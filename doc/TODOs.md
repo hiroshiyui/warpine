@@ -2,21 +2,21 @@
 
 This document tracks the tasks required to reach a functional OS/2 compatibility layer.
 
-## Phase 1: Foundation (CLI "Hello World")
-- [ ] **Executable Parser (LX/LE/NE)**
+## Phase 1: Foundation (CLI "Hello World") - COMPLETED 🎉
+- [x] **Executable Parser (LX/LE/NE)**
     - [x] Implement MZ (DOS) header parser to locate the OS/2 header offset.
     - [x] Implement LX (Linear Executable) header parser.
     - [x] Implement Object Table and Page Map parsing for LX files.
     - [x] Implement Fixup (Relocation) Table parsing.
-- [ ] **Loader Subsystem**
-    - [x] Implement memory mapping of LX objects into the process address space.
+- [x] **Loader Subsystem**
+    - [x] Implement memory mapping of LX objects into the emulation address space.
     - [x] Apply base relocations (fixups).
     - [x] Resolve dynamic imports (DLLs) and thunk them to native implementations.
-    - [x] Set up the initial CPU state (registers, stack) for jumping into OS/2 entry point.
-- [ ] **Initial API Thunks (DOSCALLS.DLL)**
-    - [ ] `DosWrite`: Basic implementation for stdout/stderr.
-    - [ ] `DosExit`: Proper process termination with exit code.
-    - [ ] `DosPutMessage`: Simple message output to console.
+    - [x] Set up the initial CPU state (registers, stack, TIB, Env) for execution.
+- [x] **Initial API Thunks (DOSCALLS.DLL)**
+    - [x] `DosWrite`: Basic implementation for stdout/stderr.
+    - [x] `DosExit`: Proper process termination with exit code.
+    - [x] `DosQuerySysInfo`: Stub implementation for runtime initialization.
 
 ## Phase 2: Core OS/2 Subsystem
 - [ ] **Memory Management**
@@ -52,3 +52,4 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
 - [ ] Add unit tests for LX parser and API stubs.
 - [ ] Improve error handling and logging (possibly using `log` or `tracing` crates).
 - [x] Create a sample 32-bit OS/2 "Hello World" binary for testing.
+- [x] Pivot to Unicorn Engine for platform-agnostic 32-bit emulation.
