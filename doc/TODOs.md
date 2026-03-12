@@ -25,9 +25,9 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
 - [x] **Memory Management**
     - [x] `DosAllocMem` / `DosFreeMem` implementation.
     - [x] Handle OS/2 32-bit flat memory model vs. segmented requests.
-- [ ] **Filesystem APIs**
-    - [ ] `DosOpen`, `DosRead`, `DosClose`, `DosQueryFileInfo`.
-    - [ ] Map OS/2 drive letters (e.g., `C:\`) to Unix paths.
+- [x] **Filesystem APIs**
+    - [x] `DosOpen`, `DosRead`, `DosClose`, `DosQueryFileInfo`.
+    - [x] Map OS/2 drive letters (e.g., `C:\`) to Unix paths.
 - [ ] **Process/Thread Management**
     - [ ] `DosCreateThread`, `DosKillThread`.
     - [ ] Thread Local Storage (TLS) emulation.

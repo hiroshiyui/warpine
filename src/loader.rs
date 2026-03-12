@@ -2,11 +2,12 @@
 use crate::lx::LxFile;
 use crate::lx::header::FixupTarget;
 use crate::api;
-use std::fs::File;
-use std::io::{self, Read, Seek, SeekFrom};
+use std::fs::{File, OpenOptions};
+use std::io::{self, Read, Write, Seek, SeekFrom};
 use std::path::Path;
 use std::ptr;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use kvm_ioctls::{Kvm, VmFd, VcpuFd};
 use kvm_bindings::{kvm_userspace_memory_region, kvm_guest_debug, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_USE_SW_BP};
 
@@ -16,7 +17,7 @@ const DYNAMIC_ALLOC_BASE: u32 = 0x02000000; // 32MB
 #[derive(Debug, Clone, Copy)]
 struct AllocBlock {
     addr: u32,
-    size: u32,
+    _size: u32,
 }
 
 pub struct MemoryManager {
@@ -40,7 +41,7 @@ impl MemoryManager {
             return None;
         }
         let addr = self.next_free;
-        self.allocated.push(AllocBlock { addr, size });
+        self.allocated.push(AllocBlock { addr, _size: size });
         self.next_free += size;
         Some(addr)
     }
@@ -56,12 +57,42 @@ impl MemoryManager {
     }
 }
 
+pub struct HandleManager {
+    handles: HashMap<u32, File>,
+    next_handle: u32,
+}
+
+impl HandleManager {
+    pub fn new() -> Self {
+        HandleManager {
+            handles: HashMap::new(),
+            next_handle: 3,
+        }
+    }
+
+    pub fn add(&mut self, file: File) -> u32 {
+        let h = self.next_handle;
+        self.handles.insert(h, file);
+        self.next_handle += 1;
+        h
+    }
+
+    pub fn get_mut(&mut self, h: u32) -> Option<&mut File> {
+        self.handles.get_mut(&h)
+    }
+
+    pub fn close(&mut self, h: u32) -> bool {
+        self.handles.remove(&h).is_some()
+    }
+}
+
 pub struct Loader {
     _kvm: Kvm,
     vm: VmFd,
     guest_mem: *mut u8,
     guest_mem_size: usize,
     pub mem_mgr: RefCell<MemoryManager>,
+    pub handle_mgr: RefCell<HandleManager>,
 }
 
 impl Loader {
@@ -77,15 +108,16 @@ impl Loader {
         unsafe { vm.set_user_memory_region(mem_region).unwrap(); }
         
         let mem_mgr = MemoryManager::new(DYNAMIC_ALLOC_BASE, guest_mem_size as u32);
+        let handle_mgr = HandleManager::new();
 
-        Loader { _kvm: kvm, vm, guest_mem, guest_mem_size, mem_mgr: RefCell::new(mem_mgr) }
+        Loader { _kvm: kvm, vm, guest_mem, guest_mem_size, mem_mgr: RefCell::new(mem_mgr), handle_mgr: RefCell::new(handle_mgr) }
     }
 
     pub fn load<P: AsRef<Path>>(&mut self, lx_file: &LxFile, path: P) -> io::Result<()> {
         let mut file = File::open(path)?;
         let data_pages_base = lx_file.header.data_pages_offset as u64;
         for (i, obj) in lx_file.object_table.iter().enumerate() {
-            println!("  Mapping Object {} at 0x{:08X}...", i + 1, obj.base_address);
+            println!("  Mapping Object {}...", i + 1);
             let obj_page_start = (obj.page_map_index as usize).saturating_sub(1);
             for p in 0..obj.page_count as usize {
                 let page_idx = obj_page_start + p;
@@ -207,18 +239,114 @@ impl Loader {
         let esp = regs.rsp;
         let read_stack = |off: u64| unsafe { ptr::read_unaligned(self.guest_mem.add((esp + off) as usize) as *const u32) };
         
-        let stack_cleanup;
+        let stack_cleanup = 4;
+
         match ordinal {
-            282 => { // DosWrite
-                let fd = read_stack(4); let buf = read_stack(8); let len = read_stack(12); let actual = read_stack(16);
+            257 => { // DosClose
+                let hf = read_stack(4);
+                self.handle_mgr.borrow_mut().close(hf);
+                regs.rax = 0;
+            },
+            273 => { // DosOpen
+                let psz_name_ptr = read_stack(4);
+                let phf_ptr = read_stack(8);
+                let pul_action_ptr = read_stack(12);
+                let _cb_file = read_stack(16);
+                let _ul_attr = read_stack(20);
+                let fs_open_flags = read_stack(24);
+                let fs_open_mode = read_stack(28);
+
                 unsafe {
-                    let res = match api::doscalls::dos_write(fd, std::slice::from_raw_parts(self.guest_mem.add(buf as usize), len as usize)) {
-                        Ok(a) => { if actual != 0 { ptr::write_unaligned(self.guest_mem.add(actual as usize) as *mut u32, a); } 0 },
-                        Err(_) => 1,
-                    };
-                    regs.rax = res as u64;
+                    let name_ptr = self.guest_mem.add(psz_name_ptr as usize);
+                    let mut name = String::new();
+                    let mut i = 0;
+                    while *name_ptr.add(i) != 0 {
+                        name.push(*name_ptr.add(i) as char);
+                        i += 1;
+                    }
+                    let path = name.replace('\\', "/");
+                    
+                    let mut options = OpenOptions::new();
+                    match fs_open_mode & 0x07 {
+                        0 => { options.read(true); },
+                        1 => { options.write(true); },
+                        2 => { options.read(true).write(true); },
+                        _ => {},
+                    }
+                    
+                    let action_if_exists = fs_open_flags & 0x03;
+                    let action_if_new = (fs_open_flags >> 4) & 0x03;
+
+                    if action_if_new == 1 { options.create(true); }
+                    if action_if_exists == 2 { options.truncate(true); }
+
+                    match options.open(&path) {
+                        Ok(file) => {
+                            let h = self.handle_mgr.borrow_mut().add(file);
+                            ptr::write_unaligned(self.guest_mem.add(phf_ptr as usize) as *mut u32, h);
+                            if pul_action_ptr != 0 {
+                                ptr::write_unaligned(self.guest_mem.add(pul_action_ptr as usize) as *mut u32, 1);
+                            }
+                            regs.rax = 0;
+                        },
+                        Err(_) => {
+                            regs.rax = 2;
+                        }
+                    }
                 }
-                stack_cleanup = 20;
+            },
+            281 => { // DosRead
+                let hf = read_stack(4);
+                let buf_ptr = read_stack(8);
+                let len = read_stack(12);
+                let actual_ptr = read_stack(16);
+
+                let mut h_mgr = self.handle_mgr.borrow_mut();
+                if let Some(file) = h_mgr.get_mut(hf) {
+                    let mut data = vec![0u8; len as usize];
+                    match file.read(&mut data) {
+                        Ok(n) => {
+                            unsafe {
+                                ptr::copy_nonoverlapping(data.as_ptr(), self.guest_mem.add(buf_ptr as usize), n);
+                                if actual_ptr != 0 {
+                                    ptr::write_unaligned(self.guest_mem.add(actual_ptr as usize) as *mut u32, n as u32);
+                                }
+                            }
+                            regs.rax = 0;
+                        },
+                        Err(_) => regs.rax = 5,
+                    }
+                } else if hf == 0 { regs.rax = 0; } else { regs.rax = 6; }
+            },
+            282 => { // DosWrite
+                let fd = read_stack(4); let buf_ptr = read_stack(8); let len = read_stack(12); let actual_ptr = read_stack(16);
+                let res = if fd == 1 || fd == 2 {
+                    unsafe {
+                        let data = std::slice::from_raw_parts(self.guest_mem.add(buf_ptr as usize), len as usize);
+                        match api::doscalls::dos_write(fd, data) {
+                            Ok(actual) => {
+                                if actual_ptr != 0 { ptr::write_unaligned(self.guest_mem.add(actual_ptr as usize) as *mut u32, actual); }
+                                0
+                            },
+                            Err(_) => 1,
+                        }
+                    }
+                } else {
+                    let mut h_mgr = self.handle_mgr.borrow_mut();
+                    if let Some(file) = h_mgr.get_mut(fd) {
+                        unsafe {
+                            let data = std::slice::from_raw_parts(self.guest_mem.add(buf_ptr as usize), len as usize);
+                            match file.write(data) {
+                                Ok(n) => {
+                                    if actual_ptr != 0 { ptr::write_unaligned(self.guest_mem.add(actual_ptr as usize) as *mut u32, n as u32); }
+                                    0
+                                },
+                                Err(_) => 5,
+                            }
+                        }
+                    } else { 6 }
+                };
+                regs.rax = res as u64;
             },
             234 => { api::doscalls::dos_exit(read_stack(4), read_stack(8)); },
             235 => { // DosQueryHType
@@ -227,7 +355,7 @@ impl Loader {
                     if ptype != 0 { ptr::write_unaligned(self.guest_mem.add(ptype as usize) as *mut u32, if hfile < 3 { 1 } else { 0 }); }
                     if pattr != 0 { ptr::write_unaligned(self.guest_mem.add(pattr as usize) as *mut u32, 0); }
                 }
-                regs.rax = 0; stack_cleanup = 16;
+                regs.rax = 0;
             },
             283 => { // DosGetInfoBlocks
                 let ptib = read_stack(4); let ppib = read_stack(8);
@@ -235,31 +363,29 @@ impl Loader {
                     if ptib != 0 { ptr::write_unaligned(self.guest_mem.add(ptib as usize) as *mut u32, 0x70000); }
                     if ppib != 0 { ptr::write_unaligned(self.guest_mem.add(ppib as usize) as *mut u32, 0x71000); }
                 }
-                regs.rax = 0; stack_cleanup = 12;
+                regs.rax = 0;
             },
             299 => { // DosAllocMem
-                let ppb = read_stack(4); let cb = read_stack(8); // let flags = read_stack(12);
+                let ppb = read_stack(4); let cb = read_stack(8);
                 match self.mem_mgr.borrow_mut().alloc(cb) {
                     Some(addr) => {
                         unsafe { ptr::write_unaligned(self.guest_mem.add(ppb as usize) as *mut u32, addr); }
                         regs.rax = 0;
                     },
-                    None => regs.rax = 8, // ERROR_NOT_ENOUGH_MEMORY
+                    None => regs.rax = 8,
                 }
-                stack_cleanup = 16;
             },
             304 => { // DosFreeMem
                 let pb = read_stack(4);
                 if self.mem_mgr.borrow_mut().free(pb) { regs.rax = 0; }
-                else { regs.rax = 487; } // ERROR_INVALID_ADDRESS
-                stack_cleanup = 8;
+                else { regs.rax = 487; }
             },
             305 => { // DosSetMem
-                regs.rax = 0; stack_cleanup = 16;
+                regs.rax = 0;
             },
-            348 => { regs.rax = 0; stack_cleanup = 20; },
-            349 => { regs.rax = 0; stack_cleanup = 16; }
-            _ => { println!("Warning: Unknown API Ordinal {}", ordinal); regs.rax = 0; stack_cleanup = 4; }
+            348 => { regs.rax = 0; },
+            349 => { regs.rax = 0; }
+            _ => { println!("Warning: Unknown API Ordinal {}", ordinal); regs.rax = 0; }
         }
         if stack_cleanup > 0 {
             regs.rip = read_stack(0) as u64;
