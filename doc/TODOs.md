@@ -22,9 +22,9 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
     - [x] `DosGetInfoBlocks`: Retrieval of TIB and PIB pointers.
 
 ## Phase 2: Core OS/2 Subsystem
-- [ ] **Memory Management**
-    - [ ] `DosAllocMem` / `DosFreeMem` implementation.
-    - [ ] Handle OS/2 32-bit flat memory model vs. segmented requests.
+- [x] **Memory Management**
+    - [x] `DosAllocMem` / `DosFreeMem` implementation.
+    - [x] Handle OS/2 32-bit flat memory model vs. segmented requests.
 - [ ] **Filesystem APIs**
     - [ ] `DosOpen`, `DosRead`, `DosClose`, `DosQueryFileInfo`.
     - [ ] Map OS/2 drive letters (e.g., `C:\`) to Unix paths.

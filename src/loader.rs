@@ -6,16 +6,62 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::ptr;
+use std::cell::RefCell;
 use kvm_ioctls::{Kvm, VmFd, VcpuFd};
 use kvm_bindings::{kvm_userspace_memory_region, kvm_guest_debug, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_USE_SW_BP};
 
 const MAGIC_API_BASE: u64 = 0x01000000;
+const DYNAMIC_ALLOC_BASE: u32 = 0x02000000; // 32MB
+
+#[derive(Debug, Clone, Copy)]
+struct AllocBlock {
+    addr: u32,
+    size: u32,
+}
+
+pub struct MemoryManager {
+    allocated: Vec<AllocBlock>,
+    next_free: u32,
+    limit: u32,
+}
+
+impl MemoryManager {
+    pub fn new(base: u32, limit: u32) -> Self {
+        MemoryManager {
+            allocated: Vec::new(),
+            next_free: base,
+            limit,
+        }
+    }
+
+    pub fn alloc(&mut self, size: u32) -> Option<u32> {
+        let size = (size + 4095) & !4095;
+        if self.next_free + size > self.limit {
+            return None;
+        }
+        let addr = self.next_free;
+        self.allocated.push(AllocBlock { addr, size });
+        self.next_free += size;
+        Some(addr)
+    }
+
+    pub fn free(&mut self, addr: u32) -> bool {
+        let len_before = self.allocated.len();
+        self.allocated.retain(|b| b.addr != addr);
+        self.allocated.len() < len_before
+    }
+
+    pub fn is_allocated(&self, addr: u32) -> bool {
+        self.allocated.iter().any(|b| b.addr == addr)
+    }
+}
 
 pub struct Loader {
     _kvm: Kvm,
     vm: VmFd,
     guest_mem: *mut u8,
     guest_mem_size: usize,
+    pub mem_mgr: RefCell<MemoryManager>,
 }
 
 impl Loader {
@@ -29,14 +75,17 @@ impl Loader {
         unsafe { ptr::write_bytes(guest_mem, 0, guest_mem_size); }
         let mem_region = kvm_userspace_memory_region { slot: 0, guest_phys_addr: 0, memory_size: guest_mem_size as u64, userspace_addr: guest_mem as u64, flags: 0 };
         unsafe { vm.set_user_memory_region(mem_region).unwrap(); }
-        Loader { _kvm: kvm, vm, guest_mem, guest_mem_size }
+        
+        let mem_mgr = MemoryManager::new(DYNAMIC_ALLOC_BASE, guest_mem_size as u32);
+
+        Loader { _kvm: kvm, vm, guest_mem, guest_mem_size, mem_mgr: RefCell::new(mem_mgr) }
     }
 
     pub fn load<P: AsRef<Path>>(&mut self, lx_file: &LxFile, path: P) -> io::Result<()> {
         let mut file = File::open(path)?;
         let data_pages_base = lx_file.header.data_pages_offset as u64;
         for (i, obj) in lx_file.object_table.iter().enumerate() {
-            println!("  Mapping Object {}...", i + 1);
+            println!("  Mapping Object {} at 0x{:08X}...", i + 1, obj.base_address);
             let obj_page_start = (obj.page_map_index as usize).saturating_sub(1);
             for p in 0..obj.page_count as usize {
                 let page_idx = obj_page_start + p;
@@ -92,7 +141,7 @@ impl Loader {
         }
     }
 
-    pub fn run(&self, lx_file: &LxFile) -> ! {
+    pub fn run(self, lx_file: &LxFile) -> ! {
         let mut vcpu = self.vm.create_vcpu(0).unwrap();
         let mut sregs = vcpu.get_sregs().unwrap();
         sregs.cs.base = 0; sregs.cs.limit = 0xFFFFFFFF; sregs.cs.g = 1; sregs.cs.db = 1; sregs.cs.present = 1; sregs.cs.type_ = 11; sregs.cs.s = 1; sregs.cs.selector = 0x08;
@@ -111,8 +160,6 @@ impl Loader {
             ptr::write_unaligned(self.guest_mem.add(tib_base as usize + 0x18) as *mut u32, tib_base as u32);
             ptr::write_unaligned(self.guest_mem.add(tib_base as usize + 0x30) as *mut u32, pib_base as u32);
             ptr::write_unaligned(self.guest_mem.add(pib_base as usize + 0x00) as *mut u32, 42); 
-            ptr::write_unaligned(self.guest_mem.add(pib_base as usize + 0x04) as *mut u32, 41); 
-            ptr::write_unaligned(self.guest_mem.add(pib_base as usize + 0x08) as *mut u32, 1); 
             ptr::write_unaligned(self.guest_mem.add(pib_base as usize + 0x0C) as *mut u32, env_addr as u32); 
             ptr::write_unaligned(self.guest_mem.add(pib_base as usize + 0x10) as *mut u32, cmdline_addr as u32);
         }
@@ -157,9 +204,10 @@ impl Loader {
 
     fn handle_api_call(&self, vcpu: &mut VcpuFd, ordinal: u32) {
         let mut regs = vcpu.get_regs().unwrap();
-        let read_stack = |off: u64| unsafe { ptr::read_unaligned(self.guest_mem.add((regs.rsp + off) as usize) as *const u32) };
+        let esp = regs.rsp;
+        let read_stack = |off: u64| unsafe { ptr::read_unaligned(self.guest_mem.add((esp + off) as usize) as *const u32) };
         
-        let mut stack_cleanup;
+        let stack_cleanup;
         match ordinal {
             282 => { // DosWrite
                 let fd = read_stack(4); let buf = read_stack(8); let len = read_stack(12); let actual = read_stack(16);
@@ -189,13 +237,33 @@ impl Loader {
                 }
                 regs.rax = 0; stack_cleanup = 12;
             },
+            299 => { // DosAllocMem
+                let ppb = read_stack(4); let cb = read_stack(8); // let flags = read_stack(12);
+                match self.mem_mgr.borrow_mut().alloc(cb) {
+                    Some(addr) => {
+                        unsafe { ptr::write_unaligned(self.guest_mem.add(ppb as usize) as *mut u32, addr); }
+                        regs.rax = 0;
+                    },
+                    None => regs.rax = 8, // ERROR_NOT_ENOUGH_MEMORY
+                }
+                stack_cleanup = 16;
+            },
+            304 => { // DosFreeMem
+                let pb = read_stack(4);
+                if self.mem_mgr.borrow_mut().free(pb) { regs.rax = 0; }
+                else { regs.rax = 487; } // ERROR_INVALID_ADDRESS
+                stack_cleanup = 8;
+            },
+            305 => { // DosSetMem
+                regs.rax = 0; stack_cleanup = 16;
+            },
             348 => { regs.rax = 0; stack_cleanup = 20; },
             349 => { regs.rax = 0; stack_cleanup = 16; }
             _ => { println!("Warning: Unknown API Ordinal {}", ordinal); regs.rax = 0; stack_cleanup = 4; }
         }
         if stack_cleanup > 0 {
             regs.rip = read_stack(0) as u64;
-            regs.rsp += stack_cleanup;
+            regs.rsp += stack_cleanup as u64;
         }
         vcpu.set_regs(&regs).unwrap();
     }
