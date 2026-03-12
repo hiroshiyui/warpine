@@ -4,9 +4,9 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
 
 ## Phase 1: Foundation (CLI "Hello World")
 - [ ] **Executable Parser (LX/LE/NE)**
-    - [ ] Implement MZ (DOS) header parser to locate the OS/2 header offset.
-    - [ ] Implement LX (Linear Executable) header parser.
-    - [ ] Implement Object Table and Page Map parsing for LX files.
+    - [x] Implement MZ (DOS) header parser to locate the OS/2 header offset.
+    - [x] Implement LX (Linear Executable) header parser.
+    - [x] Implement Object Table and Page Map parsing for LX files.
     - [ ] Implement Fixup (Relocation) Table parsing.
 - [ ] **Loader Subsystem**
     - [ ] Implement memory mapping of LX objects into the process address space.
