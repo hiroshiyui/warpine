@@ -9,10 +9,10 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
     - [x] Implement Object Table and Page Map parsing for LX files.
     - [x] Implement Fixup (Relocation) Table parsing.
 - [ ] **Loader Subsystem**
-    - [ ] Implement memory mapping of LX objects into the process address space.
-    - [ ] Apply base relocations (fixups).
-    - [ ] Resolve dynamic imports (DLLs) and thunk them to native implementations.
-    - [ ] Set up the initial CPU state (registers, stack) for jumping into OS/2 entry point.
+    - [x] Implement memory mapping of LX objects into the process address space.
+    - [x] Apply base relocations (fixups).
+    - [x] Resolve dynamic imports (DLLs) and thunk them to native implementations.
+    - [x] Set up the initial CPU state (registers, stack) for jumping into OS/2 entry point.
 - [ ] **Initial API Thunks (DOSCALLS.DLL)**
     - [ ] `DosWrite`: Basic implementation for stdout/stderr.
     - [ ] `DosExit`: Proper process termination with exit code.
