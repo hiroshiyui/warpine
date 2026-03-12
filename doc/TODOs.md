@@ -9,14 +9,17 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
     - [x] Implement Object Table and Page Map parsing for LX files.
     - [x] Implement Fixup (Relocation) Table parsing.
 - [x] **Loader Subsystem**
-    - [x] Implement memory mapping of LX objects into the emulation address space.
+    - [x] Implement memory mapping of LX objects into the KVM guest address space.
     - [x] Apply base relocations (fixups).
-    - [x] Resolve dynamic imports (DLLs) and thunk them to native implementations.
-    - [x] Set up the initial CPU state (registers, stack, TIB, Env) for execution.
+    - [x] Resolve dynamic imports (DLLs) and thunk them to native implementations via INT 3 traps.
+    - [x] Set up the initial CPU state (registers, stack, TIB, PIB, Env) for execution.
 - [x] **Initial API Thunks (DOSCALLS.DLL)**
     - [x] `DosWrite`: Basic implementation for stdout/stderr.
     - [x] `DosExit`: Proper process termination with exit code.
     - [x] `DosQuerySysInfo`: Stub implementation for runtime initialization.
+    - [x] `DosQueryConfig`: Stub implementation for runtime initialization.
+    - [x] `DosQueryHType`: Identification of standard handles.
+    - [x] `DosGetInfoBlocks`: Retrieval of TIB and PIB pointers.
 
 ## Phase 2: Core OS/2 Subsystem
 - [ ] **Memory Management**
