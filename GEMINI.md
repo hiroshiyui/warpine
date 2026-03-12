@@ -40,6 +40,19 @@ The project is structured into several core modules:
 - **Run:** `cargo run -- <path_to_os2_executable>`
 - **Test:** `cargo test` (Includes LX parser unit and integration tests)
 
+## Development Conventions
+
+- **Modular Design:** Keep API emulations, loader logic, and file format parsing strictly separated.
+- **Safety:** Leverage Rust's safety features for memory mapping and buffer handling. Critical when dealing with legacy binary formats and KVM memory regions.
+- **Stubs:** Use clear stubbing patterns for unimplemented APIs to allow incremental progress.
+- **Documentation:** Maintain this `GEMINI.md` as the primary context for AI-assisted development.
+
+### Engineering Standards
+
+- **Test Coverage:** Every new feature or bug fix MUST include corresponding unit or integration tests. Aim for high coverage in the `lx` parser and `api` thunks to prevent regressions in legacy behavior.
+- **Security Audit:** Given the use of the KVM API and extensive `unsafe` blocks for memory manipulation, all code involving pointer arithmetic or guest-to-host transitions must undergo rigorous security review. Avoid buffer overflows and ensure guest memory isolation is strictly enforced.
+- **Code Smells:** Prioritize maintainability by refactoring complex logic (e.g., the VMEXIT loop) into clean, documented abstractions. Avoid "magic numbers" in the loader; use named constants for GDT entries, segment selectors, and API ordinals.
+
 ## Roadmap
 
 1. **Phase 1 (Foundation):** LX parser, KVM loader, and basic CLI environment. [DONE]
