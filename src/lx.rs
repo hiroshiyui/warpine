@@ -10,7 +10,7 @@ pub struct LxFile {
     pub object_table: Vec<ObjectTableEntry>,
     pub page_map: Vec<ObjectPageMapEntry>,
     pub fixup_page_table: Vec<u32>,
-    pub fixup_records: Vec<LxFixupRecord>,
+    pub fixup_records_by_page: Vec<Vec<LxFixupRecord>>,
     pub imported_modules: Vec<String>,
     pub import_procedure_names: Vec<u8>,
 }
@@ -68,14 +68,22 @@ impl LxFile {
             fixup_page_table.push(u32::from_le_bytes(buf4));
         }
 
-        // 7. Read Fixup Records
+        // 7. Read Fixup Records by Page
         let fixup_record_table_start = lx_offset + header.fixup_record_table_offset as u64;
-        let fixup_record_table_end = fixup_record_table_start + *fixup_page_table.last().unwrap() as u64;
-        file.seek(SeekFrom::Start(fixup_record_table_start))?;
-
-        let mut fixup_records = Vec::new();
-        while file.stream_position()? < fixup_record_table_end {
-            fixup_records.push(LxFixupRecord::read(&mut file)?);
+        let mut fixup_records_by_page = Vec::with_capacity(header.module_num_pages as usize);
+        
+        for i in 0..header.module_num_pages as usize {
+            let start_offset = fixup_page_table[i] as u64;
+            let end_offset = fixup_page_table[i+1] as u64;
+            let mut page_records = Vec::new();
+            
+            if end_offset > start_offset {
+                file.seek(SeekFrom::Start(fixup_record_table_start + start_offset))?;
+                while file.stream_position()? < fixup_record_table_start + end_offset {
+                    page_records.push(LxFixupRecord::read(&mut file)?);
+                }
+            }
+            fixup_records_by_page.push(page_records);
         }
 
         // 8. Read Import Module Name Table
@@ -111,7 +119,7 @@ impl LxFile {
             object_table,
             page_map,
             fixup_page_table,
-            fixup_records,
+            fixup_records_by_page,
             imported_modules,
             import_procedure_names,
         })

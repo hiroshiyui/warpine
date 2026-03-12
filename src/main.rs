@@ -100,10 +100,13 @@ fn main() {
     println!("\nInitializing loader...");
 
     let mut loader = loader::Loader::new();
-    if let Err(e) = loader.load(&lx_file, file_path) {
-        eprintln!("Failed to load executable: {}", e);
-        std::process::exit(1);
-    }
+    let mut emu = match loader.load(&lx_file, file_path) {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("Failed to load executable: {}", e);
+            std::process::exit(1);
+        }
+    };
 
-    loader.run(&lx_file);
+    loader.run(&lx_file, &mut emu);
 }

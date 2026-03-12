@@ -3,52 +3,52 @@ use std::io::{self, Read, Seek, SeekFrom};
 #[derive(Debug, Default, Clone)]
 #[repr(C)]
 pub struct LxHeader {
-    pub signature: [u8; 2],            // "LX"
-    pub byte_order: u8,               // 0 = Little Endian
-    pub word_order: u8,               // 0 = Little Endian
-    pub format_level: u32,            // LX format level
-    pub cpu_type: u16,                // 1=286, 2=386, 3=486...
-    pub os_type: u16,                 // 1=OS/2
-    pub module_version: u32,
-    pub module_flags: u32,            // 0x04 = EXE, 0x07 = DLL
-    pub module_num_pages: u32,        // Total number of pages in module
-    pub eip_object: u32,              // Object number for EIP
-    pub eip: u32,                     // Initial EIP
-    pub esp_object: u32,              // Object number for ESP
-    pub esp: u32,                     // Initial ESP
-    pub page_size: u32,               // Usually 4096
-    pub page_offset_shift: u32,       // Shift count for page offsets
-    pub fixup_section_size: u32,      // Total size of fixup section
-    pub fixup_section_checksum: u32,
-    pub loader_section_size: u32,     // Total size of loader section
-    pub loader_section_checksum: u32,
-    pub object_table_offset: u32,     // Offset to object table
-    pub object_count: u32,            // Number of objects in module
-    pub object_page_map_offset: u32,  // Offset to object page map
-    pub object_iter_data_map_offset: u32,
-    pub resource_table_offset: u32,
-    pub resource_count: u32,
-    pub resident_name_table_offset: u32,
-    pub entry_table_offset: u32,      // Offset to entry table
-    pub module_directives_offset: u32,
-    pub module_directives_count: u32,
-    pub fixup_page_table_offset: u32, // Offset to fixup page table
-    pub fixup_record_table_offset: u32, // Offset to fixup record table
-    pub imported_modules_name_table_offset: u32,
-    pub imported_modules_count: u32,
-    pub import_procedure_name_table_offset: u32,
-    pub per_page_checksum_table_offset: u32,
-    pub data_pages_offset: u32,       // Offset to data pages
-    pub num_preload_pages: u32,
-    pub non_resident_name_table_offset: u32,
-    pub non_resident_name_table_length: u32,
-    pub non_resident_name_table_checksum: u32,
-    pub auto_ds_object: u32,
-    pub debug_info_offset: u32,
-    pub debug_info_length: u32,
-    pub num_instance_preload: u32,
-    pub num_instance_demand: u32,
-    pub heap_size: u32,
+    pub signature: [u8; 2],            // 00h
+    pub byte_order: u8,               // 02h
+    pub word_order: u8,               // 03h
+    pub format_level: u32,            // 04h
+    pub cpu_type: u16,                // 08h
+    pub os_type: u16,                 // 0Ah
+    pub module_version: u32,          // 0Ch
+    pub module_flags: u32,            // 10h
+    pub module_num_pages: u32,        // 14h
+    pub eip_object: u32,              // 18h
+    pub eip: u32,                     // 1Ch
+    pub esp_object: u32,              // 20h
+    pub esp: u32,                     // 24h
+    pub page_size: u32,               // 28h
+    pub page_offset_shift: u32,       // 2Ch
+    pub fixup_section_size: u32,      // 30h
+    pub fixup_section_checksum: u32,  // 34h
+    pub loader_section_size: u32,     // 38h
+    pub loader_section_checksum: u32, // 3Ch
+    pub object_table_offset: u32,     // 40h
+    pub object_count: u32,            // 44h
+    pub object_page_map_offset: u32,  // 48h
+    pub object_iter_data_map_offset: u32, // 4Ch
+    pub resource_table_offset: u32,   // 50h
+    pub resource_count: u32,          // 54h
+    pub resident_name_table_offset: u32, // 58h
+    pub entry_table_offset: u32,      // 5Ch
+    pub module_directives_offset: u32,// 60h
+    pub module_directives_count: u32, // 64h
+    pub fixup_page_table_offset: u32, // 68h
+    pub fixup_record_table_offset: u32, // 6Ch
+    pub imported_modules_name_table_offset: u32, // 70h
+    pub imported_modules_count: u32,  // 74h
+    pub import_procedure_name_table_offset: u32, // 78h
+    pub per_page_checksum_table_offset: u32, // 7Ch
+    pub data_pages_offset: u32,       // 80h
+    pub num_preload_pages: u32,       // 84h
+    pub non_resident_name_table_offset: u32, // 88h
+    pub non_resident_name_table_length: u32, // 8Ch
+    pub non_resident_name_table_checksum: u32, // 90h
+    pub auto_ds_object: u32,          // 94h
+    pub debug_info_offset: u32,       // 98h
+    pub debug_info_length: u32,       // 9Ch
+    pub num_instance_preload: u32,    // A0h
+    pub num_instance_demand: u32,     // A4h
+    pub heap_size: u32,               // A8h
 }
 
 #[derive(Debug, Default, Clone)]
@@ -143,7 +143,6 @@ impl LxFixupRecord {
 
         let mut source_offsets = Vec::new();
         if (source_type & 0x20) != 0 {
-            // Multiple source offsets
             reader.read_exact(&mut b1)?;
             let count = b1[0];
             for _ in 0..count {
@@ -151,22 +150,16 @@ impl LxFixupRecord {
                 source_offsets.push(u16::from_le_bytes(b2));
             }
         } else {
-            // Single source offset
             reader.read_exact(&mut b2)?;
             source_offsets.push(u16::from_le_bytes(b2));
         }
 
-        // Target type (bits 0-1):
-        // 00 = Internal
-        // 01 = External Ordinal
-        // 02 = External Name
-        // 03 = Internal Entry Table
         let target_type = target_flags & 0x03;
         let index_is_16bit = (target_flags & 0x40) != 0;
         let offset_is_32bit = (target_flags & 0x10) != 0;
 
         let target = match target_type {
-            0 => { // Internal
+            0 => {
                 let object_num = if index_is_16bit {
                     reader.read_exact(&mut b2)?; u16::from_le_bytes(b2)
                 } else {
@@ -179,13 +172,12 @@ impl LxFixupRecord {
                 };
                 FixupTarget::Internal { object_num, target_offset }
             },
-            1 => { // External Ordinal
+            1 => {
                 let module_ordinal = if index_is_16bit {
                     reader.read_exact(&mut b2)?; u16::from_le_bytes(b2)
                 } else {
                     reader.read_exact(&mut b1)?; b1[0] as u16
                 };
-                // Ordinal size (bit 7: 1=8-bit, 0=16/32 bit based on bit 4)
                 let proc_ordinal = if (target_flags & 0x80) != 0 {
                     reader.read_exact(&mut b1)?; b1[0] as u32
                 } else if offset_is_32bit {
@@ -195,7 +187,7 @@ impl LxFixupRecord {
                 };
                 FixupTarget::ExternalOrdinal { module_ordinal, proc_ordinal }
             },
-            2 => { // External Name
+            2 => {
                 let module_ordinal = if index_is_16bit {
                     reader.read_exact(&mut b2)?; u16::from_le_bytes(b2)
                 } else {
@@ -208,7 +200,7 @@ impl LxFixupRecord {
                 };
                 FixupTarget::ExternalName { module_ordinal, proc_name_offset }
             },
-            3 => { // Internal Entry Table
+            3 => {
                 let entry_ordinal = if index_is_16bit {
                     reader.read_exact(&mut b2)?; u16::from_le_bytes(b2)
                 } else {

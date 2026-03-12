@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 libc = "0.2.183"
+unicorn-engine = "2.1.5"
