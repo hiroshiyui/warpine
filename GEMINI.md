@@ -5,16 +5,16 @@ Warpine is a compatibility layer designed to allow IBM OS/2 applications and gam
 ## Project Overview
 
 - **Language:** Rust (Edition 2024)
-- **Goal:** Native execution of 16-bit and 32-bit OS/2 binaries (LX, LE, NE formats) on Linux/Unix using CPU emulation where necessary for compatibility.
-- **Current Status:** Phase 1 (Foundation) - **COMPLETED**. Warpine can now load 32-bit LX binaries, resolve dynamic imports, and execute code using the Unicorn Engine.
+- **Goal:** Native execution of 16-bit and 32-bit OS/2 binaries (LX, LE, NE formats) on Linux/Unix using a custom KVM-based hypervisor for hardware-accelerated compatibility.
+- **Current Status:** Phase 1 (Foundation) - **COMPLETED**. Warpine can now load 32-bit LX binaries and execute them at native speeds using the KVM API.
 
 ## Architecture
 
 The project is structured into several core modules:
 
 - `src/lx/`: Executable parser for OS/2 Linear Executable (LX). Fully implements header, object table, page map, and fixup parsing.
-- `src/loader.rs`: Unicorn-based loader that maps OS/2 objects into a 32-bit virtual CPU and manages the execution environment.
-- `src/api.rs`: Emulation of OS/2 System DLLs (e.g., `DOSCALLS.DLL`) via native Rust thunks.
+- `src/loader.rs`: KVM-based VMM (Virtual Machine Monitor) that maps OS/2 objects into a 32-bit guest VM and handles API traps.
+- `src/api.rs`: Emulation of OS/2 System DLLs (e.g., `DOSCALLS.DLL`) via native Rust thunks triggered by VMEXITs.
 - `src/main.rs`: CLI entry point for loading and executing OS/2 binaries.
 
 ## Building and Running
@@ -22,7 +22,8 @@ The project is structured into several core modules:
 ### Prerequisites
 
 - Rust toolchain (2024 edition).
-- `libunicorn-dev` (or build via cargo dependency).
+- Linux kernel with KVM support (`/dev/kvm` must be accessible).
+- `kvm-ioctls` and `kvm-bindings` crates (handled by Cargo).
 
 ### Commands
 
