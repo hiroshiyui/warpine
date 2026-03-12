@@ -41,4 +41,12 @@ pub mod bridges {
     pub unsafe extern "C" fn DosQuerySysInfo(_start: u32, _last: u32, _buf: *mut u8, _len: u32) -> u32 {
         0
     }
+
+    // A helper that matches the return address signature
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn WarpineExitThunk() -> ! {
+        // OS/2 expects us to call DosExit(1, EAX)
+        // For now, just exit success.
+        doscalls::dos_exit(1, 0);
+    }
 }
