@@ -51,4 +51,4 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
 ## General Improvements
 - [ ] Add unit tests for LX parser and API stubs.
 - [ ] Improve error handling and logging (possibly using `log` or `tracing` crates).
-- [ ] Create a sample 32-bit OS/2 "Hello World" binary for testing.
+- [x] Create a sample 32-bit OS/2 "Hello World" binary for testing.
