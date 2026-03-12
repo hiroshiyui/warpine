@@ -1,0 +1,6 @@
+/target
+/vendor/watcom/
+# OS/2 build artifacts
+*.exe
+*.obj
+*.err
