@@ -158,7 +158,7 @@ impl Loader {
         let mut regs = vcpu.get_regs().unwrap();
         let read_stack = |off: u64| unsafe { ptr::read_unaligned(self.guest_mem.add((regs.rsp + off) as usize) as *const u32) };
         
-        let mut stack_cleanup = 0;
+        let mut stack_cleanup;
         match ordinal {
             282 => { // DosWrite
                 let fd = read_stack(4); let buf = read_stack(8); let len = read_stack(12); let actual = read_stack(16);

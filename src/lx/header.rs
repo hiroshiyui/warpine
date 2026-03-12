@@ -297,3 +297,45 @@ impl LxHeader {
         Ok(header)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn test_read_lx_header_minimal() {
+        let mut data = vec![0u8; 196];
+        data[0] = b'L';
+        data[1] = b'X';
+        data[0x08] = 2; // CPU Type 386
+        data[0x0A] = 1; // OS Type OS/2
+        data[0x1C] = 0x9A; // EIP
+        data[0x80] = 0xCC; // Data Pages Offset
+        data[0x81] = 0x01;
+
+        let mut cursor = Cursor::new(data);
+        let header = LxHeader::read(&mut cursor, 0).expect("Should parse header");
+
+        assert_eq!(header.signature, *b"LX");
+        assert_eq!(header.cpu_type, 2);
+        assert_eq!(header.os_type, 1);
+        assert_eq!(header.eip, 0x9A);
+        assert_eq!(header.data_pages_offset, 0x1CC);
+    }
+
+    #[test]
+    fn test_read_object_table_entry() {
+        let mut data = vec![0u8; 24];
+        data[0x00] = 0xC4; data[0x01] = 0x05; // Size 0x5C4
+        data[0x04] = 0x00; data[0x05] = 0x00; data[0x06] = 0x01; // Base 0x10000
+        data[0x08] = 0x05; data[0x09] = 0x20; // Flags 0x2005
+
+        let mut cursor = Cursor::new(data);
+        let entry = ObjectTableEntry::read(&mut cursor).expect("Should parse object entry");
+
+        assert_eq!(entry.size, 0x5C4);
+        assert_eq!(entry.base_address, 0x10000);
+        assert_eq!(entry.flags, 0x2005);
+    }
+}
