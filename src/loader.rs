@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 use crate::lx::LxFile;
 use crate::lx::header::FixupTarget;
 use crate::api;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-only
 pub mod doscalls {
     pub fn dos_write(fd: u32, buf: &[u8]) -> Result<u32, &'static str> {
         if fd == 1 || fd == 2 {

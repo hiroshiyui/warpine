@@ -48,4 +48,4 @@ Phase 1 (Foundation) is complete. Warpine can load and execute a 32-bit "Hello W
 
 ## License
 
-This project is licensed under the MIT License.
+This project is licensed under the GNU General Public License v3 (GPLv3). See the [LICENSE](LICENSE) file for details.
