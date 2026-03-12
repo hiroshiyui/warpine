@@ -97,16 +97,13 @@ fn main() {
         }
     }
 
-    println!("\nInitializing loader...");
+    println!("\nInitializing KVM loader...");
 
     let mut loader = loader::Loader::new();
-    let mut emu = match loader.load(&lx_file, file_path) {
-        Ok(e) => e,
-        Err(e) => {
-            eprintln!("Failed to load executable: {}", e);
-            std::process::exit(1);
-        }
-    };
+    if let Err(e) = loader.load(&lx_file, file_path) {
+        eprintln!("Failed to load executable: {}", e);
+        std::process::exit(1);
+    }
 
-    loader.run(&lx_file, &mut emu);
+    loader.run(&lx_file);
 }
