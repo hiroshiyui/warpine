@@ -104,6 +104,141 @@ impl ObjectPageMapEntry {
     }
 }
 
+#[derive(Debug, Clone)]
+pub enum FixupTarget {
+    Internal {
+        object_num: u16,
+        target_offset: u32,
+    },
+    ExternalOrdinal {
+        module_ordinal: u16,
+        proc_ordinal: u32,
+    },
+    ExternalName {
+        module_ordinal: u16,
+        proc_name_offset: u32,
+    },
+    InternalEntry {
+        entry_ordinal: u16,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct LxFixupRecord {
+    pub source_type: u8,
+    pub target_flags: u8,
+    pub source_offsets: Vec<u16>,
+    pub target: FixupTarget,
+    pub additive: Option<u32>,
+}
+
+impl LxFixupRecord {
+    pub fn read<R: Read + Seek>(reader: &mut R) -> io::Result<Self> {
+        let mut b1 = [0u8; 1];
+        let mut b2 = [0u8; 2];
+        let mut b4 = [0u8; 4];
+
+        reader.read_exact(&mut b1)?; let source_type = b1[0];
+        reader.read_exact(&mut b1)?; let target_flags = b1[0];
+
+        let mut source_offsets = Vec::new();
+        if (source_type & 0x20) != 0 {
+            // Multiple source offsets
+            reader.read_exact(&mut b1)?;
+            let count = b1[0];
+            for _ in 0..count {
+                reader.read_exact(&mut b2)?;
+                source_offsets.push(u16::from_le_bytes(b2));
+            }
+        } else {
+            // Single source offset
+            reader.read_exact(&mut b2)?;
+            source_offsets.push(u16::from_le_bytes(b2));
+        }
+
+        // Target type (bits 0-1):
+        // 00 = Internal
+        // 01 = External Ordinal
+        // 02 = External Name
+        // 03 = Internal Entry Table
+        let target_type = target_flags & 0x03;
+        let index_is_16bit = (target_flags & 0x40) != 0;
+        let offset_is_32bit = (target_flags & 0x10) != 0;
+
+        let target = match target_type {
+            0 => { // Internal
+                let object_num = if index_is_16bit {
+                    reader.read_exact(&mut b2)?; u16::from_le_bytes(b2)
+                } else {
+                    reader.read_exact(&mut b1)?; b1[0] as u16
+                };
+                let target_offset = if offset_is_32bit {
+                    reader.read_exact(&mut b4)?; u32::from_le_bytes(b4)
+                } else {
+                    reader.read_exact(&mut b2)?; u16::from_le_bytes(b2) as u32
+                };
+                FixupTarget::Internal { object_num, target_offset }
+            },
+            1 => { // External Ordinal
+                let module_ordinal = if index_is_16bit {
+                    reader.read_exact(&mut b2)?; u16::from_le_bytes(b2)
+                } else {
+                    reader.read_exact(&mut b1)?; b1[0] as u16
+                };
+                // Ordinal size (bit 7: 1=8-bit, 0=16/32 bit based on bit 4)
+                let proc_ordinal = if (target_flags & 0x80) != 0 {
+                    reader.read_exact(&mut b1)?; b1[0] as u32
+                } else if offset_is_32bit {
+                    reader.read_exact(&mut b4)?; u32::from_le_bytes(b4)
+                } else {
+                    reader.read_exact(&mut b2)?; u16::from_le_bytes(b2) as u32
+                };
+                FixupTarget::ExternalOrdinal { module_ordinal, proc_ordinal }
+            },
+            2 => { // External Name
+                let module_ordinal = if index_is_16bit {
+                    reader.read_exact(&mut b2)?; u16::from_le_bytes(b2)
+                } else {
+                    reader.read_exact(&mut b1)?; b1[0] as u16
+                };
+                let proc_name_offset = if offset_is_32bit {
+                    reader.read_exact(&mut b4)?; u32::from_le_bytes(b4)
+                } else {
+                    reader.read_exact(&mut b2)?; u16::from_le_bytes(b2) as u32
+                };
+                FixupTarget::ExternalName { module_ordinal, proc_name_offset }
+            },
+            3 => { // Internal Entry Table
+                let entry_ordinal = if index_is_16bit {
+                    reader.read_exact(&mut b2)?; u16::from_le_bytes(b2)
+                } else {
+                    reader.read_exact(&mut b1)?; b1[0] as u16
+                };
+                FixupTarget::InternalEntry { entry_ordinal }
+            },
+            _ => unreachable!(),
+        };
+
+        let additive = if (target_flags & 0x04) != 0 {
+            if (target_flags & 0x20) != 0 {
+                reader.read_exact(&mut b4)?; Some(u32::from_le_bytes(b4))
+            } else {
+                reader.read_exact(&mut b2)?; Some(u16::from_le_bytes(b2) as u32)
+            }
+        } else {
+            None
+        };
+
+        Ok(LxFixupRecord {
+            source_type,
+            target_flags,
+            source_offsets,
+            target,
+            additive,
+        })
+    }
+}
+
 impl LxHeader {
     pub const SIGNATURE: [u8; 2] = *b"LX";
 
