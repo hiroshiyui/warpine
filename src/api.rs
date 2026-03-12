@@ -4,6 +4,8 @@ pub mod doscalls {
         if fd == 1 || fd == 2 {
             let s = std::str::from_utf8(buf).unwrap_or("<invalid utf8>");
             print!("{}", s);
+            use std::io::Write;
+            std::io::stdout().flush().unwrap();
             Ok(buf.len() as u32)
         } else {
             Err("Unsupported file descriptor")

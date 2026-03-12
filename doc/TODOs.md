@@ -28,9 +28,9 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
 - [x] **Filesystem APIs**
     - [x] `DosOpen`, `DosRead`, `DosClose`, `DosQueryFileInfo`.
     - [x] Map OS/2 drive letters (e.g., `C:\`) to Unix paths.
-- [ ] **Process/Thread Management**
-    - [ ] `DosCreateThread`, `DosKillThread`.
-    - [ ] Thread Local Storage (TLS) emulation.
+- [x] **Process/Thread Management**
+    - [x] `DosCreateThread`, `DosKillThread`.
+    - [x] Thread Local Storage (TLS) emulation (via TIB initialization).
 - [ ] **Inter-Process Communication (IPC)**
     - [ ] Semaphores (`DosCreateEventSem`, `DosPostEventSem`).
     - [ ] Pipes and Queues.
