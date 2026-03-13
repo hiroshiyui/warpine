@@ -451,8 +451,10 @@ impl super::Loader {
     }
 
     pub fn dos_alloc_mem(&self, ppb: u32, cb: u32) -> u32 {
+        debug!("DosAllocMem(ppb=0x{:08X}, cb=0x{:08X} [{}])", ppb, cb, cb);
         match self.shared.mem_mgr.lock_or_recover().alloc(cb) {
             Some(addr) => {
+                debug!("  -> allocated at 0x{:08X}", addr);
                 self.guest_write::<u32>(ppb, addr);
                 0
             },
@@ -775,5 +777,137 @@ impl super::Loader {
             h.join().unwrap();
             0
         } else { 309 }
+    }
+
+    /// DosSetRelMaxFH (ordinal 382): adjust max file handles relative to current
+    pub fn dos_set_rel_max_fh(&self, p_req_count: u32, p_cur_max_fh: u32) -> u32 {
+        let req_count = self.guest_read::<i32>(p_req_count).unwrap_or(0);
+        debug!("DosSetRelMaxFH(reqCount={}, pCurMaxFH=0x{:08X})", req_count, p_cur_max_fh);
+        // We don't actually limit file handles, just report a reasonable max
+        let cur_max: u32 = 256;
+        if p_cur_max_fh != 0 {
+            let _ = self.guest_write::<u32>(p_cur_max_fh, cur_max);
+        }
+        0
+    }
+
+    /// DosSetFileSize (ordinal 272): truncate or extend a file
+    pub fn dos_set_file_size(&self, hf: u32, new_size: u32) -> u32 {
+        debug!("DosSetFileSize(hf={}, size={})", hf, new_size);
+        let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
+        if let Some(file) = h_mgr.get_mut(hf) {
+            match file.set_len(new_size as u64) {
+                Ok(_) => 0,
+                Err(_) => ERROR_ACCESS_DENIED,
+            }
+        } else {
+            ERROR_INVALID_HANDLE
+        }
+    }
+
+    /// DosDupHandle (ordinal 260): duplicate a file handle
+    pub fn dos_dup_handle(&self, old_hf: u32, p_new_hf: u32) -> u32 {
+        debug!("DosDupHandle(old={}, pNew=0x{:08X})", old_hf, p_new_hf);
+        let new_hf_val = self.guest_read::<u32>(p_new_hf).unwrap_or(0xFFFFFFFF);
+        let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
+        // If new_hf_val is 0xFFFFFFFF, allocate a new handle
+        if new_hf_val == 0xFFFFFFFF {
+            if let Some(file) = h_mgr.get(old_hf) {
+                match file.try_clone() {
+                    Ok(dup) => {
+                        let new_h = h_mgr.insert(dup);
+                        let _ = self.guest_write::<u32>(p_new_hf, new_h);
+                        0
+                    }
+                    Err(_) => ERROR_INVALID_HANDLE,
+                }
+            } else {
+                ERROR_INVALID_HANDLE
+            }
+        } else {
+            // Redirect new_hf_val to point to same file as old_hf
+            if let Some(file) = h_mgr.get(old_hf) {
+                match file.try_clone() {
+                    Ok(dup) => {
+                        h_mgr.replace(new_hf_val, dup);
+                        0
+                    }
+                    Err(_) => ERROR_INVALID_HANDLE,
+                }
+            } else {
+                ERROR_INVALID_HANDLE
+            }
+        }
+    }
+
+    /// DosResetBuffer (ordinal 254): flush file buffers
+    pub fn dos_reset_buffer(&self, hf: u32) -> u32 {
+        debug!("DosResetBuffer(hf={})", hf);
+        if hf == 0xFFFFFFFF {
+            // Flush all file handles
+            let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
+            h_mgr.flush_all();
+            0
+        } else {
+            let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
+            if let Some(file) = h_mgr.get_mut(hf) {
+                let _ = file.flush();
+                0
+            } else {
+                ERROR_INVALID_HANDLE
+            }
+        }
+    }
+
+    /// DosFlatToSel (ordinal 425): convert 32-bit flat address to 16:16 sel:off
+    /// In our flat memory model, just return the address as-is in the output
+    pub fn dos_flat_to_sel(&self, flat_addr: u32) -> u32 {
+        debug!("DosFlatToSel(0x{:08X})", flat_addr);
+        // In OS/2, this converts a 0:32 flat pointer to a 16:16 selector:offset pointer
+        // Since we operate in flat mode, we return the address itself
+        // The return value goes into EAX
+        flat_addr
+    }
+
+    /// DosSelToFlat (ordinal 426): convert 16:16 sel:off to 32-bit flat address
+    pub fn dos_sel_to_flat(&self, sel_off: u32) -> u32 {
+        debug!("DosSelToFlat(0x{:08X})", sel_off);
+        // Same as above - in flat mode, addresses are the same
+        sel_off
+    }
+
+    /// DosGetInfoSeg (ordinal 8): 16-bit API to get global/local info segments
+    pub fn dos_get_info_seg(&self, p_global_sel: u32, p_local_sel: u32) -> u32 {
+        debug!("DosGetInfoSeg(pGlobal=0x{:08X}, pLocal=0x{:08X})", p_global_sel, p_local_sel);
+        // Return TIB/PIB-area selectors (as flat addresses in our model)
+        if p_global_sel != 0 {
+            let _ = self.guest_write::<u16>(p_global_sel, (PIB_BASE >> 4) as u16);
+        }
+        if p_local_sel != 0 {
+            let _ = self.guest_write::<u16>(p_local_sel, (TIB_BASE >> 4) as u16);
+        }
+        0
+    }
+
+    /// DOSQFILEMODE (ordinal 75): 16-bit query file mode
+    pub fn dos_query_file_mode_16(&self, p_filename: u32, p_attr: u32) -> u32 {
+        let filename = self.read_guest_string(p_filename);
+        debug!("DosQFileMode('{}', pAttr=0x{:08X})", filename, p_attr);
+        let path = match self.translate_path(&filename) {
+            Ok(p) => p,
+            Err(_) => return ERROR_FILE_NOT_FOUND,
+        };
+        match fs::metadata(&path) {
+            Ok(md) => {
+                let mut attr: u16 = 0;
+                if md.is_dir() { attr |= 0x10; }
+                if md.permissions().readonly() { attr |= 0x01; }
+                if p_attr != 0 {
+                    let _ = self.guest_write::<u16>(p_attr, attr);
+                }
+                0
+            }
+            Err(_) => ERROR_FILE_NOT_FOUND,
+        }
     }
 }

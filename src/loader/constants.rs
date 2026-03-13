@@ -9,7 +9,10 @@ pub const PMWIN_BASE: u32 = 2048;
 pub const PMGPI_BASE: u32 = 3072;
 pub const KBDCALLS_BASE: u32 = 4096;
 pub const VIOCALLS_BASE: u32 = 5120;
-pub const STUB_AREA_SIZE: u32 = 8192;
+pub const SESMGR_BASE: u32 = 6144;
+pub const NLS_BASE: u32 = 7168;
+pub const MSG_BASE: u32 = 8192;
+pub const STUB_AREA_SIZE: u32 = 10240;
 
 // OS/2 WM_ message constants
 pub const WM_SIZE: u32 = 0x0007;

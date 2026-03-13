@@ -55,6 +55,13 @@ impl super::Loader {
         NO_ERROR
     }
 
+    /// DosQuerySysState (ordinal 378): query system state info.
+    /// Stub — returns ERROR_INVALID_FUNCTION since we don't have real system state.
+    pub fn dos_query_sys_state(&self, func: u32, arg1: u32, pid: u32, p_buf: u32, cb_buf: u32) -> u32 {
+        debug!("  DosQuerySysState(func={}, arg1={}, pid={}, pBuf=0x{:08X}, cbBuf={})", func, arg1, pid, p_buf, cb_buf);
+        ERROR_INVALID_FUNCTION
+    }
+
     /// DosEnterMustComplete (ordinal 380).
     pub fn dos_enter_must_complete(&self, p_nesting: u32) -> u32 {
         debug!("  DosEnterMustComplete");

@@ -95,8 +95,27 @@ impl HandleManager {
         self.handles.get_mut(&h)
     }
 
+    pub fn get(&self, h: u32) -> Option<&File> {
+        self.handles.get(&h)
+    }
+
+    pub fn insert(&mut self, file: File) -> u32 {
+        self.add(file)
+    }
+
+    pub fn replace(&mut self, h: u32, file: File) {
+        self.handles.insert(h, file);
+    }
+
     pub fn close(&mut self, h: u32) -> bool {
         self.handles.remove(&h).is_some()
+    }
+
+    pub fn flush_all(&mut self) {
+        use std::io::Write;
+        for file in self.handles.values_mut() {
+            let _ = file.flush();
+        }
     }
 }
 

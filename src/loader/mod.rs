@@ -80,6 +80,8 @@ pub struct SharedState {
     pub queue_mgr: Mutex<QueueManager>,
     pub window_mgr: Mutex<WindowManager>,
     pub console_mgr: Mutex<console::VioManager>,
+    /// Code object address ranges (base, end) for return address scanning in thunk bypass
+    pub code_ranges: Mutex<Vec<(u32, u32)>>,
     pub guest_mem: *mut u8,
     pub guest_mem_size: usize,
     pub next_tid: Mutex<u32>,
@@ -101,7 +103,7 @@ impl Loader {
     pub fn new() -> Self {
         let kvm = Kvm::new().expect("Failed to open /dev/kvm");
         let vm = Arc::new(kvm.create_vm().expect("Failed to create VM"));
-        let guest_mem_size = 128 * 1024 * 1024;
+        let guest_mem_size = 256 * 1024 * 1024;
         let guest_mem_raw = unsafe {
             libc::mmap(ptr::null_mut(), guest_mem_size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE, -1, 0)
         };
@@ -135,6 +137,7 @@ impl Loader {
             queue_mgr: Mutex::new(queue_mgr),
             window_mgr: Mutex::new(window_mgr),
             console_mgr: Mutex::new(console_mgr),
+            code_ranges: Mutex::new(Vec::new()),
             guest_mem,
             guest_mem_size,
             next_tid: Mutex::new(1),
@@ -171,6 +174,19 @@ impl Loader {
                 }
             }
         }
+        // Store code object address ranges for thunk bypass stack scanning
+        {
+            let mut ranges = self.shared.code_ranges.lock_or_recover();
+            for obj in &lx_file.object_table {
+                // Object flags bit 2 = executable
+                if obj.flags & 0x0004 != 0 {
+                    let base = obj.base_address;
+                    let end = base + obj.size;
+                    ranges.push((base, end));
+                }
+            }
+        }
+
         // Populate resource manager with precomputed guest addresses
         if !lx_file.resources.is_empty() {
             let mut res_mgr = self.shared.resource_mgr.lock_or_recover();
@@ -202,16 +218,84 @@ impl Loader {
                     if target_addr == 0 { continue; }
                     for &off in &record.source_offsets {
                         let source_phys = obj.base_address as usize + p * 4096 + off as usize;
-                        if (record.source_type & 0x0F) == 0x07 {
-                            self.guest_write::<u32>(source_phys as u32, target_addr as u32).expect("fixup: write OOB");
-                        } else if (record.source_type & 0x0F) == 0x08 {
-                            self.guest_write::<i32>(source_phys as u32, (target_addr as isize - (source_phys as isize + 4)) as i32).expect("fixup: write OOB");
+                        let src_type = record.source_type & 0x0F;
+                        match src_type {
+                            0x07 => {
+                                // 32-bit offset
+                                self.guest_write::<u32>(source_phys as u32, target_addr as u32).expect("fixup: write OOB");
+                            }
+                            0x08 => {
+                                // 32-bit self-relative
+                                self.guest_write::<i32>(source_phys as u32, (target_addr as isize - (source_phys as isize + 4)) as i32).expect("fixup: write OOB");
+                            }
+                            0x02 | 0x03 => {
+                                // 16:16 far pointer (selector:offset)
+                                // In our flat 32-bit model, encode as offset in code segment (selector 0x08)
+                                // The guest code will do a far call: CALL selector:offset
+                                // We write: offset (16-bit) + selector (16-bit) = 4 bytes
+                                let offset16 = (target_addr & 0xFFFF) as u16;
+                                let selector = 0x08u16; // code segment selector
+                                self.guest_write::<u16>(source_phys as u32, offset16).expect("fixup: 16:16 offset OOB");
+                                self.guest_write::<u16>(source_phys as u32 + 2, selector).expect("fixup: 16:16 sel OOB");
+                            }
+                            0x05 => {
+                                // 16-bit offset
+                                self.guest_write::<u16>(source_phys as u32, (target_addr & 0xFFFF) as u16).expect("fixup: 16-bit offset OOB");
+                            }
+                            0x06 => {
+                                // 16:32 far pointer (6 bytes: 32-bit offset + 16-bit selector)
+                                self.guest_write::<u32>(source_phys as u32, target_addr as u32).expect("fixup: 16:32 offset OOB");
+                                self.guest_write::<u16>(source_phys as u32 + 4, 0x08).expect("fixup: 16:32 selector OOB");
+                            }
+                            _ => {
+                                // Unknown source type — log but don't crash
+                                log::warn!("Unhandled fixup source type 0x{:02X} at 0x{:08X}", src_type, source_phys);
+                            }
                         }
                     }
                 }
             }
         }
+        // Patch 16-bit thunk stubs: replace them with near JMPs to bypass 16:32 stack switching
+        self.patch_16bit_thunks(lx_file);
         Ok(())
+    }
+
+    /// Patch 16-bit API thunk stubs (Object 1) to use near JMPs instead of LSS+JMP FAR.
+    /// The thunks have 16:32 far pointers (written by type 0x06 fixups) to their targets.
+    /// We read the 32-bit offset from each fixup location and replace the thunk entry with a near JMP.
+    fn patch_16bit_thunks(&self, lx_file: &LxFile) {
+        // Look at each object for 16:32 fixups (type 0x06) that go to Object 2 code
+        for obj in &lx_file.object_table {
+            let obj_page_start = (obj.page_map_index as usize).saturating_sub(1);
+            for p in 0..obj.page_count as usize {
+                let page_idx = obj_page_start + p;
+                if page_idx >= lx_file.fixup_records_by_page.len() { break; }
+                for record in &lx_file.fixup_records_by_page[page_idx] {
+                    let src_type = record.source_type & 0x0F;
+                    if src_type != 0x06 { continue; } // only 16:32 pointer fixups
+
+                    for &off in &record.source_offsets {
+                        let fixup_addr = obj.base_address as u32 + p as u32 * 4096 + off as u32;
+                        // Read the 32-bit target address we wrote at the fixup location
+                        let target = self.guest_read::<u32>(fixup_addr).unwrap_or(0);
+                        if target == 0 { continue; }
+
+                        // The thunk entry starts 11 bytes before the fixup (based on the observed pattern)
+                        // Replace the entry with: JMP near target (E9 rel32) + NOP padding
+                        let entry_start = fixup_addr.wrapping_sub(11);
+                        let rel32 = (target as i64 - (entry_start as i64 + 5)) as i32;
+                        self.guest_write::<u8>(entry_start, 0xE9).unwrap(); // JMP rel32
+                        self.guest_write::<i32>(entry_start + 1, rel32).unwrap();
+                        // Fill remaining bytes with NOPs
+                        for i in 5..17u32 {
+                            self.guest_write::<u8>(entry_start + i, 0x90).unwrap();
+                        }
+                        debug!("Patched 16-bit thunk at 0x{:08X} -> JMP 0x{:08X}", entry_start, target);
+                    }
+                }
+            }
+        }
     }
 
     fn resolve_import(&self, module: &str, ordinal: u32) -> u64 {
@@ -221,12 +305,77 @@ impl Loader {
         else if module == "PMGPI" { MAGIC_API_BASE + PMGPI_BASE as u64 + ordinal as u64 }
         else if module == "KBDCALLS" { MAGIC_API_BASE + KBDCALLS_BASE as u64 + ordinal as u64 }
         else if module == "VIOCALLS" { MAGIC_API_BASE + VIOCALLS_BASE as u64 + ordinal as u64 }
-        else { 0 }
+        else if module == "SESMGR" { MAGIC_API_BASE + SESMGR_BASE as u64 + ordinal as u64 }
+        else if module == "NLS" { MAGIC_API_BASE + NLS_BASE as u64 + ordinal as u64 }
+        else if module == "MSG" { MAGIC_API_BASE + MSG_BASE as u64 + ordinal as u64 }
+        else {
+            warn!("Unknown import module: {} ordinal {}", module, ordinal);
+            // Return a valid stub address so the guest doesn't crash on unresolved imports
+            // Use a dedicated range at end of stub area
+            MAGIC_API_BASE + (STUB_AREA_SIZE as u64 - 1)
+        }
     }
 
     fn setup_stubs(&self) {
         for i in 0..STUB_AREA_SIZE {
             self.guest_write::<u8>(MAGIC_API_BASE as u32 + i, 0xCC).expect("setup_stubs: write OOB");
+        }
+    }
+
+    /// Set up a minimal GDT and IDT so CPU exceptions cause VMEXIT via INT 3.
+    /// GDT at 0x00080000, IDT at 0x00081000, exception handler stubs at 0x00081800.
+    fn setup_idt(&self) {
+        const GDT_BASE: u32 = 0x00080000;
+        const IDT_BASE: u32 = 0x00081000;
+        const IDT_HANDLER_BASE: u32 = 0x00081800;
+        const NUM_VECTORS: u32 = 32;
+
+        // Set up GDT entries
+        // Entry 0: null descriptor (required)
+        self.guest_write::<u64>(GDT_BASE, 0).unwrap();
+        // Entry 1 (selector 0x08): code segment — base=0, limit=0xFFFFF, 32-bit, execute/read
+        // Byte layout: limit_lo(2), base_lo(2), base_mid(1), access(1), flags_limit_hi(1), base_hi(1)
+        // access: P=1, DPL=0, S=1, type=0xB (exec/read/accessed) = 0x9B
+        // flags: G=1 (4K granularity), D/B=1 (32-bit), limit_hi=0xF = 0xCF
+        let code_desc: u64 = 0x00CF9B000000FFFF;
+        self.guest_write::<u64>(GDT_BASE + 8, code_desc).unwrap();
+        // Entry 2 (selector 0x10): data segment — base=0, limit=0xFFFFF, 32-bit, read/write
+        // access: P=1, DPL=0, S=1, type=0x3 (read/write/accessed) = 0x93
+        let data_desc: u64 = 0x00CF93000000FFFF;
+        self.guest_write::<u64>(GDT_BASE + 16, data_desc).unwrap();
+        // Entry 3 (selector 0x18): FS segment — base will be set via sregs, same attributes as data
+        self.guest_write::<u64>(GDT_BASE + 24, data_desc).unwrap();
+
+        // Set up IDT with exception handler stubs
+        for i in 0..NUM_VECTORS {
+            let handler_addr = IDT_HANDLER_BASE + i * 16;  // 16 bytes per handler
+            // For exceptions with error codes (#DF=8, #TS=10, #NP=11, #SS=12, #GP=13, #PF=14, #AC=17):
+            //   CPU pushes: [error_code] [EIP] [CS] [EFLAGS]
+            // For exceptions without error codes:
+            //   CPU pushes: [EIP] [CS] [EFLAGS]
+            let has_error_code = matches!(i, 8 | 10 | 11 | 12 | 13 | 14 | 17);
+            let mut off = 0u32;
+            if !has_error_code {
+                // PUSH 0 as fake error code to unify stack layout
+                self.guest_write::<u8>(handler_addr + off, 0x6A).unwrap(); // PUSH imm8
+                self.guest_write::<u8>(handler_addr + off + 1, 0x00).unwrap();
+                off += 2;
+            }
+            // PUSH imm8 <vector number>
+            self.guest_write::<u8>(handler_addr + off, 0x6A).unwrap();
+            self.guest_write::<u8>(handler_addr + off + 1, i as u8).unwrap();
+            off += 2;
+            // INT 3
+            self.guest_write::<u8>(handler_addr + off, 0xCC).unwrap();
+
+            // IDT entry: 32-bit interrupt gate
+            let idt_entry_addr = IDT_BASE + i * 8;
+            let offset_lo = (handler_addr & 0xFFFF) as u16;
+            let offset_hi = ((handler_addr >> 16) & 0xFFFF) as u16;
+            self.guest_write::<u16>(idt_entry_addr, offset_lo).unwrap();
+            self.guest_write::<u16>(idt_entry_addr + 2, 0x08).unwrap(); // code selector
+            self.guest_write::<u16>(idt_entry_addr + 4, 0x8E00).unwrap(); // P=1, DPL=0, 32-bit int gate
+            self.guest_write::<u16>(idt_entry_addr + 6, offset_hi).unwrap();
         }
     }
 
@@ -245,6 +394,7 @@ impl Loader {
         self.guest_write::<u32>(PIB_BASE + 0x10, cmdline_addr).expect("setup_guest: PIB cmdline OOB");
 
         self.setup_stubs();
+        self.setup_idt();
         (entry_eip, entry_esp, tib_base)
     }
 
@@ -300,7 +450,16 @@ impl Loader {
         let mut ds = sregs.cs; ds.type_ = 3; ds.selector = 0x10;
         sregs.ds = ds; sregs.es = ds; sregs.gs = ds; sregs.ss = ds;
         let mut fs = ds; fs.base = tib_base; fs.limit = 0xFFF; fs.selector = 0x18; sregs.fs = fs;
-        sregs.cr0 |= 1; vcpu.set_sregs(&sregs).unwrap();
+        // PE=1 (protected mode), clear EM/TS to enable FPU, set NE for native FPU errors
+        sregs.cr0 = (sregs.cr0 | 1 | (1 << 5)) & !(1u64 << 2) & !(1u64 << 3);
+        // Also set CR4.OSFXSR to enable SSE instructions
+        sregs.cr4 |= 1 << 9;
+        // Set up GDT and IDT registers
+        sregs.gdt.base = 0x00080000;
+        sregs.gdt.limit = 4 * 8 - 1; // 4 entries × 8 bytes
+        sregs.idt.base = 0x00081000;
+        sregs.idt.limit = 32 * 8 - 1;
+        vcpu.set_sregs(&sregs).unwrap();
 
         let debug = kvm_guest_debug { control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP, ..Default::default() };
         vcpu.set_guest_debug(&debug).unwrap();
@@ -325,6 +484,61 @@ impl Loader {
             match exit {
                 kvm_ioctls::VcpuExit::Debug(_) => {
                     let rip = vcpu.get_regs().unwrap().rip;
+                    // Check if this is from an IDT exception handler stub
+                    const IDT_HANDLER_BASE: u64 = 0x00081800;
+                    if rip >= IDT_HANDLER_BASE && rip < IDT_HANDLER_BASE + 32 * 16 {
+                        let regs = vcpu.get_regs().unwrap();
+                        // Stack layout: [vector_num] [error_code_or_fake] [fault_EIP] [fault_CS] [fault_EFLAGS]
+                        let vector = self.guest_read::<u32>(regs.rsp as u32).unwrap_or(0xFF);
+                        let error_code = self.guest_read::<u32>(regs.rsp as u32 + 4).unwrap_or(0);
+                        let fault_eip = self.guest_read::<u32>(regs.rsp as u32 + 8).unwrap_or(0);
+                        let fault_cs = self.guest_read::<u32>(regs.rsp as u32 + 12).unwrap_or(0);
+                        let fault_eflags = self.guest_read::<u32>(regs.rsp as u32 + 16).unwrap_or(0);
+
+                        // Handle #GP from 16-bit thunk LSS instruction.
+                        // OS/2 16-bit thunks use LSS to switch stack segments, which faults
+                        // in our flat 32-bit environment. We skip the thunk by scanning the
+                        // stack for the caller's return address and returning there with EAX=0.
+                        if vector == 13 {
+                            let byte0 = self.guest_read::<u8>(fault_eip as u32).unwrap_or(0);
+                            let byte1 = self.guest_read::<u8>(fault_eip as u32 + 1).unwrap_or(0);
+                            let is_lss = (byte0 == 0x66 && byte1 == 0x0F) || (byte0 == 0x0F && byte1 == 0xB2);
+                            if is_lss {
+                                warn!("  [VCPU {}] Skipping 16-bit thunk (LSS #GP at 0x{:08X})", vcpu_id, fault_eip);
+                                // Stack has: [vector][error_code][EIP][CS][EFLAGS] = 5 dwords from exception frame
+                                let scan_esp = regs.rsp as u32 + 20;
+                                let mut ret_addr = 0u32;
+                                // Scan stack for a return address in a code object range
+                                let code_ranges = self.shared.code_ranges.lock_or_recover().clone();
+                                for i in 0..32 {
+                                    let val = self.guest_read::<u32>(scan_esp + i * 4).unwrap_or(0);
+                                    let in_code = code_ranges.iter().any(|&(base, end)| val >= base && val < end);
+                                    if in_code && val != fault_eip as u32 {
+                                        ret_addr = val;
+                                        let orig_esp = scan_esp + i * 4 + 4;
+                                        let mut new_regs = vcpu.get_regs().unwrap();
+                                        new_regs.rax = 0;
+                                        new_regs.rip = ret_addr as u64;
+                                        new_regs.rsp = orig_esp as u64;
+                                        vcpu.set_regs(&new_regs).unwrap();
+                                        debug!("  Thunk skip: returning to 0x{:08X} with ESP=0x{:08X}", ret_addr, orig_esp);
+                                        break;
+                                    }
+                                }
+                                if ret_addr != 0 {
+                                    continue;
+                                }
+                            }
+                        }
+
+                        error!("  [VCPU {}] CPU Exception #{} at EIP=0x{:08X} CS=0x{:04X} EFLAGS=0x{:08X} ErrorCode=0x{:X}",
+                               vcpu_id, vector, fault_eip, fault_cs, fault_eflags, error_code);
+                        error!("    ESP=0x{:08X} EAX=0x{:08X} EBX=0x{:08X} ECX=0x{:08X} EDX=0x{:08X}",
+                               regs.rsp, regs.rax, regs.rbx, regs.rcx, regs.rdx);
+                        self.shared.exit_code.store(1, std::sync::atomic::Ordering::Relaxed);
+                        self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+                        return;
+                    }
                     if rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + STUB_AREA_SIZE as u64 {
                         if rip == EXIT_TRAP_ADDR as u64 {
                             info!("  [VCPU {}] Guest requested thread exit.", vcpu_id);
@@ -390,6 +604,28 @@ impl Loader {
                 }
                 kvm_ioctls::VcpuExit::Hlt => {
                     info!("  [VCPU {}] Guest HLT.", vcpu_id);
+                    self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return;
+                }
+                kvm_ioctls::VcpuExit::MmioRead(addr, data) => {
+                    // Guest read from unmapped memory — return zeros
+                    warn!("  [VCPU {}] MMIO read at 0x{:08X} ({} bytes) — returning zeros",
+                           vcpu_id, addr, data.len());
+                    for byte in data.iter_mut() { *byte = 0; }
+                }
+                kvm_ioctls::VcpuExit::MmioWrite(addr, _data) => {
+                    // Guest write to unmapped memory — silently ignore
+                    warn!("  [VCPU {}] MMIO write at 0x{:08X} — ignoring", vcpu_id, addr);
+                }
+                kvm_ioctls::VcpuExit::Shutdown => {
+                    let regs = vcpu.get_regs().unwrap();
+                    let sregs = vcpu.get_sregs().unwrap();
+                    error!("  [VCPU {}] Guest shutdown (triple fault)", vcpu_id);
+                    error!("    EIP=0x{:08X} ESP=0x{:08X} EAX=0x{:08X} EBX=0x{:08X}", regs.rip, regs.rsp, regs.rax, regs.rbx);
+                    error!("    ECX=0x{:08X} EDX=0x{:08X} ESI=0x{:08X} EDI=0x{:08X}", regs.rcx, regs.rdx, regs.rsi, regs.rdi);
+                    error!("    EBP=0x{:08X} EFLAGS=0x{:08X} CR0=0x{:08X} CR2=0x{:08X}", regs.rbp, regs.rflags, sregs.cr0, sregs.cr2);
+                    error!("    CS=0x{:04X} DS=0x{:04X} SS=0x{:04X} FS=0x{:04X}", sregs.cs.selector, sregs.ds.selector, sregs.ss.selector, sregs.fs.selector);
+                    self.shared.exit_code.store(1, std::sync::atomic::Ordering::Relaxed);
                     self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
                     return;
                 }
@@ -477,6 +713,7 @@ impl Loader {
                 355 => self.dos_unset_exception_handler(read_stack(4)),
                 356 => self.dos_set_signal_exception_focus(read_stack(4)),
                 418 => self.dos_acknowledge_signal_exception(read_stack(4)),
+                378 => self.dos_query_sys_state(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
                 380 => self.dos_enter_must_complete(read_stack(4)),
                 381 => self.dos_exit_must_complete(read_stack(4)),
                 // Step 2: Shared memory
@@ -514,6 +751,31 @@ impl Loader {
                 // Step 8: Named pipe stubs
                 230 => self.dos_get_date_time(read_stack(4)),
                 348 => self.dos_query_sys_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                // Additional APIs needed by 4OS2
+                382 => self.dos_set_rel_max_fh(read_stack(4), read_stack(8)),
+                272 => self.dos_set_file_size(read_stack(4), read_stack(8)),
+                260 => self.dos_dup_handle(read_stack(4), read_stack(8)),
+                254 => self.dos_reset_buffer(read_stack(4)),
+                210 => self.dos_set_verify(read_stack(4)),
+                225 => self.dos_query_verify(read_stack(4)),
+                292 => self.dos_set_date_time(read_stack(4)),
+                218 => self.dos_set_file_size(read_stack(4), read_stack(8)), // DosSetFileSize alias
+                285 => { debug!("DosFSCtl stub"); 0 }, // DosFSCtl - stub
+                357 => { debug!("DosUnwindException stub"); 0 }, // DosUnwindException - stub
+                372 => { debug!("DosEnumAttribute stub"); 0 }, // DosEnumAttribute - stub
+                415 => { debug!("DosShutdown stub"); 0 }, // DosShutdown - stub
+                425 => self.dos_flat_to_sel(read_stack(4)), // DosFlatToSel
+                426 => self.dos_sel_to_flat(read_stack(4)), // DosSelToFlat
+                241 => { debug!("DosConnectNPipe stub"); 0 }, // DosConnectNPipe - stub
+                243 => { debug!("DosCreateNPipe stub"); 0 }, // DosCreateNPipe - stub
+                250 => { debug!("DosSetNPHState stub"); 0 }, // DosSetNPHState - stub
+                221 => self.dos_set_fh_state(read_stack(4), read_stack(8)), // alias for old ordinal
+                224 => self.dos_query_h_type(read_stack(4), read_stack(8), read_stack(12)), // alias
+                110 => { debug!("DosForceDelete stub (ord 110)"); self.dos_delete(read_stack(4)) },
+                // 16-bit thunks
+                8 => self.dos_get_info_seg(read_stack(4), read_stack(8)),
+                75 => self.dos_query_file_mode_16(read_stack(4), read_stack(8)),
+                84 => self.dos_set_file_mode(read_stack(4), read_stack(8)),
                 _ => { warn!("Warning: Unknown API Ordinal {} on VCPU {}", ordinal, vcpu_id); 0 }
             };
             ApiResult::Normal(res)
@@ -539,9 +801,62 @@ impl Loader {
         } else if ordinal < VIOCALLS_BASE {
             // KBDCALLS
             self.handle_kbdcalls(vcpu, vcpu_id, ordinal - KBDCALLS_BASE)
-        } else if ordinal < STUB_AREA_SIZE {
+        } else if ordinal < SESMGR_BASE {
             // VIOCALLS
             self.handle_viocalls(vcpu, vcpu_id, ordinal - VIOCALLS_BASE)
+        } else if ordinal < NLS_BASE {
+            // SESMGR
+            let sesmgr_ord = ordinal - SESMGR_BASE;
+            warn!("SESMGR stub: ordinal {} on VCPU {}", sesmgr_ord, vcpu_id);
+            ApiResult::Normal(0)
+        } else if ordinal < MSG_BASE {
+            // NLS (National Language Support)
+            let nls_ord = ordinal - NLS_BASE;
+            let res = match nls_ord {
+                5 => {
+                    // DosMapCase(cb, pcc, pch) — convert string to uppercase
+                    let cb = read_stack(4);
+                    let _pcc = read_stack(8);
+                    let pch = read_stack(12);
+                    debug!("NLS DosMapCase(cb={}, pch=0x{:08X})", cb, pch);
+                    // Convert the buffer in-place to uppercase (ASCII)
+                    for i in 0..cb {
+                        if let Some(ch) = self.guest_read::<u8>(pch + i) {
+                            if ch >= b'a' && ch <= b'z' {
+                                let _ = self.guest_write::<u8>(pch + i, ch - 32);
+                            }
+                        }
+                    }
+                    0
+                }
+                6 => {
+                    // UniCreateUconvObject — return error to skip Unicode init
+                    warn!("NLS ordinal 6 stub — returning error");
+                    ERROR_INVALID_FUNCTION
+                }
+                7 => {
+                    // DosGetDBCSEv(cb, pcc, pch) — get DBCS lead byte ranges
+                    let cb = read_stack(4);
+                    let _pcc = read_stack(8);
+                    let pch = read_stack(12);
+                    debug!("NLS DosGetDBCSEv(cb={}, pch=0x{:08X})", cb, pch);
+                    // Return empty DBCS lead byte table (no DBCS for Western locales)
+                    if pch != 0 && cb >= 2 {
+                        let _ = self.guest_write::<u16>(pch, 0); // empty table = two zero bytes
+                    }
+                    0
+                }
+                _ => {
+                    warn!("NLS stub: ordinal {} on VCPU {}", nls_ord, vcpu_id);
+                    0
+                }
+            };
+            ApiResult::Normal(res)
+        } else if ordinal < STUB_AREA_SIZE {
+            // MSG
+            let msg_ord = ordinal - MSG_BASE;
+            warn!("MSG stub: ordinal {} on VCPU {}", msg_ord, vcpu_id);
+            ApiResult::Normal(0)
         } else {
             warn!("Warning: Unknown API Base Ordinal {} on VCPU {}", ordinal, vcpu_id);
             ApiResult::Normal(0)
