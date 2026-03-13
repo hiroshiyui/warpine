@@ -1,0 +1,681 @@
+// SPDX-License-Identifier: GPL-3.0-only
+//
+// OS/2 Presentation Manager PMWIN API handler methods.
+
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::thread;
+use kvm_ioctls::VcpuFd;
+use log::{debug, info, warn};
+
+use super::constants::*;
+use super::mutex_ext::MutexExt;
+use super::pm_types::OS2Message;
+use super::ApiResult;
+use crate::gui::GUIMessage;
+
+impl super::Loader {
+    pub(crate) fn handle_pmwin_call(&self, vcpu: &mut VcpuFd, vcpu_id: u32, ordinal: u32) -> ApiResult {
+        let regs = vcpu.get_regs().unwrap();
+        let esp = regs.rsp;
+        let read_stack = |off: u64| -> u32 { self.guest_read::<u32>((esp + off) as u32).expect("Stack read OOB") };
+
+        match ordinal {
+            763 => {
+                // WinInitialize
+                debug!("  [VCPU {}] WinInitialize called.", vcpu_id);
+                ApiResult::Normal(MOCK_HAB)
+            }
+            888 => {
+                // WinTerminate
+                debug!("  [VCPU {}] WinTerminate called.", vcpu_id);
+                ApiResult::Normal(1) // TRUE
+            }
+            716 => {
+                // WinCreateMsgQueue
+                debug!("  [VCPU {}] WinCreateMsgQueue called.", vcpu_id);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let hmq = wm.create_mq();
+                wm.tid_to_hmq.insert(vcpu_id, hmq);
+                ApiResult::Normal(hmq)
+            }
+            726 => {
+                // WinDestroyMsgQueue
+                debug!("  [VCPU {}] WinDestroyMsgQueue called.", vcpu_id);
+                ApiResult::Normal(1) // TRUE
+            }
+            926 => {
+                // WinRegisterClass
+                let _hab = read_stack(4);
+                let psz_class_name_ptr = read_stack(8);
+                let pfn_wp = read_stack(12);
+                let style = read_stack(16);
+                let _cb_window_data = read_stack(20);
+                let name = self.read_guest_string(psz_class_name_ptr);
+                debug!("  [VCPU {}] WinRegisterClass: name='{}', pfn_wp=0x{:08X}", vcpu_id, name, pfn_wp);
+                self.shared.window_mgr.lock_or_recover().register_class(name, pfn_wp, style);
+                ApiResult::Normal(1) // TRUE
+            }
+            908 => {
+                // WinCreateStdWindow
+                let parent = read_stack(4);
+                let style = read_stack(8);
+                let _pfc_flags_ptr = read_stack(12);
+                let psz_class_name_ptr = read_stack(16);
+                let psz_title_ptr = read_stack(20);
+                let _client_style = read_stack(24);
+                let _hmod = read_stack(28);
+                let _id = read_stack(32);
+                let phwnd_client_ptr = read_stack(36);
+                let class_name = self.read_guest_string(psz_class_name_ptr);
+                let title = if psz_title_ptr != 0 { self.read_guest_string(psz_title_ptr) } else { "Warpine Window".to_string() };
+                debug!("  [VCPU {}] WinCreateStdWindow: class='{}', title='{}', parent=0x{:08X}, style=0x{:08X}", vcpu_id, class_name, title, parent, style);
+
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
+                let h_frame = wm.create_window(class_name.clone(), parent, hmq);
+                let h_client = wm.create_window(class_name.clone(), h_frame, hmq);
+                wm.frame_to_client.insert(h_frame, h_client);
+
+                if let Some(ref sender) = wm.gui_tx {
+                    let _ = sender.send(GUIMessage::CreateWindow { class: class_name, title, handle: h_frame });
+                }
+
+                if phwnd_client_ptr != 0 {
+                    self.guest_write::<u32>(phwnd_client_ptr, h_client);
+                }
+
+                // Post initial WM_PAINT so the guest paints on creation
+                if let Some(mq_arc) = wm.get_mq(hmq) {
+                    let mut mq = mq_arc.lock_or_recover();
+                    mq.messages.push_back(OS2Message {
+                        hwnd: h_client, msg: WM_PAINT, mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
+                    });
+                    mq.cond.notify_one();
+                }
+
+                ApiResult::Normal(h_frame)
+            }
+            915 => {
+                // WinGetMsg
+                let _hab = read_stack(4);
+                let pqmsg_ptr = read_stack(8);
+                let _hwnd = read_stack(12);
+                let _first = read_stack(16);
+                let _last = read_stack(20);
+
+                // Find the message queue for this thread
+                let (_hmq, mq_arc) = {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
+                    let mq = wm.get_mq(hmq);
+                    (hmq, mq)
+                };
+
+                if let Some(mq_arc) = mq_arc {
+                    // Get the condvar/lock for blocking wait
+                    let (cond, wait_lock) = {
+                        let mq = mq_arc.lock_or_recover();
+                        (Arc::clone(&mq.cond), Arc::clone(&mq.lock))
+                    };
+                    loop {
+                        {
+                            let mut mq = mq_arc.lock_or_recover();
+                            if let Some(msg) = mq.messages.pop_front() {
+                                if pqmsg_ptr != 0 {
+                                    self.guest_write::<u32>(pqmsg_ptr, msg.hwnd);
+                                    self.guest_write::<u32>(pqmsg_ptr + 4, msg.msg);
+                                    self.guest_write::<u32>(pqmsg_ptr + 8, msg.mp1);
+                                    self.guest_write::<u32>(pqmsg_ptr + 12, msg.mp2);
+                                    self.guest_write::<u32>(pqmsg_ptr + 16, msg.time);
+                                    self.guest_write::<i16>(pqmsg_ptr + 20, msg.x);
+                                    self.guest_write::<i16>(pqmsg_ptr + 22, msg.y);
+                                }
+                                if msg.msg == WM_QUIT { return ApiResult::Normal(0); }
+                                return ApiResult::Normal(1);
+                            }
+                        }
+                        // Block on condvar instead of spinning
+                        let guard = wait_lock.lock_or_recover();
+                        let _ = cond.wait_timeout(guard, std::time::Duration::from_millis(100)).unwrap();
+                    }
+                }
+                ApiResult::Normal(0)
+            }
+            912 => {
+                // WinDispatchMsg
+                debug!("  [VCPU {}] WinDispatchMsg called.", vcpu_id);
+                let _hab = read_stack(4);
+                let pqmsg_ptr = read_stack(8);
+                if pqmsg_ptr == 0 { return ApiResult::Normal(0); }
+
+                let (hwnd, msg, mp1, mp2) = (
+                    self.guest_read::<u32>(pqmsg_ptr).unwrap_or(0),
+                    self.guest_read::<u32>(pqmsg_ptr + 4).unwrap_or(0),
+                    self.guest_read::<u32>(pqmsg_ptr + 8).unwrap_or(0),
+                    self.guest_read::<u32>(pqmsg_ptr + 12).unwrap_or(0),
+                );
+
+                let pfn_wp = {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    wm.get_window(hwnd).map(|w| w.pfn_wp).unwrap_or(0)
+                };
+
+                if pfn_wp != 0 {
+                    debug!("  [VCPU {}] Callback: msg={} to pfn_wp 0x{:08X}", vcpu_id, msg, pfn_wp);
+                    return ApiResult::Callback {
+                        wnd_proc: pfn_wp,
+                        hwnd,
+                        msg,
+                        mp1,
+                        mp2,
+                    };
+                }
+                ApiResult::Normal(0)
+            }
+            919 => {
+                // WinPostMsg
+                let hwnd = read_stack(4);
+                let msg = read_stack(8);
+                let mp1 = read_stack(12);
+                let mp2 = read_stack(16);
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let hmq = wm.find_hmq_for_hwnd(hwnd);
+                if let Some(hmq) = hmq {
+                    if let Some(mq_arc) = wm.get_mq(hmq) {
+                        let mut mq = mq_arc.lock_or_recover();
+                        mq.messages.push_back(OS2Message {
+                            hwnd, msg, mp1, mp2, time: 0, x: 0, y: 0,
+                        });
+                        // Wake WinGetMsg if it's waiting on the condvar
+                        mq.cond.notify_one();
+                    }
+                }
+                ApiResult::Normal(1)
+            }
+            920 => {
+                // WinSendMsg - synchronous, needs callback
+                let hwnd = read_stack(4);
+                let msg = read_stack(8);
+                let mp1 = read_stack(12);
+                let mp2 = read_stack(16);
+
+                let pfn_wp = {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    wm.get_window(hwnd).map(|w| w.pfn_wp).unwrap_or(0)
+                };
+
+                if pfn_wp != 0 {
+                    return ApiResult::Callback {
+                        wnd_proc: pfn_wp,
+                        hwnd,
+                        msg,
+                        mp1,
+                        mp2,
+                    };
+                }
+                ApiResult::Normal(0)
+            }
+            911 => {
+                // WinDefWindowProc
+                let hwnd = read_stack(4);
+                let msg = read_stack(8);
+                let _mp1 = read_stack(12);
+                let _mp2 = read_stack(16);
+
+                if msg == WM_CLOSE {
+                    // Post WM_QUIT to the message queue
+                    self.post_wm_quit(hwnd);
+                }
+                ApiResult::Normal(0)
+            }
+            703 => {
+                // WinBeginPaint
+                let hwnd = read_stack(4);
+                let _hps = read_stack(8);
+                let _prcl_ptr = read_stack(12);
+                let hps = self.shared.window_mgr.lock_or_recover().create_ps(hwnd);
+                ApiResult::Normal(hps)
+            }
+            738 => {
+                // WinEndPaint
+                let hps = read_stack(4);
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
+                let frame_hwnd = wm.client_to_frame(ps_hwnd);
+                if let Some(ref sender) = wm.gui_tx {
+                    let _ = sender.send(GUIMessage::PresentBuffer { handle: frame_hwnd });
+                }
+                ApiResult::Normal(1)
+            }
+            753 => {
+                // WinGetLastError
+                ApiResult::Normal(0)
+            }
+            789 => {
+                // WinMessageBox (stub)
+                let _hwnd_parent = read_stack(4);
+                let _hwnd_owner = read_stack(8);
+                let psz_text_ptr = read_stack(12);
+                let psz_caption_ptr = read_stack(16);
+                let _id = read_stack(20);
+                let _style = read_stack(24);
+                let text = self.read_guest_string(psz_text_ptr);
+                let caption = self.read_guest_string(psz_caption_ptr);
+                info!("  [PM MESSAGE BOX] {} : {}", caption, text);
+                ApiResult::Normal(1) // MBID_OK
+            }
+            883 => {
+                // WinShowWindow
+                ApiResult::Normal(1)
+            }
+            840 => {
+                // WinQueryWindowRect
+                let _hwnd = read_stack(4);
+                let prcl_ptr = read_stack(8);
+                if prcl_ptr != 0 {
+                    self.guest_write::<i32>(prcl_ptr, 0);       // xLeft
+                    self.guest_write::<i32>(prcl_ptr + 4, 0);   // yBottom
+                    self.guest_write::<i32>(prcl_ptr + 8, 640); // xRight
+                    self.guest_write::<i32>(prcl_ptr + 12, 480); // yTop
+                }
+                ApiResult::Normal(1) // TRUE
+            }
+            728 => {
+                // WinDestroyWindow
+                ApiResult::Normal(1)
+            }
+            884 => {
+                // WinStartTimer(HAB hab, HWND hwnd, ULONG idTimer, ULONG dtTimeout)
+                let _hab = read_stack(4);
+                let hwnd = read_stack(8);
+                let id_timer = read_stack(12);
+                let dt_timeout = read_stack(16);
+                debug!("  [VCPU {}] WinStartTimer: hwnd={}, id={}, timeout={}ms", vcpu_id, hwnd, id_timer, dt_timeout);
+
+                let running = Arc::new(AtomicBool::new(true));
+                let running_clone = running.clone();
+                let shared = Arc::clone(&self.shared);
+
+                {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    // Stop any existing timer with the same id
+                    if let Some((old_flag, old_handle)) = wm.timers.remove(&(hwnd, id_timer)) {
+                        old_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                        if let Some(h) = old_handle { let _ = h.join(); }
+                    }
+                }
+
+                let timeout = std::time::Duration::from_millis(dt_timeout as u64);
+                let join_handle = thread::spawn(move || {
+                    while running_clone.load(std::sync::atomic::Ordering::Relaxed)
+                        && !shared.exit_requested.load(std::sync::atomic::Ordering::Relaxed) {
+                        thread::sleep(timeout);
+                        if !running_clone.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                        let wm = shared.window_mgr.lock_or_recover();
+                        let hmq = wm.find_hmq_for_hwnd(hwnd);
+                        if let Some(hmq) = hmq {
+                            if let Some(mq_arc) = wm.get_mq(hmq) {
+                                let mut mq = mq_arc.lock_or_recover();
+                                mq.messages.push_back(OS2Message {
+                                    hwnd, msg: WM_TIMER, mp1: id_timer, mp2: 0,
+                                    time: 0, x: 0, y: 0,
+                                });
+                                mq.cond.notify_one();
+                            }
+                        }
+                    }
+                });
+                {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    wm.timers.insert((hwnd, id_timer), (running, Some(join_handle)));
+                }
+                ApiResult::Normal(id_timer) // Return the timer ID
+            }
+            885 => {
+                // WinStopTimer(HAB hab, HWND hwnd, ULONG idTimer)
+                let _hab = read_stack(4);
+                let hwnd = read_stack(8);
+                let id_timer = read_stack(12);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                if let Some((running, handle)) = wm.timers.remove(&(hwnd, id_timer)) {
+                    running.store(false, std::sync::atomic::Ordering::Relaxed);
+                    drop(wm); // Release lock before joining
+                    if let Some(h) = handle { let _ = h.join(); }
+                }
+                ApiResult::Normal(1)
+            }
+            701 => {
+                // WinAlarm(HWND hwndDesktop, ULONG rgfType)
+                // Just a beep - stub it
+                ApiResult::Normal(1)
+            }
+            707 => {
+                // WinCloseClipbrd(HAB hab)
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                wm.clipboard_open = false;
+                ApiResult::Normal(1)
+            }
+            907 => {
+                // WinCreateMenu(HWND hwndParent, PVOID pvmt)
+                // Stub - return a fake menu handle
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let h = wm.create_window("#Menu".to_string(), read_stack(4), 0);
+                ApiResult::Normal(h)
+            }
+            910 => {
+                // WinDefDlgProc(HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2)
+                // Default dialog procedure - delegate to WinDefWindowProc behavior
+                let _hwnd = read_stack(4);
+                let msg = read_stack(8);
+                let _mp1 = read_stack(12);
+                let _mp2 = read_stack(16);
+                if msg == WM_CLOSE {
+                    self.post_wm_quit(_hwnd);
+                }
+                ApiResult::Normal(0)
+            }
+            729 => {
+                // WinDismissDlg(HWND hwndDlg, ULONG usResult)
+                let hwnd = read_stack(4);
+                let _result = read_stack(8);
+                // Post WM_QUIT to dismiss the dialog's message loop
+                self.post_wm_quit(hwnd);
+                ApiResult::Normal(1)
+            }
+            923 => {
+                // WinDlgBox(HWND hwndParent, HWND hwndOwner, PFNWP pfnDlgProc, HMODULE hmod, ULONG idDlg, PVOID pCreateParams)
+                // Complex - needs resource loading. Stub: return MBID_OK (1)
+                debug!("  [VCPU {}] WinDlgBox (stub) - no resource loading support", vcpu_id);
+                ApiResult::Normal(1)
+            }
+            733 => {
+                // WinEmptyClipbrd(HAB hab)
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                wm.clipboard.clear();
+                ApiResult::Normal(1)
+            }
+            743 => {
+                // WinFillRect(HPS hps, PRECTL prcl, LONG lColor)
+                let hps = read_stack(4);
+                let prcl = read_stack(8);
+                let color_idx = read_stack(12);
+                let color = self.map_color(color_idx);
+                let (x_left, y_bottom, x_right, y_top) = (
+                    self.guest_read::<i32>(prcl).unwrap_or(0),
+                    self.guest_read::<i32>(prcl + 4).unwrap_or(0),
+                    self.guest_read::<i32>(prcl + 8).unwrap_or(0),
+                    self.guest_read::<i32>(prcl + 12).unwrap_or(0),
+                );
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
+                let frame_hwnd = wm.client_to_frame(ps_hwnd);
+                if let Some(ref sender) = wm.gui_tx {
+                    let _ = sender.send(GUIMessage::DrawBox {
+                        handle: frame_hwnd,
+                        x1: x_left, y1: y_bottom, x2: x_right, y2: y_top,
+                        color, fill: true,
+                    });
+                }
+                ApiResult::Normal(1)
+            }
+            765 => {
+                // WinInvalidateRect(HWND hwnd, PRECTL prcl, BOOL fIncludeChildren)
+                let hwnd = read_stack(4);
+                // Post WM_PAINT to trigger repaint
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let target = wm.frame_to_client.get(&hwnd).copied().unwrap_or(hwnd);
+                let hmq = wm.find_hmq_for_hwnd(target);
+                if let Some(hmq) = hmq {
+                    if let Some(mq_arc) = wm.get_mq(hmq) {
+                        let mut mq = mq_arc.lock_or_recover();
+                        mq.messages.push_back(OS2Message {
+                            hwnd: target, msg: WM_PAINT, mp1: 0, mp2: 0,
+                            time: 0, x: 0, y: 0,
+                        });
+                        mq.cond.notify_one();
+                    }
+                }
+                ApiResult::Normal(1)
+            }
+            776 => {
+                // WinLoadAccelTable(HAB hab, HMODULE hmod, ULONG idAccelTable)
+                // Stub - no resource loading support
+                debug!("  [VCPU {}] WinLoadAccelTable (stub)", vcpu_id);
+                ApiResult::Normal(0) // NULLHANDLE - no accel table
+            }
+            924 => {
+                // WinLoadDlg(HWND hwndParent, HWND hwndOwner, PFNWP pfnDlgProc, HMODULE hmod, ULONG idDlg, PVOID pCreateParams)
+                // Stub - no resource loading support
+                debug!("  [VCPU {}] WinLoadDlg (stub) - no resource loading support", vcpu_id);
+                ApiResult::Normal(0) // NULLHANDLE
+            }
+            778 => {
+                // WinLoadMenu(HWND hwndFrame, HMODULE hmod, ULONG idMenu)
+                // Stub - no resource loading support
+                debug!("  [VCPU {}] WinLoadMenu (stub)", vcpu_id);
+                ApiResult::Normal(0) // NULLHANDLE
+            }
+            793 => {
+                // WinOpenClipbrd(HAB hab)
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                wm.clipboard_open = true;
+                ApiResult::Normal(1)
+            }
+            937 => {
+                // WinPopupMenu(HWND hwndParent, HWND hwndOwner, HWND hwndMenu, LONG x, LONG y, LONG idItem, ULONG fs)
+                // Stub
+                debug!("  [VCPU {}] WinPopupMenu (stub)", vcpu_id);
+                ApiResult::Normal(1)
+            }
+            796 => {
+                // WinProcessDlg(HWND hwndDlg)
+                // Stub - return DID_OK (1)
+                ApiResult::Normal(1)
+            }
+            806 => {
+                // WinQueryClipbrdData(HAB hab, ULONG fmt)
+                let _hab = read_stack(4);
+                let fmt = read_stack(8);
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let data = wm.clipboard.get(&fmt).copied().unwrap_or(0);
+                ApiResult::Normal(data)
+            }
+            815 => {
+                // WinQueryDlgItemText(HWND hwndDlg, ULONG idItem, LONG cchBufferMax, PCSZ pchBuffer)
+                let hwnd_dlg = read_stack(4);
+                let id_item = read_stack(8);
+                let cch_max = read_stack(12) as usize;
+                let buffer_ptr = read_stack(16);
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let text = wm.find_child_by_id(hwnd_dlg, id_item)
+                    .and_then(|h| wm.get_window(h))
+                    .map(|w| w.text.as_str())
+                    .unwrap_or("");
+                let bytes = text.as_bytes();
+                let copy_len = bytes.len().min(cch_max.saturating_sub(1));
+                self.guest_write_bytes(buffer_ptr, &bytes[..copy_len]);
+                self.guest_write::<u8>(buffer_ptr + copy_len as u32, 0);
+                ApiResult::Normal(copy_len as u32)
+            }
+            828 => {
+                // WinQuerySysPointer(HWND hwndDesktop, LONG iptr, BOOL fLoad)
+                // Return a fake pointer handle
+                ApiResult::Normal(MOCK_HPOINTER)
+            }
+            829 => {
+                // WinQuerySysValue(HWND hwndDesktop, LONG iSysValue)
+                let _hwnd = read_stack(4);
+                let sys_val = read_stack(8) as i32;
+                let result = match sys_val {
+                    20 => 640,   // SV_CXSCREEN
+                    21 => 480,   // SV_CYSCREEN
+                    22 => 640,   // SV_CXFULLSCREEN
+                    23 => 460,   // SV_CYFULLSCREEN (minus title bar)
+                    24 => 20,    // SV_CYTITLEBAR
+                    27 => 1,     // SV_CXSIZEBORDER
+                    28 => 1,     // SV_CYSIZEBORDER
+                    _ => 0,
+                };
+                ApiResult::Normal(result as u32)
+            }
+            841 => {
+                // WinQueryWindowText(HWND hwnd, LONG cchBufferMax, PCH pchBuffer)
+                let hwnd = read_stack(4);
+                let cch_max = read_stack(8) as usize;
+                let buffer_ptr = read_stack(12);
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let text = wm.get_window(hwnd).map(|w| w.text.as_str()).unwrap_or("");
+                let bytes = text.as_bytes();
+                let copy_len = bytes.len().min(cch_max.saturating_sub(1));
+                self.guest_write_bytes(buffer_ptr, &bytes[..copy_len]);
+                self.guest_write::<u8>(buffer_ptr + copy_len as u32, 0);
+                ApiResult::Normal(copy_len as u32)
+            }
+            834 => {
+                // WinQueryWindow(HWND hwnd, LONG lCode)
+                let hwnd = read_stack(4);
+                let code = read_stack(8) as i32;
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let result = match code {
+                    5 => { // QW_PARENT
+                        wm.get_window(hwnd).map(|w| w.parent).unwrap_or(0)
+                    }
+                    6 => { // QW_OWNER
+                        wm.get_window(hwnd).map(|w| w.parent).unwrap_or(0)
+                    }
+                    _ => 0,
+                };
+                ApiResult::Normal(result)
+            }
+            843 => {
+                // WinQueryWindowULong(HWND hwnd, LONG index)
+                let hwnd = read_stack(4);
+                let index = read_stack(8) as i32;
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let val = wm.get_window(hwnd)
+                    .and_then(|w| w.window_ulong.get(&index))
+                    .copied()
+                    .unwrap_or(0);
+                ApiResult::Normal(val)
+            }
+            844 => {
+                // WinQueryWindowUShort(HWND hwnd, LONG index)
+                let hwnd = read_stack(4);
+                let index = read_stack(8) as i32;
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let val = wm.get_window(hwnd)
+                    .and_then(|w| w.window_ushort.get(&index))
+                    .copied()
+                    .unwrap_or(0);
+                ApiResult::Normal(val as u32)
+            }
+            903 => {
+                // WinSendDlgItemMsg(HWND hwndDlg, ULONG idItem, ULONG msg, MPARAM mp1, MPARAM mp2)
+                // Stub - would need to find child and dispatch
+                ApiResult::Normal(0)
+            }
+            850 => {
+                // WinSetAccelTable(HAB hab, HACCEL haccel, HWND hwnd)
+                // Stub
+                ApiResult::Normal(1)
+            }
+            854 => {
+                // WinSetClipbrdData(HAB hab, ULONG ulData, ULONG fmt, ULONG rgfFmtInfo)
+                let _hab = read_stack(4);
+                let data = read_stack(8);
+                let fmt = read_stack(12);
+                let _flags = read_stack(16);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                wm.clipboard.insert(fmt, data);
+                ApiResult::Normal(1)
+            }
+            859 => {
+                // WinSetDlgItemText(HWND hwndDlg, ULONG idItem, PCSZ pszText)
+                let hwnd_dlg = read_stack(4);
+                let id_item = read_stack(8);
+                let psz_text = read_stack(12);
+                let text = self.read_guest_string(psz_text);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                if let Some(child_hwnd) = wm.find_child_by_id(hwnd_dlg, id_item) {
+                    if let Some(win) = wm.get_window_mut(child_hwnd) {
+                        win.text = text;
+                    }
+                }
+                ApiResult::Normal(1)
+            }
+            866 => {
+                // WinSetPointer(HWND hwndDesktop, HPOINTER hptrNew)
+                // Stub - cursor changing not supported
+                ApiResult::Normal(1)
+            }
+            875 => {
+                // WinSetWindowPos(HWND hwnd, HWND hwndInsertBehind, LONG x, LONG y, LONG cx, LONG cy, ULONG fl)
+                // Stub for now - would need GUI message for resize/move
+                debug!("  [VCPU {}] WinSetWindowPos (stub)", vcpu_id);
+                ApiResult::Normal(1)
+            }
+            877 => {
+                // WinSetWindowText(HWND hwnd, PCSZ pszText)
+                let hwnd = read_stack(4);
+                let psz_text = read_stack(8);
+                let text = self.read_guest_string(psz_text);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                if let Some(win) = wm.get_window_mut(hwnd) {
+                    win.text = text;
+                }
+                ApiResult::Normal(1)
+            }
+            878 => {
+                // WinSetWindowULong(HWND hwnd, LONG index, ULONG ul)
+                let hwnd = read_stack(4);
+                let index = read_stack(8) as i32;
+                let value = read_stack(12);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                if let Some(win) = wm.get_window_mut(hwnd) {
+                    win.window_ulong.insert(index, value);
+                }
+                ApiResult::Normal(1)
+            }
+            879 => {
+                // WinSetWindowUShort(HWND hwnd, LONG index, USHORT us)
+                let hwnd = read_stack(4);
+                let index = read_stack(8) as i32;
+                let value = read_stack(12) as u16;
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                if let Some(win) = wm.get_window_mut(hwnd) {
+                    win.window_ushort.insert(index, value);
+                }
+                ApiResult::Normal(1)
+            }
+            904 => {
+                // WinTranslateAccel(HAB hab, HWND hwnd, HACCEL haccel, PQMSG pqmsg)
+                // Stub - no accelerator support
+                ApiResult::Normal(0) // FALSE - not translated
+            }
+            892 => {
+                // WinUpdateWindow(HWND hwnd)
+                // Trigger a present buffer
+                let hwnd = read_stack(4);
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let frame_hwnd = wm.client_to_frame(hwnd);
+                if let Some(ref sender) = wm.gui_tx {
+                    let _ = sender.send(GUIMessage::PresentBuffer { handle: frame_hwnd });
+                }
+                ApiResult::Normal(1)
+            }
+            899 => {
+                // WinWindowFromID(HWND hwndParent, ULONG id)
+                let hwnd_parent = read_stack(4);
+                let id = read_stack(8);
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let result = wm.find_child_by_id(hwnd_parent, id).unwrap_or(0);
+                ApiResult::Normal(result)
+            }
+            _ => {
+                warn!("Warning: Unknown PMWIN Ordinal {} on VCPU {}", ordinal, vcpu_id);
+                ApiResult::Normal(0)
+            }
+        }
+    }
+}
