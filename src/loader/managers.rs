@@ -137,6 +137,8 @@ impl HDirManager {
 pub struct ProcessManager {
     pub current_disk: u8,     // 1=A, 2=B, 3=C (default)
     pub current_dir: String,  // OS/2-style current directory (without drive letter), e.g. "\"
+    pub children: HashMap<u32, std::process::Child>,
+    next_pid: u32,
 }
 
 impl ProcessManager {
@@ -144,6 +146,8 @@ impl ProcessManager {
         ProcessManager {
             current_disk: 3, // C:
             current_dir: String::from("\\"),
+            children: HashMap::new(),
+            next_pid: 100,
         }
     }
 
@@ -151,6 +155,36 @@ impl ProcessManager {
     /// OS/2 DosQueryCurrentDir returns the path without the drive letter or leading backslash.
     pub fn current_dir_no_leading_slash(&self) -> &str {
         self.current_dir.trim_start_matches('\\')
+    }
+
+    /// Track a child process, returning its assigned PID.
+    pub fn add_child(&mut self, child: std::process::Child) -> u32 {
+        let pid = self.next_pid;
+        self.children.insert(pid, child);
+        self.next_pid += 1;
+        pid
+    }
+
+    /// Remove and return a child process by PID.
+    pub fn take_child(&mut self, pid: u32) -> Option<std::process::Child> {
+        self.children.remove(&pid)
+    }
+
+    /// Try to wait on any child (for DosWaitChild with DCWA_PROCESSTREE).
+    pub fn wait_any(&mut self) -> Option<(u32, i32)> {
+        let mut finished = None;
+        for (&pid, child) in self.children.iter_mut() {
+            if let Ok(Some(status)) = child.try_wait() {
+                finished = Some((pid, status.code().unwrap_or(1)));
+                break;
+            }
+        }
+        if let Some((pid, code)) = finished {
+            self.children.remove(&pid);
+            Some((pid, code))
+        } else {
+            None
+        }
     }
 }
 

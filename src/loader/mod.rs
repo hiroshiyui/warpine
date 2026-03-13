@@ -13,6 +13,7 @@ mod stubs;
 pub mod console;
 mod kbdcalls;
 mod viocalls;
+mod process;
 
 pub use constants::*;
 pub use mutex_ext::MutexExt;
@@ -435,7 +436,10 @@ impl Loader {
                 },
                 235 => self.dos_query_h_type(read_stack(4), read_stack(8), read_stack(12)),
                 239 => self.dos_create_pipe(read_stack(4), read_stack(8), read_stack(12)),
-                283 => self.dos_get_info_blocks(vcpu, read_stack(4), read_stack(8)),
+                312 => self.dos_get_info_blocks(vcpu, read_stack(4), read_stack(8)),
+                283 => self.dos_exec_pgm(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28)),
+                280 => self.dos_wait_child(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                237 => self.dos_kill_process(read_stack(4), read_stack(8)),
                 264 => self.dos_find_first(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28)),
                 265 => self.dos_find_next(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
                 263 => self.dos_find_close(read_stack(4)),
@@ -459,7 +463,8 @@ impl Loader {
                 337 => self.dos_create_mux_wait_sem(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
                 339 => self.dos_close_mux_wait_sem(read_stack(4)),
                 340 => self.dos_wait_mux_wait_sem(vcpu_id, read_stack(4), read_stack(8), read_stack(12)),
-                342 => 0, // DosQueryAppType (stub)
+                323 => self.dos_query_app_type(read_stack(4), read_stack(8)),
+                342 => 0, // DosQueryAppType old ordinal (stub)
                 349 => self.dos_wait_thread(vcpu_id, read_stack(4)),
                 352 => self.dos_get_resource(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
                 353 => self.dos_free_resource(read_stack(4)),
