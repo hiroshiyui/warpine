@@ -31,9 +31,12 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
 - [x] **Process/Thread Management**
     - [x] `DosCreateThread`, `DosKillThread`.
     - [x] Thread Local Storage (TLS) emulation (via TIB initialization).
-- [ ] **Inter-Process Communication (IPC)**
-    - [ ] Semaphores (`DosCreateEventSem`, `DosPostEventSem`).
+- [x] Inter-Process Communication (IPC)
+    - [x] Event Semaphores (`DosCreateEventSem`, `DosPostEventSem`, etc.).
+    - [x] Mutex Semaphores (`DosCreateMutexSem`, `DosRequestMutexSem`, etc.).
+    - [ ] MuxWait Semaphores.
     - [ ] Pipes and Queues.
+
 
 ## Phase 3: Presentation Manager (GUI)
 - [ ] **Window Management (PMWIN.DLL)**
