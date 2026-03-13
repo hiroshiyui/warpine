@@ -24,6 +24,8 @@ pub struct VioManager {
     raw_mode_active: bool,
     /// Original termios saved for restore.
     original_termios: Option<libc::termios>,
+    /// Pending LF byte after CR→CRLF translation for DosRead on stdin.
+    pub stdin_pending_lf: bool,
 }
 
 impl VioManager {
@@ -41,6 +43,7 @@ impl VioManager {
             codepage: 437,
             raw_mode_active: false,
             original_termios: None,
+            stdin_pending_lf: false,
         }
     }
 

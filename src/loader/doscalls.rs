@@ -76,6 +76,11 @@ impl super::Loader {
     }
 
     pub fn dos_read(&self, hf: u32, buf_ptr: u32, len: u32, actual_ptr: u32) -> u32 {
+        debug!("  DosRead(hf={}, buf=0x{:08X}, len={}, actual=0x{:08X})", hf, buf_ptr, len, actual_ptr);
+        // Handle stdin (handle 0): read from host terminal
+        if hf == 0 {
+            return self.dos_read_stdin(buf_ptr, len, actual_ptr);
+        }
         let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
         if let Some(file) = h_mgr.get_mut(hf) {
             let mut data = vec![0u8; len as usize];
@@ -89,7 +94,67 @@ impl super::Loader {
                 },
                 Err(_) => 5,
             }
-        } else if hf == 0 { 0 } else { 6 }
+        } else { 6 }
+    }
+
+    /// Read from stdin (handle 0) using the host terminal.
+    /// Enables raw mode and reads one byte at a time, blocking until input is available.
+    /// Translates CR (0x0D) → CR+LF (OS/2 console convention) and echoes characters.
+    fn dos_read_stdin(&self, buf_ptr: u32, len: u32, actual_ptr: u32) -> u32 {
+        if len == 0 {
+            if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, 0); }
+            return 0;
+        }
+        // Check for pending LF from previous CR→CRLF translation
+        {
+            let mut console = self.shared.console_mgr.lock_or_recover();
+            if console.stdin_pending_lf {
+                console.stdin_pending_lf = false;
+                self.guest_write::<u8>(buf_ptr, 0x0A); // LF
+                if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, 1); }
+                return 0;
+            }
+            console.enable_raw_mode();
+        }
+        // Block until at least one byte is available
+        loop {
+            if self.shutting_down() { return ERROR_INVALID_FUNCTION; }
+            let mut buf = [0u8; 1];
+            let n = unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr() as *mut libc::c_void, 1) };
+            if n == 1 {
+                let byte = buf[0];
+                if byte == 0x0D {
+                    // CR from Enter key → deliver CR now, queue LF for next read
+                    let mut console = self.shared.console_mgr.lock_or_recover();
+                    console.stdin_pending_lf = true;
+                    // Echo CR+LF to terminal
+                    let _ = unsafe { libc::write(libc::STDOUT_FILENO, b"\r\n".as_ptr() as *const libc::c_void, 2) };
+                } else if byte == 0x08 || byte == 0x7F {
+                    // Backspace — echo destructive backspace
+                    let _ = unsafe { libc::write(libc::STDOUT_FILENO, b"\x08 \x08".as_ptr() as *const libc::c_void, 3) };
+                } else if byte >= 0x20 {
+                    // Printable character — echo to terminal
+                    let _ = unsafe { libc::write(libc::STDOUT_FILENO, buf.as_ptr() as *const libc::c_void, 1) };
+                }
+                self.guest_write::<u8>(buf_ptr, byte);
+                if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, 1); }
+                return 0;
+            }
+            if n == 0 {
+                // VTIME timeout expired with no data — retry
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                continue;
+            }
+            if n < 0 {
+                let err = unsafe { *libc::__errno_location() };
+                if err == libc::EAGAIN || err == libc::EINTR {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, 0); }
+                return ERROR_ACCESS_DENIED;
+            }
+        }
     }
 
     pub fn dos_write(&self, fd: u32, buf_ptr: u32, len: u32, actual_ptr: u32) -> u32 {
