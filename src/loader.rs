@@ -353,11 +353,12 @@ impl Loader {
     fn resolve_import(&self, module: &str, ordinal: u32) -> u64 {
         if module == "DOSCALLS" { MAGIC_API_BASE + ordinal as u64 }
         else if module == "QUECALLS" { MAGIC_API_BASE + 1024 + ordinal as u64 }
+        else if module == "PMWIN" { MAGIC_API_BASE + 2048 + ordinal as u64 }
         else { 0 }
     }
 
     fn setup_stubs(&self) {
-        for i in 0..2048 {
+        for i in 0..4096 {
             unsafe {
                 let ptr = self.shared.guest_mem.add(MAGIC_API_BASE as usize + i);
                 *ptr = 0xCC; // INT 3
@@ -426,7 +427,7 @@ impl Loader {
             match exit {
                 kvm_ioctls::VcpuExit::Debug(_) => {
                     let rip = vcpu.get_regs().unwrap().rip;
-                    if rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + 2048 {
+                    if rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + 4096 {
                         if rip == EXIT_TRAP_ADDR as u64 {
                             println!("  [VCPU {}] Guest requested thread exit.", vcpu_id);
                             if vcpu_id == 0 { std::process::exit(0); }
@@ -474,7 +475,7 @@ impl Loader {
                 282 => self.dos_write(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
                 229 => self.dos_sleep(read_stack(4)),
                 311 => self.dos_create_thread(vcpu_id, read_stack(4), read_stack(8), read_stack(12), read_stack(20)),
-                234 => { api::doscalls::dos_exit(read_stack(4), read_stack(8)); 0 },
+                234 => { api::doscalls::dos_exit(read_stack(4), read_stack(8)); },
                 235 => self.dos_query_h_type(read_stack(4), read_stack(8), read_stack(12)),
                 239 => self.dos_create_pipe(read_stack(4), read_stack(8), read_stack(12)),
                 283 => self.dos_get_info_blocks(vcpu, read_stack(4), read_stack(8)),
@@ -501,7 +502,7 @@ impl Loader {
                 349 => self.dos_wait_thread(vcpu_id, read_stack(4)),
                 _ => { println!("Warning: Unknown API Ordinal {} on VCPU {}", ordinal, vcpu_id); 0 }
             }
-        } else {
+        } else if ordinal < 2048 {
             match ordinal - 1024 {
                 16 => self.dos_create_queue(read_stack(4), read_stack(8), read_stack(12)),
                 10 => self.dos_open_queue(read_stack(4), read_stack(8), read_stack(12)),
@@ -512,6 +513,17 @@ impl Loader {
                 13 => self.dos_query_queue(read_stack(4), read_stack(8)),
                 _ => { println!("Warning: Unknown QUECALLS Ordinal {} on VCPU {}", ordinal - 1024, vcpu_id); 0 }
             }
+        } else if ordinal < 4096 {
+            match ordinal - 2048 {
+                763 => self.win_initialize(read_stack(4)),
+                716 => self.win_create_msg_queue(read_stack(4), read_stack(8)),
+                789 => self.win_message_box(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24)),
+                726 => self.win_destroy_msg_queue(read_stack(4)),
+                888 => self.win_terminate(read_stack(4)),
+                _ => { println!("Warning: Unknown PMWIN Ordinal {} on VCPU {}", ordinal - 2048, vcpu_id); 0 }
+            }
+        } else {
+            println!("Warning: Unknown API Base Ordinal {} on VCPU {}", ordinal, vcpu_id); 0
         };
 
         regs.rax = res as u64;
@@ -1156,6 +1168,35 @@ impl Loader {
             h.join().unwrap();
             0
         } else { 309 }
+    }
+
+    // --- PMWIN Handlers ---
+
+    fn win_initialize(&self, _options: u32) -> u32 {
+        println!("  [VCPU] WinInitialize called.");
+        0x1234 // Mock HAB
+    }
+
+    fn win_terminate(&self, _hab: u32) -> u32 {
+        println!("  [VCPU] WinTerminate called.");
+        1 // TRUE
+    }
+
+    fn win_create_msg_queue(&self, _hab: u32, _size: u32) -> u32 {
+        println!("  [VCPU] WinCreateMsgQueue called.");
+        0x5678 // Mock HMQ
+    }
+
+    fn win_destroy_msg_queue(&self, _hmq: u32) -> u32 {
+        println!("  [VCPU] WinDestroyMsgQueue called.");
+        1 // TRUE
+    }
+
+    fn win_message_box(&self, _hwnd_parent: u32, _hwnd_owner: u32, psz_text_ptr: u32, psz_caption_ptr: u32, _id: u32, _style: u32) -> u32 {
+        let text = self.read_guest_string(psz_text_ptr);
+        let caption = self.read_guest_string(psz_caption_ptr);
+        println!("  [PM MESSAGE BOX] {} : {}", caption, text);
+        1 // MBID_OK
     }
 }
 

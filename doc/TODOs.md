@@ -43,7 +43,9 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
 
 ## Phase 3: Presentation Manager (GUI)
 - [ ] **Window Management (PMWIN.DLL)**
-    - [ ] Implement message queue (`WinCreateMsgQueue`).
+    - [x] Initial stubs for `WinInitialize`, `WinTerminate`, `WinCreateMsgQueue`.
+    - [x] Terminal-based `WinMessageBox` emulation.
+    - [ ] Implement message queue logic and message loop (`WinGetMsg`, `WinDispatchMsg`).
     - [ ] Window creation and event loop mapping to X11/Wayland.
 - [ ] **Graphics (PMGPI.DLL)**
     - [ ] Map Gpi drawing functions (lines, boxes, text) to Cairo or Skia.
