@@ -263,15 +263,30 @@ pub struct Window {
     pub parent: u32,
 }
 
+pub struct PresentationSpace {
+    pub hwnd: u32,
+    pub color: u32,
+    pub x: i32,
+    pub y: i32,
+}
+
 pub struct WindowManager {
     classes: HashMap<String, WindowClass>,
     windows: HashMap<u32, Window>,
+    ps_map: HashMap<u32, PresentationSpace>,
     next_handle: u32,
+    next_ps: u32,
 }
 
 impl WindowManager {
     pub fn new() -> Self {
-        WindowManager { classes: HashMap::new(), windows: HashMap::new(), next_handle: 0x1000 }
+        WindowManager { 
+            classes: HashMap::new(), 
+            windows: HashMap::new(), 
+            ps_map: HashMap::new(),
+            next_handle: 0x1000,
+            next_ps: 0x2000,
+        }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
         self.classes.insert(name.clone(), WindowClass { name, pfn_wp, style });
@@ -288,6 +303,15 @@ impl WindowManager {
     }
     pub fn get_window(&self, h: u32) -> Option<&Window> {
         self.windows.get(&h)
+    }
+    pub fn get_ps_hwnd(&self, hps: u32) -> u32 {
+        self.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0)
+    }
+    pub fn create_ps(&mut self, hwnd: u32) -> u32 {
+        let h = self.next_ps;
+        self.ps_map.insert(h, PresentationSpace { hwnd, color: 0, x: 0, y: 0 });
+        self.next_ps += 1;
+        h
     }
 }
 
@@ -1311,7 +1335,7 @@ impl Loader {
                     2 => 0x0023, // WM_PAINT
                     3 => 0x0041, // WM_TIMER
                     4 => {
-                        thread::sleep(std::time::Duration::from_millis(2000));
+                        thread::sleep(std::time::Duration::from_millis(10000));
                         0x002A // WM_QUIT
                     },
                     _ => 0x002A,
@@ -1407,64 +1431,104 @@ impl Loader {
         1 // TRUE
     }
 
-    fn win_fill_rect(&self, _hps: u32, _prcl_ptr: u32, _clr: u32) -> u32 {
-        println!("  [VCPU] WinFillRect called.");
-        1 // TRUE
+    fn win_fill_rect(&self, hps: u32, prcl_ptr: u32, clr: u32) -> u32 {
+        let hwnd = self.shared.window_mgr.lock().unwrap().get_ps_hwnd(hps);
+        if hwnd == 0 || prcl_ptr == 0 { return 0; }
+        
+        let (x1, y1, x2, y2) = unsafe {
+            let ptr = self.shared.guest_mem.add(prcl_ptr as usize);
+            (
+                ptr::read_unaligned(ptr.add(0) as *const i32),
+                ptr::read_unaligned(ptr.add(4) as *const i32),
+                ptr::read_unaligned(ptr.add(8) as *const i32),
+                ptr::read_unaligned(ptr.add(12) as *const i32),
+            )
+        };
+
+        if let Some(sender) = self.shared.gui_sender.lock().unwrap().as_ref() {
+            let color = self.map_color(clr);
+            sender.send(GUIMessage::DrawBox { handle: hwnd, x1, y1, x2, y2, color, fill: true }).unwrap();
+        }
+        1
     }
 
-    fn win_begin_paint(&self, _hwnd: u32, _hps: u32, _prcl_ptr: u32) -> u32 {
-        println!("  [VCPU] WinBeginPaint called.");
-        0xABCD // Mock HPS
+    fn win_begin_paint(&self, hwnd: u32, _hps: u32, _prcl_ptr: u32) -> u32 {
+        self.shared.window_mgr.lock().unwrap().create_ps(hwnd)
     }
 
     fn win_end_paint(&self, _hps: u32) -> u32 {
-        println!("  [VCPU] WinEndPaint called.");
-        1 // TRUE
+        1
     }
 
-    fn win_get_ps(&self, _hwnd: u32) -> u32 {
-        println!("  [VCPU] WinGetPS called.");
-        0xABCD // Mock HPS
+    fn win_get_ps(&self, hwnd: u32) -> u32 {
+        self.shared.window_mgr.lock().unwrap().create_ps(hwnd)
     }
 
     fn win_release_ps(&self, _hps: u32) -> u32 {
-        println!("  [VCPU] WinReleasePS called.");
-        1 // TRUE
+        1
     }
 
-    fn win_start_timer(&self, _hab: u32, _hwnd: u32, id: u32, timeout: u32) -> u32 {
-        println!("  [VCPU] WinStartTimer called: id={}, timeout={}ms", id, timeout);
-        1 // TRUE
+    fn win_start_timer(&self, _hab: u32, _hwnd: u32, _id: u32, _timeout: u32) -> u32 {
+        1
     }
 
-    fn win_stop_timer(&self, _hab: u32, _hwnd: u32, id: u32) -> u32 {
-        println!("  [VCPU] WinStopTimer called: id={}", id);
-        1 // TRUE
+    fn win_stop_timer(&self, _hab: u32, _hwnd: u32, _id: u32) -> u32 {
+        1
     }
 
     // --- PMGPI Handlers ---
 
-    fn gpi_set_color(&self, _hps: u32, color: u32) -> u32 {
-        println!("  [VCPU] GpiSetColor called: color={}", color);
-        1 // TRUE
+    fn gpi_set_color(&self, hps: u32, color: u32) -> u32 {
+        if let Some(ps) = self.shared.window_mgr.lock().unwrap().ps_map.get_mut(&hps) {
+            ps.color = color;
+        }
+        1
     }
 
-    fn gpi_move(&self, _hps: u32, pptl_ptr: u32) -> u32 {
+    fn gpi_move(&self, hps: u32, pptl_ptr: u32) -> u32 {
         let (x, y) = unsafe {
             let ptr = self.shared.guest_mem.add(pptl_ptr as usize);
             (ptr::read_unaligned(ptr as *const i32), ptr::read_unaligned(ptr.add(4) as *const i32))
         };
-        println!("  [VCPU] GpiMove called: ({}, {})", x, y);
-        1 // TRUE
+        if let Some(ps) = self.shared.window_mgr.lock().unwrap().ps_map.get_mut(&hps) {
+            ps.x = x; ps.y = y;
+        }
+        1
     }
 
-    fn gpi_box(&self, _hps: u32, control: u32, pptl_ptr: u32, h_round: u32, v_round: u32) -> u32 {
-        let (x, y) = unsafe {
+    fn gpi_box(&self, hps: u32, control: u32, pptl_ptr: u32, _h_round: u32, _v_round: u32) -> u32 {
+        let (x2, y2) = unsafe {
             let ptr = self.shared.guest_mem.add(pptl_ptr as usize);
             (ptr::read_unaligned(ptr as *const i32), ptr::read_unaligned(ptr.add(4) as *const i32))
         };
-        println!("  [VCPU] GpiBox called: control={}, corner=({}, {}), round=({}, {})", control, x, y, h_round, v_round);
-        1 // GPI_OK
+        
+        let (hwnd, x1, y1, color) = {
+            let mgr = self.shared.window_mgr.lock().unwrap();
+            if let Some(ps) = mgr.ps_map.get(&hps) {
+                (ps.hwnd, ps.x, ps.y, ps.color)
+            } else { return 0; }
+        };
+
+        if let Some(sender) = self.shared.gui_sender.lock().unwrap().as_ref() {
+            let color_val = self.map_color(color);
+            let fill = (control & 1) != 0; // DRO_FILL
+            sender.send(GUIMessage::DrawBox { handle: hwnd, x1, y1, x2, y2, color: color_val, fill }).unwrap();
+        }
+        1
+    }
+
+    fn map_color(&self, clr: u32) -> u32 {
+        match clr {
+            0 => 0x00000000, // Black
+            1 => 0x000000FF, // Blue
+            2 => 0x00FF0000, // Red
+            3 => 0x00FF00FF, // Pink
+            4 => 0x0000FF00, // Green
+            5 => 0x0000FFFF, // Cyan
+            6 => 0x00FFFF00, // Yellow
+            7 => 0x00FFFFFF, // White
+            _ => 0x00808080, // Grey
+        }
     }
 
     fn run_vcpu_internal(&self, vcpu: &mut VcpuFd, vcpu_id: u32, tib_base: u64) {

@@ -12,13 +12,26 @@ use crate::loader::SharedState;
 pub enum GUIMessage {
     CreateWindow { class: String, title: String, handle: u32 },
     Invalidate { handle: u32 },
+    DrawBox { handle: u32, x1: i32, y1: i32, x2: i32, y2: i32, color: u32, fill: bool },
+    MoveTo { handle: u32, x: i32, y: i32 },
+}
+
+pub struct WindowState {
+    pub window: Arc<Window>,
+    pub surface: Surface<Arc<Window>, Arc<Window>>,
+    pub buffer: Vec<u32>,
+    pub width: u32,
+    pub height: u32,
+    pub current_x: i32,
+    pub current_y: i32,
+    pub current_color: u32,
 }
 
 pub struct GUIApp {
     shared: Arc<SharedState>,
     rx: std::sync::mpsc::Receiver<GUIMessage>,
-    windows: HashMap<WindowId, Arc<Window>>,
-    surfaces: HashMap<WindowId, Surface<Arc<Window>, Arc<Window>>>,
+    windows: HashMap<WindowId, u32>, // winit ID -> PM handle
+    states: HashMap<u32, WindowState>, // PM handle -> state
     context: Option<Context<Arc<Window>>>,
 }
 
@@ -28,39 +41,59 @@ impl GUIApp {
             shared,
             rx,
             windows: HashMap::new(),
-            surfaces: HashMap::new(),
+            states: HashMap::new(),
             context: None,
+        }
+    }
+
+    fn draw_rect(&mut self, handle: u32, x1: i32, y1: i32, x2: i32, y2: i32, color: u32, fill: bool) {
+        if let Some(state) = self.states.get_mut(&handle) {
+            let left = x1.min(x2).max(0) as u32;
+            let right = x1.max(x2).min(state.width as i32 - 1) as u32;
+            let bottom = y1.min(y2).max(0) as u32;
+            let top = y1.max(y2).min(state.height as i32 - 1) as u32;
+
+            if fill {
+                for y in bottom..=top {
+                    for x in left..=right {
+                        state.buffer[(y * state.width + x) as usize] = color;
+                    }
+                }
+            } else {
+                // Outline only
+                for x in left..=right {
+                    state.buffer[(bottom * state.width + x) as usize] = color;
+                    state.buffer[(top * state.width + x) as usize] = color;
+                }
+                for y in bottom..=top {
+                    state.buffer[(y * state.width + left) as usize] = color;
+                    state.buffer[(y * state.width + right) as usize] = color;
+                }
+            }
         }
     }
 }
 
 impl ApplicationHandler for GUIApp {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.context.is_none() {
-            // Context needs a handle to something that implements HasDisplayHandle.
-            // In winit 0.30, we can get it from the event loop or a window.
-            // softbuffer's Context::new expects a display handle.
-        }
-    }
+    fn resumed(&mut self, _event_loop: &ActiveEventLoop) {}
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
-                self.windows.remove(&id);
-                self.surfaces.remove(&id);
+                if let Some(handle) = self.windows.remove(&id) {
+                    self.states.remove(&handle);
+                }
                 if self.windows.is_empty() {
                     event_loop.exit();
                 }
             }
             WindowEvent::RedrawRequested => {
-                if let Some(surface) = self.surfaces.get_mut(&id) {
-                    let window = self.windows.get(&id).unwrap();
-                    let size = window.inner_size();
-                    let mut buffer = surface.buffer_mut().unwrap();
-                    for index in 0..(size.width * size.height) as usize {
-                        buffer[index] = 0x00FFFFFF; // White
+                if let Some(handle) = self.windows.get(&id) {
+                    if let Some(state) = self.states.get_mut(handle) {
+                        let mut buffer = state.surface.buffer_mut().unwrap();
+                        buffer.copy_from_slice(&state.buffer);
+                        buffer.present().unwrap();
                     }
-                    buffer.present().unwrap();
                 }
             }
             _ => (),
@@ -70,7 +103,7 @@ impl ApplicationHandler for GUIApp {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
-                GUIMessage::CreateWindow { class: _, title, handle: _ } => {
+                GUIMessage::CreateWindow { class: _, title, handle } => {
                     let window_attrs = Window::default_attributes()
                         .with_title(title)
                         .with_inner_size(winit::dpi::LogicalSize::new(640.0, 480.0));
@@ -86,12 +119,31 @@ impl ApplicationHandler for GUIApp {
                     let size = window.inner_size();
                     surface.resize(NonZeroU32::new(size.width).unwrap(), NonZeroU32::new(size.height).unwrap()).unwrap();
                     
-                    self.windows.insert(id, window);
-                    self.surfaces.insert(id, surface);
+                    let width = size.width;
+                    let height = size.height;
+                    let buffer = vec![0xFFFFFFFF; (width * height) as usize]; // Default white background
+                    
+                    self.windows.insert(id, handle);
+                    self.states.insert(handle, WindowState {
+                        window, surface, buffer, width, height,
+                        current_x: 0, current_y: 0, current_color: 0
+                    });
                 }
-                GUIMessage::Invalidate { handle: _ } => {
-                    for window in self.windows.values() {
-                        window.request_redraw();
+                GUIMessage::MoveTo { handle, x, y } => {
+                    if let Some(state) = self.states.get_mut(&handle) {
+                        state.current_x = x;
+                        state.current_y = y;
+                    }
+                }
+                GUIMessage::DrawBox { handle, x1, y1, x2, y2, color, fill } => {
+                    self.draw_rect(handle, x1, y1, x2, y2, color, fill);
+                    if let Some(state) = self.states.get(&handle) {
+                        state.window.request_redraw();
+                    }
+                }
+                GUIMessage::Invalidate { handle } => {
+                    if let Some(state) = self.states.get(&handle) {
+                        state.window.request_redraw();
                     }
                 }
             }
