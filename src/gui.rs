@@ -191,6 +191,7 @@ impl ApplicationHandler<()> for GUIApp {
                     }
                     let mp2 = (size.height << 16) | size.width;
                     self.push_msg(handle, 0x0007, 0, mp2); // WM_SIZE
+                    self.push_msg(handle, 0x0023, 0, 0); // WM_PAINT
                 }
             }
             WindowEvent::RedrawRequested => {

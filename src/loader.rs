@@ -19,10 +19,12 @@ const CALLBACK_RET_TRAP: u32 = 0x010003FE;
 const DYNAMIC_ALLOC_BASE: u32 = 0x02000000; // 32MB
 
 const PMWIN_BASE: u32 = 2048;
-const PMGPI_BASE: u32 = 4096;
+const PMGPI_BASE: u32 = 3072;
 
 const WM_CLOSE: u32 = 0x0029;
 const WM_QUIT: u32 = 0x002A;
+const WM_PAINT: u32 = 0x0023;
+const WM_TIMER: u32 = 0x0024;
 
 #[derive(Debug, Clone, Copy)]
 struct AllocBlock {
@@ -557,7 +559,7 @@ impl Loader {
     }
 
     fn setup_stubs(&self) {
-        for i in 0..8192 {
+        for i in 0..4096 {
             unsafe {
                 let ptr = self.shared.guest_mem.add(MAGIC_API_BASE as usize + i);
                 *ptr = 0xCC; // INT 3
@@ -659,7 +661,7 @@ impl Loader {
             match exit {
                 kvm_ioctls::VcpuExit::Debug(_) => {
                     let rip = vcpu.get_regs().unwrap().rip;
-                    if rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + 8192 {
+                    if rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + 4096 {
                         if rip == EXIT_TRAP_ADDR as u64 {
                             println!("  [VCPU {}] Guest requested thread exit.", vcpu_id);
                             if vcpu_id == 0 { std::process::exit(0); }
@@ -803,7 +805,7 @@ impl Loader {
         } else if ordinal < PMGPI_BASE {
             // PMWIN
             self.handle_pmwin_call(vcpu, vcpu_id, ordinal - PMWIN_BASE)
-        } else if ordinal < 8192 {
+        } else if ordinal < 4096 {
             // PMGPI
             self.handle_pmgpi_call(vcpu, vcpu_id, ordinal - PMGPI_BASE)
         } else {
@@ -883,6 +885,15 @@ impl Loader {
                 if phwnd_client_ptr != 0 {
                     unsafe { ptr::write_unaligned(self.shared.guest_mem.add(phwnd_client_ptr as usize) as *mut u32, h_client); }
                 }
+
+                // Post initial WM_PAINT so the guest paints on creation
+                if let Some(mq_arc) = wm.get_mq(hmq) {
+                    let mut mq = mq_arc.lock().unwrap();
+                    mq.messages.push_back(OS2Message {
+                        hwnd: h_client, msg: WM_PAINT, mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
+                    });
+                }
+
                 ApiResult::Normal(h_frame)
             }
             915 => {
@@ -1035,13 +1046,16 @@ impl Loader {
             738 => {
                 // WinEndPaint
                 let hps = read_stack(4);
-                let hwnd = self.shared.window_mgr.lock().unwrap().get_ps_hwnd(hps);
-                if hwnd != 0 {
-                    let wm = self.shared.window_mgr.lock().unwrap();
-                    if let Some(ref sender) = wm.gui_tx {
-                        let _ = sender.send(GUIMessage::PresentBuffer { handle: hwnd });
-                    }
+                let wm = self.shared.window_mgr.lock().unwrap();
+                let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
+                let frame_hwnd = wm.frame_to_client.iter()
+                    .find(|&(_, &client)| client == ps_hwnd)
+                    .map(|(&frame, _)| frame)
+                    .unwrap_or(ps_hwnd);
+                if let Some(ref sender) = wm.gui_tx {
+                    let _ = sender.send(crate::gui::GUIMessage::PresentBuffer { handle: frame_hwnd });
                 }
+                wm.ps_map.get(&hps); // keep PS alive until explicitly destroyed
                 ApiResult::Normal(1)
             }
             753 => {
@@ -1084,7 +1098,7 @@ impl Loader {
                 // WinDestroyWindow
                 ApiResult::Normal(1)
             }
-            1559 => {
+            884 => {
                 // WinStartTimer(HAB hab, HWND hwnd, ULONG idTimer, ULONG dtTimeout)
                 let _hab = read_stack(4);
                 let hwnd = read_stack(8);
@@ -1116,7 +1130,7 @@ impl Loader {
                             if let Some(mq_arc) = wm.get_mq(hmq) {
                                 let mut mq = mq_arc.lock().unwrap();
                                 mq.messages.push_back(OS2Message {
-                                    hwnd, msg: 0x0023, mp1: id_timer, mp2: 0, // WM_TIMER = 0x0023
+                                    hwnd, msg: WM_TIMER, mp1: id_timer, mp2: 0,
                                     time: 0, x: 0, y: 0,
                                 });
                             }
@@ -1125,7 +1139,7 @@ impl Loader {
                 });
                 ApiResult::Normal(id_timer) // Return the timer ID
             }
-            1560 => {
+            885 => {
                 // WinStopTimer(HAB hab, HWND hwnd, ULONG idTimer)
                 let _hab = read_stack(4);
                 let hwnd = read_stack(8);
@@ -1136,25 +1150,25 @@ impl Loader {
                 }
                 ApiResult::Normal(1)
             }
-            1273 => {
+            701 => {
                 // WinAlarm(HWND hwndDesktop, ULONG rgfType)
                 // Just a beep - stub it
                 ApiResult::Normal(1)
             }
-            1283 => {
+            707 => {
                 // WinCloseClipbrd(HAB hab)
                 let mut wm = self.shared.window_mgr.lock().unwrap();
                 wm.clipboard_open = false;
                 ApiResult::Normal(1)
             }
-            1297 => {
+            907 => {
                 // WinCreateMenu(HWND hwndParent, PVOID pvmt)
                 // Stub - return a fake menu handle
                 let mut wm = self.shared.window_mgr.lock().unwrap();
                 let h = wm.create_window("#Menu".to_string(), read_stack(4), 0);
                 ApiResult::Normal(h)
             }
-            1309 => {
+            910 => {
                 // WinDefDlgProc(HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2)
                 // Default dialog procedure - delegate to WinDefWindowProc behavior
                 let _hwnd = read_stack(4);
@@ -1166,7 +1180,7 @@ impl Loader {
                 }
                 ApiResult::Normal(0)
             }
-            1325 => {
+            729 => {
                 // WinDismissDlg(HWND hwndDlg, ULONG usResult)
                 let hwnd = read_stack(4);
                 let _result = read_stack(8);
@@ -1174,19 +1188,19 @@ impl Loader {
                 self.post_wm_quit(hwnd);
                 ApiResult::Normal(1)
             }
-            1327 => {
+            923 => {
                 // WinDlgBox(HWND hwndParent, HWND hwndOwner, PFNWP pfnDlgProc, HMODULE hmod, ULONG idDlg, PVOID pCreateParams)
                 // Complex - needs resource loading. Stub: return MBID_OK (1)
                 println!("  [VCPU {}] WinDlgBox (stub) - no resource loading support", vcpu_id);
                 ApiResult::Normal(1)
             }
-            1332 => {
+            733 => {
                 // WinEmptyClipbrd(HAB hab)
                 let mut wm = self.shared.window_mgr.lock().unwrap();
                 wm.clipboard.clear();
                 ApiResult::Normal(1)
             }
-            1344 => {
+            743 => {
                 // WinFillRect(HPS hps, PRECTL prcl, LONG lColor)
                 let hps = read_stack(4);
                 let prcl = read_stack(8);
@@ -1216,7 +1230,7 @@ impl Loader {
                 }
                 ApiResult::Normal(1)
             }
-            1371 => {
+            765 => {
                 // WinInvalidateRect(HWND hwnd, PRECTL prcl, BOOL fIncludeChildren)
                 let hwnd = read_stack(4);
                 // Post WM_PAINT to trigger repaint
@@ -1227,49 +1241,49 @@ impl Loader {
                     if let Some(mq_arc) = wm.get_mq(hmq) {
                         let mut mq = mq_arc.lock().unwrap();
                         mq.messages.push_back(OS2Message {
-                            hwnd: target, msg: 0x0026, mp1: 0, mp2: 0, // WM_PAINT = 0x0026
+                            hwnd: target, msg: WM_PAINT, mp1: 0, mp2: 0,
                             time: 0, x: 0, y: 0,
                         });
                     }
                 }
                 ApiResult::Normal(1)
             }
-            1384 => {
+            776 => {
                 // WinLoadAccelTable(HAB hab, HMODULE hmod, ULONG idAccelTable)
                 // Stub - no resource loading support
                 println!("  [VCPU {}] WinLoadAccelTable (stub)", vcpu_id);
                 ApiResult::Normal(0) // NULLHANDLE - no accel table
             }
-            1385 => {
+            924 => {
                 // WinLoadDlg(HWND hwndParent, HWND hwndOwner, PFNWP pfnDlgProc, HMODULE hmod, ULONG idDlg, PVOID pCreateParams)
                 // Stub - no resource loading support
                 println!("  [VCPU {}] WinLoadDlg (stub) - no resource loading support", vcpu_id);
                 ApiResult::Normal(0) // NULLHANDLE
             }
-            1389 => {
+            778 => {
                 // WinLoadMenu(HWND hwndFrame, HMODULE hmod, ULONG idMenu)
                 // Stub - no resource loading support
                 println!("  [VCPU {}] WinLoadMenu (stub)", vcpu_id);
                 ApiResult::Normal(0) // NULLHANDLE
             }
-            1411 => {
+            793 => {
                 // WinOpenClipbrd(HAB hab)
                 let mut wm = self.shared.window_mgr.lock().unwrap();
                 wm.clipboard_open = true;
                 ApiResult::Normal(1)
             }
-            1415 => {
+            937 => {
                 // WinPopupMenu(HWND hwndParent, HWND hwndOwner, HWND hwndMenu, LONG x, LONG y, LONG idItem, ULONG fs)
                 // Stub
                 println!("  [VCPU {}] WinPopupMenu (stub)", vcpu_id);
                 ApiResult::Normal(1)
             }
-            1419 => {
+            796 => {
                 // WinProcessDlg(HWND hwndDlg)
                 // Stub - return DID_OK (1)
                 ApiResult::Normal(1)
             }
-            1433 => {
+            806 => {
                 // WinQueryClipbrdData(HAB hab, ULONG fmt)
                 let _hab = read_stack(4);
                 let fmt = read_stack(8);
@@ -1277,7 +1291,7 @@ impl Loader {
                 let data = wm.clipboard.get(&fmt).copied().unwrap_or(0);
                 ApiResult::Normal(data)
             }
-            1443 => {
+            815 => {
                 // WinQueryDlgItemText(HWND hwndDlg, ULONG idItem, LONG cchBufferMax, PCSZ pchBuffer)
                 let hwnd_dlg = read_stack(4);
                 let id_item = read_stack(8);
@@ -1296,12 +1310,12 @@ impl Loader {
                 }
                 ApiResult::Normal(copy_len as u32)
             }
-            1464 => {
+            828 => {
                 // WinQuerySysPointer(HWND hwndDesktop, LONG iptr, BOOL fLoad)
                 // Return a fake pointer handle
                 ApiResult::Normal(0x5000) // Fake HPOINTER
             }
-            1466 => {
+            829 => {
                 // WinQuerySysValue(HWND hwndDesktop, LONG iSysValue)
                 let _hwnd = read_stack(4);
                 let sys_val = read_stack(8) as i32;
@@ -1317,7 +1331,7 @@ impl Loader {
                 };
                 ApiResult::Normal(result as u32)
             }
-            1481 => {
+            841 => {
                 // WinQueryWindowText(HWND hwnd, LONG cchBufferMax, PCH pchBuffer)
                 let hwnd = read_stack(4);
                 let cch_max = read_stack(8) as usize;
@@ -1332,7 +1346,23 @@ impl Loader {
                 }
                 ApiResult::Normal(copy_len as u32)
             }
-            1484 => {
+            834 => {
+                // WinQueryWindow(HWND hwnd, LONG lCode)
+                let hwnd = read_stack(4);
+                let code = read_stack(8) as i32;
+                let wm = self.shared.window_mgr.lock().unwrap();
+                let result = match code {
+                    5 => { // QW_PARENT
+                        wm.windows.get(&hwnd).map(|w| w.parent).unwrap_or(0)
+                    }
+                    6 => { // QW_OWNER
+                        wm.windows.get(&hwnd).map(|w| w.parent).unwrap_or(0)
+                    }
+                    _ => 0,
+                };
+                ApiResult::Normal(result)
+            }
+            843 => {
                 // WinQueryWindowULong(HWND hwnd, LONG index)
                 let hwnd = read_stack(4);
                 let index = read_stack(8) as i32;
@@ -1343,7 +1373,7 @@ impl Loader {
                     .unwrap_or(0);
                 ApiResult::Normal(val)
             }
-            1485 => {
+            844 => {
                 // WinQueryWindowUShort(HWND hwnd, LONG index)
                 let hwnd = read_stack(4);
                 let index = read_stack(8) as i32;
@@ -1354,17 +1384,17 @@ impl Loader {
                     .unwrap_or(0);
                 ApiResult::Normal(val as u32)
             }
-            1506 => {
+            903 => {
                 // WinSendDlgItemMsg(HWND hwndDlg, ULONG idItem, ULONG msg, MPARAM mp1, MPARAM mp2)
                 // Stub - would need to find child and dispatch
                 ApiResult::Normal(0)
             }
-            1508 => {
+            850 => {
                 // WinSetAccelTable(HAB hab, HACCEL haccel, HWND hwnd)
                 // Stub
                 ApiResult::Normal(1)
             }
-            1514 => {
+            854 => {
                 // WinSetClipbrdData(HAB hab, ULONG ulData, ULONG fmt, ULONG rgfFmtInfo)
                 let _hab = read_stack(4);
                 let data = read_stack(8);
@@ -1374,7 +1404,7 @@ impl Loader {
                 wm.clipboard.insert(fmt, data);
                 ApiResult::Normal(1)
             }
-            1520 => {
+            859 => {
                 // WinSetDlgItemText(HWND hwndDlg, ULONG idItem, PCSZ pszText)
                 let hwnd_dlg = read_stack(4);
                 let id_item = read_stack(8);
@@ -1388,18 +1418,18 @@ impl Loader {
                 }
                 ApiResult::Normal(1)
             }
-            1532 => {
+            866 => {
                 // WinSetPointer(HWND hwndDesktop, HPOINTER hptrNew)
                 // Stub - cursor changing not supported
                 ApiResult::Normal(1)
             }
-            1545 => {
+            875 => {
                 // WinSetWindowPos(HWND hwnd, HWND hwndInsertBehind, LONG x, LONG y, LONG cx, LONG cy, ULONG fl)
                 // Stub for now - would need GUI message for resize/move
                 println!("  [VCPU {}] WinSetWindowPos (stub)", vcpu_id);
                 ApiResult::Normal(1)
             }
-            1547 => {
+            877 => {
                 // WinSetWindowText(HWND hwnd, PCSZ pszText)
                 let hwnd = read_stack(4);
                 let psz_text = read_stack(8);
@@ -1410,7 +1440,7 @@ impl Loader {
                 }
                 ApiResult::Normal(1)
             }
-            1549 => {
+            878 => {
                 // WinSetWindowULong(HWND hwnd, LONG index, ULONG ul)
                 let hwnd = read_stack(4);
                 let index = read_stack(8) as i32;
@@ -1421,7 +1451,7 @@ impl Loader {
                 }
                 ApiResult::Normal(1)
             }
-            1550 => {
+            879 => {
                 // WinSetWindowUShort(HWND hwnd, LONG index, USHORT us)
                 let hwnd = read_stack(4);
                 let index = read_stack(8) as i32;
@@ -1432,12 +1462,12 @@ impl Loader {
                 }
                 ApiResult::Normal(1)
             }
-            1571 => {
+            904 => {
                 // WinTranslateAccel(HAB hab, HWND hwnd, HACCEL haccel, PQMSG pqmsg)
                 // Stub - no accelerator support
                 ApiResult::Normal(0) // FALSE - not translated
             }
-            1574 => {
+            892 => {
                 // WinUpdateWindow(HWND hwnd)
                 // Trigger a present buffer
                 let hwnd = read_stack(4);
@@ -1451,7 +1481,7 @@ impl Loader {
                 }
                 ApiResult::Normal(1)
             }
-            1584 => {
+            899 => {
                 // WinWindowFromID(HWND hwndParent, ULONG id)
                 let hwnd_parent = read_stack(4);
                 let id = read_stack(8);
@@ -1582,7 +1612,7 @@ impl Loader {
                 }
                 ApiResult::Normal(1) // GPI_OK
             }
-            563 => {
+            359 => {
                 // GpiCharStringAt(HPS hps, PPOINTL pptl, LONG lCount, PCH pchString)
                 let hps = read_stack(4);
                 let pptl = read_stack(8);
@@ -1628,7 +1658,7 @@ impl Loader {
                 }
                 ApiResult::Normal(1) // GPI_OK
             }
-            608 => {
+            389 => {
                 // GpiErase(HPS hps)
                 let hps = read_stack(4);
                 let wm = self.shared.window_mgr.lock().unwrap();
