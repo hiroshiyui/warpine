@@ -37,7 +37,8 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
     - [x] Event Semaphores (`DosCreateEventSem`, `DosPostEventSem`, etc.).
     - [x] Mutex Semaphores (`DosCreateMutexSem`, `DosRequestMutexSem`, etc.).
     - [x] MuxWait Semaphores (`DosCreateMuxWaitSem`, `DosWaitMuxWaitSem`).
-    - [ ] Pipes and Queues.
+    - [x] Pipes (`DosCreatePipe`).
+    - [x] Queues (`DosCreateQueue`, `DosWriteQueue`, `DosReadQueue`).
 
 
 ## Phase 3: Presentation Manager (GUI)

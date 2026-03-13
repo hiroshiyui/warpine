@@ -6,7 +6,7 @@ use std::fs::{self, File, OpenOptions, ReadDir};
 use std::io::{self, Read, Write, Seek, SeekFrom};
 use std::path::Path;
 use std::ptr;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Condvar};
 use std::thread;
 use kvm_ioctls::{Kvm, VmFd, VcpuFd};
@@ -214,11 +214,47 @@ impl HDirManager {
     }
 }
 
+pub struct QueueEntry {
+    pub data: Vec<u8>,
+    pub event: u32,
+    pub priority: u32,
+}
+
+pub struct OS2Queue {
+    pub name: String,
+    pub items: VecDeque<QueueEntry>,
+    pub attr: u32,
+}
+
+pub struct QueueManager {
+    queues: HashMap<u32, Arc<Mutex<OS2Queue>>>,
+    next_handle: u32,
+}
+
+impl QueueManager {
+    pub fn new() -> Self {
+        QueueManager { queues: HashMap::new(), next_handle: 1 }
+    }
+    pub fn create(&mut self, name: String, attr: u32) -> u32 {
+        let h = self.next_handle;
+        self.queues.insert(h, Arc::new(Mutex::new(OS2Queue { name, items: VecDeque::new(), attr })));
+        self.next_handle += 1;
+        h
+    }
+    pub fn get(&self, h: u32) -> Option<Arc<Mutex<OS2Queue>>> {
+        self.queues.get(&h).cloned()
+    }
+    pub fn close(&mut self, h: u32) -> bool {
+        self.queues.remove(&h).is_some()
+    }
+}
+
 pub struct SharedState {
     pub mem_mgr: Mutex<MemoryManager>,
     pub handle_mgr: Mutex<HandleManager>,
     pub sem_mgr: Mutex<SemaphoreManager>,
     pub hdir_mgr: Mutex<HDirManager>,
+    pub queue_mgr: Mutex<QueueManager>,
     pub guest_mem: *mut u8,
     pub guest_mem_size: usize,
     pub next_tid: Mutex<u32>,
@@ -250,12 +286,14 @@ impl Loader {
         let handle_mgr = HandleManager::new();
         let sem_mgr = SemaphoreManager::new();
         let hdir_mgr = HDirManager::new();
+        let queue_mgr = QueueManager::new();
 
         let shared = Arc::new(SharedState {
             mem_mgr: Mutex::new(mem_mgr),
             handle_mgr: Mutex::new(handle_mgr),
             sem_mgr: Mutex::new(sem_mgr),
             hdir_mgr: Mutex::new(hdir_mgr),
+            queue_mgr: Mutex::new(queue_mgr),
             guest_mem,
             guest_mem_size,
             next_tid: Mutex::new(1),
@@ -313,11 +351,13 @@ impl Loader {
     }
 
     fn resolve_import(&self, module: &str, ordinal: u32) -> u64 {
-        if module == "DOSCALLS" { MAGIC_API_BASE + ordinal as u64 } else { 0 }
+        if module == "DOSCALLS" { MAGIC_API_BASE + ordinal as u64 }
+        else if module == "QUECALLS" { MAGIC_API_BASE + 1024 + ordinal as u64 }
+        else { 0 }
     }
 
     fn setup_stubs(&self) {
-        for i in 0..1024 {
+        for i in 0..2048 {
             unsafe {
                 let ptr = self.shared.guest_mem.add(MAGIC_API_BASE as usize + i);
                 *ptr = 0xCC; // INT 3
@@ -386,7 +426,7 @@ impl Loader {
             match exit {
                 kvm_ioctls::VcpuExit::Debug(_) => {
                     let rip = vcpu.get_regs().unwrap().rip;
-                    if rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + 1024 {
+                    if rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + 2048 {
                         if rip == EXIT_TRAP_ADDR as u64 {
                             println!("  [VCPU {}] Guest requested thread exit.", vcpu_id);
                             if vcpu_id == 0 { std::process::exit(0); }
@@ -421,43 +461,57 @@ impl Loader {
         
         println!("  [VCPU {}] API Call: Ordinal {} (ReturnAddr=0x{:08X})", vcpu_id, ordinal, read_stack(0));
 
-        let res = match ordinal {
-            256 => self.dos_set_file_ptr(read_stack(4), read_stack(8) as i32, read_stack(12), read_stack(16)),
-            257 => self.dos_close(read_stack(4)),
-            259 => self.dos_delete(read_stack(4)),
-            271 => self.dos_move(read_stack(4), read_stack(8)),
-            226 => self.dos_delete_dir(read_stack(4)),
-            270 => self.dos_create_dir(read_stack(4)),
-            273 => self.dos_open(read_stack(4), read_stack(8), read_stack(12), read_stack(24), read_stack(28)),
-            281 => self.dos_read(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
-            282 => self.dos_write(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
-            229 => self.dos_sleep(read_stack(4)),
-            311 => self.dos_create_thread(vcpu_id, read_stack(4), read_stack(8), read_stack(12), read_stack(20)),
-            234 => { api::doscalls::dos_exit(read_stack(4), read_stack(8)); },
-            235 => self.dos_query_h_type(read_stack(4), read_stack(8), read_stack(12)),
-            283 => self.dos_get_info_blocks(vcpu, read_stack(4), read_stack(8)),
-            264 => self.dos_find_first(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28)),
-            265 => self.dos_find_next(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
-            263 => self.dos_find_close(read_stack(4)),
-            275 => self.dos_query_path_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
-            278 => self.dos_query_file_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
-            299 => self.dos_alloc_mem(read_stack(4), read_stack(8)),
-            304 => self.dos_free_mem(read_stack(4)),
-            324 => self.dos_create_event_sem(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
-            326 => self.dos_close_event_sem(read_stack(4)),
-            328 => self.dos_post_event_sem(read_stack(4)),
-            329 => self.dos_wait_event_sem(read_stack(4), read_stack(8)),
-            331 => self.dos_create_mutex_sem(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
-            333 => self.dos_close_mutex_sem(read_stack(4)),
-            334 => self.dos_request_mutex_sem(vcpu_id, read_stack(4), read_stack(8)),
-            335 => self.dos_release_mutex_sem(vcpu_id, read_stack(4)),
-            337 => self.dos_create_mux_wait_sem(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
-            339 => self.dos_close_mux_wait_sem(read_stack(4)),
-            340 => self.dos_wait_mux_wait_sem(vcpu_id, read_stack(4), read_stack(8), read_stack(12)),
-            342 => 0, // DosQueryMuxWaitSem stub
-            348 => 0,
-            349 => self.dos_wait_thread(vcpu_id, read_stack(4)),
-            _ => { println!("Warning: Unknown API Ordinal {} on VCPU {}", ordinal, vcpu_id); 0 }
+        let res = if ordinal < 1024 {
+            match ordinal {
+                256 => self.dos_set_file_ptr(read_stack(4), read_stack(8) as i32, read_stack(12), read_stack(16)),
+                257 => self.dos_close(read_stack(4)),
+                259 => self.dos_delete(read_stack(4)),
+                271 => self.dos_move(read_stack(4), read_stack(8)),
+                226 => self.dos_delete_dir(read_stack(4)),
+                270 => self.dos_create_dir(read_stack(4)),
+                273 => self.dos_open(read_stack(4), read_stack(8), read_stack(12), read_stack(24), read_stack(28)),
+                281 => self.dos_read(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                282 => self.dos_write(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                229 => self.dos_sleep(read_stack(4)),
+                311 => self.dos_create_thread(vcpu_id, read_stack(4), read_stack(8), read_stack(12), read_stack(20)),
+                234 => { api::doscalls::dos_exit(read_stack(4), read_stack(8)); 0 },
+                235 => self.dos_query_h_type(read_stack(4), read_stack(8), read_stack(12)),
+                239 => self.dos_create_pipe(read_stack(4), read_stack(8), read_stack(12)),
+                283 => self.dos_get_info_blocks(vcpu, read_stack(4), read_stack(8)),
+                264 => self.dos_find_first(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28)),
+                265 => self.dos_find_next(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                263 => self.dos_find_close(read_stack(4)),
+                275 => self.dos_query_path_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                278 => self.dos_query_file_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                299 => self.dos_alloc_mem(read_stack(4), read_stack(8)),
+                304 => self.dos_free_mem(read_stack(4)),
+                324 => self.dos_create_event_sem(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                326 => self.dos_close_event_sem(read_stack(4)),
+                328 => self.dos_post_event_sem(read_stack(4)),
+                329 => self.dos_wait_event_sem(read_stack(4), read_stack(8)),
+                331 => self.dos_create_mutex_sem(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                333 => self.dos_close_mutex_sem(read_stack(4)),
+                334 => self.dos_request_mutex_sem(vcpu_id, read_stack(4), read_stack(8)),
+                335 => self.dos_release_mutex_sem(vcpu_id, read_stack(4)),
+                337 => self.dos_create_mux_wait_sem(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
+                339 => self.dos_close_mux_wait_sem(read_stack(4)),
+                340 => self.dos_wait_mux_wait_sem(vcpu_id, read_stack(4), read_stack(8), read_stack(12)),
+                342 => 0, 
+                348 => 0,
+                349 => self.dos_wait_thread(vcpu_id, read_stack(4)),
+                _ => { println!("Warning: Unknown API Ordinal {} on VCPU {}", ordinal, vcpu_id); 0 }
+            }
+        } else {
+            match ordinal - 1024 {
+                16 => self.dos_create_queue(read_stack(4), read_stack(8), read_stack(12)),
+                10 => self.dos_open_queue(read_stack(4), read_stack(8), read_stack(12)),
+                14 => self.dos_write_queue(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
+                9 => self.dos_read_queue(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28), read_stack(32)),
+                11 => self.dos_close_queue(read_stack(4)),
+                12 => { self.dos_purge_queue(read_stack(4)); 0 },
+                13 => self.dos_query_queue(read_stack(4), read_stack(8)),
+                _ => { println!("Warning: Unknown QUECALLS Ordinal {} on VCPU {}", ordinal - 1024, vcpu_id); 0 }
+            }
         };
 
         regs.rax = res as u64;
@@ -683,6 +737,25 @@ impl Loader {
             if pattr != 0 { ptr::write_unaligned(self.shared.guest_mem.add(pattr as usize) as *mut u32, 0); }
         }
         0
+    }
+
+    fn dos_create_pipe(&self, phf_read_ptr: u32, phf_write_ptr: u32, _size: u32) -> u32 {
+        let mut fds = [0i32; 2];
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } == 0 {
+            use std::os::unix::io::FromRawFd;
+            let f_read = unsafe { File::from_raw_fd(fds[0]) };
+            let f_write = unsafe { File::from_raw_fd(fds[1]) };
+            
+            let mut h_mgr = self.shared.handle_mgr.lock().unwrap();
+            let h_read = h_mgr.add(f_read);
+            let h_write = h_mgr.add(f_write);
+            
+            unsafe {
+                ptr::write_unaligned(self.shared.guest_mem.add(phf_read_ptr as usize) as *mut u32, h_read);
+                ptr::write_unaligned(self.shared.guest_mem.add(phf_write_ptr as usize) as *mut u32, h_write);
+            }
+            0
+        } else { 8 }
     }
 
     fn dos_get_info_blocks(&self, vcpu: &VcpuFd, ptib: u32, ppib: u32) -> u32 {
@@ -927,8 +1000,6 @@ impl Loader {
             for i in 0..count {
                 let hsem = *base.add(i as usize * 2);
                 let user = *base.add(i as usize * 2 + 1);
-                // We don't strictly distinguish HEV vs HMTX in SemHandle yet, 
-                // but MuxWait can wait on both. For now we just store the handle.
                 records.push(MuxWaitRecord { hsem: SemHandle::Event(hsem), user });
             }
         }
@@ -953,7 +1024,6 @@ impl Loader {
                 
                 for (i, rec) in mux.records.iter().enumerate() {
                     let h = match rec.hsem { SemHandle::Event(h) | SemHandle::Mutex(h) => h };
-                    // Check if event is posted or mutex is available
                     let sem_mgr = self.shared.sem_mgr.lock().unwrap();
                     let is_ready = if let Some(ev_arc) = sem_mgr.get_event(h) {
                         ev_arc.0.lock().unwrap().posted
@@ -974,13 +1044,103 @@ impl Loader {
                     }
                     return 0;
                 }
-                
-                // Real implementation would wait on all CVars. 
-                // For now, poll with a small sleep to avoid complexity.
                 thread::sleep(std::time::Duration::from_millis(10));
             }
         }
         6
+    }
+
+    fn dos_create_queue(&self, phq_ptr: u32, attr: u32, psz_name_ptr: u32) -> u32 {
+        let name = self.read_guest_string(psz_name_ptr);
+        let mut queue_mgr = self.shared.queue_mgr.lock().unwrap();
+        let h = queue_mgr.create(name, attr);
+        unsafe { ptr::write_unaligned(self.shared.guest_mem.add(phq_ptr as usize) as *mut u32, h); }
+        0
+    }
+
+    fn dos_open_queue(&self, _ppid_ptr: u32, phq_ptr: u32, psz_name_ptr: u32) -> u32 {
+        let name = self.read_guest_string(psz_name_ptr);
+        let queue_mgr = self.shared.queue_mgr.lock().unwrap();
+        // Simplified search by name
+        for (&h, q_arc) in &queue_mgr.queues {
+            if q_arc.lock().unwrap().name == name {
+                unsafe { ptr::write_unaligned(self.shared.guest_mem.add(phq_ptr as usize) as *mut u32, h); }
+                return 0;
+            }
+        }
+        343 // ERROR_QUE_NAME_NOT_EXIST
+    }
+
+    fn dos_write_queue(&self, hq: u32, event: u32, len: u32, buf_ptr: u32, priority: u32) -> u32 {
+        let queue_mgr = self.shared.queue_mgr.lock().unwrap();
+        if let Some(q_arc) = queue_mgr.get(hq) {
+            let mut q = q_arc.lock().unwrap();
+            let mut data = vec![0u8; len as usize];
+            unsafe { ptr::copy_nonoverlapping(self.shared.guest_mem.add(buf_ptr as usize), data.as_mut_ptr(), len as usize); }
+            q.items.push_back(QueueEntry { data, event, priority });
+            return 0;
+        }
+        337 // ERROR_QUE_INVALID_HANDLE
+    }
+
+    fn dos_read_queue(&self, hq: u32, preq_ptr: u32, pcb_ptr: u32, ppbuf_ptr: u32, _elem: u32, wait: u32, pprio_ptr: u32, _hev: u32) -> u32 {
+        loop {
+            {
+                let queue_mgr = self.shared.queue_mgr.lock().unwrap();
+                if let Some(q_arc) = queue_mgr.get(hq) {
+                    let mut q = q_arc.lock().unwrap();
+                    if let Some(entry) = q.items.pop_front() {
+                        let len = entry.data.len() as u32;
+                        // Allocate memory for the message buffer in guest space
+                        // For simplicity, we'll use a new DosAllocMem-like call or just return a pointer to a fixed region.
+                        // Better: let the user allocate or we allocate. OS/2 ReadQueue typically returns a pointer to shared mem.
+                        // We'll use our MemoryManager to allocate guest memory for this.
+                        let mut mem_mgr = self.shared.mem_mgr.lock().unwrap();
+                        if let Some(guest_addr) = mem_mgr.alloc(len) {
+                            unsafe {
+                                ptr::copy_nonoverlapping(entry.data.as_ptr(), self.shared.guest_mem.add(guest_addr as usize), len as usize);
+                                ptr::write_unaligned(self.shared.guest_mem.add(ppbuf_ptr as usize) as *mut u32, guest_addr);
+                                ptr::write_unaligned(self.shared.guest_mem.add(pcb_ptr as usize) as *mut u32, len);
+                                if preq_ptr != 0 {
+                                    // REQUESTDATA: pid, ulEvent
+                                    ptr::write_unaligned(self.shared.guest_mem.add(preq_ptr as usize + 4) as *mut u32, entry.event);
+                                }
+                                if pprio_ptr != 0 {
+                                    *self.shared.guest_mem.add(pprio_ptr as usize) = entry.priority as u8;
+                                }
+                            }
+                            return 0;
+                        }
+                        return 8;
+                    }
+                } else { return 337; }
+            }
+            if wait == 0 { return 342; } // ERROR_QUE_EMPTY
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn dos_close_queue(&self, hq: u32) -> u32 {
+        if self.shared.queue_mgr.lock().unwrap().close(hq) { 0 }
+        else { 337 }
+    }
+
+    fn dos_purge_queue(&self, hq: u32) {
+        let queue_mgr = self.shared.queue_mgr.lock().unwrap();
+        if let Some(q_arc) = queue_mgr.get(hq) {
+            let mut q = q_arc.lock().unwrap();
+            q.items.clear();
+        }
+    }
+
+    fn dos_query_queue(&self, hq: u32, pcb_ptr: u32) -> u32 {
+        let queue_mgr = self.shared.queue_mgr.lock().unwrap();
+        if let Some(q_arc) = queue_mgr.get(hq) {
+            let q = q_arc.lock().unwrap();
+            unsafe { ptr::write_unaligned(self.shared.guest_mem.add(pcb_ptr as usize) as *mut u32, q.items.len() as u32); }
+            return 0;
+        }
+        337
     }
 
     fn dos_wait_thread(&self, vcpu_id: u32, ptid_ptr: u32) -> u32 {
