@@ -181,13 +181,26 @@ New module: `src/loader/stubs.rs` for simple stub handlers. Add `SharedMemManage
 
 Goal: treat an isolated host directory (or block device) as an OS/2 virtual disk with HPFS semantics, making disk and filesystem I/O operations work correctly for applications that expect a real HPFS volume.
 
+### Design Notes (informed by WINE's filesystem approach)
+
+WINE's filesystem layer (`dlls/ntdll/unix/file.c`, `server/fd.c`) provides proven patterns for mapping a foreign OS's filesystem expectations onto Linux:
+
+- **Drive mapping:** WINE uses symlinks in `~/.wine/dosdevices/` (`c:` → `drive_c/`). Simple, inspectable with standard tools. Warpine can adopt a similar config-driven approach (e.g., `drives.toml` or a `dosdevices/`-style directory).
+- **Case-insensitive lookup:** WINE's `lookup_unix_name()` tries exact `stat()` first; on failure, falls back to `readdir()` + `strcasecmp`. Directory listings are cached. Linux 5.2+ ext4 and 6.13+ tmpfs support kernel-level case folding (`EXT4_CASEFOLD_FL`), developed in collaboration with Valve/Collabora for WINE/Proton — detect and use when available.
+- **Extended attributes:** WINE does *not* implement NTFS alternate data streams. However, OS/2 EAs are more pervasive than NTFS ADS (e.g., `.TYPE` EA for file type association), so we need real EA support. Linux `user.*` xattrs is the primary backend; sidecar files as fallback for filesystems without xattr support.
+- **File locking:** WINE uses a hybrid wineserver + `fcntl()` approach because `fcntl()` locks are per-process (not per-handle) and release when any fd to the file is closed. Since warpine manages all OS/2 file handles through a single-process handle manager, we can use `fcntl(F_SETLK)` more directly without a separate lock tracking layer.
+- **Filesystem type reporting:** WINE learned the hard way — reporting `UNIXFS` broke apps expecting NTFS, but claiming unimplemented features (named streams, ACLs) also broke apps. We should report `HPFS` with *accurate* capability flags, only claiming features we actually implement.
+- **Sandbox:** WINE explicitly provides *no* security sandbox (`Z:` → `/` gives full access). Warpine can do better: since OS/2 apps expect isolated drives, enforce that paths stay within their mapped volume directory. Path traversal prevention (`..` past volume root) gives real isolation with minimal complexity.
+- **Reserved device names:** WINE maps CON → console, NUL → `/dev/null`, COM* → `/dev/ttyS*`. OS/2 has similar devices (CON, NUL, CLOCK$, KBD$, SCREEN$) that need mapping.
+
 ### Infrastructure: Virtual Disk Layer
-- [ ] **Drive-to-directory mapping** — configurable mapping of OS/2 drive letters (C:, D:, …) to host directories, each acting as an isolated HPFS volume root
-- [ ] **Case-insensitive, case-preserving lookup** — file/directory resolution ignores case (HPFS semantics) while preserving the original case on creation
+- [ ] **Drive-to-directory mapping** — configurable mapping of OS/2 drive letters (C:, D:, …) to host directories, each acting as an isolated HPFS volume root. Approach: config file (e.g., `drives.toml`) or symlink directory (à la WINE's `dosdevices/`)
+- [ ] **Case-insensitive, case-preserving lookup** — optimistic `stat()` first, `readdir()` + case-insensitive match fallback (WINE's proven pattern). Cache directory listings to reduce `readdir()` overhead. Optionally detect kernel casefold support (`EXT4_CASEFOLD_FL`) for zero-overhead case insensitivity
 - [ ] **Long filename support** — allow filenames up to 254 characters (HPFS limit), reject FAT-illegal names only when mounted as FAT
+- [ ] **Device name mapping** — CON, NUL, CLOCK$, KBD$, SCREEN$ → appropriate host devices or internal handlers
 
 ### Extended Attributes (EAs)
-- [ ] **EA storage backend** — persist OS/2 extended attributes using host xattrs (Linux `user.*` namespace) or a sidecar `.ea` file per directory
+- [ ] **EA storage backend** — persist OS/2 extended attributes using host xattrs (Linux `user.*` namespace) as primary backend, with sidecar `.ea` directory as fallback for filesystems without xattr support
 - [ ] **`DosSetFileInfo` / `DosQueryFileInfo`** — FIL_QUERYEASIZE (level 2) and FIL_QUERYEASFROMLIST (level 3) support
 - [ ] **`DosSetPathInfo` / `DosQueryPathInfo`** — EA read/write by path
 - [ ] **`DosFindFirst` / `DosFindNext`** — return EA size in FILEFINDBUF3 and support FILEFINDBUF3L (level 12/FIL_QUERYEASFROMLISTL)
@@ -196,10 +209,10 @@ Goal: treat an isolated host directory (or block device) as an OS/2 virtual disk
 ### Filesystem Information
 - [ ] **`DosQueryFSInfo`** — return correct HPFS volume geometry: volume label, serial number, sector size (512), cluster size, total/free space derived from host `statvfs()`
 - [ ] **`DosSetFSInfo`** — set volume label (store in `.vol_label` file in volume root)
-- [ ] **`DosQueryFSAttach`** — report drive type as local HPFS (`"HPFS"` FSD name), enumerate attached drives
+- [ ] **`DosQueryFSAttach`** — report drive type as local HPFS (`"HPFS"` FSD name) with accurate capability flags (only claim what we implement), enumerate attached drives
 
 ### File Locking
-- [ ] **`DosSetFileLocks`** — byte-range locking via Linux `fcntl(F_SETLK)` with OS/2 share-mode semantics
+- [ ] **`DosSetFileLocks`** — byte-range locking via Linux `fcntl(F_SETLK)`. Since warpine manages all handles in a single process, we avoid WINE's per-process vs per-handle mismatch — our handle manager can track lock ownership directly
 - [ ] **`DosProtectSetFileLocks`** — protected variant with file lock ID
 
 ### Directory Enumeration Improvements
@@ -209,18 +222,19 @@ Goal: treat an isolated host directory (or block device) as an OS/2 virtual disk
 - [ ] **`DosFindClose`** — proper search handle cleanup
 
 ### Path Translation Hardening
-- [ ] **Sandbox enforcement** — prevent path traversal escapes (`..` past volume root), symlink resolution stays within volume boundary
+- [ ] **Sandbox enforcement** — prevent path traversal escapes (`..` past volume root), resolve symlinks and verify they stay within volume boundary. Unlike WINE (which explicitly does *not* sandbox), warpine enforces real isolation per drive
 - [ ] **UNC path handling** — `\\server\share` paths return `ERROR_NETWORK_ACCESS_DENIED` or map to a configured directory
 - [ ] **`DosQueryPathInfo`** — return correct HPFS attributes for all info levels
 
 ### Verification
 - [ ] `cargo build` — compiles cleanly
 - [ ] `cargo test` — all existing + new tests pass
-- [ ] Unit tests for case-insensitive path resolution
-- [ ] Unit tests for EA storage and retrieval
+- [ ] Unit tests for case-insensitive path resolution (exact-match fast path + readdir fallback)
+- [ ] Unit tests for EA storage and retrieval (xattr backend + sidecar fallback)
 - [ ] Unit tests for wildcard matching (HPFS rules)
 - [ ] Unit tests for `DosQueryFSInfo` volume geometry
-- [ ] Unit tests for path traversal sandbox enforcement
+- [ ] Unit tests for path traversal sandbox enforcement (symlink escape, `..` past root)
+- [ ] Unit tests for device name mapping (CON, NUL, CLOCK$)
 - [ ] 4OS2 `dir`, `tree`, `copy`, `move`, `del`, `md`, `rd` commands work correctly
 - [ ] File attributes (`attrib` command) work correctly
 

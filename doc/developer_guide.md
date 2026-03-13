@@ -21,8 +21,9 @@ This guide introduces the internals of Warpine and the OS/2 concepts it emulates
 11. [PM Callback Mechanism](#pm-callback-mechanism)
 12. [Text-Mode Console Subsystem](#text-mode-console-subsystem)
 13. [4OS2 Compatibility](#4os2-compatibility)
-14. [Module Structure](#module-structure)
-15. [Adding a New API](#adding-a-new-api)
+14. [Filesystem I/O Design](#filesystem-io-design)
+15. [Module Structure](#module-structure)
+16. [Adding a New API](#adding-a-new-api)
 
 ---
 
@@ -384,6 +385,84 @@ Several issues were discovered and fixed during 4OS2 bring-up that are worth not
 - **Guest memory layout** — LX objects can load at addresses up to `0x80000+`, so TIB/PIB must be placed above that range. But they must also stay below `0x100000` for 16-bit segment arithmetic (`addr >> 4` must fit in u16). The safe zone is `0x90000–0x9FFFF`.
 - **CR→CRLF on stdin** — OS/2 console DosRead returns `\r\n` when Enter is pressed. Linux terminals in raw mode send only `\r`. Without translation, 4OS2 never recognizes end-of-line.
 - **Character echo** — Terminal raw mode disables echo. OS/2 apps expect the console driver to echo typed characters during DosRead, so the emulation layer must do this explicitly.
+
+---
+
+## Filesystem I/O Design
+
+Warpine's filesystem layer maps OS/2 drive letters to isolated host directories with HPFS semantics. The design draws on lessons from WINE's filesystem implementation (`dlls/ntdll/unix/file.c`, `server/fd.c`, `dlls/kernel32/volume.c`) while adapting to OS/2-specific requirements.
+
+### Drive Mapping
+
+Each OS/2 drive letter (A:–Z:) maps to a host directory that serves as the volume root. WINE uses symlinks in `~/.wine/dosdevices/` — warpine uses a configuration file or similar mechanism to define mappings (e.g., `C:` → `./sandbox/c_drive/`).
+
+Unlike WINE, which maps `Z:` → `/` by default (giving full filesystem access), warpine enforces **strict isolation**: all path resolution is confined to the mapped volume directory. This is both a security measure and a closer match to OS/2's drive-based filesystem model.
+
+### Case-Insensitive Path Resolution
+
+HPFS is case-preserving but case-insensitive — `README.TXT`, `readme.txt`, and `Readme.Txt` all refer to the same file. Linux filesystems are typically case-sensitive, so the emulation layer must bridge this gap.
+
+**Strategy (adopted from WINE's `lookup_unix_name()`):**
+
+1. **Optimistic `stat()`** — Try the exact path first. If it succeeds, done. This is the fast path for well-behaved applications that use consistent casing.
+2. **`readdir()` fallback** — On `ENOENT`, open the parent directory, enumerate entries with `readdir()`, and compare case-insensitively. Cache the listing to avoid repeated syscalls when multiple lookups hit the same directory.
+3. **Kernel casefold (optional)** — Linux 5.2+ ext4 supports per-directory case-insensitive lookup (`EXT4_CASEFOLD_FL`, via `ioctl`). Linux 6.13+ tmpfs also supports this. When detected, skip the userspace fallback entirely. This feature was developed specifically for WINE/Proton by Collabora and Valve.
+
+Each path component is resolved independently, walking from the volume root to the target. This prevents case-sensitivity mismatches at any level of the path hierarchy.
+
+### Extended Attributes (EAs)
+
+OS/2 Extended Attributes are more heavily used than NTFS alternate data streams. The `.TYPE` EA (file type association), `.LONGNAME`, and `.SUBJECT` are common. Many OS/2 applications read and write EAs routinely.
+
+**Storage backends:**
+
+| Backend | Mechanism | Pros | Cons |
+|---|---|---|---|
+| Linux xattrs | `user.os2.{name}` namespace | Native, atomic, fast | Not all filesystems support xattrs; size limits vary (ext4: ~4KB per attr) |
+| Sidecar files | `.os2ea/{filename}.ea` directory | Works everywhere | Extra I/O, cleanup on rename/delete, atomicity concerns |
+
+Primary backend: Linux `user.*` xattrs. Fall back to sidecar files when xattrs are unavailable (detected by attempting a test write on mount). WINE chose not to implement NTFS ADS — but OS/2 EA support is more important for compatibility, so we implement it fully.
+
+### File Locking
+
+OS/2 `DosSetFileLocks` provides byte-range locking with shared and exclusive modes.
+
+**WINE's challenge:** `fcntl()` locks are per-process (not per-handle), and closing *any* fd to a file releases all locks held by that process. WINE works around this with a wineserver-managed lock table that tracks per-handle ownership.
+
+**Warpine's advantage:** Since all OS/2 file handles are managed by a single host process through the `HandleManager`, we can use `fcntl(F_SETLK)` more directly. The handle manager already tracks which guest handles map to which host fds, so lock ownership is naturally per-handle from the guest's perspective.
+
+### Filesystem Type Reporting
+
+`DosQueryFSInfo` and `DosQueryFSAttach` must report the filesystem type to applications.
+
+**WINE's lesson:** They experimented with reporting `UNIXFS` (broke apps expecting NTFS) and then `NTFS` with all capability flags (broke apps that tried unsupported features). The solution is to report the correct type with *accurate* capability flags.
+
+Warpine reports `HPFS` as the FSD name with capability flags matching what we actually implement. Volume geometry (sector size, cluster size, total/free space) is derived from `statvfs()` on the host directory.
+
+### Device Name Handling
+
+OS/2, like DOS/Windows, has reserved device names that refer to character devices rather than files:
+
+| OS/2 Device | Linux Mapping |
+|---|---|
+| `NUL` | `/dev/null` |
+| `CON` | stdin/stdout (context-dependent) |
+| `CLOCK$` | Internal (stub — system clock device) |
+| `KBD$` | stdin / KbdCharIn handler |
+| `SCREEN$` | stdout / VioWrtTTY handler |
+
+These are detected during path translation (case-insensitive match, with or without trailing extension) and redirected before normal file resolution. WINE handles the equivalent Windows devices (CON, NUL, PRN, COM1–9, LPT1–9) the same way.
+
+### Sandbox Enforcement
+
+Every path resolved through `translate_path()` must stay within its volume's root directory. The enforcement steps:
+
+1. Normalize the path (resolve `.` and `..` components)
+2. Canonicalize via `realpath()` (resolves symlinks)
+3. Verify the result starts with the volume root prefix
+4. Reject with `ERROR_PATH_NOT_FOUND` (3) if it escapes
+
+WINE explicitly does *not* sandbox (`"Wine is NOT a sandbox"`). Warpine's isolated-directory model provides real containment with minimal complexity, which is appropriate since OS/2 applications expect to operate within discrete drive boundaries.
 
 ---
 
