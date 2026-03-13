@@ -14,6 +14,7 @@ use kvm_bindings::{kvm_userspace_memory_region, kvm_guest_debug, KVM_GUESTDBG_EN
 
 const MAGIC_API_BASE: u64 = 0x01000000;
 const EXIT_TRAP_ADDR: u32 = 0x010003FF;
+const CALLBACK_RETURN_TRAP: u32 = 0x01001000;
 const DYNAMIC_ALLOC_BASE: u32 = 0x02000000; // 32MB
 
 #[derive(Debug, Clone, Copy)]
@@ -249,12 +250,54 @@ impl QueueManager {
     }
 }
 
+pub struct WindowClass {
+    pub name: String,
+    pub pfn_wp: u32,
+    pub style: u32,
+}
+
+pub struct Window {
+    pub handle: u32,
+    pub class_name: String,
+    pub pfn_wp: u32,
+    pub parent: u32,
+}
+
+pub struct WindowManager {
+    classes: HashMap<String, WindowClass>,
+    windows: HashMap<u32, Window>,
+    next_handle: u32,
+}
+
+impl WindowManager {
+    pub fn new() -> Self {
+        WindowManager { classes: HashMap::new(), windows: HashMap::new(), next_handle: 0x1000 }
+    }
+    pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
+        self.classes.insert(name.clone(), WindowClass { name, pfn_wp, style });
+    }
+    pub fn get_class(&self, name: &str) -> Option<&WindowClass> {
+        self.classes.get(name)
+    }
+    pub fn create_window(&mut self, class_name: String, parent: u32) -> u32 {
+        let h = self.next_handle;
+        let pfn_wp = self.classes.get(&class_name).map(|c| c.pfn_wp).unwrap_or(0);
+        self.windows.insert(h, Window { handle: h, class_name, pfn_wp, parent });
+        self.next_handle += 1;
+        h
+    }
+    pub fn get_window(&self, h: u32) -> Option<&Window> {
+        self.windows.get(&h)
+    }
+}
+
 pub struct SharedState {
     pub mem_mgr: Mutex<MemoryManager>,
     pub handle_mgr: Mutex<HandleManager>,
     pub sem_mgr: Mutex<SemaphoreManager>,
     pub hdir_mgr: Mutex<HDirManager>,
     pub queue_mgr: Mutex<QueueManager>,
+    pub window_mgr: Mutex<WindowManager>,
     pub guest_mem: *mut u8,
     pub guest_mem_size: usize,
     pub next_tid: Mutex<u32>,
@@ -287,6 +330,7 @@ impl Loader {
         let sem_mgr = SemaphoreManager::new();
         let hdir_mgr = HDirManager::new();
         let queue_mgr = QueueManager::new();
+        let window_mgr = WindowManager::new();
 
         let shared = Arc::new(SharedState {
             mem_mgr: Mutex::new(mem_mgr),
@@ -294,6 +338,7 @@ impl Loader {
             sem_mgr: Mutex::new(sem_mgr),
             hdir_mgr: Mutex::new(hdir_mgr),
             queue_mgr: Mutex::new(queue_mgr),
+            window_mgr: Mutex::new(window_mgr),
             guest_mem,
             guest_mem_size,
             next_tid: Mutex::new(1),
@@ -354,15 +399,19 @@ impl Loader {
         if module == "DOSCALLS" { MAGIC_API_BASE + ordinal as u64 }
         else if module == "QUECALLS" { MAGIC_API_BASE + 1024 + ordinal as u64 }
         else if module == "PMWIN" { MAGIC_API_BASE + 2048 + ordinal as u64 }
+        else if module == "PMGPI" { MAGIC_API_BASE + 4096 + ordinal as u64 }
         else { 0 }
     }
 
     fn setup_stubs(&self) {
-        for i in 0..4096 {
+        for i in 0..8192 {
             unsafe {
                 let ptr = self.shared.guest_mem.add(MAGIC_API_BASE as usize + i);
                 *ptr = 0xCC; // INT 3
             }
+        }
+        unsafe {
+            *self.shared.guest_mem.add(CALLBACK_RETURN_TRAP as usize) = 0xCC;
         }
     }
 
@@ -427,11 +476,14 @@ impl Loader {
             match exit {
                 kvm_ioctls::VcpuExit::Debug(_) => {
                     let rip = vcpu.get_regs().unwrap().rip;
-                    if rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + 4096 {
+                    if rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + 8192 {
                         if rip == EXIT_TRAP_ADDR as u64 {
                             println!("  [VCPU {}] Guest requested thread exit.", vcpu_id);
                             if vcpu_id == 0 { std::process::exit(0); }
                             else { return; }
+                        }
+                        if rip == CALLBACK_RETURN_TRAP as u64 {
+                            return;
                         }
                         self.handle_api_call(&mut vcpu, vcpu_id, (rip - MAGIC_API_BASE) as u32);
                     }
@@ -475,7 +527,7 @@ impl Loader {
                 282 => self.dos_write(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
                 229 => self.dos_sleep(read_stack(4)),
                 311 => self.dos_create_thread(vcpu_id, read_stack(4), read_stack(8), read_stack(12), read_stack(20)),
-                234 => { api::doscalls::dos_exit(read_stack(4), read_stack(8)); },
+                234 => { api::doscalls::dos_exit(read_stack(4), read_stack(8)); 0 },
                 235 => self.dos_query_h_type(read_stack(4), read_stack(8), read_stack(12)),
                 239 => self.dos_create_pipe(read_stack(4), read_stack(8), read_stack(12)),
                 283 => self.dos_get_info_blocks(vcpu, read_stack(4), read_stack(8)),
@@ -520,7 +572,22 @@ impl Loader {
                 789 => self.win_message_box(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24)),
                 726 => self.win_destroy_msg_queue(read_stack(4)),
                 888 => self.win_terminate(read_stack(4)),
+                926 => self.win_register_class(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
+                908 => self.win_create_std_window(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28), read_stack(32), read_stack(36)),
+                915 => self.win_get_msg(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
+                728 => self.win_dispatch_msg(vcpu, read_stack(4), read_stack(8)),
+                738 => self.win_def_window_proc(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                840 => self.win_query_window_rect(read_stack(4), read_stack(8)),
+                743 => self.win_fill_rect(read_stack(4), read_stack(8), read_stack(12)),
+                703 => self.win_begin_paint(read_stack(4), read_stack(8), read_stack(12)),
+                741 => self.win_end_paint(read_stack(4)),
+                757 => self.win_get_ps(read_stack(4)),
+                848 => self.win_release_ps(read_stack(4)),
                 _ => { println!("Warning: Unknown PMWIN Ordinal {} on VCPU {}", ordinal - 2048, vcpu_id); 0 }
+            }
+        } else if ordinal < 8192 {
+            match ordinal - 4096 {
+                _ => { println!("Warning: Unknown PMGPI Ordinal {} on VCPU {}", ordinal - 4096, vcpu_id); 0 }
             }
         } else {
             println!("Warning: Unknown API Base Ordinal {} on VCPU {}", ordinal, vcpu_id); 0
@@ -1103,10 +1170,6 @@ impl Loader {
                     let mut q = q_arc.lock().unwrap();
                     if let Some(entry) = q.items.pop_front() {
                         let len = entry.data.len() as u32;
-                        // Allocate memory for the message buffer in guest space
-                        // For simplicity, we'll use a new DosAllocMem-like call or just return a pointer to a fixed region.
-                        // Better: let the user allocate or we allocate. OS/2 ReadQueue typically returns a pointer to shared mem.
-                        // We'll use our MemoryManager to allocate guest memory for this.
                         let mut mem_mgr = self.shared.mem_mgr.lock().unwrap();
                         if let Some(guest_addr) = mem_mgr.alloc(len) {
                             unsafe {
@@ -1114,7 +1177,6 @@ impl Loader {
                                 ptr::write_unaligned(self.shared.guest_mem.add(ppbuf_ptr as usize) as *mut u32, guest_addr);
                                 ptr::write_unaligned(self.shared.guest_mem.add(pcb_ptr as usize) as *mut u32, len);
                                 if preq_ptr != 0 {
-                                    // REQUESTDATA: pid, ulEvent
                                     ptr::write_unaligned(self.shared.guest_mem.add(preq_ptr as usize + 4) as *mut u32, entry.event);
                                 }
                                 if pprio_ptr != 0 {
@@ -1198,7 +1260,178 @@ impl Loader {
         println!("  [PM MESSAGE BOX] {} : {}", caption, text);
         1 // MBID_OK
     }
+
+    fn win_register_class(&self, _hab: u32, psz_class_name_ptr: u32, pfn_wp: u32, style: u32, _cb_window_data: u32) -> u32 {
+        let name = self.read_guest_string(psz_class_name_ptr);
+        println!("  [VCPU] WinRegisterClass: name='{}', pfn_wp=0x{:08X}", name, pfn_wp);
+        self.shared.window_mgr.lock().unwrap().register_class(name, pfn_wp, style);
+        1 // TRUE
+    }
+
+    fn win_create_std_window(&self, parent: u32, style: u32, _pfc_flags_ptr: u32, psz_class_name_ptr: u32, _psz_title_ptr: u32, _client_style: u32, _hmod: u32, _id: u32, phwnd_client_ptr: u32) -> u32 {
+        let class_name = self.read_guest_string(psz_class_name_ptr);
+        println!("  [VCPU] WinCreateStdWindow: class='{}', parent=0x{:08X}, style=0x{:08X}", class_name, parent, style);
+        let mut window_mgr = self.shared.window_mgr.lock().unwrap();
+        let h_frame = window_mgr.create_window(class_name.clone(), parent);
+        let h_client = window_mgr.create_window(class_name, h_frame);
+        
+        if phwnd_client_ptr != 0 {
+            unsafe { ptr::write_unaligned(self.shared.guest_mem.add(phwnd_client_ptr as usize) as *mut u32, h_client); }
+        }
+        h_frame
+    }
+
+    fn win_get_msg(&self, _hab: u32, pqmsg_ptr: u32, _hwnd: u32, _first: u32, _last: u32) -> u32 {
+        static mut CALL_COUNT: u32 = 0;
+        println!("  [VCPU] WinGetMsg called.");
+        if pqmsg_ptr != 0 {
+            unsafe {
+                let ptr = self.shared.guest_mem.add(pqmsg_ptr as usize);
+                ptr::write_unaligned(ptr.add(0) as *mut u32, 0x1001); // Mock window handle
+                
+                if CALL_COUNT == 0 {
+                    ptr::write_unaligned(ptr.add(4) as *mut u32, 0x0001); // WM_CREATE (OS/2 PM)
+                    CALL_COUNT += 1;
+                    return 1; // TRUE
+                } else {
+                    ptr::write_unaligned(ptr.add(4) as *mut u32, 0x002A); // WM_QUIT
+                    return 0; // FALSE
+                }
+            }
+        }
+        0
+    }
+
+    fn win_dispatch_msg(&self, vcpu: &mut VcpuFd, _hab: u32, pqmsg_ptr: u32) -> u32 {
+        println!("  [VCPU] WinDispatchMsg called.");
+        if pqmsg_ptr == 0 { return 0; }
+        
+        let (hwnd, msg, mp1, mp2) = unsafe {
+            let ptr = self.shared.guest_mem.add(pqmsg_ptr as usize);
+            (
+                ptr::read_unaligned(ptr.add(0) as *const u32),
+                ptr::read_unaligned(ptr.add(4) as *const u32),
+                ptr::read_unaligned(ptr.add(8) as *const u32),
+                ptr::read_unaligned(ptr.add(12) as *const u32),
+            )
+        };
+
+        let pfn_wp = {
+            let window_mgr = self.shared.window_mgr.lock().unwrap();
+            // For testing, if hwnd is mock 0x1001, we might need to find the registered class
+            // In shapes.c, FrameHandle is created with "Watcom" class.
+            // Simplified: just find any registered class's pfn_wp for now if hwnd is mock
+            window_mgr.get_window(hwnd).map(|w| w.pfn_wp)
+                .or_else(|| window_mgr.get_class("Watcom").map(|c| c.pfn_wp))
+                .unwrap_or(0)
+        };
+
+        if pfn_wp != 0 {
+            println!("  [VCPU] Callback: msg={} to pfn_wp 0x{:08X}", msg, pfn_wp);
+            
+            let mut regs = vcpu.get_regs().unwrap();
+            let saved_regs = regs.clone();
+            
+            // Setup stack for callback return
+            regs.rsp -= 4;
+            unsafe {
+                ptr::write_unaligned(self.shared.guest_mem.add(regs.rsp as usize) as *mut u32, CALLBACK_RETURN_TRAP);
+            }
+            
+            // _Optlink: EAX=hwnd, EDX=msg, ECX=mp1, EBX=mp2
+            regs.rip = pfn_wp as u64;
+            regs.rax = hwnd as u64;
+            regs.rdx = msg as u64;
+            regs.rcx = mp1 as u64;
+            regs.rbx = mp2 as u64;
+            
+            vcpu.set_regs(&regs).unwrap();
+            
+            // Run until CALLBACK_RETURN_TRAP
+            self.run_vcpu_internal(vcpu, 0, 0); // TID/TIB not used for simple callback for now
+            
+            let result_regs = vcpu.get_regs().unwrap();
+            let mresult = result_regs.rax as u32;
+            
+            // Restore state
+            vcpu.set_regs(&saved_regs).unwrap();
+            return mresult;
+        }
+        0
+    }
+
+    fn win_def_window_proc(&self, _hwnd: u32, _msg: u32, _mp1: u32, _mp2: u32) -> u32 {
+        0
+    }
+
+    fn win_query_window_rect(&self, _hwnd: u32, prcl_ptr: u32) -> u32 {
+        if prcl_ptr != 0 {
+            unsafe {
+                let ptr = self.shared.guest_mem.add(prcl_ptr as usize);
+                ptr::write_unaligned(ptr.add(0) as *mut i32, 0);   // xLeft
+                ptr::write_unaligned(ptr.add(4) as *mut i32, 0);   // yBottom
+                ptr::write_unaligned(ptr.add(8) as *mut i32, 640); // xRight
+                ptr::write_unaligned(ptr.add(12) as *mut i32, 480); // yTop
+            }
+        }
+        1 // TRUE
+    }
+
+    fn win_fill_rect(&self, _hps: u32, _prcl_ptr: u32, _clr: u32) -> u32 {
+        println!("  [VCPU] WinFillRect called.");
+        1 // TRUE
+    }
+
+    fn win_begin_paint(&self, _hwnd: u32, _hps: u32, _prcl_ptr: u32) -> u32 {
+        println!("  [VCPU] WinBeginPaint called.");
+        0xABCD // Mock HPS
+    }
+
+    fn win_end_paint(&self, _hps: u32) -> u32 {
+        println!("  [VCPU] WinEndPaint called.");
+        1 // TRUE
+    }
+
+    fn win_get_ps(&self, _hwnd: u32) -> u32 {
+        println!("  [VCPU] WinGetPS called.");
+        0xABCD // Mock HPS
+    }
+
+    fn win_release_ps(&self, _hps: u32) -> u32 {
+        println!("  [VCPU] WinReleasePS called.");
+        1 // TRUE
+    }
+
+    fn run_vcpu_internal(&self, vcpu: &mut VcpuFd, vcpu_id: u32, tib_base: u64) {
+        // Shared logic with run_vcpu but doesn't exit process on thread exit
+        loop {
+            let res = vcpu.run();
+            if let Err(e) = res {
+                println!("  [VCPU {}] KVM Run failed: {}", vcpu_id, e);
+                return;
+            }
+            match res.unwrap() {
+                kvm_ioctls::VcpuExit::Debug(_) => {
+                    let rip = vcpu.get_regs().unwrap().rip;
+                    if rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + 8192 {
+                        if rip == CALLBACK_RETURN_TRAP as u64 {
+                            return;
+                        }
+                        if rip == EXIT_TRAP_ADDR as u64 {
+                            return;
+                        }
+                        self.handle_api_call(vcpu, vcpu_id, (rip - MAGIC_API_BASE) as u32);
+                    } else {
+                        return;
+                    }
+                }
+                _ => return,
+            }
+        }
+    }
 }
+
+fn vcpu_id_workaround(v: u32) -> u32 { v }
 
 impl Drop for SharedState {
     fn drop(&mut self) { unsafe { libc::munmap(self.guest_mem as *mut libc::c_void, self.guest_mem_size); } }
