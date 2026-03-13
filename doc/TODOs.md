@@ -123,9 +123,8 @@ Remaining items:
     - `SharedState` has 6 mutexes with no defined acquisition order. Improved by releasing `queue_mgr` lock before acquiring `mem_mgr` in `dos_read_queue`, but a formal lock ordering document is still needed.
     - **Remaining:** Define and document strict lock ordering. Consider `parking_lot` mutexes with deadlock detection in debug mode.
 
-- [ ] **Split `loader.rs` into modules**
-    - At ~2450 lines, `loader.rs` handles KVM setup, memory management, handle tables, semaphores, queues, PM window management, PMGPI drawing, filesystem APIs, and the VMEXIT loop. This makes review, testing, and modification difficult.
-    - **Suggested split:** `kvm.rs` (VMM core, VMEXIT loop), `guest_mem.rs` (bounds-checked memory wrapper), `doscalls.rs` (filesystem, memory, thread APIs), `pm_win.rs` (PMWIN handlers), `pm_gpi.rs` (PMGPI handlers), `ipc.rs` (semaphores, pipes, queues).
+- [x] **Split `loader.rs` into modules**
+    - Split into 10 files under `src/loader/`: `mod.rs` (470 lines, VMM core + VMEXIT loop), `constants.rs`, `mutex_ext.rs`, `managers.rs` (MemoryManager, HandleManager, HDirManager), `ipc.rs` (semaphores, queues), `pm_types.rs` (PM types + WindowManager), `guest_mem.rs` (bounds-checked memory), `doscalls.rs` (filesystem, memory, thread APIs), `pm_win.rs` (PMWIN handlers), `pm_gpi.rs` (PMGPI handlers).
 
 ## General Improvements
 - [x] Add unit tests for LX parser and GUI rendering.
