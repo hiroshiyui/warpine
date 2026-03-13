@@ -186,61 +186,24 @@ New module: `src/loader/process.rs`. Add `ProcessManager` to `SharedState` (or t
 
 New module: `src/loader/stubs.rs` for simple stub handlers. Add `SharedMemManager` and exception handler storage.
 
-- [ ] **Critical Init Stubs (Step 1, required for 4OS2 to start)**
-    - [ ] `DosError` (ordinal 212) — stub, return 0
-    - [ ] `DosSetMaxFH` (ordinal 291) — stub, return 0
-    - [ ] `DosBeep` (ordinal 286) — print BEL character `\x07` to stdout
-    - [ ] `DosSetExceptionHandler` (ordinal 354) — store guest exception handler address (minimal implementation)
-    - [ ] `DosUnsetExceptionHandler` (ordinal 355) — remove stored handler
-    - [ ] `DosSetSignalExceptionFocus` (ordinal 356) — stub, return 0
-    - [ ] `DosAcknowledgeSignalException` (ordinal 418) — stub, return 0
-    - [ ] `DosEnterMustComplete` (ordinal 380) / `DosExitMustComplete` (ordinal 381) — stub, return 0
-- [ ] **Shared Memory (Step 2, 4OS2 init `_exit()`s on failure)**
-    - [ ] `DosAllocSharedMem` (ordinal 300) — delegate to existing `MemoryManager::alloc()`; if named, register name→address in `SharedMemManager`
-    - [ ] `DosGetNamedSharedMem` (ordinal 301) — look up name in `SharedMemManager`, return address or `ERROR_FILE_NOT_FOUND`
-    - [ ] `DosGetSharedMem` (ordinal 302) — stub, return 0 (all memory already accessible in flat model)
-    - [ ] `DosSetMem` (ordinal 305) — stub, return 0 (all memory already committed)
-    - [ ] `DosQueryMem` (ordinal 306) — return basic info: `PAG_COMMIT | PAG_READ | PAG_WRITE`
-- [ ] **Codepage and Country Info (Step 3)**
-    - [ ] `DosQueryCp` (ordinal 291) — return codepage 437
-    - [ ] `DosSetProcessCp` (ordinal 289) — stub, return 0
-    - [ ] `DosQueryCtryInfo` (ordinal 397) — return US defaults (country=1, codepage=437, date format=0 MDY, currency='$', thousands=',', decimal='.')
-    - [ ] `DosMapCase` (ordinal 305... verify ordinal) — case mapping; ASCII toupper for now
-- [ ] **Module Loading Stubs (Step 4, 4OS2 tries to load PM DLLs)**
-    - [ ] `DosLoadModule` (ordinal 318) — return `ERROR_MOD_NOT_FOUND` (126); log requested module name
-    - [ ] `DosFreeModule` (ordinal 322) — stub, return 0
-    - [ ] `DosQueryModuleHandle` (ordinal 319) — return `ERROR_MOD_NOT_FOUND`
-    - [ ] `DosQueryProcAddr` (ordinal 321) — return `ERROR_PROC_NOT_FOUND` (127)
-    - [ ] `DosGetMessage` (ordinal 317) — stub, return error
-- [ ] **File Metadata APIs (Step 5)**
-    - [ ] `DosCopy` (ordinal 258) — implement with `std::fs::copy()` after path translation
-    - [ ] `DosForceDelete` (ordinal 259) — alias to existing `dos_delete()`
-    - [ ] `DosEditName` (ordinal 261) — wildcard filename transformation (e.g., `*.txt` + `*.bak`)
-    - [ ] `DosSetFileInfo` (ordinal 279) — stub, return 0
-    - [ ] `DosSetFileMode` (ordinal 267) — stub, return 0
-    - [ ] `DosSetPathInfo` (ordinal 276) — stub, return 0
-    - [ ] `DosQueryFHState` (ordinal 276) / `DosSetFHState` (ordinal 277) — stub, return 0
-    - [ ] `DosQueryFSInfo` (ordinal 278) — return disk info defaults (total/free space, volume label)
-    - [ ] `DosQueryFSAttach` (ordinal 277) — return drive type defaults
-    - [ ] `DosQueryVerify` / `DosSetVerify` — stub, return 0
-- [ ] **Device I/O Stubs (Step 6)**
-    - [ ] `DosDevIOCtl` (ordinal 284) — stub by category; return 0 for most, `ERROR_INVALID_FUNCTION` for serial
-    - [ ] `DosDevConfig` (ordinal 231) — return hardware defaults (0 printers, 0 serial, 1 coprocessor, 1 disk)
-- [ ] **Semaphore Extensions (Step 7)**
-    - [ ] `DosOpenEventSem` (ordinal 325) — name-based lookup in `SemaphoreManager`
-    - [ ] `DosOpenMutexSem` (ordinal 332) — name-based lookup in `SemaphoreManager`
-- [ ] **Named Pipe Stubs (Step 8, lower priority)**
-    - [ ] `DosCreateNPipe` / `DosConnectNPipe` / `DosSetNPHState` — stub, return error
-- [ ] **Session Management Stubs (Step 9, lower priority)**
-    - [ ] `DosStartSession` / `DosSetSession` / `DosStopSession` — stub, return error
-    - [ ] `DosQueryAppType` — if not done in Subsystem 2
+- [x] **Critical Init Stubs (Step 1)** — `DosError`, `DosSetMaxFH`, `DosBeep`, `DosSetExceptionHandler`/`DosUnsetExceptionHandler`, `DosSetSignalExceptionFocus`, `DosAcknowledgeSignalException`, `DosEnterMustComplete`/`DosExitMustComplete`
+- [x] **Shared Memory (Step 2)** — `DosAllocSharedMem`, `DosGetNamedSharedMem`, `DosGetSharedMem`, `DosSetMem`, `DosQueryMem` with `SharedMemManager`
+- [x] **Codepage and Country Info (Step 3)** — `DosQueryCp` (CP 437), `DosSetProcessCp`, `DosQueryCtryInfo` (US defaults), `DosMapCase`
+- [x] **Module Loading Stubs (Step 4)** — `DosLoadModule`, `DosFreeModule`, `DosQueryModuleHandle`, `DosQueryProcAddr`, `DosGetMessage`
+- [x] **File Metadata APIs (Step 5)** — `DosCopy`, `DosEditName` (with wildcard transform), `DosSetFileInfo`, `DosSetFileMode`, `DosSetPathInfo`, `DosQueryFHState`/`DosSetFHState`, `DosQueryFSInfo`, `DosQueryFSAttach`, `DosQueryVerify`/`DosSetVerify`
+- [x] **Device I/O Stubs (Step 6)** — `DosDevIOCtl`, `DosDevConfig`
+- [x] **Semaphore Extensions (Step 7)** — `DosOpenEventSem`, `DosOpenMutexSem` with name-based lookup
+- [x] **Named Pipe Stubs (Step 8)** — `DosCreateNPipe`, `DosConnectNPipe`, `DosSetNPHState` (return error)
+- [x] **Session Management Stubs (Step 9)** — `DosStartSession`, `DosSetSession`, `DosStopSession` (return error)
+- [x] **System Info** — `DosQuerySysInfo` (full QSV_* table), `DosGetDateTime` (real via libc), `DosSetDateTime` (stub)
 
 ### Verification
-- [ ] `cargo build` — compiles cleanly with all three subsystems
-- [ ] `cargo test` — all existing + new tests pass
+- [x] `cargo build` — compiles cleanly
+- [x] `cargo test` — all 34 tests pass
 - [ ] Unit tests for `VioManager` screen buffer operations (write, scroll, read back)
 - [ ] Unit tests for `KbdCharIn` scancode mapping (Linux keycode → OS/2 KBDKEYINFO)
-- [ ] Unit tests for `DosEditName` wildcard pattern replacement
+- [x] Unit tests for `DosEditName` wildcard pattern replacement (5 test cases)
+- [x] Unit tests for `ResourceManager` find operations
 - [ ] Unit tests for `DosQuerySysInfo` QSV_* index range handling
 - [ ] Unit tests for `SharedMemManager` name registration and lookup
 - [ ] Existing samples still work: `cargo run -- samples/hello/hello.exe`
