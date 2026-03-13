@@ -81,11 +81,14 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
     - [x] Window close → `WM_CLOSE`.
 - [x] **Test Application**
     - [x] `samples/pm_hello` — PM app using `WinMessageBox` for basic PM verification.
+- [x] **Text & Erasing**
+    - [x] `GpiCharStringAt` — text rendering with embedded 8x16 VGA bitmap font.
+    - [x] `GpiErase` — clear presentation space to white.
+- [x] **Timer Support**
+    - [x] `WinStartTimer` / `WinStopTimer` — background thread posts `WM_TIMER` messages.
 - [ ] **Remaining**
-    - [ ] `GpiCharStringAt` / `GpiErase` — text rendering and screen clearing.
     - [ ] Dialog boxes, menus, accelerator tables.
     - [ ] Clipboard support (`WinSetClipbrdData`, `WinQueryClipbrdData`).
-    - [ ] Timer support (`WinStartTimer`, `WinStopTimer`).
 
 ## Phase 4: Multimedia and 16-bit Support
 - [ ] **Audio/Video (MMPM2)**
