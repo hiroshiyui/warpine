@@ -84,6 +84,7 @@ impl GUIApp {
                     hwnd: target_hwnd, msg, mp1, mp2,
                     time: 0, x: 0, y: 0
                 });
+                mq.cond.notify_one();
             }
         }
     }

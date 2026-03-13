@@ -8,7 +8,7 @@ use std::path::Path;
 use std::ptr;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Condvar};
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicI32};
 use std::thread;
 use kvm_ioctls::{Kvm, VmFd, VcpuFd};
 use kvm_bindings::{kvm_userspace_memory_region, kvm_guest_debug, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_USE_SW_BP};
@@ -48,13 +48,14 @@ impl MemoryManager {
     }
 
     pub fn alloc(&mut self, size: u32) -> Option<u32> {
-        let size = (size + 4095) & !4095;
-        if self.next_free + size > self.limit {
+        let size = (size.checked_add(4095)?) & !4095;
+        let end = self.next_free.checked_add(size)?;
+        if end > self.limit {
             return None;
         }
         let addr = self.next_free;
         self.allocated.push(AllocBlock { addr, _size: size });
-        self.next_free += size;
+        self.next_free = end;
         Some(addr)
     }
 
@@ -234,6 +235,8 @@ pub struct OS2Queue {
     pub name: String,
     pub items: VecDeque<QueueEntry>,
     pub attr: u32,
+    pub cond: Arc<Condvar>,
+    pub cond_lock: Arc<Mutex<bool>>,
 }
 
 pub struct QueueManager {
@@ -247,7 +250,10 @@ impl QueueManager {
     }
     pub fn create(&mut self, name: String, attr: u32) -> u32 {
         let h = self.next_handle;
-        self.queues.insert(h, Arc::new(Mutex::new(OS2Queue { name, items: VecDeque::new(), attr })));
+        self.queues.insert(h, Arc::new(Mutex::new(OS2Queue {
+            name, items: VecDeque::new(), attr,
+            cond: Arc::new(Condvar::new()), cond_lock: Arc::new(Mutex::new(false)),
+        })));
         self.next_handle += 1;
         h
     }
@@ -447,6 +453,8 @@ pub struct SharedState {
     pub guest_mem_size: usize,
     pub next_tid: Mutex<u32>,
     pub threads: Mutex<HashMap<u32, thread::JoinHandle<()>>>,
+    pub exit_requested: AtomicBool,
+    pub exit_code: std::sync::atomic::AtomicI32,
 }
 
 unsafe impl Send for SharedState {}
@@ -492,6 +500,8 @@ impl Loader {
             guest_mem_size,
             next_tid: Mutex::new(1),
             threads: Mutex::new(HashMap::new()),
+            exit_requested: AtomicBool::new(false),
+            exit_code: AtomicI32::new(0),
         });
 
         Loader { _kvm: kvm, vm, shared }
@@ -692,7 +702,8 @@ impl Loader {
         let (entry_eip, entry_esp, tib_base) = self.setup_guest(lx_file);
         let vcpu = self.create_initial_vcpu(entry_eip, entry_esp);
         self.run_vcpu(vcpu, 0, tib_base);
-        std::process::exit(0);
+        let code = self.shared.exit_code.load(std::sync::atomic::Ordering::Relaxed);
+        std::process::exit(code);
     }
 
     pub fn setup_and_spawn_vcpu(self: Arc<Self>, lx_file: &LxFile) {
@@ -711,7 +722,8 @@ impl Loader {
         let (entry_eip, entry_esp, tib_base) = self.setup_guest(lx_file);
         let vcpu = self.create_initial_vcpu(entry_eip, entry_esp);
         self.run_vcpu(vcpu, 0, tib_base);
-        std::process::exit(0);
+        let code = self.shared.exit_code.load(std::sync::atomic::Ordering::Relaxed);
+        std::process::exit(code);
     }
 
     fn run_vcpu(&self, mut vcpu: VcpuFd, vcpu_id: u32, tib_base: u64) {
@@ -730,10 +742,16 @@ impl Loader {
         let mut callback_stack: Vec<CallbackFrame> = Vec::new();
 
         loop {
+            // Check if shutdown has been requested
+            if self.shared.exit_requested.load(std::sync::atomic::Ordering::Relaxed) {
+                return;
+            }
             let res = vcpu.run();
             if let Err(e) = res {
                 println!("  [VCPU {}] KVM Run failed: {}", vcpu_id, e);
-                std::process::exit(1);
+                self.shared.exit_code.store(1, std::sync::atomic::Ordering::Relaxed);
+                self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+                return;
             }
             let exit = res.unwrap();
             match exit {
@@ -742,8 +760,8 @@ impl Loader {
                     if rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + 4096 {
                         if rip == EXIT_TRAP_ADDR as u64 {
                             println!("  [VCPU {}] Guest requested thread exit.", vcpu_id);
-                            if vcpu_id == 0 { std::process::exit(0); }
-                            else { return; }
+                            self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+                            return;
                         }
                         if rip == CALLBACK_RET_TRAP as u64 {
                             // Return from a PM callback
@@ -799,19 +817,22 @@ impl Loader {
                     }
                     else {
                         println!("  [VCPU {}] Guest breakpoint at EIP=0x{:08X}.", vcpu_id, rip);
-                        if vcpu_id == 0 { std::process::exit(0); }
-                        else { return; }
+                        self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+                        return;
                     }
                 }
                 kvm_ioctls::VcpuExit::Hlt => {
                     println!("  [VCPU {}] Guest HLT.", vcpu_id);
-                    std::process::exit(0);
+                    self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return;
                 }
                 _ => {
                     let e = format!("{:?}", exit);
                     let rip = vcpu.get_regs().unwrap().rip;
                     println!("  [VCPU {}] Unhandled VMEXIT: {} at EIP=0x{:08X}", vcpu_id, e, rip);
-                    std::process::exit(1);
+                    self.shared.exit_code.store(1, std::sync::atomic::Ordering::Relaxed);
+                    self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return;
                 }
             }
         }
@@ -838,7 +859,14 @@ impl Loader {
                 282 => self.dos_write(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
                 229 => self.dos_sleep(read_stack(4)),
                 311 => self.dos_create_thread(vcpu_id, read_stack(4), read_stack(8), read_stack(12), read_stack(20)),
-                234 => { api::doscalls::dos_exit(read_stack(4), read_stack(8)); 0 },
+                234 => {
+                    // DosExit: signal clean shutdown instead of process::exit
+                    let _action = read_stack(4);
+                    let result = read_stack(8);
+                    self.shared.exit_code.store(result as i32, std::sync::atomic::Ordering::Relaxed);
+                    self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+                    return ApiResult::Normal(0); // won't be used; run_vcpu will exit
+                },
                 235 => self.dos_query_h_type(read_stack(4), read_stack(8), read_stack(12)),
                 239 => self.dos_create_pipe(read_stack(4), read_stack(8), read_stack(12)),
                 283 => self.dos_get_info_blocks(vcpu, read_stack(4), read_stack(8)),
@@ -969,6 +997,7 @@ impl Loader {
                     mq.messages.push_back(OS2Message {
                         hwnd: h_client, msg: WM_PAINT, mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
                     });
+                    mq.cond.notify_one();
                 }
 
                 ApiResult::Normal(h_frame)
@@ -982,15 +1011,21 @@ impl Loader {
                 let _last = read_stack(20);
 
                 // Find the message queue for this thread
-                let hmq = {
+                let (_hmq, mq_arc) = {
                     let wm = self.shared.window_mgr.lock().unwrap();
-                    wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0)
+                    let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
+                    let mq = wm.get_mq(hmq);
+                    (hmq, mq)
                 };
 
-                loop {
-                    {
-                        let wm = self.shared.window_mgr.lock().unwrap();
-                        if let Some(mq_arc) = wm.get_mq(hmq) {
+                if let Some(mq_arc) = mq_arc {
+                    // Get the condvar/lock for blocking wait
+                    let (cond, wait_lock) = {
+                        let mq = mq_arc.lock().unwrap();
+                        (Arc::clone(&mq.cond), Arc::clone(&mq.lock))
+                    };
+                    loop {
+                        {
                             let mut mq = mq_arc.lock().unwrap();
                             if let Some(msg) = mq.messages.pop_front() {
                                 if pqmsg_ptr != 0 {
@@ -1006,9 +1041,12 @@ impl Loader {
                                 return ApiResult::Normal(1);
                             }
                         }
+                        // Block on condvar instead of spinning
+                        let guard = wait_lock.lock().unwrap();
+                        let _ = cond.wait_timeout(guard, std::time::Duration::from_millis(100)).unwrap();
                     }
-                    thread::sleep(std::time::Duration::from_millis(10));
                 }
+                ApiResult::Normal(0)
             }
             912 => {
                 // WinDispatchMsg
@@ -1055,6 +1093,8 @@ impl Loader {
                         mq.messages.push_back(OS2Message {
                             hwnd, msg, mp1, mp2, time: 0, x: 0, y: 0,
                         });
+                        // Wake WinGetMsg if it's waiting on the condvar
+                        mq.cond.notify_one();
                     }
                 }
                 ApiResult::Normal(1)
@@ -1099,6 +1139,7 @@ impl Loader {
                             mq.messages.push_back(OS2Message {
                                 hwnd, msg: WM_QUIT, mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
                             });
+                            mq.cond.notify_one();
                         }
                     }
                 }
@@ -1199,6 +1240,7 @@ impl Loader {
                                     hwnd, msg: WM_TIMER, mp1: id_timer, mp2: 0,
                                     time: 0, x: 0, y: 0,
                                 });
+                                mq.cond.notify_one();
                             }
                         }
                     }
@@ -1307,6 +1349,7 @@ impl Loader {
                             hwnd: target, msg: WM_PAINT, mp1: 0, mp2: 0,
                             time: 0, x: 0, y: 0,
                         });
+                        mq.cond.notify_one();
                     }
                 }
                 ApiResult::Normal(1)
@@ -2103,13 +2146,20 @@ impl Loader {
         } else { 6 }
     }
 
-    fn dos_wait_event_sem(&self, hev: u32, _msec: u32) -> u32 {
+    fn dos_wait_event_sem(&self, hev: u32, msec: u32) -> u32 {
         let sem_arc = self.shared.sem_mgr.lock().unwrap().get_event(hev);
         if let Some(sem_arc) = sem_arc {
             let (lock, cvar) = &*sem_arc;
             let mut sem = lock.lock().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(
+                if msec == u32::MAX { u64::MAX / 2 } else { msec as u64 }
+            );
             while !sem.posted {
-                sem = cvar.wait(sem).unwrap();
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() { return 640; } // ERROR_TIMEOUT
+                let (guard, result) = cvar.wait_timeout(sem, remaining).unwrap();
+                sem = guard;
+                if result.timed_out() && !sem.posted { return 640; }
             }
             0
         } else { 6 }
@@ -2127,11 +2177,14 @@ impl Loader {
         else { 6 }
     }
 
-    fn dos_request_mutex_sem(&self, tid: u32, hmtx: u32, _msec: u32) -> u32 {
+    fn dos_request_mutex_sem(&self, tid: u32, hmtx: u32, msec: u32) -> u32 {
         let sem_arc = self.shared.sem_mgr.lock().unwrap().get_mutex(hmtx);
         if let Some(sem_arc) = sem_arc {
             let (lock, cvar) = &*sem_arc;
             let mut sem = lock.lock().unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(
+                if msec == u32::MAX { u64::MAX / 2 } else { msec as u64 }
+            );
             loop {
                 match sem.owner_tid {
                     None => {
@@ -2144,7 +2197,11 @@ impl Loader {
                         return 0;
                     }
                     _ => {
-                        sem = cvar.wait(sem).unwrap();
+                        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                        if remaining.is_zero() { return 640; } // ERROR_TIMEOUT
+                        let (guard, result) = cvar.wait_timeout(sem, remaining).unwrap();
+                        sem = guard;
+                        if result.timed_out() { continue; } // re-check ownership after timeout
                     }
                 }
             }
@@ -2189,9 +2246,12 @@ impl Loader {
         else { 6 }
     }
 
-    fn dos_wait_mux_wait_sem(&self, tid: u32, hmux: u32, _msec: u32, pul_user_ptr: u32) -> u32 {
+    fn dos_wait_mux_wait_sem(&self, tid: u32, hmux: u32, msec: u32, pul_user_ptr: u32) -> u32 {
         let mux = self.shared.sem_mgr.lock().unwrap().get_mux(hmux);
         if let Some(mux) = mux {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(
+                if msec == u32::MAX { u64::MAX / 2 } else { msec as u64 }
+            );
             loop {
                 let mut ready_idx = None;
                 let mut all_ready = true;
@@ -2218,7 +2278,9 @@ impl Loader {
                     }
                     return 0;
                 }
-                thread::sleep(std::time::Duration::from_millis(10));
+                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+                if remaining.is_zero() { return 640; } // ERROR_TIMEOUT
+                thread::sleep(remaining.min(std::time::Duration::from_millis(10)));
             }
         }
         6
@@ -2253,38 +2315,51 @@ impl Loader {
                 data.copy_from_slice(src);
             }
             q.items.push_back(QueueEntry { data, event, priority });
+            q.cond.notify_one();
             return 0;
         }
         337 // ERROR_QUE_INVALID_HANDLE
     }
 
     fn dos_read_queue(&self, hq: u32, preq_ptr: u32, pcb_ptr: u32, ppbuf_ptr: u32, _elem: u32, wait: u32, pprio_ptr: u32, _hev: u32) -> u32 {
+        // Get the queue Arc and its condvar outside the loop
+        let (q_arc, cond, cond_lock) = {
+            let queue_mgr = self.shared.queue_mgr.lock().unwrap();
+            if let Some(q_arc) = queue_mgr.get(hq) {
+                let q = q_arc.lock().unwrap();
+                let cond = Arc::clone(&q.cond);
+                let cond_lock = Arc::clone(&q.cond_lock);
+                drop(q);
+                (q_arc, cond, cond_lock)
+            } else { return 337; }
+        };
+
         loop {
             {
-                let queue_mgr = self.shared.queue_mgr.lock().unwrap();
-                if let Some(q_arc) = queue_mgr.get(hq) {
-                    let mut q = q_arc.lock().unwrap();
-                    if let Some(entry) = q.items.pop_front() {
-                        let len = entry.data.len() as u32;
-                        let mut mem_mgr = self.shared.mem_mgr.lock().unwrap();
-                        if let Some(guest_addr) = mem_mgr.alloc(len) {
-                            self.guest_write_bytes(guest_addr, &entry.data);
-                            self.guest_write::<u32>(ppbuf_ptr, guest_addr);
-                            self.guest_write::<u32>(pcb_ptr, len);
-                            if preq_ptr != 0 {
-                                self.guest_write::<u32>(preq_ptr + 4, entry.event);
-                            }
-                            if pprio_ptr != 0 {
-                                self.guest_write::<u8>(pprio_ptr, entry.priority as u8);
-                            }
-                            return 0;
+                let mut q = q_arc.lock().unwrap();
+                if let Some(entry) = q.items.pop_front() {
+                    let len = entry.data.len() as u32;
+                    drop(q); // Release queue lock before acquiring mem_mgr
+                    let mut mem_mgr = self.shared.mem_mgr.lock().unwrap();
+                    if let Some(guest_addr) = mem_mgr.alloc(len) {
+                        self.guest_write_bytes(guest_addr, &entry.data);
+                        self.guest_write::<u32>(ppbuf_ptr, guest_addr);
+                        self.guest_write::<u32>(pcb_ptr, len);
+                        if preq_ptr != 0 {
+                            self.guest_write::<u32>(preq_ptr + 4, entry.event);
                         }
-                        return 8;
+                        if pprio_ptr != 0 {
+                            self.guest_write::<u8>(pprio_ptr, entry.priority as u8);
+                        }
+                        return 0;
                     }
-                } else { return 337; }
+                    return 8;
+                }
             }
             if wait == 0 { return 342; } // ERROR_QUE_EMPTY
-            thread::sleep(std::time::Duration::from_millis(10));
+            // Block on condvar instead of spinning
+            let guard = cond_lock.lock().unwrap();
+            let _ = cond.wait_timeout(guard, std::time::Duration::from_millis(100)).unwrap();
         }
     }
 
@@ -2335,6 +2410,7 @@ impl Loader {
                 mq.messages.push_back(OS2Message {
                     hwnd, msg: WM_QUIT, mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
                 });
+                mq.cond.notify_one();
             }
         }
     }
