@@ -24,6 +24,17 @@ pub const TIB_BASE: u32 = 0x70000;
 pub const PIB_BASE: u32 = 0x71000;
 pub const ENV_ADDR: u32 = 0x60000;
 
+// SWP flags for WinSetWindowPos
+pub const SWP_SIZE: u32 = 0x0001;
+pub const SWP_MOVE: u32 = 0x0002;
+pub const SWP_ZORDER: u32 = 0x0004;
+pub const SWP_SHOW: u32 = 0x0008;
+pub const SWP_HIDE: u32 = 0x0010;
+pub const SWP_ACTIVATE: u32 = 0x0020;
+pub const SWP_MINIMIZE: u32 = 0x0100;
+pub const SWP_MAXIMIZE: u32 = 0x0200;
+pub const SWP_RESTORE: u32 = 0x0400;
+
 // Mock handle constants
 pub const MOCK_HAB: u32 = 0x1234;
 pub const MOCK_HPOINTER: u32 = 0x5000;

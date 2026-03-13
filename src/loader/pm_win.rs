@@ -267,18 +267,32 @@ impl super::Loader {
                 ApiResult::Normal(1) // MBID_OK
             }
             883 => {
-                // WinShowWindow
+                // WinShowWindow(HWND hwnd, BOOL fShow)
+                let hwnd = read_stack(4);
+                let show = read_stack(8) != 0;
+                debug!("  [VCPU {}] WinShowWindow hwnd={} show={}", vcpu_id, hwnd, show);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                if let Some(win) = wm.get_window_mut(hwnd) {
+                    win.visible = show;
+                }
+                if let Some(ref sender) = wm.gui_tx {
+                    let _ = sender.send(GUIMessage::ShowWindow { handle: hwnd, show });
+                }
                 ApiResult::Normal(1)
             }
             840 => {
-                // WinQueryWindowRect
-                let _hwnd = read_stack(4);
+                // WinQueryWindowRect(HWND hwnd, PRECTL prcl)
+                let hwnd = read_stack(4);
                 let prcl_ptr = read_stack(8);
                 if prcl_ptr != 0 {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    let (cx, cy) = wm.get_window(hwnd)
+                        .map(|w| (w.cx, w.cy))
+                        .unwrap_or((640, 480));
                     self.guest_write::<i32>(prcl_ptr, 0);       // xLeft
                     self.guest_write::<i32>(prcl_ptr + 4, 0);   // yBottom
-                    self.guest_write::<i32>(prcl_ptr + 8, 640); // xRight
-                    self.guest_write::<i32>(prcl_ptr + 12, 480); // yTop
+                    self.guest_write::<i32>(prcl_ptr + 8, cx);  // xRight
+                    self.guest_write::<i32>(prcl_ptr + 12, cy); // yTop
                 }
                 ApiResult::Normal(1) // TRUE
             }
@@ -612,8 +626,55 @@ impl super::Loader {
             }
             875 => {
                 // WinSetWindowPos(HWND hwnd, HWND hwndInsertBehind, LONG x, LONG y, LONG cx, LONG cy, ULONG fl)
-                // Stub for now - would need GUI message for resize/move
-                debug!("  [VCPU {}] WinSetWindowPos (stub)", vcpu_id);
+                let hwnd = read_stack(4);
+                let _hwnd_behind = read_stack(8);
+                let x = read_stack(12) as i32;
+                let y = read_stack(16) as i32;
+                let cx = read_stack(20) as i32;
+                let cy = read_stack(24) as i32;
+                let fl = read_stack(28);
+                debug!("  [VCPU {}] WinSetWindowPos hwnd={} x={} y={} cx={} cy={} fl=0x{:04X}", vcpu_id, hwnd, x, y, cx, cy, fl);
+
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+
+                // Update the OS2Window position/size state
+                if let Some(win) = wm.get_window_mut(hwnd) {
+                    if fl & SWP_MOVE != 0 {
+                        win.x = x;
+                        win.y = y;
+                    }
+                    if fl & SWP_SIZE != 0 {
+                        win.cx = cx;
+                        win.cy = cy;
+                    }
+                    if fl & SWP_SHOW != 0 {
+                        win.visible = true;
+                    }
+                    if fl & SWP_HIDE != 0 {
+                        win.visible = false;
+                    }
+                }
+
+                // Send GUI messages for the actual window operations
+                if let Some(ref sender) = wm.gui_tx {
+                    if fl & SWP_SIZE != 0 {
+                        let _ = sender.send(GUIMessage::ResizeWindow {
+                            handle: hwnd, width: cx as u32, height: cy as u32,
+                        });
+                    }
+                    if fl & SWP_MOVE != 0 {
+                        let _ = sender.send(GUIMessage::MoveWindow {
+                            handle: hwnd, x, y,
+                        });
+                    }
+                    if fl & SWP_SHOW != 0 {
+                        let _ = sender.send(GUIMessage::ShowWindow { handle: hwnd, show: true });
+                    }
+                    if fl & SWP_HIDE != 0 {
+                        let _ = sender.send(GUIMessage::ShowWindow { handle: hwnd, show: false });
+                    }
+                }
+
                 ApiResult::Normal(1)
             }
             877 => {

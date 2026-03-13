@@ -106,7 +106,7 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
     - [x] `WinQuerySysPointer`, `WinSetPointer`, `WinAlarm` — stubs.
 - [ ] **Remaining**
     - [ ] Resource loading from LX executables (dialog templates, menu templates, accelerator tables, string tables).
-    - [ ] Full `WinSetWindowPos` with GUI resize/move support.
+    - [x] Full `WinSetWindowPos` with GUI resize/move support.
 
 ## Phase 4: Multimedia and 16-bit Support
 - [ ] **Audio/Video (MMPM2)**

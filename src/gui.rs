@@ -12,6 +12,9 @@ use crate::loader::{SharedState, OS2Message, MutexExt, WM_CLOSE, WM_SIZE, WM_PAI
 
 pub enum GUIMessage {
     CreateWindow { class: String, title: String, handle: u32 },
+    ResizeWindow { handle: u32, width: u32, height: u32 },
+    MoveWindow { handle: u32, x: i32, y: i32 },
+    ShowWindow { handle: u32, show: bool },
     DrawBox { handle: u32, x1: i32, y1: i32, x2: i32, y2: i32, color: u32, fill: bool },
     DrawLine { handle: u32, x1: i32, y1: i32, x2: i32, y2: i32, color: u32 },
     DrawText { handle: u32, x: i32, y: i32, text: String, color: u32 },
@@ -215,6 +218,28 @@ impl GUIApp {
 
                     debug!("  [GUI] Created window for PM handle {}", handle);
                 }
+                GUIMessage::ResizeWindow { handle, width, height } => {
+                    if let Some(state) = self.states.get_mut(&handle) {
+                        let _ = state.window.request_inner_size(
+                            winit::dpi::LogicalSize::new(width as f64, height as f64)
+                        );
+                        debug!("  [GUI] Resized window {} to {}x{}", handle, width, height);
+                    }
+                }
+                GUIMessage::MoveWindow { handle, x, y } => {
+                    if let Some(state) = self.states.get_mut(&handle) {
+                        state.window.set_outer_position(
+                            winit::dpi::LogicalPosition::new(x as f64, y as f64)
+                        );
+                        debug!("  [GUI] Moved window {} to ({}, {})", handle, x, y);
+                    }
+                }
+                GUIMessage::ShowWindow { handle, show } => {
+                    if let Some(state) = self.states.get(&handle) {
+                        state.window.set_visible(show);
+                        debug!("  [GUI] Window {} visible={}", handle, show);
+                    }
+                }
                 GUIMessage::DrawBox { handle, x1, y1, x2, y2, color, fill } => {
                     self.draw_rect(handle, x1, y1, x2, y2, color, fill);
                 }
@@ -283,6 +308,7 @@ pub fn glyph_index(ch: char) -> usize {
 /// Render text into a raw pixel buffer (no winit dependency).
 /// `width`/`height` are buffer dimensions; coordinates are OS/2 bottom-left origin.
 pub fn render_text_to_buffer(buf: &mut [u32], width: u32, height: u32, x: i32, y: i32, text: &str, color: u32) {
+    if width == 0 || height == 0 { return; }
     let char_w: i32 = 8;
     let char_h: i32 = 16;
     for (i, ch) in text.chars().enumerate() {
@@ -307,10 +333,11 @@ pub fn render_text_to_buffer(buf: &mut [u32], width: u32, height: u32, x: i32, y
 /// Coordinates are OS/2 bottom-left origin.
 pub fn render_rect_to_buffer(buf: &mut [u32], width: u32, height: u32,
                               x1: i32, y1: i32, x2: i32, y2: i32, color: u32, fill: bool) {
-    let left = x1.min(x2).max(0) as u32;
-    let right = x1.max(x2).min(width as i32 - 1) as u32;
-    let bottom = y1.min(y2).max(0) as u32;
-    let top = y1.max(y2).min(height as i32 - 1) as u32;
+    if width == 0 || height == 0 { return; }
+    let left = x1.min(x2).max(0).min(width as i32 - 1) as u32;
+    let right = x1.max(x2).max(0).min(width as i32 - 1) as u32;
+    let bottom = y1.min(y2).max(0).min(height as i32 - 1) as u32;
+    let top = y1.max(y2).max(0).min(height as i32 - 1) as u32;
     let top_y = (height - 1) - bottom;
     let bottom_y = (height - 1) - top;
 
@@ -341,6 +368,7 @@ pub fn render_rect_to_buffer(buf: &mut [u32], width: u32, height: u32,
 /// Coordinates are OS/2 bottom-left origin.
 pub fn render_line_to_buffer(buf: &mut [u32], width: u32, height: u32,
                               x1: i32, y1: i32, x2: i32, y2: i32, color: u32) {
+    if width == 0 || height == 0 { return; }
     let flip = |y: i32| -> i32 { (height as i32 - 1) - y };
     let mut x = x1;
     let mut y = y1;

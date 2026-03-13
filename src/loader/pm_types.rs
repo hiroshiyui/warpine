@@ -40,6 +40,11 @@ pub struct OS2Window {
     pub window_ushort: HashMap<i32, u16>,
     pub id: u32,
     pub children: Vec<u32>,
+    pub x: i32,
+    pub y: i32,
+    pub cx: i32,
+    pub cy: i32,
+    pub visible: bool,
 }
 
 pub struct PresentationSpace {
@@ -99,6 +104,8 @@ impl WindowManager {
             window_ushort: HashMap::new(),
             id: 0,
             children: Vec::new(),
+            x: 0, y: 0, cx: 0, cy: 0,
+            visible: false,
         });
         // Register as child of parent
         if parent != 0 {
