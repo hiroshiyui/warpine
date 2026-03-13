@@ -291,6 +291,9 @@ impl WindowManager {
     }
 }
 
+use crate::gui::GUIMessage;
+use std::sync::mpsc;
+
 pub struct SharedState {
     pub mem_mgr: Mutex<MemoryManager>,
     pub handle_mgr: Mutex<HandleManager>,
@@ -298,6 +301,7 @@ pub struct SharedState {
     pub hdir_mgr: Mutex<HDirManager>,
     pub queue_mgr: Mutex<QueueManager>,
     pub window_mgr: Mutex<WindowManager>,
+    pub gui_sender: Mutex<Option<mpsc::Sender<GUIMessage>>>,
     pub guest_mem: *mut u8,
     pub guest_mem_size: usize,
     pub next_tid: Mutex<u32>,
@@ -309,8 +313,8 @@ unsafe impl Sync for SharedState {}
 
 pub struct Loader {
     _kvm: Kvm,
-    vm: Arc<VmFd>,
-    shared: Arc<SharedState>,
+    pub vm: Arc<VmFd>,
+    pub shared: Arc<SharedState>,
 }
 
 impl Loader {
@@ -339,6 +343,7 @@ impl Loader {
             hdir_mgr: Mutex::new(hdir_mgr),
             queue_mgr: Mutex::new(queue_mgr),
             window_mgr: Mutex::new(window_mgr),
+            gui_sender: Mutex::new(None),
             guest_mem,
             guest_mem_size,
             next_tid: Mutex::new(1),
@@ -415,7 +420,9 @@ impl Loader {
         }
     }
 
-    pub fn run(self, lx_file: &LxFile) -> ! {
+    pub fn run(self, lx_file: &LxFile, gui_sender: mpsc::Sender<GUIMessage>) -> ! {
+        *self.shared.gui_sender.lock().unwrap() = Some(gui_sender);
+        
         let entry_eip = lx_file.object_table[lx_file.header.eip_object as usize - 1].base_address as u64 + lx_file.header.eip as u64;
         let entry_esp = lx_file.object_table[lx_file.header.esp_object as usize - 1].base_address as u64 + lx_file.header.esp as u64;
         
@@ -583,10 +590,15 @@ impl Loader {
                 741 => self.win_end_paint(read_stack(4)),
                 757 => self.win_get_ps(read_stack(4)),
                 848 => self.win_release_ps(read_stack(4)),
+                912 => self.win_start_timer(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                911 => self.win_stop_timer(read_stack(4), read_stack(8), read_stack(12)),
                 _ => { println!("Warning: Unknown PMWIN Ordinal {} on VCPU {}", ordinal - 2048, vcpu_id); 0 }
             }
         } else if ordinal < 8192 {
             match ordinal - 4096 {
+                517 => self.gpi_set_color(read_stack(4), read_stack(8)),
+                404 => self.gpi_move(read_stack(4), read_stack(8)),
+                356 => self.gpi_box(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
                 _ => { println!("Warning: Unknown PMGPI Ordinal {} on VCPU {}", ordinal - 4096, vcpu_id); 0 }
             }
         } else {
@@ -1268,13 +1280,18 @@ impl Loader {
         1 // TRUE
     }
 
-    fn win_create_std_window(&self, parent: u32, style: u32, _pfc_flags_ptr: u32, psz_class_name_ptr: u32, _psz_title_ptr: u32, _client_style: u32, _hmod: u32, _id: u32, phwnd_client_ptr: u32) -> u32 {
+    fn win_create_std_window(&self, parent: u32, style: u32, _pfc_flags_ptr: u32, psz_class_name_ptr: u32, psz_title_ptr: u32, _client_style: u32, _hmod: u32, _id: u32, phwnd_client_ptr: u32) -> u32 {
         let class_name = self.read_guest_string(psz_class_name_ptr);
-        println!("  [VCPU] WinCreateStdWindow: class='{}', parent=0x{:08X}, style=0x{:08X}", class_name, parent, style);
+        let title = if psz_title_ptr != 0 { self.read_guest_string(psz_title_ptr) } else { "Warpine Window".to_string() };
+        println!("  [VCPU] WinCreateStdWindow: class='{}', title='{}', parent=0x{:08X}, style=0x{:08X}", class_name, title, parent, style);
         let mut window_mgr = self.shared.window_mgr.lock().unwrap();
         let h_frame = window_mgr.create_window(class_name.clone(), parent);
-        let h_client = window_mgr.create_window(class_name, h_frame);
+        let h_client = window_mgr.create_window(class_name.clone(), h_frame);
         
+        if let Some(sender) = self.shared.gui_sender.lock().unwrap().as_ref() {
+            sender.send(GUIMessage::CreateWindow { class: class_name, title, handle: h_frame }).unwrap();
+        }
+
         if phwnd_client_ptr != 0 {
             unsafe { ptr::write_unaligned(self.shared.guest_mem.add(phwnd_client_ptr as usize) as *mut u32, h_client); }
         }
@@ -1283,20 +1300,33 @@ impl Loader {
 
     fn win_get_msg(&self, _hab: u32, pqmsg_ptr: u32, _hwnd: u32, _first: u32, _last: u32) -> u32 {
         static mut CALL_COUNT: u32 = 0;
-        println!("  [VCPU] WinGetMsg called.");
         if pqmsg_ptr != 0 {
             unsafe {
                 let ptr = self.shared.guest_mem.add(pqmsg_ptr as usize);
                 ptr::write_unaligned(ptr.add(0) as *mut u32, 0x1001); // Mock window handle
                 
-                if CALL_COUNT == 0 {
-                    ptr::write_unaligned(ptr.add(4) as *mut u32, 0x0001); // WM_CREATE (OS/2 PM)
-                    CALL_COUNT += 1;
-                    return 1; // TRUE
-                } else {
-                    ptr::write_unaligned(ptr.add(4) as *mut u32, 0x002A); // WM_QUIT
-                    return 0; // FALSE
+                let msg = match CALL_COUNT {
+                    0 => 0x0001, // WM_CREATE
+                    1 => 0x0043, // WM_SIZE (fake size)
+                    2 => 0x0023, // WM_PAINT
+                    3 => 0x0041, // WM_TIMER
+                    4 => {
+                        thread::sleep(std::time::Duration::from_millis(2000));
+                        0x002A // WM_QUIT
+                    },
+                    _ => 0x002A,
+                };
+                
+                if msg == 0x0043 { // WM_SIZE
+                    ptr::write_unaligned(ptr.add(8) as *mut u32, 0); // mp1
+                    ptr::write_unaligned(ptr.add(12) as *mut u32, (480 << 16) | 640); // mp2: height | width
                 }
+
+                ptr::write_unaligned(ptr.add(4) as *mut u32, msg);
+                CALL_COUNT += 1;
+                
+                if msg == 0x002A { return 0; }
+                else { return 1; }
             }
         }
         0
@@ -1400,6 +1430,41 @@ impl Loader {
     fn win_release_ps(&self, _hps: u32) -> u32 {
         println!("  [VCPU] WinReleasePS called.");
         1 // TRUE
+    }
+
+    fn win_start_timer(&self, _hab: u32, _hwnd: u32, id: u32, timeout: u32) -> u32 {
+        println!("  [VCPU] WinStartTimer called: id={}, timeout={}ms", id, timeout);
+        1 // TRUE
+    }
+
+    fn win_stop_timer(&self, _hab: u32, _hwnd: u32, id: u32) -> u32 {
+        println!("  [VCPU] WinStopTimer called: id={}", id);
+        1 // TRUE
+    }
+
+    // --- PMGPI Handlers ---
+
+    fn gpi_set_color(&self, _hps: u32, color: u32) -> u32 {
+        println!("  [VCPU] GpiSetColor called: color={}", color);
+        1 // TRUE
+    }
+
+    fn gpi_move(&self, _hps: u32, pptl_ptr: u32) -> u32 {
+        let (x, y) = unsafe {
+            let ptr = self.shared.guest_mem.add(pptl_ptr as usize);
+            (ptr::read_unaligned(ptr as *const i32), ptr::read_unaligned(ptr.add(4) as *const i32))
+        };
+        println!("  [VCPU] GpiMove called: ({}, {})", x, y);
+        1 // TRUE
+    }
+
+    fn gpi_box(&self, _hps: u32, control: u32, pptl_ptr: u32, h_round: u32, v_round: u32) -> u32 {
+        let (x, y) = unsafe {
+            let ptr = self.shared.guest_mem.add(pptl_ptr as usize);
+            (ptr::read_unaligned(ptr as *const i32), ptr::read_unaligned(ptr.add(4) as *const i32))
+        };
+        println!("  [VCPU] GpiBox called: control={}, corner=({}, {}), round=({}, {})", control, x, y, h_round, v_round);
+        1 // GPI_OK
     }
 
     fn run_vcpu_internal(&self, vcpu: &mut VcpuFd, vcpu_id: u32, tib_base: u64) {

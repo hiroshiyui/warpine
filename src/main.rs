@@ -2,8 +2,11 @@
 pub mod lx;
 pub mod loader;
 pub mod api;
+pub mod gui;
 
 use std::env;
+use std::sync::{Arc, mpsc};
+use std::thread;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -101,10 +104,21 @@ fn main() {
     println!("\nInitializing KVM loader...");
 
     let mut loader = loader::Loader::new();
+    let shared = Arc::clone(&loader.shared);
+    
     if let Err(e) = loader.load(&lx_file, file_path) {
         eprintln!("Failed to load executable: {}", e);
         std::process::exit(1);
     }
 
-    loader.run(&lx_file);
+    let (gui_tx, gui_rx) = mpsc::channel();
+    
+    // Launch VCPU thread
+    thread::spawn(move || {
+        loader.run(&lx_file, gui_tx);
+    });
+
+    // Run GUI event loop on main thread
+    let gui = gui::GUI::new(shared);
+    gui.run(gui_rx);
 }
