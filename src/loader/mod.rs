@@ -571,6 +571,40 @@ impl Loader {
                                 if ret_addr != 0 {
                                     continue;
                                 }
+                                // Fallback: no verified return address found.
+                                // Skip the LSS instruction as a no-op (in flat mode there's
+                                // no stack switching) and let the thunk code continue.
+                                let mut new_regs = vcpu.get_regs().unwrap();
+                                // Compute LSS instruction length to skip past it
+                                let lss_len = if byte0 == 0x66 {
+                                    // 66 0F B2 ModR/M [SIB] [disp] — parse ModR/M for length
+                                    let modrm = self.guest_read::<u8>(fault_eip as u32 + 3).unwrap_or(0);
+                                    let mod_bits = modrm >> 6;
+                                    let rm = modrm & 7;
+                                    3 + 1 + match (mod_bits, rm) {  // prefix(1)+0F(1)+B2(1) + ModR/M(1)
+                                        (0, 4) => 1, (0, 5) => 4, (0, _) => 0, // SIB or disp32
+                                        (1, 4) => 2, (1, _) => 1,              // SIB+disp8 or disp8
+                                        (2, 4) => 5, (2, _) => 4,              // SIB+disp32 or disp32
+                                        _ => 0,
+                                    }
+                                } else {
+                                    let modrm = self.guest_read::<u8>(fault_eip as u32 + 2).unwrap_or(0);
+                                    let mod_bits = modrm >> 6;
+                                    let rm = modrm & 7;
+                                    2 + 1 + match (mod_bits, rm) {  // 0F(1)+B2(1) + ModR/M(1)
+                                        (0, 4) => 1, (0, 5) => 4, (0, _) => 0,
+                                        (1, 4) => 2, (1, _) => 1,
+                                        (2, 4) => 5, (2, _) => 4,
+                                        _ => 0,
+                                    }
+                                };
+                                new_regs.rsp = (regs.rsp as u32 + 20) as u64; // pop exception frame
+                                new_regs.rip = fault_eip as u64 + lss_len as u64;
+                                new_regs.rflags = fault_eflags as u64;
+                                vcpu.set_regs(&new_regs).unwrap();
+                                debug!("  Thunk skip (no-op LSS): EIP 0x{:08X} -> 0x{:08X} ESP=0x{:08X}",
+                                       fault_eip, fault_eip as u64 + lss_len as u64, new_regs.rsp);
+                                continue;
                             }
                         }
 
