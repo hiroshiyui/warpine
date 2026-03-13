@@ -8,6 +8,7 @@ use std::path::Path;
 use std::ptr;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Condvar};
+use std::sync::atomic::AtomicBool;
 use std::thread;
 use kvm_ioctls::{Kvm, VmFd, VcpuFd};
 use kvm_bindings::{kvm_userspace_memory_region, kvm_guest_debug, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_USE_SW_BP};
@@ -18,7 +19,7 @@ const CALLBACK_RET_TRAP: u32 = 0x010003FE;
 const DYNAMIC_ALLOC_BASE: u32 = 0x02000000; // 32MB
 
 const PMWIN_BASE: u32 = 2048;
-const PMGPI_BASE: u32 = 3072;
+const PMGPI_BASE: u32 = 4096;
 
 const WM_CLOSE: u32 = 0x0029;
 const WM_QUIT: u32 = 0x002A;
@@ -304,6 +305,7 @@ pub struct WindowManager {
     pub frame_to_client: HashMap<u32, u32>,
     pub tid_to_hmq: HashMap<u32, u32>,
     pub gui_tx: Option<crate::gui::GUISender>,
+    pub timers: HashMap<(u32, u32), Arc<AtomicBool>>,
     next_hwnd: u32,
     next_hps: u32,
     next_hmq: u32,
@@ -319,6 +321,7 @@ impl WindowManager {
             frame_to_client: HashMap::new(),
             tid_to_hmq: HashMap::new(),
             gui_tx: None,
+            timers: HashMap::new(),
             next_hwnd: 0x1000,
             next_hps: 0x2000,
             next_hmq: 0x3000,
@@ -520,7 +523,7 @@ impl Loader {
     }
 
     fn setup_stubs(&self) {
-        for i in 0..4096 {
+        for i in 0..8192 {
             unsafe {
                 let ptr = self.shared.guest_mem.add(MAGIC_API_BASE as usize + i);
                 *ptr = 0xCC; // INT 3
@@ -622,7 +625,7 @@ impl Loader {
             match exit {
                 kvm_ioctls::VcpuExit::Debug(_) => {
                     let rip = vcpu.get_regs().unwrap().rip;
-                    if rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + 4096 {
+                    if rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + 8192 {
                         if rip == EXIT_TRAP_ADDR as u64 {
                             println!("  [VCPU {}] Guest requested thread exit.", vcpu_id);
                             if vcpu_id == 0 { std::process::exit(0); }
@@ -766,9 +769,9 @@ impl Loader {
         } else if ordinal < PMGPI_BASE {
             // PMWIN
             self.handle_pmwin_call(vcpu, vcpu_id, ordinal - PMWIN_BASE)
-        } else if ordinal < 4096 {
+        } else if ordinal < 8192 {
             // PMGPI
-            self.handle_pmgpi_call(vcpu_id, ordinal - PMGPI_BASE)
+            self.handle_pmgpi_call(vcpu, vcpu_id, ordinal - PMGPI_BASE)
         } else {
             println!("Warning: Unknown API Base Ordinal {} on VCPU {}", ordinal, vcpu_id);
             ApiResult::Normal(0)
@@ -1047,6 +1050,58 @@ impl Loader {
                 // WinDestroyWindow
                 ApiResult::Normal(1)
             }
+            1559 => {
+                // WinStartTimer(HAB hab, HWND hwnd, ULONG idTimer, ULONG dtTimeout)
+                let _hab = read_stack(4);
+                let hwnd = read_stack(8);
+                let id_timer = read_stack(12);
+                let dt_timeout = read_stack(16);
+                println!("  [VCPU {}] WinStartTimer: hwnd={}, id={}, timeout={}ms", vcpu_id, hwnd, id_timer, dt_timeout);
+
+                let running = Arc::new(AtomicBool::new(true));
+                let running_clone = running.clone();
+                let shared = Arc::clone(&self.shared);
+
+                {
+                    let mut wm = self.shared.window_mgr.lock().unwrap();
+                    // Stop any existing timer with the same id
+                    if let Some(old) = wm.timers.remove(&(hwnd, id_timer)) {
+                        old.store(false, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    wm.timers.insert((hwnd, id_timer), running);
+                }
+
+                let timeout = std::time::Duration::from_millis(dt_timeout as u64);
+                thread::spawn(move || {
+                    while running_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                        thread::sleep(timeout);
+                        if !running_clone.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                        let wm = shared.window_mgr.lock().unwrap();
+                        let hmq = wm.find_hmq_for_hwnd(hwnd);
+                        if let Some(hmq) = hmq {
+                            if let Some(mq_arc) = wm.get_mq(hmq) {
+                                let mut mq = mq_arc.lock().unwrap();
+                                mq.messages.push_back(OS2Message {
+                                    hwnd, msg: 0x0023, mp1: id_timer, mp2: 0, // WM_TIMER = 0x0023
+                                    time: 0, x: 0, y: 0,
+                                });
+                            }
+                        }
+                    }
+                });
+                ApiResult::Normal(id_timer) // Return the timer ID
+            }
+            1560 => {
+                // WinStopTimer(HAB hab, HWND hwnd, ULONG idTimer)
+                let _hab = read_stack(4);
+                let hwnd = read_stack(8);
+                let id_timer = read_stack(12);
+                let mut wm = self.shared.window_mgr.lock().unwrap();
+                if let Some(running) = wm.timers.remove(&(hwnd, id_timer)) {
+                    running.store(false, std::sync::atomic::Ordering::Relaxed);
+                }
+                ApiResult::Normal(1)
+            }
             _ => {
                 println!("Warning: Unknown PMWIN Ordinal {} on VCPU {}", ordinal, vcpu_id);
                 ApiResult::Normal(0)
@@ -1056,32 +1111,178 @@ impl Loader {
 
     // --- PMGPI Handlers ---
 
-    fn handle_pmgpi_call(&self, vcpu_id: u32, ordinal: u32) -> ApiResult {
-        let _vcpu_id = vcpu_id;
+    fn handle_pmgpi_call(&self, vcpu: &mut VcpuFd, vcpu_id: u32, ordinal: u32) -> ApiResult {
+        let regs = vcpu.get_regs().unwrap();
+        let esp = regs.rsp;
+        let read_stack = |off: u64| unsafe { ptr::read_unaligned(self.shared.guest_mem.add((esp + off) as usize) as *const u32) };
+
         match ordinal {
             369 => {
-                // GpiCreatePS
-                ApiResult::Normal(self.shared.window_mgr.lock().unwrap().create_ps(0))
+                // GpiCreatePS(HAB hab, HDC hdc, PSIZEL pszl, ULONG flOptions)
+                let _hab = read_stack(4);
+                let _hdc = read_stack(8);
+                let _pszl = read_stack(12);
+                let _opts = read_stack(16);
+                let hps = self.shared.window_mgr.lock().unwrap().create_ps(0);
+                println!("  [VCPU {}] GpiCreatePS -> HPS {}", vcpu_id, hps);
+                ApiResult::Normal(hps)
             }
             379 => {
-                // GpiDestroyPS
+                // GpiDestroyPS(HPS hps)
+                let hps = read_stack(4);
+                self.shared.window_mgr.lock().unwrap().ps_map.remove(&hps);
                 ApiResult::Normal(1)
             }
             517 => {
-                // GpiSetColor - need to read stack but we don't have vcpu here
-                // This is handled via the ordinal dispatch in handle_api_call_ex
+                // GpiSetColor(HPS hps, LONG lColor)
+                let hps = read_stack(4);
+                let color = read_stack(8);
+                let mapped = self.map_color(color);
+                let mut wm = self.shared.window_mgr.lock().unwrap();
+                if let Some(ps) = wm.ps_map.get_mut(&hps) {
+                    ps.color = mapped;
+                }
                 ApiResult::Normal(1)
             }
             404 => {
-                // GpiMove
+                // GpiMove(HPS hps, PPOINTL pptl)
+                let hps = read_stack(4);
+                let pptl = read_stack(8);
+                let (x, y) = unsafe {
+                    let ptr = self.shared.guest_mem.add(pptl as usize);
+                    (
+                        ptr::read_unaligned(ptr as *const i32),
+                        ptr::read_unaligned(ptr.add(4) as *const i32),
+                    )
+                };
+                let mut wm = self.shared.window_mgr.lock().unwrap();
+                if let Some(ps) = wm.ps_map.get_mut(&hps) {
+                    ps.current_pos = (x, y);
+                }
                 ApiResult::Normal(1)
             }
             356 => {
-                // GpiBox
-                ApiResult::Normal(1)
+                // GpiBox(HPS hps, LONG lControl, PPOINTL pptl, LONG lHRound, LONG lVRound)
+                let hps = read_stack(4);
+                let control = read_stack(8);
+                let pptl = read_stack(12);
+                let _h_round = read_stack(16);
+                let _v_round = read_stack(20);
+                let (x2, y2) = unsafe {
+                    let ptr = self.shared.guest_mem.add(pptl as usize);
+                    (
+                        ptr::read_unaligned(ptr as *const i32),
+                        ptr::read_unaligned(ptr.add(4) as *const i32),
+                    )
+                };
+                let wm = self.shared.window_mgr.lock().unwrap();
+                if let Some(ps) = wm.ps_map.get(&hps) {
+                    let (x1, y1) = ps.current_pos;
+                    let color = ps.color;
+                    let fill = control >= 2; // DRO_FILL or DRO_OUTLINEFILL
+                    let hwnd = ps.hwnd;
+                    let frame_hwnd = wm.frame_to_client.iter()
+                        .find(|&(_, &client)| client == hwnd)
+                        .map(|(&frame, _)| frame)
+                        .unwrap_or(hwnd);
+                    if let Some(ref sender) = wm.gui_tx {
+                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                            handle: frame_hwnd, x1, y1, x2, y2, color, fill
+                        });
+                    }
+                }
+                ApiResult::Normal(1) // GPI_OK
             }
             398 => {
-                // GpiLine
+                // GpiLine(HPS hps, PPOINTL pptl)
+                let hps = read_stack(4);
+                let pptl = read_stack(8);
+                let (x2, y2) = unsafe {
+                    let ptr = self.shared.guest_mem.add(pptl as usize);
+                    (
+                        ptr::read_unaligned(ptr as *const i32),
+                        ptr::read_unaligned(ptr.add(4) as *const i32),
+                    )
+                };
+                let mut wm = self.shared.window_mgr.lock().unwrap();
+                if let Some(ps) = wm.ps_map.get(&hps) {
+                    let (x1, y1) = ps.current_pos;
+                    let color = ps.color;
+                    let hwnd = ps.hwnd;
+                    let frame_hwnd = wm.frame_to_client.iter()
+                        .find(|&(_, &client)| client == hwnd)
+                        .map(|(&frame, _)| frame)
+                        .unwrap_or(hwnd);
+                    if let Some(ref sender) = wm.gui_tx {
+                        let _ = sender.send(crate::gui::GUIMessage::DrawLine {
+                            handle: frame_hwnd, x1, y1, x2, y2, color
+                        });
+                    }
+                }
+                // Update current position
+                if let Some(ps) = wm.ps_map.get_mut(&hps) {
+                    ps.current_pos = (x2, y2);
+                }
+                ApiResult::Normal(1) // GPI_OK
+            }
+            563 => {
+                // GpiCharStringAt(HPS hps, PPOINTL pptl, LONG lCount, PCH pchString)
+                let hps = read_stack(4);
+                let pptl = read_stack(8);
+                let count = read_stack(12) as usize;
+                let pch = read_stack(16);
+                let (x, y) = unsafe {
+                    let ptr = self.shared.guest_mem.add(pptl as usize);
+                    (
+                        ptr::read_unaligned(ptr as *const i32),
+                        ptr::read_unaligned(ptr.add(4) as *const i32),
+                    )
+                };
+                let text: Vec<u8> = (0..count).map(|i| unsafe {
+                    *self.shared.guest_mem.add(pch as usize + i)
+                }).collect();
+                let text_str = String::from_utf8_lossy(&text).to_string();
+                let color = {
+                    let wm = self.shared.window_mgr.lock().unwrap();
+                    wm.ps_map.get(&hps).map(|ps| ps.color).unwrap_or(0)
+                };
+                let hwnd = {
+                    let wm = self.shared.window_mgr.lock().unwrap();
+                    let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
+                    wm.frame_to_client.iter()
+                        .find(|&(_, &client)| client == ps_hwnd)
+                        .map(|(&frame, _)| frame)
+                        .unwrap_or(ps_hwnd)
+                };
+                {
+                    let wm = self.shared.window_mgr.lock().unwrap();
+                    if let Some(ref sender) = wm.gui_tx {
+                        let _ = sender.send(crate::gui::GUIMessage::DrawText {
+                            handle: hwnd, x, y, text: text_str, color,
+                        });
+                    }
+                }
+                // Update current position (advance x by character width * count)
+                {
+                    let mut wm = self.shared.window_mgr.lock().unwrap();
+                    if let Some(ps) = wm.ps_map.get_mut(&hps) {
+                        ps.current_pos = (x + (count as i32 * 8), y);
+                    }
+                }
+                ApiResult::Normal(1) // GPI_OK
+            }
+            608 => {
+                // GpiErase(HPS hps)
+                let hps = read_stack(4);
+                let wm = self.shared.window_mgr.lock().unwrap();
+                let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
+                let frame_hwnd = wm.frame_to_client.iter()
+                    .find(|&(_, &client)| client == ps_hwnd)
+                    .map(|(&frame, _)| frame)
+                    .unwrap_or(ps_hwnd);
+                if let Some(ref sender) = wm.gui_tx {
+                    let _ = sender.send(crate::gui::GUIMessage::ClearBuffer { handle: frame_hwnd });
+                }
                 ApiResult::Normal(1)
             }
             _ => {
