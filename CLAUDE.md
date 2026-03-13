@@ -73,7 +73,7 @@ Each OS/2 thread maps to a native Rust thread with its own KVM vCPU. `SharedStat
 
 ### After Every Change
 
-1. Update all relevant documentation
+1. Update all relevant documents
 2. Add essential but missing tests to improve test coverage and ensure code quality
 3. check if there is any missing or incomplete test
 4. Remove the finishied tasks from TODOs
