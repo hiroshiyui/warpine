@@ -70,6 +70,7 @@ pub struct SharedState {
     pub handle_mgr: Mutex<HandleManager>,
     pub resource_mgr: Mutex<ResourceManager>,
     pub shmem_mgr: Mutex<SharedMemManager>,
+    pub process_mgr: Mutex<ProcessManager>,
     pub sem_mgr: Mutex<SemaphoreManager>,
     pub hdir_mgr: Mutex<HDirManager>,
     pub queue_mgr: Mutex<QueueManager>,
@@ -111,6 +112,7 @@ impl Loader {
         let handle_mgr = HandleManager::new();
         let resource_mgr = ResourceManager::new();
         let shmem_mgr = SharedMemManager::new();
+        let process_mgr = ProcessManager::new();
         let sem_mgr = SemaphoreManager::new();
         let hdir_mgr = HDirManager::new();
         let queue_mgr = QueueManager::new();
@@ -121,6 +123,7 @@ impl Loader {
             handle_mgr: Mutex::new(handle_mgr),
             resource_mgr: Mutex::new(resource_mgr),
             shmem_mgr: Mutex::new(shmem_mgr),
+            process_mgr: Mutex::new(process_mgr),
             sem_mgr: Mutex::new(sem_mgr),
             hdir_mgr: Mutex::new(hdir_mgr),
             queue_mgr: Mutex::new(queue_mgr),
@@ -430,7 +433,12 @@ impl Loader {
                 264 => self.dos_find_first(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28)),
                 265 => self.dos_find_next(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
                 263 => self.dos_find_close(read_stack(4)),
-                275 => self.dos_query_path_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                223 => self.dos_query_path_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                // Directory management
+                255 => self.dos_set_current_dir(read_stack(4)),
+                274 => self.dos_query_current_dir(read_stack(4), read_stack(8), read_stack(12)),
+                275 => self.dos_query_current_disk(read_stack(4), read_stack(8)),
+                220 => self.dos_set_default_disk(read_stack(4)),
                 278 => self.dos_query_file_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
                 299 => self.dos_alloc_mem(read_stack(4), read_stack(8)),
                 304 => self.dos_free_mem(read_stack(4)),

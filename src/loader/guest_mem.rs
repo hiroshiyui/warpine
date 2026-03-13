@@ -59,7 +59,10 @@ impl super::Loader {
 
     /// Translate an OS/2 path to a sandboxed host path.
     /// Prevents path traversal attacks by canonicalizing and checking containment.
+    /// Relative paths are resolved against the OS/2 current directory from ProcessManager.
     pub fn translate_path(&self, os2_path: &str) -> Result<std::path::PathBuf, u32> {
+        use super::mutex_ext::MutexExt;
+
         let unix_path = os2_path.replace('\\', "/");
         // Strip drive letter (e.g., "C:" or "D:")
         let stripped = if unix_path.len() >= 2 && unix_path.as_bytes()[1] == b':' {
@@ -67,7 +70,22 @@ impl super::Loader {
         } else {
             &unix_path
         };
-        let relative = stripped.trim_start_matches('/');
+
+        // If the path is relative (doesn't start with /), prepend the OS/2 current directory
+        let resolved_relative = if !stripped.starts_with('/') && !stripped.is_empty() {
+            let proc_mgr = self.shared.process_mgr.lock_or_recover();
+            let cur_dir = proc_mgr.current_dir.replace('\\', "/");
+            let cur_dir = cur_dir.trim_start_matches('/');
+            if cur_dir.is_empty() {
+                stripped.to_string()
+            } else {
+                format!("{}/{}", cur_dir, stripped)
+            }
+        } else {
+            stripped.trim_start_matches('/').to_string()
+        };
+
+        let relative = resolved_relative.trim_start_matches('/');
         let sandbox_root = std::env::current_dir().map_err(|_| 3u32)?; // ERROR_PATH_NOT_FOUND
         let candidate = sandbox_root.join(relative);
         // Canonicalize to resolve .., symlinks; for new files canonicalize parent

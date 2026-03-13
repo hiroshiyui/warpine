@@ -352,6 +352,104 @@ impl super::Loader {
         self.guest_write::<u32>(offset + 20, attr);
     }
 
+    // ── Directory Management APIs ──
+
+    /// DosSetCurrentDir (ordinal 255): change the current directory.
+    pub fn dos_set_current_dir(&self, psz_dir_name: u32) -> u32 {
+        let name = self.read_guest_string(psz_dir_name);
+        debug!("  DosSetCurrentDir('{}')", name);
+
+        // Resolve the path to validate it exists and is a directory
+        let resolved = match self.translate_path(&name) {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
+        if !resolved.is_dir() {
+            return ERROR_PATH_NOT_FOUND;
+        }
+
+        // Store the OS/2-style path (with backslashes)
+        let os2_path = name.replace('/', "\\");
+        let mut proc_mgr = self.shared.process_mgr.lock_or_recover();
+
+        // Handle absolute vs relative paths
+        if os2_path.len() >= 2 && os2_path.as_bytes()[1] == b':' {
+            // Absolute path with drive letter — store everything after drive letter
+            proc_mgr.current_dir = os2_path[2..].to_string();
+        } else if os2_path.starts_with('\\') {
+            // Absolute path without drive letter
+            proc_mgr.current_dir = os2_path;
+        } else {
+            // Relative path — append to current directory
+            let mut new_dir = proc_mgr.current_dir.clone();
+            if !new_dir.ends_with('\\') {
+                new_dir.push('\\');
+            }
+            new_dir.push_str(&os2_path);
+            proc_mgr.current_dir = new_dir;
+        }
+
+        // Normalize: ensure starts with backslash
+        if !proc_mgr.current_dir.starts_with('\\') {
+            proc_mgr.current_dir.insert(0, '\\');
+        }
+        // Remove trailing backslash (unless root)
+        if proc_mgr.current_dir.len() > 1 && proc_mgr.current_dir.ends_with('\\') {
+            proc_mgr.current_dir.pop();
+        }
+
+        NO_ERROR
+    }
+
+    /// DosQueryCurrentDir (ordinal 274): get current directory.
+    /// Returns the current directory without drive letter or leading backslash.
+    pub fn dos_query_current_dir(&self, disk_num: u32, p_buf: u32, pcb_buf: u32) -> u32 {
+        debug!("  DosQueryCurrentDir(disk={})", disk_num);
+        let proc_mgr = self.shared.process_mgr.lock_or_recover();
+        let dir = proc_mgr.current_dir_no_leading_slash();
+        let dir_bytes = dir.as_bytes();
+
+        if pcb_buf != 0 {
+            let buf_len = self.guest_read::<u32>(pcb_buf).unwrap_or(0) as usize;
+            if buf_len < dir_bytes.len() + 1 {
+                // Write needed size and return buffer overflow
+                self.guest_write::<u32>(pcb_buf, (dir_bytes.len() + 1) as u32);
+                return ERROR_BUFFER_OVERFLOW;
+            }
+            self.guest_write::<u32>(pcb_buf, (dir_bytes.len() + 1) as u32);
+        }
+
+        if p_buf != 0 {
+            self.guest_write_bytes(p_buf, dir_bytes);
+            self.guest_write::<u8>(p_buf + dir_bytes.len() as u32, 0); // null terminate
+        }
+        NO_ERROR
+    }
+
+    /// DosQueryCurrentDisk (ordinal 275): get current default drive.
+    pub fn dos_query_current_disk(&self, p_disk_num: u32, p_logical: u32) -> u32 {
+        debug!("  DosQueryCurrentDisk");
+        let proc_mgr = self.shared.process_mgr.lock_or_recover();
+        if p_disk_num != 0 {
+            self.guest_write::<u32>(p_disk_num, proc_mgr.current_disk as u32);
+        }
+        if p_logical != 0 {
+            // Logical drive map: bit 2 = C: present
+            self.guest_write::<u32>(p_logical, 0x04); // only C: available
+        }
+        NO_ERROR
+    }
+
+    /// DosSetDefaultDisk (ordinal 220): set current default drive.
+    pub fn dos_set_default_disk(&self, disk_num: u32) -> u32 {
+        debug!("  DosSetDefaultDisk({})", disk_num);
+        if disk_num < 1 || disk_num > 26 {
+            return ERROR_INVALID_FUNCTION;
+        }
+        self.shared.process_mgr.lock_or_recover().current_disk = disk_num as u8;
+        NO_ERROR
+    }
+
     pub fn dos_alloc_mem(&self, ppb: u32, cb: u32) -> u32 {
         match self.shared.mem_mgr.lock_or_recover().alloc(cb) {
             Some(addr) => {

@@ -134,6 +134,26 @@ impl HDirManager {
     }
 }
 
+pub struct ProcessManager {
+    pub current_disk: u8,     // 1=A, 2=B, 3=C (default)
+    pub current_dir: String,  // OS/2-style current directory (without drive letter), e.g. "\"
+}
+
+impl ProcessManager {
+    pub fn new() -> Self {
+        ProcessManager {
+            current_disk: 3, // C:
+            current_dir: String::from("\\"),
+        }
+    }
+
+    /// Get the OS/2 current directory path without the leading backslash.
+    /// OS/2 DosQueryCurrentDir returns the path without the drive letter or leading backslash.
+    pub fn current_dir_no_leading_slash(&self) -> &str {
+        self.current_dir.trim_start_matches('\\')
+    }
+}
+
 pub struct SharedMemManager {
     named_blocks: HashMap<String, u32>,
 }
@@ -238,5 +258,28 @@ mod tests {
         assert_eq!(mgr.find(4, 100), Some((0x20000, 512)));
         assert_eq!(mgr.find(6, 2), None);
         assert_eq!(mgr.find(99, 1), None);
+    }
+
+    #[test]
+    fn test_process_manager_defaults() {
+        let mgr = ProcessManager::new();
+        assert_eq!(mgr.current_disk, 3); // C:
+        assert_eq!(mgr.current_dir, "\\");
+        assert_eq!(mgr.current_dir_no_leading_slash(), "");
+    }
+
+    #[test]
+    fn test_process_manager_current_dir() {
+        let mut mgr = ProcessManager::new();
+        mgr.current_dir = String::from("\\TOOLS\\BIN");
+        assert_eq!(mgr.current_dir_no_leading_slash(), "TOOLS\\BIN");
+    }
+
+    #[test]
+    fn test_shared_mem_manager() {
+        let mut mgr = SharedMemManager::new();
+        mgr.register("\\SHAREMEM\\TEST".to_string(), 0x5000);
+        assert_eq!(mgr.find_by_name("\\SHAREMEM\\TEST"), Some(0x5000));
+        assert_eq!(mgr.find_by_name("\\SHAREMEM\\OTHER"), None);
     }
 }
