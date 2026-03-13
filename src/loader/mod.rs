@@ -10,6 +10,9 @@ mod doscalls;
 mod pm_win;
 mod pm_gpi;
 mod stubs;
+pub mod console;
+mod kbdcalls;
+mod viocalls;
 
 pub use constants::*;
 pub use mutex_ext::MutexExt;
@@ -75,6 +78,7 @@ pub struct SharedState {
     pub hdir_mgr: Mutex<HDirManager>,
     pub queue_mgr: Mutex<QueueManager>,
     pub window_mgr: Mutex<WindowManager>,
+    pub console_mgr: Mutex<console::VioManager>,
     pub guest_mem: *mut u8,
     pub guest_mem_size: usize,
     pub next_tid: Mutex<u32>,
@@ -117,6 +121,7 @@ impl Loader {
         let hdir_mgr = HDirManager::new();
         let queue_mgr = QueueManager::new();
         let window_mgr = WindowManager::new();
+        let console_mgr = console::VioManager::new();
 
         let shared = Arc::new(SharedState {
             mem_mgr: Mutex::new(mem_mgr),
@@ -128,6 +133,7 @@ impl Loader {
             hdir_mgr: Mutex::new(hdir_mgr),
             queue_mgr: Mutex::new(queue_mgr),
             window_mgr: Mutex::new(window_mgr),
+            console_mgr: Mutex::new(console_mgr),
             guest_mem,
             guest_mem_size,
             next_tid: Mutex::new(1),
@@ -527,14 +533,10 @@ impl Loader {
             self.handle_pmgpi_call(vcpu, vcpu_id, ordinal - PMGPI_BASE)
         } else if ordinal < VIOCALLS_BASE {
             // KBDCALLS
-            let kbd_ordinal = ordinal - KBDCALLS_BASE;
-            warn!("Warning: Unknown KBDCALLS Ordinal {} on VCPU {}", kbd_ordinal, vcpu_id);
-            ApiResult::Normal(0)
+            self.handle_kbdcalls(vcpu, vcpu_id, ordinal - KBDCALLS_BASE)
         } else if ordinal < STUB_AREA_SIZE {
             // VIOCALLS
-            let vio_ordinal = ordinal - VIOCALLS_BASE;
-            warn!("Warning: Unknown VIOCALLS Ordinal {} on VCPU {}", vio_ordinal, vcpu_id);
-            ApiResult::Normal(0)
+            self.handle_viocalls(vcpu, vcpu_id, ordinal - VIOCALLS_BASE)
         } else {
             warn!("Warning: Unknown API Base Ordinal {} on VCPU {}", ordinal, vcpu_id);
             ApiResult::Normal(0)
