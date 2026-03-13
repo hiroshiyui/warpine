@@ -423,7 +423,6 @@ struct CallbackFrame {
     saved_rip: u64,
     saved_rsp: u64,
     _saved_rax: u64,
-    api_args_size: u32,
 }
 
 enum ApiResult {
@@ -434,7 +433,6 @@ enum ApiResult {
         msg: u32,
         mp1: u32,
         mp2: u32,
-        api_args_size: u32,
     },
 }
 
@@ -675,8 +673,8 @@ impl Loader {
                                 regs.rip = frame.saved_rip;
                                 regs.rsp = frame.saved_rsp;
                                 regs.rax = result as u64;
-                                // Pop the API args that were on the stack before the callback
-                                regs.rsp += frame.api_args_size as u64;
+                                // _System calling convention is caller-cleanup, so the guest
+                                // caller will do `add esp, N` itself — we must NOT pop args here.
                                 vcpu.set_regs(&regs).unwrap();
                                 continue;
                             } else {
@@ -695,15 +693,15 @@ impl Loader {
                                 regs.rsp += 4;
                                 vcpu.set_regs(&regs).unwrap();
                             }
-                            ApiResult::Callback { wnd_proc, hwnd, msg, mp1, mp2, api_args_size } => {
+                            ApiResult::Callback { wnd_proc, hwnd, msg, mp1, mp2 } => {
                                 let mut regs = vcpu.get_regs().unwrap();
                                 let return_addr = unsafe { ptr::read_unaligned(self.shared.guest_mem.add(regs.rsp as usize) as *const u32) };
-                                // Save current state
+                                // Save current state; saved_rsp is past the return address.
+                                // The caller will clean up its own args (_System is caller-cleanup).
                                 callback_stack.push(CallbackFrame {
                                     saved_rip: return_addr as u64,
-                                    saved_rsp: regs.rsp + 4, // past the return address
+                                    saved_rsp: regs.rsp + 4,
                                     _saved_rax: regs.rax,
-                                    api_args_size,
                                 });
                                 // Set up guest stack for callback: push ret addr + 4 args = 20 bytes
                                 regs.rsp -= 20;
@@ -966,7 +964,6 @@ impl Loader {
                         msg,
                         mp1,
                         mp2,
-                        api_args_size: 8, // hab + pqmsg_ptr
                     };
                 }
                 ApiResult::Normal(0)
@@ -1008,7 +1005,6 @@ impl Loader {
                         msg,
                         mp1,
                         mp2,
-                        api_args_size: 16, // hwnd + msg + mp1 + mp2
                     };
                 }
                 ApiResult::Normal(0)
