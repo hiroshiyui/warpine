@@ -9,6 +9,7 @@ mod guest_mem;
 mod doscalls;
 mod pm_win;
 mod pm_gpi;
+mod stubs;
 
 pub use constants::*;
 pub use mutex_ext::MutexExt;
@@ -52,7 +53,7 @@ pub(crate) enum ApiResult {
 ///
 /// ```text
 /// Level 1: next_tid, threads          (lightweight, rarely contended)
-/// Level 2: mem_mgr, handle_mgr, hdir_mgr, resource_mgr  (independent resource managers)
+/// Level 2: mem_mgr, handle_mgr, hdir_mgr, resource_mgr, shmem_mgr  (independent resource managers)
 /// Level 3: queue_mgr                  (may lock inner Arc<Mutex<OS2Queue>>)
 /// Level 4: sem_mgr                    (may lock inner semaphore mutexes)
 /// Level 5: window_mgr                 (may lock inner Arc<Mutex<PM_MsgQueue>>)
@@ -68,6 +69,7 @@ pub struct SharedState {
     pub mem_mgr: Mutex<MemoryManager>,
     pub handle_mgr: Mutex<HandleManager>,
     pub resource_mgr: Mutex<ResourceManager>,
+    pub shmem_mgr: Mutex<SharedMemManager>,
     pub sem_mgr: Mutex<SemaphoreManager>,
     pub hdir_mgr: Mutex<HDirManager>,
     pub queue_mgr: Mutex<QueueManager>,
@@ -108,6 +110,7 @@ impl Loader {
         let mem_mgr = MemoryManager::new(DYNAMIC_ALLOC_BASE, guest_mem_size as u32);
         let handle_mgr = HandleManager::new();
         let resource_mgr = ResourceManager::new();
+        let shmem_mgr = SharedMemManager::new();
         let sem_mgr = SemaphoreManager::new();
         let hdir_mgr = HDirManager::new();
         let queue_mgr = QueueManager::new();
@@ -117,6 +120,7 @@ impl Loader {
             mem_mgr: Mutex::new(mem_mgr),
             handle_mgr: Mutex::new(handle_mgr),
             resource_mgr: Mutex::new(resource_mgr),
+            shmem_mgr: Mutex::new(shmem_mgr),
             sem_mgr: Mutex::new(sem_mgr),
             hdir_mgr: Mutex::new(hdir_mgr),
             queue_mgr: Mutex::new(queue_mgr),
@@ -441,12 +445,56 @@ impl Loader {
                 337 => self.dos_create_mux_wait_sem(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
                 339 => self.dos_close_mux_wait_sem(read_stack(4)),
                 340 => self.dos_wait_mux_wait_sem(vcpu_id, read_stack(4), read_stack(8), read_stack(12)),
-                342 => 0,
-                348 => 0,
+                342 => 0, // DosQueryAppType (stub)
                 349 => self.dos_wait_thread(vcpu_id, read_stack(4)),
                 352 => self.dos_get_resource(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
                 353 => self.dos_free_resource(read_stack(4)),
                 572 => self.dos_query_resource_size(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                // Step 1: Critical init stubs
+                212 => self.dos_error(read_stack(4)),
+                209 => self.dos_set_max_fh(read_stack(4)),
+                286 => self.dos_beep(read_stack(4), read_stack(8)),
+                354 => self.dos_set_exception_handler(read_stack(4)),
+                355 => self.dos_unset_exception_handler(read_stack(4)),
+                356 => self.dos_set_signal_exception_focus(read_stack(4)),
+                418 => self.dos_acknowledge_signal_exception(read_stack(4)),
+                380 => self.dos_enter_must_complete(read_stack(4)),
+                381 => self.dos_exit_must_complete(read_stack(4)),
+                // Step 2: Shared memory
+                300 => self.dos_alloc_shared_mem(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                301 => self.dos_get_named_shared_mem(read_stack(4), read_stack(8), read_stack(12)),
+                302 => self.dos_get_shared_mem(read_stack(4), read_stack(8)),
+                305 => self.dos_set_mem(read_stack(4), read_stack(8), read_stack(12)),
+                306 => self.dos_query_mem(read_stack(4), read_stack(8), read_stack(12)),
+                // Step 3: Codepage and country info
+                291 => self.dos_query_cp(read_stack(4), read_stack(8), read_stack(12)),
+                289 => self.dos_set_process_cp(read_stack(4)),
+                397 => self.dos_query_ctry_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                // Step 4: Module loading stubs
+                318 => self.dos_load_module(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                322 => self.dos_free_module(read_stack(4)),
+                319 => self.dos_query_module_handle(read_stack(4), read_stack(8)),
+                321 => self.dos_query_proc_addr(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                317 => self.dos_get_message(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28)),
+                // Step 5: File metadata APIs
+                258 => self.dos_copy(read_stack(4), read_stack(8), read_stack(12)),
+                261 => self.dos_edit_name(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
+                279 => self.dos_set_file_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                267 => self.dos_set_file_mode(read_stack(4), read_stack(8)),
+                219 => self.dos_set_path_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
+                276 => self.dos_query_fh_state(read_stack(4), read_stack(8)),
+                277 => self.dos_set_fh_state(read_stack(4), read_stack(8)),
+                297 => self.dos_query_fs_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                298 => self.dos_query_fs_attach(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
+                // Step 6: Device I/O stubs
+                284 => self.dos_dev_ioctl(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28), read_stack(32), read_stack(36)),
+                231 => self.dos_dev_config(read_stack(4), read_stack(8)),  // NOTE: may conflict with DosSetDateTime
+                // Step 7: Semaphore extensions
+                325 => self.dos_open_event_sem(read_stack(4), read_stack(8)),
+                332 => self.dos_open_mutex_sem(read_stack(4), read_stack(8)),
+                // Step 8: Named pipe stubs
+                230 => self.dos_get_date_time(read_stack(4)),
+                348 => self.dos_query_sys_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
                 _ => { warn!("Warning: Unknown API Ordinal {} on VCPU {}", ordinal, vcpu_id); 0 }
             };
             ApiResult::Normal(res)
