@@ -104,8 +104,14 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
     - [x] `WinSetWindowPos` — stub.
     - [x] `WinQuerySysValue` — screen metrics (640x480 defaults).
     - [x] `WinQuerySysPointer`, `WinSetPointer`, `WinAlarm` — stubs.
-- [ ] **Remaining**
-    - [ ] Resource loading from LX executables (dialog templates, menu templates, accelerator tables, string tables).
+- [x] **Resource Loading**
+    - [x] LX resource table parsing (`LxResourceEntry`, `ResourceManager`).
+    - [x] `DosGetResource`, `DosFreeResource`, `DosQueryResourceSize`.
+    - [x] `WinLoadString` — string table bundle parsing.
+    - [x] `WinLoadMenu` — creates menu window from resource (template parsing deferred).
+    - [x] `WinLoadAccelTable` / `WinSetAccelTable` / `WinTranslateAccel` — accelerator table loading and key translation.
+    - [x] `WinLoadDlg` / `WinDlgBox` — improved stubs with resource ID logging (dialog template parsing deferred).
+- [x] **Additional**
     - [x] Full `WinSetWindowPos` with GUI resize/move support.
 
 ## Phase 4: Multimedia and 16-bit Support
