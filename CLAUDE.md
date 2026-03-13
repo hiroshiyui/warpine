@@ -57,3 +57,37 @@ Each OS/2 thread maps to a native Rust thread with its own KVM vCPU. `SharedStat
 - **Use named constants** — no magic numbers for GDT entries, segment selectors, or API ordinals.
 - **Stubbing pattern** — unimplemented APIs should use clear stubs to allow incremental progress.
 - OS/2 paths (`C:\path`) are translated to Unix paths by replacing backslashes. OS/2 error codes (u32) are returned in RAX.
+- Ensure this document is updated to reflect any changes in the workflow and maintain consistency.
+
+### While Planning, Refactoring & Doing Code Review
+
+- When a feature requirement is unclear or ambiguous, seek clarification on definition and scope rather than guessing.
+
+### While Coding
+
+### After Every Change
+
+1. Update all relevant documentation
+2. Add essential but missing tests to improve test coverage and ensure code quality
+3. check if there is any missing or incomplete test
+4. Remove the finishied tasks from TODOs
+5. When a bug is discovered, **always** check for similar issues across the project after applying the fix
+
+### Release Engineering
+
+When creating a new release:
+
+1. Update `CHANGELOG.md` with the new version entry (follow [Keep a Changelog](https://keepachangelog.com/) format)
+2. Update `version` in `Cargo.toml` to match the new tag version
+3. Commit, push, and create the git tag (e.g. `v1.1.21`)
+4. Push the tag (`git push --tags`)
+5. Create the GitHub release via `gh release create`
+
+### Code Organization
+
+- Commit by topic — group related files per commit
+
+### Security Rules
+
+- *Always* take card about hypervisor escape prevention
+- Memory safety is top priority
