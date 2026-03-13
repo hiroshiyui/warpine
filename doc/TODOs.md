@@ -175,7 +175,7 @@ New module: `src/loader/stubs.rs` for simple stub handlers. Add `SharedMemManage
 - [x] Unit tests for `DosQuerySysInfo` QSV_* constant validation
 - [x] Unit tests for `SharedMemManager` name registration and lookup
 - [x] Existing samples verified: hello, alloc_test, file_test, pipe_test, thread_test, find_test, mutex_test
-- [ ] Stretch goal: 4OS2 boots to a prompt and accepts basic commands
+- [x] 4OS2 boots to a prompt and accepts basic commands (`ver`, `set`, `exit`, etc.)
 
 ## Phase 4: Multimedia and 16-bit Support
 - [ ] **Audio/Video (MMPM2)**

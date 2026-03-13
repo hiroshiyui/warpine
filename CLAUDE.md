@@ -8,7 +8,7 @@ Warpine is an OS/2 compatibility layer for Linux that runs 32-bit OS/2 (LX forma
 
 **License:** GPL-3.0-only
 
-**Status:** Phase 1 (Foundation) and Phase 2 (Core Subsystem) are complete. Phase 3 (Presentation Manager GUI) is in progress. See `doc/TODOs.md` for the full roadmap.
+**Status:** Phase 1 (Foundation), Phase 2 (Core Subsystem), and Phase 3 (Presentation Manager GUI) are complete. Phase 3.5 (Text-Mode Application Support) is complete — 4OS2 command shell runs interactively. See `doc/TODOs.md` for the full roadmap.
 
 ## Build & Run
 
@@ -21,7 +21,7 @@ cargo test                               # Unit tests (LX parser)
 
 **Prerequisites:** Linux with KVM enabled (`/dev/kvm`), x86_64 CPU with VT-x/AMD-V, Rust 2024 edition.
 
-**Sample OS/2 apps** are in `samples/` (hello, alloc_test, file_test, pipe_test, etc.). Build them with Open Watcom: `./vendor/setup_watcom.sh` then `make -C samples/<name>`.
+**Sample OS/2 apps** are in `samples/` (hello, alloc_test, file_test, pipe_test, 4os2, etc.). Build them with Open Watcom: `./vendor/setup_watcom.sh` then `make -C samples/<name>`. For 4OS2: `cd samples/4os2 && ./fetch_source.sh && make`.
 
 ## Architecture
 
@@ -35,7 +35,7 @@ cargo test                               # Unit tests (LX parser)
 ### Key modules
 
 - **`src/lx/`** — LX executable format parser (`header.rs` for binary structures, `lx.rs` for orchestration). Unit tests live here.
-- **`src/loader.rs`** — The core: KVM VMM, memory manager, handle manager, semaphore manager, queue manager, VMEXIT loop, and 40+ OS/2 API handler functions. This is ~57% of the codebase.
+- **`src/loader/`** — The core: KVM VMM, memory manager, handle manager, semaphore manager, queue manager, VMEXIT loop, and OS/2 API handler functions. Split into `mod.rs` (loader core), `doscalls.rs`, `viocalls.rs`, `kbdcalls.rs`, `console.rs`, `pm_win.rs`, `pm_gpi.rs`, `stubs.rs`, `process.rs`, `managers.rs`, `constants.rs`.
 - **`src/api.rs`** — Small module with `DosWrite`/`DosExit` implementations and FFI bridge stubs.
 - **`src/gui.rs`** — Phase 3 Presentation Manager GUI (winit + softbuffer). Work in progress.
 
@@ -43,11 +43,17 @@ cargo test                               # Unit tests (LX parser)
 
 Each OS/2 thread maps to a native Rust thread with its own KVM vCPU. `SharedState` wraps all managers in `Arc<Mutex<...>>` for cross-thread access. Semaphores use `Arc<(Mutex<State>, Condvar)>`.
 
-### Important constants (in loader.rs)
+### Important constants (in constants.rs)
 
 - `MAGIC_API_BASE` (0x01000000) — API thunk stub area
 - `EXIT_TRAP_ADDR` (0x010003FF) — Special exit breakpoint
 - `DYNAMIC_ALLOC_BASE` (0x02000000) — Guest memory allocation pool
+- `TIB_BASE` (0x00090000), `PIB_BASE` (0x00091000) — Thread/Process info blocks (must stay below 0x100000 for 16-bit segment arithmetic)
+- `KBDCALLS_BASE` (4096), `VIOCALLS_BASE` (5120) — Ordinal offset bases for Kbd/Vio subsystem dispatch
+
+### OS/2 PIB layout (key offsets)
+
+- `+0x00` pib_ulpid, `+0x04` pib_ulppid, `+0x08` pib_hmte, `+0x0C` pib_pchcmd, `+0x10` pib_pchenv
 
 ## Conventions
 
