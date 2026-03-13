@@ -26,10 +26,11 @@ pub const WM_BUTTON1UP: u32 = 0x0072;
 pub const WM_COMMAND: u32 = 0x0020;
 pub const WM_CHAR: u32 = 0x007A;
 
-// Guest memory layout constants
-pub const TIB_BASE: u32 = 0x70000;
-pub const PIB_BASE: u32 = 0x71000;
-pub const ENV_ADDR: u32 = 0x60000;
+// Guest memory layout constants — placed after loaded objects but below 1MB
+// to keep 16-bit segment arithmetic working. LX objects typically end below 0x80000.
+pub const TIB_BASE: u32 = 0x00090000;
+pub const PIB_BASE: u32 = 0x00091000;
+pub const ENV_ADDR: u32 = 0x00092000;
 
 // SWP flags for WinSetWindowPos
 pub const SWP_SIZE: u32 = 0x0001;
