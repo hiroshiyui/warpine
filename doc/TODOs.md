@@ -134,32 +134,11 @@ New modules: `src/loader/console.rs` (VioManager), `src/loader/kbdcalls.rs`, `sr
 
 Implementation approach: map Kbd calls to Linux termios (raw mode input) and Vio calls to ANSI escape sequences for terminal output. `VioManager` maintains a screen buffer (char+attr cells), cursor position, screen dimensions, and ANSI mode flag.
 
-- [ ] **Console Manager (`console.rs`)**
-    - [ ] `VioManager` struct: screen buffer `Vec<(u8, u8)>`, cursor (row, col), dimensions (default 25×80), ANSI mode, cursor type, codepage
-    - [ ] Terminal raw mode RAII guard (`RawModeGuard` using termios) with proper cleanup on drop/panic
-    - [ ] ANSI escape sequence helpers for cursor movement, scrolling, color mapping
-    - [ ] Add `console_mgr: Mutex<VioManager>` to `SharedState`
-- [ ] **Minimal VIO — Output (Step 1, required for any visible output)**
-    - [ ] `VioWrtTTY` (ordinal 30) — write string to stdout with ANSI cursor positioning; update screen buffer
-    - [ ] `VioGetMode` (ordinal 3) — return screen dimensions (rows/cols)
-    - [ ] `VioGetCurPos` (ordinal 4) — return current cursor row/col
-    - [ ] `VioSetCurPos` (ordinal 15) — move cursor via ANSI `\033[row;colH`; update VioManager state
-- [ ] **Minimal KBD — Input (Step 2, required for interactive use)**
-    - [ ] `KbdCharIn` (ordinal 4) — blocking read from stdin in raw mode; map Linux keycodes to OS/2 `KBDKEYINFO` struct (charcode, scancode, status, shift state); check `shutting_down()` during wait
-    - [ ] `KbdGetStatus` (ordinal 10) — return keyboard status flags from VioManager
-- [ ] **Screen Manipulation (Step 3, needed for 4OS2 line editor)**
-    - [ ] `VioScrollUp` (ordinal 7) / `VioScrollDn` (ordinal 8) — scroll region via ANSI scroll commands; update screen buffer
-    - [ ] `VioWrtCharStrAtt` (ordinal 26) — write attributed string using ANSI color codes; update screen buffer
-    - [ ] `VioWrtNCell` (ordinal 28) — fill N cells (char+attr); update screen buffer
-    - [ ] `VioWrtNAttr` (ordinal 27) — fill N attribute bytes; update screen buffer
-    - [ ] `VioReadCellStr` (ordinal 24) — read char+attr from internal screen buffer
-    - [ ] `VioSetCurType` (ordinal 16) — cursor shape via ANSI `\033[?25h/l`
-- [ ] **Stubs and Configuration (Step 4)**
-    - [ ] `KbdStringIn` (ordinal 9) — read string; can build on repeated `KbdCharIn`
-    - [ ] `VioSetAnsi` (ordinal 38) / `VioGetAnsi` (ordinal 39) — ANSI mode flag management
-    - [ ] `VioSetState` (ordinal 51) — stub, return 0
-    - [ ] `VioSetCp` (ordinal 42) — stub, return 0
-    - [ ] `VioGetConfig` (ordinal 46) — return VGA adapter defaults
+- [x] **Console Manager (`console.rs`)** — `VioManager` struct with screen buffer, cursor state, terminal dimensions, raw mode via termios, ANSI color mapping (CGA→ANSI), `console_mgr: Mutex<VioManager>` in SharedState
+- [x] **Minimal VIO — Output (Step 1)** — `VioWrtTTY` (30), `VioGetMode` (3), `VioGetCurPos` (4), `VioSetCurPos` (15)
+- [x] **Minimal KBD — Input (Step 2)** — `KbdCharIn` (4) with blocking/non-blocking modes and escape sequence parsing (arrow keys, Home/End/PgUp/PgDn/Delete), `KbdGetStatus` (10)
+- [x] **Screen Manipulation (Step 3)** — `VioScrollUp` (7), `VioScrollDn` (8), `VioWrtCharStrAtt` (26), `VioWrtNCell` (28), `VioWrtNAttr` (27), `VioReadCellStr` (24), `VioSetCurType` (16)
+- [x] **Stubs and Configuration (Step 4)** — `KbdStringIn` (9) with echo and backspace, `VioSetAnsi` (38), `VioGetAnsi` (39), `VioSetState` (51 stub), `VioSetCp` (42 stub), `VioGetConfig` (46)
 
 ### Subsystem 2: Process Management
 
@@ -192,9 +171,9 @@ New module: `src/loader/stubs.rs` for simple stub handlers. Add `SharedMemManage
 
 ### Verification
 - [x] `cargo build` — compiles cleanly
-- [x] `cargo test` — all 37 tests pass
-- [ ] Unit tests for `VioManager` screen buffer operations (write, scroll, read back)
-- [ ] Unit tests for `KbdCharIn` scancode mapping (Linux keycode → OS/2 KBDKEYINFO)
+- [x] `cargo test` — all 45 tests pass
+- [x] Unit tests for `VioManager` screen buffer operations (scroll up/down, read cell str, defaults)
+- [x] Unit tests for key mapping (enter, printable, backspace → OS/2 charcode/scancode)
 - [x] Unit tests for `DosEditName` wildcard pattern replacement (5 test cases)
 - [x] Unit tests for `ResourceManager` find operations
 - [ ] Unit tests for `DosQuerySysInfo` QSV_* index range handling
