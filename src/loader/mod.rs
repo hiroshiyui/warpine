@@ -541,12 +541,22 @@ impl Loader {
                                 // Stack has: [vector][error_code][EIP][CS][EFLAGS] = 5 dwords from exception frame
                                 let scan_esp = regs.rsp as u32 + 20;
                                 let mut ret_addr = 0u32;
-                                // Scan stack for a return address in a code object range
+                                // Scan stack for a return address in a code object range.
+                                // Verify candidates are real return addresses by checking that
+                                // the instruction before them is a CALL (E8 rel32 = 5 bytes,
+                                // or FF /2 indirect call = 2+ bytes).
                                 let code_ranges = self.shared.code_ranges.lock_or_recover().clone();
-                                for i in 0..32 {
+                                for i in 0..64 {
                                     let val = self.guest_read::<u32>(scan_esp + i * 4).unwrap_or(0);
                                     let in_code = code_ranges.iter().any(|&(base, end)| val >= base && val < end);
-                                    if in_code && val != fault_eip as u32 {
+                                    if !in_code || val == fault_eip as u32 { continue; }
+                                    // Check for CALL rel32 (E8) 5 bytes before
+                                    let is_call_e8 = self.guest_read::<u8>(val - 5).unwrap_or(0) == 0xE8;
+                                    // Check for CALL r/m32 (FF /2) 2 bytes before
+                                    let b2 = self.guest_read::<u8>(val - 2).unwrap_or(0);
+                                    let b1 = self.guest_read::<u8>(val - 1).unwrap_or(0);
+                                    let is_call_ff = b2 == 0xFF && (b1 & 0x38) == 0x10; // /2 = reg field 010
+                                    if is_call_e8 || is_call_ff {
                                         ret_addr = val;
                                         let orig_esp = scan_esp + i * 4 + 4;
                                         let mut new_regs = vcpu.get_regs().unwrap();
