@@ -5,8 +5,7 @@ pub mod api;
 pub mod gui;
 
 use std::env;
-use std::sync::{Arc, mpsc};
-use std::thread;
+use std::sync::Arc;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -16,7 +15,7 @@ fn main() {
     }
 
     let file_path = &args[1];
-    
+
     // Phase 1: Try to open and parse LX executable
     let lx_file = match lx::LxFile::open(file_path) {
         Ok(lx) => lx,
@@ -104,21 +103,33 @@ fn main() {
     println!("\nInitializing KVM loader...");
 
     let mut loader = loader::Loader::new();
-    let shared = Arc::clone(&loader.shared);
-    
+    let shared = loader.get_shared();
+    let is_pm = loader.is_pm_app(&lx_file);
+
     if let Err(e) = loader.load(&lx_file, file_path) {
         eprintln!("Failed to load executable: {}", e);
         std::process::exit(1);
     }
 
-    let (gui_tx, gui_rx) = mpsc::channel();
-    
-    // Launch VCPU thread
-    thread::spawn(move || {
-        loader.run(&lx_file, gui_tx);
-    });
+    if is_pm {
+        // PM app: create GUI event loop and run VCPU in background
+        let event_loop = winit::event_loop::EventLoop::<()>::with_user_event()
+            .build()
+            .expect("Failed to create event loop");
+        let (gui_sender, gui_rx) = gui::create_gui_channel(&event_loop);
 
-    // Run GUI event loop on main thread
-    let gui = gui::GUI::new(shared);
-    gui.run(gui_rx);
+        // Store the sender in the window manager
+        shared.window_mgr.lock().unwrap().gui_tx = Some(gui_sender);
+
+        // Launch VCPU thread
+        let loader = Arc::new(loader);
+        loader.clone().setup_and_spawn_vcpu(&lx_file);
+
+        // Run GUI event loop on main thread
+        let mut app = gui::GUIApp::new(shared, gui_rx);
+        event_loop.run_app(&mut app).expect("Event loop failed");
+    } else {
+        // CLI app: run directly
+        loader.setup_and_run_cli(&lx_file);
+    }
 }
