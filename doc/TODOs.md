@@ -134,29 +134,20 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
 ### P1 — High (correctness / stability)
 
 - [ ] **Mutex lock ordering — deadlock prevention**
-    - `SharedState` has 6 mutexes (`mem_mgr`, `handle_mgr`, `sem_mgr`, `queue_mgr`, `window_mgr`, `threads`) with no defined acquisition order. Several API handlers acquire multiple locks (e.g., `dos_read_queue` holds `queue_mgr` then acquires `mem_mgr`; `WinPostMsg` holds `window_mgr` then locks inner message queue). If two threads acquire them in different orders, deadlock occurs.
-    - **Fix:** Define and document a strict lock ordering (e.g., mem_mgr < handle_mgr < sem_mgr < queue_mgr < window_mgr < threads). Audit all call sites. Consider using `parking_lot` mutexes which detect deadlocks in debug mode.
-    - **Files:** `src/loader.rs` — all multi-lock API handlers
+    - `SharedState` has 6 mutexes with no defined acquisition order. Improved by releasing `queue_mgr` lock before acquiring `mem_mgr` in `dos_read_queue`, but a formal lock ordering document is still needed.
+    - **Remaining:** Define and document strict lock ordering. Consider `parking_lot` mutexes with deadlock detection in debug mode.
 
-- [ ] **Semaphore/mutex wait timeouts ignored**
-    - `dos_wait_event_sem`, `dos_request_mutex_sem`, and `dos_wait_mux_wait_sem` accept a timeout parameter but block indefinitely via `Condvar::wait()`, ignoring it completely. Guest apps that rely on timeouts will hang forever.
-    - **Fix:** Use `Condvar::wait_timeout()` with the guest-supplied millisecond value. Handle `SEM_TIMEOUT` (0xEE = 238) return code for OS/2.
-    - **Files:** `src/loader.rs` — semaphore wait handlers
+- [x] **Semaphore/mutex wait timeouts**
+    - `dos_wait_event_sem`, `dos_request_mutex_sem`, and `dos_wait_mux_wait_sem` now use `Condvar::wait_timeout()` with the guest-supplied millisecond value. Returns ERROR_TIMEOUT (640) on expiration. Treats `u32::MAX` as indefinite wait.
 
-- [ ] **Integer overflow in `MemoryManager::alloc`**
-    - `self.next_free + size` can overflow `u32` before the limit comparison, making the check pass and returning an overlapping/wrapped allocation.
-    - **Fix:** Use `u32::checked_add()` and return error on overflow.
-    - **Files:** `src/loader.rs` `MemoryManager::alloc()`
+- [x] **Integer overflow in `MemoryManager::alloc`**
+    - Uses `checked_add()` for both page-alignment rounding and limit comparison. Returns `None` on overflow.
 
-- [ ] **`process::exit()` in thread context**
-    - `DosExit` and the VMEXIT loop call `std::process::exit()` which terminates all threads immediately, skipping destructors. This can corrupt state, leak KVM resources, and leave the terminal in a bad state.
-    - **Fix:** Signal clean shutdown via an `AtomicBool` or channel, let threads wind down gracefully.
-    - **Files:** `src/loader.rs` `dos_exit`, `run_vcpu`
+- [x] **`process::exit()` in thread context**
+    - Added `exit_requested: AtomicBool` and `exit_code: AtomicI32` to `SharedState`. All `process::exit()` calls in `run_vcpu` replaced with atomic flag setting + return. `DosExit` sets exit code and signals shutdown. Only the top-level `setup_and_run_cli`/`run` call `process::exit` after `run_vcpu` returns.
 
-- [ ] **`WinGetMsg` spin-wait polling**
-    - Busy-waits with `thread::sleep(10ms)` in a loop, repeatedly acquiring and releasing the `window_mgr` lock. Wastes CPU and adds up to 10ms latency per message. Same pattern in `dos_wait_mux_wait_sem` and `dos_read_queue`.
-    - **Fix:** Use `Condvar` on the message queue and `notify_one()` when a message is posted. The `PM_MsgQueue` struct already has a `cond: Condvar` field that is unused.
-    - **Files:** `src/loader.rs` ordinal 915 (WinGetMsg), `dos_wait_mux_wait_sem`, `dos_read_queue`
+- [x] **`WinGetMsg` spin-wait polling**
+    - `WinGetMsg` now blocks on `PM_MsgQueue::cond` Condvar (with 100ms timeout fallback) instead of 10ms spin-wait. All message posting sites (`WinPostMsg`, `WinCreateStdWindow`, `WinDefWindowProc`, `WinInvalidateRect`, `WinStartTimer`, `gui.rs::push_msg`) call `cond.notify_one()`. Same fix for `dos_read_queue` using new Condvar on `OS2Queue`.
 
 ### P2 — Medium (architecture / maintainability)
 
