@@ -13,6 +13,8 @@ pub enum GUIMessage {
     CreateWindow { class: String, title: String, handle: u32 },
     DrawBox { handle: u32, x1: i32, y1: i32, x2: i32, y2: i32, color: u32, fill: bool },
     DrawLine { handle: u32, x1: i32, y1: i32, x2: i32, y2: i32, color: u32 },
+    DrawText { handle: u32, x: i32, y: i32, text: String, color: u32 },
+    ClearBuffer { handle: u32 },
     PresentBuffer { handle: u32 },
 }
 
@@ -103,6 +105,34 @@ impl GUIApp {
                 let e2 = 2 * err;
                 if e2 > -dy { err -= dy; x += sx; }
                 if e2 < dx { err += dx; y += sy; }
+            }
+        }
+    }
+
+    fn draw_text(&mut self, handle: u32, x: i32, y: i32, text: &str, color: u32) {
+        if let Some(state) = self.states.get_mut(&handle) {
+            let char_w: i32 = 8;
+            let char_h: i32 = 16;
+            for (i, ch) in text.chars().enumerate() {
+                let cx = x + (i as i32 * char_w);
+                let glyph_idx = if (ch as u32) >= 32 && (ch as u32) <= 126 {
+                    (ch as u32 - 32) as usize
+                } else {
+                    0 // space for unknown chars
+                };
+                for row in 0..char_h {
+                    let bits = crate::font8x16::FONT_8X16[glyph_idx * 16 + row as usize];
+                    for col in 0..char_w {
+                        if bits & (0x80 >> col) != 0 {
+                            let px = cx + col;
+                            // Flip Y for OS/2 bottom-left origin
+                            let py = (state.height as i32 - 1) - (y + row);
+                            if px >= 0 && px < state.width as i32 && py >= 0 && py < state.height as i32 {
+                                state.buffer[(py as u32 * state.width + px as u32) as usize] = color;
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -251,6 +281,14 @@ impl GUIApp {
                 }
                 GUIMessage::DrawLine { handle, x1, y1, x2, y2, color } => {
                     self.draw_line(handle, x1, y1, x2, y2, color);
+                }
+                GUIMessage::DrawText { handle, x, y, text, color } => {
+                    self.draw_text(handle, x, y, &text, color);
+                }
+                GUIMessage::ClearBuffer { handle } => {
+                    if let Some(state) = self.states.get_mut(&handle) {
+                        state.buffer.fill(0xFFFFFFFF); // White background
+                    }
                 }
                 GUIMessage::PresentBuffer { handle } => {
                     self.present_buffer(handle);
