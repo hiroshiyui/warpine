@@ -42,15 +42,50 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
 
 
 ## Phase 3: Presentation Manager (GUI)
-- [ ] **Window Management (PMWIN.DLL)**
-    - [x] Initial stubs for `WinInitialize`, `WinTerminate`, `WinCreateMsgQueue`.
-    - [x] Terminal-based `WinMessageBox` emulation.
-    - [ ] Implement message queue logic and message loop (`WinGetMsg`, `WinDispatchMsg`).
-    - [ ] Window creation and event loop mapping to X11/Wayland.
-- [ ] **Graphics (PMGPI.DLL)**
-    - [ ] Map Gpi drawing functions (lines, boxes, text) to Cairo or Skia.
-- [ ] **Input Handling**
-    - [ ] Translate Unix mouse/keyboard events to OS/2 `WM_` messages.
+- [x] **Infrastructure**
+    - [x] Add winit + softbuffer dependencies for cross-platform windowing.
+    - [x] Add PM data structures: `OS2Message`, `PM_MsgQueue`, `WindowClass`, `OS2Window`, `PresentationSpace`, `WindowManager`.
+    - [x] Add `window_mgr: Mutex<WindowManager>` to `SharedState`.
+    - [x] Expand API thunk stubs for PMWIN (2048+) and PMGPI (3072+) ordinal ranges.
+- [x] **Main Thread Restructuring**
+    - [x] Detect PM apps via imported module check (`is_pm_app`).
+    - [x] Dual-path execution: CLI apps run vCPU on main thread; PM apps run winit event loop on main thread with vCPU on worker thread.
+    - [x] `GUISender` wrapper with `EventLoopProxy` waking for cross-thread GUI message delivery.
+- [x] **Window Management (PMWIN.DLL)**
+    - [x] `WinInitialize` / `WinTerminate` — HAB lifecycle.
+    - [x] `WinCreateMsgQueue` / `WinDestroyMsgQueue` — message queue creation with tid-to-hmq mapping.
+    - [x] `WinRegisterClass` — store guest window procedure pointer per class.
+    - [x] `WinCreateStdWindow` — create frame + client windows, send `CreateWindow` to GUI thread.
+    - [x] `WinGetMsg` / `WinDispatchMsg` — message loop with blocking dequeue and guest callback dispatch.
+    - [x] `WinPostMsg` / `WinSendMsg` — inter-window messaging with callback support.
+    - [x] `WinDefWindowProc` — default message processing (WM_CLOSE → WM_QUIT, WM_PAINT no-op).
+    - [x] `WinBeginPaint` / `WinEndPaint` — presentation space for painting, buffer present on end.
+    - [x] `WinMessageBox` — terminal-based emulation (prints to stdout).
+    - [x] `WinShowWindow`, `WinQueryWindowRect`, `WinDestroyWindow`, `WinGetLastError`.
+- [x] **Callback Mechanism**
+    - [x] `ApiResult` enum: `Normal(u32)` vs `Callback { wnd_proc, hwnd, msg, mp1, mp2, api_args_size }`.
+    - [x] `CallbackFrame` stack for re-entrant guest window procedure calls.
+    - [x] `CALLBACK_RET_TRAP` (0x010003FE) for detecting callback return via VMEXIT.
+    - [x] Frame-to-client window redirection for event routing.
+- [x] **Graphics (PMGPI.DLL)**
+    - [x] `GpiCreatePS` / `GpiDestroyPS` — presentation space lifecycle.
+    - [x] `GpiSetColor` — current drawing color.
+    - [x] `GpiMove` — set current position.
+    - [x] `GpiBox` — rectangle drawing (filled and outline) via softbuffer.
+    - [x] `GpiLine` — Bresenham line drawing via softbuffer.
+- [x] **Input Handling**
+    - [x] Keyboard events → `WM_CHAR` messages with key flags and char codes.
+    - [x] Mouse movement → `WM_MOUSEMOVE` with OS/2 bottom-left coordinate flip.
+    - [x] Mouse buttons → `WM_BUTTON1DOWN` / `WM_BUTTON1UP`.
+    - [x] Window resize → `WM_SIZE` with buffer reallocation.
+    - [x] Window close → `WM_CLOSE`.
+- [x] **Test Application**
+    - [x] `samples/pm_hello` — PM app using `WinMessageBox` for basic PM verification.
+- [ ] **Remaining**
+    - [ ] `GpiCharStringAt` / `GpiErase` — text rendering and screen clearing.
+    - [ ] Dialog boxes, menus, accelerator tables.
+    - [ ] Clipboard support (`WinSetClipbrdData`, `WinQueryClipbrdData`).
+    - [ ] Timer support (`WinStartTimer`, `WinStopTimer`).
 
 ## Phase 4: Multimedia and 16-bit Support
 - [ ] **Audio/Video (MMPM2)**
