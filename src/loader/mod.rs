@@ -205,12 +205,14 @@ impl Loader {
         else if module == "QUECALLS" { MAGIC_API_BASE + 1024 + ordinal as u64 }
         else if module == "PMWIN" { MAGIC_API_BASE + PMWIN_BASE as u64 + ordinal as u64 }
         else if module == "PMGPI" { MAGIC_API_BASE + PMGPI_BASE as u64 + ordinal as u64 }
+        else if module == "KBDCALLS" { MAGIC_API_BASE + KBDCALLS_BASE as u64 + ordinal as u64 }
+        else if module == "VIOCALLS" { MAGIC_API_BASE + VIOCALLS_BASE as u64 + ordinal as u64 }
         else { 0 }
     }
 
     fn setup_stubs(&self) {
-        for i in 0..4096 {
-            self.guest_write::<u8>(MAGIC_API_BASE as u32 + i as u32, 0xCC).expect("setup_stubs: write OOB");
+        for i in 0..STUB_AREA_SIZE {
+            self.guest_write::<u8>(MAGIC_API_BASE as u32 + i, 0xCC).expect("setup_stubs: write OOB");
         }
     }
 
@@ -309,7 +311,7 @@ impl Loader {
             match exit {
                 kvm_ioctls::VcpuExit::Debug(_) => {
                     let rip = vcpu.get_regs().unwrap().rip;
-                    if rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + 4096 {
+                    if rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + STUB_AREA_SIZE as u64 {
                         if rip == EXIT_TRAP_ADDR as u64 {
                             info!("  [VCPU {}] Guest requested thread exit.", vcpu_id);
                             self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -464,9 +466,19 @@ impl Loader {
         } else if ordinal < PMGPI_BASE {
             // PMWIN
             self.handle_pmwin_call(vcpu, vcpu_id, ordinal - PMWIN_BASE)
-        } else if ordinal < 4096 {
+        } else if ordinal < KBDCALLS_BASE {
             // PMGPI
             self.handle_pmgpi_call(vcpu, vcpu_id, ordinal - PMGPI_BASE)
+        } else if ordinal < VIOCALLS_BASE {
+            // KBDCALLS
+            let kbd_ordinal = ordinal - KBDCALLS_BASE;
+            warn!("Warning: Unknown KBDCALLS Ordinal {} on VCPU {}", kbd_ordinal, vcpu_id);
+            ApiResult::Normal(0)
+        } else if ordinal < STUB_AREA_SIZE {
+            // VIOCALLS
+            let vio_ordinal = ordinal - VIOCALLS_BASE;
+            warn!("Warning: Unknown VIOCALLS Ordinal {} on VCPU {}", vio_ordinal, vcpu_id);
+            ApiResult::Normal(0)
         } else {
             warn!("Warning: Unknown API Base Ordinal {} on VCPU {}", ordinal, vcpu_id);
             ApiResult::Normal(0)
