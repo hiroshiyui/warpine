@@ -7,7 +7,7 @@ use winit::event::{WindowEvent, ElementState, MouseButton};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 use softbuffer::{Context, Surface};
-use crate::loader::{SharedState, OS2Message};
+use crate::loader::{SharedState, OS2Message, WM_CLOSE, WM_SIZE, WM_PAINT, WM_CHAR, WM_MOUSEMOVE, WM_BUTTON1DOWN, WM_BUTTON1UP};
 
 pub enum GUIMessage {
     CreateWindow { class: String, title: String, handle: u32 },
@@ -103,7 +103,7 @@ impl ApplicationHandler<()> for GUIApp {
         match event {
             WindowEvent::CloseRequested => {
                 if let Some(handle) = pm_handle {
-                    self.push_msg(handle, 0x0029, 0, 0); // WM_CLOSE
+                    self.push_msg(handle, WM_CLOSE, 0, 0);
                 }
             }
             WindowEvent::Resized(size) => {
@@ -113,12 +113,14 @@ impl ApplicationHandler<()> for GUIApp {
                             state.surface.resize(w, h).unwrap();
                             state.width = size.width;
                             state.height = size.height;
-                            state.buffer = vec![0xFFFFFFFF; (size.width * size.height) as usize];
+                            let pixel_count = (size.width as usize).checked_mul(size.height as usize)
+                                .expect("Window dimensions overflow");
+                            state.buffer = vec![0xFFFFFFFF; pixel_count];
                         }
                     }
                     let mp2 = (size.height << 16) | size.width;
-                    self.push_msg(handle, 0x0007, 0, mp2); // WM_SIZE
-                    self.push_msg(handle, 0x0023, 0, 0); // WM_PAINT
+                    self.push_msg(handle, WM_SIZE, 0, mp2);
+                    self.push_msg(handle, WM_PAINT, 0, 0);
                 }
             }
             WindowEvent::RedrawRequested => {
@@ -141,7 +143,7 @@ impl ApplicationHandler<()> for GUIApp {
                         .map(|c| c as u32)
                         .unwrap_or(0);
                     let mp1 = (flags << 16) | 1;
-                    self.push_msg(handle, 0x007A, mp1, char_code); // WM_CHAR
+                    self.push_msg(handle, WM_CHAR, mp1, char_code);
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -150,15 +152,15 @@ impl ApplicationHandler<()> for GUIApp {
                         let x = position.x as i32;
                         let y = (state.height as i32 - 1) - position.y as i32;
                         let mp1 = ((x as u32) & 0xFFFF) | (((y as u32) & 0xFFFF) << 16);
-                        self.push_msg(handle, 0x0070, mp1, 0); // WM_MOUSEMOVE
+                        self.push_msg(handle, WM_MOUSEMOVE, mp1, 0);
                     }
                 }
             }
             WindowEvent::MouseInput { state: btn_state, button, .. } => {
                 if let Some(handle) = pm_handle {
                     let msg = match (button, btn_state) {
-                        (MouseButton::Left, ElementState::Pressed) => 0x0071,
-                        (MouseButton::Left, ElementState::Released) => 0x0072,
+                        (MouseButton::Left, ElementState::Pressed) => WM_BUTTON1DOWN,
+                        (MouseButton::Left, ElementState::Released) => WM_BUTTON1UP,
                         _ => return,
                     };
                     self.push_msg(handle, msg, 0, 0);
@@ -195,7 +197,9 @@ impl GUIApp {
 
                     let width = size.width;
                     let height = size.height;
-                    let buffer = vec![0xFFFFFFFF; (width * height) as usize];
+                    let pixel_count = (width as usize).checked_mul(height as usize)
+                        .expect("Window dimensions overflow");
+                    let buffer = vec![0xFFFFFFFF; pixel_count];
 
                     self.windows.insert(id, handle);
                     self.states.insert(handle, WindowState {

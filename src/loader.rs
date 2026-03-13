@@ -21,10 +21,25 @@ const DYNAMIC_ALLOC_BASE: u32 = 0x02000000; // 32MB
 const PMWIN_BASE: u32 = 2048;
 const PMGPI_BASE: u32 = 3072;
 
-const WM_CLOSE: u32 = 0x0029;
-const WM_QUIT: u32 = 0x002A;
-const WM_PAINT: u32 = 0x0023;
-const WM_TIMER: u32 = 0x0024;
+// OS/2 WM_ message constants
+pub const WM_SIZE: u32 = 0x0007;
+pub const WM_PAINT: u32 = 0x0023;
+pub const WM_TIMER: u32 = 0x0024;
+pub const WM_CLOSE: u32 = 0x0029;
+pub const WM_QUIT: u32 = 0x002A;
+pub const WM_MOUSEMOVE: u32 = 0x0070;
+pub const WM_BUTTON1DOWN: u32 = 0x0071;
+pub const WM_BUTTON1UP: u32 = 0x0072;
+pub const WM_CHAR: u32 = 0x007A;
+
+// Guest memory layout constants
+const TIB_BASE: u32 = 0x70000;
+const PIB_BASE: u32 = 0x71000;
+const ENV_ADDR: u32 = 0x60000;
+
+// Mock handle constants
+const MOCK_HAB: u32 = 0x1234;
+const MOCK_HPOINTER: u32 = 0x5000;
 
 #[derive(Debug, Clone, Copy)]
 struct AllocBlock {
@@ -34,6 +49,7 @@ struct AllocBlock {
 
 pub struct MemoryManager {
     allocated: Vec<AllocBlock>,
+    free_list: Vec<AllocBlock>,
     next_free: u32,
     limit: u32,
 }
@@ -42,6 +58,7 @@ impl MemoryManager {
     pub fn new(base: u32, limit: u32) -> Self {
         MemoryManager {
             allocated: Vec::new(),
+            free_list: Vec::new(),
             next_free: base,
             limit,
         }
@@ -49,6 +66,18 @@ impl MemoryManager {
 
     pub fn alloc(&mut self, size: u32) -> Option<u32> {
         let size = (size.checked_add(4095)?) & !4095;
+        // First, try to reuse a freed block (first-fit)
+        if let Some(idx) = self.free_list.iter().position(|b| b._size >= size) {
+            let block = self.free_list.remove(idx);
+            let addr = block.addr;
+            // If the freed block is larger, split it and return the remainder to the free list
+            if block._size > size {
+                self.free_list.push(AllocBlock { addr: addr + size, _size: block._size - size });
+            }
+            self.allocated.push(AllocBlock { addr, _size: size });
+            return Some(addr);
+        }
+        // Otherwise bump-allocate
         let end = self.next_free.checked_add(size)?;
         if end > self.limit {
             return None;
@@ -60,9 +89,23 @@ impl MemoryManager {
     }
 
     pub fn free(&mut self, addr: u32) -> bool {
-        let len_before = self.allocated.len();
-        self.allocated.retain(|b| b.addr != addr);
-        self.allocated.len() < len_before
+        if let Some(idx) = self.allocated.iter().position(|b| b.addr == addr) {
+            let block = self.allocated.remove(idx);
+            self.free_list.push(block);
+            // Coalesce: if the top free block is at next_free boundary, reclaim it
+            self.free_list.sort_by_key(|b| b.addr);
+            while let Some(last) = self.free_list.last() {
+                if last.addr + last._size == self.next_free {
+                    self.next_free = last.addr;
+                    self.free_list.pop();
+                } else {
+                    break;
+                }
+            }
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -428,7 +471,6 @@ use crate::gui::GUIMessage;
 struct CallbackFrame {
     saved_rip: u64,
     saved_rsp: u64,
-    _saved_rax: u64,
 }
 
 enum ApiResult {
@@ -663,17 +705,15 @@ impl Loader {
         let entry_eip = lx_file.object_table[lx_file.header.eip_object as usize - 1].base_address as u64 + lx_file.header.eip as u64;
         let entry_esp = lx_file.object_table[lx_file.header.esp_object as usize - 1].base_address as u64 + lx_file.header.esp as u64;
 
-        let tib_base: u64 = 0x70000;
-        let pib_base: u64 = 0x71000;
-        let env_addr: usize = 0x60000;
-        let cmdline_addr = env_addr + 10;
+        let tib_base = TIB_BASE as u64;
+        let cmdline_addr = ENV_ADDR + 10;
         let env_data = b"PATH=C:\\\0\0HELLO.EXE\0";
-        self.guest_write_bytes(env_addr as u32, env_data).expect("setup_guest: env write OOB");
-        self.guest_write::<u32>(tib_base as u32 + 0x18, tib_base as u32).expect("setup_guest: TIB self-ptr OOB");
-        self.guest_write::<u32>(tib_base as u32 + 0x30, pib_base as u32).expect("setup_guest: TIB->PIB OOB");
-        self.guest_write::<u32>(pib_base as u32 + 0x00, 42).expect("setup_guest: PIB PID OOB");
-        self.guest_write::<u32>(pib_base as u32 + 0x0C, env_addr as u32).expect("setup_guest: PIB env OOB");
-        self.guest_write::<u32>(pib_base as u32 + 0x10, cmdline_addr as u32).expect("setup_guest: PIB cmdline OOB");
+        self.guest_write_bytes(ENV_ADDR, env_data).expect("setup_guest: env write OOB");
+        self.guest_write::<u32>(TIB_BASE + 0x18, TIB_BASE).expect("setup_guest: TIB self-ptr OOB");
+        self.guest_write::<u32>(TIB_BASE + 0x30, PIB_BASE).expect("setup_guest: TIB->PIB OOB");
+        self.guest_write::<u32>(PIB_BASE + 0x00, 42).expect("setup_guest: PIB PID OOB");
+        self.guest_write::<u32>(PIB_BASE + 0x0C, ENV_ADDR).expect("setup_guest: PIB env OOB");
+        self.guest_write::<u32>(PIB_BASE + 0x10, cmdline_addr).expect("setup_guest: PIB cmdline OOB");
 
         self.setup_stubs();
         (entry_eip, entry_esp, tib_base)
@@ -687,14 +727,13 @@ impl Loader {
         regs.rflags = 2;
         vcpu.set_regs(&regs).unwrap();
 
-        let env_addr: usize = 0x60000;
-        let cmdline_addr = env_addr + 10;
+        let cmdline_addr = ENV_ADDR + 10;
         let sp = regs.rsp as u32;
         self.guest_write::<u32>(sp, EXIT_TRAP_ADDR).expect("create_initial_vcpu: stack write OOB");
         self.guest_write::<u32>(sp + 4, 1).expect("create_initial_vcpu: stack write OOB");
         self.guest_write::<u32>(sp + 8, 0).expect("create_initial_vcpu: stack write OOB");
-        self.guest_write::<u32>(sp + 12, env_addr as u32).expect("create_initial_vcpu: stack write OOB");
-        self.guest_write::<u32>(sp + 16, cmdline_addr as u32).expect("create_initial_vcpu: stack write OOB");
+        self.guest_write::<u32>(sp + 12, ENV_ADDR).expect("create_initial_vcpu: stack write OOB");
+        self.guest_write::<u32>(sp + 16, cmdline_addr).expect("create_initial_vcpu: stack write OOB");
         vcpu
     }
 
@@ -800,7 +839,6 @@ impl Loader {
                                 callback_stack.push(CallbackFrame {
                                     saved_rip: return_addr as u64,
                                     saved_rsp: regs.rsp + 4,
-                                    _saved_rax: regs.rax,
                                 });
                                 // Set up guest stack for callback: push ret addr + 4 args = 20 bytes
                                 regs.rsp -= 20;
@@ -930,7 +968,7 @@ impl Loader {
             763 => {
                 // WinInitialize
                 println!("  [VCPU {}] WinInitialize called.", vcpu_id);
-                ApiResult::Normal(0x1234) // Mock HAB
+                ApiResult::Normal(MOCK_HAB)
             }
             888 => {
                 // WinTerminate
@@ -1165,7 +1203,6 @@ impl Loader {
                 if let Some(ref sender) = wm.gui_tx {
                     let _ = sender.send(crate::gui::GUIMessage::PresentBuffer { handle: frame_hwnd });
                 }
-                wm.ps_map.get(&hps); // keep PS alive until explicitly destroyed
                 ApiResult::Normal(1)
             }
             753 => {
@@ -1417,7 +1454,7 @@ impl Loader {
             828 => {
                 // WinQuerySysPointer(HWND hwndDesktop, LONG iptr, BOOL fLoad)
                 // Return a fake pointer handle
-                ApiResult::Normal(0x5000) // Fake HPOINTER
+                ApiResult::Normal(MOCK_HPOINTER)
             }
             829 => {
                 // WinQuerySysValue(HWND hwndDesktop, LONG iSysValue)
@@ -1930,7 +1967,7 @@ impl Loader {
             println!("  [VCPU {}] Creating thread {} (ptid_ptr=0x{:08X}, pfn=0x{:08X}, param=0x{:08X})", vcpu_id, tid, ptid_ptr, pfn, param);
 
             self.guest_write::<u32>(tib_addr + 0x18, tib_addr).expect("dos_create_thread: TIB self-ptr OOB");
-            self.guest_write::<u32>(tib_addr + 0x30, 0x71000).expect("dos_create_thread: TIB->PIB OOB");
+            self.guest_write::<u32>(tib_addr + 0x30, PIB_BASE).expect("dos_create_thread: TIB->PIB OOB");
 
             let sp_addr = stack_base + stack_size - 12;
             self.guest_write::<u32>(sp_addr, EXIT_TRAP_ADDR).expect("dos_create_thread: stack write OOB");
@@ -1984,7 +2021,7 @@ impl Loader {
     fn dos_get_info_blocks(&self, vcpu: &VcpuFd, ptib: u32, ppib: u32) -> u32 {
         let fs_base = vcpu.get_sregs().unwrap().fs.base;
         if ptib != 0 { self.guest_write::<u32>(ptib, fs_base as u32); }
-        if ppib != 0 { self.guest_write::<u32>(ppib, 0x71000); }
+        if ppib != 0 { self.guest_write::<u32>(ppib, PIB_BASE); }
         0
     }
 
@@ -2001,14 +2038,8 @@ impl Loader {
         let hdir = {
             if let Ok(rd) = std::fs::read_dir(if dir_path.to_str() == Some("") { Path::new(".") } else { &dir_path }) {
                 let mut hdir_mgr = self.shared.hdir_mgr.lock().unwrap();
-                let mut hdir = self.guest_read::<u32>(phdir_ptr).unwrap_or(0xFFFFFFFF);
-                if hdir == 0xFFFFFFFF {
-                    hdir = hdir_mgr.add(rd, pattern);
-                    self.guest_write::<u32>(phdir_ptr, hdir);
-                } else {
-                    hdir = hdir_mgr.add(rd, pattern);
-                    self.guest_write::<u32>(phdir_ptr, hdir);
-                }
+                let hdir = hdir_mgr.add(rd, pattern);
+                self.guest_write::<u32>(phdir_ptr, hdir);
                 hdir
             } else { return 3; }
         };
@@ -2432,4 +2463,62 @@ impl Loader {
 
 impl Drop for SharedState {
     fn drop(&mut self) { unsafe { libc::munmap(self.guest_mem as *mut libc::c_void, self.guest_mem_size); } }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_alloc_basic() {
+        let mut mgr = MemoryManager::new(0x1000, 0x10000);
+        let a = mgr.alloc(100).unwrap();
+        assert_eq!(a, 0x1000);
+        // 100 bytes rounds up to 4096
+        let b = mgr.alloc(100).unwrap();
+        assert_eq!(b, 0x2000);
+    }
+
+    #[test]
+    fn test_alloc_free_reuse() {
+        let mut mgr = MemoryManager::new(0x1000, 0x10000);
+        let a = mgr.alloc(4096).unwrap();
+        let _b = mgr.alloc(4096).unwrap();
+        mgr.free(a);
+        // Should reuse the freed block
+        let c = mgr.alloc(4096).unwrap();
+        assert_eq!(c, a);
+    }
+
+    #[test]
+    fn test_alloc_free_coalesce_top() {
+        let mut mgr = MemoryManager::new(0x1000, 0x10000);
+        let a = mgr.alloc(4096).unwrap();
+        assert_eq!(mgr.next_free, 0x2000);
+        mgr.free(a);
+        // After freeing the top block, next_free should be reclaimed
+        assert_eq!(mgr.next_free, 0x1000);
+    }
+
+    #[test]
+    fn test_alloc_overflow() {
+        let mut mgr = MemoryManager::new(0xFFFFF000, 0xFFFFFFFF);
+        // Requesting a size that would overflow u32 when adding 4095
+        assert!(mgr.alloc(0xFFFFF000).is_none());
+    }
+
+    #[test]
+    fn test_alloc_exceeds_limit() {
+        let mut mgr = MemoryManager::new(0x1000, 0x3000);
+        let _a = mgr.alloc(4096).unwrap();
+        // Only room for one more page
+        let _b = mgr.alloc(4096).unwrap();
+        assert!(mgr.alloc(4096).is_none());
+    }
+
+    #[test]
+    fn test_free_nonexistent() {
+        let mut mgr = MemoryManager::new(0x1000, 0x10000);
+        assert!(!mgr.free(0x9999));
+    }
 }

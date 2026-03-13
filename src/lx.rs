@@ -43,10 +43,34 @@ impl LxFile {
         // 3. Read LX Header
         let header = LxHeader::read(&mut reader, lx_offset)?;
 
+        // Validate header fields to prevent resource exhaustion from malformed inputs
+        const MAX_OBJECTS: u32 = 1024;
+        const MAX_PAGES: u32 = 65536; // 256MB at 4KB pages
+        if header.object_count > MAX_OBJECTS {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                format!("Object count {} exceeds maximum {}", header.object_count, MAX_OBJECTS)));
+        }
+        if header.module_num_pages > MAX_PAGES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                format!("Page count {} exceeds maximum {}", header.module_num_pages, MAX_PAGES)));
+        }
+        if header.page_offset_shift >= 32 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                format!("Invalid page_offset_shift: {}", header.page_offset_shift)));
+        }
+        if header.eip_object > 0 && header.eip_object > header.object_count {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                format!("eip_object {} exceeds object_count {}", header.eip_object, header.object_count)));
+        }
+        if header.esp_object > 0 && header.esp_object > header.object_count {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                format!("esp_object {} exceeds object_count {}", header.esp_object, header.object_count)));
+        }
+
         // 4. Read Object Table
         let object_table_start = lx_offset + header.object_table_offset as u64;
         reader.seek(SeekFrom::Start(object_table_start))?;
-        
+
         let mut object_table = Vec::with_capacity(header.object_count as usize);
         for _ in 0..header.object_count {
             object_table.push(ObjectTableEntry::read(&mut reader)?);
@@ -171,6 +195,68 @@ mod tests {
         // It will fail because object tables etc are missing, 
         // but it should at least get past MZ check
         assert!(res.is_ok() || res.unwrap_err().to_string().contains("Invalid LX signature") == false);
+    }
+
+    #[test]
+    fn test_reject_excessive_object_count() {
+        let mut data = vec![0u8; 1024];
+        data[0] = b'M'; data[1] = b'Z';
+        data[0x3C] = 0x80;
+        data[0x80] = b'L'; data[0x81] = b'X';
+        // Set object_count to 2000 (exceeds MAX_OBJECTS=1024)
+        let count: u32 = 2000;
+        data[0x80 + 0x44..0x80 + 0x48].copy_from_slice(&count.to_le_bytes());
+        let cursor = Cursor::new(data);
+        let res = LxFile::parse(cursor);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("Object count"));
+    }
+
+    #[test]
+    fn test_reject_excessive_page_count() {
+        let mut data = vec![0u8; 1024];
+        data[0] = b'M'; data[1] = b'Z';
+        data[0x3C] = 0x80;
+        data[0x80] = b'L'; data[0x81] = b'X';
+        // Set module_num_pages to 100000 (exceeds MAX_PAGES=65536)
+        let pages: u32 = 100000;
+        data[0x80 + 0x14..0x80 + 0x18].copy_from_slice(&pages.to_le_bytes());
+        let cursor = Cursor::new(data);
+        let res = LxFile::parse(cursor);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("Page count"));
+    }
+
+    #[test]
+    fn test_reject_invalid_page_offset_shift() {
+        let mut data = vec![0u8; 1024];
+        data[0] = b'M'; data[1] = b'Z';
+        data[0x3C] = 0x80;
+        data[0x80] = b'L'; data[0x81] = b'X';
+        // Set page_offset_shift to 32 (invalid)
+        let shift: u32 = 32;
+        data[0x80 + 0x2C..0x80 + 0x30].copy_from_slice(&shift.to_le_bytes());
+        let cursor = Cursor::new(data);
+        let res = LxFile::parse(cursor);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("page_offset_shift"));
+    }
+
+    #[test]
+    fn test_reject_invalid_eip_object() {
+        let mut data = vec![0u8; 1024];
+        data[0] = b'M'; data[1] = b'Z';
+        data[0x3C] = 0x80;
+        data[0x80] = b'L'; data[0x81] = b'X';
+        // object_count = 2, eip_object = 5
+        let count: u32 = 2;
+        data[0x80 + 0x44..0x80 + 0x48].copy_from_slice(&count.to_le_bytes());
+        let eip_obj: u32 = 5;
+        data[0x80 + 0x18..0x80 + 0x1C].copy_from_slice(&eip_obj.to_le_bytes());
+        let cursor = Cursor::new(data);
+        let res = LxFile::parse(cursor);
+        assert!(res.is_err());
+        assert!(res.unwrap_err().to_string().contains("eip_object"));
     }
 
     #[test]
