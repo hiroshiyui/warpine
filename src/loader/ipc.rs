@@ -98,6 +98,26 @@ impl SemaphoreManager {
     pub fn close_mux(&mut self, h: u32) -> bool {
         self.mux_sems.remove(&h).is_some()
     }
+
+    pub fn open_event_by_name(&self, name: &str) -> Option<u32> {
+        for (&h, arc) in &self.event_sems {
+            let sem = arc.0.lock_or_recover();
+            if sem._name.as_deref() == Some(name) {
+                return Some(h);
+            }
+        }
+        None
+    }
+
+    pub fn open_mutex_by_name(&self, name: &str) -> Option<u32> {
+        for (&h, arc) in &self.mutex_sems {
+            let sem = arc.0.lock_or_recover();
+            if sem._name.as_deref() == Some(name) {
+                return Some(h);
+            }
+        }
+        None
+    }
 }
 
 pub struct QueueEntry {

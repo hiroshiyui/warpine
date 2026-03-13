@@ -42,3 +42,38 @@ pub const SWP_RESTORE: u32 = 0x0400;
 // Mock handle constants
 pub const MOCK_HAB: u32 = 0x1234;
 pub const MOCK_HPOINTER: u32 = 0x5000;
+
+// OS/2 error codes
+pub const NO_ERROR: u32 = 0;
+pub const ERROR_FILE_NOT_FOUND: u32 = 2;
+pub const ERROR_PATH_NOT_FOUND: u32 = 3;
+pub const ERROR_ACCESS_DENIED: u32 = 5;
+pub const ERROR_INVALID_HANDLE: u32 = 6;
+pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
+pub const ERROR_INVALID_FUNCTION: u32 = 87;
+pub const ERROR_BUFFER_OVERFLOW: u32 = 111;
+pub const ERROR_INVALID_LEVEL: u32 = 124;
+pub const ERROR_MOD_NOT_FOUND: u32 = 126;
+pub const ERROR_PROC_NOT_FOUND: u32 = 127;
+
+// DosQuerySysInfo QSV_* index constants (1-based)
+pub const QSV_MAX_PATH_LENGTH: u32 = 1;
+pub const QSV_MAX_TEXT_SESSIONS: u32 = 2;
+pub const QSV_MAX_PM_SESSIONS: u32 = 3;
+pub const QSV_MAX_VDM_SESSIONS: u32 = 4;
+pub const QSV_BOOT_DRIVE: u32 = 5;
+pub const QSV_DYN_PRI_VARIATION: u32 = 6;
+pub const QSV_MAX_WAIT: u32 = 7;
+pub const QSV_MIN_SLICE: u32 = 8;
+pub const QSV_MAX_SLICE: u32 = 9;
+pub const QSV_PAGE_SIZE: u32 = 10;
+pub const QSV_VERSION_MAJOR: u32 = 11;
+pub const QSV_VERSION_MINOR: u32 = 12;
+pub const QSV_VERSION_REVISION: u32 = 13;
+pub const QSV_TOTPHYSMEM: u32 = 17;
+pub const QSV_TOTRESMEM: u32 = 18;
+pub const QSV_TOTAVAILMEM: u32 = 19;
+pub const QSV_MAXPRMEM: u32 = 20;
+pub const QSV_MAXSHMEM: u32 = 21;
+pub const QSV_TIMER_INTERVAL: u32 = 22;
+pub const QSV_MAX_COMP_LENGTH: u32 = 23;

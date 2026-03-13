@@ -134,6 +134,24 @@ impl HDirManager {
     }
 }
 
+pub struct SharedMemManager {
+    named_blocks: HashMap<String, u32>,
+}
+
+impl SharedMemManager {
+    pub fn new() -> Self {
+        SharedMemManager { named_blocks: HashMap::new() }
+    }
+
+    pub fn register(&mut self, name: String, addr: u32) {
+        self.named_blocks.insert(name, addr);
+    }
+
+    pub fn find_by_name(&self, name: &str) -> Option<u32> {
+        self.named_blocks.get(name).copied()
+    }
+}
+
 pub struct ResourceManager {
     // (type_id, name_id) → (guest_addr, size)
     resources: HashMap<(u16, u16), (u32, u32)>,
