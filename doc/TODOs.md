@@ -115,19 +115,4 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
     - [ ] Integrate a lightweight x86 emulator for 16-bit code execution.
     - [ ] Support NE (New Executable) format parsing and loading.
 
-## Security & Hardening (from code review 2026-03-13)
 
-Remaining items:
-
-- [ ] **Mutex lock ordering — deadlock prevention**
-    - `SharedState` has 6 mutexes with no defined acquisition order. Improved by releasing `queue_mgr` lock before acquiring `mem_mgr` in `dos_read_queue`, but a formal lock ordering document is still needed.
-    - **Remaining:** Define and document strict lock ordering. Consider `parking_lot` mutexes with deadlock detection in debug mode.
-
-- [x] **Split `loader.rs` into modules**
-    - Split into 10 files under `src/loader/`: `mod.rs` (470 lines, VMM core + VMEXIT loop), `constants.rs`, `mutex_ext.rs`, `managers.rs` (MemoryManager, HandleManager, HDirManager), `ipc.rs` (semaphores, queues), `pm_types.rs` (PM types + WindowManager), `guest_mem.rs` (bounds-checked memory), `doscalls.rs` (filesystem, memory, thread APIs), `pm_win.rs` (PMWIN handlers), `pm_gpi.rs` (PMGPI handlers).
-
-## General Improvements
-- [x] Add unit tests for LX parser and GUI rendering.
-- [x] Improve error handling and logging (using `log` + `env_logger` crates).
-- [x] Create a sample 32-bit OS/2 "Hello World" binary for testing.
-- [x] Pivot to Unicorn Engine for platform-agnostic 32-bit emulation.
