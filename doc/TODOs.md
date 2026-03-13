@@ -86,9 +86,27 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
     - [x] `GpiErase` — clear presentation space to white.
 - [x] **Timer Support**
     - [x] `WinStartTimer` / `WinStopTimer` — background thread posts `WM_TIMER` messages.
+- [x] **Dialog Boxes**
+    - [x] `WinDlgBox`, `WinLoadDlg`, `WinProcessDlg`, `WinDismissDlg` — stubs (no resource loading yet).
+    - [x] `WinDefDlgProc`, `WinSendDlgItemMsg`, `WinQueryDlgItemText`, `WinSetDlgItemText`.
+    - [x] `WinWindowFromID` — child window lookup by ID.
+- [x] **Menus & Accelerators**
+    - [x] `WinCreateMenu`, `WinLoadMenu`, `WinPopupMenu` — stubs (no resource loading yet).
+    - [x] `WinLoadAccelTable`, `WinSetAccelTable`, `WinTranslateAccel` — stubs.
+- [x] **Clipboard**
+    - [x] `WinOpenClipbrd`, `WinCloseClipbrd`, `WinEmptyClipbrd` — clipboard state management.
+    - [x] `WinSetClipbrdData`, `WinQueryClipbrdData` — in-process clipboard storage.
+- [x] **Additional Window APIs**
+    - [x] `WinSetWindowText` / `WinQueryWindowText` — per-window text storage.
+    - [x] `WinSetWindowULong` / `WinQueryWindowULong` / `WinSetWindowUShort` / `WinQueryWindowUShort` — window data words.
+    - [x] `WinFillRect` — fills rectangle via GUI DrawBox.
+    - [x] `WinInvalidateRect` / `WinUpdateWindow` — repaint triggering.
+    - [x] `WinSetWindowPos` — stub.
+    - [x] `WinQuerySysValue` — screen metrics (640x480 defaults).
+    - [x] `WinQuerySysPointer`, `WinSetPointer`, `WinAlarm` — stubs.
 - [ ] **Remaining**
-    - [ ] Dialog boxes, menus, accelerator tables.
-    - [ ] Clipboard support (`WinSetClipbrdData`, `WinQueryClipbrdData`).
+    - [ ] Resource loading from LX executables (dialog templates, menu templates, accelerator tables, string tables).
+    - [ ] Full `WinSetWindowPos` with GUI resize/move support.
 
 ## Phase 4: Multimedia and 16-bit Support
 - [ ] **Audio/Video (MMPM2)**
