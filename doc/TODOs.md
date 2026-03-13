@@ -63,7 +63,7 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
     - [x] `WinMessageBox` — terminal-based emulation (prints to stdout).
     - [x] `WinShowWindow`, `WinQueryWindowRect`, `WinDestroyWindow`, `WinGetLastError`.
 - [x] **Callback Mechanism**
-    - [x] `ApiResult` enum: `Normal(u32)` vs `Callback { wnd_proc, hwnd, msg, mp1, mp2, api_args_size }`.
+    - [x] `ApiResult` enum: `Normal(u32)` vs `Callback { wnd_proc, hwnd, msg, mp1, mp2 }`.
     - [x] `CallbackFrame` stack for re-entrant guest window procedure calls.
     - [x] `CALLBACK_RET_TRAP` (0x010003FE) for detecting callback return via VMEXIT.
     - [x] Frame-to-client window redirection for event routing.
@@ -116,7 +116,7 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
     - [ ] Support NE (New Executable) format parsing and loading.
 
 ## General Improvements
-- [ ] Add unit tests for LX parser and API stubs.
+- [x] Add unit tests for LX parser and GUI rendering.
 - [ ] Improve error handling and logging (possibly using `log` or `tracing` crates).
 - [x] Create a sample 32-bit OS/2 "Hello World" binary for testing.
 - [x] Pivot to Unicorn Engine for platform-agnostic 32-bit emulation.
