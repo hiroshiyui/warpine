@@ -148,11 +148,7 @@ New module: `src/loader/process.rs`. Add `ProcessManager` to `SharedState` (or t
 
 - [x] **Directory Management (Step 1)** — `DosSetCurrentDir` (255), `DosQueryCurrentDir` (274), `DosQueryCurrentDisk` (275), `DosSetDefaultDisk` (220) with `ProcessManager` tracking current disk/directory. `translate_path()` updated to resolve relative paths against OS/2 current directory. Fixed `DosQueryPathInfo` ordinal from 275 to correct 223.
 - [x] **System Information (Step 2)** — `DosQuerySysInfo` (348, full QSV_* table), `DosGetDateTime` (230, real via libc), `DosSetDateTime` (stub) — implemented in Subsystem 3.
-- [ ] **Process Execution (Step 3, core shell functionality)**
-    - [ ] `DosExecPgm` (ordinal 283) — for sync (execFlag=0): spawn `warpine <child.exe>` via `std::process::Command`, wait, return exit code in `RESULTCODES` struct at `pRes`; for async (execFlag=1,2): spawn and track in ProcessManager; parse double-null-terminated `pArg` string
-    - [ ] `DosWaitChild` (ordinal 280) — `child.wait()` or `child.try_wait()`; write `RESULTCODES`
-    - [ ] `DosKillProcess` (ordinal 237) — `child.kill()`
-    - [ ] `DosQueryAppType` (ordinal 323) — parse target LX header flags or return `FAPPTYP_NOTWINDOWCOMPAT` (1) for .exe files
+- [x] **Process Execution (Step 3)** — `DosExecPgm` (283) with sync/async modes and double-null arg parsing, `DosWaitChild` (280) with specific/any-child and wait/nowait, `DosKillProcess` (237), `DosQueryAppType` (323) with MZ header detection. ProcessManager extended with child tracking. Fixed `DosGetInfoBlocks` ordinal from 283 to correct 312.
 
 ### Subsystem 3: Shared Memory, Exception Handling, and Init Stubs
 
@@ -171,7 +167,7 @@ New module: `src/loader/stubs.rs` for simple stub handlers. Add `SharedMemManage
 
 ### Verification
 - [x] `cargo build` — compiles cleanly
-- [x] `cargo test` — all 45 tests pass
+- [x] `cargo test` — all 48 tests pass
 - [x] Unit tests for `VioManager` screen buffer operations (scroll up/down, read cell str, defaults)
 - [x] Unit tests for key mapping (enter, printable, backspace → OS/2 charcode/scancode)
 - [x] Unit tests for `DosEditName` wildcard pattern replacement (5 test cases)
