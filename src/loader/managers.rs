@@ -134,6 +134,25 @@ impl HDirManager {
     }
 }
 
+pub struct ResourceManager {
+    // (type_id, name_id) → (guest_addr, size)
+    resources: HashMap<(u16, u16), (u32, u32)>,
+}
+
+impl ResourceManager {
+    pub fn new() -> Self {
+        ResourceManager { resources: HashMap::new() }
+    }
+
+    pub fn add(&mut self, type_id: u16, name_id: u16, guest_addr: u32, size: u32) {
+        self.resources.insert((type_id, name_id), (guest_addr, size));
+    }
+
+    pub fn find(&self, type_id: u16, name_id: u16) -> Option<(u32, u32)> {
+        self.resources.get(&(type_id, name_id)).copied()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -189,5 +208,17 @@ mod tests {
     fn test_free_nonexistent() {
         let mut mgr = MemoryManager::new(0x1000, 0x10000);
         assert!(!mgr.free(0x9999));
+    }
+
+    #[test]
+    fn test_resource_manager_find() {
+        let mut mgr = ResourceManager::new();
+        mgr.add(6, 1, 0x10000, 256);
+        mgr.add(4, 100, 0x20000, 512);
+
+        assert_eq!(mgr.find(6, 1), Some((0x10000, 256)));
+        assert_eq!(mgr.find(4, 100), Some((0x20000, 512)));
+        assert_eq!(mgr.find(6, 2), None);
+        assert_eq!(mgr.find(99, 1), None);
     }
 }

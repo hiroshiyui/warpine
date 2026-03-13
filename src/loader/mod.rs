@@ -52,7 +52,7 @@ pub(crate) enum ApiResult {
 ///
 /// ```text
 /// Level 1: next_tid, threads          (lightweight, rarely contended)
-/// Level 2: mem_mgr, handle_mgr, hdir_mgr  (independent resource managers)
+/// Level 2: mem_mgr, handle_mgr, hdir_mgr, resource_mgr  (independent resource managers)
 /// Level 3: queue_mgr                  (may lock inner Arc<Mutex<OS2Queue>>)
 /// Level 4: sem_mgr                    (may lock inner semaphore mutexes)
 /// Level 5: window_mgr                 (may lock inner Arc<Mutex<PM_MsgQueue>>)
@@ -67,6 +67,7 @@ pub(crate) enum ApiResult {
 pub struct SharedState {
     pub mem_mgr: Mutex<MemoryManager>,
     pub handle_mgr: Mutex<HandleManager>,
+    pub resource_mgr: Mutex<ResourceManager>,
     pub sem_mgr: Mutex<SemaphoreManager>,
     pub hdir_mgr: Mutex<HDirManager>,
     pub queue_mgr: Mutex<QueueManager>,
@@ -106,6 +107,7 @@ impl Loader {
 
         let mem_mgr = MemoryManager::new(DYNAMIC_ALLOC_BASE, guest_mem_size as u32);
         let handle_mgr = HandleManager::new();
+        let resource_mgr = ResourceManager::new();
         let sem_mgr = SemaphoreManager::new();
         let hdir_mgr = HDirManager::new();
         let queue_mgr = QueueManager::new();
@@ -114,6 +116,7 @@ impl Loader {
         let shared = Arc::new(SharedState {
             mem_mgr: Mutex::new(mem_mgr),
             handle_mgr: Mutex::new(handle_mgr),
+            resource_mgr: Mutex::new(resource_mgr),
             sem_mgr: Mutex::new(sem_mgr),
             hdir_mgr: Mutex::new(hdir_mgr),
             queue_mgr: Mutex::new(queue_mgr),
@@ -154,6 +157,19 @@ impl Loader {
                 }
             }
         }
+        // Populate resource manager with precomputed guest addresses
+        if !lx_file.resources.is_empty() {
+            let mut res_mgr = self.shared.resource_mgr.lock_or_recover();
+            for res in &lx_file.resources {
+                let obj_idx = (res.object_num as usize).wrapping_sub(1);
+                if obj_idx < lx_file.object_table.len() {
+                    let guest_addr = lx_file.object_table[obj_idx].base_address + res.offset;
+                    res_mgr.add(res.type_id, res.name_id, guest_addr, res.size);
+                    debug!("  Resource: type={} id={} addr=0x{:08X} size={}", res.type_id, res.name_id, guest_addr, res.size);
+                }
+            }
+        }
+
         self.apply_fixups(lx_file)
     }
 
@@ -426,6 +442,9 @@ impl Loader {
                 342 => 0,
                 348 => 0,
                 349 => self.dos_wait_thread(vcpu_id, read_stack(4)),
+                352 => self.dos_get_resource(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                353 => self.dos_free_resource(read_stack(4)),
+                572 => self.dos_query_resource_size(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
                 _ => { warn!("Warning: Unknown API Ordinal {} on VCPU {}", ordinal, vcpu_id); 0 }
             };
             ApiResult::Normal(res)
