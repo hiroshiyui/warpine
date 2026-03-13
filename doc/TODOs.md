@@ -167,15 +167,8 @@ New module: `src/loader/process.rs`. Add `ProcessManager` to `SharedState` (or t
 
 `ProcessManager` fields: `children: HashMap<u32, std::process::Child>`, `next_pid: u32`, `current_disk: u8` (default 3 = C:), `current_dir: String` (OS/2 current directory, tracked separately from host cwd for sandbox safety).
 
-- [ ] **Directory Management (Step 1, needed for shell prompt)**
-    - [ ] `DosSetCurrentDir` (ordinal 255) — store path in ProcessManager; translate and validate via `translate_path()`
-    - [ ] `DosQueryCurrentDir` (ordinal 274) — read from ProcessManager, write to guest buffer (OS/2 returns path without drive letter)
-    - [ ] `DosQueryCurrentDisk` (ordinal 275) — return `current_disk`
-    - [ ] `DosSetDefaultDisk` (ordinal 220) — set `current_disk`
-- [ ] **System Information (Step 2, needed for 4OS2 init)**
-    - [ ] `DosQuerySysInfo` (ordinal 348) — real implementation: return max path length (260), OS version major/minor (20/45 = Warp 4.5), boot drive (3=C:), max text sessions, page size, etc. Query range `iStart..iLast` indexes into QSV_* table.
-    - [ ] `DosGetDateTime` (ordinal 230) — fill OS/2 `DATETIME` struct from system clock (hours, minutes, seconds, hundredths, day, month, year, timezone, weekday)
-    - [ ] `DosSetDateTime` (ordinal 231) — stub, return 0 (setting system time not meaningful)
+- [x] **Directory Management (Step 1)** — `DosSetCurrentDir` (255), `DosQueryCurrentDir` (274), `DosQueryCurrentDisk` (275), `DosSetDefaultDisk` (220) with `ProcessManager` tracking current disk/directory. `translate_path()` updated to resolve relative paths against OS/2 current directory. Fixed `DosQueryPathInfo` ordinal from 275 to correct 223.
+- [x] **System Information (Step 2)** — `DosQuerySysInfo` (348, full QSV_* table), `DosGetDateTime` (230, real via libc), `DosSetDateTime` (stub) — implemented in Subsystem 3.
 - [ ] **Process Execution (Step 3, core shell functionality)**
     - [ ] `DosExecPgm` (ordinal 283) — for sync (execFlag=0): spawn `warpine <child.exe>` via `std::process::Command`, wait, return exit code in `RESULTCODES` struct at `pRes`; for async (execFlag=1,2): spawn and track in ProcessManager; parse double-null-terminated `pArg` string
     - [ ] `DosWaitChild` (ordinal 280) — `child.wait()` or `child.try_wait()`; write `RESULTCODES`
@@ -199,7 +192,7 @@ New module: `src/loader/stubs.rs` for simple stub handlers. Add `SharedMemManage
 
 ### Verification
 - [x] `cargo build` — compiles cleanly
-- [x] `cargo test` — all 34 tests pass
+- [x] `cargo test` — all 37 tests pass
 - [ ] Unit tests for `VioManager` screen buffer operations (write, scroll, read back)
 - [ ] Unit tests for `KbdCharIn` scancode mapping (Linux keycode → OS/2 KBDKEYINFO)
 - [x] Unit tests for `DosEditName` wildcard pattern replacement (5 test cases)
