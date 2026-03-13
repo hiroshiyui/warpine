@@ -13,6 +13,7 @@ use super::mutex_ext::MutexExt;
 use super::pm_types::OS2Message;
 use super::ApiResult;
 use crate::gui::GUIMessage;
+use crate::lx::header::{RT_STRING, RT_MENU, RT_ACCELTABLE};
 
 impl super::Loader {
     pub(crate) fn handle_pmwin_call(&self, vcpu: &mut VcpuFd, vcpu_id: u32, ordinal: u32) -> ApiResult {
@@ -400,9 +401,13 @@ impl super::Loader {
             }
             923 => {
                 // WinDlgBox(HWND hwndParent, HWND hwndOwner, PFNWP pfnDlgProc, HMODULE hmod, ULONG idDlg, PVOID pCreateParams)
-                // Complex - needs resource loading. Stub: return MBID_OK (1)
-                debug!("  [VCPU {}] WinDlgBox (stub) - no resource loading support", vcpu_id);
-                ApiResult::Normal(1)
+                let _hwnd_parent = read_stack(4);
+                let _hwnd_owner = read_stack(8);
+                let _pfn_dlg_proc = read_stack(12);
+                let _hmod = read_stack(16);
+                let id_dlg = read_stack(20);
+                debug!("  [VCPU {}] WinDlgBox: idDlg={} (dialog template parsing deferred)", vcpu_id, id_dlg);
+                ApiResult::Normal(1) // DID_OK
             }
             733 => {
                 // WinEmptyClipbrd(HAB hab)
@@ -455,21 +460,119 @@ impl super::Loader {
             }
             776 => {
                 // WinLoadAccelTable(HAB hab, HMODULE hmod, ULONG idAccelTable)
-                // Stub - no resource loading support
-                debug!("  [VCPU {}] WinLoadAccelTable (stub)", vcpu_id);
-                ApiResult::Normal(0) // NULLHANDLE - no accel table
+                let _hab = read_stack(4);
+                let _hmod = read_stack(8);
+                let id = read_stack(12);
+                debug!("  [VCPU {}] WinLoadAccelTable id={}", vcpu_id, id);
+                let res_mgr = self.shared.resource_mgr.lock_or_recover();
+                if let Some((guest_addr, size)) = res_mgr.find(RT_ACCELTABLE, id as u16) {
+                    drop(res_mgr);
+                    // Parse binary accelerator table: u16 count at offset 2, then entries of 6 bytes each
+                    if size >= 4 {
+                        let count = self.guest_read::<u16>(guest_addr + 2).unwrap_or(0) as usize;
+                        let mut entries = Vec::new();
+                        for i in 0..count {
+                            let entry_off = guest_addr + 4 + (i as u32) * 6;
+                            if entry_off + 6 > guest_addr + size { break; }
+                            let flags = self.guest_read::<u16>(entry_off).unwrap_or(0);
+                            let key = self.guest_read::<u16>(entry_off + 2).unwrap_or(0);
+                            let cmd = self.guest_read::<u16>(entry_off + 4).unwrap_or(0);
+                            entries.push(super::pm_types::AccelEntry { flags, key, cmd });
+                        }
+                        let mut wm = self.shared.window_mgr.lock_or_recover();
+                        let haccel = wm.add_accel_table(entries);
+                        ApiResult::Normal(haccel)
+                    } else {
+                        ApiResult::Normal(0)
+                    }
+                } else {
+                    debug!("  [VCPU {}] WinLoadAccelTable: resource not found for id={}", vcpu_id, id);
+                    ApiResult::Normal(0)
+                }
             }
             924 => {
                 // WinLoadDlg(HWND hwndParent, HWND hwndOwner, PFNWP pfnDlgProc, HMODULE hmod, ULONG idDlg, PVOID pCreateParams)
-                // Stub - no resource loading support
-                debug!("  [VCPU {}] WinLoadDlg (stub) - no resource loading support", vcpu_id);
-                ApiResult::Normal(0) // NULLHANDLE
+                let hwnd_parent = read_stack(4);
+                let _hwnd_owner = read_stack(8);
+                let _pfn_dlg_proc = read_stack(12);
+                let _hmod = read_stack(16);
+                let id_dlg = read_stack(20);
+                debug!("  [VCPU {}] WinLoadDlg: parent={} idDlg={} (dialog template parsing deferred)", vcpu_id, hwnd_parent, id_dlg);
+                // Create a placeholder dialog window
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
+                let h = wm.create_window("#Dialog".to_string(), hwnd_parent, hmq);
+                ApiResult::Normal(h)
             }
             778 => {
                 // WinLoadMenu(HWND hwndFrame, HMODULE hmod, ULONG idMenu)
-                // Stub - no resource loading support
-                debug!("  [VCPU {}] WinLoadMenu (stub)", vcpu_id);
-                ApiResult::Normal(0) // NULLHANDLE
+                let hwnd_frame = read_stack(4);
+                let _hmod = read_stack(8);
+                let id_menu = read_stack(12);
+                debug!("  [VCPU {}] WinLoadMenu hwnd_frame={} id={}", vcpu_id, hwnd_frame, id_menu);
+                let res_mgr = self.shared.resource_mgr.lock_or_recover();
+                let has_resource = res_mgr.find(RT_MENU, id_menu as u16).is_some();
+                drop(res_mgr);
+                // Create a menu window regardless; actual template parsing deferred
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let h = wm.create_window("#Menu".to_string(), hwnd_frame, 0);
+                if has_resource {
+                    debug!("  [VCPU {}] WinLoadMenu: created menu hwnd={} from resource", vcpu_id, h);
+                } else {
+                    debug!("  [VCPU {}] WinLoadMenu: created empty menu hwnd={} (no resource found)", vcpu_id, h);
+                }
+                ApiResult::Normal(h)
+            }
+            781 => {
+                // WinLoadString(HAB hab, HMODULE hmod, ULONG id, LONG cchMax, PSZ pszBuffer)
+                let _hab = read_stack(4);
+                let _hmod = read_stack(8);
+                let id = read_stack(12);
+                let cch_max = read_stack(16) as i32;
+                let psz_buffer = read_stack(20);
+                debug!("  [VCPU {}] WinLoadString id={} cchMax={}", vcpu_id, id, cch_max);
+
+                // OS/2 string tables are grouped in bundles of 16.
+                // Resource ID = (string_id / 16) + 1, index within bundle = string_id % 16
+                let bundle_id = (id / 16) + 1;
+                let string_index = (id % 16) as usize;
+                let res_mgr = self.shared.resource_mgr.lock_or_recover();
+                if let Some((guest_addr, size)) = res_mgr.find(RT_STRING, bundle_id as u16) {
+                    drop(res_mgr);
+                    // Parse bundle: sequential length-prefixed strings (1-byte length + data)
+                    let mut offset = 0u32;
+                    for idx in 0..16 {
+                        if offset >= size { break; }
+                        let len = self.guest_read::<u8>(guest_addr + offset).unwrap_or(0) as u32;
+                        offset += 1;
+                        if idx == string_index {
+                            let copy_len = len.min((cch_max.max(0) as u32).saturating_sub(1));
+                            if psz_buffer != 0 && copy_len > 0 {
+                                for i in 0..copy_len {
+                                    let b = self.guest_read::<u8>(guest_addr + offset + i).unwrap_or(0);
+                                    self.guest_write::<u8>(psz_buffer + i, b);
+                                }
+                                self.guest_write::<u8>(psz_buffer + copy_len, 0);
+                            } else if psz_buffer != 0 {
+                                self.guest_write::<u8>(psz_buffer, 0);
+                            }
+                            return ApiResult::Normal(copy_len);
+                        }
+                        offset += len;
+                    }
+                    // String index not found in bundle
+                    if psz_buffer != 0 {
+                        self.guest_write::<u8>(psz_buffer, 0);
+                    }
+                    ApiResult::Normal(0)
+                } else {
+                    drop(res_mgr);
+                    debug!("  [VCPU {}] WinLoadString: string bundle {} not found", vcpu_id, bundle_id);
+                    if psz_buffer != 0 {
+                        self.guest_write::<u8>(psz_buffer, 0);
+                    }
+                    ApiResult::Normal(0)
+                }
             }
             793 => {
                 // WinOpenClipbrd(HAB hab)
@@ -592,7 +695,12 @@ impl super::Loader {
             }
             850 => {
                 // WinSetAccelTable(HAB hab, HACCEL haccel, HWND hwnd)
-                // Stub
+                let _hab = read_stack(4);
+                let haccel = read_stack(8);
+                let hwnd = read_stack(12);
+                debug!("  [VCPU {}] WinSetAccelTable haccel={} hwnd={}", vcpu_id, haccel, hwnd);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                wm.set_window_accel(hwnd, haccel);
                 ApiResult::Normal(1)
             }
             854 => {
@@ -712,7 +820,27 @@ impl super::Loader {
             }
             904 => {
                 // WinTranslateAccel(HAB hab, HWND hwnd, HACCEL haccel, PQMSG pqmsg)
-                // Stub - no accelerator support
+                let _hab = read_stack(4);
+                let hwnd = read_stack(8);
+                let _haccel = read_stack(12);
+                let pqmsg = read_stack(16);
+                if pqmsg == 0 { return ApiResult::Normal(0); }
+                let msg = self.guest_read::<u32>(pqmsg + 4).unwrap_or(0);
+                if msg == WM_CHAR {
+                    let mp1 = self.guest_read::<u32>(pqmsg + 8).unwrap_or(0);
+                    let mp2 = self.guest_read::<u32>(pqmsg + 12).unwrap_or(0);
+                    let flags = (mp1 & 0xFFFF) as u16;
+                    let key = (mp2 & 0xFFFF) as u16;
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    if let Some(cmd) = wm.translate_accel(hwnd, key, flags) {
+                        drop(wm);
+                        // Rewrite message as WM_COMMAND
+                        self.guest_write::<u32>(pqmsg + 4, WM_COMMAND);
+                        self.guest_write::<u32>(pqmsg + 8, cmd as u32); // mp1 = command id
+                        self.guest_write::<u32>(pqmsg + 12, 0);         // mp2 = 0
+                        return ApiResult::Normal(1); // TRUE - translated
+                    }
+                }
                 ApiResult::Normal(0) // FALSE - not translated
             }
             892 => {

@@ -54,6 +54,12 @@ pub struct PresentationSpace {
     pub current_pos: (i32, i32),
 }
 
+pub struct AccelEntry {
+    pub flags: u16,
+    pub key: u16,
+    pub cmd: u16,
+}
+
 pub struct WindowManager {
     classes: HashMap<String, WindowClass>,
     windows: HashMap<u32, OS2Window>,
@@ -65,9 +71,12 @@ pub struct WindowManager {
     pub timers: HashMap<(u32, u32), (Arc<AtomicBool>, Option<thread::JoinHandle<()>>)>,
     pub clipboard: HashMap<u32, u32>,
     pub clipboard_open: bool,
+    accel_tables: HashMap<u32, Vec<AccelEntry>>,
+    window_accel: HashMap<u32, u32>, // hwnd → haccel
     next_hwnd: u32,
     next_hps: u32,
     next_hmq: u32,
+    next_haccel: u32,
 }
 
 impl WindowManager {
@@ -83,9 +92,12 @@ impl WindowManager {
             timers: HashMap::new(),
             clipboard: HashMap::new(),
             clipboard_open: false,
+            accel_tables: HashMap::new(),
+            window_accel: HashMap::new(),
             next_hwnd: 0x1000,
             next_hps: 0x2000,
             next_hmq: 0x3000,
+            next_haccel: 0x4000,
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
@@ -175,6 +187,32 @@ impl WindowManager {
                 let _ = h.join();
             }
         }
+    }
+
+    pub fn add_accel_table(&mut self, entries: Vec<AccelEntry>) -> u32 {
+        let h = self.next_haccel;
+        self.accel_tables.insert(h, entries);
+        self.next_haccel += 1;
+        h
+    }
+
+    pub fn set_window_accel(&mut self, hwnd: u32, haccel: u32) {
+        if haccel == 0 {
+            self.window_accel.remove(&hwnd);
+        } else {
+            self.window_accel.insert(hwnd, haccel);
+        }
+    }
+
+    pub fn translate_accel(&self, hwnd: u32, key: u16, flags: u16) -> Option<u16> {
+        let haccel = self.window_accel.get(&hwnd)?;
+        let entries = self.accel_tables.get(haccel)?;
+        for entry in entries {
+            if entry.key == key && (entry.flags & flags) == entry.flags {
+                return Some(entry.cmd);
+            }
+        }
+        None
     }
 
     pub fn find_child_by_id(&self, parent: u32, id: u32) -> Option<u32> {

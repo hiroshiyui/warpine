@@ -17,6 +17,7 @@ pub const WM_QUIT: u32 = 0x002A;
 pub const WM_MOUSEMOVE: u32 = 0x0070;
 pub const WM_BUTTON1DOWN: u32 = 0x0071;
 pub const WM_BUTTON1UP: u32 = 0x0072;
+pub const WM_COMMAND: u32 = 0x0020;
 pub const WM_CHAR: u32 = 0x007A;
 
 // Guest memory layout constants

@@ -638,6 +638,31 @@ impl super::Loader {
         337
     }
 
+    pub fn dos_get_resource(&self, _hmod: u32, id_type: u32, id_name: u32, ppb: u32) -> u32 {
+        let res_mgr = self.shared.resource_mgr.lock_or_recover();
+        if let Some((guest_addr, _size)) = res_mgr.find(id_type as u16, id_name as u16) {
+            self.guest_write::<u32>(ppb, guest_addr);
+            0
+        } else {
+            6 // ERROR_INVALID_HANDLE
+        }
+    }
+
+    pub fn dos_free_resource(&self, _pb: u32) -> u32 {
+        // No-op: resource data lives in loaded object pages
+        0
+    }
+
+    pub fn dos_query_resource_size(&self, _hmod: u32, id_type: u32, id_name: u32, p_size: u32) -> u32 {
+        let res_mgr = self.shared.resource_mgr.lock_or_recover();
+        if let Some((_guest_addr, size)) = res_mgr.find(id_type as u16, id_name as u16) {
+            self.guest_write::<u32>(p_size, size);
+            0
+        } else {
+            6 // ERROR_INVALID_HANDLE
+        }
+    }
+
     pub fn dos_wait_thread(&self, vcpu_id: u32, ptid_ptr: u32) -> u32 {
         let tid = self.guest_read::<u32>(ptid_ptr).unwrap_or(0);
         debug!("  [VCPU {}] Waiting for thread {}...", vcpu_id, tid);
