@@ -106,6 +106,9 @@ impl ApplicationHandler<()> for GUIApp {
                 if let Some(handle) = pm_handle {
                     self.push_msg(handle, WM_CLOSE, 0, 0);
                 }
+                // Signal shutdown and exit the event loop
+                self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+                _event_loop.exit();
             }
             WindowEvent::Resized(size) => {
                 if let Some(handle) = pm_handle {
@@ -173,6 +176,9 @@ impl ApplicationHandler<()> for GUIApp {
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         self.process_gui_messages(event_loop);
+        if self.shared.exit_requested.load(std::sync::atomic::Ordering::Relaxed) {
+            event_loop.exit();
+        }
     }
 }
 

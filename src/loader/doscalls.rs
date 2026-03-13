@@ -156,7 +156,12 @@ impl super::Loader {
     }
 
     pub fn dos_sleep(&self, msec: u32) -> u32 {
-        thread::sleep(std::time::Duration::from_millis(msec as u64));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(msec as u64);
+        while std::time::Instant::now() < deadline {
+            if self.shutting_down() { return 0; }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            thread::sleep(remaining.min(std::time::Duration::from_millis(100)));
+        }
         0
     }
 
@@ -397,11 +402,15 @@ impl super::Loader {
                 if msec == u32::MAX { u64::MAX / 2 } else { msec as u64 }
             );
             while !sem.posted {
+                if self.shutting_down() { return 640; }
                 let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                 if remaining.is_zero() { return 640; } // ERROR_TIMEOUT
-                let (guard, result) = cvar.wait_timeout(sem, remaining).unwrap();
+                let wait_time = remaining.min(std::time::Duration::from_millis(100));
+                let (guard, result) = cvar.wait_timeout(sem, wait_time).unwrap();
                 sem = guard;
-                if result.timed_out() && !sem.posted { return 640; }
+                if result.timed_out() && !sem.posted {
+                    if deadline.saturating_duration_since(std::time::Instant::now()).is_zero() { return 640; }
+                }
             }
             0
         } else { 6 }
@@ -428,6 +437,7 @@ impl super::Loader {
                 if msec == u32::MAX { u64::MAX / 2 } else { msec as u64 }
             );
             loop {
+                if self.shutting_down() { return 640; }
                 match sem.owner_tid {
                     None => {
                         sem.owner_tid = Some(tid);
@@ -441,9 +451,9 @@ impl super::Loader {
                     _ => {
                         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
                         if remaining.is_zero() { return 640; } // ERROR_TIMEOUT
-                        let (guard, result) = cvar.wait_timeout(sem, remaining).unwrap();
+                        let wait_time = remaining.min(std::time::Duration::from_millis(100));
+                        let (guard, _result) = cvar.wait_timeout(sem, wait_time).unwrap();
                         sem = guard;
-                        if result.timed_out() { continue; } // re-check ownership after timeout
                     }
                 }
             }
@@ -495,6 +505,7 @@ impl super::Loader {
                 if msec == u32::MAX { u64::MAX / 2 } else { msec as u64 }
             );
             loop {
+                if self.shutting_down() { return 640; }
                 let mut ready_idx = None;
                 let mut all_ready = true;
 
@@ -575,6 +586,7 @@ impl super::Loader {
         };
 
         loop {
+            if self.shutting_down() { return 342; }
             {
                 let mut q = q_arc.lock_or_recover();
                 if let Some(entry) = q.items.pop_front() {
@@ -631,6 +643,7 @@ impl super::Loader {
         debug!("  [VCPU {}] Waiting for thread {}...", vcpu_id, tid);
         let mut handle = None;
         for _ in 0..100 {
+            if self.shutting_down() { return 309; }
             handle = self.shared.threads.lock_or_recover().remove(&tid);
             if handle.is_some() { break; }
             std::thread::sleep(std::time::Duration::from_millis(10));

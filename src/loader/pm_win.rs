@@ -119,6 +119,7 @@ impl super::Loader {
                         (Arc::clone(&mq.cond), Arc::clone(&mq.lock))
                     };
                     loop {
+                        if self.shutting_down() { return ApiResult::Normal(0); }
                         {
                             let mut mq = mq_arc.lock_or_recover();
                             if let Some(msg) = mq.messages.pop_front() {

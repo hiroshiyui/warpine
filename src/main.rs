@@ -130,8 +130,14 @@ fn main() {
         loader.clone().setup_and_spawn_vcpu(&lx_file);
 
         // Run GUI event loop on main thread
-        let mut app = gui::GUIApp::new(shared, gui_rx);
+        let mut app = gui::GUIApp::new(shared.clone(), gui_rx);
         event_loop.run_app(&mut app).expect("Event loop failed");
+
+        // Cleanup: signal shutdown, stop timers, and exit
+        shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+        shared.window_mgr.lock_or_recover().stop_all_timers();
+        let code = shared.exit_code.load(std::sync::atomic::Ordering::Relaxed);
+        std::process::exit(code);
     } else {
         // CLI app: run directly
         loader.setup_and_run_cli(&lx_file);
