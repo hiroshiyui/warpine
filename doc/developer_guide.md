@@ -19,8 +19,10 @@ This guide introduces the internals of Warpine and the OS/2 concepts it emulates
 9. [IPC: Semaphores and Queues](#ipc-semaphores-and-queues)
 10. [Presentation Manager (GUI)](#presentation-manager-gui)
 11. [PM Callback Mechanism](#pm-callback-mechanism)
-12. [Module Structure](#module-structure)
-13. [Adding a New API](#adding-a-new-api)
+12. [Text-Mode Console Subsystem](#text-mode-console-subsystem)
+13. [4OS2 Compatibility](#4os2-compatibility)
+14. [Module Structure](#module-structure)
+15. [Adding a New API](#adding-a-new-api)
 
 ---
 
@@ -107,14 +109,30 @@ All addresses are guest physical addresses (GPA = GVA in Warpine's flat memory m
 
 | Address Range | Purpose |
 |---|---|
-| `0x00001000` – `0x0005FFFF` | GDT, executable pages (loaded from LX objects) |
-| `0x00060000` | Environment variables block |
-| `0x00070000` | Thread Information Block (TIB) for thread 1 |
-| `0x00071000` | Process Information Block (PIB) |
-| `0x01000000` (`MAGIC_API_BASE`) | API thunk stubs (4096 bytes of INT 3 instructions) |
+| `0x00001000` – `0x0008FFFF` | GDT, executable pages (loaded from LX objects) |
+| `0x00090000` (`TIB_BASE`) | Thread Information Block (TIB) for thread 1 |
+| `0x00091000` (`PIB_BASE`) | Process Information Block (PIB) |
+| `0x00092000` (`ENV_ADDR`) | Reserved (env block is now dynamically allocated) |
+| `0x01000000` (`MAGIC_API_BASE`) | API thunk stubs (10240 bytes of INT 3 instructions) |
 | `0x010003FE` (`CALLBACK_RET_TRAP`) | PM callback return trap |
 | `0x010003FF` (`EXIT_TRAP_ADDR`) | Thread exit trap |
-| `0x02000000` (`DYNAMIC_ALLOC_BASE`) | Dynamic allocation pool (DosAllocMem) |
+| `0x02000000` (`DYNAMIC_ALLOC_BASE`) | Dynamic allocation pool (DosAllocMem, env block) |
+
+TIB/PIB addresses must stay below `0x100000` so that 16-bit segment arithmetic (`addr >> 4` fits in u16) works correctly for `DosGetInfoSeg` and similar APIs.
+
+#### PIB Layout
+
+The Process Information Block has the following key offsets:
+
+| Offset | Field | Description |
+|---|---|---|
+| `+0x00` | `pib_ulpid` | Process ID |
+| `+0x04` | `pib_ulppid` | Parent process ID |
+| `+0x08` | `pib_hmte` | Module handle |
+| `+0x0C` | `pib_pchcmd` | Pointer to command line string |
+| `+0x10` | `pib_pchenv` | Pointer to environment block |
+
+The environment block follows OS/2 format: null-terminated `KEY=VALUE` strings, double-null terminated. The command line is stored separately (typically after the environment block) and contains `program_name\0arguments\0`.
 
 Guest memory helpers in `src/loader/guest_mem.rs` provide safe access:
 
@@ -132,14 +150,19 @@ This is Warpine's core trick for intercepting OS/2 API calls without modifying t
 
 ### Setup
 
-During loading, `setup_stubs()` fills the 4096-byte region at `MAGIC_API_BASE` with INT 3 (0xCC) instructions. When the LX loader encounters an import fixup for a known module (DOSCALLS, PMWIN, PMGPI), `resolve_import()` maps it to a specific address:
+During loading, `setup_stubs()` fills a 10240-byte region at `MAGIC_API_BASE` with INT 3 (0xCC) instructions. When the LX loader encounters an import fixup for a known module, `resolve_import()` maps it to a specific address:
 
-| Module | Address formula |
-|---|---|
-| DOSCALLS | `MAGIC_API_BASE + ordinal` (ordinals 0–1023) |
-| QUECALLS | `MAGIC_API_BASE + 1024 + ordinal` (ordinals 1024–2047) |
-| PMWIN | `MAGIC_API_BASE + 2048 + ordinal` (ordinals 2048–3071) |
-| PMGPI | `MAGIC_API_BASE + 3072 + ordinal` (ordinals 3072–4095) |
+| Module | Base Constant | Address formula | Range |
+|---|---|---|---|
+| DOSCALLS | — | `MAGIC_API_BASE + ordinal` | 0–1023 |
+| QUECALLS | — | `MAGIC_API_BASE + 1024 + ordinal` | 1024–2047 |
+| PMWIN | `PMWIN_BASE` (2048) | `MAGIC_API_BASE + 2048 + ordinal` | 2048–3071 |
+| PMGPI | `PMGPI_BASE` (3072) | `MAGIC_API_BASE + 3072 + ordinal` | 3072–4095 |
+| KBDCALLS | `KBDCALLS_BASE` (4096) | `MAGIC_API_BASE + 4096 + ordinal` | 4096–5119 |
+| VIOCALLS | `VIOCALLS_BASE` (5120) | `MAGIC_API_BASE + 5120 + ordinal` | 5120–6143 |
+| SESMGR | `SESMGR_BASE` (6144) | `MAGIC_API_BASE + 6144 + ordinal` | 6144–7167 |
+| NLS | `NLS_BASE` (7168) | `MAGIC_API_BASE + 7168 + ordinal` | 7168–8191 |
+| MSG | `MSG_BASE` (8192) | `MAGIC_API_BASE + 8192 + ordinal` | 8192–10239 |
 
 The fixup is patched so the guest's `CALL` instruction targets the appropriate stub address.
 
@@ -170,13 +193,16 @@ The primary OS/2 API module. Implemented functions:
 
 | Category | Functions |
 |---|---|
-| **File I/O** | DosOpen, DosClose, DosRead, DosWrite, DosSetFilePtr, DosDelete, DosMove, DosQueryPathInfo, DosQueryFileInfo, DosQueryHType |
-| **Directory** | DosCreateDir, DosDeleteDir, DosFindFirst, DosFindNext, DosFindClose |
-| **Memory** | DosAllocMem, DosFreeMem |
+| **File I/O** | DosOpen, DosClose, DosRead (including stdin), DosWrite, DosSetFilePtr, DosDelete, DosMove, DosCopy, DosQueryPathInfo, DosQueryFileInfo, DosSetFileInfo, DosSetFileMode, DosSetPathInfo, DosQueryHType, DosQueryFHState, DosSetFHState, DosQueryFSInfo, DosQueryFSAttach, DosQueryVerify, DosSetVerify, DosEditName |
+| **Directory** | DosCreateDir, DosDeleteDir, DosFindFirst, DosFindNext, DosFindClose, DosSetCurrentDir, DosQueryCurrentDir, DosQueryCurrentDisk, DosSetDefaultDisk |
+| **Memory** | DosAllocMem, DosFreeMem, DosAllocSharedMem, DosGetNamedSharedMem, DosGetSharedMem, DosSetMem, DosQueryMem |
 | **Threading** | DosCreateThread, DosSleep, DosWaitThread, DosGetInfoBlocks |
-| **Semaphores** | DosCreateEventSem, DosCloseEventSem, DosPostEventSem, DosWaitEventSem, DosCreateMutexSem, DosCloseMutexSem, DosRequestMutexSem, DosReleaseMutexSem, DosCreateMuxWaitSem, DosCloseMuxWaitSem, DosWaitMuxWaitSem |
+| **Process** | DosExecPgm, DosWaitChild, DosKillProcess, DosQueryAppType, DosExit |
+| **Semaphores** | DosCreateEventSem, DosCloseEventSem, DosPostEventSem, DosWaitEventSem, DosOpenEventSem, DosCreateMutexSem, DosCloseMutexSem, DosRequestMutexSem, DosReleaseMutexSem, DosOpenMutexSem, DosCreateMuxWaitSem, DosCloseMuxWaitSem, DosWaitMuxWaitSem |
 | **Queues** | DosCreateQueue, DosOpenQueue, DosWriteQueue, DosReadQueue, DosCloseQueue, DosPurgeQueue, DosQueryQueue |
 | **Pipes** | DosCreatePipe |
+| **System** | DosQuerySysInfo, DosGetDateTime, DosQueryCp, DosQueryCtryInfo, DosMapCase, DosDevConfig, DosDevIOCtl |
+| **Stubs** | DosError, DosSetMaxFH, DosBeep, DosSetExceptionHandler, DosLoadModule, DosStartSession, and others |
 
 All blocking operations (DosSleep, DosWaitEventSem, DosRequestMutexSem, DosWaitMuxWaitSem, DosReadQueue, DosWaitThread) check the `exit_requested` flag in 100 ms intervals to ensure clean shutdown.
 
@@ -294,6 +320,73 @@ This mechanism is **re-entrant** — a window procedure can call `WinSendMsg`, w
 
 ---
 
+## Text-Mode Console Subsystem
+
+**Modules:** `src/loader/console.rs`, `src/loader/viocalls.rs`, `src/loader/kbdcalls.rs`
+
+OS/2 text-mode applications use two subsystems: **VIOCALLS** (Video I/O) for screen output and **KBDCALLS** (Keyboard) for input. Warpine implements these by mapping VIO calls to ANSI escape sequences on the host terminal and KBD calls to Linux termios raw mode input.
+
+### VioManager (console.rs)
+
+The `VioManager` maintains:
+- A **screen buffer** of `(char, attribute)` cell pairs (row-major, CGA 16-color attributes)
+- **Cursor position** (row, col) and visibility state
+- **Terminal dimensions** detected via `TIOCGWINSZ` ioctl
+- **Raw mode state** for keyboard input via `tcsetattr`
+
+VIO output functions write to the screen buffer and emit ANSI escape sequences to the host terminal. CGA attribute bytes are mapped to ANSI color codes (foreground 30–37, background 40–47, with bright bit support).
+
+### DosRead on stdin
+
+CLI applications like 4OS2 read keyboard input via `DosRead` on file handle 0 rather than using `KbdCharIn`. The `dos_read_stdin()` handler:
+
+1. Enables terminal raw mode (`VMIN=0, VTIME=1` for 100ms timeout polling)
+2. Blocks until a byte is available, checking `exit_requested` between polls
+3. **Translates CR → CR+LF** — OS/2 console convention; pressing Enter on the host sends `\r`, but OS/2 apps expect `\r\n` as the line terminator. A pending LF byte is queued in `VioManager.stdin_pending_lf` and delivered on the next `DosRead` call.
+4. **Echoes characters** — Raw mode disables terminal echo, so `dos_read_stdin` writes typed characters back to stdout (including destructive backspace handling)
+
+### 16-bit Thunk Bypass
+
+Some OS/2 applications contain 16-bit code thunks (e.g., `LSS` instructions for loading segment:offset pairs) that cause #GP faults in Warpine's flat 32-bit mode. The VMEXIT handler detects these by:
+
+1. Checking if the faulting instruction is `LSS` (opcodes `0x66 0x0F` or `0x0F 0xB2`)
+2. Scanning the guest stack for return addresses within known code object ranges (`SharedState.code_ranges`)
+3. Skipping the thunk by setting RIP to the found return address
+
+---
+
+## 4OS2 Compatibility
+
+[4OS2](https://github.com/StevenLevine/4os2) is a commercial-grade OS/2 command shell (BSD-like license from JP Software). It serves as Warpine's primary text-mode compatibility target because it exercises nearly every DOSCALLS surface plus the full Kbd/Vio console subsystem.
+
+### Setup
+
+```bash
+cd samples/4os2
+./fetch_source.sh    # Clones source from GitHub at a pinned commit
+make                 # Cross-compiles with Open Watcom
+```
+
+### Running
+
+```bash
+cargo run -- samples/4os2/4os2.exe
+```
+
+4OS2 boots to an interactive `[c:\]` prompt. Supported commands include `ver`, `set`, `echo`, `exit`, and other built-in commands. Use `RUST_LOG=debug` to trace API calls.
+
+### Key implementation details
+
+Several issues were discovered and fixed during 4OS2 bring-up that are worth noting for future OS/2 application compatibility work:
+
+- **PIB field ordering** — `pib_pchcmd` is at offset `+0x0C` and `pib_pchenv` is at `+0x10`. Getting these swapped causes the app to read the command line string as the environment block (symptom: `set` shows no variables, `memory` reports only ~13 bytes used in env).
+- **Environment block format** — Must be null-terminated `KEY=VALUE` strings followed by a double-null terminator. The command line string (`program_name\0arguments\0`) is stored separately and pointed to by `pib_pchcmd`. The env block is dynamically allocated to avoid collisions with loaded LX objects.
+- **Guest memory layout** — LX objects can load at addresses up to `0x80000+`, so TIB/PIB must be placed above that range. But they must also stay below `0x100000` for 16-bit segment arithmetic (`addr >> 4` must fit in u16). The safe zone is `0x90000–0x9FFFF`.
+- **CR→CRLF on stdin** — OS/2 console DosRead returns `\r\n` when Enter is pressed. Linux terminals in raw mode send only `\r`. Without translation, 4OS2 never recognizes end-of-line.
+- **Character echo** — Terminal raw mode disables echo. OS/2 apps expect the console driver to echo typed characters during DosRead, so the emulation layer must do this explicitly.
+
+---
+
 ## Module Structure
 
 ```
@@ -310,13 +403,18 @@ src/
     mod.rs             Loader struct, SharedState, KVM setup, VMEXIT loop, API dispatch
     constants.rs       Named constants (addresses, message IDs, mock handles)
     mutex_ext.rs       MutexExt trait (poison-recovering lock)
-    managers.rs        MemoryManager, HandleManager, HDirManager
+    managers.rs        MemoryManager, HandleManager, HDirManager, ResourceManager
     ipc.rs             Semaphores (event, mutex, muxwait) and queues
     pm_types.rs        PM data types (windows, classes, presentation spaces, WindowManager)
     guest_mem.rs       Guest memory read/write/translate helpers
     doscalls.rs        DOSCALLS API implementations (~40 functions)
     pm_win.rs          PMWIN API implementations (~50 ordinals)
     pm_gpi.rs          PMGPI API implementations (8 ordinals)
+    console.rs         VioManager: screen buffer, cursor state, raw mode, ANSI output
+    viocalls.rs        VIOCALLS API implementations (VioWrtTTY, VioScrollUp, etc.)
+    kbdcalls.rs        KBDCALLS API implementations (KbdCharIn, KbdStringIn, etc.)
+    stubs.rs           Stub handlers for unimplemented/low-priority APIs
+    process.rs         ProcessManager: DosExecPgm, DosWaitChild, directory tracking
 ```
 
 ---
@@ -422,9 +520,12 @@ The test suite covers three areas:
 
 | Module | What's tested |
 |---|---|
-| `src/lx/header.rs` | LX header parsing, object table entry parsing |
+| `src/lx/header.rs` | LX header parsing, object table entry parsing, resource entry parsing |
 | `src/lx.rs` | MZ validation, LX signature detection, rejection of malformed binaries (excessive object/page counts, invalid EIP object, invalid page offset shift), parsing of a real `hello.exe` |
-| `src/loader/managers.rs` | MemoryManager allocation, 4KB alignment, free-list reuse, top-of-heap coalescing, overflow/limit rejection |
+| `src/loader/managers.rs` | MemoryManager allocation, 4KB alignment, free-list reuse, top-of-heap coalescing, overflow/limit rejection, ResourceManager find operations, SharedMemManager name lookup |
+| `src/loader/console.rs` | VioManager screen buffer operations (scroll up/down, read cell str, defaults), key mapping (enter, printable, backspace → OS/2 charcode/scancode) |
+| `src/loader/stubs.rs` | DosEditName wildcard pattern replacement, DosQuerySysInfo QSV_* constant validation |
+| `src/loader/process.rs` | ProcessManager child tracking, wait-any semantics |
 | `src/gui.rs` | Y-coordinate flipping, rectangle rendering (filled/outlined), line drawing (horizontal/vertical/diagonal), text rendering pixel output and orientation |
 
 ### Integration testing with sample apps
@@ -480,4 +581,10 @@ cargo run -- samples/pm_demo/pm_demo.exe
 cargo run -- samples/shapes/shapes.exe
 ```
 
-CLI samples should print output and exit with code 0. PM samples should open a window and respond to close. Use `RUST_LOG=debug` to inspect API call traces if a sample misbehaves.
+# Text-mode: 4OS2 command shell (interactive)
+cd samples/4os2 && ./fetch_source.sh && make && cd ../..
+cargo run -- samples/4os2/4os2.exe
+# Should show banner, [c:\] prompt, accept commands (ver, set, exit)
+```
+
+CLI samples should print output and exit with code 0. PM samples should open a window and respond to close. 4OS2 should boot to an interactive prompt. Use `RUST_LOG=debug` to inspect API call traces if a sample misbehaves.
