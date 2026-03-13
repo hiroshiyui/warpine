@@ -27,6 +27,8 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
     - [x] Handle OS/2 32-bit flat memory model vs. segmented requests.
 - [x] **Filesystem APIs**
     - [x] `DosOpen`, `DosRead`, `DosClose`, `DosQueryFileInfo`.
+    - [x] `DosDelete`, `DosMove`, `DosCreateDir`, `DosDeleteDir`.
+    - [x] `DosFindFirst`, `DosFindNext` with basic wildcard support.
     - [x] Map OS/2 drive letters (e.g., `C:\`) to Unix paths.
 - [x] **Process/Thread Management**
     - [x] `DosCreateThread`, `DosKillThread`.
@@ -34,7 +36,7 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
 - [x] Inter-Process Communication (IPC)
     - [x] Event Semaphores (`DosCreateEventSem`, `DosPostEventSem`, etc.).
     - [x] Mutex Semaphores (`DosCreateMutexSem`, `DosRequestMutexSem`, etc.).
-    - [ ] MuxWait Semaphores.
+    - [x] MuxWait Semaphores (`DosCreateMuxWaitSem`, `DosWaitMuxWaitSem`).
     - [ ] Pipes and Queues.
 
 

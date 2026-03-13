@@ -2,7 +2,7 @@
 use crate::lx::LxFile;
 use crate::lx::header::FixupTarget;
 use crate::api;
-use std::fs::{File, OpenOptions, ReadDir};
+use std::fs::{self, File, OpenOptions, ReadDir};
 use std::io::{self, Read, Write, Seek, SeekFrom};
 use std::path::Path;
 use std::ptr;
@@ -97,9 +97,28 @@ pub struct MutexSemaphore {
     _name: Option<String>,
 }
 
+#[derive(Clone)]
+pub enum SemHandle {
+    Event(u32),
+    Mutex(u32),
+}
+
+pub struct MuxWaitRecord {
+    pub hsem: SemHandle,
+    pub user: u32,
+}
+
+pub struct MuxWaitSemaphore {
+    pub records: Vec<MuxWaitRecord>,
+    pub wait_all: bool,
+    _attr: u32,
+    _name: Option<String>,
+}
+
 pub struct SemaphoreManager {
     event_sems: HashMap<u32, Arc<(Mutex<EventSemaphore>, Condvar)>>,
     mutex_sems: HashMap<u32, Arc<(Mutex<MutexSemaphore>, Condvar)>>,
+    mux_sems: HashMap<u32, Arc<MuxWaitSemaphore>>,
     next_handle: u32,
 }
 
@@ -108,6 +127,7 @@ impl SemaphoreManager {
         SemaphoreManager {
             event_sems: HashMap::new(),
             mutex_sems: HashMap::new(),
+            mux_sems: HashMap::new(),
             next_handle: 1,
         }
     }
@@ -143,10 +163,30 @@ impl SemaphoreManager {
     pub fn close_mutex(&mut self, h: u32) -> bool {
         self.mutex_sems.remove(&h).is_some()
     }
+
+    pub fn create_mux(&mut self, name: Option<String>, attr: u32, records: Vec<MuxWaitRecord>, wait_all: bool) -> u32 {
+        let h = self.next_handle;
+        self.mux_sems.insert(h, Arc::new(MuxWaitSemaphore { records, wait_all, _attr: attr, _name: name }));
+        self.next_handle += 1;
+        h
+    }
+
+    pub fn get_mux(&self, h: u32) -> Option<Arc<MuxWaitSemaphore>> {
+        self.mux_sems.get(&h).cloned()
+    }
+
+    pub fn close_mux(&mut self, h: u32) -> bool {
+        self.mux_sems.remove(&h).is_some()
+    }
+}
+
+pub struct HDirEntry {
+    pub iterator: ReadDir,
+    pub pattern: String,
 }
 
 pub struct HDirManager {
-    iterators: HashMap<u32, ReadDir>,
+    iterators: HashMap<u32, HDirEntry>,
     next_handle: u32,
 }
 
@@ -158,14 +198,14 @@ impl HDirManager {
         }
     }
 
-    pub fn add(&mut self, it: ReadDir) -> u32 {
+    pub fn add(&mut self, it: ReadDir, pattern: String) -> u32 {
         let h = self.next_handle;
-        self.iterators.insert(h, it);
+        self.iterators.insert(h, HDirEntry { iterator: it, pattern });
         self.next_handle += 1;
         h
     }
 
-    pub fn get_mut(&mut self, h: u32) -> Option<&mut ReadDir> {
+    pub fn get_mut(&mut self, h: u32) -> Option<&mut HDirEntry> {
         self.iterators.get_mut(&h)
     }
 
@@ -384,6 +424,10 @@ impl Loader {
         let res = match ordinal {
             256 => self.dos_set_file_ptr(read_stack(4), read_stack(8) as i32, read_stack(12), read_stack(16)),
             257 => self.dos_close(read_stack(4)),
+            259 => self.dos_delete(read_stack(4)),
+            271 => self.dos_move(read_stack(4), read_stack(8)),
+            226 => self.dos_delete_dir(read_stack(4)),
+            270 => self.dos_create_dir(read_stack(4)),
             273 => self.dos_open(read_stack(4), read_stack(8), read_stack(12), read_stack(24), read_stack(28)),
             281 => self.dos_read(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
             282 => self.dos_write(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
@@ -392,8 +436,9 @@ impl Loader {
             234 => { api::doscalls::dos_exit(read_stack(4), read_stack(8)); },
             235 => self.dos_query_h_type(read_stack(4), read_stack(8), read_stack(12)),
             283 => self.dos_get_info_blocks(vcpu, read_stack(4), read_stack(8)),
-            271 => self.dos_find_first(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28)),
-            272 => self.dos_find_next(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+            264 => self.dos_find_first(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28)),
+            265 => self.dos_find_next(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+            263 => self.dos_find_close(read_stack(4)),
             275 => self.dos_query_path_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
             278 => self.dos_query_file_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
             299 => self.dos_alloc_mem(read_stack(4), read_stack(8)),
@@ -406,6 +451,10 @@ impl Loader {
             333 => self.dos_close_mutex_sem(read_stack(4)),
             334 => self.dos_request_mutex_sem(vcpu_id, read_stack(4), read_stack(8)),
             335 => self.dos_release_mutex_sem(vcpu_id, read_stack(4)),
+            337 => self.dos_create_mux_wait_sem(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
+            339 => self.dos_close_mux_wait_sem(read_stack(4)),
+            340 => self.dos_wait_mux_wait_sem(vcpu_id, read_stack(4), read_stack(8), read_stack(12)),
+            342 => 0, // DosQueryMuxWaitSem stub
             348 => 0,
             349 => self.dos_wait_thread(vcpu_id, read_stack(4)),
             _ => { println!("Warning: Unknown API Ordinal {} on VCPU {}", ordinal, vcpu_id); 0 }
@@ -434,7 +483,7 @@ impl Loader {
                 0 => SeekFrom::Start(offset as u64),
                 1 => SeekFrom::Current(offset as i64),
                 2 => SeekFrom::End(offset as i64),
-                _ => return 1, // ERROR_INVALID_FUNCTION
+                _ => return 1,
             };
             match file.seek(pos) {
                 Ok(new_pos) => {
@@ -445,7 +494,7 @@ impl Loader {
                 }
                 Err(_) => 1,
             }
-        } else { 6 } // ERROR_INVALID_HANDLE
+        } else { 6 }
     }
 
     fn dos_open(&self, psz_name_ptr: u32, phf_ptr: u32, pul_action_ptr: u32, fs_open_flags: u32, fs_open_mode: u32) -> u32 {
@@ -535,6 +584,52 @@ impl Loader {
         }
     }
 
+    fn dos_delete(&self, psz_name_ptr: u32) -> u32 {
+        let name = self.read_guest_string(psz_name_ptr);
+        match fs::remove_file(name.replace('\\', "/")) {
+            Ok(_) => 0,
+            Err(_) => 2,
+        }
+    }
+
+    fn dos_move(&self, psz_old_ptr: u32, psz_new_ptr: u32) -> u32 {
+        let old = self.read_guest_string(psz_old_ptr).replace('\\', "/");
+        let new = self.read_guest_string(psz_new_ptr).replace('\\', "/");
+        match fs::rename(old, new) {
+            Ok(_) => 0,
+            Err(_) => 2,
+        }
+    }
+
+    fn dos_create_dir(&self, psz_name_ptr: u32) -> u32 {
+        let name = self.read_guest_string(psz_name_ptr).replace('\\', "/");
+        match fs::create_dir(name) {
+            Ok(_) => 0,
+            Err(_) => 5,
+        }
+    }
+
+    fn dos_delete_dir(&self, psz_name_ptr: u32) -> u32 {
+        let name = self.read_guest_string(psz_name_ptr).replace('\\', "/");
+        match fs::remove_dir(name) {
+            Ok(_) => 0,
+            Err(_) => 5,
+        }
+    }
+
+    fn read_guest_string(&self, ptr: u32) -> String {
+        unsafe {
+            let mut s = String::new();
+            let mut i = 0;
+            let base = self.shared.guest_mem.add(ptr as usize);
+            while *base.add(i) != 0 {
+                s.push(*base.add(i) as char);
+                i += 1;
+            }
+            s
+        }
+    }
+
     fn dos_sleep(&self, msec: u32) -> u32 {
         thread::sleep(std::time::Duration::from_millis(msec as u64));
         0
@@ -558,7 +653,7 @@ impl Loader {
                 ptr::write_unaligned(self.shared.guest_mem.add(tib_addr as usize + 0x30) as *mut u32, 0x71000);
                 
                 let sp = self.shared.guest_mem.add((stack_base + stack_size) as usize - 12) as *mut u32;
-                ptr::write_unaligned(sp.offset(0), EXIT_TRAP_ADDR); // Exit return
+                ptr::write_unaligned(sp.offset(0), EXIT_TRAP_ADDR); 
                 ptr::write_unaligned(sp.offset(1), param);
                 
                 let vm_clone = Arc::clone(&self.vm);
@@ -567,12 +662,11 @@ impl Loader {
                 let mut new_regs = new_vcpu.get_regs().unwrap();
                 new_regs.rip = pfn as u64;
                 new_regs.rsp = (stack_base + stack_size - 12) as u64;
-                new_regs.rax = param as u64; // For _Optlink
+                new_regs.rax = param as u64;
                 new_regs.rflags = 2;
                 new_vcpu.set_regs(&new_regs).unwrap();
 
                 let handle = thread::spawn(move || {
-                    println!("  [THREAD {}] Host thread spawned.", tid);
                     let loader = Loader { _kvm: Kvm::new().unwrap(), vm: vm_clone, shared: shared_clone };
                     loader.run_vcpu(new_vcpu, tid, tib_addr as u64);
                 });
@@ -602,58 +696,79 @@ impl Loader {
 
     fn dos_find_first(&self, psz_spec_ptr: u32, phdir_ptr: u32, _attr: u32, buf_ptr: u32, buf_len: u32, pc_found_ptr: u32, level: u32) -> u32 {
         if level != 1 { return 124; }
-        unsafe {
-            let spec_ptr = self.shared.guest_mem.add(psz_spec_ptr as usize);
-            let mut spec = String::new();
-            let mut i = 0;
-            while *spec_ptr.add(i) != 0 {
-                spec.push(*spec_ptr.add(i) as char);
-                i += 1;
-            }
-            let path = spec.replace('\\', "/");
-            // Simplified: just use the directory of the spec
-            let dir_path = Path::new(&path).parent().unwrap_or(Path::new("."));
-            if let Ok(rd) = std::fs::read_dir(dir_path) {
+        let spec = self.read_guest_string(psz_spec_ptr).replace('\\', "/");
+        let path = Path::new(&spec);
+        let pattern = path.file_name().and_then(|s| s.to_str()).unwrap_or("*").to_string();
+        let dir_path = path.parent().unwrap_or(Path::new("."));
+        
+        let hdir = {
+            if let Ok(rd) = std::fs::read_dir(if dir_path.to_str() == Some("") { Path::new(".") } else { dir_path }) {
                 let mut hdir_mgr = self.shared.hdir_mgr.lock().unwrap();
-                let hdir = hdir_mgr.add(rd);
-                ptr::write_unaligned(self.shared.guest_mem.add(phdir_ptr as usize) as *mut u32, hdir);
-                
-                // Read the first entry
-                return self.dos_find_next(hdir, buf_ptr, buf_len, pc_found_ptr);
-            }
-        }
-        3 // ERROR_PATH_NOT_FOUND
+                let mut hdir = unsafe { ptr::read_unaligned(self.shared.guest_mem.add(phdir_ptr as usize) as *const u32) };
+                if hdir == 0xFFFFFFFF {
+                    hdir = hdir_mgr.add(rd, pattern);
+                    unsafe { ptr::write_unaligned(self.shared.guest_mem.add(phdir_ptr as usize) as *mut u32, hdir); }
+                } else {
+                    hdir = hdir_mgr.add(rd, pattern);
+                    unsafe { ptr::write_unaligned(self.shared.guest_mem.add(phdir_ptr as usize) as *mut u32, hdir); }
+                }
+                hdir
+            } else { return 3; }
+        };
+        
+        return self.dos_find_next(hdir, buf_ptr, buf_len, pc_found_ptr);
+    }
+
+    fn dos_find_close(&self, hdir: u32) -> u32 {
+        if self.shared.hdir_mgr.lock().unwrap().close(hdir) { 0 }
+        else { 6 }
     }
 
     fn dos_find_next(&self, hdir: u32, buf_ptr: u32, buf_len: u32, pc_found_ptr: u32) -> u32 {
         let mut hdir_mgr = self.shared.hdir_mgr.lock().unwrap();
-        if let Some(rd) = hdir_mgr.get_mut(hdir) {
-            if let Some(Ok(entry)) = rd.next() {
-                if let Ok(meta) = entry.metadata() {
-                    let name = entry.file_name().into_string().unwrap_or_default();
-                    let name_bytes = name.as_bytes();
-                    let name_len = name_bytes.len().min(255);
-                    
-                    if buf_len < (32 + name_len as u32 + 1) { return 111; }
-                    
-                    unsafe {
-                        let ptr = self.shared.guest_mem.add(buf_ptr as usize);
-                        ptr::write_unaligned(ptr.add(0) as *mut u32, 0); // oNextEntryOffset (simplified)
-                        self.write_filestatus3_internal(&meta, ptr.add(4));
-                        *ptr.add(24) = name_len as u8;
-                        ptr::copy_nonoverlapping(name_bytes.as_ptr(), ptr.add(25), name_len);
-                        *ptr.add(25 + name_len) = 0;
-                        
-                        if pc_found_ptr != 0 {
-                            ptr::write_unaligned(self.shared.guest_mem.add(pc_found_ptr as usize) as *mut u32, 1);
+        if let Some(entry) = hdir_mgr.get_mut(hdir) {
+            let pattern = entry.pattern.clone();
+            while let Some(Ok(dir_entry)) = entry.iterator.next() {
+                let name = dir_entry.file_name().into_string().unwrap_or_default();
+                if self.match_pattern(&name, &pattern) {
+                    if let Ok(meta) = dir_entry.metadata() {
+                        let name_bytes = name.as_bytes();
+                        let name_len = name_bytes.len().min(255);
+                        if buf_len < (32 + name_len as u32 + 1) { return 111; }
+                        unsafe {
+                            let ptr = self.shared.guest_mem.add(buf_ptr as usize);
+                            ptr::write_unaligned(ptr.add(0) as *mut u32, 0);
+                            self.write_filestatus3_internal(&meta, ptr.add(4));
+                            *ptr.add(24) = name_len as u8;
+                            ptr::copy_nonoverlapping(name_bytes.as_ptr(), ptr.add(25), name_len);
+                            *ptr.add(25 + name_len) = 0;
+                            if pc_found_ptr != 0 {
+                                ptr::write_unaligned(self.shared.guest_mem.add(pc_found_ptr as usize) as *mut u32, 1);
+                            }
                         }
+                        return 0;
                     }
-                    return 0;
                 }
             }
-            return 18; // ERROR_NO_MORE_FILES
+            return 18;
         }
-        6 // ERROR_INVALID_HANDLE
+        6
+    }
+
+    fn match_pattern(&self, name: &str, pattern: &str) -> bool {
+        if pattern == "*" || pattern == "*.*" { return true; }
+        let pattern_lower = pattern.to_lowercase();
+        let name_lower = name.to_lowercase();
+        
+        if pattern_lower.starts_with('*') {
+            let suffix = &pattern_lower[1..];
+            name_lower.ends_with(suffix)
+        } else if pattern_lower.ends_with('*') {
+            let prefix = &pattern_lower[..pattern_lower.len()-1];
+            name_lower.starts_with(prefix)
+        } else {
+            name_lower == pattern_lower
+        }
     }
 
     fn dos_query_file_info(&self, hf: u32, level: u32, buf_ptr: u32, buf_len: u32) -> u32 {
@@ -672,19 +787,10 @@ impl Loader {
     fn dos_query_path_info(&self, psz_path_ptr: u32, level: u32, buf_ptr: u32, buf_len: u32) -> u32 {
         if level != 1 { return 124; }
         if buf_len < 22 { return 111; }
-        unsafe {
-            let name_ptr = self.shared.guest_mem.add(psz_path_ptr as usize);
-            let mut name = String::new();
-            let mut i = 0;
-            while *name_ptr.add(i) != 0 {
-                name.push(*name_ptr.add(i) as char);
-                i += 1;
-            }
-            let path = name.replace('\\', "/");
-            if let Ok(meta) = std::fs::metadata(&path) {
-                self.write_filestatus3_internal(&meta, self.shared.guest_mem.add(buf_ptr as usize));
-                return 0;
-            }
+        let path = self.read_guest_string(psz_path_ptr).replace('\\', "/");
+        if let Ok(meta) = std::fs::metadata(&path) {
+            unsafe { self.write_filestatus3_internal(&meta, self.shared.guest_mem.add(buf_ptr as usize)); }
+            return 0;
         }
         3
     }
@@ -738,7 +844,7 @@ impl Loader {
         if let Some(sem_arc) = sem_mgr.get_event(hev) {
             let (lock, cvar) = &*sem_arc;
             let mut sem = lock.lock().unwrap();
-            if sem.posted { 299 } // ERROR_ALREADY_POSTED
+            if sem.posted { 299 }
             else {
                 sem.posted = true;
                 cvar.notify_all();
@@ -809,31 +915,87 @@ impl Loader {
                     }
                     0
                 }
-                _ => 288, // ERROR_NOT_OWNER
+                _ => 288,
             }
         } else { 6 }
+    }
+
+    fn dos_create_mux_wait_sem(&self, _psz_name_ptr: u32, phmux_ptr: u32, count: u32, records_ptr: u32, fl_attr: u32) -> u32 {
+        let mut records = Vec::new();
+        unsafe {
+            let base = self.shared.guest_mem.add(records_ptr as usize) as *const u32;
+            for i in 0..count {
+                let hsem = *base.add(i as usize * 2);
+                let user = *base.add(i as usize * 2 + 1);
+                // We don't strictly distinguish HEV vs HMTX in SemHandle yet, 
+                // but MuxWait can wait on both. For now we just store the handle.
+                records.push(MuxWaitRecord { hsem: SemHandle::Event(hsem), user });
+            }
+        }
+        let wait_all = (fl_attr & 4) != 0;
+        let mut sem_mgr = self.shared.sem_mgr.lock().unwrap();
+        let h = sem_mgr.create_mux(None, fl_attr, records, wait_all);
+        unsafe { ptr::write_unaligned(self.shared.guest_mem.add(phmux_ptr as usize) as *mut u32, h); }
+        0
+    }
+
+    fn dos_close_mux_wait_sem(&self, hmux: u32) -> u32 {
+        if self.shared.sem_mgr.lock().unwrap().close_mux(hmux) { 0 }
+        else { 6 }
+    }
+
+    fn dos_wait_mux_wait_sem(&self, tid: u32, hmux: u32, _msec: u32, pul_user_ptr: u32) -> u32 {
+        let mux = self.shared.sem_mgr.lock().unwrap().get_mux(hmux);
+        if let Some(mux) = mux {
+            loop {
+                let mut ready_idx = None;
+                let mut all_ready = true;
+                
+                for (i, rec) in mux.records.iter().enumerate() {
+                    let h = match rec.hsem { SemHandle::Event(h) | SemHandle::Mutex(h) => h };
+                    // Check if event is posted or mutex is available
+                    let sem_mgr = self.shared.sem_mgr.lock().unwrap();
+                    let is_ready = if let Some(ev_arc) = sem_mgr.get_event(h) {
+                        ev_arc.0.lock().unwrap().posted
+                    } else if let Some(mtx_arc) = sem_mgr.get_mutex(h) {
+                        let mtx = mtx_arc.0.lock().unwrap();
+                        mtx.owner_tid.is_none() || mtx.owner_tid == Some(tid)
+                    } else { false };
+
+                    if is_ready { ready_idx = Some(i); }
+                    else { all_ready = false; }
+                }
+
+                if (mux.wait_all && all_ready) || (!mux.wait_all && ready_idx.is_some()) {
+                    if let Some(idx) = ready_idx {
+                        if pul_user_ptr != 0 {
+                            unsafe { ptr::write_unaligned(self.shared.guest_mem.add(pul_user_ptr as usize) as *mut u32, mux.records[idx].user); }
+                        }
+                    }
+                    return 0;
+                }
+                
+                // Real implementation would wait on all CVars. 
+                // For now, poll with a small sleep to avoid complexity.
+                thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+        6
     }
 
     fn dos_wait_thread(&self, vcpu_id: u32, ptid_ptr: u32) -> u32 {
         let tid = unsafe { ptr::read_unaligned(self.shared.guest_mem.add(ptid_ptr as usize) as *const u32) };
         println!("  [VCPU {}] Waiting for thread {}...", vcpu_id, tid);
-        
         let mut handle = None;
         for _ in 0..100 {
             handle = self.shared.threads.lock().unwrap().remove(&tid);
             if handle.is_some() { break; }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-
         if let Some(h) = handle {
-            println!("  [VCPU {}] Joining thread {}...", vcpu_id, tid);
             h.join().unwrap();
-            println!("  [VCPU {}] Thread {} joined successfully.", vcpu_id, tid);
             0
-        } else {
-            println!("  [VCPU {}] Thread {} handle not found!", vcpu_id, tid);
-            309
-        }
+        } else { 309 }
     }
 }
 
