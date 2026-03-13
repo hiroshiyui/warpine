@@ -12,6 +12,19 @@ use std::sync::atomic::{AtomicBool, AtomicI32};
 use std::thread;
 use kvm_ioctls::{Kvm, VmFd, VcpuFd};
 use kvm_bindings::{kvm_userspace_memory_region, kvm_guest_debug, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_USE_SW_BP};
+use log::{info, debug, warn, error};
+
+/// Extension trait for Mutex that recovers from poisoned locks instead of panicking.
+/// If a thread panics while holding a lock, the data is still accessible.
+pub trait MutexExt<T> {
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T>;
+}
+
+impl<T> MutexExt<T> for Mutex<T> {
+    fn lock_or_recover(&self) -> std::sync::MutexGuard<'_, T> {
+        self.lock().unwrap_or_else(|e| e.into_inner())
+    }
+}
 
 const MAGIC_API_BASE: u64 = 0x01000000;
 const EXIT_TRAP_ADDR: u32 = 0x010003FF;
@@ -361,7 +374,7 @@ pub struct WindowManager {
     pub frame_to_client: HashMap<u32, u32>,
     pub tid_to_hmq: HashMap<u32, u32>,
     pub gui_tx: Option<crate::gui::GUISender>,
-    pub timers: HashMap<(u32, u32), Arc<AtomicBool>>,
+    pub timers: HashMap<(u32, u32), (Arc<AtomicBool>, Option<thread::JoinHandle<()>>)>,
     pub clipboard: HashMap<u32, u32>,
     pub clipboard_open: bool,
     next_hwnd: u32,
@@ -452,6 +465,25 @@ impl WindowManager {
         }
         None
     }
+    /// Reverse lookup: given a client hwnd, find the frame hwnd.
+    /// Returns the client hwnd itself if no mapping exists.
+    pub fn client_to_frame(&self, client_hwnd: u32) -> u32 {
+        self.frame_to_client.iter()
+            .find(|&(_, &client)| client == client_hwnd)
+            .map(|(&frame, _)| frame)
+            .unwrap_or(client_hwnd)
+    }
+
+    /// Stop all running timers and join their threads.
+    pub fn stop_all_timers(&mut self) {
+        for (_, (running, handle)) in self.timers.drain() {
+            running.store(false, std::sync::atomic::Ordering::Relaxed);
+            if let Some(h) = handle {
+                let _ = h.join();
+            }
+        }
+    }
+
     pub fn find_child_by_id(&self, parent: u32, id: u32) -> Option<u32> {
         if let Some(win) = self.windows.get(&parent) {
             for &child_hwnd in &win.children {
@@ -626,7 +658,7 @@ impl Loader {
         };
         // Verify resolved path is under sandbox root
         if !resolved.starts_with(&sandbox_root) {
-            eprintln!("SECURITY: Path traversal blocked: '{}' → '{}'", os2_path, resolved.display());
+            warn!("SECURITY: Path traversal blocked: '{}' → '{}'", os2_path, resolved.display());
             return Err(5); // ERROR_ACCESS_DENIED
         }
         Ok(resolved)
@@ -644,7 +676,7 @@ impl Loader {
         let mut file = File::open(path)?;
         let data_pages_base = lx_file.header.data_pages_offset as u64;
         for (i, obj) in lx_file.object_table.iter().enumerate() {
-            println!("  Mapping Object {}...", i + 1);
+            debug!("  Mapping Object {}...", i + 1);
             let obj_page_start = (obj.page_map_index as usize).saturating_sub(1);
             for p in 0..obj.page_count as usize {
                 let page_idx = obj_page_start + p;
@@ -756,7 +788,7 @@ impl Loader {
 
     /// Legacy run method for backwards compatibility
     pub fn run(self, lx_file: &LxFile, gui_sender: crate::gui::GUISender) -> ! {
-        self.shared.window_mgr.lock().unwrap().gui_tx = Some(gui_sender);
+        self.shared.window_mgr.lock_or_recover().gui_tx = Some(gui_sender);
 
         let (entry_eip, entry_esp, tib_base) = self.setup_guest(lx_file);
         let vcpu = self.create_initial_vcpu(entry_eip, entry_esp);
@@ -776,7 +808,7 @@ impl Loader {
         let debug = kvm_guest_debug { control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP, ..Default::default() };
         vcpu.set_guest_debug(&debug).unwrap();
 
-        println!("  [VCPU {}] Started at EIP=0x{:08X}", vcpu_id, vcpu.get_regs().unwrap().rip);
+        debug!("  [VCPU {}] Started at EIP=0x{:08X}", vcpu_id, vcpu.get_regs().unwrap().rip);
 
         let mut callback_stack: Vec<CallbackFrame> = Vec::new();
 
@@ -787,7 +819,7 @@ impl Loader {
             }
             let res = vcpu.run();
             if let Err(e) = res {
-                println!("  [VCPU {}] KVM Run failed: {}", vcpu_id, e);
+                error!("  [VCPU {}] KVM Run failed: {}", vcpu_id, e);
                 self.shared.exit_code.store(1, std::sync::atomic::Ordering::Relaxed);
                 self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
                 return;
@@ -798,7 +830,7 @@ impl Loader {
                     let rip = vcpu.get_regs().unwrap().rip;
                     if rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + 4096 {
                         if rip == EXIT_TRAP_ADDR as u64 {
-                            println!("  [VCPU {}] Guest requested thread exit.", vcpu_id);
+                            info!("  [VCPU {}] Guest requested thread exit.", vcpu_id);
                             self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
                             return;
                         }
@@ -815,7 +847,7 @@ impl Loader {
                                 vcpu.set_regs(&regs).unwrap();
                                 continue;
                             } else {
-                                println!("  [VCPU {}] CALLBACK_RET_TRAP with empty callback stack!", vcpu_id);
+                                error!("  [VCPU {}] CALLBACK_RET_TRAP with empty callback stack!", vcpu_id);
                                 return;
                             }
                         }
@@ -854,20 +886,20 @@ impl Loader {
                         }
                     }
                     else {
-                        println!("  [VCPU {}] Guest breakpoint at EIP=0x{:08X}.", vcpu_id, rip);
+                        warn!("  [VCPU {}] Guest breakpoint at EIP=0x{:08X}.", vcpu_id, rip);
                         self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
                         return;
                     }
                 }
                 kvm_ioctls::VcpuExit::Hlt => {
-                    println!("  [VCPU {}] Guest HLT.", vcpu_id);
+                    info!("  [VCPU {}] Guest HLT.", vcpu_id);
                     self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
                     return;
                 }
                 _ => {
                     let e = format!("{:?}", exit);
                     let rip = vcpu.get_regs().unwrap().rip;
-                    println!("  [VCPU {}] Unhandled VMEXIT: {} at EIP=0x{:08X}", vcpu_id, e, rip);
+                    error!("  [VCPU {}] Unhandled VMEXIT: {} at EIP=0x{:08X}", vcpu_id, e, rip);
                     self.shared.exit_code.store(1, std::sync::atomic::Ordering::Relaxed);
                     self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
                     return;
@@ -881,7 +913,7 @@ impl Loader {
         let esp = regs.rsp;
         let read_stack = |off: u64| -> u32 { self.guest_read::<u32>((esp + off) as u32).expect("Stack read OOB") };
 
-        println!("  [VCPU {}] API Call: Ordinal {} (ReturnAddr=0x{:08X})", vcpu_id, ordinal, read_stack(0));
+        debug!("  [VCPU {}] API Call: Ordinal {} (ReturnAddr=0x{:08X})", vcpu_id, ordinal, read_stack(0));
 
         if ordinal < 1024 {
             // DOSCALLS
@@ -929,7 +961,7 @@ impl Loader {
                 342 => 0,
                 348 => 0,
                 349 => self.dos_wait_thread(vcpu_id, read_stack(4)),
-                _ => { println!("Warning: Unknown API Ordinal {} on VCPU {}", ordinal, vcpu_id); 0 }
+                _ => { warn!("Warning: Unknown API Ordinal {} on VCPU {}", ordinal, vcpu_id); 0 }
             };
             ApiResult::Normal(res)
         } else if ordinal < 2048 {
@@ -942,7 +974,7 @@ impl Loader {
                 11 => self.dos_close_queue(read_stack(4)),
                 12 => { self.dos_purge_queue(read_stack(4)); 0 },
                 13 => self.dos_query_queue(read_stack(4), read_stack(8)),
-                _ => { println!("Warning: Unknown QUECALLS Ordinal {} on VCPU {}", ordinal - 1024, vcpu_id); 0 }
+                _ => { warn!("Warning: Unknown QUECALLS Ordinal {} on VCPU {}", ordinal - 1024, vcpu_id); 0 }
             };
             ApiResult::Normal(res)
         } else if ordinal < PMGPI_BASE {
@@ -952,7 +984,7 @@ impl Loader {
             // PMGPI
             self.handle_pmgpi_call(vcpu, vcpu_id, ordinal - PMGPI_BASE)
         } else {
-            println!("Warning: Unknown API Base Ordinal {} on VCPU {}", ordinal, vcpu_id);
+            warn!("Warning: Unknown API Base Ordinal {} on VCPU {}", ordinal, vcpu_id);
             ApiResult::Normal(0)
         }
     }
@@ -967,25 +999,25 @@ impl Loader {
         match ordinal {
             763 => {
                 // WinInitialize
-                println!("  [VCPU {}] WinInitialize called.", vcpu_id);
+                debug!("  [VCPU {}] WinInitialize called.", vcpu_id);
                 ApiResult::Normal(MOCK_HAB)
             }
             888 => {
                 // WinTerminate
-                println!("  [VCPU {}] WinTerminate called.", vcpu_id);
+                debug!("  [VCPU {}] WinTerminate called.", vcpu_id);
                 ApiResult::Normal(1) // TRUE
             }
             716 => {
                 // WinCreateMsgQueue
-                println!("  [VCPU {}] WinCreateMsgQueue called.", vcpu_id);
-                let mut wm = self.shared.window_mgr.lock().unwrap();
+                debug!("  [VCPU {}] WinCreateMsgQueue called.", vcpu_id);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
                 let hmq = wm.create_mq();
                 wm.tid_to_hmq.insert(vcpu_id, hmq);
                 ApiResult::Normal(hmq)
             }
             726 => {
                 // WinDestroyMsgQueue
-                println!("  [VCPU {}] WinDestroyMsgQueue called.", vcpu_id);
+                debug!("  [VCPU {}] WinDestroyMsgQueue called.", vcpu_id);
                 ApiResult::Normal(1) // TRUE
             }
             926 => {
@@ -996,8 +1028,8 @@ impl Loader {
                 let style = read_stack(16);
                 let _cb_window_data = read_stack(20);
                 let name = self.read_guest_string(psz_class_name_ptr);
-                println!("  [VCPU {}] WinRegisterClass: name='{}', pfn_wp=0x{:08X}", vcpu_id, name, pfn_wp);
-                self.shared.window_mgr.lock().unwrap().register_class(name, pfn_wp, style);
+                debug!("  [VCPU {}] WinRegisterClass: name='{}', pfn_wp=0x{:08X}", vcpu_id, name, pfn_wp);
+                self.shared.window_mgr.lock_or_recover().register_class(name, pfn_wp, style);
                 ApiResult::Normal(1) // TRUE
             }
             908 => {
@@ -1013,9 +1045,9 @@ impl Loader {
                 let phwnd_client_ptr = read_stack(36);
                 let class_name = self.read_guest_string(psz_class_name_ptr);
                 let title = if psz_title_ptr != 0 { self.read_guest_string(psz_title_ptr) } else { "Warpine Window".to_string() };
-                println!("  [VCPU {}] WinCreateStdWindow: class='{}', title='{}', parent=0x{:08X}, style=0x{:08X}", vcpu_id, class_name, title, parent, style);
+                debug!("  [VCPU {}] WinCreateStdWindow: class='{}', title='{}', parent=0x{:08X}, style=0x{:08X}", vcpu_id, class_name, title, parent, style);
 
-                let mut wm = self.shared.window_mgr.lock().unwrap();
+                let mut wm = self.shared.window_mgr.lock_or_recover();
                 let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
                 let h_frame = wm.create_window(class_name.clone(), parent, hmq);
                 let h_client = wm.create_window(class_name.clone(), h_frame, hmq);
@@ -1031,7 +1063,7 @@ impl Loader {
 
                 // Post initial WM_PAINT so the guest paints on creation
                 if let Some(mq_arc) = wm.get_mq(hmq) {
-                    let mut mq = mq_arc.lock().unwrap();
+                    let mut mq = mq_arc.lock_or_recover();
                     mq.messages.push_back(OS2Message {
                         hwnd: h_client, msg: WM_PAINT, mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
                     });
@@ -1050,7 +1082,7 @@ impl Loader {
 
                 // Find the message queue for this thread
                 let (_hmq, mq_arc) = {
-                    let wm = self.shared.window_mgr.lock().unwrap();
+                    let wm = self.shared.window_mgr.lock_or_recover();
                     let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
                     let mq = wm.get_mq(hmq);
                     (hmq, mq)
@@ -1059,12 +1091,12 @@ impl Loader {
                 if let Some(mq_arc) = mq_arc {
                     // Get the condvar/lock for blocking wait
                     let (cond, wait_lock) = {
-                        let mq = mq_arc.lock().unwrap();
+                        let mq = mq_arc.lock_or_recover();
                         (Arc::clone(&mq.cond), Arc::clone(&mq.lock))
                     };
                     loop {
                         {
-                            let mut mq = mq_arc.lock().unwrap();
+                            let mut mq = mq_arc.lock_or_recover();
                             if let Some(msg) = mq.messages.pop_front() {
                                 if pqmsg_ptr != 0 {
                                     self.guest_write::<u32>(pqmsg_ptr, msg.hwnd);
@@ -1080,7 +1112,7 @@ impl Loader {
                             }
                         }
                         // Block on condvar instead of spinning
-                        let guard = wait_lock.lock().unwrap();
+                        let guard = wait_lock.lock_or_recover();
                         let _ = cond.wait_timeout(guard, std::time::Duration::from_millis(100)).unwrap();
                     }
                 }
@@ -1088,7 +1120,7 @@ impl Loader {
             }
             912 => {
                 // WinDispatchMsg
-                println!("  [VCPU {}] WinDispatchMsg called.", vcpu_id);
+                debug!("  [VCPU {}] WinDispatchMsg called.", vcpu_id);
                 let _hab = read_stack(4);
                 let pqmsg_ptr = read_stack(8);
                 if pqmsg_ptr == 0 { return ApiResult::Normal(0); }
@@ -1101,12 +1133,12 @@ impl Loader {
                 );
 
                 let pfn_wp = {
-                    let wm = self.shared.window_mgr.lock().unwrap();
+                    let wm = self.shared.window_mgr.lock_or_recover();
                     wm.get_window(hwnd).map(|w| w.pfn_wp).unwrap_or(0)
                 };
 
                 if pfn_wp != 0 {
-                    println!("  [VCPU {}] Callback: msg={} to pfn_wp 0x{:08X}", vcpu_id, msg, pfn_wp);
+                    debug!("  [VCPU {}] Callback: msg={} to pfn_wp 0x{:08X}", vcpu_id, msg, pfn_wp);
                     return ApiResult::Callback {
                         wnd_proc: pfn_wp,
                         hwnd,
@@ -1123,11 +1155,11 @@ impl Loader {
                 let msg = read_stack(8);
                 let mp1 = read_stack(12);
                 let mp2 = read_stack(16);
-                let wm = self.shared.window_mgr.lock().unwrap();
+                let wm = self.shared.window_mgr.lock_or_recover();
                 let hmq = wm.find_hmq_for_hwnd(hwnd);
                 if let Some(hmq) = hmq {
                     if let Some(mq_arc) = wm.get_mq(hmq) {
-                        let mut mq = mq_arc.lock().unwrap();
+                        let mut mq = mq_arc.lock_or_recover();
                         mq.messages.push_back(OS2Message {
                             hwnd, msg, mp1, mp2, time: 0, x: 0, y: 0,
                         });
@@ -1145,7 +1177,7 @@ impl Loader {
                 let mp2 = read_stack(16);
 
                 let pfn_wp = {
-                    let wm = self.shared.window_mgr.lock().unwrap();
+                    let wm = self.shared.window_mgr.lock_or_recover();
                     wm.get_window(hwnd).map(|w| w.pfn_wp).unwrap_or(0)
                 };
 
@@ -1169,11 +1201,11 @@ impl Loader {
 
                 if msg == WM_CLOSE {
                     // Post WM_QUIT to the message queue
-                    let wm = self.shared.window_mgr.lock().unwrap();
+                    let wm = self.shared.window_mgr.lock_or_recover();
                     let hmq = wm.find_hmq_for_hwnd(hwnd);
                     if let Some(hmq) = hmq {
                         if let Some(mq_arc) = wm.get_mq(hmq) {
-                            let mut mq = mq_arc.lock().unwrap();
+                            let mut mq = mq_arc.lock_or_recover();
                             mq.messages.push_back(OS2Message {
                                 hwnd, msg: WM_QUIT, mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
                             });
@@ -1188,18 +1220,15 @@ impl Loader {
                 let hwnd = read_stack(4);
                 let _hps = read_stack(8);
                 let _prcl_ptr = read_stack(12);
-                let hps = self.shared.window_mgr.lock().unwrap().create_ps(hwnd);
+                let hps = self.shared.window_mgr.lock_or_recover().create_ps(hwnd);
                 ApiResult::Normal(hps)
             }
             738 => {
                 // WinEndPaint
                 let hps = read_stack(4);
-                let wm = self.shared.window_mgr.lock().unwrap();
+                let wm = self.shared.window_mgr.lock_or_recover();
                 let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
-                let frame_hwnd = wm.frame_to_client.iter()
-                    .find(|&(_, &client)| client == ps_hwnd)
-                    .map(|(&frame, _)| frame)
-                    .unwrap_or(ps_hwnd);
+                let frame_hwnd = wm.client_to_frame(ps_hwnd);
                 if let Some(ref sender) = wm.gui_tx {
                     let _ = sender.send(crate::gui::GUIMessage::PresentBuffer { handle: frame_hwnd });
                 }
@@ -1219,7 +1248,7 @@ impl Loader {
                 let _style = read_stack(24);
                 let text = self.read_guest_string(psz_text_ptr);
                 let caption = self.read_guest_string(psz_caption_ptr);
-                println!("  [PM MESSAGE BOX] {} : {}", caption, text);
+                info!("  [PM MESSAGE BOX] {} : {}", caption, text);
                 ApiResult::Normal(1) // MBID_OK
             }
             883 => {
@@ -1248,31 +1277,32 @@ impl Loader {
                 let hwnd = read_stack(8);
                 let id_timer = read_stack(12);
                 let dt_timeout = read_stack(16);
-                println!("  [VCPU {}] WinStartTimer: hwnd={}, id={}, timeout={}ms", vcpu_id, hwnd, id_timer, dt_timeout);
+                debug!("  [VCPU {}] WinStartTimer: hwnd={}, id={}, timeout={}ms", vcpu_id, hwnd, id_timer, dt_timeout);
 
                 let running = Arc::new(AtomicBool::new(true));
                 let running_clone = running.clone();
                 let shared = Arc::clone(&self.shared);
 
                 {
-                    let mut wm = self.shared.window_mgr.lock().unwrap();
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
                     // Stop any existing timer with the same id
-                    if let Some(old) = wm.timers.remove(&(hwnd, id_timer)) {
-                        old.store(false, std::sync::atomic::Ordering::Relaxed);
+                    if let Some((old_flag, old_handle)) = wm.timers.remove(&(hwnd, id_timer)) {
+                        old_flag.store(false, std::sync::atomic::Ordering::Relaxed);
+                        if let Some(h) = old_handle { let _ = h.join(); }
                     }
-                    wm.timers.insert((hwnd, id_timer), running);
                 }
 
                 let timeout = std::time::Duration::from_millis(dt_timeout as u64);
-                thread::spawn(move || {
-                    while running_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                let join_handle = thread::spawn(move || {
+                    while running_clone.load(std::sync::atomic::Ordering::Relaxed)
+                        && !shared.exit_requested.load(std::sync::atomic::Ordering::Relaxed) {
                         thread::sleep(timeout);
                         if !running_clone.load(std::sync::atomic::Ordering::Relaxed) { break; }
-                        let wm = shared.window_mgr.lock().unwrap();
+                        let wm = shared.window_mgr.lock_or_recover();
                         let hmq = wm.find_hmq_for_hwnd(hwnd);
                         if let Some(hmq) = hmq {
                             if let Some(mq_arc) = wm.get_mq(hmq) {
-                                let mut mq = mq_arc.lock().unwrap();
+                                let mut mq = mq_arc.lock_or_recover();
                                 mq.messages.push_back(OS2Message {
                                     hwnd, msg: WM_TIMER, mp1: id_timer, mp2: 0,
                                     time: 0, x: 0, y: 0,
@@ -1282,6 +1312,10 @@ impl Loader {
                         }
                     }
                 });
+                {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    wm.timers.insert((hwnd, id_timer), (running, Some(join_handle)));
+                }
                 ApiResult::Normal(id_timer) // Return the timer ID
             }
             885 => {
@@ -1289,9 +1323,11 @@ impl Loader {
                 let _hab = read_stack(4);
                 let hwnd = read_stack(8);
                 let id_timer = read_stack(12);
-                let mut wm = self.shared.window_mgr.lock().unwrap();
-                if let Some(running) = wm.timers.remove(&(hwnd, id_timer)) {
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                if let Some((running, handle)) = wm.timers.remove(&(hwnd, id_timer)) {
                     running.store(false, std::sync::atomic::Ordering::Relaxed);
+                    drop(wm); // Release lock before joining
+                    if let Some(h) = handle { let _ = h.join(); }
                 }
                 ApiResult::Normal(1)
             }
@@ -1302,14 +1338,14 @@ impl Loader {
             }
             707 => {
                 // WinCloseClipbrd(HAB hab)
-                let mut wm = self.shared.window_mgr.lock().unwrap();
+                let mut wm = self.shared.window_mgr.lock_or_recover();
                 wm.clipboard_open = false;
                 ApiResult::Normal(1)
             }
             907 => {
                 // WinCreateMenu(HWND hwndParent, PVOID pvmt)
                 // Stub - return a fake menu handle
-                let mut wm = self.shared.window_mgr.lock().unwrap();
+                let mut wm = self.shared.window_mgr.lock_or_recover();
                 let h = wm.create_window("#Menu".to_string(), read_stack(4), 0);
                 ApiResult::Normal(h)
             }
@@ -1336,12 +1372,12 @@ impl Loader {
             923 => {
                 // WinDlgBox(HWND hwndParent, HWND hwndOwner, PFNWP pfnDlgProc, HMODULE hmod, ULONG idDlg, PVOID pCreateParams)
                 // Complex - needs resource loading. Stub: return MBID_OK (1)
-                println!("  [VCPU {}] WinDlgBox (stub) - no resource loading support", vcpu_id);
+                debug!("  [VCPU {}] WinDlgBox (stub) - no resource loading support", vcpu_id);
                 ApiResult::Normal(1)
             }
             733 => {
                 // WinEmptyClipbrd(HAB hab)
-                let mut wm = self.shared.window_mgr.lock().unwrap();
+                let mut wm = self.shared.window_mgr.lock_or_recover();
                 wm.clipboard.clear();
                 ApiResult::Normal(1)
             }
@@ -1357,12 +1393,9 @@ impl Loader {
                     self.guest_read::<i32>(prcl + 8).unwrap_or(0),
                     self.guest_read::<i32>(prcl + 12).unwrap_or(0),
                 );
-                let wm = self.shared.window_mgr.lock().unwrap();
+                let wm = self.shared.window_mgr.lock_or_recover();
                 let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
-                let frame_hwnd = wm.frame_to_client.iter()
-                    .find(|&(_, &client)| client == ps_hwnd)
-                    .map(|(&frame, _)| frame)
-                    .unwrap_or(ps_hwnd);
+                let frame_hwnd = wm.client_to_frame(ps_hwnd);
                 if let Some(ref sender) = wm.gui_tx {
                     let _ = sender.send(crate::gui::GUIMessage::DrawBox {
                         handle: frame_hwnd,
@@ -1376,12 +1409,12 @@ impl Loader {
                 // WinInvalidateRect(HWND hwnd, PRECTL prcl, BOOL fIncludeChildren)
                 let hwnd = read_stack(4);
                 // Post WM_PAINT to trigger repaint
-                let wm = self.shared.window_mgr.lock().unwrap();
+                let wm = self.shared.window_mgr.lock_or_recover();
                 let target = wm.frame_to_client.get(&hwnd).copied().unwrap_or(hwnd);
                 let hmq = wm.find_hmq_for_hwnd(target);
                 if let Some(hmq) = hmq {
                     if let Some(mq_arc) = wm.get_mq(hmq) {
-                        let mut mq = mq_arc.lock().unwrap();
+                        let mut mq = mq_arc.lock_or_recover();
                         mq.messages.push_back(OS2Message {
                             hwnd: target, msg: WM_PAINT, mp1: 0, mp2: 0,
                             time: 0, x: 0, y: 0,
@@ -1394,31 +1427,31 @@ impl Loader {
             776 => {
                 // WinLoadAccelTable(HAB hab, HMODULE hmod, ULONG idAccelTable)
                 // Stub - no resource loading support
-                println!("  [VCPU {}] WinLoadAccelTable (stub)", vcpu_id);
+                debug!("  [VCPU {}] WinLoadAccelTable (stub)", vcpu_id);
                 ApiResult::Normal(0) // NULLHANDLE - no accel table
             }
             924 => {
                 // WinLoadDlg(HWND hwndParent, HWND hwndOwner, PFNWP pfnDlgProc, HMODULE hmod, ULONG idDlg, PVOID pCreateParams)
                 // Stub - no resource loading support
-                println!("  [VCPU {}] WinLoadDlg (stub) - no resource loading support", vcpu_id);
+                debug!("  [VCPU {}] WinLoadDlg (stub) - no resource loading support", vcpu_id);
                 ApiResult::Normal(0) // NULLHANDLE
             }
             778 => {
                 // WinLoadMenu(HWND hwndFrame, HMODULE hmod, ULONG idMenu)
                 // Stub - no resource loading support
-                println!("  [VCPU {}] WinLoadMenu (stub)", vcpu_id);
+                debug!("  [VCPU {}] WinLoadMenu (stub)", vcpu_id);
                 ApiResult::Normal(0) // NULLHANDLE
             }
             793 => {
                 // WinOpenClipbrd(HAB hab)
-                let mut wm = self.shared.window_mgr.lock().unwrap();
+                let mut wm = self.shared.window_mgr.lock_or_recover();
                 wm.clipboard_open = true;
                 ApiResult::Normal(1)
             }
             937 => {
                 // WinPopupMenu(HWND hwndParent, HWND hwndOwner, HWND hwndMenu, LONG x, LONG y, LONG idItem, ULONG fs)
                 // Stub
-                println!("  [VCPU {}] WinPopupMenu (stub)", vcpu_id);
+                debug!("  [VCPU {}] WinPopupMenu (stub)", vcpu_id);
                 ApiResult::Normal(1)
             }
             796 => {
@@ -1430,7 +1463,7 @@ impl Loader {
                 // WinQueryClipbrdData(HAB hab, ULONG fmt)
                 let _hab = read_stack(4);
                 let fmt = read_stack(8);
-                let wm = self.shared.window_mgr.lock().unwrap();
+                let wm = self.shared.window_mgr.lock_or_recover();
                 let data = wm.clipboard.get(&fmt).copied().unwrap_or(0);
                 ApiResult::Normal(data)
             }
@@ -1440,7 +1473,7 @@ impl Loader {
                 let id_item = read_stack(8);
                 let cch_max = read_stack(12) as usize;
                 let buffer_ptr = read_stack(16);
-                let wm = self.shared.window_mgr.lock().unwrap();
+                let wm = self.shared.window_mgr.lock_or_recover();
                 let text = wm.find_child_by_id(hwnd_dlg, id_item)
                     .and_then(|h| wm.windows.get(&h))
                     .map(|w| w.text.as_str())
@@ -1477,7 +1510,7 @@ impl Loader {
                 let hwnd = read_stack(4);
                 let cch_max = read_stack(8) as usize;
                 let buffer_ptr = read_stack(12);
-                let wm = self.shared.window_mgr.lock().unwrap();
+                let wm = self.shared.window_mgr.lock_or_recover();
                 let text = wm.windows.get(&hwnd).map(|w| w.text.as_str()).unwrap_or("");
                 let bytes = text.as_bytes();
                 let copy_len = bytes.len().min(cch_max.saturating_sub(1));
@@ -1489,7 +1522,7 @@ impl Loader {
                 // WinQueryWindow(HWND hwnd, LONG lCode)
                 let hwnd = read_stack(4);
                 let code = read_stack(8) as i32;
-                let wm = self.shared.window_mgr.lock().unwrap();
+                let wm = self.shared.window_mgr.lock_or_recover();
                 let result = match code {
                     5 => { // QW_PARENT
                         wm.windows.get(&hwnd).map(|w| w.parent).unwrap_or(0)
@@ -1505,7 +1538,7 @@ impl Loader {
                 // WinQueryWindowULong(HWND hwnd, LONG index)
                 let hwnd = read_stack(4);
                 let index = read_stack(8) as i32;
-                let wm = self.shared.window_mgr.lock().unwrap();
+                let wm = self.shared.window_mgr.lock_or_recover();
                 let val = wm.windows.get(&hwnd)
                     .and_then(|w| w.window_ulong.get(&index))
                     .copied()
@@ -1516,7 +1549,7 @@ impl Loader {
                 // WinQueryWindowUShort(HWND hwnd, LONG index)
                 let hwnd = read_stack(4);
                 let index = read_stack(8) as i32;
-                let wm = self.shared.window_mgr.lock().unwrap();
+                let wm = self.shared.window_mgr.lock_or_recover();
                 let val = wm.windows.get(&hwnd)
                     .and_then(|w| w.window_ushort.get(&index))
                     .copied()
@@ -1539,7 +1572,7 @@ impl Loader {
                 let data = read_stack(8);
                 let fmt = read_stack(12);
                 let _flags = read_stack(16);
-                let mut wm = self.shared.window_mgr.lock().unwrap();
+                let mut wm = self.shared.window_mgr.lock_or_recover();
                 wm.clipboard.insert(fmt, data);
                 ApiResult::Normal(1)
             }
@@ -1549,7 +1582,7 @@ impl Loader {
                 let id_item = read_stack(8);
                 let psz_text = read_stack(12);
                 let text = self.read_guest_string(psz_text);
-                let mut wm = self.shared.window_mgr.lock().unwrap();
+                let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(child_hwnd) = wm.find_child_by_id(hwnd_dlg, id_item) {
                     if let Some(win) = wm.windows.get_mut(&child_hwnd) {
                         win.text = text;
@@ -1565,7 +1598,7 @@ impl Loader {
             875 => {
                 // WinSetWindowPos(HWND hwnd, HWND hwndInsertBehind, LONG x, LONG y, LONG cx, LONG cy, ULONG fl)
                 // Stub for now - would need GUI message for resize/move
-                println!("  [VCPU {}] WinSetWindowPos (stub)", vcpu_id);
+                debug!("  [VCPU {}] WinSetWindowPos (stub)", vcpu_id);
                 ApiResult::Normal(1)
             }
             877 => {
@@ -1573,7 +1606,7 @@ impl Loader {
                 let hwnd = read_stack(4);
                 let psz_text = read_stack(8);
                 let text = self.read_guest_string(psz_text);
-                let mut wm = self.shared.window_mgr.lock().unwrap();
+                let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(win) = wm.windows.get_mut(&hwnd) {
                     win.text = text;
                 }
@@ -1584,7 +1617,7 @@ impl Loader {
                 let hwnd = read_stack(4);
                 let index = read_stack(8) as i32;
                 let value = read_stack(12);
-                let mut wm = self.shared.window_mgr.lock().unwrap();
+                let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(win) = wm.windows.get_mut(&hwnd) {
                     win.window_ulong.insert(index, value);
                 }
@@ -1595,7 +1628,7 @@ impl Loader {
                 let hwnd = read_stack(4);
                 let index = read_stack(8) as i32;
                 let value = read_stack(12) as u16;
-                let mut wm = self.shared.window_mgr.lock().unwrap();
+                let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(win) = wm.windows.get_mut(&hwnd) {
                     win.window_ushort.insert(index, value);
                 }
@@ -1610,11 +1643,8 @@ impl Loader {
                 // WinUpdateWindow(HWND hwnd)
                 // Trigger a present buffer
                 let hwnd = read_stack(4);
-                let wm = self.shared.window_mgr.lock().unwrap();
-                let frame_hwnd = wm.frame_to_client.iter()
-                    .find(|&(_, &client)| client == hwnd)
-                    .map(|(&frame, _)| frame)
-                    .unwrap_or(hwnd);
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let frame_hwnd = wm.client_to_frame(hwnd);
                 if let Some(ref sender) = wm.gui_tx {
                     let _ = sender.send(crate::gui::GUIMessage::PresentBuffer { handle: frame_hwnd });
                 }
@@ -1624,12 +1654,12 @@ impl Loader {
                 // WinWindowFromID(HWND hwndParent, ULONG id)
                 let hwnd_parent = read_stack(4);
                 let id = read_stack(8);
-                let wm = self.shared.window_mgr.lock().unwrap();
+                let wm = self.shared.window_mgr.lock_or_recover();
                 let result = wm.find_child_by_id(hwnd_parent, id).unwrap_or(0);
                 ApiResult::Normal(result)
             }
             _ => {
-                println!("Warning: Unknown PMWIN Ordinal {} on VCPU {}", ordinal, vcpu_id);
+                warn!("Warning: Unknown PMWIN Ordinal {} on VCPU {}", ordinal, vcpu_id);
                 ApiResult::Normal(0)
             }
         }
@@ -1649,14 +1679,14 @@ impl Loader {
                 let _hdc = read_stack(8);
                 let _pszl = read_stack(12);
                 let _opts = read_stack(16);
-                let hps = self.shared.window_mgr.lock().unwrap().create_ps(0);
-                println!("  [VCPU {}] GpiCreatePS -> HPS {}", vcpu_id, hps);
+                let hps = self.shared.window_mgr.lock_or_recover().create_ps(0);
+                debug!("  [VCPU {}] GpiCreatePS -> HPS {}", vcpu_id, hps);
                 ApiResult::Normal(hps)
             }
             379 => {
                 // GpiDestroyPS(HPS hps)
                 let hps = read_stack(4);
-                self.shared.window_mgr.lock().unwrap().ps_map.remove(&hps);
+                self.shared.window_mgr.lock_or_recover().ps_map.remove(&hps);
                 ApiResult::Normal(1)
             }
             517 => {
@@ -1664,7 +1694,7 @@ impl Loader {
                 let hps = read_stack(4);
                 let color = read_stack(8);
                 let mapped = self.map_color(color);
-                let mut wm = self.shared.window_mgr.lock().unwrap();
+                let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(ps) = wm.ps_map.get_mut(&hps) {
                     ps.color = mapped;
                 }
@@ -1678,7 +1708,7 @@ impl Loader {
                     self.guest_read::<i32>(pptl).unwrap_or(0),
                     self.guest_read::<i32>(pptl + 4).unwrap_or(0),
                 );
-                let mut wm = self.shared.window_mgr.lock().unwrap();
+                let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(ps) = wm.ps_map.get_mut(&hps) {
                     ps.current_pos = (x, y);
                 }
@@ -1695,7 +1725,7 @@ impl Loader {
                     self.guest_read::<i32>(pptl).unwrap_or(0),
                     self.guest_read::<i32>(pptl + 4).unwrap_or(0),
                 );
-                let wm = self.shared.window_mgr.lock().unwrap();
+                let wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(ps) = wm.ps_map.get(&hps) {
                     let (x1, y1) = ps.current_pos;
                     let color = ps.color;
@@ -1721,7 +1751,7 @@ impl Loader {
                     self.guest_read::<i32>(pptl).unwrap_or(0),
                     self.guest_read::<i32>(pptl + 4).unwrap_or(0),
                 );
-                let mut wm = self.shared.window_mgr.lock().unwrap();
+                let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(ps) = wm.ps_map.get(&hps) {
                     let (x1, y1) = ps.current_pos;
                     let color = ps.color;
@@ -1757,19 +1787,16 @@ impl Loader {
                 }).collect();
                 let text_str = String::from_utf8_lossy(&text).to_string();
                 let color = {
-                    let wm = self.shared.window_mgr.lock().unwrap();
+                    let wm = self.shared.window_mgr.lock_or_recover();
                     wm.ps_map.get(&hps).map(|ps| ps.color).unwrap_or(0)
                 };
                 let hwnd = {
-                    let wm = self.shared.window_mgr.lock().unwrap();
+                    let wm = self.shared.window_mgr.lock_or_recover();
                     let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
-                    wm.frame_to_client.iter()
-                        .find(|&(_, &client)| client == ps_hwnd)
-                        .map(|(&frame, _)| frame)
-                        .unwrap_or(ps_hwnd)
+                    wm.client_to_frame(ps_hwnd)
                 };
                 {
-                    let wm = self.shared.window_mgr.lock().unwrap();
+                    let wm = self.shared.window_mgr.lock_or_recover();
                     if let Some(ref sender) = wm.gui_tx {
                         let _ = sender.send(crate::gui::GUIMessage::DrawText {
                             handle: hwnd, x, y, text: text_str, color,
@@ -1778,7 +1805,7 @@ impl Loader {
                 }
                 // Update current position (advance x by character width * count)
                 {
-                    let mut wm = self.shared.window_mgr.lock().unwrap();
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
                     if let Some(ps) = wm.ps_map.get_mut(&hps) {
                         ps.current_pos = (x + (count as i32 * 8), y);
                     }
@@ -1788,19 +1815,16 @@ impl Loader {
             389 => {
                 // GpiErase(HPS hps)
                 let hps = read_stack(4);
-                let wm = self.shared.window_mgr.lock().unwrap();
+                let wm = self.shared.window_mgr.lock_or_recover();
                 let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
-                let frame_hwnd = wm.frame_to_client.iter()
-                    .find(|&(_, &client)| client == ps_hwnd)
-                    .map(|(&frame, _)| frame)
-                    .unwrap_or(ps_hwnd);
+                let frame_hwnd = wm.client_to_frame(ps_hwnd);
                 if let Some(ref sender) = wm.gui_tx {
                     let _ = sender.send(crate::gui::GUIMessage::ClearBuffer { handle: frame_hwnd });
                 }
                 ApiResult::Normal(1)
             }
             _ => {
-                println!("Warning: Unknown PMGPI Ordinal {} on VCPU {}", ordinal, vcpu_id);
+                warn!("Warning: Unknown PMGPI Ordinal {} on VCPU {}", ordinal, vcpu_id);
                 ApiResult::Normal(0)
             }
         }
@@ -1809,12 +1833,12 @@ impl Loader {
     // --- API Handlers ---
 
     fn dos_close(&self, hf: u32) -> u32 {
-        self.shared.handle_mgr.lock().unwrap().close(hf);
+        self.shared.handle_mgr.lock_or_recover().close(hf);
         0
     }
 
     fn dos_set_file_ptr(&self, hf: u32, offset: i32, method: u32, actual_ptr: u32) -> u32 {
-        let mut h_mgr = self.shared.handle_mgr.lock().unwrap();
+        let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
         if let Some(file) = h_mgr.get_mut(hf) {
             let pos = match method {
                 0 => SeekFrom::Start(offset as u64),
@@ -1857,7 +1881,7 @@ impl Loader {
 
         match options.open(&path) {
             Ok(file) => {
-                let h = self.shared.handle_mgr.lock().unwrap().add(file);
+                let h = self.shared.handle_mgr.lock_or_recover().add(file);
                 self.guest_write::<u32>(phf_ptr, h);
                 if pul_action_ptr != 0 {
                     self.guest_write::<u32>(pul_action_ptr, 1);
@@ -1869,7 +1893,7 @@ impl Loader {
     }
 
     fn dos_read(&self, hf: u32, buf_ptr: u32, len: u32, actual_ptr: u32) -> u32 {
-        let mut h_mgr = self.shared.handle_mgr.lock().unwrap();
+        let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
         if let Some(file) = h_mgr.get_mut(hf) {
             let mut data = vec![0u8; len as usize];
             match file.read(&mut data) {
@@ -1896,7 +1920,7 @@ impl Loader {
                     Err(_) => 1,
                 }
             } else {
-                let mut h_mgr = self.shared.handle_mgr.lock().unwrap();
+                let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
                 if let Some(file) = h_mgr.get_mut(fd) {
                     match file.write(data) {
                         Ok(n) => {
@@ -1955,16 +1979,16 @@ impl Loader {
 
     fn dos_create_thread(&self, vcpu_id: u32, ptid_ptr: u32, pfn: u32, param: u32, cb_stack: u32) -> u32 {
         let stack_size = if cb_stack == 0 { 65536 } else { cb_stack };
-        let mut mem_mgr = self.shared.mem_mgr.lock().unwrap();
+        let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
         if let Some(stack_base) = mem_mgr.alloc(stack_size) {
             let tib_addr = mem_mgr.alloc(4096).unwrap();
             let tid = {
-                let mut next_tid = self.shared.next_tid.lock().unwrap();
+                let mut next_tid = self.shared.next_tid.lock_or_recover();
                 let tid = *next_tid;
                 *next_tid += 1;
                 tid
             };
-            println!("  [VCPU {}] Creating thread {} (ptid_ptr=0x{:08X}, pfn=0x{:08X}, param=0x{:08X})", vcpu_id, tid, ptid_ptr, pfn, param);
+            debug!("  [VCPU {}] Creating thread {} (ptid_ptr=0x{:08X}, pfn=0x{:08X}, param=0x{:08X})", vcpu_id, tid, ptid_ptr, pfn, param);
 
             self.guest_write::<u32>(tib_addr + 0x18, tib_addr).expect("dos_create_thread: TIB self-ptr OOB");
             self.guest_write::<u32>(tib_addr + 0x30, PIB_BASE).expect("dos_create_thread: TIB->PIB OOB");
@@ -1974,9 +1998,8 @@ impl Loader {
             self.guest_write::<u32>(sp_addr + 4, param).expect("dos_create_thread: stack write OOB");
 
             {
-                let vm_clone = Arc::clone(&self.vm);
-                let shared_clone = Arc::clone(&self.shared);
-                let new_vcpu = vm_clone.create_vcpu(tid as u64).unwrap();
+                // Create the vCPU using the existing VM fd (no new /dev/kvm needed)
+                let new_vcpu = self.vm.create_vcpu(tid as u64).unwrap();
                 let mut new_regs = new_vcpu.get_regs().unwrap();
                 new_regs.rip = pfn as u64;
                 new_regs.rsp = (stack_base + stack_size - 12) as u64;
@@ -1984,11 +2007,16 @@ impl Loader {
                 new_regs.rflags = 2;
                 new_vcpu.set_regs(&new_regs).unwrap();
 
+                let shared_clone = Arc::clone(&self.shared);
+                let vm_clone = Arc::clone(&self.vm);
                 let handle = thread::spawn(move || {
-                    let loader = Loader { _kvm: Kvm::new().unwrap(), vm: vm_clone, shared: shared_clone };
+                    // Dummy _kvm fd — only needed to satisfy the Loader struct.
+                    // run_vcpu only uses shared, never _kvm or vm.
+                    let kvm = Kvm::new().unwrap();
+                    let loader = Loader { _kvm: kvm, vm: vm_clone, shared: shared_clone };
                     loader.run_vcpu(new_vcpu, tid, tib_addr as u64);
                 });
-                self.shared.threads.lock().unwrap().insert(tid, handle);
+                self.shared.threads.lock_or_recover().insert(tid, handle);
                 self.guest_write::<u32>(ptid_ptr, tid);
             }
             0
@@ -2008,7 +2036,7 @@ impl Loader {
             let f_read = unsafe { File::from_raw_fd(fds[0]) };
             let f_write = unsafe { File::from_raw_fd(fds[1]) };
 
-            let mut h_mgr = self.shared.handle_mgr.lock().unwrap();
+            let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
             let h_read = h_mgr.add(f_read);
             let h_write = h_mgr.add(f_write);
 
@@ -2037,7 +2065,7 @@ impl Loader {
 
         let hdir = {
             if let Ok(rd) = std::fs::read_dir(if dir_path.to_str() == Some("") { Path::new(".") } else { &dir_path }) {
-                let mut hdir_mgr = self.shared.hdir_mgr.lock().unwrap();
+                let mut hdir_mgr = self.shared.hdir_mgr.lock_or_recover();
                 let hdir = hdir_mgr.add(rd, pattern);
                 self.guest_write::<u32>(phdir_ptr, hdir);
                 hdir
@@ -2048,12 +2076,12 @@ impl Loader {
     }
 
     fn dos_find_close(&self, hdir: u32) -> u32 {
-        if self.shared.hdir_mgr.lock().unwrap().close(hdir) { 0 }
+        if self.shared.hdir_mgr.lock_or_recover().close(hdir) { 0 }
         else { 6 }
     }
 
     fn dos_find_next(&self, hdir: u32, buf_ptr: u32, buf_len: u32, pc_found_ptr: u32) -> u32 {
-        let mut hdir_mgr = self.shared.hdir_mgr.lock().unwrap();
+        let mut hdir_mgr = self.shared.hdir_mgr.lock_or_recover();
         if let Some(entry) = hdir_mgr.get_mut(hdir) {
             let pattern = entry.pattern.clone();
             while let Some(Ok(dir_entry)) = entry.iterator.next() {
@@ -2099,7 +2127,7 @@ impl Loader {
     fn dos_query_file_info(&self, hf: u32, level: u32, buf_ptr: u32, buf_len: u32) -> u32 {
         if level != 1 { return 124; }
         if buf_len < 22 { return 111; }
-        let mut h_mgr = self.shared.handle_mgr.lock().unwrap();
+        let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
         if let Some(file) = h_mgr.get_mut(hf) {
             if let Ok(meta) = file.metadata() {
                 self.write_filestatus3_internal(&meta, buf_ptr);
@@ -2137,7 +2165,7 @@ impl Loader {
     }
 
     fn dos_alloc_mem(&self, ppb: u32, cb: u32) -> u32 {
-        match self.shared.mem_mgr.lock().unwrap().alloc(cb) {
+        match self.shared.mem_mgr.lock_or_recover().alloc(cb) {
             Some(addr) => {
                 self.guest_write::<u32>(ppb, addr);
                 0
@@ -2147,27 +2175,27 @@ impl Loader {
     }
 
     fn dos_free_mem(&self, pb: u32) -> u32 {
-        if self.shared.mem_mgr.lock().unwrap().free(pb) { 0 }
+        if self.shared.mem_mgr.lock_or_recover().free(pb) { 0 }
         else { 487 }
     }
 
     fn dos_create_event_sem(&self, _psz_name_ptr: u32, phev_ptr: u32, fl_attr: u32, f_state: u32) -> u32 {
-        let mut sem_mgr = self.shared.sem_mgr.lock().unwrap();
+        let mut sem_mgr = self.shared.sem_mgr.lock_or_recover();
         let h = sem_mgr.create_event(None, fl_attr, f_state != 0);
         self.guest_write::<u32>(phev_ptr, h);
         0
     }
 
     fn dos_close_event_sem(&self, hev: u32) -> u32 {
-        if self.shared.sem_mgr.lock().unwrap().close_event(hev) { 0 }
+        if self.shared.sem_mgr.lock_or_recover().close_event(hev) { 0 }
         else { 6 }
     }
 
     fn dos_post_event_sem(&self, hev: u32) -> u32 {
-        let sem_mgr = self.shared.sem_mgr.lock().unwrap();
+        let sem_mgr = self.shared.sem_mgr.lock_or_recover();
         if let Some(sem_arc) = sem_mgr.get_event(hev) {
             let (lock, cvar) = &*sem_arc;
-            let mut sem = lock.lock().unwrap();
+            let mut sem = lock.lock_or_recover();
             if sem.posted { 299 }
             else {
                 sem.posted = true;
@@ -2178,10 +2206,10 @@ impl Loader {
     }
 
     fn dos_wait_event_sem(&self, hev: u32, msec: u32) -> u32 {
-        let sem_arc = self.shared.sem_mgr.lock().unwrap().get_event(hev);
+        let sem_arc = self.shared.sem_mgr.lock_or_recover().get_event(hev);
         if let Some(sem_arc) = sem_arc {
             let (lock, cvar) = &*sem_arc;
-            let mut sem = lock.lock().unwrap();
+            let mut sem = lock.lock_or_recover();
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(
                 if msec == u32::MAX { u64::MAX / 2 } else { msec as u64 }
             );
@@ -2197,22 +2225,22 @@ impl Loader {
     }
 
     fn dos_create_mutex_sem(&self, _psz_name_ptr: u32, phmtx_ptr: u32, fl_attr: u32, f_state: u32) -> u32 {
-        let mut sem_mgr = self.shared.sem_mgr.lock().unwrap();
+        let mut sem_mgr = self.shared.sem_mgr.lock_or_recover();
         let h = sem_mgr.create_mutex(None, fl_attr, f_state != 0);
         self.guest_write::<u32>(phmtx_ptr, h);
         0
     }
 
     fn dos_close_mutex_sem(&self, hmtx: u32) -> u32 {
-        if self.shared.sem_mgr.lock().unwrap().close_mutex(hmtx) { 0 }
+        if self.shared.sem_mgr.lock_or_recover().close_mutex(hmtx) { 0 }
         else { 6 }
     }
 
     fn dos_request_mutex_sem(&self, tid: u32, hmtx: u32, msec: u32) -> u32 {
-        let sem_arc = self.shared.sem_mgr.lock().unwrap().get_mutex(hmtx);
+        let sem_arc = self.shared.sem_mgr.lock_or_recover().get_mutex(hmtx);
         if let Some(sem_arc) = sem_arc {
             let (lock, cvar) = &*sem_arc;
-            let mut sem = lock.lock().unwrap();
+            let mut sem = lock.lock_or_recover();
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(
                 if msec == u32::MAX { u64::MAX / 2 } else { msec as u64 }
             );
@@ -2240,10 +2268,10 @@ impl Loader {
     }
 
     fn dos_release_mutex_sem(&self, tid: u32, hmtx: u32) -> u32 {
-        let sem_arc = self.shared.sem_mgr.lock().unwrap().get_mutex(hmtx);
+        let sem_arc = self.shared.sem_mgr.lock_or_recover().get_mutex(hmtx);
         if let Some(sem_arc) = sem_arc {
             let (lock, cvar) = &*sem_arc;
-            let mut sem = lock.lock().unwrap();
+            let mut sem = lock.lock_or_recover();
             match sem.owner_tid {
                 Some(owner) if owner == tid => {
                     sem.request_count -= 1;
@@ -2266,19 +2294,19 @@ impl Loader {
             records.push(MuxWaitRecord { hsem: SemHandle::Event(hsem), user });
         }
         let wait_all = (fl_attr & 4) != 0;
-        let mut sem_mgr = self.shared.sem_mgr.lock().unwrap();
+        let mut sem_mgr = self.shared.sem_mgr.lock_or_recover();
         let h = sem_mgr.create_mux(None, fl_attr, records, wait_all);
         self.guest_write::<u32>(phmux_ptr, h);
         0
     }
 
     fn dos_close_mux_wait_sem(&self, hmux: u32) -> u32 {
-        if self.shared.sem_mgr.lock().unwrap().close_mux(hmux) { 0 }
+        if self.shared.sem_mgr.lock_or_recover().close_mux(hmux) { 0 }
         else { 6 }
     }
 
     fn dos_wait_mux_wait_sem(&self, tid: u32, hmux: u32, msec: u32, pul_user_ptr: u32) -> u32 {
-        let mux = self.shared.sem_mgr.lock().unwrap().get_mux(hmux);
+        let mux = self.shared.sem_mgr.lock_or_recover().get_mux(hmux);
         if let Some(mux) = mux {
             let deadline = std::time::Instant::now() + std::time::Duration::from_millis(
                 if msec == u32::MAX { u64::MAX / 2 } else { msec as u64 }
@@ -2289,11 +2317,11 @@ impl Loader {
 
                 for (i, rec) in mux.records.iter().enumerate() {
                     let h = match rec.hsem { SemHandle::Event(h) | SemHandle::Mutex(h) => h };
-                    let sem_mgr = self.shared.sem_mgr.lock().unwrap();
+                    let sem_mgr = self.shared.sem_mgr.lock_or_recover();
                     let is_ready = if let Some(ev_arc) = sem_mgr.get_event(h) {
-                        ev_arc.0.lock().unwrap().posted
+                        ev_arc.0.lock_or_recover().posted
                     } else if let Some(mtx_arc) = sem_mgr.get_mutex(h) {
-                        let mtx = mtx_arc.0.lock().unwrap();
+                        let mtx = mtx_arc.0.lock_or_recover();
                         mtx.owner_tid.is_none() || mtx.owner_tid == Some(tid)
                     } else { false };
 
@@ -2319,7 +2347,7 @@ impl Loader {
 
     fn dos_create_queue(&self, phq_ptr: u32, attr: u32, psz_name_ptr: u32) -> u32 {
         let name = self.read_guest_string(psz_name_ptr);
-        let mut queue_mgr = self.shared.queue_mgr.lock().unwrap();
+        let mut queue_mgr = self.shared.queue_mgr.lock_or_recover();
         let h = queue_mgr.create(name, attr);
         self.guest_write::<u32>(phq_ptr, h);
         0
@@ -2327,9 +2355,9 @@ impl Loader {
 
     fn dos_open_queue(&self, _ppid_ptr: u32, phq_ptr: u32, psz_name_ptr: u32) -> u32 {
         let name = self.read_guest_string(psz_name_ptr);
-        let queue_mgr = self.shared.queue_mgr.lock().unwrap();
+        let queue_mgr = self.shared.queue_mgr.lock_or_recover();
         for (&h, q_arc) in &queue_mgr.queues {
-            if q_arc.lock().unwrap().name == name {
+            if q_arc.lock_or_recover().name == name {
                 self.guest_write::<u32>(phq_ptr, h);
                 return 0;
             }
@@ -2338,9 +2366,9 @@ impl Loader {
     }
 
     fn dos_write_queue(&self, hq: u32, event: u32, len: u32, buf_ptr: u32, priority: u32) -> u32 {
-        let queue_mgr = self.shared.queue_mgr.lock().unwrap();
+        let queue_mgr = self.shared.queue_mgr.lock_or_recover();
         if let Some(q_arc) = queue_mgr.get(hq) {
-            let mut q = q_arc.lock().unwrap();
+            let mut q = q_arc.lock_or_recover();
             let mut data = vec![0u8; len as usize];
             if let Some(src) = self.guest_slice_mut(buf_ptr, len as usize) {
                 data.copy_from_slice(src);
@@ -2355,9 +2383,9 @@ impl Loader {
     fn dos_read_queue(&self, hq: u32, preq_ptr: u32, pcb_ptr: u32, ppbuf_ptr: u32, _elem: u32, wait: u32, pprio_ptr: u32, _hev: u32) -> u32 {
         // Get the queue Arc and its condvar outside the loop
         let (q_arc, cond, cond_lock) = {
-            let queue_mgr = self.shared.queue_mgr.lock().unwrap();
+            let queue_mgr = self.shared.queue_mgr.lock_or_recover();
             if let Some(q_arc) = queue_mgr.get(hq) {
-                let q = q_arc.lock().unwrap();
+                let q = q_arc.lock_or_recover();
                 let cond = Arc::clone(&q.cond);
                 let cond_lock = Arc::clone(&q.cond_lock);
                 drop(q);
@@ -2367,11 +2395,11 @@ impl Loader {
 
         loop {
             {
-                let mut q = q_arc.lock().unwrap();
+                let mut q = q_arc.lock_or_recover();
                 if let Some(entry) = q.items.pop_front() {
                     let len = entry.data.len() as u32;
                     drop(q); // Release queue lock before acquiring mem_mgr
-                    let mut mem_mgr = self.shared.mem_mgr.lock().unwrap();
+                    let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
                     if let Some(guest_addr) = mem_mgr.alloc(len) {
                         self.guest_write_bytes(guest_addr, &entry.data);
                         self.guest_write::<u32>(ppbuf_ptr, guest_addr);
@@ -2389,28 +2417,28 @@ impl Loader {
             }
             if wait == 0 { return 342; } // ERROR_QUE_EMPTY
             // Block on condvar instead of spinning
-            let guard = cond_lock.lock().unwrap();
+            let guard = cond_lock.lock_or_recover();
             let _ = cond.wait_timeout(guard, std::time::Duration::from_millis(100)).unwrap();
         }
     }
 
     fn dos_close_queue(&self, hq: u32) -> u32 {
-        if self.shared.queue_mgr.lock().unwrap().close(hq) { 0 }
+        if self.shared.queue_mgr.lock_or_recover().close(hq) { 0 }
         else { 337 }
     }
 
     fn dos_purge_queue(&self, hq: u32) {
-        let queue_mgr = self.shared.queue_mgr.lock().unwrap();
+        let queue_mgr = self.shared.queue_mgr.lock_or_recover();
         if let Some(q_arc) = queue_mgr.get(hq) {
-            let mut q = q_arc.lock().unwrap();
+            let mut q = q_arc.lock_or_recover();
             q.items.clear();
         }
     }
 
     fn dos_query_queue(&self, hq: u32, pcb_ptr: u32) -> u32 {
-        let queue_mgr = self.shared.queue_mgr.lock().unwrap();
+        let queue_mgr = self.shared.queue_mgr.lock_or_recover();
         if let Some(q_arc) = queue_mgr.get(hq) {
-            let q = q_arc.lock().unwrap();
+            let q = q_arc.lock_or_recover();
             self.guest_write::<u32>(pcb_ptr, q.items.len() as u32);
             return 0;
         }
@@ -2419,10 +2447,10 @@ impl Loader {
 
     fn dos_wait_thread(&self, vcpu_id: u32, ptid_ptr: u32) -> u32 {
         let tid = self.guest_read::<u32>(ptid_ptr).unwrap_or(0);
-        println!("  [VCPU {}] Waiting for thread {}...", vcpu_id, tid);
+        debug!("  [VCPU {}] Waiting for thread {}...", vcpu_id, tid);
         let mut handle = None;
         for _ in 0..100 {
-            handle = self.shared.threads.lock().unwrap().remove(&tid);
+            handle = self.shared.threads.lock_or_recover().remove(&tid);
             if handle.is_some() { break; }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
@@ -2433,11 +2461,11 @@ impl Loader {
     }
 
     fn post_wm_quit(&self, hwnd: u32) {
-        let wm = self.shared.window_mgr.lock().unwrap();
+        let wm = self.shared.window_mgr.lock_or_recover();
         let hmq = wm.find_hmq_for_hwnd(hwnd);
         if let Some(hmq) = hmq {
             if let Some(mq_arc) = wm.get_mq(hmq) {
-                let mut mq = mq_arc.lock().unwrap();
+                let mut mq = mq_arc.lock_or_recover();
                 mq.messages.push_back(OS2Message {
                     hwnd, msg: WM_QUIT, mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
                 });

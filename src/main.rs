@@ -7,8 +7,11 @@ pub mod font8x16;
 
 use std::env;
 use std::sync::Arc;
+use log::{info, debug};
+use loader::MutexExt;
 
 fn main() {
+    env_logger::init();
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage: {} <os2_executable>", args[0]);
@@ -26,19 +29,19 @@ fn main() {
         }
     };
 
-    println!("Successfully parsed LX file: {}", file_path);
-    println!("  CPU Type:    {:?}", lx_file.header.cpu_type);
-    println!("  OS Type:     {:?}", lx_file.header.os_type);
-    println!("  Module Flags: 0x{:08X}", lx_file.header.module_flags);
-    println!("  Entry EIP:   0x{:08X} (Object {})", lx_file.header.eip, lx_file.header.eip_object);
-    println!("  Entry ESP:   0x{:08X} (Object {})", lx_file.header.esp, lx_file.header.esp_object);
-    println!("  Page Size:   {}", lx_file.header.page_size);
+    info!("Successfully parsed LX file: {}", file_path);
+    debug!("  CPU Type:    {:?}", lx_file.header.cpu_type);
+    debug!("  OS Type:     {:?}", lx_file.header.os_type);
+    debug!("  Module Flags: 0x{:08X}", lx_file.header.module_flags);
+    debug!("  Entry EIP:   0x{:08X} (Object {})", lx_file.header.eip, lx_file.header.eip_object);
+    debug!("  Entry ESP:   0x{:08X} (Object {})", lx_file.header.esp, lx_file.header.esp_object);
+    debug!("  Page Size:   {}", lx_file.header.page_size);
 
-    println!("\nObject Table ({} objects):", lx_file.object_table.len());
-    println!("  # | Base Addr  | Virt Size  | Flags      | Pages");
-    println!(" ---|------------|------------|------------|-------");
+    debug!("\nObject Table ({} objects):", lx_file.object_table.len());
+    debug!("  # | Base Addr  | Virt Size  | Flags      | Pages");
+    debug!(" ---|------------|------------|------------|-------");
     for (i, obj) in lx_file.object_table.iter().enumerate() {
-        println!(
+        debug!(
             "  {:>1} | 0x{:08X} | 0x{:08X} | 0x{:08X} | {}",
             i + 1,
             obj.base_address,
@@ -48,11 +51,11 @@ fn main() {
         );
     }
 
-    println!("\nObject Page Map ({} pages):", lx_file.page_map.len());
-    println!("  # | Offset   | Size | Flags");
-    println!(" ---|----------|------|-------");
+    debug!("\nObject Page Map ({} pages):", lx_file.page_map.len());
+    debug!("  # | Offset   | Size | Flags");
+    debug!(" ---|----------|------|-------");
     for (i, page) in lx_file.page_map.iter().enumerate() {
-        println!(
+        debug!(
             "  {:>1} | 0x{:08X} | {:>4} | 0x{:04X}",
             i + 1,
             page.data_offset,
@@ -61,15 +64,15 @@ fn main() {
         );
     }
 
-    println!("\nImported Modules:");
+    debug!("\nImported Modules:");
     for (i, name) in lx_file.imported_modules.iter().enumerate() {
-        println!("  {:>2} | {}", i + 1, name);
+        debug!("  {:>2} | {}", i + 1, name);
     }
 
-    println!("\nFixup Record Table ({} pages):", lx_file.fixup_records_by_page.len());
+    debug!("\nFixup Record Table ({} pages):", lx_file.fixup_records_by_page.len());
     for (p, records) in lx_file.fixup_records_by_page.iter().enumerate() {
         if records.is_empty() { continue; }
-        println!("  Page {}:", p + 1);
+        debug!("  Page {}:", p + 1);
         for (i, record) in records.iter().enumerate() {
             let target_desc = match &record.target {
                 lx::header::FixupTarget::Internal { object_num, target_offset } => {
@@ -91,7 +94,7 @@ fn main() {
                 }
             };
 
-            println!(
+            debug!(
                 "    {:>2} | Offsets: {:?} | Type: 0x{:02X} | Target: {}",
                 i + 1,
                 record.source_offsets,
@@ -101,7 +104,7 @@ fn main() {
         }
     }
 
-    println!("\nInitializing KVM loader...");
+    info!("Initializing KVM loader...");
 
     let mut loader = loader::Loader::new();
     let shared = loader.get_shared();
@@ -120,7 +123,7 @@ fn main() {
         let (gui_sender, gui_rx) = gui::create_gui_channel(&event_loop);
 
         // Store the sender in the window manager
-        shared.window_mgr.lock().unwrap().gui_tx = Some(gui_sender);
+        shared.window_mgr.lock_or_recover().gui_tx = Some(gui_sender);
 
         // Launch VCPU thread
         let loader = Arc::new(loader);

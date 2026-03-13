@@ -7,7 +7,8 @@ use winit::event::{WindowEvent, ElementState, MouseButton};
 use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 use softbuffer::{Context, Surface};
-use crate::loader::{SharedState, OS2Message, WM_CLOSE, WM_SIZE, WM_PAINT, WM_CHAR, WM_MOUSEMOVE, WM_BUTTON1DOWN, WM_BUTTON1UP};
+use log::debug;
+use crate::loader::{SharedState, OS2Message, MutexExt, WM_CLOSE, WM_SIZE, WM_PAINT, WM_CHAR, WM_MOUSEMOVE, WM_BUTTON1DOWN, WM_BUTTON1UP};
 
 pub enum GUIMessage {
     CreateWindow { class: String, title: String, handle: u32 },
@@ -72,14 +73,14 @@ impl GUIApp {
     }
 
     fn push_msg(&self, hwnd: u32, msg: u32, mp1: u32, mp2: u32) {
-        let wm = self.shared.window_mgr.lock().unwrap();
+        let wm = self.shared.window_mgr.lock_or_recover();
         // Redirect frame window messages to the client window
         let target_hwnd = wm.frame_to_client.get(&hwnd).copied().unwrap_or(hwnd);
         let hmq = wm.find_hmq_for_hwnd(target_hwnd)
             .or_else(|| wm.find_hmq_for_hwnd(hwnd));
         if let Some(hmq) = hmq {
             if let Some(mq_arc) = wm.get_mq(hmq) {
-                let mut mq = mq_arc.lock().unwrap();
+                let mut mq = mq_arc.lock_or_recover();
                 mq.messages.push_back(OS2Message {
                     hwnd: target_hwnd, msg, mp1, mp2,
                     time: 0, x: 0, y: 0
@@ -206,7 +207,7 @@ impl GUIApp {
                         window, surface, buffer, width, height,
                     });
 
-                    println!("  [GUI] Created window for PM handle {}", handle);
+                    debug!("  [GUI] Created window for PM handle {}", handle);
                 }
                 GUIMessage::DrawBox { handle, x1, y1, x2, y2, color, fill } => {
                     self.draw_rect(handle, x1, y1, x2, y2, color, fill);
