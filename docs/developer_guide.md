@@ -355,3 +355,129 @@ Key conventions:
 - Return OS/2 error codes in EAX (0 = success). Common codes: 2 = FILE_NOT_FOUND, 5 = ACCESS_DENIED, 6 = INVALID_HANDLE, 87 = INVALID_PARAMETER.
 - For PM APIs that need to invoke guest code, return `ApiResult::Callback` instead of `ApiResult::Normal`.
 - Use `guest_read`/`guest_write` for all guest memory access — never dereference raw guest pointers without bounds checking.
+
+---
+
+## Debugging
+
+Warpine uses the `log` crate with `env_logger`. Set the `RUST_LOG` environment variable to control verbosity:
+
+```bash
+# Full debug output — shows every API call, arguments, and return values
+RUST_LOG=debug cargo run -- samples/pm_demo/pm_demo.exe
+
+# Info level — shows high-level milestones (parse, load, entry point)
+RUST_LOG=info cargo run -- samples/pm_demo/pm_demo.exe
+
+# Filter to a specific module
+RUST_LOG=warpine::loader=debug cargo run -- samples/hello/hello.exe
+RUST_LOG=warpine::gui=debug cargo run -- samples/pm_demo/pm_demo.exe
+```
+
+### What debug output shows
+
+At **debug** level, each intercepted API call is logged with its vCPU ID, function name, arguments, and return value. For example:
+
+```
+[VCPU 0] DosOpen("CONFIG.SYS", ...) = 0
+[VCPU 0] WinSetWindowPos hwnd=4096 x=100 y=100 cx=400 cy=300 fl=0x002B
+[GUI] Resized window 4096 to 400x300
+[GUI] Moved window 4096 to (100, 100)
+```
+
+This is the primary way to diagnose issues — if an OS/2 app misbehaves, the debug log shows exactly which API calls were made, in what order, and what was returned.
+
+### Common debugging scenarios
+
+| Symptom | What to check |
+|---|---|
+| App crashes immediately | Look for unhandled ordinals: `WARN ... unimplemented DOSCALLS ordinal ...` |
+| Window doesn't appear | Check for `WinCreateStdWindow`, `WinSetWindowPos` with `SWP_SHOW`, and `[GUI] Created window` in logs |
+| App hangs | Check if a blocking call (`WinGetMsg`, `DosWaitEventSem`, `DosReadQueue`) is waiting indefinitely |
+| Drawing issues | Look for `GpiSetColor`, `GpiBox`, `GpiLine`, `GpiCharStringAt` calls and verify coordinates |
+| Import resolution errors | Look for `WARN ... unresolved import` during loading |
+
+### Rust backtrace
+
+For panics, enable the full backtrace:
+
+```bash
+RUST_BACKTRACE=1 cargo run -- samples/pm_demo/pm_demo.exe
+RUST_BACKTRACE=full cargo run -- samples/pm_demo/pm_demo.exe  # with full symbol info
+```
+
+---
+
+## Testing
+
+### Unit tests
+
+Run all unit tests with:
+
+```bash
+cargo test
+```
+
+The test suite covers three areas:
+
+| Module | What's tested |
+|---|---|
+| `src/lx/header.rs` | LX header parsing, object table entry parsing |
+| `src/lx.rs` | MZ validation, LX signature detection, rejection of malformed binaries (excessive object/page counts, invalid EIP object, invalid page offset shift), parsing of a real `hello.exe` |
+| `src/loader/managers.rs` | MemoryManager allocation, 4KB alignment, free-list reuse, top-of-heap coalescing, overflow/limit rejection |
+| `src/gui.rs` | Y-coordinate flipping, rectangle rendering (filled/outlined), line drawing (horizontal/vertical/diagonal), text rendering pixel output and orientation |
+
+### Integration testing with sample apps
+
+Sample OS/2 binaries in `samples/` serve as integration tests. Build them with Open Watcom:
+
+```bash
+./vendor/setup_watcom.sh
+make -C samples/<name>
+```
+
+Run each sample to verify specific subsystems:
+
+```bash
+# Core: stdout, DosExit
+cargo run -- samples/hello/hello.exe
+
+# Memory: DosAllocMem, DosFreeMem
+cargo run -- samples/alloc_test/alloc_test.exe
+
+# File I/O: DosOpen, DosRead, DosWrite, DosClose, DosSetFilePtr, DosDelete
+cargo run -- samples/file_test/file_test.exe
+
+# Directory: DosFindFirst, DosFindNext, DosFindClose
+cargo run -- samples/find_test/find_test.exe
+
+# Filesystem: DosCreateDir, DosDeleteDir, DosMove, DosQueryPathInfo
+cargo run -- samples/fs_ops_test/fs_ops_test.exe
+
+# Threading: DosCreateThread, DosSleep, DosWaitThread
+cargo run -- samples/thread_test/thread_test.exe
+
+# Pipes: DosCreatePipe, cross-thread DosRead/DosWrite
+cargo run -- samples/pipe_test/pipe_test.exe
+
+# Semaphores: DosCreateEventSem, DosPostEventSem, DosWaitEventSem
+cargo run -- samples/ipc_test/ipc_test.exe
+
+# Mutexes: DosCreateMutexSem, DosRequestMutexSem, DosReleaseMutexSem
+cargo run -- samples/mutex_test/mutex_test.exe
+
+# MuxWait: DosCreateMuxWaitSem, DosWaitMuxWaitSem
+cargo run -- samples/muxwait_test/muxwait_test.exe
+
+# Queues: DosCreateQueue, DosWriteQueue, DosReadQueue
+cargo run -- samples/queue_test/queue_test.exe
+
+# PM GUI: WinCreateStdWindow, message loop, WinSetWindowPos
+cargo run -- samples/pm_hello/pm_hello.exe
+cargo run -- samples/pm_demo/pm_demo.exe
+
+# PM drawing: GpiBox, GpiLine, GpiCharStringAt, GpiSetColor
+cargo run -- samples/shapes/shapes.exe
+```
+
+CLI samples should print output and exit with code 0. PM samples should open a window and respond to close. Use `RUST_LOG=debug` to inspect API call traces if a sample misbehaves.
