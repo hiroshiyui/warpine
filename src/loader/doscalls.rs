@@ -343,12 +343,13 @@ impl super::Loader {
                     if let Ok(meta) = dir_entry.metadata() {
                         let name_bytes = name.as_bytes();
                         let name_len = name_bytes.len().min(255);
-                        if buf_len < (32 + name_len as u32 + 1) { return 111; }
-                        self.guest_write::<u32>(buf_ptr, 0);
-                        self.write_filestatus3_internal(&meta, buf_ptr + 4);
-                        self.guest_write::<u8>(buf_ptr + 24, name_len as u8);
-                        self.guest_write_bytes(buf_ptr + 25, &name_bytes[..name_len]);
-                        self.guest_write::<u8>(buf_ptr + 25 + name_len as u32, 0);
+                        // FILEFINDBUF3: oNextEntryOffset(4) + FILESTATUS3(24) + cchName(1) + achName(var+1)
+                        if buf_len < (30 + name_len as u32) { return 111; }
+                        self.guest_write::<u32>(buf_ptr, 0);                           // +0: oNextEntryOffset
+                        self.write_filestatus3_internal(&meta, buf_ptr + 4);           // +4: FILESTATUS3 (24 bytes)
+                        self.guest_write::<u8>(buf_ptr + 28, name_len as u8);          // +28: cchName
+                        self.guest_write_bytes(buf_ptr + 29, &name_bytes[..name_len]); // +29: achName
+                        self.guest_write::<u8>(buf_ptr + 29 + name_len as u32, 0);     // null terminator
                         if pc_found_ptr != 0 {
                             self.guest_write::<u32>(pc_found_ptr, 1);
                         }
