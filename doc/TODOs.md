@@ -152,32 +152,23 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
 ### P2 — Medium (architecture / maintainability)
 
 - [ ] **Split `loader.rs` into modules**
-    - At 2337 lines, `loader.rs` handles KVM setup, memory management, handle tables, semaphores, queues, PM window management, PMGPI drawing, filesystem APIs, and the VMEXIT loop. This makes review, testing, and modification difficult.
+    - At ~2450 lines, `loader.rs` handles KVM setup, memory management, handle tables, semaphores, queues, PM window management, PMGPI drawing, filesystem APIs, and the VMEXIT loop. This makes review, testing, and modification difficult.
     - **Suggested split:** `kvm.rs` (VMM core, VMEXIT loop), `guest_mem.rs` (bounds-checked memory wrapper), `doscalls.rs` (filesystem, memory, thread APIs), `pm_win.rs` (PMWIN handlers), `pm_gpi.rs` (PMGPI handlers), `ipc.rs` (semaphores, pipes, queues).
 
-- [ ] **Bump-only memory allocator**
-    - `MemoryManager::free()` removes the `AllocBlock` tracking entry but never reclaims the space — `next_free` only grows. Repeated alloc/free cycles exhaust the guest address space.
-    - **Fix:** Implement a free-list allocator, or at minimum coalesce freed blocks at the top of the allocation range.
-    - **Files:** `src/loader.rs` `MemoryManager`
+- [x] **Bump-only memory allocator → free-list**
+    - `MemoryManager` now has a `free_list` with first-fit reuse, block splitting, and coalescing at the top of the allocation range. Unit tests verify alloc, free, reuse, coalescing, overflow, and limit checking.
 
-- [ ] **Magic numbers → named constants**
-    - WM_ message constants used as hex literals in `gui.rs` (0x0029, 0x0007, 0x0023, 0x007A, 0x0070, 0x0071, 0x0072) instead of named constants already defined in `loader.rs`. TIB/PIB addresses (0x70000, 0x71000, 0x60000) hardcoded in multiple places without constants. Mock handles (0x1234 for HAB, 0x5000 for HPOINTER) are unexplained literals.
-    - **Fix:** Define shared constants in a `constants.rs` module and use them everywhere.
-    - **Files:** `src/gui.rs`, `src/loader.rs`
+- [x] **Magic numbers → named constants**
+    - Defined `WM_SIZE`, `WM_PAINT`, `WM_TIMER`, `WM_CLOSE`, `WM_QUIT`, `WM_MOUSEMOVE`, `WM_BUTTON1DOWN`, `WM_BUTTON1UP`, `WM_CHAR` as public constants in `loader.rs`. Added `TIB_BASE`, `PIB_BASE`, `ENV_ADDR`, `MOCK_HAB`, `MOCK_HPOINTER`. `gui.rs` imports and uses these instead of hex literals.
 
-- [ ] **Buffer allocation integer overflow in GUI**
-    - `vec![0xFFFFFFFF; (size.width * size.height) as usize]` — `u32 * u32` can wrap to 0 for large window sizes, creating a tiny buffer. All subsequent rendering would then index out of bounds (currently guarded by bounds checks, but the buffer would be wrong).
-    - **Fix:** Use `(width as usize).checked_mul(height as usize)` and handle overflow. Add early return for zero dimensions in `render_rect_to_buffer`.
-    - **Files:** `src/gui.rs` `CreateWindow` handler, `Resized` handler, `render_rect_to_buffer`
+- [x] **Buffer allocation integer overflow in GUI**
+    - Both `CreateWindow` and `Resized` handlers use `checked_mul()` for pixel buffer allocation.
 
-- [ ] **LX parser hardening for malformed inputs**
-    - `object_count` and `module_num_pages` from the LX header are used directly for `Vec::with_capacity` and loop counts without upper-bound validation. A crafted LX file could trigger multi-gigabyte allocations. `page_offset_shift` is not validated (values >= 32 cause undefined behavior in shift operations). Fixup parsing can read past declared page boundaries. `eip_object`/`esp_object` are not validated against `object_table` bounds.
-    - **Fix:** Validate header fields against file size. Add `assert!(page_offset_shift < 32)`. Bounds-check fixup reads. Validate entry point object indices.
-    - **Files:** `src/lx/lx.rs`, `src/lx/header.rs`
+- [x] **LX parser hardening for malformed inputs**
+    - Validates `object_count` (max 1024), `module_num_pages` (max 65536), `page_offset_shift` (< 32), and `eip_object`/`esp_object` against `object_count`. Returns descriptive errors. Unit tests cover all rejection cases.
 
-- [ ] **Dead code cleanup**
-    - `api.rs` bridge functions (`DosWrite`, `DosExit`, `DosQuerySysInfo` etc.) are `extern "C"` FFI stubs from an earlier architecture — never called in the current KVM-based execution model. `_saved_rax` in `CallbackFrame` is stored but never read. `wm.ps_map.get(&hps)` in WinEndPaint reads and discards a value. `dos_find_first` has duplicate `if/else` branches that do the same thing.
-    - **Files:** `src/api.rs`, `src/loader.rs`
+- [x] **Dead code cleanup**
+    - Removed `api.rs` bridge functions (`DosWrite`, `DosExit`, `DosQuerySysInfo`, `WarpineExitThunk`) and `bridges` module. Removed `_saved_rax` from `CallbackFrame`. Removed useless `wm.ps_map.get(&hps)` in WinEndPaint. Collapsed duplicate `if/else` branches in `dos_find_first`.
 
 ### P3 — Low (polish)
 
