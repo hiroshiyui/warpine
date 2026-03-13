@@ -4,7 +4,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 
 pub mod header;
-use header::{LxHeader, ObjectTableEntry, ObjectPageMapEntry, LxFixupRecord};
+use header::{LxHeader, ObjectTableEntry, ObjectPageMapEntry, LxFixupRecord, LxResourceEntry};
 
 #[derive(Debug)]
 pub struct LxFile {
@@ -13,6 +13,7 @@ pub struct LxFile {
     pub page_map: Vec<ObjectPageMapEntry>,
     pub fixup_page_table: Vec<u32>,
     pub fixup_records_by_page: Vec<Vec<LxFixupRecord>>,
+    pub resources: Vec<LxResourceEntry>,
     pub imported_modules: Vec<String>,
     pub import_procedure_names: Vec<u8>,
 }
@@ -85,6 +86,21 @@ impl LxFile {
             page_map.push(ObjectPageMapEntry::read(&mut reader)?);
         }
 
+        // 5b. Read Resource Table
+        const MAX_RESOURCES: u32 = 4096;
+        if header.resource_count > MAX_RESOURCES {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                format!("Resource count {} exceeds maximum {}", header.resource_count, MAX_RESOURCES)));
+        }
+        let mut resources = Vec::with_capacity(header.resource_count as usize);
+        if header.resource_count > 0 && header.resource_table_offset > 0 {
+            let resource_table_start = lx_offset + header.resource_table_offset as u64;
+            reader.seek(SeekFrom::Start(resource_table_start))?;
+            for _ in 0..header.resource_count {
+                resources.push(LxResourceEntry::read(&mut reader)?);
+            }
+        }
+
         // 6. Read Fixup Page Table
         let fixup_page_table_start = lx_offset + header.fixup_page_table_offset as u64;
         reader.seek(SeekFrom::Start(fixup_page_table_start))?;
@@ -143,12 +159,13 @@ impl LxFile {
             }
         }
 
-        Ok(LxFile { 
+        Ok(LxFile {
             header,
             object_table,
             page_map,
             fixup_page_table,
             fixup_records_by_page,
+            resources,
             imported_modules,
             import_procedure_names,
         })

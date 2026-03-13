@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use std::io::{self, Read, Seek, SeekFrom};
 
+// OS/2 resource type constants
+pub const RT_POINTER: u16 = 1;
+pub const RT_BITMAP: u16 = 2;
+pub const RT_MENU: u16 = 4;
+pub const RT_DIALOG: u16 = 5;
+pub const RT_STRING: u16 = 6;
+pub const RT_ACCELTABLE: u16 = 10;
+
 #[derive(Debug, Default, Clone)]
 #[repr(C)]
 pub struct LxHeader {
@@ -100,6 +108,34 @@ impl ObjectPageMapEntry {
         reader.read_exact(&mut buf4)?; entry.data_offset = u32::from_le_bytes(buf4);
         reader.read_exact(&mut buf2)?; entry.data_size = u16::from_le_bytes(buf2);
         reader.read_exact(&mut buf2)?; entry.flags = u16::from_le_bytes(buf2);
+
+        Ok(entry)
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+#[repr(C)]
+pub struct LxResourceEntry {
+    pub type_id: u16,    // Resource type (RT_MENU, RT_STRING, etc.)
+    pub name_id: u16,    // Resource ID
+    pub size: u32,       // Size in bytes
+    pub object_num: u16, // 1-based object index containing the data
+    pub offset: u32,     // Offset within that object
+}
+
+impl LxResourceEntry {
+    pub const SIZE: usize = 14;
+
+    pub fn read<R: Read + Seek>(reader: &mut R) -> io::Result<Self> {
+        let mut buf2 = [0u8; 2];
+        let mut buf4 = [0u8; 4];
+        let mut entry = Self::default();
+
+        reader.read_exact(&mut buf2)?; entry.type_id = u16::from_le_bytes(buf2);
+        reader.read_exact(&mut buf2)?; entry.name_id = u16::from_le_bytes(buf2);
+        reader.read_exact(&mut buf4)?; entry.size = u32::from_le_bytes(buf4);
+        reader.read_exact(&mut buf2)?; entry.object_num = u16::from_le_bytes(buf2);
+        reader.read_exact(&mut buf4)?; entry.offset = u32::from_le_bytes(buf4);
 
         Ok(entry)
     }
@@ -323,6 +359,30 @@ mod tests {
         assert_eq!(header.os_type, 1);
         assert_eq!(header.eip, 0x9A);
         assert_eq!(header.data_pages_offset, 0x1CC);
+    }
+
+    #[test]
+    fn test_read_resource_entry() {
+        let mut data = vec![0u8; 14];
+        // type_id = 6 (RT_STRING)
+        data[0] = 6; data[1] = 0;
+        // name_id = 42
+        data[2] = 42; data[3] = 0;
+        // size = 0x100
+        data[4] = 0x00; data[5] = 0x01; data[6] = 0x00; data[7] = 0x00;
+        // object_num = 2
+        data[8] = 2; data[9] = 0;
+        // offset = 0x200
+        data[10] = 0x00; data[11] = 0x02; data[12] = 0x00; data[13] = 0x00;
+
+        let mut cursor = Cursor::new(data);
+        let entry = LxResourceEntry::read(&mut cursor).expect("Should parse resource entry");
+
+        assert_eq!(entry.type_id, 6);
+        assert_eq!(entry.name_id, 42);
+        assert_eq!(entry.size, 0x100);
+        assert_eq!(entry.object_num, 2);
+        assert_eq!(entry.offset, 0x200);
     }
 
     #[test]
