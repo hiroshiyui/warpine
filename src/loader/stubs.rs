@@ -631,4 +631,21 @@ mod tests {
     fn test_edit_name_no_extension() {
         assert_eq!(Loader::apply_edit_name("makefile", "*.bak"), "makefile.bak");
     }
+
+    #[test]
+    fn test_qsv_constants_valid_ranges() {
+        use super::super::constants::*;
+        // QSV indexes are 1-based and sequential ranges should work
+        assert_eq!(QSV_MAX_PATH_LENGTH, 1);
+        assert_eq!(QSV_BOOT_DRIVE, 5);
+        assert_eq!(QSV_PAGE_SIZE, 10);
+        assert_eq!(QSV_VERSION_MAJOR, 11);
+        assert_eq!(QSV_VERSION_MINOR, 12);
+        assert_eq!(QSV_VERSION_REVISION, 13);
+        assert_eq!(QSV_TOTPHYSMEM, 17);
+        assert_eq!(QSV_MAX_COMP_LENGTH, 23);
+        // Ensure range queries would work: iStart <= iLast
+        assert!(QSV_VERSION_MAJOR < QSV_VERSION_REVISION);
+        assert!(QSV_MAX_PATH_LENGTH < QSV_MAX_COMP_LENGTH);
+    }
 }

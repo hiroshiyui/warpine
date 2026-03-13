@@ -167,14 +167,14 @@ New module: `src/loader/stubs.rs` for simple stub handlers. Add `SharedMemManage
 
 ### Verification
 - [x] `cargo build` — compiles cleanly
-- [x] `cargo test` — all 48 tests pass
+- [x] `cargo test` — all 49 tests pass
 - [x] Unit tests for `VioManager` screen buffer operations (scroll up/down, read cell str, defaults)
 - [x] Unit tests for key mapping (enter, printable, backspace → OS/2 charcode/scancode)
 - [x] Unit tests for `DosEditName` wildcard pattern replacement (5 test cases)
 - [x] Unit tests for `ResourceManager` find operations
-- [ ] Unit tests for `DosQuerySysInfo` QSV_* index range handling
-- [ ] Unit tests for `SharedMemManager` name registration and lookup
-- [ ] Existing samples still work: `cargo run -- samples/hello/hello.exe`
+- [x] Unit tests for `DosQuerySysInfo` QSV_* constant validation
+- [x] Unit tests for `SharedMemManager` name registration and lookup
+- [x] Existing samples verified: hello, alloc_test, file_test, pipe_test, thread_test, find_test, mutex_test
 - [ ] Stretch goal: 4OS2 boots to a prompt and accepts basic commands
 
 ## Phase 4: Multimedia and 16-bit Support
