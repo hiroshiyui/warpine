@@ -119,25 +119,17 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
 
 ### P0 — Critical (sandbox escape / memory safety)
 
-- [ ] **Guest memory bounds checking**
-    - All 50+ guest memory accesses use raw `guest_mem.add(offset)` without validating that `offset` falls within the 128MB allocation. A malicious OS/2 binary can supply out-of-bounds pointers via API arguments (DosRead buffer, WinQueryWindowRect rect, GpiCharStringAt string, stack reads via corrupted RSP) to read/write arbitrary host memory.
-    - **Fix:** Create a `guest_ptr_checked(addr: u32, len: usize) -> Option<*mut u8>` helper that validates `addr as usize + len <= GUEST_MEM_SIZE` and route all guest memory access through it. Affected: `read_stack`, `read_guest_string`, every API handler that reads/writes guest pointers.
-    - **Files:** `src/loader.rs` (50+ sites), `src/api.rs` (`DosWrite` `from_raw_parts` on unvalidated pointer)
+- [x] **Guest memory bounds checking**
+    - Added `guest_ptr()`, `guest_read()`, `guest_write()`, `guest_write_bytes()`, `guest_slice_mut()` helpers that validate `offset + len <= guest_mem_size`. All 67 raw `guest_mem.add()` accesses migrated.
 
-- [ ] **Filesystem sandbox (path traversal)**
-    - `translate_path()` replaces backslashes and strips drive letters but does not prevent `..` traversal or absolute paths. A guest binary can access any host file: `C:\..\..\etc\passwd` → `/etc/passwd`. `DosOpen`, `DosDelete`, `DosMove`, `DosCreateDir`, `DosDeleteDir` are all affected.
-    - **Fix:** Implement a chroot-like sandbox: prepend a configurable base directory, canonicalize the result, and reject paths that escape the base. Consider a `--rootfs <dir>` CLI option.
-    - **Files:** `src/loader.rs` `translate_path()`, `dos_open`, `dos_delete`, `dos_move`, `dos_create_dir`, `dos_delete_dir`
+- [x] **Filesystem sandbox (path traversal)**
+    - Added `translate_path()` that canonicalizes paths and verifies they stay under the sandbox root (CWD). All filesystem APIs (`DosOpen`, `DosDelete`, `DosMove`, `DosCreateDir`, `DosDeleteDir`, `DosFindFirst`, `DosQueryPathInfo`) now route through it.
 
-- [ ] **`read_guest_string` unbounded read**
-    - Reads bytes from guest memory until a null terminator with no maximum length and no bounds check against guest memory size. Can read into host memory if the guest supplies a pointer near the end of the allocation or a string without a null terminator.
-    - **Fix:** Add a `max_len` parameter (e.g., 4096) and bounds-check against `GUEST_MEM_SIZE`.
-    - **Files:** `src/loader.rs` `read_guest_string()`
+- [x] **`read_guest_string` unbounded read**
+    - Replaced with bounded version: max 4096 bytes, checked against `guest_mem_size`. Old inline string reader in `dos_open` also replaced.
 
-- [ ] **`mmap` return value unchecked**
-    - `libc::mmap` can return `MAP_FAILED` (usize::MAX cast to pointer). The code proceeds to `write_bytes` on the returned pointer without checking, causing immediate SIGSEGV.
-    - **Fix:** Check `guest_mem == libc::MAP_FAILED` and return an error.
-    - **Files:** `src/loader.rs` `Loader::new()` mmap call
+- [x] **`mmap` return value unchecked**
+    - Added `MAP_FAILED` check with panic and `last_os_error()` diagnostic.
 
 ### P1 — High (correctness / stability)
 
