@@ -177,8 +177,55 @@ New module: `src/loader/stubs.rs` for simple stub handlers. Add `SharedMemManage
 - [x] Existing samples verified: hello, alloc_test, file_test, pipe_test, thread_test, find_test, mutex_test
 - [x] 4OS2 boots to a prompt and accepts basic commands (`ver`, `set`, `exit`, etc.)
 
-## Phase 4: Multimedia and 16-bit Support
-- [ ] **Audio/Video (MMPM2)**
+## Phase 4: Filesystem I/O (HPFS-Compatible Virtual Disk)
+
+Goal: treat an isolated host directory (or block device) as an OS/2 virtual disk with HPFS semantics, making disk and filesystem I/O operations work correctly for applications that expect a real HPFS volume.
+
+### Infrastructure: Virtual Disk Layer
+- [ ] **Drive-to-directory mapping** — configurable mapping of OS/2 drive letters (C:, D:, …) to host directories, each acting as an isolated HPFS volume root
+- [ ] **Case-insensitive, case-preserving lookup** — file/directory resolution ignores case (HPFS semantics) while preserving the original case on creation
+- [ ] **Long filename support** — allow filenames up to 254 characters (HPFS limit), reject FAT-illegal names only when mounted as FAT
+
+### Extended Attributes (EAs)
+- [ ] **EA storage backend** — persist OS/2 extended attributes using host xattrs (Linux `user.*` namespace) or a sidecar `.ea` file per directory
+- [ ] **`DosSetFileInfo` / `DosQueryFileInfo`** — FIL_QUERYEASIZE (level 2) and FIL_QUERYEASFROMLIST (level 3) support
+- [ ] **`DosSetPathInfo` / `DosQueryPathInfo`** — EA read/write by path
+- [ ] **`DosFindFirst` / `DosFindNext`** — return EA size in FILEFINDBUF3 and support FILEFINDBUF3L (level 12/FIL_QUERYEASFROMLISTL)
+- [ ] **`DosEnumAttribute`** — enumerate EAs on a file
+
+### Filesystem Information
+- [ ] **`DosQueryFSInfo`** — return correct HPFS volume geometry: volume label, serial number, sector size (512), cluster size, total/free space derived from host `statvfs()`
+- [ ] **`DosSetFSInfo`** — set volume label (store in `.vol_label` file in volume root)
+- [ ] **`DosQueryFSAttach`** — report drive type as local HPFS (`"HPFS"` FSD name), enumerate attached drives
+
+### File Locking
+- [ ] **`DosSetFileLocks`** — byte-range locking via Linux `fcntl(F_SETLK)` with OS/2 share-mode semantics
+- [ ] **`DosProtectSetFileLocks`** — protected variant with file lock ID
+
+### Directory Enumeration Improvements
+- [ ] **Wildcard matching** — full OS/2 wildcard semantics (`*`, `?`, dot-handling rules matching HPFS behavior)
+- [ ] **`DosFindFirst` attributes filter** — respect `MUST_HAVE_*` attribute bits, hidden/system/directory filtering
+- [ ] **`DosFindNext` multi-entry** — support `ulSearchCount > 1` returning multiple FILEFINDBUF3 entries per call
+- [ ] **`DosFindClose`** — proper search handle cleanup
+
+### Path Translation Hardening
+- [ ] **Sandbox enforcement** — prevent path traversal escapes (`..` past volume root), symlink resolution stays within volume boundary
+- [ ] **UNC path handling** — `\\server\share` paths return `ERROR_NETWORK_ACCESS_DENIED` or map to a configured directory
+- [ ] **`DosQueryPathInfo`** — return correct HPFS attributes for all info levels
+
+### Verification
+- [ ] `cargo build` — compiles cleanly
+- [ ] `cargo test` — all existing + new tests pass
+- [ ] Unit tests for case-insensitive path resolution
+- [ ] Unit tests for EA storage and retrieval
+- [ ] Unit tests for wildcard matching (HPFS rules)
+- [ ] Unit tests for `DosQueryFSInfo` volume geometry
+- [ ] Unit tests for path traversal sandbox enforcement
+- [ ] 4OS2 `dir`, `tree`, `copy`, `move`, `del`, `md`, `rd` commands work correctly
+- [ ] File attributes (`attrib` command) work correctly
+
+## Phase 5: Multimedia and 16-bit Support
+- [ ] **Audio/Video (MMPM/2)**
     - [ ] Reimplement multimedia APIs using PulseAudio/ALSA or SDL.
 - [ ] **16-bit Compatibility**
     - [ ] Integrate a lightweight x86 emulator for 16-bit code execution.
