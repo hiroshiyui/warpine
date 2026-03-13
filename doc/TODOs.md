@@ -120,13 +120,13 @@ Target application: [4OS2](https://github.com/StevenLevine/4os2) — a commercia
 
 **Recommended implementation order:** Infrastructure → Subsystem 3 stubs (unblock init) → Subsystem 2 directory/sysinfo → Subsystem 1 console I/O → Subsystem 2 process execution → remaining APIs.
 
-### Infrastructure: Expand Thunk Stub Area
-- [ ] Add `KBDCALLS_BASE = 4096` and `VIOCALLS_BASE = 5120` constants to `constants.rs`
-- [ ] Add `STUB_AREA_SIZE = 8192` constant (expanded from implicit 4096)
-- [ ] Update `setup_stubs()` loop to `0..STUB_AREA_SIZE`
-- [ ] Update `run_vcpu()` bounds check from `MAGIC_API_BASE + 4096` to `MAGIC_API_BASE + STUB_AREA_SIZE`
-- [ ] Add `"KBDCALLS"` and `"VIOCALLS"` branches in `resolve_import()`
-- [ ] Add KBDCALLS and VIOCALLS dispatch branches in `handle_api_call_ex()`
+### Infrastructure: Expand Thunk Stub Area — COMPLETED
+- [x] Add `KBDCALLS_BASE = 4096` and `VIOCALLS_BASE = 5120` constants to `constants.rs`
+- [x] Add `STUB_AREA_SIZE = 8192` constant (expanded from implicit 4096)
+- [x] Update `setup_stubs()` loop to `0..STUB_AREA_SIZE`
+- [x] Update `run_vcpu()` bounds check from `MAGIC_API_BASE + 4096` to `MAGIC_API_BASE + STUB_AREA_SIZE`
+- [x] Add `"KBDCALLS"` and `"VIOCALLS"` branches in `resolve_import()`
+- [x] Add KBDCALLS and VIOCALLS dispatch branches in `handle_api_call_ex()`
 
 ### Subsystem 1: Console I/O (KBDCALLS.DLL + VIOCALLS.DLL)
 
