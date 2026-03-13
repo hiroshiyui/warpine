@@ -82,6 +82,8 @@ pub struct SharedState {
     pub console_mgr: Mutex<console::VioManager>,
     /// Code object address ranges (base, end) for return address scanning in thunk bypass
     pub code_ranges: Mutex<Vec<(u32, u32)>>,
+    /// Executable name as provided on the command line
+    pub exe_name: Mutex<String>,
     pub guest_mem: *mut u8,
     pub guest_mem_size: usize,
     pub next_tid: Mutex<u32>,
@@ -138,6 +140,7 @@ impl Loader {
             window_mgr: Mutex::new(window_mgr),
             console_mgr: Mutex::new(console_mgr),
             code_ranges: Mutex::new(Vec::new()),
+            exe_name: Mutex::new(String::new()),
             guest_mem,
             guest_mem_size,
             next_tid: Mutex::new(1),
@@ -384,14 +387,41 @@ impl Loader {
         let entry_esp = lx_file.object_table[lx_file.header.esp_object as usize - 1].base_address as u64 + lx_file.header.esp as u64;
 
         let tib_base = TIB_BASE as u64;
-        let cmdline_addr = ENV_ADDR + 10;
-        let env_data = b"PATH=C:\\\0\0HELLO.EXE\0";
-        self.guest_write_bytes(ENV_ADDR, env_data).expect("setup_guest: env write OOB");
+        // Build OS/2 environment block: null-terminated KEY=VALUE strings, double-null terminated,
+        // followed by the program name (null-terminated).
+        let exe_name = self.shared.exe_name.lock_or_recover().clone();
+        let os2_exe = if exe_name.is_empty() {
+            String::from("C:\\APP.EXE")
+        } else {
+            // Convert Unix path to OS/2 style: C:\path\to\exe
+            let basename = std::path::Path::new(&exe_name)
+                .file_name()
+                .map(|f| f.to_string_lossy().to_uppercase())
+                .unwrap_or_else(|| "APP.EXE".into());
+            format!("C:\\{}", basename)
+        };
+        let mut env_block: Vec<u8> = Vec::new();
+        env_block.extend_from_slice(b"PATH=C:\\\0");
+        env_block.extend_from_slice(b"COMSPEC=C:\\4OS2.EXE\0");
+        env_block.extend_from_slice(b"OS=OS2\0");
+        env_block.extend_from_slice(b"TMP=C:\\TMP\0");
+        env_block.push(0); // double-null terminates the environment
+        let cmdline_offset = env_block.len() as u32;
+        env_block.extend_from_slice(os2_exe.as_bytes());
+        env_block.push(0);
+        // Allocate env block via memory manager so it's properly tracked
+        let env_addr = self.shared.mem_mgr.lock_or_recover()
+            .alloc(env_block.len() as u32)
+            .expect("setup_guest: env alloc failed");
+        let cmdline_addr = env_addr + cmdline_offset;
+        debug!("  Environment block ({} bytes) at 0x{:08X}: {:02X?}",
+            env_block.len(), env_addr, &env_block);
+        self.guest_write_bytes(env_addr, &env_block).expect("setup_guest: env write OOB");
         self.guest_write::<u32>(TIB_BASE + 0x18, TIB_BASE).expect("setup_guest: TIB self-ptr OOB");
         self.guest_write::<u32>(TIB_BASE + 0x30, PIB_BASE).expect("setup_guest: TIB->PIB OOB");
         self.guest_write::<u32>(PIB_BASE + 0x00, 42).expect("setup_guest: PIB PID OOB");
-        self.guest_write::<u32>(PIB_BASE + 0x0C, ENV_ADDR).expect("setup_guest: PIB env OOB");
-        self.guest_write::<u32>(PIB_BASE + 0x10, cmdline_addr).expect("setup_guest: PIB cmdline OOB");
+        self.guest_write::<u32>(PIB_BASE + 0x0C, cmdline_addr).expect("setup_guest: PIB pchcmd OOB");
+        self.guest_write::<u32>(PIB_BASE + 0x10, env_addr).expect("setup_guest: PIB pchenv OOB");
 
         self.setup_stubs();
         self.setup_idt();
@@ -406,12 +436,15 @@ impl Loader {
         regs.rflags = 2;
         vcpu.set_regs(&regs).unwrap();
 
-        let cmdline_addr = ENV_ADDR + 10;
+        // OS/2 initial stack: [return_addr] [hmod] [reserved] [env_ptr] [cmdline_ptr]
+        // PIB layout: +0x0C = pib_pchcmd, +0x10 = pib_pchenv
+        let cmdline_addr = self.guest_read::<u32>(PIB_BASE + 0x0C).unwrap_or(ENV_ADDR);
+        let env_addr = self.guest_read::<u32>(PIB_BASE + 0x10).unwrap_or(ENV_ADDR);
         let sp = regs.rsp as u32;
         self.guest_write::<u32>(sp, EXIT_TRAP_ADDR).expect("create_initial_vcpu: stack write OOB");
-        self.guest_write::<u32>(sp + 4, 1).expect("create_initial_vcpu: stack write OOB");
+        self.guest_write::<u32>(sp + 4, 0).expect("create_initial_vcpu: stack write OOB");
         self.guest_write::<u32>(sp + 8, 0).expect("create_initial_vcpu: stack write OOB");
-        self.guest_write::<u32>(sp + 12, ENV_ADDR).expect("create_initial_vcpu: stack write OOB");
+        self.guest_write::<u32>(sp + 12, env_addr).expect("create_initial_vcpu: stack write OOB");
         self.guest_write::<u32>(sp + 16, cmdline_addr).expect("create_initial_vcpu: stack write OOB");
         vcpu
     }

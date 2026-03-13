@@ -114,6 +114,7 @@ fn main() {
         eprintln!("Failed to load executable: {}", e);
         std::process::exit(1);
     }
+    *shared.exe_name.lock_or_recover() = file_path.clone();
 
     if is_pm {
         // PM app: create GUI event loop and run VCPU in background
