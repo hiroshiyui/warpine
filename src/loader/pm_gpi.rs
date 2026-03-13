@@ -123,29 +123,18 @@ impl super::Loader {
                     self.guest_read::<u8>(pch + i as u32).unwrap_or(0)
                 }).collect();
                 let text_str = String::from_utf8_lossy(&text).to_string();
-                let color = {
-                    let wm = self.shared.window_mgr.lock_or_recover();
-                    wm.ps_map.get(&hps).map(|ps| ps.color).unwrap_or(0)
-                };
-                let hwnd = {
-                    let wm = self.shared.window_mgr.lock_or_recover();
-                    let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
-                    wm.client_to_frame(ps_hwnd)
-                };
-                {
-                    let wm = self.shared.window_mgr.lock_or_recover();
-                    if let Some(ref sender) = wm.gui_tx {
-                        let _ = sender.send(GUIMessage::DrawText {
-                            handle: hwnd, x, y, text: text_str, color,
-                        });
-                    }
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let color = wm.ps_map.get(&hps).map(|ps| ps.color).unwrap_or(0);
+                let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
+                let hwnd = wm.client_to_frame(ps_hwnd);
+                if let Some(ref sender) = wm.gui_tx {
+                    let _ = sender.send(GUIMessage::DrawText {
+                        handle: hwnd, x, y, text: text_str, color,
+                    });
                 }
                 // Update current position (advance x by character width * count)
-                {
-                    let mut wm = self.shared.window_mgr.lock_or_recover();
-                    if let Some(ps) = wm.ps_map.get_mut(&hps) {
-                        ps.current_pos = (x + (count as i32 * 8), y);
-                    }
+                if let Some(ps) = wm.ps_map.get_mut(&hps) {
+                    ps.current_pos = (x + (count as i32 * 8), y);
                 }
                 ApiResult::Normal(1) // GPI_OK
             }

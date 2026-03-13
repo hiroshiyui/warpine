@@ -46,6 +46,24 @@ pub(crate) enum ApiResult {
     },
 }
 
+/// Shared state for all vCPU threads, the GUI event loop, and timer threads.
+///
+/// # Lock ordering (acquire in this order to prevent deadlocks)
+///
+/// ```text
+/// Level 1: next_tid, threads          (lightweight, rarely contended)
+/// Level 2: mem_mgr, handle_mgr, hdir_mgr  (independent resource managers)
+/// Level 3: queue_mgr                  (may lock inner Arc<Mutex<OS2Queue>>)
+/// Level 4: sem_mgr                    (may lock inner semaphore mutexes)
+/// Level 5: window_mgr                 (may lock inner Arc<Mutex<PM_MsgQueue>>)
+/// ```
+///
+/// Rules:
+/// - Never acquire a higher-level lock while holding a lower-level lock.
+/// - Inner mutexes (OS2Queue, PM_MsgQueue, EventSemaphore, MutexSemaphore)
+///   are always acquired *after* their parent manager and released *before*
+///   acquiring any other SharedState mutex.
+/// - Release locks before blocking (condvar wait, thread join, sleep).
 pub struct SharedState {
     pub mem_mgr: Mutex<MemoryManager>,
     pub handle_mgr: Mutex<HandleManager>,
@@ -434,6 +452,11 @@ impl Loader {
             warn!("Warning: Unknown API Base Ordinal {} on VCPU {}", ordinal, vcpu_id);
             ApiResult::Normal(0)
         }
+    }
+
+    /// Check whether a shutdown has been requested.
+    pub(crate) fn shutting_down(&self) -> bool {
+        self.shared.exit_requested.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     pub(crate) fn post_wm_quit(&self, hwnd: u32) {
