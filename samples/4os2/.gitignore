@@ -1,0 +1,9 @@
+# Ignore everything by default (4OS2 source fetched by fetch_source.sh)
+# Copyright (c) 1989-2002 J.P. Software, Inc. — see license.txt
+*
+
+# Track only our build files and the fetch script
+!.gitignore
+!Makefile
+!buildlevel.txt
+!fetch_source.sh
