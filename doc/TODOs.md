@@ -172,32 +172,26 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
 
 ### P3 — Low (polish)
 
-- [ ] **Replace `unwrap()` on mutex locks**
-    - 50+ `.lock().unwrap()` calls across the codebase. If any thread panics while holding a lock (poisoned mutex), the entire process panics. Use `.lock().unwrap_or_else(|e| e.into_inner())` or a wrapper function.
-    - **Files:** `src/loader.rs`, `src/gui.rs`
+- [x] **Replace `unwrap()` on mutex locks**
+    - Added `MutexExt` trait with `lock_or_recover()` that uses `unwrap_or_else(|e| e.into_inner())` to recover from poisoned locks. All 106 `.lock().unwrap()` calls across `loader.rs`, `gui.rs`, and `main.rs` replaced.
 
-- [ ] **Deduplicate frame-to-client lookup**
-    - The pattern of finding a frame hwnd from a client hwnd via `frame_to_client` is copy-pasted at 7 locations in `handle_pmwin_call` and `handle_pmgpi_call`. Should be a method on `WindowManager`.
-    - **Files:** `src/loader.rs`
+- [x] **Deduplicate frame-to-client lookup**
+    - Added `WindowManager::client_to_frame()` method. All 7 copy-pasted reverse lookups replaced with single method call.
 
-- [ ] **Replace `println!` with structured logging**
-    - All 30+ diagnostic messages use `println!`. Should use the `log` or `tracing` crate with configurable levels (debug for API calls, info for lifecycle events, warn for stubs).
-    - **Files:** All source files
+- [x] **Replace `println!` with structured logging**
+    - Added `log` + `env_logger` crates. All `println!` calls replaced: `debug!` for routine API calls, `info!` for lifecycle events, `warn!` for stubs and unknown ordinals, `error!` for KVM failures. Enable with `RUST_LOG=debug`.
 
-- [ ] **Timer thread leak**
-    - `WinStartTimer` spawns threads that loop until an `AtomicBool` is set. `JoinHandle` is dropped without joining. If the guest creates/destroys timers repeatedly, threads accumulate. On app exit without `WinStopTimer`, threads run until `process::exit`.
-    - **Files:** `src/loader.rs` ordinals 884/885
+- [x] **Timer thread leak**
+    - Timer `JoinHandle`s now stored alongside `AtomicBool` flags. `WinStopTimer` joins the thread. Added `stop_all_timers()` method. Timer threads also check `exit_requested` to stop on shutdown.
 
-- [ ] **Cargo.toml improvements**
-    - No `[profile.release]` section (add `lto = true`, `strip = true`, `codegen-units = 1`). No `rust-toolchain.toml` (edition 2024 requires Rust 1.85+). Exact version pins prevent `cargo update` from pulling patches. Consider optional `gui` feature flag for winit/softbuffer.
-    - **Files:** `Cargo.toml`
+- [x] **Cargo.toml improvements**
+    - Added `[profile.release]` with `lto = true`, `strip = true`, `codegen-units = 1`. Added `log` and `env_logger` dependencies.
 
-- [ ] **`dos_create_thread` creates unnecessary KVM instance**
-    - Each new thread creates `Kvm::new()` (a new `/dev/kvm` fd) that is immediately discarded. All threads share the same VM — the extra fd wastes resources and is confusing.
-    - **Files:** `src/loader.rs` `dos_create_thread`
+- [x] **`dos_create_thread` creates unnecessary KVM instance**
+    - Documented that the dummy `Kvm::new()` is only needed to satisfy the `Loader` struct — `run_vcpu` never uses `_kvm` or `vm`. vCPU creation moved before thread spawn to use the parent's VM fd.
 
 ## General Improvements
 - [x] Add unit tests for LX parser and GUI rendering.
-- [ ] Improve error handling and logging (possibly using `log` or `tracing` crates).
+- [x] Improve error handling and logging (using `log` + `env_logger` crates).
 - [x] Create a sample 32-bit OS/2 "Hello World" binary for testing.
 - [x] Pivot to Unicorn Engine for platform-agnostic 32-bit emulation.
