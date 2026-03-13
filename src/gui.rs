@@ -125,8 +125,8 @@ impl GUIApp {
                     for col in 0..char_w {
                         if bits & (0x80 >> col) != 0 {
                             let px = cx + col;
-                            // Flip Y for OS/2 bottom-left origin
-                            let py = (state.height as i32 - 1) - (y + row);
+                            // Flip Y: font row 0 is glyph top (OS/2 y + char_h - 1)
+                            let py = state.height as i32 - y - char_h + row;
                             if px >= 0 && px < state.width as i32 && py >= 0 && py < state.height as i32 {
                                 state.buffer[(py as u32 * state.width + px as u32) as usize] = color;
                             }
