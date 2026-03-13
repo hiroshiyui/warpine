@@ -463,9 +463,13 @@ impl Loader {
         let kvm = Kvm::new().expect("Failed to open /dev/kvm");
         let vm = Arc::new(kvm.create_vm().expect("Failed to create VM"));
         let guest_mem_size = 128 * 1024 * 1024;
-        let guest_mem = unsafe {
-            libc::mmap(ptr::null_mut(), guest_mem_size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE, -1, 0) as *mut u8
+        let guest_mem_raw = unsafe {
+            libc::mmap(ptr::null_mut(), guest_mem_size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE, -1, 0)
         };
+        if guest_mem_raw == libc::MAP_FAILED {
+            panic!("Failed to mmap {} bytes for guest memory: {}", guest_mem_size, std::io::Error::last_os_error());
+        }
+        let guest_mem = guest_mem_raw as *mut u8;
         unsafe { ptr::write_bytes(guest_mem, 0, guest_mem_size); }
         let mem_region = kvm_userspace_memory_region { slot: 0, guest_phys_addr: 0, memory_size: guest_mem_size as u64, userspace_addr: guest_mem as u64, flags: 0 };
         unsafe { vm.set_user_memory_region(mem_region).unwrap(); }
@@ -493,6 +497,89 @@ impl Loader {
         Loader { _kvm: kvm, vm, shared }
     }
 
+    // ── Bounds-checked guest memory access helpers ──
+
+    /// Returns a checked raw pointer into guest memory, or None if out of bounds.
+    fn guest_ptr(&self, offset: u32, len: usize) -> Option<*mut u8> {
+        let offset = offset as usize;
+        if offset.checked_add(len).map_or(true, |end| end > self.shared.guest_mem_size) {
+            return None;
+        }
+        Some(unsafe { self.shared.guest_mem.add(offset) })
+    }
+
+    /// Read a value from guest memory with bounds check.
+    fn guest_read<T: Copy>(&self, offset: u32) -> Option<T> {
+        let ptr = self.guest_ptr(offset, std::mem::size_of::<T>())?;
+        Some(unsafe { ptr::read_unaligned(ptr as *const T) })
+    }
+
+    /// Write a value to guest memory with bounds check.
+    fn guest_write<T: Copy>(&self, offset: u32, val: T) -> Option<()> {
+        let ptr = self.guest_ptr(offset, std::mem::size_of::<T>())?;
+        unsafe { ptr::write_unaligned(ptr as *mut T, val); }
+        Some(())
+    }
+
+    /// Copy bytes into guest memory with bounds check.
+    fn guest_write_bytes(&self, offset: u32, data: &[u8]) -> Option<()> {
+        let ptr = self.guest_ptr(offset, data.len())?;
+        unsafe { ptr::copy_nonoverlapping(data.as_ptr(), ptr, data.len()); }
+        Some(())
+    }
+
+    /// Get a mutable slice of guest memory with bounds check.
+    fn guest_slice_mut(&self, offset: u32, len: usize) -> Option<&mut [u8]> {
+        let ptr = self.guest_ptr(offset, len)?;
+        Some(unsafe { std::slice::from_raw_parts_mut(ptr, len) })
+    }
+
+    /// Read a null-terminated string from guest memory with bounds check and max length.
+    fn read_guest_string(&self, ptr: u32) -> String {
+        const MAX_GUEST_STRING_LEN: usize = 4096;
+        let mut s = String::new();
+        let base = ptr as usize;
+        let mem_size = self.shared.guest_mem_size;
+        if base >= mem_size { return s; }
+        let max_len = MAX_GUEST_STRING_LEN.min(mem_size - base);
+        for i in 0..max_len {
+            let byte = self.guest_read::<u8>((base + i) as u32).unwrap_or(0);
+            if byte == 0 { break; }
+            s.push(byte as char);
+        }
+        s
+    }
+
+    /// Translate an OS/2 path to a sandboxed host path.
+    /// Prevents path traversal attacks by canonicalizing and checking containment.
+    fn translate_path(&self, os2_path: &str) -> Result<std::path::PathBuf, u32> {
+        let unix_path = os2_path.replace('\\', "/");
+        // Strip drive letter (e.g., "C:" or "D:")
+        let stripped = if unix_path.len() >= 2 && unix_path.as_bytes()[1] == b':' {
+            &unix_path[2..]
+        } else {
+            &unix_path
+        };
+        let relative = stripped.trim_start_matches('/');
+        let sandbox_root = std::env::current_dir().map_err(|_| 3u32)?; // ERROR_PATH_NOT_FOUND
+        let candidate = sandbox_root.join(relative);
+        // Canonicalize to resolve .., symlinks; for new files canonicalize parent
+        let resolved = if candidate.exists() {
+            candidate.canonicalize().map_err(|_| 3u32)?
+        } else {
+            let parent = candidate.parent().ok_or(3u32)?;
+            if !parent.exists() { return Err(3); }
+            let file_name = candidate.file_name().ok_or(3u32)?;
+            parent.canonicalize().map_err(|_| 3u32)?.join(file_name)
+        };
+        // Verify resolved path is under sandbox root
+        if !resolved.starts_with(&sandbox_root) {
+            eprintln!("SECURITY: Path traversal blocked: '{}' → '{}'", os2_path, resolved.display());
+            return Err(5); // ERROR_ACCESS_DENIED
+        }
+        Ok(resolved)
+    }
+
     pub fn is_pm_app(&self, lx_file: &LxFile) -> bool {
         lx_file.imported_modules.iter().any(|m| m == "PMWIN" || m == "PMGPI")
     }
@@ -514,7 +601,7 @@ impl Loader {
                 let target = obj.base_address as usize + (p * 4096);
                 if lx_file.page_map[page_idx].data_size > 0 {
                     file.seek(SeekFrom::Start(page_off))?;
-                    unsafe { file.read_exact(std::slice::from_raw_parts_mut(self.shared.guest_mem.add(target), lx_file.page_map[page_idx].data_size as usize))?; }
+                    file.read_exact(self.guest_slice_mut(target as u32, lx_file.page_map[page_idx].data_size as usize).expect("load: page target OOB"))?;
                 }
             }
         }
@@ -536,10 +623,10 @@ impl Loader {
                     if target_addr == 0 { continue; }
                     for &off in &record.source_offsets {
                         let source_phys = obj.base_address as usize + p * 4096 + off as usize;
-                        unsafe {
-                            let ptr = self.shared.guest_mem.add(source_phys);
-                            if (record.source_type & 0x0F) == 0x07 { ptr::write_unaligned(ptr as *mut u32, target_addr as u32); }
-                            else if (record.source_type & 0x0F) == 0x08 { ptr::write_unaligned(ptr as *mut i32, (target_addr as isize - (source_phys as isize + 4)) as i32); }
+                        if (record.source_type & 0x0F) == 0x07 {
+                            self.guest_write::<u32>(source_phys as u32, target_addr as u32).expect("fixup: write OOB");
+                        } else if (record.source_type & 0x0F) == 0x08 {
+                            self.guest_write::<i32>(source_phys as u32, (target_addr as isize - (source_phys as isize + 4)) as i32).expect("fixup: write OOB");
                         }
                     }
                 }
@@ -558,10 +645,7 @@ impl Loader {
 
     fn setup_stubs(&self) {
         for i in 0..4096 {
-            unsafe {
-                let ptr = self.shared.guest_mem.add(MAGIC_API_BASE as usize + i);
-                *ptr = 0xCC; // INT 3
-            }
+            self.guest_write::<u8>(MAGIC_API_BASE as u32 + i as u32, 0xCC).expect("setup_stubs: write OOB");
         }
     }
 
@@ -574,14 +658,12 @@ impl Loader {
         let env_addr: usize = 0x60000;
         let cmdline_addr = env_addr + 10;
         let env_data = b"PATH=C:\\\0\0HELLO.EXE\0";
-        unsafe {
-            ptr::copy_nonoverlapping(env_data.as_ptr(), self.shared.guest_mem.add(env_addr), env_data.len());
-            ptr::write_unaligned(self.shared.guest_mem.add(tib_base as usize + 0x18) as *mut u32, tib_base as u32);
-            ptr::write_unaligned(self.shared.guest_mem.add(tib_base as usize + 0x30) as *mut u32, pib_base as u32);
-            ptr::write_unaligned(self.shared.guest_mem.add(pib_base as usize + 0x00) as *mut u32, 42);
-            ptr::write_unaligned(self.shared.guest_mem.add(pib_base as usize + 0x0C) as *mut u32, env_addr as u32);
-            ptr::write_unaligned(self.shared.guest_mem.add(pib_base as usize + 0x10) as *mut u32, cmdline_addr as u32);
-        }
+        self.guest_write_bytes(env_addr as u32, env_data).expect("setup_guest: env write OOB");
+        self.guest_write::<u32>(tib_base as u32 + 0x18, tib_base as u32).expect("setup_guest: TIB self-ptr OOB");
+        self.guest_write::<u32>(tib_base as u32 + 0x30, pib_base as u32).expect("setup_guest: TIB->PIB OOB");
+        self.guest_write::<u32>(pib_base as u32 + 0x00, 42).expect("setup_guest: PIB PID OOB");
+        self.guest_write::<u32>(pib_base as u32 + 0x0C, env_addr as u32).expect("setup_guest: PIB env OOB");
+        self.guest_write::<u32>(pib_base as u32 + 0x10, cmdline_addr as u32).expect("setup_guest: PIB cmdline OOB");
 
         self.setup_stubs();
         (entry_eip, entry_esp, tib_base)
@@ -597,14 +679,12 @@ impl Loader {
 
         let env_addr: usize = 0x60000;
         let cmdline_addr = env_addr + 10;
-        unsafe {
-            let sp = self.shared.guest_mem.add(regs.rsp as usize) as *mut u32;
-            ptr::write_unaligned(sp.offset(0), EXIT_TRAP_ADDR);
-            ptr::write_unaligned(sp.offset(1), 1);
-            ptr::write_unaligned(sp.offset(2), 0);
-            ptr::write_unaligned(sp.offset(3), env_addr as u32);
-            ptr::write_unaligned(sp.offset(4), cmdline_addr as u32);
-        }
+        let sp = regs.rsp as u32;
+        self.guest_write::<u32>(sp, EXIT_TRAP_ADDR).expect("create_initial_vcpu: stack write OOB");
+        self.guest_write::<u32>(sp + 4, 1).expect("create_initial_vcpu: stack write OOB");
+        self.guest_write::<u32>(sp + 8, 0).expect("create_initial_vcpu: stack write OOB");
+        self.guest_write::<u32>(sp + 12, env_addr as u32).expect("create_initial_vcpu: stack write OOB");
+        self.guest_write::<u32>(sp + 16, cmdline_addr as u32).expect("create_initial_vcpu: stack write OOB");
         vcpu
     }
 
@@ -687,15 +767,16 @@ impl Loader {
                         match api_result {
                             ApiResult::Normal(res) => {
                                 let mut regs = vcpu.get_regs().unwrap();
-                                let read_stack = |off: u64| unsafe { ptr::read_unaligned(self.shared.guest_mem.add((regs.rsp + off) as usize) as *const u32) };
                                 regs.rax = res as u64;
-                                regs.rip = read_stack(0) as u64;
+                                regs.rip = self.guest_read::<u32>(regs.rsp as u32)
+                                    .expect("Stack read OOB for return address") as u64;
                                 regs.rsp += 4;
                                 vcpu.set_regs(&regs).unwrap();
                             }
                             ApiResult::Callback { wnd_proc, hwnd, msg, mp1, mp2 } => {
                                 let mut regs = vcpu.get_regs().unwrap();
-                                let return_addr = unsafe { ptr::read_unaligned(self.shared.guest_mem.add(regs.rsp as usize) as *const u32) };
+                                let return_addr = self.guest_read::<u32>(regs.rsp as u32)
+                                    .expect("Stack read OOB for callback return address");
                                 // Save current state; saved_rsp is past the return address.
                                 // The caller will clean up its own args (_System is caller-cleanup).
                                 callback_stack.push(CallbackFrame {
@@ -705,14 +786,12 @@ impl Loader {
                                 });
                                 // Set up guest stack for callback: push ret addr + 4 args = 20 bytes
                                 regs.rsp -= 20;
-                                unsafe {
-                                    let sp = self.shared.guest_mem.add(regs.rsp as usize) as *mut u32;
-                                    ptr::write_unaligned(sp.offset(0), CALLBACK_RET_TRAP);
-                                    ptr::write_unaligned(sp.offset(1), hwnd);
-                                    ptr::write_unaligned(sp.offset(2), msg);
-                                    ptr::write_unaligned(sp.offset(3), mp1);
-                                    ptr::write_unaligned(sp.offset(4), mp2);
-                                }
+                                let sp = regs.rsp as u32;
+                                self.guest_write::<u32>(sp, CALLBACK_RET_TRAP).expect("Callback stack write OOB");
+                                self.guest_write::<u32>(sp + 4, hwnd).expect("Callback stack write OOB");
+                                self.guest_write::<u32>(sp + 8, msg).expect("Callback stack write OOB");
+                                self.guest_write::<u32>(sp + 12, mp1).expect("Callback stack write OOB");
+                                self.guest_write::<u32>(sp + 16, mp2).expect("Callback stack write OOB");
                                 regs.rip = wnd_proc as u64;
                                 vcpu.set_regs(&regs).unwrap();
                             }
@@ -741,7 +820,7 @@ impl Loader {
     fn handle_api_call_ex(&self, vcpu: &mut VcpuFd, vcpu_id: u32, ordinal: u32) -> ApiResult {
         let regs = vcpu.get_regs().unwrap();
         let esp = regs.rsp;
-        let read_stack = |off: u64| unsafe { ptr::read_unaligned(self.shared.guest_mem.add((esp + off) as usize) as *const u32) };
+        let read_stack = |off: u64| -> u32 { self.guest_read::<u32>((esp + off) as u32).expect("Stack read OOB") };
 
         println!("  [VCPU {}] API Call: Ordinal {} (ReturnAddr=0x{:08X})", vcpu_id, ordinal, read_stack(0));
 
@@ -817,7 +896,7 @@ impl Loader {
     fn handle_pmwin_call(&self, vcpu: &mut VcpuFd, vcpu_id: u32, ordinal: u32) -> ApiResult {
         let regs = vcpu.get_regs().unwrap();
         let esp = regs.rsp;
-        let read_stack = |off: u64| unsafe { ptr::read_unaligned(self.shared.guest_mem.add((esp + off) as usize) as *const u32) };
+        let read_stack = |off: u64| -> u32 { self.guest_read::<u32>((esp + off) as u32).expect("Stack read OOB") };
 
         match ordinal {
             763 => {
@@ -881,7 +960,7 @@ impl Loader {
                 }
 
                 if phwnd_client_ptr != 0 {
-                    unsafe { ptr::write_unaligned(self.shared.guest_mem.add(phwnd_client_ptr as usize) as *mut u32, h_client); }
+                    self.guest_write::<u32>(phwnd_client_ptr, h_client);
                 }
 
                 // Post initial WM_PAINT so the guest paints on creation
@@ -915,16 +994,13 @@ impl Loader {
                             let mut mq = mq_arc.lock().unwrap();
                             if let Some(msg) = mq.messages.pop_front() {
                                 if pqmsg_ptr != 0 {
-                                    unsafe {
-                                        let ptr = self.shared.guest_mem.add(pqmsg_ptr as usize);
-                                        ptr::write_unaligned(ptr.add(0) as *mut u32, msg.hwnd);
-                                        ptr::write_unaligned(ptr.add(4) as *mut u32, msg.msg);
-                                        ptr::write_unaligned(ptr.add(8) as *mut u32, msg.mp1);
-                                        ptr::write_unaligned(ptr.add(12) as *mut u32, msg.mp2);
-                                        ptr::write_unaligned(ptr.add(16) as *mut u32, msg.time);
-                                        ptr::write_unaligned(ptr.add(20) as *mut i16, msg.x);
-                                        ptr::write_unaligned(ptr.add(22) as *mut i16, msg.y);
-                                    }
+                                    self.guest_write::<u32>(pqmsg_ptr, msg.hwnd);
+                                    self.guest_write::<u32>(pqmsg_ptr + 4, msg.msg);
+                                    self.guest_write::<u32>(pqmsg_ptr + 8, msg.mp1);
+                                    self.guest_write::<u32>(pqmsg_ptr + 12, msg.mp2);
+                                    self.guest_write::<u32>(pqmsg_ptr + 16, msg.time);
+                                    self.guest_write::<i16>(pqmsg_ptr + 20, msg.x);
+                                    self.guest_write::<i16>(pqmsg_ptr + 22, msg.y);
                                 }
                                 if msg.msg == WM_QUIT { return ApiResult::Normal(0); }
                                 return ApiResult::Normal(1);
@@ -941,15 +1017,12 @@ impl Loader {
                 let pqmsg_ptr = read_stack(8);
                 if pqmsg_ptr == 0 { return ApiResult::Normal(0); }
 
-                let (hwnd, msg, mp1, mp2) = unsafe {
-                    let ptr = self.shared.guest_mem.add(pqmsg_ptr as usize);
-                    (
-                        ptr::read_unaligned(ptr.add(0) as *const u32),
-                        ptr::read_unaligned(ptr.add(4) as *const u32),
-                        ptr::read_unaligned(ptr.add(8) as *const u32),
-                        ptr::read_unaligned(ptr.add(12) as *const u32),
-                    )
-                };
+                let (hwnd, msg, mp1, mp2) = (
+                    self.guest_read::<u32>(pqmsg_ptr).unwrap_or(0),
+                    self.guest_read::<u32>(pqmsg_ptr + 4).unwrap_or(0),
+                    self.guest_read::<u32>(pqmsg_ptr + 8).unwrap_or(0),
+                    self.guest_read::<u32>(pqmsg_ptr + 12).unwrap_or(0),
+                );
 
                 let pfn_wp = {
                     let wm = self.shared.window_mgr.lock().unwrap();
@@ -1080,13 +1153,10 @@ impl Loader {
                 let _hwnd = read_stack(4);
                 let prcl_ptr = read_stack(8);
                 if prcl_ptr != 0 {
-                    unsafe {
-                        let ptr = self.shared.guest_mem.add(prcl_ptr as usize);
-                        ptr::write_unaligned(ptr.add(0) as *mut i32, 0);   // xLeft
-                        ptr::write_unaligned(ptr.add(4) as *mut i32, 0);   // yBottom
-                        ptr::write_unaligned(ptr.add(8) as *mut i32, 640); // xRight
-                        ptr::write_unaligned(ptr.add(12) as *mut i32, 480); // yTop
-                    }
+                    self.guest_write::<i32>(prcl_ptr, 0);       // xLeft
+                    self.guest_write::<i32>(prcl_ptr + 4, 0);   // yBottom
+                    self.guest_write::<i32>(prcl_ptr + 8, 640); // xRight
+                    self.guest_write::<i32>(prcl_ptr + 12, 480); // yTop
                 }
                 ApiResult::Normal(1) // TRUE
             }
@@ -1202,15 +1272,12 @@ impl Loader {
                 let prcl = read_stack(8);
                 let color_idx = read_stack(12);
                 let color = self.map_color(color_idx);
-                let (x_left, y_bottom, x_right, y_top) = unsafe {
-                    let ptr = self.shared.guest_mem.add(prcl as usize);
-                    (
-                        ptr::read_unaligned(ptr as *const i32),
-                        ptr::read_unaligned(ptr.add(4) as *const i32),
-                        ptr::read_unaligned(ptr.add(8) as *const i32),
-                        ptr::read_unaligned(ptr.add(12) as *const i32),
-                    )
-                };
+                let (x_left, y_bottom, x_right, y_top) = (
+                    self.guest_read::<i32>(prcl).unwrap_or(0),
+                    self.guest_read::<i32>(prcl + 4).unwrap_or(0),
+                    self.guest_read::<i32>(prcl + 8).unwrap_or(0),
+                    self.guest_read::<i32>(prcl + 12).unwrap_or(0),
+                );
                 let wm = self.shared.window_mgr.lock().unwrap();
                 let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
                 let frame_hwnd = wm.frame_to_client.iter()
@@ -1300,10 +1367,8 @@ impl Loader {
                     .unwrap_or("");
                 let bytes = text.as_bytes();
                 let copy_len = bytes.len().min(cch_max.saturating_sub(1));
-                unsafe {
-                    ptr::copy_nonoverlapping(bytes.as_ptr(), self.shared.guest_mem.add(buffer_ptr as usize), copy_len);
-                    *self.shared.guest_mem.add(buffer_ptr as usize + copy_len) = 0;
-                }
+                self.guest_write_bytes(buffer_ptr, &bytes[..copy_len]);
+                self.guest_write::<u8>(buffer_ptr + copy_len as u32, 0);
                 ApiResult::Normal(copy_len as u32)
             }
             828 => {
@@ -1336,10 +1401,8 @@ impl Loader {
                 let text = wm.windows.get(&hwnd).map(|w| w.text.as_str()).unwrap_or("");
                 let bytes = text.as_bytes();
                 let copy_len = bytes.len().min(cch_max.saturating_sub(1));
-                unsafe {
-                    ptr::copy_nonoverlapping(bytes.as_ptr(), self.shared.guest_mem.add(buffer_ptr as usize), copy_len);
-                    *self.shared.guest_mem.add(buffer_ptr as usize + copy_len) = 0;
-                }
+                self.guest_write_bytes(buffer_ptr, &bytes[..copy_len]);
+                self.guest_write::<u8>(buffer_ptr + copy_len as u32, 0);
                 ApiResult::Normal(copy_len as u32)
             }
             834 => {
@@ -1497,7 +1560,7 @@ impl Loader {
     fn handle_pmgpi_call(&self, vcpu: &mut VcpuFd, vcpu_id: u32, ordinal: u32) -> ApiResult {
         let regs = vcpu.get_regs().unwrap();
         let esp = regs.rsp;
-        let read_stack = |off: u64| unsafe { ptr::read_unaligned(self.shared.guest_mem.add((esp + off) as usize) as *const u32) };
+        let read_stack = |off: u64| -> u32 { self.guest_read::<u32>((esp + off) as u32).expect("Stack read OOB") };
 
         match ordinal {
             369 => {
@@ -1531,13 +1594,10 @@ impl Loader {
                 // GpiMove(HPS hps, PPOINTL pptl)
                 let hps = read_stack(4);
                 let pptl = read_stack(8);
-                let (x, y) = unsafe {
-                    let ptr = self.shared.guest_mem.add(pptl as usize);
-                    (
-                        ptr::read_unaligned(ptr as *const i32),
-                        ptr::read_unaligned(ptr.add(4) as *const i32),
-                    )
-                };
+                let (x, y) = (
+                    self.guest_read::<i32>(pptl).unwrap_or(0),
+                    self.guest_read::<i32>(pptl + 4).unwrap_or(0),
+                );
                 let mut wm = self.shared.window_mgr.lock().unwrap();
                 if let Some(ps) = wm.ps_map.get_mut(&hps) {
                     ps.current_pos = (x, y);
@@ -1551,13 +1611,10 @@ impl Loader {
                 let pptl = read_stack(12);
                 let _h_round = read_stack(16);
                 let _v_round = read_stack(20);
-                let (x2, y2) = unsafe {
-                    let ptr = self.shared.guest_mem.add(pptl as usize);
-                    (
-                        ptr::read_unaligned(ptr as *const i32),
-                        ptr::read_unaligned(ptr.add(4) as *const i32),
-                    )
-                };
+                let (x2, y2) = (
+                    self.guest_read::<i32>(pptl).unwrap_or(0),
+                    self.guest_read::<i32>(pptl + 4).unwrap_or(0),
+                );
                 let wm = self.shared.window_mgr.lock().unwrap();
                 if let Some(ps) = wm.ps_map.get(&hps) {
                     let (x1, y1) = ps.current_pos;
@@ -1580,13 +1637,10 @@ impl Loader {
                 // GpiLine(HPS hps, PPOINTL pptl)
                 let hps = read_stack(4);
                 let pptl = read_stack(8);
-                let (x2, y2) = unsafe {
-                    let ptr = self.shared.guest_mem.add(pptl as usize);
-                    (
-                        ptr::read_unaligned(ptr as *const i32),
-                        ptr::read_unaligned(ptr.add(4) as *const i32),
-                    )
-                };
+                let (x2, y2) = (
+                    self.guest_read::<i32>(pptl).unwrap_or(0),
+                    self.guest_read::<i32>(pptl + 4).unwrap_or(0),
+                );
                 let mut wm = self.shared.window_mgr.lock().unwrap();
                 if let Some(ps) = wm.ps_map.get(&hps) {
                     let (x1, y1) = ps.current_pos;
@@ -1614,15 +1668,12 @@ impl Loader {
                 let pptl = read_stack(8);
                 let count = read_stack(12) as usize;
                 let pch = read_stack(16);
-                let (x, y) = unsafe {
-                    let ptr = self.shared.guest_mem.add(pptl as usize);
-                    (
-                        ptr::read_unaligned(ptr as *const i32),
-                        ptr::read_unaligned(ptr.add(4) as *const i32),
-                    )
-                };
-                let text: Vec<u8> = (0..count).map(|i| unsafe {
-                    *self.shared.guest_mem.add(pch as usize + i)
+                let (x, y) = (
+                    self.guest_read::<i32>(pptl).unwrap_or(0),
+                    self.guest_read::<i32>(pptl + 4).unwrap_or(0),
+                );
+                let text: Vec<u8> = (0..count).map(|i| {
+                    self.guest_read::<u8>(pch + i as u32).unwrap_or(0)
                 }).collect();
                 let text_str = String::from_utf8_lossy(&text).to_string();
                 let color = {
@@ -1694,7 +1745,7 @@ impl Loader {
             match file.seek(pos) {
                 Ok(new_pos) => {
                     if actual_ptr != 0 {
-                        unsafe { ptr::write_unaligned(self.shared.guest_mem.add(actual_ptr as usize) as *mut u32, new_pos as u32); }
+                        self.guest_write::<u32>(actual_ptr, new_pos as u32);
                     }
                     0
                 }
@@ -1704,41 +1755,36 @@ impl Loader {
     }
 
     fn dos_open(&self, psz_name_ptr: u32, phf_ptr: u32, pul_action_ptr: u32, fs_open_flags: u32, fs_open_mode: u32) -> u32 {
-        unsafe {
-            let name_ptr = self.shared.guest_mem.add(psz_name_ptr as usize);
-            let mut name = String::new();
-            let mut i = 0;
-            while *name_ptr.add(i) != 0 {
-                name.push(*name_ptr.add(i) as char);
-                i += 1;
-            }
-            let path = name.replace('\\', "/");
+        let name = self.read_guest_string(psz_name_ptr);
+        let path = match self.translate_path(&name) {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
 
-            let mut options = OpenOptions::new();
-            match fs_open_mode & 0x07 {
-                0 => { options.read(true); },
-                1 => { options.write(true); },
-                2 => { options.read(true).write(true); },
-                _ => {},
-            }
+        let mut options = OpenOptions::new();
+        match fs_open_mode & 0x07 {
+            0 => { options.read(true); },
+            1 => { options.write(true); },
+            2 => { options.read(true).write(true); },
+            _ => {},
+        }
 
-            let action_if_exists = fs_open_flags & 0x03;
-            let action_if_new = (fs_open_flags >> 4) & 0x03;
+        let action_if_exists = fs_open_flags & 0x03;
+        let action_if_new = (fs_open_flags >> 4) & 0x03;
 
-            if action_if_new == 1 { options.create(true); }
-            if action_if_exists == 2 { options.truncate(true); }
+        if action_if_new == 1 { options.create(true); }
+        if action_if_exists == 2 { options.truncate(true); }
 
-            match options.open(&path) {
-                Ok(file) => {
-                    let h = self.shared.handle_mgr.lock().unwrap().add(file);
-                    ptr::write_unaligned(self.shared.guest_mem.add(phf_ptr as usize) as *mut u32, h);
-                    if pul_action_ptr != 0 {
-                        ptr::write_unaligned(self.shared.guest_mem.add(pul_action_ptr as usize) as *mut u32, 1);
-                    }
-                    0
-                },
-                Err(_) => 2,
-            }
+        match options.open(&path) {
+            Ok(file) => {
+                let h = self.shared.handle_mgr.lock().unwrap().add(file);
+                self.guest_write::<u32>(phf_ptr, h);
+                if pul_action_ptr != 0 {
+                    self.guest_write::<u32>(pul_action_ptr, 1);
+                }
+                0
+            },
+            Err(_) => 2,
         }
     }
 
@@ -1748,11 +1794,9 @@ impl Loader {
             let mut data = vec![0u8; len as usize];
             match file.read(&mut data) {
                 Ok(n) => {
-                    unsafe {
-                        ptr::copy_nonoverlapping(data.as_ptr(), self.shared.guest_mem.add(buf_ptr as usize), n);
-                        if actual_ptr != 0 {
-                            ptr::write_unaligned(self.shared.guest_mem.add(actual_ptr as usize) as *mut u32, n as u32);
-                        }
+                    self.guest_write_bytes(buf_ptr, &data[..n]);
+                    if actual_ptr != 0 {
+                        self.guest_write::<u32>(actual_ptr, n as u32);
                     }
                     0
                 },
@@ -1762,45 +1806,44 @@ impl Loader {
     }
 
     fn dos_write(&self, fd: u32, buf_ptr: u32, len: u32, actual_ptr: u32) -> u32 {
-        if fd == 1 || fd == 2 {
-            unsafe {
-                let data = std::slice::from_raw_parts(self.shared.guest_mem.add(buf_ptr as usize), len as usize);
+        if let Some(data) = self.guest_slice_mut(buf_ptr, len as usize) {
+            if fd == 1 || fd == 2 {
                 match api::doscalls::dos_write(fd, data) {
                     Ok(actual) => {
-                        if actual_ptr != 0 { ptr::write_unaligned(self.shared.guest_mem.add(actual_ptr as usize) as *mut u32, actual); }
+                        if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, actual); }
                         0
                     },
                     Err(_) => 1,
                 }
-            }
-        } else {
-            let mut h_mgr = self.shared.handle_mgr.lock().unwrap();
-            if let Some(file) = h_mgr.get_mut(fd) {
-                unsafe {
-                    let data = std::slice::from_raw_parts(self.shared.guest_mem.add(buf_ptr as usize), len as usize);
+            } else {
+                let mut h_mgr = self.shared.handle_mgr.lock().unwrap();
+                if let Some(file) = h_mgr.get_mut(fd) {
                     match file.write(data) {
                         Ok(n) => {
-                            if actual_ptr != 0 { ptr::write_unaligned(self.shared.guest_mem.add(actual_ptr as usize) as *mut u32, n as u32); }
+                            if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, n as u32); }
                             0
                         },
                         Err(_) => 5,
                     }
-                }
-            } else { 6 }
-        }
+                } else { 6 }
+            }
+        } else { 87 }
     }
 
     fn dos_delete(&self, psz_name_ptr: u32) -> u32 {
         let name = self.read_guest_string(psz_name_ptr);
-        match fs::remove_file(name.replace('\\', "/")) {
+        let path = match self.translate_path(&name) { Ok(p) => p, Err(e) => return e };
+        match fs::remove_file(path) {
             Ok(_) => 0,
             Err(_) => 2,
         }
     }
 
     fn dos_move(&self, psz_old_ptr: u32, psz_new_ptr: u32) -> u32 {
-        let old = self.read_guest_string(psz_old_ptr).replace('\\', "/");
-        let new = self.read_guest_string(psz_new_ptr).replace('\\', "/");
+        let old_name = self.read_guest_string(psz_old_ptr);
+        let new_name = self.read_guest_string(psz_new_ptr);
+        let old = match self.translate_path(&old_name) { Ok(p) => p, Err(e) => return e };
+        let new = match self.translate_path(&new_name) { Ok(p) => p, Err(e) => return e };
         match fs::rename(old, new) {
             Ok(_) => 0,
             Err(_) => 2,
@@ -1808,31 +1851,20 @@ impl Loader {
     }
 
     fn dos_create_dir(&self, psz_name_ptr: u32) -> u32 {
-        let name = self.read_guest_string(psz_name_ptr).replace('\\', "/");
-        match fs::create_dir(name) {
+        let name = self.read_guest_string(psz_name_ptr);
+        let path = match self.translate_path(&name) { Ok(p) => p, Err(e) => return e };
+        match fs::create_dir(path) {
             Ok(_) => 0,
             Err(_) => 5,
         }
     }
 
     fn dos_delete_dir(&self, psz_name_ptr: u32) -> u32 {
-        let name = self.read_guest_string(psz_name_ptr).replace('\\', "/");
-        match fs::remove_dir(name) {
+        let name = self.read_guest_string(psz_name_ptr);
+        let path = match self.translate_path(&name) { Ok(p) => p, Err(e) => return e };
+        match fs::remove_dir(path) {
             Ok(_) => 0,
             Err(_) => 5,
-        }
-    }
-
-    fn read_guest_string(&self, ptr: u32) -> String {
-        unsafe {
-            let mut s = String::new();
-            let mut i = 0;
-            let base = self.shared.guest_mem.add(ptr as usize);
-            while *base.add(i) != 0 {
-                s.push(*base.add(i) as char);
-                i += 1;
-            }
-            s
         }
     }
 
@@ -1854,14 +1886,14 @@ impl Loader {
             };
             println!("  [VCPU {}] Creating thread {} (ptid_ptr=0x{:08X}, pfn=0x{:08X}, param=0x{:08X})", vcpu_id, tid, ptid_ptr, pfn, param);
 
-            unsafe {
-                ptr::write_unaligned(self.shared.guest_mem.add(tib_addr as usize + 0x18) as *mut u32, tib_addr);
-                ptr::write_unaligned(self.shared.guest_mem.add(tib_addr as usize + 0x30) as *mut u32, 0x71000);
+            self.guest_write::<u32>(tib_addr + 0x18, tib_addr).expect("dos_create_thread: TIB self-ptr OOB");
+            self.guest_write::<u32>(tib_addr + 0x30, 0x71000).expect("dos_create_thread: TIB->PIB OOB");
 
-                let sp = self.shared.guest_mem.add((stack_base + stack_size) as usize - 12) as *mut u32;
-                ptr::write_unaligned(sp.offset(0), EXIT_TRAP_ADDR);
-                ptr::write_unaligned(sp.offset(1), param);
+            let sp_addr = stack_base + stack_size - 12;
+            self.guest_write::<u32>(sp_addr, EXIT_TRAP_ADDR).expect("dos_create_thread: stack write OOB");
+            self.guest_write::<u32>(sp_addr + 4, param).expect("dos_create_thread: stack write OOB");
 
+            {
                 let vm_clone = Arc::clone(&self.vm);
                 let shared_clone = Arc::clone(&self.shared);
                 let new_vcpu = vm_clone.create_vcpu(tid as u64).unwrap();
@@ -1877,17 +1909,15 @@ impl Loader {
                     loader.run_vcpu(new_vcpu, tid, tib_addr as u64);
                 });
                 self.shared.threads.lock().unwrap().insert(tid, handle);
-                ptr::write_unaligned(self.shared.guest_mem.add(ptid_ptr as usize) as *mut u32, tid);
+                self.guest_write::<u32>(ptid_ptr, tid);
             }
             0
         } else { 8 }
     }
 
     fn dos_query_h_type(&self, hfile: u32, ptype: u32, pattr: u32) -> u32 {
-        unsafe {
-            if ptype != 0 { ptr::write_unaligned(self.shared.guest_mem.add(ptype as usize) as *mut u32, if hfile < 3 { 1 } else { 0 }); }
-            if pattr != 0 { ptr::write_unaligned(self.shared.guest_mem.add(pattr as usize) as *mut u32, 0); }
-        }
+        if ptype != 0 { self.guest_write::<u32>(ptype, if hfile < 3 { 1 } else { 0 }); }
+        if pattr != 0 { self.guest_write::<u32>(pattr, 0); }
         0
     }
 
@@ -1902,40 +1932,39 @@ impl Loader {
             let h_read = h_mgr.add(f_read);
             let h_write = h_mgr.add(f_write);
 
-            unsafe {
-                ptr::write_unaligned(self.shared.guest_mem.add(phf_read_ptr as usize) as *mut u32, h_read);
-                ptr::write_unaligned(self.shared.guest_mem.add(phf_write_ptr as usize) as *mut u32, h_write);
-            }
+            self.guest_write::<u32>(phf_read_ptr, h_read);
+            self.guest_write::<u32>(phf_write_ptr, h_write);
             0
         } else { 8 }
     }
 
     fn dos_get_info_blocks(&self, vcpu: &VcpuFd, ptib: u32, ppib: u32) -> u32 {
         let fs_base = vcpu.get_sregs().unwrap().fs.base;
-        unsafe {
-            if ptib != 0 { ptr::write_unaligned(self.shared.guest_mem.add(ptib as usize) as *mut u32, fs_base as u32); }
-            if ppib != 0 { ptr::write_unaligned(self.shared.guest_mem.add(ppib as usize) as *mut u32, 0x71000); }
-        }
+        if ptib != 0 { self.guest_write::<u32>(ptib, fs_base as u32); }
+        if ppib != 0 { self.guest_write::<u32>(ppib, 0x71000); }
         0
     }
 
     fn dos_find_first(&self, psz_spec_ptr: u32, phdir_ptr: u32, _attr: u32, buf_ptr: u32, buf_len: u32, pc_found_ptr: u32, level: u32) -> u32 {
         if level != 1 { return 124; }
-        let spec = self.read_guest_string(psz_spec_ptr).replace('\\', "/");
-        let path = Path::new(&spec);
-        let pattern = path.file_name().and_then(|s| s.to_str()).unwrap_or("*").to_string();
-        let dir_path = path.parent().unwrap_or(Path::new("."));
+        let spec_raw = self.read_guest_string(psz_spec_ptr);
+        let spec = spec_raw.replace('\\', "/");
+        let spec_path = Path::new(&spec);
+        let pattern = spec_path.file_name().and_then(|s| s.to_str()).unwrap_or("*").to_string();
+        // Translate the directory part through the sandbox
+        let dir_str = spec_path.parent().and_then(|p| p.to_str()).unwrap_or(".");
+        let dir_path = match self.translate_path(dir_str) { Ok(p) => p, Err(e) => return e };
 
         let hdir = {
-            if let Ok(rd) = std::fs::read_dir(if dir_path.to_str() == Some("") { Path::new(".") } else { dir_path }) {
+            if let Ok(rd) = std::fs::read_dir(if dir_path.to_str() == Some("") { Path::new(".") } else { &dir_path }) {
                 let mut hdir_mgr = self.shared.hdir_mgr.lock().unwrap();
-                let mut hdir = unsafe { ptr::read_unaligned(self.shared.guest_mem.add(phdir_ptr as usize) as *const u32) };
+                let mut hdir = self.guest_read::<u32>(phdir_ptr).unwrap_or(0xFFFFFFFF);
                 if hdir == 0xFFFFFFFF {
                     hdir = hdir_mgr.add(rd, pattern);
-                    unsafe { ptr::write_unaligned(self.shared.guest_mem.add(phdir_ptr as usize) as *mut u32, hdir); }
+                    self.guest_write::<u32>(phdir_ptr, hdir);
                 } else {
                     hdir = hdir_mgr.add(rd, pattern);
-                    unsafe { ptr::write_unaligned(self.shared.guest_mem.add(phdir_ptr as usize) as *mut u32, hdir); }
+                    self.guest_write::<u32>(phdir_ptr, hdir);
                 }
                 hdir
             } else { return 3; }
@@ -1960,16 +1989,13 @@ impl Loader {
                         let name_bytes = name.as_bytes();
                         let name_len = name_bytes.len().min(255);
                         if buf_len < (32 + name_len as u32 + 1) { return 111; }
-                        unsafe {
-                            let ptr = self.shared.guest_mem.add(buf_ptr as usize);
-                            ptr::write_unaligned(ptr.add(0) as *mut u32, 0);
-                            self.write_filestatus3_internal(&meta, ptr.add(4));
-                            *ptr.add(24) = name_len as u8;
-                            ptr::copy_nonoverlapping(name_bytes.as_ptr(), ptr.add(25), name_len);
-                            *ptr.add(25 + name_len) = 0;
-                            if pc_found_ptr != 0 {
-                                ptr::write_unaligned(self.shared.guest_mem.add(pc_found_ptr as usize) as *mut u32, 1);
-                            }
+                        self.guest_write::<u32>(buf_ptr, 0);
+                        self.write_filestatus3_internal(&meta, buf_ptr + 4);
+                        self.guest_write::<u8>(buf_ptr + 24, name_len as u8);
+                        self.guest_write_bytes(buf_ptr + 25, &name_bytes[..name_len]);
+                        self.guest_write::<u8>(buf_ptr + 25 + name_len as u32, 0);
+                        if pc_found_ptr != 0 {
+                            self.guest_write::<u32>(pc_found_ptr, 1);
                         }
                         return 0;
                     }
@@ -2002,7 +2028,7 @@ impl Loader {
         let mut h_mgr = self.shared.handle_mgr.lock().unwrap();
         if let Some(file) = h_mgr.get_mut(hf) {
             if let Ok(meta) = file.metadata() {
-                unsafe { self.write_filestatus3_internal(&meta, self.shared.guest_mem.add(buf_ptr as usize)); }
+                self.write_filestatus3_internal(&meta, buf_ptr);
                 return 0;
             }
         }
@@ -2012,35 +2038,34 @@ impl Loader {
     fn dos_query_path_info(&self, psz_path_ptr: u32, level: u32, buf_ptr: u32, buf_len: u32) -> u32 {
         if level != 1 { return 124; }
         if buf_len < 22 { return 111; }
-        let path = self.read_guest_string(psz_path_ptr).replace('\\', "/");
+        let name = self.read_guest_string(psz_path_ptr);
+        let path = match self.translate_path(&name) { Ok(p) => p, Err(e) => return e };
         if let Ok(meta) = std::fs::metadata(&path) {
-            unsafe { self.write_filestatus3_internal(&meta, self.shared.guest_mem.add(buf_ptr as usize)); }
+            self.write_filestatus3_internal(&meta, buf_ptr);
             return 0;
         }
         3
     }
 
-    unsafe fn write_filestatus3_internal(&self, meta: &std::fs::Metadata, ptr: *mut u8) {
-        let dos_date = 0x21; // 1980-01-01
-        let dos_time = 0;
-        unsafe {
-            ptr::write_unaligned(ptr.add(0) as *mut u16, dos_date);
-            ptr::write_unaligned(ptr.add(2) as *mut u16, dos_time);
-            ptr::write_unaligned(ptr.add(4) as *mut u16, dos_date);
-            ptr::write_unaligned(ptr.add(6) as *mut u16, dos_time);
-            ptr::write_unaligned(ptr.add(8) as *mut u16, dos_date);
-            ptr::write_unaligned(ptr.add(10) as *mut u16, dos_time);
-            ptr::write_unaligned(ptr.add(12) as *mut u32, meta.len() as u32);
-            ptr::write_unaligned(ptr.add(16) as *mut u32, meta.len() as u32);
-            let attr = if meta.is_dir() { 0x10 } else { 0x00 };
-            ptr::write_unaligned(ptr.add(20) as *mut u32, attr);
-        }
+    fn write_filestatus3_internal(&self, meta: &std::fs::Metadata, offset: u32) {
+        let dos_date: u16 = 0x21; // 1980-01-01
+        let dos_time: u16 = 0;
+        self.guest_write::<u16>(offset, dos_date);
+        self.guest_write::<u16>(offset + 2, dos_time);
+        self.guest_write::<u16>(offset + 4, dos_date);
+        self.guest_write::<u16>(offset + 6, dos_time);
+        self.guest_write::<u16>(offset + 8, dos_date);
+        self.guest_write::<u16>(offset + 10, dos_time);
+        self.guest_write::<u32>(offset + 12, meta.len() as u32);
+        self.guest_write::<u32>(offset + 16, meta.len() as u32);
+        let attr: u32 = if meta.is_dir() { 0x10 } else { 0x00 };
+        self.guest_write::<u32>(offset + 20, attr);
     }
 
     fn dos_alloc_mem(&self, ppb: u32, cb: u32) -> u32 {
         match self.shared.mem_mgr.lock().unwrap().alloc(cb) {
             Some(addr) => {
-                unsafe { ptr::write_unaligned(self.shared.guest_mem.add(ppb as usize) as *mut u32, addr); }
+                self.guest_write::<u32>(ppb, addr);
                 0
             },
             None => 8,
@@ -2055,7 +2080,7 @@ impl Loader {
     fn dos_create_event_sem(&self, _psz_name_ptr: u32, phev_ptr: u32, fl_attr: u32, f_state: u32) -> u32 {
         let mut sem_mgr = self.shared.sem_mgr.lock().unwrap();
         let h = sem_mgr.create_event(None, fl_attr, f_state != 0);
-        unsafe { ptr::write_unaligned(self.shared.guest_mem.add(phev_ptr as usize) as *mut u32, h); }
+        self.guest_write::<u32>(phev_ptr, h);
         0
     }
 
@@ -2093,7 +2118,7 @@ impl Loader {
     fn dos_create_mutex_sem(&self, _psz_name_ptr: u32, phmtx_ptr: u32, fl_attr: u32, f_state: u32) -> u32 {
         let mut sem_mgr = self.shared.sem_mgr.lock().unwrap();
         let h = sem_mgr.create_mutex(None, fl_attr, f_state != 0);
-        unsafe { ptr::write_unaligned(self.shared.guest_mem.add(phmtx_ptr as usize) as *mut u32, h); }
+        self.guest_write::<u32>(phmtx_ptr, h);
         0
     }
 
@@ -2147,18 +2172,15 @@ impl Loader {
 
     fn dos_create_mux_wait_sem(&self, _psz_name_ptr: u32, phmux_ptr: u32, count: u32, records_ptr: u32, fl_attr: u32) -> u32 {
         let mut records = Vec::new();
-        unsafe {
-            let base = self.shared.guest_mem.add(records_ptr as usize) as *const u32;
-            for i in 0..count {
-                let hsem = *base.add(i as usize * 2);
-                let user = *base.add(i as usize * 2 + 1);
-                records.push(MuxWaitRecord { hsem: SemHandle::Event(hsem), user });
-            }
+        for i in 0..count {
+            let hsem = self.guest_read::<u32>(records_ptr + i * 8).unwrap_or(0);
+            let user = self.guest_read::<u32>(records_ptr + i * 8 + 4).unwrap_or(0);
+            records.push(MuxWaitRecord { hsem: SemHandle::Event(hsem), user });
         }
         let wait_all = (fl_attr & 4) != 0;
         let mut sem_mgr = self.shared.sem_mgr.lock().unwrap();
         let h = sem_mgr.create_mux(None, fl_attr, records, wait_all);
-        unsafe { ptr::write_unaligned(self.shared.guest_mem.add(phmux_ptr as usize) as *mut u32, h); }
+        self.guest_write::<u32>(phmux_ptr, h);
         0
     }
 
@@ -2191,7 +2213,7 @@ impl Loader {
                 if (mux.wait_all && all_ready) || (!mux.wait_all && ready_idx.is_some()) {
                     if let Some(idx) = ready_idx {
                         if pul_user_ptr != 0 {
-                            unsafe { ptr::write_unaligned(self.shared.guest_mem.add(pul_user_ptr as usize) as *mut u32, mux.records[idx].user); }
+                            self.guest_write::<u32>(pul_user_ptr, mux.records[idx].user);
                         }
                     }
                     return 0;
@@ -2206,7 +2228,7 @@ impl Loader {
         let name = self.read_guest_string(psz_name_ptr);
         let mut queue_mgr = self.shared.queue_mgr.lock().unwrap();
         let h = queue_mgr.create(name, attr);
-        unsafe { ptr::write_unaligned(self.shared.guest_mem.add(phq_ptr as usize) as *mut u32, h); }
+        self.guest_write::<u32>(phq_ptr, h);
         0
     }
 
@@ -2215,7 +2237,7 @@ impl Loader {
         let queue_mgr = self.shared.queue_mgr.lock().unwrap();
         for (&h, q_arc) in &queue_mgr.queues {
             if q_arc.lock().unwrap().name == name {
-                unsafe { ptr::write_unaligned(self.shared.guest_mem.add(phq_ptr as usize) as *mut u32, h); }
+                self.guest_write::<u32>(phq_ptr, h);
                 return 0;
             }
         }
@@ -2227,7 +2249,9 @@ impl Loader {
         if let Some(q_arc) = queue_mgr.get(hq) {
             let mut q = q_arc.lock().unwrap();
             let mut data = vec![0u8; len as usize];
-            unsafe { ptr::copy_nonoverlapping(self.shared.guest_mem.add(buf_ptr as usize), data.as_mut_ptr(), len as usize); }
+            if let Some(src) = self.guest_slice_mut(buf_ptr, len as usize) {
+                data.copy_from_slice(src);
+            }
             q.items.push_back(QueueEntry { data, event, priority });
             return 0;
         }
@@ -2244,16 +2268,14 @@ impl Loader {
                         let len = entry.data.len() as u32;
                         let mut mem_mgr = self.shared.mem_mgr.lock().unwrap();
                         if let Some(guest_addr) = mem_mgr.alloc(len) {
-                            unsafe {
-                                ptr::copy_nonoverlapping(entry.data.as_ptr(), self.shared.guest_mem.add(guest_addr as usize), len as usize);
-                                ptr::write_unaligned(self.shared.guest_mem.add(ppbuf_ptr as usize) as *mut u32, guest_addr);
-                                ptr::write_unaligned(self.shared.guest_mem.add(pcb_ptr as usize) as *mut u32, len);
-                                if preq_ptr != 0 {
-                                    ptr::write_unaligned(self.shared.guest_mem.add(preq_ptr as usize + 4) as *mut u32, entry.event);
-                                }
-                                if pprio_ptr != 0 {
-                                    *self.shared.guest_mem.add(pprio_ptr as usize) = entry.priority as u8;
-                                }
+                            self.guest_write_bytes(guest_addr, &entry.data);
+                            self.guest_write::<u32>(ppbuf_ptr, guest_addr);
+                            self.guest_write::<u32>(pcb_ptr, len);
+                            if preq_ptr != 0 {
+                                self.guest_write::<u32>(preq_ptr + 4, entry.event);
+                            }
+                            if pprio_ptr != 0 {
+                                self.guest_write::<u8>(pprio_ptr, entry.priority as u8);
                             }
                             return 0;
                         }
@@ -2283,14 +2305,14 @@ impl Loader {
         let queue_mgr = self.shared.queue_mgr.lock().unwrap();
         if let Some(q_arc) = queue_mgr.get(hq) {
             let q = q_arc.lock().unwrap();
-            unsafe { ptr::write_unaligned(self.shared.guest_mem.add(pcb_ptr as usize) as *mut u32, q.items.len() as u32); }
+            self.guest_write::<u32>(pcb_ptr, q.items.len() as u32);
             return 0;
         }
         337
     }
 
     fn dos_wait_thread(&self, vcpu_id: u32, ptid_ptr: u32) -> u32 {
-        let tid = unsafe { ptr::read_unaligned(self.shared.guest_mem.add(ptid_ptr as usize) as *const u32) };
+        let tid = self.guest_read::<u32>(ptid_ptr).unwrap_or(0);
         println!("  [VCPU {}] Waiting for thread {}...", vcpu_id, tid);
         let mut handle = None;
         for _ in 0..100 {
