@@ -3,7 +3,9 @@
 # OS/2 build artifacts
 *.exe
 *.obj
+*.o
 *.err
+*.map
 *.gz
 # Runtime artifacts from OS/2 sample apps
 test.txt
