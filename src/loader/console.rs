@@ -5,6 +5,35 @@
 
 use std::io::{self, Write};
 
+/// Convert a CP437 byte to its Unicode character.
+/// Bytes 0x00–0x7F are ASCII-identical. Bytes 0x80–0xFF map to CP437-specific glyphs
+/// (box-drawing, accented letters, Greek, math symbols, etc.).
+pub fn cp437_to_char(byte: u8) -> char {
+    if byte < 0x80 {
+        return byte as char;
+    }
+    // CP437 high bytes (0x80–0xFF) → Unicode code points
+    const CP437_HIGH: [char; 128] = [
+        // 0x80–0x8F
+        'Ç','ü','é','â','ä','à','å','ç','ê','ë','è','ï','î','ì','Ä','Å',
+        // 0x90–0x9F
+        'É','æ','Æ','ô','ö','ò','û','ù','ÿ','Ö','Ü','¢','£','¥','₧','ƒ',
+        // 0xA0–0xAF
+        'á','í','ó','ú','ñ','Ñ','ª','º','¿','⌐','¬','½','¼','¡','«','»',
+        // 0xB0–0xBF
+        '░','▒','▓','│','┤','╡','╢','╖','╕','╣','║','╗','╝','╜','╛','┐',
+        // 0xC0–0xCF
+        '└','┴','┬','├','─','┼','╞','╟','╚','╔','╩','╦','╠','═','╬','╧',
+        // 0xD0–0xDF
+        '╨','╤','╥','╙','╘','╒','╓','╫','╪','┘','┌','█','▄','▌','▐','▀',
+        // 0xE0–0xEF
+        'α','ß','Γ','π','Σ','σ','µ','τ','Φ','Θ','Ω','δ','∞','φ','ε','∩',
+        // 0xF0–0xFF
+        '≡','±','≥','≤','⌠','⌡','÷','≈','°','∙','·','√','ⁿ','²','■','\u{00A0}',
+    ];
+    CP437_HIGH[(byte - 0x80) as usize]
+}
+
 /// OS/2 VIO attribute byte: bits 0-2 = fg color, 3 = fg bright, 4-6 = bg color, 7 = blink/bg bright.
 /// Maps to standard 16-color CGA palette.
 const CGA_TO_ANSI_FG: [u8; 8] = [30, 34, 32, 36, 31, 35, 33, 37]; // black, blue, green, cyan, red, magenta, brown, white
@@ -87,6 +116,13 @@ impl VioManager {
         }
     }
 
+    /// Write a CP437 byte to stdout as UTF-8.
+    fn write_cp437_char(stdout: &mut io::Stdout, ch: u8) {
+        let mut buf = [0u8; 4];
+        let s = cp437_to_char(ch).encode_utf8(&mut buf);
+        let _ = stdout.write_all(s.as_bytes());
+    }
+
     /// Write a string at the current cursor position, advancing the cursor.
     /// Updates the screen buffer and outputs to the terminal.
     pub fn write_tty(&mut self, text: &[u8], attr: u8) {
@@ -128,7 +164,7 @@ impl VioManager {
                         self.cursor_row = self.rows - 1;
                     }
                 }
-                let _ = stdout.write_all(&[ch]);
+                Self::write_cp437_char(&mut stdout, ch);
             }
         }
         let _ = stdout.flush();
@@ -149,7 +185,7 @@ impl VioManager {
             if idx < self.buffer.len() {
                 self.buffer[idx] = (ch, attr);
             }
-            let _ = stdout.write_all(&[ch]);
+            Self::write_cp437_char(&mut stdout, ch);
             c += 1;
         }
         // Reset attributes
@@ -175,7 +211,7 @@ impl VioManager {
             if idx < self.buffer.len() {
                 self.buffer[idx] = cell;
             }
-            let _ = stdout.write_all(&[cell.0]);
+            Self::write_cp437_char(&mut stdout, cell.0);
             c += 1;
         }
         let _ = stdout.write_all(b"\x1b[0m");
@@ -196,7 +232,7 @@ impl VioManager {
             if idx < self.buffer.len() {
                 let ch = self.buffer[idx].0;
                 self.buffer[idx].1 = attr;
-                let _ = stdout.write_all(&[ch]);
+                Self::write_cp437_char(&mut stdout, ch);
             }
             c += 1;
         }
