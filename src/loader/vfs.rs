@@ -729,6 +729,13 @@ impl DriveManager {
         backend.set_file_size(entry.vfs_handle, size)
     }
 
+    /// Apply byte-range locks and unlocks on an open file handle.
+    pub fn set_file_locks(&self, handle: u32, unlock: &[FileLockRange], lock: &[FileLockRange], timeout_ms: u32) -> VfsResult<()> {
+        let entry = self.file_handles.get(&handle).ok_or(Os2Error::INVALID_HANDLE)?;
+        let backend = self.drives[entry.drive as usize].as_ref().ok_or(Os2Error::INVALID_HANDLE)?;
+        backend.set_file_locks(entry.vfs_handle, unlock, lock, timeout_ms)
+    }
+
     /// Flush all open file handles.
     pub fn flush_all(&self) {
         for entry in self.file_handles.values() {
