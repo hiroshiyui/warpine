@@ -576,6 +576,24 @@ impl DriveManager {
     ///
     /// Handles drive letter extraction, relative path resolution against
     /// per-drive current directories, and backslash conversion.
+    /// Check if a path refers to an OS/2 reserved device name.
+    /// Returns the device name (uppercase) if matched, None otherwise.
+    /// Device names are matched case-insensitively, with or without extensions.
+    pub fn check_device_name(path: &str) -> Option<&'static str> {
+        // Extract the filename component
+        let filename = path.rsplit(&['\\', '/'][..]).next().unwrap_or(path);
+        // Strip extension if present
+        let base = filename.split('.').next().unwrap_or(filename);
+        match base.to_ascii_uppercase().as_str() {
+            "NUL" => Some("NUL"),
+            "CON" => Some("CON"),
+            "CLOCK$" => Some("CLOCK$"),
+            "KBD$" => Some("KBD$"),
+            "SCREEN$" => Some("SCREEN$"),
+            _ => None,
+        }
+    }
+
     pub fn resolve_path(&self, os2_path: &str) -> VfsResult<(u8, String)> {
         // Reject UNC paths (\\server\share)
         if os2_path.starts_with("\\\\") || os2_path.starts_with("//") {
@@ -648,6 +666,18 @@ impl DriveManager {
         flags: OpenFlags,
         attributes: FileAttribute,
     ) -> VfsResult<(u32, OpenAction)> {
+        // Intercept OS/2 device names — they bypass the filesystem
+        if let Some(device) = Self::check_device_name(os2_path) {
+            log::debug!("Device name '{}' detected in path '{}'", device, os2_path);
+            // NUL device: open /dev/null
+            if device == "NUL" {
+                // Use HandleManager for device handles (not VFS-backed)
+                return Err(Os2Error::INVALID_PARAMETER); // caller should handle NUL specially
+            }
+            // Other devices (CON, KBD$, SCREEN$) — not filesystem-backed
+            return Err(Os2Error::INVALID_PARAMETER);
+        }
+
         let (drive, rel_path) = self.resolve_path(os2_path)?;
         let backend = self.drives[drive as usize].as_ref().ok_or(Os2Error::INVALID_DRIVE)?;
         let (vfs_handle, action) = backend.open(&rel_path, mode, sharing, flags, attributes)?;
@@ -1075,6 +1105,21 @@ mod tests {
         assert_eq!(dm.resolve_path("\\\\server\\share\\file").unwrap_err(), Os2Error::PATH_NOT_FOUND);
         // UNC paths with forward slashes
         assert_eq!(dm.resolve_path("//server/share/file").unwrap_err(), Os2Error::PATH_NOT_FOUND);
+    }
+
+    #[test]
+    fn test_device_name_detection() {
+        assert_eq!(DriveManager::check_device_name("NUL"), Some("NUL"));
+        assert_eq!(DriveManager::check_device_name("nul"), Some("NUL"));
+        assert_eq!(DriveManager::check_device_name("NUL.TXT"), Some("NUL"));
+        assert_eq!(DriveManager::check_device_name("C:\\NUL"), Some("NUL"));
+        assert_eq!(DriveManager::check_device_name("CON"), Some("CON"));
+        assert_eq!(DriveManager::check_device_name("con"), Some("CON"));
+        assert_eq!(DriveManager::check_device_name("CLOCK$"), Some("CLOCK$"));
+        assert_eq!(DriveManager::check_device_name("KBD$"), Some("KBD$"));
+        assert_eq!(DriveManager::check_device_name("SCREEN$"), Some("SCREEN$"));
+        assert_eq!(DriveManager::check_device_name("README.TXT"), None);
+        assert_eq!(DriveManager::check_device_name("NULLIFY"), None);
     }
 
     #[test]

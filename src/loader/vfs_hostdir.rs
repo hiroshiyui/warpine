@@ -15,8 +15,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::SystemTime;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Instant, SystemTime};
 
 use std::ffi::CString;
 
@@ -98,37 +98,114 @@ fn metadata_to_file_status(meta: &fs::Metadata) -> FileStatus {
     }
 }
 
+// ── Directory listing cache ──
+
+/// Cache entry for a directory listing, used to avoid repeated `readdir()` calls
+/// during case-insensitive path resolution.
+struct DirCacheEntry {
+    /// Lowercased name → original name mapping.
+    names: HashMap<String, String>,
+    /// When this cache entry was created.
+    created: Instant,
+}
+
+/// Time-to-live for cached directory listings (2 seconds).
+const DIR_CACHE_TTL_MS: u128 = 2000;
+
+/// Thread-safe directory listing cache.
+struct DirCache {
+    entries: Mutex<HashMap<PathBuf, DirCacheEntry>>,
+}
+
+impl DirCache {
+    fn new() -> Self {
+        DirCache { entries: Mutex::new(HashMap::new()) }
+    }
+
+    /// Look up a component case-insensitively using the cache.
+    /// Returns the original-cased name if found.
+    fn lookup(&self, dir: &Path, component_lower: &str) -> Option<String> {
+        let mut cache = self.entries.lock().unwrap();
+
+        // Check if we have a valid cache entry
+        if let Some(entry) = cache.get(dir) {
+            if entry.created.elapsed().as_millis() < DIR_CACHE_TTL_MS {
+                return entry.names.get(component_lower).cloned();
+            }
+            // Expired — will be replaced below
+        }
+
+        // Populate cache from readdir()
+        let read_dir = fs::read_dir(dir).ok()?;
+        let mut names = HashMap::new();
+        for entry in read_dir.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            names.insert(name.to_ascii_lowercase(), name);
+        }
+        let result = names.get(component_lower).cloned();
+        cache.insert(dir.to_path_buf(), DirCacheEntry { names, created: Instant::now() });
+        result
+    }
+
+    /// Invalidate cache for a directory (call after creating/deleting/renaming files).
+    fn invalidate(&self, dir: &Path) {
+        self.entries.lock().unwrap().remove(dir);
+    }
+}
+
+// ── Kernel casefold detection ──
+
+/// Check if a directory supports kernel-level case-insensitive lookup
+/// (ext4 with EXT4_CASEFOLD_FL or tmpfs with casefold mount option).
+fn detect_kernel_casefold(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = match CString::new(path.as_os_str().as_bytes()) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+
+    // Try ioctl FS_IOC_GETFLAGS to check for EXT4_CASEFOLD_FL (0x40000000)
+    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY) };
+    if fd < 0 {
+        return false;
+    }
+
+    let mut flags: u32 = 0;
+    // FS_IOC_GETFLAGS = 0x80046601
+    let rc = unsafe { libc::ioctl(fd, 0x80046601, &mut flags) };
+    unsafe { libc::close(fd); }
+
+    if rc < 0 {
+        return false;
+    }
+
+    // EXT4_CASEFOLD_FL = 0x40000000
+    (flags & 0x40000000) != 0
+}
+
 // ── Case-insensitive path resolution ──
 
 /// Resolve a single path component case-insensitively within a directory.
 ///
 /// Strategy (from WINE's `lookup_unix_name()`):
 /// 1. Try exact match with stat() — fast path
-/// 2. Fall back to readdir() + case-insensitive comparison
-fn resolve_component_case_insensitive(dir: &Path, component: &str) -> Option<String> {
+/// 2. Fall back to cached readdir() + case-insensitive comparison
+fn resolve_component_case_insensitive(dir: &Path, component: &str, cache: &DirCache) -> Option<String> {
     // Fast path: exact match
     let exact = dir.join(component);
     if exact.exists() {
         return Some(component.to_string());
     }
 
-    // Fallback: scan directory entries case-insensitively
-    let entries = fs::read_dir(dir).ok()?;
+    // Fallback: use cached directory listing for case-insensitive match
     let lower = component.to_ascii_lowercase();
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name_str = name.to_string_lossy();
-        if name_str.to_ascii_lowercase() == lower {
-            return Some(name_str.into_owned());
-        }
-    }
-
-    None
+    cache.lookup(dir, &lower)
 }
 
 /// Resolve a full relative path case-insensitively, walking from root.
 /// Returns the canonical host path if found, or None.
-fn resolve_path_case_insensitive(root: &Path, rel_path: &str) -> Option<PathBuf> {
+fn resolve_path_case_insensitive_cached(root: &Path, rel_path: &str, cache: &DirCache) -> Option<PathBuf> {
     if rel_path.is_empty() {
         return Some(root.to_path_buf());
     }
@@ -145,7 +222,7 @@ fn resolve_path_case_insensitive(root: &Path, rel_path: &str) -> Option<PathBuf>
             }
             continue;
         }
-        match resolve_component_case_insensitive(&current, component) {
+        match resolve_component_case_insensitive(&current, component, cache) {
             Some(resolved) => current = current.join(resolved),
             None => return None,
         }
@@ -328,22 +405,32 @@ pub struct HostDirBackend {
     files: Mutex<HashMap<u64, OpenFileState>>,
     finds: Mutex<HashMap<u64, FindState>>,
     sharing: Mutex<SharingTable>,
+    dir_cache: DirCache,
+    /// True if the root filesystem supports kernel-level case-insensitive lookup
+    /// (ext4 with EXT4_CASEFOLD_FL). When true, we skip the userspace readdir() fallback.
+    kernel_casefold: AtomicBool,
     next_id: AtomicU64,
 }
 
 impl HostDirBackend {
     /// Create a new HostDirBackend rooted at the given directory.
-    /// The directory must exist.
+    /// The directory must exist. Detects kernel casefold support on init.
     pub fn new(root: PathBuf) -> VfsResult<Self> {
         let root = root.canonicalize().map_err(|_| Os2Error::PATH_NOT_FOUND)?;
         if !root.is_dir() {
             return Err(Os2Error::PATH_NOT_FOUND);
+        }
+        let has_casefold = detect_kernel_casefold(&root);
+        if has_casefold {
+            debug!("Kernel casefold detected on {}", root.display());
         }
         Ok(HostDirBackend {
             root,
             files: Mutex::new(HashMap::new()),
             finds: Mutex::new(HashMap::new()),
             sharing: Mutex::new(SharingTable::new()),
+            dir_cache: DirCache::new(),
+            kernel_casefold: AtomicBool::new(has_casefold),
             next_id: AtomicU64::new(1),
         })
     }
@@ -359,8 +446,19 @@ impl HostDirBackend {
     /// For existing files: resolves case-insensitively and canonicalizes.
     /// For new files: resolves the parent case-insensitively, preserves the
     /// filename as given (case-preserving on creation).
+    /// Resolve a relative path using the directory cache.
+    fn resolve_ci(&self, rel_path: &str) -> Option<PathBuf> {
+        if self.kernel_casefold.load(Ordering::Relaxed) {
+            // Kernel handles case-insensitivity — just join and check existence
+            let candidate = self.root.join(rel_path);
+            if candidate.exists() { Some(candidate) } else { None }
+        } else {
+            resolve_path_case_insensitive_cached(&self.root, rel_path, &self.dir_cache)
+        }
+    }
+
     fn resolve_existing(&self, rel_path: &str) -> VfsResult<PathBuf> {
-        let resolved = resolve_path_case_insensitive(&self.root, rel_path)
+        let resolved = self.resolve_ci(rel_path)
             .ok_or(Os2Error::FILE_NOT_FOUND)?;
         self.enforce_sandbox(&resolved)?;
         Ok(resolved)
@@ -387,7 +485,7 @@ impl HostDirBackend {
         let parent = if parent_rel.is_empty() {
             self.root.clone()
         } else {
-            resolve_path_case_insensitive(&self.root, parent_rel)
+            self.resolve_ci(parent_rel)
                 .ok_or(Os2Error::PATH_NOT_FOUND)?
         };
 
@@ -614,7 +712,7 @@ impl VfsBackend for HostDirBackend {
         _attributes: FileAttribute,
     ) -> VfsResult<(VfsFileHandle, OpenAction)> {
         // Try case-insensitive resolution of existing file
-        let existing = resolve_path_case_insensitive(&self.root, path);
+        let existing = self.resolve_ci(path);
         let (host_path, action) = match (&existing, flags.exist_action, flags.new_action) {
             // File exists
             (Some(p), ExistAction::Open, _) => {
@@ -670,6 +768,10 @@ impl VfsBackend for HostDirBackend {
             Self::map_io_error(&e)
         })?;
 
+        // Invalidate cache if we created or replaced a file
+        if action == OpenAction::Created || action == OpenAction::Replaced {
+            if let Some(parent) = host_path.parent() { self.dir_cache.invalidate(parent); }
+        }
         self.files.lock().unwrap().insert(handle_id, OpenFileState { file, host_path });
         Ok((VfsFileHandle(handle_id), action))
     }
@@ -730,7 +832,7 @@ impl VfsBackend for HostDirBackend {
         let dir_path = if dir_part.is_empty() {
             self.root.clone()
         } else {
-            resolve_path_case_insensitive(&self.root, dir_part)
+            self.resolve_ci(dir_part)
                 .ok_or(Os2Error::PATH_NOT_FOUND)?
         };
         self.enforce_sandbox(&dir_path)?;
@@ -811,29 +913,47 @@ impl VfsBackend for HostDirBackend {
 
     fn create_dir(&self, path: &str) -> VfsResult<()> {
         let host_path = self.resolve_for_create(path)?;
-        fs::create_dir(&host_path).map_err(|e| Self::map_io_error(&e))
+        let result = fs::create_dir(&host_path).map_err(|e| Self::map_io_error(&e));
+        if result.is_ok() {
+            if let Some(parent) = host_path.parent() { self.dir_cache.invalidate(parent); }
+        }
+        result
     }
 
     fn delete_dir(&self, path: &str) -> VfsResult<()> {
         let host_path = self.resolve_existing(path)?;
-        fs::remove_dir(&host_path).map_err(|e| Self::map_io_error(&e))
+        let result = fs::remove_dir(&host_path).map_err(|e| Self::map_io_error(&e));
+        if result.is_ok() {
+            if let Some(parent) = host_path.parent() { self.dir_cache.invalidate(parent); }
+        }
+        result
     }
 
     fn delete(&self, path: &str) -> VfsResult<()> {
         let host_path = self.resolve_existing(path)?;
-        fs::remove_file(&host_path).map_err(|e| Self::map_io_error(&e))
+        let result = fs::remove_file(&host_path).map_err(|e| Self::map_io_error(&e));
+        if result.is_ok() {
+            if let Some(parent) = host_path.parent() { self.dir_cache.invalidate(parent); }
+        }
+        result
     }
 
     fn rename(&self, old_path: &str, new_path: &str) -> VfsResult<()> {
         let old_host = self.resolve_existing(old_path)?;
         let new_host = self.resolve_for_create(new_path)?;
-        fs::rename(&old_host, &new_host).map_err(|e| Self::map_io_error(&e))
+        let result = fs::rename(&old_host, &new_host).map_err(|e| Self::map_io_error(&e));
+        if result.is_ok() {
+            if let Some(p) = old_host.parent() { self.dir_cache.invalidate(p); }
+            if let Some(p) = new_host.parent() { self.dir_cache.invalidate(p); }
+        }
+        result
     }
 
     fn copy(&self, src_path: &str, dst_path: &str) -> VfsResult<()> {
         let src_host = self.resolve_existing(src_path)?;
         let dst_host = self.resolve_for_create(dst_path)?;
         fs::copy(&src_host, &dst_host).map_err(|e| Self::map_io_error(&e))?;
+        if let Some(parent) = dst_host.parent() { self.dir_cache.invalidate(parent); }
         Ok(())
     }
 
@@ -1039,7 +1159,8 @@ mod tests {
         File::create(&test_file).unwrap();
 
         // Should find it with different casing
-        let resolved = resolve_path_case_insensitive(tmp.path(), "helloworld.txt");
+        let cache = DirCache::new();
+        let resolved = resolve_path_case_insensitive_cached(tmp.path(), "helloworld.txt", &cache);
         assert!(resolved.is_some());
         let resolved = resolved.unwrap();
         assert!(resolved.exists());
@@ -1052,7 +1173,8 @@ mod tests {
         fs::create_dir(tmp.path().join("MyDir")).unwrap();
         File::create(tmp.path().join("MyDir/Test.Txt")).unwrap();
 
-        let resolved = resolve_path_case_insensitive(tmp.path(), "mydir/test.txt");
+        let cache = DirCache::new();
+        let resolved = resolve_path_case_insensitive_cached(tmp.path(), "mydir/test.txt", &cache);
         assert!(resolved.is_some());
         assert!(resolved.unwrap().exists());
     }
@@ -1232,7 +1354,7 @@ mod tests {
         backend.close(h).unwrap();
 
         // Accessing via excessive .. should clamp at root, not escape
-        // resolve_path_case_insensitive clamps .. at root
+        // resolve_path_case_insensitive_cached clamps .. at root
         let result = backend.query_path_info("../../../safe.txt", 1);
         // Should find the file (.. clamped at root)
         assert!(result.is_ok() || result.unwrap_err() == Os2Error::FILE_NOT_FOUND);
