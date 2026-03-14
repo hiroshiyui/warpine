@@ -832,22 +832,38 @@ impl Loader {
             let nls_ord = ordinal - NLS_BASE;
             let res = match nls_ord {
                 5 => {
-                    // DosQueryCp (NLS ordinal 5)
-                    self.dos_query_cp(read_stack(4), read_stack(8), read_stack(12))
+                    // NLS ordinal 5 — _System convention
+                    // On real OS/2, this is DosQueryCp for small cb (codepage query).
+                    // But the CRT wrapper calls it with cb=44 (sizeof COUNTRYINFO)
+                    // to retrieve full country information. When cb >= 44, the
+                    // layout appears to be: (cb, pcc, pci_output)
+                    let cb = read_stack(4);
+                    let arg2 = read_stack(8);
+                    let arg3 = read_stack(12);
+                    debug!("NLS ordinal 5: cb={} arg2=0x{:08X} arg3=0x{:08X}", cb, arg2, arg3);
+                    if cb >= 44 {
+                        // Return full COUNTRYINFO to arg3 (the output buffer)
+                        self.dos_query_ctry_info(cb, arg2, arg3, 0)
+                    } else {
+                        // Standard DosQueryCp: (cb, pCP, pcb)
+                        self.dos_query_cp(cb, arg2, arg3)
+                    }
                 }
                 6 => {
-                    // DosQueryCtryInfo (NLS ordinal 6)
-                    debug!("  NLS DosQueryCtryInfo stack: +4=0x{:08X} +8=0x{:08X} +12=0x{:08X} +16=0x{:08X} +20=0x{:08X}",
-                           read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20));
-                    self.dos_query_ctry_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16))
+                    // DosQueryCtryInfo(cb, pcc, pci, pcb_actual) — _System convention
+                    let cb = read_stack(4);
+                    let pcc = read_stack(8);
+                    let pci = read_stack(12);
+                    let pcb = read_stack(16);
+                    debug!("NLS DosQueryCtryInfo: cb={} pcc=0x{:08X} pci=0x{:08X} pcb=0x{:08X}", cb, pcc, pci, pcb);
+                    self.dos_query_ctry_info(cb, pcc, pci, pcb)
                 }
                 7 => {
-                    // DosMapCase(cb, pcc, pch) — convert string to uppercase
+                    // DosMapCase(cb, pcc, pch) — _System convention
                     let cb = read_stack(4);
                     let _pcc = read_stack(8);
                     let pch = read_stack(12);
                     debug!("NLS DosMapCase(cb={}, pch=0x{:08X})", cb, pch);
-                    // Convert the buffer in-place to uppercase (ASCII)
                     for i in 0..cb {
                         if let Some(ch) = self.guest_read::<u8>(pch + i) {
                             if ch >= b'a' && ch <= b'z' {
@@ -858,14 +874,13 @@ impl Loader {
                     0
                 }
                 8 => {
-                    // DosGetDBCSEv(cb, pcc, pch) — get DBCS lead byte ranges
+                    // DosGetDBCSEv(cb, pcc, pch) — _System convention
                     let cb = read_stack(4);
                     let _pcc = read_stack(8);
                     let pch = read_stack(12);
                     debug!("NLS DosGetDBCSEv(cb={}, pch=0x{:08X})", cb, pch);
-                    // Return empty DBCS lead byte table (no DBCS for Western locales)
                     if pch != 0 && cb >= 2 {
-                        let _ = self.guest_write::<u16>(pch, 0); // empty table = two zero bytes
+                        let _ = self.guest_write::<u16>(pch, 0);
                     }
                     0
                 }
