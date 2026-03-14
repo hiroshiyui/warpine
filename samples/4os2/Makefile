@@ -73,7 +73,6 @@ $(OBJDIR)/%.obj: a/%.asm
 		option quiet \
 		option description @buildlevel.txt \
 		library $(WATCOM_ROOT)/lib386/os2/os2386 \
-		library $(WATCOM_ROOT)/lib286/os2/os2 \
 		import _WP_VIOGETMODE VIOCALLS.3 \
 		import _WP_VIOGETCURPOS VIOCALLS.4 \
 		import _WP_VIOSETCURPOS VIOCALLS.15 \
@@ -93,6 +92,9 @@ $(OBJDIR)/%.obj: a/%.asm
 		import _WP_KBDCHARIN KBDCALLS.4 \
 		import _WP_KBDGETSTATUS KBDCALLS.10 \
 		import _WP_KBDSTRINGIN KBDCALLS.9 \
+		import DOSGETINFOSEG DOSCALLS.8 \
+		import DOSQFILEMODE DOSCALLS.75 \
+		import DOSSETFILEMODE DOSCALLS.76 \
 		file { $(4OS2_OBJ) }
 
 clean:
