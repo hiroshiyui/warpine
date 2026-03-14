@@ -45,17 +45,24 @@ done
 echo "Applying warpine patches..."
 # Apply patches for warpine compatibility (see patches/README.md)
 if [ -d "$SCRIPT_DIR/patches" ]; then
-    # Modified bsesub.h — eliminates 16-bit VIO/KBD thunks
-    if [ -f "$SCRIPT_DIR/patches/bsesub.h" ]; then
-        cp "$SCRIPT_DIR/patches/bsesub.h" "$SCRIPT_DIR/h/bsesub.h"
-        echo "  Applied: h/bsesub.h (32-bit VIO/KBD declarations)"
+    # bsesub.h — diff patch against vendor/watcom/h/os2/bsesub.h
+    # Replaces APIENTRY16 with _System to eliminate 16-bit VIO/KBD thunks
+    if [ -f "$SCRIPT_DIR/patches/bsesub.h.patch" ]; then
+        WATCOM_BSESUB="$SCRIPT_DIR/../../vendor/watcom/h/os2/bsesub.h"
+        if [ -f "$WATCOM_BSESUB" ]; then
+            cp "$WATCOM_BSESUB" "$SCRIPT_DIR/h/bsesub.h"
+            patch -s -p2 "$SCRIPT_DIR/h/bsesub.h" < "$SCRIPT_DIR/patches/bsesub.h.patch"
+            echo "  Applied: h/bsesub.h (APIENTRY16 → _System)"
+        else
+            echo "  Warning: vendor/watcom/h/os2/bsesub.h not found, skipping patch"
+        fi
     fi
-    # viodirect.h — additional APIENTRY16 overrides
+    # viodirect.h — new file (APIENTRY16/_Seg16 overrides)
     if [ -f "$SCRIPT_DIR/patches/viodirect.h" ]; then
         cp "$SCRIPT_DIR/patches/viodirect.h" "$SCRIPT_DIR/h/viodirect.h"
         echo "  Applied: h/viodirect.h"
     fi
-    # viowrap.c — 32-bit VIO/KBD import pragmas
+    # viowrap.c — new file (32-bit VIO/KBD import pragmas)
     if [ -f "$SCRIPT_DIR/patches/viowrap.c" ]; then
         cp "$SCRIPT_DIR/patches/viowrap.c" "$SCRIPT_DIR/c/viowrap.c"
         echo "  Applied: c/viowrap.c"
