@@ -382,9 +382,10 @@ impl VioManager {
 impl Drop for VioManager {
     fn drop(&mut self) {
         self.disable_raw_mode();
-        // Show cursor on cleanup
+        // Reset terminal: show cursor, reset attributes, reset scroll region,
+        // move to a new line so host prompt isn't garbled.
         let mut stdout = io::stdout();
-        let _ = stdout.write_all(b"\x1b[?25h");
+        let _ = stdout.write_all(b"\x1b[0m\x1b[?25h\x1b[r\n");
         let _ = stdout.flush();
     }
 }
