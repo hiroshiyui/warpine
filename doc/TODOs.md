@@ -313,8 +313,28 @@ This validates: DriveManager path resolution (relative path `"test.txt"` → vol
 - [x] `samples/find_test` — DosFindFirst/DosFindNext verified
 - [x] `samples/fs_ops_test` — DosCreateDir/DosDeleteDir/DosMove/DosQueryPathInfo verified (all rc=0)
 - [x] `samples/vfs_test` — 16/16 tests passed on drive C: (pure VFS, no HandleManager fallback)
-- [ ] 4OS2 `dir`, `tree`, `copy`, `move`, `del`, `md`, `rd` commands — blocked by 16-bit thunk issues (see Phase 3.5 notes)
-- [ ] File attributes (`attrib` command) — blocked by 4OS2 thunk issues
+- [ ] 4OS2 `dir`, `tree`, `copy`, `move`, `del`, `md`, `rd` commands — blocked by 16-bit thunk issue (see Known Issues below)
+- [ ] File attributes (`attrib` command) — blocked by 16-bit thunk issue
+
+## Known Issues
+
+### 16-bit Thunk Bypass Causes Crashes in 4OS2 Commands
+
+**Symptoms:** 4OS2's `dir` shows `"C:\"` but no file listings; `tree` crashes with stack overflow (`ESP=0x0000000C`); other filesystem commands (`copy`, `move`, `del`, `attrib`) may also crash when they exercise the same thunk code paths.
+
+**Root cause:** Some OS/2 applications (including 4OS2) contain **16-bit code thunks** — small pieces of 16-bit code that bridge between 16-bit and 32-bit calling conventions. These thunks use `LSS` (Load Stack Segment) and `JMP FAR` instructions that require real x86 segmented memory with valid 16-bit segment selectors in the GDT.
+
+Warpine's `patch_16bit_thunks()` replaces 16-bit thunk entry points with `JMP near` to the 32-bit thunk entry code. However, the 32-bit thunk entry starts with `LSS` to restore the saved 16:16 stack pointer — but the 16-bit entry code that *saves* that stack was patched out. So the `LSS` reads garbage, causing a `#GP` fault.
+
+**Current mitigations (fragile):**
+- **CALL instruction verification** (commit `83f0b70`): when skipping a thunk, the stack scanner verifies that candidate return addresses are preceded by a CALL instruction (`E8 rel32` or `FF /2`). This fixed `dir` but is still a heuristic.
+- **No-op LSS fallback** (commit `09565dc`): when the stack scan finds no valid return address, the handler parses the LSS instruction's ModR/M byte to compute its length and advances EIP past it, effectively making LSS a no-op. This prevents immediate crashes but leaves the guest in a wrong code path.
+
+**Proper fix options:**
+1. **Patch thunks to jump directly to API stubs** — instead of jumping to the 32-bit thunk entry (which expects saved 16-bit state), patch thunk entries to jump directly to the INT 3 API stub address. This bypasses the LSS entirely.
+2. **Implement proper 16-bit segment support** — set up GDT with tiled 16-bit selectors (one per 64KB segment), allowing `LSS` and `JMP FAR` to work correctly. This is the more complete solution but significantly more complex.
+
+**Not a VFS issue** — the filesystem VFS layer works correctly (verified by `samples/vfs_test` with 16/16 tests passing). The thunk issue is in the CPU emulation / VMEXIT handling layer (`src/loader/mod.rs`).
 
 ## Phase 5: Multimedia and 16-bit Support
 - [ ] **Audio/Video (MMPM/2)**
@@ -322,3 +342,4 @@ This validates: DriveManager path resolution (relative path `"test.txt"` → vol
 - [ ] **16-bit Compatibility**
     - [ ] Integrate a lightweight x86 emulator for 16-bit code execution.
     - [ ] Support NE (New Executable) format parsing and loading.
+    - [ ] Resolve 16-bit thunk bypass issues (see Known Issues above) — either by patching thunks to jump directly to API stubs, or by implementing proper GDT tiling for 16-bit segments.
