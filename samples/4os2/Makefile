@@ -57,7 +57,10 @@ $(OBJDIR)/%.obj: a/%.asm
 # We create a linker script inline since the original .wlk references
 # vdm2os2.exe (16-bit DOS stub) and buildlevel.txt via REXX paths.
 # Link 4os2.exe
-# Links both 32-bit os2386.lib and 16-bit os2.lib (for DosGetInfoSeg etc.)
+# Links 16-bit os2.lib for DosGetInfoSeg/DosQFileMode/DosSetFileMode.
+# Note: The Watcom C runtime (clib3r.lib) includes __vfthunk which
+# wraps VIO/KBD calls through 16-bit thunks. This is handled by
+# warpine's LSS #GP handler + thunk skip mechanism.
 4os2.exe: $(4OS2_OBJ) buildlevel.txt
 	$(WLINK) \
 		name $@ \
