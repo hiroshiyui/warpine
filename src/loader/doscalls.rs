@@ -299,22 +299,20 @@ impl super::Loader {
                 match dm.query_path_info(&name, 1) {
                     Ok(status) => {
                         self.write_filestatus3_from_vfs(&status, buf_ptr);
-                        // cbList: total size of all EAs (4 bytes minimum = empty EA list)
-                        let (drive, rel_path) = match dm.resolve_path(&name) {
-                            Ok(r) => r,
-                            Err(e) => return e.0,
-                        };
-                        let ea_size = match dm.backend(drive) {
-                            Ok(b) => b.enum_ea(&rel_path).map(|eas| {
-                                eas.iter().map(|ea| 9 + ea.name.len() as u32 + ea.value.len() as u32).sum::<u32>() + 4
-                            }).unwrap_or(4),
-                            Err(_) => 4,
-                        };
+                        let ea_size = self.compute_ea_size(&dm, &name);
                         self.guest_write::<u32>(buf_ptr + 24, ea_size);
                         0
                     }
                     Err(e) => e.0,
                 }
+            }
+            // Level 3: FIL_QUERYEASFROMLIST — query specific EAs by name list
+            3 => {
+                // Input buffer contains a GEA2LIST: cbList(4) + GEA2 entries
+                // GEA2: oNextEntryOffset(4) + cbName(1) + szName(cbName+1)
+                // Output: FEA2LIST: cbList(4) + FEA2 entries
+                // FEA2: oNextEntryOffset(4) + fEA(1) + cbName(1) + cbValue(2) + szName(cbName+1) + value(cbValue)
+                self.dos_query_eas_from_list(&dm, &name, buf_ptr, buf_len)
             }
             _ => 124, // ERROR_INVALID_LEVEL
         }
@@ -327,6 +325,13 @@ impl super::Loader {
             }
             2 => {
                 if buf_len < 28 { return 111; }
+            }
+            3 => {
+                // Level 3 uses EAOP2 (12 bytes) — handled separately
+                if buf_len < 12 { return 111; }
+                // For file handle-based level 3, we'd need the path from the handle.
+                // Return 0 with empty FEA2LIST for now.
+                return 0;
             }
             _ => return 124,
         }
@@ -448,7 +453,7 @@ impl super::Loader {
     // ── Directory enumeration (via DriveManager) ──
 
     pub fn dos_find_first(&self, psz_spec_ptr: u32, phdir_ptr: u32, attr: u32, buf_ptr: u32, buf_len: u32, pc_found_ptr: u32, level: u32) -> u32 {
-        if level != 1 { return 124; }
+        if level != 1 && level != 2 { return 124; }
         let spec = self.read_guest_string(psz_spec_ptr);
 
         let requested = if pc_found_ptr != 0 {
@@ -459,7 +464,6 @@ impl super::Loader {
         match dm.find_first(&spec, FileAttribute(attr)) {
             Ok((hdir, first_entry)) => {
                 self.guest_write::<u32>(phdir_ptr, hdir);
-                // Write first entry + additional entries up to requested count
                 let mut entries = vec![first_entry];
                 for _ in 1..requested {
                     match dm.find_next(hdir) {
@@ -467,7 +471,7 @@ impl super::Loader {
                         Err(_) => break,
                     }
                 }
-                self.write_filefindbuf3_multi(&entries, buf_ptr, buf_len, pc_found_ptr)
+                self.write_filefindbuf3_multi(&entries, buf_ptr, buf_len, pc_found_ptr, level == 2)
             }
             Err(e) => e.0,
         }
@@ -489,7 +493,8 @@ impl super::Loader {
         if entries.is_empty() {
             return 18; // ERROR_NO_MORE_FILES
         }
-        self.write_filefindbuf3_multi(&entries, buf_ptr, buf_len, pc_found_ptr)
+        // TODO: track find level per handle to pass correct include_ea_size flag
+        self.write_filefindbuf3_multi(&entries, buf_ptr, buf_len, pc_found_ptr, false)
     }
 
     pub fn dos_find_close(&self, hdir: u32) -> u32 {
@@ -582,6 +587,108 @@ impl super::Loader {
 
     // ── Helpers ──
 
+    /// Compute total EA size for a path (cbList value: 4 bytes minimum for empty list).
+    fn compute_ea_size(&self, dm: &super::vfs::DriveManager, os2_path: &str) -> u32 {
+        let (drive, rel_path) = match dm.resolve_path(os2_path) {
+            Ok(r) => r,
+            Err(_) => return 4,
+        };
+        match dm.backend(drive) {
+            Ok(b) => b.enum_ea(&rel_path).map(|eas| {
+                if eas.is_empty() { 4 } else {
+                    // FEA2LIST cbList: 4 (header) + sum of FEA2 entries
+                    // Each FEA2: oNextEntryOffset(4) + fEA(1) + cbName(1) + cbValue(2) + name(cbName+1) + value(cbValue)
+                    eas.iter().map(|ea| 9 + ea.name.len() as u32 + ea.value.len() as u32).sum::<u32>() + 4
+                }
+            }).unwrap_or(4),
+            Err(_) => 4,
+        }
+    }
+
+    /// DosQueryPathInfo level 3 (FIL_QUERYEASFROMLIST): query specific EAs by name.
+    ///
+    /// The input buf_ptr initially contains a GEA2LIST (list of EA names to query).
+    /// The output overwrites it with an FEA2LIST (EA names + values).
+    /// OS/2 uses an EAOP2 struct at buf_ptr: pGEA2List(4) + pFEA2List(4) + oError(4) = 12 bytes.
+    fn dos_query_eas_from_list(&self, dm: &super::vfs::DriveManager, os2_path: &str, buf_ptr: u32, buf_len: u32) -> u32 {
+        if buf_len < 12 { return 111; }
+
+        // EAOP2: pGEA2List(4) + pFEA2List(4) + oError(4)
+        let p_gea2list = self.guest_read::<u32>(buf_ptr).unwrap_or(0);
+        let p_fea2list = self.guest_read::<u32>(buf_ptr + 4).unwrap_or(0);
+
+        if p_gea2list == 0 || p_fea2list == 0 { return 87; } // ERROR_INVALID_PARAMETER
+
+        // Parse GEA2LIST: cbList(4) + GEA2 entries
+        let gea_cb_list = self.guest_read::<u32>(p_gea2list).unwrap_or(0);
+        if gea_cb_list < 4 { return 87; }
+
+        // Read EA names from GEA2LIST
+        let mut ea_names = Vec::new();
+        let mut pos = 4u32; // skip cbList
+        while pos < gea_cb_list {
+            let o_next = self.guest_read::<u32>(p_gea2list + pos).unwrap_or(0);
+            let cb_name = self.guest_read::<u8>(p_gea2list + pos + 4).unwrap_or(0) as u32;
+            if cb_name == 0 { break; }
+            let mut name_buf = vec![0u8; cb_name as usize];
+            for i in 0..cb_name {
+                name_buf[i as usize] = self.guest_read::<u8>(p_gea2list + pos + 5 + i).unwrap_or(0);
+            }
+            let name = String::from_utf8_lossy(&name_buf).into_owned();
+            ea_names.push(name);
+            if o_next == 0 { break; }
+            pos += o_next;
+        }
+
+        // Resolve path and query each EA
+        let (drive, rel_path) = match dm.resolve_path(os2_path) {
+            Ok(r) => r,
+            Err(e) => return e.0,
+        };
+        let backend = match dm.backend(drive) {
+            Ok(b) => b,
+            Err(e) => return e.0,
+        };
+
+        // Build FEA2LIST in output buffer
+        let mut out_pos = 4u32; // skip cbList (will be written at the end)
+        let mut prev_fea2_ptr: Option<u32> = None;
+
+        for ea_name in &ea_names {
+            let ea = match backend.get_ea(&rel_path, ea_name) {
+                Ok(ea) => ea,
+                Err(_) => EaEntry { name: ea_name.clone(), value: Vec::new(), flags: 0 },
+            };
+
+            // FEA2: oNextEntryOffset(4) + fEA(1) + cbName(1) + cbValue(2) + szName(cbName+1) + value(cbValue)
+            let fea2_size = 4 + 1 + 1 + 2 + ea.name.len() as u32 + 1 + ea.value.len() as u32;
+            let aligned_size = (fea2_size + 3) & !3;
+
+            let fea2_ptr = p_fea2list + out_pos;
+            self.guest_write::<u32>(fea2_ptr, 0); // oNextEntryOffset (patched below)
+            self.guest_write::<u8>(fea2_ptr + 4, ea.flags);
+            self.guest_write::<u8>(fea2_ptr + 5, ea.name.len() as u8);
+            self.guest_write::<u16>(fea2_ptr + 6, ea.value.len() as u16);
+            self.guest_write_bytes(fea2_ptr + 8, ea.name.as_bytes());
+            self.guest_write::<u8>(fea2_ptr + 8 + ea.name.len() as u32, 0); // null term
+            if !ea.value.is_empty() {
+                self.guest_write_bytes(fea2_ptr + 9 + ea.name.len() as u32, &ea.value);
+            }
+
+            if let Some(prev) = prev_fea2_ptr {
+                self.guest_write::<u32>(prev, fea2_ptr - prev);
+            }
+            prev_fea2_ptr = Some(fea2_ptr);
+            out_pos += aligned_size;
+        }
+
+        // Write FEA2LIST cbList
+        self.guest_write::<u32>(p_fea2list, out_pos);
+        // Clear EAOP2 oError
+        self.guest_write::<u32>(buf_ptr + 8, 0);
+        0
+    }
+
     /// Write a VFS FileStatus to guest memory as FILESTATUS3 (24 bytes).
     fn write_filestatus3_from_vfs(&self, status: &FileStatus, offset: u32) {
         self.guest_write::<u16>(offset, status.creation_date);
@@ -597,36 +704,46 @@ impl super::Loader {
 
     /// Write multiple VFS DirEntry items to guest memory as packed FILEFINDBUF3 structs.
     /// Each entry's oNextEntryOffset points to the next (4-byte aligned); last entry has 0.
+    ///
+    /// When `include_ea_size` is true (level 2 / FIL_QUERYEASIZE), each entry has an extra
+    /// cbList (4 bytes) field after FILESTATUS3, making the layout:
+    /// oNextEntryOffset(4) + FILESTATUS3(24) + cbList(4) + cchName(1) + achName(var+1)
+    ///
     /// Returns 0 on success, or an OS/2 error code.
-    fn write_filefindbuf3_multi(&self, entries: &[DirEntry], buf_ptr: u32, buf_len: u32, pc_found_ptr: u32) -> u32 {
+    fn write_filefindbuf3_multi(&self, entries: &[DirEntry], buf_ptr: u32, buf_len: u32,
+                                pc_found_ptr: u32, include_ea_size: bool) -> u32 {
         let mut offset = 0u32;
         let mut count = 0u32;
         let mut prev_offset_field: Option<u32> = None;
 
+        let ea_field_size: u32 = if include_ea_size { 4 } else { 0 };
+
         for entry in entries.iter() {
             let name_bytes = entry.name.as_bytes();
             let name_len = name_bytes.len().min(255);
-            // FILEFINDBUF3: oNextEntryOffset(4) + FILESTATUS3(24) + cchName(1) + achName(name_len+1)
-            let entry_size = 4 + 24 + 1 + name_len as u32 + 1;
-            let aligned_size = (entry_size + 3) & !3; // 4-byte aligned
+            // FILEFINDBUF3: oNextEntryOffset(4) + FILESTATUS3(24) [+ cbList(4)] + cchName(1) + achName(name_len+1)
+            let entry_size = 4 + 24 + ea_field_size + 1 + name_len as u32 + 1;
+            let aligned_size = (entry_size + 3) & !3;
 
-            if offset + entry_size > buf_len { break; } // buffer full
+            if offset + entry_size > buf_len { break; }
 
             let entry_ptr = buf_ptr + offset;
+            let name_offset = 28 + ea_field_size; // cchName offset
 
-            // Write oNextEntryOffset (will be patched for non-last entries)
-            self.guest_write::<u32>(entry_ptr, 0);
+            self.guest_write::<u32>(entry_ptr, 0); // oNextEntryOffset
             self.write_filestatus3_from_vfs(&entry.status, entry_ptr + 4);
-            self.guest_write::<u8>(entry_ptr + 28, name_len as u8);
-            self.guest_write_bytes(entry_ptr + 29, &name_bytes[..name_len]);
-            self.guest_write::<u8>(entry_ptr + 29 + name_len as u32, 0);
+            if include_ea_size {
+                self.guest_write::<u32>(entry_ptr + 28, 4); // cbList: 4 = empty EA list
+            }
+            self.guest_write::<u8>(entry_ptr + name_offset, name_len as u8);
+            self.guest_write_bytes(entry_ptr + name_offset + 1, &name_bytes[..name_len]);
+            self.guest_write::<u8>(entry_ptr + name_offset + 1 + name_len as u32, 0);
 
-            // Patch previous entry's oNextEntryOffset (offset from prev entry start to this entry)
             if let Some(prev_entry_ptr) = prev_offset_field {
                 self.guest_write::<u32>(prev_entry_ptr, entry_ptr - prev_entry_ptr);
             }
 
-            prev_offset_field = Some(entry_ptr); // guest address of this entry (oNextEntryOffset is at +0)
+            prev_offset_field = Some(entry_ptr);
             offset += aligned_size;
             count += 1;
         }
@@ -634,7 +751,7 @@ impl super::Loader {
         if pc_found_ptr != 0 {
             self.guest_write::<u32>(pc_found_ptr, count);
         }
-        if count == 0 { 111 } else { 0 } // BUFFER_OVERFLOW if nothing fit
+        if count == 0 { 111 } else { 0 }
     }
 
     /// Write std::fs::Metadata as FILESTATUS3 (legacy, for pipe handles).
