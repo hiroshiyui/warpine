@@ -330,16 +330,39 @@ Warpine's `patch_16bit_thunks()` replaces 16-bit thunk entry points with `JMP ne
 - **CALL instruction verification** (commit `83f0b70`): when skipping a thunk, the stack scanner verifies that candidate return addresses are preceded by a CALL instruction (`E8 rel32` or `FF /2`). This fixed `dir` but is still a heuristic.
 - **No-op LSS fallback** (commit `09565dc`): when the stack scan finds no valid return address, the handler parses the LSS instruction's ModR/M byte to compute its length and advances EIP past it, effectively making LSS a no-op. This prevents immediate crashes but leaves the guest in a wrong code path.
 
-**Proper fix options:**
-1. **Patch thunks to jump directly to API stubs** — instead of jumping to the 32-bit thunk entry (which expects saved 16-bit state), patch thunk entries to jump directly to the INT 3 API stub address. This bypasses the LSS entirely.
-2. **Implement proper 16-bit segment support** — set up GDT with tiled 16-bit selectors (one per 64KB segment), allowing `LSS` and `JMP FAR` to work correctly. This is the more complete solution but significantly more complex.
+**Proper fix (recommended):** **Patch thunks to jump directly to API stubs** — instead of jumping to the 32-bit thunk entry (which expects saved 16-bit state), patch thunk entries to jump directly to the INT 3 API stub address. This bypasses the `LSS` entirely. This is a targeted fix for 32-bit LX apps with embedded thunks and does **not** require full 16-bit segment support.
+
+**Alternative fix:** Implement GDT tiling for 16-bit segments (see Phase 5). This would fix thunks as a side effect but is significantly more complex and primarily needed for full NE (16-bit) application support.
 
 **Not a VFS issue** — the filesystem VFS layer works correctly (verified by `samples/vfs_test` with 16/16 tests passing). The thunk issue is in the CPU emulation / VMEXIT handling layer (`src/loader/mod.rs`).
+
+### Distinction: 16-bit Thunks vs. Full 16-bit Support
+
+These are related but separate problems:
+
+| | 16-bit thunks (this issue) | Full 16-bit support (Phase 5) |
+|---|---|---|
+| **Binary format** | LX (32-bit) with embedded 16:16↔0:32 thunks | NE (16-bit) — entire app is 16-bit |
+| **Scope** | A few thunk entry points per app | Entire application runs in 16-bit mode |
+| **Fix needed** | Patch thunks to bypass `LSS` (small, targeted) | Full x86 16-bit emulator + NE parser + GDT tiling |
+| **Effort** | Small–moderate | Large |
+| **Blocks** | 4OS2 `dir`, `tree`, `attrib`, etc. | Running OS/2 1.x 16-bit applications |
+
+The recommended path is to fix the thunk issue independently (direct API stub patching) to unblock 4OS2 commands now, and defer full NE 16-bit support to Phase 5.
+
+## Phase 4.5: 16-bit Thunk Fix
+
+Fix the 16-bit thunk bypass to unblock 4OS2 filesystem commands. This is independent of Phase 5's full 16-bit NE support.
+
+- [ ] **Analyze thunk structure** — identify all 16:16↔0:32 thunk entry points in 4OS2's LX binary, map which API calls they wrap
+- [ ] **Patch thunks to API stubs directly** — modify `patch_16bit_thunks()` to redirect thunk entries to the corresponding INT 3 API stub address (`MAGIC_API_BASE + ordinal`) instead of to the 32-bit thunk entry code, bypassing `LSS` entirely
+- [ ] **Remove fragile mitigations** — remove CALL instruction verification heuristic and no-op LSS fallback once direct patching works
+- [ ] **Verify** — 4OS2 `dir`, `tree`, `copy`, `move`, `del`, `md`, `rd`, `attrib` all work correctly
 
 ## Phase 5: Multimedia and 16-bit Support
 - [ ] **Audio/Video (MMPM/2)**
     - [ ] Reimplement multimedia APIs using PulseAudio/ALSA or SDL.
-- [ ] **16-bit Compatibility**
-    - [ ] Integrate a lightweight x86 emulator for 16-bit code execution.
+- [ ] **16-bit Compatibility (NE format)**
     - [ ] Support NE (New Executable) format parsing and loading.
-    - [ ] Resolve 16-bit thunk bypass issues (see Known Issues above) — either by patching thunks to jump directly to API stubs, or by implementing proper GDT tiling for 16-bit segments.
+    - [ ] GDT tiling — set up 16-bit segment selectors (one per 64KB segment) so `LSS`, `JMP FAR`, and other segmented instructions work correctly. This also fixes 16-bit thunks in LX apps as a side effect.
+    - [ ] Integrate a lightweight x86 16-bit emulator for instructions not supported in KVM protected mode.
