@@ -287,7 +287,13 @@ impl Loader {
     /// The thunks have 16:32 far pointers (written by type 0x06 fixups) to their targets.
     /// We read the 32-bit offset from each fixup location and replace the thunk entry with a near JMP.
     fn patch_16bit_thunks(&self, lx_file: &LxFile) {
-        // Look at each object for 16:32 fixups (type 0x06) that go to Object 2 code
+        // Build a map of internal code addresses → API stub addresses.
+        // When a type 0x06 (16:32 far pointer) fixup targets an internal address,
+        // we need to figure out what API it wraps. We do this by scanning the target
+        // code for a CALL or JMP to a MAGIC_API_BASE address.
+        //
+        // For fixups that directly target an external ordinal (already resolved to
+        // MAGIC_API_BASE+), we can jump straight there.
         for obj in &lx_file.object_table {
             let obj_page_start = (obj.page_map_index as usize).saturating_sub(1);
             for p in 0..obj.page_count as usize {
@@ -297,27 +303,106 @@ impl Loader {
                     let src_type = record.source_type & 0x0F;
                     if src_type != 0x06 { continue; } // only 16:32 pointer fixups
 
+                    // Determine the jump target for this thunk
+                    let api_target = match &record.target {
+                        FixupTarget::ExternalOrdinal { module_ordinal, proc_ordinal } => {
+                            // Direct external import — resolve to API stub
+                            let module = lx_file.imported_modules
+                                .get((*module_ordinal as usize).wrapping_sub(1));
+                            if let Some(module) = module {
+                                Some(self.resolve_import(module, *proc_ordinal) as u32)
+                            } else { None }
+                        }
+                        FixupTarget::Internal { object_num, target_offset } => {
+                            // Internal target — the 32-bit thunk entry code.
+                            // Scan the target code for an INT 3 at MAGIC_API_BASE (API call)
+                            // or a CALL/JMP to a MAGIC_API_BASE address.
+                            let target_obj = lx_file.object_table
+                                .get((*object_num as usize).wrapping_sub(1));
+                            if let Some(tobj) = target_obj {
+                                let target_addr = tobj.base_address as u32 + *target_offset as u32;
+                                self.scan_thunk_for_api_target(target_addr)
+                            } else { None }
+                        }
+                        _ => None,
+                    };
+
                     for &off in &record.source_offsets {
                         let fixup_addr = obj.base_address as u32 + p as u32 * 4096 + off as u32;
-                        // Read the 32-bit target address we wrote at the fixup location
                         let target = self.guest_read::<u32>(fixup_addr).unwrap_or(0);
                         if target == 0 { continue; }
 
-                        // The thunk entry starts 11 bytes before the fixup (based on the observed pattern)
+                        // Use API stub target if we found one, otherwise fall back to original target
+                        let jump_target = api_target.unwrap_or(target);
+
+                        // The thunk entry starts 11 bytes before the fixup (based on observed pattern)
                         // Replace the entry with: JMP near target (E9 rel32) + NOP padding
                         let entry_start = fixup_addr.wrapping_sub(11);
-                        let rel32 = (target as i64 - (entry_start as i64 + 5)) as i32;
+                        let rel32 = (jump_target as i64 - (entry_start as i64 + 5)) as i32;
                         self.guest_write::<u8>(entry_start, 0xE9).unwrap(); // JMP rel32
                         self.guest_write::<i32>(entry_start + 1, rel32).unwrap();
-                        // Fill remaining bytes with NOPs
                         for i in 5..17u32 {
                             self.guest_write::<u8>(entry_start + i, 0x90).unwrap();
                         }
-                        debug!("Patched 16-bit thunk at 0x{:08X} -> JMP 0x{:08X}", entry_start, target);
+                        if api_target.is_some() {
+                            debug!("Patched 16-bit thunk at 0x{:08X} -> JMP API stub 0x{:08X}", entry_start, jump_target);
+                        } else {
+                            debug!("Patched 16-bit thunk at 0x{:08X} -> JMP 0x{:08X} (internal, no API found)", entry_start, jump_target);
+                        }
                     }
                 }
             }
         }
+    }
+
+    /// Scan a 32-bit thunk entry for the API call it wraps.
+    /// The thunk code typically has: LSS (which faults), then some setup,
+    /// then a CALL or JMP to a MAGIC_API_BASE address (INT 3 stub).
+    /// We scan up to 64 bytes looking for a CALL (E8 rel32) or JMP (E9 rel32)
+    /// whose target is in the MAGIC_API_BASE range.
+    fn scan_thunk_for_api_target(&self, start_addr: u32) -> Option<u32> {
+        let api_base = MAGIC_API_BASE as u32;
+        let api_end = api_base + STUB_AREA_SIZE as u32;
+
+        for offset in 0..64u32 {
+            let addr = start_addr + offset;
+            let byte = self.guest_read::<u8>(addr).unwrap_or(0);
+            match byte {
+                0xE8 | 0xE9 => {
+                    // CALL rel32 or JMP rel32
+                    if let Some(rel) = self.guest_read::<i32>(addr + 1) {
+                        let target = (addr as i64 + 5 + rel as i64) as u32;
+                        if target >= api_base && target < api_end {
+                            return Some(target);
+                        }
+                    }
+                }
+                0xFF => {
+                    // Check for indirect CALL/JMP with absolute target
+                    // FF /2 (CALL r/m32) or FF /4 (JMP r/m32) with mod=00 rm=101 (disp32)
+                    let modrm = self.guest_read::<u8>(addr + 1).unwrap_or(0);
+                    let reg = (modrm >> 3) & 7;
+                    let mod_bits = modrm >> 6;
+                    let rm = modrm & 7;
+                    if (reg == 2 || reg == 4) && mod_bits == 0 && rm == 5 {
+                        // [disp32] form
+                        if let Some(disp) = self.guest_read::<u32>(addr + 2) {
+                            if disp >= api_base && disp < api_end {
+                                return Some(disp);
+                            }
+                        }
+                    }
+                }
+                0xCC => {
+                    // INT 3 — if we're already at MAGIC_API_BASE range, this IS the API stub
+                    if addr >= api_base && addr < api_end {
+                        return Some(addr);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
     }
 
     fn resolve_import(&self, module: &str, ordinal: u32) -> u64 {
@@ -547,34 +632,33 @@ impl Loader {
                         let fault_cs = self.guest_read::<u32>(regs.rsp as u32 + 12).unwrap_or(0);
                         let fault_eflags = self.guest_read::<u32>(regs.rsp as u32 + 16).unwrap_or(0);
 
-                        // Handle #GP from 16-bit thunk LSS instruction.
-                        // OS/2 16-bit thunks use LSS to switch stack segments, which faults
-                        // in our flat 32-bit environment. We skip the thunk by scanning the
-                        // stack for the caller's return address and returning there with EAX=0.
+                        // Handle #GP from LSS instruction.
+                        // LSS (Load Stack Segment) faults because our flat 32-bit GDT has no
+                        // 16-bit segment selectors. Two strategies:
+                        // 1. Stack scan: find a verified CALL return address and skip the entire
+                        //    thunk (works for init-time thunks where the API call is bypassed)
+                        // 2. LSS emulation: load the offset portion into the dest register and
+                        //    advance past the instruction (works when the code after LSS is valid
+                        //    flat-mode code)
                         if vector == 13 {
                             let byte0 = self.guest_read::<u8>(fault_eip as u32).unwrap_or(0);
                             let byte1 = self.guest_read::<u8>(fault_eip as u32 + 1).unwrap_or(0);
                             let is_lss = (byte0 == 0x66 && byte1 == 0x0F) || (byte0 == 0x0F && byte1 == 0xB2);
                             if is_lss {
-                                warn!("  [VCPU {}] Skipping 16-bit thunk (LSS #GP at 0x{:08X})", vcpu_id, fault_eip);
-                                // Stack has: [vector][error_code][EIP][CS][EFLAGS] = 5 dwords from exception frame
+                                debug!("  [VCPU {}] LSS #GP at 0x{:08X}", vcpu_id, fault_eip);
+
+                                // Strategy 1: Stack scan for verified return address
                                 let scan_esp = regs.rsp as u32 + 20;
                                 let mut ret_addr = 0u32;
-                                // Scan stack for a return address in a code object range.
-                                // Verify candidates are real return addresses by checking that
-                                // the instruction before them is a CALL (E8 rel32 = 5 bytes,
-                                // or FF /2 indirect call = 2+ bytes).
                                 let code_ranges = self.shared.code_ranges.lock_or_recover().clone();
                                 for i in 0..64 {
                                     let val = self.guest_read::<u32>(scan_esp + i * 4).unwrap_or(0);
                                     let in_code = code_ranges.iter().any(|&(base, end)| val >= base && val < end);
                                     if !in_code || val == fault_eip as u32 { continue; }
-                                    // Check for CALL rel32 (E8) 5 bytes before
                                     let is_call_e8 = self.guest_read::<u8>(val - 5).unwrap_or(0) == 0xE8;
-                                    // Check for CALL r/m32 (FF /2) 2 bytes before
                                     let b2 = self.guest_read::<u8>(val - 2).unwrap_or(0);
                                     let b1 = self.guest_read::<u8>(val - 1).unwrap_or(0);
-                                    let is_call_ff = b2 == 0xFF && (b1 & 0x38) == 0x10; // /2 = reg field 010
+                                    let is_call_ff = b2 == 0xFF && (b1 & 0x38) == 0x10;
                                     if is_call_e8 || is_call_ff {
                                         ret_addr = val;
                                         let orig_esp = scan_esp + i * 4 + 4;
@@ -590,39 +674,103 @@ impl Loader {
                                 if ret_addr != 0 {
                                     continue;
                                 }
-                                // Fallback: no verified return address found.
-                                // Skip the LSS instruction as a no-op (in flat mode there's
-                                // no stack switching) and let the thunk code continue.
+
+                                // Strategy 2: LSS emulation (no verified return address found)
+                                // Emulate LSS as a flat-mode operation: load the 32-bit offset
+                                // portion into the destination register, ignore the 16-bit segment
+                                // selector (keep SS unchanged). This allows the thunk code to
+                                // continue with the correct stack pointer value.
                                 let mut new_regs = vcpu.get_regs().unwrap();
-                                // Compute LSS instruction length to skip past it
-                                let lss_len = if byte0 == 0x66 {
-                                    // 66 0F B2 ModR/M [SIB] [disp] — parse ModR/M for length
-                                    let modrm = self.guest_read::<u8>(fault_eip as u32 + 3).unwrap_or(0);
-                                    let mod_bits = modrm >> 6;
-                                    let rm = modrm & 7;
-                                    3 + 1 + match (mod_bits, rm) {  // prefix(1)+0F(1)+B2(1) + ModR/M(1)
-                                        (0, 4) => 1, (0, 5) => 4, (0, _) => 0, // SIB or disp32
-                                        (1, 4) => 2, (1, _) => 1,              // SIB+disp8 or disp8
-                                        (2, 4) => 5, (2, _) => 4,              // SIB+disp32 or disp32
-                                        _ => 0,
+                                // Parse LSS instruction to get dest register and memory operand
+                                let (prefix_len, modrm_offset) = if byte0 == 0x66 { (1u32, 3u32) } else { (0u32, 2u32) };
+                                let modrm = self.guest_read::<u8>(fault_eip as u32 + modrm_offset).unwrap_or(0);
+                                let mod_bits = modrm >> 6;
+                                let reg = (modrm >> 3) & 7; // destination register
+                                let rm = modrm & 7;
+
+                                // Compute memory operand address and instruction length
+                                let (mem_addr, extra_len) = match (mod_bits, rm) {
+                                    (0, 4) => {
+                                        let sib = self.guest_read::<u8>(fault_eip as u32 + modrm_offset + 1).unwrap_or(0);
+                                        // Simplified SIB: just use base register
+                                        let base_reg = sib & 7;
+                                        let base_val = match base_reg {
+                                            0 => new_regs.rax, 1 => new_regs.rcx, 2 => new_regs.rdx,
+                                            3 => new_regs.rbx, 4 => new_regs.rsp, 5 => new_regs.rbp,
+                                            6 => new_regs.rsi, 7 => new_regs.rdi, _ => 0,
+                                        };
+                                        (base_val as u32, 1u32) // SIB byte
                                     }
-                                } else {
-                                    let modrm = self.guest_read::<u8>(fault_eip as u32 + 2).unwrap_or(0);
-                                    let mod_bits = modrm >> 6;
-                                    let rm = modrm & 7;
-                                    2 + 1 + match (mod_bits, rm) {  // 0F(1)+B2(1) + ModR/M(1)
-                                        (0, 4) => 1, (0, 5) => 4, (0, _) => 0,
-                                        (1, 4) => 2, (1, _) => 1,
-                                        (2, 4) => 5, (2, _) => 4,
-                                        _ => 0,
+                                    (0, 5) => {
+                                        let disp = self.guest_read::<u32>(fault_eip as u32 + modrm_offset + 1).unwrap_or(0);
+                                        (disp, 4u32)
                                     }
+                                    (0, _) => {
+                                        let base_val = match rm {
+                                            0 => new_regs.rax, 1 => new_regs.rcx, 2 => new_regs.rdx,
+                                            3 => new_regs.rbx, 5 => new_regs.rbp,
+                                            6 => new_regs.rsi, 7 => new_regs.rdi, _ => 0,
+                                        };
+                                        (base_val as u32, 0u32)
+                                    }
+                                    (1, 4) => {
+                                        let sib = self.guest_read::<u8>(fault_eip as u32 + modrm_offset + 1).unwrap_or(0);
+                                        let disp = self.guest_read::<i8>(fault_eip as u32 + modrm_offset + 2).unwrap_or(0);
+                                        let base_reg = sib & 7;
+                                        let base_val = match base_reg {
+                                            0 => new_regs.rax, 1 => new_regs.rcx, 2 => new_regs.rdx,
+                                            3 => new_regs.rbx, 4 => new_regs.rsp, 5 => new_regs.rbp,
+                                            6 => new_regs.rsi, 7 => new_regs.rdi, _ => 0,
+                                        };
+                                        ((base_val as i64 + disp as i64) as u32, 2u32)
+                                    }
+                                    (1, _) => {
+                                        let disp = self.guest_read::<i8>(fault_eip as u32 + modrm_offset + 1).unwrap_or(0);
+                                        let base_val = match rm {
+                                            0 => new_regs.rax, 1 => new_regs.rcx, 2 => new_regs.rdx,
+                                            3 => new_regs.rbx, 5 => new_regs.rbp,
+                                            6 => new_regs.rsi, 7 => new_regs.rdi, _ => 0,
+                                        };
+                                        ((base_val as i64 + disp as i64) as u32, 1u32)
+                                    }
+                                    (2, _) => {
+                                        let disp = self.guest_read::<i32>(fault_eip as u32 + modrm_offset + 1).unwrap_or(0);
+                                        let base_val = match rm {
+                                            0 => new_regs.rax, 1 => new_regs.rcx, 2 => new_regs.rdx,
+                                            3 => new_regs.rbx, 4 => new_regs.rsp, 5 => new_regs.rbp,
+                                            6 => new_regs.rsi, 7 => new_regs.rdi, _ => 0,
+                                        };
+                                        ((base_val as i64 + disp as i64) as u32, 4u32)
+                                    }
+                                    _ => (0, 0),
                                 };
-                                new_regs.rsp = (regs.rsp as u32 + 20) as u64; // pop exception frame
+
+                                // Read the 32-bit offset from memory (first 4 bytes of the 6-byte far pointer)
+                                let loaded_offset = self.guest_read::<u32>(mem_addr).unwrap_or(0);
+                                // Set destination register (LSS loads into reg:SS, we load offset into reg)
+                                match reg {
+                                    0 => new_regs.rax = loaded_offset as u64,
+                                    1 => new_regs.rcx = loaded_offset as u64,
+                                    2 => new_regs.rdx = loaded_offset as u64,
+                                    3 => new_regs.rbx = loaded_offset as u64,
+                                    4 => new_regs.rsp = loaded_offset as u64,
+                                    5 => new_regs.rbp = loaded_offset as u64,
+                                    6 => new_regs.rsi = loaded_offset as u64,
+                                    7 => new_regs.rdi = loaded_offset as u64,
+                                    _ => {}
+                                }
+
+                                let lss_len = prefix_len + 2 + 1 + extra_len; // prefix + 0F B2 + ModR/M + extra
+                                new_regs.rsp = (regs.rsp as u32 + 20) as u64; // pop exception frame first
                                 new_regs.rip = fault_eip as u64 + lss_len as u64;
                                 new_regs.rflags = fault_eflags as u64;
+                                // If LSS targets ESP, override with the loaded value
+                                if reg == 4 {
+                                    new_regs.rsp = loaded_offset as u64;
+                                }
                                 vcpu.set_regs(&new_regs).unwrap();
-                                debug!("  Thunk skip (no-op LSS): EIP 0x{:08X} -> 0x{:08X} ESP=0x{:08X}",
-                                       fault_eip, fault_eip as u64 + lss_len as u64, new_regs.rsp);
+                                debug!("  LSS emulation: reg{} = 0x{:08X} (from [0x{:08X}]), EIP 0x{:08X} -> 0x{:08X}",
+                                       reg, loaded_offset, mem_addr, fault_eip, new_regs.rip);
                                 continue;
                             }
                         }
