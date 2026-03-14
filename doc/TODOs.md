@@ -167,7 +167,7 @@ New module: `src/loader/stubs.rs` for simple stub handlers. Add `SharedMemManage
 
 ### Verification
 - [x] `cargo build` — compiles cleanly
-- [x] `cargo test` — all 49 tests pass
+- [x] `cargo test` — all tests pass
 - [x] Unit tests for `VioManager` screen buffer operations (scroll up/down, read cell str, defaults)
 - [x] Unit tests for key mapping (enter, printable, backspace → OS/2 charcode/scancode)
 - [x] Unit tests for `DosEditName` wildcard pattern replacement (5 test cases)
@@ -301,7 +301,7 @@ This validates: DriveManager path resolution (relative path `"test.txt"` → vol
 
 #### Full test suite
 - [x] `cargo build` — compiles cleanly (no warnings)
-- [x] `cargo test` — 107 tests pass
+- [x] `cargo test` — 124 tests pass
 - [x] Unit tests for `VfsBackend` trait (MockBackend: `test_drive_manager_file_handles`, `test_drive_manager_find_handles`)
 - [x] Unit tests for case-insensitive path resolution (`test_case_insensitive_lookup`, `test_case_insensitive_nested`)
 - [x] Unit tests for EA storage — xattr backend (7 tests) + sidecar fallback (`test_ea_sidecar_set_get`, `test_ea_sidecar_enum_and_delete`)
@@ -314,54 +314,31 @@ This validates: DriveManager path resolution (relative path `"test.txt"` → vol
 - [x] `samples/find_test` — DosFindFirst/DosFindNext verified
 - [x] `samples/fs_ops_test` — DosCreateDir/DosDeleteDir/DosMove/DosQueryPathInfo verified (all rc=0)
 - [x] `samples/vfs_test` — 16/16 tests passed on drive C: (pure VFS, no HandleManager fallback)
-- [ ] 4OS2 `dir`, `tree`, `copy`, `move`, `del`, `md`, `rd` commands — blocked by 16-bit thunk issue (see Known Issues below)
-- [ ] File attributes (`attrib` command) — blocked by 16-bit thunk issue
+- [x] 4OS2 `dir` command — works with correct date/time formatting (NLS fix)
+- [ ] 4OS2 `tree`, `copy`, `move`, `del`, `md`, `rd`, `attrib` commands — need testing
 
-## Known Issues
+## Phase 4.5: 16-bit Thunk Fix — COMPLETED
 
-### 16-bit Thunk Bypass Causes Crashes in 4OS2 Commands
+Eliminated 16-bit thunks from 4OS2 via source-level recompilation rather than runtime thunk patching. All thunk handling code (~350 lines) removed from the loader.
 
-**Symptoms:** 4OS2's `dir` shows `"C:\"` but no file listings (DosFindFirst succeeds but DosFindNext is never called); `tree` crashes with stack overflow (`ESP=0x0000000C`); other filesystem commands (`copy`, `move`, `del`, `attrib`) may also crash when they exercise the same thunk code paths. Note: the VFS directory enumeration itself works correctly — verified by `samples/dir_test` which lists files without thunks.
+**Approach:** Instead of trying to patch or emulate 16-bit thunks at runtime (which proved fragile), we recompile 4OS2 with modified headers and a custom C runtime that avoids generating thunks entirely. This produces a pure 32-bit binary with zero 16-bit code.
 
-**Root cause:** Some OS/2 applications (including 4OS2) contain **16-bit code thunks** — small pieces of 16-bit code that bridge between 16-bit and 32-bit calling conventions. These thunks use `LSS` (Load Stack Segment) and `JMP FAR` instructions that require real x86 segmented memory with valid 16-bit segment selectors in the GDT.
-
-Warpine's `patch_16bit_thunks()` replaces 16-bit thunk entry points with `JMP near` to the 32-bit thunk entry code. However, the 32-bit thunk entry starts with `LSS` to restore the saved 16:16 stack pointer — but the 16-bit entry code that *saves* that stack was patched out. So the `LSS` reads garbage, causing a `#GP` fault.
-
-**Current mitigations (fragile):**
-- **CALL instruction verification** (commit `83f0b70`): when skipping a thunk, the stack scanner verifies that candidate return addresses are preceded by a CALL instruction (`E8 rel32` or `FF /2`). This fixed `dir` but is still a heuristic.
-- **No-op LSS fallback** (commit `09565dc`): when the stack scan finds no valid return address, the handler parses the LSS instruction's ModR/M byte to compute its length and advances EIP past it, effectively making LSS a no-op. This prevents immediate crashes but leaves the guest in a wrong code path.
-
-**Proper fix (recommended):** **Patch thunks to jump directly to API stubs** — instead of jumping to the 32-bit thunk entry (which expects saved 16-bit state), patch thunk entries to jump directly to the INT 3 API stub address. This bypasses the `LSS` entirely. This is a targeted fix for 32-bit LX apps with embedded thunks and does **not** require full 16-bit segment support.
-
-**Alternative fix:** Implement GDT tiling for 16-bit segments (see Phase 5). This would fix thunks as a side effect but is significantly more complex and primarily needed for full NE (16-bit) application support.
-
-**Not a VFS issue** — the filesystem VFS layer works correctly (verified by `samples/vfs_test` with 16/16 tests passing). The thunk issue is in the CPU emulation / VMEXIT handling layer (`src/loader/mod.rs`).
-
-### Distinction: 16-bit Thunks vs. Full 16-bit Support
-
-These are related but separate problems:
-
-| | 16-bit thunks (this issue) | Full 16-bit support (Phase 5) |
-|---|---|---|
-| **Binary format** | LX (32-bit) with embedded 16:16↔0:32 thunks | NE (16-bit) — entire app is 16-bit |
-| **Scope** | A few thunk entry points per app | Entire application runs in 16-bit mode |
-| **Fix needed** | Patch thunks to bypass `LSS` (small, targeted) | Full x86 16-bit emulator + NE parser + GDT tiling |
-| **Effort** | Small–moderate | Large |
-| **Blocks** | 4OS2 `dir`, `tree`, `attrib`, etc. | Running OS/2 1.x 16-bit applications |
-
-The recommended path is to fix the thunk issue independently (direct API stub patching) to unblock 4OS2 commands now, and defer full NE 16-bit support to Phase 5.
-
-## Phase 4.5: 16-bit Thunk Fix — IN PROGRESS
-
-Fix the 16-bit thunk bypass to unblock 4OS2 filesystem commands. This is independent of Phase 5's full 16-bit NE support.
-
-- [x] **Analyze thunk structure** — identified two types: (1) Object 1 thunks with type 0x06 (16:32) fixups wrapping API calls, (2) inline thunking code in Object 2 that calls `DosFlatToSel` then does `LSS` to set up a 16:16 stack
-- [x] **Patch Object 1 thunks to API stubs** — `patch_16bit_thunks()` now resolves `ExternalOrdinal` fixups directly to `MAGIC_API_BASE + ordinal`. For `Internal` fixups, `scan_thunk_for_api_target()` scans the target code for CALL/JMP to API stubs
-- [x] **LSS emulation** — when stack scan finds no return address, fully emulates LSS: parses ModR/M/SIB/displacement, loads 32-bit offset into destination register, advances EIP. SS unchanged (flat mode). Replaces old no-op skip.
-- [x] **GDT tiling explored** — infrastructure prepared (constants, IDT relocation, make_gdt_entry helper) but **tiling NOT activated**. Investigation found that active tiling breaks 4OS2: LSS succeeds (no #GP), thunk code runs in 16-bit mode, corrupts CPU state. The #GP handler MUST intercept LSS to skip thunks. Tiling requires Phase 5's full 16-bit support (code descriptors + mode switching).
-- [x] **DosFindFirst improvements** — strip trailing garbage bytes from thunk-corrupted patterns, expand bare directory paths (`C:\` → `C:\*.*`). DosFindFirst now correctly finds files in VFS.
-- [ ] **Inline thunk fix** — Object 2 thunk at 0x00051154 is a generic 32-to-16 bridge (REP MOVSW args → DosFlatToSel → LSS → JMP FAR 16-bit function → LSS restore → ROL EAX). The stack scan skips the entire thunk including the JMP FAR call. For `dir`: DosFindFirst succeeds (finds files) but DosFindNext is never called because the file iteration loop is in the 16-bit code path that gets skipped. **Fundamental limitation of stack scan** — cannot skip just the LSS without also skipping the function call. Requires Phase 5 (16-bit code execution) to resolve.
-- [ ] **Verify** — 4OS2 `dir`, `tree`, `copy`, `move`, `del`, `md`, `rd`, `attrib` — blocked by inline thunk issue
+- [x] **Root cause identified** — Watcom's `APIENTRY16` (`_Far16 _Pascal`) in `bsesub.h` generates `__vfthunk` 16-bit bridges for every VIO/KBD call
+- [x] **Source-level fix** — Modified `bsesub.h` to use `_System` instead of `APIENTRY16`, eliminating all thunk generation
+- [x] **Custom C runtime** — `crt0.c` replaces Watcom's `__OS2Main` which called `DosGetInfoSeg` through a 16-bit thunk; uses `DosGetInfoBlocks` (32-bit) instead
+- [x] **VIO/KBD imports** — `viowrap.c` provides `#pragma import` for all VIO/KBD ordinals, bypassing CRT thunk wrappers
+- [x] **os2init.c patched** — `DosGetInfoSeg` replaced with static `LINFOSEG` from `DosGetInfoBlocks`
+- [x] **os2calls.c patched** — Direct `DosFindFirst`/`DosFindNext` with `FILEFINDBUF4`, field-by-field copy to `FILESEARCH`
+- [x] **VIOCALLS/KBDCALLS ordinals fixed** — Comprehensive audit against OS/2 ordinal tables; Pascal calling convention with callee stack cleanup
+- [x] **DOSCALLS ordinal audit** — Fixed ordinals 218, 235, 267, 277, 278, 279, 297, 298, 317, 342, 356, 368, 378
+- [x] **FSQBUFFER2 layout fixed** — Correct fixed header (iType+cbName+cbFSDName+cbFSAData) then variable strings
+- [x] **DosFindNext level tracking** — Track find level per handle for correct FILEFINDBUF format selection
+- [x] **NLS (National Language Support) fixed** — NLS ordinals use _System convention (not Pascal); ordinal 5 returns full COUNTRYINFO when cb >= 44 (CRT wrapper path); DosQueryCtryInfo bounded writes respect caller's buffer size
+- [x] **BDA initialization** — BIOS Data Area at 0x400 with VGA 80x25 text mode info
+- [x] **Thunk code removed** — ~350 lines of runtime thunk handling removed from `mod.rs` (patch_16bit_thunks, scan_thunk_for_api_target, LSS #GP handler, JMP FAR handler)
+- [x] **Patches preserved** — All 4OS2 modifications stored in `samples/4os2/patches/` (6 patches); `fetch_source.sh` applies them automatically
+- [x] **4OS2 `dir` verified** — Correct date formatting (`03-14-26 8:12`), file listing, directory count, free space
+- [x] **Test samples** — `screen_test` (18/18), `findbuf_test` (15/15), `nls_test` (15/15), `thunk_test`, `dir_test`
 
 ## Phase 5: Multimedia and 16-bit Support
 - [ ] **Audio/Video (MMPM/2)**

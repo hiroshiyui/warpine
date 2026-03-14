@@ -20,10 +20,11 @@ This guide introduces the internals of Warpine and the OS/2 concepts it emulates
 10. [Presentation Manager (GUI)](#presentation-manager-gui)
 11. [PM Callback Mechanism](#pm-callback-mechanism)
 12. [Text-Mode Console Subsystem](#text-mode-console-subsystem)
-13. [4OS2 Compatibility](#4os2-compatibility)
-14. [Filesystem I/O Design](#filesystem-io-design)
-15. [Module Structure](#module-structure)
-16. [Adding a New API](#adding-a-new-api)
+13. [NLS (National Language Support)](#nls-national-language-support)
+14. [4OS2 Compatibility](#4os2-compatibility)
+15. [Filesystem I/O Design](#filesystem-io-design)
+16. [Module Structure](#module-structure)
+17. [Adding a New API](#adding-a-new-api)
 
 ---
 
@@ -346,13 +347,46 @@ CLI applications like 4OS2 read keyboard input via `DosRead` on file handle 0 ra
 3. **Translates CR → CR+LF** — OS/2 console convention; pressing Enter on the host sends `\r`, but OS/2 apps expect `\r\n` as the line terminator. A pending LF byte is queued in `VioManager.stdin_pending_lf` and delivered on the next `DosRead` call.
 4. **Echoes characters** — Raw mode disables terminal echo, so `dos_read_stdin` writes typed characters back to stdout (including destructive backspace handling)
 
-### 16-bit Thunk Bypass
+### Calling Conventions
 
-Some OS/2 applications contain 16-bit code thunks (e.g., `LSS` instructions for loading segment:offset pairs) that cause #GP faults in Warpine's flat 32-bit mode. The VMEXIT handler detects these by:
+VIO/KBD subsystem functions use **Pascal calling convention** (`_Far16 _Pascal` / `APIENTRY16`):
+- Arguments pushed **left-to-right** (last argument at ESP+4)
+- **Callee** cleans the stack (the loader adjusts ESP after return via `viocalls_arg_bytes()` / `kbdcalls_arg_bytes()`)
 
-1. Checking if the faulting instruction is `LSS` (opcodes `0x66 0x0F` or `0x0F 0xB2`)
-2. Scanning the guest stack for return addresses within known code object ranges (`SharedState.code_ranges`)
-3. Skipping the thunk by setting RIP to the found return address
+This is different from DOSCALLS which uses **_System** convention:
+- Arguments pushed **right-to-left** (first argument at ESP+4)
+- **Caller** cleans the stack
+
+---
+
+## NLS (National Language Support)
+
+NLS functions (DosQueryCp, DosQueryCtryInfo, DosMapCase, DosGetDBCSEv) can be imported from either DOSCALLS (by ordinal) or the NLS DLL. Both paths use **_System** calling convention.
+
+### NLS DLL Dispatch
+
+NLS DLL imports are dispatched at `NLS_BASE` (7168) + ordinal:
+
+| Ordinal | Function | Notes |
+|---|---|---|
+| 5 | DosQueryCp / COUNTRYINFO | Dual behavior: returns codepages for cb < 44, full COUNTRYINFO for cb >= 44 |
+| 6 | DosQueryCtryInfo | Standard DosQueryCtryInfo with _System args |
+| 7 | DosMapCase | ASCII uppercase conversion |
+| 8 | DosGetDBCSEv | Returns empty DBCS table (Western locales) |
+
+### Watcom CRT NLS Caching
+
+The Watcom C runtime wraps DosQueryCtryInfo with a caching layer:
+
+1. During CRT init, calls **NLS ordinal 6** with `cb=12` (first 3 ULONGs: country, codepage, fsDateFmt)
+2. When user code calls DosQueryCtryInfo, the wrapper calls **NLS ordinal 5** with `cb=44` (full COUNTRYINFO size) to retrieve complete locale data
+3. The wrapper caches the result and returns it without calling NLS again
+
+This is why NLS ordinal 5 must return full COUNTRYINFO when `cb >= 44` — the CRT wrapper depends on this behavior.
+
+### DosQueryCtryInfo Bounded Writes
+
+`dos_query_ctry_info()` writes only `min(cb, 44)` bytes to respect the caller's buffer size. The CRT init call with `cb=12` only gets the first 12 bytes (country, codepage, fsDateFmt). Writing more would corrupt the CRT's stack frame. Currently returns hardcoded US English defaults (country=1, codepage=437, MDY format).
 
 ---
 
@@ -364,9 +398,17 @@ Some OS/2 applications contain 16-bit code thunks (e.g., `LSS` instructions for 
 
 ```bash
 cd samples/4os2
-./fetch_source.sh    # Clones source from GitHub at a pinned commit
+./fetch_source.sh    # Clones source, applies warpine patches automatically
 make                 # Cross-compiles with Open Watcom
 ```
+
+`fetch_source.sh` applies 6 patches from `patches/` (see `patches/README.md`):
+1. `bsesub.h.patch` — APIENTRY16 → _System (eliminate 16-bit VIO/KBD thunks)
+2. `viodirect.h` — APIENTRY16/_Seg16 macro overrides (new file)
+3. `viowrap.c` — 32-bit VIO/KBD import pragmas (new file)
+4. `crt0.c` — minimal CRT startup using DosGetInfoBlocks instead of DosGetInfoSeg (new file)
+5. `os2init.c.patch` — DosGetInfoSeg → DosGetInfoBlocks
+6. `os2calls.c.patch` — direct DosFindFirst/DosFindNext with FILEFINDBUF4
 
 ### Running
 
@@ -374,17 +416,22 @@ make                 # Cross-compiles with Open Watcom
 cargo run -- samples/4os2/4os2.exe
 ```
 
-4OS2 boots to an interactive `[c:\]` prompt. Supported commands include `ver`, `set`, `echo`, `exit`, and other built-in commands. Use `RUST_LOG=debug` to trace API calls.
+4OS2 boots to an interactive `[c:\]` prompt. Working commands include `ver`, `set`, `echo`, `dir`, `exit`, and other built-ins. Use `RUST_LOG=debug` to trace API calls.
 
 ### Key implementation details
 
 Several issues were discovered and fixed during 4OS2 bring-up that are worth noting for future OS/2 application compatibility work:
 
-- **PIB field ordering** — `pib_pchcmd` is at offset `+0x0C` and `pib_pchenv` is at `+0x10`. Getting these swapped causes the app to read the command line string as the environment block (symptom: `set` shows no variables, `memory` reports only ~13 bytes used in env).
-- **Environment block format** — Must be null-terminated `KEY=VALUE` strings followed by a double-null terminator. The command line string (`program_name\0arguments\0`) is stored separately and pointed to by `pib_pchcmd`. The env block is dynamically allocated to avoid collisions with loaded LX objects.
-- **Guest memory layout** — LX objects can load at addresses up to `0x80000+`, so TIB/PIB must be placed above that range. But they must also stay below `0x100000` for 16-bit segment arithmetic (`addr >> 4` must fit in u16). The safe zone is `0x90000–0x9FFFF`.
-- **CR→CRLF on stdin** — OS/2 console DosRead returns `\r\n` when Enter is pressed. Linux terminals in raw mode send only `\r`. Without translation, 4OS2 never recognizes end-of-line.
-- **Character echo** — Terminal raw mode disables echo. OS/2 apps expect the console driver to echo typed characters during DosRead, so the emulation layer must do this explicitly.
+- **16-bit thunk elimination** — Watcom's `APIENTRY16` (`_Far16 _Pascal`) generates `__vfthunk` 16-bit bridges that warpine cannot execute. The fix is source-level: replace `APIENTRY16` with `_System` in headers, provide a custom CRT startup (`crt0.c`) that avoids `DosGetInfoSeg` thunks, and use `#pragma import` for direct VIO/KBD ordinal imports. This produces a pure 32-bit binary with zero 16-bit code. See `samples/4os2/patches/` for all modifications.
+- **VIOCALLS/KBDCALLS use Pascal calling convention** — Arguments pushed left-to-right (last arg at ESP+4), callee cleans stack. This is different from DOSCALLS which uses `_System` (right-to-left, caller cleans). The loader adds callee stack cleanup after VIO/KBD API returns via `viocalls_arg_bytes()` and `kbdcalls_arg_bytes()`.
+- **NLS DLL calling convention** — NLS functions (DosQueryCp, DosQueryCtryInfo, DosMapCase) are imported through the NLS DLL, which uses `_System` convention (same as DOSCALLS, NOT Pascal like VIOCALLS). The Watcom CRT wrapper caches NLS data: it calls NLS ordinal 6 (DosQueryCtryInfo) once during init with cb=12, then calls NLS ordinal 5 with cb=44 to fill the full COUNTRYINFO. NLS ordinal 5 has dual behavior — returns codepages for small cb, returns full COUNTRYINFO for cb >= 44.
+- **FSQBUFFER2 layout** — Uses fixed 8-byte header (iType+cbName+cbFSDName+cbFSAData) followed by variable-length strings, not the older FSQBUFFER interleaved format. Getting this wrong causes 4OS2's `ifs_type()` to read garbage, preventing `dir` from calling DosFindFirst.
+- **DosFindNext level tracking** — DosFindFirst stores the info level (1=FILEFINDBUF3, 2=FILEFINDBUF4 with EA size). DosFindNext must use the same level, otherwise filenames are offset by 4 bytes (the cbList field size difference).
+- **PIB field ordering** — `pib_pchcmd` is at offset `+0x0C` and `pib_pchenv` is at `+0x10`. Getting these swapped causes the app to read the command line string as the environment block.
+- **Environment block format** — Must be null-terminated `KEY=VALUE` strings followed by a double-null terminator. The command line string is stored separately at `pib_pchcmd`.
+- **Guest memory layout** — TIB/PIB must stay below `0x100000` for 16-bit segment arithmetic (`addr >> 4` must fit in u16). Safe zone: `0x90000–0x9FFFF`.
+- **CR→CRLF on stdin** — OS/2 console DosRead returns `\r\n` when Enter is pressed. Linux raw mode sends only `\r`. Without translation, 4OS2 never recognizes end-of-line.
+- **BDA initialization** — BIOS Data Area at flat address 0x400 must contain VGA 80x25 text mode info. 4OS2's `crt0.c` reads BDA to determine screen dimensions.
 
 ---
 
@@ -629,6 +676,10 @@ src/
     mod.rs             LX module re-exports
     header.rs          LX binary format structures and parsing
     lx.rs              LX file orchestration (open, parse, fixups)
+  ne/
+    mod.rs             NE module re-exports
+    header.rs          NE binary format structures (NeHeader, NeSegmentEntry, NeRelocationEntry)
+    ne.rs              NE file orchestration (16-bit OS/2 apps, 16 unit tests)
   loader/
     mod.rs             Loader struct, SharedState, KVM setup, VMEXIT loop, API dispatch
     constants.rs       Named constants (addresses, message IDs, mock handles)
