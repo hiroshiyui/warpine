@@ -701,7 +701,7 @@ impl Loader {
                 274 => self.dos_query_current_dir(read_stack(4), read_stack(8), read_stack(12)),
                 275 => self.dos_query_current_disk(read_stack(4), read_stack(8)),
                 220 => self.dos_set_default_disk(read_stack(4)),
-                278 => self.dos_query_file_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                278 => self.dos_query_fs_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
                 299 => self.dos_alloc_mem(read_stack(4), read_stack(8)),
                 304 => self.dos_free_mem(read_stack(4)),
                 324 => self.dos_create_event_sem(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
@@ -751,7 +751,7 @@ impl Loader {
                 // Step 5: File metadata APIs
                 258 => self.dos_copy(read_stack(4), read_stack(8), read_stack(12)),
                 261 => self.dos_edit_name(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
-                279 => self.dos_set_file_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                279 => self.dos_query_file_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
                 267 => self.dos_set_file_mode(read_stack(4), read_stack(8)),
                 219 => self.dos_set_path_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
                 276 => self.dos_query_fh_state(read_stack(4), read_stack(8)),

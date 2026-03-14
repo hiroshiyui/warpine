@@ -424,9 +424,8 @@ impl super::Loader {
         let dev_name_bytes = dev_name.as_bytes();
         let fsd_name_bytes = fsd_name.as_bytes();
 
-        // FSQBUFFER2 layout:
-        // iType(2) + cbName(2) + szName(cbName+1) + cbFSDName(2) + szFSDName(cbFSDName+1) + cbFSAData(2) + rgFSAData(0)
-        let total_size = 2 + 2 + dev_name_bytes.len() + 1 + 2 + fsd_name_bytes.len() + 1 + 2;
+        // FSQBUFFER2 layout: fixed header (8 bytes) + szName + szFSDName
+        let total_size = 8 + dev_name_bytes.len() + 1 + fsd_name_bytes.len() + 1;
 
         if pcb_buf != 0 {
             let buf_avail = self.guest_read::<u32>(pcb_buf).unwrap_or(0) as usize;
@@ -438,22 +437,18 @@ impl super::Loader {
         }
 
         if p_buf != 0 {
-            let mut off = p_buf;
-            self.guest_write::<u16>(off, 3);  // iType = 3 (local drive)
-            off += 2;
-            self.guest_write::<u16>(off, dev_name_bytes.len() as u16); // cbName
-            off += 2;
-            self.guest_write_bytes(off, dev_name_bytes);
-            off += dev_name_bytes.len() as u32;
-            self.guest_write::<u8>(off, 0); // null terminator
-            off += 1;
-            self.guest_write::<u16>(off, fsd_name_bytes.len() as u16); // cbFSDName
-            off += 2;
-            self.guest_write_bytes(off, fsd_name_bytes);
-            off += fsd_name_bytes.len() as u32;
-            self.guest_write::<u8>(off, 0); // null terminator
-            off += 1;
-            self.guest_write::<u16>(off, 0); // cbFSAData = 0
+            // FSQBUFFER2 layout: lengths first, then variable-length strings
+            self.guest_write::<u16>(p_buf, 3);  // +0: iType = 3 (local drive)
+            self.guest_write::<u16>(p_buf + 2, dev_name_bytes.len() as u16); // +2: cbName
+            self.guest_write::<u16>(p_buf + 4, fsd_name_bytes.len() as u16); // +4: cbFSDName
+            self.guest_write::<u16>(p_buf + 6, 0); // +6: cbFSAData = 0
+            // +8: szName (null-terminated)
+            self.guest_write_bytes(p_buf + 8, dev_name_bytes);
+            self.guest_write::<u8>(p_buf + 8 + dev_name_bytes.len() as u32, 0);
+            // +8+cbName+1: szFSDName (null-terminated)
+            let fsd_off = p_buf + 8 + dev_name_bytes.len() as u32 + 1;
+            self.guest_write_bytes(fsd_off, fsd_name_bytes);
+            self.guest_write::<u8>(fsd_off + fsd_name_bytes.len() as u32, 0);
         }
 
         NO_ERROR
