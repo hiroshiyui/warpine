@@ -351,14 +351,15 @@ These are related but separate problems:
 
 The recommended path is to fix the thunk issue independently (direct API stub patching) to unblock 4OS2 commands now, and defer full NE 16-bit support to Phase 5.
 
-## Phase 4.5: 16-bit Thunk Fix
+## Phase 4.5: 16-bit Thunk Fix — IN PROGRESS
 
 Fix the 16-bit thunk bypass to unblock 4OS2 filesystem commands. This is independent of Phase 5's full 16-bit NE support.
 
-- [ ] **Analyze thunk structure** — identify all 16:16↔0:32 thunk entry points in 4OS2's LX binary, map which API calls they wrap
-- [ ] **Patch thunks to API stubs directly** — modify `patch_16bit_thunks()` to redirect thunk entries to the corresponding INT 3 API stub address (`MAGIC_API_BASE + ordinal`) instead of to the 32-bit thunk entry code, bypassing `LSS` entirely
-- [ ] **Remove fragile mitigations** — remove CALL instruction verification heuristic and no-op LSS fallback once direct patching works
-- [ ] **Verify** — 4OS2 `dir`, `tree`, `copy`, `move`, `del`, `md`, `rd`, `attrib` all work correctly
+- [x] **Analyze thunk structure** — identified two types: (1) Object 1 thunks with type 0x06 (16:32) fixups wrapping API calls, (2) inline thunking code in Object 2 that calls `DosFlatToSel` then does `LSS` to set up a 16:16 stack
+- [x] **Patch Object 1 thunks to API stubs** — `patch_16bit_thunks()` now resolves `ExternalOrdinal` fixups directly to `MAGIC_API_BASE + ordinal`. For `Internal` fixups, `scan_thunk_for_api_target()` scans the target code for CALL/JMP to API stubs
+- [x] **LSS emulation** — when stack scan finds no return address, fully emulates LSS: parses ModR/M/SIB/displacement, loads 32-bit offset into destination register, advances EIP. SS unchanged (flat mode). Replaces old no-op skip.
+- [ ] **Inline thunk fix** — Object 2 inline thunking code (at 0x00051154) still crashes after LSS emulation because the code after LSS uses 16-bit instructions (JMP FAR, etc.) that need valid segment selectors. **Requires GDT tiling** (Phase 5) for a proper fix.
+- [ ] **Verify** — 4OS2 `dir`, `tree`, `copy`, `move`, `del`, `md`, `rd`, `attrib` — `dir` shows `"C:\"` but no file listings; `tree` and others blocked by inline thunk issue
 
 ## Phase 5: Multimedia and 16-bit Support
 - [ ] **Audio/Video (MMPM/2)**
