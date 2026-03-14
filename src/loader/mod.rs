@@ -469,6 +469,9 @@ impl Loader {
         let (entry_eip, entry_esp, tib_base) = self.setup_guest(lx_file);
         let vcpu = self.create_initial_vcpu(entry_eip, entry_esp);
         self.run_vcpu(vcpu, 0, tib_base);
+        // Restore terminal before process::exit() which skips all destructors.
+        // Must restore termios FIRST so OPOST is active, then emit ANSI reset.
+        self.shared.console_mgr.lock_or_recover().disable_raw_mode();
         let code = self.shared.exit_code.load(std::sync::atomic::Ordering::Relaxed);
         std::process::exit(code);
     }
@@ -489,6 +492,7 @@ impl Loader {
         let (entry_eip, entry_esp, tib_base) = self.setup_guest(lx_file);
         let vcpu = self.create_initial_vcpu(entry_eip, entry_esp);
         self.run_vcpu(vcpu, 0, tib_base);
+        self.shared.console_mgr.lock_or_recover().disable_raw_mode();
         let code = self.shared.exit_code.load(std::sync::atomic::Ordering::Relaxed);
         std::process::exit(code);
     }

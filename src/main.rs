@@ -138,29 +138,12 @@ fn main() {
         // Cleanup: signal shutdown, stop timers, reset terminal, and exit
         shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
         shared.window_mgr.lock_or_recover().stop_all_timers();
-        // Restore terminal before process::exit() which skips destructors
         shared.console_mgr.lock_or_recover().disable_raw_mode();
-        {
-            use std::io::Write;
-            let mut stdout = std::io::stdout();
-            let _ = stdout.write_all(b"\x1b[0m\x1b[?25h\x1b[r\n");
-            let _ = stdout.flush();
-        }
         let code = shared.exit_code.load(std::sync::atomic::Ordering::Relaxed);
         std::process::exit(code);
     } else {
-        // CLI app: run directly
+        // CLI app: run directly (never returns — calls process::exit internally
+        // after restoring terminal state)
         loader.setup_and_run_cli(&lx_file);
-        // Restore terminal state after guest exits.
-        // Must explicitly restore before Loader/SharedState Drop runs,
-        // to ensure terminal is sane before the process fully exits.
-        shared.console_mgr.lock_or_recover().disable_raw_mode();
-        {
-            use std::io::Write;
-            let mut stdout = std::io::stdout();
-            // Reset ANSI attributes, show cursor, reset scroll region, newline
-            let _ = stdout.write_all(b"\x1b[0m\x1b[?25h\x1b[r\n");
-            let _ = stdout.flush();
-        }
     }
 }

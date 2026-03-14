@@ -110,10 +110,20 @@ impl VioManager {
 
     /// Restore terminal to original mode.
     pub fn disable_raw_mode(&mut self) {
-        if let Some(ref orig) = self.original_termios {
-            // TCSAFLUSH: drain output, discard pending input, then restore
+        if self.original_termios.is_some() {
+            // Restore saved termios first
+            let orig = self.original_termios.as_ref().unwrap();
             unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, orig); }
             self.raw_mode_active = false;
+        }
+        // As a safety net, force-enable critical cooked-mode flags
+        // even if original_termios wasn't saved (e.g., signal handler path).
+        let mut cur: libc::termios = unsafe { std::mem::zeroed() };
+        if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut cur) } == 0 {
+            cur.c_lflag |= libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN;
+            cur.c_iflag |= libc::ICRNL;
+            cur.c_oflag |= libc::OPOST;
+            unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, &cur); }
         }
     }
 
@@ -383,11 +393,6 @@ impl VioManager {
 impl Drop for VioManager {
     fn drop(&mut self) {
         self.disable_raw_mode();
-        // Reset terminal: show cursor, reset attributes, reset scroll region,
-        // move to a new line so host prompt isn't garbled.
-        let mut stdout = io::stdout();
-        let _ = stdout.write_all(b"\x1b[0m\x1b[?25h\x1b[r\n");
-        let _ = stdout.flush();
     }
 }
 
