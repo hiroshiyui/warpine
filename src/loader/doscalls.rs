@@ -500,7 +500,31 @@ impl super::Loader {
 
     pub fn dos_find_first(&self, psz_spec_ptr: u32, phdir_ptr: u32, attr: u32, buf_ptr: u32, buf_len: u32, pc_found_ptr: u32, level: u32) -> u32 {
         if level != 1 && level != 2 { return 124; }
-        let spec = self.read_guest_string(psz_spec_ptr);
+        let mut spec = self.read_guest_string(psz_spec_ptr);
+        debug!("  DosFindFirst('{}', attr=0x{:04X}, level={}, buf_len={})", spec, attr, level, buf_len);
+
+        // If the spec is a bare directory (ends with \ or is just a drive letter),
+        // append *.* to list its contents. OS/2 apps may pass "C:\" expecting to
+        // enumerate the root directory contents (e.g., 4OS2 `dir` command).
+        // Strip trailing non-printable characters (thunk skip may leave garbage bytes)
+        while spec.ends_with(|c: char| c < ' ') {
+            spec.pop();
+        }
+
+        // If the spec is a bare directory (ends with \ or is just a drive letter),
+        // append *.* to list its contents. OS/2 apps may pass "C:\" expecting to
+        // enumerate the root directory contents (e.g., 4OS2 `dir` command when the
+        // wildcard appending code is in a thunk-skipped path).
+        let spec_trimmed = spec.trim_end_matches(&['\\', '/'][..]);
+        let is_bare_dir = spec.ends_with('\\') || spec.ends_with('/')
+            || (spec_trimmed.len() == 2 && spec_trimmed.as_bytes()[1] == b':');
+        if is_bare_dir {
+            if !spec.ends_with('\\') && !spec.ends_with('/') {
+                spec.push('\\');
+            }
+            spec.push_str("*.*");
+            debug!("  DosFindFirst: bare directory, expanded to '{}'", spec);
+        }
 
         let requested = if pc_found_ptr != 0 {
             self.guest_read::<u32>(pc_found_ptr).unwrap_or(1).max(1)
