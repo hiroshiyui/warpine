@@ -321,7 +321,7 @@ This validates: DriveManager path resolution (relative path `"test.txt"` → vol
 
 ### 16-bit Thunk Bypass Causes Crashes in 4OS2 Commands
 
-**Symptoms:** 4OS2's `dir` shows `"C:\"` but no file listings; `tree` crashes with stack overflow (`ESP=0x0000000C`); other filesystem commands (`copy`, `move`, `del`, `attrib`) may also crash when they exercise the same thunk code paths.
+**Symptoms:** 4OS2's `dir` shows `"C:\"` but no file listings (DosFindFirst succeeds but DosFindNext is never called); `tree` crashes with stack overflow (`ESP=0x0000000C`); other filesystem commands (`copy`, `move`, `del`, `attrib`) may also crash when they exercise the same thunk code paths. Note: the VFS directory enumeration itself works correctly — verified by `samples/dir_test` which lists files without thunks.
 
 **Root cause:** Some OS/2 applications (including 4OS2) contain **16-bit code thunks** — small pieces of 16-bit code that bridge between 16-bit and 32-bit calling conventions. These thunks use `LSS` (Load Stack Segment) and `JMP FAR` instructions that require real x86 segmented memory with valid 16-bit segment selectors in the GDT.
 
@@ -359,7 +359,8 @@ Fix the 16-bit thunk bypass to unblock 4OS2 filesystem commands. This is indepen
 - [x] **Patch Object 1 thunks to API stubs** — `patch_16bit_thunks()` now resolves `ExternalOrdinal` fixups directly to `MAGIC_API_BASE + ordinal`. For `Internal` fixups, `scan_thunk_for_api_target()` scans the target code for CALL/JMP to API stubs
 - [x] **LSS emulation** — when stack scan finds no return address, fully emulates LSS: parses ModR/M/SIB/displacement, loads 32-bit offset into destination register, advances EIP. SS unchanged (flat mode). Replaces old no-op skip.
 - [x] **GDT tiling explored** — infrastructure prepared (constants, IDT relocation, make_gdt_entry helper) but **tiling NOT activated**. Investigation found that active tiling breaks 4OS2: LSS succeeds (no #GP), thunk code runs in 16-bit mode, corrupts CPU state. The #GP handler MUST intercept LSS to skip thunks. Tiling requires Phase 5's full 16-bit support (code descriptors + mode switching).
-- [ ] **Inline thunk fix** — Object 2 inline thunking code (at 0x00051154) still uses stack scan heuristic. `dir` shows `"C:\"` but no file listings. Full fix requires Phase 5 (GDT tiling + 16-bit code segments + mode switching).
+- [x] **DosFindFirst improvements** — strip trailing garbage bytes from thunk-corrupted patterns, expand bare directory paths (`C:\` → `C:\*.*`). DosFindFirst now correctly finds files in VFS.
+- [ ] **Inline thunk fix** — Object 2 thunk at 0x00051154 is a generic 32-to-16 bridge (REP MOVSW args → DosFlatToSel → LSS → JMP FAR 16-bit function → LSS restore → ROL EAX). The stack scan skips the entire thunk including the JMP FAR call. For `dir`: DosFindFirst succeeds (finds files) but DosFindNext is never called because the file iteration loop is in the 16-bit code path that gets skipped. **Fundamental limitation of stack scan** — cannot skip just the LSS without also skipping the function call. Requires Phase 5 (16-bit code execution) to resolve.
 - [ ] **Verify** — 4OS2 `dir`, `tree`, `copy`, `move`, `del`, `md`, `rd`, `attrib` — blocked by inline thunk issue
 
 ## Phase 5: Multimedia and 16-bit Support
