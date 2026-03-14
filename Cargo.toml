@@ -13,6 +13,9 @@ log = "0.4"
 softbuffer = "0.4.8"
 winit = "0.30.13"
 
+[dev-dependencies]
+tempfile = "3"
+
 [profile.release]
 lto = true
 strip = true

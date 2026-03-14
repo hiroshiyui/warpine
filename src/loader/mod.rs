@@ -6,6 +6,7 @@ pub mod managers;
 pub mod ipc;
 pub mod pm_types;
 pub mod vfs;
+pub mod vfs_hostdir;
 mod guest_mem;
 mod doscalls;
 mod pm_win;
