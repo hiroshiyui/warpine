@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 pub mod lx;
+pub mod ne;
 pub mod loader;
 pub mod api;
 pub mod gui;
