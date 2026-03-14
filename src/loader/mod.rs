@@ -5,6 +5,7 @@ pub mod mutex_ext;
 pub mod managers;
 pub mod ipc;
 pub mod pm_types;
+pub mod vfs;
 mod guest_mem;
 mod doscalls;
 mod pm_win;
@@ -20,6 +21,7 @@ pub use mutex_ext::MutexExt;
 pub use managers::*;
 pub use ipc::*;
 pub use pm_types::*;
+pub use vfs::DriveManager;
 
 use crate::lx::LxFile;
 use crate::lx::header::FixupTarget;
@@ -57,7 +59,7 @@ pub(crate) enum ApiResult {
 ///
 /// ```text
 /// Level 1: next_tid, threads          (lightweight, rarely contended)
-/// Level 2: mem_mgr, handle_mgr, hdir_mgr, resource_mgr, shmem_mgr  (independent resource managers)
+/// Level 2: mem_mgr, handle_mgr, hdir_mgr, resource_mgr, shmem_mgr, drive_mgr  (independent resource managers)
 /// Level 3: queue_mgr                  (may lock inner Arc<Mutex<OS2Queue>>)
 /// Level 4: sem_mgr                    (may lock inner semaphore mutexes)
 /// Level 5: window_mgr                 (may lock inner Arc<Mutex<PM_MsgQueue>>)
@@ -79,6 +81,7 @@ pub struct SharedState {
     pub hdir_mgr: Mutex<HDirManager>,
     pub queue_mgr: Mutex<QueueManager>,
     pub window_mgr: Mutex<WindowManager>,
+    pub drive_mgr: Mutex<DriveManager>,
     pub console_mgr: Mutex<console::VioManager>,
     /// Code object address ranges (base, end) for return address scanning in thunk bypass
     pub code_ranges: Mutex<Vec<(u32, u32)>>,
@@ -126,6 +129,7 @@ impl Loader {
         let hdir_mgr = HDirManager::new();
         let queue_mgr = QueueManager::new();
         let window_mgr = WindowManager::new();
+        let drive_mgr = DriveManager::new();
         let console_mgr = console::VioManager::new();
 
         let shared = Arc::new(SharedState {
@@ -138,6 +142,7 @@ impl Loader {
             hdir_mgr: Mutex::new(hdir_mgr),
             queue_mgr: Mutex::new(queue_mgr),
             window_mgr: Mutex::new(window_mgr),
+            drive_mgr: Mutex::new(drive_mgr),
             console_mgr: Mutex::new(console_mgr),
             code_ranges: Mutex::new(Vec::new()),
             exe_name: Mutex::new(String::new()),
