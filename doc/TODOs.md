@@ -315,7 +315,12 @@ This validates: DriveManager path resolution (relative path `"test.txt"` → vol
 - [x] `samples/fs_ops_test` — DosCreateDir/DosDeleteDir/DosMove/DosQueryPathInfo verified (all rc=0)
 - [x] `samples/vfs_test` — 16/16 tests passed on drive C: (pure VFS, no HandleManager fallback)
 - [x] 4OS2 `dir` command — works with correct date/time formatting (NLS fix)
-- [ ] 4OS2 `tree`, `copy`, `move`, `del`, `md`, `rd`, `attrib` commands — need testing
+- [x] 4OS2 `tree` — shows directory tree with box-drawing characters
+- [x] 4OS2 `md` / `rd` — create and remove directories
+- [x] 4OS2 `copy` — file copy with correct content
+- [x] 4OS2 `move` — rename/move with source removal
+- [x] 4OS2 `del` — file deletion
+- [x] 4OS2 `attrib` — displays file attributes (archive, read-only, etc.)
 
 ## Phase 4.5: 16-bit Thunk Fix — COMPLETED
 
