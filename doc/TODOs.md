@@ -271,11 +271,14 @@ WINE's filesystem layer (`dlls/ntdll/unix/file.c`, `server/fd.c`) provides prove
 - [x] **`DosQueryPathInfo`** — returns correct HPFS attributes for level 1 (FILESTATUS3) via `query_path_info` (implemented in Step 2)
 - [x] **3 unit tests** — UNC path rejection, `..` clamping, symlink escape blocking
 
-### Step 7: Migrate API Handlers
-- [ ] **Refactor `doscalls.rs`** — replace all direct `std::fs` calls with `DriveManager` / `VfsBackend` trait method calls
-- [ ] **Remove `HandleManager` and `HDirManager`** — file and search handle state now lives inside `DriveManager`
-- [ ] **Remove `translate_path()`** — path resolution now lives inside the VFS/DriveManager
-- [ ] **Backward compatibility** — existing samples (`file_test`, `find_test`, `fs_ops_test`) work unchanged via default drive configuration (C: → cwd)
+### Step 7: Migrate API Handlers — COMPLETED
+- [x] **Refactor `doscalls.rs`** — all filesystem operations route through `DriveManager` → `VfsBackend`: DosOpen, DosClose, DosRead, DosWrite, DosSetFilePtr, DosFindFirst/Next/Close, DosDelete, DosMove, DosCreateDir, DosDeleteDir, DosQueryPathInfo, DosQueryFileInfo, DosResetBuffer, DosSetCurrentDir, DosQueryCurrentDir, DosQueryCurrentDisk, DosSetDefaultDisk, DosQFileMode
+- [x] **Refactor `stubs.rs`** — DosCopy migrated to DriveManager
+- [x] **Mount HostDirBackend** — C: drive mounted at startup using configured path (`~/.local/share/warpine/drive_c/`)
+- [x] **HandleManager retained** — for pipes (`DosCreatePipe`) and `DosDupHandle` (non-filesystem handles)
+- [x] **`translate_path()` retained** — for `process.rs` (`DosExecPgm`, `DosQueryAppType`) which need host executable resolution
+- [x] **New helpers** — `write_filestatus3_from_vfs()` (VFS FileStatus → guest FILESTATUS3), `write_filefindbuf3()` (VFS DirEntry → guest FILEFINDBUF3)
+- [x] **VFS-first with HandleManager fallback** — DosRead/DosWrite/DosSetFilePtr/DosClose try VFS first, fall back to HandleManager for pipe handles
 
 ### Verification
 
