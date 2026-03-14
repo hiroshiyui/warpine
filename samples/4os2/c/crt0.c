@@ -23,6 +23,41 @@
 char *_LpPgmName;
 char *_LpCmdLine;
 
+/*
+ * Direct 32-bit VioGetMode implementation.
+ * Reads screen dimensions from the BIOS Data Area (BDA) at 0x400,
+ * which warpine initializes with VGA 80x25 text mode values.
+ * This bypasses the VioGetMode import entirely.
+ *
+ * Symbol name matches what bsesub.h with _System generates: VIO16GETMODE_
+ */
+typedef struct {
+    unsigned short cb;
+    unsigned char  fbType;
+    unsigned char  color;
+    unsigned short col;
+    unsigned short row;
+    unsigned short hres;
+    unsigned short vres;
+} VIOMODE_MINI;
+
+unsigned short VIO16GETMODE(VIOMODE_MINI *pMode, unsigned short hvio);
+#pragma aux VIO16GETMODE "*_"
+unsigned short VIO16GETMODE(VIOMODE_MINI *pMode, unsigned short hvio) {
+    if (pMode && pMode->cb >= 12) {
+        /* Read from BIOS Data Area */
+        unsigned short *bda_cols = (unsigned short *)0x44A;
+        unsigned char  *bda_rows_m1 = (unsigned char *)0x484;
+        pMode->fbType = 1;       /* text mode */
+        pMode->color = 4;        /* 16 colors */
+        pMode->col = *bda_cols;
+        pMode->row = (unsigned short)(*bda_rows_m1) + 1;
+        pMode->hres = pMode->col * 8;
+        pMode->vres = pMode->row * 16;
+    }
+    return 0;
+}
+
 /* main() is provided by the application */
 extern int main(int argc, char **argv);
 

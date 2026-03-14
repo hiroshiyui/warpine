@@ -407,6 +407,25 @@ impl Loader {
         self.guest_write::<u32>(PIB_BASE + 0x0C, cmdline_addr).expect("setup_guest: PIB pchcmd OOB");
         self.guest_write::<u32>(PIB_BASE + 0x10, env_addr).expect("setup_guest: PIB pchenv OOB");
 
+        // Initialize BIOS Data Area (BDA) at flat address 0x400 with VGA 80x25 text mode.
+        // Some OS/2 code and C runtime libraries read BDA directly for screen dimensions.
+        {
+            let console = self.shared.console_mgr.lock_or_recover();
+            let cols = console.cols as u16;
+            let rows = console.rows as u16;
+            drop(console);
+            self.guest_write::<u8>(0x449, 0x03).unwrap();         // Current video mode: VGA 80x25 color text
+            self.guest_write::<u16>(0x44A, cols).unwrap();         // Number of columns
+            self.guest_write::<u16>(0x44C, cols * rows * 2).unwrap(); // Page size (chars * 2 bytes each)
+            self.guest_write::<u16>(0x44E, 0).unwrap();            // Current page offset
+            self.guest_write::<u16>(0x450, 0).unwrap();            // Cursor position page 0 (row=0, col=0)
+            self.guest_write::<u8>(0x462, 0).unwrap();             // Current display page
+            self.guest_write::<u16>(0x463, 0x3D4).unwrap();        // CRTC base I/O port (color)
+            self.guest_write::<u8>(0x484, (rows - 1) as u8).unwrap(); // Number of rows - 1
+            self.guest_write::<u16>(0x485, 16).unwrap();           // Character height (16 scanlines)
+            debug!("BDA initialized: VGA mode 0x03, {}x{} text", cols, rows);
+        }
+
         self.setup_stubs();
         self.setup_idt();
         (entry_eip, entry_esp, tib_base)
