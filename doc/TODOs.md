@@ -263,7 +263,7 @@ WINE's filesystem layer (`dlls/ntdll/unix/file.c`, `server/fd.c`) provides prove
 - [x] **`DosFindFirst` attributes filter** — hidden, system, and directory entries excluded by default; only included when corresponding bit set in filter. Dot/dotdot entries require DIRECTORY in filter
 - [x] **`DosFindClose`** — proper search handle cleanup (implemented in Step 2)
 - [x] **6 unit tests** — `*.*` matches all, no-dot patterns, attribute filter for normal/directory/hidden, find_first with directory filter
-- [ ] **`DosFindNext` multi-entry** — support `ulSearchCount > 1` returning multiple FILEFINDBUF3 entries per call (deferred to Step 7, doscalls.rs concern — VFS returns one entry at a time)
+- [x] **`DosFindNext` multi-entry** — `ulSearchCount > 1` packs multiple FILEFINDBUF3 entries with `oNextEntryOffset` linking (4-byte aligned). Buffer overflow stops packing early
 
 ### Step 6: Path Translation Hardening — COMPLETED
 - [x] **Sandbox enforcement** — `..` clamped at volume root in `resolve_path_case_insensitive()`. Symlink targets verified via `canonicalize()` + prefix check in `enforce_sandbox()`. Parent directory validated before joining filename for new files
