@@ -201,7 +201,7 @@ The new design introduces a **VFS trait** as the **correctness boundary** betwee
 
 **Key principle:** The VFS trait defines OS/2 filesystem semantics. Any implementation of the trait must ensure that every valid OS/2 filesystem operation works correctly. The API handlers (`doscalls.rs`) call trait methods and never touch host filesystem primitives directly.
 
-**Current `HandleManager` integration:** The `HandleManager` currently maps OS/2 handles → `std::fs::File`. With the VFS, it will map OS/2 handles → `VfsFileHandle` (an opaque handle returned by the VFS backend). The VFS owns file state; the `HandleManager` just tracks the guest-to-VFS mapping.
+**`HandleManager` integration:** `DriveManager` absorbs `HandleManager` and `HDirManager` — it owns the file handle table (`HashMap<u32, FileEntry>`) and find handle table (`HashMap<u32, FindEntry>`) directly. The old `HandleManager` and `HDirManager` in `managers.rs` remain in place during the transition period and will be removed in Step 7.
 
 ### Design Notes (informed by WINE's filesystem approach)
 
@@ -215,11 +215,15 @@ WINE's filesystem layer (`dlls/ntdll/unix/file.c`, `server/fd.c`) provides prove
 - **Sandbox:** WINE explicitly provides *no* security sandbox (`Z:` → `/` gives full access). Warpine can do better: since OS/2 apps expect isolated drives, enforce that paths stay within their mapped volume directory. Path traversal prevention (`..` past volume root) gives real isolation with minimal complexity.
 - **Reserved device names:** WINE maps CON → console, NUL → `/dev/null`, COM* → `/dev/ttyS*`. OS/2 has similar devices (CON, NUL, CLOCK$, KBD$, SCREEN$) that need mapping.
 
-### Step 1: VFS Trait and Drive Manager
-- [ ] **`VfsBackend` trait** — define the OS/2 filesystem semantics contract: `open`, `close`, `read`, `write`, `seek`, `find_first`, `find_next`, `find_close`, `create_dir`, `delete_dir`, `delete`, `rename`, `query_path_info`, `query_file_info`, `set_file_info`, `get_ea`, `set_ea`, `enum_ea`, `query_fs_info`, `set_file_locks`
-- [ ] **`VfsFileHandle` / `VfsFindHandle`** — opaque handle types returned by the VFS backend
-- [ ] **`DriveManager`** — maps drive letters (A:–Z:) to `(Box<dyn VfsBackend>, volume_config)` pairs. Owns all file and directory search handle state (absorbs `HandleManager` and `HDirManager`). Replaces current `translate_path()` with drive-aware path resolution
-- [ ] **Drive configuration** — configurable mapping of OS/2 drive letters to host directories via CLI flags (`--drive C=/path`) or config file (`drives.toml`)
+### Step 1: VFS Trait and Drive Manager — COMPLETED
+- [x] **`VfsBackend` trait** — 21 methods defining OS/2 filesystem semantics: `open`, `close`, `read`, `write`, `seek`, `set_file_size`, `flush`, `find_first`, `find_next`, `find_close`, `create_dir`, `delete_dir`, `delete`, `rename`, `copy`, `query_path_info`, `query_file_info`, `set_file_info`, `set_path_info`, `get_ea`, `set_ea`, `enum_ea`, `query_fs_info_alloc`, `query_fs_info_volume`, `fs_name`, `set_file_locks`
+- [x] **`VfsFileHandle` / `VfsFindHandle`** — opaque handle types (newtype over `u64`)
+- [x] **`Os2Error`** — typed error codes with 20 named constants and Debug/Display
+- [x] **OS/2 data types** — `OpenMode`, `SharingMode`, `OpenFlags`, `OpenAction`, `SeekMode`, `FileAttribute`, `FileStatus`, `DirEntry`, `EaEntry`, `FsAllocate`, `FsVolumeInfo`, `FileLockRange` with `from_raw()` parsers
+- [x] **`DriveManager`** — maps drive letters (A:–Z:) to `Box<dyn VfsBackend>`. Owns file and search handle tables (absorbs `HandleManager` and `HDirManager` responsibilities). Per-drive current directory tracking. OS/2 path resolution with drive letter extraction
+- [x] **Wired into `SharedState`** — `drive_mgr: Mutex<DriveManager>` added alongside existing managers
+- [x] **15 unit tests** — error constants, type parsers, DriveManager path resolution, handle allocation, drive mounting, per-drive current directory
+- [ ] **Drive configuration** — configurable mapping of OS/2 drive letters to host directories via CLI flags (`--drive C=/path`) or config file (`drives.toml`) — deferred to Step 2 (needs HostDirBackend to be useful)
 
 ### Step 2: HostDir Backend (first implementation)
 - [ ] **`HostDirBackend`** — implements `VfsBackend` using a host directory as storage, providing HPFS semantics on top of the Linux filesystem
