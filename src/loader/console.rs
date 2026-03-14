@@ -111,7 +111,8 @@ impl VioManager {
     /// Restore terminal to original mode.
     pub fn disable_raw_mode(&mut self) {
         if let Some(ref orig) = self.original_termios {
-            unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, orig); }
+            // TCSAFLUSH: drain output, discard pending input, then restore
+            unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, orig); }
             self.raw_mode_active = false;
         }
     }
