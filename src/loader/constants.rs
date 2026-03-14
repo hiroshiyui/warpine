@@ -14,6 +14,19 @@ pub const NLS_BASE: u32 = 7168;
 pub const MSG_BASE: u32 = 8192;
 pub const STUB_AREA_SIZE: u32 = 10240;
 
+// GDT tiling: 16-bit segment descriptors covering the guest address space
+// so that 16:16 (selector:offset) addressing works for OS/2 16-bit thunks.
+pub const GDT_BASE: u32 = 0x00080000;
+pub const TILED_SEL_START_INDEX: u32 = 4;       // GDT[0..3] = null/code32/data32/data32, tiled starts at GDT[4]
+pub const TILED_SEL_START: u32 = TILED_SEL_START_INDEX * 8; // selector 0x20
+pub const TILE_SIZE: u32 = 0x10000;             // 64KB per tile
+pub const NUM_TILES: u32 = 4096;                // 256MB / 64KB
+pub const GDT_ENTRY_COUNT: u32 = 4 + NUM_TILES; // 4100 entries
+pub const GDT_SIZE: u32 = GDT_ENTRY_COUNT * 8;  // 32800 bytes
+// IDT relocated after GDT (GDT ends at ~0x88020)
+pub const IDT_BASE: u32 = 0x0008A000;
+pub const IDT_HANDLER_BASE: u32 = 0x0008A800;
+
 // OS/2 WM_ message constants
 pub const WM_SIZE: u32 = 0x0007;
 pub const WM_PAINT: u32 = 0x0023;

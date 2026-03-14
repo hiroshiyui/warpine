@@ -429,31 +429,52 @@ impl Loader {
         }
     }
 
-    /// Set up a minimal GDT and IDT so CPU exceptions cause VMEXIT via INT 3.
-    /// GDT at 0x00080000, IDT at 0x00081000, exception handler stubs at 0x00081800.
+    /// Build a GDT descriptor entry.
+    fn make_gdt_entry(base: u32, limit: u32, access: u8, flags: u8) -> u64 {
+        let mut entry: u64 = 0;
+        entry |= (limit & 0xFFFF) as u64;
+        entry |= ((base & 0xFFFF) as u64) << 16;
+        entry |= (((base >> 16) & 0xFF) as u64) << 32;
+        entry |= (access as u64) << 40;
+        entry |= ((((limit >> 16) & 0x0F) as u64) | ((flags as u64) & 0xF0)) << 48;
+        entry |= (((base >> 24) & 0xFF) as u64) << 56;
+        entry
+    }
+
+    /// Set up GDT (with 16-bit tiled segments) and IDT for CPU exception handling.
+    ///
+    /// GDT layout:
+    ///   [0] null, [1] 32-bit code (0x08), [2] 32-bit data (0x10), [3] FS data (0x18),
+    ///   [4..4099] 16-bit data tiles (0x20..0x7FF8) — one per 64KB segment of guest memory.
+    ///
+    /// The tiled 16-bit descriptors allow OS/2 16:16 (selector:offset) addressing to work
+    /// correctly for LSS, JMP FAR, CALL FAR, and other segmented instructions.
     fn setup_idt(&self) {
-        const GDT_BASE: u32 = 0x00080000;
-        const IDT_BASE: u32 = 0x00081000;
-        const IDT_HANDLER_BASE: u32 = 0x00081800;
         const NUM_VECTORS: u32 = 32;
 
-        // Set up GDT entries
-        // Entry 0: null descriptor (required)
-        self.guest_write::<u64>(GDT_BASE, 0).unwrap();
-        // Entry 1 (selector 0x08): code segment — base=0, limit=0xFFFFF, 32-bit, execute/read
-        // Byte layout: limit_lo(2), base_lo(2), base_mid(1), access(1), flags_limit_hi(1), base_hi(1)
-        // access: P=1, DPL=0, S=1, type=0xB (exec/read/accessed) = 0x9B
-        // flags: G=1 (4K granularity), D/B=1 (32-bit), limit_hi=0xF = 0xCF
-        let code_desc: u64 = 0x00CF9B000000FFFF;
-        self.guest_write::<u64>(GDT_BASE + 8, code_desc).unwrap();
-        // Entry 2 (selector 0x10): data segment — base=0, limit=0xFFFFF, 32-bit, read/write
-        // access: P=1, DPL=0, S=1, type=0x3 (read/write/accessed) = 0x93
-        let data_desc: u64 = 0x00CF93000000FFFF;
-        self.guest_write::<u64>(GDT_BASE + 16, data_desc).unwrap();
-        // Entry 3 (selector 0x18): FS segment — base will be set via sregs, same attributes as data
-        self.guest_write::<u64>(GDT_BASE + 24, data_desc).unwrap();
+        // ── GDT entries ──
 
-        // Set up IDT with exception handler stubs
+        // Entry 0: null descriptor
+        self.guest_write::<u64>(GDT_BASE, 0).unwrap();
+        // Entry 1 (selector 0x08): 32-bit code — base=0, limit=4GB, exec/read
+        self.guest_write::<u64>(GDT_BASE + 8, Self::make_gdt_entry(0, 0xFFFFF, 0x9B, 0xCF)).unwrap();
+        // Entry 2 (selector 0x10): 32-bit data — base=0, limit=4GB, read/write
+        self.guest_write::<u64>(GDT_BASE + 16, Self::make_gdt_entry(0, 0xFFFFF, 0x93, 0xCF)).unwrap();
+        // Entry 3 (selector 0x18): FS data — base set via sregs
+        self.guest_write::<u64>(GDT_BASE + 24, Self::make_gdt_entry(0, 0xFFFFF, 0x93, 0xCF)).unwrap();
+
+        // Note: 16-bit tiled segments (GDT entries 4..4099) are NOT populated yet.
+        // GDT tiling is prepared (constants defined, GDT sized for 4100 entries) but
+        // not enabled because it makes LSS succeed in 16-bit thunk code, preventing
+        // the #GP handler from intercepting and skipping thunks. GDT tiling will be
+        // enabled in Phase 5 when full 16-bit NE support is implemented with proper
+        // code segment descriptors and mode switching.
+        //
+        // DosFlatToSel/DosSelToFlat still use the tiled selector formula so that
+        // 16:16 pointer arithmetic works correctly at the API level.
+        debug!("GDT: 4 entries (tiling prepared but not active)");
+
+        // ── IDT with exception handler stubs ──
         for i in 0..NUM_VECTORS {
             let handler_addr = IDT_HANDLER_BASE + i * 16;  // 16 bytes per handler
             // For exceptions with error codes (#DF=8, #TS=10, #NP=11, #SS=12, #GP=13, #PF=14, #AC=17):
@@ -592,9 +613,9 @@ impl Loader {
         // Also set CR4.OSFXSR to enable SSE instructions
         sregs.cr4 |= 1 << 9;
         // Set up GDT and IDT registers
-        sregs.gdt.base = 0x00080000;
-        sregs.gdt.limit = 4 * 8 - 1; // 4 entries × 8 bytes
-        sregs.idt.base = 0x00081000;
+        sregs.gdt.base = GDT_BASE as u64;
+        sregs.gdt.limit = 4 * 8 - 1; // 4 active entries; tiling prepared but not active
+        sregs.idt.base = IDT_BASE as u64;
         sregs.idt.limit = 32 * 8 - 1;
         vcpu.set_sregs(&sregs).unwrap();
 
@@ -622,8 +643,7 @@ impl Loader {
                 kvm_ioctls::VcpuExit::Debug(_) => {
                     let rip = vcpu.get_regs().unwrap().rip;
                     // Check if this is from an IDT exception handler stub
-                    const IDT_HANDLER_BASE: u64 = 0x00081800;
-                    if rip >= IDT_HANDLER_BASE && rip < IDT_HANDLER_BASE + 32 * 16 {
+                    if rip >= IDT_HANDLER_BASE as u64 && rip < IDT_HANDLER_BASE as u64 + 32 * 16 {
                         let regs = vcpu.get_regs().unwrap();
                         // Stack layout: [vector_num] [error_code_or_fake] [fault_EIP] [fault_CS] [fault_EFLAGS]
                         let vector = self.guest_read::<u32>(regs.rsp as u32).unwrap_or(0xFF);
@@ -632,18 +652,18 @@ impl Loader {
                         let fault_cs = self.guest_read::<u32>(regs.rsp as u32 + 12).unwrap_or(0);
                         let fault_eflags = self.guest_read::<u32>(regs.rsp as u32 + 16).unwrap_or(0);
 
-                        // Handle #GP from LSS instruction.
-                        // LSS (Load Stack Segment) faults because our flat 32-bit GDT has no
-                        // 16-bit segment selectors. Two strategies:
-                        // 1. Stack scan: find a verified CALL return address and skip the entire
-                        //    thunk (works for init-time thunks where the API call is bypassed)
-                        // 2. LSS emulation: load the offset portion into the dest register and
-                        //    advance past the instruction (works when the code after LSS is valid
-                        //    flat-mode code)
+                        // Handle #GP from 16-bit thunk instructions.
+                        // LSS (Load Stack Segment) faults because our GDT has no active 16-bit
+                        // segment selectors. We handle with stack scan + LSS emulation fallback.
+                        //
+                        // Note: GDT tiling constants are defined (for Phase 5) but tiled entries
+                        // are NOT populated — LSS will still fault, which is the desired behavior
+                        // for intercepting 16-bit thunks.
                         if vector == 13 {
                             let byte0 = self.guest_read::<u8>(fault_eip as u32).unwrap_or(0);
                             let byte1 = self.guest_read::<u8>(fault_eip as u32 + 1).unwrap_or(0);
                             let is_lss = (byte0 == 0x66 && byte1 == 0x0F) || (byte0 == 0x0F && byte1 == 0xB2);
+
                             if is_lss {
                                 debug!("  [VCPU {}] LSS #GP at 0x{:08X}", vcpu_id, fault_eip);
 

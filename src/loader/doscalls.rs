@@ -1270,11 +1270,17 @@ impl super::Loader {
         }
     }
 
+    /// DosFlatToSel (ordinal 425): convert 32-bit flat address to 16:16 selector:offset.
+    ///
+    /// GDT tiling is prepared (constants defined) but not active — tiled selectors are
+    /// not populated in the GDT yet. In flat mode, return the address as-is.
+    /// When tiling is enabled (Phase 5), this will return proper selector:offset pairs.
     pub fn dos_flat_to_sel(&self, flat_addr: u32) -> u32 {
         debug!("DosFlatToSel(0x{:08X})", flat_addr);
         flat_addr
     }
 
+    /// DosSelToFlat (ordinal 426): convert 16:16 selector:offset to 32-bit flat address.
     pub fn dos_sel_to_flat(&self, sel_off: u32) -> u32 {
         debug!("DosSelToFlat(0x{:08X})", sel_off);
         sel_off
@@ -1282,6 +1288,7 @@ impl super::Loader {
 
     pub fn dos_get_info_seg(&self, p_global_sel: u32, p_local_sel: u32) -> u32 {
         debug!("DosGetInfoSeg(pGlobal=0x{:08X}, pLocal=0x{:08X})", p_global_sel, p_local_sel);
+        // Return TIB/PIB-area selectors (as flat addresses in our model)
         if p_global_sel != 0 {
             let _ = self.guest_write::<u16>(p_global_sel, (PIB_BASE >> 4) as u16);
         }
