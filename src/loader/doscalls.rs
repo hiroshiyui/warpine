@@ -238,9 +238,16 @@ impl super::Loader {
 
     pub fn dos_set_file_size(&self, hf: u32, new_size: u32) -> u32 {
         debug!("DosSetFileSize(hf={}, size={})", hf, new_size);
-        // Try VFS — need to use the backend directly via file handle lookup
-        // For now, fall back to HandleManager since VfsBackend::set_file_size
-        // requires a VfsFileHandle, not an OS/2 handle
+        // Try VFS first
+        {
+            let dm = self.shared.drive_mgr.lock_or_recover();
+            match dm.set_file_size(hf, new_size as u64) {
+                Ok(()) => return 0,
+                Err(e) if e == Os2Error::INVALID_HANDLE => {} // fall through
+                Err(e) => return e.0,
+            }
+        }
+        // Fall back to HandleManager (pipes)
         let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
         if let Some(file) = h_mgr.get_mut(hf) {
             match file.set_len(new_size as u64) {

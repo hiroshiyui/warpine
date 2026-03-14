@@ -722,6 +722,13 @@ impl DriveManager {
         backend.flush(entry.vfs_handle)
     }
 
+    /// Set the size of an open file (truncate or extend).
+    pub fn set_file_size(&self, handle: u32, size: u64) -> VfsResult<()> {
+        let entry = self.file_handles.get(&handle).ok_or(Os2Error::INVALID_HANDLE)?;
+        let backend = self.drives[entry.drive as usize].as_ref().ok_or(Os2Error::INVALID_HANDLE)?;
+        backend.set_file_size(entry.vfs_handle, size)
+    }
+
     /// Flush all open file handles.
     pub fn flush_all(&self) {
         for entry in self.file_handles.values() {
