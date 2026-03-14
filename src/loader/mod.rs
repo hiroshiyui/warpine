@@ -222,6 +222,16 @@ impl Loader {
                         _ => 0,
                     };
                     if target_addr == 0 { continue; }
+                    // Trace VIO/KBD import fixups
+                    if let FixupTarget::ExternalOrdinal { module_ordinal, proc_ordinal } = &record.target {
+                        let module = lx_file.imported_modules.get((*module_ordinal as usize).wrapping_sub(1));
+                        if let Some(m) = module {
+                            if m == "VIOCALLS" || m == "KBDCALLS" {
+                                debug!("  Fixup: {}.{} -> target 0x{:08X}, src_type=0x{:02X}",
+                                       m, proc_ordinal, target_addr, record.source_type & 0x0F);
+                            }
+                        }
+                    }
                     for &off in &record.source_offsets {
                         let source_phys = obj.base_address as usize + p * 4096 + off as usize;
                         let src_type = record.source_type & 0x0F;
@@ -570,6 +580,13 @@ impl Loader {
                                 regs.rip = self.guest_read::<u32>(regs.rsp as u32)
                                     .expect("Stack read OOB for return address") as u64;
                                 regs.rsp += 4;
+                                // VIO/KBD use Pascal calling convention (callee cleanup).
+                                // Pop the arguments from the stack after the return address.
+                                if ordinal >= VIOCALLS_BASE && ordinal < SESMGR_BASE {
+                                    regs.rsp += self.viocalls_arg_bytes(ordinal - VIOCALLS_BASE);
+                                } else if ordinal >= KBDCALLS_BASE && ordinal < VIOCALLS_BASE {
+                                    regs.rsp += self.kbdcalls_arg_bytes(ordinal - KBDCALLS_BASE);
+                                }
                                 vcpu.set_regs(&regs).unwrap();
                             }
                             ApiResult::Callback { wnd_proc, hwnd, msg, mp1, mp2 } => {

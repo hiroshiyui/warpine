@@ -11,17 +11,29 @@ use super::console::map_key_to_os2;
 
 impl super::Loader {
     pub(crate) fn handle_kbdcalls(&self, vcpu: &mut VcpuFd, _vcpu_id: u32, ordinal: u32) -> super::ApiResult {
-        let regs = vcpu.get_regs().unwrap();
+        let mut regs = vcpu.get_regs().unwrap();
         let esp = regs.rsp;
         let read_stack = |off: u64| -> u32 { self.guest_read::<u32>((esp + off) as u32).expect("Stack read OOB") };
 
+        // KBDCALLS uses Pascal calling convention: last arg at ESP+4.
         let res = match ordinal {
-            4  => self.kbd_char_in(read_stack(4), read_stack(8), read_stack(12)),
-            10 => self.kbd_get_status(read_stack(4), read_stack(8)),
-            9  => self.kbd_string_in(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+            // KbdCharIn(pKeyInfo, wait, hkbd) → ESP+4=hkbd, +8=wait, +12=pKeyInfo
+            4  => self.kbd_char_in(read_stack(12), read_stack(8), read_stack(4)),
+            // KbdGetStatus(pInfo, hkbd) → ESP+4=hkbd, +8=pInfo
+            10 => self.kbd_get_status(read_stack(8), read_stack(4)),
+            // KbdStringIn(pBuf, pLen, wait, hkbd) → ESP+4=hkbd, +8=wait, +12=pLen, +16=pBuf
+            9  => self.kbd_string_in(read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
             _ => { warn!("Warning: Unknown KBDCALLS Ordinal {}", ordinal); NO_ERROR }
         };
         super::ApiResult::Normal(res)
+    }
+
+    /// Pascal calling convention argument byte count for stack cleanup.
+    pub(crate) fn kbdcalls_arg_bytes(&self, ordinal: u32) -> u64 {
+        match ordinal {
+            4 => 12, 10 => 8, 9 => 16,
+            _ => 0,
+        }
     }
 
     /// KbdCharIn (ordinal 4): read a character from the keyboard.

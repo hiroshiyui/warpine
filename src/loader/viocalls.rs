@@ -10,27 +10,47 @@ use super::mutex_ext::MutexExt;
 
 impl super::Loader {
     pub(crate) fn handle_viocalls(&self, vcpu: &mut VcpuFd, _vcpu_id: u32, ordinal: u32) -> super::ApiResult {
-        let regs = vcpu.get_regs().unwrap();
+        let mut regs = vcpu.get_regs().unwrap();
         let esp = regs.rsp;
         let read_stack = |off: u64| -> u32 { self.guest_read::<u32>((esp + off) as u32).expect("Stack read OOB") };
 
+        // VIOCALLS ordinals from OS/2 VIOCALLS DLL (see doc/os2_ordinals.md).
+        // VIO uses Pascal calling convention: args pushed LEFT-TO-RIGHT,
+        // so LAST arg is at ESP+4, first arg at highest offset.
+        // Example: VioGetMode(pMode, hvio) → ESP+4=hvio, ESP+8=pMode
         let res = match ordinal {
-            30 => self.vio_wrt_tty(read_stack(4), read_stack(8), read_stack(12)),
-            3  => self.vio_get_mode(read_stack(4), read_stack(8)),
-            4  => self.vio_get_cur_pos(read_stack(4), read_stack(8), read_stack(12)),
-            15 => self.vio_set_cur_pos(read_stack(4), read_stack(8), read_stack(12)),
-            7  => self.vio_scroll_up(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24)),
-            8  => self.vio_scroll_dn(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24)),
-            26 => self.vio_wrt_char_str_att(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
-            28 => self.vio_wrt_n_cell(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
-            27 => self.vio_wrt_n_attr(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
-            24 => self.vio_read_cell_str(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
-            16 => self.vio_set_cur_type(read_stack(4), read_stack(8)),
-            38 => self.vio_set_ansi(read_stack(4), read_stack(8)),
-            39 => self.vio_get_ansi(read_stack(4), read_stack(8)),
+            // VioWrtTTY(pStr, len, hvio) → ESP+4=hvio, +8=len, +12=pStr
+            19 => self.vio_wrt_tty(read_stack(12), read_stack(8), read_stack(4)),
+            // VioGetMode(pMode, hvio) → ESP+4=hvio, +8=pMode
+            21 => self.vio_get_mode(read_stack(8), read_stack(4)),
+            // VioGetCurPos(pRow, pCol, hvio) → ESP+4=hvio, +8=pCol, +12=pRow
+            9  => self.vio_get_cur_pos(read_stack(12), read_stack(8), read_stack(4)),
+            // VioSetCurPos(row, col, hvio) → ESP+4=hvio, +8=col, +12=row
+            15 => self.vio_set_cur_pos(read_stack(12), read_stack(8), read_stack(4)),
+            // VioScrollUp(ulr, ulc, lrr, lrc, n, cell, hvio) → ESP+4=hvio, +8=cell, +12=n, +16=lrc, +20=lrr, +24=ulc, +28=ulr
+            7  => self.vio_scroll_up(read_stack(28), read_stack(24), read_stack(20), read_stack(16), read_stack(12), read_stack(8)),
+            8  => { debug!("  VioPrtSc (stub)"); NO_ERROR },
+            // VioWrtCharStrAtt(pStr, len, row, col, pAttr, hvio) → ESP+4=hvio, +8=pAttr, +12=col, +16=row, +20=len, +24=pStr
+            48 => self.vio_wrt_char_str_att(read_stack(24), read_stack(20), read_stack(16), read_stack(12), read_stack(8)),
+            // VioWrtNCell(pCell, n, row, col, hvio) → ESP+4=hvio, +8=col, +12=row, +16=n, +20=pCell
+            52 => self.vio_wrt_n_cell(read_stack(20), read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
+            // VioWrtNAttr(pAttr, len, row, col, hvio) → ESP+4=hvio, +8=col, +12=row, +16=len, +20=pAttr
+            26 => self.vio_wrt_n_attr(read_stack(20), read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
+            // VioReadCellStr(pBuf, pLen, row, col, hvio) → ESP+4=hvio, +8=col, +12=row, +16=pLen, +20=pBuf
+            24 => self.vio_read_cell_str(read_stack(20), read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
+            // VioSetCurType(pCurInfo, hvio) → ESP+4=hvio, +8=pCurInfo
+            32 => self.vio_set_cur_type(read_stack(8), read_stack(4)),
+            // VioSetAnsi(mode, hvio) → ESP+4=hvio, +8=mode
+            5  => self.vio_set_ansi(read_stack(8), read_stack(4)),
+            // VioGetAnsi(pMode, hvio) → ESP+4=hvio, +8=pMode
+            3  => self.vio_get_ansi(read_stack(8), read_stack(4)),
             51 => { debug!("  VioSetState (stub)"); NO_ERROR },
             42 => { debug!("  VioSetCp (stub)"); NO_ERROR },
-            46 => self.vio_get_config(read_stack(4), read_stack(8)),
+            // VioGetConfig(reserved, pConfig, hvio) → ESP+4=hvio, +8=pConfig, +12=reserved
+            46 => self.vio_get_config(read_stack(12), read_stack(8)),
+            22 => { debug!("  VioSetMode (stub)"); NO_ERROR },
+            31 => { debug!("  VioGetBuf (stub)"); NO_ERROR },
+            43 => { debug!("  VioShowBuf (stub)"); NO_ERROR },
             _ => { warn!("Warning: Unknown VIOCALLS Ordinal {}", ordinal); NO_ERROR }
         };
         super::ApiResult::Normal(res)
@@ -44,6 +64,17 @@ impl super::Loader {
         let mut console = self.shared.console_mgr.lock_or_recover();
         console.write_tty(&data, 0x07); // default attribute
         NO_ERROR
+    }
+
+    /// Pascal calling convention argument byte count for stack cleanup.
+    pub(crate) fn viocalls_arg_bytes(&self, ordinal: u32) -> u64 {
+        match ordinal {
+            19 => 12, 21 => 8, 9 => 12, 15 => 12, 7 => 28,
+            48 => 24, 52 => 20, 26 => 20, 24 => 20, 32 => 8,
+            5 => 8, 3 => 8, 51 => 8, 42 => 12, 46 => 12,
+            22 => 8, 31 => 12, 43 => 12, 8 => 4,
+            _ => 0,
+        }
     }
 
     /// VioGetMode (ordinal 3): get screen mode (rows/cols).
