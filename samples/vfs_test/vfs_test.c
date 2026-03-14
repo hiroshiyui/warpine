@@ -114,7 +114,7 @@ int main(void) {
         print(buffer);
         print("\r\n");
         /* Verify content */
-        if (buffer[0] == 'H' && buffer[5] == ' ' && buffer[10] == 'o') {
+        if (buffer[0] == 'H' && buffer[5] == ' ' && buffer[10] == 'W') {
             print("  Content verified OK\r\n");
             passed++;
         } else {
