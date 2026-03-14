@@ -1859,6 +1859,69 @@ mod tests {
     }
 
     #[test]
+    // ── Sidecar EA fallback ──
+
+    #[test]
+    fn test_ea_sidecar_set_get() {
+        let (tmp, backend) = create_temp_backend();
+        // Force sidecar mode
+        backend.xattr_supported.store(false, Ordering::Relaxed);
+
+        let (h, _) = backend.open(
+            "sidecar_test.txt", OpenMode::ReadWrite, SharingMode::DenyNone,
+            OpenFlags::from_raw(0x0012), FileAttribute::NORMAL,
+        ).unwrap();
+        backend.close(h).unwrap();
+
+        // Set EA via sidecar
+        backend.set_ea("sidecar_test.txt", &EaEntry {
+            name: ".TYPE".to_string(), value: b"Sidecar Data".to_vec(), flags: 0x80,
+        }).unwrap();
+
+        // Verify sidecar file exists
+        let ea_file = tmp.path().join(".os2ea/sidecar_test.txt.ea");
+        assert!(ea_file.exists(), "Sidecar EA file should exist");
+
+        // Read EA back via sidecar
+        let got = backend.get_ea("sidecar_test.txt", ".TYPE").unwrap();
+        assert_eq!(got.name, ".TYPE");
+        assert_eq!(got.value, b"Sidecar Data");
+        assert_eq!(got.flags, 0x80);
+    }
+
+    #[test]
+    fn test_ea_sidecar_enum_and_delete() {
+        let (_tmp, backend) = create_temp_backend();
+        backend.xattr_supported.store(false, Ordering::Relaxed);
+
+        let (h, _) = backend.open(
+            "sidecar_multi.txt", OpenMode::ReadWrite, SharingMode::DenyNone,
+            OpenFlags::from_raw(0x0012), FileAttribute::NORMAL,
+        ).unwrap();
+        backend.close(h).unwrap();
+
+        // Set two EAs
+        backend.set_ea("sidecar_multi.txt", &EaEntry {
+            name: ".TYPE".to_string(), value: b"text".to_vec(), flags: 0,
+        }).unwrap();
+        backend.set_ea("sidecar_multi.txt", &EaEntry {
+            name: ".SUBJECT".to_string(), value: b"test".to_vec(), flags: 0,
+        }).unwrap();
+
+        // Enumerate
+        let eas = backend.enum_ea("sidecar_multi.txt").unwrap();
+        assert_eq!(eas.len(), 2);
+
+        // Delete one
+        backend.set_ea("sidecar_multi.txt", &EaEntry {
+            name: ".TYPE".to_string(), value: Vec::new(), flags: 0,
+        }).unwrap();
+
+        let eas = backend.enum_ea("sidecar_multi.txt").unwrap();
+        assert_eq!(eas.len(), 1);
+        assert_eq!(eas[0].name, ".SUBJECT");
+    }
+
     fn test_ea_case_insensitive_path() {
         let (_tmp, backend) = create_temp_backend();
 

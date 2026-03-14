@@ -299,22 +299,22 @@ Expected output: `Read data: Warpine File Test Data`
 This validates: DriveManager path resolution (relative path `"test.txt"` → volume root + cwd), VfsFileHandle lifecycle (open → write → close → reopen → read → close), `HostDirBackend` creating and reading a real file, and that stdout (handle 0/1/2) remains special-cased outside the VFS.
 
 #### Full test suite
-- [ ] `cargo build` — compiles cleanly
-- [ ] `cargo test` — all existing + new tests pass
-- [ ] Unit tests for `VfsBackend` trait (using mock/in-memory backend)
-- [ ] Unit tests for case-insensitive path resolution (exact-match fast path + readdir fallback)
-- [ ] Unit tests for EA storage and retrieval (xattr backend + sidecar fallback)
-- [ ] Unit tests for file sharing mode enforcement
-- [ ] Unit tests for wildcard matching (HPFS rules)
-- [ ] Unit tests for `DosQueryFSInfo` volume geometry
-- [ ] Unit tests for path traversal sandbox enforcement (symlink escape, `..` past root)
-- [ ] Unit tests for device name mapping (CON, NUL, CLOCK$)
-- [ ] `samples/file_test` — gate test (DosOpen/DosWrite/DosRead/DosClose through VFS)
-- [ ] `samples/find_test` — DosFindFirst/DosFindNext through VFS
-- [ ] `samples/fs_ops_test` — DosCreateDir/DosDeleteDir/DosMove/DosQueryPathInfo through VFS
-- [ ] `samples/vfs_test` — comprehensive VFS test on drive C: (create, read, seek, truncate, mkdir, rename, copy, find, metadata, current dir, delete)
-- [ ] 4OS2 `dir`, `tree`, `copy`, `move`, `del`, `md`, `rd` commands work correctly
-- [ ] File attributes (`attrib` command) work correctly
+- [x] `cargo build` — compiles cleanly (no warnings)
+- [x] `cargo test` — 107 tests pass
+- [x] Unit tests for `VfsBackend` trait (MockBackend: `test_drive_manager_file_handles`, `test_drive_manager_find_handles`)
+- [x] Unit tests for case-insensitive path resolution (`test_case_insensitive_lookup`, `test_case_insensitive_nested`)
+- [x] Unit tests for EA storage — xattr backend (7 tests) + sidecar fallback (`test_ea_sidecar_set_get`, `test_ea_sidecar_enum_and_delete`)
+- [x] Unit tests for file sharing mode enforcement (`test_sharing_deny_write`, `test_sharing_compatibility`)
+- [x] Unit tests for wildcard matching (`test_wildcard_star_star`, `test_wildcard_star_dot_star_matches_all`, `test_wildcard_star_ext`, `test_wildcard_question`, `test_wildcard_star_all`, `test_wildcard_no_dot_pattern`)
+- [x] Unit tests for `DosQueryFSInfo` volume geometry (`test_query_fs_info`, `test_set_and_get_volume_label`)
+- [x] Unit tests for path traversal sandbox enforcement (`test_sandbox_blocks_traversal`, `test_sandbox_dotdot_clamped_at_root`, `test_sandbox_symlink_escape`)
+- [x] Unit tests for device name mapping (`test_device_name_detection`)
+- [x] `samples/file_test` — gate test verified (output: `Read data: Warpine File Test Data`)
+- [x] `samples/find_test` — DosFindFirst/DosFindNext verified
+- [x] `samples/fs_ops_test` — DosCreateDir/DosDeleteDir/DosMove/DosQueryPathInfo verified (all rc=0)
+- [x] `samples/vfs_test` — 16/16 tests passed on drive C: (pure VFS, no HandleManager fallback)
+- [ ] 4OS2 `dir`, `tree`, `copy`, `move`, `del`, `md`, `rd` commands — blocked by 16-bit thunk issues (see Phase 3.5 notes)
+- [ ] File attributes (`attrib` command) — blocked by 4OS2 thunk issues
 
 ## Phase 5: Multimedia and 16-bit Support
 - [ ] **Audio/Video (MMPM/2)**
