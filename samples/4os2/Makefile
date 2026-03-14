@@ -27,7 +27,7 @@ CFLAGS += -oaxt
 OBJDIR = build
 
 # Source files for 4os2.exe (from master.mif)
-4OS2_CSRC = viowrap.c main.c parser.c os2init.c cmds.c expand.c eval.c \
+4OS2_CSRC = main.c parser.c os2init.c cmds.c expand.c eval.c \
             ea.c dircmds.c filecmds.c syscmds.c os2cmds.c \
             os2calls.c misc.c env.c batch.c screenio.c msg.c \
             error.c window.c listall.c lines.c kparse.c \
@@ -38,12 +38,16 @@ OBJDIR = build
 
 4OS2_COBJ = $(patsubst %.c,$(OBJDIR)/%.obj,$(4OS2_CSRC))
 4OS2_ASMOBJ = $(patsubst %.asm,$(OBJDIR)/%.obj,$(4OS2_ASMSRC))
-4OS2_OBJ = $(4OS2_COBJ) $(4OS2_ASMOBJ)
+4OS2_OBJ = $(OBJDIR)/viowrap.obj $(4OS2_COBJ) $(4OS2_ASMOBJ)
 
 all: $(OBJDIR) 4os2.exe
 
 $(OBJDIR):
 	mkdir -p $(OBJDIR)
+
+# Compile viowrap.c WITHOUT -fi (it provides import pragmas, not app code)
+$(OBJDIR)/viowrap.obj: c/viowrap.c
+	$(WCC386) -zq -s -bt=os2 -fo=$@ $<
 
 # Compile C sources
 $(OBJDIR)/%.obj: c/%.c
@@ -70,21 +74,25 @@ $(OBJDIR)/%.obj: a/%.asm
 		option description @buildlevel.txt \
 		library $(WATCOM_ROOT)/lib386/os2/os2386 \
 		library $(WATCOM_ROOT)/lib286/os2/os2 \
-		import _vio32_GetMode VIOCALLS.3 \
-		import _vio32_GetCurPos VIOCALLS.4 \
-		import _vio32_SetCurPos VIOCALLS.15 \
-		import _vio32_WrtTTY VIOCALLS.30 \
-		import _vio32_ScrollUp VIOCALLS.7 \
-		import _vio32_ScrollDn VIOCALLS.8 \
-		import _vio32_WrtCharStrAtt VIOCALLS.26 \
-		import _vio32_WrtNCell VIOCALLS.28 \
-		import _vio32_WrtNAttr VIOCALLS.27 \
-		import _vio32_ReadCellStr VIOCALLS.24 \
-		import _vio32_SetCurType VIOCALLS.16 \
-		import _vio32_SetState VIOCALLS.51 \
-		import _vio32_GetConfig VIOCALLS.46 \
-		import _kbd32_CharIn KBDCALLS.4 \
-		import _kbd32_GetStatus KBDCALLS.10 \
+		import _WP_VIOGETMODE VIOCALLS.3 \
+		import _WP_VIOGETCURPOS VIOCALLS.4 \
+		import _WP_VIOSETCURPOS VIOCALLS.15 \
+		import _WP_VIOWRTTTY VIOCALLS.30 \
+		import _WP_VIOSCROLLUP VIOCALLS.7 \
+		import _WP_VIOSCROLLDN VIOCALLS.8 \
+		import _WP_VIOWRTCHARSTRATT VIOCALLS.26 \
+		import _WP_VIOWRTNCELL VIOCALLS.28 \
+		import _WP_VIOWRTNATTR VIOCALLS.27 \
+		import _WP_VIOREADCELLSTR VIOCALLS.24 \
+		import _WP_VIOSETCURTYPE VIOCALLS.16 \
+		import _WP_VIOSETSTATE VIOCALLS.51 \
+		import _WP_VIOGETCONFIG VIOCALLS.46 \
+		import _WP_VIOSETANSI VIOCALLS.38 \
+		import _WP_VIOGETANSI VIOCALLS.39 \
+		import _WP_VIOSETCP VIOCALLS.42 \
+		import _WP_KBDCHARIN KBDCALLS.4 \
+		import _WP_KBDGETSTATUS KBDCALLS.10 \
+		import _WP_KBDSTRINGIN KBDCALLS.9 \
 		file { $(4OS2_OBJ) }
 
 clean:
