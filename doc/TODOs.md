@@ -245,8 +245,8 @@ WINE's filesystem layer (`dlls/ntdll/unix/file.c`, `server/fd.c`) provides prove
 - [x] **Sidecar `.os2ea/` fallback** — for filesystems without xattr support. Detected via test `setxattr` at init. Binary format: `[flags(1) name_len(1) value_len(2) name value]` per entry in `.os2ea/{filename}.ea`
 - [x] **`DosQueryFileInfo` / `DosQueryPathInfo` level 2** — FIL_QUERYEASIZE: returns FILESTATUS3 + cbList (total EA size computed from `enum_ea`)
 - [x] **`DosEnumAttribute`** — full implementation (ordinal 372): path-based EA enumeration, returns DENA1 structures with 4-byte alignment, 1-based entry indexing
-- [ ] **`DosQueryFileInfo` / `DosQueryPathInfo` level 3** — FIL_QUERYEASFROMLIST: query specific EAs by name list (rarely used, deferred)
-- [ ] **`DosFindFirst` / `DosFindNext` EA size** — return EA size in FILEFINDBUF3 cbList field (deferred, requires FILEFINDBUF3 format extension)
+- [x] **`DosQueryPathInfo` level 3** — FIL_QUERYEASFROMLIST: parses GEA2LIST (EA name list), queries each via VFS, writes FEA2LIST with names/values/flags. EAOP2 struct handling.
+- [x] **`DosFindFirst` / `DosFindNext` level 2** — FIL_QUERYEASIZE: FILEFINDBUF3 extended with cbList (4 bytes) after FILESTATUS3. Layout: oNextEntryOffset(4) + FILESTATUS3(24) + cbList(4) + cchName(1) + achName
 
 ### Step 4: Filesystem Information and Locking — COMPLETED
 - [x] **`query_fs_info_alloc`** — HPFS volume geometry via host `statvfs()`: sector size (512), sectors per unit, total/available units (implemented in Step 2)
