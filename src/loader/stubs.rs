@@ -165,21 +165,43 @@ impl super::Loader {
 
     /// DosQueryCtryInfo (ordinal 397): get country/locale information.
     pub fn dos_query_ctry_info(&self, cb: u32, _p_ctry_code: u32, p_ctry_info: u32, pcb_actual: u32) -> u32 {
-        debug!("  DosQueryCtryInfo");
-        if p_ctry_info != 0 && cb >= 24 {
-            // COUNTRYINFO struct: US defaults
-            self.guest_write::<u32>(p_ctry_info, 1);       // country
-            self.guest_write::<u32>(p_ctry_info + 4, 437);  // codepage
-            self.guest_write::<u32>(p_ctry_info + 8, 0);    // fsDateFmt: 0=MDY
-            self.guest_write::<u8>(p_ctry_info + 12, b'$'); // szCurrency
-            self.guest_write::<u8>(p_ctry_info + 13, 0);
-            self.guest_write::<u8>(p_ctry_info + 18, b','); // szThousandsSeparator
-            self.guest_write::<u8>(p_ctry_info + 19, 0);
-            self.guest_write::<u8>(p_ctry_info + 20, b'.'); // szDecimal
-            self.guest_write::<u8>(p_ctry_info + 21, 0);
+        debug!("  DosQueryCtryInfo(cb={}, pcc=0x{:08X}, p_ctry_info=0x{:08X}, pcb_actual=0x{:08X})", cb, _p_ctry_code, p_ctry_info, pcb_actual);
+        // COUNTRYINFO struct layout (38 bytes):
+        // +0:  country (ULONG)
+        // +4:  codepage (ULONG)
+        // +8:  fsDateFmt (ULONG) 0=MDY, 1=DMY, 2=YMD
+        // +12: szCurrency[5]
+        // +17: szThousandsSeparator[2]
+        // +19: szDecimal[2]
+        // +21: szDateSeparator[2]
+        // +23: szTimeSeparator[2]
+        // +25: fsCurrencyFmt (UCHAR)
+        // +26: cDecimalPlace (UCHAR)
+        // +27: fsTimeFmt (UCHAR) 0=12-hour, 1=24-hour
+        // +28: abReserved1[2] (USHORT×2)
+        // +32: szDataSeparator[2]
+        // +34: abReserved2[5] (USHORT×5)
+        let info_size = 38u32;
+        if p_ctry_info != 0 && cb >= info_size {
+            // Zero-fill first, then set US defaults
+            for i in 0..info_size {
+                self.guest_write::<u8>(p_ctry_info + i, 0);
+            }
+            self.guest_write::<u32>(p_ctry_info, 1);       // country = US
+            self.guest_write::<u32>(p_ctry_info + 4, 437);  // codepage = 437
+            self.guest_write::<u32>(p_ctry_info + 8, 0);    // fsDateFmt = MDY
+            self.guest_write_bytes(p_ctry_info + 12, b"$\0\0\0\0"); // szCurrency
+            self.guest_write_bytes(p_ctry_info + 17, b",\0"); // szThousandsSeparator
+            self.guest_write_bytes(p_ctry_info + 19, b".\0"); // szDecimal
+            self.guest_write_bytes(p_ctry_info + 21, b"-\0"); // szDateSeparator
+            self.guest_write_bytes(p_ctry_info + 23, b":\0"); // szTimeSeparator
+            self.guest_write::<u8>(p_ctry_info + 25, 0);    // fsCurrencyFmt
+            self.guest_write::<u8>(p_ctry_info + 26, 2);    // cDecimalPlace
+            self.guest_write::<u8>(p_ctry_info + 27, 0);    // fsTimeFmt = 12-hour
+            self.guest_write_bytes(p_ctry_info + 32, b",\0"); // szDataSeparator
         }
         if pcb_actual != 0 {
-            self.guest_write::<u32>(pcb_actual, 24);
+            self.guest_write::<u32>(pcb_actual, info_size);
         }
         NO_ERROR
     }

@@ -832,6 +832,16 @@ impl Loader {
             let nls_ord = ordinal - NLS_BASE;
             let res = match nls_ord {
                 5 => {
+                    // DosQueryCp (NLS ordinal 5)
+                    self.dos_query_cp(read_stack(4), read_stack(8), read_stack(12))
+                }
+                6 => {
+                    // DosQueryCtryInfo (NLS ordinal 6)
+                    debug!("  NLS DosQueryCtryInfo stack: +4=0x{:08X} +8=0x{:08X} +12=0x{:08X} +16=0x{:08X} +20=0x{:08X}",
+                           read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20));
+                    self.dos_query_ctry_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16))
+                }
+                7 => {
                     // DosMapCase(cb, pcc, pch) — convert string to uppercase
                     let cb = read_stack(4);
                     let _pcc = read_stack(8);
@@ -847,12 +857,7 @@ impl Loader {
                     }
                     0
                 }
-                6 => {
-                    // UniCreateUconvObject — return error to skip Unicode init
-                    warn!("NLS ordinal 6 stub — returning error");
-                    ERROR_INVALID_FUNCTION
-                }
-                7 => {
+                8 => {
                     // DosGetDBCSEv(cb, pcc, pch) — get DBCS lead byte ranges
                     let cb = read_stack(4);
                     let _pcc = read_stack(8);
