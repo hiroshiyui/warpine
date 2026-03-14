@@ -258,11 +258,12 @@ WINE's filesystem layer (`dlls/ntdll/unix/file.c`, `server/fd.c`) provides prove
 - [ ] **`DosQueryFSAttach`** — report drive type as local HPFS with accurate capability flags (deferred to Step 7 doscalls.rs migration)
 - [ ] **`DosProtectSetFileLocks`** — protected variant with file lock ID (deferred, rarely used)
 
-### Step 5: Directory Enumeration Improvements
-- [ ] **Wildcard matching** — full OS/2 wildcard semantics (`*`, `?`, dot-handling rules matching HPFS behavior)
-- [ ] **`DosFindFirst` attributes filter** — respect `MUST_HAVE_*` attribute bits, hidden/system/directory filtering
-- [ ] **`DosFindNext` multi-entry** — support `ulSearchCount > 1` returning multiple FILEFINDBUF3 entries per call
-- [ ] **`DosFindClose`** — proper search handle cleanup
+### Step 5: Directory Enumeration Improvements — COMPLETED
+- [x] **Wildcard matching** — HPFS semantics: `*.*` matches all files including those without dots (unlike DOS/FAT). `*` and `?` with case-insensitive comparison
+- [x] **`DosFindFirst` attributes filter** — hidden, system, and directory entries excluded by default; only included when corresponding bit set in filter. Dot/dotdot entries require DIRECTORY in filter
+- [x] **`DosFindClose`** — proper search handle cleanup (implemented in Step 2)
+- [x] **6 unit tests** — `*.*` matches all, no-dot patterns, attribute filter for normal/directory/hidden, find_first with directory filter
+- [ ] **`DosFindNext` multi-entry** — support `ulSearchCount > 1` returning multiple FILEFINDBUF3 entries per call (deferred to Step 7, doscalls.rs concern — VFS returns one entry at a time)
 
 ### Step 6: Path Translation Hardening
 - [ ] **Sandbox enforcement** — prevent path traversal escapes (`..` past volume root), resolve symlinks and verify they stay within volume boundary. Unlike WINE (which explicitly does *not* sandbox), warpine enforces real isolation per drive

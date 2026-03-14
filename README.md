@@ -90,7 +90,7 @@ cargo test
 - **Phase 2** (Core Subsystem) — Complete. Memory, filesystem, threading, IPC, process management.
 - **Phase 3** (Presentation Manager GUI) — Complete. Window management, graphics, input, timers, dialogs, menus, clipboard, resource loading.
 - **Phase 3.5** (Text-Mode Application Support) — Complete. VIO/KBD console subsystem, DosRead stdin with CR-CRLF translation and echo. 4OS2 command shell runs interactively.
-- **Phase 4** (Filesystem I/O) — In progress. HPFS-compatible virtual filesystem with VfsBackend trait, pluggable backends (host-directory first), case-insensitive lookup, extended attributes, file locking, and sandbox isolation. Steps 1–4 (VFS trait, DriveManager, HostDirBackend, EAs, FS info, file locking) complete.
+- **Phase 4** (Filesystem I/O) — In progress. HPFS-compatible virtual filesystem with VfsBackend trait, pluggable backends (host-directory first), case-insensitive lookup, extended attributes, file locking, and sandbox isolation. Steps 1–5 (VFS trait, DriveManager, HostDirBackend, EAs, FS info, locking, HPFS wildcards) complete.
 
 See [doc/TODOs.md](doc/TODOs.md) for the full roadmap.
 
