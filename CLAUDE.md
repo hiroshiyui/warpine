@@ -8,7 +8,7 @@ Warpine is an OS/2 compatibility layer for Linux that runs 32-bit OS/2 (LX forma
 
 **License:** GPL-3.0-only
 
-**Status:** Phase 1 (Foundation), Phase 2 (Core Subsystem), and Phase 3 (Presentation Manager GUI) are complete. Phase 3.5 (Text-Mode Application Support) is complete — 4OS2 command shell runs interactively. Phase 4 (Filesystem I/O) is in progress — Steps 1–3 (VfsBackend trait, DriveManager, HostDirBackend, EAs via xattrs) are complete; Step 4 (FS info + locking) is next. See `doc/TODOs.md` for the full roadmap.
+**Status:** Phase 1 (Foundation), Phase 2 (Core Subsystem), and Phase 3 (Presentation Manager GUI) are complete. Phase 3.5 (Text-Mode Application Support) is complete — 4OS2 command shell runs interactively. Phase 4 (Filesystem I/O) is in progress — Steps 1–4 (VfsBackend trait, DriveManager, HostDirBackend, EAs, FS info, file locking) are complete; Step 5 (directory enumeration) is next. See `doc/TODOs.md` for the full roadmap.
 
 ## Build & Run
 

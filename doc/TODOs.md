@@ -248,12 +248,15 @@ WINE's filesystem layer (`dlls/ntdll/unix/file.c`, `server/fd.c`) provides prove
 - [ ] **`DosFindFirst` / `DosFindNext`** — return EA size in FILEFINDBUF3 (deferred to Step 7)
 - [ ] **`DosEnumAttribute`** — dispatch to VFS `enum_ea` (deferred to Step 7)
 
-### Step 4: Filesystem Information and Locking
-- [ ] **`DosQueryFSInfo`** — return correct HPFS volume geometry: volume label, serial number, sector size (512), cluster size, total/free space derived from host `statvfs()`
-- [ ] **`DosSetFSInfo`** — set volume label (store in `.vol_label` file in volume root)
-- [ ] **`DosQueryFSAttach`** — report drive type as local HPFS (`"HPFS"` FSD name) with accurate capability flags (only claim what we implement), enumerate attached drives
-- [ ] **`DosSetFileLocks`** — byte-range locking via Linux `fcntl(F_SETLK)`. VFS tracks lock ownership per `VfsFileHandle`, avoiding WINE's per-process vs per-handle mismatch
-- [ ] **`DosProtectSetFileLocks`** — protected variant with file lock ID
+### Step 4: Filesystem Information and Locking — COMPLETED
+- [x] **`query_fs_info_alloc`** — HPFS volume geometry via host `statvfs()`: sector size (512), sectors per unit, total/available units (implemented in Step 2)
+- [x] **`query_fs_info_volume`** — volume label from `.vol_label` file, serial number from path hash (implemented in Step 2)
+- [x] **`set_fs_info_volume`** — persist volume label to `.vol_label` file in volume root
+- [x] **`fs_name`** — returns `"HPFS"`
+- [x] **`set_file_locks`** — byte-range locking via Linux `fcntl(F_SETLK)`, unlocks processed before locks, proper `LOCK_VIOLATION`/`ACCESS_DENIED` error mapping
+- [x] **3 unit tests** — lock/unlock cycle, invalid handle, volume label set/get
+- [ ] **`DosQueryFSAttach`** — report drive type as local HPFS with accurate capability flags (deferred to Step 7 doscalls.rs migration)
+- [ ] **`DosProtectSetFileLocks`** — protected variant with file lock ID (deferred, rarely used)
 
 ### Step 5: Directory Enumeration Improvements
 - [ ] **Wildcard matching** — full OS/2 wildcard semantics (`*`, `?`, dot-handling rules matching HPFS behavior)
