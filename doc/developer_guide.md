@@ -390,60 +390,199 @@ Several issues were discovered and fixed during 4OS2 bring-up that are worth not
 
 ## Filesystem I/O Design
 
-Warpine's filesystem layer maps OS/2 drive letters to isolated host directories with HPFS semantics. The design draws on lessons from WINE's filesystem implementation (`dlls/ntdll/unix/file.c`, `server/fd.c`, `dlls/kernel32/volume.c`) while adapting to OS/2-specific requirements.
+### Motivation: From "Happens to Work" to "Guaranteed to Work"
 
-### Drive Mapping
+The current filesystem I/O is **pass-through**: `translate_path()` maps OS/2 paths to host paths, and `DosOpen`/`DosRead`/`DosWrite` call `std::fs` directly with host `File` objects stored in `HandleManager`. This works for simple cases (e.g., `samples/file_test` writes `test.txt` to the host cwd) but provides no HPFS semantic guarantees:
 
-Each OS/2 drive letter (A:–Z:) maps to a host directory that serves as the volume root. WINE uses symlinks in `~/.wine/dosdevices/` — warpine uses a configuration file or similar mechanism to define mappings (e.g., `C:` → `./sandbox/c_drive/`).
+- Case sensitivity is wrong (host FS is case-sensitive; HPFS is not)
+- Extended attributes are missing entirely
+- File sharing modes (`OPEN_SHARE_DENY*`) are ignored
+- Wildcard matching doesn't follow OS/2 rules
+- Edge cases crash or produce wrong results instead of proper error codes
 
-Unlike WINE, which maps `Z:` → `/` by default (giving full filesystem access), warpine enforces **strict isolation**: all path resolution is confined to the mapped volume directory. This is both a security measure and a closer match to OS/2's drive-based filesystem model.
+The goal is a **correctness guarantee**: every valid OS/2 filesystem operation succeeds with correct HPFS behavior. Invalid operations return proper OS/2 error codes, not crashes. The only failure mode is the host side failing (disk full, permissions, etc.).
 
-### Case-Insensitive Path Resolution
+### Architecture: VFS Trait as the Correctness Boundary
 
-HPFS is case-preserving but case-insensitive — `README.TXT`, `readme.txt`, and `Readme.Txt` all refer to the same file. Linux filesystems are typically case-sensitive, so the emulation layer must bridge this gap.
+The design uses a `VfsBackend` trait as the **semantic contract** between OS/2 API handlers and the storage layer. The trait defines OS/2 filesystem operations with HPFS semantics. Backend implementations must fulfill this contract regardless of how they store data.
 
-**Strategy (adopted from WINE's `lookup_unix_name()`):**
+```
+  DosOpen / DosRead / DosWrite / DosFindFirst / ...    (OS/2 API layer — doscalls.rs)
+                         │
+                         ▼
+                   DriveManager                         (drive letter → backend routing)
+                         │
+                         ▼
+                  VfsBackend trait                      (OS/2 semantics contract)
+                         │
+               ┌─────────┴──────────┐
+               ▼                    ▼
+        HostDirBackend        HpfsImageBackend          (pluggable backends)
+        (host directory)      (disk image, future)
+```
+
+**Key principle:** API handlers (`doscalls.rs`) call trait methods and never touch host filesystem primitives (`std::fs`) directly. The VFS is the correctness boundary — if the trait contract is met, OS/2 apps get correct behavior regardless of backend.
+
+### VfsBackend Trait
+
+The trait surface is driven by OS/2 filesystem semantics, not by what's convenient for any particular backend:
+
+```rust
+pub trait VfsBackend: Send + Sync {
+    // File operations
+    fn open(&self, path: &Os2Path, mode: OpenMode, flags: OpenFlags,
+            sharing: SharingMode) -> Result<VfsFileHandle, Os2Error>;
+    fn close(&self, handle: VfsFileHandle) -> Result<(), Os2Error>;
+    fn read(&self, handle: &VfsFileHandle, buf: &mut [u8]) -> Result<usize, Os2Error>;
+    fn write(&self, handle: &VfsFileHandle, buf: &[u8]) -> Result<usize, Os2Error>;
+    fn seek(&self, handle: &VfsFileHandle, offset: i64, whence: SeekMode) -> Result<u64, Os2Error>;
+
+    // Directory operations
+    fn create_dir(&self, path: &Os2Path) -> Result<(), Os2Error>;
+    fn delete_dir(&self, path: &Os2Path) -> Result<(), Os2Error>;
+    fn delete(&self, path: &Os2Path) -> Result<(), Os2Error>;
+    fn rename(&self, from: &Os2Path, to: &Os2Path) -> Result<(), Os2Error>;
+
+    // Directory enumeration
+    fn find_first(&self, spec: &Os2Path, attr_filter: u32,
+                  level: u32) -> Result<(VfsFindHandle, Vec<DirEntry>), Os2Error>;
+    fn find_next(&self, handle: &VfsFindHandle,
+                 count: u32) -> Result<Vec<DirEntry>, Os2Error>;
+    fn find_close(&self, handle: VfsFindHandle) -> Result<(), Os2Error>;
+
+    // Metadata
+    fn query_path_info(&self, path: &Os2Path, level: u32) -> Result<FileInfo, Os2Error>;
+    fn query_file_info(&self, handle: &VfsFileHandle, level: u32) -> Result<FileInfo, Os2Error>;
+    fn set_file_info(&self, handle: &VfsFileHandle, level: u32,
+                     info: &FileInfo) -> Result<(), Os2Error>;
+
+    // Extended attributes
+    fn get_ea(&self, path: &Os2Path, name: &str) -> Result<Vec<u8>, Os2Error>;
+    fn set_ea(&self, path: &Os2Path, name: &str, data: &[u8]) -> Result<(), Os2Error>;
+    fn enum_ea(&self, path: &Os2Path) -> Result<Vec<EaEntry>, Os2Error>;
+
+    // Volume information
+    fn query_fs_info(&self, level: u32) -> Result<FsInfo, Os2Error>;
+
+    // Locking
+    fn set_file_locks(&self, handle: &VfsFileHandle,
+                      locks: &[LockRange], unlock: &[LockRange]) -> Result<(), Os2Error>;
+}
+```
+
+`VfsFileHandle` and `VfsFindHandle` are opaque types returned by the backend — the API layer never inspects their internals.
+
+### DriveManager
+
+The `DriveManager` replaces the current `translate_path()`. It maps drive letters to backends and resolves OS/2 paths to the correct backend + relative path:
+
+```rust
+pub struct DriveManager {
+    drives: [Option<DriveMount>; 26],  // A: = 0, B: = 1, ..., Z: = 25
+    current_drive: u8,                 // default: 2 (C:)
+    current_dirs: [String; 26],        // per-drive current directory
+}
+
+pub struct DriveMount {
+    backend: Box<dyn VfsBackend>,
+    volume_label: String,
+    read_only: bool,
+}
+```
+
+Path resolution flow:
+1. Parse drive letter (or use `current_drive` if relative)
+2. Look up `DriveMount` for that drive → `ERROR_INVALID_DRIVE` if unmounted
+3. Resolve relative path against `current_dirs[drive]`
+4. Check for reserved device names (CON, NUL, CLOCK$, KBD$, SCREEN$) → redirect to internal handlers
+5. Pass the resolved relative path to the backend
+
+### Handle Management (absorbed into VFS)
+
+Currently, file handles and directory search handles are managed by two separate structs in `managers.rs`:
+
+- `HandleManager` — maps OS/2 file handles (`u32`) → `std::fs::File`
+- `HDirManager` — maps OS/2 search handles (`u32`) → `HDirEntry { iterator: ReadDir, pattern: String }`
+
+Both are absorbed into the VFS layer. The `DriveManager` owns all handle state:
+
+```rust
+pub struct DriveManager {
+    drives: [Option<DriveMount>; 26],
+    current_drive: u8,
+    current_dirs: [String; 26],
+
+    // Handle tables (moved from HandleManager + HDirManager)
+    file_handles: HashMap<u32, OpenFile>,    // OS/2 handle → open file state
+    find_handles: HashMap<u32, FindState>,   // OS/2 hdir → search state
+    next_file_handle: u32,                   // starts at 3 (0/1/2 = stdin/stdout/stderr)
+    next_find_handle: u32,
+}
+
+struct OpenFile {
+    drive: u8,                    // which drive this file belongs to
+    vfs_handle: VfsFileHandle,    // opaque handle from the backend
+    sharing_mode: SharingMode,    // OS/2 sharing flags from DosOpen
+}
+
+struct FindState {
+    drive: u8,
+    vfs_find: VfsFindHandle,     // opaque handle from the backend
+}
+```
+
+**Why absorb rather than keep separate?** The VFS needs to enforce file sharing modes, track locks per handle, and route operations to the correct drive's backend. If handles are managed externally, every API call requires a lookup in the handle table *and* a lookup in the drive table — two indirections that share no state. With handles inside the DriveManager, `dos_read(handle)` is a single lookup that yields the backend, the VFS handle, and the sharing/lock state together.
+
+Standard handles (0=stdin, 1=stdout, 2=stderr) remain special-cased in `doscalls.rs` — they are not routed through the VFS. The old `HandleManager` and `HDirManager` in `managers.rs` are removed once migration is complete.
+
+### HostDirBackend
+
+The first backend implementation, using a host directory as the volume root. It translates HPFS semantics to Linux filesystem operations:
+
+| HPFS Semantic | Linux Implementation |
+|---|---|
+| Case-insensitive lookup | Optimistic `stat()` → `readdir()` + `strcasecmp` fallback (WINE's pattern). Optional kernel casefold detection. |
+| Extended attributes | `user.os2.*` xattrs (primary) → `.os2ea/` sidecar directory (fallback) |
+| File sharing modes | In-memory sharing mode table keyed by inode; checked on open, released on close |
+| Byte-range locking | `fcntl(F_SETLK)` with per-handle tracking via `VfsFileHandle` |
+| Long filenames (254 chars) | Native (Linux supports 255) |
+| Volume geometry | `statvfs()` on the root directory |
+| Sandbox enforcement | Canonicalize + verify prefix stays within volume root |
+
+#### Case-Insensitive Path Resolution (detail)
+
+Strategy adopted from WINE's `lookup_unix_name()`:
 
 1. **Optimistic `stat()`** — Try the exact path first. If it succeeds, done. This is the fast path for well-behaved applications that use consistent casing.
 2. **`readdir()` fallback** — On `ENOENT`, open the parent directory, enumerate entries with `readdir()`, and compare case-insensitively. Cache the listing to avoid repeated syscalls when multiple lookups hit the same directory.
 3. **Kernel casefold (optional)** — Linux 5.2+ ext4 supports per-directory case-insensitive lookup (`EXT4_CASEFOLD_FL`, via `ioctl`). Linux 6.13+ tmpfs also supports this. When detected, skip the userspace fallback entirely. This feature was developed specifically for WINE/Proton by Collabora and Valve.
 
-Each path component is resolved independently, walking from the volume root to the target. This prevents case-sensitivity mismatches at any level of the path hierarchy.
+Each path component is resolved independently, walking from the volume root to the target.
 
-### Extended Attributes (EAs)
+#### Extended Attributes (detail)
 
-OS/2 Extended Attributes are more heavily used than NTFS alternate data streams. The `.TYPE` EA (file type association), `.LONGNAME`, and `.SUBJECT` are common. Many OS/2 applications read and write EAs routinely.
-
-**Storage backends:**
+OS/2 EAs are more pervasive than NTFS alternate data streams. The `.TYPE` EA (file type association), `.LONGNAME`, and `.SUBJECT` are common. Many OS/2 applications read and write EAs routinely.
 
 | Backend | Mechanism | Pros | Cons |
 |---|---|---|---|
-| Linux xattrs | `user.os2.{name}` namespace | Native, atomic, fast | Not all filesystems support xattrs; size limits vary (ext4: ~4KB per attr) |
+| Linux xattrs | `user.os2.{name}` namespace | Native, atomic, fast | Not all FS support xattrs; size limits vary (ext4: ~4KB per attr) |
 | Sidecar files | `.os2ea/{filename}.ea` directory | Works everywhere | Extra I/O, cleanup on rename/delete, atomicity concerns |
 
-Primary backend: Linux `user.*` xattrs. Fall back to sidecar files when xattrs are unavailable (detected by attempting a test write on mount). WINE chose not to implement NTFS ADS — but OS/2 EA support is more important for compatibility, so we implement it fully.
+Primary: xattrs. Fallback: sidecar (detected by attempting a test `setxattr` on volume root at mount time).
 
-### File Locking
+#### File Locking (detail)
 
-OS/2 `DosSetFileLocks` provides byte-range locking with shared and exclusive modes.
-
-**WINE's challenge:** `fcntl()` locks are per-process (not per-handle), and closing *any* fd to a file releases all locks held by that process. WINE works around this with a wineserver-managed lock table that tracks per-handle ownership.
-
-**Warpine's advantage:** Since all OS/2 file handles are managed by a single host process through the `HandleManager`, we can use `fcntl(F_SETLK)` more directly. The handle manager already tracks which guest handles map to which host fds, so lock ownership is naturally per-handle from the guest's perspective.
+WINE uses a hybrid wineserver + `fcntl()` approach because `fcntl()` locks are per-process (not per-handle) and release when any fd is closed. Since warpine manages all OS/2 file handles in a single host process, we can use `fcntl(F_SETLK)` more directly. The `VfsFileHandle` tracks lock ownership, avoiding the per-process vs per-handle mismatch.
 
 ### Filesystem Type Reporting
 
-`DosQueryFSInfo` and `DosQueryFSAttach` must report the filesystem type to applications.
-
-**WINE's lesson:** They experimented with reporting `UNIXFS` (broke apps expecting NTFS) and then `NTFS` with all capability flags (broke apps that tried unsupported features). The solution is to report the correct type with *accurate* capability flags.
-
-Warpine reports `HPFS` as the FSD name with capability flags matching what we actually implement. Volume geometry (sector size, cluster size, total/free space) is derived from `statvfs()` on the host directory.
+`DosQueryFSInfo` and `DosQueryFSAttach` report the filesystem type to applications. WINE learned that reporting incorrect types breaks apps in both directions: reporting `UNIXFS` broke apps expecting NTFS, but claiming unsupported features also broke apps. Warpine reports `HPFS` as the FSD name with **accurate** capability flags — only claim features we actually implement.
 
 ### Device Name Handling
 
-OS/2, like DOS/Windows, has reserved device names that refer to character devices rather than files:
+OS/2 reserved device names are intercepted during path resolution in the `DriveManager`, before reaching any backend:
 
-| OS/2 Device | Linux Mapping |
+| OS/2 Device | Handling |
 |---|---|
 | `NUL` | `/dev/null` |
 | `CON` | stdin/stdout (context-dependent) |
@@ -451,18 +590,30 @@ OS/2, like DOS/Windows, has reserved device names that refer to character device
 | `KBD$` | stdin / KbdCharIn handler |
 | `SCREEN$` | stdout / VioWrtTTY handler |
 
-These are detected during path translation (case-insensitive match, with or without trailing extension) and redirected before normal file resolution. WINE handles the equivalent Windows devices (CON, NUL, PRN, COM1–9, LPT1–9) the same way.
+Detected by case-insensitive match (with or without trailing extension). WINE handles the equivalent Windows devices (CON, NUL, PRN, COM1–9, LPT1–9) the same way.
 
 ### Sandbox Enforcement
 
-Every path resolved through `translate_path()` must stay within its volume's root directory. The enforcement steps:
+The `HostDirBackend` enforces that all path resolution stays within its volume root:
 
 1. Normalize the path (resolve `.` and `..` components)
 2. Canonicalize via `realpath()` (resolves symlinks)
 3. Verify the result starts with the volume root prefix
 4. Reject with `ERROR_PATH_NOT_FOUND` (3) if it escapes
 
-WINE explicitly does *not* sandbox (`"Wine is NOT a sandbox"`). Warpine's isolated-directory model provides real containment with minimal complexity, which is appropriate since OS/2 applications expect to operate within discrete drive boundaries.
+WINE explicitly does *not* sandbox (`"Wine is NOT a sandbox"`). Warpine's isolated-directory model provides real containment with minimal complexity — OS/2 applications expect to operate within discrete drive boundaries, so isolation is both correct and secure.
+
+### Migration Path
+
+The VFS is introduced incrementally:
+
+1. **Define trait + DriveManager** — new module `src/loader/vfs.rs` (or `src/vfs/`). DriveManager absorbs `HandleManager` and `HDirManager` handle tables from the start.
+2. **Implement HostDirBackend** — starts with basic open/read/write/close, then adds case-insensitive lookup, EAs, sharing modes, locking
+3. **Refactor doscalls.rs** — replace `std::fs` calls with `DriveManager` / `VfsBackend` trait calls, one API at a time
+4. **Remove `HandleManager` and `HDirManager`** — all file and search handle state now lives in DriveManager
+5. **Remove `translate_path()`** — path resolution now lives inside DriveManager
+6. **Default configuration** — `C:` maps to cwd by default, so existing samples work unchanged
+7. **Gate test** — `samples/file_test` must pass end-to-end after each migration step. It exercises DosOpen (create + read modes with sharing flags), DosWrite, DosRead, DosClose through the VFS, while stdout (handle 1) stays special-cased. Expected output: `Read data: Warpine File Test Data`
 
 ---
 
@@ -494,6 +645,8 @@ src/
     kbdcalls.rs        KBDCALLS API implementations (KbdCharIn, KbdStringIn, etc.)
     stubs.rs           Stub handlers for unimplemented/low-priority APIs
     process.rs         ProcessManager: DosExecPgm, DosWaitChild, directory tracking
+    vfs.rs             VfsBackend trait, DriveManager, VfsFileHandle (Phase 4, planned)
+    vfs_hostdir.rs     HostDirBackend: HPFS-on-host-directory implementation (Phase 4, planned)
 ```
 
 ---

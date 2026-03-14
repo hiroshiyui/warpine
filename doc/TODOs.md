@@ -177,9 +177,31 @@ New module: `src/loader/stubs.rs` for simple stub handlers. Add `SharedMemManage
 - [x] Existing samples verified: hello, alloc_test, file_test, pipe_test, thread_test, find_test, mutex_test
 - [x] 4OS2 boots to a prompt and accepts basic commands (`ver`, `set`, `exit`, etc.)
 
-## Phase 4: Filesystem I/O (HPFS-Compatible Virtual Disk)
+## Phase 4: Filesystem I/O (HPFS-Compatible Virtual Filesystem)
 
-Goal: treat an isolated host directory (or block device) as an OS/2 virtual disk with HPFS semantics, making disk and filesystem I/O operations work correctly for applications that expect a real HPFS volume.
+Goal: build an isolated virtual filesystem with HPFS semantics and a correctness guarantee — every valid OS/2 filesystem operation succeeds with correct behavior; invalid operations return proper OS/2 error codes, never crashes. The only failure mode is the host side failing (disk full, permissions, etc.).
+
+### Architecture: VFS Trait with Pluggable Backends (Option C)
+
+The current filesystem I/O is pass-through: `translate_path()` maps OS/2 paths to host paths, and `DosOpen`/`DosRead`/`DosWrite` call `std::fs` directly. This "happens to work" for simple cases (e.g., `samples/file_test`) but provides no HPFS semantic guarantees — case sensitivity is wrong, EAs are missing, sharing modes are ignored, and edge cases crash or silently corrupt.
+
+The new design introduces a **VFS trait** as the **correctness boundary** between OS/2 API handlers and the storage backend:
+
+```
+  DosOpen/DosRead/DosWrite/DosFindFirst/...   (OS/2 API layer — doscalls.rs)
+                    │
+                    ▼
+              VfsBackend trait                  (OS/2 semantics contract)
+                    │
+          ┌─────────┴─────────┐
+          ▼                   ▼
+   HostDirBackend       HpfsImageBackend       (pluggable backends)
+   (host directory)     (disk image, future)
+```
+
+**Key principle:** The VFS trait defines OS/2 filesystem semantics. Any implementation of the trait must ensure that every valid OS/2 filesystem operation works correctly. The API handlers (`doscalls.rs`) call trait methods and never touch host filesystem primitives directly.
+
+**Current `HandleManager` integration:** The `HandleManager` currently maps OS/2 handles → `std::fs::File`. With the VFS, it will map OS/2 handles → `VfsFileHandle` (an opaque handle returned by the VFS backend). The VFS owns file state; the `HandleManager` just tracks the guest-to-VFS mapping.
 
 ### Design Notes (informed by WINE's filesystem approach)
 
@@ -193,48 +215,82 @@ WINE's filesystem layer (`dlls/ntdll/unix/file.c`, `server/fd.c`) provides prove
 - **Sandbox:** WINE explicitly provides *no* security sandbox (`Z:` → `/` gives full access). Warpine can do better: since OS/2 apps expect isolated drives, enforce that paths stay within their mapped volume directory. Path traversal prevention (`..` past volume root) gives real isolation with minimal complexity.
 - **Reserved device names:** WINE maps CON → console, NUL → `/dev/null`, COM* → `/dev/ttyS*`. OS/2 has similar devices (CON, NUL, CLOCK$, KBD$, SCREEN$) that need mapping.
 
-### Infrastructure: Virtual Disk Layer
-- [ ] **Drive-to-directory mapping** — configurable mapping of OS/2 drive letters (C:, D:, …) to host directories, each acting as an isolated HPFS volume root. Approach: config file (e.g., `drives.toml`) or symlink directory (à la WINE's `dosdevices/`)
+### Step 1: VFS Trait and Drive Manager
+- [ ] **`VfsBackend` trait** — define the OS/2 filesystem semantics contract: `open`, `close`, `read`, `write`, `seek`, `find_first`, `find_next`, `find_close`, `create_dir`, `delete_dir`, `delete`, `rename`, `query_path_info`, `query_file_info`, `set_file_info`, `get_ea`, `set_ea`, `enum_ea`, `query_fs_info`, `set_file_locks`
+- [ ] **`VfsFileHandle` / `VfsFindHandle`** — opaque handle types returned by the VFS backend
+- [ ] **`DriveManager`** — maps drive letters (A:–Z:) to `(Box<dyn VfsBackend>, volume_config)` pairs. Owns all file and directory search handle state (absorbs `HandleManager` and `HDirManager`). Replaces current `translate_path()` with drive-aware path resolution
+- [ ] **Drive configuration** — configurable mapping of OS/2 drive letters to host directories via CLI flags (`--drive C=/path`) or config file (`drives.toml`)
+
+### Step 2: HostDir Backend (first implementation)
+- [ ] **`HostDirBackend`** — implements `VfsBackend` using a host directory as storage, providing HPFS semantics on top of the Linux filesystem
 - [ ] **Case-insensitive, case-preserving lookup** — optimistic `stat()` first, `readdir()` + case-insensitive match fallback (WINE's proven pattern). Cache directory listings to reduce `readdir()` overhead. Optionally detect kernel casefold support (`EXT4_CASEFOLD_FL`) for zero-overhead case insensitivity
-- [ ] **Long filename support** — allow filenames up to 254 characters (HPFS limit), reject FAT-illegal names only when mounted as FAT
+- [ ] **Long filename support** — allow filenames up to 254 characters (HPFS limit)
+- [ ] **File sharing modes** — enforce OS/2 `DosOpen` sharing flags (`OPEN_SHARE_DENY*`) within the VFS layer
 - [ ] **Device name mapping** — CON, NUL, CLOCK$, KBD$, SCREEN$ → appropriate host devices or internal handlers
 
-### Extended Attributes (EAs)
-- [ ] **EA storage backend** — persist OS/2 extended attributes using host xattrs (Linux `user.*` namespace) as primary backend, with sidecar `.ea` directory as fallback for filesystems without xattr support
+### Step 3: Extended Attributes (EAs)
+- [ ] **EA storage backend** — persist OS/2 extended attributes using host xattrs (Linux `user.os2.*` namespace) as primary backend, with sidecar `.os2ea/` directory as fallback for filesystems without xattr support
 - [ ] **`DosSetFileInfo` / `DosQueryFileInfo`** — FIL_QUERYEASIZE (level 2) and FIL_QUERYEASFROMLIST (level 3) support
 - [ ] **`DosSetPathInfo` / `DosQueryPathInfo`** — EA read/write by path
 - [ ] **`DosFindFirst` / `DosFindNext`** — return EA size in FILEFINDBUF3 and support FILEFINDBUF3L (level 12/FIL_QUERYEASFROMLISTL)
 - [ ] **`DosEnumAttribute`** — enumerate EAs on a file
 
-### Filesystem Information
+### Step 4: Filesystem Information and Locking
 - [ ] **`DosQueryFSInfo`** — return correct HPFS volume geometry: volume label, serial number, sector size (512), cluster size, total/free space derived from host `statvfs()`
 - [ ] **`DosSetFSInfo`** — set volume label (store in `.vol_label` file in volume root)
 - [ ] **`DosQueryFSAttach`** — report drive type as local HPFS (`"HPFS"` FSD name) with accurate capability flags (only claim what we implement), enumerate attached drives
-
-### File Locking
-- [ ] **`DosSetFileLocks`** — byte-range locking via Linux `fcntl(F_SETLK)`. Since warpine manages all handles in a single process, we avoid WINE's per-process vs per-handle mismatch — our handle manager can track lock ownership directly
+- [ ] **`DosSetFileLocks`** — byte-range locking via Linux `fcntl(F_SETLK)`. VFS tracks lock ownership per `VfsFileHandle`, avoiding WINE's per-process vs per-handle mismatch
 - [ ] **`DosProtectSetFileLocks`** — protected variant with file lock ID
 
-### Directory Enumeration Improvements
+### Step 5: Directory Enumeration Improvements
 - [ ] **Wildcard matching** — full OS/2 wildcard semantics (`*`, `?`, dot-handling rules matching HPFS behavior)
 - [ ] **`DosFindFirst` attributes filter** — respect `MUST_HAVE_*` attribute bits, hidden/system/directory filtering
 - [ ] **`DosFindNext` multi-entry** — support `ulSearchCount > 1` returning multiple FILEFINDBUF3 entries per call
 - [ ] **`DosFindClose`** — proper search handle cleanup
 
-### Path Translation Hardening
+### Step 6: Path Translation Hardening
 - [ ] **Sandbox enforcement** — prevent path traversal escapes (`..` past volume root), resolve symlinks and verify they stay within volume boundary. Unlike WINE (which explicitly does *not* sandbox), warpine enforces real isolation per drive
 - [ ] **UNC path handling** — `\\server\share` paths return `ERROR_NETWORK_ACCESS_DENIED` or map to a configured directory
 - [ ] **`DosQueryPathInfo`** — return correct HPFS attributes for all info levels
 
+### Step 7: Migrate API Handlers
+- [ ] **Refactor `doscalls.rs`** — replace all direct `std::fs` calls with `DriveManager` / `VfsBackend` trait method calls
+- [ ] **Remove `HandleManager` and `HDirManager`** — file and search handle state now lives inside `DriveManager`
+- [ ] **Remove `translate_path()`** — path resolution now lives inside the VFS/DriveManager
+- [ ] **Backward compatibility** — existing samples (`file_test`, `find_test`, `fs_ops_test`) work unchanged via default drive configuration (C: → cwd)
+
 ### Verification
+
+#### Gate test: `samples/file_test`
+
+The VFS design must pass `samples/file_test` end-to-end as the minimum viability gate. This test exercises the core file I/O path through the VFS:
+
+1. `DosOpen("test.txt", ..., 0x0012, 0x0012)` — create file with `OPEN_ACTION_CREATE_IF_NEW | OPEN_ACTION_REPLACE_IF_EXISTS`, sharing mode `OPEN_SHARE_DENYNONE | OPEN_ACCESS_READWRITE`
+2. `DosWrite(hf, "Warpine File Test Data", 22)` — write 22 bytes through `VfsBackend::write()`
+3. `DosClose(hf)` — close via `DriveManager`, releasing the `VfsFileHandle`
+4. `DosOpen("test.txt", ..., 0x0001, 0x0040)` — reopen read-only with `OPEN_SHARE_DENYWRITE`
+5. `DosRead(hf, buffer, 22)` — read back through `VfsBackend::read()`, verify 22 bytes returned
+6. `DosWrite(1, ...)` — stdout (handle 1, special-cased outside VFS)
+7. `DosClose(hf)` + `DosExit(1, 0)`
+
+Expected output: `Read data: Warpine File Test Data`
+
+This validates: DriveManager path resolution (relative path `"test.txt"` → volume root + cwd), VfsFileHandle lifecycle (open → write → close → reopen → read → close), `HostDirBackend` creating and reading a real file, and that stdout (handle 0/1/2) remains special-cased outside the VFS.
+
+#### Full test suite
 - [ ] `cargo build` — compiles cleanly
 - [ ] `cargo test` — all existing + new tests pass
+- [ ] Unit tests for `VfsBackend` trait (using mock/in-memory backend)
 - [ ] Unit tests for case-insensitive path resolution (exact-match fast path + readdir fallback)
 - [ ] Unit tests for EA storage and retrieval (xattr backend + sidecar fallback)
+- [ ] Unit tests for file sharing mode enforcement
 - [ ] Unit tests for wildcard matching (HPFS rules)
 - [ ] Unit tests for `DosQueryFSInfo` volume geometry
 - [ ] Unit tests for path traversal sandbox enforcement (symlink escape, `..` past root)
 - [ ] Unit tests for device name mapping (CON, NUL, CLOCK$)
+- [ ] `samples/file_test` — gate test (DosOpen/DosWrite/DosRead/DosClose through VFS)
+- [ ] `samples/find_test` — DosFindFirst/DosFindNext through VFS
+- [ ] `samples/fs_ops_test` — DosCreateDir/DosDeleteDir/DosMove/DosQueryPathInfo through VFS
 - [ ] 4OS2 `dir`, `tree`, `copy`, `move`, `del`, `md`, `rd` commands work correctly
 - [ ] File attributes (`attrib` command) work correctly
 
