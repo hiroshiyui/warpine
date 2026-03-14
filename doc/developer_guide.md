@@ -646,7 +646,7 @@ src/
     stubs.rs           Stub handlers for unimplemented/low-priority APIs
     process.rs         ProcessManager: DosExecPgm, DosWaitChild, directory tracking
     vfs.rs             VfsBackend trait, DriveManager, Os2Error, OS/2 data types, handle types
-    vfs_hostdir.rs     HostDirBackend: HPFS-on-host-directory implementation (Phase 4, planned)
+    vfs_hostdir.rs     HostDirBackend: HPFS-on-host-directory VfsBackend implementation
 ```
 
 ---

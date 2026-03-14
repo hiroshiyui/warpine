@@ -225,12 +225,18 @@ WINE's filesystem layer (`dlls/ntdll/unix/file.c`, `server/fd.c`) provides prove
 - [x] **15 unit tests** — error constants, type parsers, DriveManager path resolution, handle allocation, drive mounting, per-drive current directory
 - [x] **Drive configuration** — default config: C: → `~/.local/share/warpine/drive_c/` (XDG-compliant, auto-created). `DriveConfig` struct stores host path, volume label, and read-only flag. CLI/config file override deferred to Step 2
 
-### Step 2: HostDir Backend (first implementation)
-- [ ] **`HostDirBackend`** — implements `VfsBackend` using a host directory as storage, providing HPFS semantics on top of the Linux filesystem
-- [ ] **Case-insensitive, case-preserving lookup** — optimistic `stat()` first, `readdir()` + case-insensitive match fallback (WINE's proven pattern). Cache directory listings to reduce `readdir()` overhead. Optionally detect kernel casefold support (`EXT4_CASEFOLD_FL`) for zero-overhead case insensitivity
-- [ ] **Long filename support** — allow filenames up to 254 characters (HPFS limit)
-- [ ] **File sharing modes** — enforce OS/2 `DosOpen` sharing flags (`OPEN_SHARE_DENY*`) within the VFS layer
-- [ ] **Device name mapping** — CON, NUL, CLOCK$, KBD$, SCREEN$ → appropriate host devices or internal handlers
+### Step 2: HostDir Backend (first implementation) — COMPLETED
+- [x] **`HostDirBackend`** — implements `VfsBackend` using a host directory as storage, providing HPFS semantics on top of the Linux filesystem. All 21 trait methods implemented (EAs and file locking are stubs, deferred to Steps 3–4)
+- [x] **Case-insensitive, case-preserving lookup** — optimistic `stat()` first, `readdir()` + case-insensitive match fallback (WINE's proven pattern). Resolves each path component independently walking from volume root
+- [x] **Long filename support** — filenames up to 254 characters (HPFS limit), `FILENAME_EXCED_RANGE` error if exceeded
+- [x] **File sharing modes** — `SharingTable` enforces OS/2 `DosOpen` sharing flags (`DENY_READWRITE`, `DENY_WRITE`, `DENY_READ`, `DENY_NONE`) with bidirectional compatibility checking
+- [x] **Sandbox enforcement** — canonicalize + prefix check prevents path traversal escapes
+- [x] **OS/2 wildcard matching** — `*` and `?` with case-insensitive comparison
+- [x] **Gate test passes** — `test_file_test_gate` mirrors `samples/file_test` exactly (create → write → close → reopen → read → verify)
+- [x] **17 unit tests** — wildcard matching, case-insensitive lookup (flat + nested), case-preserving creation, file_test gate, sharing mode enforcement, directory ops, find_first/next, sandbox, metadata, FS info, rename, copy, sharing compatibility
+- [ ] **Directory listing caching** — cache `readdir()` results to reduce overhead (optimization, deferred)
+- [ ] **Kernel casefold detection** — detect `EXT4_CASEFOLD_FL` for zero-overhead case insensitivity (optimization, deferred)
+- [ ] **Device name mapping** — CON, NUL, CLOCK$, KBD$, SCREEN$ → appropriate host devices or internal handlers (deferred to DriveManager level)
 
 ### Step 3: Extended Attributes (EAs)
 - [ ] **EA storage backend** — persist OS/2 extended attributes using host xattrs (Linux `user.os2.*` namespace) as primary backend, with sidecar `.os2ea/` directory as fallback for filesystems without xattr support
