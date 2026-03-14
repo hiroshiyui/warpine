@@ -42,5 +42,25 @@ for item in a c h license.txt 4os2.rc 4os2.ico 4os2.txt 4os2h.txt \
     fi
 done
 
+echo "Applying warpine patches..."
+# Apply patches for warpine compatibility (see patches/README.md)
+if [ -d "$SCRIPT_DIR/patches" ]; then
+    # Modified bsesub.h — eliminates 16-bit VIO/KBD thunks
+    if [ -f "$SCRIPT_DIR/patches/bsesub.h" ]; then
+        cp "$SCRIPT_DIR/patches/bsesub.h" "$SCRIPT_DIR/h/bsesub.h"
+        echo "  Applied: h/bsesub.h (32-bit VIO/KBD declarations)"
+    fi
+    # viodirect.h — additional APIENTRY16 overrides
+    if [ -f "$SCRIPT_DIR/patches/viodirect.h" ]; then
+        cp "$SCRIPT_DIR/patches/viodirect.h" "$SCRIPT_DIR/h/viodirect.h"
+        echo "  Applied: h/viodirect.h"
+    fi
+    # viowrap.c — 32-bit VIO/KBD import pragmas
+    if [ -f "$SCRIPT_DIR/patches/viowrap.c" ]; then
+        cp "$SCRIPT_DIR/patches/viowrap.c" "$SCRIPT_DIR/c/viowrap.c"
+        echo "  Applied: c/viowrap.c"
+    fi
+fi
+
 echo "Done. 4OS2 source is ready in $SCRIPT_DIR"
 echo "Build with: make -C $SCRIPT_DIR"
