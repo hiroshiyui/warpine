@@ -686,12 +686,11 @@ impl Loader {
                     self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
                     return ApiResult::Normal(0); // won't be used; run_vcpu will exit
                 },
-                235 => self.dos_query_h_type(read_stack(4), read_stack(8), read_stack(12)),
                 239 => self.dos_create_pipe(read_stack(4), read_stack(8), read_stack(12)),
                 312 => self.dos_get_info_blocks(vcpu, read_stack(4), read_stack(8)),
                 283 => self.dos_exec_pgm(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28)),
                 280 => self.dos_wait_child(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
-                237 => self.dos_kill_process(read_stack(4), read_stack(8)),
+                235 => self.dos_kill_process(read_stack(4), read_stack(8)), // DosKillProcess
                 264 => self.dos_find_first(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28)),
                 265 => self.dos_find_next(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
                 263 => self.dos_find_close(read_stack(4)),
@@ -716,7 +715,7 @@ impl Loader {
                 339 => self.dos_close_mux_wait_sem(read_stack(4)),
                 340 => self.dos_wait_mux_wait_sem(vcpu_id, read_stack(4), read_stack(8), read_stack(12)),
                 323 => self.dos_query_app_type(read_stack(4), read_stack(8)),
-                342 => 0, // DosQueryAppType old ordinal (stub)
+                342 => { debug!("DosDeleteMuxWaitSem stub"); 0 }, // DosDeleteMuxWaitSem
                 349 => self.dos_wait_thread(vcpu_id, read_stack(4)),
                 352 => self.dos_get_resource(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
                 353 => self.dos_free_resource(read_stack(4)),
@@ -727,9 +726,10 @@ impl Loader {
                 286 => self.dos_beep(read_stack(4), read_stack(8)),
                 354 => self.dos_set_exception_handler(read_stack(4)),
                 355 => self.dos_unset_exception_handler(read_stack(4)),
-                356 => self.dos_set_signal_exception_focus(read_stack(4)),
+                356 => { debug!("DosRaiseException stub"); 0 }, // DosRaiseException
                 418 => self.dos_acknowledge_signal_exception(read_stack(4)),
-                378 => self.dos_query_sys_state(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
+                368 => self.dos_query_sys_state(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)), // DosQuerySysState
+                378 => self.dos_set_signal_exception_focus(read_stack(4)), // DosSetSignalExceptionFocus
                 380 => self.dos_enter_must_complete(read_stack(4)),
                 381 => self.dos_exit_must_complete(read_stack(4)),
                 // Step 2: Shared memory
@@ -741,23 +741,22 @@ impl Loader {
                 // Step 3: Codepage and country info
                 291 => self.dos_query_cp(read_stack(4), read_stack(8), read_stack(12)),
                 289 => self.dos_set_process_cp(read_stack(4)),
-                397 => self.dos_query_ctry_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                397 => self.dos_query_ctry_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)), // DosQueryCtryInfo
                 // Step 4: Module loading stubs
                 318 => self.dos_load_module(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
                 322 => self.dos_free_module(read_stack(4)),
                 319 => self.dos_query_module_handle(read_stack(4), read_stack(8)),
                 321 => self.dos_query_proc_addr(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
-                317 => self.dos_get_message(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28)),
+                317 => { debug!("DosDebug stub"); 87 }, // DosDebug (not implemented)
                 // Step 5: File metadata APIs
                 258 => self.dos_copy(read_stack(4), read_stack(8), read_stack(12)),
                 261 => self.dos_edit_name(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
                 279 => self.dos_query_file_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
-                267 => self.dos_set_file_mode(read_stack(4), read_stack(8)),
+                267 => { debug!("DOS16REQUESTVDD stub"); 0 }, // DOS16REQUESTVDD
                 219 => self.dos_set_path_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
                 276 => self.dos_query_fh_state(read_stack(4), read_stack(8)),
-                277 => self.dos_set_fh_state(read_stack(4), read_stack(8)),
-                297 => self.dos_query_fs_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
-                298 => self.dos_query_fs_attach(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
+                277 => self.dos_query_fs_attach(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)), // DosQueryFSAttach
+                // Ordinals 297/298 do not exist in DOSCALLS — removed (were phantom duplicates)
                 // Step 6: Device I/O stubs
                 284 => self.dos_dev_ioctl(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28), read_stack(32), read_stack(36)),
                 231 => self.dos_dev_config(read_stack(4), read_stack(8)),  // NOTE: may conflict with DosSetDateTime
@@ -775,7 +774,7 @@ impl Loader {
                 210 => self.dos_set_verify(read_stack(4)),
                 225 => self.dos_query_verify(read_stack(4)),
                 292 => self.dos_set_date_time(read_stack(4)),
-                218 => self.dos_set_file_size(read_stack(4), read_stack(8)), // DosSetFileSize alias
+                218 => self.dos_set_file_info(read_stack(4), read_stack(8), read_stack(12), read_stack(16)), // DosSetFileInfo
                 285 => { debug!("DosFSCtl stub"); 0 }, // DosFSCtl - stub
                 357 => { debug!("DosUnwindException stub"); 0 }, // DosUnwindException - stub
                 372 => self.dos_enum_attribute(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28)),
@@ -799,14 +798,15 @@ impl Loader {
             ApiResult::Normal(res)
         } else if ordinal < 2048 {
             // QUECALLS
+            // QUECALLS ordinals from doc/os2_ordinals.md
             let res = match ordinal - 1024 {
-                16 => self.dos_create_queue(read_stack(4), read_stack(8), read_stack(12)),
-                10 => self.dos_open_queue(read_stack(4), read_stack(8), read_stack(12)),
-                14 => self.dos_write_queue(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
-                9 => self.dos_read_queue(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28), read_stack(32)),
-                11 => self.dos_close_queue(read_stack(4)),
-                12 => { self.dos_purge_queue(read_stack(4)); 0 },
-                13 => self.dos_query_queue(read_stack(4), read_stack(8)),
+                16 => self.dos_create_queue(read_stack(4), read_stack(8), read_stack(12)),   // DosCreateQueue
+                15 => self.dos_open_queue(read_stack(4), read_stack(8), read_stack(12)),     // DosOpenQueue
+                14 => self.dos_write_queue(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)), // DosWriteQueue
+                9  => self.dos_read_queue(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28), read_stack(32)), // DosReadQueue
+                11 => self.dos_close_queue(read_stack(4)),                                   // DosCloseQueue
+                10 => { self.dos_purge_queue(read_stack(4)); 0 },                           // DosPurgeQueue
+                12 => self.dos_query_queue(read_stack(4), read_stack(8)),                    // DosQueryQueue
                 _ => { warn!("Warning: Unknown QUECALLS Ordinal {} on VCPU {}", ordinal - 1024, vcpu_id); 0 }
             };
             ApiResult::Normal(res)
