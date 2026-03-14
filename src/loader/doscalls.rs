@@ -292,26 +292,62 @@ impl super::Loader {
     }
 
     pub fn dos_query_path_info(&self, psz_path_ptr: u32, level: u32, buf_ptr: u32, buf_len: u32) -> u32 {
-        if level != 1 { return 124; }
-        if buf_len < 22 { return 111; }
         let name = self.read_guest_string(psz_path_ptr);
         let dm = self.shared.drive_mgr.lock_or_recover();
-        match dm.query_path_info(&name, level) {
-            Ok(status) => {
-                self.write_filestatus3_from_vfs(&status, buf_ptr);
-                0
+        match level {
+            // Level 1: FILESTATUS3 (24 bytes)
+            1 => {
+                if buf_len < 24 { return 111; }
+                match dm.query_path_info(&name, level) {
+                    Ok(status) => { self.write_filestatus3_from_vfs(&status, buf_ptr); 0 }
+                    Err(e) => e.0,
+                }
             }
-            Err(e) => e.0,
+            // Level 2: FILESTATUS3 (24 bytes) + cbList (4 bytes) = FIL_QUERYEASIZE
+            2 => {
+                if buf_len < 28 { return 111; }
+                match dm.query_path_info(&name, 1) {
+                    Ok(status) => {
+                        self.write_filestatus3_from_vfs(&status, buf_ptr);
+                        // cbList: total size of all EAs (4 bytes minimum = empty EA list)
+                        let (drive, rel_path) = match dm.resolve_path(&name) {
+                            Ok(r) => r,
+                            Err(e) => return e.0,
+                        };
+                        let ea_size = match dm.backend(drive) {
+                            Ok(b) => b.enum_ea(&rel_path).map(|eas| {
+                                eas.iter().map(|ea| 9 + ea.name.len() as u32 + ea.value.len() as u32).sum::<u32>() + 4
+                            }).unwrap_or(4),
+                            Err(_) => 4,
+                        };
+                        self.guest_write::<u32>(buf_ptr + 24, ea_size);
+                        0
+                    }
+                    Err(e) => e.0,
+                }
+            }
+            _ => 124, // ERROR_INVALID_LEVEL
         }
     }
 
     pub fn dos_query_file_info(&self, hf: u32, level: u32, buf_ptr: u32, buf_len: u32) -> u32 {
-        if level != 1 { return 124; }
-        if buf_len < 22 { return 111; }
+        match level {
+            1 => {
+                if buf_len < 24 { return 111; }
+            }
+            2 => {
+                if buf_len < 28 { return 111; }
+            }
+            _ => return 124,
+        }
         let dm = self.shared.drive_mgr.lock_or_recover();
-        match dm.query_file_info(hf, level) {
+        match dm.query_file_info(hf, 1) {
             Ok(status) => {
                 self.write_filestatus3_from_vfs(&status, buf_ptr);
+                if level == 2 {
+                    // cbList: write 4 (empty EA list) — EAs on open handles not yet supported
+                    self.guest_write::<u32>(buf_ptr + 24, 4);
+                }
                 0
             }
             Err(e) => {
@@ -321,6 +357,9 @@ impl super::Loader {
                     if let Some(file) = h_mgr.get_mut(hf) {
                         if let Ok(meta) = file.metadata() {
                             self.write_filestatus3_internal(&meta, buf_ptr);
+                            if level == 2 {
+                                self.guest_write::<u32>(buf_ptr + 24, 4);
+                            }
                             return 0;
                         }
                     }
@@ -355,6 +394,76 @@ impl super::Loader {
                 Err(e) => e.0,
             }
         }
+    }
+
+    // ── Extended Attributes ──
+
+    /// DosEnumAttribute (ordinal 372): enumerate extended attributes.
+    ///
+    /// OS/2 signature: DosEnumAttribute(ulRefType, pvFile, ulEntry, pvBuf, cbBuf, pulCount, ulInfoLevel)
+    /// - ulRefType: 0 = pvFile is path (PCSZ), 1 = pvFile is file handle (HFILE)
+    /// - ulEntry: 1-based index of first EA to return
+    /// - pvBuf: output buffer for DENA1 structs
+    /// - cbBuf: buffer size
+    /// - pulCount: in/out count of entries
+    /// - ulInfoLevel: must be 1 (ENUMEA_LEVEL_NO_VALUE)
+    pub fn dos_enum_attribute(&self, ref_type: u32, pv_file: u32, ul_entry: u32,
+                              pv_buf: u32, cb_buf: u32, pul_count: u32, info_level: u32) -> u32 {
+        debug!("  DosEnumAttribute(refType={}, entry={}, level={})", ref_type, ul_entry, info_level);
+        if info_level != 1 { return 124; } // ERROR_INVALID_LEVEL
+
+        // Get the path to enumerate EAs on
+        let path_str = if ref_type == 0 {
+            // pvFile is a path string
+            self.read_guest_string(pv_file)
+        } else {
+            // pvFile is a file handle — not yet supported, return empty
+            if pul_count != 0 { self.guest_write::<u32>(pul_count, 0); }
+            return 0;
+        };
+
+        let dm = self.shared.drive_mgr.lock_or_recover();
+        let (drive, rel_path) = match dm.resolve_path(&path_str) {
+            Ok(r) => r,
+            Err(e) => return e.0,
+        };
+        let eas = match dm.backend(drive) {
+            Ok(b) => match b.enum_ea(&rel_path) {
+                Ok(eas) => eas,
+                Err(_) => Vec::new(),
+            },
+            Err(e) => return e.0,
+        };
+
+        let max_count = if pul_count != 0 {
+            self.guest_read::<u32>(pul_count).unwrap_or(1) as usize
+        } else { 1 };
+
+        // ul_entry is 1-based
+        let start = if ul_entry > 0 { (ul_entry - 1) as usize } else { 0 };
+        let mut offset = 0u32;
+        let mut count = 0u32;
+
+        for ea in eas.iter().skip(start).take(max_count) {
+            // DENA1 structure: reserved(4) + cbName(1) + cbValue(2) + szName(cbName+1)
+            let entry_size = 4 + 1 + 2 + ea.name.len() as u32 + 1;
+            let aligned_size = (entry_size + 3) & !3; // 4-byte aligned
+            if offset + aligned_size > cb_buf { break; }
+
+            self.guest_write::<u32>(pv_buf + offset, 0);           // reserved
+            self.guest_write::<u8>(pv_buf + offset + 4, ea.name.len() as u8); // cbName
+            self.guest_write::<u16>(pv_buf + offset + 5, ea.value.len() as u16); // cbValue
+            self.guest_write_bytes(pv_buf + offset + 7, ea.name.as_bytes());
+            self.guest_write::<u8>(pv_buf + offset + 7 + ea.name.len() as u32, 0); // null term
+
+            offset += aligned_size;
+            count += 1;
+        }
+
+        if pul_count != 0 {
+            self.guest_write::<u32>(pul_count, count);
+        }
+        0
     }
 
     // ── Directory enumeration (via DriveManager) ──

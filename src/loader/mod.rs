@@ -858,7 +858,7 @@ impl Loader {
                 218 => self.dos_set_file_size(read_stack(4), read_stack(8)), // DosSetFileSize alias
                 285 => { debug!("DosFSCtl stub"); 0 }, // DosFSCtl - stub
                 357 => { debug!("DosUnwindException stub"); 0 }, // DosUnwindException - stub
-                372 => { debug!("DosEnumAttribute stub"); 0 }, // DosEnumAttribute - stub
+                372 => self.dos_enum_attribute(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24), read_stack(28)),
                 415 => { debug!("DosShutdown stub"); 0 }, // DosShutdown - stub
                 425 => self.dos_flat_to_sel(read_stack(4)), // DosFlatToSel
                 426 => self.dos_sel_to_flat(read_stack(4)), // DosSelToFlat

@@ -184,6 +184,97 @@ fn detect_kernel_casefold(path: &Path) -> bool {
     (flags & 0x40000000) != 0
 }
 
+// ── xattr support detection ──
+
+/// Check if a directory supports extended attributes by attempting a test write.
+fn detect_xattr_support(path: &Path) -> bool {
+    let c_path = match CString::new(path.as_os_str().as_encoded_bytes()) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let test_name = CString::new("user.os2.ea._test").unwrap();
+    let test_val = b"1";
+
+    let rc = unsafe {
+        libc::setxattr(c_path.as_ptr(), test_name.as_ptr(),
+                      test_val.as_ptr() as *const libc::c_void, 1, 0)
+    };
+    if rc == 0 {
+        // Clean up the test xattr
+        unsafe { libc::removexattr(c_path.as_ptr(), test_name.as_ptr()); }
+        true
+    } else {
+        false
+    }
+}
+
+// ── Sidecar EA storage (.os2ea/) ──
+
+/// Get the sidecar EA file path for a given host file path.
+/// EAs for `/path/to/file.txt` are stored in `/path/to/.os2ea/file.txt.ea`
+fn sidecar_ea_path(host_path: &Path) -> Option<PathBuf> {
+    let parent = host_path.parent()?;
+    let name = host_path.file_name()?;
+    let ea_dir = parent.join(".os2ea");
+    let mut ea_file = name.to_os_string();
+    ea_file.push(".ea");
+    Some(ea_dir.join(ea_file))
+}
+
+/// Sidecar EA file format: sequence of entries, each:
+///   flags(1) + name_len(1) + value_len(2) + name(name_len) + value(value_len)
+fn sidecar_read_eas(host_path: &Path) -> Vec<EaEntry> {
+    let ea_path = match sidecar_ea_path(host_path) {
+        Some(p) => p,
+        None => return Vec::new(),
+    };
+    let data = match fs::read(&ea_path) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut eas = Vec::new();
+    let mut pos = 0;
+    while pos + 4 <= data.len() {
+        let flags = data[pos];
+        let name_len = data[pos + 1] as usize;
+        let value_len = u16::from_le_bytes([data[pos + 2], data[pos + 3]]) as usize;
+        pos += 4;
+        if pos + name_len + value_len > data.len() { break; }
+        let name = String::from_utf8_lossy(&data[pos..pos + name_len]).into_owned();
+        pos += name_len;
+        let value = data[pos..pos + value_len].to_vec();
+        pos += value_len;
+        eas.push(EaEntry { name, value, flags });
+    }
+    eas
+}
+
+fn sidecar_write_eas(host_path: &Path, eas: &[EaEntry]) -> VfsResult<()> {
+    let ea_path = sidecar_ea_path(host_path).ok_or(Os2Error::PATH_NOT_FOUND)?;
+
+    if eas.is_empty() {
+        // Remove sidecar file if no EAs remain
+        let _ = fs::remove_file(&ea_path);
+        return Ok(());
+    }
+
+    // Ensure .os2ea/ directory exists
+    if let Some(ea_dir) = ea_path.parent() {
+        let _ = fs::create_dir_all(ea_dir);
+    }
+
+    let mut data = Vec::new();
+    for ea in eas {
+        data.push(ea.flags);
+        data.push(ea.name.len() as u8);
+        data.extend_from_slice(&(ea.value.len() as u16).to_le_bytes());
+        data.extend_from_slice(ea.name.as_bytes());
+        data.extend_from_slice(&ea.value);
+    }
+    fs::write(&ea_path, &data).map_err(|_| Os2Error::ACCESS_DENIED)
+}
+
 // ── Case-insensitive path resolution ──
 
 /// Resolve a single path component case-insensitively within a directory.
@@ -409,12 +500,14 @@ pub struct HostDirBackend {
     /// True if the root filesystem supports kernel-level case-insensitive lookup
     /// (ext4 with EXT4_CASEFOLD_FL). When true, we skip the userspace readdir() fallback.
     kernel_casefold: AtomicBool,
+    /// True if the root filesystem supports xattrs. When false, use sidecar `.os2ea/` files.
+    xattr_supported: AtomicBool,
     next_id: AtomicU64,
 }
 
 impl HostDirBackend {
     /// Create a new HostDirBackend rooted at the given directory.
-    /// The directory must exist. Detects kernel casefold support on init.
+    /// The directory must exist. Detects kernel casefold and xattr support on init.
     pub fn new(root: PathBuf) -> VfsResult<Self> {
         let root = root.canonicalize().map_err(|_| Os2Error::PATH_NOT_FOUND)?;
         if !root.is_dir() {
@@ -424,6 +517,10 @@ impl HostDirBackend {
         if has_casefold {
             debug!("Kernel casefold detected on {}", root.display());
         }
+        let has_xattr = detect_xattr_support(&root);
+        if !has_xattr {
+            debug!("xattr not supported on {}, using sidecar .os2ea/ for EAs", root.display());
+        }
         Ok(HostDirBackend {
             root,
             files: Mutex::new(HashMap::new()),
@@ -431,6 +528,7 @@ impl HostDirBackend {
             sharing: Mutex::new(SharingTable::new()),
             dir_cache: DirCache::new(),
             kernel_casefold: AtomicBool::new(has_casefold),
+            xattr_supported: AtomicBool::new(has_xattr),
             next_id: AtomicU64::new(1),
         })
     }
@@ -987,22 +1085,41 @@ impl VfsBackend for HostDirBackend {
 
     fn get_ea(&self, path: &str, name: &str) -> VfsResult<EaEntry> {
         let host_path = self.resolve_existing(path)?;
-        Self::xattr_get_ea(&host_path, name)
+        if self.xattr_supported.load(Ordering::Relaxed) {
+            Self::xattr_get_ea(&host_path, name)
+        } else {
+            // Sidecar fallback
+            let eas = sidecar_read_eas(&host_path);
+            eas.into_iter().find(|e| e.name == name).ok_or(Os2Error::EA_NOT_FOUND)
+        }
     }
 
     fn set_ea(&self, path: &str, ea: &EaEntry) -> VfsResult<()> {
         let host_path = self.resolve_existing(path)?;
-        if ea.value.is_empty() && ea.flags == 0 {
-            // Empty value with no flags = delete the EA
-            Self::xattr_remove_ea(&host_path, &ea.name)
+        if self.xattr_supported.load(Ordering::Relaxed) {
+            if ea.value.is_empty() && ea.flags == 0 {
+                Self::xattr_remove_ea(&host_path, &ea.name)
+            } else {
+                Self::xattr_set_ea(&host_path, ea)
+            }
         } else {
-            Self::xattr_set_ea(&host_path, ea)
+            // Sidecar fallback
+            let mut eas = sidecar_read_eas(&host_path);
+            eas.retain(|e| e.name != ea.name);
+            if !ea.value.is_empty() || ea.flags != 0 {
+                eas.push(ea.clone());
+            }
+            sidecar_write_eas(&host_path, &eas)
         }
     }
 
     fn enum_ea(&self, path: &str) -> VfsResult<Vec<EaEntry>> {
         let host_path = self.resolve_existing(path)?;
-        Self::xattr_list_eas(&host_path)
+        if self.xattr_supported.load(Ordering::Relaxed) {
+            Self::xattr_list_eas(&host_path)
+        } else {
+            Ok(sidecar_read_eas(&host_path))
+        }
     }
 
     fn query_fs_info_alloc(&self) -> VfsResult<FsAllocate> {
