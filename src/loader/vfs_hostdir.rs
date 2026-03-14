@@ -153,14 +153,28 @@ fn resolve_path_case_insensitive(root: &Path, rel_path: &str) -> Option<PathBuf>
     Some(current)
 }
 
-// ── OS/2 wildcard matching ──
+// ── OS/2 wildcard matching (HPFS semantics) ──
 
 /// Match a filename against an OS/2 wildcard pattern (case-insensitive).
-/// Supports `*` (match any sequence) and `?` (match any single character).
+///
+/// HPFS wildcard rules:
+/// - `*` matches any sequence of characters (including dots)
+/// - `?` matches any single character
+/// - `*.*` matches ALL files (including files without dots) — unlike DOS/FAT
+/// - `.` in the pattern only matches `.` in the name (no implicit dot insertion)
+/// - Matching is case-insensitive
 fn wildcard_match(pattern: &str, name: &str) -> bool {
-    let p: Vec<char> = pattern.to_ascii_lowercase().chars().collect();
-    let n: Vec<char> = name.to_ascii_lowercase().chars().collect();
-    wildcard_match_recursive(&p, &n)
+    let p = pattern.to_ascii_lowercase();
+    let n = name.to_ascii_lowercase();
+
+    // HPFS special case: "*.*" matches everything (including files without dots)
+    if p == "*.*" {
+        return true;
+    }
+
+    let p_chars: Vec<char> = p.chars().collect();
+    let n_chars: Vec<char> = n.chars().collect();
+    wildcard_match_recursive(&p_chars, &n_chars)
 }
 
 fn wildcard_match_recursive(pattern: &[char], name: &[char]) -> bool {
@@ -179,6 +193,27 @@ fn wildcard_match_recursive(pattern: &[char], name: &[char]) -> bool {
         }
         _ => false,
     }
+}
+
+// ── Attribute filtering ──
+
+/// Check if a directory entry's attributes pass the OS/2 DosFindFirst filter.
+///
+/// OS/2 attribute filtering rules:
+/// - Normal files (no special attributes) are always included
+/// - Hidden, system, and directory entries are only included if the
+///   corresponding bit is set in the attribute filter
+/// - The filter acts as an "include these types too" mask, not "must have"
+fn attributes_match(entry_attrs: FileAttribute, filter: FileAttribute) -> bool {
+    // These attribute types are excluded by default — only included if filter requests them
+    let gated = FileAttribute::HIDDEN.0 | FileAttribute::SYSTEM.0 | FileAttribute::DIRECTORY.0;
+    let entry_gated = entry_attrs.0 & gated;
+
+    // If the entry has any gated attributes, the filter must include them
+    if entry_gated != 0 && (entry_gated & filter.0) != entry_gated {
+        return false;
+    }
+    true
 }
 
 // ── Sharing mode tracking ──
@@ -672,7 +707,7 @@ impl VfsBackend for HostDirBackend {
     fn find_first(
         &self,
         pattern: &str,
-        _attributes: FileAttribute,
+        attr_filter: FileAttribute,
     ) -> VfsResult<(VfsFindHandle, DirEntry)> {
         // Split pattern into directory and filename pattern
         let (dir_part, file_pattern) = match pattern.rfind('/') {
@@ -692,7 +727,7 @@ impl VfsBackend for HostDirBackend {
             return Err(Os2Error::PATH_NOT_FOUND);
         }
 
-        // Collect all matching entries
+        // Collect all matching entries (wildcard + attribute filter)
         let read_dir = fs::read_dir(&dir_path).map_err(|e| Self::map_io_error(&e))?;
         let mut entries = Vec::new();
 
@@ -700,16 +735,17 @@ impl VfsBackend for HostDirBackend {
             let name = entry.file_name().to_string_lossy().into_owned();
             if wildcard_match(file_pattern, &name) {
                 if let Ok(meta) = entry.metadata() {
-                    entries.push(DirEntry {
-                        name,
-                        status: metadata_to_file_status(&meta),
-                    });
+                    let status = metadata_to_file_status(&meta);
+                    if attributes_match(status.attributes, attr_filter) {
+                        entries.push(DirEntry { name, status });
+                    }
                 }
             }
         }
 
         // Also check for "." and ".." if pattern matches
-        if wildcard_match(file_pattern, ".") {
+        // "." and ".." are directories, so they require DIRECTORY in the attr filter
+        if wildcard_match(file_pattern, ".") && attr_filter.contains(FileAttribute::DIRECTORY) {
             if let Ok(meta) = fs::metadata(&dir_path) {
                 entries.insert(0, DirEntry {
                     name: ".".to_string(),
@@ -717,7 +753,7 @@ impl VfsBackend for HostDirBackend {
                 });
             }
         }
-        if wildcard_match(file_pattern, "..") {
+        if wildcard_match(file_pattern, "..") && attr_filter.contains(FileAttribute::DIRECTORY) {
             let parent = dir_path.parent().unwrap_or(&dir_path);
             if let Ok(meta) = fs::metadata(parent) {
                 let insert_pos = if entries.first().is_some_and(|e| e.name == ".") { 1 } else { 0 };
@@ -954,9 +990,10 @@ mod tests {
 
     #[test]
     fn test_wildcard_star_star() {
+        // HPFS: *.* matches all files, including those without dots
         assert!(wildcard_match("*.*", "test.txt"));
         assert!(wildcard_match("*.*", "README.MD"));
-        assert!(!wildcard_match("*.*", "Makefile")); // no dot
+        assert!(wildcard_match("*.*", "Makefile")); // HPFS: matches even without dot
     }
 
     #[test]
@@ -1242,6 +1279,83 @@ mod tests {
 
         let status = backend.query_path_info("dst.txt", 1).unwrap();
         assert_eq!(status.file_size, 7);
+    }
+
+    // ── HPFS wildcard semantics ──
+
+    #[test]
+    fn test_wildcard_star_dot_star_matches_all() {
+        // HPFS: *.* matches everything including files without dots
+        assert!(wildcard_match("*.*", "Makefile"));
+        assert!(wildcard_match("*.*", "README"));
+        assert!(wildcard_match("*.*", "test.txt"));
+        assert!(wildcard_match("*.*", ".hidden"));
+    }
+
+    #[test]
+    fn test_wildcard_no_dot_pattern() {
+        // Pattern without dot should not match files with dots (unless * covers it)
+        assert!(wildcard_match("test*", "test.txt"));
+        assert!(wildcard_match("test*", "testing"));
+        assert!(!wildcard_match("test", "test.txt"));
+    }
+
+    // ── Attribute filtering ──
+
+    #[test]
+    fn test_attr_filter_normal_files() {
+        // Normal files (ARCHIVE) always pass
+        assert!(attributes_match(FileAttribute::ARCHIVE, FileAttribute::NORMAL));
+        assert!(attributes_match(FileAttribute::ARCHIVE, FileAttribute::ARCHIVE));
+    }
+
+    #[test]
+    fn test_attr_filter_directory_excluded_by_default() {
+        // Directories excluded unless DIRECTORY bit set in filter
+        assert!(!attributes_match(FileAttribute::DIRECTORY, FileAttribute::NORMAL));
+        assert!(attributes_match(FileAttribute::DIRECTORY,
+            FileAttribute(FileAttribute::DIRECTORY.0 | FileAttribute::NORMAL.0)));
+    }
+
+    #[test]
+    fn test_attr_filter_hidden_excluded_by_default() {
+        assert!(!attributes_match(FileAttribute::HIDDEN, FileAttribute::NORMAL));
+        assert!(attributes_match(FileAttribute::HIDDEN,
+            FileAttribute(FileAttribute::HIDDEN.0)));
+    }
+
+    #[test]
+    fn test_find_first_attr_filter_dirs() {
+        let (_tmp, backend) = create_temp_backend();
+
+        // Create a file and a directory
+        let (h, _) = backend.open(
+            "file.txt", OpenMode::ReadWrite, SharingMode::DenyNone,
+            OpenFlags::from_raw(0x0012), FileAttribute::NORMAL,
+        ).unwrap();
+        backend.close(h).unwrap();
+        backend.create_dir("subdir").unwrap();
+
+        // Without DIRECTORY in filter, should only get the file
+        let (fh, first) = backend.find_first("*", FileAttribute::NORMAL).unwrap();
+        let mut names = vec![first.name];
+        while let Ok(entry) = backend.find_next(fh) {
+            names.push(entry.name);
+        }
+        backend.find_close(fh).unwrap();
+        assert!(names.contains(&"file.txt".to_string()));
+        assert!(!names.contains(&"subdir".to_string()));
+
+        // With DIRECTORY in filter, should get both
+        let attr_with_dir = FileAttribute(FileAttribute::DIRECTORY.0);
+        let (fh2, first2) = backend.find_first("*", attr_with_dir).unwrap();
+        let mut names2 = vec![first2.name];
+        while let Ok(entry) = backend.find_next(fh2) {
+            names2.push(entry.name);
+        }
+        backend.find_close(fh2).unwrap();
+        assert!(names2.contains(&"file.txt".to_string()));
+        assert!(names2.contains(&"subdir".to_string()));
     }
 
     // ── Sharing compatibility ──
