@@ -11,6 +11,29 @@ use std::sync::Arc;
 use log::{info, debug};
 use loader::MutexExt;
 
+/// Detect executable format by reading the signature at the NE/LX header offset.
+fn detect_format(path: &str) -> Result<ExeFormat, String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).map_err(|e| format!("{}", e))?;
+    let mut mz = [0u8; 64];
+    f.read_exact(&mut mz).map_err(|e| format!("{}", e))?;
+    if &mz[0..2] != b"MZ" {
+        return Err("Not a DOS/OS2 executable (missing MZ header)".into());
+    }
+    let e_lfanew = u32::from_le_bytes([mz[60], mz[61], mz[62], mz[63]]);
+    use std::io::Seek;
+    f.seek(std::io::SeekFrom::Start(e_lfanew as u64)).map_err(|e| format!("{}", e))?;
+    let mut sig = [0u8; 2];
+    f.read_exact(&mut sig).map_err(|e| format!("{}", e))?;
+    match &sig {
+        b"NE" => Ok(ExeFormat::NE),
+        b"LX" | b"LE" => Ok(ExeFormat::LX),
+        _ => Err(format!("Unknown executable format: {:?}", sig)),
+    }
+}
+
+enum ExeFormat { LX, NE }
+
 fn main() {
     env_logger::init();
     let args: Vec<String> = env::args().collect();
@@ -21,6 +44,45 @@ fn main() {
 
     let file_path = &args[1];
 
+    let format = match detect_format(file_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Failed to detect executable format '{}': {}", file_path, e);
+            std::process::exit(1);
+        }
+    };
+
+    match format {
+        ExeFormat::NE => run_ne(file_path),
+        ExeFormat::LX => run_lx(file_path),
+    }
+}
+
+fn run_ne(file_path: &str) -> ! {
+    let ne_file = match ne::NeFile::open(file_path) {
+        Ok(ne) => ne,
+        Err(e) => {
+            eprintln!("Failed to parse NE executable '{}': {}", file_path, e);
+            std::process::exit(1);
+        }
+    };
+    info!("Successfully parsed NE file: {} ({} segments, {} modules)",
+        file_path, ne_file.segment_table.len(), ne_file.imported_modules.len());
+    for (i, seg) in ne_file.segment_table.iter().enumerate() {
+        debug!("  Segment {}: {} bytes, {} alloc, {}",
+            i + 1, seg.actual_data_length(), seg.actual_min_alloc(),
+            if seg.is_code() { "CODE" } else { "DATA" });
+    }
+
+    let mut loader = loader::Loader::new();
+    if let Err(e) = loader.load_ne(&ne_file, file_path) {
+        eprintln!("Failed to load NE executable: {}", e);
+        std::process::exit(1);
+    }
+    loader.setup_and_run_ne_cli(&ne_file)
+}
+
+fn run_lx(file_path: &str) {
     // Phase 1: Try to open and parse LX executable
     let lx_file = match lx::LxFile::open(file_path) {
         Ok(lx) => lx,
@@ -115,7 +177,7 @@ fn main() {
         eprintln!("Failed to load executable: {}", e);
         std::process::exit(1);
     }
-    *shared.exe_name.lock_or_recover() = file_path.clone();
+    *shared.exe_name.lock_or_recover() = file_path.to_string();
 
     if is_pm {
         // PM app: create GUI event loop and run VCPU in background

@@ -27,6 +27,13 @@ pub const GDT_SIZE: u32 = GDT_ENTRY_COUNT * 8;  // 32800 bytes
 pub const IDT_BASE: u32 = 0x0008A000;
 pub const IDT_HANDLER_BASE: u32 = 0x0008A800;
 
+// NE (16-bit) loader constants
+pub const NE_SEGMENT_BASE: u32 = 0x00100000;   // 1MB — NE segments start here
+pub const NE_THUNK_BASE: u32 = 0x00F00000;     // 16-bit API thunk stubs at 15MB (high address to avoid selector conflicts)
+pub const NE_THUNK_TILE_INDEX: u32 = NE_THUNK_BASE / TILE_SIZE; // tile 240
+pub const NE_THUNK_GDT_INDEX: u32 = TILED_SEL_START_INDEX + NE_THUNK_TILE_INDEX; // GDT[244]
+pub const NE_THUNK_SELECTOR: u16 = (NE_THUNK_GDT_INDEX as u16) * 8; // 0x07A0
+
 // OS/2 WM_ message constants
 pub const WM_SIZE: u32 = 0x0007;
 pub const WM_PAINT: u32 = 0x0023;
