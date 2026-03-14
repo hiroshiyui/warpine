@@ -419,6 +419,9 @@ pub trait VfsBackend: Send + Sync {
     /// Query filesystem volume info (DosQueryFSInfo level 2).
     fn query_fs_info_volume(&self) -> VfsResult<FsVolumeInfo>;
 
+    /// Set filesystem volume label (DosSetFSInfo level 2).
+    fn set_fs_info_volume(&self, label: &str) -> VfsResult<()>;
+
     /// Filesystem driver name (e.g., "HPFS").
     fn fs_name(&self) -> &str;
 
@@ -966,6 +969,7 @@ mod tests {
         fn query_fs_info_volume(&self) -> VfsResult<FsVolumeInfo> {
             Ok(FsVolumeInfo { serial_number: 0x12345678, label: "MOCK".to_string() })
         }
+        fn set_fs_info_volume(&self, _label: &str) -> VfsResult<()> { Ok(()) }
         fn fs_name(&self) -> &str { "HPFS" }
         fn set_file_locks(&self, _handle: VfsFileHandle, _unlock: &[FileLockRange],
                           _lock: &[FileLockRange], _timeout_ms: u32) -> VfsResult<()> { Ok(()) }

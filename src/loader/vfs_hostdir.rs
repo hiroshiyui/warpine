@@ -878,18 +878,62 @@ impl VfsBackend for HostDirBackend {
         })
     }
 
+    fn set_fs_info_volume(&self, label: &str) -> VfsResult<()> {
+        let label_path = self.root.join(".vol_label");
+        fs::write(&label_path, label).map_err(|e| Self::map_io_error(&e))
+    }
+
     fn fs_name(&self) -> &str {
         "HPFS"
     }
 
     fn set_file_locks(
         &self,
-        _handle: VfsFileHandle,
-        _unlock: &[FileLockRange],
-        _lock: &[FileLockRange],
+        handle: VfsFileHandle,
+        unlock: &[FileLockRange],
+        lock: &[FileLockRange],
         _timeout_ms: u32,
     ) -> VfsResult<()> {
-        // File locking deferred to Step 4
+        use std::os::unix::io::AsRawFd;
+
+        let files = self.files.lock().unwrap();
+        let entry = files.get(&handle.0).ok_or(Os2Error::INVALID_HANDLE)?;
+        let fd = entry.file.as_raw_fd();
+
+        // Process unlocks first
+        for range in unlock {
+            let flock = libc::flock {
+                l_type: libc::F_UNLCK as i16,
+                l_whence: libc::SEEK_SET as i16,
+                l_start: range.offset as libc::off_t,
+                l_len: range.length as libc::off_t,
+                l_pid: 0,
+            };
+            let rc = unsafe { libc::fcntl(fd, libc::F_SETLK, &flock) };
+            if rc < 0 {
+                return Err(Os2Error::LOCK_VIOLATION);
+            }
+        }
+
+        // Process locks
+        for range in lock {
+            let flock = libc::flock {
+                l_type: libc::F_WRLCK as i16,
+                l_whence: libc::SEEK_SET as i16,
+                l_start: range.offset as libc::off_t,
+                l_len: range.length as libc::off_t,
+                l_pid: 0,
+            };
+            let rc = unsafe { libc::fcntl(fd, libc::F_SETLK, &flock) };
+            if rc < 0 {
+                let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+                if errno == libc::EACCES || errno == libc::EAGAIN {
+                    return Err(Os2Error::LOCK_VIOLATION);
+                }
+                return Err(Os2Error::ACCESS_DENIED);
+            }
+        }
+
         Ok(())
     }
 }
@@ -1365,6 +1409,55 @@ mod tests {
         let got = backend.get_ea("overwrite_ea.txt", ".TYPE").unwrap();
         assert_eq!(got.value, b"Updated");
         assert_eq!(got.flags, 0x80);
+    }
+
+    // ── Filesystem information ──
+
+    #[test]
+    fn test_set_and_get_volume_label() {
+        let (_tmp, backend) = create_temp_backend();
+
+        // Default label
+        let vol = backend.query_fs_info_volume().unwrap();
+        assert_eq!(vol.label, "OS2");
+
+        // Set new label
+        backend.set_fs_info_volume("MYVOLUME").unwrap();
+
+        // Read it back
+        let vol = backend.query_fs_info_volume().unwrap();
+        assert_eq!(vol.label, "MYVOLUME");
+    }
+
+    // ── File locking ──
+
+    #[test]
+    fn test_file_lock_basic() {
+        let (_tmp, backend) = create_temp_backend();
+
+        let (h, _) = backend.open(
+            "lock_test.txt", OpenMode::ReadWrite, SharingMode::DenyNone,
+            OpenFlags::from_raw(0x0012), FileAttribute::NORMAL,
+        ).unwrap();
+        backend.write(h, b"test data for locking").unwrap();
+
+        // Lock bytes 0-10
+        let lock_range = FileLockRange { offset: 0, length: 10 };
+        backend.set_file_locks(h, &[], &[lock_range], 0).unwrap();
+
+        // Unlock
+        backend.set_file_locks(h, &[lock_range], &[], 0).unwrap();
+
+        backend.close(h).unwrap();
+    }
+
+    #[test]
+    fn test_file_lock_invalid_handle() {
+        let (_tmp, backend) = create_temp_backend();
+
+        let lock_range = FileLockRange { offset: 0, length: 10 };
+        let result = backend.set_file_locks(VfsFileHandle(999), &[], &[lock_range], 0);
+        assert_eq!(result.unwrap_err(), Os2Error::INVALID_HANDLE);
     }
 
     #[test]
