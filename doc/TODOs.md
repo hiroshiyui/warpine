@@ -265,10 +265,11 @@ WINE's filesystem layer (`dlls/ntdll/unix/file.c`, `server/fd.c`) provides prove
 - [x] **6 unit tests** — `*.*` matches all, no-dot patterns, attribute filter for normal/directory/hidden, find_first with directory filter
 - [ ] **`DosFindNext` multi-entry** — support `ulSearchCount > 1` returning multiple FILEFINDBUF3 entries per call (deferred to Step 7, doscalls.rs concern — VFS returns one entry at a time)
 
-### Step 6: Path Translation Hardening
-- [ ] **Sandbox enforcement** — prevent path traversal escapes (`..` past volume root), resolve symlinks and verify they stay within volume boundary. Unlike WINE (which explicitly does *not* sandbox), warpine enforces real isolation per drive
-- [ ] **UNC path handling** — `\\server\share` paths return `ERROR_NETWORK_ACCESS_DENIED` or map to a configured directory
-- [ ] **`DosQueryPathInfo`** — return correct HPFS attributes for all info levels
+### Step 6: Path Translation Hardening — COMPLETED
+- [x] **Sandbox enforcement** — `..` clamped at volume root in `resolve_path_case_insensitive()`. Symlink targets verified via `canonicalize()` + prefix check in `enforce_sandbox()`. Parent directory validated before joining filename for new files
+- [x] **UNC path handling** — `\\server\share` and `//server/share` rejected at DriveManager level with `PATH_NOT_FOUND`
+- [x] **`DosQueryPathInfo`** — returns correct HPFS attributes for level 1 (FILESTATUS3) via `query_path_info` (implemented in Step 2)
+- [x] **3 unit tests** — UNC path rejection, `..` clamping, symlink escape blocking
 
 ### Step 7: Migrate API Handlers
 - [ ] **Refactor `doscalls.rs`** — replace all direct `std::fs` calls with `DriveManager` / `VfsBackend` trait method calls
