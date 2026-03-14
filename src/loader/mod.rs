@@ -23,6 +23,7 @@ pub use managers::*;
 pub use ipc::*;
 pub use pm_types::*;
 pub use vfs::DriveManager;
+pub use vfs_hostdir::HostDirBackend;
 
 use crate::lx::LxFile;
 use crate::lx::header::FixupTarget;
@@ -130,7 +131,19 @@ impl Loader {
         let hdir_mgr = HDirManager::new();
         let queue_mgr = QueueManager::new();
         let window_mgr = WindowManager::new();
-        let drive_mgr = DriveManager::with_default_config();
+        let mut drive_mgr = DriveManager::with_default_config();
+        // Mount HostDirBackend on C: using the configured path
+        if let Some(config) = drive_mgr.drive_config(2).cloned() {
+            match HostDirBackend::new(config.host_path.clone()) {
+                Ok(backend) => {
+                    drive_mgr.mount(2, Box::new(backend));
+                    info!("Mounted C: → {}", config.host_path.display());
+                }
+                Err(e) => {
+                    warn!("Failed to mount C: drive at {}: {:?}", config.host_path.display(), e);
+                }
+            }
+        }
         let console_mgr = console::VioManager::new();
 
         let shared = Arc::new(SharedState {

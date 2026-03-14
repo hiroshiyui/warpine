@@ -270,11 +270,10 @@ impl super::Loader {
     pub fn dos_copy(&self, psz_src: u32, psz_dst: u32, _option: u32) -> u32 {
         let src = self.read_guest_string(psz_src);
         let dst = self.read_guest_string(psz_dst);
-        let src_path = match self.translate_path(&src) { Ok(p) => p, Err(e) => return e };
-        let dst_path = match self.translate_path(&dst) { Ok(p) => p, Err(e) => return e };
-        match std::fs::copy(src_path, dst_path) {
-            Ok(_) => NO_ERROR,
-            Err(_) => ERROR_FILE_NOT_FOUND,
+        let dm = self.shared.drive_mgr.lock_or_recover();
+        match dm.copy_file(&src, &dst) {
+            Ok(()) => NO_ERROR,
+            Err(e) => e.0,
         }
     }
 
