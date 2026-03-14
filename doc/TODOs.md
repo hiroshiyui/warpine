@@ -238,12 +238,15 @@ WINE's filesystem layer (`dlls/ntdll/unix/file.c`, `server/fd.c`) provides prove
 - [ ] **Kernel casefold detection** — detect `EXT4_CASEFOLD_FL` for zero-overhead case insensitivity (optimization, deferred)
 - [ ] **Device name mapping** — CON, NUL, CLOCK$, KBD$, SCREEN$ → appropriate host devices or internal handlers (deferred to DriveManager level)
 
-### Step 3: Extended Attributes (EAs)
-- [ ] **EA storage backend** — persist OS/2 extended attributes using host xattrs (Linux `user.os2.*` namespace) as primary backend, with sidecar `.os2ea/` directory as fallback for filesystems without xattr support
-- [ ] **`DosSetFileInfo` / `DosQueryFileInfo`** — FIL_QUERYEASIZE (level 2) and FIL_QUERYEASFROMLIST (level 3) support
-- [ ] **`DosSetPathInfo` / `DosQueryPathInfo`** — EA read/write by path
-- [ ] **`DosFindFirst` / `DosFindNext`** — return EA size in FILEFINDBUF3 and support FILEFINDBUF3L (level 12/FIL_QUERYEASFROMLISTL)
-- [ ] **`DosEnumAttribute`** — enumerate EAs on a file
+### Step 3: Extended Attributes (EAs) — COMPLETED
+- [x] **EA storage backend** — OS/2 EAs stored as Linux xattrs under `user.os2.ea.*` namespace. Each xattr value encodes `[flags_u8][ea_data...]`. Supports get, set, delete (empty value), enumerate (listxattr + prefix filter), and overwrite
+- [x] **VfsBackend EA methods** — `get_ea`, `set_ea`, `enum_ea` fully implemented in HostDirBackend with proper error mapping (ENODATA→EA_NOT_FOUND, ENOTSUP→ACCESS_DENIED)
+- [x] **7 unit tests** — set/get, critical flag (0x80), not found, enum multiple, delete, overwrite, case-insensitive path with EAs
+- [ ] **Sidecar `.os2ea/` fallback** — for filesystems without xattr support (deferred, xattrs cover ext4/btrfs/XFS/tmpfs)
+- [ ] **`DosSetFileInfo` / `DosQueryFileInfo`** — FIL_QUERYEASIZE (level 2) and FIL_QUERYEASFROMLIST (level 3) support (deferred to Step 7 doscalls.rs migration)
+- [ ] **`DosSetPathInfo` / `DosQueryPathInfo`** — EA read/write by path (deferred to Step 7)
+- [ ] **`DosFindFirst` / `DosFindNext`** — return EA size in FILEFINDBUF3 (deferred to Step 7)
+- [ ] **`DosEnumAttribute`** — dispatch to VFS `enum_ea` (deferred to Step 7)
 
 ### Step 4: Filesystem Information and Locking
 - [ ] **`DosQueryFSInfo`** — return correct HPFS volume geometry: volume label, serial number, sector size (512), cluster size, total/free space derived from host `statvfs()`
