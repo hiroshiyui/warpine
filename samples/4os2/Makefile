@@ -38,16 +38,19 @@ OBJDIR = build
 
 4OS2_COBJ = $(patsubst %.c,$(OBJDIR)/%.obj,$(4OS2_CSRC))
 4OS2_ASMOBJ = $(patsubst %.asm,$(OBJDIR)/%.obj,$(4OS2_ASMSRC))
-4OS2_OBJ = $(OBJDIR)/viowrap.obj $(4OS2_COBJ) $(4OS2_ASMOBJ)
+4OS2_OBJ = $(OBJDIR)/crt0.obj $(OBJDIR)/viowrap.obj $(4OS2_COBJ) $(4OS2_ASMOBJ)
 
 all: $(OBJDIR) 4os2.exe
 
 $(OBJDIR):
 	mkdir -p $(OBJDIR)
 
-# Compile viowrap.c WITHOUT -fi (it provides import pragmas, not app code)
+# Compile viowrap.c and crt0.c WITHOUT -fi (they provide imports/startup, not app code)
 $(OBJDIR)/viowrap.obj: c/viowrap.c
 	$(WCC386) -zq -s -bt=os2 -fo=$@ $<
+
+$(OBJDIR)/crt0.obj: c/crt0.c
+	$(WCC386) -zq -s -bt=os2 -I$(WATCOM_ROOT)/h/os2 -fo=$@ $<
 
 # Compile C sources
 $(OBJDIR)/%.obj: c/%.c
