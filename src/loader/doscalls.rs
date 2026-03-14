@@ -451,22 +451,45 @@ impl super::Loader {
         if level != 1 { return 124; }
         let spec = self.read_guest_string(psz_spec_ptr);
 
+        let requested = if pc_found_ptr != 0 {
+            self.guest_read::<u32>(pc_found_ptr).unwrap_or(1).max(1)
+        } else { 1 };
+
         let mut dm = self.shared.drive_mgr.lock_or_recover();
         match dm.find_first(&spec, FileAttribute(attr)) {
-            Ok((hdir, entry)) => {
+            Ok((hdir, first_entry)) => {
                 self.guest_write::<u32>(phdir_ptr, hdir);
-                self.write_filefindbuf3(&entry, buf_ptr, buf_len, pc_found_ptr)
+                // Write first entry + additional entries up to requested count
+                let mut entries = vec![first_entry];
+                for _ in 1..requested {
+                    match dm.find_next(hdir) {
+                        Ok(entry) => entries.push(entry),
+                        Err(_) => break,
+                    }
+                }
+                self.write_filefindbuf3_multi(&entries, buf_ptr, buf_len, pc_found_ptr)
             }
             Err(e) => e.0,
         }
     }
 
     pub fn dos_find_next(&self, hdir: u32, buf_ptr: u32, buf_len: u32, pc_found_ptr: u32) -> u32 {
+        let requested = if pc_found_ptr != 0 {
+            self.guest_read::<u32>(pc_found_ptr).unwrap_or(1).max(1)
+        } else { 1 };
+
         let dm = self.shared.drive_mgr.lock_or_recover();
-        match dm.find_next(hdir) {
-            Ok(entry) => self.write_filefindbuf3(&entry, buf_ptr, buf_len, pc_found_ptr),
-            Err(e) => e.0,
+        let mut entries = Vec::new();
+        for _ in 0..requested {
+            match dm.find_next(hdir) {
+                Ok(entry) => entries.push(entry),
+                Err(_) => break,
+            }
         }
+        if entries.is_empty() {
+            return 18; // ERROR_NO_MORE_FILES
+        }
+        self.write_filefindbuf3_multi(&entries, buf_ptr, buf_len, pc_found_ptr)
     }
 
     pub fn dos_find_close(&self, hdir: u32) -> u32 {
@@ -572,22 +595,46 @@ impl super::Loader {
         self.guest_write::<u32>(offset + 20, status.attributes.0);
     }
 
-    /// Write a VFS DirEntry to guest memory as FILEFINDBUF3.
+    /// Write multiple VFS DirEntry items to guest memory as packed FILEFINDBUF3 structs.
+    /// Each entry's oNextEntryOffset points to the next (4-byte aligned); last entry has 0.
     /// Returns 0 on success, or an OS/2 error code.
-    fn write_filefindbuf3(&self, entry: &DirEntry, buf_ptr: u32, buf_len: u32, pc_found_ptr: u32) -> u32 {
-        let name_bytes = entry.name.as_bytes();
-        let name_len = name_bytes.len().min(255);
-        // FILEFINDBUF3: oNextEntryOffset(4) + FILESTATUS3(24) + cchName(1) + achName(var+1)
-        if buf_len < (30 + name_len as u32) { return 111; }
-        self.guest_write::<u32>(buf_ptr, 0);                           // +0: oNextEntryOffset
-        self.write_filestatus3_from_vfs(&entry.status, buf_ptr + 4);   // +4: FILESTATUS3 (24 bytes)
-        self.guest_write::<u8>(buf_ptr + 28, name_len as u8);          // +28: cchName
-        self.guest_write_bytes(buf_ptr + 29, &name_bytes[..name_len]); // +29: achName
-        self.guest_write::<u8>(buf_ptr + 29 + name_len as u32, 0);     // null terminator
-        if pc_found_ptr != 0 {
-            self.guest_write::<u32>(pc_found_ptr, 1);
+    fn write_filefindbuf3_multi(&self, entries: &[DirEntry], buf_ptr: u32, buf_len: u32, pc_found_ptr: u32) -> u32 {
+        let mut offset = 0u32;
+        let mut count = 0u32;
+        let mut prev_offset_field: Option<u32> = None;
+
+        for entry in entries.iter() {
+            let name_bytes = entry.name.as_bytes();
+            let name_len = name_bytes.len().min(255);
+            // FILEFINDBUF3: oNextEntryOffset(4) + FILESTATUS3(24) + cchName(1) + achName(name_len+1)
+            let entry_size = 4 + 24 + 1 + name_len as u32 + 1;
+            let aligned_size = (entry_size + 3) & !3; // 4-byte aligned
+
+            if offset + entry_size > buf_len { break; } // buffer full
+
+            let entry_ptr = buf_ptr + offset;
+
+            // Write oNextEntryOffset (will be patched for non-last entries)
+            self.guest_write::<u32>(entry_ptr, 0);
+            self.write_filestatus3_from_vfs(&entry.status, entry_ptr + 4);
+            self.guest_write::<u8>(entry_ptr + 28, name_len as u8);
+            self.guest_write_bytes(entry_ptr + 29, &name_bytes[..name_len]);
+            self.guest_write::<u8>(entry_ptr + 29 + name_len as u32, 0);
+
+            // Patch previous entry's oNextEntryOffset (offset from prev entry start to this entry)
+            if let Some(prev_entry_ptr) = prev_offset_field {
+                self.guest_write::<u32>(prev_entry_ptr, entry_ptr - prev_entry_ptr);
+            }
+
+            prev_offset_field = Some(entry_ptr); // guest address of this entry (oNextEntryOffset is at +0)
+            offset += aligned_size;
+            count += 1;
         }
-        0
+
+        if pc_found_ptr != 0 {
+            self.guest_write::<u32>(pc_found_ptr, count);
+        }
+        if count == 0 { 111 } else { 0 } // BUFFER_OVERFLOW if nothing fit
     }
 
     /// Write std::fs::Metadata as FILESTATUS3 (legacy, for pipe handles).
