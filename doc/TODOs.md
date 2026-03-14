@@ -234,9 +234,9 @@ WINE's filesystem layer (`dlls/ntdll/unix/file.c`, `server/fd.c`) provides prove
 - [x] **OS/2 wildcard matching** — `*` and `?` with case-insensitive comparison
 - [x] **Gate test passes** — `test_file_test_gate` mirrors `samples/file_test` exactly (create → write → close → reopen → read → verify)
 - [x] **17 unit tests** — wildcard matching, case-insensitive lookup (flat + nested), case-preserving creation, file_test gate, sharing mode enforcement, directory ops, find_first/next, sandbox, metadata, FS info, rename, copy, sharing compatibility
-- [ ] **Directory listing caching** — cache `readdir()` results to reduce overhead (optimization, deferred)
-- [ ] **Kernel casefold detection** — detect `EXT4_CASEFOLD_FL` for zero-overhead case insensitivity (optimization, deferred)
-- [ ] **Device name mapping** — CON, NUL, CLOCK$, KBD$, SCREEN$ → appropriate host devices or internal handlers (deferred to DriveManager level)
+- [x] **Directory listing caching** — `DirCache` with 2-second TTL caches `readdir()` results. Invalidated on create/delete/rename/copy/mkdir/rmdir
+- [x] **Kernel casefold detection** — `detect_kernel_casefold()` checks `EXT4_CASEFOLD_FL` via `FS_IOC_GETFLAGS` ioctl. When detected, skips userspace `readdir()` fallback
+- [x] **Device name mapping** — `DriveManager::check_device_name()` detects NUL, CON, CLOCK$, KBD$, SCREEN$ case-insensitively (with/without extensions). Intercepted in `open_file()` before VFS resolution
 
 ### Step 3: Extended Attributes (EAs) — COMPLETED
 - [x] **EA storage backend** — OS/2 EAs stored as Linux xattrs under `user.os2.ea.*` namespace. Each xattr value encodes `[flags_u8][ea_data...]`. Supports get, set, delete (empty value), enumerate (listxattr + prefix filter), and overwrite
