@@ -15,12 +15,10 @@ impl super::Loader {
         let read_stack = |off: u64| -> u32 { self.guest_read::<u32>((esp + off) as u32).expect("Stack read OOB") };
 
         let res = match ordinal {
-            // Step 1: Minimal VIO output
             30 => self.vio_wrt_tty(read_stack(4), read_stack(8), read_stack(12)),
             3  => self.vio_get_mode(read_stack(4), read_stack(8)),
             4  => self.vio_get_cur_pos(read_stack(4), read_stack(8), read_stack(12)),
             15 => self.vio_set_cur_pos(read_stack(4), read_stack(8), read_stack(12)),
-            // Step 3: Screen manipulation
             7  => self.vio_scroll_up(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24)),
             8  => self.vio_scroll_dn(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20), read_stack(24)),
             26 => self.vio_wrt_char_str_att(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
@@ -28,7 +26,6 @@ impl super::Loader {
             27 => self.vio_wrt_n_attr(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
             24 => self.vio_read_cell_str(read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20)),
             16 => self.vio_set_cur_type(read_stack(4), read_stack(8)),
-            // Step 4: Stubs and configuration
             38 => self.vio_set_ansi(read_stack(4), read_stack(8)),
             39 => self.vio_get_ansi(read_stack(4), read_stack(8)),
             51 => { debug!("  VioSetState (stub)"); NO_ERROR },
@@ -51,7 +48,7 @@ impl super::Loader {
 
     /// VioGetMode (ordinal 3): get screen mode (rows/cols).
     fn vio_get_mode(&self, p_mode: u32, _hvio: u32) -> u32 {
-        debug!("  VioGetMode");
+        debug!("  VioGetMode(p_mode=0x{:08X}, hvio={})", p_mode, _hvio);
         let console = self.shared.console_mgr.lock_or_recover();
         if p_mode != 0 {
             // VIOMODEINFO struct (minimal): length=12, type=1, color=4, col, row, hres, vres
