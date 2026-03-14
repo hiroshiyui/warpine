@@ -242,6 +242,52 @@ impl super::Loader {
         }
     }
 
+    /// DosSetFileLocks (ordinal 349): lock/unlock byte ranges.
+    ///
+    /// OS/2 signature: DosSetFileLocks(hFile, pUnlock, pLock, timeout, flags)
+    /// - pUnlock/pLock: pointer to FILELOCK struct { offset(4), range(4) }, or 0 if none
+    /// - flags: bit 0 = atomic (unlock+lock in one operation), bit 1 = shared lock
+    pub fn dos_set_file_locks(&self, hf: u32, p_unlock: u32, p_lock: u32, timeout: u32, _flags: u32) -> u32 {
+        debug!("  DosSetFileLocks(hf={}, timeout={})", hf, timeout);
+
+        let mut unlock_ranges = Vec::new();
+        if p_unlock != 0 {
+            let offset = self.guest_read::<u32>(p_unlock).unwrap_or(0);
+            let length = self.guest_read::<u32>(p_unlock + 4).unwrap_or(0);
+            if length > 0 {
+                unlock_ranges.push(FileLockRange { offset, length });
+            }
+        }
+
+        let mut lock_ranges = Vec::new();
+        if p_lock != 0 {
+            let offset = self.guest_read::<u32>(p_lock).unwrap_or(0);
+            let length = self.guest_read::<u32>(p_lock + 4).unwrap_or(0);
+            if length > 0 {
+                lock_ranges.push(FileLockRange { offset, length });
+            }
+        }
+
+        if unlock_ranges.is_empty() && lock_ranges.is_empty() {
+            return 0;
+        }
+
+        let dm = self.shared.drive_mgr.lock_or_recover();
+        match dm.set_file_locks(hf, &unlock_ranges, &lock_ranges, timeout) {
+            Ok(()) => 0,
+            Err(e) => e.0,
+        }
+    }
+
+    /// DosProtectSetFileLocks (ordinal 613): lock/unlock with file lock ID.
+    ///
+    /// Same as DosSetFileLocks but with an additional fhFileHandleLockID parameter
+    /// for protected file handle operations. We ignore the lock ID.
+    pub fn dos_protect_set_file_locks(&self, hf: u32, p_unlock: u32, p_lock: u32, timeout: u32, flags: u32, _lock_id: u32) -> u32 {
+        debug!("  DosProtectSetFileLocks(hf={})", hf);
+        self.dos_set_file_locks(hf, p_unlock, p_lock, timeout, flags)
+    }
+
     // ── Path operations (via DriveManager) ──
 
     pub fn dos_delete(&self, psz_name_ptr: u32) -> u32 {

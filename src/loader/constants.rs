@@ -54,6 +54,7 @@ pub const ERROR_PATH_NOT_FOUND: u32 = 3;
 pub const ERROR_ACCESS_DENIED: u32 = 5;
 pub const ERROR_INVALID_HANDLE: u32 = 6;
 pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
+pub const ERROR_INVALID_DRIVE: u32 = 15;
 pub const ERROR_INVALID_FUNCTION: u32 = 87;
 pub const ERROR_BUFFER_OVERFLOW: u32 = 111;
 pub const ERROR_INVALID_LEVEL: u32 = 124;

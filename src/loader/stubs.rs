@@ -398,21 +398,64 @@ impl super::Loader {
     }
 
     /// DosQueryFSAttach (ordinal 277): query filesystem type.
-    /// Returns basic drive info.
+    ///
+    /// OS/2 signature: DosQueryFSAttach(pszDevName, ulOrdinal, ulFSAInfoLevel, pfsqb, pcbBuf)
+    /// Returns FSQBUFFER2: iType(2) + cbName(2) + szName(cbName+1) + cbFSDName(2) + szFSDName(cbFSDName+1) + cbFSAData(2) + rgFSAData(cbFSAData)
     pub fn dos_query_fs_attach(&self, psz_dev: u32, _ordinal: u32, level: u32, p_buf: u32, pcb_buf: u32) -> u32 {
         let dev = if psz_dev != 0 { self.read_guest_string(psz_dev) } else { String::new() };
         debug!("  DosQueryFSAttach('{}', level={})", dev, level);
-        if p_buf != 0 {
-            // FSQBUFFER2 minimal: iType=3 (local drive), szName, szFSDName
-            self.guest_write::<u16>(p_buf, 3); // iType = local
-            self.guest_write::<u16>(p_buf + 2, 2); // cbName
-            self.guest_write_bytes(p_buf + 4, b"C:\0");
-            self.guest_write::<u16>(p_buf + 7, 4); // cbFSDName
-            self.guest_write_bytes(p_buf + 9, b"FAT\0");
-        }
+
+        // Determine which drive is being queried
+        let dm = self.shared.drive_mgr.lock_or_recover();
+        let drive_letter = if dev.len() >= 2 && dev.as_bytes()[1] == b':' {
+            dev.as_bytes()[0].to_ascii_uppercase()
+        } else {
+            b'A' + dm.current_disk()
+        };
+        let drive_idx = drive_letter - b'A';
+
+        // Get filesystem name from the backend
+        let fsd_name = match dm.backend(drive_idx) {
+            Ok(b) => b.fs_name(),
+            Err(_) => return ERROR_INVALID_DRIVE,
+        };
+
+        let dev_name = format!("{}:", drive_letter as char);
+        let dev_name_bytes = dev_name.as_bytes();
+        let fsd_name_bytes = fsd_name.as_bytes();
+
+        // FSQBUFFER2 layout:
+        // iType(2) + cbName(2) + szName(cbName+1) + cbFSDName(2) + szFSDName(cbFSDName+1) + cbFSAData(2) + rgFSAData(0)
+        let total_size = 2 + 2 + dev_name_bytes.len() + 1 + 2 + fsd_name_bytes.len() + 1 + 2;
+
         if pcb_buf != 0 {
-            self.guest_write::<u32>(pcb_buf, 13);
+            let buf_avail = self.guest_read::<u32>(pcb_buf).unwrap_or(0) as usize;
+            if buf_avail < total_size {
+                self.guest_write::<u32>(pcb_buf, total_size as u32);
+                return ERROR_BUFFER_OVERFLOW;
+            }
+            self.guest_write::<u32>(pcb_buf, total_size as u32);
         }
+
+        if p_buf != 0 {
+            let mut off = p_buf;
+            self.guest_write::<u16>(off, 3);  // iType = 3 (local drive)
+            off += 2;
+            self.guest_write::<u16>(off, dev_name_bytes.len() as u16); // cbName
+            off += 2;
+            self.guest_write_bytes(off, dev_name_bytes);
+            off += dev_name_bytes.len() as u32;
+            self.guest_write::<u8>(off, 0); // null terminator
+            off += 1;
+            self.guest_write::<u16>(off, fsd_name_bytes.len() as u16); // cbFSDName
+            off += 2;
+            self.guest_write_bytes(off, fsd_name_bytes);
+            off += fsd_name_bytes.len() as u32;
+            self.guest_write::<u8>(off, 0); // null terminator
+            off += 1;
+            self.guest_write::<u16>(off, 0); // cbFSAData = 0
+        }
+
         NO_ERROR
     }
 
