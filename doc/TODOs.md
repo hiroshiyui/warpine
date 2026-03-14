@@ -366,7 +366,7 @@ Fix the 16-bit thunk bypass to unblock 4OS2 filesystem commands. This is indepen
 - [ ] **Audio/Video (MMPM/2)**
     - [ ] Reimplement multimedia APIs using PulseAudio/ALSA or SDL.
 - [ ] **16-bit Compatibility (NE format)**
-    - [ ] **NE format parser** — parse NE (New Executable) headers, segment table, relocations, import/export tables for OS/2 1.x 16-bit applications
+    - [x] **NE format parser** — `src/ne/` module: NeHeader, NeSegmentEntry, NeRelocationEntry, NeEntry, entry table/name table parsers, NeFile orchestration with full validation. 16 unit tests.
     - [ ] **GDT tiling** — create 16-bit segment descriptors in the GDT for each NE segment (one per 64KB region). KVM executes 16-bit code natively at hardware speed — no software emulator needed. The CPU switches between 16-bit and 32-bit code segments naturally when descriptors are set up correctly. This also fixes 16-bit thunks in LX apps as a side effect.
     - [ ] **16-bit API thunking** — NE apps use Pascal calling convention and `_far16` pointers. Add 16-bit API dispatch alongside the existing 32-bit `_System` dispatch, with segment:offset ↔ flat address translation
     - [ ] **Mode switching** — handle transitions between 16-bit NE code and 32-bit flat code (e.g., 16-bit app calling a 32-bit DLL or vice versa)

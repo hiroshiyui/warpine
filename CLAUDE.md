@@ -35,6 +35,7 @@ cargo test                               # Unit tests (LX parser)
 ### Key modules
 
 - **`src/lx/`** — LX executable format parser (`header.rs` for binary structures, `lx.rs` for orchestration). Unit tests live here.
+- **`src/ne/`** — NE (New Executable) format parser for OS/2 1.x 16-bit apps (`header.rs` for structures, `ne.rs` for orchestration). Phase 5.
 - **`src/loader/`** — The core: KVM VMM, memory manager, handle manager, semaphore manager, queue manager, VMEXIT loop, and OS/2 API handler functions. Split into `mod.rs` (loader core), `doscalls.rs`, `viocalls.rs`, `kbdcalls.rs`, `console.rs`, `pm_win.rs`, `pm_gpi.rs`, `stubs.rs`, `process.rs`, `managers.rs`, `constants.rs`. Phase 4 adds `vfs.rs` (VfsBackend trait, DriveManager) and `vfs_hostdir.rs` (HostDirBackend) — see developer guide for VFS architecture.
 - **`src/api.rs`** — Small module with `DosWrite`/`DosExit` implementations and FFI bridge stubs.
 - **`src/gui.rs`** — Phase 3 Presentation Manager GUI (winit + softbuffer). Work in progress.
