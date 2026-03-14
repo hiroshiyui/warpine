@@ -1,0 +1,77 @@
+--- a/c/os2calls.c	2026-03-14 17:29:08.472692695 +0800
++++ b/c/os2calls.c	2026-03-14 16:25:23.736406712 +0800
+@@ -301,7 +301,7 @@
+         line = strcpy( arg, line );
+ 
+         // read the first line of the file
+-        getline( gnGFH, gszCmdline, MAXLINESIZ - 1, EDIT_DATA );
++        os2_getline( gnGFH, gszCmdline, MAXLINESIZ - 1, EDIT_DATA );
+         gnGFH = _close( gnGFH );
+ 
+         // if it's a REXX comment (begins with "/*"), call the
+@@ -1690,17 +1690,56 @@
+             // set IFS type flag for upper/lower case setting
+             dir->FSType = ifs_type( arg );
+ 
+-            // 20090501 AB added large file support (FIL_QUERYEASIZEL)
+-            // 20090820 AB FAT32 driver overwrites more than needed bytes in FILESEARCH struct if buffer size is not restricted to FILEFINDBUF4L
+-            //      maybe
+-            //      char    dummy[3];       // kludge for IFS overwrites of "hdir"
+-            //      in FILESEARCH struct (4os2.h) would be not necessary any more, but who knows?
+-            //rval = xDosFindFirst( fname, &(dir->hdir), mode, dir, sizeof(FILESEARCH), &srch_cnt, FIL_QUERYEASIZEL );
+-            rval = xDosFindFirst( fname, &(dir->hdir), mode, dir, sizeof(FILEFINDBUF4L), &srch_cnt, FIL_QUERYEASIZEL );
++            // Warpine: call DosFindFirst directly with FILEFINDBUF4 (level 2)
++            {
++                FILEFINDBUF4 ffb4;
++                srch_cnt = 1;
++                rval = DosFindFirst( fname, &(dir->hdir), mode, &ffb4, sizeof(ffb4), &srch_cnt, FIL_QUERYEASIZE );
++                if ( !rval ) {
++                    dir->oNextEntryOffset = ffb4.oNextEntryOffset;
++                    dir->fdC.fdCreation = *(USHORT*)&ffb4.fdateCreation;
++                    dir->ftC.ftCreation = *(USHORT*)&ffb4.ftimeCreation;
++                    dir->fdLA.fdLAccess = *(USHORT*)&ffb4.fdateLastAccess;
++                    dir->ftLA.ftLAccess = *(USHORT*)&ffb4.ftimeLastAccess;
++                    dir->fdLW.fdLWrite = *(USHORT*)&ffb4.fdateLastWrite;
++                    dir->ftLW.ftLWrite = *(USHORT*)&ffb4.ftimeLastWrite;
++                    *(ULONG*)&dir->size = ffb4.cbFile;
++                    *((ULONG*)&dir->size + 1) = 0;
++                    *(ULONG*)&dir->cbFileAlloc = ffb4.cbFileAlloc;
++                    *((ULONG*)&dir->cbFileAlloc + 1) = 0;
++                    dir->attrib = ffb4.attrFile;
++                    dir->cbList = ffb4.cbList;
++                    dir->cchName = ffb4.cchName;
++                    memcpy( dir->name, ffb4.achName, ffb4.cchName + 1 );
++                }
++            }
+         } else if ( strpbrk( fname, WILD_CHARS ) == NULL )
+             rval = ERROR_FILE_NOT_FOUND;
+-        else
+-            rval = xDosFindNext( dir->hdir, (PVOID)dir, sizeof(FILEFINDBUF4L), &srch_cnt );
++        else {
++            // Warpine: same direct approach for DosFindNext
++            {
++            FILEFINDBUF4 ffb4;
++            srch_cnt = 1;
++            rval = DosFindNext( dir->hdir, &ffb4, sizeof(ffb4), &srch_cnt );
++            if ( !rval ) {
++                dir->oNextEntryOffset = ffb4.oNextEntryOffset;
++                dir->fdC.fdCreation = *(USHORT*)&ffb4.fdateCreation;
++                dir->ftC.ftCreation = *(USHORT*)&ffb4.ftimeCreation;
++                dir->fdLA.fdLAccess = *(USHORT*)&ffb4.fdateLastAccess;
++                dir->ftLA.ftLAccess = *(USHORT*)&ffb4.ftimeLastAccess;
++                dir->fdLW.fdLWrite = *(USHORT*)&ffb4.fdateLastWrite;
++                dir->ftLW.ftLWrite = *(USHORT*)&ffb4.ftimeLastWrite;
++                *(ULONG*)&dir->size = ffb4.cbFile;
++                *((ULONG*)&dir->size + 1) = 0;
++                *(ULONG*)&dir->cbFileAlloc = ffb4.cbFileAlloc;
++                *((ULONG*)&dir->cbFileAlloc + 1) = 0;
++                dir->attrib = ffb4.attrFile;
++                dir->cbList = ffb4.cbList;
++                dir->cchName = ffb4.cchName;
++                memcpy( dir->name, ffb4.achName, ffb4.cchName + 1 );
++            }
++            }
++        }
+ 
+         if ( rval ) {
+             // couldn't find file; if FIND_FIRST, display error

@@ -38,6 +38,37 @@ Provides `#pragma import` directives for all VIO/KBD ordinals used by
 VIOCALLS/KBDCALLS instead of through the Watcom C runtime's thunk
 wrappers in `clib3r.lib`.
 
+### 4. crt0.c — Minimal C runtime startup (new file)
+
+**Type:** new file
+**Applied to:** `c/crt0.c`
+
+Replaces Watcom's `__OS2Main` startup that calls `DosGetInfoSeg`
+through a 16-bit thunk. Uses `DosGetInfoBlocks` (32-bit) instead
+to obtain PIB for `_LpPgmName` and `_LpCmdLine`. Also provides
+`VIO16GETMODE` that reads VGA mode info from BIOS Data Area (BDA).
+
+### 5. os2init.c.patch — DosGetInfoSeg replacement
+
+**Type:** unified diff against upstream `c/os2init.c`
+**Applied to:** `c/os2init.c`
+
+Replaces `DosGetInfoSeg` (16-bit thunk) with a static `LINFOSEG`
+populated from `DosGetInfoBlocks`. The CRT init calls DosGetInfoSeg
+to get system time info; this patch avoids the 16-bit thunk.
+
+### 6. os2calls.c.patch — Direct DosFindFirst/DosFindNext calls
+
+**Type:** unified diff against upstream `c/os2calls.c`
+**Applied to:** `c/os2calls.c`
+
+Replaces `xDosFindFirst`/`xDosFindNext` wrappers (which use
+`FILEFINDBUF4L` with large-file support) with direct `DosFindFirst`/
+`DosFindNext` calls using `FILEFINDBUF4` (level 2). Performs
+field-by-field copy from `FILEFINDBUF4` to the internal `FILESEARCH`
+struct. Also renames `getline()` to `os2_getline()` to avoid
+conflict with POSIX `getline`.
+
 ## Applying Patches
 
 Patches are applied automatically by `fetch_source.sh` after fetching
@@ -45,10 +76,13 @@ the upstream source. To apply manually:
 
 ```bash
 cd samples/4os2
-# Apply bsesub.h diff patch
+# Apply diff patches
 cp ../../vendor/watcom/h/os2/bsesub.h h/bsesub.h
-patch -p2 h/bsesub.h < patches/bsesub.h.patch
+patch -s -p1 h/bsesub.h < patches/bsesub.h.patch
+patch -s -p1 c/os2init.c < patches/os2init.c.patch
+patch -s -p1 c/os2calls.c < patches/os2calls.c.patch
 # Copy new files
 cp patches/viodirect.h h/viodirect.h
 cp patches/viowrap.c c/viowrap.c
+cp patches/crt0.c c/crt0.c
 ```

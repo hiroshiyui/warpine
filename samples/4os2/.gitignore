@@ -2,8 +2,10 @@
 # Copyright (c) 1989-2002 J.P. Software, Inc. — see license.txt
 *
 
-# Track only our build files and the fetch script
+# Track only our build files, the fetch script, and patches
 !.gitignore
 !Makefile
 !buildlevel.txt
 !fetch_source.sh
+!patches/
+!patches/**

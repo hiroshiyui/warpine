@@ -67,6 +67,21 @@ if [ -d "$SCRIPT_DIR/patches" ]; then
         cp "$SCRIPT_DIR/patches/viowrap.c" "$SCRIPT_DIR/c/viowrap.c"
         echo "  Applied: c/viowrap.c"
     fi
+    # crt0.c — new file (minimal C runtime startup, replaces Watcom's __OS2Main)
+    if [ -f "$SCRIPT_DIR/patches/crt0.c" ]; then
+        cp "$SCRIPT_DIR/patches/crt0.c" "$SCRIPT_DIR/c/crt0.c"
+        echo "  Applied: c/crt0.c"
+    fi
+    # os2init.c — diff patch (DosGetInfoSeg → DosGetInfoBlocks)
+    if [ -f "$SCRIPT_DIR/patches/os2init.c.patch" ]; then
+        patch -s -p1 -d "$SCRIPT_DIR" < "$SCRIPT_DIR/patches/os2init.c.patch"
+        echo "  Applied: c/os2init.c (DosGetInfoSeg replacement)"
+    fi
+    # os2calls.c — diff patch (direct DosFindFirst/DosFindNext, getline rename)
+    if [ -f "$SCRIPT_DIR/patches/os2calls.c.patch" ]; then
+        patch -s -p1 -d "$SCRIPT_DIR" < "$SCRIPT_DIR/patches/os2calls.c.patch"
+        echo "  Applied: c/os2calls.c (DosFindFirst/DosFindNext fixes)"
+    fi
 fi
 
 echo "Done. 4OS2 source is ready in $SCRIPT_DIR"
