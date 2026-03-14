@@ -270,6 +270,57 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_actual_ne_hello() {
+        // Parse the actual 16-bit NE hello world sample
+        let path = "samples/ne_hello/ne_hello.exe";
+        if !std::path::Path::new(path).exists() {
+            eprintln!("Skipping test: {} not found (run make -C samples/ne_hello first)", path);
+            return;
+        }
+        let ne = NeFile::open(path).expect("Failed to parse NE file");
+
+        // Verify header
+        assert_eq!(ne.header.signature, [b'N', b'E']);
+        assert_eq!(ne.header.target_os, NE_OS_OS2);
+        assert!(!ne.header.is_dll());
+
+        // Should have at least 1 segment
+        assert!(ne.segment_table.len() >= 1, "Expected at least 1 segment, got {}", ne.segment_table.len());
+
+        // Entry point should be valid
+        let cs = ne.header.entry_cs();
+        assert!(cs >= 1 && cs <= ne.segment_table.len() as u16,
+                "Entry CS {} out of range (1..{})", cs, ne.segment_table.len());
+
+        // Should import DOSCALLS
+        let has_doscalls = ne.imported_modules.iter().any(|m|
+            m.eq_ignore_ascii_case("DOSCALLS") || m.eq_ignore_ascii_case("DOSCALL1"));
+        assert!(has_doscalls, "Expected DOSCALLS import, got: {:?}", ne.imported_modules);
+
+        // Entry table may be empty for simple apps (entry point is in header CS:IP)
+        println!("  Entry table entries: {}", ne.entries.len());
+        println!("  Entry table offset: {}, size: {}", ne.header.entry_table_offset, ne.header.entry_table_size);
+
+        // Module name should be in resident names
+        if let Some(name) = ne.module_name() {
+            assert!(!name.is_empty());
+            println!("  NE module name: {}", name);
+        }
+
+        println!("  Segments: {}", ne.segment_table.len());
+        println!("  Entry CS:IP = {}:{:04X}", cs, ne.header.entry_ip());
+        println!("  Stack SS:SP = {}:{:04X}", ne.header.stack_ss(), ne.header.stack_sp());
+        println!("  Imports: {:?}", ne.imported_modules);
+        println!("  Entries: {}", ne.entries.len());
+        for (i, seg) in ne.segment_table.iter().enumerate() {
+            println!("  Seg {}: {} len={} minalloc={} flags=0x{:04X} relocs={}",
+                     i + 1, if seg.is_code() { "CODE" } else { "DATA" },
+                     seg.actual_data_length(), seg.actual_min_alloc(), seg.flags,
+                     ne.relocations_by_segment.get(i).map_or(0, |r| r.len()));
+        }
+    }
+
+    #[test]
     fn test_entry_helpers() {
         let header = NeHeader {
             initial_cs_ip: 0x0002_0100, // CS=2, IP=0x100

@@ -1858,7 +1858,6 @@ mod tests {
         assert_eq!(result.unwrap_err(), Os2Error::INVALID_HANDLE);
     }
 
-    #[test]
     // ── Sidecar EA fallback ──
 
     #[test]
@@ -1922,6 +1921,7 @@ mod tests {
         assert_eq!(eas[0].name, ".SUBJECT");
     }
 
+    #[test]
     fn test_ea_case_insensitive_path() {
         let (_tmp, backend) = create_temp_backend();
 
