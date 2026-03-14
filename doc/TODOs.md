@@ -223,7 +223,7 @@ WINE's filesystem layer (`dlls/ntdll/unix/file.c`, `server/fd.c`) provides prove
 - [x] **`DriveManager`** — maps drive letters (A:–Z:) to `Box<dyn VfsBackend>`. Owns file and search handle tables (absorbs `HandleManager` and `HDirManager` responsibilities). Per-drive current directory tracking. OS/2 path resolution with drive letter extraction
 - [x] **Wired into `SharedState`** — `drive_mgr: Mutex<DriveManager>` added alongside existing managers
 - [x] **15 unit tests** — error constants, type parsers, DriveManager path resolution, handle allocation, drive mounting, per-drive current directory
-- [ ] **Drive configuration** — configurable mapping of OS/2 drive letters to host directories via CLI flags (`--drive C=/path`) or config file (`drives.toml`) — deferred to Step 2 (needs HostDirBackend to be useful)
+- [x] **Drive configuration** — default config: C: → `~/.local/share/warpine/drive_c/` (XDG-compliant, auto-created). `DriveConfig` struct stores host path, volume label, and read-only flag. CLI/config file override deferred to Step 2
 
 ### Step 2: HostDir Backend (first implementation)
 - [ ] **`HostDirBackend`** — implements `VfsBackend` using a host directory as storage, providing HPFS semantics on top of the Linux filesystem
