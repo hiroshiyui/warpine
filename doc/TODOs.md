@@ -358,8 +358,9 @@ Fix the 16-bit thunk bypass to unblock 4OS2 filesystem commands. This is indepen
 - [x] **Analyze thunk structure** — identified two types: (1) Object 1 thunks with type 0x06 (16:32) fixups wrapping API calls, (2) inline thunking code in Object 2 that calls `DosFlatToSel` then does `LSS` to set up a 16:16 stack
 - [x] **Patch Object 1 thunks to API stubs** — `patch_16bit_thunks()` now resolves `ExternalOrdinal` fixups directly to `MAGIC_API_BASE + ordinal`. For `Internal` fixups, `scan_thunk_for_api_target()` scans the target code for CALL/JMP to API stubs
 - [x] **LSS emulation** — when stack scan finds no return address, fully emulates LSS: parses ModR/M/SIB/displacement, loads 32-bit offset into destination register, advances EIP. SS unchanged (flat mode). Replaces old no-op skip.
-- [ ] **Inline thunk fix** — Object 2 inline thunking code (at 0x00051154) still crashes after LSS emulation because the code after LSS uses 16-bit instructions (JMP FAR, etc.) that need valid segment selectors. **Requires GDT tiling** (Phase 5) for a proper fix.
-- [ ] **Verify** — 4OS2 `dir`, `tree`, `copy`, `move`, `del`, `md`, `rd`, `attrib` — `dir` shows `"C:\"` but no file listings; `tree` and others blocked by inline thunk issue
+- [x] **GDT tiling explored** — infrastructure prepared (constants, IDT relocation, make_gdt_entry helper) but **tiling NOT activated**. Investigation found that active tiling breaks 4OS2: LSS succeeds (no #GP), thunk code runs in 16-bit mode, corrupts CPU state. The #GP handler MUST intercept LSS to skip thunks. Tiling requires Phase 5's full 16-bit support (code descriptors + mode switching).
+- [ ] **Inline thunk fix** — Object 2 inline thunking code (at 0x00051154) still uses stack scan heuristic. `dir` shows `"C:\"` but no file listings. Full fix requires Phase 5 (GDT tiling + 16-bit code segments + mode switching).
+- [ ] **Verify** — 4OS2 `dir`, `tree`, `copy`, `move`, `del`, `md`, `rd`, `attrib` — blocked by inline thunk issue
 
 ## Phase 5: Multimedia and 16-bit Support
 - [ ] **Audio/Video (MMPM/2)**
