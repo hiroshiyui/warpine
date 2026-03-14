@@ -242,11 +242,11 @@ WINE's filesystem layer (`dlls/ntdll/unix/file.c`, `server/fd.c`) provides prove
 - [x] **EA storage backend** — OS/2 EAs stored as Linux xattrs under `user.os2.ea.*` namespace. Each xattr value encodes `[flags_u8][ea_data...]`. Supports get, set, delete (empty value), enumerate (listxattr + prefix filter), and overwrite
 - [x] **VfsBackend EA methods** — `get_ea`, `set_ea`, `enum_ea` fully implemented in HostDirBackend with proper error mapping (ENODATA→EA_NOT_FOUND, ENOTSUP→ACCESS_DENIED)
 - [x] **7 unit tests** — set/get, critical flag (0x80), not found, enum multiple, delete, overwrite, case-insensitive path with EAs
-- [ ] **Sidecar `.os2ea/` fallback** — for filesystems without xattr support (deferred, xattrs cover ext4/btrfs/XFS/tmpfs)
-- [ ] **`DosSetFileInfo` / `DosQueryFileInfo`** — FIL_QUERYEASIZE (level 2) and FIL_QUERYEASFROMLIST (level 3) support (deferred to Step 7 doscalls.rs migration)
-- [ ] **`DosSetPathInfo` / `DosQueryPathInfo`** — EA read/write by path (deferred to Step 7)
-- [ ] **`DosFindFirst` / `DosFindNext`** — return EA size in FILEFINDBUF3 (deferred to Step 7)
-- [ ] **`DosEnumAttribute`** — dispatch to VFS `enum_ea` (deferred to Step 7)
+- [x] **Sidecar `.os2ea/` fallback** — for filesystems without xattr support. Detected via test `setxattr` at init. Binary format: `[flags(1) name_len(1) value_len(2) name value]` per entry in `.os2ea/{filename}.ea`
+- [x] **`DosQueryFileInfo` / `DosQueryPathInfo` level 2** — FIL_QUERYEASIZE: returns FILESTATUS3 + cbList (total EA size computed from `enum_ea`)
+- [x] **`DosEnumAttribute`** — full implementation (ordinal 372): path-based EA enumeration, returns DENA1 structures with 4-byte alignment, 1-based entry indexing
+- [ ] **`DosQueryFileInfo` / `DosQueryPathInfo` level 3** — FIL_QUERYEASFROMLIST: query specific EAs by name list (rarely used, deferred)
+- [ ] **`DosFindFirst` / `DosFindNext` EA size** — return EA size in FILEFINDBUF3 cbList field (deferred, requires FILEFINDBUF3 format extension)
 
 ### Step 4: Filesystem Information and Locking — COMPLETED
 - [x] **`query_fs_info_alloc`** — HPFS volume geometry via host `statvfs()`: sector size (512), sectors per unit, total/available units (implemented in Step 2)
