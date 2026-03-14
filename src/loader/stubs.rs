@@ -181,24 +181,26 @@ impl super::Loader {
         // +28: abReserved1[2] (USHORT×2)
         // +32: szDataSeparator[2]
         // +34: abReserved2[5] (USHORT×5)
-        let info_size = 38u32;
-        if p_ctry_info != 0 && cb >= info_size {
-            // Zero-fill first, then set US defaults
-            for i in 0..info_size {
+        let info_size = 44u32; // Full Watcom COUNTRYINFO size (including reserved fields)
+        let write_size = cb.min(info_size);
+        if p_ctry_info != 0 && write_size > 0 {
+            // Zero-fill only the bytes we're allowed to write
+            for i in 0..write_size {
                 self.guest_write::<u8>(p_ctry_info + i, 0);
             }
-            self.guest_write::<u32>(p_ctry_info, 1);       // country = US
-            self.guest_write::<u32>(p_ctry_info + 4, 437);  // codepage = 437
-            self.guest_write::<u32>(p_ctry_info + 8, 0);    // fsDateFmt = MDY
-            self.guest_write_bytes(p_ctry_info + 12, b"$\0\0\0\0"); // szCurrency
-            self.guest_write_bytes(p_ctry_info + 17, b",\0"); // szThousandsSeparator
-            self.guest_write_bytes(p_ctry_info + 19, b".\0"); // szDecimal
-            self.guest_write_bytes(p_ctry_info + 21, b"-\0"); // szDateSeparator
-            self.guest_write_bytes(p_ctry_info + 23, b":\0"); // szTimeSeparator
-            self.guest_write::<u8>(p_ctry_info + 25, 0);    // fsCurrencyFmt
-            self.guest_write::<u8>(p_ctry_info + 26, 2);    // cDecimalPlace
-            self.guest_write::<u8>(p_ctry_info + 27, 0);    // fsTimeFmt = 12-hour
-            self.guest_write_bytes(p_ctry_info + 32, b",\0"); // szDataSeparator
+            // Write fields only if they fit within cb
+            if write_size >= 4 { self.guest_write::<u32>(p_ctry_info, 1); }       // country = US
+            if write_size >= 8 { self.guest_write::<u32>(p_ctry_info + 4, 437); }  // codepage = 437
+            if write_size >= 12 { self.guest_write::<u32>(p_ctry_info + 8, 0); }   // fsDateFmt = MDY
+            if write_size >= 17 { self.guest_write_bytes(p_ctry_info + 12, b"$\0\0\0\0"); } // szCurrency
+            if write_size >= 19 { self.guest_write_bytes(p_ctry_info + 17, b",\0"); } // szThousandsSeparator
+            if write_size >= 21 { self.guest_write_bytes(p_ctry_info + 19, b".\0"); } // szDecimal
+            if write_size >= 23 { self.guest_write_bytes(p_ctry_info + 21, b"-\0"); } // szDateSeparator
+            if write_size >= 25 { self.guest_write_bytes(p_ctry_info + 23, b":\0"); } // szTimeSeparator
+            if write_size >= 26 { self.guest_write::<u8>(p_ctry_info + 25, 0); }   // fsCurrencyFmt
+            if write_size >= 27 { self.guest_write::<u8>(p_ctry_info + 26, 2); }   // cDecimalPlace
+            if write_size >= 28 { self.guest_write::<u8>(p_ctry_info + 27, 0); }   // fsTimeFmt = 12-hour
+            if write_size >= 34 { self.guest_write_bytes(p_ctry_info + 32, b",\0"); } // szDataSeparator
         }
         if pcb_actual != 0 {
             self.guest_write::<u32>(pcb_actual, info_size);
