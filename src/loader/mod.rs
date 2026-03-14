@@ -542,8 +542,14 @@ impl Loader {
         debug!("  Environment block ({} bytes) at 0x{:08X}: {:02X?}",
             env_block.len(), env_addr, &env_block);
         self.guest_write_bytes(env_addr, &env_block).expect("setup_guest: env write OOB");
+        // TIB2 is placed right after TIB (TIB is ~0x40 bytes, TIB2 at TIB_BASE + 0x40)
+        let tib2_addr = TIB_BASE + 0x40;
+        self.guest_write::<u32>(TIB_BASE + 0x0C, tib2_addr).expect("setup_guest: TIB.ptib2 OOB"); // tib_ptib2
         self.guest_write::<u32>(TIB_BASE + 0x18, TIB_BASE).expect("setup_guest: TIB self-ptr OOB");
         self.guest_write::<u32>(TIB_BASE + 0x30, PIB_BASE).expect("setup_guest: TIB->PIB OOB");
+        // TIB2 fields
+        self.guest_write::<u32>(tib2_addr + 0x00, 1).expect("setup_guest: TIB2.tid OOB"); // tib2_ultid = thread 1
+        self.guest_write::<u32>(tib2_addr + 0x04, 0).expect("setup_guest: TIB2.pri OOB"); // tib2_ulpri = normal
         self.guest_write::<u32>(PIB_BASE + 0x00, 42).expect("setup_guest: PIB PID OOB");
         self.guest_write::<u32>(PIB_BASE + 0x0C, cmdline_addr).expect("setup_guest: PIB pchcmd OOB");
         self.guest_write::<u32>(PIB_BASE + 0x10, env_addr).expect("setup_guest: PIB pchenv OOB");
