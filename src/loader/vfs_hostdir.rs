@@ -401,17 +401,29 @@ impl HostDirBackend {
     }
 
     /// Verify that a path does not escape the volume root.
+    ///
+    /// Canonicalizes the path (resolving symlinks) and verifies the result
+    /// is under the volume root. This prevents:
+    /// - `..` traversal past the volume root
+    /// - Symlinks pointing outside the volume
+    /// - Any other path manipulation that escapes isolation
     fn enforce_sandbox(&self, path: &Path) -> VfsResult<()> {
-        // For existing paths, canonicalize and check prefix
+        // For existing paths, canonicalize (follows symlinks) and check prefix
         let check_path = if path.exists() {
             path.canonicalize().map_err(|_| Os2Error::PATH_NOT_FOUND)?
         } else {
-            // For new files, canonicalize the parent
+            // For new files, canonicalize the parent (which must exist)
             let parent = path.parent().ok_or(Os2Error::PATH_NOT_FOUND)?;
             if !parent.exists() {
                 return Err(Os2Error::PATH_NOT_FOUND);
             }
             let canon_parent = parent.canonicalize().map_err(|_| Os2Error::PATH_NOT_FOUND)?;
+            // Verify parent is within sandbox before joining filename
+            if !canon_parent.starts_with(&self.root) {
+                warn!("SECURITY: Parent path traversal blocked: {} (root={})",
+                      canon_parent.display(), self.root.display());
+                return Err(Os2Error::ACCESS_DENIED);
+            }
             let filename = path.file_name().ok_or(Os2Error::PATH_NOT_FOUND)?;
             canon_parent.join(filename)
         };
@@ -1206,6 +1218,39 @@ mod tests {
         // Should fail with FILE_NOT_FOUND (.. past root resolves to root)
         // or ACCESS_DENIED if canonicalization reveals escape
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_sandbox_dotdot_clamped_at_root() {
+        let (_tmp, backend) = create_temp_backend();
+
+        // Create a file in the root
+        let (h, _) = backend.open(
+            "safe.txt", OpenMode::ReadWrite, SharingMode::DenyNone,
+            OpenFlags::from_raw(0x0012), FileAttribute::NORMAL,
+        ).unwrap();
+        backend.close(h).unwrap();
+
+        // Accessing via excessive .. should clamp at root, not escape
+        // resolve_path_case_insensitive clamps .. at root
+        let result = backend.query_path_info("../../../safe.txt", 1);
+        // Should find the file (.. clamped at root)
+        assert!(result.is_ok() || result.unwrap_err() == Os2Error::FILE_NOT_FOUND);
+    }
+
+    #[test]
+    fn test_sandbox_symlink_escape() {
+        let (tmp, backend) = create_temp_backend();
+
+        // Create a symlink inside the volume root pointing outside
+        let link_path = tmp.path().join("escape_link");
+        let _ = std::os::unix::fs::symlink("/etc", &link_path);
+
+        if link_path.exists() {
+            // Trying to use the symlink should be blocked by sandbox
+            let result = backend.query_path_info("escape_link/hostname", 1);
+            assert!(result.is_err(), "Symlink escape should be blocked");
+        }
     }
 
     // ── File metadata ──

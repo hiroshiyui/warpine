@@ -577,6 +577,11 @@ impl DriveManager {
     /// Handles drive letter extraction, relative path resolution against
     /// per-drive current directories, and backslash conversion.
     pub fn resolve_path(&self, os2_path: &str) -> VfsResult<(u8, String)> {
+        // Reject UNC paths (\\server\share)
+        if os2_path.starts_with("\\\\") || os2_path.starts_with("//") {
+            return Err(Os2Error::PATH_NOT_FOUND);
+        }
+
         let path = os2_path.replace('\\', "/");
 
         // Extract drive letter or use current drive
@@ -1059,6 +1064,17 @@ mod tests {
         let dm = DriveManager::new();
         let result = dm.resolve_path("D:\\FILE.TXT");
         assert_eq!(result.unwrap_err(), Os2Error::INVALID_DRIVE);
+    }
+
+    #[test]
+    fn test_drive_manager_reject_unc_paths() {
+        let mut dm = DriveManager::new();
+        dm.mount(2, Box::new(MockBackend)); // C:
+
+        // UNC paths with backslashes
+        assert_eq!(dm.resolve_path("\\\\server\\share\\file").unwrap_err(), Os2Error::PATH_NOT_FOUND);
+        // UNC paths with forward slashes
+        assert_eq!(dm.resolve_path("//server/share/file").unwrap_err(), Os2Error::PATH_NOT_FOUND);
     }
 
     #[test]
