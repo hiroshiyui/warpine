@@ -12,6 +12,7 @@
 
 use std::collections::HashMap;
 use std::fmt;
+use std::path::PathBuf;
 
 // ── OS/2 Error Type ──
 
@@ -450,6 +451,17 @@ struct FindEntry {
     pattern: String,
 }
 
+/// Configuration for a single drive mapping.
+#[derive(Debug, Clone)]
+pub struct DriveConfig {
+    /// Host directory that serves as the volume root.
+    pub host_path: PathBuf,
+    /// Volume label reported by DosQueryFSInfo.
+    pub label: String,
+    /// Whether the drive is read-only.
+    pub read_only: bool,
+}
+
 /// Maps OS/2 drive letters to VfsBackend implementations and owns
 /// all file and directory search handle state.
 ///
@@ -462,6 +474,9 @@ struct FindEntry {
 /// and will get their own mechanism in a future step).
 pub struct DriveManager {
     drives: [Option<Box<dyn VfsBackend>>; 26],
+    /// Drive configurations (host path mappings). Stored separately from
+    /// backends so configuration can be set before backends are created.
+    drive_configs: [Option<DriveConfig>; 26],
     file_handles: HashMap<u32, FileEntry>,
     find_handles: HashMap<u32, FindEntry>,
     next_file_handle: u32,
@@ -471,13 +486,14 @@ pub struct DriveManager {
 }
 
 impl DriveManager {
-    /// Create a new DriveManager with no drives mounted.
+    /// Create a new DriveManager with no drives mounted or configured.
     /// File handles start at 3 (0/1/2 reserved for stdin/stdout/stderr).
     /// Find handles start at 10.
     pub fn new() -> Self {
         const EMPTY_STRING: String = String::new();
         DriveManager {
             drives: std::array::from_fn(|_| None),
+            drive_configs: std::array::from_fn(|_| None),
             file_handles: HashMap::new(),
             find_handles: HashMap::new(),
             next_file_handle: 3,
@@ -485,6 +501,37 @@ impl DriveManager {
             current_disk: 2, // C:
             current_dirs: [EMPTY_STRING; 26],
         }
+    }
+
+    /// Create a DriveManager with default configuration:
+    /// C: → `~/.local/share/warpine/drive_c/`
+    ///
+    /// The directory is created if it does not exist.
+    /// Falls back to `./drive_c/` if the home directory cannot be determined.
+    pub fn with_default_config() -> Self {
+        let mut dm = Self::new();
+
+        let base_dir = std::env::var("XDG_DATA_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                std::env::var("HOME")
+                    .map(|h| PathBuf::from(h).join(".local/share"))
+                    .unwrap_or_else(|_| PathBuf::from("."))
+            });
+        let drive_c_path = base_dir.join("warpine/drive_c");
+
+        if let Err(e) = std::fs::create_dir_all(&drive_c_path) {
+            log::warn!("Failed to create default C: drive directory {}: {}",
+                       drive_c_path.display(), e);
+        }
+
+        dm.set_drive_config(2, DriveConfig {
+            host_path: drive_c_path,
+            label: "OS2".to_string(),
+            read_only: false,
+        });
+
+        dm
     }
 
     /// Mount a backend on a drive letter (0=A, 1=B, ..., 25=Z).
@@ -497,6 +544,19 @@ impl DriveManager {
     pub fn unmount(&mut self, drive: u8) {
         assert!(drive < 26, "Drive index must be 0-25");
         self.drives[drive as usize] = None;
+    }
+
+    /// Set the configuration for a drive (host path, label, read-only flag).
+    /// This stores the config for later use when creating a backend.
+    pub fn set_drive_config(&mut self, drive: u8, config: DriveConfig) {
+        assert!(drive < 26, "Drive index must be 0-25");
+        self.drive_configs[drive as usize] = Some(config);
+    }
+
+    /// Get the configuration for a drive, if set.
+    pub fn drive_config(&self, drive: u8) -> Option<&DriveConfig> {
+        if drive >= 26 { return None; }
+        self.drive_configs[drive as usize].as_ref()
     }
 
     /// Get the backend for a drive, or INVALID_DRIVE if not mounted.
@@ -917,6 +977,37 @@ mod tests {
         assert_eq!(dm.current_disk(), 2); // C:
         assert_eq!(dm.current_disk_os2(), 3);
         assert_eq!(dm.logical_drive_map(), 0);
+        assert!(dm.drive_config(2).is_none()); // no config set
+    }
+
+    #[test]
+    fn test_drive_manager_with_default_config() {
+        let dm = DriveManager::with_default_config();
+        assert_eq!(dm.current_disk(), 2); // C:
+
+        // C: should have a config
+        let config = dm.drive_config(2).expect("C: config should exist");
+        assert!(config.host_path.ends_with("warpine/drive_c"),
+                "C: should map to warpine/drive_c, got {:?}", config.host_path);
+        assert_eq!(config.label, "OS2");
+        assert!(!config.read_only);
+
+        // D: should not have a config
+        assert!(dm.drive_config(3).is_none());
+    }
+
+    #[test]
+    fn test_drive_config_set_and_get() {
+        let mut dm = DriveManager::new();
+        dm.set_drive_config(3, DriveConfig {
+            host_path: PathBuf::from("/tmp/os2_d"),
+            label: "DATA".to_string(),
+            read_only: true,
+        });
+        let config = dm.drive_config(3).unwrap();
+        assert_eq!(config.host_path, PathBuf::from("/tmp/os2_d"));
+        assert_eq!(config.label, "DATA");
+        assert!(config.read_only);
     }
 
     #[test]

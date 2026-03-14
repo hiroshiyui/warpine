@@ -129,7 +129,7 @@ impl Loader {
         let hdir_mgr = HDirManager::new();
         let queue_mgr = QueueManager::new();
         let window_mgr = WindowManager::new();
-        let drive_mgr = DriveManager::new();
+        let drive_mgr = DriveManager::with_default_config();
         let console_mgr = console::VioManager::new();
 
         let shared = Arc::new(SharedState {
