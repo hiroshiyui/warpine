@@ -76,11 +76,15 @@ pub struct HandleManager {
     next_handle: u32,
 }
 
+/// Pipe/legacy handle base — offset to avoid collision with VFS file handles.
+/// VFS handles occupy 3..PIPE_HANDLE_BASE-1, pipe handles occupy PIPE_HANDLE_BASE+.
+pub const PIPE_HANDLE_BASE: u32 = 0x1000;
+
 impl HandleManager {
     pub fn new() -> Self {
         HandleManager {
             handles: HashMap::new(),
-            next_handle: 3,
+            next_handle: PIPE_HANDLE_BASE,
         }
     }
 

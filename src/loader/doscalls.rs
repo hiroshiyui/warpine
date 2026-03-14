@@ -2,9 +2,13 @@
 //
 // OS/2 DOSCALLS and QUECALLS API handler methods.
 //
-// File I/O operations route through DriveManager → VfsBackend.
-// Standard handles (0=stdin, 1=stdout, 2=stderr) are special-cased.
-// Pipes continue to use HandleManager (not filesystem-backed).
+// Handle routing (no fallback):
+// - Handles 0/1/2: stdin/stdout/stderr (special-cased)
+// - Handles 3..PIPE_HANDLE_BASE-1: VFS file handles (DriveManager)
+// - Handles PIPE_HANDLE_BASE+: pipe handles (HandleManager)
+//
+// VFS file operations never fall back to HandleManager and vice versa.
+// This ensures VFS bugs are caught immediately rather than masked.
 
 use std::fs::File;
 use std::io::{Read, Write, Seek, SeekFrom};
@@ -15,6 +19,7 @@ use log::debug;
 
 use super::constants::*;
 use super::mutex_ext::MutexExt;
+use super::managers::PIPE_HANDLE_BASE;
 use super::ipc::*;
 use super::vfs::*;
 
@@ -44,55 +49,50 @@ impl super::Loader {
     }
 
     pub fn dos_close(&self, hf: u32) -> u32 {
-        // Try VFS first, then fall back to HandleManager (for pipes)
-        let vfs_result = self.shared.drive_mgr.lock_or_recover().close_file(hf);
-        if vfs_result.is_ok() {
-            return 0;
+        if hf >= PIPE_HANDLE_BASE {
+            self.shared.handle_mgr.lock_or_recover().close(hf);
+            0
+        } else {
+            match self.shared.drive_mgr.lock_or_recover().close_file(hf) {
+                Ok(()) => 0,
+                Err(e) => e.0,
+            }
         }
-        // Fall back to HandleManager for pipes and legacy handles
-        self.shared.handle_mgr.lock_or_recover().close(hf);
-        0
     }
 
     pub fn dos_read(&self, hf: u32, buf_ptr: u32, len: u32, actual_ptr: u32) -> u32 {
         debug!("  DosRead(hf={}, buf=0x{:08X}, len={}, actual=0x{:08X})", hf, buf_ptr, len, actual_ptr);
-        // Handle stdin (handle 0): read from host terminal
         if hf == 0 {
             return self.dos_read_stdin(buf_ptr, len, actual_ptr);
         }
 
-        // Try VFS first
-        {
+        if hf >= PIPE_HANDLE_BASE {
+            // Pipe handle
+            let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
+            if let Some(file) = h_mgr.get_mut(hf) {
+                let mut data = vec![0u8; len as usize];
+                match file.read(&mut data) {
+                    Ok(n) => {
+                        self.guest_write_bytes(buf_ptr, &data[..n]);
+                        if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, n as u32); }
+                        0
+                    },
+                    Err(_) => 5,
+                }
+            } else { 6 }
+        } else {
+            // VFS file handle
             let dm = self.shared.drive_mgr.lock_or_recover();
             let mut data = vec![0u8; len as usize];
             match dm.read_file(hf, &mut data) {
                 Ok(n) => {
                     self.guest_write_bytes(buf_ptr, &data[..n]);
-                    if actual_ptr != 0 {
-                        self.guest_write::<u32>(actual_ptr, n as u32);
-                    }
-                    return 0;
+                    if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, n as u32); }
+                    0
                 }
-                Err(e) if e == Os2Error::INVALID_HANDLE => {} // fall through to HandleManager
-                Err(e) => return e.0,
+                Err(e) => e.0,
             }
         }
-
-        // Fall back to HandleManager (pipes)
-        let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
-        if let Some(file) = h_mgr.get_mut(hf) {
-            let mut data = vec![0u8; len as usize];
-            match file.read(&mut data) {
-                Ok(n) => {
-                    self.guest_write_bytes(buf_ptr, &data[..n]);
-                    if actual_ptr != 0 {
-                        self.guest_write::<u32>(actual_ptr, n as u32);
-                    }
-                    0
-                },
-                Err(_) => 5,
-            }
-        } else { 6 }
     }
 
     /// Read from stdin (handle 0) using the host terminal.
@@ -157,7 +157,6 @@ impl super::Loader {
 
     pub fn dos_write(&self, fd: u32, buf_ptr: u32, len: u32, actual_ptr: u32) -> u32 {
         if let Some(data) = self.guest_slice_mut(buf_ptr, len as usize) {
-            // stdout/stderr: direct host output
             if fd == 1 || fd == 2 {
                 match crate::api::doscalls::dos_write(fd, data) {
                     Ok(actual) => {
@@ -166,20 +165,7 @@ impl super::Loader {
                     },
                     Err(_) => 1,
                 }
-            } else {
-                // Try VFS first
-                {
-                    let dm = self.shared.drive_mgr.lock_or_recover();
-                    match dm.write_file(fd, data) {
-                        Ok(n) => {
-                            if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, n as u32); }
-                            return 0;
-                        }
-                        Err(e) if e == Os2Error::INVALID_HANDLE => {} // fall through
-                        Err(e) => return e.0,
-                    }
-                }
-                // Fall back to HandleManager (pipes)
+            } else if fd >= PIPE_HANDLE_BASE {
                 let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
                 if let Some(file) = h_mgr.get_mut(fd) {
                     match file.write(data) {
@@ -190,72 +176,69 @@ impl super::Loader {
                         Err(_) => 5,
                     }
                 } else { 6 }
+            } else {
+                let dm = self.shared.drive_mgr.lock_or_recover();
+                match dm.write_file(fd, data) {
+                    Ok(n) => {
+                        if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, n as u32); }
+                        0
+                    }
+                    Err(e) => e.0,
+                }
             }
         } else { 87 }
     }
 
     pub fn dos_set_file_ptr(&self, hf: u32, offset: i32, method: u32, actual_ptr: u32) -> u32 {
-        let mode = match SeekMode::from_raw(method) {
-            Ok(m) => m,
-            Err(e) => return e.0,
-        };
-
-        // Try VFS first
-        {
+        if hf >= PIPE_HANDLE_BASE {
+            let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
+            if let Some(file) = h_mgr.get_mut(hf) {
+                let pos = match method {
+                    0 => SeekFrom::Start(offset as u64),
+                    1 => SeekFrom::Current(offset as i64),
+                    2 => SeekFrom::End(offset as i64),
+                    _ => return 1,
+                };
+                match file.seek(pos) {
+                    Ok(new_pos) => {
+                        if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, new_pos as u32); }
+                        0
+                    }
+                    Err(_) => 1,
+                }
+            } else { 6 }
+        } else {
+            let mode = match SeekMode::from_raw(method) {
+                Ok(m) => m,
+                Err(e) => return e.0,
+            };
             let dm = self.shared.drive_mgr.lock_or_recover();
             match dm.seek_file(hf, offset as i64, mode) {
                 Ok(new_pos) => {
-                    if actual_ptr != 0 {
-                        self.guest_write::<u32>(actual_ptr, new_pos as u32);
-                    }
-                    return 0;
-                }
-                Err(e) if e == Os2Error::INVALID_HANDLE => {} // fall through
-                Err(e) => return e.0,
-            }
-        }
-
-        // Fall back to HandleManager
-        let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
-        if let Some(file) = h_mgr.get_mut(hf) {
-            let pos = match method {
-                0 => SeekFrom::Start(offset as u64),
-                1 => SeekFrom::Current(offset as i64),
-                2 => SeekFrom::End(offset as i64),
-                _ => return 1,
-            };
-            match file.seek(pos) {
-                Ok(new_pos) => {
-                    if actual_ptr != 0 {
-                        self.guest_write::<u32>(actual_ptr, new_pos as u32);
-                    }
+                    if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, new_pos as u32); }
                     0
                 }
-                Err(_) => 1,
+                Err(e) => e.0,
             }
-        } else { 6 }
+        }
     }
 
     pub fn dos_set_file_size(&self, hf: u32, new_size: u32) -> u32 {
         debug!("DosSetFileSize(hf={}, size={})", hf, new_size);
-        // Try VFS first
-        {
+        if hf >= PIPE_HANDLE_BASE {
+            let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
+            if let Some(file) = h_mgr.get_mut(hf) {
+                match file.set_len(new_size as u64) {
+                    Ok(_) => 0,
+                    Err(_) => ERROR_ACCESS_DENIED,
+                }
+            } else { ERROR_INVALID_HANDLE }
+        } else {
             let dm = self.shared.drive_mgr.lock_or_recover();
             match dm.set_file_size(hf, new_size as u64) {
-                Ok(()) => return 0,
-                Err(e) if e == Os2Error::INVALID_HANDLE => {} // fall through
-                Err(e) => return e.0,
+                Ok(()) => 0,
+                Err(e) => e.0,
             }
-        }
-        // Fall back to HandleManager (pipes)
-        let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
-        if let Some(file) = h_mgr.get_mut(hf) {
-            match file.set_len(new_size as u64) {
-                Ok(_) => 0,
-                Err(_) => ERROR_ACCESS_DENIED,
-            }
-        } else {
-            ERROR_INVALID_HANDLE
         }
     }
 
@@ -347,57 +330,46 @@ impl super::Loader {
             }
             _ => return 124,
         }
+        if hf >= PIPE_HANDLE_BASE {
+            let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
+            if let Some(file) = h_mgr.get_mut(hf) {
+                if let Ok(meta) = file.metadata() {
+                    self.write_filestatus3_internal(&meta, buf_ptr);
+                    if level == 2 { self.guest_write::<u32>(buf_ptr + 24, 4); }
+                    return 0;
+                }
+            }
+            return 6; // ERROR_INVALID_HANDLE
+        }
         let dm = self.shared.drive_mgr.lock_or_recover();
         match dm.query_file_info(hf, 1) {
             Ok(status) => {
                 self.write_filestatus3_from_vfs(&status, buf_ptr);
                 if level == 2 {
-                    // cbList: write 4 (empty EA list) — EAs on open handles not yet supported
                     self.guest_write::<u32>(buf_ptr + 24, 4);
                 }
                 0
             }
-            Err(e) => {
-                // Fall back to HandleManager for pipes
-                if e == Os2Error::INVALID_HANDLE {
-                    let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
-                    if let Some(file) = h_mgr.get_mut(hf) {
-                        if let Ok(meta) = file.metadata() {
-                            self.write_filestatus3_internal(&meta, buf_ptr);
-                            if level == 2 {
-                                self.guest_write::<u32>(buf_ptr + 24, 4);
-                            }
-                            return 0;
-                        }
-                    }
-                }
-                e.0
-            }
+            Err(e) => e.0,
         }
     }
 
     pub fn dos_reset_buffer(&self, hf: u32) -> u32 {
         debug!("DosResetBuffer(hf={})", hf);
         if hf == 0xFFFFFFFF {
-            let dm = self.shared.drive_mgr.lock_or_recover();
-            dm.flush_all();
-            let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
-            h_mgr.flush_all();
+            // Flush all handles in both managers
+            self.shared.drive_mgr.lock_or_recover().flush_all();
+            self.shared.handle_mgr.lock_or_recover().flush_all();
             0
+        } else if hf >= PIPE_HANDLE_BASE {
+            let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
+            if let Some(file) = h_mgr.get_mut(hf) {
+                let _ = file.flush();
+                0
+            } else { ERROR_INVALID_HANDLE }
         } else {
-            let dm = self.shared.drive_mgr.lock_or_recover();
-            match dm.flush_file(hf) {
+            match self.shared.drive_mgr.lock_or_recover().flush_file(hf) {
                 Ok(()) => 0,
-                Err(e) if e == Os2Error::INVALID_HANDLE => {
-                    // Fall back to HandleManager
-                    let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
-                    if let Some(file) = h_mgr.get_mut(hf) {
-                        let _ = file.flush();
-                        0
-                    } else {
-                        ERROR_INVALID_HANDLE
-                    }
-                }
                 Err(e) => e.0,
             }
         }
