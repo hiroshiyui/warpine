@@ -449,6 +449,8 @@ struct FileEntry {
 struct FindEntry {
     drive: u8,
     vfs_handle: VfsFindHandle,
+    /// Info level from DosFindFirst (1=FIL_STANDARD, 2=FIL_QUERYEASIZE).
+    level: u32,
     /// Original search pattern (kept for diagnostics/logging).
     #[allow(dead_code)]
     pattern: String,
@@ -753,6 +755,7 @@ impl DriveManager {
         &mut self,
         os2_path: &str,
         attributes: FileAttribute,
+        level: u32,
     ) -> VfsResult<(u32, DirEntry)> {
         let (drive, rel_path) = self.resolve_path(os2_path)?;
         let backend = self.drives[drive as usize].as_ref().ok_or(Os2Error::INVALID_DRIVE)?;
@@ -761,9 +764,14 @@ impl DriveManager {
         self.next_find_handle += 1;
         self.find_handles.insert(
             os2_handle,
-            FindEntry { drive, vfs_handle, pattern: os2_path.to_string() },
+            FindEntry { drive, vfs_handle, level, pattern: os2_path.to_string() },
         );
         Ok((os2_handle, entry))
+    }
+
+    /// Get the info level for a find handle (1=FIL_STANDARD, 2=FIL_QUERYEASIZE).
+    pub fn find_level(&self, handle: u32) -> u32 {
+        self.find_handles.get(&handle).map_or(1, |e| e.level)
     }
 
     /// Get the next matching entry from a directory search.
@@ -1165,7 +1173,7 @@ mod tests {
         dm.mount(2, Box::new(MockBackend)); // C:
 
         // MockBackend::find_first returns NO_MORE_FILES
-        let result = dm.find_first("C:\\*.*", FileAttribute::NORMAL);
+        let result = dm.find_first("C:\\*.*", FileAttribute::NORMAL, 1);
         assert_eq!(result.unwrap_err(), Os2Error::NO_MORE_FILES);
     }
 

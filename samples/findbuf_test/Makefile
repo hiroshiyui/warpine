@@ -1,7 +1,7 @@
 # samples/findbuf_test/Makefile — FILEFINDBUF layout verification
 WATCOM_ROOT = $(CURDIR)/../../vendor/watcom
 WCL386 = $(WATCOM_ROOT)/binl64/wcl386
-INCLUDE = $(WATCOM_ROOT)/h/os2
+INCLUDE = $(WATCOM_ROOT)/h/os2:$(WATCOM_ROOT)/h
 
 all: findbuf_test.exe
 

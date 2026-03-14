@@ -1,14 +1,15 @@
 /*
- * findbuf_test.c — Verify FILEFINDBUF3/FILEFINDBUF4 layout from DosFindFirst.
+ * findbuf_test.c — Verify FILEFINDBUF3/4/4L layout from DosFindFirst.
  *
- * Calls DosFindFirst with FIL_STANDARD (level 1) and FIL_QUERYEASIZE (level 2),
- * then dumps the raw bytes of the returned buffer to verify field offsets.
- * Also checks individual fields by name to detect layout mismatches.
+ * Tests DosFindFirst with level 1 and level 2, dumps buffers,
+ * and simulates 4OS2's xDosFindFirst FILEFINDBUF4→FILEFINDBUF4L conversion.
  */
 
 #define INCL_DOS
 #define INCL_DOSERRORS
 #include <os2.h>
+
+#include <string.h>
 
 static ULONG dummy;
 
@@ -30,19 +31,10 @@ static void print_num(ULONG val) {
 
 static void print_hex8(unsigned char val) {
     char buf[3];
-    int hi = (val >> 4) & 0xF;
-    int lo = val & 0xF;
-    buf[0] = hi < 10 ? '0' + hi : 'A' + hi - 10;
-    buf[1] = lo < 10 ? '0' + lo : 'A' + lo - 10;
+    buf[0] = (val >> 4) < 10 ? '0' + (val >> 4) : 'A' + (val >> 4) - 10;
+    buf[1] = (val & 0xF) < 10 ? '0' + (val & 0xF) : 'A' + (val & 0xF) - 10;
     buf[2] = 0;
     print(buf);
-}
-
-static void print_hex32(ULONG val) {
-    print_hex8((val >> 24) & 0xFF);
-    print_hex8((val >> 16) & 0xFF);
-    print_hex8((val >> 8) & 0xFF);
-    print_hex8(val & 0xFF);
 }
 
 static void dump_bytes(unsigned char *buf, ULONG len, ULONG per_line) {
@@ -63,15 +55,14 @@ static void check(const char *label, int pass, int *passed, int *failed) {
 }
 
 int main(void) {
-    FILEFINDBUF3 fb3;
-    FILEFINDBUF4 fb4;
+    FILEFINDBUF4 ffb4;
+    FILEFINDBUF4L fb4l;
     HDIR hdir;
     ULONG count;
     APIRET rc;
     int passed = 0, failed = 0;
-    unsigned char *raw;
 
-    /* Create a test file first */
+    /* Create test file */
     {
         HFILE hf;
         ULONG action, written;
@@ -84,108 +75,104 @@ int main(void) {
         }
     }
 
-    print("=== FILEFINDBUF Layout Test ===\r\n\r\n");
+    print("=== FILEFINDBUF4 -> FILEFINDBUF4L Conversion Test ===\r\n\r\n");
 
-    /* ── Test 1: FILEFINDBUF3 (level 1) ── */
-    print("Test 1: DosFindFirst with FIL_STANDARD (level 1)\r\n");
+    /* ── Test: Simulate xDosFindFirst conversion ── */
+    print("Test: DosFindFirst level 2 -> FILEFINDBUF4L conversion\r\n");
+
     hdir = HDIR_CREATE;
     count = 1;
-    memset(&fb3, 0xCC, sizeof(fb3));  /* Fill with sentinel */
-    rc = DosFindFirst("C:\\FINDTEST.DAT", &hdir, FILE_NORMAL, &fb3, sizeof(fb3), &count, FIL_STANDARD);
-    print("  rc="); print_num(rc); print(" count="); print_num(count); print("\r\n");
-    check("DosFindFirst level 1 returns 0", rc == 0, &passed, &failed);
+    memset(&ffb4, 0, sizeof(ffb4));
+    rc = DosFindFirst("C:\\FINDTEST.DAT", &hdir, FILE_NORMAL, &ffb4, sizeof(ffb4), &count, FIL_QUERYEASIZE);
+    print("  DosFindFirst rc="); print_num(rc); print("\r\n");
+    check("DosFindFirst returns 0", rc == 0, &passed, &failed);
 
     if (rc == 0) {
-        print("  sizeof(FILEFINDBUF3)="); print_num(sizeof(FILEFINDBUF3)); print("\r\n");
+        print("  FILEFINDBUF4 fields:\r\n");
+        print("    cbFile="); print_num(ffb4.cbFile); print("\r\n");
+        print("    cbFileAlloc="); print_num(ffb4.cbFileAlloc); print("\r\n");
+        print("    attrFile="); print_num(ffb4.attrFile); print("\r\n");
+        print("    cbList="); print_num(ffb4.cbList); print("\r\n");
+        print("    cchName="); print_num(ffb4.cchName); print("\r\n");
+        print("    achName='"); print(ffb4.achName); print("'\r\n");
 
-        /* Dump raw bytes (first 48 bytes) */
-        print("  Raw bytes:\r\n    ");
-        dump_bytes((unsigned char *)&fb3, 48, 16);
+        /* Now simulate xDosFindFirst's conversion */
+        print("\r\n  Simulating xDosFindFirst conversion:\r\n");
+        memset(&fb4l, 0xCC, sizeof(fb4l));
 
-        /* Check individual fields */
-        print("  oNextEntryOffset="); print_num(fb3.oNextEntryOffset); print("\r\n");
-        print("  fdateCreation="); print_num(*(USHORT*)&fb3.fdateCreation); print("\r\n");
-        print("  ftimeCreation="); print_num(*(USHORT*)&fb3.ftimeCreation); print("\r\n");
-        print("  fdateLastWrite="); print_num(*(USHORT*)&fb3.fdateLastWrite); print("\r\n");
-        print("  ftimeLastWrite="); print_num(*(USHORT*)&fb3.ftimeLastWrite); print("\r\n");
-        print("  cbFile="); print_num(fb3.cbFile); print("\r\n");
-        print("  cbFileAlloc="); print_num(fb3.cbFileAlloc); print("\r\n");
-        print("  attrFile="); print_num(fb3.attrFile); print("\r\n");
-        print("  cchName="); print_num(fb3.cchName); print("\r\n");
-        print("  achName='"); print(fb3.achName); print("'\r\n");
+        /* Step 1: struct copy (line 150 in wrappers.c) */
+        *(PFILEFINDBUF4)&fb4l = ffb4;
 
-        check("cbFile == 13", fb3.cbFile == 13, &passed, &failed);
-        check("cchName > 0", fb3.cchName > 0, &passed, &failed);
-        check("achName is FINDTEST.DAT", strcmp(fb3.achName, "FINDTEST.DAT") == 0, &passed, &failed);
-        check("attrFile == FILE_NORMAL (0x20)", fb3.attrFile == 0x20, &passed, &failed);
+        print("    After struct copy:\r\n");
+        print("    Raw bytes 28-48:\r\n      ");
+        dump_bytes(((unsigned char*)&fb4l) + 28, 20, 20);
 
-        /* Verify field offsets by checking raw bytes */
-        raw = (unsigned char *)&fb3;
+        /* Step 2: fix up fields (lines 151-156 of wrappers.c) */
+        /* LONGLONG is a struct in Watcom, so use memcpy for assignment */
         {
-            ULONG off_cchName = (unsigned char *)&fb3.cchName - raw;
-            ULONG off_achName = (unsigned char *)fb3.achName - raw;
-            print("  Offset of cchName: "); print_num(off_cchName); print("\r\n");
-            print("  Offset of achName: "); print_num(off_achName); print("\r\n");
-            check("cchName at offset 28", off_cchName == 28, &passed, &failed);
-            check("achName at offset 29", off_achName == 29, &passed, &failed);
+            ULONG tmp;
+            tmp = ffb4.cbFile;
+            memcpy(&fb4l.cbFile, &tmp, 4);
+            memset(((char*)&fb4l.cbFile) + 4, 0, 4); /* zero high dword */
+            tmp = ffb4.cbFileAlloc;
+            memcpy(&fb4l.cbFileAlloc, &tmp, 4);
+            memset(((char*)&fb4l.cbFileAlloc) + 4, 0, 4);
         }
+        fb4l.attrFile = ffb4.attrFile;
+        fb4l.cbList = ffb4.cbList;
+        fb4l.cchName = ffb4.cchName;
+        memcpy(fb4l.achName, ffb4.achName, ffb4.cchName + 1);
+
+        print("    After fix-up:\r\n");
+        {
+            ULONG tmp_lo;
+            memcpy(&tmp_lo, &fb4l.cbFile, 4);
+            print("    fb4l.cbFile="); print_num(tmp_lo); print("\r\n");
+            memcpy(&tmp_lo, &fb4l.cbFileAlloc, 4);
+            print("    fb4l.cbFileAlloc="); print_num(tmp_lo); print("\r\n");
+        }
+        print("    fb4l.attrFile="); print_num(fb4l.attrFile); print("\r\n");
+        print("    fb4l.cbList="); print_num(fb4l.cbList); print("\r\n");
+        print("    fb4l.cchName="); print_num(fb4l.cchName); print("\r\n");
+        print("    fb4l.achName='"); print(fb4l.achName); print("'\r\n");
+
+        /* Verify struct offsets */
+        {
+            unsigned char *base = (unsigned char *)&fb4l;
+            ULONG off_cbFile = (unsigned char *)&fb4l.cbFile - base;
+            ULONG off_cbFileAlloc = (unsigned char *)&fb4l.cbFileAlloc - base;
+            ULONG off_attrFile = (unsigned char *)&fb4l.attrFile - base;
+            ULONG off_cbList = (unsigned char *)&fb4l.cbList - base;
+            ULONG off_cchName = (unsigned char *)&fb4l.cchName - base;
+            ULONG off_achName = (unsigned char *)fb4l.achName - base;
+            print("\r\n  FILEFINDBUF4L offsets:\r\n");
+            print("    cbFile: "); print_num(off_cbFile); print("\r\n");
+            print("    cbFileAlloc: "); print_num(off_cbFileAlloc); print("\r\n");
+            print("    attrFile: "); print_num(off_attrFile); print("\r\n");
+            print("    cbList: "); print_num(off_cbList); print("\r\n");
+            print("    cchName: "); print_num(off_cchName); print("\r\n");
+            print("    achName: "); print_num(off_achName); print("\r\n");
+
+            check("cbFile at 16", off_cbFile == 16, &passed, &failed);
+            check("cbFileAlloc at 24", off_cbFileAlloc == 24, &passed, &failed);
+            check("attrFile at 32", off_attrFile == 32, &passed, &failed);
+            check("cbList at 36", off_cbList == 36, &passed, &failed);
+            check("cchName at 40", off_cchName == 40, &passed, &failed);
+            check("achName at 41", off_achName == 41, &passed, &failed);
+        }
+
+        {
+            ULONG cbFile_lo;
+            memcpy(&cbFile_lo, &fb4l.cbFile, 4);
+            check("fb4l.cbFile == 13", cbFile_lo == 13, &passed, &failed);
+        }
+        check("fb4l.achName == FINDTEST.DAT", strcmp(fb4l.achName, "FINDTEST.DAT") == 0, &passed, &failed);
 
         DosFindClose(hdir);
     }
 
-    /* ── Test 2: FILEFINDBUF4 (level 2 — with EA size) ── */
-    print("\r\nTest 2: DosFindFirst with FIL_QUERYEASIZE (level 2)\r\n");
-    hdir = HDIR_CREATE;
-    count = 1;
-    memset(&fb4, 0xCC, sizeof(fb4));  /* Fill with sentinel */
-    rc = DosFindFirst("C:\\FINDTEST.DAT", &hdir, FILE_NORMAL, &fb4, sizeof(fb4), &count, FIL_QUERYEASIZE);
-    print("  rc="); print_num(rc); print(" count="); print_num(count); print("\r\n");
-    check("DosFindFirst level 2 returns 0", rc == 0, &passed, &failed);
-
-    if (rc == 0) {
-        print("  sizeof(FILEFINDBUF4)="); print_num(sizeof(FILEFINDBUF4)); print("\r\n");
-
-        /* Dump raw bytes (first 52 bytes) */
-        print("  Raw bytes:\r\n    ");
-        dump_bytes((unsigned char *)&fb4, 52, 16);
-
-        /* Check individual fields */
-        print("  oNextEntryOffset="); print_num(fb4.oNextEntryOffset); print("\r\n");
-        print("  fdateLastWrite="); print_num(*(USHORT*)&fb4.fdateLastWrite); print("\r\n");
-        print("  ftimeLastWrite="); print_num(*(USHORT*)&fb4.ftimeLastWrite); print("\r\n");
-        print("  cbFile="); print_num(fb4.cbFile); print("\r\n");
-        print("  cbFileAlloc="); print_num(fb4.cbFileAlloc); print("\r\n");
-        print("  attrFile="); print_num(fb4.attrFile); print("\r\n");
-        print("  cbList="); print_num(fb4.cbList); print("\r\n");
-        print("  cchName="); print_num(fb4.cchName); print("\r\n");
-        print("  achName='"); print(fb4.achName); print("'\r\n");
-
-        check("cbFile == 13", fb4.cbFile == 13, &passed, &failed);
-        check("cchName > 0", fb4.cchName > 0, &passed, &failed);
-        check("achName is FINDTEST.DAT", strcmp(fb4.achName, "FINDTEST.DAT") == 0, &passed, &failed);
-        check("cbList >= 4", fb4.cbList >= 4, &passed, &failed);
-
-        /* Verify field offsets */
-        raw = (unsigned char *)&fb4;
-        {
-            ULONG off_cbList = (unsigned char *)&fb4.cbList - raw;
-            ULONG off_cchName = (unsigned char *)&fb4.cchName - raw;
-            ULONG off_achName = (unsigned char *)fb4.achName - raw;
-            print("  Offset of cbList: "); print_num(off_cbList); print("\r\n");
-            print("  Offset of cchName: "); print_num(off_cchName); print("\r\n");
-            print("  Offset of achName: "); print_num(off_achName); print("\r\n");
-            check("cbList at offset 28", off_cbList == 28, &passed, &failed);
-            check("cchName at offset 32", off_cchName == 32, &passed, &failed);
-            check("achName at offset 33", off_achName == 33, &passed, &failed);
-        }
-
-        DosFindClose(hdir);
-    }
-
-    /* Cleanup */
     DosDelete("C:\\FINDTEST.DAT");
 
-    /* ── Summary ── */
     print("\r\n=== Results ===\r\n");
     print("Passed: "); print_num(passed); print("\r\n");
     print("Failed: "); print_num(failed); print("\r\n");

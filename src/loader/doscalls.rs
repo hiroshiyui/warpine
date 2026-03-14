@@ -531,7 +531,7 @@ impl super::Loader {
         } else { 1 };
 
         let mut dm = self.shared.drive_mgr.lock_or_recover();
-        let rc = match dm.find_first(&spec, FileAttribute(attr)) {
+        let rc = match dm.find_first(&spec, FileAttribute(attr), level) {
             Ok((hdir, first_entry)) => {
                 self.guest_write::<u32>(phdir_ptr, hdir);
                 let mut entries = vec![first_entry];
@@ -566,8 +566,8 @@ impl super::Loader {
         if entries.is_empty() {
             return 18; // ERROR_NO_MORE_FILES
         }
-        // TODO: track find level per handle to pass correct include_ea_size flag
-        self.write_filefindbuf3_multi(&entries, buf_ptr, buf_len, pc_found_ptr, false)
+        let include_ea = dm.find_level(hdir) == 2;
+        self.write_filefindbuf3_multi(&entries, buf_ptr, buf_len, pc_found_ptr, include_ea)
     }
 
     pub fn dos_find_close(&self, hdir: u32) -> u32 {
