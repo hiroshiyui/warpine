@@ -255,8 +255,9 @@ WINE's filesystem layer (`dlls/ntdll/unix/file.c`, `server/fd.c`) provides prove
 - [x] **`fs_name`** — returns `"HPFS"`
 - [x] **`set_file_locks`** — byte-range locking via Linux `fcntl(F_SETLK)`, unlocks processed before locks, proper `LOCK_VIOLATION`/`ACCESS_DENIED` error mapping
 - [x] **3 unit tests** — lock/unlock cycle, invalid handle, volume label set/get
-- [ ] **`DosQueryFSAttach`** — report drive type as local HPFS with accurate capability flags (deferred to Step 7 doscalls.rs migration)
-- [ ] **`DosProtectSetFileLocks`** — protected variant with file lock ID (deferred, rarely used)
+- [x] **`DosQueryFSAttach`** — rewritten to use DriveManager: resolves drive letter, queries backend `fs_name()`, returns `"HPFS"` as FSD name in proper FSQBUFFER2 layout with buffer overflow checking
+- [x] **`DosSetFileLocks`** (ordinal 428) — parses FILELOCK structs from guest memory, routes through `DriveManager.set_file_locks()` → `fcntl(F_SETLK)`
+- [x] **`DosProtectSetFileLocks`** (ordinal 639) — delegates to `DosSetFileLocks` (file lock ID ignored)
 
 ### Step 5: Directory Enumeration Improvements — COMPLETED
 - [x] **Wildcard matching** — HPFS semantics: `*.*` matches all files including those without dots (unlike DOS/FAT). `*` and `?` with case-insensitive comparison
