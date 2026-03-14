@@ -252,11 +252,11 @@ impl Loader {
                             }
                             0x02 | 0x03 => {
                                 // 16:16 far pointer (selector:offset)
-                                // In our flat 32-bit model, encode as offset in code segment (selector 0x08)
-                                // The guest code will do a far call: CALL selector:offset
-                                // We write: offset (16-bit) + selector (16-bit) = 4 bytes
+                                // Use tiled selector so the 64KB segment base is correct.
+                                // The offset is the low 16 bits within the 64KB tile.
                                 let offset16 = (target_addr & 0xFFFF) as u16;
-                                let selector = 0x08u16; // code segment selector
+                                let tile_index = (target_addr >> 16) as u32;
+                                let selector = ((tile_index + TILED_SEL_START_INDEX) << 3) as u16;
                                 self.guest_write::<u16>(source_phys as u32, offset16).expect("fixup: 16:16 offset OOB");
                                 self.guest_write::<u16>(source_phys as u32 + 2, selector).expect("fixup: 16:16 sel OOB");
                             }
@@ -463,16 +463,16 @@ impl Loader {
         // Entry 3 (selector 0x18): FS data — base set via sregs
         self.guest_write::<u64>(GDT_BASE + 24, Self::make_gdt_entry(0, 0xFFFFF, 0x93, 0xCF)).unwrap();
 
-        // Note: 16-bit tiled segments (GDT entries 4..4099) are NOT populated yet.
-        // GDT tiling is prepared (constants defined, GDT sized for 4100 entries) but
-        // not enabled because it makes LSS succeed in 16-bit thunk code, preventing
-        // the #GP handler from intercepting and skipping thunks. GDT tiling will be
-        // enabled in Phase 5 when full 16-bit NE support is implemented with proper
-        // code segment descriptors and mode switching.
-        //
-        // DosFlatToSel/DosSelToFlat still use the tiled selector formula so that
-        // 16:16 pointer arithmetic works correctly at the API level.
-        debug!("GDT: 4 entries (tiling prepared but not active)");
+        // Entries 4..4099: tiled 16-bit DATA segments (64KB each)
+        // access=0x93 (P=1, DPL=0, S=1, type=3 read/write/accessed)
+        // flags=0x00 (G=0 byte granularity, D/B=0 16-bit)
+        for tile in 0..NUM_TILES {
+            let base = tile * TILE_SIZE;
+            let entry = Self::make_gdt_entry(base, 0xFFFF, 0x93, 0x00);
+            let gdt_offset = GDT_BASE + (TILED_SEL_START_INDEX + tile) * 8;
+            self.guest_write::<u64>(gdt_offset, entry).unwrap();
+        }
+        debug!("GDT: {} entries ({} tiled 16-bit data segments)", GDT_ENTRY_COUNT, NUM_TILES);
 
         // ── IDT with exception handler stubs ──
         for i in 0..NUM_VECTORS {
@@ -620,7 +620,7 @@ impl Loader {
         sregs.cr4 |= 1 << 9;
         // Set up GDT and IDT registers
         sregs.gdt.base = GDT_BASE as u64;
-        sregs.gdt.limit = 4 * 8 - 1; // 4 active entries; tiling prepared but not active
+        sregs.gdt.limit = (GDT_ENTRY_COUNT * 8 - 1) as u16;
         sregs.idt.base = IDT_BASE as u64;
         sregs.idt.limit = 32 * 8 - 1;
         vcpu.set_sregs(&sregs).unwrap();
@@ -798,6 +798,58 @@ impl Loader {
                                 debug!("  LSS emulation: reg{} = 0x{:08X} (from [0x{:08X}]), EIP 0x{:08X} -> 0x{:08X}",
                                        reg, loaded_offset, mem_addr, fault_eip, new_regs.rip);
                                 continue;
+                            }
+                        }
+
+                        // Handle #GP from JMP FAR / CALL FAR with tiled data selector as CS.
+                        // Tiled data selectors are not executable — translate to flat address.
+                        if vector == 13 {
+                            let b0 = self.guest_read::<u8>(fault_eip as u32).unwrap_or(0);
+                            let b1 = self.guest_read::<u8>(fault_eip as u32 + 1).unwrap_or(0);
+                            // 66 EA = JMP FAR (16-bit operand in 32-bit mode)
+                            // 66 9A = CALL FAR (16-bit operand in 32-bit mode)
+                            // EA = JMP FAR (32-bit operand)
+                            // 9A = CALL FAR (32-bit operand)
+                            let (is_far_jmp, has_prefix) = match (b0, b1) {
+                                (0x66, 0xEA) => (true, true),   // 16-bit JMP FAR
+                                (0x66, 0x9A) => (true, true),   // 16-bit CALL FAR
+                                (0xEA, _) => (true, false),      // 32-bit JMP FAR
+                                (0x9A, _) => (true, false),      // 32-bit CALL FAR
+                                _ => (false, false),
+                            };
+                            if is_far_jmp {
+                                let operand_offset = if has_prefix { 2u32 } else { 1u32 };
+                                let (offset, selector, instr_len) = if has_prefix {
+                                    // 16-bit: offset(2) + selector(2) = 4 bytes
+                                    let off = self.guest_read::<u16>(fault_eip as u32 + operand_offset).unwrap_or(0) as u32;
+                                    let sel = self.guest_read::<u16>(fault_eip as u32 + operand_offset + 2).unwrap_or(0) as u32;
+                                    (off, sel, operand_offset + 4)
+                                } else {
+                                    // 32-bit: offset(4) + selector(2) = 6 bytes
+                                    let off = self.guest_read::<u32>(fault_eip as u32 + operand_offset).unwrap_or(0);
+                                    let sel = self.guest_read::<u16>(fault_eip as u32 + operand_offset + 4).unwrap_or(0) as u32;
+                                    (off, sel, operand_offset + 6)
+                                };
+                                let gdt_index = selector >> 3;
+                                // Check if the selector is a tiled selector
+                                if gdt_index >= TILED_SEL_START_INDEX && gdt_index < TILED_SEL_START_INDEX + NUM_TILES {
+                                    let tile_index = gdt_index - TILED_SEL_START_INDEX;
+                                    let flat_addr = (tile_index << 16) | offset;
+                                    debug!("  [VCPU {}] Far jump/call to tiled selector {:04X}:{:04X} -> flat 0x{:08X}",
+                                           vcpu_id, selector, offset, flat_addr);
+                                    let is_call = b0 == 0x9A || (has_prefix && b1 == 0x9A);
+                                    let mut new_regs = vcpu.get_regs().unwrap();
+                                    new_regs.rsp = (regs.rsp as u32 + 20) as u64; // pop exception frame
+                                    if is_call {
+                                        // Push return address for CALL FAR (push CS then EIP)
+                                        new_regs.rsp -= 4;
+                                        self.guest_write::<u32>(new_regs.rsp as u32, fault_eip as u32 + instr_len);
+                                    }
+                                    new_regs.rip = flat_addr as u64;
+                                    new_regs.rflags = fault_eflags as u64;
+                                    vcpu.set_regs(&new_regs).unwrap();
+                                    continue;
+                                }
                             }
                         }
 
