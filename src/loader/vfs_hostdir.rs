@@ -18,7 +18,9 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
-use log::warn;
+use std::ffi::CString;
+
+use log::{debug, warn};
 
 use super::vfs::*;
 
@@ -405,6 +407,154 @@ impl HostDirBackend {
             }
         }
     }
+
+    // ── Extended Attribute helpers (xattr-based) ──
+
+    /// The xattr namespace prefix for OS/2 extended attributes.
+    /// Each EA is stored as `user.os2.ea.{NAME}` with value = `[flags_u8][data...]`.
+    const EA_XATTR_PREFIX: &'static str = "user.os2.ea.";
+
+    /// Get a single extended attribute from a host path via xattr.
+    fn xattr_get_ea(host_path: &Path, ea_name: &str) -> VfsResult<EaEntry> {
+        let xattr_name = format!("{}{}", Self::EA_XATTR_PREFIX, ea_name);
+        let c_path = CString::new(host_path.as_os_str().as_encoded_bytes())
+            .map_err(|_| Os2Error::INVALID_PARAMETER)?;
+        let c_xattr = CString::new(xattr_name.as_bytes())
+            .map_err(|_| Os2Error::INVALID_PARAMETER)?;
+
+        // First call: get size
+        let size = unsafe {
+            libc::getxattr(c_path.as_ptr(), c_xattr.as_ptr(), std::ptr::null_mut(), 0)
+        };
+        if size < 0 {
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            return if errno == libc::ENODATA || errno == libc::ENOTSUP {
+                Err(Os2Error::EA_NOT_FOUND)
+            } else {
+                Err(Os2Error::ACCESS_DENIED)
+            };
+        }
+        if size == 0 {
+            return Ok(EaEntry { name: ea_name.to_string(), value: Vec::new(), flags: 0 });
+        }
+
+        // Second call: get data
+        let mut buf = vec![0u8; size as usize];
+        let got = unsafe {
+            libc::getxattr(c_path.as_ptr(), c_xattr.as_ptr(),
+                          buf.as_mut_ptr() as *mut libc::c_void, buf.len())
+        };
+        if got < 0 {
+            return Err(Os2Error::ACCESS_DENIED);
+        }
+        buf.truncate(got as usize);
+
+        // First byte is flags, rest is value
+        let flags = if !buf.is_empty() { buf[0] } else { 0 };
+        let value = if buf.len() > 1 { buf[1..].to_vec() } else { Vec::new() };
+
+        Ok(EaEntry { name: ea_name.to_string(), value, flags })
+    }
+
+    /// Set a single extended attribute on a host path via xattr.
+    fn xattr_set_ea(host_path: &Path, ea: &EaEntry) -> VfsResult<()> {
+        let xattr_name = format!("{}{}", Self::EA_XATTR_PREFIX, ea.name);
+        let c_path = CString::new(host_path.as_os_str().as_encoded_bytes())
+            .map_err(|_| Os2Error::INVALID_PARAMETER)?;
+        let c_xattr = CString::new(xattr_name.as_bytes())
+            .map_err(|_| Os2Error::INVALID_PARAMETER)?;
+
+        // Encode: [flags_u8][value_bytes...]
+        let mut data = Vec::with_capacity(1 + ea.value.len());
+        data.push(ea.flags);
+        data.extend_from_slice(&ea.value);
+
+        let rc = unsafe {
+            libc::setxattr(c_path.as_ptr(), c_xattr.as_ptr(),
+                          data.as_ptr() as *const libc::c_void, data.len(), 0)
+        };
+        if rc < 0 {
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            return if errno == libc::ENOTSUP {
+                debug!("xattr not supported on {}, EA '{}' not stored",
+                       host_path.display(), ea.name);
+                Err(Os2Error::ACCESS_DENIED)
+            } else if errno == libc::ENOSPC || errno == libc::E2BIG {
+                Err(Os2Error::DISK_FULL)
+            } else {
+                Err(Os2Error::ACCESS_DENIED)
+            };
+        }
+        Ok(())
+    }
+
+    /// Remove a single extended attribute from a host path.
+    fn xattr_remove_ea(host_path: &Path, ea_name: &str) -> VfsResult<()> {
+        let xattr_name = format!("{}{}", Self::EA_XATTR_PREFIX, ea_name);
+        let c_path = CString::new(host_path.as_os_str().as_encoded_bytes())
+            .map_err(|_| Os2Error::INVALID_PARAMETER)?;
+        let c_xattr = CString::new(xattr_name.as_bytes())
+            .map_err(|_| Os2Error::INVALID_PARAMETER)?;
+
+        let rc = unsafe { libc::removexattr(c_path.as_ptr(), c_xattr.as_ptr()) };
+        if rc < 0 {
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            if errno != libc::ENODATA {
+                return Err(Os2Error::ACCESS_DENIED);
+            }
+        }
+        Ok(())
+    }
+
+    /// List all OS/2 extended attributes on a host path.
+    fn xattr_list_eas(host_path: &Path) -> VfsResult<Vec<EaEntry>> {
+        let c_path = CString::new(host_path.as_os_str().as_encoded_bytes())
+            .map_err(|_| Os2Error::INVALID_PARAMETER)?;
+
+        // First call: get buffer size
+        let size = unsafe { libc::listxattr(c_path.as_ptr(), std::ptr::null_mut(), 0) };
+        if size < 0 {
+            let errno = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            if errno == libc::ENOTSUP {
+                return Ok(Vec::new());
+            }
+            return Err(Os2Error::ACCESS_DENIED);
+        }
+        if size == 0 {
+            return Ok(Vec::new());
+        }
+
+        // Second call: get names (null-separated list)
+        let mut buf = vec![0u8; size as usize];
+        let got = unsafe {
+            libc::listxattr(c_path.as_ptr(), buf.as_mut_ptr() as *mut libc::c_char, buf.len())
+        };
+        if got < 0 {
+            return Err(Os2Error::ACCESS_DENIED);
+        }
+        buf.truncate(got as usize);
+
+        // Parse null-separated xattr names, filter for our prefix
+        let prefix = Self::EA_XATTR_PREFIX;
+        let mut eas = Vec::new();
+        for name_bytes in buf.split(|&b| b == 0) {
+            if name_bytes.is_empty() { continue; }
+            let name = match std::str::from_utf8(name_bytes) {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            if let Some(ea_name) = name.strip_prefix(prefix) {
+                if !ea_name.is_empty() {
+                    match Self::xattr_get_ea(host_path, ea_name) {
+                        Ok(ea) => eas.push(ea),
+                        Err(_) => {} // skip unreadable EAs
+                    }
+                }
+            }
+        }
+
+        Ok(eas)
+    }
 }
 
 impl VfsBackend for HostDirBackend {
@@ -667,19 +817,24 @@ impl VfsBackend for HostDirBackend {
         Ok(())
     }
 
-    fn get_ea(&self, _path: &str, _name: &str) -> VfsResult<EaEntry> {
-        // EAs deferred to Step 3
-        Err(Os2Error::EA_NOT_FOUND)
+    fn get_ea(&self, path: &str, name: &str) -> VfsResult<EaEntry> {
+        let host_path = self.resolve_existing(path)?;
+        Self::xattr_get_ea(&host_path, name)
     }
 
-    fn set_ea(&self, _path: &str, _ea: &EaEntry) -> VfsResult<()> {
-        // EAs deferred to Step 3
-        Ok(())
+    fn set_ea(&self, path: &str, ea: &EaEntry) -> VfsResult<()> {
+        let host_path = self.resolve_existing(path)?;
+        if ea.value.is_empty() && ea.flags == 0 {
+            // Empty value with no flags = delete the EA
+            Self::xattr_remove_ea(&host_path, &ea.name)
+        } else {
+            Self::xattr_set_ea(&host_path, ea)
+        }
     }
 
-    fn enum_ea(&self, _path: &str) -> VfsResult<Vec<EaEntry>> {
-        // EAs deferred to Step 3
-        Ok(Vec::new())
+    fn enum_ea(&self, path: &str) -> VfsResult<Vec<EaEntry>> {
+        let host_path = self.resolve_existing(path)?;
+        Self::xattr_list_eas(&host_path)
     }
 
     fn query_fs_info_alloc(&self) -> VfsResult<FsAllocate> {
@@ -1072,5 +1227,163 @@ mod tests {
             OpenMode::ReadOnly, SharingMode::DenyWrite,
             OpenMode::WriteOnly, SharingMode::DenyNone,
         ));
+    }
+
+    // ── Extended Attributes ──
+
+    #[test]
+    fn test_ea_set_and_get() {
+        let (_tmp, backend) = create_temp_backend();
+
+        // Create a file to attach EAs to
+        let (h, _) = backend.open(
+            "ea_test.txt", OpenMode::ReadWrite, SharingMode::DenyNone,
+            OpenFlags::from_raw(0x0012), FileAttribute::NORMAL,
+        ).unwrap();
+        backend.close(h).unwrap();
+
+        // Set an EA
+        let ea = EaEntry {
+            name: ".TYPE".to_string(),
+            value: b"Plain Text".to_vec(),
+            flags: 0,
+        };
+        backend.set_ea("ea_test.txt", &ea).unwrap();
+
+        // Get it back
+        let got = backend.get_ea("ea_test.txt", ".TYPE").unwrap();
+        assert_eq!(got.name, ".TYPE");
+        assert_eq!(got.value, b"Plain Text");
+        assert_eq!(got.flags, 0);
+    }
+
+    #[test]
+    fn test_ea_critical_flag() {
+        let (_tmp, backend) = create_temp_backend();
+
+        let (h, _) = backend.open(
+            "critical.txt", OpenMode::ReadWrite, SharingMode::DenyNone,
+            OpenFlags::from_raw(0x0012), FileAttribute::NORMAL,
+        ).unwrap();
+        backend.close(h).unwrap();
+
+        // Set a critical EA (flags = 0x80)
+        let ea = EaEntry {
+            name: ".LONGNAME".to_string(),
+            value: b"A Very Long Filename.txt".to_vec(),
+            flags: 0x80,
+        };
+        backend.set_ea("critical.txt", &ea).unwrap();
+
+        let got = backend.get_ea("critical.txt", ".LONGNAME").unwrap();
+        assert_eq!(got.flags, 0x80);
+        assert_eq!(got.value, b"A Very Long Filename.txt");
+    }
+
+    #[test]
+    fn test_ea_not_found() {
+        let (_tmp, backend) = create_temp_backend();
+
+        let (h, _) = backend.open(
+            "noea.txt", OpenMode::ReadWrite, SharingMode::DenyNone,
+            OpenFlags::from_raw(0x0012), FileAttribute::NORMAL,
+        ).unwrap();
+        backend.close(h).unwrap();
+
+        let result = backend.get_ea("noea.txt", ".NONEXISTENT");
+        assert_eq!(result.unwrap_err(), Os2Error::EA_NOT_FOUND);
+    }
+
+    #[test]
+    fn test_ea_enum() {
+        let (_tmp, backend) = create_temp_backend();
+
+        let (h, _) = backend.open(
+            "multi_ea.txt", OpenMode::ReadWrite, SharingMode::DenyNone,
+            OpenFlags::from_raw(0x0012), FileAttribute::NORMAL,
+        ).unwrap();
+        backend.close(h).unwrap();
+
+        // Set multiple EAs
+        backend.set_ea("multi_ea.txt", &EaEntry {
+            name: ".TYPE".to_string(), value: b"Plain Text".to_vec(), flags: 0,
+        }).unwrap();
+        backend.set_ea("multi_ea.txt", &EaEntry {
+            name: ".SUBJECT".to_string(), value: b"Test file".to_vec(), flags: 0,
+        }).unwrap();
+
+        // Enumerate
+        let eas = backend.enum_ea("multi_ea.txt").unwrap();
+        assert_eq!(eas.len(), 2);
+        let names: Vec<&str> = eas.iter().map(|e| e.name.as_str()).collect();
+        assert!(names.contains(&".TYPE"));
+        assert!(names.contains(&".SUBJECT"));
+    }
+
+    #[test]
+    fn test_ea_delete() {
+        let (_tmp, backend) = create_temp_backend();
+
+        let (h, _) = backend.open(
+            "del_ea.txt", OpenMode::ReadWrite, SharingMode::DenyNone,
+            OpenFlags::from_raw(0x0012), FileAttribute::NORMAL,
+        ).unwrap();
+        backend.close(h).unwrap();
+
+        // Set then delete an EA (empty value + flags=0 means delete)
+        backend.set_ea("del_ea.txt", &EaEntry {
+            name: ".TYPE".to_string(), value: b"data".to_vec(), flags: 0,
+        }).unwrap();
+        assert!(backend.get_ea("del_ea.txt", ".TYPE").is_ok());
+
+        backend.set_ea("del_ea.txt", &EaEntry {
+            name: ".TYPE".to_string(), value: Vec::new(), flags: 0,
+        }).unwrap();
+        assert_eq!(backend.get_ea("del_ea.txt", ".TYPE").unwrap_err(), Os2Error::EA_NOT_FOUND);
+    }
+
+    #[test]
+    fn test_ea_overwrite() {
+        let (_tmp, backend) = create_temp_backend();
+
+        let (h, _) = backend.open(
+            "overwrite_ea.txt", OpenMode::ReadWrite, SharingMode::DenyNone,
+            OpenFlags::from_raw(0x0012), FileAttribute::NORMAL,
+        ).unwrap();
+        backend.close(h).unwrap();
+
+        // Set EA
+        backend.set_ea("overwrite_ea.txt", &EaEntry {
+            name: ".TYPE".to_string(), value: b"Original".to_vec(), flags: 0,
+        }).unwrap();
+
+        // Overwrite with new value
+        backend.set_ea("overwrite_ea.txt", &EaEntry {
+            name: ".TYPE".to_string(), value: b"Updated".to_vec(), flags: 0x80,
+        }).unwrap();
+
+        let got = backend.get_ea("overwrite_ea.txt", ".TYPE").unwrap();
+        assert_eq!(got.value, b"Updated");
+        assert_eq!(got.flags, 0x80);
+    }
+
+    #[test]
+    fn test_ea_case_insensitive_path() {
+        let (_tmp, backend) = create_temp_backend();
+
+        let (h, _) = backend.open(
+            "CaseEA.TXT", OpenMode::ReadWrite, SharingMode::DenyNone,
+            OpenFlags::from_raw(0x0012), FileAttribute::NORMAL,
+        ).unwrap();
+        backend.close(h).unwrap();
+
+        // Set EA using original case
+        backend.set_ea("CaseEA.TXT", &EaEntry {
+            name: ".TYPE".to_string(), value: b"test".to_vec(), flags: 0,
+        }).unwrap();
+
+        // Read EA using different case (case-insensitive path resolution)
+        let got = backend.get_ea("caseea.txt", ".TYPE").unwrap();
+        assert_eq!(got.value, b"test");
     }
 }
