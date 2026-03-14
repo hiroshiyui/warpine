@@ -16,6 +16,7 @@ pub mod console;
 mod kbdcalls;
 mod viocalls;
 mod process;
+pub mod locale;
 
 pub use constants::*;
 pub use mutex_ext::MutexExt;
@@ -93,6 +94,7 @@ pub struct SharedState {
     pub threads: Mutex<HashMap<u32, thread::JoinHandle<()>>>,
     pub exit_requested: AtomicBool,
     pub exit_code: AtomicI32,
+    pub locale: locale::Os2Locale,
 }
 
 unsafe impl Send for SharedState {}
@@ -163,6 +165,7 @@ impl Loader {
             threads: Mutex::new(HashMap::new()),
             exit_requested: AtomicBool::new(false),
             exit_code: AtomicI32::new(0),
+            locale: locale::Os2Locale::from_host(),
         });
 
         Loader { _kvm: kvm, vm, shared }

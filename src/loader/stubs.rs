@@ -147,9 +147,10 @@ impl super::Loader {
     /// DosQueryCp (ordinal 291): get active codepage.
     /// NOTE: ordinal 291 is shared; see dispatch comment.
     pub fn dos_query_cp(&self, cb: u32, p_cp_list: u32, pcb: u32) -> u32 {
-        debug!("  DosQueryCp");
+        let cp = self.shared.locale.codepage;
+        debug!("  DosQueryCp(cp={})", cp);
         if p_cp_list != 0 && cb >= 4 {
-            self.guest_write::<u32>(p_cp_list, 437); // CP 437 (US)
+            self.guest_write::<u32>(p_cp_list, cp);
         }
         if pcb != 0 {
             self.guest_write::<u32>(pcb, 4);
@@ -181,6 +182,7 @@ impl super::Loader {
         // +28: abReserved1[2] (USHORT×2)
         // +32: szDataSeparator[2]
         // +34: abReserved2[5] (USHORT×5)
+        let locale = &self.shared.locale;
         let info_size = 44u32; // Full Watcom COUNTRYINFO size (including reserved fields)
         let write_size = cb.min(info_size);
         if p_ctry_info != 0 && write_size > 0 {
@@ -188,19 +190,19 @@ impl super::Loader {
             for i in 0..write_size {
                 self.guest_write::<u8>(p_ctry_info + i, 0);
             }
-            // Write fields only if they fit within cb
-            if write_size >= 4 { self.guest_write::<u32>(p_ctry_info, 1); }       // country = US
-            if write_size >= 8 { self.guest_write::<u32>(p_ctry_info + 4, 437); }  // codepage = 437
-            if write_size >= 12 { self.guest_write::<u32>(p_ctry_info + 8, 0); }   // fsDateFmt = MDY
-            if write_size >= 17 { self.guest_write_bytes(p_ctry_info + 12, b"$\0\0\0\0"); } // szCurrency
-            if write_size >= 19 { self.guest_write_bytes(p_ctry_info + 17, b",\0"); } // szThousandsSeparator
-            if write_size >= 21 { self.guest_write_bytes(p_ctry_info + 19, b".\0"); } // szDecimal
-            if write_size >= 23 { self.guest_write_bytes(p_ctry_info + 21, b"-\0"); } // szDateSeparator
-            if write_size >= 25 { self.guest_write_bytes(p_ctry_info + 23, b":\0"); } // szTimeSeparator
-            if write_size >= 26 { self.guest_write::<u8>(p_ctry_info + 25, 0); }   // fsCurrencyFmt
-            if write_size >= 27 { self.guest_write::<u8>(p_ctry_info + 26, 2); }   // cDecimalPlace
-            if write_size >= 28 { self.guest_write::<u8>(p_ctry_info + 27, 0); }   // fsTimeFmt = 12-hour
-            if write_size >= 34 { self.guest_write_bytes(p_ctry_info + 32, b",\0"); } // szDataSeparator
+            // Write fields from host locale, only if they fit within cb
+            if write_size >= 4 { self.guest_write::<u32>(p_ctry_info, locale.country); }
+            if write_size >= 8 { self.guest_write::<u32>(p_ctry_info + 4, locale.codepage); }
+            if write_size >= 12 { self.guest_write::<u32>(p_ctry_info + 8, locale.date_fmt); }
+            if write_size >= 17 { self.guest_write_bytes(p_ctry_info + 12, &locale.currency); }
+            if write_size >= 19 { self.guest_write_bytes(p_ctry_info + 17, &[locale.thousands_sep, 0]); }
+            if write_size >= 21 { self.guest_write_bytes(p_ctry_info + 19, &[locale.decimal_sep, 0]); }
+            if write_size >= 23 { self.guest_write_bytes(p_ctry_info + 21, &[locale.date_sep, 0]); }
+            if write_size >= 25 { self.guest_write_bytes(p_ctry_info + 23, &[locale.time_sep, 0]); }
+            if write_size >= 26 { self.guest_write::<u8>(p_ctry_info + 25, locale.currency_fmt); }
+            if write_size >= 27 { self.guest_write::<u8>(p_ctry_info + 26, locale.decimal_places); }
+            if write_size >= 28 { self.guest_write::<u8>(p_ctry_info + 27, locale.time_fmt); }
+            if write_size >= 34 { self.guest_write_bytes(p_ctry_info + 32, &[locale.data_sep, 0]); }
         }
         if pcb_actual != 0 {
             self.guest_write::<u32>(pcb_actual, info_size);
