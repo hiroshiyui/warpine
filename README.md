@@ -10,7 +10,7 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) applications 
 - **Multi-Threading:** Concurrent OS/2 threads, each mapped to a native host thread with its own KVM vCPU.
 - **Presentation Manager (GUI):** Window management, message loop, graphics primitives, timer support, clipboard, dialog boxes, menus, and resource loading — implemented via winit + softbuffer.
 - **Text-Mode Console:** Full VIO (Video I/O) and KBD (Keyboard) subsystem emulation via ANSI terminal escape sequences and termios raw mode.
-- **Filesystem Support:** OS/2 file I/O bridged to native Linux files with drive letter path translation, directory enumeration, and file metadata APIs.
+- **Filesystem Support:** OS/2 file I/O with drive letter path translation, directory enumeration, and file metadata APIs. Phase 4 introduces a VFS layer with HPFS-compatible semantics (case-insensitive lookup, extended attributes, file locking, sandbox isolation).
 - **Memory Management:** `DosAllocMem`/`DosFreeMem`, shared memory, and a dedicated guest physical memory manager.
 - **IPC:** Event/mutex/muxwait semaphores, pipes, and named message queues.
 - **Process Management:** `DosExecPgm`, `DosWaitChild`, directory tracking, and system information queries.
@@ -90,6 +90,7 @@ cargo test
 - **Phase 2** (Core Subsystem) — Complete. Memory, filesystem, threading, IPC, process management.
 - **Phase 3** (Presentation Manager GUI) — Complete. Window management, graphics, input, timers, dialogs, menus, clipboard, resource loading.
 - **Phase 3.5** (Text-Mode Application Support) — Complete. VIO/KBD console subsystem, DosRead stdin with CR-CRLF translation and echo. 4OS2 command shell runs interactively.
+- **Phase 4** (Filesystem I/O) — Planned. HPFS-compatible virtual filesystem with VfsBackend trait, pluggable backends (host-directory first), case-insensitive lookup, extended attributes, file locking, and sandbox isolation.
 
 See [doc/TODOs.md](doc/TODOs.md) for the full roadmap.
 

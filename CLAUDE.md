@@ -35,7 +35,7 @@ cargo test                               # Unit tests (LX parser)
 ### Key modules
 
 - **`src/lx/`** — LX executable format parser (`header.rs` for binary structures, `lx.rs` for orchestration). Unit tests live here.
-- **`src/loader/`** — The core: KVM VMM, memory manager, handle manager, semaphore manager, queue manager, VMEXIT loop, and OS/2 API handler functions. Split into `mod.rs` (loader core), `doscalls.rs`, `viocalls.rs`, `kbdcalls.rs`, `console.rs`, `pm_win.rs`, `pm_gpi.rs`, `stubs.rs`, `process.rs`, `managers.rs`, `constants.rs`.
+- **`src/loader/`** — The core: KVM VMM, memory manager, handle manager, semaphore manager, queue manager, VMEXIT loop, and OS/2 API handler functions. Split into `mod.rs` (loader core), `doscalls.rs`, `viocalls.rs`, `kbdcalls.rs`, `console.rs`, `pm_win.rs`, `pm_gpi.rs`, `stubs.rs`, `process.rs`, `managers.rs`, `constants.rs`. Phase 4 adds `vfs.rs` (VfsBackend trait, DriveManager) and `vfs_hostdir.rs` (HostDirBackend) — see developer guide for VFS architecture.
 - **`src/api.rs`** — Small module with `DosWrite`/`DosExit` implementations and FFI bridge stubs.
 - **`src/gui.rs`** — Phase 3 Presentation Manager GUI (winit + softbuffer). Work in progress.
 
@@ -73,7 +73,7 @@ Each OS/2 thread maps to a native Rust thread with its own KVM vCPU. `SharedStat
 
 ### After Every Change
 
-1. Update all relevant documents
+1. Update all relevant documents (`README.md`, `doc/*.md` and this file `CLAUDE.md`...)
 2. Add essential but missing tests to improve test coverage and ensure code quality
 3. check if there is any missing or incomplete test
 4. Remove the finishied tasks from TODOs
