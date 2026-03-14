@@ -531,7 +531,7 @@ impl super::Loader {
         } else { 1 };
 
         let mut dm = self.shared.drive_mgr.lock_or_recover();
-        match dm.find_first(&spec, FileAttribute(attr)) {
+        let rc = match dm.find_first(&spec, FileAttribute(attr)) {
             Ok((hdir, first_entry)) => {
                 self.guest_write::<u32>(phdir_ptr, hdir);
                 let mut entries = vec![first_entry];
@@ -541,10 +541,13 @@ impl super::Loader {
                         Err(_) => break,
                     }
                 }
+                debug!("  DosFindFirst -> {} entries, first='{}'", entries.len(),
+                       entries.first().map(|e| e.name.as_str()).unwrap_or("?"));
                 self.write_filefindbuf3_multi(&entries, buf_ptr, buf_len, pc_found_ptr, level == 2)
             }
-            Err(e) => e.0,
-        }
+            Err(e) => { debug!("  DosFindFirst -> error {}", e.0); e.0 },
+        };
+        rc
     }
 
     pub fn dos_find_next(&self, hdir: u32, buf_ptr: u32, buf_len: u32, pc_found_ptr: u32) -> u32 {
