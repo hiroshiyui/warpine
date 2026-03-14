@@ -787,6 +787,10 @@ cargo run -- samples/find_test/find_test.exe
 # Filesystem: DosCreateDir, DosDeleteDir, DosMove, DosQueryPathInfo
 cargo run -- samples/fs_ops_test/fs_ops_test.exe
 
+# VFS: comprehensive filesystem test on drive C: (create, read, seek, truncate,
+# mkdir, rename, copy, find, metadata, current dir, delete)
+cargo run -- samples/vfs_test/vfs_test.exe
+
 # Threading: DosCreateThread, DosSleep, DosWaitThread
 cargo run -- samples/thread_test/thread_test.exe
 

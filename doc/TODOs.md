@@ -312,6 +312,7 @@ This validates: DriveManager path resolution (relative path `"test.txt"` → vol
 - [ ] `samples/file_test` — gate test (DosOpen/DosWrite/DosRead/DosClose through VFS)
 - [ ] `samples/find_test` — DosFindFirst/DosFindNext through VFS
 - [ ] `samples/fs_ops_test` — DosCreateDir/DosDeleteDir/DosMove/DosQueryPathInfo through VFS
+- [ ] `samples/vfs_test` — comprehensive VFS test on drive C: (create, read, seek, truncate, mkdir, rename, copy, find, metadata, current dir, delete)
 - [ ] 4OS2 `dir`, `tree`, `copy`, `move`, `del`, `md`, `rd` commands work correctly
 - [ ] File attributes (`attrib` command) work correctly
 
