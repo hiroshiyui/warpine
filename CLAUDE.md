@@ -16,7 +16,7 @@ Warpine is an OS/2 compatibility layer for Linux that runs 32-bit OS/2 (LX forma
 cargo build                              # Debug build
 cargo run -- <path_to_os2_executable>    # Run an OS/2 binary
 cargo run -- samples/hello/hello.exe     # Example: run hello world
-cargo test                               # Unit tests (168 tests: LX/NE parsers, VFS, managers, MMPM, API registry, HeadlessRenderer)
+cargo test                               # Unit tests (177 tests: LX/NE parsers, VFS, managers, MMPM, API registry, HeadlessRenderer, scan codes)
 ```
 
 **Prerequisites:** Linux with KVM enabled (`/dev/kvm`), x86_64 CPU with VT-x/AMD-V, Rust 2024 edition, `libsdl2-dev` (for PM/GUI window support).

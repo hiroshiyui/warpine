@@ -57,9 +57,10 @@ Eliminated 16-bit thunks from 4OS2 by recompiling with modified headers rather t
 ~~Done — see Architecture → Completed Items.~~
 
 ### SDL2 Backend — Remaining
-- [ ] OS/2 scan code table: map SDL2 `Scancode` to IBM PC Set-1 scan codes for accurate WM_CHAR SC field
-- [ ] `SDL_CaptureMouse` for `WinSetCapture` semantics
-- [ ] `SDL_SetClipboardText` / `SDL_GetClipboardText` for host clipboard bridging
+~~All items done — see Architecture → Completed Items.~~
+- ~~OS/2 scan code table~~ — done: `sdl_scancode_to_os2()` maps SDL2 Scancode → IBM PC Set-1; `build_wm_char()` encodes KC_* flags, scan code, modifier keys, and VK_* virtual key codes into WM_CHAR MP1/MP2.
+- ~~`SDL_CaptureMouse` for `WinSetCapture` semantics~~ — done: `WinSetCapture` (ordinal 852) / `WinQueryCapture` (ordinal 804) implemented; `GUIMessage::SetMouseCapture` triggers `SDL_CaptureMouse`.
+- ~~`SDL_SetClipboardText` / `SDL_GetClipboardText` for host clipboard bridging~~ — done: guest→host on `WinSetClipbrdData` CF_TEXT; host→guest via per-frame clipboard polling in `Sdl2Renderer::poll_events`.
 - ~~SDL2 audio subsystem for `DosBeep` and future MMPM/2~~ — done: `DosBeep` plays real tones; `mciSendCommand`/`mciSendString` waveaudio implemented via SDL2 audio queue in `src/loader/mmpm.rs`
 
 ### Testing Strategy
