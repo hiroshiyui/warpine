@@ -345,11 +345,187 @@ Eliminated 16-bit thunks from 4OS2 via source-level recompilation rather than ru
 - [x] **4OS2 `dir` verified** — Correct date formatting (`03-14-26 8:12`), file listing, directory count, free space
 - [x] **Test samples** — `screen_test` (18/18), `findbuf_test` (15/15), `nls_test` (15/15), `thunk_test`, `dir_test`
 
+---
+
+## Architecture & Refactoring Backlog
+
+Items identified during architecture review. These cut across phases and should be evaluated for priority as each phase is planned.
+
+### Virtualization Backend Abstraction
+- [ ] Define a `VmBackend` trait with methods: `create_vcpu()`, `run()`, `read_register()`, `write_register()`, `write_memory()`, `read_memory()` — analogous to the existing `VfsBackend` pattern
+- [ ] Implement KVM as the primary `VmBackend` (refactor from current direct `kvm_ioctls` usage)
+- [ ] This decouples API thunking logic from the hypervisor, enabling future backends (user-mode emulation via unicorn/icicle as fallback for non-KVM environments)
+- [ ] Enables unit testing of API thunk logic without a live KVM instance (mock backend)
+
+### Guest Memory Type Safety
+- [ ] Wrap the raw guest physical memory region in a dedicated `GuestMemory` type (currently `*mut u8` in `SharedState`)
+- [ ] All guest memory reads/writes go through bounds-checked methods on `GuestMemory` — no direct pointer arithmetic outside this type
+- [ ] This enforces the hypervisor escape prevention rule and makes the safety boundary explicit
+- [ ] `guest_mem.rs` already provides helpers (`guest_read`, `guest_write`, `guest_slice_mut`) — formalise this as the sole API surface
+
+### API Thunk Auto-Registration
+- [ ] Replace the large `match ordinal` dispatch table in `api_dispatch.rs` with a registry-based mechanism
+- [ ] Option A: procedural macro (`#[os2_api(module = "DOSCALLS", ordinal = 299)]`) auto-registers handlers at compile time
+- [ ] Option B: `inventory` crate for distributed static registration without a proc macro
+- [ ] Benefits: auto-generate stub lists, compatibility matrices, and missing-API reports; reduces `api_dispatch.rs` maintenance burden as ordinal count grows
+
+### Ordinal Table Canonical Build Tool
+- [ ] Write a standalone tool that reads real OS/2 system DLLs (DOSCALLS.DLL, PMWIN.DLL, PMGPI.DLL, etc.) using the LX parser and dumps the complete `ordinal → export name` mapping
+- [ ] Use this as ground truth instead of documentation (different fixpak levels can differ; documentation has errors)
+- [ ] Auto-generate a Rust source file with `const` ordinal definitions and a verification table
+- [ ] Cross-reference against the import tables of target binaries to catch mapping mismatches early
+- [ ] Note: the same ordinal can map to different APIs across OS/2 versions (1.x 16-bit vs 2.x 32-bit transition); the tool should handle multi-version comparison
+
+### Structured API Trace System
+- [ ] Replace ad-hoc `debug!` logging in thunk handlers with a structured tracing layer using the `tracing` crate
+- [ ] Each API call emits a span with: module, ordinal, resolved name, all arguments (typed), return value, guest register state at call site
+- [ ] Output modes: human-readable (strace-like), JSON (for tooling), suppressed (production)
+- [ ] Enables a future TUI debug overlay showing live API call stream, memory map, window hierarchy, and PM message queue
+
+### PM Renderer Abstraction
+- [ ] Define a `PmRenderer` trait: `render_frame(buf: &VgaTextBuffer)`, `render_pm_window(...)`, `poll_key_event() -> Option<Os2ScanCode>`, `poll_mouse_event() -> Option<Os2MouseEvent>`
+- [ ] Current winit + softbuffer implementation becomes one concrete `PmRenderer`
+- [ ] SDL2 backend as a second implementation (see SDL2 migration item below)
+- [ ] Enables headless renderer for CI/automated testing of PM applications
+
+### SDL2 as Unified Windowing/Input/Audio Backend
+- [ ] Evaluate migrating from winit + softbuffer to SDL2 as the unified host-side backend for both text-mode and PM rendering
+- [ ] Key advantages over winit for OS/2 compatibility work:
+  - `SDL_Scancode` maps cleanly to OS/2 hardware scan codes (physical key identity, not character); winit's `KeyCode` has edge cases on Wayland
+  - Key down/up distinction and extended scan codes (E0 prefix) are reliable
+  - `SDL_CaptureMouse` directly matches PM's `WinSetCapture` semantics; winit mouse capture has platform consistency issues
+  - Custom cursor creation from pixel data (`SDL_CreateColorCursor`) maps to PM's `WinSetPointer`; winit support is limited
+  - `SDL_GetClipboardText` / `SDL_SetClipboardText` available directly; winit requires a separate crate
+  - SDL2 audio subsystem handles `DosBeep` and future MMPM/2 without an additional dependency
+  - Polling event model (`SDL_PollEvent`) integrates more naturally with the KVM VMEXIT loop than winit's callback-based `run()`
+- [ ] Recommended migration path: (1) add SDL2 text-mode renderer as trial, (2) define `PmRenderer` trait boundary, (3) port PM rendering from winit to SDL2, (4) remove winit + softbuffer
+
+### Testing Strategy
+- [ ] **Unit tests (no KVM):** once `VmBackend` trait exists, mock it out so individual API thunk functions can be tested with arbitrary guest memory and register state — no `/dev/kvm` required
+- [ ] **Integration tests:** run OS/2 binaries from `samples/` end-to-end in CI; capture stdout + exit code for regression detection; extend to cover `pm_hello`, `screen_test`, `nls_test`, `thunk_test`
+- [ ] **Compatibility matrix:** track which OS/2 API ordinals are implemented, stubbed, or missing; generate a report from the ordinal registry; use real OS/2 test programs (e.g., Open Watcom-compiled conformance suites) as targets
+
+---
+
 ## Phase 5: Multimedia and 16-bit Support
 - [ ] **Audio/Video (MMPM/2)**
-    - [ ] Reimplement multimedia APIs using PulseAudio/ALSA or SDL.
+    - [ ] Basic `mciSendCommand` / `mciSendString` for `waveaudio` device, bridged to SDL2 audio or PulseAudio/ALSA
+    - [ ] `DosBeep` — emit tone via audio backend (currently a stub)
 - [ ] **16-bit Compatibility (NE format)**
     - [x] **NE format parser** — `src/ne/` module: NeHeader, NeSegmentEntry, NeRelocationEntry, NeEntry, entry table/name table parsers, NeFile orchestration with full validation. 16 unit tests.
+    - [x] **NE loader infrastructure** — `load_ne()`, `apply_ne_fixups()`, `setup_guest_ne()`, `setup_and_run_ne_cli()`, `handle_ne_api_call()`, `ne_api_arg_bytes()`, `resolve_import_16()` — 16-bit execution skeleton in place
     - [ ] **GDT tiling** — create 16-bit segment descriptors in the GDT for each NE segment (one per 64KB region). KVM executes 16-bit code natively at hardware speed — no software emulator needed. The CPU switches between 16-bit and 32-bit code segments naturally when descriptors are set up correctly. This also fixes 16-bit thunks in LX apps as a side effect.
     - [ ] **16-bit API thunking** — NE apps use Pascal calling convention and `_far16` pointers. Add 16-bit API dispatch alongside the existing 32-bit `_System` dispatch, with segment:offset ↔ flat address translation
     - [ ] **Mode switching** — handle transitions between 16-bit NE code and 32-bit flat code (e.g., 16-bit app calling a 32-bit DLL or vice versa)
+
+## Phase 6: Text-Mode VGA Renderer
+
+Goal: replace the current ANSI-escape terminal approach with a proper VGA text-mode framebuffer rendered into a window, giving OS/2 text-mode applications a faithful visual environment.
+
+### Architecture
+```
+  VIO API layer (viocalls.rs)
+        │
+        ▼
+  VgaTextBuffer (cells: [char+attr; 80×25], cursor state, dirty tracking)
+        │
+        ▼
+  TextModeRenderer trait
+        │
+   ┌────┴────┐
+   ▼         ▼
+SDL2       winit+softbuffer
+backend    backend (existing)
+```
+
+- [ ] **`VgaTextBuffer` struct** — 80×25 (or configurable) grid of `VgaCell { character: u8, attribute: u8 }`, cursor position/visibility, dirty-cell tracking (`BitVec`)
+- [ ] **VIO API handlers updated** — `VioWrtTTY`, `VioWrtCellStr`, `VioWrtCharStrAtt`, `VioWrtNCell`, `VioScrollUp`, `VioScrollDn`, etc. write into `VgaTextBuffer` instead of emitting ANSI escape sequences
+- [ ] **CP437 bitmap font** — embed 8×16 VGA font (e.g., IBM VGA CP437, from public domain sources or DOSBox); load via `include_bytes!`
+- [ ] **CGA/EGA 16-colour palette** — standard `#000000`…`#FFFFFF` mapping; attribute byte bits 0–3 = foreground, 4–6 = background, 7 = blink/bright-bg
+- [ ] **Renderer loop** — scan dirty cells each frame; for each cell blit 8×16 glyph pixels to host pixel buffer; present; target ≤16ms frame time for 60fps
+- [ ] **`TextModeRenderer` trait** — `render_frame(&VgaTextBuffer)`, `poll_key_event() -> Option<Os2KeyEvent>` — allows swapping SDL2 and winit+softbuffer backends
+- [ ] **Cursor rendering** — honour `VioSetCurType` start/end scan line for block, underline, or hidden cursor; blink via timer
+- [ ] **Keyboard scan codes** — map SDL2 `SDL_Scancode` (or winit `KeyCode`) to OS/2 scan code + character code pairs; handle extended keys (arrows, Home/End/PgUp/PgDn/Ins/Del, F1–F12)
+- [ ] **DBCS font support (future)** — for CP932/CP950, load a 16×16 double-width glyph set; `VgaCell` extended to flag lead/trail bytes
+
+## Phase 7: Application Compatibility Expansion
+
+Goal: raise the fraction of real OS/2 applications that run correctly. Priority order below is based on breadth of unblocking effect.
+
+### DLL Loader Chain (highest priority — blocks nearly everything)
+- [ ] Parse LX import table and recursively load dependent DLLs
+- [ ] Support both ordinal-based and name-based imports
+- [ ] Resolve export tables from loaded DLL LX objects
+- [ ] Call DLL initialisation routines (`DLL_INITTERM` entry point) at load and unload time
+- [ ] `DosLoadModule` / `DosFreeModule` — full runtime dynamic loading (currently stubs)
+- [ ] `DosQueryModuleHandle` / `DosQueryProcAddr` — runtime symbol resolution
+- [ ] Handle load-order dependencies and circular imports
+- [ ] Option: load real OS/2 system DLL binaries alongside emulated ones (selective real-DLL execution)
+
+### DOSCALLS Long Tail
+- [ ] **Structured Exception Handling** — `DosSetExceptionHandler` / `DosUnsetExceptionHandler` with a real per-thread exception handler chain; `DosRaiseException`; `DosUnwindException`
+- [ ] **Environment** — `DosScanEnv`, `DosSetExtLIBPATH`, `DosQueryExtLIBPATH`
+- [ ] **NLS / DBCS** — `DosQueryDBCSEnv` (DBCS lead-byte table), full `DosMapCase` for non-Latin codepages
+- [ ] **`DosQuerySysInfo`** — verify all QSV_* values are reasonable for common app queries (version number, timer resolution, page size, max path length)
+- [ ] **Thread priorities** — `DosSetPriority` (idle / regular / time-critical / server classes); currently ignored
+- [ ] **`DosWaitThread`** — reliable join semantics with timeout; `DosKillThread` — correct cleanup
+
+### Code Page and DBCS Support
+- [ ] `DosQueryCp` / `DosSetProcessCp` — track current process code page; return it accurately
+- [ ] DBCS lead-byte table for CP932, CP949, CP950, CP936 — required for `DosQueryDBCSEnv` and correct multi-byte string handling in VIO
+- [ ] VGA font loader for DBCS (16×16 full-width glyphs) — needed for Phase 6 text renderer
+
+### PM Advanced Controls
+- [ ] **`WC_CONTAINER`** — OS/2's all-in-one list control; supports Icon / Name / Text / Detail / Tree view modes; record management; in-place editing; sorting and filtering. Heavily used by file managers and database front-ends.
+- [ ] **`WC_NOTEBOOK`** — tabbed property sheet; used by nearly all Settings dialogs
+- [ ] **Dialog template parsing** — load dialog layout from LX resource (DLGTEMPLATE binary format); auto-create child windows via `WinCreateWindow`; enables `WinDlgBox` / `WinLoadDlg` to work for real
+- [ ] **Accelerator table** — `WinLoadAccelTable` / `WinTranslateAccel` with real resource parsing
+- [ ] **`WinSubclassWindow`** — replace a window's procedure pointer and chain to original; essential for PM customisation patterns
+- [ ] **Drag and drop** — `DrgDrag`, `DrgAccessDraginfo`, `DM_DRAGOVER` / `DM_DROP` message protocol
+- [ ] **Mouse capture** — `WinSetCapture` / `WinQueryCapture`; map to SDL2 `SDL_CaptureMouse`
+- [ ] **Custom cursors** — `WinSetPointer` with pixel-data cursor; map to SDL2 `SDL_CreateColorCursor`
+- [ ] **Clipboard bridging** — connect `WinSetClipbrdData` / `WinQueryClipbrdData` to host clipboard via SDL2 `SDL_SetClipboardText` / `SDL_GetClipboardText`
+- [ ] **Printing** — `DevOpenDC`, `DevCloseDC`, basic spool API stubs; low priority but required by some commercial apps
+
+### TCP/IP Socket API
+- [ ] Implement `SO32DLL.DLL` / `TCP32DLL.DLL` thunks: `socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv`, `select`, `gethostbyname`, `getservbyname`, `setsockopt`, `getsockopt`, `closesocket`
+- [ ] Map directly to Linux BSD socket syscalls (semantics are nearly identical)
+- [ ] Handle OS/2-specific error codes (`SOCEINVAL`, `SOCECONNREFUSED`, etc.) → errno mapping
+- [ ] Enables: web browsers (WebExplorer, Netscape for OS/2), FTP clients, IRC clients, network-licensed commercial software
+
+### REXX Interpreter Bridge
+- [ ] Bridge `REXXAPI.DLL` exports (`RexxStart`, `RexxRegisterSubcomDll`, `RexxVariablePool`) to [Regina REXX](http://regina-rexx.sourceforge.net/) — an open-source, API-compatible REXX interpreter
+- [ ] Avoids implementing a REXX interpreter from scratch; Regina's API is compatible with IBM's
+- [ ] Unlocks: most OS/2 installation programs (REXX-based), many system administration tools, 4OS2 `.cmd` scripts
+
+### Year 2038 Problem
+- [ ] **Audit `time_t` usage** — identify which DOSCALLS and CRT shim functions return or accept 32-bit `time_t` values; document which are affected
+- [ ] **DOSCALLS native time APIs** — `DosGetDateTime` / `DosSetDateTime` use `DATETIME` struct (year as `USHORT`); not affected by 2038 — verify and document
+- [ ] **CRT import shimming** — intercept `time()`, `mktime()`, `localtime()`, `gmtime()`, `difftime()`, `strftime()` imported from IBM CRT DLLs (CLIB.DLL, CRTL.DLL) and EMX runtime (EMX.DLL); redirect to 64-bit-clean host implementations
+- [ ] **`struct tm` passthrough** — shim `localtime()`/`gmtime()` return: compute correctly using 64-bit arithmetic, write `tm_year` as actual year offset from 1900 (int, not bounded); `struct tm` itself is not 2038-limited
+- [ ] **`time_t` windowing for arithmetic** — for callers that use `time_t` for comparisons/differences: apply pivot-year epoch shift inside the shim; document the limitation (shift breaks absolute timestamp storage)
+- [ ] **File system timestamps** — `FILESTATUS3` uses `FDATE`/`FTIME` (7-bit year offset from 1980, max 2107); not affected — verify
+- [ ] **Extended time API** (`WARPINE.DLL`)  — define `WrpGetDateTime64` / `WrpTime64` as optional escape hatch for programs that can be recompiled or binary-patched to use 64-bit time
+
+## Phase 8: SOM / Workplace Shell (Long-term)
+
+The Workplace Shell (WPS) is built entirely on IBM's System Object Model (SOM). SOM runtime is a prerequisite for any WPS support. This is a multi-year effort and is documented here for architectural reference only.
+
+### SOM Runtime Core (prerequisite for WPS)
+- [ ] **Object / Class model** — each SOM class has a class object (itself a SOM object); instances hold a pointer to the method table; single inheritance
+- [ ] **Offset-based method dispatch** — primary dispatch mechanism; method table is an array of function pointers; offset calculated from class hierarchy at registration time
+- [ ] **Name-lookup dispatch** — slower string-based resolution; used in DSOM and dynamic scenarios
+- [ ] **`SOMClassMgrObject`** — global class manager; `SOMClassMgr_somFindClass()`, class registration, DLL-based class loading
+- [ ] **IDL metadata** — SOM classes are described in IDL; the compiled metadata encodes method offsets and class hierarchy; runtime needs to parse or reconstruct this
+- [ ] **Binary ABI compatibility** — method table layout must match IBM SOM 2.1 ABI exactly for WPS extensions (XWorkplace, Object Desktop) to load and subclass WPS classes without recompilation; research `somFree` / SOMFree project ABI documentation
+
+### WPS Object Hierarchy (requires SOM runtime)
+- [ ] **`WPObject`** — root class; `wpInitData`, `wpSaveState`, `wpRestoreState`, `wpQueryTitle`, `wpSetTitle`, `wpOpen`, `wpDragOver`, `wpDrop`
+- [ ] **`WPFileSystem`** — object backed by a filesystem entry; `wpQueryFilename`, `wpQueryAttr`
+- [ ] **`WPFolder`** — directory view; Icon / Detail / Tree view modes via `WC_CONTAINER`; `wpPopulate` scans directory contents
+- [ ] **`WPDesktop`** — root desktop; singleton; persists object positions in OS2.INI
+- [ ] **`WPProgram`** — program object; double-click launches via `DosExecPgm`
+- [ ] **`WPDataFile`** — file with associated application; type determined by `.TYPE` EA
+- [ ] **Persistence** — `wpSaveState` / `wpRestoreState` serialise object state to OS2.INI / OS2SYS.INI via `PrfWriteProfileData` / `PrfQueryProfileData`
+- [ ] **Settings notebook** — `WinLoadDlg` + `WC_NOTEBOOK` + property pages per object class
+- [ ] **Drag and drop** — WPS objects participate in PM drag-and-drop protocol; `wpDragOver` / `wpDrop` / `wpCopyObject` / `wpMoveObject`
