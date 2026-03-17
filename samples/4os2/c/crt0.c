@@ -18,6 +18,7 @@
 #define INCL_DOS
 #include <os2.h>
 #include <string.h>
+#include <stdlib.h>   /* _osmajor, _osminor */
 
 /* Watcom C runtime symbols we provide */
 char *_LpPgmName;
@@ -110,6 +111,17 @@ void __OS2Main(void) {
     char *argv_buf[64];
     int argc;
     int rc;
+    ULONG ulVerBuf[2];
+
+    /* Initialise _osmajor / _osminor so that runtime code such as
+     * SetOSVersion() in os2calls.c formats the correct version string.
+     * The original Watcom CRT reads these from the GINFOSEG via
+     * DosGetInfoSeg (a 16-bit thunk); we use DosQuerySysInfo instead. */
+    if (DosQuerySysInfo(QSV_VERSION_MAJOR, QSV_VERSION_MINOR,
+                        ulVerBuf, sizeof(ulVerBuf)) == 0) {
+        _osmajor = (unsigned char)ulVerBuf[0];
+        _osminor  = (unsigned char)ulVerBuf[1];
+    }
 
     /* Get PIB (contains command line and environment) */
     DosGetInfoBlocks(&ptib, &ppib);
