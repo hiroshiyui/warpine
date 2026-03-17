@@ -297,16 +297,17 @@ OS/2 queues (`DosCreateQueue` / `DosReadQueue`) are named, prioritized message q
 
 ## Presentation Manager (GUI)
 
-**Modules:** `src/gui.rs`, `src/loader/pm_win.rs`, `src/loader/pm_gpi.rs`, `src/loader/pm_types.rs`
+**Modules:** `src/gui/renderer.rs`, `src/gui/sdl2_renderer.rs`, `src/gui/headless.rs`, `src/loader/pm_win.rs`, `src/loader/pm_gpi.rs`, `src/loader/pm_types.rs`
 
 The Presentation Manager (PM) is OS/2's GUI subsystem. Warpine implements it using **SDL2** (window management, event handling, and hardware-accelerated framebuffer rendering via streaming textures).
 
-### Dual Execution Paths
+### Three Execution Paths
 
-In `main.rs`, Warpine detects PM applications by checking if the executable imports the `"PMWIN"` module:
+`main.rs` selects an execution mode based on the executable's imports and environment:
 
-- **CLI apps** — vCPU runs on the main thread, no event loop.
-- **PM apps** — SDL2 event loop runs on the main thread (required by SDL2). The vCPU is spawned on a worker thread. Communication between the vCPU thread and the GUI thread happens via a channel (`GUISender` / `GUIReceiver`).
+- **CLI apps (SDL2 text window)** — default for apps that do not import `PMWIN`. The vCPU runs on a worker thread. `Sdl2TextRenderer` runs `run_text_loop()` on the main thread (required by SDL2), rendering a 640×400 VGA text window.
+- **CLI apps (terminal / headless)** — `WARPINE_HEADLESS=1`. The vCPU runs on the main thread; terminal ANSI output and raw-mode keyboard are used.
+- **PM apps** — SDL2 event loop runs on the main thread. The vCPU is spawned on a worker thread. Communication between the vCPU thread and the GUI thread happens via a channel (`GUISender` / `GUIReceiver`).
 
 ### Window Lifecycle
 
@@ -362,28 +363,94 @@ This mechanism is **re-entrant** — a window procedure can call `WinSendMsg`, w
 
 ## Text-Mode Console Subsystem
 
-**Modules:** `src/loader/console.rs`, `src/loader/viocalls.rs`, `src/loader/kbdcalls.rs`
+**Modules:** `src/loader/console.rs`, `src/loader/viocalls.rs`, `src/loader/kbdcalls.rs`, `src/gui/text_renderer.rs`
 
-OS/2 text-mode applications use two subsystems: **VIOCALLS** (Video I/O) for screen output and **KBDCALLS** (Keyboard) for input. Warpine implements these by mapping VIO calls to ANSI escape sequences on the host terminal and KBD calls to Linux termios raw mode input.
+OS/2 text-mode applications use two subsystems: **VIOCALLS** (Video I/O) for screen output and **KBDCALLS** (Keyboard) for input.
+
+### Rendering modes
+
+Two rendering backends are available, selected at startup:
+
+| Mode | Condition | Description |
+|---|---|---|
+| **SDL2 text window** | default | 640×400 SDL2 window; CP437 8×16 font; CGA 16-colour palette; blinking block/underline cursor |
+| **Terminal (ANSI)** | `WARPINE_HEADLESS=1` | ANSI escape sequences on the host terminal; raw-mode termios keyboard |
+
+Set `WARPINE_HEADLESS=1` for headless CI runs or when an SDL2 display is unavailable.
 
 ### VioManager (console.rs)
 
-The `VioManager` maintains:
-- A **screen buffer** of `(char, attribute)` cell pairs (row-major, CGA 16-color attributes)
-- **Cursor position** (row, col) and visibility state
-- **Terminal dimensions** detected via `TIOCGWINSZ` ioctl
-- **Raw mode state** for keyboard input via `tcsetattr`
+`VioManager` is the central state object for text-mode I/O. It maintains:
 
-VIO output functions write to the screen buffer and emit ANSI escape sequences to the host terminal. CGA attribute bytes are mapped to ANSI color codes (foreground 30–37, background 40–47, with bright bit support).
+- A **screen buffer** of `(char, attribute)` cell pairs, row-major, 80×25 in SDL2 mode or terminal-detected dimensions otherwise.
+- **Cursor position** (`cursor_row`, `cursor_col`) and visibility/shape (`cursor_visible`, `cursor_start`, `cursor_end` — VGA scan-line indices 0–15).
+- An `sdl2_mode` flag. When `true`, all ANSI terminal output is suppressed; the SDL2 renderer reads the buffer directly. `enable_raw_mode()` becomes a no-op; `enable_sdl2_mode()` locks dimensions to 80×25.
+- `stdin_pending_lf` — for CR→CRLF translation across consecutive `DosRead` calls.
+- `stdin_cooked_chars` — running count of printable chars echoed since the last CR/LF; used to bound backspace echo in cooked-mode `DosRead` (prevents erasing the shell prompt).
 
-### DosRead on stdin
+VIO write methods (`write_tty`, `write_char_str_att`, `write_n_cell`, `write_n_attr`, `scroll_up`, `scroll_down`) always update the screen buffer. In terminal mode they also emit ANSI escape sequences. In SDL2 mode only the buffer is updated; the renderer picks it up on the next frame.
 
-CLI applications like 4OS2 read keyboard input via `DosRead` on file handle 0 rather than using `KbdCharIn`. The `dos_read_stdin()` handler:
+#### VioScrollUp / VioScrollDn — OS/2 special case
 
-1. Enables terminal raw mode (`VMIN=0, VTIME=1` for 100ms timeout polling)
-2. Blocks until a byte is available, checking `exit_requested` between polls
-3. **Translates CR → CR+LF** — OS/2 console convention; pressing Enter on the host sends `\r`, but OS/2 apps expect `\r\n` as the line terminator. A pending LF byte is queued in `VioManager.stdin_pending_lf` and delivered on the next `DosRead` call.
-4. **Echoes characters** — Raw mode disables terminal echo, so `dos_read_stdin` writes typed characters back to stdout (including destructive backspace handling)
+`VioScrollUp` / `VioScrollDn` accept a `pCell` pointer to a 2-byte `(char, attr)` fill cell. **If `lines == 0`, OS/2 defines this as "clear the entire region"** (fill all rows from `top` to `bottom` with `fill_cell`). A null `pCell` defaults to `(' ', 0x07)`.
+
+### SDL2 text renderer (gui/text_renderer.rs)
+
+```
+VgaTextBuffer              — per-frame snapshot of VioManager state
+TextModeRenderer (trait)   — render_frame(buf, blink_on), poll_events(shared), frame_sleep()
+  Sdl2TextRenderer         — 640×400 window; streaming ARGB8888 texture; XOR-invert cursor
+  HeadlessTextRenderer     — no-op CI backend (counts frames)
+run_text_loop(renderer, shared)
+```
+
+`run_text_loop` drives the main-thread event loop. Cursor blink uses **wall-clock time** (`Instant`): on for 500 ms, off for 500 ms — independent of frame rate.
+
+**Cursor rendering** uses XOR-inversion of all RGB channels (`old ^ 0x00_FF_FF_FF`), guaranteeing the cursor bar is visible regardless of the underlying cell's fg/bg colour (including black-on-black `attr=0x00`). Degenerate cursor shapes (`cursor_start > cursor_end`) fall back to the default underline at scan lines 14–15.
+
+**CP437 font**: `get_cp437_glyph(ch: u8) -> [u8; 16]` returns the 8×16 bitmap. ASCII 0x20–0x7E delegates to `font8x16::FONT_8X16`; box-drawing (0xB0–0xCE), block elements (0xDB–0xDF), and other CP437 glyphs are hand-crafted bitmaps.
+
+**CGA palette**: `CGA_PALETTE: [u32; 16]` — ARGB8888 values indexed by 4-bit colour nibble (bits 3:0 for foreground, 7:4 for background in the attribute byte).
+
+### Keyboard input
+
+#### SDL2 mode
+
+Keyboard events from `Sdl2TextRenderer::poll_events()` are mapped to OS/2 key codes and pushed into `SharedState::kbd_queue` (a `Mutex<VecDeque<KbdKeyInfo>>`); `kbd_cond` (a `Condvar`) is signalled so waiting threads wake up immediately.
+
+```rust
+pub struct KbdKeyInfo {
+    pub ch:    u8,    // ASCII char code (0x00 for pure extended/navigation keys)
+    pub scan:  u8,    // IBM PC Set-1 scan code
+    pub state: u16,   // shift/ctrl/alt modifier bits
+}
+```
+
+`KbdCharIn` (ordinal 4) dequeues from `kbd_queue`, blocking on `kbd_cond` with a 50 ms timeout so it can check `exit_requested`. `IO_NOWAIT` (`wait == 1`) returns immediately if the queue is empty.
+
+`use_sdl2_text: AtomicBool` in `SharedState` signals all subsystems (DosWrite, DosRead, KbdCharIn) to use the SDL2 paths.
+
+#### Terminal mode (WARPINE_HEADLESS)
+
+`KbdCharIn` uses `VioManager::enable_raw_mode()` (termios `VMIN=0, VTIME=1`) and polls `read_byte()` in a loop. `KbdStringIn` provides line-buffered input with echo for simple applications.
+
+### VioSetCurType / VioGetCurType
+
+`VioSetCurType` (ordinal 32) reads a `VIOCURSORINFO` struct from guest memory:
+
+| Offset | Field | Notes |
+|---|---|---|
+| +0 | `yStart` (u16) | First scan line (0 = top of cell) |
+| +2 | `cEnd` (u16) | Last scan line (15 = bottom for 8×16 font) |
+| +4 | `cx` (u16) | Cursor width (0 = full) |
+| +6 | `attr` (u16) | 0 = normal/visible; 0xFFFF = hidden |
+
+`VioGetCurType` (ordinal 33) writes the current `VioManager` state back to the guest struct. Together they support the read-modify-write pattern common in OS/2 shell startup.
+
+### DosRead / DosWrite in SDL2 mode
+
+- **`DosWrite(fd=1)`** — routed through `VioManager::write_tty()` with attribute `0x07`. This keeps the screen buffer in sync so `VioGetCurPos` always returns the correct cursor column.
+- **`DosRead(fd=0)` (cooked mode)** — reads from `kbd_queue`, echoes printable chars and CR+LF, translates Enter to CR+LF (`stdin_pending_lf` for the second byte). Backspace is only echoed and delivered if `stdin_cooked_chars > 0`; otherwise it is silently discarded to prevent erasing content written before the current input line (e.g. the shell prompt).
 
 ### Calling Conventions
 
@@ -454,7 +521,7 @@ make                 # Cross-compiles with Open Watcom
 cargo run -- samples/4os2/4os2.exe
 ```
 
-4OS2 boots to an interactive `[c:\]` prompt. Working commands include `ver`, `set`, `echo`, `dir`, `exit`, and other built-ins. Use `RUST_LOG=debug` to trace API calls.
+4OS2 boots to an interactive `[c:\]` prompt in an SDL2 640×400 text window (CP437 font, CGA colours, blinking cursor). Working commands include `ver`, `set`, `echo`, `dir`, `exit`, and other built-ins. Use `RUST_LOG=debug` to trace API calls. Use `WARPINE_HEADLESS=1` to run in the host terminal instead.
 
 ### Key implementation details
 
@@ -706,10 +773,9 @@ The VFS is introduced incrementally:
 
 ```
 src/
-  main.rs              Entry point, CLI/PM detection, SDL2 init
-  gui.rs               SDL2 GUI: event loop, Canvas/Texture rendering, input dispatch
+  main.rs              Entry point: CLI/PM/text-mode detection, SDL2 init, thread spawning
   api.rs               DosWrite/DosExit FFI bridge stubs
-  font8x16.rs          8x16 bitmap font for text rendering
+  font8x16.rs          8×16 bitmap font (ASCII 0x20–0x7E) for CP437 text rendering
   lx/
     mod.rs             LX module re-exports
     header.rs          LX binary format structures and parsing
@@ -718,12 +784,23 @@ src/
     mod.rs             NE module re-exports
     header.rs          NE binary format structures (NeHeader, NeSegmentEntry, NeRelocationEntry)
     ne.rs              NE file orchestration (16-bit OS/2 apps, 16 unit tests)
+  gui/
+    mod.rs             GUI module re-exports; pub use for all renderer types
+    message.rs         GUIMessage channel (PM GUI ↔ renderer communication)
+    renderer.rs        PmRenderer trait + run_pm_loop() (PM/GUI SDL2 event loop)
+    render_utils.rs    Geometry helpers (Y-flip, rect/line rendering)
+    headless.rs        HeadlessRenderer: no-op PM backend for CI
+    sdl2_renderer.rs   Sdl2Renderer: PM SDL2 backend; SDL scancode/VK tables; push_msg
+    text_renderer.rs   TextModeRenderer trait, VgaTextBuffer, Sdl2TextRenderer,
+                       HeadlessTextRenderer, run_text_loop(), get_cp437_glyph(),
+                       CGA_PALETTE (22 unit tests)
   loader/
-    mod.rs             Loader struct, SharedState, KVM/mock init
+    mod.rs             Loader struct, SharedState (kbd_queue/kbd_cond/use_sdl2_text), KVM/mock init
     lx_loader.rs       LX executable loading into guest memory and fixup application
     ne_exec.rs         NE executable loader infrastructure (Phase 5)
     vcpu.rs            vCPU thread: VMEXIT loop, API call dispatch entry point
-    api_dispatch.rs    OS/2 API dispatch (ordinal → handler, all subsystems)
+    api_registry.rs    Static sorted API thunk table (122 entries); ApiEntry
+    api_dispatch.rs    Registry lookup + per-subsystem dispatcher routing
     api_trace.rs       Structured tracing helpers (ordinal_to_name, module_for_ordinal)
     constants.rs       Named constants (addresses, message IDs, ordinal bases)
     mutex_ext.rs       MutexExt trait (poison-recovering lock)
@@ -738,9 +815,12 @@ src/
     pm_win.rs          PMWIN API implementations (~50 ordinals)
     pm_gpi.rs          PMGPI API implementations (8 ordinals)
     mmpm.rs            MMPM/2 audio: MmpmManager, beep_tone, mciSendCommand/mciSendString
-    console.rs         VioManager: screen buffer, cursor state, raw mode, ANSI output
-    viocalls.rs        VIOCALLS API implementations (VioWrtTTY, VioScrollUp, etc.)
-    kbdcalls.rs        KBDCALLS API implementations (KbdCharIn, KbdStringIn, etc.)
+    console.rs         VioManager: screen buffer, cursor state/shape, sdl2_mode,
+                       ANSI output, stdin_cooked_chars, CP437→UTF-8 conversion
+    viocalls.rs        VIOCALLS API: VioWrtTTY, VioScrollUp/Dn (pCell + lines=0),
+                       VioSetCurType, VioGetCurType, VioWrtNCell, VioWrtNAttr, etc.
+    kbdcalls.rs        KBDCALLS API: KbdCharIn (kbd_queue in SDL2, termios in terminal),
+                       KbdStringIn, KbdGetStatus
     stubs.rs           Stub handlers for unimplemented/low-priority APIs
     process.rs         ProcessManager: DosExecPgm, DosWaitChild, directory tracking
     vfs.rs             VfsBackend trait, DriveManager, Os2Error, OS/2 data types, handle types
@@ -757,7 +837,7 @@ To add a new OS/2 API call:
 
 1. **Find the ordinal** — Look up the API's ordinal number in `doc/os2_ordinals.md` or OS/2 documentation.
 
-2. **Add the handler method** — In the appropriate file (`doscalls.rs`, `pm_win.rs`, or `pm_gpi.rs`), add a method on `impl Loader`:
+2. **Add the handler method** — In the appropriate file (`doscalls.rs`, `pm_win.rs`, `pm_gpi.rs`, `viocalls.rs`, `kbdcalls.rs`, or `stubs.rs`), add a method on `impl Loader`:
    ```rust
    pub fn dos_my_new_api(&self, param1: u32, param2: u32) -> u32 {
        // Read additional args from guest memory if needed
@@ -767,13 +847,18 @@ To add a new OS/2 API call:
    }
    ```
 
-3. **Wire up the dispatch** — In the dispatch function (`handle_api_call()` in `api_dispatch.rs` for DOSCALLS, `handle_pmwin_call()` for PMWIN, `handle_pmgpi_call()` for PMGPI), add a match arm:
+3. **Wire up the dispatch** — The dispatch path depends on the subsystem:
+
+   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (122 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
+
+   - **VIOCALLS / KBDCALLS**: add a match arm in `handle_viocalls()` or `handle_kbdcalls()`, and add the ordinal's stack-byte count to `viocalls_arg_bytes()` / `kbdcalls_arg_bytes()`.
+
+   - **PMWIN / PMGPI**: add a match arm in `handle_pmwin_call()` or `handle_pmgpi_call()`.
+
    ```rust
-   ORDINAL_NUMBER => {
-       let param1 = self.guest_read::<u32>(esp + 4).unwrap_or(0);
-       let param2 = self.guest_read::<u32>(esp + 8).unwrap_or(0);
-       ApiResult::Normal(self.dos_my_new_api(param1, param2))
-   }
+   // Example: VIOCALLS arm
+   // VioMyFunc(pArg, hvio) → ESP+4=hvio, +8=pArg
+   99 => self.vio_my_func(read_stack(8), read_stack(4)),
    ```
 
 4. **Add a named constant** — If the ordinal is used elsewhere, add it to `constants.rs`.
@@ -781,7 +866,8 @@ To add a new OS/2 API call:
 5. **Test** — Build with `cargo build`, run with an OS/2 binary that uses the API, verify with `RUST_LOG=debug`.
 
 Key conventions:
-- Arguments follow `_System` calling convention: first arg at `ESP+4`, second at `ESP+8`, etc.
+- **DOSCALLS** arguments follow `_System` calling convention: first arg at `ESP+4`, second at `ESP+8`, etc.
+- **VIOCALLS / KBDCALLS** use **Pascal** calling convention: arguments are pushed left-to-right, so the **last** argument is at `ESP+4` and the **first** is at the highest offset.
 - Return OS/2 error codes in EAX (0 = success). Common codes: 2 = FILE_NOT_FOUND, 5 = ACCESS_DENIED, 6 = INVALID_HANDLE, 87 = INVALID_PARAMETER.
 - For PM APIs that need to invoke guest code, return `ApiResult::Callback` instead of `ApiResult::Normal`.
 - Use `guest_read`/`guest_write` for all guest memory access — never dereference raw guest pointers without bounds checking.
@@ -874,7 +960,8 @@ The test suite covers three areas:
 | `src/loader/mmpm.rs` | MmpmManager waveaudio device open/close/play lifecycle, mciSendCommand dispatch, mciSendString parsing, mciFreeBlock, mciGetLastError |
 | `src/loader/vfs.rs` | DriveManager path resolution, device name detection, drive letter parsing |
 | `src/loader/vfs_hostdir.rs` | HostDirBackend case-insensitive lookup, sandbox enforcement, EA operations |
-| `src/gui.rs` | Y-coordinate flipping, rectangle rendering (filled/outlined), line drawing (horizontal/vertical/diagonal), text rendering pixel output and orientation |
+| `src/gui/sdl2_renderer.rs` | Y-coordinate flipping, rectangle rendering (filled/outlined), line drawing (horizontal/vertical/diagonal), text rendering pixel output and orientation; scancode/VK mapping |
+| `src/gui/text_renderer.rs` | CP437 glyph bitmaps (box-drawing, block elements, ASCII delegation), CGA palette (opaque, correct entries), HeadlessTextRenderer frame counting and loop termination, VgaTextBuffer snapshot, KbdKeyInfo queue push/pop (22 tests) |
 
 ### Integration testing with sample apps
 
