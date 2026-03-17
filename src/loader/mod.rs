@@ -39,11 +39,24 @@ pub use vm_backend::{VmBackend, VcpuBackend, VmExit, GuestRegs, GuestSegment, Gu
 pub use guest_mem::GuestMemory;
 
 use kvm_backend::KvmVmBackend;
-use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex, Condvar};
 use std::sync::atomic::{AtomicBool, AtomicI32};
 use std::thread;
 use log::{info, warn};
+
+/// Key information pushed into the SDL2 text-mode keyboard queue.
+///
+/// Mirrors the fields that OS/2 `KBDKEYINFO` needs for `KbdCharIn`:
+/// - `ch`    — `chChar`: ASCII character code (0 for extended keys)
+/// - `scan`  — `chScan`: OS/2 scan code
+/// - `state` — `fsState`: shift-state flags (Shift/Ctrl/Alt bitmask)
+#[derive(Clone, Copy, Debug)]
+pub struct KbdKeyInfo {
+    pub ch: u8,
+    pub scan: u8,
+    pub state: u16,
+}
 
 pub(crate) struct CallbackFrame {
     saved_rip: u64,
@@ -100,6 +113,14 @@ pub struct SharedState {
     pub exit_requested: AtomicBool,
     pub exit_code: AtomicI32,
     pub locale: locale::Os2Locale,
+    /// Keyboard event queue for SDL2 text-mode (CLI) apps.
+    /// The VCPU thread blocks on `kbd_cond` when `use_sdl2_text` is set.
+    pub kbd_queue: Mutex<VecDeque<KbdKeyInfo>>,
+    /// Condvar paired with `kbd_queue` to wake `KbdCharIn` when a key arrives.
+    pub kbd_cond: Condvar,
+    /// When `true`, `KbdCharIn` reads from `kbd_queue` instead of termios stdin.
+    /// Set before spawning the VCPU for SDL2 text-mode CLI apps.
+    pub use_sdl2_text: AtomicBool,
 }
 
 unsafe impl Send for SharedState {}
@@ -161,6 +182,9 @@ impl Loader {
             exit_requested: AtomicBool::new(false),
             exit_code: AtomicI32::new(0),
             locale: locale::Os2Locale::from_host(),
+            kbd_queue: Mutex::new(VecDeque::new()),
+            kbd_cond: Condvar::new(),
+            use_sdl2_text: AtomicBool::new(false),
         });
 
         Loader { vm, shared }
@@ -218,6 +242,9 @@ impl Loader {
             exit_requested: AtomicBool::new(false),
             exit_code:    AtomicI32::new(0),
             locale:       locale::Os2Locale::from_host(),
+            kbd_queue:    Mutex::new(VecDeque::new()),
+            kbd_cond:     Condvar::new(),
+            use_sdl2_text: AtomicBool::new(false),
         });
         Loader { vm, shared }
     }
