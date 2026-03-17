@@ -69,9 +69,15 @@ impl super::Loader {
                 queue = new_queue;
             };
             if p_key_info != 0 {
+                // fbStatus: 0x40 = final ASCII char; 0x02 = secondary conversion
+                // (extended/function key).  4OS2's GetKeystroke checks fbStatus & 0x02
+                // together with chChar == 0 to distinguish extended keys: when both are
+                // true it returns (chScan | 0x100) so arrow keys and F-keys are
+                // recognised.  Regular printable keys and backspace keep 0x40.
+                let fb_status: u8 = if ki.ch == 0 { 0x02 } else { 0x40 };
                 self.guest_write::<u8>(p_key_info,     ki.ch);
                 self.guest_write::<u8>(p_key_info + 1, ki.scan);
-                self.guest_write::<u8>(p_key_info + 2, 0x40);  // fbStatus: final char
+                self.guest_write::<u8>(p_key_info + 2, fb_status);
                 self.guest_write::<u8>(p_key_info + 3, 0);
                 self.guest_write::<u16>(p_key_info + 4, ki.state);
                 self.guest_write::<u32>(p_key_info + 6, 0);
@@ -298,6 +304,31 @@ mod tests {
         assert_eq!(loader.guest_read::<u8>(p_key_info + 1), Some(0x1E)); // scan
         assert_eq!(loader.guest_read::<u8>(p_key_info + 2), Some(0x40)); // fbStatus = final char
         assert_eq!(loader.guest_read::<u16>(p_key_info + 4), Some(0x0020)); // shift state
+    }
+
+    #[test]
+    fn test_kbd_char_in_sdl2_extended_key_uses_fb_status_02() {
+        // Extended keys (ch=0, e.g. arrow keys) must use fbStatus=0x02 so that
+        // 4OS2's GetKeystroke loop can detect them via (fbStatus & 2) and return
+        // the scan code as (chScan | 0x100) rather than looping forever on ch=0.
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        loader.shared.use_sdl2_text.store(true, Ordering::Relaxed);
+        {
+            let mut q = loader.shared.kbd_queue.lock().unwrap();
+            // Up-arrow: ch=0, scan=0x48
+            q.push_back(KbdKeyInfo { ch: 0, scan: 0x48, state: 0 });
+        }
+        loader.shared.kbd_cond.notify_all();
+        let esp = 0x1000u32;
+        vcpu.regs.rsp = esp as u64;
+        let p_key_info = 0x2000u32;
+        write_stack(&loader, esp, &[0, 0, p_key_info]);
+        let result = loader.handle_kbdcalls(&mut vcpu, 0, 4);
+        assert!(matches!(result, ApiResult::Normal(0)));
+        assert_eq!(loader.guest_read::<u8>(p_key_info),     Some(0));    // ch = 0
+        assert_eq!(loader.guest_read::<u8>(p_key_info + 1), Some(0x48)); // scan = Up
+        assert_eq!(loader.guest_read::<u8>(p_key_info + 2), Some(0x02)); // fbStatus = extended
     }
 
     // ── KbdStringIn (ordinal 9) ──────────────────────────────────────────────
