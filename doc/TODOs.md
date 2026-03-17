@@ -122,6 +122,19 @@ Remaining:
 - [ ] **Thread priorities** — `DosSetPriority` (idle / regular / time-critical / server classes); currently ignored
 - [ ] **`DosWaitThread`** — reliable join with timeout; `DosKillThread` — correct cleanup
 
+### Unicode-Internal Architecture (long-term goal)
+Convert Warpine's internal string representation to UTF-8, with codepage↔UTF-8 conversion at every guest/host API boundary. Modelled on Wine's ANSI→UTF-16 approach.
+
+- [ ] **Conversion helpers** — `cp_decode(bytes, cp) -> String` / `cp_encode(s, cp) -> Vec<u8>` using `encoding_rs` crate (covers CP850, CP932, CP949, CP950, CP936 and all other OS/2 codepages)
+- [ ] **Codepage state** — `DosQueryCp`/`DosSetProcessCp` track the active process codepage in `SharedState`; plumb it through all conversion sites
+- [ ] **Path strings** — `DosOpen`, `DosFindFirst/Next`, `DosDelete`, `DosMove`, etc.: decode guest path bytes → UTF-8 before VFS lookup; encode result strings back to guest CP on return
+- [ ] **VIO output** — `VioWrtTTY`, `VioWrtCharStrAtt`, etc.: decode CP bytes → Unicode codepoints at write time; `VioManager` screen buffer becomes `Vec<(char, u8)>` (codepoint + attribute)
+- [ ] **SDL2 text renderer** — replace static CP437 8×16 bitmap glyph table with a Unicode font (SDL2\_ttf or embedded PSF/BDF); renders any codepoint correctly regardless of active codepage
+- [ ] **PM strings** — `WinSetWindowText`, window titles, menu items, clipboard text: decode at PM API entry
+- [ ] **UCONV.DLL** — implement `UniCreateUconvObject`, `UniUconvToUcs`, `UniUconvFromUcs` etc. using `encoding_rs`; unlocks OS/2 apps that do their own Unicode conversion
+
+Sequencing: codepage state → path strings → VIO output → screen buffer/font → PM strings → UCONV.DLL.
+
 ### Code Page and DBCS Support
 - [ ] `DosQueryCp` / `DosSetProcessCp` — track current process code page accurately
 - [ ] DBCS lead-byte table for CP932, CP949, CP950, CP936 — needed for `DosQueryDBCSEnv` and multi-byte VIO string handling
