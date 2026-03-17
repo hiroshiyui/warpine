@@ -72,13 +72,23 @@ impl super::Loader {
                 if let Some(ps) = wm.ps_map.get(&hps) {
                     let (x1, y1) = ps.current_pos;
                     let color = ps.color;
-                    let fill = control >= 2; // DRO_FILL or DRO_OUTLINEFILL
+                    // DRO_FILL=1 (fill only), DRO_OUTLINE=2 (outline only),
+                    // DRO_OUTLINEFILL=3 (fill + outline) — from Open Watcom pmgpi.h
+                    let do_fill    = control == 1 || control == 3;
+                    let do_outline = control == 2 || control == 3;
                     let hwnd = ps.hwnd;
                     let frame_hwnd = wm.client_to_frame(hwnd);
                     if let Some(ref sender) = wm.gui_tx {
-                        let _ = sender.send(GUIMessage::DrawBox {
-                            handle: frame_hwnd, x1, y1, x2, y2, color, fill
-                        });
+                        if do_fill {
+                            let _ = sender.send(GUIMessage::DrawBox {
+                                handle: frame_hwnd, x1, y1, x2, y2, color, fill: true,
+                            });
+                        }
+                        if do_outline {
+                            let _ = sender.send(GUIMessage::DrawBox {
+                                handle: frame_hwnd, x1, y1, x2, y2, color, fill: false,
+                            });
+                        }
                     }
                 }
                 ApiResult::Normal(1) // GPI_OK

@@ -262,6 +262,18 @@ impl GUIApp {
                             if let Some(wd) = self.windows.get_mut(&handle) {
                                 wd.resize_texture(w, h);
                             }
+                            // Keep OS2Window dimensions in sync so WinQueryWindowRect
+                            // returns the correct size after a user resize.
+                            {
+                                let mut wm = self.shared.window_mgr.lock_or_recover();
+                                let client = wm.frame_to_client.get(&handle).copied();
+                                for hwnd in std::iter::once(handle).chain(client) {
+                                    if let Some(win) = wm.get_window_mut(hwnd) {
+                                        win.cx = w as i32;
+                                        win.cy = h as i32;
+                                    }
+                                }
+                            }
                             let mp2 = (h << 16) | w;
                             self.push_msg(handle, WM_SIZE, 0, mp2);
                             self.push_msg(handle, WM_PAINT, 0, 0);

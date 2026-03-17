@@ -77,6 +77,10 @@ impl super::Loader {
                 let h_frame = wm.create_window(class_name.clone(), parent, hmq);
                 let h_client = wm.create_window(class_name.clone(), h_frame, hmq);
                 wm.frame_to_client.insert(h_frame, h_client);
+                // Initialise both windows to the default SDL2 window size so that
+                // WinQueryWindowRect returns correct dimensions before the first resize.
+                if let Some(win) = wm.get_window_mut(h_frame)  { win.cx = 640; win.cy = 480; }
+                if let Some(win) = wm.get_window_mut(h_client) { win.cx = 640; win.cy = 480; }
 
                 if let Some(ref sender) = wm.gui_tx {
                     let _ = sender.send(GUIMessage::CreateWindow { class: class_name, title, handle: h_frame });
