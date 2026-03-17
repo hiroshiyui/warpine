@@ -121,55 +121,57 @@ impl super::Loader {
         }
 
         if self.shared.use_sdl2_text.load(Ordering::Relaxed) {
-            // SDL2 path: block on kbd_queue for one character.
-            let ki = {
-                let mut queue = self.shared.kbd_queue.lock().unwrap();
-                loop {
-                    if self.shutting_down() { return ERROR_INVALID_FUNCTION; }
-                    if let Some(ki) = queue.pop_front() { break ki; }
-                    let (new_q, _) = self.shared.kbd_cond
-                        .wait_timeout(queue, Duration::from_millis(50))
-                        .unwrap();
-                    queue = new_q;
-                }
-            };
-            let ch = ki.ch;
-            if ch == 0x0D {
-                // Enter: deliver CR, queue LF for next call, echo newline.
-                let mut console = self.shared.console_mgr.lock_or_recover();
-                console.stdin_pending_lf = true;
-                console.stdin_cooked_chars = 0; // reset for next line
-                console.write_tty(b"\r\n", 0x07);
-                drop(console);
-                self.guest_write::<u8>(buf_ptr, 0x0D);
-            } else if ch == 0x08 {
-                // Backspace: only echo destructive sequence if something has
-                // been typed on this input line; otherwise ignore (no echo,
-                // no delivery) to prevent erasing the shell prompt.
-                let mut console = self.shared.console_mgr.lock_or_recover();
-                if console.stdin_cooked_chars > 0 {
-                    console.stdin_cooked_chars -= 1;
-                    console.write_tty(b"\x08 \x08", 0x07);
+            // SDL2 path: block on kbd_queue, delivering one character per call.
+            // Loops for characters that must be silently discarded (e.g. backspace
+            // at start of line) so we never return 0 bytes to the caller.
+            loop {
+                let ki = {
+                    let mut queue = self.shared.kbd_queue.lock().unwrap();
+                    loop {
+                        if self.shutting_down() { return ERROR_INVALID_FUNCTION; }
+                        if let Some(ki) = queue.pop_front() { break ki; }
+                        let (new_q, _) = self.shared.kbd_cond
+                            .wait_timeout(queue, Duration::from_millis(50))
+                            .unwrap();
+                        queue = new_q;
+                    }
+                };
+                let ch = ki.ch;
+                if ch == 0x0D {
+                    // Enter: deliver CR, queue LF for next call, echo newline.
+                    let mut console = self.shared.console_mgr.lock_or_recover();
+                    console.stdin_pending_lf = true;
+                    console.stdin_cooked_chars = 0; // reset for next line
+                    console.write_tty(b"\r\n", 0x07);
+                    drop(console);
+                    self.guest_write::<u8>(buf_ptr, 0x0D);
+                } else if ch == 0x08 {
+                    // Backspace: only echo destructive sequence if something has
+                    // been typed on this input line; otherwise discard and wait
+                    // for the next character (never return 0 bytes to caller).
+                    let mut console = self.shared.console_mgr.lock_or_recover();
+                    if console.stdin_cooked_chars > 0 {
+                        console.stdin_cooked_chars -= 1;
+                        console.write_tty(b"\x08 \x08", 0x07);
+                        drop(console);
+                        self.guest_write::<u8>(buf_ptr, ch);
+                    } else {
+                        // Nothing to erase — silently discard; loop for next char.
+                        continue;
+                    }
+                } else {
+                    // Printable or extended — echo and deliver.
+                    let mut console = self.shared.console_mgr.lock_or_recover();
+                    if ch >= 0x20 {
+                        console.stdin_cooked_chars += 1;
+                        console.write_tty(&[ch], 0x07);
+                    }
                     drop(console);
                     self.guest_write::<u8>(buf_ptr, ch);
-                } else {
-                    // Nothing to erase — silently discard.
-                    drop(console);
-                    if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, 0); }
-                    return 0;
                 }
-            } else {
-                // Printable or extended — echo and deliver.
-                let mut console = self.shared.console_mgr.lock_or_recover();
-                if ch >= 0x20 {
-                    console.stdin_cooked_chars += 1;
-                    console.write_tty(&[ch], 0x07);
-                }
-                drop(console);
-                self.guest_write::<u8>(buf_ptr, ch);
+                if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, 1); }
+                return 0;
             }
-            if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, 1); }
-            return 0;
         }
 
         // Terminal (termios) path — enable raw mode and read from stdin fd.
