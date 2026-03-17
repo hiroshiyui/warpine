@@ -281,8 +281,9 @@ pub trait TextModeRenderer {
 
 /// Drive a text-mode application's event loop on the main thread.
 pub fn run_text_loop<R: TextModeRenderer>(renderer: &mut R, shared: Arc<SharedState>) {
-    const BLINK_FRAMES: u32 = 30; // toggle every 30 frames ≈ 500 ms at 60 fps
-    let mut frame: u32 = 0;
+    // Use wall-clock time for cursor blink so it is frame-rate independent.
+    // 500 ms on / 500 ms off → 1 Hz blink, matching real VGA behaviour.
+    let blink_epoch = std::time::Instant::now();
 
     loop {
         if shared.exit_requested.load(Ordering::Relaxed) { break; }
@@ -295,11 +296,10 @@ pub fn run_text_loop<R: TextModeRenderer>(renderer: &mut R, shared: Arc<SharedSt
 
         if shared.exit_requested.load(Ordering::Relaxed) { break; }
 
-        let blink_on = (frame / BLINK_FRAMES) % 2 == 0;
+        let blink_on = (blink_epoch.elapsed().as_millis() / 500) % 2 == 0;
         let buf = VgaTextBuffer::snapshot(&shared);
         renderer.render_frame(&buf, blink_on);
 
-        frame = frame.wrapping_add(1);
         renderer.frame_sleep();
     }
 }

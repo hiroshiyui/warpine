@@ -41,6 +41,8 @@ impl super::Loader {
             24 => self.vio_read_cell_str(read_stack(20), read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
             // VioSetCurType(pCurInfo, hvio) → ESP+4=hvio, +8=pCurInfo
             32 => self.vio_set_cur_type(read_stack(8), read_stack(4)),
+            // VioGetCurType(pCurInfo, hvio) → ESP+4=hvio, +8=pCurInfo
+            33 => self.vio_get_cur_type(read_stack(8), read_stack(4)),
             // VioSetAnsi(mode, hvio) → ESP+4=hvio, +8=mode
             5  => self.vio_set_ansi(read_stack(8), read_stack(4)),
             // VioGetAnsi(pMode, hvio) → ESP+4=hvio, +8=pMode
@@ -71,7 +73,7 @@ impl super::Loader {
     pub(crate) fn viocalls_arg_bytes(&self, ordinal: u32) -> u64 {
         match ordinal {
             19 => 12, 21 => 8, 9 => 12, 15 => 12, 7 => 28, 8 => 28,
-            48 => 24, 52 => 20, 26 => 20, 24 => 20, 32 => 8,
+            48 => 24, 52 => 20, 26 => 20, 24 => 20, 32 => 8, 33 => 8,
             5 => 8, 3 => 8, 51 => 8, 42 => 12, 46 => 12,
             22 => 8, 31 => 12, 43 => 12,
             _ => 0,
@@ -204,6 +206,23 @@ impl super::Loader {
             let mut console = self.shared.console_mgr.lock_or_recover();
             console.set_cursor_type(visible);
             console.set_cursor_shape(y_start as u8, c_end as u8);
+        }
+        NO_ERROR
+    }
+
+    /// VioGetCurType (ordinal 33): read current cursor shape/visibility.
+    ///
+    /// VIOCURSORINFO layout: yStart(u16) cEnd(u16) cx(u16) attr(u16).
+    /// attr == 0xFFFF means hidden; 0 means normal.
+    fn vio_get_cur_type(&self, p_cur_data: u32, _hvio: u32) -> u32 {
+        debug!("  VioGetCurType");
+        if p_cur_data != 0 {
+            let console = self.shared.console_mgr.lock_or_recover();
+            let attr: u16 = if console.cursor_visible { 0 } else { 0xFFFF };
+            self.guest_write::<u16>(p_cur_data,     console.cursor_start as u16);
+            self.guest_write::<u16>(p_cur_data + 2, console.cursor_end   as u16);
+            self.guest_write::<u16>(p_cur_data + 4, 0); // cx: default width
+            self.guest_write::<u16>(p_cur_data + 6, attr);
         }
         NO_ERROR
     }
@@ -432,6 +451,43 @@ mod tests {
         let cols = con.cols as usize;
         assert_eq!(con.buffer[cols], (b'Q', 0x07), "row 1 should have row-0 content after scroll-dn");
         assert_eq!(con.buffer[0], (b'*', 0x1A), "top row should be filled with pCell value");
+    }
+
+    #[test]
+    fn test_vio_get_cur_type_reflects_set() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp: u32        = 0x1000;
+        let p_cur_data: u32 = 0x2000;
+        vcpu.regs.rsp = esp as u64;
+
+        // Set cursor to yStart=6, cEnd=7, attr=0 (visible block)
+        loader.guest_write::<u16>(p_cur_data,     6).unwrap();   // yStart
+        loader.guest_write::<u16>(p_cur_data + 2, 7).unwrap();   // cEnd
+        loader.guest_write::<u16>(p_cur_data + 4, 0).unwrap();   // cx
+        loader.guest_write::<u16>(p_cur_data + 6, 0).unwrap();   // attr = visible
+        write_stack(&loader, esp, &[0, p_cur_data]); // hvio=0, pCurInfo=p_cur_data
+        loader.handle_viocalls(&mut vcpu, 0, 32);  // VioSetCurType
+
+        // Now read it back with VioGetCurType (ordinal 33)
+        let p_out: u32 = 0x3000;
+        write_stack(&loader, esp, &[0, p_out]);
+        let result = loader.handle_viocalls(&mut vcpu, 0, 33);
+        assert!(matches!(result, ApiResult::Normal(0)));
+
+        assert_eq!(loader.guest_read::<u16>(p_out).unwrap(),     6,      "yStart");
+        assert_eq!(loader.guest_read::<u16>(p_out + 2).unwrap(), 7,      "cEnd");
+        assert_eq!(loader.guest_read::<u16>(p_out + 6).unwrap(), 0,      "attr (visible)");
+
+        // Hide cursor via VioSetCurType (attr = 0xFFFF)
+        loader.guest_write::<u16>(p_cur_data + 6, 0xFFFF).unwrap();
+        write_stack(&loader, esp, &[0, p_cur_data]);
+        loader.handle_viocalls(&mut vcpu, 0, 32);
+
+        // VioGetCurType should now report hidden
+        write_stack(&loader, esp, &[0, p_out]);
+        loader.handle_viocalls(&mut vcpu, 0, 33);
+        assert_eq!(loader.guest_read::<u16>(p_out + 6).unwrap(), 0xFFFF, "attr (hidden)");
     }
 
     #[test]
