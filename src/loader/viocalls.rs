@@ -27,10 +27,10 @@ impl super::Loader {
             9  => self.vio_get_cur_pos(read_stack(12), read_stack(8), read_stack(4)),
             // VioSetCurPos(row, col, hvio) → ESP+4=hvio, +8=col, +12=row
             15 => self.vio_set_cur_pos(read_stack(12), read_stack(8), read_stack(4)),
-            // VioScrollUp(ulr, ulc, lrr, lrc, n, cell, hvio) → ESP+4=hvio, +8=cell, +12=n, +16=lrc, +20=lrr, +24=ulc, +28=ulr
-            7  => self.vio_scroll_up(read_stack(28), read_stack(24), read_stack(20), read_stack(16), read_stack(12), read_stack(8)),
-            // VioScrollDn(ulr, ulc, lrr, lrc, n, cell, hvio) — same layout as VioScrollUp
-            8  => self.vio_scroll_dn(read_stack(28), read_stack(24), read_stack(20), read_stack(16), read_stack(12), read_stack(8)),
+            // VioScrollUp(ulr, ulc, lrr, lrc, n, pCell, hvio) → ESP+4=hvio, +8=pCell, +12=n, +16=lrc, +20=lrr, +24=ulc, +28=ulr
+            7  => self.vio_scroll_up(read_stack(28), read_stack(24), read_stack(20), read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
+            // VioScrollDn(ulr, ulc, lrr, lrc, n, pCell, hvio) — same layout as VioScrollUp
+            8  => self.vio_scroll_dn(read_stack(28), read_stack(24), read_stack(20), read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
             // VioWrtCharStrAtt(pStr, len, row, col, pAttr, hvio) → ESP+4=hvio, +8=pAttr, +12=col, +16=row, +20=len, +24=pStr
             48 => self.vio_wrt_char_str_att(read_stack(24), read_stack(20), read_stack(16), read_stack(12), read_stack(8)),
             // VioWrtNCell(pCell, n, row, col, hvio) → ESP+4=hvio, +8=col, +12=row, +16=n, +20=pCell
@@ -113,25 +113,34 @@ impl super::Loader {
     }
 
     /// VioScrollUp (ordinal 7): scroll a screen region up.
-    fn vio_scroll_up(&self, top: u32, left: u32, bottom: u32, right: u32, lines: u32, _hvio: u32) -> u32 {
-        debug!("  VioScrollUp(top={}, left={}, bottom={}, right={}, lines={})", top, left, bottom, right, lines);
-        let fill_attr = if lines > 0 {
-            // The 'lines' parameter in OS/2 is actually a pointer to a cell (char+attr)
-            // But for the common case, we use lines as count and default fill
-            0x07
+    /// `p_cell` points to a 2-byte (char, attr) fill cell; NULL → space/grey.
+    fn vio_scroll_up(&self, top: u32, left: u32, bottom: u32, right: u32, lines: u32, p_cell: u32, _hvio: u32) -> u32 {
+        debug!("  VioScrollUp(top={}, left={}, bottom={}, right={}, lines={}, p_cell=0x{:08X})", top, left, bottom, right, lines, p_cell);
+        let fill_cell = if p_cell != 0 {
+            let ch   = self.guest_read::<u8>(p_cell).unwrap_or(b' ');
+            let attr = self.guest_read::<u8>(p_cell + 1).unwrap_or(0x07);
+            (ch, attr)
         } else {
-            0x07
+            (b' ', 0x07)
         };
         let mut console = self.shared.console_mgr.lock_or_recover();
-        console.scroll_up(top as u16, bottom as u16, lines as u16, fill_attr);
+        console.scroll_up(top as u16, bottom as u16, lines as u16, fill_cell);
         NO_ERROR
     }
 
     /// VioScrollDn (ordinal 8): scroll a screen region down.
-    fn vio_scroll_dn(&self, top: u32, _left: u32, bottom: u32, _right: u32, lines: u32, _hvio: u32) -> u32 {
-        debug!("  VioScrollDn(top={}, bottom={}, lines={})", top, bottom, lines);
+    /// `p_cell` points to a 2-byte (char, attr) fill cell; NULL → space/grey.
+    fn vio_scroll_dn(&self, top: u32, _left: u32, bottom: u32, _right: u32, lines: u32, p_cell: u32, _hvio: u32) -> u32 {
+        debug!("  VioScrollDn(top={}, bottom={}, lines={}, p_cell=0x{:08X})", top, bottom, lines, p_cell);
+        let fill_cell = if p_cell != 0 {
+            let ch   = self.guest_read::<u8>(p_cell).unwrap_or(b' ');
+            let attr = self.guest_read::<u8>(p_cell + 1).unwrap_or(0x07);
+            (ch, attr)
+        } else {
+            (b' ', 0x07)
+        };
         let mut console = self.shared.console_mgr.lock_or_recover();
-        console.scroll_down(top as u16, bottom as u16, lines as u16, 0x07);
+        console.scroll_down(top as u16, bottom as u16, lines as u16, fill_cell);
         NO_ERROR
     }
 
@@ -235,6 +244,7 @@ impl super::Loader {
 mod tests {
     use super::super::{Loader, ApiResult};
     use super::super::vm_backend::mock::MockVcpu;
+    use super::super::mutex_ext::MutexExt;
 
     /// Write `args` to the Pascal call stack at `esp`: last arg at esp+4,
     /// second-to-last at esp+8, etc. (matches OS/2 Pascal calling convention).
@@ -346,9 +356,9 @@ mod tests {
         let esp: u32 = 0x1000;
         vcpu.regs.rsp = esp as u64;
 
-        // VioScrollDn(ulr, ulc, lrr, lrc, n, cell, hvio)
-        // Pascal layout (last arg at esp+4): hvio, cell, n, lrc, lrr, ulc, ulr
-        write_stack(&loader, esp, &[/*hvio*/0, /*cell*/0, /*n*/2, /*lrc*/79, /*lrr*/24, /*ulc*/0, /*ulr*/0]);
+        // VioScrollDn(ulr, ulc, lrr, lrc, n, pCell, hvio)
+        // Pascal layout (last arg at esp+4): hvio, pCell, n, lrc, lrr, ulc, ulr
+        write_stack(&loader, esp, &[/*hvio*/0, /*pCell*/0, /*n*/2, /*lrc*/79, /*lrr*/24, /*ulc*/0, /*ulr*/0]);
         let result = loader.handle_viocalls(&mut vcpu, 0, 8);
         // Must return NO_ERROR (not a stub panic/wrong ordinal)
         assert!(matches!(result, ApiResult::Normal(0)));
@@ -357,6 +367,71 @@ mod tests {
         // so the vCPU loop adjusts rsp by 28 (not 4 as the old bug had it).
         assert_eq!(loader.viocalls_arg_bytes(8), 28,
             "Wrong arg-byte count for VioScrollDn (ordinal 8): stack corruption bug");
+    }
+
+    /// VioScrollUp/VioScrollDn: pCell pointer is read and used as fill char+attr.
+    #[test]
+    fn test_vio_scroll_up_p_cell_fill() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp: u32    = 0x1000;
+        let p_cell: u32 = 0x3000;
+        vcpu.regs.rsp = esp as u64;
+
+        // Write a custom fill cell: '.' (0x2E) with attr 0x4F (white on red)
+        loader.guest_write::<u8>(p_cell,     b'.').unwrap();
+        loader.guest_write::<u8>(p_cell + 1, 0x4F).unwrap();
+
+        // Seed row 1 with some content, then scroll it up so row 0 gets it
+        // and the bottom (row 24) should be filled with '.' / 0x4F.
+        {
+            let mut con = loader.shared.console_mgr.lock_or_recover();
+            con.enable_sdl2_mode(); // fix to 80x25
+            let cols = con.cols as usize;
+            con.buffer[cols] = (b'Z', 0x07); // row 1, col 0
+        }
+
+        // VioScrollUp(ulr=0, ulc=0, lrr=24, lrc=79, n=1, pCell=p_cell, hvio=0)
+        // Pascal layout: hvio, pCell, n, lrc, lrr, ulc, ulr
+        write_stack(&loader, esp, &[/*hvio*/0, /*pCell*/p_cell, /*n*/1, /*lrc*/79, /*lrr*/24, /*ulc*/0, /*ulr*/0]);
+        let result = loader.handle_viocalls(&mut vcpu, 0, 7);
+        assert!(matches!(result, ApiResult::Normal(0)));
+
+        let con = loader.shared.console_mgr.lock_or_recover();
+        // Row 0 should now contain what was in row 1
+        assert_eq!(con.buffer[0], (b'Z', 0x07), "row 0 should have row-1 content after scroll-up");
+        // Last row should be filled with the custom fill cell
+        let last_row_start = 24 * con.cols as usize;
+        assert_eq!(con.buffer[last_row_start], (b'.', 0x4F), "bottom row should be filled with pCell value");
+    }
+
+    /// VioScrollDn with pCell: fill row at top with the custom cell.
+    #[test]
+    fn test_vio_scroll_dn_p_cell_fill() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp: u32    = 0x1000;
+        let p_cell: u32 = 0x3000;
+        vcpu.regs.rsp = esp as u64;
+
+        loader.guest_write::<u8>(p_cell,     b'*').unwrap();
+        loader.guest_write::<u8>(p_cell + 1, 0x1A).unwrap(); // green on blue
+
+        {
+            let mut con = loader.shared.console_mgr.lock_or_recover();
+            con.enable_sdl2_mode();
+            con.buffer[0] = (b'Q', 0x07); // row 0, col 0
+        }
+
+        // VioScrollDn: row 0 → row 1, top row filled with '*'/0x1A
+        write_stack(&loader, esp, &[/*hvio*/0, /*pCell*/p_cell, /*n*/1, /*lrc*/79, /*lrr*/24, /*ulc*/0, /*ulr*/0]);
+        let result = loader.handle_viocalls(&mut vcpu, 0, 8);
+        assert!(matches!(result, ApiResult::Normal(0)));
+
+        let con = loader.shared.console_mgr.lock_or_recover();
+        let cols = con.cols as usize;
+        assert_eq!(con.buffer[cols], (b'Q', 0x07), "row 1 should have row-0 content after scroll-dn");
+        assert_eq!(con.buffer[0], (b'*', 0x1A), "top row should be filled with pCell value");
     }
 
     #[test]

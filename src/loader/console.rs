@@ -174,7 +174,7 @@ impl VioManager {
                 self.cursor_row += 1;
                 self.cursor_col = 0;
                 if self.cursor_row >= self.rows {
-                    self.scroll_up(0, self.rows - 1, 1, 0x07);
+                    self.scroll_up(0, self.rows - 1, 1, (b' ', 0x07));
                     self.cursor_row = self.rows - 1;
                 }
                 if !sdl2 { let _ = stdout.write_all(b"\n"); }
@@ -202,7 +202,7 @@ impl VioManager {
                     self.cursor_col = 0;
                     self.cursor_row += 1;
                     if self.cursor_row >= self.rows {
-                        self.scroll_up(0, self.rows - 1, 1, 0x07);
+                        self.scroll_up(0, self.rows - 1, 1, (b' ', 0x07));
                         self.cursor_row = self.rows - 1;
                     }
                 }
@@ -303,8 +303,8 @@ impl VioManager {
         result
     }
 
-    /// Scroll a region up by `lines` rows, filling the bottom with blank cells.
-    pub fn scroll_up(&mut self, top: u16, bottom: u16, lines: u16, fill_attr: u8) {
+    /// Scroll a region up by `lines` rows, filling the bottom with `fill_cell`.
+    pub fn scroll_up(&mut self, top: u16, bottom: u16, lines: u16, fill_cell: (u8, u8)) {
         if lines == 0 || top > bottom || bottom >= self.rows { return; }
         let cols = self.cols as usize;
         let lines = lines.min(bottom - top + 1);
@@ -319,12 +319,12 @@ impl VioManager {
                 }
             }
         }
-        // Fill vacated rows with blanks
+        // Fill vacated rows
         for row in (bottom - lines + 1)..=bottom {
             let base = row as usize * cols;
             for c in 0..cols {
                 if base + c < self.buffer.len() {
-                    self.buffer[base + c] = (b' ', fill_attr);
+                    self.buffer[base + c] = fill_cell;
                 }
             }
         }
@@ -346,8 +346,8 @@ impl VioManager {
         }
     }
 
-    /// Scroll a region down by `lines` rows, filling the top with blank cells.
-    pub fn scroll_down(&mut self, top: u16, bottom: u16, lines: u16, fill_attr: u8) {
+    /// Scroll a region down by `lines` rows, filling the top with `fill_cell`.
+    pub fn scroll_down(&mut self, top: u16, bottom: u16, lines: u16, fill_cell: (u8, u8)) {
         if lines == 0 || top > bottom || bottom >= self.rows { return; }
         let cols = self.cols as usize;
         let lines = lines.min(bottom - top + 1);
@@ -367,7 +367,7 @@ impl VioManager {
             let base = row as usize * cols;
             for c in 0..cols {
                 if base + c < self.buffer.len() {
-                    self.buffer[base + c] = (b' ', fill_attr);
+                    self.buffer[base + c] = fill_cell;
                 }
             }
         }
@@ -549,7 +549,7 @@ mod tests {
         let cols = mgr.cols as usize;
         mgr.buffer[cols] = (b'A', 0x07); // row 1, col 0
 
-        mgr.scroll_up(0, mgr.rows - 1, 1, 0x07);
+        mgr.scroll_up(0, mgr.rows - 1, 1, (b' ', 0x07));
 
         // Row 0 should now have what was in row 1
         assert_eq!(mgr.buffer[0], (b'A', 0x07));
@@ -564,7 +564,7 @@ mod tests {
         let cols = mgr.cols as usize;
         mgr.buffer[0] = (b'B', 0x07); // row 0, col 0
 
-        mgr.scroll_down(0, mgr.rows - 1, 1, 0x07);
+        mgr.scroll_down(0, mgr.rows - 1, 1, (b' ', 0x07));
 
         // Row 1 should now have what was in row 0
         assert_eq!(mgr.buffer[cols], (b'B', 0x07));
