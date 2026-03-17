@@ -33,9 +33,9 @@ pub use pm_types::*;
 pub use vfs::DriveManager;
 pub use vfs_hostdir::HostDirBackend;
 pub use vm_backend::{VmBackend, VcpuBackend, VmExit, GuestRegs, GuestSegment, GuestSregs};
+pub use guest_mem::GuestMemory;
 
 use kvm_backend::KvmVmBackend;
-use std::ptr;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicI32};
@@ -90,8 +90,7 @@ pub struct SharedState {
     pub console_mgr: Mutex<console::VioManager>,
     /// Executable name as provided on the command line
     pub exe_name: Mutex<String>,
-    pub guest_mem: *mut u8,
-    pub guest_mem_size: usize,
+    pub guest_mem: GuestMemory,
     pub next_tid: Mutex<u32>,
     pub threads: Mutex<HashMap<u32, thread::JoinHandle<()>>>,
     pub exit_requested: AtomicBool,
@@ -111,15 +110,8 @@ impl Loader {
     pub fn new() -> Self {
         let vm: Arc<dyn VmBackend> = Arc::new(KvmVmBackend::new());
         let guest_mem_size = 256 * 1024 * 1024;
-        let guest_mem_raw = unsafe {
-            libc::mmap(ptr::null_mut(), guest_mem_size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE, -1, 0)
-        };
-        if guest_mem_raw == libc::MAP_FAILED {
-            panic!("Failed to mmap {} bytes for guest memory: {}", guest_mem_size, std::io::Error::last_os_error());
-        }
-        let guest_mem = guest_mem_raw as *mut u8;
-        unsafe { ptr::write_bytes(guest_mem, 0, guest_mem_size); }
-        vm.register_guest_memory(0, guest_mem_size as u64, guest_mem as u64).unwrap();
+        let guest_mem = GuestMemory::alloc(guest_mem_size);
+        vm.register_guest_memory(0, guest_mem_size as u64, guest_mem.host_base_addr()).unwrap();
 
         let mem_mgr = MemoryManager::new(DYNAMIC_ALLOC_BASE, guest_mem_size as u32);
         let handle_mgr = HandleManager::new();
@@ -159,7 +151,6 @@ impl Loader {
             console_mgr: Mutex::new(console_mgr),
             exe_name: Mutex::new(String::new()),
             guest_mem,
-            guest_mem_size,
             next_tid: Mutex::new(1),
             threads: Mutex::new(HashMap::new()),
             exit_requested: AtomicBool::new(false),
@@ -204,6 +195,3 @@ impl Loader {
     }
 }
 
-impl Drop for SharedState {
-    fn drop(&mut self) { unsafe { libc::munmap(self.guest_mem as *mut libc::c_void, self.guest_mem_size); } }
-}
