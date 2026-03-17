@@ -1414,3 +1414,227 @@ impl super::Loader {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::Loader;
+    use super::super::mutex_ext::MutexExt;
+    use std::sync::atomic::Ordering;
+
+    // ── DosAllocMem / DosFreeMem ─────────────────────────────────────────────
+
+    #[test]
+    fn test_dos_alloc_and_free_mem() {
+        let loader = Loader::new_mock();
+        let ppb = 0x2000u32;
+        assert_eq!(loader.dos_alloc_mem(ppb, 4096), 0);
+        let addr = loader.guest_read::<u32>(ppb).unwrap();
+        assert_ne!(addr, 0);
+        assert_eq!(loader.dos_free_mem(addr), 0);
+    }
+
+    #[test]
+    fn test_dos_free_mem_invalid_address() {
+        let loader = Loader::new_mock();
+        assert_eq!(loader.dos_free_mem(0xDEAD), 487); // ERROR_INVALID_ADDRESS
+    }
+
+    // ── DosQueryHType ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_dos_query_h_type_handles() {
+        let loader = Loader::new_mock();
+        let p_type = 0x2000u32;
+        let p_attr = 0x2004u32;
+        // Handles 0–2 (stdin/stdout/stderr) → type 1 (character device)
+        for hf in 0u32..3 {
+            assert_eq!(loader.dos_query_h_type(hf, p_type, p_attr), 0);
+            assert_eq!(loader.guest_read::<u32>(p_type), Some(1));
+            assert_eq!(loader.guest_read::<u32>(p_attr), Some(0));
+        }
+        // Handle ≥3 (file) → type 0
+        assert_eq!(loader.dos_query_h_type(100, p_type, p_attr), 0);
+        assert_eq!(loader.guest_read::<u32>(p_type), Some(0));
+    }
+
+    #[test]
+    fn test_dos_query_h_type_null_pointers() {
+        let loader = Loader::new_mock();
+        // Null output pointers must not crash
+        assert_eq!(loader.dos_query_h_type(0, 0, 0), 0);
+    }
+
+    // ── DosRead len=0 ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_dos_read_stdin_len_zero() {
+        let loader = Loader::new_mock();
+        let actual_ptr = 0x2000u32;
+        let rc = loader.dos_read(0, 0x3000, 0, actual_ptr);
+        assert_eq!(rc, 0);
+        assert_eq!(loader.guest_read::<u32>(actual_ptr), Some(0));
+    }
+
+    // ── DosWrite ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_dos_write_to_sdl2_console_updates_buffer() {
+        let loader = Loader::new_mock();
+        loader.shared.use_sdl2_text.store(true, Ordering::Relaxed);
+        loader.guest_write_bytes(0x3000, b"AB");
+        let actual_ptr = 0x2000u32;
+        let rc = loader.dos_write(1, 0x3000, 2, actual_ptr);
+        assert_eq!(rc, 0);
+        assert_eq!(loader.guest_read::<u32>(actual_ptr), Some(2));
+        // Cursor should have advanced 2 columns
+        let console = loader.shared.console_mgr.lock_or_recover();
+        assert_eq!(console.cursor_col, 2);
+    }
+
+    #[test]
+    fn test_dos_write_len_zero() {
+        let loader = Loader::new_mock();
+        loader.shared.use_sdl2_text.store(true, Ordering::Relaxed);
+        let actual_ptr = 0x2000u32;
+        let rc = loader.dos_write(1, 0x3000, 0, actual_ptr);
+        assert_eq!(rc, 0);
+        assert_eq!(loader.guest_read::<u32>(actual_ptr), Some(0));
+    }
+
+    // ── DosSetRelMaxFH ───────────────────────────────────────────────────────
+
+    #[test]
+    fn test_dos_set_rel_max_fh() {
+        let loader = Loader::new_mock();
+        let p_req = 0x2000u32;
+        let p_cur = 0x2004u32;
+        loader.guest_write::<i32>(p_req, 0).unwrap(); // no change requested
+        assert_eq!(loader.dos_set_rel_max_fh(p_req, p_cur), 0);
+        assert_eq!(loader.guest_read::<u32>(p_cur), Some(256));
+    }
+
+    // ── Event semaphores ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_dos_event_sem_create_close() {
+        let loader = Loader::new_mock();
+        let phev = 0x2000u32;
+        assert_eq!(loader.dos_create_event_sem(0, phev, 0, 0), 0);
+        let hev = loader.guest_read::<u32>(phev).unwrap();
+        assert_ne!(hev, 0);
+        assert_eq!(loader.dos_close_event_sem(hev), 0);
+    }
+
+    #[test]
+    fn test_dos_event_sem_wait_presignaled() {
+        let loader = Loader::new_mock();
+        let phev = 0x2000u32;
+        // f_state=1: create already-posted semaphore
+        loader.dos_create_event_sem(0, phev, 0, 1);
+        let hev = loader.guest_read::<u32>(phev).unwrap();
+        // Wait 0 ms — already posted, must return immediately
+        assert_eq!(loader.dos_wait_event_sem(hev, 0), 0);
+    }
+
+    #[test]
+    fn test_dos_event_sem_post_then_wait() {
+        let loader = Loader::new_mock();
+        let phev = 0x2000u32;
+        loader.dos_create_event_sem(0, phev, 0, 0);
+        let hev = loader.guest_read::<u32>(phev).unwrap();
+        assert_eq!(loader.dos_post_event_sem(hev), 0);
+        assert_eq!(loader.dos_wait_event_sem(hev, 0), 0);
+    }
+
+    #[test]
+    fn test_dos_event_sem_wait_timeout() {
+        let loader = Loader::new_mock();
+        let phev = 0x2000u32;
+        loader.dos_create_event_sem(0, phev, 0, 0); // not posted
+        let hev = loader.guest_read::<u32>(phev).unwrap();
+        // 0 ms timeout on unposted semaphore → 640 (ERROR_TIMEOUT)
+        assert_eq!(loader.dos_wait_event_sem(hev, 0), 640);
+    }
+
+    #[test]
+    fn test_dos_event_sem_double_post_returns_already_posted() {
+        let loader = Loader::new_mock();
+        let phev = 0x2000u32;
+        loader.dos_create_event_sem(0, phev, 0, 0);
+        let hev = loader.guest_read::<u32>(phev).unwrap();
+        assert_eq!(loader.dos_post_event_sem(hev), 0);
+        assert_eq!(loader.dos_post_event_sem(hev), 299); // ERROR_ALREADY_POSTED
+    }
+
+    #[test]
+    fn test_dos_event_sem_invalid_handle() {
+        let loader = Loader::new_mock();
+        assert_eq!(loader.dos_close_event_sem(9999), 6); // ERROR_INVALID_HANDLE
+        assert_eq!(loader.dos_post_event_sem(9999), 6);
+        assert_eq!(loader.dos_wait_event_sem(9999, 0), 6);
+    }
+
+    // ── Mutex semaphores ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_dos_mutex_sem_create_request_release_close() {
+        let loader = Loader::new_mock();
+        let phmtx = 0x2000u32;
+        // Create unowned mutex (f_state=0)
+        assert_eq!(loader.dos_create_mutex_sem(0, phmtx, 0, 0), 0);
+        let hmtx = loader.guest_read::<u32>(phmtx).unwrap();
+        assert_ne!(hmtx, 0);
+        // Request from tid=1 with 0 ms timeout — unowned, must succeed
+        assert_eq!(loader.dos_request_mutex_sem(1, hmtx, 0), 0);
+        // Release
+        assert_eq!(loader.dos_release_mutex_sem(1, hmtx), 0);
+        // Close
+        assert_eq!(loader.dos_close_mutex_sem(hmtx), 0);
+    }
+
+    #[test]
+    fn test_dos_mutex_sem_invalid_handle() {
+        let loader = Loader::new_mock();
+        assert_eq!(loader.dos_close_mutex_sem(9999), 6); // ERROR_INVALID_HANDLE
+    }
+
+    // ── Queue ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_dos_queue_create_write_query_read_close() {
+        let loader = Loader::new_mock();
+        let phq = 0x2000u32;
+        loader.guest_write_bytes(0x3000, b"\\QUEUES\\TEST\0");
+        assert_eq!(loader.dos_create_queue(phq, 0, 0x3000), 0);
+        let hq = loader.guest_read::<u32>(phq).unwrap();
+        assert_ne!(hq, 0);
+
+        // Write 3-byte payload
+        loader.guest_write_bytes(0x4000, b"xyz");
+        assert_eq!(loader.dos_write_queue(hq, 0, 3, 0x4000, 0), 0);
+
+        // Query count → 1
+        let pcb = 0x5000u32;
+        assert_eq!(loader.dos_query_queue(hq, pcb), 0);
+        assert_eq!(loader.guest_read::<u32>(pcb), Some(1));
+
+        // Read queue (wait=1 IO_WAIT, but item already present)
+        let pcb_len = 0x6000u32;
+        let ppbuf   = 0x6004u32;
+        assert_eq!(loader.dos_read_queue(hq, 0, pcb_len, ppbuf, 0, 1, 0, 0), 0);
+        assert_eq!(loader.guest_read::<u32>(pcb_len), Some(3)); // 3 bytes
+
+        // Queue now empty — NOWAIT read must return 342 (ERROR_QUE_EMPTY)
+        assert_eq!(loader.dos_read_queue(hq, 0, pcb_len, ppbuf, 0, 0, 0, 0), 342);
+
+        assert_eq!(loader.dos_close_queue(hq), 0);
+    }
+
+    // ── DosSleep ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_dos_sleep_zero_returns_immediately() {
+        let loader = Loader::new_mock();
+        assert_eq!(loader.dos_sleep(0), 0);
+    }
+}
