@@ -198,3 +198,120 @@ impl super::Loader {
         NO_ERROR
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Loader, ApiResult, KbdKeyInfo};
+    use super::super::vm_backend::mock::MockVcpu;
+    use super::super::constants::{NO_ERROR, ERROR_INVALID_FUNCTION};
+    use std::sync::atomic::Ordering;
+
+    /// Push Pascal-convention args: args[0] at ESP+4, args[1] at ESP+8, …
+    fn write_stack(loader: &Loader, esp: u32, args: &[u32]) {
+        for (i, &arg) in args.iter().enumerate() {
+            loader.guest_write::<u32>(esp + 4 + i as u32 * 4, arg).unwrap();
+        }
+    }
+
+    // ── kbdcalls_arg_bytes ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_kbdcalls_arg_bytes() {
+        let loader = Loader::new_mock();
+        assert_eq!(loader.kbdcalls_arg_bytes(4),  12); // KbdCharIn:   3 args × 4
+        assert_eq!(loader.kbdcalls_arg_bytes(9),  16); // KbdStringIn: 4 args × 4
+        assert_eq!(loader.kbdcalls_arg_bytes(10),  8); // KbdGetStatus: 2 args × 4
+        assert_eq!(loader.kbdcalls_arg_bytes(99),  0); // unknown → 0
+    }
+
+    // ── KbdGetStatus (ordinal 10) ────────────────────────────────────────────
+
+    #[test]
+    fn test_kbd_get_status_writes_kbdinfo_struct() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp = 0x1000u32;
+        vcpu.regs.rsp = esp as u64;
+        let p_status = 0x2000u32;
+        // Pascal: KbdGetStatus(pInfo, hkbd) → ESP+4=hkbd, ESP+8=pInfo
+        write_stack(&loader, esp, &[0, p_status]);
+        let result = loader.handle_kbdcalls(&mut vcpu, 0, 10);
+        assert!(matches!(result, ApiResult::Normal(0)));
+        assert_eq!(loader.guest_read::<u16>(p_status),     Some(10));   // cb = struct size
+        assert_eq!(loader.guest_read::<u16>(p_status + 2), Some(0x06)); // fsMask: binary+raw
+        assert_eq!(loader.guest_read::<u16>(p_status + 4), Some(0x0D)); // turn-around: CR
+        assert_eq!(loader.guest_read::<u16>(p_status + 6), Some(0));    // fsInterim
+        assert_eq!(loader.guest_read::<u16>(p_status + 8), Some(0));    // fsState
+    }
+
+    #[test]
+    fn test_kbd_get_status_null_pointer_no_crash() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp = 0x1000u32;
+        vcpu.regs.rsp = esp as u64;
+        write_stack(&loader, esp, &[0, 0]); // pStatus = null
+        let result = loader.handle_kbdcalls(&mut vcpu, 0, 10);
+        assert!(matches!(result, ApiResult::Normal(0)));
+    }
+
+    // ── KbdCharIn (ordinal 4) — SDL2 mode ───────────────────────────────────
+
+    #[test]
+    fn test_kbd_char_in_nowait_empty_queue_returns_zeroed_struct() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        loader.shared.use_sdl2_text.store(true, Ordering::Relaxed);
+        let esp = 0x1000u32;
+        vcpu.regs.rsp = esp as u64;
+        let p_key_info = 0x2000u32;
+        // Pascal: KbdCharIn(pKeyInfo, wait, hkbd) → ESP+4=hkbd, +8=wait(1=NOWAIT), +12=pKeyInfo
+        write_stack(&loader, esp, &[0, 1, p_key_info]);
+        let result = loader.handle_kbdcalls(&mut vcpu, 0, 4);
+        assert!(matches!(result, ApiResult::Normal(0)));
+        // All fields zeroed (no char available)
+        assert_eq!(loader.guest_read::<u8>(p_key_info),     Some(0)); // ch
+        assert_eq!(loader.guest_read::<u8>(p_key_info + 1), Some(0)); // scan
+        assert_eq!(loader.guest_read::<u8>(p_key_info + 2), Some(0)); // fbStatus
+        assert_eq!(loader.guest_read::<u16>(p_key_info + 4), Some(0)); // state
+    }
+
+    #[test]
+    fn test_kbd_char_in_sdl2_prequeued_key_delivered() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        loader.shared.use_sdl2_text.store(true, Ordering::Relaxed);
+        // Pre-queue a key before the call
+        {
+            let mut q = loader.shared.kbd_queue.lock().unwrap();
+            q.push_back(KbdKeyInfo { ch: b'A', scan: 0x1E, state: 0x0020 });
+        }
+        loader.shared.kbd_cond.notify_all();
+        let esp = 0x1000u32;
+        vcpu.regs.rsp = esp as u64;
+        let p_key_info = 0x2000u32;
+        // wait=0 (IO_WAIT) — key already in queue so returns immediately
+        write_stack(&loader, esp, &[0, 0, p_key_info]);
+        let result = loader.handle_kbdcalls(&mut vcpu, 0, 4);
+        assert!(matches!(result, ApiResult::Normal(0)));
+        assert_eq!(loader.guest_read::<u8>(p_key_info),     Some(b'A')); // ch
+        assert_eq!(loader.guest_read::<u8>(p_key_info + 1), Some(0x1E)); // scan
+        assert_eq!(loader.guest_read::<u8>(p_key_info + 2), Some(0x40)); // fbStatus = final char
+        assert_eq!(loader.guest_read::<u16>(p_key_info + 4), Some(0x0020)); // shift state
+    }
+
+    // ── KbdStringIn (ordinal 9) ──────────────────────────────────────────────
+
+    #[test]
+    fn test_kbd_string_in_null_length_returns_error() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp = 0x1000u32;
+        vcpu.regs.rsp = esp as u64;
+        // Pascal: KbdStringIn(pBuf, pLen, wait, hkbd) → ESP+4=hkbd, +8=wait, +12=pLen, +16=pBuf
+        // pLen = 0 (null) → must return ERROR_INVALID_FUNCTION
+        write_stack(&loader, esp, &[0, 0, 0, 0x2000]); // hkbd=0, wait=0, pLen=0, pBuf=0x2000
+        let result = loader.handle_kbdcalls(&mut vcpu, 0, 9);
+        assert!(matches!(result, ApiResult::Normal(ERROR_INVALID_FUNCTION)));
+    }
+}
