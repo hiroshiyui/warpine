@@ -8,7 +8,7 @@ Warpine is an OS/2 compatibility layer for Linux that runs 32-bit OS/2 (LX forma
 
 **License:** GPL-3.0-only
 
-**Status:** Phases 1–4 complete. Phase 3.5 (Text-Mode Application Support) complete — 4OS2 command shell runs interactively with working `dir` command (date/time formatting verified). Phase 4.5 (16-bit Thunk Fix) complete — eliminated 16-bit thunks via source-level recompilation of 4OS2 (patches in `samples/4os2/patches/`). NLS (National Language Support) working — DosQueryCtryInfo, DosQueryCp, DosMapCase all verified. NE format parser complete. GUI backend migrated from winit+softbuffer to SDL2. MMPM/2 audio baseline: `DosBeep` plays real tones; MDM.DLL `mciSendCommand`/`mciSendString` for `waveaudio` devices implemented via SDL2 audio queue. See `doc/TODOs.md` for the full roadmap.
+**Status:** Phases 1–4 complete. Phase 3.5 (Text-Mode Application Support) complete — 4OS2 command shell runs interactively with working `dir` command (date/time formatting verified). Phase 4.5 (16-bit Thunk Fix) complete — eliminated 16-bit thunks via source-level recompilation of 4OS2 (patches in `samples/4os2/patches/`). NLS (National Language Support) working — DosQueryCtryInfo, DosQueryCp, DosMapCase all verified. NE format parser complete. GUI backend migrated from winit+softbuffer to SDL2. MMPM/2 audio baseline: `DosBeep` plays real tones; MDM.DLL `mciSendCommand`/`mciSendString` for `waveaudio` devices implemented via SDL2 audio queue. API thunk auto-registration complete — `api_registry.rs` static sorted table replaces the ~120-arm match in `api_dispatch.rs`. See `doc/TODOs.md` for the full roadmap.
 
 ## Build & Run
 
@@ -16,7 +16,7 @@ Warpine is an OS/2 compatibility layer for Linux that runs 32-bit OS/2 (LX forma
 cargo build                              # Debug build
 cargo run -- <path_to_os2_executable>    # Run an OS/2 binary
 cargo run -- samples/hello/hello.exe     # Example: run hello world
-cargo test                               # Unit tests (155 tests: LX/NE parsers, VFS, managers, MMPM)
+cargo test                               # Unit tests (162 tests: LX/NE parsers, VFS, managers, MMPM, API registry)
 ```
 
 **Prerequisites:** Linux with KVM enabled (`/dev/kvm`), x86_64 CPU with VT-x/AMD-V, Rust 2024 edition, `libsdl2-dev` (for PM/GUI window support).
@@ -36,7 +36,7 @@ cargo test                               # Unit tests (155 tests: LX/NE parsers,
 
 - **`src/lx/`** — LX executable format parser (`header.rs` for binary structures, `lx.rs` for orchestration). Unit tests live here.
 - **`src/ne/`** — NE (New Executable) format parser for OS/2 1.x 16-bit apps (`header.rs` for structures, `ne.rs` for orchestration). 16 unit tests. Phase 5 will add NE loading/execution.
-- **`src/loader/`** — The core: KVM VMM, memory manager, handle manager, semaphore manager, queue manager, VMEXIT loop, and OS/2 API handler functions. Split into `mod.rs` (loader core), `doscalls.rs`, `viocalls.rs`, `kbdcalls.rs`, `console.rs`, `pm_win.rs`, `pm_gpi.rs`, `stubs.rs`, `process.rs`, `managers.rs`, `constants.rs`, `mmpm.rs` (MMPM/2 audio: MmpmManager, beep_tone, mciSendCommand/String). Phase 4 adds `vfs.rs` (VfsBackend trait, DriveManager) and `vfs_hostdir.rs` (HostDirBackend) — see developer guide for VFS architecture.
+- **`src/loader/`** — The core: KVM VMM, memory manager, handle manager, semaphore manager, queue manager, VMEXIT loop, and OS/2 API handler functions. Split into `mod.rs` (loader core), `api_registry.rs` (static sorted API thunk table, 122 entries), `api_dispatch.rs` (registry lookup + sub-dispatcher routing), `api_trace.rs` (ordinal-to-name/module helpers), `doscalls.rs`, `viocalls.rs`, `kbdcalls.rs`, `console.rs`, `pm_win.rs`, `pm_gpi.rs`, `stubs.rs`, `process.rs`, `managers.rs`, `constants.rs`, `mmpm.rs` (MMPM/2 audio: MmpmManager, beep_tone, mciSendCommand/String). Phase 4 adds `vfs.rs` (VfsBackend trait, DriveManager) and `vfs_hostdir.rs` (HostDirBackend) — see developer guide for VFS architecture.
 - **`src/api.rs`** — Small module with `DosWrite`/`DosExit` implementations and FFI bridge stubs.
 - **`src/gui.rs`** — Phase 3 Presentation Manager GUI backend (SDL2). `GUIMessage` channel carries draw/window commands from VCPU thread to main thread; `run_gui_loop()` drives the SDL2 event pump and pixel-buffer rendering via streaming textures.
 

@@ -32,17 +32,13 @@ Eliminated 16-bit thunks from 4OS2 by recompiling with modified headers rather t
 
 **Structured API Trace System** — `api_trace.rs` provides `ordinal_to_name()` and `module_for_ordinal()`; every API call emits a `tracing::debug_span!` with module, ordinal, name, return value, guest eip/esp. `WARPINE_TRACE=strace` for compact span output, `=json` for JSON lines, unset for default pretty logging.
 
+**API Thunk Auto-Registration** — `api_registry.rs` holds a static sorted `&[ApiEntry]` table (122 entries) covering DOSCALLS, QUECALLS, NLS, and MDM. Each `ApiEntry` carries ordinal, module, name, argc, and a type-erased `fn` pointer handler. `find(ordinal)` does O(log n) binary search; `all()` exposes the full table for compatibility reports. `api_dispatch.rs` reduced from ~120-arm match to pre-read + registry lookup + sub-dispatcher routing. PMWIN/PMGPI/KBDCALLS/VIOCALLS retain their own sub-dispatchers. Seven registry regression tests (sorted order, no duplicates, name/module cross-validation with api_trace). NLS ordinal names added to `api_trace.rs`.
+
 **SDL2 GUI Backend** — Migrated from `winit + softbuffer` to `sdl2 = { version = "0.37", features = ["unsafe_textures"] }`. `src/gui.rs` rewritten: polling event loop (`run_gui_loop`), per-window `Canvas<Window>` + streaming `Texture` with `BlendMode::None` for opaque pixel rendering. `build.rs` emits `cargo:rustc-link-search` from `pkg-config` so `rust-lld` finds `libSDL2.so` on Debian multi-arch.
 
 ---
 
 ## Architecture & Refactoring Backlog
-
-### API Thunk Auto-Registration
-- [ ] Replace the large `match ordinal` dispatch table in `api_dispatch.rs` with a registry-based mechanism
-- [ ] Option A: procedural macro (`#[os2_api(module = "DOSCALLS", ordinal = 299)]`) auto-registers handlers at compile time
-- [ ] Option B: `inventory` crate for distributed static registration without a proc macro
-- [ ] Benefits: auto-generate stub lists, compatibility matrices, and missing-API reports; reduces `api_dispatch.rs` maintenance burden as ordinal count grows
 
 ### Ordinal Table Canonical Build Tool
 - [ ] Write a standalone tool that reads real OS/2 system DLLs (DOSCALLS.DLL, PMWIN.DLL, PMGPI.DLL, etc.) using the LX parser and dumps the complete `ordinal → export name` mapping
