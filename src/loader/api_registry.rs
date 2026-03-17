@@ -400,12 +400,139 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.mci_get_last_error(a[0],a[1],a[2])) },
 ];
 
+// ── Compatibility report ──────────────────────────────────────────────────────
+
+/// Pure-stub ordinals: handlers that return 0 without doing any real work.
+/// These are maintained manually alongside the registry entries above.
+const STUB_ORDINALS: &[u32] = &[
+    241,  // DosConnectNPipe
+    243,  // DosCreateNPipe
+    250,  // DosSetNPHState
+    267,  // DOS16REQUESTVDD
+    285,  // DosFSCtl
+    317,  // DosDebug
+    342,  // DosDeleteMuxWaitSem
+    356,  // DosRaiseException
+    357,  // DosUnwindException
+    415,  // DosShutdown
+];
+
+/// Generate a human-readable OS/2 API compatibility report.
+///
+/// Sections:
+/// 1. Per-module table of all registry entries (implemented vs. stub)
+/// 2. Sub-dispatcher summaries for VIOCALLS, KBDCALLS, PMWIN, PMGPI
+/// 3. Aggregate statistics
+pub fn compat_report() -> String {
+    use std::collections::BTreeMap;
+    let mut out = String::new();
+
+    out.push_str("Warpine OS/2 API Compatibility Report\n");
+    out.push_str("======================================\n\n");
+
+    // Group registry entries by module (BTreeMap for stable alphabetical order)
+    let mut by_module: BTreeMap<&str, Vec<&ApiEntry>> = BTreeMap::new();
+    for entry in REGISTRY {
+        by_module.entry(entry.module).or_default().push(entry);
+    }
+
+    let mut total_impl  = 0u32;
+    let mut total_stubs = 0u32;
+
+    for (module, entries) in &by_module {
+        let module_stubs = entries.iter().filter(|e| STUB_ORDINALS.contains(&e.ordinal)).count();
+        let module_impl  = entries.len() - module_stubs;
+        out.push_str(&format!(
+            "{module}  ({} implemented, {} stub)\n",
+            module_impl, module_stubs
+        ));
+        for e in entries {
+            let tag = if STUB_ORDINALS.contains(&e.ordinal) { "[stub]" } else { "      " };
+            out.push_str(&format!("  {tag}  [{:>4}]  {}\n", e.ordinal, e.name));
+        }
+        out.push('\n');
+        total_impl  += module_impl  as u32;
+        total_stubs += module_stubs as u32;
+    }
+
+    // Sub-dispatcher summaries
+    out.push_str("Sub-dispatchers (separate from registry)\n");
+    out.push_str("----------------------------------------\n");
+    out.push_str("  VIOCALLS   15 implemented, 5 stub  (VioWrtTTY, VioGetMode, VioSetCurPos, \
+                  VioGetCurPos, VioScrollUp, VioScrollDn, VioWrtCharStrAtt, VioWrtNCell, \
+                  VioWrtNAttr, VioReadCellStr, VioSetCurType, VioGetCurType, VioGetConfig, \
+                  VioSetMode[stub], VioGetBuf[stub], VioShowBuf[stub], VioSetState[stub], \
+                  VioSetCp[stub])\n");
+    out.push_str("  KBDCALLS    3 implemented  (KbdCharIn, KbdStringIn, KbdGetStatus)\n");
+    out.push_str("  PMWIN      67 implemented  (WinInitialize, message queues, window mgmt, \
+                  input, paint, timers, menus, dialogs, clipboard, resources)\n");
+    out.push_str("  PMGPI       8 implemented  (GpiCreatePS, GpiDestroyPS, GpiSetColor, \
+                  GpiMove, GpiBox, GpiLine, GpiCharStringAt, GpiErase)\n");
+    out.push('\n');
+
+    // Aggregate statistics
+    let registry_total = REGISTRY.len() as u32;
+    out.push_str("Summary\n");
+    out.push_str("-------\n");
+    out.push_str(&format!("  Registry entries:  {registry_total}\n"));
+    out.push_str(&format!("    Implemented:     {total_impl}\n"));
+    out.push_str(&format!("    Stub (no-op):    {total_stubs}\n"));
+    out.push_str("  Sub-dispatchers:   93 ordinals (VIOCALLS + KBDCALLS + PMWIN + PMGPI)\n");
+    out.push_str(&format!(
+        "  Grand total:       {} API entry points covered\n",
+        registry_total + 93
+    ));
+
+    out
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::loader::api_trace;
+
+    // ── compat_report ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_compat_report_structure() {
+        let report = super::compat_report();
+        // Must contain the header
+        assert!(report.contains("Warpine OS/2 API Compatibility Report"),
+            "missing header");
+        // Must list all four registry modules
+        assert!(report.contains("DOSCALLS"), "missing DOSCALLS section");
+        assert!(report.contains("QUECALLS"), "missing QUECALLS section");
+        assert!(report.contains("NLS"),      "missing NLS section");
+        assert!(report.contains("MDM"),      "missing MDM section");
+        // Must mention all four sub-dispatchers
+        assert!(report.contains("VIOCALLS"), "missing VIOCALLS");
+        assert!(report.contains("KBDCALLS"), "missing KBDCALLS");
+        assert!(report.contains("PMWIN"),    "missing PMWIN");
+        assert!(report.contains("PMGPI"),    "missing PMGPI");
+        // Spot-check a known implemented and a known stub API name
+        assert!(report.contains("DosOpen"),        "DosOpen missing");
+        assert!(report.contains("DosCreateNPipe"), "DosCreateNPipe missing");
+        assert!(report.contains("[stub]"),         "no stubs marked");
+        // Summary section present
+        assert!(report.contains("Grand total:"), "missing summary");
+    }
+
+    #[test]
+    fn test_compat_report_stub_count() {
+        let report = super::compat_report();
+        // Count only registry-section stub lines, which are formatted as
+        // "  [stub]  [ordinal]  Name" — prefix with two spaces + "[stub]".
+        let stub_lines = report.lines()
+            .filter(|l| l.trim_start().starts_with("[stub]"))
+            .count();
+        assert_eq!(stub_lines, super::STUB_ORDINALS.len(),
+            "stub count in report ({stub_lines}) != STUB_ORDINALS len ({})",
+            super::STUB_ORDINALS.len());
+    }
+
+    // ── registry ─────────────────────────────────────────────────────────────
 
     #[test]
     fn test_registry_sorted() {

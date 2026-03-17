@@ -91,7 +91,13 @@ fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage: {} <os2_executable>", args[0]);
+        eprintln!("       {} --compat         Print API compatibility report", args[0]);
         std::process::exit(1);
+    }
+
+    if args[1] == "--compat" {
+        print!("{}", loader::api_registry::compat_report());
+        return;
     }
 
     let file_path = &args[1];
