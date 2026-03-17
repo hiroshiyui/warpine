@@ -4,6 +4,8 @@
 
 use super::vm_backend::VcpuBackend;
 use log::{debug, warn};
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
 use super::constants::*;
 use super::mutex_ext::MutexExt;
@@ -42,7 +44,42 @@ impl super::Loader {
     fn kbd_char_in(&self, p_key_info: u32, wait: u32, _hkbd: u32) -> u32 {
         debug!("  KbdCharIn(wait={})", wait);
 
-        // Ensure raw mode is active
+        if self.shared.use_sdl2_text.load(Ordering::Relaxed) {
+            // SDL2 text mode: block on the keyboard condvar queue.
+            let mut queue = self.shared.kbd_queue.lock().unwrap();
+            let ki = loop {
+                if self.shutting_down() { return ERROR_INVALID_FUNCTION; }
+                if let Some(ki) = queue.pop_front() { break ki; }
+                if wait == 1 {
+                    // IO_NOWAIT: return immediately with status 0 (no char)
+                    if p_key_info != 0 {
+                        self.guest_write::<u8>(p_key_info, 0);
+                        self.guest_write::<u8>(p_key_info + 1, 0);
+                        self.guest_write::<u8>(p_key_info + 2, 0);
+                        self.guest_write::<u8>(p_key_info + 3, 0);
+                        self.guest_write::<u16>(p_key_info + 4, 0);
+                        self.guest_write::<u32>(p_key_info + 6, 0);
+                    }
+                    return NO_ERROR;
+                }
+                // IO_WAIT: sleep on condvar; recheck every 50 ms for shutdown
+                let (new_queue, _) = self.shared.kbd_cond
+                    .wait_timeout(queue, Duration::from_millis(50))
+                    .unwrap();
+                queue = new_queue;
+            };
+            if p_key_info != 0 {
+                self.guest_write::<u8>(p_key_info,     ki.ch);
+                self.guest_write::<u8>(p_key_info + 1, ki.scan);
+                self.guest_write::<u8>(p_key_info + 2, 0x40);  // fbStatus: final char
+                self.guest_write::<u8>(p_key_info + 3, 0);
+                self.guest_write::<u16>(p_key_info + 4, ki.state);
+                self.guest_write::<u32>(p_key_info + 6, 0);
+            }
+            return NO_ERROR;
+        }
+
+        // Terminal (termios) path — ensure raw mode is active
         {
             let mut console = self.shared.console_mgr.lock_or_recover();
             console.enable_raw_mode();
@@ -63,23 +100,9 @@ impl super::Loader {
                 };
 
                 if p_key_info != 0 {
-                    self.guest_write::<u8>(p_key_info, charcode);      // chChar
-                    self.guest_write::<u8>(p_key_info + 1, scancode);  // chScan
-                    self.guest_write::<u8>(p_key_info + 2, 0x40);     // fbStatus: final char
-                    self.guest_write::<u8>(p_key_info + 3, 0);         // bNlsShift
-                    self.guest_write::<u16>(p_key_info + 4, 0);       // fsState (shift state)
-                    self.guest_write::<u32>(p_key_info + 6, 0);       // time
-                }
-                return NO_ERROR;
-            }
-
-            // No input available
-            if wait == 1 {
-                // IO_NOWAIT: return immediately with no data
-                if p_key_info != 0 {
-                    self.guest_write::<u8>(p_key_info, 0);
-                    self.guest_write::<u8>(p_key_info + 1, 0);
-                    self.guest_write::<u8>(p_key_info + 2, 0); // status 0 = no char
+                    self.guest_write::<u8>(p_key_info, charcode);
+                    self.guest_write::<u8>(p_key_info + 1, scancode);
+                    self.guest_write::<u8>(p_key_info + 2, 0x40);
                     self.guest_write::<u8>(p_key_info + 3, 0);
                     self.guest_write::<u16>(p_key_info + 4, 0);
                     self.guest_write::<u32>(p_key_info + 6, 0);
@@ -87,8 +110,19 @@ impl super::Loader {
                 return NO_ERROR;
             }
 
-            // IO_WAIT: sleep briefly and retry
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            if wait == 1 {
+                if p_key_info != 0 {
+                    self.guest_write::<u8>(p_key_info, 0);
+                    self.guest_write::<u8>(p_key_info + 1, 0);
+                    self.guest_write::<u8>(p_key_info + 2, 0);
+                    self.guest_write::<u8>(p_key_info + 3, 0);
+                    self.guest_write::<u16>(p_key_info + 4, 0);
+                    self.guest_write::<u32>(p_key_info + 6, 0);
+                }
+                return NO_ERROR;
+            }
+
+            std::thread::sleep(Duration::from_millis(10));
         }
     }
 
