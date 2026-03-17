@@ -2,366 +2,41 @@
 
 This document tracks the tasks required to reach a functional OS/2 compatibility layer.
 
-## Phase 1: Foundation (CLI "Hello World") - COMPLETED 🎉
-- [x] **Executable Parser (LX/LE/NE)**
-    - [x] Implement MZ (DOS) header parser to locate the OS/2 header offset.
-    - [x] Implement LX (Linear Executable) header parser.
-    - [x] Implement Object Table and Page Map parsing for LX files.
-    - [x] Implement Fixup (Relocation) Table parsing.
-- [x] **Loader Subsystem**
-    - [x] Implement memory mapping of LX objects into the KVM guest address space.
-    - [x] Apply base relocations (fixups).
-    - [x] Resolve dynamic imports (DLLs) and thunk them to native implementations via INT 3 traps.
-    - [x] Set up the initial CPU state (registers, stack, TIB, PIB, Env) for execution.
-- [x] **Initial API Thunks (DOSCALLS.DLL)**
-    - [x] `DosWrite`: Basic implementation for stdout/stderr.
-    - [x] `DosExit`: Proper process termination with exit code.
-    - [x] `DosQuerySysInfo`: Stub implementation for runtime initialization.
-    - [x] `DosQueryConfig`: Stub implementation for runtime initialization.
-    - [x] `DosQueryHType`: Identification of standard handles.
-    - [x] `DosGetInfoBlocks`: Retrieval of TIB and PIB pointers.
+---
 
-## Phase 2: Core OS/2 Subsystem
-- [x] **Memory Management**
-    - [x] `DosAllocMem` / `DosFreeMem` implementation.
-    - [x] Handle OS/2 32-bit flat memory model vs. segmented requests.
-- [x] **Filesystem APIs**
-    - [x] `DosOpen`, `DosRead`, `DosClose`, `DosQueryFileInfo`.
-    - [x] `DosDelete`, `DosMove`, `DosCreateDir`, `DosDeleteDir`.
-    - [x] `DosFindFirst`, `DosFindNext` with basic wildcard support.
-    - [x] Map OS/2 drive letters (e.g., `C:\`) to Unix paths.
-- [x] **Process/Thread Management**
-    - [x] `DosCreateThread`, `DosKillThread`.
-    - [x] Thread Local Storage (TLS) emulation (via TIB initialization).
-- [x] Inter-Process Communication (IPC)
-    - [x] Event Semaphores (`DosCreateEventSem`, `DosPostEventSem`, etc.).
-    - [x] Mutex Semaphores (`DosCreateMutexSem`, `DosRequestMutexSem`, etc.).
-    - [x] MuxWait Semaphores (`DosCreateMuxWaitSem`, `DosWaitMuxWaitSem`).
-    - [x] Pipes (`DosCreatePipe`).
-    - [x] Queues (`DosCreateQueue`, `DosWriteQueue`, `DosReadQueue`).
+## Completed Work
 
+### Phase 1 — Foundation (CLI Hello World)
+LX/LE executable parser (MZ header, object table, page map, fixup table). Loader maps LX objects into 128 MB KVM guest memory and applies relocations. API thunk infrastructure: imports resolved to INT 3 trap stubs at `MAGIC_API_BASE` (0x01000000); VMEXIT loop dispatches to Rust handlers by ordinal. Initial DOSCALLS thunks: `DosWrite`, `DosExit`, `DosQuerySysInfo`, `DosQueryConfig`, `DosQueryHType`, `DosGetInfoBlocks`.
 
-## Phase 3: Presentation Manager (GUI)
-- [x] **Infrastructure**
-    - [x] Add winit + softbuffer dependencies for cross-platform windowing.
-    - [x] Add PM data structures: `OS2Message`, `PM_MsgQueue`, `WindowClass`, `OS2Window`, `PresentationSpace`, `WindowManager`.
-    - [x] Add `window_mgr: Mutex<WindowManager>` to `SharedState`.
-    - [x] Expand API thunk stubs for PMWIN (2048+) and PMGPI (3072+) ordinal ranges.
-- [x] **Main Thread Restructuring**
-    - [x] Detect PM apps via imported module check (`is_pm_app`).
-    - [x] Dual-path execution: CLI apps run vCPU on main thread; PM apps run winit event loop on main thread with vCPU on worker thread.
-    - [x] `GUISender` wrapper with `EventLoopProxy` waking for cross-thread GUI message delivery.
-- [x] **Window Management (PMWIN.DLL)**
-    - [x] `WinInitialize` / `WinTerminate` — HAB lifecycle.
-    - [x] `WinCreateMsgQueue` / `WinDestroyMsgQueue` — message queue creation with tid-to-hmq mapping.
-    - [x] `WinRegisterClass` — store guest window procedure pointer per class.
-    - [x] `WinCreateStdWindow` — create frame + client windows, send `CreateWindow` to GUI thread.
-    - [x] `WinGetMsg` / `WinDispatchMsg` — message loop with blocking dequeue and guest callback dispatch.
-    - [x] `WinPostMsg` / `WinSendMsg` — inter-window messaging with callback support.
-    - [x] `WinDefWindowProc` — default message processing (WM_CLOSE → WM_QUIT, WM_PAINT no-op).
-    - [x] `WinBeginPaint` / `WinEndPaint` — presentation space for painting, buffer present on end.
-    - [x] `WinMessageBox` — terminal-based emulation (prints to stdout).
-    - [x] `WinShowWindow`, `WinQueryWindowRect`, `WinDestroyWindow`, `WinGetLastError`.
-- [x] **Callback Mechanism**
-    - [x] `ApiResult` enum: `Normal(u32)` vs `Callback { wnd_proc, hwnd, msg, mp1, mp2 }`.
-    - [x] `CallbackFrame` stack for re-entrant guest window procedure calls.
-    - [x] `CALLBACK_RET_TRAP` (0x010003FE) for detecting callback return via VMEXIT.
-    - [x] Frame-to-client window redirection for event routing.
-- [x] **Graphics (PMGPI.DLL)**
-    - [x] `GpiCreatePS` / `GpiDestroyPS` — presentation space lifecycle.
-    - [x] `GpiSetColor` — current drawing color.
-    - [x] `GpiMove` — set current position.
-    - [x] `GpiBox` — rectangle drawing (filled and outline) via softbuffer.
-    - [x] `GpiLine` — Bresenham line drawing via softbuffer.
-- [x] **Input Handling**
-    - [x] Keyboard events → `WM_CHAR` messages with key flags and char codes.
-    - [x] Mouse movement → `WM_MOUSEMOVE` with OS/2 bottom-left coordinate flip.
-    - [x] Mouse buttons → `WM_BUTTON1DOWN` / `WM_BUTTON1UP`.
-    - [x] Window resize → `WM_SIZE` with buffer reallocation.
-    - [x] Window close → `WM_CLOSE`.
-- [x] **Test Application**
-    - [x] `samples/pm_hello` — PM app using `WinMessageBox` for basic PM verification.
-- [x] **Text & Erasing**
-    - [x] `GpiCharStringAt` — text rendering with embedded 8x16 VGA bitmap font.
-    - [x] `GpiErase` — clear presentation space to white.
-- [x] **Timer Support**
-    - [x] `WinStartTimer` / `WinStopTimer` — background thread posts `WM_TIMER` messages.
-- [x] **Dialog Boxes**
-    - [x] `WinDlgBox`, `WinLoadDlg`, `WinProcessDlg`, `WinDismissDlg` — stubs (no resource loading yet).
-    - [x] `WinDefDlgProc`, `WinSendDlgItemMsg`, `WinQueryDlgItemText`, `WinSetDlgItemText`.
-    - [x] `WinWindowFromID` — child window lookup by ID.
-- [x] **Menus & Accelerators**
-    - [x] `WinCreateMenu`, `WinLoadMenu`, `WinPopupMenu` — stubs (no resource loading yet).
-    - [x] `WinLoadAccelTable`, `WinSetAccelTable`, `WinTranslateAccel` — stubs.
-- [x] **Clipboard**
-    - [x] `WinOpenClipbrd`, `WinCloseClipbrd`, `WinEmptyClipbrd` — clipboard state management.
-    - [x] `WinSetClipbrdData`, `WinQueryClipbrdData` — in-process clipboard storage.
-- [x] **Additional Window APIs**
-    - [x] `WinSetWindowText` / `WinQueryWindowText` — per-window text storage.
-    - [x] `WinSetWindowULong` / `WinQueryWindowULong` / `WinSetWindowUShort` / `WinQueryWindowUShort` — window data words.
-    - [x] `WinFillRect` — fills rectangle via GUI DrawBox.
-    - [x] `WinInvalidateRect` / `WinUpdateWindow` — repaint triggering.
-    - [x] `WinSetWindowPos` — stub.
-    - [x] `WinQuerySysValue` — screen metrics (640x480 defaults).
-    - [x] `WinQuerySysPointer`, `WinSetPointer`, `WinAlarm` — stubs.
-- [x] **Resource Loading**
-    - [x] LX resource table parsing (`LxResourceEntry`, `ResourceManager`).
-    - [x] `DosGetResource`, `DosFreeResource`, `DosQueryResourceSize`.
-    - [x] `WinLoadString` — string table bundle parsing.
-    - [x] `WinLoadMenu` — creates menu window from resource (template parsing deferred).
-    - [x] `WinLoadAccelTable` / `WinSetAccelTable` / `WinTranslateAccel` — accelerator table loading and key translation.
-    - [x] `WinLoadDlg` / `WinDlgBox` — improved stubs with resource ID logging (dialog template parsing deferred).
-- [x] **Additional**
-    - [x] Full `WinSetWindowPos` with GUI resize/move support.
+### Phase 2 — Core OS/2 Subsystem
+Memory: `DosAllocMem` / `DosFreeMem`. Filesystem: `DosOpen/Read/Write/Close/Delete/Move/CreateDir/DeleteDir`, `DosFindFirst/Next`, OS/2 drive-letter path translation. Threads: `DosCreateThread`, `DosKillThread`, TLS via TIB. IPC: event, mutex, and MuxWait semaphores; pipes (`DosCreatePipe`); queues (`DosCreateQueue/WriteQueue/ReadQueue`).
 
-## Phase 3.5: Text-Mode Application Support (4OS2 Compatibility Target)
+### Phase 3 — Presentation Manager (GUI)
+Dual-path execution: PM apps run the SDL2 event loop on the main thread; CLI apps run the vCPU directly. `GUIMessage` channel carries draw/window commands from vCPU thread to main thread. PMWIN: `WinInitialize/Terminate`, message queues, `WinRegisterClass`, `WinCreateStdWindow`, `WinGetMsg/DispatchMsg`, `WinPostMsg/SendMsg`, `WinDefWindowProc`, `WinBeginPaint/EndPaint`, `WinMessageBox`, `WinShowWindow`, `WinDestroyWindow`, timers, dialogs (stubs), menus (stubs), clipboard in-process storage, `WinSetWindowPos`, resource loading (`WinLoadString/Menu/AccelTable/Dlg`). PMGPI: `GpiCreatePS/DestroyPS`, `GpiSetColor`, `GpiMove`, `GpiBox`, `GpiLine`, `GpiCharStringAt`, `GpiErase`. Callback mechanism: `ApiResult::Callback` for re-entrant guest window-procedure calls via `CALLBACK_RET_TRAP`. Input: `WM_CHAR`, `WM_MOUSEMOVE`, `WM_BUTTON1DOWN/UP`, `WM_SIZE`, `WM_CLOSE`. Embedded 8×16 VGA bitmap font for text rendering.
 
-Target application: [4OS2](https://github.com/StevenLevine/4os2) — a commercial-grade OS/2 command shell that exercises nearly every DOSCALLS surface plus the full Kbd/Vio console subsystem. Getting 4OS2 to run validates CLI compatibility broadly.
+### Phase 3.5 — Text-Mode Application Support (4OS2)
+Target: 4OS2 command shell — validates nearly every DOSCALLS/KBD/VIO surface. Expanded thunk stub area (`KBDCALLS_BASE=4096`, `VIOCALLS_BASE=5120`, `SESMGR_BASE=6144`, `NLS_BASE=7168`, `MSG_BASE=8192`). Console: `VioManager` with screen buffer, cursor, raw termios input, ANSI escape output. KBD: `KbdCharIn` (blocking/non-blocking, arrow/function-key escape parsing), `KbdGetStatus`, `KbdStringIn`. VIO: `VioWrtTTY`, `VioGetMode`, `VioGetCurPos`, `VioSetCurPos`, `VioSetCurType`, `VioScrollUp`, `VioScrollDn`, `VioWrtCharStrAtt`, `VioWrtNCell`, `VioWrtNAttr`, `VioReadCellStr`, `VioSetAnsi`, `VioGetAnsi`, `VioGetConfig`. Process: `DosSetCurrentDir`, `DosQueryCurrentDir/Disk`, `DosSetDefaultDisk`, `DosExecPgm`, `DosWaitChild`, `DosKillProcess`, `DosQueryAppType`. System info: full `DosQuerySysInfo` QSV table, `DosGetDateTime`. Stubs: `DosError`, `DosSetMaxFH`, `DosBeep`, exception handlers, shared memory, codepage/country info, module loading stubs, file metadata APIs, device I/O stubs, semaphore extensions, named pipe stubs, session management stubs. Result: 4OS2 boots to a prompt; `dir`, `set`, `ver`, `md`, `rd`, `copy`, `move`, `del`, `attrib`, `tree` all work.
 
-**Recommended implementation order:** Infrastructure → Subsystem 3 stubs (unblock init) → Subsystem 2 directory/sysinfo → Subsystem 1 console I/O → Subsystem 2 process execution → remaining APIs.
+### Phase 4 — HPFS-Compatible Virtual Filesystem
+`VfsBackend` trait (21 methods) as OS/2 filesystem semantics contract. `DriveManager` maps drive letters A:–Z: to `Box<dyn VfsBackend>`; owns file and find-handle tables. `HostDirBackend`: case-insensitive case-preserving lookup (optimistic stat + readdir fallback, kernel casefold detection), long filenames (254 chars), file sharing modes, sandbox enforcement, OS/2 wildcard matching, directory listing cache (2s TTL), device name mapping (NUL/CON/CLOCK$/KBD$/SCREEN$). Extended attributes via Linux xattrs (`user.os2.ea.*`) with sidecar `.os2ea/` fallback. `DosEnumAttribute`, `DosQueryPathInfo` levels 1/2/3. File locking via `fcntl(F_SETLK)`. `DosFindFirst/Next` multi-entry packing, attribute filtering, `*.*` HPFS semantics. All `doscalls.rs` filesystem operations route through `DriveManager`. C: drive auto-mounted at `~/.local/share/warpine/drive_c/`. 4OS2 `dir` with correct date/time formatting verified; `samples/file_test`, `find_test`, `fs_ops_test`, `vfs_test` (16/16) all pass.
 
-### Infrastructure: Expand Thunk Stub Area — COMPLETED
-- [x] Add `KBDCALLS_BASE = 4096` and `VIOCALLS_BASE = 5120` constants to `constants.rs`
-- [x] Add `STUB_AREA_SIZE = 8192` constant (expanded from implicit 4096)
-- [x] Update `setup_stubs()` loop to `0..STUB_AREA_SIZE`
-- [x] Update `run_vcpu()` bounds check from `MAGIC_API_BASE + 4096` to `MAGIC_API_BASE + STUB_AREA_SIZE`
-- [x] Add `"KBDCALLS"` and `"VIOCALLS"` branches in `resolve_import()`
-- [x] Add KBDCALLS and VIOCALLS dispatch branches in `handle_api_call_ex()`
+### Phase 4.5 — 16-bit Thunk Fix
+Eliminated 16-bit thunks from 4OS2 by recompiling with modified headers rather than runtime patching — removed ~350 lines of thunk-handling code from the loader. Key patches: `bsesub.h` changed `APIENTRY16` to `_System` (eliminates `__vfthunk` generation); `crt0.c` replaces Watcom's `__OS2Main` (which called `DosGetInfoSeg` via 16-bit thunk) with a pure 32-bit version using `DosGetInfoBlocks`; `viowrap.c` provides `#pragma import` for VIO/KBD ordinals; DOSCALLS/VIOCALLS/KBDCALLS ordinal tables audited and corrected. All 6 patches stored in `samples/4os2/patches/`; `fetch_source.sh` applies them automatically. OS/2 version now correctly reports 4.50 (fixed `_osmajor`/`_osminor` init via `DosQuerySysInfo`).
 
-### Subsystem 1: Console I/O (KBDCALLS.DLL + VIOCALLS.DLL)
+### Architecture — Completed Items
 
-New modules: `src/loader/console.rs` (VioManager), `src/loader/kbdcalls.rs`, `src/loader/viocalls.rs`.
+**Virtualization Backend Abstraction** — `VmBackend` / `VcpuBackend` traits in `vm_backend.rs`; KVM implementation isolated to `kvm_backend.rs`; `MockVcpu` / `MockVmBackend` enable guest-memory and VIO handler tests without `/dev/kvm`.
 
-Implementation approach: map Kbd calls to Linux termios (raw mode input) and Vio calls to ANSI escape sequences for terminal output. `VioManager` maintains a screen buffer (char+attr cells), cursor position, screen dimensions, and ANSI mode flag.
+**Guest Memory Type Safety** — `GuestMemory` struct (`guest_mem.rs`) owns the mmap allocation with safe `read<T>`/`write<T>` methods; replaces the former `*mut u8` + `usize` pair in `SharedState`.
 
-- [x] **Console Manager (`console.rs`)** — `VioManager` struct with screen buffer, cursor state, terminal dimensions, raw mode via termios, ANSI color mapping (CGA→ANSI), `console_mgr: Mutex<VioManager>` in SharedState
-- [x] **Minimal VIO — Output (Step 1)** — `VioWrtTTY` (30), `VioGetMode` (3), `VioGetCurPos` (4), `VioSetCurPos` (15)
-- [x] **Minimal KBD — Input (Step 2)** — `KbdCharIn` (4) with blocking/non-blocking modes and escape sequence parsing (arrow keys, Home/End/PgUp/PgDn/Delete), `KbdGetStatus` (10)
-- [x] **Screen Manipulation (Step 3)** — `VioScrollUp` (7), `VioScrollDn` (8), `VioWrtCharStrAtt` (26), `VioWrtNCell` (28), `VioWrtNAttr` (27), `VioReadCellStr` (24), `VioSetCurType` (16)
-- [x] **Stubs and Configuration (Step 4)** — `KbdStringIn` (9) with echo and backspace, `VioSetAnsi` (38), `VioGetAnsi` (39), `VioSetState` (51 stub), `VioSetCp` (42 stub), `VioGetConfig` (46)
+**Structured API Trace System** — `api_trace.rs` provides `ordinal_to_name()` and `module_for_ordinal()`; every API call emits a `tracing::debug_span!` with module, ordinal, name, return value, guest eip/esp. `WARPINE_TRACE=strace` for compact span output, `=json` for JSON lines, unset for default pretty logging.
 
-### Subsystem 2: Process Management
-
-New module: `src/loader/process.rs`. Add `ProcessManager` to `SharedState` (or to `managers.rs`).
-
-`ProcessManager` fields: `children: HashMap<u32, std::process::Child>`, `next_pid: u32`, `current_disk: u8` (default 3 = C:), `current_dir: String` (OS/2 current directory, tracked separately from host cwd for sandbox safety).
-
-- [x] **Directory Management (Step 1)** — `DosSetCurrentDir` (255), `DosQueryCurrentDir` (274), `DosQueryCurrentDisk` (275), `DosSetDefaultDisk` (220) with `ProcessManager` tracking current disk/directory. `translate_path()` updated to resolve relative paths against OS/2 current directory. Fixed `DosQueryPathInfo` ordinal from 275 to correct 223.
-- [x] **System Information (Step 2)** — `DosQuerySysInfo` (348, full QSV_* table), `DosGetDateTime` (230, real via libc), `DosSetDateTime` (stub) — implemented in Subsystem 3.
-- [x] **Process Execution (Step 3)** — `DosExecPgm` (283) with sync/async modes and double-null arg parsing, `DosWaitChild` (280) with specific/any-child and wait/nowait, `DosKillProcess` (237), `DosQueryAppType` (323) with MZ header detection. ProcessManager extended with child tracking. Fixed `DosGetInfoBlocks` ordinal from 283 to correct 312.
-
-### Subsystem 3: Shared Memory, Exception Handling, and Init Stubs
-
-New module: `src/loader/stubs.rs` for simple stub handlers. Add `SharedMemManager` and exception handler storage.
-
-- [x] **Critical Init Stubs (Step 1)** — `DosError`, `DosSetMaxFH`, `DosBeep`, `DosSetExceptionHandler`/`DosUnsetExceptionHandler`, `DosSetSignalExceptionFocus`, `DosAcknowledgeSignalException`, `DosEnterMustComplete`/`DosExitMustComplete`
-- [x] **Shared Memory (Step 2)** — `DosAllocSharedMem`, `DosGetNamedSharedMem`, `DosGetSharedMem`, `DosSetMem`, `DosQueryMem` with `SharedMemManager`
-- [x] **Codepage and Country Info (Step 3)** — `DosQueryCp` (CP 437), `DosSetProcessCp`, `DosQueryCtryInfo` (US defaults), `DosMapCase`
-- [x] **Module Loading Stubs (Step 4)** — `DosLoadModule`, `DosFreeModule`, `DosQueryModuleHandle`, `DosQueryProcAddr`, `DosGetMessage`
-- [x] **File Metadata APIs (Step 5)** — `DosCopy`, `DosEditName` (with wildcard transform), `DosSetFileInfo`, `DosSetFileMode`, `DosSetPathInfo`, `DosQueryFHState`/`DosSetFHState`, `DosQueryFSInfo`, `DosQueryFSAttach`, `DosQueryVerify`/`DosSetVerify`
-- [x] **Device I/O Stubs (Step 6)** — `DosDevIOCtl`, `DosDevConfig`
-- [x] **Semaphore Extensions (Step 7)** — `DosOpenEventSem`, `DosOpenMutexSem` with name-based lookup
-- [x] **Named Pipe Stubs (Step 8)** — `DosCreateNPipe`, `DosConnectNPipe`, `DosSetNPHState` (return error)
-- [x] **Session Management Stubs (Step 9)** — `DosStartSession`, `DosSetSession`, `DosStopSession` (return error)
-- [x] **System Info** — `DosQuerySysInfo` (full QSV_* table), `DosGetDateTime` (real via libc), `DosSetDateTime` (stub)
-
-### Verification
-- [x] `cargo build` — compiles cleanly
-- [x] `cargo test` — all tests pass
-- [x] Unit tests for `VioManager` screen buffer operations (scroll up/down, read cell str, defaults)
-- [x] Unit tests for key mapping (enter, printable, backspace → OS/2 charcode/scancode)
-- [x] Unit tests for `DosEditName` wildcard pattern replacement (5 test cases)
-- [x] Unit tests for `ResourceManager` find operations
-- [x] Unit tests for `DosQuerySysInfo` QSV_* constant validation
-- [x] Unit tests for `SharedMemManager` name registration and lookup
-- [x] Existing samples verified: hello, alloc_test, file_test, pipe_test, thread_test, find_test, mutex_test
-- [x] 4OS2 boots to a prompt and accepts basic commands (`ver`, `set`, `exit`, etc.)
-
-## Phase 4: Filesystem I/O (HPFS-Compatible Virtual Filesystem)
-
-Goal: build an isolated virtual filesystem with HPFS semantics and a correctness guarantee — every valid OS/2 filesystem operation succeeds with correct behavior; invalid operations return proper OS/2 error codes, never crashes. The only failure mode is the host side failing (disk full, permissions, etc.).
-
-### Architecture: VFS Trait with Pluggable Backends (Option C)
-
-The current filesystem I/O is pass-through: `translate_path()` maps OS/2 paths to host paths, and `DosOpen`/`DosRead`/`DosWrite` call `std::fs` directly. This "happens to work" for simple cases (e.g., `samples/file_test`) but provides no HPFS semantic guarantees — case sensitivity is wrong, EAs are missing, sharing modes are ignored, and edge cases crash or silently corrupt.
-
-The new design introduces a **VFS trait** as the **correctness boundary** between OS/2 API handlers and the storage backend:
-
-```
-  DosOpen/DosRead/DosWrite/DosFindFirst/...   (OS/2 API layer — doscalls.rs)
-                    │
-                    ▼
-              VfsBackend trait                  (OS/2 semantics contract)
-                    │
-          ┌─────────┴─────────┐
-          ▼                   ▼
-   HostDirBackend       HpfsImageBackend       (pluggable backends)
-   (host directory)     (disk image, future)
-```
-
-**Key principle:** The VFS trait defines OS/2 filesystem semantics. Any implementation of the trait must ensure that every valid OS/2 filesystem operation works correctly. The API handlers (`doscalls.rs`) call trait methods and never touch host filesystem primitives directly.
-
-**`HandleManager` integration:** `DriveManager` absorbs `HandleManager` and `HDirManager` — it owns the file handle table (`HashMap<u32, FileEntry>`) and find handle table (`HashMap<u32, FindEntry>`) directly. The old `HandleManager` and `HDirManager` in `managers.rs` remain in place during the transition period and will be removed in Step 7.
-
-### Design Notes (informed by WINE's filesystem approach)
-
-WINE's filesystem layer (`dlls/ntdll/unix/file.c`, `server/fd.c`) provides proven patterns for mapping a foreign OS's filesystem expectations onto Linux:
-
-- **Drive mapping:** WINE uses symlinks in `~/.wine/dosdevices/` (`c:` → `drive_c/`). Simple, inspectable with standard tools. Warpine can adopt a similar config-driven approach (e.g., `drives.toml` or a `dosdevices/`-style directory).
-- **Case-insensitive lookup:** WINE's `lookup_unix_name()` tries exact `stat()` first; on failure, falls back to `readdir()` + `strcasecmp`. Directory listings are cached. Linux 5.2+ ext4 and 6.13+ tmpfs support kernel-level case folding (`EXT4_CASEFOLD_FL`), developed in collaboration with Valve/Collabora for WINE/Proton — detect and use when available.
-- **Extended attributes:** WINE does *not* implement NTFS alternate data streams. However, OS/2 EAs are more pervasive than NTFS ADS (e.g., `.TYPE` EA for file type association), so we need real EA support. Linux `user.*` xattrs is the primary backend; sidecar files as fallback for filesystems without xattr support.
-- **File locking:** WINE uses a hybrid wineserver + `fcntl()` approach because `fcntl()` locks are per-process (not per-handle) and release when any fd to the file is closed. Since warpine manages all OS/2 file handles through a single-process handle manager, we can use `fcntl(F_SETLK)` more directly without a separate lock tracking layer.
-- **Filesystem type reporting:** WINE learned the hard way — reporting `UNIXFS` broke apps expecting NTFS, but claiming unimplemented features (named streams, ACLs) also broke apps. We should report `HPFS` with *accurate* capability flags, only claiming features we actually implement.
-- **Sandbox:** WINE explicitly provides *no* security sandbox (`Z:` → `/` gives full access). Warpine can do better: since OS/2 apps expect isolated drives, enforce that paths stay within their mapped volume directory. Path traversal prevention (`..` past volume root) gives real isolation with minimal complexity.
-- **Reserved device names:** WINE maps CON → console, NUL → `/dev/null`, COM* → `/dev/ttyS*`. OS/2 has similar devices (CON, NUL, CLOCK$, KBD$, SCREEN$) that need mapping.
-
-### Step 1: VFS Trait and Drive Manager — COMPLETED
-- [x] **`VfsBackend` trait** — 21 methods defining OS/2 filesystem semantics: `open`, `close`, `read`, `write`, `seek`, `set_file_size`, `flush`, `find_first`, `find_next`, `find_close`, `create_dir`, `delete_dir`, `delete`, `rename`, `copy`, `query_path_info`, `query_file_info`, `set_file_info`, `set_path_info`, `get_ea`, `set_ea`, `enum_ea`, `query_fs_info_alloc`, `query_fs_info_volume`, `fs_name`, `set_file_locks`
-- [x] **`VfsFileHandle` / `VfsFindHandle`** — opaque handle types (newtype over `u64`)
-- [x] **`Os2Error`** — typed error codes with 20 named constants and Debug/Display
-- [x] **OS/2 data types** — `OpenMode`, `SharingMode`, `OpenFlags`, `OpenAction`, `SeekMode`, `FileAttribute`, `FileStatus`, `DirEntry`, `EaEntry`, `FsAllocate`, `FsVolumeInfo`, `FileLockRange` with `from_raw()` parsers
-- [x] **`DriveManager`** — maps drive letters (A:–Z:) to `Box<dyn VfsBackend>`. Owns file and search handle tables (absorbs `HandleManager` and `HDirManager` responsibilities). Per-drive current directory tracking. OS/2 path resolution with drive letter extraction
-- [x] **Wired into `SharedState`** — `drive_mgr: Mutex<DriveManager>` added alongside existing managers
-- [x] **15 unit tests** — error constants, type parsers, DriveManager path resolution, handle allocation, drive mounting, per-drive current directory
-- [x] **Drive configuration** — default config: C: → `~/.local/share/warpine/drive_c/` (XDG-compliant, auto-created). `DriveConfig` struct stores host path, volume label, and read-only flag. CLI/config file override deferred to Step 2
-
-### Step 2: HostDir Backend (first implementation) — COMPLETED
-- [x] **`HostDirBackend`** — implements `VfsBackend` using a host directory as storage, providing HPFS semantics on top of the Linux filesystem. All 21 trait methods implemented (EAs and file locking are stubs, deferred to Steps 3–4)
-- [x] **Case-insensitive, case-preserving lookup** — optimistic `stat()` first, `readdir()` + case-insensitive match fallback (WINE's proven pattern). Resolves each path component independently walking from volume root
-- [x] **Long filename support** — filenames up to 254 characters (HPFS limit), `FILENAME_EXCED_RANGE` error if exceeded
-- [x] **File sharing modes** — `SharingTable` enforces OS/2 `DosOpen` sharing flags (`DENY_READWRITE`, `DENY_WRITE`, `DENY_READ`, `DENY_NONE`) with bidirectional compatibility checking
-- [x] **Sandbox enforcement** — canonicalize + prefix check prevents path traversal escapes
-- [x] **OS/2 wildcard matching** — `*` and `?` with case-insensitive comparison
-- [x] **Gate test passes** — `test_file_test_gate` mirrors `samples/file_test` exactly (create → write → close → reopen → read → verify)
-- [x] **17 unit tests** — wildcard matching, case-insensitive lookup (flat + nested), case-preserving creation, file_test gate, sharing mode enforcement, directory ops, find_first/next, sandbox, metadata, FS info, rename, copy, sharing compatibility
-- [x] **Directory listing caching** — `DirCache` with 2-second TTL caches `readdir()` results. Invalidated on create/delete/rename/copy/mkdir/rmdir
-- [x] **Kernel casefold detection** — `detect_kernel_casefold()` checks `EXT4_CASEFOLD_FL` via `FS_IOC_GETFLAGS` ioctl. When detected, skips userspace `readdir()` fallback
-- [x] **Device name mapping** — `DriveManager::check_device_name()` detects NUL, CON, CLOCK$, KBD$, SCREEN$ case-insensitively (with/without extensions). Intercepted in `open_file()` before VFS resolution
-
-### Step 3: Extended Attributes (EAs) — COMPLETED
-- [x] **EA storage backend** — OS/2 EAs stored as Linux xattrs under `user.os2.ea.*` namespace. Each xattr value encodes `[flags_u8][ea_data...]`. Supports get, set, delete (empty value), enumerate (listxattr + prefix filter), and overwrite
-- [x] **VfsBackend EA methods** — `get_ea`, `set_ea`, `enum_ea` fully implemented in HostDirBackend with proper error mapping (ENODATA→EA_NOT_FOUND, ENOTSUP→ACCESS_DENIED)
-- [x] **7 unit tests** — set/get, critical flag (0x80), not found, enum multiple, delete, overwrite, case-insensitive path with EAs
-- [x] **Sidecar `.os2ea/` fallback** — for filesystems without xattr support. Detected via test `setxattr` at init. Binary format: `[flags(1) name_len(1) value_len(2) name value]` per entry in `.os2ea/{filename}.ea`
-- [x] **`DosQueryFileInfo` / `DosQueryPathInfo` level 2** — FIL_QUERYEASIZE: returns FILESTATUS3 + cbList (total EA size computed from `enum_ea`)
-- [x] **`DosEnumAttribute`** — full implementation (ordinal 372): path-based EA enumeration, returns DENA1 structures with 4-byte alignment, 1-based entry indexing
-- [x] **`DosQueryPathInfo` level 3** — FIL_QUERYEASFROMLIST: parses GEA2LIST (EA name list), queries each via VFS, writes FEA2LIST with names/values/flags. EAOP2 struct handling.
-- [x] **`DosFindFirst` / `DosFindNext` level 2** — FIL_QUERYEASIZE: FILEFINDBUF3 extended with cbList (4 bytes) after FILESTATUS3. Layout: oNextEntryOffset(4) + FILESTATUS3(24) + cbList(4) + cchName(1) + achName
-
-### Step 4: Filesystem Information and Locking — COMPLETED
-- [x] **`query_fs_info_alloc`** — HPFS volume geometry via host `statvfs()`: sector size (512), sectors per unit, total/available units (implemented in Step 2)
-- [x] **`query_fs_info_volume`** — volume label from `.vol_label` file, serial number from path hash (implemented in Step 2)
-- [x] **`set_fs_info_volume`** — persist volume label to `.vol_label` file in volume root
-- [x] **`fs_name`** — returns `"HPFS"`
-- [x] **`set_file_locks`** — byte-range locking via Linux `fcntl(F_SETLK)`, unlocks processed before locks, proper `LOCK_VIOLATION`/`ACCESS_DENIED` error mapping
-- [x] **3 unit tests** — lock/unlock cycle, invalid handle, volume label set/get
-- [x] **`DosQueryFSAttach`** — rewritten to use DriveManager: resolves drive letter, queries backend `fs_name()`, returns `"HPFS"` as FSD name in proper FSQBUFFER2 layout with buffer overflow checking
-- [x] **`DosSetFileLocks`** (ordinal 428) — parses FILELOCK structs from guest memory, routes through `DriveManager.set_file_locks()` → `fcntl(F_SETLK)`
-- [x] **`DosProtectSetFileLocks`** (ordinal 639) — delegates to `DosSetFileLocks` (file lock ID ignored)
-
-### Step 5: Directory Enumeration Improvements — COMPLETED
-- [x] **Wildcard matching** — HPFS semantics: `*.*` matches all files including those without dots (unlike DOS/FAT). `*` and `?` with case-insensitive comparison
-- [x] **`DosFindFirst` attributes filter** — hidden, system, and directory entries excluded by default; only included when corresponding bit set in filter. Dot/dotdot entries require DIRECTORY in filter
-- [x] **`DosFindClose`** — proper search handle cleanup (implemented in Step 2)
-- [x] **6 unit tests** — `*.*` matches all, no-dot patterns, attribute filter for normal/directory/hidden, find_first with directory filter
-- [x] **`DosFindNext` multi-entry** — `ulSearchCount > 1` packs multiple FILEFINDBUF3 entries with `oNextEntryOffset` linking (4-byte aligned). Buffer overflow stops packing early
-
-### Step 6: Path Translation Hardening — COMPLETED
-- [x] **Sandbox enforcement** — `..` clamped at volume root in `resolve_path_case_insensitive()`. Symlink targets verified via `canonicalize()` + prefix check in `enforce_sandbox()`. Parent directory validated before joining filename for new files
-- [x] **UNC path handling** — `\\server\share` and `//server/share` rejected at DriveManager level with `PATH_NOT_FOUND`
-- [x] **`DosQueryPathInfo`** — returns correct HPFS attributes for level 1 (FILESTATUS3) via `query_path_info` (implemented in Step 2)
-- [x] **3 unit tests** — UNC path rejection, `..` clamping, symlink escape blocking
-
-### Step 7: Migrate API Handlers — COMPLETED
-- [x] **Refactor `doscalls.rs`** — all filesystem operations route through `DriveManager` → `VfsBackend`: DosOpen, DosClose, DosRead, DosWrite, DosSetFilePtr, DosFindFirst/Next/Close, DosDelete, DosMove, DosCreateDir, DosDeleteDir, DosQueryPathInfo, DosQueryFileInfo, DosResetBuffer, DosSetCurrentDir, DosQueryCurrentDir, DosQueryCurrentDisk, DosSetDefaultDisk, DosQFileMode
-- [x] **Refactor `stubs.rs`** — DosCopy migrated to DriveManager
-- [x] **Mount HostDirBackend** — C: drive mounted at startup using configured path (`~/.local/share/warpine/drive_c/`)
-- [x] **HandleManager retained** — for pipes (`DosCreatePipe`) and `DosDupHandle` (non-filesystem handles)
-- [x] **`translate_path()` retained** — for `process.rs` (`DosExecPgm`, `DosQueryAppType`) which need host executable resolution
-- [x] **New helpers** — `write_filestatus3_from_vfs()` (VFS FileStatus → guest FILESTATUS3), `write_filefindbuf3()` (VFS DirEntry → guest FILEFINDBUF3)
-- [x] **VFS-first with HandleManager fallback** — DosRead/DosWrite/DosSetFilePtr/DosClose try VFS first, fall back to HandleManager for pipe handles
-
-### Verification
-
-#### Gate test: `samples/file_test`
-
-The VFS design must pass `samples/file_test` end-to-end as the minimum viability gate. This test exercises the core file I/O path through the VFS:
-
-1. `DosOpen("test.txt", ..., 0x0012, 0x0012)` — create file with `OPEN_ACTION_CREATE_IF_NEW | OPEN_ACTION_REPLACE_IF_EXISTS`, sharing mode `OPEN_SHARE_DENYNONE | OPEN_ACCESS_READWRITE`
-2. `DosWrite(hf, "Warpine File Test Data", 22)` — write 22 bytes through `VfsBackend::write()`
-3. `DosClose(hf)` — close via `DriveManager`, releasing the `VfsFileHandle`
-4. `DosOpen("test.txt", ..., 0x0001, 0x0040)` — reopen read-only with `OPEN_SHARE_DENYWRITE`
-5. `DosRead(hf, buffer, 22)` — read back through `VfsBackend::read()`, verify 22 bytes returned
-6. `DosWrite(1, ...)` — stdout (handle 1, special-cased outside VFS)
-7. `DosClose(hf)` + `DosExit(1, 0)`
-
-Expected output: `Read data: Warpine File Test Data`
-
-This validates: DriveManager path resolution (relative path `"test.txt"` → volume root + cwd), VfsFileHandle lifecycle (open → write → close → reopen → read → close), `HostDirBackend` creating and reading a real file, and that stdout (handle 0/1/2) remains special-cased outside the VFS.
-
-#### Full test suite
-- [x] `cargo build` — compiles cleanly (no warnings)
-- [x] `cargo test` — 124 tests pass
-- [x] Unit tests for `VfsBackend` trait (MockBackend: `test_drive_manager_file_handles`, `test_drive_manager_find_handles`)
-- [x] Unit tests for case-insensitive path resolution (`test_case_insensitive_lookup`, `test_case_insensitive_nested`)
-- [x] Unit tests for EA storage — xattr backend (7 tests) + sidecar fallback (`test_ea_sidecar_set_get`, `test_ea_sidecar_enum_and_delete`)
-- [x] Unit tests for file sharing mode enforcement (`test_sharing_deny_write`, `test_sharing_compatibility`)
-- [x] Unit tests for wildcard matching (`test_wildcard_star_star`, `test_wildcard_star_dot_star_matches_all`, `test_wildcard_star_ext`, `test_wildcard_question`, `test_wildcard_star_all`, `test_wildcard_no_dot_pattern`)
-- [x] Unit tests for `DosQueryFSInfo` volume geometry (`test_query_fs_info`, `test_set_and_get_volume_label`)
-- [x] Unit tests for path traversal sandbox enforcement (`test_sandbox_blocks_traversal`, `test_sandbox_dotdot_clamped_at_root`, `test_sandbox_symlink_escape`)
-- [x] Unit tests for device name mapping (`test_device_name_detection`)
-- [x] `samples/file_test` — gate test verified (output: `Read data: Warpine File Test Data`)
-- [x] `samples/find_test` — DosFindFirst/DosFindNext verified
-- [x] `samples/fs_ops_test` — DosCreateDir/DosDeleteDir/DosMove/DosQueryPathInfo verified (all rc=0)
-- [x] `samples/vfs_test` — 16/16 tests passed on drive C: (pure VFS, no HandleManager fallback)
-- [x] 4OS2 `dir` command — works with correct date/time formatting (NLS fix)
-- [x] 4OS2 `tree` — shows directory tree with box-drawing characters
-- [x] 4OS2 `md` / `rd` — create and remove directories
-- [x] 4OS2 `copy` — file copy with correct content
-- [x] 4OS2 `move` — rename/move with source removal
-- [x] 4OS2 `del` — file deletion
-- [x] 4OS2 `attrib` — displays file attributes (archive, read-only, etc.)
-
-## Phase 4.5: 16-bit Thunk Fix — COMPLETED
-
-Eliminated 16-bit thunks from 4OS2 via source-level recompilation rather than runtime thunk patching. All thunk handling code (~350 lines) removed from the loader.
-
-**Approach:** Instead of trying to patch or emulate 16-bit thunks at runtime (which proved fragile), we recompile 4OS2 with modified headers and a custom C runtime that avoids generating thunks entirely. This produces a pure 32-bit binary with zero 16-bit code.
-
-- [x] **Root cause identified** — Watcom's `APIENTRY16` (`_Far16 _Pascal`) in `bsesub.h` generates `__vfthunk` 16-bit bridges for every VIO/KBD call
-- [x] **Source-level fix** — Modified `bsesub.h` to use `_System` instead of `APIENTRY16`, eliminating all thunk generation
-- [x] **Custom C runtime** — `crt0.c` replaces Watcom's `__OS2Main` which called `DosGetInfoSeg` through a 16-bit thunk; uses `DosGetInfoBlocks` (32-bit) instead
-- [x] **VIO/KBD imports** — `viowrap.c` provides `#pragma import` for all VIO/KBD ordinals, bypassing CRT thunk wrappers
-- [x] **os2init.c patched** — `DosGetInfoSeg` replaced with static `LINFOSEG` from `DosGetInfoBlocks`
-- [x] **os2calls.c patched** — Direct `DosFindFirst`/`DosFindNext` with `FILEFINDBUF4`, field-by-field copy to `FILESEARCH`
-- [x] **VIOCALLS/KBDCALLS ordinals fixed** — Comprehensive audit against OS/2 ordinal tables; Pascal calling convention with callee stack cleanup
-- [x] **DOSCALLS ordinal audit** — Fixed ordinals 218, 235, 267, 277, 278, 279, 297, 298, 317, 342, 356, 368, 378
-- [x] **FSQBUFFER2 layout fixed** — Correct fixed header (iType+cbName+cbFSDName+cbFSAData) then variable strings
-- [x] **DosFindNext level tracking** — Track find level per handle for correct FILEFINDBUF format selection
-- [x] **NLS (National Language Support) fixed** — NLS ordinals use _System convention (not Pascal); ordinal 5 returns full COUNTRYINFO when cb >= 44 (CRT wrapper path); DosQueryCtryInfo bounded writes respect caller's buffer size
-- [x] **BDA initialization** — BIOS Data Area at 0x400 with VGA 80x25 text mode info
-- [x] **Thunk code removed** — ~350 lines of runtime thunk handling removed from `mod.rs` (patch_16bit_thunks, scan_thunk_for_api_target, LSS #GP handler, JMP FAR handler)
-- [x] **Patches preserved** — All 4OS2 modifications stored in `samples/4os2/patches/` (6 patches); `fetch_source.sh` applies them automatically
-- [x] **4OS2 `dir` verified** — Correct date formatting (`03-14-26 8:12`), file listing, directory count, free space
-- [x] **Test samples** — `screen_test` (18/18), `findbuf_test` (15/15), `nls_test` (15/15), `thunk_test`, `dir_test`
+**SDL2 GUI Backend** — Migrated from `winit + softbuffer` to `sdl2 = { version = "0.37", features = ["unsafe_textures"] }`. `src/gui.rs` rewritten: polling event loop (`run_gui_loop`), per-window `Canvas<Window>` + streaming `Texture` with `BlendMode::None` for opaque pixel rendering. `build.rs` emits `cargo:rustc-link-search` from `pkg-config` so `rust-lld` finds `libSDL2.so` on Debian multi-arch.
 
 ---
 
 ## Architecture & Refactoring Backlog
-
-Items identified during architecture review. These cut across phases and should be evaluated for priority as each phase is planned.
-
-### Virtualization Backend Abstraction ✓ COMPLETE
-- [x] `VmBackend` / `VcpuBackend` traits defined in `src/loader/vm_backend.rs`; portable types: `VmExit`, `GuestRegs`, `GuestSegment`, `GuestSregs`
-- [x] KVM implementation isolated to `src/loader/kvm_backend.rs` (`KvmVmBackend`, `KvmVcpu`); no other loader file imports `kvm_ioctls`/`kvm_bindings`
-- [x] All handler signatures updated to `&mut dyn VcpuBackend`; `Loader.vm` is `Arc<dyn VmBackend>`
-- [x] `MockVcpu` / `MockVmBackend` in `vm_backend::mock` (test-only); `Loader::new_mock()` in `mod.rs`; 6 guest-memory tests + 6 VIO handler tests added — no `/dev/kvm` required
-
-### Guest Memory Type Safety ✓ COMPLETE
-- [x] `GuestMemory` struct defined in `guest_mem.rs`: owns the `mmap` allocation, `unsafe impl Send + Sync`, implements `Drop` (munmap)
-- [x] `GuestMemory` methods: `alloc()`, `size()`, `host_base_addr()`, `ptr_at()`, `read<T>()`, `write<T>()`, `write_bytes()`, `slice_mut()`
-- [x] `SharedState.guest_mem: GuestMemory` replaces the former `*mut u8` + `usize` pair; `Drop for SharedState` removed (handled by `GuestMemory::drop`)
-- [x] `impl Loader` helpers in `guest_mem.rs` delegate to `GuestMemory` methods — sole API surface, no direct pointer arithmetic elsewhere
 
 ### API Thunk Auto-Registration
 - [ ] Replace the large `match ordinal` dispatch table in `api_dispatch.rs` with a registry-based mechanism
@@ -374,54 +49,51 @@ Items identified during architecture review. These cut across phases and should 
 - [ ] Use this as ground truth instead of documentation (different fixpak levels can differ; documentation has errors)
 - [ ] Auto-generate a Rust source file with `const` ordinal definitions and a verification table
 - [ ] Cross-reference against the import tables of target binaries to catch mapping mismatches early
-- [ ] Note: the same ordinal can map to different APIs across OS/2 versions (1.x 16-bit vs 2.x 32-bit transition); the tool should handle multi-version comparison
+- [ ] Note: the same ordinal can map to different APIs across OS/2 versions (1.x 16-bit vs 2.x 32-bit); the tool should handle multi-version comparison
 
-### ✓ Structured API Trace System — COMPLETE
-- [x] Replace ad-hoc `debug!` logging in thunk handlers with a structured tracing layer using the `tracing` crate
-- [x] Each API call emits a span with: module, ordinal, resolved name, return value, guest eip/esp at call site (`src/loader/api_trace.rs` + `api_dispatch.rs`)
-- [x] Output modes: human-readable strace-like (`WARPINE_TRACE=strace`), JSON (`WARPINE_TRACE=json`), default pretty (unset) — see `main::init_logging()`
-- [ ] Per-argument typed names (e.g. `DosWrite(hfile=1, pBuf=0x500, cbBuf=42)`) — future enhancement; raw eip/esp captured now
+### Structured API Trace — Remaining
+- [ ] Per-argument typed names (e.g. `DosWrite(hfile=1, pBuf=0x500, cbBuf=42)`) — raw eip/esp captured now; argument decoding is future work
 - [ ] TUI debug overlay showing live API call stream, memory map, window hierarchy, and PM message queue
 
 ### PM Renderer Abstraction
 - [ ] Define a `PmRenderer` trait: `render_frame(buf: &VgaTextBuffer)`, `render_pm_window(...)`, `poll_key_event() -> Option<Os2ScanCode>`, `poll_mouse_event() -> Option<Os2MouseEvent>`
-- [ ] Current winit + softbuffer implementation becomes one concrete `PmRenderer`
-- [ ] SDL2 backend as a second implementation (see SDL2 migration item below)
-- [ ] Enables headless renderer for CI/automated testing of PM applications
+- [ ] SDL2 is the concrete backend; the trait boundary would enable a headless renderer for CI/automated PM application testing
 
-### SDL2 as Unified Windowing/Input/Audio Backend
-- [ ] Evaluate migrating from winit + softbuffer to SDL2 as the unified host-side backend for both text-mode and PM rendering
-- [ ] Key advantages over winit for OS/2 compatibility work:
-  - `SDL_Scancode` maps cleanly to OS/2 hardware scan codes (physical key identity, not character); winit's `KeyCode` has edge cases on Wayland
-  - Key down/up distinction and extended scan codes (E0 prefix) are reliable
-  - `SDL_CaptureMouse` directly matches PM's `WinSetCapture` semantics; winit mouse capture has platform consistency issues
-  - Custom cursor creation from pixel data (`SDL_CreateColorCursor`) maps to PM's `WinSetPointer`; winit support is limited
-  - `SDL_GetClipboardText` / `SDL_SetClipboardText` available directly; winit requires a separate crate
-  - SDL2 audio subsystem handles `DosBeep` and future MMPM/2 without an additional dependency
-  - Polling event model (`SDL_PollEvent`) integrates more naturally with the KVM VMEXIT loop than winit's callback-based `run()`
-- [ ] Recommended migration path: (1) add SDL2 text-mode renderer as trial, (2) define `PmRenderer` trait boundary, (3) port PM rendering from winit to SDL2, (4) remove winit + softbuffer
+### SDL2 Backend — Remaining
+- [ ] OS/2 scan code table: map SDL2 `Scancode` to IBM PC Set-1 scan codes for accurate WM_CHAR SC field
+- [ ] `SDL_CaptureMouse` for `WinSetCapture` semantics
+- [ ] `SDL_SetClipboardText` / `SDL_GetClipboardText` for host clipboard bridging
+- ~~SDL2 audio subsystem for `DosBeep` and future MMPM/2~~ — done: `DosBeep` plays real tones; `mciSendCommand`/`mciSendString` waveaudio implemented via SDL2 audio queue in `src/loader/mmpm.rs`
 
 ### Testing Strategy
-- [ ] **Unit tests (no KVM):** once `VmBackend` trait exists, mock it out so individual API thunk functions can be tested with arbitrary guest memory and register state — no `/dev/kvm` required
+- [ ] **Unit tests (no KVM):** `VmBackend` mock exists; extend coverage so individual API thunk functions can be tested with arbitrary guest memory and register state
 - [ ] **Integration tests:** run OS/2 binaries from `samples/` end-to-end in CI; capture stdout + exit code for regression detection; extend to cover `pm_hello`, `screen_test`, `nls_test`, `thunk_test`
 - [ ] **Compatibility matrix:** track which OS/2 API ordinals are implemented, stubbed, or missing; generate a report from the ordinal registry; use real OS/2 test programs (e.g., Open Watcom-compiled conformance suites) as targets
 
 ---
 
 ## Phase 5: Multimedia and 16-bit Support
-- [ ] **Audio/Video (MMPM/2)**
-    - [ ] Basic `mciSendCommand` / `mciSendString` for `waveaudio` device, bridged to SDL2 audio or PulseAudio/ALSA
-    - [ ] `DosBeep` — emit tone via audio backend (currently a stub)
-- [ ] **16-bit Compatibility (NE format)**
-    - [x] **NE format parser** — `src/ne/` module: NeHeader, NeSegmentEntry, NeRelocationEntry, NeEntry, entry table/name table parsers, NeFile orchestration with full validation. 16 unit tests.
-    - [x] **NE loader infrastructure** — `load_ne()`, `apply_ne_fixups()`, `setup_guest_ne()`, `setup_and_run_ne_cli()`, `handle_ne_api_call()`, `ne_api_arg_bytes()`, `resolve_import_16()` — 16-bit execution skeleton in place
-    - [ ] **GDT tiling** — create 16-bit segment descriptors in the GDT for each NE segment (one per 64KB region). KVM executes 16-bit code natively at hardware speed — no software emulator needed. The CPU switches between 16-bit and 32-bit code segments naturally when descriptors are set up correctly. This also fixes 16-bit thunks in LX apps as a side effect.
-    - [ ] **16-bit API thunking** — NE apps use Pascal calling convention and `_far16` pointers. Add 16-bit API dispatch alongside the existing 32-bit `_System` dispatch, with segment:offset ↔ flat address translation
-    - [ ] **Mode switching** — handle transitions between 16-bit NE code and 32-bit flat code (e.g., 16-bit app calling a 32-bit DLL or vice versa)
+
+### Audio/Video (MMPM/2)
+MMPM/2 baseline done. MDM.DLL (`MDM_BASE=10240`) wired into the ordinal dispatch. `DosBeep` plays a real sine-wave tone via SDL2 audio queue. `mciSendCommand` handles MCI_OPEN/CLOSE/PLAY/STOP/STATUS for `waveaudio` device. `mciSendString` parses `open`/`play`/`stop`/`close`/`status` command strings. WAV files loaded via the VFS using `SDL_LoadWAV_RW`. Audio format conversion via `SDL_BuildAudioCVT`/`SDL_ConvertAudio` when device output format differs. Synchronous play via `MCI_WAIT` flag. 5 tests in `mmpm.rs`.
+
+- [ ] `mciSendCommand` MCI_SEEK, MCI_RECORD — seek/recording support
+- [ ] Audio mixer / volume control (`MCI_SET` with `MCI_SET_AUDIO`)
+- [ ] MIDI playback device type (currently only `waveaudio` supported)
+- [ ] Non-blocking play completion notification (`MCI_NOTIFY` flag → post `MM_MCINOTIFY` to hwndCallback)
+
+### 16-bit Compatibility (NE format)
+NE format parser complete (`src/ne/`): NeHeader, segment/relocation/entry tables, name table, 16 unit tests. NE loader skeleton in place: `load_ne()`, `apply_ne_fixups()`, `setup_guest_ne()`, `setup_and_run_ne_cli()`, `handle_ne_api_call()`, `resolve_import_16()`.
+
+- [ ] **GDT tiling** — create 16-bit segment descriptors in the GDT for each NE segment (one per 64KB region). KVM executes 16-bit code natively; the CPU switches between 16-bit and 32-bit segments when descriptors are set up correctly. Also fixes 16-bit thunks in LX apps as a side effect.
+- [ ] **16-bit API thunking** — NE apps use Pascal calling convention and `_far16` pointers; add 16-bit dispatch alongside existing 32-bit `_System` dispatch, with segment:offset ↔ flat address translation
+- [ ] **Mode switching** — handle transitions between 16-bit NE code and 32-bit flat code (e.g., 16-bit app calling a 32-bit DLL)
+
+---
 
 ## Phase 6: Text-Mode VGA Renderer
 
-Goal: replace the current ANSI-escape terminal approach with a proper VGA text-mode framebuffer rendered into a window, giving OS/2 text-mode applications a faithful visual environment.
+Goal: replace the current ANSI-escape terminal approach with a proper VGA text-mode framebuffer rendered into a window.
 
 ### Architecture
 ```
@@ -433,25 +105,25 @@ Goal: replace the current ANSI-escape terminal approach with a proper VGA text-m
         ▼
   TextModeRenderer trait
         │
-   ┌────┴────┐
-   ▼         ▼
-SDL2       winit+softbuffer
-backend    backend (existing)
+        ▼
+      SDL2 backend
 ```
 
-- [ ] **`VgaTextBuffer` struct** — 80×25 (or configurable) grid of `VgaCell { character: u8, attribute: u8 }`, cursor position/visibility, dirty-cell tracking (`BitVec`)
+- [ ] **`VgaTextBuffer` struct** — 80×25 (configurable) grid of `VgaCell { character: u8, attribute: u8 }`, cursor position/visibility, dirty-cell tracking (`BitVec`)
 - [ ] **VIO API handlers updated** — `VioWrtTTY`, `VioWrtCellStr`, `VioWrtCharStrAtt`, `VioWrtNCell`, `VioScrollUp`, `VioScrollDn`, etc. write into `VgaTextBuffer` instead of emitting ANSI escape sequences
-- [ ] **CP437 bitmap font** — embed 8×16 VGA font (e.g., IBM VGA CP437, from public domain sources or DOSBox); load via `include_bytes!`
+- [ ] **CP437 bitmap font** — embed 8×16 IBM VGA CP437 font via `include_bytes!`
 - [ ] **CGA/EGA 16-colour palette** — standard `#000000`…`#FFFFFF` mapping; attribute byte bits 0–3 = foreground, 4–6 = background, 7 = blink/bright-bg
-- [ ] **Renderer loop** — scan dirty cells each frame; for each cell blit 8×16 glyph pixels to host pixel buffer; present; target ≤16ms frame time for 60fps
-- [ ] **`TextModeRenderer` trait** — `render_frame(&VgaTextBuffer)`, `poll_key_event() -> Option<Os2KeyEvent>` — allows swapping SDL2 and winit+softbuffer backends
+- [ ] **Renderer loop** — scan dirty cells each frame; blit 8×16 glyph pixels to SDL2 pixel buffer; target ≤16ms frame time
+- [ ] **`TextModeRenderer` trait** — `render_frame(&VgaTextBuffer)`, `poll_key_event() -> Option<Os2KeyEvent>`
 - [ ] **Cursor rendering** — honour `VioSetCurType` start/end scan line for block, underline, or hidden cursor; blink via timer
-- [ ] **Keyboard scan codes** — map SDL2 `SDL_Scancode` (or winit `KeyCode`) to OS/2 scan code + character code pairs; handle extended keys (arrows, Home/End/PgUp/PgDn/Ins/Del, F1–F12)
-- [ ] **DBCS font support (future)** — for CP932/CP950, load a 16×16 double-width glyph set; `VgaCell` extended to flag lead/trail bytes
+- [ ] **Keyboard scan codes** — map SDL2 `SDL_Scancode` to OS/2 scan code + character code pairs; handle extended keys (arrows, Home/End/PgUp/PgDn/Ins/Del, F1–F12)
+- [ ] **DBCS font support (future)** — CP932/CP950: 16×16 double-width glyph set; `VgaCell` extended to flag lead/trail bytes
+
+---
 
 ## Phase 7: Application Compatibility Expansion
 
-Goal: raise the fraction of real OS/2 applications that run correctly. Priority order below is based on breadth of unblocking effect.
+Goal: raise the fraction of real OS/2 applications that run correctly.
 
 ### DLL Loader Chain (highest priority — blocks nearly everything)
 - [ ] Parse LX import table and recursively load dependent DLLs
@@ -464,69 +136,62 @@ Goal: raise the fraction of real OS/2 applications that run correctly. Priority 
 - [ ] Option: load real OS/2 system DLL binaries alongside emulated ones (selective real-DLL execution)
 
 ### DOSCALLS Long Tail
-- [ ] **Structured Exception Handling** — `DosSetExceptionHandler` / `DosUnsetExceptionHandler` with a real per-thread exception handler chain; `DosRaiseException`; `DosUnwindException`
+- [ ] **Structured Exception Handling** — real per-thread handler chain; `DosRaiseException`; `DosUnwindException`
 - [ ] **Environment** — `DosScanEnv`, `DosSetExtLIBPATH`, `DosQueryExtLIBPATH`
 - [ ] **NLS / DBCS** — `DosQueryDBCSEnv` (DBCS lead-byte table), full `DosMapCase` for non-Latin codepages
-- [ ] **`DosQuerySysInfo`** — verify all QSV_* values are reasonable for common app queries (version number, timer resolution, page size, max path length)
 - [ ] **Thread priorities** — `DosSetPriority` (idle / regular / time-critical / server classes); currently ignored
-- [ ] **`DosWaitThread`** — reliable join semantics with timeout; `DosKillThread` — correct cleanup
+- [ ] **`DosWaitThread`** — reliable join with timeout; `DosKillThread` — correct cleanup
 
 ### Code Page and DBCS Support
-- [ ] `DosQueryCp` / `DosSetProcessCp` — track current process code page; return it accurately
-- [ ] DBCS lead-byte table for CP932, CP949, CP950, CP936 — required for `DosQueryDBCSEnv` and correct multi-byte string handling in VIO
+- [ ] `DosQueryCp` / `DosSetProcessCp` — track current process code page accurately
+- [ ] DBCS lead-byte table for CP932, CP949, CP950, CP936 — needed for `DosQueryDBCSEnv` and multi-byte VIO string handling
 - [ ] VGA font loader for DBCS (16×16 full-width glyphs) — needed for Phase 6 text renderer
 
 ### PM Advanced Controls
-- [ ] **`WC_CONTAINER`** — OS/2's all-in-one list control; supports Icon / Name / Text / Detail / Tree view modes; record management; in-place editing; sorting and filtering. Heavily used by file managers and database front-ends.
-- [ ] **`WC_NOTEBOOK`** — tabbed property sheet; used by nearly all Settings dialogs
-- [ ] **Dialog template parsing** — load dialog layout from LX resource (DLGTEMPLATE binary format); auto-create child windows via `WinCreateWindow`; enables `WinDlgBox` / `WinLoadDlg` to work for real
-- [ ] **Accelerator table** — `WinLoadAccelTable` / `WinTranslateAccel` with real resource parsing
-- [ ] **`WinSubclassWindow`** — replace a window's procedure pointer and chain to original; essential for PM customisation patterns
-- [ ] **Drag and drop** — `DrgDrag`, `DrgAccessDraginfo`, `DM_DRAGOVER` / `DM_DROP` message protocol
-- [ ] **Mouse capture** — `WinSetCapture` / `WinQueryCapture`; map to SDL2 `SDL_CaptureMouse`
-- [ ] **Custom cursors** — `WinSetPointer` with pixel-data cursor; map to SDL2 `SDL_CreateColorCursor`
-- [ ] **Clipboard bridging** — connect `WinSetClipbrdData` / `WinQueryClipbrdData` to host clipboard via SDL2 `SDL_SetClipboardText` / `SDL_GetClipboardText`
-- [ ] **Printing** — `DevOpenDC`, `DevCloseDC`, basic spool API stubs; low priority but required by some commercial apps
+- [ ] **`WC_CONTAINER`** — Icon / Name / Text / Detail / Tree view modes; record management; sorting and filtering
+- [ ] **`WC_NOTEBOOK`** — tabbed property sheet
+- [ ] **Dialog template parsing** — load `DLGTEMPLATE` from LX resource; auto-create child windows; enables real `WinDlgBox` / `WinLoadDlg`
+- [ ] **`WinSubclassWindow`** — replace window procedure and chain to original
+- [ ] **Drag and drop** — `DrgDrag`, `DrgAccessDraginfo`, `DM_DRAGOVER` / `DM_DROP`
+- [ ] **Mouse capture** — `WinSetCapture` / `WinQueryCapture` via `SDL_CaptureMouse`
+- [ ] **Custom cursors** — `WinSetPointer` via `SDL_CreateColorCursor`
+- [ ] **Clipboard bridging** — `WinSetClipbrdData` / `WinQueryClipbrdData` via `SDL_SetClipboardText` / `SDL_GetClipboardText`
+- [ ] **Printing** — `DevOpenDC`, `DevCloseDC`, basic spool API stubs
 
 ### TCP/IP Socket API
-- [ ] Implement `SO32DLL.DLL` / `TCP32DLL.DLL` thunks: `socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv`, `select`, `gethostbyname`, `getservbyname`, `setsockopt`, `getsockopt`, `closesocket`
-- [ ] Map directly to Linux BSD socket syscalls (semantics are nearly identical)
-- [ ] Handle OS/2-specific error codes (`SOCEINVAL`, `SOCECONNREFUSED`, etc.) → errno mapping
-- [ ] Enables: web browsers (WebExplorer, Netscape for OS/2), FTP clients, IRC clients, network-licensed commercial software
+- [ ] `SO32DLL.DLL` / `TCP32DLL.DLL` thunks: `socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv`, `select`, `gethostbyname`, `getservbyname`, `setsockopt`, `getsockopt`, `closesocket`
+- [ ] Map to Linux BSD socket syscalls; handle OS/2 `SOCE*` error codes → errno mapping
+- [ ] Enables: WebExplorer, Netscape for OS/2, FTP/IRC clients, network-licensed software
 
 ### REXX Interpreter Bridge
-- [ ] Bridge `REXXAPI.DLL` exports (`RexxStart`, `RexxRegisterSubcomDll`, `RexxVariablePool`) to [Regina REXX](http://regina-rexx.sourceforge.net/) — an open-source, API-compatible REXX interpreter
-- [ ] Avoids implementing a REXX interpreter from scratch; Regina's API is compatible with IBM's
-- [ ] Unlocks: most OS/2 installation programs (REXX-based), many system administration tools, 4OS2 `.cmd` scripts
+- [ ] Bridge `REXXAPI.DLL` exports (`RexxStart`, `RexxRegisterSubcomDll`, `RexxVariablePool`) to [Regina REXX](http://regina-rexx.sourceforge.net/)
+- [ ] Unlocks: OS/2 installation programs, system tools, 4OS2 `.cmd` scripts
 
 ### Year 2038 Problem
-- [ ] **Audit `time_t` usage** — identify which DOSCALLS and CRT shim functions return or accept 32-bit `time_t` values; document which are affected
-- [ ] **DOSCALLS native time APIs** — `DosGetDateTime` / `DosSetDateTime` use `DATETIME` struct (year as `USHORT`); not affected by 2038 — verify and document
-- [ ] **CRT import shimming** — intercept `time()`, `mktime()`, `localtime()`, `gmtime()`, `difftime()`, `strftime()` imported from IBM CRT DLLs (CLIB.DLL, CRTL.DLL) and EMX runtime (EMX.DLL); redirect to 64-bit-clean host implementations
-- [ ] **`struct tm` passthrough** — shim `localtime()`/`gmtime()` return: compute correctly using 64-bit arithmetic, write `tm_year` as actual year offset from 1900 (int, not bounded); `struct tm` itself is not 2038-limited
-- [ ] **`time_t` windowing for arithmetic** — for callers that use `time_t` for comparisons/differences: apply pivot-year epoch shift inside the shim; document the limitation (shift breaks absolute timestamp storage)
-- [ ] **File system timestamps** — `FILESTATUS3` uses `FDATE`/`FTIME` (7-bit year offset from 1980, max 2107); not affected — verify
-- [ ] **Extended time API** (`WARPINE.DLL`)  — define `WrpGetDateTime64` / `WrpTime64` as optional escape hatch for programs that can be recompiled or binary-patched to use 64-bit time
+- [ ] Audit `time_t` usage in DOSCALLS and CRT shim functions
+- [ ] `DosGetDateTime` / `DosSetDateTime` use `DATETIME` struct (`USHORT` year) — not affected; verify and document
+- [ ] Intercept and redirect CRT time functions imported from CLIB.DLL / CRTL.DLL / EMX.DLL to 64-bit-clean host implementations
+- [ ] `FILESTATUS3` timestamps use `FDATE`/`FTIME` (7-bit year from 1980, max 2107) — not affected; verify
+- [ ] Optional: `WARPINE.DLL` escape hatch — `WrpGetDateTime64` / `WrpTime64` for programs that can be recompiled
+
+---
 
 ## Phase 8: SOM / Workplace Shell (Long-term)
 
-The Workplace Shell (WPS) is built entirely on IBM's System Object Model (SOM). SOM runtime is a prerequisite for any WPS support. This is a multi-year effort and is documented here for architectural reference only.
+The Workplace Shell (WPS) is built entirely on IBM's System Object Model (SOM). This is a multi-year effort.
 
 ### SOM Runtime Core (prerequisite for WPS)
-- [ ] **Object / Class model** — each SOM class has a class object (itself a SOM object); instances hold a pointer to the method table; single inheritance
-- [ ] **Offset-based method dispatch** — primary dispatch mechanism; method table is an array of function pointers; offset calculated from class hierarchy at registration time
-- [ ] **Name-lookup dispatch** — slower string-based resolution; used in DSOM and dynamic scenarios
-- [ ] **`SOMClassMgrObject`** — global class manager; `SOMClassMgr_somFindClass()`, class registration, DLL-based class loading
-- [ ] **IDL metadata** — SOM classes are described in IDL; the compiled metadata encodes method offsets and class hierarchy; runtime needs to parse or reconstruct this
-- [ ] **Binary ABI compatibility** — method table layout must match IBM SOM 2.1 ABI exactly for WPS extensions (XWorkplace, Object Desktop) to load and subclass WPS classes without recompilation; research `somFree` / SOMFree project ABI documentation
+- [ ] Object / class model: SOM class objects, method table dispatch, offset-based and name-lookup dispatch
+- [ ] `SOMClassMgrObject` — global class manager; `SOMClassMgr_somFindClass()`, class registration, DLL-based class loading
+- [ ] IDL metadata: parse or reconstruct method offsets and class hierarchy at runtime
+- [ ] Binary ABI compatibility with IBM SOM 2.1 so WPS extensions (XWorkplace, Object Desktop) load without recompilation
 
 ### WPS Object Hierarchy (requires SOM runtime)
-- [ ] **`WPObject`** — root class; `wpInitData`, `wpSaveState`, `wpRestoreState`, `wpQueryTitle`, `wpSetTitle`, `wpOpen`, `wpDragOver`, `wpDrop`
-- [ ] **`WPFileSystem`** — object backed by a filesystem entry; `wpQueryFilename`, `wpQueryAttr`
-- [ ] **`WPFolder`** — directory view; Icon / Detail / Tree view modes via `WC_CONTAINER`; `wpPopulate` scans directory contents
-- [ ] **`WPDesktop`** — root desktop; singleton; persists object positions in OS2.INI
-- [ ] **`WPProgram`** — program object; double-click launches via `DosExecPgm`
-- [ ] **`WPDataFile`** — file with associated application; type determined by `.TYPE` EA
-- [ ] **Persistence** — `wpSaveState` / `wpRestoreState` serialise object state to OS2.INI / OS2SYS.INI via `PrfWriteProfileData` / `PrfQueryProfileData`
-- [ ] **Settings notebook** — `WinLoadDlg` + `WC_NOTEBOOK` + property pages per object class
-- [ ] **Drag and drop** — WPS objects participate in PM drag-and-drop protocol; `wpDragOver` / `wpDrop` / `wpCopyObject` / `wpMoveObject`
+- [ ] `WPObject` — root: `wpInitData`, `wpSaveState`, `wpRestoreState`, `wpQueryTitle`, `wpOpen`, `wpDragOver`, `wpDrop`
+- [ ] `WPFileSystem` — `wpQueryFilename`, `wpQueryAttr`
+- [ ] `WPFolder` — Icon / Detail / Tree via `WC_CONTAINER`; `wpPopulate`
+- [ ] `WPDesktop` — singleton root desktop; persists object positions in OS2.INI
+- [ ] `WPProgram` — launches via `DosExecPgm`; `WPDataFile` — `.TYPE` EA for app association
+- [ ] Persistence via `PrfWriteProfileData` / `PrfQueryProfileData` (OS2.INI / OS2SYS.INI)
+- [ ] Settings notebook: `WinLoadDlg` + `WC_NOTEBOOK` + per-class property pages
+- [ ] Drag and drop protocol: `wpDragOver` / `wpDrop` / `wpCopyObject` / `wpMoveObject`
