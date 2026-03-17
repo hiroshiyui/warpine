@@ -7,8 +7,7 @@ use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::atomic::Ordering;
-use kvm_ioctls::VcpuFd;
-use kvm_bindings::{kvm_guest_debug, kvm_segment, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_USE_SW_BP};
+use super::vm_backend::{VcpuBackend, GuestSegment};
 use log::{info, debug, warn};
 
 impl super::Loader {
@@ -303,7 +302,7 @@ impl super::Loader {
     pub fn setup_and_run_ne_cli(self, ne_file: &NeFile) -> ! {
         let (cs_sel, entry_ip, ss_sel, sp) = self.setup_guest_ne(ne_file);
 
-        let vcpu = self.vm.create_vcpu(0).unwrap();
+        let mut vcpu = self.vm.create_vcpu(0).unwrap();
         let mut regs = vcpu.get_regs().unwrap();
         regs.rip = entry_ip as u64;
         regs.rsp = sp as u64;
@@ -313,58 +312,49 @@ impl super::Loader {
         // Set up 16-bit protected mode segments
         let mut sregs = vcpu.get_sregs().unwrap();
         // GDT
-        sregs.gdt.base = GDT_BASE as u64;
+        sregs.gdt_base = GDT_BASE as u64;
         // GDT must cover all NE segment entries + thunk entry
         let last_seg = ne_file.segment_table.len() as u32;
         let last_tile_idx = (NE_SEGMENT_BASE / TILE_SIZE) + last_seg.saturating_sub(1);
         let max_gdt_idx = (TILED_SEL_START_INDEX + last_tile_idx).max(NE_THUNK_GDT_INDEX);
-        sregs.gdt.limit = ((max_gdt_idx + 1) * 8 - 1) as u16;
+        sregs.gdt_limit = (max_gdt_idx + 1) * 8 - 1;
         // IDT
-        sregs.idt.base = IDT_BASE as u64;
-        sregs.idt.limit = (32 * 8 - 1) as u16;
+        sregs.idt_base  = IDT_BASE as u64;
+        sregs.idt_limit = 32 * 8 - 1;
         // CR0: protected mode enabled
         sregs.cr0 = 0x00000011; // PE + ET
 
         // CS: 16-bit code segment
-        let cs_base = self.gdt_entry_base(cs_sel);
-        let cs_limit = self.gdt_entry_limit(cs_sel);
-        sregs.cs = kvm_segment {
-            base: cs_base as u64, limit: cs_limit,
-            selector: cs_sel, type_: 11, present: 1, dpl: 0, db: 0, s: 1, l: 0, g: 0, avl: 0, unusable: 0, padding: 0
+        sregs.cs = GuestSegment {
+            base: self.gdt_entry_base(cs_sel) as u64, limit: self.gdt_entry_limit(cs_sel),
+            selector: cs_sel, type_: 11, present: 1, dpl: 0, db: 0, s: 1, l: 0, g: 0, avl: 0, unusable: 0,
         };
 
         // DS/ES: data segment (auto data segment or same as SS)
         let ds_sel = ss_sel; // Use stack segment as default data segment
-        let ds_base = self.gdt_entry_base(ds_sel);
-        let ds_limit = self.gdt_entry_limit(ds_sel);
-        let ds_seg = kvm_segment {
-            base: ds_base as u64, limit: ds_limit,
-            selector: ds_sel, type_: 3, present: 1, dpl: 0, db: 0, s: 1, l: 0, g: 0, avl: 0, unusable: 0, padding: 0
+        let ds_seg = GuestSegment {
+            base: self.gdt_entry_base(ds_sel) as u64, limit: self.gdt_entry_limit(ds_sel),
+            selector: ds_sel, type_: 3, present: 1, dpl: 0, db: 0, s: 1, l: 0, g: 0, avl: 0, unusable: 0,
         };
-        sregs.ds = ds_seg;
+        sregs.ds = ds_seg.clone();
         sregs.es = ds_seg;
 
         // SS: stack segment
-        let ss_base = self.gdt_entry_base(ss_sel);
-        let ss_limit = self.gdt_entry_limit(ss_sel);
-        sregs.ss = kvm_segment {
-            base: ss_base as u64, limit: ss_limit,
-            selector: ss_sel, type_: 3, present: 1, dpl: 0, db: 0, s: 1, l: 0, g: 0, avl: 0, unusable: 0, padding: 0
+        sregs.ss = GuestSegment {
+            base: self.gdt_entry_base(ss_sel) as u64, limit: self.gdt_entry_limit(ss_sel),
+            selector: ss_sel, type_: 3, present: 1, dpl: 0, db: 0, s: 1, l: 0, g: 0, avl: 0, unusable: 0,
         };
 
         // FS/GS: use 32-bit flat data for now
-        let flat_seg = kvm_segment {
+        let flat_seg = GuestSegment {
             base: 0, limit: 0xFFFFFFFF,
-            selector: 0x10, type_: 3, present: 1, dpl: 0, db: 1, s: 1, l: 0, g: 1, avl: 0, unusable: 0, padding: 0
+            selector: 0x10, type_: 3, present: 1, dpl: 0, db: 1, s: 1, l: 0, g: 1, avl: 0, unusable: 0,
         };
-        sregs.fs = flat_seg;
+        sregs.fs = flat_seg.clone();
         sregs.gs = flat_seg;
 
         vcpu.set_sregs(&sregs).unwrap();
-
-        // Enable guest debugging for INT 3 breakpoints
-        let debug = kvm_guest_debug { control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP, ..Default::default() };
-        vcpu.set_guest_debug(&debug).unwrap();
+        vcpu.enable_software_breakpoints().unwrap();
 
         info!("Starting NE 16-bit execution at 0x{:04X}:0x{:04X}", cs_sel, entry_ip);
         self.run_vcpu(vcpu, 0, TIB_BASE as u64);
@@ -375,7 +365,7 @@ impl super::Loader {
     }
 
     /// Handle a 16-bit NE API call. Ordinal includes module base offset.
-    pub(crate) fn handle_ne_api_call(&self, vcpu: &mut VcpuFd, vcpu_id: u32, ordinal: u16) -> u32 {
+    pub(crate) fn handle_ne_api_call(&self, vcpu: &mut dyn VcpuBackend, vcpu_id: u32, ordinal: u16) -> u32 {
         let regs = vcpu.get_regs().unwrap();
         let sregs = vcpu.get_sregs().unwrap();
         let ss_base = sregs.ss.base as u32;

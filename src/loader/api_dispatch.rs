@@ -2,11 +2,11 @@
 
 use super::constants::*;
 use super::ApiResult;
-use kvm_ioctls::VcpuFd;
+use super::vm_backend::VcpuBackend;
 use log::{debug, warn};
 
 impl super::Loader {
-    pub(crate) fn handle_api_call_ex(&self, vcpu: &mut VcpuFd, vcpu_id: u32, ordinal: u32) -> ApiResult {
+    pub(crate) fn handle_api_call_ex(&self, vcpu: &mut dyn VcpuBackend, vcpu_id: u32, ordinal: u32) -> ApiResult {
         let regs = vcpu.get_regs().unwrap();
         let esp = regs.rsp;
         let read_stack = |off: u64| -> u32 { self.guest_read::<u32>((esp + off) as u32).expect("Stack read OOB") };

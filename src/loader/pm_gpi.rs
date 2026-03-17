@@ -2,7 +2,7 @@
 //
 // OS/2 Presentation Manager PMGPI API handler methods.
 
-use kvm_ioctls::VcpuFd;
+use super::vm_backend::VcpuBackend;
 use log::{debug, warn};
 
 use super::mutex_ext::MutexExt;
@@ -10,7 +10,7 @@ use super::ApiResult;
 use crate::gui::GUIMessage;
 
 impl super::Loader {
-    pub(crate) fn handle_pmgpi_call(&self, vcpu: &mut VcpuFd, vcpu_id: u32, ordinal: u32) -> ApiResult {
+    pub(crate) fn handle_pmgpi_call(&self, vcpu: &mut dyn VcpuBackend, vcpu_id: u32, ordinal: u32) -> ApiResult {
         let regs = vcpu.get_regs().unwrap();
         let esp = regs.rsp;
         let read_stack = |off: u64| -> u32 { self.guest_read::<u32>((esp + off) as u32).expect("Stack read OOB") };

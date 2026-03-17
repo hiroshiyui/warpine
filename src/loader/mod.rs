@@ -7,6 +7,8 @@ pub mod ipc;
 pub mod pm_types;
 pub mod vfs;
 pub mod vfs_hostdir;
+pub mod vm_backend;
+mod kvm_backend;
 mod guest_mem;
 mod lx_loader;
 mod ne_exec;
@@ -30,14 +32,14 @@ pub use ipc::*;
 pub use pm_types::*;
 pub use vfs::DriveManager;
 pub use vfs_hostdir::HostDirBackend;
+pub use vm_backend::{VmBackend, VcpuBackend, VmExit, GuestRegs, GuestSegment, GuestSregs};
 
+use kvm_backend::KvmVmBackend;
 use std::ptr;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicI32};
 use std::thread;
-use kvm_ioctls::{Kvm, VmFd};
-use kvm_bindings::kvm_userspace_memory_region;
 use log::{info, warn};
 
 pub(crate) struct CallbackFrame {
@@ -101,15 +103,13 @@ unsafe impl Send for SharedState {}
 unsafe impl Sync for SharedState {}
 
 pub struct Loader {
-    pub(crate) _kvm: Kvm,
-    pub vm: Arc<VmFd>,
+    pub vm: Arc<dyn VmBackend>,
     pub shared: Arc<SharedState>,
 }
 
 impl Loader {
     pub fn new() -> Self {
-        let kvm = Kvm::new().expect("Failed to open /dev/kvm");
-        let vm = Arc::new(kvm.create_vm().expect("Failed to create VM"));
+        let vm: Arc<dyn VmBackend> = Arc::new(KvmVmBackend::new());
         let guest_mem_size = 256 * 1024 * 1024;
         let guest_mem_raw = unsafe {
             libc::mmap(ptr::null_mut(), guest_mem_size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS | libc::MAP_NORESERVE, -1, 0)
@@ -119,8 +119,7 @@ impl Loader {
         }
         let guest_mem = guest_mem_raw as *mut u8;
         unsafe { ptr::write_bytes(guest_mem, 0, guest_mem_size); }
-        let mem_region = kvm_userspace_memory_region { slot: 0, guest_phys_addr: 0, memory_size: guest_mem_size as u64, userspace_addr: guest_mem as u64, flags: 0 };
-        unsafe { vm.set_user_memory_region(mem_region).unwrap(); }
+        vm.register_guest_memory(0, guest_mem_size as u64, guest_mem as u64).unwrap();
 
         let mem_mgr = MemoryManager::new(DYNAMIC_ALLOC_BASE, guest_mem_size as u32);
         let handle_mgr = HandleManager::new();
@@ -168,7 +167,7 @@ impl Loader {
             locale: locale::Os2Locale::from_host(),
         });
 
-        Loader { _kvm: kvm, vm, shared }
+        Loader { vm, shared }
     }
 
     /// Check whether a shutdown has been requested.

@@ -5,7 +5,7 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::thread;
-use kvm_ioctls::VcpuFd;
+use super::vm_backend::VcpuBackend;
 use log::{debug, info, warn};
 
 use super::constants::*;
@@ -16,7 +16,7 @@ use crate::gui::GUIMessage;
 use crate::lx::header::{RT_STRING, RT_MENU, RT_ACCELTABLE};
 
 impl super::Loader {
-    pub(crate) fn handle_pmwin_call(&self, vcpu: &mut VcpuFd, vcpu_id: u32, ordinal: u32) -> ApiResult {
+    pub(crate) fn handle_pmwin_call(&self, vcpu: &mut dyn VcpuBackend, vcpu_id: u32, ordinal: u32) -> ApiResult {
         let regs = vcpu.get_regs().unwrap();
         let esp = regs.rsp;
         let read_stack = |off: u64| -> u32 { self.guest_read::<u32>((esp + off) as u32).expect("Stack read OOB") };

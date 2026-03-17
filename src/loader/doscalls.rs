@@ -14,7 +14,7 @@ use std::fs::File;
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::sync::Arc;
 use std::thread;
-use kvm_ioctls::{Kvm, VcpuFd};
+use super::vm_backend::VcpuBackend;
 use log::debug;
 
 use super::constants::*;
@@ -876,7 +876,7 @@ impl super::Loader {
             self.guest_write::<u32>(sp_addr + 4, param).expect("dos_create_thread: stack write OOB");
 
             {
-                let new_vcpu = self.vm.create_vcpu(tid as u64).unwrap();
+                let mut new_vcpu = self.vm.create_vcpu(tid as u64).unwrap();
                 let mut new_regs = new_vcpu.get_regs().unwrap();
                 new_regs.rip = pfn as u64;
                 new_regs.rsp = (stack_base + stack_size - 12) as u64;
@@ -887,8 +887,7 @@ impl super::Loader {
                 let shared_clone = Arc::clone(&self.shared);
                 let vm_clone = Arc::clone(&self.vm);
                 let handle = thread::spawn(move || {
-                    let kvm = Kvm::new().unwrap();
-                    let loader = super::Loader { _kvm: kvm, vm: vm_clone, shared: shared_clone };
+                    let loader = super::Loader { vm: vm_clone, shared: shared_clone };
                     loader.run_vcpu(new_vcpu, tid, tib_addr as u64);
                 });
                 self.shared.threads.lock_or_recover().insert(tid, handle);
@@ -921,7 +920,7 @@ impl super::Loader {
         } else { 8 }
     }
 
-    pub fn dos_get_info_blocks(&self, vcpu: &VcpuFd, ptib: u32, ppib: u32) -> u32 {
+    pub fn dos_get_info_blocks(&self, vcpu: &dyn VcpuBackend, ptib: u32, ppib: u32) -> u32 {
         let fs_base = vcpu.get_sregs().unwrap().fs.base;
         if ptib != 0 { self.guest_write::<u32>(ptib, fs_base as u32); }
         if ppib != 0 { self.guest_write::<u32>(ppib, PIB_BASE); }

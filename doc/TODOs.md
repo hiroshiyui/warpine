@@ -351,11 +351,11 @@ Eliminated 16-bit thunks from 4OS2 via source-level recompilation rather than ru
 
 Items identified during architecture review. These cut across phases and should be evaluated for priority as each phase is planned.
 
-### Virtualization Backend Abstraction
-- [ ] Define a `VmBackend` trait with methods: `create_vcpu()`, `run()`, `read_register()`, `write_register()`, `write_memory()`, `read_memory()` — analogous to the existing `VfsBackend` pattern
-- [ ] Implement KVM as the primary `VmBackend` (refactor from current direct `kvm_ioctls` usage)
-- [ ] This decouples API thunking logic from the hypervisor, enabling future backends (user-mode emulation via unicorn/icicle as fallback for non-KVM environments)
-- [ ] Enables unit testing of API thunk logic without a live KVM instance (mock backend)
+### Virtualization Backend Abstraction ✓ COMPLETE
+- [x] `VmBackend` / `VcpuBackend` traits defined in `src/loader/vm_backend.rs`; portable types: `VmExit`, `GuestRegs`, `GuestSegment`, `GuestSregs`
+- [x] KVM implementation isolated to `src/loader/kvm_backend.rs` (`KvmVmBackend`, `KvmVcpu`); no other loader file imports `kvm_ioctls`/`kvm_bindings`
+- [x] All handler signatures updated to `&mut dyn VcpuBackend`; `Loader.vm` is `Arc<dyn VmBackend>`
+- [ ] Add `MockVmBackend` / `MockVcpu` and `Loader::new_mock()` to enable unit tests without `/dev/kvm` (next step)
 
 ### Guest Memory Type Safety
 - [ ] Wrap the raw guest physical memory region in a dedicated `GuestMemory` type (currently `*mut u8` in `SharedState`)

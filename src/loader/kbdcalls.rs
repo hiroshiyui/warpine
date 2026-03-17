@@ -2,7 +2,7 @@
 //
 // OS/2 KBDCALLS (Keyboard) API implementations.
 
-use kvm_ioctls::VcpuFd;
+use super::vm_backend::VcpuBackend;
 use log::{debug, warn};
 
 use super::constants::*;
@@ -10,8 +10,8 @@ use super::mutex_ext::MutexExt;
 use super::console::map_key_to_os2;
 
 impl super::Loader {
-    pub(crate) fn handle_kbdcalls(&self, vcpu: &mut VcpuFd, _vcpu_id: u32, ordinal: u32) -> super::ApiResult {
-        let mut regs = vcpu.get_regs().unwrap();
+    pub(crate) fn handle_kbdcalls(&self, vcpu: &mut dyn VcpuBackend, _vcpu_id: u32, ordinal: u32) -> super::ApiResult {
+        let regs = vcpu.get_regs().unwrap();
         let esp = regs.rsp;
         let read_stack = |off: u64| -> u32 { self.guest_read::<u32>((esp + off) as u32).expect("Stack read OOB") };
 

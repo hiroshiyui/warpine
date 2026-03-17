@@ -6,8 +6,7 @@ use crate::lx::LxFile;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread;
-use kvm_ioctls::VcpuFd;
-use kvm_bindings::{kvm_guest_debug, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_USE_SW_BP};
+use super::vm_backend::{VcpuBackend, VmExit};
 use log::{info, debug, warn, error};
 
 impl super::Loader {
@@ -82,8 +81,8 @@ impl super::Loader {
         (entry_eip, entry_esp, tib_base)
     }
 
-    pub(crate) fn create_initial_vcpu(&self, entry_eip: u64, entry_esp: u64) -> VcpuFd {
-        let vcpu = self.vm.create_vcpu(0).unwrap();
+    pub(crate) fn create_initial_vcpu(&self, entry_eip: u64, entry_esp: u64) -> Box<dyn VcpuBackend> {
+        let mut vcpu = self.vm.create_vcpu(0).unwrap();
         let mut regs = vcpu.get_regs().unwrap();
         regs.rip = entry_eip;
         regs.rsp = entry_esp - 20;
@@ -135,25 +134,24 @@ impl super::Loader {
         std::process::exit(code);
     }
 
-    pub(crate) fn run_vcpu(&self, mut vcpu: VcpuFd, vcpu_id: u32, tib_base: u64) {
+    pub(crate) fn run_vcpu(&self, mut vcpu: Box<dyn VcpuBackend>, vcpu_id: u32, tib_base: u64) {
         let mut sregs = vcpu.get_sregs().unwrap();
         sregs.cs.base = 0; sregs.cs.limit = 0xFFFFFFFF; sregs.cs.g = 1; sregs.cs.db = 1; sregs.cs.present = 1; sregs.cs.type_ = 11; sregs.cs.s = 1; sregs.cs.selector = 0x08;
-        let mut ds = sregs.cs; ds.type_ = 3; ds.selector = 0x10;
-        sregs.ds = ds; sregs.es = ds; sregs.gs = ds; sregs.ss = ds;
+        let mut ds = sregs.cs.clone(); ds.type_ = 3; ds.selector = 0x10;
+        sregs.ds = ds.clone(); sregs.es = ds.clone(); sregs.gs = ds.clone(); sregs.ss = ds.clone();
         let mut fs = ds; fs.base = tib_base; fs.limit = 0xFFF; fs.selector = 0x18; sregs.fs = fs;
         // PE=1 (protected mode), clear EM/TS to enable FPU, set NE for native FPU errors
         sregs.cr0 = (sregs.cr0 | 1 | (1 << 5)) & !(1u64 << 2) & !(1u64 << 3);
         // Also set CR4.OSFXSR to enable SSE instructions
         sregs.cr4 |= 1 << 9;
         // Set up GDT and IDT registers
-        sregs.gdt.base = GDT_BASE as u64;
-        sregs.gdt.limit = 4 * 8 - 1; // 4 entries (tiling reserved for Phase 5)
-        sregs.idt.base = IDT_BASE as u64;
-        sregs.idt.limit = 32 * 8 - 1;
+        sregs.gdt_base  = GDT_BASE as u64;
+        sregs.gdt_limit = 4 * 8 - 1; // 4 entries (tiling reserved for Phase 5)
+        sregs.idt_base  = IDT_BASE as u64;
+        sregs.idt_limit = 32 * 8 - 1;
         vcpu.set_sregs(&sregs).unwrap();
 
-        let debug = kvm_guest_debug { control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP, ..Default::default() };
-        vcpu.set_guest_debug(&debug).unwrap();
+        vcpu.enable_software_breakpoints().unwrap();
 
         debug!("  [VCPU {}] Started at EIP=0x{:08X}", vcpu_id, vcpu.get_regs().unwrap().rip);
 
@@ -173,7 +171,7 @@ impl super::Loader {
             }
             let exit = res.unwrap();
             match exit {
-                kvm_ioctls::VcpuExit::Debug(_) => {
+                VmExit::Debug => {
                     let rip = vcpu.get_regs().unwrap().rip;
                     // Check if this is from an IDT exception handler stub
                     if rip >= IDT_HANDLER_BASE as u64 && rip < IDT_HANDLER_BASE as u64 + 32 * 16 {
@@ -206,7 +204,7 @@ impl super::Loader {
                             debug!("  [VCPU {}] 16-bit API call: ordinal {} at 0x{:08X}, ret=0x{:04X}:0x{:04X}, SP=0x{:04X}",
                                 vcpu_id, ordinal, rip, ret_cs_dbg, ret_ip_dbg, sp_dbg);
                         }
-                        let result = self.handle_ne_api_call(&mut vcpu, vcpu_id, ordinal);
+                        let result = self.handle_ne_api_call(&mut *vcpu, vcpu_id, ordinal);
                         let mut regs = vcpu.get_regs().unwrap();
                         regs.rax = result as u64;
                         // Pop far return address (IP + CS = 4 bytes) and restore CS:IP
@@ -224,15 +222,13 @@ impl super::Loader {
                         vcpu.set_regs(&regs).unwrap();
                         // Update CS segment register to the return code segment
                         let mut sregs = vcpu.get_sregs().unwrap();
-                        let cs_base = self.gdt_entry_base(ret_cs_sel);
-                        let cs_limit = self.gdt_entry_limit(ret_cs_sel);
-                        sregs.cs.base = cs_base as u64;
-                        sregs.cs.limit = cs_limit;
+                        sregs.cs.base     = self.gdt_entry_base(ret_cs_sel) as u64;
+                        sregs.cs.limit    = self.gdt_entry_limit(ret_cs_sel);
                         sregs.cs.selector = ret_cs_sel;
-                        sregs.cs.type_ = 11; // code, exec+read
-                        sregs.cs.db = 0; // 16-bit
-                        sregs.cs.present = 1;
-                        sregs.cs.s = 1;
+                        sregs.cs.type_    = 11; // code, exec+read
+                        sregs.cs.db       = 0; // 16-bit
+                        sregs.cs.present  = 1;
+                        sregs.cs.s        = 1;
                         vcpu.set_sregs(&sregs).unwrap();
                         continue;
                     }
@@ -260,7 +256,7 @@ impl super::Loader {
                             }
                         }
                         let ordinal = (rip - MAGIC_API_BASE) as u32;
-                        let api_result = self.handle_api_call_ex(&mut vcpu, vcpu_id, ordinal);
+                        let api_result = self.handle_api_call_ex(&mut *vcpu, vcpu_id, ordinal);
                         match api_result {
                             ApiResult::Normal(res) => {
                                 let mut regs = vcpu.get_regs().unwrap();
@@ -306,22 +302,21 @@ impl super::Loader {
                         return;
                     }
                 }
-                kvm_ioctls::VcpuExit::Hlt => {
+                VmExit::Hlt => {
                     info!("  [VCPU {}] Guest HLT.", vcpu_id);
                     self.shared.exit_requested.store(true, Ordering::Relaxed);
                     return;
                 }
-                kvm_ioctls::VcpuExit::MmioRead(addr, data) => {
-                    // Guest read from unmapped memory — return zeros
+                VmExit::MmioRead { addr, size } => {
+                    // zeros already filled by kvm_backend
                     warn!("  [VCPU {}] MMIO read at 0x{:08X} ({} bytes) — returning zeros",
-                           vcpu_id, addr, data.len());
-                    for byte in data.iter_mut() { *byte = 0; }
+                           vcpu_id, addr, size);
                 }
-                kvm_ioctls::VcpuExit::MmioWrite(addr, _data) => {
+                VmExit::MmioWrite { addr } => {
                     // Guest write to unmapped memory — silently ignore
                     warn!("  [VCPU {}] MMIO write at 0x{:08X} — ignoring", vcpu_id, addr);
                 }
-                kvm_ioctls::VcpuExit::Shutdown => {
+                VmExit::Shutdown => {
                     let regs = vcpu.get_regs().unwrap();
                     let sregs = vcpu.get_sregs().unwrap();
                     error!("  [VCPU {}] Guest shutdown (triple fault)", vcpu_id);
@@ -333,8 +328,7 @@ impl super::Loader {
                     self.shared.exit_requested.store(true, Ordering::Relaxed);
                     return;
                 }
-                _ => {
-                    let e = format!("{:?}", exit);
+                VmExit::Other(e) => {
                     let rip = vcpu.get_regs().unwrap().rip;
                     error!("  [VCPU {}] Unhandled VMEXIT: {} at EIP=0x{:08X}", vcpu_id, e, rip);
                     self.shared.exit_code.store(1, Ordering::Relaxed);
