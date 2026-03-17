@@ -96,12 +96,22 @@ NE format parser complete (`src/ne/`): NeHeader, segment/relocation/entry tables
 Goal: raise the fraction of real OS/2 applications that run correctly.
 
 ### DLL Loader Chain (highest priority — blocks nearly everything)
-- [ ] Parse LX import table and recursively load dependent DLLs
-- [ ] Support both ordinal-based and name-based imports
-- [ ] Resolve export tables from loaded DLL LX objects
-- [ ] Call DLL initialisation routines (`DLL_INITTERM` entry point) at load and unload time
-- [ ] `DosLoadModule` / `DosFreeModule` — full runtime dynamic loading (currently stubs)
-- [ ] `DosQueryModuleHandle` / `DosQueryProcAddr` — runtime symbol resolution
+**Baseline complete** — `jpos2dll.dll` (4OS2 extension DLL) loads successfully at runtime.
+
+Completed items:
+- [x] Parse LX entry table (ordinal → object + offset) and non-resident names table (ordinal → name)
+- [x] `load_dll()` — allocate guest memory for each object, load pages (rebased), apply fixups
+- [x] Ordinal-based and name-based export maps; `DllManager` in `SharedState`
+- [x] `DosLoadModule` — finds DLL by name (exe dir + C:\OS2\DLL\), loads it, returns HMODULE
+- [x] `DosQueryProcAddr` — ordinal or name lookup from `DllManager`
+- [x] `DosQueryModuleHandle` — name lookup
+- [x] `resolve_import` checks `DllManager` for user DLLs (after built-in thunks)
+- [x] `jpos2dll.dll` built by `samples/4os2/Makefile` (`make jpos2dll.dll`)
+
+Remaining:
+- [ ] Recursive/static import loading — load a DLL's dependent DLLs from its import table before applying fixups (currently only built-in emulated modules work as DLL dependencies)
+- [ ] Call DLL initialisation routines (`DLL_INITTERM` / `eip_object`) at load and unload time
+- [ ] `DosFreeModule` — proper reference counting and unload
 - [ ] Handle load-order dependencies and circular imports
 - [ ] Option: load real OS/2 system DLL binaries alongside emulated ones (selective real-DLL execution)
 
