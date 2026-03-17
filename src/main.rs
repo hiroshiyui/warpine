@@ -254,8 +254,36 @@ fn run_lx(file_path: &str) {
         let code = shared.exit_code.load(std::sync::atomic::Ordering::Relaxed);
         std::process::exit(code);
     } else {
-        // CLI app: run directly (never returns — calls process::exit internally
-        // after restoring terminal state)
-        loader.setup_and_run_cli(&lx_file);
+        // CLI app: use SDL2 text-mode window unless WARPINE_HEADLESS is set.
+        let headless = std::env::var("WARPINE_HEADLESS").map(|v| v != "0").unwrap_or(false);
+        if headless {
+            // Headless / terminal mode: run directly (never returns).
+            loader.setup_and_run_cli(&lx_file);
+        } else {
+            // SDL2 text-mode: enable sdl2 mode on VioManager, then spawn VCPU
+            // on a worker thread while the SDL2 text renderer runs on main.
+            {
+                let mut vio = shared.console_mgr.lock_or_recover();
+                vio.enable_sdl2_mode();
+            }
+            shared.use_sdl2_text.store(true, std::sync::atomic::Ordering::Relaxed);
+
+            let sdl = sdl2::init().expect("Failed to initialise SDL2");
+            let exe_title = file_path.rsplit('/').next().unwrap_or(file_path);
+            let title = format!("Warpine — {exe_title}");
+
+            let loader = Arc::new(loader);
+            loader.clone().setup_and_spawn_vcpu(&lx_file);
+
+            let mut renderer = gui::Sdl2TextRenderer::new(&sdl, &title);
+            gui::run_text_loop(&mut renderer, shared.clone());
+
+            // Cleanup
+            shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+            shared.kbd_cond.notify_all();
+            shared.console_mgr.lock_or_recover().disable_raw_mode();
+            let code = shared.exit_code.load(std::sync::atomic::Ordering::Relaxed);
+            std::process::exit(code);
+        }
     }
 }
