@@ -63,3 +63,81 @@ impl super::Loader {
         result
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Loader, ApiResult};
+    use super::super::vm_backend::mock::MockVcpu;
+    use super::super::constants::{KBDCALLS_BASE, VIOCALLS_BASE};
+
+    /// Set up a minimal stack: fake return address at ESP, args at ESP+4, +8, …
+    fn setup_stack(loader: &Loader, vcpu: &mut MockVcpu, esp: u32, args: &[u32]) {
+        vcpu.regs.rsp = esp as u64;
+        loader.guest_write::<u32>(esp, 0xCAFEBABE).unwrap(); // fake return address
+        for (i, &arg) in args.iter().enumerate() {
+            loader.guest_write::<u32>(esp + 4 + i as u32 * 4, arg).unwrap();
+        }
+    }
+
+    // ── KBDCALLS routing ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_dispatch_routes_kbdcalls_kbd_get_status() {
+        // KbdGetStatus = KBDCALLS_BASE + 10
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp = 0x1000u32;
+        let p_status = 0x2000u32;
+        // Pascal: ESP+4=hkbd=0, ESP+8=pStatus
+        setup_stack(&loader, &mut vcpu, esp, &[0, p_status]);
+        let result = loader.handle_api_call_ex(&mut vcpu, 0, KBDCALLS_BASE + 10);
+        assert!(matches!(result, ApiResult::Normal(0)));
+        // KBDINFO.cb field should be 10
+        assert_eq!(loader.guest_read::<u16>(p_status), Some(10));
+    }
+
+    // ── VIOCALLS routing ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_dispatch_routes_viocalls_vio_get_cur_type() {
+        // VioGetCurType = VIOCALLS_BASE + 33
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp = 0x1000u32;
+        let p_cur_data = 0x2000u32;
+        // Pascal: ESP+4=hvio=0, ESP+8=pCurData
+        setup_stack(&loader, &mut vcpu, esp, &[0, p_cur_data]);
+        let result = loader.handle_api_call_ex(&mut vcpu, 0, VIOCALLS_BASE + 33);
+        assert!(matches!(result, ApiResult::Normal(0)));
+    }
+
+    // ── DOSCALLS registry routing ────────────────────────────────────────────
+
+    #[test]
+    fn test_dispatch_routes_doscalls_query_h_type() {
+        // DosQueryHType = ordinal 224
+        // _System: args[0]=hfile, args[1]=pType, args[2]=pAttr at ESP+4, +8, +12
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp = 0x1000u32;
+        let p_type = 0x2000u32;
+        let p_attr = 0x2004u32;
+        setup_stack(&loader, &mut vcpu, esp, &[0, p_type, p_attr]); // hfile=0 (stdin)
+        let result = loader.handle_api_call_ex(&mut vcpu, 0, 224);
+        assert!(matches!(result, ApiResult::Normal(0)));
+        assert_eq!(loader.guest_read::<u32>(p_type), Some(1)); // stdin = char device
+    }
+
+    // ── Unknown ordinal ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_dispatch_unknown_ordinal_returns_ok() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp = 0x1000u32;
+        setup_stack(&loader, &mut vcpu, esp, &[]);
+        // 50000 is outside all known subsystem ranges
+        let result = loader.handle_api_call_ex(&mut vcpu, 0, 50000);
+        assert!(matches!(result, ApiResult::Normal(0)));
+    }
+}
