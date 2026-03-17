@@ -6,6 +6,14 @@ use std::path::Path;
 pub mod header;
 use header::{LxHeader, ObjectTableEntry, ObjectPageMapEntry, LxFixupRecord, LxResourceEntry};
 
+/// An exported entry from the LX entry table.
+#[derive(Debug, Clone)]
+pub struct LxExport {
+    pub ordinal: u32,
+    pub object_num: u16,
+    pub offset: u32,
+}
+
 #[derive(Debug)]
 pub struct LxFile {
     pub header: LxHeader,
@@ -16,6 +24,8 @@ pub struct LxFile {
     pub resources: Vec<LxResourceEntry>,
     pub imported_modules: Vec<String>,
     pub import_procedure_names: Vec<u8>,
+    pub exports: Vec<LxExport>,
+    pub nonresident_names: Vec<(u32, String)>,
 }
 
 impl LxFile {
@@ -147,7 +157,7 @@ impl LxFile {
 
         // 9. Read Import Procedure Name Table
         let import_proc_table_start = lx_offset + header.import_procedure_name_table_offset as u64;
-        
+
         let mut import_procedure_names = Vec::new();
         if header.import_procedure_name_table_offset > 0 {
             reader.seek(SeekFrom::Start(import_proc_table_start))?;
@@ -156,6 +166,82 @@ impl LxFile {
                 let mut table_data = vec![0u8; remaining as usize];
                 reader.read_exact(&mut table_data)?;
                 import_procedure_names = table_data;
+            }
+        }
+
+        // 10. Parse Entry Table (ordinal → object + offset)
+        let mut exports = Vec::new();
+        if header.entry_table_offset > 0 {
+            let entry_table_start = lx_offset + header.entry_table_offset as u64;
+            reader.seek(SeekFrom::Start(entry_table_start))?;
+            let mut ordinal = 1u32;
+            loop {
+                let mut b1 = [0u8; 1];
+                if reader.read_exact(&mut b1).is_err() { break; }
+                let count = b1[0];
+                if count == 0 { break; }
+
+                let mut b2 = [0u8; 1];
+                reader.read_exact(&mut b2)?;
+                let bundle_type = b2[0];
+
+                match bundle_type {
+                    0 => {
+                        // EMPTY — skip `count` ordinal slots
+                        ordinal += count as u32;
+                    }
+                    3 => {
+                        // ENTRY32 — object_num then count×(flags:u8 + offset:u32)
+                        let mut obj_buf = [0u8; 2];
+                        reader.read_exact(&mut obj_buf)?;
+                        let object_num = u16::from_le_bytes(obj_buf);
+                        for _ in 0..count {
+                            let mut entry_buf = [0u8; 5]; // flags(1) + offset(4)
+                            reader.read_exact(&mut entry_buf)?;
+                            let offset = u32::from_le_bytes([entry_buf[1], entry_buf[2], entry_buf[3], entry_buf[4]]);
+                            exports.push(LxExport { ordinal, object_num, offset });
+                            ordinal += 1;
+                        }
+                    }
+                    1 => {
+                        // ENTRY16 — count×(flags:u8 + offset:u16)
+                        for _ in 0..count {
+                            let mut skip = [0u8; 3];
+                            reader.read_exact(&mut skip)?;
+                            ordinal += 1;
+                        }
+                    }
+                    2 => {
+                        // CALLGATE — count×(flags:u8 + offset:u16 + gate:u16)
+                        for _ in 0..count {
+                            let mut skip = [0u8; 5];
+                            reader.read_exact(&mut skip)?;
+                            ordinal += 1;
+                        }
+                    }
+                    _ => {
+                        // Unknown bundle type — stop parsing
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 11. Parse Non-Resident Names Table (absolute file offset, not relative to LX header)
+        let mut nonresident_names = Vec::new();
+        if header.non_resident_name_table_offset > 0 && header.non_resident_name_table_length > 0 {
+            reader.seek(SeekFrom::Start(header.non_resident_name_table_offset as u64))?;
+            loop {
+                let mut lb = [0u8; 1];
+                if reader.read_exact(&mut lb).is_err() { break; }
+                let len = lb[0] as usize;
+                if len == 0 { break; }
+                let mut name_buf = vec![0u8; len];
+                reader.read_exact(&mut name_buf)?;
+                let mut ord_buf = [0u8; 2];
+                reader.read_exact(&mut ord_buf)?;
+                let ordinal = u16::from_le_bytes(ord_buf) as u32;
+                nonresident_names.push((ordinal, String::from_utf8_lossy(&name_buf).into_owned()));
             }
         }
 
@@ -168,6 +254,8 @@ impl LxFile {
             resources,
             imported_modules,
             import_procedure_names,
+            exports,
+            nonresident_names,
         })
     }
 
@@ -288,5 +376,21 @@ mod tests {
         let lx = res.unwrap();
         assert_eq!(lx.header.signature, *b"LX");
         assert!(lx.object_table.len() > 0);
+    }
+
+    #[test]
+    fn test_parse_entry_table_and_nonresident_names() {
+        // jpos2dll.dll is in samples/4os2/ — only run if present
+        let path = "samples/4os2/jpos2dll.dll";
+        if !std::path::Path::new(path).exists() { return; }
+        let lx = LxFile::open(path).expect("parse jpos2dll.dll");
+        // Entry table: 7 exports in object 1
+        assert_eq!(lx.exports.len(), 7, "expected 7 exports");
+        assert!(lx.exports.iter().all(|e| e.object_num == 1), "all in object 1");
+        assert!(lx.exports.iter().enumerate().all(|(i, e)| e.ordinal == (i + 1) as u32), "ordinals 1..7");
+        // Non-resident names: 7 entries
+        assert_eq!(lx.nonresident_names.len(), 7);
+        let has_sendkeys = lx.nonresident_names.iter().any(|(_, n)| n == "SendKeys");
+        assert!(has_sendkeys, "SendKeys not in nonresident names");
     }
 }
