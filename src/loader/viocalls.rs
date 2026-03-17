@@ -29,7 +29,8 @@ impl super::Loader {
             15 => self.vio_set_cur_pos(read_stack(12), read_stack(8), read_stack(4)),
             // VioScrollUp(ulr, ulc, lrr, lrc, n, cell, hvio) → ESP+4=hvio, +8=cell, +12=n, +16=lrc, +20=lrr, +24=ulc, +28=ulr
             7  => self.vio_scroll_up(read_stack(28), read_stack(24), read_stack(20), read_stack(16), read_stack(12), read_stack(8)),
-            8  => { debug!("  VioPrtSc (stub)"); NO_ERROR },
+            // VioScrollDn(ulr, ulc, lrr, lrc, n, cell, hvio) — same layout as VioScrollUp
+            8  => self.vio_scroll_dn(read_stack(28), read_stack(24), read_stack(20), read_stack(16), read_stack(12), read_stack(8)),
             // VioWrtCharStrAtt(pStr, len, row, col, pAttr, hvio) → ESP+4=hvio, +8=pAttr, +12=col, +16=row, +20=len, +24=pStr
             48 => self.vio_wrt_char_str_att(read_stack(24), read_stack(20), read_stack(16), read_stack(12), read_stack(8)),
             // VioWrtNCell(pCell, n, row, col, hvio) → ESP+4=hvio, +8=col, +12=row, +16=n, +20=pCell
@@ -69,10 +70,10 @@ impl super::Loader {
     /// Pascal calling convention argument byte count for stack cleanup.
     pub(crate) fn viocalls_arg_bytes(&self, ordinal: u32) -> u64 {
         match ordinal {
-            19 => 12, 21 => 8, 9 => 12, 15 => 12, 7 => 28,
+            19 => 12, 21 => 8, 9 => 12, 15 => 12, 7 => 28, 8 => 28,
             48 => 24, 52 => 20, 26 => 20, 24 => 20, 32 => 8,
             5 => 8, 3 => 8, 51 => 8, 42 => 12, 46 => 12,
-            22 => 8, 31 => 12, 43 => 12, 8 => 4,
+            22 => 8, 31 => 12, 43 => 12,
             _ => 0,
         }
     }
@@ -327,6 +328,29 @@ mod tests {
         assert_eq!(loader.guest_read::<u16>(p_config).unwrap(),     10); // cb
         assert_eq!(loader.guest_read::<u16>(p_config + 2).unwrap(),  3); // VGA adapter
         assert_eq!(loader.guest_read::<u16>(p_config + 4).unwrap(),  3); // VGA color display
+    }
+
+    /// VioScrollDn (ordinal 8): dispatch must call the real implementation, not a stub.
+    /// Before the fix, ordinal 8 was mislabelled "VioPrtSc" with only 4 arg-bytes,
+    /// which corrupted the Pascal calling-convention stack by 24 bytes on every call.
+    #[test]
+    fn test_vio_scroll_dn_ordinal_and_arg_bytes() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp: u32 = 0x1000;
+        vcpu.regs.rsp = esp as u64;
+
+        // VioScrollDn(ulr, ulc, lrr, lrc, n, cell, hvio)
+        // Pascal layout (last arg at esp+4): hvio, cell, n, lrc, lrr, ulc, ulr
+        write_stack(&loader, esp, &[/*hvio*/0, /*cell*/0, /*n*/2, /*lrc*/79, /*lrr*/24, /*ulc*/0, /*ulr*/0]);
+        let result = loader.handle_viocalls(&mut vcpu, 0, 8);
+        // Must return NO_ERROR (not a stub panic/wrong ordinal)
+        assert!(matches!(result, ApiResult::Normal(0)));
+
+        // Arg-byte count must match VioScrollDn's 7 args × 4 bytes = 28,
+        // so the vCPU loop adjusts rsp by 28 (not 4 as the old bug had it).
+        assert_eq!(loader.viocalls_arg_bytes(8), 28,
+            "Wrong arg-byte count for VioScrollDn (ordinal 8): stack corruption bug");
     }
 
     #[test]
