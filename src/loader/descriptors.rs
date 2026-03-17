@@ -33,6 +33,7 @@ impl super::Loader {
         else if module == "SESMGR" { MAGIC_API_BASE + SESMGR_BASE as u64 + ordinal as u64 }
         else if module == "NLS" { MAGIC_API_BASE + NLS_BASE as u64 + ordinal as u64 }
         else if module == "MSG" { MAGIC_API_BASE + MSG_BASE as u64 + ordinal as u64 }
+        else if module == "MDM" { MAGIC_API_BASE + MDM_BASE as u64 + ordinal as u64 }
         else {
             log::warn!("Unknown import module: {} ordinal {}", module, ordinal);
             // Return a valid stub address so the guest doesn't crash on unresolved imports

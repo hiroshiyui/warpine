@@ -25,6 +25,7 @@ mod kbdcalls;
 mod viocalls;
 mod process;
 pub mod locale;
+pub mod mmpm;
 
 pub use constants::*;
 pub use mutex_ext::MutexExt;
@@ -89,6 +90,7 @@ pub struct SharedState {
     pub window_mgr: Mutex<WindowManager>,
     pub drive_mgr: Mutex<DriveManager>,
     pub console_mgr: Mutex<console::VioManager>,
+    pub mmpm_mgr: Mutex<mmpm::MmpmManager>,
     /// Executable name as provided on the command line
     pub exe_name: Mutex<String>,
     pub guest_mem: GuestMemory,
@@ -150,6 +152,7 @@ impl Loader {
             window_mgr: Mutex::new(window_mgr),
             drive_mgr: Mutex::new(drive_mgr),
             console_mgr: Mutex::new(console_mgr),
+            mmpm_mgr: Mutex::new(mmpm::MmpmManager::new()),
             exe_name: Mutex::new(String::new()),
             guest_mem,
             next_tid: Mutex::new(1),
@@ -206,6 +209,7 @@ impl Loader {
             window_mgr:   Mutex::new(WindowManager::new()),
             drive_mgr:    Mutex::new(DriveManager::with_default_config()),
             console_mgr:  Mutex::new(console::VioManager::new()),
+            mmpm_mgr:     Mutex::new(mmpm::MmpmManager::new()),
             exe_name:     Mutex::new(String::new()),
             guest_mem,
             next_tid:     Mutex::new(1),

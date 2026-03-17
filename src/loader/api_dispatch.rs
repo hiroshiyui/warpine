@@ -252,11 +252,22 @@ impl super::Loader {
                 }
             };
             ApiResult::Normal(res)
-        } else if ordinal < STUB_AREA_SIZE {
+        } else if ordinal < MDM_BASE {
             // MSG
             let msg_ord = ordinal - MSG_BASE;
             warn!("MSG stub: ordinal {} on VCPU {}", msg_ord, vcpu_id);
             ApiResult::Normal(0)
+        } else if ordinal < STUB_AREA_SIZE {
+            // MDM (MMPM/2 Media Device Manager)
+            let mdm_ord = ordinal - MDM_BASE;
+            let res = match mdm_ord {
+                1 => self.mci_send_command(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                2 => self.mci_send_string(read_stack(4), read_stack(8), read_stack(12), read_stack(16)),
+                3 => self.mci_free_block(read_stack(4)),
+                4 => self.mci_get_last_error(read_stack(4), read_stack(8), read_stack(12)),
+                _ => { warn!("MDM stub: ordinal {} on VCPU {}", mdm_ord, vcpu_id); 0 }
+            };
+            ApiResult::Normal(res)
         } else {
             warn!("Warning: Unknown API Base Ordinal {} on VCPU {}", ordinal, vcpu_id);
             ApiResult::Normal(0)

@@ -141,6 +141,15 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             _  => "?",
         },
 
+        // ── MDM / MMPM/2 (MDM_BASE + local ordinal) ───────────────────────
+        o if (MDM_BASE..STUB_AREA_SIZE).contains(&o) => match o - MDM_BASE {
+            1 => "mciSendCommand",
+            2 => "mciSendString",
+            3 => "mciFreeBlock",
+            4 => "mciGetLastError",
+            _ => "?",
+        },
+
         // Higher subsystems (PMWIN, PMGPI, KBDCALLS, VIOCALLS, …) carry
         // their own internal dispatch tables; the top-level name is just "?"
         // here — callers use `module_for_ordinal` for the DLL name.
@@ -160,7 +169,9 @@ pub fn module_for_ordinal(ordinal: u32) -> &'static str {
     else if ordinal < SESMGR_BASE   { "VIOCALLS" }   // 5120–6143
     else if ordinal < NLS_BASE      { "SESMGR" }     // 6144–7167
     else if ordinal < MSG_BASE      { "NLS" }         // 7168–8191
-    else                            { "MSG" }
+    else if ordinal < MDM_BASE      { "MSG" }         // 8192–10239
+    else if ordinal < STUB_AREA_SIZE { "MDM" }        // 10240–12287
+    else                            { "?" }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -224,6 +235,7 @@ mod tests {
         assert_eq!(module_for_ordinal(SESMGR_BASE),   "SESMGR");
         assert_eq!(module_for_ordinal(NLS_BASE),      "NLS");
         assert_eq!(module_for_ordinal(MSG_BASE),      "MSG");
+        assert_eq!(module_for_ordinal(MDM_BASE),      "MDM");
     }
 
     #[test]
@@ -236,6 +248,17 @@ mod tests {
         assert_eq!(module_for_ordinal(SESMGR_BASE - 1),   "VIOCALLS");
         assert_eq!(module_for_ordinal(NLS_BASE - 1),      "SESMGR");
         assert_eq!(module_for_ordinal(MSG_BASE - 1),      "NLS");
+        assert_eq!(module_for_ordinal(MDM_BASE - 1),      "MSG");
+        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1),"MDM");
+    }
+
+    #[test]
+    fn test_mdm_ordinal_names() {
+        assert_eq!(ordinal_to_name(MDM_BASE + 1), "mciSendCommand");
+        assert_eq!(ordinal_to_name(MDM_BASE + 2), "mciSendString");
+        assert_eq!(ordinal_to_name(MDM_BASE + 3), "mciFreeBlock");
+        assert_eq!(ordinal_to_name(MDM_BASE + 4), "mciGetLastError");
+        assert_eq!(ordinal_to_name(MDM_BASE + 99), "?");
     }
 
     /// Every ordinal dispatched in `api_dispatch.rs` must have a name entry.
