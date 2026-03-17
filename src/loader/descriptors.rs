@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::constants::*;
+use super::mutex_ext::MutexExt;
 use log::debug;
 
 impl super::Loader {
@@ -35,9 +36,13 @@ impl super::Loader {
         else if module == "MSG" { MAGIC_API_BASE + MSG_BASE as u64 + ordinal as u64 }
         else if module == "MDM" { MAGIC_API_BASE + MDM_BASE as u64 + ordinal as u64 }
         else {
+            // Check loaded user DLLs
+            let dll_mgr = self.shared.dll_mgr.lock_or_recover();
+            if let Some(addr) = dll_mgr.resolve_ordinal(module, ordinal) {
+                return addr as u64;
+            }
+            drop(dll_mgr);
             log::warn!("Unknown import module: {} ordinal {}", module, ordinal);
-            // Return a valid stub address so the guest doesn't crash on unresolved imports
-            // Use a dedicated range at end of stub area
             MAGIC_API_BASE + (STUB_AREA_SIZE as u64 - 1)
         }
     }

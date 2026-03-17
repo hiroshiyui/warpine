@@ -233,17 +233,51 @@ impl super::Loader {
     pub fn dos_load_module(&self, psz_fail_name: u32, cb_fail_name: u32, psz_mod_name: u32, phmod: u32) -> u32 {
         let name = self.read_guest_string(psz_mod_name);
         debug!("  DosLoadModule('{}')", name);
-        // Write the failing module name to the error buffer
-        if psz_fail_name != 0 && cb_fail_name > 0 {
-            let bytes = name.as_bytes();
-            let copy_len = bytes.len().min(cb_fail_name as usize - 1);
-            self.guest_write_bytes(psz_fail_name, &bytes[..copy_len]);
-            self.guest_write::<u8>(psz_fail_name + copy_len as u32, 0);
+
+        // Check if already loaded
+        let already = {
+            let dll_mgr = self.shared.dll_mgr.lock_or_recover();
+            dll_mgr.find_by_name(&name).map(|d| d.handle)
+        };
+        if let Some(h) = already {
+            if phmod != 0 { self.guest_write::<u32>(phmod, h); }
+            return NO_ERROR;
         }
-        if phmod != 0 {
-            self.guest_write::<u32>(phmod, 0);
+
+        // Search for the DLL on the host filesystem
+        match self.find_dll_path(&name) {
+            Some(path) => {
+                match self.load_dll(&name, &path) {
+                    Ok(h) => {
+                        if phmod != 0 { self.guest_write::<u32>(phmod, h); }
+                        NO_ERROR
+                    }
+                    Err(e) => {
+                        log::warn!("DosLoadModule('{}') failed: {}", name, e);
+                        // Write module name to error buffer
+                        if psz_fail_name != 0 && cb_fail_name > 0 {
+                            let bytes = name.as_bytes();
+                            let copy_len = bytes.len().min(cb_fail_name as usize - 1);
+                            self.guest_write_bytes(psz_fail_name, &bytes[..copy_len]);
+                            self.guest_write::<u8>(psz_fail_name + copy_len as u32, 0);
+                        }
+                        if phmod != 0 { self.guest_write::<u32>(phmod, 0); }
+                        ERROR_MOD_NOT_FOUND
+                    }
+                }
+            }
+            None => {
+                debug!("  DosLoadModule: '{}' not found on host", name);
+                if psz_fail_name != 0 && cb_fail_name > 0 {
+                    let bytes = name.as_bytes();
+                    let copy_len = bytes.len().min(cb_fail_name as usize - 1);
+                    self.guest_write_bytes(psz_fail_name, &bytes[..copy_len]);
+                    self.guest_write::<u8>(psz_fail_name + copy_len as u32, 0);
+                }
+                if phmod != 0 { self.guest_write::<u32>(phmod, 0); }
+                ERROR_MOD_NOT_FOUND
+            }
         }
-        ERROR_MOD_NOT_FOUND
     }
 
     /// DosFreeModule (ordinal 322): free a loaded DLL.
@@ -256,20 +290,44 @@ impl super::Loader {
     pub fn dos_query_module_handle(&self, psz_mod_name: u32, phmod: u32) -> u32 {
         let name = self.read_guest_string(psz_mod_name);
         debug!("  DosQueryModuleHandle('{}')", name);
-        if phmod != 0 {
-            self.guest_write::<u32>(phmod, 0);
+        let dll_mgr = self.shared.dll_mgr.lock_or_recover();
+        if let Some(dll) = dll_mgr.find_by_name(&name) {
+            if phmod != 0 { self.guest_write::<u32>(phmod, dll.handle); }
+            NO_ERROR
+        } else {
+            if phmod != 0 { self.guest_write::<u32>(phmod, 0); }
+            ERROR_MOD_NOT_FOUND
         }
-        ERROR_MOD_NOT_FOUND
     }
 
-    /// DosQueryProcAddr (ordinal 321): resolve function address from DLL.
+    /// DosQueryProcAddr (ordinal 321): resolve a function address from a loaded DLL.
     pub fn dos_query_proc_addr(&self, hmod: u32, ordinal: u32, psz_name: u32, p_pfn: u32) -> u32 {
         let name = if psz_name != 0 { self.read_guest_string(psz_name) } else { String::new() };
-        debug!("  DosQueryProcAddr(hmod={}, ord={}, name='{}')", hmod, ordinal, name);
-        if p_pfn != 0 {
-            self.guest_write::<u32>(p_pfn, 0);
+        debug!("  DosQueryProcAddr(hmod={:#x}, ord={}, name='{}')", hmod, ordinal, name);
+
+        let dll_mgr = self.shared.dll_mgr.lock_or_recover();
+        let maybe_dll = dll_mgr.find_by_handle(hmod);
+        let addr = if let Some(dll) = maybe_dll {
+            if !name.is_empty() {
+                // Name-based lookup
+                dll.exports_by_name.get(&name.to_ascii_uppercase()).copied()
+            } else if ordinal != 0 {
+                // Ordinal-based lookup
+                dll.exports_by_ordinal.get(&ordinal).copied()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        if let Some(guest_addr) = addr {
+            if p_pfn != 0 { self.guest_write::<u32>(p_pfn, guest_addr); }
+            NO_ERROR
+        } else {
+            if p_pfn != 0 { self.guest_write::<u32>(p_pfn, 0); }
+            ERROR_PROC_NOT_FOUND
         }
-        ERROR_PROC_NOT_FOUND
     }
 
     /// DosGetMessage (ordinal 317): get message from MSG file.

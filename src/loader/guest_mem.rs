@@ -257,7 +257,7 @@ mod tests {
     #[test]
     fn test_mock_guest_oob_read_returns_none() {
         let loader = Loader::new_mock();
-        let end = 1024 * 1024u32; // 1 MB region
+        let end = 64 * 1024 * 1024u32; // 64 MB mock region (new_mock allocates 64 MB)
         assert!(loader.guest_read::<u8>(end - 1).is_some());   // last valid byte
         assert!(loader.guest_read::<u8>(end).is_none());        // one past end
         assert!(loader.guest_read::<u32>(end - 3).is_none());   // u32 straddles end

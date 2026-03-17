@@ -105,6 +105,7 @@ pub struct SharedState {
     pub drive_mgr: Mutex<DriveManager>,
     pub console_mgr: Mutex<console::VioManager>,
     pub mmpm_mgr: Mutex<mmpm::MmpmManager>,
+    pub dll_mgr: Mutex<DllManager>,
     /// Executable name as provided on the command line
     pub exe_name: Mutex<String>,
     pub guest_mem: GuestMemory,
@@ -175,6 +176,7 @@ impl Loader {
             drive_mgr: Mutex::new(drive_mgr),
             console_mgr: Mutex::new(console_mgr),
             mmpm_mgr: Mutex::new(mmpm::MmpmManager::new()),
+            dll_mgr: Mutex::new(DllManager::new()),
             exe_name: Mutex::new(String::new()),
             guest_mem,
             next_tid: Mutex::new(1),
@@ -219,7 +221,7 @@ impl Loader {
     pub fn new_mock() -> Self {
         use vm_backend::mock::MockVmBackend;
         let vm: Arc<dyn VmBackend> = Arc::new(MockVmBackend);
-        let guest_mem_size = 1024 * 1024; // 1 MB
+        let guest_mem_size = 64 * 1024 * 1024; // 64 MB (must cover DYNAMIC_ALLOC_BASE = 0x02000000)
         let guest_mem = GuestMemory::alloc(guest_mem_size);
         vm.register_guest_memory(0, guest_mem_size as u64, guest_mem.host_base_addr()).unwrap();
         let shared = Arc::new(SharedState {
@@ -235,6 +237,7 @@ impl Loader {
             drive_mgr:    Mutex::new(DriveManager::with_default_config()),
             console_mgr:  Mutex::new(console::VioManager::new()),
             mmpm_mgr:     Mutex::new(mmpm::MmpmManager::new()),
+            dll_mgr:      Mutex::new(DllManager::new()),
             exe_name:     Mutex::new(String::new()),
             guest_mem,
             next_tid:     Mutex::new(1),

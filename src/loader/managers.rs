@@ -248,6 +248,68 @@ impl ResourceManager {
     }
 }
 
+/// A DLL module that has been loaded into guest memory.
+pub struct LoadedDll {
+    /// Module name in UPPERCASE (e.g., "JPOS2DLL")
+    pub name: String,
+    /// HMODULE handle (opaque u32)
+    pub handle: u32,
+    /// Guest flat address of each LX object (index = object_num - 1)
+    pub object_bases: Vec<u32>,
+    /// ordinal → guest flat address
+    pub exports_by_ordinal: HashMap<u32, u32>,
+    /// UPPERCASE name → guest flat address
+    pub exports_by_name: HashMap<String, u32>,
+}
+
+/// Tracks all user DLLs loaded into guest memory.
+pub struct DllManager {
+    dlls: Vec<LoadedDll>,
+    next_handle: u32,
+}
+
+impl DllManager {
+    pub fn new() -> Self {
+        DllManager { dlls: Vec::new(), next_handle: 0x1000 }
+    }
+
+    /// Allocate a new HMODULE handle value.
+    pub fn alloc_handle(&mut self) -> u32 {
+        let h = self.next_handle;
+        self.next_handle += 1;
+        h
+    }
+
+    /// Register a loaded DLL and return its handle.
+    pub fn register(&mut self, dll: LoadedDll) -> u32 {
+        let h = dll.handle;
+        self.dlls.push(dll);
+        h
+    }
+
+    /// Find a loaded DLL by module name (case-insensitive).
+    pub fn find_by_name(&self, name: &str) -> Option<&LoadedDll> {
+        let upper = name.to_ascii_uppercase();
+        self.dlls.iter().find(|d| d.name == upper)
+    }
+
+    /// Find a loaded DLL by HMODULE handle.
+    pub fn find_by_handle(&self, handle: u32) -> Option<&LoadedDll> {
+        self.dlls.iter().find(|d| d.handle == handle)
+    }
+
+    /// Resolve an import by module name + ordinal → guest flat address.
+    pub fn resolve_ordinal(&self, module: &str, ordinal: u32) -> Option<u32> {
+        self.find_by_name(module)?.exports_by_ordinal.get(&ordinal).copied()
+    }
+
+    /// Resolve an import by module name + export name → guest flat address.
+    pub fn resolve_name(&self, module: &str, name: &str) -> Option<u32> {
+        let upper = name.to_ascii_uppercase();
+        self.find_by_name(module)?.exports_by_name.get(&upper).copied()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
