@@ -402,25 +402,62 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// DosQueryFSInfo (ordinal 278 at level 1/2): get disk info.
-    /// Note: ordinal 278 is already used for DosQueryFileInfo (level-based).
-    /// DosQueryFSInfo has a different ordinal; verify before dispatch.
+    /// DosQueryFSInfo (ordinal 278): query filesystem allocation or volume info.
+    ///
+    /// drive: 0 = default, 1 = A:, 2 = B:, 3 = C:, …
+    /// level 1 → FSALLOCATE (18 bytes); level 2 → FSINFO (volume label, 16+ bytes).
     pub fn dos_query_fs_info(&self, drive: u32, level: u32, p_buf: u32, cb_buf: u32) -> u32 {
         debug!("  DosQueryFSInfo(drive={}, level={})", drive, level);
-        if level == 1 && p_buf != 0 && cb_buf >= 18 {
-            // FSALLOCATE struct
-            self.guest_write::<u32>(p_buf, 0);          // idFileSystem
-            self.guest_write::<u32>(p_buf + 4, 100000);  // cSectorUnit (sectors per alloc unit)
-            self.guest_write::<u32>(p_buf + 8, 500000);  // cUnit (total alloc units)
-            self.guest_write::<u32>(p_buf + 12, 250000); // cUnitAvail (free alloc units)
-            self.guest_write::<u16>(p_buf + 16, 512);    // cbSector (bytes per sector)
-        } else if level == 2 && p_buf != 0 && cb_buf >= 16 {
-            // FSINFO struct with volume label
-            self.guest_write::<u32>(p_buf, 0);  // volume serial
-            self.guest_write::<u8>(p_buf + 4, 7); // label length
-            self.guest_write_bytes(p_buf + 5, b"WARPINE");
+        if p_buf == 0 { return ERROR_INVALID_FUNCTION; }
+
+        // Resolve drive index (0 = current default)
+        let drive_idx = if drive == 0 {
+            self.shared.drive_mgr.lock_or_recover().current_disk()
+        } else {
+            (drive - 1) as u8
+        };
+
+        let dm = self.shared.drive_mgr.lock_or_recover();
+
+        match level {
+            1 => {
+                // FSALLOCATE: idFileSystem(4) + cSectorUnit(4) + cUnit(4) + cUnitAvail(4) + cbSector(2) = 18 bytes
+                if cb_buf < 18 { return ERROR_BUFFER_OVERFLOW; }
+                let info = match dm.backend(drive_idx) {
+                    Ok(b) => match b.query_fs_info_alloc() {
+                        Ok(i) => i,
+                        Err(e) => return e.0,
+                    },
+                    Err(e) => return e.0,
+                };
+                self.guest_write::<u32>(p_buf,      info.id_filesystem);
+                self.guest_write::<u32>(p_buf +  4, info.sectors_per_unit);
+                self.guest_write::<u32>(p_buf +  8, info.total_units);
+                self.guest_write::<u32>(p_buf + 12, info.available_units);
+                self.guest_write::<u16>(p_buf + 16, info.bytes_per_sector);
+                NO_ERROR
+            }
+            2 => {
+                // FSINFO: ulVSN(4) + vol(1-byte len + up-to-11 chars + NUL) = 17 bytes min
+                if cb_buf < 17 { return ERROR_BUFFER_OVERFLOW; }
+                let info = match dm.backend(drive_idx) {
+                    Ok(b) => match b.query_fs_info_volume() {
+                        Ok(i) => i,
+                        Err(e) => return e.0,
+                    },
+                    Err(e) => return e.0,
+                };
+                self.guest_write::<u32>(p_buf, info.serial_number);
+                let label = info.label.as_bytes();
+                let label_len = label.len().min(11) as u8;
+                self.guest_write::<u8>(p_buf + 4, label_len);
+                self.guest_write_bytes(p_buf + 5, &label[..label_len as usize]);
+                // NUL-terminate
+                self.guest_write::<u8>(p_buf + 5 + label_len as u32, 0);
+                NO_ERROR
+            }
+            _ => ERROR_INVALID_FUNCTION,
         }
-        NO_ERROR
     }
 
     /// DosQueryFSAttach (ordinal 277): query filesystem type.
