@@ -404,15 +404,18 @@ impl TextModeRenderer for Sdl2TextRenderer {
                 {
                     let cstart = buf.cursor_start as usize;
                     let cend   = (buf.cursor_end as usize).min(15);
+                    // Guard against inverted/degenerate shapes from guest.
+                    let (cstart, cend) = if cstart <= cend { (cstart, cend) } else { (14, 15) };
                     for gr in cstart..=cend {
                         let py = base_y + gr;
                         if py >= win_h { break; }
                         for gc in 0..8usize {
                             let px = base_x + gc;
                             if px >= win_w { break; }
-                            // Invert: swap fg/bg
+                            // XOR-invert RGB channels: always visible regardless of
+                            // cell fg/bg colour (including black-on-black attr=0x00).
                             let old = self.pixels[py * win_w + px];
-                            self.pixels[py * win_w + px] = if old == fg { bg } else { fg };
+                            self.pixels[py * win_w + px] = (old ^ 0x00_FF_FF_FF) | 0xFF_00_00_00;
                         }
                     }
                 }

@@ -63,6 +63,10 @@ pub struct VioManager {
     original_termios: Option<libc::termios>,
     /// Pending LF byte after CR→CRLF translation for DosRead on stdin.
     pub stdin_pending_lf: bool,
+    /// Number of characters typed (echoed) since the last CR/LF in cooked-mode
+    /// DosRead(fd=0).  Used to prevent backspace from erasing beyond the start
+    /// of the current input line (e.g. into the shell prompt).
+    pub stdin_cooked_chars: i32,
 }
 
 impl VioManager {
@@ -84,6 +88,7 @@ impl VioManager {
             raw_mode_active: false,
             original_termios: None,
             stdin_pending_lf: false,
+            stdin_cooked_chars: 0,
         }
     }
 
@@ -304,8 +309,34 @@ impl VioManager {
     }
 
     /// Scroll a region up by `lines` rows, filling the bottom with `fill_cell`.
+    ///
+    /// OS/2 special case: `lines == 0` means "clear the entire region" (fill all
+    /// rows from `top` to `bottom` with `fill_cell` without scrolling).
     pub fn scroll_up(&mut self, top: u16, bottom: u16, lines: u16, fill_cell: (u8, u8)) {
-        if lines == 0 || top > bottom || bottom >= self.rows { return; }
+        if top > bottom || bottom >= self.rows { return; }
+        if lines == 0 {
+            // Clear entire region
+            let cols = self.cols as usize;
+            for row in top..=bottom {
+                let base = row as usize * cols;
+                for c in 0..cols {
+                    if base + c < self.buffer.len() {
+                        self.buffer[base + c] = fill_cell;
+                    }
+                }
+            }
+            if !self.sdl2_mode {
+                let mut stdout = io::stdout();
+                let _ = write!(stdout, "\x1b[{};{}r", top + 1, bottom + 1);
+                for _ in 0..(bottom - top + 1) {
+                    let _ = write!(stdout, "\x1b[{}S", 1);
+                }
+                let _ = write!(stdout, "\x1b[;r");
+                let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
+                let _ = stdout.flush();
+            }
+            return;
+        }
         let cols = self.cols as usize;
         let lines = lines.min(bottom - top + 1);
 
@@ -347,8 +378,32 @@ impl VioManager {
     }
 
     /// Scroll a region down by `lines` rows, filling the top with `fill_cell`.
+    ///
+    /// OS/2 special case: `lines == 0` means "clear the entire region".
     pub fn scroll_down(&mut self, top: u16, bottom: u16, lines: u16, fill_cell: (u8, u8)) {
-        if lines == 0 || top > bottom || bottom >= self.rows { return; }
+        if top > bottom || bottom >= self.rows { return; }
+        if lines == 0 {
+            let cols = self.cols as usize;
+            for row in top..=bottom {
+                let base = row as usize * cols;
+                for c in 0..cols {
+                    if base + c < self.buffer.len() {
+                        self.buffer[base + c] = fill_cell;
+                    }
+                }
+            }
+            if !self.sdl2_mode {
+                let mut stdout = io::stdout();
+                let _ = write!(stdout, "\x1b[{};{}r", top + 1, bottom + 1);
+                for _ in 0..(bottom - top + 1) {
+                    let _ = write!(stdout, "\x1b[{}T", 1);
+                }
+                let _ = write!(stdout, "\x1b[;r");
+                let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
+                let _ = stdout.flush();
+            }
+            return;
+        }
         let cols = self.cols as usize;
         let lines = lines.min(bottom - top + 1);
 
@@ -559,6 +614,20 @@ mod tests {
     }
 
     #[test]
+    fn test_scroll_up_lines_zero_clears_region() {
+        let mut mgr = VioManager::new();
+        let cols = mgr.cols as usize;
+        // Seed row 0 with non-blank content
+        for c in 0..cols { mgr.buffer[c] = (b'X', 0x07); }
+        // VioScrollUp with lines=0 must clear the whole region
+        mgr.scroll_up(0, 0, 0, (b' ', 0x1F));
+        // All cells in row 0 should be filled with the fill cell
+        for c in 0..cols {
+            assert_eq!(mgr.buffer[c], (b' ', 0x1F), "cell {} not cleared", c);
+        }
+    }
+
+    #[test]
     fn test_scroll_down_buffer() {
         let mut mgr = VioManager::new();
         let cols = mgr.cols as usize;
@@ -570,6 +639,17 @@ mod tests {
         assert_eq!(mgr.buffer[cols], (b'B', 0x07));
         // Row 0 should be blank
         assert_eq!(mgr.buffer[0], (b' ', 0x07));
+    }
+
+    #[test]
+    fn test_scroll_down_lines_zero_clears_region() {
+        let mut mgr = VioManager::new();
+        let cols = mgr.cols as usize;
+        for c in 0..cols { mgr.buffer[c] = (b'Y', 0x07); }
+        mgr.scroll_down(0, 0, 0, (b'-', 0x4E));
+        for c in 0..cols {
+            assert_eq!(mgr.buffer[c], (b'-', 0x4E), "cell {} not cleared", c);
+        }
     }
 
     #[test]

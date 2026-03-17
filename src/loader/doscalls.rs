@@ -138,20 +138,34 @@ impl super::Loader {
                 // Enter: deliver CR, queue LF for next call, echo newline.
                 let mut console = self.shared.console_mgr.lock_or_recover();
                 console.stdin_pending_lf = true;
+                console.stdin_cooked_chars = 0; // reset for next line
                 console.write_tty(b"\r\n", 0x07);
                 drop(console);
                 self.guest_write::<u8>(buf_ptr, 0x0D);
             } else if ch == 0x08 {
-                // Backspace: echo destructive sequence; deliver the byte.
-                self.shared.console_mgr.lock_or_recover()
-                    .write_tty(b"\x08 \x08", 0x07);
-                self.guest_write::<u8>(buf_ptr, ch);
+                // Backspace: only echo destructive sequence if something has
+                // been typed on this input line; otherwise ignore (no echo,
+                // no delivery) to prevent erasing the shell prompt.
+                let mut console = self.shared.console_mgr.lock_or_recover();
+                if console.stdin_cooked_chars > 0 {
+                    console.stdin_cooked_chars -= 1;
+                    console.write_tty(b"\x08 \x08", 0x07);
+                    drop(console);
+                    self.guest_write::<u8>(buf_ptr, ch);
+                } else {
+                    // Nothing to erase — silently discard.
+                    drop(console);
+                    if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, 0); }
+                    return 0;
+                }
             } else {
                 // Printable or extended — echo and deliver.
+                let mut console = self.shared.console_mgr.lock_or_recover();
                 if ch >= 0x20 {
-                    self.shared.console_mgr.lock_or_recover()
-                        .write_tty(&[ch], 0x07);
+                    console.stdin_cooked_chars += 1;
+                    console.write_tty(&[ch], 0x07);
                 }
+                drop(console);
                 self.guest_write::<u8>(buf_ptr, ch);
             }
             if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, 1); }
