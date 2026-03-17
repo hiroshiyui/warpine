@@ -1592,7 +1592,6 @@ dependencies = [
  "softbuffer",
  "tempfile",
  "tracing",
- "tracing-log",
  "tracing-subscriber",
  "winit",
 ]

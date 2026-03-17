@@ -25,9 +25,10 @@ use loader::MutexExt;
 fn init_logging() {
     use tracing_subscriber::{fmt, EnvFilter, prelude::*};
 
-    // Bridge all existing log:: calls into the tracing ecosystem so that
-    // every module can stay on log:: while API dispatch uses native spans.
-    tracing_log::LogTracer::init().ok();
+    // tracing_subscriber::registry().init() automatically initialises the
+    // log → tracing bridge (tracing_log::LogTracer) when the tracing-log
+    // feature is active, so all existing log:: calls in other modules are
+    // forwarded to the tracing subscriber without any extra setup here.
 
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info"));
