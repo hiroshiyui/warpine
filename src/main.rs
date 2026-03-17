@@ -244,7 +244,8 @@ fn run_lx(file_path: &str) {
         loader.clone().setup_and_spawn_vcpu(&lx_file);
 
         // Run SDL2 GUI event loop on the main thread (returns when done).
-        gui::run_gui_loop(sdl, shared.clone(), gui_rx);
+        let mut renderer = gui::Sdl2Renderer::new(&sdl);
+        gui::run_pm_loop(&mut renderer, shared.clone(), gui_rx);
 
         // Cleanup: signal shutdown, stop timers, reset terminal, and exit
         shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);

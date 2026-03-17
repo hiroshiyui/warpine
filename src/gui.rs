@@ -11,6 +11,8 @@ use log::debug;
 use crate::loader::{SharedState, OS2Message, MutexExt,
     WM_CLOSE, WM_SIZE, WM_PAINT, WM_CHAR, WM_MOUSEMOVE, WM_BUTTON1DOWN, WM_BUTTON1UP};
 
+// ── GUI message channel ────────────────────────────────────────────────────
+
 pub enum GUIMessage {
     CreateWindow { class: String, title: String, handle: u32 },
     ResizeWindow { handle: u32, width: u32, height: u32 },
@@ -22,6 +24,83 @@ pub enum GUIMessage {
     ClearBuffer { handle: u32 },
     PresentBuffer { handle: u32 },
 }
+
+/// Sender half of the GUI channel — cheaply cloneable and `Send`.
+pub struct GUISender {
+    tx: std::sync::mpsc::Sender<GUIMessage>,
+}
+
+impl GUISender {
+    pub fn send(&self, msg: GUIMessage) -> Result<(), std::sync::mpsc::SendError<GUIMessage>> {
+        self.tx.send(msg)
+    }
+}
+
+/// Create a GUI message channel.  The receiver is handed to `run_pm_loop`.
+pub fn create_gui_channel() -> (GUISender, std::sync::mpsc::Receiver<GUIMessage>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    (GUISender { tx }, rx)
+}
+
+// ── PmRenderer trait ───────────────────────────────────────────────────────
+
+/// Backend abstraction for the Presentation Manager GUI loop.
+///
+/// All methods run on the **main thread** only.
+/// Implementors are not required to be `Send`.
+pub trait PmRenderer {
+    /// Dispatch a single queued `GUIMessage` to the backend.
+    ///
+    /// Called once per message drained from the channel.
+    /// Does not receive `shared` — all draw/window commands operate on backend-local state.
+    fn handle_message(&mut self, msg: GUIMessage);
+
+    /// Poll the underlying event source (SDL2 events, synthetic events, etc.)
+    /// and post OS/2 messages to `shared` message queues.
+    ///
+    /// Returns `false` to signal the loop should exit (e.g. window closed).
+    fn poll_events(&mut self, shared: &Arc<SharedState>) -> bool;
+
+    /// Yield the calling thread for approximately one frame period.
+    ///
+    /// Default: 8 ms.  `HeadlessRenderer` overrides with a no-op for speed.
+    fn frame_sleep(&self) {
+        std::thread::sleep(std::time::Duration::from_millis(8));
+    }
+}
+
+// ── Main event loop ────────────────────────────────────────────────────────
+
+/// Run the PM GUI event loop using `renderer` as the backend.
+///
+/// Must be called from the **main thread** when using `Sdl2Renderer`
+/// (SDL2 event pump requirement).  Returns when `shared.exit_requested`
+/// is set or `renderer.poll_events` returns `false`.
+pub fn run_pm_loop(
+    renderer: &mut dyn PmRenderer,
+    shared: Arc<SharedState>,
+    rx: std::sync::mpsc::Receiver<GUIMessage>,
+) {
+    loop {
+        // Drain all pending GUI messages from the VCPU thread.
+        while let Ok(msg) = rx.try_recv() {
+            renderer.handle_message(msg);
+        }
+
+        // Poll backend events; false means exit.
+        if !renderer.poll_events(&shared) {
+            return;
+        }
+
+        if shared.exit_requested.load(Ordering::Relaxed) {
+            return;
+        }
+
+        renderer.frame_sleep();
+    }
+}
+
+// ── SDL2 backend ───────────────────────────────────────────────────────────
 
 /// Per-window state: SDL2 canvas, a cached streaming texture, and the pixel buffer.
 ///
@@ -72,179 +151,49 @@ impl WindowData {
     }
 }
 
-/// Sender half of the GUI channel — cheaply cloneable and `Send`.
-pub struct GUISender {
-    tx: std::sync::mpsc::Sender<GUIMessage>,
-}
-
-impl GUISender {
-    pub fn send(&self, msg: GUIMessage) -> Result<(), std::sync::mpsc::SendError<GUIMessage>> {
-        self.tx.send(msg)
-    }
-}
-
-/// Create a GUI message channel.  The receiver is handed to `run_gui_loop`.
-pub fn create_gui_channel() -> (GUISender, std::sync::mpsc::Receiver<GUIMessage>) {
-    let (tx, rx) = std::sync::mpsc::channel();
-    (GUISender { tx }, rx)
-}
-
-/// Run the SDL2 GUI event loop.  Must be called from the **main thread**.
+/// SDL2-backed Presentation Manager renderer.
 ///
-/// Returns when `shared.exit_requested` is set or the window is closed.
-pub fn run_gui_loop(
-    sdl: sdl2::Sdl,
-    shared: Arc<SharedState>,
-    rx: std::sync::mpsc::Receiver<GUIMessage>,
-) {
-    let video = sdl.video().expect("SDL2 video subsystem init failed");
-    let mut event_pump = sdl.event_pump().expect("SDL2 event pump init failed");
-    let mut app = GUIApp::new(video, shared.clone(), rx);
-
-    loop {
-        // Drain GUI messages from the VCPU thread first.
-        app.process_gui_messages();
-
-        // Process all pending SDL events.
-        for event in event_pump.poll_iter() {
-            if !app.handle_event(event) {
-                return;
-            }
-        }
-
-        if shared.exit_requested.load(Ordering::Relaxed) {
-            return;
-        }
-
-        // Yield ~8 ms so we don't busy-spin the main thread.
-        std::thread::sleep(std::time::Duration::from_millis(8));
-    }
-}
-
-// ── Internal app struct ────────────────────────────────────────────────────
-
-struct GUIApp {
-    shared: Arc<SharedState>,
-    rx: std::sync::mpsc::Receiver<GUIMessage>,
+/// Created on the main thread; must stay on the main thread for the duration
+/// of `run_pm_loop`.
+pub struct Sdl2Renderer {
     video: sdl2::VideoSubsystem,
+    event_pump: sdl2::EventPump,
     /// SDL2 window ID → PM handle
     id_to_handle: HashMap<u32, u32>,
     /// PM handle → window state
     windows: HashMap<u32, WindowData>,
 }
 
-impl GUIApp {
-    fn new(
-        video: sdl2::VideoSubsystem,
-        shared: Arc<SharedState>,
-        rx: std::sync::mpsc::Receiver<GUIMessage>,
-    ) -> Self {
-        GUIApp { shared, rx, video, id_to_handle: HashMap::new(), windows: HashMap::new() }
-    }
-
-    fn push_msg(&self, hwnd: u32, msg: u32, mp1: u32, mp2: u32) {
-        let wm = self.shared.window_mgr.lock_or_recover();
-        let target = wm.frame_to_client.get(&hwnd).copied().unwrap_or(hwnd);
-        let hmq = wm.find_hmq_for_hwnd(target).or_else(|| wm.find_hmq_for_hwnd(hwnd));
-        if let Some(hmq) = hmq {
-            if let Some(mq_arc) = wm.get_mq(hmq) {
-                let mut mq = mq_arc.lock_or_recover();
-                mq.messages.push_back(OS2Message { hwnd: target, msg, mp1, mp2, time: 0, x: 0, y: 0 });
-                mq.cond.notify_one();
-            }
+impl Sdl2Renderer {
+    /// Create an `Sdl2Renderer` from an existing SDL2 context.
+    ///
+    /// `sdl` must outlive this renderer.  Typical usage:
+    /// ```rust,ignore
+    /// let sdl = sdl2::init().unwrap();
+    /// let mut renderer = Sdl2Renderer::new(&sdl);
+    /// run_pm_loop(&mut renderer, shared, rx);
+    /// ```
+    pub fn new(sdl: &sdl2::Sdl) -> Self {
+        let video = sdl.video().expect("SDL2 video subsystem init failed");
+        let event_pump = sdl.event_pump().expect("SDL2 event pump init failed");
+        Sdl2Renderer {
+            video,
+            event_pump,
+            id_to_handle: HashMap::new(),
+            windows: HashMap::new(),
         }
     }
 
-    fn process_gui_messages(&mut self) {
-        while let Ok(msg) = self.rx.try_recv() {
-            match msg {
-                GUIMessage::CreateWindow { title, handle, .. } => {
-                    let window = self.video
-                        .window(&title, 640, 480)
-                        .position_centered()
-                        .resizable()
-                        .build()
-                        .expect("Failed to create SDL2 window");
-                    let sdl_id = window.id();
-                    let canvas = window
-                        .into_canvas()
-                        .software()
-                        .build()
-                        .expect("Failed to create SDL2 canvas");
-                    let (w, h) = canvas.output_size().expect("output_size failed");
-                    // Create a streaming texture; with `unsafe_textures` there is no
-                    // lifetime tie to `tc` — dropping `tc` is safe.
-                    let mut texture = {
-                        let tc = canvas.texture_creator();
-                        tc.create_texture_streaming(PixelFormatEnum::ARGB8888, w, h)
-                            .expect("Failed to create streaming texture")
-                    };
-                    // BlendMode::None makes SDL2 ignore the alpha channel and render
-                    // every pixel as fully opaque, so 0x00RRGGBB colours display correctly.
-                    texture.set_blend_mode(BlendMode::None);
-                    let buffer = vec![0xFFFFFFFF_u32; (w * h) as usize];
-                    self.id_to_handle.insert(sdl_id, handle);
-                    self.windows.insert(handle, WindowData { canvas, texture, buffer, width: w, height: h });
-                    debug!("[GUI] Created SDL2 window for PM handle {}", handle);
-                }
-                GUIMessage::ResizeWindow { handle, width, height } => {
-                    if let Some(wd) = self.windows.get_mut(&handle) {
-                        let _ = wd.canvas.window_mut().set_size(width, height);
-                        debug!("[GUI] Resized window {} to {}x{}", handle, width, height);
-                    }
-                }
-                GUIMessage::MoveWindow { handle, x, y } => {
-                    if let Some(wd) = self.windows.get_mut(&handle) {
-                        wd.canvas.window_mut().set_position(
-                            sdl2::video::WindowPos::Positioned(x),
-                            sdl2::video::WindowPos::Positioned(y),
-                        );
-                        debug!("[GUI] Moved window {} to ({}, {})", handle, x, y);
-                    }
-                }
-                GUIMessage::ShowWindow { handle, show } => {
-                    if let Some(wd) = self.windows.get_mut(&handle) {
-                        if show { wd.canvas.window_mut().show(); }
-                        else    { wd.canvas.window_mut().hide(); }
-                        debug!("[GUI] Window {} visible={}", handle, show);
-                    }
-                }
-                GUIMessage::DrawBox { handle, x1, y1, x2, y2, color, fill } => {
-                    if let Some(wd) = self.windows.get_mut(&handle) {
-                        render_rect_to_buffer(&mut wd.buffer, wd.width, wd.height, x1, y1, x2, y2, color, fill);
-                    }
-                }
-                GUIMessage::DrawLine { handle, x1, y1, x2, y2, color } => {
-                    if let Some(wd) = self.windows.get_mut(&handle) {
-                        render_line_to_buffer(&mut wd.buffer, wd.width, wd.height, x1, y1, x2, y2, color);
-                    }
-                }
-                GUIMessage::DrawText { handle, x, y, text, color } => {
-                    if let Some(wd) = self.windows.get_mut(&handle) {
-                        render_text_to_buffer(&mut wd.buffer, wd.width, wd.height, x, y, &text, color);
-                    }
-                }
-                GUIMessage::ClearBuffer { handle } => {
-                    if let Some(wd) = self.windows.get_mut(&handle) {
-                        wd.buffer.fill(0xFFFFFFFF);
-                    }
-                }
-                GUIMessage::PresentBuffer { handle } => {
-                    if let Some(wd) = self.windows.get_mut(&handle) {
-                        wd.present();
-                    }
-                }
-            }
-        }
-    }
-
-    /// Returns `false` to signal the event loop should exit.
-    fn handle_event(&mut self, event: Event) -> bool {
+    /// Handle a single SDL2 event, posting OS/2 messages to `shared` as needed.
+    /// Returns `false` when the application should exit.
+    fn handle_sdl_event(&mut self, event: Event, shared: &Arc<SharedState>) -> bool {
         match event {
             Event::Quit { .. } => {
-                self.shared.exit_requested.store(true, Ordering::Relaxed);
-                for &handle in self.windows.keys() {
-                    self.push_msg(handle, WM_CLOSE, 0, 0);
+                shared.exit_requested.store(true, Ordering::Relaxed);
+                // Collect handles first to avoid borrowing self.windows while posting
+                let handles: Vec<u32> = self.windows.keys().copied().collect();
+                for handle in handles {
+                    push_msg(shared, handle, WM_CLOSE, 0, 0);
                 }
                 return false;
             }
@@ -253,8 +202,8 @@ impl GUIApp {
                     use sdl2::event::WindowEvent;
                     match win_event {
                         WindowEvent::Close => {
-                            self.push_msg(handle, WM_CLOSE, 0, 0);
-                            self.shared.exit_requested.store(true, Ordering::Relaxed);
+                            push_msg(shared, handle, WM_CLOSE, 0, 0);
+                            shared.exit_requested.store(true, Ordering::Relaxed);
                             return false;
                         }
                         WindowEvent::Resized(w, h) => {
@@ -262,10 +211,9 @@ impl GUIApp {
                             if let Some(wd) = self.windows.get_mut(&handle) {
                                 wd.resize_texture(w, h);
                             }
-                            // Keep OS2Window dimensions in sync so WinQueryWindowRect
-                            // returns the correct size after a user resize.
+                            // Sync OS2Window dimensions so WinQueryWindowRect stays accurate.
                             {
-                                let mut wm = self.shared.window_mgr.lock_or_recover();
+                                let mut wm = shared.window_mgr.lock_or_recover();
                                 let client = wm.frame_to_client.get(&handle).copied();
                                 for hwnd in std::iter::once(handle).chain(client) {
                                     if let Some(win) = wm.get_window_mut(hwnd) {
@@ -275,8 +223,8 @@ impl GUIApp {
                                 }
                             }
                             let mp2 = (h << 16) | w;
-                            self.push_msg(handle, WM_SIZE, 0, mp2);
-                            self.push_msg(handle, WM_PAINT, 0, 0);
+                            push_msg(shared, handle, WM_SIZE, 0, mp2);
+                            push_msg(shared, handle, WM_PAINT, 0, 0);
                         }
                         WindowEvent::Exposed => {
                             if let Some(wd) = self.windows.get_mut(&handle) {
@@ -292,7 +240,7 @@ impl GUIApp {
                     let ch = keycode.map(sdl_keycode_to_char).unwrap_or(0);
                     let flags: u32 = 0x0001; // KC_CHAR (key down)
                     let mp1 = (flags << 16) | 1;
-                    self.push_msg(handle, WM_CHAR, mp1, ch);
+                    push_msg(shared, handle, WM_CHAR, mp1, ch);
                 }
             }
             Event::KeyUp { window_id, keycode, .. } => {
@@ -300,7 +248,7 @@ impl GUIApp {
                     let ch = keycode.map(sdl_keycode_to_char).unwrap_or(0);
                     let flags: u32 = 0x0041; // KC_CHAR | KC_KEYUP
                     let mp1 = (flags << 16) | 1;
-                    self.push_msg(handle, WM_CHAR, mp1, ch);
+                    push_msg(shared, handle, WM_CHAR, mp1, ch);
                 }
             }
             Event::MouseMotion { window_id, x, y, .. } => {
@@ -308,13 +256,14 @@ impl GUIApp {
                     let height = self.windows.get(&handle).map(|w| w.height).unwrap_or(480);
                     let os2_y = (height as i32 - 1) - y;
                     let mp1 = ((x as u32) & 0xFFFF) | ((os2_y as u32 & 0xFFFF) << 16);
-                    self.push_msg(handle, WM_MOUSEMOVE, mp1, 0);
+                    push_msg(shared, handle, WM_MOUSEMOVE, mp1, 0);
                 }
             }
             Event::MouseButtonDown { window_id, mouse_btn, .. } => {
                 if let Some(&handle) = self.id_to_handle.get(&window_id) {
                     match mouse_btn {
-                        sdl2::mouse::MouseButton::Left => self.push_msg(handle, WM_BUTTON1DOWN, 0, 0),
+                        sdl2::mouse::MouseButton::Left =>
+                            push_msg(shared, handle, WM_BUTTON1DOWN, 0, 0),
                         _ => {}
                     }
                 }
@@ -322,7 +271,8 @@ impl GUIApp {
             Event::MouseButtonUp { window_id, mouse_btn, .. } => {
                 if let Some(&handle) = self.id_to_handle.get(&window_id) {
                     match mouse_btn {
-                        sdl2::mouse::MouseButton::Left => self.push_msg(handle, WM_BUTTON1UP, 0, 0),
+                        sdl2::mouse::MouseButton::Left =>
+                            push_msg(shared, handle, WM_BUTTON1UP, 0, 0),
                         _ => {}
                     }
                 }
@@ -330,6 +280,161 @@ impl GUIApp {
             _ => {}
         }
         true
+    }
+}
+
+impl PmRenderer for Sdl2Renderer {
+    fn handle_message(&mut self, msg: GUIMessage) {
+        match msg {
+            GUIMessage::CreateWindow { title, handle, .. } => {
+                let window = self.video
+                    .window(&title, 640, 480)
+                    .position_centered()
+                    .resizable()
+                    .build()
+                    .expect("Failed to create SDL2 window");
+                let sdl_id = window.id();
+                let canvas = window
+                    .into_canvas()
+                    .software()
+                    .build()
+                    .expect("Failed to create SDL2 canvas");
+                let (w, h) = canvas.output_size().expect("output_size failed");
+                // Create a streaming texture; with `unsafe_textures` there is no
+                // lifetime tie to `tc` — dropping `tc` is safe.
+                let mut texture = {
+                    let tc = canvas.texture_creator();
+                    tc.create_texture_streaming(PixelFormatEnum::ARGB8888, w, h)
+                        .expect("Failed to create streaming texture")
+                };
+                // BlendMode::None makes SDL2 ignore the alpha channel and render
+                // every pixel as fully opaque, so 0x00RRGGBB colours display correctly.
+                texture.set_blend_mode(BlendMode::None);
+                let buffer = vec![0xFFFFFFFF_u32; (w * h) as usize];
+                self.id_to_handle.insert(sdl_id, handle);
+                self.windows.insert(handle, WindowData { canvas, texture, buffer, width: w, height: h });
+                debug!("[GUI] Created SDL2 window for PM handle {}", handle);
+            }
+            GUIMessage::ResizeWindow { handle, width, height } => {
+                if let Some(wd) = self.windows.get_mut(&handle) {
+                    let _ = wd.canvas.window_mut().set_size(width, height);
+                    debug!("[GUI] Resized window {} to {}x{}", handle, width, height);
+                }
+            }
+            GUIMessage::MoveWindow { handle, x, y } => {
+                if let Some(wd) = self.windows.get_mut(&handle) {
+                    wd.canvas.window_mut().set_position(
+                        sdl2::video::WindowPos::Positioned(x),
+                        sdl2::video::WindowPos::Positioned(y),
+                    );
+                    debug!("[GUI] Moved window {} to ({}, {})", handle, x, y);
+                }
+            }
+            GUIMessage::ShowWindow { handle, show } => {
+                if let Some(wd) = self.windows.get_mut(&handle) {
+                    if show { wd.canvas.window_mut().show(); }
+                    else    { wd.canvas.window_mut().hide(); }
+                    debug!("[GUI] Window {} visible={}", handle, show);
+                }
+            }
+            GUIMessage::DrawBox { handle, x1, y1, x2, y2, color, fill } => {
+                if let Some(wd) = self.windows.get_mut(&handle) {
+                    render_rect_to_buffer(&mut wd.buffer, wd.width, wd.height, x1, y1, x2, y2, color, fill);
+                }
+            }
+            GUIMessage::DrawLine { handle, x1, y1, x2, y2, color } => {
+                if let Some(wd) = self.windows.get_mut(&handle) {
+                    render_line_to_buffer(&mut wd.buffer, wd.width, wd.height, x1, y1, x2, y2, color);
+                }
+            }
+            GUIMessage::DrawText { handle, x, y, text, color } => {
+                if let Some(wd) = self.windows.get_mut(&handle) {
+                    render_text_to_buffer(&mut wd.buffer, wd.width, wd.height, x, y, &text, color);
+                }
+            }
+            GUIMessage::ClearBuffer { handle } => {
+                if let Some(wd) = self.windows.get_mut(&handle) {
+                    wd.buffer.fill(0xFFFFFFFF);
+                }
+            }
+            GUIMessage::PresentBuffer { handle } => {
+                if let Some(wd) = self.windows.get_mut(&handle) {
+                    wd.present();
+                }
+            }
+        }
+    }
+
+    fn poll_events(&mut self, shared: &Arc<SharedState>) -> bool {
+        let events: Vec<_> = self.event_pump.poll_iter().collect();
+        for event in events {
+            if !self.handle_sdl_event(event, shared) {
+                return false;
+            }
+        }
+        true
+    }
+
+    // frame_sleep: use default 8 ms implementation
+}
+
+// ── Headless backend ───────────────────────────────────────────────────────
+
+/// No-op renderer for CI and headless automated testing.
+///
+/// All `handle_message` calls are silently discarded.
+/// `poll_events` always returns `keep_running`.
+/// `frame_sleep` is a no-op to keep tests fast.
+pub struct HeadlessRenderer {
+    /// Total number of messages dispatched so far (for test assertions).
+    pub message_count: u32,
+    /// Controls whether `poll_events` returns `true` (continue) or `false` (stop).
+    /// Tests set this to `false` after sending their desired messages.
+    pub keep_running: bool,
+}
+
+impl HeadlessRenderer {
+    pub fn new() -> Self {
+        HeadlessRenderer { message_count: 0, keep_running: true }
+    }
+}
+
+impl Default for HeadlessRenderer {
+    fn default() -> Self { Self::new() }
+}
+
+impl PmRenderer for HeadlessRenderer {
+    fn handle_message(&mut self, _msg: GUIMessage) {
+        self.message_count += 1;
+    }
+
+    fn poll_events(&mut self, _shared: &Arc<SharedState>) -> bool {
+        self.keep_running
+    }
+
+    fn frame_sleep(&self) {
+        // No-op: no sleep needed in headless mode.
+    }
+}
+
+// ── Internal helpers ───────────────────────────────────────────────────────
+
+/// Post an OS/2 message to the queue associated with `hwnd`.
+///
+/// Looks up the client window via `frame_to_client` first; falls back to
+/// `hwnd` itself.  Notifies the condvar so `WinGetMsg` wakes up.
+fn push_msg(shared: &Arc<SharedState>, hwnd: u32, msg: u32, mp1: u32, mp2: u32) {
+    let wm = shared.window_mgr.lock_or_recover();
+    let target = wm.frame_to_client.get(&hwnd).copied().unwrap_or(hwnd);
+    let hmq = wm.find_hmq_for_hwnd(target).or_else(|| wm.find_hmq_for_hwnd(hwnd));
+    if let Some(hmq) = hmq {
+        if let Some(mq_arc) = wm.get_mq(hmq) {
+            let mut mq = mq_arc.lock_or_recover();
+            mq.messages.push_back(OS2Message {
+                hwnd: target, msg, mp1, mp2, time: 0, x: 0, y: 0,
+            });
+            mq.cond.notify_one();
+        }
     }
 }
 
@@ -619,5 +724,91 @@ mod tests {
         for x in 0..10 {
             assert_eq!(buf[0 * 10 + x], 0, "pixel at screen row 0 should be empty");
         }
+    }
+
+    // ── HeadlessRenderer tests ────────────────────────────────────────────
+
+    fn make_shared() -> Arc<crate::loader::SharedState> {
+        crate::loader::Loader::new_mock().shared
+    }
+
+    #[test]
+    fn headless_renderer_counts_messages() {
+        let shared = make_shared();
+        let (tx, rx) = create_gui_channel();
+        let mut renderer = HeadlessRenderer::new();
+
+        tx.send(GUIMessage::ClearBuffer { handle: 1 }).unwrap();
+        tx.send(GUIMessage::PresentBuffer { handle: 1 }).unwrap();
+        // Signal exit so the loop terminates after draining.
+        drop(tx);
+        renderer.keep_running = false;
+
+        run_pm_loop(&mut renderer, shared, rx);
+        assert_eq!(renderer.message_count, 2);
+    }
+
+    #[test]
+    fn headless_renderer_exits_on_keep_running_false() {
+        let shared = make_shared();
+        let (_tx, rx) = create_gui_channel();
+        let mut renderer = HeadlessRenderer::new();
+        renderer.keep_running = false;
+
+        // Must return immediately without hanging.
+        run_pm_loop(&mut renderer, shared, rx);
+        // Reaching here means the loop exited correctly.
+    }
+
+    #[test]
+    fn headless_renderer_exits_on_exit_requested() {
+        use std::sync::atomic::Ordering;
+        let shared = make_shared();
+        shared.exit_requested.store(true, Ordering::Relaxed);
+        let (_tx, rx) = create_gui_channel();
+        let mut renderer = HeadlessRenderer::new();
+
+        run_pm_loop(&mut renderer, shared, rx);
+    }
+
+    #[test]
+    fn headless_frame_sleep_is_noop() {
+        let renderer = HeadlessRenderer::new();
+        let start = std::time::Instant::now();
+        renderer.frame_sleep();
+        // Should complete in well under 1 ms.
+        assert!(start.elapsed().as_millis() < 5);
+    }
+
+    #[test]
+    fn headless_renderer_discards_all_message_variants() {
+        let shared = make_shared();
+        let (tx, rx) = create_gui_channel();
+        let mut renderer = HeadlessRenderer::new();
+
+        tx.send(GUIMessage::CreateWindow {
+            class: "WC_FRAME".into(), title: "Test".into(), handle: 42,
+        }).unwrap();
+        tx.send(GUIMessage::DrawBox {
+            handle: 42, x1: 0, y1: 0, x2: 10, y2: 10, color: 0xFF0000, fill: true,
+        }).unwrap();
+        tx.send(GUIMessage::DrawLine {
+            handle: 42, x1: 0, y1: 0, x2: 5, y2: 5, color: 0x00FF00,
+        }).unwrap();
+        tx.send(GUIMessage::DrawText {
+            handle: 42, x: 0, y: 0, text: "hi".into(), color: 0x0000FF,
+        }).unwrap();
+        drop(tx);
+        renderer.keep_running = false;
+
+        run_pm_loop(&mut renderer, shared, rx);
+        assert_eq!(renderer.message_count, 4);
+    }
+
+    #[test]
+    fn headless_renderer_default_matches_new() {
+        let r = HeadlessRenderer::default();
+        assert_eq!(r.message_count, 0);
+        assert!(r.keep_running);
     }
 }
