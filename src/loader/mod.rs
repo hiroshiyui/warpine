@@ -223,7 +223,7 @@ impl Loader {
         let guest_mem = GuestMemory::alloc(guest_mem_size);
         vm.register_guest_memory(0, guest_mem_size as u64, guest_mem.host_base_addr()).unwrap();
         let shared = Arc::new(SharedState {
-            mem_mgr:      Mutex::new(MemoryManager::new(DYNAMIC_ALLOC_BASE, guest_mem_size as u32)),
+            mem_mgr:      Mutex::new(MemoryManager::new(DYNAMIC_ALLOC_BASE, DYNAMIC_ALLOC_BASE + guest_mem_size as u32)),
             handle_mgr:   Mutex::new(HandleManager::new()),
             resource_mgr: Mutex::new(ResourceManager::new()),
             shmem_mgr:    Mutex::new(SharedMemManager::new()),
