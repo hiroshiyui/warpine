@@ -34,9 +34,9 @@ Eliminated 16-bit thunks from 4OS2 by recompiling with modified headers rather t
 
 **API Thunk Auto-Registration** — `api_registry.rs` holds a static sorted `&[ApiEntry]` table (122 entries) covering DOSCALLS, QUECALLS, NLS, and MDM. Each `ApiEntry` carries ordinal, module, name, argc, and a type-erased `fn` pointer handler. `find(ordinal)` does O(log n) binary search; `all()` exposes the full table for compatibility reports. `api_dispatch.rs` reduced from ~120-arm match to pre-read + registry lookup + sub-dispatcher routing. PMWIN/PMGPI/KBDCALLS/VIOCALLS retain their own sub-dispatchers. Seven registry regression tests (sorted order, no duplicates, name/module cross-validation with api_trace). NLS ordinal names added to `api_trace.rs`.
 
-**SDL2 GUI Backend** — Migrated from `winit + softbuffer` to `sdl2 = { version = "0.37", features = ["unsafe_textures"] }`. `src/gui.rs` rewritten: polling event loop (`run_gui_loop`), per-window `Canvas<Window>` + streaming `Texture` with `BlendMode::None` for opaque pixel rendering. `build.rs` emits `cargo:rustc-link-search` from `pkg-config` so `rust-lld` finds `libSDL2.so` on Debian multi-arch.
+**SDL2 GUI Backend** — Migrated from `winit + softbuffer` to `sdl2 = { version = "0.37", features = ["unsafe_textures"] }`. Per-window `Canvas<Window>` + streaming `Texture` with `BlendMode::None` for opaque pixel rendering. `build.rs` emits `cargo:rustc-link-search` from `pkg-config` so `rust-lld` finds `libSDL2.so` on Debian multi-arch. Full keyboard support: `sdl_scancode_to_os2()` (IBM PC Set-1 table), `sdl_keycode_to_vk()`, `build_wm_char()` encode WM_CHAR MP1/MP2 with KC_* flags, scan codes, and VK_* virtual keys. Mouse buttons 1–3 with OS/2 Y-flip. `SDL_CaptureMouse` wired to `WinSetCapture`/`WinQueryCapture` (ordinals 852/804). Host↔guest clipboard bridging: guest→host via `GUIMessage::SetClipboardText`; host→guest via per-frame polling in `Sdl2Renderer::poll_events`.
 
-**PM Renderer Abstraction** — `PmRenderer` trait (`handle_message`, `poll_events`, `frame_sleep`) decouples rendering from SDL2. `Sdl2Renderer` carries all SDL2 state and absorbs the former `GUIApp`. `HeadlessRenderer` is a no-op backend for CI and unit testing. `run_pm_loop()` replaces `run_gui_loop()`. `push_msg` extracted as a free function. 7 `HeadlessRenderer` tests added.
+**PM Renderer Abstraction** — `PmRenderer` trait (`handle_message`, `poll_events`, `frame_sleep`) decouples rendering from SDL2. `Sdl2Renderer` carries all SDL2 state. `HeadlessRenderer` is a no-op backend for CI and unit testing. `run_pm_loop()` is the main event loop. `push_msg` extracted as a free function. 7 `HeadlessRenderer` tests added. `src/gui.rs` refactored into `src/gui/` sub-modules: `message.rs`, `renderer.rs`, `render_utils.rs`, `headless.rs`, `sdl2_renderer.rs`.
 
 ---
 
@@ -58,10 +58,6 @@ Eliminated 16-bit thunks from 4OS2 by recompiling with modified headers rather t
 
 ### SDL2 Backend — Remaining
 ~~All items done — see Architecture → Completed Items.~~
-- ~~OS/2 scan code table~~ — done: `sdl_scancode_to_os2()` maps SDL2 Scancode → IBM PC Set-1; `build_wm_char()` encodes KC_* flags, scan code, modifier keys, and VK_* virtual key codes into WM_CHAR MP1/MP2.
-- ~~`SDL_CaptureMouse` for `WinSetCapture` semantics~~ — done: `WinSetCapture` (ordinal 852) / `WinQueryCapture` (ordinal 804) implemented; `GUIMessage::SetMouseCapture` triggers `SDL_CaptureMouse`.
-- ~~`SDL_SetClipboardText` / `SDL_GetClipboardText` for host clipboard bridging~~ — done: guest→host on `WinSetClipbrdData` CF_TEXT; host→guest via per-frame clipboard polling in `Sdl2Renderer::poll_events`.
-- ~~SDL2 audio subsystem for `DosBeep` and future MMPM/2~~ — done: `DosBeep` plays real tones; `mciSendCommand`/`mciSendString` waveaudio implemented via SDL2 audio queue in `src/loader/mmpm.rs`
 
 ### Testing Strategy
 - [ ] **Unit tests (no KVM):** `VmBackend` mock exists; extend coverage so individual API thunk functions can be tested with arbitrary guest memory and register state
@@ -151,9 +147,9 @@ Goal: raise the fraction of real OS/2 applications that run correctly.
 - [ ] **Dialog template parsing** — load `DLGTEMPLATE` from LX resource; auto-create child windows; enables real `WinDlgBox` / `WinLoadDlg`
 - [ ] **`WinSubclassWindow`** — replace window procedure and chain to original
 - [ ] **Drag and drop** — `DrgDrag`, `DrgAccessDraginfo`, `DM_DRAGOVER` / `DM_DROP`
-- [ ] **Mouse capture** — `WinSetCapture` / `WinQueryCapture` via `SDL_CaptureMouse`
+- ~~**Mouse capture** — `WinSetCapture` / `WinQueryCapture` via `SDL_CaptureMouse`~~ — done (ordinals 852/804; `GUIMessage::SetMouseCapture` → `SDL_CaptureMouse`)
 - [ ] **Custom cursors** — `WinSetPointer` via `SDL_CreateColorCursor`
-- [ ] **Clipboard bridging** — `WinSetClipbrdData` / `WinQueryClipbrdData` via `SDL_SetClipboardText` / `SDL_GetClipboardText`
+- ~~**Clipboard bridging** — `WinSetClipbrdData` / `WinQueryClipbrdData` via `SDL_SetClipboardText` / `SDL_GetClipboardText`~~ — done (guest→host on CF_TEXT write; host→guest via per-frame poll)
 - [ ] **Printing** — `DevOpenDC`, `DevCloseDC`, basic spool API stubs
 
 ### TCP/IP Socket API
