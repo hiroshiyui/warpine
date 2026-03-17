@@ -24,6 +24,14 @@ Target: 4OS2 command shell — validates nearly every DOSCALLS/KBD/VIO surface. 
 ### Phase 4.5 — 16-bit Thunk Fix
 Eliminated 16-bit thunks from 4OS2 by recompiling with modified headers rather than runtime patching — removed ~350 lines of thunk-handling code from the loader. Key patches: `bsesub.h` changed `APIENTRY16` to `_System` (eliminates `__vfthunk` generation); `crt0.c` replaces Watcom's `__OS2Main` (which called `DosGetInfoSeg` via 16-bit thunk) with a pure 32-bit version using `DosGetInfoBlocks`; `viowrap.c` provides `#pragma import` for VIO/KBD ordinals; DOSCALLS/VIOCALLS/KBDCALLS ordinal tables audited and corrected. All 6 patches stored in `samples/4os2/patches/`; `fetch_source.sh` applies them automatically. OS/2 version now correctly reports 4.50 (fixed `_osmajor`/`_osminor` init via `DosQuerySysInfo`).
 
+### Phase 5 Baseline — MMPM/2 Audio
+`DosBeep` plays real sine-wave tones via SDL2 audio queue. MDM.DLL (`MDM_BASE=10240`) wired into the ordinal dispatch. `mciSendCommand` handles MCI_OPEN/CLOSE/PLAY/STOP/STATUS for `waveaudio` device. `mciSendString` parses `open`/`play`/`stop`/`close`/`status` command strings. WAV files loaded via VFS using `SDL_LoadWAV_RW`. Audio format conversion via `SDL_BuildAudioCVT`/`SDL_ConvertAudio`. Synchronous play via `MCI_WAIT` flag. 5 tests in `mmpm.rs`.
+
+### Phase 6 — Text-Mode VGA Renderer
+`TextModeRenderer` trait (`render_frame`, `poll_events`, `frame_sleep`) with two backends: `Sdl2TextRenderer` (640×400 SDL2 window, CP437 8×16 font, CGA 16-colour palette, blinking cursor) and `HeadlessTextRenderer` (CI/no-op). `run_text_loop()` is the main event loop for CLI apps. `KbdKeyInfo` struct + `SharedState::kbd_queue/kbd_cond/use_sdl2_text` for SDL2→KbdCharIn/DosRead key delivery. VioManager gains `sdl2_mode` (suppresses ANSI output) and `cursor_start/end` (scan-line cursor shape). `get_cp437_glyph()` provides the full 256-glyph CP437 font. CLI apps default to SDL2 text window; `WARPINE_HEADLESS=1` falls back to terminal mode.
+
+Bug fixes included: cursor rendering switched from fg/bg swap to XOR pixel inversion (always visible regardless of cell attribute); `VioGetCurType` (ordinal 33) implemented so 4OS2's read-modify-write cursor setup works; `VioScrollUp`/`VioScrollDn` now correctly read the 7th argument (`pCell` fill-cell pointer) and handle `lines=0` as "clear entire region" per OS/2 semantics; `dos_read_stdin` cooked-mode backspace gated by `stdin_cooked_chars` counter (prevents erasing the shell prompt); backspace-at-start-of-line returns correct blocking behaviour instead of `actual_bytes=0`. 22+ tests (font, palette, headless renderer, queue, scroll, VioGetCurType).
+
 ### Architecture — Completed Items
 
 **Virtualization Backend Abstraction** — `VmBackend` / `VcpuBackend` traits in `vm_backend.rs`; KVM implementation isolated to `kvm_backend.rs`; `MockVcpu` / `MockVmBackend` enable guest-memory and VIO handler tests without `/dev/kvm`.
@@ -32,11 +40,20 @@ Eliminated 16-bit thunks from 4OS2 by recompiling with modified headers rather t
 
 **Structured API Trace System** — `api_trace.rs` provides `ordinal_to_name()` and `module_for_ordinal()`; every API call emits a `tracing::debug_span!` with module, ordinal, name, return value, guest eip/esp. `WARPINE_TRACE=strace` for compact span output, `=json` for JSON lines, unset for default pretty logging.
 
-**API Thunk Auto-Registration** — `api_registry.rs` holds a static sorted `&[ApiEntry]` table (122 entries) covering DOSCALLS, QUECALLS, NLS, and MDM. Each `ApiEntry` carries ordinal, module, name, argc, and a type-erased `fn` pointer handler. `find(ordinal)` does O(log n) binary search; `all()` exposes the full table for compatibility reports. `api_dispatch.rs` reduced from ~120-arm match to pre-read + registry lookup + sub-dispatcher routing. PMWIN/PMGPI/KBDCALLS/VIOCALLS retain their own sub-dispatchers. Seven registry regression tests (sorted order, no duplicates, name/module cross-validation with api_trace). NLS ordinal names added to `api_trace.rs`.
+**API Thunk Auto-Registration** — `api_registry.rs` holds a static sorted `&[ApiEntry]` table (122 entries) covering DOSCALLS, QUECALLS, NLS, and MDM. Each `ApiEntry` carries ordinal, module, name, argc, and a type-erased `fn` pointer handler. `find(ordinal)` does O(log n) binary search; `all()` exposes the full table for compatibility reports. `api_dispatch.rs` reduced from ~120-arm match to pre-read + registry lookup + sub-dispatcher routing. Seven registry regression tests.
 
-**SDL2 GUI Backend** — Migrated from `winit + softbuffer` to `sdl2 = { version = "0.37", features = ["unsafe_textures"] }`. Per-window `Canvas<Window>` + streaming `Texture` with `BlendMode::None` for opaque pixel rendering. `build.rs` emits `cargo:rustc-link-search` from `pkg-config` so `rust-lld` finds `libSDL2.so` on Debian multi-arch. Full keyboard support: `sdl_scancode_to_os2()` (IBM PC Set-1 table), `sdl_keycode_to_vk()`, `build_wm_char()` encode WM_CHAR MP1/MP2 with KC_* flags, scan codes, and VK_* virtual keys. Mouse buttons 1–3 with OS/2 Y-flip. `SDL_CaptureMouse` wired to `WinSetCapture`/`WinQueryCapture` (ordinals 852/804). Host↔guest clipboard bridging: guest→host via `GUIMessage::SetClipboardText`; host→guest via per-frame polling in `Sdl2Renderer::poll_events`.
+**SDL2 GUI Backend** — Migrated from `winit + softbuffer` to SDL2. Per-window `Canvas<Window>` + streaming `Texture`. Full keyboard support: `sdl_scancode_to_os2()`, `sdl_keycode_to_vk()`, `build_wm_char()` encode WM_CHAR with KC_* flags, scan codes, and VK_* virtual keys. Mouse buttons 1–3. `SDL_CaptureMouse` wired to `WinSetCapture`/`WinQueryCapture`. Host↔guest clipboard bridging via `SDL_SetClipboardText`/`SDL_GetClipboardText`.
 
-**PM Renderer Abstraction** — `PmRenderer` trait (`handle_message`, `poll_events`, `frame_sleep`) decouples rendering from SDL2. `Sdl2Renderer` carries all SDL2 state. `HeadlessRenderer` is a no-op backend for CI and unit testing. `run_pm_loop()` is the main event loop. `push_msg` extracted as a free function. 7 `HeadlessRenderer` tests added. `src/gui.rs` refactored into `src/gui/` sub-modules: `message.rs`, `renderer.rs`, `render_utils.rs`, `headless.rs`, `sdl2_renderer.rs`.
+**PM Renderer Abstraction** — `PmRenderer` trait (`handle_message`, `poll_events`, `frame_sleep`) decouples rendering from SDL2. `Sdl2Renderer` and `HeadlessRenderer` backends. `run_pm_loop()` is the main PM event loop. `src/gui/` sub-modules: `message.rs`, `renderer.rs`, `render_utils.rs`, `headless.rs`, `sdl2_renderer.rs`, `text_renderer.rs`.
+
+### Testing Infrastructure
+Unit tests, end-to-end integration tests, and a compatibility report — all implemented and passing.
+
+**Unit tests (no KVM)** — Added 28 new tests for `kbdcalls.rs` (KbdGetStatus, KbdCharIn SDL2 path, KbdStringIn error case), `doscalls.rs` (memory, I/O, semaphores, queues, sleep), and `api_dispatch.rs` (routing to KBDCALLS/VIOCALLS sub-dispatchers and DOSCALLS registry). Fixed a latent bug in `new_mock()`: `MemoryManager` limit was set below base, causing all test allocations to fail silently. Total unit tests: 234 (up from 199).
+
+**Integration tests** — `tests/integration.rs`: 8 end-to-end tests run real OS/2 sample binaries (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test) with `WARPINE_HEADLESS=1`, asserting stdout content and exit code. KVM-gated (skip silently when `/dev/kvm` is absent). Run with `cargo test --test integration`.
+
+**Compatibility matrix** — `api_registry::compat_report()` generates a module-grouped report with `[stub]` tags for pure no-op handlers and sub-dispatcher summaries for VIOCALLS/KBDCALLS/PMWIN/PMGPI (215 entry points total). Exposed via `warpine --compat`. Two tests verify report structure and stub count.
 
 ---
 
@@ -53,26 +70,11 @@ Eliminated 16-bit thunks from 4OS2 by recompiling with modified headers rather t
 - [ ] Per-argument typed names (e.g. `DosWrite(hfile=1, pBuf=0x500, cbBuf=42)`) — raw eip/esp captured now; argument decoding is future work
 - [ ] TUI debug overlay showing live API call stream, memory map, window hierarchy, and PM message queue
 
-### PM Renderer Abstraction
-~~Done — see Architecture → Completed Items.~~
-
-**Text-Mode VGA Renderer** — `TextModeRenderer` trait (`render_frame`, `poll_events`, `frame_sleep`) with `Sdl2TextRenderer` (640×400 window, CP437 8×16 font, CGA 16-colour palette, blink cursor) and `HeadlessTextRenderer` (CI/no-op). `run_text_loop()` is the main event loop for CLI apps. `KbdKeyInfo` struct + `SharedState::kbd_queue/kbd_cond/use_sdl2_text` for SDL2→KbdCharIn key delivery. VioManager gains `sdl2_mode` (suppresses all ANSI output), `cursor_start/end` (for VioSetCurType scan-line shape). `get_cp437_glyph()` provides full 256-glyph CP437 font (ASCII + box-drawing + block elements). CLI apps default to SDL2 text window; `WARPINE_HEADLESS=1` falls back to terminal mode. 22 new tests (font, palette, headless renderer, queue). See `src/gui/text_renderer.rs`.
-
-### SDL2 Backend — Remaining
-~~All items done — see Architecture → Completed Items.~~
-
-### Testing Strategy
-- [x] **Unit tests (no KVM):** Added 28 new tests for `kbdcalls.rs`, `doscalls.rs`, `api_dispatch.rs`; fixed `new_mock()` MemoryManager limit bug. Total unit tests: 234.
-- [x] **Integration tests:** `tests/integration.rs` — 8 end-to-end tests (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test); KVM-gated (skip silently when absent); run with `cargo test --test integration`.
-- [x] **Compatibility matrix:** `compat_report()` in `api_registry.rs` generates module-grouped report with `[stub]` tags and sub-dispatcher summaries (215 entry points). Exposed via `warpine --compat`.
-
 ---
 
-## Phase 5: Multimedia and 16-bit Support
+## Phase 5 — Multimedia and 16-bit Support
 
-### Audio/Video (MMPM/2)
-MMPM/2 baseline done. MDM.DLL (`MDM_BASE=10240`) wired into the ordinal dispatch. `DosBeep` plays a real sine-wave tone via SDL2 audio queue. `mciSendCommand` handles MCI_OPEN/CLOSE/PLAY/STOP/STATUS for `waveaudio` device. `mciSendString` parses `open`/`play`/`stop`/`close`/`status` command strings. WAV files loaded via the VFS using `SDL_LoadWAV_RW`. Audio format conversion via `SDL_BuildAudioCVT`/`SDL_ConvertAudio` when device output format differs. Synchronous play via `MCI_WAIT` flag. 5 tests in `mmpm.rs`.
-
+### Audio/Video (MMPM/2) — Remaining
 - [ ] `mciSendCommand` MCI_SEEK, MCI_RECORD — seek/recording support
 - [ ] Audio mixer / volume control (`MCI_SET` with `MCI_SET_AUDIO`)
 - [ ] MIDI playback device type (currently only `waveaudio` supported)
@@ -84,18 +86,6 @@ NE format parser complete (`src/ne/`): NeHeader, segment/relocation/entry tables
 - [ ] **GDT tiling** — create 16-bit segment descriptors in the GDT for each NE segment (one per 64KB region). KVM executes 16-bit code natively; the CPU switches between 16-bit and 32-bit segments when descriptors are set up correctly. Also fixes 16-bit thunks in LX apps as a side effect.
 - [ ] **16-bit API thunking** — NE apps use Pascal calling convention and `_far16` pointers; add 16-bit dispatch alongside existing 32-bit `_System` dispatch, with segment:offset ↔ flat address translation
 - [ ] **Mode switching** — handle transitions between 16-bit NE code and 32-bit flat code (e.g., 16-bit app calling a 32-bit DLL)
-
----
-
-## ~~Phase 6: Text-Mode VGA Renderer~~ — Done
-
-~~Goal: replace the current ANSI-escape terminal approach with a proper VGA text-mode framebuffer rendered into a window.~~
-
-See **Architecture → Completed Items → Text-Mode VGA Renderer** for full implementation notes.
-
-Remaining future work:
-- [ ] **DBCS font support** — CP932/CP950: 16×16 double-width glyph set; `VgaCell` extended to flag lead/trail bytes
-- [ ] **Window resize** — dynamic resize of the SDL2 text window to match VioManager rows/cols (currently fixed at 80×25)
 
 ---
 
@@ -123,7 +113,11 @@ Goal: raise the fraction of real OS/2 applications that run correctly.
 ### Code Page and DBCS Support
 - [ ] `DosQueryCp` / `DosSetProcessCp` — track current process code page accurately
 - [ ] DBCS lead-byte table for CP932, CP949, CP950, CP936 — needed for `DosQueryDBCSEnv` and multi-byte VIO string handling
-- [ ] VGA font loader for DBCS (16×16 full-width glyphs) — needed for Phase 6 text renderer
+- [ ] VGA font loader for DBCS (16×16 full-width glyphs)
+
+### VGA Text Renderer — Remaining
+- [ ] **DBCS font support** — CP932/CP950: 16×16 double-width glyph set; `VgaCell` extended to flag lead/trail bytes
+- [ ] **Window resize** — dynamic resize of the SDL2 text window to match VioManager rows/cols (currently fixed at 80×25)
 
 ### PM Advanced Controls
 - [ ] **`WC_CONTAINER`** — Icon / Name / Text / Detail / Tree view modes; record management; sorting and filtering
@@ -131,9 +125,7 @@ Goal: raise the fraction of real OS/2 applications that run correctly.
 - [ ] **Dialog template parsing** — load `DLGTEMPLATE` from LX resource; auto-create child windows; enables real `WinDlgBox` / `WinLoadDlg`
 - [ ] **`WinSubclassWindow`** — replace window procedure and chain to original
 - [ ] **Drag and drop** — `DrgDrag`, `DrgAccessDraginfo`, `DM_DRAGOVER` / `DM_DROP`
-- ~~**Mouse capture** — `WinSetCapture` / `WinQueryCapture` via `SDL_CaptureMouse`~~ — done (ordinals 852/804; `GUIMessage::SetMouseCapture` → `SDL_CaptureMouse`)
 - [ ] **Custom cursors** — `WinSetPointer` via `SDL_CreateColorCursor`
-- ~~**Clipboard bridging** — `WinSetClipbrdData` / `WinQueryClipbrdData` via `SDL_SetClipboardText` / `SDL_GetClipboardText`~~ — done (guest→host on CF_TEXT write; host→guest via per-frame poll)
 - [ ] **Printing** — `DevOpenDC`, `DevCloseDC`, basic spool API stubs
 
 ### TCP/IP Socket API
