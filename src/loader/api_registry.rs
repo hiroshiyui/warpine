@@ -48,7 +48,7 @@ pub struct ApiEntry {
     /// - `vcpu`    — `&mut dyn VcpuBackend` for APIs that read vCPU registers
     /// - `vcpu_id` — thread ID for APIs with per-thread ownership semantics
     /// - `args`    — pre-read snapshot: `args[i]` = guest stack word i
-    pub handler: fn(&super::Loader, &mut dyn VcpuBackend, u32, [u32; 10]) -> ApiResult,
+    pub(crate) handler: fn(&super::Loader, &mut dyn VcpuBackend, u32, [u32; 10]) -> ApiResult,
 }
 
 // ── Public functions ──────────────────────────────────────────────────────────
