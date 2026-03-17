@@ -56,6 +56,8 @@ Eliminated 16-bit thunks from 4OS2 by recompiling with modified headers rather t
 ### PM Renderer Abstraction
 ~~Done — see Architecture → Completed Items.~~
 
+**Text-Mode VGA Renderer** — `TextModeRenderer` trait (`render_frame`, `poll_events`, `frame_sleep`) with `Sdl2TextRenderer` (640×400 window, CP437 8×16 font, CGA 16-colour palette, blink cursor) and `HeadlessTextRenderer` (CI/no-op). `run_text_loop()` is the main event loop for CLI apps. `KbdKeyInfo` struct + `SharedState::kbd_queue/kbd_cond/use_sdl2_text` for SDL2→KbdCharIn key delivery. VioManager gains `sdl2_mode` (suppresses all ANSI output), `cursor_start/end` (for VioSetCurType scan-line shape). `get_cp437_glyph()` provides full 256-glyph CP437 font (ASCII + box-drawing + block elements). CLI apps default to SDL2 text window; `WARPINE_HEADLESS=1` falls back to terminal mode. 22 new tests (font, palette, headless renderer, queue). See `src/gui/text_renderer.rs`.
+
 ### SDL2 Backend — Remaining
 ~~All items done — see Architecture → Completed Items.~~
 
@@ -85,33 +87,15 @@ NE format parser complete (`src/ne/`): NeHeader, segment/relocation/entry tables
 
 ---
 
-## Phase 6: Text-Mode VGA Renderer
+## ~~Phase 6: Text-Mode VGA Renderer~~ — Done
 
-Goal: replace the current ANSI-escape terminal approach with a proper VGA text-mode framebuffer rendered into a window.
+~~Goal: replace the current ANSI-escape terminal approach with a proper VGA text-mode framebuffer rendered into a window.~~
 
-### Architecture
-```
-  VIO API layer (viocalls.rs)
-        │
-        ▼
-  VgaTextBuffer (cells: [char+attr; 80×25], cursor state, dirty tracking)
-        │
-        ▼
-  TextModeRenderer trait
-        │
-        ▼
-      SDL2 backend
-```
+See **Architecture → Completed Items → Text-Mode VGA Renderer** for full implementation notes.
 
-- [ ] **`VgaTextBuffer` struct** — 80×25 (configurable) grid of `VgaCell { character: u8, attribute: u8 }`, cursor position/visibility, dirty-cell tracking (`BitVec`)
-- [ ] **VIO API handlers updated** — `VioWrtTTY`, `VioWrtCellStr`, `VioWrtCharStrAtt`, `VioWrtNCell`, `VioScrollUp`, `VioScrollDn`, etc. write into `VgaTextBuffer` instead of emitting ANSI escape sequences
-- [ ] **CP437 bitmap font** — embed 8×16 IBM VGA CP437 font via `include_bytes!`
-- [ ] **CGA/EGA 16-colour palette** — standard `#000000`…`#FFFFFF` mapping; attribute byte bits 0–3 = foreground, 4–6 = background, 7 = blink/bright-bg
-- [ ] **Renderer loop** — scan dirty cells each frame; blit 8×16 glyph pixels to SDL2 pixel buffer; target ≤16ms frame time
-- [ ] **`TextModeRenderer` trait** — `render_frame(&VgaTextBuffer)`, `poll_key_event() -> Option<Os2KeyEvent>`
-- [ ] **Cursor rendering** — honour `VioSetCurType` start/end scan line for block, underline, or hidden cursor; blink via timer
-- [ ] **Keyboard scan codes** — map SDL2 `SDL_Scancode` to OS/2 scan code + character code pairs; handle extended keys (arrows, Home/End/PgUp/PgDn/Ins/Del, F1–F12)
-- [ ] **DBCS font support (future)** — CP932/CP950: 16×16 double-width glyph set; `VgaCell` extended to flag lead/trail bytes
+Remaining future work:
+- [ ] **DBCS font support** — CP932/CP950: 16×16 double-width glyph set; `VgaCell` extended to flag lead/trail bytes
+- [ ] **Window resize** — dynamic resize of the SDL2 text window to match VioManager rows/cols (currently fixed at 80×25)
 
 ---
 
