@@ -3,13 +3,21 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use sdl2::event::Event;
-use sdl2::keyboard::Keycode;
+use sdl2::keyboard::{Keycode, Mod as KeyMod, Scancode};
 use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::{BlendMode, Canvas, Texture};
 use sdl2::video::Window;
 use log::debug;
 use crate::loader::{SharedState, OS2Message, MutexExt,
-    WM_CLOSE, WM_SIZE, WM_PAINT, WM_CHAR, WM_MOUSEMOVE, WM_BUTTON1DOWN, WM_BUTTON1UP};
+    WM_CLOSE, WM_SIZE, WM_PAINT, WM_CHAR, WM_MOUSEMOVE,
+    WM_BUTTON1DOWN, WM_BUTTON1UP, WM_BUTTON2DOWN, WM_BUTTON2UP, WM_BUTTON3DOWN, WM_BUTTON3UP,
+    KC_CHAR, KC_VIRTUALKEY, KC_SCANCODE, KC_SHIFT, KC_CTRL, KC_ALT, KC_KEYUP,
+    VK_BACKSPACE, VK_TAB, VK_NEWLINE, VK_ESC, VK_SPACE,
+    VK_PAGEUP, VK_PAGEDOWN, VK_END, VK_HOME, VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN,
+    VK_INSERT, VK_DELETE, VK_SCRLLOCK, VK_NUMLOCK, VK_ENTER,
+    VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6,
+    VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12,
+    CF_TEXT, KC_PREVDOWN};
 
 // ── GUI message channel ────────────────────────────────────────────────────
 
@@ -23,6 +31,11 @@ pub enum GUIMessage {
     DrawText { handle: u32, x: i32, y: i32, text: String, color: u32 },
     ClearBuffer { handle: u32 },
     PresentBuffer { handle: u32 },
+    /// Copy `text` to the host system clipboard.
+    SetClipboardText(String),
+    /// Instruct the SDL2 backend to call `SDL_CaptureMouse`.
+    /// `hwnd` is the capturing window (0 = release capture).
+    SetMouseCapture(u32),
 }
 
 /// Sender half of the GUI channel — cheaply cloneable and `Send`.
@@ -162,6 +175,8 @@ pub struct Sdl2Renderer {
     id_to_handle: HashMap<u32, u32>,
     /// PM handle → window state
     windows: HashMap<u32, WindowData>,
+    /// Last seen host clipboard text — used to detect changes between frames.
+    cached_clipboard: String,
 }
 
 impl Sdl2Renderer {
@@ -181,6 +196,7 @@ impl Sdl2Renderer {
             event_pump,
             id_to_handle: HashMap::new(),
             windows: HashMap::new(),
+            cached_clipboard: String::new(),
         }
     }
 
@@ -235,20 +251,16 @@ impl Sdl2Renderer {
                     }
                 }
             }
-            Event::KeyDown { window_id, keycode, repeat: false, .. } => {
+            Event::KeyDown { window_id, keycode, scancode, keymod, repeat, .. } => {
                 if let Some(&handle) = self.id_to_handle.get(&window_id) {
-                    let ch = keycode.map(sdl_keycode_to_char).unwrap_or(0);
-                    let flags: u32 = 0x0001; // KC_CHAR (key down)
-                    let mp1 = (flags << 16) | 1;
-                    push_msg(shared, handle, WM_CHAR, mp1, ch);
+                    let (mp1, mp2) = build_wm_char(keycode, scancode, keymod, repeat, false);
+                    push_msg(shared, handle, WM_CHAR, mp1, mp2);
                 }
             }
-            Event::KeyUp { window_id, keycode, .. } => {
+            Event::KeyUp { window_id, keycode, scancode, keymod, .. } => {
                 if let Some(&handle) = self.id_to_handle.get(&window_id) {
-                    let ch = keycode.map(sdl_keycode_to_char).unwrap_or(0);
-                    let flags: u32 = 0x0041; // KC_CHAR | KC_KEYUP
-                    let mp1 = (flags << 16) | 1;
-                    push_msg(shared, handle, WM_CHAR, mp1, ch);
+                    let (mp1, mp2) = build_wm_char(keycode, scancode, keymod, false, true);
+                    push_msg(shared, handle, WM_CHAR, mp1, mp2);
                 }
             }
             Event::MouseMotion { window_id, x, y, .. } => {
@@ -259,22 +271,34 @@ impl Sdl2Renderer {
                     push_msg(shared, handle, WM_MOUSEMOVE, mp1, 0);
                 }
             }
-            Event::MouseButtonDown { window_id, mouse_btn, .. } => {
+            Event::MouseButtonDown { window_id, mouse_btn, x, y, .. } => {
                 if let Some(&handle) = self.id_to_handle.get(&window_id) {
-                    match mouse_btn {
-                        sdl2::mouse::MouseButton::Left =>
-                            push_msg(shared, handle, WM_BUTTON1DOWN, 0, 0),
-                        _ => {}
-                    }
+                    let height = self.windows.get(&handle).map(|w| w.height).unwrap_or(480);
+                    let os2_y = (height as i32 - 1) - y;
+                    let mp1 = ((x as u32) & 0xFFFF) | ((os2_y as u32 & 0xFFFF) << 16);
+                    use sdl2::mouse::MouseButton;
+                    let msg = match mouse_btn {
+                        MouseButton::Left   => Some(WM_BUTTON1DOWN),
+                        MouseButton::Right  => Some(WM_BUTTON2DOWN),
+                        MouseButton::Middle => Some(WM_BUTTON3DOWN),
+                        _ => None,
+                    };
+                    if let Some(m) = msg { push_msg(shared, handle, m, mp1, 0); }
                 }
             }
-            Event::MouseButtonUp { window_id, mouse_btn, .. } => {
+            Event::MouseButtonUp { window_id, mouse_btn, x, y, .. } => {
                 if let Some(&handle) = self.id_to_handle.get(&window_id) {
-                    match mouse_btn {
-                        sdl2::mouse::MouseButton::Left =>
-                            push_msg(shared, handle, WM_BUTTON1UP, 0, 0),
-                        _ => {}
-                    }
+                    let height = self.windows.get(&handle).map(|w| w.height).unwrap_or(480);
+                    let os2_y = (height as i32 - 1) - y;
+                    let mp1 = ((x as u32) & 0xFFFF) | ((os2_y as u32 & 0xFFFF) << 16);
+                    use sdl2::mouse::MouseButton;
+                    let msg = match mouse_btn {
+                        MouseButton::Left   => Some(WM_BUTTON1UP),
+                        MouseButton::Right  => Some(WM_BUTTON2UP),
+                        MouseButton::Middle => Some(WM_BUTTON3UP),
+                        _ => None,
+                    };
+                    if let Some(m) = msg { push_msg(shared, handle, m, mp1, 0); }
                 }
             }
             _ => {}
@@ -362,10 +386,35 @@ impl PmRenderer for Sdl2Renderer {
                     wd.present();
                 }
             }
+            GUIMessage::SetClipboardText(text) => {
+                let _ = self.video.clipboard().set_clipboard_text(&text);
+                self.cached_clipboard = text;
+            }
+            GUIMessage::SetMouseCapture(hwnd) => {
+                // hwnd == 0 releases capture; any other value acquires it.
+                // Safety: SDL2 is initialised; SDL_CaptureMouse is thread-safe.
+                unsafe {
+                    sdl2::sys::SDL_CaptureMouse(if hwnd != 0 {
+                        sdl2::sys::SDL_bool::SDL_TRUE
+                    } else {
+                        sdl2::sys::SDL_bool::SDL_FALSE
+                    });
+                }
+            }
         }
     }
 
     fn poll_events(&mut self, shared: &Arc<SharedState>) -> bool {
+        // Sync the host clipboard into SharedState so WinQueryClipbrdData can read it.
+        if let Ok(host_text) = self.video.clipboard().clipboard_text() {
+            if host_text != self.cached_clipboard {
+                self.cached_clipboard = host_text.clone();
+                let mut wm = shared.window_mgr.lock_or_recover();
+                wm.clipboard_text = host_text;
+                wm.clipboard.insert(CF_TEXT, 0); // invalidate stale guest pointer
+            }
+        }
+
         let events: Vec<_> = self.event_pump.poll_iter().collect();
         for event in events {
             if !self.handle_sdl_event(event, shared) {
@@ -438,24 +487,200 @@ fn push_msg(shared: &Arc<SharedState>, hwnd: u32, msg: u32, mp1: u32, mp2: u32) 
     }
 }
 
-/// Map an SDL2 Keycode to an OS/2 character code.
+/// Map SDL2 hardware Scancode → IBM PC Set-1 make code (OS/2 scan code field).
 ///
-/// SDL2 printable keycodes equal their Unicode / ASCII code point; non-printable
-/// keys (arrows, F-keys, etc.) have the SDLK_SCANCODE_MASK bit set (0x40000000).
+/// Extended keys (with E0 prefix on real hardware) share the same Set-1 make
+/// code in OS/2; the distinction is handled via VK_ virtual-key codes instead.
+pub fn sdl_scancode_to_os2(sc: Scancode) -> u8 {
+    match sc {
+        Scancode::Escape       => 0x01,
+        Scancode::Num1         => 0x02,
+        Scancode::Num2         => 0x03,
+        Scancode::Num3         => 0x04,
+        Scancode::Num4         => 0x05,
+        Scancode::Num5         => 0x06,
+        Scancode::Num6         => 0x07,
+        Scancode::Num7         => 0x08,
+        Scancode::Num8         => 0x09,
+        Scancode::Num9         => 0x0A,
+        Scancode::Num0         => 0x0B,
+        Scancode::Minus        => 0x0C,
+        Scancode::Equals       => 0x0D,
+        Scancode::Backspace    => 0x0E,
+        Scancode::Tab          => 0x0F,
+        Scancode::Q            => 0x10,
+        Scancode::W            => 0x11,
+        Scancode::E            => 0x12,
+        Scancode::R            => 0x13,
+        Scancode::T            => 0x14,
+        Scancode::Y            => 0x15,
+        Scancode::U            => 0x16,
+        Scancode::I            => 0x17,
+        Scancode::O            => 0x18,
+        Scancode::P            => 0x19,
+        Scancode::LeftBracket  => 0x1A,
+        Scancode::RightBracket => 0x1B,
+        Scancode::Return       => 0x1C,
+        Scancode::LCtrl        => 0x1D,
+        Scancode::RCtrl        => 0x1D, // E0-1D
+        Scancode::A            => 0x1E,
+        Scancode::S            => 0x1F,
+        Scancode::D            => 0x20,
+        Scancode::F            => 0x21,
+        Scancode::G            => 0x22,
+        Scancode::H            => 0x23,
+        Scancode::J            => 0x24,
+        Scancode::K            => 0x25,
+        Scancode::L            => 0x26,
+        Scancode::Semicolon    => 0x27,
+        Scancode::Apostrophe   => 0x28,
+        Scancode::Grave        => 0x29,
+        Scancode::LShift       => 0x2A,
+        Scancode::Backslash    => 0x2B,
+        Scancode::Z            => 0x2C,
+        Scancode::X            => 0x2D,
+        Scancode::C            => 0x2E,
+        Scancode::V            => 0x2F,
+        Scancode::B            => 0x30,
+        Scancode::N            => 0x31,
+        Scancode::M            => 0x32,
+        Scancode::Comma        => 0x33,
+        Scancode::Period       => 0x34,
+        Scancode::Slash        => 0x35,
+        Scancode::KpDivide     => 0x35, // E0-35
+        Scancode::RShift       => 0x36,
+        Scancode::KpMultiply   => 0x37,
+        Scancode::PrintScreen  => 0x37, // E0-37
+        Scancode::LAlt         => 0x38,
+        Scancode::RAlt         => 0x38, // E0-38
+        Scancode::Space        => 0x39,
+        Scancode::CapsLock     => 0x3A,
+        Scancode::F1           => 0x3B,
+        Scancode::F2           => 0x3C,
+        Scancode::F3           => 0x3D,
+        Scancode::F4           => 0x3E,
+        Scancode::F5           => 0x3F,
+        Scancode::F6           => 0x40,
+        Scancode::F7           => 0x41,
+        Scancode::F8           => 0x42,
+        Scancode::F9           => 0x43,
+        Scancode::F10          => 0x44,
+        Scancode::NumLockClear => 0x45,
+        Scancode::ScrollLock   => 0x46,
+        Scancode::Kp7          => 0x47,
+        Scancode::Home         => 0x47, // E0-47
+        Scancode::Kp8          => 0x48,
+        Scancode::Up           => 0x48, // E0-48
+        Scancode::Kp9          => 0x49,
+        Scancode::PageUp       => 0x49, // E0-49
+        Scancode::KpMinus      => 0x4A,
+        Scancode::Kp4          => 0x4B,
+        Scancode::Left         => 0x4B, // E0-4B
+        Scancode::Kp5          => 0x4C,
+        Scancode::Kp6          => 0x4D,
+        Scancode::Right        => 0x4D, // E0-4D
+        Scancode::KpPlus       => 0x4E,
+        Scancode::Kp1          => 0x4F,
+        Scancode::End          => 0x4F, // E0-4F
+        Scancode::Kp2          => 0x50,
+        Scancode::Down         => 0x50, // E0-50
+        Scancode::Kp3          => 0x51,
+        Scancode::PageDown     => 0x51, // E0-51
+        Scancode::Kp0          => 0x52,
+        Scancode::Insert       => 0x52, // E0-52
+        Scancode::KpPeriod     => 0x53,
+        Scancode::Delete       => 0x53, // E0-53
+        Scancode::KpEnter      => 0x1C, // E0-1C
+        Scancode::F11          => 0x57,
+        Scancode::F12          => 0x58,
+        _                      => 0x00,
+    }
+}
+
+/// Map an SDL2 Keycode to the OS/2 VK_* virtual key code.
+/// Returns 0 for keys that have no VK_ mapping (regular printable characters).
+pub fn sdl_keycode_to_vk(kc: Keycode) -> u32 {
+    match kc {
+        Keycode::Backspace => VK_BACKSPACE,
+        Keycode::Tab       => VK_TAB,
+        Keycode::Return    => VK_NEWLINE,
+        Keycode::KpEnter   => VK_ENTER,
+        Keycode::Escape    => VK_ESC,
+        Keycode::Space     => VK_SPACE,
+        Keycode::PageUp    => VK_PAGEUP,
+        Keycode::PageDown  => VK_PAGEDOWN,
+        Keycode::End       => VK_END,
+        Keycode::Home      => VK_HOME,
+        Keycode::Left      => VK_LEFT,
+        Keycode::Up        => VK_UP,
+        Keycode::Right     => VK_RIGHT,
+        Keycode::Down      => VK_DOWN,
+        Keycode::Insert    => VK_INSERT,
+        Keycode::Delete    => VK_DELETE,
+        Keycode::ScrollLock => VK_SCRLLOCK,
+        Keycode::NumLockClear => VK_NUMLOCK,
+        Keycode::F1        => VK_F1,
+        Keycode::F2        => VK_F2,
+        Keycode::F3        => VK_F3,
+        Keycode::F4        => VK_F4,
+        Keycode::F5        => VK_F5,
+        Keycode::F6        => VK_F6,
+        Keycode::F7        => VK_F7,
+        Keycode::F8        => VK_F8,
+        Keycode::F9        => VK_F9,
+        Keycode::F10       => VK_F10,
+        Keycode::F11       => VK_F11,
+        Keycode::F12       => VK_F12,
+        _                  => 0,
+    }
+}
+
+/// Build WM_CHAR MP1 and MP2 from SDL2 key event fields.
+///
+/// MP1 encoding (per OS/2 PM Reference):
+///   bits  7–0  : cRepeat (1 for normal press, 0 for auto-repeat we treat separately)
+///   bits 15–8  : hardware scan code (IBM PC Set-1)
+///   bits 31–16 : KC_* flags
+///
+/// MP2 encoding:
+///   bits 15–0  : usCh (character code, 0 for pure virtual keys)
+///   bits 31–16 : usVKey (VK_* code, 0 for pure character keys)
+fn build_wm_char(
+    keycode:  Option<Keycode>,
+    scancode: Option<Scancode>,
+    keymod:   KeyMod,
+    repeat:   bool,
+    key_up:   bool,
+) -> (u32, u32) {
+    let sc  = scancode.map(sdl_scancode_to_os2).unwrap_or(0);
+    let vk  = keycode.map(sdl_keycode_to_vk).unwrap_or(0);
+    let ch  = keycode.map(sdl_keycode_to_char).unwrap_or(0);
+
+    // Modifier state → KC_* flags
+    let mut flags = KC_SCANCODE;
+    if keymod.intersects(KeyMod::LSHIFTMOD | KeyMod::RSHIFTMOD) { flags |= KC_SHIFT; }
+    if keymod.intersects(KeyMod::LCTRLMOD  | KeyMod::RCTRLMOD)  { flags |= KC_CTRL;  }
+    if keymod.intersects(KeyMod::LALTMOD   | KeyMod::RALTMOD)   { flags |= KC_ALT;   }
+    if key_up  { flags |= KC_KEYUP;   }
+    if repeat  { flags |= KC_PREVDOWN; }
+
+    if vk != 0 { flags |= KC_VIRTUALKEY; }
+    if ch != 0 { flags |= KC_CHAR;       }
+
+    let mp1 = (flags << 16) | ((sc as u32) << 8) | 1;
+    let mp2 = ch | (vk << 16);
+    (mp1, mp2)
+}
+
+/// Map an SDL2 Keycode to the unshifted OS/2 character code.
 fn sdl_keycode_to_char(kc: Keycode) -> u32 {
-    // SDL2 gives single-character names to printable keys (letters, digits, symbols).
-    // Non-printable keys (arrows, F-keys, etc.) have multi-character names.
     let name = kc.name();
     let b = name.as_bytes();
     if b.len() == 1 && b[0].is_ascii() {
-        // SDL2 names letter keys with an uppercase letter (e.g. "A"), but the
-        // corresponding keycode represents the unshifted (lowercase) character.
-        // Shift state is tracked separately via KeyMod and should be applied by
-        // the application, not here.
+        // Letter keys arrive as uppercase names; return lowercase (unshifted).
         let c = if b[0].is_ascii_uppercase() { b[0] + 32 } else { b[0] };
         return c as u32;
     }
-    // Explicit mappings for common control / whitespace keys.
     match kc {
         Keycode::Space     => b' ' as u32,
         Keycode::Return    => b'\r' as u32,
@@ -724,6 +949,114 @@ mod tests {
         for x in 0..10 {
             assert_eq!(buf[0 * 10 + x], 0, "pixel at screen row 0 should be empty");
         }
+    }
+
+    // ── Scan code / VK mapping tests ─────────────────────────────────────
+
+    #[test]
+    fn scancode_alpha_keys_are_set1() {
+        assert_eq!(sdl_scancode_to_os2(Scancode::A), 0x1E);
+        assert_eq!(sdl_scancode_to_os2(Scancode::Z), 0x2C);
+        assert_eq!(sdl_scancode_to_os2(Scancode::Q), 0x10);
+    }
+
+    #[test]
+    fn scancode_function_keys() {
+        assert_eq!(sdl_scancode_to_os2(Scancode::F1),  0x3B);
+        assert_eq!(sdl_scancode_to_os2(Scancode::F10), 0x44);
+        assert_eq!(sdl_scancode_to_os2(Scancode::F11), 0x57);
+        assert_eq!(sdl_scancode_to_os2(Scancode::F12), 0x58);
+    }
+
+    #[test]
+    fn scancode_extended_nav_keys() {
+        assert_eq!(sdl_scancode_to_os2(Scancode::Up),       0x48);
+        assert_eq!(sdl_scancode_to_os2(Scancode::Down),     0x50);
+        assert_eq!(sdl_scancode_to_os2(Scancode::Left),     0x4B);
+        assert_eq!(sdl_scancode_to_os2(Scancode::Right),    0x4D);
+        assert_eq!(sdl_scancode_to_os2(Scancode::Home),     0x47);
+        assert_eq!(sdl_scancode_to_os2(Scancode::End),      0x4F);
+        assert_eq!(sdl_scancode_to_os2(Scancode::PageUp),   0x49);
+        assert_eq!(sdl_scancode_to_os2(Scancode::PageDown), 0x51);
+        assert_eq!(sdl_scancode_to_os2(Scancode::Insert),   0x52);
+        assert_eq!(sdl_scancode_to_os2(Scancode::Delete),   0x53);
+    }
+
+    #[test]
+    fn vk_mapping_for_special_keys() {
+        use crate::loader::*;
+        assert_eq!(sdl_keycode_to_vk(Keycode::F1),        VK_F1);
+        assert_eq!(sdl_keycode_to_vk(Keycode::F12),       VK_F12);
+        assert_eq!(sdl_keycode_to_vk(Keycode::Up),        VK_UP);
+        assert_eq!(sdl_keycode_to_vk(Keycode::Return),    VK_NEWLINE);
+        assert_eq!(sdl_keycode_to_vk(Keycode::KpEnter),   VK_ENTER);
+        assert_eq!(sdl_keycode_to_vk(Keycode::Escape),    VK_ESC);
+        assert_eq!(sdl_keycode_to_vk(Keycode::Backspace), VK_BACKSPACE);
+    }
+
+    #[test]
+    fn vk_mapping_returns_zero_for_printable() {
+        assert_eq!(sdl_keycode_to_vk(Keycode::A), 0);
+        assert_eq!(sdl_keycode_to_vk(Keycode::Num5), 0);
+    }
+
+    #[test]
+    fn build_wm_char_regular_key() {
+        use crate::loader::*;
+        // 'A' key down, no modifiers
+        let (mp1, mp2) = build_wm_char(
+            Some(Keycode::A), Some(Scancode::A),
+            KeyMod::NOMOD, false, false,
+        );
+        let flags = mp1 >> 16;
+        let sc = (mp1 >> 8) & 0xFF;
+        let ch = mp2 & 0xFFFF;
+        let vk = mp2 >> 16;
+        assert!(flags & KC_CHAR != 0,     "KC_CHAR should be set for 'a'");
+        assert!(flags & KC_SCANCODE != 0, "KC_SCANCODE always set");
+        assert!(flags & KC_VIRTUALKEY == 0, "KC_VIRTUALKEY not set for plain char");
+        assert_eq!(sc, 0x1E, "scan code for A is 0x1E");
+        assert_eq!(ch, b'a' as u32);
+        assert_eq!(vk, 0);
+    }
+
+    #[test]
+    fn build_wm_char_function_key() {
+        use crate::loader::*;
+        let (mp1, mp2) = build_wm_char(
+            Some(Keycode::F1), Some(Scancode::F1),
+            KeyMod::NOMOD, false, false,
+        );
+        let flags = mp1 >> 16;
+        let sc = (mp1 >> 8) & 0xFF;
+        let vk = mp2 >> 16;
+        assert!(flags & KC_VIRTUALKEY != 0, "KC_VIRTUALKEY set for F1");
+        assert!(flags & KC_SCANCODE != 0,   "KC_SCANCODE always set");
+        assert!(flags & KC_CHAR == 0,       "KC_CHAR not set for F1");
+        assert_eq!(sc, 0x3B, "scan code for F1");
+        assert_eq!(vk, VK_F1);
+    }
+
+    #[test]
+    fn build_wm_char_shift_modifier() {
+        use crate::loader::*;
+        let (mp1, _) = build_wm_char(
+            Some(Keycode::A), Some(Scancode::A),
+            KeyMod::LSHIFTMOD, false, false,
+        );
+        let flags = mp1 >> 16;
+        assert!(flags & KC_SHIFT != 0, "KC_SHIFT set when shift held");
+    }
+
+    #[test]
+    fn build_wm_char_keyup_flag() {
+        use crate::loader::*;
+        let (mp1, _) = build_wm_char(
+            Some(Keycode::A), Some(Scancode::A),
+            KeyMod::NOMOD, false, true,
+        );
+        let flags = mp1 >> 16;
+        assert!(flags & KC_KEYUP != 0, "KC_KEYUP set on key release");
     }
 
     // ── HeadlessRenderer tests ────────────────────────────────────────────

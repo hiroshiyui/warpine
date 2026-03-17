@@ -44,8 +44,59 @@ pub const WM_QUIT: u32 = 0x002A;
 pub const WM_MOUSEMOVE: u32 = 0x0070;
 pub const WM_BUTTON1DOWN: u32 = 0x0071;
 pub const WM_BUTTON1UP: u32 = 0x0072;
+pub const WM_BUTTON2DOWN: u32 = 0x0073;
+pub const WM_BUTTON2UP: u32 = 0x0074;
+pub const WM_BUTTON3DOWN: u32 = 0x0075;
+pub const WM_BUTTON3UP: u32 = 0x0076;
 pub const WM_COMMAND: u32 = 0x0020;
 pub const WM_CHAR: u32 = 0x007A;
+
+// KC_* flags for WM_CHAR message (MP1 high word)
+pub const KC_CHAR:       u32 = 0x0001; // character code in MP2 low word is valid
+pub const KC_VIRTUALKEY: u32 = 0x0002; // virtual key code in MP2 high word is valid
+pub const KC_SCANCODE:   u32 = 0x0004; // hardware scan code in MP1 byte 8-15 is valid
+pub const KC_SHIFT:      u32 = 0x0008; // shift key held
+pub const KC_CTRL:       u32 = 0x0010; // Ctrl key held
+pub const KC_ALT:        u32 = 0x0020; // Alt key held
+pub const KC_KEYUP:      u32 = 0x0040; // key-release event
+pub const KC_PREVDOWN:   u32 = 0x0080; // key was already down (auto-repeat)
+pub const KC_LONEKEY:    u32 = 0x0100; // key pressed without any other key
+
+// VK_* virtual key codes for WM_CHAR MP2 high word
+pub const VK_BACKSPACE:  u32 = 0x05;
+pub const VK_TAB:        u32 = 0x06;
+pub const VK_NEWLINE:    u32 = 0x08; // main Enter key
+pub const VK_ESC:        u32 = 0x0f;
+pub const VK_SPACE:      u32 = 0x10;
+pub const VK_PAGEUP:     u32 = 0x11;
+pub const VK_PAGEDOWN:   u32 = 0x12;
+pub const VK_END:        u32 = 0x13;
+pub const VK_HOME:       u32 = 0x14;
+pub const VK_LEFT:       u32 = 0x15;
+pub const VK_UP:         u32 = 0x16;
+pub const VK_RIGHT:      u32 = 0x17;
+pub const VK_DOWN:       u32 = 0x18;
+pub const VK_INSERT:     u32 = 0x1a;
+pub const VK_DELETE:     u32 = 0x1b;
+pub const VK_SCRLLOCK:   u32 = 0x1c;
+pub const VK_NUMLOCK:    u32 = 0x1d;
+pub const VK_ENTER:      u32 = 0x1e; // keypad Enter
+pub const VK_F1:         u32 = 0x20;
+pub const VK_F2:         u32 = 0x21;
+pub const VK_F3:         u32 = 0x22;
+pub const VK_F4:         u32 = 0x23;
+pub const VK_F5:         u32 = 0x24;
+pub const VK_F6:         u32 = 0x25;
+pub const VK_F7:         u32 = 0x26;
+pub const VK_F8:         u32 = 0x27;
+pub const VK_F9:         u32 = 0x28;
+pub const VK_F10:        u32 = 0x29;
+pub const VK_F11:        u32 = 0x2a;
+pub const VK_F12:        u32 = 0x2b;
+
+// Clipboard format constants (CF_*)
+pub const CF_TEXT:   u32 = 1;
+pub const CF_BITMAP: u32 = 2;
 
 // Guest memory layout constants — placed after loaded objects but below 1MB
 // to keep 16-bit segment arithmetic working. LX objects typically end below 0x80000.

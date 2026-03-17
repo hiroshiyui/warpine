@@ -595,6 +595,12 @@ impl super::Loader {
                 // Stub - return DID_OK (1)
                 ApiResult::Normal(1)
             }
+            804 => {
+                // WinQueryCapture(HWND hwndDesktop) -> HWND
+                let _hwnd_desktop = read_stack(4);
+                let wm = self.shared.window_mgr.lock_or_recover();
+                ApiResult::Normal(wm.capture_hwnd)
+            }
             806 => {
                 // WinQueryClipbrdData(HAB hab, ULONG fmt)
                 let _hab = read_stack(4);
@@ -707,14 +713,38 @@ impl super::Loader {
                 wm.set_window_accel(hwnd, haccel);
                 ApiResult::Normal(1)
             }
+            852 => {
+                // WinSetCapture(HWND hwndDesktop, HWND hwnd)
+                let _hwnd_desktop = read_stack(4);
+                let hwnd = read_stack(8);
+                debug!("  [VCPU {}] WinSetCapture hwnd={}", vcpu_id, hwnd);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                wm.capture_hwnd = hwnd;
+                if let Some(ref sender) = wm.gui_tx {
+                    let _ = sender.send(GUIMessage::SetMouseCapture(hwnd));
+                }
+                ApiResult::Normal(1)
+            }
             854 => {
                 // WinSetClipbrdData(HAB hab, ULONG ulData, ULONG fmt, ULONG rgfFmtInfo)
                 let _hab = read_stack(4);
                 let data = read_stack(8);
                 let fmt = read_stack(12);
                 let _flags = read_stack(16);
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-                wm.clipboard.insert(fmt, data);
+                // For CF_TEXT, also bridge the text to the host system clipboard.
+                if fmt == CF_TEXT && data != 0 {
+                    let text = self.read_guest_string(data);
+                    debug!("  [VCPU {}] WinSetClipbrdData CF_TEXT: {:?}", vcpu_id, &text);
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    wm.clipboard_text = text.clone();
+                    if let Some(ref sender) = wm.gui_tx {
+                        let _ = sender.send(GUIMessage::SetClipboardText(text));
+                    }
+                    wm.clipboard.insert(fmt, data);
+                } else {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    wm.clipboard.insert(fmt, data);
+                }
                 ApiResult::Normal(1)
             }
             859 => {

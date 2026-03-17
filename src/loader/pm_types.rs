@@ -71,6 +71,10 @@ pub struct WindowManager {
     pub timers: HashMap<(u32, u32), (Arc<AtomicBool>, Option<thread::JoinHandle<()>>)>,
     pub clipboard: HashMap<u32, u32>,
     pub clipboard_open: bool,
+    /// Currently captured window handle (0 = none).
+    pub capture_hwnd: u32,
+    /// Text-format clipboard content, kept in sync with the host SDL2 clipboard.
+    pub clipboard_text: String,
     accel_tables: HashMap<u32, Vec<AccelEntry>>,
     window_accel: HashMap<u32, u32>, // hwnd → haccel
     next_hwnd: u32,
@@ -92,6 +96,8 @@ impl WindowManager {
             timers: HashMap::new(),
             clipboard: HashMap::new(),
             clipboard_open: false,
+            capture_hwnd: 0,
+            clipboard_text: String::new(),
             accel_tables: HashMap::new(),
             window_accel: HashMap::new(),
             next_hwnd: 0x1000,
