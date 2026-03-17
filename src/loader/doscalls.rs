@@ -13,6 +13,8 @@
 use std::fs::File;
 use std::io::{Read, Write, Seek, SeekFrom};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 use std::thread;
 use super::vm_backend::VcpuBackend;
 use log::debug;
@@ -95,26 +97,72 @@ impl super::Loader {
         }
     }
 
-    /// Read from stdin (handle 0) using the host terminal.
-    /// Enables raw mode and reads one byte at a time, blocking until input is available.
-    /// Translates CR (0x0D) → CR+LF (OS/2 console convention) and echoes characters.
+    /// Read from stdin (handle 0).
+    ///
+    /// In SDL2 text mode, reads from `kbd_queue` (populated by the SDL2 renderer)
+    /// and echoes typed characters into the VioManager buffer.
+    /// In terminal mode, enables raw mode and reads from the real stdin fd.
+    /// Translates CR → CR+LF (OS/2 console convention) with a pending-LF mechanism.
     fn dos_read_stdin(&self, buf_ptr: u32, len: u32, actual_ptr: u32) -> u32 {
         if len == 0 {
             if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, 0); }
             return 0;
         }
-        // Check for pending LF from previous CR→CRLF translation
+
+        // Pending LF from a previous CR→CRLF translation (both modes).
         {
             let mut console = self.shared.console_mgr.lock_or_recover();
             if console.stdin_pending_lf {
                 console.stdin_pending_lf = false;
-                self.guest_write::<u8>(buf_ptr, 0x0A); // LF
+                self.guest_write::<u8>(buf_ptr, 0x0A);
                 if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, 1); }
                 return 0;
             }
+        }
+
+        if self.shared.use_sdl2_text.load(Ordering::Relaxed) {
+            // SDL2 path: block on kbd_queue for one character.
+            let ki = {
+                let mut queue = self.shared.kbd_queue.lock().unwrap();
+                loop {
+                    if self.shutting_down() { return ERROR_INVALID_FUNCTION; }
+                    if let Some(ki) = queue.pop_front() { break ki; }
+                    let (new_q, _) = self.shared.kbd_cond
+                        .wait_timeout(queue, Duration::from_millis(50))
+                        .unwrap();
+                    queue = new_q;
+                }
+            };
+            let ch = ki.ch;
+            if ch == 0x0D {
+                // Enter: deliver CR, queue LF for next call, echo newline.
+                let mut console = self.shared.console_mgr.lock_or_recover();
+                console.stdin_pending_lf = true;
+                console.write_tty(b"\r\n", 0x07);
+                drop(console);
+                self.guest_write::<u8>(buf_ptr, 0x0D);
+            } else if ch == 0x08 {
+                // Backspace: echo destructive sequence; deliver the byte.
+                self.shared.console_mgr.lock_or_recover()
+                    .write_tty(b"\x08 \x08", 0x07);
+                self.guest_write::<u8>(buf_ptr, ch);
+            } else {
+                // Printable or extended — echo and deliver.
+                if ch >= 0x20 {
+                    self.shared.console_mgr.lock_or_recover()
+                        .write_tty(&[ch], 0x07);
+                }
+                self.guest_write::<u8>(buf_ptr, ch);
+            }
+            if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, 1); }
+            return 0;
+        }
+
+        // Terminal (termios) path — enable raw mode and read from stdin fd.
+        {
+            let mut console = self.shared.console_mgr.lock_or_recover();
             console.enable_raw_mode();
         }
-        // Block until at least one byte is available
         loop {
             if self.shutting_down() { return ERROR_INVALID_FUNCTION; }
             let mut buf = [0u8; 1];
@@ -125,13 +173,10 @@ impl super::Loader {
                     // CR from Enter key → deliver CR now, queue LF for next read
                     let mut console = self.shared.console_mgr.lock_or_recover();
                     console.stdin_pending_lf = true;
-                    // Echo CR+LF to terminal
                     let _ = unsafe { libc::write(libc::STDOUT_FILENO, b"\r\n".as_ptr() as *const libc::c_void, 2) };
                 } else if byte == 0x08 || byte == 0x7F {
-                    // Backspace — echo destructive backspace
                     let _ = unsafe { libc::write(libc::STDOUT_FILENO, b"\x08 \x08".as_ptr() as *const libc::c_void, 3) };
                 } else if byte >= 0x20 {
-                    // Printable character — echo to terminal
                     let _ = unsafe { libc::write(libc::STDOUT_FILENO, buf.as_ptr() as *const libc::c_void, 1) };
                 }
                 self.guest_write::<u8>(buf_ptr, byte);
@@ -139,14 +184,13 @@ impl super::Loader {
                 return 0;
             }
             if n == 0 {
-                // VTIME timeout expired with no data — retry
-                std::thread::sleep(std::time::Duration::from_millis(10));
+                std::thread::sleep(Duration::from_millis(10));
                 continue;
             }
             if n < 0 {
                 let err = unsafe { *libc::__errno_location() };
                 if err == libc::EAGAIN || err == libc::EINTR {
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+                    std::thread::sleep(Duration::from_millis(10));
                     continue;
                 }
                 if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, 0); }
@@ -158,6 +202,17 @@ impl super::Loader {
     pub fn dos_write(&self, fd: u32, buf_ptr: u32, len: u32, actual_ptr: u32) -> u32 {
         if let Some(data) = self.guest_slice_mut(buf_ptr, len as usize) {
             if fd == 1 || fd == 2 {
+                // In SDL2 text mode, stdout (fd=1) routes through VioManager so the
+                // SDL2 text renderer picks it up.  stderr (fd=2) still goes to the
+                // host terminal for diagnostics.
+                if fd == 1 && self.shared.use_sdl2_text.load(Ordering::Relaxed) {
+                    let written = data.len() as u32;
+                    let data_copy = data.to_vec();
+                    let mut console = self.shared.console_mgr.lock_or_recover();
+                    console.write_tty(&data_copy, 0x07);
+                    if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, written); }
+                    return 0;
+                }
                 match crate::api::doscalls::dos_write(fd, data) {
                     Ok(actual) => {
                         if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, actual); }
