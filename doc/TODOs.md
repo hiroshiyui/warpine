@@ -190,3 +190,55 @@ The Workplace Shell (WPS) is built entirely on IBM's System Object Model (SOM). 
 - [ ] Persistence via `PrfWriteProfileData` / `PrfQueryProfileData` (OS2.INI / OS2SYS.INI)
 - [ ] Settings notebook: `WinLoadDlg` + `WC_NOTEBOOK` + per-class property pages
 - [ ] Drag and drop protocol: `wpDragOver` / `wpDrop` / `wpCopyObject` / `wpMoveObject`
+
+---
+
+## Phase 9: XE — 64-bit OS/2-lineage Platform (far future / vision)
+
+Goal: define and implement a new 64-bit executable format and API set as a natural evolution of the OS/2 lineage. XE apps run natively on Warpine alongside existing 32-bit LX apps. This transforms Warpine from a pure compatibility layer into a dual-ABI OS personality for x86-64 Linux.
+
+### XE Executable Format
+
+A new format following the MZ → LX precedent: MZ stub with `"XE"` signature at `e_lfanew`, fields widened to 64 bits where addresses appear.
+
+- [ ] Define format spec: XE header (signature, cpu_type, object_count, entry_rip: u64, entry_rsp: u64), 64-bit object table (base_address: u64, size: u64, flags: u32), 64-bit fixup records, import/export tables (ordinal → u64 offset)
+- [ ] `src/xe/` parser module mirroring `src/lx/` structure
+- [ ] `detect_format()` in `main.rs` recognises `"XE"` signature
+- [ ] `Loader::load_xe()` / `run_xe()` path in `lx_loader.rs`
+
+### KVM Long Mode Execution
+
+- [ ] vCPU initialisation in long mode (set `EFER.LME`, enable 4-level paging, 64-bit GDT — segments mostly flat, FS/GS for TIB/PIB)
+- [ ] 64-bit `SharedState` TIB/PIB layout at well-known addresses
+- [ ] INT 3 thunk mechanism unchanged — works identically in long mode; thunk handler reads args from `rdi/rsi/rdx/rcx/r8/r9` (System V AMD64 ABI) instead of the stack
+
+### Calling Convention
+
+**System V AMD64 ABI** (`rdi, rsi, rdx, rcx, r8, r9`, caller-saves `rax/rcx/rdx/rsi/rdi/r8–r11`, return in `rax`). Rationale: universal toolchain support (Rust, Clang, GCC) with no custom patches needed; Warpine's Rust host code already uses this ABI natively.
+
+- [ ] Document `_XE64` calling convention in `doc/`
+- [ ] Update `api_dispatch.rs` to extract arguments from 64-bit registers for XE calls
+
+### 64-bit API Set (`DOSCALLS64`, `PMWIN64`, …)
+
+Clean-break 64-bit API — pointer-sized arguments, 64-bit handles, `size_t` buffer lengths. New ordinal namespace separate from 32-bit DOSCALLS.
+
+- [ ] Core I/O: `DosWrite64`, `DosRead64`, `DosOpen64`, `DosClose64`, `DosExit64`
+- [ ] Memory: `DosAllocMem64` (full 64-bit address space), `DosFreeMem64`
+- [ ] Threads: `DosCreateThread64`, `DosWaitThread64`
+- [ ] Synchronisation: `DosCreateEventSem64`, `DosCreateMutexSem64`
+- [ ] PM: `WinInitialize64`, `WinCreateStdWindow64`, `WinGetMsg64`, `WinDispatchMsg64` — same message model, 64-bit pointers
+- [ ] `UCONV64.DLL` — Unicode conversion using UTF-8 natively (complements Unicode-internal architecture goal)
+
+### Rust/Clang Toolchain Support
+
+- [ ] `warpine-xe` Rust crate: safe bindings to the 64-bit API set; `#![no_std]` compatible
+- [ ] Custom Rust target spec `x86_64-warpine-xe` (bare-metal, System V ABI, XE binary output via custom linker script)
+- [ ] Sample XE app written in Rust: `samples/xe_hello/` — `DosWrite64` to stdout, `DosExit64`
+- [ ] Sample XE app written in C (Clang `x86_64-unknown-none`): validates the ABI from C
+
+### Dual-ABI Coexistence
+
+- [ ] 32-bit LX apps and 64-bit XE apps run side-by-side under the same Warpine instance
+- [ ] `DosExecPgm` detects XE format and spawns a 64-bit vCPU thread
+- [ ] Shared `SharedState` managers (memory, handles, semaphores) serve both 32-bit and 64-bit guests
