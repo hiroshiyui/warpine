@@ -141,6 +141,15 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             _  => "?",
         },
 
+        // ── NLS — National Language Support (NLS_BASE + local ordinal) ──────
+        o if (NLS_BASE..MSG_BASE).contains(&o) => match o - NLS_BASE {
+            5 => "NlsQueryCp",
+            6 => "NlsQueryCtryInfo",
+            7 => "NlsMapCase",
+            8 => "NlsGetDBCSEv",
+            _ => "?",
+        },
+
         // ── MDM / MMPM/2 (MDM_BASE + local ordinal) ───────────────────────
         o if (MDM_BASE..STUB_AREA_SIZE).contains(&o) => match o - MDM_BASE {
             1 => "mciSendCommand",

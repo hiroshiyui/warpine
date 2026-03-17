@@ -9,6 +9,7 @@ pub mod vfs;
 pub mod vfs_hostdir;
 pub mod vm_backend;
 pub mod api_trace;
+pub mod api_registry;
 mod kvm_backend;
 mod guest_mem;
 mod lx_loader;
