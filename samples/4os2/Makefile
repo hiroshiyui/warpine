@@ -40,7 +40,7 @@ OBJDIR = build
 4OS2_ASMOBJ = $(patsubst %.asm,$(OBJDIR)/%.obj,$(4OS2_ASMSRC))
 4OS2_OBJ = $(OBJDIR)/crt0.obj $(OBJDIR)/viowrap.obj $(4OS2_COBJ) $(4OS2_ASMOBJ)
 
-all: $(OBJDIR) 4os2.exe
+all: $(OBJDIR) 4os2.exe jpos2dll.dll
 
 $(OBJDIR):
 	mkdir -p $(OBJDIR)
@@ -100,7 +100,30 @@ $(OBJDIR)/%.obj: a/%.asm
 		import DOSSETFILEMODE DOSCALLS.76 \
 		file { $(4OS2_OBJ) }
 
+# Compile and link jpos2dll.dll
+$(OBJDIR)/jpos2dll.obj: c/jpos2dll.c
+	$(WCC386) -zq -s -bt=os2 -I$(CURDIR)/h -I$(WATCOM_ROOT)/h/os2 -I$(WATCOM_ROOT)/h -fo=$@ $<
+
+jpos2dll.dll: $(OBJDIR)/jpos2dll.obj
+	$(WLINK) \
+		name $@ \
+		system os2v2_dll \
+		option map \
+		option quiet \
+		option manyautodata \
+		segment type DATA shared \
+		library $(WATCOM_ROOT)/lib386/os2/clib3r.lib \
+		library $(WATCOM_ROOT)/lib386/os2/os2386.lib \
+		file $< \
+		export QueryExtLIBPATH.1 \
+		export SetExtLIBPATH.2 \
+		export SendKeys.3 \
+		export QuitSendKeys.4 \
+		export StartHook.5 \
+		export PauseKeys.6 \
+		export KeystackHookProc.7
+
 clean:
-	rm -rf $(OBJDIR) *.exe *.map *.err
+	rm -rf $(OBJDIR) *.exe *.dll *.map *.err
 
 .PHONY: all clean
