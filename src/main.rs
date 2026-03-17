@@ -11,6 +11,57 @@ use std::sync::Arc;
 use log::{info, debug};
 use loader::MutexExt;
 
+/// Initialise the tracing/logging stack.
+///
+/// `WARPINE_TRACE` controls the output format:
+///
+/// | Value          | Format                                                  |
+/// |----------------|---------------------------------------------------------|
+/// | unset / `0`    | Default pretty format (similar to env_logger)           |
+/// | `strace` / `1` | Compact span-events format — strace-like API call log   |
+/// | `json`         | JSON lines — one object per event/span for tooling      |
+///
+/// `RUST_LOG` controls the level filter in all modes (default: `info`).
+fn init_logging() {
+    use tracing_subscriber::{fmt, EnvFilter, prelude::*};
+
+    // Bridge all existing log:: calls into the tracing ecosystem so that
+    // every module can stay on log:: while API dispatch uses native spans.
+    tracing_log::LogTracer::init().ok();
+
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
+    let trace_mode = std::env::var("WARPINE_TRACE").unwrap_or_default();
+    match trace_mode.as_str() {
+        "json" => {
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(fmt::layer()
+                    .json()
+                    .with_span_events(fmt::format::FmtSpan::ENTER | fmt::format::FmtSpan::CLOSE))
+                .init();
+        }
+        v if !v.is_empty() && v != "0" && v != "false" => {
+            // strace-like: compact format with span entry/exit events visible
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(fmt::layer()
+                    .compact()
+                    .with_target(false)
+                    .with_span_events(fmt::format::FmtSpan::ENTER | fmt::format::FmtSpan::CLOSE))
+                .init();
+        }
+        _ => {
+            // Default: no span events, just log messages (mirrors env_logger)
+            tracing_subscriber::registry()
+                .with(filter)
+                .with(fmt::layer().with_target(true))
+                .init();
+        }
+    }
+}
+
 /// Detect executable format by reading the signature at the NE/LX header offset.
 fn detect_format(path: &str) -> Result<ExeFormat, String> {
     use std::io::Read;
@@ -35,7 +86,7 @@ fn detect_format(path: &str) -> Result<ExeFormat, String> {
 enum ExeFormat { LX, NE }
 
 fn main() {
-    env_logger::init();
+    init_logging();
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage: {} <os2_executable>", args[0]);

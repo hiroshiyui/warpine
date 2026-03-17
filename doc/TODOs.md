@@ -376,11 +376,12 @@ Items identified during architecture review. These cut across phases and should 
 - [ ] Cross-reference against the import tables of target binaries to catch mapping mismatches early
 - [ ] Note: the same ordinal can map to different APIs across OS/2 versions (1.x 16-bit vs 2.x 32-bit transition); the tool should handle multi-version comparison
 
-### Structured API Trace System
-- [ ] Replace ad-hoc `debug!` logging in thunk handlers with a structured tracing layer using the `tracing` crate
-- [ ] Each API call emits a span with: module, ordinal, resolved name, all arguments (typed), return value, guest register state at call site
-- [ ] Output modes: human-readable (strace-like), JSON (for tooling), suppressed (production)
-- [ ] Enables a future TUI debug overlay showing live API call stream, memory map, window hierarchy, and PM message queue
+### ✓ Structured API Trace System — COMPLETE
+- [x] Replace ad-hoc `debug!` logging in thunk handlers with a structured tracing layer using the `tracing` crate
+- [x] Each API call emits a span with: module, ordinal, resolved name, return value, guest eip/esp at call site (`src/loader/api_trace.rs` + `api_dispatch.rs`)
+- [x] Output modes: human-readable strace-like (`WARPINE_TRACE=strace`), JSON (`WARPINE_TRACE=json`), default pretty (unset) — see `main::init_logging()`
+- [ ] Per-argument typed names (e.g. `DosWrite(hfile=1, pBuf=0x500, cbBuf=42)`) — future enhancement; raw eip/esp captured now
+- [ ] TUI debug overlay showing live API call stream, memory map, window hierarchy, and PM message queue
 
 ### PM Renderer Abstraction
 - [ ] Define a `PmRenderer` trait: `render_frame(buf: &VgaTextBuffer)`, `render_pm_window(...)`, `poll_key_event() -> Option<Os2ScanCode>`, `poll_mouse_event() -> Option<Os2MouseEvent>`

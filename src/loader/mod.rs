@@ -8,6 +8,7 @@ pub mod pm_types;
 pub mod vfs;
 pub mod vfs_hostdir;
 pub mod vm_backend;
+pub mod api_trace;
 mod kvm_backend;
 mod guest_mem;
 mod lx_loader;

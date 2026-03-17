@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::constants::*;
+use super::api_trace;
 use super::ApiResult;
 use super::vm_backend::VcpuBackend;
-use log::{debug, warn};
+use tracing::{debug, warn};
 
 impl super::Loader {
     pub(crate) fn handle_api_call_ex(&self, vcpu: &mut dyn VcpuBackend, vcpu_id: u32, ordinal: u32) -> ApiResult {
@@ -11,9 +12,20 @@ impl super::Loader {
         let esp = regs.rsp;
         let read_stack = |off: u64| -> u32 { self.guest_read::<u32>((esp + off) as u32).expect("Stack read OOB") };
 
-        debug!("  [VCPU {}] API Call: Ordinal {} (ReturnAddr=0x{:08X})", vcpu_id, ordinal, read_stack(0));
+        let ret_addr = read_stack(0);
+        let api_name = api_trace::ordinal_to_name(ordinal);
+        let api_mod  = api_trace::module_for_ordinal(ordinal);
+        let _span = tracing::debug_span!(
+            "api",
+            vcpu   = vcpu_id,
+            module = api_mod,
+            ord    = ordinal,
+            name   = api_name,
+            eip    = ret_addr,
+            esp    = esp as u32,
+        ).entered();
 
-        if ordinal < 1024 {
+        let result = if ordinal < 1024 {
             // DOSCALLS
             let res = match ordinal {
                 256 => self.dos_set_file_ptr(read_stack(4), read_stack(8) as i32, read_stack(12), read_stack(16)),
@@ -33,6 +45,7 @@ impl super::Loader {
                     let result = read_stack(8);
                     self.shared.exit_code.store(result as i32, std::sync::atomic::Ordering::Relaxed);
                     self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+                    debug!(ret = 0u32, "exit");
                     return ApiResult::Normal(0); // won't be used; run_vcpu will exit
                 },
                 239 => self.dos_create_pipe(read_stack(4), read_stack(8), read_stack(12)),
@@ -247,6 +260,12 @@ impl super::Loader {
         } else {
             warn!("Warning: Unknown API Base Ordinal {} on VCPU {}", ordinal, vcpu_id);
             ApiResult::Normal(0)
+        };
+
+        match &result {
+            ApiResult::Normal(v) => debug!(ret = v, "return"),
+            ApiResult::Callback { wnd_proc, .. } => debug!(wnd_proc, "callback"),
         }
+        result
     }
 }
