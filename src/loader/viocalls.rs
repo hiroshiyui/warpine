@@ -182,13 +182,19 @@ impl super::Loader {
     }
 
     /// VioSetCurType (ordinal 16): set cursor shape/visibility.
+    ///
+    /// VIOCURSORINFO layout: yStart(u16) cEnd(u16) cx(u16) attr(u16).
+    /// attr == 0xFFFF means hidden.
     fn vio_set_cur_type(&self, p_cur_data: u32, _hvio: u32) -> u32 {
         debug!("  VioSetCurType");
         if p_cur_data != 0 {
-            let attr = self.guest_read::<u16>(p_cur_data + 4).unwrap_or(0);
-            let visible = (attr & 0xFFFF) != 0xFFFF; // -1 = hidden
+            let y_start = self.guest_read::<u16>(p_cur_data).unwrap_or(14);
+            let c_end   = self.guest_read::<u16>(p_cur_data + 2).unwrap_or(15);
+            let attr    = self.guest_read::<u16>(p_cur_data + 6).unwrap_or(0);
+            let visible = (attr & 0xFFFF) != 0xFFFF;
             let mut console = self.shared.console_mgr.lock_or_recover();
             console.set_cursor_type(visible);
+            console.set_cursor_shape(y_start as u8, c_end as u8);
         }
         NO_ERROR
     }

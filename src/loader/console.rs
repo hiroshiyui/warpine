@@ -47,8 +47,16 @@ pub struct VioManager {
     pub cursor_row: u16,
     pub cursor_col: u16,
     pub cursor_visible: bool,
+    /// Cursor shape: first scan line (0 = top of cell).
+    pub cursor_start: u8,
+    /// Cursor shape: last scan line (15 = bottom of cell for 8×16 font).
+    pub cursor_end: u8,
     pub ansi_mode: bool,
     pub codepage: u16,
+    /// When `true`, all ANSI escape output is suppressed; the SDL2 text
+    /// renderer reads the buffer directly.  Also forces rows/cols to 80×25
+    /// and prevents `enable_raw_mode` from touching termios.
+    pub sdl2_mode: bool,
     /// Whether terminal raw mode has been activated.
     raw_mode_active: bool,
     /// Original termios saved for restore.
@@ -68,12 +76,33 @@ impl VioManager {
             cursor_row: 0,
             cursor_col: 0,
             cursor_visible: true,
+            cursor_start: 14,
+            cursor_end: 15,
             ansi_mode: true,
             codepage: 437,
+            sdl2_mode: false,
             raw_mode_active: false,
             original_termios: None,
             stdin_pending_lf: false,
         }
+    }
+
+    /// Switch to SDL2 text-mode: fix dimensions to 80×25, suppress ANSI output.
+    pub fn enable_sdl2_mode(&mut self) {
+        self.sdl2_mode = true;
+        // Resize buffer to fixed 80×25 if needed
+        let (new_rows, new_cols) = (25u16, 80u16);
+        if self.rows != new_rows || self.cols != new_cols {
+            self.rows = new_rows;
+            self.cols = new_cols;
+            self.buffer = vec![(b' ', 0x07); new_rows as usize * new_cols as usize];
+        }
+    }
+
+    /// Set cursor scan-line shape (for `VioSetCurType`).
+    pub fn set_cursor_shape(&mut self, start: u8, end: u8) {
+        self.cursor_start = start;
+        self.cursor_end = end;
     }
 
     /// Detect terminal size, defaulting to 25x80.
@@ -88,8 +117,9 @@ impl VioManager {
     }
 
     /// Enable terminal raw mode for keyboard input.
+    /// No-op in SDL2 text mode (keyboard events come from SDL2 instead).
     pub fn enable_raw_mode(&mut self) {
-        if self.raw_mode_active { return; }
+        if self.raw_mode_active || self.sdl2_mode { return; }
         let mut termios: libc::termios = unsafe { std::mem::zeroed() };
         if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut termios) } == 0 {
             self.original_termios = Some(termios);
@@ -135,8 +165,9 @@ impl VioManager {
     }
 
     /// Write a string at the current cursor position, advancing the cursor.
-    /// Updates the screen buffer and outputs to the terminal.
+    /// Updates the screen buffer and (in terminal mode) outputs ANSI escapes.
     pub fn write_tty(&mut self, text: &[u8], attr: u8) {
+        let sdl2 = self.sdl2_mode;
         let mut stdout = io::stdout();
         for &ch in text {
             if ch == b'\n' {
@@ -146,19 +177,19 @@ impl VioManager {
                     self.scroll_up(0, self.rows - 1, 1, 0x07);
                     self.cursor_row = self.rows - 1;
                 }
-                let _ = stdout.write_all(b"\n");
+                if !sdl2 { let _ = stdout.write_all(b"\n"); }
             } else if ch == b'\r' {
                 self.cursor_col = 0;
-                let _ = stdout.write_all(b"\r");
+                if !sdl2 { let _ = stdout.write_all(b"\r"); }
             } else if ch == b'\x08' {
                 // Backspace
                 if self.cursor_col > 0 {
                     self.cursor_col -= 1;
                 }
-                let _ = stdout.write_all(b"\x08");
+                if !sdl2 { let _ = stdout.write_all(b"\x08"); }
             } else if ch == b'\x07' {
                 // Bell
-                let _ = stdout.write_all(b"\x07");
+                if !sdl2 { let _ = stdout.write_all(b"\x07"); }
             } else {
                 if self.cursor_row < self.rows && self.cursor_col < self.cols {
                     let idx = self.cursor_row as usize * self.cols as usize + self.cursor_col as usize;
@@ -175,20 +206,20 @@ impl VioManager {
                         self.cursor_row = self.rows - 1;
                     }
                 }
-                Self::write_cp437_char(&mut stdout, ch);
+                if !sdl2 { Self::write_cp437_char(&mut stdout, ch); }
             }
         }
-        let _ = stdout.flush();
+        if !sdl2 { let _ = stdout.flush(); }
     }
 
     /// Write an attributed string at a specific position.
     pub fn write_char_str_att(&mut self, row: u16, col: u16, text: &[u8], attr: u8) {
+        let sdl2 = self.sdl2_mode;
         let mut stdout = io::stdout();
-        // Move cursor to position
-        let _ = write!(stdout, "\x1b[{};{}H", row + 1, col + 1);
-        // Set attribute
-        self.write_ansi_attr(&mut stdout, attr);
-
+        if !sdl2 {
+            let _ = write!(stdout, "\x1b[{};{}H", row + 1, col + 1);
+            self.write_ansi_attr(&mut stdout, attr);
+        }
         let mut c = col;
         for &ch in text {
             if c >= self.cols { break; }
@@ -196,60 +227,65 @@ impl VioManager {
             if idx < self.buffer.len() {
                 self.buffer[idx] = (ch, attr);
             }
-            Self::write_cp437_char(&mut stdout, ch);
+            if !sdl2 { Self::write_cp437_char(&mut stdout, ch); }
             c += 1;
         }
-        // Reset attributes
-        let _ = stdout.write_all(b"\x1b[0m");
-        // Restore cursor
-        let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
-        let _ = stdout.flush();
+        if !sdl2 {
+            let _ = stdout.write_all(b"\x1b[0m");
+            let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
+            let _ = stdout.flush();
+        }
     }
 
     /// Fill N cells starting at (row, col) with a character+attribute pair.
     pub fn write_n_cell(&mut self, row: u16, col: u16, cell: (u8, u8), count: u16) {
+        let sdl2 = self.sdl2_mode;
         let mut stdout = io::stdout();
-        let _ = write!(stdout, "\x1b[{};{}H", row + 1, col + 1);
-        self.write_ansi_attr(&mut stdout, cell.1);
-
+        if !sdl2 {
+            let _ = write!(stdout, "\x1b[{};{}H", row + 1, col + 1);
+            self.write_ansi_attr(&mut stdout, cell.1);
+        }
         let mut c = col;
         for _ in 0..count {
-            if c >= self.cols {
-                // Wrap to next row (OS/2 VioWrtNCell wraps)
-                break;
-            }
+            if c >= self.cols { break; }
             let idx = row as usize * self.cols as usize + c as usize;
             if idx < self.buffer.len() {
                 self.buffer[idx] = cell;
             }
-            Self::write_cp437_char(&mut stdout, cell.0);
+            if !sdl2 { Self::write_cp437_char(&mut stdout, cell.0); }
             c += 1;
         }
-        let _ = stdout.write_all(b"\x1b[0m");
-        let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
-        let _ = stdout.flush();
+        if !sdl2 {
+            let _ = stdout.write_all(b"\x1b[0m");
+            let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
+            let _ = stdout.flush();
+        }
     }
 
     /// Fill N attribute bytes starting at (row, col), preserving characters.
     pub fn write_n_attr(&mut self, row: u16, col: u16, attr: u8, count: u16) {
+        let sdl2 = self.sdl2_mode;
         let mut stdout = io::stdout();
+        if !sdl2 {
+            let _ = write!(stdout, "\x1b[{};{}H", row + 1, col + 1);
+            self.write_ansi_attr(&mut stdout, attr);
+        }
         let mut c = col;
-        let _ = write!(stdout, "\x1b[{};{}H", row + 1, col + 1);
-        self.write_ansi_attr(&mut stdout, attr);
-
         for _ in 0..count {
             if c >= self.cols { break; }
             let idx = row as usize * self.cols as usize + c as usize;
             if idx < self.buffer.len() {
                 let ch = self.buffer[idx].0;
                 self.buffer[idx].1 = attr;
-                Self::write_cp437_char(&mut stdout, ch);
+                if !sdl2 { Self::write_cp437_char(&mut stdout, ch); }
             }
             c += 1;
         }
-        let _ = stdout.write_all(b"\x1b[0m");
-        let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
-        let _ = stdout.flush();
+        if !sdl2 {
+            let _ = stdout.write_all(b"\x1b[0m");
+            let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
+            let _ = stdout.flush();
+        }
     }
 
     /// Read cell string from the screen buffer.
@@ -293,21 +329,21 @@ impl VioManager {
             }
         }
 
-        // Output ANSI scroll
-        let mut stdout = io::stdout();
-        if top == 0 && bottom == self.rows - 1 {
-            // Simple scroll: use \n at bottom
-            for _ in 0..lines {
-                let _ = write!(stdout, "\x1b[{};{}H\n", bottom + 1, 1);
+        // Output ANSI scroll (terminal mode only)
+        if !self.sdl2_mode {
+            let mut stdout = io::stdout();
+            if top == 0 && bottom == self.rows - 1 {
+                for _ in 0..lines {
+                    let _ = write!(stdout, "\x1b[{};{}H\n", bottom + 1, 1);
+                }
+            } else {
+                let _ = write!(stdout, "\x1b[{};{}r", top + 1, bottom + 1);
+                let _ = write!(stdout, "\x1b[{}S", lines);
+                let _ = write!(stdout, "\x1b[;r");
             }
-        } else {
-            // Set scroll region and scroll
-            let _ = write!(stdout, "\x1b[{};{}r", top + 1, bottom + 1);
-            let _ = write!(stdout, "\x1b[{}S", lines);
-            let _ = write!(stdout, "\x1b[;r"); // reset scroll region
+            let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
+            let _ = stdout.flush();
         }
-        let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
-        let _ = stdout.flush();
     }
 
     /// Scroll a region down by `lines` rows, filling the top with blank cells.
@@ -336,33 +372,39 @@ impl VioManager {
             }
         }
 
-        let mut stdout = io::stdout();
-        let _ = write!(stdout, "\x1b[{};{}r", top + 1, bottom + 1);
-        let _ = write!(stdout, "\x1b[{}T", lines);
-        let _ = write!(stdout, "\x1b[;r");
-        let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
-        let _ = stdout.flush();
+        if !self.sdl2_mode {
+            let mut stdout = io::stdout();
+            let _ = write!(stdout, "\x1b[{};{}r", top + 1, bottom + 1);
+            let _ = write!(stdout, "\x1b[{}T", lines);
+            let _ = write!(stdout, "\x1b[;r");
+            let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
+            let _ = stdout.flush();
+        }
     }
 
-    /// Set cursor position and output ANSI escape.
+    /// Set cursor position and output ANSI escape (in terminal mode).
     pub fn set_cursor_pos(&mut self, row: u16, col: u16) {
         self.cursor_row = row.min(self.rows - 1);
         self.cursor_col = col.min(self.cols - 1);
-        let mut stdout = io::stdout();
-        let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
-        let _ = stdout.flush();
+        if !self.sdl2_mode {
+            let mut stdout = io::stdout();
+            let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
+            let _ = stdout.flush();
+        }
     }
 
-    /// Set cursor visibility.
+    /// Set cursor visibility (in terminal mode, also emits ANSI escape).
     pub fn set_cursor_type(&mut self, visible: bool) {
         self.cursor_visible = visible;
-        let mut stdout = io::stdout();
-        if visible {
-            let _ = stdout.write_all(b"\x1b[?25h");
-        } else {
-            let _ = stdout.write_all(b"\x1b[?25l");
+        if !self.sdl2_mode {
+            let mut stdout = io::stdout();
+            if visible {
+                let _ = stdout.write_all(b"\x1b[?25h");
+            } else {
+                let _ = stdout.write_all(b"\x1b[?25l");
+            }
+            let _ = stdout.flush();
         }
-        let _ = stdout.flush();
     }
 
     /// Write ANSI color escape for an OS/2 attribute byte.
