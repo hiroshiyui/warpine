@@ -232,11 +232,9 @@ fn run_lx(file_path: &str) {
     *shared.exe_name.lock_or_recover() = file_path.to_string();
 
     if is_pm {
-        // PM app: create GUI event loop and run VCPU in background
-        let event_loop = winit::event_loop::EventLoop::<()>::with_user_event()
-            .build()
-            .expect("Failed to create event loop");
-        let (gui_sender, gui_rx) = gui::create_gui_channel(&event_loop);
+        // PM app: SDL2 must be initialised on the main thread.
+        let sdl = sdl2::init().expect("Failed to initialise SDL2");
+        let (gui_sender, gui_rx) = gui::create_gui_channel();
 
         // Store the sender in the window manager
         shared.window_mgr.lock_or_recover().gui_tx = Some(gui_sender);
@@ -245,9 +243,8 @@ fn run_lx(file_path: &str) {
         let loader = Arc::new(loader);
         loader.clone().setup_and_spawn_vcpu(&lx_file);
 
-        // Run GUI event loop on main thread
-        let mut app = gui::GUIApp::new(shared.clone(), gui_rx);
-        event_loop.run_app(&mut app).expect("Event loop failed");
+        // Run SDL2 GUI event loop on the main thread (returns when done).
+        gui::run_gui_loop(sdl, shared.clone(), gui_rx);
 
         // Cleanup: signal shutdown, stop timers, reset terminal, and exit
         shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
