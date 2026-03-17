@@ -355,13 +355,13 @@ Items identified during architecture review. These cut across phases and should 
 - [x] `VmBackend` / `VcpuBackend` traits defined in `src/loader/vm_backend.rs`; portable types: `VmExit`, `GuestRegs`, `GuestSegment`, `GuestSregs`
 - [x] KVM implementation isolated to `src/loader/kvm_backend.rs` (`KvmVmBackend`, `KvmVcpu`); no other loader file imports `kvm_ioctls`/`kvm_bindings`
 - [x] All handler signatures updated to `&mut dyn VcpuBackend`; `Loader.vm` is `Arc<dyn VmBackend>`
-- [ ] Add `MockVmBackend` / `MockVcpu` and `Loader::new_mock()` to enable unit tests without `/dev/kvm` (next step)
+- [x] `MockVcpu` / `MockVmBackend` in `vm_backend::mock` (test-only); `Loader::new_mock()` in `mod.rs`; 6 guest-memory tests + 6 VIO handler tests added — no `/dev/kvm` required
 
-### Guest Memory Type Safety
-- [ ] Wrap the raw guest physical memory region in a dedicated `GuestMemory` type (currently `*mut u8` in `SharedState`)
-- [ ] All guest memory reads/writes go through bounds-checked methods on `GuestMemory` — no direct pointer arithmetic outside this type
-- [ ] This enforces the hypervisor escape prevention rule and makes the safety boundary explicit
-- [ ] `guest_mem.rs` already provides helpers (`guest_read`, `guest_write`, `guest_slice_mut`) — formalise this as the sole API surface
+### Guest Memory Type Safety ✓ COMPLETE
+- [x] `GuestMemory` struct defined in `guest_mem.rs`: owns the `mmap` allocation, `unsafe impl Send + Sync`, implements `Drop` (munmap)
+- [x] `GuestMemory` methods: `alloc()`, `size()`, `host_base_addr()`, `ptr_at()`, `read<T>()`, `write<T>()`, `write_bytes()`, `slice_mut()`
+- [x] `SharedState.guest_mem: GuestMemory` replaces the former `*mut u8` + `usize` pair; `Drop for SharedState` removed (handled by `GuestMemory::drop`)
+- [x] `impl Loader` helpers in `guest_mem.rs` delegate to `GuestMemory` methods — sole API surface, no direct pointer arithmetic elsewhere
 
 ### API Thunk Auto-Registration
 - [ ] Replace the large `match ordinal` dispatch table in `api_dispatch.rs` with a registry-based mechanism

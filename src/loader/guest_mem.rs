@@ -212,3 +212,69 @@ impl super::Loader {
         Ok(resolved)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::Loader;
+
+    #[test]
+    fn test_mock_guest_read_write_u32() {
+        let loader = Loader::new_mock();
+        loader.guest_write::<u32>(0x100, 0xDEAD_BEEF).unwrap();
+        assert_eq!(loader.guest_read::<u32>(0x100), Some(0xDEAD_BEEF));
+    }
+
+    #[test]
+    fn test_mock_guest_read_write_u8_u16() {
+        let loader = Loader::new_mock();
+        loader.guest_write::<u8>(0x200, 0x42).unwrap();
+        loader.guest_write::<u16>(0x202, 0x1234).unwrap();
+        assert_eq!(loader.guest_read::<u8>(0x200), Some(0x42));
+        assert_eq!(loader.guest_read::<u16>(0x202), Some(0x1234));
+    }
+
+    #[test]
+    fn test_mock_guest_write_bytes_and_read_back() {
+        let loader = Loader::new_mock();
+        let data = b"Hello, OS/2!";
+        loader.guest_write_bytes(0x300, data).unwrap();
+        for (i, &b) in data.iter().enumerate() {
+            assert_eq!(loader.guest_read::<u8>(0x300 + i as u32), Some(b));
+        }
+    }
+
+    #[test]
+    fn test_mock_guest_slice_mut() {
+        let loader = Loader::new_mock();
+        {
+            let s = loader.guest_slice_mut(0x400, 4).unwrap();
+            s.copy_from_slice(&[0x01, 0x02, 0x03, 0x04]);
+        }
+        // Little-endian: bytes [01 02 03 04] → u32 0x04030201
+        assert_eq!(loader.guest_read::<u32>(0x400), Some(0x0403_0201));
+    }
+
+    #[test]
+    fn test_mock_guest_oob_read_returns_none() {
+        let loader = Loader::new_mock();
+        let end = 1024 * 1024u32; // 1 MB region
+        assert!(loader.guest_read::<u8>(end - 1).is_some());   // last valid byte
+        assert!(loader.guest_read::<u8>(end).is_none());        // one past end
+        assert!(loader.guest_read::<u32>(end - 3).is_none());   // u32 straddles end
+        assert!(loader.guest_write::<u32>(end - 3, 0).is_none());
+    }
+
+    #[test]
+    fn test_mock_read_guest_string_null_terminated() {
+        let loader = Loader::new_mock();
+        loader.guest_write_bytes(0x500, b"OS/2 Warp\0extra").unwrap();
+        assert_eq!(loader.read_guest_string(0x500), "OS/2 Warp");
+    }
+
+    #[test]
+    fn test_mock_read_guest_string_oob_ptr() {
+        let loader = Loader::new_mock();
+        // Pointer past the end of memory → empty string, no panic
+        assert_eq!(loader.read_guest_string(2 * 1024 * 1024), "");
+    }
+}

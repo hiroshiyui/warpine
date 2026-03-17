@@ -180,6 +180,42 @@ impl Loader {
         }
     }
 
+    /// Create a lightweight [`Loader`] for unit tests — no `/dev/kvm` required.
+    ///
+    /// Uses [`vm_backend::mock::MockVmBackend`] so the test process never
+    /// opens `/dev/kvm`.  Allocates 1 MB of guest memory (sufficient for
+    /// testing API handler logic).  No C: drive is mounted, avoiding
+    /// filesystem I/O in pure unit tests.
+    #[cfg(test)]
+    pub fn new_mock() -> Self {
+        use vm_backend::mock::MockVmBackend;
+        let vm: Arc<dyn VmBackend> = Arc::new(MockVmBackend);
+        let guest_mem_size = 1024 * 1024; // 1 MB
+        let guest_mem = GuestMemory::alloc(guest_mem_size);
+        vm.register_guest_memory(0, guest_mem_size as u64, guest_mem.host_base_addr()).unwrap();
+        let shared = Arc::new(SharedState {
+            mem_mgr:      Mutex::new(MemoryManager::new(DYNAMIC_ALLOC_BASE, guest_mem_size as u32)),
+            handle_mgr:   Mutex::new(HandleManager::new()),
+            resource_mgr: Mutex::new(ResourceManager::new()),
+            shmem_mgr:    Mutex::new(SharedMemManager::new()),
+            process_mgr:  Mutex::new(ProcessManager::new()),
+            sem_mgr:      Mutex::new(SemaphoreManager::new()),
+            hdir_mgr:     Mutex::new(HDirManager::new()),
+            queue_mgr:    Mutex::new(QueueManager::new()),
+            window_mgr:   Mutex::new(WindowManager::new()),
+            drive_mgr:    Mutex::new(DriveManager::with_default_config()),
+            console_mgr:  Mutex::new(console::VioManager::new()),
+            exe_name:     Mutex::new(String::new()),
+            guest_mem,
+            next_tid:     Mutex::new(1),
+            threads:      Mutex::new(HashMap::new()),
+            exit_requested: AtomicBool::new(false),
+            exit_code:    AtomicI32::new(0),
+            locale:       locale::Os2Locale::from_host(),
+        });
+        Loader { vm, shared }
+    }
+
     pub(crate) fn map_color(&self, clr: u32) -> u32 {
         match clr {
             0 => 0x00000000, // Black

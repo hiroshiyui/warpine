@@ -223,3 +223,135 @@ impl super::Loader {
         NO_ERROR
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Loader, ApiResult};
+    use super::super::vm_backend::mock::MockVcpu;
+
+    /// Write `args` to the Pascal call stack at `esp`: last arg at esp+4,
+    /// second-to-last at esp+8, etc. (matches OS/2 Pascal calling convention).
+    fn write_stack(loader: &Loader, esp: u32, args: &[u32]) {
+        for (i, &arg) in args.iter().enumerate() {
+            loader.guest_write::<u32>(esp + 4 + i as u32 * 4, arg).unwrap();
+        }
+    }
+
+    #[test]
+    fn test_vio_get_mode_writes_viomodeinfo() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp: u32    = 0x1000;
+        let p_mode: u32 = 0x2000;
+        vcpu.regs.rsp = esp as u64;
+        // VioGetMode(pMode, hvio) → ESP+4=hvio, +8=pMode
+        write_stack(&loader, esp, &[/*hvio*/0, /*pMode*/p_mode]);
+
+        let result = loader.handle_viocalls(&mut vcpu, 0, 21);
+        assert!(matches!(result, ApiResult::Normal(0)));
+
+        // VIOMODEINFO: cb=12, fbType=1 (text), color=4 (16-colour)
+        assert_eq!(loader.guest_read::<u16>(p_mode).unwrap(),     12);  // cb
+        assert_eq!(loader.guest_read::<u8>(p_mode + 2).unwrap(),   1);  // fbType
+        assert_eq!(loader.guest_read::<u8>(p_mode + 3).unwrap(),   4);  // color
+        // cols/rows are terminal-dependent; just check they are sane values
+        let cols = loader.guest_read::<u16>(p_mode + 4).unwrap();
+        let rows = loader.guest_read::<u16>(p_mode + 6).unwrap();
+        assert!(cols >= 80, "cols={cols}");
+        assert!(rows >= 25, "rows={rows}");
+        // hres = cols*8, vres = rows*16
+        assert_eq!(loader.guest_read::<u16>(p_mode + 8).unwrap(),  cols * 8);
+        assert_eq!(loader.guest_read::<u16>(p_mode + 10).unwrap(), rows * 16);
+    }
+
+    #[test]
+    fn test_vio_get_mode_null_ptr_is_noop() {
+        // p_mode == 0 → handler must not write anything (no panic/OOB)
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp: u32 = 0x1000;
+        vcpu.regs.rsp = esp as u64;
+        write_stack(&loader, esp, &[0, 0]); // hvio=0, pMode=0 (null)
+        let result = loader.handle_viocalls(&mut vcpu, 0, 21);
+        assert!(matches!(result, ApiResult::Normal(0)));
+    }
+
+    #[test]
+    fn test_vio_set_and_get_cur_pos() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp: u32 = 0x1000;
+        vcpu.regs.rsp = esp as u64;
+
+        // VioSetCurPos(row=5, col=10, hvio=0) → ESP+4=hvio, +8=col, +12=row
+        write_stack(&loader, esp, &[0, 10, 5]);
+        loader.handle_viocalls(&mut vcpu, 0, 15);
+
+        // VioGetCurPos(pRow, pCol, hvio) → ESP+4=hvio, +8=pCol, +12=pRow
+        let p_row: u32 = 0x2000;
+        let p_col: u32 = 0x2002;
+        write_stack(&loader, esp, &[0, p_col, p_row]);
+        let result = loader.handle_viocalls(&mut vcpu, 0, 9);
+        assert!(matches!(result, ApiResult::Normal(0)));
+
+        assert_eq!(loader.guest_read::<u16>(p_row).unwrap(), 5);
+        assert_eq!(loader.guest_read::<u16>(p_col).unwrap(), 10);
+    }
+
+    #[test]
+    fn test_vio_wrt_tty_null_or_zero_len_is_noop() {
+        // Both null pointer and zero length should return NO_ERROR without panic
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp: u32 = 0x1000;
+        vcpu.regs.rsp = esp as u64;
+
+        // pStr=NULL, len=0
+        write_stack(&loader, esp, &[0, 0, 0]); // hvio, len, pStr
+        let result = loader.handle_viocalls(&mut vcpu, 0, 19);
+        assert!(matches!(result, ApiResult::Normal(0)));
+    }
+
+    #[test]
+    fn test_vio_get_config_writes_struct() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp: u32      = 0x1000;
+        let p_config: u32 = 0x2000;
+        vcpu.regs.rsp = esp as u64;
+        // VioGetConfig(reserved, pConfig, hvio) → ESP+4=hvio, +8=pConfig, +12=reserved
+        write_stack(&loader, esp, &[0, p_config, 0]);
+        let result = loader.handle_viocalls(&mut vcpu, 0, 46);
+        assert!(matches!(result, ApiResult::Normal(0)));
+
+        assert_eq!(loader.guest_read::<u16>(p_config).unwrap(),     10); // cb
+        assert_eq!(loader.guest_read::<u16>(p_config + 2).unwrap(),  3); // VGA adapter
+        assert_eq!(loader.guest_read::<u16>(p_config + 4).unwrap(),  3); // VGA color display
+    }
+
+    #[test]
+    fn test_vio_ansi_set_and_get() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp: u32    = 0x1000;
+        let p_flag: u32 = 0x2000;
+        vcpu.regs.rsp = esp as u64;
+
+        // VioSetAnsi(mode=1, hvio=0)
+        write_stack(&loader, esp, &[0, 1]);
+        loader.handle_viocalls(&mut vcpu, 0, 5);
+
+        // VioGetAnsi(pMode, hvio=0)
+        write_stack(&loader, esp, &[0, p_flag]);
+        loader.handle_viocalls(&mut vcpu, 0, 3);
+        assert_eq!(loader.guest_read::<u32>(p_flag).unwrap(), 1);
+
+        // VioSetAnsi(mode=0)
+        write_stack(&loader, esp, &[0, 0]);
+        loader.handle_viocalls(&mut vcpu, 0, 5);
+        loader.handle_viocalls(&mut vcpu, 0, 3); // VioGetAnsi again (same p_flag)
+        write_stack(&loader, esp, &[0, p_flag]);
+        loader.handle_viocalls(&mut vcpu, 0, 3);
+        assert_eq!(loader.guest_read::<u32>(p_flag).unwrap(), 0);
+    }
+}

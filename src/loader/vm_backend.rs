@@ -143,3 +143,64 @@ pub trait VmBackend: Send + Sync {
     /// `id` must be unique within the VM for the lifetime of the vCPU.
     fn create_vcpu(&self, id: u64) -> Result<Box<dyn VcpuBackend>, String>;
 }
+
+// ── Mock backend (test-only) ─────────────────────────────────────────────────
+
+/// Test doubles for [`VmBackend`] / [`VcpuBackend`] that require no `/dev/kvm`.
+///
+/// Import with `use loader::vm_backend::mock::{MockVcpu, MockVmBackend};`
+/// inside `#[cfg(test)]` blocks.
+#[cfg(test)]
+pub mod mock {
+    use super::*;
+    use std::collections::VecDeque;
+
+    /// Scriptable vCPU for unit-testing API handlers.
+    ///
+    /// Register state is directly accessible (`pub regs`, `pub sregs`) so
+    /// tests can set up ESP / EIP before invoking a handler.  VM exits are
+    /// queued with [`push_exit`]; when the queue is empty `run()` returns
+    /// `VmExit::Hlt`.
+    pub struct MockVcpu {
+        pub regs:  GuestRegs,
+        pub sregs: GuestSregs,
+        exits:     VecDeque<VmExit>,
+    }
+
+    impl MockVcpu {
+        pub fn new() -> Self {
+            MockVcpu {
+                regs:  GuestRegs::default(),
+                sregs: GuestSregs::default(),
+                exits: VecDeque::new(),
+            }
+        }
+
+        /// Queue a VM exit to be returned on the next `run()` call.
+        pub fn push_exit(&mut self, exit: VmExit) {
+            self.exits.push_back(exit);
+        }
+    }
+
+    impl VcpuBackend for MockVcpu {
+        fn run(&mut self) -> Result<VmExit, String> {
+            Ok(self.exits.pop_front().unwrap_or(VmExit::Hlt))
+        }
+        fn get_regs(&self) -> Result<GuestRegs, String>          { Ok(self.regs.clone()) }
+        fn set_regs(&mut self, r: &GuestRegs) -> Result<(), String> { self.regs = r.clone(); Ok(()) }
+        fn get_sregs(&self) -> Result<GuestSregs, String>         { Ok(self.sregs.clone()) }
+        fn set_sregs(&mut self, s: &GuestSregs) -> Result<(), String> { self.sregs = s.clone(); Ok(()) }
+        fn enable_software_breakpoints(&mut self) -> Result<(), String> { Ok(()) }
+    }
+
+    /// No-op VM backend for unit tests — no KVM file descriptors opened.
+    pub struct MockVmBackend;
+
+    impl VmBackend for MockVmBackend {
+        /// No-op: mock tests use `GuestMemory` directly; no hypervisor registration needed.
+        fn register_guest_memory(&self, _: u64, _: u64, _: u64) -> Result<(), String> { Ok(()) }
+        fn create_vcpu(&self, _id: u64) -> Result<Box<dyn VcpuBackend>, String> {
+            Ok(Box::new(MockVcpu::new()))
+        }
+    }
+}
