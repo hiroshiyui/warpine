@@ -218,10 +218,11 @@ impl super::Loader {
     pub fn dos_write(&self, fd: u32, buf_ptr: u32, len: u32, actual_ptr: u32) -> u32 {
         if let Some(data) = self.guest_slice_mut(buf_ptr, len as usize) {
             if fd == 1 || fd == 2 {
-                // In SDL2 text mode, stdout (fd=1) routes through VioManager so the
-                // SDL2 text renderer picks it up.  stderr (fd=2) still goes to the
-                // host terminal for diagnostics.
-                if fd == 1 && self.shared.use_sdl2_text.load(Ordering::Relaxed) {
+                // In SDL2 text mode, both stdout (fd=1) and stderr (fd=2) route
+                // through VioManager so messages appear in the SDL2 text window.
+                // Without this, error messages from guest apps (written to stderr)
+                // would be invisible to the user.
+                if self.shared.use_sdl2_text.load(Ordering::Relaxed) {
                     let written = data.len() as u32;
                     let data_copy = data.to_vec();
                     let mut console = self.shared.console_mgr.lock_or_recover();
@@ -970,7 +971,18 @@ impl super::Loader {
 
     pub fn dos_query_h_type(&self, hfile: u32, ptype: u32, pattr: u32) -> u32 {
         if ptype != 0 { self.guest_write::<u32>(ptype, if hfile < 3 { 1 } else { 0 }); }
-        if pattr != 0 { self.guest_write::<u32>(pattr, 0); }
+        if pattr != 0 {
+            // For standard handles (stdin=0, stdout=1, stderr=2) report the OS/2
+            // console device attribute word: bit 0 = stdin device, bit 1 = stdout
+            // device.  Both bits are set because the unredirected console (CON:) is
+            // simultaneously the input and output device.  Without these bits,
+            // QueryIsConsole(STDIN) returns false and 4OS2 falls back to getchar()
+            // (DosRead), bypassing KbdCharIn.  That creates double backspace/echo
+            // processing: dos_read_stdin does it once and egets does it again,
+            // producing garbled command-line input.
+            let attr = if hfile < 3 { 0x0003u32 } else { 0 };
+            self.guest_write::<u32>(pattr, attr);
+        }
         0
     }
 
@@ -1446,15 +1458,17 @@ mod tests {
         let loader = Loader::new_mock();
         let p_type = 0x2000u32;
         let p_attr = 0x2004u32;
-        // Handles 0–2 (stdin/stdout/stderr) → type 1 (character device)
+        // Handles 0–2 (stdin/stdout/stderr) → type 1 (character device),
+        // attr 0x0003 (stdin+stdout console device bits — makes QueryIsConsole return true)
         for hf in 0u32..3 {
             assert_eq!(loader.dos_query_h_type(hf, p_type, p_attr), 0);
             assert_eq!(loader.guest_read::<u32>(p_type), Some(1));
-            assert_eq!(loader.guest_read::<u32>(p_attr), Some(0));
+            assert_eq!(loader.guest_read::<u32>(p_attr), Some(0x0003));
         }
-        // Handle ≥3 (file) → type 0
+        // Handle ≥3 (file) → type 0, attr 0
         assert_eq!(loader.dos_query_h_type(100, p_type, p_attr), 0);
         assert_eq!(loader.guest_read::<u32>(p_type), Some(0));
+        assert_eq!(loader.guest_read::<u32>(p_attr), Some(0));
     }
 
     #[test]
