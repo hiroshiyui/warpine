@@ -11,20 +11,21 @@ This guide introduces the internals of Warpine and the OS/2 concepts it emulates
 1. [Background: OS/2 and LX Executables](#background-os2-and-lx-executables)
 2. [Architecture Overview](#architecture-overview)
 3. [LX Format Parser](#lx-format-parser)
-4. [KVM Virtualization Engine](#kvm-virtualization-engine)
-5. [Guest Memory Layout](#guest-memory-layout)
-6. [API Thunking Mechanism](#api-thunking-mechanism)
-7. [OS/2 API Emulation](#os2-api-emulation)
-8. [Threading Model](#threading-model)
-9. [IPC: Semaphores and Queues](#ipc-semaphores-and-queues)
-10. [Presentation Manager (GUI)](#presentation-manager-gui)
-11. [PM Callback Mechanism](#pm-callback-mechanism)
-12. [Text-Mode Console Subsystem](#text-mode-console-subsystem)
-13. [NLS (National Language Support)](#nls-national-language-support)
-14. [4OS2 Compatibility](#4os2-compatibility)
-15. [Filesystem I/O Design](#filesystem-io-design)
-16. [Module Structure](#module-structure)
-17. [Adding a New API](#adding-a-new-api)
+4. [NE Format Parser](#ne-format-parser)
+5. [KVM Virtualization Engine](#kvm-virtualization-engine)
+6. [Guest Memory Layout](#guest-memory-layout)
+7. [API Thunking Mechanism](#api-thunking-mechanism)
+8. [OS/2 API Emulation](#os2-api-emulation) (includes MMPM/2 audio subsystem)
+9. [Threading Model](#threading-model)
+10. [IPC: Semaphores and Queues](#ipc-semaphores-and-queues)
+11. [Presentation Manager (GUI)](#presentation-manager-gui)
+12. [PM Callback Mechanism](#pm-callback-mechanism)
+13. [Text-Mode Console Subsystem](#text-mode-console-subsystem)
+14. [NLS (National Language Support)](#nls-national-language-support)
+15. [4OS2 Compatibility](#4os2-compatibility)
+16. [Filesystem I/O Design](#filesystem-io-design)
+17. [Module Structure](#module-structure)
+18. [Adding a New API](#adding-a-new-api)
 
 ---
 
@@ -51,7 +52,7 @@ Warpine's execution pipeline has four stages:
 3. **Execute** — `Loader::run_vcpu()` creates a KVM vCPU in 32-bit protected mode and enters the VMEXIT loop.
 4. **Thunk** — When the guest calls an OS/2 API, it hits an INT 3 breakpoint at a magic address. The resulting `VMEXIT_DEBUG` is caught by the host, which reads arguments from the guest stack, executes the API in Rust, and writes the result back to guest RAX.
 
-For **CLI applications**, the vCPU runs on the main thread. For **PM (GUI) applications**, the winit event loop runs on the main thread (as required by most windowing systems), and the vCPU runs on a worker thread.
+For **CLI applications**, the vCPU runs on the main thread. For **PM (GUI) applications**, the SDL2 event loop runs on the main thread (as required by most windowing systems), and the vCPU runs on a worker thread.
 
 ---
 
@@ -77,6 +78,26 @@ The parser handles:
 - **Import table** — List of module names (e.g., `"DOSCALLS"`, `"PMWIN"`, `"PMGPI"`).
 
 Unit tests for the parser live alongside the source in `src/lx/`.
+
+---
+
+## NE Format Parser
+
+**Module:** `src/ne/` (`header.rs` for binary structures, `ne.rs` for orchestration)
+
+The NE (New Executable) format is used by OS/2 1.x 16-bit applications. While Warpine's primary target is 32-bit LX binaries, some 32-bit applications (notably 4OS2) historically included 16-bit NE imports, and future Phase 5 work targets full NE execution.
+
+The parser handles:
+
+- **MZ stub detection** — Same as LX: reads `e_lfanew` to find the NE header.
+- **NE header** — Magic (`NE`), linker version, segment/resource/module table offsets and counts, entry table offset, flags, initial CS/IP and SS/SP.
+- **Segment table** — Each `NeSegmentEntry` describes a 16-bit segment: file offset, size, flags (code/data/movable/preload), and minimum allocation size.
+- **Relocation records** — Per-segment relocation entries with source type (byte/word/far) and targets (internal, imported ordinal, imported name, OS fixup).
+- **Export table** — Entry table and exported name table mapping names to entry points.
+- **Import table** — Module reference table listing names of imported DLLs.
+- **Resource table** — Resource type/name table mapping resource IDs to file offsets.
+
+The parser has 16 unit tests in `src/ne/`. NE loading/execution (Phase 5) is planned but not yet implemented.
 
 ---
 
@@ -115,7 +136,7 @@ All addresses are guest physical addresses (GPA = GVA in Warpine's flat memory m
 | `0x00090000` (`TIB_BASE`) | Thread Information Block (TIB) for thread 1 |
 | `0x00091000` (`PIB_BASE`) | Process Information Block (PIB) |
 | `0x00092000` (`ENV_ADDR`) | Reserved (env block is now dynamically allocated) |
-| `0x01000000` (`MAGIC_API_BASE`) | API thunk stubs (10240 bytes of INT 3 instructions) |
+| `0x01000000` (`MAGIC_API_BASE`) | API thunk stubs (12288 bytes of INT 3 instructions) |
 | `0x010003FE` (`CALLBACK_RET_TRAP`) | PM callback return trap |
 | `0x010003FF` (`EXIT_TRAP_ADDR`) | Thread exit trap |
 | `0x02000000` (`DYNAMIC_ALLOC_BASE`) | Dynamic allocation pool (DosAllocMem, env block) |
@@ -152,7 +173,7 @@ This is Warpine's core trick for intercepting OS/2 API calls without modifying t
 
 ### Setup
 
-During loading, `setup_stubs()` fills a 10240-byte region at `MAGIC_API_BASE` with INT 3 (0xCC) instructions. When the LX loader encounters an import fixup for a known module, `resolve_import()` maps it to a specific address:
+During loading, `setup_stubs()` fills a 12288-byte region at `MAGIC_API_BASE` with INT 3 (0xCC) instructions. When the LX loader encounters an import fixup for a known module, `resolve_import()` maps it to a specific address:
 
 | Module | Base Constant | Address formula | Range |
 |---|---|---|---|
@@ -165,6 +186,7 @@ During loading, `setup_stubs()` fills a 10240-byte region at `MAGIC_API_BASE` wi
 | SESMGR | `SESMGR_BASE` (6144) | `MAGIC_API_BASE + 6144 + ordinal` | 6144–7167 |
 | NLS | `NLS_BASE` (7168) | `MAGIC_API_BASE + 7168 + ordinal` | 7168–8191 |
 | MSG | `MSG_BASE` (8192) | `MAGIC_API_BASE + 8192 + ordinal` | 8192–10239 |
+| MDM | `MDM_BASE` (10240) | `MAGIC_API_BASE + 10240 + ordinal` | 10240–12287 |
 
 The fixup is patched so the guest's `CALL` instruction targets the appropriate stub address.
 
@@ -204,9 +226,25 @@ The primary OS/2 API module. Implemented functions:
 | **Queues** | DosCreateQueue, DosOpenQueue, DosWriteQueue, DosReadQueue, DosCloseQueue, DosPurgeQueue, DosQueryQueue |
 | **Pipes** | DosCreatePipe |
 | **System** | DosQuerySysInfo, DosGetDateTime, DosQueryCp, DosQueryCtryInfo, DosMapCase, DosDevConfig, DosDevIOCtl |
-| **Stubs** | DosError, DosSetMaxFH, DosBeep, DosSetExceptionHandler, DosLoadModule, DosStartSession, and others |
+| **Audio** | DosBeep (real sine-wave tones via MMPM/2 beep_tone) |
+| **Stubs** | DosError, DosSetMaxFH, DosSetExceptionHandler, DosLoadModule, DosStartSession, and others |
 
 All blocking operations (DosSleep, DosWaitEventSem, DosRequestMutexSem, DosWaitMuxWaitSem, DosReadQueue, DosWaitThread) check the `exit_requested` flag in 100 ms intervals to ensure clean shutdown.
+
+### MMPM/2 (src/loader/mmpm.rs)
+
+Multimedia Presentation Manager/2 APIs. Dispatched at `MDM_BASE` (10240) + ordinal:
+
+| Ordinal | Function | Notes |
+|---|---|---|
+| 1 | `mciSendCommand` | Structured MCI command (MCI_OPEN, MCI_CLOSE, MCI_PLAY, MCI_STOP, etc.) |
+| 2 | `mciSendString` | Text-string MCI command (`"open waveaudio alias wave1"`) |
+| 3 | `mciFreeBlock` | Free an MCI-allocated block |
+| 4 | `mciGetLastError` | Retrieve the last MCI error string |
+
+`DosBeep` (DOSCALLS ordinal 286) is also routed through `mmpm::beep_tone()` which generates a real sine-wave tone at the requested frequency/duration via the SDL2 audio queue.
+
+`MmpmManager` tracks open waveaudio devices (by alias), queued audio data, and last error strings. Audio playback uses SDL2's audio queue (`AudioQueue<i16>`).
 
 ### PMWIN (src/loader/pm_win.rs)
 
@@ -261,21 +299,21 @@ OS/2 queues (`DosCreateQueue` / `DosReadQueue`) are named, prioritized message q
 
 **Modules:** `src/gui.rs`, `src/loader/pm_win.rs`, `src/loader/pm_gpi.rs`, `src/loader/pm_types.rs`
 
-The Presentation Manager (PM) is OS/2's GUI subsystem. Warpine implements it using **winit** (cross-platform window management) and **softbuffer** (CPU-based framebuffer rendering).
+The Presentation Manager (PM) is OS/2's GUI subsystem. Warpine implements it using **SDL2** (window management, event handling, and hardware-accelerated framebuffer rendering via streaming textures).
 
 ### Dual Execution Paths
 
 In `main.rs`, Warpine detects PM applications by checking if the executable imports the `"PMWIN"` module:
 
 - **CLI apps** — vCPU runs on the main thread, no event loop.
-- **PM apps** — winit event loop runs on the main thread (required by most windowing systems). The vCPU is spawned on a worker thread. Communication between the vCPU thread and the GUI thread happens via a channel (`GUISender` / `GUIReceiver`).
+- **PM apps** — SDL2 event loop runs on the main thread (required by SDL2). The vCPU is spawned on a worker thread. Communication between the vCPU thread and the GUI thread happens via a channel (`GUISender` / `GUIReceiver`).
 
 ### Window Lifecycle
 
 1. **WinInitialize** — Returns a handle to the anchor block (HAB).
 2. **WinCreateMsgQueue** — Creates a `PM_MsgQueue` and maps the calling thread to it.
 3. **WinRegisterClass** — Stores a `WindowClass` with the guest's window procedure address.
-4. **WinCreateStdWindow** — Sends a `GUIMessage::CreateWindow` to the GUI thread (which creates the actual winit window), creates frame and client `OS2Window` entries in the `WindowManager`, and returns the frame HWND.
+4. **WinCreateStdWindow** — Sends a `GUIMessage::CreateWindow` to the GUI thread (which creates the actual SDL2 window), creates frame and client `OS2Window` entries in the `WindowManager`, and returns the frame HWND.
 5. **WinGetMsg** — Blocks on the message queue condvar until a message is available. Returns FALSE on WM_QUIT (ending the message loop).
 6. **WinDispatchMsg** — Invokes the guest's window procedure via the callback mechanism (see below).
 7. **WinDestroyMsgQueue / WinTerminate** — Cleanup.
@@ -288,11 +326,11 @@ Drawing in PM uses Presentation Spaces (HPS):
 2. **GpiSetColor / GpiMove / GpiLine / GpiBox / GpiCharStringAt** — Modify the presentation space state and send `GUIMessage::Draw*` commands to the GUI thread.
 3. **WinEndPaint** — Sends `GUIMessage::PresentBuffer` to flush the framebuffer to the screen.
 
-The GUI thread (`GUIApp` in `src/gui.rs`) processes these messages, drawing into a pixel buffer via softbuffer, and presents it to the window surface.
+The GUI thread (`GUIApp` in `src/gui.rs`) processes these messages, drawing into a pixel buffer (SDL2 streaming texture), and presents it to the window via `Canvas::copy()`.
 
 ### Input Handling
 
-The GUI thread translates winit input events into OS/2 messages:
+The GUI thread translates SDL2 input events into OS/2 messages:
 - Keyboard events → `WM_CHAR`
 - Mouse movement → `WM_MOUSEMOVE`
 - Mouse buttons → `WM_BUTTON1DOWN` / `WM_BUTTON1UP`
@@ -668,8 +706,8 @@ The VFS is introduced incrementally:
 
 ```
 src/
-  main.rs              Entry point, CLI/PM detection, event loop setup
-  gui.rs               winit/softbuffer GUI, event handling, drawing
+  main.rs              Entry point, CLI/PM detection, SDL2 init
+  gui.rs               SDL2 GUI: event loop, Canvas/Texture rendering, input dispatch
   api.rs               DosWrite/DosExit FFI bridge stubs
   font8x16.rs          8x16 bitmap font for text rendering
   lx/
@@ -681,16 +719,25 @@ src/
     header.rs          NE binary format structures (NeHeader, NeSegmentEntry, NeRelocationEntry)
     ne.rs              NE file orchestration (16-bit OS/2 apps, 16 unit tests)
   loader/
-    mod.rs             Loader struct, SharedState, KVM setup, VMEXIT loop, API dispatch
-    constants.rs       Named constants (addresses, message IDs, mock handles)
+    mod.rs             Loader struct, SharedState, KVM/mock init
+    lx_loader.rs       LX executable loading into guest memory and fixup application
+    ne_exec.rs         NE executable loader infrastructure (Phase 5)
+    vcpu.rs            vCPU thread: VMEXIT loop, API call dispatch entry point
+    api_dispatch.rs    OS/2 API dispatch (ordinal → handler, all subsystems)
+    api_trace.rs       Structured tracing helpers (ordinal_to_name, module_for_ordinal)
+    constants.rs       Named constants (addresses, message IDs, ordinal bases)
     mutex_ext.rs       MutexExt trait (poison-recovering lock)
     managers.rs        MemoryManager, HandleManager, HDirManager, ResourceManager
     ipc.rs             Semaphores (event, mutex, muxwait) and queues
     pm_types.rs        PM data types (windows, classes, presentation spaces, WindowManager)
+    vm_backend.rs      VmBackend/VcpuBackend traits (KVM + mock implementations)
+    kvm_backend.rs     KVM-based VmBackend implementation
     guest_mem.rs       Guest memory read/write/translate helpers
+    locale.rs          Os2Locale: country/codepage information
     doscalls.rs        DOSCALLS API implementations (~40 functions)
     pm_win.rs          PMWIN API implementations (~50 ordinals)
     pm_gpi.rs          PMGPI API implementations (8 ordinals)
+    mmpm.rs            MMPM/2 audio: MmpmManager, beep_tone, mciSendCommand/mciSendString
     console.rs         VioManager: screen buffer, cursor state, raw mode, ANSI output
     viocalls.rs        VIOCALLS API implementations (VioWrtTTY, VioScrollUp, etc.)
     kbdcalls.rs        KBDCALLS API implementations (KbdCharIn, KbdStringIn, etc.)
@@ -698,6 +745,8 @@ src/
     process.rs         ProcessManager: DosExecPgm, DosWaitChild, directory tracking
     vfs.rs             VfsBackend trait, DriveManager, Os2Error, OS/2 data types, handle types
     vfs_hostdir.rs     HostDirBackend: HPFS-on-host-directory VfsBackend implementation
+    descriptors.rs     GDT/LDT descriptor table helpers
+build.rs               Linker search path for libSDL2 (via pkg-config)
 ```
 
 ---
@@ -718,7 +767,7 @@ To add a new OS/2 API call:
    }
    ```
 
-3. **Wire up the dispatch** — In the dispatch function (`handle_api_call()` in `mod.rs` for DOSCALLS, `handle_pmwin_call()` for PMWIN, `handle_pmgpi_call()` for PMGPI), add a match arm:
+3. **Wire up the dispatch** — In the dispatch function (`handle_api_call()` in `api_dispatch.rs` for DOSCALLS, `handle_pmwin_call()` for PMWIN, `handle_pmgpi_call()` for PMGPI), add a match arm:
    ```rust
    ORDINAL_NUMBER => {
        let param1 = self.guest_read::<u32>(esp + 4).unwrap_or(0);
@@ -741,11 +790,17 @@ Key conventions:
 
 ## Debugging
 
-Warpine uses the `log` crate with `env_logger`. Set the `RUST_LOG` environment variable to control verbosity:
+Warpine uses the `tracing` crate. `RUST_LOG` controls verbosity; `WARPINE_TRACE` selects the output format:
 
 ```bash
 # Full debug output — shows every API call, arguments, and return values
 RUST_LOG=debug cargo run -- samples/pm_demo/pm_demo.exe
+
+# strace-like compact one-line-per-call format
+WARPINE_TRACE=strace RUST_LOG=debug cargo run -- samples/hello/hello.exe
+
+# JSON Lines (machine-readable, for tooling/analysis)
+WARPINE_TRACE=json RUST_LOG=debug cargo run -- samples/hello/hello.exe
 
 # Info level — shows high-level milestones (parse, load, entry point)
 RUST_LOG=info cargo run -- samples/pm_demo/pm_demo.exe
@@ -754,6 +809,11 @@ RUST_LOG=info cargo run -- samples/pm_demo/pm_demo.exe
 RUST_LOG=warpine::loader=debug cargo run -- samples/hello/hello.exe
 RUST_LOG=warpine::gui=debug cargo run -- samples/pm_demo/pm_demo.exe
 ```
+
+`WARPINE_TRACE` values:
+- (unset) — default `tracing-subscriber` format with spans and timestamps
+- `strace` — compact `syscall(args) = retval` lines, one per API call
+- `json` — JSON Lines; each line is a self-contained record for log ingestion tools
 
 ### What debug output shows
 
@@ -805,10 +865,15 @@ The test suite covers three areas:
 |---|---|
 | `src/lx/header.rs` | LX header parsing, object table entry parsing, resource entry parsing |
 | `src/lx.rs` | MZ validation, LX signature detection, rejection of malformed binaries (excessive object/page counts, invalid EIP object, invalid page offset shift), parsing of a real `hello.exe` |
+| `src/ne/` | NE header parsing, segment table, relocation records, export/import tables, resource table (16 tests) |
 | `src/loader/managers.rs` | MemoryManager allocation, 4KB alignment, free-list reuse, top-of-heap coalescing, overflow/limit rejection, ResourceManager find operations, SharedMemManager name lookup |
 | `src/loader/console.rs` | VioManager screen buffer operations (scroll up/down, read cell str, defaults), key mapping (enter, printable, backspace → OS/2 charcode/scancode) |
 | `src/loader/stubs.rs` | DosEditName wildcard pattern replacement, DosQuerySysInfo QSV_* constant validation |
 | `src/loader/process.rs` | ProcessManager child tracking, wait-any semantics |
+| `src/loader/api_trace.rs` | ordinal_to_name (DOSCALLS, QUECALLS, MDM), module_for_ordinal (all ranges and boundaries) |
+| `src/loader/mmpm.rs` | MmpmManager waveaudio device open/close/play lifecycle, mciSendCommand dispatch, mciSendString parsing, mciFreeBlock, mciGetLastError |
+| `src/loader/vfs.rs` | DriveManager path resolution, device name detection, drive letter parsing |
+| `src/loader/vfs_hostdir.rs` | HostDirBackend case-insensitive lookup, sandbox enforcement, EA operations |
 | `src/gui.rs` | Y-coordinate flipping, rectangle rendering (filled/outlined), line drawing (horizontal/vertical/diagonal), text rendering pixel output and orientation |
 
 ### Integration testing with sample apps
