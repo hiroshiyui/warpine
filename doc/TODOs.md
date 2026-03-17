@@ -60,11 +60,13 @@ Unit tests, end-to-end integration tests, and a compatibility report — all imp
 ## Architecture & Refactoring Backlog
 
 ### Ordinal Table Canonical Build Tool
-- [ ] Write a standalone tool that reads real OS/2 system DLLs (DOSCALLS.DLL, PMWIN.DLL, PMGPI.DLL, etc.) using the LX parser and dumps the complete `ordinal → export name` mapping
-- [ ] Use this as ground truth instead of documentation (different fixpak levels can differ; documentation has errors)
-- [ ] Auto-generate a Rust source file with `const` ordinal definitions and a verification table
-- [ ] Cross-reference against the import tables of target binaries to catch mapping mismatches early
-- [ ] Note: the same ordinal can map to different APIs across OS/2 versions (1.x 16-bit vs 2.x 32-bit); the tool should handle multi-version comparison
+**Prerequisite: requires real OS/2 system DLLs (DOSCALLS.DLL, PMWIN.DLL, etc.) from a Warp 4 install.**
+
+Implementation plan (ready to execute once DLLs are available):
+1. Extend `LxFile` to parse entry table + resident/non-resident name tables (currently only import tables are parsed)
+2. `src/bin/ordinals.rs` — dump complete `ordinal → name` map from a DLL; output as text or `--emit-rust` for `const` definitions
+3. `--check` mode — cross-reference against warpine's `api_registry` to surface mismatches
+4. Multi-version comparison — diff ordinal maps across fixpak levels (same ordinal can map to different APIs in 1.x vs 2.x)
 
 ### Structured API Trace — Remaining
 - [ ] Per-argument typed names (e.g. `DosWrite(hfile=1, pBuf=0x500, cbBuf=42)`) — raw eip/esp captured now; argument decoding is future work
