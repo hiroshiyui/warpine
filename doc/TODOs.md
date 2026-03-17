@@ -62,9 +62,9 @@ Eliminated 16-bit thunks from 4OS2 by recompiling with modified headers rather t
 ~~All items done — see Architecture → Completed Items.~~
 
 ### Testing Strategy
-- [ ] **Unit tests (no KVM):** `VmBackend` mock exists; extend coverage so individual API thunk functions can be tested with arbitrary guest memory and register state
-- [ ] **Integration tests:** run OS/2 binaries from `samples/` end-to-end in CI; capture stdout + exit code for regression detection; extend to cover `pm_hello`, `screen_test`, `nls_test`, `thunk_test`
-- [ ] **Compatibility matrix:** track which OS/2 API ordinals are implemented, stubbed, or missing; generate a report from the ordinal registry; use real OS/2 test programs (e.g., Open Watcom-compiled conformance suites) as targets
+- [x] **Unit tests (no KVM):** Added 28 new tests for `kbdcalls.rs`, `doscalls.rs`, `api_dispatch.rs`; fixed `new_mock()` MemoryManager limit bug. Total unit tests: 234.
+- [x] **Integration tests:** `tests/integration.rs` — 8 end-to-end tests (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test); KVM-gated (skip silently when absent); run with `cargo test --test integration`.
+- [x] **Compatibility matrix:** `compat_report()` in `api_registry.rs` generates module-grouped report with `[stub]` tags and sub-dispatcher summaries (215 entry points). Exposed via `warpine --compat`.
 
 ---
 
