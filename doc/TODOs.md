@@ -36,6 +36,8 @@ Eliminated 16-bit thunks from 4OS2 by recompiling with modified headers rather t
 
 **SDL2 GUI Backend** — Migrated from `winit + softbuffer` to `sdl2 = { version = "0.37", features = ["unsafe_textures"] }`. `src/gui.rs` rewritten: polling event loop (`run_gui_loop`), per-window `Canvas<Window>` + streaming `Texture` with `BlendMode::None` for opaque pixel rendering. `build.rs` emits `cargo:rustc-link-search` from `pkg-config` so `rust-lld` finds `libSDL2.so` on Debian multi-arch.
 
+**PM Renderer Abstraction** — `PmRenderer` trait (`handle_message`, `poll_events`, `frame_sleep`) decouples rendering from SDL2. `Sdl2Renderer` carries all SDL2 state and absorbs the former `GUIApp`. `HeadlessRenderer` is a no-op backend for CI and unit testing. `run_pm_loop()` replaces `run_gui_loop()`. `push_msg` extracted as a free function. 7 `HeadlessRenderer` tests added.
+
 ---
 
 ## Architecture & Refactoring Backlog
@@ -52,8 +54,7 @@ Eliminated 16-bit thunks from 4OS2 by recompiling with modified headers rather t
 - [ ] TUI debug overlay showing live API call stream, memory map, window hierarchy, and PM message queue
 
 ### PM Renderer Abstraction
-- [ ] Define a `PmRenderer` trait: `render_frame(buf: &VgaTextBuffer)`, `render_pm_window(...)`, `poll_key_event() -> Option<Os2ScanCode>`, `poll_mouse_event() -> Option<Os2MouseEvent>`
-- [ ] SDL2 is the concrete backend; the trait boundary would enable a headless renderer for CI/automated PM application testing
+~~Done — see Architecture → Completed Items.~~
 
 ### SDL2 Backend — Remaining
 - [ ] OS/2 scan code table: map SDL2 `Scancode` to IBM PC Set-1 scan codes for accurate WM_CHAR SC field
