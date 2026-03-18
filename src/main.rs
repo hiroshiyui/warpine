@@ -260,8 +260,11 @@ fn run_lx(file_path: &str) {
         let code = shared.exit_code.load(std::sync::atomic::Ordering::Relaxed);
         std::process::exit(code);
     } else {
-        // CLI app: use SDL2 text-mode window unless WARPINE_HEADLESS is set.
-        let headless = std::env::var("WARPINE_HEADLESS").map(|v| v != "0").unwrap_or(false);
+        // CLI app: use SDL2 text-mode window only when stdout is a real terminal.
+        // When stdout is piped (e.g. spawned as a child by DosExecPgm), fall
+        // back to headless mode automatically — no env var needed.
+        use std::io::IsTerminal;
+        let headless = !std::io::stdout().is_terminal();
         if headless {
             // Headless / terminal mode: run directly (never returns).
             loader.setup_and_run_cli(&lx_file);
