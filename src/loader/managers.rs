@@ -161,6 +161,10 @@ pub struct ProcessManager {
     pub current_disk: u8,     // 1=A, 2=B, 3=C (default)
     pub current_dir: String,  // OS/2-style current directory (without drive letter), e.g. "\"
     pub children: HashMap<u32, std::process::Child>,
+    /// Background relay threads that forward child stdout to the parent VioManager.
+    /// Keyed by the same PID used in `children`.  Must be joined after the child
+    /// exits so no output is lost and the thread is properly reaped.
+    relay_threads: HashMap<u32, std::thread::JoinHandle<()>>,
     next_pid: u32,
 }
 
@@ -170,6 +174,7 @@ impl ProcessManager {
             current_disk: 3, // C:
             current_dir: String::from("\\"),
             children: HashMap::new(),
+            relay_threads: HashMap::new(),
             next_pid: 100,
         }
     }
@@ -193,7 +198,18 @@ impl ProcessManager {
         self.children.remove(&pid)
     }
 
+    /// Store the relay thread handle for a child (keyed by PID).
+    pub fn add_relay_thread(&mut self, pid: u32, handle: std::thread::JoinHandle<()>) {
+        self.relay_threads.insert(pid, handle);
+    }
+
+    /// Remove and return the relay thread handle for a child (if any).
+    pub fn take_relay_thread(&mut self, pid: u32) -> Option<std::thread::JoinHandle<()>> {
+        self.relay_threads.remove(&pid)
+    }
+
     /// Try to wait on any child (for DosWaitChild with DCWA_PROCESSTREE).
+    /// Returns (pid, exit_code) for the first finished child found.
     pub fn wait_any(&mut self) -> Option<(u32, i32)> {
         let mut finished = None;
         for (&pid, child) in self.children.iter_mut() {

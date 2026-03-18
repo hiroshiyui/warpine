@@ -4,6 +4,8 @@
 // DosExecPgm, DosWaitChild, DosKillProcess, DosQueryAppType.
 
 use std::process::Command;
+use std::io::Read;
+use std::sync::Arc;
 use log::{debug, warn};
 
 use super::constants::*;
@@ -92,15 +94,43 @@ impl super::Loader {
 
         match exec_flag {
             0 => {
-                // EXEC_SYNC: run and wait
-                match cmd.status() {
-                    Ok(status) => {
-                        let exit_code = status.code().unwrap_or(1) as u32;
-                        if p_res != 0 {
-                            self.guest_write::<u32>(p_res, 0);         // codeTerminate: 0=normal
-                            self.guest_write::<u32>(p_res + 4, exit_code); // codeResult
+                // EXEC_SYNC: pipe only stdout so the child's program output
+                // appears in the same SDL2 text window (or terminal) as the
+                // parent (e.g. 4OS2).  stderr is left inherited so warpine's
+                // own diagnostic log messages continue going to the terminal
+                // and do NOT clutter the SDL2 window.
+                // The child detects the piped stdout via isatty() and runs in
+                // headless mode automatically — no env var required.
+                cmd.stdout(std::process::Stdio::piped())
+                   .stderr(std::process::Stdio::inherit());
+
+                match cmd.spawn() {
+                    Ok(mut child) => {
+                        let stdout_pipe = child.stdout.take();
+
+                        let shared_out = self.shared.clone();
+                        let stdout_thread = stdout_pipe.map(move |pipe| {
+                            std::thread::spawn(move || relay_pipe_to_vio(pipe, shared_out))
+                        });
+
+                        let status = child.wait();
+
+                        if let Some(t) = stdout_thread { let _ = t.join(); }
+
+                        match status {
+                            Ok(status) => {
+                                let exit_code = status.code().unwrap_or(1) as u32;
+                                if p_res != 0 {
+                                    self.guest_write::<u32>(p_res, 0);
+                                    self.guest_write::<u32>(p_res + 4, exit_code);
+                                }
+                                NO_ERROR
+                            }
+                            Err(e) => {
+                                warn!("  DosExecPgm: wait failed: {}", e);
+                                ERROR_FILE_NOT_FOUND
+                            }
                         }
-                        NO_ERROR
                     }
                     Err(e) => {
                         warn!("  DosExecPgm: spawn failed: {}", e);
@@ -115,10 +145,25 @@ impl super::Loader {
                 }
             }
             1 | 2 | 4 => {
-                // EXEC_ASYNC / EXEC_ASYNCRESULT / EXEC_BACKGROUND: spawn and track
+                // EXEC_ASYNC / EXEC_ASYNCRESULT / EXEC_BACKGROUND: pipe stdout
+                // so the child detects it's not a terminal and skips SDL2.
+                // stderr inherits so warpine diagnostics reach the terminal.
+                // A background relay thread forwards the child's stdout to the
+                // parent's VioManager so the output appears in the same SDL2
+                // text window as the parent (e.g. 4OS2).
+                cmd.stdout(std::process::Stdio::piped())
+                   .stderr(std::process::Stdio::inherit());
                 match cmd.spawn() {
-                    Ok(child) => {
-                        let pid = self.shared.process_mgr.lock_or_recover().add_child(child);
+                    Ok(mut child) => {
+                        let stdout_pipe = child.stdout.take();
+                        let shared_out = self.shared.clone();
+                        let mut proc_mgr = self.shared.process_mgr.lock_or_recover();
+                        let pid = proc_mgr.add_child(child);
+                        if let Some(pipe) = stdout_pipe {
+                            let relay = std::thread::spawn(move || relay_pipe_to_vio(pipe, shared_out));
+                            proc_mgr.add_relay_thread(pid, relay);
+                        }
+                        drop(proc_mgr);
                         if p_res != 0 {
                             self.guest_write::<u32>(p_res, 0);       // codeTerminate (unused for async)
                             self.guest_write::<u32>(p_res + 4, pid); // PID
@@ -175,6 +220,9 @@ impl super::Loader {
                     match child.wait() {
                         Ok(status) => {
                             let code = status.code().unwrap_or(1) as u32;
+                            // Join relay thread so all output is flushed before returning
+                            let relay = self.shared.process_mgr.lock_or_recover().take_relay_thread(target_pid);
+                            if let Some(t) = relay { let _ = t.join(); }
                             if p_res != 0 {
                                 self.guest_write::<u32>(p_res, 0);
                                 self.guest_write::<u32>(p_res + 4, code);
@@ -193,6 +241,8 @@ impl super::Loader {
             if option == 1 {
                 // NOWAIT: try all children
                 if let Some((pid, code)) = self.shared.process_mgr.lock_or_recover().wait_any() {
+                    let relay = self.shared.process_mgr.lock_or_recover().take_relay_thread(pid);
+                    if let Some(t) = relay { let _ = t.join(); }
                     if p_res != 0 {
                         self.guest_write::<u32>(p_res, 0);
                         self.guest_write::<u32>(p_res + 4, code as u32);
@@ -207,6 +257,8 @@ impl super::Loader {
                 loop {
                     if self.shutting_down() { return ERROR_INVALID_FUNCTION; }
                     if let Some((pid, code)) = self.shared.process_mgr.lock_or_recover().wait_any() {
+                        let relay = self.shared.process_mgr.lock_or_recover().take_relay_thread(pid);
+                        if let Some(t) = relay { let _ = t.join(); }
                         if p_res != 0 {
                             self.guest_write::<u32>(p_res, 0);
                             self.guest_write::<u32>(p_res + 4, code as u32);
@@ -326,6 +378,23 @@ impl super::Loader {
             offset += 1;
         }
         strings
+    }
+}
+
+/// Read from `pipe` in a loop and write every chunk to the parent's
+/// VioManager so the child's text output appears in the same SDL2 text
+/// window (or terminal) as the parent process.
+fn relay_pipe_to_vio<R: Read>(mut pipe: R, shared: Arc<super::SharedState>) {
+    use super::mutex_ext::MutexExt;
+    let mut buf = [0u8; 512];
+    loop {
+        match pipe.read(&mut buf) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                let mut console = shared.console_mgr.lock_or_recover();
+                console.write_tty(&buf[..n], 0x07);
+            }
+        }
     }
 }
 
