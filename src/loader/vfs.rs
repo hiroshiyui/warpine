@@ -435,6 +435,13 @@ pub trait VfsBackend: Send + Sync {
         lock: &[FileLockRange],
         timeout_ms: u32,
     ) -> VfsResult<()>;
+
+    /// Resolve a relative VFS path to an absolute host filesystem path.
+    ///
+    /// Used by `DosExecPgm` to locate the executable on the host for launching
+    /// a child Warpine process.  Returns `None` if the path does not exist or
+    /// the backend does not support host-path exposure.
+    fn to_host_path(&self, _rel_path: &str) -> Option<std::path::PathBuf> { None }
 }
 
 // ── DriveManager ──
@@ -562,6 +569,17 @@ impl DriveManager {
     pub fn drive_config(&self, drive: u8) -> Option<&DriveConfig> {
         if drive >= 26 { return None; }
         self.drive_configs[drive as usize].as_ref()
+    }
+
+    /// Resolve an OS/2 path (e.g. `C:\hello.exe`) to the corresponding host
+    /// filesystem path by routing through the mounted VFS backend.
+    ///
+    /// Returns `None` if the drive is not mounted, the path does not exist,
+    /// or the backend does not expose host paths.
+    pub fn resolve_to_host_path(&self, os2_path: &str) -> Option<std::path::PathBuf> {
+        let (drive, rel) = self.resolve_path(os2_path).ok()?;
+        let backend = self.drives[drive as usize].as_ref()?;
+        backend.to_host_path(&rel)
     }
 
     /// Get the backend for a drive, or INVALID_DRIVE if not mounted.

@@ -1221,6 +1221,10 @@ impl VfsBackend for HostDirBackend {
 
         Ok(())
     }
+
+    fn to_host_path(&self, rel_path: &str) -> Option<std::path::PathBuf> {
+        self.resolve_ci(rel_path)
+    }
 }
 
 // ── Tests ──

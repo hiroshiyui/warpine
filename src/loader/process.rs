@@ -30,18 +30,22 @@ impl super::Loader {
         };
         debug!("    args: {:?}", args);
 
-        // Resolve the program path through the sandbox
-        let prog_path = match self.translate_path(&prog_name) {
-            Ok(p) => p,
-            Err(e) => {
-                // Write failing module name to error buffer
-                if p_objname != 0 && cb_objname > 0 {
-                    let bytes = prog_name.as_bytes();
-                    let n = bytes.len().min(cb_objname as usize - 1);
-                    self.guest_write_bytes(p_objname, &bytes[..n]);
-                    self.guest_write::<u8>(p_objname + n as u32, 0);
+        // Resolve the program path via the DriveManager VFS (handles C:\ → host path,
+        // case-insensitive lookup, per-drive current directory, etc.).
+        let prog_path = {
+            let dm = self.shared.drive_mgr.lock_or_recover();
+            match dm.resolve_to_host_path(&prog_name) {
+                Some(p) => p,
+                None => {
+                    warn!("  DosExecPgm: cannot resolve '{}' via VFS", prog_name);
+                    if p_objname != 0 && cb_objname > 0 {
+                        let bytes = prog_name.as_bytes();
+                        let n = bytes.len().min(cb_objname as usize - 1);
+                        self.guest_write_bytes(p_objname, &bytes[..n]);
+                        self.guest_write::<u8>(p_objname + n as u32, 0);
+                    }
+                    return ERROR_FILE_NOT_FOUND;
                 }
-                return e;
             }
         };
 
