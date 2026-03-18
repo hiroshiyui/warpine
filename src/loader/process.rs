@@ -246,31 +246,53 @@ impl super::Loader {
 
     /// DosQueryAppType (ordinal 323): query application type.
     ///
-    /// Returns application type flags. For simplicity, check if the file
-    /// is an OS/2 LX executable and return appropriate flags.
+    /// Resolves the path through the DriveManager VFS (same as DosExecPgm /
+    /// DosFindFirst), then inspects the MZ/LX/NE signature to determine the
+    /// OS/2 application-type flags.
     pub fn dos_query_app_type(&self, psz_name: u32, p_flags: u32) -> u32 {
         let name = self.read_guest_string(psz_name);
         debug!("  DosQueryAppType('{}')", name);
 
-        let path = match self.translate_path(&name) {
-            Ok(p) => p,
-            Err(e) => return e,
+        let path = {
+            let dm = self.shared.drive_mgr.lock_or_recover();
+            match dm.resolve_to_host_path(&name) {
+                Some(p) => p,
+                None => return ERROR_FILE_NOT_FOUND,
+            }
         };
 
         if !path.exists() {
             return ERROR_FILE_NOT_FOUND;
         }
 
-        // Try to detect if it's an OS/2 executable by checking MZ+LX signature
+        // Detect executable type from MZ stub + secondary signature.
+        // FAPPTYP_* flags (OS/2 Toolkit header values):
+        //   0x0001 NOTWINDOWCOMPAT  — text-mode OS/2 32-bit app
+        //   0x0002 WINDOWCOMPAT     — PM-capable OS/2 app
+        //   0x0003 WINDOWAPI        — PM app
+        //   0x0010 DLL              — dynamic link library
+        //   0x0020 DOS              — real-mode DOS app
         let app_type = if let Ok(mut f) = std::fs::File::open(&path) {
-            use std::io::Read;
-            let mut header = [0u8; 2];
-            if f.read_exact(&mut header).is_ok() && header == [b'M', b'Z'] {
-                // FAPPTYP_NOTWINDOWCOMPAT (1) = text-mode OS/2 app
-                // This is a simplification — ideally parse the LX header flags
-                1u32
+            use std::io::{Read, Seek, SeekFrom};
+            let mut mz = [0u8; 64];
+            if f.read_exact(&mut mz).is_ok() && mz[0] == b'M' && mz[1] == b'Z' {
+                // Read e_lfanew (offset 0x3C) to find secondary header
+                let e_lfanew = u32::from_le_bytes([mz[60], mz[61], mz[62], mz[63]]);
+                let mut sig = [0u8; 2];
+                if f.seek(SeekFrom::Start(e_lfanew as u64)).is_ok()
+                    && f.read_exact(&mut sig).is_ok()
+                {
+                    match &sig {
+                        b"LX" => 1, // FAPPTYP_NOTWINDOWCOMPAT — OS/2 32-bit LX
+                        b"NE" => 1, // OS/2 16-bit NE
+                        b"PE" => 0, // PE — not an OS/2 app
+                        _    => 1, // Unknown secondary — assume OS/2
+                    }
+                } else {
+                    1 // MZ only, no secondary header — treat as OS/2
+                }
             } else {
-                0 // not an executable
+                0 // not an MZ executable
             }
         } else {
             0
@@ -310,6 +332,46 @@ impl super::Loader {
 #[cfg(test)]
 mod tests {
     use super::super::managers::ProcessManager;
+    use super::super::Loader;
+    use super::super::mutex_ext::MutexExt;
+
+    /// DosQueryAppType resolves paths through the DriveManager VFS and
+    /// classifies MZ+LX executables as FAPPTYP_NOTWINDOWCOMPAT (1).
+    #[test]
+    fn test_dos_query_app_type_lx_exe() {
+        let path = "samples/hello/hello.exe";
+        if !std::path::Path::new(path).exists() { return; }
+
+        let loader = Loader::new_mock();
+        // Mount C: → samples/hello/ so "C:\hello.exe" resolves correctly
+        {
+            let mut dm = loader.shared.drive_mgr.lock_or_recover();
+            dm.mount(2, Box::new(super::super::vfs_hostdir::HostDirBackend::new("samples/hello".into()).unwrap()));
+        }
+        // Write "C:\hello.exe" into guest memory at address 0x3000
+        let name = b"C:\\hello.exe\0";
+        loader.guest_write_bytes(0x3000, name).unwrap();
+        let p_flags = 0x3100u32;
+        loader.guest_write::<u32>(p_flags, 0xDEAD).unwrap();
+
+        let rc = loader.dos_query_app_type(0x3000, p_flags);
+        assert_eq!(rc, 0, "DosQueryAppType should return NO_ERROR");
+        let flags = loader.guest_read::<u32>(p_flags).unwrap();
+        assert_eq!(flags, 1, "LX exe should be FAPPTYP_NOTWINDOWCOMPAT (1)");
+    }
+
+    #[test]
+    fn test_dos_query_app_type_missing_file() {
+        let loader = Loader::new_mock();
+        {
+            let mut dm = loader.shared.drive_mgr.lock_or_recover();
+            dm.mount(2, Box::new(super::super::vfs_hostdir::HostDirBackend::new("samples/hello".into()).unwrap()));
+        }
+        let name = b"C:\\nonexistent_xyz.exe\0";
+        loader.guest_write_bytes(0x3000, name).unwrap();
+        let rc = loader.dos_query_app_type(0x3000, 0);
+        assert_eq!(rc, 2, "missing file should return ERROR_FILE_NOT_FOUND (2)");
+    }
 
     #[test]
     fn test_process_manager_add_child() {
