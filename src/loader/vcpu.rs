@@ -350,10 +350,15 @@ impl super::Loader {
                     // zeros already filled by kvm_backend
                     warn!("  [VCPU {}] MMIO read at 0x{:08X} ({} bytes) — returning zeros",
                            vcpu_id, addr, size);
+                    // Rate-limit repeated accesses to unmapped memory to avoid
+                    // spinning the VCPU thread at 100% CPU.
+                    std::thread::sleep(std::time::Duration::from_millis(1));
                 }
                 VmExit::MmioWrite { addr } => {
                     // Guest write to unmapped memory — silently ignore
                     warn!("  [VCPU {}] MMIO write at 0x{:08X} — ignoring", vcpu_id, addr);
+                    // Rate-limit same as MmioRead.
+                    std::thread::sleep(std::time::Duration::from_millis(1));
                 }
                 VmExit::Shutdown => {
                     let regs = vcpu.get_regs().unwrap();
