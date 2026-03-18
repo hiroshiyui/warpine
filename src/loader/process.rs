@@ -220,9 +220,16 @@ impl super::Loader {
                     match child.wait() {
                         Ok(status) => {
                             let code = status.code().unwrap_or(1) as u32;
-                            // Join relay thread so all output is flushed before returning
-                            let relay = self.shared.process_mgr.lock_or_recover().take_relay_thread(target_pid);
-                            if let Some(t) = relay { let _ = t.join(); }
+                            // Drop the relay thread handle (detaches it).  The relay
+                            // thread will exit on its own within microseconds: the
+                            // child process has exited so the pipe write-end is closed,
+                            // and the next pipe.read() will return EOF.  We must NOT
+                            // call t.join() here — if the relay thread is currently
+                            // inside write_tty (holding console_mgr) while the SDL2
+                            // renderer is also trying to acquire it, the join would
+                            // deadlock until the next render frame (≥16 ms), which
+                            // would make DosWaitChild appear to hang.
+                            drop(self.shared.process_mgr.lock_or_recover().take_relay_thread(target_pid));
                             if p_res != 0 {
                                 self.guest_write::<u32>(p_res, 0);
                                 self.guest_write::<u32>(p_res + 4, code);
@@ -241,8 +248,7 @@ impl super::Loader {
             if option == 1 {
                 // NOWAIT: try all children
                 if let Some((pid, code)) = self.shared.process_mgr.lock_or_recover().wait_any() {
-                    let relay = self.shared.process_mgr.lock_or_recover().take_relay_thread(pid);
-                    if let Some(t) = relay { let _ = t.join(); }
+                    drop(self.shared.process_mgr.lock_or_recover().take_relay_thread(pid));
                     if p_res != 0 {
                         self.guest_write::<u32>(p_res, 0);
                         self.guest_write::<u32>(p_res + 4, code as u32);
@@ -257,8 +263,7 @@ impl super::Loader {
                 loop {
                     if self.shutting_down() { return ERROR_INVALID_FUNCTION; }
                     if let Some((pid, code)) = self.shared.process_mgr.lock_or_recover().wait_any() {
-                        let relay = self.shared.process_mgr.lock_or_recover().take_relay_thread(pid);
-                        if let Some(t) = relay { let _ = t.join(); }
+                        drop(self.shared.process_mgr.lock_or_recover().take_relay_thread(pid));
                         if p_res != 0 {
                             self.guest_write::<u32>(p_res, 0);
                             self.guest_write::<u32>(p_res + 4, code as u32);
