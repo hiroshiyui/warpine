@@ -124,6 +124,21 @@ Implementation plan (ready to execute once DLLs are available):
 NE format parser complete (`src/ne/`): NeHeader, segment/relocation/entry tables, name table, 16 unit tests. NE loader skeleton in place: `load_ne()`, `apply_ne_fixups()`, `setup_guest_ne()`, `setup_and_run_ne_cli()`, `handle_ne_api_call()`, `resolve_import_16()`.
 
 - [x] **GDT tiling** — 4096 tiled 16-bit read/write data descriptors (GDT[4..4100], selectors 0x20..0x8020) populated in `setup_idt`; `DosFlatToSel`/`DosSelToFlat` use tile arithmetic; 16:16 LX fixups write correct tile selectors. Fixes `__Far16Func2` GPF crash and enables Far16 thunks in LX apps.
+- [ ] **GDT: missing 16-bit code alias at selector 0x0028** — *first crash captured by crash dump facility.*
+  - **Symptom:** `#GP(0x0028)` immediately after 4OS2 prompt appears. Fault instruction at flat
+    `0x00051377`: `66 EA 00 00 28 00` = `JMP FAR 0x0028:0x0000` (32-bit mode + 66h prefix →
+    16-bit far jump). The CPU rejects loading CS=0x0028 because our GDT[5] is a DATA tile, not
+    a CODE descriptor.
+  - **Root cause:** In real OS/2, GDT[5] (selector 0x0028) is a **16-bit code alias** (base=0,
+    limit=0xFFFF, type=code/exec+read, db=0) used by `__Far16` thunk stubs to enter 16-bit
+    execution mode. Our emulation maps 0x0028 to tile 1 (data, base=0x1000), which is wrong.
+  - **Fix needed:** Add a proper 16-bit CODE descriptor at GDT[5] (selector 0x0028) with base=0,
+    limit=0xFFFF. The actual tile descriptors for `DosFlatToSel`/`DosSelToFlat` must shift to
+    start at GDT[6] (selector 0x0030) instead of GDT[4]. Update `TILED_SEL_START_INDEX`,
+    `DosFlatToSel`, `DosSelToFlat`, and the Far16 fixup code in `lx_loader.rs` accordingly.
+  - **Also note:** `format_call()` in `api_dispatch.rs` is now called unconditionally (for the
+    ring buffer). Previously it was gated on DEBUG level. Consider a compile-time or runtime
+    flag to skip formatting if overhead becomes a concern in tight loops.
 - [ ] **16-bit API thunking** — NE apps use Pascal calling convention and `_far16` pointers; add 16-bit dispatch alongside existing 32-bit `_System` dispatch, with segment:offset ↔ flat address translation
 - [ ] **Mode switching** — handle transitions between 16-bit NE code and 32-bit flat code (e.g., 16-bit app calling a 32-bit DLL)
 
