@@ -57,6 +57,40 @@ Unit tests, end-to-end integration tests, and a compatibility report — all imp
 
 ---
 
+## Developer Tooling
+
+### A — Enhanced Crash Dump *(low effort, high immediate value)*
+On any fatal VMEXIT or unhandled guest exception: capture all CPU registers, segment descriptors, top ~32 stack words, raw hex bytes at EIP, and the last N entries from the API call ring buffer (see C below). Write to `warpine-crash-<pid>.txt` and print a summary to stderr. Requires no external dependencies.
+
+- [ ] Structured `CrashReport` type — collects regs, segs, stack words, code bytes, recent API calls
+- [ ] `dump_crash_report()` called from the VMEXIT exception path and any `panic!`-equivalent site
+- [ ] Output: human-readable `.txt` (columns for hex + ASCII) and optionally JSON for tooling
+- [ ] Integration test: inject a synthetic fault and assert the dump file is created with expected fields
+
+### B — GDB Remote Stub *(medium effort, highest interactive value)*
+Implement GDB RSP (Remote Serial Protocol) over a TCP socket so `gdb`, `gef`, or `pwndbg` can attach to a live guest. KVM already supports single-stepping (RFLAGS.TF) and hardware breakpoints (DR0–DR3). The `gdbstub` crate provides the protocol framing.
+
+- [ ] Add optional dependency: `gdbstub` + `gdbstub-arch` (x86_32 target)
+- [ ] `GdbStubBackend` implementing `gdbstub::Target` — reads/writes guest memory via `GuestMemory`, gets/sets regs via `VcpuBackend`
+- [ ] TCP listener on `WARPINE_GDB_PORT` (e.g. 1234); accept one connection per session
+- [ ] Single-step via `RFLAGS.TF` on next VMENTRY
+- [ ] Hardware breakpoints via DR0–DR3 + DR7 (up to 4 simultaneous)
+- [ ] Software breakpoints: patch guest INT 3 byte, restore on hit
+- [ ] Memory read/write: expose full 128 MB guest flat address space
+- [ ] Stop on guest exception with correct signal mapping (SIGSEGV, SIGILL, etc.)
+- [ ] Integration: `--gdb` CLI flag enables the listener; execution pauses until GDB attaches
+
+### C — API Call Ring Buffer *(low effort, complements A and B)*
+Keep the last 256 API calls in a circular buffer in `SharedState`. Already have the trace format in `api_trace.rs`; just needs a ring buffer and a reader.
+
+- [ ] `ApiCallRecord` struct: ordinal, name, formatted args string, return value, timestamp
+- [ ] `SharedState::api_ring: Mutex<RingBuffer<ApiCallRecord, 256>>`
+- [ ] `api_dispatch.rs` pushes one record per call (zero-cost when ring is disabled at compile time)
+- [ ] `dump_crash_report()` (from A) drains the ring buffer into the crash dump
+- [ ] GDB stub (from B) can expose the ring as a synthetic memory region or monitor command
+
+---
+
 ## Architecture & Refactoring Backlog
 
 ### Ordinal Table Canonical Build Tool
