@@ -144,7 +144,8 @@ NE format parser complete (`src/ne/`): NeHeader, segment/relocation/entry tables
     `__Far16` far pointer. Two possible approaches:
     1. Fix the GDT (correct long-term approach, needed for real 16-bit app support anyway).
     2. Patch JPOS2DLL to eliminate its remaining `__Far16` usage (narrower fix).
-    Option 1 is preferred.
+    Option 1 is preferred. See `doc/developer_guide.md` § *4OS2 Compatibility* for a full
+    explanation of which patches can/cannot be reverted and why.
   - **Also note:** `format_call()` in `api_dispatch.rs` is now called unconditionally (for the
     ring buffer). Previously it was gated on DEBUG level. Consider a compile-time or runtime
     flag to skip formatting if overhead becomes a concern in tight loops.
