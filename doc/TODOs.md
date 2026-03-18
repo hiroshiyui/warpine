@@ -85,7 +85,7 @@ Implementation plan (ready to execute once DLLs are available):
 ### 16-bit Compatibility (NE format)
 NE format parser complete (`src/ne/`): NeHeader, segment/relocation/entry tables, name table, 16 unit tests. NE loader skeleton in place: `load_ne()`, `apply_ne_fixups()`, `setup_guest_ne()`, `setup_and_run_ne_cli()`, `handle_ne_api_call()`, `resolve_import_16()`.
 
-- [ ] **GDT tiling** — create 16-bit segment descriptors in the GDT for each NE segment (one per 64KB region). KVM executes 16-bit code natively; the CPU switches between 16-bit and 32-bit segments when descriptors are set up correctly. Also fixes 16-bit thunks in LX apps as a side effect.
+- [x] **GDT tiling** — 4096 tiled 16-bit read/write data descriptors (GDT[4..4100], selectors 0x20..0x8020) populated in `setup_idt`; `DosFlatToSel`/`DosSelToFlat` use tile arithmetic; 16:16 LX fixups write correct tile selectors. Fixes `__Far16Func2` GPF crash and enables Far16 thunks in LX apps.
 - [ ] **16-bit API thunking** — NE apps use Pascal calling convention and `_far16` pointers; add 16-bit dispatch alongside existing 32-bit `_System` dispatch, with segment:offset ↔ flat address translation
 - [ ] **Mode switching** — handle transitions between 16-bit NE code and 32-bit flat code (e.g., 16-bit app calling a 32-bit DLL)
 
