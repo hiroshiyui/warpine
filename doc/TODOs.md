@@ -192,20 +192,109 @@ Convert Warpine's internal string representation to UTF-8, with codepage↔UTF-8
 - [ ] **Codepage state** — `DosQueryCp`/`DosSetProcessCp` track the active process codepage in `SharedState`; plumb it through all conversion sites
 - [ ] **Path strings** — `DosOpen`, `DosFindFirst/Next`, `DosDelete`, `DosMove`, etc.: decode guest path bytes → UTF-8 before VFS lookup; encode result strings back to guest CP on return
 - [ ] **VIO output** — `VioWrtTTY`, `VioWrtCharStrAtt`, etc.: decode CP bytes → Unicode codepoints at write time; `VioManager` screen buffer becomes `Vec<(char, u8)>` (codepoint + attribute)
-- [ ] **SDL2 text renderer** — replace static CP437 8×16 bitmap glyph table with a Unicode font (SDL2\_ttf or embedded PSF/BDF); renders any codepoint correctly regardless of active codepage
+- [ ] **SDL2 text renderer** — replace static CP437 8×16 bitmap glyph table with GNU Unifont (see *GNU Unifont Integration* sections above); Phase A covers SBCS, Phase B covers DBCS 16×16 glyphs
 - [ ] **PM strings** — `WinSetWindowText`, window titles, menu items, clipboard text: decode at PM API entry
 - [ ] **UCONV.DLL** — implement `UniCreateUconvObject`, `UniUconvToUcs`, `UniUconvFromUcs` etc. using `encoding_rs`; unlocks OS/2 apps that do their own Unicode conversion
 
 Sequencing: codepage state → path strings → VIO output → screen buffer/font → PM strings → UCONV.DLL.
 
-### Code Page and DBCS Support
-- [ ] `DosQueryCp` / `DosSetProcessCp` — track current process code page accurately
-- [ ] DBCS lead-byte table for CP932, CP949, CP950, CP936 — needed for `DosQueryDBCSEnv` and multi-byte VIO string handling
-- [ ] VGA font loader for DBCS (16×16 full-width glyphs)
+### GNU Unifont Integration — SBCS (Phase A)
+
+Replace the hand-crafted partial CP437 font with full 256-glyph tables generated at build time from GNU Unifont, then extend to additional SBCS code pages. Unifont is GPL-2+ with a font exception (compatible with GPL-3 Warpine for static embedding).
+
+**Source files to vendor:**
+- `vendor/unifont/unifont-<ver>.hex` — Unicode BMP (8×16 for SBCS, 16×16 for CJK)
+- `vendor/codepage/CP437.TXT`, `CP850.TXT`, `CP852.TXT`, `CP866.TXT` — Unicode Consortium CP→Unicode mapping tables
+
+**A1 — `build.rs` extractor**
+- [ ] For each target codepage: parse `CP<n>.TXT` (u8 → char), look up each of the 256 codepoints in Unifont, emit `src/generated/font_cp<n>.rs` with `pub static GLYPHS: [[u8; 16]; 256]`
+- [ ] Skip 16×16 Unifont entries (used only for DBCS — Phase B); undefined bytes → blank `[0u8; 16]`
+- [ ] Generated files committed; `build.rs` only reruns if vendor sources change
+
+**A2 — Codepage dispatcher in `text_renderer.rs`**
+- [ ] `get_glyph_sbcs(ch: u8, cp: u32) -> [u8; 16]` dispatches to the correct generated table
+- [ ] CP targets for initial delivery: 437 (drop-in), 850 (Western Europe), 852 (Central Europe), 866 (Cyrillic)
+
+**A3 — Thread `active_codepage` through to renderer**
+- [ ] Add `active_codepage: u32` to `VgaTextBuffer`, populated from `SharedState::locale.codepage` at snapshot time
+- [ ] Pass it into `render_frame()` and down to `get_glyph_sbcs()`
+
+**A4 — Cleanup**
+- [ ] Delete `src/font8x16.rs` and the hand-crafted `match` block in `get_cp437_glyph()`
+- [ ] Update `src/gui/mod.rs` exports; remove `get_cp437_glyph` from public API
+- [ ] Unlock `Os2Locale::codepage` for non-437 SBCS locales (850/852/866) once Watcom CRT path is confirmed safe
+
+---
+
+### GNU Unifont Integration — DBCS (Phase B)
+
+DBCS (Double-Byte Character Set) support for CP932 (Shift-JIS / Japanese), CP936 (GBK / Simplified Chinese), CP949 (EUC-KR / Korean), CP950 (Big5 / Traditional Chinese). Depends on Phase A being complete.
+
+**OS/2 DBCS cell model** (important context):
+In OS/2 VIO text mode a DBCS character occupies two consecutive screen cells: cell N holds the lead byte + attribute, cell N+1 holds the trail byte + same attribute. `VioCheckCharType` distinguishes SBCS=0, DBCS-lead=2, DBCS-trail=3. `VioManager::buffer: Vec<(u8, u8)>` already stores raw lead/trail bytes naturally — no storage format change is needed.
+
+**B1 — Lead-byte range tables**
+- [ ] `dbcs_lead_ranges(cp: u32) -> &'static [(u8, u8)]` in `locale.rs`:
+  - CP932: `(0x81, 0x9F), (0xE0, 0xFC)`
+  - CP936 / 949 / 950: `(0x81, 0xFE)`
+  - All others: `&[]` (SBCS)
+
+**B2 — `CellKind` annotation in `VgaTextBuffer`**
+- [ ] Add `pub enum CellKind { Sbcs, DbcsLead, DbcsTail }` and `pub cell_kind: Vec<CellKind>` (parallel to `cells[]`)
+- [ ] `VgaTextBuffer::snapshot()` runs `annotate_dbcs(cells, codepage)` — a single left-to-right scan using `dbcs_lead_ranges()`; marks DBCS pairs, leaves everything else as `Sbcs`; O(cols×rows) per frame
+
+**B3 — 16×16 DBCS render path in `Sdl2TextRenderer::render_frame()`**
+- [ ] Replace column `for` loop with a `while col < cols` loop:
+  - `DbcsLead`: decode lead+trail → Unicode codepoint, look up 16×16 Unifont glyph (`[u8; 32]`), render into pixels at `col*8 .. col*8+16` (two SBCS column widths), advance `col += 2`
+  - `DbcsTail`: `col += 1` (already drawn by its lead cell)
+  - `Sbcs`: existing 8×16 path, `col += 1`
+- [ ] Window stays 640 px wide (80 cols × 8 px) — no resize needed
+
+**B4 — DBCS Unicode mapping tables (build.rs extension)**
+- [ ] Vendor `SHIFTJIS.TXT`, `GBK.TXT`, `KSX1001.TXT`, `BIG5.TXT` (Unicode Consortium)
+- [ ] `build.rs` emits `src/generated/dbcs_cp<n>.rs`: sorted `&[(u16, u32)]` (DBCS codeword → Unicode codepoint); runtime lookup via `binary_search_by_key`
+- [ ] `decode_dbcs(lead: u8, trail: u8, cp: u32) -> char` utility function
+
+**B5 — 16×16 glyph extraction from Unifont**
+- [ ] `build.rs` extracts Unifont `.hex` entries with 64 hex chars (16×16) as `[u8; 32]`
+- [ ] Emit `src/generated/font_dbcs_wide.rs`: sorted `&[(u32, [u8; 32])]` keyed by Unicode codepoint
+- [ ] `get_glyph_dbcs(cp: char) -> [u8; 32]` — `binary_search_by_key` lookup; falls back to two half-width glyphs if not found
+- [ ] Scope: CJK Unified Ideographs (U+4E00–U+9FFF), Hangul Syllables (U+AC00–U+D7A3), Kana blocks (~20k–30k entries total, ~600 KB–1 MB per generated file)
+
+**B6 — `NlsGetDBCSEv` — return real lead-byte table**
+- [ ] Update the current empty-table stub to return the correct `(first, last)` pairs for the active DBCS codepage, terminated by `(0, 0)` per OS/2 spec
+
+**B7 — `VioCheckCharType` (new VIO API)**
+- [ ] `VioCheckCharType(pType *u16, row u16, col u16, hvio u16) → u32`
+- [ ] Scans `VioManager::buffer` from column 0 of the given row to correctly classify mid-DBCS positions (must be left-to-right, stateful — cannot annotate a single cell in isolation)
+- [ ] Returns 0 (SBCS), 2 (DBCS lead), 3 (DBCS trail)
+- [ ] Register in `api_registry.rs` under `VIOCALLS_BASE`
+
+**B8 — DBCS keyboard re-encoding**
+- [ ] SDL2 `SDL_TEXTINPUT` events deliver UTF-8; re-encode to active DBCS codepage before pushing to `kbd_queue`
+- [ ] Requires reverse mapping (Unicode → CP codeword) — derive from the same build.rs mapping tables
+
+**Implementation order:** B1 → B2 → B3 → B4+B5 (parallel) → B6 → B7 → B8
+
+**Key risks:**
+| Risk | Mitigation |
+|---|---|
+| Watcom CRT crash on non-437 locale | Keep codepage=437 for 4OS2; unlock only per-app |
+| DBCS trail byte collides with SBCS range | Annotation must always scan left-to-right from column 0 |
+| Unifont missing glyphs for some codepoints | Fall back to two half-width 8×16 glyphs |
+| Generated file size (CP932 ~1 MB) | Acceptable; or use `include_bytes!` + runtime decode |
+| `VioCheckCharType` mid-row query | Scan full row from col 0, not just the queried position |
+
+---
 
 ### VGA Text Renderer — Remaining
-- [ ] **DBCS font support** — CP932/CP950: 16×16 double-width glyph set; `VgaCell` extended to flag lead/trail bytes
 - [ ] **Window resize** — dynamic resize of the SDL2 text window to match VioManager rows/cols (currently fixed at 80×25)
+
+---
+
+### Code Page and DBCS Support
+- [ ] `DosQueryCp` / `DosSetProcessCp` — track current process code page accurately (prerequisite for Phase B above)
+- [ ] Full `DosMapCase` for non-Latin codepages (CP852, CP866, CP932, etc.)
 
 ### PM Advanced Controls
 - [ ] **`WC_CONTAINER`** — Icon / Name / Text / Detail / Tree view modes; record management; sorting and filtering
