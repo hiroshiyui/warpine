@@ -176,16 +176,37 @@ impl super::Loader {
                     // Check if this is from an IDT exception handler stub
                     if rip >= IDT_HANDLER_BASE as u64 && rip < IDT_HANDLER_BASE as u64 + 32 * 16 {
                         let regs = vcpu.get_regs().unwrap();
-                        // Stack layout: [vector_num] [error_code_or_fake] [fault_EIP] [fault_CS] [fault_EFLAGS]
-                        let vector = self.guest_read::<u32>(regs.rsp as u32).unwrap_or(0xFF);
-                        let error_code = self.guest_read::<u32>(regs.rsp as u32 + 4).unwrap_or(0);
-                        let fault_eip = self.guest_read::<u32>(regs.rsp as u32 + 8).unwrap_or(0);
-                        let fault_cs = self.guest_read::<u32>(regs.rsp as u32 + 12).unwrap_or(0);
-                        let fault_eflags = self.guest_read::<u32>(regs.rsp as u32 + 16).unwrap_or(0);
-
                         let sregs = vcpu.get_sregs().unwrap();
-                        error!("  [VCPU {}] CPU Exception #{} at EIP=0x{:08X} CS=0x{:04X} EFLAGS=0x{:08X} ErrorCode=0x{:X}",
-                               vcpu_id, vector, fault_eip, fault_cs, fault_eflags, error_code);
+
+                        // When SS has D/B=0 (16-bit stack segment — e.g. a tiled Far16
+                        // descriptor), the CPU uses SP (the low 16 bits of ESP) as the
+                        // effective stack pointer.  All pushes/pops address
+                        // SS.base + SP, NOT SS.base + ESP.  The full RSP reported by KVM
+                        // still holds the original 32-bit ESP with its upper 16 bits
+                        // unchanged, so reading the exception frame from `regs.rsp as u32`
+                        // would land in completely the wrong memory and produce all-zero
+                        // values.  Detect this case and compute the correct address.
+                        let frame_base = if sregs.ss.db == 0 {
+                            sregs.ss.base as u32 + regs.rsp as u16 as u32
+                        } else {
+                            regs.rsp as u32
+                        };
+
+                        // Stack layout: [vector_num] [error_code_or_fake] [fault_EIP] [fault_CS] [fault_EFLAGS]
+                        let vector     = self.guest_read::<u32>(frame_base).unwrap_or(0xFF);
+                        let error_code = self.guest_read::<u32>(frame_base + 4).unwrap_or(0);
+                        let fault_eip  = self.guest_read::<u32>(frame_base + 8).unwrap_or(0);
+                        let fault_cs   = self.guest_read::<u32>(frame_base + 12).unwrap_or(0);
+                        let fault_eflags = self.guest_read::<u32>(frame_base + 16).unwrap_or(0);
+
+                        let stack_note = if sregs.ss.db == 0 {
+                            format!(" [16-bit SS: base=0x{:08X} SP=0x{:04X} frame@0x{:08X}]",
+                                    sregs.ss.base, regs.rsp as u16, frame_base)
+                        } else {
+                            String::new()
+                        };
+                        error!("  [VCPU {}] CPU Exception #{} at EIP=0x{:08X} CS=0x{:04X} EFLAGS=0x{:08X} ErrorCode=0x{:X}{}",
+                               vcpu_id, vector, fault_eip, fault_cs, fault_eflags, error_code, stack_note);
                         error!("    EAX=0x{:08X} EBX=0x{:08X} ECX=0x{:08X} EDX=0x{:08X}",
                                regs.rax, regs.rbx, regs.rcx, regs.rdx);
                         error!("    ESI=0x{:08X} EDI=0x{:08X} EBP=0x{:08X} ESP=0x{:08X}",
@@ -193,12 +214,18 @@ impl super::Loader {
                         error!("    CS=0x{:04X} DS=0x{:04X} SS=0x{:04X} ES=0x{:04X} FS=0x{:04X} GS=0x{:04X}",
                                sregs.cs.selector, sregs.ds.selector, sregs.ss.selector,
                                sregs.es.selector, sregs.fs.selector, sregs.gs.selector);
-                        // Dump bytes at the fault EIP to help diagnose the faulting instruction
+                        // Compute fault EIP as a flat address for the byte dump.
+                        // In 16-bit CS mode the segment base must be added.
+                        let flat_fault_eip = if sregs.cs.db == 0 {
+                            sregs.cs.base as u32 + fault_eip as u32
+                        } else {
+                            fault_eip
+                        };
                         let mut fault_bytes = [0u8; 16];
                         for (i, b) in fault_bytes.iter_mut().enumerate() {
-                            *b = self.guest_read::<u8>(fault_eip + i as u32).unwrap_or(0xCC);
+                            *b = self.guest_read::<u8>(flat_fault_eip + i as u32).unwrap_or(0xCC);
                         }
-                        error!("    Bytes at EIP: {:02X?}", fault_bytes);
+                        error!("    Bytes at EIP (flat 0x{:08X}): {:02X?}", flat_fault_eip, fault_bytes);
                         self.shared.exit_code.store(1, Ordering::Relaxed);
                         self.shared.exit_requested.store(true, Ordering::Relaxed);
                         return;
