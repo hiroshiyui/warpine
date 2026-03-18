@@ -3,7 +3,8 @@
 use super::constants::*;
 use super::api_trace;
 use super::api_registry;
-use super::ApiResult;
+use super::{ApiResult, ApiCallRecord};
+use super::mutex_ext::MutexExt;
 use super::vm_backend::VcpuBackend;
 use tracing::{debug, warn};
 
@@ -31,10 +32,13 @@ impl super::Loader {
             self.guest_read::<u32>((esp + 4 + i as u64 * 4) as u32).unwrap_or(0)
         });
 
-        // Emit strace-style call line at DEBUG level (zero cost when DEBUG is off).
+        // Always compute the formatted call string — used both for the strace
+        // debug log and for the ring buffer (which must be populated regardless
+        // of log level so crash dumps include the full recent call history).
+        let call_str = api_trace::format_call(api_name, ordinal, &args,
+            &|ptr| self.read_guest_string(ptr));
+
         if tracing::enabled!(tracing::Level::DEBUG) {
-            let call_str = api_trace::format_call(api_name, ordinal, &args,
-                &|ptr| self.read_guest_string(ptr));
             debug!("{}", call_str);
         }
 
@@ -63,10 +67,21 @@ impl super::Loader {
             }
         };
 
-        match &result {
-            ApiResult::Normal(v) => debug!(ret = v, "return"),
-            ApiResult::Callback { wnd_proc, .. } => debug!(wnd_proc, "callback"),
-        }
+        let ret_val = match &result {
+            ApiResult::Normal(v) => { debug!(ret = v, "return"); *v }
+            ApiResult::Callback { wnd_proc, .. } => { debug!(wnd_proc, "callback"); 0 }
+        };
+
+        // Push to ring buffer unconditionally (populated even in release/info builds).
+        self.shared.api_ring.lock_or_recover().push(ApiCallRecord {
+            ordinal,
+            module: api_mod,
+            name: api_name,
+            call_str,
+            ret_val,
+            seq: 0, // overwritten by ApiRingBuffer::push()
+        });
+
         result
     }
 }

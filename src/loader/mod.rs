@@ -28,6 +28,7 @@ mod process;
 pub mod locale;
 pub mod mmpm;
 pub mod crash_dump;
+pub mod api_ring;
 
 pub use constants::*;
 pub use mutex_ext::MutexExt;
@@ -38,6 +39,7 @@ pub use vfs::DriveManager;
 pub use vfs_hostdir::HostDirBackend;
 pub use vm_backend::{VmBackend, VcpuBackend, VmExit, GuestRegs, GuestSegment, GuestSregs};
 pub use guest_mem::GuestMemory;
+pub use api_ring::{ApiRingBuffer, ApiCallRecord};
 
 use kvm_backend::KvmVmBackend;
 use std::collections::{HashMap, VecDeque};
@@ -123,6 +125,9 @@ pub struct SharedState {
     /// When `true`, `KbdCharIn` reads from `kbd_queue` instead of termios stdin.
     /// Set before spawning the VCPU for SDL2 text-mode CLI apps.
     pub use_sdl2_text: AtomicBool,
+    /// Ring buffer of the last 256 OS/2 API calls — always populated,
+    /// regardless of log level, so crash dumps include full call history.
+    pub api_ring: Mutex<ApiRingBuffer>,
 }
 
 unsafe impl Send for SharedState {}
@@ -188,6 +193,7 @@ impl Loader {
             kbd_queue: Mutex::new(VecDeque::new()),
             kbd_cond: Condvar::new(),
             use_sdl2_text: AtomicBool::new(false),
+            api_ring: Mutex::new(ApiRingBuffer::new()),
         });
 
         Loader { vm, shared }
@@ -249,6 +255,7 @@ impl Loader {
             kbd_queue:    Mutex::new(VecDeque::new()),
             kbd_cond:     Condvar::new(),
             use_sdl2_text: AtomicBool::new(false),
+            api_ring:     Mutex::new(ApiRingBuffer::new()),
         });
         Loader { vm, shared }
     }

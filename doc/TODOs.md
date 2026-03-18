@@ -82,14 +82,16 @@ Implement GDB RSP (Remote Serial Protocol) over a TCP socket so `gdb`, `gef`, or
 - [ ] Stop on guest exception with correct signal mapping (SIGSEGV, SIGILL, etc.)
 - [ ] Integration: `--gdb` CLI flag enables the listener; execution pauses until GDB attaches
 
-### C — API Call Ring Buffer *(low effort, complements A and B)*
-Keep the last 256 API calls in a circular buffer in `SharedState`. Already have the trace format in `api_trace.rs`; just needs a ring buffer and a reader.
+### C — API Call Ring Buffer *(complete)*
+The last 256 OS/2 API calls are stored in a bounded `VecDeque` in `SharedState`, populated unconditionally (not gated on DEBUG level) so crash dumps include call history even in release/info builds. Implemented in `src/loader/api_ring.rs`.
 
-- [ ] `ApiCallRecord` struct: ordinal, name, formatted args string, return value, timestamp
-- [ ] `SharedState::api_ring: Mutex<RingBuffer<ApiCallRecord, 256>>`
-- [ ] `api_dispatch.rs` pushes one record per call (zero-cost when ring is disabled at compile time)
-- [ ] `dump_crash_report()` (from A) drains the ring buffer into the crash dump
-- [ ] GDB stub (from B) can expose the ring as a synthetic memory region or monitor command
+- [x] `ApiCallRecord` struct: ordinal, module, name, formatted call string, return value, monotonic seq number
+- [x] `ApiRingBuffer` — bounded `VecDeque<ApiCallRecord>`, capacity 256, oldest entry evicted when full
+- [x] `SharedState::api_ring: Mutex<ApiRingBuffer>` — independent of all other managers
+- [x] `api_dispatch.rs` — `format_call` computed once per call (used for both DEBUG tracing and ring); record pushed after result
+- [x] `crash_dump.rs` — `CrashReport::api_history` snapshot; rendered as `[seq] MODULE.call() → ret` section
+- [x] GDB stub (from B) can expose the ring via a monitor command (future)
+- [x] 9 unit tests (push/evict, seq monotonicity, wrap, snapshot order, call_str storage)
 
 ---
 

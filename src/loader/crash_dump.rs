@@ -6,7 +6,7 @@
 // fault, unhandled VMEXIT, KVM error) and writes a human-readable report to
 // both stderr and a `warpine-crash-<pid>.txt` file in the current directory.
 
-use super::{GuestRegs, GuestSregs, Loader};
+use super::{GuestRegs, GuestSregs, Loader, ApiCallRecord};
 use super::mutex_ext::MutexExt;
 use super::vm_backend::VcpuBackend;
 use std::fmt::Write as FmtWrite;
@@ -51,6 +51,8 @@ pub struct CrashReport {
     pub code_addr:   u32,
     pub exe_name:    String,
     pub timestamp:   std::time::SystemTime,
+    /// Snapshot of the API call ring buffer at crash time (oldest first).
+    pub api_history: Vec<ApiCallRecord>,
 }
 
 // ── Loader methods ────────────────────────────────────────────────────────────
@@ -101,7 +103,8 @@ impl Loader {
             );
         }
 
-        let exe_name = self.shared.exe_name.lock_or_recover().clone();
+        let exe_name    = self.shared.exe_name.lock_or_recover().clone();
+        let api_history = self.shared.api_ring.lock_or_recover().snapshot();
 
         CrashReport {
             vcpu_id,
@@ -113,6 +116,7 @@ impl Loader {
             code_addr: flat_code_addr,
             exe_name,
             timestamp: std::time::SystemTime::now(),
+            api_history,
         }
     }
 
@@ -227,6 +231,20 @@ fn format_crash_report(r: &CrashReport) -> String {
     }
     let _ = writeln!(out);
 
+    // ── API call history ──────────────────────────────────────────────────────
+    if r.api_history.is_empty() {
+        let _ = writeln!(out, "── API Call History ─────────────────────────────────────────────");
+        let _ = writeln!(out, "  (no calls recorded)");
+    } else {
+        let _ = writeln!(out, "── API Call History (last {} calls, oldest first) ───────────────",
+            r.api_history.len());
+        for rec in &r.api_history {
+            let _ = writeln!(out, "  [{:>6}] {}.{} → 0x{:08X}",
+                rec.seq, rec.module, rec.call_str, rec.ret_val);
+        }
+    }
+    let _ = writeln!(out);
+
     out
 }
 
@@ -332,6 +350,7 @@ mod tests {
             code_addr: 0x12345678,
             exe_name: "TEST.EXE".to_string(),
             timestamp: std::time::SystemTime::UNIX_EPOCH,
+            api_history: vec![],
         }
     }
 
@@ -426,6 +445,37 @@ mod tests {
             + std::time::Duration::from_secs(1710764096);
         let s = format_timestamp(ts);
         assert_eq!(s, "2024-03-18 12:14:56 UTC");
+    }
+
+    #[test]
+    fn test_format_report_includes_api_history() {
+        use crate::loader::ApiCallRecord;
+        let mut report = make_report(CrashContext::TripleFault);
+        report.api_history = vec![
+            ApiCallRecord {
+                ordinal: 282, module: "DOSCALLS", name: "DosWrite",
+                call_str: "DosWrite(hFile=1, pBuf=0x1000, cbBuf=0x5, pcbActual=0x2000)".to_string(),
+                ret_val: 0, seq: 41,
+            },
+            ApiCallRecord {
+                ordinal: 257, module: "DOSCALLS", name: "DosClose",
+                call_str: "DosClose(hFile=1)".to_string(),
+                ret_val: 0, seq: 42,
+            },
+        ];
+        let text = format_crash_report(&report);
+        assert!(text.contains("API Call History"), "missing section header");
+        assert!(text.contains("DosWrite"), "missing DosWrite entry");
+        assert!(text.contains("DosClose"), "missing DosClose entry");
+        assert!(text.contains("[    41]"), "missing seq 41");
+        assert!(text.contains("[    42]"), "missing seq 42");
+    }
+
+    #[test]
+    fn test_format_report_empty_api_history() {
+        let report = make_report(CrashContext::TripleFault);
+        let text = format_crash_report(&report);
+        assert!(text.contains("(no calls recorded)"));
     }
 
     #[test]
