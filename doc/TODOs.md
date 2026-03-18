@@ -136,6 +136,15 @@ NE format parser complete (`src/ne/`): NeHeader, segment/relocation/entry tables
     limit=0xFFFF. The actual tile descriptors for `DosFlatToSel`/`DosSelToFlat` must shift to
     start at GDT[6] (selector 0x0030) instead of GDT[4]. Update `TILED_SEL_START_INDEX`,
     `DosFlatToSel`, `DosSelToFlat`, and the Far16 fixup code in `lx_loader.rs` accordingly.
+  - **Why 16-bit thunks appear in an otherwise 32-bit app:** 4OS2 itself is pure 32-bit (the
+    `samples/4os2/patches/` patches eliminated `__vfthunk` generation from the OS/2 API
+    headers). However, **JPOS2DLL** is a separate DLL compiled with its own build rules and
+    still uses `__Far16` calling convention for some of its entry points. The crash occurs in
+    a thunk stub inside 4OS2's own code (flat `0x51377`) that calls into JPOS2DLL via a
+    `__Far16` far pointer. Two possible approaches:
+    1. Fix the GDT (correct long-term approach, needed for real 16-bit app support anyway).
+    2. Patch JPOS2DLL to eliminate its remaining `__Far16` usage (narrower fix).
+    Option 1 is preferred.
   - **Also note:** `format_call()` in `api_dispatch.rs` is now called unconditionally (for the
     ring buffer). Previously it was gated on DEBUG level. Consider a compile-time or runtime
     flag to skip formatting if overhead becomes a concern in tight loops.
