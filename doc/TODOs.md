@@ -69,7 +69,7 @@ Implementation plan (ready to execute once DLLs are available):
 4. Multi-version comparison — diff ordinal maps across fixpak levels (same ordinal can map to different APIs in 1.x vs 2.x)
 
 ### Structured API Trace — Remaining
-- [ ] Per-argument typed names (e.g. `DosWrite(hfile=1, pBuf=0x500, cbBuf=42)`) — raw eip/esp captured now; argument decoding is future work
+- [x] Per-argument typed names — `arg_names_for_ordinal()` covers all 122 registry entries + QUECALLS/NLS/MSG/MDM; `format_call()` emits strace-style `DosWrite(hFile=5, pBuf=0x2001000, cbBuf=42, pcbActual=0x2001100)` at DEBUG level; `psz*` args are auto-dereferenced as strings; handle args (`h*`) shown decimal; zero-cost when DEBUG disabled.
 - [ ] TUI debug overlay showing live API call stream, memory map, window hierarchy, and PM message queue
 
 ---
