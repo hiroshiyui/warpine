@@ -2,6 +2,10 @@
 
 This document tracks the tasks required to reach a functional OS/2 compatibility layer.
 
+## Engineering Policy
+
+**Near-clean-room, blackbox implementation.** Warpine implements the OS/2 API surface from public documentation only — IBM's *Control Program Programming Reference*, the OS/2 Warp 4 Toolkit headers, published IBM Developer Connection materials, and open-source reference implementations (e.g., ReactOS, osFree, WINE analogues). No IBM-proprietary DLL binaries, no ROM dumps, and no disassembly of original OS/2 system libraries are used as implementation inputs. Behaviour is inferred solely from the observable behaviour of OS/2 applications compiled with the Open Watcom toolchain and from the public specifications listed above.
+
 ---
 
 ## Completed Work
@@ -98,13 +102,13 @@ The last 256 OS/2 API calls are stored in a bounded `VecDeque` in `SharedState`,
 ## Architecture & Refactoring Backlog
 
 ### Ordinal Table Canonical Build Tool
-**Prerequisite: requires real OS/2 system DLLs (DOSCALLS.DLL, PMWIN.DLL, etc.) from a Warp 4 install.**
+Build a tool to manage the authoritative ordinal→name table used by `api_registry.rs`, sourced exclusively from public documentation (IBM CP Programming Reference, OS/2 Warp 4 Toolkit headers, osFree project). **No real OS/2 system DLLs are used as input** (clean-room policy).
 
-Implementation plan (ready to execute once DLLs are available):
-1. Extend `LxFile` to parse entry table + resident/non-resident name tables (currently only import tables are parsed)
-2. `src/bin/ordinals.rs` — dump complete `ordinal → name` map from a DLL; output as text or `--emit-rust` for `const` definitions
-3. `--check` mode — cross-reference against warpine's `api_registry` to surface mismatches
-4. Multi-version comparison — diff ordinal maps across fixpak levels (same ordinal can map to different APIs in 1.x vs 2.x)
+Implementation plan:
+1. Extend `LxFile` to parse entry table + resident/non-resident name tables (currently only import tables are parsed) — useful for `jpos2dll.dll` and other Open Watcom-built DLLs in `samples/`
+2. `src/bin/ordinals.rs` — dump complete `ordinal → name` map from an LX binary built by us; output as text or `--emit-rust` for `const` definitions
+3. `--check` mode — cross-reference against warpine's `api_registry` to surface mismatches between documented and implemented ordinals
+4. Maintain a hand-curated `doc/ordinals/` directory with one `.txt` per module (DOSCALLS, PMWIN, PMGPI, …) derived from public IBM documentation
 
 ### Structured API Trace — Remaining
 - [x] Per-argument typed names — `arg_names_for_ordinal()` covers all 122 registry entries + QUECALLS/NLS/MSG/MDM; `format_call()` emits strace-style `DosWrite(hFile=5, pBuf=0x2001000, cbBuf=42, pcbActual=0x2001100)` at DEBUG level; `psz*` args are auto-dereferenced as strings; handle args (`h*`) shown decimal; zero-cost when DEBUG disabled.
@@ -176,7 +180,6 @@ Remaining:
 - [ ] Call DLL initialisation routines (`DLL_INITTERM` / `eip_object`) at load and unload time
 - [ ] `DosFreeModule` — proper reference counting and unload
 - [ ] Handle load-order dependencies and circular imports
-- [ ] Option: load real OS/2 system DLL binaries alongside emulated ones (selective real-DLL execution)
 
 ### DOSCALLS Long Tail
 - [ ] **Structured Exception Handling** — real per-thread handler chain; `DosRaiseException`; `DosUnwindException`
