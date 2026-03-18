@@ -150,6 +150,13 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             _ => "?",
         },
 
+        // ── MSG — OS/2 Message DLL (MSG_BASE + local ordinal) ────────────
+        o if (MSG_BASE..MDM_BASE).contains(&o) => match o - MSG_BASE {
+            3 => "DosPutMessage",
+            6 => "DosGetMessage",
+            _ => "?",
+        },
+
         // ── MDM / MMPM/2 (MDM_BASE + local ordinal) ───────────────────────
         o if (MDM_BASE..STUB_AREA_SIZE).contains(&o) => match o - MDM_BASE {
             1 => "mciSendCommand",

@@ -25,7 +25,7 @@
 use std::sync::atomic::Ordering;
 use tracing::debug;
 
-use super::constants::{NLS_BASE, MDM_BASE};
+use super::constants::{NLS_BASE, MSG_BASE, MDM_BASE};
 use super::ApiResult;
 use super::vm_backend::VcpuBackend;
 
@@ -388,6 +388,13 @@ static REGISTRY: &[ApiEntry] = &[
                    }
                    ApiResult::Normal(0)
                } },
+
+    // ── MSG — OS/2 Message DLL (base MSG_BASE = 8192) ────────────────────
+    // 4OS2 imports DosGetMessage from MSG.DLL ordinal 6, not from DOSCALLS.
+    ApiEntry { ordinal: MSG_BASE + 3, module: "MSG", name: "DosPutMessage",     argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_put_message(a[0],a[1],a[2])) },
+    ApiEntry { ordinal: MSG_BASE + 6, module: "MSG", name: "DosGetMessage",     argc: 7,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_get_message(a[0],a[1],a[2],a[3],a[4],a[5],a[6])) },
 
     // ── MDM — MMPM/2 Media Device Manager (base MDM_BASE = 10240) ────────
     ApiEntry { ordinal: MDM_BASE + 1, module: "MDM", name: "mciSendCommand",   argc: 4,
