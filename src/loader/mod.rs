@@ -27,6 +27,7 @@ mod viocalls;
 mod process;
 pub mod locale;
 pub mod mmpm;
+pub mod crash_dump;
 
 pub use constants::*;
 pub use mutex_ext::MutexExt;

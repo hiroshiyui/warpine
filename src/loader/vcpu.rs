@@ -2,6 +2,7 @@
 
 use super::constants::*;
 use super::{ApiResult, CallbackFrame, MutexExt};
+use super::crash_dump::CrashContext;
 use crate::lx::LxFile;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -164,7 +165,11 @@ impl super::Loader {
             }
             let res = vcpu.run();
             if let Err(e) = res {
-                error!("  [VCPU {}] KVM Run failed: {}", vcpu_id, e);
+                let report = self.collect_crash_report(
+                    &*vcpu, vcpu_id,
+                    CrashContext::KvmRunError { description: e.clone() },
+                );
+                self.dump_crash_report(&report);
                 self.shared.exit_code.store(1, Ordering::Relaxed);
                 self.shared.exit_requested.store(true, Ordering::Relaxed);
                 return;
@@ -199,33 +204,17 @@ impl super::Loader {
                         let fault_cs   = self.guest_read::<u32>(frame_base + 12).unwrap_or(0);
                         let fault_eflags = self.guest_read::<u32>(frame_base + 16).unwrap_or(0);
 
-                        let stack_note = if sregs.ss.db == 0 {
-                            format!(" [16-bit SS: base=0x{:08X} SP=0x{:04X} frame@0x{:08X}]",
-                                    sregs.ss.base, regs.rsp as u16, frame_base)
-                        } else {
-                            String::new()
-                        };
-                        error!("  [VCPU {}] CPU Exception #{} at EIP=0x{:08X} CS=0x{:04X} EFLAGS=0x{:08X} ErrorCode=0x{:X}{}",
-                               vcpu_id, vector, fault_eip, fault_cs, fault_eflags, error_code, stack_note);
-                        error!("    EAX=0x{:08X} EBX=0x{:08X} ECX=0x{:08X} EDX=0x{:08X}",
-                               regs.rax, regs.rbx, regs.rcx, regs.rdx);
-                        error!("    ESI=0x{:08X} EDI=0x{:08X} EBP=0x{:08X} ESP=0x{:08X}",
-                               regs.rsi, regs.rdi, regs.rbp, regs.rsp);
-                        error!("    CS=0x{:04X} DS=0x{:04X} SS=0x{:04X} ES=0x{:04X} FS=0x{:04X} GS=0x{:04X}",
-                               sregs.cs.selector, sregs.ds.selector, sregs.ss.selector,
-                               sregs.es.selector, sregs.fs.selector, sregs.gs.selector);
-                        // Compute fault EIP as a flat address for the byte dump.
-                        // In 16-bit CS mode the segment base must be added.
-                        let flat_fault_eip = if sregs.cs.db == 0 {
-                            sregs.cs.base as u32 + fault_eip as u32
-                        } else {
-                            fault_eip
-                        };
-                        let mut fault_bytes = [0u8; 16];
-                        for (i, b) in fault_bytes.iter_mut().enumerate() {
-                            *b = self.guest_read::<u8>(flat_fault_eip + i as u32).unwrap_or(0xCC);
-                        }
-                        error!("    Bytes at EIP (flat 0x{:08X}): {:02X?}", flat_fault_eip, fault_bytes);
+                        let report = self.collect_crash_report(
+                            &*vcpu, vcpu_id,
+                            CrashContext::GuestException {
+                                vector,
+                                error_code,
+                                fault_eip,
+                                fault_cs,
+                                fault_eflags,
+                            },
+                        );
+                        self.dump_crash_report(&report);
                         self.shared.exit_code.store(1, Ordering::Relaxed);
                         self.shared.exit_requested.store(true, Ordering::Relaxed);
                         return;
@@ -336,7 +325,10 @@ impl super::Loader {
                         }
                     }
                     else {
-                        warn!("  [VCPU {}] Guest breakpoint at EIP=0x{:08X}.", vcpu_id, rip);
+                        let report = self.collect_crash_report(
+                            &*vcpu, vcpu_id, CrashContext::UnexpectedBreakpoint,
+                        );
+                        self.dump_crash_report(&report);
                         self.shared.exit_requested.store(true, Ordering::Relaxed);
                         return;
                     }
@@ -361,20 +353,20 @@ impl super::Loader {
                     std::thread::sleep(std::time::Duration::from_millis(1));
                 }
                 VmExit::Shutdown => {
-                    let regs = vcpu.get_regs().unwrap();
-                    let sregs = vcpu.get_sregs().unwrap();
-                    error!("  [VCPU {}] Guest shutdown (triple fault)", vcpu_id);
-                    error!("    EIP=0x{:08X} ESP=0x{:08X} EAX=0x{:08X} EBX=0x{:08X}", regs.rip, regs.rsp, regs.rax, regs.rbx);
-                    error!("    ECX=0x{:08X} EDX=0x{:08X} ESI=0x{:08X} EDI=0x{:08X}", regs.rcx, regs.rdx, regs.rsi, regs.rdi);
-                    error!("    EBP=0x{:08X} EFLAGS=0x{:08X} CR0=0x{:08X} CR2=0x{:08X}", regs.rbp, regs.rflags, sregs.cr0, sregs.cr2);
-                    error!("    CS=0x{:04X} DS=0x{:04X} SS=0x{:04X} FS=0x{:04X}", sregs.cs.selector, sregs.ds.selector, sregs.ss.selector, sregs.fs.selector);
+                    let report = self.collect_crash_report(
+                        &*vcpu, vcpu_id, CrashContext::TripleFault,
+                    );
+                    self.dump_crash_report(&report);
                     self.shared.exit_code.store(1, Ordering::Relaxed);
                     self.shared.exit_requested.store(true, Ordering::Relaxed);
                     return;
                 }
                 VmExit::Other(e) => {
-                    let rip = vcpu.get_regs().unwrap().rip;
-                    error!("  [VCPU {}] Unhandled VMEXIT: {} at EIP=0x{:08X}", vcpu_id, e, rip);
+                    let report = self.collect_crash_report(
+                        &*vcpu, vcpu_id,
+                        CrashContext::UnhandledVmexit { description: e.clone() },
+                    );
+                    self.dump_crash_report(&report);
                     self.shared.exit_code.store(1, Ordering::Relaxed);
                     self.shared.exit_requested.store(true, Ordering::Relaxed);
                     return;

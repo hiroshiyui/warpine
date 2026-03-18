@@ -59,13 +59,15 @@ Unit tests, end-to-end integration tests, and a compatibility report — all imp
 
 ## Developer Tooling
 
-### A — Enhanced Crash Dump *(low effort, high immediate value)*
-On any fatal VMEXIT or unhandled guest exception: capture all CPU registers, segment descriptors, top ~32 stack words, raw hex bytes at EIP, and the last N entries from the API call ring buffer (see C below). Write to `warpine-crash-<pid>.txt` and print a summary to stderr. Requires no external dependencies.
+### A — Enhanced Crash Dump *(complete)*
+On any fatal VMEXIT or unhandled guest exception: capture all CPU registers, segment descriptors, top 32 stack dwords, 32 hex bytes at EIP, and context info. Writes to `warpine-crash-<pid>.txt` and prints the full report to stderr. Implemented in `src/loader/crash_dump.rs`.
 
-- [ ] Structured `CrashReport` type — collects regs, segs, stack words, code bytes, recent API calls
-- [ ] `dump_crash_report()` called from the VMEXIT exception path and any `panic!`-equivalent site
-- [ ] Output: human-readable `.txt` (columns for hex + ASCII) and optionally JSON for tooling
-- [ ] Integration test: inject a synthetic fault and assert the dump file is created with expected fields
+- [x] `CrashContext` enum — GuestException, TripleFault, UnhandledVmexit, KvmRunError, UnexpectedBreakpoint
+- [x] `CrashReport` struct — regs, sregs, stack words, code bytes, exe name, timestamp
+- [x] `Loader::collect_crash_report()` — snapshots vCPU state; handles 16-bit SS for correct ESP
+- [x] `Loader::dump_crash_report()` — formats with hex+ASCII dump, writes file + stderr
+- [x] All four fatal VMEXIT paths in `vcpu.rs` replaced with crash dump calls
+- [x] 13 unit tests (format, hex dump, exception names, timestamp, file creation)
 
 ### B — GDB Remote Stub *(medium effort, highest interactive value)*
 Implement GDB RSP (Remote Serial Protocol) over a TCP socket so `gdb`, `gef`, or `pwndbg` can attach to a live guest. KVM already supports single-stepping (RFLAGS.TF) and hardware breakpoints (DR0–DR3). The `gdbstub` crate provides the protocol framing.
