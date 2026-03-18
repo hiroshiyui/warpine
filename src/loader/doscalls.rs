@@ -1379,22 +1379,33 @@ impl super::Loader {
         }
     }
 
-    /// DosFlatToSel (ordinal 425): convert 32-bit flat address to 16:16 selector:offset.
+    /// DosFlatToSel (ordinal 425): convert 32-bit flat address to 16:16 tiled selector:offset.
     ///
-    /// Returns flat address as-is in flat mode. The GDT tiling infrastructure exists
-    /// but DosFlatToSel must return flat addresses because the LSS #GP handler needs
-    /// to intercept the LSS instruction (which only faults if the selector is invalid).
-    /// If DosFlatToSel returned tiled selectors, LSS would succeed and the 16-bit thunk
-    /// code would execute in an invalid state.
+    /// Returns a packed 16:16 pointer: high 16 bits = tile selector, low 16 bits = offset.
+    /// Tile selector = (TILED_SEL_START_INDEX + tile_index) * 8 where tile_index = flat >> 16.
     pub fn dos_flat_to_sel(&self, flat_addr: u32) -> u32 {
-        debug!("DosFlatToSel(0x{:08X})", flat_addr);
-        flat_addr
+        let tile_index = flat_addr >> 16;
+        let offset = flat_addr & 0xFFFF;
+        let selector = (TILED_SEL_START_INDEX + tile_index) * 8;
+        debug!("DosFlatToSel(0x{:08X}) -> sel=0x{:04X} off=0x{:04X}", flat_addr, selector, offset);
+        (selector << 16) | offset
     }
 
-    /// DosSelToFlat (ordinal 426): convert 16:16 selector:offset to 32-bit flat address.
+    /// DosSelToFlat (ordinal 426): convert 16:16 tiled selector:offset to 32-bit flat address.
+    ///
+    /// The input is a packed 16:16 pointer: high 16 bits = selector, low 16 bits = offset.
     pub fn dos_sel_to_flat(&self, sel_off: u32) -> u32 {
-        debug!("DosSelToFlat(0x{:08X})", sel_off);
-        sel_off
+        let selector = (sel_off >> 16) as u16;
+        let offset = sel_off & 0xFFFF;
+        let gdt_index = (selector / 8) as u32;
+        let flat = if gdt_index >= TILED_SEL_START_INDEX {
+            (gdt_index - TILED_SEL_START_INDEX) * TILE_SIZE + offset
+        } else {
+            // Not a tile selector (e.g., null or standard descriptor) — return offset as-is
+            offset
+        };
+        debug!("DosSelToFlat(sel=0x{:04X} off=0x{:04X}) -> 0x{:08X}", selector, offset, flat);
+        flat
     }
 
     pub fn dos_get_info_seg(&self, p_global_sel: u32, p_local_sel: u32) -> u32 {
@@ -1431,7 +1442,53 @@ impl super::Loader {
 mod tests {
     use super::super::Loader;
     use super::super::mutex_ext::MutexExt;
+    use super::super::constants::*;
     use std::sync::atomic::Ordering;
+
+    // ── DosFlatToSel / DosSelToFlat ──────────────────────────────────────────
+
+    #[test]
+    fn test_dos_flat_to_sel_tile_zero() {
+        let loader = Loader::new_mock();
+        // Flat 0x00001234 → tile 0 → selector = TILED_SEL_START_INDEX * 8 = 0x20, offset = 0x1234
+        let result = loader.dos_flat_to_sel(0x00001234);
+        let selector = (result >> 16) as u16;
+        let offset   = (result & 0xFFFF) as u16;
+        assert_eq!(selector, (TILED_SEL_START_INDEX * 8) as u16, "tile 0 selector mismatch");
+        assert_eq!(offset, 0x1234);
+    }
+
+    #[test]
+    fn test_dos_flat_to_sel_tile_one() {
+        let loader = Loader::new_mock();
+        // Flat 0x00015678 → tile 1 → selector = (4+1)*8 = 0x28, offset = 0x5678
+        let result = loader.dos_flat_to_sel(0x00015678);
+        let selector = (result >> 16) as u16;
+        let offset   = (result & 0xFFFF) as u16;
+        assert_eq!(selector, ((TILED_SEL_START_INDEX + 1) * 8) as u16);
+        assert_eq!(offset, 0x5678);
+    }
+
+    #[test]
+    fn test_dos_sel_to_flat_roundtrip() {
+        let loader = Loader::new_mock();
+        // Round-trip: flat → 16:16 → flat must recover the original address.
+        for &flat in &[0x00001000u32, 0x00010000, 0x00051372, 0x0000FFFF, 0x00100000] {
+            let packed = loader.dos_flat_to_sel(flat);
+            let recovered = loader.dos_sel_to_flat(packed);
+            assert_eq!(recovered, flat, "round-trip failed for 0x{:08X}", flat);
+        }
+    }
+
+    #[test]
+    fn test_dos_sel_to_flat_non_tile_selector() {
+        let loader = Loader::new_mock();
+        // Selector 0x00 (null) or 0x10 (standard data) with offset 0x1234
+        // → gdt_index < TILED_SEL_START_INDEX → return offset only
+        let packed = (0x0010u32 << 16) | 0x1234u32;
+        let flat = loader.dos_sel_to_flat(packed);
+        assert_eq!(flat, 0x1234);
+    }
 
     // ── DosAllocMem / DosFreeMem ─────────────────────────────────────────────
 

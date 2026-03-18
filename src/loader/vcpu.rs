@@ -146,7 +146,7 @@ impl super::Loader {
         sregs.cr4 |= 1 << 9;
         // Set up GDT and IDT registers
         sregs.gdt_base  = GDT_BASE as u64;
-        sregs.gdt_limit = 4 * 8 - 1; // 4 entries (tiling reserved for Phase 5)
+        sregs.gdt_limit = GDT_SIZE - 1; // 4 standard + NUM_TILES tiled 16-bit data entries
         sregs.idt_base  = IDT_BASE as u64;
         sregs.idt_limit = 32 * 8 - 1;
         vcpu.set_sregs(&sregs).unwrap();
@@ -183,10 +183,22 @@ impl super::Loader {
                         let fault_cs = self.guest_read::<u32>(regs.rsp as u32 + 12).unwrap_or(0);
                         let fault_eflags = self.guest_read::<u32>(regs.rsp as u32 + 16).unwrap_or(0);
 
+                        let sregs = vcpu.get_sregs().unwrap();
                         error!("  [VCPU {}] CPU Exception #{} at EIP=0x{:08X} CS=0x{:04X} EFLAGS=0x{:08X} ErrorCode=0x{:X}",
                                vcpu_id, vector, fault_eip, fault_cs, fault_eflags, error_code);
-                        error!("    ESP=0x{:08X} EAX=0x{:08X} EBX=0x{:08X} ECX=0x{:08X} EDX=0x{:08X}",
-                               regs.rsp, regs.rax, regs.rbx, regs.rcx, regs.rdx);
+                        error!("    EAX=0x{:08X} EBX=0x{:08X} ECX=0x{:08X} EDX=0x{:08X}",
+                               regs.rax, regs.rbx, regs.rcx, regs.rdx);
+                        error!("    ESI=0x{:08X} EDI=0x{:08X} EBP=0x{:08X} ESP=0x{:08X}",
+                               regs.rsi, regs.rdi, regs.rbp, regs.rsp);
+                        error!("    CS=0x{:04X} DS=0x{:04X} SS=0x{:04X} ES=0x{:04X} FS=0x{:04X} GS=0x{:04X}",
+                               sregs.cs.selector, sregs.ds.selector, sregs.ss.selector,
+                               sregs.es.selector, sregs.fs.selector, sregs.gs.selector);
+                        // Dump bytes at the fault EIP to help diagnose the faulting instruction
+                        let mut fault_bytes = [0u8; 16];
+                        for (i, b) in fault_bytes.iter_mut().enumerate() {
+                            *b = self.guest_read::<u8>(fault_eip + i as u32).unwrap_or(0xCC);
+                        }
+                        error!("    Bytes at EIP: {:02X?}", fault_bytes);
                         self.shared.exit_code.store(1, Ordering::Relaxed);
                         self.shared.exit_requested.store(true, Ordering::Relaxed);
                         return;

@@ -87,12 +87,17 @@ impl super::Loader {
         // Entry 3 (selector 0x18): FS data — base set via sregs
         self.guest_write::<u64>(GDT_BASE + 24, Self::make_gdt_entry(0, 0xFFFFF, 0x93, 0xCF)).unwrap();
 
-        // GDT tiling constants (TILED_SEL_START_INDEX, NUM_TILES, etc.) are
-        // defined in constants.rs for future Phase 5 NE (16-bit) app support.
-        // Tiled 16-bit segment descriptors are NOT populated — the preferred
-        // approach for 32-bit LX apps is to recompile with modified bsesub.h
-        // (APIENTRY16 → _System) to eliminate 16-bit thunks at the source level.
-        debug!("GDT: 4 entries (tiling reserved for Phase 5)");
+        // Tiled 16-bit read/write data descriptors: GDT[4..4100].
+        // Each tile i covers [i*64KB .. (i+1)*64KB), allowing OS/2 16:16 (selector:offset)
+        // address arithmetic to work correctly for Far16 thunks (LSS, LES, LDS instructions).
+        // Selector for tile i = (TILED_SEL_START_INDEX + i) * 8 = 0x20 + i*8.
+        for i in 0..NUM_TILES {
+            let base = i * TILE_SIZE;
+            let entry = Self::make_gdt_entry(base, 0xFFFF, 0x93, 0x00); // 16-bit data, byte granular
+            let entry_addr = GDT_BASE + (TILED_SEL_START_INDEX + i) * 8;
+            self.guest_write::<u64>(entry_addr, entry).expect("setup_idt: tile descriptor OOB");
+        }
+        debug!("GDT: 4 standard + {} tiled 16-bit data descriptors", NUM_TILES);
 
         // ── IDT with exception handler stubs ──
         for i in 0..NUM_VECTORS {

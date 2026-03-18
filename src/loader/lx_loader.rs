@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::MutexExt;
+use super::constants::*;
 use super::managers::LoadedDll;
 use crate::lx::LxFile;
 use crate::lx::header::FixupTarget;
@@ -106,8 +107,11 @@ impl super::Loader {
                                 self.guest_write::<i32>(source_phys as u32, (target_addr as isize - (source_phys as isize + 4)) as i32).expect("fixup: write OOB");
                             }
                             0x02 | 0x03 => {
+                                // 16:16 far pointer: derive tile selector from target flat address.
+                                // Tile i covers [i*64KB .. (i+1)*64KB); selector = (TILED_SEL_START_INDEX + i) * 8.
+                                let tile_index = (target_addr >> 16) as u32;
                                 let offset16 = (target_addr & 0xFFFF) as u16;
-                                let selector = 0x08u16;
+                                let selector = ((TILED_SEL_START_INDEX + tile_index) * 8) as u16;
                                 self.guest_write::<u16>(source_phys as u32, offset16).expect("fixup: 16:16 offset OOB");
                                 self.guest_write::<u16>(source_phys as u32 + 2, selector).expect("fixup: 16:16 sel OOB");
                             }
