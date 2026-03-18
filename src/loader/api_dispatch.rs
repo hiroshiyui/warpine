@@ -31,6 +31,13 @@ impl super::Loader {
             self.guest_read::<u32>((esp + 4 + i as u64 * 4) as u32).unwrap_or(0)
         });
 
+        // Emit strace-style call line at DEBUG level (zero cost when DEBUG is off).
+        if tracing::enabled!(tracing::Level::DEBUG) {
+            let call_str = api_trace::format_call(api_name, ordinal, &args,
+                &|ptr| self.read_guest_string(ptr));
+            debug!("{}", call_str);
+        }
+
         let result = if let Some(entry) = api_registry::find(ordinal) {
             (entry.handler)(self, vcpu, vcpu_id, args)
         } else {
