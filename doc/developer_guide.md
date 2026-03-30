@@ -87,7 +87,7 @@ Unit tests for the parser live alongside the source in `src/lx/`.
 
 **Module:** `src/ne/` (`header.rs` for binary structures, `ne.rs` for orchestration)
 
-The NE (New Executable) format is used by OS/2 1.x 16-bit applications. While Warpine's primary target is 32-bit LX binaries, some 32-bit applications (notably 4OS2) historically included 16-bit NE imports, and future Phase 5 work targets full NE execution.
+The NE (New Executable) format is used by OS/2 1.x 16-bit applications. Warpine now supports both LX (32-bit) and NE (16-bit) execution. The NE parser in `src/ne/` provides the binary structures; `src/loader/ne_exec.rs` provides the full NE loader and 16-bit execution path.
 
 The parser handles:
 
@@ -99,7 +99,7 @@ The parser handles:
 - **Import table** — Module reference table listing names of imported DLLs.
 - **Resource table** — Resource type/name table mapping resource IDs to file offsets.
 
-The parser has 16 unit tests in `src/ne/`. NE loading/execution (Phase 5) is planned but not yet implemented.
+The parser has 16 unit tests in `src/ne/`. NE loading and execution is implemented in `src/loader/ne_exec.rs` — see [§20 Appendix: Development Phases](#appendix-development-phases) for details.
 
 ---
 
@@ -109,14 +109,15 @@ Warpine uses Linux KVM (Kernel-based Virtual Machine) for hardware-accelerated x
 
 1. **Create VM** — Open `/dev/kvm`, create a VM file descriptor.
 2. **Allocate guest memory** — `mmap` 128 MB of anonymous memory, register it as a KVM memory region at guest physical address 0.
-3. **Set up GDT** — A Global Descriptor Table (4102 entries, ~32 KB at `GDT_BASE` 0x80000) is written into guest memory:
+3. **Set up GDT** — A Global Descriptor Table (6150 entries, ~49 KB at `GDT_BASE` 0x80000) is written into guest memory:
    - GDT[0]: null descriptor
    - GDT[1] (selector 0x08): 32-bit code segment — base 0, limit 4 GB, execute/read
    - GDT[2] (selector 0x10): 32-bit data segment — base 0, limit 4 GB, read/write
    - GDT[3] (selector 0x18): FS data segment (TIB pointer)
-   - GDT[4] (selector 0x20): 16-bit data alias — base 0, limit 0xFFFF (used for SS in 16-bit mode)
+   - GDT[4] (selector 0x20): 16-bit data alias — base 0, limit 0xFFFF, DPL=0 (used for SS in 16-bit mode)
    - GDT[5] (selector 0x28): 16-bit code alias — base 0, limit 0xFFFF (Far16 thunk entry: `JMP FAR 0x0028:offset`)
-   - GDT[6..4102] (selectors 0x30, 0x38, ...): 4096 tiled 16-bit data descriptors — one per 64 KB of guest address space, enabling 16:16 (selector:offset) addressing for OS/2 16-bit thunks and `DosFlatToSel`/`DosSelToFlat`
+   - GDT[6..4101] (selectors 0x30, 0x38, ...): 4096 tiled 16-bit **data** descriptors — one per 64 KB, DPL=2, read/write; enable 16:16 (selector:offset) addressing for `DosFlatToSel`/`DosSelToFlat` and NE segment DS/ES loads
+   - GDT[4102..6149] (selectors 0x8030+): 2048 tiled 16-bit **code** descriptors — same bases as data tiles, execute/read, DPL=0; required by CALL FAR fixups targeting executable NE objects and by `DosFlatToSel` for code addresses
 4. **Configure vCPU** — Set segment registers (CS=0x08, DS/ES/SS=0x10), enable protected mode (CR0.PE), set EFLAGS, configure debug registers to trap INT 3 (`DR7` with `GD` bit, guest debug via `KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP`).
 
 The **VMEXIT loop** in `run_vcpu()` repeatedly calls `vcpu.run()` and matches on the exit reason:
@@ -816,7 +817,7 @@ src/
     kvm_backend.rs     KVM-based VmBackend implementation
     guest_mem.rs       Guest memory read/write/translate helpers
     lx_loader.rs       LX executable loading into guest memory and fixup application
-    ne_exec.rs         NE executable loader infrastructure (Phase 5)
+    ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants (addresses, message IDs, ordinal bases)
     api_registry.rs    Static sorted API thunk table (124 entries); ApiEntry
@@ -1101,10 +1102,10 @@ CLI samples should print output and exit with code 0. PM samples should open a w
 
 ### Automated integration tests
 
-`tests/integration.rs` contains 8 end-to-end tests that run real OS/2 sample binaries (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test) with headless mode, asserting stdout content and exit code. KVM-gated: tests skip silently when `/dev/kvm` is absent.
+`tests/integration.rs` contains 9 end-to-end tests that run real OS/2 sample binaries (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test, ne_hello) with headless mode, asserting stdout content and exit code. KVM-gated: tests skip silently when `/dev/kvm` is absent.
 
 ```bash
-cargo test --test integration     # 8 end-to-end tests (requires /dev/kvm)
+cargo test --test integration     # 9 end-to-end tests (requires /dev/kvm)
 ```
 
 ---
@@ -1145,6 +1146,23 @@ Eliminated 16-bit thunks from 4OS2 by recompiling with modified headers rather t
 
 `TextModeRenderer` trait with `Sdl2TextRenderer` (640×400 SDL2 window, CP437 8×16 font, CGA 16-colour palette, blinking cursor) and `HeadlessTextRenderer` backends. `run_text_loop()` as the main event loop for CLI apps. `KbdKeyInfo` + `SharedState::kbd_queue`/`kbd_cond`/`use_sdl2_text` for SDL2→KbdCharIn key delivery. Bug fixes: cursor rendering via XOR pixel inversion; `VioGetCurType` (ordinal 33); `VioScrollUp`/`VioScrollDn` `lines=0` as "clear entire region"; `dos_read_stdin` backspace gating. CLI apps default to SDL2 text window; headless fallback via `is_terminal()` detection.
 
+### Phase 5 — NE (16-bit OS/2 1.x) Execution
+
+Full NE loader and 16-bit execution path in `ne_exec.rs`:
+
+- `load_ne()` maps NE segments into GDT-tiled guest memory starting at `NE_SEGMENT_BASE` (0x00100000), one tile per segment.
+- `apply_ne_fixups()` patches CALL FAR import fixups to the NE thunk tile using `NE_THUNK_CODE_SELECTOR` (0x87B0, a code tile descriptor — required because x86 CALL FAR mandates an execute descriptor).
+- `setup_guest_ne()` configures the full tiled GDT, fills the NE thunk tile at 0x00F00000 with INT 3 stubs, tightens NE segment GDT entries to actual allocation sizes, and returns initial CS:IP and SS:SP from the NE header.
+- `handle_ne_api_call()` dispatches 16-bit DOSCALLS (DosWrite, DosExit, DosGetInfoSeg, DosSetSigHandler, DosSetVec, DosGetEnv) and VIOCALLS (VioWrtTTY) using Pascal calling convention (left-to-right push; far pointers as seg:off word pairs on stack; `ne_api_arg_bytes()` for callee cleanup).
+
+Key implementation challenges resolved:
+- **CALL FAR selector type**: data tile (0x07B0) caused `#GP` — switched to code tile (0x87B0).
+- **16-bit mode `rip`**: KVM reports `rip` as CS-relative offset in 16-bit mode; `flat_rip = CS.base + rip` needed for thunk dispatch.
+- **DPL mismatch**: tiled data tiles changed from DPL=0 to DPL=2 (`access=0xD3`) so OS/2 RPL=2 selectors pass the `max(CPL,RPL)≤DPL` check.
+- **Watcom CRT incompatibility**: the Watcom C runtime computes LDT-based selectors (TI=1) that our GDT-tile model cannot provide. `ne_hello` is written in pure assembly (no CRT) to avoid this.
+
+The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment NE program (CODE/DATA/STACK) built with Open Watcom `wasm`+`wlink`, directly calling DosWrite (ord 138) + DosExit (ord 5) in Pascal convention. Integration test `test_ne_hello` verifies end-to-end output and exit code.
+
 ### Phase 7 Baseline — DLL Loader Chain
 
 `DosLoadModule`/`DosQueryProcAddr`/`DosQueryModuleHandle` implemented. `load_dll()` allocates guest memory for each object, loads pages (rebased), applies fixups. Ordinal-based and name-based export maps. `DllManager` in `SharedState`. `jpos2dll.dll` (4OS2 extension DLL) loads and resolves all 7 exports at runtime.
@@ -1157,6 +1175,8 @@ Eliminated 16-bit thunks from 4OS2 by recompiling with modified headers rather t
 - **API thunk auto-registration** — `api_registry.rs` static sorted table (124 entries); O(log n) binary search replaces ~120-arm match.
 - **SDL2 GUI backend** — migrated from `winit + softbuffer` to SDL2; full keyboard, mouse, clipboard support.
 - **PM renderer abstraction** — `PmRenderer` trait with `Sdl2Renderer` and `HeadlessRenderer` backends.
-- **GDT tiling** — 4096 tiled 16-bit data descriptors (GDT[6..4102]) for 16:16 addressing; GDT[4] 16-bit data alias (0x20), GDT[5] 16-bit code alias (0x28) for Far16 thunks.
+- **GDT tiling** — 4096 tiled 16-bit data descriptors (GDT[6..4101], DPL=2) and 2048 tiled 16-bit code descriptors (GDT[4102..6149]) for 16:16 addressing; GDT[4] 16-bit data alias (0x20), GDT[5] 16-bit code alias (0x28) for Far16 thunks.
+- **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
+- **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 276 unit tests, 8 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 281 unit tests, 9 integration tests, compatibility report (`warpine --compat`).

@@ -53,10 +53,12 @@ Per-argument typed names complete (see [Developer Guide §19](developer_guide.md
 - [ ] Non-blocking play completion notification (`MCI_NOTIFY` flag → post `MM_MCINOTIFY` to hwndCallback)
 
 ### 16-bit Compatibility (NE format)
-NE format parser complete (`src/ne/`): NeHeader, segment/relocation/entry tables, name table, 16 unit tests. NE loader skeleton in place: `load_ne()`, `apply_ne_fixups()`, `setup_guest_ne()`, `setup_and_run_ne_cli()`, `handle_ne_api_call()`, `resolve_import_16()`. GDT tiling and 16-bit aliases complete (see [Developer Guide §20](developer_guide.md#appendix-development-phases)).
+**NE execution baseline complete.** NE format parser (`src/ne/`): NeHeader, segment/relocation/entry tables, name table, 16 unit tests. Full NE loader in `src/loader/ne_exec.rs`: `load_ne()`, `apply_ne_fixups()`, `setup_guest_ne()`, `setup_and_run_ne_cli()`, `handle_ne_api_call()`, `ne_api_arg_bytes()`. GDT tiling with data tiles (DPL=2) and code tiles for CALL FAR. `ne_hello` pure-assembly sample runs `DosWrite`+`DosExit` end-to-end; integration test `test_ne_hello` passes. See [Developer Guide §20](developer_guide.md#appendix-development-phases).
 
-- [ ] **16-bit API thunking** — NE apps use Pascal calling convention and `_far16` pointers; add 16-bit dispatch alongside existing 32-bit `_System` dispatch, with segment:offset ↔ flat address translation
-- [ ] **Mode switching** — handle transitions between 16-bit NE code and 32-bit flat code (e.g., 16-bit app calling a 32-bit DLL)
+Remaining:
+- [ ] **Watcom CRT NE apps** — the Watcom C runtime for 16-bit OS/2 requires LDT-based selectors (TI=1) that our GDT-tile model cannot provide; would need a stub LDT or full LDT emulation
+- [ ] **Mode switching** — transitions between 16-bit NE code and 32-bit flat code (e.g., 16-bit app calling a 32-bit DLL)
+- [ ] **Broader 16-bit API coverage** — more DOSCALLS, VIOCALLS, KBDCALLS ordinals needed for real NE applications beyond minimal hello-world
 
 ---
 

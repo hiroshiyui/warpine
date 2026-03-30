@@ -2,7 +2,7 @@
 
 > ⚠️ **Experimental — not for production use.** Warpine is a research and hobby project in active development. APIs are incomplete, behaviour may be incorrect, and security has not been hardened. Use at your own risk.
 
-Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) applications natively on Linux using KVM hardware virtualization. Analogous to WINE for Windows, but targeting OS/2 instead.
+Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS/2 1.x (NE format) applications natively on Linux using KVM hardware virtualization. Analogous to WINE for Windows, but targeting OS/2 instead.
 
 ![4OS2 running under Warpine](doc/screenshots/4os2_20260317_233729.png)
 
@@ -22,7 +22,7 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) applications 
 - **Process Management:** `DosExecPgm`, `DosWaitChild`, directory tracking, system information queries.
 - **NLS:** `DosQueryCtryInfo`, `DosQueryCp`, `DosMapCase`, `DosGetDateTime` — verified correct.
 - **MMPM/2 Audio:** `DosBeep` plays real sine-wave tones; `mciSendCommand`/`mciSendString` for `waveaudio` devices via SDL2 audio queue.
-- **NE Format Parser:** Parser for OS/2 1.x 16-bit (NE) executables — foundation for future 16-bit support.
+- **NE Format Execution:** Full NE (New Executable) loader and 16-bit execution — loads OS/2 1.x 16-bit NE binaries into GDT-tiled guest memory, dispatches DOSCALLS/VIOCALLS via Pascal-convention 16-bit thunks. `ne_hello` (pure assembly, no Watcom CRT) runs `DosWrite`+`DosExit` correctly.
 - **GDB Remote Stub:** `--gdb <port>` enables GDB RSP over TCP — attach with `gdb`/`gef`/`pwndbg` for software breakpoints, single-step, and full register/memory access.
 - **Crash Dump Facility:** Structured crash reports on fatal VMEXITs — registers, stack, code bytes, and last 256 API calls written to `warpine-crash-<pid>.txt`.
 - **API Compatibility Report:** `warpine --compat` prints a module-grouped report of all implemented APIs with stub annotations.
@@ -44,7 +44,7 @@ src/
     kvm_backend.rs     KVM-based VmBackend implementation
     guest_mem.rs       GuestMemory: safe typed read/write into KVM guest memory
     lx_loader.rs       LX/DLL loading: load(), load_dll(), find_dll_path(), apply_fixups()
-    ne_exec.rs         NE loader skeleton (GDT tiling, 16-bit API thunking — Phase 5)
+    ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants: MAGIC_API_BASE, ordinal bases, TIB/PIB addresses
     api_registry.rs    Static sorted API thunk table (124 entries); compat_report()
@@ -157,8 +157,8 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 8. Run tests
 ```bash
-cargo test                        # 276 unit tests (no KVM required)
-cargo test --test integration     # 8 end-to-end tests (requires /dev/kvm)
+cargo test                        # 281 unit tests (no KVM required)
+cargo test --test integration     # 9 end-to-end tests (requires /dev/kvm)
 ```
 
 ## Status
@@ -171,7 +171,7 @@ cargo test --test integration     # 8 end-to-end tests (requires /dev/kvm)
 | 3.5 | Text-Mode Application Support — VIO/KBD console, 4OS2 shell | ✅ Complete |
 | 4 | HPFS-Compatible VFS — VfsBackend, HostDirBackend, EA, file locking | ✅ Complete |
 | 4.5 | 16-bit Thunk Fix — eliminated 16-bit thunks in 4OS2 via recompilation | ✅ Complete |
-| 5 | Multimedia & 16-bit — MMPM/2 audio baseline done; NE parser complete | 🔄 In progress |
+| 5 | Multimedia & 16-bit — MMPM/2 audio baseline; NE parser + full 16-bit NE execution | ✅ Complete |
 | 6 | SDL2 VGA Text Renderer — 640×400 CP437 window, CGA palette, blinking cursor | ✅ Complete |
 | 7 | Application Compatibility — DLL loader chain baseline (jpos2dll.dll) | 🔄 In progress |
 | 8 | SOM / Workplace Shell | 🔮 Long-term |

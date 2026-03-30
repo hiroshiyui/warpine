@@ -1,6 +1,6 @@
 # Warpine Reference Manual
 
-Warpine is an OS/2 compatibility layer for Linux that runs 32-bit OS/2 (LX format) applications natively using KVM hardware virtualization.
+Warpine is an OS/2 compatibility layer for Linux that runs 32-bit OS/2 (LX format) and 16-bit OS/2 1.x (NE format) applications natively using KVM hardware virtualization.
 
 ---
 
@@ -405,9 +405,9 @@ All addresses are guest physical (GPA = GVA in Warpine's flat model):
 | Address | Size | Purpose |
 |---------|------|---------|
 | `0x00001000` | — | Executable pages (loaded from LX objects) |
-| `0x00080000` | 32,816 B | GDT (4102 entries) |
-| `0x0008A000` | 2,048 B | IDT (256 entries) |
-| `0x0008A800` | — | IDT handler stubs |
+| `0x00080000` | 49,200 B | GDT (6150 entries: 6 fixed + 4096 data tiles + 2048 code tiles) |
+| `0x0008D000` | 256 B | IDT (32 exception vectors) |
+| `0x0008D800` | — | IDT handler stubs |
 | `0x00090000` | 4 KB | Thread Information Block (TIB) — thread 1 |
 | `0x00091000` | 4 KB | Process Information Block (PIB) |
 | `0x00092000` | 4 KB | Environment string block |
@@ -428,4 +428,5 @@ All addresses are guest physical (GPA = GVA in Warpine's flat model):
 | 3 | 0x18 | FS segment (TIB pointer) |
 | 4 | 0x20 | 16-bit data alias: base 0, limit 64 KB |
 | 5 | 0x28 | 16-bit code alias: base 0, limit 64 KB (Far16 thunk entry) |
-| 6–4101 | 0x30+ | 4096 tiled 16-bit data descriptors (one per 64 KB, for 16:16 addressing) |
+| 6–4101 | 0x30+ | 4096 tiled 16-bit **data** descriptors (one per 64 KB, DPL=2, for 16:16 addressing and NE segment DS/ES loads) |
+| 4102–6149 | 0x8030+ | 2048 tiled 16-bit **code** descriptors (same bases, execute/read; used by CALL FAR fixups and NE thunk code tile) |

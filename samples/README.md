@@ -44,5 +44,5 @@ cd samples/4os2 && ./fetch_source.sh && make
 | pm_demo | PM GUI window with graphics and timers | WinCreateStdWindow, GpiBox, GpiLine, WinStartTimer |
 | pm_hello | Minimal PM message box | WinInitialize, WinMessageBox |
 | shapes | PM graphics: geometric shape drawing | WinCreateStdWindow, GpiSetColor, GpiBox, GpiLine |
-| ne_hello | 16-bit NE format hello world | NE parser and 16-bit loader verification |
+| ne_hello | 16-bit NE format hello world (pure assembly, no Watcom CRT) | DosWrite (ord 138), DosExit (ord 5) via 16-bit Pascal thunk dispatch |
 | 4os2 | 4OS2 command shell (full interactive) | Nearly all DOSCALLS/VIO/KBD APIs; DLL loading (jpos2dll.dll) |
