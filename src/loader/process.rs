@@ -185,12 +185,15 @@ impl super::Loader {
 
     /// DosWaitChild (ordinal 280): wait for a child process.
     ///
-    /// OS/2 signature: DosWaitChild(action, option, pRes, pPid)
+    /// OS/2 signature: DosWaitChild(action, option, pRes, ppid, pid)
     /// - action: 0=DCWA_PROCESS (specific pid), 1=DCWA_PROCESSTREE (any child)
     /// - option: 0=DCWW_WAIT, 1=DCWW_NOWAIT
-    pub fn dos_wait_child(&self, action: u32, option: u32, p_res: u32, p_pid: u32) -> u32 {
-        let target_pid = self.guest_read::<u32>(p_pid).unwrap_or(0);
-        debug!("  DosWaitChild(action={}, option={}, pid={})", action, option, target_pid);
+    /// - pRes: PRESULTCODES — output: exit info
+    /// - ppid: PPID * — output: PID of the child that terminated
+    /// - pid:  PID — input: PID to wait for (DCWA_PROCESS only)
+    pub fn dos_wait_child(&self, action: u32, option: u32, p_res: u32, p_pid: u32, pid: u32) -> u32 {
+        let target_pid = pid;   // 5th arg is the input PID (p_pid is an OUTPUT pointer)
+        debug!("  DosWaitChild(action={}, option={}, target_pid={})", action, option, target_pid);
 
         if action == 0 && target_pid != 0 {
             // DCWA_PROCESS: wait for specific child
