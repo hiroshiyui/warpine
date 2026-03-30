@@ -328,6 +328,105 @@ impl super::Loader {
                         let fault_cs   = self.guest_read::<u32>(frame_base + 12).unwrap_or(0);
                         let fault_eflags = self.guest_read::<u32>(frame_base + 16).unwrap_or(0);
 
+                        // ── Far16 thunk bypass ───────────────────────────────
+                        // Watcom __Far16 thunks do `JMP FAR <tiled_sel>:<off>`
+                        // to enter 16-bit mode.  Warpine cannot execute 16-bit
+                        // code, so we intercept the #GP, fully unwind the
+                        // thunk, and return 0 to the caller.
+                        //
+                        // Thunk prologue pattern (Watcom):
+                        //   PUSH EBP/EDI/EBX/EDX/ES/DS   (6 saves, 24 bytes)
+                        //   MOV EBP, ESP                  (EBP = top of saves)
+                        //   PUSH SS; PUSH EBP             ([EBP-4]=SS, [EBP-8]=EBP)
+                        //   ...param conversion, 16-bit SS:SP switch...
+                        //   66 EA xx xx xx xx              JMP FAR ptr16:16  ← #GP
+                        //
+                        // To unwind: find the saved EBP on the 32-bit stack
+                        // (self-referential: value at addr == addr+8, with
+                        // [addr+4]==0x10 as saved SS), then read the saved
+                        // registers and return address from [EBP+0..EBP+24].
+                        if vector == 13 && fault_cs == 0x08 {
+                            let err_sel_index = error_code / 8;
+                            let is_tiled = (err_sel_index >= TILED_SEL_START_INDEX
+                                && err_sel_index < TILED_SEL_START_INDEX + NUM_TILES)
+                                || (err_sel_index >= TILED_CODE_START_INDEX
+                                && err_sel_index < TILED_CODE_START_INDEX + NUM_CODE_TILES);
+                            if is_tiled {
+                                let b0 = self.guest_read::<u8>(fault_eip).unwrap_or(0);
+                                let b1 = self.guest_read::<u8>(fault_eip + 1).unwrap_or(0);
+                                if b0 == 0x66 && b1 == 0xEA {
+                                    let target_off = self.guest_read::<u16>(fault_eip + 2).unwrap_or(0);
+                                    let target_sel = self.guest_read::<u16>(fault_eip + 4).unwrap_or(0);
+
+                                    // Scan the 32-bit stack for the self-referential
+                                    // PUSH EBP pattern: val == addr+8, [addr+4]==0x10.
+                                    let stack_upper = (regs.rsp as u32) & 0xFFFF0000;
+                                    let scan_start = stack_upper | 0xFF00; // near top of page
+                                    let scan_end   = stack_upper;
+                                    let mut saved_ebp: Option<u32> = None;
+                                    let mut addr = scan_start;
+                                    while addr >= scan_end + 8 {
+                                        let val = self.guest_read::<u32>(addr).unwrap_or(0);
+                                        if val == addr + 8 {
+                                            let ss_val = self.guest_read::<u16>(addr + 4).unwrap_or(0);
+                                            if ss_val == 0x10 {
+                                                saved_ebp = Some(val);
+                                                break;
+                                            }
+                                        }
+                                        addr = addr.wrapping_sub(4);
+                                    }
+
+                                    if let Some(ebp) = saved_ebp {
+                                        // Read saved registers from [EBP+0..EBP+24]
+                                        let s_ds  = self.guest_read::<u32>(ebp).unwrap_or(0x10);
+                                        let _s_es = self.guest_read::<u32>(ebp + 4).unwrap_or(0x10);
+                                        let s_edx = self.guest_read::<u32>(ebp + 8).unwrap_or(0);
+                                        let s_ebx = self.guest_read::<u32>(ebp + 12).unwrap_or(0);
+                                        let s_edi = self.guest_read::<u32>(ebp + 16).unwrap_or(0);
+                                        let s_ebp = self.guest_read::<u32>(ebp + 20).unwrap_or(0);
+                                        let ret_addr = self.guest_read::<u32>(ebp + 24).unwrap_or(0);
+
+                                        log::warn!("[VCPU {}] Bypassing Far16 thunk: JMP FAR 0x{:04X}:0x{:04X} \
+                                                   at EIP=0x{:08X} → return to 0x{:08X}",
+                                                  vcpu_id, target_sel, target_off, fault_eip, ret_addr);
+
+                                        let mut regs = vcpu.get_regs().unwrap();
+                                        regs.rip = ret_addr as u64;
+                                        regs.rsp = (ebp + 28) as u64; // past saved regs + return addr
+                                        regs.rax = 0; // return "success" / null
+                                        regs.rbx = s_ebx as u64;
+                                        regs.rdx = s_edx as u64;
+                                        regs.rdi = s_edi as u64;
+                                        regs.rbp = s_ebp as u64;
+                                        regs.rflags = fault_eflags as u64;
+                                        vcpu.set_regs(&regs).unwrap();
+
+                                        let mut sregs = vcpu.get_sregs().unwrap();
+                                        // Restore all segments to 32-bit flat
+                                        sregs.cs.selector = 0x08;
+                                        sregs.cs.base = 0;
+                                        sregs.cs.limit = 0xFFFFFFFF;
+                                        sregs.cs.db = 1;
+                                        sregs.cs.type_ = 0x0B;
+                                        for seg in [&mut sregs.ds, &mut sregs.es, &mut sregs.ss] {
+                                            seg.selector = s_ds as u16; // typically 0x10
+                                            seg.base = 0;
+                                            seg.limit = 0xFFFFFFFF;
+                                            seg.db = 1;
+                                            seg.type_ = 0x03;
+                                        }
+                                        vcpu.set_sregs(&sregs).unwrap();
+                                        continue;
+                                    } else {
+                                        log::warn!("[VCPU {}] Far16 thunk at EIP=0x{:08X}: \
+                                                   could not find saved frame, crashing",
+                                                  vcpu_id, fault_eip);
+                                    }
+                                }
+                            }
+                        }
+
                         let report = self.collect_crash_report(
                             &*vcpu, vcpu_id,
                             CrashContext::GuestException {

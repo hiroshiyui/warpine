@@ -1398,7 +1398,11 @@ impl super::Loader {
         let selector = (sel_off >> 16) as u16;
         let offset = sel_off & 0xFFFF;
         let gdt_index = (selector / 8) as u32;
-        let flat = if gdt_index >= TILED_SEL_START_INDEX {
+        let flat = if gdt_index >= TILED_CODE_START_INDEX {
+            // Code tile selector → tile_index = gdt_index - TILED_CODE_START_INDEX
+            (gdt_index - TILED_CODE_START_INDEX) * TILE_SIZE + offset
+        } else if gdt_index >= TILED_SEL_START_INDEX {
+            // Data tile selector → tile_index = gdt_index - TILED_SEL_START_INDEX
             (gdt_index - TILED_SEL_START_INDEX) * TILE_SIZE + offset
         } else {
             // Not a tile selector (e.g., null or standard descriptor) — return offset as-is
@@ -1488,6 +1492,16 @@ mod tests {
         let packed = (0x0010u32 << 16) | 0x1234u32;
         let flat = loader.dos_sel_to_flat(packed);
         assert_eq!(flat, 0x1234);
+    }
+
+    #[test]
+    fn test_dos_sel_to_flat_code_tile_selector() {
+        let loader = Loader::new_mock();
+        // Code tile for tile_index=1 → flat address 0x10000 + offset
+        let code_tile_sel = (TILED_CODE_START_INDEX + 1) * 8; // GDT[4103]
+        let packed = (code_tile_sel << 16) | 0x5678;
+        let flat = loader.dos_sel_to_flat(packed);
+        assert_eq!(flat, 0x15678, "code tile selector should map to flat 0x15678");
     }
 
     // ── DosAllocMem / DosFreeMem ─────────────────────────────────────────────

@@ -106,7 +106,16 @@ impl super::Loader {
             let entry_addr = GDT_BASE + (TILED_SEL_START_INDEX + i) * 8;
             self.guest_write::<u64>(entry_addr, entry).expect("setup_idt: tile descriptor OOB");
         }
-        debug!("GDT: 6 fixed (null/code32/data32/fs/data16/code16) + {} tiled 16-bit data descriptors", NUM_TILES);
+        // Tiled 16-bit execute/read code descriptors: GDT[4102..6150].
+        // Same base/limit as data tiles, but with code (exec+read) access.
+        // Used by 16:16 far JMP/CALL fixups targeting executable LX objects.
+        for i in 0..NUM_CODE_TILES {
+            let base = i * TILE_SIZE;
+            let entry = Self::make_gdt_entry(base, 0xFFFF, 0x9B, 0x00); // 16-bit code, exec+read
+            let entry_addr = GDT_BASE + (TILED_CODE_START_INDEX + i) * 8;
+            self.guest_write::<u64>(entry_addr, entry).expect("setup_idt: code tile descriptor OOB");
+        }
+        debug!("GDT: 6 fixed + {} tiled data + {} tiled code descriptors", NUM_TILES, NUM_CODE_TILES);
 
         // ── IDT with exception handler stubs ──
         for i in 0..NUM_VECTORS {

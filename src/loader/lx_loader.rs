@@ -109,6 +109,9 @@ impl super::Loader {
                             0x02 | 0x03 => {
                                 // 16:16 far pointer: derive tile selector from target flat address.
                                 // Tile i covers [i*64KB .. (i+1)*64KB); selector = (TILED_SEL_START_INDEX + i) * 8.
+                                // Always uses data tile selectors. If a Far16 thunk tries to JMP FAR
+                                // to a data tile, the resulting #GP is caught by the VMEXIT handler
+                                // which skips the call (Far16 thunks can't work in Warpine's flat model).
                                 let tile_index = (target_addr >> 16) as u32;
                                 let offset16 = (target_addr & 0xFFFF) as u16;
                                 let selector = ((TILED_SEL_START_INDEX + tile_index) * 8) as u16;
