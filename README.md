@@ -39,7 +39,7 @@ src/
     mod.rs             Loader, SharedState (all managers + DllManager), KVM setup
     lx_loader.rs       LX/DLL loading: load(), load_dll(), find_dll_path(), apply_fixups()
     ne_exec.rs         NE loader skeleton (GDT tiling, 16-bit API thunking — Phase 5)
-    api_registry.rs    Static sorted API thunk table (122 entries); compat_report()
+    api_registry.rs    Static sorted API thunk table (124 entries); compat_report()
     api_dispatch.rs    Ordinal → handler dispatch + sub-dispatcher routing
     api_trace.rs       ordinal_to_name(), module_for_ordinal() for structured tracing
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
@@ -129,7 +129,7 @@ WARPINE_TRACE=json   RUST_LOG=debug cargo run -- samples/hello/hello.exe  # JSON
 
 ### 7. Run tests
 ```bash
-cargo test                        # 237 unit tests (no KVM required)
+cargo test                        # 276 unit tests (no KVM required)
 cargo test --test integration     # 8 end-to-end tests (requires /dev/kvm)
 ```
 
