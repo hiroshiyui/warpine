@@ -949,6 +949,7 @@ impl super::Loader {
 
             {
                 let mut new_vcpu = self.vm.create_vcpu(tid as u64).unwrap();
+                self.setup_vcpu_segments_32bit(&mut *new_vcpu, tib_addr as u64);
                 let mut new_regs = new_vcpu.get_regs().unwrap();
                 new_regs.rip = pfn as u64;
                 new_regs.rsp = (stack_base + stack_size - 12) as u64;

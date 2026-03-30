@@ -85,6 +85,8 @@ impl super::Loader {
 
     pub(crate) fn create_initial_vcpu(&self, entry_eip: u64, entry_esp: u64) -> Box<dyn VcpuBackend> {
         let mut vcpu = self.vm.create_vcpu(0).unwrap();
+        // Set up 32-bit flat segment registers, CR0/CR4, GDT, IDT.
+        self.setup_vcpu_segments_32bit(&mut *vcpu, TIB_BASE as u64);
         let mut regs = vcpu.get_regs().unwrap();
         regs.rip = entry_eip;
         regs.rsp = entry_esp - 20;
@@ -136,7 +138,12 @@ impl super::Loader {
         std::process::exit(code);
     }
 
-    pub(crate) fn run_vcpu(&self, mut vcpu: Box<dyn VcpuBackend>, vcpu_id: u32, tib_base: u64) {
+    /// Configure vCPU segment registers, CR0/CR4, GDT, and IDT for 32-bit flat mode.
+    ///
+    /// Called by the LX (32-bit) execution paths.  The NE (16-bit) path sets up
+    /// its own segment registers in `setup_and_run_ne_cli` before calling
+    /// `run_vcpu`, so this helper must NOT be called from there.
+    pub(crate) fn setup_vcpu_segments_32bit(&self, vcpu: &mut dyn VcpuBackend, tib_base: u64) {
         let mut sregs = vcpu.get_sregs().unwrap();
         sregs.cs.base = 0; sregs.cs.limit = 0xFFFFFFFF; sregs.cs.g = 1; sregs.cs.db = 1; sregs.cs.present = 1; sregs.cs.type_ = 11; sregs.cs.s = 1; sregs.cs.selector = 0x08;
         let mut ds = sregs.cs.clone(); ds.type_ = 3; ds.selector = 0x10;
@@ -148,10 +155,13 @@ impl super::Loader {
         sregs.cr4 |= 1 << 9;
         // Set up GDT and IDT registers
         sregs.gdt_base  = GDT_BASE as u64;
-        sregs.gdt_limit = GDT_SIZE - 1; // 6 fixed + NUM_TILES tiled 16-bit data entries
+        sregs.gdt_limit = GDT_SIZE - 1;
         sregs.idt_base  = IDT_BASE as u64;
         sregs.idt_limit = 32 * 8 - 1;
         vcpu.set_sregs(&sregs).unwrap();
+    }
+
+    pub(crate) fn run_vcpu(&self, mut vcpu: Box<dyn VcpuBackend>, vcpu_id: u32, _tib_base: u64) {
 
         vcpu.enable_software_breakpoints().unwrap();
 
@@ -278,9 +288,10 @@ impl super::Loader {
                         // Single-step stops happen at addresses that are NOT in our
                         // API thunk range and NOT in the IDT handler range.
                         let rip = regs.rip;
+                        let flat_rip_ss = vcpu.get_sregs().unwrap().cs.base + rip;
                         let in_api_range = rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + STUB_AREA_SIZE as u64;
                         let in_idt_range = rip >= IDT_HANDLER_BASE as u64 && rip < IDT_HANDLER_BASE as u64 + 32 * 16;
-                        let in_ne_range  = rip >= NE_THUNK_BASE as u64 && rip < (NE_THUNK_BASE + TILE_SIZE) as u64;
+                        let in_ne_range  = flat_rip_ss >= NE_THUNK_BASE as u64 && flat_rip_ss < (NE_THUNK_BASE + TILE_SIZE) as u64;
                         if !in_api_range && !in_idt_range && !in_ne_range {
                             // Single-step stop.
                             vcpu.set_single_step(false).unwrap();
@@ -302,6 +313,9 @@ impl super::Loader {
                     }
 
                     let rip = vcpu.get_regs().unwrap().rip;
+                    // In 16-bit mode KVM reports rip as the segment offset, not the flat address.
+                    // Compute flat_rip = CS.base + rip for range checks (harmless in 32-bit: CS.base=0).
+                    let flat_rip = vcpu.get_sregs().unwrap().cs.base + rip;
                     // Check if this is from an IDT exception handler stub
                     if rip >= IDT_HANDLER_BASE as u64 && rip < IDT_HANDLER_BASE as u64 + 32 * 16 {
                         let regs = vcpu.get_regs().unwrap();
@@ -443,8 +457,9 @@ impl super::Loader {
                         return;
                     }
                     // 16-bit NE API thunk: breakpoint in the NE thunk tile
-                    if rip >= NE_THUNK_BASE as u64 && rip < (NE_THUNK_BASE + TILE_SIZE) as u64 {
-                        let ordinal = (rip - NE_THUNK_BASE as u64) as u16;
+                    // Use flat_rip (CS.base + rip) since rip is a segment offset in 16-bit mode.
+                    if flat_rip >= NE_THUNK_BASE as u64 && flat_rip < (NE_THUNK_BASE + TILE_SIZE) as u64 {
+                        let ordinal = (flat_rip - NE_THUNK_BASE as u64) as u16;
                         {
                             let regs_dbg = vcpu.get_regs().unwrap();
                             let sregs_dbg = vcpu.get_sregs().unwrap();
@@ -452,8 +467,8 @@ impl super::Loader {
                             let sp_dbg = regs_dbg.rsp as u16;
                             let ret_ip_dbg = self.guest_read::<u16>(ss_base_dbg + sp_dbg as u32).unwrap_or(0);
                             let ret_cs_dbg = self.guest_read::<u16>(ss_base_dbg + sp_dbg as u32 + 2).unwrap_or(0);
-                            debug!("  [VCPU {}] 16-bit API call: ordinal {} at 0x{:08X}, ret=0x{:04X}:0x{:04X}, SP=0x{:04X}",
-                                vcpu_id, ordinal, rip, ret_cs_dbg, ret_ip_dbg, sp_dbg);
+                            debug!("  [VCPU {}] 16-bit API call: ordinal {} at flat=0x{:08X}, ret=0x{:04X}:0x{:04X}, SP=0x{:04X}",
+                                vcpu_id, ordinal, flat_rip, ret_cs_dbg, ret_ip_dbg, sp_dbg);
                         }
                         let result = self.handle_ne_api_call(&mut *vcpu, vcpu_id, ordinal);
                         let mut regs = vcpu.get_regs().unwrap();
@@ -548,6 +563,9 @@ impl super::Loader {
                         }
                     }
                     else {
+                        let sregs_dbg = vcpu.get_sregs().unwrap();
+                        warn!("[VCPU {}] Unexpected breakpoint: raw_rip=0x{:08X} flat_rip=0x{:08X} cs.sel=0x{:04X} cs.base=0x{:08X} cs.db={}",
+                            vcpu_id, rip, flat_rip, sregs_dbg.cs.selector, sregs_dbg.cs.base, sregs_dbg.cs.db);
                         let report = self.collect_crash_report(
                             &*vcpu, vcpu_id, CrashContext::UnexpectedBreakpoint,
                         );

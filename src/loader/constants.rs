@@ -41,10 +41,15 @@ pub const IDT_HANDLER_BASE: u32 = 0x0008D800;
 
 // NE (16-bit) loader constants
 pub const NE_SEGMENT_BASE: u32 = 0x00100000;   // 1MB — NE segments start here
-pub const NE_THUNK_BASE: u32 = 0x00F00000;     // 16-bit API thunk stubs at 15MB (high address to avoid selector conflicts)
+pub const NE_THUNK_BASE: u32 = 0x00F00000;     // 16-bit API thunk stubs at 15MB
 pub const NE_THUNK_TILE_INDEX: u32 = NE_THUNK_BASE / TILE_SIZE; // tile 240
-pub const NE_THUNK_GDT_INDEX: u32 = TILED_SEL_START_INDEX + NE_THUNK_TILE_INDEX; // GDT[244]
-pub const NE_THUNK_SELECTOR: u16 = (NE_THUNK_GDT_INDEX as u16) * 8; // 0x07A0
+// Data tile selector for NE_THUNK_BASE (cannot be used for CALL FAR — data, not code)
+pub const NE_THUNK_GDT_INDEX: u32 = TILED_SEL_START_INDEX + NE_THUNK_TILE_INDEX; // GDT[246]
+pub const NE_THUNK_SELECTOR: u16 = (NE_THUNK_GDT_INDEX as u16) * 8; // 0x07B0 (data tile)
+// Code tile selector for NE_THUNK_BASE — this is the one used in CALL FAR fixups,
+// because x86 CALL FAR requires a code (execute) segment descriptor.
+pub const NE_THUNK_CODE_GDT_INDEX: u32 = TILED_CODE_START_INDEX + NE_THUNK_TILE_INDEX; // GDT[4342]
+pub const NE_THUNK_CODE_SELECTOR: u16 = (NE_THUNK_CODE_GDT_INDEX as u16) * 8; // 0x87B0
 
 // OS/2 WM_ message constants
 pub const WM_SIZE: u32 = 0x0007;

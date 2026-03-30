@@ -140,6 +140,18 @@ fn test_queue() {
     assert!(out.contains("msg='Queue Message'"), "queue message:\n{out}");
 }
 
+/// ne_hello: 16-bit NE format DosWrite + DosExit — pure assembly, no CRT.
+#[test]
+fn test_ne_hello() {
+    if !kvm_available() { return; }
+    let (out, code) = run_sample("samples/ne_hello/ne_hello.exe", 15);
+    assert_eq!(code, 0, "ne_hello exited with {code}\nstdout:\n{out}");
+    assert!(
+        out.contains("Hello from NE (16-bit OS/2)!"),
+        "unexpected output:\n{out}"
+    );
+}
+
 /// thunk_test: TIB/PIB layout, DosGetInfoBlocks, DosQuerySysInfo.
 #[test]
 fn test_thunk() {

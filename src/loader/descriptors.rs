@@ -102,7 +102,9 @@ impl super::Loader {
         // Selector for tile i = (TILED_SEL_START_INDEX + i) * 8 = 0x30 + i*8.
         for i in 0..NUM_TILES {
             let base = i * TILE_SIZE;
-            let entry = Self::make_gdt_entry(base, 0xFFFF, 0x93, 0x00); // 16-bit data, byte granular
+            // DPL=2 (0xD3) so that OS/2 ring-2 selectors (RPL=2) can be loaded into
+            // data segment registers from CPL=0: max(CPL=0,RPL=2)=2 ≤ DPL=2 passes.
+            let entry = Self::make_gdt_entry(base, 0xFFFF, 0xD3, 0x00); // 16-bit data, DPL=2
             let entry_addr = GDT_BASE + (TILED_SEL_START_INDEX + i) * 8;
             self.guest_write::<u64>(entry_addr, entry).expect("setup_idt: tile descriptor OOB");
         }

@@ -1,0 +1,8 @@
+# ne_hello.lnk — wlink directive file for 16-bit OS/2 NE hello world
+format os2
+option nodefaultlibs
+option stack=0x400
+import DosWrite DOSCALLS.138
+import DosExit DOSCALLS.5
+file ne_hello.o
+name ne_hello.exe

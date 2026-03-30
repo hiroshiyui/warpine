@@ -67,9 +67,9 @@ impl super::Loader {
                             .map(|s| s.as_str())
                             .unwrap_or("?");
                         debug!("  NE fixup: {}.#{} -> thunk", mod_name, ordinal);
-                        // Resolve to 16-bit thunk area: selector=NE_THUNK_SELECTOR, offset=module_base+ordinal
+                        // CALL FAR requires a code (execute) descriptor — use NE_THUNK_CODE_SELECTOR
                         let thunk_offset = self.resolve_import_16(mod_name, *ordinal);
-                        (thunk_offset, NE_THUNK_SELECTOR)
+                        (thunk_offset, NE_THUNK_CODE_SELECTOR)
                     }
                     NeRelocationTarget::ImportName { module_index, name_offset: _ } => {
                         let mod_name = ne_file.imported_modules
@@ -135,7 +135,7 @@ impl super::Loader {
 
     /// Resolve a 16-bit import to an offset within the NE thunk tile.
     /// Uses the same module base offsets as 32-bit (DOSCALLS=0, KBDCALLS=4096, etc.)
-    fn resolve_import_16(&self, module: &str, ordinal: u16) -> u16 {
+    pub(crate) fn resolve_import_16(&self, module: &str, ordinal: u16) -> u16 {
         let base: u16 = if module == "DOSCALLS" { 0 }
             else if module == "VIOCALLS" { VIOCALLS_BASE as u16 }
             else if module == "KBDCALLS" { KBDCALLS_BASE as u16 }
@@ -206,68 +206,39 @@ impl super::Loader {
         // Set up 32-bit API stubs (still needed for some internal dispatches)
         self.setup_stubs();
 
-        // Set up 16-bit API thunk tile at NE_THUNK_BASE: fill with INT 3
+        // Set up the full tiled GDT and IDT using the same path as LX executables.
+        // This writes all 6150 GDT entries (including data/code tiles for all NE
+        // segment selectors and the NE thunk tile at GDT[NE_THUNK_GDT_INDEX]) and
+        // the 32-bit interrupt-gate IDT stubs required by the VMEXIT exception handler.
+        self.setup_idt();
+
+        // Set up 16-bit API thunk tile at NE_THUNK_BASE: fill with INT 3.
+        // The thunk tile GDT entry (a code tile at NE_THUNK_TILE_INDEX) is already
+        // written by setup_idt() as a 16-bit execute/read descriptor (access=0x9B).
         for i in 0..TILE_SIZE {
             self.guest_write::<u8>(NE_THUNK_BASE + i, 0xCC).expect("setup_ne_thunks: write OOB");
         }
+        debug!("  NE thunk tile: GDT[{}] selector=0x{:04X} base=0x{:08X}",
+            NE_THUNK_GDT_INDEX, NE_THUNK_SELECTOR, NE_THUNK_BASE);
 
-        // Set up GDT with NE segment descriptors
-        // First, set up the standard entries (null, code32, data32, fs)
-        self.guest_write::<u64>(GDT_BASE, 0).unwrap();
-        self.guest_write::<u64>(GDT_BASE + 8, Self::make_gdt_entry(0, 0xFFFFF, 0x9B, 0xCF)).unwrap();
-        self.guest_write::<u64>(GDT_BASE + 16, Self::make_gdt_entry(0, 0xFFFFF, 0x93, 0xCF)).unwrap();
-        self.guest_write::<u64>(GDT_BASE + 24, Self::make_gdt_entry(TIB_BASE, 0xFFF, 0x93, 0xCF)).unwrap();
-
-        // 16-bit thunk code segment (NE_THUNK_GDT_INDEX)
-        let thunk_gdt_offset = GDT_BASE + NE_THUNK_GDT_INDEX * 8;
-        self.guest_write::<u64>(thunk_gdt_offset,
-            Self::make_gdt_entry(NE_THUNK_BASE, 0xFFFF, 0x9B, 0x00)).unwrap(); // 16-bit code, exec+read
-        debug!("  GDT[{}] = 16-bit thunk code at 0x{:08X}, selector=0x{:04X}",
-            NE_THUNK_GDT_INDEX, NE_THUNK_BASE, NE_THUNK_SELECTOR);
-
-        // NE segment descriptors
-        let mut max_gdt_index = NE_THUNK_GDT_INDEX;
+        // Update NE segment GDT entries with accurate byte-granular limits.
+        // setup_idt() writes all tiles with limit=0xFFFF; here we tighten each
+        // NE segment to its actual allocation size so out-of-bounds accesses fault.
         for (i, seg) in ne_file.segment_table.iter().enumerate() {
             let guest_base = NE_SEGMENT_BASE + (i as u32) * TILE_SIZE;
             let tile_idx = guest_base / TILE_SIZE;
             let gdt_idx = TILED_SEL_START_INDEX + tile_idx;
             let selector = gdt_idx * 8;
             let limit = seg.actual_min_alloc().saturating_sub(1).min(0xFFFF);
-            let access = if seg.is_code() { 0x9B } else { 0x93 }; // code exec+read or data read+write
+            // Data segments use DPL=2 (0xD3) to match the tiled data tile base, allowing
+            // OS/2 ring-2 RPL selectors to be loaded without a protection fault.
+            let access = if seg.is_code() { 0x9B } else { 0xD3 };
             let gdt_offset = GDT_BASE + gdt_idx * 8;
             self.guest_write::<u64>(gdt_offset,
-                Self::make_gdt_entry(guest_base, limit, access, 0x00)).unwrap(); // 16-bit, byte granularity
+                Self::make_gdt_entry(guest_base, limit, access, 0x00)).unwrap();
             debug!("  GDT[{}] = NE seg {} ({}) at 0x{:08X}, limit=0x{:04X}, selector=0x{:04X}",
                 gdt_idx, i + 1, if seg.is_code() { "CODE" } else { "DATA" },
                 guest_base, limit, selector);
-            if gdt_idx > max_gdt_index { max_gdt_index = gdt_idx; }
-        }
-
-        // Set up IDT (for exception handling)
-        {
-            const NUM_VECTORS: u32 = 32;
-            for i in 0..NUM_VECTORS {
-                let handler_addr = IDT_HANDLER_BASE + i * 16;
-                let has_error_code = matches!(i, 8 | 10 | 11 | 12 | 13 | 14 | 17);
-                let mut off = 0u32;
-                if !has_error_code {
-                    self.guest_write::<u8>(handler_addr + off, 0x6A).unwrap();
-                    self.guest_write::<u8>(handler_addr + off + 1, 0x00).unwrap();
-                    off += 2;
-                }
-                self.guest_write::<u8>(handler_addr + off, 0x6A).unwrap();
-                self.guest_write::<u8>(handler_addr + off + 1, i as u8).unwrap();
-                off += 2;
-                self.guest_write::<u8>(handler_addr + off, 0xCC).unwrap();
-
-                let idt_entry_addr = IDT_BASE + i * 8;
-                let offset_lo = (handler_addr & 0xFFFF) as u16;
-                let offset_hi = ((handler_addr >> 16) & 0xFFFF) as u16;
-                self.guest_write::<u16>(idt_entry_addr, offset_lo).unwrap();
-                self.guest_write::<u16>(idt_entry_addr + 2, 0x08).unwrap();
-                self.guest_write::<u16>(idt_entry_addr + 4, 0x8E00).unwrap();
-                self.guest_write::<u16>(idt_entry_addr + 6, offset_hi).unwrap();
-            }
         }
 
         // Return entry point and stack as selectors
@@ -311,13 +282,9 @@ impl super::Loader {
 
         // Set up 16-bit protected mode segments
         let mut sregs = vcpu.get_sregs().unwrap();
-        // GDT
-        sregs.gdt_base = GDT_BASE as u64;
-        // GDT must cover all NE segment entries + thunk entry
-        let last_seg = ne_file.segment_table.len() as u32;
-        let last_tile_idx = (NE_SEGMENT_BASE / TILE_SIZE) + last_seg.saturating_sub(1);
-        let max_gdt_idx = (TILED_SEL_START_INDEX + last_tile_idx).max(NE_THUNK_GDT_INDEX);
-        sregs.gdt_limit = (max_gdt_idx + 1) * 8 - 1;
+        // GDT — use the full tiled GDT written by setup_idt()
+        sregs.gdt_base  = GDT_BASE as u64;
+        sregs.gdt_limit = GDT_SIZE - 1;
         // IDT
         sregs.idt_base  = IDT_BASE as u64;
         sregs.idt_limit = 32 * 8 - 1;
@@ -330,8 +297,15 @@ impl super::Loader {
             selector: cs_sel, type_: 11, present: 1, dpl: 0, db: 0, s: 1, l: 0, g: 0, avl: 0, unusable: 0,
         };
 
-        // DS/ES: data segment (auto data segment or same as SS)
-        let ds_sel = ss_sel; // Use stack segment as default data segment
+        // DS/ES: NE header's auto_data_segment identifies the automatic data segment.
+        // Fall back to the stack segment if auto_data_segment is 0 or out of range.
+        let auto_ds = ne_file.header.auto_data_segment;
+        let ds_sel = if auto_ds > 0 && (auto_ds as usize) <= ne_file.segment_table.len() {
+            let tile_idx = (NE_SEGMENT_BASE / TILE_SIZE) + (auto_ds as u32 - 1);
+            ((TILED_SEL_START_INDEX + tile_idx) * 8) as u16
+        } else {
+            ss_sel
+        };
         let ds_seg = GuestSegment {
             base: self.gdt_entry_base(ds_sel) as u64, limit: self.gdt_entry_limit(ds_sel),
             selector: ds_sel, type_: 3, present: 1, dpl: 0, db: 0, s: 1, l: 0, g: 0, avl: 0, unusable: 0,
@@ -461,11 +435,31 @@ impl super::Loader {
                     0
                 }
             }
+        } else if (ordinal as u32) >= VIOCALLS_BASE && (ordinal as u32) < VIOCALLS_BASE + 1024 {
+            let vio_ord = (ordinal as u32) - VIOCALLS_BASE;
+            match vio_ord {
+                // VioWrtTTY(pszStr:far, cbStr:USHORT, hvio:HVIO) — Pascal, left-to-right push.
+                // Stack after CALL FAR: [ret_IP][ret_CS][hvio][cbStr][pszStr_off][pszStr_seg]
+                19 => {
+                    let hvio     = read_arg16(0);
+                    let cb_str   = read_arg16(2);
+                    let p_str    = read_far_ptr(4); // offset at +4, seg at +6
+                    debug!("  16-bit VioWrtTTY(pszStr=0x{:08X}, cb={}, hvio={})", p_str, cb_str, hvio);
+                    if let Some(data) = self.guest_slice_mut(p_str, cb_str as usize) {
+                        let bytes = data.to_vec();
+                        let mut console = self.shared.console_mgr.lock_or_recover();
+                        console.write_tty(&bytes, 0x07); // default attribute: light-grey on black
+                    }
+                    0
+                }
+                _ => {
+                    warn!("  [VCPU {}] Unimplemented 16-bit VIOCALLS ordinal {}", vcpu_id, vio_ord);
+                    0
+                }
+            }
         } else {
             warn!("  [VCPU {}] Unimplemented 16-bit API ordinal {} (module base {})",
-                vcpu_id, ordinal, if ordinal as u32 >= VIOCALLS_BASE { "VIOCALLS" }
-                else if ordinal as u32 >= KBDCALLS_BASE { "KBDCALLS" }
-                else { "?" });
+                vcpu_id, ordinal, if ordinal as u32 >= KBDCALLS_BASE { "KBDCALLS" } else { "?" });
             0
         }
     }
@@ -492,5 +486,87 @@ impl super::Loader {
         } else {
             0
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Loader, MutexExt};
+    use super::super::constants::*;
+
+    /// ne_api_arg_bytes must return the correct Pascal callee-cleanup byte counts
+    /// for all ordinals exercised by ne_hello.exe.
+    #[test]
+    fn ne_api_arg_bytes_known_ordinals() {
+        let loader = Loader::new_mock();
+        assert_eq!(loader.ne_api_arg_bytes(5),   4,  "DosExit: fTerminate(2)+usExitCode(2)");
+        assert_eq!(loader.ne_api_arg_bytes(138), 12, "DosWrite: hf(2)+pBuf(4)+cb(2)+pcb(4)");
+        assert_eq!(loader.ne_api_arg_bytes(41),  10, "DosSetSigHandler");
+        assert_eq!(loader.ne_api_arg_bytes(49),  8,  "DosSetVec");
+        assert_eq!(loader.ne_api_arg_bytes(92),  4,  "DosGetPID");
+        assert_eq!(loader.ne_api_arg_bytes(94),  8,  "DosGetEnv");
+        // VioWrtTTY at VIOCALLS_BASE+19
+        let vio_ord = (VIOCALLS_BASE + 19) as u16;
+        assert_eq!(loader.ne_api_arg_bytes(vio_ord), 8,
+            "VioWrtTTY: hvio(2)+cbStr(2)+pszStr_off(2)+pszStr_seg(2)");
+    }
+
+    /// resolve_import_16 must map each known module to the correct thunk offset.
+    #[test]
+    fn resolve_import_16_offset() {
+        let loader = Loader::new_mock();
+        // DOSCALLS base = 0: ordinal N maps to thunk offset N
+        assert_eq!(loader.resolve_import_16("DOSCALLS", 5),   5);
+        assert_eq!(loader.resolve_import_16("DOSCALLS", 138), 138);
+        // VIOCALLS base: ordinal 19 maps to VIOCALLS_BASE + 19
+        let expected = VIOCALLS_BASE as u16 + 19;
+        assert_eq!(loader.resolve_import_16("VIOCALLS", 19), expected);
+    }
+
+    /// VioWrtTTY dispatch: a call to ordinal VIOCALLS_BASE+19 writes to the console
+    /// screen buffer.
+    #[test]
+    fn ne_vio_wrt_tty_writes_to_screen() {
+        use super::super::vm_backend::mock::MockVcpu;
+        use super::super::vm_backend::{GuestSegment, GuestSregs, GuestRegs};
+
+        let loader = Loader::new_mock();
+        // Write test string into guest memory at flat 0x3000.
+        let msg = b"Hi!";
+        for (i, &b) in msg.iter().enumerate() {
+            loader.guest_write::<u8>(0x3000 + i as u32, b).unwrap();
+        }
+        // Set up the full GDT so gdt_entry_base works.
+        loader.setup_idt();
+
+        // Build mock call frame at SS_base=0, SP=0x200.
+        // Stack after CALL FAR: [ret_IP:2][ret_CS:2][hvio:2][cbStr:2][str_off:2][str_seg:2]
+        let sp: u32 = 0x200;
+        loader.guest_write::<u16>(sp, 0x0050u16).unwrap();      // ret IP
+        loader.guest_write::<u16>(sp + 2, 0x00B0u16).unwrap();  // ret CS
+        loader.guest_write::<u16>(sp + 4, 0u16).unwrap();       // hvio
+        loader.guest_write::<u16>(sp + 6, 3u16).unwrap();       // cbStr = 3
+        // String is at flat 0x3000; tile 0, selector 0x30, offset 0x3000
+        loader.guest_write::<u16>(sp + 8, 0x3000u16).unwrap();  // pszStr offset
+        loader.guest_write::<u16>(sp + 10, 0x0030u16).unwrap(); // pszStr segment (tile 0)
+
+        let mut vcpu = MockVcpu::new();
+        vcpu.regs = GuestRegs { rsp: 0x200, ..Default::default() };
+        vcpu.sregs = GuestSregs {
+            ss: GuestSegment {
+                base: 0, limit: 0xFFFF, selector: 0x30,
+                type_: 3, present: 1, dpl: 0, db: 0, s: 1, l: 0, g: 0, avl: 0, unusable: 0,
+            },
+            ..Default::default()
+        };
+
+        let vio_ord = (VIOCALLS_BASE + 19) as u16;
+        loader.handle_ne_api_call(&mut vcpu, 0, vio_ord);
+
+        // The VioManager screen buffer should contain 'H', 'i', '!'
+        let console = loader.shared.console_mgr.lock_or_recover();
+        assert_eq!(console.buffer[0].0, b'H', "buffer[0]='H'");
+        assert_eq!(console.buffer[1].0, b'i', "buffer[1]='i'");
+        assert_eq!(console.buffer[2].0, b'!', "buffer[2]='!'");
     }
 }
