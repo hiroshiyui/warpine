@@ -11,7 +11,7 @@ When performing documentation engineering, always follow these steps:
    - `README.md` — features list, prerequisites, acknowledgements
    - `CHANGELOG.md` — release notes and version history
    - `CLAUDE.md` — stack, architecture, key gotchas, project conventions
-   - `doc/developer_guide.md`, `doc/os2_ordinals.md`, `doc/TODOs.md`
+   - `doc/developer_guide.md`, `doc/os2_ordinals.md`, `doc/TODOs.md`, `doc/reference_manual.md`
    - `samples/README.md` — sample scripts and their required features/phases
    - Code comments visible to human developers
 
