@@ -27,6 +27,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - 276 unit tests, 8 integration tests
 
 ### Fixed
+- **Far16 thunk bypass** — `#GP` on `66 EA` (Watcom `__Far16` JMP FAR) now fully bypassed in VMEXIT handler: scans stack for self-referential PUSH EBP frame, restores 32-bit caller state and returns EAX=0, avoiding all 16-bit execution (fixes 4OS2/JPOS2DLL crashes 606162, 623645, 630555)
+- **SDL2 text-mode CPU idle** — replaced `poll_iter()` busy-loop with `wait_event_timeout(8)` so idle processes yield the CPU instead of pinning a full core
+- Added 2048 code-tile GDT entries (GDT[4102..6149], type 0x9B) so `DosFlatToSel`/`DosSelToFlat` round-trip correctly for code-tile selectors
 - Detach relay thread in `DosWaitChild` instead of joining (deadlock fix)
 - Rate-limit MMIO exit handlers to prevent 100% CPU spin
 - Read IDT exception frame from `SS.base+SP` when SS is 16-bit
