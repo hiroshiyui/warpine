@@ -39,6 +39,7 @@ fn init_logging() {
             tracing_subscriber::registry()
                 .with(filter)
                 .with(fmt::layer()
+                    .with_writer(std::io::stderr)
                     .json()
                     .with_span_events(fmt::format::FmtSpan::ENTER | fmt::format::FmtSpan::CLOSE))
                 .init();
@@ -48,6 +49,7 @@ fn init_logging() {
             tracing_subscriber::registry()
                 .with(filter)
                 .with(fmt::layer()
+                    .with_writer(std::io::stderr)
                     .compact()
                     .with_target(false)
                     .with_span_events(fmt::format::FmtSpan::ENTER | fmt::format::FmtSpan::CLOSE))
@@ -57,7 +59,7 @@ fn init_logging() {
             // Default: no span events, just log messages (mirrors env_logger)
             tracing_subscriber::registry()
                 .with(filter)
-                .with(fmt::layer().with_target(true))
+                .with(fmt::layer().with_writer(std::io::stderr).with_target(true))
                 .init();
         }
     }

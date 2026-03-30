@@ -151,14 +151,19 @@ impl VioManager {
             unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, orig); }
             self.raw_mode_active = false;
         }
-        // As a safety net, force-enable critical cooked-mode flags
-        // even if original_termios wasn't saved (e.g., signal handler path).
-        let mut cur: libc::termios = unsafe { std::mem::zeroed() };
-        if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut cur) } == 0 {
-            cur.c_lflag |= libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN;
-            cur.c_iflag |= libc::ICRNL;
-            cur.c_oflag |= libc::OPOST;
-            unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, &cur); }
+        // As a safety net, force-enable critical cooked-mode flags if raw mode
+        // was ever activated.  Guard is intentional: a child warpine process
+        // running headless (stdout piped) never sets raw mode, so calling
+        // TCSAFLUSH here would flush pending input on the *parent's* shared
+        // terminal fd and break the parent shell's prompt.
+        if self.raw_mode_active || self.original_termios.is_some() {
+            let mut cur: libc::termios = unsafe { std::mem::zeroed() };
+            if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut cur) } == 0 {
+                cur.c_lflag |= libc::ICANON | libc::ECHO | libc::ISIG | libc::IEXTEN;
+                cur.c_iflag |= libc::ICRNL;
+                cur.c_oflag |= libc::OPOST;
+                unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, &cur); }
+            }
         }
     }
 
