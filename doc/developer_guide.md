@@ -26,6 +26,7 @@ This guide introduces the internals of Warpine and the OS/2 concepts it emulates
 16. [Filesystem I/O Design](#filesystem-io-design)
 17. [Module Structure](#module-structure)
 18. [Adding a New API](#adding-a-new-api)
+19. [Developer Tooling](#developer-tooling) (GDB stub, crash dump, API ring buffer)
 
 ---
 
@@ -107,9 +108,14 @@ Warpine uses Linux KVM (Kernel-based Virtual Machine) for hardware-accelerated x
 
 1. **Create VM** — Open `/dev/kvm`, create a VM file descriptor.
 2. **Allocate guest memory** — `mmap` 128 MB of anonymous memory, register it as a KVM memory region at guest physical address 0.
-3. **Set up GDT** — A Global Descriptor Table is written into guest memory with segments for 32-bit protected mode:
-   - Code segment (selector 0x08): base 0, limit 4 GB, 32-bit, execute/read
-   - Data segment (selector 0x10): base 0, limit 4 GB, 32-bit, read/write
+3. **Set up GDT** — A Global Descriptor Table (4102 entries, ~32 KB at `GDT_BASE` 0x80000) is written into guest memory:
+   - GDT[0]: null descriptor
+   - GDT[1] (selector 0x08): 32-bit code segment — base 0, limit 4 GB, execute/read
+   - GDT[2] (selector 0x10): 32-bit data segment — base 0, limit 4 GB, read/write
+   - GDT[3] (selector 0x18): FS data segment (TIB pointer)
+   - GDT[4] (selector 0x20): 16-bit data alias — base 0, limit 0xFFFF (used for SS in 16-bit mode)
+   - GDT[5] (selector 0x28): 16-bit code alias — base 0, limit 0xFFFF (Far16 thunk entry: `JMP FAR 0x0028:offset`)
+   - GDT[6..4102] (selectors 0x30, 0x38, ...): 4096 tiled 16-bit data descriptors — one per 64 KB of guest address space, enabling 16:16 (selector:offset) addressing for OS/2 16-bit thunks and `DosFlatToSel`/`DosSelToFlat`
 4. **Configure vCPU** — Set segment registers (CS=0x08, DS/ES/SS=0x10), enable protected mode (CR0.PE), set EFLAGS, configure debug registers to trap INT 3 (`DR7` with `GD` bit, guest debug via `KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP`).
 
 The **VMEXIT loop** in `run_vcpu()` repeatedly calls `vcpu.run()` and matches on the exit reason:
@@ -939,6 +945,59 @@ For panics, enable the full backtrace:
 RUST_BACKTRACE=1 cargo run -- samples/pm_demo/pm_demo.exe
 RUST_BACKTRACE=full cargo run -- samples/pm_demo/pm_demo.exe  # with full symbol info
 ```
+
+---
+
+## Developer Tooling
+
+### GDB Remote Stub
+
+**Module:** `src/loader/gdb_stub.rs`
+
+Warpine includes a built-in GDB Remote Serial Protocol (RSP) stub that allows `gdb`, `gef`, or `pwndbg` to attach to a live KVM guest over TCP.
+
+**Usage:**
+
+```bash
+warpine --gdb 1234 samples/hello/hello.exe
+# In another terminal:
+gdb -ex 'target remote :1234'
+```
+
+**Architecture:**
+
+- `GdbState` — Shared `Mutex`+`Condvar` synchronisation channel between the vCPU thread and the GDB stub thread. An `AtomicBool` (`stop_requested`) handles Ctrl-C interrupt from the GDB client.
+- `WarpineTarget` — Implements `gdbstub::Target` with `X86_SSE` architecture, `SingleThreadBase`, `SingleThreadResume`, `SingleThreadSingleStep`, and `Breakpoints`/`SwBreakpoint`.
+- `GdbBlockingEventLoop` — Polls `stop_cond` with 10 ms timeout and checks the TCP socket for incoming bytes between polls.
+- `launch_gdb_stub()` — Binds `127.0.0.1:<port>`, accepts one connection, and runs `GdbStub::run_blocking`.
+
+**Features:** Software breakpoints (INT 3 patching with original byte restore), single-step via `KVM_GUESTDBG_SINGLESTEP`, full 256 MB guest memory read/write, Ctrl-C stop with `SIGINT` mapping. The vCPU pauses at the entry point on startup, sending `SIGTRAP` to the GDB client.
+
+### Crash Dump Facility
+
+**Module:** `src/loader/crash_dump.rs`
+
+On any fatal VMEXIT (guest exception, triple fault, unhandled VMEXIT, KVM run error, unexpected breakpoint), Warpine captures a structured crash report and writes it to both `warpine-crash-<pid>.txt` and stderr.
+
+**Data captured:**
+- All general-purpose and segment registers
+- Segment descriptor details (base, limit, type)
+- Top 32 stack dwords (hex + ASCII)
+- 32 bytes of code at EIP (hex dump)
+- Last 256 API calls from the ring buffer (see below)
+- Context info: exception type, executable name, timestamp
+
+**Integration:** All four fatal VMEXIT paths in `vcpu.rs` call `Loader::collect_crash_report()` and `Loader::dump_crash_report()`. The `collect_crash_report()` method handles 16-bit SS correctly when reading the stack.
+
+### API Call Ring Buffer
+
+**Module:** `src/loader/api_ring.rs`
+
+The last 256 OS/2 API calls are stored in a bounded `VecDeque` (`ApiRingBuffer`) in `SharedState`, populated unconditionally (not gated on `DEBUG` level) so crash dumps include call history even in release/info builds.
+
+- `ApiCallRecord` — Struct with ordinal, module, name, formatted call string, return value, and monotonic sequence number.
+- `api_dispatch.rs` computes `format_call` once per call (shared between DEBUG tracing and ring buffer), and pushes a record after each API return.
+- `crash_dump.rs` snapshots the ring as `api_history` and renders it as `[seq] MODULE.call() → ret` lines in the crash report.
 
 ---
 
