@@ -430,7 +430,14 @@ impl TextModeRenderer for Sdl2TextRenderer {
         use sdl2::keyboard::{Keycode, Mod as KeyMod};
         use crate::gui::sdl2_renderer::sdl_scancode_to_os2;
 
-        for event in self.event_pump.poll_iter() {
+        // Use wait_event_timeout so the thread sleeps inside SDL2 when idle
+        // instead of busy-polling with poll_iter().  The 8 ms timeout gives
+        // ~125 Hz frame rate (matching the PM renderer) while the OS
+        // scheduler can keep this core idle between events.
+        let maybe_event = self.event_pump.wait_event_timeout(8);
+        let events = maybe_event.into_iter().chain(self.event_pump.poll_iter());
+
+        for event in events {
             match event {
                 Event::Quit { .. } => return false,
                 Event::KeyDown { keycode: Some(kc), scancode: Some(sc), keymod, repeat: false, .. } => {
@@ -463,8 +470,8 @@ impl TextModeRenderer for Sdl2TextRenderer {
     }
 
     fn frame_sleep(&self) {
-        // Small sleep to yield the CPU; vsync will throttle us further if available.
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        // No additional sleep needed — wait_event_timeout(8) in poll_events
+        // already provides the frame-rate throttle and CPU yield.
     }
 }
 
