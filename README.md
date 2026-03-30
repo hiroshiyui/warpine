@@ -23,6 +23,8 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) applications 
 - **NLS:** `DosQueryCtryInfo`, `DosQueryCp`, `DosMapCase`, `DosGetDateTime` — verified correct.
 - **MMPM/2 Audio:** `DosBeep` plays real sine-wave tones; `mciSendCommand`/`mciSendString` for `waveaudio` devices via SDL2 audio queue.
 - **NE Format Parser:** Parser for OS/2 1.x 16-bit (NE) executables — foundation for future 16-bit support.
+- **GDB Remote Stub:** `--gdb <port>` enables GDB RSP over TCP — attach with `gdb`/`gef`/`pwndbg` for software breakpoints, single-step, and full register/memory access.
+- **Crash Dump Facility:** Structured crash reports on fatal VMEXITs — registers, stack, code bytes, and last 256 API calls written to `warpine-crash-<pid>.txt`.
 - **API Compatibility Report:** `warpine --compat` prints a module-grouped report of all implemented APIs with stub annotations.
 
 ## Architecture
@@ -146,7 +148,14 @@ WARPINE_TRACE=strace RUST_LOG=debug cargo run -- samples/hello/hello.exe  # stra
 WARPINE_TRACE=json   RUST_LOG=debug cargo run -- samples/hello/hello.exe  # JSON lines
 ```
 
-### 7. Run tests
+### 7. GDB debugging
+```bash
+cargo run -- --gdb 1234 samples/hello/hello.exe   # Start with GDB stub on port 1234
+# In another terminal:
+gdb -ex 'target remote :1234'                      # Attach with GDB
+```
+
+### 8. Run tests
 ```bash
 cargo test                        # 276 unit tests (no KVM required)
 cargo test --test integration     # 8 end-to-end tests (requires /dev/kvm)
