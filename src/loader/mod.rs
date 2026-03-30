@@ -29,6 +29,7 @@ pub mod locale;
 pub mod mmpm;
 pub mod crash_dump;
 pub mod api_ring;
+pub mod gdb_stub;
 
 pub use constants::*;
 pub use mutex_ext::MutexExt;
@@ -128,6 +129,9 @@ pub struct SharedState {
     /// Ring buffer of the last 256 OS/2 API calls — always populated,
     /// regardless of log level, so crash dumps include full call history.
     pub api_ring: Mutex<ApiRingBuffer>,
+    /// GDB Remote Serial Protocol state.  `Some` when `--gdb <port>` is given;
+    /// `None` in normal (non-debugger) runs.
+    pub gdb_state: Option<Arc<gdb_stub::GdbState>>,
 }
 
 unsafe impl Send for SharedState {}
@@ -194,9 +198,20 @@ impl Loader {
             kbd_cond: Condvar::new(),
             use_sdl2_text: AtomicBool::new(false),
             api_ring: Mutex::new(ApiRingBuffer::new()),
+            gdb_state: None,
         });
 
         Loader { vm, shared }
+    }
+
+    /// Attach a GDB state to this loader.
+    ///
+    /// Must be called before the first [`get_shared`] / [`setup_and_spawn_vcpu`]
+    /// call so that `Arc::get_mut` succeeds (single owner at this point).
+    pub fn set_gdb_state(&mut self, state: Arc<gdb_stub::GdbState>) {
+        Arc::get_mut(&mut self.shared)
+            .expect("set_gdb_state: shared Arc has multiple owners — call before get_shared()")
+            .gdb_state = Some(state);
     }
 
     /// Check whether a shutdown has been requested.
@@ -256,6 +271,7 @@ impl Loader {
             kbd_cond:     Condvar::new(),
             use_sdl2_text: AtomicBool::new(false),
             api_ring:     Mutex::new(ApiRingBuffer::new()),
+            gdb_state:    None,
         });
         Loader { vm, shared }
     }

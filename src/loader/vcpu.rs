@@ -3,6 +3,7 @@
 use super::constants::*;
 use super::{ApiResult, CallbackFrame, MutexExt};
 use super::crash_dump::CrashContext;
+use super::gdb_stub::{GdbResumeCmd, GdbStopInfo, GdbVcpuStopReason};
 use crate::lx::LxFile;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -147,7 +148,7 @@ impl super::Loader {
         sregs.cr4 |= 1 << 9;
         // Set up GDT and IDT registers
         sregs.gdt_base  = GDT_BASE as u64;
-        sregs.gdt_limit = GDT_SIZE - 1; // 4 standard + NUM_TILES tiled 16-bit data entries
+        sregs.gdt_limit = GDT_SIZE - 1; // 6 fixed + NUM_TILES tiled 16-bit data entries
         sregs.idt_base  = IDT_BASE as u64;
         sregs.idt_limit = 32 * 8 - 1;
         vcpu.set_sregs(&sregs).unwrap();
@@ -156,6 +157,25 @@ impl super::Loader {
 
         debug!("  [VCPU {}] Started at EIP=0x{:08X}", vcpu_id, vcpu.get_regs().unwrap().rip);
 
+        // If a GDB stub is attached, pause at the entry point and wait for the
+        // first 'continue' or 'step' command before executing any guest code.
+        if let Some(gdb) = self.shared.gdb_state.as_ref() {
+            let regs  = vcpu.get_regs().unwrap();
+            let sregs = vcpu.get_sregs().unwrap();
+            gdb.notify_stopped(GdbStopInfo {
+                reason: GdbVcpuStopReason::Initial,
+                regs,
+                sregs,
+            });
+            match gdb.wait_for_resume() {
+                GdbResumeCmd::Kill => return,
+                GdbResumeCmd::Step => {
+                    vcpu.set_single_step(true).unwrap();
+                }
+                GdbResumeCmd::Continue => {}
+            }
+        }
+
         let mut callback_stack: Vec<CallbackFrame> = Vec::new();
 
         loop {
@@ -163,6 +183,29 @@ impl super::Loader {
             if self.shared.exit_requested.load(Ordering::Relaxed) {
                 return;
             }
+
+            // GDB Ctrl-C: pause the vCPU and wait for a resume command.
+            if let Some(gdb) = self.shared.gdb_state.as_ref() {
+                if gdb.stop_requested.swap(false, Ordering::Relaxed) {
+                    let regs  = vcpu.get_regs().unwrap();
+                    let sregs = vcpu.get_sregs().unwrap();
+                    gdb.notify_stopped(GdbStopInfo {
+                        reason: GdbVcpuStopReason::Interrupt,
+                        regs,
+                        sregs,
+                    });
+                    match gdb.wait_for_resume() {
+                        GdbResumeCmd::Kill => return,
+                        GdbResumeCmd::Step => {
+                            vcpu.set_single_step(true).unwrap();
+                        }
+                        GdbResumeCmd::Continue => {
+                            vcpu.set_single_step(false).unwrap();
+                        }
+                    }
+                }
+            }
+
             let res = vcpu.run();
             if let Err(e) = res {
                 let report = self.collect_crash_report(
@@ -177,6 +220,87 @@ impl super::Loader {
             let exit = res.unwrap();
             match exit {
                 VmExit::Debug => {
+                    // ── GDB single-step or software breakpoint ────────────────
+                    if let Some(gdb) = self.shared.gdb_state.as_ref() {
+                        let regs  = vcpu.get_regs().unwrap();
+                        let rip32 = regs.rip as u32;
+
+                        // Check if this is a GDB software breakpoint (INT 3 we
+                        // wrote into guest memory).  RIP points *after* the 0xCC,
+                        // so the breakpoint address is RIP-1.
+                        let is_gdb_bp = {
+                            let bps = gdb.sw_breakpoints.lock().unwrap();
+                            bps.contains_key(&(rip32.wrapping_sub(1)))
+                        };
+
+                        // If single-step was active this is a step stop, not a BP.
+                        // We detect by checking whether the matching slot exists AND
+                        // single-step flag is off (gdbstub will have turned it off
+                        // before any resume, but we recheck via KVM here — instead
+                        // we just use the presence in the sw_bp map as the criterion).
+                        if is_gdb_bp {
+                            // Restore the original byte and rewind RIP to the
+                            // breakpoint address so GDB sees the correct PC.
+                            let bp_addr = rip32.wrapping_sub(1);
+                            let orig = {
+                                let bps = gdb.sw_breakpoints.lock().unwrap();
+                                *bps.get(&bp_addr).unwrap()
+                            };
+                            self.shared.guest_mem.write::<u8>(bp_addr, orig);
+                            let mut regs_w = regs.clone();
+                            regs_w.rip = bp_addr as u64;
+                            vcpu.set_regs(&regs_w).unwrap();
+                            // Disable single-step (it may have been on from a prior step).
+                            vcpu.set_single_step(false).unwrap();
+
+                            let sregs = vcpu.get_sregs().unwrap();
+                            gdb.notify_stopped(GdbStopInfo {
+                                reason: GdbVcpuStopReason::SwBreakpoint,
+                                regs:   regs_w,
+                                sregs,
+                            });
+                            match gdb.wait_for_resume() {
+                                GdbResumeCmd::Kill => return,
+                                GdbResumeCmd::Step => {
+                                    vcpu.set_single_step(true).unwrap();
+                                }
+                                GdbResumeCmd::Continue => {
+                                    // Re-install the INT3 so the breakpoint persists,
+                                    // and single-step over the real instruction first.
+                                    self.shared.guest_mem.write::<u8>(bp_addr, 0xCC);
+                                    vcpu.set_single_step(true).unwrap();
+                                }
+                            }
+                            continue;
+                        }
+
+                        // Is this a single-step stop (not a GDB SW breakpoint)?
+                        // Single-step stops happen at addresses that are NOT in our
+                        // API thunk range and NOT in the IDT handler range.
+                        let rip = regs.rip;
+                        let in_api_range = rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + STUB_AREA_SIZE as u64;
+                        let in_idt_range = rip >= IDT_HANDLER_BASE as u64 && rip < IDT_HANDLER_BASE as u64 + 32 * 16;
+                        let in_ne_range  = rip >= NE_THUNK_BASE as u64 && rip < (NE_THUNK_BASE + TILE_SIZE) as u64;
+                        if !in_api_range && !in_idt_range && !in_ne_range {
+                            // Single-step stop.
+                            vcpu.set_single_step(false).unwrap();
+                            let sregs = vcpu.get_sregs().unwrap();
+                            gdb.notify_stopped(GdbStopInfo {
+                                reason: GdbVcpuStopReason::SingleStep,
+                                regs,
+                                sregs,
+                            });
+                            match gdb.wait_for_resume() {
+                                GdbResumeCmd::Kill => return,
+                                GdbResumeCmd::Step => {
+                                    vcpu.set_single_step(true).unwrap();
+                                }
+                                GdbResumeCmd::Continue => {}
+                            }
+                            continue;
+                        }
+                    }
+
                     let rip = vcpu.get_regs().unwrap().rip;
                     // Check if this is from an IDT exception handler stub
                     if rip >= IDT_HANDLER_BASE as u64 && rip < IDT_HANDLER_BASE as u64 + 32 * 16 {

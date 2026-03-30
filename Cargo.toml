@@ -12,6 +12,8 @@ log = "0.4"
 sdl2 = { version = "0.37", features = ["unsafe_textures"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+gdbstub = "0.7"
+gdbstub_arch = "0.3"
 
 [dev-dependencies]
 tempfile = "3"

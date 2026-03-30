@@ -117,6 +117,12 @@ pub trait VcpuBackend: Send {
     ///
     /// Must be called once after vCPU creation and before the first `run()`.
     fn enable_software_breakpoints(&mut self) -> Result<(), String>;
+
+    /// Enable or disable single-step execution (TF flag via `KVM_GUESTDBG_SINGLESTEP`).
+    ///
+    /// When `enabled` is `true` the vCPU will exit after every instruction with
+    /// `VmExit::Debug`.  Call with `false` to return to normal execution.
+    fn set_single_step(&mut self, enabled: bool) -> Result<(), String>;
 }
 
 // ── VM trait ─────────────────────────────────────────────────────────────────
@@ -191,6 +197,7 @@ pub mod mock {
         fn get_sregs(&self) -> Result<GuestSregs, String>         { Ok(self.sregs.clone()) }
         fn set_sregs(&mut self, s: &GuestSregs) -> Result<(), String> { self.sregs = s.clone(); Ok(()) }
         fn enable_software_breakpoints(&mut self) -> Result<(), String> { Ok(()) }
+        fn set_single_step(&mut self, _enabled: bool) -> Result<(), String> { Ok(()) }
     }
 
     /// No-op VM backend for unit tests — no KVM file descriptors opened.

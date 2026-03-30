@@ -90,7 +90,7 @@ fn main() {
     init_logging();
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: {} <os2_executable>", args[0]);
+        eprintln!("Usage: {} <os2_executable> [--gdb <port>]", args[0]);
         eprintln!("       {} --compat         Print API compatibility report", args[0]);
         std::process::exit(1);
     }
@@ -100,7 +100,33 @@ fn main() {
         return;
     }
 
-    let file_path = &args[1];
+    // Parse optional --gdb <port> flag (position-independent).
+    let mut gdb_port: Option<u16> = None;
+    let mut remaining_args: Vec<&str> = Vec::new();
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "--gdb" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!("--gdb requires a port number");
+                std::process::exit(1);
+            }
+            gdb_port = Some(args[i].parse::<u16>().unwrap_or_else(|_| {
+                eprintln!("Invalid GDB port: {}", args[i]);
+                std::process::exit(1);
+            }));
+        } else {
+            remaining_args.push(&args[i]);
+        }
+        i += 1;
+    }
+
+    if remaining_args.is_empty() {
+        eprintln!("Usage: {} <os2_executable> [--gdb <port>]", args[0]);
+        std::process::exit(1);
+    }
+
+    let file_path = remaining_args[0];
 
     let format = match detect_format(file_path) {
         Ok(f) => f,
@@ -112,7 +138,7 @@ fn main() {
 
     match format {
         ExeFormat::NE => run_ne(file_path),
-        ExeFormat::LX => run_lx(file_path),
+        ExeFormat::LX => run_lx(file_path, gdb_port),
     }
 }
 
@@ -140,7 +166,7 @@ fn run_ne(file_path: &str) -> ! {
     loader.setup_and_run_ne_cli(&ne_file)
 }
 
-fn run_lx(file_path: &str) {
+fn run_lx(file_path: &str, gdb_port: Option<u16>) {
     // Phase 1: Try to open and parse LX executable
     let lx_file = match lx::LxFile::open(file_path) {
         Ok(lx) => lx,
@@ -228,6 +254,16 @@ fn run_lx(file_path: &str) {
     info!("Initializing KVM loader...");
 
     let mut loader = loader::Loader::new();
+
+    // Attach GDB stub if --gdb was requested.
+    // Must be done before get_shared() so Arc::get_mut() succeeds inside
+    // set_gdb_state().
+    if let Some(port) = gdb_port {
+        let gdb_state = Arc::new(loader::gdb_stub::GdbState::new());
+        loader.set_gdb_state(gdb_state);
+        loader::gdb_stub::launch_gdb_stub(loader.get_shared(), port);
+    }
+
     let shared = loader.get_shared();
     let is_pm = loader.is_pm_app(&lx_file);
 

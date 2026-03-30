@@ -73,18 +73,21 @@ On any fatal VMEXIT or unhandled guest exception: capture all CPU registers, seg
 - [x] All four fatal VMEXIT paths in `vcpu.rs` replaced with crash dump calls
 - [x] 13 unit tests (format, hex dump, exception names, timestamp, file creation)
 
-### B — GDB Remote Stub *(medium effort, highest interactive value)*
-Implement GDB RSP (Remote Serial Protocol) over a TCP socket so `gdb`, `gef`, or `pwndbg` can attach to a live guest. KVM already supports single-stepping (RFLAGS.TF) and hardware breakpoints (DR0–DR3). The `gdbstub` crate provides the protocol framing.
+### B — GDB Remote Stub *(complete)*
+GDB RSP (Remote Serial Protocol) over TCP so `gdb`, `gef`, or `pwndbg` can attach to a live KVM guest.
 
-- [ ] Add optional dependency: `gdbstub` + `gdbstub-arch` (x86_32 target)
-- [ ] `GdbStubBackend` implementing `gdbstub::Target` — reads/writes guest memory via `GuestMemory`, gets/sets regs via `VcpuBackend`
-- [ ] TCP listener on `WARPINE_GDB_PORT` (e.g. 1234); accept one connection per session
-- [ ] Single-step via `RFLAGS.TF` on next VMENTRY
-- [ ] Hardware breakpoints via DR0–DR3 + DR7 (up to 4 simultaneous)
-- [ ] Software breakpoints: patch guest INT 3 byte, restore on hit
-- [ ] Memory read/write: expose full 128 MB guest flat address space
-- [ ] Stop on guest exception with correct signal mapping (SIGSEGV, SIGILL, etc.)
-- [ ] Integration: `--gdb` CLI flag enables the listener; execution pauses until GDB attaches
+- [x] Dependencies: `gdbstub = "0.7"`, `gdbstub_arch = "0.3"` in `Cargo.toml`
+- [x] `src/loader/gdb_stub.rs` — `WarpineTarget` implements `gdbstub::Target` (`X86_SSE` arch, `SingleThreadBase`, `SingleThreadResume`, `SingleThreadSingleStep`, `Breakpoints`/`SwBreakpoint`)
+- [x] `GdbState` — shared Mutex+Condvar synchronisation channel between vCPU thread and GDB stub thread; `stop_requested` AtomicBool for Ctrl-C
+- [x] `GdbBlockingEventLoop` — `BlockingEventLoop` impl: polls `stop_cond` with 10 ms timeout, checks TCP for incoming bytes between polls; `on_interrupt` requests vCPU stop
+- [x] TCP listener (`launch_gdb_stub`): binds `127.0.0.1:<port>`, accepts one connection, runs `GdbStub::run_blocking::<GdbBlockingEventLoop>`
+- [x] Single-step via `KVM_GUESTDBG_SINGLESTEP`: `VcpuBackend::set_single_step` trait method; `KvmVcpu` toggles `KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP | KVM_GUESTDBG_SINGLESTEP`
+- [x] Software breakpoints: INT 3 (0xCC) patched into guest memory on `add_sw_breakpoint`; original byte restored on hit / `remove_sw_breakpoint`; RIP rewound to breakpoint address; breakpoint re-installed + single-step before resuming
+- [x] Memory read/write: full 256 MB guest flat address space via `GuestMemory::read/write`
+- [x] Stop on Ctrl-C interrupt with correct `SIGINT` mapping
+- [x] `vcpu.rs` integration: initial pause at entry point (sends `SIGTRAP` to GDB client); Ctrl-C polling loop; GDB debug-break path in `VmExit::Debug` before existing API/IDT checks; single-step stop path
+- [x] `--gdb <port>` CLI flag: parsed in `main.rs`; `Loader::set_gdb_state()` attaches before first `Arc` clone; `launch_gdb_stub()` spawns the TCP listener thread
+- Usage: `warpine --gdb 1234 samples/hello/hello.exe` then `gdb -ex 'target remote :1234'`
 
 ### C — API Call Ring Buffer *(complete)*
 The last 256 OS/2 API calls are stored in a bounded `VecDeque` in `SharedState`, populated unconditionally (not gated on DEBUG level) so crash dumps include call history even in release/info builds. Implemented in `src/loader/api_ring.rs`.
@@ -127,32 +130,12 @@ Implementation plan:
 ### 16-bit Compatibility (NE format)
 NE format parser complete (`src/ne/`): NeHeader, segment/relocation/entry tables, name table, 16 unit tests. NE loader skeleton in place: `load_ne()`, `apply_ne_fixups()`, `setup_guest_ne()`, `setup_and_run_ne_cli()`, `handle_ne_api_call()`, `resolve_import_16()`.
 
-- [x] **GDT tiling** — 4096 tiled 16-bit read/write data descriptors (GDT[4..4100], selectors 0x20..0x8020) populated in `setup_idt`; `DosFlatToSel`/`DosSelToFlat` use tile arithmetic; 16:16 LX fixups write correct tile selectors. Fixes `__Far16Func2` GPF crash and enables Far16 thunks in LX apps.
-- [ ] **GDT: missing 16-bit code alias at selector 0x0028** — *first crash captured by crash dump facility.*
-  - **Symptom:** `#GP(0x0028)` immediately after 4OS2 prompt appears. Fault instruction at flat
-    `0x00051377`: `66 EA 00 00 28 00` = `JMP FAR 0x0028:0x0000` (32-bit mode + 66h prefix →
-    16-bit far jump). The CPU rejects loading CS=0x0028 because our GDT[5] is a DATA tile, not
-    a CODE descriptor.
-  - **Root cause:** In real OS/2, GDT[5] (selector 0x0028) is a **16-bit code alias** (base=0,
-    limit=0xFFFF, type=code/exec+read, db=0) used by `__Far16` thunk stubs to enter 16-bit
-    execution mode. Our emulation maps 0x0028 to tile 1 (data, base=0x1000), which is wrong.
-  - **Fix needed:** Add a proper 16-bit CODE descriptor at GDT[5] (selector 0x0028) with base=0,
-    limit=0xFFFF. The actual tile descriptors for `DosFlatToSel`/`DosSelToFlat` must shift to
-    start at GDT[6] (selector 0x0030) instead of GDT[4]. Update `TILED_SEL_START_INDEX`,
-    `DosFlatToSel`, `DosSelToFlat`, and the Far16 fixup code in `lx_loader.rs` accordingly.
-  - **Why 16-bit thunks appear in an otherwise 32-bit app:** 4OS2 itself is pure 32-bit (the
-    `samples/4os2/patches/` patches eliminated `__vfthunk` generation from the OS/2 API
-    headers). However, **JPOS2DLL** is a separate DLL compiled with its own build rules and
-    still uses `__Far16` calling convention for some of its entry points. The crash occurs in
-    a thunk stub inside 4OS2's own code (flat `0x51377`) that calls into JPOS2DLL via a
-    `__Far16` far pointer. Two possible approaches:
-    1. Fix the GDT (correct long-term approach, needed for real 16-bit app support anyway).
-    2. Patch JPOS2DLL to eliminate its remaining `__Far16` usage (narrower fix).
-    Option 1 is preferred. See `doc/developer_guide.md` § *4OS2 Compatibility* for a full
-    explanation of which patches can/cannot be reverted and why.
-  - **Also note:** `format_call()` in `api_dispatch.rs` is now called unconditionally (for the
-    ring buffer). Previously it was gated on DEBUG level. Consider a compile-time or runtime
-    flag to skip formatting if overhead becomes a concern in tight loops.
+- [x] **GDT tiling** — 4096 tiled 16-bit read/write data descriptors (GDT[6..4102], selectors 0x30..0x8028) populated in `setup_idt`; `DosFlatToSel`/`DosSelToFlat` use tile arithmetic; 16:16 LX fixups write correct tile selectors. Fixes `__Far16Func2` GPF crash and enables Far16 thunks in LX apps.
+- [x] **GDT: 16-bit code alias at selector 0x0028** — Added proper 16-bit CODE descriptor at GDT[5]
+  (base=0, limit=0xFFFF, exec+read, db=0) and 16-bit DATA alias at GDT[4] (base=0, limit=0xFFFF).
+  Tile descriptors shifted to start at GDT[6] (selector 0x0030, `TILED_SEL_START_INDEX=6`).
+  `GDT_ENTRY_COUNT` updated to 4102. Fixes `#GP(0x0028)` crash when 4OS2's Far16 thunk stubs
+  execute `JMP FAR 0x0028:xxxx` to enter 16-bit execution mode for JPOS2DLL calls.
 - [ ] **16-bit API thunking** — NE apps use Pascal calling convention and `_far16` pointers; add 16-bit dispatch alongside existing 32-bit `_System` dispatch, with segment:offset ↔ flat address translation
 - [ ] **Mode switching** — handle transitions between 16-bit NE code and 32-bit flat code (e.g., 16-bit app calling a 32-bit DLL)
 

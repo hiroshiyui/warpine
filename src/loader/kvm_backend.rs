@@ -9,7 +9,7 @@
 use kvm_ioctls::{Kvm, VmFd, VcpuFd};
 use kvm_bindings::{
     kvm_userspace_memory_region, kvm_segment,
-    kvm_guest_debug, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_USE_SW_BP,
+    kvm_guest_debug, KVM_GUESTDBG_ENABLE, KVM_GUESTDBG_USE_SW_BP, KVM_GUESTDBG_SINGLESTEP,
 };
 use std::sync::Arc;
 use super::vm_backend::{GuestRegs, GuestSegment, GuestSregs, VcpuBackend, VmBackend, VmExit};
@@ -127,6 +127,16 @@ impl VcpuBackend for KvmVcpu {
             control: KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP,
             ..Default::default()
         };
+        self.fd.set_guest_debug(&dbg).map_err(|e| e.to_string())
+    }
+
+    fn set_single_step(&mut self, enabled: bool) -> Result<(), String> {
+        let control = if enabled {
+            KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP | KVM_GUESTDBG_SINGLESTEP
+        } else {
+            KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP
+        };
+        let dbg = kvm_guest_debug { control, ..Default::default() };
         self.fd.set_guest_debug(&dbg).map_err(|e| e.to_string())
     }
 }
