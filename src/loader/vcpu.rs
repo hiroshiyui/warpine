@@ -368,9 +368,26 @@ impl super::Loader {
                             if is_tiled {
                                 let b0 = self.guest_read::<u8>(fault_eip).unwrap_or(0);
                                 let b1 = self.guest_read::<u8>(fault_eip + 1).unwrap_or(0);
-                                if b0 == 0x66 && b1 == 0xEA {
-                                    let target_off = self.guest_read::<u16>(fault_eip + 2).unwrap_or(0);
-                                    let target_sel = self.guest_read::<u16>(fault_eip + 4).unwrap_or(0);
+                                let b2 = self.guest_read::<u8>(fault_eip + 2).unwrap_or(0);
+
+                                // Two known Far16 thunk patterns that fault with a tiled selector:
+                                //   Pattern A (Watcom __Far16 JMP):  66 EA <off16> <sel16>
+                                //   Pattern B (LSS stack-switch):    66 0F B2 24 24
+                                //                                     66 EA <off16> <sel16>
+                                // Pattern B faults at the LSS (trying to load a DPL=2 tile
+                                // selector into SS at CPL=0) before ever reaching the JMP FAR.
+                                // Both patterns use the same Watcom thunk frame layout so the
+                                // self-referential EBP scan and unwind path are identical.
+                                let is_jmp_far = b0 == 0x66 && b1 == 0xEA;
+                                // `66 0F B2 24 24` = LSS SP, [ESP] with 16-bit operand override
+                                let is_lss_sp_esp = b0 == 0x66 && b1 == 0x0F && b2 == 0xB2;
+
+                                if is_jmp_far || is_lss_sp_esp {
+                                    // For the JMP FAR variant the target is inline.
+                                    // For the LSS variant the JMP FAR follows at +5.
+                                    let jmp_base = if is_jmp_far { fault_eip + 2 } else { fault_eip + 7 };
+                                    let target_off = self.guest_read::<u16>(jmp_base).unwrap_or(0);
+                                    let target_sel = self.guest_read::<u16>(jmp_base + 2).unwrap_or(0);
 
                                     // Scan the 32-bit stack for the self-referential
                                     // PUSH EBP pattern: val == addr+8, [addr+4]==0x10.
@@ -401,9 +418,12 @@ impl super::Loader {
                                         let s_ebp = self.guest_read::<u32>(ebp + 20).unwrap_or(0);
                                         let ret_addr = self.guest_read::<u32>(ebp + 24).unwrap_or(0);
 
-                                        log::warn!("[VCPU {}] Bypassing Far16 thunk: JMP FAR 0x{:04X}:0x{:04X} \
+                                        log::warn!("[VCPU {}] Bypassing Far16 thunk ({}): \
+                                                   JMP FAR 0x{:04X}:0x{:04X} \
                                                    at EIP=0x{:08X} → return to 0x{:08X}",
-                                                  vcpu_id, target_sel, target_off, fault_eip, ret_addr);
+                                                  vcpu_id,
+                                                  if is_lss_sp_esp { "LSS+JMP" } else { "JMP" },
+                                                  target_sel, target_off, fault_eip, ret_addr);
 
                                         let mut regs = vcpu.get_regs().unwrap();
                                         regs.rip = ret_addr as u64;
