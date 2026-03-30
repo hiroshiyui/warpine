@@ -94,7 +94,7 @@ samples/               OS/2 sample applications and build scripts
   ne_hello/            NE (16-bit) format hello world
 ```
 
-See [doc/developer_guide.md](doc/developer_guide.md) for detailed internals documentation.
+See [doc/developer_guide.md](doc/developer_guide.md) for detailed internals documentation and [doc/reference_manual.md](doc/reference_manual.md) for the user reference manual.
 
 ## Prerequisites
 
