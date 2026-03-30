@@ -18,12 +18,17 @@ pub const STUB_AREA_SIZE: u32 = 12288;
 // GDT tiling: 16-bit segment descriptors covering the guest address space
 // so that 16:16 (selector:offset) addressing works for OS/2 16-bit thunks.
 pub const GDT_BASE: u32 = 0x00080000;
-pub const TILED_SEL_START_INDEX: u32 = 4;       // GDT[0..3] = null/code32/data32/data32, tiled starts at GDT[4]
-pub const TILED_SEL_START: u32 = TILED_SEL_START_INDEX * 8; // selector 0x20
+// GDT layout:
+//   [0] null, [1] 32-bit code (0x08), [2] 32-bit data (0x10), [3] FS data (0x18),
+//   [4] 16-bit data alias (0x20, base=0, limit=0xFFFF) — used for SS in 16-bit mode,
+//   [5] 16-bit code alias (0x28, base=0, limit=0xFFFF) — Far16 thunk entry (JMP FAR 0x0028:xxxx),
+//   [6..] 16-bit data tiles (0x30, 0x38, …) — one per 64KB of guest address space.
+pub const TILED_SEL_START_INDEX: u32 = 6;       // tiles start at GDT[6] (selector 0x30)
+pub const TILED_SEL_START: u32 = TILED_SEL_START_INDEX * 8; // selector 0x30
 pub const TILE_SIZE: u32 = 0x10000;             // 64KB per tile
 pub const NUM_TILES: u32 = 4096;                // 256MB / 64KB
-pub const GDT_ENTRY_COUNT: u32 = 4 + NUM_TILES; // 4100 entries
-pub const GDT_SIZE: u32 = GDT_ENTRY_COUNT * 8;  // 32800 bytes
+pub const GDT_ENTRY_COUNT: u32 = 6 + NUM_TILES; // 6 fixed + 4096 tiled = 4102 entries
+pub const GDT_SIZE: u32 = GDT_ENTRY_COUNT * 8;  // 32816 bytes
 // IDT relocated after GDT (GDT ends at ~0x88020)
 pub const IDT_BASE: u32 = 0x0008A000;
 pub const IDT_HANDLER_BASE: u32 = 0x0008A800;

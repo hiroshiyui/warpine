@@ -69,7 +69,9 @@ impl super::Loader {
     ///
     /// GDT layout:
     ///   [0] null, [1] 32-bit code (0x08), [2] 32-bit data (0x10), [3] FS data (0x18),
-    ///   [4..4099] 16-bit data tiles (0x20..0x7FF8) — one per 64KB segment of guest memory.
+    ///   [4] 16-bit data alias (0x20, base=0, limit=0xFFFF) — SS for 16-bit stack,
+    ///   [5] 16-bit code alias (0x28, base=0, limit=0xFFFF) — CS target for Far16 thunks,
+    ///   [6..4101] 16-bit data tiles (0x30..0x8020) — one per 64KB of guest address space.
     ///
     /// The tiled 16-bit descriptors allow OS/2 16:16 (selector:offset) addressing to work
     /// correctly for LSS, JMP FAR, CALL FAR, and other segmented instructions.
@@ -86,18 +88,25 @@ impl super::Loader {
         self.guest_write::<u64>(GDT_BASE + 16, Self::make_gdt_entry(0, 0xFFFFF, 0x93, 0xCF)).unwrap();
         // Entry 3 (selector 0x18): FS data — base set via sregs
         self.guest_write::<u64>(GDT_BASE + 24, Self::make_gdt_entry(0, 0xFFFFF, 0x93, 0xCF)).unwrap();
+        // Entry 4 (selector 0x20): 16-bit data alias — base=0, limit=0xFFFF, byte granular.
+        // Used as SS by 16-bit thunk code when it loads a 16-bit stack segment.
+        self.guest_write::<u64>(GDT_BASE + 32, Self::make_gdt_entry(0, 0xFFFF, 0x93, 0x00)).unwrap();
+        // Entry 5 (selector 0x28): 16-bit code alias — base=0, limit=0xFFFF, byte granular,
+        // exec+read. Required by Far16 thunk stubs that execute `JMP FAR 0x0028:xxxx` to switch
+        // from 32-bit to 16-bit execution mode (e.g., calls into JPOS2DLL Far16 exports).
+        self.guest_write::<u64>(GDT_BASE + 40, Self::make_gdt_entry(0, 0xFFFF, 0x9B, 0x00)).unwrap();
 
-        // Tiled 16-bit read/write data descriptors: GDT[4..4100].
+        // Tiled 16-bit read/write data descriptors: GDT[6..4102].
         // Each tile i covers [i*64KB .. (i+1)*64KB), allowing OS/2 16:16 (selector:offset)
         // address arithmetic to work correctly for Far16 thunks (LSS, LES, LDS instructions).
-        // Selector for tile i = (TILED_SEL_START_INDEX + i) * 8 = 0x20 + i*8.
+        // Selector for tile i = (TILED_SEL_START_INDEX + i) * 8 = 0x30 + i*8.
         for i in 0..NUM_TILES {
             let base = i * TILE_SIZE;
             let entry = Self::make_gdt_entry(base, 0xFFFF, 0x93, 0x00); // 16-bit data, byte granular
             let entry_addr = GDT_BASE + (TILED_SEL_START_INDEX + i) * 8;
             self.guest_write::<u64>(entry_addr, entry).expect("setup_idt: tile descriptor OOB");
         }
-        debug!("GDT: 4 standard + {} tiled 16-bit data descriptors", NUM_TILES);
+        debug!("GDT: 6 fixed (null/code32/data32/fs/data16/code16) + {} tiled 16-bit data descriptors", NUM_TILES);
 
         // ── IDT with exception handler stubs ──
         for i in 0..NUM_VECTORS {

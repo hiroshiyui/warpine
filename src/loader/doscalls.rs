@@ -1450,7 +1450,7 @@ mod tests {
     #[test]
     fn test_dos_flat_to_sel_tile_zero() {
         let loader = Loader::new_mock();
-        // Flat 0x00001234 → tile 0 → selector = TILED_SEL_START_INDEX * 8 = 0x20, offset = 0x1234
+        // Flat 0x00001234 → tile 0 → selector = TILED_SEL_START_INDEX * 8 = 0x30, offset = 0x1234
         let result = loader.dos_flat_to_sel(0x00001234);
         let selector = (result >> 16) as u16;
         let offset   = (result & 0xFFFF) as u16;
@@ -1461,7 +1461,7 @@ mod tests {
     #[test]
     fn test_dos_flat_to_sel_tile_one() {
         let loader = Loader::new_mock();
-        // Flat 0x00015678 → tile 1 → selector = (4+1)*8 = 0x28, offset = 0x5678
+        // Flat 0x00015678 → tile 1 → selector = (6+1)*8 = 0x38, offset = 0x5678
         let result = loader.dos_flat_to_sel(0x00015678);
         let selector = (result >> 16) as u16;
         let offset   = (result & 0xFFFF) as u16;
