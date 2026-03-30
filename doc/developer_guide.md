@@ -27,6 +27,7 @@ This guide introduces the internals of Warpine and the OS/2 concepts it emulates
 17. [Module Structure](#module-structure)
 18. [Adding a New API](#adding-a-new-api)
 19. [Developer Tooling](#developer-tooling) (GDB stub, crash dump, API ring buffer)
+20. [Appendix: Development Phases](#appendix-development-phases)
 
 ---
 
@@ -537,7 +538,7 @@ Several issues were discovered and fixed during 4OS2 bring-up that are worth not
 - **Why the patches cannot be fully reverted even after GDT fixes** — The patches serve two distinct purposes that must be kept separate:
   - *Purpose 1 — OS/2 API calling convention* (`bsesub.h`, `viowrap.c`, `crt0.c`): these eliminate `__vfthunk` generation for VIO/KBD/MOU API calls and replace `DosGetInfoSeg` (16-bit-only) with `DosGetInfoBlocks`. Even with a fully working GDT, Warpine's emulation dispatches all these APIs through the 32-bit `MAGIC_API_BASE` INT 3 thunk mechanism. Reverting these patches would require a complete 16-bit API dispatch path (separate ordinal namespace, Pascal/Far16 calling convention, 16:16 pointer translation) — a large undertaking.
   - *Purpose 2 — correctness fixes* (`os2init.c`, `os2calls.c`): these fix 4OS2 bugs unrelated to calling convention (DosGetInfoSeg → DosGetInfoBlocks, correct DosFindFirst buffer layout). These patches should stay regardless.
-- **JPOS2DLL still uses `__Far16` thunks** — 4OS2 itself is pure 32-bit after patching, but JPOS2DLL (its extension DLL) was compiled with its own build rules and still calls some of its entry points via `__Far16` far pointers. The thunk stubs in 4OS2's code do `JMP FAR 0x0028:offset` to enter 16-bit execution. This requires GDT[5] (selector 0x0028) to be a valid 16-bit code descriptor — see the GDT fix item in `doc/TODOs.md`.
+- **JPOS2DLL still uses `__Far16` thunks** — 4OS2 itself is pure 32-bit after patching, but JPOS2DLL (its extension DLL) was compiled with its own build rules and still calls some of its entry points via `__Far16` far pointers. The thunk stubs in 4OS2's code do `JMP FAR 0x0028:offset` to enter 16-bit execution. This requires GDT[5] (selector 0x0028) to be a valid 16-bit code descriptor — see the [GDT layout](#kvm-virtualization-engine) in §5.
 - **VIOCALLS/KBDCALLS use Pascal calling convention** — Arguments pushed left-to-right (last arg at ESP+4), callee cleans stack. This is different from DOSCALLS which uses `_System` (right-to-left, caller cleans). The loader adds callee stack cleanup after VIO/KBD API returns via `viocalls_arg_bytes()` and `kbdcalls_arg_bytes()`.
 - **NLS DLL calling convention** — NLS functions (DosQueryCp, DosQueryCtryInfo, DosMapCase) are imported through the NLS DLL, which uses `_System` convention (same as DOSCALLS, NOT Pascal like VIOCALLS). The Watcom CRT wrapper caches NLS data: it calls NLS ordinal 6 (DosQueryCtryInfo) once during init with cb=12, then calls NLS ordinal 5 with cb=44 to fill the full COUNTRYINFO. NLS ordinal 5 has dual behavior — returns codepages for small cb, returns full COUNTRYINFO for cb >= 44.
 - **FSQBUFFER2 layout** — Uses fixed 8-byte header (iType+cbName+cbFSDName+cbFSAData) followed by variable-length strings, not the older FSQBUFFER interleaved format. Getting this wrong causes 4OS2's `ifs_type()` to read garbage, preventing `dir` from calling DosFindFirst.
@@ -708,8 +709,12 @@ The first backend implementation, using a host directory as the volume root. It 
 | File sharing modes | In-memory sharing mode table keyed by inode; checked on open, released on close |
 | Byte-range locking | `fcntl(F_SETLK)` with per-handle tracking via `VfsFileHandle` |
 | Long filenames (254 chars) | Native (Linux supports 255) |
+| OS/2 wildcard matching | `*`, `?` patterns; `*.*` matches all files (HPFS semantics, unlike FAT where it requires a dot) |
+| Directory listing cache | 2-second TTL to avoid repeated `readdir()` for case-insensitive lookup |
 | Volume geometry | `statvfs()` on the root directory |
 | Sandbox enforcement | Canonicalize + verify prefix stays within volume root |
+
+C: drive is auto-mounted at `~/.local/share/warpine/drive_c/` (via `XDG_DATA_HOME` / `HOME` fallback). The directory is created automatically if absent.
 
 #### Case-Insensitive Path Resolution (detail)
 
@@ -1092,4 +1097,66 @@ cargo run -- samples/4os2/4os2.exe
 # Should show banner, [c:\] prompt, accept commands (ver, set, exit)
 ```
 
-CLI samples should print output and exit with code 0. PM samples should open a window and respond to close. 4OS2 should boot to an interactive prompt. Use `RUST_LOG=debug` to inspect API call traces if a sample misbehaves.
+CLI samples should print output and exit with code 0. PM samples should open a window and respond to close. 4OS2 should boot to an interactive prompt (`[c:\]`) with working commands: `dir`, `set`, `ver`, `md`, `rd`, `copy`, `move`, `del`, `attrib`, `tree`, `exit`. Use `RUST_LOG=debug` to inspect API call traces if a sample misbehaves.
+
+### Automated integration tests
+
+`tests/integration.rs` contains 8 end-to-end tests that run real OS/2 sample binaries (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test) with headless mode, asserting stdout content and exit code. KVM-gated: tests skip silently when `/dev/kvm` is absent.
+
+```bash
+cargo test --test integration     # 8 end-to-end tests (requires /dev/kvm)
+```
+
+---
+
+## Appendix: Development Phases
+
+This appendix summarises the major development phases and what each delivered. The sections above document the current architecture; this appendix provides the historical development narrative.
+
+### Phase 1 — Foundation (CLI Hello World)
+
+LX/LE executable parser (MZ header, object table, page map, fixup table). Loader maps LX objects into 128 MB KVM guest memory and applies relocations. API thunk infrastructure: imports resolved to INT 3 trap stubs at `MAGIC_API_BASE` (0x01000000); VMEXIT loop dispatches to Rust handlers by ordinal. Initial DOSCALLS thunks: `DosWrite`, `DosExit`, `DosQuerySysInfo`, `DosQueryConfig`, `DosQueryHType`, `DosGetInfoBlocks`.
+
+### Phase 2 — Core OS/2 Subsystem
+
+Memory: `DosAllocMem` / `DosFreeMem`. Filesystem: `DosOpen`/`DosRead`/`DosWrite`/`DosClose`/`DosDelete`/`DosMove`/`DosCreateDir`/`DosDeleteDir`, `DosFindFirst`/`DosFindNext`, OS/2 drive-letter path translation. Threads: `DosCreateThread`, `DosKillThread`, TLS via TIB. IPC: event, mutex, and MuxWait semaphores; pipes (`DosCreatePipe`); queues (`DosCreateQueue`/`DosWriteQueue`/`DosReadQueue`).
+
+### Phase 3 — Presentation Manager (GUI)
+
+Dual-path execution: PM apps run the SDL2 event loop on the main thread; CLI apps run the vCPU directly. `GUIMessage` channel carries draw/window commands from vCPU thread to main thread. PMWIN: `WinInitialize`/`WinTerminate`, message queues, `WinRegisterClass`, `WinCreateStdWindow`, `WinGetMsg`/`WinDispatchMsg`, `WinPostMsg`/`WinSendMsg`, `WinDefWindowProc`, `WinBeginPaint`/`WinEndPaint`, `WinMessageBox`, `WinShowWindow`, `WinDestroyWindow`, timers, dialogs (stubs), menus (stubs), clipboard in-process storage, `WinSetWindowPos`, resource loading. PMGPI: `GpiCreatePS`/`GpiDestroyPS`, `GpiSetColor`, `GpiMove`, `GpiBox`, `GpiLine`, `GpiCharStringAt`, `GpiErase`. Callback mechanism: `ApiResult::Callback` for re-entrant guest window-procedure calls via `CALLBACK_RET_TRAP`. Input: `WM_CHAR`, `WM_MOUSEMOVE`, `WM_BUTTON1DOWN`/`UP`, `WM_SIZE`, `WM_CLOSE`. Embedded 8×16 VGA bitmap font for text rendering.
+
+### Phase 3.5 — Text-Mode Application Support (4OS2)
+
+Target: 4OS2 command shell — validates nearly every DOSCALLS/KBD/VIO surface. Expanded thunk stub area (`KBDCALLS_BASE=4096`, `VIOCALLS_BASE=5120`, `SESMGR_BASE=6144`, `NLS_BASE=7168`, `MSG_BASE=8192`). Console: `VioManager` with screen buffer, cursor, raw termios input, ANSI escape output. KBD: `KbdCharIn` (blocking/non-blocking, arrow/function-key escape parsing), `KbdGetStatus`, `KbdStringIn`. VIO: `VioWrtTTY`, `VioGetMode`, `VioGetCurPos`, `VioSetCurPos`, `VioSetCurType`, `VioScrollUp`, `VioScrollDn`, `VioWrtCharStrAtt`, `VioWrtNCell`, `VioWrtNAttr`, `VioReadCellStr`, `VioSetAnsi`, `VioGetAnsi`, `VioGetConfig`. Process: `DosSetCurrentDir`, `DosQueryCurrentDir`/`DosQueryCurrentDisk`, `DosSetDefaultDisk`, `DosExecPgm`, `DosWaitChild`, `DosKillProcess`, `DosQueryAppType`. System info: full `DosQuerySysInfo` QSV table, `DosGetDateTime`. Result: 4OS2 boots to a prompt; `dir`, `set`, `ver`, `md`, `rd`, `copy`, `move`, `del`, `attrib`, `tree` all work.
+
+### Phase 4 — HPFS-Compatible Virtual Filesystem
+
+`VfsBackend` trait (21 methods) as the OS/2 filesystem semantics contract. `DriveManager` maps drive letters A:–Z: to backends; owns file and find-handle tables. `HostDirBackend`: case-insensitive case-preserving lookup, long filenames (254 chars), file sharing modes, sandbox enforcement, OS/2 wildcard matching, directory listing cache (2s TTL), device name mapping. Extended attributes via Linux xattrs with sidecar fallback. File locking via `fcntl(F_SETLK)`. `DosFindFirst`/`DosFindNext` multi-entry packing, attribute filtering. C: drive auto-mounted at `~/.local/share/warpine/drive_c/`. Verified: 4OS2 `dir` with correct date/time formatting; `samples/file_test`, `find_test`, `fs_ops_test`, `vfs_test` all pass.
+
+### Phase 4.5 — 16-bit Thunk Fix
+
+Eliminated 16-bit thunks from 4OS2 by recompiling with modified headers rather than runtime patching. Key patches: `bsesub.h` changed `APIENTRY16` to `_System`; `crt0.c` replaces Watcom's `__OS2Main` with a pure 32-bit version using `DosGetInfoBlocks`; `viowrap.c` provides `#pragma import` for VIO/KBD ordinals; DOSCALLS/VIOCALLS/KBDCALLS ordinal tables audited and corrected. All 6 patches stored in `samples/4os2/patches/`; `fetch_source.sh` applies them automatically.
+
+### Phase 5 Baseline — MMPM/2 Audio
+
+`DosBeep` plays real sine-wave tones via SDL2 audio queue. MDM.DLL (`MDM_BASE=10240`) wired into the ordinal dispatch. `mciSendCommand` handles `MCI_OPEN`/`MCI_CLOSE`/`MCI_PLAY`/`MCI_STOP`/`MCI_STATUS` for `waveaudio` device. `mciSendString` parses command strings. WAV files loaded via VFS using `SDL_LoadWAV_RW`. Audio format conversion via `SDL_BuildAudioCVT`/`SDL_ConvertAudio`. Synchronous play via `MCI_WAIT` flag.
+
+### Phase 6 — Text-Mode VGA Renderer
+
+`TextModeRenderer` trait with `Sdl2TextRenderer` (640×400 SDL2 window, CP437 8×16 font, CGA 16-colour palette, blinking cursor) and `HeadlessTextRenderer` backends. `run_text_loop()` as the main event loop for CLI apps. `KbdKeyInfo` + `SharedState::kbd_queue`/`kbd_cond`/`use_sdl2_text` for SDL2→KbdCharIn key delivery. Bug fixes: cursor rendering via XOR pixel inversion; `VioGetCurType` (ordinal 33); `VioScrollUp`/`VioScrollDn` `lines=0` as "clear entire region"; `dos_read_stdin` backspace gating. CLI apps default to SDL2 text window; headless fallback via `is_terminal()` detection.
+
+### Phase 7 Baseline — DLL Loader Chain
+
+`DosLoadModule`/`DosQueryProcAddr`/`DosQueryModuleHandle` implemented. `load_dll()` allocates guest memory for each object, loads pages (rebased), applies fixups. Ordinal-based and name-based export maps. `DllManager` in `SharedState`. `jpos2dll.dll` (4OS2 extension DLL) loads and resolves all 7 exports at runtime.
+
+### Architecture Milestones
+
+- **Virtualization backend abstraction** — `VmBackend`/`VcpuBackend` traits; KVM isolated to `kvm_backend.rs`; `MockVcpu`/`MockVmBackend` for testing without `/dev/kvm`.
+- **Guest memory type safety** — `GuestMemory` struct with safe `read<T>`/`write<T>` replacing raw `*mut u8` + `usize`.
+- **Structured API trace** — `api_trace.rs` with `ordinal_to_name()`, `module_for_ordinal()`, per-argument typed names. `WARPINE_TRACE=strace|json` output modes.
+- **API thunk auto-registration** — `api_registry.rs` static sorted table (124 entries); O(log n) binary search replaces ~120-arm match.
+- **SDL2 GUI backend** — migrated from `winit + softbuffer` to SDL2; full keyboard, mouse, clipboard support.
+- **PM renderer abstraction** — `PmRenderer` trait with `Sdl2Renderer` and `HeadlessRenderer` backends.
+- **GDT tiling** — 4096 tiled 16-bit data descriptors (GDT[6..4102]) for 16:16 addressing; GDT[4] 16-bit data alias (0x20), GDT[5] 16-bit code alias (0x28) for Far16 thunks.
+- **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
+- **Testing** — 276 unit tests, 8 integration tests, compatibility report (`warpine --compat`).
