@@ -37,18 +37,26 @@ src/
   font8x16.rs          Embedded CP437 8×16 VGA bitmap font (256 glyphs)
   loader/
     mod.rs             Loader, SharedState (all managers + DllManager), KVM setup
+    vcpu.rs            vCPU thread: VMEXIT loop, GDB integration, crash dump hooks
+    vm_backend.rs      VmBackend/VcpuBackend traits (KVM + mock implementations)
+    kvm_backend.rs     KVM-based VmBackend implementation
+    guest_mem.rs       GuestMemory: safe typed read/write into KVM guest memory
     lx_loader.rs       LX/DLL loading: load(), load_dll(), find_dll_path(), apply_fixups()
     ne_exec.rs         NE loader skeleton (GDT tiling, 16-bit API thunking — Phase 5)
+    descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
+    constants.rs       Named constants: MAGIC_API_BASE, ordinal bases, TIB/PIB addresses
     api_registry.rs    Static sorted API thunk table (124 entries); compat_report()
     api_dispatch.rs    Ordinal → handler dispatch + sub-dispatcher routing
     api_trace.rs       ordinal_to_name(), module_for_ordinal() for structured tracing
-    descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
-    constants.rs       Named constants: MAGIC_API_BASE, ordinal bases, TIB/PIB addresses
+    api_ring.rs        256-entry API call ring buffer for crash post-mortem
+    crash_dump.rs      Structured crash reports on fatal VMEXITs
+    gdb_stub.rs        GDB Remote Stub: RSP over TCP, breakpoints, single-step
     doscalls.rs        DOSCALLS API implementations
     viocalls.rs        VIOCALLS (Video I/O) implementations
     kbdcalls.rs        KBDCALLS (Keyboard) implementations
     pm_win.rs          PMWIN (Window Manager) implementations
     pm_gpi.rs          PMGPI (Graphics) implementations
+    pm_types.rs        PM data types (windows, classes, WindowManager)
     mmpm.rs            MMPM/2 audio: MmpmManager, beep_tone, mciSendCommand/String
     console.rs         VioManager: screen buffer, cursor, raw/SDL2 mode, ANSI output
     process.rs         Process execution and directory tracking
@@ -58,19 +66,30 @@ src/
     vfs.rs             VfsBackend trait, DriveManager, OS/2 filesystem types
     vfs_hostdir.rs     HostDirBackend: HPFS-on-host-directory implementation
     locale.rs          Os2Locale: country/codepage information
-    guest_mem.rs       GuestMemory: safe typed read/write into KVM guest memory
-    vm_backend.rs      VmBackend/VcpuBackend traits + KVM and mock implementations
+    mutex_ext.rs       MutexExt trait (poison-recovering lock)
 samples/               OS/2 sample applications and build scripts
   hello/               DosWrite "Hello" — basic smoke test
   alloc_test/          DosAllocMem/DosFreeMem round-trip
   4os2/                4OS2 command shell (fetch_source.sh + make; includes jpos2dll.dll)
   pm_demo/             Presentation Manager GUI demo
+  pm_hello/            Minimal PM "Hello World" window
+  shapes/              PM graphics: boxes, lines, arcs
   thread_test/         DosCreateThread/DosWaitThread
   pipe_test/           DosCreatePipe/DosWrite/DosRead
   mutex_test/          DosCreateMutexSem recursive locking
+  muxwait_test/        DosCreateMuxWaitSem multi-semaphore wait
   queue_test/          DosCreateQueue/DosWriteQueue/DosReadQueue
+  ipc_test/            Combined IPC exerciser (semaphores + pipes)
   thunk_test/          TIB/PIB layout, DosGetInfoBlocks, DosQuerySysInfo
   nls_test/            DosQueryCtryInfo, DosQueryCp, DosMapCase
+  file_test/           DosOpen/Read/Write/Close file I/O
+  dir_test/            DosCreateDir/DeleteDir/FindFirst directory ops
+  find_test/           DosFindFirst/Next wildcard search
+  findbuf_test/        DosFindFirst multi-entry buffer packing
+  fs_ops_test/         Filesystem operations (move, delete, attribs)
+  vfs_test/            VFS subsystem integration test
+  screen_test/         VIO screen buffer and cursor operations
+  ne_hello/            NE (16-bit) format hello world
 ```
 
 See [doc/developer_guide.md](doc/developer_guide.md) for detailed internals documentation.

@@ -800,20 +800,24 @@ src/
                        CGA_PALETTE (22 unit tests)
   loader/
     mod.rs             Loader struct, SharedState (kbd_queue/kbd_cond/use_sdl2_text), KVM/mock init
+    vcpu.rs            vCPU thread: VMEXIT loop, GDB integration, crash dump hooks
+    vm_backend.rs      VmBackend/VcpuBackend traits (KVM + mock implementations)
+    kvm_backend.rs     KVM-based VmBackend implementation
+    guest_mem.rs       Guest memory read/write/translate helpers
     lx_loader.rs       LX executable loading into guest memory and fixup application
     ne_exec.rs         NE executable loader infrastructure (Phase 5)
-    vcpu.rs            vCPU thread: VMEXIT loop, API call dispatch entry point
+    descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
+    constants.rs       Named constants (addresses, message IDs, ordinal bases)
     api_registry.rs    Static sorted API thunk table (124 entries); ApiEntry
     api_dispatch.rs    Registry lookup + per-subsystem dispatcher routing
     api_trace.rs       Structured tracing helpers (ordinal_to_name, module_for_ordinal)
-    constants.rs       Named constants (addresses, message IDs, ordinal bases)
+    api_ring.rs        256-entry bounded API call ring buffer for crash post-mortem
+    crash_dump.rs      Structured crash reports (regs, stack, code bytes) on fatal VMEXITs
+    gdb_stub.rs        GDB Remote Stub: RSP over TCP, software breakpoints, single-step
     mutex_ext.rs       MutexExt trait (poison-recovering lock)
     managers.rs        MemoryManager, HandleManager, HDirManager, ResourceManager
     ipc.rs             Semaphores (event, mutex, muxwait) and queues
     pm_types.rs        PM data types (windows, classes, presentation spaces, WindowManager)
-    vm_backend.rs      VmBackend/VcpuBackend traits (KVM + mock implementations)
-    kvm_backend.rs     KVM-based VmBackend implementation
-    guest_mem.rs       Guest memory read/write/translate helpers
     locale.rs          Os2Locale: country/codepage information
     doscalls.rs        DOSCALLS API implementations (~40 functions)
     pm_win.rs          PMWIN API implementations (~50 ordinals)
@@ -829,7 +833,6 @@ src/
     process.rs         ProcessManager: DosExecPgm, DosWaitChild, directory tracking
     vfs.rs             VfsBackend trait, DriveManager, Os2Error, OS/2 data types, handle types
     vfs_hostdir.rs     HostDirBackend: HPFS-on-host-directory VfsBackend implementation
-    descriptors.rs     GDT/LDT descriptor table helpers
 build.rs               Linker search path for libSDL2 (via pkg-config)
 ```
 
