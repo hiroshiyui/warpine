@@ -450,6 +450,21 @@ impl TextModeRenderer for Sdl2TextRenderer {
                         return false;
                     }
 
+                    // OS/2 KbdCharIn does not deliver events for pure modifier
+                    // keys (Shift, Ctrl, Alt, CapsLock, NumLock, ScrollLock).
+                    // Their state is reflected in the `state` field of the next
+                    // real keystroke.  Enqueuing them causes the scan code byte
+                    // (0x2A / 0x36 / …) to appear as a spurious character.
+                    if matches!(kc,
+                        Keycode::LShift | Keycode::RShift |
+                        Keycode::LCtrl  | Keycode::RCtrl  |
+                        Keycode::LAlt   | Keycode::RAlt   |
+                        Keycode::CapsLock | Keycode::NumLockClear | Keycode::ScrollLock |
+                        Keycode::LGui   | Keycode::RGui
+                    ) {
+                        continue;
+                    }
+
                     let scan = sdl_scancode_to_os2(sc);
                     let ch   = sdl_keycode_to_text_char(kc, keymod);
                     let mut state: u16 = 0;
@@ -744,6 +759,19 @@ mod tests {
     }
 
     // ── KbdKeyInfo queue ──────────────────────────────────────────────────────
+
+    // Modifier-only keys must not appear as characters (would output raw scan
+    // code bytes like 0x2A='*' for LShift or 0x36='6' for RShift).
+    #[test]
+    fn modifier_keys_yield_no_char() {
+        use sdl2::keyboard::{Keycode, Mod as KeyMod};
+        let shift_mod = KeyMod::LSHIFTMOD;
+        for kc in [Keycode::LShift, Keycode::RShift, Keycode::LCtrl, Keycode::RCtrl,
+                   Keycode::LAlt,   Keycode::RAlt,   Keycode::CapsLock] {
+            let ch = sdl_keycode_to_text_char(kc, shift_mod);
+            assert_eq!(ch, 0x00, "{:?} should produce ch=0x00, got 0x{:02X}", kc, ch);
+        }
+    }
 
     #[test]
     fn kbd_queue_push_pop() {
