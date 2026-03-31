@@ -47,10 +47,11 @@ Per-argument typed names complete (see [Developer Guide §19](developer_guide.md
 ## Phase 5 — Multimedia and 16-bit Support
 
 ### Audio/Video (MMPM/2) — Remaining
-- [ ] `mciSendCommand` MCI_SEEK, MCI_RECORD — seek/recording support
-- [ ] Audio mixer / volume control (`MCI_SET` with `MCI_SET_AUDIO`)
+- [x] `MCI_SEEK` — seeks to a millisecond position; updates `current_position` byte offset; next `MCI_PLAY` starts from that offset; `MCI_STATUS_POSITION` reports it
+- [x] `MCI_SET` with `MCI_SET_AUDIO | MCI_SET_VOLUME` — volume 0–100 applied via `SDL_MixAudioFormat` at play time; `mciSendString "set … audio volume to N"` also supported
+- [x] `MCI_RECORD` stub — returns `MCIERR_UNSUPPORTED_FUNCTION`; SDL2 audio capture not yet implemented
+- [x] `MCI_NOTIFY` flag — non-blocking play spawns a watcher thread that posts `MM_MCINOTIFY` (0x0502) with `MCI_NOTIFY_SUCCESSFUL` to `hwndCallback` when queue drains; `mci_stop()` / device drop cancels with `MCI_NOTIFY_SUPERSEDED`
 - [ ] MIDI playback device type (currently only `waveaudio` supported)
-- [ ] Non-blocking play completion notification (`MCI_NOTIFY` flag → post `MM_MCINOTIFY` to hwndCallback)
 
 ### 16-bit Compatibility (NE format)
 **NE execution baseline complete.** NE format parser (`src/ne/`): NeHeader, segment/relocation/entry tables, name table, 16 unit tests. Full NE loader in `src/loader/ne_exec.rs`: `load_ne()`, `apply_ne_fixups()`, `setup_guest_ne()`, `setup_and_run_ne_cli()`, `handle_ne_api_call()`, `ne_api_arg_bytes()`. GDT tiling with data tiles (DPL=2) and code tiles for CALL FAR. `ne_hello` pure-assembly sample runs `DosWrite`+`DosExit` end-to-end; integration test `test_ne_hello` passes. See [Developer Guide §20](developer_guide.md#appendix-development-phases).
