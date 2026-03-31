@@ -199,11 +199,11 @@ In OS/2 VIO text mode a DBCS character occupies two consecutive screen cells: ce
 These are high-priority items needed by virtually every real PM application.
 
 - [ ] **`WinMessageBox`** — real modal dialog (currently stubs `MBID_OK`); needs a blocking `WinGetMsg` loop inside a synthesised dialog window
-- [ ] **`WinSetWindowText` / `WinQueryWindowText`** — apps set titles and control labels dynamically after creation; update `OS2Window::text` and re-post `WM_PAINT`
-- [ ] **`WinInvalidateRect` / `WinUpdateWindow`** — explicit repaint requests; synthesise `WM_PAINT` for the target window; needed for proper redraw cycles
-- [ ] **`WinQueryWindowRect` / `WinQueryWindowPos`** — return window geometry; many layout routines call these to measure siblings
-- [ ] **`WinSetWindowPos` with child windows** — currently only handles frame moves; extend to arbitrary child reposition/resize
-- [ ] **`WinEnableWindow` / `WinIsWindowEnabled`** — toggle `WS_DISABLED`; built-in controls should draw grayed when disabled
+- [x] **`WinSetWindowText` / `WinQueryWindowText`** — apps set titles and control labels dynamically after creation; `OS2Window::text` updated on call
+- [x] **`WinInvalidateRect` / `WinUpdateWindow`** — synthesise `WM_PAINT` for the target window; `WinUpdateWindow` sends `PresentBuffer`
+- [x] **`WinQueryWindowRect` / `WinQueryWindowPos`** — `WinQueryWindowRect` returns `(0,0,cx,cy)`; `WinQueryWindowPos` fills SWP struct (ordinal 837)
+- [x] **`WinSetWindowPos` with child windows** — handles `SWP_MOVE`, `SWP_SIZE`, `SWP_SHOW`, `SWP_HIDE` for any hwnd
+- [x] **`WinEnableWindow` / `WinIsWindowEnabled`** — toggle `WS_DISABLED` bit in `OS2Window::style`; post `WM_ENABLE` to message queue (ordinals 735/773)
 
 ### PM Menu System
 - [ ] **Menu template parsing** — load `MENUTEMPLATE` resource from LX binary; create `WC_MENU` window hierarchy

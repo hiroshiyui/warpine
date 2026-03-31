@@ -983,6 +983,96 @@ impl super::Loader {
                 }
                 ApiResult::Normal(0)
             }
+            735 => {
+                // WinEnableWindow(HWND hwnd, BOOL fEnable) -> BOOL
+                //
+                // Toggles the WS_DISABLED style bit.  Returns the previous
+                // enabled state (TRUE = was enabled before this call).
+                let hwnd    = read_stack(4);
+                let enable  = read_stack(8) != 0;
+                debug!("  [VCPU {}] WinEnableWindow hwnd={} enable={}", vcpu_id, hwnd, enable);
+
+                let was_enabled = {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    if let Some(win) = wm.get_window_mut(hwnd) {
+                        let prev = win.style & WS_DISABLED == 0; // was enabled?
+                        if enable {
+                            win.style &= !WS_DISABLED;
+                        } else {
+                            win.style |= WS_DISABLED;
+                        }
+                        prev
+                    } else {
+                        true // non-existent window: treat as already enabled
+                    }
+                };
+
+                // Notify the window proc of the state change via WM_ENABLE.
+                {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    if let Some(hmq) = wm.find_hmq_for_hwnd(hwnd)
+                        && let Some(mq_arc) = wm.get_mq(hmq) {
+                            let mut mq = mq_arc.lock_or_recover();
+                            mq.messages.push_back(OS2Message {
+                                hwnd,
+                                msg: WM_ENABLE,
+                                mp1: enable as u32,
+                                mp2: 0,
+                                time: 0, x: 0, y: 0,
+                            });
+                            mq.cond.notify_one();
+                    }
+                }
+                ApiResult::Normal(was_enabled as u32)
+            }
+            736 => {
+                // WinEnableWindowUpdate(HWND hwnd, BOOL fEnable)
+                // Controls whether the window redraws itself.  Stub — we have
+                // no deferred-update queue, so just return TRUE.
+                ApiResult::Normal(1)
+            }
+            773 => {
+                // WinIsWindowEnabled(HWND hwnd) -> BOOL
+                let hwnd = read_stack(4);
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let enabled = wm.get_window(hwnd)
+                    .map(|w| w.style & WS_DISABLED == 0)
+                    .unwrap_or(false);
+                ApiResult::Normal(enabled as u32)
+            }
+            837 => {
+                // WinQueryWindowPos(HWND hwnd, PSWP pswp) -> BOOL
+                //
+                // Fills in a SWP structure (28 bytes) with the window's current
+                // position and size.
+                //
+                //   LONG   fl;               +0  SWP_MOVE | SWP_SIZE
+                //   LONG   cy;               +4  height
+                //   LONG   cx;               +8  width
+                //   LONG   y;                +12 y position
+                //   LONG   x;                +16 x position
+                //   HWND   hwndInsertBehind; +20 (always 0 here)
+                //   HWND   hwnd;             +24 window handle
+                let hwnd     = read_stack(4);
+                let pswp_ptr = read_stack(8);
+                if pswp_ptr == 0 {
+                    return ApiResult::Normal(0); // FALSE — null pointer
+                }
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let (x, y, cx, cy) = wm.get_window(hwnd)
+                    .map(|w| (w.x, w.y, w.cx, w.cy))
+                    .unwrap_or((0, 0, 0, 0));
+                drop(wm);
+                // fl: report both position and size are valid
+                self.guest_write::<u32>(pswp_ptr,      SWP_MOVE | SWP_SIZE); // fl
+                self.guest_write::<i32>(pswp_ptr +  4, cy);                  // cy
+                self.guest_write::<i32>(pswp_ptr +  8, cx);                  // cx
+                self.guest_write::<i32>(pswp_ptr + 12, y);                   // y
+                self.guest_write::<i32>(pswp_ptr + 16, x);                   // x
+                self.guest_write::<u32>(pswp_ptr + 20, 0);                   // hwndInsertBehind
+                self.guest_write::<u32>(pswp_ptr + 24, hwnd);                // hwnd
+                ApiResult::Normal(1) // TRUE
+            }
             _ => {
                 warn!("Warning: Unknown PMWIN Ordinal {} on VCPU {}", ordinal, vcpu_id);
                 ApiResult::Normal(0)

@@ -66,6 +66,7 @@ pub const WM_BUTTON3DOWN: u32 = 0x0075;
 pub const WM_BUTTON3UP: u32 = 0x0076;
 pub const WM_COMMAND: u32 = 0x0020;
 pub const WM_CHAR: u32 = 0x007A;
+pub const WM_ENABLE: u32 = 0x0002;
 
 // KC_* flags for WM_CHAR message (MP1 high word)
 pub const KC_CHAR:       u32 = 0x0001; // character code in MP2 low word is valid
