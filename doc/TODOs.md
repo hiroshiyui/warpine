@@ -71,10 +71,10 @@ Goal: raise the fraction of real OS/2 applications that run correctly.
 **Baseline complete** — `DosLoadModule`/`DosQueryProcAddr`/`DosQueryModuleHandle` implemented; `jpos2dll.dll` loads at runtime. See [Developer Guide §20](developer_guide.md#appendix-development-phases).
 
 Remaining:
-- [ ] Recursive/static import loading — load a DLL's dependent DLLs from its import table before applying fixups (currently only built-in emulated modules work as DLL dependencies)
-- [ ] Call DLL initialisation routines (`DLL_INITTERM` / `eip_object`) at load and unload time
-- [ ] `DosFreeModule` — proper reference counting and unload
-- [ ] Handle load-order dependencies and circular imports
+- [x] Recursive/static import loading — `load_dll_impl` iterates `lx_file.imported_modules`, skips built-ins, recursively loads any user-DLL dependency before applying fixups; `BUILTIN_MODULES` constant enumerates the 10 emulated modules
+- [x] `DosFreeModule` — reference-counted unload; `LoadedDll::ref_count` starts at 1; second `DosLoadModule` increments it; `DosFreeModule` decrements and frees guest memory at zero
+- [x] Handle load-order dependencies and circular imports — `HashSet<String> loading` passed through `load_dll_impl` call stack; cycle detected and warned; avoids infinite recursion
+- [ ] Call DLL initialisation routines (`DLL_INITTERM` / `eip_object`) at load and unload time — entry point address is logged; actual call requires vCPU call-injection (not yet implemented)
 
 ### DOSCALLS Long Tail
 - [ ] **Structured Exception Handling** — real per-thread handler chain; `DosRaiseException`; `DosUnwindException`

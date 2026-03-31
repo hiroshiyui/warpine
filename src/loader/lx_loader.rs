@@ -5,12 +5,19 @@ use super::constants::*;
 use super::managers::LoadedDll;
 use crate::lx::LxFile;
 use crate::lx::header::FixupTarget;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
 use std::path::Path;
 use std::sync::Arc;
 use log::{debug, info, warn};
+
+/// Built-in (emulated) module names — handled entirely by the API thunk mechanism.
+/// These are never loaded from the host filesystem; imports to them resolve to thunk stubs.
+const BUILTIN_MODULES: &[&str] = &[
+    "DOSCALLS", "QUECALLS", "PMWIN", "PMGPI", "KBDCALLS",
+    "VIOCALLS", "SESMGR", "NLS", "MSG", "MDM",
+];
 
 impl super::Loader {
     pub fn is_pm_app(&self, lx_file: &LxFile) -> bool {
@@ -137,22 +144,45 @@ impl super::Loader {
 
     /// Load a user DLL into guest memory by file path.
     ///
-    /// Parses the LX file, allocates guest memory for each object, applies
-    /// fixups (imports resolved to thunks or previously-loaded DLLs), builds
-    /// the export map, and registers the DLL in `SharedState::dll_mgr`.
+    /// If the DLL is already loaded its reference count is incremented and the
+    /// existing handle is returned immediately (no re-parse).  Otherwise the LX
+    /// file is parsed, all imported user-DLL dependencies are loaded recursively,
+    /// pages are mapped, fixups applied, and the result registered in `dll_mgr`.
     ///
     /// Returns the HMODULE handle on success.
     pub fn load_dll(&self, dll_name: &str, dll_path: &str) -> Result<u32, String> {
-        info!("DLL load: '{}' from '{}'", dll_name, dll_path);
+        self.load_dll_impl(dll_name, dll_path, &mut HashSet::new())
+    }
+
+    /// Internal recursive implementation — `loading` is the set of module names
+    /// currently on the call stack, used to break import cycles.
+    fn load_dll_impl(
+        &self,
+        dll_name: &str,
+        dll_path: &str,
+        loading: &mut HashSet<String>,
+    ) -> Result<u32, String> {
+        let dll_name_upper = dll_name.to_ascii_uppercase();
+
+        // Fast path: already loaded — bump refcount and return existing handle.
+        {
+            let mut dll_mgr = self.shared.dll_mgr.lock_or_recover();
+            let maybe_handle = dll_mgr.find_by_name(&dll_name_upper).map(|d| d.handle);
+            if let Some(h) = maybe_handle {
+                dll_mgr.increment_refcount(h);
+                return Ok(h);
+            }
+        }
+
+        info!("DLL load: '{}' from '{}'", dll_name_upper, dll_path);
 
         // 1. Parse the DLL LX file
         let lx_file = LxFile::open(dll_path)
             .map_err(|e| format!("Failed to parse DLL '{}': {}", dll_path, e))?;
 
         // Verify it is a library
-        let is_lib = lx_file.header.module_flags & 0x8000 != 0; // MODULE_LIBRARY
-        if !is_lib {
-            warn!("DLL load: '{}' does not have LIBRARY flag set", dll_name);
+        if lx_file.header.module_flags & 0x8000 == 0 {
+            warn!("DLL load: '{}' does not have LIBRARY flag set", dll_name_upper);
         }
 
         // 2. Allocate guest memory for each object
@@ -162,7 +192,7 @@ impl super::Loader {
             for obj in &lx_file.object_table {
                 let size = obj.size.max(4096); // at least one page
                 let addr = mem.alloc(size)
-                    .ok_or_else(|| format!("Out of guest memory for DLL '{}'", dll_name))?;
+                    .ok_or_else(|| format!("Out of guest memory for DLL '{}'", dll_name_upper))?;
                 object_bases.push(addr);
                 debug!("  DLL object: size=0x{:X} → guest 0x{:08X}", size, addr);
             }
@@ -193,9 +223,39 @@ impl super::Loader {
             }
         }
 
-        // 4. Apply fixups using the allocated (rebased) object addresses
+        // 3.5. Recursively load imported user-DLL dependencies before applying
+        //      fixups, so that `resolve_import` finds them in `dll_mgr`.
+        loading.insert(dll_name_upper.clone());
+        for dep_name in &lx_file.imported_modules {
+            let dep_upper = dep_name.to_ascii_uppercase();
+            // Built-in emulated modules are handled by the thunk mechanism.
+            if BUILTIN_MODULES.contains(&dep_upper.as_str()) { continue; }
+            // Already loaded — no further action needed (fixups will resolve via dll_mgr).
+            {
+                let dll_mgr = self.shared.dll_mgr.lock_or_recover();
+                if dll_mgr.find_by_name(&dep_upper).is_some() { continue; }
+            }
+            // Cycle guard.
+            if loading.contains(&dep_upper) {
+                warn!("DLL '{}': circular import '{}', skipping", dll_name_upper, dep_upper);
+                continue;
+            }
+            match self.find_dll_path(&dep_upper) {
+                Some(dep_path) => {
+                    if let Err(e) = self.load_dll_impl(&dep_upper, &dep_path, loading) {
+                        warn!("DLL '{}': dependency '{}' failed: {}", dll_name_upper, dep_upper, e);
+                    }
+                }
+                None => {
+                    warn!("DLL '{}': dependency '{}' not found on host", dll_name_upper, dep_upper);
+                }
+            }
+        }
+
+        // 4. Apply fixups using the allocated (rebased) object addresses.
+        //    Dependencies are now in `dll_mgr`, so `resolve_import` can find them.
         self.apply_fixups(&lx_file, &object_bases)
-            .map_err(|e| format!("DLL fixup error for '{}': {}", dll_name, e))?;
+            .map_err(|e| format!("DLL fixup error for '{}': {}", dll_name_upper, e))?;
 
         // 5. Build export map from entry table + non-resident names table
         let mut exports_by_ordinal: HashMap<u32, u32> = HashMap::new();
@@ -215,22 +275,34 @@ impl super::Loader {
         }
 
         info!("DLL '{}': {} exports, {} named exports",
-              dll_name, exports_by_ordinal.len(), exports_by_name.len());
+              dll_name_upper, exports_by_ordinal.len(), exports_by_name.len());
 
-        // 6. Register in dll_mgr
+        // 6. Check for DLL initialisation entry point (INITTERM).
+        if lx_file.header.eip_object != 0 {
+            let obj_idx = (lx_file.header.eip_object as usize).wrapping_sub(1);
+            if obj_idx < object_bases.len() {
+                let init_addr = object_bases[obj_idx] + lx_file.header.eip;
+                debug!("DLL '{}': has INITTERM entry at 0x{:08X} (not yet called)", dll_name_upper, init_addr);
+                // TODO: call init_addr(hmod, 0, 0) once vCPU call-injection is supported
+            }
+        }
+
+        // 7. Register in dll_mgr
         let handle = {
             let mut dll_mgr = self.shared.dll_mgr.lock_or_recover();
             let handle = dll_mgr.alloc_handle();
             dll_mgr.register(LoadedDll {
-                name: dll_name.to_ascii_uppercase(),
+                name: dll_name_upper.clone(),
                 handle,
                 object_bases,
                 exports_by_ordinal,
                 exports_by_name,
+                ref_count: 1,
             });
             handle
         };
 
+        loading.remove(&dll_name_upper);
         Ok(handle)
     }
 
@@ -325,5 +397,65 @@ mod tests {
 
         let found_missing = loader.find_dll_path("NONEXISTENT_DLL_ABCD");
         assert!(found_missing.is_none(), "nonexistent DLL should return None");
+    }
+
+    /// Verify BUILTIN_MODULES covers all modules handled by the thunk mechanism.
+    #[test]
+    fn test_builtin_modules_are_complete() {
+        use super::BUILTIN_MODULES;
+        // Every module base defined in descriptors.rs must appear in BUILTIN_MODULES.
+        let required = ["DOSCALLS", "QUECALLS", "PMWIN", "PMGPI",
+                        "KBDCALLS", "VIOCALLS", "SESMGR", "NLS", "MSG", "MDM"];
+        for m in &required {
+            assert!(BUILTIN_MODULES.contains(m),
+                    "BUILTIN_MODULES is missing '{}'", m);
+        }
+    }
+
+    /// Second load_dll call returns the same handle with incremented refcount.
+    #[test]
+    fn test_load_dll_refcount_on_second_load() {
+        let path = "samples/4os2/jpos2dll.dll";
+        if !std::path::Path::new(path).exists() { return; }
+
+        let loader = Loader::new_mock();
+        *loader.shared.exe_name.lock_or_recover() = "samples/4os2/4os2.exe".to_string();
+
+        let h1 = loader.load_dll("JPOS2DLL", path).expect("first load");
+        let h2 = loader.load_dll("JPOS2DLL", path).expect("second load");
+        assert_eq!(h1, h2, "same handle on second load");
+
+        let dll_mgr = loader.shared.dll_mgr.lock_or_recover();
+        let dll = dll_mgr.find_by_handle(h1).expect("dll must still be registered");
+        assert_eq!(dll.ref_count, 2, "refcount should be 2 after two loads");
+    }
+
+    /// DosFreeModule decrements refcount; DLL stays loaded until refcount = 0.
+    #[test]
+    fn test_dos_free_module_refcount() {
+        let path = "samples/4os2/jpos2dll.dll";
+        if !std::path::Path::new(path).exists() { return; }
+
+        let loader = Loader::new_mock();
+        *loader.shared.exe_name.lock_or_recover() = "samples/4os2/4os2.exe".to_string();
+
+        let h = loader.load_dll("JPOS2DLL", path).expect("load");
+        let h2 = loader.load_dll("JPOS2DLL", path).expect("second load"); // refcount = 2
+        assert_eq!(h, h2);
+
+        // First free: refcount drops to 1, DLL still loaded
+        loader.dos_free_module(h);
+        {
+            let dll_mgr = loader.shared.dll_mgr.lock_or_recover();
+            assert!(dll_mgr.find_by_handle(h).is_some(), "DLL should still be loaded after first free");
+            assert_eq!(dll_mgr.find_by_handle(h).unwrap().ref_count, 1);
+        }
+
+        // Second free: refcount drops to 0, DLL unloaded
+        loader.dos_free_module(h);
+        {
+            let dll_mgr = loader.shared.dll_mgr.lock_or_recover();
+            assert!(dll_mgr.find_by_handle(h).is_none(), "DLL should be unloaded after second free");
+        }
     }
 }

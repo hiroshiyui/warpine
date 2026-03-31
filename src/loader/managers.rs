@@ -296,6 +296,9 @@ pub struct LoadedDll {
     pub exports_by_ordinal: HashMap<u32, u32>,
     /// UPPERCASE name → guest flat address
     pub exports_by_name: HashMap<String, u32>,
+    /// Reference count — starts at 1 on first load; DosFreeModule decrements it;
+    /// the DLL is unloaded when it reaches 0.
+    pub ref_count: u32,
 }
 
 /// Tracks all user DLLs loaded into guest memory.
@@ -347,6 +350,35 @@ impl DllManager {
     pub fn resolve_name(&self, module: &str, name: &str) -> Option<u32> {
         let upper = name.to_ascii_uppercase();
         self.find_by_name(module)?.exports_by_name.get(&upper).copied()
+    }
+
+    /// Increment the reference count of the DLL identified by `handle`.
+    /// Returns `true` if the handle was found, `false` otherwise.
+    pub fn increment_refcount(&mut self, handle: u32) -> bool {
+        if let Some(dll) = self.dlls.iter_mut().find(|d| d.handle == handle) {
+            dll.ref_count += 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Decrement the reference count of the DLL identified by `handle`.
+    ///
+    /// Returns `Some(object_bases)` if the count reached zero (caller must free
+    /// those guest memory blocks), or `None` if the DLL is still referenced.
+    pub fn decrement_refcount(&mut self, handle: u32) -> Option<Vec<u32>> {
+        let idx = self.dlls.iter().position(|d| d.handle == handle)?;
+        if self.dlls[idx].ref_count > 0 {
+            self.dlls[idx].ref_count -= 1;
+        }
+        if self.dlls[idx].ref_count == 0 {
+            let bases = self.dlls[idx].object_bases.clone();
+            self.dlls.remove(idx);
+            Some(bases)
+        } else {
+            None
+        }
     }
 }
 
@@ -440,5 +472,53 @@ mod tests {
         mgr.register("\\SHAREMEM\\TEST".to_string(), 0x5000);
         assert_eq!(mgr.find_by_name("\\SHAREMEM\\TEST"), Some(0x5000));
         assert_eq!(mgr.find_by_name("\\SHAREMEM\\OTHER"), None);
+    }
+
+    fn make_dll(handle: u32, name: &str, bases: Vec<u32>) -> LoadedDll {
+        LoadedDll {
+            name: name.to_string(),
+            handle,
+            object_bases: bases,
+            exports_by_ordinal: HashMap::new(),
+            exports_by_name: HashMap::new(),
+            ref_count: 1,
+        }
+    }
+
+    #[test]
+    fn test_dll_manager_refcount_increment() {
+        let mut mgr = DllManager::new();
+        let h = mgr.alloc_handle();
+        mgr.register(make_dll(h, "TESTDLL", vec![0x1000]));
+        assert!(mgr.increment_refcount(h));
+        assert_eq!(mgr.find_by_handle(h).map(|d| d.ref_count), Some(2));
+        assert!(!mgr.increment_refcount(0xDEAD)); // unknown handle
+    }
+
+    #[test]
+    fn test_dll_manager_refcount_decrement_stays() {
+        let mut mgr = DllManager::new();
+        let h = mgr.alloc_handle();
+        mgr.register(make_dll(h, "TESTDLL", vec![0x1000]));
+        mgr.increment_refcount(h); // ref_count = 2
+        let result = mgr.decrement_refcount(h); // ref_count = 1 → still loaded
+        assert!(result.is_none(), "should not unload at refcount 1");
+        assert!(mgr.find_by_handle(h).is_some());
+    }
+
+    #[test]
+    fn test_dll_manager_refcount_decrement_unloads() {
+        let mut mgr = DllManager::new();
+        let h = mgr.alloc_handle();
+        mgr.register(make_dll(h, "TESTDLL", vec![0x2000, 0x3000]));
+        let freed = mgr.decrement_refcount(h); // ref_count 1 → 0
+        assert_eq!(freed, Some(vec![0x2000, 0x3000]));
+        assert!(mgr.find_by_handle(h).is_none(), "DLL should be removed");
+    }
+
+    #[test]
+    fn test_dll_manager_decrement_unknown_handle() {
+        let mut mgr = DllManager::new();
+        assert!(mgr.decrement_refcount(0xBEEF).is_none());
     }
 }

@@ -229,44 +229,27 @@ impl super::Loader {
     // ── Step 4: Module Loading Stubs ──
 
     /// DosLoadModule (ordinal 318): load a DLL.
+    ///
+    /// If the module is already loaded its reference count is incremented and
+    /// the existing handle is returned.  Otherwise the DLL (and all of its
+    /// imported user-DLL dependencies) is loaded recursively.
     pub fn dos_load_module(&self, psz_fail_name: u32, cb_fail_name: u32, psz_mod_name: u32, phmod: u32) -> u32 {
         let name = self.read_guest_string(psz_mod_name);
         debug!("  DosLoadModule('{}')", name);
 
-        // Check if already loaded
-        let already = {
-            let dll_mgr = self.shared.dll_mgr.lock_or_recover();
-            dll_mgr.find_by_name(&name).map(|d| d.handle)
+        // `load_dll` handles the "already loaded → increment refcount" case internally.
+        let result = match self.find_dll_path(&name) {
+            Some(path) => self.load_dll(&name, &path),
+            None => Err(format!("'{}' not found on host", name)),
         };
-        if let Some(h) = already {
-            if phmod != 0 { self.guest_write::<u32>(phmod, h); }
-            return NO_ERROR;
-        }
 
-        // Search for the DLL on the host filesystem
-        match self.find_dll_path(&name) {
-            Some(path) => {
-                match self.load_dll(&name, &path) {
-                    Ok(h) => {
-                        if phmod != 0 { self.guest_write::<u32>(phmod, h); }
-                        NO_ERROR
-                    }
-                    Err(e) => {
-                        log::warn!("DosLoadModule('{}') failed: {}", name, e);
-                        // Write module name to error buffer
-                        if psz_fail_name != 0 && cb_fail_name > 0 {
-                            let bytes = name.as_bytes();
-                            let copy_len = bytes.len().min(cb_fail_name as usize - 1);
-                            self.guest_write_bytes(psz_fail_name, &bytes[..copy_len]);
-                            self.guest_write::<u8>(psz_fail_name + copy_len as u32, 0);
-                        }
-                        if phmod != 0 { self.guest_write::<u32>(phmod, 0); }
-                        ERROR_MOD_NOT_FOUND
-                    }
-                }
+        match result {
+            Ok(h) => {
+                if phmod != 0 { self.guest_write::<u32>(phmod, h); }
+                NO_ERROR
             }
-            None => {
-                debug!("  DosLoadModule: '{}' not found on host", name);
+            Err(e) => {
+                log::warn!("DosLoadModule('{}') failed: {}", name, e);
                 if psz_fail_name != 0 && cb_fail_name > 0 {
                     let bytes = name.as_bytes();
                     let copy_len = bytes.len().min(cb_fail_name as usize - 1);
@@ -279,9 +262,23 @@ impl super::Loader {
         }
     }
 
-    /// DosFreeModule (ordinal 322): free a loaded DLL.
+    /// DosFreeModule (ordinal 322): decrement a DLL's reference count.
+    ///
+    /// When the count reaches zero the DLL's guest memory objects are freed and
+    /// the module is removed from `dll_mgr`.
     pub fn dos_free_module(&self, hmod: u32) -> u32 {
-        debug!("  DosFreeModule({})", hmod);
+        debug!("  DosFreeModule(hmod={})", hmod);
+        let freed_bases = {
+            let mut dll_mgr = self.shared.dll_mgr.lock_or_recover();
+            dll_mgr.decrement_refcount(hmod)
+        };
+        if let Some(bases) = freed_bases {
+            let mut mem = self.shared.mem_mgr.lock_or_recover();
+            for addr in bases {
+                mem.free(addr);
+            }
+            debug!("  DosFreeModule: hmod={} unloaded", hmod);
+        }
         NO_ERROR
     }
 
