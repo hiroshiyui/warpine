@@ -543,17 +543,19 @@ impl super::Loader {
         let mut offset = 0u32;
         let mut count = 0u32;
 
+        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
         for ea in eas.iter().skip(start).take(max_count) {
+            let name_bytes = super::codepage::cp_encode(&ea.name, cp);
             // DENA1 structure: reserved(4) + cbName(1) + cbValue(2) + szName(cbName+1)
-            let entry_size = 4 + 1 + 2 + ea.name.len() as u32 + 1;
+            let entry_size = 4 + 1 + 2 + name_bytes.len() as u32 + 1;
             let aligned_size = (entry_size + 3) & !3; // 4-byte aligned
             if offset + aligned_size > cb_buf { break; }
 
             self.guest_write::<u32>(pv_buf + offset, 0);           // reserved
-            self.guest_write::<u8>(pv_buf + offset + 4, ea.name.len() as u8); // cbName
+            self.guest_write::<u8>(pv_buf + offset + 4, name_bytes.len() as u8); // cbName
             self.guest_write::<u16>(pv_buf + offset + 5, ea.value.len() as u16); // cbValue
-            self.guest_write_bytes(pv_buf + offset + 7, ea.name.as_bytes());
-            self.guest_write::<u8>(pv_buf + offset + 7 + ea.name.len() as u32, 0); // null term
+            self.guest_write_bytes(pv_buf + offset + 7, &name_bytes);
+            self.guest_write::<u8>(pv_buf + offset + 7 + name_bytes.len() as u32, 0); // null term
 
             offset += aligned_size;
             count += 1;
@@ -685,7 +687,8 @@ impl super::Loader {
         let dm = self.shared.drive_mgr.lock_or_recover();
         let drive = if disk_num == 0 { dm.current_disk() } else { (disk_num as u8) - 1 };
         let dir = dm.current_dir(drive);
-        let dir_bytes = dir.as_bytes();
+        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let dir_bytes = super::codepage::cp_encode(dir, cp);
 
         if pcb_buf != 0 {
             let buf_len = self.guest_read::<u32>(pcb_buf).unwrap_or(0) as usize;
@@ -697,7 +700,7 @@ impl super::Loader {
         }
 
         if p_buf != 0 {
-            self.guest_write_bytes(p_buf, dir_bytes);
+            self.guest_write_bytes(p_buf, &dir_bytes);
             self.guest_write::<u8>(p_buf + dir_bytes.len() as u32, 0);
         }
         NO_ERROR
@@ -796,25 +799,27 @@ impl super::Loader {
         let mut out_pos = 4u32; // skip cbList (will be written at the end)
         let mut prev_fea2_ptr: Option<u32> = None;
 
+        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
         for ea_name in &ea_names {
             let ea = match backend.get_ea(&rel_path, ea_name) {
                 Ok(ea) => ea,
                 Err(_) => EaEntry { name: ea_name.clone(), value: Vec::new(), flags: 0 },
             };
+            let name_bytes = super::codepage::cp_encode(&ea.name, cp);
 
             // FEA2: oNextEntryOffset(4) + fEA(1) + cbName(1) + cbValue(2) + szName(cbName+1) + value(cbValue)
-            let fea2_size = 4 + 1 + 1 + 2 + ea.name.len() as u32 + 1 + ea.value.len() as u32;
+            let fea2_size = 4 + 1 + 1 + 2 + name_bytes.len() as u32 + 1 + ea.value.len() as u32;
             let aligned_size = (fea2_size + 3) & !3;
 
             let fea2_ptr = p_fea2list + out_pos;
             self.guest_write::<u32>(fea2_ptr, 0); // oNextEntryOffset (patched below)
             self.guest_write::<u8>(fea2_ptr + 4, ea.flags);
-            self.guest_write::<u8>(fea2_ptr + 5, ea.name.len() as u8);
+            self.guest_write::<u8>(fea2_ptr + 5, name_bytes.len() as u8);
             self.guest_write::<u16>(fea2_ptr + 6, ea.value.len() as u16);
-            self.guest_write_bytes(fea2_ptr + 8, ea.name.as_bytes());
-            self.guest_write::<u8>(fea2_ptr + 8 + ea.name.len() as u32, 0); // null term
+            self.guest_write_bytes(fea2_ptr + 8, &name_bytes);
+            self.guest_write::<u8>(fea2_ptr + 8 + name_bytes.len() as u32, 0); // null term
             if !ea.value.is_empty() {
-                self.guest_write_bytes(fea2_ptr + 9 + ea.name.len() as u32, &ea.value);
+                self.guest_write_bytes(fea2_ptr + 9 + name_bytes.len() as u32, &ea.value);
             }
 
             if let Some(prev) = prev_fea2_ptr {
@@ -857,11 +862,12 @@ impl super::Loader {
         let mut offset = 0u32;
         let mut count = 0u32;
         let mut prev_offset_field: Option<u32> = None;
+        let cp = self.shared.active_codepage.load(Ordering::Relaxed);
 
         let ea_field_size: u32 = if include_ea_size { 4 } else { 0 };
 
         for entry in entries.iter() {
-            let name_bytes = entry.name.as_bytes();
+            let name_bytes = super::codepage::cp_encode(&entry.name, cp);
             let name_len = name_bytes.len().min(255);
             // FILEFINDBUF3: oNextEntryOffset(4) + FILESTATUS3(24) [+ cbList(4)] + cchName(1) + achName(name_len+1)
             let entry_size = 4 + 24 + ea_field_size + 1 + name_len as u32 + 1;
