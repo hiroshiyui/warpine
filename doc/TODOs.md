@@ -47,11 +47,9 @@ Per-argument typed names complete (see [Developer Guide §19](developer_guide.md
 ## Phase 5 — Multimedia and 16-bit Support
 
 ### Audio/Video (MMPM/2) — Remaining
-- [x] `MCI_SEEK` — seeks to a millisecond position; updates `current_position` byte offset; next `MCI_PLAY` starts from that offset; `MCI_STATUS_POSITION` reports it
-- [x] `MCI_SET` with `MCI_SET_AUDIO | MCI_SET_VOLUME` — volume 0–100 applied via `SDL_MixAudioFormat` at play time; `mciSendString "set … audio volume to N"` also supported
-- [x] `MCI_RECORD` stub — returns `MCIERR_UNSUPPORTED_FUNCTION`; SDL2 audio capture not yet implemented
-- [x] `MCI_NOTIFY` flag — non-blocking play spawns a watcher thread that posts `MM_MCINOTIFY` (0x0502) with `MCI_NOTIFY_SUCCESSFUL` to `hwndCallback` when queue drains; `mci_stop()` / device drop cancels with `MCI_NOTIFY_SUPERSEDED`
-- [ ] MIDI playback device type (currently only `waveaudio` supported)
+MCI_SEEK, MCI_SET volume, MCI_NOTIFY, and MCI_RECORD stub are all complete. Remaining:
+
+- [ ] MIDI playback device type (currently only `waveaudio` supported) — requires FluidSynth/SDL2_mixer or ALSA sequencer; deferred due to external dependency cost
 
 ### 16-bit Compatibility (NE format)
 **NE execution baseline complete.** NE format parser (`src/ne/`): NeHeader, segment/relocation/entry tables, name table, 16 unit tests. Full NE loader in `src/loader/ne_exec.rs`: `load_ne()`, `apply_ne_fixups()`, `setup_guest_ne()`, `setup_and_run_ne_cli()`, `handle_ne_api_call()`, `ne_api_arg_bytes()`. GDT tiling with data tiles (DPL=2) and code tiles for CALL FAR. `ne_hello` pure-assembly sample runs `DosWrite`+`DosExit` end-to-end; integration test `test_ne_hello` passes. See [Developer Guide §20](developer_guide.md#appendix-development-phases).
@@ -71,17 +69,11 @@ Goal: raise the fraction of real OS/2 applications that run correctly.
 **Baseline complete** — `DosLoadModule`/`DosQueryProcAddr`/`DosQueryModuleHandle` implemented; `jpos2dll.dll` loads at runtime. See [Developer Guide §20](developer_guide.md#appendix-development-phases).
 
 Remaining:
-- [x] Recursive/static import loading — `load_dll_impl` iterates `lx_file.imported_modules`, skips built-ins, recursively loads any user-DLL dependency before applying fixups; `BUILTIN_MODULES` constant enumerates the 10 emulated modules
-- [x] `DosFreeModule` — reference-counted unload; `LoadedDll::ref_count` starts at 1; second `DosLoadModule` increments it; `DosFreeModule` decrements and frees guest memory at zero
-- [x] Handle load-order dependencies and circular imports — `HashSet<String> loading` passed through `load_dll_impl` call stack; cycle detected and warned; avoids infinite recursion
 - [ ] Call DLL initialisation routines (`DLL_INITTERM` / `eip_object`) at load and unload time — entry point address is logged; actual call requires vCPU call-injection (not yet implemented)
 
 ### DOSCALLS Long Tail
 - [ ] **Structured Exception Handling** — real per-thread handler chain; `DosRaiseException`; `DosUnwindException`
-- [x] **Environment** — `DosScanEnv` (ordinal 227), `DosSetExtLIBPATH` (873), `DosQueryExtLIBPATH` (874) implemented; BEGINLIBPATH/ENDLIBPATH stored in `SharedState`
 - [ ] **NLS / DBCS** — `DosQueryDBCSEnv` (DBCS lead-byte table), full `DosMapCase` for non-Latin codepages
-- [x] **Thread priorities** — `DosSetPriority` (ordinal 236) implemented as no-op stub
-- [x] **`DosKillThread`** (ordinal 111) — removes JoinHandle from thread table (async cancellation not implemented)
 
 ### Unicode-Internal Architecture (long-term goal)
 Convert Warpine's internal string representation to UTF-8, with codepage↔UTF-8 conversion at every guest/host API boundary. Modelled on Wine's ANSI→UTF-16 approach.
@@ -185,25 +177,9 @@ In OS/2 VIO text mode a DBCS character occupies two consecutive screen cells: ce
 
 ---
 
-### VGA Text Renderer — Remaining
-- [x] **Window resize** — `VioSetMode` (ordinal 22) now resizes `VioManager` via `VioManager::resize()`; `Sdl2TextRenderer::render_frame()` detects changed dims and calls `handle_resize()` to resize the SDL2 window and recreate the streaming texture
-- [x] **ANSI colors in terminal mode** — `VioManager::write_tty` now emits `write_ansi_attr` before printable characters and `\x1b[0m` after, matching the colour output already present in `write_char_str_att`/`write_n_cell`/`write_n_attr`
-
----
-
 ### Code Page and DBCS Support
 - [ ] `DosQueryCp` / `DosSetProcessCp` — track current process code page accurately (prerequisite for Phase B above)
 - [ ] Full `DosMapCase` for non-Latin codepages (CP852, CP866, CP932, etc.)
-
-### PM Core Window Management — Remaining
-These are high-priority items needed by virtually every real PM application.
-
-- [x] **`WinMessageBox`** — modal dialog via SDL2 `show_message_box`; vCPU thread blocks on `SyncSender` reply; headless auto-replies MBID_OK; all MB_* button sets and MB_ICON* flags mapped; 7 new tests
-- [x] **`WinSetWindowText` / `WinQueryWindowText`** — apps set titles and control labels dynamically after creation; `OS2Window::text` updated on call
-- [x] **`WinInvalidateRect` / `WinUpdateWindow`** — synthesise `WM_PAINT` for the target window; `WinUpdateWindow` sends `PresentBuffer`
-- [x] **`WinQueryWindowRect` / `WinQueryWindowPos`** — `WinQueryWindowRect` returns `(0,0,cx,cy)`; `WinQueryWindowPos` fills SWP struct (ordinal 837)
-- [x] **`WinSetWindowPos` with child windows** — handles `SWP_MOVE`, `SWP_SIZE`, `SWP_SHOW`, `SWP_HIDE` for any hwnd
-- [x] **`WinEnableWindow` / `WinIsWindowEnabled`** — toggle `WS_DISABLED` bit in `OS2Window::style`; post `WM_ENABLE` to message queue (ordinals 735/773)
 
 ### PM Menu System
 - [ ] **Menu template parsing** — load `MENUTEMPLATE` resource from LX binary; create `WC_MENU` window hierarchy
@@ -218,28 +194,9 @@ These are high-priority items needed by virtually every real PM application.
 - [ ] **`WinDefDlgProc`** — default dialog procedure: keyboard navigation, Enter/Escape handling, default button
 
 ### GPI Drawing Primitives
-- [x] **`GpiSetColor`** (517) — stores foreground colour in `PresentationSpace`
-- [x] **`GpiSetBackColor`** (518) — stores background colour in `PresentationSpace`
-- [x] **`GpiQueryColor` / `GpiQueryBackColor`** (520/521) — read-back from `PresentationSpace`
-- [x] **`GpiSetMix` / `GpiSetBackMix`** (509/503) — mix mode stored in `PresentationSpace`
-- [x] **`GpiMove` / `GpiQueryCurrentPosition`** (404/416) — current-position tracking
-- [x] **`GpiLine`** (398) — line from current pos; emits `GUIMessage::DrawLine`
-- [x] **`GpiBox`** (356) — filled/outlined rect; emits `GUIMessage::DrawBox`
-- [x] **`GpiCharString` / `GpiCharStringAt`** (358/359) — text at current pos / explicit pos; emits `GUIMessage::DrawText`; advances current pos
-- [x] **`GpiErase`** (389) — clears framebuffer; emits `GUIMessage::ClearBuffer`
-- [x] **`GpiFullArc`** (392) — approximated as box centred on current pos
-- [x] **`GpiCreatePS` / `GpiDestroyPS`** (369/379) — PS lifecycle; `PresentationSpace` now tracks `back_color`, `mix_mode`, `back_mix`, `char_set`, `char_box`
-- [x] **`GpiCreateLogFont` / `GpiDeleteSetId` / `GpiSetCharSet` / `GpiSetCharBox`** (381/385/481/482) — font selection stubs; always report FONT_DEFAULT
-- [x] **`GpiQueryFontMetrics`** (464) — writes mock FONTMETRICS (8×16 system font, 208 bytes) to guest; key metrics: lMaxBaselineExt=16, lAveCharWidth=8, sXDeviceRes=96
-- [x] **`GpiQueryFonts`** (459) — returns 1 system font; fills optional FONTMETRICS entry
-- [x] **`GpiQueryTextBox`** (476) — returns 5-point bounding box for mock 8×16 font (TXTBOX_COUNT corners + concat point)
-- [x] **`GpiLoadFonts` / `GpiLoadPublicFonts`** (399/400) — stubs returning TRUE
-- [x] **`GpiSetLineType` / `GpiSetLineWidth`** (527/529) — stubs returning TRUE
-- [x] **`map_color`** — full CLR_* palette (CLR_BLACK=-1, CLR_WHITE=-2, CLR_DEFAULT=-3, indices 0–15) + direct 0x00RRGGBB pass-through for values ≥ 16
+GpiSetColor/BackColor, GpiQueryColor/BackColor, GpiSetMix/BackMix, GpiMove, GpiLine, GpiBox, GpiCharString/At, GpiErase, GpiFullArc, GpiCreatePS/DestroyPS, GpiCreateLogFont/DeleteSetId/SetCharSet/SetCharBox, GpiQueryFontMetrics (208-byte struct), GpiQueryFonts, GpiQueryTextBox (5-point box), GpiLoadFonts stubs, GpiSetLineType/Width stubs, and full `map_color` (CLR_* + palette + direct RGB) — all complete. See `src/loader/pm_gpi.rs`.
 
 ### PM Advanced Controls
-- [x] **`WinSubclassWindow`** — replace window procedure and chain to original (ordinal 895)
-- [x] **`WinCreateWindow`** — create any window/control from class atom or name; built-in WC_BUTTON, WC_STATIC, WC_SCROLLBAR, WC_ENTRYFIELD, WC_MLE, WC_LISTBOX render via `GUIMessage` (ordinal 709)
 - [ ] **`WC_CONTAINER`** — Icon / Name / Text / Detail / Tree view modes; record management; sorting and filtering
 - [ ] **`WC_NOTEBOOK`** — tabbed property sheet
 - [ ] **Drag and drop** — `DrgDrag`, `DrgAccessDraginfo`, `DM_DRAGOVER` / `DM_DROP`
