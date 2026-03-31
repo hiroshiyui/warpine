@@ -75,13 +75,14 @@ Convert Warpine's internal string representation to UTF-8, with codepage↔UTF-8
 
 **Path strings complete:** `read_guest_string` decodes all 57 input call sites through the active codepage automatically. Write-back paths (`DosQueryCurrentDir`, `write_filefindbuf3_multi`, `dos_enum_attribute` DENA1, `dos_query_path_info` FEA2LIST) call `cp_encode()` before writing to guest memory. `DosSetProcessCp`/`DosQueryCp` store/read the active codepage atomically. `codepage.rs` provides `cp_decode`/`cp_encode` with embedded CP437/850/852 tables and `encoding_rs` for Windows/DBCS codepages.
 
+**VIO output complete:** `VioManager::buffer` is now `Vec<(char, u8)>` — Unicode codepoints + attributes. `decode_vio_byte(b, cp) -> char` decodes CP bytes to Unicode at write time (fast-path for ASCII < 0x80; `cp_decode` for high bytes). `get_glyph_for_char(ch) -> [u8; 16]` in `text_renderer.rs` reverse-maps Unicode through the CP437 font table; chars not in CP437 return a blank glyph (pending Unifont integration). `VioReadCellStr` re-encodes stored chars back to active-codepage bytes via `cp_encode`. Fill cells in `VioScrollUp`/`VioScrollDn` and `VioWrtNCell` are also decoded through the active codepage.
+
 Remaining:
-- [ ] **VIO output** — `VioWrtTTY`, `VioWrtCharStrAtt`, etc.: decode CP bytes → Unicode codepoints at write time; `VioManager` screen buffer becomes `Vec<(char, u8)>` (codepoint + attribute)
-- [ ] **SDL2 text renderer** — replace static CP437 8×16 bitmap glyph table with GNU Unifont (see *GNU Unifont Integration* sections above); Phase A covers SBCS, Phase B covers DBCS 16×16 glyphs
+- [ ] **SDL2 text renderer** — replace static CP437 8×16 bitmap glyph table with GNU Unifont (see *GNU Unifont Integration* sections above); Phase A covers SBCS, Phase B covers DBCS 16×16 glyphs; chars not in CP437 currently render as blank — Unifont resolves this
 - [ ] **PM strings** — `WinSetWindowText`, window titles, menu items, clipboard text: decode at PM API entry
 - [ ] **UCONV.DLL** — implement `UniCreateUconvObject`, `UniUconvToUcs`, `UniUconvFromUcs` etc. using `encoding_rs`; unlocks OS/2 apps that do their own Unicode conversion
 
-Sequencing (remaining): VIO output → screen buffer/font → PM strings → UCONV.DLL.
+Sequencing (remaining): screen buffer/font (Unifont Phase A) → PM strings → UCONV.DLL.
 
 ### GNU Unifont Integration — SBCS (Phase A)
 
@@ -116,7 +117,7 @@ Replace the hand-crafted partial CP437 font with full 256-glyph tables generated
 DBCS (Double-Byte Character Set) support for CP932 (Shift-JIS / Japanese), CP936 (GBK / Simplified Chinese), CP949 (EUC-KR / Korean), CP950 (Big5 / Traditional Chinese). Depends on Phase A being complete.
 
 **OS/2 DBCS cell model** (important context):
-In OS/2 VIO text mode a DBCS character occupies two consecutive screen cells: cell N holds the lead byte + attribute, cell N+1 holds the trail byte + same attribute. `VioCheckCharType` distinguishes SBCS=0, DBCS-lead=2, DBCS-trail=3. `VioManager::buffer: Vec<(u8, u8)>` already stores raw lead/trail bytes naturally — no storage format change is needed.
+In OS/2 VIO text mode a DBCS character occupies two consecutive screen cells: cell N holds the lead byte + attribute, cell N+1 holds the trail byte + same attribute. `VioCheckCharType` distinguishes SBCS=0, DBCS-lead=2, DBCS-trail=3. `VioManager::buffer: Vec<(char, u8)>` now stores decoded Unicode codepoints — DBCS lead+trail pairs will be folded into a single `char` per logical character during the Phase B annotation pass.
 
 **B1 — Lead-byte range tables**
 - [ ] `dbcs_lead_ranges(cp: u32) -> &'static [(u8, u8)]` in `locale.rs`:
