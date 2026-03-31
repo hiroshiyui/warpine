@@ -64,10 +64,7 @@ Goal: raise the fraction of real OS/2 applications that run correctly.
 ### DLL Loader Chain
 **Baseline complete** — `DosLoadModule`/`DosQueryProcAddr`/`DosQueryModuleHandle` implemented; `jpos2dll.dll` loads at runtime. See [Developer Guide §20](developer_guide.md#appendix-development-phases).
 
-**DLL INITTERM complete** — `_DLL_InitTerm(hmod, flag)` called at load time via vCPU call-injection (`ApiResult::CallGuest`); `FrameKind::InitTerm` tracks the callback; `ERROR_INIT_ROUTINE_FAILED` returned on failure; `LoadedDll::initterm_addr` populated from `eip_object`/`eip` LX header fields.
-
-Remaining:
-- [ ] INITTERM unload-time call — `DosFreeModule` at ref_count=0 should inject `_DLL_InitTerm(hmod, 1)` before freeing pages
+**DLL INITTERM fully complete** — load-time (`flag=0`) and unload-time (`flag=1`) calls both implemented via vCPU call-injection. `FrameKind::InitTerm` handles load; `FrameKind::InitTermUnload` handles unload and frees guest pages after the call. `managers::decrement_refcount` returns `(object_bases, initterm_addr)` atomically; `dos_free_module` returns `ApiResult`. OS/2 ignores the unload return value — pages are freed unconditionally.
 
 ### DOSCALLS Long Tail
 - [ ] **Structured Exception Handling** — real per-thread handler chain; `DosRaiseException`; `DosUnwindException`
