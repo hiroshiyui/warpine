@@ -73,16 +73,15 @@ Goal: raise the fraction of real OS/2 applications that run correctly.
 ### Unicode-Internal Architecture (long-term goal)
 Convert Warpine's internal string representation to UTF-8, with codepage↔UTF-8 conversion at every guest/host API boundary. Modelled on Wine's ANSI→UTF-16 approach.
 
-**Foundation complete:** `DosSetProcessCp` now stores the active process codepage in `SharedState::active_codepage` (`AtomicU32`); `DosQueryCp` reads it atomically. `codepage.rs` provides `cp_decode`/`cp_encode` with embedded CP437/850/852 upper-half tables and `encoding_rs` for Windows/DBCS codepages. `read_guest_string` decodes all 57 call sites through the active codepage automatically.
+**Path strings complete:** `read_guest_string` decodes all 57 input call sites through the active codepage automatically. Write-back paths (`DosQueryCurrentDir`, `write_filefindbuf3_multi`, `dos_enum_attribute` DENA1, `dos_query_path_info` FEA2LIST) call `cp_encode()` before writing to guest memory. `DosSetProcessCp`/`DosQueryCp` store/read the active codepage atomically. `codepage.rs` provides `cp_decode`/`cp_encode` with embedded CP437/850/852 tables and `encoding_rs` for Windows/DBCS codepages.
 
 Remaining:
-- [ ] **Path strings (write-back complete, decode remaining)** — Result string encoding is done: `DosQueryCurrentDir`, `write_filefindbuf3_multi` (DosFindFirst/Next filenames), `dos_enum_attribute` (DENA1 EA names), and `dos_query_path_info` (FEA2LIST EA names) all call `cp_encode()` before writing to guest memory. Remaining: decode guest path bytes → UTF-8 before VFS lookup for `DosOpen`, `DosFindFirst/Next` spec argument, `DosDelete`, `DosMove`, etc.
 - [ ] **VIO output** — `VioWrtTTY`, `VioWrtCharStrAtt`, etc.: decode CP bytes → Unicode codepoints at write time; `VioManager` screen buffer becomes `Vec<(char, u8)>` (codepoint + attribute)
 - [ ] **SDL2 text renderer** — replace static CP437 8×16 bitmap glyph table with GNU Unifont (see *GNU Unifont Integration* sections above); Phase A covers SBCS, Phase B covers DBCS 16×16 glyphs
 - [ ] **PM strings** — `WinSetWindowText`, window titles, menu items, clipboard text: decode at PM API entry
 - [ ] **UCONV.DLL** — implement `UniCreateUconvObject`, `UniUconvToUcs`, `UniUconvFromUcs` etc. using `encoding_rs`; unlocks OS/2 apps that do their own Unicode conversion
 
-Sequencing (remaining): path strings → VIO output → screen buffer/font → PM strings → UCONV.DLL.
+Sequencing (remaining): VIO output → screen buffer/font → PM strings → UCONV.DLL.
 
 ### GNU Unifont Integration — SBCS (Phase A)
 
