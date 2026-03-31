@@ -142,7 +142,7 @@ impl super::Loader {
                     let mut console = self.shared.console_mgr.lock_or_recover();
                     console.stdin_pending_lf = true;
                     console.stdin_cooked_chars = 0; // reset for next line
-                    console.write_tty(b"\r\n", 0x07);
+                    console.write_tty(b"\r\n", 0x07, 437);
                     drop(console);
                     self.guest_write::<u8>(buf_ptr, 0x0D);
                 } else if ch == 0x08 {
@@ -152,7 +152,7 @@ impl super::Loader {
                     let mut console = self.shared.console_mgr.lock_or_recover();
                     if console.stdin_cooked_chars > 0 {
                         console.stdin_cooked_chars -= 1;
-                        console.write_tty(b"\x08 \x08", 0x07);
+                        console.write_tty(b"\x08 \x08", 0x07, 437);
                         drop(console);
                         self.guest_write::<u8>(buf_ptr, ch);
                     } else {
@@ -161,10 +161,11 @@ impl super::Loader {
                     }
                 } else {
                     // Printable or extended — echo and deliver.
+                    let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
                     let mut console = self.shared.console_mgr.lock_or_recover();
                     if ch >= 0x20 {
                         console.stdin_cooked_chars += 1;
-                        console.write_tty(&[ch], 0x07);
+                        console.write_tty(&[ch], 0x07, cp);
                     }
                     drop(console);
                     self.guest_write::<u8>(buf_ptr, ch);
@@ -225,8 +226,9 @@ impl super::Loader {
                 if self.shared.use_sdl2_text.load(Ordering::Relaxed) {
                     let written = data.len() as u32;
                     let data_copy = data.to_vec();
+                    let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
                     let mut console = self.shared.console_mgr.lock_or_recover();
-                    console.write_tty(&data_copy, 0x07);
+                    console.write_tty(&data_copy, 0x07, cp);
                     if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, written); }
                     return 0;
                 }

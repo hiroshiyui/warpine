@@ -446,8 +446,9 @@ impl super::Loader {
                     debug!("  16-bit VioWrtTTY(pszStr=0x{:08X}, cb={}, hvio={})", p_str, cb_str, hvio);
                     if let Some(data) = self.guest_slice_mut(p_str, cb_str as usize) {
                         let bytes = data.to_vec();
+                        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
                         let mut console = self.shared.console_mgr.lock_or_recover();
-                        console.write_tty(&bytes, 0x07); // default attribute: light-grey on black
+                        console.write_tty(&bytes, 0x07, cp); // default attribute: light-grey on black
                     }
                     0
                 }
@@ -564,8 +565,8 @@ mod tests {
 
         // The VioManager screen buffer should contain 'H', 'i', '!'
         let console = loader.shared.console_mgr.lock_or_recover();
-        assert_eq!(console.buffer[0].0, b'H', "buffer[0]='H'");
-        assert_eq!(console.buffer[1].0, b'i', "buffer[1]='i'");
-        assert_eq!(console.buffer[2].0, b'!', "buffer[2]='!'");
+        assert_eq!(console.buffer[0].0, 'H', "buffer[0]='H'");
+        assert_eq!(console.buffer[1].0, 'i', "buffer[1]='i'");
+        assert_eq!(console.buffer[2].0, '!', "buffer[2]='!'");
     }
 }

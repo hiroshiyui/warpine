@@ -40,8 +40,9 @@ const CGA_TO_ANSI_FG: [u8; 8] = [30, 34, 32, 36, 31, 35, 33, 37]; // black, blue
 const CGA_TO_ANSI_BG: [u8; 8] = [40, 44, 42, 46, 41, 45, 43, 47];
 
 pub struct VioManager {
-    /// Screen buffer: (character, attribute) pairs, row-major.
-    pub buffer: Vec<(u8, u8)>,
+    /// Screen buffer: (Unicode codepoint, attribute) pairs, row-major.
+    /// Characters are decoded from the guest's active codepage at write time.
+    pub buffer: Vec<(char, u8)>,
     pub rows: u16,
     pub cols: u16,
     pub cursor_row: u16,
@@ -78,7 +79,7 @@ impl VioManager {
         let (rows, cols) = Self::detect_terminal_size();
         let size = rows as usize * cols as usize;
         VioManager {
-            buffer: vec![(b' ', 0x07); size], // space with light gray on black
+            buffer: vec![(' ', 0x07); size], // space with light gray on black
             rows,
             cols,
             cursor_row: 0,
@@ -112,7 +113,7 @@ impl VioManager {
     pub fn resize(&mut self, new_rows: u16, new_cols: u16) {
         if self.rows == new_rows && self.cols == new_cols { return; }
         let new_size = new_rows as usize * new_cols as usize;
-        let mut new_buf: Vec<(u8, u8)> = vec![(b' ', 0x07); new_size];
+        let mut new_buf: Vec<(char, u8)> = vec![(' ', 0x07); new_size];
         // Copy the top-left region that fits in both old and new dimensions.
         let copy_rows = self.rows.min(new_rows) as usize;
         let copy_cols = self.cols.min(new_cols) as usize;
@@ -193,10 +194,17 @@ impl VioManager {
         }
     }
 
-    /// Write a CP437 byte to stdout as UTF-8.
-    fn write_cp437_char(stdout: &mut io::Stdout, ch: u8) {
+    /// Decode a single VIO byte to a Unicode char via the active codepage.
+    pub(crate) fn decode_vio_byte(b: u8, cp: u32) -> char {
+        if b < 0x80 { return b as char; }
+        let s = super::codepage::cp_decode(&[b], cp);
+        s.chars().next().unwrap_or(b as char)
+    }
+
+    /// Write a Unicode char to stdout as UTF-8.
+    fn write_char(stdout: &mut io::Stdout, ch: char) {
         let mut buf = [0u8; 4];
-        let s = cp437_to_char(ch).encode_utf8(&mut buf);
+        let s = ch.encode_utf8(&mut buf);
         let _ = stdout.write_all(s.as_bytes());
     }
 
@@ -205,7 +213,8 @@ impl VioManager {
     /// Updates the screen buffer.  In terminal (non-SDL2) mode, also emits
     /// ANSI colour escapes so coloured text from `VioWrtTTY` is rendered with
     /// the correct CGA attribute.
-    pub fn write_tty(&mut self, text: &[u8], attr: u8) {
+    /// `cp` is the active OS/2 codepage used to decode non-ASCII bytes.
+    pub fn write_tty(&mut self, text: &[u8], attr: u8, cp: u32) {
         let sdl2 = self.sdl2_mode;
         let mut stdout = io::stdout();
         // Lazily emit the ANSI colour attribute on the first printable byte so
@@ -217,7 +226,7 @@ impl VioManager {
                 self.cursor_row += 1;
                 self.cursor_col = 0;
                 if self.cursor_row >= self.rows {
-                    self.scroll_up(0, self.rows - 1, 1, (b' ', 0x07));
+                    self.scroll_up(0, self.rows - 1, 1, (' ', 0x07));
                     self.cursor_row = self.rows - 1;
                 }
                 if !sdl2 {
@@ -240,10 +249,11 @@ impl VioManager {
                 // Bell
                 if !sdl2 { let _ = stdout.write_all(b"\x07"); }
             } else {
+                let decoded = Self::decode_vio_byte(ch, cp);
                 if self.cursor_row < self.rows && self.cursor_col < self.cols {
                     let idx = self.cursor_row as usize * self.cols as usize + self.cursor_col as usize;
                     if idx < self.buffer.len() {
-                        self.buffer[idx] = (ch, attr);
+                        self.buffer[idx] = (decoded, attr);
                     }
                 }
                 self.cursor_col += 1;
@@ -251,7 +261,7 @@ impl VioManager {
                     self.cursor_col = 0;
                     self.cursor_row += 1;
                     if self.cursor_row >= self.rows {
-                        self.scroll_up(0, self.rows - 1, 1, (b' ', 0x07));
+                        self.scroll_up(0, self.rows - 1, 1, (' ', 0x07));
                         self.cursor_row = self.rows - 1;
                     }
                 }
@@ -260,7 +270,7 @@ impl VioManager {
                         self.write_ansi_attr(&mut stdout, attr);
                         attr_applied = true;
                     }
-                    Self::write_cp437_char(&mut stdout, ch);
+                    Self::write_char(&mut stdout, decoded);
                 }
             }
         }
@@ -271,7 +281,8 @@ impl VioManager {
     }
 
     /// Write an attributed string at a specific position.
-    pub fn write_char_str_att(&mut self, row: u16, col: u16, text: &[u8], attr: u8) {
+    /// `cp` is the active OS/2 codepage used to decode non-ASCII bytes.
+    pub fn write_char_str_att(&mut self, row: u16, col: u16, text: &[u8], attr: u8, cp: u32) {
         let sdl2 = self.sdl2_mode;
         let mut stdout = io::stdout();
         if !sdl2 {
@@ -281,11 +292,12 @@ impl VioManager {
         let mut c = col;
         for &ch in text {
             if c >= self.cols { break; }
+            let decoded = Self::decode_vio_byte(ch, cp);
             let idx = row as usize * self.cols as usize + c as usize;
             if idx < self.buffer.len() {
-                self.buffer[idx] = (ch, attr);
+                self.buffer[idx] = (decoded, attr);
             }
-            if !sdl2 { Self::write_cp437_char(&mut stdout, ch); }
+            if !sdl2 { Self::write_char(&mut stdout, decoded); }
             c += 1;
         }
         if !sdl2 {
@@ -296,7 +308,8 @@ impl VioManager {
     }
 
     /// Fill N cells starting at (row, col) with a character+attribute pair.
-    pub fn write_n_cell(&mut self, row: u16, col: u16, cell: (u8, u8), count: u16) {
+    /// `cell.0` is already a decoded Unicode char (caller decodes via active codepage).
+    pub fn write_n_cell(&mut self, row: u16, col: u16, cell: (char, u8), count: u16) {
         let sdl2 = self.sdl2_mode;
         let mut stdout = io::stdout();
         if !sdl2 {
@@ -310,7 +323,7 @@ impl VioManager {
             if idx < self.buffer.len() {
                 self.buffer[idx] = cell;
             }
-            if !sdl2 { Self::write_cp437_char(&mut stdout, cell.0); }
+            if !sdl2 { Self::write_char(&mut stdout, cell.0); }
             c += 1;
         }
         if !sdl2 {
@@ -335,7 +348,7 @@ impl VioManager {
             if idx < self.buffer.len() {
                 let ch = self.buffer[idx].0;
                 self.buffer[idx].1 = attr;
-                if !sdl2 { Self::write_cp437_char(&mut stdout, ch); }
+                if !sdl2 { Self::write_char(&mut stdout, ch); }
             }
             c += 1;
         }
@@ -347,7 +360,8 @@ impl VioManager {
     }
 
     /// Read cell string from the screen buffer.
-    pub fn read_cell_str(&self, row: u16, col: u16, max_len: u16) -> Vec<(u8, u8)> {
+    /// Returns decoded Unicode chars; callers must re-encode to the active codepage for guest writes.
+    pub fn read_cell_str(&self, row: u16, col: u16, max_len: u16) -> Vec<(char, u8)> {
         let mut result = Vec::new();
         let mut c = col;
         for _ in 0..max_len / 2 {
@@ -365,7 +379,7 @@ impl VioManager {
     ///
     /// OS/2 special case: `lines == 0` means "clear the entire region" (fill all
     /// rows from `top` to `bottom` with `fill_cell` without scrolling).
-    pub fn scroll_up(&mut self, top: u16, bottom: u16, lines: u16, fill_cell: (u8, u8)) {
+    pub fn scroll_up(&mut self, top: u16, bottom: u16, lines: u16, fill_cell: (char, u8)) {
         if top > bottom || bottom >= self.rows { return; }
         if lines == 0 {
             // Clear entire region
@@ -433,7 +447,7 @@ impl VioManager {
     /// Scroll a region down by `lines` rows, filling the top with `fill_cell`.
     ///
     /// OS/2 special case: `lines == 0` means "clear the entire region".
-    pub fn scroll_down(&mut self, top: u16, bottom: u16, lines: u16, fill_cell: (u8, u8)) {
+    pub fn scroll_down(&mut self, top: u16, bottom: u16, lines: u16, fill_cell: (char, u8)) {
         if top > bottom || bottom >= self.rows { return; }
         if lines == 0 {
             let cols = self.cols as usize;
@@ -628,6 +642,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_decode_vio_byte_ascii() {
+        assert_eq!(VioManager::decode_vio_byte(b'A', 437), 'A');
+        assert_eq!(VioManager::decode_vio_byte(b' ', 850), ' ');
+        assert_eq!(VioManager::decode_vio_byte(b'\n', 437), '\n');
+    }
+
+    #[test]
+    fn test_decode_vio_byte_cp437_high() {
+        // CP437 0x9C = '£' (pound sign)
+        assert_eq!(VioManager::decode_vio_byte(0x9C, 437), '£');
+    }
+
+    #[test]
+    fn test_decode_vio_byte_cp850_high() {
+        // CP850 0xD0 = 'ð' (eth) — differs from CP437 0xD0 = '╨'
+        let ch = VioManager::decode_vio_byte(0xD0, 850);
+        assert_eq!(ch, 'ð', "CP850 0xD0 should decode to eth (ð), not CP437 box-drawing");
+    }
+
+    #[test]
     fn test_vio_manager_defaults() {
         let mgr = VioManager::new();
         assert!(mgr.rows >= 24);
@@ -645,7 +679,7 @@ mod tests {
         let mgr = VioManager::new();
         // All cells should be space with attribute 0x07
         for &(ch, attr) in &mgr.buffer {
-            assert_eq!(ch, b' ');
+            assert_eq!(ch, ' ');
             assert_eq!(attr, 0x07);
         }
     }
@@ -655,15 +689,15 @@ mod tests {
         let mut mgr = VioManager::new();
         // Manually set row 1 content
         let cols = mgr.cols as usize;
-        mgr.buffer[cols] = (b'A', 0x07); // row 1, col 0
+        mgr.buffer[cols] = ('A', 0x07); // row 1, col 0
 
-        mgr.scroll_up(0, mgr.rows - 1, 1, (b' ', 0x07));
+        mgr.scroll_up(0, mgr.rows - 1, 1, (' ', 0x07));
 
         // Row 0 should now have what was in row 1
-        assert_eq!(mgr.buffer[0], (b'A', 0x07));
+        assert_eq!(mgr.buffer[0], ('A', 0x07));
         // Last row should be blank
         let last_row_start = (mgr.rows - 1) as usize * cols;
-        assert_eq!(mgr.buffer[last_row_start], (b' ', 0x07));
+        assert_eq!(mgr.buffer[last_row_start], (' ', 0x07));
     }
 
     #[test]
@@ -671,12 +705,12 @@ mod tests {
         let mut mgr = VioManager::new();
         let cols = mgr.cols as usize;
         // Seed row 0 with non-blank content
-        for c in 0..cols { mgr.buffer[c] = (b'X', 0x07); }
+        for c in 0..cols { mgr.buffer[c] = ('X', 0x07); }
         // VioScrollUp with lines=0 must clear the whole region
-        mgr.scroll_up(0, 0, 0, (b' ', 0x1F));
+        mgr.scroll_up(0, 0, 0, (' ', 0x1F));
         // All cells in row 0 should be filled with the fill cell
         for c in 0..cols {
-            assert_eq!(mgr.buffer[c], (b' ', 0x1F), "cell {} not cleared", c);
+            assert_eq!(mgr.buffer[c], (' ', 0x1F), "cell {} not cleared", c);
         }
     }
 
@@ -684,24 +718,24 @@ mod tests {
     fn test_scroll_down_buffer() {
         let mut mgr = VioManager::new();
         let cols = mgr.cols as usize;
-        mgr.buffer[0] = (b'B', 0x07); // row 0, col 0
+        mgr.buffer[0] = ('B', 0x07); // row 0, col 0
 
-        mgr.scroll_down(0, mgr.rows - 1, 1, (b' ', 0x07));
+        mgr.scroll_down(0, mgr.rows - 1, 1, (' ', 0x07));
 
         // Row 1 should now have what was in row 0
-        assert_eq!(mgr.buffer[cols], (b'B', 0x07));
+        assert_eq!(mgr.buffer[cols], ('B', 0x07));
         // Row 0 should be blank
-        assert_eq!(mgr.buffer[0], (b' ', 0x07));
+        assert_eq!(mgr.buffer[0], (' ', 0x07));
     }
 
     #[test]
     fn test_scroll_down_lines_zero_clears_region() {
         let mut mgr = VioManager::new();
         let cols = mgr.cols as usize;
-        for c in 0..cols { mgr.buffer[c] = (b'Y', 0x07); }
-        mgr.scroll_down(0, 0, 0, (b'-', 0x4E));
+        for c in 0..cols { mgr.buffer[c] = ('Y', 0x07); }
+        mgr.scroll_down(0, 0, 0, ('-', 0x4E));
         for c in 0..cols {
-            assert_eq!(mgr.buffer[c], (b'-', 0x4E), "cell {} not cleared", c);
+            assert_eq!(mgr.buffer[c], ('-', 0x4E), "cell {} not cleared", c);
         }
     }
 
@@ -709,13 +743,13 @@ mod tests {
     fn test_read_cell_str() {
         let mut mgr = VioManager::new();
         let cols = mgr.cols as usize;
-        mgr.buffer[cols + 5] = (b'X', 0x1F); // row 1, col 5
-        mgr.buffer[cols + 6] = (b'Y', 0x2A); // row 1, col 6
+        mgr.buffer[cols + 5] = ('X', 0x1F); // row 1, col 5
+        mgr.buffer[cols + 6] = ('Y', 0x2A); // row 1, col 6
 
         let cells = mgr.read_cell_str(1, 5, 4); // 4 bytes = 2 cells
         assert_eq!(cells.len(), 2);
-        assert_eq!(cells[0], (b'X', 0x1F));
-        assert_eq!(cells[1], (b'Y', 0x2A));
+        assert_eq!(cells[0], ('X', 0x1F));
+        assert_eq!(cells[1], ('Y', 0x2A));
     }
 
     #[test]
@@ -750,18 +784,18 @@ mod tests {
         assert_eq!(mgr.cols, 132);
         assert_eq!(mgr.buffer.len(), 50 * 132);
         // New cells default to space with attribute 0x07
-        assert_eq!(mgr.buffer[0], (b' ', 0x07));
+        assert_eq!(mgr.buffer[0], (' ', 0x07));
     }
 
     #[test]
     fn test_resize_shrinks_and_preserves_content() {
         let mut mgr = VioManager::new();
         // Seed row 0, col 0 with 'X', attr 0x4F
-        mgr.buffer[0] = (b'X', 0x4F);
+        mgr.buffer[0] = ('X', 0x4F);
         mgr.resize(10, 40);
         assert_eq!(mgr.rows, 10);
         assert_eq!(mgr.cols, 40);
-        assert_eq!(mgr.buffer[0], (b'X', 0x4F), "top-left cell preserved");
+        assert_eq!(mgr.buffer[0], ('X', 0x4F), "top-left cell preserved");
     }
 
     #[test]

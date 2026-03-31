@@ -181,14 +181,15 @@ impl super::Loader {
                         count -= 1;
                         // Echo backspace
                         let mut console = self.shared.console_mgr.lock_or_recover();
-                        console.write_tty(b"\x08 \x08", 0x07);
+                        console.write_tty(b"\x08 \x08", 0x07, 437);
                     }
                 } else if b >= 0x20 {
                     self.guest_write::<u8>(p_buf + count, b);
                     count += 1;
                     // Echo character
+                    let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
                     let mut console = self.shared.console_mgr.lock_or_recover();
-                    console.write_tty(&[b], 0x07);
+                    console.write_tty(&[b], 0x07, cp);
                 }
             } else if wait == 1 {
                 break; // NOWAIT

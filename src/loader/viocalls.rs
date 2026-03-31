@@ -65,8 +65,9 @@ impl super::Loader {
         debug!("  VioWrtTTY(psz=0x{:08X}, cb={})", psz, cb);
         if cb == 0 || psz == 0 { return NO_ERROR; }
         let data: Vec<u8> = (0..cb).filter_map(|i| self.guest_read::<u8>(psz + i)).collect();
+        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
         let mut console = self.shared.console_mgr.lock_or_recover();
-        console.write_tty(&data, 0x07); // default attribute
+        console.write_tty(&data, 0x07, cp);
         NO_ERROR
     }
 
@@ -155,11 +156,12 @@ impl super::Loader {
     fn vio_scroll_up(&self, top: u32, left: u32, bottom: u32, right: u32, lines: u32, p_cell: u32, _hvio: u32) -> u32 {
         debug!("  VioScrollUp(top={}, left={}, bottom={}, right={}, lines={}, p_cell=0x{:08X})", top, left, bottom, right, lines, p_cell);
         let fill_cell = if p_cell != 0 {
-            let ch   = self.guest_read::<u8>(p_cell).unwrap_or(b' ');
-            let attr = self.guest_read::<u8>(p_cell + 1).unwrap_or(0x07);
-            (ch, attr)
+            let ch_byte = self.guest_read::<u8>(p_cell).unwrap_or(b' ');
+            let attr    = self.guest_read::<u8>(p_cell + 1).unwrap_or(0x07);
+            let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+            (super::console::VioManager::decode_vio_byte(ch_byte, cp), attr)
         } else {
-            (b' ', 0x07)
+            (' ', 0x07)
         };
         let mut console = self.shared.console_mgr.lock_or_recover();
         console.scroll_up(top as u16, bottom as u16, lines as u16, fill_cell);
@@ -172,11 +174,12 @@ impl super::Loader {
     fn vio_scroll_dn(&self, top: u32, _left: u32, bottom: u32, _right: u32, lines: u32, p_cell: u32, _hvio: u32) -> u32 {
         debug!("  VioScrollDn(top={}, bottom={}, lines={}, p_cell=0x{:08X})", top, bottom, lines, p_cell);
         let fill_cell = if p_cell != 0 {
-            let ch   = self.guest_read::<u8>(p_cell).unwrap_or(b' ');
-            let attr = self.guest_read::<u8>(p_cell + 1).unwrap_or(0x07);
-            (ch, attr)
+            let ch_byte = self.guest_read::<u8>(p_cell).unwrap_or(b' ');
+            let attr    = self.guest_read::<u8>(p_cell + 1).unwrap_or(0x07);
+            let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+            (super::console::VioManager::decode_vio_byte(ch_byte, cp), attr)
         } else {
-            (b' ', 0x07)
+            (' ', 0x07)
         };
         let mut console = self.shared.console_mgr.lock_or_recover();
         console.scroll_down(top as u16, bottom as u16, lines as u16, fill_cell);
@@ -188,16 +191,19 @@ impl super::Loader {
         debug!("  VioWrtCharStrAtt(cb={}, row={}, col={})", cb, row, col);
         let attr = if p_attr != 0 { self.guest_read::<u8>(p_attr).unwrap_or(0x07) } else { 0x07 };
         let data: Vec<u8> = (0..cb).filter_map(|i| self.guest_read::<u8>(psz + i)).collect();
+        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
         let mut console = self.shared.console_mgr.lock_or_recover();
-        console.write_char_str_att(row as u16, col as u16, &data, attr);
+        console.write_char_str_att(row as u16, col as u16, &data, attr, cp);
         NO_ERROR
     }
 
     /// VioWrtNCell (ordinal 28): write a cell (char+attr) N times.
     fn vio_wrt_n_cell(&self, p_cell: u32, count: u32, row: u32, col: u32, _hvio: u32) -> u32 {
         debug!("  VioWrtNCell(count={}, row={}, col={})", count, row, col);
-        let ch = self.guest_read::<u8>(p_cell).unwrap_or(b' ');
+        let ch_byte = self.guest_read::<u8>(p_cell).unwrap_or(b' ');
         let attr = self.guest_read::<u8>(p_cell + 1).unwrap_or(0x07);
+        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let ch = super::console::VioManager::decode_vio_byte(ch_byte, cp);
         let mut console = self.shared.console_mgr.lock_or_recover();
         console.write_n_cell(row as u16, col as u16, (ch, attr), count as u16);
         NO_ERROR
@@ -216,12 +222,20 @@ impl super::Loader {
     fn vio_read_cell_str(&self, p_buf: u32, pcb: u32, row: u32, col: u32, _hvio: u32) -> u32 {
         debug!("  VioReadCellStr(row={}, col={})", row, col);
         let max_len = self.guest_read::<u16>(pcb).unwrap_or(0);
+        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
         let console = self.shared.console_mgr.lock_or_recover();
         let cells = console.read_cell_str(row as u16, col as u16, max_len);
         let mut offset = 0u32;
         for (ch, attr) in &cells {
             if offset + 2 > max_len as u32 { break; }
-            self.guest_write::<u8>(p_buf + offset, *ch);
+            // Re-encode the stored Unicode char back to the active codepage byte.
+            let byte = if ch.is_ascii() {
+                *ch as u8
+            } else {
+                let s: String = std::iter::once(*ch).collect();
+                *super::codepage::cp_encode(&s, cp).first().unwrap_or(&b'?')
+            };
+            self.guest_write::<u8>(p_buf + offset, byte);
             self.guest_write::<u8>(p_buf + offset + 1, *attr);
             offset += 2;
         }
@@ -444,7 +458,7 @@ mod tests {
             let mut con = loader.shared.console_mgr.lock_or_recover();
             con.enable_sdl2_mode(); // fix to 80x25
             let cols = con.cols as usize;
-            con.buffer[cols] = (b'Z', 0x07); // row 1, col 0
+            con.buffer[cols] = ('Z', 0x07); // row 1, col 0
         }
 
         // VioScrollUp(ulr=0, ulc=0, lrr=24, lrc=79, n=1, pCell=p_cell, hvio=0)
@@ -455,10 +469,10 @@ mod tests {
 
         let con = loader.shared.console_mgr.lock_or_recover();
         // Row 0 should now contain what was in row 1
-        assert_eq!(con.buffer[0], (b'Z', 0x07), "row 0 should have row-1 content after scroll-up");
+        assert_eq!(con.buffer[0], ('Z', 0x07), "row 0 should have row-1 content after scroll-up");
         // Last row should be filled with the custom fill cell
         let last_row_start = 24 * con.cols as usize;
-        assert_eq!(con.buffer[last_row_start], (b'.', 0x4F), "bottom row should be filled with pCell value");
+        assert_eq!(con.buffer[last_row_start], ('.', 0x4F), "bottom row should be filled with pCell value");
     }
 
     /// VioScrollDn with pCell: fill row at top with the custom cell.
@@ -476,7 +490,7 @@ mod tests {
         {
             let mut con = loader.shared.console_mgr.lock_or_recover();
             con.enable_sdl2_mode();
-            con.buffer[0] = (b'Q', 0x07); // row 0, col 0
+            con.buffer[0] = ('Q', 0x07); // row 0, col 0
         }
 
         // VioScrollDn: row 0 → row 1, top row filled with '*'/0x1A
@@ -486,8 +500,8 @@ mod tests {
 
         let con = loader.shared.console_mgr.lock_or_recover();
         let cols = con.cols as usize;
-        assert_eq!(con.buffer[cols], (b'Q', 0x07), "row 1 should have row-0 content after scroll-dn");
-        assert_eq!(con.buffer[0], (b'*', 0x1A), "top row should be filled with pCell value");
+        assert_eq!(con.buffer[cols], ('Q', 0x07), "row 1 should have row-0 content after scroll-dn");
+        assert_eq!(con.buffer[0], ('*', 0x1A), "top row should be filled with pCell value");
     }
 
     #[test]

@@ -9,6 +9,7 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use crate::loader::{SharedState, KbdKeyInfo, MutexExt};
+use crate::loader::console::cp437_to_char;
 
 // ── CGA 16-colour palette (ARGB8888 = 0xFF_RR_GG_BB) ───────────────────────
 
@@ -231,6 +232,24 @@ pub fn get_cp437_glyph(ch: u8) -> [u8; 16] {
     }
 }
 
+/// Look up the 8×16 glyph for a Unicode char by reverse-mapping through the CP437 table.
+///
+/// For ASCII (U+0020–U+007E), delegates directly to `get_cp437_glyph`.  For non-ASCII
+/// chars, searches the CP437 upper-half table for a matching codepoint and returns its
+/// glyph.  Characters that are not in CP437 return a blank glyph (until GNU Unifont
+/// integration in a future phase provides full Unicode coverage).
+pub fn get_glyph_for_char(ch: char) -> [u8; 16] {
+    if ch.is_ascii() {
+        return get_cp437_glyph(ch as u8);
+    }
+    for byte in 0x80u8..=0xFF {
+        if cp437_to_char(byte) == ch {
+            return get_cp437_glyph(byte);
+        }
+    }
+    [0u8; 16] // character not in CP437 font — blank until Unifont integration
+}
+
 // ── VgaTextBuffer snapshot ───────────────────────────────────────────────────
 
 /// Snapshot of the VioManager state for a single rendered frame.
@@ -238,7 +257,7 @@ pub struct VgaTextBuffer {
     pub rows: u16,
     pub cols: u16,
     /// (char, attr) pairs, row-major.  attr: bits 3:0 = fg (with bright), 7:4 = bg.
-    pub cells: Vec<(u8, u8)>,
+    pub cells: Vec<(char, u8)>,
     pub cursor_row: u16,
     pub cursor_col: u16,
     pub cursor_visible: bool,
@@ -426,12 +445,12 @@ impl TextModeRenderer for Sdl2TextRenderer {
         for row in 0..rows {
             for col in 0..cols {
                 let idx = row * cols + col;
-                let (ch, attr) = if idx < buf.cells.len() { buf.cells[idx] } else { (b' ', 0x07) };
+                let (ch, attr) = if idx < buf.cells.len() { buf.cells[idx] } else { (' ', 0x07) };
 
                 let fg = CGA_PALETTE[(attr & 0x0F) as usize];
                 let bg = CGA_PALETTE[((attr >> 4) & 0x0F) as usize];
 
-                let glyph = get_cp437_glyph(ch);
+                let glyph = get_glyph_for_char(ch);
                 let base_x = col * 8;
                 let base_y = row * 16;
 
@@ -667,7 +686,31 @@ mod tests {
         Loader::new_mock().shared
     }
 
-    // ── CP437 font ────────────────────────────────────────────────────────────
+    // ── CP437 font + Unicode glyph lookup ─────────────────────────────────────
+
+    #[test]
+    fn glyph_for_char_ascii_matches_cp437_glyph() {
+        assert_eq!(get_glyph_for_char('A'), get_cp437_glyph(b'A'));
+        assert_eq!(get_glyph_for_char(' '), get_cp437_glyph(b' '));
+    }
+
+    #[test]
+    fn glyph_for_char_cp437_box_drawing() {
+        // '│' is CP437 0xB3 — should resolve via reverse lookup
+        assert_eq!(get_glyph_for_char('│'), get_cp437_glyph(0xB3));
+    }
+
+    #[test]
+    fn glyph_for_char_cp437_block_element() {
+        // '█' is CP437 0xDB
+        assert_eq!(get_glyph_for_char('█'), get_cp437_glyph(0xDB));
+    }
+
+    #[test]
+    fn glyph_for_char_not_in_cp437_is_blank() {
+        // U+00D0 (Ð, eth) is not in CP437; should return blank
+        assert_eq!(get_glyph_for_char('Ð'), [0u8; 16]);
+    }
 
     #[test]
     fn ascii_glyph_has_pixels() {

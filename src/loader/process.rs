@@ -399,8 +399,9 @@ fn relay_pipe_to_vio<R: Read>(mut pipe: R, shared: Arc<super::SharedState>) {
         match pipe.read(&mut buf) {
             Ok(0) | Err(_) => break,
             Ok(n) => {
+                let cp = shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
                 let mut console = shared.console_mgr.lock_or_recover();
-                console.write_tty(&buf[..n], 0x07);
+                console.write_tty(&buf[..n], 0x07, cp);
             }
         }
     }
