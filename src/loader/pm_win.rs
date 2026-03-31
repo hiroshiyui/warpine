@@ -9,6 +9,32 @@ use super::vm_backend::VcpuBackend;
 use log::{debug, info, warn};
 
 use super::constants::*;
+
+// ── Built-in class atom → canonical class name ────────────────────────────────
+
+/// Resolve a WinCreateWindow `pszClass` argument.
+///
+/// If `ptr < 0x10000` the value is a numeric atom (WC_BUTTON = 3, etc.).
+/// Otherwise `string` contains the already-read class name string.
+fn resolve_class_atom(ptr: u32, string: String) -> String {
+    match ptr {
+        WC_FRAME_ATOM      => "WC_FRAME".to_string(),
+        WC_COMBOBOX_ATOM   => "WC_COMBOBOX".to_string(),
+        WC_BUTTON_ATOM     => "WC_BUTTON".to_string(),
+        WC_MENU_ATOM       => "WC_MENU".to_string(),
+        WC_STATIC_ATOM     => "WC_STATIC".to_string(),
+        WC_ENTRYFIELD_ATOM => "WC_ENTRYFIELD".to_string(),
+        WC_LISTBOX_ATOM    => "WC_LISTBOX".to_string(),
+        WC_SCROLLBAR_ATOM  => "WC_SCROLLBAR".to_string(),
+        WC_TITLEBAR_ATOM   => "WC_TITLEBAR".to_string(),
+        WC_MLE_ATOM        => "WC_MLE".to_string(),
+        WC_SPINBUTTON_ATOM => "WC_SPINBUTTON".to_string(),
+        WC_CONTAINER_ATOM  => "WC_CONTAINER".to_string(),
+        WC_NOTEBOOK_ATOM   => "WC_NOTEBOOK".to_string(),
+        n if n < 0x10000   => format!("WC_ATOM_{}", n),
+        _                  => string,
+    }
+}
 use super::mutex_ext::MutexExt;
 use super::pm_types::OS2Message;
 use super::ApiResult;
@@ -169,15 +195,10 @@ impl super::Loader {
 
                 if pfn_wp != 0 {
                     debug!("  [VCPU {}] Callback: msg={} to pfn_wp 0x{:08X}", vcpu_id, msg, pfn_wp);
-                    return ApiResult::Callback {
-                        wnd_proc: pfn_wp,
-                        hwnd,
-                        msg,
-                        mp1,
-                        mp2,
-                    };
+                    return ApiResult::Callback { wnd_proc: pfn_wp, hwnd, msg, mp1, mp2 };
                 }
-                ApiResult::Normal(0)
+                // pfn_wp == 0: route to built-in control handler (WC_BUTTON, WC_STATIC, …)
+                self.dispatch_builtin_control(hwnd, msg, mp1, mp2)
             }
             919 => {
                 // WinPostMsg
@@ -891,6 +912,76 @@ impl super::Loader {
                 let wm = self.shared.window_mgr.lock_or_recover();
                 let result = wm.find_child_by_id(hwnd_parent, id).unwrap_or(0);
                 ApiResult::Normal(result)
+            }
+            709 => {
+                // WinCreateWindow(hwndParent, pszClass, pszName, flStyle,
+                //                 x, y, cx, cy, hwndOwner, hwndInsertBehind,
+                //                 id, pCtlData, pPresParams)
+                let hwnd_parent     = read_stack(4);
+                let psz_class       = read_stack(8);
+                let psz_name        = read_stack(12);
+                let fl_style        = read_stack(16);
+                let x               = read_stack(20) as i32;
+                let y               = read_stack(24) as i32;
+                let cx              = read_stack(28) as i32;
+                let cy              = read_stack(32) as i32;
+                // hwndOwner (+36), hwndInsertBehind (+40) — ignored for now
+                let id              = read_stack(44);
+                // pCtlData (+48), pPresParams (+52) — ignored
+
+                let class_name = if psz_class < 0x10000 {
+                    resolve_class_atom(psz_class, String::new())
+                } else {
+                    resolve_class_atom(psz_class, self.read_guest_string(psz_class))
+                };
+                let text = if psz_name != 0 { self.read_guest_string(psz_name) } else { String::new() };
+                debug!("  [VCPU {}] WinCreateWindow class='{}' text='{}' parent={} ({},{}) {}x{} id={} style=0x{:08X}",
+                       vcpu_id, class_name, text, hwnd_parent, x, y, cx, cy, id, fl_style);
+
+                let hwnd = {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
+                    let h = wm.create_window(class_name.clone(), hwnd_parent, hmq);
+                    if let Some(win) = wm.get_window_mut(h) {
+                        win.text = text;
+                        win.x = x; win.y = y;
+                        win.cx = cx; win.cy = cy;
+                        win.id = id;
+                        win.style = fl_style;
+                        win.visible = fl_style & WS_VISIBLE != 0;
+                    }
+                    h
+                };
+
+                // Post WM_PAINT so the control draws itself on creation.
+                if fl_style & WS_VISIBLE != 0 {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
+                    if let Some(mq_arc) = wm.get_mq(hmq) {
+                        let mut mq = mq_arc.lock_or_recover();
+                        mq.messages.push_back(OS2Message {
+                            hwnd, msg: WM_PAINT, mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
+                        });
+                        mq.cond.notify_one();
+                    }
+                }
+                ApiResult::Normal(hwnd)
+            }
+            895 => {
+                // WinSubclassWindow(HWND hwnd, PFNWP pfnwp) → PFNWP (old proc)
+                //
+                // Replace hwnd's window procedure with pfnwp and return the
+                // previous one.  The caller is responsible for chaining.
+                let hwnd   = read_stack(4);
+                let pfn_wp = read_stack(8);
+                debug!("  [VCPU {}] WinSubclassWindow hwnd={} pfn_wp=0x{:08X}", vcpu_id, hwnd, pfn_wp);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                if let Some(win) = wm.get_window_mut(hwnd) {
+                    let old = win.pfn_wp;
+                    win.pfn_wp = pfn_wp;
+                    return ApiResult::Normal(old);
+                }
+                ApiResult::Normal(0)
             }
             _ => {
                 warn!("Warning: Unknown PMWIN Ordinal {} on VCPU {}", ordinal, vcpu_id);

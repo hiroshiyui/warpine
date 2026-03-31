@@ -48,6 +48,8 @@ pub struct OS2Window {
     pub cx: i32,
     pub cy: i32,
     pub visible: bool,
+    /// Raw flStyle value from WinCreateWindow / WinCreateStdWindow.
+    pub style: u32,
 }
 
 pub struct PresentationSpace {
@@ -131,6 +133,7 @@ impl WindowManager {
             children: Vec::new(),
             x: 0, y: 0, cx: 0, cy: 0,
             visible: false,
+            style: 0,
         });
         // Register as child of parent
         if parent != 0
@@ -219,6 +222,46 @@ impl WindowManager {
             }
         }
         None
+    }
+
+    /// Walk up the parent chain to find the top-level frame window for `hwnd`.
+    ///
+    /// Stops when the parent is in `frame_to_client` (i.e. it is a frame) or
+    /// when there is no parent.  Returns the frame hwnd, or `hwnd` itself if
+    /// no frame ancestor is found.
+    pub fn find_frame_for_hwnd(&self, hwnd: u32) -> u32 {
+        let mut h = hwnd;
+        loop {
+            let parent = match self.windows.get(&h) { Some(w) => w.parent, None => return h };
+            if parent == 0 { return h; }
+            if self.frame_to_client.contains_key(&parent) { return parent; }
+            h = parent;
+        }
+    }
+
+    /// Compute the absolute OS/2-space rectangle of `hwnd` relative to the
+    /// root frame's client area.
+    ///
+    /// OS/2 PM uses a bottom-left origin, so `(x, y)` is the bottom-left corner
+    /// of `hwnd` in frame-client coordinates.  The caller can pass these
+    /// directly as `(x1=x, y1=y, x2=x+cx, y2=y+cy)` to `GUIMessage::DrawBox`.
+    ///
+    /// Returns `(x, y, cx, cy)`.
+    pub fn get_abs_rect_in_frame(&self, hwnd: u32) -> (i32, i32, i32, i32) {
+        let (cx, cy) = self.windows.get(&hwnd)
+            .map(|w| (w.cx, w.cy)).unwrap_or((0, 0));
+        let mut ax = 0i32;
+        let mut ay = 0i32;
+        let mut h = hwnd;
+        while let Some(win) = self.windows.get(&h) {
+            ax += win.x;
+            ay += win.y;
+            let parent = win.parent;
+            if parent == 0 { break; }
+            if self.frame_to_client.contains_key(&parent) { break; }
+            h = parent;
+        }
+        (ax, ay, cx, cy)
     }
 
     pub fn find_child_by_id(&self, parent: u32, id: u32) -> Option<u32> {

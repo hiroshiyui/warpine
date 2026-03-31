@@ -287,6 +287,128 @@ impl Loader {
         Loader { vm, shared }
     }
 
+    /// Handle a message dispatched to a window whose `pfn_wp == 0`.
+    ///
+    /// Called from `WinDispatchMsg` when the window has no user-registered
+    /// window procedure.  Covers the built-in WC_* controls that OS/2 PM
+    /// provides without requiring the app to register a class.
+    pub(crate) fn dispatch_builtin_control(
+        &self,
+        hwnd: u32,
+        msg: u32,
+        _mp1: u32,
+        _mp2: u32,
+    ) -> ApiResult {
+        // Collect window metadata (geometry, class, text, id, parent).
+        let info = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            let (ax, ay, acx, acy) = wm.get_abs_rect_in_frame(hwnd);
+            wm.get_window(hwnd).map(|w| {
+                (w.class_name.clone(), ax, ay, acx, acy,
+                 w.text.clone(), w.id, w.parent)
+            })
+        };
+        let (class_name, x, y, cx, cy, text, id, parent) = match info {
+            Some(v) => v,
+            None    => return ApiResult::Normal(0),
+        };
+
+        match msg {
+            WM_PAINT => {
+                let (frame_hwnd, gui_tx) = {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    (wm.find_frame_for_hwnd(hwnd), wm.gui_tx.clone())
+                };
+                let Some(ref sender) = gui_tx else { return ApiResult::Normal(0); };
+
+                match class_name.as_str() {
+                    "WC_BUTTON" => {
+                        // Filled rectangle with gray background, border, centered label.
+                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + cy,
+                            color: 0x00D4D0C8, fill: true,
+                        });
+                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + cy,
+                            color: 0x00808080, fill: false,
+                        });
+                        if !text.is_empty() {
+                            let _ = sender.send(crate::gui::GUIMessage::DrawText {
+                                handle: frame_hwnd, x: x + 4, y: y + cy / 4,
+                                text, color: 0x00000000,
+                            });
+                        }
+                    }
+                    "WC_STATIC" => {
+                        // Plain text label, no background.
+                        if !text.is_empty() {
+                            let _ = sender.send(crate::gui::GUIMessage::DrawText {
+                                handle: frame_hwnd, x, y: y + cy / 4,
+                                text, color: 0x00000000,
+                            });
+                        }
+                    }
+                    "WC_SCROLLBAR" => {
+                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + cy,
+                            color: 0x00A0A0A0, fill: true,
+                        });
+                    }
+                    "WC_ENTRYFIELD" | "WC_MLE" => {
+                        // White background with gray border; current text inside.
+                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + cy,
+                            color: 0x00FFFFFF, fill: true,
+                        });
+                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + cy,
+                            color: 0x00808080, fill: false,
+                        });
+                        if !text.is_empty() {
+                            let _ = sender.send(crate::gui::GUIMessage::DrawText {
+                                handle: frame_hwnd, x: x + 2, y: y + cy / 4,
+                                text, color: 0x00000000,
+                            });
+                        }
+                    }
+                    "WC_LISTBOX" => {
+                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + cy,
+                            color: 0x00FFFFFF, fill: true,
+                        });
+                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + cy,
+                            color: 0x00808080, fill: false,
+                        });
+                    }
+                    _ => {} // Unknown built-in class — silently ignore WM_PAINT
+                }
+                ApiResult::Normal(0)
+            }
+
+            WM_BUTTON1UP if class_name == "WC_BUTTON" => {
+                // Notify parent via WM_CONTROL with BN_CLICKED.
+                // mp1 = MPFROM2SHORT(id, BN_CLICKED) = (BN_CLICKED << 16) | id
+                let mp1_ctrl = (BN_CLICKED << 16) | (id & 0xFFFF);
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let hmq = wm.find_hmq_for_hwnd(parent);
+                if let Some(hmq) = hmq
+                    && let Some(mq_arc) = wm.get_mq(hmq) {
+                        let mut mq = mq_arc.lock_or_recover();
+                        mq.messages.push_back(OS2Message {
+                            hwnd: parent, msg: WM_CONTROL,
+                            mp1: mp1_ctrl, mp2: 0,
+                            time: 0, x: 0, y: 0,
+                        });
+                        mq.cond.notify_one();
+                }
+                ApiResult::Normal(0)
+            }
+
+            _ => ApiResult::Normal(0),
+        }
+    }
+
     pub(crate) fn map_color(&self, clr: u32) -> u32 {
         match clr {
             0 => 0x00000000, // Black

@@ -20,6 +20,7 @@ pub enum GUIMessage {
 }
 
 /// Sender half of the GUI channel — cheaply cloneable and `Send`.
+#[derive(Clone)]
 pub struct GUISender {
     tx: std::sync::mpsc::Sender<GUIMessage>,
 }

@@ -150,6 +150,44 @@ pub const ERROR_MOD_NOT_FOUND: u32 = 126;
 pub const ERROR_PROC_NOT_FOUND: u32 = 127;
 pub const ERROR_ENVVAR_NOT_FOUND: u32 = 204;
 
+// ── WC_* built-in window class atoms ─────────────────────────────────────────
+// These are the numeric atom values passed as the pszClass pointer to
+// WinCreateWindow when creating built-in PM controls (OS/2 pmwin.h).
+pub const WC_FRAME_ATOM:      u32 = 1;
+pub const WC_COMBOBOX_ATOM:   u32 = 2;
+pub const WC_BUTTON_ATOM:     u32 = 3;
+pub const WC_MENU_ATOM:       u32 = 4;
+pub const WC_STATIC_ATOM:     u32 = 5;
+pub const WC_ENTRYFIELD_ATOM: u32 = 6;
+pub const WC_LISTBOX_ATOM:    u32 = 7;
+pub const WC_SCROLLBAR_ATOM:  u32 = 8;
+pub const WC_TITLEBAR_ATOM:   u32 = 9;
+pub const WC_MLE_ATOM:        u32 = 10;
+pub const WC_SPINBUTTON_ATOM: u32 = 15;
+pub const WC_CONTAINER_ATOM:  u32 = 37;
+pub const WC_NOTEBOOK_ATOM:   u32 = 40;
+
+// WM_CONTROL — notification message from a child control to its owner.
+// mp1 = MPFROM2SHORT(usID, usNotifyCode); mp2 = control-specific data.
+pub const WM_CONTROL: u32 = 0x0030;
+
+// Button notification codes (high word of WM_CONTROL mp1)
+pub const BN_CLICKED: u32 = 0;
+pub const BN_DBLCLICKED: u32 = 1;
+
+// Common window style bits (flStyle in WinCreateWindow)
+pub const WS_VISIBLE:  u32 = 0x8000_0000;
+pub const WS_DISABLED: u32 = 0x4000_0000;
+pub const WS_TABSTOP:  u32 = 0x0002_0000;
+pub const WS_GROUP:    u32 = 0x0001_0000;
+
+// Button styles (low 16 bits of flStyle for WC_BUTTON windows)
+pub const BS_PUSHBUTTON:     u32 = 0x0000;
+pub const BS_CHECKBOX:       u32 = 0x0001;
+pub const BS_AUTOCHECKBOX:   u32 = 0x0003;
+pub const BS_RADIOBUTTON:    u32 = 0x0005;
+pub const BS_AUTORADIOBUTTON: u32 = 0x0007;
+
 // DosSetExtLIBPATH / DosQueryExtLIBPATH flags
 pub const BEGIN_LIBPATH: u32 = 1;
 pub const END_LIBPATH: u32 = 2;
