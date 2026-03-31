@@ -104,6 +104,18 @@ See [doc/developer_guide.md](doc/developer_guide.md) for detailed internals docu
 - **Library:** `libsdl2-dev` (for PM/GUI window and audio support).
 - **Optional (for samples):** Open Watcom v2 — `./vendor/setup_watcom.sh` to vendor it.
 
+## Contributing
+
+### Git Hooks
+
+This repo ships a pre-commit hook that runs `cargo test` before every commit. Activate it once after cloning:
+
+```bash
+git config core.hooksPath githooks
+```
+
+The hook will abort the commit if any test fails.
+
 ## Getting Started
 
 ### 1. Build Warpine
