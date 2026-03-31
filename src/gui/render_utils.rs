@@ -16,7 +16,7 @@ pub fn text_screen_y(y: i32, row: i32, char_h: i32, height: u32) -> i32 {
 /// Map a font character to its glyph index (0 = space for unknown/control chars).
 pub fn glyph_index(ch: char) -> usize {
     let c = ch as u32;
-    if c >= 32 && c <= 126 { (c - 32) as usize } else { 0 }
+    if (32..=126).contains(&c) { (c - 32) as usize } else { 0 }
 }
 
 /// Render text into a raw pixel buffer (no SDL2 dependency).
@@ -45,6 +45,7 @@ pub fn render_text_to_buffer(buf: &mut [u32], width: u32, height: u32, x: i32, y
 
 /// Draw a filled or outlined rectangle into a raw pixel buffer.
 /// Coordinates are OS/2 bottom-left origin.
+#[allow(clippy::too_many_arguments)]
 pub fn render_rect_to_buffer(buf: &mut [u32], width: u32, height: u32,
                               x1: i32, y1: i32, x2: i32, y2: i32, color: u32, fill: bool) {
     if width == 0 || height == 0 { return; }
@@ -80,6 +81,7 @@ pub fn render_rect_to_buffer(buf: &mut [u32], width: u32, height: u32,
 
 /// Draw a line into a raw pixel buffer using Bresenham's algorithm.
 /// Coordinates are OS/2 bottom-left origin.
+#[allow(clippy::too_many_arguments)]
 pub fn render_line_to_buffer(buf: &mut [u32], width: u32, height: u32,
                               x1: i32, y1: i32, x2: i32, y2: i32, color: u32) {
     if width == 0 || height == 0 { return; }

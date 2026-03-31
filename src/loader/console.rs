@@ -69,6 +69,10 @@ pub struct VioManager {
     pub stdin_cooked_chars: i32,
 }
 
+impl Default for VioManager {
+    fn default() -> Self { Self::new() }
+}
+
 impl VioManager {
     pub fn new() -> Self {
         let (rows, cols) = Self::detect_terminal_size();
@@ -92,16 +96,39 @@ impl VioManager {
         }
     }
 
-    /// Switch to SDL2 text-mode: fix dimensions to 80×25, suppress ANSI output.
+    /// Switch to SDL2 text-mode: initialise to 80×25, suppress ANSI output.
     pub fn enable_sdl2_mode(&mut self) {
         self.sdl2_mode = true;
-        // Resize buffer to fixed 80×25 if needed
-        let (new_rows, new_cols) = (25u16, 80u16);
-        if self.rows != new_rows || self.cols != new_cols {
-            self.rows = new_rows;
-            self.cols = new_cols;
-            self.buffer = vec![(b' ', 0x07); new_rows as usize * new_cols as usize];
+        // Start at the standard 80×25 text mode; VioSetMode may later change
+        // the dimensions and the SDL2 window will resize to match.
+        self.resize(25, 80);
+    }
+
+    /// Resize the virtual screen to `new_rows` × `new_cols`.
+    ///
+    /// Preserves as much of the existing buffer content as possible (top-left
+    /// content is kept; new cells are initialised to space/attribute 0x07).
+    /// Called by `VioSetMode` and `enable_sdl2_mode`.
+    pub fn resize(&mut self, new_rows: u16, new_cols: u16) {
+        if self.rows == new_rows && self.cols == new_cols { return; }
+        let new_size = new_rows as usize * new_cols as usize;
+        let mut new_buf: Vec<(u8, u8)> = vec![(b' ', 0x07); new_size];
+        // Copy the top-left region that fits in both old and new dimensions.
+        let copy_rows = self.rows.min(new_rows) as usize;
+        let copy_cols = self.cols.min(new_cols) as usize;
+        for r in 0..copy_rows {
+            for c in 0..copy_cols {
+                let src = r * self.cols as usize + c;
+                let dst = r * new_cols as usize + c;
+                new_buf[dst] = self.buffer[src];
+            }
         }
+        self.rows = new_rows;
+        self.cols = new_cols;
+        self.buffer = new_buf;
+        // Clamp cursor to new boundaries.
+        self.cursor_row = self.cursor_row.min(new_rows.saturating_sub(1));
+        self.cursor_col = self.cursor_col.min(new_cols.saturating_sub(1));
     }
 
     /// Set cursor scan-line shape (for `VioSetCurType`).
@@ -145,9 +172,8 @@ impl VioManager {
 
     /// Restore terminal to original mode.
     pub fn disable_raw_mode(&mut self) {
-        if self.original_termios.is_some() {
+        if let Some(orig) = self.original_termios.as_ref() {
             // Restore saved termios first
-            let orig = self.original_termios.as_ref().unwrap();
             unsafe { libc::tcsetattr(libc::STDIN_FILENO, libc::TCSAFLUSH, orig); }
             self.raw_mode_active = false;
         }
@@ -175,10 +201,17 @@ impl VioManager {
     }
 
     /// Write a string at the current cursor position, advancing the cursor.
-    /// Updates the screen buffer and (in terminal mode) outputs ANSI escapes.
+    ///
+    /// Updates the screen buffer.  In terminal (non-SDL2) mode, also emits
+    /// ANSI colour escapes so coloured text from `VioWrtTTY` is rendered with
+    /// the correct CGA attribute.
     pub fn write_tty(&mut self, text: &[u8], attr: u8) {
         let sdl2 = self.sdl2_mode;
         let mut stdout = io::stdout();
+        // Lazily emit the ANSI colour attribute on the first printable byte so
+        // that pure-control strings (CR/LF/BS sequences) don't pollute the
+        // terminal colour state unnecessarily.
+        let mut attr_applied = false;
         for &ch in text {
             if ch == b'\n' {
                 self.cursor_row += 1;
@@ -187,7 +220,13 @@ impl VioManager {
                     self.scroll_up(0, self.rows - 1, 1, (b' ', 0x07));
                     self.cursor_row = self.rows - 1;
                 }
-                if !sdl2 { let _ = stdout.write_all(b"\n"); }
+                if !sdl2 {
+                    if attr_applied {
+                        let _ = stdout.write_all(b"\x1b[0m");
+                        attr_applied = false;
+                    }
+                    let _ = stdout.write_all(b"\n");
+                }
             } else if ch == b'\r' {
                 self.cursor_col = 0;
                 if !sdl2 { let _ = stdout.write_all(b"\r"); }
@@ -216,10 +255,19 @@ impl VioManager {
                         self.cursor_row = self.rows - 1;
                     }
                 }
-                if !sdl2 { Self::write_cp437_char(&mut stdout, ch); }
+                if !sdl2 {
+                    if !attr_applied {
+                        self.write_ansi_attr(&mut stdout, attr);
+                        attr_applied = true;
+                    }
+                    Self::write_cp437_char(&mut stdout, ch);
+                }
             }
         }
-        if !sdl2 { let _ = stdout.flush(); }
+        if !sdl2 {
+            if attr_applied { let _ = stdout.write_all(b"\x1b[0m"); }
+            let _ = stdout.flush();
+        }
     }
 
     /// Write an attributed string at a specific position.
@@ -370,7 +418,7 @@ impl VioManager {
             let mut stdout = io::stdout();
             if top == 0 && bottom == self.rows - 1 {
                 for _ in 0..lines {
-                    let _ = write!(stdout, "\x1b[{};{}H\n", bottom + 1, 1);
+                    let _ = writeln!(stdout, "\x1b[{};{}H", bottom + 1, 1);
                 }
             } else {
                 let _ = write!(stdout, "\x1b[{};{}r", top + 1, bottom + 1);
@@ -692,5 +740,47 @@ mod tests {
         let (ch, scan) = map_key_to_os2(0x7F, &mgr);
         assert_eq!(ch, 0x08);
         assert_eq!(scan, 0x0E);
+    }
+
+    #[test]
+    fn test_resize_expands_buffer() {
+        let mut mgr = VioManager::new();
+        mgr.resize(50, 132);
+        assert_eq!(mgr.rows, 50);
+        assert_eq!(mgr.cols, 132);
+        assert_eq!(mgr.buffer.len(), 50 * 132);
+        // New cells default to space with attribute 0x07
+        assert_eq!(mgr.buffer[0], (b' ', 0x07));
+    }
+
+    #[test]
+    fn test_resize_shrinks_and_preserves_content() {
+        let mut mgr = VioManager::new();
+        // Seed row 0, col 0 with 'X', attr 0x4F
+        mgr.buffer[0] = (b'X', 0x4F);
+        mgr.resize(10, 40);
+        assert_eq!(mgr.rows, 10);
+        assert_eq!(mgr.cols, 40);
+        assert_eq!(mgr.buffer[0], (b'X', 0x4F), "top-left cell preserved");
+    }
+
+    #[test]
+    fn test_resize_clamps_cursor() {
+        let mut mgr = VioManager::new();
+        mgr.cursor_row = 24;
+        mgr.cursor_col = 79;
+        mgr.resize(5, 10);
+        assert!(mgr.cursor_row < 5,  "cursor_row must be within new bounds");
+        assert!(mgr.cursor_col < 10, "cursor_col must be within new bounds");
+    }
+
+    #[test]
+    fn test_resize_noop_same_dimensions() {
+        let mut mgr = VioManager::new();
+        let orig_rows = mgr.rows;
+        let orig_cols = mgr.cols;
+        let orig_len  = mgr.buffer.len();
+        mgr.resize(orig_rows, orig_cols);
+        assert_eq!(mgr.buffer.len(), orig_len, "noop resize must not reallocate");
     }
 }

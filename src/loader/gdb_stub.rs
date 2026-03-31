@@ -119,6 +119,10 @@ pub struct GdbState {
     pub hw_breakpoints: Mutex<[Option<u32>; 4]>,
 }
 
+impl Default for GdbState {
+    fn default() -> Self { Self::new() }
+}
+
 impl GdbState {
     pub fn new() -> Self {
         GdbState {
@@ -404,11 +408,7 @@ impl BlockingEventLoop for GdbBlockingEventLoop {
         target.gdb_state.stop_requested.store(true, Ordering::Relaxed);
 
         let deadline = std::time::Instant::now() + Duration::from_secs(2);
-        loop {
-            let remaining = match deadline.checked_duration_since(std::time::Instant::now()) {
-                Some(d) => d,
-                None    => break,
-            };
+        while let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) {
             let (mut stopped, _) = target
                 .gdb_state
                 .stop_cond

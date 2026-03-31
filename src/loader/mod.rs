@@ -129,6 +129,10 @@ pub struct SharedState {
     /// Ring buffer of the last 256 OS/2 API calls — always populated,
     /// regardless of log level, so crash dumps include full call history.
     pub api_ring: Mutex<ApiRingBuffer>,
+    /// Extended LIBPATH prepended to LIBPATH (BEGINLIBPATH).
+    pub begin_libpath: Mutex<String>,
+    /// Extended LIBPATH appended after LIBPATH (ENDLIBPATH).
+    pub end_libpath: Mutex<String>,
     /// GDB Remote Serial Protocol state.  `Some` when `--gdb <port>` is given;
     /// `None` in normal (non-debugger) runs.
     pub gdb_state: Option<Arc<gdb_stub::GdbState>>,
@@ -140,6 +144,10 @@ unsafe impl Sync for SharedState {}
 pub struct Loader {
     pub vm: Arc<dyn VmBackend>,
     pub shared: Arc<SharedState>,
+}
+
+impl Default for Loader {
+    fn default() -> Self { Self::new() }
 }
 
 impl Loader {
@@ -198,6 +206,8 @@ impl Loader {
             kbd_cond: Condvar::new(),
             use_sdl2_text: AtomicBool::new(false),
             api_ring: Mutex::new(ApiRingBuffer::new()),
+            begin_libpath: Mutex::new(String::new()),
+            end_libpath: Mutex::new(String::new()),
             gdb_state: None,
         });
 
@@ -222,14 +232,13 @@ impl Loader {
     pub(crate) fn post_wm_quit(&self, hwnd: u32) {
         let wm = self.shared.window_mgr.lock_or_recover();
         let hmq = wm.find_hmq_for_hwnd(hwnd);
-        if let Some(hmq) = hmq {
-            if let Some(mq_arc) = wm.get_mq(hmq) {
+        if let Some(hmq) = hmq
+            && let Some(mq_arc) = wm.get_mq(hmq) {
                 let mut mq = mq_arc.lock_or_recover();
                 mq.messages.push_back(OS2Message {
                     hwnd, msg: WM_QUIT, mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
                 });
                 mq.cond.notify_one();
-            }
         }
     }
 
@@ -271,6 +280,8 @@ impl Loader {
             kbd_cond:     Condvar::new(),
             use_sdl2_text: AtomicBool::new(false),
             api_ring:     Mutex::new(ApiRingBuffer::new()),
+            begin_libpath: Mutex::new(String::new()),
+            end_libpath:  Mutex::new(String::new()),
             gdb_state:    None,
         });
         Loader { vm, shared }

@@ -455,12 +455,11 @@ impl super::Loader {
         }
         if hf >= PIPE_HANDLE_BASE {
             let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
-            if let Some(file) = h_mgr.get_mut(hf) {
-                if let Ok(meta) = file.metadata() {
+            if let Some(file) = h_mgr.get_mut(hf)
+                && let Ok(meta) = file.metadata() {
                     self.write_filestatus3_internal(&meta, buf_ptr);
                     if level == 2 { self.guest_write::<u32>(buf_ptr + 24, 4); }
                     return 0;
-                }
             }
             return 6; // ERROR_INVALID_HANDLE
         }
@@ -509,6 +508,7 @@ impl super::Loader {
     /// - cbBuf: buffer size
     /// - pulCount: in/out count of entries
     /// - ulInfoLevel: must be 1 (ENUMEA_LEVEL_NO_VALUE)
+    #[allow(clippy::too_many_arguments)]
     pub fn dos_enum_attribute(&self, ref_type: u32, pv_file: u32, ul_entry: u32,
                               pv_buf: u32, cb_buf: u32, pul_count: u32, info_level: u32) -> u32 {
         debug!("  DosEnumAttribute(refType={}, entry={}, level={})", ref_type, ul_entry, info_level);
@@ -530,10 +530,7 @@ impl super::Loader {
             Err(e) => return e.0,
         };
         let eas = match dm.backend(drive) {
-            Ok(b) => match b.enum_ea(&rel_path) {
-                Ok(eas) => eas,
-                Err(_) => Vec::new(),
-            },
+            Ok(b) => b.enum_ea(&rel_path).unwrap_or_default(),
             Err(e) => return e.0,
         };
 
@@ -570,6 +567,7 @@ impl super::Loader {
 
     // ── Directory enumeration (via DriveManager) ──
 
+    #[allow(clippy::too_many_arguments)]
     pub fn dos_find_first(&self, psz_spec_ptr: u32, phdir_ptr: u32, attr: u32, buf_ptr: u32, buf_len: u32, pc_found_ptr: u32, level: u32) -> u32 {
         if level != 1 && level != 2 { return 124; }
         let mut spec = self.read_guest_string(psz_spec_ptr);
@@ -603,7 +601,7 @@ impl super::Loader {
         } else { 1 };
 
         let mut dm = self.shared.drive_mgr.lock_or_recover();
-        let rc = match dm.find_first(&spec, FileAttribute(attr), level) {
+        match dm.find_first(&spec, FileAttribute(attr), level) {
             Ok((hdir, first_entry)) => {
                 self.guest_write::<u32>(phdir_ptr, hdir);
                 let mut entries = vec![first_entry];
@@ -618,8 +616,7 @@ impl super::Loader {
                 self.write_filefindbuf3_multi(&entries, buf_ptr, buf_len, pc_found_ptr, level == 2)
             }
             Err(e) => { debug!("  DosFindFirst -> error {}", e.0); e.0 },
-        };
-        rc
+        }
     }
 
     pub fn dos_find_next(&self, hdir: u32, buf_ptr: u32, buf_len: u32, pc_found_ptr: u32) -> u32 {
@@ -1069,8 +1066,9 @@ impl super::Loader {
                 let wait_time = remaining.min(std::time::Duration::from_millis(100));
                 let (guard, result) = cvar.wait_timeout(sem, wait_time).unwrap();
                 sem = guard;
-                if result.timed_out() && !sem.posted {
-                    if deadline.saturating_duration_since(std::time::Instant::now()).is_zero() { return 640; }
+                if result.timed_out() && !sem.posted
+                    && deadline.saturating_duration_since(std::time::Instant::now()).is_zero() {
+                        return 640;
                 }
             }
             0
@@ -1185,10 +1183,9 @@ impl super::Loader {
                 }
 
                 if (mux.wait_all && all_ready) || (!mux.wait_all && ready_idx.is_some()) {
-                    if let Some(idx) = ready_idx {
-                        if pul_user_ptr != 0 {
+                    if let Some(idx) = ready_idx
+                        && pul_user_ptr != 0 {
                             self.guest_write::<u32>(pul_user_ptr, mux.records[idx].user);
-                        }
                     }
                     return 0;
                 }
@@ -1233,6 +1230,7 @@ impl super::Loader {
         337
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn dos_read_queue(&self, hq: u32, preq_ptr: u32, pcb_ptr: u32, ppbuf_ptr: u32, _elem: u32, wait: u32, pprio_ptr: u32, _hev: u32) -> u32 {
         let (q_arc, cond, cond_lock) = {
             let queue_mgr = self.shared.queue_mgr.lock_or_recover();
@@ -1365,18 +1363,16 @@ impl super::Loader {
             } else {
                 ERROR_INVALID_HANDLE
             }
-        } else {
-            if let Some(file) = h_mgr.get(old_hf) {
-                match file.try_clone() {
-                    Ok(dup) => {
-                        h_mgr.replace(new_hf_val, dup);
-                        0
-                    }
-                    Err(_) => ERROR_INVALID_HANDLE,
+        } else if let Some(file) = h_mgr.get(old_hf) {
+            match file.try_clone() {
+                Ok(dup) => {
+                    h_mgr.replace(new_hf_val, dup);
+                    0
                 }
-            } else {
-                ERROR_INVALID_HANDLE
+                Err(_) => ERROR_INVALID_HANDLE,
             }
+        } else {
+            ERROR_INVALID_HANDLE
         }
     }
 

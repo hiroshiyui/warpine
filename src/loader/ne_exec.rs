@@ -180,17 +180,17 @@ impl super::Loader {
         self.guest_write::<u32>(TIB_BASE + 0x0C, tib2_addr).unwrap();
         self.guest_write::<u32>(TIB_BASE + 0x18, TIB_BASE).unwrap();
         self.guest_write::<u32>(TIB_BASE + 0x30, PIB_BASE).unwrap();
-        self.guest_write::<u32>(tib2_addr + 0x00, 1).unwrap();
+        self.guest_write::<u32>(tib2_addr, 1).unwrap();
         self.guest_write::<u32>(tib2_addr + 0x04, 0).unwrap();
-        self.guest_write::<u32>(PIB_BASE + 0x00, 42).unwrap();
+        self.guest_write::<u32>(PIB_BASE, 42).unwrap();
         self.guest_write::<u32>(PIB_BASE + 0x0C, cmdline_addr).unwrap();
         self.guest_write::<u32>(PIB_BASE + 0x10, env_addr).unwrap();
 
         // BDA
         {
             let console = self.shared.console_mgr.lock_or_recover();
-            let cols = console.cols as u16;
-            let rows = console.rows as u16;
+            let cols = console.cols;
+            let rows = console.rows;
             drop(console);
             self.guest_write::<u8>(0x449, 0x03).unwrap();
             self.guest_write::<u16>(0x44A, cols).unwrap();
@@ -383,8 +383,8 @@ impl super::Loader {
                     let hf = read_arg16(10);
                     debug!("  16-bit DosWrite(hf={}, buf=0x{:08X}, cb={}, pcb=0x{:08X})",
                         hf, p_buf, cb_buf, pcb_written);
-                    if let Some(data) = self.guest_slice_mut(p_buf, cb_buf as usize) {
-                        if hf == 1 || hf == 2 {
+                    if let Some(data) = self.guest_slice_mut(p_buf, cb_buf as usize)
+                        && (hf == 1 || hf == 2) {
                             match crate::api::doscalls::dos_write(hf as u32, data) {
                                 Ok(actual) => {
                                     if pcb_written != 0 {
@@ -394,7 +394,6 @@ impl super::Loader {
                                 }
                                 Err(_) => return 1,
                             }
-                        }
                     }
                     1 // error
                 }

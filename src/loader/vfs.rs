@@ -497,6 +497,10 @@ pub struct DriveManager {
     current_dirs: [String; 26],
 }
 
+impl Default for DriveManager {
+    fn default() -> Self { Self::new() }
+}
+
 impl DriveManager {
     /// Create a new DriveManager with no drives mounted or configured.
     /// File handles start at 3 (0/1/2 reserved for stdin/stdout/stderr).
@@ -625,7 +629,7 @@ impl DriveManager {
         // Extract drive letter or use current drive
         let (drive, rest) = if path.len() >= 2 && path.as_bytes()[1] == b':' {
             let letter = path.as_bytes()[0].to_ascii_uppercase();
-            if !(b'A'..=b'Z').contains(&letter) {
+            if !letter.is_ascii_uppercase() {
                 return Err(Os2Error::INVALID_DRIVE);
             }
             (letter - b'A', &path[2..])

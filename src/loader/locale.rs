@@ -72,6 +72,7 @@ impl Os2Locale {
     /// - Non-US country codes trigger Watcom CRT initialization paths that
     ///   try to load collation/DBCS tables, causing crashes without real NLS DLL
     /// - Guest executables are compiled for CP 437 (single-byte)
+    ///
     /// Host locale formatting (date/time separators, currency, etc.) is still
     /// applied through the other COUNTRYINFO fields.
     fn map_country(_lang: &str, _territory: &str) -> (u32, u32) {

@@ -315,13 +315,12 @@ impl PmRenderer for Sdl2Renderer {
 
     fn poll_events(&mut self, shared: &Arc<SharedState>) -> bool {
         // Sync the host clipboard into SharedState so WinQueryClipbrdData can read it.
-        if let Ok(host_text) = self.video.clipboard().clipboard_text() {
-            if host_text != self.cached_clipboard {
+        if let Ok(host_text) = self.video.clipboard().clipboard_text()
+            && host_text != self.cached_clipboard {
                 self.cached_clipboard = host_text.clone();
                 let mut wm = shared.window_mgr.lock_or_recover();
                 wm.clipboard_text = host_text;
                 wm.clipboard.insert(CF_TEXT, 0); // invalidate stale guest pointer
-            }
         }
 
         let events: Vec<_> = self.event_pump.poll_iter().collect();
@@ -346,14 +345,13 @@ pub fn push_msg(shared: &Arc<SharedState>, hwnd: u32, msg: u32, mp1: u32, mp2: u
     let wm = shared.window_mgr.lock_or_recover();
     let target = wm.frame_to_client.get(&hwnd).copied().unwrap_or(hwnd);
     let hmq = wm.find_hmq_for_hwnd(target).or_else(|| wm.find_hmq_for_hwnd(hwnd));
-    if let Some(hmq) = hmq {
-        if let Some(mq_arc) = wm.get_mq(hmq) {
+    if let Some(hmq) = hmq
+        && let Some(mq_arc) = wm.get_mq(hmq) {
             let mut mq = mq_arc.lock_or_recover();
             mq.messages.push_back(OS2Message {
                 hwnd: target, msg, mp1, mp2, time: 0, x: 0, y: 0,
             });
             mq.cond.notify_one();
-        }
     }
 }
 

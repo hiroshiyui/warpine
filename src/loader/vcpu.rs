@@ -53,9 +53,9 @@ impl super::Loader {
         self.guest_write::<u32>(TIB_BASE + 0x18, TIB_BASE).expect("setup_guest: TIB self-ptr OOB");
         self.guest_write::<u32>(TIB_BASE + 0x30, PIB_BASE).expect("setup_guest: TIB->PIB OOB");
         // TIB2 fields
-        self.guest_write::<u32>(tib2_addr + 0x00, 1).expect("setup_guest: TIB2.tid OOB"); // tib2_ultid = thread 1
+        self.guest_write::<u32>(tib2_addr, 1).expect("setup_guest: TIB2.tid OOB"); // tib2_ultid = thread 1
         self.guest_write::<u32>(tib2_addr + 0x04, 0).expect("setup_guest: TIB2.pri OOB"); // tib2_ulpri = normal
-        self.guest_write::<u32>(PIB_BASE + 0x00, 42).expect("setup_guest: PIB PID OOB");
+        self.guest_write::<u32>(PIB_BASE, 42).expect("setup_guest: PIB PID OOB");
         self.guest_write::<u32>(PIB_BASE + 0x0C, cmdline_addr).expect("setup_guest: PIB pchcmd OOB");
         self.guest_write::<u32>(PIB_BASE + 0x10, env_addr).expect("setup_guest: PIB pchenv OOB");
 
@@ -63,8 +63,8 @@ impl super::Loader {
         // Some OS/2 code and C runtime libraries read BDA directly for screen dimensions.
         {
             let console = self.shared.console_mgr.lock_or_recover();
-            let cols = console.cols as u16;
-            let rows = console.rows as u16;
+            let cols = console.cols;
+            let rows = console.rows;
             drop(console);
             self.guest_write::<u8>(0x449, 0x03).unwrap();         // Current video mode: VGA 80x25 color text
             self.guest_write::<u16>(0x44A, cols).unwrap();         // Number of columns
@@ -195,23 +195,22 @@ impl super::Loader {
             }
 
             // GDB Ctrl-C: pause the vCPU and wait for a resume command.
-            if let Some(gdb) = self.shared.gdb_state.as_ref() {
-                if gdb.stop_requested.swap(false, Ordering::Relaxed) {
-                    let regs  = vcpu.get_regs().unwrap();
-                    let sregs = vcpu.get_sregs().unwrap();
-                    gdb.notify_stopped(GdbStopInfo {
-                        reason: GdbVcpuStopReason::Interrupt,
-                        regs,
-                        sregs,
-                    });
-                    match gdb.wait_for_resume() {
-                        GdbResumeCmd::Kill => return,
-                        GdbResumeCmd::Step => {
-                            vcpu.set_single_step(true).unwrap();
-                        }
-                        GdbResumeCmd::Continue => {
-                            vcpu.set_single_step(false).unwrap();
-                        }
+            if let Some(gdb) = self.shared.gdb_state.as_ref()
+                && gdb.stop_requested.swap(false, Ordering::Relaxed) {
+                let regs  = vcpu.get_regs().unwrap();
+                let sregs = vcpu.get_sregs().unwrap();
+                gdb.notify_stopped(GdbStopInfo {
+                    reason: GdbVcpuStopReason::Interrupt,
+                    regs,
+                    sregs,
+                });
+                match gdb.wait_for_resume() {
+                    GdbResumeCmd::Kill => return,
+                    GdbResumeCmd::Step => {
+                        vcpu.set_single_step(true).unwrap();
+                    }
+                    GdbResumeCmd::Continue => {
+                        vcpu.set_single_step(false).unwrap();
                     }
                 }
             }
@@ -361,10 +360,8 @@ impl super::Loader {
                         // registers and return address from [EBP+0..EBP+24].
                         if vector == 13 && fault_cs == 0x08 {
                             let err_sel_index = error_code / 8;
-                            let is_tiled = (err_sel_index >= TILED_SEL_START_INDEX
-                                && err_sel_index < TILED_SEL_START_INDEX + NUM_TILES)
-                                || (err_sel_index >= TILED_CODE_START_INDEX
-                                && err_sel_index < TILED_CODE_START_INDEX + NUM_CODE_TILES);
+                            let is_tiled = (TILED_SEL_START_INDEX..TILED_SEL_START_INDEX + NUM_TILES).contains(&err_sel_index)
+                                || (TILED_CODE_START_INDEX..TILED_CODE_START_INDEX + NUM_CODE_TILES).contains(&err_sel_index);
                             if is_tiled {
                                 let b0 = self.guest_read::<u8>(fault_eip).unwrap_or(0);
                                 let b1 = self.guest_read::<u8>(fault_eip + 1).unwrap_or(0);
@@ -552,9 +549,9 @@ impl super::Loader {
                                 regs.rsp += 4;
                                 // VIO/KBD use Pascal calling convention (callee cleanup).
                                 // Pop the arguments from the stack after the return address.
-                                if ordinal >= VIOCALLS_BASE && ordinal < SESMGR_BASE {
+                                if (VIOCALLS_BASE..SESMGR_BASE).contains(&ordinal) {
                                     regs.rsp += self.viocalls_arg_bytes(ordinal - VIOCALLS_BASE);
-                                } else if ordinal >= KBDCALLS_BASE && ordinal < VIOCALLS_BASE {
+                                } else if (KBDCALLS_BASE..VIOCALLS_BASE).contains(&ordinal) {
                                     regs.rsp += self.kbdcalls_arg_bytes(ordinal - KBDCALLS_BASE);
                                 }
                                 vcpu.set_regs(&regs).unwrap();

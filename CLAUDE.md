@@ -19,6 +19,7 @@ cargo build                              # Debug build
 cargo run -- <path_to_os2_executable>    # Run an OS/2 binary
 cargo run -- samples/hello/hello.exe     # Example: run hello world
 cargo test                               # Unit tests (281 tests: LX/NE parsers, VFS, managers, MMPM, API registry, HeadlessRenderer, scan codes, text renderer, DLL loader, crash dump, API ring buffer) + 9 integration tests
+cargo clippy -- -D warnings             # Lint — must pass with zero warnings before every commit/release
 ```
 
 **Prerequisites:** Linux with KVM enabled (`/dev/kvm`), x86_64 CPU with VT-x/AMD-V, Rust 2024 edition, `libsdl2-dev` (for PM/GUI window support).
@@ -81,6 +82,7 @@ Each OS/2 thread maps to a native Rust thread with its own KVM vCPU. `SharedStat
 1. **Always** update all relevant documents (`README.md`, `doc/*.md` and this file `CLAUDE.md`...)
 2. **Always** add essential but missing tests to improve test coverage and ensure code quality
 3. **Always** check if there is any missing or incomplete test
+4. **Always** run `cargo clippy -- -D warnings` and fix all warnings before committing
 4. Remove the finishied tasks from TODOs
 5. When a bug is discovered, **always** check for similar issues across the project after applying the fix
 

@@ -43,7 +43,7 @@ fn systemtime_to_dos(st: SystemTime) -> (u16, u16) {
     let (year, month, day) = days_to_ymd(days);
 
     // DOS date: bits 15-9 = year-1980, bits 8-5 = month, bits 4-0 = day
-    let dos_year = (year as i32 - 1980).max(0) as u16;
+    let dos_year = (year - 1980).max(0) as u16;
     let dos_date = (dos_year << 9) | ((month as u16) << 5) | (day as u16);
     // DOS time: bits 15-11 = hour, bits 10-5 = minute, bits 4-0 = seconds/2
     let dos_time = ((hours as u16) << 11) | ((minutes as u16) << 5) | ((seconds as u16) / 2);
@@ -69,13 +69,13 @@ fn days_to_ymd(days_since_epoch: i64) -> (i32, u32, u32) {
 /// Build a FileStatus from std::fs::Metadata.
 fn metadata_to_file_status(meta: &fs::Metadata) -> FileStatus {
     let (cdate, ctime) = meta.created()
-        .map(|t| systemtime_to_dos(t))
+        .map(systemtime_to_dos)
         .unwrap_or((0, 0));
     let (adate, atime) = meta.accessed()
-        .map(|t| systemtime_to_dos(t))
+        .map(systemtime_to_dos)
         .unwrap_or((0, 0));
     let (wdate, wtime) = meta.modified()
-        .map(|t| systemtime_to_dos(t))
+        .map(systemtime_to_dos)
         .unwrap_or((0, 0));
 
     let size = meta.len() as u32;
@@ -128,10 +128,9 @@ impl DirCache {
         let mut cache = self.entries.lock().unwrap();
 
         // Check if we have a valid cache entry
-        if let Some(entry) = cache.get(dir) {
-            if entry.created.elapsed().as_millis() < DIR_CACHE_TTL_MS {
+        if let Some(entry) = cache.get(dir)
+            && entry.created.elapsed().as_millis() < DIR_CACHE_TTL_MS {
                 return entry.names.get(component_lower).cloned();
-            }
             // Expired — will be replaced below
         }
 
@@ -786,13 +785,10 @@ impl HostDirBackend {
                 Ok(s) => s,
                 Err(_) => continue,
             };
-            if let Some(ea_name) = name.strip_prefix(prefix) {
-                if !ea_name.is_empty() {
-                    match Self::xattr_get_ea(host_path, ea_name) {
-                        Ok(ea) => eas.push(ea),
-                        Err(_) => {} // skip unreadable EAs
-                    }
-                }
+            if let Some(ea_name) = name.strip_prefix(prefix)
+                && !ea_name.is_empty()
+                && let Ok(ea) = Self::xattr_get_ea(host_path, ea_name) {
+                    eas.push(ea);
             }
         }
 
@@ -867,8 +863,9 @@ impl VfsBackend for HostDirBackend {
         })?;
 
         // Invalidate cache if we created or replaced a file
-        if action == OpenAction::Created || action == OpenAction::Replaced {
-            if let Some(parent) = host_path.parent() { self.dir_cache.invalidate(parent); }
+        if (action == OpenAction::Created || action == OpenAction::Replaced)
+            && let Some(parent) = host_path.parent() {
+                self.dir_cache.invalidate(parent);
         }
         self.files.lock().unwrap().insert(handle_id, OpenFileState { file, host_path });
         Ok((VfsFileHandle(handle_id), action))
@@ -945,25 +942,23 @@ impl VfsBackend for HostDirBackend {
 
         for entry in read_dir.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if wildcard_match(file_pattern, &name) {
-                if let Ok(meta) = entry.metadata() {
+            if wildcard_match(file_pattern, &name)
+                && let Ok(meta) = entry.metadata() {
                     let status = metadata_to_file_status(&meta);
                     if attributes_match(status.attributes, attr_filter) {
                         entries.push(DirEntry { name, status });
                     }
-                }
             }
         }
 
         // Also check for "." and ".." if pattern matches
         // "." and ".." are directories, so they require DIRECTORY in the attr filter
-        if wildcard_match(file_pattern, ".") && attr_filter.contains(FileAttribute::DIRECTORY) {
-            if let Ok(meta) = fs::metadata(&dir_path) {
+        if wildcard_match(file_pattern, ".") && attr_filter.contains(FileAttribute::DIRECTORY)
+            && let Ok(meta) = fs::metadata(&dir_path) {
                 entries.insert(0, DirEntry {
                     name: ".".to_string(),
                     status: metadata_to_file_status(&meta),
                 });
-            }
         }
         if wildcard_match(file_pattern, "..") && attr_filter.contains(FileAttribute::DIRECTORY) {
             let parent = dir_path.parent().unwrap_or(&dir_path);
@@ -1012,27 +1007,24 @@ impl VfsBackend for HostDirBackend {
     fn create_dir(&self, path: &str) -> VfsResult<()> {
         let host_path = self.resolve_for_create(path)?;
         let result = fs::create_dir(&host_path).map_err(|e| Self::map_io_error(&e));
-        if result.is_ok() {
-            if let Some(parent) = host_path.parent() { self.dir_cache.invalidate(parent); }
-        }
+        if result.is_ok()
+            && let Some(parent) = host_path.parent() { self.dir_cache.invalidate(parent); }
         result
     }
 
     fn delete_dir(&self, path: &str) -> VfsResult<()> {
         let host_path = self.resolve_existing(path)?;
         let result = fs::remove_dir(&host_path).map_err(|e| Self::map_io_error(&e));
-        if result.is_ok() {
-            if let Some(parent) = host_path.parent() { self.dir_cache.invalidate(parent); }
-        }
+        if result.is_ok()
+            && let Some(parent) = host_path.parent() { self.dir_cache.invalidate(parent); }
         result
     }
 
     fn delete(&self, path: &str) -> VfsResult<()> {
         let host_path = self.resolve_existing(path)?;
         let result = fs::remove_file(&host_path).map_err(|e| Self::map_io_error(&e));
-        if result.is_ok() {
-            if let Some(parent) = host_path.parent() { self.dir_cache.invalidate(parent); }
-        }
+        if result.is_ok()
+            && let Some(parent) = host_path.parent() { self.dir_cache.invalidate(parent); }
         result
     }
 

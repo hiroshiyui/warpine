@@ -38,6 +38,10 @@ pub struct ApiRingBuffer {
     next_seq: u64,
 }
 
+impl Default for ApiRingBuffer {
+    fn default() -> Self { Self::new() }
+}
+
 impl ApiRingBuffer {
     pub fn new() -> Self {
         ApiRingBuffer {

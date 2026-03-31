@@ -84,6 +84,8 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_file_mode(a[0],a[1])) },
     ApiEntry { ordinal: 110, module: "DOSCALLS", name: "DosForceDelete",   argc: 1,
                handler: |l,_v,_i,a| { debug!("DosForceDelete stub"); ApiResult::Normal(l.dos_delete(a[0])) } },
+    ApiEntry { ordinal: 111, module: "DOSCALLS", name: "DosKillThread",    argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_kill_thread(a[0])) },
 
     // ── DOSCALLS — init / control ─────────────────────────────────────────
     ApiEntry { ordinal: 209, module: "DOSCALLS", name: "DosSetMaxFH",      argc: 1,
@@ -112,6 +114,8 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_verify(a[0])) },
     ApiEntry { ordinal: 226, module: "DOSCALLS", name: "DosDeleteDir",     argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_delete_dir(a[0])) },
+    ApiEntry { ordinal: 227, module: "DOSCALLS", name: "DosScanEnv",       argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_scan_env(a[0],a[1])) },
 
     // ── DOSCALLS — time / misc ────────────────────────────────────────────
     ApiEntry { ordinal: 229, module: "DOSCALLS", name: "DosSleep",         argc: 1,
@@ -129,9 +133,11 @@ static REGISTRY: &[ApiEntry] = &[
                    ApiResult::Normal(0)
                } },
 
-    // ── DOSCALLS — processes ──────────────────────────────────────────────
+    // ── DOSCALLS — processes / priorities ────────────────────────────────
     ApiEntry { ordinal: 235, module: "DOSCALLS", name: "DosKillProcess",   argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_kill_process(a[0],a[1])) },
+    ApiEntry { ordinal: 236, module: "DOSCALLS", name: "DosSetPriority",   argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_priority(a[0],a[1],a[2],a[3])) },
 
     // ── DOSCALLS — pipes ──────────────────────────────────────────────────
     ApiEntry { ordinal: 239, module: "DOSCALLS", name: "DosCreatePipe",    argc: 3,
@@ -339,6 +345,12 @@ static REGISTRY: &[ApiEntry] = &[
     ApiEntry { ordinal: 639, module: "DOSCALLS", name: "DosProtectSetFileLocks", argc: 6,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect_set_file_locks(a[0],a[1],a[2],a[3],a[4],a[5])) },
 
+    // ── DOSCALLS — extended LIBPATH ───────────────────────────────────────
+    ApiEntry { ordinal: 873, module: "DOSCALLS", name: "DosSetExtLIBPATH",   argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_ext_libpath(a[0],a[1])) },
+    ApiEntry { ordinal: 874, module: "DOSCALLS", name: "DosQueryExtLIBPATH", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_ext_libpath(a[0],a[1])) },
+
     // ── QUECALLS (base 1024) ──────────────────────────────────────────────
     ApiEntry { ordinal: 1024 + 9,  module: "QUECALLS", name: "DosReadQueue",   argc: 8,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_read_queue(a[0],a[1],a[2],a[3],a[4],a[5],a[6],a[7])) },
@@ -372,10 +384,9 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| {
                    let (cb, pch) = (a[0], a[2]);
                    for i in 0..cb {
-                       if let Some(ch) = l.guest_read::<u8>(pch + i) {
-                           if ch.is_ascii_lowercase() {
+                       if let Some(ch) = l.guest_read::<u8>(pch + i)
+                           && ch.is_ascii_lowercase() {
                                let _ = l.guest_write::<u8>(pch + i, ch.to_ascii_uppercase());
-                           }
                        }
                    }
                    ApiResult::Normal(0)

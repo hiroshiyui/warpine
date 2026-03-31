@@ -5,7 +5,7 @@ description: Stage, commit, and push changes to the remote repository with a wel
 
 When committing and pushing changes, always follow these steps:
 
-1. **Run tests** with `cargo test` and ensure all tests pass. If any test fails, stop and report the failures to the user — do not proceed with staging or committing until the tests are green.
+1. **Run tests and lint** with `cargo test` and `cargo clippy -- -D warnings`. Ensure all tests pass and there are zero clippy warnings. If either fails, stop and report the failures to the user — do not proceed with staging or committing until both are clean.
 
 2. **Stage** all relevant changes with `git add`. Be deliberate — stage only files related to the current topic. Never blindly stage everything with `git add -A` if unrelated changes are present.
 

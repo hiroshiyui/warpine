@@ -102,6 +102,10 @@ pub struct MmpmManager {
     pub last_error: u32,
 }
 
+impl Default for MmpmManager {
+    fn default() -> Self { Self::new() }
+}
+
 impl MmpmManager {
     pub fn new() -> Self {
         Self {
@@ -130,11 +134,10 @@ pub fn beep_tone(freq_hz: u32, duration_ms: u32) {
 
     unsafe {
         // Ensure audio subsystem is initialised.
-        if sys::SDL_WasInit(sys::SDL_INIT_AUDIO) == 0 {
-            if sys::SDL_InitSubSystem(sys::SDL_INIT_AUDIO) != 0 {
+        if sys::SDL_WasInit(sys::SDL_INIT_AUDIO) == 0
+            && sys::SDL_InitSubSystem(sys::SDL_INIT_AUDIO) != 0 {
                 warn!("DosBeep: SDL_InitSubSystem(AUDIO) failed");
                 return;
-            }
         }
 
         let desired = sys::SDL_AudioSpec {
@@ -298,7 +301,7 @@ impl super::Loader {
 
             "play" => {
                 let dev_id = self.mci_resolve_alias(tokens.get(1).copied().unwrap_or(""));
-                let wait = tokens.iter().any(|&t| t == "wait");
+                let wait = tokens.contains(&"wait");
                 let flags = if wait { MCI_WAIT } else { 0 };
                 self.mci_play(dev_id as u32, flags, 0)
             }
@@ -317,7 +320,7 @@ impl super::Loader {
                 let dev_id = self.mci_resolve_alias(tokens.get(1).copied().unwrap_or(""));
                 let item_str = tokens.get(2).copied().unwrap_or("");
                 let mode = self.shared.mmpm_mgr.lock().unwrap()
-                    .devices.get(&(dev_id as u16)).map(|d| d.mode);
+                    .devices.get(&dev_id).map(|d| d.mode);
                 let result = match (item_str, mode) {
                     ("mode", Some(MciMode::Playing))  => "playing",
                     ("mode", Some(MciMode::Stopped))  => "stopped",
@@ -470,17 +473,16 @@ impl super::Loader {
         };
 
         let audio_dev = unsafe {
-            if sys::SDL_WasInit(sys::SDL_INIT_AUDIO) == 0 {
-                if sys::SDL_InitSubSystem(sys::SDL_INIT_AUDIO) != 0 {
+            if sys::SDL_WasInit(sys::SDL_INIT_AUDIO) == 0
+                && sys::SDL_InitSubSystem(sys::SDL_INIT_AUDIO) != 0 {
                     warn!("mciPlay: SDL_InitSubSystem(AUDIO) failed");
                     return MCIERR_CANNOT_LOAD_DRIVER;
-                }
             }
 
             let desired = sys::SDL_AudioSpec {
-                freq:     freq,
+                freq,
                 format:   format as sys::SDL_AudioFormat,
-                channels: channels,
+                channels,
                 silence:  0,
                 samples:  1024,
                 padding:  0,
@@ -707,6 +709,7 @@ impl super::Loader {
 /// Returns converted samples as a `Vec<u8>`, or `None` if conversion not needed or fails.
 ///
 /// SAFETY: `src` must point to valid PCM data of `src_len` bytes.
+#[allow(clippy::too_many_arguments)]
 unsafe fn convert_audio(
     src: *mut sdl2::sys::Uint8,
     src_len: u32,

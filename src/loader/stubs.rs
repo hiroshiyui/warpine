@@ -217,10 +217,9 @@ impl super::Loader {
         debug!("  DosMapCase(cb={}, pStr=0x{:08X})", cb, p_str);
         if p_str != 0 {
             for i in 0..cb {
-                if let Some(b) = self.guest_read::<u8>(p_str + i) {
-                    if b >= b'a' && b <= b'z' {
+                if let Some(b) = self.guest_read::<u8>(p_str + i)
+                    && b.is_ascii_lowercase() {
                         self.guest_write::<u8>(p_str + i, b - 32);
-                    }
                 }
             }
         }
@@ -331,6 +330,7 @@ impl super::Loader {
     }
 
     /// DosGetMessage (ordinal 317): get message from MSG file.
+    #[allow(clippy::too_many_arguments)]
     pub fn dos_get_message(&self, _p_table: u32, _c_table: u32, p_buf: u32, cb_buf: u32,
                            msg_num: u32, psz_file: u32, pcb_msg: u32) -> u32 {
         let file = self.read_guest_string(psz_file);
@@ -599,6 +599,7 @@ impl super::Loader {
     // ── Step 6: Device I/O Stubs ──
 
     /// DosDevIOCtl (ordinal 284): device I/O control.
+    #[allow(clippy::too_many_arguments)]
     pub fn dos_dev_ioctl(&self, hdev: u32, category: u32, function: u32, _p_params: u32, _cb_params: u32,
                          _pcb_params: u32, _p_data: u32, _cb_data: u32, _pcb_data: u32) -> u32 {
         debug!("  DosDevIOCtl(hdev={}, cat={}, func={})", hdev, category, function);
@@ -665,6 +666,7 @@ impl super::Loader {
 
     // ── Step 8: Named Pipe Stubs ──
 
+    #[allow(clippy::too_many_arguments)]
     pub fn dos_create_npipe(&self, psz_name: u32, _ph: u32, _open_mode: u32, _pipe_mode: u32, _out_sz: u32, _in_sz: u32, _timeout: u32) -> u32 {
         let name = self.read_guest_string(psz_name);
         warn!("  DosCreateNPipe('{}') - not implemented", name);
@@ -774,11 +776,112 @@ impl super::Loader {
         debug!("  DosSetDateTime (stub)");
         NO_ERROR
     }
+
+    // ── Step 10: Thread / Environment / LIBPATH ──
+
+    /// DosKillThread (ordinal 111): terminate a thread.
+    ///
+    /// OS/2 signature: DosKillThread(TID tid)
+    ///
+    /// Warpine removes the JoinHandle from the thread table, orphaning the
+    /// host thread.  True async cancellation is not implemented — this is
+    /// sufficient for apps that kill subsidiary worker threads before exit.
+    pub fn dos_kill_thread(&self, tid: u32) -> u32 {
+        debug!("  DosKillThread(tid={})", tid);
+        let removed = self.shared.threads.lock_or_recover().remove(&tid);
+        if removed.is_some() { NO_ERROR } else { ERROR_INVALID_HANDLE }
+    }
+
+    /// DosScanEnv (ordinal 227): scan the process environment for a variable.
+    ///
+    /// OS/2 signature: DosScanEnv(PCSZ pszName, PCSZ *ppszValue)
+    ///
+    /// Reads the environment block pointed to by PIB.pib_pchenv (PIB+0x10),
+    /// which is a sequence of `NAME=VALUE\0` strings terminated by an extra
+    /// `\0`.  On success, writes the guest pointer to the value substring
+    /// into *ppszValue and returns NO_ERROR.
+    pub fn dos_scan_env(&self, psz_name: u32, pp_value: u32) -> u32 {
+        let name = self.read_guest_string(psz_name);
+        debug!("  DosScanEnv('{}')", name);
+        if name.is_empty() { return ERROR_ENVVAR_NOT_FOUND; }
+
+        // PIB.pib_pchenv is at PIB_BASE + 0x10
+        let env_addr = match self.guest_read::<u32>(super::constants::PIB_BASE + 0x10) {
+            Some(a) => a,
+            None => return ERROR_ENVVAR_NOT_FOUND,
+        };
+
+        // Scan the double-null–terminated environment block.
+        let mut cursor = env_addr;
+        loop {
+            let entry = self.read_guest_string(cursor);
+            if entry.is_empty() { break; } // double-null: end of block
+
+            // Find `NAME=VALUE` — compare the prefix including the '='
+            let prefix = format!("{}=", name);
+            if entry.to_ascii_uppercase().starts_with(&prefix.to_ascii_uppercase()) {
+                // Write the guest pointer to the value part into *ppszValue
+                let value_offset = cursor + prefix.len() as u32;
+                self.guest_write::<u32>(pp_value, value_offset);
+                return NO_ERROR;
+            }
+            cursor += entry.len() as u32 + 1; // skip past the NUL terminator
+        }
+
+        ERROR_ENVVAR_NOT_FOUND
+    }
+
+    /// DosSetPriority (ordinal 236): set thread/process priority.
+    ///
+    /// OS/2 signature: DosSetPriority(ULONG scope, ULONG prtyClass, LONG delta, ULONG target)
+    ///
+    /// Priority scheduling is not implemented; this is a no-op stub that
+    /// satisfies apps which call it during initialisation.
+    pub fn dos_set_priority(&self, scope: u32, prty_class: u32, delta: u32, target: u32) -> u32 {
+        debug!("  DosSetPriority(scope={}, class={}, delta={}, target={})", scope, prty_class, delta as i32, target);
+        NO_ERROR
+    }
+
+    /// DosSetExtLIBPATH (ordinal 873): set extended LIBPATH prefix or suffix.
+    ///
+    /// OS/2 signature: DosSetExtLIBPATH(PCSZ pszExtLIBPATH, ULONG flags)
+    /// - flags 1 (BEGIN_LIBPATH): prepend path
+    /// - flags 2 (END_LIBPATH):   append path
+    pub fn dos_set_ext_libpath(&self, psz_path: u32, flags: u32) -> u32 {
+        let path = if psz_path != 0 { self.read_guest_string(psz_path) } else { String::new() };
+        debug!("  DosSetExtLIBPATH('{}', flags={})", path, flags);
+        match flags {
+            BEGIN_LIBPATH => { *self.shared.begin_libpath.lock_or_recover() = path; NO_ERROR }
+            END_LIBPATH   => { *self.shared.end_libpath.lock_or_recover() = path;   NO_ERROR }
+            _             => ERROR_INVALID_FUNCTION,
+        }
+    }
+
+    /// DosQueryExtLIBPATH (ordinal 874): query extended LIBPATH prefix or suffix.
+    ///
+    /// OS/2 signature: DosQueryExtLIBPATH(PSZ pszExtLIBPATH, ULONG flags)
+    ///
+    /// The caller provides a pre-allocated buffer of at least CCHMAXPATH (260)
+    /// bytes at pszExtLIBPATH.  Writes the stored path as a NUL-terminated
+    /// string.
+    pub fn dos_query_ext_libpath(&self, psz_path: u32, flags: u32) -> u32 {
+        debug!("  DosQueryExtLIBPATH(flags={})", flags);
+        if psz_path == 0 { return ERROR_INVALID_FUNCTION; }
+        let stored = match flags {
+            BEGIN_LIBPATH => self.shared.begin_libpath.lock_or_recover().clone(),
+            END_LIBPATH   => self.shared.end_libpath.lock_or_recover().clone(),
+            _             => return ERROR_INVALID_FUNCTION,
+        };
+        self.guest_write_bytes(psz_path, stored.as_bytes());
+        self.guest_write::<u8>(psz_path + stored.len() as u32, 0); // NUL terminator
+        NO_ERROR
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::super::Loader;
+    use super::super::mutex_ext::MutexExt;
 
     #[test]
     fn test_edit_name_star_extension() {
@@ -820,5 +923,91 @@ mod tests {
         // Ensure range queries would work: iStart <= iLast
         assert!(QSV_VERSION_MAJOR < QSV_VERSION_REVISION);
         assert!(QSV_MAX_PATH_LENGTH < QSV_MAX_COMP_LENGTH);
+    }
+
+    #[test]
+    fn test_dos_set_priority_is_noop() {
+        let loader = Loader::new_mock();
+        assert_eq!(loader.dos_set_priority(1, 2, 0, 0),
+                   super::super::constants::NO_ERROR);
+    }
+
+    #[test]
+    fn test_dos_kill_thread_invalid_tid() {
+        let loader = Loader::new_mock();
+        // No threads registered — should return ERROR_INVALID_HANDLE
+        assert_eq!(loader.dos_kill_thread(99),
+                   super::super::constants::ERROR_INVALID_HANDLE);
+    }
+
+    #[test]
+    fn test_dos_ext_libpath_roundtrip() {
+        use super::super::constants::{BEGIN_LIBPATH, END_LIBPATH, NO_ERROR};
+
+        let loader = Loader::new_mock();
+
+        // Reserve a guest buffer at a known address
+        let buf = loader.shared.mem_mgr.lock_or_recover().alloc(512).unwrap();
+
+        // Set and query BEGINLIBPATH
+        let path = b"C:\\MYLIB\0";
+        loader.guest_write_bytes(buf, path);
+        assert_eq!(loader.dos_set_ext_libpath(buf, BEGIN_LIBPATH), NO_ERROR);
+
+        let out_buf = loader.shared.mem_mgr.lock_or_recover().alloc(512).unwrap();
+        assert_eq!(loader.dos_query_ext_libpath(out_buf, BEGIN_LIBPATH), NO_ERROR);
+        assert_eq!(loader.read_guest_string(out_buf), "C:\\MYLIB");
+
+        // Set and query ENDLIBPATH
+        let path2 = b"D:\\EXTRA\0";
+        loader.guest_write_bytes(buf, path2);
+        assert_eq!(loader.dos_set_ext_libpath(buf, END_LIBPATH), NO_ERROR);
+
+        let out_buf2 = loader.shared.mem_mgr.lock_or_recover().alloc(512).unwrap();
+        assert_eq!(loader.dos_query_ext_libpath(out_buf2, END_LIBPATH), NO_ERROR);
+        assert_eq!(loader.read_guest_string(out_buf2), "D:\\EXTRA");
+
+        // BEGINLIBPATH is still independent
+        let out_begin = loader.shared.mem_mgr.lock_or_recover().alloc(512).unwrap();
+        assert_eq!(loader.dos_query_ext_libpath(out_begin, BEGIN_LIBPATH), NO_ERROR);
+        assert_eq!(loader.read_guest_string(out_begin), "C:\\MYLIB");
+
+        // Invalid flag
+        assert_ne!(loader.dos_query_ext_libpath(out_buf, 99), NO_ERROR);
+    }
+
+    #[test]
+    fn test_dos_scan_env_found_and_not_found() {
+        use super::super::constants::{NO_ERROR, ERROR_ENVVAR_NOT_FOUND, PIB_BASE};
+
+        let loader = Loader::new_mock();
+
+        // Build a tiny environment block: "FOO=bar\0PATH=C:\\\0\0"
+        let env = b"FOO=bar\0PATH=C:\\\0\0";
+        let env_addr = loader.shared.mem_mgr.lock_or_recover().alloc(64).unwrap();
+        loader.guest_write_bytes(env_addr, env);
+
+        // Write env_addr into PIB.pib_pchenv
+        loader.guest_write::<u32>(PIB_BASE + 0x10, env_addr);
+
+        // Write the variable name into guest memory
+        let name_buf = loader.shared.mem_mgr.lock_or_recover().alloc(16).unwrap();
+        loader.guest_write_bytes(name_buf, b"FOO\0");
+
+        // Pointer for *ppszValue
+        let ptr_buf = loader.shared.mem_mgr.lock_or_recover().alloc(4).unwrap();
+
+        // Should find FOO and point at "bar"
+        assert_eq!(loader.dos_scan_env(name_buf, ptr_buf), NO_ERROR);
+        let value_ptr = loader.guest_read::<u32>(ptr_buf).unwrap();
+        assert_eq!(loader.read_guest_string(value_ptr), "bar");
+
+        // Case-insensitive lookup: "foo" should also find "FOO=bar"
+        loader.guest_write_bytes(name_buf, b"foo\0");
+        assert_eq!(loader.dos_scan_env(name_buf, ptr_buf), NO_ERROR);
+
+        // Non-existent variable
+        loader.guest_write_bytes(name_buf, b"MISSING\0");
+        assert_eq!(loader.dos_scan_env(name_buf, ptr_buf), ERROR_ENVVAR_NOT_FOUND);
     }
 }

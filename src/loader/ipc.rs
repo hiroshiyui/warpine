@@ -42,6 +42,10 @@ pub struct SemaphoreManager {
     next_handle: u32,
 }
 
+impl Default for SemaphoreManager {
+    fn default() -> Self { Self::new() }
+}
+
 impl SemaphoreManager {
     pub fn new() -> Self {
         SemaphoreManager {
@@ -137,6 +141,10 @@ pub struct OS2Queue {
 pub struct QueueManager {
     queues: HashMap<u32, Arc<Mutex<OS2Queue>>>,
     next_handle: u32,
+}
+
+impl Default for QueueManager {
+    fn default() -> Self { Self::new() }
 }
 
 impl QueueManager {

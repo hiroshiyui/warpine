@@ -51,7 +51,8 @@ impl super::Loader {
             42 => { debug!("  VioSetCp (stub)"); NO_ERROR },
             // VioGetConfig(reserved, pConfig, hvio) → ESP+4=hvio, +8=pConfig, +12=reserved
             46 => self.vio_get_config(read_stack(12), read_stack(8)),
-            22 => { debug!("  VioSetMode (stub)"); NO_ERROR },
+            // VioSetMode(pMode, hvio) → ESP+4=hvio, +8=pMode
+            22 => self.vio_set_mode(read_stack(8), read_stack(4)),
             31 => { debug!("  VioGetBuf (stub)"); NO_ERROR },
             43 => { debug!("  VioShowBuf (stub)"); NO_ERROR },
             _ => { warn!("Warning: Unknown VIOCALLS Ordinal {}", ordinal); NO_ERROR }
@@ -97,6 +98,40 @@ impl super::Loader {
         NO_ERROR
     }
 
+    /// VioSetMode (ordinal 22): set screen mode (rows/cols).
+    ///
+    /// OS/2 VIOMODEINFO layout (first 12 bytes required):
+    ///   +0 cb(u16)  +2 fbType(u8)  +3 color(u8)  +4 col(u16)  +6 row(u16)
+    ///   +8 hres(u16)  +10 vres(u16)
+    ///
+    /// Only text mode (fbType == 1) is supported.  The SDL2 text window will
+    /// resize automatically on the next rendered frame.
+    fn vio_set_mode(&self, p_mode: u32, _hvio: u32) -> u32 {
+        debug!("  VioSetMode(p_mode=0x{:08X})", p_mode);
+        if p_mode == 0 { return ERROR_INVALID_FUNCTION; }
+
+        let cb = self.guest_read::<u16>(p_mode).unwrap_or(0);
+        if cb < 8 { return ERROR_INVALID_LEVEL; }
+
+        let fb_type = self.guest_read::<u8>(p_mode + 2).unwrap_or(0);
+        if fb_type != 1 {
+            // Only text mode (fbType=1) is supported.
+            return ERROR_INVALID_FUNCTION;
+        }
+
+        let new_cols = self.guest_read::<u16>(p_mode + 4).unwrap_or(80);
+        let new_rows = self.guest_read::<u16>(p_mode + 6).unwrap_or(25);
+
+        if new_cols < 1 || new_rows < 1 || new_cols > 255 || new_rows > 255 {
+            return ERROR_INVALID_LEVEL;
+        }
+
+        let mut console = self.shared.console_mgr.lock_or_recover();
+        console.resize(new_rows, new_cols);
+        debug!("  VioSetMode → {}×{} text mode", new_cols, new_rows);
+        NO_ERROR
+    }
+
     /// VioGetCurPos (ordinal 4): get cursor position.
     fn vio_get_cur_pos(&self, p_row: u32, p_col: u32, _hvio: u32) -> u32 {
         debug!("  VioGetCurPos");
@@ -116,6 +151,7 @@ impl super::Loader {
 
     /// VioScrollUp (ordinal 7): scroll a screen region up.
     /// `p_cell` points to a 2-byte (char, attr) fill cell; NULL → space/grey.
+    #[allow(clippy::too_many_arguments)]
     fn vio_scroll_up(&self, top: u32, left: u32, bottom: u32, right: u32, lines: u32, p_cell: u32, _hvio: u32) -> u32 {
         debug!("  VioScrollUp(top={}, left={}, bottom={}, right={}, lines={}, p_cell=0x{:08X})", top, left, bottom, right, lines, p_cell);
         let fill_cell = if p_cell != 0 {
@@ -132,6 +168,7 @@ impl super::Loader {
 
     /// VioScrollDn (ordinal 8): scroll a screen region down.
     /// `p_cell` points to a 2-byte (char, attr) fill cell; NULL → space/grey.
+    #[allow(clippy::too_many_arguments)]
     fn vio_scroll_dn(&self, top: u32, _left: u32, bottom: u32, _right: u32, lines: u32, p_cell: u32, _hvio: u32) -> u32 {
         debug!("  VioScrollDn(top={}, bottom={}, lines={}, p_cell=0x{:08X})", top, bottom, lines, p_cell);
         let fill_cell = if p_cell != 0 {
@@ -202,7 +239,7 @@ impl super::Loader {
             let y_start = self.guest_read::<u16>(p_cur_data).unwrap_or(14);
             let c_end   = self.guest_read::<u16>(p_cur_data + 2).unwrap_or(15);
             let attr    = self.guest_read::<u16>(p_cur_data + 6).unwrap_or(0);
-            let visible = (attr & 0xFFFF) != 0xFFFF;
+            let visible = attr != 0xFFFF;
             let mut console = self.shared.console_mgr.lock_or_recover();
             console.set_cursor_type(visible);
             console.set_cursor_shape(y_start as u8, c_end as u8);
@@ -488,6 +525,80 @@ mod tests {
         write_stack(&loader, esp, &[0, p_out]);
         loader.handle_viocalls(&mut vcpu, 0, 33);
         assert_eq!(loader.guest_read::<u16>(p_out + 6).unwrap(), 0xFFFF, "attr (hidden)");
+    }
+
+    #[test]
+    fn test_vio_set_mode_resizes_console() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp: u32    = 0x1000;
+        let p_mode: u32 = 0x2000;
+        vcpu.regs.rsp = esp as u64;
+
+        // Build a VIOMODEINFO: cb=12, fbType=1 (text), color=4, cols=132, rows=50
+        loader.guest_write::<u16>(p_mode,      12).unwrap(); // cb
+        loader.guest_write::<u8>(p_mode + 2,    1).unwrap(); // fbType = text
+        loader.guest_write::<u8>(p_mode + 3,    4).unwrap(); // color = 16
+        loader.guest_write::<u16>(p_mode + 4, 132).unwrap(); // cols
+        loader.guest_write::<u16>(p_mode + 6,  50).unwrap(); // rows
+
+        // VioSetMode(pMode, hvio) → ESP+4=hvio, +8=pMode
+        write_stack(&loader, esp, &[/*hvio*/0, /*pMode*/p_mode]);
+        let result = loader.handle_viocalls(&mut vcpu, 0, 22);
+        assert!(matches!(result, super::super::ApiResult::Normal(0)));
+
+        let con = loader.shared.console_mgr.lock_or_recover();
+        assert_eq!(con.cols, 132, "cols should be updated to 132");
+        assert_eq!(con.rows, 50,  "rows should be updated to 50");
+        assert_eq!(con.buffer.len(), 132 * 50, "buffer resized");
+    }
+
+    #[test]
+    fn test_vio_set_mode_invalid_type_rejected() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp: u32    = 0x1000;
+        let p_mode: u32 = 0x2000;
+        vcpu.regs.rsp = esp as u64;
+
+        // fbType = 0 (graphics mode) — not supported
+        loader.guest_write::<u16>(p_mode,     12).unwrap();
+        loader.guest_write::<u8>(p_mode + 2,   0).unwrap(); // graphics
+        loader.guest_write::<u8>(p_mode + 3,   4).unwrap();
+        loader.guest_write::<u16>(p_mode + 4, 80).unwrap();
+        loader.guest_write::<u16>(p_mode + 6, 25).unwrap();
+        write_stack(&loader, esp, &[0, p_mode]);
+        let result = loader.handle_viocalls(&mut vcpu, 0, 22);
+        assert!(!matches!(result, super::super::ApiResult::Normal(0)),
+            "graphics mode must be rejected");
+    }
+
+    #[test]
+    fn test_vio_set_mode_roundtrip_via_get_mode() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp: u32    = 0x1000;
+        let p_mode: u32 = 0x2000;
+        vcpu.regs.rsp = esp as u64;
+
+        // Set 40×12
+        loader.guest_write::<u16>(p_mode,     12).unwrap();
+        loader.guest_write::<u8>(p_mode + 2,   1).unwrap();
+        loader.guest_write::<u8>(p_mode + 3,   4).unwrap();
+        loader.guest_write::<u16>(p_mode + 4, 40).unwrap();
+        loader.guest_write::<u16>(p_mode + 6, 12).unwrap();
+        write_stack(&loader, esp, &[0, p_mode]);
+        loader.handle_viocalls(&mut vcpu, 0, 22);
+
+        // Read back with VioGetMode
+        let p_out: u32 = 0x3000;
+        write_stack(&loader, esp, &[0, p_out]);
+        let result = loader.handle_viocalls(&mut vcpu, 0, 21);
+        assert!(matches!(result, super::super::ApiResult::Normal(0)));
+        assert_eq!(loader.guest_read::<u16>(p_out + 4).unwrap(), 40);
+        assert_eq!(loader.guest_read::<u16>(p_out + 6).unwrap(), 12);
+        assert_eq!(loader.guest_read::<u16>(p_out + 8).unwrap(),  40 * 8);
+        assert_eq!(loader.guest_read::<u16>(p_out + 10).unwrap(), 12 * 16);
     }
 
     #[test]

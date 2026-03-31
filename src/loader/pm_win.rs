@@ -187,15 +187,14 @@ impl super::Loader {
                 let mp2 = read_stack(16);
                 let wm = self.shared.window_mgr.lock_or_recover();
                 let hmq = wm.find_hmq_for_hwnd(hwnd);
-                if let Some(hmq) = hmq {
-                    if let Some(mq_arc) = wm.get_mq(hmq) {
+                if let Some(hmq) = hmq
+                    && let Some(mq_arc) = wm.get_mq(hmq) {
                         let mut mq = mq_arc.lock_or_recover();
                         mq.messages.push_back(OS2Message {
                             hwnd, msg, mp1, mp2, time: 0, x: 0, y: 0,
                         });
                         // Wake WinGetMsg if it's waiting on the condvar
                         mq.cond.notify_one();
-                    }
                 }
                 ApiResult::Normal(1)
             }
@@ -334,15 +333,14 @@ impl super::Loader {
                         if !running_clone.load(std::sync::atomic::Ordering::Relaxed) { break; }
                         let wm = shared.window_mgr.lock_or_recover();
                         let hmq = wm.find_hmq_for_hwnd(hwnd);
-                        if let Some(hmq) = hmq {
-                            if let Some(mq_arc) = wm.get_mq(hmq) {
+                        if let Some(hmq) = hmq
+                            && let Some(mq_arc) = wm.get_mq(hmq) {
                                 let mut mq = mq_arc.lock_or_recover();
                                 mq.messages.push_back(OS2Message {
                                     hwnd, msg: WM_TIMER, mp1: id_timer, mp2: 0,
                                     time: 0, x: 0, y: 0,
                                 });
                                 mq.cond.notify_one();
-                            }
                         }
                     }
                 });
@@ -450,15 +448,14 @@ impl super::Loader {
                 let wm = self.shared.window_mgr.lock_or_recover();
                 let target = wm.frame_to_client.get(&hwnd).copied().unwrap_or(hwnd);
                 let hmq = wm.find_hmq_for_hwnd(target);
-                if let Some(hmq) = hmq {
-                    if let Some(mq_arc) = wm.get_mq(hmq) {
+                if let Some(hmq) = hmq
+                    && let Some(mq_arc) = wm.get_mq(hmq) {
                         let mut mq = mq_arc.lock_or_recover();
                         mq.messages.push_back(OS2Message {
                             hwnd: target, msg: WM_PAINT, mp1: 0, mp2: 0,
                             time: 0, x: 0, y: 0,
                         });
                         mq.cond.notify_one();
-                    }
                 }
                 ApiResult::Normal(1)
             }
@@ -754,10 +751,9 @@ impl super::Loader {
                 let psz_text = read_stack(12);
                 let text = self.read_guest_string(psz_text);
                 let mut wm = self.shared.window_mgr.lock_or_recover();
-                if let Some(child_hwnd) = wm.find_child_by_id(hwnd_dlg, id_item) {
-                    if let Some(win) = wm.get_window_mut(child_hwnd) {
+                if let Some(child_hwnd) = wm.find_child_by_id(hwnd_dlg, id_item)
+                    && let Some(win) = wm.get_window_mut(child_hwnd) {
                         win.text = text;
-                    }
                 }
                 ApiResult::Normal(1)
             }

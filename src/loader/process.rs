@@ -19,6 +19,7 @@ impl super::Loader {
     /// - pArg: double-null-terminated string (program name \0 args \0\0)
     /// - pRes: pointer to RESULTCODES struct (codeTerminate, codeResult)
     /// - pName: program path
+    #[allow(clippy::too_many_arguments)]
     pub fn dos_exec_pgm(&self, p_objname: u32, cb_objname: u32, exec_flag: u32,
                          p_arg: u32, _p_env: u32, p_res: u32, p_name: u32) -> u32 {
         let prog_name = self.read_guest_string(p_name);
@@ -86,10 +87,9 @@ impl super::Loader {
                 std::env::current_dir().ok().map(|base| base.join(&dir))
             }
         };
-        if let Some(ref cwd) = cwd {
-            if cwd.is_dir() {
+        if let Some(ref cwd) = cwd
+            && cwd.is_dir() {
                 cmd.current_dir(cwd);
-            }
         }
 
         match exec_flag {

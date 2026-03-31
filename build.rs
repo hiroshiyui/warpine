@@ -19,6 +19,6 @@ fn pkg_config_libdir(lib: &str) -> Result<String, std::io::Error> {
     if out.status.success() {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
-        Err(std::io::Error::new(std::io::ErrorKind::Other, "pkg-config failed"))
+        Err(std::io::Error::other("pkg-config failed"))
     }
 }

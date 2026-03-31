@@ -77,7 +77,7 @@ impl GuestMemory {
     /// or `None` if `offset..offset+len` would exceed the allocation bounds.
     pub fn ptr_at(&self, offset: u32, len: usize) -> Option<*mut u8> {
         let off = offset as usize;
-        if off.checked_add(len).map_or(true, |end| end > self.size) {
+        if off.checked_add(len).is_none_or(|end| end > self.size) {
             return None;
         }
         Some(unsafe { self.ptr.add(off) })
@@ -108,6 +108,12 @@ impl GuestMemory {
 
     /// Return a mutable byte slice into guest memory at `offset..offset+len`.
     /// Returns `None` if the range would be out of bounds.
+    ///
+    /// # Safety
+    ///
+    /// This uses interior mutability through a raw pointer.  The caller must
+    /// ensure no other live mutable reference into the same region exists.
+    #[allow(clippy::mut_from_ref)]
     pub fn slice_mut(&self, offset: u32, len: usize) -> Option<&mut [u8]> {
         let p = self.ptr_at(offset, len)?;
         Some(unsafe { std::slice::from_raw_parts_mut(p, len) })

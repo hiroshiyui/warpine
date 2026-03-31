@@ -80,6 +80,10 @@ pub struct HandleManager {
 /// VFS handles occupy 3..PIPE_HANDLE_BASE-1, pipe handles occupy PIPE_HANDLE_BASE+.
 pub const PIPE_HANDLE_BASE: u32 = 0x1000;
 
+impl Default for HandleManager {
+    fn default() -> Self { Self::new() }
+}
+
 impl HandleManager {
     pub fn new() -> Self {
         HandleManager {
@@ -133,6 +137,10 @@ pub struct HDirManager {
     next_handle: u32,
 }
 
+impl Default for HDirManager {
+    fn default() -> Self { Self::new() }
+}
+
 impl HDirManager {
     pub fn new() -> Self {
         HDirManager {
@@ -166,6 +174,10 @@ pub struct ProcessManager {
     /// exits so no output is lost and the thread is properly reaped.
     relay_threads: HashMap<u32, std::thread::JoinHandle<()>>,
     next_pid: u32,
+}
+
+impl Default for ProcessManager {
+    fn default() -> Self { Self::new() }
 }
 
 impl ProcessManager {
@@ -231,6 +243,10 @@ pub struct SharedMemManager {
     named_blocks: HashMap<String, u32>,
 }
 
+impl Default for SharedMemManager {
+    fn default() -> Self { Self::new() }
+}
+
 impl SharedMemManager {
     pub fn new() -> Self {
         SharedMemManager { named_blocks: HashMap::new() }
@@ -248,6 +264,10 @@ impl SharedMemManager {
 pub struct ResourceManager {
     // (type_id, name_id) → (guest_addr, size)
     resources: HashMap<(u16, u16), (u32, u32)>,
+}
+
+impl Default for ResourceManager {
+    fn default() -> Self { Self::new() }
 }
 
 impl ResourceManager {
@@ -282,6 +302,10 @@ pub struct LoadedDll {
 pub struct DllManager {
     dlls: Vec<LoadedDll>,
     next_handle: u32,
+}
+
+impl Default for DllManager {
+    fn default() -> Self { Self::new() }
 }
 
 impl DllManager {

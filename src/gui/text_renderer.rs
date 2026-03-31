@@ -44,7 +44,7 @@ pub const CGA_PALETTE: [u32; 16] = [
 /// - All other bytes return a blank glyph.
 pub fn get_cp437_glyph(ch: u8) -> [u8; 16] {
     // ASCII printable range: delegate to the existing 8×16 font
-    if ch >= 0x20 && ch <= 0x7E {
+    if (0x20..=0x7E).contains(&ch) {
         let idx = (ch - 0x20) as usize;
         let base = idx * 16;
         let mut g = [0u8; 16];
@@ -72,24 +72,24 @@ pub fn get_cp437_glyph(ch: u8) -> [u8; 16] {
         0xDA => { // ┌ top-left
             let mut g = [0u8; 16];
             g[7] = 0x0F; // right half of horizontal bar
-            for r in 8..16 { g[r] = 0x08; } // lower vertical
+            g[8..16].fill(0x08); // lower vertical
             g
         }
         0xBF => { // ┐ top-right
             let mut g = [0u8; 16];
             g[7] = 0xF8; // left half of horizontal bar
-            for r in 8..16 { g[r] = 0x08; }
+            g[8..16].fill(0x08);
             g
         }
         0xC0 => { // └ bottom-left
             let mut g = [0u8; 16];
-            for r in 0..7 { g[r] = 0x08; }
+            g[0..7].fill(0x08);
             g[7] = 0x0F;
             g
         }
         0xD9 => { // ┘ bottom-right
             let mut g = [0u8; 16];
-            for r in 0..7 { g[r] = 0x08; }
+            g[0..7].fill(0x08);
             g[7] = 0xF8;
             g
         }
@@ -106,12 +106,12 @@ pub fn get_cp437_glyph(ch: u8) -> [u8; 16] {
         0xC2 => { // ┬ top T
             let mut g = [0u8; 16];
             g[7] = 0xFF;
-            for r in 8..16 { g[r] = 0x08; }
+            g[8..16].fill(0x08);
             g
         }
         0xC1 => { // ┴ bottom T
             let mut g = [0u8; 16];
-            for r in 0..7 { g[r] = 0x08; }
+            g[0..7].fill(0x08);
             g[7] = 0xFF;
             g
         }
@@ -131,26 +131,26 @@ pub fn get_cp437_glyph(ch: u8) -> [u8; 16] {
             let mut g = [0u8; 16];
             g[4] = 0x1F; g[5] = 0x10; g[6] = 0x10;
             g[8] = 0x17;
-            for r in 9..16 { g[r] = 0x14; }
+            g[9..16].fill(0x14);
             g
         }
         0xBB => { // ╗ double top-right
             let mut g = [0u8; 16];
             g[4] = 0xF8; g[5] = 0x08; g[6] = 0x08;
             g[8] = 0xE8;
-            for r in 9..16 { g[r] = 0x14; }
+            g[9..16].fill(0x14);
             g
         }
         0xC8 => { // ╚ double bottom-left
             let mut g = [0u8; 16];
-            for r in 0..6 { g[r] = 0x14; }
+            g[0..6].fill(0x14);
             g[6] = 0x17;
             g[8] = 0x10; g[9] = 0x10; g[10] = 0x1F;
             g
         }
         0xBC => { // ╝ double bottom-right
             let mut g = [0u8; 16];
-            for r in 0..6 { g[r] = 0x14; }
+            g[0..6].fill(0x14);
             g[6] = 0xE8;
             g[8] = 0x08; g[9] = 0x08; g[10] = 0xF8;
             g
@@ -167,14 +167,14 @@ pub fn get_cp437_glyph(ch: u8) -> [u8; 16] {
         }
         0xCA => { // ╩ double bottom T
             let mut g = [0u8; 16];
-            for r in 0..5 { g[r] = 0x14; }
+            g[0..5].fill(0x14);
             g[5] = 0xFF; g[9] = 0xFF;
             g
         }
         0xCB => { // ╦ double top T
             let mut g = [0u8; 16];
             g[5] = 0xFF; g[9] = 0xFF;
-            for r in 10..16 { g[r] = 0x14; }
+            g[10..16].fill(0x14);
             g
         }
         0xCE => { // ╬ double cross
@@ -185,8 +185,8 @@ pub fn get_cp437_glyph(ch: u8) -> [u8; 16] {
 
         // ── Block elements ───────────────────────────────────────────────────
         0xDB => [0xFF; 16],  // █ full block
-        0xDC => { let mut g = [0u8; 16]; for r in 8..16 { g[r] = 0xFF; } g } // ▄ lower half
-        0xDF => { let mut g = [0u8; 16]; for r in 0..8  { g[r] = 0xFF; } g } // ▀ upper half
+        0xDC => { let mut g = [0u8; 16]; g[8..16].fill(0xFF); g } // ▄ lower half
+        0xDF => { let mut g = [0u8; 16]; g[0..8].fill(0xFF); g } // ▀ upper half
         0xDD => [0xF0; 16],  // ▌ left half
         0xDE => [0x0F; 16],  // ▐ right half
 
@@ -203,26 +203,26 @@ pub fn get_cp437_glyph(ch: u8) -> [u8; 16] {
         }
         0xCF => { // ╧
             let mut g = [0u8; 16];
-            for r in 0..7 { g[r] = 0x08; }
+            g[0..7].fill(0x08);
             g[7] = 0xFF;
             g
         }
         0xD0 => { // ╨
             let mut g = [0u8; 16];
-            for r in 0..5 { g[r] = 0x14; }
+            g[0..5].fill(0x14);
             g[5] = 0xFF;
             g
         }
         0xD1 => { // ╤
             let mut g = [0u8; 16];
             g[5] = 0xFF;
-            for r in 9..16 { g[r] = 0x08; }
+            g[9..16].fill(0x08);
             g
         }
         0xD2 => { // ╥
             let mut g = [0u8; 16];
             g[7] = 0xFF;
-            for r in 8..16 { g[r] = 0x14; }
+            g[8..16].fill(0x14);
             g
         }
 
@@ -296,7 +296,7 @@ pub fn run_text_loop<R: TextModeRenderer>(renderer: &mut R, shared: Arc<SharedSt
 
         if shared.exit_requested.load(Ordering::Relaxed) { break; }
 
-        let blink_on = (blink_epoch.elapsed().as_millis() / 500) % 2 == 0;
+        let blink_on = (blink_epoch.elapsed().as_millis() / 500).is_multiple_of(2);
         let buf = VgaTextBuffer::snapshot(&shared);
         renderer.render_frame(&buf, blink_on);
 
@@ -308,28 +308,42 @@ pub fn run_text_loop<R: TextModeRenderer>(renderer: &mut R, shared: Arc<SharedSt
 
 /// SDL2-backed VGA text-mode renderer.
 ///
-/// Creates a fixed 640×400 window (80 cols × 8 px, 25 rows × 16 px).
+/// Opens an SDL2 window sized to `cols × 8` × `rows × 16` pixels and renders
+/// one 8×16 CP437 cell per screen cell.  When the `VgaTextBuffer` dimensions
+/// change (e.g. after a `VioSetMode` call) the window is automatically
+/// resized to match.
+///
 /// Must be created and driven on the main thread.
 pub struct Sdl2TextRenderer {
     canvas: sdl2::render::Canvas<sdl2::video::Window>,
+    /// Texture creator stored alongside the canvas so we can recreate the
+    /// streaming texture on window resize without rebuilding the whole renderer.
+    texture_creator: sdl2::render::TextureCreator<sdl2::video::WindowContext>,
     /// Persistent streaming texture — uploaded once per frame.
     texture: sdl2::render::Texture,
     event_pump: sdl2::EventPump,
-    /// Pixel framebuffer: WIN_W × WIN_H ARGB8888 pixels.
+    /// Pixel framebuffer: `current_cols*8 × current_rows*16` ARGB8888 pixels.
     pixels: Vec<u32>,
+    /// Width of the current window in text columns.
+    current_cols: u16,
+    /// Height of the current window in text rows.
+    current_rows: u16,
 }
 
 impl Sdl2TextRenderer {
-    pub const WIN_W: u32 = 80 * 8;   // 640
-    pub const WIN_H: u32 = 25 * 16;  // 400
+    /// Initial (default) window size — 80 columns × 25 rows.
+    const INIT_COLS: u16 = 80;
+    const INIT_ROWS: u16 = 25;
 
     pub fn new(sdl: &sdl2::Sdl, title: &str) -> Self {
         use sdl2::pixels::PixelFormatEnum;
         use sdl2::render::BlendMode;
 
         let video = sdl.video().expect("SDL2 video subsystem");
+        let init_w = Self::INIT_COLS as u32 * 8;
+        let init_h = Self::INIT_ROWS as u32 * 16;
         let window = video
-            .window(title, Self::WIN_W, Self::WIN_H)
+            .window(title, init_w, init_h)
             .position_centered()
             .build()
             .expect("SDL2 window");
@@ -338,19 +352,23 @@ impl Sdl2TextRenderer {
             .accelerated()
             .build()
             .expect("SDL2 canvas");
-        let tc = canvas.texture_creator();
-        let mut texture = tc
-            .create_texture_streaming(PixelFormatEnum::ARGB8888, Self::WIN_W, Self::WIN_H)
+        let texture_creator = canvas.texture_creator();
+        let mut texture = texture_creator
+            .create_texture_streaming(PixelFormatEnum::ARGB8888, init_w, init_h)
             .expect("SDL2 streaming texture");
         texture.set_blend_mode(BlendMode::None);
         let event_pump = sdl.event_pump().expect("SDL2 event pump");
-        let pixels = vec![0xFF_00_00_00u32; (Self::WIN_W * Self::WIN_H) as usize];
-        Sdl2TextRenderer { canvas, texture, event_pump, pixels }
+        let pixels = vec![0xFF_00_00_00u32; (init_w * init_h) as usize];
+        Sdl2TextRenderer {
+            canvas, texture_creator, texture, event_pump, pixels,
+            current_cols: Self::INIT_COLS,
+            current_rows: Self::INIT_ROWS,
+        }
     }
 
     /// Upload the pixel buffer to the texture and blit to the screen.
     fn present(&mut self) {
-        let w = Self::WIN_W as usize;
+        let w = self.current_cols as usize * 8;
         let pixels = &self.pixels;
         self.texture.with_lock(None, |data: &mut [u8], pitch: usize| {
             for (y, row) in pixels.chunks(w).enumerate() {
@@ -365,14 +383,45 @@ impl Sdl2TextRenderer {
         self.canvas.copy(&self.texture, None, None).expect("canvas copy failed");
         self.canvas.present();
     }
+
+    /// Resize the SDL2 window + recreate the streaming texture when the
+    /// VioManager dimensions change.
+    fn handle_resize(&mut self, new_cols: u16, new_rows: u16) {
+        use sdl2::pixels::PixelFormatEnum;
+        use sdl2::render::BlendMode;
+
+        let new_w = new_cols as u32 * 8;
+        let new_h = new_rows as u32 * 16;
+
+        // Resize the SDL2 window (best-effort; may fail on some platforms
+        // if the window was created without the RESIZABLE flag, but SDL2 will
+        // silently clamp rather than panic).
+        let _ = self.canvas.window_mut().set_size(new_w, new_h);
+
+        // Recreate the streaming texture for the new dimensions.
+        let mut new_tex = self.texture_creator
+            .create_texture_streaming(PixelFormatEnum::ARGB8888, new_w, new_h)
+            .expect("SDL2 texture resize failed");
+        new_tex.set_blend_mode(BlendMode::None);
+        self.texture = new_tex;
+
+        self.pixels = vec![0xFF_00_00_00u32; (new_w * new_h) as usize];
+        self.current_cols = new_cols;
+        self.current_rows = new_rows;
+    }
 }
 
 impl TextModeRenderer for Sdl2TextRenderer {
     fn render_frame(&mut self, buf: &VgaTextBuffer, blink_on: bool) {
+        // Resize window + texture when VioManager dimensions change.
+        if buf.cols != self.current_cols || buf.rows != self.current_rows {
+            self.handle_resize(buf.cols, buf.rows);
+        }
+
         let cols = buf.cols as usize;
         let rows = buf.rows as usize;
-        let win_w = Self::WIN_W as usize;
-        let win_h = Self::WIN_H as usize;
+        let win_w = self.current_cols as usize * 8;
+        let win_h = self.current_rows as usize * 16;
 
         for row in 0..rows {
             for col in 0..cols {
@@ -386,8 +435,7 @@ impl TextModeRenderer for Sdl2TextRenderer {
                 let base_x = col * 8;
                 let base_y = row * 16;
 
-                for gr in 0..16usize {
-                    let bits = glyph[gr];
+                for (gr, &bits) in glyph.iter().enumerate() {
                     let py = base_y + gr;
                     if py >= win_h { break; }
                     for gc in 0..8usize {

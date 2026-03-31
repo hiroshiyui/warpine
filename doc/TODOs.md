@@ -77,10 +77,10 @@ Remaining:
 
 ### DOSCALLS Long Tail
 - [ ] **Structured Exception Handling** — real per-thread handler chain; `DosRaiseException`; `DosUnwindException`
-- [ ] **Environment** — `DosScanEnv`, `DosSetExtLIBPATH`, `DosQueryExtLIBPATH`
+- [x] **Environment** — `DosScanEnv` (ordinal 227), `DosSetExtLIBPATH` (873), `DosQueryExtLIBPATH` (874) implemented; BEGINLIBPATH/ENDLIBPATH stored in `SharedState`
 - [ ] **NLS / DBCS** — `DosQueryDBCSEnv` (DBCS lead-byte table), full `DosMapCase` for non-Latin codepages
-- [ ] **Thread priorities** — `DosSetPriority` (idle / regular / time-critical / server classes); currently ignored
-- [ ] **`DosWaitThread`** — reliable join with timeout; `DosKillThread` — correct cleanup
+- [x] **Thread priorities** — `DosSetPriority` (ordinal 236) implemented as no-op stub
+- [x] **`DosKillThread`** (ordinal 111) — removes JoinHandle from thread table (async cancellation not implemented)
 
 ### Unicode-Internal Architecture (long-term goal)
 Convert Warpine's internal string representation to UTF-8, with codepage↔UTF-8 conversion at every guest/host API boundary. Modelled on Wine's ANSI→UTF-16 approach.
@@ -185,7 +185,8 @@ In OS/2 VIO text mode a DBCS character occupies two consecutive screen cells: ce
 ---
 
 ### VGA Text Renderer — Remaining
-- [ ] **Window resize** — dynamic resize of the SDL2 text window to match VioManager rows/cols (currently fixed at 80×25)
+- [x] **Window resize** — `VioSetMode` (ordinal 22) now resizes `VioManager` via `VioManager::resize()`; `Sdl2TextRenderer::render_frame()` detects changed dims and calls `handle_resize()` to resize the SDL2 window and recreate the streaming texture
+- [x] **ANSI colors in terminal mode** — `VioManager::write_tty` now emits `write_ansi_attr` before printable characters and `\x1b[0m` after, matching the colour output already present in `write_char_str_att`/`write_n_cell`/`write_n_attr`
 
 ---
 

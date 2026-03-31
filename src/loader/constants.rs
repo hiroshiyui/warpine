@@ -148,6 +148,11 @@ pub const ERROR_BUFFER_OVERFLOW: u32 = 111;
 pub const ERROR_INVALID_LEVEL: u32 = 124;
 pub const ERROR_MOD_NOT_FOUND: u32 = 126;
 pub const ERROR_PROC_NOT_FOUND: u32 = 127;
+pub const ERROR_ENVVAR_NOT_FOUND: u32 = 204;
+
+// DosSetExtLIBPATH / DosQueryExtLIBPATH flags
+pub const BEGIN_LIBPATH: u32 = 1;
+pub const END_LIBPATH: u32 = 2;
 
 // DosQuerySysInfo QSV_* index constants (1-based)
 pub const QSV_MAX_PATH_LENGTH: u32 = 1;

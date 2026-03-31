@@ -89,11 +89,10 @@ impl super::Loader {
                     // Trace VIO/KBD import fixups
                     if let FixupTarget::ExternalOrdinal { module_ordinal, proc_ordinal } = &record.target {
                         let module = lx_file.imported_modules.get((*module_ordinal as usize).wrapping_sub(1));
-                        if let Some(m) = module {
-                            if m == "VIOCALLS" || m == "KBDCALLS" {
+                        if let Some(m) = module
+                            && (m == "VIOCALLS" || m == "KBDCALLS") {
                                 debug!("  Fixup: {}.{} -> target 0x{:08X}, src_type=0x{:02X}",
                                        m, proc_ordinal, target_addr, record.source_type & 0x0F);
-                            }
                         }
                     }
                     for &off in &record.source_offsets {

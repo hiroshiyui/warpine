@@ -5,7 +5,7 @@ description: Manage the full software release process, including version bumps, 
 
 When performing release engineering, always follow these steps:
 
-1. **Verify the build is clean** — run `cargo clean && cargo build 2>&1` to confirm a from-scratch build passes with no errors or unexpected warnings. Then run `cargo test 2>&1` to confirm all tests pass. Do not proceed if either fails.
+1. **Verify the build is clean** — run `cargo clean && cargo build 2>&1` to confirm a from-scratch build passes with no errors or unexpected warnings. Then run `cargo test 2>&1` to confirm all tests pass. Then run `cargo clippy -- -D warnings 2>&1` to confirm there are zero lint warnings. Do not proceed if any of these steps fail.
 
 2. **Determine the release type** — review all unreleased commits since the last tag (`git log $(git describe --tags --abbrev=0)..HEAD --oneline`) and classify the release as `major`, `minor`, or `patch` following [Semantic Versioning](https://semver.org/). Present the recommendation to the user and confirm before proceeding.
 

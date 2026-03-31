@@ -5,6 +5,9 @@ use std::sync::{Arc, Mutex, Condvar};
 use std::sync::atomic::AtomicBool;
 use std::thread;
 
+/// Type alias for the timer map to reduce type complexity.
+pub type TimerMap = HashMap<(u32, u32), (Arc<AtomicBool>, Option<thread::JoinHandle<()>>)>;
+
 
 pub struct OS2Message {
     pub hwnd: u32,
@@ -68,7 +71,7 @@ pub struct WindowManager {
     pub frame_to_client: HashMap<u32, u32>,
     pub tid_to_hmq: HashMap<u32, u32>,
     pub gui_tx: Option<crate::gui::GUISender>,
-    pub timers: HashMap<(u32, u32), (Arc<AtomicBool>, Option<thread::JoinHandle<()>>)>,
+    pub timers: TimerMap,
     pub clipboard: HashMap<u32, u32>,
     pub clipboard_open: bool,
     /// Currently captured window handle (0 = none).
@@ -81,6 +84,10 @@ pub struct WindowManager {
     next_hps: u32,
     next_hmq: u32,
     next_haccel: u32,
+}
+
+impl Default for WindowManager {
+    fn default() -> Self { Self::new() }
 }
 
 impl WindowManager {
@@ -126,10 +133,9 @@ impl WindowManager {
             visible: false,
         });
         // Register as child of parent
-        if parent != 0 {
-            if let Some(parent_win) = self.windows.get_mut(&parent) {
+        if parent != 0
+            && let Some(parent_win) = self.windows.get_mut(&parent) {
                 parent_win.children.push(h);
-            }
         }
         self.next_hwnd += 1;
         h
@@ -163,18 +169,12 @@ impl WindowManager {
         self.msg_queues.get(&h).cloned()
     }
     pub fn find_hmq_for_hwnd(&self, hwnd: u32) -> Option<u32> {
-        if let Some(win) = self.windows.get(&hwnd) {
-            if win.hmq != 0 {
+        if let Some(win) = self.windows.get(&hwnd)
+            && win.hmq != 0 {
                 return Some(win.hmq);
-            }
         }
         // Search through tid_to_hmq for a match
-        for (_tid, &hmq) in &self.tid_to_hmq {
-            if self.msg_queues.contains_key(&hmq) {
-                return Some(hmq);
-            }
-        }
-        None
+        self.tid_to_hmq.values().find(|&&hmq| self.msg_queues.contains_key(&hmq)).copied()
     }
     /// Reverse lookup: given a client hwnd, find the frame hwnd.
     /// Returns the client hwnd itself if no mapping exists.
@@ -224,10 +224,9 @@ impl WindowManager {
     pub fn find_child_by_id(&self, parent: u32, id: u32) -> Option<u32> {
         if let Some(win) = self.windows.get(&parent) {
             for &child_hwnd in &win.children {
-                if let Some(child) = self.windows.get(&child_hwnd) {
-                    if child.id == id {
+                if let Some(child) = self.windows.get(&child_hwnd)
+                    && child.id == id {
                         return Some(child_hwnd);
-                    }
                 }
             }
         }

@@ -108,13 +108,13 @@ See [doc/developer_guide.md](doc/developer_guide.md) for detailed internals docu
 
 ### Git Hooks
 
-This repo ships a pre-commit hook that runs `cargo test` before every commit. Activate it once after cloning:
+This repo ships a pre-commit hook that runs `cargo test` and `cargo clippy -- -D warnings` before every commit. Activate it once after cloning:
 
 ```bash
 git config core.hooksPath githooks
 ```
 
-The hook will abort the commit if any test fails.
+The hook will abort the commit if any test fails or if there are clippy warnings.
 
 ## Getting Started
 
@@ -167,10 +167,11 @@ cargo run -- --gdb 1234 samples/hello/hello.exe   # Start with GDB stub on port 
 gdb -ex 'target remote :1234'                      # Attach with GDB
 ```
 
-### 8. Run tests
+### 8. Run tests and lint
 ```bash
 cargo test                        # 281 unit tests (no KVM required)
 cargo test --test integration     # 9 end-to-end tests (requires /dev/kvm)
+cargo clippy -- -D warnings       # Lint — must pass with zero warnings
 ```
 
 ## Status
