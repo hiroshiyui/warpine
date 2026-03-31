@@ -147,7 +147,7 @@ impl super::Loader {
     /// DosQueryCp (ordinal 291): get active codepage.
     /// NOTE: ordinal 291 is shared; see dispatch comment.
     pub fn dos_query_cp(&self, cb: u32, p_cp_list: u32, pcb: u32) -> u32 {
-        let cp = self.shared.locale.codepage;
+        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
         debug!("  DosQueryCp(cp={})", cp);
         if p_cp_list != 0 && cb >= 4 {
             self.guest_write::<u32>(p_cp_list, cp);
@@ -158,9 +158,17 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// DosSetProcessCp (ordinal 289).
+    /// DosSetProcessCp (ordinal 289): set the active codepage for this process.
+    /// Validates against the supported list (437, 850, 852, 932, 949, 950, 1250–1258).
+    /// Returns ERROR_INVALID_CODE_PAGE (470) for unrecognised values.
     pub fn dos_set_process_cp(&self, cp: u32) -> u32 {
-        debug!("  DosSetProcessCp({})", cp);
+        const SUPPORTED: &[u32] = &[437, 850, 852, 932, 949, 950, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258];
+        if !SUPPORTED.contains(&cp) {
+            debug!("  DosSetProcessCp({}) → ERROR_INVALID_CODE_PAGE", cp);
+            return ERROR_INVALID_CODE_PAGE;
+        }
+        self.shared.active_codepage.store(cp, std::sync::atomic::Ordering::Relaxed);
+        debug!("  DosSetProcessCp({}) → NO_ERROR", cp);
         NO_ERROR
     }
 
@@ -1006,5 +1014,56 @@ mod tests {
         // Non-existent variable
         loader.guest_write_bytes(name_buf, b"MISSING\0");
         assert_eq!(loader.dos_scan_env(name_buf, ptr_buf), ERROR_ENVVAR_NOT_FOUND);
+    }
+
+    #[test]
+    fn test_dos_set_process_cp_valid() {
+        use super::super::constants::NO_ERROR;
+        use std::sync::atomic::Ordering;
+
+        let loader = Loader::new_mock();
+        assert_eq!(loader.dos_set_process_cp(850), NO_ERROR);
+        assert_eq!(loader.shared.active_codepage.load(Ordering::Relaxed), 850);
+    }
+
+    #[test]
+    fn test_dos_set_process_cp_invalid() {
+        use super::super::constants::ERROR_INVALID_CODE_PAGE;
+        use std::sync::atomic::Ordering;
+
+        let loader = Loader::new_mock();
+        let result = loader.dos_set_process_cp(9999);
+        assert_eq!(result, ERROR_INVALID_CODE_PAGE);
+        // Active codepage must remain unchanged (still the default 437)
+        assert_eq!(loader.shared.active_codepage.load(Ordering::Relaxed), 437);
+    }
+
+    #[test]
+    fn test_dos_query_cp_reflects_set_process_cp() {
+        use super::super::constants::NO_ERROR;
+        use super::super::mutex_ext::MutexExt;
+
+        let loader = Loader::new_mock();
+        let buf = loader.shared.mem_mgr.lock_or_recover().alloc(8).unwrap();
+        let pcb = loader.shared.mem_mgr.lock_or_recover().alloc(4).unwrap();
+
+        // Default should be 437
+        assert_eq!(loader.dos_query_cp(4, buf, pcb), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(buf).unwrap(), 437);
+
+        // After DosSetProcessCp(850), DosQueryCp must return 850
+        assert_eq!(loader.dos_set_process_cp(850), NO_ERROR);
+        assert_eq!(loader.dos_query_cp(4, buf, pcb), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(buf).unwrap(), 850);
+    }
+
+    #[test]
+    fn test_dos_set_process_cp_all_supported() {
+        use super::super::constants::NO_ERROR;
+
+        let loader = Loader::new_mock();
+        for &cp in &[437u32, 850, 852, 932, 949, 950, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258] {
+            assert_eq!(loader.dos_set_process_cp(cp), NO_ERROR, "cp={cp} should be supported");
+        }
     }
 }

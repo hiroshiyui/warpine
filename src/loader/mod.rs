@@ -26,6 +26,7 @@ mod kbdcalls;
 mod viocalls;
 mod process;
 pub mod locale;
+pub mod codepage;
 pub mod mmpm;
 pub mod crash_dump;
 pub mod api_ring;
@@ -45,7 +46,7 @@ pub use api_ring::{ApiRingBuffer, ApiCallRecord};
 use kvm_backend::KvmVmBackend;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Condvar};
-use std::sync::atomic::{AtomicBool, AtomicI32};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32};
 use std::thread;
 use log::{info, warn};
 
@@ -118,6 +119,9 @@ pub struct SharedState {
     pub exit_requested: AtomicBool,
     pub exit_code: AtomicI32,
     pub locale: locale::Os2Locale,
+    /// Active process codepage — updated by DosSetProcessCp; read by DosQueryCp.
+    /// Initialized from locale.codepage at startup.
+    pub active_codepage: AtomicU32,
     /// Keyboard event queue for SDL2 text-mode (CLI) apps.
     /// The VCPU thread blocks on `kbd_cond` when `use_sdl2_text` is set.
     pub kbd_queue: Mutex<VecDeque<KbdKeyInfo>>,
@@ -202,6 +206,7 @@ impl Loader {
             exit_requested: AtomicBool::new(false),
             exit_code: AtomicI32::new(0),
             locale: locale::Os2Locale::from_host(),
+            active_codepage: AtomicU32::new(437), // default CP437; overridden by DosSetProcessCp
             kbd_queue: Mutex::new(VecDeque::new()),
             kbd_cond: Condvar::new(),
             use_sdl2_text: AtomicBool::new(false),
@@ -276,6 +281,7 @@ impl Loader {
             exit_requested: AtomicBool::new(false),
             exit_code:    AtomicI32::new(0),
             locale:       locale::Os2Locale::from_host(),
+            active_codepage: AtomicU32::new(437),
             kbd_queue:    Mutex::new(VecDeque::new()),
             kbd_cond:     Condvar::new(),
             use_sdl2_text: AtomicBool::new(false),

@@ -154,20 +154,27 @@ impl super::Loader {
         self.shared.guest_mem.slice_mut(offset, len)
     }
 
-    /// Read a null-terminated string from guest memory.
+    /// Read a null-terminated string from guest memory, decoding it with the
+    /// process's active codepage (`SharedState::active_codepage`).
+    ///
+    /// Bytes 0x00–0x7F are always pure ASCII. Upper bytes (0x80–0xFF) are
+    /// decoded via `codepage::cp_decode` using the current process codepage so
+    /// that non-ASCII characters (accented letters, box-drawing, etc.) are
+    /// rendered as the correct Unicode codepoints rather than raw Latin-1 values.
     pub fn read_guest_string(&self, ptr: u32) -> String {
         const MAX_GUEST_STRING_LEN: usize = 4096;
-        let mut s = String::new();
         let base = ptr as usize;
         let mem_size = self.shared.guest_mem.size();
-        if base >= mem_size { return s; }
+        if base >= mem_size { return String::new(); }
         let max_len = MAX_GUEST_STRING_LEN.min(mem_size - base);
+        let mut bytes = Vec::with_capacity(64);
         for i in 0..max_len {
             let byte = self.shared.guest_mem.read::<u8>((base + i) as u32).unwrap_or(0);
             if byte == 0 { break; }
-            s.push(byte as char);
+            bytes.push(byte);
         }
-        s
+        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        super::codepage::cp_decode(&bytes, cp)
     }
 
     /// Translate an OS/2 path to a sandboxed host path.

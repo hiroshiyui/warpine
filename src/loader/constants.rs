@@ -150,6 +150,7 @@ pub const ERROR_INVALID_LEVEL: u32 = 124;
 pub const ERROR_MOD_NOT_FOUND: u32 = 126;
 pub const ERROR_PROC_NOT_FOUND: u32 = 127;
 pub const ERROR_ENVVAR_NOT_FOUND: u32 = 204;
+pub const ERROR_INVALID_CODE_PAGE: u32 = 470;
 
 // ── WC_* built-in window class atoms ─────────────────────────────────────────
 // These are the numeric atom values passed as the pszClass pointer to
