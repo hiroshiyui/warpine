@@ -195,11 +195,43 @@ In OS/2 VIO text mode a DBCS character occupies two consecutive screen cells: ce
 - [ ] `DosQueryCp` / `DosSetProcessCp` — track current process code page accurately (prerequisite for Phase B above)
 - [ ] Full `DosMapCase` for non-Latin codepages (CP852, CP866, CP932, etc.)
 
+### PM Core Window Management — Remaining
+These are high-priority items needed by virtually every real PM application.
+
+- [ ] **`WinMessageBox`** — real modal dialog (currently stubs `MBID_OK`); needs a blocking `WinGetMsg` loop inside a synthesised dialog window
+- [ ] **`WinSetWindowText` / `WinQueryWindowText`** — apps set titles and control labels dynamically after creation; update `OS2Window::text` and re-post `WM_PAINT`
+- [ ] **`WinInvalidateRect` / `WinUpdateWindow`** — explicit repaint requests; synthesise `WM_PAINT` for the target window; needed for proper redraw cycles
+- [ ] **`WinQueryWindowRect` / `WinQueryWindowPos`** — return window geometry; many layout routines call these to measure siblings
+- [ ] **`WinSetWindowPos` with child windows** — currently only handles frame moves; extend to arbitrary child reposition/resize
+- [ ] **`WinEnableWindow` / `WinIsWindowEnabled`** — toggle `WS_DISABLED`; built-in controls should draw grayed when disabled
+
+### PM Menu System
+- [ ] **Menu template parsing** — load `MENUTEMPLATE` resource from LX binary; create `WC_MENU` window hierarchy
+- [ ] **`WinLoadMenu` / `WinSetMenu`** — attach menu to frame; store `hmenu` in `OS2Window`
+- [ ] **`WinSendMsg` → menu → `WM_COMMAND`** — route menu-item activations to the frame's client window procedure
+- [ ] **`WM_INITMENU` / `WM_MENUSELECT`** — sent before menu is displayed / on item highlight
+
+### Dialog System
+- [ ] **Dialog template parsing** — load `DLGTEMPLATE` from LX resource; auto-create child windows; enables real `WinDlgBox` / `WinLoadDlg`
+- [ ] **`WinDlgBox` / `WinLoadDlg`** — modal and modeless dialog creation; runs its own `WinGetMsg` pump
+- [ ] **`WinDismissDlg`** — posts `WM_DISMISS`; unblocks `WinDlgBox`
+- [ ] **`WinDefDlgProc`** — default dialog procedure: keyboard navigation, Enter/Escape handling, default button
+
+### GPI Drawing Primitives
+Most PM apps that custom-paint call at least `GpiSetColor` + `GpiLine` / `GpiBox` / `GpiCharString`.
+
+- [ ] **`GpiSetColor` / `GpiSetBackColor`** — store in `PresentationSpace`; used by all drawing operations
+- [ ] **`GpiSetCurrentPosition` / `GpiQueryCurrentPosition`** — move the current position without drawing
+- [ ] **`GpiLine`** — draw a line from current position to target; emit `GUIMessage::DrawLine`
+- [ ] **`GpiBox`** — filled or outlined rectangle; emit `GUIMessage::DrawBox`
+- [ ] **`GpiCharString` / `GpiCharStringAt`** — draw text at position; emit `GUIMessage::DrawText`
+- [ ] **`GpiSetCharSet` / `GpiLoadPublicFonts` / `GpiQueryFonts`** — font selection stubs; return reasonable defaults
+
 ### PM Advanced Controls
+- [x] **`WinSubclassWindow`** — replace window procedure and chain to original (ordinal 895)
+- [x] **`WinCreateWindow`** — create any window/control from class atom or name; built-in WC_BUTTON, WC_STATIC, WC_SCROLLBAR, WC_ENTRYFIELD, WC_MLE, WC_LISTBOX render via `GUIMessage` (ordinal 709)
 - [ ] **`WC_CONTAINER`** — Icon / Name / Text / Detail / Tree view modes; record management; sorting and filtering
 - [ ] **`WC_NOTEBOOK`** — tabbed property sheet
-- [ ] **Dialog template parsing** — load `DLGTEMPLATE` from LX resource; auto-create child windows; enables real `WinDlgBox` / `WinLoadDlg`
-- [ ] **`WinSubclassWindow`** — replace window procedure and chain to original
 - [ ] **Drag and drop** — `DrgDrag`, `DrgAccessDraginfo`, `DM_DRAGOVER` / `DM_DROP`
 - [ ] **Custom cursors** — `WinSetPointer` via `SDL_CreateColorCursor`
 - [ ] **Printing** — `DevOpenDC`, `DevCloseDC`, basic spool API stubs
