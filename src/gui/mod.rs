@@ -9,11 +9,11 @@ pub mod text_renderer;
 
 pub use message::{GUIMessage, GUISender, create_gui_channel};
 pub use renderer::{PmRenderer, run_pm_loop};
-pub use render_utils::{flip_y, text_screen_y, glyph_index,
+pub use render_utils::{flip_y, text_screen_y,
     render_text_to_buffer, render_rect_to_buffer, render_line_to_buffer};
 pub use headless::HeadlessRenderer;
 pub use sdl2_renderer::{Sdl2Renderer, push_msg, sdl_scancode_to_os2, sdl_keycode_to_vk};
 pub use text_renderer::{
     CGA_PALETTE, VgaTextBuffer, TextModeRenderer, HeadlessTextRenderer,
-    Sdl2TextRenderer, run_text_loop, get_cp437_glyph,
+    Sdl2TextRenderer, run_text_loop, get_glyph_for_char,
 };

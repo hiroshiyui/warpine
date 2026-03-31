@@ -13,12 +13,6 @@ pub fn text_screen_y(y: i32, row: i32, char_h: i32, height: u32) -> i32 {
     height as i32 - y - char_h + row
 }
 
-/// Map a font character to its glyph index (0 = space for unknown/control chars).
-pub fn glyph_index(ch: char) -> usize {
-    let c = ch as u32;
-    if (32..=126).contains(&c) { (c - 32) as usize } else { 0 }
-}
-
 /// Render text into a raw pixel buffer (no SDL2 dependency).
 /// `width`/`height` are buffer dimensions; coordinates are OS/2 bottom-left origin.
 pub fn render_text_to_buffer(buf: &mut [u32], width: u32, height: u32, x: i32, y: i32, text: &str, color: u32) {
@@ -27,13 +21,12 @@ pub fn render_text_to_buffer(buf: &mut [u32], width: u32, height: u32, x: i32, y
     let char_h: i32 = 16;
     for (i, ch) in text.chars().enumerate() {
         let cx = x + (i as i32 * char_w);
-        let gi = glyph_index(ch);
-        for row in 0..char_h {
-            let bits = crate::font8x16::FONT_8X16[gi * 16 + row as usize];
+        let glyph = crate::gui::text_renderer::get_glyph_for_char(ch);
+        for (row, &bits) in glyph.iter().enumerate() {
             for col in 0..char_w {
                 if bits & (0x80 >> col) != 0 {
                     let px = cx + col;
-                    let py = text_screen_y(y, row, char_h, height);
+                    let py = text_screen_y(y, row as i32, char_h, height);
                     if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
                         buf[(py as u32 * width + px as u32) as usize] = color;
                     }
@@ -132,16 +125,6 @@ mod tests {
     fn test_text_screen_y_values() {
         assert_eq!(text_screen_y(100, 0, 16, 480), 364);
         assert_eq!(text_screen_y(100, 15, 16, 480), 379);
-    }
-
-    #[test]
-    fn test_glyph_index() {
-        assert_eq!(glyph_index(' '), 0);
-        assert_eq!(glyph_index('!'), 1);
-        assert_eq!(glyph_index('A'), 33);
-        assert_eq!(glyph_index('~'), 94);
-        assert_eq!(glyph_index('\n'), 0);
-        assert_eq!(glyph_index('\x01'), 0);
     }
 
     #[test]

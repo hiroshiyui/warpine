@@ -4,7 +4,6 @@ pub mod ne;
 pub mod loader;
 pub mod api;
 pub mod gui;
-pub mod font8x16;
 
 use std::env;
 use std::sync::Arc;

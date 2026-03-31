@@ -2,14 +2,17 @@
 
 //! Phase 6: VGA Text-Mode Renderer
 //!
-//! Renders an 80×25 VGA text buffer into an SDL2 window using an 8×16 IBM CP437
-//! pixel font.  Keyboard events from SDL2 are pushed into `SharedState::kbd_queue`
-//! for consumption by `KbdCharIn`.
+//! Renders an 80×25 VGA text buffer into an SDL2 window using an 8×16 GNU
+//! Unifont pixel font.  Keyboard events from SDL2 are pushed into
+//! `SharedState::kbd_queue` for consumption by `KbdCharIn`.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use crate::loader::{SharedState, KbdKeyInfo, MutexExt};
-use crate::loader::console::cp437_to_char;
+
+// Generated at build time from vendor/unifont/unifont.hex.
+// Sorted (Unicode codepoint, 8×16 glyph) pairs for all half-width entries.
+include!(concat!(env!("OUT_DIR"), "/font_unifont_sbcs.rs"));
 
 // ── CGA 16-colour palette (ARGB8888 = 0xFF_RR_GG_BB) ───────────────────────
 
@@ -35,219 +38,21 @@ pub const CGA_PALETTE: [u32; 16] = [
     0xFF_FF_FF_FF, // 15 White
 ];
 
-// ── CP437 8×16 pixel font ────────────────────────────────────────────────────
+// ── GNU Unifont 8×16 glyph lookup ────────────────────────────────────────────
 
-/// Return the 8×16 glyph bitmap for CP437 byte `ch`.
+/// Return the 8×16 glyph bitmap for a Unicode character from GNU Unifont 17.
 ///
 /// Rows 0-15 from top to bottom; bit 7 of each byte is the leftmost pixel.
-/// - Bytes 0x20-0x7E delegate to the existing ASCII font table.
-/// - Box-drawing and block-element characters are hand-crafted.
-/// - All other bytes return a blank glyph.
-pub fn get_cp437_glyph(ch: u8) -> [u8; 16] {
-    // ASCII printable range: delegate to the existing 8×16 font
-    if (0x20..=0x7E).contains(&ch) {
-        let idx = (ch - 0x20) as usize;
-        let base = idx * 16;
-        let mut g = [0u8; 16];
-        g.copy_from_slice(&crate::font8x16::FONT_8X16[base..base + 16]);
-        return g;
-    }
-
-    // CP437 special glyphs
-    match ch {
-        // ── Shade blocks ────────────────────────────────────────────────────
-        0xB0 => [0xAA,0x55,0xAA,0x55,0xAA,0x55,0xAA,0x55,
-                 0xAA,0x55,0xAA,0x55,0xAA,0x55,0xAA,0x55], // ░ light shade
-        0xB1 => [0xFF,0xAA,0xFF,0x55,0xFF,0xAA,0xFF,0x55,
-                 0xFF,0xAA,0xFF,0x55,0xFF,0xAA,0xFF,0x55], // ▒ medium shade
-        0xB2 => [0xFF,0xFF,0xFF,0xAA,0xFF,0xFF,0xFF,0x55,
-                 0xFF,0xFF,0xFF,0xAA,0xFF,0xFF,0xFF,0x55], // ▓ dark shade
-
-        // ── Single-line box drawing ──────────────────────────────────────────
-        // Vertical line at col 4 (bit 3 from right)
-        0xB3 => [0x08; 16], // │
-        // Horizontal line at row 7 (mid-cell)
-        0xC4 => { let mut g = [0u8; 16]; g[7] = 0xFF; g } // ─
-
-        // Corners and T-junctions (single-line)
-        0xDA => { // ┌ top-left
-            let mut g = [0u8; 16];
-            g[7] = 0x0F; // right half of horizontal bar
-            g[8..16].fill(0x08); // lower vertical
-            g
-        }
-        0xBF => { // ┐ top-right
-            let mut g = [0u8; 16];
-            g[7] = 0xF8; // left half of horizontal bar
-            g[8..16].fill(0x08);
-            g
-        }
-        0xC0 => { // └ bottom-left
-            let mut g = [0u8; 16];
-            g[0..7].fill(0x08);
-            g[7] = 0x0F;
-            g
-        }
-        0xD9 => { // ┘ bottom-right
-            let mut g = [0u8; 16];
-            g[0..7].fill(0x08);
-            g[7] = 0xF8;
-            g
-        }
-        0xC3 => { // ├ left T
-            let mut g = [0x08u8; 16];
-            g[7] = 0x0F;
-            g
-        }
-        0xB4 => { // ┤ right T
-            let mut g = [0x08u8; 16];
-            g[7] = 0xF8;
-            g
-        }
-        0xC2 => { // ┬ top T
-            let mut g = [0u8; 16];
-            g[7] = 0xFF;
-            g[8..16].fill(0x08);
-            g
-        }
-        0xC1 => { // ┴ bottom T
-            let mut g = [0u8; 16];
-            g[0..7].fill(0x08);
-            g[7] = 0xFF;
-            g
-        }
-        0xC5 => { // ┼ cross
-            let mut g = [0x08u8; 16];
-            g[7] = 0xFF;
-            g
-        }
-
-        // ── Double-line box drawing ──────────────────────────────────────────
-        // Double vertical at cols 3 and 5 (0x14 = 0b00010100)
-        0xBA => [0x14; 16], // ║
-        // Double horizontal at rows 5 and 9
-        0xCD => { let mut g = [0u8; 16]; g[5] = 0xFF; g[9] = 0xFF; g } // ═
-
-        0xC9 => { // ╔ double top-left
-            let mut g = [0u8; 16];
-            g[4] = 0x1F; g[5] = 0x10; g[6] = 0x10;
-            g[8] = 0x17;
-            g[9..16].fill(0x14);
-            g
-        }
-        0xBB => { // ╗ double top-right
-            let mut g = [0u8; 16];
-            g[4] = 0xF8; g[5] = 0x08; g[6] = 0x08;
-            g[8] = 0xE8;
-            g[9..16].fill(0x14);
-            g
-        }
-        0xC8 => { // ╚ double bottom-left
-            let mut g = [0u8; 16];
-            g[0..6].fill(0x14);
-            g[6] = 0x17;
-            g[8] = 0x10; g[9] = 0x10; g[10] = 0x1F;
-            g
-        }
-        0xBC => { // ╝ double bottom-right
-            let mut g = [0u8; 16];
-            g[0..6].fill(0x14);
-            g[6] = 0xE8;
-            g[8] = 0x08; g[9] = 0x08; g[10] = 0xF8;
-            g
-        }
-        0xCC => { // ╠ double left T
-            let mut g = [0x14u8; 16];
-            g[5] = 0x17; g[9] = 0x17;
-            g
-        }
-        0xB9 => { // ╣ double right T
-            let mut g = [0x14u8; 16];
-            g[5] = 0xF4; g[9] = 0xF4;
-            g
-        }
-        0xCA => { // ╩ double bottom T
-            let mut g = [0u8; 16];
-            g[0..5].fill(0x14);
-            g[5] = 0xFF; g[9] = 0xFF;
-            g
-        }
-        0xCB => { // ╦ double top T
-            let mut g = [0u8; 16];
-            g[5] = 0xFF; g[9] = 0xFF;
-            g[10..16].fill(0x14);
-            g
-        }
-        0xCE => { // ╬ double cross
-            let mut g = [0x14u8; 16];
-            g[5] = 0xFF; g[9] = 0xFF;
-            g
-        }
-
-        // ── Block elements ───────────────────────────────────────────────────
-        0xDB => [0xFF; 16],  // █ full block
-        0xDC => { let mut g = [0u8; 16]; g[8..16].fill(0xFF); g } // ▄ lower half
-        0xDF => { let mut g = [0u8; 16]; g[0..8].fill(0xFF); g } // ▀ upper half
-        0xDD => [0xF0; 16],  // ▌ left half
-        0xDE => [0x0F; 16],  // ▐ right half
-
-        // ── Additional single-line variant glyphs ────────────────────────────
-        0xC6 => { // ╞
-            let mut g = [0x08u8; 16];
-            g[7] = 0x0F;
-            g
-        }
-        0xC7 => { // ╟
-            let mut g = [0x14u8; 16];
-            g[7] = 0x1F;
-            g
-        }
-        0xCF => { // ╧
-            let mut g = [0u8; 16];
-            g[0..7].fill(0x08);
-            g[7] = 0xFF;
-            g
-        }
-        0xD0 => { // ╨
-            let mut g = [0u8; 16];
-            g[0..5].fill(0x14);
-            g[5] = 0xFF;
-            g
-        }
-        0xD1 => { // ╤
-            let mut g = [0u8; 16];
-            g[5] = 0xFF;
-            g[9..16].fill(0x08);
-            g
-        }
-        0xD2 => { // ╥
-            let mut g = [0u8; 16];
-            g[7] = 0xFF;
-            g[8..16].fill(0x14);
-            g
-        }
-
-        // Everything else: blank
-        _ => [0u8; 16],
-    }
-}
-
-/// Look up the 8×16 glyph for a Unicode char by reverse-mapping through the CP437 table.
-///
-/// For ASCII (U+0020–U+007E), delegates directly to `get_cp437_glyph`.  For non-ASCII
-/// chars, searches the CP437 upper-half table for a matching codepoint and returns its
-/// glyph.  Characters that are not in CP437 return a blank glyph (until GNU Unifont
-/// integration in a future phase provides full Unicode coverage).
+/// Uses binary search on the pre-sorted `UNIFONT_SBCS` table generated at
+/// build time from `vendor/unifont/unifont.hex`.  Characters not present in
+/// Unifont (e.g. Private Use Area codepoints U+E000–U+F8FF) return a blank
+/// glyph `[0u8; 16]`.
 pub fn get_glyph_for_char(ch: char) -> [u8; 16] {
-    if ch.is_ascii() {
-        return get_cp437_glyph(ch as u8);
+    let cp = ch as u32;
+    match UNIFONT_SBCS.binary_search_by_key(&cp, |&(c, _)| c) {
+        Ok(idx) => UNIFONT_SBCS[idx].1,
+        Err(_) => [0u8; 16],
     }
-    for byte in 0x80u8..=0xFF {
-        if cp437_to_char(byte) == ch {
-            return get_cp437_glyph(byte);
-        }
-    }
-    [0u8; 16] // character not in CP437 font — blank until Unifont integration
 }
 
 // ── VgaTextBuffer snapshot ───────────────────────────────────────────────────
@@ -686,92 +491,90 @@ mod tests {
         Loader::new_mock().shared
     }
 
-    // ── CP437 font + Unicode glyph lookup ─────────────────────────────────────
+    // ── GNU Unifont glyph lookup ──────────────────────────────────────────────
 
     #[test]
-    fn glyph_for_char_ascii_matches_cp437_glyph() {
-        assert_eq!(get_glyph_for_char('A'), get_cp437_glyph(b'A'));
-        assert_eq!(get_glyph_for_char(' '), get_cp437_glyph(b' '));
+    fn glyph_for_char_ascii_has_pixels() {
+        // ASCII printable chars must have at least one set pixel.
+        let g = get_glyph_for_char('A');
+        assert!(g.iter().any(|&b| b != 0), "'A' glyph should have pixels");
+        let g2 = get_glyph_for_char('T');
+        assert!(g2.iter().any(|&b| b != 0), "'T' glyph should have pixels");
     }
 
     #[test]
-    fn glyph_for_char_cp437_box_drawing() {
-        // '│' is CP437 0xB3 — should resolve via reverse lookup
-        assert_eq!(get_glyph_for_char('│'), get_cp437_glyph(0xB3));
+    fn glyph_for_char_box_drawing_has_pixels() {
+        // U+2502 (│ BOX DRAWINGS LIGHT VERTICAL) — must be non-blank
+        assert_ne!(get_glyph_for_char('│'), [0u8; 16]);
     }
 
     #[test]
-    fn glyph_for_char_cp437_block_element() {
-        // '█' is CP437 0xDB
-        assert_eq!(get_glyph_for_char('█'), get_cp437_glyph(0xDB));
+    fn glyph_for_char_block_element_has_pixels() {
+        // U+2588 (█ FULL BLOCK) — must be all-ones in Unifont
+        assert_eq!(get_glyph_for_char('█'), [0xFF; 16]);
     }
 
     #[test]
-    fn glyph_for_char_not_in_cp437_is_blank() {
-        // U+00D0 (Ð, eth) is not in CP437; should return blank
-        assert_eq!(get_glyph_for_char('Ð'), [0u8; 16]);
+    fn glyph_for_char_private_use_is_blank() {
+        // U+E000 is in the Private Use Area — not defined in Unifont
+        assert_eq!(get_glyph_for_char('\u{E000}'), [0u8; 16]);
     }
 
     #[test]
-    fn ascii_glyph_has_pixels() {
-        let g = get_cp437_glyph(b'A');
-        assert!(g.iter().any(|&b| b != 0));
+    fn glyph_for_char_latin1_extended_has_pixels() {
+        // U+00D0 (Ð LATIN CAPITAL LETTER ETH) — not in CP437 but present in Unifont
+        assert_ne!(get_glyph_for_char('Ð'), [0u8; 16]);
     }
 
     #[test]
     fn full_block_is_all_ones() {
-        assert_eq!(get_cp437_glyph(0xDB), [0xFF; 16]); // █
+        assert_eq!(get_glyph_for_char('█'), [0xFF; 16]); // U+2588
     }
 
     #[test]
     fn lower_half_block_correct() {
-        let g = get_cp437_glyph(0xDC); // ▄
+        let g = get_glyph_for_char('▄'); // U+2584
         for r in 0..8  { assert_eq!(g[r], 0x00, "upper half must be blank at row {r}"); }
         for r in 8..16 { assert_eq!(g[r], 0xFF, "lower half must be set at row {r}"); }
     }
 
     #[test]
     fn upper_half_block_correct() {
-        let g = get_cp437_glyph(0xDF); // ▀
+        let g = get_glyph_for_char('▀'); // U+2580
         for r in 0..8  { assert_eq!(g[r], 0xFF, "upper half must be set at row {r}"); }
         for r in 8..16 { assert_eq!(g[r], 0x00, "lower half must be blank at row {r}"); }
     }
 
     #[test]
     fn left_half_block_correct() {
-        assert_eq!(get_cp437_glyph(0xDD), [0xF0; 16]); // ▌
+        assert_eq!(get_glyph_for_char('▌'), [0xF0; 16]); // U+258C
     }
 
     #[test]
     fn right_half_block_correct() {
-        assert_eq!(get_cp437_glyph(0xDE), [0x0F; 16]); // ▐
+        assert_eq!(get_glyph_for_char('▐'), [0x0F; 16]); // U+2590
     }
 
     #[test]
     fn vertical_line_is_uniform() {
-        assert_eq!(get_cp437_glyph(0xB3), [0x08; 16]); // │
+        assert_eq!(get_glyph_for_char('│'), [0x08; 16]); // U+2502
     }
 
     #[test]
     fn horizontal_line_has_exactly_one_filled_row() {
-        let g = get_cp437_glyph(0xC4); // ─
+        let g = get_glyph_for_char('─'); // U+2500
         assert_eq!(g.iter().filter(|&&b| b == 0xFF).count(), 1);
     }
 
     #[test]
     fn double_vertical_line_is_uniform() {
-        assert_eq!(get_cp437_glyph(0xBA), [0x14; 16]); // ║
+        assert_eq!(get_glyph_for_char('║'), [0x14; 16]); // U+2551
     }
 
     #[test]
     fn double_horizontal_has_two_filled_rows() {
-        let g = get_cp437_glyph(0xCD); // ═
+        let g = get_glyph_for_char('═'); // U+2550
         assert_eq!(g.iter().filter(|&&b| b == 0xFF).count(), 2);
-    }
-
-    #[test]
-    fn unknown_byte_returns_blank() {
-        assert_eq!(get_cp437_glyph(0x01), [0u8; 16]);
     }
 
     // ── CGA palette ───────────────────────────────────────────────────────────
