@@ -77,38 +77,17 @@ Convert Warpine's internal string representation to UTF-8, with codepage↔UTF-8
 
 **VIO output complete:** `VioManager::buffer` is now `Vec<(char, u8)>` — Unicode codepoints + attributes. `decode_vio_byte(b, cp) -> char` decodes CP bytes to Unicode at write time (fast-path for ASCII < 0x80; `cp_decode` for high bytes). `get_glyph_for_char(ch) -> [u8; 16]` in `text_renderer.rs` reverse-maps Unicode through the CP437 font table; chars not in CP437 return a blank glyph (pending Unifont integration). `VioReadCellStr` re-encodes stored chars back to active-codepage bytes via `cp_encode`. Fill cells in `VioScrollUp`/`VioScrollDn` and `VioWrtNCell` are also decoded through the active codepage.
 
+**SDL2 text renderer complete (Unifont Phase A):** `build.rs` parses `vendor/unifont/unifont.hex` (GNU Unifont 17.0.04) and emits a sorted `UNIFONT_SBCS: &[(u32, [u8;16])]` table of all 7282 half-width (8×16) entries. `get_glyph_for_char(ch)` does a binary search on this table; characters absent from Unifont (Private Use Area etc.) return blank. `render_text_to_buffer` (PM text) and the VGA text renderer both use this path. The hand-crafted CP437 match block and `src/font8x16.rs` are deleted. Full SBCS Unicode coverage: e.g. Ð (U+00D0) now renders without needing to be in CP437. Phase B (DBCS 16×16 glyphs) remains pending.
+
 Remaining:
-- [ ] **SDL2 text renderer** — replace static CP437 8×16 bitmap glyph table with GNU Unifont (see *GNU Unifont Integration* sections above); Phase A covers SBCS, Phase B covers DBCS 16×16 glyphs; chars not in CP437 currently render as blank — Unifont resolves this
 - [ ] **PM strings** — `WinSetWindowText`, window titles, menu items, clipboard text: decode at PM API entry
 - [ ] **UCONV.DLL** — implement `UniCreateUconvObject`, `UniUconvToUcs`, `UniUconvFromUcs` etc. using `encoding_rs`; unlocks OS/2 apps that do their own Unicode conversion
 
-Sequencing (remaining): screen buffer/font (Unifont Phase A) → PM strings → UCONV.DLL.
+Sequencing (remaining): PM strings → UCONV.DLL.
 
-### GNU Unifont Integration — SBCS (Phase A)
+### GNU Unifont Integration — SBCS (Phase A) — Complete
 
-Replace the hand-crafted partial CP437 font with full 256-glyph tables generated at build time from GNU Unifont, then extend to additional SBCS code pages. Unifont is GPL-2+ with a font exception (compatible with GPL-3 Warpine for static embedding).
-
-**Source files to vendor:**
-- `vendor/unifont/unifont-<ver>.hex` — Unicode BMP (8×16 for SBCS, 16×16 for CJK)
-- `vendor/codepage/CP437.TXT`, `CP850.TXT`, `CP852.TXT`, `CP866.TXT` — Unicode Consortium CP→Unicode mapping tables
-
-**A1 — `build.rs` extractor**
-- [ ] For each target codepage: parse `CP<n>.TXT` (u8 → char), look up each of the 256 codepoints in Unifont, emit `src/generated/font_cp<n>.rs` with `pub static GLYPHS: [[u8; 16]; 256]`
-- [ ] Skip 16×16 Unifont entries (used only for DBCS — Phase B); undefined bytes → blank `[0u8; 16]`
-- [ ] Generated files committed; `build.rs` only reruns if vendor sources change
-
-**A2 — Codepage dispatcher in `text_renderer.rs`**
-- [ ] `get_glyph_sbcs(ch: u8, cp: u32) -> [u8; 16]` dispatches to the correct generated table
-- [ ] CP targets for initial delivery: 437 (drop-in), 850 (Western Europe), 852 (Central Europe), 866 (Cyrillic)
-
-**A3 — Thread `active_codepage` through to renderer**
-- [ ] Add `active_codepage: u32` to `VgaTextBuffer`, populated from `SharedState::active_codepage` at snapshot time
-- [ ] Pass it into `render_frame()` and down to `get_glyph_sbcs()`
-
-**A4 — Cleanup**
-- [ ] Delete `src/font8x16.rs` and the hand-crafted `match` block in `get_cp437_glyph()`
-- [ ] Update `src/gui/mod.rs` exports; remove `get_cp437_glyph` from public API
-- [ ] Unlock `Os2Locale::codepage` for non-437 SBCS locales (850/852/866) once Watcom CRT path is confirmed safe
+`build.rs` parses `vendor/unifont/unifont.hex` (GNU Unifont 17.0.04, GPL-2+ with font exception) and emits `$OUT_DIR/font_unifont_sbcs.rs` — a sorted `pub static UNIFONT_SBCS: &[(u32, [u8;16])]` array of 7282 half-width (8×16) glyph entries, keyed by Unicode codepoint. `get_glyph_for_char(ch)` binary-searches this table. The approach is Unicode-direct (the VIO buffer stores `char`, not codepage bytes) so no per-codepage tables or `active_codepage` thread-through is needed in the renderer. `src/font8x16.rs` deleted; `glyph_index()` removed. Phase B (DBCS 16×16 glyphs) remains pending.
 
 ---
 
