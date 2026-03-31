@@ -78,15 +78,16 @@ Remaining:
 ### Unicode-Internal Architecture (long-term goal)
 Convert Warpine's internal string representation to UTF-8, with codepage↔UTF-8 conversion at every guest/host API boundary. Modelled on Wine's ANSI→UTF-16 approach.
 
-- [ ] **Conversion helpers** — `cp_decode(bytes, cp) -> String` / `cp_encode(s, cp) -> Vec<u8>` using `encoding_rs` crate (covers CP850, CP932, CP949, CP950, CP936 and all other OS/2 codepages)
-- [ ] **Codepage state** — `DosQueryCp`/`DosSetProcessCp` track the active process codepage in `SharedState`; plumb it through all conversion sites
+**Foundation complete:** `DosSetProcessCp` now stores the active process codepage in `SharedState::active_codepage` (`AtomicU32`); `DosQueryCp` reads it atomically. `codepage.rs` provides `cp_decode`/`cp_encode` with embedded CP437/850/852 upper-half tables and `encoding_rs` for Windows/DBCS codepages. `read_guest_string` decodes all 57 call sites through the active codepage automatically.
+
+Remaining:
 - [ ] **Path strings** — `DosOpen`, `DosFindFirst/Next`, `DosDelete`, `DosMove`, etc.: decode guest path bytes → UTF-8 before VFS lookup; encode result strings back to guest CP on return
 - [ ] **VIO output** — `VioWrtTTY`, `VioWrtCharStrAtt`, etc.: decode CP bytes → Unicode codepoints at write time; `VioManager` screen buffer becomes `Vec<(char, u8)>` (codepoint + attribute)
 - [ ] **SDL2 text renderer** — replace static CP437 8×16 bitmap glyph table with GNU Unifont (see *GNU Unifont Integration* sections above); Phase A covers SBCS, Phase B covers DBCS 16×16 glyphs
 - [ ] **PM strings** — `WinSetWindowText`, window titles, menu items, clipboard text: decode at PM API entry
 - [ ] **UCONV.DLL** — implement `UniCreateUconvObject`, `UniUconvToUcs`, `UniUconvFromUcs` etc. using `encoding_rs`; unlocks OS/2 apps that do their own Unicode conversion
 
-Sequencing: codepage state → path strings → VIO output → screen buffer/font → PM strings → UCONV.DLL.
+Sequencing (remaining): path strings → VIO output → screen buffer/font → PM strings → UCONV.DLL.
 
 ### GNU Unifont Integration — SBCS (Phase A)
 
@@ -106,7 +107,7 @@ Replace the hand-crafted partial CP437 font with full 256-glyph tables generated
 - [ ] CP targets for initial delivery: 437 (drop-in), 850 (Western Europe), 852 (Central Europe), 866 (Cyrillic)
 
 **A3 — Thread `active_codepage` through to renderer**
-- [ ] Add `active_codepage: u32` to `VgaTextBuffer`, populated from `SharedState::locale.codepage` at snapshot time
+- [ ] Add `active_codepage: u32` to `VgaTextBuffer`, populated from `SharedState::active_codepage` at snapshot time
 - [ ] Pass it into `render_frame()` and down to `get_glyph_sbcs()`
 
 **A4 — Cleanup**
@@ -178,7 +179,6 @@ In OS/2 VIO text mode a DBCS character occupies two consecutive screen cells: ce
 ---
 
 ### Code Page and DBCS Support
-- [ ] `DosQueryCp` / `DosSetProcessCp` — track current process code page accurately (prerequisite for Phase B above)
 - [ ] Full `DosMapCase` for non-Latin codepages (CP852, CP866, CP932, etc.)
 
 ### PM Menu System
