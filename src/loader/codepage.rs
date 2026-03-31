@@ -153,6 +153,69 @@ const CP852_UPPER: [char; 128] = [
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
+/// Map a single guest byte to its uppercase equivalent in the given codepage.
+///
+/// Only 1:1 Unicode case mappings are applied.  Multi-char results (e.g. ß→SS)
+/// leave the byte unchanged — this matches OS/2's fixed-width NLS behaviour
+/// where `DosMapCase`/`NlsMapCase` operate on a fixed-length byte buffer.
+///
+/// DBCS codepages (CP932/949/950) are not supported here: a single byte is not
+/// a complete character so the byte is returned unchanged.  Unknown codepages
+/// also return the byte unchanged.
+pub fn cp_map_case_upper(byte: u8, cp: u32) -> u8 {
+    // ASCII fast path — identical in all codepages.
+    if byte < 0x80 {
+        return byte.to_ascii_uppercase();
+    }
+    match cp {
+        437 => map_case_sbcs(byte, &CP437_UPPER),
+        850 => map_case_sbcs(byte, &CP850_UPPER),
+        852 => map_case_sbcs(byte, &CP852_UPPER),
+        // DBCS: a single byte may be a multi-byte lead byte — cannot case-map.
+        932 | 949 | 950 => byte,
+        _ => {
+            // Windows SBCS (1250–1258): decode single byte → Unicode →
+            // uppercase (1:1 only) → re-encode.
+            if matches!(cp, 1250..=1258) && let Some(enc) = cp_to_encoding(cp) {
+                let buf = [byte];
+                let (decoded, _) = enc.decode_without_bom_handling(&buf);
+                if let Some(ch) = decoded.chars().next() {
+                    let mut it = ch.to_uppercase();
+                    let upper_ch = it.next();
+                    let is_single = it.next().is_none();
+                    if let Some(up) = upper_ch && is_single && up != ch {
+                        // Single-char uppercase — re-encode.
+                        let s: String = std::iter::once(up).collect();
+                        let (encoded, _, _) = enc.encode(&s);
+                        if let Some(&b) = encoded.first() {
+                            return b;
+                        }
+                    }
+                }
+            }
+            byte
+        }
+    }
+}
+
+/// Uppercase a single byte using a DOS codepage upper-half table.
+///
+/// Looks up the Unicode character at `byte`, applies `.to_uppercase()`, and
+/// reverses back to a byte.  Multi-char uppercase results (ß→SS) are skipped.
+/// Uppercase codepoints that fall in ASCII are returned as their ASCII byte.
+/// Codepoints with no representation in the table are returned unchanged.
+fn map_case_sbcs(byte: u8, upper: &[char; 128]) -> u8 {
+    let ch = upper[(byte - 0x80) as usize];
+    let mut it = ch.to_uppercase();
+    let Some(up) = it.next() else { return byte; };
+    if it.next().is_some() { return byte; } // multi-char uppercase: leave unchanged
+    if up == ch { return byte; }
+    if up.is_ascii() { return up as u8; }
+    // Search the upper-half table for the uppercased codepoint.
+    upper.iter().position(|&t| t == up)
+        .map_or(byte, |i| (i as u8) + 0x80)
+}
+
 /// Decode a byte slice from the given OS/2 codepage into a Rust `String`.
 ///
 /// - Bytes 0x00–0x7F are treated as ASCII (identical in all supported codepages).
@@ -361,5 +424,77 @@ mod tests {
         let bytes = [0xE9u8]; // In Latin-1 this is é (U+00E9)
         let s = cp_decode(&bytes, 9999);
         assert_eq!(s, "\u{00E9}");
+    }
+
+    // ── cp_map_case_upper ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_map_case_upper_ascii() {
+        assert_eq!(cp_map_case_upper(b'a', 437), b'A');
+        assert_eq!(cp_map_case_upper(b'z', 850), b'Z');
+        assert_eq!(cp_map_case_upper(b'A', 852), b'A'); // already uppercase
+        assert_eq!(cp_map_case_upper(b'0', 437), b'0'); // digit: unchanged
+    }
+
+    // CP850: é (0x82=U+00E9) → É (0x90=U+00C9)
+    #[test]
+    fn test_map_case_upper_cp850_e_acute() {
+        assert_eq!(cp_map_case_upper(0x82, 850), 0x90,
+            "CP850 0x82 (é) should uppercase to 0x90 (É)");
+    }
+
+    // CP850: ü (0x81=U+00FC) → Ü (0x9A=U+00DC)
+    #[test]
+    fn test_map_case_upper_cp850_u_umlaut() {
+        assert_eq!(cp_map_case_upper(0x81, 850), 0x9A,
+            "CP850 0x81 (ü) should uppercase to 0x9A (Ü)");
+    }
+
+    // CP437: box-drawing char (0xC4=U+2500) has no case — must be unchanged.
+    #[test]
+    fn test_map_case_upper_cp437_box_drawing_unchanged() {
+        assert_eq!(cp_map_case_upper(0xC4, 437), 0xC4,
+            "CP437 box-drawing ─ (0xC4) has no case and must be unchanged");
+    }
+
+    // CP437: ß (0xE1=U+00DF) uppercases to SS in Unicode (multi-char) — must be unchanged.
+    #[test]
+    fn test_map_case_upper_cp437_sharp_s_unchanged() {
+        assert_eq!(cp_map_case_upper(0xE1, 437), 0xE1,
+            "CP437 ß (0xE1) multi-char uppercase must be left unchanged");
+    }
+
+    // CP852: ü (0x81=U+00FC) → Ü (0x9A=U+00DC) — same as CP850
+    #[test]
+    fn test_map_case_upper_cp852_u_umlaut() {
+        assert_eq!(cp_map_case_upper(0x81, 852), 0x9A,
+            "CP852 0x81 (ü) should uppercase to 0x9A (Ü)");
+    }
+
+    // Windows-1252: é (0xE9=U+00E9) → É (0xC9=U+00C9)
+    #[test]
+    fn test_map_case_upper_cp1252_e_acute() {
+        assert_eq!(cp_map_case_upper(0xE9, 1252), 0xC9,
+            "CP1252 0xE9 (é) should uppercase to 0xC9 (É)");
+    }
+
+    // Windows-1252: already-uppercase É (0xC9) must be unchanged.
+    #[test]
+    fn test_map_case_upper_cp1252_uppercase_unchanged() {
+        assert_eq!(cp_map_case_upper(0xC9, 1252), 0xC9,
+            "CP1252 0xC9 (É) is already uppercase — must be unchanged");
+    }
+
+    // DBCS codepage (CP932): single byte must be returned unchanged.
+    #[test]
+    fn test_map_case_upper_dbcs_unchanged() {
+        assert_eq!(cp_map_case_upper(0x82, 932), 0x82,
+            "CP932 (DBCS) single byte must be returned unchanged");
+    }
+
+    // Unknown codepage: byte returned unchanged.
+    #[test]
+    fn test_map_case_upper_unknown_cp_unchanged() {
+        assert_eq!(cp_map_case_upper(0xE9, 9999), 0xE9);
     }
 }

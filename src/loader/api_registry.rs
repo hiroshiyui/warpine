@@ -383,10 +383,11 @@ static REGISTRY: &[ApiEntry] = &[
     ApiEntry { ordinal: NLS_BASE + 7, module: "NLS", name: "NlsMapCase",       argc: 3,
                handler: |l,_v,_i,a| {
                    let (cb, pch) = (a[0], a[2]);
+                   let cp = l.shared.active_codepage.load(Ordering::Relaxed);
                    for i in 0..cb {
-                       if let Some(ch) = l.guest_read::<u8>(pch + i)
-                           && ch.is_ascii_lowercase() {
-                               let _ = l.guest_write::<u8>(pch + i, ch.to_ascii_uppercase());
+                       if let Some(b) = l.guest_read::<u8>(pch + i) {
+                           let upper = super::codepage::cp_map_case_upper(b, cp);
+                           if upper != b { let _ = l.guest_write::<u8>(pch + i, upper); }
                        }
                    }
                    ApiResult::Normal(0)

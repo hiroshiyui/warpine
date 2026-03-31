@@ -218,16 +218,22 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// DosMapCase (ordinal 305): case mapping. ASCII toupper for now.
-    /// NOTE: This is listed under ordinal 305 in some references but may conflict with DosSetMem.
-    /// Verify actual ordinal before dispatching.
+    /// DosMapCase (ordinal 305): in-place uppercase of a guest byte string.
+    ///
+    /// Uses the active process codepage for non-ASCII bytes so that accented
+    /// characters in CP850/CP852 (and Windows SBCS codepages) are uppercased
+    /// correctly.  Multi-char Unicode results (e.g. ß→SS) are left unchanged,
+    /// matching OS/2's fixed-width NLS behaviour.
     pub fn dos_map_case(&self, cb: u32, _p_ctry_code: u32, p_str: u32) -> u32 {
         debug!("  DosMapCase(cb={}, pStr=0x{:08X})", cb, p_str);
         if p_str != 0 {
+            let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
             for i in 0..cb {
-                if let Some(b) = self.guest_read::<u8>(p_str + i)
-                    && b.is_ascii_lowercase() {
-                        self.guest_write::<u8>(p_str + i, b - 32);
+                if let Some(b) = self.guest_read::<u8>(p_str + i) {
+                    let upper = super::codepage::cp_map_case_upper(b, cp);
+                    if upper != b {
+                        self.guest_write::<u8>(p_str + i, upper);
+                    }
                 }
             }
         }
