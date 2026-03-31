@@ -55,7 +55,18 @@ pub struct OS2Window {
 pub struct PresentationSpace {
     pub hps: u32,
     pub hwnd: u32,
+    /// Foreground (pen/text) colour, stored as 0x00RRGGBB.
     pub color: u32,
+    /// Background colour, stored as 0x00RRGGBB.
+    pub back_color: u32,
+    /// Foreground mix mode (FM_* — e.g. FM_OVERPAINT = 6).
+    pub mix_mode: u32,
+    /// Background mix mode (BM_* — e.g. BM_OVERPAINT = 6).
+    pub back_mix: u32,
+    /// Current logical character set (LCID) selected via GpiSetCharSet.
+    pub char_set: u32,
+    /// Character box in world units (cx, cy); 0 means use default font metrics.
+    pub char_box: (i32, i32),
     pub current_pos: (i32, i32),
 }
 
@@ -154,7 +165,17 @@ impl WindowManager {
     }
     pub fn create_ps(&mut self, hwnd: u32) -> u32 {
         let h = self.next_hps;
-        self.ps_map.insert(h, PresentationSpace { hps: h, hwnd, color: 0, current_pos: (0, 0) });
+        self.ps_map.insert(h, PresentationSpace {
+            hps: h,
+            hwnd,
+            color: 0x00000000,     // CLR_BLACK — default foreground
+            back_color: 0x00FFFFFF, // CLR_WHITE — default background
+            mix_mode: 6,            // FM_OVERPAINT
+            back_mix: 6,            // BM_OVERPAINT
+            char_set: 0,
+            char_box: (0, 0),
+            current_pos: (0, 0),
+        });
         self.next_hps += 1;
         h
     }

@@ -409,17 +409,35 @@ impl Loader {
         }
     }
 
+    /// Map an OS/2 PM `lColor` value to a 0x00RRGGBB pixel colour.
+    ///
+    /// Handles the full CLR_* palette (negative specials + 0–15 named indices)
+    /// and direct RGB values (>= 16, i.e. `RGB(r,g,b)` macro output).
     pub(crate) fn map_color(&self, clr: u32) -> u32 {
-        match clr {
-            0 => 0x00000000, // Black
-            1 => 0x000000FF, // Blue
-            2 => 0x00FF0000, // Red
-            3 => 0x00FF00FF, // Pink
-            4 => 0x0000FF00, // Green
-            5 => 0x0000FFFF, // Cyan
-            6 => 0x00FFFF00, // Yellow
-            7 => 0x00FFFFFF, // White
-            _ => 0x00808080, // Grey
+        // Cast to signed so that CLR_BLACK=-1, CLR_WHITE=-2, CLR_DEFAULT=-3 match.
+        match clr as i32 {
+            -5 | -4     => 0x00000000, // CLR_FALSE / CLR_TRUE — treat as black
+            -3          => 0x00000000, // CLR_DEFAULT — default foreground (black)
+            -2          => 0x00FFFFFF, // CLR_WHITE
+            -1          => 0x00000000, // CLR_BLACK
+             0          => 0x00FFFFFF, // CLR_BACKGROUND — page background (white)
+             1          => 0x000000FF, // CLR_BLUE
+             2          => 0x00FF0000, // CLR_RED
+             3          => 0x00FF00FF, // CLR_PINK (magenta)
+             4          => 0x0000FF00, // CLR_GREEN
+             5          => 0x0000FFFF, // CLR_CYAN
+             6          => 0x00FFFF00, // CLR_YELLOW
+             7          => 0x00808080, // CLR_NEUTRAL (medium grey)
+             8          => 0x00404040, // CLR_DARKGRAY
+             9          => 0x00000080, // CLR_DARKBLUE
+            10          => 0x00800000, // CLR_DARKRED
+            11          => 0x00800080, // CLR_DARKPINK
+            12          => 0x00008000, // CLR_DARKGREEN
+            13          => 0x00008080, // CLR_DARKCYAN
+            14          => 0x00804000, // CLR_BROWN
+            15          => 0x00C0C0C0, // CLR_PALEGRAY
+            n if n >= 16 => clr & 0x00FF_FFFF, // Direct 0x00RRGGBB — mask alpha
+            _           => 0x00808080, // Unknown — grey
         }
     }
 }

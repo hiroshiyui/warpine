@@ -218,14 +218,24 @@ These are high-priority items needed by virtually every real PM application.
 - [ ] **`WinDefDlgProc`** — default dialog procedure: keyboard navigation, Enter/Escape handling, default button
 
 ### GPI Drawing Primitives
-Most PM apps that custom-paint call at least `GpiSetColor` + `GpiLine` / `GpiBox` / `GpiCharString`.
-
-- [ ] **`GpiSetColor` / `GpiSetBackColor`** — store in `PresentationSpace`; used by all drawing operations
-- [ ] **`GpiSetCurrentPosition` / `GpiQueryCurrentPosition`** — move the current position without drawing
-- [ ] **`GpiLine`** — draw a line from current position to target; emit `GUIMessage::DrawLine`
-- [ ] **`GpiBox`** — filled or outlined rectangle; emit `GUIMessage::DrawBox`
-- [ ] **`GpiCharString` / `GpiCharStringAt`** — draw text at position; emit `GUIMessage::DrawText`
-- [ ] **`GpiSetCharSet` / `GpiLoadPublicFonts` / `GpiQueryFonts`** — font selection stubs; return reasonable defaults
+- [x] **`GpiSetColor`** (517) — stores foreground colour in `PresentationSpace`
+- [x] **`GpiSetBackColor`** (518) — stores background colour in `PresentationSpace`
+- [x] **`GpiQueryColor` / `GpiQueryBackColor`** (520/521) — read-back from `PresentationSpace`
+- [x] **`GpiSetMix` / `GpiSetBackMix`** (509/503) — mix mode stored in `PresentationSpace`
+- [x] **`GpiMove` / `GpiQueryCurrentPosition`** (404/416) — current-position tracking
+- [x] **`GpiLine`** (398) — line from current pos; emits `GUIMessage::DrawLine`
+- [x] **`GpiBox`** (356) — filled/outlined rect; emits `GUIMessage::DrawBox`
+- [x] **`GpiCharString` / `GpiCharStringAt`** (358/359) — text at current pos / explicit pos; emits `GUIMessage::DrawText`; advances current pos
+- [x] **`GpiErase`** (389) — clears framebuffer; emits `GUIMessage::ClearBuffer`
+- [x] **`GpiFullArc`** (392) — approximated as box centred on current pos
+- [x] **`GpiCreatePS` / `GpiDestroyPS`** (369/379) — PS lifecycle; `PresentationSpace` now tracks `back_color`, `mix_mode`, `back_mix`, `char_set`, `char_box`
+- [x] **`GpiCreateLogFont` / `GpiDeleteSetId` / `GpiSetCharSet` / `GpiSetCharBox`** (381/385/481/482) — font selection stubs; always report FONT_DEFAULT
+- [x] **`GpiQueryFontMetrics`** (464) — writes mock FONTMETRICS (8×16 system font, 208 bytes) to guest; key metrics: lMaxBaselineExt=16, lAveCharWidth=8, sXDeviceRes=96
+- [x] **`GpiQueryFonts`** (459) — returns 1 system font; fills optional FONTMETRICS entry
+- [x] **`GpiQueryTextBox`** (476) — returns 5-point bounding box for mock 8×16 font (TXTBOX_COUNT corners + concat point)
+- [x] **`GpiLoadFonts` / `GpiLoadPublicFonts`** (399/400) — stubs returning TRUE
+- [x] **`GpiSetLineType` / `GpiSetLineWidth`** (527/529) — stubs returning TRUE
+- [x] **`map_color`** — full CLR_* palette (CLR_BLACK=-1, CLR_WHITE=-2, CLR_DEFAULT=-3, indices 0–15) + direct 0x00RRGGBB pass-through for values ≥ 16
 
 ### PM Advanced Controls
 - [x] **`WinSubclassWindow`** — replace window procedure and chain to original (ordinal 895)
