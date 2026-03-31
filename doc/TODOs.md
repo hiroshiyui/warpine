@@ -68,7 +68,7 @@ Goal: raise the fraction of real OS/2 applications that run correctly.
 
 ### DOSCALLS Long Tail
 - [ ] **Structured Exception Handling** — real per-thread handler chain; `DosRaiseException`; `DosUnwindException`
-- [ ] **NLS / DBCS** — `DosQueryDBCSEnv` (DBCS lead-byte table), full `DosMapCase` for non-Latin codepages
+- [ ] **NLS / DBCS** — `DosQueryDBCSEnv` (DBCS lead-byte table); `DosMapCase`/`NlsMapCase` DBCS support (CP932/949/950 require multi-byte pair handling)
 
 ### Unicode-Internal Architecture (long-term goal)
 Convert Warpine's internal string representation to UTF-8, with codepage↔UTF-8 conversion at every guest/host API boundary. Modelled on Wine's ANSI→UTF-16 approach.
