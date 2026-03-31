@@ -73,6 +73,10 @@ pub(crate) enum FrameKind {
     /// EAX == 0 → init failed → return ERROR_INIT_ROUTINE_FAILED.
     /// EAX != 0 → init succeeded → write hmod to *phmod, return NO_ERROR.
     InitTerm { hmod: u32, phmod: u32 },
+    /// A DLL _DLL_InitTerm(hmod, 1) call injected by DosFreeModule.
+    /// Return value is ignored — OS/2 does not allow a DLL to refuse unload.
+    /// After the call the guest pages in `object_bases` are freed.
+    InitTermUnload { hmod: u32, object_bases: Vec<u32> },
 }
 
 pub(crate) struct CallbackFrame {
@@ -91,13 +95,15 @@ pub(crate) enum ApiResult {
         mp1: u32,
         mp2: u32,
     },
-    /// Inject a guest call to `addr` with two _System args `(arg0, arg1)`.
-    /// Used for DLL INITTERM: addr = _DLL_InitTerm, arg0 = hmod, arg1 = flag.
-    /// The frame carries `hmod` and `phmod` for post-return bookkeeping.
+    /// Inject a guest call to `addr` with two _System args `(hmod, flag)`.
+    /// Used for DLL INITTERM.  `phmod` is the address to write the handle on
+    /// successful load-time init (0 for unload).  `object_bases` is non-empty
+    /// for unload-time calls and holds the guest pages to free after the call.
     CallGuest {
-        addr:  u32,
-        hmod:  u32,
-        phmod: u32,
+        addr:         u32,
+        hmod:         u32,
+        phmod:        u32,
+        object_bases: Vec<u32>,
     },
 }
 

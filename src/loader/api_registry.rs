@@ -253,7 +253,7 @@ static REGISTRY: &[ApiEntry] = &[
     ApiEntry { ordinal: 321, module: "DOSCALLS", name: "DosQueryProcAddr", argc: 4,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_proc_addr(a[0],a[1],a[2],a[3])) },
     ApiEntry { ordinal: 322, module: "DOSCALLS", name: "DosFreeModule",    argc: 1,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_free_module(a[0])) },
+               handler: |l,_v,_i,a| l.dos_free_module(a[0]) },
     ApiEntry { ordinal: 323, module: "DOSCALLS", name: "DosQueryAppType",  argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_app_type(a[0],a[1])) },
 

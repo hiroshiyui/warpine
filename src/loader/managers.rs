@@ -368,17 +368,19 @@ impl DllManager {
 
     /// Decrement the reference count of the DLL identified by `handle`.
     ///
-    /// Returns `Some(object_bases)` if the count reached zero (caller must free
-    /// those guest memory blocks), or `None` if the DLL is still referenced.
-    pub fn decrement_refcount(&mut self, handle: u32) -> Option<Vec<u32>> {
+    /// Returns `Some((object_bases, initterm_addr))` if the count reached zero
+    /// (caller must free those guest memory blocks, optionally after calling
+    /// the INITTERM unload routine), or `None` if the DLL is still referenced.
+    pub fn decrement_refcount(&mut self, handle: u32) -> Option<(Vec<u32>, Option<u32>)> {
         let idx = self.dlls.iter().position(|d| d.handle == handle)?;
         if self.dlls[idx].ref_count > 0 {
             self.dlls[idx].ref_count -= 1;
         }
         if self.dlls[idx].ref_count == 0 {
             let bases = self.dlls[idx].object_bases.clone();
+            let initterm_addr = self.dlls[idx].initterm_addr;
             self.dlls.remove(idx);
-            Some(bases)
+            Some((bases, initterm_addr))
         } else {
             None
         }
@@ -511,13 +513,25 @@ mod tests {
     }
 
     #[test]
-    fn test_dll_manager_refcount_decrement_unloads() {
+    fn test_dll_manager_refcount_decrement_unloads_no_initterm() {
         let mut mgr = DllManager::new();
         let h = mgr.alloc_handle();
         mgr.register(make_dll(h, "TESTDLL", vec![0x2000, 0x3000]));
         let freed = mgr.decrement_refcount(h); // ref_count 1 → 0
-        assert_eq!(freed, Some(vec![0x2000, 0x3000]));
+        assert_eq!(freed, Some((vec![0x2000, 0x3000], None)));
         assert!(mgr.find_by_handle(h).is_none(), "DLL should be removed");
+    }
+
+    #[test]
+    fn test_dll_manager_refcount_decrement_unloads_with_initterm() {
+        let mut mgr = DllManager::new();
+        let h = mgr.alloc_handle();
+        let mut dll = make_dll(h, "TESTDLL", vec![0x4000]);
+        dll.initterm_addr = Some(0x4100);
+        mgr.register(dll);
+        let freed = mgr.decrement_refcount(h);
+        assert_eq!(freed, Some((vec![0x4000], Some(0x4100))));
+        assert!(mgr.find_by_handle(h).is_none());
     }
 
     #[test]

@@ -268,7 +268,7 @@ impl super::Loader {
                 };
                 if let Some(addr) = initterm {
                     debug!("  DosLoadModule: injecting _DLL_InitTerm(hmod={:#x}, 0) at 0x{:08X}", h, addr);
-                    ApiResult::CallGuest { addr, hmod: h, phmod }
+                    ApiResult::CallGuest { addr, hmod: h, phmod, object_bases: vec![] }
                 } else {
                     if phmod != 0 { self.guest_write::<u32>(phmod, h); }
                     ApiResult::Normal(NO_ERROR)
@@ -290,22 +290,33 @@ impl super::Loader {
 
     /// DosFreeModule (ordinal 322): decrement a DLL's reference count.
     ///
-    /// When the count reaches zero the DLL's guest memory objects are freed and
-    /// the module is removed from `dll_mgr`.
-    pub fn dos_free_module(&self, hmod: u32) -> u32 {
+    /// When the count reaches zero:
+    /// - If the DLL has an INITTERM entry point, inject `_DLL_InitTerm(hmod, 1)`
+    ///   via `ApiResult::CallGuest`; the vcpu handler frees pages after the call.
+    /// - Otherwise free the guest memory pages immediately and return `NO_ERROR`.
+    pub(crate) fn dos_free_module(&self, hmod: u32) -> super::ApiResult {
         debug!("  DosFreeModule(hmod={})", hmod);
-        let freed_bases = {
+        let freed = {
             let mut dll_mgr = self.shared.dll_mgr.lock_or_recover();
             dll_mgr.decrement_refcount(hmod)
         };
-        if let Some(bases) = freed_bases {
-            let mut mem = self.shared.mem_mgr.lock_or_recover();
-            for addr in bases {
-                mem.free(addr);
+        match freed {
+            Some((bases, Some(addr))) => {
+                // DLL has INITTERM — inject _DLL_InitTerm(hmod, 1) before freeing.
+                debug!("  DosFreeModule: hmod={} has INITTERM at {:#x}, injecting unload call", hmod, addr);
+                super::ApiResult::CallGuest { addr, hmod, phmod: 0, object_bases: bases }
             }
-            debug!("  DosFreeModule: hmod={} unloaded", hmod);
+            Some((bases, None)) => {
+                // No INITTERM — free pages now.
+                let mut mem = self.shared.mem_mgr.lock_or_recover();
+                for base in bases {
+                    mem.free(base);
+                }
+                debug!("  DosFreeModule: hmod={} unloaded", hmod);
+                super::ApiResult::Normal(NO_ERROR)
+            }
+            None => super::ApiResult::Normal(NO_ERROR),
         }
-        NO_ERROR
     }
 
     /// DosQueryModuleHandle (ordinal 319): query module handle.
@@ -1083,5 +1094,84 @@ mod tests {
         for &cp in &[437u32, 850, 852, 932, 949, 950, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258] {
             assert_eq!(loader.dos_set_process_cp(cp), NO_ERROR, "cp={cp} should be supported");
         }
+    }
+
+    // ── DosFreeModule ─────────────────────────────────────────────────────────
+
+    /// Helper: register a fake DLL in the dll_mgr and return its handle.
+    fn register_fake_dll(loader: &Loader, name: &str, bases: Vec<u32>, initterm_addr: Option<u32>) -> u32 {
+        use super::super::managers::LoadedDll;
+        use std::collections::HashMap;
+        use super::super::mutex_ext::MutexExt;
+
+        let mut dll_mgr = loader.shared.dll_mgr.lock_or_recover();
+        let h = dll_mgr.alloc_handle();
+        dll_mgr.register(LoadedDll {
+            name: name.to_ascii_uppercase(),
+            handle: h,
+            object_bases: bases,
+            exports_by_ordinal: HashMap::new(),
+            exports_by_name: HashMap::new(),
+            ref_count: 1,
+            initterm_addr,
+        });
+        h
+    }
+
+    #[test]
+    fn test_dos_free_module_still_referenced_returns_normal() {
+        use super::super::{ApiResult, mutex_ext::MutexExt};
+        use super::super::constants::NO_ERROR;
+
+        let loader = Loader::new_mock();
+        let h = register_fake_dll(&loader, "TESTDLL", vec![0x1000], None);
+        // Bump refcount to 2 first
+        loader.shared.dll_mgr.lock_or_recover().increment_refcount(h);
+
+        let result = loader.dos_free_module(h);
+        assert!(matches!(result, ApiResult::Normal(c) if c == NO_ERROR));
+        // DLL still loaded with refcount 1
+        assert!(loader.shared.dll_mgr.lock_or_recover().find_by_handle(h).is_some());
+    }
+
+    #[test]
+    fn test_dos_free_module_no_initterm_returns_normal_and_frees_pages() {
+        use super::super::{ApiResult, mutex_ext::MutexExt};
+        use super::super::constants::NO_ERROR;
+
+        let loader = Loader::new_mock();
+        let base = loader.shared.mem_mgr.lock_or_recover().alloc(64).unwrap();
+        let h = register_fake_dll(&loader, "NODLL", vec![base], None);
+
+        let result = loader.dos_free_module(h);
+        assert!(matches!(result, ApiResult::Normal(c) if c == NO_ERROR));
+        // DLL removed from manager
+        assert!(loader.shared.dll_mgr.lock_or_recover().find_by_handle(h).is_none());
+        // Page returned to allocator — re-alloc should succeed at the same address
+        let new_base = loader.shared.mem_mgr.lock_or_recover().alloc(64).unwrap();
+        assert_eq!(new_base, base, "freed page should be reusable");
+    }
+
+    #[test]
+    fn test_dos_free_module_with_initterm_returns_call_guest() {
+        use super::super::ApiResult;
+
+        let loader = Loader::new_mock();
+        let base = loader.shared.mem_mgr.lock_or_recover().alloc(64).unwrap();
+        let initterm = 0x5000u32;
+        let h = register_fake_dll(&loader, "INITTDLL", vec![base], Some(initterm));
+
+        let result = loader.dos_free_module(h);
+        match result {
+            ApiResult::CallGuest { addr, hmod, phmod, ref object_bases } => {
+                assert_eq!(addr, initterm);
+                assert_eq!(hmod, h);
+                assert_eq!(phmod, 0, "phmod must be 0 for unload");
+                assert_eq!(object_bases, &vec![base], "bases must be carried for deferred free");
+            }
+            other => panic!("expected CallGuest, got {:?}", other),
+        }
+        // DLL must already be removed from manager (pages deferred, but DLL entry gone)
+        assert!(loader.shared.dll_mgr.lock_or_recover().find_by_handle(h).is_none());
     }
 }

@@ -550,6 +550,16 @@ impl super::Loader {
                                             regs.rax = ERROR_INIT_ROUTINE_FAILED as u64;
                                         }
                                     }
+                                    FrameKind::InitTermUnload { hmod, object_bases } => {
+                                        // Unload-time INITTERM: OS/2 does not allow a DLL to
+                                        // refuse unloading, so the return value is ignored.
+                                        debug!("  [VCPU {}] _DLL_InitTerm(hmod={:#x}, flag=1) unload complete (ret={})", vcpu_id, hmod, result);
+                                        let mut mem = self.shared.mem_mgr.lock_or_recover();
+                                        for base in object_bases {
+                                            mem.free(base);
+                                        }
+                                        regs.rax = NO_ERROR as u64;
+                                    }
                                 }
                                 vcpu.set_regs(&regs).unwrap();
                                 continue;
@@ -598,24 +608,29 @@ impl super::Loader {
                                 regs.rip = wnd_proc as u64;
                                 vcpu.set_regs(&regs).unwrap();
                             }
-                            ApiResult::CallGuest { addr, hmod, phmod } => {
+                            ApiResult::CallGuest { addr, hmod, phmod, object_bases } => {
                                 let mut regs = vcpu.get_regs().unwrap();
                                 let return_addr = self.guest_read::<u32>(regs.rsp as u32)
                                     .expect("Stack read OOB for INITTERM return address");
-                                // Save DosLoadModule's return address and ESP (caller will
-                                // clean up DosLoadModule's own args — _System convention).
+                                // Distinguish load-time (flag=0, object_bases empty) from
+                                // unload-time (flag=1, object_bases carries pages to free).
+                                let (kind, flag) = if object_bases.is_empty() {
+                                    (FrameKind::InitTerm { hmod, phmod }, 0u32)
+                                } else {
+                                    (FrameKind::InitTermUnload { hmod, object_bases }, 1u32)
+                                };
                                 callback_stack.push(CallbackFrame {
                                     saved_rip: return_addr as u64,
                                     saved_rsp: regs.rsp + 4,
-                                    kind: FrameKind::InitTerm { hmod, phmod },
+                                    kind,
                                 });
                                 // _DLL_InitTerm(hmod: u32, flag: u32) — _System, 2 args.
-                                // Push: [CALLBACK_RET_TRAP][hmod][0 (init flag)] = 12 bytes.
+                                // Push: [CALLBACK_RET_TRAP][hmod][flag] = 12 bytes.
                                 regs.rsp -= 12;
                                 let sp = regs.rsp as u32;
                                 self.guest_write::<u32>(sp,     CALLBACK_RET_TRAP).expect("INITTERM stack write OOB");
                                 self.guest_write::<u32>(sp + 4, hmod).expect("INITTERM stack write OOB");
-                                self.guest_write::<u32>(sp + 8, 0).expect("INITTERM stack write OOB");
+                                self.guest_write::<u32>(sp + 8, flag).expect("INITTERM stack write OOB");
                                 regs.rip = addr as u64;
                                 vcpu.set_regs(&regs).unwrap();
                             }
