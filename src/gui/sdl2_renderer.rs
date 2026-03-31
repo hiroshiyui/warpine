@@ -8,6 +8,7 @@ use sdl2::pixels::PixelFormatEnum;
 use sdl2::render::{BlendMode, Canvas, Texture};
 use sdl2::video::Window;
 use log::debug;
+use sdl2::messagebox::{show_message_box, ButtonData, MessageBoxButtonFlag, MessageBoxFlag};
 use crate::loader::{SharedState, OS2Message, MutexExt,
     WM_CLOSE, WM_SIZE, WM_PAINT, WM_CHAR, WM_MOUSEMOVE,
     WM_BUTTON1DOWN, WM_BUTTON1UP, WM_BUTTON2DOWN, WM_BUTTON2UP, WM_BUTTON3DOWN, WM_BUTTON3UP,
@@ -216,6 +217,35 @@ impl Sdl2Renderer {
     }
 }
 
+/// Map the low 4 bits of a WinMessageBox `flStyle` to an array of SDL2 button
+/// descriptors: `(button_id, label, returnkey_default, escapekey_default)`.
+fn mb_buttons(style: u32) -> &'static [(i32, &'static str, bool, bool)] {
+    use crate::loader::{MBID_OK, MBID_CANCEL, MBID_ABORT, MBID_RETRY, MBID_IGNORE,
+                        MBID_YES, MBID_NO, MBID_ENTER,
+                        MB_OKCANCEL, MB_RETRYCANCEL, MB_ABORTRETRYIGNORE,
+                        MB_YESNO, MB_YESNOCANCEL, MB_CANCEL, MB_ENTER, MB_ENTERCANCEL};
+    // (button_id, label, returnkey_default, escapekey_default)
+    match style & 0x0F {
+        x if x == MB_OKCANCEL         => &[(MBID_OK as i32,     "OK",     true,  false),
+                                           (MBID_CANCEL as i32, "Cancel", false, true)],
+        x if x == MB_RETRYCANCEL      => &[(MBID_RETRY as i32,  "Retry",  true,  false),
+                                           (MBID_CANCEL as i32, "Cancel", false, true)],
+        x if x == MB_ABORTRETRYIGNORE => &[(MBID_ABORT as i32,  "Abort",  true,  false),
+                                           (MBID_RETRY as i32,  "Retry",  false, false),
+                                           (MBID_IGNORE as i32, "Ignore", false, true)],
+        x if x == MB_YESNO            => &[(MBID_YES as i32,    "Yes",    true,  false),
+                                           (MBID_NO as i32,     "No",     false, true)],
+        x if x == MB_YESNOCANCEL      => &[(MBID_YES as i32,    "Yes",    true,  false),
+                                           (MBID_NO as i32,     "No",     false, false),
+                                           (MBID_CANCEL as i32, "Cancel", false, true)],
+        x if x == MB_CANCEL           => &[(MBID_CANCEL as i32, "Cancel", true,  true)],
+        x if x == MB_ENTER            => &[(MBID_ENTER as i32,  "Enter",  true,  false)],
+        x if x == MB_ENTERCANCEL      => &[(MBID_ENTER as i32,  "Enter",  true,  false),
+                                           (MBID_CANCEL as i32, "Cancel", false, true)],
+        _                             => &[(MBID_OK as i32,     "OK",     true,  true)], // MB_OK
+    }
+}
+
 impl PmRenderer for Sdl2Renderer {
     fn handle_message(&mut self, msg: GUIMessage) {
         match msg {
@@ -309,6 +339,32 @@ impl PmRenderer for Sdl2Renderer {
                         sdl2::sys::SDL_bool::SDL_FALSE
                     });
                 }
+            }
+            GUIMessage::ShowMessageBox { caption, text, style, reply_tx } => {
+                // Map MB_ICON* bits to an SDL2 flag.
+                let flag = match style & 0x00F0 {
+                    x if x == crate::loader::MB_ICONHAND        => MessageBoxFlag::ERROR,
+                    x if x == crate::loader::MB_ICONQUESTION    => MessageBoxFlag::WARNING,
+                    x if x == crate::loader::MB_ICONEXCLAMATION => MessageBoxFlag::WARNING,
+                    x if x == crate::loader::MB_ICONASTERISK    => MessageBoxFlag::INFORMATION,
+                    _                                            => MessageBoxFlag::INFORMATION,
+                };
+
+                let button_defs = mb_buttons(style);
+                let buttons: Vec<ButtonData> = button_defs.iter().map(|&(id, label, ret, esc)| {
+                    let mut f = MessageBoxButtonFlag::NOTHING;
+                    if ret { f |= MessageBoxButtonFlag::RETURNKEY_DEFAULT; }
+                    if esc { f |= MessageBoxButtonFlag::ESCAPEKEY_DEFAULT; }
+                    ButtonData { flags: f, button_id: id, text: label }
+                }).collect();
+
+                let mbid = match show_message_box(flag, &buttons, &caption, &text, None, None) {
+                    Ok(sdl2::messagebox::ClickedButton::CustomButton(b)) => b.button_id as u32,
+                    // Close button or error → default to first button's id
+                    _ => button_defs.first().map(|b| b.0 as u32).unwrap_or(crate::loader::MBID_OK),
+                };
+                debug!("[GUI] ShowMessageBox '{}' → MBID={}", caption, mbid);
+                let _ = reply_tx.send(mbid);
             }
         }
     }
@@ -562,8 +618,57 @@ fn sdl_keycode_to_char(kc: Keycode) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{sdl_keycode_to_char, sdl_keycode_to_vk, sdl_scancode_to_os2, build_wm_char};
+    use super::{sdl_keycode_to_char, sdl_keycode_to_vk, sdl_scancode_to_os2, build_wm_char, mb_buttons};
     use sdl2::keyboard::{Keycode, Mod as KeyMod, Scancode};
+    use crate::loader::{MBID_OK, MBID_CANCEL, MBID_RETRY, MBID_YES, MBID_NO, MBID_ENTER,
+                        MB_OK, MB_OKCANCEL, MB_RETRYCANCEL, MB_YESNO, MB_ENTERCANCEL};
+
+    #[test]
+    fn mb_buttons_ok_has_one_entry_with_mbid_ok() {
+        let btns = mb_buttons(MB_OK);
+        assert_eq!(btns.len(), 1);
+        assert_eq!(btns[0].0, MBID_OK as i32);
+        assert!(btns[0].2, "OK should be returnkey default");
+    }
+
+    #[test]
+    fn mb_buttons_ok_cancel_has_two_entries() {
+        let btns = mb_buttons(MB_OKCANCEL);
+        assert_eq!(btns.len(), 2);
+        assert_eq!(btns[0].0, MBID_OK as i32);
+        assert_eq!(btns[1].0, MBID_CANCEL as i32);
+        assert!(btns[1].3, "Cancel should be escapekey default");
+    }
+
+    #[test]
+    fn mb_buttons_retry_cancel() {
+        let btns = mb_buttons(MB_RETRYCANCEL);
+        assert_eq!(btns[0].0, MBID_RETRY as i32);
+        assert_eq!(btns[1].0, MBID_CANCEL as i32);
+    }
+
+    #[test]
+    fn mb_buttons_yes_no() {
+        let btns = mb_buttons(MB_YESNO);
+        assert_eq!(btns.len(), 2);
+        assert_eq!(btns[0].0, MBID_YES as i32);
+        assert_eq!(btns[1].0, MBID_NO as i32);
+    }
+
+    #[test]
+    fn mb_buttons_enter_cancel() {
+        let btns = mb_buttons(MB_ENTERCANCEL);
+        assert_eq!(btns[0].0, MBID_ENTER as i32);
+        assert_eq!(btns[1].0, MBID_CANCEL as i32);
+    }
+
+    #[test]
+    fn mb_buttons_icon_bits_ignored_in_button_selection() {
+        // MB_OKCANCEL | MB_ICONEXCLAMATION
+        let btns = mb_buttons(0x0031);
+        assert_eq!(btns.len(), 2);
+        assert_eq!(btns[0].0, MBID_OK as i32);
+    }
 
     #[test]
     fn test_sdl_keycode_to_char_printable() {

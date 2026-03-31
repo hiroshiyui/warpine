@@ -214,3 +214,31 @@ pub const QSV_MAXPRMEM: u32 = 20;
 pub const QSV_MAXSHMEM: u32 = 21;
 pub const QSV_TIMER_INTERVAL: u32 = 22;
 pub const QSV_MAX_COMP_LENGTH: u32 = 23;
+
+// WinMessageBox style flags (flStyle) — low 4 bits select the button set
+pub const MB_OK:               u32 = 0x0000;
+pub const MB_OKCANCEL:         u32 = 0x0001;
+pub const MB_RETRYCANCEL:      u32 = 0x0002;
+pub const MB_ABORTRETRYIGNORE: u32 = 0x0003;
+pub const MB_YESNO:            u32 = 0x0004;
+pub const MB_YESNOCANCEL:      u32 = 0x0005;
+pub const MB_CANCEL:           u32 = 0x0006;
+pub const MB_ENTER:            u32 = 0x0007;
+pub const MB_ENTERCANCEL:      u32 = 0x0008;
+
+// Icon bits (bits 4–7 of flStyle)
+pub const MB_NOICON:           u32 = 0x0000;
+pub const MB_ICONHAND:         u32 = 0x0010; // error
+pub const MB_ICONQUESTION:     u32 = 0x0020; // question
+pub const MB_ICONEXCLAMATION:  u32 = 0x0030; // warning
+pub const MB_ICONASTERISK:     u32 = 0x0040; // information
+
+// WinMessageBox return values (MBID_*)
+pub const MBID_OK:     u32 = 1;
+pub const MBID_CANCEL: u32 = 2;
+pub const MBID_ABORT:  u32 = 3;
+pub const MBID_RETRY:  u32 = 4;
+pub const MBID_IGNORE: u32 = 5;
+pub const MBID_YES:    u32 = 6;
+pub const MBID_NO:     u32 = 7;
+pub const MBID_ENTER:  u32 = 8;

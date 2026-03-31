@@ -31,8 +31,12 @@ impl Default for HeadlessRenderer {
 }
 
 impl PmRenderer for HeadlessRenderer {
-    fn handle_message(&mut self, _msg: GUIMessage) {
+    fn handle_message(&mut self, msg: GUIMessage) {
         self.message_count += 1;
+        // In headless mode modal dialogs are auto-dismissed with MBID_OK.
+        if let GUIMessage::ShowMessageBox { reply_tx, .. } = msg {
+            let _ = reply_tx.send(1); // MBID_OK
+        }
     }
 
     fn poll_events(&mut self, _shared: &Arc<SharedState>) -> bool {
@@ -133,5 +137,21 @@ mod tests {
         let r = HeadlessRenderer::default();
         assert_eq!(r.message_count, 0);
         assert!(r.keep_running);
+    }
+
+    #[test]
+    fn headless_show_message_box_replies_mbid_ok() {
+        // The headless renderer must immediately reply MBID_OK (=1) so that
+        // WinMessageBox doesn't hang in tests.
+        let mut renderer = HeadlessRenderer::new();
+        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel::<u32>(1);
+        renderer.handle_message(GUIMessage::ShowMessageBox {
+            caption: "Title".into(),
+            text:    "Body".into(),
+            style:   0, // MB_OK
+            reply_tx,
+        });
+        let result = reply_rx.try_recv().expect("reply_tx should have been sent");
+        assert_eq!(result, 1); // MBID_OK
     }
 }
