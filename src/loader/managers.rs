@@ -299,6 +299,9 @@ pub struct LoadedDll {
     /// Reference count — starts at 1 on first load; DosFreeModule decrements it;
     /// the DLL is unloaded when it reaches 0.
     pub ref_count: u32,
+    /// Guest flat address of the DLL's `_DLL_InitTerm` entry point, if present
+    /// (LX header eip_object != 0).  `None` for DLLs without an init routine.
+    pub initterm_addr: Option<u32>,
 }
 
 /// Tracks all user DLLs loaded into guest memory.
@@ -482,6 +485,7 @@ mod tests {
             exports_by_ordinal: HashMap::new(),
             exports_by_name: HashMap::new(),
             ref_count: 1,
+            initterm_addr: None,
         }
     }
 

@@ -63,11 +63,25 @@ pub struct KbdKeyInfo {
     pub state: u16,
 }
 
+/// Discriminates callback frames so the CALLBACK_RET_TRAP handler knows what
+/// to do with the guest's EAX on return.
+pub(crate) enum FrameKind {
+    /// A PM window-procedure callback (WinCallWindowProc / WinDispatchMsg).
+    /// EAX is returned as-is to the original API caller.
+    PmCallback,
+    /// A DLL _DLL_InitTerm(hmod, 0) call injected by DosLoadModule.
+    /// EAX == 0 → init failed → return ERROR_INIT_ROUTINE_FAILED.
+    /// EAX != 0 → init succeeded → write hmod to *phmod, return NO_ERROR.
+    InitTerm { hmod: u32, phmod: u32 },
+}
+
 pub(crate) struct CallbackFrame {
     saved_rip: u64,
     saved_rsp: u64,
+    pub kind: FrameKind,
 }
 
+#[derive(Debug)]
 pub(crate) enum ApiResult {
     Normal(u32),
     Callback {
@@ -76,6 +90,14 @@ pub(crate) enum ApiResult {
         msg: u32,
         mp1: u32,
         mp2: u32,
+    },
+    /// Inject a guest call to `addr` with two _System args `(arg0, arg1)`.
+    /// Used for DLL INITTERM: addr = _DLL_InitTerm, arg0 = hmod, arg1 = flag.
+    /// The frame carries `hmod` and `phmod` for post-return bookkeeping.
+    CallGuest {
+        addr:  u32,
+        hmod:  u32,
+        phmod: u32,
     },
 }
 

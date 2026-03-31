@@ -277,15 +277,19 @@ impl super::Loader {
         info!("DLL '{}': {} exports, {} named exports",
               dll_name_upper, exports_by_ordinal.len(), exports_by_name.len());
 
-        // 6. Check for DLL initialisation entry point (INITTERM).
-        if lx_file.header.eip_object != 0 {
+        // 6. Compute INITTERM entry address (if present).
+        let initterm_addr = if lx_file.header.eip_object != 0 {
             let obj_idx = (lx_file.header.eip_object as usize).wrapping_sub(1);
             if obj_idx < object_bases.len() {
-                let init_addr = object_bases[obj_idx] + lx_file.header.eip;
-                debug!("DLL '{}': has INITTERM entry at 0x{:08X} (not yet called)", dll_name_upper, init_addr);
-                // TODO: call init_addr(hmod, 0, 0) once vCPU call-injection is supported
+                let addr = object_bases[obj_idx] + lx_file.header.eip;
+                debug!("DLL '{}': has INITTERM entry at 0x{:08X}", dll_name_upper, addr);
+                Some(addr)
+            } else {
+                None
             }
-        }
+        } else {
+            None
+        };
 
         // 7. Register in dll_mgr
         let handle = {
@@ -298,6 +302,7 @@ impl super::Loader {
                 exports_by_ordinal,
                 exports_by_name,
                 ref_count: 1,
+                initterm_addr,
             });
             handle
         };
@@ -457,5 +462,46 @@ mod tests {
             let dll_mgr = loader.shared.dll_mgr.lock_or_recover();
             assert!(dll_mgr.find_by_handle(h).is_none(), "DLL should be unloaded after second free");
         }
+    }
+
+    /// jpos2dll.dll has eip_object == 0 so initterm_addr must be None.
+    #[test]
+    fn test_load_dll_initterm_none_for_jpos2dll() {
+        let path = "samples/4os2/jpos2dll.dll";
+        if !std::path::Path::new(path).exists() { return; }
+
+        let loader = Loader::new_mock();
+        *loader.shared.exe_name.lock_or_recover() = "samples/4os2/4os2.exe".to_string();
+
+        let handle = loader.load_dll("JPOS2DLL", path).expect("load_dll failed");
+        let dll_mgr = loader.shared.dll_mgr.lock_or_recover();
+        let dll = dll_mgr.find_by_handle(handle).unwrap();
+        assert_eq!(dll.initterm_addr, None,
+            "jpos2dll has no INITTERM entry — initterm_addr should be None");
+    }
+
+    /// DosLoadModule for a DLL without INITTERM must return ApiResult::Normal(NO_ERROR)
+    /// and immediately write the handle to *phmod.
+    #[test]
+    fn test_dos_load_module_no_initterm_returns_normal() {
+        use super::super::ApiResult;
+        use super::super::constants::NO_ERROR;
+
+        let path = "samples/4os2/jpos2dll.dll";
+        if !std::path::Path::new(path).exists() { return; }
+
+        let loader = Loader::new_mock();
+        *loader.shared.exe_name.lock_or_recover() = "samples/4os2/4os2.exe".to_string();
+
+        let phmod = loader.shared.mem_mgr.lock_or_recover().alloc(4).unwrap();
+        let mod_name_buf = loader.shared.mem_mgr.lock_or_recover().alloc(32).unwrap();
+        loader.guest_write_bytes(mod_name_buf, b"JPOS2DLL\0");
+
+        let result = loader.dos_load_module(0, 0, mod_name_buf, phmod);
+        assert!(matches!(result, ApiResult::Normal(c) if c == NO_ERROR),
+            "no-INITTERM DLL must return Normal(NO_ERROR), got {:?}", result);
+
+        let written_handle = loader.guest_read::<u32>(phmod).unwrap();
+        assert!(written_handle > 0, "phmod must be written immediately for no-INITTERM DLL");
     }
 }

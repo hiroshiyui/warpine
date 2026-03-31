@@ -247,7 +247,7 @@ static REGISTRY: &[ApiEntry] = &[
     ApiEntry { ordinal: 317, module: "DOSCALLS", name: "DosDebug",         argc: 1,
                handler: |_l,_v,_i,_a| { debug!("DosDebug stub"); ApiResult::Normal(87) } },
     ApiEntry { ordinal: 318, module: "DOSCALLS", name: "DosLoadModule",    argc: 4,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_load_module(a[0],a[1],a[2],a[3])) },
+               handler: |l,_v,_i,a| l.dos_load_module(a[0],a[1],a[2],a[3]) },
     ApiEntry { ordinal: 319, module: "DOSCALLS", name: "DosQueryModuleHandle", argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_module_handle(a[0],a[1])) },
     ApiEntry { ordinal: 321, module: "DOSCALLS", name: "DosQueryProcAddr", argc: 4,

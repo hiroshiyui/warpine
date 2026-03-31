@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::constants::*;
-use super::{ApiResult, CallbackFrame, MutexExt};
+use super::{ApiResult, CallbackFrame, FrameKind, MutexExt};
 use super::crash_dump::CrashContext;
 use super::gdb_stub::{GdbResumeCmd, GdbStopInfo, GdbVcpuStopReason};
 use crate::lx::LxFile;
@@ -522,15 +522,35 @@ impl super::Loader {
                             return;
                         }
                         if rip == CALLBACK_RET_TRAP as u64 {
-                            // Return from a PM callback
                             if let Some(frame) = callback_stack.pop() {
                                 let mut regs = vcpu.get_regs().unwrap();
                                 let result = regs.rax as u32;
                                 regs.rip = frame.saved_rip;
                                 regs.rsp = frame.saved_rsp;
-                                regs.rax = result as u64;
-                                // _System calling convention is caller-cleanup, so the guest
-                                // caller will do `add esp, N` itself — we must NOT pop args here.
+                                match frame.kind {
+                                    FrameKind::PmCallback => {
+                                        // Return the window-proc result as-is.
+                                        // _System is caller-cleanup; the guest caller
+                                        // will do `add esp, N` itself.
+                                        regs.rax = result as u64;
+                                    }
+                                    FrameKind::InitTerm { hmod, phmod } => {
+                                        // _DLL_InitTerm returns 1 on success, 0 on failure.
+                                        if result != 0 {
+                                            debug!("  [VCPU {}] _DLL_InitTerm(hmod={:#x}) succeeded", vcpu_id, hmod);
+                                            if phmod != 0 {
+                                                self.guest_write::<u32>(phmod, hmod);
+                                            }
+                                            regs.rax = NO_ERROR as u64;
+                                        } else {
+                                            warn!("  [VCPU {}] _DLL_InitTerm(hmod={:#x}) returned 0 — init failed", vcpu_id, hmod);
+                                            if phmod != 0 {
+                                                self.guest_write::<u32>(phmod, 0);
+                                            }
+                                            regs.rax = ERROR_INIT_ROUTINE_FAILED as u64;
+                                        }
+                                    }
+                                }
                                 vcpu.set_regs(&regs).unwrap();
                                 continue;
                             } else {
@@ -565,6 +585,7 @@ impl super::Loader {
                                 callback_stack.push(CallbackFrame {
                                     saved_rip: return_addr as u64,
                                     saved_rsp: regs.rsp + 4,
+                                    kind: FrameKind::PmCallback,
                                 });
                                 // Set up guest stack for callback: push ret addr + 4 args = 20 bytes
                                 regs.rsp -= 20;
@@ -575,6 +596,27 @@ impl super::Loader {
                                 self.guest_write::<u32>(sp + 12, mp1).expect("Callback stack write OOB");
                                 self.guest_write::<u32>(sp + 16, mp2).expect("Callback stack write OOB");
                                 regs.rip = wnd_proc as u64;
+                                vcpu.set_regs(&regs).unwrap();
+                            }
+                            ApiResult::CallGuest { addr, hmod, phmod } => {
+                                let mut regs = vcpu.get_regs().unwrap();
+                                let return_addr = self.guest_read::<u32>(regs.rsp as u32)
+                                    .expect("Stack read OOB for INITTERM return address");
+                                // Save DosLoadModule's return address and ESP (caller will
+                                // clean up DosLoadModule's own args — _System convention).
+                                callback_stack.push(CallbackFrame {
+                                    saved_rip: return_addr as u64,
+                                    saved_rsp: regs.rsp + 4,
+                                    kind: FrameKind::InitTerm { hmod, phmod },
+                                });
+                                // _DLL_InitTerm(hmod: u32, flag: u32) — _System, 2 args.
+                                // Push: [CALLBACK_RET_TRAP][hmod][0 (init flag)] = 12 bytes.
+                                regs.rsp -= 12;
+                                let sp = regs.rsp as u32;
+                                self.guest_write::<u32>(sp,     CALLBACK_RET_TRAP).expect("INITTERM stack write OOB");
+                                self.guest_write::<u32>(sp + 4, hmod).expect("INITTERM stack write OOB");
+                                self.guest_write::<u32>(sp + 8, 0).expect("INITTERM stack write OOB");
+                                regs.rip = addr as u64;
                                 vcpu.set_regs(&regs).unwrap();
                             }
                         }

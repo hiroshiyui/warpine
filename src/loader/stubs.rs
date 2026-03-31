@@ -241,7 +241,13 @@ impl super::Loader {
     /// If the module is already loaded its reference count is incremented and
     /// the existing handle is returned.  Otherwise the DLL (and all of its
     /// imported user-DLL dependencies) is loaded recursively.
-    pub fn dos_load_module(&self, psz_fail_name: u32, cb_fail_name: u32, psz_mod_name: u32, phmod: u32) -> u32 {
+    ///
+    /// When the loaded DLL has a `_DLL_InitTerm` entry point (LX eip_object != 0)
+    /// this returns `ApiResult::CallGuest` so the vCPU injects a call to
+    /// `_DLL_InitTerm(hmod, 0)` before resuming the guest.  The phmod output
+    /// pointer is written only after INITTERM succeeds.
+    pub(crate) fn dos_load_module(&self, psz_fail_name: u32, cb_fail_name: u32, psz_mod_name: u32, phmod: u32) -> super::ApiResult {
+        use super::ApiResult;
         let name = self.read_guest_string(psz_mod_name);
         debug!("  DosLoadModule('{}')", name);
 
@@ -253,8 +259,20 @@ impl super::Loader {
 
         match result {
             Ok(h) => {
-                if phmod != 0 { self.guest_write::<u32>(phmod, h); }
-                NO_ERROR
+                // If the DLL has an INITTERM entry, inject the call before writing
+                // the handle to *phmod — the handle is written by the vcpu handler
+                // after INITTERM returns successfully.
+                let initterm = {
+                    let dll_mgr = self.shared.dll_mgr.lock_or_recover();
+                    dll_mgr.find_by_handle(h).and_then(|d| d.initterm_addr)
+                };
+                if let Some(addr) = initterm {
+                    debug!("  DosLoadModule: injecting _DLL_InitTerm(hmod={:#x}, 0) at 0x{:08X}", h, addr);
+                    ApiResult::CallGuest { addr, hmod: h, phmod }
+                } else {
+                    if phmod != 0 { self.guest_write::<u32>(phmod, h); }
+                    ApiResult::Normal(NO_ERROR)
+                }
             }
             Err(e) => {
                 log::warn!("DosLoadModule('{}') failed: {}", name, e);
@@ -265,7 +283,7 @@ impl super::Loader {
                     self.guest_write::<u8>(psz_fail_name + copy_len as u32, 0);
                 }
                 if phmod != 0 { self.guest_write::<u32>(phmod, 0); }
-                ERROR_MOD_NOT_FOUND
+                ApiResult::Normal(ERROR_MOD_NOT_FOUND)
             }
         }
     }
