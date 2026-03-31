@@ -38,10 +38,6 @@ Implementation plan:
 3. `--check` mode — cross-reference against warpine's `api_registry` to surface mismatches between documented and implemented ordinals
 4. Maintain a hand-curated `doc/ordinals/` directory with one `.txt` per module (DOSCALLS, PMWIN, PMGPI, …) derived from public IBM documentation
 
-### Structured API Trace — Remaining
-Per-argument typed names complete (see [Developer Guide §19](developer_guide.md#debugging)).
-- [ ] TUI debug overlay showing live API call stream, memory map, window hierarchy, and PM message queue
-
 ---
 
 ## Phase 5 — Multimedia and 16-bit Support
