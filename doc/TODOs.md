@@ -64,8 +64,10 @@ Goal: raise the fraction of real OS/2 applications that run correctly.
 ### DLL Loader Chain
 **Baseline complete** — `DosLoadModule`/`DosQueryProcAddr`/`DosQueryModuleHandle` implemented; `jpos2dll.dll` loads at runtime. See [Developer Guide §20](developer_guide.md#appendix-development-phases).
 
+**DLL INITTERM complete** — `_DLL_InitTerm(hmod, flag)` called at load time via vCPU call-injection (`ApiResult::CallGuest`); `FrameKind::InitTerm` tracks the callback; `ERROR_INIT_ROUTINE_FAILED` returned on failure; `LoadedDll::initterm_addr` populated from `eip_object`/`eip` LX header fields.
+
 Remaining:
-- [ ] Call DLL initialisation routines (`DLL_INITTERM` / `eip_object`) at load and unload time — entry point address is logged; actual call requires vCPU call-injection (not yet implemented)
+- [ ] INITTERM unload-time call — `DosFreeModule` at ref_count=0 should inject `_DLL_InitTerm(hmod, 1)` before freeing pages
 
 ### DOSCALLS Long Tail
 - [ ] **Structured Exception Handling** — real per-thread handler chain; `DosRaiseException`; `DosUnwindException`
