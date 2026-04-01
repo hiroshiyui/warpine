@@ -35,21 +35,11 @@ DLL binaries, no ROM dumps, and no disassembly of original OS/2 system libraries
 | Builtin CMD.EXE host Rust shell (core built-ins + .CMD scripts) | Complete | `src/loader/cmd.rs` |
 | CMD.EXE I/O redirection (`>`, `>>`, `<`) + pipe (`\|`) + sample script | Complete | `src/loader/cmd.rs`, `samples/cmd_test/test.cmd` |
 | Rust Guest Toolchain | Complete | Targets, lx-link linker, warpine-os2 crate family, rust_hello sample, test_rust_hello |
+| Ordinal Table Canonical Build Tool | Complete | `src/bin/gen_api.rs`; `targets/os2api.def` is single source of truth |
 
 ---
 
 ## Architecture Backlog
-
-### Ordinal Table Canonical Build Tool
-
-Build a tool to manage the authoritative ordinal→name table used by `api_registry.rs`,
-sourced exclusively from public documentation. **No real OS/2 system DLLs as input**
-(clean-room policy).
-
-- [ ] Extend `LxFile` to parse entry table + resident/non-resident name tables
-- [ ] `src/bin/ordinals.rs` — dump `ordinal → name` map from an Open Watcom-built LX binary; `--emit-rust` flag
-- [ ] `--check` mode — cross-reference against `api_registry` to surface mismatches
-- [ ] Maintain `doc/ordinals/` — one `.txt` per module (DOSCALLS, PMWIN, PMGPI, …) from IBM documentation
 
 ---
 

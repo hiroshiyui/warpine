@@ -997,9 +997,10 @@ src/
     ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants (addresses, message IDs, ordinal bases)
-    api_registry.rs    Static sorted API thunk table (124 entries); ApiEntry
+    api_registry.rs    Static sorted API thunk table (135 entries); ApiEntry
     api_dispatch.rs    Registry lookup + per-subsystem dispatcher routing
-    api_trace.rs       Structured tracing helpers (ordinal_to_name, module_for_ordinal)
+    api_trace.rs       Structured tracing helpers (ordinal_to_name auto-generated from os2api.def,
+                       module_for_ordinal, arg_names_for_ordinal, format_call)
     api_ring.rs        256-entry bounded API call ring buffer for crash post-mortem
     crash_dump.rs      Structured crash reports (regs, stack, code bytes) on fatal VMEXITs
     gdb_stub.rs        GDB Remote Stub: RSP over TCP, software breakpoints, single-step
@@ -1205,7 +1206,7 @@ The test suite covers three areas:
 | `src/loader/console.rs` | VioManager screen buffer operations (scroll up/down, read cell str, defaults), key mapping (enter, printable, backspace → OS/2 charcode/scancode) |
 | `src/loader/stubs.rs` | DosEditName wildcard pattern replacement, DosQuerySysInfo QSV_* constant validation |
 | `src/loader/process.rs` | ProcessManager child tracking, wait-any semantics |
-| `src/loader/api_trace.rs` | ordinal_to_name (DOSCALLS, QUECALLS, MDM), module_for_ordinal (all ranges and boundaries) |
+| `src/loader/api_trace.rs` | ordinal_to_name (DOSCALLS, QUECALLS, KBDCALLS, VIOCALLS, NLS, MSG, MDM, UCONV — auto-generated from `os2api.def`), module_for_ordinal (all ranges), arg_names_for_ordinal |
 | `src/loader/mmpm.rs` | MmpmManager waveaudio device open/close/play lifecycle, mciSendCommand dispatch, mciSendString parsing, mciFreeBlock, mciGetLastError |
 | `src/loader/vfs.rs` | DriveManager path resolution, device name detection, drive letter parsing |
 | `src/loader/vfs_hostdir.rs` | HostDirBackend case-insensitive lookup, sandbox enforcement, EA operations |
@@ -1368,7 +1369,15 @@ Warpine provides a complete toolchain for writing OS/2 guest programs in Rust wi
 
 **`targets/i686-warpine-os2.json`** — Custom Rust target spec: `i686-unknown-none`, `relocation-model: static`, `panic-strategy: abort`, `linker: lx-link`. Only `R_386_32` relocations are emitted (no PLT, no PC-relative imports).
 
-**`src/bin/lx_link.rs`** — ELF-to-LX linker. Reads ELF `.o`/`.rlib`/`.a` objects produced by rustc, merges `.text`/`.data` sections, resolves OS/2 API imports via `targets/os2api.def`, and emits a valid MZ+LX executable. Object layout: code at `0x00010000` (flags `READABLE|EXECUTABLE|BIG`), data at `0x00060000`, stack at `0x00070000`.
+**`src/bin/gen_api.rs`** — Ordinal Table Canonical Build Tool. `targets/os2api.def` is the single authoritative source for the OS/2 API ordinal address space. Subcommands:
+- `show` — pretty-print all ordinals with flat addresses and module ranges
+- `check` — validate def file (no duplicates, sorted, no overflow) and drift-detect against `api_trace.rs` by text-scanning `ordinal_to_name()` match arms
+- `gen-trace` — emit replacement Rust source for `ordinal_to_name()` + `module_for_ordinal()` (pipe to a file then paste into `api_trace.rs`)
+- `gen-def` — re-emit a canonically sorted `os2api.def`
+
+Run `cargo run --bin gen_api -- check` to verify consistency after any ordinal change.
+
+**`src/bin/lx_link.rs`** — ELF-to-LX linker. Reads ELF `.o`/`.rlib`/`.a` objects produced by rustc, merges `.text`/`.data` sections, resolves OS/2 API imports via `targets/os2api.def` (embedded via `include_str!` as compile-time fallback), and emits a valid MZ+LX executable. Object layout: code at `0x00010000` (flags `READABLE|EXECUTABLE|BIG`), data at `0x00060000`, stack at `0x00070000`.
 
 **`crates/warpine-os2-sys`** — `#![no_std]` raw OS/2 API bindings. DOSCALLS use `extern "C"` (caller-cleanup). VIOCALLS and KBDCALLS use `extern "stdcall"` (callee-cleanup) with **reversed argument order** to compensate for the OS/2 Pascal calling convention (which pushes args left-to-right, placing the last arg at ESP+4). The reversed declaration causes Rust's right-to-left stdcall push to produce the same stack layout.
 
