@@ -74,17 +74,20 @@ Root `Cargo.toml` gains `[workspace]` block listing the three new crates.
 
 ---
 
-#### A — Custom Rust Target Spec (`targets/i686-warpine-os2.json`)
+#### A — Custom Rust Target Spec (`targets/i686-warpine-os2.json`) ✓ Complete
 
-- [ ] Create `targets/i686-warpine-os2.json`:
+- [x] Create `targets/i686-warpine-os2.json`:
   - `"llvm-target": "i686-unknown-none"`, `"arch": "x86"`, `"os": "none"`
   - `"linker-flavor": "ld"`, `"linker": "lx-link"` — rustc passes raw `-o`/`.o` args, no `-Wl,` wrapping
-  - `"relocation-model": "static"` — no PLT; all cross-crate calls become `R_386_32` absolute
+  - `"relocation-model": "static"` — no PLT; only `R_386_32` relocations emitted (verified)
   - `"panic-strategy": "abort"`, `"no-default-libraries": true`, `"disable-redzone": true`
-  - `"dynamic-linking": false`, `"needs-plt": false`
-  - `"exe-suffix": ".exe"`
-- [ ] Add `rust-toolchain.toml` pinning nightly + `rust-src` component
-- [ ] Verify `cargo build -Z build-std=core,alloc --target targets/i686-warpine-os2.json -Z build-std-features=compiler-builtins-mem` emits correct i686 ELF objects
+  - `"dynamic-linking": false`, `"plt-by-default": false`
+  - `"exe-suffix": ".exe"`, `"features": "+x87,+mmx"`, `"cpu": "i686"`
+  - Note: `target-pointer-width` must be integer 32, not string; `needs-plt` renamed to `plt-by-default`; `pre/post-link-args` must be `{}`
+- [ ] Add `rust-toolchain.toml` in guest crate dirs pinning nightly + `rust-src` component
+  (do NOT add at workspace root — host warpine builds with stable)
+  Build command: `cargo +nightly build -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -Z json-target-spec --target /path/to/targets/i686-warpine-os2.json`
+- [x] Verified: `cargo +nightly build -Z build-std=core,alloc` emits **ELF 32-bit LSB relocatable, Intel i386** objects with only `R_386_32` relocations — no PLT stubs, no `R_386_PC32`
 
 ---
 

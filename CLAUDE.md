@@ -24,6 +24,20 @@ cargo clippy -- -D warnings             # Lint — must pass with zero warnings 
 
 **Prerequisites:** Linux with KVM enabled (`/dev/kvm`), x86_64 CPU with VT-x/AMD-V, Rust 2024 edition, `libsdl2-dev` (for PM/GUI window support).
 
+**Rust Guest Toolchain** (building OS/2 guest binaries in Rust — in progress):
+```bash
+# Nightly + rust-src required; install once:
+rustup toolchain install nightly --component rust-src
+
+# Build a guest crate (lx-link must be on PATH — see Phase B):
+cargo +nightly build \
+  -Z build-std=core,alloc \
+  -Z build-std-features=compiler-builtins-mem \
+  -Z json-target-spec \
+  --target targets/i686-warpine-os2.json
+```
+`targets/i686-warpine-os2.json` — custom target spec (`i686-unknown-none`, `panic=abort`, linker=`lx-link`, only `R_386_32` relocations emitted).
+
 **Sample OS/2 apps** are in `samples/` (hello, alloc_test, file_test, pipe_test, 4os2, etc.). Build them with Open Watcom: `./vendor/setup_watcom.sh` then `make -C samples/<name>`. For 4OS2: `cd samples/4os2 && ./fetch_source.sh && make`.
 
 ## Architecture
