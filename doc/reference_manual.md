@@ -330,42 +330,53 @@ mciSendCommand (10241), mciSendString (10242), mciFreeBlock (10243), mciGetLastE
 
 Supported MCI commands: `MCI_OPEN`, `MCI_CLOSE`, `MCI_PLAY`, `MCI_STOP`, `MCI_STATUS`. Device type: `waveaudio` (WAV playback via SDL2 audio queue).
 
-### VIOCALLS (20 APIs: 15 implemented, 5 stub)
+### UCONV (5 APIs)
+
+UniCreateUconvObject (12289), UniFreeUconvObject (12290), UniUconvToUcs (12291), UniUconvFromUcs (12292), UniMapCpToUcsCp (12294)
+
+UCS-2 name parser accepts `"IBM-NNN"`, `"CP-NNN"`, and `"UTF-8"` (case-insensitive). Conversion delegates to `cp_decode`/`cp_encode` in `codepage.rs`.
+
+### VIOCALLS (21 APIs: 17 implemented, 4 stub)
 
 **Implemented:**
-VioGetAnsi (3), VioSetAnsi (5), VioScrollUp (7), VioScrollDn (8), VioGetCurPos (9), VioSetCurPos (15), VioWrtTTY (19), VioGetMode (21), VioReadCellStr (24), VioWrtNAttr (26), VioSetCurType (32), VioGetCurType (33), VioGetConfig (46), VioWrtCharStrAtt (48), VioWrtNCell (52)
+VioGetAnsi (3), VioSetAnsi (5), VioScrollUp (7), VioScrollDn (8), VioGetCurPos (9), VioSetCurPos (15), VioWrtTTY (19), VioGetMode (21), VioSetMode (22), VioReadCellStr (24), VioWrtNAttr (26), VioSetCurType (32), VioGetCurType (33), VioCheckCharType (39), VioGetConfig (46), VioWrtCharStrAtt (48), VioWrtNCell (52)
 
 **Stubs:**
-VioSetMode (22), VioGetBuf (31), VioSetCp (42), VioShowBuf (43), VioSetState (51)
+VioGetBuf (31), VioSetCp (42), VioShowBuf (43), VioSetState (51)
 
 ### KBDCALLS (3 APIs)
 
 KbdCharIn (4), KbdStringIn (9), KbdGetStatus (10)
 
-### PMWIN (67 APIs)
+### PMWIN (73 APIs)
 
 Window management, message queues, painting, input, dialogs, menus, clipboard, and resource loading. Key APIs:
 
-WinInitialize (763), WinTerminate (888), WinCreateMsgQueue (716), WinDestroyMsgQueue (726), WinGetMsg (764), WinDispatchMsg (728), WinPostMsg (796), WinSendMsg (866), WinCreateWindow (907), WinCreateStdWindow (908), WinDestroyWindow (729), WinShowWindow (883), WinSetWindowPos (903), WinSetWindowText (904), WinDefWindowProc (728), WinRegisterClass (926), WinBeginPaint (703), WinEndPaint (729), WinMessageBox (793), WinStartTimer (898), WinStopTimer (900), WinSetActiveWindow (875), WinSetFocus (879), WinSetCapture (877), WinMapWindowPoints (789), WinQueryWindowRect (854), WinQueryWindowPos (852), WinLoadMenu (781), WinLoadString (781), WinGetClipbrdData (6), WinInvalidateRect (27)
+WinInitialize (763), WinTerminate (888), WinCreateMsgQueue (716), WinDestroyMsgQueue (726), WinGetMsg (915), WinDispatchMsg (728), WinPostMsg (796), WinSendMsg (866), WinCreateWindow (907), WinCreateStdWindow (908), WinDestroyWindow (729), WinShowWindow (883), WinSetWindowPos (903), WinSetWindowText (904), WinQueryWindowText (841), WinDefWindowProc (728), WinRegisterClass (926), WinBeginPaint (703), WinEndPaint (729), WinMessageBox (793), WinStartTimer (898), WinStopTimer (900), WinSetActiveWindow (875), WinSetFocus (879), WinSetCapture (877), WinMapWindowPoints (789), WinQueryWindowRect (854), WinQueryWindowPos (852), WinLoadMenu (781), WinGetClipbrdData (6), WinInvalidateRect (27), WinEnableWindow (735), WinIsWindowEnabled (773), WinQueryWindowPos (852), WinSetParent (859), WinQueryDlgItemText (815)
 
-### PMGPI (8 APIs)
+### PMGPI (30 APIs: 23 implemented, 7 stub)
 
-GpiCreatePS (369), GpiDestroyPS (379), GpiSetColor (517), GpiMove (404), GpiBox (356), GpiLine (398), GpiCharStringAt (359), GpiErase (389)
+**Implemented:**
+GpiBox (356), GpiCharString (358), GpiCharStringAt (359), GpiCreatePS (369), GpiDestroyPS (379), GpiCreateLogFont (381), GpiDeleteSetId (385), GpiErase (389), GpiFullArc (392), GpiLine (398), GpiMove (404), GpiQueryCurrentPosition (416), GpiQueryFonts (459), GpiQueryFontMetrics (464), GpiQueryTextBox (476), GpiSetCharSet (481), GpiSetCharBox (482), GpiSetBackMix (503), GpiSetMix (509), GpiSetColor (517), GpiSetBackColor (518), GpiQueryColor (520), GpiQueryBackColor (521)
+
+**Stubs:**
+GpiSetArcParams (353), GpiLoadFonts (399), GpiLoadPublicFonts (400), GpiUnloadPublicFonts (401), GpiSetLineType (527), GpiSetLineWidth (529), GpiSetLineWidthGeom (530)
 
 ### Summary
 
-| Module | Implemented | Stub | Total |
-|--------|-------------|------|-------|
-| DOSCALLS | 97 | 10 | 107 |
-| QUECALLS | 7 | 0 | 7 |
-| NLS | 4 | 0 | 4 |
-| MSG | 2 | 0 | 2 |
-| MDM | 4 | 0 | 4 |
-| VIOCALLS | 15 | 5 | 20 |
-| KBDCALLS | 3 | 0 | 3 |
-| PMWIN | 67 | 0 | 67 |
-| PMGPI | 8 | 0 | 8 |
-| **Total** | **207** | **15** | **222** |
+| Module | Total |
+|--------|-------|
+| DOSCALLS | 113 |
+| QUECALLS | 7 |
+| NLS | 4 |
+| MSG | 2 |
+| MDM | 4 |
+| UCONV | 5 |
+| VIOCALLS | 21 |
+| KBDCALLS | 3 |
+| PMWIN | 73 |
+| PMGPI | 30 |
+| **Total** | **262** |
 
 ---
 

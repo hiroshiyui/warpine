@@ -416,7 +416,7 @@ run_text_loop(renderer, shared)
 
 **Cursor rendering** uses XOR-inversion of all RGB channels (`old ^ 0x00_FF_FF_FF`), guaranteeing the cursor bar is visible regardless of the underlying cell's fg/bg colour (including black-on-black `attr=0x00`). Degenerate cursor shapes (`cursor_start > cursor_end`) fall back to the default underline at scan lines 14–15.
 
-**CP437 font**: `get_cp437_glyph(ch: u8) -> [u8; 16]` returns the 8×16 bitmap. ASCII 0x20–0x7E delegates to `font8x16::FONT_8X16`; box-drawing (0xB0–0xCE), block elements (0xDB–0xDF), and other CP437 glyphs are hand-crafted bitmaps.
+**Glyph rendering**: `get_glyph_for_char(ch: char) -> [u8; 16]` does a binary search over the `UNIFONT_SBCS` table (7282 half-width 8×16 entries generated from GNU Unifont 17 by `build.rs`). Characters absent from Unifont return a blank glyph. For DBCS wide characters, `get_glyph_dbcs(ch: char) -> [u8; 32]` searches the `font_unifont_wide.bin` binary blob (49,804 16×16 entries). The old hand-crafted `src/font8x16.rs` was removed in Unifont Phase A.
 
 **CGA palette**: `CGA_PALETTE: [u32; 16]` — ARGB8888 values indexed by 4-bit colour nibble (bits 3:0 for foreground, 7:4 for background in the attribute byte).
 
@@ -791,7 +791,7 @@ The VFS is introduced incrementally:
 src/
   main.rs              Entry point: CLI/PM/text-mode detection, SDL2 init, thread spawning
   api.rs               DosWrite/DosExit FFI bridge stubs
-  font8x16.rs          8×16 bitmap font (ASCII 0x20–0x7E) for CP437 text rendering
+  build.rs             Compile-time Unifont parser: emits font_unifont_sbcs.rs + font_unifont_wide.bin
   lx/
     mod.rs             LX module re-exports
     header.rs          LX binary format structures and parsing

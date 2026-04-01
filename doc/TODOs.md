@@ -13,7 +13,7 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
 Phases 1–7 baseline are complete. Detailed descriptions of each phase, the APIs implemented, architectural decisions, and verification evidence are documented in:
 
 - **[Developer Guide](developer_guide.md)** — Sections 1–20 cover all subsystem architectures; Appendix (Section 20) has per-phase development narratives.
-- **[Reference Manual](reference_manual.md)** — Section 9 lists all 222 implemented APIs with ordinals; Section 11 covers guest memory layout and GDT.
+- **[Reference Manual](reference_manual.md)** — Section 9 lists all 262 implemented APIs with ordinals; Section 11 covers guest memory layout and GDT.
 
 ---
 

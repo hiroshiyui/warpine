@@ -57,6 +57,8 @@ impl super::Loader {
             43 => { debug!("  VioShowBuf (stub)"); NO_ERROR },
             // VioCheckCharType(pType, usRow, usCol, hvio) → ESP+4=hvio, +8=usCol, +12=usRow, +16=pType
             39 => self.vio_check_char_type(read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
+            // VioWrtCellStr(pchCells, cb, usRow, usCol, hvio) — stub, returns NO_ERROR
+            28 => { debug!("  VioWrtCellStr (stub)"); NO_ERROR },
             _ => { warn!("Warning: Unknown VIOCALLS Ordinal {}", ordinal); NO_ERROR }
         };
         super::ApiResult::Normal(res)
@@ -80,6 +82,8 @@ impl super::Loader {
             48 => 24, 52 => 20, 26 => 20, 24 => 20, 32 => 8, 33 => 8,
             5 => 8, 3 => 8, 51 => 8, 42 => 12, 46 => 12,
             22 => 8, 31 => 12, 43 => 12,
+            28 => 20, // VioWrtCellStr(pchCells, cb, usRow, usCol, hvio) — 5 args × 4 bytes
+            39 => 16, // VioCheckCharType(pType, usRow, usCol, hvio) — 4 args × 4 bytes
             _ => 0,
         }
     }
@@ -711,5 +715,35 @@ mod tests {
         let rows = loader.shared.console_mgr.lock_or_recover().rows;
         // row >= rows is out of bounds.
         assert_ne!(loader.vio_check_char_type(0x2000, rows as u32, 0, 0), 0);
+    }
+
+    /// VioWrtCellStr (ordinal 28): stub must return NO_ERROR and its Pascal
+    /// arg-byte count must be 20 (5 args × 4 bytes). Missing this entry was
+    /// the root cause of the `Passed: 127928197` stack-corruption bug.
+    #[test]
+    fn test_vio_wrt_cell_str_stub_and_arg_bytes() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp: u32 = 0x1000;
+        vcpu.regs.rsp = esp as u64;
+
+        // VioWrtCellStr(pchCells, cb, usRow, usCol, hvio)
+        // Pascal layout (last arg at esp+4): hvio, usCol, usRow, cb, pchCells
+        write_stack(&loader, esp, &[/*hvio*/0, /*usCol*/0u32, /*usRow*/0u32, /*cb*/2u32, /*pchCells*/0x3000u32]);
+        let result = loader.handle_viocalls(&mut vcpu, 0, 28);
+        assert!(matches!(result, ApiResult::Normal(0)), "VioWrtCellStr must return NO_ERROR");
+
+        assert_eq!(loader.viocalls_arg_bytes(28), 20,
+            "Wrong arg-byte count for VioWrtCellStr (ordinal 28): stack corruption bug");
+    }
+
+    /// VioCheckCharType (ordinal 39): Pascal arg-byte count must be 16
+    /// (4 args × 4 bytes). Missing this entry was part of the dbcs_test
+    /// stack-corruption bug.
+    #[test]
+    fn test_vio_check_char_type_arg_bytes() {
+        let loader = Loader::new_mock();
+        assert_eq!(loader.viocalls_arg_bytes(39), 16,
+            "Wrong arg-byte count for VioCheckCharType (ordinal 39): stack corruption bug");
     }
 }

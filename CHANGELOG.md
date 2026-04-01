@@ -43,6 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **PresentationSpace expansion** — `back_color`, `mix_mode`, `back_mix`, `char_set`, `char_box` fields added; `create_ps()` initialises defaults (white background, FM_OVERPAINT mix); `current_pos` tracking for GPI drawing state
 
 ### Fixed
+- **VioWrtCellStr / VioCheckCharType Pascal stack corruption** — `viocalls_arg_bytes()` was missing entries for ordinal 28 (VioWrtCellStr, 5 args × 4 = 20 bytes) and ordinal 39 (VioCheckCharType, 4 args × 4 = 16 bytes); the callee-cleanup mechanism left those bytes on the guest stack after each call, corrupting local variables (e.g. `passed` counter reading as `127928197` in dbcs_test); added `28 => 20` and `39 => 16` to the match table and a VioWrtCellStr stub (returns NO_ERROR) to `handle_viocalls()`; 2 new regression tests; 418 unit tests pass
 - **Far16 LSS+JMP thunk bypass** — added variant handler for `LSS ESP, [EBP-n]` prefix before `JMP FAR` (66 EA); fixes Up/Down arrow crashes in 4OS2
 - **DosWaitChild 5-arg signature** — stack read used wrong offset for 4th/5th args; caused 4OS2 prompt not returning after child process exit
 - **4OS2 child-process prompt regression** — relay thread and DosWaitChild interaction corrected
