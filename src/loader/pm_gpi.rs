@@ -2,6 +2,7 @@
 //
 // OS/2 Presentation Manager PMGPI API handler methods.
 
+use std::sync::atomic::Ordering;
 use super::vm_backend::VcpuBackend;
 use log::{debug, warn};
 
@@ -164,7 +165,8 @@ impl super::Loader {
                 let text: Vec<u8> = (0..count).map(|i| {
                     self.guest_read::<u8>(pch + i as u32).unwrap_or(0)
                 }).collect();
-                let text_str = String::from_utf8_lossy(&text).to_string();
+                let cp = self.shared.active_codepage.load(Ordering::Relaxed);
+                let text_str = super::codepage::cp_decode(&text, cp);
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 let color = wm.ps_map.get(&hps).map(|ps| ps.color).unwrap_or(0);
                 let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
@@ -201,7 +203,8 @@ impl super::Loader {
                 let text: Vec<u8> = (0..count)
                     .map(|i| self.guest_read::<u8>(pch + i as u32).unwrap_or(0))
                     .collect();
-                let text_str = String::from_utf8_lossy(&text).to_string();
+                let cp = self.shared.active_codepage.load(Ordering::Relaxed);
+                let text_str = super::codepage::cp_decode(&text, cp);
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 let (x, y) = wm.ps_map.get(&hps).map(|ps| ps.current_pos).unwrap_or((0, 0));
                 let color  = wm.ps_map.get(&hps).map(|ps| ps.color).unwrap_or(0);
@@ -545,5 +548,54 @@ mod tests {
         // This test just confirms we don't panic/crash on these ordinals.
         let _loader = Loader::new_mock();
         // (Full dispatch requires a VcpuBackend; smoke test is via integration)
+    }
+
+    /// GpiCharString (ordinal 358) must decode raw guest bytes through the
+    /// active codepage rather than treating them as UTF-8.
+    /// We verify this by setting up a headless GUI channel, writing CP850 bytes
+    /// to guest memory, calling the handler, and inspecting the DrawText message.
+    #[test]
+    fn test_gpi_char_string_decodes_through_active_codepage() {
+        use super::super::vm_backend::mock::MockVcpu;
+        use super::super::mutex_ext::MutexExt;
+        use crate::gui::GUIMessage;
+        use std::sync::atomic::Ordering;
+
+        let loader = Loader::new_mock();
+        loader.shared.active_codepage.store(850, Ordering::Relaxed);
+
+        // Inject a headless GUI channel so DrawText messages are captured.
+        let (tx, rx) = crate::gui::create_gui_channel();
+        {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            wm.gui_tx = Some(tx);
+        }
+
+        // Write CP850 bytes for "caf\x82" (é = 0x82 in CP850) at guest addr 0x3000.
+        let text_ptr: u32 = 0x3000;
+        let cp850_text = b"caf\x82";
+        for (i, &b) in cp850_text.iter().enumerate() {
+            loader.guest_write::<u8>(text_ptr + i as u32, b).unwrap();
+        }
+
+        // GpiCharString(hps=1, lCount=4, pchString)
+        let mut vcpu = MockVcpu::new();
+        let esp: u32 = 0x1000;
+        vcpu.regs.rsp = esp as u64;
+        for (i, &a) in [1u32, 4, text_ptr].iter().enumerate() {
+            loader.guest_write::<u32>(esp + 4 + i as u32 * 4, a).unwrap();
+        }
+        let _ = loader.handle_pmgpi_call(&mut vcpu, 0, 358);
+
+        // Drain the channel and find the DrawText message.
+        let mut found_text: Option<String> = None;
+        while let Ok(msg) = rx.try_recv() {
+            if let GUIMessage::DrawText { text, .. } = msg {
+                found_text = Some(text);
+            }
+        }
+        // The decoded text should be "café" (U+00E9), not "caf\u{FFFD}".
+        assert_eq!(found_text.as_deref(), Some("caf\u{00E9}"),
+            "GpiCharString should decode CP850 bytes to Unicode");
     }
 }

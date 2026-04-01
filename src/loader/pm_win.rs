@@ -658,12 +658,14 @@ impl super::Loader {
                 let id_item = read_stack(8);
                 let cch_max = read_stack(12) as usize;
                 let buffer_ptr = read_stack(16);
+                let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
                 let wm = self.shared.window_mgr.lock_or_recover();
                 let text = wm.find_child_by_id(hwnd_dlg, id_item)
                     .and_then(|h| wm.get_window(h))
-                    .map(|w| w.text.as_str())
-                    .unwrap_or("");
-                let bytes = text.as_bytes();
+                    .map(|w| w.text.clone())
+                    .unwrap_or_default();
+                drop(wm);
+                let bytes = super::codepage::cp_encode(&text, cp);
                 let copy_len = bytes.len().min(cch_max.saturating_sub(1));
                 self.guest_write_bytes(buffer_ptr, &bytes[..copy_len]);
                 self.guest_write::<u8>(buffer_ptr + copy_len as u32, 0);
@@ -695,9 +697,11 @@ impl super::Loader {
                 let hwnd = read_stack(4);
                 let cch_max = read_stack(8) as usize;
                 let buffer_ptr = read_stack(12);
+                let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
                 let wm = self.shared.window_mgr.lock_or_recover();
-                let text = wm.get_window(hwnd).map(|w| w.text.as_str()).unwrap_or("");
-                let bytes = text.as_bytes();
+                let text = wm.get_window(hwnd).map(|w| w.text.clone()).unwrap_or_default();
+                drop(wm);
+                let bytes = super::codepage::cp_encode(&text, cp);
                 let copy_len = bytes.len().min(cch_max.saturating_sub(1));
                 self.guest_write_bytes(buffer_ptr, &bytes[..copy_len]);
                 self.guest_write::<u8>(buffer_ptr + copy_len as u32, 0);
@@ -1103,5 +1107,74 @@ impl super::Loader {
                 ApiResult::Normal(0)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{Loader, ApiResult};
+    use super::super::vm_backend::mock::MockVcpu;
+    use super::super::mutex_ext::MutexExt;
+    use std::sync::atomic::Ordering;
+
+    fn write_stack(loader: &Loader, esp: u32, args: &[u32]) {
+        for (i, &a) in args.iter().enumerate() {
+            loader.guest_write::<u32>(esp + 4 + i as u32 * 4, a).unwrap();
+        }
+    }
+
+    /// WinQueryWindowText (ordinal 841) must encode the stored UTF-8 window
+    /// title back into the guest's active codepage before writing to guest RAM.
+    #[test]
+    fn test_win_query_window_text_encodes_to_active_codepage() {
+        let loader = Loader::new_mock();
+        // Store a window with a non-ASCII title (CP850: é = 0x82)
+        let hwnd = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let h = wm.create_window("WC_FRAME".to_string(), 0, 1);
+            wm.get_window_mut(h).unwrap().text = "caf\u{00E9}".to_string(); // "café"
+            h
+        };
+        // Switch active codepage to CP850
+        loader.shared.active_codepage.store(850, Ordering::Relaxed);
+
+        let mut vcpu = MockVcpu::new();
+        let esp: u32    = 0x1000;
+        let buf_ptr: u32 = 0x2000;
+        vcpu.regs.rsp = esp as u64;
+        // WinQueryWindowText(hwnd, cchMax=16, pchBuffer)
+        write_stack(&loader, esp, &[hwnd, 16, buf_ptr]);
+        let result = loader.handle_pmwin_call(&mut vcpu, 0, 841);
+        assert!(matches!(result, ApiResult::Normal(4))); // "café" = 4 bytes in CP850
+
+        // CP850: 'c'=0x63, 'a'=0x61, 'f'=0x66, 'é'=0x82
+        assert_eq!(loader.guest_read::<u8>(buf_ptr).unwrap(),     b'c');
+        assert_eq!(loader.guest_read::<u8>(buf_ptr + 1).unwrap(), b'a');
+        assert_eq!(loader.guest_read::<u8>(buf_ptr + 2).unwrap(), b'f');
+        assert_eq!(loader.guest_read::<u8>(buf_ptr + 3).unwrap(), 0x82); // é in CP850
+        assert_eq!(loader.guest_read::<u8>(buf_ptr + 4).unwrap(), 0x00); // NUL terminator
+    }
+
+    /// WinQueryWindowText with ASCII-only text must still work after the
+    /// codepage-encode path (ASCII encodes identically in all supported CPs).
+    #[test]
+    fn test_win_query_window_text_ascii_roundtrip() {
+        let loader = Loader::new_mock();
+        let hwnd = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let h = wm.create_window("WC_FRAME".to_string(), 0, 1);
+            wm.get_window_mut(h).unwrap().text = "Hello".to_string();
+            h
+        };
+        let mut vcpu = MockVcpu::new();
+        let esp: u32     = 0x1000;
+        let buf_ptr: u32 = 0x2000;
+        vcpu.regs.rsp = esp as u64;
+        write_stack(&loader, esp, &[hwnd, 16, buf_ptr]);
+        let result = loader.handle_pmwin_call(&mut vcpu, 0, 841);
+        assert!(matches!(result, ApiResult::Normal(5)));
+        assert_eq!(&loader.guest_read::<u8>(buf_ptr).unwrap(),     &b'H');
+        assert_eq!(&loader.guest_read::<u8>(buf_ptr + 4).unwrap(), &b'o');
+        assert_eq!(loader.guest_read::<u8>(buf_ptr + 5).unwrap(),   0x00);
     }
 }
