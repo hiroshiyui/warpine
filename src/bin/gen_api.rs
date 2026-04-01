@@ -558,6 +558,177 @@ fn cmd_gen_trace(entries: &[OrdEntry]) {
     print!("{out}");
 }
 
+// ── doc/os2_ordinals.md parser ────────────────────────────────────────────────
+//
+// Parses the markdown file produced from the Open Watcom import library and
+// returns a map of (MODULE, local_ordinal) → documented_name.
+//
+// Format expected:
+//   ## MODULE (N exports)
+//   | Ordinal | Function |
+//   |---------|----------|
+//   | 234 | DosExit |
+//   ...
+//
+// Duplicate ordinal rows (e.g. short + long alias in the doc) keep the last
+// occurrence (both names are typically fine for comparison purposes).
+
+fn parse_ordinals_doc(path: &Path) -> Result<HashMap<(String, u32), String>, String> {
+    let content = fs::read_to_string(path)
+        .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+
+    let mut map: HashMap<(String, u32), String> = HashMap::new();
+    let mut current_module: Option<String> = None;
+    let mut in_table = false;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+
+        // Module section header: "## DOSCALLS (395 exports)"
+        if let Some(rest) = trimmed.strip_prefix("## ") {
+            if let Some(mod_name) = rest.split_whitespace().next() {
+                current_module = Some(mod_name.to_owned());
+                in_table = false;
+            }
+            continue;
+        }
+
+        // Table header row: "| Ordinal | Function |"
+        if trimmed.starts_with("| Ordinal") || trimmed.starts_with("|Ordinal") {
+            in_table = true;
+            continue;
+        }
+
+        // Separator row: "|---------|----------|"
+        if in_table && (trimmed.starts_with("|---") || trimmed.starts_with("| ---")) {
+            continue;
+        }
+
+        // Data row: "| 234 | DosExit |"
+        if in_table && trimmed.starts_with('|') {
+            if let Some(module) = &current_module {
+                let parts: Vec<&str> = trimmed.split('|').collect();
+                // parts: ["", " 234 ", " DosExit ", ""]
+                if parts.len() >= 3 {
+                    let ord_str = parts[1].trim();
+                    let name    = parts[2].trim();
+                    if let Ok(ordinal) = ord_str.parse::<u32>() {
+                        map.insert((module.clone(), ordinal), name.to_owned());
+                    }
+                }
+            }
+            continue;
+        }
+
+        // Blank line resets table state
+        if trimmed.is_empty() {
+            in_table = false;
+        }
+    }
+
+    Ok(map)
+}
+
+/// Normalise a name for 16-bit alias detection.
+///
+/// Strategy: uppercase + remove all occurrences of "16".
+/// Catches `VIO16SCROLLDN` ↔ `VioScrollDn`, `KBD16CHARIN` ↔ `KbdCharIn`, etc.
+fn normalize_for_alias(s: &str) -> String {
+    s.to_uppercase().replace("16", "")
+}
+
+fn cmd_validate_doc(entries: &[OrdEntry], doc_path: &Path) {
+    // Only modules present in both os2api.def and os2_ordinals.md.
+    // NLS, MSG, MDM, UCONV are Warpine-specific and absent from the OW snapshot.
+    const DOC_MODULES: &[&str] = &[
+        "DOSCALLS", "QUECALLS", "KBDCALLS", "VIOCALLS", "PMGPI", "PMWIN", "SESMGR",
+    ];
+
+    let doc_map = match parse_ordinals_doc(doc_path) {
+        Ok(m)  => m,
+        Err(e) => { eprintln!("error: {e}"); return; }
+    };
+
+    let mut confirmed:    usize = 0;
+    let mut alias_ok:     usize = 0;
+    let mut only_in_def:  Vec<&OrdEntry> = Vec::new();
+    let mut mismatches:   Vec<(&OrdEntry, String)> = Vec::new();
+
+    let in_scope: Vec<&OrdEntry> = entries
+        .iter()
+        .filter(|e| DOC_MODULES.contains(&e.module.as_str()))
+        .collect();
+
+    for e in &in_scope {
+        let key = (e.module.clone(), e.local_ordinal);
+        match doc_map.get(&key) {
+            None => only_in_def.push(e),
+            Some(doc_name) => {
+                if doc_name.to_uppercase() == e.name.to_uppercase() {
+                    confirmed += 1;
+                } else if normalize_for_alias(doc_name) == normalize_for_alias(&e.name) {
+                    alias_ok += 1;
+                } else {
+                    mismatches.push((e, doc_name.clone()));
+                }
+            }
+        }
+    }
+
+    println!("Validation: targets/os2api.def vs {}", doc_path.display());
+    println!(
+        "{} def entries checked (modules: {})",
+        in_scope.len(),
+        DOC_MODULES.join(", ")
+    );
+    println!();
+
+    println!("  ✓  Confirmed (exact match):             {confirmed}");
+    println!("  ~  16-bit alias pairs (auto-detected):  {alias_ok}");
+
+    if !only_in_def.is_empty() {
+        println!();
+        println!(
+            "  ℹ  Only in os2api.def (not in OW snapshot, {} entries):",
+            only_in_def.len()
+        );
+        let mut by_mod: HashMap<&str, Vec<&OrdEntry>> = HashMap::new();
+        for e in &only_in_def {
+            by_mod.entry(e.module.as_str()).or_default().push(e);
+        }
+        for module in DOC_MODULES {
+            let Some(group) = by_mod.get(module) else { continue };
+            for e in group.iter() {
+                println!("    {}.{} = {}", e.module, e.local_ordinal, e.name);
+            }
+        }
+    }
+
+    if !mismatches.is_empty() {
+        println!();
+        println!(
+            "  ⚠  Ordinal name mismatches ({} — investigate for correctness):",
+            mismatches.len()
+        );
+        for (e, doc_name) in &mismatches {
+            println!(
+                "    {}.{:>4}: def={:<40} doc={}",
+                e.module, e.local_ordinal, e.name, doc_name
+            );
+        }
+    }
+
+    println!();
+    if mismatches.is_empty() {
+        println!("✓  All in-scope def entries confirmed or recognised as 16-bit aliases.");
+    } else {
+        println!(
+            "⚠  {} mismatch(es) need investigation — see list above.",
+            mismatches.len()
+        );
+    }
+}
+
 fn cmd_gen_def(entries: &[OrdEntry]) {
     println!("# OS/2 API ordinal map for the Warpine LX linker.");
     println!("#");
@@ -593,33 +764,37 @@ fn cmd_gen_def(entries: &[OrdEntry]) {
 // ── CLI parsing ───────────────────────────────────────────────────────────────
 
 struct Config {
-    command: String,
-    def_path: PathBuf,
-    trace_path: PathBuf,
+    command:      String,
+    def_path:     PathBuf,
+    trace_path:   PathBuf,
+    ordinals_doc: PathBuf,
 }
 
 fn usage_and_exit() -> ! {
     eprintln!(
-        "Usage: gen_api [--def PATH] [--trace PATH] <command>\n\
+        "Usage: gen_api [--def PATH] [--trace PATH] [--ordinals-doc PATH] <command>\n\
          \n\
          Commands:\n\
-           show       Pretty-print the full ordinal table\n\
-           check      Validate os2api.def + detect drift vs api_trace.rs\n\
-           gen-trace  Emit Rust source for ordinal_to_name() + module_for_ordinal()\n\
-           gen-def    Re-emit a canonically sorted os2api.def\n\
+           show          Pretty-print the full ordinal table\n\
+           check         Validate os2api.def + detect drift vs api_trace.rs\n\
+           gen-trace     Emit Rust source for ordinal_to_name() + module_for_ordinal()\n\
+           gen-def       Re-emit a canonically sorted os2api.def\n\
+           validate-doc  Cross-check os2api.def against doc/os2_ordinals.md\n\
          \n\
          Options:\n\
-           --def PATH    Path to os2api.def  (default: targets/os2api.def)\n\
-           --trace PATH  Path to api_trace.rs (default: src/loader/api_trace.rs)"
+           --def PATH          Path to os2api.def        (default: targets/os2api.def)\n\
+           --trace PATH        Path to api_trace.rs      (default: src/loader/api_trace.rs)\n\
+           --ordinals-doc PATH Path to os2_ordinals.md   (default: doc/os2_ordinals.md)"
     );
     process::exit(1);
 }
 
 fn parse_args() -> Config {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let mut def_path   = PathBuf::from("targets/os2api.def");
-    let mut trace_path = PathBuf::from("src/loader/api_trace.rs");
-    let mut command    = None;
+    let mut def_path     = PathBuf::from("targets/os2api.def");
+    let mut trace_path   = PathBuf::from("src/loader/api_trace.rs");
+    let mut ordinals_doc = PathBuf::from("doc/os2_ordinals.md");
+    let mut command      = None;
 
     let mut i = 0;
     while i < args.len() {
@@ -635,6 +810,13 @@ fn parse_args() -> Config {
                 i += 1;
                 trace_path = PathBuf::from(args.get(i).unwrap_or_else(|| {
                     eprintln!("--trace requires a path argument");
+                    process::exit(1);
+                }));
+            }
+            "--ordinals-doc" => {
+                i += 1;
+                ordinals_doc = PathBuf::from(args.get(i).unwrap_or_else(|| {
+                    eprintln!("--ordinals-doc requires a path argument");
                     process::exit(1);
                 }));
             }
@@ -660,6 +842,7 @@ fn parse_args() -> Config {
         }),
         def_path,
         trace_path,
+        ordinals_doc,
     }
 }
 
@@ -686,6 +869,8 @@ fn main() {
         "gen-trace" => cmd_gen_trace(&entries),
 
         "gen-def" => cmd_gen_def(&entries),
+
+        "validate-doc" => cmd_validate_doc(&entries, &cfg.ordinals_doc),
 
         other => {
             eprintln!("unknown command: {other:?}");
@@ -878,6 +1063,82 @@ mod tests {
                 e.module, e.local_ordinal, e.flat_ordinal, upper
             );
         }
+    }
+
+    // ── validate-doc tests ───────────────────────────────────────────────────
+
+    fn sample_ordinals_md() -> String {
+        "## DOSCALLS (3 exports)\n\
+         \n\
+         | Ordinal | Function |\n\
+         |---------|----------|\n\
+         | 234 | DosExit |\n\
+         | 282 | DosWrite |\n\
+         | 373 | DosQueryDOSProperty |\n\
+         \n\
+         ## VIOCALLS (2 exports)\n\
+         \n\
+         | Ordinal | Function |\n\
+         |---------|----------|\n\
+         | 19 | VIO16WRTTTY |\n\
+         | 8  | VIO16PRTSC |\n\
+         ".to_owned()
+    }
+
+    #[test]
+    fn test_parse_ordinals_doc_basic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("os2_ordinals.md");
+        fs::write(&path, sample_ordinals_md()).unwrap();
+
+        let map = parse_ordinals_doc(&path).unwrap();
+        assert_eq!(map.get(&("DOSCALLS".into(), 234)), Some(&"DosExit".to_owned()));
+        assert_eq!(map.get(&("DOSCALLS".into(), 282)), Some(&"DosWrite".to_owned()));
+        assert_eq!(map.get(&("VIOCALLS".into(), 19)),  Some(&"VIO16WRTTTY".to_owned()));
+        assert_eq!(map.get(&("VIOCALLS".into(), 8)),   Some(&"VIO16PRTSC".to_owned()));
+        // Module not in doc — absent
+        assert!(map.get(&("NLS".into(), 5)).is_none());
+    }
+
+    #[test]
+    fn test_normalize_for_alias() {
+        // 16-bit and 32-bit variants of the same function normalise identically
+        assert_eq!(normalize_for_alias("VIO16WRTTTY"),  normalize_for_alias("VioWrtTTY"));
+        assert_eq!(normalize_for_alias("KBD16CHARIN"),  normalize_for_alias("KbdCharIn"));
+        assert_eq!(normalize_for_alias("DOS16EXIT"),    normalize_for_alias("DosExit"));
+        // Different functions must NOT normalise identically
+        assert_ne!(normalize_for_alias("VIO16PRTSC"),   normalize_for_alias("VioScrollDn"));
+        // Same name, different case
+        assert_eq!(normalize_for_alias("DosWrite"),     normalize_for_alias("DOSWRITE"));
+    }
+
+    #[test]
+    fn test_validate_doc_exact_and_alias() {
+        // Build a tiny def and a matching doc — confirmed + alias should both work
+        let def_content =
+            "DOSCALLS.234  DosExit\n\
+             VIOCALLS.19   VioWrtTTY\n";
+        let doc_content = sample_ordinals_md();
+
+        let dir = tempfile::tempdir().unwrap();
+        let def_path = dir.path().join("test.def");
+        let doc_path = dir.path().join("os2_ordinals.md");
+        fs::write(&def_path, def_content).unwrap();
+        fs::write(&doc_path, doc_content).unwrap();
+
+        let entries = parse_def(&def_path).unwrap();
+        let doc_map = parse_ordinals_doc(&doc_path).unwrap();
+
+        // DosExit: exact match
+        let e_dos = entries.iter().find(|e| e.name == "DosExit").unwrap();
+        let doc_name = doc_map.get(&("DOSCALLS".into(), 234)).unwrap();
+        assert_eq!(doc_name.to_uppercase(), e_dos.name.to_uppercase());
+
+        // VioWrtTTY: alias match (VIO16WRTTTY → VIOWRTTTY == VIOWRTTTY)
+        let e_vio = entries.iter().find(|e| e.name == "VioWrtTTY").unwrap();
+        let doc_vio = doc_map.get(&("VIOCALLS".into(), 19)).unwrap();
+        assert_ne!(doc_vio.to_uppercase(), e_vio.name.to_uppercase(), "should not be exact");
+        assert_eq!(normalize_for_alias(doc_vio), normalize_for_alias(&e_vio.name), "alias should match");
     }
 
     #[test]

@@ -37,7 +37,6 @@ impl super::Loader {
         static VIOCALLS_NAMES: &[(&str, u32)] = &[
             ("VioGetAnsi",        3),
             ("VioSetAnsi",        5),
-            ("VioGetConfig",      6),
             ("VioScrollUp",       7),
             ("VioScrollDn",       8),
             ("VioGetCurPos",      9),
@@ -54,16 +53,16 @@ impl super::Loader {
             ("VioCheckCharType", 39),
             ("VioSetCp",         42),
             ("VioShowBuf",       43),
+            ("VioGetConfig",     46),  // was incorrectly 6 (VIO16DEREGISTER); real ord = 46
             ("VioWrtCharStrAtt", 48),
             ("VioSetState",      51),
             ("VioWrtNCell",      52),
         ];
         // KBDCALLS name → ordinal table.
         static KBDCALLS_NAMES: &[(&str, u32)] = &[
-            ("KbdCharIn",     10),
-            ("KbdPeek",       11),
+            ("KbdCharIn",      4),   // was incorrectly 10 (KbdGetStatus); real ord = 4
+            ("KbdStringIn",    9),
             ("KbdGetStatus",  10),
-            ("KbdSetStatus",  11),
             ("KbdFlushBuffer", 6),
         ];
 
