@@ -878,18 +878,34 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// Entry point called from `main()` when the user runs `warpine CMD.EXE [args...]`
-    /// directly from the host command line (no guest memory involved).
+    /// Entry point for the **terminal path**: `warpine CMD.EXE [args]` with
+    /// `WARPINE_HEADLESS=1` or when stdout is not a terminal. Runs the shell
+    /// synchronously and calls `std::process::exit` when done.
     pub fn run_builtin_cmd_main(&mut self, host_args: &[&str]) {
+        let exit_code = self.run_builtin_cmd_main_inner(host_args);
+        std::process::exit(exit_code as i32);
+    }
+
+    /// Entry point for the **SDL2 text-window path**: spawned on a worker thread
+    /// while `run_text_loop` runs on the main thread. Signals completion via
+    /// `SharedState::exit_code` + `exit_requested` so the main thread can clean up.
+    pub fn run_builtin_cmd_sdl2(self: Arc<Self>, host_args: Vec<String>) {
+        let args: Vec<&str> = host_args.iter().map(|s| s.as_str()).collect();
+        let exit_code = self.run_builtin_cmd_main_inner(&args);
+        self.shared.exit_code.store(exit_code as i32, std::sync::atomic::Ordering::Relaxed);
+        self.shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.shared.kbd_cond.notify_all();
+    }
+
+    fn run_builtin_cmd_main_inner(&self, host_args: &[&str]) -> u32 {
         // Synthesise the args vector that CmdShell::run() expects:
         // args[0] = program name (ignored by run()), args[1..] = shell args/flags.
         let mut args: Vec<String> = vec!["CMD.EXE".to_string()];
         args.extend(host_args.iter().map(|s| s.to_string()));
-        debug!("run_builtin_cmd_main: args={:?}", args);
+        debug!("run_builtin_cmd: args={:?}", args);
 
         let mut shell = CmdShell::new(Arc::clone(&self.shared));
-        let exit_code = shell.run(&args);
-        std::process::exit(exit_code as i32);
+        shell.run(&args)
     }
 }
 

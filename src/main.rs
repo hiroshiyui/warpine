@@ -130,7 +130,9 @@ fn main() {
     let file_path = remaining_args[0];
 
     // Intercept CMD.EXE / OS2SHELL.EXE directly from the command line.
-    // The remaining_args after the binary name are passed as shell arguments.
+    // When stdout is a real terminal and WARPINE_HEADLESS is not set, open an
+    // SDL2 640×400 text window just like a normal CLI app.  Otherwise fall back
+    // to terminal/headless mode.
     {
         let base = std::path::Path::new(file_path)
             .file_name()
@@ -138,8 +140,45 @@ fn main() {
             .unwrap_or(file_path)
             .to_ascii_uppercase();
         if base == "CMD.EXE" || base == "OS2SHELL.EXE" {
-            let mut loader = loader::Loader::new();
-            loader.run_builtin_cmd_main(&remaining_args[1..]);
+            use std::io::IsTerminal;
+            use std::sync::Arc;
+            use std::sync::atomic::Ordering;
+
+            let headless = std::env::var("WARPINE_HEADLESS").is_ok()
+                || !std::io::stdout().is_terminal();
+
+            let host_args: Vec<String> = remaining_args[1..].iter()
+                .map(|s| s.to_string()).collect();
+
+            if headless {
+                let mut loader = loader::Loader::new();
+                let args: Vec<&str> = host_args.iter().map(|s| s.as_str()).collect();
+                loader.run_builtin_cmd_main(&args);
+            } else {
+                let loader = Arc::new(loader::Loader::new());
+                let shared = loader.get_shared();
+
+                {
+                    let mut vio = shared.console_mgr.lock_or_recover();
+                    vio.enable_sdl2_mode();
+                }
+                shared.use_sdl2_text.store(true, Ordering::Relaxed);
+                *shared.exe_name.lock_or_recover() = "CMD.EXE".to_string();
+
+                let sdl = sdl2::init().expect("Failed to initialise SDL2");
+
+                let loader2 = loader.clone();
+                std::thread::spawn(move || loader2.run_builtin_cmd_sdl2(host_args));
+
+                let mut renderer = gui::Sdl2TextRenderer::new(&sdl, "Warpine — CMD.EXE");
+                gui::run_text_loop(&mut renderer, shared.clone());
+
+                shared.exit_requested.store(true, Ordering::Relaxed);
+                shared.kbd_cond.notify_all();
+                shared.console_mgr.lock_or_recover().disable_raw_mode();
+                let code = shared.exit_code.load(Ordering::Relaxed);
+                std::process::exit(code);
+            }
             return;
         }
     }
