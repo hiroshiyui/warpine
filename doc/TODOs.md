@@ -81,8 +81,9 @@ Convert Warpine's internal string representation to UTF-8, with codepage↔UTF-8
 
 **PM strings complete:** All PM API string boundaries are now codepage-aware. Input paths (`WinSetWindowText`, `WinCreateWindow`, `WinMessageBox`, clipboard — all via `read_guest_string`) already decoded through `cp_decode`. Output paths fixed: `WinQueryWindowText` (ord 841) and `WinQueryDlgItemText` (ord 815) now call `cp_encode(text, cp)` before writing to guest RAM. GPI draw paths fixed: `GpiCharString` (ord 358) and `GpiCharStringAt` (ord 359) now call `cp_decode(&bytes, cp)` instead of `String::from_utf8_lossy`.
 
-Remaining:
-- [ ] **UCONV.DLL** — implement `UniCreateUconvObject`, `UniUconvToUcs`, `UniUconvFromUcs` etc. using `encoding_rs`; unlocks OS/2 apps that do their own Unicode conversion
+**UCONV.DLL complete:** `src/loader/uconv.rs` — `UniCreateUconvObject` (ord 1), `UniFreeUconvObject` (2), `UniUconvToUcs` (3), `UniUconvFromUcs` (4), `UniMapCpToUcsCp` (6). `UconvManager` maps UCONV_OBJECT handles to codepage numbers in `SharedState::uconv_mgr`. UCS-2 name parser accepts `"IBM-NNN"`, `"CP-NNN"`, `"UTF-8"` forms (case-insensitive). Conversion delegates to `cp_decode`/`cp_encode`. `UCONV_BASE = 12288`; `STUB_AREA_SIZE` extended to 16384; UCONV added to `BUILTIN_MODULES` and `resolve_import`. 15 unit tests.
+
+**Unicode-Internal Architecture complete.** All phases done: path strings, VIO output, SDL2 text renderer (Unifont Phase A), PM strings, and UCONV.DLL.
 
 ### GNU Unifont Integration — SBCS (Phase A) — Complete
 
