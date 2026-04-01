@@ -183,6 +183,12 @@ UCONV.3       UniUconvToUcs
 UCONV.4       UniUconvFromUcs
 UCONV.6       UniMapCpToUcsCp
 
+# ── MSG (ordinal relative to module, linker uses MSG.N) ──────────────────────
+MSG.3         DosPutMessage
+MSG.6         DosGetMessage
+
 # ── MDM (ordinal relative to module, linker uses MDM.N) ──────────────────────
 MDM.1         mciSendCommand
-MDM.3         mciSendString
+MDM.2         mciSendString
+MDM.3         mciFreeBlock
+MDM.4         mciGetLastError

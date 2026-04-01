@@ -15,19 +15,22 @@
 
 use super::constants::*;
 
-// ── Ordinal → API name ────────────────────────────────────────────────────────
+// ── Ordinal → API name  (AUTO-GENERATED from targets/os2api.def) ──────────────
+//
+// Regenerate with: cargo run --bin gen_api -- gen-trace
+// Do not edit the two functions below manually; edit os2api.def instead.
 
 /// Map a warpine flat ordinal to its OS/2 API name.
 ///
-/// Returns `"?"` for unknown ordinals.  The returned `&'static str` is safe to
-/// embed as a `tracing` span field without any allocation.
+/// Returns `"?"` for unknown ordinals.
 pub fn ordinal_to_name(ordinal: u32) -> &'static str {
     match ordinal {
-        // ── DOSCALLS (0–1023) ──────────────────────────────────────────────
-        8   => "DosGetInfoSeg",
-        75  => "DosQueryFileMode16",
-        84  => "DosSetFileMode",
+        // ── DOSCALLS ──────────────────────────────────────────────
+        8 => "DosGetInfoSeg",
+        75 => "DosQueryFileMode16",
+        84 => "DosSetFileMode",
         110 => "DosForceDelete",
+        111 => "DosKillThread",
         209 => "DosSetMaxFH",
         210 => "DosSetVerify",
         212 => "DosError",
@@ -39,11 +42,13 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         224 => "DosQueryHType",
         225 => "DosQueryVerify",
         226 => "DosDeleteDir",
+        227 => "DosScanEnv",
         229 => "DosSleep",
         230 => "DosGetDateTime",
         231 => "DosDevConfig",
         234 => "DosExit",
         235 => "DosKillProcess",
+        236 => "DosSetPriority",
         239 => "DosCreatePipe",
         241 => "DosConnectNPipe",
         243 => "DosCreateNPipe",
@@ -132,9 +137,11 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         428 => "DosSetFileLocks",
         572 => "DosQueryResourceSize",
         639 => "DosProtectSetFileLocks",
+        873 => "DosSetExtLIBPATH",
+        874 => "DosQueryExtLIBPATH",
 
-        // ── QUECALLS (1024 + local ordinal) ───────────────────────────────
-        o if (1024..2048).contains(&o) => match o - 1024 {
+        // ── QUECALLS ──────────────────────────────────────────────
+        o if (1024..PMWIN_BASE).contains(&o) => match o - 1024 {
             9  => "DosReadQueue",
             10 => "DosPurgeQueue",
             11 => "DosCloseQueue",
@@ -145,23 +152,60 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             _  => "?",
         },
 
-        // ── NLS — National Language Support (NLS_BASE + local ordinal) ──────
+        // ── KBDCALLS ──────────────────────────────────────────────
+        o if (KBDCALLS_BASE..VIOCALLS_BASE).contains(&o) => match o - KBDCALLS_BASE {
+            4  => "KbdCharIn",
+            9  => "KbdStringIn",
+            10 => "KbdGetStatus",
+            _  => "?",
+        },
+
+        // ── VIOCALLS ──────────────────────────────────────────────
+        o if (VIOCALLS_BASE..SESMGR_BASE).contains(&o) => match o - VIOCALLS_BASE {
+            3  => "VioGetAnsi",
+            5  => "VioSetAnsi",
+            7  => "VioScrollUp",
+            8  => "VioScrollDn",
+            9  => "VioGetCurPos",
+            10 => "VioWrtCellStr",
+            15 => "VioSetCurPos",
+            19 => "VioWrtTTY",
+            21 => "VioGetMode",
+            22 => "VioSetMode",
+            24 => "VioReadCellStr",
+            26 => "VioWrtNAttr",
+            28 => "VioWrtCellStr2",
+            31 => "VioGetBuf",
+            32 => "VioSetCurType",
+            33 => "VioGetCurType",
+            39 => "VioCheckCharType",
+            42 => "VioSetCp",
+            43 => "VioShowBuf",
+            46 => "VioGetConfig",
+            48 => "VioWrtCharStrAtt",
+            51 => "VioSetState",
+            52 => "VioWrtNCell",
+            _  => "?",
+        },
+
+        // ── NLS ───────────────────────────────────────────────────
         o if (NLS_BASE..MSG_BASE).contains(&o) => match o - NLS_BASE {
             5 => "NlsQueryCp",
             6 => "NlsQueryCtryInfo",
             7 => "NlsMapCase",
             8 => "NlsGetDBCSEv",
+            9 => "NlsDosMapCase",
             _ => "?",
         },
 
-        // ── MSG — OS/2 Message DLL (MSG_BASE + local ordinal) ────────────
+        // ── MSG ───────────────────────────────────────────────────
         o if (MSG_BASE..MDM_BASE).contains(&o) => match o - MSG_BASE {
             3 => "DosPutMessage",
             6 => "DosGetMessage",
             _ => "?",
         },
 
-        // ── MDM / MMPM/2 (MDM_BASE + local ordinal) ───────────────────────
+        // ── MDM / MMPM/2 ──────────────────────────────────────────
         o if (MDM_BASE..UCONV_BASE).contains(&o) => match o - MDM_BASE {
             1 => "mciSendCommand",
             2 => "mciSendString",
@@ -170,7 +214,7 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             _ => "?",
         },
 
-        // ── UCONV — Unicode conversion (UCONV_BASE + local ordinal) ───────
+        // ── UCONV ─────────────────────────────────────────────────
         o if (UCONV_BASE..STUB_AREA_SIZE).contains(&o) => match o - UCONV_BASE {
             1 => "UniCreateUconvObject",
             2 => "UniFreeUconvObject",
@@ -180,9 +224,6 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             _ => "?",
         },
 
-        // Higher subsystems (PMWIN, PMGPI, KBDCALLS, VIOCALLS, …) carry
-        // their own internal dispatch tables; the top-level name is just "?"
-        // here — callers use `module_for_ordinal` for the DLL name.
         _ => "?",
     }
 }
@@ -198,10 +239,10 @@ pub fn module_for_ordinal(ordinal: u32) -> &'static str {
     else if ordinal < VIOCALLS_BASE { "KBDCALLS" }   // 4096–5119
     else if ordinal < SESMGR_BASE   { "VIOCALLS" }   // 5120–6143
     else if ordinal < NLS_BASE      { "SESMGR" }     // 6144–7167
-    else if ordinal < MSG_BASE      { "NLS" }         // 7168–8191
-    else if ordinal < MDM_BASE      { "MSG" }         // 8192–10239
-    else if ordinal < UCONV_BASE    { "MDM" }         // 10240–12287
-    else if ordinal < STUB_AREA_SIZE { "UCONV" }      // 12288–16383
+    else if ordinal < MSG_BASE      { "NLS" }        // 7168–8191
+    else if ordinal < MDM_BASE      { "MSG" }        // 8192–10239
+    else if ordinal < UCONV_BASE    { "MDM" }        // 10240–12287
+    else if ordinal < STUB_AREA_SIZE { "UCONV" }     // 12288–16383
     else                            { "?" }
 }
 
@@ -537,8 +578,40 @@ mod tests {
         assert_eq!(ordinal_to_name(0),    "?");
         assert_eq!(ordinal_to_name(999),  "?");
         assert_eq!(ordinal_to_name(1024 + 99), "?"); // unknown QUECALLS sub-ordinal
-        assert_eq!(ordinal_to_name(2048), "?"); // PMWIN — higher subsystem
+        assert_eq!(ordinal_to_name(2048), "?"); // PMWIN — not in def
+        assert_eq!(ordinal_to_name(3072), "?"); // PMGPI — not in def
         assert_eq!(ordinal_to_name(9999), "?");
+    }
+
+    #[test]
+    fn test_kbdcalls_and_viocalls_ordinal_names() {
+        assert_eq!(ordinal_to_name(KBDCALLS_BASE + 4),  "KbdCharIn");
+        assert_eq!(ordinal_to_name(KBDCALLS_BASE + 9),  "KbdStringIn");
+        assert_eq!(ordinal_to_name(KBDCALLS_BASE + 10), "KbdGetStatus");
+        assert_eq!(ordinal_to_name(KBDCALLS_BASE + 99), "?");
+        assert_eq!(ordinal_to_name(VIOCALLS_BASE + 19), "VioWrtTTY");
+        assert_eq!(ordinal_to_name(VIOCALLS_BASE + 9),  "VioGetCurPos");
+        assert_eq!(ordinal_to_name(VIOCALLS_BASE + 15), "VioSetCurPos");
+        assert_eq!(ordinal_to_name(VIOCALLS_BASE + 39), "VioCheckCharType");
+        assert_eq!(ordinal_to_name(VIOCALLS_BASE + 99), "?");
+    }
+
+    #[test]
+    fn test_newly_named_doscalls_ordinals() {
+        assert_eq!(ordinal_to_name(111), "DosKillThread");
+        assert_eq!(ordinal_to_name(227), "DosScanEnv");
+        assert_eq!(ordinal_to_name(236), "DosSetPriority");
+        assert_eq!(ordinal_to_name(873), "DosSetExtLIBPATH");
+        assert_eq!(ordinal_to_name(874), "DosQueryExtLIBPATH");
+    }
+
+    #[test]
+    fn test_nls_all_ordinals_named() {
+        assert_eq!(ordinal_to_name(NLS_BASE + 5), "NlsQueryCp");
+        assert_eq!(ordinal_to_name(NLS_BASE + 6), "NlsQueryCtryInfo");
+        assert_eq!(ordinal_to_name(NLS_BASE + 7), "NlsMapCase");
+        assert_eq!(ordinal_to_name(NLS_BASE + 8), "NlsGetDBCSEv");
+        assert_eq!(ordinal_to_name(NLS_BASE + 9), "NlsDosMapCase");
     }
 
     #[test]
