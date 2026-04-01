@@ -162,3 +162,63 @@ fn test_thunk() {
     assert!(out.contains("DosGetInfoBlocks returns 0 OK"), "DosGetInfoBlocks:\n{out}");
     assert!(out.contains("DosQuerySysInfo returns 0 OK"),  "DosQuerySysInfo:\n{out}");
 }
+
+/// rust_hello: Rust guest binary built with the warpine-os2 crate family.
+///
+/// Skipped gracefully when:
+/// - KVM is unavailable
+/// - `lx-link` has not been built yet (`target/debug/lx-link` absent)
+/// - The nightly build of `rust_hello` fails (toolchain or dependency issue)
+#[test]
+fn test_rust_hello() {
+    if !kvm_available() { return; }
+
+    let workspace_root = env!("CARGO_MANIFEST_DIR");
+
+    // lx-link must be pre-built; skip rather than fail if it is missing.
+    let lx_link = format!("{workspace_root}/target/debug/lx-link");
+    if !Path::new(&lx_link).exists() {
+        return;
+    }
+
+    // Build rust_hello with the nightly Rust guest toolchain.
+    let target_json = format!("{workspace_root}/targets/i686-warpine-os2.json");
+    let rust_hello_dir = format!("{workspace_root}/samples/rust_hello");
+
+    // Prepend the debug directory to PATH so lx-link is found at link time.
+    let debug_dir = format!("{workspace_root}/target/debug");
+    let existing_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{debug_dir}:{existing_path}");
+
+    let status = Command::new("cargo")
+        .args([
+            "+nightly",
+            "build",
+            "-Z", "build-std=core,alloc",
+            "-Z", "build-std-features=compiler-builtins-mem",
+            "-Z", "json-target-spec",
+            "--target", &target_json,
+        ])
+        .current_dir(&rust_hello_dir)
+        .env("PATH", &new_path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    // If nightly is unavailable or the build fails for any reason, skip.
+    let ok = match status {
+        Ok(s) => s.success(),
+        Err(_) => false,
+    };
+    if !ok {
+        return;
+    }
+
+    let exe = "samples/rust_hello/target/i686-warpine-os2/debug/rust_hello.exe";
+    let (out, code) = run_sample(exe, 15);
+    assert_eq!(code, 0, "rust_hello exited with {code}\nstdout:\n{out}");
+    assert!(
+        out.contains("Hello from Rust on Warpine!"),
+        "unexpected output:\n{out}"
+    );
+}

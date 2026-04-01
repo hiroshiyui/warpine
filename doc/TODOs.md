@@ -84,7 +84,7 @@ Root `Cargo.toml` gains `[workspace]` block listing the three new crates.
   - `"dynamic-linking": false`, `"plt-by-default": false`
   - `"exe-suffix": ".exe"`, `"features": "+x87,+mmx"`, `"cpu": "i686"`
   - Note: `target-pointer-width` must be integer 32, not string; `needs-plt` renamed to `plt-by-default`; `pre/post-link-args` must be `{}`
-- [ ] Add `rust-toolchain.toml` in guest crate dirs pinning nightly + `rust-src` component
+- [x] Add `rust-toolchain.toml` in guest crate dirs pinning nightly + `rust-src` component
   (do NOT add at workspace root — host warpine builds with stable)
   Build command: `cargo +nightly build -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -Z json-target-spec --target /path/to/targets/i686-warpine-os2.json`
 - [x] Verified: `cargo +nightly build -Z build-std=core,alloc` emits **ELF 32-bit LSB relocatable, Intel i386** objects with only `R_386_32` relocations — no PLT stubs, no `R_386_PC32`
@@ -139,28 +139,26 @@ cargo build --bin lx-link
 export PATH="$PATH:$(pwd)/target/debug"
 ```
 
-- [ ] `args` module: parse CLI flags, collect `.o` paths
-- [ ] `elf_reader` module: extract sections / symbols / relocations via `object` crate
-- [ ] `def_parser` module + generate `targets/os2api.def` from `api_registry.rs`
-- [ ] `linker_state` module: merge sections, assign VAs, build symbol table
-- [ ] `reloc_processor` module: classify and resolve all relocations
-- [ ] `lx_writer` module: serialize complete LX binary
-- [ ] Unit test — DEF parser roundtrip
-- [ ] Unit test — ELF reader section/symbol extraction
-- [ ] Unit test — section merge contrib_map offsets
-- [ ] Unit test — LX roundtrip: `LxFile::open()` parses `lx-link` output correctly
-- [ ] Integration test: link minimal `DosWrite` + `DosExit` object → run on Warpine
+- [x] `args` module: parse CLI flags, collect `.o` paths
+- [x] `elf_reader` module: extract sections / symbols / relocations via `object` crate
+- [x] `def_parser` module + generate `targets/os2api.def` from `api_registry.rs`
+- [x] `linker_state` module: merge sections, assign VAs, build symbol table
+- [x] `reloc_processor` module: classify and resolve all relocations
+- [x] `lx_writer` module: serialize complete LX binary
+- [x] Unit test — DEF parser roundtrip
+- [x] Unit test — ELF reader section/symbol extraction
+- [x] Unit test — section merge contrib_map offsets
+- [x] Unit test — LX roundtrip: `LxFile::open()` parses `lx-link` output correctly
+- [x] Integration test: link minimal `DosWrite` + `DosExit` object → run on Warpine (`test_rust_hello`)
 
 ---
 
 #### C — `warpine-os2` Crate Family
 
 **`crates/warpine-os2-sys`** — raw FFI, `#![no_std]`, no `#[link]` needed:
-- [ ] `extern "system"` blocks for all DOSCALLS ordinals (sourced from `api_registry.rs`)
-- [ ] `extern "system"` blocks for VIOCALLS / KBDCALLS Pascal-convention APIs
-- [ ] `_Optlink` macro via `core::arch::global_asm!` for PMWIN callbacks
-  (first 3 args in EAX/EDX/ECX; shim pushes them to stack before calling Rust fn)
-- [ ] OS/2 primitive types: `APIRET`, `HFILE`, `ULONG`, `PVOID`, `PCSZ`, etc.
+- [x] `extern "C"` blocks for DOSCALLS ordinals (DosExit, DosWrite, DosRead, DosOpen, DosClose, DosAllocMem, DosFreeMem, DosSetMem, DosCreateThread, DosWaitThread, DosKillThread, DosGetInfoBlocks, DosSleep, DosGetDateTime, DosQuerySysInfo, event/mutex semaphore APIs)
+- [x] `extern "stdcall"` blocks for VIOCALLS / KBDCALLS Pascal-convention APIs (VioWrtTTY, VioGetCurPos, VioSetCurPos, KbdCharIn, KbdGetStatus) with reversed arg order
+- [x] OS/2 primitive types: `APIRET`, `HFILE`, `ULONG`, `USHORT`, `HVIO`, `HKBD`, `PVOID`, `PCSZ`, `PFNTHREAD`, `DATETIME`, `KBDKEYINFO`, `KBDINFO`
 
 **`crates/warpine-os2-rt`** — runtime support:
 
@@ -174,21 +172,20 @@ Stack layout on entry to `_start` (from `vcpu.rs` `create_initial_vcpu()`):
 ```
 `_start` ignores all stack args and calls `os2_main()` then `DosExit`.
 
-- [ ] `#[no_mangle] pub unsafe extern "C" fn _start() -> !` — calls `os2_main()` then `DosExit(1, code)`
-- [ ] `#[panic_handler]` — calls `DosExit(1, 1)` unconditionally
-- [ ] `#[global_allocator]` backed by `DosAllocMem(PAG_READ|PAG_WRITE|PAG_COMMIT=0x13)` / `DosFreeMem`
-  — verify arg order against `doscalls.rs` `dos_alloc_mem` **before** writing
+- [x] `#[no_mangle] pub unsafe extern "C" fn _start() -> !` — calls `os2_main()` then `DosExit(1, code)`
+- [x] `#[panic_handler]` — calls `DosExit(1, 1)` unconditionally
+- [x] `#[global_allocator]` backed by `DosAllocMem(PAG_READ|PAG_WRITE|PAG_COMMIT=0x13)` / `DosFreeMem`
 
-**`crates/warpine-os2`** — safe wrappers, `#![no_std]` + `extern crate alloc`:
-- [ ] `mod file` — `DosOpen`/`DosRead`/`DosWrite`/`DosClose` → `Result<>`; `write_stdout()`
-- [ ] `mod memory` — `DosAllocMem`/`DosFreeMem`/`DosSetMem`
-- [ ] `mod process` — `DosExit`, `DosGetInfoSeg`
-- [ ] `mod thread` — `DosCreateThread`, `DosSuspendThread`, `DosResumeThread`
-- [ ] `mod vio` — `VioWrtTTY`, `VioGetCurPos` (feature-gated)
+**`crates/warpine-os2`** — safe wrappers, `#![no_std]`:
+- [x] `mod file` — `write_stdout()`, `write_stderr()` → `Result<usize, u32>`
+- [x] `mod memory` — `alloc()`, `free()`, `set_mem()` wrapping `DosAllocMem`/`DosFreeMem`/`DosSetMem`
+- [x] `mod process` — `exit()` wrapping `DosExit`
+- [x] `mod thread` — `sleep()`, `create()`, `wait()`, `kill()` wrapping `DosSleep`/`DosCreateThread`/`DosWaitThread`/`DosKillThread`
+- [x] `mod vio` — `write_tty()`, `get_cur_pos()`, `set_cur_pos()` wrapping VIO Pascal APIs
 
 **`samples/rust_hello/`:**
-- [ ] `#![no_std] #![no_main]` guest binary: `os2_main()` writes "Hello from Rust on Warpine!\r\n" via `DosWrite` and returns 0
-- [ ] Verify `cargo run -- samples/rust_hello/…/rust_hello.exe` prints the message and exits 0
+- [x] `#![no_std] #![no_main]` guest binary: `os2_main()` writes "Hello from Rust on Warpine!\r\n" via `DosWrite` and returns 0
+- [x] Integration test `test_rust_hello` in `tests/integration.rs` (graceful skip when lx-link or nightly unavailable)
 
 ---
 
