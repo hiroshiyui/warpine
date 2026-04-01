@@ -25,6 +25,16 @@ impl super::Loader {
         let prog_name = self.read_guest_string(p_name);
         debug!("  DosExecPgm(prog='{}', execFlag={})", prog_name, exec_flag);
 
+        // Intercept CMD.EXE / OS2SHELL.EXE → run builtin host-Rust shell
+        {
+            let base = prog_name.split(['\\', '/']).next_back()
+                .unwrap_or(&prog_name).to_ascii_uppercase();
+            if base == "CMD.EXE" || base == "OS2SHELL.EXE" {
+                debug!("  DosExecPgm: intercepted CMD.EXE → builtin shell");
+                return self.run_builtin_cmd(p_arg, p_res);
+            }
+        }
+
         // Parse the double-null-terminated argument string
         let args = if p_arg != 0 {
             self.parse_double_null_string(p_arg)
@@ -366,7 +376,7 @@ impl super::Loader {
 
     /// Parse a double-null-terminated string from guest memory.
     /// Returns a vector of strings (typically: program name, then arguments).
-    fn parse_double_null_string(&self, ptr: u32) -> Vec<String> {
+    pub(crate) fn parse_double_null_string(&self, ptr: u32) -> Vec<String> {
         let mut strings = Vec::new();
         let mut current = String::new();
         let mut offset = 0u32;

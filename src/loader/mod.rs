@@ -33,6 +33,7 @@ pub mod api_ring;
 pub mod gdb_stub;
 pub mod uconv;
 mod seh;
+mod cmd;
 
 pub use constants::*;
 pub use mutex_ext::MutexExt;
