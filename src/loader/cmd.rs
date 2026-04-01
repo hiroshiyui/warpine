@@ -13,7 +13,10 @@
 // process (EXEC_SYNC), with stdout relayed through VioManager.
 // .CMD scripts are executed line-by-line through the same dispatch path.
 
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::io::Read;
+use std::io::Write as IoWrite;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -48,16 +51,46 @@ enum ReadResult {
     Eof,
 }
 
+// ── I/O redirection types ─────────────────────────────────────────────────────
+
+enum OutputSink {
+    Vio,
+    File(std::fs::File),
+    Buffer(Vec<u8>),
+}
+
+enum InputSource {
+    Kbd,
+    Lines(VecDeque<String>),
+}
+
+/// Parsed command line with pipeline segments and I/O redirections.
+pub struct ParsedCommand {
+    /// Pipeline segments (commands split at unquoted `|`)
+    pub segments: Vec<String>,
+    /// `< file` stdin redirect
+    pub stdin_file: Option<String>,
+    /// `> file` or `>> file` stdout redirect: (path, append)
+    pub stdout_redir: Option<(String, bool)>,
+}
+
 // ── CmdShell ─────────────────────────────────────────────────────────────────
 
 struct CmdShell {
     shared: Arc<SharedState>,
     history: Vec<String>,
+    output_sink: RefCell<OutputSink>,
+    input_source: RefCell<InputSource>,
 }
 
 impl CmdShell {
     fn new(shared: Arc<SharedState>) -> Self {
-        CmdShell { shared, history: Vec::with_capacity(HISTORY_SIZE) }
+        CmdShell {
+            shared,
+            history: Vec::with_capacity(HISTORY_SIZE),
+            output_sink: RefCell::new(OutputSink::Vio),
+            input_source: RefCell::new(InputSource::Kbd),
+        }
     }
 
     // ── Entry point ──────────────────────────────────────────────────────────
@@ -166,6 +199,17 @@ impl CmdShell {
     /// Read a full line with basic line-editing: backspace, history (↑/↓), Esc
     /// to clear, and Enter to submit.
     fn read_line(&mut self) -> ReadResult {
+        // Check non-kbd input source first.
+        {
+            let mut src = self.input_source.borrow_mut();
+            if let InputSource::Lines(ref mut lines) = *src {
+                return match lines.pop_front() {
+                    Some(line) => ReadResult::Line(line),
+                    None => ReadResult::Eof,
+                };
+            }
+        }
+
         let mut line = String::new();
         let mut hist_idx = self.history.len(); // past-end = "no history entry"
 
@@ -257,15 +301,24 @@ impl CmdShell {
     // ── Output helpers ────────────────────────────────────────────────────────
 
     fn write_out(&self, bytes: &[u8]) {
-        let cp = self.shared.active_codepage.load(Ordering::Relaxed);
-        let mut vio = self.shared.console_mgr.lock_or_recover();
-        vio.write_tty(bytes, ATTR_NORMAL, cp);
+        self.write_sink(bytes, ATTR_NORMAL);
     }
 
     fn write_attr(&self, bytes: &[u8], attr: u8) {
-        let cp = self.shared.active_codepage.load(Ordering::Relaxed);
-        let mut vio = self.shared.console_mgr.lock_or_recover();
-        vio.write_tty(bytes, attr, cp);
+        self.write_sink(bytes, attr);
+    }
+
+    fn write_sink(&self, bytes: &[u8], attr: u8) {
+        let mut sink = self.output_sink.borrow_mut();
+        match &mut *sink {
+            OutputSink::Vio => {
+                let cp = self.shared.active_codepage.load(Ordering::Relaxed);
+                let mut vio = self.shared.console_mgr.lock_or_recover();
+                vio.write_tty(bytes, attr, cp);
+            }
+            OutputSink::File(f) => { f.write_all(bytes).ok(); }
+            OutputSink::Buffer(v) => { v.extend_from_slice(bytes); }
+        }
     }
 
     fn writeln(&self, s: &str) {
@@ -301,7 +354,113 @@ impl CmdShell {
         let line = if let Some(pos) = line.find("::") { &line[..pos] } else { line };
         let line = line.trim();
         if line.is_empty() { return None; }
+        let parsed = parse_command(line);
+        self.execute_pipeline(parsed)
+    }
 
+    /// Execute a pipeline parsed from a command line.
+    fn execute_pipeline(&mut self, parsed: ParsedCommand) -> Option<u32> {
+        let segments = parsed.segments;
+        if segments.iter().all(|s| s.is_empty()) { return None; }
+
+        // Validate and prepare stdout sink (but keep errors going to Vio during setup).
+        let final_sink = if let Some((ref path, append)) = parsed.stdout_redir {
+            let host_path = {
+                let dm = self.shared.drive_mgr.lock_or_recover();
+                dm.resolve_to_host_path(path)
+                    .unwrap_or_else(|| std::path::PathBuf::from(path))
+            };
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .append(append)
+                .truncate(!append)
+                .open(&host_path)
+            {
+                Ok(f) => Some(OutputSink::File(f)),
+                Err(e) => {
+                    self.writeln_attr(&format!("Cannot open '{}': {e}", path), ATTR_ERROR);
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
+
+        // Prepare stdin source.
+        let initial_stdin = if let Some(ref path) = parsed.stdin_file {
+            let host_path = {
+                let dm = self.shared.drive_mgr.lock_or_recover();
+                dm.resolve_to_host_path(path)
+            };
+            if let Some(p) = host_path {
+                match std::fs::read_to_string(&p) {
+                    Ok(content) => {
+                        let lines: VecDeque<String> = content.lines()
+                            .map(|l| l.to_string())
+                            .collect();
+                        Some(InputSource::Lines(lines))
+                    }
+                    Err(e) => {
+                        self.writeln_attr(&format!("Cannot read '{}': {e}", path), ATTR_ERROR);
+                        return None;
+                    }
+                }
+            } else {
+                self.writeln_attr(&format!("File not found: {}", path), ATTR_ERROR);
+                return None;
+            }
+        } else {
+            None
+        };
+
+        // Apply the prepared stdin source.
+        if let Some(src) = initial_stdin {
+            *self.input_source.borrow_mut() = src;
+        }
+
+        // Apply final stdout sink if any.
+        if let Some(sink) = final_sink {
+            *self.output_sink.borrow_mut() = sink;
+        }
+
+        let n = segments.len();
+        let mut result = None;
+
+        for (i, segment) in segments.iter().enumerate() {
+            let segment = segment.trim();
+            if segment.is_empty() { continue; }
+
+            if i < n - 1 {
+                // Non-last segment: capture output to buffer.
+                let prev_sink = self.output_sink.replace(OutputSink::Buffer(Vec::new()));
+                result = self.execute_segment(segment);
+                let captured = match self.output_sink.replace(prev_sink) {
+                    OutputSink::Buffer(v) => v,
+                    _ => Vec::new(),
+                };
+                // Feed captured output as the next segment's stdin.
+                let lines: VecDeque<String> = captured
+                    .split(|&b| b == b'\n')
+                    .map(|l| String::from_utf8_lossy(l).trim_end_matches('\r').to_string())
+                    .collect();
+                *self.input_source.borrow_mut() = InputSource::Lines(lines);
+            } else {
+                result = self.execute_segment(segment);
+            }
+
+            if result.is_some() { break; }
+        }
+
+        // Restore defaults.
+        *self.output_sink.borrow_mut() = OutputSink::Vio;
+        *self.input_source.borrow_mut() = InputSource::Kbd;
+
+        result
+    }
+
+    /// Execute a single (non-pipeline) command segment.
+    fn execute_segment(&mut self, line: &str) -> Option<u32> {
         let tokens = tokenize(line);
         if tokens.is_empty() { return None; }
 
@@ -595,11 +754,7 @@ impl CmdShell {
             Some(p) => match std::fs::read(&p) {
                 Err(e) => self.writeln_attr(&format!("Error reading file: {e}"), ATTR_ERROR),
                 Ok(bytes) => {
-                    // Write bytes through VIO (codepage-aware)
-                    let cp = self.shared.active_codepage.load(Ordering::Relaxed);
-                    let mut vio = self.shared.console_mgr.lock_or_recover();
-                    vio.write_tty(&bytes, ATTR_NORMAL, cp);
-                    drop(vio);
+                    self.write_out(&bytes);
                     self.write_out(b"\r\n");
                 }
             },
@@ -677,7 +832,81 @@ impl CmdShell {
                 shell.run_script(&p);
             }
             Some(p) => {
-                spawn_os2_program(&self.shared, &p, args);
+                self.spawn_external(&p, args);
+            }
+        }
+    }
+
+    /// Spawn `warpine <prog_path> [args...]` as a child process and relay its
+    /// stdout through the current output sink.
+    fn spawn_external(&self, prog_path: &std::path::Path, args: &[&str]) {
+        let warpine_exe = match std::env::current_exe() {
+            Ok(p) => p,
+            Err(e) => {
+                self.writeln_attr(&format!("Cannot locate warpine executable: {e}"), ATTR_ERROR);
+                return;
+            }
+        };
+
+        let mut cmd = std::process::Command::new(&warpine_exe);
+        cmd.arg(prog_path);
+        for a in args { cmd.arg(a); }
+
+        // Set CWD from ProcessManager so the child inherits the shell's directory.
+        let cwd = {
+            let pm = self.shared.process_mgr.lock_or_recover();
+            let dir = pm.current_dir.replace('\\', "/").trim_start_matches('/').to_string();
+            if dir.is_empty() {
+                std::env::current_dir().ok()
+            } else {
+                std::env::current_dir().ok().map(|base| base.join(&dir))
+            }
+        };
+        if let Some(ref cwd) = cwd
+            && cwd.is_dir() { cmd.current_dir(cwd); }
+
+        cmd.stdout(std::process::Stdio::piped())
+           .stderr(std::process::Stdio::inherit());
+
+        let to_vio = matches!(&*self.output_sink.borrow(), OutputSink::Vio);
+
+        match cmd.spawn() {
+            Err(e) => {
+                self.writeln_attr(&format!("Failed to spawn program: {e}"), ATTR_ERROR);
+            }
+            Ok(mut child) => {
+                if to_vio {
+                    // Real-time relay to VioManager.
+                    let shared_relay = Arc::clone(&self.shared);
+                    let relay = child.stdout.take().map(move |pipe| {
+                        std::thread::spawn(move || {
+                            let mut buf = [0u8; 512];
+                            let mut r = pipe;
+                            loop {
+                                match r.read(&mut buf) {
+                                    Ok(0) | Err(_) => break,
+                                    Ok(n) => {
+                                        let cp = shared_relay.active_codepage.load(Ordering::Relaxed);
+                                        let mut vio = shared_relay.console_mgr.lock_or_recover();
+                                        vio.write_tty(&buf[..n], ATTR_NORMAL, cp);
+                                    }
+                                }
+                            }
+                        })
+                    });
+                    let _ = child.wait();
+                    if let Some(t) = relay { let _ = t.join(); }
+                } else {
+                    // Buffer all output then write to sink.
+                    let mut output = Vec::new();
+                    if let Some(mut pipe) = child.stdout.take() {
+                        pipe.read_to_end(&mut output).ok();
+                    }
+                    let _ = child.wait();
+                    if !output.is_empty() {
+                        self.write_out(&output);
+                    }
+                }
             }
         }
     }
@@ -787,70 +1016,69 @@ pub fn format_dos_time(time: u16) -> String {
     format!("{h12:2}:{minute:02}{ampm}")
 }
 
-/// Spawn `warpine <prog_path> [args...]` as a child process and relay its
-/// stdout to VioManager.  Mirrors the EXEC_SYNC path in `dos_exec_pgm`.
-fn spawn_os2_program(shared: &Arc<SharedState>, prog_path: &std::path::Path, args: &[&str]) {
-    let warpine_exe = match std::env::current_exe() {
-        Ok(p) => p,
-        Err(e) => {
-            let cp = shared.active_codepage.load(Ordering::Relaxed);
-            let mut vio = shared.console_mgr.lock_or_recover();
-            let msg = format!("Cannot locate warpine executable: {e}\r\n");
-            vio.write_tty(msg.as_bytes(), ATTR_ERROR, cp);
-            return;
-        }
-    };
+/// Parse a command line into segments (pipeline), stdout redirect, and stdin redirect.
+pub fn parse_command(line: &str) -> ParsedCommand {
+    let mut segments: Vec<String> = Vec::new();
+    let mut stdin_file: Option<String> = None;
+    let mut stdout_redir: Option<(String, bool)> = None;
 
-    let mut cmd = std::process::Command::new(&warpine_exe);
-    cmd.arg(prog_path);
-    for a in args { cmd.arg(a); }
+    let mut current = String::new();
+    let mut in_quote = false;
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
 
-    // Set CWD from ProcessManager so the child inherits the shell's directory.
-    let cwd = {
-        let pm = shared.process_mgr.lock_or_recover();
-        let dir = pm.current_dir.replace('\\', "/").trim_start_matches('/').to_string();
-        if dir.is_empty() {
-            std::env::current_dir().ok()
-        } else {
-            std::env::current_dir().ok().map(|base| base.join(&dir))
+    while i < chars.len() {
+        let ch = chars[i];
+        if ch == '"' {
+            in_quote = !in_quote;
+            current.push(ch);
+            i += 1;
+            continue;
         }
-    };
-    if let Some(ref cwd) = cwd
-        && cwd.is_dir() { cmd.current_dir(cwd); }
-
-    cmd.stdout(std::process::Stdio::piped())
-       .stderr(std::process::Stdio::inherit());
-
-    match cmd.spawn() {
-        Err(e) => {
-            let cp = shared.active_codepage.load(Ordering::Relaxed);
-            let mut vio = shared.console_mgr.lock_or_recover();
-            let msg = format!("Failed to spawn program: {e}\r\n");
-            vio.write_tty(msg.as_bytes(), ATTR_ERROR, cp);
+        if in_quote {
+            current.push(ch);
+            i += 1;
+            continue;
         }
-        Ok(mut child) => {
-            let stdout_pipe = child.stdout.take();
-            let shared_relay = Arc::clone(shared);
-            let relay = stdout_pipe.map(move |pipe| {
-                std::thread::spawn(move || {
-                    let mut buf = [0u8; 512];
-                    let mut r = pipe;
-                    loop {
-                        match r.read(&mut buf) {
-                            Ok(0) | Err(_) => break,
-                            Ok(n) => {
-                                let cp = shared_relay.active_codepage.load(Ordering::Relaxed);
-                                let mut vio = shared_relay.console_mgr.lock_or_recover();
-                                vio.write_tty(&buf[..n], ATTR_NORMAL, cp);
-                            }
-                        }
-                    }
-                })
-            });
-            let _ = child.wait();
-            if let Some(t) = relay { let _ = t.join(); }
+        if ch == '|' {
+            segments.push(current.trim().to_string());
+            current = String::new();
+            i += 1;
+            continue;
         }
+        if ch == '>' {
+            let append = i + 1 < chars.len() && chars[i + 1] == '>';
+            if append { i += 1; }
+            i += 1;
+            while i < chars.len() && chars[i] == ' ' { i += 1; }
+            let mut fname = String::new();
+            while i < chars.len() && !matches!(chars[i], ' ' | '<' | '>' | '|') {
+                fname.push(chars[i]);
+                i += 1;
+            }
+            if !fname.is_empty() { stdout_redir = Some((fname, append)); }
+            continue;
+        }
+        if ch == '<' {
+            i += 1;
+            while i < chars.len() && chars[i] == ' ' { i += 1; }
+            let mut fname = String::new();
+            while i < chars.len() && !matches!(chars[i], ' ' | '<' | '>' | '|') {
+                fname.push(chars[i]);
+                i += 1;
+            }
+            if !fname.is_empty() { stdin_file = Some(fname); }
+            continue;
+        }
+        current.push(ch);
+        i += 1;
     }
+    let last = current.trim().to_string();
+    if !last.is_empty() || segments.is_empty() {
+        segments.push(last);
+    }
+
+    ParsedCommand { segments, stdin_file, stdout_redir }
 }
 
 // ── Loader entry point ────────────────────────────────────────────────────────
@@ -1170,5 +1398,138 @@ mod tests {
         assert_eq!(rc, NO_ERROR, "unknown command should not crash the shell");
         let screen = screen_text(&loader);
         assert!(screen.contains("not recognized"), "should show error for unknown command");
+    }
+
+    // ── parse_command ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_command_no_redirections() {
+        let p = parse_command("echo hello world");
+        assert_eq!(p.segments, vec!["echo hello world"]);
+        assert!(p.stdin_file.is_none());
+        assert!(p.stdout_redir.is_none());
+    }
+
+    #[test]
+    fn test_parse_command_stdout_redirect() {
+        let p = parse_command("echo hello > out.txt");
+        assert_eq!(p.segments, vec!["echo hello"]);
+        assert_eq!(p.stdout_redir, Some(("out.txt".to_string(), false)));
+    }
+
+    #[test]
+    fn test_parse_command_append_redirect() {
+        let p = parse_command("echo hello >> log.txt");
+        assert_eq!(p.segments, vec!["echo hello"]);
+        assert_eq!(p.stdout_redir, Some(("log.txt".to_string(), true)));
+    }
+
+    #[test]
+    fn test_parse_command_stdin_redirect() {
+        let p = parse_command("type < input.txt");
+        assert_eq!(p.segments, vec!["type"]);
+        assert_eq!(p.stdin_file, Some("input.txt".to_string()));
+    }
+
+    #[test]
+    fn test_parse_command_pipe() {
+        let p = parse_command("echo hello | ver");
+        assert_eq!(p.segments, vec!["echo hello", "ver"]);
+        assert!(p.stdin_file.is_none());
+        assert!(p.stdout_redir.is_none());
+    }
+
+    #[test]
+    fn test_parse_command_pipe_three_stages() {
+        let p = parse_command("echo a | echo b | echo c");
+        assert_eq!(p.segments.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_command_quoted_pipe_not_split() {
+        let p = parse_command(r#"echo "a|b""#);
+        assert_eq!(p.segments.len(), 1, "pipe inside quotes should not split");
+    }
+
+    #[test]
+    fn test_parse_command_empty() {
+        let p = parse_command("   ");
+        // Should produce one empty segment
+        assert_eq!(p.segments, vec![""]);
+        assert!(p.stdin_file.is_none());
+        assert!(p.stdout_redir.is_none());
+    }
+
+    // ── Pipeline integration ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_cmd_pipe_echo_to_ver() {
+        // "echo hi | ver" — ver output should appear
+        let loader = Loader::new_mock();
+        push_keys(&loader, &[
+            key_char(b'e'), key_char(b'c'), key_char(b'h'), key_char(b'o'),
+            key_char(b' '), key_char(b'h'), key_char(b'i'),
+            key_char(b' '), key_char(b'|'), key_char(b' '),
+            key_char(b'v'), key_char(b'e'), key_char(b'r'),
+            key_enter(),
+            key_char(b'e'), key_char(b'x'), key_char(b'i'), key_char(b't'), key_enter(),
+        ]);
+        let rc = loader.run_builtin_cmd(0, 0);
+        assert_eq!(rc, NO_ERROR);
+        let screen = screen_text(&loader);
+        assert!(
+            screen.contains("Warpine"),
+            "ver output should appear after pipe: {:?}",
+            &screen[..200.min(screen.len())]
+        );
+    }
+
+    #[test]
+    fn test_cmd_echo_redirect_to_file() {
+        // Write "echo hello > <tmppath>", verify tmpfile contains "hello\r\n"
+        let tmp = std::env::temp_dir().join("warpine_cmd_test_redirect.txt");
+        let _ = std::fs::remove_file(&tmp);
+
+        let loader = Loader::new_mock();
+        // Use absolute host path directly (DriveManager may not resolve it, but
+        // parse_command + execute_pipeline falls back to PathBuf::from(path))
+        let tmp_str = tmp.to_string_lossy().to_string();
+        let line = format!("echo hello > {tmp_str}");
+
+        // Feed the line via /C
+        push_keys(&loader, &[]); // enable SDL2 path
+        {
+            // Run execute_line directly via the shell
+            let mut shell = CmdShell::new(Arc::clone(&loader.shared));
+            shell.execute_line(&line);
+        }
+
+        let content = std::fs::read_to_string(&tmp).unwrap_or_default();
+        let _ = std::fs::remove_file(&tmp);
+        assert!(
+            content.contains("hello"),
+            "redirected file should contain 'hello', got: {:?}",
+            content
+        );
+    }
+
+    #[test]
+    fn test_cmd_append_redirect() {
+        let tmp = std::env::temp_dir().join("warpine_cmd_test_append.txt");
+        let _ = std::fs::remove_file(&tmp);
+
+        let loader = Loader::new_mock();
+        let tmp_str = tmp.to_string_lossy().to_string();
+
+        {
+            let mut shell = CmdShell::new(Arc::clone(&loader.shared));
+            shell.execute_line(&format!("echo line1 > {tmp_str}"));
+            shell.execute_line(&format!("echo line2 >> {tmp_str}"));
+        }
+
+        let content = std::fs::read_to_string(&tmp).unwrap_or_default();
+        let _ = std::fs::remove_file(&tmp);
+        assert!(content.contains("line1"), "file should contain 'line1'");
+        assert!(content.contains("line2"), "file should contain 'line2' after append");
     }
 }

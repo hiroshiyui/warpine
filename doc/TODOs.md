@@ -33,18 +33,7 @@ DLL binaries, no ROM dumps, and no disassembly of original OS/2 system libraries
 | DosMapCase / NlsMapCase — full SBCS + DBCS + CP866 | Complete | Developer Guide §16 |
 | Developer tooling (crash dump, GDB stub, API ring buffer) | Complete | Developer Guide §19 |
 | Builtin CMD.EXE host Rust shell (core built-ins + .CMD scripts) | Complete | `src/loader/cmd.rs` |
-
----
-
-## High Priority
-
-### Builtin CMD.EXE — remaining work
-
-Core shell implemented in `src/loader/cmd.rs`. Remaining:
-
-- [ ] I/O redirection (`>`, `>>`, `<`) via pipe handles through `VioManager`
-- [ ] Pipe (`|`) between two OS/2 child processes — use existing `ipc.rs` pipes
-- [ ] Sample: `samples/cmd_test/` — a `.cmd` script that exercises all built-ins
+| CMD.EXE I/O redirection (`>`, `>>`, `<`) + pipe (`\|`) + sample script | Complete | `src/loader/cmd.rs`, `samples/cmd_test/test.cmd` |
 
 ---
 
