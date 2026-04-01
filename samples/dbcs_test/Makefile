@@ -12,7 +12,7 @@ dbcs_test.exe: dbcs_test.obj
 	INCLUDE=$(INCLUDE) WATCOM=$(WATCOM_ROOT) PATH=$(WATCOM_ROOT)/binl64:$(PATH) \
 	$(WLINK) system os2v2 \
 	    file dbcs_test.obj \
-	    import VioCheckCharType VIOCALLS.VioCheckCharType \
+	    import VioCheckCharType VIOCALLS.39 \
 	    name dbcs_test.exe
 
 dbcs_test.obj: dbcs_test.c

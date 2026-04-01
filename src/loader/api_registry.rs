@@ -64,6 +64,15 @@ pub fn find(ordinal: u32) -> Option<&'static ApiEntry> {
         .map(|i| &REGISTRY[i])
 }
 
+/// Look up an entry by module name and function name (linear search).
+/// Used to resolve `ExternalName` LX fixups for registry-based modules.
+/// Returns the ordinal if found, `None` otherwise.
+pub fn find_by_module_and_name(module: &str, name: &str) -> Option<u32> {
+    REGISTRY.iter()
+        .find(|e| e.module == module && e.name == name)
+        .map(|e| e.ordinal)
+}
+
 /// Iterate all registered entries (for compatibility reports, tests, etc.).
 pub fn all() -> &'static [ApiEntry] {
     REGISTRY

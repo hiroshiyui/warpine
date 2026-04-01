@@ -57,8 +57,11 @@ impl super::Loader {
             43 => { debug!("  VioShowBuf (stub)"); NO_ERROR },
             // VioCheckCharType(pType, usRow, usCol, hvio) → ESP+4=hvio, +8=usCol, +12=usRow, +16=pType
             39 => self.vio_check_char_type(read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
-            // VioWrtCellStr(pchCells, cb, usRow, usCol, hvio) — stub, returns NO_ERROR
-            28 => { debug!("  VioWrtCellStr (stub)"); NO_ERROR },
+            // VioWrtCellStr(pchCells, cb, usRow, usCol, hvio) — two possible ordinals:
+            //   ordinal 10: as used by Open Watcom VIOCALLS.LIB (os2v2 target)
+            //   ordinal 28: from older/alternative ordinal table
+            // Both stubs return NO_ERROR; real implementation would write to VIO buffer.
+            10 | 28 => { debug!("  VioWrtCellStr (stub)"); NO_ERROR },
             _ => { warn!("Warning: Unknown VIOCALLS Ordinal {}", ordinal); NO_ERROR }
         };
         super::ApiResult::Normal(res)
@@ -82,7 +85,8 @@ impl super::Loader {
             48 => 24, 52 => 20, 26 => 20, 24 => 20, 32 => 8, 33 => 8,
             5 => 8, 3 => 8, 51 => 8, 42 => 12, 46 => 12,
             22 => 8, 31 => 12, 43 => 12,
-            28 => 20, // VioWrtCellStr(pchCells, cb, usRow, usCol, hvio) — 5 args × 4 bytes
+            10 => 20, // VioWrtCellStr — ordinal as used by Open Watcom VIOCALLS.LIB
+            28 => 20, // VioWrtCellStr — ordinal from alternative table
             39 => 16, // VioCheckCharType(pType, usRow, usCol, hvio) — 4 args × 4 bytes
             _ => 0,
         }
@@ -717,9 +721,10 @@ mod tests {
         assert_ne!(loader.vio_check_char_type(0x2000, rows as u32, 0, 0), 0);
     }
 
-    /// VioWrtCellStr (ordinal 28): stub must return NO_ERROR and its Pascal
-    /// arg-byte count must be 20 (5 args × 4 bytes). Missing this entry was
-    /// the root cause of the `Passed: 127928197` stack-corruption bug.
+    /// VioWrtCellStr: stub must return NO_ERROR and its Pascal arg-byte count
+    /// must be 20 (5 args × 4 bytes) for BOTH ordinals (10 = Open Watcom
+    /// VIOCALLS.LIB, 28 = alternative table). The wrong ordinal (0 arg-bytes)
+    /// was the root cause of the `Passed: 127928197` stack-corruption bug.
     #[test]
     fn test_vio_wrt_cell_str_stub_and_arg_bytes() {
         let loader = Loader::new_mock();
@@ -730,9 +735,16 @@ mod tests {
         // VioWrtCellStr(pchCells, cb, usRow, usCol, hvio)
         // Pascal layout (last arg at esp+4): hvio, usCol, usRow, cb, pchCells
         write_stack(&loader, esp, &[/*hvio*/0, /*usCol*/0u32, /*usRow*/0u32, /*cb*/2u32, /*pchCells*/0x3000u32]);
-        let result = loader.handle_viocalls(&mut vcpu, 0, 28);
-        assert!(matches!(result, ApiResult::Normal(0)), "VioWrtCellStr must return NO_ERROR");
 
+        // Ordinal 10 (Open Watcom VIOCALLS.LIB os2v2 ordinal)
+        let result = loader.handle_viocalls(&mut vcpu, 0, 10);
+        assert!(matches!(result, ApiResult::Normal(0)), "VioWrtCellStr (ord 10) must return NO_ERROR");
+        assert_eq!(loader.viocalls_arg_bytes(10), 20,
+            "Wrong arg-byte count for VioWrtCellStr (ordinal 10): stack corruption bug");
+
+        // Ordinal 28 (alternative ordinal table)
+        let result = loader.handle_viocalls(&mut vcpu, 0, 28);
+        assert!(matches!(result, ApiResult::Normal(0)), "VioWrtCellStr (ord 28) must return NO_ERROR");
         assert_eq!(loader.viocalls_arg_bytes(28), 20,
             "Wrong arg-byte count for VioWrtCellStr (ordinal 28): stack corruption bug");
     }

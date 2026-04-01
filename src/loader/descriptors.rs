@@ -24,6 +24,71 @@ impl super::Loader {
         limit_lo | (limit_hi << 16)
     }
 
+    /// Resolve an import by procedure name rather than ordinal.
+    ///
+    /// Used for `FixupTarget::ExternalName` fixups where the linker emits a
+    /// name-based fixup instead of an ordinal (e.g. Open Watcom imports
+    /// `VioCheckCharType` by name because it is absent from the standard
+    /// VIOCALLS.LIB shipped with the toolkit).
+    ///
+    /// Returns 0 if the name cannot be resolved.
+    pub(crate) fn resolve_import_by_name(&self, module: &str, proc_name: &str) -> u64 {
+        // VIOCALLS name → ordinal table (OS/2 Warp 4 / Warp Server ordinals).
+        static VIOCALLS_NAMES: &[(&str, u32)] = &[
+            ("VioGetAnsi",        3),
+            ("VioSetAnsi",        5),
+            ("VioGetConfig",      6),
+            ("VioScrollUp",       7),
+            ("VioScrollDn",       8),
+            ("VioGetCurPos",      9),
+            ("VioWrtCellStr",    10),
+            ("VioSetCurPos",     15),
+            ("VioWrtTTY",        19),
+            ("VioGetMode",       21),
+            ("VioSetMode",       22),
+            ("VioReadCellStr",   24),
+            ("VioWrtNAttr",      26),
+            ("VioGetBuf",        31),
+            ("VioSetCurType",    32),
+            ("VioGetCurType",    33),
+            ("VioCheckCharType", 39),
+            ("VioSetCp",         42),
+            ("VioShowBuf",       43),
+            ("VioWrtCharStrAtt", 48),
+            ("VioSetState",      51),
+            ("VioWrtNCell",      52),
+        ];
+        // KBDCALLS name → ordinal table.
+        static KBDCALLS_NAMES: &[(&str, u32)] = &[
+            ("KbdCharIn",     10),
+            ("KbdPeek",       11),
+            ("KbdGetStatus",  10),
+            ("KbdSetStatus",  11),
+            ("KbdFlushBuffer", 6),
+        ];
+
+        let ordinal = match module {
+            "VIOCALLS" => {
+                VIOCALLS_NAMES.iter().find(|(n, _)| *n == proc_name).map(|(_, o)| *o)
+            }
+            "KBDCALLS" => {
+                KBDCALLS_NAMES.iter().find(|(n, _)| *n == proc_name).map(|(_, o)| *o)
+            }
+            _ => {
+                // For registry-based modules (DOSCALLS, PMWIN, etc.) search api_registry.
+                super::api_registry::find_by_module_and_name(module, proc_name)
+            }
+        };
+
+        if let Some(ord) = ordinal {
+            log::debug!("resolve_import_by_name: {}.{} → ordinal {}", module, proc_name, ord);
+            self.resolve_import(module, ord)
+        } else {
+            log::warn!("resolve_import_by_name: {}.{} not found", module, proc_name);
+            0
+        }
+    }
+
     pub(crate) fn resolve_import(&self, module: &str, ordinal: u32) -> u64 {
         if module == "DOSCALLS" { MAGIC_API_BASE + ordinal as u64 }
         else if module == "QUECALLS" { MAGIC_API_BASE + 1024 + ordinal as u64 }

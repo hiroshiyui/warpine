@@ -90,6 +90,14 @@ impl super::Loader {
                                 .map(|s| s.as_str()).unwrap_or("");
                             self.resolve_import(module, *proc_ordinal) as usize
                         }
+                        FixupTarget::ExternalName { module_ordinal, proc_name_offset } => {
+                            let module = lx_file.imported_modules
+                                .get((*module_ordinal as usize).wrapping_sub(1))
+                                .map(|s| s.as_str()).unwrap_or("");
+                            let proc_name = lx_file.get_proc_name(*proc_name_offset)
+                                .unwrap_or_default();
+                            self.resolve_import_by_name(module, &proc_name) as usize
+                        }
                         _ => 0,
                     };
                     if target_addr == 0 { continue; }
