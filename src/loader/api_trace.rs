@@ -161,11 +161,21 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         },
 
         // ── MDM / MMPM/2 (MDM_BASE + local ordinal) ───────────────────────
-        o if (MDM_BASE..STUB_AREA_SIZE).contains(&o) => match o - MDM_BASE {
+        o if (MDM_BASE..UCONV_BASE).contains(&o) => match o - MDM_BASE {
             1 => "mciSendCommand",
             2 => "mciSendString",
             3 => "mciFreeBlock",
             4 => "mciGetLastError",
+            _ => "?",
+        },
+
+        // ── UCONV — Unicode conversion (UCONV_BASE + local ordinal) ───────
+        o if (UCONV_BASE..STUB_AREA_SIZE).contains(&o) => match o - UCONV_BASE {
+            1 => "UniCreateUconvObject",
+            2 => "UniFreeUconvObject",
+            3 => "UniUconvToUcs",
+            4 => "UniUconvFromUcs",
+            6 => "UniMapCpToUcsCp",
             _ => "?",
         },
 
@@ -189,7 +199,8 @@ pub fn module_for_ordinal(ordinal: u32) -> &'static str {
     else if ordinal < NLS_BASE      { "SESMGR" }     // 6144–7167
     else if ordinal < MSG_BASE      { "NLS" }         // 7168–8191
     else if ordinal < MDM_BASE      { "MSG" }         // 8192–10239
-    else if ordinal < STUB_AREA_SIZE { "MDM" }        // 10240–12287
+    else if ordinal < UCONV_BASE    { "MDM" }         // 10240–12287
+    else if ordinal < STUB_AREA_SIZE { "UCONV" }      // 12288–16383
     else                            { "?" }
 }
 
@@ -339,11 +350,21 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
         },
 
         // ── MDM ───────────────────────────────────────────────────────────
-        o if (MDM_BASE..STUB_AREA_SIZE).contains(&o) => match o - MDM_BASE {
+        o if (MDM_BASE..UCONV_BASE).contains(&o) => match o - MDM_BASE {
             1 => &["usDeviceID", "usMessage", "ulParam1", "pParam2"],
             2 => &["pszCommandBuf", "pszReturnString", "usReturnLength", "hwndCallback"],
             3 => &["pMemToFree"],
             4 => &["pszErrorBuf", "usBufLen"],
+            _ => &[],
+        },
+
+        // ── UCONV ─────────────────────────────────────────────────────────
+        o if (UCONV_BASE..STUB_AREA_SIZE).contains(&o) => match o - UCONV_BASE {
+            1 => &["ucsName", "puobj"],
+            2 => &["uobj"],
+            3 => &["uobj", "ppInBuf", "pInBytesLeft", "ppOutBuf", "pOutCharsLeft", "pNumSubs"],
+            4 => &["uobj", "ppInBuf", "pInCharsLeft", "ppOutBuf", "pOutBytesLeft", "pNumSubs"],
+            6 => &["ulCodePage", "ucsCodePage", "n"],
             _ => &[],
         },
 
@@ -554,7 +575,9 @@ mod tests {
         assert_eq!(module_for_ordinal(NLS_BASE - 1),      "SESMGR");
         assert_eq!(module_for_ordinal(MSG_BASE - 1),      "NLS");
         assert_eq!(module_for_ordinal(MDM_BASE - 1),      "MSG");
-        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1),"MDM");
+        assert_eq!(module_for_ordinal(UCONV_BASE - 1),    "MDM");
+        assert_eq!(module_for_ordinal(UCONV_BASE),         "UCONV");
+        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "UCONV");
     }
 
     #[test]

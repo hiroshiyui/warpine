@@ -13,7 +13,8 @@ pub const SESMGR_BASE: u32 = 6144;
 pub const NLS_BASE: u32 = 7168;
 pub const MSG_BASE: u32 = 8192;
 pub const MDM_BASE: u32 = 10240;
-pub const STUB_AREA_SIZE: u32 = 12288;
+pub const UCONV_BASE: u32 = 12288;
+pub const STUB_AREA_SIZE: u32 = 16384;
 
 // GDT tiling: 16-bit segment descriptors covering the guest address space
 // so that 16:16 (selector:offset) addressing works for OS/2 16-bit thunks.

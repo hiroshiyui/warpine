@@ -31,6 +31,7 @@ pub mod mmpm;
 pub mod crash_dump;
 pub mod api_ring;
 pub mod gdb_stub;
+pub mod uconv;
 
 pub use constants::*;
 pub use mutex_ext::MutexExt;
@@ -139,6 +140,7 @@ pub struct SharedState {
     pub console_mgr: Mutex<console::VioManager>,
     pub mmpm_mgr: Mutex<mmpm::MmpmManager>,
     pub dll_mgr: Mutex<DllManager>,
+    pub uconv_mgr: Mutex<uconv::UconvManager>,
     /// Executable name as provided on the command line
     pub exe_name: Mutex<String>,
     pub guest_mem: GuestMemory,
@@ -227,6 +229,7 @@ impl Loader {
             console_mgr: Mutex::new(console_mgr),
             mmpm_mgr: Mutex::new(mmpm::MmpmManager::new()),
             dll_mgr: Mutex::new(DllManager::new()),
+            uconv_mgr: Mutex::new(uconv::UconvManager::new()),
             exe_name: Mutex::new(String::new()),
             guest_mem,
             next_tid: Mutex::new(1),
@@ -302,6 +305,7 @@ impl Loader {
             console_mgr:  Mutex::new(console::VioManager::new()),
             mmpm_mgr:     Mutex::new(mmpm::MmpmManager::new()),
             dll_mgr:      Mutex::new(DllManager::new()),
+            uconv_mgr:    Mutex::new(uconv::UconvManager::new()),
             exe_name:     Mutex::new(String::new()),
             guest_mem,
             next_tid:     Mutex::new(1),

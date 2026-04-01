@@ -16,7 +16,7 @@ use log::{debug, info, warn};
 /// These are never loaded from the host filesystem; imports to them resolve to thunk stubs.
 const BUILTIN_MODULES: &[&str] = &[
     "DOSCALLS", "QUECALLS", "PMWIN", "PMGPI", "KBDCALLS",
-    "VIOCALLS", "SESMGR", "NLS", "MSG", "MDM",
+    "VIOCALLS", "SESMGR", "NLS", "MSG", "MDM", "UCONV",
 ];
 
 impl super::Loader {
@@ -410,7 +410,7 @@ mod tests {
         use super::BUILTIN_MODULES;
         // Every module base defined in descriptors.rs must appear in BUILTIN_MODULES.
         let required = ["DOSCALLS", "QUECALLS", "PMWIN", "PMGPI",
-                        "KBDCALLS", "VIOCALLS", "SESMGR", "NLS", "MSG", "MDM"];
+                        "KBDCALLS", "VIOCALLS", "SESMGR", "NLS", "MSG", "MDM", "UCONV"];
         for m in &required {
             assert!(BUILTIN_MODULES.contains(m),
                     "BUILTIN_MODULES is missing '{}'", m);
