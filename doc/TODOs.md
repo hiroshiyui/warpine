@@ -79,11 +79,10 @@ Convert Warpine's internal string representation to UTF-8, with codepage↔UTF-8
 
 **SDL2 text renderer complete (Unifont Phase A):** `build.rs` parses `vendor/unifont/unifont.hex` (GNU Unifont 17.0.04) and emits a sorted `UNIFONT_SBCS: &[(u32, [u8;16])]` table of all 7282 half-width (8×16) entries. `get_glyph_for_char(ch)` does a binary search on this table; characters absent from Unifont (Private Use Area etc.) return blank. `render_text_to_buffer` (PM text) and the VGA text renderer both use this path. The hand-crafted CP437 match block and `src/font8x16.rs` are deleted. Full SBCS Unicode coverage: e.g. Ð (U+00D0) now renders without needing to be in CP437. Phase B (DBCS 16×16 glyphs) remains pending.
 
-Remaining:
-- [ ] **PM strings** — `WinSetWindowText`, window titles, menu items, clipboard text: decode at PM API entry
-- [ ] **UCONV.DLL** — implement `UniCreateUconvObject`, `UniUconvToUcs`, `UniUconvFromUcs` etc. using `encoding_rs`; unlocks OS/2 apps that do their own Unicode conversion
+**PM strings complete:** All PM API string boundaries are now codepage-aware. Input paths (`WinSetWindowText`, `WinCreateWindow`, `WinMessageBox`, clipboard — all via `read_guest_string`) already decoded through `cp_decode`. Output paths fixed: `WinQueryWindowText` (ord 841) and `WinQueryDlgItemText` (ord 815) now call `cp_encode(text, cp)` before writing to guest RAM. GPI draw paths fixed: `GpiCharString` (ord 358) and `GpiCharStringAt` (ord 359) now call `cp_decode(&bytes, cp)` instead of `String::from_utf8_lossy`.
 
-Sequencing (remaining): PM strings → UCONV.DLL.
+Remaining:
+- [ ] **UCONV.DLL** — implement `UniCreateUconvObject`, `UniUconvToUcs`, `UniUconvFromUcs` etc. using `encoding_rs`; unlocks OS/2 apps that do their own Unicode conversion
 
 ### GNU Unifont Integration — SBCS (Phase A) — Complete
 
