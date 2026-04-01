@@ -25,7 +25,7 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 - **NE Format Execution:** Full NE (New Executable) loader and 16-bit execution — loads OS/2 1.x 16-bit NE binaries into GDT-tiled guest memory, dispatches DOSCALLS/VIOCALLS via Pascal-convention 16-bit thunks. `ne_hello` (pure assembly, no Watcom CRT) runs `DosWrite`+`DosExit` correctly.
 - **GDB Remote Stub:** `--gdb <port>` enables GDB RSP over TCP — attach with `gdb`/`gef`/`pwndbg` for software breakpoints, single-step, and full register/memory access.
 - **Crash Dump Facility:** Structured crash reports on fatal VMEXITs — registers, stack, code bytes, and last 256 API calls written to `warpine-crash-<pid>.txt`.
-- **Builtin CMD.EXE Shell:** Native Rust command shell. Run directly with `cargo run -- CMD.EXE` (host terminal mode) or launched automatically when an OS/2 guest calls `DosExecPgm("CMD.EXE")` (runs in the active VIO text window). No Open Watcom or 4OS2 required. Built-in commands: `DIR`, `CD`, `SET`, `ECHO`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `HELP`, `EXIT`. Line editor with history (↑/↓). `.CMD` script interpreter.
+- **Builtin CMD.EXE Shell:** Native Rust command shell. `cargo run -- CMD.EXE` opens a 640×400 SDL2 VGA text window (same as any CLI app); `WARPINE_HEADLESS=1` falls back to the host terminal. Also intercepts `DosExecPgm("CMD.EXE")` from running OS/2 guests. No Open Watcom or 4OS2 required. Built-in commands: `DIR`, `CD`, `SET`, `ECHO`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `HELP`, `EXIT`. Line editor with history (↑/↓). `.CMD` script interpreter.
 - **API Compatibility Report:** `warpine --compat` prints a module-grouped report of all implemented APIs with stub annotations.
 
 ## Architecture
@@ -145,9 +145,10 @@ WARPINE_HEADLESS=1 cargo run -- samples/hello/hello.exe   # Terminal fallback
 
 ### 4. Run the builtin CMD.EXE shell
 ```bash
-cargo run -- CMD.EXE                      # Interactive shell (host terminal)
-cargo run -- CMD.EXE /C "ECHO Hello!"    # Run one command and exit
-cargo run -- CMD.EXE /K "VER"            # Run one command then stay interactive
+cargo run -- CMD.EXE                       # Interactive shell (SDL2 text window)
+WARPINE_HEADLESS=1 cargo run -- CMD.EXE   # Terminal/headless mode
+cargo run -- CMD.EXE /C "ECHO Hello!"     # Run one command and exit
+cargo run -- CMD.EXE /K "VER"             # Run one command then stay interactive
 ```
 
 ### 5. Run 4OS2 (full-featured OS/2 command shell)

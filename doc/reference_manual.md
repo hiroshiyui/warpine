@@ -124,14 +124,15 @@ Warpine includes a native Rust command shell that requires no Open Watcom compil
 ### Invocation
 
 ```bash
-warpine CMD.EXE                    # Interactive session
+warpine CMD.EXE                    # Interactive session (SDL2 text window)
+WARPINE_HEADLESS=1 warpine CMD.EXE # Terminal/headless mode
 warpine CMD.EXE /C "DIR C:\"      # Run one command and exit
 warpine CMD.EXE /K "VER"          # Run one command then stay interactive
 ```
 
 The shell can also be launched from within a running OS/2 application via `DosExecPgm("CMD.EXE")` or `DosExecPgm("OS2SHELL.EXE")`.
 
-**Note:** When invoked from the host command line (`warpine CMD.EXE`), the shell runs in the host terminal. When invoked by a guest program that already has an SDL2 text window open, the shell runs inside that window.
+**SDL2 vs terminal:** When stdout is a terminal and `WARPINE_HEADLESS` is not set, the shell opens a 640×400 SDL2 VGA text window (same as any CLI app). Set `WARPINE_HEADLESS=1` or pipe stdout to force terminal/headless mode.
 
 ### Flags
 

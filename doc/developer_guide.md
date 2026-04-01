@@ -634,19 +634,30 @@ Several issues were discovered and fixed during 4OS2 bring-up that are worth not
 
 `src/loader/cmd.rs` implements a command shell entirely in host Rust, eliminating the Open Watcom / 4OS2 build dependency for basic interactive use. The shell is invoked in two ways:
 
-1. **From the host command line** — `warpine CMD.EXE [args]`: detected in `main()` by basename before `detect_format()` is called; routes to `Loader::run_builtin_cmd_main()`. Runs in the host terminal (no SDL2 window).
+1. **From the host command line** — `warpine CMD.EXE [args]`: detected in `main()` by basename before `detect_format()` is called. When stdout is a terminal and `WARPINE_HEADLESS` is not set, enables SDL2 mode on `VioManager`, spawns the shell on a worker thread via `run_builtin_cmd_sdl2()`, and runs `run_text_loop()` on the main thread — the same flow as any CLI LX app. With `WARPINE_HEADLESS=1` or piped stdout, calls `run_builtin_cmd_main()` directly on the main thread (terminal mode).
 
 2. **From a running OS/2 guest** — `DosExecPgm("CMD.EXE")` or `DosExecPgm("OS2SHELL.EXE")`: intercepted in `dos_exec_pgm()` before the VFS path lookup; routes to `Loader::run_builtin_cmd()`. Runs inside the active VIO text window (SDL2 or headless), sharing keyboard queue and screen buffer with the guest.
 
 ### Architecture
 
 ```
-Loader::run_builtin_cmd_main()     ← main.rs intercept (host CLI)
-Loader::run_builtin_cmd()          ← dos_exec_pgm intercept (guest call)
-    └── CmdShell::run()
-            ├── parse_shell_flags()   /C /K processing
-            ├── interactive_loop()    REPL: prompt → read_line → execute_line
-            └── run_script()          .CMD file execution
+main.rs CMD.EXE intercept (stdout is terminal):
+    ├── enable SDL2 mode on VioManager
+    ├── spawn thread → Loader::run_builtin_cmd_sdl2()
+    └── run_text_loop() on main thread (SDL2 window)
+
+main.rs CMD.EXE intercept (WARPINE_HEADLESS / piped):
+    └── Loader::run_builtin_cmd_main()    (terminal mode, blocks)
+
+dos_exec_pgm() intercept (guest call):
+    └── Loader::run_builtin_cmd()
+
+All paths converge on:
+    run_builtin_cmd_main_inner()
+        └── CmdShell::run()
+                ├── parse_shell_flags()   /C /K processing
+                ├── interactive_loop()    REPL: prompt → read_line → execute_line
+                └── run_script()          .CMD file execution
 ```
 
 `CmdShell` holds an `Arc<SharedState>` and has no vCPU — all I/O goes through `SharedState` managers directly.
