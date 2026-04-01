@@ -108,18 +108,11 @@ In OS/2 VIO text mode a DBCS character occupies two consecutive screen cells: ce
 
 **B5 — 16×16 glyph extraction from Unifont — complete:** `build.rs` extended with `generate_unifont_wide()` — parses 64-hex-char Unifont entries (16×16), writes `$OUT_DIR/font_unifont_wide.bin` (sorted packed `(u32_le, [u8;32])` entries; 49,804 entries, ~1.8 MB), and emits `$OUT_DIR/font_unifont_wide.rs` with `get_glyph_dbcs(ch: char) -> [u8; 32]` using O(log N) binary search over the binary blob via `include_bytes!`. `text_renderer.rs` includes the generated code; the B3 placeholder stub is removed. 5 new tests verifying CJK (中 U+4E2D), Hangul (가 U+AC00), Hiragana (あ U+3042) coverage and blank fallback for Private Use Area.
 
-**B6 — `NlsGetDBCSEv` — return real lead-byte table**
-- [ ] Update the current empty-table stub to return the correct `(first, last)` pairs for the active DBCS codepage, terminated by `(0, 0)` per OS/2 spec
+**B6 — `NlsGetDBCSEv` / `DosQueryDBCSEnv` — complete:** `dos_query_dbcs_env(cb, pcc, pbuf)` shared implementation in `doscalls.rs`; reads `dbcs_lead_ranges(active_codepage)` from `locale.rs`; writes `(first, last)` byte pairs + `(0, 0)` terminator to guest buffer; returns 113 (`ERROR_BUFFER_OVERFLOW`) if `cb` too small, 0 on null `pbuf`; `NlsGetDBCSEv` handler updated from zero-stub; `DosQueryDBCSEnv` (ordinal 373) added to `api_registry.rs` and `api_trace.rs`; 5 unit tests.
 
-**B7 — `VioCheckCharType` (new VIO API)**
-- [ ] `VioCheckCharType(pType *u16, row u16, col u16, hvio u16) → u32`
-- [ ] Scans `VioManager::buffer` from column 0 of the given row to correctly classify mid-DBCS positions (must be left-to-right, stateful — cannot annotate a single cell in isolation)
-- [ ] Returns 0 (SBCS), 2 (DBCS lead), 3 (DBCS trail)
-- [ ] Register in `api_registry.rs` under `VIOCALLS_BASE`
+**B7 — `VioCheckCharType` (VIO ordinal 39) — complete:** `vio_check_char_type(p_type, row, col, hvio)` in `viocalls.rs`; scans the queried row left-to-right via `annotate_dbcs()` on just that row's raw bytes (stateful left-to-right scan mandatory for DBCS correctness); writes 0/2/3 (`Sbcs`/`DbcsLead`/`DbcsTail`) as `u16` to `*p_type`; returns `ERROR_VIO_ROW` (426) for out-of-bounds row, `ERROR_VIO_COL` (427) for out-of-bounds column; both new error constants added to `constants.rs`; VIOCALLS compat report updated to 20 implemented; 3 unit tests.
 
-**B8 — DBCS keyboard re-encoding**
-- [ ] SDL2 `SDL_TEXTINPUT` events deliver UTF-8; re-encode to active DBCS codepage before pushing to `kbd_queue`
-- [ ] Requires reverse mapping (Unicode → CP codeword) — derive from the same build.rs mapping tables
+**B8 — DBCS keyboard re-encoding — complete:** SDL2 `TextInput` event handler added to `Sdl2TextRenderer::poll_events()`; pure ASCII single-byte chars skipped (already queued by `KeyDown`); non-ASCII text (IME-composed DBCS input) re-encoded via `cp_encode(text, active_codepage)` and pushed as individual `KbdKeyInfo { scan: 0 }` entries to `kbd_queue`; 3 unit tests (`dbcs_text_input_cp936_encodes_to_gbk`, `dbcs_text_input_cp932_encodes_to_sjis`, `dbcs_text_input_ascii_passthrough_unchanged`).
 
 **Implementation order:** B1 → B2 → B3 → B4+B5 (parallel) → B6 → B7 → B8
 
