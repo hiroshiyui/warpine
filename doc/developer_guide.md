@@ -28,6 +28,7 @@ This guide introduces the internals of Warpine and the OS/2 concepts it emulates
 18. [Adding a New API](#adding-a-new-api)
 19. [Developer Tooling](#developer-tooling) (GDB stub, crash dump, API ring buffer)
 20. [Appendix: Development Phases](#appendix-development-phases)
+21. [Rust Guest Toolchain](#rust-guest-toolchain)
 
 ---
 
@@ -1356,3 +1357,47 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
 - **Testing** — 281 unit tests, 9 integration tests, compatibility report (`warpine --compat`).
+
+---
+
+## 21. Rust Guest Toolchain
+
+Warpine provides a complete toolchain for writing OS/2 guest programs in Rust without Open Watcom.
+
+### Components
+
+**`targets/i686-warpine-os2.json`** — Custom Rust target spec: `i686-unknown-none`, `relocation-model: static`, `panic-strategy: abort`, `linker: lx-link`. Only `R_386_32` relocations are emitted (no PLT, no PC-relative imports).
+
+**`src/bin/lx_link.rs`** — ELF-to-LX linker. Reads ELF `.o`/`.rlib`/`.a` objects produced by rustc, merges `.text`/`.data` sections, resolves OS/2 API imports via `targets/os2api.def`, and emits a valid MZ+LX executable. Object layout: code at `0x00010000` (flags `READABLE|EXECUTABLE|BIG`), data at `0x00060000`, stack at `0x00070000`.
+
+**`crates/warpine-os2-sys`** — `#![no_std]` raw OS/2 API bindings. DOSCALLS use `extern "C"` (caller-cleanup). VIOCALLS and KBDCALLS use `extern "stdcall"` (callee-cleanup) with **reversed argument order** to compensate for the OS/2 Pascal calling convention (which pushes args left-to-right, placing the last arg at ESP+4). The reversed declaration causes Rust's right-to-left stdcall push to produce the same stack layout.
+
+**`crates/warpine-os2-rt`** — Runtime shim providing `_start` (calls `os2_main() -> u32` then `DosExit`), a `#[panic_handler]` (calls `DosExit(1,1)`), and a `#[global_allocator]` backed by `DosAllocMem(PAG_READ|PAG_WRITE|PAG_COMMIT)` / `DosFreeMem`.
+
+**`crates/warpine-os2`** — Ergonomic safe wrappers: `mod file` (write_stdout/write_stderr), `mod memory` (alloc/free/set_mem), `mod process` (exit), `mod thread` (sleep/create/wait/kill), `mod vio` (write_tty/get_cur_pos/set_cur_pos).
+
+### Build
+
+```bash
+rustup toolchain install nightly --component rust-src
+cargo build --bin lx_link && cp target/debug/lx_link ~/.cargo/bin/lx-link
+
+cd samples/rust_hello
+cargo +nightly build \
+  -Z build-std=core,alloc \
+  -Z build-std-features=compiler-builtins-mem \
+  -Z json-target-spec \
+  --target ../../targets/i686-warpine-os2.json
+```
+
+### Pascal calling-convention trick for VIO/KBD
+
+OS/2 VIOCALLS and KBDCALLS use Pascal convention: arguments are pushed left-to-right so the **last** argument ends up at ESP+4. Warpine's vcpu.rs does callee-cleanup (pops args after returning via `viocalls_arg_bytes`/`kbdcalls_arg_bytes`).
+
+Rust has no `extern "pascal"`. The solution: declare VIO/KBD functions with `extern "stdcall"` and **reverse the argument order**. Since stdcall pushes right-to-left, reversing the declaration makes the compiled push sequence match the Pascal layout Warpine expects, while stdcall's callee-cleanup prevents the Rust caller from also emitting `add esp, N`.
+
+Example — `VioWrtTTY(pStr, cb, hvio)` in OS/2 Pascal order means ESP+4=hvio, ESP+8=cb, ESP+12=pStr. In the sys crate it is declared as:
+```rust
+pub fn VioWrtTTY(hvio: HVIO, cb: ULONG, pch: *const u8) -> APIRET;
+```
+Rust/stdcall pushes pch first (deepest), then cb, then hvio (top) → ESP+4=hvio ✓

@@ -49,4 +49,23 @@ cd samples/4os2 && ./fetch_source.sh && make
 | uconv_test | UCONV.DLL Unicode conversion round-trip | DosLoadModule, DosQueryProcAddr, UniCreateUconvObject, UniUconvToUcs, UniUconvFromUcs, UniMapCpToUcsCp, UniFreeUconvObject |
 | audio_test | MMPM/2 audio: beep tones and MCI command string | DosBeep, DosLoadModule/DosQueryProcAddr into MDM.DLL, mciSendString open/capability/close |
 | pm_controls_test | PM built-in controls creation and API verification | WinCreateWindow (WC_STATIC/WC_BUTTON/WC_ENTRYFIELD/WC_SCROLLBAR/WC_LISTBOX/WC_MLE), WinSetWindowText, WinQueryWindowText, WinEnableWindow, WinIsWindowEnabled, LM_INSERTITEM/LM_QUERYITEMCOUNT |
+| rust_hello | Rust no_std guest binary: "Hello from Rust on Warpine!" | DosWrite, DosExit (via warpine-os2 crate) |
 | 4os2 | 4OS2 command shell (full interactive) | Nearly all DOSCALLS/VIO/KBD APIs; DLL loading (jpos2dll.dll) |
+
+## Rust Guest Binaries
+
+`rust_hello` is built with the Warpine Rust guest toolchain (nightly Rust + `lx-link` linker):
+
+```bash
+# Install once:
+rustup toolchain install nightly --component rust-src
+cargo build --bin lx_link && cp target/debug/lx_link ~/.cargo/bin/lx-link
+
+# Build:
+cd samples/rust_hello
+cargo +nightly build \
+  -Z build-std=core,alloc \
+  -Z build-std-features=compiler-builtins-mem \
+  -Z json-target-spec \
+  --target ../../targets/i686-warpine-os2.json
+```

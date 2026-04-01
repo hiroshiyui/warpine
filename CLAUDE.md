@@ -18,7 +18,7 @@ Warpine is an OS/2 compatibility layer for Linux that runs 32-bit OS/2 (LX forma
 cargo build                              # Debug build
 cargo run -- <path_to_os2_executable>    # Run an OS/2 binary
 cargo run -- samples/hello/hello.exe     # Example: run hello world
-cargo test                               # Unit tests (477 warpine + 11 lx-link = 488 unit tests: LX/NE parsers, VFS, managers, MMPM, API registry, HeadlessRenderer, scan codes, text renderer, DLL loader, crash dump, API ring buffer, GPI, PM controls, codepage, INITTERM, DosMapCase SBCS+CP866+DBCS, DBCS B1–B8, builtin DLL loading, SEH chain+dispatch, CMD.EXE shell, I/O redirection+pipeline, lx-link ELF-to-LX linker) + 9 integration tests
+cargo test                               # Unit tests (477 warpine + 11 lx-link = 488 unit tests: LX/NE parsers, VFS, managers, MMPM, API registry, HeadlessRenderer, scan codes, text renderer, DLL loader, crash dump, API ring buffer, GPI, PM controls, codepage, INITTERM, DosMapCase SBCS+CP866+DBCS, DBCS B1–B8, builtin DLL loading, SEH chain+dispatch, CMD.EXE shell, I/O redirection+pipeline, lx-link ELF-to-LX linker) + 10 integration tests
 cargo clippy -- -D warnings             # Lint — must pass with zero warnings before every commit/release
 ```
 
@@ -50,7 +50,7 @@ cargo run --manifest-path ../../Cargo.toml -- \
 **Phase C — Rust Guest Crates** (standalone; NOT part of the host workspace):
 - `crates/warpine-os2-sys/` — `#![no_std]` raw OS/2 API bindings (`extern "C"` declarations for DosExit/DosWrite/DosRead/DosOpen/DosClose/DosAllocMem/DosFreeMem/DosSetMem) with OS/2 type aliases (APIRET/ULONG/HFILE/PVOID/PCSZ).
 - `crates/warpine-os2-rt/` — `#![no_std]` runtime: `_start` entry point (calls `os2_main() -> u32` then `DosExit`), panic handler, and global allocator backed by `DosAllocMem`/`DosFreeMem`.
-- `crates/warpine-os2/` — `#![no_std]` ergonomic wrappers: `file::write_stdout`, `file::write_stderr`, `process::exit`.
+- `crates/warpine-os2/` — `#![no_std]` ergonomic wrappers: `mod file` (`write_stdout`/`write_stderr`), `mod memory` (`alloc`/`free`/`set_mem`), `mod process` (`exit`), `mod thread` (`sleep`/`create`/`wait`/`kill`), `mod vio` (`write_tty`/`get_cur_pos`/`set_cur_pos`).
 - `samples/rust_hello/` — "Hello from Rust on Warpine!" demonstration using the above crates; `extern crate warpine_os2_rt` forces the runtime to link in.
 
 **Sample OS/2 apps** are in `samples/` (hello, alloc_test, file_test, pipe_test, rust_hello, 4os2, etc.). Build Watcom samples with Open Watcom: `./vendor/setup_watcom.sh` then `make -C samples/<name>`. For 4OS2: `cd samples/4os2 && ./fetch_source.sh && make`. Build Rust samples as shown above.
