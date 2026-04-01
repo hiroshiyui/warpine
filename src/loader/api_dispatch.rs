@@ -126,14 +126,14 @@ mod tests {
 
     #[test]
     fn test_dispatch_routes_viocalls_vio_get_cur_type() {
-        // VioGetCurType = VIOCALLS_BASE + 33
+        // VioGetCurType = VIOCALLS_BASE + 27
         let loader = Loader::new_mock();
         let mut vcpu = MockVcpu::new();
         let esp = 0x1000u32;
         let p_cur_data = 0x2000u32;
         // Pascal: ESP+4=hvio=0, ESP+8=pCurData
         setup_stack(&loader, &mut vcpu, esp, &[0, p_cur_data]);
-        let result = loader.handle_api_call_ex(&mut vcpu, 0, VIOCALLS_BASE + 33);
+        let result = loader.handle_api_call_ex(&mut vcpu, 0, VIOCALLS_BASE + 27);
         assert!(matches!(result, ApiResult::Normal(0)));
     }
 

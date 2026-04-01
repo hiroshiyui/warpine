@@ -17,7 +17,7 @@
 
 # ── DOSCALLS ─────────────────────────────────────────────────────────────────
 DOSCALLS.8    DosGetInfoSeg
-DOSCALLS.75   DosQueryFileMode16
+DOSCALLS.75   DosQueryFileMode16  # NOTE: OW lib names this DOS16QFILEMODE (16-bit thunk alias); same ordinal, naming convention only
 DOSCALLS.84   DosSetFileMode
 DOSCALLS.110  DosForceDelete
 DOSCALLS.111  DosKillThread
@@ -114,7 +114,7 @@ DOSCALLS.356  DosRaiseException
 DOSCALLS.357  DosUnwindException
 DOSCALLS.368  DosQuerySysState
 DOSCALLS.372  DosEnumAttribute
-DOSCALLS.373  DosQueryDBCSEnv
+DOSCALLS.373  DosQueryDBCSEnv  # NOTE: OW lib (os2_ordinals.md) names this DosQueryDOSProperty at ordinal 373; DosQueryDBCSEnv is the Warp 4 name for the same ordinal
 DOSCALLS.378  DosSetSignalExceptionFocus
 DOSCALLS.380  DosEnterMustComplete
 DOSCALLS.381  DosExitMustComplete
@@ -148,7 +148,6 @@ KBDCALLS.10   KbdGetStatus
 VIOCALLS.3    VioGetAnsi
 VIOCALLS.5    VioSetAnsi
 VIOCALLS.7    VioScrollUp
-VIOCALLS.8    VioScrollDn
 VIOCALLS.9    VioGetCurPos
 VIOCALLS.10   VioWrtCellStr
 VIOCALLS.15   VioSetCurPos
@@ -157,14 +156,14 @@ VIOCALLS.21   VioGetMode
 VIOCALLS.22   VioSetMode
 VIOCALLS.24   VioReadCellStr
 VIOCALLS.26   VioWrtNAttr
-VIOCALLS.28   VioWrtCellStr2
+VIOCALLS.27   VioGetCurType
 VIOCALLS.31   VioGetBuf
 VIOCALLS.32   VioSetCurType
-VIOCALLS.33   VioGetCurType
 VIOCALLS.39   VioCheckCharType
 VIOCALLS.42   VioSetCp
 VIOCALLS.43   VioShowBuf
 VIOCALLS.46   VioGetConfig
+VIOCALLS.47   VioScrollDn
 VIOCALLS.48   VioWrtCharStrAtt
 VIOCALLS.51   VioSetState
 VIOCALLS.52   VioWrtNCell

@@ -30,7 +30,7 @@ impl super::Loader {
             // VioScrollUp(ulr, ulc, lrr, lrc, n, pCell, hvio) → ESP+4=hvio, +8=pCell, +12=n, +16=lrc, +20=lrr, +24=ulc, +28=ulr
             7  => self.vio_scroll_up(read_stack(28), read_stack(24), read_stack(20), read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
             // VioScrollDn(ulr, ulc, lrr, lrc, n, pCell, hvio) — same layout as VioScrollUp
-            8  => self.vio_scroll_dn(read_stack(28), read_stack(24), read_stack(20), read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
+            47 => self.vio_scroll_dn(read_stack(28), read_stack(24), read_stack(20), read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
             // VioWrtCharStrAtt(pStr, len, row, col, pAttr, hvio) → ESP+4=hvio, +8=pAttr, +12=col, +16=row, +20=len, +24=pStr
             48 => self.vio_wrt_char_str_att(read_stack(24), read_stack(20), read_stack(16), read_stack(12), read_stack(8)),
             // VioWrtNCell(pCell, n, row, col, hvio) → ESP+4=hvio, +8=col, +12=row, +16=n, +20=pCell
@@ -42,7 +42,7 @@ impl super::Loader {
             // VioSetCurType(pCurInfo, hvio) → ESP+4=hvio, +8=pCurInfo
             32 => self.vio_set_cur_type(read_stack(8), read_stack(4)),
             // VioGetCurType(pCurInfo, hvio) → ESP+4=hvio, +8=pCurInfo
-            33 => self.vio_get_cur_type(read_stack(8), read_stack(4)),
+            27 => self.vio_get_cur_type(read_stack(8), read_stack(4)),
             // VioSetAnsi(mode, hvio) → ESP+4=hvio, +8=mode
             5  => self.vio_set_ansi(read_stack(8), read_stack(4)),
             // VioGetAnsi(pMode, hvio) → ESP+4=hvio, +8=pMode
@@ -57,11 +57,8 @@ impl super::Loader {
             43 => { debug!("  VioShowBuf (stub)"); NO_ERROR },
             // VioCheckCharType(pType, usRow, usCol, hvio) → ESP+4=hvio, +8=usCol, +12=usRow, +16=pType
             39 => self.vio_check_char_type(read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
-            // VioWrtCellStr(pchCells, cb, usRow, usCol, hvio) — two possible ordinals:
-            //   ordinal 10: as used by Open Watcom VIOCALLS.LIB (os2v2 target)
-            //   ordinal 28: from older/alternative ordinal table
-            // Both stubs return NO_ERROR; real implementation would write to VIO buffer.
-            10 | 28 => { debug!("  VioWrtCellStr (stub)"); NO_ERROR },
+            // VioWrtCellStr(pchCells, cb, usRow, usCol, hvio) — ordinal 10 per Open Watcom VIOCALLS.LIB.
+            10 => { debug!("  VioWrtCellStr (stub)"); NO_ERROR },
             _ => { warn!("Warning: Unknown VIOCALLS Ordinal {}", ordinal); NO_ERROR }
         };
         super::ApiResult::Normal(res)
@@ -81,12 +78,11 @@ impl super::Loader {
     /// Pascal calling convention argument byte count for stack cleanup.
     pub(crate) fn viocalls_arg_bytes(&self, ordinal: u32) -> u64 {
         match ordinal {
-            19 => 12, 21 => 8, 9 => 12, 15 => 12, 7 => 28, 8 => 28,
-            48 => 24, 52 => 20, 26 => 20, 24 => 20, 32 => 8, 33 => 8,
+            19 => 12, 21 => 8, 9 => 12, 15 => 12, 7 => 28, 47 => 28,
+            48 => 24, 52 => 20, 26 => 20, 24 => 20, 32 => 8, 27 => 8,
             5 => 8, 3 => 8, 51 => 8, 42 => 12, 46 => 12,
             22 => 8, 31 => 12, 43 => 12,
-            10 => 20, // VioWrtCellStr — ordinal as used by Open Watcom VIOCALLS.LIB
-            28 => 20, // VioWrtCellStr — ordinal from alternative table
+            10 => 20, // VioWrtCellStr — ordinal per Open Watcom VIOCALLS.LIB
             39 => 16, // VioCheckCharType(pType, usRow, usCol, hvio) — 4 args × 4 bytes
             _ => 0,
         }
@@ -456,9 +452,8 @@ mod tests {
         assert_eq!(loader.guest_read::<u16>(p_config + 4).unwrap(),  3); // VGA color display
     }
 
-    /// VioScrollDn (ordinal 8): dispatch must call the real implementation, not a stub.
-    /// Before the fix, ordinal 8 was mislabelled "VioPrtSc" with only 4 arg-bytes,
-    /// which corrupted the Pascal calling-convention stack by 24 bytes on every call.
+    /// VioScrollDn (ordinal 47): dispatch must call the real implementation, not a stub.
+    /// Ordinal 47 matches VIO16SCROLLDN in the Open Watcom import library snapshot.
     #[test]
     fn test_vio_scroll_dn_ordinal_and_arg_bytes() {
         let loader = Loader::new_mock();
@@ -469,14 +464,14 @@ mod tests {
         // VioScrollDn(ulr, ulc, lrr, lrc, n, pCell, hvio)
         // Pascal layout (last arg at esp+4): hvio, pCell, n, lrc, lrr, ulc, ulr
         write_stack(&loader, esp, &[/*hvio*/0, /*pCell*/0, /*n*/2, /*lrc*/79, /*lrr*/24, /*ulc*/0, /*ulr*/0]);
-        let result = loader.handle_viocalls(&mut vcpu, 0, 8);
+        let result = loader.handle_viocalls(&mut vcpu, 0, 47);
         // Must return NO_ERROR (not a stub panic/wrong ordinal)
         assert!(matches!(result, ApiResult::Normal(0)));
 
         // Arg-byte count must match VioScrollDn's 7 args × 4 bytes = 28,
-        // so the vCPU loop adjusts rsp by 28 (not 4 as the old bug had it).
-        assert_eq!(loader.viocalls_arg_bytes(8), 28,
-            "Wrong arg-byte count for VioScrollDn (ordinal 8): stack corruption bug");
+        // so the vCPU loop adjusts rsp by 28.
+        assert_eq!(loader.viocalls_arg_bytes(47), 28,
+            "Wrong arg-byte count for VioScrollDn (ordinal 47): stack corruption bug");
     }
 
     /// VioScrollUp/VioScrollDn: pCell pointer is read and used as fill char+attr.
@@ -535,7 +530,7 @@ mod tests {
 
         // VioScrollDn: row 0 → row 1, top row filled with '*'/0x1A
         write_stack(&loader, esp, &[/*hvio*/0, /*pCell*/p_cell, /*n*/1, /*lrc*/79, /*lrr*/24, /*ulc*/0, /*ulr*/0]);
-        let result = loader.handle_viocalls(&mut vcpu, 0, 8);
+        let result = loader.handle_viocalls(&mut vcpu, 0, 47);
         assert!(matches!(result, ApiResult::Normal(0)));
 
         let con = loader.shared.console_mgr.lock_or_recover();
@@ -560,10 +555,10 @@ mod tests {
         write_stack(&loader, esp, &[0, p_cur_data]); // hvio=0, pCurInfo=p_cur_data
         loader.handle_viocalls(&mut vcpu, 0, 32);  // VioSetCurType
 
-        // Now read it back with VioGetCurType (ordinal 33)
+        // Now read it back with VioGetCurType (ordinal 27)
         let p_out: u32 = 0x3000;
         write_stack(&loader, esp, &[0, p_out]);
-        let result = loader.handle_viocalls(&mut vcpu, 0, 33);
+        let result = loader.handle_viocalls(&mut vcpu, 0, 27);
         assert!(matches!(result, ApiResult::Normal(0)));
 
         assert_eq!(loader.guest_read::<u16>(p_out).unwrap(),     6,      "yStart");
@@ -577,7 +572,7 @@ mod tests {
 
         // VioGetCurType should now report hidden
         write_stack(&loader, esp, &[0, p_out]);
-        loader.handle_viocalls(&mut vcpu, 0, 33);
+        loader.handle_viocalls(&mut vcpu, 0, 27);
         assert_eq!(loader.guest_read::<u16>(p_out + 6).unwrap(), 0xFFFF, "attr (hidden)");
     }
 
@@ -721,10 +716,9 @@ mod tests {
         assert_ne!(loader.vio_check_char_type(0x2000, rows as u32, 0, 0), 0);
     }
 
-    /// VioWrtCellStr: stub must return NO_ERROR and its Pascal arg-byte count
-    /// must be 20 (5 args × 4 bytes) for BOTH ordinals (10 = Open Watcom
-    /// VIOCALLS.LIB, 28 = alternative table). The wrong ordinal (0 arg-bytes)
-    /// was the root cause of the `Passed: 127928197` stack-corruption bug.
+    /// VioWrtCellStr (ordinal 10): stub must return NO_ERROR and its Pascal
+    /// arg-byte count must be 20 (5 args × 4 bytes). Ordinal 10 is the
+    /// canonical Open Watcom VIOCALLS.LIB ordinal for VioWrtCellStr.
     #[test]
     fn test_vio_wrt_cell_str_stub_and_arg_bytes() {
         let loader = Loader::new_mock();
@@ -741,12 +735,6 @@ mod tests {
         assert!(matches!(result, ApiResult::Normal(0)), "VioWrtCellStr (ord 10) must return NO_ERROR");
         assert_eq!(loader.viocalls_arg_bytes(10), 20,
             "Wrong arg-byte count for VioWrtCellStr (ordinal 10): stack corruption bug");
-
-        // Ordinal 28 (alternative ordinal table)
-        let result = loader.handle_viocalls(&mut vcpu, 0, 28);
-        assert!(matches!(result, ApiResult::Normal(0)), "VioWrtCellStr (ord 28) must return NO_ERROR");
-        assert_eq!(loader.viocalls_arg_bytes(28), 20,
-            "Wrong arg-byte count for VioWrtCellStr (ordinal 28): stack corruption bug");
     }
 
     /// VioCheckCharType (ordinal 39): Pascal arg-byte count must be 16
