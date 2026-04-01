@@ -55,6 +55,20 @@ pub fn get_glyph_for_char(ch: char) -> [u8; 16] {
     }
 }
 
+/// Return the 16×16 glyph bitmap for a wide (DBCS) Unicode character.
+///
+/// Each of the 16 rows is stored as two consecutive bytes: the first byte
+/// covers pixels 0–7 (left half) and the second covers pixels 8–15 (right
+/// half), MSB first (`bit 7 = leftmost pixel`).
+///
+/// **Phase B5 placeholder** — returns a blank 32-byte array for all inputs
+/// until `build.rs` extracts the 16×16 entries from `vendor/unifont/unifont.hex`
+/// and emits the `UNIFONT_WIDE` lookup table.  Once B5 is in place this
+/// function will binary-search that table identically to `get_glyph_for_char`.
+pub fn get_glyph_dbcs(_ch: char) -> [u8; 32] {
+    [0u8; 32]
+}
+
 // ── DBCS cell classification ─────────────────────────────────────────────────
 
 /// Per-cell classification for the DBCS annotation pass.
@@ -313,47 +327,132 @@ impl TextModeRenderer for Sdl2TextRenderer {
         let win_h = self.current_rows as usize * 16;
 
         for row in 0..rows {
-            for col in 0..cols {
+            let mut col = 0usize;
+            while col < cols {
                 let idx = row * cols + col;
                 let (ch, attr) = if idx < buf.cells.len() { buf.cells[idx] } else { (' ', 0x07) };
+                let kind = if idx < buf.cell_kind.len() { buf.cell_kind[idx] } else { CellKind::Sbcs };
 
                 let fg = CGA_PALETTE[(attr & 0x0F) as usize];
                 let bg = CGA_PALETTE[((attr >> 4) & 0x0F) as usize];
-
-                let glyph = get_glyph_for_char(ch);
                 let base_x = col * 8;
                 let base_y = row * 16;
+                let cursor_here = buf.cursor_visible && blink_on
+                    && row as u16 == buf.cursor_row && col as u16 == buf.cursor_col;
 
-                for (gr, &bits) in glyph.iter().enumerate() {
-                    let py = base_y + gr;
-                    if py >= win_h { break; }
-                    for gc in 0..8usize {
-                        let px = base_x + gc;
-                        if px >= win_w { break; }
-                        self.pixels[py * win_w + px] =
-                            if bits & (0x80 >> gc) != 0 { fg } else { bg };
-                    }
-                }
+                match kind {
+                    CellKind::DbcsLead => {
+                        // ch is currently U+FFFD (each byte decoded individually).
+                        // Phase B4 will update the snapshot or write path so ch holds
+                        // the correct Unicode codepoint decoded from the lead+trail pair.
+                        // Phase B5 will implement get_glyph_dbcs() with a real lookup table.
+                        let glyph = get_glyph_dbcs(ch);
 
-                // Cursor overlay for the cursor cell
-                if buf.cursor_visible && blink_on
-                    && row as u16 == buf.cursor_row && col as u16 == buf.cursor_col
-                {
-                    let cstart = buf.cursor_start as usize;
-                    let cend   = (buf.cursor_end as usize).min(15);
-                    // Guard against inverted/degenerate shapes from guest.
-                    let (cstart, cend) = if cstart <= cend { (cstart, cend) } else { (14, 15) };
-                    for gr in cstart..=cend {
-                        let py = base_y + gr;
-                        if py >= win_h { break; }
-                        for gc in 0..8usize {
-                            let px = base_x + gc;
-                            if px >= win_w { break; }
-                            // XOR-invert RGB channels: always visible regardless of
-                            // cell fg/bg colour (including black-on-black attr=0x00).
-                            let old = self.pixels[py * win_w + px];
-                            self.pixels[py * win_w + px] = (old ^ 0x00_FF_FF_FF) | 0xFF_00_00_00;
+                        for gr in 0..16usize {
+                            let py = base_y + gr;
+                            if py >= win_h { break; }
+                            let hi = glyph[gr * 2];
+                            let lo = glyph[gr * 2 + 1];
+                            for gc in 0..8usize {
+                                let px = base_x + gc;
+                                if px < win_w {
+                                    self.pixels[py * win_w + px] =
+                                        if hi & (0x80 >> gc) != 0 { fg } else { bg };
+                                }
+                            }
+                            for gc in 0..8usize {
+                                let px = base_x + 8 + gc;
+                                if px < win_w {
+                                    self.pixels[py * win_w + px] =
+                                        if lo & (0x80 >> gc) != 0 { fg } else { bg };
+                                }
+                            }
                         }
+
+                        // Cursor overlay: XOR-invert both 8-pixel halves.
+                        if cursor_here {
+                            let cstart = buf.cursor_start as usize;
+                            let cend   = (buf.cursor_end as usize).min(15);
+                            let (cstart, cend) = if cstart <= cend { (cstart, cend) } else { (14, 15) };
+                            for gr in cstart..=cend {
+                                let py = base_y + gr;
+                                if py >= win_h { break; }
+                                for gc in 0..16usize {
+                                    let px = base_x + gc;
+                                    if px < win_w {
+                                        let old = self.pixels[py * win_w + px];
+                                        self.pixels[py * win_w + px] =
+                                            (old ^ 0x00_FF_FF_FF) | 0xFF_00_00_00;
+                                    }
+                                }
+                            }
+                        }
+
+                        col += 2;
+                    }
+
+                    CellKind::DbcsTail => {
+                        // Already rendered by the preceding DbcsLead cell.
+                        // If the cursor lands on the tail cell, invert only the
+                        // right 8-pixel half (this cell's column).
+                        if buf.cursor_visible && blink_on
+                            && row as u16 == buf.cursor_row && col as u16 == buf.cursor_col
+                        {
+                            let cstart = buf.cursor_start as usize;
+                            let cend   = (buf.cursor_end as usize).min(15);
+                            let (cstart, cend) = if cstart <= cend { (cstart, cend) } else { (14, 15) };
+                            for gr in cstart..=cend {
+                                let py = base_y + gr;
+                                if py >= win_h { break; }
+                                for gc in 0..8usize {
+                                    let px = base_x + gc;
+                                    if px < win_w {
+                                        let old = self.pixels[py * win_w + px];
+                                        self.pixels[py * win_w + px] =
+                                            (old ^ 0x00_FF_FF_FF) | 0xFF_00_00_00;
+                                    }
+                                }
+                            }
+                        }
+                        col += 1;
+                    }
+
+                    CellKind::Sbcs => {
+                        let glyph = get_glyph_for_char(ch);
+
+                        for (gr, &bits) in glyph.iter().enumerate() {
+                            let py = base_y + gr;
+                            if py >= win_h { break; }
+                            for gc in 0..8usize {
+                                let px = base_x + gc;
+                                if px >= win_w { break; }
+                                self.pixels[py * win_w + px] =
+                                    if bits & (0x80 >> gc) != 0 { fg } else { bg };
+                            }
+                        }
+
+                        // Cursor overlay for the cursor cell.
+                        if cursor_here {
+                            let cstart = buf.cursor_start as usize;
+                            let cend   = (buf.cursor_end as usize).min(15);
+                            // Guard against inverted/degenerate shapes from guest.
+                            let (cstart, cend) = if cstart <= cend { (cstart, cend) } else { (14, 15) };
+                            for gr in cstart..=cend {
+                                let py = base_y + gr;
+                                if py >= win_h { break; }
+                                for gc in 0..8usize {
+                                    let px = base_x + gc;
+                                    if px >= win_w { break; }
+                                    // XOR-invert RGB channels: always visible regardless of
+                                    // cell fg/bg colour (including black-on-black attr=0x00).
+                                    let old = self.pixels[py * win_w + px];
+                                    self.pixels[py * win_w + px] =
+                                        (old ^ 0x00_FF_FF_FF) | 0xFF_00_00_00;
+                                }
+                            }
+                        }
+
+                        col += 1;
                     }
                 }
             }
@@ -702,6 +801,23 @@ mod tests {
         let r = HeadlessTextRenderer::default();
         assert_eq!(r.frame_count, 0);
         assert!(r.keep_running);
+    }
+
+    // ── get_glyph_dbcs (Phase B5 placeholder) ────────────────────────────────
+
+    #[test]
+    fn glyph_dbcs_is_placeholder_blank() {
+        // Until B5 is implemented, every wide character returns a blank glyph.
+        assert_eq!(get_glyph_dbcs('\u{4E2D}'), [0u8; 32]); // CJK: 中
+        assert_eq!(get_glyph_dbcs('\u{AC00}'), [0u8; 32]); // Hangul: 가
+        assert_eq!(get_glyph_dbcs('\u{FFFD}'), [0u8; 32]); // Replacement char
+    }
+
+    #[test]
+    fn glyph_dbcs_row_stride_is_two_bytes() {
+        // Sanity check: glyph is exactly 32 bytes (16 rows × 2 bytes per row).
+        let g = get_glyph_dbcs('X');
+        assert_eq!(g.len(), 32);
     }
 
     // ── VgaTextBuffer ─────────────────────────────────────────────────────────

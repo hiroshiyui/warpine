@@ -102,12 +102,7 @@ In OS/2 VIO text mode a DBCS character occupies two consecutive screen cells: ce
 
 **B2 — `CellKind` annotation in `VgaTextBuffer` — complete:** `CellKind` enum (`Sbcs`/`DbcsLead`/`DbcsTail`) added to `text_renderer.rs`; `VioManager` gains `raw_bytes: Vec<u8>` (original guest byte per cell, maintained by all write paths including `write_tty`, `write_char_str_att`, `write_n_cell`, `scroll_up`, `scroll_down`, `resize`); `VgaTextBuffer` gains `raw_bytes` and `cell_kind: Vec<CellKind>` populated at snapshot time by `annotate_dbcs(raw_bytes, codepage, cols)`; function performs left-to-right row scan using `dbcs_lead_ranges()`; unpaired lead bytes at row end → `Sbcs`; SBCS codepage fast-path; 9 unit tests.
 
-**B3 — 16×16 DBCS render path in `Sdl2TextRenderer::render_frame()`**
-- [ ] Replace column `for` loop with a `while col < cols` loop:
-  - `DbcsLead`: decode lead+trail → Unicode codepoint, look up 16×16 Unifont glyph (`[u8; 32]`), render into pixels at `col*8 .. col*8+16` (two SBCS column widths), advance `col += 2`
-  - `DbcsTail`: `col += 1` (already drawn by its lead cell)
-  - `Sbcs`: existing 8×16 path, `col += 1`
-- [ ] Window stays 640 px wide (80 cols × 8 px) — no resize needed
+**B3 — 16×16 DBCS render path in `Sdl2TextRenderer::render_frame()` — complete:** `render_frame()` inner loop replaced from `for col` to `while col < cols` dispatching on `CellKind`; `DbcsLead` renders a 16-wide `[u8;32]` glyph via `get_glyph_dbcs(ch)` and advances `col += 2`; `DbcsTail` skips; `Sbcs` unchanged 8×16 path; cursor overlay extended to 16 px for DbcsLead, 8 px (right half) for DbcsTail; `get_glyph_dbcs(ch) -> [u8; 32]` stub added (returns blank until B5); 2 new unit tests.
 
 **B4 — DBCS Unicode mapping tables (build.rs extension)**
 - [ ] Vendor `SHIFTJIS.TXT`, `GBK.TXT`, `KSX1001.TXT`, `BIG5.TXT` (Unicode Consortium)
