@@ -984,8 +984,10 @@ fn main() {
 }
 
 fn load_def_file(explicit: Option<&Path>) -> String {
+    // Embedded fallback — compiled in so lx-link works regardless of CWD.
+    const EMBEDDED: &str = include_str!("../../targets/os2api.def");
     if let Some(p) = explicit {
-        return std::fs::read_to_string(p).unwrap_or_default();
+        return std::fs::read_to_string(p).unwrap_or_else(|_| EMBEDDED.to_string());
     }
     if let Ok(s) = std::fs::read_to_string("targets/os2api.def") { return s; }
     if let Ok(exe) = std::env::current_exe()
@@ -993,7 +995,7 @@ fn load_def_file(explicit: Option<&Path>) -> String {
         && let Ok(s) = std::fs::read_to_string(dir.join("os2api.def")) {
         return s;
     }
-    String::new()
+    EMBEDDED.to_string()
 }
 
 fn load_input(path: &Path, objects: &mut Vec<elf_reader::ElfObject>) -> Result<(), Box<dyn Error>> {
