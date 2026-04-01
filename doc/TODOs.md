@@ -1,179 +1,128 @@
 # Warpine TODO List
 
-This document tracks the tasks required to reach a functional OS/2 compatibility layer.
+This document tracks **open work only**. Completed items are documented in the
+[Developer Guide](developer_guide.md) and [Reference Manual](reference_manual.md).
 
 ## Engineering Policy
 
-**Near-clean-room, blackbox implementation.** Warpine implements the OS/2 API surface from public documentation only — IBM's *Control Program Programming Reference*, the OS/2 Warp 4 Toolkit headers, published IBM Developer Connection materials, and open-source reference implementations (e.g., ReactOS, osFree, WINE analogues). No IBM-proprietary DLL binaries, no ROM dumps, and no disassembly of original OS/2 system libraries are used as implementation inputs. Behaviour is inferred solely from the observable behaviour of OS/2 applications compiled with the Open Watcom toolchain and from the public specifications listed above.
+**Near-clean-room, blackbox implementation.** All API behaviour is derived from
+public documentation only (IBM *Control Program Programming Reference*, OS/2 Warp 4
+Toolkit headers, IBM Developer Connection, ReactOS/osFree reference). No IBM-proprietary
+DLL binaries, no ROM dumps, and no disassembly of original OS/2 system libraries.
 
 ---
 
-## Completed Work
+## Completed Phases (summary)
 
-Phases 1–7 baseline are complete. Detailed descriptions of each phase, the APIs implemented, architectural decisions, and verification evidence are documented in:
-
-- **[Developer Guide](developer_guide.md)** — Sections 1–20 cover all subsystem architectures; Appendix (Section 20) has per-phase development narratives.
-- **[Reference Manual](reference_manual.md)** — Section 9 lists all 269 implemented APIs with ordinals; Section 11 covers guest memory layout and GDT.
+| Area | Status | Reference |
+|------|--------|-----------|
+| Phases 1–7 baseline | Complete | [Developer Guide §20](developer_guide.md#appendix-development-phases) |
+| LX/NE loader, KVM vCPU, GDT/IDT | Complete | Developer Guide §3–6 |
+| DOSCALLS core (file I/O, memory, threads, semaphores, IPC) | Complete | Reference Manual §9 |
+| VIO/KBD console subsystem | Complete | Developer Guide §15 |
+| SDL2 VGA text renderer + GNU Unifont (SBCS + DBCS 16×16) | Complete | Developer Guide §15 |
+| DBCS full support (B1–B8: cell annotation, render, encode, keyboard) | Complete | Developer Guide §15 |
+| PM window management + built-in controls | Complete | Developer Guide §11 |
+| GPI drawing primitives (20+ ordinals) | Complete | Developer Guide §12 |
+| MMPM/2 audio (DosBeep, waveaudio MCI) | Complete | Developer Guide §10 |
+| NE (16-bit OS/2 1.x) execution | Complete | Developer Guide §7 |
+| Unicode-internal architecture (codepage↔UTF-8 at all boundaries) | Complete | Developer Guide §16 |
+| UCONV.DLL emulation | Complete | Reference Manual §9 |
+| DLL loader (recursive, ref-counted, INITTERM, builtin modules) | Complete | Developer Guide §20 |
+| Structured Exception Handling (SEH) — DosSetExceptionHandler, DosRaiseException, DosUnwindException | Complete | Developer Guide (SEH section) |
+| DosMapCase / NlsMapCase — full SBCS + DBCS + CP866 | Complete | Developer Guide §16 |
+| Developer tooling (crash dump, GDB stub, API ring buffer) | Complete | Developer Guide §19 |
 
 ---
 
-## Developer Tooling (complete)
-
-**A — Enhanced Crash Dump** — `src/loader/crash_dump.rs`. On fatal VMEXITs: captures registers, segment descriptors, stack, code bytes at EIP, and API ring history. Writes to `warpine-crash-<pid>.txt` + stderr. 13 unit tests. See [Developer Guide §19](developer_guide.md#developer-tooling) and [Reference Manual §7](reference_manual.md#crash-dumps).
-
-**B — GDB Remote Stub** — `src/loader/gdb_stub.rs`. GDB RSP over TCP via `gdbstub 0.7`; software breakpoints, single-step (`KVM_GUESTDBG_SINGLESTEP`), Ctrl-C interrupt, full register/memory access. `--gdb <port>` CLI flag. See [Developer Guide §19](developer_guide.md#developer-tooling) and [Reference Manual §6](reference_manual.md#gdb-debugging).
-
-**C — API Call Ring Buffer** — `src/loader/api_ring.rs`. Last 256 API calls in a bounded `VecDeque`, populated unconditionally. Included in crash dumps. 9 unit tests. See [Developer Guide §19](developer_guide.md#developer-tooling) and [Reference Manual §7](reference_manual.md#crash-dumps).
-
----
-
-## Architecture & Refactoring Backlog
+## Architecture Backlog
 
 ### Ordinal Table Canonical Build Tool
-Build a tool to manage the authoritative ordinal→name table used by `api_registry.rs`, sourced exclusively from public documentation (IBM CP Programming Reference, OS/2 Warp 4 Toolkit headers, osFree project). **No real OS/2 system DLLs are used as input** (clean-room policy).
 
-Implementation plan:
-1. Extend `LxFile` to parse entry table + resident/non-resident name tables (currently only import tables are parsed) — useful for `jpos2dll.dll` and other Open Watcom-built DLLs in `samples/`
-2. `src/bin/ordinals.rs` — dump complete `ordinal → name` map from an LX binary built by us; output as text or `--emit-rust` for `const` definitions
-3. `--check` mode — cross-reference against warpine's `api_registry` to surface mismatches between documented and implemented ordinals
-4. Maintain a hand-curated `doc/ordinals/` directory with one `.txt` per module (DOSCALLS, PMWIN, PMGPI, …) derived from public IBM documentation
+Build a tool to manage the authoritative ordinal→name table used by `api_registry.rs`,
+sourced exclusively from public documentation. **No real OS/2 system DLLs as input**
+(clean-room policy).
 
----
-
-## Phase 5 — Multimedia and 16-bit Support
-
-### Audio/Video (MMPM/2) — Remaining
-MCI_SEEK, MCI_SET volume, MCI_NOTIFY, and MCI_RECORD stub are all complete. Remaining:
-
-- [ ] MIDI playback device type (currently only `waveaudio` supported) — requires FluidSynth/SDL2_mixer or ALSA sequencer; deferred due to external dependency cost
-
-### 16-bit Compatibility (NE format)
-**NE execution baseline complete.** NE format parser (`src/ne/`): NeHeader, segment/relocation/entry tables, name table, 16 unit tests. Full NE loader in `src/loader/ne_exec.rs`: `load_ne()`, `apply_ne_fixups()`, `setup_guest_ne()`, `setup_and_run_ne_cli()`, `handle_ne_api_call()`, `ne_api_arg_bytes()`. GDT tiling with data tiles (DPL=2) and code tiles for CALL FAR. `ne_hello` pure-assembly sample runs `DosWrite`+`DosExit` end-to-end; integration test `test_ne_hello` passes. See [Developer Guide §20](developer_guide.md#appendix-development-phases).
-
-Remaining:
-- [ ] **Watcom CRT NE apps** — the Watcom C runtime for 16-bit OS/2 requires LDT-based selectors (TI=1) that our GDT-tile model cannot provide; would need a stub LDT or full LDT emulation
-- [ ] **Mode switching** — transitions between 16-bit NE code and 32-bit flat code (e.g., 16-bit app calling a 32-bit DLL)
-- [ ] **Broader 16-bit API coverage** — more DOSCALLS, VIOCALLS, KBDCALLS ordinals needed for real NE applications beyond minimal hello-world
+- [ ] Extend `LxFile` to parse entry table + resident/non-resident name tables
+- [ ] `src/bin/ordinals.rs` — dump `ordinal → name` map from an Open Watcom-built LX binary; `--emit-rust` flag
+- [ ] `--check` mode — cross-reference against `api_registry` to surface mismatches
+- [ ] Maintain `doc/ordinals/` — one `.txt` per module (DOSCALLS, PMWIN, PMGPI, …) from IBM documentation
 
 ---
 
-## Phase 7: Application Compatibility Expansion
+## Phase 5 — Multimedia (remaining)
 
-Goal: raise the fraction of real OS/2 applications that run correctly.
-
-### DLL Loader Chain
-**Baseline complete** — `DosLoadModule`/`DosQueryProcAddr`/`DosQueryModuleHandle` implemented; `jpos2dll.dll` loads at runtime. See [Developer Guide §20](developer_guide.md#appendix-development-phases).
-
-**DLL INITTERM fully complete** — load-time (`flag=0`) and unload-time (`flag=1`) calls both implemented via vCPU call-injection. `FrameKind::InitTerm` handles load; `FrameKind::InitTermUnload` handles unload and frees guest pages after the call. `managers::decrement_refcount` returns `(object_bases, initterm_addr)` atomically; `dos_free_module` returns `ApiResult`. OS/2 ignores the unload return value — pages are freed unconditionally.
-
-### Unicode-Internal Architecture (long-term goal)
-Convert Warpine's internal string representation to UTF-8, with codepage↔UTF-8 conversion at every guest/host API boundary. Modelled on Wine's ANSI→UTF-16 approach.
-
-**Path strings complete:** `read_guest_string` decodes all 57 input call sites through the active codepage automatically. Write-back paths (`DosQueryCurrentDir`, `write_filefindbuf3_multi`, `dos_enum_attribute` DENA1, `dos_query_path_info` FEA2LIST) call `cp_encode()` before writing to guest memory. `DosSetProcessCp`/`DosQueryCp` store/read the active codepage atomically. `codepage.rs` provides `cp_decode`/`cp_encode` with embedded CP437/850/852 tables and `encoding_rs` for Windows/DBCS codepages.
-
-**VIO output complete:** `VioManager::buffer` is now `Vec<(char, u8)>` — Unicode codepoints + attributes. `decode_vio_byte(b, cp) -> char` decodes CP bytes to Unicode at write time (fast-path for ASCII < 0x80; `cp_decode` for high bytes). `get_glyph_for_char(ch) -> [u8; 16]` in `text_renderer.rs` reverse-maps Unicode through the CP437 font table; chars not in CP437 return a blank glyph (pending Unifont integration). `VioReadCellStr` re-encodes stored chars back to active-codepage bytes via `cp_encode`. Fill cells in `VioScrollUp`/`VioScrollDn` and `VioWrtNCell` are also decoded through the active codepage.
-
-**SDL2 text renderer complete (Unifont Phase A):** `build.rs` parses `vendor/unifont/unifont.hex` (GNU Unifont 17.0.04) and emits a sorted `UNIFONT_SBCS: &[(u32, [u8;16])]` table of all 7282 half-width (8×16) entries. `get_glyph_for_char(ch)` does a binary search on this table; characters absent from Unifont (Private Use Area etc.) return blank. `render_text_to_buffer` (PM text) and the VGA text renderer both use this path. The hand-crafted CP437 match block and `src/font8x16.rs` are deleted. Full SBCS Unicode coverage: e.g. Ð (U+00D0) now renders without needing to be in CP437. Phase B (DBCS 16×16 glyphs) remains pending.
-
-**PM strings complete:** All PM API string boundaries are now codepage-aware. Input paths (`WinSetWindowText`, `WinCreateWindow`, `WinMessageBox`, clipboard — all via `read_guest_string`) already decoded through `cp_decode`. Output paths fixed: `WinQueryWindowText` (ord 841) and `WinQueryDlgItemText` (ord 815) now call `cp_encode(text, cp)` before writing to guest RAM. GPI draw paths fixed: `GpiCharString` (ord 358) and `GpiCharStringAt` (ord 359) now call `cp_decode(&bytes, cp)` instead of `String::from_utf8_lossy`.
-
-**UCONV.DLL complete:** `src/loader/uconv.rs` — `UniCreateUconvObject` (ord 1), `UniFreeUconvObject` (2), `UniUconvToUcs` (3), `UniUconvFromUcs` (4), `UniMapCpToUcsCp` (6). `UconvManager` maps UCONV_OBJECT handles to codepage numbers in `SharedState::uconv_mgr`. UCS-2 name parser accepts `"IBM-NNN"`, `"CP-NNN"`, `"UTF-8"` forms (case-insensitive). Conversion delegates to `cp_decode`/`cp_encode`. `UCONV_BASE = 12288`; `STUB_AREA_SIZE` extended to 16384; UCONV added to `BUILTIN_MODULES` and `resolve_import`. 15 unit tests.
-
-**Unicode-Internal Architecture complete.** All phases done: path strings, VIO output, SDL2 text renderer (Unifont Phase A), PM strings, and UCONV.DLL.
-
-### GNU Unifont Integration — SBCS (Phase A) — Complete
-
-`build.rs` parses `vendor/unifont/unifont.hex` (GNU Unifont 17.0.04, GPL-2+ with font exception) and emits `$OUT_DIR/font_unifont_sbcs.rs` — a sorted `pub static UNIFONT_SBCS: &[(u32, [u8;16])]` array of 7282 half-width (8×16) glyph entries, keyed by Unicode codepoint. `get_glyph_for_char(ch)` binary-searches this table. The approach is Unicode-direct (the VIO buffer stores `char`, not codepage bytes) so no per-codepage tables or `active_codepage` thread-through is needed in the renderer. `src/font8x16.rs` deleted; `glyph_index()` removed. Phase B (DBCS 16×16 glyphs) remains pending.
+- [ ] **MIDI playback** — device type `midi`; requires FluidSynth / SDL2_mixer or ALSA sequencer; deferred (external dependency cost)
 
 ---
 
-### GNU Unifont Integration — DBCS (Phase B)
+## Phase 7 — Application Compatibility (remaining)
 
-DBCS (Double-Byte Character Set) support for CP932 (Shift-JIS / Japanese), CP936 (GBK / Simplified Chinese), CP949 (EUC-KR / Korean), CP950 (Big5 / Traditional Chinese). Depends on Phase A being complete.
+### 16-bit (NE) Compatibility
 
-**OS/2 DBCS cell model** (important context):
-In OS/2 VIO text mode a DBCS character occupies two consecutive screen cells: cell N holds the lead byte + attribute, cell N+1 holds the trail byte + same attribute. `VioCheckCharType` distinguishes SBCS=0, DBCS-lead=2, DBCS-trail=3. `VioManager::buffer: Vec<(char, u8)>` now stores decoded Unicode codepoints — DBCS lead+trail pairs will be folded into a single `char` per logical character during the Phase B annotation pass.
+NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 
-**B1 — Lead-byte range tables — complete:** `dbcs_lead_ranges(cp: u32) -> &'static [(u8, u8)]` and `is_dbcs_lead_byte(byte, cp) -> bool` added to `locale.rs`. CP932 returns two ranges `(0x81,0x9F),(0xE0,0xFC)`; CP936/949/950 return `(0x81,0xFE)`; all SBCS codepages return `&[]`. 9 unit tests.
-
-**B2 — `CellKind` annotation in `VgaTextBuffer` — complete:** `CellKind` enum (`Sbcs`/`DbcsLead`/`DbcsTail`) added to `text_renderer.rs`; `VioManager` gains `raw_bytes: Vec<u8>` (original guest byte per cell, maintained by all write paths including `write_tty`, `write_char_str_att`, `write_n_cell`, `scroll_up`, `scroll_down`, `resize`); `VgaTextBuffer` gains `raw_bytes` and `cell_kind: Vec<CellKind>` populated at snapshot time by `annotate_dbcs(raw_bytes, codepage, cols)`; function performs left-to-right row scan using `dbcs_lead_ranges()`; unpaired lead bytes at row end → `Sbcs`; SBCS codepage fast-path; 9 unit tests.
-
-**B3 — 16×16 DBCS render path in `Sdl2TextRenderer::render_frame()` — complete:** `render_frame()` inner loop replaced from `for col` to `while col < cols` dispatching on `CellKind`; `DbcsLead` renders a 16-wide `[u8;32]` glyph via `get_glyph_dbcs(ch)` and advances `col += 2`; `DbcsTail` skips; `Sbcs` unchanged 8×16 path; cursor overlay extended to 16 px for DbcsLead, 8 px (right half) for DbcsTail; `get_glyph_dbcs(ch) -> [u8; 32]` stub added (returns blank until B5); 2 new unit tests.
-
-**B4 — DBCS Unicode mapping / `decode_dbcs` — complete:** `decode_dbcs(lead, trail, cp) -> char` added to `codepage.rs`; delegates to `cp_decode(&[lead, trail], cp)` which uses `encoding_rs` for all four DBCS codepages (CP932/SJIS, CP936/GBK, CP949/EUC-KR, CP950/Big5). CP936 (GBK) was missing from `cp_to_encoding()` — added `936 => Some(encoding_rs::GBK)`. `VgaTextBuffer::snapshot()` now iterates DbcsLead cells post-annotation and calls `decode_dbcs()` to replace the U+FFFD stored by the single-byte write path with the correct Unicode codepoint. 4 new codepage tests + 1 snapshot fix-up test.
-
-**B5 — 16×16 glyph extraction from Unifont — complete:** `build.rs` extended with `generate_unifont_wide()` — parses 64-hex-char Unifont entries (16×16), writes `$OUT_DIR/font_unifont_wide.bin` (sorted packed `(u32_le, [u8;32])` entries; 49,804 entries, ~1.8 MB), and emits `$OUT_DIR/font_unifont_wide.rs` with `get_glyph_dbcs(ch: char) -> [u8; 32]` using O(log N) binary search over the binary blob via `include_bytes!`. `text_renderer.rs` includes the generated code; the B3 placeholder stub is removed. 5 new tests verifying CJK (中 U+4E2D), Hangul (가 U+AC00), Hiragana (あ U+3042) coverage and blank fallback for Private Use Area.
-
-**B6 — `NlsGetDBCSEv` / `DosQueryDBCSEnv` — complete:** `dos_query_dbcs_env(cb, pcc, pbuf)` shared implementation in `doscalls.rs`; reads `dbcs_lead_ranges(active_codepage)` from `locale.rs`; writes `(first, last)` byte pairs + `(0, 0)` terminator to guest buffer; returns 113 (`ERROR_BUFFER_OVERFLOW`) if `cb` too small, 0 on null `pbuf`; `NlsGetDBCSEv` handler updated from zero-stub; `DosQueryDBCSEnv` (ordinal 373) added to `api_registry.rs` and `api_trace.rs`; 5 unit tests.
-
-**B7 — `VioCheckCharType` (VIO ordinal 39) — complete:** `vio_check_char_type(p_type, row, col, hvio)` in `viocalls.rs`; scans the queried row left-to-right via `annotate_dbcs()` on just that row's raw bytes (stateful left-to-right scan mandatory for DBCS correctness); writes 0/2/3 (`Sbcs`/`DbcsLead`/`DbcsTail`) as `u16` to `*p_type`; returns `ERROR_VIO_ROW` (426) for out-of-bounds row, `ERROR_VIO_COL` (427) for out-of-bounds column; both new error constants added to `constants.rs`; VIOCALLS compat report updated to 20 implemented; 3 unit tests.
-
-**B8 — DBCS keyboard re-encoding — complete:** SDL2 `TextInput` event handler added to `Sdl2TextRenderer::poll_events()`; pure ASCII single-byte chars skipped (already queued by `KeyDown`); non-ASCII text (IME-composed DBCS input) re-encoded via `cp_encode(text, active_codepage)` and pushed as individual `KbdKeyInfo { scan: 0 }` entries to `kbd_queue`; 3 unit tests (`dbcs_text_input_cp936_encodes_to_gbk`, `dbcs_text_input_cp932_encodes_to_sjis`, `dbcs_text_input_ascii_passthrough_unchanged`).
-
-**Implementation order:** B1 → B2 → B3 → B4+B5 (parallel) → B6 → B7 → B8
-
-**Key risks:**
-| Risk | Mitigation |
-|---|---|
-| Watcom CRT crash on non-437 locale | Keep codepage=437 for 4OS2; unlock only per-app |
-| DBCS trail byte collides with SBCS range | Annotation must always scan left-to-right from column 0 |
-| Unifont missing glyphs for some codepoints | Fall back to two half-width 8×16 glyphs |
-| Generated file size (CP932 ~1 MB) | Acceptable; or use `include_bytes!` + runtime decode |
-| `VioCheckCharType` mid-row query | Scan full row from col 0, not just the queried position |
-
----
+- [ ] **Watcom CRT NE apps** — Watcom 16-bit CRT requires LDT-based selectors (TI=1); would need stub LDT or full LDT emulation
+- [ ] **Mode switching** — 16-bit NE code calling a 32-bit flat DLL
+- [ ] **Broader 16-bit API coverage** — more DOSCALLS / VIOCALLS / KBDCALLS ordinals beyond minimal hello-world
 
 ### PM Menu System
+
 - [ ] **Menu template parsing** — load `MENUTEMPLATE` resource from LX binary; create `WC_MENU` window hierarchy
 - [ ] **`WinLoadMenu` / `WinSetMenu`** — attach menu to frame; store `hmenu` in `OS2Window`
 - [ ] **`WinSendMsg` → menu → `WM_COMMAND`** — route menu-item activations to the frame's client window procedure
 - [ ] **`WM_INITMENU` / `WM_MENUSELECT`** — sent before menu is displayed / on item highlight
 
 ### Dialog System
-- [ ] **Dialog template parsing** — load `DLGTEMPLATE` from LX resource; auto-create child windows; enables real `WinDlgBox` / `WinLoadDlg`
-- [ ] **`WinDlgBox` / `WinLoadDlg`** — modal and modeless dialog creation; runs its own `WinGetMsg` pump
-- [ ] **`WinDismissDlg`** — posts `WM_DISMISS`; unblocks `WinDlgBox`
-- [ ] **`WinDefDlgProc`** — default dialog procedure: keyboard navigation, Enter/Escape handling, default button
 
-### GPI Drawing Primitives
-GpiSetColor/BackColor, GpiQueryColor/BackColor, GpiSetMix/BackMix, GpiMove, GpiLine, GpiBox, GpiCharString/At, GpiErase, GpiFullArc, GpiCreatePS/DestroyPS, GpiCreateLogFont/DeleteSetId/SetCharSet/SetCharBox, GpiQueryFontMetrics (208-byte struct), GpiQueryFonts, GpiQueryTextBox (5-point box), GpiLoadFonts stubs, GpiSetLineType/Width stubs, and full `map_color` (CLR_* + palette + direct RGB) — all complete. See `src/loader/pm_gpi.rs`.
+- [ ] **Dialog template parsing** — load `DLGTEMPLATE` from LX resource; auto-create child windows; enables `WinDlgBox` / `WinLoadDlg`
+- [ ] **`WinDlgBox` / `WinLoadDlg`** — modal and modeless dialog creation; own `WinGetMsg` pump
+- [ ] **`WinDismissDlg`** — posts `WM_DISMISS`; unblocks `WinDlgBox`
+- [ ] **`WinDefDlgProc`** — keyboard navigation, Enter/Escape, default button
 
 ### PM Advanced Controls
-- [ ] **`WC_CONTAINER`** — Icon / Name / Text / Detail / Tree view modes; record management; sorting and filtering
+
+- [ ] **`WC_CONTAINER`** — Icon / Name / Text / Detail / Tree views; record management
 - [ ] **`WC_NOTEBOOK`** — tabbed property sheet
 - [ ] **Drag and drop** — `DrgDrag`, `DrgAccessDraginfo`, `DM_DRAGOVER` / `DM_DROP`
 - [ ] **Custom cursors** — `WinSetPointer` via `SDL_CreateColorCursor`
 - [ ] **Printing** — `DevOpenDC`, `DevCloseDC`, basic spool API stubs
 
 ### TCP/IP Socket API
+
 - [ ] `SO32DLL.DLL` / `TCP32DLL.DLL` thunks: `socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv`, `select`, `gethostbyname`, `getservbyname`, `setsockopt`, `getsockopt`, `closesocket`
-- [ ] Map to Linux BSD socket syscalls; handle OS/2 `SOCE*` error codes → errno mapping
-- [ ] Enables: WebExplorer, Netscape for OS/2, FTP/IRC clients, network-licensed software
+- [ ] Map to Linux BSD socket syscalls; OS/2 `SOCE*` → errno mapping
+- [ ] Enables: WebExplorer, Netscape for OS/2, FTP/IRC clients
 
 ### REXX Interpreter Bridge
-- [ ] Bridge `REXXAPI.DLL` exports (`RexxStart`, `RexxRegisterSubcomDll`, `RexxVariablePool`) to [Regina REXX](http://regina-rexx.sourceforge.net/)
-- [ ] Unlocks: OS/2 installation programs, system tools, 4OS2 `.cmd` scripts
 
-### Year 2038 Problem
+- [ ] Bridge `REXXAPI.DLL` exports (`RexxStart`, `RexxRegisterSubcomDll`, `RexxVariablePool`) to [Regina REXX](http://regina-rexx.sourceforge.net/)
+- [ ] Unlocks: OS/2 install programs, system tools, 4OS2 `.cmd` scripts
+
+### Year 2038
+
 - [ ] Audit `time_t` usage in DOSCALLS and CRT shim functions
-- [ ] `DosGetDateTime` / `DosSetDateTime` use `DATETIME` struct (`USHORT` year) — not affected; verify and document
-- [ ] Intercept and redirect CRT time functions imported from CLIB.DLL / CRTL.DLL / EMX.DLL to 64-bit-clean host implementations
-- [ ] `FILESTATUS3` timestamps use `FDATE`/`FTIME` (7-bit year from 1980, max 2107) — not affected; verify
-- [ ] Optional: `WARPINE.DLL` escape hatch — `WrpGetDateTime64` / `WrpTime64` for programs that can be recompiled
+- [ ] `DosGetDateTime` / `DosSetDateTime` use `DATETIME` (`USHORT` year) — verify not affected
+- [ ] `FILESTATUS3` timestamps use `FDATE`/`FTIME` (7-bit year from 1980, max 2107) — verify not affected
+- [ ] Redirect CRT time imports (`CLIB.DLL` / `CRTL.DLL` / `EMX.DLL`) to 64-bit-clean host implementations
+- [ ] Optional: `WARPINE.DLL` escape — `WrpGetDateTime64` / `WrpTime64` for recompilable apps
 
 ---
 
-## Phase 8: SOM / Workplace Shell (Long-term)
+## Phase 8 — SOM / Workplace Shell (long-term)
 
-The Workplace Shell (WPS) is built entirely on IBM's System Object Model (SOM). This is a multi-year effort.
+The Workplace Shell (WPS) is built entirely on IBM's System Object Model (SOM).
+Multi-year effort; depends on Phase 7 PM completion.
 
 ### SOM Runtime Core (prerequisite for WPS)
+
 - [ ] Object / class model: SOM class objects, method table dispatch, offset-based and name-lookup dispatch
 - [ ] `SOMClassMgrObject` — global class manager; `SOMClassMgr_somFindClass()`, class registration, DLL-based class loading
 - [ ] IDL metadata: parse or reconstruct method offsets and class hierarchy at runtime
-- [ ] Binary ABI compatibility with IBM SOM 2.1 so WPS extensions (XWorkplace, Object Desktop) load without recompilation
+- [ ] Binary ABI compatibility with IBM SOM 2.1 (for XWorkplace, Object Desktop)
 
 ### WPS Object Hierarchy (requires SOM runtime)
+
 - [ ] `WPObject` — root: `wpInitData`, `wpSaveState`, `wpRestoreState`, `wpQueryTitle`, `wpOpen`, `wpDragOver`, `wpDrop`
 - [ ] `WPFileSystem` — `wpQueryFilename`, `wpQueryAttr`
 - [ ] `WPFolder` — Icon / Detail / Tree via `WC_CONTAINER`; `wpPopulate`
@@ -181,56 +130,46 @@ The Workplace Shell (WPS) is built entirely on IBM's System Object Model (SOM). 
 - [ ] `WPProgram` — launches via `DosExecPgm`; `WPDataFile` — `.TYPE` EA for app association
 - [ ] Persistence via `PrfWriteProfileData` / `PrfQueryProfileData` (OS2.INI / OS2SYS.INI)
 - [ ] Settings notebook: `WinLoadDlg` + `WC_NOTEBOOK` + per-class property pages
-- [ ] Drag and drop protocol: `wpDragOver` / `wpDrop` / `wpCopyObject` / `wpMoveObject`
+- [ ] Drag and drop: `wpDragOver` / `wpDrop` / `wpCopyObject` / `wpMoveObject`
 
 ---
 
-## Phase 9: XE — 64-bit OS/2-lineage Platform (far future / vision)
+## Phase 9 — XE: 64-bit OS/2-lineage Platform (far future / vision)
 
-Goal: define and implement a new 64-bit executable format and API set as a natural evolution of the OS/2 lineage. XE apps run natively on Warpine alongside existing 32-bit LX apps. This transforms Warpine from a pure compatibility layer into a dual-ABI OS personality for x86-64 Linux.
+Define and implement a new 64-bit executable format and API set as a natural evolution
+of the OS/2 lineage. XE apps run natively on Warpine alongside existing 32-bit LX apps.
 
 ### XE Executable Format
 
-A new format following the MZ → LX precedent: MZ stub with `"XE"` signature at `e_lfanew`, fields widened to 64 bits where addresses appear.
-
-- [ ] Define format spec: XE header (signature, cpu_type, object_count, entry_rip: u64, entry_rsp: u64), 64-bit object table (base_address: u64, size: u64, flags: u32), 64-bit fixup records, import/export tables (ordinal → u64 offset)
-- [ ] `src/xe/` parser module mirroring `src/lx/` structure
+- [ ] Define spec: XE header (`"XE"` signature, `cpu_type`, `object_count`, `entry_rip: u64`), 64-bit object table, fixup records, import/export tables
+- [ ] `src/xe/` parser module mirroring `src/lx/`
 - [ ] `detect_format()` in `main.rs` recognises `"XE"` signature
-- [ ] `Loader::load_xe()` / `run_xe()` path in `lx_loader.rs`
+- [ ] `Loader::load_xe()` / `run_xe()` path
 
 ### KVM Long Mode Execution
 
-- [ ] vCPU initialisation in long mode (set `EFER.LME`, enable 4-level paging, 64-bit GDT — segments mostly flat, FS/GS for TIB/PIB)
-- [ ] 64-bit `SharedState` TIB/PIB layout at well-known addresses
-- [ ] INT 3 thunk mechanism unchanged — works identically in long mode; thunk handler reads args from `rdi/rsi/rdx/rcx/r8/r9` (System V AMD64 ABI) instead of the stack
-
-### Calling Convention
-
-**System V AMD64 ABI** (`rdi, rsi, rdx, rcx, r8, r9`, caller-saves `rax/rcx/rdx/rsi/rdi/r8–r11`, return in `rax`). Rationale: universal toolchain support (Rust, Clang, GCC) with no custom patches needed; Warpine's Rust host code already uses this ABI natively.
-
-- [ ] Document `_XE64` calling convention in `doc/`
-- [ ] Update `api_dispatch.rs` to extract arguments from 64-bit registers for XE calls
+- [ ] vCPU initialisation in long mode (`EFER.LME`, 4-level paging, 64-bit GDT with FS/GS for TIB/PIB)
+- [ ] 64-bit `SharedState` TIB/PIB layout
+- [ ] INT 3 thunk mechanism in long mode; args from `rdi/rsi/rdx/rcx/r8/r9` (System V AMD64 ABI)
 
 ### 64-bit API Set (`DOSCALLS64`, `PMWIN64`, …)
-
-Clean-break 64-bit API — pointer-sized arguments, 64-bit handles, `size_t` buffer lengths. New ordinal namespace separate from 32-bit DOSCALLS.
 
 - [ ] Core I/O: `DosWrite64`, `DosRead64`, `DosOpen64`, `DosClose64`, `DosExit64`
 - [ ] Memory: `DosAllocMem64` (full 64-bit address space), `DosFreeMem64`
 - [ ] Threads: `DosCreateThread64`, `DosWaitThread64`
 - [ ] Synchronisation: `DosCreateEventSem64`, `DosCreateMutexSem64`
-- [ ] PM: `WinInitialize64`, `WinCreateStdWindow64`, `WinGetMsg64`, `WinDispatchMsg64` — same message model, 64-bit pointers
-- [ ] `UCONV64.DLL` — Unicode conversion using UTF-8 natively (complements Unicode-internal architecture goal)
+- [ ] PM: `WinInitialize64`, `WinCreateStdWindow64`, `WinGetMsg64`, `WinDispatchMsg64`
+- [ ] `UCONV64.DLL` — Unicode conversion using UTF-8 natively
 
-### Rust/Clang Toolchain Support
+### Toolchain Support
 
-- [ ] `warpine-xe` Rust crate: safe bindings to the 64-bit API set; `#![no_std]` compatible
-- [ ] Custom Rust target spec `x86_64-warpine-xe` (bare-metal, System V ABI, XE binary output via custom linker script)
-- [ ] Sample XE app written in Rust: `samples/xe_hello/` — `DosWrite64` to stdout, `DosExit64`
-- [ ] Sample XE app written in C (Clang `x86_64-unknown-none`): validates the ABI from C
+- [ ] `warpine-xe` Rust crate: safe bindings to the 64-bit API; `#![no_std]` compatible
+- [ ] Custom Rust target `x86_64-warpine-xe` (bare-metal, System V ABI, XE output via linker script)
+- [ ] Sample XE app in Rust: `samples/xe_hello/`
+- [ ] Sample XE app in C (Clang `x86_64-unknown-none`)
 
 ### Dual-ABI Coexistence
 
-- [ ] 32-bit LX apps and 64-bit XE apps run side-by-side under the same Warpine instance
+- [ ] 32-bit LX and 64-bit XE run side-by-side under the same Warpine instance
 - [ ] `DosExecPgm` detects XE format and spawns a 64-bit vCPU thread
-- [ ] Shared `SharedState` managers (memory, handles, semaphores) serve both 32-bit and 64-bit guests
+- [ ] Shared `SharedState` managers serve both 32-bit and 64-bit guests
