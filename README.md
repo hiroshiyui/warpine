@@ -26,6 +26,7 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 - **GDB Remote Stub:** `--gdb <port>` enables GDB RSP over TCP — attach with `gdb`/`gef`/`pwndbg` for software breakpoints, single-step, and full register/memory access.
 - **Crash Dump Facility:** Structured crash reports on fatal VMEXITs — registers, stack, code bytes, and last 256 API calls written to `warpine-crash-<pid>.txt`.
 - **Builtin CMD.EXE Shell:** Native Rust command shell. `cargo run -- CMD.EXE` opens a 640×400 SDL2 VGA text window (same as any CLI app); `WARPINE_HEADLESS=1` falls back to the host terminal. Also intercepts `DosExecPgm("CMD.EXE")` from running OS/2 guests. No Open Watcom or 4OS2 required. Built-in commands: `DIR`, `CD`, `SET`, `ECHO`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `HELP`, `EXIT`. Line editor with history (↑/↓). `.CMD` script interpreter.
+- **Rust Guest Toolchain (Phase C):** Write OS/2 guest applications in Rust with `no_std`. Three standalone crates: `crates/warpine-os2-sys` (raw API bindings), `crates/warpine-os2-rt` (`_start` + panic handler + global allocator via `DosAllocMem`/`DosFreeMem`), `crates/warpine-os2` (ergonomic `file::write_stdout`/`process::exit` wrappers). `samples/rust_hello` demonstrates a full Rust→LX binary with `cargo +nightly build`.
 - **API Compatibility Report:** `warpine --compat` prints a module-grouped report of all implemented APIs with stub annotations.
 
 ## Architecture
@@ -96,6 +97,11 @@ samples/               OS/2 sample applications and build scripts
   uconv_test/          UCONV.DLL Unicode conversion round-trip
   audio_test/          MMPM/2 audio: DosBeep and mciSendString
   pm_controls_test/    PM built-in controls (WC_BUTTON, WC_STATIC, WC_ENTRYFIELD, etc.)
+  rust_hello/          Rust guest binary: "Hello from Rust on Warpine!" (Phase C)
+crates/                Standalone guest crates (NOT part of the host workspace)
+  warpine-os2-sys/     Raw #![no_std] OS/2 API bindings (extern "C" declarations)
+  warpine-os2-rt/      Runtime: _start entry, panic handler, global allocator
+  warpine-os2/         High-level wrappers: file::write_stdout, process::exit
 ```
 
 See [doc/developer_guide.md](doc/developer_guide.md) for detailed internals documentation and [doc/reference_manual.md](doc/reference_manual.md) for the user reference manual.
@@ -155,6 +161,27 @@ cargo run -- CMD.EXE /K "VER"             # Run one command then stay interactiv
 ```bash
 cd samples/4os2 && ./fetch_source.sh && make && cd ../..
 cargo run -- samples/4os2/4os2.exe
+```
+
+### 6. Build and run a Rust guest binary
+```bash
+# Install nightly + rust-src (once):
+rustup toolchain install nightly --component rust-src
+
+# Build and install the ELF-to-LX linker (once):
+cargo build --bin lx_link && cp target/debug/lx_link ~/.cargo/bin/lx-link
+
+# Build the sample Rust guest:
+cd samples/rust_hello
+cargo +nightly build \
+  -Z build-std=core,alloc \
+  -Z build-std-features=compiler-builtins-mem \
+  -Z json-target-spec \
+  --target ../../targets/i686-warpine-os2.json
+cd ../..
+
+# Run it:
+cargo run -- samples/rust_hello/target/i686-warpine-os2/debug/rust_hello.exe
 ```
 
 ### 7. API compatibility report

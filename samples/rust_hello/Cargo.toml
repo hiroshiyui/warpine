@@ -1,0 +1,8 @@
+[package]
+name = "rust_hello"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+warpine-os2 = { path = "../../crates/warpine-os2" }
+warpine-os2-rt = { path = "../../crates/warpine-os2-rt" }
