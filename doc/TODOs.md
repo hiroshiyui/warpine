@@ -32,29 +32,18 @@ DLL binaries, no ROM dumps, and no disassembly of original OS/2 system libraries
 | Structured Exception Handling (SEH) — DosSetExceptionHandler, DosRaiseException, DosUnwindException | Complete | Developer Guide (SEH section) |
 | DosMapCase / NlsMapCase — full SBCS + DBCS + CP866 | Complete | Developer Guide §16 |
 | Developer tooling (crash dump, GDB stub, API ring buffer) | Complete | Developer Guide §19 |
+| Builtin CMD.EXE host Rust shell (core built-ins + .CMD scripts) | Complete | `src/loader/cmd.rs` |
 
 ---
 
 ## High Priority
 
-### Builtin CMD.EXE (host Rust shell)
+### Builtin CMD.EXE — remaining work
 
-Implement a command shell entirely in host Rust, invoked when `DosExecPgm("CMD.EXE")`
-or `DosExecPgm("OS2SHELL.EXE")` is called. Eliminates the Open Watcom / 4OS2 build
-dependency for basic interactive use.
+Core shell implemented in `src/loader/cmd.rs`. Remaining:
 
-**Integration points:** `VioManager::write_tty` (output), `kbd_queue` (input),
-`DriveManager` + VFS (path operations), existing `DosExecPgm` / `DosWaitChild`
-(child process launch), `SharedState` PIB environment block (`SET`).
-
-- [ ] Intercept `CMD.EXE` / `OS2SHELL.EXE` in `dos_exec_pgm()` → spawn `cmd_thread()`
-- [ ] Line editor — read chars from `kbd_queue`; handle backspace, cursor keys, history
-- [ ] Command parser — tokenise input, `%VAR%` expansion, handle quoted strings
-- [ ] Built-in commands: `dir`, `cd`, `set`, `echo`, `cls`, `type`, `copy`, `move`, `del`, `md`, `rd`, `ver`, `exit`
-- [ ] Child process execution — pass remaining tokens to `dos_exec_pgm()` + `dos_wait_child()`
 - [ ] I/O redirection (`>`, `>>`, `<`) via pipe handles through `VioManager`
 - [ ] Pipe (`|`) between two OS/2 child processes — use existing `ipc.rs` pipes
-- [ ] `.cmd` script interpreter — `ECHO`, `SET`, `IF`, `FOR`, `GOTO`, `CALL`, `REM`
 - [ ] Sample: `samples/cmd_test/` — a `.cmd` script that exercises all built-ins
 
 ---
