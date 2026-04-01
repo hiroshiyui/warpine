@@ -129,6 +129,21 @@ fn main() {
 
     let file_path = remaining_args[0];
 
+    // Intercept CMD.EXE / OS2SHELL.EXE directly from the command line.
+    // The remaining_args after the binary name are passed as shell arguments.
+    {
+        let base = std::path::Path::new(file_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(file_path)
+            .to_ascii_uppercase();
+        if base == "CMD.EXE" || base == "OS2SHELL.EXE" {
+            let mut loader = loader::Loader::new();
+            loader.run_builtin_cmd_main(&remaining_args[1..]);
+            return;
+        }
+    }
+
     let format = match detect_format(file_path) {
         Ok(f) => f,
         Err(e) => {

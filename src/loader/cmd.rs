@@ -877,6 +877,20 @@ impl super::Loader {
         }
         NO_ERROR
     }
+
+    /// Entry point called from `main()` when the user runs `warpine CMD.EXE [args...]`
+    /// directly from the host command line (no guest memory involved).
+    pub fn run_builtin_cmd_main(&mut self, host_args: &[&str]) {
+        // Synthesise the args vector that CmdShell::run() expects:
+        // args[0] = program name (ignored by run()), args[1..] = shell args/flags.
+        let mut args: Vec<String> = vec!["CMD.EXE".to_string()];
+        args.extend(host_args.iter().map(|s| s.to_string()));
+        debug!("run_builtin_cmd_main: args={:?}", args);
+
+        let mut shell = CmdShell::new(Arc::clone(&self.shared));
+        let exit_code = shell.run(&args);
+        std::process::exit(exit_code as i32);
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
