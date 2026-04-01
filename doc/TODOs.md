@@ -104,16 +104,9 @@ In OS/2 VIO text mode a DBCS character occupies two consecutive screen cells: ce
 
 **B3 — 16×16 DBCS render path in `Sdl2TextRenderer::render_frame()` — complete:** `render_frame()` inner loop replaced from `for col` to `while col < cols` dispatching on `CellKind`; `DbcsLead` renders a 16-wide `[u8;32]` glyph via `get_glyph_dbcs(ch)` and advances `col += 2`; `DbcsTail` skips; `Sbcs` unchanged 8×16 path; cursor overlay extended to 16 px for DbcsLead, 8 px (right half) for DbcsTail; `get_glyph_dbcs(ch) -> [u8; 32]` stub added (returns blank until B5); 2 new unit tests.
 
-**B4 — DBCS Unicode mapping tables (build.rs extension)**
-- [ ] Vendor `SHIFTJIS.TXT`, `GBK.TXT`, `KSX1001.TXT`, `BIG5.TXT` (Unicode Consortium)
-- [ ] `build.rs` emits `src/generated/dbcs_cp<n>.rs`: sorted `&[(u16, u32)]` (DBCS codeword → Unicode codepoint); runtime lookup via `binary_search_by_key`
-- [ ] `decode_dbcs(lead: u8, trail: u8, cp: u32) -> char` utility function
+**B4 — DBCS Unicode mapping / `decode_dbcs` — complete:** `decode_dbcs(lead, trail, cp) -> char` added to `codepage.rs`; delegates to `cp_decode(&[lead, trail], cp)` which uses `encoding_rs` for all four DBCS codepages (CP932/SJIS, CP936/GBK, CP949/EUC-KR, CP950/Big5). CP936 (GBK) was missing from `cp_to_encoding()` — added `936 => Some(encoding_rs::GBK)`. `VgaTextBuffer::snapshot()` now iterates DbcsLead cells post-annotation and calls `decode_dbcs()` to replace the U+FFFD stored by the single-byte write path with the correct Unicode codepoint. 4 new codepage tests + 1 snapshot fix-up test.
 
-**B5 — 16×16 glyph extraction from Unifont**
-- [ ] `build.rs` extracts Unifont `.hex` entries with 64 hex chars (16×16) as `[u8; 32]`
-- [ ] Emit `src/generated/font_dbcs_wide.rs`: sorted `&[(u32, [u8; 32])]` keyed by Unicode codepoint
-- [ ] `get_glyph_dbcs(cp: char) -> [u8; 32]` — `binary_search_by_key` lookup; falls back to two half-width glyphs if not found
-- [ ] Scope: CJK Unified Ideographs (U+4E00–U+9FFF), Hangul Syllables (U+AC00–U+D7A3), Kana blocks (~20k–30k entries total, ~600 KB–1 MB per generated file)
+**B5 — 16×16 glyph extraction from Unifont — complete:** `build.rs` extended with `generate_unifont_wide()` — parses 64-hex-char Unifont entries (16×16), writes `$OUT_DIR/font_unifont_wide.bin` (sorted packed `(u32_le, [u8;32])` entries; 49,804 entries, ~1.8 MB), and emits `$OUT_DIR/font_unifont_wide.rs` with `get_glyph_dbcs(ch: char) -> [u8; 32]` using O(log N) binary search over the binary blob via `include_bytes!`. `text_renderer.rs` includes the generated code; the B3 placeholder stub is removed. 5 new tests verifying CJK (中 U+4E2D), Hangul (가 U+AC00), Hiragana (あ U+3042) coverage and blank fallback for Private Use Area.
 
 **B6 — `NlsGetDBCSEv` — return real lead-byte table**
 - [ ] Update the current empty-table stub to return the correct `(first, last)` pairs for the active DBCS codepage, terminated by `(0, 0)` per OS/2 spec
