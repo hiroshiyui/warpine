@@ -35,6 +35,61 @@ DLL binaries, no ROM dumps, and no disassembly of original OS/2 system libraries
 
 ---
 
+## High Priority
+
+### Builtin CMD.EXE (host Rust shell)
+
+Implement a command shell entirely in host Rust, invoked when `DosExecPgm("CMD.EXE")`
+or `DosExecPgm("OS2SHELL.EXE")` is called. Eliminates the Open Watcom / 4OS2 build
+dependency for basic interactive use.
+
+**Integration points:** `VioManager::write_tty` (output), `kbd_queue` (input),
+`DriveManager` + VFS (path operations), existing `DosExecPgm` / `DosWaitChild`
+(child process launch), `SharedState` PIB environment block (`SET`).
+
+- [ ] Intercept `CMD.EXE` / `OS2SHELL.EXE` in `dos_exec_pgm()` → spawn `cmd_thread()`
+- [ ] Line editor — read chars from `kbd_queue`; handle backspace, cursor keys, history
+- [ ] Command parser — tokenise input, `%VAR%` expansion, handle quoted strings
+- [ ] Built-in commands: `dir`, `cd`, `set`, `echo`, `cls`, `type`, `copy`, `move`, `del`, `md`, `rd`, `ver`, `exit`
+- [ ] Child process execution — pass remaining tokens to `dos_exec_pgm()` + `dos_wait_child()`
+- [ ] I/O redirection (`>`, `>>`, `<`) via pipe handles through `VioManager`
+- [ ] Pipe (`|`) between two OS/2 child processes — use existing `ipc.rs` pipes
+- [ ] `.cmd` script interpreter — `ECHO`, `SET`, `IF`, `FOR`, `GOTO`, `CALL`, `REM`
+- [ ] Sample: `samples/cmd_test/` — a `.cmd` script that exercises all built-ins
+
+---
+
+### Rust Guest Toolchain (`i686-warpine-os2`)
+
+A complete toolchain for writing Warpine guest programs in Rust, producing valid
+LX binaries without Open Watcom. Three components:
+
+#### A — Custom Rust Target Spec
+- [ ] `targets/i686-warpine-os2.json` — `llvm-target: i686-unknown-none`, 32-bit static, `panic-strategy: abort`, custom linker `lx-link`
+- [ ] Verify `cargo build -Z build-std=core,alloc --target i686-warpine-os2` emits correct i686 ELF objects
+
+#### B — LX Linker (`src/bin/lx_link.rs`)
+This is the core engineering effort. Reads ELF relocatable objects (via the `object`
+crate) and writes a valid LX binary.
+
+- [ ] Read ELF `.o` files — sections, symbols, relocations
+- [ ] Parse ordinal `.def` file mapping symbol names to `MODULE.ordinal` pairs
+- [ ] Lay out LX object table (code + data segments, page-aligned)
+- [ ] Generate LX page map from section content
+- [ ] Convert ELF relocations → LX fixup records (`FIXUP_RECORD_TYPE_INTERNAL` for intra-object refs, `FIXUP_RECORD_TYPE_IMPORT_BY_ORDINAL` for API calls)
+- [ ] Write LX import table (module name list + ordinal entries)
+- [ ] Write LX header and emit the final binary
+- [ ] Integration test: link a minimal `DosWrite` + `DosExit` object → run on Warpine
+
+#### C — `warpine-os2` Crate
+- [ ] `warpine-os2-sys` — raw `extern "system"` declarations for all DOSCALLS ordinals; `extern "system"` for VIOCALLS / KBDCALLS Pascal-convention APIs
+- [ ] `warpine-os2-rt` — `#[panic_handler]` → `DosExit(1,1)`; `#[global_allocator]` backed by `DosAllocMem` / `DosFreeMem`; `_start` entry point
+- [ ] `warpine-os2` — safe ergonomic wrappers (file I/O, memory, threads, semaphores, VIO)
+- [ ] `_Optlink` calling convention shim for PMWIN callbacks (first 3 args in EAX/EDX/ECX)
+- [ ] Sample: `samples/rust_hello/` — `#![no_std]` Rust guest writing to stdout via `DosWrite`, runs on Warpine
+
+---
+
 ## Architecture Backlog
 
 ### Ordinal Table Canonical Build Tool
