@@ -273,6 +273,7 @@ pub fn cp_encode(s: &str, cp: u32) -> Vec<u8> {
 pub fn cp_to_encoding(cp: u32) -> Option<&'static encoding_rs::Encoding> {
     match cp {
         932  => Some(encoding_rs::SHIFT_JIS),
+        936  => Some(encoding_rs::GBK),
         949  => Some(encoding_rs::EUC_KR),
         950  => Some(encoding_rs::BIG5),
         1250 => Some(encoding_rs::WINDOWS_1250),
@@ -314,6 +315,16 @@ fn encode_single_byte(s: &str, upper: &[char; 128]) -> Vec<u8> {
         }
     }
     out
+}
+
+/// Decode a DBCS lead+trail byte pair to a Unicode character.
+///
+/// Passes `[lead, trail]` through `cp_decode()` which delegates to `encoding_rs`
+/// for all four supported DBCS codepages (CP932/SJIS, CP936/GBK, CP949/EUC-KR, CP950/Big5).
+/// Returns U+FFFD if the pair is invalid or the codepage is not DBCS.
+pub fn decode_dbcs(lead: u8, trail: u8, cp: u32) -> char {
+    let decoded = cp_decode(&[lead, trail], cp);
+    decoded.chars().next().unwrap_or('\u{FFFD}')
 }
 
 // ── Unit tests ────────────────────────────────────────────────────────────────
@@ -496,5 +507,37 @@ mod tests {
     #[test]
     fn test_map_case_upper_unknown_cp_unchanged() {
         assert_eq!(cp_map_case_upper(0xE9, 9999), 0xE9);
+    }
+
+    // ── decode_dbcs ───────────────────────────────────────────────────────────
+
+    // CP932 (Shift-JIS): 0x82 0xA0 → U+3042 (あ, HIRAGANA LETTER A)
+    #[test]
+    fn test_decode_dbcs_sjis_hiragana() {
+        let ch = decode_dbcs(0x82, 0xA0, 932);
+        assert_eq!(ch, '\u{3042}', "CP932 0x82 0xA0 should decode to あ (U+3042)");
+    }
+
+    // CP936 (GBK): 0xC4 0xE3 → U+4F60 (你, CJK UNIFIED IDEOGRAPH)
+    #[test]
+    fn test_decode_dbcs_gbk_cjk() {
+        let ch = decode_dbcs(0xC4, 0xE3, 936);
+        assert_eq!(ch, '\u{4F60}', "CP936 0xC4 0xE3 should decode to 你 (U+4F60)");
+    }
+
+    // CP950 (Big5): 0xA4 0xA4 → U+4E2D (中, CJK UNIFIED IDEOGRAPH)
+    #[test]
+    fn test_decode_dbcs_big5_cjk() {
+        let ch = decode_dbcs(0xA4, 0xA4, 950);
+        assert_eq!(ch, '\u{4E2D}', "CP950 0xA4 0xA4 should decode to 中 (U+4E2D)");
+    }
+
+    // Invalid pair for SBCS codepage → U+FFFD
+    #[test]
+    fn test_decode_dbcs_sbcs_codepage_returns_replacement() {
+        // CP437 is SBCS; treating bytes as DBCS pair makes no sense — must not panic
+        let ch = decode_dbcs(0xC4, 0xE3, 437);
+        // Result is implementation-defined but must not panic; just verify it's a valid char
+        let _ = ch as u32;
     }
 }

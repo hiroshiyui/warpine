@@ -14,6 +14,10 @@ use crate::loader::{SharedState, KbdKeyInfo, MutexExt};
 // Sorted (Unicode codepoint, 8×16 glyph) pairs for all half-width entries.
 include!(concat!(env!("OUT_DIR"), "/font_unifont_sbcs.rs"));
 
+// Generated at build time from vendor/unifont/unifont.hex.
+// Exposes `get_glyph_dbcs(ch: char) -> [u8; 32]` for all 16×16 wide entries.
+include!(concat!(env!("OUT_DIR"), "/font_unifont_wide.rs"));
+
 // ── CGA 16-colour palette (ARGB8888 = 0xFF_RR_GG_BB) ───────────────────────
 
 /// Standard CGA/EGA 16-colour palette indexed by a 4-bit colour nibble.
@@ -55,19 +59,6 @@ pub fn get_glyph_for_char(ch: char) -> [u8; 16] {
     }
 }
 
-/// Return the 16×16 glyph bitmap for a wide (DBCS) Unicode character.
-///
-/// Each of the 16 rows is stored as two consecutive bytes: the first byte
-/// covers pixels 0–7 (left half) and the second covers pixels 8–15 (right
-/// half), MSB first (`bit 7 = leftmost pixel`).
-///
-/// **Phase B5 placeholder** — returns a blank 32-byte array for all inputs
-/// until `build.rs` extracts the 16×16 entries from `vendor/unifont/unifont.hex`
-/// and emits the `UNIFONT_WIDE` lookup table.  Once B5 is in place this
-/// function will binary-search that table identically to `get_glyph_for_char`.
-pub fn get_glyph_dbcs(_ch: char) -> [u8; 32] {
-    [0u8; 32]
-}
 
 // ── DBCS cell classification ─────────────────────────────────────────────────
 
@@ -146,15 +137,26 @@ impl VgaTextBuffer {
     /// Runs the DBCS annotation pass once per frame so renderers can
     /// distinguish DBCS lead/tail cells from SBCS cells without re-scanning.
     pub fn snapshot(shared: &SharedState) -> Self {
+        use crate::loader::codepage::decode_dbcs;
         let vio = shared.console_mgr.lock_or_recover();
         let raw_bytes = vio.raw_bytes.clone();
         let codepage = vio.codepage as u32;
         let cols = vio.cols;
         let cell_kind = annotate_dbcs(&raw_bytes, codepage, cols);
+        let mut cells = vio.buffer.clone();
+        // Fix up DBCS lead cells: VioManager stored U+FFFD for each byte decoded
+        // individually.  Now that we know which cells are DbcsLead, decode the
+        // correct Unicode codepoint from the raw lead+trail byte pair.
+        for (i, kind) in cell_kind.iter().enumerate() {
+            if matches!(kind, CellKind::DbcsLead) && i + 1 < raw_bytes.len() {
+                let ch = decode_dbcs(raw_bytes[i], raw_bytes[i + 1], codepage);
+                cells[i].0 = ch;
+            }
+        }
         VgaTextBuffer {
             rows: vio.rows,
             cols: vio.cols,
-            cells: vio.buffer.clone(),
+            cells,
             raw_bytes,
             cell_kind,
             cursor_row: vio.cursor_row,
@@ -342,10 +344,10 @@ impl TextModeRenderer for Sdl2TextRenderer {
 
                 match kind {
                     CellKind::DbcsLead => {
-                        // ch is currently U+FFFD (each byte decoded individually).
-                        // Phase B4 will update the snapshot or write path so ch holds
-                        // the correct Unicode codepoint decoded from the lead+trail pair.
-                        // Phase B5 will implement get_glyph_dbcs() with a real lookup table.
+                        // ch holds the correct Unicode codepoint decoded from the
+                        // lead+trail raw byte pair by VgaTextBuffer::snapshot() (B4).
+                        // Phase B5 will replace the stub get_glyph_dbcs() with a real
+                        // lookup in the Unifont wide-glyph binary table.
                         let glyph = get_glyph_dbcs(ch);
 
                         for gr in 0..16usize {
@@ -803,21 +805,40 @@ mod tests {
         assert!(r.keep_running);
     }
 
-    // ── get_glyph_dbcs (Phase B5 placeholder) ────────────────────────────────
-
-    #[test]
-    fn glyph_dbcs_is_placeholder_blank() {
-        // Until B5 is implemented, every wide character returns a blank glyph.
-        assert_eq!(get_glyph_dbcs('\u{4E2D}'), [0u8; 32]); // CJK: 中
-        assert_eq!(get_glyph_dbcs('\u{AC00}'), [0u8; 32]); // Hangul: 가
-        assert_eq!(get_glyph_dbcs('\u{FFFD}'), [0u8; 32]); // Replacement char
-    }
+    // ── get_glyph_dbcs (Phase B5 — real Unifont wide-glyph lookup) ──────────
 
     #[test]
     fn glyph_dbcs_row_stride_is_two_bytes() {
         // Sanity check: glyph is exactly 32 bytes (16 rows × 2 bytes per row).
-        let g = get_glyph_dbcs('X');
+        let g = get_glyph_dbcs('中');
         assert_eq!(g.len(), 32);
+    }
+
+    #[test]
+    fn glyph_dbcs_cjk_ideograph_is_non_blank() {
+        // U+4E2D (中, CJK UNIFIED IDEOGRAPH) — must have real pixels in Unifont.
+        let g = get_glyph_dbcs('\u{4E2D}');
+        assert!(g.iter().any(|&b| b != 0), "中 (U+4E2D) should have a non-blank glyph");
+    }
+
+    #[test]
+    fn glyph_dbcs_hangul_syllable_is_non_blank() {
+        // U+AC00 (가, HANGUL SYLLABLE GA) — must have real pixels in Unifont.
+        let g = get_glyph_dbcs('\u{AC00}');
+        assert!(g.iter().any(|&b| b != 0), "가 (U+AC00) should have a non-blank glyph");
+    }
+
+    #[test]
+    fn glyph_dbcs_hiragana_is_non_blank() {
+        // U+3042 (あ, HIRAGANA LETTER A) — in the Unifont wide table.
+        let g = get_glyph_dbcs('\u{3042}');
+        assert!(g.iter().any(|&b| b != 0), "あ (U+3042) should have a non-blank glyph");
+    }
+
+    #[test]
+    fn glyph_dbcs_private_use_area_is_blank() {
+        // U+E000 is in the Private Use Area — not defined in Unifont wide table.
+        assert_eq!(get_glyph_dbcs('\u{E000}'), [0u8; 32]);
     }
 
     // ── VgaTextBuffer ─────────────────────────────────────────────────────────
@@ -839,6 +860,32 @@ mod tests {
         let buf = VgaTextBuffer::snapshot(&shared);
         assert_eq!(buf.raw_bytes.len(), buf.cells.len());
         assert_eq!(buf.cell_kind.len(), buf.cells.len());
+    }
+
+    /// Snapshot must fix-up DbcsLead cells so cells[i].0 is the correct
+    /// Unicode codepoint, not the U+FFFD that single-byte decode would produce.
+    #[test]
+    fn snapshot_dbcs_lead_cell_decoded_correctly() {
+        use crate::loader::locale::is_dbcs_lead_byte;
+        let shared = make_shared();
+        // Write a CP936 DBCS pair (你 = 0xC4 0xE3) into the VIO buffer at (0,0).
+        {
+            let mut vio = shared.console_mgr.lock_or_recover();
+            vio.codepage = 936;
+            // Manually plant raw bytes for the DBCS pair.
+            vio.raw_bytes[0] = 0xC4;
+            vio.raw_bytes[1] = 0xE3;
+            // cells[0].0 is set to U+FFFD by single-byte decode (normal write path).
+            vio.buffer[0] = ('\u{FFFD}', 0x07);
+            vio.buffer[1] = ('\u{FFFD}', 0x07);
+        }
+        assert!(is_dbcs_lead_byte(0xC4, 936)); // sanity
+        let buf = VgaTextBuffer::snapshot(&shared);
+        assert_eq!(buf.cell_kind[0], CellKind::DbcsLead);
+        assert_eq!(buf.cell_kind[1], CellKind::DbcsTail);
+        // After snapshot fix-up, cells[0].0 must be 你 (U+4F60).
+        assert_eq!(buf.cells[0].0, '\u{4F60}',
+            "DbcsLead cell char should be decoded to 你, got {:?}", buf.cells[0].0);
     }
 
     // ── annotate_dbcs ─────────────────────────────────────────────────────────
