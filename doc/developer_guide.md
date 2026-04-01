@@ -1374,8 +1374,9 @@ Warpine provides a complete toolchain for writing OS/2 guest programs in Rust wi
 - `check` — validate def file (no duplicates, sorted, no overflow) and drift-detect against `api_trace.rs` by text-scanning `ordinal_to_name()` match arms
 - `gen-trace` — emit replacement Rust source for `ordinal_to_name()` + `module_for_ordinal()` (pipe to a file then paste into `api_trace.rs`)
 - `gen-def` — re-emit a canonically sorted `os2api.def`
+- `validate-doc` — cross-check `os2api.def` against `doc/os2_ordinals.md` (Open Watcom `lib386/os2/os2386.lib` snapshot); reports confirmed ordinals, 16-bit alias pairs auto-detected by uppercase+strip-"16" normalisation, entries only in def (e.g. `DosQueryCtryInfo`, `VioCheckCharType`), and name mismatches to investigate
 
-Run `cargo run --bin gen_api -- check` to verify consistency after any ordinal change.
+Run `cargo run --bin gen_api -- check` to verify consistency after any ordinal change. Run `cargo run --bin gen_api -- validate-doc` to cross-reference against the OS/2 ordinal reference.
 
 **`src/bin/lx_link.rs`** — ELF-to-LX linker. Reads ELF `.o`/`.rlib`/`.a` objects produced by rustc, merges `.text`/`.data` sections, resolves OS/2 API imports via `targets/os2api.def` (embedded via `include_str!` as compile-time fallback), and emits a valid MZ+LX executable. Object layout: code at `0x00010000` (flags `READABLE|EXECUTABLE|BIG`), data at `0x00060000`, stack at `0x00070000`.
 
