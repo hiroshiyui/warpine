@@ -204,6 +204,47 @@ impl Os2Locale {
     }
 }
 
+/// Return the DBCS lead-byte ranges for a given OS/2 codepage.
+///
+/// A DBCS lead byte introduces a two-byte character sequence.  Any byte whose
+/// value falls within one of the returned `(first, last)` inclusive ranges is
+/// a lead byte for that codepage; all other bytes are single-byte characters.
+///
+/// Returns an empty slice for SBCS codepages (e.g. CP437, CP850, CP1252).
+///
+/// Source: IBM National Language Support Reference Manual, Vol. 2, lead-byte
+/// tables for each supported DBCS codepage.
+///
+/// ```
+/// # use warpine::loader::locale::dbcs_lead_ranges;
+/// assert_eq!(dbcs_lead_ranges(437), &[]);                        // SBCS
+/// assert_eq!(dbcs_lead_ranges(932)[0], (0x81, 0x9F));            // Shift-JIS low
+/// assert_eq!(dbcs_lead_ranges(936), &[(0x81_u8, 0xFE_u8)]);      // GBK
+/// ```
+pub fn dbcs_lead_ranges(cp: u32) -> &'static [(u8, u8)] {
+    match cp {
+        // CP932 — Shift-JIS (Japanese): two disjoint lead-byte ranges.
+        932 => &[(0x81, 0x9F), (0xE0, 0xFC)],
+        // CP936 — GBK / GB2312 (Simplified Chinese)
+        936 => &[(0x81, 0xFE)],
+        // CP949 — EUC-KR / UHC (Korean)
+        949 => &[(0x81, 0xFE)],
+        // CP950 — Big5 (Traditional Chinese)
+        950 => &[(0x81, 0xFE)],
+        // All SBCS codepages (CP437, CP850, CP852, CP1250–CP1258, etc.)
+        _ => &[],
+    }
+}
+
+/// Returns `true` if `byte` is a DBCS lead byte for the given codepage.
+///
+/// This is a convenience wrapper around [`dbcs_lead_ranges`] used by VIO
+/// routines that need to classify individual bytes.
+#[inline]
+pub fn is_dbcs_lead_byte(byte: u8, cp: u32) -> bool {
+    dbcs_lead_ranges(cp).iter().any(|&(lo, hi)| byte >= lo && byte <= hi)
+}
+
 #[derive(Debug, Default)]
 struct HostLconv {
     decimal_sep: u8,
@@ -211,4 +252,88 @@ struct HostLconv {
     currency_symbol: String,
     currency_fmt: u8,
     decimal_places: u8,
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── dbcs_lead_ranges ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_dbcs_lead_ranges_sbcs_empty() {
+        // All SBCS codepages must return an empty slice.
+        for cp in [437, 850, 852, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258, 0] {
+            assert_eq!(dbcs_lead_ranges(cp), &[],
+                "cp {} should have no lead-byte ranges", cp);
+        }
+    }
+
+    #[test]
+    fn test_dbcs_lead_ranges_cp932_shift_jis() {
+        let ranges = dbcs_lead_ranges(932);
+        assert_eq!(ranges.len(), 2, "CP932 must have exactly two ranges");
+        assert_eq!(ranges[0], (0x81, 0x9F));
+        assert_eq!(ranges[1], (0xE0, 0xFC));
+    }
+
+    #[test]
+    fn test_dbcs_lead_ranges_cp936_gbk() {
+        assert_eq!(dbcs_lead_ranges(936), &[(0x81, 0xFE)]);
+    }
+
+    #[test]
+    fn test_dbcs_lead_ranges_cp949_euc_kr() {
+        assert_eq!(dbcs_lead_ranges(949), &[(0x81, 0xFE)]);
+    }
+
+    #[test]
+    fn test_dbcs_lead_ranges_cp950_big5() {
+        assert_eq!(dbcs_lead_ranges(950), &[(0x81, 0xFE)]);
+    }
+
+    // ── is_dbcs_lead_byte ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_is_dbcs_lead_byte_cp932_in_range() {
+        // Low range: 0x81–0x9F
+        assert!(is_dbcs_lead_byte(0x81, 932));
+        assert!(is_dbcs_lead_byte(0x9F, 932));
+        assert!(is_dbcs_lead_byte(0x90, 932)); // mid
+        // High range: 0xE0–0xFC
+        assert!(is_dbcs_lead_byte(0xE0, 932));
+        assert!(is_dbcs_lead_byte(0xFC, 932));
+        assert!(is_dbcs_lead_byte(0xF0, 932)); // mid
+    }
+
+    #[test]
+    fn test_is_dbcs_lead_byte_cp932_outside_range() {
+        assert!(!is_dbcs_lead_byte(0x7F, 932)); // below first range
+        assert!(!is_dbcs_lead_byte(0x80, 932)); // just below 0x81
+        assert!(!is_dbcs_lead_byte(0xA0, 932)); // gap between ranges (0xA0–0xDF)
+        assert!(!is_dbcs_lead_byte(0xDF, 932)); // just below 0xE0
+        assert!(!is_dbcs_lead_byte(0xFD, 932)); // above 0xFC
+        assert!(!is_dbcs_lead_byte(0xFF, 932));
+        assert!(!is_dbcs_lead_byte(b'A', 932)); // ASCII
+    }
+
+    #[test]
+    fn test_is_dbcs_lead_byte_cp936_boundaries() {
+        assert!(!is_dbcs_lead_byte(0x80, 936)); // just below 0x81
+        assert!(is_dbcs_lead_byte(0x81, 936));
+        assert!(is_dbcs_lead_byte(0xFE, 936));
+        assert!(!is_dbcs_lead_byte(0xFF, 936)); // just above 0xFE
+    }
+
+    #[test]
+    fn test_is_dbcs_lead_byte_sbcs_always_false() {
+        for cp in [437, 850, 1252] {
+            for byte in [0x00u8, 0x41, 0x81, 0xA0, 0xFE, 0xFF] {
+                assert!(!is_dbcs_lead_byte(byte, cp),
+                    "cp {} byte 0x{:02X} must not be a DBCS lead", cp, byte);
+            }
+        }
+    }
 }

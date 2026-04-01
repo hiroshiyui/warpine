@@ -98,11 +98,7 @@ DBCS (Double-Byte Character Set) support for CP932 (Shift-JIS / Japanese), CP936
 **OS/2 DBCS cell model** (important context):
 In OS/2 VIO text mode a DBCS character occupies two consecutive screen cells: cell N holds the lead byte + attribute, cell N+1 holds the trail byte + same attribute. `VioCheckCharType` distinguishes SBCS=0, DBCS-lead=2, DBCS-trail=3. `VioManager::buffer: Vec<(char, u8)>` now stores decoded Unicode codepoints — DBCS lead+trail pairs will be folded into a single `char` per logical character during the Phase B annotation pass.
 
-**B1 — Lead-byte range tables**
-- [ ] `dbcs_lead_ranges(cp: u32) -> &'static [(u8, u8)]` in `locale.rs`:
-  - CP932: `(0x81, 0x9F), (0xE0, 0xFC)`
-  - CP936 / 949 / 950: `(0x81, 0xFE)`
-  - All others: `&[]` (SBCS)
+**B1 — Lead-byte range tables — complete:** `dbcs_lead_ranges(cp: u32) -> &'static [(u8, u8)]` and `is_dbcs_lead_byte(byte, cp) -> bool` added to `locale.rs`. CP932 returns two ranges `(0x81,0x9F),(0xE0,0xFC)`; CP936/949/950 return `(0x81,0xFE)`; all SBCS codepages return `&[]`. 9 unit tests.
 
 **B2 — `CellKind` annotation in `VgaTextBuffer`**
 - [ ] Add `pub enum CellKind { Sbcs, DbcsLead, DbcsTail }` and `pub cell_kind: Vec<CellKind>` (parallel to `cells[]`)
