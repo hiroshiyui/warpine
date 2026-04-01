@@ -467,6 +467,7 @@ impl TextModeRenderer for Sdl2TextRenderer {
         use sdl2::event::Event;
         use sdl2::keyboard::{Keycode, Mod as KeyMod};
         use crate::gui::sdl2_renderer::sdl_scancode_to_os2;
+        use crate::loader::codepage::cp_encode;
 
         // Use wait_event_timeout so the thread sleeps inside SDL2 when idle
         // instead of busy-polling with poll_iter().  The 8 ms timeout gives
@@ -516,6 +517,31 @@ impl TextModeRenderer for Sdl2TextRenderer {
                     }
                     shared.kbd_cond.notify_one();
                 }
+
+                // TextInput carries UTF-8 text composed by the IME (e.g. CJK characters).
+                // For ASCII (text == single byte < 0x80) the KeyDown handler already
+                // enqueued the character, so skip it here to avoid double-delivery.
+                // For non-ASCII (DBCS or multi-byte sequences), re-encode to the active
+                // codepage and push each resulting byte as a separate KbdKeyInfo.
+                Event::TextInput { text, .. } => {
+                    // Skip pure-ASCII single chars — KeyDown already handled them.
+                    if text.len() == 1 && text.as_bytes()[0] < 0x80 {
+                        continue;
+                    }
+                    let cp = shared.active_codepage.load(Ordering::Relaxed);
+                    let encoded = cp_encode(&text, cp);
+                    {
+                        let mut q = shared.kbd_queue.lock().unwrap();
+                        for byte in encoded {
+                            // Scan code 0 — IME-composed characters have no OS/2 scan code.
+                            q.push_back(KbdKeyInfo { ch: byte, scan: 0, state: 0 });
+                        }
+                    }
+                    if !text.is_empty() {
+                        shared.kbd_cond.notify_one();
+                    }
+                }
+
                 _ => {}
             }
         }
@@ -1010,5 +1036,36 @@ mod tests {
         assert_eq!(q.pop_front().unwrap().ch, b'H');
         assert_eq!(q.pop_front().unwrap().ch, b'i');
         assert!(q.pop_front().is_none());
+    }
+
+    // ── B8 — DBCS TextInput re-encoding ──────────────────────────────────────
+
+    /// Verify that the re-encoding logic used by the TextInput event handler
+    /// produces the correct DBCS byte sequence.  (The handler itself calls
+    /// `cp_encode(text, cp)` and pushes each byte — this test validates that.)
+    #[test]
+    fn dbcs_text_input_cp936_encodes_to_gbk() {
+        use crate::loader::codepage::cp_encode;
+        // 你 in GBK is 0xC4 0xE3
+        let bytes = cp_encode("你", 936);
+        assert_eq!(bytes, vec![0xC4, 0xE3],
+            "cp_encode should encode 你 to GBK 0xC4 0xE3");
+    }
+
+    #[test]
+    fn dbcs_text_input_cp932_encodes_to_sjis() {
+        use crate::loader::codepage::cp_encode;
+        // あ in Shift-JIS is 0x82 0xA0
+        let bytes = cp_encode("あ", 932);
+        assert_eq!(bytes, vec![0x82, 0xA0],
+            "cp_encode should encode あ to SJIS 0x82 0xA0");
+    }
+
+    #[test]
+    fn dbcs_text_input_ascii_passthrough_unchanged() {
+        use crate::loader::codepage::cp_encode;
+        // ASCII chars must encode to themselves in any SBCS codepage.
+        let bytes = cp_encode("A", 437);
+        assert_eq!(bytes, vec![b'A']);
     }
 }

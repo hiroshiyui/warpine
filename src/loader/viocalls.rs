@@ -55,6 +55,8 @@ impl super::Loader {
             22 => self.vio_set_mode(read_stack(8), read_stack(4)),
             31 => { debug!("  VioGetBuf (stub)"); NO_ERROR },
             43 => { debug!("  VioShowBuf (stub)"); NO_ERROR },
+            // VioCheckCharType(pType, usRow, usCol, hvio) → ESP+4=hvio, +8=usCol, +12=usRow, +16=pType
+            39 => self.vio_check_char_type(read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
             _ => { warn!("Warning: Unknown VIOCALLS Ordinal {}", ordinal); NO_ERROR }
         };
         super::ApiResult::Normal(res)
@@ -292,6 +294,36 @@ impl super::Loader {
         let console = self.shared.console_mgr.lock_or_recover();
         if p_flag != 0 {
             self.guest_write::<u32>(p_flag, if console.ansi_mode { 1 } else { 0 });
+        }
+        NO_ERROR
+    }
+
+    /// VioCheckCharType (ordinal 39): classify a screen cell as SBCS, DBCS lead, or DBCS trail.
+    ///
+    /// Scans from column 0 of the queried row left-to-right using `annotate_dbcs()` so
+    /// mid-row queries correctly reflect the DBCS pairing state.  Writes:
+    ///   0 → SBCS cell
+    ///   2 → DBCS lead cell
+    ///   3 → DBCS trail cell
+    fn vio_check_char_type(&self, p_type: u32, row: u32, col: u32, _hvio: u32) -> u32 {
+        use crate::gui::text_renderer::{annotate_dbcs, CellKind};
+        debug!("  VioCheckCharType(p_type=0x{:08X}, row={}, col={})", p_type, row, col);
+        let console = self.shared.console_mgr.lock_or_recover();
+        let rows = console.rows as u32;
+        let cols = console.cols as u32;
+        if row >= rows { return ERROR_VIO_ROW; }
+        if col >= cols { return ERROR_VIO_COL; }
+        let cp = console.codepage as u32;
+        let row_start = (row * cols) as usize;
+        let row_bytes = &console.raw_bytes[row_start..row_start + cols as usize];
+        let kinds = annotate_dbcs(row_bytes, cp, cols as u16);
+        if p_type != 0 {
+            let type_val: u16 = match kinds[col as usize] {
+                CellKind::Sbcs     => 0,
+                CellKind::DbcsLead => 2,
+                CellKind::DbcsTail => 3,
+            };
+            let _ = self.guest_write::<u16>(p_type, type_val);
         }
         NO_ERROR
     }
@@ -639,5 +671,45 @@ mod tests {
         write_stack(&loader, esp, &[0, p_flag]);
         loader.handle_viocalls(&mut vcpu, 0, 3);
         assert_eq!(loader.guest_read::<u32>(p_flag).unwrap(), 0);
+    }
+
+    // ── VioCheckCharType ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_vio_check_char_type_sbcs_returns_zero() {
+        let loader = Loader::new_mock();
+        // Default codepage is CP437 (SBCS) — every cell must be type 0.
+        let p_type: u32 = 0x2000;
+        assert_eq!(loader.vio_check_char_type(p_type, 0, 0, 0), 0);
+        assert_eq!(loader.guest_read::<u16>(p_type), Some(0));
+    }
+
+    #[test]
+    fn test_vio_check_char_type_dbcs_lead_and_trail() {
+        use std::sync::atomic::Ordering;
+        let loader = Loader::new_mock();
+        loader.shared.active_codepage.store(936, Ordering::Relaxed);
+        // Plant a CP936 DBCS pair (0xC4 0xE3) at row 0, col 0.
+        {
+            let mut console = loader.shared.console_mgr.lock_or_recover();
+            console.codepage = 936;
+            console.raw_bytes[0] = 0xC4;
+            console.raw_bytes[1] = 0xE3;
+        }
+        let p_type: u32 = 0x2000;
+        // Col 0 = DBCS lead → type 2
+        assert_eq!(loader.vio_check_char_type(p_type, 0, 0, 0), 0);
+        assert_eq!(loader.guest_read::<u16>(p_type), Some(2));
+        // Col 1 = DBCS tail → type 3
+        assert_eq!(loader.vio_check_char_type(p_type, 0, 1, 0), 0);
+        assert_eq!(loader.guest_read::<u16>(p_type), Some(3));
+    }
+
+    #[test]
+    fn test_vio_check_char_type_oob_row_returns_error() {
+        let loader = Loader::new_mock();
+        let rows = loader.shared.console_mgr.lock_or_recover().rows;
+        // row >= rows is out of bounds.
+        assert_ne!(loader.vio_check_char_type(0x2000, rows as u32, 0, 0), 0);
     }
 }

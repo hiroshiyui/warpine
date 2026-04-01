@@ -318,6 +318,9 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_sys_state(a[0],a[1],a[2],a[3],a[4])) },
     ApiEntry { ordinal: 372, module: "DOSCALLS", name: "DosEnumAttribute", argc: 7,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_enum_attribute(a[0],a[1],a[2],a[3],a[4],a[5],a[6])) },
+    // a[0]=cb, a[1]=pCountryCode, a[2]=pBuf
+    ApiEntry { ordinal: 373, module: "DOSCALLS", name: "DosQueryDBCSEnv",  argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_dbcs_env(a[0],a[1],a[2])) },
     ApiEntry { ordinal: 378, module: "DOSCALLS", name: "DosSetSignalExceptionFocus", argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_signal_exception_focus(a[0])) },
     ApiEntry { ordinal: 380, module: "DOSCALLS", name: "DosEnterMustComplete", argc: 1,
@@ -394,11 +397,8 @@ static REGISTRY: &[ApiEntry] = &[
                } },
     ApiEntry { ordinal: NLS_BASE + 8, module: "NLS", name: "NlsGetDBCSEv",     argc: 3,
                handler: |l,_v,_i,a| {
-                   // Returns empty DBCS lead-byte table (Western locale only)
-                   if a[2] != 0 && a[0] >= 2 {
-                       let _ = l.guest_write::<u16>(a[2], 0);
-                   }
-                   ApiResult::Normal(0)
+                   // a[0]=cb, a[1]=pCountryCode, a[2]=pBuf
+                   ApiResult::Normal(l.dos_query_dbcs_env(a[0], a[1], a[2]))
                } },
 
     // ── MSG — OS/2 Message DLL (base MSG_BASE = 8192) ────────────────────
@@ -489,9 +489,10 @@ pub fn compat_report() -> String {
     // Sub-dispatcher summaries
     out.push_str("Sub-dispatchers (separate from registry)\n");
     out.push_str("----------------------------------------\n");
-    out.push_str("  VIOCALLS   15 implemented, 5 stub  (VioWrtTTY, VioGetMode, VioSetCurPos, \
+    out.push_str("  VIOCALLS   16 implemented, 5 stub  (VioWrtTTY, VioGetMode, VioSetCurPos, \
                   VioGetCurPos, VioScrollUp, VioScrollDn, VioWrtCharStrAtt, VioWrtNCell, \
                   VioWrtNAttr, VioReadCellStr, VioSetCurType, VioGetCurType, VioGetConfig, \
+                  VioCheckCharType, \
                   VioSetMode[stub], VioGetBuf[stub], VioShowBuf[stub], VioSetState[stub], \
                   VioSetCp[stub])\n");
     out.push_str("  KBDCALLS    3 implemented  (KbdCharIn, KbdStringIn, KbdGetStatus)\n");

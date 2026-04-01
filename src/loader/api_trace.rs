@@ -119,6 +119,7 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         357 => "DosUnwindException",
         368 => "DosQuerySysState",
         372 => "DosEnumAttribute",
+        373 => "DosQueryDBCSEnv",
         378 => "DosSetSignalExceptionFocus",
         380 => "DosEnterMustComplete",
         381 => "DosExitMustComplete",
@@ -308,6 +309,7 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
         357 => &["pHandler", "pTargetIP", "pexcept"],
         368 => &["EntityList", "EntityLevel", "PID", "TID", "pDataBuf", "cbBuf"],
         372 => &["ulRefType", "pvFile", "ulEntry", "pvBuf", "cbBuf", "pcbActual", "ulInfoLevel"],
+        373 => &["cb", "pcc", "pBuf"],
         378 => &["fEnable", "pulTimes"],
         380 => &["pulNesting"],
         381 => &["pulNesting"],
@@ -603,7 +605,7 @@ mod tests {
             368, 378, 380, 381, 300, 301, 302, 305, 306, 291, 289, 397, 318,
             322, 319, 321, 317, 258, 261, 279, 267, 219, 276, 277, 284, 231,
             325, 332, 230, 348, 382, 272, 260, 254, 210, 225, 292, 218, 285,
-            357, 372, 428, 639, 415, 425, 426, 241, 243, 250, 221, 224, 110,
+            357, 372, 373, 428, 639, 415, 425, 426, 241, 243, 250, 221, 224, 110,
             8, 75, 84,
         ];
         for &ord in dispatched {

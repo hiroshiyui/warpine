@@ -154,6 +154,10 @@ pub const ERROR_ENVVAR_NOT_FOUND: u32 = 204;
 pub const ERROR_INIT_ROUTINE_FAILED: u32 = 199;
 pub const ERROR_INVALID_CODE_PAGE: u32 = 470;
 
+// ── VIO error codes ───────────────────────────────────────────────────────────
+pub const ERROR_VIO_ROW: u32 = 426; // Row parameter out of range
+pub const ERROR_VIO_COL: u32 = 427; // Column parameter out of range
+
 // ── WC_* built-in window class atoms ─────────────────────────────────────────
 // These are the numeric atom values passed as the pszClass pointer to
 // WinCreateWindow when creating built-in PM controls (OS/2 pmwin.h).

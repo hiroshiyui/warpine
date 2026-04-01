@@ -1428,6 +1428,41 @@ impl super::Loader {
         0
     }
 
+    /// Write the DBCS lead-byte vector to a guest buffer.
+    ///
+    /// The vector is a series of `(first, last)` byte pairs representing the
+    /// lead-byte ranges for the active codepage, terminated by `(0x00, 0x00)`.
+    /// For SBCS codepages the vector contains only the terminator.
+    ///
+    /// Used by both `DosQueryDBCSEnv` (DOSCALLS ord 373) and `NlsGetDBCSEv`
+    /// (NLS ord 8).
+    ///
+    /// Returns `NO_ERROR` on success or `ERROR_BUFFER_OVERFLOW` (113) if the
+    /// caller's buffer is too small to hold all ranges plus the terminator.
+    pub fn dos_query_dbcs_env(&self, cb: u32, _pcc: u32, pbuf: u32) -> u32 {
+        use crate::loader::locale::dbcs_lead_ranges;
+        use std::sync::atomic::Ordering;
+        if pbuf == 0 {
+            return 0;
+        }
+        let cp = self.shared.active_codepage.load(Ordering::Relaxed);
+        let ranges = dbcs_lead_ranges(cp);
+        // Each range needs 2 bytes; terminator is an additional 2 bytes.
+        let needed = (ranges.len() as u32 + 1) * 2;
+        if cb < needed {
+            return 113; // ERROR_BUFFER_OVERFLOW
+        }
+        let mut vec: Vec<u8> = Vec::with_capacity(needed as usize);
+        for &(first, last) in ranges {
+            vec.push(first);
+            vec.push(last);
+        }
+        vec.push(0);
+        vec.push(0);
+        let _ = self.guest_write_bytes(pbuf, &vec);
+        0
+    }
+
     pub fn dos_query_file_mode_16(&self, p_filename: u32, p_attr: u32) -> u32 {
         let filename = self.read_guest_string(p_filename);
         debug!("DosQFileMode('{}', pAttr=0x{:08X})", filename, p_attr);
@@ -1726,5 +1761,64 @@ mod tests {
     fn test_dos_sleep_zero_returns_immediately() {
         let loader = Loader::new_mock();
         assert_eq!(loader.dos_sleep(0), 0);
+    }
+
+    // ── DosQueryDBCSEnv / dos_query_dbcs_env ─────────────────────────────────
+
+    #[test]
+    fn test_dos_query_dbcs_env_sbcs_writes_terminator() {
+        // Default codepage is CP437 (SBCS) — vector is just (0,0).
+        let loader = Loader::new_mock();
+        let buf = 0x5000u32;
+        assert_eq!(loader.dos_query_dbcs_env(2, 0, buf), 0);
+        assert_eq!(loader.guest_read::<u8>(buf),     Some(0x00));
+        assert_eq!(loader.guest_read::<u8>(buf + 1), Some(0x00));
+    }
+
+    #[test]
+    fn test_dos_query_dbcs_env_cp932_writes_two_ranges() {
+        let loader = Loader::new_mock();
+        // Set active codepage to CP932 (Shift-JIS).
+        loader.shared.active_codepage.store(932, Ordering::Relaxed);
+        let buf = 0x5000u32;
+        // CP932 has 2 ranges → needs 6 bytes.
+        assert_eq!(loader.dos_query_dbcs_env(6, 0, buf), 0);
+        // Range 1: (0x81, 0x9F)
+        assert_eq!(loader.guest_read::<u8>(buf),     Some(0x81));
+        assert_eq!(loader.guest_read::<u8>(buf + 1), Some(0x9F));
+        // Range 2: (0xE0, 0xFC)
+        assert_eq!(loader.guest_read::<u8>(buf + 2), Some(0xE0));
+        assert_eq!(loader.guest_read::<u8>(buf + 3), Some(0xFC));
+        // Terminator
+        assert_eq!(loader.guest_read::<u8>(buf + 4), Some(0x00));
+        assert_eq!(loader.guest_read::<u8>(buf + 5), Some(0x00));
+    }
+
+    #[test]
+    fn test_dos_query_dbcs_env_cp936_writes_one_range() {
+        let loader = Loader::new_mock();
+        loader.shared.active_codepage.store(936, Ordering::Relaxed);
+        let buf = 0x5000u32;
+        // CP936 has 1 range → needs 4 bytes.
+        assert_eq!(loader.dos_query_dbcs_env(4, 0, buf), 0);
+        assert_eq!(loader.guest_read::<u8>(buf),     Some(0x81));
+        assert_eq!(loader.guest_read::<u8>(buf + 1), Some(0xFE));
+        assert_eq!(loader.guest_read::<u8>(buf + 2), Some(0x00));
+        assert_eq!(loader.guest_read::<u8>(buf + 3), Some(0x00));
+    }
+
+    #[test]
+    fn test_dos_query_dbcs_env_buffer_too_small_returns_overflow() {
+        let loader = Loader::new_mock();
+        loader.shared.active_codepage.store(932, Ordering::Relaxed);
+        // CP932 needs 6 bytes; supply only 4.
+        assert_eq!(loader.dos_query_dbcs_env(4, 0, 0x5000), 113); // ERROR_BUFFER_OVERFLOW
+    }
+
+    #[test]
+    fn test_dos_query_dbcs_env_null_buf_returns_ok() {
+        let loader = Loader::new_mock();
+        // pbuf == 0 is a no-op; must return NO_ERROR without panicking.
+        assert_eq!(loader.dos_query_dbcs_env(256, 0, 0), 0);
     }
 }
