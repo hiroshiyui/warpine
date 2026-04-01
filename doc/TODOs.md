@@ -100,9 +100,7 @@ In OS/2 VIO text mode a DBCS character occupies two consecutive screen cells: ce
 
 **B1 — Lead-byte range tables — complete:** `dbcs_lead_ranges(cp: u32) -> &'static [(u8, u8)]` and `is_dbcs_lead_byte(byte, cp) -> bool` added to `locale.rs`. CP932 returns two ranges `(0x81,0x9F),(0xE0,0xFC)`; CP936/949/950 return `(0x81,0xFE)`; all SBCS codepages return `&[]`. 9 unit tests.
 
-**B2 — `CellKind` annotation in `VgaTextBuffer`**
-- [ ] Add `pub enum CellKind { Sbcs, DbcsLead, DbcsTail }` and `pub cell_kind: Vec<CellKind>` (parallel to `cells[]`)
-- [ ] `VgaTextBuffer::snapshot()` runs `annotate_dbcs(cells, codepage)` — a single left-to-right scan using `dbcs_lead_ranges()`; marks DBCS pairs, leaves everything else as `Sbcs`; O(cols×rows) per frame
+**B2 — `CellKind` annotation in `VgaTextBuffer` — complete:** `CellKind` enum (`Sbcs`/`DbcsLead`/`DbcsTail`) added to `text_renderer.rs`; `VioManager` gains `raw_bytes: Vec<u8>` (original guest byte per cell, maintained by all write paths including `write_tty`, `write_char_str_att`, `write_n_cell`, `scroll_up`, `scroll_down`, `resize`); `VgaTextBuffer` gains `raw_bytes` and `cell_kind: Vec<CellKind>` populated at snapshot time by `annotate_dbcs(raw_bytes, codepage, cols)`; function performs left-to-right row scan using `dbcs_lead_ranges()`; unpaired lead bytes at row end → `Sbcs`; SBCS codepage fast-path; 9 unit tests.
 
 **B3 — 16×16 DBCS render path in `Sdl2TextRenderer::render_frame()`**
 - [ ] Replace column `for` loop with a `while col < cols` loop:

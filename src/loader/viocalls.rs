@@ -155,16 +155,16 @@ impl super::Loader {
     #[allow(clippy::too_many_arguments)]
     fn vio_scroll_up(&self, top: u32, left: u32, bottom: u32, right: u32, lines: u32, p_cell: u32, _hvio: u32) -> u32 {
         debug!("  VioScrollUp(top={}, left={}, bottom={}, right={}, lines={}, p_cell=0x{:08X})", top, left, bottom, right, lines, p_cell);
-        let fill_cell = if p_cell != 0 {
+        let (fill_cell, fill_raw) = if p_cell != 0 {
             let ch_byte = self.guest_read::<u8>(p_cell).unwrap_or(b' ');
             let attr    = self.guest_read::<u8>(p_cell + 1).unwrap_or(0x07);
             let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
-            (super::console::VioManager::decode_vio_byte(ch_byte, cp), attr)
+            ((super::console::VioManager::decode_vio_byte(ch_byte, cp), attr), ch_byte)
         } else {
-            (' ', 0x07)
+            ((' ', 0x07), b' ')
         };
         let mut console = self.shared.console_mgr.lock_or_recover();
-        console.scroll_up(top as u16, bottom as u16, lines as u16, fill_cell);
+        console.scroll_up(top as u16, bottom as u16, lines as u16, fill_cell, fill_raw);
         NO_ERROR
     }
 
@@ -173,16 +173,16 @@ impl super::Loader {
     #[allow(clippy::too_many_arguments)]
     fn vio_scroll_dn(&self, top: u32, _left: u32, bottom: u32, _right: u32, lines: u32, p_cell: u32, _hvio: u32) -> u32 {
         debug!("  VioScrollDn(top={}, bottom={}, lines={}, p_cell=0x{:08X})", top, bottom, lines, p_cell);
-        let fill_cell = if p_cell != 0 {
+        let (fill_cell, fill_raw) = if p_cell != 0 {
             let ch_byte = self.guest_read::<u8>(p_cell).unwrap_or(b' ');
             let attr    = self.guest_read::<u8>(p_cell + 1).unwrap_or(0x07);
             let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
-            (super::console::VioManager::decode_vio_byte(ch_byte, cp), attr)
+            ((super::console::VioManager::decode_vio_byte(ch_byte, cp), attr), ch_byte)
         } else {
-            (' ', 0x07)
+            ((' ', 0x07), b' ')
         };
         let mut console = self.shared.console_mgr.lock_or_recover();
-        console.scroll_down(top as u16, bottom as u16, lines as u16, fill_cell);
+        console.scroll_down(top as u16, bottom as u16, lines as u16, fill_cell, fill_raw);
         NO_ERROR
     }
 
@@ -205,7 +205,7 @@ impl super::Loader {
         let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
         let ch = super::console::VioManager::decode_vio_byte(ch_byte, cp);
         let mut console = self.shared.console_mgr.lock_or_recover();
-        console.write_n_cell(row as u16, col as u16, (ch, attr), count as u16);
+        console.write_n_cell(row as u16, col as u16, ch_byte, (ch, attr), count as u16);
         NO_ERROR
     }
 

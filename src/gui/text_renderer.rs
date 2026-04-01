@@ -55,6 +55,58 @@ pub fn get_glyph_for_char(ch: char) -> [u8; 16] {
     }
 }
 
+// ── DBCS cell classification ─────────────────────────────────────────────────
+
+/// Per-cell classification for the DBCS annotation pass.
+///
+/// In OS/2 VIO text mode a DBCS character occupies two consecutive cells:
+/// the first cell is `DbcsLead` and the second is `DbcsTail`.  All cells in
+/// SBCS codepages (and any cell that is not part of a DBCS pair) are `Sbcs`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellKind {
+    Sbcs,
+    DbcsLead,
+    DbcsTail,
+}
+
+/// Classify every cell in a VGA text buffer as SBCS, DBCS-lead, or DBCS-tail.
+///
+/// Performs a single left-to-right scan per row using the lead-byte tables
+/// from [`crate::loader::locale::dbcs_lead_ranges`].  A lead byte followed
+/// by any trail byte within the same row produces a `(DbcsLead, DbcsTail)`
+/// pair; an unpaired lead byte at the end of a row is treated as `Sbcs`.
+/// For SBCS codepages the function returns all-`Sbcs` in O(1).
+///
+/// Returns a `Vec<CellKind>` of the same length as `raw_bytes`.
+pub fn annotate_dbcs(raw_bytes: &[u8], codepage: u32, cols: u16) -> Vec<CellKind> {
+    use crate::loader::locale::is_dbcs_lead_byte;
+
+    let mut kinds = vec![CellKind::Sbcs; raw_bytes.len()];
+
+    // Fast path: SBCS codepages have no lead bytes.
+    if crate::loader::locale::dbcs_lead_ranges(codepage).is_empty() {
+        return kinds;
+    }
+
+    let cols = cols as usize;
+    if cols == 0 { return kinds; }
+
+    let mut i = 0;
+    while i < raw_bytes.len() {
+        let col = i % cols;
+        if is_dbcs_lead_byte(raw_bytes[i], codepage) && col + 1 < cols && i + 1 < raw_bytes.len() {
+            // Lead byte with a valid trail position in the same row.
+            kinds[i]     = CellKind::DbcsLead;
+            kinds[i + 1] = CellKind::DbcsTail;
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    kinds
+}
+
 // ── VgaTextBuffer snapshot ───────────────────────────────────────────────────
 
 /// Snapshot of the VioManager state for a single rendered frame.
@@ -63,6 +115,10 @@ pub struct VgaTextBuffer {
     pub cols: u16,
     /// (char, attr) pairs, row-major.  attr: bits 3:0 = fg (with bright), 7:4 = bg.
     pub cells: Vec<(char, u8)>,
+    /// Raw guest bytes parallel to `cells`, used by the DBCS annotation pass.
+    pub raw_bytes: Vec<u8>,
+    /// Per-cell kind produced by `annotate_dbcs` at snapshot time.
+    pub cell_kind: Vec<CellKind>,
     pub cursor_row: u16,
     pub cursor_col: u16,
     pub cursor_visible: bool,
@@ -72,12 +128,21 @@ pub struct VgaTextBuffer {
 
 impl VgaTextBuffer {
     /// Snapshot the current VioManager state.
+    ///
+    /// Runs the DBCS annotation pass once per frame so renderers can
+    /// distinguish DBCS lead/tail cells from SBCS cells without re-scanning.
     pub fn snapshot(shared: &SharedState) -> Self {
         let vio = shared.console_mgr.lock_or_recover();
+        let raw_bytes = vio.raw_bytes.clone();
+        let codepage = vio.codepage as u32;
+        let cols = vio.cols;
+        let cell_kind = annotate_dbcs(&raw_bytes, codepage, cols);
         VgaTextBuffer {
             rows: vio.rows,
             cols: vio.cols,
             cells: vio.buffer.clone(),
+            raw_bytes,
+            cell_kind,
             cursor_row: vio.cursor_row,
             cursor_col: vio.cursor_col,
             cursor_visible: vio.cursor_visible,
@@ -650,6 +715,97 @@ mod tests {
         assert_eq!(buf.cursor_row, 0);
         assert_eq!(buf.cursor_col, 0);
         assert!(buf.cursor_visible);
+    }
+
+    #[test]
+    fn snapshot_cell_kind_and_raw_bytes_lengths_match() {
+        let shared = make_shared();
+        let buf = VgaTextBuffer::snapshot(&shared);
+        assert_eq!(buf.raw_bytes.len(), buf.cells.len());
+        assert_eq!(buf.cell_kind.len(), buf.cells.len());
+    }
+
+    // ── annotate_dbcs ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn annotate_sbcs_codepage_all_sbcs() {
+        // CP437 has no lead bytes — every cell must be Sbcs.
+        let raw = vec![b'A', 0x9C, b' ', 0xFF];
+        let kinds = annotate_dbcs(&raw, 437, 4);
+        assert!(kinds.iter().all(|&k| k == CellKind::Sbcs));
+    }
+
+    #[test]
+    fn annotate_dbcs_cp932_basic_pair() {
+        // 0x82 is a CP932 (Shift-JIS) lead byte.
+        // Row of 4 cols: [0x82, 0xA0, b'X', b'Y']
+        let raw = vec![0x82_u8, 0xA0, b'X', b'Y'];
+        let kinds = annotate_dbcs(&raw, 932, 4);
+        assert_eq!(kinds[0], CellKind::DbcsLead);
+        assert_eq!(kinds[1], CellKind::DbcsTail);
+        assert_eq!(kinds[2], CellKind::Sbcs);
+        assert_eq!(kinds[3], CellKind::Sbcs);
+    }
+
+    #[test]
+    fn annotate_dbcs_cp932_two_pairs() {
+        // Two adjacent DBCS pairs on the same row (4 cols = exactly two pairs).
+        let raw = vec![0x82_u8, 0xA0, 0x82, 0xA1];
+        let kinds = annotate_dbcs(&raw, 932, 4);
+        assert_eq!(kinds, vec![CellKind::DbcsLead, CellKind::DbcsTail,
+                               CellKind::DbcsLead, CellKind::DbcsTail]);
+    }
+
+    #[test]
+    fn annotate_dbcs_lead_at_last_col_is_sbcs() {
+        // A lead byte at the last column of a row cannot form a pair (no next
+        // column in the same row) → must be classified as Sbcs.
+        // Row of 2 cols: col 0 = 0x82 (lead), col 1 = next row starts here
+        // represented as a flat 4-element slice with cols=2.
+        // row 0: [0x82, b'A']  — 0x82 at col 0 → should pair with b'A' at col 1
+        // row 1: [0x82, b'B']  — 0x82 at col 0 → should pair with b'B' at col 1
+        let raw = vec![0x82_u8, b'A', 0x82, b'B'];
+        let kinds = annotate_dbcs(&raw, 932, 2);
+        // col 0 of each row: DbcsLead; col 1: DbcsTail
+        assert_eq!(kinds[0], CellKind::DbcsLead);
+        assert_eq!(kinds[1], CellKind::DbcsTail);
+        assert_eq!(kinds[2], CellKind::DbcsLead);
+        assert_eq!(kinds[3], CellKind::DbcsTail);
+    }
+
+    #[test]
+    fn annotate_dbcs_lead_at_last_col_no_pair() {
+        // Lead byte is the very last cell of a row (col == cols-1) — no pair.
+        // 3-col row: [b'X', b'Y', 0x82]  → the lead at col 2 is unpaired.
+        let raw = vec![b'X', b'Y', 0x82_u8];
+        let kinds = annotate_dbcs(&raw, 932, 3);
+        assert_eq!(kinds[0], CellKind::Sbcs);
+        assert_eq!(kinds[1], CellKind::Sbcs);
+        assert_eq!(kinds[2], CellKind::Sbcs); // unpaired lead → Sbcs
+    }
+
+    #[test]
+    fn annotate_dbcs_cp936_pair() {
+        // CP936 lead range is 0x81–0xFE.
+        let raw = vec![0x81_u8, 0x40, b'Z'];
+        let kinds = annotate_dbcs(&raw, 936, 3);
+        assert_eq!(kinds[0], CellKind::DbcsLead);
+        assert_eq!(kinds[1], CellKind::DbcsTail);
+        assert_eq!(kinds[2], CellKind::Sbcs);
+    }
+
+    #[test]
+    fn annotate_dbcs_empty_input() {
+        let kinds = annotate_dbcs(&[], 932, 80);
+        assert!(kinds.is_empty());
+    }
+
+    #[test]
+    fn annotate_dbcs_zero_cols_no_pairs() {
+        // cols=0 guard: should return all-Sbcs without panic.
+        let raw = vec![0x82_u8, 0xA0];
+        let kinds = annotate_dbcs(&raw, 932, 0);
+        assert!(kinds.iter().all(|&k| k == CellKind::Sbcs));
     }
 
     // ── KbdKeyInfo queue ──────────────────────────────────────────────────────

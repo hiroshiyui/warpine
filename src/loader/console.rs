@@ -43,6 +43,10 @@ pub struct VioManager {
     /// Screen buffer: (Unicode codepoint, attribute) pairs, row-major.
     /// Characters are decoded from the guest's active codepage at write time.
     pub buffer: Vec<(char, u8)>,
+    /// Raw guest bytes parallel to `buffer`, used by the DBCS annotation pass.
+    /// Stores the original byte written by the guest for each cell (0x20 for
+    /// synthesised fill cells such as scroll fill and resize fill).
+    pub raw_bytes: Vec<u8>,
     pub rows: u16,
     pub cols: u16,
     pub cursor_row: u16,
@@ -80,6 +84,7 @@ impl VioManager {
         let size = rows as usize * cols as usize;
         VioManager {
             buffer: vec![(' ', 0x07); size], // space with light gray on black
+            raw_bytes: vec![b' '; size],
             rows,
             cols,
             cursor_row: 0,
@@ -114,6 +119,7 @@ impl VioManager {
         if self.rows == new_rows && self.cols == new_cols { return; }
         let new_size = new_rows as usize * new_cols as usize;
         let mut new_buf: Vec<(char, u8)> = vec![(' ', 0x07); new_size];
+        let mut new_raw: Vec<u8> = vec![b' '; new_size];
         // Copy the top-left region that fits in both old and new dimensions.
         let copy_rows = self.rows.min(new_rows) as usize;
         let copy_cols = self.cols.min(new_cols) as usize;
@@ -122,11 +128,13 @@ impl VioManager {
                 let src = r * self.cols as usize + c;
                 let dst = r * new_cols as usize + c;
                 new_buf[dst] = self.buffer[src];
+                new_raw[dst] = self.raw_bytes[src];
             }
         }
         self.rows = new_rows;
         self.cols = new_cols;
         self.buffer = new_buf;
+        self.raw_bytes = new_raw;
         // Clamp cursor to new boundaries.
         self.cursor_row = self.cursor_row.min(new_rows.saturating_sub(1));
         self.cursor_col = self.cursor_col.min(new_cols.saturating_sub(1));
@@ -226,7 +234,7 @@ impl VioManager {
                 self.cursor_row += 1;
                 self.cursor_col = 0;
                 if self.cursor_row >= self.rows {
-                    self.scroll_up(0, self.rows - 1, 1, (' ', 0x07));
+                    self.scroll_up(0, self.rows - 1, 1, (' ', 0x07), b' ');
                     self.cursor_row = self.rows - 1;
                 }
                 if !sdl2 {
@@ -254,6 +262,7 @@ impl VioManager {
                     let idx = self.cursor_row as usize * self.cols as usize + self.cursor_col as usize;
                     if idx < self.buffer.len() {
                         self.buffer[idx] = (decoded, attr);
+                        self.raw_bytes[idx] = ch;
                     }
                 }
                 self.cursor_col += 1;
@@ -261,7 +270,7 @@ impl VioManager {
                     self.cursor_col = 0;
                     self.cursor_row += 1;
                     if self.cursor_row >= self.rows {
-                        self.scroll_up(0, self.rows - 1, 1, (' ', 0x07));
+                        self.scroll_up(0, self.rows - 1, 1, (' ', 0x07), b' ');
                         self.cursor_row = self.rows - 1;
                     }
                 }
@@ -296,6 +305,7 @@ impl VioManager {
             let idx = row as usize * self.cols as usize + c as usize;
             if idx < self.buffer.len() {
                 self.buffer[idx] = (decoded, attr);
+                self.raw_bytes[idx] = ch;
             }
             if !sdl2 { Self::write_char(&mut stdout, decoded); }
             c += 1;
@@ -309,7 +319,8 @@ impl VioManager {
 
     /// Fill N cells starting at (row, col) with a character+attribute pair.
     /// `cell.0` is already a decoded Unicode char (caller decodes via active codepage).
-    pub fn write_n_cell(&mut self, row: u16, col: u16, cell: (char, u8), count: u16) {
+    /// `raw_byte` is the original guest byte, stored for the DBCS annotation pass.
+    pub fn write_n_cell(&mut self, row: u16, col: u16, raw_byte: u8, cell: (char, u8), count: u16) {
         let sdl2 = self.sdl2_mode;
         let mut stdout = io::stdout();
         if !sdl2 {
@@ -322,6 +333,7 @@ impl VioManager {
             let idx = row as usize * self.cols as usize + c as usize;
             if idx < self.buffer.len() {
                 self.buffer[idx] = cell;
+                self.raw_bytes[idx] = raw_byte;
             }
             if !sdl2 { Self::write_char(&mut stdout, cell.0); }
             c += 1;
@@ -379,7 +391,7 @@ impl VioManager {
     ///
     /// OS/2 special case: `lines == 0` means "clear the entire region" (fill all
     /// rows from `top` to `bottom` with `fill_cell` without scrolling).
-    pub fn scroll_up(&mut self, top: u16, bottom: u16, lines: u16, fill_cell: (char, u8)) {
+    pub fn scroll_up(&mut self, top: u16, bottom: u16, lines: u16, fill_cell: (char, u8), fill_raw: u8) {
         if top > bottom || bottom >= self.rows { return; }
         if lines == 0 {
             // Clear entire region
@@ -389,6 +401,7 @@ impl VioManager {
                 for c in 0..cols {
                     if base + c < self.buffer.len() {
                         self.buffer[base + c] = fill_cell;
+                        self.raw_bytes[base + c] = fill_raw;
                     }
                 }
             }
@@ -414,6 +427,7 @@ impl VioManager {
             for c in 0..cols {
                 if src + c < self.buffer.len() && dst + c < self.buffer.len() {
                     self.buffer[dst + c] = self.buffer[src + c];
+                    self.raw_bytes[dst + c] = self.raw_bytes[src + c];
                 }
             }
         }
@@ -423,6 +437,7 @@ impl VioManager {
             for c in 0..cols {
                 if base + c < self.buffer.len() {
                     self.buffer[base + c] = fill_cell;
+                    self.raw_bytes[base + c] = fill_raw;
                 }
             }
         }
@@ -447,7 +462,7 @@ impl VioManager {
     /// Scroll a region down by `lines` rows, filling the top with `fill_cell`.
     ///
     /// OS/2 special case: `lines == 0` means "clear the entire region".
-    pub fn scroll_down(&mut self, top: u16, bottom: u16, lines: u16, fill_cell: (char, u8)) {
+    pub fn scroll_down(&mut self, top: u16, bottom: u16, lines: u16, fill_cell: (char, u8), fill_raw: u8) {
         if top > bottom || bottom >= self.rows { return; }
         if lines == 0 {
             let cols = self.cols as usize;
@@ -456,6 +471,7 @@ impl VioManager {
                 for c in 0..cols {
                     if base + c < self.buffer.len() {
                         self.buffer[base + c] = fill_cell;
+                        self.raw_bytes[base + c] = fill_raw;
                     }
                 }
             }
@@ -481,6 +497,7 @@ impl VioManager {
             for c in 0..cols {
                 if src + c < self.buffer.len() && dst + c < self.buffer.len() {
                     self.buffer[dst + c] = self.buffer[src + c];
+                    self.raw_bytes[dst + c] = self.raw_bytes[src + c];
                 }
             }
         }
@@ -490,6 +507,7 @@ impl VioManager {
             for c in 0..cols {
                 if base + c < self.buffer.len() {
                     self.buffer[base + c] = fill_cell;
+                    self.raw_bytes[base + c] = fill_raw;
                 }
             }
         }
@@ -672,6 +690,7 @@ mod tests {
         assert!(mgr.ansi_mode);
         assert_eq!(mgr.codepage, 437);
         assert_eq!(mgr.buffer.len(), mgr.rows as usize * mgr.cols as usize);
+        assert_eq!(mgr.raw_bytes.len(), mgr.rows as usize * mgr.cols as usize);
     }
 
     #[test]
@@ -691,7 +710,7 @@ mod tests {
         let cols = mgr.cols as usize;
         mgr.buffer[cols] = ('A', 0x07); // row 1, col 0
 
-        mgr.scroll_up(0, mgr.rows - 1, 1, (' ', 0x07));
+        mgr.scroll_up(0, mgr.rows - 1, 1, (' ', 0x07), b' ');
 
         // Row 0 should now have what was in row 1
         assert_eq!(mgr.buffer[0], ('A', 0x07));
@@ -707,7 +726,7 @@ mod tests {
         // Seed row 0 with non-blank content
         for c in 0..cols { mgr.buffer[c] = ('X', 0x07); }
         // VioScrollUp with lines=0 must clear the whole region
-        mgr.scroll_up(0, 0, 0, (' ', 0x1F));
+        mgr.scroll_up(0, 0, 0, (' ', 0x1F), b' ');
         // All cells in row 0 should be filled with the fill cell
         for c in 0..cols {
             assert_eq!(mgr.buffer[c], (' ', 0x1F), "cell {} not cleared", c);
@@ -720,7 +739,7 @@ mod tests {
         let cols = mgr.cols as usize;
         mgr.buffer[0] = ('B', 0x07); // row 0, col 0
 
-        mgr.scroll_down(0, mgr.rows - 1, 1, (' ', 0x07));
+        mgr.scroll_down(0, mgr.rows - 1, 1, (' ', 0x07), b' ');
 
         // Row 1 should now have what was in row 0
         assert_eq!(mgr.buffer[cols], ('B', 0x07));
@@ -733,7 +752,7 @@ mod tests {
         let mut mgr = VioManager::new();
         let cols = mgr.cols as usize;
         for c in 0..cols { mgr.buffer[c] = ('Y', 0x07); }
-        mgr.scroll_down(0, 0, 0, ('-', 0x4E));
+        mgr.scroll_down(0, 0, 0, ('-', 0x4E), b'-');
         for c in 0..cols {
             assert_eq!(mgr.buffer[c], ('-', 0x4E), "cell {} not cleared", c);
         }
