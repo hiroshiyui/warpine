@@ -630,6 +630,93 @@ Several issues were discovered and fixed during 4OS2 bring-up that are worth not
 
 ---
 
+## Builtin CMD.EXE Shell
+
+`src/loader/cmd.rs` implements a command shell entirely in host Rust, eliminating the Open Watcom / 4OS2 build dependency for basic interactive use. The shell is invoked in two ways:
+
+1. **From the host command line** — `warpine CMD.EXE [args]`: detected in `main()` by basename before `detect_format()` is called; routes to `Loader::run_builtin_cmd_main()`. Runs in the host terminal (no SDL2 window).
+
+2. **From a running OS/2 guest** — `DosExecPgm("CMD.EXE")` or `DosExecPgm("OS2SHELL.EXE")`: intercepted in `dos_exec_pgm()` before the VFS path lookup; routes to `Loader::run_builtin_cmd()`. Runs inside the active VIO text window (SDL2 or headless), sharing keyboard queue and screen buffer with the guest.
+
+### Architecture
+
+```
+Loader::run_builtin_cmd_main()     ← main.rs intercept (host CLI)
+Loader::run_builtin_cmd()          ← dos_exec_pgm intercept (guest call)
+    └── CmdShell::run()
+            ├── parse_shell_flags()   /C /K processing
+            ├── interactive_loop()    REPL: prompt → read_line → execute_line
+            └── run_script()          .CMD file execution
+```
+
+`CmdShell` holds an `Arc<SharedState>` and has no vCPU — all I/O goes through `SharedState` managers directly.
+
+### Keyboard input
+
+`CmdShell::read_key()` uses dual-path input matching the rest of the VIO subsystem:
+
+- **SDL2 path** (`shared.use_sdl2_text = true`): blocks on `shared.kbd_cond` condvar, pops from `shared.kbd_queue`. Used when the shell is invoked from a running OS/2 guest with an SDL2 text window open.
+- **Terminal path** (`use_sdl2_text = false`): calls `console_mgr.read_byte()` with a 5 ms sleep loop, using raw termios mode. Used when the shell is invoked directly from the host command line.
+
+Arrow-key sequences (`\x1B[A` / `\x1B[B`) are decoded in the terminal path to `SCAN_UP` / `SCAN_DOWN` for history navigation.
+
+### Line editor
+
+`read_line()` assembles a `String` from keystrokes:
+
+| Key | Action |
+|-----|--------|
+| Enter | Submit line |
+| Backspace / DEL | Erase last character (`\x08 \x08` sequence to VIO) |
+| Esc | Clear line |
+| ↑ / ↓ | Navigate history — `replace_input()` erases current chars then writes the new string |
+
+History is a `Vec<String>` capped at 20 entries (constant `HISTORY_SIZE`). Duplicate consecutive entries are not stored.
+
+### Built-in commands
+
+| Command | Description |
+|---------|-------------|
+| `DIR [path]` | List directory; sorted dirs-first, then files. Reads via `DriveManager::find_first` / `find_next`. |
+| `CD [path]` | Change directory. Updates `DriveManager::set_current_dir` and `process_mgr::set_current_dir`. |
+| `C:` … `Z:` | Switch current drive. |
+| `SET [var[=val]]` | List/get/set host environment variables via `std::env`. |
+| `ECHO [text]` | Write text to VIO. `ECHO.` prints a blank line. |
+| `CLS` | Clears VIO screen buffer and resets cursor to (0, 0). |
+| `VER` | Prints Warpine version string. |
+| `TYPE <file>` | Reads file via host `std::fs` and writes to VIO in 4 KiB chunks. |
+| `MD <path>` | Creates directory via `std::fs::create_dir_all`. |
+| `RD <path>` | Removes empty directory via `std::fs::remove_dir`. |
+| `DEL <file>` | Deletes file via `std::fs::remove_file`. |
+| `HELP` | Prints command list. |
+| `EXIT [code]` | Exits shell with optional numeric exit code. |
+
+### External program execution
+
+`exec_external()` tries `<command>.EXE` then `<command>.CMD` via `DriveManager::resolve_to_host_path`. For `.EXE` files, `spawn_os2_program()` launches the Warpine host process recursively (`std::process::Command::new(warpine_exe)`), captures stdout, and forwards it to `VioManager::write_tty`. For `.CMD` files, `run_script()` reads and interprets each line.
+
+### .CMD script interpreter
+
+`run_script()` reads the script file line by line, strips comments (`REM`, `::`) and calls `execute_line()` for each. Supported directives:
+
+| Directive | Behaviour |
+|-----------|-----------|
+| `ECHO` | Write to VIO (same as interactive) |
+| `SET` | Set/unset host env variable |
+| `IF [NOT] EXIST <file> <cmd>` | Conditional on file existence |
+| `IF [NOT] ERRORLEVEL <n> <cmd>` | Conditional on last exit code |
+| `FOR %%V IN (list) DO <cmd>` | Iterate space-separated list |
+| `GOTO <label>` | Jump to `:label` line |
+| `CALL <script>` | Recursive script execution |
+| `PAUSE` | Waits for any key |
+| `REM` / `::` | Comment — skipped |
+
+### Lock ordering
+
+The shell never holds two `SharedState` manager locks simultaneously. Acquire order when both must be consulted: `console_mgr` (level 0) → `process_mgr` (level 1) → `drive_mgr` (level 2). In practice each built-in grabs exactly one lock per operation.
+
+---
+
 ## Filesystem I/O Design
 
 ### Motivation: From "Happens to Work" to "Guaranteed to Work"

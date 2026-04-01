@@ -9,14 +9,15 @@ Warpine is an OS/2 compatibility layer for Linux that runs 32-bit OS/2 (LX forma
 1. [Command-Line Interface](#command-line-interface)
 2. [Environment Variables](#environment-variables)
 3. [Execution Modes](#execution-modes)
-4. [Virtual Filesystem](#virtual-filesystem)
-5. [Logging and Tracing](#logging-and-tracing)
-6. [GDB Debugging](#gdb-debugging)
-7. [Crash Dumps](#crash-dumps)
-8. [API Compatibility Report](#api-compatibility-report)
-9. [Implemented APIs](#implemented-apis)
-10. [OS/2 Error Codes](#os2-error-codes)
-11. [Guest Memory Layout](#guest-memory-layout)
+4. [Builtin CMD.EXE Shell](#builtin-cmdexe-shell)
+5. [Virtual Filesystem](#virtual-filesystem)
+6. [Logging and Tracing](#logging-and-tracing)
+7. [GDB Debugging](#gdb-debugging)
+8. [Crash Dumps](#crash-dumps)
+9. [API Compatibility Report](#api-compatibility-report)
+10. [Implemented APIs](#implemented-apis)
+11. [OS/2 Error Codes](#os2-error-codes)
+12. [Guest Memory Layout](#guest-memory-layout)
 
 ---
 
@@ -113,6 +114,96 @@ Warpine automatically selects an execution mode based on the executable and envi
 - Keyboard input read from raw terminal (termios).
 - Child processes spawned via `DosExecPgm` automatically use headless mode.
 - Detection is automatic via `is_terminal()` — no environment variable needed.
+
+---
+
+## Builtin CMD.EXE Shell
+
+Warpine includes a native Rust command shell that requires no Open Watcom compiler or 4OS2 installation.
+
+### Invocation
+
+```bash
+warpine CMD.EXE                    # Interactive session
+warpine CMD.EXE /C "DIR C:\"      # Run one command and exit
+warpine CMD.EXE /K "VER"          # Run one command then stay interactive
+```
+
+The shell can also be launched from within a running OS/2 application via `DosExecPgm("CMD.EXE")` or `DosExecPgm("OS2SHELL.EXE")`.
+
+**Note:** When invoked from the host command line (`warpine CMD.EXE`), the shell runs in the host terminal. When invoked by a guest program that already has an SDL2 text window open, the shell runs inside that window.
+
+### Flags
+
+| Flag | Effect |
+|------|--------|
+| `/C <command>` | Execute `<command>` and exit |
+| `/K <command>` | Execute `<command>` then enter interactive mode |
+| (none) | Enter interactive mode immediately |
+
+### Line editor
+
+The prompt shows the current drive and directory: `[C:\path] `.
+
+| Key | Action |
+|-----|--------|
+| Enter | Submit line |
+| Backspace | Erase last character |
+| Esc | Clear the current line |
+| ↑ | Previous history entry |
+| ↓ | Next history entry |
+
+### Built-in commands
+
+| Command | Syntax | Description |
+|---------|--------|-------------|
+| `DIR` | `DIR [path]` | List directory contents. Directories are shown first, then files, each with date/time and size. |
+| `CD` | `CD [path]` | Print or change the current directory. `CD \` goes to root. `CD ..` goes up one level. |
+| `C:` – `Z:` | `C:` | Switch the current drive. |
+| `SET` | `SET [VAR[=value]]` | Without args: list all environment variables. `SET VAR` shows matching vars. `SET VAR=value` sets a variable. `SET VAR=` unsets it. |
+| `ECHO` | `ECHO [text]` | Write text to the console. `ECHO.` prints a blank line. `ECHO ON`/`OFF` not supported. |
+| `CLS` | `CLS` | Clear the screen. |
+| `VER` | `VER` | Print the Warpine version. |
+| `TYPE` | `TYPE <file>` | Print file contents to the console. |
+| `MD` | `MD <path>` | Create a directory (and any missing parent directories). |
+| `RD` | `RD <path>` | Remove an empty directory. |
+| `DEL` | `DEL <file>` | Delete a file. |
+| `HELP` | `HELP` | List available commands. |
+| `EXIT` | `EXIT [code]` | Exit the shell with an optional numeric exit code (default 0). |
+
+### Running OS/2 programs
+
+Any token that is not a built-in is treated as a program name. The shell searches the current directory, then the `PATH` environment variable, appending `.EXE` if no extension is given. Example:
+
+```
+[C:\] hello
+Hello, OS/2!
+```
+
+If `hello.exe` is not found, the shell tries `hello.cmd`.
+
+### .CMD scripts
+
+Run a `.CMD` file by typing its name (with or without the `.CMD` extension) or using `/C`:
+
+```
+[C:\] warpine CMD.EXE /C "MYSCRIPT.CMD"
+```
+
+Supported script directives:
+
+| Directive | Description |
+|-----------|-------------|
+| `REM text` | Comment — ignored |
+| `:: text` | Alternative comment |
+| `ECHO text` | Write to console |
+| `SET VAR=value` | Set environment variable |
+| `IF [NOT] EXIST file cmd` | Execute `cmd` if file exists (or not) |
+| `IF [NOT] ERRORLEVEL n cmd` | Execute `cmd` if last exit code ≥ n (or <n for NOT) |
+| `FOR %%V IN (a b c) DO cmd` | Loop over space-separated list; `%%V` is replaced by each item |
+| `GOTO label` | Jump to `:label` |
+| `CALL script` | Execute another `.CMD` file |
+| `PAUSE` | Print "Press any key to continue…" and wait |
 
 ---
 

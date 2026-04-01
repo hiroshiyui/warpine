@@ -25,6 +25,7 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 - **NE Format Execution:** Full NE (New Executable) loader and 16-bit execution — loads OS/2 1.x 16-bit NE binaries into GDT-tiled guest memory, dispatches DOSCALLS/VIOCALLS via Pascal-convention 16-bit thunks. `ne_hello` (pure assembly, no Watcom CRT) runs `DosWrite`+`DosExit` correctly.
 - **GDB Remote Stub:** `--gdb <port>` enables GDB RSP over TCP — attach with `gdb`/`gef`/`pwndbg` for software breakpoints, single-step, and full register/memory access.
 - **Crash Dump Facility:** Structured crash reports on fatal VMEXITs — registers, stack, code bytes, and last 256 API calls written to `warpine-crash-<pid>.txt`.
+- **Builtin CMD.EXE Shell:** Native Rust command shell. Run directly with `cargo run -- CMD.EXE` (host terminal mode) or launched automatically when an OS/2 guest calls `DosExecPgm("CMD.EXE")` (runs in the active VIO text window). No Open Watcom or 4OS2 required. Built-in commands: `DIR`, `CD`, `SET`, `ECHO`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `HELP`, `EXIT`. Line editor with history (↑/↓). `.CMD` script interpreter.
 - **API Compatibility Report:** `warpine --compat` prints a module-grouped report of all implemented APIs with stub annotations.
 
 ## Architecture
@@ -142,18 +143,25 @@ cargo run -- samples/pm_demo/pm_demo.exe    # GUI app
 WARPINE_HEADLESS=1 cargo run -- samples/hello/hello.exe   # Terminal fallback
 ```
 
-### 4. Run 4OS2 (interactive OS/2 command shell)
+### 4. Run the builtin CMD.EXE shell
+```bash
+cargo run -- CMD.EXE                      # Interactive shell (host terminal)
+cargo run -- CMD.EXE /C "ECHO Hello!"    # Run one command and exit
+cargo run -- CMD.EXE /K "VER"            # Run one command then stay interactive
+```
+
+### 5. Run 4OS2 (full-featured OS/2 command shell)
 ```bash
 cd samples/4os2 && ./fetch_source.sh && make && cd ../..
 cargo run -- samples/4os2/4os2.exe
 ```
 
-### 5. API compatibility report
+### 7. API compatibility report
 ```bash
 cargo run -- --compat
 ```
 
-### 6. Tracing
+### 8. Tracing
 
 `RUST_LOG` controls log verbosity. `WARPINE_TRACE` controls output format:
 
@@ -163,14 +171,14 @@ WARPINE_TRACE=strace RUST_LOG=debug cargo run -- samples/hello/hello.exe  # stra
 WARPINE_TRACE=json   RUST_LOG=debug cargo run -- samples/hello/hello.exe  # JSON lines
 ```
 
-### 7. GDB debugging
+### 9. GDB debugging
 ```bash
 cargo run -- --gdb 1234 samples/hello/hello.exe   # Start with GDB stub on port 1234
 # In another terminal:
 gdb -ex 'target remote :1234'                      # Attach with GDB
 ```
 
-### 8. Run tests and lint
+### 10. Run tests and lint
 ```bash
 cargo test                        # 466 unit tests (no KVM required)
 cargo test --test integration     # 9 end-to-end tests (requires /dev/kvm)
