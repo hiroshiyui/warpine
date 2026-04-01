@@ -1,0 +1,188 @@
+# OS/2 API ordinal map for the Warpine LX linker.
+#
+# Format:  MODULE.ORDINAL  SymbolName
+#
+# Modules and their MAGIC_API_BASE offsets:
+#   DOSCALLS  base 0        (MAGIC_API_BASE + ordinal)
+#   QUECALLS  base 1024     (MAGIC_API_BASE + 1024 + ordinal)
+#   PMWIN     base 2048     (MAGIC_API_BASE + 2048 + ordinal)
+#   PMGPI     base 3072     (MAGIC_API_BASE + 3072 + ordinal)
+#   KBDCALLS  base 4096     (MAGIC_API_BASE + 4096 + ordinal)
+#   VIOCALLS  base 5120     (MAGIC_API_BASE + 5120 + ordinal)
+#   SESMGR    base 6144     (MAGIC_API_BASE + 6144 + ordinal)
+#   NLS       base 7168     (MAGIC_API_BASE + 7168 + ordinal)
+#   MSG       base 8192     (MAGIC_API_BASE + 8192 + ordinal)
+#   MDM       base 10240    (MAGIC_API_BASE + 10240 + ordinal)
+#   UCONV     base 12288    (MAGIC_API_BASE + 12288 + ordinal)
+
+# ── DOSCALLS ─────────────────────────────────────────────────────────────────
+DOSCALLS.8    DosGetInfoSeg
+DOSCALLS.75   DosQueryFileMode16
+DOSCALLS.84   DosSetFileMode
+DOSCALLS.110  DosForceDelete
+DOSCALLS.111  DosKillThread
+DOSCALLS.209  DosSetMaxFH
+DOSCALLS.210  DosSetVerify
+DOSCALLS.212  DosError
+DOSCALLS.218  DosSetFileInfo
+DOSCALLS.219  DosSetPathInfo
+DOSCALLS.220  DosSetDefaultDisk
+DOSCALLS.221  DosSetFHState
+DOSCALLS.223  DosQueryPathInfo
+DOSCALLS.224  DosQueryHType
+DOSCALLS.225  DosQueryVerify
+DOSCALLS.226  DosDeleteDir
+DOSCALLS.227  DosScanEnv
+DOSCALLS.229  DosSleep
+DOSCALLS.230  DosGetDateTime
+DOSCALLS.231  DosDevConfig
+DOSCALLS.234  DosExit
+DOSCALLS.235  DosKillProcess
+DOSCALLS.236  DosSetPriority
+DOSCALLS.239  DosCreatePipe
+DOSCALLS.241  DosConnectNPipe
+DOSCALLS.243  DosCreateNPipe
+DOSCALLS.250  DosSetNPHState
+DOSCALLS.254  DosResetBuffer
+DOSCALLS.255  DosSetCurrentDir
+DOSCALLS.256  DosSetFilePtr
+DOSCALLS.257  DosClose
+DOSCALLS.258  DosCopy
+DOSCALLS.259  DosDelete
+DOSCALLS.260  DosDupHandle
+DOSCALLS.261  DosEditName
+DOSCALLS.263  DosFindClose
+DOSCALLS.264  DosFindFirst
+DOSCALLS.265  DosFindNext
+DOSCALLS.267  DOS16REQUESTVDD
+DOSCALLS.270  DosCreateDir
+DOSCALLS.271  DosMove
+DOSCALLS.272  DosSetFileSize
+DOSCALLS.273  DosOpen
+DOSCALLS.274  DosQueryCurrentDir
+DOSCALLS.275  DosQueryCurrentDisk
+DOSCALLS.276  DosQueryFHState
+DOSCALLS.277  DosQueryFSAttach
+DOSCALLS.278  DosQueryFSInfo
+DOSCALLS.279  DosQueryFileInfo
+DOSCALLS.280  DosWaitChild
+DOSCALLS.281  DosRead
+DOSCALLS.282  DosWrite
+DOSCALLS.283  DosExecPgm
+DOSCALLS.284  DosDevIOCtl
+DOSCALLS.285  DosFSCtl
+DOSCALLS.286  DosBeep
+DOSCALLS.289  DosSetProcessCp
+DOSCALLS.291  DosQueryCp
+DOSCALLS.292  DosSetDateTime
+DOSCALLS.299  DosAllocMem
+DOSCALLS.300  DosAllocSharedMem
+DOSCALLS.301  DosGetNamedSharedMem
+DOSCALLS.302  DosGetSharedMem
+DOSCALLS.304  DosFreeMem
+DOSCALLS.305  DosSetMem
+DOSCALLS.306  DosQueryMem
+DOSCALLS.311  DosCreateThread
+DOSCALLS.312  DosGetInfoBlocks
+DOSCALLS.317  DosDebug
+DOSCALLS.318  DosLoadModule
+DOSCALLS.319  DosQueryModuleHandle
+DOSCALLS.321  DosQueryProcAddr
+DOSCALLS.322  DosFreeModule
+DOSCALLS.323  DosQueryAppType
+DOSCALLS.324  DosCreateEventSem
+DOSCALLS.325  DosOpenEventSem
+DOSCALLS.326  DosCloseEventSem
+DOSCALLS.328  DosPostEventSem
+DOSCALLS.329  DosWaitEventSem
+DOSCALLS.331  DosCreateMutexSem
+DOSCALLS.332  DosOpenMutexSem
+DOSCALLS.333  DosCloseMutexSem
+DOSCALLS.334  DosRequestMutexSem
+DOSCALLS.335  DosReleaseMutexSem
+DOSCALLS.337  DosCreateMuxWaitSem
+DOSCALLS.339  DosCloseMuxWaitSem
+DOSCALLS.340  DosWaitMuxWaitSem
+DOSCALLS.342  DosDeleteMuxWaitSem
+DOSCALLS.348  DosQuerySysInfo
+DOSCALLS.349  DosWaitThread
+DOSCALLS.352  DosGetResource
+DOSCALLS.353  DosFreeResource
+DOSCALLS.354  DosSetExceptionHandler
+DOSCALLS.355  DosUnsetExceptionHandler
+DOSCALLS.356  DosRaiseException
+DOSCALLS.357  DosUnwindException
+DOSCALLS.368  DosQuerySysState
+DOSCALLS.372  DosEnumAttribute
+DOSCALLS.373  DosQueryDBCSEnv
+DOSCALLS.378  DosSetSignalExceptionFocus
+DOSCALLS.380  DosEnterMustComplete
+DOSCALLS.381  DosExitMustComplete
+DOSCALLS.382  DosSetRelMaxFH
+DOSCALLS.397  DosQueryCtryInfo
+DOSCALLS.415  DosShutdown
+DOSCALLS.418  DosAcknowledgeSignalException
+DOSCALLS.425  DosFlatToSel
+DOSCALLS.426  DosSelToFlat
+DOSCALLS.428  DosSetFileLocks
+DOSCALLS.572  DosQueryResourceSize
+DOSCALLS.639  DosProtectSetFileLocks
+DOSCALLS.873  DosSetExtLIBPATH
+DOSCALLS.874  DosQueryExtLIBPATH
+
+# ── QUECALLS (ordinal relative to module, linker uses QUECALLS.N) ─────────────
+QUECALLS.9    DosReadQueue
+QUECALLS.10   DosPurgeQueue
+QUECALLS.11   DosCloseQueue
+QUECALLS.12   DosQueryQueue
+QUECALLS.14   DosWriteQueue
+QUECALLS.15   DosOpenQueue
+QUECALLS.16   DosCreateQueue
+
+# ── KBDCALLS ──────────────────────────────────────────────────────────────────
+KBDCALLS.4    KbdCharIn
+KBDCALLS.9    KbdStringIn
+KBDCALLS.10   KbdGetStatus
+
+# ── VIOCALLS ──────────────────────────────────────────────────────────────────
+VIOCALLS.3    VioGetAnsi
+VIOCALLS.5    VioSetAnsi
+VIOCALLS.7    VioScrollUp
+VIOCALLS.8    VioScrollDn
+VIOCALLS.9    VioGetCurPos
+VIOCALLS.10   VioWrtCellStr
+VIOCALLS.15   VioSetCurPos
+VIOCALLS.19   VioWrtTTY
+VIOCALLS.21   VioGetMode
+VIOCALLS.22   VioSetMode
+VIOCALLS.24   VioReadCellStr
+VIOCALLS.26   VioWrtNAttr
+VIOCALLS.28   VioWrtCellStr2
+VIOCALLS.31   VioGetBuf
+VIOCALLS.32   VioSetCurType
+VIOCALLS.33   VioGetCurType
+VIOCALLS.39   VioCheckCharType
+VIOCALLS.42   VioSetCp
+VIOCALLS.43   VioShowBuf
+VIOCALLS.46   VioGetConfig
+VIOCALLS.48   VioWrtCharStrAtt
+VIOCALLS.51   VioSetState
+VIOCALLS.52   VioWrtNCell
+
+# ── NLS (ordinal relative to module, linker uses NLS.N) ──────────────────────
+NLS.5         NlsQueryCp
+NLS.6         NlsQueryCtryInfo
+NLS.7         NlsMapCase
+NLS.8         NlsGetDBCSEv
+NLS.9         NlsDosMapCase
+
+# ── UCONV (ordinal relative to module, linker uses UCONV.N) ──────────────────
+UCONV.1       UniCreateUconvObject
+UCONV.2       UniFreeUconvObject
+UCONV.3       UniUconvToUcs
+UCONV.4       UniUconvFromUcs
+UCONV.6       UniMapCpToUcsCp
+
+# ── MDM (ordinal relative to module, linker uses MDM.N) ──────────────────────
+MDM.1         mciSendCommand
+MDM.3         mciSendString
