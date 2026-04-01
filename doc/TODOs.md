@@ -40,31 +40,163 @@ DLL binaries, no ROM dumps, and no disassembly of original OS/2 system libraries
 ### Rust Guest Toolchain (`i686-warpine-os2`)
 
 A complete toolchain for writing Warpine guest programs in Rust, producing valid
-LX binaries without Open Watcom. Three components:
+LX binaries without Open Watcom. Three components with strict dependency order:
 
-#### A — Custom Rust Target Spec
-- [ ] `targets/i686-warpine-os2.json` — `llvm-target: i686-unknown-none`, 32-bit static, `panic-strategy: abort`, custom linker `lx-link`
-- [ ] Verify `cargo build -Z build-std=core,alloc --target i686-warpine-os2` emits correct i686 ELF objects
+```
+Phase 1  →  lx-link  (src/bin/lx_link.rs)
+Phase 2  →  targets/i686-warpine-os2.json
+Phase 3  →  crates/warpine-os2-sys
+Phase 4  →  crates/warpine-os2-rt
+Phase 5  →  crates/warpine-os2
+Phase 6  →  samples/rust_hello/
+Phase 7  →  tests/integration.rs  test_rust_hello
+```
+
+#### Repo layout (new files)
+
+```
+targets/
+  i686-warpine-os2.json       ← custom Rust target spec
+  os2api.def                  ← ordinal map: "DOSCALLS.282 DosWrite"
+                                 generated from api_registry.rs REGISTRY table
+src/bin/
+  lx_link.rs                  ← host ELF→LX linker; shares src/lx/header.rs
+crates/
+  warpine-os2-sys/            ← raw extern "system" + _Optlink macro
+  warpine-os2-rt/             ← _start, panic_handler, global_allocator
+  warpine-os2/                ← safe ergonomic wrappers
+samples/rust_hello/           ← #![no_std] smoke-test guest binary
+rust-toolchain.toml           ← pins nightly + rust-src component
+```
+
+Root `Cargo.toml` gains `[workspace]` block listing the three new crates.
+`lx-link` is a second `[[bin]]` in the warpine package (no separate crate needed).
+
+---
+
+#### A — Custom Rust Target Spec (`targets/i686-warpine-os2.json`)
+
+- [ ] Create `targets/i686-warpine-os2.json`:
+  - `"llvm-target": "i686-unknown-none"`, `"arch": "x86"`, `"os": "none"`
+  - `"linker-flavor": "ld"`, `"linker": "lx-link"` — rustc passes raw `-o`/`.o` args, no `-Wl,` wrapping
+  - `"relocation-model": "static"` — no PLT; all cross-crate calls become `R_386_32` absolute
+  - `"panic-strategy": "abort"`, `"no-default-libraries": true`, `"disable-redzone": true`
+  - `"dynamic-linking": false`, `"needs-plt": false`
+  - `"exe-suffix": ".exe"`
+- [ ] Add `rust-toolchain.toml` pinning nightly + `rust-src` component
+- [ ] Verify `cargo build -Z build-std=core,alloc --target targets/i686-warpine-os2.json -Z build-std-features=compiler-builtins-mem` emits correct i686 ELF objects
+
+---
 
 #### B — LX Linker (`src/bin/lx_link.rs`)
-This is the core engineering effort. Reads ELF relocatable objects (via the `object`
-crate) and writes a valid LX binary.
 
-- [ ] Read ELF `.o` files — sections, symbols, relocations
-- [ ] Parse ordinal `.def` file mapping symbol names to `MODULE.ordinal` pairs
-- [ ] Lay out LX object table (code + data segments, page-aligned)
-- [ ] Generate LX page map from section content
-- [ ] Convert ELF relocations → LX fixup records (`FIXUP_RECORD_TYPE_INTERNAL` for intra-object refs, `FIXUP_RECORD_TYPE_IMPORT_BY_ORDINAL` for API calls)
-- [ ] Write LX import table (module name list + ordinal entries)
-- [ ] Write LX header and emit the final binary
-- [ ] Integration test: link a minimal `DosWrite` + `DosExit` object → run on Warpine
+This is the core engineering effort (~8–10 days). Reads ELF relocatable objects
+(via the `object` crate — add to `Cargo.toml`) and writes a valid LX binary.
 
-#### C — `warpine-os2` Crate
-- [ ] `warpine-os2-sys` — raw `extern "system"` declarations for all DOSCALLS ordinals; `extern "system"` for VIOCALLS / KBDCALLS Pascal-convention APIs
-- [ ] `warpine-os2-rt` — `#[panic_handler]` → `DosExit(1,1)`; `#[global_allocator]` backed by `DosAllocMem` / `DosFreeMem`; `_start` entry point
-- [ ] `warpine-os2` — safe ergonomic wrappers (file I/O, memory, threads, semaphores, VIO)
-- [ ] `_Optlink` calling convention shim for PMWIN callbacks (first 3 args in EAX/EDX/ECX)
-- [ ] Sample: `samples/rust_hello/` — `#![no_std]` Rust guest writing to stdout via `DosWrite`, runs on Warpine
+**Internal module structure:**
+
+| Module | Responsibility |
+|--------|----------------|
+| `args` | CLI: `.o` files, `-o out.exe`, `--def api.def`; silently ignore unknown flags |
+| `elf_reader` | Sections / symbols / relocs via `object` crate |
+| `def_parser` | `"DOSCALLS.282 DosWrite"` → `HashMap<name,(module,ordinal)>` |
+| `linker_state` | Merge `.text`/`.data`, assign VAs, build global symbol table |
+| `reloc_processor` | ELF reloc → `ResolvedReloc::Internal` or `::Import` |
+| `lx_writer` | Serialize MZ stub + LX structs using types from `src/lx/header.rs` |
+
+**Object layout:**
+- Object 1 (code): base `0x00010000`, flags `READABLE|EXECUTABLE|BIG`
+- Object 2 (data+bss): base `0x00020000`, flags `READABLE|WRITABLE|BIG`
+- LX header field `page_offset_shift = 0` (direct byte offsets)
+- `esp_object=2`, `esp = data_size + bss_size - 64` (provisional stack top)
+
+**Relocation rules:**
+- `R_386_PC32` within same merged section → patch in place, **no LX fixup needed**
+- `R_386_32` to internal symbol → `source_type=0x07`, `LxFixupTarget::InternalOffset`
+- `R_386_32`/`R_386_PC32` to import → `source_type=0x07`/`0x08`, `LxFixupTarget::ExternalOrdinal`
+- Import resolution must mirror `resolve_import()` in `descriptors.rs` exactly;
+  `os2api.def` is generated from the REGISTRY table in `api_registry.rs`
+
+**LX file layout:**
+```
+[0x00] MZ stub (64 bytes, e_lfanew = 0x40)
+[0x40] LX header
+       object table (2 × 24 bytes)
+       page map entries
+       entry table (1 bundle → _start at object 1 offset 0)
+       fixup page table + fixup record stream
+       imported modules name table ("DOSCALLS", "VIOCALLS", …)
+       raw page data (code pages then data pages)
+```
+
+**Install for use:**
+```bash
+cargo build --bin lx-link
+# or: cargo install --path . --bin lx-link
+export PATH="$PATH:$(pwd)/target/debug"
+```
+
+- [ ] `args` module: parse CLI flags, collect `.o` paths
+- [ ] `elf_reader` module: extract sections / symbols / relocations via `object` crate
+- [ ] `def_parser` module + generate `targets/os2api.def` from `api_registry.rs`
+- [ ] `linker_state` module: merge sections, assign VAs, build symbol table
+- [ ] `reloc_processor` module: classify and resolve all relocations
+- [ ] `lx_writer` module: serialize complete LX binary
+- [ ] Unit test — DEF parser roundtrip
+- [ ] Unit test — ELF reader section/symbol extraction
+- [ ] Unit test — section merge contrib_map offsets
+- [ ] Unit test — LX roundtrip: `LxFile::open()` parses `lx-link` output correctly
+- [ ] Integration test: link minimal `DosWrite` + `DosExit` object → run on Warpine
+
+---
+
+#### C — `warpine-os2` Crate Family
+
+**`crates/warpine-os2-sys`** — raw FFI, `#![no_std]`, no `#[link]` needed:
+- [ ] `extern "system"` blocks for all DOSCALLS ordinals (sourced from `api_registry.rs`)
+- [ ] `extern "system"` blocks for VIOCALLS / KBDCALLS Pascal-convention APIs
+- [ ] `_Optlink` macro via `core::arch::global_asm!` for PMWIN callbacks
+  (first 3 args in EAX/EDX/ECX; shim pushes them to stack before calling Rust fn)
+- [ ] OS/2 primitive types: `APIRET`, `HFILE`, `ULONG`, `PVOID`, `PCSZ`, etc.
+
+**`crates/warpine-os2-rt`** — runtime support:
+
+Stack layout on entry to `_start` (from `vcpu.rs` `create_initial_vcpu()`):
+```
+[ESP+0]  EXIT_TRAP_ADDR  (return address — never used)
+[ESP+4]  hmod = 0
+[ESP+8]  reserved = 0
+[ESP+12] env_ptr
+[ESP+16] cmdline_ptr
+```
+`_start` ignores all stack args and calls `os2_main()` then `DosExit`.
+
+- [ ] `#[no_mangle] pub unsafe extern "C" fn _start() -> !` — calls `os2_main()` then `DosExit(1, code)`
+- [ ] `#[panic_handler]` — calls `DosExit(1, 1)` unconditionally
+- [ ] `#[global_allocator]` backed by `DosAllocMem(PAG_READ|PAG_WRITE|PAG_COMMIT=0x13)` / `DosFreeMem`
+  — verify arg order against `doscalls.rs` `dos_alloc_mem` **before** writing
+
+**`crates/warpine-os2`** — safe wrappers, `#![no_std]` + `extern crate alloc`:
+- [ ] `mod file` — `DosOpen`/`DosRead`/`DosWrite`/`DosClose` → `Result<>`; `write_stdout()`
+- [ ] `mod memory` — `DosAllocMem`/`DosFreeMem`/`DosSetMem`
+- [ ] `mod process` — `DosExit`, `DosGetInfoSeg`
+- [ ] `mod thread` — `DosCreateThread`, `DosSuspendThread`, `DosResumeThread`
+- [ ] `mod vio` — `VioWrtTTY`, `VioGetCurPos` (feature-gated)
+
+**`samples/rust_hello/`:**
+- [ ] `#![no_std] #![no_main]` guest binary: `os2_main()` writes "Hello from Rust on Warpine!\r\n" via `DosWrite` and returns 0
+- [ ] Verify `cargo run -- samples/rust_hello/…/rust_hello.exe` prints the message and exits 0
+
+---
+
+#### Key Risks
+
+| Risk | Mitigation |
+|------|-----------|
+| Unexpected ELF reloc types from LLVM | `readelf -r` on first `.o`; `lx-link` errors clearly on unknown types |
+| `R_386_PC32` to imports | Use `source_type=0x08` (self-relative) LX fixup; `MAGIC_API_BASE` always in 32-bit range |
+| `DosAllocMem` arg count mismatch | Read `doscalls.rs` `dos_alloc_mem` before writing sys crate |
+| `lx-link` not on PATH at link time | CI step: `cargo build --bin lx-link && export PATH=…` before guest builds |
 
 ---
 
