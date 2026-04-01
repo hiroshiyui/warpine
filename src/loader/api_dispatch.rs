@@ -68,9 +68,12 @@ impl super::Loader {
         };
 
         let ret_val = match &result {
-            ApiResult::Normal(v) => { debug!(ret = v, "return"); *v }
+            ApiResult::Normal(v)               => { debug!(ret = v, "return"); *v }
             ApiResult::Callback { wnd_proc, .. } => { debug!(wnd_proc, "callback"); 0 }
-            ApiResult::CallGuest { addr, .. } => { debug!(addr, "call_guest"); 0 }
+            ApiResult::CallGuest { addr, .. }  => { debug!(addr, "call_guest"); 0 }
+            ApiResult::ExceptionDispatch { handler_addr, .. } => {
+                debug!(handler_addr, "exception_dispatch"); 0
+            }
         };
 
         // Push to ring buffer unconditionally (populated even in release/info builds).

@@ -32,6 +32,7 @@ pub mod crash_dump;
 pub mod api_ring;
 pub mod gdb_stub;
 pub mod uconv;
+mod seh;
 
 pub use constants::*;
 pub use mutex_ext::MutexExt;
@@ -64,6 +65,18 @@ pub struct KbdKeyInfo {
     pub state: u16,
 }
 
+/// CPU context saved at the time of a hardware fault or software exception raise.
+///
+/// Used by `FrameKind::ExceptionHandler` to restore the full register state
+/// when an exception handler returns `XCPT_CONTINUE_EXECUTION`.
+#[derive(Clone, Debug)]
+pub(crate) struct FaultContext {
+    pub eax: u32, pub ebx: u32, pub ecx: u32, pub edx: u32,
+    pub esi: u32, pub edi: u32, pub ebp: u32,
+    pub esp: u32, pub eip: u32, pub eflags: u32,
+    pub cs: u16, pub ds: u16, pub es: u16, pub fs: u16, pub gs: u16, pub ss: u16,
+}
+
 /// Discriminates callback frames so the CALLBACK_RET_TRAP handler knows what
 /// to do with the guest's EAX on return.
 pub(crate) enum FrameKind {
@@ -78,6 +91,24 @@ pub(crate) enum FrameKind {
     /// Return value is ignored — OS/2 does not allow a DLL to refuse unload.
     /// After the call the guest pages in `object_bases` are freed.
     InitTermUnload { hmod: u32, object_bases: Vec<u32> },
+    /// An OS/2 exception handler callback (SEH).
+    ///
+    /// EAX on return is `XCPT_CONTINUE_EXECUTION` (restore fault context and
+    /// resume), `XCPT_CONTINUE_SEARCH` (try the next handler in the chain), or
+    /// any other value (treated as XCPT_CONTINUE_SEARCH).
+    ExceptionHandler {
+        /// Saved CPU state at fault time; restored on XCPT_CONTINUE_EXECUTION.
+        saved: Box<FaultContext>,
+        /// Pointer to the next `EXCEPTIONREGISTRATIONRECORD` to invoke if the
+        /// handler returns XCPT_CONTINUE_SEARCH (XCPT_CHAIN_END = no more).
+        next_handler: u32,
+        /// Guest pointer to the `EXCEPTIONREPORTRECORD` passed to each handler.
+        exc_report: u32,
+        /// Guest pointer to the `CONTEXTRECORD` passed to each handler.
+        ctx_record: u32,
+        /// Guest memory blocks to free once exception handling is complete.
+        guest_allocs: Vec<u32>,
+    },
 }
 
 pub(crate) struct CallbackFrame {
@@ -105,6 +136,28 @@ pub(crate) enum ApiResult {
         hmod:         u32,
         phmod:        u32,
         object_bases: Vec<u32>,
+    },
+    /// Invoke an OS/2 exception handler as a guest callback.
+    ///
+    /// Emitted by `DosRaiseException` and by the IDT exception dispatch path.
+    /// `vcpu.rs` converts this into a `CallbackFrame { FrameKind::ExceptionHandler }`
+    /// and sets up the guest stack/IP to call the handler with the four standard
+    /// OS/2 exception-handler arguments.
+    ExceptionDispatch {
+        /// Guest function pointer of the handler to call.
+        handler_addr: u32,
+        /// Guest pointer to the `EXCEPTIONREPORTRECORD`.
+        exc_report:   u32,
+        /// Guest pointer to the current `EXCEPTIONREGISTRATIONRECORD`.
+        reg_rec:      u32,
+        /// Guest pointer to the `CONTEXTRECORD`.
+        ctx_record:   u32,
+        /// Saved CPU state (used to restore on XCPT_CONTINUE_EXECUTION).
+        saved:        Box<FaultContext>,
+        /// Next handler record pointer (for XCPT_CONTINUE_SEARCH walk).
+        next_handler: u32,
+        /// Guest allocations to free when handling is complete.
+        guest_allocs: Vec<u32>,
     },
 }
 

@@ -67,8 +67,6 @@ Goal: raise the fraction of real OS/2 applications that run correctly.
 **DLL INITTERM fully complete** — load-time (`flag=0`) and unload-time (`flag=1`) calls both implemented via vCPU call-injection. `FrameKind::InitTerm` handles load; `FrameKind::InitTermUnload` handles unload and frees guest pages after the call. `managers::decrement_refcount` returns `(object_bases, initterm_addr)` atomically; `dos_free_module` returns `ApiResult`. OS/2 ignores the unload return value — pages are freed unconditionally.
 
 ### DOSCALLS Long Tail
-- [ ] **Structured Exception Handling** — real per-thread handler chain; `DosRaiseException`; `DosUnwindException`
-- [ ] **NLS / DBCS** — `DosQueryDBCSEnv` (DBCS lead-byte table); `DosMapCase`/`NlsMapCase` DBCS support (CP932/949/950 require multi-byte pair handling)
 
 ### Unicode-Internal Architecture (long-term goal)
 Convert Warpine's internal string representation to UTF-8, with codepage↔UTF-8 conversion at every guest/host API boundary. Modelled on Wine's ANSI→UTF-16 approach.
@@ -126,9 +124,6 @@ In OS/2 VIO text mode a DBCS character occupies two consecutive screen cells: ce
 | `VioCheckCharType` mid-row query | Scan full row from col 0, not just the queried position |
 
 ---
-
-### Code Page and DBCS Support
-- [ ] Full `DosMapCase` for non-Latin codepages (CP852, CP866, CP932, etc.)
 
 ### PM Menu System
 - [ ] **Menu template parsing** — load `MENUTEMPLATE` resource from LX binary; create `WC_MENU` window hierarchy

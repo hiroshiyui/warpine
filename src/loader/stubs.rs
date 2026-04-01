@@ -30,16 +30,36 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// DosSetExceptionHandler (ordinal 354): install exception handler.
-    /// Minimal: store the handler registration record address but don't invoke it.
+    /// DosSetExceptionHandler (ordinal 354): push a handler record onto the
+    /// per-thread exception chain at TIB+0x00 (tib_pexchain).
+    ///
+    /// Sets `preg_rec->prev_structure = TIB[0x00]`, then `TIB[0x00] = preg_rec`.
     pub fn dos_set_exception_handler(&self, preg_rec: u32) -> u32 {
         debug!("  DosSetExceptionHandler(pRegRec=0x{:08X})", preg_rec);
+        if preg_rec == 0 {
+            return ERROR_INVALID_PARAMETER;
+        }
+        let cur_head = self.guest_read::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET)
+            .unwrap_or(XCPT_CHAIN_END);
+        // Link new record to the current chain head.
+        self.guest_write::<u32>(preg_rec + XERREC_PREV, cur_head).unwrap();
+        // New record becomes the chain head.
+        self.guest_write::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET, preg_rec).unwrap();
         NO_ERROR
     }
 
-    /// DosUnsetExceptionHandler (ordinal 355): remove exception handler.
+    /// DosUnsetExceptionHandler (ordinal 355): pop a handler record from the
+    /// per-thread exception chain at TIB+0x00 (tib_pexchain).
+    ///
+    /// Sets `TIB[0x00] = preg_rec->prev_structure`.
     pub fn dos_unset_exception_handler(&self, preg_rec: u32) -> u32 {
         debug!("  DosUnsetExceptionHandler(pRegRec=0x{:08X})", preg_rec);
+        if preg_rec == 0 {
+            return ERROR_INVALID_PARAMETER;
+        }
+        let prev = self.guest_read::<u32>(preg_rec + XERREC_PREV)
+            .unwrap_or(XCPT_CHAIN_END);
+        self.guest_write::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET, prev).unwrap();
         NO_ERROR
     }
 
@@ -221,23 +241,66 @@ impl super::Loader {
     /// DosMapCase (ordinal 305): in-place uppercase of a guest byte string.
     ///
     /// Uses the active process codepage for non-ASCII bytes so that accented
-    /// characters in CP850/CP852 (and Windows SBCS codepages) are uppercased
-    /// correctly.  Multi-char Unicode results (e.g. ß→SS) are left unchanged,
-    /// matching OS/2's fixed-width NLS behaviour.
+    /// characters in CP850/CP852/CP866 (and Windows SBCS codepages) are uppercased
+    /// correctly.  For DBCS codepages (CP932/936/949/950) adjacent lead+trail pairs
+    /// are decoded, uppercased as a Unicode scalar, and re-encoded as a pair.
+    /// Multi-char Unicode results (e.g. ß→SS) are left unchanged, matching OS/2's
+    /// fixed-width NLS behaviour.
     pub fn dos_map_case(&self, cb: u32, _p_ctry_code: u32, p_str: u32) -> u32 {
         debug!("  DosMapCase(cb={}, pStr=0x{:08X})", cb, p_str);
         if p_str != 0 {
             let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
-            for i in 0..cb {
-                if let Some(b) = self.guest_read::<u8>(p_str + i) {
-                    let upper = super::codepage::cp_map_case_upper(b, cp);
-                    if upper != b {
-                        self.guest_write::<u8>(p_str + i, upper);
-                    }
-                }
-            }
+            self.map_case_guest_buf(p_str, cb, cp);
         }
         NO_ERROR
+    }
+
+    /// In-place uppercase of a guest byte buffer using the given codepage.
+    ///
+    /// SBCS codepages: maps each byte individually via `cp_map_case_upper`.
+    /// DBCS codepages (CP932/936/949/950): when a lead byte is detected the
+    /// following trail byte is consumed as a pair, decoded to Unicode, uppercased
+    /// (1:1 only), and re-encoded; the pair index advances by 2.  An orphaned lead
+    /// byte at the end of the buffer is left unchanged.
+    pub fn map_case_guest_buf(&self, p_str: u32, cb: u32, cp: u32) {
+        use super::codepage::{cp_map_case_upper, cp_to_encoding, decode_dbcs};
+        use super::locale::is_dbcs_lead_byte;
+
+        let mut i = 0u32;
+        while i < cb {
+            let Some(b) = self.guest_read::<u8>(p_str + i) else { break };
+
+            if is_dbcs_lead_byte(b, cp) && i + 1 < cb {
+                // DBCS pair: read trail byte and attempt Unicode case mapping.
+                if let Some(trail) = self.guest_read::<u8>(p_str + i + 1) {
+                    let ch = decode_dbcs(b, trail, cp);
+                    if ch != '\u{FFFD}' {
+                        let mut upper_it = ch.to_uppercase();
+                        let upper_ch = upper_it.next().unwrap_or(ch);
+                        let is_single = upper_it.next().is_none();
+                        if is_single && upper_ch != ch
+                            && let Some(enc) = cp_to_encoding(cp)
+                        {
+                            let s = upper_ch.to_string();
+                            let (encoded, _, _) = enc.encode(&s);
+                            if encoded.len() == 2 {
+                                let _ = self.guest_write::<u8>(p_str + i, encoded[0]);
+                                let _ = self.guest_write::<u8>(p_str + i + 1, encoded[1]);
+                            }
+                        }
+                    }
+                    i += 2;
+                    continue;
+                }
+            }
+
+            // SBCS byte (or orphaned DBCS lead at end of buffer).
+            let upper = cp_map_case_upper(b, cp);
+            if upper != b {
+                let _ = self.guest_write::<u8>(p_str + i, upper);
+            }
+            i += 1;
+        }
     }
 
     // ── Step 4: Module Loading Stubs ──
@@ -1310,5 +1373,73 @@ mod tests {
         }
         // DLL must already be removed from manager (pages deferred, but DLL entry gone)
         assert!(loader.shared.dll_mgr.lock_or_recover().find_by_handle(h).is_none());
+    }
+
+    // ── dos_map_case / map_case_guest_buf ─────────────────────────────────────
+
+    /// Allocate a small guest buffer, write `data`, call `dos_map_case`, read back.
+    fn run_map_case(loader: &Loader, cp: u32, data: &[u8]) -> Vec<u8> {
+        use std::sync::atomic::Ordering;
+        loader.shared.active_codepage.store(cp, Ordering::Relaxed);
+        let buf = loader.shared.mem_mgr.lock_or_recover().alloc(data.len() as u32 + 4).unwrap();
+        loader.guest_write_bytes(buf, data);
+        loader.dos_map_case(data.len() as u32, 0, buf);
+        (0..data.len()).map(|i| loader.guest_read::<u8>(buf + i as u32).unwrap()).collect()
+    }
+
+    // ASCII lowercase → uppercase in CP437.
+    #[test]
+    fn test_dos_map_case_ascii_cp437() {
+        let loader = Loader::new_mock();
+        let result = run_map_case(&loader, 437, b"hello");
+        assert_eq!(result, b"HELLO");
+    }
+
+    // CP850: é (0x82) → É (0x90)
+    #[test]
+    fn test_dos_map_case_cp850_e_acute() {
+        let loader = Loader::new_mock();
+        let result = run_map_case(&loader, 850, &[0x82]);
+        assert_eq!(result, &[0x90]);
+    }
+
+    // CP866: Cyrillic а (0xA0) → А (0x80)
+    #[test]
+    fn test_dos_map_case_cp866_cyrillic() {
+        let loader = Loader::new_mock();
+        // "аб" in CP866: 0xA0 0xA1 → "АБ": 0x80 0x81
+        let result = run_map_case(&loader, 866, &[0xA0, 0xA1]);
+        assert_eq!(result, &[0x80, 0x81],
+            "CP866 аб should uppercase to АБ");
+    }
+
+    // CP932 (Shift-JIS): DBCS pair あ (0x82 0xA0, U+3042) — no case variant →
+    // bytes unchanged.
+    #[test]
+    fn test_dos_map_case_cp932_hiragana_unchanged() {
+        let loader = Loader::new_mock();
+        // あ has no uppercase variant in Unicode; bytes must be unchanged.
+        let result = run_map_case(&loader, 932, &[0x82, 0xA0]);
+        assert_eq!(result, &[0x82, 0xA0],
+            "CP932 あ (no case) must be unchanged");
+    }
+
+    // CP932 mixed: ASCII before DBCS pair.
+    #[test]
+    fn test_dos_map_case_cp932_mixed_ascii_and_dbcs() {
+        let loader = Loader::new_mock();
+        // 'a' (0x61) followed by DBCS あ (0x82 0xA0)
+        let result = run_map_case(&loader, 932, &[0x61, 0x82, 0xA0]);
+        assert_eq!(result[0], b'A', "ASCII 'a' must uppercase to 'A'");
+        assert_eq!(result[1], 0x82, "DBCS lead byte must be unchanged");
+        assert_eq!(result[2], 0xA0, "DBCS trail byte must be unchanged");
+    }
+
+    // Null pointer → NO_ERROR, no crash.
+    #[test]
+    fn test_dos_map_case_null_ptr() {
+        use super::super::constants::NO_ERROR;
+        let loader = Loader::new_mock();
+        assert_eq!(loader.dos_map_case(4, 0, 0), NO_ERROR);
     }
 }

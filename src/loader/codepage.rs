@@ -171,12 +171,13 @@ pub fn cp_map_case_upper(byte: u8, cp: u32) -> u8 {
         437 => map_case_sbcs(byte, &CP437_UPPER),
         850 => map_case_sbcs(byte, &CP850_UPPER),
         852 => map_case_sbcs(byte, &CP852_UPPER),
-        // DBCS: a single byte may be a multi-byte lead byte — cannot case-map.
-        932 | 949 | 950 => byte,
+        // DBCS: a single byte may be a multi-byte lead byte — cannot case-map
+        // in isolation.  Pair-level mapping is handled by `map_case_guest_buf`.
+        932 | 936 | 949 | 950 => byte,
         _ => {
-            // Windows SBCS (1250–1258): decode single byte → Unicode →
-            // uppercase (1:1 only) → re-encode.
-            if matches!(cp, 1250..=1258) && let Some(enc) = cp_to_encoding(cp) {
+            // CP866 (IBM Cyrillic DOS) and Windows SBCS (1250–1258): decode
+            // single byte → Unicode → uppercase (1:1 only) → re-encode.
+            if let Some(enc) = cp_to_encoding(cp) {
                 let buf = [byte];
                 let (decoded, _) = enc.decode_without_bom_handling(&buf);
                 if let Some(ch) = decoded.chars().next() {
@@ -272,6 +273,7 @@ pub fn cp_encode(s: &str, cp: u32) -> Vec<u8> {
 /// will return `None` here.
 pub fn cp_to_encoding(cp: u32) -> Option<&'static encoding_rs::Encoding> {
     match cp {
+        866  => Some(encoding_rs::IBM866),
         932  => Some(encoding_rs::SHIFT_JIS),
         936  => Some(encoding_rs::GBK),
         949  => Some(encoding_rs::EUC_KR),
@@ -501,6 +503,36 @@ mod tests {
     fn test_map_case_upper_dbcs_unchanged() {
         assert_eq!(cp_map_case_upper(0x82, 932), 0x82,
             "CP932 (DBCS) single byte must be returned unchanged");
+    }
+
+    // CP936 (DBCS): single byte must be returned unchanged.
+    #[test]
+    fn test_map_case_upper_cp936_dbcs_unchanged() {
+        assert_eq!(cp_map_case_upper(0xC4, 936), 0xC4,
+            "CP936 (DBCS) single byte must be returned unchanged");
+    }
+
+    // CP866 (IBM Cyrillic DOS): а (0xA0=U+0430) → А (0x80=U+0410)
+    #[test]
+    fn test_map_case_upper_cp866_cyrillic_a() {
+        // CP866: 0xA0 = Cyrillic small а (U+0430), uppercase А = 0x80 (U+0410)
+        assert_eq!(cp_map_case_upper(0xA0, 866), 0x80,
+            "CP866 0xA0 (а) should uppercase to 0x80 (А)");
+    }
+
+    // CP866 (IBM Cyrillic DOS): я (0xAF=U+044F) → Я (0x8F=U+042F)
+    #[test]
+    fn test_map_case_upper_cp866_cyrillic_ya() {
+        // CP866: 0xAF = Cyrillic small я (U+044F), uppercase Я = 0x8F (U+042F)
+        assert_eq!(cp_map_case_upper(0xAF, 866), 0x8F,
+            "CP866 0xAF (я) should uppercase to 0x8F (Я)");
+    }
+
+    // CP866: already-uppercase А (0x80) must be unchanged.
+    #[test]
+    fn test_map_case_upper_cp866_uppercase_unchanged() {
+        assert_eq!(cp_map_case_upper(0x80, 866), 0x80,
+            "CP866 0x80 (А) is already uppercase — must be unchanged");
     }
 
     // Unknown codepage: byte returned unchanged.

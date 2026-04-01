@@ -152,7 +152,9 @@ pub const ERROR_MOD_NOT_FOUND: u32 = 126;
 pub const ERROR_PROC_NOT_FOUND: u32 = 127;
 pub const ERROR_ENVVAR_NOT_FOUND: u32 = 204;
 pub const ERROR_INIT_ROUTINE_FAILED: u32 = 199;
-pub const ERROR_INVALID_CODE_PAGE: u32 = 470;
+pub const ERROR_INVALID_PARAMETER:    u32 = 87;
+pub const ERROR_INVALID_CODE_PAGE:    u32 = 470;
+pub const ERROR_NESTING_NOT_ALLOWED:  u32 = 215;
 
 // ── VIO error codes ───────────────────────────────────────────────────────────
 pub const ERROR_VIO_ROW: u32 = 426; // Row parameter out of range
@@ -249,3 +251,88 @@ pub const MBID_IGNORE: u32 = 5;
 pub const MBID_YES:    u32 = 6;
 pub const MBID_NO:     u32 = 7;
 pub const MBID_ENTER:  u32 = 8;
+
+// ── OS/2 Structured Exception Handling (SEH) ─────────────────────────────────
+
+/// TIB byte offset of `tib_pexchain` (exception handler chain head pointer).
+pub const TIB_EXCHAIN_OFFSET: u32 = 0x00;
+/// Sentinel stored at the tail of the exception handler chain (no further handlers).
+pub const XCPT_CHAIN_END: u32 = 0xFFFF_FFFF;
+
+// Exception handler return values (from the handler function)
+/// Handler fixed the exception — resume at the fault address.
+pub const XCPT_CONTINUE_EXECUTION: u32 = 0xFFFF_FFFF;
+/// Handler did not handle the exception — try the next one in the chain.
+pub const XCPT_CONTINUE_SEARCH:    u32 = 0x0000_0001;
+
+// Exception report flags (fHandlerFlags in EXCEPTIONREPORTRECORD)
+pub const EH_NONCONTINUABLE: u32 = 0x0000_0001;
+pub const EH_UNWINDING:      u32 = 0x0000_0002;
+pub const EH_EXIT_UNWIND:    u32 = 0x0000_0004;
+pub const EH_NESTED_CALL:    u32 = 0x0000_0010;
+
+// CONTEXTRECORD.ContextFlags bits
+pub const CONTEXT_CONTROL:  u32 = 0x0001; // CS, EIP, EFLAGS, SS, ESP
+pub const CONTEXT_INTEGER:  u32 = 0x0002; // EAX, EBX, ECX, EDX, ESI, EDI, EBP
+pub const CONTEXT_SEGMENTS: u32 = 0x0004; // DS, ES, FS, GS
+pub const CONTEXT_FULL: u32 = CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS;
+
+// CONTEXTRECORD guest layout — byte offsets from record base
+// Offsets 0x04–0x8B are FPU env/save area (zeroed; not emulated here).
+pub const CTX_FLAGS:  u32 = 0x00;
+pub const CTX_GS:     u32 = 0x8C;
+pub const CTX_FS:     u32 = 0x90;
+pub const CTX_ES:     u32 = 0x94;
+pub const CTX_DS:     u32 = 0x98;
+pub const CTX_EDI:    u32 = 0x9C;
+pub const CTX_ESI:    u32 = 0xA0;
+pub const CTX_EAX:    u32 = 0xA4;
+pub const CTX_EBX:    u32 = 0xA8;
+pub const CTX_ECX:    u32 = 0xAC;
+pub const CTX_EDX:    u32 = 0xB0;
+pub const CTX_EBP:    u32 = 0xB4;
+pub const CTX_EIP:    u32 = 0xB8;
+pub const CTX_CS:     u32 = 0xBC;
+pub const CTX_EFLAGS: u32 = 0xC0;
+pub const CTX_ESP:    u32 = 0xC4;
+pub const CTX_SS:     u32 = 0xC8;
+/// Total size of the CONTEXTRECORD guest structure (0xCC bytes).
+pub const CONTEXT_RECORD_SIZE: u32 = 0xCC;
+
+// EXCEPTIONREPORTRECORD guest layout — byte offsets
+pub const ERR_NUM:    u32 = 0x00; // ExceptionNum (XCPT_* code)
+pub const ERR_FLAGS:  u32 = 0x04; // fHandlerFlags (EH_* bitmask)
+pub const ERR_NESTED: u32 = 0x08; // NestedExceptionReportRecord ptr
+pub const ERR_ADDR:   u32 = 0x0C; // ExceptionAddress
+pub const ERR_CPARMS: u32 = 0x10; // cParameters
+pub const ERR_PARAMS: u32 = 0x14; // ExceptionInfo[9] (9 × u32 = 36 bytes)
+/// Total size of the EXCEPTIONREPORTRECORD (0x38 bytes).
+pub const EXCEPTION_REPORT_SIZE: u32 = 0x38;
+
+// EXCEPTIONREGISTRATIONRECORD guest layout — byte offsets
+pub const XERREC_PREV:    u32 = 0x00; // prev_structure (next node toward chain end)
+pub const XERREC_HANDLER: u32 = 0x04; // ExceptionHandler function pointer
+
+// OS/2 exception codes (XCPT_*) — from IBM bseexpt.h / OS/2 Warp toolkit
+pub const XCPT_GUARD_PAGE_VIOLATION:    u32 = 0xC000_0001;
+pub const XCPT_UNABLE_TO_GROW_STACK:    u32 = 0xC000_0003;
+pub const XCPT_ACCESS_VIOLATION:        u32 = 0xC000_0005;
+pub const XCPT_IN_PAGE_ERROR:           u32 = 0xC000_0006;
+pub const XCPT_ILLEGAL_INSTRUCTION:     u32 = 0xC000_001C;
+pub const XCPT_INVALID_LOCK_SEQUENCE:   u32 = 0xC000_001E;
+pub const XCPT_FLOAT_DENORMAL_OPERAND:  u32 = 0xC000_0048;
+pub const XCPT_FLOAT_DIVIDE_BY_ZERO:    u32 = 0xC000_0049;
+pub const XCPT_FLOAT_INEXACT_RESULT:    u32 = 0xC000_004A;
+pub const XCPT_FLOAT_INVALID_OPERATION: u32 = 0xC000_004B;
+pub const XCPT_FLOAT_OVERFLOW:          u32 = 0xC000_004C;
+pub const XCPT_FLOAT_STACK_CHECK:       u32 = 0xC000_004D;
+pub const XCPT_FLOAT_UNDERFLOW:         u32 = 0xC000_004E;
+pub const XCPT_INTEGER_DIVIDE_BY_ZERO:  u32 = 0xC000_009B;
+pub const XCPT_INTEGER_OVERFLOW:        u32 = 0xC000_0097;
+pub const XCPT_PRIVILEGED_INSTRUCTION:  u32 = 0xC000_0096;
+pub const XCPT_DATATYPE_MISALIGNMENT:   u32 = 0xC000_009E;
+pub const XCPT_BREAKPOINT:              u32 = 0xC000_0009;
+pub const XCPT_SINGLE_STEP:             u32 = 0xC000_000A;
+pub const XCPT_SIGNAL:                  u32 = 0xC001_0003;
+/// Catch-all for unclassified hardware faults.
+pub const XCPT_FATAL_EXCEPTION:         u32 = 0xC000_FFFF;

@@ -318,9 +318,9 @@ static REGISTRY: &[ApiEntry] = &[
     ApiEntry { ordinal: 355, module: "DOSCALLS", name: "DosUnsetExceptionHandler", argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_unset_exception_handler(a[0])) },
     ApiEntry { ordinal: 356, module: "DOSCALLS", name: "DosRaiseException", argc: 1,
-               handler: |_l,_v,_i,_a| { debug!("DosRaiseException stub"); ApiResult::Normal(0) } },
-    ApiEntry { ordinal: 357, module: "DOSCALLS", name: "DosUnwindException", argc: 3,
-               handler: |_l,_v,_i,_a| { debug!("DosUnwindException stub"); ApiResult::Normal(0) } },
+               handler: |l,_v,_i,a| l.dos_raise_exception(a[0]) },
+    ApiEntry { ordinal: 357, module: "DOSCALLS", name: "DosUnwindException", argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_unwind_exception(a[0],a[1],a[2],a[3])) },
 
     // ── DOSCALLS — process state / signals ───────────────────────────────
     ApiEntry { ordinal: 368, module: "DOSCALLS", name: "DosQuerySysState", argc: 5,
@@ -396,12 +396,7 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| {
                    let (cb, pch) = (a[0], a[2]);
                    let cp = l.shared.active_codepage.load(Ordering::Relaxed);
-                   for i in 0..cb {
-                       if let Some(b) = l.guest_read::<u8>(pch + i) {
-                           let upper = super::codepage::cp_map_case_upper(b, cp);
-                           if upper != b { let _ = l.guest_write::<u8>(pch + i, upper); }
-                       }
-                   }
+                   l.map_case_guest_buf(pch, cb, cp);
                    ApiResult::Normal(0)
                } },
     ApiEntry { ordinal: NLS_BASE + 8, module: "NLS", name: "NlsGetDBCSEv",     argc: 3,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::constants::*;
-use super::{ApiResult, CallbackFrame, FrameKind, MutexExt};
+use super::{ApiResult, CallbackFrame, FaultContext, FrameKind, MutexExt};
 use super::crash_dump::CrashContext;
 use super::gdb_stub::{GdbResumeCmd, GdbStopInfo, GdbVcpuStopReason};
 use crate::lx::LxFile;
@@ -49,6 +49,9 @@ impl super::Loader {
         self.guest_write_bytes(env_addr, &env_block).expect("setup_guest: env write OOB");
         // TIB2 is placed right after TIB (TIB is ~0x40 bytes, TIB2 at TIB_BASE + 0x40)
         let tib2_addr = TIB_BASE + 0x40;
+        // tib_pexchain (TIB+0x00): head of the SEH handler chain; XCPT_CHAIN_END = no handlers.
+        self.guest_write::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET, XCPT_CHAIN_END)
+            .expect("setup_guest: TIB.pexchain OOB");
         self.guest_write::<u32>(TIB_BASE + 0x0C, tib2_addr).expect("setup_guest: TIB.ptib2 OOB"); // tib_ptib2
         self.guest_write::<u32>(TIB_BASE + 0x18, TIB_BASE).expect("setup_guest: TIB self-ptr OOB");
         self.guest_write::<u32>(TIB_BASE + 0x30, PIB_BASE).expect("setup_guest: TIB->PIB OOB");
@@ -458,20 +461,60 @@ impl super::Loader {
                             }
                         }
 
-                        let report = self.collect_crash_report(
-                            &*vcpu, vcpu_id,
-                            CrashContext::GuestException {
-                                vector,
-                                error_code,
-                                fault_eip,
-                                fault_cs,
-                                fault_eflags,
-                            },
-                        );
-                        self.dump_crash_report(&report);
-                        self.shared.exit_code.store(1, Ordering::Relaxed);
-                        self.shared.exit_requested.store(true, Ordering::Relaxed);
-                        return;
+                        // ── SEH dispatch ────────────────────────────────────
+                        // Reconstruct the fault-time register state.  The IDT
+                        // stub only pushed vector + error_code + INT3 so all
+                        // general-purpose registers still reflect the fault context.
+                        // The pre-fault ESP is the current frame_base + 20 (the five
+                        // dwords pushed by the exception stub and CPU, both variants).
+                        let fault_ctx = FaultContext {
+                            eax:    regs.rax as u32,
+                            ebx:    regs.rbx as u32,
+                            ecx:    regs.rcx as u32,
+                            edx:    regs.rdx as u32,
+                            esi:    regs.rsi as u32,
+                            edi:    regs.rdi as u32,
+                            ebp:    regs.rbp as u32,
+                            esp:    frame_base + 20,  // pre-fault stack pointer
+                            eip:    fault_eip,
+                            eflags: fault_eflags,
+                            cs:     fault_cs as u16,
+                            ds:     sregs.ds.selector,
+                            es:     sregs.es.selector,
+                            fs:     sregs.fs.selector,
+                            gs:     sregs.gs.selector,
+                            ss:     sregs.ss.selector,
+                        };
+
+                        match self.try_hw_exception_dispatch(fault_ctx, vector, error_code) {
+                            Some(exc_dispatch) => {
+                                // Install exception handler call on the guest stack.
+                                // We reuse the IDT-stub frame area; the pre-fault ESP
+                                // is carried in saved.esp and will be used on
+                                // XCPT_CONTINUE_EXECUTION.
+                                setup_exception_dispatch(
+                                    &mut *vcpu, self, &mut callback_stack, exc_dispatch,
+                                );
+                                continue;
+                            }
+                            None => {
+                                // No handlers: fall through to crash report.
+                                let report = self.collect_crash_report(
+                                    &*vcpu, vcpu_id,
+                                    CrashContext::GuestException {
+                                        vector,
+                                        error_code,
+                                        fault_eip,
+                                        fault_cs,
+                                        fault_eflags,
+                                    },
+                                );
+                                self.dump_crash_report(&report);
+                                self.shared.exit_code.store(1, Ordering::Relaxed);
+                                self.shared.exit_requested.store(true, Ordering::Relaxed);
+                                return;
+                            }
+                        }
                     }
                     // 16-bit NE API thunk: breakpoint in the NE thunk tile
                     // Use flat_rip (CS.base + rip) since rip is a segment offset in 16-bit mode.
@@ -560,6 +603,63 @@ impl super::Loader {
                                         }
                                         regs.rax = NO_ERROR as u64;
                                     }
+                                    FrameKind::ExceptionHandler {
+                                        saved, next_handler, exc_report, ctx_record, guest_allocs,
+                                    } => {
+                                        if result == XCPT_CONTINUE_EXECUTION {
+                                            // Handler fixed the exception — restore the fault
+                                            // context from the CONTEXTRECORD (handler may have
+                                            // modified it) and resume at the fault address.
+                                            let ctx = self.read_context_record(ctx_record);
+                                            regs.rip    = ctx.eip as u64;
+                                            regs.rsp    = ctx.esp as u64;
+                                            regs.rax    = ctx.eax as u64;
+                                            regs.rbx    = ctx.ebx as u64;
+                                            regs.rcx    = ctx.ecx as u64;
+                                            regs.rdx    = ctx.edx as u64;
+                                            regs.rsi    = ctx.esi as u64;
+                                            regs.rdi    = ctx.edi as u64;
+                                            regs.rbp    = ctx.ebp as u64;
+                                            regs.rflags = ctx.eflags as u64;
+                                            self.free_exception_records(guest_allocs);
+                                            debug!("  [VCPU {}] SEH: XCPT_CONTINUE_EXECUTION at EIP=0x{:08X}", vcpu_id, ctx.eip);
+                                        } else {
+                                            // XCPT_CONTINUE_SEARCH (or any other value):
+                                            // try the next handler in the chain.
+                                            if next_handler == XCPT_CHAIN_END {
+                                                // Chain exhausted — unhandled exception.
+                                                warn!("  [VCPU {}] SEH: unhandled exception (chain exhausted)", vcpu_id);
+                                                self.free_exception_records(guest_allocs);
+                                                self.shared.exit_code.store(1, Ordering::Relaxed);
+                                                self.shared.exit_requested.store(true, Ordering::Relaxed);
+                                                return;
+                                            }
+                                            let handler_fn = self.guest_read::<u32>(next_handler + XERREC_HANDLER).unwrap_or(0);
+                                            let next_next  = self.guest_read::<u32>(next_handler + XERREC_PREV).unwrap_or(XCPT_CHAIN_END);
+                                            if handler_fn == 0 {
+                                                warn!("  [VCPU {}] SEH: null handler at 0x{:08X}, giving up", vcpu_id, next_handler);
+                                                self.free_exception_records(guest_allocs);
+                                                self.shared.exit_code.store(1, Ordering::Relaxed);
+                                                self.shared.exit_requested.store(true, Ordering::Relaxed);
+                                                return;
+                                            }
+                                            debug!("  [VCPU {}] SEH: XCPT_CONTINUE_SEARCH → next handler=0x{:08X} at 0x{:08X}", vcpu_id, next_handler, handler_fn);
+                                            // Re-issue the exception dispatch to the next handler.
+                                            let exc_dispatch = ApiResult::ExceptionDispatch {
+                                                handler_addr: handler_fn,
+                                                exc_report,
+                                                reg_rec: next_handler,
+                                                ctx_record,
+                                                saved,
+                                                next_handler: next_next,
+                                                guest_allocs,
+                                            };
+                                            setup_exception_dispatch(
+                                                &mut *vcpu, self, &mut callback_stack, exc_dispatch,
+                                            );
+                                            continue;
+                                        }
+                                    }
                                 }
                                 vcpu.set_regs(&regs).unwrap();
                                 continue;
@@ -607,6 +707,36 @@ impl super::Loader {
                                 self.guest_write::<u32>(sp + 16, mp2).expect("Callback stack write OOB");
                                 regs.rip = wnd_proc as u64;
                                 vcpu.set_regs(&regs).unwrap();
+                            }
+                            ApiResult::ExceptionDispatch { .. } => {
+                                let mut regs = vcpu.get_regs().unwrap();
+                                // Pop the API return address from the guest stack
+                                // (the standard API dispatch leaves this on top).
+                                let return_addr = self.guest_read::<u32>(regs.rsp as u32)
+                                    .expect("Stack read OOB for ExceptionDispatch return address");
+                                regs.rsp += 4;
+                                // Rebuild the FaultContext so XCPT_CONTINUE_EXECUTION returns
+                                // to the DosRaiseException caller (i.e. normal API return).
+                                if let ApiResult::ExceptionDispatch {
+                                    handler_addr, exc_report, reg_rec, ctx_record,
+                                    mut saved, next_handler, guest_allocs,
+                                } = api_result {
+                                    // For DosRaiseException the "saved" context EIP/ESP should
+                                    // point back to the API caller so XCPT_CONTINUE_EXECUTION
+                                    // effectively returns NO_ERROR from DosRaiseException.
+                                    saved.eip = return_addr;
+                                    saved.esp = regs.rsp as u32;
+                                    // Write these into the CONTEXTRECORD so the handler can see them.
+                                    self.guest_write::<u32>(ctx_record + CTX_EIP, return_addr).unwrap();
+                                    self.guest_write::<u32>(ctx_record + CTX_ESP, regs.rsp as u32).unwrap();
+                                    setup_exception_dispatch(
+                                        &mut *vcpu, self, &mut callback_stack,
+                                        ApiResult::ExceptionDispatch {
+                                            handler_addr, exc_report, reg_rec, ctx_record,
+                                            saved, next_handler, guest_allocs,
+                                        },
+                                    );
+                                }
                             }
                             ApiResult::CallGuest { addr, hmod, phmod, object_bases } => {
                                 let mut regs = vcpu.get_regs().unwrap();
@@ -689,4 +819,55 @@ impl super::Loader {
             }
         }
     }
+}
+
+/// Set up a guest call to an OS/2 exception handler.
+///
+/// Pushes a `FrameKind::ExceptionHandler` onto `callback_stack`, then adjusts
+/// the vCPU registers to call `handler_addr` with the four standard OS/2
+/// exception-handler arguments (cdecl/caller-cleanup convention):
+///
+/// ```text
+/// [ESP+0]  CALLBACK_RET_TRAP   ← return address
+/// [ESP+4]  pExceptionReport
+/// [ESP+8]  pRegistrationRecord
+/// [ESP+12] pContextRecord
+/// [ESP+16] pDispatcherContext (0)
+/// ```
+fn setup_exception_dispatch(
+    vcpu: &mut dyn super::vm_backend::VcpuBackend,
+    loader: &super::Loader,
+    callback_stack: &mut Vec<CallbackFrame>,
+    exc_dispatch: ApiResult,
+) {
+    let ApiResult::ExceptionDispatch {
+        handler_addr, exc_report, reg_rec, ctx_record,
+        saved, next_handler, guest_allocs,
+    } = exc_dispatch else { return };
+
+    let mut regs = vcpu.get_regs().unwrap();
+
+    // Push the callback frame so we know what to do when the handler returns.
+    callback_stack.push(CallbackFrame {
+        saved_rip: saved.eip as u64,
+        saved_rsp: saved.esp as u64,
+        kind: FrameKind::ExceptionHandler {
+            saved,
+            next_handler,
+            exc_report,
+            ctx_record,
+            guest_allocs,
+        },
+    });
+
+    // Build the handler call on the guest stack: 5 × u32 = 20 bytes.
+    regs.rsp -= 20;
+    let sp = regs.rsp as u32;
+    loader.guest_write::<u32>(sp,      CALLBACK_RET_TRAP).expect("SEH stack write OOB");
+    loader.guest_write::<u32>(sp +  4, exc_report).expect("SEH stack write OOB");
+    loader.guest_write::<u32>(sp +  8, reg_rec).expect("SEH stack write OOB");
+    loader.guest_write::<u32>(sp + 12, ctx_record).expect("SEH stack write OOB");
+    loader.guest_write::<u32>(sp + 16, 0).expect("SEH stack write OOB"); // pDispCtx
+    regs.rip = handler_addr as u64;
+    vcpu.set_regs(&regs).unwrap();
 }
