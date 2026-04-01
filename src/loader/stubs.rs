@@ -1204,8 +1204,7 @@ mod tests {
     /// Second DosLoadModule call on the same builtin must reuse the existing handle.
     #[test]
     fn test_dos_load_module_builtin_reuse_handle() {
-        use super::super::{ApiResult, mutex_ext::MutexExt};
-        use super::super::constants::NO_ERROR;
+        use super::super::mutex_ext::MutexExt;
         let loader = Loader::new_mock();
 
         let name_addr = loader.shared.mem_mgr.lock_or_recover().alloc(8).unwrap();
@@ -1224,7 +1223,7 @@ mod tests {
     /// DosQueryProcAddr on a builtin handle resolves to the expected thunk address.
     #[test]
     fn test_dos_query_proc_addr_builtin_ordinal() {
-        use super::super::{ApiResult, mutex_ext::MutexExt};
+        use super::super::mutex_ext::MutexExt;
         use super::super::constants::{NO_ERROR, MAGIC_API_BASE, UCONV_BASE, MDM_BASE};
         let loader = Loader::new_mock();
 
