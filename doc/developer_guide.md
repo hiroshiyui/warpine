@@ -484,7 +484,7 @@ NLS DLL imports are dispatched at `NLS_BASE` (7168) + ordinal:
 |---|---|---|
 | 5 | DosQueryCp / COUNTRYINFO | Dual behavior: returns codepages for cb < 44, full COUNTRYINFO for cb >= 44 |
 | 6 | DosQueryCtryInfo | Standard DosQueryCtryInfo with _System args |
-| 7 | DosMapCase | ASCII uppercase conversion |
+| 7 | DosMapCase | Full case mapping: SBCS (CP437/850/852/866/1250–1258) and DBCS (CP932/936/949/950) |
 | 8 | DosGetDBCSEv | Returns empty DBCS table (Western locales) |
 
 ### Watcom CRT NLS Caching
@@ -500,6 +500,84 @@ This is why NLS ordinal 5 must return full COUNTRYINFO when `cb >= 44` — the C
 ### DosQueryCtryInfo Bounded Writes
 
 `dos_query_ctry_info()` writes only `min(cb, 44)` bytes to respect the caller's buffer size. The CRT init call with `cb=12` only gets the first 12 bytes (country, codepage, fsDateFmt). Writing more would corrupt the CRT's stack frame. Currently returns hardcoded US English defaults (country=1, codepage=437, MDY format).
+
+---
+
+## Structured Exception Handling (SEH)
+
+OS/2 uses a per-thread exception handler chain (analogous to Win32 SEH) rooted at `TIB+0x00` (`tib_pexchain`). Each handler is an EXCEPTIONREGISTRATIONRECORD linked-list node; the chain terminates at `XCPT_CHAIN_END` (0xFFFFFFFF).
+
+### Handler Chain Maintenance
+
+`DosSetExceptionHandler` (ordinal 354) and `DosUnsetExceptionHandler` (355) are implemented in `stubs.rs`:
+
+- `dos_set_exception_handler(preg_rec)` — writes `preg_rec->prev = TIB[TIB_EXCHAIN_OFFSET]`, then `TIB[TIB_EXCHAIN_OFFSET] = preg_rec`
+- `dos_unset_exception_handler(preg_rec)` — writes `TIB[TIB_EXCHAIN_OFFSET] = preg_rec->prev`
+
+`TIB_EXCHAIN_OFFSET` is 0x00 (the first dword of the TIB). `setup_guest()` in `vcpu.rs` initialises this to `XCPT_CHAIN_END` before the first vCPU run.
+
+### Hardware Exception Dispatch Path
+
+When the guest triggers an IDT fault (vectors 0–31) that is not the Far16 thunk bypass:
+
+1. `vcpu.rs` builds a `FaultContext` from the current KVM registers. Pre-fault ESP is `frame_base + 20` (5 dwords pushed by the IDT stub: `[vector][error_code][EIP][CS][EFLAGS]`).
+2. `try_hw_exception_dispatch()` in `seh.rs` reads `TIB[TIB_EXCHAIN_OFFSET]`. If the chain is `XCPT_CHAIN_END`, returns `None` → falls through to crash dump.
+3. Otherwise allocates guest memory for an EXCEPTIONREPORTRECORD (0x38 bytes) and CONTEXTRECORD (0xCC bytes), writes them via `write_exception_report()` / `write_context_record()`, and returns `ApiResult::ExceptionDispatch`.
+4. Back in the VMEXIT loop, `setup_exception_dispatch()` pushes a `CallbackFrame { FrameKind::ExceptionHandler { saved, next_handler, exc_report, ctx_record, guest_allocs } }` and sets up the guest stack for the handler call:
+
+```
+[CALLBACK_RET_TRAP]   ← guest EIP (handler will RETF here)
+[exc_report ptr]
+[reg_rec ptr]
+[ctx_record ptr]
+[0]                   ← pDispCtx (unused)
+```
+
+Handler calling convention is cdecl (caller-cleanup, 4 args).
+
+### CALLBACK_RET_TRAP — ExceptionHandler Frame
+
+When the handler returns via `CALLBACK_RET_TRAP`:
+
+- **`XCPT_CONTINUE_EXECUTION` (0xFFFFFFFF):** calls `read_context_record(ctx_record)` to restore all GP registers and segment selectors to the saved state, then frees `guest_allocs` and resumes execution at `saved.eip`.
+- **`XCPT_CONTINUE_SEARCH` (0x01):** reads `reg_rec->prev` (next handler in chain). If not `XCPT_CHAIN_END`, calls `setup_exception_dispatch()` again with the next handler address. If chain exhausted, falls through to crash dump.
+
+### DosRaiseException (ordinal 356)
+
+`dos_raise_exception(p_exc_report)` in `seh.rs` reads the caller-supplied EXCEPTIONREPORTRECORD from guest memory, walks the TIB chain, and returns `ApiResult::ExceptionDispatch`. The VMEXIT loop's `ApiResult::ExceptionDispatch` arm adjusts `saved.eip`/`saved.esp` to point back to the `DosRaiseException` API caller, so `XCPT_CONTINUE_EXECUTION` effectively returns `NO_ERROR` to the API caller.
+
+### DosUnwindException (ordinal 357)
+
+`dos_unwind_exception(p_target_rec, _addr, p_exc_report, _data)` in `seh.rs` walks the TIB chain until `p_target_rec` is reached (or `XCPT_CHAIN_END`), then writes `TIB[TIB_EXCHAIN_OFFSET] = p_target_rec`, truncating the chain to the target registration record.
+
+### xcpt_code_for_vector
+
+Maps x86 CPU fault vectors to OS/2 `XCPT_*` codes:
+
+| Vector | XCPT code |
+|---|---|
+| 0 (#DE) | `XCPT_INTEGER_DIVIDE_BY_ZERO` (0xC0000094) |
+| 4 (#OF) | `XCPT_INTEGER_OVERFLOW` (0xC0000095) |
+| 5 (#BR) | `XCPT_ARRAY_BOUNDS_EXCEEDED` (0xC0000093) |
+| 6 (#UD) | `XCPT_ILLEGAL_INSTRUCTION` (0xC000001C) |
+| 11 (#NP) | `XCPT_ACCESS_VIOLATION` (0xC0000005) |
+| 12 (#SS) | `XCPT_ACCESS_VIOLATION` |
+| 13 (#GP) | `XCPT_ACCESS_VIOLATION` |
+| 14 (#PF) | `XCPT_ACCESS_VIOLATION` |
+| others | `XCPT_PROCESS_TERMINATE` (0x40010004) |
+
+### Key Constants (constants.rs)
+
+```rust
+pub const TIB_EXCHAIN_OFFSET: u32 = 0x00;
+pub const XCPT_CHAIN_END: u32 = 0xFFFF_FFFF;
+pub const XCPT_CONTINUE_EXECUTION: u32 = 0xFFFF_FFFF;
+pub const XCPT_CONTINUE_SEARCH: u32 = 0x0000_0001;
+pub const EXCEPTION_REPORT_SIZE: u32 = 0x38;
+pub const CONTEXT_RECORD_SIZE: u32 = 0xCC;
+pub const EH_NONCONTINUABLE: u32 = 0x0000_0001;
+pub const EH_UNWINDING: u32 = 0x0000_0002;
+```
 
 ---
 

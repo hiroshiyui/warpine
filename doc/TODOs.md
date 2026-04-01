@@ -13,7 +13,7 @@ This document tracks the tasks required to reach a functional OS/2 compatibility
 Phases 1–7 baseline are complete. Detailed descriptions of each phase, the APIs implemented, architectural decisions, and verification evidence are documented in:
 
 - **[Developer Guide](developer_guide.md)** — Sections 1–20 cover all subsystem architectures; Appendix (Section 20) has per-phase development narratives.
-- **[Reference Manual](reference_manual.md)** — Section 9 lists all 262 implemented APIs with ordinals; Section 11 covers guest memory layout and GDT.
+- **[Reference Manual](reference_manual.md)** — Section 9 lists all 269 implemented APIs with ordinals; Section 11 covers guest memory layout and GDT.
 
 ---
 
@@ -65,8 +65,6 @@ Goal: raise the fraction of real OS/2 applications that run correctly.
 **Baseline complete** — `DosLoadModule`/`DosQueryProcAddr`/`DosQueryModuleHandle` implemented; `jpos2dll.dll` loads at runtime. See [Developer Guide §20](developer_guide.md#appendix-development-phases).
 
 **DLL INITTERM fully complete** — load-time (`flag=0`) and unload-time (`flag=1`) calls both implemented via vCPU call-injection. `FrameKind::InitTerm` handles load; `FrameKind::InitTermUnload` handles unload and frees guest pages after the call. `managers::decrement_refcount` returns `(object_bases, initterm_addr)` atomically; `dos_free_module` returns `ApiResult`. OS/2 ignores the unload return value — pages are freed unconditionally.
-
-### DOSCALLS Long Tail
 
 ### Unicode-Internal Architecture (long-term goal)
 Convert Warpine's internal string representation to UTF-8, with codepage↔UTF-8 conversion at every guest/host API boundary. Modelled on Wine's ANSI→UTF-16 approach.

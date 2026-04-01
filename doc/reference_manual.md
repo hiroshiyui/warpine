@@ -267,7 +267,7 @@ $ warpine --compat
 Warpine OS/2 API Compatibility Report
 ======================================
 
-DOSCALLS  (97 implemented, 10 stub)
+DOSCALLS  (99 implemented, 8 stub)
   [stub]  [  241]  DosConnectNPipe
           [  213]  DosFlatToSel
           [  234]  DosExit
@@ -280,7 +280,7 @@ APIs marked `[stub]` accept calls and return `NO_ERROR` but perform no operation
 
 ## Implemented APIs
 
-### DOSCALLS (107 APIs: 97 implemented, 10 stub)
+### DOSCALLS (107 APIs: 99 implemented, 8 stub)
 
 **File I/O:**
 DosOpen (273), DosClose (257), DosRead (281), DosWrite (282), DosDelete (259), DosCopy (258), DosMove (271), DosSetFilePtr (256), DosSetFileSize (272), DosQueryFileInfo (279), DosSetFileInfo (218), DosQueryPathInfo (223), DosSetPathInfo (219), DosEnumAttribute (372)
@@ -306,11 +306,14 @@ DosLoadModule (318), DosFreeModule (322), DosQueryModuleHandle (319), DosQueryMo
 **System:**
 DosQuerySysInfo (348), DosGetDateTime (230), DosFlatToSel (213), DosSelToFlat (227), DosSetExceptionHandler (354), DosUnsetExceptionHandler (355)
 
+**Exception Handling:**
+DosRaiseException (356), DosUnwindException (357)
+
 **Miscellaneous:**
 DosError (212), DosSetMaxFH (209), DosBeep (286), DosQueryHType (224), DosSetFileLocks (268), DosResetBuffer (254), DosQuerySysState (368)
 
 **Stubs (no-op):**
-DosConnectNPipe (241), DosCreateNPipe (243), DosSetNPHState (250), DosDebug (317), DosDeleteMuxWaitSem (342), DosRaiseException (356), DosUnwindException (357), DosShutdown (415), DOS16REQUESTVDD (267), DosFSCtl (285)
+DosConnectNPipe (241), DosCreateNPipe (243), DosSetNPHState (250), DosDebug (317), DosDeleteMuxWaitSem (342), DosShutdown (415), DOS16REQUESTVDD (267), DosFSCtl (285)
 
 ### QUECALLS (7 APIs)
 
