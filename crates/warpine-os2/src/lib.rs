@@ -183,3 +183,20 @@ pub mod vio {
         unsafe { sys::VioSetCurPos(0, col, row) }
     }
 }
+
+// ── Keyboard ─────────────────────────────────────────────────────────────────
+
+pub mod kbd {
+    use super::sys;
+
+    /// Block until a key is pressed; returns the raw `KBDKEYINFO`.
+    pub fn getchar() -> sys::KBDKEYINFO {
+        let mut info = sys::KBDKEYINFO {
+            chChar: 0, chScan: 0, fbStatus: 0, bNlsShift: 0,
+            fsState: 0, time: 0,
+        };
+        // IO_WAIT = 0
+        unsafe { sys::KbdCharIn(0, 0, &mut info) };
+        info
+    }
+}

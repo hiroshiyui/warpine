@@ -23,7 +23,11 @@ use warpine_os2 as os2;
 /// Guest entry point — called by `warpine-os2-rt::_start`.
 #[no_mangle]
 pub extern "C" fn os2_main() -> u32 {
-    os2::file::write_stdout(b"Hello from Rust on Warpine!\r\n")
-        .map(|_| 0u32)
-        .unwrap_or(1)
+    if os2::file::write_stdout(b"Hello from Rust on Warpine!\r\n").is_err() {
+        return 1;
+    }
+    os2::file::write_stdout(b"Press any key to exit...\r\n")
+        .ok();
+    os2::kbd::getchar();
+    0
 }
