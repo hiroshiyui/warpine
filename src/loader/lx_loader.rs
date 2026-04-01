@@ -303,6 +303,7 @@ impl super::Loader {
                 exports_by_name,
                 ref_count: 1,
                 initterm_addr,
+                is_builtin: false,
             });
             handle
         };

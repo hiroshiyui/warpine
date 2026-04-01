@@ -254,8 +254,45 @@ impl super::Loader {
     /// pointer is written only after INITTERM succeeds.
     pub(crate) fn dos_load_module(&self, psz_fail_name: u32, cb_fail_name: u32, psz_mod_name: u32, phmod: u32) -> super::ApiResult {
         use super::ApiResult;
+        use super::managers::LoadedDll;
+        use std::collections::HashMap;
         let name = self.read_guest_string(psz_mod_name);
         debug!("  DosLoadModule('{}')", name);
+
+        // Builtin modules (UCONV, MDM, VIOCALLS, …) have no real DLL file on the
+        // host.  Register a synthetic handle so DosQueryProcAddr can resolve their
+        // ordinals to warpine thunk stubs at runtime.
+        const BUILTINS: &[&str] = &[
+            "DOSCALLS", "QUECALLS", "PMWIN", "PMGPI", "KBDCALLS",
+            "VIOCALLS", "SESMGR", "NLS", "MSG", "MDM", "UCONV",
+        ];
+        let name_upper = name.to_ascii_uppercase();
+        let stem = name_upper.strip_suffix(".DLL").unwrap_or(&name_upper);
+        if BUILTINS.contains(&stem) {
+            let mut dll_mgr = self.shared.dll_mgr.lock_or_recover();
+            // Reuse an existing registration (e.g. from a previous DosLoadModule call).
+            if let Some(existing) = dll_mgr.find_by_name(stem) {
+                let h = existing.handle;
+                drop(dll_mgr);
+                if phmod != 0 { let _ = self.guest_write::<u32>(phmod, h); }
+                return ApiResult::Normal(NO_ERROR);
+            }
+            let h = dll_mgr.alloc_handle();
+            dll_mgr.register(LoadedDll {
+                name: stem.to_string(),
+                handle: h,
+                object_bases: vec![],
+                exports_by_ordinal: HashMap::new(),
+                exports_by_name: HashMap::new(),
+                ref_count: 1,
+                initterm_addr: None,
+                is_builtin: true,
+            });
+            drop(dll_mgr);
+            debug!("  DosLoadModule: registered builtin '{}' as hmod={:#x}", stem, h);
+            if phmod != 0 { let _ = self.guest_write::<u32>(phmod, h); }
+            return ApiResult::Normal(NO_ERROR);
+        }
 
         // `load_dll` handles the "already loaded → increment refcount" case internally.
         let result = match self.find_dll_path(&name) {
@@ -344,27 +381,42 @@ impl super::Loader {
         let name = if psz_name != 0 { self.read_guest_string(psz_name) } else { String::new() };
         debug!("  DosQueryProcAddr(hmod={:#x}, ord={}, name='{}')", hmod, ordinal, name);
 
-        let dll_mgr = self.shared.dll_mgr.lock_or_recover();
-        let maybe_dll = dll_mgr.find_by_handle(hmod);
-        let addr = if let Some(dll) = maybe_dll {
-            if !name.is_empty() {
-                // Name-based lookup
-                dll.exports_by_name.get(&name.to_ascii_uppercase()).copied()
-            } else if ordinal != 0 {
-                // Ordinal-based lookup
-                dll.exports_by_ordinal.get(&ordinal).copied()
+        let (maybe_name, maybe_addr) = {
+            let dll_mgr = self.shared.dll_mgr.lock_or_recover();
+            let maybe_dll = dll_mgr.find_by_handle(hmod);
+            if let Some(dll) = maybe_dll {
+                if dll.is_builtin {
+                    // Builtin: resolve to warpine thunk stub address below.
+                    (Some(dll.name.clone()), None)
+                } else if !name.is_empty() {
+                    (None, dll.exports_by_name.get(&name.to_ascii_uppercase()).copied())
+                } else if ordinal != 0 {
+                    (None, dll.exports_by_ordinal.get(&ordinal).copied())
+                } else {
+                    (None, None)
+                }
+            } else {
+                (None, None)
+            }
+        };
+
+        // For builtin modules, compute the thunk stub address directly.
+        let addr = if let Some(mod_name) = maybe_name {
+            if ordinal != 0 {
+                let thunk = self.resolve_import(&mod_name, ordinal);
+                Some(thunk as u32)
             } else {
                 None
             }
         } else {
-            None
+            maybe_addr
         };
 
         if let Some(guest_addr) = addr {
-            if p_pfn != 0 { self.guest_write::<u32>(p_pfn, guest_addr); }
+            if p_pfn != 0 { let _ = self.guest_write::<u32>(p_pfn, guest_addr); }
             NO_ERROR
         } else {
-            if p_pfn != 0 { self.guest_write::<u32>(p_pfn, 0); }
+            if p_pfn != 0 { let _ = self.guest_write::<u32>(p_pfn, 0); }
             ERROR_PROC_NOT_FOUND
         }
     }
@@ -1120,8 +1172,88 @@ mod tests {
             exports_by_name: HashMap::new(),
             ref_count: 1,
             initterm_addr,
+            is_builtin: false,
         });
         h
+    }
+
+    /// DosLoadModule on a builtin module name must return NO_ERROR and a valid handle.
+    #[test]
+    fn test_dos_load_module_builtin_returns_ok() {
+        use super::super::{ApiResult, mutex_ext::MutexExt};
+        use super::super::constants::NO_ERROR;
+        let loader = Loader::new_mock();
+
+        // Write "UCONV\0" to guest memory so read_guest_string works.
+        let name_addr = loader.shared.mem_mgr.lock_or_recover().alloc(8).unwrap();
+        loader.guest_write_bytes(name_addr, b"UCONV\0");
+        let hmod_addr = loader.shared.mem_mgr.lock_or_recover().alloc(4).unwrap();
+
+        let result = loader.dos_load_module(0, 0, name_addr, hmod_addr);
+        assert!(matches!(result, ApiResult::Normal(NO_ERROR)));
+
+        let h = loader.guest_read::<u32>(hmod_addr).unwrap();
+        assert_ne!(h, 0, "handle must be non-zero");
+
+        let dll_mgr = loader.shared.dll_mgr.lock_or_recover();
+        let dll = dll_mgr.find_by_handle(h).expect("builtin handle must be registered");
+        assert_eq!(dll.name, "UCONV");
+        assert!(dll.is_builtin, "must be marked as builtin");
+    }
+
+    /// Second DosLoadModule call on the same builtin must reuse the existing handle.
+    #[test]
+    fn test_dos_load_module_builtin_reuse_handle() {
+        use super::super::{ApiResult, mutex_ext::MutexExt};
+        use super::super::constants::NO_ERROR;
+        let loader = Loader::new_mock();
+
+        let name_addr = loader.shared.mem_mgr.lock_or_recover().alloc(8).unwrap();
+        loader.guest_write_bytes(name_addr, b"MDM\0");
+        let hmod1 = loader.shared.mem_mgr.lock_or_recover().alloc(4).unwrap();
+        let hmod2 = loader.shared.mem_mgr.lock_or_recover().alloc(4).unwrap();
+
+        let _ = loader.dos_load_module(0, 0, name_addr, hmod1);
+        let _ = loader.dos_load_module(0, 0, name_addr, hmod2);
+
+        let h1 = loader.guest_read::<u32>(hmod1).unwrap();
+        let h2 = loader.guest_read::<u32>(hmod2).unwrap();
+        assert_eq!(h1, h2, "same builtin must return the same handle");
+    }
+
+    /// DosQueryProcAddr on a builtin handle resolves to the expected thunk address.
+    #[test]
+    fn test_dos_query_proc_addr_builtin_ordinal() {
+        use super::super::{ApiResult, mutex_ext::MutexExt};
+        use super::super::constants::{NO_ERROR, MAGIC_API_BASE, UCONV_BASE, MDM_BASE};
+        let loader = Loader::new_mock();
+
+        // Load UCONV builtin
+        let name_addr = loader.shared.mem_mgr.lock_or_recover().alloc(8).unwrap();
+        loader.guest_write_bytes(name_addr, b"UCONV\0");
+        let hmod_addr = loader.shared.mem_mgr.lock_or_recover().alloc(4).unwrap();
+        let pfn_addr = loader.shared.mem_mgr.lock_or_recover().alloc(4).unwrap();
+
+        let _ = loader.dos_load_module(0, 0, name_addr, hmod_addr);
+        let h = loader.guest_read::<u32>(hmod_addr).unwrap();
+
+        // Ordinal 1 = UniCreateUconvObject → thunk at MAGIC_API_BASE + UCONV_BASE + 1
+        let rc = loader.dos_query_proc_addr(h, 1, 0, pfn_addr);
+        assert_eq!(rc, NO_ERROR, "DosQueryProcAddr for builtin ordinal 1 must succeed");
+        let got = loader.guest_read::<u32>(pfn_addr).unwrap();
+        let expected = (MAGIC_API_BASE as u32) + UCONV_BASE + 1;
+        assert_eq!(got, expected, "thunk address mismatch for UCONV ordinal 1");
+
+        // Load MDM builtin; ordinal 2 = mciSendString → MAGIC_API_BASE + MDM_BASE + 2
+        loader.guest_write_bytes(name_addr, b"MDM\0");
+        let hmod2 = loader.shared.mem_mgr.lock_or_recover().alloc(4).unwrap();
+        let _ = loader.dos_load_module(0, 0, name_addr, hmod2);
+        let h2 = loader.guest_read::<u32>(hmod2).unwrap();
+
+        let rc2 = loader.dos_query_proc_addr(h2, 2, 0, pfn_addr);
+        assert_eq!(rc2, NO_ERROR);
+        let got2 = loader.guest_read::<u32>(pfn_addr).unwrap();
+        assert_eq!(got2, (MAGIC_API_BASE as u32) + MDM_BASE + 2);
     }
 
     #[test]

@@ -302,6 +302,9 @@ pub struct LoadedDll {
     /// Guest flat address of the DLL's `_DLL_InitTerm` entry point, if present
     /// (LX header eip_object != 0).  `None` for DLLs without an init routine.
     pub initterm_addr: Option<u32>,
+    /// True for warpine builtin modules (UCONV, MDM, VIOCALLS, etc.) that have
+    /// no real DLL file — DosQueryProcAddr resolves ordinals to thunk stubs.
+    pub is_builtin: bool,
 }
 
 /// Tracks all user DLLs loaded into guest memory.
@@ -488,6 +491,7 @@ mod tests {
             exports_by_name: HashMap::new(),
             ref_count: 1,
             initterm_addr: None,
+            is_builtin: false,
         }
     }
 
