@@ -50,6 +50,8 @@ pub struct OS2Window {
     pub visible: bool,
     /// Raw flStyle value from WinCreateWindow / WinCreateStdWindow.
     pub style: u32,
+    /// Items stored by WC_LISTBOX on LM_INSERTITEM.
+    pub listbox_items: Vec<String>,
 }
 
 pub struct PresentationSpace {
@@ -145,6 +147,7 @@ impl WindowManager {
             x: 0, y: 0, cx: 0, cy: 0,
             visible: false,
             style: 0,
+            listbox_items: Vec::new(),
         });
         // Register as child of parent
         if parent != 0

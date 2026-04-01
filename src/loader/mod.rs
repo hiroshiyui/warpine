@@ -110,6 +110,10 @@ pub(crate) enum FrameKind {
         /// Guest memory blocks to free once exception handling is complete.
         guest_allocs: Vec<u32>,
     },
+    /// A WM_CREATE callback dispatched synchronously by WinCreateStdWindow.
+    /// After the client window procedure returns, the frame window handle
+    /// (`h_frame`) is written into EAX as the return value of WinCreateStdWindow.
+    WmCreate { h_frame: u32 },
 }
 
 pub(crate) struct CallbackFrame {
@@ -127,6 +131,15 @@ pub(crate) enum ApiResult {
         msg: u32,
         mp1: u32,
         mp2: u32,
+    },
+    /// Dispatch WM_CREATE synchronously from WinCreateStdWindow.
+    /// After the client window procedure returns, `h_frame` is placed in EAX
+    /// as the return value of WinCreateStdWindow (regardless of WM_CREATE's
+    /// own return value).
+    WmCreateCallback {
+        wnd_proc: u32,
+        hwnd:     u32,
+        h_frame:  u32,
     },
     /// Inject a guest call to `addr` with two _System args `(hmod, flag)`.
     /// Used for DLL INITTERM.  `phmod` is the address to write the handle on
@@ -388,8 +401,8 @@ impl Loader {
         &self,
         hwnd: u32,
         msg: u32,
-        _mp1: u32,
-        _mp2: u32,
+        mp1: u32,
+        mp2: u32,
     ) -> ApiResult {
         // Collect window metadata (geometry, class, text, id, parent).
         let info = {
@@ -495,6 +508,31 @@ impl Loader {
                         mq.cond.notify_one();
                 }
                 ApiResult::Normal(0)
+            }
+
+            LM_INSERTITEM => {
+                // mp1 = MPFROMSHORT(index) — insert position; LIT_END (0xFFFF) = append
+                // mp2 = MPFROMP(pszItem)   — guest pointer to item string
+                let item_text = if mp2 != 0 { self.read_guest_string(mp2) } else { String::new() };
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                if let Some(win) = wm.get_window_mut(hwnd) {
+                    let idx = mp1 as i32;
+                    if idx < 0 || idx as usize >= win.listbox_items.len() {
+                        win.listbox_items.push(item_text);
+                        ApiResult::Normal(win.listbox_items.len() as u32 - 1)
+                    } else {
+                        win.listbox_items.insert(idx as usize, item_text);
+                        ApiResult::Normal(idx as u32)
+                    }
+                } else {
+                    ApiResult::Normal(u32::MAX) // LIT_ERROR
+                }
+            }
+
+            LM_QUERYITEMCOUNT => {
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let count = wm.get_window(hwnd).map(|w| w.listbox_items.len()).unwrap_or(0);
+                ApiResult::Normal(count as u32)
             }
 
             _ => ApiResult::Normal(0),

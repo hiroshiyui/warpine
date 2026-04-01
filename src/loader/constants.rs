@@ -53,6 +53,7 @@ pub const NE_THUNK_CODE_GDT_INDEX: u32 = TILED_CODE_START_INDEX + NE_THUNK_TILE_
 pub const NE_THUNK_CODE_SELECTOR: u16 = (NE_THUNK_CODE_GDT_INDEX as u16) * 8; // 0x87B0
 
 // OS/2 WM_ message constants
+pub const WM_CREATE: u32 = 0x0001;
 pub const WM_SIZE: u32 = 0x0007;
 pub const WM_PAINT: u32 = 0x0023;
 pub const WM_TIMER: u32 = 0x0024;
@@ -68,6 +69,11 @@ pub const WM_BUTTON3UP: u32 = 0x0076;
 pub const WM_COMMAND: u32 = 0x0020;
 pub const WM_CHAR: u32 = 0x007A;
 pub const WM_ENABLE: u32 = 0x0002;
+
+// OS/2 WC_LISTBOX messages (LM_*)
+pub const LM_INSERTITEM:     u32 = 0x0161;
+pub const LM_QUERYITEMCOUNT: u32 = 0x0160;
+pub const LIT_END:           u32 = 0xFFFF_FFFF; // insert at end of list
 
 // KC_* flags for WM_CHAR message (MP1 high word)
 pub const KC_CHAR:       u32 = 0x0001; // character code in MP2 low word is valid

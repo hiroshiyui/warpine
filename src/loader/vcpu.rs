@@ -577,6 +577,13 @@ impl super::Loader {
                                         // will do `add esp, N` itself.
                                         regs.rax = result as u64;
                                     }
+                                    FrameKind::WmCreate { h_frame } => {
+                                        // WM_CREATE returned; pass the frame window handle
+                                        // back to the WinCreateStdWindow caller.
+                                        // (Non-zero WM_CREATE return = veto creation; we
+                                        // ignore vetoes for now and always return h_frame.)
+                                        regs.rax = h_frame as u64;
+                                    }
                                     FrameKind::InitTerm { hmod, phmod } => {
                                         // _DLL_InitTerm returns 1 on success, 0 on failure.
                                         if result != 0 {
@@ -705,6 +712,28 @@ impl super::Loader {
                                 self.guest_write::<u32>(sp + 8, msg).expect("Callback stack write OOB");
                                 self.guest_write::<u32>(sp + 12, mp1).expect("Callback stack write OOB");
                                 self.guest_write::<u32>(sp + 16, mp2).expect("Callback stack write OOB");
+                                regs.rip = wnd_proc as u64;
+                                vcpu.set_regs(&regs).unwrap();
+                            }
+                            ApiResult::WmCreateCallback { wnd_proc, hwnd, h_frame } => {
+                                // Dispatch WM_CREATE synchronously; after the callback
+                                // returns CALLBACK_RET_TRAP, FrameKind::WmCreate writes
+                                // h_frame into EAX as WinCreateStdWindow's return value.
+                                let mut regs = vcpu.get_regs().unwrap();
+                                let return_addr = self.guest_read::<u32>(regs.rsp as u32)
+                                    .expect("Stack read OOB for WM_CREATE return address");
+                                callback_stack.push(CallbackFrame {
+                                    saved_rip: return_addr as u64,
+                                    saved_rsp: regs.rsp + 4,
+                                    kind: FrameKind::WmCreate { h_frame },
+                                });
+                                regs.rsp -= 20;
+                                let sp = regs.rsp as u32;
+                                self.guest_write::<u32>(sp,      CALLBACK_RET_TRAP).expect("Callback stack write OOB");
+                                self.guest_write::<u32>(sp +  4, hwnd).expect("Callback stack write OOB");
+                                self.guest_write::<u32>(sp +  8, WM_CREATE).expect("Callback stack write OOB");
+                                self.guest_write::<u32>(sp + 12, 0).expect("Callback stack write OOB"); // mp1 (CREATESTRUCT*)
+                                self.guest_write::<u32>(sp + 16, 0).expect("Callback stack write OOB"); // mp2 (CTLDATA*)
                                 regs.rip = wnd_proc as u64;
                                 vcpu.set_regs(&regs).unwrap();
                             }

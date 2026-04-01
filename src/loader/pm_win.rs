@@ -98,31 +98,50 @@ impl super::Loader {
                 let title = if psz_title_ptr != 0 { self.read_guest_string(psz_title_ptr) } else { "Warpine Window".to_string() };
                 debug!("  [VCPU {}] WinCreateStdWindow: class='{}', title='{}', parent=0x{:08X}, style=0x{:08X}", vcpu_id, class_name, title, parent, style);
 
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-                let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
-                let h_frame = wm.create_window(class_name.clone(), parent, hmq);
-                let h_client = wm.create_window(class_name.clone(), h_frame, hmq);
-                wm.frame_to_client.insert(h_frame, h_client);
-                // Initialise both windows to the default SDL2 window size so that
-                // WinQueryWindowRect returns correct dimensions before the first resize.
-                if let Some(win) = wm.get_window_mut(h_frame)  { win.cx = 640; win.cy = 480; }
-                if let Some(win) = wm.get_window_mut(h_client) { win.cx = 640; win.cy = 480; }
+                let (h_frame, h_client, pfn_wp_client) = {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
+                    let h_frame = wm.create_window(class_name.clone(), parent, hmq);
+                    let h_client = wm.create_window(class_name.clone(), h_frame, hmq);
+                    wm.frame_to_client.insert(h_frame, h_client);
+                    // Initialise both windows to the default SDL2 window size so that
+                    // WinQueryWindowRect returns correct dimensions before the first resize.
+                    if let Some(win) = wm.get_window_mut(h_frame)  { win.cx = 640; win.cy = 480; }
+                    if let Some(win) = wm.get_window_mut(h_client) { win.cx = 640; win.cy = 480; }
 
-                if let Some(ref sender) = wm.gui_tx {
-                    let _ = sender.send(GUIMessage::CreateWindow { class: class_name, title, handle: h_frame });
-                }
+                    if let Some(ref sender) = wm.gui_tx {
+                        let _ = sender.send(GUIMessage::CreateWindow { class: class_name, title, handle: h_frame });
+                    }
+
+                    // Post initial WM_PAINT so the guest paints on creation
+                    let hmq2 = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
+                    if let Some(mq_arc) = wm.get_mq(hmq2) {
+                        let mut mq = mq_arc.lock_or_recover();
+                        mq.messages.push_back(OS2Message {
+                            hwnd: h_client, msg: WM_PAINT, mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
+                        });
+                        mq.cond.notify_one();
+                    }
+
+                    let pfn_wp = wm.get_window(h_client).map(|w| w.pfn_wp).unwrap_or(0);
+                    (h_frame, h_client, pfn_wp)
+                };
 
                 if phwnd_client_ptr != 0 {
                     self.guest_write::<u32>(phwnd_client_ptr, h_client);
                 }
 
-                // Post initial WM_PAINT so the guest paints on creation
-                if let Some(mq_arc) = wm.get_mq(hmq) {
-                    let mut mq = mq_arc.lock_or_recover();
-                    mq.messages.push_back(OS2Message {
-                        hwnd: h_client, msg: WM_PAINT, mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
-                    });
-                    mq.cond.notify_one();
+                // Dispatch WM_CREATE synchronously to the client window procedure
+                // before returning h_frame to the guest.  This mirrors real OS/2 PM
+                // behaviour: controls and timers set up in WM_CREATE are ready before
+                // WinCreateStdWindow returns.
+                if pfn_wp_client != 0 {
+                    debug!("  [VCPU {}] WinCreateStdWindow: dispatching WM_CREATE to pfn_wp=0x{:08X}", vcpu_id, pfn_wp_client);
+                    return ApiResult::WmCreateCallback {
+                        wnd_proc: pfn_wp_client,
+                        hwnd: h_client,
+                        h_frame,
+                    };
                 }
 
                 ApiResult::Normal(h_frame)
@@ -240,7 +259,9 @@ impl super::Loader {
                         mp2,
                     };
                 }
-                ApiResult::Normal(0)
+                // No guest window proc — route to built-in control handler
+                // (handles LM_INSERTITEM, LM_QUERYITEMCOUNT, etc.)
+                self.dispatch_builtin_control(hwnd, msg, mp1, mp2)
             }
             911 => {
                 // WinDefWindowProc
@@ -942,7 +963,7 @@ impl super::Loader {
                 let result = wm.find_child_by_id(hwnd_parent, id).unwrap_or(0);
                 ApiResult::Normal(result)
             }
-            709 => {
+            909 => {
                 // WinCreateWindow(hwndParent, pszClass, pszName, flStyle,
                 //                 x, y, cx, cy, hwndOwner, hwndInsertBehind,
                 //                 id, pCtlData, pPresParams)
