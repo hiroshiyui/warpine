@@ -60,6 +60,9 @@ pub struct OS2Window {
     pub dialog_dismissed: bool,
     /// The result code passed to WinDismissDlg; returned by WinDlgBox.
     pub dialog_result: u32,
+    /// `flCreateFlags` from `WinCreateStdWindow` (FCF_* bits).
+    /// Zero for non-frame windows (dialogs, controls).
+    pub frame_flags: u32,
 }
 
 pub struct PresentationSpace {
@@ -184,6 +187,7 @@ impl WindowManager {
             menu_hwnd: 0,
             dialog_dismissed: false,
             dialog_result: 0,
+            frame_flags: 0,
         });
         // Register as child of parent
         if parent != 0

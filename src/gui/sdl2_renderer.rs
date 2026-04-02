@@ -18,7 +18,8 @@ use crate::loader::{SharedState, OS2Message, MutexExt,
     VK_INSERT, VK_DELETE, VK_SCRLLOCK, VK_NUMLOCK, VK_ENTER,
     VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6,
     VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12,
-    CF_TEXT, KC_PREVDOWN};
+    CF_TEXT, KC_PREVDOWN,
+    FCF_TITLEBAR, FCF_BORDER, FCF_DLGBORDER, FCF_SIZEBORDER};
 use super::message::GUIMessage;
 use super::renderer::PmRenderer;
 use super::render_utils::{render_text_to_buffer, render_rect_to_buffer, render_line_to_buffer};
@@ -27,6 +28,47 @@ use super::render_utils::{render_text_to_buffer, render_rect_to_buffer, render_l
 
 /// Desktop background colour (OS/2-style teal).
 const DESKTOP_BG: u32 = 0x00408040;
+
+// ── VDR-C: Window chrome constants ────────────────────────────────────────
+
+/// Height of the title bar chrome in desktop pixels.
+const CHROME_TITLE_H: i32 = 20;
+/// Width of the frame border in desktop pixels (each side).
+const CHROME_BORDER_W: i32 = 2;
+
+/// Active (focused) title bar colour — OS/2 navy blue.
+const CHROME_TITLE_ACTIVE: u32   = 0x0000_0080;
+/// Inactive title bar colour — dark gray.
+const CHROME_TITLE_INACTIVE: u32 = 0x0040_4040;
+/// Title bar text colour.
+const CHROME_TEXT_COLOR: u32     = 0x00FF_FFFF;
+/// Frame border colour — medium gray.
+const CHROME_BORDER_COLOR: u32   = 0x0080_8080;
+
+/// Draw ASCII/Unicode text into a desktop-space pixel buffer.
+///
+/// `sx`/`sy` are screen coordinates (y=0 at top, x=0 at left).
+/// Uses 8×16 GNU Unifont half-width glyphs (one byte per row, MSB = leftmost).
+fn draw_text_screen(buf: &mut [u32], buf_w: usize, buf_h: usize, sx: i32, sy: i32, text: &str, color: u32) {
+    const CHAR_W: i32 = 8;
+    for (i, ch) in text.chars().enumerate() {
+        let cx = sx + i as i32 * CHAR_W;
+        let glyph = crate::gui::text_renderer::get_glyph_for_char(ch);
+        for (row, &bits) in glyph.iter().enumerate() {
+            let py = sy + row as i32;
+            if py < 0 || py >= buf_h as i32 { continue; }
+            for col in 0..CHAR_W {
+                if bits & (0x80 >> col) != 0 {
+                    let px = cx + col;
+                    if px >= 0 && px < buf_w as i32 {
+                        let idx = py as usize * buf_w + px as usize;
+                        if idx < buf.len() { buf[idx] = color; }
+                    }
+                }
+            }
+        }
+    }
+}
 
 /// Off-screen pixel buffer for one PM frame/dialog window.
 struct FrameBuffer {
@@ -169,6 +211,8 @@ impl Sdl2Renderer {
     /// Z-order (back-to-front) is read from `shared.window_mgr.z_order`.
     /// Each frame is blitted at its OS/2 screen position converted to SDL2 coords:
     ///   `dst_top_y = desktop_height - win.y - win.cy`
+    /// After blitting the client content, window chrome (title bar, border) is drawn
+    /// directly onto the desktop buffer (VDR-C1, VDR-C2, VDR-E3).
     fn composite_and_present(&mut self, shared: &Arc<SharedState>) {
         let dw = self.desktop.width as usize;
         let dh = self.desktop.height as i32;
@@ -176,38 +220,126 @@ impl Sdl2Renderer {
         // Fill background.
         self.desktop.buffer.fill(DESKTOP_BG);
 
-        // Snapshot z_order and window rects without holding the lock during blit.
-        let frames: Vec<(u32, i32, i32, i32, i32, bool)> = {
+        // Snapshot z_order + window state without holding the lock during blit.
+        struct FrameSnap {
+            hwnd: u32,
+            x: i32, y: i32, cx: i32, cy: i32,
+            visible: bool,
+            frame_flags: u32,
+            title: String,
+            is_focused: bool,
+        }
+        let frames: Vec<FrameSnap> = {
             let wm = shared.window_mgr.lock_or_recover();
+            let focused = wm.focused_hwnd;
             wm.z_order.iter().filter_map(|&hwnd| {
-                wm.get_window(hwnd).map(|w| (hwnd, w.x, w.y, w.cx, w.cy, w.visible))
+                wm.get_window(hwnd).map(|w| FrameSnap {
+                    hwnd,
+                    x: w.x, y: w.y, cx: w.cx, cy: w.cy,
+                    visible: w.visible,
+                    frame_flags: w.frame_flags,
+                    title: w.text.clone(),
+                    is_focused: hwnd == focused,
+                })
             }).collect()
         };
 
-        for (hwnd, win_x, win_y, win_cx, win_cy, visible) in frames {
-            if !visible { continue; }
-            let fb = match self.frame_buffers.get(&hwnd) {
+        for snap in &frames {
+            if !snap.visible { continue; }
+            let fb = match self.frame_buffers.get(&snap.hwnd) {
                 Some(fb) => fb,
                 None => continue,
             };
-            // OS/2 y=0 is bottom; SDL2 y=0 is top.
-            let dst_top_y = dh - win_y - win_cy;
-            let blit_h = (fb.height as i32).min(win_cy).min(dh - dst_top_y.max(0));
-            let blit_w = (fb.width as i32).min(win_cx).min(dw as i32 - win_x.max(0));
-            if blit_h <= 0 || blit_w <= 0 { continue; }
 
-            for py in 0..blit_h as usize {
-                let dy = dst_top_y + py as i32;
-                if dy < 0 || dy >= dh { continue; }
-                let dx0 = win_x;
-                if dx0 >= dw as i32 { continue; }
-                let src_row_start = py * fb.width as usize;
-                let dst_row_start = dy as usize * dw;
-                for px in 0..blit_w as usize {
-                    let dx = dx0 + px as i32;
-                    if dx < 0 || dx >= dw as i32 { continue; }
-                    self.desktop.buffer[dst_row_start + dx as usize] =
-                        fb.buffer[src_row_start + px];
+            // Compute chrome heights so client content is offset below the title bar.
+            let title_h = if snap.frame_flags & FCF_TITLEBAR != 0 { CHROME_TITLE_H } else { 0 };
+            let border_w = if snap.frame_flags & (FCF_BORDER | FCF_DLGBORDER | FCF_SIZEBORDER) != 0 {
+                CHROME_BORDER_W
+            } else { 0 };
+
+            // OS/2 y=0 is bottom; SDL2 y=0 is top.
+            let dst_top_y = dh - snap.y - snap.cy;
+
+            // Blit frame buffer (client content), offset below the title bar.
+            let content_top_y = dst_top_y + title_h;
+            let blit_h = (fb.height as i32)
+                .min(snap.cy - title_h)
+                .min(dh - content_top_y.max(0));
+            let blit_w = (fb.width as i32)
+                .min(snap.cx - border_w * 2)
+                .min(dw as i32 - (snap.x + border_w).max(0));
+            if blit_h > 0 && blit_w > 0 {
+                for py in 0..blit_h as usize {
+                    let dy = content_top_y + py as i32;
+                    if dy < 0 || dy >= dh { continue; }
+                    let src_row_start = py * fb.width as usize;
+                    let dst_row_start = dy as usize * dw;
+                    for px in 0..blit_w as usize {
+                        let dx = snap.x + border_w + px as i32;
+                        if dx < 0 || dx >= dw as i32 { continue; }
+                        self.desktop.buffer[dst_row_start + dx as usize] =
+                            fb.buffer[src_row_start + px];
+                    }
+                }
+            }
+
+            // VDR-C1: draw title bar chrome on the desktop buffer.
+            if title_h > 0 {
+                let title_color = if snap.is_focused {
+                    CHROME_TITLE_ACTIVE   // VDR-E3: navy for focused
+                } else {
+                    CHROME_TITLE_INACTIVE // VDR-E3: dark gray for others
+                };
+                let x0 = snap.x.max(0);
+                let x1 = (snap.x + snap.cx).min(dw as i32);
+                let y0 = dst_top_y.max(0);
+                let y1 = (dst_top_y + title_h).min(dh);
+                for ty in y0..y1 {
+                    for tx in x0..x1 {
+                        self.desktop.buffer[ty as usize * dw + tx as usize] = title_color;
+                    }
+                }
+                // Title text: 4px left margin, vertically centered in title bar.
+                let text_x = snap.x + 4;
+                let text_y = dst_top_y + (title_h - 8) / 2; // centre 8px tall glyphs
+                draw_text_screen(
+                    &mut self.desktop.buffer, dw, dh as usize,
+                    text_x, text_y, &snap.title, CHROME_TEXT_COLOR);
+                // Close button: '×' right-aligned with 4px margin.
+                let close_x = snap.x + snap.cx - 4 - 8;
+                draw_text_screen(
+                    &mut self.desktop.buffer, dw, dh as usize,
+                    close_x, text_y, "\u{00D7}", CHROME_TEXT_COLOR);
+            }
+
+            // VDR-C2: draw frame border.
+            if border_w > 0 {
+                let bx0 = snap.x.max(0) as usize;
+                let bx1 = (snap.x + snap.cx).min(dw as i32) as usize;
+                let by0 = dst_top_y.max(0) as usize;
+                let by1 = (dst_top_y + snap.cy).min(dh) as usize;
+                let bc = CHROME_BORDER_COLOR;
+                for bw_i in 0..border_w as usize {
+                    // Top edge
+                    let ty = by0 + bw_i;
+                    if ty < by1 {
+                        for tx in bx0..bx1 { self.desktop.buffer[ty * dw + tx] = bc; }
+                    }
+                    // Bottom edge
+                    let by = by1.saturating_sub(1 + bw_i);
+                    if by >= by0 {
+                        for tx in bx0..bx1 { self.desktop.buffer[by * dw + tx] = bc; }
+                    }
+                    // Left edge
+                    let lx = bx0 + bw_i;
+                    if lx < bx1 {
+                        for ty in by0..by1 { self.desktop.buffer[ty * dw + lx] = bc; }
+                    }
+                    // Right edge
+                    let rx = bx1.saturating_sub(1 + bw_i);
+                    if rx >= bx0 {
+                        for ty in by0..by1 { self.desktop.buffer[ty * dw + rx] = bc; }
+                    }
                 }
             }
         }
@@ -322,21 +454,57 @@ impl Sdl2Renderer {
                             wm.z_push_top(frame);
                         }
                     }
-                    let (local_x, local_y) = {
+                    // VDR-D2: title bar hit-testing.
+                    // Title bar occupies the top CHROME_TITLE_H pixels of a frame
+                    // (highest OS/2 y values: win.y + win.cy - CHROME_TITLE_H .. win.y + win.cy).
+                    let chrome_hit = {
                         let wm = shared.window_mgr.lock_or_recover();
-                        wm.get_window(hwnd)
-                            .map(|w| (x - w.x, os2_y - w.y))
-                            .unwrap_or((x, os2_y))
+                        if let Some(win) = wm.get_window(hwnd) {
+                            if win.frame_flags & FCF_TITLEBAR != 0 {
+                                let title_bot_os2 = win.y + win.cy - CHROME_TITLE_H;
+                                if os2_y >= title_bot_os2 {
+                                    // In title bar — check close button (right-aligned).
+                                    let close_x = win.x + win.cx - 4 - 8;
+                                    if x >= close_x && x < close_x + 8 {
+                                        ChromeHit::Close
+                                    } else {
+                                        ChromeHit::TitleBar
+                                    }
+                                } else {
+                                    ChromeHit::None
+                                }
+                            } else {
+                                ChromeHit::None
+                            }
+                        } else {
+                            ChromeHit::None
+                        }
                     };
-                    let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
-                    use sdl2::mouse::MouseButton;
-                    let msg = match mouse_btn {
-                        MouseButton::Left   => Some(WM_BUTTON1DOWN),
-                        MouseButton::Right  => Some(WM_BUTTON2DOWN),
-                        MouseButton::Middle => Some(WM_BUTTON3DOWN),
-                        _ => None,
-                    };
-                    if let Some(m) = msg { push_msg(shared, hwnd, m, mp1, 0); }
+                    match chrome_hit {
+                        ChromeHit::Close => {
+                            push_msg(shared, hwnd, WM_CLOSE, 0, 0);
+                        }
+                        ChromeHit::TitleBar => {
+                            // Activate only; don't forward to app.
+                        }
+                        ChromeHit::None => {
+                            let (local_x, local_y) = {
+                                let wm = shared.window_mgr.lock_or_recover();
+                                wm.get_window(hwnd)
+                                    .map(|w| (x - w.x, os2_y - w.y))
+                                    .unwrap_or((x, os2_y))
+                            };
+                            let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
+                            use sdl2::mouse::MouseButton;
+                            let msg = match mouse_btn {
+                                MouseButton::Left   => Some(WM_BUTTON1DOWN),
+                                MouseButton::Right  => Some(WM_BUTTON2DOWN),
+                                MouseButton::Middle => Some(WM_BUTTON3DOWN),
+                                _ => None,
+                            };
+                            if let Some(m) = msg { push_msg(shared, hwnd, m, mp1, 0); }
+                        }
+                    }
                 }
             }
             Event::MouseButtonUp { mouse_btn, x, y, .. } => {
@@ -509,6 +677,17 @@ impl PmRenderer for Sdl2Renderer {
 }
 
 // ── Internal helpers ───────────────────────────────────────────────────────
+
+/// Result of a chrome hit-test on a mouse click.
+#[derive(PartialEq)]
+enum ChromeHit {
+    /// Click is on the close (×) button — send WM_CLOSE.
+    Close,
+    /// Click is in the title bar but not on any button — activate only.
+    TitleBar,
+    /// Click is in the client area — forward to the app.
+    None,
+}
 
 /// Post an OS/2 message to the queue associated with `hwnd`.
 ///

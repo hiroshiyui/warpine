@@ -100,7 +100,7 @@ impl super::Loader {
                 // WinCreateStdWindow
                 let parent = read_stack(4);
                 let style = read_stack(8);
-                let _pfc_flags_ptr = read_stack(12);
+                let pfc_flags_ptr = read_stack(12);
                 let psz_class_name_ptr = read_stack(16);
                 let psz_title_ptr = read_stack(20);
                 let _client_style = read_stack(24);
@@ -109,7 +109,11 @@ impl super::Loader {
                 let phwnd_client_ptr = read_stack(36);
                 let class_name = self.read_guest_string(psz_class_name_ptr);
                 let title = if psz_title_ptr != 0 { self.read_guest_string(psz_title_ptr) } else { "Warpine Window".to_string() };
-                debug!("  [VCPU {}] WinCreateStdWindow: class='{}', title='{}', parent=0x{:08X}, style=0x{:08X}", vcpu_id, class_name, title, parent, style);
+                // VDR-C1: read the flCreateFlags (FCF_* bits) from the PULONG argument.
+                let fl_create_flags = if pfc_flags_ptr != 0 {
+                    self.guest_read::<u32>(pfc_flags_ptr).unwrap_or(0)
+                } else { 0 };
+                debug!("  [VCPU {}] WinCreateStdWindow: class='{}', title='{}', parent=0x{:08X}, style=0x{:08X}, fcf=0x{:08X}", vcpu_id, class_name, title, parent, style, fl_create_flags);
 
                 let (h_frame, h_client, pfn_wp_client) = {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
@@ -119,7 +123,7 @@ impl super::Loader {
                     wm.frame_to_client.insert(h_frame, h_client);
                     // Initialise both windows to the default SDL2 window size so that
                     // WinQueryWindowRect returns correct dimensions before the first resize.
-                    if let Some(win) = wm.get_window_mut(h_frame)  { win.cx = 640; win.cy = 480; }
+                    if let Some(win) = wm.get_window_mut(h_frame)  { win.cx = 640; win.cy = 480; win.frame_flags = fl_create_flags; }
                     if let Some(win) = wm.get_window_mut(h_client) { win.cx = 640; win.cy = 480; }
                     // VDR-B1/E1: register in Z-order stack (top-most) and set focus.
                     wm.z_push_top(h_frame);

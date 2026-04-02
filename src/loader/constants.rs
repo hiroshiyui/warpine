@@ -145,6 +145,27 @@ pub const HWND_BOTTOM: u32       = 2; // Place window at the bottom of Z-order
 pub const HWND_FLOAT: u32        = 3; // Float above all normal windows (mapped to HWND_TOP)
 pub const HWND_DESKTOP: u32      = 4; // PM desktop pseudo-handle (origin of coordinate space)
 
+// ── FCF_* frame creation flags (flCreateFlags in WinCreateStdWindow) ─────────
+// Values match OS/2 Warp 4 Toolkit <pmwin.h>.
+pub const FCF_TITLEBAR:      u32 = 0x0000_0001; // draw title bar chrome
+pub const FCF_SYSMENU:       u32 = 0x0000_0002; // system menu icon in title bar
+pub const FCF_MENU:          u32 = 0x0000_0004; // load/attach a menu bar
+pub const FCF_SIZEBORDER:    u32 = 0x0000_0008; // resize border (SB_*)
+pub const FCF_MINBUTTON:     u32 = 0x0000_0010; // minimize button
+pub const FCF_MAXBUTTON:     u32 = 0x0000_0020; // maximize button
+pub const FCF_MINMAX:        u32 = 0x0000_0030; // min + max buttons
+pub const FCF_VERTSCROLL:    u32 = 0x0000_0040; // vertical scroll bar
+pub const FCF_HORZSCROLL:    u32 = 0x0000_0080; // horizontal scroll bar
+pub const FCF_DLGBORDER:     u32 = 0x0000_0100; // dialog border (thicker, no resize)
+pub const FCF_BORDER:        u32 = 0x0000_0200; // thin single-pixel border
+pub const FCF_SHELLPOSITION: u32 = 0x0000_0400; // let shell determine initial position
+pub const FCF_TASKLIST:      u32 = 0x0000_0800; // appear in task list / window list
+pub const FCF_NOBYTEALIGN:   u32 = 0x0000_1000; // don't byte-align window position
+pub const FCF_ICON:          u32 = 0x0000_4000; // title bar icon (requires hmod resource)
+pub const FCF_ACCELTABLE:    u32 = 0x0000_8000; // load accelerator table from hmod
+pub const FCF_SYSMODAL:      u32 = 0x0001_0000; // system-modal frame
+pub const FCF_STANDARD:      u32 = 0x0000_0CC3; // FCF_TITLEBAR|FCF_SYSMENU|FCF_MINMAX|FCF_SIZEBORDER|FCF_TASKLIST
+
 // Mock handle constants
 pub const MOCK_HAB: u32 = 0x1234;
 pub const MOCK_HPOINTER: u32 = 0x5000;

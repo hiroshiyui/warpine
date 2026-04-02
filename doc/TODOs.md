@@ -114,11 +114,12 @@ The largest structural change: remove per-PM-window SDL2 windows.
 Currently app windows have no title bar or chrome (SDL2 provides it via the OS).
 After VDR-A those decorations must be drawn by Warpine.
 
-- [ ] **VDR-C1 — Title bar rendering**: for frames with `FCF_TITLEBAR` draw a 20-px
-  navy bar at the top of the frame rect; white title text at x+4, y+2; close button
-  (×) right-aligned.
-- [ ] **VDR-C2 — Frame border**: 2-px gray border for frames with `FCF_BORDER` or
-  `FCF_DLGBORDER`.
+- [x] **VDR-C1 — Title bar rendering**: for frames with `FCF_TITLEBAR` draw a 20-px
+  navy bar (active) / dark-gray bar (inactive) at the top of the frame in the desktop
+  buffer; white title text at x+4; close (×) button right-aligned. `flCreateFlags`
+  stored as `OS2Window::frame_flags`; FCF_* constants added to `constants.rs`.
+- [x] **VDR-C2 — Frame border**: 2-px gray border overlay in the compositor for frames
+  with `FCF_BORDER`, `FCF_DLGBORDER`, or `FCF_SIZEBORDER`.
 - [ ] **VDR-C3 — System menu icon**: small OS/2 "warp" glyph in the title bar left
   corner for `FCF_SYSMENU`; clicking posts `WM_SYSCOMMAND(SC_CLOSE)`.
 - [ ] **VDR-C4 — Minimize / maximize buttons**: right side of title bar; clicking
@@ -137,9 +138,10 @@ After VDR-A there is only one OS window, so Warpine must route events itself.
   `z_hit_test(x, os2_y)` walks `z_order` front-to-back, returns the topmost frame
   whose rect contains the event. Local coords computed as `(x - win.x, os2_y - win.y)`;
   `push_msg` called with local coordinates as before.
-- [ ] **VDR-D2 — Title bar / chrome hit-testing**: before forwarding to the PM window,
-  check if the click is in the title bar, close/min/max buttons, or resize handles;
-  handle those in the compositor without posting to the app.
+- [x] **VDR-D2 — Title bar / chrome hit-testing**: before forwarding to the PM window,
+  check if the click is in the title bar region (OS/2 y >= win.y + win.cy - 20);
+  close button (×) sends WM_CLOSE; other title bar clicks activate-only (no forwarding
+  to app). `ChromeHit` enum dispatches in `handle_sdl_event`.
 - [ ] **VDR-D3 — Window dragging**: on title-bar press, enter drag mode; track
   `SDL_MouseMotion` and update `frame.x / frame.y`, recomposite. Release ends drag;
   post `WM_WINDOWPOSCHANGED`.
@@ -162,7 +164,7 @@ After VDR-A there is only one OS window, so Warpine must route events itself.
   `WinSetActiveWindow`, and `MouseButtonDown` in `Sdl2Renderer` (VDR-D4).
 - [x] **VDR-E2 — `WinSetActiveWindow` (ord 795) / `WinQueryActiveWindow` (ord 797)**:
   set / query `focused_hwnd`; `WinSetActiveWindow` also calls `z_push_top`.
-- [ ] **VDR-E3 — Title bar highlight**: the focused window's title bar is navy; all
+- [x] **VDR-E3 — Title bar highlight**: the focused window's title bar is navy; all
   others are dark gray (standard OS/2 PM visual behaviour).
 
 ---
