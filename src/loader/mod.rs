@@ -607,6 +607,77 @@ impl Loader {
                         // Flush immediately — no WinEndPaint caller for this pseudo-window.
                         let _ = sender.send(crate::gui::GUIMessage::PresentBuffer { handle: frame_hwnd });
                     }
+                    "#Dialog" => {
+                        // Collect child-window metadata while holding the lock.
+                        let children = {
+                            let wm2 = self.shared.window_mgr.lock_or_recover();
+                            let child_hwnds = wm2.get_window(hwnd)
+                                .map(|w| w.children.clone())
+                                .unwrap_or_default();
+                            child_hwnds.iter().filter_map(|&ch| {
+                                let (ax, ay, acx, acy) = wm2.get_abs_rect_in_frame(ch);
+                                wm2.get_window(ch).map(|w| {
+                                    (w.class_name.clone(), ax, ay, acx, acy, w.text.clone())
+                                })
+                            }).collect::<Vec<_>>()
+                        };
+                        // The dialog has its own SDL2 window; use hwnd as the handle.
+                        // Gray background.
+                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                            handle: hwnd, x1: 0, y1: 0, x2: cx, y2: cy,
+                            color: 0x00D4D0C8, fill: true,
+                        });
+                        // Navy title bar at the top (high OS/2 y = low SDL2 y = top of window).
+                        const DLG_TITLE_H: i32 = 16;
+                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                            handle: hwnd, x1: 0, y1: cy - DLG_TITLE_H, x2: cx, y2: cy,
+                            color: 0x00000080, fill: true,
+                        });
+                        if !text.is_empty() {
+                            let _ = sender.send(crate::gui::GUIMessage::DrawText {
+                                handle: hwnd, x: 4, y: cy - DLG_TITLE_H + 2,
+                                text: text.clone(), color: 0x00FFFFFF,
+                            });
+                        }
+                        // Dialog border.
+                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                            handle: hwnd, x1: 0, y1: 0, x2: cx, y2: cy,
+                            color: 0x00808080, fill: false,
+                        });
+                        // Child controls.
+                        for (cname, chi_x, chi_y, chi_cx, chi_cy, ctext) in children {
+                            match cname.as_str() {
+                                "WC_BUTTON" => {
+                                    let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                                        handle: hwnd, x1: chi_x, y1: chi_y,
+                                        x2: chi_x + chi_cx, y2: chi_y + chi_cy,
+                                        color: 0x00D4D0C8, fill: true,
+                                    });
+                                    let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                                        handle: hwnd, x1: chi_x, y1: chi_y,
+                                        x2: chi_x + chi_cx, y2: chi_y + chi_cy,
+                                        color: 0x00808080, fill: false,
+                                    });
+                                    if !ctext.is_empty() {
+                                        let _ = sender.send(crate::gui::GUIMessage::DrawText {
+                                            handle: hwnd, x: chi_x + 2, y: chi_y + chi_cy / 4,
+                                            text: ctext, color: 0x00000000,
+                                        });
+                                    }
+                                }
+                                "WC_STATIC" => {
+                                    if !ctext.is_empty() {
+                                        let _ = sender.send(crate::gui::GUIMessage::DrawText {
+                                            handle: hwnd, x: chi_x, y: chi_y + chi_cy / 4,
+                                            text: ctext, color: 0x00000000,
+                                        });
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        let _ = sender.send(crate::gui::GUIMessage::PresentBuffer { handle: hwnd });
+                    }
                     _ => {} // Unknown built-in class — silently ignore WM_PAINT
                 }
                 ApiResult::Normal(0)
@@ -742,6 +813,46 @@ impl Loader {
                 // Close any open dropdown and redraw the menu bar.
                 { self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd).map(|w| w.window_ulong.remove(&-1)); }
                 self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0)
+            }
+
+            WM_BUTTON1DOWN if class_name == "#Dialog" => {
+                // Hit-test child WC_BUTTON controls; post WM_COMMAND to the dialog's HMQ.
+                let click_x = (mp1 & 0xFFFF) as i32;
+                let click_y = ((mp1 >> 16) & 0xFFFF) as i32;
+                let (child_info, mq_opt) = {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    let child_hwnds = wm.get_window(hwnd)
+                        .map(|w| w.children.clone())
+                        .unwrap_or_default();
+                    let info: Vec<(String, i32, i32, i32, i32, u32)> = child_hwnds.iter()
+                        .filter_map(|&ch| {
+                            let (ax, ay, acx, acy) = wm.get_abs_rect_in_frame(ch);
+                            wm.get_window(ch).map(|w| (w.class_name.clone(), ax, ay, acx, acy, w.id))
+                        }).collect();
+                    let hmq = wm.find_hmq_for_hwnd(hwnd);
+                    let mq = hmq.and_then(|h| wm.get_mq(h));
+                    (info, mq)
+                };
+                for (cname, chi_x, chi_y, chi_cx, chi_cy, chi_id) in child_info {
+                    if cname == "WC_BUTTON"
+                        && click_x >= chi_x && click_x < chi_x + chi_cx
+                        && click_y >= chi_y && click_y < chi_y + chi_cy
+                    {
+                        if let Some(ref mq_arc) = mq_opt {
+                            let mut mq = mq_arc.lock_or_recover();
+                            mq.messages.push_back(OS2Message {
+                                hwnd,
+                                msg: WM_COMMAND,
+                                mp1: chi_id,
+                                mp2: 0,
+                                time: 0, x: 0, y: 0,
+                            });
+                            mq.cond.notify_one();
+                        }
+                        break;
+                    }
+                }
+                ApiResult::Normal(0)
             }
 
             LM_INSERTITEM => {

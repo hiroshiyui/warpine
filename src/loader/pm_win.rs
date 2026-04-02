@@ -656,6 +656,11 @@ impl super::Loader {
                             mp1: first_child, mp2: p_create_params,
                             time: 0, x: 0, y: 0,
                         });
+                        // WM_PAINT renders the dialog after WM_INITDLG is processed by the dialog proc.
+                        mq.messages.push_back(OS2Message {
+                            hwnd: hwnd_dlg, msg: WM_PAINT,
+                            mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
+                        });
                         mq.cond.notify_one();
                     }
                 }
@@ -795,6 +800,11 @@ impl super::Loader {
                             hwnd: hwnd_dlg, msg: WM_INITDLG,
                             mp1: first_child, mp2: p_create_params,
                             time: 0, x: 0, y: 0,
+                        });
+                        // WM_PAINT renders the dialog after WM_INITDLG is processed.
+                        mq.messages.push_back(OS2Message {
+                            hwnd: hwnd_dlg, msg: WM_PAINT,
+                            mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
                         });
                         mq.cond.notify_one();
                     }
@@ -1579,12 +1589,16 @@ impl super::Loader {
         let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
         let h = wm.create_window("#Dialog".to_string(), hwnd_parent, hmq);
         if let Some(win) = wm.get_window_mut(h) {
-            win.text   = title;
+            win.text   = title.clone();
             win.pfn_wp = pfn_dlg_proc;
-            win.x  = dlg_x  as i32;
-            win.y  = dlg_y  as i32;
+            // Use (0,0) as the dialog-local origin so that child-control coordinates
+            // (relative to the dialog window) remain directly usable for hit-testing
+            // and rendering inside the dialog's own SDL2 window.
+            win.x  = 0;
+            win.y  = 0;
             win.cx = dlg_cx as i32;
             win.cy = dlg_cy as i32;
+            let _ = (dlg_x, dlg_y); // screen position managed by the SDL2 windowing system
         }
         for item in items {
             let class_name = if !item.class_name.is_empty() {
@@ -1603,6 +1617,19 @@ impl super::Loader {
                 cwin.style   = item.fl_style;
                 cwin.visible = item.fl_style & super::constants::WS_VISIBLE != 0;
             }
+        }
+        // Create a dedicated SDL2 window for this dialog so it renders independently.
+        if let Some(ref sender) = wm.gui_tx {
+            let _ = sender.send(GUIMessage::CreateWindow {
+                class: "#Dialog".into(),
+                title,
+                handle: h,
+            });
+            let _ = sender.send(GUIMessage::ResizeWindow {
+                handle: h,
+                width: dlg_cx as u32,
+                height: dlg_cy as u32,
+            });
         }
         (h, hmq)
     }

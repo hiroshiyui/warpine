@@ -593,7 +593,15 @@ impl super::Loader {
                                                 .map(|w| (w.dialog_dismissed, w.dialog_result))
                                         };
                                         if let Some((true, dlg_result)) = dismissed {
-                                            // Dialog dismissed: restore caller state, return result.
+                                            // Dialog dismissed: hide the SDL2 window and
+                                            // restore caller state, return result.
+                                            let gui_tx = self.shared.window_mgr
+                                                .lock_or_recover().gui_tx.clone();
+                                            if let Some(ref s) = gui_tx {
+                                                let _ = s.send(crate::gui::GUIMessage::ShowWindow {
+                                                    handle: hwnd_dlg, show: false,
+                                                });
+                                            }
                                             // regs.rip and regs.rsp are already set to saved state
                                             // by the code above the match.
                                             regs.rax = dlg_result as u64;
@@ -1038,6 +1046,13 @@ fn setup_dlg_dispatch(
                 regs.rax = DID_CANCEL as u64;
                 vcpu.set_regs(&regs).unwrap();
                 return false;
+            }
+
+            // WM_PAINT: render the dialog via the built-in handler; do not dispatch
+            // to dlg_proc (dialog procs typically ignore WM_PAINT).
+            if msg.msg == WM_PAINT {
+                loader.dispatch_builtin_control(msg.hwnd, WM_PAINT, 0, 0);
+                continue;
             }
 
             // Push the DlgRunLoop frame so the loop continues after the callback.
