@@ -289,10 +289,22 @@ impl super::Loader {
                         // If this frame has a menu, delegate mouse events to the menu
                         // control handler so it can handle menu-bar clicks and dropdown
                         // item selection.
+                        //
+                        // push_msg() translates frame_hwnd → client_hwnd via frame_to_client,
+                        // so WM_BUTTON1DOWN arrives with hwnd = client_hwnd.  We must also
+                        // check the frame window (via client_to_frame) for menu_hwnd.
                         let (menu_hwnd, frame_cy) = {
                             let wm = self.shared.window_mgr.lock_or_recover();
-                            let mh = wm.get_window(hwnd).map(|w| w.menu_hwnd).unwrap_or(0);
-                            let cy = wm.get_window(hwnd).map(|w| w.cy).unwrap_or(0);
+                            // First try hwnd directly, then its frame ancestor.
+                            let mut mh = wm.get_window(hwnd).map(|w| w.menu_hwnd).unwrap_or(0);
+                            let mut frame_h = hwnd;
+                            if mh == 0 {
+                                frame_h = wm.client_to_frame(hwnd);
+                                if frame_h != hwnd {
+                                    mh = wm.get_window(frame_h).map(|w| w.menu_hwnd).unwrap_or(0);
+                                }
+                            }
+                            let cy = wm.get_window(frame_h).map(|w| w.cy).unwrap_or(0);
                             (mh, cy)
                         };
                         if menu_hwnd != 0 && msg == WM_BUTTON1DOWN {
