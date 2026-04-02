@@ -99,10 +99,9 @@ The largest structural change: remove per-PM-window SDL2 windows.
 - [x] **VDR-B2 — `WinSetWindowPos` SWP_ZORDER**: `HWND_TOP`/`HWND_FLOAT` → `z_push_top`;
   `HWND_BOTTOM` → `z_push_bottom`; arbitrary `hwnd_behind` → `z_insert_behind`;
   `SWP_ACTIVATE` → `z_push_top` + `focused_hwnd` update. Constants in `constants.rs`.
-- [ ] **VDR-B3 — Full-frame compositor loop**: on each 60 Hz tick, iterate `z_order`
-  back-to-front; for each visible frame, clear its region (gray desktop background)
-  then call `dispatch_builtin_control(hwnd, WM_PAINT, 0, 0)` + post `WM_PAINT` to
-  the app's HMQ to trigger guest repaints.
+- [x] **VDR-B3 — Full-frame compositor loop**: 60Hz periodic `composite_and_present`
+  call in `poll_events` (`last_composite: Instant` guards the 16ms interval);
+  drag animations and focus-change repaints no longer require an app `PresentBuffer`.
 - [ ] **VDR-B4 — Dirty-rect tracking** (optimisation, can be deferred): add
   `WindowManager::dirty: HashSet<u32>` — only repaint frames marked dirty. Mark dirty
   on `WinInvalidateRect`, `WinShowWindow`, move/resize, Z-order change.
@@ -142,9 +141,10 @@ After VDR-A there is only one OS window, so Warpine must route events itself.
   check if the click is in the title bar region (OS/2 y >= win.y + win.cy - 20);
   close button (×) sends WM_CLOSE; other title bar clicks activate-only (no forwarding
   to app). `ChromeHit` enum dispatches in `handle_sdl_event`.
-- [ ] **VDR-D3 — Window dragging**: on title-bar press, enter drag mode; track
-  `SDL_MouseMotion` and update `frame.x / frame.y`, recomposite. Release ends drag;
-  post `WM_WINDOWPOSCHANGED`.
+- [x] **VDR-D3 — Window dragging**: `DragState { hwnd, anchor_x, anchor_y_sdl }` in
+  `Sdl2Renderer`; `ChromeHit::TitleBar` starts drag; `MouseMotion` updates
+  `win.x/win.y` and syncs client window; `MouseButtonUp` ends drag; compositor loop
+  (VDR-B3) repaints each frame during drag.
 - [ ] **VDR-D4 — Window activation on click**: clicking any non-focused frame brings
   it to the top (`z_order` splice) and posts `WM_ACTIVATE(WA_CLICK, hwnd)` to the
   newly active window and `WM_ACTIVATE(WA_INACTIVE, hwnd)` to the previous.

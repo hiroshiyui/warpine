@@ -159,6 +159,16 @@ impl DesktopCanvas {
     }
 }
 
+/// Active window-drag state (VDR-D3).
+struct DragState {
+    /// HWND of the frame being dragged.
+    hwnd: u32,
+    /// Horizontal offset (SDL2 pixels) from the frame's left edge to the press point.
+    anchor_x: i32,
+    /// Vertical offset (SDL2 pixels) from the top of the frame in SDL2 coords to the press point.
+    anchor_y_sdl: i32,
+}
+
 /// SDL2-backed Presentation Manager renderer.
 ///
 /// VDR-A: one SDL2 window (the desktop), one `FrameBuffer` per PM frame/dialog.
@@ -175,6 +185,10 @@ pub struct Sdl2Renderer {
     frame_buffers: HashMap<u32, FrameBuffer>,
     /// Last seen host clipboard text — used to detect changes between frames.
     cached_clipboard: String,
+    /// Active drag operation (VDR-D3); `None` when no drag is in progress.
+    drag_state: Option<DragState>,
+    /// Timestamp of the last full compositor repaint (VDR-B3).
+    last_composite: std::time::Instant,
 }
 
 impl Sdl2Renderer {
@@ -203,6 +217,8 @@ impl Sdl2Renderer {
             desktop,
             frame_buffers: HashMap::new(),
             cached_clipboard: String::new(),
+            drag_state: None,
+            last_composite: std::time::Instant::now(),
         }
     }
 
@@ -419,22 +435,45 @@ impl Sdl2Renderer {
                 }
             }
             Event::MouseMotion { x, y, .. } => {
-                let os2_y = (dh as i32 - 1) - y;
-                // Hit-test to find the topmost frame under the cursor.
-                let target = {
-                    let wm = shared.window_mgr.lock_or_recover();
-                    wm.z_hit_test(x, os2_y)
-                };
-                if let Some(hwnd) = target {
-                    // Compute local coords: cursor relative to window origin.
-                    let (local_x, local_y) = {
+                // VDR-D3: if a drag is active, move the window.
+                if let Some(ref ds) = self.drag_state {
+                    let hwnd = ds.hwnd;
+                    let anchor_x = ds.anchor_x;
+                    let anchor_y_sdl = ds.anchor_y_sdl;
+                    let mut wm = shared.window_mgr.lock_or_recover();
+                    if let Some(win) = wm.get_window_mut(hwnd) {
+                        let new_top_y_sdl = y - anchor_y_sdl;
+                        win.x = x - anchor_x;
+                        win.y = dh as i32 - new_top_y_sdl - win.cy;
+                        // Clamp so window is never fully off-screen.
+                        win.x = win.x.max(-(win.cx - 32));
+                        win.y = win.y.max(0);
+                    }
+                    // Also sync client window position.
+                    if let Some(&client) = wm.frame_to_client.get(&hwnd) {
+                        let (fx, fy) = wm.get_window(hwnd).map(|w| (w.x, w.y)).unwrap_or((0, 0));
+                        if let Some(cw) = wm.get_window_mut(client) {
+                            cw.x = fx;
+                            cw.y = fy;
+                        }
+                    }
+                } else {
+                    let os2_y = (dh as i32 - 1) - y;
+                    // Hit-test to find the topmost frame under the cursor.
+                    let target = {
                         let wm = shared.window_mgr.lock_or_recover();
-                        wm.get_window(hwnd)
-                            .map(|w| (x - w.x, os2_y - w.y))
-                            .unwrap_or((x, os2_y))
+                        wm.z_hit_test(x, os2_y)
                     };
-                    let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
-                    push_msg(shared, hwnd, WM_MOUSEMOVE, mp1, 0);
+                    if let Some(hwnd) = target {
+                        let (local_x, local_y) = {
+                            let wm = shared.window_mgr.lock_or_recover();
+                            wm.get_window(hwnd)
+                                .map(|w| (x - w.x, os2_y - w.y))
+                                .unwrap_or((x, os2_y))
+                        };
+                        let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
+                        push_msg(shared, hwnd, WM_MOUSEMOVE, mp1, 0);
+                    }
                 }
             }
             Event::MouseButtonDown { mouse_btn, x, y, .. } => {
@@ -485,7 +524,18 @@ impl Sdl2Renderer {
                             push_msg(shared, hwnd, WM_CLOSE, 0, 0);
                         }
                         ChromeHit::TitleBar => {
-                            // Activate only; don't forward to app.
+                            // VDR-D3: start drag — record how far into the title bar the user clicked.
+                            let (anchor_x, dst_top_y) = {
+                                let wm = shared.window_mgr.lock_or_recover();
+                                wm.get_window(hwnd)
+                                    .map(|w| (x - w.x, dh as i32 - w.y - w.cy))
+                                    .unwrap_or((0, 0))
+                            };
+                            self.drag_state = Some(DragState {
+                                hwnd,
+                                anchor_x,
+                                anchor_y_sdl: y - dst_top_y,
+                            });
                         }
                         ChromeHit::None => {
                             let (local_x, local_y) = {
@@ -508,6 +558,13 @@ impl Sdl2Renderer {
                 }
             }
             Event::MouseButtonUp { mouse_btn, x, y, .. } => {
+                // VDR-D3: end drag on button release, regardless of which button.
+                if self.drag_state.is_some() {
+                    self.drag_state = None;
+                    // Trigger one final composite to show the window at its resting position.
+                    self.composite_and_present(shared);
+                    return true;
+                }
                 let os2_y = (dh as i32 - 1) - y;
                 let target = {
                     let wm = shared.window_mgr.lock_or_recover();
@@ -670,6 +727,15 @@ impl PmRenderer for Sdl2Renderer {
                 return false;
             }
         }
+
+        // VDR-B3: periodic 60Hz compositor tick.
+        // Recomposite unconditionally every ~16ms so drag animations, focus changes,
+        // and any other state updates are visible even without an app PresentBuffer.
+        if self.last_composite.elapsed() >= std::time::Duration::from_millis(16) {
+            self.composite_and_present(shared);
+            self.last_composite = std::time::Instant::now();
+        }
+
         true
     }
 
