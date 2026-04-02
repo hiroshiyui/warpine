@@ -565,11 +565,16 @@ impl super::Loader {
                 let hwnd = read_stack(4);
                 let msg  = read_stack(8);
                 let mp1  = read_stack(12);
-                let _mp2 = read_stack(16);
+                let mp2  = read_stack(16);
                 match msg {
                     WM_INITDLG => {
                         // Return FALSE (0): accept the focus set in mp1 as-is.
                         ApiResult::Normal(0)
+                    }
+                    WM_BUTTON1DOWN => {
+                        // Route through the built-in #Dialog handler so it can
+                        // hit-test child WC_BUTTON controls and post WM_COMMAND.
+                        self.dispatch_builtin_control(hwnd, WM_BUTTON1DOWN, mp1, mp2)
                     }
                     WM_COMMAND => {
                         // If the command is DID_OK or DID_CANCEL, dismiss.

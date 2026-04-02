@@ -89,8 +89,8 @@ fn draw_filled_rect(buf: &mut [u32], buf_w: usize,
     let buf_h = buf.len() / buf_w.max(1);
     let rx0 = x0.max(0) as usize;
     let ry0 = y0.max(0) as usize;
-    let rx1 = (x1.min(buf_w as i32)) as usize;
-    let ry1 = (y1.min(buf_h as i32)) as usize;
+    let rx1 = (x1.min(buf_w as i32)).max(0) as usize;
+    let ry1 = (y1.min(buf_h as i32)).max(0) as usize;
     for y in ry0..ry1 {
         for x in rx0..rx1 {
             buf[y * buf_w + x] = color;
