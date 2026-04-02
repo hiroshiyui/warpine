@@ -11,9 +11,15 @@
 /* ── Menu IDs ── */
 #define ID_MAINMENU    100
 #define ID_ABOUTDLG    101
+#define IDM_FILE       200
 #define IDM_ABOUT      201
 #define IDM_EXIT       202
 #define IDC_LABEL      301
+/* DID_OK/DID_CANCEL may not be visible to wrc without INCL_WINDIALOGS */
+#ifndef DID_OK
+#define DID_OK         1
+#define DID_CANCEL     2
+#endif
 
 /* ── Main menu ── */
 MENU ID_MAINMENU

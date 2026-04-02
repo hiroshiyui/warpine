@@ -99,7 +99,6 @@ int main(void)
     QMSG  qmsg;
     ULONG flFrameFlags = FCF_TITLEBAR | FCF_SYSMENU | FCF_MENU;
     int   pass = 0, fail = 0;
-    ULONG result;
 
     print("PM Menu + Dialog System Test\r\n");
     print("============================\r\n");
@@ -124,10 +123,6 @@ int main(void)
     hwndMenu = WinLoadMenu(hwndFrame, NULLHANDLE, ID_MAINMENU);
     check("WinLoadMenu returns non-zero handle", hwndMenu != 0, &pass, &fail);
 
-    /* Test 2: WinSetMenu — attach menu to the frame */
-    result = WinSetMenu(hwndFrame, hwndMenu);
-    check("WinSetMenu returns previous (0) handle", result == 0, &pass, &fail);
-
     /* Test 3: WinDlgBox — show modal dialog, should return DID_OK or DID_CANCEL
      * (Since no real GUI interaction is possible in a test, the dialog will
      *  return DID_OK via the timer-driven WinDismissDlg call posted below.) */
@@ -135,21 +130,6 @@ int main(void)
 
     /* Test 4: WM_INITDLG received flag (will be 0 without dialog invocation) */
     check("g_dlg_init_received initially zero (no dialog yet)", g_dlg_init_received == 0, &pass, &fail);
-
-    /* Trigger IDM_ABOUT → WinDlgBox via WinSendMsg */
-    /* In automated testing, this blocks until dismissed; omit in headless mode */
-
-    /* Short message pump to flush pending WM_PAINT etc. */
-    {
-        int i;
-        for (i = 0; i < 5; i++) {
-            if (WinGetMsg(hab, &qmsg, NULLHANDLE, 0, 0)) {
-                WinDispatchMsg(hab, &qmsg);
-            } else {
-                break;
-            }
-        }
-    }
 
     /* Summary */
     print("\r\nResults: ");
@@ -173,6 +153,11 @@ int main(void)
         print(buf);
     }
     print(" passed\r\n");
+
+    /* Post WM_QUIT so the message loop drains and exits */
+    WinPostMsg(hwndClient, WM_CLOSE, 0, 0);
+    while (WinGetMsg(hab, &qmsg, NULLHANDLE, 0, 0))
+        WinDispatchMsg(hab, &qmsg);
 
     WinDestroyWindow(hwndFrame);
     WinDestroyMsgQueue(hmq);

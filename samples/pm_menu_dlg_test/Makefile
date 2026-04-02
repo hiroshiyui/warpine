@@ -1,29 +1,22 @@
-# Makefile for pm_menu_dlg_test
-# Requires Open Watcom (setup via ../../vendor/setup_watcom.sh)
+# samples/pm_menu_dlg_test/Makefile
+WATCOM_ROOT = $(CURDIR)/../../vendor/watcom
+WCL386      = $(WATCOM_ROOT)/binl64/wcl386
+RC          = $(WATCOM_ROOT)/binl64/wrc
+INCLUDE     = $(WATCOM_ROOT)/h/os2;$(WATCOM_ROOT)/h
 
-CC      = wcc386
-RC      = rc
-LINK    = wlink
-CFLAGS  = -bt=os2 -I$(WATCOM)/h -I$(WATCOM)/h/os2 -mf -3s -zq
-
-TARGET  = pm_menu_dlg_test.exe
-OBJ     = pm_menu_dlg_test.obj
-RES     = pm_menu_dlg_test.res
+TARGET = pm_menu_dlg_test.exe
 
 all: $(TARGET)
 
-$(OBJ): pm_menu_dlg_test.c
-	$(CC) $(CFLAGS) $<
-
-$(RES): pm_menu_dlg_test.rc
-	$(RC) -r $<
-
-$(TARGET): $(OBJ) $(RES)
-	$(LINK) system os2v2 pmcompatible \
-	    name $(TARGET) \
-	    file $(OBJ) \
-	    library $(WATCOM)/lib386/os2/os2386.lib
-	$(RC) $(RES) $(TARGET)
+$(TARGET): pm_menu_dlg_test.c pm_menu_dlg_test.rc
+	@if [ ! -d "$(WATCOM_ROOT)" ]; then \
+		echo "Error: Open Watcom not found. Run ../../vendor/setup_watcom.sh first."; \
+		exit 1; \
+	fi
+	INCLUDE="$(INCLUDE)" WATCOM=$(WATCOM_ROOT) PATH=$(WATCOM_ROOT)/binl64:$(PATH) \
+	$(WCL386) -q -bt=os2 -l=os2v2_pm pm_menu_dlg_test.c
+	INCLUDE="$(INCLUDE)" WATCOM=$(WATCOM_ROOT) PATH=$(WATCOM_ROOT)/binl64:$(PATH) \
+	$(RC) -bt=os2 -i=$(WATCOM_ROOT)/h/os2 -i=$(WATCOM_ROOT)/h pm_menu_dlg_test.rc $(TARGET)
 
 clean:
-	rm -f $(OBJ) $(RES) $(TARGET)
+	rm -f *.exe *.obj *.res *.err
