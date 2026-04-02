@@ -84,9 +84,10 @@ The largest structural change: remove per-PM-window SDL2 windows.
 - [x] **VDR-A4 — Full-desktop PresentBuffer**: `GUIMessage::PresentBuffer` composites all
   visible frames (bottom-to-top z-order) onto the single desktop surface and presents.
   Background filled with `DESKTOP_BG` (OS/2-style teal `0x00408040`).
-- [ ] **VDR-A5 — Dialog windows composited in-surface**: `create_dialog_from_template`
-  no longer emits `CreateWindow` + `ResizeWindow`; dialogs are Z-stack entries just
-  like frames. Remove the `ResizeWindow` dialog hack added in the current fix.
+- [x] **VDR-A5 — Dialog windows composited in-surface**: `create_dialog_from_template`
+  no longer emits `CreateWindow` + `ResizeWindow`; dialogs are pure Z-stack entries.
+  `Sdl2Renderer::get_or_create_fb()` allocates FrameBuffers lazily on first draw call,
+  sized from `OS2Window::cx × cy`; used by all draw-message handlers.
 
 ---
 
@@ -145,15 +146,16 @@ After VDR-A there is only one OS window, so Warpine must route events itself.
   `Sdl2Renderer`; `ChromeHit::TitleBar` starts drag; `MouseMotion` updates
   `win.x/win.y` and syncs client window; `MouseButtonUp` ends drag; compositor loop
   (VDR-B3) repaints each frame during drag.
-- [ ] **VDR-D4 — Window activation on click**: clicking any non-focused frame brings
-  it to the top (`z_order` splice) and posts `WM_ACTIVATE(WA_CLICK, hwnd)` to the
-  newly active window and `WM_ACTIVATE(WA_INACTIVE, hwnd)` to the previous.
-- [ ] **VDR-D5 — Keyboard routing**: all `SDL_KeyDown` / `SDL_KeyUp` / `SDL_TextInput`
-  events go to `focused_hwnd`'s HMQ via `push_msg`. `focused_hwnd` tracks the PM
-  window that received the last `WM_ACTIVATE`.
-- [ ] **VDR-D6 — `WinSetCapture` / `capture_hwnd`**: if set, all mouse events go to
-  the captured window regardless of position. Already tracked in `WindowManager`;
-  wire into the event router.
+- [x] **VDR-D4 — Window activation on click**: clicking any non-focused frame brings
+  it to the top; posts `WM_ACTIVATE(mp1=0, mp2=new)` to the old frame and
+  `WM_ACTIVATE(mp1=2/WA_CLICK, mp2=old)` to the new frame; `WinSetActiveWindow`
+  posts `WM_ACTIVATE(mp1=1, mp2=other)` to both parties.
+- [x] **VDR-D5 — Keyboard routing**: all `SDL_KeyDown` / `SDL_KeyUp` / `SDL_TextInput`
+  events go to `focused_hwnd`'s HMQ via `push_msg`; `WM_ACTIVATE = 0x0042` added to
+  `constants.rs`; `focused_hwnd` updated by mouse click and `WinSetActiveWindow`.
+- [x] **VDR-D6 — `WinSetCapture` / `capture_hwnd`**: all three mouse event handlers
+  (`MouseButtonDown`, `MouseMotion`, `MouseButtonUp`) check `wm.capture_hwnd` first;
+  if non-zero the captured window overrides `z_hit_test`.
 
 ---
 

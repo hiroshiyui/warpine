@@ -942,19 +942,48 @@ impl super::Loader {
             }
             795 => {
                 // WinSetActiveWindow(HWND hwndDesktop, HWND hwnd) -> BOOL
-                // VDR-E2: set focused_hwnd and raise to top of Z-order.
+                // VDR-E2: set focused_hwnd and raise to top of Z-order;
+                // post WM_ACTIVATE to both the old and new active windows (VDR-D4).
                 let _hwnd_desktop = read_stack(4);
                 let hwnd = read_stack(8);
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-                let frame = {
-                    let candidate = wm.client_to_frame(hwnd);
-                    if wm.frame_to_client.contains_key(&candidate) { candidate } else { hwnd }
+                let (prev, new_frame) = {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    let frame = {
+                        let candidate = wm.client_to_frame(hwnd);
+                        if wm.frame_to_client.contains_key(&candidate) { candidate } else { hwnd }
+                    };
+                    let prev = wm.focused_hwnd;
+                    if wm.frame_to_client.contains_key(&frame) {
+                        wm.focused_hwnd = frame;
+                        wm.z_push_top(frame);
+                        (prev, frame)
+                    } else {
+                        (0, 0)
+                    }
                 };
-                if wm.frame_to_client.contains_key(&frame) {
-                    wm.focused_hwnd = frame;
-                    wm.z_push_top(frame);
+                if new_frame != 0 && prev != new_frame {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    // Post WM_ACTIVATE to old frame (mp1=0 deactivating, mp2=new frame).
+                    if prev != 0
+                        && let Some(mq_arc) = wm.find_hmq_for_hwnd(prev).and_then(|h| wm.get_mq(h)) {
+                        let mut mq = mq_arc.lock_or_recover();
+                        mq.messages.push_back(OS2Message {
+                            hwnd: prev, msg: WM_ACTIVATE, mp1: 0, mp2: new_frame,
+                            time: 0, x: 0, y: 0,
+                        });
+                        mq.cond.notify_one();
+                    }
+                    // Post WM_ACTIVATE to new frame (mp1=1 activating, mp2=old frame).
+                    if let Some(mq_arc) = wm.find_hmq_for_hwnd(new_frame).and_then(|h| wm.get_mq(h)) {
+                        let mut mq = mq_arc.lock_or_recover();
+                        mq.messages.push_back(OS2Message {
+                            hwnd: new_frame, msg: WM_ACTIVATE, mp1: 1, mp2: prev,
+                            time: 0, x: 0, y: 0,
+                        });
+                        mq.cond.notify_one();
+                    }
                 }
-                ApiResult::Normal(1)
+                ApiResult::Normal(if new_frame != 0 { 1 } else { 0 })
             }
             // WinQueryActiveWindow(HWND hwndDesktop) -> HWND
             // NOTE: ordinal 795 in some headers; 797 in others — both map here via
@@ -1671,19 +1700,9 @@ impl super::Loader {
                 cwin.visible = item.fl_style & super::constants::WS_VISIBLE != 0;
             }
         }
-        // Create a dedicated SDL2 window for this dialog so it renders independently.
-        if let Some(ref sender) = wm.gui_tx {
-            let _ = sender.send(GUIMessage::CreateWindow {
-                class: "#Dialog".into(),
-                title,
-                handle: h,
-            });
-            let _ = sender.send(GUIMessage::ResizeWindow {
-                handle: h,
-                width: dlg_cx as u32,
-                height: dlg_cy as u32,
-            });
-        }
+        // VDR-A5: dialogs are pure Z-stack entries; no CreateWindow / ResizeWindow
+        // needed — the compositor reads position from OS2Window and the FrameBuffer
+        // is allocated lazily on the first draw call (sized from win.cx × win.cy).
         (h, hmq)
     }
 }

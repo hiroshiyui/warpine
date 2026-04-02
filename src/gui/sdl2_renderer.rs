@@ -19,7 +19,8 @@ use crate::loader::{SharedState, OS2Message, MutexExt,
     VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6,
     VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12,
     CF_TEXT, KC_PREVDOWN,
-    FCF_TITLEBAR, FCF_BORDER, FCF_DLGBORDER, FCF_SIZEBORDER};
+    FCF_TITLEBAR, FCF_BORDER, FCF_DLGBORDER, FCF_SIZEBORDER,
+    WM_ACTIVATE};
 use super::message::GUIMessage;
 use super::renderer::PmRenderer;
 use super::render_utils::{render_text_to_buffer, render_rect_to_buffer, render_line_to_buffer};
@@ -220,6 +221,31 @@ impl Sdl2Renderer {
             drag_state: None,
             last_composite: std::time::Instant::now(),
         }
+    }
+
+    /// Return a mutable reference to the `FrameBuffer` for `handle`, allocating
+    /// one lazily if it doesn't exist yet (VDR-A5: dialogs skip `CreateWindow`).
+    ///
+    /// The initial size is read from `OS2Window::cx / cy` in `SharedState`; falls
+    /// back to the desktop size if the window is unknown (e.g. a frame window that
+    /// hasn't received a `WinSetWindowPos` yet).
+    fn get_or_create_fb<'s>(
+        frame_buffers: &'s mut HashMap<u32, FrameBuffer>,
+        desktop: &DesktopCanvas,
+        handle: u32,
+        shared: &Arc<SharedState>,
+    ) -> Option<&'s mut FrameBuffer> {
+        frame_buffers.entry(handle).or_insert_with(|| {
+            let (w, h) = {
+                let wm = shared.window_mgr.lock_or_recover();
+                wm.get_window(handle)
+                    .filter(|w| w.cx > 0 && w.cy > 0)
+                    .map(|w| (w.cx as u32, w.cy as u32))
+                    .unwrap_or((desktop.width, desktop.height))
+            };
+            FrameBuffer::new(w, h)
+        });
+        frame_buffers.get_mut(&handle)
     }
 
     /// Composite all visible PM windows onto `desktop.buffer` and present.
@@ -459,8 +485,11 @@ impl Sdl2Renderer {
                     }
                 } else {
                     let os2_y = (dh as i32 - 1) - y;
-                    // Hit-test to find the topmost frame under the cursor.
-                    let target = {
+                    // VDR-D6: captured window overrides hit-test.
+                    let capture = shared.window_mgr.lock_or_recover().capture_hwnd;
+                    let target = if capture != 0 {
+                        Some(capture)
+                    } else {
                         let wm = shared.window_mgr.lock_or_recover();
                         wm.z_hit_test(x, os2_y)
                     };
@@ -478,20 +507,33 @@ impl Sdl2Renderer {
             }
             Event::MouseButtonDown { mouse_btn, x, y, .. } => {
                 let os2_y = (dh as i32 - 1) - y;
-                let target = {
+                // VDR-D6: captured window overrides hit-test.
+                let capture = shared.window_mgr.lock_or_recover().capture_hwnd;
+                let target = if capture != 0 {
+                    Some(capture)
+                } else {
                     let wm = shared.window_mgr.lock_or_recover();
                     wm.z_hit_test(x, os2_y)
                 };
                 if let Some(hwnd) = target {
-                    // VDR-D4: activate window on click.
-                    {
+                    // VDR-D4: activate window on click; post WM_ACTIVATE to both windows.
+                    let prev_focused = {
                         let mut wm = shared.window_mgr.lock_or_recover();
                         let frame = wm.client_to_frame(hwnd);
                         let frame = if wm.frame_to_client.contains_key(&frame) { frame } else { hwnd };
-                        if wm.frame_to_client.contains_key(&frame) && wm.focused_hwnd != frame {
+                        let prev = wm.focused_hwnd;
+                        if wm.frame_to_client.contains_key(&frame) && prev != frame {
                             wm.focused_hwnd = frame;
                             wm.z_push_top(frame);
-                        }
+                            prev
+                        } else { 0 }
+                    };
+                    if prev_focused != 0 {
+                        // Notify old frame it lost focus.
+                        push_msg(shared, prev_focused, WM_ACTIVATE, 0, hwnd);
+                        // Notify new frame it gained focus (WA_CLICK = 2).
+                        let new_focused = shared.window_mgr.lock_or_recover().focused_hwnd;
+                        push_msg(shared, new_focused, WM_ACTIVATE, 2, prev_focused);
                     }
                     // VDR-D2: title bar hit-testing.
                     // Title bar occupies the top CHROME_TITLE_H pixels of a frame
@@ -566,7 +608,11 @@ impl Sdl2Renderer {
                     return true;
                 }
                 let os2_y = (dh as i32 - 1) - y;
-                let target = {
+                // VDR-D6: captured window overrides hit-test.
+                let capture = shared.window_mgr.lock_or_recover().capture_hwnd;
+                let target = if capture != 0 {
+                    Some(capture)
+                } else {
                     let wm = shared.window_mgr.lock_or_recover();
                     wm.z_hit_test(x, os2_y)
                 };
@@ -642,24 +688,28 @@ impl PmRenderer for Sdl2Renderer {
                 // No-op: position/visibility live in OS2Window; compositor reads from there.
             }
             GUIMessage::DrawBox { handle, x1, y1, x2, y2, color, fill } => {
-                if let Some(fb) = self.frame_buffers.get_mut(&handle) {
+                if let Some(fb) = Self::get_or_create_fb(
+                    &mut self.frame_buffers, &self.desktop, handle, shared) {
                     render_rect_to_buffer(&mut fb.buffer, fb.width, fb.height,
                                          x1, y1, x2, y2, color, fill);
                 }
             }
             GUIMessage::DrawLine { handle, x1, y1, x2, y2, color } => {
-                if let Some(fb) = self.frame_buffers.get_mut(&handle) {
+                if let Some(fb) = Self::get_or_create_fb(
+                    &mut self.frame_buffers, &self.desktop, handle, shared) {
                     render_line_to_buffer(&mut fb.buffer, fb.width, fb.height,
                                          x1, y1, x2, y2, color);
                 }
             }
             GUIMessage::DrawText { handle, x, y, text, color } => {
-                if let Some(fb) = self.frame_buffers.get_mut(&handle) {
+                if let Some(fb) = Self::get_or_create_fb(
+                    &mut self.frame_buffers, &self.desktop, handle, shared) {
                     render_text_to_buffer(&mut fb.buffer, fb.width, fb.height, x, y, &text, color);
                 }
             }
             GUIMessage::ClearBuffer { handle } => {
-                if let Some(fb) = self.frame_buffers.get_mut(&handle) {
+                if let Some(fb) = Self::get_or_create_fb(
+                    &mut self.frame_buffers, &self.desktop, handle, shared) {
                     fb.buffer.fill(0xFFFFFFFF);
                 }
             }

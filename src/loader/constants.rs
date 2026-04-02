@@ -253,6 +253,10 @@ pub const MIA_CHECKED:   u16 = 0x2000;
 pub const MIA_DISABLED:  u16 = 0x4000;
 pub const MIA_HILITED:   u16 = 0x8000;
 
+// WM_ACTIVATE (0x0042) — sent to a frame when it gains or loses activation.
+// mp1 = fActivate (TRUE = gaining focus, FALSE = losing); mp2 = other frame HWND.
+pub const WM_ACTIVATE: u32 = 0x0042;
+
 // WM_CONTROL — notification message from a child control to its owner.
 // mp1 = MPFROM2SHORT(usID, usNotifyCode); mp2 = control-specific data.
 pub const WM_CONTROL: u32 = 0x0030;
