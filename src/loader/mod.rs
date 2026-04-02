@@ -508,6 +508,37 @@ impl Loader {
                             color: 0x00808080, fill: false,
                         });
                     }
+                    "#Menu" => {
+                        // Collect top-level menu items (second lock — brief).
+                        let items = {
+                            let wm2 = self.shared.window_mgr.lock_or_recover();
+                            wm2.get_window(hwnd).map(|w| w.menu_items.clone()).unwrap_or_default()
+                        };
+                        // Gray menu bar background.
+                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + cy,
+                            color: 0x00D4D0C8, fill: true,
+                        });
+                        // Bottom border line.
+                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + 1,
+                            color: 0x00808080, fill: true,
+                        });
+                        // Top-level item names (strip ~ accelerator marker).
+                        let mut item_x = x + 4;
+                        for item in &items {
+                            if item.style & MIS_SEPARATOR != 0 { continue; }
+                            let label: String = item.text.chars().filter(|&c| c != '~').collect();
+                            let label_w = (label.len() as i32 * 8) + 8;
+                            let _ = sender.send(crate::gui::GUIMessage::DrawText {
+                                handle: frame_hwnd, x: item_x + 2, y: y + 2,
+                                text: label, color: 0x00000000,
+                            });
+                            item_x += label_w;
+                        }
+                        // Flush immediately — no WinEndPaint caller for this pseudo-window.
+                        let _ = sender.send(crate::gui::GUIMessage::PresentBuffer { handle: frame_hwnd });
+                    }
                     _ => {} // Unknown built-in class — silently ignore WM_PAINT
                 }
                 ApiResult::Normal(0)

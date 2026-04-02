@@ -780,14 +780,36 @@ impl super::Loader {
                     Vec::new()
                 };
 
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-                let h = wm.create_window("#Menu".to_string(), hwnd_frame, 0);
-                if let Some(win) = wm.get_window_mut(h) {
-                    win.menu_items = items;
-                }
-                // Associate the menu with the frame window.
-                if let Some(frame_win) = wm.get_window_mut(hwnd_frame) {
-                    frame_win.menu_hwnd = h;
+                let (h, hmq_val) = {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    let (frame_cx, frame_cy) = wm.get_window(hwnd_frame)
+                        .map(|w| (w.cx, w.cy)).unwrap_or((640, 480));
+                    let h = wm.create_window("#Menu".to_string(), hwnd_frame, 0);
+                    if let Some(win) = wm.get_window_mut(h) {
+                        win.menu_items = items;
+                        // Position at top of frame in OS/2 bottom-left coordinate space.
+                        win.x = 0;
+                        win.y = frame_cy - MENU_BAR_HEIGHT as i32;
+                        win.cx = frame_cx;
+                        win.cy = MENU_BAR_HEIGHT as i32;
+                    }
+                    // Associate the menu with the frame window.
+                    if let Some(frame_win) = wm.get_window_mut(hwnd_frame) {
+                        frame_win.menu_hwnd = h;
+                    }
+                    (h, wm.find_hmq_for_hwnd(hwnd_frame))
+                };
+                // Post WM_PAINT so the menu bar renders on the next message pump.
+                if let Some(hmq) = hmq_val {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    if let Some(mq_arc) = wm.get_mq(hmq) {
+                        let mut mq = mq_arc.lock_or_recover();
+                        mq.messages.push_back(OS2Message {
+                            hwnd: h, msg: WM_PAINT, mp1: 0, mp2: 0,
+                            time: 0, x: 0, y: 0,
+                        });
+                        mq.cond.notify_one();
+                    }
                 }
                 ApiResult::Normal(h)
             }
@@ -1383,22 +1405,30 @@ impl super::Loader {
         offset
     }
 
-    /// Parse a single nesting level of MENUTEMPLATE items.
+    /// Parse exactly `count` MENUTEMPLATE items from the flat byte stream.
     ///
-    /// Items are read until the `MIS_END` bit (0x8000) is found in an item's
-    /// `afStyle` field, which marks the last entry at this level.  Submenu
-    /// items are parsed recursively.
-    fn parse_menu_items(&self, base: u32, size: u32, offset: &mut u32) -> Vec<MenuItem> {
+    /// Each item is: u16 afStyle + u16 afAttribute + u16 id + NUL-terminated
+    /// text (absent when `MIS_SEPARATOR` is set).  SUBMENU items are followed
+    /// by a 10-byte child-block header (u32 total_size, u16 codepage, u16
+    /// reserved, u16 child_count) then the children recursively.
+    ///
+    /// When `count == 0` the function falls back to the MIS_END sentinel
+    /// (bit 15 of afStyle) for compatibility with hand-built templates that
+    /// omit the count field.
+    fn parse_menu_items(&self, base: u32, size: u32, offset: &mut u32, count: usize) -> Vec<MenuItem> {
         use super::constants::{MIS_END, MIS_SEPARATOR, MIS_SUBMENU};
+        let use_count = count > 0;
         let mut items = Vec::new();
+        let mut remaining = count;
         loop {
+            if use_count && remaining == 0 { break; }
             if *offset + 6 > size { break; }
             let raw_style = self.guest_read::<u16>(base + *offset).unwrap_or(0);
             let attr      = self.guest_read::<u16>(base + *offset + 2).unwrap_or(0);
             let id        = self.guest_read::<u16>(base + *offset + 4).unwrap_or(0);
             *offset += 6;
 
-            let is_last = (raw_style & MIS_END) != 0;
+            let is_last = !use_count && (raw_style & MIS_END) != 0;
             let style   = raw_style & !MIS_END;
 
             // Text is present unless the item is a pure separator.
@@ -1408,14 +1438,22 @@ impl super::Loader {
                 String::new()
             };
 
-            // Recurse into submenu.
+            // Recurse into submenu: wrc prepends a 10-byte child-block header
+            // (u32 total_size + u16 codepage + u16 reserved + u16 child_count).
             let children = if style & MIS_SUBMENU != 0 {
-                self.parse_menu_items(base, size, offset)
+                if *offset + 10 <= size {
+                    let child_count = self.guest_read::<u16>(base + *offset + 8).unwrap_or(0) as usize;
+                    *offset += 10;
+                    self.parse_menu_items(base, size, offset, child_count)
+                } else {
+                    Vec::new()
+                }
             } else {
                 Vec::new()
             };
 
             items.push(MenuItem { id, style, attr, text, children });
+            if use_count { remaining -= 1; }
             if is_last { break; }
         }
         items
@@ -1423,14 +1461,18 @@ impl super::Loader {
 
     /// Parse a MENUTEMPLATE binary resource at `guest_addr` (size `size`).
     ///
+    /// The wrc (Open Watcom) OS/2 MENUTEMPLATE header is 10 bytes:
+    ///   u32 total_size, u16 codepage, u16 reserved, u16 item_count.
+    /// Items start at byte 10.  A zero item_count falls back to MIS_END
+    /// sentinel parsing for hand-built inline templates.
+    ///
     /// Returns the top-level item list, or an empty `Vec` on parse failure.
     fn parse_menu_template(&self, guest_addr: u32, size: u32) -> Vec<MenuItem> {
-        if size < 8 { return Vec::new(); }
-        // Header: u16 version, u16 codepage, u16 reserved, u16 cbInfo
-        let cb_info = self.guest_read::<u16>(guest_addr + 6).unwrap_or(0) as u32;
-        let mut offset = 8 + cb_info;
-        if offset >= size { return Vec::new(); }
-        self.parse_menu_items(guest_addr, size, &mut offset)
+        if size < 10 { return Vec::new(); }
+        // Header: u32 total_size, u16 codepage, u16 reserved, u16 item_count
+        let item_count = self.guest_read::<u16>(guest_addr + 8).unwrap_or(0) as usize;
+        let mut offset = 10u32;
+        self.parse_menu_items(guest_addr, size, &mut offset, item_count)
     }
 
     /// Parse a DLGTEMPLATE binary resource at `guest_addr` (size `size`).
@@ -1538,28 +1580,31 @@ mod tests {
         }
     }
 
-    /// WinLoadMenu (778) with a minimal RT_MENU binary resource must parse
+    /// WinLoadMenu (778) with a wrc-format RT_MENU binary resource must parse
     /// a two-item top-level menu and store the items in the menu window.
+    ///
+    /// The wrc OS/2 MENUTEMPLATE header is 10 bytes:
+    ///   u32 total_size, u16 codepage, u16 reserved, u16 item_count.
     #[test]
     fn test_win_load_menu_parses_items() {
-        use super::super::pm_types::MenuItem;
         use super::super::mutex_ext::MutexExt;
         let loader = Loader::new_mock();
 
-        // Build a minimal MENUTEMPLATE in guest RAM at address 0x5000.
-        // Header: version=0, codepage=0, reserved=0, cbInfo=0
-        // Item 1: style=MIS_TEXT (0x0001), attr=0, id=100, text="File\0", NOT last
-        // Item 2: style=MIS_TEXT|MIS_END (0x8001), attr=0, id=200, text="Help\0", IS last
+        // Build a wrc-format MENUTEMPLATE in guest RAM at 0x5000.
+        // Header: u32 total_size=0x20, u16 codepage=850, u16 reserved=4, u16 count=2
+        // Item 1: style=MIS_TEXT(0x0001), attr=0, id=100, text="File\0"
+        // Item 2: style=MIS_TEXT(0x0001), attr=0, id=200, text="Help\0"
         let base: u32 = 0x5000;
+        // total_size = 10 header + 11 + 11 = 32 = 0x20
         let data: &[u8] = &[
-            0x00, 0x00, // version
-            0x00, 0x00, // codepage
-            0x00, 0x00, // reserved
-            0x00, 0x00, // cbInfo
+            0x20, 0x00, 0x00, 0x00, // u32 total_size = 32
+            0x52, 0x03,             // u16 codepage = 850
+            0x04, 0x00,             // u16 reserved = 4
+            0x02, 0x00,             // u16 item_count = 2
             // Item 1: style=0x0001, attr=0x0000, id=100, text="File\0"
             0x01, 0x00, 0x00, 0x00, 0x64, 0x00, b'F', b'i', b'l', b'e', 0x00,
-            // Item 2: style=0x8001 (MIS_TEXT|MIS_END), attr=0, id=200, text="Help\0"
-            0x01, 0x80, 0x00, 0x00, 0xC8, 0x00, b'H', b'e', b'l', b'p', 0x00,
+            // Item 2: style=0x0001, attr=0, id=200, text="Help\0"
+            0x01, 0x00, 0x00, 0x00, 0xC8, 0x00, b'H', b'e', b'l', b'p', 0x00,
         ];
         for (i, &b) in data.iter().enumerate() {
             loader.guest_write::<u8>(base + i as u32, b).unwrap();
@@ -1571,6 +1616,58 @@ mod tests {
         assert_eq!(items[0].text, "File");
         assert_eq!(items[1].id, 200);
         assert_eq!(items[1].text, "Help");
+    }
+
+    /// parse_menu_template with a SUBMENU item must recurse into the child
+    /// block (10-byte sub-header) and return the nested structure.
+    #[test]
+    fn test_win_load_menu_submenu() {
+        use super::super::mutex_ext::MutexExt;
+        let loader = Loader::new_mock();
+
+        // MENUTEMPLATE with 1 top-level SUBMENU "File" (id=200) containing
+        // 2 children: "About" (id=201) and "Exit" (id=202).
+        //
+        // Main header (10 bytes): total=66, codepage=850, reserved=4, count=1
+        // File item (17 bytes): style=MIS_TEXT|MIS_SUBMENU, attr=0, id=200, "~File\0"
+        // Child sub-header (10 bytes): total=44, codepage=850, reserved=4, count=2
+        // About item (16 bytes): style=MIS_TEXT, attr=0, id=201, "~About\0"
+        // Exit item (15 bytes): style=MIS_TEXT, attr=0, id=202, "Exit\0"
+        let base: u32 = 0x5000;
+        let data: &[u8] = &[
+            // Main header: count=1
+            0x44, 0x00, 0x00, 0x00,  // total_size=68
+            0x52, 0x03,               // codepage=850
+            0x04, 0x00,               // reserved=4
+            0x01, 0x00,               // item_count=1
+            // File SUBMENU item: style=MIS_TEXT|MIS_SUBMENU=0x0011
+            0x11, 0x00, 0x00, 0x00, 0xC8, 0x00,  // style, attr, id=200
+            b'~', b'F', b'i', b'l', b'e', 0x00,   // "~File\0"
+            // Child sub-header: count=2
+            0x27, 0x00, 0x00, 0x00,  // total_size=39
+            0x52, 0x03,               // codepage=850
+            0x04, 0x00,               // reserved=4
+            0x02, 0x00,               // child_count=2
+            // About item: style=MIS_TEXT
+            0x01, 0x00, 0x00, 0x00, 0xC9, 0x00,  // style, attr, id=201
+            b'~', b'A', b'b', b'o', b'u', b't', 0x00, // "~About\0"
+            // Exit item: style=MIS_TEXT
+            0x01, 0x00, 0x00, 0x00, 0xCA, 0x00,  // style, attr, id=202
+            b'E', b'x', b'i', b't', 0x00,          // "Exit\0"
+        ];
+        for (i, &b) in data.iter().enumerate() {
+            loader.guest_write::<u8>(base + i as u32, b).unwrap();
+        }
+
+        let items = loader.parse_menu_template(base, data.len() as u32);
+        assert_eq!(items.len(), 1, "Expected 1 top-level item");
+        assert_eq!(items[0].id, 200);
+        assert_eq!(items[0].text, "~File");
+        assert_eq!(items[0].children.len(), 2, "Expected 2 children");
+        assert_eq!(items[0].children[0].id, 201);
+        assert_eq!(items[0].children[0].text, "~About");
+        assert_eq!(items[0].children[1].id, 202);
+        assert_eq!(items[0].children[1].text, "Exit");
     }
 
     /// WinDismissDlg (729) must set dialog_dismissed and dialog_result on the window.

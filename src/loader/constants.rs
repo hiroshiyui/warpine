@@ -185,6 +185,9 @@ pub const WC_SPINBUTTON_ATOM: u32 = 0xFFFF_000F;
 pub const WC_CONTAINER_ATOM:  u32 = 0xFFFF_0025;
 pub const WC_NOTEBOOK_ATOM:   u32 = 0xFFFF_0028;
 
+/// Height of the PM menu bar in pixels (OS/2-space units).
+pub const MENU_BAR_HEIGHT: i16 = 20;
+
 // Dialog and menu message constants
 pub const WM_INITDLG:    u32 = 0x0021; // First message to a dialog box
 pub const WM_INITMENU:   u32 = 0x00E5; // Sent before a menu is displayed
@@ -197,19 +200,24 @@ pub const DID_CANCEL: u32 = 2;         // Cancel button
 pub const DID_ERROR:  u32 = 0xFFFF;    // Error return
 
 // ── MIS_* menu item style flags (afStyle in MENUITEM) ───────────────────────
-pub const MIS_TEXT:          u16 = 0x0001;
-pub const MIS_BITMAP:        u16 = 0x0002;
-pub const MIS_OWNERITEM:     u16 = 0x0004;
-pub const MIS_MULTIMENU:     u16 = 0x0008;
-pub const MIS_SUBMENU:       u16 = 0x0010;
-pub const MIS_SEPARATOR:     u16 = 0x0020;
-pub const MIS_SYSCOMMAND:    u16 = 0x0100;
-pub const MIS_HELP:          u16 = 0x0200;
-pub const MIS_STATIC:        u16 = 0x0400;
-pub const MIS_OWNERDRAW:     u16 = 0x0800;
-/// Binary resource end-of-level marker: bit 15 of afStyle set on the last
-/// item at each nesting level in the MENUTEMPLATE binary resource.
-pub const MIS_END:           u16 = 0x8000;
+// Values match OS/2 Warp 4 Toolkit <pmwin.h> exactly.
+pub const MIS_TEXT:            u16 = 0x0001;
+pub const MIS_BITMAP:          u16 = 0x0002;
+pub const MIS_SEPARATOR:       u16 = 0x0004;
+pub const MIS_OWNERDRAW:       u16 = 0x0008;
+pub const MIS_SUBMENU:         u16 = 0x0010;
+pub const MIS_MULTMENU:        u16 = 0x0020;
+pub const MIS_SYSCOMMAND:      u16 = 0x0040;
+pub const MIS_HELP:            u16 = 0x0080;
+pub const MIS_STATIC:          u16 = 0x0100;
+pub const MIS_BUTTONSEPARATOR: u16 = 0x0200;
+pub const MIS_BREAK:           u16 = 0x0400;
+pub const MIS_BREAKSEPARATOR:  u16 = 0x0800;
+pub const MIS_GROUP:           u16 = 0x1000;
+pub const MIS_SINGLE:          u16 = 0x2000;
+/// Binary resource end-of-level marker: bit 15 of afStyle.
+/// Present in some hand-built templates; wrc uses count-based format instead.
+pub const MIS_END:             u16 = 0x8000;
 
 // ── MIA_* menu item attribute flags (afAttribute in MENUITEM) ────────────────
 pub const MIA_NODISMISS: u16 = 0x0020;

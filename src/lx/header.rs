@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-only
 use std::io::{self, Read, Seek, SeekFrom};
 
-// OS/2 resource type constants
+// OS/2 LX resource type constants (OS/2 numbering, not Windows).
+// Reference: IBM OS/2 Warp 4 Toolkit <pmwin.h> / <os2.h> RT_* macros.
 pub const RT_POINTER: u16 = 1;
 pub const RT_BITMAP: u16 = 2;
-pub const RT_MENU: u16 = 4;
-pub const RT_DIALOG: u16 = 5;
-pub const RT_STRING: u16 = 6;
-pub const RT_ACCELTABLE: u16 = 10;
+pub const RT_MENU: u16 = 3;
+pub const RT_DIALOG: u16 = 4;
+pub const RT_STRING: u16 = 5;
+pub const RT_FONTDIR: u16 = 6;
+pub const RT_FONT: u16 = 7;
+pub const RT_ACCELTABLE: u16 = 8;
+pub const RT_RCDATA: u16 = 9;
+pub const RT_MESSAGE: u16 = 10;
+pub const RT_DLGINCLUDE: u16 = 11;
 
 #[derive(Debug, Default, Clone)]
 #[repr(C)]
@@ -364,7 +370,7 @@ mod tests {
     #[test]
     fn test_read_resource_entry() {
         let mut data = vec![0u8; 14];
-        // type_id = 6 (RT_STRING)
+        // type_id = 6 (arbitrary raw value — just tests the parser round-trip)
         data[0] = 6; data[1] = 0;
         // name_id = 42
         data[2] = 42; data[3] = 0;

@@ -90,6 +90,7 @@ pub struct AccelEntry {
 ///
 /// Populated by `Loader::parse_menu_items` and stored in
 /// `OS2Window::menu_items` for WC_MENU windows created by `WinLoadMenu`.
+#[derive(Clone)]
 pub struct MenuItem {
     pub id: u16,
     /// `afStyle` field from the binary resource (MIS_* flags, bit 15 stripped).
