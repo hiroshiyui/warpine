@@ -259,6 +259,39 @@ Multimedia Presentation Manager/2 APIs. Dispatched at `MDM_BASE` (10240) + ordin
 
 Window management APIs — approximately 50 ordinals including WinInitialize, WinCreateMsgQueue, WinRegisterClass, WinCreateStdWindow, WinGetMsg, WinDispatchMsg, WinSendMsg, WinPostMsg, WinDefWindowProc, WinBeginPaint, WinEndPaint, WinMessageBox, WinStartTimer, WinStopTimer, clipboard operations, and dialog support.
 
+#### Built-in window class atoms (MAKEINTATOM encoding)
+
+OS/2 PM identifies built-in window classes (`WC_BUTTON`, `WC_STATIC`, etc.) via numeric atoms encoded as **`MAKEINTATOM(n) = 0xFFFF0000 | n`**, *not* as bare integers.  The Open Watcom `<pmwin.h>` header defines them as:
+
+```c
+#define WC_FRAME        ((PSZ)0xFFFF0001L)
+#define WC_COMBOBOX     ((PSZ)0xFFFF0002L)
+#define WC_BUTTON       ((PSZ)0xFFFF0003L)
+#define WC_MENU         ((PSZ)0xFFFF0004L)
+#define WC_STATIC       ((PSZ)0xFFFF0005L)
+#define WC_ENTRYFIELD   ((PSZ)0xFFFF0006L)
+#define WC_LISTBOX      ((PSZ)0xFFFF0007L)
+#define WC_SCROLLBAR    ((PSZ)0xFFFF0008L)
+#define WC_TITLEBAR     ((PSZ)0xFFFF0009L)
+#define WC_MLE          ((PSZ)0xFFFF000AL)
+#define WC_SPINBUTTON   ((PSZ)0xFFFF000FL)
+#define WC_CONTAINER    ((PSZ)0xFFFF0025L)
+#define WC_NOTEBOOK     ((PSZ)0xFFFF0028L)
+```
+
+The `pszClass` argument to `WinCreateWindow` (ordinal 909) arrives as a 32-bit guest integer.  `resolve_class_atom()` in `pm_win.rs` maps these MAKEINTATOM values to canonical Rust strings (`"WC_BUTTON"`, `"WC_LISTBOX"`, etc.) which are stored in `OS2Window::class_name`.  The corresponding `WC_*_ATOM` constants in `constants.rs` must always use the `0xFFFF000x` format.
+
+> **Pitfall:** Bare integers (`WC_BUTTON = 3`) look plausible but are *wrong* — the compiler emits `0xFFFF0003` in the binary.  Using bare integers causes `read_guest_string` to be called on an invalid address, returning an empty class name, and making the renderer unable to identify or draw any built-in control.
+
+`WinSendMsg` routes to `dispatch_builtin_control()` (in `mod.rs`) for any window whose `pfn_wp == 0` (i.e., a built-in class with no user-registered procedure).  Currently handled messages:
+
+| Message | Value | Action |
+|---|---|---|
+| `LM_INSERTITEM` | `0x0161` | Appends or inserts a string into `OS2Window::listbox_items` |
+| `LM_QUERYITEMCOUNT` | `0x0160` | Returns `listbox_items.len()` |
+
+**Note on `LM_*` values:** The Open Watcom headers define `LM_INSERTITEM = 0x0161` and `LM_QUERYITEMCOUNT = 0x0160`.  Older SDK documentation and some headers show `0x0150`/`0x0151` — those are incorrect for OS/2 Warp 4.
+
 ### PMGPI (src/loader/pm_gpi.rs)
 
 Graphics Primitive Interface — GpiCreatePS, GpiDestroyPS, GpiSetColor, GpiMove, GpiLine, GpiBox, GpiCharStringAt, GpiErase.
@@ -367,6 +400,17 @@ Since the window procedure runs in the guest (inside KVM), Warpine can't simply 
 8. The INT 3 at `CALLBACK_RET_TRAP` causes another VMEXIT. The host pops the `CallbackFrame`, restores the saved RIP/RSP, reads the return value from guest EAX, and resumes the original API call flow.
 
 This mechanism is **re-entrant** — a window procedure can call `WinSendMsg`, which triggers another callback, pushing another frame onto the callback stack. The stack unwinds naturally as each callback returns.
+
+### WM_CREATE Dispatch (WinCreateStdWindow)
+
+In real OS/2 PM, `WinCreateStdWindow` dispatches `WM_CREATE` **synchronously** to the client window procedure before returning the frame handle to the caller.  Warpine replicates this via a dedicated `ApiResult` variant:
+
+1. `WinCreateStdWindow` (ordinal 908) creates the frame and client `OS2Window` entries, then — if the registered class has a non-zero `pfn_wp` — returns `ApiResult::WmCreateCallback { wnd_proc, hwnd: h_client, h_frame }`.
+2. The VMEXIT loop saves the original return address (from `WinCreateStdWindow`'s call site) as `FrameKind::WmCreate { h_frame }` on the callback stack, then pushes `WM_CREATE` arguments onto the guest stack and jumps to `wnd_proc`.
+3. The WndProc executes (typically creating child controls via `WinCreateWindow`), then returns to `CALLBACK_RET_TRAP`.
+4. `FrameKind::WmCreate` causes the trap handler to write `h_frame` into guest EAX — the correct return value of `WinCreateStdWindow`.
+
+Applications that create their child controls inside `WM_CREATE` (the standard OS/2 pattern) require this synchronous dispatch.  Without it, `WinCreateStdWindow` returns before any controls exist.
 
 ---
 
