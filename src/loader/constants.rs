@@ -275,6 +275,9 @@ pub const WM_CONTROL: u32 = 0x0030;
 pub const BN_CLICKED: u32 = 0;
 pub const BN_DBLCLICKED: u32 = 1;
 
+// VDR chrome dimensions — must match CHROME_TITLE_H in sdl2_renderer.rs
+pub const CHROME_TITLE_H: i32 = 20;
+
 // Common window style bits (flStyle in WinCreateWindow)
 pub const WS_VISIBLE:  u32 = 0x8000_0000;
 pub const WS_DISABLED: u32 = 0x4000_0000;

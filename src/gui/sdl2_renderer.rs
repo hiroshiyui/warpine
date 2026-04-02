@@ -286,8 +286,11 @@ impl Sdl2Renderer {
             let (w, h) = {
                 let wm = shared.window_mgr.lock_or_recover();
                 wm.get_window(handle)
-                    .filter(|w| w.cx > 0 && w.cy > 0)
-                    .map(|w| (w.cx as u32, w.cy as u32))
+                    .filter(|win| win.cx > 0 && win.cy > 0)
+                    .map(|win| {
+                        let title_h = if win.frame_flags & FCF_TITLEBAR != 0 { CHROME_TITLE_H } else { 0 };
+                        (win.cx as u32, (win.cy - title_h).max(1) as u32)
+                    })
                     .unwrap_or((desktop.width, desktop.height))
             };
             FrameBuffer::new(w, h)
@@ -847,10 +850,22 @@ impl PmRenderer for Sdl2Renderer {
     fn handle_message(&mut self, msg: GUIMessage, shared: &Arc<SharedState>) {
         match msg {
             GUIMessage::CreateWindow { handle, .. } => {
-                // VDR-A2: allocate a FrameBuffer; no SDL2 window created.
-                let fb = FrameBuffer::new(self.desktop.width, self.desktop.height);
+                // VDR-A2: allocate a FrameBuffer sized to the window's client area.
+                // The compositor blits the FrameBuffer below the title bar chrome, so
+                // use the actual window dimensions (not the desktop canvas size).
+                let (w, h) = {
+                    let wm = shared.window_mgr.lock_or_recover();
+                    wm.get_window(handle)
+                        .filter(|win| win.cx > 0 && win.cy > 0)
+                        .map(|win| {
+                            let title_h = if win.frame_flags & FCF_TITLEBAR != 0 { CHROME_TITLE_H } else { 0 };
+                            (win.cx as u32, (win.cy - title_h).max(1) as u32)
+                        })
+                        .unwrap_or((self.desktop.width, self.desktop.height))
+                };
+                let fb = FrameBuffer::new(w, h);
                 self.frame_buffers.insert(handle, fb);
-                debug!("[GUI] Allocated FrameBuffer for PM handle {}", handle);
+                debug!("[GUI] Allocated FrameBuffer {}x{} for PM handle {}", w, h, handle);
             }
             GUIMessage::ResizeWindow { handle, width, height } => {
                 if let Some(fb) = self.frame_buffers.get_mut(&handle) {

@@ -127,8 +127,14 @@ impl super::Loader {
                         win.cx = 640; win.cy = 480;
                         win.frame_flags = fl_create_flags;
                         win.visible = style & WS_VISIBLE != 0;
+                        win.text = title.clone();
                     }
-                    if let Some(win) = wm.get_window_mut(h_client) { win.cx = 640; win.cy = 480; }
+                    let client_cy = if fl_create_flags & FCF_TITLEBAR != 0 {
+                        480 - CHROME_TITLE_H
+                    } else {
+                        480
+                    };
+                    if let Some(win) = wm.get_window_mut(h_client) { win.cx = 640; win.cy = client_cy; }
                     // VDR-B1/E1: register in Z-order stack (top-most) and set focus.
                     wm.z_push_top(h_frame);
                     wm.focused_hwnd = h_frame;
@@ -320,11 +326,11 @@ impl super::Loader {
                         };
                         if menu_hwnd != 0 && msg == WM_BUTTON1DOWN {
                             let click_y = ((mp1 >> 16) & 0xFFFF) as i32;
-                            // Check if click is above the menu bar bottom edge.
-                            // Menu bar occupies [frame_cy-MENU_BAR_HEIGHT, frame_cy].
-                            // Dropdown occupies [frame_cy-MENU_BAR_HEIGHT-drop_h, frame_cy-MENU_BAR_HEIGHT].
-                            // Forward all clicks to the menu handler; it knows its own geometry.
-                            let menu_y1 = frame_cy - MENU_BAR_HEIGHT as i32;
+                            // Check if click is in the menu bar or open dropdown.
+                            // Title bar occupies [frame_cy-CHROME_TITLE_H, frame_cy).
+                            // Menu bar occupies [frame_cy-CHROME_TITLE_H-MENU_BAR_HEIGHT, frame_cy-CHROME_TITLE_H).
+                            // Dropdown is further below; we forward any click at or below menu bar top edge.
+                            let menu_y1 = frame_cy - CHROME_TITLE_H - MENU_BAR_HEIGHT as i32;
                             // Only intercept clicks that are at or above menu_y1 (in bar),
                             // or check if there's an open dropdown covering the click area.
                             let open_item = {
@@ -861,9 +867,11 @@ impl super::Loader {
                     let h = wm.create_window("#Menu".to_string(), hwnd_frame, 0);
                     if let Some(win) = wm.get_window_mut(h) {
                         win.menu_items = items;
-                        // Position at top of frame in OS/2 bottom-left coordinate space.
+                        // Position just below the title bar in OS/2 bottom-left coordinate space.
+                        // Frame top (OS/2 y) = frame_cy; title bar occupies [frame_cy-CHROME_TITLE_H, frame_cy).
+                        // Menu bar sits immediately below: [frame_cy-CHROME_TITLE_H-MENU_BAR_HEIGHT, frame_cy-CHROME_TITLE_H).
                         win.x = 0;
-                        win.y = frame_cy - MENU_BAR_HEIGHT as i32;
+                        win.y = frame_cy - CHROME_TITLE_H - MENU_BAR_HEIGHT as i32;
                         win.cx = frame_cx;
                         win.cy = MENU_BAR_HEIGHT as i32;
                     }
@@ -1925,13 +1933,14 @@ mod tests {
     #[test]
     fn test_menu_bar_click_opens_submenu_and_posts_command() {
         use super::super::mutex_ext::MutexExt;
-        use super::super::constants::{WM_BUTTON1DOWN, WM_COMMAND, MIS_SUBMENU, MIS_TEXT, MENU_BAR_HEIGHT};
+        use super::super::constants::{WM_BUTTON1DOWN, WM_COMMAND, MIS_SUBMENU, MIS_TEXT, MENU_BAR_HEIGHT, CHROME_TITLE_H};
         use super::super::pm_types::MenuItem;
 
         let loader = Loader::new_mock();
 
-        // Build: frame (cy=480) → menu window (y=460, cy=20) with one SUBMENU "File"
+        // Build: frame (cy=480) → menu window (y=440, cy=20) with one SUBMENU "File"
         //        containing two children: "About" (id=201) and "Exit" (id=202).
+        //        Menu sits just below the title bar: y = frame_cy - CHROME_TITLE_H - MENU_BAR_HEIGHT.
         //        Also create a client window so frame_to_client resolves.
         let (_frame_hwnd, menu_hwnd, client_hwnd, hmq) = {
             let mut wm = loader.shared.window_mgr.lock_or_recover();
@@ -1944,7 +1953,7 @@ mod tests {
             // Position frame and menu windows
             let frame_cy = 480i32;
             wm.get_window_mut(frame).unwrap().cy = frame_cy;
-            wm.get_window_mut(menu).unwrap().y = frame_cy - MENU_BAR_HEIGHT as i32;
+            wm.get_window_mut(menu).unwrap().y = frame_cy - CHROME_TITLE_H - MENU_BAR_HEIGHT as i32;
             wm.get_window_mut(menu).unwrap().cy = MENU_BAR_HEIGHT as i32;
             wm.get_window_mut(menu).unwrap().cx = 640;
             wm.get_window_mut(frame).unwrap().menu_hwnd = menu;
@@ -1961,10 +1970,10 @@ mod tests {
             (frame, menu, client, hmq)
         };
 
-        // --- Step 1: click on "File" in the menu bar (x=6, y=465) ---
+        // --- Step 1: click on "File" in the menu bar (x=6, y=445) ---
         // item_x starts at x+4 = 0+4 = 4; "File" label_w = 4*8+8 = 40 (stripping ~)
-        // click_x=6 is within [4, 44), click_y=465 >= y=460
-        let mp1_bar: u32 = 6u32 | (465u32 << 16);
+        // click_x=6 is within [4, 44), click_y=445 >= y=440 (menu bar occupies [440,460))
+        let mp1_bar: u32 = 6u32 | (445u32 << 16);
         let res = loader.dispatch_builtin_control(menu_hwnd, WM_BUTTON1DOWN, mp1_bar, 0);
         assert!(matches!(res, ApiResult::Normal(0)));
         // open_item should now be 1 (1-based index 0)
@@ -1974,10 +1983,10 @@ mod tests {
         assert_eq!(open_item, 1, "open_item should be 1 after clicking File");
 
         // --- Step 2: click on "Exit" (child index 1) in the dropdown ---
-        // Dropdown y range: [y - 2*16, y] = [460 - 32, 460] = [428, 460]
-        // Exit is child index 1: item_y range [460 - 32, 460 - 16] = [428, 444]
-        // Click at (x=6, y=435) → child_idx = (460-1-435)/16 = 24/16 = 1 → Exit (id=202)
-        let mp1_drop: u32 = 6u32 | (435u32 << 16);
+        // Dropdown y range: [y - 2*16, y] = [440 - 32, 440] = [408, 440]
+        // Exit is child index 1: item_y range [440 - 32, 440 - 16] = [408, 424]
+        // Click at (x=6, y=415) → child_idx = (440-1-415)/16 = 24/16 = 1 → Exit (id=202)
+        let mp1_drop: u32 = 6u32 | (415u32 << 16);
         let res = loader.dispatch_builtin_control(menu_hwnd, WM_BUTTON1DOWN, mp1_drop, 0);
         assert!(matches!(res, ApiResult::Normal(0)));
         // Dropdown should be closed
