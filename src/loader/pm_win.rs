@@ -1547,17 +1547,6 @@ impl super::Loader {
         s
     }
 
-    /// Skip a NUL-terminated string at `base + offset`; return the new offset.
-    fn skip_nul_str_at(&self, base: u32, mut offset: u32, max_size: u32) -> u32 {
-        loop {
-            if offset >= max_size { break; }
-            let b = self.guest_read::<u8>(base + offset).unwrap_or(0);
-            offset += 1;
-            if b == 0 { break; }
-        }
-        offset
-    }
-
     /// Parse exactly `count` MENUTEMPLATE items from the flat byte stream.
     ///
     /// Each item is: u16 afStyle + u16 afAttribute + u16 id + NUL-terminated
@@ -1630,46 +1619,87 @@ impl super::Loader {
 
     /// Parse a DLGTEMPLATE binary resource at `guest_addr` (size `size`).
     ///
+    /// Handles the Open Watcom wrc OS/2 DLGTEMPLATE binary layout:
+    ///   Bytes  0- 9: Template header (u32 total_size, u16 codepage, u16 offLastItem, u16 cTopItems)
+    ///   Bytes 10-19: Dialog sub-header ×5 u16  (child_count at [16,17])
+    ///   Bytes 20-29: Dialog metadata   ×5 u16  (title_offset at [24,25])
+    ///   Bytes 30-39: Dialog position   i16 x,y,cx,cy + u16 id
+    ///   Bytes 40-49: Dialog variable data (classname, etc.)
+    ///   Bytes 50+:   Child items — each: 10-byte pre-header (class_ord u16 at [0], text_off u16 at
+    ///                [4]) + 10-byte position (i16 x,y,cx,cy + u16 id) + variable data
+    ///   Bytes [title_off]+: NUL-terminated strings (title then item texts indexed by text_off)
+    ///
     /// Returns `(x, y, cx, cy, title, items)` or `None` on parse failure.
     fn parse_dlg_template(
         &self,
         guest_addr: u32,
         size: u32,
     ) -> Option<(i16, i16, i16, i16, String, Vec<DlgItemInfo>)> {
-        if size < 16 { return None; }
-        // Header: u16 version, u16 codepage, u16 reserved, u16 cbInfo
-        let cb_info = self.guest_read::<u16>(guest_addr + 6).unwrap_or(0) as u32;
-        let mut off = 8 + cb_info;
-        if off + 12 > size { return None; }
+        if size < 40 { return None; }
 
-        let x  = self.guest_read::<i16>(guest_addr + off).unwrap_or(0); off += 2;
-        let y  = self.guest_read::<i16>(guest_addr + off).unwrap_or(0); off += 2;
-        let cx = self.guest_read::<i16>(guest_addr + off).unwrap_or(0); off += 2;
-        let cy = self.guest_read::<i16>(guest_addr + off).unwrap_or(0); off += 2;
-        off += 2; // reserved
-        if off + 2 > size { return None; }
-        let c_items = self.guest_read::<u16>(guest_addr + off).unwrap_or(0) as usize; off += 2;
+        let c_items   = self.guest_read::<u16>(guest_addr + 16).unwrap_or(0) as usize;
+        let title_off = self.guest_read::<u16>(guest_addr + 24).unwrap_or(0) as u32;
+        let x  = self.guest_read::<i16>(guest_addr + 30).unwrap_or(0);
+        let y  = self.guest_read::<i16>(guest_addr + 32).unwrap_or(0);
+        let cx = self.guest_read::<i16>(guest_addr + 34).unwrap_or(0);
+        let cy = self.guest_read::<i16>(guest_addr + 36).unwrap_or(0);
 
-        // Skip presparams, classname; read dialog title.
-        off = self.skip_nul_str_at(guest_addr, off, size);  // presparams
-        off = self.skip_nul_str_at(guest_addr, off, size);  // classname
-        let title = self.read_nul_str_at(guest_addr, &mut off, size);
+        // Dialog title sits in the string pool starting at title_off.
+        let title = if title_off > 0 && title_off < size {
+            let mut toff = title_off;
+            self.read_nul_str_at(guest_addr, &mut toff, size)
+        } else {
+            String::new()
+        };
 
+        // Children start at byte 50; string pool begins at title_off.
+        let items_end = if title_off > 0 && title_off < size { title_off } else { size };
+        let mut off: u32 = 50;
         let mut items = Vec::with_capacity(c_items);
-        for _ in 0..c_items {
-            if off + 16 > size { break; }
-            let ix  = self.guest_read::<i16>(guest_addr + off).unwrap_or(0); off += 2;
-            let iy  = self.guest_read::<i16>(guest_addr + off).unwrap_or(0); off += 2;
-            let icx = self.guest_read::<i16>(guest_addr + off).unwrap_or(0); off += 2;
-            let icy = self.guest_read::<i16>(guest_addr + off).unwrap_or(0); off += 2;
-            let id  = self.guest_read::<u16>(guest_addr + off).unwrap_or(0); off += 2;
-            off += 2; // reserved
-            if off + 4 > size { break; }
-            let fl_style = self.guest_read::<u32>(guest_addr + off).unwrap_or(0); off += 4;
-            off = self.skip_nul_str_at(guest_addr, off, size);   // presparams
-            let class_name = self.read_nul_str_at(guest_addr, &mut off, size);
-            let text       = self.read_nul_str_at(guest_addr, &mut off, size);
-            items.push(DlgItemInfo { x: ix, y: iy, cx: icx, cy: icy, id, fl_style, class_name, text });
+        for i in 0..c_items {
+            if off + 20 > items_end { break; }
+            // Pre-header (10 bytes): class ordinal at [0,1], text_off at [4,5]
+            let class_ord = self.guest_read::<u16>(guest_addr + off).unwrap_or(0);
+            let text_off  = self.guest_read::<u16>(guest_addr + off + 4).unwrap_or(0) as u32;
+            off += 10;
+            // Position block (10 bytes): i16 x, y, cx, cy then u16 id
+            let ix  = self.guest_read::<i16>(guest_addr + off).unwrap_or(0);
+            let iy  = self.guest_read::<i16>(guest_addr + off + 2).unwrap_or(0);
+            let icx = self.guest_read::<i16>(guest_addr + off + 4).unwrap_or(0);
+            let icy = self.guest_read::<i16>(guest_addr + off + 6).unwrap_or(0);
+            let id  = self.guest_read::<u16>(guest_addr + off + 8).unwrap_or(0);
+            off += 10;
+            // Skip variable data: scan (2 bytes at a time) for the next item's class ordinal
+            // (valid wrc class ordinals are 1–10) or advance to items_end for the last item.
+            if i + 1 < c_items {
+                while off + 2 <= items_end {
+                    let maybe_class = self.guest_read::<u16>(guest_addr + off).unwrap_or(0);
+                    if (1..=10).contains(&maybe_class) { break; }
+                    off += 2;
+                }
+            } else {
+                off = items_end;
+            }
+            let class_name = match class_ord {
+                3 => "WC_BUTTON",
+                5 => "WC_STATIC",
+                6 => "WC_ENTRYFIELD",
+                7 => "WC_LISTBOX",
+                _ => "WC_STATIC",
+            }.to_string();
+            let text = if text_off > 0 && text_off < size {
+                let mut toff = text_off;
+                self.read_nul_str_at(guest_addr, &mut toff, size)
+            } else {
+                String::new()
+            };
+            items.push(DlgItemInfo {
+                x: ix, y: iy, cx: icx, cy: icy,
+                id,
+                fl_style: super::constants::WS_VISIBLE,
+                class_name,
+                text,
+            });
         }
         Some((x, y, cx, cy, title, items))
     }
