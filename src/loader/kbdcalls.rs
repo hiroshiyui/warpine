@@ -210,7 +210,7 @@ impl super::Loader {
 mod tests {
     use super::super::{Loader, ApiResult, KbdKeyInfo};
     use super::super::vm_backend::mock::MockVcpu;
-    use super::super::constants::{NO_ERROR, ERROR_INVALID_FUNCTION};
+    use super::super::constants::ERROR_INVALID_FUNCTION;
     use std::sync::atomic::Ordering;
 
     /// Push Pascal-convention args: args[0] at ESP+4, args[1] at ESP+8, …

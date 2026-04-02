@@ -1850,7 +1850,7 @@ mod tests {
         use super::super::mutex_ext::MutexExt;
         use super::super::constants::LM_INSERTITEM;
         let loader = Loader::new_mock();
-        let (dlg_hwnd, list_hwnd) = {
+        let (dlg_hwnd, _list_hwnd) = {
             let mut wm = loader.shared.window_mgr.lock_or_recover();
             let hmq = wm.create_mq();
             wm.tid_to_hmq.insert(0, hmq);
