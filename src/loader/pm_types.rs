@@ -123,6 +123,12 @@ pub struct WindowManager {
     next_hps: u32,
     next_hmq: u32,
     next_haccel: u32,
+    /// Back-to-front Z-order stack of top-level frame window handles.
+    /// Index 0 = bottom-most; last index = top-most (foreground).
+    /// Only frame windows (those present in `frame_to_client`) are tracked here.
+    pub z_order: Vec<u32>,
+    /// The currently active (focused) frame window handle; 0 = none.
+    pub focused_hwnd: u32,
 }
 
 impl Default for WindowManager {
@@ -150,6 +156,8 @@ impl WindowManager {
             next_hps: 0x2000,
             next_hmq: 0x3000,
             next_haccel: 0x4000,
+            z_order: Vec::new(),
+            focused_hwnd: 0,
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
@@ -326,5 +334,186 @@ impl WindowManager {
             }
         }
         None
+    }
+
+    // ── Z-order helpers ──────────────────────────────────────────────────────
+
+    /// Register a frame window into the Z-order stack (top-most position).
+    /// Only frame windows (present in `frame_to_client`) should be registered.
+    /// Safe to call multiple times — duplicates are ignored.
+    pub fn z_push_top(&mut self, frame_hwnd: u32) {
+        if !self.z_order.contains(&frame_hwnd) {
+            self.z_order.push(frame_hwnd);
+        } else {
+            // Already present — bring to top.
+            self.z_order.retain(|&h| h != frame_hwnd);
+            self.z_order.push(frame_hwnd);
+        }
+    }
+
+    /// Remove a frame window from the Z-order stack (called on WinDestroyWindow).
+    pub fn z_remove(&mut self, frame_hwnd: u32) {
+        self.z_order.retain(|&h| h != frame_hwnd);
+        if self.focused_hwnd == frame_hwnd {
+            // Focus falls to the new top-most window, if any.
+            self.focused_hwnd = self.z_order.last().copied().unwrap_or(0);
+        }
+    }
+
+    /// Move a frame to the bottom of the Z-order stack.
+    pub fn z_push_bottom(&mut self, frame_hwnd: u32) {
+        self.z_order.retain(|&h| h != frame_hwnd);
+        self.z_order.insert(0, frame_hwnd);
+    }
+
+    /// Insert `frame_hwnd` directly below `behind_hwnd` in the Z-stack.
+    /// If `behind_hwnd` is not found, falls back to `z_push_top`.
+    pub fn z_insert_behind(&mut self, frame_hwnd: u32, behind_hwnd: u32) {
+        self.z_order.retain(|&h| h != frame_hwnd);
+        if let Some(pos) = self.z_order.iter().position(|&h| h == behind_hwnd) {
+            self.z_order.insert(pos, frame_hwnd);
+        } else {
+            self.z_order.push(frame_hwnd);
+        }
+    }
+
+    /// Hit-test desktop-absolute point `(px, py)` against the Z-order stack,
+    /// returning the top-most visible frame whose bounding box contains the point.
+    /// `(px, py)` uses OS/2 coordinates (y=0 at bottom).
+    pub fn z_hit_test(&self, px: i32, py: i32) -> Option<u32> {
+        // Iterate top-to-bottom (reverse of z_order).
+        for &hwnd in self.z_order.iter().rev() {
+            if let Some(win) = self.windows.get(&hwnd) {
+                if !win.visible { continue; }
+                if px >= win.x && px < win.x + win.cx
+                    && py >= win.y && py < win.y + win.cy
+                {
+                    return Some(hwnd);
+                }
+            }
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WindowManager;
+
+    fn make_frame(wm: &mut WindowManager) -> u32 {
+        let h_frame = wm.create_window("TestFrame".to_string(), 0, 0);
+        let h_client = wm.create_window("TestClient".to_string(), h_frame, 0);
+        wm.frame_to_client.insert(h_frame, h_client);
+        h_frame
+    }
+
+    #[test]
+    fn z_push_top_adds_and_deduplicates() {
+        let mut wm = WindowManager::new();
+        let f1 = make_frame(&mut wm);
+        let f2 = make_frame(&mut wm);
+        let f3 = make_frame(&mut wm);
+
+        wm.z_push_top(f1);
+        wm.z_push_top(f2);
+        wm.z_push_top(f3);
+        assert_eq!(wm.z_order, vec![f1, f2, f3]);
+
+        // Pushing f1 again brings it to top.
+        wm.z_push_top(f1);
+        assert_eq!(wm.z_order, vec![f2, f3, f1]);
+    }
+
+    #[test]
+    fn z_push_bottom_places_at_index_zero() {
+        let mut wm = WindowManager::new();
+        let f1 = make_frame(&mut wm);
+        let f2 = make_frame(&mut wm);
+        let f3 = make_frame(&mut wm);
+
+        wm.z_push_top(f1);
+        wm.z_push_top(f2);
+        wm.z_push_top(f3);
+        // Stack: [f1, f2, f3]
+
+        wm.z_push_bottom(f3);
+        assert_eq!(wm.z_order, vec![f3, f1, f2]);
+    }
+
+    #[test]
+    fn z_insert_behind_positions_correctly() {
+        let mut wm = WindowManager::new();
+        let f1 = make_frame(&mut wm);
+        let f2 = make_frame(&mut wm);
+        let f3 = make_frame(&mut wm);
+
+        wm.z_push_top(f1);
+        wm.z_push_top(f2);
+        // Stack: [f1, f2]
+
+        // Insert f3 behind (below) f2.
+        wm.z_insert_behind(f3, f2);
+        assert_eq!(wm.z_order, vec![f1, f3, f2]);
+    }
+
+    #[test]
+    fn z_remove_cleans_up_focus() {
+        let mut wm = WindowManager::new();
+        let f1 = make_frame(&mut wm);
+        let f2 = make_frame(&mut wm);
+
+        wm.z_push_top(f1);
+        wm.z_push_top(f2);
+        wm.focused_hwnd = f2;
+
+        wm.z_remove(f2);
+        // f2 gone; focus falls back to new top (f1).
+        assert_eq!(wm.focused_hwnd, f1);
+        assert!(!wm.z_order.contains(&f2));
+    }
+
+    #[test]
+    fn z_hit_test_returns_top_most_visible() {
+        let mut wm = WindowManager::new();
+        let f1 = make_frame(&mut wm);
+        let f2 = make_frame(&mut wm);
+
+        // f1: covers (0,0)-(100,100), f2: covers (50,50)-(150,150)
+        {
+            let w = wm.get_window_mut(f1).unwrap();
+            w.x = 0; w.y = 0; w.cx = 100; w.cy = 100; w.visible = true;
+        }
+        {
+            let w = wm.get_window_mut(f2).unwrap();
+            w.x = 50; w.y = 50; w.cx = 100; w.cy = 100; w.visible = true;
+        }
+
+        wm.z_push_top(f1);
+        wm.z_push_top(f2); // f2 on top
+
+        // In overlap region (60,60): f2 is on top.
+        assert_eq!(wm.z_hit_test(60, 60), Some(f2));
+        // In f1-only region (10,10): f1.
+        assert_eq!(wm.z_hit_test(10, 10), Some(f1));
+        // Outside both.
+        assert_eq!(wm.z_hit_test(200, 200), None);
+    }
+
+    #[test]
+    fn z_hit_test_ignores_invisible_windows() {
+        let mut wm = WindowManager::new();
+        let f1 = make_frame(&mut wm);
+        let f2 = make_frame(&mut wm);
+
+        for &h in &[f1, f2] {
+            let w = wm.get_window_mut(h).unwrap();
+            w.x = 0; w.y = 0; w.cx = 100; w.cy = 100; w.visible = true;
+        }
+        wm.z_push_top(f1);
+        wm.z_push_top(f2);
+
+        // Hide the top window — hit should fall through to f1.
+        wm.get_window_mut(f2).unwrap().visible = false;
+        assert_eq!(wm.z_hit_test(50, 50), Some(f1));
     }
 }

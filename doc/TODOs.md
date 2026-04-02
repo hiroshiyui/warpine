@@ -92,11 +92,13 @@ The largest structural change: remove per-PM-window SDL2 windows.
 
 ### VDR-B: Z-Order and Window Lifecycle
 
-- [ ] **VDR-B1 — `WindowManager::z_order: Vec<u32>`**: ordered back-to-front list of
-  visible frame HWNDs. `create_window` appends; `WinDestroyWindow` removes.
-- [ ] **VDR-B2 — `WinSetWindowPos` SWP_ZORDER**: implement `HWND_TOP`, `HWND_BOTTOM`,
-  `HWND_TOPMOST`, `HWND_NOTTOPMOST` by reordering `z_order`. `WinSetActiveWindow`
-  brings target to top.
+- [x] **VDR-B1 — `WindowManager::z_order: Vec<u32>`**: ordered back-to-front list of
+  visible frame HWNDs. `WinCreateStdWindow` calls `z_push_top`; `WinDestroyWindow` calls
+  `z_remove`. Helpers: `z_push_top/bottom`, `z_insert_behind`, `z_hit_test`, `z_remove`.
+  6 unit tests in `pm_types::tests`.
+- [x] **VDR-B2 — `WinSetWindowPos` SWP_ZORDER**: `HWND_TOP`/`HWND_FLOAT` → `z_push_top`;
+  `HWND_BOTTOM` → `z_push_bottom`; arbitrary `hwnd_behind` → `z_insert_behind`;
+  `SWP_ACTIVATE` → `z_push_top` + `focused_hwnd` update. Constants in `constants.rs`.
 - [ ] **VDR-B3 — Full-frame compositor loop**: on each 60 Hz tick, iterate `z_order`
   back-to-front; for each visible frame, clear its region (gray desktop background)
   then call `dispatch_builtin_control(hwnd, WM_PAINT, 0, 0)` + post `WM_PAINT` to
@@ -154,10 +156,11 @@ After VDR-A there is only one OS window, so Warpine must route events itself.
 
 ### VDR-E: Focus Management
 
-- [ ] **VDR-E1 — `WindowManager::focused_hwnd: u32`**: the currently active frame
-  HWND (0 = none). Updated by activation events.
-- [ ] **VDR-E2 — `WinSetActiveWindow` / `WinQueryActiveWindow`**: ordinals 795 / 796;
-  set / query `focused_hwnd`; emit `WM_ACTIVATE` to old and new windows.
+- [x] **VDR-E1 — `WindowManager::focused_hwnd: u32`**: the currently active frame
+  HWND (0 = none). Updated by `WinCreateStdWindow`, `WinSetWindowPos(SWP_ACTIVATE)`,
+  `WinSetActiveWindow`, and `MouseButtonDown` in `Sdl2Renderer` (VDR-D4).
+- [x] **VDR-E2 — `WinSetActiveWindow` (ord 795) / `WinQueryActiveWindow` (ord 797)**:
+  set / query `focused_hwnd`; `WinSetActiveWindow` also calls `z_push_top`.
 - [ ] **VDR-E3 — Title bar highlight**: the focused window's title bar is navy; all
   others are dark gray (standard OS/2 PM visual behaviour).
 

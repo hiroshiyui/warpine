@@ -121,6 +121,9 @@ impl super::Loader {
                     // WinQueryWindowRect returns correct dimensions before the first resize.
                     if let Some(win) = wm.get_window_mut(h_frame)  { win.cx = 640; win.cy = 480; }
                     if let Some(win) = wm.get_window_mut(h_client) { win.cx = 640; win.cy = 480; }
+                    // VDR-B1/E1: register in Z-order stack (top-most) and set focus.
+                    wm.z_push_top(h_frame);
+                    wm.focused_hwnd = h_frame;
 
                     if let Some(ref sender) = wm.gui_tx {
                         let _ = sender.send(GUIMessage::CreateWindow { class: class_name, title, handle: h_frame });
@@ -422,7 +425,19 @@ impl super::Loader {
                 ApiResult::Normal(1) // TRUE
             }
             728 => {
-                // WinDestroyWindow
+                // WinDestroyWindow(HWND hwnd)
+                let hwnd = read_stack(4);
+                {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    // If this is a frame, clean up Z-order and focus.
+                    if wm.frame_to_client.contains_key(&hwnd) {
+                        wm.z_remove(hwnd);
+                        wm.frame_to_client.remove(&hwnd);
+                        if let Some(ref sender) = wm.gui_tx {
+                            let _ = sender.send(GUIMessage::ShowWindow { handle: hwnd, show: false });
+                        }
+                    }
+                }
                 ApiResult::Normal(1)
             }
             884 => {
@@ -921,6 +936,32 @@ impl super::Loader {
                 wm.clipboard_open = true;
                 ApiResult::Normal(1)
             }
+            795 => {
+                // WinSetActiveWindow(HWND hwndDesktop, HWND hwnd) -> BOOL
+                // VDR-E2: set focused_hwnd and raise to top of Z-order.
+                let _hwnd_desktop = read_stack(4);
+                let hwnd = read_stack(8);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let frame = {
+                    let candidate = wm.client_to_frame(hwnd);
+                    if wm.frame_to_client.contains_key(&candidate) { candidate } else { hwnd }
+                };
+                if wm.frame_to_client.contains_key(&frame) {
+                    wm.focused_hwnd = frame;
+                    wm.z_push_top(frame);
+                }
+                ApiResult::Normal(1)
+            }
+            // WinQueryActiveWindow(HWND hwndDesktop) -> HWND
+            // NOTE: ordinal 795 in some headers; 797 in others — both map here via
+            // the sub-dispatcher fallthrough.  See os2api.def for the canonical ordinal.
+            797 => {
+                // WinQueryActiveWindow(HWND hwndDesktop) -> HWND
+                // VDR-E2: return focused_hwnd.
+                let _hwnd_desktop = read_stack(4);
+                let wm = self.shared.window_mgr.lock_or_recover();
+                ApiResult::Normal(wm.focused_hwnd)
+            }
             937 => {
                 // WinPopupMenu(HWND hwndParent, HWND hwndOwner, HWND hwndMenu, LONG x, LONG y, LONG idItem, ULONG fs)
                 // Stub
@@ -1132,18 +1173,19 @@ impl super::Loader {
             }
             875 => {
                 // WinSetWindowPos(HWND hwnd, HWND hwndInsertBehind, LONG x, LONG y, LONG cx, LONG cy, ULONG fl)
-                let hwnd = read_stack(4);
-                let _hwnd_behind = read_stack(8);
-                let x = read_stack(12) as i32;
-                let y = read_stack(16) as i32;
+                let hwnd         = read_stack(4);
+                let hwnd_behind  = read_stack(8);
+                let x  = read_stack(12) as i32;
+                let y  = read_stack(16) as i32;
                 let cx = read_stack(20) as i32;
                 let cy = read_stack(24) as i32;
                 let fl = read_stack(28);
-                debug!("  [VCPU {}] WinSetWindowPos hwnd={} x={} y={} cx={} cy={} fl=0x{:04X}", vcpu_id, hwnd, x, y, cx, cy, fl);
+                debug!("  [VCPU {}] WinSetWindowPos hwnd={} behind={} x={} y={} cx={} cy={} fl=0x{:04X}",
+                       vcpu_id, hwnd, hwnd_behind, x, y, cx, cy, fl);
 
                 let mut wm = self.shared.window_mgr.lock_or_recover();
 
-                // Update the OS2Window position/size state
+                // Update the OS2Window position/size state.
                 if let Some(win) = wm.get_window_mut(hwnd) {
                     if fl & SWP_MOVE != 0 {
                         win.x = x;
@@ -1153,15 +1195,27 @@ impl super::Loader {
                         win.cx = cx;
                         win.cy = cy;
                     }
-                    if fl & SWP_SHOW != 0 {
-                        win.visible = true;
-                    }
-                    if fl & SWP_HIDE != 0 {
-                        win.visible = false;
+                    if fl & SWP_SHOW != 0 { win.visible = true; }
+                    if fl & SWP_HIDE != 0 { win.visible = false; }
+                }
+
+                // VDR-B2: SWP_ZORDER — update the Z-order stack.
+                if fl & SWP_ZORDER != 0 && wm.frame_to_client.contains_key(&hwnd) {
+                    match hwnd_behind {
+                        HWND_TOP | HWND_FLOAT => wm.z_push_top(hwnd),
+                        HWND_BOTTOM           => wm.z_push_bottom(hwnd),
+                        0                     => {} // no-op
+                        behind                => wm.z_insert_behind(hwnd, behind),
                     }
                 }
 
-                // Send GUI messages for the actual window operations
+                // VDR-E1: SWP_ACTIVATE — update focused_hwnd.
+                if fl & SWP_ACTIVATE != 0 && wm.frame_to_client.contains_key(&hwnd) {
+                    wm.focused_hwnd = hwnd;
+                    wm.z_push_top(hwnd);
+                }
+
+                // Send GUI messages for the actual window operations.
                 if let Some(ref sender) = wm.gui_tx {
                     if fl & SWP_SIZE != 0 {
                         let _ = sender.send(GUIMessage::ResizeWindow {
@@ -1169,9 +1223,7 @@ impl super::Loader {
                         });
                     }
                     if fl & SWP_MOVE != 0 {
-                        let _ = sender.send(GUIMessage::MoveWindow {
-                            handle: hwnd, x, y,
-                        });
+                        let _ = sender.send(GUIMessage::MoveWindow { handle: hwnd, x, y });
                     }
                     if fl & SWP_SHOW != 0 {
                         let _ = sender.send(GUIMessage::ShowWindow { handle: hwnd, show: true });

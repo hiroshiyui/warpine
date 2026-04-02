@@ -186,6 +186,18 @@ impl Sdl2Renderer {
                     let height = self.windows.get(&handle).map(|w| w.height).unwrap_or(480);
                     let os2_y = (height as i32 - 1) - y;
                     let mp1 = ((x as u32) & 0xFFFF) | ((os2_y as u32 & 0xFFFF) << 16);
+                    // VDR-D4: activate window on click (bring to top of Z-order).
+                    {
+                        let mut wm = shared.window_mgr.lock_or_recover();
+                        // Only frames track Z-order/focus; the frame for a client hwnd is
+                        // found via client_to_frame.  For a frame itself it's a no-op.
+                        let frame = wm.client_to_frame(handle);
+                        let frame = if wm.frame_to_client.contains_key(&frame) { frame } else { handle };
+                        if wm.frame_to_client.contains_key(&frame) && wm.focused_hwnd != frame {
+                            wm.focused_hwnd = frame;
+                            wm.z_push_top(frame);
+                        }
+                    }
                     use sdl2::mouse::MouseButton;
                     let msg = match mouse_btn {
                         MouseButton::Left   => Some(WM_BUTTON1DOWN),

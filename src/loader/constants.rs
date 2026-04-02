@@ -139,6 +139,12 @@ pub const SWP_MINIMIZE: u32 = 0x0100;
 pub const SWP_MAXIMIZE: u32 = 0x0200;
 pub const SWP_RESTORE: u32 = 0x0400;
 
+// OS/2 HWND Z-order sentinels used with SWP_ZORDER in WinSetWindowPos.
+pub const HWND_TOP: u32          = 1; // Place window at the top of Z-order
+pub const HWND_BOTTOM: u32       = 2; // Place window at the bottom of Z-order
+pub const HWND_FLOAT: u32        = 3; // Float above all normal windows (mapped to HWND_TOP)
+pub const HWND_DESKTOP: u32      = 4; // PM desktop pseudo-handle (origin of coordinate space)
+
 // Mock handle constants
 pub const MOCK_HAB: u32 = 0x1234;
 pub const MOCK_HPOINTER: u32 = 0x5000;
