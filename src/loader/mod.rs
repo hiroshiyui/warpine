@@ -509,10 +509,13 @@ impl Loader {
                         });
                     }
                     "#Menu" => {
-                        // Collect top-level menu items (second lock — brief).
-                        let items = {
+                        // Collect top-level menu items and open-submenu state.
+                        let (items, open_item) = {
                             let wm2 = self.shared.window_mgr.lock_or_recover();
-                            wm2.get_window(hwnd).map(|w| w.menu_items.clone()).unwrap_or_default()
+                            let win = wm2.get_window(hwnd);
+                            let it = win.map(|w| w.menu_items.clone()).unwrap_or_default();
+                            let oi = win.and_then(|w| w.window_ulong.get(&-1)).copied().unwrap_or(0);
+                            (it, oi)
                         };
                         // Gray menu bar background.
                         let _ = sender.send(crate::gui::GUIMessage::DrawBox {
@@ -526,15 +529,80 @@ impl Loader {
                         });
                         // Top-level item names (strip ~ accelerator marker).
                         let mut item_x = x + 4;
-                        for item in &items {
+                        for (i, item) in items.iter().enumerate() {
                             if item.style & MIS_SEPARATOR != 0 { continue; }
                             let label: String = item.text.chars().filter(|&c| c != '~').collect();
                             let label_w = (label.len() as i32 * 8) + 8;
-                            let _ = sender.send(crate::gui::GUIMessage::DrawText {
-                                handle: frame_hwnd, x: item_x + 2, y: y + 2,
-                                text: label, color: 0x00000000,
-                            });
+                            // Highlight the open item.
+                            if open_item > 0 && i == (open_item - 1) as usize {
+                                let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                                    handle: frame_hwnd,
+                                    x1: item_x, y1: y, x2: item_x + label_w, y2: y + cy,
+                                    color: 0x00000080, fill: true,
+                                });
+                                let _ = sender.send(crate::gui::GUIMessage::DrawText {
+                                    handle: frame_hwnd, x: item_x + 2, y: y + 2,
+                                    text: label, color: 0x00FFFFFF,
+                                });
+                            } else {
+                                let _ = sender.send(crate::gui::GUIMessage::DrawText {
+                                    handle: frame_hwnd, x: item_x + 2, y: y + 2,
+                                    text: label, color: 0x00000000,
+                                });
+                            }
                             item_x += label_w;
+                        }
+                        // Draw open dropdown if any.
+                        if open_item > 0 {
+                            let idx = (open_item - 1) as usize;
+                            if let Some(parent_item) = items.get(idx) {
+                                // Compute dropdown x: same as the open item's x position.
+                                let mut drop_x = x + 4;
+                                for (i, item) in items.iter().enumerate() {
+                                    if i >= idx { break; }
+                                    if item.style & MIS_SEPARATOR != 0 { continue; }
+                                    let lw = (item.text.chars().filter(|&c| c != '~').count() as i32 * 8) + 8;
+                                    drop_x += lw;
+                                }
+                                const DROP_W: i32 = 120;
+                                const ITEM_H: i32 = 16;
+                                let child_count = parent_item.children.len() as i32;
+                                let drop_h = child_count * ITEM_H;
+                                // Dropdown sits just below the menu bar (lower y in OS/2 coords).
+                                let drop_y2 = y; // top of dropdown = bottom of menu bar
+                                let drop_y1 = drop_y2 - drop_h;
+                                // Background + border.
+                                let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                                    handle: frame_hwnd,
+                                    x1: drop_x, y1: drop_y1, x2: drop_x + DROP_W, y2: drop_y2,
+                                    color: 0x00D4D0C8, fill: true,
+                                });
+                                let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                                    handle: frame_hwnd,
+                                    x1: drop_x, y1: drop_y1, x2: drop_x + DROP_W, y2: drop_y2,
+                                    color: 0x00808080, fill: false,
+                                });
+                                // Draw child items top-to-bottom (decreasing OS/2 y).
+                                for (ci, child) in parent_item.children.iter().enumerate() {
+                                    let item_y2 = drop_y2 - (ci as i32 * ITEM_H);
+                                    let item_y1 = item_y2 - ITEM_H;
+                                    if child.style & MIS_SEPARATOR != 0 {
+                                        let sep_y = (item_y1 + item_y2) / 2;
+                                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                                            handle: frame_hwnd,
+                                            x1: drop_x + 2, y1: sep_y, x2: drop_x + DROP_W - 2, y2: sep_y + 1,
+                                            color: 0x00808080, fill: true,
+                                        });
+                                    } else {
+                                        let label: String = child.text.chars().filter(|&c| c != '~').collect();
+                                        let _ = sender.send(crate::gui::GUIMessage::DrawText {
+                                            handle: frame_hwnd,
+                                            x: drop_x + 4, y: item_y1 + 2,
+                                            text: label, color: 0x00000000,
+                                        });
+                                    }
+                                }
+                            }
                         }
                         // Flush immediately — no WinEndPaint caller for this pseudo-window.
                         let _ = sender.send(crate::gui::GUIMessage::PresentBuffer { handle: frame_hwnd });
@@ -561,6 +629,119 @@ impl Loader {
                         mq.cond.notify_one();
                 }
                 ApiResult::Normal(0)
+            }
+
+            WM_BUTTON1DOWN if class_name == "#Menu" => {
+                // Hit-test: is click in the menu bar or in an open dropdown?
+                // Coordinates in mp1 are frame-relative OS/2 bottom-left.
+                let click_x = (mp1 & 0xFFFF) as i32;
+                let click_y = ((mp1 >> 16) & 0xFFFF) as i32;
+
+                let (items, open_item) = {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    let win = wm.get_window(hwnd);
+                    let it = win.map(|w| w.menu_items.clone()).unwrap_or_default();
+                    let oi = win.and_then(|w| w.window_ulong.get(&-1)).copied().unwrap_or(0);
+                    (it, oi)
+                };
+
+                // Menu bar spans [y, y+cy] in OS/2 coords (y/cy from abs_rect).
+                if click_y >= y && click_y < y + cy {
+                    // Click is in the menu bar — find which top-level item was hit.
+                    let mut item_x = x + 4;
+                    let mut hit_idx: Option<usize> = None;
+                    for (i, item) in items.iter().enumerate() {
+                        if item.style & MIS_SEPARATOR != 0 { continue; }
+                        let label_w = (item.text.chars().filter(|&c| c != '~').count() as i32 * 8) + 8;
+                        if click_x >= item_x && click_x < item_x + label_w {
+                            hit_idx = Some(i);
+                            break;
+                        }
+                        item_x += label_w;
+                    }
+                    if let Some(idx) = hit_idx {
+                        // Toggle: clicking the already-open item closes it.
+                        let new_open = if open_item == idx as u32 + 1 { 0 } else { idx as u32 + 1 };
+                        {
+                            let mut wm = self.shared.window_mgr.lock_or_recover();
+                            if let Some(win) = wm.get_window_mut(hwnd) {
+                                if new_open == 0 { win.window_ulong.remove(&-1); }
+                                else { win.window_ulong.insert(-1, new_open); }
+                            }
+                        }
+                        // Repaint the menu bar (and dropdown if newly opened).
+                        return self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0);
+                    } else if open_item > 0 {
+                        // Click on empty part of menu bar: close dropdown.
+                        { self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd).map(|w| w.window_ulong.remove(&-1)); }
+                        return self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0);
+                    }
+                } else if open_item > 0 {
+                    // Click below the menu bar — check if it's in the open dropdown.
+                    let idx = (open_item - 1) as usize;
+                    if let Some(parent_item) = items.get(idx) {
+                        let mut drop_x = x + 4;
+                        for (i, item) in items.iter().enumerate() {
+                            if i >= idx { break; }
+                            if item.style & MIS_SEPARATOR != 0 { continue; }
+                            let lw = (item.text.chars().filter(|&c| c != '~').count() as i32 * 8) + 8;
+                            drop_x += lw;
+                        }
+                        const DROP_W: i32 = 120;
+                        const ITEM_H: i32 = 16;
+                        let child_count = parent_item.children.len() as i32;
+                        let drop_y2 = y; // same as menu bar bottom
+                        let drop_y1 = drop_y2 - child_count * ITEM_H;
+
+                        if click_x >= drop_x && click_x < drop_x + DROP_W
+                           && click_y >= drop_y1 && click_y < drop_y2
+                        {
+                            // Determine which child item was clicked.
+                            let child_idx = ((drop_y2 - 1 - click_y) / ITEM_H) as usize;
+                            if let Some(child) = parent_item.children.get(child_idx)
+                                && child.style & MIS_SEPARATOR == 0
+                            {
+                                let cmd_id = child.id as u32;
+                                // Close dropdown before dispatching.
+                                { self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd).map(|w| w.window_ulong.remove(&-1)); }
+                                self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0);
+                                // Post WM_COMMAND (CMDSRC_MENU=2) to the client window.
+                                // parent = frame_hwnd; client = frame_to_client[frame_hwnd].
+                                let (client_hwnd, mq_arc_opt) = {
+                                    let wm = self.shared.window_mgr.lock_or_recover();
+                                    let client = wm.frame_to_client.get(&parent).copied().unwrap_or(parent);
+                                    let hmq = wm.find_hmq_for_hwnd(client);
+                                    let mq = hmq.and_then(|h| wm.get_mq(h));
+                                    (client, mq)
+                                };
+                                if let Some(mq_arc) = mq_arc_opt {
+                                    let mut mq = mq_arc.lock_or_recover();
+                                    // mp1 = MPFROM2SHORT(id, CMDSRC_MENU=2)
+                                    mq.messages.push_back(OS2Message {
+                                        hwnd: client_hwnd,
+                                        msg: WM_COMMAND,
+                                        mp1: cmd_id | (2u32 << 16), // CMDSRC_MENU
+                                        mp2: 0,
+                                        time: 0, x: 0, y: 0,
+                                    });
+                                    mq.cond.notify_one();
+                                }
+                                return ApiResult::Normal(0);
+                            }
+                        } else {
+                            // Click outside dropdown: close it.
+                            { self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd).map(|w| w.window_ulong.remove(&-1)); }
+                            return self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0);
+                        }
+                    }
+                }
+                ApiResult::Normal(0)
+            }
+
+            WM_MENUEND if class_name == "#Menu" => {
+                // Close any open dropdown and redraw the menu bar.
+                { self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd).map(|w| w.window_ulong.remove(&-1)); }
+                self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0)
             }
 
             LM_INSERTITEM => {

@@ -280,12 +280,41 @@ impl super::Loader {
                 // WinDefWindowProc
                 let hwnd = read_stack(4);
                 let msg = read_stack(8);
-                let _mp1 = read_stack(12);
+                let mp1 = read_stack(12);
                 let _mp2 = read_stack(16);
 
-                if msg == WM_CLOSE {
-                    // Post WM_QUIT to the message queue
-                    self.post_wm_quit(hwnd);
+                match msg {
+                    WM_CLOSE => { self.post_wm_quit(hwnd); }
+                    WM_BUTTON1DOWN | WM_BUTTON1UP => {
+                        // If this frame has a menu, delegate mouse events to the menu
+                        // control handler so it can handle menu-bar clicks and dropdown
+                        // item selection.
+                        let (menu_hwnd, frame_cy) = {
+                            let wm = self.shared.window_mgr.lock_or_recover();
+                            let mh = wm.get_window(hwnd).map(|w| w.menu_hwnd).unwrap_or(0);
+                            let cy = wm.get_window(hwnd).map(|w| w.cy).unwrap_or(0);
+                            (mh, cy)
+                        };
+                        if menu_hwnd != 0 && msg == WM_BUTTON1DOWN {
+                            let click_y = ((mp1 >> 16) & 0xFFFF) as i32;
+                            // Check if click is above the menu bar bottom edge.
+                            // Menu bar occupies [frame_cy-MENU_BAR_HEIGHT, frame_cy].
+                            // Dropdown occupies [frame_cy-MENU_BAR_HEIGHT-drop_h, frame_cy-MENU_BAR_HEIGHT].
+                            // Forward all clicks to the menu handler; it knows its own geometry.
+                            let menu_y1 = frame_cy - MENU_BAR_HEIGHT as i32;
+                            // Only intercept clicks that are at or above menu_y1 (in bar),
+                            // or check if there's an open dropdown covering the click area.
+                            let open_item = {
+                                let wm = self.shared.window_mgr.lock_or_recover();
+                                wm.get_window(menu_hwnd)
+                                    .and_then(|w| w.window_ulong.get(&-1)).copied().unwrap_or(0)
+                            };
+                            if click_y >= menu_y1 || open_item > 0 {
+                                return self.dispatch_builtin_control(menu_hwnd, WM_BUTTON1DOWN, mp1, 0);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
                 ApiResult::Normal(0)
             }
@@ -1772,6 +1801,84 @@ mod tests {
         assert_eq!(loader.guest_read::<u8>(buf_ptr + 2).unwrap(), b'f');
         assert_eq!(loader.guest_read::<u8>(buf_ptr + 3).unwrap(), 0x82); // é in CP850
         assert_eq!(loader.guest_read::<u8>(buf_ptr + 4).unwrap(), 0x00); // NUL terminator
+    }
+
+    /// dispatch_builtin_control #Menu WM_BUTTON1DOWN must toggle the open-item
+    /// state when clicking a top-level SUBMENU item, and must post WM_COMMAND
+    /// to the client window when a child item is clicked.
+    #[test]
+    fn test_menu_bar_click_opens_submenu_and_posts_command() {
+        use super::super::mutex_ext::MutexExt;
+        use super::super::constants::{WM_BUTTON1DOWN, WM_COMMAND, MIS_SUBMENU, MIS_TEXT, MENU_BAR_HEIGHT};
+        use super::super::pm_types::MenuItem;
+
+        let loader = Loader::new_mock();
+
+        // Build: frame (cy=480) → menu window (y=460, cy=20) with one SUBMENU "File"
+        //        containing two children: "About" (id=201) and "Exit" (id=202).
+        //        Also create a client window so frame_to_client resolves.
+        let (_frame_hwnd, menu_hwnd, client_hwnd, hmq) = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq();
+            wm.tid_to_hmq.insert(0, hmq);
+            let frame = wm.create_window("TestClass".to_string(), 0, hmq);
+            let client = wm.create_window("TestClass".to_string(), frame, hmq);
+            wm.frame_to_client.insert(frame, client);
+            let menu = wm.create_window("#Menu".to_string(), frame, hmq);
+            // Position frame and menu windows
+            let frame_cy = 480i32;
+            wm.get_window_mut(frame).unwrap().cy = frame_cy;
+            wm.get_window_mut(menu).unwrap().y = frame_cy - MENU_BAR_HEIGHT as i32;
+            wm.get_window_mut(menu).unwrap().cy = MENU_BAR_HEIGHT as i32;
+            wm.get_window_mut(menu).unwrap().cx = 640;
+            wm.get_window_mut(frame).unwrap().menu_hwnd = menu;
+            // Load items: "~File" SUBMENU with two children
+            let file_item = MenuItem {
+                id: 200, style: MIS_TEXT | MIS_SUBMENU, attr: 0,
+                text: "~File".to_string(),
+                children: vec![
+                    MenuItem { id: 201, style: MIS_TEXT, attr: 0, text: "~About".to_string(), children: vec![] },
+                    MenuItem { id: 202, style: MIS_TEXT, attr: 0, text: "Exit".to_string(),   children: vec![] },
+                ],
+            };
+            wm.get_window_mut(menu).unwrap().menu_items = vec![file_item];
+            (frame, menu, client, hmq)
+        };
+
+        // --- Step 1: click on "File" in the menu bar (x=6, y=465) ---
+        // item_x starts at x+4 = 0+4 = 4; "File" label_w = 4*8+8 = 40 (stripping ~)
+        // click_x=6 is within [4, 44), click_y=465 >= y=460
+        let mp1_bar: u32 = 6u32 | (465u32 << 16);
+        let res = loader.dispatch_builtin_control(menu_hwnd, WM_BUTTON1DOWN, mp1_bar, 0);
+        assert!(matches!(res, ApiResult::Normal(0)));
+        // open_item should now be 1 (1-based index 0)
+        let open_item = loader.shared.window_mgr.lock_or_recover()
+            .get_window(menu_hwnd).unwrap()
+            .window_ulong.get(&-1).copied().unwrap_or(0);
+        assert_eq!(open_item, 1, "open_item should be 1 after clicking File");
+
+        // --- Step 2: click on "Exit" (child index 1) in the dropdown ---
+        // Dropdown y range: [y - 2*16, y] = [460 - 32, 460] = [428, 460]
+        // Exit is child index 1: item_y range [460 - 32, 460 - 16] = [428, 444]
+        // Click at (x=6, y=435) → child_idx = (460-1-435)/16 = 24/16 = 1 → Exit (id=202)
+        let mp1_drop: u32 = 6u32 | (435u32 << 16);
+        let res = loader.dispatch_builtin_control(menu_hwnd, WM_BUTTON1DOWN, mp1_drop, 0);
+        assert!(matches!(res, ApiResult::Normal(0)));
+        // Dropdown should be closed
+        let open_item = loader.shared.window_mgr.lock_or_recover()
+            .get_window(menu_hwnd).unwrap()
+            .window_ulong.get(&-1).copied().unwrap_or(0);
+        assert_eq!(open_item, 0, "open_item should be 0 after clicking Exit");
+        // WM_COMMAND with id=202 should be in the client's message queue
+        let mq_arc = loader.shared.window_mgr.lock_or_recover()
+            .get_mq(hmq).expect("mq should exist");
+        let mq = mq_arc.lock_or_recover();
+        let cmd_msg = mq.messages.iter().find(|m| m.msg == WM_COMMAND);
+        assert!(cmd_msg.is_some(), "WM_COMMAND should be posted");
+        let cmd = cmd_msg.unwrap();
+        assert_eq!(cmd.hwnd, client_hwnd);
+        assert_eq!(cmd.mp1 & 0xFFFF, 202); // id=202 (Exit)
+        assert_eq!((cmd.mp1 >> 16) & 0xFFFF, 2); // CMDSRC_MENU=2
     }
 
     /// WinQueryWindowText with ASCII-only text must still work after the
