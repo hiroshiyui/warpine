@@ -114,6 +114,17 @@ pub(crate) enum FrameKind {
     /// After the client window procedure returns, the frame window handle
     /// (`h_frame`) is written into EAX as the return value of WinCreateStdWindow.
     WmCreate { h_frame: u32 },
+    /// A modal dialog message loop (WinDlgBox / WinProcessDlg).
+    ///
+    /// After each message callback returns, the CALLBACK_RET_TRAP handler
+    /// checks `hwnd_dlg.dialog_dismissed`.  If dismissed, it returns
+    /// `dialog_result` to the WinDlgBox/WinProcessDlg caller.  Otherwise it
+    /// waits for the next queued message and dispatches it to `dlg_proc`.
+    DlgRunLoop {
+        dlg_proc: u32,
+        hwnd_dlg: u32,
+        hmq:      u32,
+    },
 }
 
 pub(crate) struct CallbackFrame {
@@ -150,6 +161,17 @@ pub(crate) enum ApiResult {
         hmod:         u32,
         phmod:        u32,
         object_bases: Vec<u32>,
+    },
+    /// Run a modal dialog message loop on behalf of WinDlgBox / WinProcessDlg.
+    ///
+    /// `vcpu.rs` dispatches messages from `hmq` to `dlg_proc` in a loop,
+    /// blocking on the queue condvar between messages.  The loop terminates
+    /// when `hwnd_dlg.dialog_dismissed` is set by WinDismissDlg, returning
+    /// `dialog_result` to the original API caller.
+    DlgRunLoop {
+        dlg_proc: u32,
+        hwnd_dlg: u32,
+        hmq:      u32,
     },
     /// Invoke an OS/2 exception handler as a guest callback.
     ///

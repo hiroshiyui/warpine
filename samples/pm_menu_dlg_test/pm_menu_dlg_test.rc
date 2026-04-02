@@ -1,0 +1,41 @@
+/* pm_menu_dlg_test.rc — Resources for pm_menu_dlg_test
+ *
+ * Build with Open Watcom RC (included in Open Watcom toolchain):
+ *   rc -r pm_menu_dlg_test.rc
+ * The .res file is linked in by the Makefile via wlink.
+ */
+
+#define INCL_WIN
+#include <os2.h>
+
+/* ── Menu IDs ── */
+#define ID_MAINMENU    100
+#define ID_ABOUTDLG    101
+#define IDM_ABOUT      201
+#define IDM_EXIT       202
+#define IDC_LABEL      301
+
+/* ── Main menu ── */
+MENU ID_MAINMENU
+BEGIN
+    SUBMENU "~File", IDM_FILE
+    BEGIN
+        MENUITEM "~About...", IDM_ABOUT
+        MENUITEM SEPARATOR
+        MENUITEM "E~xit", IDM_EXIT
+    END
+END
+
+/* ── About dialog ── */
+DLGTEMPLATE ID_ABOUTDLG LOADONCALL MOVEABLE DISCARDABLE
+BEGIN
+    DIALOG "About PM Menu/Dialog Test", ID_ABOUTDLG,
+           40, 40, 180, 80, WS_VISIBLE | WS_CLIPSIBLINGS,
+           FCF_TITLEBAR | FCF_SYSMENU
+    BEGIN
+        LTEXT   "Warpine PM Menu & Dialog Test", IDC_LABEL,
+                10, 45, 160, 14
+        DEFPUSHBUTTON "OK", DID_OK,
+                60, 10, 50, 14
+    END
+END

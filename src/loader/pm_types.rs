@@ -52,6 +52,14 @@ pub struct OS2Window {
     pub style: u32,
     /// Items stored by WC_LISTBOX on LM_INSERTITEM.
     pub listbox_items: Vec<String>,
+    /// Items parsed from a MENUTEMPLATE binary resource (WC_MENU windows only).
+    pub menu_items: Vec<MenuItem>,
+    /// HWND of the menu attached to this frame window via WinSetMenu / WinLoadMenu.
+    pub menu_hwnd: u32,
+    /// Set by WinDismissDlg; inspected by the DlgRunLoop to end the modal loop.
+    pub dialog_dismissed: bool,
+    /// The result code passed to WinDismissDlg; returned by WinDlgBox.
+    pub dialog_result: u32,
 }
 
 pub struct PresentationSpace {
@@ -76,6 +84,21 @@ pub struct AccelEntry {
     pub flags: u16,
     pub key: u16,
     pub cmd: u16,
+}
+
+/// A single item from a parsed OS/2 MENUTEMPLATE binary resource.
+///
+/// Populated by `Loader::parse_menu_items` and stored in
+/// `OS2Window::menu_items` for WC_MENU windows created by `WinLoadMenu`.
+pub struct MenuItem {
+    pub id: u16,
+    /// `afStyle` field from the binary resource (MIS_* flags, bit 15 stripped).
+    pub style: u16,
+    /// `afAttribute` field (MIA_* flags).
+    pub attr: u16,
+    pub text: String,
+    /// Nested items for `MIS_SUBMENU` entries.
+    pub children: Vec<MenuItem>,
 }
 
 pub struct WindowManager {
@@ -148,6 +171,10 @@ impl WindowManager {
             visible: false,
             style: 0,
             listbox_items: Vec::new(),
+            menu_items: Vec::new(),
+            menu_hwnd: 0,
+            dialog_dismissed: false,
+            dialog_result: 0,
         });
         // Register as child of parent
         if parent != 0

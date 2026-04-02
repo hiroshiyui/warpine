@@ -584,6 +584,34 @@ impl super::Loader {
                                         // ignore vetoes for now and always return h_frame.)
                                         regs.rax = h_frame as u64;
                                     }
+                                    FrameKind::DlgRunLoop { dlg_proc, hwnd_dlg, hmq } => {
+                                        // Check whether the dialog was dismissed while the
+                                        // last message callback was executing.
+                                        let dismissed = {
+                                            let wm = self.shared.window_mgr.lock_or_recover();
+                                            wm.get_window(hwnd_dlg)
+                                                .map(|w| (w.dialog_dismissed, w.dialog_result))
+                                        };
+                                        if let Some((true, dlg_result)) = dismissed {
+                                            // Dialog dismissed: restore caller state, return result.
+                                            // regs.rip and regs.rsp are already set to saved state
+                                            // by the code above the match.
+                                            regs.rax = dlg_result as u64;
+                                            // Fall through to vcpu.set_regs + continue.
+                                        } else {
+                                            // Not yet dismissed: dispatch the next queued message.
+                                            if setup_dlg_dispatch(
+                                                &mut *vcpu, self, &mut callback_stack,
+                                                dlg_proc, hwnd_dlg, hmq,
+                                                frame.saved_rip, frame.saved_rsp,
+                                            ) {
+                                                continue; // skip vcpu.set_regs — setup_dlg_dispatch did it
+                                            }
+                                            // setup_dlg_dispatch returned false = returning to caller.
+                                            // regs were set by setup_dlg_dispatch; skip set below.
+                                            continue;
+                                        }
+                                    }
                                     FrameKind::InitTerm { hmod, phmod } => {
                                         // _DLL_InitTerm returns 1 on success, 0 on failure.
                                         if result != 0 {
@@ -736,6 +764,24 @@ impl super::Loader {
                                 self.guest_write::<u32>(sp + 16, 0).expect("Callback stack write OOB"); // mp2 (CTLDATA*)
                                 regs.rip = wnd_proc as u64;
                                 vcpu.set_regs(&regs).unwrap();
+                            }
+                            ApiResult::DlgRunLoop { dlg_proc, hwnd_dlg, hmq } => {
+                                let regs = vcpu.get_regs().unwrap();
+                                let return_addr = self.guest_read::<u32>(regs.rsp as u32)
+                                    .expect("Stack read OOB for DlgRunLoop return address");
+                                let saved_rip = return_addr as u64;
+                                let saved_rsp = regs.rsp + 4; // past return addr; caller cleans args
+                                // Restore regs so setup_dlg_dispatch sees a clean state.
+                                vcpu.set_regs(&regs).unwrap();
+                                if setup_dlg_dispatch(
+                                    &mut *vcpu, self, &mut callback_stack,
+                                    dlg_proc, hwnd_dlg, hmq,
+                                    saved_rip, saved_rsp,
+                                ) {
+                                    continue;
+                                }
+                                // setup_dlg_dispatch returned false (dismissed immediately or
+                                // no queue) — registers already set, fall through.
                             }
                             ApiResult::ExceptionDispatch { .. } => {
                                 let mut regs = vcpu.get_regs().unwrap();
@@ -899,4 +945,124 @@ fn setup_exception_dispatch(
     loader.guest_write::<u32>(sp + 16, 0).expect("SEH stack write OOB"); // pDispCtx
     regs.rip = handler_addr as u64;
     vcpu.set_regs(&regs).unwrap();
+}
+
+/// Drive the modal dialog message loop for WinDlgBox / WinProcessDlg.
+///
+/// This function either:
+/// * Dispatches the next message from `hmq` to `dlg_proc` (pushes a
+///   `FrameKind::DlgRunLoop` frame onto `callback_stack`, sets guest IP
+///   to `dlg_proc`, then returns — caller must `continue` the VMEXIT loop).
+/// * Returns to the WinDlgBox/WinProcessDlg caller (`saved_rip`/`saved_rsp`)
+///   with EAX = dialog result (sets registers and returns — caller should
+///   NOT `continue` independently; `vcpu.set_regs` is already done).
+///
+/// Use `setup_dlg_dispatch_returns_to_caller` as a boolean:
+/// The function sets `*dispatched = false` when returning to caller, and
+/// `true` when dispatching a message.  Caller should `continue` iff `true`.
+#[allow(clippy::too_many_arguments)]
+fn setup_dlg_dispatch(
+    vcpu: &mut dyn super::vm_backend::VcpuBackend,
+    loader: &super::Loader,
+    callback_stack: &mut Vec<CallbackFrame>,
+    dlg_proc: u32,
+    hwnd_dlg: u32,
+    hmq: u32,
+    saved_rip: u64,
+    saved_rsp: u64,
+) -> bool {
+    use super::mutex_ext::MutexExt;
+
+    let mq_arc = loader.shared.window_mgr.lock_or_recover().get_mq(hmq);
+    let Some(mq_arc) = mq_arc else {
+        let mut regs = vcpu.get_regs().unwrap();
+        regs.rip = saved_rip;
+        regs.rsp = saved_rsp;
+        regs.rax = DID_CANCEL as u64;
+        vcpu.set_regs(&regs).unwrap();
+        return false;
+    };
+
+    let (cond, wait_lock) = {
+        let mq = mq_arc.lock_or_recover();
+        (Arc::clone(&mq.cond), Arc::clone(&mq.lock))
+    };
+
+    loop {
+        // Check if the dialog has been dismissed by WinDismissDlg.
+        {
+            let wm = loader.shared.window_mgr.lock_or_recover();
+            match wm.get_window(hwnd_dlg) {
+                Some(w) if w.dialog_dismissed => {
+                    let result = w.dialog_result;
+                    drop(wm);
+                    let mut regs = vcpu.get_regs().unwrap();
+                    regs.rip = saved_rip;
+                    regs.rsp = saved_rsp;
+                    regs.rax = result as u64;
+                    vcpu.set_regs(&regs).unwrap();
+                    return false;
+                }
+                None => {
+                    // Window destroyed; return DID_CANCEL.
+                    drop(wm);
+                    let mut regs = vcpu.get_regs().unwrap();
+                    regs.rip = saved_rip;
+                    regs.rsp = saved_rsp;
+                    regs.rax = DID_CANCEL as u64;
+                    vcpu.set_regs(&regs).unwrap();
+                    return false;
+                }
+                _ => {}
+            }
+        }
+
+        if loader.shutting_down() {
+            let mut regs = vcpu.get_regs().unwrap();
+            regs.rip = saved_rip;
+            regs.rsp = saved_rsp;
+            regs.rax = DID_CANCEL as u64;
+            vcpu.set_regs(&regs).unwrap();
+            return false;
+        }
+
+        // Try to pop the next message from the queue.
+        let msg_opt = mq_arc.lock_or_recover().messages.pop_front();
+
+        if let Some(msg) = msg_opt {
+            // WM_QUIT terminates the dialog loop with DID_CANCEL.
+            if msg.msg == WM_QUIT {
+                let mut regs = vcpu.get_regs().unwrap();
+                regs.rip = saved_rip;
+                regs.rsp = saved_rsp;
+                regs.rax = DID_CANCEL as u64;
+                vcpu.set_regs(&regs).unwrap();
+                return false;
+            }
+
+            // Push the DlgRunLoop frame so the loop continues after the callback.
+            callback_stack.push(CallbackFrame {
+                saved_rip,
+                saved_rsp,
+                kind: FrameKind::DlgRunLoop { dlg_proc, hwnd_dlg, hmq },
+            });
+
+            // Set up the guest stack for a standard WndProc call.
+            let mut regs = vcpu.get_regs().unwrap();
+            regs.rsp -= 20;
+            let sp = regs.rsp as u32;
+            loader.guest_write::<u32>(sp,      CALLBACK_RET_TRAP).expect("DlgRunLoop stack OOB");
+            loader.guest_write::<u32>(sp +  4, msg.hwnd).expect("DlgRunLoop stack OOB");
+            loader.guest_write::<u32>(sp +  8, msg.msg).expect("DlgRunLoop stack OOB");
+            loader.guest_write::<u32>(sp + 12, msg.mp1).expect("DlgRunLoop stack OOB");
+            loader.guest_write::<u32>(sp + 16, msg.mp2).expect("DlgRunLoop stack OOB");
+            regs.rip = dlg_proc as u64;
+            vcpu.set_regs(&regs).unwrap();
+            return true; // caller must `continue` the VMEXIT loop
+        }
+
+        // No message; block on the condvar for up to 100 ms.
+        let guard = wait_lock.lock_or_recover();
+        let _ = cond.wait_timeout(guard, std::time::Duration::from_millis(100)).unwrap();
+    }
 }

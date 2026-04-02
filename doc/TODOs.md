@@ -36,6 +36,8 @@ DLL binaries, no ROM dumps, and no disassembly of original OS/2 system libraries
 | CMD.EXE I/O redirection (`>`, `>>`, `<`) + pipe (`\|`) + sample script | Complete | `src/loader/cmd.rs`, `samples/cmd_test/test.cmd` |
 | Rust Guest Toolchain | Complete | Targets, lx-link linker, warpine-os2 crate family, rust_hello sample, test_rust_hello |
 | Ordinal Table Canonical Build Tool | Complete | `src/bin/gen_api.rs`; `targets/os2api.def` is single source of truth |
+| PM Menu System (MENUTEMPLATE parser, WinLoadMenu, WinSetMenu, WinCreateMenu) | Complete | `src/loader/pm_win.rs` |
+| PM Dialog System (DLGTEMPLATE parser, WinDlgBox, WinLoadDlg, WinProcessDlg, WinDismissDlg, WinDefDlgProc, WinSendDlgItemMsg, DlgRunLoop) | Complete | `src/loader/pm_win.rs`, `src/loader/vcpu.rs` |
 
 ---
 
@@ -58,20 +60,6 @@ NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 - [ ] **Watcom CRT NE apps** — Watcom 16-bit CRT requires LDT-based selectors (TI=1); would need stub LDT or full LDT emulation
 - [ ] **Mode switching** — 16-bit NE code calling a 32-bit flat DLL
 - [ ] **Broader 16-bit API coverage** — more DOSCALLS / VIOCALLS / KBDCALLS ordinals beyond minimal hello-world
-
-### PM Menu System
-
-- [ ] **Menu template parsing** — load `MENUTEMPLATE` resource from LX binary; create `WC_MENU` window hierarchy
-- [ ] **`WinLoadMenu` / `WinSetMenu`** — attach menu to frame; store `hmenu` in `OS2Window`
-- [ ] **`WinSendMsg` → menu → `WM_COMMAND`** — route menu-item activations to the frame's client window procedure
-- [ ] **`WM_INITMENU` / `WM_MENUSELECT`** — sent before menu is displayed / on item highlight
-
-### Dialog System
-
-- [ ] **Dialog template parsing** — load `DLGTEMPLATE` from LX resource; auto-create child windows; enables `WinDlgBox` / `WinLoadDlg`
-- [ ] **`WinDlgBox` / `WinLoadDlg`** — modal and modeless dialog creation; own `WinGetMsg` pump
-- [ ] **`WinDismissDlg`** — posts `WM_DISMISS`; unblocks `WinDlgBox`
-- [ ] **`WinDefDlgProc`** — keyboard navigation, Enter/Escape, default button
 
 ### PM Advanced Controls
 

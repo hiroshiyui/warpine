@@ -72,6 +72,7 @@ impl super::Loader {
             ApiResult::Callback { wnd_proc, .. } => { debug!(wnd_proc, "callback"); 0 }
             ApiResult::WmCreateCallback { wnd_proc, .. } => { debug!(wnd_proc, "wm_create_callback"); 0 }
             ApiResult::CallGuest { addr, .. }  => { debug!(addr, "call_guest"); 0 }
+            ApiResult::DlgRunLoop { dlg_proc, .. } => { debug!(dlg_proc, "dlg_run_loop"); 0 }
             ApiResult::ExceptionDispatch { handler_addr, .. } => {
                 debug!(handler_addr, "exception_dispatch"); 0
             }

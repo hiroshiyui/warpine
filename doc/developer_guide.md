@@ -412,6 +412,55 @@ In real OS/2 PM, `WinCreateStdWindow` dispatches `WM_CREATE` **synchronously** t
 
 Applications that create their child controls inside `WM_CREATE` (the standard OS/2 pattern) require this synchronous dispatch.  Without it, `WinCreateStdWindow` returns before any controls exist.
 
+### Menu System (WinLoadMenu / WinSetMenu / WinCreateMenu)
+
+**Binary MENUTEMPLATE format (RT_MENU = 4):** An 8-byte header (`u16 version`, `u16 codepage`, `u16 reserved`, `u16 cbInfo`) followed by recursive item records. Each item:
+
+| Field | Type | Notes |
+|---|---|---|
+| `afStyle` | `u16` | Menu item style flags. **Bit 15 (`MIS_END`) marks the last item at this nesting level** — NOT a separate sentinel record. Strip `MIS_END` (`style & !MIS_END`) to get the real style. |
+| `afAttribute` | `u16` | Menu item attribute flags (MIA_CHECKED, MIA_DISABLED, …) |
+| `id` | `u16` | Command ID posted as WM_COMMAND mp1 |
+| `text` | NUL-terminated `[u8]` | Absent for `MIS_SEPARATOR` items |
+| children | recursive | Present only for `MIS_SUBMENU` items; terminated by the next item with `MIS_END` |
+
+`parse_menu_template()` in `pm_win.rs` builds a `Vec<MenuItem>` tree. `WinLoadMenu` registers a menu pseudo-window carrying this tree; `WinSetMenu` stores the menu hwnd in `OS2Window::menu_hwnd` and returns the previous handle.
+
+### Dialog System (WinDlgBox / DlgRunLoop)
+
+**Binary DLGTEMPLATE format (RT_DIALOG = 5):**
+
+```
+[8-byte header: u16 version, u16 codepage, u16 reserved, u16 cbInfo]
+[cbInfo padding bytes]
+i16  x, y, cx, cy       -- dialog position/size
+u16  reserved
+u16  cItems             -- number of child controls
+[NUL-str: presparams]   -- presentation parameters (usually empty)
+[NUL-str: classname]    -- dialog frame class (usually empty)
+[NUL-str: title]        -- dialog title bar text
+[cItems × DlgItemInfo]:
+  i16  x, y, cx, cy
+  u16  id
+  u16  reserved
+  u32  flStyle
+  [NUL-str: presparams]
+  [NUL-str: classname]  -- control class (e.g. "#3" = WC_BUTTON)
+  [NUL-str: text]
+```
+
+`parse_dlg_template()` returns the frame geometry, title, and a `Vec<DlgItemInfo>`. `create_dialog_from_template()` calls `WinCreateStdWindow` + `WinCreateWindow` for each item.
+
+**DlgRunLoop modal loop:** When `WinDlgBox` or `WinProcessDlg` needs a modal dialog, they return `ApiResult::DlgRunLoop { dlg_proc, hwnd_dlg, hmq }`. The VMEXIT loop handles this via `setup_dlg_dispatch()` — a free function that mirrors `setup_exception_dispatch()`:
+
+1. Saves the caller's RIP/RSP.
+2. Blocks on the `MessageQueue` condvar until a message arrives or the dialog is dismissed.
+3. If dismissed (`OS2Window::dialog_dismissed == true`): restores saved RIP/RSP, writes `dialog_result` to guest EAX, returns `false` (caller falls through).
+4. Otherwise: pushes a `FrameKind::DlgRunLoop` frame, sets guest registers to invoke `dlg_proc(hwnd, msg, mp1, mp2)`, returns `true` (caller does `continue`).
+5. At `CALLBACK_RET_TRAP`, the `DlgRunLoop` frame handler checks dismissal again and either returns to caller or calls `setup_dlg_dispatch()` again for the next message.
+
+`WinDismissDlg` sets `dialog_dismissed = true` and `dialog_result = result`, then calls `condvar.notify_one()` to wake the blocked loop.
+
 ---
 
 ## Text-Mode Console Subsystem

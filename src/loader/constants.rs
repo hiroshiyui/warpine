@@ -185,6 +185,39 @@ pub const WC_SPINBUTTON_ATOM: u32 = 0xFFFF_000F;
 pub const WC_CONTAINER_ATOM:  u32 = 0xFFFF_0025;
 pub const WC_NOTEBOOK_ATOM:   u32 = 0xFFFF_0028;
 
+// Dialog and menu message constants
+pub const WM_INITDLG:    u32 = 0x0021; // First message to a dialog box
+pub const WM_INITMENU:   u32 = 0x00E5; // Sent before a menu is displayed
+pub const WM_MENUSELECT: u32 = 0x0078; // Menu item selected (non-activating)
+pub const WM_MENUEND:    u32 = 0x0079; // Menu dismissed
+
+// Dialog result IDs returned by WinDlgBox / WinProcessDlg
+pub const DID_OK:     u32 = 1;         // OK button
+pub const DID_CANCEL: u32 = 2;         // Cancel button
+pub const DID_ERROR:  u32 = 0xFFFF;    // Error return
+
+// ── MIS_* menu item style flags (afStyle in MENUITEM) ───────────────────────
+pub const MIS_TEXT:          u16 = 0x0001;
+pub const MIS_BITMAP:        u16 = 0x0002;
+pub const MIS_OWNERITEM:     u16 = 0x0004;
+pub const MIS_MULTIMENU:     u16 = 0x0008;
+pub const MIS_SUBMENU:       u16 = 0x0010;
+pub const MIS_SEPARATOR:     u16 = 0x0020;
+pub const MIS_SYSCOMMAND:    u16 = 0x0100;
+pub const MIS_HELP:          u16 = 0x0200;
+pub const MIS_STATIC:        u16 = 0x0400;
+pub const MIS_OWNERDRAW:     u16 = 0x0800;
+/// Binary resource end-of-level marker: bit 15 of afStyle set on the last
+/// item at each nesting level in the MENUTEMPLATE binary resource.
+pub const MIS_END:           u16 = 0x8000;
+
+// ── MIA_* menu item attribute flags (afAttribute in MENUITEM) ────────────────
+pub const MIA_NODISMISS: u16 = 0x0020;
+pub const MIA_FRAMED:    u16 = 0x1000;
+pub const MIA_CHECKED:   u16 = 0x2000;
+pub const MIA_DISABLED:  u16 = 0x4000;
+pub const MIA_HILITED:   u16 = 0x8000;
+
 // WM_CONTROL — notification message from a child control to its owner.
 // mp1 = MPFROM2SHORT(usID, usNotifyCode); mp2 = control-specific data.
 pub const WM_CONTROL: u32 = 0x0030;
