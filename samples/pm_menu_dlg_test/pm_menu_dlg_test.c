@@ -154,8 +154,7 @@ int main(void)
     }
     print(" passed\r\n");
 
-    /* Post WM_QUIT so the message loop drains and exits */
-    WinPostMsg(hwndClient, WM_CLOSE, 0, 0);
+    /* Run interactive message loop until the user closes the window */
     while (WinGetMsg(hab, &qmsg, NULLHANDLE, 0, 0))
         WinDispatchMsg(hab, &qmsg);
 
