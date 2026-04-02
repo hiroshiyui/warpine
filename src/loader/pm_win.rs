@@ -1587,7 +1587,6 @@ mod tests {
     ///   u32 total_size, u16 codepage, u16 reserved, u16 item_count.
     #[test]
     fn test_win_load_menu_parses_items() {
-        use super::super::mutex_ext::MutexExt;
         let loader = Loader::new_mock();
 
         // Build a wrc-format MENUTEMPLATE in guest RAM at 0x5000.
@@ -1622,7 +1621,6 @@ mod tests {
     /// block (10-byte sub-header) and return the nested structure.
     #[test]
     fn test_win_load_menu_submenu() {
-        use super::super::mutex_ext::MutexExt;
         let loader = Loader::new_mock();
 
         // MENUTEMPLATE with 1 top-level SUBMENU "File" (id=200) containing
