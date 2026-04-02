@@ -123,7 +123,11 @@ impl super::Loader {
                     wm.frame_to_client.insert(h_frame, h_client);
                     // Initialise both windows to the default SDL2 window size so that
                     // WinQueryWindowRect returns correct dimensions before the first resize.
-                    if let Some(win) = wm.get_window_mut(h_frame)  { win.cx = 640; win.cy = 480; win.frame_flags = fl_create_flags; }
+                    if let Some(win) = wm.get_window_mut(h_frame)  {
+                        win.cx = 640; win.cy = 480;
+                        win.frame_flags = fl_create_flags;
+                        win.visible = style & WS_VISIBLE != 0;
+                    }
                     if let Some(win) = wm.get_window_mut(h_client) { win.cx = 640; win.cy = 480; }
                     // VDR-B1/E1: register in Z-order stack (top-most) and set focus.
                     wm.z_push_top(h_frame);
@@ -1674,12 +1678,13 @@ impl super::Loader {
         let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
         let h = wm.create_window("#Dialog".to_string(), hwnd_parent, hmq);
         if let Some(win) = wm.get_window_mut(h) {
-            win.text   = title.clone();
-            win.pfn_wp = pfn_dlg_proc;
-            win.x  = dlg_x as i32;
-            win.y  = dlg_y as i32;
-            win.cx = dlg_cx as i32;
-            win.cy = dlg_cy as i32;
+            win.text    = title.clone();
+            win.pfn_wp  = pfn_dlg_proc;
+            win.x       = dlg_x as i32;
+            win.y       = dlg_y as i32;
+            win.cx      = dlg_cx as i32;
+            win.cy      = dlg_cy as i32;
+            win.visible = true; // dialogs are always shown when created
         }
         wm.z_push_top(h);
         for item in items {
