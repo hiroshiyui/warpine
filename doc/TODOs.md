@@ -45,6 +45,159 @@ DLL binaries, no ROM dumps, and no disassembly of original OS/2 system libraries
 
 ---
 
+## Virtual Desktop Renderer (VDR) — Architecture Refactor
+
+The current renderer maps each PM frame window to a separate SDL2 OS window.
+This makes Z-ordering, modal dialogs, window decorations, and focus management
+painful because they require co-ordinating multiple OS windows.
+
+The VDR replaces this with a single host window acting as the PM desktop
+surface. All PM frame windows are composited as clipping regions within it —
+the same model used by WINE's `--virtual-desktop` option.
+
+### Design Principles
+
+- One SDL2/host window = the entire PM screen (default 1024×768, configurable).
+- `WindowManager` owns the Z-order stack, focus state, and dirty-rect list.
+- All rendering messages carry desktop-absolute coordinates computed from the
+  window's position in the PM hierarchy.
+- Input events (mouse, keyboard) are routed by Warpine, not by the OS.
+- Window chrome (title bar, border, resize handles) is drawn by the compositor,
+  not delegated to SDL2.
+
+---
+
+### VDR-A: Single-Surface Rendering Model
+
+The largest structural change: remove per-PM-window SDL2 windows.
+
+- [ ] **VDR-A1 — Single desktop SDL2 window**: create one SDL2 window at startup
+  (size from `WARPINE_DESKTOP_W` / `WARPINE_DESKTOP_H` env vars, default 1024×768).
+  Replace `HashMap<u32, WindowData>` in `Sdl2Renderer` with a single `DesktopCanvas`.
+- [ ] **VDR-A2 — `GUIMessage::CreateWindow` → Z-stack entry**: stop creating an SDL2
+  window per PM frame; instead insert the handle into `WindowManager::z_order`
+  (back-to-front `Vec<u32>`). Remove `SDL2`-specific window creation from `pm_win.rs`.
+- [ ] **VDR-A3 — Coordinate offset injection**: all `DrawBox` / `DrawText` / `DrawLine`
+  messages must carry desktop-absolute coordinates. `dispatch_builtin_control` already
+  calls `get_abs_rect_in_frame`; extend `GUIMessage` with optional `origin: (i32, i32)`
+  or pre-translate in the PM side before sending.
+- [ ] **VDR-A4 — Full-desktop PresentBuffer**: `GUIMessage::PresentBuffer` presents the
+  single desktop canvas. Remove per-handle present calls; add a frame-rate-limited
+  compositor tick (target: 60 Hz).
+- [ ] **VDR-A5 — Dialog windows composited in-surface**: `create_dialog_from_template`
+  no longer emits `CreateWindow` + `ResizeWindow`; dialogs are Z-stack entries just
+  like frames. Remove the `ResizeWindow` dialog hack added in the current fix.
+
+---
+
+### VDR-B: Z-Order and Window Lifecycle
+
+- [ ] **VDR-B1 — `WindowManager::z_order: Vec<u32>`**: ordered back-to-front list of
+  visible frame HWNDs. `create_window` appends; `WinDestroyWindow` removes.
+- [ ] **VDR-B2 — `WinSetWindowPos` SWP_ZORDER**: implement `HWND_TOP`, `HWND_BOTTOM`,
+  `HWND_TOPMOST`, `HWND_NOTTOPMOST` by reordering `z_order`. `WinSetActiveWindow`
+  brings target to top.
+- [ ] **VDR-B3 — Full-frame compositor loop**: on each 60 Hz tick, iterate `z_order`
+  back-to-front; for each visible frame, clear its region (gray desktop background)
+  then call `dispatch_builtin_control(hwnd, WM_PAINT, 0, 0)` + post `WM_PAINT` to
+  the app's HMQ to trigger guest repaints.
+- [ ] **VDR-B4 — Dirty-rect tracking** (optimisation, can be deferred): add
+  `WindowManager::dirty: HashSet<u32>` — only repaint frames marked dirty. Mark dirty
+  on `WinInvalidateRect`, `WinShowWindow`, move/resize, Z-order change.
+
+---
+
+### VDR-C: Window Decorations
+
+Currently app windows have no title bar or chrome (SDL2 provides it via the OS).
+After VDR-A those decorations must be drawn by Warpine.
+
+- [ ] **VDR-C1 — Title bar rendering**: for frames with `FCF_TITLEBAR` draw a 20-px
+  navy bar at the top of the frame rect; white title text at x+4, y+2; close button
+  (×) right-aligned.
+- [ ] **VDR-C2 — Frame border**: 2-px gray border for frames with `FCF_BORDER` or
+  `FCF_DLGBORDER`.
+- [ ] **VDR-C3 — System menu icon**: small OS/2 "warp" glyph in the title bar left
+  corner for `FCF_SYSMENU`; clicking posts `WM_SYSCOMMAND(SC_CLOSE)`.
+- [ ] **VDR-C4 — Minimize / maximize buttons**: right side of title bar; clicking
+  posts `WM_SYSCOMMAND(SC_MINIMIZE / SC_MAXIMIZE)` to the frame.
+- [ ] **VDR-C5 — Resize handles**: 4-px corner/edge grabs; drag generates
+  `WM_WINDOWPOSCHANGED` with new cx/cy via `WinSetWindowPos`.
+
+---
+
+### VDR-D: Input Routing
+
+All input currently relies on SDL2 routing events to the correct OS window.
+After VDR-A there is only one OS window, so Warpine must route events itself.
+
+- [ ] **VDR-D1 — Mouse hit-testing**: on `SDL_MouseButtonDown`, walk `z_order`
+  front-to-back, find the topmost frame whose rect contains the click. Translate
+  (x, y) to window-local OS/2 coordinates and call `push_msg` as before.
+- [ ] **VDR-D2 — Title bar / chrome hit-testing**: before forwarding to the PM window,
+  check if the click is in the title bar, close/min/max buttons, or resize handles;
+  handle those in the compositor without posting to the app.
+- [ ] **VDR-D3 — Window dragging**: on title-bar press, enter drag mode; track
+  `SDL_MouseMotion` and update `frame.x / frame.y`, recomposite. Release ends drag;
+  post `WM_WINDOWPOSCHANGED`.
+- [ ] **VDR-D4 — Window activation on click**: clicking any non-focused frame brings
+  it to the top (`z_order` splice) and posts `WM_ACTIVATE(WA_CLICK, hwnd)` to the
+  newly active window and `WM_ACTIVATE(WA_INACTIVE, hwnd)` to the previous.
+- [ ] **VDR-D5 — Keyboard routing**: all `SDL_KeyDown` / `SDL_KeyUp` / `SDL_TextInput`
+  events go to `focused_hwnd`'s HMQ via `push_msg`. `focused_hwnd` tracks the PM
+  window that received the last `WM_ACTIVATE`.
+- [ ] **VDR-D6 — `WinSetCapture` / `capture_hwnd`**: if set, all mouse events go to
+  the captured window regardless of position. Already tracked in `WindowManager`;
+  wire into the event router.
+
+---
+
+### VDR-E: Focus Management
+
+- [ ] **VDR-E1 — `WindowManager::focused_hwnd: u32`**: the currently active frame
+  HWND (0 = none). Updated by activation events.
+- [ ] **VDR-E2 — `WinSetActiveWindow` / `WinQueryActiveWindow`**: ordinals 795 / 796;
+  set / query `focused_hwnd`; emit `WM_ACTIVATE` to old and new windows.
+- [ ] **VDR-E3 — Title bar highlight**: the focused window's title bar is navy; all
+  others are dark gray (standard OS/2 PM visual behaviour).
+
+---
+
+### VDR-F: winit + pixels Migration (optional follow-on)
+
+After VDR-A–E, SDL2 is used only for: one window, pixel buffer upload, event loop,
+and clipboard. Replace with the lighter Rust-native stack:
+
+- [ ] **VDR-F1 — Add `winit` + `pixels` dependencies**; gate behind a
+  `--features winit-renderer` Cargo feature.
+- [ ] **VDR-F2 — `WinitRenderer` struct** implementing `PmRenderer` trait; mirrors
+  `Sdl2Renderer` but uses `winit::EventLoop` + `pixels::Pixels`.
+- [ ] **VDR-F3 — Event translation**: `winit::event::WindowEvent` → existing
+  `push_msg` calls (keyboard, mouse, resize, close).
+- [ ] **VDR-F4 — Clipboard via `arboard` crate** (replaces `sdl2::clipboard`).
+- [ ] **VDR-F5 — Remove `libsdl2-dev` system dependency** once `winit` renderer
+  passes all integration tests.
+
+---
+
+### VDR Implementation Order
+
+Suggested sequence to keep the codebase working at each step:
+
+1. VDR-B1 (z_order), VDR-E1 (focused_hwnd) — data model only, no rendering change.
+2. VDR-A2 (stop creating SDL2 windows for dialogs; already partially done).
+3. VDR-D1 + VDR-D4 (hit-test + activation) — prerequisite for correct input.
+4. VDR-A1 + VDR-A3 + VDR-A4 (single surface, coordinate offset) — big change; do
+   behind a `WARPINE_VDR=1` env var until stable.
+5. VDR-C1–C3 (basic chrome: title bar, border, sys-menu).
+6. VDR-B2–B3 (Z-order, compositor loop).
+7. VDR-A5 (dialogs fully in-surface).
+8. VDR-D2–D6 (full chrome interaction, drag, keyboard routing).
+9. VDR-C4–C5, VDR-E2–E3 (min/max, resize, active-title highlight).
+10. VDR-F1–F5 (winit migration, optional).
+
+---
+
 ## Phase 5 — Multimedia (remaining)
 
 - [ ] **MIDI playback** — device type `midi`; requires FluidSynth / SDL2_mixer or ALSA sequencer; deferred (external dependency cost)
