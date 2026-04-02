@@ -1643,15 +1643,12 @@ impl super::Loader {
         if let Some(win) = wm.get_window_mut(h) {
             win.text   = title.clone();
             win.pfn_wp = pfn_dlg_proc;
-            // Use (0,0) as the dialog-local origin so that child-control coordinates
-            // (relative to the dialog window) remain directly usable for hit-testing
-            // and rendering inside the dialog's own SDL2 window.
-            win.x  = 0;
-            win.y  = 0;
+            win.x  = dlg_x as i32;
+            win.y  = dlg_y as i32;
             win.cx = dlg_cx as i32;
             win.cy = dlg_cy as i32;
-            let _ = (dlg_x, dlg_y); // screen position managed by the SDL2 windowing system
         }
+        wm.z_push_top(h);
         for item in items {
             let class_name = if !item.class_name.is_empty() {
                 item.class_name.clone()

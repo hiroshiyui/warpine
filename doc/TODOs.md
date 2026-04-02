@@ -71,19 +71,19 @@ the same model used by WINE's `--virtual-desktop` option.
 
 The largest structural change: remove per-PM-window SDL2 windows.
 
-- [ ] **VDR-A1 — Single desktop SDL2 window**: create one SDL2 window at startup
+- [x] **VDR-A1 — Single desktop SDL2 window**: create one SDL2 window at startup
   (size from `WARPINE_DESKTOP_W` / `WARPINE_DESKTOP_H` env vars, default 1024×768).
   Replace `HashMap<u32, WindowData>` in `Sdl2Renderer` with a single `DesktopCanvas`.
-- [ ] **VDR-A2 — `GUIMessage::CreateWindow` → Z-stack entry**: stop creating an SDL2
-  window per PM frame; instead insert the handle into `WindowManager::z_order`
-  (back-to-front `Vec<u32>`). Remove `SDL2`-specific window creation from `pm_win.rs`.
-- [ ] **VDR-A3 — Coordinate offset injection**: all `DrawBox` / `DrawText` / `DrawLine`
-  messages must carry desktop-absolute coordinates. `dispatch_builtin_control` already
-  calls `get_abs_rect_in_frame`; extend `GUIMessage` with optional `origin: (i32, i32)`
-  or pre-translate in the PM side before sending.
-- [ ] **VDR-A4 — Full-desktop PresentBuffer**: `GUIMessage::PresentBuffer` presents the
-  single desktop canvas. Remove per-handle present calls; add a frame-rate-limited
-  compositor tick (target: 60 Hz).
+- [x] **VDR-A2 — `GUIMessage::CreateWindow` → FrameBuffer entry**: stop creating an SDL2
+  window per PM frame; instead allocate a `FrameBuffer` (off-screen pixel buffer) keyed
+  by PM handle in `Sdl2Renderer::frame_buffers`. `CreateWindow` → `FrameBuffer::new`.
+- [x] **VDR-A3 — Coordinate offset handled at composite time**: draw calls write
+  frame-local coordinates to the `FrameBuffer`; the compositor in `PresentBuffer` blits
+  each frame at its OS/2 screen position (`win.x, win.y`) with the y-flip applied:
+  `dst_top_y = desktop_height - win.y - win.cy`.
+- [x] **VDR-A4 — Full-desktop PresentBuffer**: `GUIMessage::PresentBuffer` composites all
+  visible frames (bottom-to-top z-order) onto the single desktop surface and presents.
+  Background filled with `DESKTOP_BG` (OS/2-style teal `0x00408040`).
 - [ ] **VDR-A5 — Dialog windows composited in-surface**: `create_dialog_from_template`
   no longer emits `CreateWindow` + `ResizeWindow`; dialogs are Z-stack entries just
   like frames. Remove the `ResizeWindow` dialog hack added in the current fix.
@@ -133,9 +133,10 @@ After VDR-A those decorations must be drawn by Warpine.
 All input currently relies on SDL2 routing events to the correct OS window.
 After VDR-A there is only one OS window, so Warpine must route events itself.
 
-- [ ] **VDR-D1 — Mouse hit-testing**: on `SDL_MouseButtonDown`, walk `z_order`
-  front-to-back, find the topmost frame whose rect contains the click. Translate
-  (x, y) to window-local OS/2 coordinates and call `push_msg` as before.
+- [x] **VDR-D1 — Mouse hit-testing**: on `SDL_MouseButtonDown` / `SDL_MouseMotion`,
+  `z_hit_test(x, os2_y)` walks `z_order` front-to-back, returns the topmost frame
+  whose rect contains the event. Local coords computed as `(x - win.x, os2_y - win.y)`;
+  `push_msg` called with local coordinates as before.
 - [ ] **VDR-D2 — Title bar / chrome hit-testing**: before forwarding to the PM window,
   check if the click is in the title bar, close/min/max buttons, or resize handles;
   handle those in the compositor without posting to the app.

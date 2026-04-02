@@ -15,8 +15,9 @@ pub trait PmRenderer {
     /// Dispatch a single queued `GUIMessage` to the backend.
     ///
     /// Called once per message drained from the channel.
-    /// Does not receive `shared` — all draw/window commands operate on backend-local state.
-    fn handle_message(&mut self, msg: GUIMessage);
+    /// `shared` is provided so compositor-style renderers can read window positions
+    /// from `SharedState::window_mgr` during `PresentBuffer`.
+    fn handle_message(&mut self, msg: GUIMessage, shared: &Arc<SharedState>);
 
     /// Poll the underlying event source (SDL2 events, synthetic events, etc.)
     /// and post OS/2 messages to `shared` message queues.
@@ -47,7 +48,7 @@ pub fn run_pm_loop(
     loop {
         // Drain all pending GUI messages from the VCPU thread.
         while let Ok(msg) = rx.try_recv() {
-            renderer.handle_message(msg);
+            renderer.handle_message(msg, &shared);
         }
 
         // Poll backend events; false means exit.

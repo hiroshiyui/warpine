@@ -31,7 +31,7 @@ impl Default for HeadlessRenderer {
 }
 
 impl PmRenderer for HeadlessRenderer {
-    fn handle_message(&mut self, msg: GUIMessage) {
+    fn handle_message(&mut self, msg: GUIMessage, _shared: &Arc<SharedState>) {
         self.message_count += 1;
         // In headless mode modal dialogs are auto-dismissed with MBID_OK.
         if let GUIMessage::ShowMessageBox { reply_tx, .. } = msg {
@@ -150,7 +150,7 @@ mod tests {
             text:    "Body".into(),
             style:   0, // MB_OK
             reply_tx,
-        });
+        }, &make_shared());
         let result = reply_rx.try_recv().expect("reply_tx should have been sent");
         assert_eq!(result, 1); // MBID_OK
     }

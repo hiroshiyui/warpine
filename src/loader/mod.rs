@@ -615,9 +615,8 @@ impl Loader {
                                 .map(|w| w.children.clone())
                                 .unwrap_or_default();
                             child_hwnds.iter().filter_map(|&ch| {
-                                let (ax, ay, acx, acy) = wm2.get_abs_rect_in_frame(ch);
                                 wm2.get_window(ch).map(|w| {
-                                    (w.class_name.clone(), ax, ay, acx, acy, w.text.clone())
+                                    (w.class_name.clone(), w.x, w.y, w.cx, w.cy, w.text.clone())
                                 })
                             }).collect::<Vec<_>>()
                         };
@@ -826,8 +825,7 @@ impl Loader {
                         .unwrap_or_default();
                     let info: Vec<(String, i32, i32, i32, i32, u32)> = child_hwnds.iter()
                         .filter_map(|&ch| {
-                            let (ax, ay, acx, acy) = wm.get_abs_rect_in_frame(ch);
-                            wm.get_window(ch).map(|w| (w.class_name.clone(), ax, ay, acx, acy, w.id))
+                            wm.get_window(ch).map(|w| (w.class_name.clone(), w.x, w.y, w.cx, w.cy, w.id))
                         }).collect();
                     let hmq = wm.find_hmq_for_hwnd(hwnd);
                     let mq = hmq.and_then(|h| wm.get_mq(h));

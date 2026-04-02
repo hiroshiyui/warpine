@@ -23,74 +23,123 @@ use super::message::GUIMessage;
 use super::renderer::PmRenderer;
 use super::render_utils::{render_text_to_buffer, render_rect_to_buffer, render_line_to_buffer};
 
-// ── SDL2 backend ───────────────────────────────────────────────────────────
+// ── VDR-A: Single-surface desktop renderer ────────────────────────────────
 
-/// Per-window state: SDL2 canvas, a cached streaming texture, and the pixel buffer.
-///
-/// The texture is created with the `unsafe_textures` feature so it carries no
-/// lifetime — both `canvas` and `texture` are dropped together when `WindowData`
-/// is dropped.
-struct WindowData {
-    canvas: Canvas<Window>,
-    /// Streaming texture that mirrors the pixel buffer on the GPU side.
-    texture: Texture,
+/// Desktop background colour (OS/2-style teal).
+const DESKTOP_BG: u32 = 0x00408040;
+
+/// Off-screen pixel buffer for one PM frame/dialog window.
+struct FrameBuffer {
     buffer: Vec<u32>,
-    width: u32,
+    width:  u32,
     height: u32,
 }
 
-impl WindowData {
-    /// Upload `buffer` to the texture and blit to the canvas.
+impl FrameBuffer {
+    fn new(width: u32, height: u32) -> Self {
+        let n = (width as usize).saturating_mul(height as usize);
+        FrameBuffer { buffer: vec![0xFFFFFFFF_u32; n], width, height }
+    }
+
+    fn resize(&mut self, width: u32, height: u32) {
+        self.width  = width;
+        self.height = height;
+        let n = (width as usize).saturating_mul(height as usize);
+        self.buffer = vec![0xFFFFFFFF_u32; n];
+    }
+}
+
+/// The single SDL2 window that acts as the OS/2 desktop.
+struct DesktopCanvas {
+    canvas:  Canvas<Window>,
+    texture: Texture,
+    buffer:  Vec<u32>,
+    width:   u32,
+    height:  u32,
+}
+
+impl DesktopCanvas {
+    fn new(video: &sdl2::VideoSubsystem, w: u32, h: u32) -> Self {
+        let window = video
+            .window("Warpine \u{2014} OS/2 Compatibility Layer", w, h)
+            .position_centered()
+            .resizable()
+            .build()
+            .expect("Failed to create desktop SDL2 window");
+        let canvas = window
+            .into_canvas()
+            .software()
+            .build()
+            .expect("Failed to create desktop canvas");
+        let (cw, ch) = canvas.output_size().expect("output_size failed");
+        let texture = {
+            let tc = canvas.texture_creator();
+            let mut t = tc
+                .create_texture_streaming(PixelFormatEnum::ARGB8888, cw, ch)
+                .expect("Failed to create desktop texture");
+            t.set_blend_mode(BlendMode::None);
+            t
+        };
+        let n = (cw as usize).saturating_mul(ch as usize);
+        DesktopCanvas { canvas, texture, buffer: vec![DESKTOP_BG; n], width: cw, height: ch }
+    }
+
+    /// Recreate the streaming texture after a resize.
+    fn resize_texture(&mut self, w: u32, h: u32) {
+        self.width  = w;
+        self.height = h;
+        let tc = self.canvas.texture_creator();
+        let mut t = tc
+            .create_texture_streaming(PixelFormatEnum::ARGB8888, w, h)
+            .expect("Failed to recreate desktop texture");
+        t.set_blend_mode(BlendMode::None);
+        self.texture = t;
+        let n = (w as usize).saturating_mul(h as usize);
+        self.buffer = vec![DESKTOP_BG; n];
+    }
+
+    /// Upload `buffer` to the texture and present.
     fn present(&mut self) {
         let w = self.width as usize;
         let buf = &self.buffer;
         self.texture.with_lock(None, |data: &mut [u8], pitch: usize| {
             for (y, row) in buf.chunks(w).enumerate() {
                 let dst = &mut data[y * pitch..y * pitch + w * 4];
-                // Safety: row is a &[u32] aligned to 4; dst is &mut [u8] with
-                // exactly w*4 bytes — same byte count as row.len()*4.
+                // Safety: row is &[u32] aligned to 4; dst has exactly row.len()*4 bytes.
                 let src: &[u8] = unsafe {
                     std::slice::from_raw_parts(row.as_ptr() as *const u8, row.len() * 4)
                 };
                 dst.copy_from_slice(src);
             }
-        }).expect("texture lock failed");
+        }).expect("desktop texture lock failed");
         self.canvas.copy(&self.texture, None, None).expect("canvas copy failed");
         self.canvas.present();
-    }
-
-    /// Recreate the streaming texture after a window resize.
-    fn resize_texture(&mut self, w: u32, h: u32) {
-        let tc = self.canvas.texture_creator();
-        self.texture = tc
-            .create_texture_streaming(PixelFormatEnum::ARGB8888, w, h)
-            .expect("Failed to recreate texture");
-        self.texture.set_blend_mode(BlendMode::None);
-        self.width = w;
-        self.height = h;
-        let pixel_count = (w as usize).checked_mul(h as usize)
-            .expect("Window dimensions overflow");
-        self.buffer = vec![0xFFFFFFFF_u32; pixel_count];
     }
 }
 
 /// SDL2-backed Presentation Manager renderer.
 ///
+/// VDR-A: one SDL2 window (the desktop), one `FrameBuffer` per PM frame/dialog.
+/// `PresentBuffer` composites all visible frames onto the desktop surface using
+/// window positions from `SharedState::window_mgr`.
+///
 /// Created on the main thread; must stay on the main thread for the duration
 /// of `run_pm_loop`.
 pub struct Sdl2Renderer {
-    video: sdl2::VideoSubsystem,
-    event_pump: sdl2::EventPump,
-    /// SDL2 window ID → PM handle
-    id_to_handle: HashMap<u32, u32>,
-    /// PM handle → window state
-    windows: HashMap<u32, WindowData>,
+    video:       sdl2::VideoSubsystem,
+    event_pump:  sdl2::EventPump,
+    desktop:     DesktopCanvas,
+    /// PM handle → off-screen frame buffer.
+    frame_buffers: HashMap<u32, FrameBuffer>,
     /// Last seen host clipboard text — used to detect changes between frames.
     cached_clipboard: String,
 }
 
 impl Sdl2Renderer {
     /// Create an `Sdl2Renderer` from an existing SDL2 context.
+    ///
+    /// Reads `WARPINE_DESKTOP_W` / `WARPINE_DESKTOP_H` env vars for the desktop
+    /// size; defaults to 1024×768.
     ///
     /// `sdl` must outlive this renderer.  Typical usage:
     /// ```rust,ignore
@@ -99,105 +148,187 @@ impl Sdl2Renderer {
     /// run_pm_loop(&mut renderer, shared, rx);
     /// ```
     pub fn new(sdl: &sdl2::Sdl) -> Self {
-        let video = sdl.video().expect("SDL2 video subsystem init failed");
+        let dw: u32 = std::env::var("WARPINE_DESKTOP_W")
+            .ok().and_then(|v| v.parse().ok()).unwrap_or(1024);
+        let dh: u32 = std::env::var("WARPINE_DESKTOP_H")
+            .ok().and_then(|v| v.parse().ok()).unwrap_or(768);
+        let video      = sdl.video().expect("SDL2 video subsystem init failed");
         let event_pump = sdl.event_pump().expect("SDL2 event pump init failed");
+        let desktop    = DesktopCanvas::new(&video, dw, dh);
         Sdl2Renderer {
             video,
             event_pump,
-            id_to_handle: HashMap::new(),
-            windows: HashMap::new(),
+            desktop,
+            frame_buffers: HashMap::new(),
             cached_clipboard: String::new(),
         }
+    }
+
+    /// Composite all visible PM windows onto `desktop.buffer` and present.
+    ///
+    /// Z-order (back-to-front) is read from `shared.window_mgr.z_order`.
+    /// Each frame is blitted at its OS/2 screen position converted to SDL2 coords:
+    ///   `dst_top_y = desktop_height - win.y - win.cy`
+    fn composite_and_present(&mut self, shared: &Arc<SharedState>) {
+        let dw = self.desktop.width as usize;
+        let dh = self.desktop.height as i32;
+
+        // Fill background.
+        self.desktop.buffer.fill(DESKTOP_BG);
+
+        // Snapshot z_order and window rects without holding the lock during blit.
+        let frames: Vec<(u32, i32, i32, i32, i32, bool)> = {
+            let wm = shared.window_mgr.lock_or_recover();
+            wm.z_order.iter().filter_map(|&hwnd| {
+                wm.get_window(hwnd).map(|w| (hwnd, w.x, w.y, w.cx, w.cy, w.visible))
+            }).collect()
+        };
+
+        for (hwnd, win_x, win_y, win_cx, win_cy, visible) in frames {
+            if !visible { continue; }
+            let fb = match self.frame_buffers.get(&hwnd) {
+                Some(fb) => fb,
+                None => continue,
+            };
+            // OS/2 y=0 is bottom; SDL2 y=0 is top.
+            let dst_top_y = dh - win_y - win_cy;
+            let blit_h = (fb.height as i32).min(win_cy).min(dh - dst_top_y.max(0));
+            let blit_w = (fb.width as i32).min(win_cx).min(dw as i32 - win_x.max(0));
+            if blit_h <= 0 || blit_w <= 0 { continue; }
+
+            for py in 0..blit_h as usize {
+                let dy = dst_top_y + py as i32;
+                if dy < 0 || dy >= dh { continue; }
+                let dx0 = win_x;
+                if dx0 >= dw as i32 { continue; }
+                let src_row_start = py * fb.width as usize;
+                let dst_row_start = dy as usize * dw;
+                for px in 0..blit_w as usize {
+                    let dx = dx0 + px as i32;
+                    if dx < 0 || dx >= dw as i32 { continue; }
+                    self.desktop.buffer[dst_row_start + dx as usize] =
+                        fb.buffer[src_row_start + px];
+                }
+            }
+        }
+
+        self.desktop.present();
     }
 
     /// Handle a single SDL2 event, posting OS/2 messages to `shared` as needed.
     /// Returns `false` when the application should exit.
     fn handle_sdl_event(&mut self, event: Event, shared: &Arc<SharedState>) -> bool {
+        let dh = self.desktop.height;
         match event {
             Event::Quit { .. } => {
                 shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
-                // Collect handles first to avoid borrowing self.windows while posting
-                let handles: Vec<u32> = self.windows.keys().copied().collect();
-                for handle in handles {
-                    push_msg(shared, handle, WM_CLOSE, 0, 0);
+                let focused = shared.window_mgr.lock_or_recover().focused_hwnd;
+                if focused != 0 {
+                    push_msg(shared, focused, WM_CLOSE, 0, 0);
                 }
                 return false;
             }
-            Event::Window { window_id, win_event, .. } => {
-                if let Some(&handle) = self.id_to_handle.get(&window_id) {
-                    use sdl2::event::WindowEvent;
-                    match win_event {
-                        WindowEvent::Close => {
-                            push_msg(shared, handle, WM_CLOSE, 0, 0);
-                            shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
-                            return false;
+            Event::Window { win_event, .. } => {
+                use sdl2::event::WindowEvent;
+                match win_event {
+                    WindowEvent::Close => {
+                        shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
+                        let focused = shared.window_mgr.lock_or_recover().focused_hwnd;
+                        if focused != 0 {
+                            push_msg(shared, focused, WM_CLOSE, 0, 0);
                         }
-                        WindowEvent::Resized(w, h) => {
-                            let (w, h) = (w as u32, h as u32);
-                            if let Some(wd) = self.windows.get_mut(&handle) {
-                                wd.resize_texture(w, h);
-                            }
-                            // Sync OS2Window dimensions so WinQueryWindowRect stays accurate.
-                            {
-                                let mut wm = shared.window_mgr.lock_or_recover();
-                                let client = wm.frame_to_client.get(&handle).copied();
-                                for hwnd in std::iter::once(handle).chain(client) {
+                        return false;
+                    }
+                    WindowEvent::Resized(w, h) => {
+                        let (w, h) = (w as u32, h as u32);
+                        self.desktop.resize_texture(w, h);
+                        // Sync the focused frame's dimensions.
+                        let focused = {
+                            let mut wm = shared.window_mgr.lock_or_recover();
+                            let focused = wm.focused_hwnd;
+                            if focused != 0 {
+                                let client = wm.frame_to_client.get(&focused).copied();
+                                for hwnd in std::iter::once(focused).chain(client) {
                                     if let Some(win) = wm.get_window_mut(hwnd) {
                                         win.cx = w as i32;
                                         win.cy = h as i32;
                                     }
                                 }
+                                if let Some(fb) = self.frame_buffers.get_mut(&focused) {
+                                    fb.resize(w, h);
+                                }
                             }
+                            focused
+                        };
+                        if focused != 0 {
                             let mp2 = (h << 16) | w;
-                            push_msg(shared, handle, WM_SIZE, 0, mp2);
-                            push_msg(shared, handle, WM_PAINT, 0, 0);
+                            push_msg(shared, focused, WM_SIZE, 0, mp2);
+                            push_msg(shared, focused, WM_PAINT, 0, 0);
                         }
-                        WindowEvent::Exposed => {
-                            if let Some(wd) = self.windows.get_mut(&handle) {
-                                wd.present();
-                            }
-                        }
-                        _ => {}
                     }
+                    WindowEvent::Exposed => {
+                        self.composite_and_present(shared);
+                    }
+                    _ => {}
                 }
             }
-            Event::KeyDown { window_id, keycode, scancode, keymod, repeat, .. } => {
-                if let Some(&handle) = self.id_to_handle.get(&window_id) {
+            Event::KeyDown { keycode, scancode, keymod, repeat, .. } => {
+                let focused = shared.window_mgr.lock_or_recover().focused_hwnd;
+                if focused != 0 {
                     let (mp1, mp2) = build_wm_char(keycode, scancode, keymod, repeat, false);
-                    push_msg(shared, handle, WM_CHAR, mp1, mp2);
+                    push_msg(shared, focused, WM_CHAR, mp1, mp2);
                 }
             }
-            Event::KeyUp { window_id, keycode, scancode, keymod, .. } => {
-                if let Some(&handle) = self.id_to_handle.get(&window_id) {
+            Event::KeyUp { keycode, scancode, keymod, .. } => {
+                let focused = shared.window_mgr.lock_or_recover().focused_hwnd;
+                if focused != 0 {
                     let (mp1, mp2) = build_wm_char(keycode, scancode, keymod, false, true);
-                    push_msg(shared, handle, WM_CHAR, mp1, mp2);
+                    push_msg(shared, focused, WM_CHAR, mp1, mp2);
                 }
             }
-            Event::MouseMotion { window_id, x, y, .. } => {
-                if let Some(&handle) = self.id_to_handle.get(&window_id) {
-                    let height = self.windows.get(&handle).map(|w| w.height).unwrap_or(480);
-                    let os2_y = (height as i32 - 1) - y;
-                    let mp1 = ((x as u32) & 0xFFFF) | ((os2_y as u32 & 0xFFFF) << 16);
-                    push_msg(shared, handle, WM_MOUSEMOVE, mp1, 0);
+            Event::MouseMotion { x, y, .. } => {
+                let os2_y = (dh as i32 - 1) - y;
+                // Hit-test to find the topmost frame under the cursor.
+                let target = {
+                    let wm = shared.window_mgr.lock_or_recover();
+                    wm.z_hit_test(x, os2_y)
+                };
+                if let Some(hwnd) = target {
+                    // Compute local coords: cursor relative to window origin.
+                    let (local_x, local_y) = {
+                        let wm = shared.window_mgr.lock_or_recover();
+                        wm.get_window(hwnd)
+                            .map(|w| (x - w.x, os2_y - w.y))
+                            .unwrap_or((x, os2_y))
+                    };
+                    let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
+                    push_msg(shared, hwnd, WM_MOUSEMOVE, mp1, 0);
                 }
             }
-            Event::MouseButtonDown { window_id, mouse_btn, x, y, .. } => {
-                if let Some(&handle) = self.id_to_handle.get(&window_id) {
-                    let height = self.windows.get(&handle).map(|w| w.height).unwrap_or(480);
-                    let os2_y = (height as i32 - 1) - y;
-                    let mp1 = ((x as u32) & 0xFFFF) | ((os2_y as u32 & 0xFFFF) << 16);
-                    // VDR-D4: activate window on click (bring to top of Z-order).
+            Event::MouseButtonDown { mouse_btn, x, y, .. } => {
+                let os2_y = (dh as i32 - 1) - y;
+                let target = {
+                    let wm = shared.window_mgr.lock_or_recover();
+                    wm.z_hit_test(x, os2_y)
+                };
+                if let Some(hwnd) = target {
+                    // VDR-D4: activate window on click.
                     {
                         let mut wm = shared.window_mgr.lock_or_recover();
-                        // Only frames track Z-order/focus; the frame for a client hwnd is
-                        // found via client_to_frame.  For a frame itself it's a no-op.
-                        let frame = wm.client_to_frame(handle);
-                        let frame = if wm.frame_to_client.contains_key(&frame) { frame } else { handle };
+                        let frame = wm.client_to_frame(hwnd);
+                        let frame = if wm.frame_to_client.contains_key(&frame) { frame } else { hwnd };
                         if wm.frame_to_client.contains_key(&frame) && wm.focused_hwnd != frame {
                             wm.focused_hwnd = frame;
                             wm.z_push_top(frame);
                         }
                     }
+                    let (local_x, local_y) = {
+                        let wm = shared.window_mgr.lock_or_recover();
+                        wm.get_window(hwnd)
+                            .map(|w| (x - w.x, os2_y - w.y))
+                            .unwrap_or((x, os2_y))
+                    };
+                    let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
                     use sdl2::mouse::MouseButton;
                     let msg = match mouse_btn {
                         MouseButton::Left   => Some(WM_BUTTON1DOWN),
@@ -205,14 +336,23 @@ impl Sdl2Renderer {
                         MouseButton::Middle => Some(WM_BUTTON3DOWN),
                         _ => None,
                     };
-                    if let Some(m) = msg { push_msg(shared, handle, m, mp1, 0); }
+                    if let Some(m) = msg { push_msg(shared, hwnd, m, mp1, 0); }
                 }
             }
-            Event::MouseButtonUp { window_id, mouse_btn, x, y, .. } => {
-                if let Some(&handle) = self.id_to_handle.get(&window_id) {
-                    let height = self.windows.get(&handle).map(|w| w.height).unwrap_or(480);
-                    let os2_y = (height as i32 - 1) - y;
-                    let mp1 = ((x as u32) & 0xFFFF) | ((os2_y as u32 & 0xFFFF) << 16);
+            Event::MouseButtonUp { mouse_btn, x, y, .. } => {
+                let os2_y = (dh as i32 - 1) - y;
+                let target = {
+                    let wm = shared.window_mgr.lock_or_recover();
+                    wm.z_hit_test(x, os2_y)
+                };
+                if let Some(hwnd) = target {
+                    let (local_x, local_y) = {
+                        let wm = shared.window_mgr.lock_or_recover();
+                        wm.get_window(hwnd)
+                            .map(|w| (x - w.x, os2_y - w.y))
+                            .unwrap_or((x, os2_y))
+                    };
+                    let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
                     use sdl2::mouse::MouseButton;
                     let msg = match mouse_btn {
                         MouseButton::Left   => Some(WM_BUTTON1UP),
@@ -220,7 +360,7 @@ impl Sdl2Renderer {
                         MouseButton::Middle => Some(WM_BUTTON3UP),
                         _ => None,
                     };
-                    if let Some(m) = msg { push_msg(shared, handle, m, mp1, 0); }
+                    if let Some(m) = msg { push_msg(shared, hwnd, m, mp1, 0); }
                 }
             }
             _ => {}
@@ -259,83 +399,48 @@ fn mb_buttons(style: u32) -> &'static [(i32, &'static str, bool, bool)] {
 }
 
 impl PmRenderer for Sdl2Renderer {
-    fn handle_message(&mut self, msg: GUIMessage) {
+    fn handle_message(&mut self, msg: GUIMessage, shared: &Arc<SharedState>) {
         match msg {
-            GUIMessage::CreateWindow { title, handle, .. } => {
-                let window = self.video
-                    .window(&title, 640, 480)
-                    .position_centered()
-                    .resizable()
-                    .build()
-                    .expect("Failed to create SDL2 window");
-                let sdl_id = window.id();
-                let canvas = window
-                    .into_canvas()
-                    .software()
-                    .build()
-                    .expect("Failed to create SDL2 canvas");
-                let (w, h) = canvas.output_size().expect("output_size failed");
-                // Create a streaming texture; with `unsafe_textures` there is no
-                // lifetime tie to `tc` — dropping `tc` is safe.
-                let mut texture = {
-                    let tc = canvas.texture_creator();
-                    tc.create_texture_streaming(PixelFormatEnum::ARGB8888, w, h)
-                        .expect("Failed to create streaming texture")
-                };
-                // BlendMode::None makes SDL2 ignore the alpha channel and render
-                // every pixel as fully opaque, so 0x00RRGGBB colours display correctly.
-                texture.set_blend_mode(BlendMode::None);
-                let buffer = vec![0xFFFFFFFF_u32; (w * h) as usize];
-                self.id_to_handle.insert(sdl_id, handle);
-                self.windows.insert(handle, WindowData { canvas, texture, buffer, width: w, height: h });
-                debug!("[GUI] Created SDL2 window for PM handle {}", handle);
+            GUIMessage::CreateWindow { handle, .. } => {
+                // VDR-A2: allocate a FrameBuffer; no SDL2 window created.
+                let fb = FrameBuffer::new(self.desktop.width, self.desktop.height);
+                self.frame_buffers.insert(handle, fb);
+                debug!("[GUI] Allocated FrameBuffer for PM handle {}", handle);
             }
             GUIMessage::ResizeWindow { handle, width, height } => {
-                if let Some(wd) = self.windows.get_mut(&handle) {
-                    let _ = wd.canvas.window_mut().set_size(width, height);
-                    debug!("[GUI] Resized window {} to {}x{}", handle, width, height);
+                if let Some(fb) = self.frame_buffers.get_mut(&handle) {
+                    fb.resize(width, height);
+                    debug!("[GUI] Resized FrameBuffer {} to {}x{}", handle, width, height);
                 }
             }
-            GUIMessage::MoveWindow { handle, x, y } => {
-                if let Some(wd) = self.windows.get_mut(&handle) {
-                    wd.canvas.window_mut().set_position(
-                        sdl2::video::WindowPos::Positioned(x),
-                        sdl2::video::WindowPos::Positioned(y),
-                    );
-                    debug!("[GUI] Moved window {} to ({}, {})", handle, x, y);
-                }
-            }
-            GUIMessage::ShowWindow { handle, show } => {
-                if let Some(wd) = self.windows.get_mut(&handle) {
-                    if show { wd.canvas.window_mut().show(); }
-                    else    { wd.canvas.window_mut().hide(); }
-                    debug!("[GUI] Window {} visible={}", handle, show);
-                }
+            GUIMessage::MoveWindow { .. } | GUIMessage::ShowWindow { .. } => {
+                // No-op: position/visibility live in OS2Window; compositor reads from there.
             }
             GUIMessage::DrawBox { handle, x1, y1, x2, y2, color, fill } => {
-                if let Some(wd) = self.windows.get_mut(&handle) {
-                    render_rect_to_buffer(&mut wd.buffer, wd.width, wd.height, x1, y1, x2, y2, color, fill);
+                if let Some(fb) = self.frame_buffers.get_mut(&handle) {
+                    render_rect_to_buffer(&mut fb.buffer, fb.width, fb.height,
+                                         x1, y1, x2, y2, color, fill);
                 }
             }
             GUIMessage::DrawLine { handle, x1, y1, x2, y2, color } => {
-                if let Some(wd) = self.windows.get_mut(&handle) {
-                    render_line_to_buffer(&mut wd.buffer, wd.width, wd.height, x1, y1, x2, y2, color);
+                if let Some(fb) = self.frame_buffers.get_mut(&handle) {
+                    render_line_to_buffer(&mut fb.buffer, fb.width, fb.height,
+                                         x1, y1, x2, y2, color);
                 }
             }
             GUIMessage::DrawText { handle, x, y, text, color } => {
-                if let Some(wd) = self.windows.get_mut(&handle) {
-                    render_text_to_buffer(&mut wd.buffer, wd.width, wd.height, x, y, &text, color);
+                if let Some(fb) = self.frame_buffers.get_mut(&handle) {
+                    render_text_to_buffer(&mut fb.buffer, fb.width, fb.height, x, y, &text, color);
                 }
             }
             GUIMessage::ClearBuffer { handle } => {
-                if let Some(wd) = self.windows.get_mut(&handle) {
-                    wd.buffer.fill(0xFFFFFFFF);
+                if let Some(fb) = self.frame_buffers.get_mut(&handle) {
+                    fb.buffer.fill(0xFFFFFFFF);
                 }
             }
-            GUIMessage::PresentBuffer { handle } => {
-                if let Some(wd) = self.windows.get_mut(&handle) {
-                    wd.present();
-                }
+            GUIMessage::PresentBuffer { .. } => {
+                // VDR-A4: composite all visible frames onto the desktop and present.
+                self.composite_and_present(shared);
             }
             GUIMessage::SetClipboardText(text) => {
                 let _ = self.video.clipboard().set_clipboard_text(&text);
