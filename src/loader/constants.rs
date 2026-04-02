@@ -253,6 +253,16 @@ pub const MIA_CHECKED:   u16 = 0x2000;
 pub const MIA_DISABLED:  u16 = 0x4000;
 pub const MIA_HILITED:   u16 = 0x8000;
 
+// WM_SYSCOMMAND (0x000A) — system command sent by frame chrome to the frame.
+// mp1 = SC_* command code, mp2 = unused.
+pub const WM_SYSCOMMAND: u32 = 0x000A;
+
+// SC_* system command codes (sent in mp1 of WM_SYSCOMMAND).
+pub const SC_CLOSE:    u32 = 0x8004; // close the window
+pub const SC_MINIMIZE: u32 = 0x8002; // minimize the window
+pub const SC_MAXIMIZE: u32 = 0x8003; // maximize the window
+pub const SC_RESTORE:  u32 = 0x8080; // restore from min/max
+
 // WM_ACTIVATE (0x0042) — sent to a frame when it gains or loses activation.
 // mp1 = fActivate (TRUE = gaining focus, FALSE = losing); mp2 = other frame HWND.
 pub const WM_ACTIVATE: u32 = 0x0042;

@@ -19,8 +19,9 @@ use crate::loader::{SharedState, OS2Message, MutexExt,
     VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6,
     VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12,
     CF_TEXT, KC_PREVDOWN,
-    FCF_TITLEBAR, FCF_BORDER, FCF_DLGBORDER, FCF_SIZEBORDER,
-    WM_ACTIVATE};
+    FCF_TITLEBAR, FCF_SYSMENU, FCF_MINBUTTON, FCF_MAXBUTTON,
+    FCF_BORDER, FCF_DLGBORDER, FCF_SIZEBORDER,
+    WM_ACTIVATE, WM_SYSCOMMAND, SC_MINIMIZE, SC_MAXIMIZE};
 use super::message::GUIMessage;
 use super::renderer::PmRenderer;
 use super::render_utils::{render_text_to_buffer, render_rect_to_buffer, render_line_to_buffer};
@@ -36,6 +37,15 @@ const DESKTOP_BG: u32 = 0x00408040;
 const CHROME_TITLE_H: i32 = 20;
 /// Width of the frame border in desktop pixels (each side).
 const CHROME_BORDER_W: i32 = 2;
+
+/// Width of each title-bar button (close/min/max/sysmenu), in desktop pixels.
+const CHROME_BTN_W: i32   = 16;
+/// Gap between adjacent title-bar buttons.
+const CHROME_BTN_GAP: i32 = 2;
+/// Right margin before the close button.
+const CHROME_BTN_MARGIN: i32 = 2;
+/// Resize-hit zone width at each window edge (VDR-C5).
+const RESIZE_HIT_W: i32 = 6;
 
 /// Active (focused) title bar colour — OS/2 navy blue.
 const CHROME_TITLE_ACTIVE: u32   = 0x0000_0080;
@@ -67,6 +77,23 @@ fn draw_text_screen(buf: &mut [u32], buf_w: usize, buf_h: usize, sx: i32, sy: i3
                     }
                 }
             }
+        }
+    }
+}
+
+/// Draw a filled axis-aligned rectangle into a desktop-space pixel buffer.
+///
+/// Coordinates are in SDL2 screen space (y=0 at top). Clips to buffer bounds.
+fn draw_filled_rect(buf: &mut [u32], buf_w: usize,
+                    x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
+    let buf_h = buf.len() / buf_w.max(1);
+    let rx0 = x0.max(0) as usize;
+    let ry0 = y0.max(0) as usize;
+    let rx1 = (x1.min(buf_w as i32)) as usize;
+    let ry1 = (y1.min(buf_h as i32)) as usize;
+    for y in ry0..ry1 {
+        for x in rx0..rx1 {
+            buf[y * buf_w + x] = color;
         }
     }
 }
@@ -170,6 +197,23 @@ struct DragState {
     anchor_y_sdl: i32,
 }
 
+/// Which edge or corner is being resized (VDR-C5).
+#[derive(Clone, Copy, PartialEq)]
+enum ResizeEdge {
+    N, S, E, W, NE, NW, SE, SW,
+}
+
+/// Active resize-drag state (VDR-C5).
+struct ResizeState {
+    hwnd:    u32,
+    edge:    ResizeEdge,
+    /// SDL2 cursor position at press.
+    press_x: i32,
+    press_y: i32,
+    /// Window geometry at press time (OS/2 coords).
+    orig_x: i32, orig_y: i32, orig_cx: i32, orig_cy: i32,
+}
+
 /// SDL2-backed Presentation Manager renderer.
 ///
 /// VDR-A: one SDL2 window (the desktop), one `FrameBuffer` per PM frame/dialog.
@@ -188,6 +232,8 @@ pub struct Sdl2Renderer {
     cached_clipboard: String,
     /// Active drag operation (VDR-D3); `None` when no drag is in progress.
     drag_state: Option<DragState>,
+    /// Active resize operation (VDR-C5); `None` when no resize is in progress.
+    resize_state: Option<ResizeState>,
     /// Timestamp of the last full compositor repaint (VDR-B3).
     last_composite: std::time::Instant,
 }
@@ -219,6 +265,7 @@ impl Sdl2Renderer {
             frame_buffers: HashMap::new(),
             cached_clipboard: String::new(),
             drag_state: None,
+            resize_state: None,
             last_composite: std::time::Instant::now(),
         }
     }
@@ -325,7 +372,7 @@ impl Sdl2Renderer {
                 }
             }
 
-            // VDR-C1: draw title bar chrome on the desktop buffer.
+            // VDR-C1/C3/C4: draw title bar chrome on the desktop buffer.
             if title_h > 0 {
                 let title_color = if snap.is_focused {
                     CHROME_TITLE_ACTIVE   // VDR-E3: navy for focused
@@ -341,17 +388,43 @@ impl Sdl2Renderer {
                         self.desktop.buffer[ty as usize * dw + tx as usize] = title_color;
                     }
                 }
-                // Title text: 4px left margin, vertically centered in title bar.
-                let text_x = snap.x + 4;
-                let text_y = dst_top_y + (title_h - 8) / 2; // centre 8px tall glyphs
+                // VDR-C3: system-menu icon — small gray square on the left.
+                let (text_left, text_y) = {
+                    let cy = (title_h - 8) / 2; // vertical centre offset for 8px glyphs
+                    let mut left = snap.x + 4;
+                    if snap.frame_flags & FCF_SYSMENU != 0 {
+                        draw_filled_rect(
+                            &mut self.desktop.buffer, dw,
+                            snap.x + 3, dst_top_y + 3,
+                            snap.x + 3 + CHROME_BTN_W, dst_top_y + title_h - 3,
+                            0x00C0C0C0,
+                        );
+                        left = snap.x + 3 + CHROME_BTN_W + 4;
+                    }
+                    (left, dst_top_y + cy)
+                };
+                // Title text after the system-menu icon.
                 draw_text_screen(
                     &mut self.desktop.buffer, dw, dh as usize,
-                    text_x, text_y, &snap.title, CHROME_TEXT_COLOR);
-                // Close button: '×' right-aligned with 4px margin.
-                let close_x = snap.x + snap.cx - 4 - 8;
+                    text_left, text_y, &snap.title, CHROME_TEXT_COLOR);
+                // VDR-C4: right-side buttons — close, then max (if any), then min (if any).
+                let mut btn_x = snap.x + snap.cx - CHROME_BTN_MARGIN - CHROME_BTN_W;
+                // Close button (always present when title bar is shown).
                 draw_text_screen(
                     &mut self.desktop.buffer, dw, dh as usize,
-                    close_x, text_y, "\u{00D7}", CHROME_TEXT_COLOR);
+                    btn_x, text_y, "\u{00D7}", CHROME_TEXT_COLOR);
+                btn_x -= CHROME_BTN_W + CHROME_BTN_GAP;
+                if snap.frame_flags & FCF_MAXBUTTON != 0 {
+                    draw_text_screen(
+                        &mut self.desktop.buffer, dw, dh as usize,
+                        btn_x, text_y, "^", CHROME_TEXT_COLOR);
+                    btn_x -= CHROME_BTN_W + CHROME_BTN_GAP;
+                }
+                if snap.frame_flags & FCF_MINBUTTON != 0 {
+                    draw_text_screen(
+                        &mut self.desktop.buffer, dw, dh as usize,
+                        btn_x, text_y, "_", CHROME_TEXT_COLOR);
+                }
             }
 
             // VDR-C2: draw frame border.
@@ -461,8 +534,59 @@ impl Sdl2Renderer {
                 }
             }
             Event::MouseMotion { x, y, .. } => {
+                // VDR-C5: if a resize is active, update window geometry.
+                if let Some(ref rs) = self.resize_state {
+                    let dx = x - rs.press_x;
+                    let dy = y - rs.press_y; // dy positive = downward in SDL2
+                    let hwnd = rs.hwnd;
+                    let (orig_x, orig_y, orig_cx, orig_cy) =
+                        (rs.orig_x, rs.orig_y, rs.orig_cx, rs.orig_cy);
+                    let edge = rs.edge;
+                    const MIN_SZ: i32 = 32;
+                    let mut wm = shared.window_mgr.lock_or_recover();
+                    if let Some(win) = wm.get_window_mut(hwnd) {
+                        match edge {
+                            ResizeEdge::E  => { win.cx = (orig_cx + dx).max(MIN_SZ); }
+                            ResizeEdge::W  => {
+                                let new_cx = (orig_cx - dx).max(MIN_SZ);
+                                win.x  = orig_x + (orig_cx - new_cx);
+                                win.cx = new_cx;
+                            }
+                            ResizeEdge::S  => {
+                                // SDL2 dy>0 = downward = decreasing OS/2 y
+                                let new_cy = (orig_cy - dy).max(MIN_SZ);
+                                win.y  = orig_y + (orig_cy - new_cy);
+                                win.cy = new_cy;
+                            }
+                            ResizeEdge::N  => { win.cy = (orig_cy + dy).max(MIN_SZ); }
+                            ResizeEdge::SE => {
+                                win.cx = (orig_cx + dx).max(MIN_SZ);
+                                let new_cy = (orig_cy - dy).max(MIN_SZ);
+                                win.y  = orig_y + (orig_cy - new_cy);
+                                win.cy = new_cy;
+                            }
+                            ResizeEdge::SW => {
+                                let new_cx = (orig_cx - dx).max(MIN_SZ);
+                                win.x  = orig_x + (orig_cx - new_cx);
+                                win.cx = new_cx;
+                                let new_cy = (orig_cy - dy).max(MIN_SZ);
+                                win.y  = orig_y + (orig_cy - new_cy);
+                                win.cy = new_cy;
+                            }
+                            ResizeEdge::NE => {
+                                win.cx = (orig_cx + dx).max(MIN_SZ);
+                                win.cy = (orig_cy + dy).max(MIN_SZ);
+                            }
+                            ResizeEdge::NW => {
+                                let new_cx = (orig_cx - dx).max(MIN_SZ);
+                                win.x  = orig_x + (orig_cx - new_cx);
+                                win.cx = new_cx;
+                                win.cy = (orig_cy + dy).max(MIN_SZ);
+                            }
+                        }
+                    }
                 // VDR-D3: if a drag is active, move the window.
-                if let Some(ref ds) = self.drag_state {
+                } else if let Some(ref ds) = self.drag_state {
                     let hwnd = ds.hwnd;
                     let anchor_x = ds.anchor_x;
                     let anchor_y_sdl = ds.anchor_y_sdl;
@@ -535,25 +659,13 @@ impl Sdl2Renderer {
                         let new_focused = shared.window_mgr.lock_or_recover().focused_hwnd;
                         push_msg(shared, new_focused, WM_ACTIVATE, 2, prev_focused);
                     }
-                    // VDR-D2: title bar hit-testing.
-                    // Title bar occupies the top CHROME_TITLE_H pixels of a frame
-                    // (highest OS/2 y values: win.y + win.cy - CHROME_TITLE_H .. win.y + win.cy).
+                    // VDR-D2/C3/C4: chrome hit-testing (title bar + buttons).
                     let chrome_hit = {
                         let wm = shared.window_mgr.lock_or_recover();
                         if let Some(win) = wm.get_window(hwnd) {
                             if win.frame_flags & FCF_TITLEBAR != 0 {
-                                let title_bot_os2 = win.y + win.cy - CHROME_TITLE_H;
-                                if os2_y >= title_bot_os2 {
-                                    // In title bar — check close button (right-aligned).
-                                    let close_x = win.x + win.cx - 4 - 8;
-                                    if x >= close_x && x < close_x + 8 {
-                                        ChromeHit::Close
-                                    } else {
-                                        ChromeHit::TitleBar
-                                    }
-                                } else {
-                                    ChromeHit::None
-                                }
+                                chrome_hit_test(win.x, win.cx, win.frame_flags,
+                                                x, os2_y, win.y, win.cy)
                             } else {
                                 ChromeHit::None
                             }
@@ -565,6 +677,26 @@ impl Sdl2Renderer {
                         ChromeHit::Close => {
                             push_msg(shared, hwnd, WM_CLOSE, 0, 0);
                         }
+                        ChromeHit::SysMenu => {
+                            // VDR-C3: single-click on system menu — treat as title bar drag.
+                            let (anchor_x, dst_top_y) = {
+                                let wm = shared.window_mgr.lock_or_recover();
+                                wm.get_window(hwnd)
+                                    .map(|w| (x - w.x, dh as i32 - w.y - w.cy))
+                                    .unwrap_or((0, 0))
+                            };
+                            self.drag_state = Some(DragState {
+                                hwnd, anchor_x, anchor_y_sdl: y - dst_top_y,
+                            });
+                        }
+                        ChromeHit::Minimize => {
+                            // VDR-C4: post WM_SYSCOMMAND(SC_MINIMIZE) to the client.
+                            push_msg(shared, hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+                        }
+                        ChromeHit::Maximize => {
+                            // VDR-C4: post WM_SYSCOMMAND(SC_MAXIMIZE) to the client.
+                            push_msg(shared, hwnd, WM_SYSCOMMAND, SC_MAXIMIZE, 0);
+                        }
                         ChromeHit::TitleBar => {
                             // VDR-D3: start drag — record how far into the title bar the user clicked.
                             let (anchor_x, dst_top_y) = {
@@ -574,12 +706,31 @@ impl Sdl2Renderer {
                                     .unwrap_or((0, 0))
                             };
                             self.drag_state = Some(DragState {
-                                hwnd,
-                                anchor_x,
-                                anchor_y_sdl: y - dst_top_y,
+                                hwnd, anchor_x, anchor_y_sdl: y - dst_top_y,
                             });
                         }
                         ChromeHit::None => {
+                            // VDR-C5: check resize edge before forwarding to app.
+                            let resize_edge = {
+                                let wm = shared.window_mgr.lock_or_recover();
+                                wm.get_window(hwnd).and_then(|win| {
+                                    resize_hit_test(win.x, win.y, win.cx, win.cy,
+                                                    win.frame_flags, x, os2_y)
+                                })
+                            };
+                            if let Some(edge) = resize_edge {
+                                let (orig_x, orig_y, orig_cx, orig_cy) = {
+                                    let wm = shared.window_mgr.lock_or_recover();
+                                    wm.get_window(hwnd)
+                                        .map(|w| (w.x, w.y, w.cx, w.cy))
+                                        .unwrap_or((0, 0, 0, 0))
+                                };
+                                self.resize_state = Some(ResizeState {
+                                    hwnd, edge,
+                                    press_x: x, press_y: y,
+                                    orig_x, orig_y, orig_cx, orig_cy,
+                                });
+                            } else {
                             let (local_x, local_y) = {
                                 let wm = shared.window_mgr.lock_or_recover();
                                 wm.get_window(hwnd)
@@ -595,11 +746,33 @@ impl Sdl2Renderer {
                                 _ => None,
                             };
                             if let Some(m) = msg { push_msg(shared, hwnd, m, mp1, 0); }
+                            }
                         }
                     }
                 }
             }
             Event::MouseButtonUp { mouse_btn, x, y, .. } => {
+                // VDR-C5: end resize on button release.
+                if let Some(rs) = self.resize_state.take() {
+                    let hwnd = rs.hwnd;
+                    let (new_cx, new_cy) = {
+                        let wm = shared.window_mgr.lock_or_recover();
+                        wm.get_window(hwnd).map(|w| (w.cx, w.cy)).unwrap_or((rs.orig_cx, rs.orig_cy))
+                    };
+                    // Resize the FrameBuffer to match the new client-area dimensions.
+                    let client_w = new_cx.max(1) as u32;
+                    let client_h = new_cy.max(1) as u32;
+                    if let Some(fb) = self.frame_buffers.get_mut(&hwnd)
+                        && (fb.width != client_w || fb.height != client_h) {
+                        fb.resize(client_w, client_h);
+                    }
+                    // Notify the app so it repaints.
+                    let mp2 = ((new_cy as u32) << 16) | (new_cx as u32);
+                    push_msg(shared, hwnd, WM_SIZE, 0, mp2);
+                    push_msg(shared, hwnd, WM_PAINT, 0, 0);
+                    self.composite_and_present(shared);
+                    return true;
+                }
                 // VDR-D3: end drag on button release, regardless of which button.
                 if self.drag_state.is_some() {
                     self.drag_state = None;
@@ -607,6 +780,7 @@ impl Sdl2Renderer {
                     self.composite_and_present(shared);
                     return true;
                 }
+                let _ = (x, y); // suppress unused-variable warnings for x/y used above
                 let os2_y = (dh as i32 - 1) - y;
                 // VDR-D6: captured window overrides hit-test.
                 let capture = shared.window_mgr.lock_or_recover().capture_hwnd;
@@ -799,10 +973,83 @@ impl PmRenderer for Sdl2Renderer {
 enum ChromeHit {
     /// Click is on the close (×) button — send WM_CLOSE.
     Close,
-    /// Click is in the title bar but not on any button — activate only.
+    /// Click is on the system-menu icon (VDR-C3) — send WM_SYSCOMMAND(SC_CLOSE) on double-click;
+    /// for single-click, treat as title bar (activate only).
+    SysMenu,
+    /// Click is on the minimize button (VDR-C4) — send WM_SYSCOMMAND(SC_MINIMIZE).
+    Minimize,
+    /// Click is on the maximize button (VDR-C4) — send WM_SYSCOMMAND(SC_MAXIMIZE).
+    Maximize,
+    /// Click is in the title bar but not on any button — activate / drag.
     TitleBar,
     /// Click is in the client area — forward to the app.
     None,
+}
+
+/// Perform a chrome hit-test for a click at SDL2 `(x, _)` / OS/2 `os2_y` on `win`.
+///
+/// Returns the hit target.  `dst_top_y` is the SDL2 y of the top of the frame's
+/// title bar.  Call only when the title bar is enabled (`FCF_TITLEBAR`).
+fn chrome_hit_test(win_x: i32, win_cx: i32, win_fcf: u32,
+                   x: i32, os2_y: i32, win_y: i32, win_cy: i32) -> ChromeHit {
+    // Title bar occupies OS/2 y in [win_y + win_cy - CHROME_TITLE_H, win_y + win_cy).
+    let title_bot_os2 = win_y + win_cy - CHROME_TITLE_H;
+    if os2_y < title_bot_os2 {
+        return ChromeHit::None;
+    }
+    // Right-side buttons: close is rightmost, then max (if present), then min.
+    let mut btn_right = win_x + win_cx - CHROME_BTN_MARGIN;
+    let close_x0 = btn_right - CHROME_BTN_W;
+    if x >= close_x0 && x < btn_right {
+        return ChromeHit::Close;
+    }
+    btn_right = close_x0 - CHROME_BTN_GAP;
+    if win_fcf & FCF_MAXBUTTON != 0 {
+        let max_x0 = btn_right - CHROME_BTN_W;
+        if x >= max_x0 && x < btn_right {
+            return ChromeHit::Maximize;
+        }
+        btn_right = max_x0 - CHROME_BTN_GAP;
+    }
+    if win_fcf & FCF_MINBUTTON != 0 {
+        let min_x0 = btn_right - CHROME_BTN_W;
+        if x >= min_x0 && x < btn_right {
+            return ChromeHit::Minimize;
+        }
+    }
+    // Left-side: system menu icon.
+    if win_fcf & FCF_SYSMENU != 0 {
+        let sysmenu_x1 = win_x + 3 + CHROME_BTN_W;
+        if x >= win_x + 3 && x < sysmenu_x1 {
+            return ChromeHit::SysMenu;
+        }
+    }
+    ChromeHit::TitleBar
+}
+
+/// Test if a click at `(x, os2_y)` is on a resize edge of the window (VDR-C5).
+///
+/// Returns `Some(edge)` when `FCF_SIZEBORDER` is set and the click is within
+/// `RESIZE_HIT_W` pixels of an edge.  Does NOT include the title-bar area for
+/// N/NE/NW edges — those are handled by the chrome hit-test first.
+fn resize_hit_test(win_x: i32, win_y: i32, win_cx: i32, win_cy: i32,
+                   win_fcf: u32, x: i32, os2_y: i32) -> Option<ResizeEdge> {
+    if win_fcf & FCF_SIZEBORDER == 0 { return None; }
+    let near_left   = x   >= win_x            && x   < win_x            + RESIZE_HIT_W;
+    let near_right  = x   >= win_x + win_cx - RESIZE_HIT_W && x < win_x + win_cx;
+    let near_bottom = os2_y >= win_y            && os2_y < win_y            + RESIZE_HIT_W;
+    let near_top    = os2_y >= win_y + win_cy - RESIZE_HIT_W && os2_y < win_y + win_cy;
+    match (near_left, near_right, near_bottom, near_top) {
+        (true,  false, false, false) => Some(ResizeEdge::W),
+        (false, true,  false, false) => Some(ResizeEdge::E),
+        (false, false, true,  false) => Some(ResizeEdge::S),
+        (false, false, false, true ) => Some(ResizeEdge::N),
+        (true,  false, true,  false) => Some(ResizeEdge::SW),
+        (false, true,  true,  false) => Some(ResizeEdge::SE),
+        (true,  false, false, true ) => Some(ResizeEdge::NW),
+        (false, true,  false, true ) => Some(ResizeEdge::NE),
+        _ => None,
+    }
 }
 
 /// Post an OS/2 message to the queue associated with `hwnd`.
