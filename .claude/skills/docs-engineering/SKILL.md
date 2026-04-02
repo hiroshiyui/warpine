@@ -20,6 +20,16 @@ When performing documentation engineering, always follow these steps:
 
 3. **Verify numeric accuracy** — run `cargo test 2>&1 | tail -10` to get the current test count; inspect `src/loader/api_registry.rs` and sub-dispatchers to count API entry points. Update any stale counts in `CLAUDE.md`, `README.md`, or elsewhere so they match reality exactly.
 
+3a. **Validate the API ordinal table** — run both consistency checks:
+   ```bash
+   cargo run --bin gen_api -- check          # def-vs-api_trace.rs drift check
+   cargo run --bin gen_api -- validate-doc   # def-vs-doc/os2_ordinals.md cross-check
+   ```
+   - If `check` reports warnings or errors, update `targets/os2api.def` and/or `src/loader/api_trace.rs` to eliminate the drift, then re-run `gen-trace` and paste the output.
+   - If `validate-doc` reports **name mismatches** (⚠ section): investigate each one. For mismatches that are genuine errors in `os2api.def` (wrong ordinal or wrong name), fix the def and update `api_trace.rs` accordingly. For mismatches that are merely 16-bit-vs-32-bit naming conventions that the normaliser cannot auto-detect, add a `# NOTE:` comment on the relevant line in `os2api.def` explaining the discrepancy so future passes do not re-investigate.
+   - If `validate-doc` reports entries **only in def** (ℹ section): confirm they are intentional (e.g. ordinals documented in the IBM CPP Reference but absent from the Open Watcom lib snapshot). If not intentional, correct the def.
+   - Do **not** add new ordinals to `doc/os2_ordinals.md` based solely on Warpine's own assignments — that file is a snapshot of the Open Watcom import library and should only be updated from authoritative OS/2 SDK sources.
+
 4. **Revise stale or incomplete content** — update anything that no longer matches the current code: new features, removed dependencies, behavioral changes, renamed constants, new modules, and architectural decisions. When in doubt, read the source — never assume.
 
 5. **Update `doc/TODOs.md`** — remove completed items. Before removing, if the completed work is non-obvious or architectural, capture a concise summary in `doc/developer_guide.md` or `doc/reference_manual.md` as appropriate so the implementation rationale is preserved.
