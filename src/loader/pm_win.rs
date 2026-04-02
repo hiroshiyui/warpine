@@ -14,8 +14,10 @@ use super::constants::*;
 
 /// Resolve a WinCreateWindow `pszClass` argument.
 ///
-/// If `ptr < 0x10000` the value is a numeric atom (WC_BUTTON = 3, etc.).
-/// Otherwise `string` contains the already-read class name string.
+/// OS/2 PM encodes built-in class atoms as `MAKEINTATOM(n) = 0xFFFF0000 | n`.
+/// If `ptr` carries the `0xFFFF` high word (or is a small bare atom < 0x10000),
+/// we map it to the canonical class-name string.  Otherwise `string` contains
+/// the already-read guest class-name string.
 fn resolve_class_atom(ptr: u32, string: String) -> String {
     match ptr {
         WC_FRAME_ATOM      => "WC_FRAME".to_string(),
@@ -31,6 +33,8 @@ fn resolve_class_atom(ptr: u32, string: String) -> String {
         WC_SPINBUTTON_ATOM => "WC_SPINBUTTON".to_string(),
         WC_CONTAINER_ATOM  => "WC_CONTAINER".to_string(),
         WC_NOTEBOOK_ATOM   => "WC_NOTEBOOK".to_string(),
+        n if (n & 0xFFFF_0000) == 0xFFFF_0000
+                           => format!("WC_ATOM_0x{:04X}", n & 0xFFFF),
         n if n < 0x10000   => format!("WC_ATOM_{}", n),
         _                  => string,
     }
@@ -979,7 +983,9 @@ impl super::Loader {
                 let id              = read_stack(44);
                 // pCtlData (+48), pPresParams (+52) — ignored
 
-                let class_name = if psz_class < 0x10000 {
+                // MAKEINTATOM atoms have high word 0xFFFF; also accept bare
+                // small integers (< 0x10000) for robustness.
+                let class_name = if (psz_class & 0xFFFF_0000) == 0xFFFF_0000 || psz_class < 0x10000 {
                     resolve_class_atom(psz_class, String::new())
                 } else {
                     resolve_class_atom(psz_class, self.read_guest_string(psz_class))

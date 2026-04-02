@@ -169,19 +169,21 @@ pub const ERROR_VIO_COL: u32 = 427; // Column parameter out of range
 // ── WC_* built-in window class atoms ─────────────────────────────────────────
 // These are the numeric atom values passed as the pszClass pointer to
 // WinCreateWindow when creating built-in PM controls (OS/2 pmwin.h).
-pub const WC_FRAME_ATOM:      u32 = 1;
-pub const WC_COMBOBOX_ATOM:   u32 = 2;
-pub const WC_BUTTON_ATOM:     u32 = 3;
-pub const WC_MENU_ATOM:       u32 = 4;
-pub const WC_STATIC_ATOM:     u32 = 5;
-pub const WC_ENTRYFIELD_ATOM: u32 = 6;
-pub const WC_LISTBOX_ATOM:    u32 = 7;
-pub const WC_SCROLLBAR_ATOM:  u32 = 8;
-pub const WC_TITLEBAR_ATOM:   u32 = 9;
-pub const WC_MLE_ATOM:        u32 = 10;
-pub const WC_SPINBUTTON_ATOM: u32 = 15;
-pub const WC_CONTAINER_ATOM:  u32 = 37;
-pub const WC_NOTEBOOK_ATOM:   u32 = 40;
+// OS/2 built-in window-class atoms.  PM encodes them as MAKEINTATOM(n)
+// = 0xFFFF0000 | n, following the same pattern as Win16 class atoms.
+pub const WC_FRAME_ATOM:      u32 = 0xFFFF_0001;
+pub const WC_COMBOBOX_ATOM:   u32 = 0xFFFF_0002;
+pub const WC_BUTTON_ATOM:     u32 = 0xFFFF_0003;
+pub const WC_MENU_ATOM:       u32 = 0xFFFF_0004;
+pub const WC_STATIC_ATOM:     u32 = 0xFFFF_0005;
+pub const WC_ENTRYFIELD_ATOM: u32 = 0xFFFF_0006;
+pub const WC_LISTBOX_ATOM:    u32 = 0xFFFF_0007;
+pub const WC_SCROLLBAR_ATOM:  u32 = 0xFFFF_0008;
+pub const WC_TITLEBAR_ATOM:   u32 = 0xFFFF_0009;
+pub const WC_MLE_ATOM:        u32 = 0xFFFF_000A;
+pub const WC_SPINBUTTON_ATOM: u32 = 0xFFFF_000F;
+pub const WC_CONTAINER_ATOM:  u32 = 0xFFFF_0025;
+pub const WC_NOTEBOOK_ATOM:   u32 = 0xFFFF_0028;
 
 // WM_CONTROL — notification message from a child control to its owner.
 // mp1 = MPFROM2SHORT(usID, usNotifyCode); mp2 = control-specific data.
