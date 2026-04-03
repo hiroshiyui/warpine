@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **VDR-B4 — Dirty-rect tracking** (`pm_types.rs`, `sdl2_renderer.rs`) — `WindowManager::dirty: HashSet<u32>` tracks which HWNDs need recompositing; `composite_and_present()` returns immediately when the set is empty and no drag/resize is active, eliminating unnecessary 60Hz full-desktop blits when nothing has changed. Marked dirty by: all Z-order helpers (`z_push_top/bottom/insert_behind/z_remove` call `mark_all_dirty()`), `WinInvalidateRect`, `WinShowWindow`, `WinSetWindowPos` (any SWP flag), `WinSetWindowText`, `PresentBuffer`, and drag/resize `MouseMotion` handlers. Dirty set cleared after every composite. 4 new unit tests in `pm_types::tests`.
+
 ## [0.0.1] - 2026-04-03
 
 ### Fixed

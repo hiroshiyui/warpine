@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, Condvar};
 use std::sync::atomic::AtomicBool;
 use std::thread;
@@ -132,6 +132,10 @@ pub struct WindowManager {
     pub z_order: Vec<u32>,
     /// The currently active (focused) frame window handle; 0 = none.
     pub focused_hwnd: u32,
+    /// VDR-B4: set of HWNDs whose visual state has changed since the last composite.
+    /// Any non-empty dirty set causes the next compositor tick to recomposite the
+    /// full desktop; an empty set allows the tick to be skipped entirely.
+    pub dirty: HashSet<u32>,
 }
 
 impl Default for WindowManager {
@@ -161,6 +165,7 @@ impl WindowManager {
             next_haccel: 0x4000,
             z_order: Vec::new(),
             focused_hwnd: 0,
+            dirty: HashSet::new(),
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
@@ -342,6 +347,18 @@ impl WindowManager {
 
     // ── Z-order helpers ──────────────────────────────────────────────────────
 
+    /// VDR-B4: mark an HWND (frame or client) as visually dirty.
+    /// The compositor will recomposite the full desktop on its next tick.
+    pub fn mark_dirty(&mut self, hwnd: u32) {
+        self.dirty.insert(hwnd);
+    }
+
+    /// VDR-B4: mark every frame in the Z-order dirty.
+    /// Called after Z-order changes, which affect all overlapping windows.
+    pub fn mark_all_dirty(&mut self) {
+        self.dirty.extend(self.z_order.iter().copied());
+    }
+
     /// Register a frame window into the Z-order stack (top-most position).
     /// Only frame windows (present in `frame_to_client`) should be registered.
     /// Safe to call multiple times — duplicates are ignored.
@@ -353,6 +370,7 @@ impl WindowManager {
             self.z_order.retain(|&h| h != frame_hwnd);
             self.z_order.push(frame_hwnd);
         }
+        self.mark_all_dirty();
     }
 
     /// Remove a frame window from the Z-order stack (called on WinDestroyWindow).
@@ -362,12 +380,14 @@ impl WindowManager {
             // Focus falls to the new top-most window, if any.
             self.focused_hwnd = self.z_order.last().copied().unwrap_or(0);
         }
+        self.mark_all_dirty();
     }
 
     /// Move a frame to the bottom of the Z-order stack.
     pub fn z_push_bottom(&mut self, frame_hwnd: u32) {
         self.z_order.retain(|&h| h != frame_hwnd);
         self.z_order.insert(0, frame_hwnd);
+        self.mark_all_dirty();
     }
 
     /// Insert `frame_hwnd` directly below `behind_hwnd` in the Z-stack.
@@ -379,6 +399,7 @@ impl WindowManager {
         } else {
             self.z_order.push(frame_hwnd);
         }
+        self.mark_all_dirty();
     }
 
     /// Hit-test desktop-absolute point `(px, py)` against the Z-order stack,
@@ -519,5 +540,50 @@ mod tests {
         // Hide the top window — hit should fall through to f1.
         wm.get_window_mut(f2).unwrap().visible = false;
         assert_eq!(wm.z_hit_test(50, 50), Some(f1));
+    }
+
+    #[test]
+    fn mark_dirty_inserts_hwnd() {
+        let mut wm = WindowManager::new();
+        assert!(wm.dirty.is_empty());
+        wm.mark_dirty(0x1000);
+        assert!(wm.dirty.contains(&0x1000));
+        assert_eq!(wm.dirty.len(), 1);
+    }
+
+    #[test]
+    fn mark_all_dirty_covers_z_order() {
+        let mut wm = WindowManager::new();
+        let f1 = make_frame(&mut wm);
+        let f2 = make_frame(&mut wm);
+        // Use a raw z_order push to avoid the side-effect of mark_all_dirty.
+        wm.z_order.push(f1);
+        wm.z_order.push(f2);
+        wm.dirty.clear();
+
+        wm.mark_all_dirty();
+        assert!(wm.dirty.contains(&f1));
+        assert!(wm.dirty.contains(&f2));
+    }
+
+    #[test]
+    fn z_push_top_marks_dirty() {
+        let mut wm = WindowManager::new();
+        let f1 = make_frame(&mut wm);
+        wm.dirty.clear();
+        wm.z_push_top(f1);
+        assert!(!wm.dirty.is_empty(), "z_push_top must mark dirty");
+    }
+
+    #[test]
+    fn z_remove_marks_dirty() {
+        let mut wm = WindowManager::new();
+        let f1 = make_frame(&mut wm);
+        let f2 = make_frame(&mut wm);
+        wm.z_order.push(f1);
+        wm.z_order.push(f2);
+        wm.dirty.clear();
+        wm.z_remove(f1);
+        assert!(!wm.dirty.is_empty(), "z_remove must mark dirty");
     }
 }

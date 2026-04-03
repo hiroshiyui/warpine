@@ -103,9 +103,11 @@ The largest structural change: remove per-PM-window SDL2 windows.
 - [x] **VDR-B3 — Full-frame compositor loop**: 60Hz periodic `composite_and_present`
   call in `poll_events` (`last_composite: Instant` guards the 16ms interval);
   drag animations and focus-change repaints no longer require an app `PresentBuffer`.
-- [ ] **VDR-B4 — Dirty-rect tracking** (optimisation, can be deferred): add
-  `WindowManager::dirty: HashSet<u32>` — only repaint frames marked dirty. Mark dirty
-  on `WinInvalidateRect`, `WinShowWindow`, move/resize, Z-order change.
+- [x] **VDR-B4 — Dirty-rect tracking**: `WindowManager::dirty: HashSet<u32>` —
+  compositor skips the full composite when the set is empty; marked dirty by
+  `WinInvalidateRect`, `WinShowWindow`, `WinSetWindowPos` (move/resize/show/hide/activate),
+  `WinSetWindowText`, `PresentBuffer`, all Z-order helpers, and drag/resize mouse motion.
+  Dirty set cleared after each composite. 4 new unit tests.
 
 ---
 

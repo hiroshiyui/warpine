@@ -417,6 +417,7 @@ impl super::Loader {
                 if let Some(win) = wm.get_window_mut(hwnd) {
                     win.visible = show;
                 }
+                wm.mark_dirty(hwnd); // VDR-B4
                 if let Some(ref sender) = wm.gui_tx {
                     let _ = sender.send(GUIMessage::ShowWindow { handle: hwnd, show });
                 }
@@ -735,7 +736,8 @@ impl super::Loader {
                 // WinInvalidateRect(HWND hwnd, PRECTL prcl, BOOL fIncludeChildren)
                 let hwnd = read_stack(4);
                 // Post WM_PAINT to trigger repaint
-                let wm = self.shared.window_mgr.lock_or_recover();
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                wm.mark_dirty(hwnd); // VDR-B4
                 let target = wm.frame_to_client.get(&hwnd).copied().unwrap_or(hwnd);
                 let hmq = wm.find_hmq_for_hwnd(target);
                 if let Some(hmq) = hmq
@@ -1265,6 +1267,12 @@ impl super::Loader {
                     wm.z_push_top(hwnd);
                 }
 
+                // VDR-B4: any geometry/visibility/z-order/activation change → dirty.
+                if fl & (SWP_MOVE | SWP_SIZE | SWP_SHOW | SWP_HIDE | SWP_ACTIVATE) != 0 {
+                    wm.mark_dirty(hwnd);
+                }
+                // (SWP_ZORDER dirtiness is handled transitively via z_push_top/bottom/insert_behind)
+
                 // Send GUI messages for the actual window operations.
                 if let Some(ref sender) = wm.gui_tx {
                     if fl & SWP_SIZE != 0 {
@@ -1294,6 +1302,7 @@ impl super::Loader {
                 if let Some(win) = wm.get_window_mut(hwnd) {
                     win.text = text;
                 }
+                wm.mark_dirty(hwnd); // VDR-B4: title bar text changed
                 ApiResult::Normal(1)
             }
             878 => {

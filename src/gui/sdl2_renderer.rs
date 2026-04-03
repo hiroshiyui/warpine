@@ -306,6 +306,15 @@ impl Sdl2Renderer {
     /// After blitting the client content, window chrome (title bar, border) is drawn
     /// directly onto the desktop buffer (VDR-C1, VDR-C2, VDR-E3).
     fn composite_and_present(&mut self, shared: &Arc<SharedState>) {
+        // VDR-B4: skip the composite entirely if nothing has changed and no
+        // interactive operation (drag/resize) is in progress.
+        {
+            let wm = shared.window_mgr.lock_or_recover();
+            if wm.dirty.is_empty() && self.drag_state.is_none() && self.resize_state.is_none() {
+                return;
+            }
+        }
+
         let dw = self.desktop.width as usize;
         let dh = self.desktop.height as i32;
 
@@ -463,6 +472,9 @@ impl Sdl2Renderer {
         }
 
         self.desktop.present();
+
+        // VDR-B4: clear dirty set — everything has now been composited.
+        shared.window_mgr.lock_or_recover().dirty.clear();
     }
 
     /// Handle a single SDL2 event, posting OS/2 messages to `shared` as needed.
@@ -547,6 +559,7 @@ impl Sdl2Renderer {
                     let edge = rs.edge;
                     const MIN_SZ: i32 = 32;
                     let mut wm = shared.window_mgr.lock_or_recover();
+                    wm.mark_dirty(hwnd); // VDR-B4
                     if let Some(win) = wm.get_window_mut(hwnd) {
                         match edge {
                             ResizeEdge::E  => { win.cx = (orig_cx + dx).max(MIN_SZ); }
@@ -594,6 +607,7 @@ impl Sdl2Renderer {
                     let anchor_x = ds.anchor_x;
                     let anchor_y_sdl = ds.anchor_y_sdl;
                     let mut wm = shared.window_mgr.lock_or_recover();
+                    wm.mark_dirty(hwnd); // VDR-B4
                     if let Some(win) = wm.get_window_mut(hwnd) {
                         let new_top_y_sdl = y - anchor_y_sdl;
                         win.x = x - anchor_x;
@@ -902,8 +916,10 @@ impl PmRenderer for Sdl2Renderer {
                     fb.buffer.fill(0xFFFFFFFF);
                 }
             }
-            GUIMessage::PresentBuffer { .. } => {
+            GUIMessage::PresentBuffer { handle } => {
                 // VDR-A4: composite all visible frames onto the desktop and present.
+                // VDR-B4: mark the frame dirty so composite_and_present doesn't skip.
+                shared.window_mgr.lock_or_recover().mark_dirty(handle);
                 self.composite_and_present(shared);
             }
             GUIMessage::SetClipboardText(text) => {
