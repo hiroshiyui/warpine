@@ -1315,7 +1315,6 @@ mod tests {
 
     #[test]
     fn test_so_bind_and_getsockname() {
-        use std::os::fd::IntoRawFd;
         let loader = Loader::new_mock();
         // Create a real TCP socket via libc and insert into SocketManager.
         let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
@@ -1344,7 +1343,6 @@ mod tests {
 
     #[test]
     fn test_so_send_recv_loopback() {
-        use std::io::Write;
         use std::net::{TcpListener, TcpStream};
         use std::os::unix::io::IntoRawFd;
         // Use Rust std to set up a loopback connection, then exercise send/recv via the handlers.
