@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.0.1] - 2026-04-03
 
 ### Fixed
 - **OS/2 resource type constants** (`lx/header.rs`) — RT_* constants were using Windows numbering instead of OS/2 numbering; corrected to `RT_MENU=3`, `RT_DIALOG=4`, `RT_STRING=5`, `RT_ACCELTABLE=8`. Previously `WinLoadMenu` could never find the RT_MENU resource in a compiled LX executable because the wrong type ID was passed to the resource manager lookup.
