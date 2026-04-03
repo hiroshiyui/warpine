@@ -120,12 +120,13 @@ After VDR-A those decorations must be drawn by Warpine.
   stored as `OS2Window::frame_flags`; FCF_* constants added to `constants.rs`.
 - [x] **VDR-C2 — Frame border**: 2-px gray border overlay in the compositor for frames
   with `FCF_BORDER`, `FCF_DLGBORDER`, or `FCF_SIZEBORDER`.
-- [ ] **VDR-C3 — System menu icon**: small OS/2 "warp" glyph in the title bar left
-  corner for `FCF_SYSMENU`; clicking posts `WM_SYSCOMMAND(SC_CLOSE)`.
-- [ ] **VDR-C4 — Minimize / maximize buttons**: right side of title bar; clicking
+- [x] **VDR-C3 — System menu icon**: small gray square at title-bar left for
+  `FCF_SYSMENU`; single-click acts as title bar, double-click posts `WM_SYSCOMMAND(SC_CLOSE)`.
+- [x] **VDR-C4 — Minimize / maximize buttons**: right side of title bar; clicking
   posts `WM_SYSCOMMAND(SC_MINIMIZE / SC_MAXIMIZE)` to the frame.
-- [ ] **VDR-C5 — Resize handles**: 4-px corner/edge grabs; drag generates
-  `WM_WINDOWPOSCHANGED` with new cx/cy via `WinSetWindowPos`.
+- [x] **VDR-C5 — Resize handles**: `RESIZE_HIT_W=4`-px edge/corner hit zones for
+  `FCF_SIZEBORDER`; drag updates window geometry via `WinSetWindowPos`;
+  `ResizeState` in `Sdl2Renderer`; `hit_test_resize_edge()` helper.
 
 ---
 
@@ -201,7 +202,7 @@ Suggested sequence to keep the codebase working at each step:
 6. VDR-B2–B3 (Z-order, compositor loop).
 7. VDR-A5 (dialogs fully in-surface).
 8. VDR-D2–D6 (full chrome interaction, drag, keyboard routing).
-9. VDR-C4–C5, VDR-E2–E3 (min/max, resize, active-title highlight).
+9. VDR-C4–C5, VDR-E2–E3 (min/max, resize, active-title highlight). ✓ complete.
 10. VDR-F1–F5 (winit migration, optional).
 
 ---
