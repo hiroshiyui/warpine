@@ -99,7 +99,9 @@ impl super::Loader {
         else if module == "NLS" { MAGIC_API_BASE + NLS_BASE as u64 + ordinal as u64 }
         else if module == "MSG" { MAGIC_API_BASE + MSG_BASE as u64 + ordinal as u64 }
         else if module == "MDM"   { MAGIC_API_BASE + MDM_BASE   as u64 + ordinal as u64 }
-        else if module == "UCONV" { MAGIC_API_BASE + UCONV_BASE as u64 + ordinal as u64 }
+        else if module == "UCONV"    { MAGIC_API_BASE + UCONV_BASE    as u64 + ordinal as u64 }
+        else if module == "SO32DLL"  { MAGIC_API_BASE + SO32DLL_BASE  as u64 + ordinal as u64 }
+        else if module == "TCP32DLL" { MAGIC_API_BASE + TCP32DLL_BASE as u64 + ordinal as u64 }
         else {
             // Check loaded user DLLs
             let dll_mgr = self.shared.dll_mgr.lock_or_recover();

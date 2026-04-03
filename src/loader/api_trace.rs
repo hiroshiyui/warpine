@@ -214,12 +214,73 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         },
 
         // ── UCONV ─────────────────────────────────────────────────
-        o if (UCONV_BASE..STUB_AREA_SIZE).contains(&o) => match o - UCONV_BASE {
+        o if (UCONV_BASE..SO32DLL_BASE).contains(&o) => match o - UCONV_BASE {
             1 => "UniCreateUconvObject",
             2 => "UniFreeUconvObject",
             3 => "UniUconvToUcs",
             4 => "UniUconvFromUcs",
             6 => "UniMapCpToUcsCp",
+            _ => "?",
+        },
+
+        // ── SO32DLL ────────────────────────────────────────────────
+        o if (SO32DLL_BASE..TCP32DLL_BASE).contains(&o) => match o - SO32DLL_BASE {
+            1  => "accept",
+            2  => "bind",
+            3  => "connect",
+            4  => "gethostid",
+            5  => "gethostname",
+            6  => "getpeername",
+            7  => "getsockname",
+            8  => "getsockopt",
+            10 => "listen",
+            11 => "recv",
+            12 => "recvfrom",
+            13 => "select",
+            14 => "send",
+            15 => "sendto",
+            16 => "setsockopt",
+            17 => "shutdown",
+            18 => "sock_errno",
+            19 => "socket",
+            20 => "soclose",
+            21 => "psock_errno",
+            22 => "sock_init",
+            40 => "gethostbyname",
+            41 => "gethostbyaddr",
+            42 => "getservbyname",
+            43 => "getservbyport",
+            44 => "getprotobyname",
+            45 => "getprotobynumber",
+            _ => "?",
+        },
+
+        // ── TCP32DLL ───────────────────────────────────────────────
+        o if (TCP32DLL_BASE..STUB_AREA_SIZE).contains(&o) => match o - TCP32DLL_BASE {
+            1  => "accept",
+            2  => "bind",
+            3  => "connect",
+            6  => "getpeername",
+            7  => "getsockname",
+            8  => "getsockopt",
+            10 => "listen",
+            11 => "recv",
+            12 => "recvfrom",
+            13 => "select",
+            14 => "send",
+            15 => "sendto",
+            16 => "setsockopt",
+            17 => "shutdown",
+            18 => "sock_errno",
+            19 => "socket",
+            20 => "soclose",
+            22 => "sock_init",
+            40 => "gethostbyname",
+            41 => "gethostbyaddr",
+            42 => "getservbyname",
+            43 => "getservbyport",
+            44 => "getprotobyname",
+            45 => "getprotobynumber",
             _ => "?",
         },
 
@@ -241,7 +302,9 @@ pub fn module_for_ordinal(ordinal: u32) -> &'static str {
     else if ordinal < MSG_BASE      { "NLS" }        // 7168–8191
     else if ordinal < MDM_BASE      { "MSG" }        // 8192–10239
     else if ordinal < UCONV_BASE    { "MDM" }        // 10240–12287
-    else if ordinal < STUB_AREA_SIZE { "UCONV" }     // 12288–16383
+    else if ordinal < SO32DLL_BASE  { "UCONV" }     // 12288–13311
+    else if ordinal < TCP32DLL_BASE { "SO32DLL" }   // 13312–14335
+    else if ordinal < STUB_AREA_SIZE { "TCP32DLL" } // 14336–16383
     else                            { "?" }
 }
 
@@ -401,12 +464,68 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
         },
 
         // ── UCONV ─────────────────────────────────────────────────────────
-        o if (UCONV_BASE..STUB_AREA_SIZE).contains(&o) => match o - UCONV_BASE {
+        o if (UCONV_BASE..SO32DLL_BASE).contains(&o) => match o - UCONV_BASE {
             1 => &["ucsName", "puobj"],
             2 => &["uobj"],
             3 => &["uobj", "ppInBuf", "pInBytesLeft", "ppOutBuf", "pOutCharsLeft", "pNumSubs"],
             4 => &["uobj", "ppInBuf", "pInCharsLeft", "ppOutBuf", "pOutBytesLeft", "pNumSubs"],
             6 => &["ulCodePage", "ucsCodePage", "n"],
+            _ => &[],
+        },
+
+        // ── SO32DLL ───────────────────────────────────────────────────────
+        o if (SO32DLL_BASE..TCP32DLL_BASE).contains(&o) => match o - SO32DLL_BASE {
+            1  => &["s", "addr", "addrlen"],
+            2  => &["s", "name", "namelen"],
+            3  => &["s", "name", "namelen"],
+            5  => &["name", "namelen"],
+            6  => &["s", "name", "namelen"],
+            7  => &["s", "name", "namelen"],
+            8  => &["s", "level", "optname", "optval", "optlen"],
+            10 => &["s", "backlog"],
+            11 => &["s", "buf", "len", "flags"],
+            12 => &["s", "buf", "len", "flags", "from", "fromlen"],
+            13 => &["nfds", "readfds", "writefds", "exceptfds", "timeout"],
+            14 => &["s", "msg", "len", "flags"],
+            15 => &["s", "msg", "len", "flags", "to", "tolen"],
+            16 => &["s", "level", "optname", "optval", "optlen"],
+            17 => &["s", "how"],
+            19 => &["domain", "type", "protocol"],
+            20 => &["s"],
+            21 => &["pszMsg"],
+            40 => &["pszName"],
+            41 => &["addr", "len", "type"],
+            42 => &["pszName", "pszProto"],
+            43 => &["port", "pszProto"],
+            44 => &["pszName"],
+            45 => &["proto"],
+            _ => &[],
+        },
+
+        // ── TCP32DLL ──────────────────────────────────────────────────────
+        o if (TCP32DLL_BASE..STUB_AREA_SIZE).contains(&o) => match o - TCP32DLL_BASE {
+            1  => &["s", "addr", "addrlen"],
+            2  => &["s", "name", "namelen"],
+            3  => &["s", "name", "namelen"],
+            6  => &["s", "name", "namelen"],
+            7  => &["s", "name", "namelen"],
+            8  => &["s", "level", "optname", "optval", "optlen"],
+            10 => &["s", "backlog"],
+            11 => &["s", "buf", "len", "flags"],
+            12 => &["s", "buf", "len", "flags", "from", "fromlen"],
+            13 => &["nfds", "readfds", "writefds", "exceptfds", "timeout"],
+            14 => &["s", "msg", "len", "flags"],
+            15 => &["s", "msg", "len", "flags", "to", "tolen"],
+            16 => &["s", "level", "optname", "optval", "optlen"],
+            17 => &["s", "how"],
+            19 => &["domain", "type", "protocol"],
+            20 => &["s"],
+            40 => &["pszName"],
+            41 => &["addr", "len", "type"],
+            42 => &["pszName", "pszProto"],
+            43 => &["port", "pszProto"],
+            44 => &["pszName"],
+            45 => &["proto"],
             _ => &[],
         },
 
@@ -649,9 +768,13 @@ mod tests {
         assert_eq!(module_for_ordinal(NLS_BASE - 1),      "SESMGR");
         assert_eq!(module_for_ordinal(MSG_BASE - 1),      "NLS");
         assert_eq!(module_for_ordinal(MDM_BASE - 1),      "MSG");
-        assert_eq!(module_for_ordinal(UCONV_BASE - 1),    "MDM");
-        assert_eq!(module_for_ordinal(UCONV_BASE),         "UCONV");
-        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "UCONV");
+        assert_eq!(module_for_ordinal(UCONV_BASE - 1),      "MDM");
+        assert_eq!(module_for_ordinal(UCONV_BASE),          "UCONV");
+        assert_eq!(module_for_ordinal(SO32DLL_BASE - 1),   "UCONV");
+        assert_eq!(module_for_ordinal(SO32DLL_BASE),        "SO32DLL");
+        assert_eq!(module_for_ordinal(TCP32DLL_BASE - 1),  "SO32DLL");
+        assert_eq!(module_for_ordinal(TCP32DLL_BASE),       "TCP32DLL");
+        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "TCP32DLL");
     }
 
     #[test]

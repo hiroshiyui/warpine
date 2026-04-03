@@ -32,6 +32,7 @@ pub mod crash_dump;
 pub mod api_ring;
 pub mod gdb_stub;
 pub mod uconv;
+pub mod tcpip;
 mod seh;
 mod cmd;
 
@@ -230,6 +231,7 @@ pub struct SharedState {
     pub mmpm_mgr: Mutex<mmpm::MmpmManager>,
     pub dll_mgr: Mutex<DllManager>,
     pub uconv_mgr: Mutex<uconv::UconvManager>,
+    pub socket_mgr: Mutex<tcpip::SocketManager>,
     /// Executable name as provided on the command line
     pub exe_name: Mutex<String>,
     pub guest_mem: GuestMemory,
@@ -319,6 +321,7 @@ impl Loader {
             mmpm_mgr: Mutex::new(mmpm::MmpmManager::new()),
             dll_mgr: Mutex::new(DllManager::new()),
             uconv_mgr: Mutex::new(uconv::UconvManager::new()),
+            socket_mgr: Mutex::new(tcpip::SocketManager::new()),
             exe_name: Mutex::new(String::new()),
             guest_mem,
             next_tid: Mutex::new(1),
@@ -395,6 +398,7 @@ impl Loader {
             mmpm_mgr:     Mutex::new(mmpm::MmpmManager::new()),
             dll_mgr:      Mutex::new(DllManager::new()),
             uconv_mgr:    Mutex::new(uconv::UconvManager::new()),
+            socket_mgr:   Mutex::new(tcpip::SocketManager::new()),
             exe_name:     Mutex::new(String::new()),
             guest_mem,
             next_tid:     Mutex::new(1),

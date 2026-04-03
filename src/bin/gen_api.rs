@@ -39,6 +39,8 @@ const MODULES: &[(&str, u32)] = &[
     ("MSG",      8192),
     ("MDM",      10240),
     ("UCONV",    12288),
+    ("SO32DLL",  13312),
+    ("TCP32DLL", 14336),
 ];
 const STUB_AREA_SIZE: u32 = 16384;
 
@@ -57,6 +59,8 @@ fn base_const(module: &str) -> &'static str {
         "MSG"      => "MSG_BASE",
         "MDM"      => "MDM_BASE",
         "UCONV"    => "UCONV_BASE",
+        "SO32DLL"  => "SO32DLL_BASE",
+        "TCP32DLL" => "TCP32DLL_BASE",
         _          => "?",
     }
 }
@@ -74,7 +78,9 @@ fn upper_const(module: &str) -> &'static str {
         "NLS"      => "MSG_BASE",
         "MSG"      => "MDM_BASE",
         "MDM"      => "UCONV_BASE",
-        "UCONV"    => "STUB_AREA_SIZE",
+        "UCONV"    => "SO32DLL_BASE",
+        "SO32DLL"  => "TCP32DLL_BASE",
+        "TCP32DLL" => "STUB_AREA_SIZE",
         _          => "?",
     }
 }
@@ -249,6 +255,8 @@ fn resolve_const(name: &str) -> u32 {
         "MSG_BASE"      => 8192,
         "MDM_BASE"      => 10240,
         "UCONV_BASE"    => 12288,
+        "SO32DLL_BASE"  => 13312,
+        "TCP32DLL_BASE" => 14336,
         "STUB_AREA_SIZE"=> 16384,
         other => other.parse().unwrap_or(0),
     }
@@ -357,6 +365,7 @@ fn cmd_check(entries: &[OrdEntry], trace_path: &Path) -> bool {
     // Excludes PMWIN, PMGPI, SESMGR which return "?" and use sub-dispatchers.
     let trace_covered_modules = [
         "DOSCALLS", "QUECALLS", "KBDCALLS", "VIOCALLS", "NLS", "MSG", "MDM", "UCONV",
+        "SO32DLL", "TCP32DLL",
     ];
     let def_in_trace: Vec<&OrdEntry> = entries
         .iter()
@@ -910,9 +919,11 @@ mod tests {
 
     #[test]
     fn test_module_upper_boundaries() {
-        assert_eq!(module_upper("DOSCALLS"), 1024);
-        assert_eq!(module_upper("QUECALLS"), 2048);
-        assert_eq!(module_upper("UCONV"),    STUB_AREA_SIZE);
+        assert_eq!(module_upper("DOSCALLS"),  1024);
+        assert_eq!(module_upper("QUECALLS"),  2048);
+        assert_eq!(module_upper("UCONV"),     13312); // SO32DLL_BASE
+        assert_eq!(module_upper("SO32DLL"),   14336); // TCP32DLL_BASE
+        assert_eq!(module_upper("TCP32DLL"),  STUB_AREA_SIZE);
     }
 
     #[test]
@@ -969,7 +980,9 @@ mod tests {
         assert_eq!(base_const("NLS"),       "NLS_BASE");
         assert_eq!(upper_const("DOSCALLS"), "1024");
         assert_eq!(upper_const("NLS"),      "MSG_BASE");
-        assert_eq!(upper_const("UCONV"),    "STUB_AREA_SIZE");
+        assert_eq!(upper_const("UCONV"),     "SO32DLL_BASE");
+        assert_eq!(upper_const("SO32DLL"),   "TCP32DLL_BASE");
+        assert_eq!(upper_const("TCP32DLL"),  "STUB_AREA_SIZE");
     }
 
     #[test]

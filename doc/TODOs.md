@@ -39,6 +39,7 @@ DLL binaries, no ROM dumps, and no disassembly of original OS/2 system libraries
 | PM Menu System (MENUTEMPLATE parser, WinLoadMenu, WinSetMenu, WinCreateMenu) | Complete | `src/loader/pm_win.rs` |
 | PM Dialog System (DLGTEMPLATE parser, WinDlgBox, WinLoadDlg, WinProcessDlg, WinDismissDlg, WinDefDlgProc, WinSendDlgItemMsg, DlgRunLoop) | Complete | `src/loader/pm_win.rs`, `src/loader/vcpu.rs` |
 | Virtual Desktop Renderer (VDR) — single-surface compositor, full window chrome, input routing, dirty-rect tracking (A1–A5/B1–B4/C1–C5/D1–D6/E1–E3) | Complete | `src/gui/sdl2_renderer.rs`, `src/loader/pm_types.rs` |
+| TCP/IP Socket API — SO32DLL/TCP32DLL (51 thunks: socket/bind/connect/listen/accept/send/recv/select/setsockopt/getsockopt/gethostbyname/getservbyname/…) | Complete | `src/loader/tcpip.rs`, `samples/socket_test/` |
 
 ---
 
@@ -65,12 +66,6 @@ NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 - [ ] **Drag and drop** — `DrgDrag`, `DrgAccessDraginfo`, `DM_DRAGOVER` / `DM_DROP`
 - [ ] **Custom cursors** — `WinSetPointer` via `SDL_CreateColorCursor`
 - [ ] **Printing** — `DevOpenDC`, `DevCloseDC`, basic spool API stubs
-
-### TCP/IP Socket API
-
-- [ ] `SO32DLL.DLL` / `TCP32DLL.DLL` thunks: `socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv`, `select`, `gethostbyname`, `getservbyname`, `setsockopt`, `getsockopt`, `closesocket`
-- [ ] Map to Linux BSD socket syscalls; OS/2 `SOCE*` → errno mapping
-- [ ] Enables: WebExplorer, Netscape for OS/2, FTP/IRC clients
 
 ### REXX Interpreter Bridge
 

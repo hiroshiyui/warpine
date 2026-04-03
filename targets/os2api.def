@@ -14,6 +14,8 @@
 #   MSG       base 8192     (MAGIC_API_BASE + 8192 + ordinal)
 #   MDM       base 10240    (MAGIC_API_BASE + 10240 + ordinal)
 #   UCONV     base 12288    (MAGIC_API_BASE + 12288 + ordinal)
+#   SO32DLL   base 13312    (MAGIC_API_BASE + 13312 + ordinal)
+#   TCP32DLL  base 14336    (MAGIC_API_BASE + 14336 + ordinal)
 
 # ── DOSCALLS ─────────────────────────────────────────────────────────────────
 DOSCALLS.8    DosGetInfoSeg
@@ -191,3 +193,58 @@ MDM.1         mciSendCommand
 MDM.2         mciSendString
 MDM.3         mciFreeBlock
 MDM.4         mciGetLastError
+
+# ── SO32DLL (TCP/IP socket API — ordinal relative to module) ─────────────────
+SO32DLL.1     accept
+SO32DLL.2     bind
+SO32DLL.3     connect
+SO32DLL.4     gethostid
+SO32DLL.5     gethostname
+SO32DLL.6     getpeername
+SO32DLL.7     getsockname
+SO32DLL.8     getsockopt
+SO32DLL.10    listen
+SO32DLL.11    recv
+SO32DLL.12    recvfrom
+SO32DLL.13    select
+SO32DLL.14    send
+SO32DLL.15    sendto
+SO32DLL.16    setsockopt
+SO32DLL.17    shutdown
+SO32DLL.18    sock_errno
+SO32DLL.19    socket
+SO32DLL.20    soclose
+SO32DLL.21    psock_errno
+SO32DLL.22    sock_init
+SO32DLL.40    gethostbyname
+SO32DLL.41    gethostbyaddr
+SO32DLL.42    getservbyname
+SO32DLL.43    getservbyport
+SO32DLL.44    getprotobyname
+SO32DLL.45    getprotobynumber
+
+# ── TCP32DLL (re-export layer — same ordinals as SO32DLL) ────────────────────
+TCP32DLL.1    accept
+TCP32DLL.2    bind
+TCP32DLL.3    connect
+TCP32DLL.6    getpeername
+TCP32DLL.7    getsockname
+TCP32DLL.8    getsockopt
+TCP32DLL.10   listen
+TCP32DLL.11   recv
+TCP32DLL.12   recvfrom
+TCP32DLL.13   select
+TCP32DLL.14   send
+TCP32DLL.15   sendto
+TCP32DLL.16   setsockopt
+TCP32DLL.17   shutdown
+TCP32DLL.18   sock_errno
+TCP32DLL.19   socket
+TCP32DLL.20   soclose
+TCP32DLL.22   sock_init
+TCP32DLL.40   gethostbyname
+TCP32DLL.41   gethostbyaddr
+TCP32DLL.42   getservbyname
+TCP32DLL.43   getservbyport
+TCP32DLL.44   getprotobyname
+TCP32DLL.45   getprotobynumber

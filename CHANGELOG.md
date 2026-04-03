@@ -7,6 +7,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **TCP/IP Socket API — SO32DLL / TCP32DLL** (`src/loader/tcpip.rs`) — BSD socket thunks mapping OS/2 socket handles to Linux host file descriptors:
+  - **`SocketManager`** — `HashMap<u32, i32>` (OS/2 handle → Linux fd), handles start at `0xA000`, `AtomicI32 last_sock_errno`, 256-byte scratch guest buffer (`ensure_hostent_scratch()`) for `hostent`/`servent` results.
+  - **SOCE_* error constants** — 30 BSD socket error codes; `errno_to_soce()` maps Linux `errno` to OS/2 `SOCE*` values.
+  - **SO32DLL ordinals** (27): `sock_init` (22), `sock_errno` (18), `psock_errno` (28), `socket` (19), `soclose` (20), `bind` (2), `connect` (3), `listen` (10), `accept` (1), `send` (14), `sendto` (21), `recv` (11), `recvfrom` (12), `shutdown` (17), `getsockname` (7), `getpeername` (6), `setsockopt` (16), `getsockopt` (8), `select` (13), `gethostid` (31), `gethostname` (32), `gethostbyname` (40), `gethostbyaddr` (41), `getservbyname` (42), `getservbyport` (43), `getprotobyname` (44), `getprotobynumber` (45).
+  - **TCP32DLL ordinals** (24): same socket APIs via TCP32DLL_BASE (14336) — same functions re-exported at TCP32DLL ordinals matching the SO32DLL layout.
+  - **`select()` fd_set translation** — OS/2 fd_set (2×u32 bitmask over OS/2 handles) translated to Linux `fd_set` and back.
+  - **`gethostbyname` / `getservbyname`** — results written into 256-byte guest scratch buffer at fixed `hostent`/`servent` struct offsets; pointers patched to guest addresses.
+  - **API registry** — 51 new entries; total static registry now 186 entries.
+  - **`os2api.def`** — extended to 212 entries (SO32DLL and TCP32DLL module headers + all ordinals).
+  - **`BUILTINS`** — SO32DLL and TCP32DLL added to `dos_load_module` interception list and `resolve_import()`.
+  - **`gen_api` updated** — MODULES array, `base_const()`, `upper_const()`, `resolve_const()`, and boundary tests updated for SO32DLL/TCP32DLL.
+  - **15 unit tests** — errno mapping, SocketManager lifecycle, DNS (`gethostbyname` loopback), `select()` with 1s timeout, `getservbyname` http/tcp.
+  - **New sample** — `samples/socket_test/` — Open Watcom C program that loads SO32DLL via `DosLoadModule`/`DosQueryProcAddr` and exercises all socket APIs: loopback `bind`/`listen`/`connect`/`accept`/`send`/`recv`, `setsockopt`/`getsockopt`, `getsockname`, `select`, `gethostbyname("localhost")`, `getservbyname("http","tcp")`, `sock_errno`.
+
 - **VDR-B4 — Dirty-rect tracking** (`pm_types.rs`, `sdl2_renderer.rs`) — `WindowManager::dirty: HashSet<u32>` tracks which HWNDs need recompositing; `composite_and_present()` returns immediately when the set is empty and no drag/resize is active, eliminating unnecessary 60Hz full-desktop blits when nothing has changed. Marked dirty by: all Z-order helpers (`z_push_top/bottom/insert_behind/z_remove` call `mark_all_dirty()`), `WinInvalidateRect`, `WinShowWindow`, `WinSetWindowPos` (any SWP flag), `WinSetWindowText`, `PresentBuffer`, and drag/resize `MouseMotion` handlers. Dirty set cleared after every composite. 4 new unit tests in `pm_types::tests`.
 
 ## [0.0.1] - 2026-04-03
