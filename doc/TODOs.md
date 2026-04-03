@@ -172,38 +172,13 @@ After VDR-A there is only one OS window, so Warpine must route events itself.
 
 ---
 
-### VDR-F: winit + pixels Migration (optional follow-on)
+### VDR Implementation Order (completed)
 
-After VDR-A–E, SDL2 is used only for: one window, pixel buffer upload, event loop,
-and clipboard. Replace with the lighter Rust-native stack:
+All VDR-A through VDR-E milestones are complete. The winit + pixels migration
+(formerly VDR-F) has been dropped — SDL2 remains the renderer backend.
 
-- [ ] **VDR-F1 — Add `winit` + `pixels` dependencies**; gate behind a
-  `--features winit-renderer` Cargo feature.
-- [ ] **VDR-F2 — `WinitRenderer` struct** implementing `PmRenderer` trait; mirrors
-  `Sdl2Renderer` but uses `winit::EventLoop` + `pixels::Pixels`.
-- [ ] **VDR-F3 — Event translation**: `winit::event::WindowEvent` → existing
-  `push_msg` calls (keyboard, mouse, resize, close).
-- [ ] **VDR-F4 — Clipboard via `arboard` crate** (replaces `sdl2::clipboard`).
-- [ ] **VDR-F5 — Remove `libsdl2-dev` system dependency** once `winit` renderer
-  passes all integration tests.
-
----
-
-### VDR Implementation Order
-
-Suggested sequence to keep the codebase working at each step:
-
-1. VDR-B1 (z_order), VDR-E1 (focused_hwnd) — data model only, no rendering change.
-2. VDR-A2 (stop creating SDL2 windows for dialogs; already partially done).
-3. VDR-D1 + VDR-D4 (hit-test + activation) — prerequisite for correct input.
-4. VDR-A1 + VDR-A3 + VDR-A4 (single surface, coordinate offset) — big change; do
-   behind a `WARPINE_VDR=1` env var until stable.
-5. VDR-C1–C3 (basic chrome: title bar, border, sys-menu).
-6. VDR-B2–B3 (Z-order, compositor loop).
-7. VDR-A5 (dialogs fully in-surface).
-8. VDR-D2–D6 (full chrome interaction, drag, keyboard routing).
-9. VDR-C4–C5, VDR-E2–E3 (min/max, resize, active-title highlight). ✓ complete.
-10. VDR-F1–F5 (winit migration, optional).
+1. VDR-B1/E1, VDR-A2, VDR-D1/D4, VDR-A1/A3/A4, VDR-C1–C3, VDR-B2–B3,
+   VDR-A5, VDR-D2–D6, VDR-C4–C5/E2–E3 — all complete.
 
 ---
 
