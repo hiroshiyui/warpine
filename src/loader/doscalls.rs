@@ -68,6 +68,10 @@ impl super::Loader {
             return self.dos_read_stdin(buf_ptr, len, actual_ptr);
         }
 
+        // Cap read length to prevent OOM from untrusted guest-supplied sizes.
+        // 64 MB is far larger than any realistic single OS/2 file read.
+        let len = len.min(64 * 1024 * 1024);
+
         if hf >= PIPE_HANDLE_BASE {
             // Pipe handle
             let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
@@ -777,6 +781,8 @@ impl super::Loader {
             let o_next = self.guest_read::<u32>(p_gea2list + pos).unwrap_or(0);
             let cb_name = self.guest_read::<u8>(p_gea2list + pos + 4).unwrap_or(0) as u32;
             if cb_name == 0 { break; }
+            // cb_name is a u8 (max 255) from guest input; cap at OS/2 max path length for safety.
+            let cb_name = cb_name.min(260u32);
             let mut name_buf = vec![0u8; cb_name as usize];
             for i in 0..cb_name {
                 name_buf[i as usize] = self.guest_read::<u8>(p_gea2list + pos + 5 + i).unwrap_or(0);
@@ -1227,6 +1233,8 @@ impl super::Loader {
         let queue_mgr = self.shared.queue_mgr.lock_or_recover();
         if let Some(q_arc) = queue_mgr.get(hq) {
             let mut q = q_arc.lock_or_recover();
+            // Cap len to prevent OOM from untrusted guest-supplied sizes.
+            let len = len.min(64 * 1024 * 1024);
             let mut data = vec![0u8; len as usize];
             if let Some(src) = self.guest_slice_mut(buf_ptr, len as usize) {
                 data.copy_from_slice(src);

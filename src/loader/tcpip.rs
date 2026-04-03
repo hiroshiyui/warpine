@@ -77,6 +77,9 @@ pub const SOCE_CONNREFUSED:    i32 = 61;
 pub const SOCE_HOSTDOWN:       i32 = 64;
 pub const SOCE_HOSTUNREACH:    i32 = 65;
 
+/// Maximum byte count accepted from guest for any single socket buffer operation.
+const MAX_SOCKET_BUF: usize = 64 * 1024;
+
 // OS/2 socket success value
 const SOCK_SUCCESS: u32 = 0;
 // OS/2 socket error sentinel (returned from socket API on error)
@@ -266,6 +269,7 @@ impl super::Loader {
 
     pub fn so_socket(&self, domain: u32, sock_type: u32, protocol: u32) -> u32 {
         debug!("socket(domain={}, type={}, protocol={})", domain, sock_type, protocol);
+        // SAFETY: domain/type/protocol are valid i32 values passed from guest args.
         let fd = unsafe { libc::socket(domain as i32, sock_type as i32, protocol as i32) };
         if fd < 0 {
             let e = errno_to_soce(last_errno());
@@ -273,8 +277,11 @@ impl super::Loader {
             debug!("  → error {}", e);
             return SOCK_ERROR;
         }
-        let h = self.shared.socket_mgr.lock_or_recover().alloc(fd);
-        self.shared.socket_mgr.lock_or_recover().clear_errno();
+        let h = {
+            let mut mgr = self.shared.socket_mgr.lock_or_recover();
+            mgr.clear_errno();
+            mgr.alloc(fd)
+        };
         debug!("  → handle 0x{:X} (fd {})", h, fd);
         h
     }
@@ -321,6 +328,7 @@ impl super::Loader {
             self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_FAULT);
             return SOCK_ERROR;
         }
+        // SAFETY: addr_bytes is a valid slice of at least namelen bytes read from bounded guest memory.
         let rc = unsafe {
             libc::bind(fd,
                 addr_bytes.as_ptr() as *const libc::sockaddr,
@@ -377,6 +385,7 @@ impl super::Loader {
         let mut storage: libc::sockaddr_storage = unsafe { std::mem::zeroed() };
         let mut len = std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t;
 
+        // SAFETY: storage is stack-allocated; len is bounded by sockaddr_storage size.
         let new_fd = unsafe {
             libc::accept(fd, &mut storage as *mut _ as *mut libc::sockaddr, &mut len)
         };
@@ -390,6 +399,7 @@ impl super::Loader {
         if addr_ptr != 0 && addrlen_ptr != 0 {
             let guest_len = self.guest_read::<u32>(addrlen_ptr).unwrap_or(0) as usize;
             let copy_len = (len as usize).min(guest_len);
+            // SAFETY: storage is valid stack memory; copy_len is bounded by min(len, guest_len).
             let addr_bytes = unsafe {
                 std::slice::from_raw_parts(&storage as *const _ as *const u8, copy_len)
             };
@@ -397,8 +407,11 @@ impl super::Loader {
             let _ = self.guest_write::<u32>(addrlen_ptr, len as u32);
         }
 
-        let new_h = self.shared.socket_mgr.lock_or_recover().alloc(new_fd);
-        self.shared.socket_mgr.lock_or_recover().clear_errno();
+        let new_h = {
+            let mut mgr = self.shared.socket_mgr.lock_or_recover();
+            mgr.clear_errno();
+            mgr.alloc(new_fd)
+        };
         debug!("  → new handle 0x{:X} (fd {})", new_h, new_fd);
         new_h
     }
@@ -455,7 +468,7 @@ impl super::Loader {
         sent as u32
     }
 
-    // ── recv (ordinal 11) ─────────────────────────────────────────────────────
+    // ── recv (ordinal 11) ───────────────────────────────────────────────────── ─────────────────────────────────────────────────────
     //
     //   int recv(int s, void *buf, int len, int flags)
 
@@ -509,6 +522,7 @@ impl super::Loader {
         if from_ptr != 0 && fromlen_ptr != 0 {
             let guest_len = self.guest_read::<u32>(fromlen_ptr).unwrap_or(0) as usize;
             let copy_len = (from_len as usize).min(guest_len);
+            // SAFETY: storage is valid stack memory; copy_len is bounded by min(len, guest_len).
             let addr_bytes = unsafe {
                 std::slice::from_raw_parts(&storage as *const _ as *const u8, copy_len)
             };
@@ -551,6 +565,7 @@ impl super::Loader {
         }
         let guest_len = self.guest_read::<u32>(namelen_ptr).unwrap_or(0) as usize;
         let copy_len = (len as usize).min(guest_len);
+        // SAFETY: storage is valid stack memory; copy_len is bounded by min(len, guest_len).
         let addr_bytes = unsafe {
             std::slice::from_raw_parts(&storage as *const _ as *const u8, copy_len)
         };
@@ -579,6 +594,7 @@ impl super::Loader {
         }
         let guest_len = self.guest_read::<u32>(namelen_ptr).unwrap_or(0) as usize;
         let copy_len = (len as usize).min(guest_len);
+        // SAFETY: storage is valid stack memory; copy_len is bounded by min(len, guest_len).
         let addr_bytes = unsafe {
             std::slice::from_raw_parts(&storage as *const _ as *const u8, copy_len)
         };
@@ -820,49 +836,7 @@ impl super::Loader {
             }
         };
 
-        // Ensure scratch buffer is allocated.
-        let scratch = self.ensure_hostent_scratch();
-        if scratch == 0 {
-            self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_NOBUFS);
-            return 0;
-        }
-
-        // Layout within 256-byte scratch area:
-        //   +0x00  hostent struct (24 bytes)
-        //   +0x18  alias_list: [null u32]           (4 bytes)
-        //   +0x1C  addr_list:  [ptr u32, null u32]  (8 bytes)
-        //   +0x24  ipv4 addr                         (4 bytes)
-        //   +0x28  name string (null-terminated)
-        let hostent_base  = scratch;
-        let alias_base    = scratch + 0x18;
-        let addrlist_base = scratch + 0x1C;
-        let ip_base       = scratch + 0x24;
-        let name_base     = scratch + 0x28;
-
-        // Write name string.
-        let name_bytes: Vec<u8> = hostname.bytes().chain(std::iter::once(0)).collect();
-        self.guest_write_bytes(name_base, &name_bytes);
-
-        // Write IPv4 address bytes.
-        self.guest_write_bytes(ip_base, &ip);
-
-        // Write alias list: [null].
-        let _ = self.guest_write::<u32>(alias_base, 0);
-
-        // Write addr list: [&ip, null].
-        let _ = self.guest_write::<u32>(addrlist_base,     ip_base);
-        let _ = self.guest_write::<u32>(addrlist_base + 4, 0);
-
-        // Write hostent struct.
-        let _ = self.guest_write::<u32>(hostent_base,        name_base);    // h_name
-        let _ = self.guest_write::<u32>(hostent_base + 0x04, alias_base);   // h_aliases
-        let _ = self.guest_write::<i32>(hostent_base + 0x08, libc::AF_INET);// h_addrtype
-        let _ = self.guest_write::<i32>(hostent_base + 0x0C, 4);            // h_length
-        let _ = self.guest_write::<u32>(hostent_base + 0x10, addrlist_base);// h_addr_list
-
-        self.shared.socket_mgr.lock_or_recover().clear_errno();
-        debug!("  → hostent at 0x{:X}, ip={}.{}.{}.{}", hostent_base, ip[0], ip[1], ip[2], ip[3]);
-        hostent_base
+        self.write_hostent_to_scratch(&hostname, ip)
     }
 
     // ── gethostbyaddr (ordinal 41) ────────────────────────────────────────────
@@ -881,16 +855,10 @@ impl super::Loader {
             self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_FAULT);
             return 0;
         }
-        let hostname = format!("{}.{}.{}.{}", ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]);
-        // Forward to gethostbyname with dotted-quad string.
-        let tmp = hostname.as_bytes().to_vec();
-        let scratch = self.ensure_hostent_scratch();
-        if scratch == 0 { return 0; }
-        // Write hostname to scratch+0x80 as a temporary guest string.
-        let tmp_str_addr = scratch + 0x80;
-        let name_bytes: Vec<u8> = tmp.iter().cloned().chain(std::iter::once(0)).collect();
-        self.guest_write_bytes(tmp_str_addr, &name_bytes);
-        self.so_gethostbyname(tmp_str_addr)
+        let ip: [u8; 4] = [ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]];
+        let hostname = format!("{}.{}.{}.{}", ip[0], ip[1], ip[2], ip[3]);
+        // Write the hostent directly using the resolved dotted-quad as the name.
+        self.write_hostent_to_scratch(&hostname, ip)
     }
 
     // ── getservbyname (ordinal 42) ────────────────────────────────────────────
@@ -932,40 +900,12 @@ impl super::Loader {
             return 0;
         }
 
-        let port   = unsafe { (*se).s_port } as i32;
-        let c_name_ptr = unsafe { (*se).s_name };
-        let c_proto_ptr = unsafe { (*se).s_proto };
+        // SAFETY: se is a non-null pointer returned by libc::getservbyname.
+        let port       = unsafe { (*se).s_port } as i32;
+        let host_name  = unsafe { std::ffi::CStr::from_ptr((*se).s_name).to_string_lossy().to_string() };
+        let host_proto = unsafe { std::ffi::CStr::from_ptr((*se).s_proto).to_string_lossy().to_string() };
 
-        let host_name  = unsafe { std::ffi::CStr::from_ptr(c_name_ptr).to_string_lossy().to_string() };
-        let host_proto = unsafe { std::ffi::CStr::from_ptr(c_proto_ptr).to_string_lossy().to_string() };
-
-        let scratch = self.ensure_hostent_scratch();
-        if scratch == 0 { return 0; }
-
-        // Layout at scratch + 0x40 (avoids collision with hostent at scratch + 0x00):
-        let servent_base  = scratch + 0x40;
-        let alias_base    = scratch + 0x54;
-        let sname_base    = scratch + 0x58;
-        let sproto_base   = scratch + sname_base - scratch + host_name.len() as u32 + 1;
-
-        // Write strings.
-        let name_bytes: Vec<u8> = host_name.bytes().chain(std::iter::once(0)).collect();
-        self.guest_write_bytes(sname_base, &name_bytes);
-        let proto_bytes: Vec<u8> = host_proto.bytes().chain(std::iter::once(0)).collect();
-        self.guest_write_bytes(sproto_base, &proto_bytes);
-
-        // Write alias list: [null].
-        let _ = self.guest_write::<u32>(alias_base, 0);
-
-        // Write servent struct.
-        let _ = self.guest_write::<u32>(servent_base,        sname_base);  // s_name
-        let _ = self.guest_write::<u32>(servent_base + 0x04, alias_base);  // s_aliases
-        let _ = self.guest_write::<i32>(servent_base + 0x08, port);         // s_port
-        let _ = self.guest_write::<u32>(servent_base + 0x0C, sproto_base); // s_proto
-
-        self.shared.socket_mgr.lock_or_recover().clear_errno();
-        debug!("  → servent at 0x{:X}, port={}", servent_base, i16::from_be(port as i16));
-        servent_base
+        self.write_servent_to_scratch(&host_name, port, &host_proto)
     }
 
     // ── getservbyport (ordinal 43) ────────────────────────────────────────────
@@ -987,14 +927,11 @@ impl super::Loader {
             self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_INVAL);
             return 0;
         }
-        let c_name = unsafe { std::ffi::CStr::from_ptr((*se).s_name).to_string_lossy().to_string() };
-        // Forward via getservbyname using the resolved name.
-        let scratch = self.ensure_hostent_scratch();
-        if scratch == 0 { return 0; }
-        let tmp_addr = scratch + 0xA0;
-        let name_bytes: Vec<u8> = c_name.bytes().chain(std::iter::once(0)).collect();
-        self.guest_write_bytes(tmp_addr, &name_bytes);
-        self.so_getservbyname(tmp_addr, proto_ptr)
+        // SAFETY: se is a non-null pointer returned by libc::getservbyport.
+        let host_name  = unsafe { std::ffi::CStr::from_ptr((*se).s_name).to_string_lossy().to_string() };
+        let host_proto = unsafe { std::ffi::CStr::from_ptr((*se).s_proto).to_string_lossy().to_string() };
+        let resolved_port = unsafe { (*se).s_port } as i32;
+        self.write_servent_to_scratch(&host_name, resolved_port, &host_proto)
     }
 
     // ── getprotobyname (ordinal 44) ───────────────────────────────────────────
@@ -1004,7 +941,7 @@ impl super::Loader {
     //   Stub: returns 0 (not found). Used only by rare apps that need raw protocol info.
 
     pub fn so_getprotobyname(&self, _name_ptr: u32) -> u32 {
-        debug!("getprotobyname() → stub 0");
+        debug!("[STUB] getprotobyname() → 0 (not implemented)");
         0
     }
 
@@ -1015,17 +952,131 @@ impl super::Loader {
     //   Stub: returns 0.
 
     pub fn so_getprotobynumber(&self, _proto: u32) -> u32 {
-        debug!("getprotobynumber() → stub 0");
+        debug!("[STUB] getprotobynumber() → 0 (not implemented)");
         0
     }
 
     // ── Private helpers ───────────────────────────────────────────────────────
 
+    /// Write a resolved hostent into the scratch buffer and return its guest address.
+    ///
+    /// Layout within 256-byte scratch area:
+    ///   +0x00  hostent struct (24 bytes)
+    ///   +0x18  alias_list: [null u32]           (4 bytes)
+    ///   +0x1C  addr_list:  [ptr u32, null u32]  (8 bytes)
+    ///   +0x24  ipv4 addr                         (4 bytes)
+    ///   +0x28  name string (null-terminated)
+    fn write_hostent_to_scratch(&self, hostname: &str, ip: [u8; 4]) -> u32 {
+        let scratch = self.ensure_hostent_scratch();
+        if scratch == 0 {
+            self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_NOBUFS);
+            return 0;
+        }
+
+        let hostent_base  = scratch;
+        let alias_base    = scratch + 0x18;
+        let addrlist_base = scratch + 0x1C;
+        let ip_base       = scratch + 0x24;
+        let name_base     = scratch + 0x28;
+
+        // Write name string.
+        let name_bytes: Vec<u8> = hostname.bytes().chain(std::iter::once(0)).collect();
+        self.guest_write_bytes(name_base, &name_bytes);
+
+        // Write IPv4 address bytes.
+        self.guest_write_bytes(ip_base, &ip);
+
+        // Write alias list: [null].
+        let _ = self.guest_write::<u32>(alias_base, 0);
+
+        // Write addr list: [&ip, null].
+        let _ = self.guest_write::<u32>(addrlist_base,     ip_base);
+        let _ = self.guest_write::<u32>(addrlist_base + 4, 0);
+
+        // Write hostent struct.
+        let _ = self.guest_write::<u32>(hostent_base,        name_base);    // h_name
+        let _ = self.guest_write::<u32>(hostent_base + 0x04, alias_base);   // h_aliases
+        let _ = self.guest_write::<i32>(hostent_base + 0x08, libc::AF_INET);// h_addrtype
+        let _ = self.guest_write::<i32>(hostent_base + 0x0C, 4);            // h_length
+        let _ = self.guest_write::<u32>(hostent_base + 0x10, addrlist_base);// h_addr_list
+
+        self.shared.socket_mgr.lock_or_recover().clear_errno();
+        debug!("  → hostent at 0x{:X}, ip={}.{}.{}.{}", hostent_base, ip[0], ip[1], ip[2], ip[3]);
+        hostent_base
+    }
+
+    /// Write a resolved servent into the scratch buffer and return its guest address.
+    ///
+    /// Layout at scratch + 0x40 (avoids collision with hostent at scratch + 0x00):
+    ///   +0x00  s_name    u32  ptr to service name
+    ///   +0x04  s_aliases u32  ptr to null alias list
+    ///   +0x08  s_port    i32  port in network byte order
+    ///   +0x0C  s_proto   u32  ptr to protocol name
+    fn write_servent_to_scratch(&self, svc_name: &str, port: i32, proto_name: &str) -> u32 {
+        let scratch = self.ensure_hostent_scratch();
+        if scratch == 0 {
+            self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_NOBUFS);
+            return 0;
+        }
+
+        // Cap name length to fit within the 256-byte scratch layout (name at +0x58, proto after).
+        let max_name_len = 256usize.saturating_sub(0x58 + 2); // leave 2 bytes for proto + NUL
+        let host_name = if svc_name.len() > max_name_len {
+            warn!("getservbyname: service name too long for scratch buffer; truncating");
+            &svc_name[..max_name_len]
+        } else {
+            svc_name
+        };
+
+        let servent_base  = scratch + 0x40;
+        let alias_base    = scratch + 0x54;
+        let sname_base    = scratch + 0x58;
+        let sproto_base   = sname_base + host_name.len() as u32 + 1;
+
+        // Check that proto fits within the 256-byte scratch area.
+        let scratch_end = scratch + 256;
+        let max_proto_len = scratch_end.saturating_sub(sproto_base + 1) as usize;
+        let host_proto = if proto_name.len() > max_proto_len {
+            warn!("getservbyname: protocol name too long for scratch buffer; truncating");
+            &proto_name[..max_proto_len]
+        } else {
+            proto_name
+        };
+
+        // Write strings.
+        let name_bytes: Vec<u8> = host_name.bytes().chain(std::iter::once(0)).collect();
+        self.guest_write_bytes(sname_base, &name_bytes);
+        let proto_bytes: Vec<u8> = host_proto.bytes().chain(std::iter::once(0)).collect();
+        self.guest_write_bytes(sproto_base, &proto_bytes);
+
+        // Write alias list: [null].
+        let _ = self.guest_write::<u32>(alias_base, 0);
+
+        // Write servent struct.
+        let _ = self.guest_write::<u32>(servent_base,        sname_base);  // s_name
+        let _ = self.guest_write::<u32>(servent_base + 0x04, alias_base);  // s_aliases
+        let _ = self.guest_write::<i32>(servent_base + 0x08, port);         // s_port
+        let _ = self.guest_write::<u32>(servent_base + 0x0C, sproto_base); // s_proto
+
+        self.shared.socket_mgr.lock_or_recover().clear_errno();
+        debug!("  → servent at 0x{:X}, port={}", servent_base, i16::from_be(port as i16));
+        servent_base
+    }
+
     /// Read `len` bytes from guest memory at `addr`. Returns fewer bytes if OOB.
+    ///
+    /// The read is capped at `MAX_SOCKET_BUF` to prevent runaway allocations from
+    /// untrusted guest length fields.
     fn read_guest_bytes(&self, addr: u32, len: usize) -> Vec<u8> {
-        (0..len)
-            .filter_map(|i| self.guest_read::<u8>(addr + i as u32))
-            .collect()
+        let capped = len.min(MAX_SOCKET_BUF);
+        if let Some(slice) = self.guest_slice_mut(addr, capped) {
+            slice.to_vec()
+        } else {
+            // guest_slice_mut failed (OOB or zero len); fall back to safe byte-by-byte.
+            (0..capped)
+                .filter_map(|i| self.guest_read::<u8>(addr + i as u32))
+                .collect()
+        }
     }
 
     /// Translate a Linux syscall return value (0 = ok, -1 = error) into an OS/2 result.
@@ -1260,5 +1311,73 @@ mod tests {
 
         let ptr = loader.so_getservbyname(name_addr, 0);
         assert_eq!(ptr, 0, "unknown service must return null");
+    }
+
+    #[test]
+    fn test_so_bind_and_getsockname() {
+        use std::os::fd::IntoRawFd;
+        let loader = Loader::new_mock();
+        // Create a real TCP socket via libc and insert into SocketManager.
+        let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        assert!(fd >= 0, "libc::socket failed");
+        let h = loader.shared.socket_mgr.lock_or_recover().alloc(fd);
+
+        // Prepare a sockaddr_in for 127.0.0.1:0.
+        let sa_addr = loader.shared.mem_mgr.lock_or_recover().alloc(16).unwrap();
+        loader.guest_write_bytes(sa_addr, &[2, 0, 0, 0, 127, 0, 0, 1, 0,0,0,0,0,0,0,0]);
+        loader.guest_write::<u16>(sa_addr, 2u16); // AF_INET
+        loader.guest_write::<u16>(sa_addr + 2, 0u16); // port 0
+
+        let rc = loader.so_bind(h, sa_addr, 16);
+        assert_eq!(rc, 0, "bind to 127.0.0.1:0 should succeed");
+
+        // getsockname should return the assigned port.
+        let name_addr = loader.shared.mem_mgr.lock_or_recover().alloc(16).unwrap();
+        let len_addr  = loader.shared.mem_mgr.lock_or_recover().alloc(4).unwrap();
+        loader.guest_write::<u32>(len_addr, 16);
+        let rc2 = loader.so_getsockname(h, name_addr, len_addr);
+        assert_eq!(rc2, 0, "getsockname should succeed");
+
+        // Clean up.
+        loader.so_close(h);
+    }
+
+    #[test]
+    fn test_so_send_recv_loopback() {
+        use std::io::Write;
+        use std::net::{TcpListener, TcpStream};
+        use std::os::unix::io::IntoRawFd;
+        // Use Rust std to set up a loopback connection, then exercise send/recv via the handlers.
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind failed");
+        let port = listener.local_addr().unwrap().port();
+
+        // Connect a client stream.
+        let client = TcpStream::connect(format!("127.0.0.1:{}", port)).expect("connect failed");
+        let (server, _) = listener.accept().expect("accept failed");
+
+        let client_fd = client.into_raw_fd();
+        let server_fd = server.into_raw_fd();
+
+        let loader = Loader::new_mock();
+        let cli_h  = loader.shared.socket_mgr.lock_or_recover().alloc(client_fd);
+        let srv_h  = loader.shared.socket_mgr.lock_or_recover().alloc(server_fd);
+
+        // Write "hello" via so_send.
+        let send_addr = loader.shared.mem_mgr.lock_or_recover().alloc(8).unwrap();
+        loader.guest_write_bytes(send_addr, b"hello");
+        let sent = loader.so_send(cli_h, send_addr, 5, 0);
+        assert_eq!(sent, 5, "so_send should return 5");
+
+        // Read via so_recv.
+        let recv_addr = loader.shared.mem_mgr.lock_or_recover().alloc(16).unwrap();
+        // Give data time to arrive (loopback is instant but flush just in case).
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let got = loader.so_recv(srv_h, recv_addr, 16, 0);
+        assert_eq!(got, 5, "so_recv should return 5");
+        let b0 = loader.guest_read::<u8>(recv_addr).unwrap();
+        assert_eq!(b0, b'h', "first byte should be 'h'");
+
+        loader.so_close(cli_h);
+        loader.so_close(srv_h);
     }
 }

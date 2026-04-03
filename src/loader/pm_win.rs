@@ -2050,6 +2050,107 @@ mod tests {
         assert_eq!((cmd.mp1 >> 16) & 0xFFFF, 2); // CMDSRC_MENU=2
     }
 
+    // ── Parse robustness tests (T-2) ─────────────────────────────────────────
+
+    /// parse_menu_template with a resource shorter than the 10-byte header
+    /// must return an empty Vec without panicking.
+    #[test]
+    fn test_parse_menu_template_truncated_does_not_panic() {
+        let loader = Loader::new_mock();
+        let base: u32 = 0x5000;
+        // Write only 5 bytes — less than the 10-byte header minimum.
+        let data: &[u8] = &[0xFF, 0x01, 0x00, 0x00, 0x00];
+        for (i, &b) in data.iter().enumerate() {
+            loader.guest_write::<u8>(base + i as u32, b).unwrap();
+        }
+        let items = loader.parse_menu_template(base, data.len() as u32);
+        assert!(items.is_empty(), "truncated header must produce no items");
+    }
+
+    /// parse_menu_template with an all-zero resource (item_count=0, no items)
+    /// must return an empty Vec without panicking.
+    #[test]
+    fn test_parse_menu_template_all_zero_does_not_panic() {
+        let loader = Loader::new_mock();
+        let base: u32 = 0x5100;
+        // 16 zero bytes — header is valid (size 16 >= 10) but item_count=0 and
+        // every potential item byte is 0x00 (MIS_END sentinel with count fallback).
+        let data = [0u8; 16];
+        for (i, &b) in data.iter().enumerate() {
+            loader.guest_write::<u8>(base + i as u32, b).unwrap();
+        }
+        let items = loader.parse_menu_template(base, data.len() as u32);
+        // With item_count=0 (use_count=false) the loop stops at MIS_END sentinel
+        // (style=0 contains bit 15 clear, so !use_count && (0 & MIS_END) == 0 is
+        // false, but offset+6 > size=16 after two iterations → early break).
+        assert!(items.len() <= 1, "all-zero template must not iterate unboundedly");
+    }
+
+    /// parse_menu_template with item_count=0xFFFF but only ~30 bytes of data
+    /// must terminate as soon as the offset exceeds the available size,
+    /// not iterate 65535 times.
+    #[test]
+    fn test_parse_menu_template_huge_item_count_bounded_by_size() {
+        let loader = Loader::new_mock();
+        let base: u32 = 0x5200;
+        // Header: total_size=30, codepage=850, reserved=4, item_count=0xFFFF.
+        // Item data: 20 bytes of junk after the 10-byte header.
+        let mut data = [0u8; 30];
+        // u32 total_size = 30
+        data[0] = 30;
+        // u16 codepage = 850 (0x0352)
+        data[4] = 0x52; data[5] = 0x03;
+        // u16 reserved = 4
+        data[6] = 4;
+        // u16 item_count = 0xFFFF
+        data[8] = 0xFF; data[9] = 0xFF;
+        // Fill item bytes with non-MIS_END style so the loop doesn't early-exit
+        // via the sentinel path, only via the size guard.
+        for b in &mut data[10..] { *b = 0x01; }
+        for (i, &b) in data.iter().enumerate() {
+            loader.guest_write::<u8>(base + i as u32, b).unwrap();
+        }
+        let items = loader.parse_menu_template(base, data.len() as u32);
+        // The size guard (offset+6 > 30) caps how many 6-byte items can fit:
+        // at most (30 - 10) / 6 = 3 iterations before text-read exhausts the buffer.
+        assert!(items.len() <= 4, "huge item_count must be bounded by available data (got {})", items.len());
+    }
+
+    /// parse_dlg_template with a resource shorter than the 40-byte minimum
+    /// must return None without panicking.
+    #[test]
+    fn test_parse_dlg_template_truncated_does_not_panic() {
+        let loader = Loader::new_mock();
+        let base: u32 = 0x5300;
+        // Write only 20 bytes — less than the 40-byte minimum.
+        let data = [0u8; 20];
+        for (i, &b) in data.iter().enumerate() {
+            loader.guest_write::<u8>(base + i as u32, b).unwrap();
+        }
+        let result = loader.parse_dlg_template(base, data.len() as u32);
+        assert!(result.is_none(), "truncated dlg template must return None");
+    }
+
+    /// parse_dlg_template with an all-zero 64-byte resource (c_items=0)
+    /// must return Some with an empty item list, not panic.
+    #[test]
+    fn test_parse_dlg_template_all_zero_does_not_panic() {
+        let loader = Loader::new_mock();
+        let base: u32 = 0x5400;
+        // 64 zero bytes — size >= 40 so the header check passes; c_items=0 so
+        // the child loop body never executes.
+        let data = [0u8; 64];
+        for (i, &b) in data.iter().enumerate() {
+            loader.guest_write::<u8>(base + i as u32, b).unwrap();
+        }
+        let result = loader.parse_dlg_template(base, data.len() as u32);
+        // size=64 >= 40, so result is Some; c_items=0 → empty items vec.
+        assert!(result.is_some(), "all-zero dlg template (size>=40) should return Some");
+        let (_, _, _, _, title, items) = result.unwrap();
+        assert!(items.is_empty(), "c_items=0 must produce no child items");
+        assert!(title.is_empty(), "title_off=0 must produce empty title");
+    }
+
     /// WinQueryWindowText with ASCII-only text must still work after the
     /// codepage-encode path (ASCII encodes identically in all supported CPs).
     #[test]

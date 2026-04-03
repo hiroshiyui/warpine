@@ -177,6 +177,11 @@ impl super::Loader {
         if chain_head == XCPT_CHAIN_END {
             return None; // No handlers registered
         }
+        // Validate that chain_head is a plausible guest address (within 128 MB window).
+        if chain_head == 0 || chain_head >= 0x0800_0000 {
+            warn!("SEH: chain_head=0x{:08X} is outside guest address space; ignoring", chain_head);
+            return None;
+        }
 
         let handler_fn = self.guest_read::<u32>(chain_head + XERREC_HANDLER)
             .unwrap_or(0);
@@ -227,6 +232,10 @@ impl super::Loader {
         if chain_head == XCPT_CHAIN_END {
             warn!("  DosRaiseException: no handlers registered, xcpt=0x{:08X}", xcpt_code);
             return ApiResult::Normal(ERROR_NESTING_NOT_ALLOWED); // no handlers
+        }
+        if chain_head == 0 || chain_head >= 0x0800_0000 {
+            warn!("SEH: chain_head=0x{:08X} outside guest window; no handlers", chain_head);
+            return ApiResult::Normal(ERROR_NESTING_NOT_ALLOWED);
         }
 
         let handler_fn = self.guest_read::<u32>(chain_head + XERREC_HANDLER).unwrap_or(0);
@@ -287,7 +296,13 @@ impl super::Loader {
         let mut cur = self.guest_read::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET)
             .unwrap_or(XCPT_CHAIN_END);
 
+        let mut steps: usize = 0;
         while cur != XCPT_CHAIN_END && cur != p_reg_rec {
+            steps += 1;
+            if steps > 256 {
+                warn!("SEH unwind: handler chain exceeds 256 entries — possible cycle; truncating");
+                break;
+            }
             debug!("  DosUnwindException: skipping handler at 0x{:08X}", cur);
             // NOTE: a full implementation would invoke each handler with EH_UNWINDING.
             // For Watcom Open Watcom apps that use __try/__finally via setjmp this
