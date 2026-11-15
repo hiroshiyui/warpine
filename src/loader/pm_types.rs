@@ -105,6 +105,17 @@ pub struct MenuItem {
     pub children: Vec<MenuItem>,
 }
 
+/// Strip the `~` mnemonic marker from a menu item's text for display.
+pub fn menu_label(text: &str) -> String {
+    text.chars().filter(|&c| c != '~').collect()
+}
+
+/// Pixel width a top-level item occupies in the menu bar (8-px glyphs + padding).
+pub fn menu_bar_item_width(text: &str) -> i32 {
+    use super::constants::{MENU_BAR_ITEM_PAD, SYSFONT_CHAR_W};
+    text.chars().filter(|&c| c != '~').count() as i32 * SYSFONT_CHAR_W + MENU_BAR_ITEM_PAD
+}
+
 pub struct WindowManager {
     classes: HashMap<String, WindowClass>,
     windows: HashMap<u32, OS2Window>,
@@ -345,6 +356,54 @@ impl WindowManager {
         None
     }
 
+    // ── Frame layout helpers ─────────────────────────────────────────────────
+
+    /// Height of the chrome stacked above a frame's client area: the title bar
+    /// (when `FCF_TITLEBAR` is set) plus the menu bar (when a menu is attached).
+    pub fn frame_chrome_top_h(&self, frame: u32) -> i32 {
+        use super::constants::{CHROME_TITLE_H, FCF_TITLEBAR, MENU_BAR_HEIGHT};
+        self.windows.get(&frame).map_or(0, |w| {
+            let title_h = if w.frame_flags & FCF_TITLEBAR != 0 { CHROME_TITLE_H } else { 0 };
+            let menu_h = if w.menu_hwnd != 0 { MENU_BAR_HEIGHT as i32 } else { 0 };
+            title_h + menu_h
+        })
+    }
+
+    /// Re-derive the menu-bar and client rectangles of `frame` from its current
+    /// size: the menu bar sits directly below the title bar and the client
+    /// fills what is left underneath. Returns the client `(cx, cy)`.
+    pub fn layout_frame(&mut self, frame: u32) -> (i32, i32) {
+        use super::constants::MENU_BAR_HEIGHT;
+        let Some((frame_cx, frame_cy, menu_hwnd)) =
+            self.windows.get(&frame).map(|w| (w.cx, w.cy, w.menu_hwnd)) else { return (0, 0) };
+        let top_h = self.frame_chrome_top_h(frame);
+        let client_cy = (frame_cy - top_h).max(0);
+        if menu_hwnd != 0 && let Some(menu) = self.windows.get_mut(&menu_hwnd) {
+            menu.x = 0;
+            menu.y = client_cy;
+            menu.cx = frame_cx;
+            menu.cy = MENU_BAR_HEIGHT as i32;
+        }
+        if let Some(&client) = self.frame_to_client.get(&frame)
+            && let Some(cw) = self.windows.get_mut(&client) {
+            cw.cx = frame_cx;
+            cw.cy = client_cy;
+        }
+        self.mark_dirty(frame);
+        (frame_cx, client_cy)
+    }
+
+    /// Attach `menu` as the menu bar of `frame` (0 detaches) and re-layout the
+    /// frame so the client area no longer overlaps the bar. Returns the
+    /// previously attached menu handle.
+    pub fn attach_menu(&mut self, frame: u32, menu: u32) -> u32 {
+        let Some(win) = self.windows.get_mut(&frame) else { return 0 };
+        let prev = win.menu_hwnd;
+        win.menu_hwnd = menu;
+        self.layout_frame(frame);
+        prev
+    }
+
     // ── Z-order helpers ──────────────────────────────────────────────────────
 
     /// VDR-B4: mark an HWND (frame or client) as visually dirty.
@@ -430,6 +489,57 @@ mod tests {
         let h_client = wm.create_window("TestClient".to_string(), h_frame, 0);
         wm.frame_to_client.insert(h_frame, h_client);
         h_frame
+    }
+
+    #[test]
+    fn layout_frame_puts_client_below_title_bar() {
+        use crate::loader::constants::{CHROME_TITLE_H, FCF_TITLEBAR};
+        let mut wm = WindowManager::new();
+        let frame = make_frame(&mut wm);
+        {
+            let w = wm.get_window_mut(frame).unwrap();
+            w.cx = 640; w.cy = 480; w.frame_flags = FCF_TITLEBAR;
+        }
+        assert_eq!(wm.frame_chrome_top_h(frame), CHROME_TITLE_H);
+        assert_eq!(wm.layout_frame(frame), (640, 480 - CHROME_TITLE_H));
+        let client = wm.frame_to_client[&frame];
+        assert_eq!(wm.get_window(client).unwrap().cy, 480 - CHROME_TITLE_H);
+    }
+
+    #[test]
+    fn attach_menu_shrinks_client_and_places_bar_above_it() {
+        use crate::loader::constants::{CHROME_TITLE_H, FCF_TITLEBAR, MENU_BAR_HEIGHT};
+        let mut wm = WindowManager::new();
+        let frame = make_frame(&mut wm);
+        {
+            let w = wm.get_window_mut(frame).unwrap();
+            w.cx = 640; w.cy = 480; w.frame_flags = FCF_TITLEBAR;
+        }
+        wm.layout_frame(frame);
+        wm.dirty.clear();
+        let menu = wm.create_window("#Menu".to_string(), frame, 0);
+
+        assert_eq!(wm.attach_menu(frame, menu), 0, "no previous menu");
+        let client_cy = 480 - CHROME_TITLE_H - MENU_BAR_HEIGHT as i32;
+        assert_eq!(wm.frame_chrome_top_h(frame), CHROME_TITLE_H + MENU_BAR_HEIGHT as i32);
+        let client = wm.frame_to_client[&frame];
+        assert_eq!(wm.get_window(client).unwrap().cy, client_cy);
+        // The bar occupies the strip directly above the client, so they never overlap.
+        let m = wm.get_window(menu).unwrap();
+        assert_eq!((m.x, m.y, m.cx, m.cy), (0, client_cy, 640, MENU_BAR_HEIGHT as i32));
+        assert!(wm.dirty.contains(&frame), "attaching a menu must request a recomposite");
+
+        // Detaching gives the strip back to the client.
+        assert_eq!(wm.attach_menu(frame, 0), menu);
+        assert_eq!(wm.get_window(client).unwrap().cy, 480 - CHROME_TITLE_H);
+    }
+
+    #[test]
+    fn menu_bar_item_width_ignores_mnemonic_marker() {
+        use super::{menu_bar_item_width, menu_label};
+        assert_eq!(menu_label("~File"), "File");
+        assert_eq!(menu_bar_item_width("~File"), menu_bar_item_width("File"));
+        assert_eq!(menu_bar_item_width("File"), 4 * 8 + 8);
     }
 
     #[test]

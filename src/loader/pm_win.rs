@@ -105,7 +105,7 @@ impl super::Loader {
                 let psz_title_ptr = read_stack(20);
                 let _client_style = read_stack(24);
                 let _hmod = read_stack(28);
-                let _id = read_stack(32);
+                let id_resources = read_stack(32);
                 let phwnd_client_ptr = read_stack(36);
                 let class_name = self.read_guest_string(psz_class_name_ptr);
                 let title = if psz_title_ptr != 0 { self.read_guest_string(psz_title_ptr) } else { "Warpine Window".to_string() };
@@ -114,6 +114,13 @@ impl super::Loader {
                     self.guest_read::<u32>(pfc_flags_ptr).unwrap_or(0)
                 } else { 0 };
                 debug!("  [VCPU {}] WinCreateStdWindow: class='{}', title='{}', parent=0x{:08X}, style=0x{:08X}, fcf=0x{:08X}", vcpu_id, class_name, title, parent, style, fl_create_flags);
+
+                // FCF_MENU: the frame loads its menu bar from the RT_MENU resource
+                // whose id is the idResources argument. A missing resource simply
+                // leaves the frame without a menu.
+                let fcf_menu_items = if fl_create_flags & FCF_MENU != 0 {
+                    self.load_menu_resource(id_resources, vcpu_id)
+                } else { None };
 
                 let (h_frame, h_client, pfn_wp_client) = {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
@@ -129,12 +136,13 @@ impl super::Loader {
                         win.visible = style & WS_VISIBLE != 0;
                         win.text = title.clone();
                     }
-                    let client_cy = if fl_create_flags & FCF_TITLEBAR != 0 {
-                        480 - CHROME_TITLE_H
-                    } else {
-                        480
-                    };
-                    if let Some(win) = wm.get_window_mut(h_client) { win.cx = 640; win.cy = client_cy; }
+                    if let Some(items) = fcf_menu_items {
+                        let h_menu = wm.create_window("#Menu".to_string(), h_frame, 0);
+                        if let Some(win) = wm.get_window_mut(h_menu) { win.menu_items = items; }
+                        if let Some(win) = wm.get_window_mut(h_frame) { win.menu_hwnd = h_menu; }
+                    }
+                    // Client fills the frame below the title bar and menu bar.
+                    wm.layout_frame(h_frame);
                     // VDR-B1/E1: register in Z-order stack (top-most) and set focus.
                     wm.z_push_top(h_frame);
                     wm.focused_hwnd = h_frame;
@@ -530,14 +538,7 @@ impl super::Loader {
                 let hwnd_frame = read_stack(4);
                 let hwnd_menu  = read_stack(8);
                 debug!("  [VCPU {}] WinSetMenu frame={} menu={}", vcpu_id, hwnd_frame, hwnd_menu);
-                let old = {
-                    let mut wm = self.shared.window_mgr.lock_or_recover();
-                    if let Some(win) = wm.get_window_mut(hwnd_frame) {
-                        let prev = win.menu_hwnd;
-                        win.menu_hwnd = hwnd_menu;
-                        prev
-                    } else { 0 }
-                };
+                let old = self.attach_menu_to_frame(hwnd_frame, hwnd_menu);
                 ApiResult::Normal(old)
             }
             907 => {
@@ -854,52 +855,15 @@ impl super::Loader {
                 let id_menu    = read_stack(12);
                 debug!("  [VCPU {}] WinLoadMenu hwnd_frame={} id={}", vcpu_id, hwnd_frame, id_menu);
 
-                let res = self.shared.resource_mgr.lock_or_recover()
-                    .find(RT_MENU, id_menu as u16);
-
-                let items = if let Some((guest_addr, size)) = res {
-                    let parsed = self.parse_menu_template(guest_addr, size);
-                    debug!("  [VCPU {}] WinLoadMenu: parsed {} top-level items for id={}",
-                           vcpu_id, parsed.len(), id_menu);
-                    parsed
-                } else {
-                    debug!("  [VCPU {}] WinLoadMenu: no RT_MENU resource for id={}", vcpu_id, id_menu);
-                    Vec::new()
-                };
-
-                let (h, hmq_val) = {
+                let items = self.load_menu_resource(id_menu, vcpu_id).unwrap_or_default();
+                let h = {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
-                    let (frame_cx, frame_cy) = wm.get_window(hwnd_frame)
-                        .map(|w| (w.cx, w.cy)).unwrap_or((640, 480));
                     let h = wm.create_window("#Menu".to_string(), hwnd_frame, 0);
-                    if let Some(win) = wm.get_window_mut(h) {
-                        win.menu_items = items;
-                        // Position just below the title bar in OS/2 bottom-left coordinate space.
-                        // Frame top (OS/2 y) = frame_cy; title bar occupies [frame_cy-CHROME_TITLE_H, frame_cy).
-                        // Menu bar sits immediately below: [frame_cy-CHROME_TITLE_H-MENU_BAR_HEIGHT, frame_cy-CHROME_TITLE_H).
-                        win.x = 0;
-                        win.y = frame_cy - CHROME_TITLE_H - MENU_BAR_HEIGHT as i32;
-                        win.cx = frame_cx;
-                        win.cy = MENU_BAR_HEIGHT as i32;
-                    }
-                    // Associate the menu with the frame window.
-                    if let Some(frame_win) = wm.get_window_mut(hwnd_frame) {
-                        frame_win.menu_hwnd = h;
-                    }
-                    (h, wm.find_hmq_for_hwnd(hwnd_frame))
+                    if let Some(win) = wm.get_window_mut(h) { win.menu_items = items; }
+                    h
                 };
-                // Post WM_PAINT so the menu bar renders on the next message pump.
-                if let Some(hmq) = hmq_val {
-                    let wm = self.shared.window_mgr.lock_or_recover();
-                    if let Some(mq_arc) = wm.get_mq(hmq) {
-                        let mut mq = mq_arc.lock_or_recover();
-                        mq.messages.push_back(OS2Message {
-                            hwnd: h, msg: WM_PAINT, mp1: 0, mp2: 0,
-                            time: 0, x: 0, y: 0,
-                        });
-                        mq.cond.notify_one();
-                    }
-                }
+                // Associate the menu with the frame; the compositor draws the bar.
+                self.attach_menu_to_frame(hwnd_frame, h);
                 ApiResult::Normal(h)
             }
             781 => {
@@ -1273,11 +1237,17 @@ impl super::Loader {
                 }
                 // (SWP_ZORDER dirtiness is handled transitively via z_push_top/bottom/insert_behind)
 
+                // A resized frame re-lays out its menu bar and client; the frame's
+                // FrameBuffer holds client content only, so size it to the client.
+                let (fb_cx, fb_cy) = if fl & SWP_SIZE != 0 && wm.frame_to_client.contains_key(&hwnd) {
+                    wm.layout_frame(hwnd)
+                } else { (cx, cy) };
+
                 // Send GUI messages for the actual window operations.
                 if let Some(ref sender) = wm.gui_tx {
                     if fl & SWP_SIZE != 0 {
                         let _ = sender.send(GUIMessage::ResizeWindow {
-                            handle: hwnd, width: cx as u32, height: cy as u32,
+                            handle: hwnd, width: fb_cx.max(1) as u32, height: fb_cy.max(1) as u32,
                         });
                     }
                     if fl & SWP_MOVE != 0 {
@@ -1713,6 +1683,56 @@ impl super::Loader {
         Some((x, y, cx, cy, title, items))
     }
 
+    /// Parse the RT_MENU resource `id_menu` into a menu item tree.
+    /// Returns `None` when the executable has no such resource.
+    fn load_menu_resource(&self, id_menu: u32, vcpu_id: u32) -> Option<Vec<MenuItem>> {
+        let res = self.shared.resource_mgr.lock_or_recover().find(RT_MENU, id_menu as u16);
+        match res {
+            Some((guest_addr, size)) => {
+                let parsed = self.parse_menu_template(guest_addr, size);
+                debug!("  [VCPU {}] RT_MENU id={}: parsed {} top-level items",
+                       vcpu_id, id_menu, parsed.len());
+                Some(parsed)
+            }
+            None => {
+                debug!("  [VCPU {}] no RT_MENU resource for id={}", vcpu_id, id_menu);
+                None
+            }
+        }
+    }
+
+    /// Attach `hwnd_menu` as the menu bar of `hwnd_frame` and return the menu
+    /// it replaces. The client area shrinks (or grows) to make room for the
+    /// bar; when its size changes the FrameBuffer is resized and the client is
+    /// told via WM_SIZE + WM_PAINT so it redraws at the new size.
+    fn attach_menu_to_frame(&self, hwnd_frame: u32, hwnd_menu: u32) -> u32 {
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        let client = wm.frame_to_client.get(&hwnd_frame).copied();
+        let old_size = client.and_then(|c| wm.get_window(c)).map(|w| (w.cx, w.cy));
+        let prev = wm.attach_menu(hwnd_frame, hwnd_menu);
+        let new_size = client.and_then(|c| wm.get_window(c)).map(|w| (w.cx, w.cy));
+        if let (Some(client), Some((cx, cy))) = (client, new_size)
+            && old_size != new_size
+        {
+            if let Some(ref sender) = wm.gui_tx {
+                let _ = sender.send(GUIMessage::ResizeWindow {
+                    handle: hwnd_frame, width: cx.max(1) as u32, height: cy.max(1) as u32,
+                });
+            }
+            if let Some(mq_arc) = wm.find_hmq_for_hwnd(client).and_then(|h| wm.get_mq(h)) {
+                let mut mq = mq_arc.lock_or_recover();
+                let mp2 = ((cy as u32 & 0xFFFF) << 16) | (cx as u32 & 0xFFFF);
+                for (msg, mp2) in [(WM_SIZE, mp2), (WM_PAINT, 0)] {
+                    mq.messages.push_back(OS2Message {
+                        hwnd: client, msg, mp1: 0, mp2, time: 0, x: 0, y: 0,
+                    });
+                }
+                mq.cond.notify_one();
+            }
+        }
+        prev
+    }
+
     /// Create a dialog window with child controls from parsed template data.
     ///
     /// Returns `(hwnd_dlg, hmq)`.
@@ -1814,6 +1834,67 @@ mod tests {
         assert_eq!(items[0].text, "File");
         assert_eq!(items[1].id, 200);
         assert_eq!(items[1].text, "Help");
+    }
+
+    /// WinCreateStdWindow (908) with FCF_MENU must load the RT_MENU resource
+    /// named by idResources, attach it to the frame, and size the client so it
+    /// ends below the menu bar. Without the resource the frame has no menu.
+    #[test]
+    fn test_win_create_std_window_fcf_menu_loads_menu_resource() {
+        use super::super::mutex_ext::MutexExt;
+        use super::super::constants::{FCF_TITLEBAR, FCF_MENU, MENU_BAR_HEIGHT, CHROME_TITLE_H};
+        let loader = Loader::new_mock();
+        {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq();
+            wm.tid_to_hmq.insert(0, hmq);
+        }
+        // One-item wrc MENUTEMPLATE ("File", id 100) registered as RT_MENU id 7.
+        let base: u32 = 0x5000;
+        let data: &[u8] = &[
+            0x15, 0x00, 0x00, 0x00, 0x52, 0x03, 0x04, 0x00, 0x01, 0x00,
+            0x01, 0x00, 0x00, 0x00, 0x64, 0x00, b'F', b'i', b'l', b'e', 0x00,
+        ];
+        for (i, &b) in data.iter().enumerate() {
+            loader.guest_write::<u8>(base + i as u32, b).unwrap();
+        }
+        loader.shared.resource_mgr.lock_or_recover().add(crate::lx::header::RT_MENU, 7, base, data.len() as u32);
+        // Class name string and flCreateFlags in guest memory.
+        let (p_class, p_flags, p_client) = (0x6000u32, 0x6100u32, 0x6200u32);
+        for (i, &b) in b"MenuTest\0".iter().enumerate() {
+            loader.guest_write::<u8>(p_class + i as u32, b).unwrap();
+        }
+        loader.guest_write::<u32>(p_flags, FCF_TITLEBAR | FCF_MENU).unwrap();
+
+        let create = |id_resources: u32| {
+            let mut vcpu = MockVcpu::new();
+            let esp: u32 = 0x1000;
+            vcpu.regs.rsp = esp as u64;
+            write_stack(&loader, esp, &[0, 0, p_flags, p_class, 0, 0, 0, id_resources, p_client]);
+            loader.handle_pmwin_call(&mut vcpu, 0, 908);
+            loader.guest_read::<u32>(p_client).unwrap()
+        };
+
+        let client = create(7);
+        {
+            let wm = loader.shared.window_mgr.lock_or_recover();
+            let frame = wm.client_to_frame(client);
+            let menu_hwnd = wm.get_window(frame).unwrap().menu_hwnd;
+            assert_ne!(menu_hwnd, 0, "FCF_MENU must attach a menu");
+            let menu = wm.get_window(menu_hwnd).unwrap();
+            assert_eq!(menu.menu_items.len(), 1);
+            assert_eq!(menu.menu_items[0].text, "File");
+            assert_eq!(wm.get_window(client).unwrap().cy,
+                       480 - CHROME_TITLE_H - MENU_BAR_HEIGHT as i32);
+            assert_eq!(menu.y, wm.get_window(client).unwrap().cy);
+        }
+
+        // idResources with no RT_MENU resource: no menu, client only loses the title bar.
+        let client = create(99);
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        let frame = wm.client_to_frame(client);
+        assert_eq!(wm.get_window(frame).unwrap().menu_hwnd, 0);
+        assert_eq!(wm.get_window(client).unwrap().cy, 480 - CHROME_TITLE_H);
     }
 
     /// parse_menu_template with a SUBMENU item must recurse into the child

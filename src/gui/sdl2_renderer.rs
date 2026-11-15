@@ -22,6 +22,9 @@ use crate::loader::{SharedState, OS2Message, MutexExt,
     FCF_TITLEBAR, FCF_SYSMENU, FCF_MINBUTTON, FCF_MAXBUTTON,
     FCF_BORDER, FCF_DLGBORDER, FCF_SIZEBORDER,
     WM_ACTIVATE, WM_SYSCOMMAND, SC_MINIMIZE, SC_MAXIMIZE};
+use crate::loader::constants::{
+    MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H, MIS_SEPARATOR};
+use crate::loader::pm_types::{MenuItem, menu_label, menu_bar_item_width};
 use super::message::GUIMessage;
 use super::renderer::PmRenderer;
 use super::render_utils::{render_text_to_buffer, render_rect_to_buffer, render_line_to_buffer};
@@ -77,6 +80,62 @@ fn draw_text_screen(buf: &mut [u32], buf_w: usize, buf_h: usize, sx: i32, sy: i3
                     }
                 }
             }
+        }
+    }
+}
+
+/// Height of the bitmap system font's glyphs (pixels).
+const GLYPH_H: i32 = 16;
+const MENU_BG_COLOR: u32        = 0x00D4_D0C8;
+const MENU_EDGE_COLOR: u32      = 0x0080_8080;
+const MENU_TEXT_COLOR: u32      = 0x0000_0000;
+const MENU_HILITE_COLOR: u32    = 0x0000_0080;
+const MENU_HILITE_TEXT: u32     = 0x00FF_FFFF;
+
+/// Draw a frame's menu bar and, when `open_item` (1-based) is non-zero, the
+/// pull-down of that top-level item, into a desktop-space pixel buffer.
+///
+/// `(x0, bar_top)` is the bar's top-left corner in SDL2 screen space and
+/// `bar_w` its width. Item geometry mirrors the `#Menu` hit-testing in
+/// `Loader::dispatch_builtin_control` (same insets, widths and row height).
+fn draw_menu_chrome(buf: &mut [u32], buf_w: usize, x0: i32, bar_top: i32, bar_w: i32,
+                    items: &[MenuItem], open_item: u32) {
+    let buf_h = buf.len() / buf_w.max(1);
+    let bar_h = MENU_BAR_HEIGHT as i32;
+    let bar_bot = bar_top + bar_h;
+    draw_filled_rect(buf, buf_w, x0, bar_top, x0 + bar_w, bar_bot, MENU_BG_COLOR);
+    draw_filled_rect(buf, buf_w, x0, bar_bot - 1, x0 + bar_w, bar_bot, MENU_EDGE_COLOR);
+
+    let text_y = bar_top + (bar_h - GLYPH_H) / 2;
+    let mut item_x = x0 + MENU_BAR_ITEM_INSET;
+    let mut open_x = None;
+    for (i, item) in items.iter().enumerate() {
+        if item.style & MIS_SEPARATOR != 0 { continue; }
+        let label_w = menu_bar_item_width(&item.text);
+        let is_open = open_item > 0 && i == (open_item - 1) as usize;
+        if is_open {
+            draw_filled_rect(buf, buf_w, item_x, bar_top, item_x + label_w, bar_bot, MENU_HILITE_COLOR);
+            open_x = Some(item_x);
+        }
+        draw_text_screen(buf, buf_w, buf_h, item_x + 2, text_y, &menu_label(&item.text),
+                         if is_open { MENU_HILITE_TEXT } else { MENU_TEXT_COLOR });
+        item_x += label_w;
+    }
+
+    let (Some(drop_x), Some(parent)) =
+        (open_x, items.get(open_item.wrapping_sub(1) as usize)) else { return };
+    let drop_h = parent.children.len() as i32 * MENU_DROPDOWN_ITEM_H;
+    let (dx1, dy1) = (drop_x + MENU_DROPDOWN_W, bar_bot + drop_h);
+    draw_filled_rect(buf, buf_w, drop_x, bar_bot, dx1, dy1, MENU_EDGE_COLOR);
+    draw_filled_rect(buf, buf_w, drop_x + 1, bar_bot, dx1 - 1, dy1 - 1, MENU_BG_COLOR);
+    for (ci, child) in parent.children.iter().enumerate() {
+        let row_top = bar_bot + ci as i32 * MENU_DROPDOWN_ITEM_H;
+        if child.style & MIS_SEPARATOR != 0 {
+            let sep_y = row_top + MENU_DROPDOWN_ITEM_H / 2;
+            draw_filled_rect(buf, buf_w, drop_x + 2, sep_y, dx1 - 2, sep_y + 1, MENU_EDGE_COLOR);
+        } else {
+            draw_text_screen(buf, buf_w, buf_h, drop_x + 4, row_top,
+                             &menu_label(&child.text), MENU_TEXT_COLOR);
         }
     }
 }
@@ -287,10 +346,7 @@ impl Sdl2Renderer {
                 let wm = shared.window_mgr.lock_or_recover();
                 wm.get_window(handle)
                     .filter(|win| win.cx > 0 && win.cy > 0)
-                    .map(|win| {
-                        let title_h = if win.frame_flags & FCF_TITLEBAR != 0 { CHROME_TITLE_H } else { 0 };
-                        (win.cx as u32, (win.cy - title_h).max(1) as u32)
-                    })
+                    .map(|win| (win.cx as u32, (win.cy - wm.frame_chrome_top_h(handle)).max(1) as u32))
                     .unwrap_or((desktop.width, desktop.height))
             };
             FrameBuffer::new(w, h)
@@ -329,6 +385,8 @@ impl Sdl2Renderer {
             frame_flags: u32,
             title: String,
             is_focused: bool,
+            /// Attached menu bar: top-level items and the 1-based open item (0 = closed).
+            menu: Option<(Vec<MenuItem>, u32)>,
         }
         let frames: Vec<FrameSnap> = {
             let wm = shared.window_mgr.lock_or_recover();
@@ -341,6 +399,9 @@ impl Sdl2Renderer {
                     frame_flags: w.frame_flags,
                     title: w.text.clone(),
                     is_focused: hwnd == focused,
+                    menu: wm.get_window(w.menu_hwnd).filter(|_| w.menu_hwnd != 0).map(|m| {
+                        (m.menu_items.clone(), m.window_ulong.get(&-1).copied().unwrap_or(0))
+                    }),
                 })
             }).collect()
         };
@@ -361,10 +422,11 @@ impl Sdl2Renderer {
             // OS/2 y=0 is bottom; SDL2 y=0 is top.
             let dst_top_y = dh - snap.y - snap.cy;
 
-            // Blit frame buffer (client content), offset below the title bar.
-            let content_top_y = dst_top_y + title_h;
+            // Blit frame buffer (client content), offset below the title bar and menu bar.
+            let menu_h = if snap.menu.is_some() { MENU_BAR_HEIGHT as i32 } else { 0 };
+            let content_top_y = dst_top_y + title_h + menu_h;
             let blit_h = (fb.height as i32)
-                .min(snap.cy - title_h)
+                .min(snap.cy - title_h - menu_h)
                 .min(dh - content_top_y.max(0));
             let blit_w = (fb.width as i32)
                 .min(snap.cx - border_w * 2)
@@ -402,7 +464,7 @@ impl Sdl2Renderer {
                 }
                 // VDR-C3: system-menu icon — small gray square on the left.
                 let (text_left, text_y) = {
-                    let cy = (title_h - 8) / 2; // vertical centre offset for 8px glyphs
+                    let cy = (title_h - GLYPH_H) / 2; // vertical centre offset for 16-px glyphs
                     let mut left = snap.x + 4;
                     if snap.frame_flags & FCF_SYSMENU != 0 {
                         draw_filled_rect(
@@ -468,6 +530,15 @@ impl Sdl2Renderer {
                         for ty in by0..by1 { self.desktop.buffer[ty * dw + rx] = bc; }
                     }
                 }
+            }
+
+            // Menu bar + open pull-down, drawn last so the pull-down overlays the
+            // client content without ever being written into its FrameBuffer.
+            if let Some((items, open_item)) = &snap.menu {
+                draw_menu_chrome(
+                    &mut self.desktop.buffer, dw,
+                    snap.x + border_w, dst_top_y + title_h, snap.cx - border_w * 2,
+                    items, *open_item);
             }
         }
 
@@ -772,10 +843,9 @@ impl Sdl2Renderer {
                 // VDR-C5: end resize on button release.
                 if let Some(rs) = self.resize_state.take() {
                     let hwnd = rs.hwnd;
-                    let (new_cx, new_cy) = {
-                        let wm = shared.window_mgr.lock_or_recover();
-                        wm.get_window(hwnd).map(|w| (w.cx, w.cy)).unwrap_or((rs.orig_cx, rs.orig_cy))
-                    };
+                    // Re-lay out the menu bar and client for the new frame size; the
+                    // FrameBuffer and WM_SIZE both describe the client area.
+                    let (new_cx, new_cy) = shared.window_mgr.lock_or_recover().layout_frame(hwnd);
                     // Resize the FrameBuffer to match the new client-area dimensions.
                     let client_w = new_cx.max(1) as u32;
                     let client_h = new_cy.max(1) as u32;
@@ -871,10 +941,7 @@ impl PmRenderer for Sdl2Renderer {
                     let wm = shared.window_mgr.lock_or_recover();
                     wm.get_window(handle)
                         .filter(|win| win.cx > 0 && win.cy > 0)
-                        .map(|win| {
-                            let title_h = if win.frame_flags & FCF_TITLEBAR != 0 { CHROME_TITLE_H } else { 0 };
-                            (win.cx as u32, (win.cy - title_h).max(1) as u32)
-                        })
+                        .map(|win| (win.cx as u32, (win.cy - wm.frame_chrome_top_h(handle)).max(1) as u32))
                         .unwrap_or((self.desktop.width, self.desktop.height))
                 };
                 let fb = FrameBuffer::new(w, h);
@@ -1309,9 +1376,61 @@ fn sdl_keycode_to_char(kc: Keycode) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{sdl_keycode_to_char, sdl_keycode_to_vk, sdl_scancode_to_os2, build_wm_char, mb_buttons};
+    use super::{draw_menu_chrome, menu_bar_item_width, MenuItem,
+                MENU_BG_COLOR, MENU_EDGE_COLOR, MENU_HILITE_COLOR,
+                MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H, MIS_SEPARATOR};
+    use crate::loader::constants::{MIS_TEXT, MIS_SUBMENU};
     use sdl2::keyboard::{Keycode, Mod as KeyMod, Scancode};
     use crate::loader::{MBID_OK, MBID_CANCEL, MBID_RETRY, MBID_YES, MBID_NO, MBID_ENTER,
                         MB_OK, MB_OKCANCEL, MB_RETRYCANCEL, MB_YESNO, MB_ENTERCANCEL};
+
+    fn menu_item(text: &str, style: u16, children: Vec<MenuItem>) -> MenuItem {
+        MenuItem { id: 0, style, attr: 0, text: text.to_string(), children }
+    }
+
+    /// The bar is drawn at the given screen position; with no open item nothing
+    /// is painted below it.
+    #[test]
+    fn draw_menu_chrome_closed_paints_only_the_bar() {
+        const W: usize = 200;
+        let mut buf = vec![0xFFFF_FFFFu32; W * 100];
+        let items = vec![menu_item("~File", MIS_TEXT | MIS_SUBMENU,
+                                   vec![menu_item("~About", MIS_TEXT, vec![])])];
+        draw_menu_chrome(&mut buf, W, 0, 10, W as i32, &items, 0);
+        let px = |x: usize, y: usize| buf[y * W + x];
+        assert_eq!(px(150, 9), 0xFFFF_FFFF, "row above the bar untouched");
+        assert_eq!(px(150, 10), MENU_BG_COLOR);
+        assert_eq!(px(150, 10 + MENU_BAR_HEIGHT as usize - 1), MENU_EDGE_COLOR, "bottom rule");
+        assert_eq!(px(10, 10 + MENU_BAR_HEIGHT as usize), 0xFFFF_FFFF, "no pull-down when closed");
+    }
+
+    /// An open item is highlighted and its pull-down appears directly below the
+    /// bar, one row per child, with a rule for separators.
+    #[test]
+    fn draw_menu_chrome_open_paints_highlight_and_pulldown() {
+        const W: usize = 200;
+        let mut buf = vec![0xFFFF_FFFFu32; W * 100];
+        let items = vec![menu_item("~File", MIS_TEXT | MIS_SUBMENU, vec![
+            menu_item("~About", MIS_TEXT, vec![]),
+            menu_item("", MIS_SEPARATOR, vec![]),
+            menu_item("E~xit", MIS_TEXT, vec![]),
+        ])];
+        draw_menu_chrome(&mut buf, W, 0, 10, W as i32, &items, 1);
+        let px = |x: i32, y: i32| buf[y as usize * W + x as usize];
+        let bar_bot = 10 + MENU_BAR_HEIGHT as i32;
+        // Highlight spans the item's width at the bar's top row.
+        assert_eq!(px(MENU_BAR_ITEM_INSET, 10), MENU_HILITE_COLOR);
+        assert_eq!(px(MENU_BAR_ITEM_INSET + menu_bar_item_width("File"), 10), MENU_BG_COLOR);
+        // Pull-down: 3 rows, left edge is the border, interior is menu background.
+        let drop_bot = bar_bot + 3 * MENU_DROPDOWN_ITEM_H;
+        assert_eq!(px(MENU_BAR_ITEM_INSET, bar_bot + 1), MENU_EDGE_COLOR);
+        assert_eq!(px(MENU_BAR_ITEM_INSET + MENU_DROPDOWN_W - 2, bar_bot + 1), MENU_BG_COLOR);
+        assert_eq!(px(MENU_BAR_ITEM_INSET + MENU_DROPDOWN_W, bar_bot + 1), 0xFFFF_FFFF, "right of pull-down");
+        assert_eq!(px(MENU_BAR_ITEM_INSET + 10, drop_bot), 0xFFFF_FFFF, "below pull-down");
+        // Separator rule in the middle of the second row.
+        let sep_y = bar_bot + MENU_DROPDOWN_ITEM_H + MENU_DROPDOWN_ITEM_H / 2;
+        assert_eq!(px(MENU_BAR_ITEM_INSET + 60, sep_y), MENU_EDGE_COLOR);
+    }
 
     #[test]
     fn mb_buttons_ok_has_one_entry_with_mbid_ok() {

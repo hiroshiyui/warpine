@@ -219,6 +219,14 @@ pub const WC_NOTEBOOK_ATOM:   u32 = 0xFFFF_0028;
 
 /// Height of the PM menu bar in pixels (OS/2-space units).
 pub const MENU_BAR_HEIGHT: i16 = 20;
+/// Left inset of the first top-level menu item inside the menu bar (pixels).
+pub const MENU_BAR_ITEM_INSET: i32 = 4;
+/// Horizontal padding added to a top-level item's label width (pixels).
+pub const MENU_BAR_ITEM_PAD: i32 = 8;
+/// Width of a pull-down menu (pixels).
+pub const MENU_DROPDOWN_W: i32 = 120;
+/// Height of one pull-down menu row (pixels).
+pub const MENU_DROPDOWN_ITEM_H: i32 = 16;
 
 // Dialog and menu message constants
 pub const WM_INITDLG:    u32 = 0x0021; // First message to a dialog box
