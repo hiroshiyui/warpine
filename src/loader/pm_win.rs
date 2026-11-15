@@ -1726,16 +1726,18 @@ impl super::Loader {
         dlg_x: i16, dlg_y: i16, dlg_cx: i16, dlg_cy: i16,
         items: Vec<DlgItemInfo>,
     ) -> (u32, u32) {
+        use super::constants::{dlg_units_to_px_x, dlg_units_to_px_y};
         let mut wm = self.shared.window_mgr.lock_or_recover();
         let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
         let h = wm.create_window("#Dialog".to_string(), hwnd_parent, hmq);
         if let Some(win) = wm.get_window_mut(h) {
             win.text    = title.clone();
             win.pfn_wp  = pfn_dlg_proc;
-            win.x       = dlg_x as i32;
-            win.y       = dlg_y as i32;
-            win.cx      = dlg_cx as i32;
-            win.cy      = dlg_cy as i32;
+            // DLGTEMPLATE geometry is in dialog units, not pixels.
+            win.x       = dlg_units_to_px_x(dlg_x);
+            win.y       = dlg_units_to_px_y(dlg_y);
+            win.cx      = dlg_units_to_px_x(dlg_cx);
+            win.cy      = dlg_units_to_px_y(dlg_cy);
             win.visible = true; // dialogs are always shown when created
         }
         wm.z_push_top(h);
@@ -1748,10 +1750,10 @@ impl super::Loader {
             let ch = wm.create_window(class_name, h, hmq);
             if let Some(cwin) = wm.get_window_mut(ch) {
                 cwin.text    = item.text;
-                cwin.x       = item.x as i32;
-                cwin.y       = item.y as i32;
-                cwin.cx      = item.cx as i32;
-                cwin.cy      = item.cy as i32;
+                cwin.x       = dlg_units_to_px_x(item.x);
+                cwin.y       = dlg_units_to_px_y(item.y);
+                cwin.cx      = dlg_units_to_px_x(item.cx);
+                cwin.cy      = dlg_units_to_px_y(item.cy);
                 cwin.id      = item.id as u32;
                 cwin.style   = item.fl_style;
                 cwin.visible = item.fl_style & super::constants::WS_VISIBLE != 0;
@@ -1886,6 +1888,31 @@ mod tests {
         let win = wm.get_window(hwnd).unwrap();
         assert!(win.dialog_dismissed, "dialog_dismissed should be true");
         assert_eq!(win.dialog_result, 42, "dialog_result should be 42");
+    }
+
+    /// DLGTEMPLATE geometry is in dialog units; the created dialog and its
+    /// children must be scaled to pixels (2× with the 8×16 system font).
+    #[test]
+    fn test_create_dialog_scales_dialog_units_to_pixels() {
+        use super::super::mutex_ext::MutexExt;
+        use super::DlgItemInfo;
+        let loader = Loader::new_mock();
+        {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq();
+            wm.tid_to_hmq.insert(0, hmq);
+        }
+        let items = vec![DlgItemInfo {
+            x: 70, y: 10, cx: 40, cy: 14, id: 1, fl_style: 0,
+            class_name: "WC_BUTTON".to_string(), text: "OK".to_string(),
+        }];
+        let (hwnd_dlg, _) = loader.create_dialog_from_template(
+            0, 0, 0, "About".to_string(), 40, 40, 180, 80, items);
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        let dlg = wm.get_window(hwnd_dlg).unwrap();
+        assert_eq!((dlg.x, dlg.y, dlg.cx, dlg.cy), (80, 80, 360, 160));
+        let child = wm.get_window(dlg.children[0]).unwrap();
+        assert_eq!((child.x, child.y, child.cx, child.cy), (140, 20, 80, 28));
     }
 
     /// WinSendDlgItemMsg (903) routes to a child control's built-in handler.

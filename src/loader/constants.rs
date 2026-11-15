@@ -280,6 +280,24 @@ pub const WM_CONTROL: u32 = 0x0030;
 pub const BN_CLICKED: u32 = 0;
 pub const BN_DBLCLICKED: u32 = 1;
 
+// Dialog units → pixels. OS/2 defines one horizontal dialog unit as 1/4 of the
+// system font's average character width and one vertical unit as 1/8 of its
+// height. Warpine's system font is the 8×16 bitmap font, so both factors are 2.
+pub const SYSFONT_CHAR_W: i32 = 8;
+pub const SYSFONT_CHAR_H: i32 = 16;
+pub const DLG_UNITS_PER_CHAR_W: i32 = 4;
+pub const DLG_UNITS_PER_CHAR_H: i32 = 8;
+
+/// Convert a horizontal dialog-unit value (DLGTEMPLATE x / cx) to pixels.
+pub const fn dlg_units_to_px_x(du: i16) -> i32 {
+    du as i32 * SYSFONT_CHAR_W / DLG_UNITS_PER_CHAR_W
+}
+
+/// Convert a vertical dialog-unit value (DLGTEMPLATE y / cy) to pixels.
+pub const fn dlg_units_to_px_y(du: i16) -> i32 {
+    du as i32 * SYSFONT_CHAR_H / DLG_UNITS_PER_CHAR_H
+}
+
 // VDR chrome dimensions — must match CHROME_TITLE_H in sdl2_renderer.rs
 pub const CHROME_TITLE_H: i32 = 20;
 
