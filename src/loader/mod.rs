@@ -5,6 +5,8 @@ pub mod mutex_ext;
 pub mod managers;
 pub mod ipc;
 pub mod pm_types;
+pub mod pm_edit;
+mod pm_controls;
 pub mod vfs;
 pub mod vfs_hostdir;
 pub mod vm_backend;
@@ -476,26 +478,14 @@ impl Loader {
                             color: 0x00A0A0A0, fill: true,
                         });
                     }
-                    "WC_ENTRYFIELD" => {
-                        // White field with one vertically centred line of text.
-                        control_box(sender, frame_hwnd, (x, y, cx, cy), CONTROL_FIELD_COLOR);
-                        let line = font::fit_text(&text, cx - 2 * CONTROL_TEXT_INSET, FontSpec::SYSTEM);
-                        if !line.is_empty() {
-                            control_text(sender, frame_hwnd, x + CONTROL_TEXT_INSET,
-                                         y + (cy - CONTROL_LINE_H) / 2, line);
-                        }
+                    pm_controls::CLASS_ENTRYFIELD => {
+                        self.paint_entry_field(sender, frame_hwnd, hwnd, (x, y, cx, cy));
                     }
-                    "WC_MLE" => {
-                        // White field; one row per line of text, from the top.
-                        control_box(sender, frame_hwnd, (x, y, cx, cy), CONTROL_FIELD_COLOR);
-                        control_rows(sender, frame_hwnd, (x, y, cx, cy), text.lines());
+                    pm_controls::CLASS_MLE => {
+                        self.paint_mle(sender, frame_hwnd, hwnd, (x, y, cx, cy));
                     }
-                    "WC_LISTBOX" => {
-                        // White field; one row per item, from the top.
-                        let items = self.shared.window_mgr.lock_or_recover()
-                            .get_window(hwnd).map(|w| w.listbox_items.clone()).unwrap_or_default();
-                        control_box(sender, frame_hwnd, (x, y, cx, cy), CONTROL_FIELD_COLOR);
-                        control_rows(sender, frame_hwnd, (x, y, cx, cy), items.iter().map(String::as_str));
+                    pm_controls::CLASS_LISTBOX => {
+                        self.paint_listbox(sender, frame_hwnd, hwnd, (x, y, cx, cy));
                     }
                     "#Menu" => {
                         // The menu bar and any open pull-down are frame chrome:
@@ -734,23 +724,44 @@ impl Loader {
                 ApiResult::Normal(0)
             }
 
+            WM_BUTTON1DOWN if pm_controls::is_input_control(&class_name) => {
+                self.control_button_down(hwnd, &class_name, cy, mp1)
+            }
+
+            WM_CHAR if pm_controls::is_input_control(&class_name) => {
+                self.control_char(hwnd, &class_name, mp1, mp2)
+            }
+
+            LM_SELECTITEM => self.listbox_select_item(hwnd, mp1, mp2),
+
+            LM_QUERYSELECTION => self.listbox_query_selection(hwnd, mp1),
+
             LM_INSERTITEM => {
                 // mp1 = MPFROMSHORT(index) — insert position; LIT_END (0xFFFF) = append
                 // mp2 = MPFROMP(pszItem)   — guest pointer to item string
                 let item_text = if mp2 != 0 { self.read_guest_string(mp2) } else { String::new() };
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-                if let Some(win) = wm.get_window_mut(hwnd) {
+                let index = {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    let Some(win) = wm.get_window_mut(hwnd) else {
+                        return ApiResult::Normal(u32::MAX); // LIT_ERROR
+                    };
                     let idx = mp1 as i32;
                     if idx < 0 || idx as usize >= win.listbox_items.len() {
                         win.listbox_items.push(item_text);
-                        ApiResult::Normal(win.listbox_items.len() as u32 - 1)
+                        win.listbox_items.len() as u32 - 1
                     } else {
                         win.listbox_items.insert(idx as usize, item_text);
-                        ApiResult::Normal(idx as u32)
+                        // The selected item keeps its selection when it is
+                        // pushed down by an item inserted at or before it.
+                        if let Some(sel) = win.listbox_sel.as_mut()
+                            && *sel >= idx as usize {
+                            *sel += 1;
+                        }
+                        idx as u32
                     }
-                } else {
-                    ApiResult::Normal(u32::MAX) // LIT_ERROR
-                }
+                };
+                self.repaint_control(hwnd);
+                ApiResult::Normal(index)
             }
 
             LM_QUERYITEMCOUNT => {
@@ -824,62 +835,4 @@ fn control_text(sender: &crate::gui::GUISender, handle: u32, x: i32, y: i32, tex
     let _ = sender.send(crate::gui::GUIMessage::DrawText {
         handle, x, y, text: text.to_string(), color: CONTROL_TEXT_COLOR,
     });
-}
-
-/// Layout of text rows inside a control `(x, y, cx, cy)`: rows run from the
-/// top down, each clipped to the control's width, and rows that would not fit
-/// completely above the bottom border are dropped. Returns `(x, y, text)` per
-/// visible row, `y` being the bottom of the row's line box.
-fn control_row_layout<'a>(
-    (x, y, cx, cy): (i32, i32, i32, i32),
-    rows: impl Iterator<Item = &'a str>,
-) -> Vec<(i32, i32, &'a str)> {
-    let top = y + cy - 2;
-    rows.enumerate()
-        .map(|(i, row)| (top - CONTROL_LINE_H * (i as i32 + 1), row))
-        .take_while(|&(row_y, _)| row_y > y)
-        .map(|(row_y, row)| {
-            (x + CONTROL_TEXT_INSET, row_y,
-             font::fit_text(row, cx - 2 * CONTROL_TEXT_INSET, FontSpec::SYSTEM))
-        })
-        .collect()
-}
-
-/// Draw the rows produced by [`control_row_layout`].
-fn control_rows<'a>(sender: &crate::gui::GUISender, handle: u32,
-                    rect: (i32, i32, i32, i32), rows: impl Iterator<Item = &'a str>) {
-    for (rx, ry, row) in control_row_layout(rect, rows) {
-        if !row.is_empty() { control_text(sender, handle, rx, ry, row); }
-    }
-}
-
-#[cfg(test)]
-mod control_paint_tests {
-    use super::*;
-
-    /// Rows are laid out from the top of the control downwards, clipped to its
-    /// width, and rows that do not fit above the bottom border are dropped.
-    #[test]
-    fn control_rows_run_top_down_and_are_clipped() {
-        let rect = (10, 60, 200, 100); // bottom-left (10,60), 200×100
-        let rows = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh"];
-        let layout = control_row_layout(rect, rows.iter().copied());
-        // 100-px control, 16-px rows, 2-px top inset, 1-px bottom border → 6 rows.
-        assert_eq!(layout.len(), 6);
-        assert_eq!(layout[0], (10 + CONTROL_TEXT_INSET, 60 + 100 - 2 - CONTROL_LINE_H, "first"));
-        for pair in layout.windows(2) {
-            assert_eq!(pair[0].1 - pair[1].1, CONTROL_LINE_H, "rows are one line apart");
-        }
-        assert!(layout.iter().all(|&(_, y, _)| y > 60 && y + CONTROL_LINE_H < 60 + 100));
-
-        // A row wider than the control is cut to a prefix that fits.
-        let long = "a very long list box entry that is much wider than the control";
-        let narrow = control_row_layout((0, 0, 80, 40), std::iter::once(long));
-        let (_, _, shown) = narrow[0];
-        assert!(long.starts_with(shown) && shown.len() < long.len());
-        assert!(font::text_width(shown, FontSpec::SYSTEM) <= 80 - 2 * CONTROL_TEXT_INSET);
-
-        // A control too short for a single row shows nothing.
-        assert!(control_row_layout((0, 0, 80, 10), std::iter::once("x")).is_empty());
-    }
 }

@@ -263,6 +263,11 @@ impl super::Loader {
                     return ApiResult::Callback { wnd_proc: pfn_wp, hwnd, msg, mp1, mp2 };
                 }
                 // pfn_wp == 0: route to built-in control handler (WC_BUTTON, WC_STATIC, …)
+                // A queued WM_PAINT for a control (creation, focus change) is
+                // painted and presented; nothing else will present it.
+                if msg == WM_PAINT && self.repaint_control(hwnd) {
+                    return ApiResult::Normal(0);
+                }
                 self.dispatch_builtin_control(hwnd, msg, mp1, mp2)
             }
             919 => {
@@ -991,6 +996,27 @@ impl super::Loader {
                 }
                 ApiResult::Normal(if new_frame != 0 { 1 } else { 0 })
             }
+            860 => {
+                // WinSetFocus(HWND hwndDesktop, HWND hwndNewFocus) -> BOOL
+                // The focus window receives keyboard input; NULLHANDLE means
+                // no window has the focus (keys go to the active frame's client).
+                let _hwnd_desktop = read_stack(4);
+                let hwnd = read_stack(8);
+                let exists = hwnd == 0
+                    || self.shared.window_mgr.lock_or_recover().get_window(hwnd).is_some();
+                if exists {
+                    self.set_focus_window(hwnd);
+                }
+                ApiResult::Normal(exists as u32)
+            }
+            817 => {
+                // WinQueryFocus(HWND hwndDesktop) -> HWND
+                // The focus window, or the active frame's client when no
+                // window has taken the focus explicitly.
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let target = wm.key_target();
+                ApiResult::Normal(wm.frame_to_client.get(&target).copied().unwrap_or(target))
+            }
             799 => {
                 // WinQueryActiveWindow(HWND hwndDesktop) -> HWND
                 // VDR-E2: return focused_hwnd.
@@ -1373,7 +1399,8 @@ impl super::Loader {
                 let y               = read_stack(24) as i32;
                 let cx              = read_stack(28) as i32;
                 let cy              = read_stack(32) as i32;
-                // hwndOwner (+36), hwndInsertBehind (+40) — ignored for now
+                let hwnd_owner      = read_stack(36);
+                // hwndInsertBehind (+40) — ignored for now
                 let id              = read_stack(44);
                 // pCtlData (+48), pPresParams (+52) — ignored
 
@@ -1397,6 +1424,7 @@ impl super::Loader {
                         win.x = x; win.y = y;
                         win.cx = cx; win.cy = cy;
                         win.id = id;
+                        win.owner = hwnd_owner;
                         win.style = fl_style;
                         win.visible = fl_style & WS_VISIBLE != 0;
                     }
@@ -2479,5 +2507,135 @@ mod tests {
         assert_eq!(&loader.guest_read::<u8>(buf_ptr).unwrap(),     &b'H');
         assert_eq!(&loader.guest_read::<u8>(buf_ptr + 4).unwrap(), &b'o');
         assert_eq!(loader.guest_read::<u8>(buf_ptr + 5).unwrap(),   0x00);
+    }
+
+    /// A std window with one entry field (id 7, text "ab") created through
+    /// WinCreateWindow with an explicit owner. Returns `(frame, client, owner, entry)`.
+    fn window_with_entry(loader: &Loader) -> (u32, u32, u32, u32) {
+        let (frame, client, owner) = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq(TEST_CODEPAGE);
+            wm.tid_to_hmq.insert(0, hmq);
+            wm.register_class("App".into(), 0x1234, 0);
+            let frame = wm.create_window("App".into(), 0, hmq);
+            let client = wm.create_window("App".into(), frame, hmq);
+            let owner = wm.create_window("App".into(), 0, hmq);
+            wm.frame_to_client.insert(frame, client);
+            wm.z_push_top(frame);
+            wm.focused_hwnd = frame;
+            (frame, client, owner)
+        };
+        // WC_ENTRYFIELD is passed the way the toolkit headers define it: as an atom.
+        let (p_class, p_text) = (super::super::constants::WC_ENTRYFIELD_ATOM, 0x13100u32);
+        for (i, b) in "ab\0".bytes().enumerate() {
+            loader.guest_write::<u8>(p_text + i as u32, b).unwrap();
+        }
+        let mut vcpu = MockVcpu::new();
+        let esp: u32 = 0x1000;
+        vcpu.regs.rsp = esp as u64;
+        // WinCreateWindow(parent, class, name, style, x, y, cx, cy, owner, behind, id, ctl, pres)
+        write_stack(loader, esp, &[client, p_class, p_text, super::super::constants::WS_VISIBLE, 10, 200, 200, 25,
+                                   owner, 0, 7, 0, 0]);
+        let entry = match loader.handle_pmwin_call(&mut vcpu, 0, 909) {
+            ApiResult::Normal(h) => h,
+            _ => panic!("WinCreateWindow should return a handle"),
+        };
+        (frame, client, owner, entry)
+    }
+
+    /// WinSetFocus (860) / WinQueryFocus (817): the focus window defaults to
+    /// the active frame's client, can be moved to a control and cleared, and
+    /// a bad handle is rejected without changing it.
+    #[test]
+    fn test_win_set_focus_and_query_focus() {
+        let loader = Loader::new_mock();
+        let (_frame, client, _owner, entry) = window_with_entry(&loader);
+        let mut vcpu = MockVcpu::new();
+        let esp: u32 = 0x1000;
+        vcpu.regs.rsp = esp as u64;
+        let mut call = |ordinal: u32, args: &[u32]| {
+            write_stack(&loader, esp, args);
+            match loader.handle_pmwin_call(&mut vcpu, 0, ordinal) {
+                ApiResult::Normal(v) => v,
+                _ => panic!("expected a plain return value"),
+            }
+        };
+        const HWND_DESKTOP: u32 = 1;
+        assert_eq!(call(817, &[HWND_DESKTOP]), client, "default focus: the client");
+        assert_eq!(call(860, &[HWND_DESKTOP, entry]), 1);
+        assert_eq!(call(817, &[HWND_DESKTOP]), entry);
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().key_target(), entry);
+        assert_eq!(call(860, &[HWND_DESKTOP, 0xDEAD]), 0, "unknown window");
+        assert_eq!(call(817, &[HWND_DESKTOP]), entry, "focus unchanged");
+        assert_eq!(call(860, &[HWND_DESKTOP, client]), 1);
+        assert_eq!(call(817, &[HWND_DESKTOP]), client);
+        assert_eq!(call(860, &[HWND_DESKTOP, entry]), 1);
+        assert_eq!(call(860, &[HWND_DESKTOP, 0]), 1, "NULLHANDLE clears the focus");
+        assert_eq!(call(817, &[HWND_DESKTOP]), client);
+    }
+
+    /// End to end through the PMWIN API: a click and keystrokes dispatched
+    /// with WinDispatchMsg (912) edit the entry field, WinQueryWindowText
+    /// (841) returns the edited text, EN_CHANGE goes to the owner given to
+    /// WinCreateWindow, and WinSetWindowText (877) still replaces the text.
+    #[test]
+    fn test_entry_field_editing_through_dispatch_and_window_text() {
+        use super::super::constants::{WM_CHAR, WM_BUTTON1DOWN, WM_CONTROL, EN_CHANGE,
+                                      KC_CHAR, KC_VIRTUALKEY, VK_BACKSPACE, WM_CHAR_VKEY_SHIFT};
+        let loader = Loader::new_mock();
+        let (_frame, _client, owner, entry) = window_with_entry(&loader);
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().get_window(entry).unwrap().owner, owner);
+
+        let mut vcpu = MockVcpu::new();
+        let esp: u32 = 0x1000;
+        let (qmsg, buf, p_new) = (0x2000u32, 0x2100u32, 0x2200u32);
+        vcpu.regs.rsp = esp as u64;
+        let mut call = |ordinal: u32, args: &[u32]| {
+            write_stack(&loader, esp, args);
+            match loader.handle_pmwin_call(&mut vcpu, 0, ordinal) {
+                ApiResult::Normal(v) => v,
+                _ => panic!("expected a plain return value"),
+            }
+        };
+        let mut dispatch = |msg: u32, mp1: u32, mp2: u32| {
+            for (i, v) in [entry, msg, mp1, mp2].into_iter().enumerate() {
+                loader.guest_write::<u32>(qmsg + i as u32 * 4, v).unwrap();
+            }
+            call(912, &[0, qmsg]);
+        };
+        // Click at the far right (x=190, y=12 inside the field): caret after "ab".
+        dispatch(WM_BUTTON1DOWN, 190 | (12 << 16), 0);
+        dispatch(WM_CHAR, KC_CHAR, b'c' as u32);
+        dispatch(WM_CHAR, KC_CHAR, b'd' as u32);
+        dispatch(WM_CHAR, KC_VIRTUALKEY, VK_BACKSPACE << WM_CHAR_VKEY_SHIFT);
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().focus_hwnd, entry);
+
+        let text_of = |n: u32| {
+            (0..n).map(|i| loader.guest_read::<u8>(buf + i).unwrap() as char).collect::<String>()
+        };
+        // WinQueryWindowText(hwnd, cchMax, pchBuffer)
+        assert_eq!(text_of(call(841, &[entry, 16, buf])), "abc");
+
+        // Three text changes → three EN_CHANGE notifications to the owner.
+        let notes: Vec<(u32, u32, u32)> = {
+            let wm = loader.shared.window_mgr.lock_or_recover();
+            let mq = wm.get_mq(wm.find_hmq_for_hwnd(owner).unwrap()).unwrap();
+            let mq = mq.lock_or_recover();
+            mq.messages.iter().filter(|m| m.msg == WM_CONTROL)
+                .map(|m| (m.hwnd, m.mp1, m.mp2)).collect()
+        };
+        assert_eq!(notes, vec![(owner, (EN_CHANGE << 16) | 7, entry); 3]);
+
+        // WinSetWindowText with a shorter text; typing continues at its end.
+        for (i, b) in "x\0".bytes().enumerate() {
+            loader.guest_write::<u8>(p_new + i as u32, b).unwrap();
+        }
+        call(877, &[entry, p_new]);
+        assert_eq!(text_of(call(841, &[entry, 16, buf])), "x");
+        for (i, v) in [entry, WM_CHAR, KC_CHAR, b'y' as u32].into_iter().enumerate() {
+            loader.guest_write::<u32>(qmsg + i as u32 * 4, v).unwrap();
+        }
+        call(912, &[0, qmsg]);
+        assert_eq!(text_of(call(841, &[entry, 16, buf])), "xy");
     }
 }

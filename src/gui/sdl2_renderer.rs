@@ -18,7 +18,7 @@ use crate::loader::{SharedState, OS2Message, MutexExt,
     VK_INSERT, VK_DELETE, VK_SCRLLOCK, VK_NUMLOCK, VK_ENTER,
     VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6,
     VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12,
-    CF_TEXT, KC_PREVDOWN,
+    CF_TEXT, KC_PREVDOWN, WM_CHAR_REPEAT_SHIFT, WM_CHAR_SCANCODE_SHIFT, WM_CHAR_VKEY_SHIFT,
     FCF_TITLEBAR, FCF_SYSMENU, FCF_MINBUTTON, FCF_MAXBUTTON,
     FCF_BORDER, FCF_DLGBORDER, FCF_SIZEBORDER,
     WM_ACTIVATE, WM_SYSCOMMAND, SC_MINIMIZE, SC_MAXIMIZE};
@@ -454,6 +454,9 @@ impl Sdl2Renderer {
         let video      = sdl.video().expect("SDL2 video subsystem init failed");
         let event_pump = sdl.event_pump().expect("SDL2 event pump init failed");
         let desktop    = DesktopCanvas::new(&video, dw, dh);
+        // Typed characters are taken from SDL TextInput events (see
+        // `build_wm_char`); make sure they are being generated.
+        video.text_input().start();
         Sdl2Renderer {
             video,
             event_pump,
@@ -663,18 +666,33 @@ impl Sdl2Renderer {
                     _ => {}
                 }
             }
+            // Keyboard input goes to the PM focus window (a control that was
+            // clicked or given the focus with WinSetFocus), else to the
+            // active frame's client.
             Event::KeyDown { keycode, scancode, keymod, repeat, .. } => {
-                let focused = shared.window_mgr.lock_or_recover().focused_hwnd;
-                if focused != 0 {
+                let target = shared.window_mgr.lock_or_recover().key_target();
+                if target != 0 {
                     let (mp1, mp2) = build_wm_char(keycode, scancode, keymod, repeat, false);
-                    push_msg(shared, focused, WM_CHAR, mp1, mp2);
+                    push_msg(shared, target, WM_CHAR, mp1, mp2);
                 }
             }
             Event::KeyUp { keycode, scancode, keymod, .. } => {
-                let focused = shared.window_mgr.lock_or_recover().focused_hwnd;
-                if focused != 0 {
+                let target = shared.window_mgr.lock_or_recover().key_target();
+                if target != 0 {
                     let (mp1, mp2) = build_wm_char(keycode, scancode, keymod, false, true);
-                    push_msg(shared, focused, WM_CHAR, mp1, mp2);
+                    push_msg(shared, target, WM_CHAR, mp1, mp2);
+                }
+            }
+            // Typed text: the final characters after keyboard layout, Shift,
+            // dead keys and input-method composition. KeyDown above carries no
+            // printable character, so nothing is delivered twice.
+            Event::TextInput { text, .. } => {
+                let target = shared.window_mgr.lock_or_recover().key_target();
+                if target != 0 {
+                    let cp = shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+                    for (mp1, mp2) in text_input_wm_chars(&text, cp) {
+                        push_msg(shared, target, WM_CHAR, mp1, mp2);
+                    }
                 }
             }
             Event::MouseMotion { x, y, .. } => {
@@ -883,7 +901,6 @@ impl Sdl2Renderer {
                                     .map(|w| (x - w.x, os2_y - w.y))
                                     .unwrap_or((x, os2_y))
                             };
-                            let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
                             use sdl2::mouse::MouseButton;
                             let msg = match mouse_btn {
                                 MouseButton::Left   => Some(WM_BUTTON1DOWN),
@@ -891,6 +908,20 @@ impl Sdl2Renderer {
                                 MouseButton::Middle => Some(WM_BUTTON3DOWN),
                                 _ => None,
                             };
+                            // Button 1 goes to the built-in control under the
+                            // pointer, if any; a click elsewhere takes the
+                            // keyboard focus away from the focused control.
+                            let (hwnd, local_x, local_y) = if mouse_btn == MouseButton::Left {
+                                let (target, lost_focus) = route_button1(shared, hwnd, local_x, local_y, true);
+                                if lost_focus != 0 {
+                                    // Repaint the control without its caret.
+                                    push_msg(shared, lost_focus, WM_PAINT, 0, 0);
+                                }
+                                target
+                            } else {
+                                (hwnd, local_x, local_y)
+                            };
+                            let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
                             if let Some(m) = msg { push_msg(shared, hwnd, m, mp1, 0); }
                             }
                         }
@@ -942,8 +973,13 @@ impl Sdl2Renderer {
                             .map(|w| (x - w.x, os2_y - w.y))
                             .unwrap_or((x, os2_y))
                     };
-                    let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
                     use sdl2::mouse::MouseButton;
+                    let (hwnd, local_x, local_y) = if mouse_btn == MouseButton::Left && capture == 0 {
+                        route_button1(shared, hwnd, local_x, local_y, false).0
+                    } else {
+                        (hwnd, local_x, local_y)
+                    };
+                    let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
                     let msg = match mouse_btn {
                         MouseButton::Left   => Some(WM_BUTTON1UP),
                         MouseButton::Right  => Some(WM_BUTTON2UP),
@@ -1241,6 +1277,65 @@ fn resize_hit_test(win_x: i32, win_y: i32, win_cx: i32, win_cy: i32,
     }
 }
 
+/// Width of the frame border that offsets the client area horizontally
+/// inside a frame created with `frame_flags`.
+fn frame_border_w(frame_flags: u32) -> i32 {
+    if frame_flags & (FCF_BORDER | FCF_DLGBORDER | FCF_SIZEBORDER) != 0 { CHROME_BORDER_W } else { 0 }
+}
+
+/// Decide which window receives a mouse-button-1 message aimed at `frame`.
+///
+/// `(x, y)` is the pointer relative to the frame's bottom-left corner. If a
+/// built-in control lies under the pointer the message goes to that control,
+/// with the position relative to the control; otherwise it goes to the frame
+/// (whose client `push_msg` resolves) unchanged.
+///
+/// With `press` set, a click that is not on a control ends that frame's
+/// control focus: the second return value is the control that lost the focus
+/// (0 if none) so the caller can have it repainted without its caret.
+fn route_button1(shared: &Arc<SharedState>, frame: u32, x: i32, y: i32, press: bool)
+    -> ((u32, i32, i32), u32)
+{
+    let mut wm = shared.window_mgr.lock_or_recover();
+    // The client's buffer starts to the right of the frame's left border.
+    let border = wm.get_window(frame).map_or(0, |w| frame_border_w(w.frame_flags));
+    if let Some(hit) = wm.control_at(frame, x - border, y) {
+        return (hit, 0);
+    }
+    let focus = wm.focus_hwnd;
+    let lost = if press && focus != 0 && wm.frame_to_client.contains_key(&frame)
+        && wm.find_frame_for_hwnd(focus) == frame
+    {
+        wm.focus_hwnd = 0;
+        focus
+    } else {
+        0
+    };
+    ((frame, x, y), lost)
+}
+
+/// WM_CHAR `(mp1, mp2)` pairs for text typed or committed by the input
+/// method (an SDL `TextInput` event).
+///
+/// Each character is encoded in the guest codepage `cp` and sent as one
+/// character message: a single byte, or for a double-byte character the lead
+/// byte in the low byte and the trail byte in the high byte of the character
+/// word. Control characters and characters the codepage cannot represent are
+/// dropped.
+fn text_input_wm_chars(text: &str, cp: u32) -> Vec<(u32, u32)> {
+    text.chars().filter(|ch| !ch.is_control()).filter_map(|ch| {
+        let mut utf8 = [0u8; 4];
+        let s = ch.encode_utf8(&mut utf8);
+        let chr = match crate::loader::codepage::cp_encode(s, cp)[..] {
+            // `cp_encode` substitutes '?' for unrepresentable characters.
+            [b] if b != b'?' || ch == '?' => b as u32,
+            [lead, trail] => lead as u32 | ((trail as u32) << 8),
+            _ => return None,
+        };
+        Some((KC_CHAR | (1 << WM_CHAR_REPEAT_SHIFT), chr))
+    }).collect()
+}
+
 /// Post an OS/2 message to the queue associated with `hwnd`.
 ///
 /// Looks up the client window via `frame_to_client` first; falls back to
@@ -1409,14 +1504,22 @@ pub fn sdl_keycode_to_vk(kc: Keycode) -> u32 {
 
 /// Build WM_CHAR MP1 and MP2 from SDL2 key event fields.
 ///
-/// MP1 encoding (per OS/2 PM Reference):
-///   bits  7–0  : cRepeat (1 for normal press, 0 for auto-repeat we treat separately)
-///   bits 15–8  : hardware scan code (IBM PC Set-1)
-///   bits 31–16 : KC_* flags
+/// Packing follows CHRMSG in `<pmwin.h>`:
 ///
-/// MP2 encoding:
-///   bits 15–0  : usCh (character code, 0 for pure virtual keys)
-///   bits 31–16 : usVKey (VK_* code, 0 for pure character keys)
+/// MP1 layout:
+///   bits 15–0  : KC_* flags (`fs`)
+///   bits 23–16 : repeat count (`cRepeat`, always 1)
+///   bits 31–24 : hardware scan code (`scancode`)
+///
+/// MP2 layout:
+///   bits 15–0  : character code (`chr`, 0 if none)
+///   bits 31–16 : virtual key code (`vkey`, 0 if none)
+///
+/// A key event only carries a character when no `TextInput` event will: for
+/// control characters (Enter, Tab, Backspace, Esc, Delete) and for Ctrl/Alt
+/// chords, which report the key's unshifted character for accelerators.
+/// Printable characters are delivered by `text_input_wm_chars` instead, with
+/// the keyboard layout and Shift state applied, so they never arrive twice.
 fn build_wm_char(
     keycode:  Option<Keycode>,
     scancode: Option<Scancode>,
@@ -1426,7 +1529,10 @@ fn build_wm_char(
 ) -> (u32, u32) {
     let sc  = scancode.map(sdl_scancode_to_os2).unwrap_or(0);
     let vk  = keycode.map(sdl_keycode_to_vk).unwrap_or(0);
-    let ch  = keycode.map(sdl_keycode_to_char).unwrap_or(0);
+    let chord = keymod.intersects(
+        KeyMod::LCTRLMOD | KeyMod::RCTRLMOD | KeyMod::LALTMOD | KeyMod::RALTMOD);
+    let ch  = keycode.map(sdl_keycode_to_char)
+        .filter(|&c| chord || !is_text_input_char(c)).unwrap_or(0);
 
     // Modifier state → KC_* flags
     let mut flags = KC_SCANCODE;
@@ -1439,8 +1545,8 @@ fn build_wm_char(
     if vk != 0 { flags |= KC_VIRTUALKEY; }
     if ch != 0 { flags |= KC_CHAR;       }
 
-    let mp1 = (flags << 16) | ((sc as u32) << 8) | 1;
-    let mp2 = ch | (vk << 16);
+    let mp1 = flags | (1 << WM_CHAR_REPEAT_SHIFT) | ((sc as u32) << WM_CHAR_SCANCODE_SHIFT);
+    let mp2 = ch | (vk << WM_CHAR_VKEY_SHIFT);
     (mp1, mp2)
 }
 
@@ -1565,6 +1671,14 @@ fn script_input_to_event(input: &gui_script::Input) -> Option<Event> {
     })
 }
 
+/// Whether a key's character is printable, i.e. SDL reports it through a
+/// `TextInput` event rather than only as a key press.
+fn is_text_input_char(ch: u32) -> bool {
+    const SPACE: u32 = 0x20;
+    const DEL: u32 = 0x7F;
+    ch >= SPACE && ch != DEL
+}
+
 /// Map an SDL2 Keycode to the unshifted OS/2 character code.
 fn sdl_keycode_to_char(kc: Keycode) -> u32 {
     let name = kc.name();
@@ -1588,6 +1702,9 @@ fn sdl_keycode_to_char(kc: Keycode) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{sdl_keycode_to_char, sdl_keycode_to_vk, sdl_scancode_to_os2, build_wm_char, mb_buttons};
+    use super::{text_input_wm_chars, route_button1, CHROME_BORDER_W, KC_CHAR, WM_CHAR_REPEAT_SHIFT,
+                SharedState, MutexExt};
+    use std::sync::Arc;
     use super::{draw_frame_chrome, FrameChrome, CHROME_TITLE_H, CHROME_BTN_W, CHROME_BTN_GAP,
                 CHROME_BTN_MARGIN, CHROME_BTN_INSET_Y, CHROME_TITLE_ACTIVE, CHROME_TITLE_INACTIVE,
                 CHROME_LIGHT_COLOR, CHROME_SHADOW_COLOR, CHROME_FACE_COLOR, CHROME_DARK_COLOR,
@@ -1844,15 +1961,16 @@ mod tests {
             Some(Keycode::A), Some(Scancode::A),
             KeyMod::NOMOD, false, false,
         );
-        let flags = mp1 >> 16;
-        let sc = (mp1 >> 8) & 0xFF;
+        let flags = mp1 & 0xFFFF;
+        let sc = mp1 >> WM_CHAR_SCANCODE_SHIFT;
+        assert_eq!((mp1 >> WM_CHAR_REPEAT_SHIFT) & 0xFF, 1, "repeat count is 1");
         let ch = mp2 & 0xFFFF;
         let vk = mp2 >> 16;
-        assert!(flags & KC_CHAR != 0,     "KC_CHAR should be set for 'a'");
+        assert!(flags & KC_CHAR == 0,     "printable characters come from TextInput");
         assert!(flags & KC_SCANCODE != 0, "KC_SCANCODE always set");
         assert!(flags & KC_VIRTUALKEY == 0, "KC_VIRTUALKEY not set for plain char");
         assert_eq!(sc, 0x1E, "scan code for A is 0x1E");
-        assert_eq!(ch, b'a' as u32);
+        assert_eq!(ch, 0);
         assert_eq!(vk, 0);
     }
 
@@ -1863,8 +1981,8 @@ mod tests {
             Some(Keycode::F1), Some(Scancode::F1),
             KeyMod::NOMOD, false, false,
         );
-        let flags = mp1 >> 16;
-        let sc = (mp1 >> 8) & 0xFF;
+        let flags = mp1 & 0xFFFF;
+        let sc = mp1 >> WM_CHAR_SCANCODE_SHIFT;
         let vk = mp2 >> 16;
         assert!(flags & KC_VIRTUALKEY != 0, "KC_VIRTUALKEY set for F1");
         assert!(flags & KC_SCANCODE != 0,   "KC_SCANCODE always set");
@@ -1876,12 +1994,13 @@ mod tests {
     #[test]
     fn build_wm_char_shift_modifier() {
         use crate::loader::*;
-        let (mp1, _) = build_wm_char(
+        let (mp1, mp2) = build_wm_char(
             Some(Keycode::A), Some(Scancode::A),
             KeyMod::LSHIFTMOD, false, false,
         );
-        let flags = mp1 >> 16;
+        let flags = mp1 & 0xFFFF;
         assert!(flags & KC_SHIFT != 0, "KC_SHIFT set when shift held");
+        assert_eq!(mp2 & 0xFFFF, 0, "the shifted character comes from TextInput");
     }
 
     #[test]
@@ -1891,8 +2010,136 @@ mod tests {
             Some(Keycode::A), Some(Scancode::A),
             KeyMod::NOMOD, false, true,
         );
-        let flags = mp1 >> 16;
+        let flags = mp1 & 0xFFFF;
         assert!(flags & KC_KEYUP != 0, "KC_KEYUP set on key release");
+    }
+
+    /// What `build_wm_char` produces is what the built-in edit controls and
+    /// `WinTranslateAccel` decode (CHRMSG packing). Printable keys carry no
+    /// character on key-down; editing keys and control characters do.
+    #[test]
+    fn build_wm_char_round_trips_through_the_edit_key_decoder() {
+        use crate::loader::pm_edit::{key_from_wm_char, EditKey};
+        let key = |kc, sc, km, up| {
+            let (mp1, mp2) = build_wm_char(Some(kc), Some(sc), km, false, up);
+            key_from_wm_char(mp1, mp2, 437)
+        };
+        for km in [KeyMod::NOMOD, KeyMod::RSHIFTMOD, KeyMod::CAPSMOD] {
+            assert_eq!(key(Keycode::A, Scancode::A, km, false), None);
+            assert_eq!(key(Keycode::Num1, Scancode::Num1, km, false), None);
+            assert_eq!(key(Keycode::Space, Scancode::Space, km, false), None);
+        }
+        assert_eq!(key(Keycode::Backspace, Scancode::Backspace, KeyMod::NOMOD, false), Some((EditKey::Backspace, false)));
+        assert_eq!(key(Keycode::Delete, Scancode::Delete, KeyMod::NOMOD, false), Some((EditKey::Delete, false)));
+        assert_eq!(key(Keycode::Return, Scancode::Return, KeyMod::NOMOD, false), Some((EditKey::Enter, false)));
+        assert_eq!(key(Keycode::Home, Scancode::Home, KeyMod::LSHIFTMOD, false), Some((EditKey::Home, false)));
+        assert_eq!(key(Keycode::Left, Scancode::Left, KeyMod::NOMOD, true), Some((EditKey::Left, true)));
+        assert_eq!(key(Keycode::Tab, Scancode::Tab, KeyMod::NOMOD, false), None);
+        assert_eq!(key(Keycode::C, Scancode::C, KeyMod::LCTRLMOD, false), None);
+    }
+
+    #[test]
+    fn build_wm_char_keeps_characters_that_text_input_will_not_send() {
+        use crate::loader::*;
+        let chr = |kc, sc, km| {
+            let (mp1, mp2) = build_wm_char(Some(kc), Some(sc), km, false, false);
+            ((mp1 & KC_CHAR != 0), mp2 & 0xFFFF)
+        };
+        // Control characters.
+        assert_eq!(chr(Keycode::Return, Scancode::Return, KeyMod::NOMOD), (true, b'\r' as u32));
+        assert_eq!(chr(Keycode::Tab, Scancode::Tab, KeyMod::NOMOD), (true, b'\t' as u32));
+        assert_eq!(chr(Keycode::Backspace, Scancode::Backspace, KeyMod::NOMOD), (true, 8));
+        assert_eq!(chr(Keycode::Escape, Scancode::Escape, KeyMod::NOMOD), (true, 27));
+        // Ctrl / Alt chords report the key's character for accelerators.
+        assert_eq!(chr(Keycode::C, Scancode::C, KeyMod::LCTRLMOD), (true, b'c' as u32));
+        assert_eq!(chr(Keycode::F, Scancode::F, KeyMod::RALTMOD), (true, b'f' as u32));
+        // Printable keys, shifted or not, do not.
+        assert_eq!(chr(Keycode::C, Scancode::C, KeyMod::NOMOD), (false, 0));
+        assert_eq!(chr(Keycode::Slash, Scancode::Slash, KeyMod::LSHIFTMOD), (false, 0));
+        assert_eq!(chr(Keycode::Space, Scancode::Space, KeyMod::NOMOD), (false, 0));
+    }
+
+    #[test]
+    fn text_input_becomes_codepage_wm_chars() {
+        use crate::loader::pm_edit::{key_from_wm_char, EditKey};
+        let decode = |text: &str, cp| text_input_wm_chars(text, cp).into_iter()
+            .map(|(mp1, mp2)| match key_from_wm_char(mp1, mp2, cp) {
+                Some((EditKey::Char(ch), false)) => ch,
+                other => panic!("not a character: {other:?}"),
+            }).collect::<String>();
+        // Capitals and punctuation arrive exactly as SDL composed them.
+        assert_eq!(decode("Hello, World? ~!@", 437), "Hello, World? ~!@");
+        // é is 0x82 in CP850; KC_CHAR with a repeat count of one.
+        assert_eq!(text_input_wm_chars("é", 850), vec![(KC_CHAR | (1 << WM_CHAR_REPEAT_SHIFT), 0x82)]);
+        // 日本 in CP932: lead byte low, trail byte high.
+        let msgs = text_input_wm_chars("a日本", 932);
+        assert_eq!(msgs.iter().map(|m| m.1).collect::<Vec<_>>(), vec![b'a' as u32, 0xFA93, 0x7B96]);
+        assert_eq!(decode("a日本", 932), "a日本");
+        // Unrepresentable characters are dropped, not sent as '?'; a real '?'
+        // is kept. Control characters never come through as text.
+        assert_eq!(decode("日?x", 437), "?x");
+        assert!(text_input_wm_chars("\r\n\t\u{8}", 437).is_empty());
+        assert!(text_input_wm_chars("", 437).is_empty());
+    }
+
+    /// A std window with one entry field; returns `(shared, frame, client, entry)`.
+    fn routed_window(frame_flags: u32) -> (Arc<SharedState>, u32, u32, u32) {
+        let loader = crate::loader::Loader::new_mock();
+        let shared = loader.shared.clone();
+        let mut wm = shared.window_mgr.lock_or_recover();
+        let frame = wm.create_window("App".into(), 0, 0);
+        let client = wm.create_window("App".into(), frame, 0);
+        wm.frame_to_client.insert(frame, client);
+        wm.get_window_mut(frame).unwrap().frame_flags = frame_flags;
+        let entry = wm.create_window("WC_ENTRYFIELD".into(), client, 0);
+        let w = wm.get_window_mut(entry).unwrap();
+        (w.x, w.y, w.cx, w.cy, w.visible) = (10, 200, 200, 25, true);
+        drop(wm);
+        (shared, frame, client, entry)
+    }
+
+    #[test]
+    fn button1_is_routed_to_the_control_under_the_pointer() {
+        let (shared, frame, _client, entry) = routed_window(0);
+        // On the control: control-relative coordinates, focus untouched here
+        // (the control takes the focus when it handles the message).
+        assert_eq!(route_button1(&shared, frame, 15, 210, true), ((entry, 5, 10), 0));
+        assert_eq!(route_button1(&shared, frame, 15, 210, false), ((entry, 5, 10), 0));
+        // Off the control: the frame gets it unchanged.
+        assert_eq!(route_button1(&shared, frame, 300, 100, true), ((frame, 300, 100), 0));
+    }
+
+    #[test]
+    fn button1_accounts_for_the_frame_border() {
+        let (shared, frame, _client, entry) = routed_window(FCF_SIZEBORDER);
+        // Frame x = border + client x: the control's left edge is at 10 + border.
+        let left = 10 + CHROME_BORDER_W;
+        assert_eq!(route_button1(&shared, frame, left, 200, true), ((entry, 0, 0), 0));
+        assert_eq!(route_button1(&shared, frame, left - 1, 200, true), ((frame, left - 1, 200), 0));
+    }
+
+    #[test]
+    fn click_outside_controls_ends_control_focus() {
+        let (shared, frame, _client, entry) = routed_window(0);
+        shared.window_mgr.lock_or_recover().focus_hwnd = entry;
+        // Releasing the button elsewhere does not change the focus.
+        assert_eq!(route_button1(&shared, frame, 300, 100, false).1, 0);
+        assert_eq!(shared.window_mgr.lock_or_recover().focus_hwnd, entry);
+        // Pressing it does, and reports the control to repaint.
+        assert_eq!(route_button1(&shared, frame, 300, 100, true), ((frame, 300, 100), entry));
+        assert_eq!(shared.window_mgr.lock_or_recover().focus_hwnd, 0);
+        assert_eq!(route_button1(&shared, frame, 300, 100, true).1, 0);
+        // A click in another frame leaves this frame's focus control alone.
+        shared.window_mgr.lock_or_recover().focus_hwnd = entry;
+        let other = {
+            let mut wm = shared.window_mgr.lock_or_recover();
+            let f = wm.create_window("App".into(), 0, 0);
+            let c = wm.create_window("App".into(), f, 0);
+            wm.frame_to_client.insert(f, c);
+            f
+        };
+        assert_eq!(route_button1(&shared, other, 300, 100, true), ((other, 300, 100), 0));
+        assert_eq!(shared.window_mgr.lock_or_recover().focus_hwnd, entry);
     }
 }
 
@@ -1920,7 +2167,10 @@ mod script_tests {
                 build_wm_char(*keycode, *scancode, *keymod, false, true),
             other => panic!("not a key event: {other:?}"),
         };
-        (mp1 >> 16, (mp1 >> 8) & 0xFF, mp2 & 0xFFFF, mp2 >> 16)
+        // CHRMSG layout: flags in the low word of mp1, scan code in its top
+        // byte; character in the low word of mp2, virtual key in the high word.
+        (mp1 & 0xFFFF, mp1 >> crate::loader::constants::WM_CHAR_SCANCODE_SHIFT,
+         mp2 & 0xFFFF, mp2 >> crate::loader::constants::WM_CHAR_VKEY_SHIFT)
     }
 
     /// Every key a script can name has an SDL key code and scan code that
@@ -1978,8 +2228,10 @@ mod script_tests {
 
         let (_, scan, ch, vk) = wm_char(&script_events("0 key enter")[0]);
         assert_eq!((scan, ch, vk), (0x1C, b'\r' as u32, VK_NEWLINE));
+        // A printable key carries no character on its key press: the character
+        // arrives separately through SDL text input (see the `text` action).
         let (flags, _, ch, vk) = wm_char(&script_events("0 key a")[0]);
-        assert_eq!((flags, ch, vk), (KC_SCANCODE | KC_CHAR, b'a' as u32, 0));
+        assert_eq!((flags, ch, vk), (KC_SCANCODE, 0, 0));
     }
 
     /// `key alt+f4`: Alt goes down first and up last, and F4 carries KC_ALT.
