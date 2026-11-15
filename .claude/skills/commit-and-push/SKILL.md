@@ -9,10 +9,11 @@ When committing and pushing changes, always follow these steps:
 
 2. **Stage** all relevant changes with `git add`. Be deliberate — stage only files related to the current topic. Never blindly stage everything with `git add -A` if unrelated changes are present.
 
-3. **Commit** with a clear, concise message following the [Conventional Commits](https://www.conventionalcommits.org/) standard (e.g., `feat(loader): implement DosSetFilePtr`). The message should explain *why* the change was made, not just *what* changed. Append a co-author trailer:
+3. **Commit** with a clear, concise message following the [Conventional Commits](https://www.conventionalcommits.org/) standard (e.g., `feat(loader): implement DosSetFilePtr`). The message should explain *why* the change was made, not just *what* changed. Append a co-author trailer naming the model that is actually running the session (take the name from the session's own model information — never copy a hardcoded or previously used name):
    ```
-   Co-Authored-By: Claude Sonnet 4.6 <noreply@anthropic.com>
+   Co-Authored-By: Claude <Model Name and Version> <noreply@anthropic.com>
    ```
+   For example, when the session runs on Fable 5.2 the trailer is `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`.
    Pass the full message via a heredoc to preserve formatting. Never use `--no-verify` to skip hooks unless the user explicitly requests it.
 
 4. **Push** the committed changes to the current branch on the remote repository.
