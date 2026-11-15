@@ -23,11 +23,14 @@ use crate::loader::{SharedState, OS2Message, MutexExt,
     FCF_BORDER, FCF_DLGBORDER, FCF_SIZEBORDER,
     WM_ACTIVATE, WM_SYSCOMMAND, SC_MINIMIZE, SC_MAXIMIZE};
 use crate::loader::constants::{
-    MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H, MIS_SEPARATOR};
+    MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_BAR_ITEM_PAD, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H,
+    MIS_SEPARATOR};
 use crate::loader::pm_types::{MenuItem, menu_label, menu_bar_item_width};
 use super::message::GUIMessage;
 use super::renderer::PmRenderer;
-use super::render_utils::{render_text_to_buffer, render_rect_to_buffer, render_line_to_buffer};
+use super::font::{self, FontSpec};
+use super::render_utils::{render_text_to_buffer, render_text_font_to_buffer,
+    render_rect_to_buffer, render_line_to_buffer};
 
 // ── VDR-A: Single-surface desktop renderer ────────────────────────────────
 
@@ -59,33 +62,19 @@ const CHROME_TEXT_COLOR: u32     = 0x00FF_FFFF;
 /// Frame border colour — medium gray.
 const CHROME_BORDER_COLOR: u32   = 0x0080_8080;
 
-/// Draw ASCII/Unicode text into a desktop-space pixel buffer.
+/// Draw text into a desktop-space pixel buffer.
 ///
-/// `sx`/`sy` are screen coordinates (y=0 at top, x=0 at left).
-/// Uses 8×16 GNU Unifont half-width glyphs (one byte per row, MSB = leftmost).
-fn draw_text_screen(buf: &mut [u32], buf_w: usize, buf_h: usize, sx: i32, sy: i32, text: &str, color: u32) {
-    const CHAR_W: i32 = 8;
-    for (i, ch) in text.chars().enumerate() {
-        let cx = sx + i as i32 * CHAR_W;
-        let glyph = crate::gui::text_renderer::get_glyph_for_char(ch);
-        for (row, &bits) in glyph.iter().enumerate() {
-            let py = sy + row as i32;
-            if py < 0 || py >= buf_h as i32 { continue; }
-            for col in 0..CHAR_W {
-                if bits & (0x80 >> col) != 0 {
-                    let px = cx + col;
-                    if px >= 0 && px < buf_w as i32 {
-                        let idx = py as usize * buf_w + px as usize;
-                        if idx < buf.len() { buf[idx] = color; }
-                    }
-                }
-            }
-        }
-    }
+/// `sx`/`sy` are screen coordinates (y=0 at top, x=0 at left) of the top-left
+/// corner of the text's line box, which is `spec.px` pixels tall.
+#[allow(clippy::too_many_arguments)]
+fn draw_text_screen(buf: &mut [u32], buf_w: usize, buf_h: usize,
+                    sx: i32, sy: i32, text: &str, color: u32, spec: FontSpec) {
+    let baseline = sy + font::metrics(spec).ascent;
+    font::draw_text(buf, buf_w, buf_h, sx, baseline, text, color, spec);
 }
 
-/// Height of the bitmap system font's glyphs (pixels).
-const GLYPH_H: i32 = 16;
+/// Line height of the PM system font (pixels).
+const GLYPH_H: i32 = font::SYSTEM_FONT_PX as i32;
 const MENU_BG_COLOR: u32        = 0x00D4_D0C8;
 const MENU_EDGE_COLOR: u32      = 0x0080_8080;
 const MENU_TEXT_COLOR: u32      = 0x0000_0000;
@@ -117,8 +106,9 @@ fn draw_menu_chrome(buf: &mut [u32], buf_w: usize, x0: i32, bar_top: i32, bar_w:
             draw_filled_rect(buf, buf_w, item_x, bar_top, item_x + label_w, bar_bot, MENU_HILITE_COLOR);
             open_x = Some(item_x);
         }
-        draw_text_screen(buf, buf_w, buf_h, item_x + 2, text_y, &menu_label(&item.text),
-                         if is_open { MENU_HILITE_TEXT } else { MENU_TEXT_COLOR });
+        draw_text_screen(buf, buf_w, buf_h, item_x + MENU_BAR_ITEM_PAD / 2, text_y,
+                         &menu_label(&item.text),
+                         if is_open { MENU_HILITE_TEXT } else { MENU_TEXT_COLOR }, FontSpec::SYSTEM);
         item_x += label_w;
     }
 
@@ -135,7 +125,7 @@ fn draw_menu_chrome(buf: &mut [u32], buf_w: usize, x0: i32, bar_top: i32, bar_w:
             draw_filled_rect(buf, buf_w, drop_x + 2, sep_y, dx1 - 2, sep_y + 1, MENU_EDGE_COLOR);
         } else {
             draw_text_screen(buf, buf_w, buf_h, drop_x + 4, row_top,
-                             &menu_label(&child.text), MENU_TEXT_COLOR);
+                             &menu_label(&child.text), MENU_TEXT_COLOR, FontSpec::SYSTEM);
         }
     }
 }
@@ -480,24 +470,24 @@ impl Sdl2Renderer {
                 // Title text after the system-menu icon.
                 draw_text_screen(
                     &mut self.desktop.buffer, dw, dh as usize,
-                    text_left, text_y, &snap.title, CHROME_TEXT_COLOR);
+                    text_left, text_y, &snap.title, CHROME_TEXT_COLOR, FontSpec::SYSTEM_BOLD);
                 // VDR-C4: right-side buttons — close, then max (if any), then min (if any).
                 let mut btn_x = snap.x + snap.cx - CHROME_BTN_MARGIN - CHROME_BTN_W;
                 // Close button (always present when title bar is shown).
                 draw_text_screen(
                     &mut self.desktop.buffer, dw, dh as usize,
-                    btn_x, text_y, "\u{00D7}", CHROME_TEXT_COLOR);
+                    btn_x, text_y, "\u{00D7}", CHROME_TEXT_COLOR, FontSpec::SYSTEM_BOLD);
                 btn_x -= CHROME_BTN_W + CHROME_BTN_GAP;
                 if snap.frame_flags & FCF_MAXBUTTON != 0 {
                     draw_text_screen(
                         &mut self.desktop.buffer, dw, dh as usize,
-                        btn_x, text_y, "^", CHROME_TEXT_COLOR);
+                        btn_x, text_y, "^", CHROME_TEXT_COLOR, FontSpec::SYSTEM_BOLD);
                     btn_x -= CHROME_BTN_W + CHROME_BTN_GAP;
                 }
                 if snap.frame_flags & FCF_MINBUTTON != 0 {
                     draw_text_screen(
                         &mut self.desktop.buffer, dw, dh as usize,
-                        btn_x, text_y, "_", CHROME_TEXT_COLOR);
+                        btn_x, text_y, "_", CHROME_TEXT_COLOR, FontSpec::SYSTEM_BOLD);
                 }
             }
 
@@ -975,6 +965,13 @@ impl PmRenderer for Sdl2Renderer {
                 if let Some(fb) = Self::get_or_create_fb(
                     &mut self.frame_buffers, &self.desktop, handle, shared) {
                     render_text_to_buffer(&mut fb.buffer, fb.width, fb.height, x, y, &text, color);
+                }
+            }
+            GUIMessage::DrawTextFont { handle, x, y, text, color, font } => {
+                if let Some(fb) = Self::get_or_create_fb(
+                    &mut self.frame_buffers, &self.desktop, handle, shared) {
+                    render_text_font_to_buffer(&mut fb.buffer, fb.width, fb.height,
+                                               x, y, &text, color, font);
                 }
             }
             GUIMessage::ClearBuffer { handle } => {

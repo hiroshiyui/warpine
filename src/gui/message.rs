@@ -2,6 +2,8 @@
 
 // ── GUI message channel ────────────────────────────────────────────────────
 
+use super::font::FontSpec;
+
 pub enum GUIMessage {
     CreateWindow { class: String, title: String, handle: u32 },
     ResizeWindow { handle: u32, width: u32, height: u32 },
@@ -9,7 +11,10 @@ pub enum GUIMessage {
     ShowWindow { handle: u32, show: bool },
     DrawBox { handle: u32, x1: i32, y1: i32, x2: i32, y2: i32, color: u32, fill: bool },
     DrawLine { handle: u32, x1: i32, y1: i32, x2: i32, y2: i32, color: u32 },
+    /// System-font text; `y` is the bottom of the 16-px line box.
     DrawText { handle: u32, x: i32, y: i32, text: String, color: u32 },
+    /// Text in an explicit font; `y` is the baseline (GPI convention).
+    DrawTextFont { handle: u32, x: i32, y: i32, text: String, color: u32, font: FontSpec },
     ClearBuffer { handle: u32 },
     PresentBuffer { handle: u32 },
     /// Copy `text` to the host system clipboard.

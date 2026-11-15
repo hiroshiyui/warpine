@@ -384,6 +384,37 @@ OS/2 uses a bottom-left coordinate origin (Y increases upward), so Y coordinates
 
 ---
 
+### PM Typography (IBM Plex)
+
+All Presentation Manager text is drawn by `src/gui/font.rs` from the IBM Plex
+outline fonts vendored in `vendor/ibm-plex` (SIL OFL 1.1) and embedded in the
+binary. The VIO text-mode console is separate and keeps its 8×16 bitmap font.
+
+- **Faces.** IBM Plex Sans, Mono and Serif in Regular/Bold/Italic/Bold Italic,
+  plus IBM Plex Sans JP, KR, TC and SC (Regular) for CJK. Faces are parsed
+  lazily and zero-copy (`ab_glyph::FontRef`), so the large CJK files cost
+  nothing until a character needs them.
+- **`FontSpec { family, bold, italic, px }`.** `px` is the line height
+  (ascent + descent). `FontSpec::SYSTEM` is Plex Sans at 16 px, matching the
+  16-px rows the PM layout uses; title bars use `FontSpec::SYSTEM_BOLD`.
+- **Face-name mapping.** `FontSpec::from_facename()` maps the FATTRS face name
+  by case-insensitive substring: Courier / System Monospaced / System VIO →
+  Mono; Tms Rmn / Times New Roman → Serif; anything else (Helv, WarpSans,
+  System Proportional, unknown) → Sans.
+- **Fallback.** Each character is looked up in the requested Latin face, then
+  the CJK faces in an order chosen by the active codepage (CP932 → JP first,
+  CP936 → SC, CP949 → KR, CP950 → TC), then the GNU Unifont bitmap tables.
+  CJK glyphs are scaled to the Latin face's em size so mixed text lines up.
+- **Coordinates.** `GUIMessage::DrawText` positions system-font text by the
+  bottom of its 16-px line box (used by built-in controls);
+  `GUIMessage::DrawTextFont` positions text by its baseline, the GPI
+  convention, and carries the `FontSpec`.
+- **GPI.** `GpiCreateLogFont` registers a `FontSpec` per LCID in
+  `PresentationSpace::log_fonts`; `GpiSetCharSet`, `GpiSetCharBox` and
+  `GpiDeleteSetId` update the selection; `GpiQueryTextBox`,
+  `GpiQueryFontMetrics` and the current-position advance after
+  `GpiCharString` all use the selected font's real proportional metrics.
+
 ## PM Callback Mechanism
 
 The most complex part of Warpine is **guest callbacks** — when `WinDispatchMsg` or `WinSendMsg` needs to invoke the guest's window procedure (a function compiled into the OS/2 binary).
@@ -1073,6 +1104,9 @@ src/
   gui/
     mod.rs             GUI module re-exports; pub use for all renderer types
     message.rs         GUIMessage channel (PM GUI ↔ renderer communication)
+    font.rs            PM typeface: embedded IBM Plex Sans/Mono/Serif + Plex Sans JP/KR/TC/SC
+                       (vendor/ibm-plex), FontSpec, text_width(), metrics(), draw_text();
+                       fallback chain Latin → CJK (by codepage) → GNU Unifont
     renderer.rs        PmRenderer trait + run_pm_loop() (PM/GUI SDL2 event loop)
     render_utils.rs    Geometry helpers (Y-flip, rect/line rendering)
     headless.rs        HeadlessRenderer: no-op PM backend for CI

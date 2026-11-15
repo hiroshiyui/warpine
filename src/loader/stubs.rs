@@ -188,6 +188,8 @@ impl super::Loader {
             return ERROR_INVALID_CODE_PAGE;
         }
         self.shared.active_codepage.store(cp, std::sync::atomic::Ordering::Relaxed);
+        // PM text picks its CJK fallback face (JP/KR/TC/SC) from the codepage.
+        crate::gui::font::set_active_codepage(cp);
         debug!("  DosSetProcessCp({}) → NO_ERROR", cp);
         NO_ERROR
     }

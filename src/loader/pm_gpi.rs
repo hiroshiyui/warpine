@@ -9,16 +9,24 @@ use log::{debug, warn};
 use super::mutex_ext::MutexExt;
 use super::ApiResult;
 use crate::gui::GUIMessage;
+use crate::gui::font::{self, FontFamily, FontSpec};
 
 // ── GpiCreateLogFont return values ────────────────────────────────────────────
-const FONT_DEFAULT: u32 = 1; // best available match is the system default
+const FONT_DEFAULT: u32 = 1; // no FATTRS given: the system default font was used
+const FONT_MATCH:   u32 = 2; // a font matching the FATTRS was selected
 
-// ── Mock font metrics (8×16 fixed-pitch system font) ─────────────────────────
-const MOCK_CHAR_W:     i32 = 8;
-const MOCK_CHAR_H:     i32 = 16;
-const MOCK_ASCENDER:   i32 = 12; // pixels above baseline
-const MOCK_DESCENDER:  i32 = 4;  // pixels below baseline
-const MOCK_DEVICE_RES: i16 = 96; // device resolution (DPI) reported to apps
+// FATTRS byte offsets (OS/2 Warp 4 pmgpi.h)
+const FATTRS_OFF_SELECTION:      u32 = 2;  // USHORT fsSelection
+const FATTRS_OFF_FACENAME:       u32 = 8;  // CHAR szFacename[FACESIZE]
+const FATTRS_OFF_MAXBASELINEEXT: u32 = 44; // LONG lMaxBaselineExt
+const FACESIZE: usize = 32;
+const FATTR_SEL_ITALIC: u16 = 0x0001;
+const FATTR_SEL_BOLD:   u16 = 0x0020;
+
+/// Upper bound on the string length GpiQueryTextBox will read from the guest.
+const MAX_TEXT_BOX_CHARS: i32 = 4096;
+
+const DEVICE_RES: i16 = 96; // device resolution (DPI) reported to apps
 
 // FONTMETRICS byte offsets (OS/2 Warp 4 pmgpi.h, packed struct, no alignment padding)
 const FM_OFF_FAMILYNAME:     u32 = 0;   // STR8[32]
@@ -171,14 +179,16 @@ impl super::Loader {
                 let color = wm.ps_map.get(&hps).map(|ps| ps.color).unwrap_or(0);
                 let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
                 let hwnd = wm.client_to_frame(ps_hwnd);
+                let font = wm.ps_map.get(&hps).map_or(FontSpec::SYSTEM, |ps| ps.current_font());
+                let advance = font::text_width(&text_str, font);
                 if let Some(ref sender) = wm.gui_tx {
-                    let _ = sender.send(GUIMessage::DrawText {
-                        handle: hwnd, x, y, text: text_str, color,
+                    let _ = sender.send(GUIMessage::DrawTextFont {
+                        handle: hwnd, x, y, text: text_str, color, font,
                     });
                 }
-                // Update current position (advance x by character width * count)
+                // Advance the current position by the string's width in its font.
                 if let Some(ps) = wm.ps_map.get_mut(&hps) {
-                    ps.current_pos = (x + (count as i32 * 8), y);
+                    ps.current_pos = (x + advance, y);
                 }
                 ApiResult::Normal(1) // GPI_OK
             }
@@ -210,11 +220,15 @@ impl super::Loader {
                 let color  = wm.ps_map.get(&hps).map(|ps| ps.color).unwrap_or(0);
                 let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
                 let frame_hwnd = wm.client_to_frame(ps_hwnd);
+                let font = wm.ps_map.get(&hps).map_or(FontSpec::SYSTEM, |ps| ps.current_font());
+                let advance = font::text_width(&text_str, font);
                 if let Some(ref sender) = wm.gui_tx {
-                    let _ = sender.send(GUIMessage::DrawText { handle: frame_hwnd, x, y, text: text_str, color });
+                    let _ = sender.send(GUIMessage::DrawTextFont {
+                        handle: frame_hwnd, x, y, text: text_str, color, font,
+                    });
                 }
                 if let Some(ps) = wm.ps_map.get_mut(&hps) {
-                    ps.current_pos = (x + count as i32 * MOCK_CHAR_W, y);
+                    ps.current_pos = (x + advance, y);
                 }
                 ApiResult::Normal(1) // GPI_OK
             }
@@ -299,15 +313,45 @@ impl super::Loader {
 
             381 => {
                 // GpiCreateLogFont(HPS hps, PSTR8 pszLocalID, LONG lcid, PFATTRS pfatfs) → LONG
-                // We always return FONT_DEFAULT — no real font selection.
+                // Maps the requested face onto an IBM Plex family and registers it
+                // under `lcid`; GpiSetCharSet(lcid) then selects it for text output.
                 let hps = read_stack(4);
                 let lcid = read_stack(12);
-                debug!("  GpiCreateLogFont(hps={}, lcid={})", hps, lcid);
-                ApiResult::Normal(FONT_DEFAULT)
+                let pfat = read_stack(16);
+                let (spec, ret) = if pfat != 0 {
+                    let selection = self.guest_read::<u16>(pfat + FATTRS_OFF_SELECTION).unwrap_or(0);
+                    let face_bytes: Vec<u8> = (0..FACESIZE as u32)
+                        .map(|i| self.guest_read::<u8>(pfat + FATTRS_OFF_FACENAME + i).unwrap_or(0))
+                        .take_while(|&b| b != 0)
+                        .collect();
+                    let cp = self.shared.active_codepage.load(Ordering::Relaxed);
+                    let facename = super::codepage::cp_decode(&face_bytes, cp);
+                    let max_ext = self.guest_read::<i32>(pfat + FATTRS_OFF_MAXBASELINEEXT).unwrap_or(0);
+                    let spec = FontSpec::from_facename(
+                        &facename,
+                        selection & FATTR_SEL_BOLD != 0,
+                        selection & FATTR_SEL_ITALIC != 0,
+                        max_ext.max(0) as u32,
+                    );
+                    debug!("  GpiCreateLogFont(hps={}, lcid={}, face='{}') → {:?}", hps, lcid, facename, spec);
+                    (spec, FONT_MATCH)
+                } else {
+                    debug!("  GpiCreateLogFont(hps={}, lcid={}) → system font", hps, lcid);
+                    (FontSpec::SYSTEM, FONT_DEFAULT)
+                };
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                if let Some(ps) = wm.ps_map.get_mut(&hps) { ps.log_fonts.insert(lcid, spec); }
+                ApiResult::Normal(ret)
             }
             385 => {
                 // GpiDeleteSetId(HPS hps, LONG lcid) → BOOL
-                // No-op — we have no real font set to release.
+                let hps = read_stack(4);
+                let lcid = read_stack(8);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                if let Some(ps) = wm.ps_map.get_mut(&hps) {
+                    ps.log_fonts.remove(&lcid);
+                    if ps.char_set == lcid { ps.char_set = 0; }
+                }
                 ApiResult::Normal(1)
             }
 
@@ -344,9 +388,9 @@ impl super::Loader {
                 let pfm = read_stack(12);
                 debug!("  GpiQueryFontMetrics(hps={}, cb={}, pfm=0x{:08X})", hps, cb, pfm);
                 if pfm != 0 {
-                    self.write_font_metrics(pfm, cb);
+                    let font = self.ps_font(hps);
+                    self.write_font_metrics(pfm, cb, font);
                 }
-                let _ = hps;
                 ApiResult::Normal(1) // TRUE
             }
 
@@ -363,7 +407,7 @@ impl super::Loader {
                 debug!("  GpiQueryFonts(hps={}, afm=0x{:08X}, cb={})", hps, afm, cb);
                 // Report one system font.
                 if pl_req != 0 { self.guest_write::<i32>(pl_req, 0); } // 0 remaining
-                if afm != 0 && cb > 0 { self.write_font_metrics(afm, cb); }
+                if afm != 0 && cb > 0 { self.write_font_metrics(afm, cb, FontSpec::SYSTEM); }
                 ApiResult::Normal(1) // 1 font matches
             }
 
@@ -375,18 +419,24 @@ impl super::Loader {
                 // box in current-coordinate space (baseline at y=0).
                 let hps     = read_stack(4);
                 let count   = read_stack(8) as i32;
-                let _pch    = read_stack(12);
+                let pch     = read_stack(12);
                 let npoints = read_stack(16); // how many POINTLs to fill (≤5)
                 let aptl    = read_stack(20);
-                let _ = hps;
-                let w = count * MOCK_CHAR_W;
+                // Measure the actual string in the presentation space's font.
+                let bytes: Vec<u8> = (0..count.clamp(0, MAX_TEXT_BOX_CHARS) as u32)
+                    .map(|i| self.guest_read::<u8>(pch + i).unwrap_or(0))
+                    .collect();
+                let cp = self.shared.active_codepage.load(Ordering::Relaxed);
+                let font = self.ps_font(hps);
+                let w = font::text_width(&super::codepage::cp_decode(&bytes, cp), font);
+                let m = font::metrics(font);
                 // TXTBOX_TOPLEFT(0), TXTBOX_BOTTOMLEFT(1), TXTBOX_BOTTOMRIGHT(2),
                 // TXTBOX_TOPRIGHT(3), TXTBOX_CONCAT(4) — each is a POINTL (2×i32 = 8 bytes).
                 let pts: [(i32, i32); 5] = [
-                    (0,  MOCK_ASCENDER),   // top-left
-                    (0, -MOCK_DESCENDER),  // bottom-left
-                    (w, -MOCK_DESCENDER),  // bottom-right
-                    (w,  MOCK_ASCENDER),   // top-right
+                    (0,  m.ascent),   // top-left
+                    (0, -m.descent),  // bottom-left
+                    (w, -m.descent),  // bottom-right
+                    (w,  m.ascent),   // top-right
                     (w,  0),               // concat point (at baseline)
                 ];
                 if aptl != 0 {
@@ -442,11 +492,23 @@ impl super::Loader {
         }
     }
 
-    /// Write a mock `FONTMETRICS` struct to guest memory at `addr`.
+    /// Font currently selected into presentation space `hps`.
+    fn ps_font(&self, hps: u32) -> FontSpec {
+        self.shared.window_mgr.lock_or_recover()
+            .ps_map.get(&hps).map_or(FontSpec::SYSTEM, |ps| ps.current_font())
+    }
+
+    /// Write the `FONTMETRICS` of `spec` to guest memory at `addr`.
     ///
     /// `cb` is the byte length the caller has allocated; we fill at most `cb`
     /// bytes so callers that request a partial struct still get the data they fit.
-    fn write_font_metrics(&self, addr: u32, cb: u32) {
+    fn write_font_metrics(&self, addr: u32, cb: u32, spec: FontSpec) {
+        let m = font::metrics(spec);
+        let face: &[u8] = match spec.family {
+            FontFamily::Sans  => b"IBM Plex Sans",
+            FontFamily::Mono  => b"IBM Plex Mono",
+            FontFamily::Serif => b"IBM Plex Serif",
+        };
         // Zero the entire region first so unwritten fields default to 0.
         let len = cb.min(FM_SIZE) as usize;
         let zeros = vec![0u8; len];
@@ -472,22 +534,22 @@ impl super::Loader {
         };
 
         // Names
-        write_str(FM_OFF_FAMILYNAME, b"System", 32);
-        write_str(FM_OFF_FACENAME,   b"System", 32);
+        write_str(FM_OFF_FAMILYNAME, face, 32);
+        write_str(FM_OFF_FACENAME,   face, 32);
 
         // Key metrics
-        write_i32(FM_OFF_EMHEIGHT,       MOCK_ASCENDER);
-        write_i32(FM_OFF_XHEIGHT,        MOCK_ASCENDER * 3 / 4);
-        write_i32(FM_OFF_MAXASCENDER,    MOCK_ASCENDER);
-        write_i32(FM_OFF_MAXDESCENDER,   MOCK_DESCENDER);
-        write_i32(FM_OFF_LCASE_ASCENT,   MOCK_ASCENDER);
-        write_i32(FM_OFF_LCASE_DESCENT,  MOCK_DESCENDER);
-        write_i32(FM_OFF_AVECHWIDTH,     MOCK_CHAR_W);
-        write_i32(FM_OFF_MAXCHARINC,     MOCK_CHAR_W);
-        write_i32(FM_OFF_EMINC,          MOCK_CHAR_W);
-        write_i32(FM_OFF_MAXBASELINEEXT, MOCK_CHAR_H);
-        write_i16(FM_OFF_XDEVICERES,     MOCK_DEVICE_RES);
-        write_i16(FM_OFF_YDEVICERES,     MOCK_DEVICE_RES);
+        write_i32(FM_OFF_EMHEIGHT,       m.line_height);
+        write_i32(FM_OFF_XHEIGHT,        m.x_height);
+        write_i32(FM_OFF_MAXASCENDER,    m.ascent);
+        write_i32(FM_OFF_MAXDESCENDER,   m.descent);
+        write_i32(FM_OFF_LCASE_ASCENT,   m.ascent);
+        write_i32(FM_OFF_LCASE_DESCENT,  m.descent);
+        write_i32(FM_OFF_AVECHWIDTH,     m.avg_char_width);
+        write_i32(FM_OFF_MAXCHARINC,     m.max_char_width);
+        write_i32(FM_OFF_EMINC,          m.max_char_width);
+        write_i32(FM_OFF_MAXBASELINEEXT, m.line_height);
+        write_i16(FM_OFF_XDEVICERES,     DEVICE_RES);
+        write_i16(FM_OFF_YDEVICERES,     DEVICE_RES);
         write_i16(FM_OFF_FIRSTCHAR,      32);   // ' '
         write_i16(FM_OFF_LASTCHAR,       255);
         write_i16(FM_OFF_DEFAULTCHAR,    63);   // '?'
@@ -534,11 +596,8 @@ mod tests {
 
     #[test]
     fn test_font_metrics_key_constants() {
-        // Sanity-check our mock font constants for internal consistency.
-        assert_eq!(super::MOCK_CHAR_H, super::MOCK_ASCENDER + super::MOCK_DESCENDER,
-                   "char height must equal ascender + descender");
-        assert!(super::MOCK_CHAR_W > 0 && super::MOCK_CHAR_H > 0);
         assert!(super::FM_SIZE <= 256, "FONTMETRICS fits in a reasonable buffer");
+        assert!(super::FATTRS_OFF_FACENAME + super::FACESIZE as u32 <= super::FATTRS_OFF_MAXBASELINEEXT);
     }
 
     #[test]
@@ -590,12 +649,119 @@ mod tests {
         // Drain the channel and find the DrawText message.
         let mut found_text: Option<String> = None;
         while let Ok(msg) = rx.try_recv() {
-            if let GUIMessage::DrawText { text, .. } = msg {
+            if let GUIMessage::DrawTextFont { text, font, .. } = msg {
+                assert_eq!(font, crate::gui::font::FontSpec::SYSTEM, "no logical font selected");
                 found_text = Some(text);
             }
         }
         // The decoded text should be "café" (U+00E9), not "caf\u{FFFD}".
         assert_eq!(found_text.as_deref(), Some("caf\u{00E9}"),
             "GpiCharString should decode CP850 bytes to Unicode");
+    }
+
+    /// Push `args` as a cdecl argument list and call PMGPI `ordinal`.
+    fn call_gpi(loader: &Loader, ordinal: u32, args: &[u32]) -> u32 {
+        use super::super::vm_backend::mock::MockVcpu;
+        let mut vcpu = MockVcpu::new();
+        let esp: u32 = 0x1000;
+        vcpu.regs.rsp = esp as u64;
+        for (i, &a) in args.iter().enumerate() {
+            loader.guest_write::<u32>(esp + 4 + i as u32 * 4, a).unwrap();
+        }
+        match loader.handle_pmgpi_call(&mut vcpu, 0, ordinal) {
+            super::ApiResult::Normal(v) => v,
+            _ => panic!("unexpected ApiResult"),
+        }
+    }
+
+    fn write_bytes(loader: &Loader, addr: u32, bytes: &[u8]) {
+        for (i, &b) in bytes.iter().enumerate() {
+            loader.guest_write::<u8>(addr + i as u32, b).unwrap();
+        }
+    }
+
+    /// GpiCreateLogFont maps the FATTRS face/style/size onto an IBM Plex font;
+    /// GpiSetCharSet selects it; text output, the current-position advance,
+    /// GpiQueryTextBox and GpiQueryFontMetrics then all use that font.
+    #[test]
+    fn test_gpi_log_font_selects_plex_face_for_drawing_and_metrics() {
+        use super::super::mutex_ext::MutexExt;
+        use crate::gui::GUIMessage;
+        use crate::gui::font::{self, FontFamily, FontSpec};
+
+        let loader = Loader::new_mock();
+        let (tx, rx) = crate::gui::create_gui_channel();
+        let hps = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            wm.gui_tx = Some(tx);
+            let hwnd = wm.create_window("Test".to_string(), 0, 0);
+            wm.create_ps(hwnd)
+        };
+
+        // FATTRS: bold "Courier" with a 24-px maximum baseline extent.
+        let pfat: u32 = 0x4000;
+        write_bytes(&loader, pfat, &[0u8; 56]);
+        loader.guest_write::<u16>(pfat + super::FATTRS_OFF_SELECTION, super::FATTR_SEL_BOLD).unwrap();
+        write_bytes(&loader, pfat + super::FATTRS_OFF_FACENAME, b"Courier\0");
+        loader.guest_write::<i32>(pfat + super::FATTRS_OFF_MAXBASELINEEXT, 24).unwrap();
+        let expect = FontSpec { family: FontFamily::Mono, bold: true, italic: false, px: 24 };
+
+        assert_eq!(call_gpi(&loader, 381, &[hps, 0, 7, pfat]), super::FONT_MATCH);
+        assert_eq!(call_gpi(&loader, 481, &[hps, 7]), 1); // GpiSetCharSet(lcid 7)
+
+        // GpiCharStringAt(hps, &pt, 5, "Hello")
+        let (ppt, ptext): (u32, u32) = (0x4100, 0x4200);
+        loader.guest_write::<i32>(ppt, 10).unwrap();
+        loader.guest_write::<i32>(ppt + 4, 50).unwrap();
+        write_bytes(&loader, ptext, b"Hello");
+        call_gpi(&loader, 359, &[hps, ppt, 5, ptext]);
+        let mut drawn = None;
+        while let Ok(msg) = rx.try_recv() {
+            if let GUIMessage::DrawTextFont { x, y, text, font, .. } = msg { drawn = Some((x, y, text, font)); }
+        }
+        assert_eq!(drawn, Some((10, 50, "Hello".to_string(), expect)));
+        let width = font::text_width("Hello", expect);
+        {
+            let wm = loader.shared.window_mgr.lock_or_recover();
+            assert_eq!(wm.ps_map[&hps].current_pos, (10 + width, 50), "advance uses the font's width");
+        }
+
+        // GpiQueryTextBox reports the same width and the font's ascent/descent.
+        let aptl: u32 = 0x4300;
+        call_gpi(&loader, 476, &[hps, 5, ptext, 5, aptl]);
+        let m = font::metrics(expect);
+        let pt = |i: u32| (loader.guest_read::<i32>(aptl + i * 8).unwrap(),
+                           loader.guest_read::<i32>(aptl + i * 8 + 4).unwrap());
+        assert_eq!(pt(0), (0, m.ascent));
+        assert_eq!(pt(2), (width, -m.descent));
+        assert_eq!(pt(4), (width, 0));
+
+        // GpiQueryFontMetrics describes the selected face.
+        let pfm: u32 = 0x4400;
+        call_gpi(&loader, 464, &[hps, super::FM_SIZE, pfm]);
+        assert_eq!(loader.guest_read::<i32>(pfm + super::FM_OFF_MAXBASELINEEXT).unwrap(), 24);
+        assert_eq!(loader.guest_read::<i32>(pfm + super::FM_OFF_MAXASCENDER).unwrap(), m.ascent);
+        assert_eq!(loader.guest_read::<i32>(pfm + super::FM_OFF_AVECHWIDTH).unwrap(), m.avg_char_width);
+        let name: Vec<u8> = (0..13).map(|i| loader.guest_read::<u8>(pfm + super::FM_OFF_FACENAME + i).unwrap()).collect();
+        assert_eq!(&name, b"IBM Plex Mono");
+
+        // GpiDeleteSetId drops the logical font and falls back to the system font.
+        assert_eq!(call_gpi(&loader, 385, &[hps, 7]), 1);
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        assert_eq!(wm.ps_map[&hps].current_font(), FontSpec::SYSTEM);
+    }
+
+    /// A GpiSetCharBox character box resizes the current font.
+    #[test]
+    fn test_char_box_sets_font_size() {
+        use super::super::pm_types::WindowManager;
+        use crate::gui::font::FontSpec;
+        let mut wm = WindowManager::new();
+        let hwnd = wm.create_window("Test".to_string(), 0, 0);
+        let hps = wm.create_ps(hwnd);
+        let ps = wm.ps_map.get_mut(&hps).unwrap();
+        assert_eq!(ps.current_font(), FontSpec::SYSTEM);
+        ps.char_box = (0, 32);
+        assert_eq!(ps.current_font(), FontSpec { px: 32, ..FontSpec::SYSTEM });
     }
 }

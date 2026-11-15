@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+use super::font::{self, FontSpec};
+
 // ── Standalone geometry helpers (testable without SDL2) ───────────────────
 
 /// Flip an OS/2 Y coordinate (bottom-left origin) to screen Y (top-left origin).
@@ -13,27 +15,27 @@ pub fn text_screen_y(y: i32, row: i32, char_h: i32, height: u32) -> i32 {
     height as i32 - y - char_h + row
 }
 
-/// Render text into a raw pixel buffer (no SDL2 dependency).
-/// `width`/`height` are buffer dimensions; coordinates are OS/2 bottom-left origin.
+/// Render system-font text into a raw pixel buffer (no SDL2 dependency).
+///
+/// `width`/`height` are buffer dimensions; coordinates are OS/2 bottom-left
+/// origin and `y` is the bottom of the text's 16-px line box, which is how the
+/// built-in controls position their labels.
 pub fn render_text_to_buffer(buf: &mut [u32], width: u32, height: u32, x: i32, y: i32, text: &str, color: u32) {
+    let spec = FontSpec::SYSTEM;
+    let descent = font::metrics(spec).descent;
+    render_text_font_to_buffer(buf, width, height, x, y + descent, text, color, spec);
+}
+
+/// Render text in an explicit font, with `y` the OS/2 (bottom-left origin)
+/// coordinate of the text **baseline** — the GPI character-string convention.
+#[allow(clippy::too_many_arguments)]
+pub fn render_text_font_to_buffer(buf: &mut [u32], width: u32, height: u32,
+                                  x: i32, y: i32, text: &str, color: u32, spec: FontSpec) {
     if width == 0 || height == 0 { return; }
-    let char_w: i32 = 8;
-    let char_h: i32 = 16;
-    for (i, ch) in text.chars().enumerate() {
-        let cx = x + (i as i32 * char_w);
-        let glyph = crate::gui::text_renderer::get_glyph_for_char(ch);
-        for (row, &bits) in glyph.iter().enumerate() {
-            for col in 0..char_w {
-                if bits & (0x80 >> col) != 0 {
-                    let px = cx + col;
-                    let py = text_screen_y(y, row as i32, char_h, height);
-                    if px >= 0 && px < width as i32 && py >= 0 && py < height as i32 {
-                        buf[(py as u32 * width + px as u32) as usize] = color;
-                    }
-                }
-            }
-        }
-    }
+    // OS/2 row `y` is screen row `height - 1 - y`; glyphs rest on that row, so
+    // the baseline (the boundary under it) is screen y `height - y`.
+    let baseline = height as i32 - y;
+    font::draw_text(buf, width as usize, height as usize, x, baseline, text, color, spec);
 }
 
 /// Draw a filled or outlined rectangle into a raw pixel buffer.
@@ -132,36 +134,59 @@ mod tests {
         let (w, h) = (80u32, 32u32);
         let mut buf = vec![0u32; (w * h) as usize];
         render_text_to_buffer(&mut buf, w, h, 0, 0, "A", 0xFF0000);
-        let colored = buf.iter().filter(|&&p| p == 0xFF0000).count();
+        // Text is anti-aliased, so painted pixels are shades of the colour:
+        // only the red channel may be set.
+        let colored = buf.iter().filter(|&&p| p != 0).count();
         assert!(colored > 0, "rendering 'A' should produce colored pixels");
+        assert!(buf.iter().all(|&p| p & 0x00_00FFFF == 0), "only the red channel is drawn");
+    }
+
+    /// Rows (top, bottom) of the painted pixels in a buffer cleared to 0.
+    fn painted_rows(buf: &[u32], w: u32) -> (i32, i32) {
+        let rows: Vec<i32> = buf.iter().enumerate()
+            .filter(|&(_, &p)| p != 0).map(|(i, _)| (i as u32 / w) as i32).collect();
+        (*rows.iter().min().unwrap(), *rows.iter().max().unwrap())
     }
 
     #[test]
     fn test_render_text_right_side_up() {
         let (w, h) = (16u32, 32u32);
         let mut buf = vec![0u32; (w * h) as usize];
-        let color = 0xFFFFFF;
-        render_text_to_buffer(&mut buf, w, h, 0, 8, "T", color);
-
-        let mut top_row = h as i32;
-        let mut bot_row = -1i32;
-        for py in 0..h as i32 {
-            for px in 0..8 {
-                if buf[(py as u32 * w + px as u32) as usize] == color {
-                    if py < top_row { top_row = py; }
-                    if py > bot_row { bot_row = py; }
-                }
-            }
-        }
+        render_text_to_buffer(&mut buf, w, h, 0, 8, "T", 0xFFFFFF);
+        let (top_row, bot_row) = painted_rows(&buf, w);
         assert!(top_row < bot_row);
 
         let count_at = |row: i32| -> usize {
-            (0..8).filter(|&px| buf[(row as u32 * w + px as u32) as usize] == color).count()
+            (0..w).filter(|&px| buf[(row as u32 * w + px) as usize] & 0xFF > 0x60).count()
         };
         let top_count = count_at(top_row);
         let mid_count = count_at((top_row + bot_row) / 2);
         assert!(top_count > mid_count,
             "top row should have more pixels (bar of T) than middle (stem): top={}, mid={}", top_count, mid_count);
+    }
+
+    /// `render_text_to_buffer` places the 16-px line box with its bottom at
+    /// OS/2 `y`; `render_text_font_to_buffer` places the baseline there.
+    #[test]
+    fn test_render_text_line_box_and_baseline_placement() {
+        let (w, h) = (32u32, 64u32);
+        let y = 20;
+        // Line box: everything lies in screen rows [h - y - 16, h - y).
+        let mut buf = vec![0u32; (w * h) as usize];
+        render_text_to_buffer(&mut buf, w, h, 0, y, "Tg", 0xFFFFFF);
+        let (top, bot) = painted_rows(&buf, w);
+        assert!(top >= h as i32 - y - 16 && bot < h as i32 - y, "top={top} bot={bot}");
+
+        // Baseline: a capital rests on OS/2 row `y`, i.e. screen row h - 1 - y…
+        let mut buf = vec![0u32; (w * h) as usize];
+        render_text_font_to_buffer(&mut buf, w, h, 0, y, "T", 0xFFFFFF, FontSpec::SYSTEM);
+        let (_, bot) = painted_rows(&buf, w);
+        assert_eq!(bot, h as i32 - 1 - y);
+        // …while a descender reaches below it.
+        let mut buf = vec![0u32; (w * h) as usize];
+        render_text_font_to_buffer(&mut buf, w, h, 0, y, "g", 0xFFFFFF, FontSpec::SYSTEM);
+        let (_, bot) = painted_rows(&buf, w);
+        assert!(bot > h as i32 - 1 - y);
     }
 
     #[test]

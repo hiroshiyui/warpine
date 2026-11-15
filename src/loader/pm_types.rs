@@ -4,6 +4,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, Condvar};
 use std::sync::atomic::AtomicBool;
 use std::thread;
+use crate::gui::font::FontSpec;
 
 /// Type alias for the timer map to reduce type complexity.
 pub type TimerMap = HashMap<(u32, u32), (Arc<AtomicBool>, Option<thread::JoinHandle<()>>)>;
@@ -80,7 +81,22 @@ pub struct PresentationSpace {
     pub char_set: u32,
     /// Character box in world units (cx, cy); 0 means use default font metrics.
     pub char_box: (i32, i32),
+    /// Logical fonts created by `GpiCreateLogFont`, keyed by LCID.
+    pub log_fonts: HashMap<u32, FontSpec>,
     pub current_pos: (i32, i32),
+}
+
+impl PresentationSpace {
+    /// The font text is currently drawn and measured with: the logical font
+    /// selected by `GpiSetCharSet` (the system font for LCID 0 or an unknown
+    /// LCID), resized by a `GpiSetCharBox` character box when one is set.
+    pub fn current_font(&self) -> FontSpec {
+        let mut spec = self.log_fonts.get(&self.char_set).copied().unwrap_or(FontSpec::SYSTEM);
+        if self.char_box.1 > 0 {
+            spec.px = crate::gui::font::clamp_px(self.char_box.1 as u32);
+        }
+        spec
+    }
 }
 
 pub struct AccelEntry {
@@ -110,10 +126,12 @@ pub fn menu_label(text: &str) -> String {
     text.chars().filter(|&c| c != '~').collect()
 }
 
-/// Pixel width a top-level item occupies in the menu bar (8-px glyphs + padding).
+/// Pixel width a top-level item occupies in the menu bar: its label in the
+/// system font plus padding.
 pub fn menu_bar_item_width(text: &str) -> i32 {
-    use super::constants::{MENU_BAR_ITEM_PAD, SYSFONT_CHAR_W};
-    text.chars().filter(|&c| c != '~').count() as i32 * SYSFONT_CHAR_W + MENU_BAR_ITEM_PAD
+    use super::constants::MENU_BAR_ITEM_PAD;
+    use crate::gui::font::{text_width, FontSpec};
+    text_width(&menu_label(text), FontSpec::SYSTEM) + MENU_BAR_ITEM_PAD
 }
 
 pub struct WindowManager {
@@ -233,6 +251,7 @@ impl WindowManager {
             back_mix: 6,            // BM_OVERPAINT
             char_set: 0,
             char_box: (0, 0),
+            log_fonts: HashMap::new(),
             current_pos: (0, 0),
         });
         self.next_hps += 1;
@@ -539,7 +558,10 @@ mod tests {
         use super::{menu_bar_item_width, menu_label};
         assert_eq!(menu_label("~File"), "File");
         assert_eq!(menu_bar_item_width("~File"), menu_bar_item_width("File"));
-        assert_eq!(menu_bar_item_width("File"), 4 * 8 + 8);
+        // Label width in the proportional system font, plus the fixed padding.
+        let label_w = crate::gui::font::text_width("File", crate::gui::font::FontSpec::SYSTEM);
+        assert_eq!(menu_bar_item_width("File"), label_w + 8);
+        assert!(menu_bar_item_width("WWWW") > menu_bar_item_width("iiii"));
     }
 
     #[test]
