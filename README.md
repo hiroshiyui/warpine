@@ -267,3 +267,24 @@ See [doc/TODOs.md](doc/TODOs.md) for the detailed roadmap.
 This project is licensed under the GNU General Public License v3.0 only (GPL-3.0-only). See the [LICENSE](LICENSE) file for details.
 
 Bundled third-party fonts keep their own licences: the IBM Plex families in [`vendor/ibm-plex`](vendor/ibm-plex) are © IBM Corp. under the SIL Open Font License 1.1 ([`LICENSE.txt`](vendor/ibm-plex/LICENSE.txt)), and GNU Unifont in `vendor/unifont` is dual-licensed under GPL-2.0-or-later with the GNU font embedding exception and the SIL Open Font License 1.1.
+
+## References
+
+Warpine follows a near-clean-room policy: API behaviour is derived from public documentation and from the observable behaviour of applications built with Open Watcom, never from IBM binaries or their disassembly. These are the sources the project draws on.
+
+### Documentation
+
+- [IBM OS/2 Toolkit Documentation](https://www.edm2.com/index.php/IBM_OS/2_Toolkit_Documentation) (EDM/2) — the *Control Program*, *Presentation Manager* and *Graphics Programming Interface* programming guides and references; the primary description of API semantics.
+- [IBM OS/2 Device Driver Development Kit](https://www.edm2.com/index.php/IBM_OS/2_Device_Driver_Development_Kit) (EDM/2) — lower-level system and driver documentation.
+- [List of OS/2 Software Development Related Books](https://www.edm2.com/index.php/List_of_OS/2_Software_Development_Related_Books) (EDM/2) — index of further published material.
+- [Open Watcom](https://github.com/open-watcom/open-watcom-v2) — the OS/2 headers and import libraries are the source of the ordinal table in [`doc/os2_ordinals.md`](doc/os2_ordinals.md), and its compiler builds the sample programs used as the test oracle.
+
+### Related projects
+
+Other open-source efforts to run OS/2 software or reimplement its APIs, useful for comparison and as pointers to documentation:
+
+- [osFree](https://github.com/osfree-project/osfree) — an open-source OS/2-compatible operating system.
+- [2ine](https://github.com/icculus/2ine) — runs OS/2 LX binaries on Linux by loading them natively and reimplementing the APIs.
+- [OS2Linux](https://github.com/OS2World/LINUX-SYSTEM-OS2Linux) — an earlier OS/2 API layer for Linux, preserved by OS2World.
+
+Thanks to Martin Iturbide for collecting these references in [issue #1](https://github.com/hiroshiyui/warpine/issues/1).
