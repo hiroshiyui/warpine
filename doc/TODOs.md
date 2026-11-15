@@ -101,12 +101,16 @@ From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `render
 - [ ] **Shared per-window surface** — GPI calls are sent as one `GUIMessage` per primitive and rasterised later on the GUI thread, so the API thread cannot read pixels back. Draw on the API thread into a shared surface and send only damage to the GUI thread
 - [ ] **Unlocks** — `GpiQueryPel`, `GpiBitBlt` from a window, destination-dependent mix modes (XOR…), memory presentation spaces and bitmaps
 
+- [ ] **DIVE (direct framebuffer blitting)** — the API most OS/2 games and video players use instead of GPI: the application fills a buffer and asks for it to be blitted (with scaling and colour conversion) into a window. Maps directly onto the shared per-window surface above. The ordinal table (`doc/os2_ordinals.md`) has no DIVE section, so first find the export list and semantics in public headers / import libraries (clean-room policy); pairs with DART audio in MMPM/2
+
 **Step 4 — GPU compositing**
 
 - [ ] **Compositor trait** — put compositing behind a small trait; keep the software backend for headless tests (`SDL_VIDEODRIVER=dummy`, golden signatures)
 - [ ] **Intermediate step** — the PM canvas is created with `.software()`; try `.accelerated().present_vsync()` with one SDL texture per window (window moves without re-blit, partial uploads)
 - [ ] **GPU backend** — one texture per window drawn as quads, scaling for HiDPI, vsync. Prefer `wgpu` (Vulkan on Linux, OpenGL fallback) over raw Vulkan via `ash`, which needs far more setup for a handful of textured quads
 - [ ] **Keep GPI on the CPU** — GPI is immediate-mode with pixel-exact semantics, raster operations and readback; mapping it to GPU draw calls is a large effort with poor returns
+
+- [ ] **OpenGL forwarding (`OPENGL.DLL`)** — OS/2 Warp 4 shipped OpenGL 1.0 (later a 1.1 update) with GLU and a small PM binding, PGL (`pglChooseConfig`, `pglCreateContext`, `pglMakeCurrent`, `pglSwapBuffers`…); version details are from memory and need checking against public documentation. GL 1.x calls map one-to-one onto the host's OpenGL compatibility profile, so most thunks only pass arguments and can be generated from a table; the real work is PGL context creation / buffer swap, translating guest pointers for array and pixel-data calls, and the few hundred entry points. Depends on the GPU compositor: the guest context renders into an offscreen framebuffer that is composited as the window's texture (with the CPU compositor every frame would need a GPU readback). No `OPENGL` section in `doc/os2_ordinals.md` yet — find the export list first
 
 **Step 5 — only if profiling still shows text as significant**
 
