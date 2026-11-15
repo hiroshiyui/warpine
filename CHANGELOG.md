@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **IBM Plex typography for Presentation Manager** (`src/gui/font.rs`, `vendor/ibm-plex`) — all PM text (title bars, menus, dialogs, built-in controls, GPI text) is rendered anti-aliased in the embedded IBM Plex Sans / Mono / Serif families (Regular, Bold, Italic, Bold Italic) with IBM Plex Sans JP / KR / TC / SC for CJK; per-character fallback Latin face → CJK faces (ordered by the active DBCS codepage) → GNU Unifont. Rasterised with the `ab_glyph` crate. The VIO text console keeps its 8×16 bitmap font.
+- **GPI font selection** (`pm_gpi.rs`) — `GpiCreateLogFont` maps the FATTRS face name, bold/italic flags and size onto an IBM Plex face (Courier/System VIO → Mono, Tms Rmn/Times → Serif, others → Sans); `GpiSetCharSet`, `GpiSetCharBox` and `GpiDeleteSetId` update the selection; `GpiQueryTextBox`, `GpiQueryFontMetrics` and the current-position advance use the selected font's real proportional metrics.
+- **`FCF_MENU` support** (`pm_win.rs`) — `WinCreateStdWindow` loads the RT_MENU resource named by `idResources` and attaches it to the frame at creation.
+- **Bevelled window chrome** (`sdl2_renderer.rs`) — title-bar buttons are raised boxes with close / maximise / minimise / system-menu pictograms; sizing borders are a raised bevel; long titles are clipped before the buttons.
+- **`rust-toolchain.toml`** — pins the host toolchain to Rust 1.100.0 with `clippy` and `rustfmt`.
+
 - **TCP/IP Socket API — SO32DLL / TCP32DLL** (`src/loader/tcpip.rs`) — BSD socket thunks mapping OS/2 socket handles to Linux host file descriptors:
   - **`SocketManager`** — `HashMap<u32, i32>` (OS/2 handle → Linux fd), handles start at `0xA000`, `AtomicI32 last_sock_errno`, 256-byte scratch guest buffer (`ensure_hostent_scratch()`) for `hostent`/`servent` results.
   - **SOCE_* error constants** — 30 BSD socket error codes; `errno_to_soce()` maps Linux `errno` to OS/2 `SOCE*` values.
@@ -22,6 +28,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   - **New sample** — `samples/socket_test/` — Open Watcom C program that loads SO32DLL via `DosLoadModule`/`DosQueryProcAddr` and exercises all socket APIs: loopback `bind`/`listen`/`connect`/`accept`/`send`/`recv`, `setsockopt`/`getsockopt`, `getsockname`, `select`, `gethostbyname("localhost")`, `getservbyname("http","tcp")`, `sock_errno`.
 
 - **VDR-B4 — Dirty-rect tracking** (`pm_types.rs`, `sdl2_renderer.rs`) — `WindowManager::dirty: HashSet<u32>` tracks which HWNDs need recompositing; `composite_and_present()` returns immediately when the set is empty and no drag/resize is active, eliminating unnecessary 60Hz full-desktop blits when nothing has changed. Marked dirty by: all Z-order helpers (`z_push_top/bottom/insert_behind/z_remove` call `mark_all_dirty()`), `WinInvalidateRect`, `WinShowWindow`, `WinSetWindowPos` (any SWP flag), `WinSetWindowText`, `PresentBuffer`, and drag/resize `MouseMotion` handlers. Dirty set cleared after every composite. 4 new unit tests in `pm_types::tests`.
+
+### Changed
+- **Menu bar is frame chrome** (`pm_types.rs`, `sdl2_renderer.rs`, `mod.rs`) — the menu bar and open pull-down are drawn by the compositor from window state instead of into the client's FrameBuffer, and the client area now ends below the menu bar (`WindowManager::layout_frame` / `attach_menu`). `WinSetMenu`, `WinLoadMenu`, `WinSetWindowPos` and drag-resize re-lay out the frame; the client receives `WM_SIZE` + `WM_PAINT` when its size changes.
+- **GPI text is positioned by its baseline** — `GpiCharString` / `GpiCharStringAt` treat `y` as the text baseline, as PM defines it (previously the bottom of the character cell).
+- **`sdl2` crate 0.37 → 0.38.**
+
+### Fixed
+- **Startup panic in every PM program** — `sdl2` 0.37 panicked in `poll_events` on an event type (0x207) emitted by the system SDL library; 0.38 ignores unknown event types.
+- **Dialogs at half size** (`pm_win.rs`) — DLGTEMPLATE geometry is in dialog units but was used as pixels, so dialogs were tiny with truncated text; it is now converted (`dlg_units_to_px_x/y`).
+- **Menu bar erased by client repaints and stale pull-downs** — see "Menu bar is frame chrome" above.
+- **Title-bar text overflowing into the client area and invisible minimise button** — title text was centred for 8-px glyphs although glyphs are 16 px tall.
+- **Clippy 1.100 lints** — 13 findings in existing code rewritten without behaviour change.
 
 ## [0.0.1] - 2026-04-03
 

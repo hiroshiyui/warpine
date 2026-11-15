@@ -38,6 +38,9 @@ DLL binaries, no ROM dumps, and no disassembly of original OS/2 system libraries
 | Ordinal Table Canonical Build Tool | Complete | `src/bin/gen_api.rs`; `targets/os2api.def` is single source of truth |
 | PM Menu System (MENUTEMPLATE parser, WinLoadMenu, WinSetMenu, WinCreateMenu) | Complete | `src/loader/pm_win.rs` |
 | PM Dialog System (DLGTEMPLATE parser, WinDlgBox, WinLoadDlg, WinProcessDlg, WinDismissDlg, WinDefDlgProc, WinSendDlgItemMsg, DlgRunLoop) | Complete | `src/loader/pm_win.rs`, `src/loader/vcpu.rs` |
+| PM typography — IBM Plex Sans/Mono/Serif + Plex Sans JP/KR/TC/SC embedded; `GpiCreateLogFont` face/style/size mapping; real proportional font metrics | Complete | `src/gui/font.rs`, `vendor/ibm-plex`, Developer Guide (PM Typography) |
+| PM menu bar as frame chrome — `FCF_MENU` auto-load, client area below the bar, compositor-drawn bar and pull-down | Complete | `src/loader/pm_types.rs`, `src/gui/sdl2_renderer.rs` |
+| Bevelled window chrome — raised title-bar buttons with pictograms, bevelled sizing border | Complete | `src/gui/sdl2_renderer.rs` |
 | Virtual Desktop Renderer (VDR) — single-surface compositor, full window chrome, input routing, dirty-rect tracking (A1–A5/B1–B4/C1–C5/D1–D6/E1–E3) | Complete | `src/gui/sdl2_renderer.rs`, `src/loader/pm_types.rs` |
 | TCP/IP Socket API — SO32DLL/TCP32DLL (51 thunks: socket/bind/connect/listen/accept/send/recv/select/setsockopt/getsockopt/gethostbyname/getservbyname/…) | Complete | `src/loader/tcpip.rs`, `samples/socket_test/` |
 
@@ -58,6 +61,15 @@ NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 - [ ] **Watcom CRT NE apps** — Watcom 16-bit CRT requires LDT-based selectors (TI=1); would need stub LDT or full LDT emulation
 - [ ] **Mode switching** — 16-bit NE code calling a 32-bit flat DLL
 - [ ] **Broader 16-bit API coverage** — more DOSCALLS / VIOCALLS / KBDCALLS ordinals beyond minimal hello-world
+
+### PM Rendering Quality
+
+- [ ] **Dialog placement** — dialogs open at a fixed desktop position; position relative to the owner window
+- [ ] **Dialog units vs. font** — dialog units still assume 8-px average character width; derive from the system font's metrics
+- [ ] **`FCF_SHELLPOSITION`** — every frame defaults to 640×480 at the bottom-left; cascade default positions
+- [ ] **Built-in controls with proportional text** — verify cursor placement / clipping in entry fields, list boxes and MLE
+- [ ] **CJK + `GpiCreateLogFont` PM sample** — on-screen coverage for the CJK faces and font selection
+- [ ] **GUI regression test mode** — scripted input + frame dump compared against reference images
 
 ### PM Advanced Controls
 
