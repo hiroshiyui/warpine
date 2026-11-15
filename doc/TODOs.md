@@ -64,9 +64,6 @@ NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 
 ### PM Rendering Quality
 
-- [ ] **Dialog placement** — dialogs open at a fixed desktop position; position relative to the owner window
-- [ ] **Dialog units vs. font** — dialog units still assume 8-px average character width; derive from the system font's metrics
-- [ ] **`FCF_SHELLPOSITION`** — every frame defaults to 640×480 at the bottom-left; cascade default positions
 - [ ] **Built-in controls with proportional text** — verify cursor placement / clipping in entry fields, list boxes and MLE
 - [ ] **CJK + `GpiCreateLogFont` PM sample** — on-screen coverage for the CJK faces and font selection
 - [ ] **GUI regression test mode** — scripted input + frame dump compared against reference images

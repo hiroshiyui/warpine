@@ -35,6 +35,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **`sdl2` crate 0.37 → 0.38.**
 
 ### Fixed
+- **Screen size reported to guests** (`pm_win.rs`) — `SV_CXSCREEN` / `SV_CYSCREEN` returned 640×480 while the desktop is 1024×768; both now come from `constants::desktop_size()`, which the renderer also uses.
+- **Every window opening at the bottom-left corner** — frames created by `WinCreateStdWindow` now cascade from the desktop's top-left corner (`default_frame_pos`).
+- **Dialog layout** (`pm_win.rs`, `mod.rs`) — dialog units follow the system font's metrics instead of a fixed 8-px cell; template positions are relative to the dialog's parent window; dialogs use the standard compositor chrome (title bar, system menu, close button, dialog border) and become the active window while open.
 - **Startup panic in every PM program** — `sdl2` 0.37 panicked in `poll_events` on an event type (0x207) emitted by the system SDL library; 0.38 ignores unknown event types.
 - **Dialogs at half size** (`pm_win.rs`) — DLGTEMPLATE geometry is in dialog units but was used as pixels, so dialogs were tiny with truncated text; it is now converted (`dlg_units_to_px_x/y`).
 - **Menu bar erased by client repaints and stale pull-downs** — see "Menu bar is frame chrome" above.

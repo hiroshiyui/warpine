@@ -47,6 +47,7 @@ use crate::lx::header::{RT_STRING, RT_MENU, RT_DIALOG, RT_ACCELTABLE};
 use super::pm_types::MenuItem;
 
 /// Parsed metadata for a single DLGITEMTEMPLATE entry.
+#[derive(Clone)]
 struct DlgItemInfo {
     x: i16, y: i16, cx: i16, cy: i16,
     id: u16, fl_style: u32,
@@ -130,8 +131,13 @@ impl super::Loader {
                     wm.frame_to_client.insert(h_frame, h_client);
                     // Initialise both windows to the default SDL2 window size so that
                     // WinQueryWindowRect returns correct dimensions before the first resize.
+                    // Default placement: cascade from the desktop's top-left corner
+                    // so successive windows do not stack exactly on top of each other.
+                    let (def_x, def_y) = default_frame_pos(
+                        wm.frame_to_client.len() - 1, FRAME_DEFAULT_CX, FRAME_DEFAULT_CY, desktop_size());
                     if let Some(win) = wm.get_window_mut(h_frame)  {
-                        win.cx = 640; win.cy = 480;
+                        win.x = def_x; win.y = def_y;
+                        win.cx = FRAME_DEFAULT_CX; win.cy = FRAME_DEFAULT_CY;
                         win.frame_flags = fl_create_flags;
                         win.visible = style & WS_VISIBLE != 0;
                         win.text = title.clone();
@@ -1042,16 +1048,16 @@ impl super::Loader {
                 let _hwnd = read_stack(4);
                 let sys_val = read_stack(8) as i32;
                 let result = match sys_val {
-                    20 => 640,   // SV_CXSCREEN
-                    21 => 480,   // SV_CYSCREEN
-                    22 => 640,   // SV_CXFULLSCREEN
-                    23 => 460,   // SV_CYFULLSCREEN (minus title bar)
+                    20 => desktop_size().0,   // SV_CXSCREEN
+                    21 => desktop_size().1,   // SV_CYSCREEN
+                    22 => desktop_size().0,   // SV_CXFULLSCREEN
+                    23 => desktop_size().1.saturating_sub(CHROME_TITLE_H as u32), // SV_CYFULLSCREEN (minus title bar)
                     24 => 20,    // SV_CYTITLEBAR
                     27 => 1,     // SV_CXSIZEBORDER
                     28 => 1,     // SV_CYSIZEBORDER
                     _ => 0,
                 };
-                ApiResult::Normal(result as u32)
+                ApiResult::Normal(result)
             }
             841 => {
                 // WinQueryWindowText(HWND hwnd, LONG cchBufferMax, PCH pchBuffer)
@@ -1749,18 +1755,32 @@ impl super::Loader {
         use super::constants::{dlg_units_to_px_x, dlg_units_to_px_y};
         let mut wm = self.shared.window_mgr.lock_or_recover();
         let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
+        // Template coordinates are relative to the dialog's parent: the desktop
+        // for HWND_DESKTOP, otherwise the parent window's frame.
+        let (origin_x, origin_y) = if hwnd_parent == HWND_DESKTOP {
+            (0, 0)
+        } else {
+            let frame = wm.find_frame_for_hwnd(hwnd_parent);
+            wm.get_window(frame).map_or((0, 0), |w| (w.x, w.y))
+        };
         let h = wm.create_window("#Dialog".to_string(), hwnd_parent, hmq);
         if let Some(win) = wm.get_window_mut(h) {
+            // Dialogs get the standard frame chrome (title bar, system menu,
+            // dialog border) drawn by the compositor.
+            win.frame_flags = FCF_TITLEBAR | FCF_SYSMENU | FCF_DLGBORDER;
             win.text    = title.clone();
             win.pfn_wp  = pfn_dlg_proc;
             // DLGTEMPLATE geometry is in dialog units, not pixels.
-            win.x       = dlg_units_to_px_x(dlg_x);
-            win.y       = dlg_units_to_px_y(dlg_y);
+            win.x       = origin_x + dlg_units_to_px_x(dlg_x);
+            win.y       = origin_y + dlg_units_to_px_y(dlg_y);
             win.cx      = dlg_units_to_px_x(dlg_cx);
             win.cy      = dlg_units_to_px_y(dlg_cy);
             win.visible = true; // dialogs are always shown when created
         }
         wm.z_push_top(h);
+        // A new dialog is the active window; z_remove hands focus back to the
+        // window underneath when it is dismissed.
+        wm.focused_hwnd = h;
         for item in items {
             let class_name = if !item.class_name.is_empty() {
                 item.class_name.clone()
@@ -1987,13 +2007,68 @@ mod tests {
             x: 70, y: 10, cx: 40, cy: 14, id: 1, fl_style: 0,
             class_name: "WC_BUTTON".to_string(), text: "OK".to_string(),
         }];
+        use super::super::constants::{dlg_units_to_px_x as dx, dlg_units_to_px_y as dy,
+                                      HWND_DESKTOP, FCF_TITLEBAR, FCF_DLGBORDER};
         let (hwnd_dlg, _) = loader.create_dialog_from_template(
-            0, 0, 0, "About".to_string(), 40, 40, 180, 80, items);
-        let wm = loader.shared.window_mgr.lock_or_recover();
+            HWND_DESKTOP, 0, 0, "About".to_string(), 40, 40, 180, 80, items.clone());
+        // One horizontal unit is 1/4 of the system font's average character
+        // width, one vertical unit 1/8 of its 16-px line height (= 2 px).
+        let avg_w = crate::gui::font::metrics(crate::gui::font::FontSpec::SYSTEM).avg_char_width;
+        assert_eq!(dx(4), avg_w);
+        assert_eq!(dy(8), 16);
+        assert!(dx(180) > 180 && dx(180) < 360, "dialogs are scaled, but no longer by a fixed 8-px cell");
+        {
+            let wm = loader.shared.window_mgr.lock_or_recover();
+            let dlg = wm.get_window(hwnd_dlg).unwrap();
+            // Parent is the desktop: template position is desktop-relative.
+            assert_eq!((dlg.x, dlg.y, dlg.cx, dlg.cy), (dx(40), dy(40), dx(180), dy(80)));
+            assert_eq!(dlg.frame_flags & (FCF_TITLEBAR | FCF_DLGBORDER), FCF_TITLEBAR | FCF_DLGBORDER,
+                       "dialogs use the standard compositor chrome");
+            let child = wm.get_window(dlg.children[0]).unwrap();
+            assert_eq!((child.x, child.y, child.cx, child.cy), (dx(70), dy(10), dx(40), dy(14)));
+        }
+
+        // Parent is a window: the template position is relative to its frame.
+        let client = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let frame = wm.create_window("F".to_string(), 0, 0);
+            let client = wm.create_window("C".to_string(), frame, 0);
+            wm.frame_to_client.insert(frame, client);
+            let f = wm.get_window_mut(frame).unwrap();
+            f.x = 300; f.y = 200;
+            client
+        };
+        let (hwnd_dlg, _) = loader.create_dialog_from_template(
+            client, 0, 0, "About".to_string(), 40, 40, 180, 80, items);
+        let mut wm = loader.shared.window_mgr.lock_or_recover();
         let dlg = wm.get_window(hwnd_dlg).unwrap();
-        assert_eq!((dlg.x, dlg.y, dlg.cx, dlg.cy), (80, 80, 360, 160));
-        let child = wm.get_window(dlg.children[0]).unwrap();
-        assert_eq!((child.x, child.y, child.cx, child.cy), (140, 20, 80, 28));
+        assert_eq!((dlg.x, dlg.y), (300 + dx(40), 200 + dy(40)));
+        // The newest dialog is the active window until it is removed.
+        assert_eq!(wm.focused_hwnd, hwnd_dlg);
+        wm.z_remove(hwnd_dlg);
+        assert_ne!(wm.focused_hwnd, hwnd_dlg);
+    }
+
+    /// Frames created without an explicit position cascade from the desktop's
+    /// top-left corner and always stay on the desktop.
+    #[test]
+    fn test_default_frame_pos_cascades_and_stays_on_desktop() {
+        use super::super::constants::{default_frame_pos, FRAME_CASCADE_ORIGIN as O,
+                                      FRAME_CASCADE_STEP as STEP, FRAME_CASCADE_SLOTS};
+        let desk = (1024, 768);
+        // First frame: inset from the top-left corner (OS/2 y is from the bottom).
+        assert_eq!(default_frame_pos(0, 640, 480, desk), (O, 768 - 480 - O));
+        assert_eq!(default_frame_pos(1, 640, 480, desk), (O + STEP, 768 - 480 - O - STEP));
+        // The cascade wraps round.
+        assert_eq!(default_frame_pos(FRAME_CASCADE_SLOTS as usize, 640, 480, desk),
+                   default_frame_pos(0, 640, 480, desk));
+        // A frame as large as (or larger than) the desktop is pinned to the origin.
+        assert_eq!(default_frame_pos(3, 1024, 768, desk), (0, 0));
+        assert_eq!(default_frame_pos(3, 2000, 2000, desk), (0, 0));
+        for n in 0..20 {
+            let (x, y) = default_frame_pos(n, 640, 480, desk);
+            assert!(x >= 0 && y >= 0 && x + 640 <= 1024 && y + 480 <= 768, "frame {n} off-desktop");
+        }
     }
 
     /// WinSendDlgItemMsg (903) routes to a child control's built-in handler.

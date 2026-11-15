@@ -534,28 +534,13 @@ impl Loader {
                                 })
                             }).collect::<Vec<_>>()
                         };
-                        // The dialog has its own SDL2 window; use hwnd as the handle.
-                        // Gray background.
+                        // The dialog has its own FrameBuffer keyed by hwnd. Its title
+                        // bar and border are frame chrome drawn by the compositor
+                        // (from `frame_flags` and the window text), so only the
+                        // dialog face and the controls are painted here.
                         let _ = sender.send(crate::gui::GUIMessage::DrawBox {
                             handle: hwnd, x1: 0, y1: 0, x2: cx, y2: cy,
                             color: 0x00D4D0C8, fill: true,
-                        });
-                        // Navy title bar at the top (high OS/2 y = low SDL2 y = top of window).
-                        const DLG_TITLE_H: i32 = 16;
-                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
-                            handle: hwnd, x1: 0, y1: cy - DLG_TITLE_H, x2: cx, y2: cy,
-                            color: 0x00000080, fill: true,
-                        });
-                        if !text.is_empty() {
-                            let _ = sender.send(crate::gui::GUIMessage::DrawText {
-                                handle: hwnd, x: 4, y: cy - DLG_TITLE_H + 2,
-                                text: text.clone(), color: 0x00FFFFFF,
-                            });
-                        }
-                        // Dialog border.
-                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
-                            handle: hwnd, x1: 0, y1: 0, x2: cx, y2: cy,
-                            color: 0x00808080, fill: false,
                         });
                         // Child controls.
                         for (cname, chi_x, chi_y, chi_cx, chi_cy, ctext) in children {

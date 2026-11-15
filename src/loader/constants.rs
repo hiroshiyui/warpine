@@ -290,20 +290,56 @@ pub const BN_DBLCLICKED: u32 = 1;
 
 // Dialog units → pixels. OS/2 defines one horizontal dialog unit as 1/4 of the
 // system font's average character width and one vertical unit as 1/8 of its
-// height. Warpine's system font is the 8×16 bitmap font, so both factors are 2.
-pub const SYSFONT_CHAR_W: i32 = 8;
-pub const SYSFONT_CHAR_H: i32 = 16;
+// height, so the factors follow the metrics of the PM system font (IBM Plex
+// Sans) rather than a fixed cell size.
 pub const DLG_UNITS_PER_CHAR_W: i32 = 4;
 pub const DLG_UNITS_PER_CHAR_H: i32 = 8;
 
 /// Convert a horizontal dialog-unit value (DLGTEMPLATE x / cx) to pixels.
-pub const fn dlg_units_to_px_x(du: i16) -> i32 {
-    du as i32 * SYSFONT_CHAR_W / DLG_UNITS_PER_CHAR_W
+pub fn dlg_units_to_px_x(du: i16) -> i32 {
+    let avg_w = crate::gui::font::metrics(crate::gui::font::FontSpec::SYSTEM).avg_char_width;
+    (du as i32 * avg_w + DLG_UNITS_PER_CHAR_W / 2).div_euclid(DLG_UNITS_PER_CHAR_W)
 }
 
 /// Convert a vertical dialog-unit value (DLGTEMPLATE y / cy) to pixels.
-pub const fn dlg_units_to_px_y(du: i16) -> i32 {
-    du as i32 * SYSFONT_CHAR_H / DLG_UNITS_PER_CHAR_H
+pub fn dlg_units_to_px_y(du: i16) -> i32 {
+    let line_h = crate::gui::font::metrics(crate::gui::font::FontSpec::SYSTEM).line_height;
+    (du as i32 * line_h + DLG_UNITS_PER_CHAR_H / 2).div_euclid(DLG_UNITS_PER_CHAR_H)
+}
+
+/// Default size of the virtual PM desktop (pixels).
+pub const DESKTOP_DEFAULT_W: u32 = 1024;
+pub const DESKTOP_DEFAULT_H: u32 = 768;
+/// Default size given to a frame by `WinCreateStdWindow`.
+pub const FRAME_DEFAULT_CX: i32 = 640;
+pub const FRAME_DEFAULT_CY: i32 = 480;
+/// Offset of the first default-positioned frame from the desktop's top-left
+/// corner, and the step between successive frames in the cascade.
+pub const FRAME_CASCADE_ORIGIN: i32 = 32;
+pub const FRAME_CASCADE_STEP: i32 = 24;
+/// Number of cascade slots before default positions wrap around.
+pub const FRAME_CASCADE_SLOTS: i32 = 8;
+
+/// Size of the virtual PM desktop: `WARPINE_DESKTOP_W` / `WARPINE_DESKTOP_H`
+/// when set to a valid number, otherwise 1024×768. The renderer's desktop
+/// surface and the values the guest sees (`SV_CXSCREEN` / `SV_CYSCREEN`,
+/// default window placement) all come from here so they cannot disagree.
+pub fn desktop_size() -> (u32, u32) {
+    let var = |name: &str, default: u32| {
+        std::env::var(name).ok().and_then(|v| v.parse().ok()).filter(|&v| v > 0).unwrap_or(default)
+    };
+    (var("WARPINE_DESKTOP_W", DESKTOP_DEFAULT_W), var("WARPINE_DESKTOP_H", DESKTOP_DEFAULT_H))
+}
+
+/// Default bottom-left position (OS/2 desktop coordinates) of the `n`-th
+/// frame created without an explicit position: a cascade stepping down and
+/// right from the desktop's top-left corner, kept on the desktop.
+pub fn default_frame_pos(n: usize, cx: i32, cy: i32, desktop: (u32, u32)) -> (i32, i32) {
+    let off = FRAME_CASCADE_ORIGIN + (n as i32 % FRAME_CASCADE_SLOTS) * FRAME_CASCADE_STEP;
+    let (dw, dh) = (desktop.0 as i32, desktop.1 as i32);
+    let x = off.min(dw - cx).max(0);
+    let y = (dh - cy - off).max(0);
+    (x, y)
 }
 
 // VDR chrome dimensions — must match CHROME_TITLE_H in sdl2_renderer.rs

@@ -447,10 +447,7 @@ impl Sdl2Renderer {
     /// run_pm_loop(&mut renderer, shared, rx);
     /// ```
     pub fn new(sdl: &sdl2::Sdl) -> Self {
-        let dw: u32 = std::env::var("WARPINE_DESKTOP_W")
-            .ok().and_then(|v| v.parse().ok()).unwrap_or(1024);
-        let dh: u32 = std::env::var("WARPINE_DESKTOP_H")
-            .ok().and_then(|v| v.parse().ok()).unwrap_or(768);
+        let (dw, dh) = crate::loader::constants::desktop_size();
         let video      = sdl.video().expect("SDL2 video subsystem init failed");
         let event_pump = sdl.event_pump().expect("SDL2 event pump init failed");
         let desktop    = DesktopCanvas::new(&video, dw, dh);
