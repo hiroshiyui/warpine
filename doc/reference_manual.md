@@ -361,7 +361,7 @@ $ warpine --compat
 Warpine OS/2 API Compatibility Report
 ======================================
 
-DOSCALLS  (99 implemented, 8 stub)
+DOSCALLS  (103 implemented, 10 stub)
   [stub]  [  241]  DosConnectNPipe
           [  213]  DosFlatToSel
           [  234]  DosExit
@@ -374,7 +374,7 @@ APIs marked `[stub]` accept calls and return `NO_ERROR` but perform no operation
 
 ## Implemented APIs
 
-### DOSCALLS (107 APIs: 99 implemented, 8 stub)
+### DOSCALLS (113 APIs: 103 implemented, 10 stub)
 
 **File I/O:**
 DosOpen (273), DosClose (257), DosRead (281), DosWrite (282), DosDelete (259), DosCopy (258), DosMove (271), DosSetFilePtr (256), DosSetFileSize (272), DosQueryFileInfo (279), DosSetFileInfo (218), DosQueryPathInfo (223), DosSetPathInfo (219), DosEnumAttribute (372)
@@ -433,13 +433,13 @@ UniCreateUconvObject (12289), UniFreeUconvObject (12290), UniUconvToUcs (12291),
 
 UCS-2 name parser accepts `"IBM-NNN"`, `"CP-NNN"`, and `"UTF-8"` (case-insensitive). Conversion delegates to `cp_decode`/`cp_encode` in `codepage.rs`.
 
-### VIOCALLS (21 APIs: 17 implemented, 4 stub)
+### VIOCALLS (22 APIs: 17 implemented, 5 stub)
 
 **Implemented:**
-VioGetAnsi (3), VioSetAnsi (5), VioScrollUp (7), VioScrollDn (8), VioGetCurPos (9), VioSetCurPos (15), VioWrtTTY (19), VioGetMode (21), VioSetMode (22), VioReadCellStr (24), VioWrtNAttr (26), VioSetCurType (32), VioGetCurType (33), VioCheckCharType (39), VioGetConfig (46), VioWrtCharStrAtt (48), VioWrtNCell (52)
+VioGetAnsi (3), VioSetAnsi (5), VioScrollUp (7), VioGetCurPos (9), VioSetCurPos (15), VioWrtTTY (19), VioGetMode (21), VioSetMode (22), VioReadCellStr (24), VioWrtNAttr (26), VioGetCurType (27), VioSetCurType (32), VioCheckCharType (39), VioGetConfig (46), VioScrollDn (47), VioWrtCharStrAtt (48), VioWrtNCell (52)
 
 **Stubs:**
-VioGetBuf (31), VioSetCp (42), VioShowBuf (43), VioSetState (51)
+VioWrtCellStr (10), VioGetBuf (31), VioSetCp (42), VioShowBuf (43), VioSetState (51)
 
 ### KBDCALLS (3 APIs)
 
@@ -461,8 +461,27 @@ GpiLoadFonts (400), GpiSetArcParams (502), GpiSetLineType (530), GpiSetLineWidth
 
 ### Summary
 
-| Module | Total |
-|--------|-------|
+Counts are taken from the static registry (`api_registry.rs`, 186 entries) and the four sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `pm_win.rs`, `pm_gpi.rs`, 125 ordinals). A stub accepts the call and returns success without doing any work.
+
+| Module | Dispatch | Implemented | Stub | Total |
+|--------|----------|------------:|-----:|------:|
+| DOSCALLS | registry | 103 | 10 | 113 |
+| QUECALLS | registry | 7 | 0 | 7 |
+| NLS | registry | 4 | 0 | 4 |
+| MSG | registry | 2 | 0 | 2 |
+| MDM (MMPM/2) | registry | 4 | 0 | 4 |
+| UCONV | registry | 5 | 0 | 5 |
+| SO32DLL (sockets) | registry | 27 | 0 | 27 |
+| TCP32DLL (sockets, resolver) | registry | 24 | 0 | 24 |
+| VIOCALLS | sub-dispatcher | 17 | 5 | 22 |
+| KBDCALLS | sub-dispatcher | 3 | 0 | 3 |
+| PMWIN | sub-dispatcher | 70 | 0 | 70 |
+| PMGPI | sub-dispatcher | 23 | 7 | 30 |
+| **Total** | | **289** | **22** | **311** |
+
+PMWIN handlers are not individually classified as stubs; some return fixed values.
+
+--------|-------|
 | DOSCALLS | 113 |
 | QUECALLS | 7 |
 | NLS | 4 |

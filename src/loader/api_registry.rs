@@ -558,6 +558,10 @@ const STUB_ORDINALS: &[u32] = &[
     415,  // DosShutdown
 ];
 
+/// Ordinals handled by the sub-dispatchers rather than the registry:
+/// VIOCALLS 22 + KBDCALLS 3 + PMWIN 70 + PMGPI 30. Maintained manually.
+const SUB_DISPATCHER_ORDINALS: u32 = 22 + 3 + 70 + 30;
+
 /// Generate a human-readable OS/2 API compatibility report.
 ///
 /// Sections:
@@ -599,17 +603,17 @@ pub fn compat_report() -> String {
     // Sub-dispatcher summaries
     out.push_str("Sub-dispatchers (separate from registry)\n");
     out.push_str("----------------------------------------\n");
-    out.push_str("  VIOCALLS   16 implemented, 5 stub  (VioWrtTTY, VioGetMode, VioSetCurPos, \
+    out.push_str("  VIOCALLS   17 implemented, 5 stub  (VioWrtTTY, VioGetMode, VioSetCurPos, \
                   VioGetCurPos, VioScrollUp, VioScrollDn, VioWrtCharStrAtt, VioWrtNCell, \
-                  VioWrtNAttr, VioReadCellStr, VioSetCurType, VioGetCurType, VioGetConfig, \
+                  VioWrtNAttr, VioReadCellStr, VioSetCurType, VioGetCurType, VioGetConfig, VioGetAnsi, VioSetAnsi, \
                   VioCheckCharType, \
                   VioSetMode[stub], VioGetBuf[stub], VioShowBuf[stub], VioSetState[stub], \
-                  VioSetCp[stub])\n");
+                  VioSetCp[stub], VioWrtCellStr[stub])\n");
     out.push_str("  KBDCALLS    3 implemented  (KbdCharIn, KbdStringIn, KbdGetStatus)\n");
-    out.push_str("  PMWIN      67 implemented  (WinInitialize, message queues, window mgmt, \
+    out.push_str("  PMWIN      70 implemented  (WinInitialize, message queues, window mgmt, \
                   input, paint, timers, menus, dialogs, clipboard, resources)\n");
-    out.push_str("  PMGPI       8 implemented  (GpiCreatePS, GpiDestroyPS, GpiSetColor, \
-                  GpiMove, GpiBox, GpiLine, GpiCharStringAt, GpiErase)\n");
+    out.push_str("  PMGPI      23 implemented, 7 stub  (presentation spaces, colour and mix, \
+                  lines, boxes, arcs, text, logical fonts, font metrics)\n");
     out.push('\n');
 
     // Aggregate statistics
@@ -619,10 +623,10 @@ pub fn compat_report() -> String {
     out.push_str(&format!("  Registry entries:  {registry_total}\n"));
     out.push_str(&format!("    Implemented:     {total_impl}\n"));
     out.push_str(&format!("    Stub (no-op):    {total_stubs}\n"));
-    out.push_str("  Sub-dispatchers:   93 ordinals (VIOCALLS + KBDCALLS + PMWIN + PMGPI)\n");
+    out.push_str(&format!("  Sub-dispatchers:   {SUB_DISPATCHER_ORDINALS} ordinals (VIOCALLS + KBDCALLS + PMWIN + PMGPI)\n"));
     out.push_str(&format!(
         "  Grand total:       {} API entry points covered\n",
-        registry_total + 93
+        registry_total + SUB_DISPATCHER_ORDINALS
     ));
 
     out
@@ -659,6 +663,8 @@ mod tests {
         assert!(report.contains("[stub]"),         "no stubs marked");
         // Summary section present
         assert!(report.contains("Grand total:"), "missing summary");
+        let total = REGISTRY.len() as u32 + super::SUB_DISPATCHER_ORDINALS;
+        assert!(report.contains(&format!("{total} API entry points")), "wrong grand total");
     }
 
     #[test]
