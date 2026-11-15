@@ -29,6 +29,7 @@ use crate::loader::pm_types::{MenuItem, menu_label, menu_bar_item_width};
 use super::message::GUIMessage;
 use super::renderer::PmRenderer;
 use super::font::{self, FontSpec};
+use super::gui_script::{self, GuiScript};
 use super::render_utils::{render_text_to_buffer, render_text_font_to_buffer,
     render_rect_to_buffer, render_line_to_buffer};
 
@@ -432,6 +433,8 @@ pub struct Sdl2Renderer {
     resize_state: Option<ResizeState>,
     /// Timestamp of the last full compositor repaint (VDR-B3).
     last_composite: std::time::Instant,
+    /// Scripted session replayed against the desktop (`WARPINE_GUI_SCRIPT`).
+    script: Option<GuiScript>,
 }
 
 impl Sdl2Renderer {
@@ -460,6 +463,7 @@ impl Sdl2Renderer {
             drag_state: None,
             resize_state: None,
             last_composite: std::time::Instant::now(),
+            script: GuiScript::from_env(),
         }
     }
 
@@ -1104,7 +1108,33 @@ impl PmRenderer for Sdl2Renderer {
                 wm.clipboard.insert(CF_TEXT, 0); // invalidate stale guest pointer
         }
 
-        let events: Vec<_> = self.event_pump.poll_iter().collect();
+        let mut events: Vec<_> = self.event_pump.poll_iter().collect();
+
+        // Scripted session: turn due steps into input events and captures.
+        let scripted = self.script.as_mut().map(GuiScript::due).unwrap_or_default();
+        for action in scripted {
+            match action {
+                gui_script::Action::Click { x, y } => {
+                    let btn = sdl2::mouse::MouseButton::Left;
+                    events.push(Event::MouseButtonDown {
+                        timestamp: 0, window_id: 0, which: 0, mouse_btn: btn, clicks: 1, x, y });
+                    events.push(Event::MouseButtonUp {
+                        timestamp: 0, window_id: 0, which: 0, mouse_btn: btn, clicks: 1, x, y });
+                }
+                gui_script::Action::Dump(path) => {
+                    // Capture what is on screen now, including changes that
+                    // have not been composited yet.
+                    shared.window_mgr.lock_or_recover().mark_all_dirty();
+                    self.composite_and_present(shared);
+                    if let Err(e) = gui_script::write_ppm(
+                        &path, &self.desktop.buffer, self.desktop.width, self.desktop.height) {
+                        eprintln!("warpine: cannot write {}: {e}", path.display());
+                    }
+                }
+                gui_script::Action::Quit => events.push(Event::Quit { timestamp: 0 }),
+            }
+        }
+
         for event in events {
             if !self.handle_sdl_event(event, shared) {
                 return false;

@@ -66,7 +66,7 @@ NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 
 - [ ] **Editable text controls** — `WC_ENTRYFIELD` / `WC_MLE` show their text but have no caret, selection or keyboard editing; `WC_LISTBOX` has no selection highlight or scrolling
 - [ ] **`WinSetCp` / `WinSetMenu` ordinal clash** — PMWIN ordinal 857 is `WinSetCp` in the ordinal table but is dispatched as a Warpine-internal `WinSetMenu`; implement `WinSetCp` there and move the internal slot
-- [ ] **GUI regression test mode** — scripted input + frame dump compared against reference images
+- [ ] **GUI script: more input** — scripted sessions only inject left clicks; add key presses, drags and right clicks so keyboard routing, window dragging and resizing can be regression-tested
 
 ### PM Advanced Controls
 

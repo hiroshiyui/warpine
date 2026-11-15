@@ -1415,6 +1415,47 @@ cargo test --test integration     # 9 end-to-end tests (requires /dev/kvm)
 
 ---
 
+### GUI regression tests
+
+PM rendering is tested end to end without a display.
+
+**Scripted sessions.** Setting `WARPINE_GUI_SCRIPT` to a script file makes the
+SDL2 PM renderer replay it (`src/gui/gui_script.rs`). Each line is
+`<milliseconds since start> <action>`; `#` starts a comment:
+
+```text
+1500 click 52 62        # left click at desktop pixel (52, 62), origin top-left
+2500 click 62 80
+4000 dump  /tmp/about.ppm   # write the composited desktop as a binary PPM
+4100 quit               # end the session
+```
+
+Run it with SDL's dummy drivers so no window is opened:
+
+```bash
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy WARPINE_GUI_SCRIPT=session.script \
+  cargo run -- samples/pm_menu_dlg_test/pm_menu_dlg_test.exe
+```
+
+**Golden references.** The `gui_*` tests in `tests/integration.rs` run a sample
+under a script and compare the dump with `tests/golden/<name>.sig`. The
+reference is a *tile signature*: the average colour of each 16×16-pixel tile,
+as text. It is small, tolerates anti-aliasing noise (per-channel tolerance 6),
+and a failure lists the tiles that changed as `(tile x, tile y)`, so multiply
+by 16 to find the area on the desktop.
+
+After an intentional rendering change, regenerate and review the references:
+
+```bash
+WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_
+git diff --stat tests/golden
+```
+
+The tests are skipped when `/dev/kvm` or the Open Watcom-built sample binary
+is missing. Because the signature is coarse, a change confined to a few
+pixels (a 1-px line, a small pictogram) can pass unnoticed; unit tests on the
+drawing functions cover those.
+
 ## Appendix: Development Phases
 
 This appendix summarises the major development phases and what each delivered. The sections above document the current architecture; this appendix provides the historical development narrative.

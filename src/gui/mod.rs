@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 pub mod font;
+pub mod gui_script;
 pub mod message;
 pub mod renderer;
 pub mod render_utils;
