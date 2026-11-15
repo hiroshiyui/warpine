@@ -59,8 +59,6 @@ const CHROME_TITLE_ACTIVE: u32   = 0x0000_0080;
 const CHROME_TITLE_INACTIVE: u32 = 0x0040_4040;
 /// Title bar text colour.
 const CHROME_TEXT_COLOR: u32     = 0x00FF_FFFF;
-/// Frame border colour — medium gray.
-const CHROME_BORDER_COLOR: u32   = 0x0080_8080;
 
 /// Draw text into a desktop-space pixel buffer.
 ///
@@ -71,6 +69,155 @@ fn draw_text_screen(buf: &mut [u32], buf_w: usize, buf_h: usize,
                     sx: i32, sy: i32, text: &str, color: u32, spec: FontSpec) {
     let baseline = sy + font::metrics(spec).ascent;
     font::draw_text(buf, buf_w, buf_h, sx, baseline, text, color, spec);
+}
+
+// ── Frame chrome ─────────────────────────────────────────────────────────────
+
+/// Face colour of raised chrome elements (buttons, sizing border).
+const CHROME_FACE_COLOR: u32   = 0x00CC_CCCC;
+/// Lit (top/left) edge of a raised bevel.
+const CHROME_LIGHT_COLOR: u32  = 0x00FF_FFFF;
+/// Shaded (bottom/right) edge of a raised bevel.
+const CHROME_SHADOW_COLOR: u32 = 0x0080_8080;
+/// Outermost dark edge and button glyphs.
+const CHROME_DARK_COLOR: u32   = 0x0000_0000;
+/// Vertical inset of the title-bar buttons inside the title bar.
+const CHROME_BTN_INSET_Y: i32  = 2;
+
+/// Geometry and state of one frame's chrome, in SDL2 screen space.
+struct FrameChrome<'a> {
+    x: i32,
+    /// Screen y of the frame's top edge.
+    top: i32,
+    cx: i32,
+    cy: i32,
+    frame_flags: u32,
+    title: &'a str,
+    focused: bool,
+}
+
+/// Which pictogram a title-bar button carries.
+#[derive(Clone, Copy)]
+enum ButtonGlyph { Close, Maximize, Minimize, SysMenu }
+
+/// Fill `[x0,x1) × [y0,y1)` with `face` and give it a 1-px raised bevel:
+/// `light` along the top and left edges, `shadow` along the bottom and right.
+#[allow(clippy::too_many_arguments)]
+fn draw_raised_box(buf: &mut [u32], buf_w: usize, x0: i32, y0: i32, x1: i32, y1: i32,
+                   face: u32, light: u32, shadow: u32) {
+    draw_filled_rect(buf, buf_w, x0, y0, x1, y1, face);
+    draw_filled_rect(buf, buf_w, x0, y0, x1, y0 + 1, light);
+    draw_filled_rect(buf, buf_w, x0, y0, x0 + 1, y1, light);
+    draw_filled_rect(buf, buf_w, x0, y1 - 1, x1, y1, shadow);
+    draw_filled_rect(buf, buf_w, x1 - 1, y0, x1, y1, shadow);
+}
+
+/// Draw one raised title-bar button with its pictogram. `(x, y)` is the
+/// button's top-left corner; it is `CHROME_BTN_W` wide and `h` tall.
+fn draw_chrome_button(buf: &mut [u32], buf_w: usize, x: i32, y: i32, h: i32, glyph: ButtonGlyph) {
+    let w = CHROME_BTN_W;
+    draw_raised_box(buf, buf_w, x, y, x + w, y + h,
+                    CHROME_FACE_COLOR, CHROME_LIGHT_COLOR, CHROME_SHADOW_COLOR);
+    // Pictogram box: the button interior minus a 4-px margin.
+    let (gx0, gy0, gx1, gy1) = (x + 4, y + 4, x + w - 4, y + h - 4);
+    let ink = CHROME_DARK_COLOR;
+    match glyph {
+        ButtonGlyph::Close => {
+            // Two 2-px-wide diagonals.
+            let n = (gx1 - gx0).min(gy1 - gy0);
+            for i in 0..n {
+                draw_filled_rect(buf, buf_w, gx0 + i, gy0 + i, gx0 + i + 2, gy0 + i + 1, ink);
+                draw_filled_rect(buf, buf_w, gx1 - i - 2, gy0 + i, gx1 - i, gy0 + i + 1, ink);
+            }
+        }
+        ButtonGlyph::Maximize => {
+            // Window outline with a thick top edge.
+            draw_filled_rect(buf, buf_w, gx0, gy0, gx1, gy0 + 2, ink);
+            draw_filled_rect(buf, buf_w, gx0, gy1 - 1, gx1, gy1, ink);
+            draw_filled_rect(buf, buf_w, gx0, gy0, gx0 + 1, gy1, ink);
+            draw_filled_rect(buf, buf_w, gx1 - 1, gy0, gx1, gy1, ink);
+        }
+        ButtonGlyph::Minimize => {
+            // Bar along the bottom.
+            draw_filled_rect(buf, buf_w, gx0, gy1 - 2, gx1, gy1, ink);
+        }
+        ButtonGlyph::SysMenu => {
+            // Small raised plate with a horizontal slot.
+            let my = (gy0 + gy1) / 2;
+            draw_raised_box(buf, buf_w, gx0 - 1, my - 2, gx1 + 1, my + 2,
+                            CHROME_LIGHT_COLOR, CHROME_DARK_COLOR, CHROME_DARK_COLOR);
+        }
+    }
+}
+
+/// Draw a frame's title bar (with system-menu, minimise, maximise and close
+/// buttons) and border into the desktop buffer.
+///
+/// Button positions mirror `hit_test_chrome`: the close button sits
+/// `CHROME_BTN_MARGIN` from the right edge, then maximise and minimise to its
+/// left with `CHROME_BTN_GAP` between them; the system menu is 3 px from the
+/// left edge.
+fn draw_frame_chrome(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
+    let buf_h = buf.len() / buf_w.max(1);
+    let title_h = if c.frame_flags & FCF_TITLEBAR != 0 { CHROME_TITLE_H } else { 0 };
+
+    if title_h > 0 {
+        let title_color = if c.focused { CHROME_TITLE_ACTIVE } else { CHROME_TITLE_INACTIVE };
+        draw_filled_rect(buf, buf_w, c.x, c.top, c.x + c.cx, c.top + title_h, title_color);
+        // Hairline separating the title bar from the menu bar / client below.
+        draw_filled_rect(buf, buf_w, c.x, c.top + title_h - 1, c.x + c.cx, c.top + title_h,
+                         CHROME_SHADOW_COLOR);
+
+        let btn_y = c.top + CHROME_BTN_INSET_Y;
+        let btn_h = title_h - 2 * CHROME_BTN_INSET_Y - 1;
+        let mut text_left = c.x + 4;
+        if c.frame_flags & FCF_SYSMENU != 0 {
+            draw_chrome_button(buf, buf_w, c.x + 3, btn_y, btn_h, ButtonGlyph::SysMenu);
+            text_left = c.x + 3 + CHROME_BTN_W + 4;
+        }
+
+        // Right-side buttons: close, then maximise and minimise when present.
+        let mut btn_x = c.x + c.cx - CHROME_BTN_MARGIN - CHROME_BTN_W;
+        draw_chrome_button(buf, buf_w, btn_x, btn_y, btn_h, ButtonGlyph::Close);
+        if c.frame_flags & FCF_MAXBUTTON != 0 {
+            btn_x -= CHROME_BTN_W + CHROME_BTN_GAP;
+            draw_chrome_button(buf, buf_w, btn_x, btn_y, btn_h, ButtonGlyph::Maximize);
+        }
+        if c.frame_flags & FCF_MINBUTTON != 0 {
+            btn_x -= CHROME_BTN_W + CHROME_BTN_GAP;
+            draw_chrome_button(buf, buf_w, btn_x, btn_y, btn_h, ButtonGlyph::Minimize);
+        }
+
+        // Title text, clipped so it never runs under the buttons.
+        let text_y = c.top + (title_h - GLYPH_H) / 2;
+        let avail = btn_x - 4 - text_left;
+        let mut title: String = c.title.to_string();
+        while !title.is_empty() && font::text_width(&title, FontSpec::SYSTEM_BOLD) > avail {
+            title.pop();
+        }
+        draw_text_screen(buf, buf_w, buf_h, text_left, text_y, &title,
+                         CHROME_TEXT_COLOR, FontSpec::SYSTEM_BOLD);
+    }
+
+    // Border: a sizing border is a raised bevel; a plain or dialog border is a
+    // dark outline with a face-coloured inner ring.
+    let has_border = c.frame_flags & (FCF_BORDER | FCF_DLGBORDER | FCF_SIZEBORDER) != 0;
+    if has_border {
+        let (outer_lt, outer_rb) = if c.frame_flags & FCF_SIZEBORDER != 0 {
+            (CHROME_LIGHT_COLOR, CHROME_SHADOW_COLOR)
+        } else {
+            (CHROME_SHADOW_COLOR, CHROME_SHADOW_COLOR)
+        };
+        let rings = [(outer_lt, outer_rb), (CHROME_FACE_COLOR, CHROME_FACE_COLOR)];
+        for (i, &(lt, rb)) in rings.iter().enumerate().take(CHROME_BORDER_W as usize) {
+            let i = i as i32;
+            let (x0, y0, x1, y1) = (c.x + i, c.top + i, c.x + c.cx - i, c.top + c.cy - i);
+            draw_filled_rect(buf, buf_w, x0, y0, x1, y0 + 1, lt);
+            draw_filled_rect(buf, buf_w, x0, y0, x0 + 1, y1, lt);
+            draw_filled_rect(buf, buf_w, x0, y1 - 1, x1, y1, rb);
+            draw_filled_rect(buf, buf_w, x1 - 1, y0, x1, y1, rb);
+        }
+    }
 }
 
 /// Line height of the PM system font (pixels).
@@ -436,91 +583,11 @@ impl Sdl2Renderer {
                 }
             }
 
-            // VDR-C1/C3/C4: draw title bar chrome on the desktop buffer.
-            if title_h > 0 {
-                let title_color = if snap.is_focused {
-                    CHROME_TITLE_ACTIVE   // VDR-E3: navy for focused
-                } else {
-                    CHROME_TITLE_INACTIVE // VDR-E3: dark gray for others
-                };
-                let x0 = snap.x.max(0);
-                let x1 = (snap.x + snap.cx).min(dw as i32);
-                let y0 = dst_top_y.max(0);
-                let y1 = (dst_top_y + title_h).min(dh);
-                for ty in y0..y1 {
-                    for tx in x0..x1 {
-                        self.desktop.buffer[ty as usize * dw + tx as usize] = title_color;
-                    }
-                }
-                // VDR-C3: system-menu icon — small gray square on the left.
-                let (text_left, text_y) = {
-                    let cy = (title_h - GLYPH_H) / 2; // vertical centre offset for 16-px glyphs
-                    let mut left = snap.x + 4;
-                    if snap.frame_flags & FCF_SYSMENU != 0 {
-                        draw_filled_rect(
-                            &mut self.desktop.buffer, dw,
-                            snap.x + 3, dst_top_y + 3,
-                            snap.x + 3 + CHROME_BTN_W, dst_top_y + title_h - 3,
-                            0x00C0C0C0,
-                        );
-                        left = snap.x + 3 + CHROME_BTN_W + 4;
-                    }
-                    (left, dst_top_y + cy)
-                };
-                // Title text after the system-menu icon.
-                draw_text_screen(
-                    &mut self.desktop.buffer, dw, dh as usize,
-                    text_left, text_y, &snap.title, CHROME_TEXT_COLOR, FontSpec::SYSTEM_BOLD);
-                // VDR-C4: right-side buttons — close, then max (if any), then min (if any).
-                let mut btn_x = snap.x + snap.cx - CHROME_BTN_MARGIN - CHROME_BTN_W;
-                // Close button (always present when title bar is shown).
-                draw_text_screen(
-                    &mut self.desktop.buffer, dw, dh as usize,
-                    btn_x, text_y, "\u{00D7}", CHROME_TEXT_COLOR, FontSpec::SYSTEM_BOLD);
-                btn_x -= CHROME_BTN_W + CHROME_BTN_GAP;
-                if snap.frame_flags & FCF_MAXBUTTON != 0 {
-                    draw_text_screen(
-                        &mut self.desktop.buffer, dw, dh as usize,
-                        btn_x, text_y, "^", CHROME_TEXT_COLOR, FontSpec::SYSTEM_BOLD);
-                    btn_x -= CHROME_BTN_W + CHROME_BTN_GAP;
-                }
-                if snap.frame_flags & FCF_MINBUTTON != 0 {
-                    draw_text_screen(
-                        &mut self.desktop.buffer, dw, dh as usize,
-                        btn_x, text_y, "_", CHROME_TEXT_COLOR, FontSpec::SYSTEM_BOLD);
-                }
-            }
-
-            // VDR-C2: draw frame border.
-            if border_w > 0 {
-                let bx0 = snap.x.max(0) as usize;
-                let bx1 = (snap.x + snap.cx).min(dw as i32) as usize;
-                let by0 = dst_top_y.max(0) as usize;
-                let by1 = (dst_top_y + snap.cy).min(dh) as usize;
-                let bc = CHROME_BORDER_COLOR;
-                for bw_i in 0..border_w as usize {
-                    // Top edge
-                    let ty = by0 + bw_i;
-                    if ty < by1 {
-                        for tx in bx0..bx1 { self.desktop.buffer[ty * dw + tx] = bc; }
-                    }
-                    // Bottom edge
-                    let by = by1.saturating_sub(1 + bw_i);
-                    if by >= by0 {
-                        for tx in bx0..bx1 { self.desktop.buffer[by * dw + tx] = bc; }
-                    }
-                    // Left edge
-                    let lx = bx0 + bw_i;
-                    if lx < bx1 {
-                        for ty in by0..by1 { self.desktop.buffer[ty * dw + lx] = bc; }
-                    }
-                    // Right edge
-                    let rx = bx1.saturating_sub(1 + bw_i);
-                    if rx >= bx0 {
-                        for ty in by0..by1 { self.desktop.buffer[ty * dw + rx] = bc; }
-                    }
-                }
-            }
+            // VDR-C1–C4: title bar, system menu, min/max/close buttons and border.
+            draw_frame_chrome(&mut self.desktop.buffer, dw, &FrameChrome {
+                x: snap.x, top: dst_top_y, cx: snap.cx, cy: snap.cy,
+                frame_flags: snap.frame_flags, title: &snap.title, focused: snap.is_focused,
+            });
 
             // Menu bar + open pull-down, drawn last so the pull-down overlays the
             // client content without ever being written into its FrameBuffer.
@@ -1373,6 +1440,10 @@ fn sdl_keycode_to_char(kc: Keycode) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{sdl_keycode_to_char, sdl_keycode_to_vk, sdl_scancode_to_os2, build_wm_char, mb_buttons};
+    use super::{draw_frame_chrome, FrameChrome, CHROME_TITLE_H, CHROME_BTN_W, CHROME_BTN_GAP,
+                CHROME_BTN_MARGIN, CHROME_BTN_INSET_Y, CHROME_TITLE_ACTIVE, CHROME_TITLE_INACTIVE,
+                CHROME_LIGHT_COLOR, CHROME_SHADOW_COLOR, CHROME_FACE_COLOR, CHROME_DARK_COLOR,
+                FCF_TITLEBAR, FCF_SYSMENU, FCF_MINBUTTON, FCF_MAXBUTTON, FCF_BORDER, FCF_SIZEBORDER};
     use super::{draw_menu_chrome, menu_bar_item_width, MenuItem,
                 MENU_BG_COLOR, MENU_EDGE_COLOR, MENU_HILITE_COLOR,
                 MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H, MIS_SEPARATOR};
@@ -1427,6 +1498,84 @@ mod tests {
         // Separator rule in the middle of the second row.
         let sep_y = bar_bot + MENU_DROPDOWN_ITEM_H + MENU_DROPDOWN_ITEM_H / 2;
         assert_eq!(px(MENU_BAR_ITEM_INSET + 60, sep_y), MENU_EDGE_COLOR);
+    }
+
+    /// Chrome for a 200×100 frame at (10, 10) in a 240×140 buffer.
+    fn chrome_buf(frame_flags: u32, focused: bool) -> Vec<u32> {
+        let mut buf = vec![0x00FF_00FFu32; 240 * 140];
+        draw_frame_chrome(&mut buf, 240, &FrameChrome {
+            x: 10, top: 10, cx: 200, cy: 100, frame_flags, title: "Title", focused,
+        });
+        buf
+    }
+
+    /// The title bar is navy when focused and grey otherwise, and each button
+    /// is a raised box (lit top-left corner, shaded bottom-right) exactly where
+    /// the hit-test expects it.
+    #[test]
+    fn frame_chrome_draws_title_bar_and_raised_buttons() {
+        let flags = FCF_TITLEBAR | FCF_SYSMENU | FCF_MINBUTTON | FCF_MAXBUTTON;
+        let buf = chrome_buf(flags, true);
+        let px = |x: i32, y: i32| buf[y as usize * 240 + x as usize];
+        // Title bar fill between the system menu and the title text start.
+        assert_eq!(px(10 + 3 + CHROME_BTN_W + 1, 12), CHROME_TITLE_ACTIVE);
+        assert_eq!(px(100, 10 + CHROME_TITLE_H), 0x00FF_00FF, "nothing drawn below the title bar");
+        // Close, maximise, minimise from the right edge; system menu on the left.
+        let close_x = 10 + 200 - CHROME_BTN_MARGIN - CHROME_BTN_W;
+        let max_x = close_x - CHROME_BTN_W - CHROME_BTN_GAP;
+        let min_x = max_x - CHROME_BTN_W - CHROME_BTN_GAP;
+        let btn_y = 10 + CHROME_BTN_INSET_Y;
+        let btn_bot = 10 + CHROME_TITLE_H - CHROME_BTN_INSET_Y - 1;
+        for x in [close_x, max_x, min_x, 10 + 3] {
+            assert_eq!(px(x, btn_y), CHROME_LIGHT_COLOR, "lit corner at x={x}");
+            assert_eq!(px(x + CHROME_BTN_W - 1, btn_bot - 1), CHROME_SHADOW_COLOR, "shaded corner at x={x}");
+            assert_eq!(px(x + 2, btn_y + 2), CHROME_FACE_COLOR, "face at x={x}");
+        }
+        // Each button carries a dark pictogram.
+        for x in [close_x, max_x, min_x] {
+            let dark = (0..CHROME_BTN_W).flat_map(|dx| (btn_y..btn_bot).map(move |y| (x + dx, y)))
+                .filter(|&(x, y)| px(x, y) == CHROME_DARK_COLOR).count();
+            assert!(dark >= 4, "button at x={x} has no pictogram");
+        }
+        // Inactive frames use the inactive title colour.
+        let buf = chrome_buf(flags, false);
+        assert_eq!(buf[12 * 240 + (10 + 3 + CHROME_BTN_W + 1) as usize], CHROME_TITLE_INACTIVE);
+    }
+
+    /// Without FCF_MINBUTTON / FCF_MAXBUTTON only the close button is drawn,
+    /// and a long title is clipped before it.
+    #[test]
+    fn frame_chrome_omits_absent_buttons_and_clips_title() {
+        let mut buf = vec![0u32; 240 * 140];
+        draw_frame_chrome(&mut buf, 240, &FrameChrome {
+            x: 10, top: 10, cx: 200, cy: 100, frame_flags: FCF_TITLEBAR,
+            title: "A very long window title that cannot possibly fit in the bar", focused: true,
+        });
+        let px = |x: i32, y: i32| buf[y as usize * 240 + x as usize];
+        let close_x = 10 + 200 - CHROME_BTN_MARGIN - CHROME_BTN_W;
+        let max_x = close_x - CHROME_BTN_W - CHROME_BTN_GAP;
+        assert_eq!(px(close_x, 10 + CHROME_BTN_INSET_Y), CHROME_LIGHT_COLOR);
+        assert_eq!(px(max_x, 10 + CHROME_BTN_INSET_Y), CHROME_TITLE_ACTIVE, "no maximise button");
+        // No title pixels in the 4-px gap before the close button or on it.
+        for y in 10..10 + CHROME_TITLE_H - 1 {
+            for x in close_x - 4..close_x {
+                assert_eq!(px(x, y), CHROME_TITLE_ACTIVE, "title text ran into the buttons at ({x},{y})");
+            }
+        }
+    }
+
+    /// A sizing border is a raised bevel; a plain border is a uniform outline;
+    /// no border flag draws nothing at the frame edge.
+    #[test]
+    fn frame_chrome_border_styles() {
+        let edge = |flags: u32| {
+            let buf = chrome_buf(flags, true);
+            // top-left outer, bottom-right outer, inner ring (left side, mid-height)
+            (buf[10 * 240 + 10], buf[109 * 240 + 209], buf[60 * 240 + 11])
+        };
+        assert_eq!(edge(FCF_SIZEBORDER), (CHROME_LIGHT_COLOR, CHROME_SHADOW_COLOR, CHROME_FACE_COLOR));
+        assert_eq!(edge(FCF_BORDER), (CHROME_SHADOW_COLOR, CHROME_SHADOW_COLOR, CHROME_FACE_COLOR));
+        assert_eq!(edge(0), (0x00FF_00FF, 0x00FF_00FF, 0x00FF_00FF));
     }
 
     #[test]
