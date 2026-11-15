@@ -25,6 +25,9 @@ pub struct PM_MsgQueue {
     pub messages: VecDeque<OS2Message>,
     pub cond: Arc<Condvar>,
     pub lock: Arc<Mutex<bool>>,
+    /// Queue codepage (WinSetCp / WinQueryCp). PM keeps one per message
+    /// queue; it starts as the process codepage when the queue is created.
+    pub codepage: u32,
 }
 
 pub struct WindowClass {
@@ -55,7 +58,7 @@ pub struct OS2Window {
     pub listbox_items: Vec<String>,
     /// Items parsed from a MENUTEMPLATE binary resource (WC_MENU windows only).
     pub menu_items: Vec<MenuItem>,
-    /// HWND of the menu attached to this frame window via WinSetMenu / WinLoadMenu.
+    /// HWND of the menu attached to this frame window (WinLoadMenu / FCF_MENU).
     pub menu_hwnd: u32,
     /// Set by WinDismissDlg; inspected by the DlgRunLoop to end the modal loop.
     pub dialog_dismissed: bool,
@@ -257,12 +260,15 @@ impl WindowManager {
         self.next_hps += 1;
         h
     }
-    pub fn create_mq(&mut self) -> u32 {
+    /// Create a message queue whose codepage starts as `codepage` (the
+    /// process codepage at the time of the call).
+    pub fn create_mq(&mut self, codepage: u32) -> u32 {
         let h = self.next_hmq;
         self.msg_queues.insert(h, Arc::new(Mutex::new(PM_MsgQueue {
             messages: VecDeque::new(),
             cond: Arc::new(Condvar::new()),
             lock: Arc::new(Mutex::new(false)),
+            codepage,
         })));
         self.next_hmq += 1;
         h

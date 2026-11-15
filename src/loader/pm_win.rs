@@ -76,7 +76,9 @@ impl super::Loader {
                 // WinCreateMsgQueue
                 debug!("  [VCPU {}] WinCreateMsgQueue called.", vcpu_id);
                 let mut wm = self.shared.window_mgr.lock_or_recover();
-                let hmq = wm.create_mq();
+                // The queue codepage starts as the process codepage.
+                let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+                let hmq = wm.create_mq(cp);
                 wm.tid_to_hmq.insert(vcpu_id, hmq);
                 ApiResult::Normal(hmq)
             }
@@ -548,12 +550,19 @@ impl super::Loader {
                 ApiResult::Normal(1)
             }
             857 => {
-                // WinSetMenu(HWND hwndFrame, HWND hwndMenu) -> HWND (old menu)
-                let hwnd_frame = read_stack(4);
-                let hwnd_menu  = read_stack(8);
-                debug!("  [VCPU {}] WinSetMenu frame={} menu={}", vcpu_id, hwnd_frame, hwnd_menu);
-                let old = self.attach_menu_to_frame(hwnd_frame, hwnd_menu);
-                ApiResult::Normal(old)
+                // WinSetCp(HMQ hmq, ULONG idCodePage) -> BOOL
+                let hmq = read_stack(4);
+                let cp  = read_stack(8);
+                let ok = self.win_set_cp(hmq, cp);
+                debug!("  [VCPU {}] WinSetCp hmq={} cp={} -> {}", vcpu_id, hmq, cp, ok);
+                ApiResult::Normal(ok as u32)
+            }
+            810 => {
+                // WinQueryCp(HMQ hmq) -> ULONG (0 on error)
+                let hmq = read_stack(4);
+                let cp = self.win_query_cp(hmq);
+                debug!("  [VCPU {}] WinQueryCp hmq={} -> {}", vcpu_id, hmq, cp);
+                ApiResult::Normal(cp)
             }
             907 => {
                 // WinCreateMenu(HWND hwndParent, PVOID pvmt)
@@ -1712,6 +1721,25 @@ impl super::Loader {
         }
     }
 
+    /// WinSetCp: set the codepage of message queue `hmq`. Fails for a
+    /// codepage warpine cannot convert or an unknown queue, changing nothing.
+    ///
+    /// The value is per queue and independent of the process codepage
+    /// (`DosSetProcessCp`), as in PM. PM text conversion still follows the
+    /// process codepage, so this only affects what `WinQueryCp` reports.
+    fn win_set_cp(&self, hmq: u32, cp: u32) -> bool {
+        if !super::stubs::is_supported_codepage(cp) { return false; }
+        let Some(mq) = self.shared.window_mgr.lock_or_recover().get_mq(hmq) else { return false };
+        mq.lock_or_recover().codepage = cp;
+        true
+    }
+
+    /// WinQueryCp: codepage of message queue `hmq`, or 0 for an unknown queue.
+    fn win_query_cp(&self, hmq: u32) -> u32 {
+        let Some(mq) = self.shared.window_mgr.lock_or_recover().get_mq(hmq) else { return 0 };
+        mq.lock_or_recover().codepage
+    }
+
     /// Attach `hwnd_menu` as the menu bar of `hwnd_frame` and return the menu
     /// it replaces. The client area shrinks (or grows) to make room for the
     /// bar; when its size changes the FrameBuffer is resized and the client is
@@ -1871,7 +1899,7 @@ mod tests {
         let loader = Loader::new_mock();
         {
             let mut wm = loader.shared.window_mgr.lock_or_recover();
-            let hmq = wm.create_mq();
+            let hmq = wm.create_mq(TEST_CODEPAGE);
             wm.tid_to_hmq.insert(0, hmq);
         }
         // One-item wrc MENUTEMPLATE ("File", id 100) registered as RT_MENU id 7.
@@ -1980,7 +2008,7 @@ mod tests {
         let loader = Loader::new_mock();
         let hwnd = {
             let mut wm = loader.shared.window_mgr.lock_or_recover();
-            let hmq = wm.create_mq();
+            let hmq = wm.create_mq(TEST_CODEPAGE);
             wm.tid_to_hmq.insert(0, hmq);
             wm.create_window("#Dialog".to_string(), 0, hmq)
         };
@@ -2005,7 +2033,7 @@ mod tests {
         let loader = Loader::new_mock();
         {
             let mut wm = loader.shared.window_mgr.lock_or_recover();
-            let hmq = wm.create_mq();
+            let hmq = wm.create_mq(TEST_CODEPAGE);
             wm.tid_to_hmq.insert(0, hmq);
         }
         let items = vec![DlgItemInfo {
@@ -2084,7 +2112,7 @@ mod tests {
         let loader = Loader::new_mock();
         let (dlg_hwnd, _list_hwnd) = {
             let mut wm = loader.shared.window_mgr.lock_or_recover();
-            let hmq = wm.create_mq();
+            let hmq = wm.create_mq(TEST_CODEPAGE);
             wm.tid_to_hmq.insert(0, hmq);
             let dlg = wm.create_window("#Dialog".to_string(), 0, hmq);
             let list = wm.create_window("WC_LISTBOX".to_string(), dlg, hmq);
@@ -2106,25 +2134,116 @@ mod tests {
         assert!(matches!(result, ApiResult::Normal(0)), "Expected index 0, got {:?}", result);
     }
 
-    /// WinSetMenu (857) must store the menu hwnd on the frame window.
+    /// Attaching a menu through the loader-level helper (the path WinLoadMenu
+    /// takes) stores the menu hwnd on the frame and returns the menu it
+    /// replaces. There is no PMWIN export for this; ordinal 857 is WinSetCp.
     #[test]
-    fn test_win_set_menu() {
+    fn test_attach_menu_to_frame() {
         use super::super::mutex_ext::MutexExt;
         let loader = Loader::new_mock();
-        let (frame_hwnd, menu_hwnd) = {
+        let (frame_hwnd, menu_hwnd, menu2_hwnd) = {
             let mut wm = loader.shared.window_mgr.lock_or_recover();
             let frame = wm.create_window("WC_FRAME".to_string(), 0, 0);
             let menu  = wm.create_window("#Menu".to_string(), frame, 0);
-            (frame, menu)
+            let menu2 = wm.create_window("#Menu".to_string(), frame, 0);
+            (frame, menu, menu2)
         };
-        let mut vcpu = MockVcpu::new();
+        assert_eq!(loader.attach_menu_to_frame(frame_hwnd, menu_hwnd), 0); // previous menu was 0
+        assert_eq!(loader.shared.window_mgr.lock_or_recover()
+            .get_window(frame_hwnd).unwrap().menu_hwnd, menu_hwnd);
+        // Replacing the menu hands back the old one.
+        assert_eq!(loader.attach_menu_to_frame(frame_hwnd, menu2_hwnd), menu_hwnd);
+        assert_eq!(loader.shared.window_mgr.lock_or_recover()
+            .get_window(frame_hwnd).unwrap().menu_hwnd, menu2_hwnd);
+    }
+
+    /// Call a PMWIN API with `args` on the stack and return its plain result.
+    fn call_pmwin(loader: &Loader, vcpu: &mut MockVcpu, ordinal: u32, args: &[u32]) -> u32 {
         let esp: u32 = 0x1000;
         vcpu.regs.rsp = esp as u64;
-        write_stack(&loader, esp, &[frame_hwnd, menu_hwnd]);
-        let result = loader.handle_pmwin_call(&mut vcpu, 0, 857);
-        assert!(matches!(result, ApiResult::Normal(0))); // previous menu was 0
-        let wm = loader.shared.window_mgr.lock_or_recover();
-        assert_eq!(wm.get_window(frame_hwnd).unwrap().menu_hwnd, menu_hwnd);
+        write_stack(loader, esp, args);
+        match loader.handle_pmwin_call(vcpu, 0, ordinal) {
+            ApiResult::Normal(v) => v,
+            other => panic!("PMWIN ordinal {} returned {:?}", ordinal, other),
+        }
+    }
+
+    /// Queue codepage for tests that create a queue without caring about it.
+    const TEST_CODEPAGE: u32 = 437;
+
+    const ORD_WIN_CREATE_MSG_QUEUE: u32 = 716;
+    const ORD_WIN_QUERY_CP: u32 = 810;
+    const ORD_WIN_SET_CP: u32 = 857;
+
+    /// A new queue reports the process codepage in force when it was created.
+    #[test]
+    fn test_win_query_cp_starts_as_process_codepage() {
+        use std::sync::atomic::Ordering;
+        let loader = Loader::new_mock();
+        loader.shared.active_codepage.store(850, Ordering::Relaxed);
+        let mut vcpu = MockVcpu::new();
+        let hmq = call_pmwin(&loader, &mut vcpu, ORD_WIN_CREATE_MSG_QUEUE, &[0, 0]);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_QUERY_CP, &[hmq]), 850);
+    }
+
+    /// WinSetCp (857) with a supported codepage returns TRUE, WinQueryCp (810)
+    /// reports it, and the process codepage is left alone.
+    #[test]
+    fn test_win_set_cp_supported() {
+        use std::sync::atomic::Ordering;
+        let loader = Loader::new_mock();
+        loader.shared.active_codepage.store(437, Ordering::Relaxed);
+        let mut vcpu = MockVcpu::new();
+        let hmq = call_pmwin(&loader, &mut vcpu, ORD_WIN_CREATE_MSG_QUEUE, &[0, 0]);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_CP, &[hmq, 932]), 1);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_QUERY_CP, &[hmq]), 932);
+        assert_eq!(loader.shared.active_codepage.load(Ordering::Relaxed), 437);
+    }
+
+    /// The codepage belongs to the queue: setting one leaves another unchanged.
+    #[test]
+    fn test_win_set_cp_is_per_queue() {
+        use std::sync::atomic::Ordering;
+        let loader = Loader::new_mock();
+        loader.shared.active_codepage.store(437, Ordering::Relaxed);
+        let mut vcpu = MockVcpu::new();
+        let hmq_a = call_pmwin(&loader, &mut vcpu, ORD_WIN_CREATE_MSG_QUEUE, &[0, 0]);
+        let hmq_b = call_pmwin(&loader, &mut vcpu, ORD_WIN_CREATE_MSG_QUEUE, &[0, 0]);
+        assert_ne!(hmq_a, hmq_b);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_CP, &[hmq_a, 850]), 1);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_QUERY_CP, &[hmq_a]), 850);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_QUERY_CP, &[hmq_b]), 437);
+    }
+
+    /// An unsupported codepage returns FALSE and changes nothing.
+    #[test]
+    fn test_win_set_cp_unsupported_codepage() {
+        use std::sync::atomic::Ordering;
+        let loader = Loader::new_mock();
+        loader.shared.active_codepage.store(437, Ordering::Relaxed);
+        let mut vcpu = MockVcpu::new();
+        let hmq = call_pmwin(&loader, &mut vcpu, ORD_WIN_CREATE_MSG_QUEUE, &[0, 0]);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_CP, &[hmq, 12345]), 0);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_QUERY_CP, &[hmq]), 437);
+        assert_eq!(loader.shared.active_codepage.load(Ordering::Relaxed), 437);
+    }
+
+    /// An unknown queue handle returns FALSE from WinSetCp and 0 from
+    /// WinQueryCp, and must not be mistaken for a frame window (the old
+    /// WinSetMenu arm at this ordinal would have attached a "menu").
+    #[test]
+    fn test_win_set_cp_invalid_queue() {
+        use super::super::mutex_ext::MutexExt;
+        let loader = Loader::new_mock();
+        let frame = loader.shared.window_mgr.lock_or_recover()
+            .create_window("WC_FRAME".to_string(), 0, 0);
+        let mut vcpu = MockVcpu::new();
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_CP, &[0xDEAD, 850]), 0);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_QUERY_CP, &[0xDEAD]), 0);
+        // A window handle is not a queue handle.
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_CP, &[frame, 850]), 0);
+        assert_eq!(loader.shared.window_mgr.lock_or_recover()
+            .get_window(frame).unwrap().menu_hwnd, 0);
     }
 
     /// WinQueryWindowText (ordinal 841) must encode the stored UTF-8 window
@@ -2176,7 +2295,7 @@ mod tests {
         //        Also create a client window so frame_to_client resolves.
         let (_frame_hwnd, menu_hwnd, client_hwnd, hmq) = {
             let mut wm = loader.shared.window_mgr.lock_or_recover();
-            let hmq = wm.create_mq();
+            let hmq = wm.create_mq(TEST_CODEPAGE);
             wm.tid_to_hmq.insert(0, hmq);
             let frame = wm.create_window("TestClass".to_string(), 0, hmq);
             let client = wm.create_window("TestClass".to_string(), frame, hmq);

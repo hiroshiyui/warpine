@@ -822,7 +822,6 @@ mod tests {
 
     #[test]
     fn test_pmwin_dispatch_ordinals_match_ordinal_table() {
-        // WinSetMenu is not a PMWIN export; its arm is a Warpine-internal slot.
-        assert_arms_match_ordinal_table(include_str!("pm_win.rs"), "Win", &["WinSetMenu"]);
+        assert_arms_match_ordinal_table(include_str!("pm_win.rs"), "Win", &[]);
     }
 }

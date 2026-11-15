@@ -2,7 +2,7 @@
  * pm_menu_dlg_test.c — PM Menu System + Dialog System test for Warpine.
  *
  * Exercises:
- *   WinLoadMenu / WinSetMenu — load and attach a menu from resources
+ *   WinLoadMenu (FCF_MENU)   — load and attach a menu from resources
  *   WinDlgBox              — display a modal dialog loaded from resources
  *   WinDismissDlg          — dismiss the dialog from a button click
  *   WinDefDlgProc          — default dialog procedure (DID_OK/DID_CANCEL)
