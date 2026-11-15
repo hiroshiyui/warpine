@@ -36,7 +36,7 @@ DLL binaries, no ROM dumps, and no disassembly of original OS/2 system libraries
 | CMD.EXE I/O redirection (`>`, `>>`, `<`) + pipe (`\|`) + sample script | Complete | `src/loader/cmd.rs`, `samples/cmd_test/test.cmd` |
 | Rust Guest Toolchain | Complete | Targets, lx-link linker, warpine-os2 crate family, rust_hello sample, test_rust_hello |
 | Ordinal Table Canonical Build Tool | Complete | `src/bin/gen_api.rs`; `targets/os2api.def` is single source of truth |
-| PM Menu System (MENUTEMPLATE parser, WinLoadMenu, WinSetMenu, WinCreateMenu) | Complete | `src/loader/pm_win.rs` |
+| PM Menu System (MENUTEMPLATE parser, WinLoadMenu, WinCreateMenu, FCF_MENU) | Complete | `src/loader/pm_win.rs` |
 | PM Dialog System (DLGTEMPLATE parser, WinDlgBox, WinLoadDlg, WinProcessDlg, WinDismissDlg, WinDefDlgProc, WinSendDlgItemMsg, DlgRunLoop) | Complete | `src/loader/pm_win.rs`, `src/loader/vcpu.rs` |
 | PM typography — IBM Plex Sans/Mono/Serif + Plex Sans JP/KR/TC/SC embedded; `GpiCreateLogFont` face/style/size mapping; real proportional font metrics | Complete | `src/gui/font.rs`, `vendor/ibm-plex`, Developer Guide (PM Typography) |
 | PM menu bar as frame chrome — `FCF_MENU` auto-load, client area below the bar, compositor-drawn bar and pull-down | Complete | `src/loader/pm_types.rs`, `src/gui/sdl2_renderer.rs` |
@@ -65,7 +65,10 @@ NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 ### PM Rendering Quality
 
 - [ ] **Editable text controls** — `WC_ENTRYFIELD` / `WC_MLE` show their text but have no caret, selection or keyboard editing; `WC_LISTBOX` has no selection highlight or scrolling
-- [ ] **`WinSetCp` / `WinSetMenu` ordinal clash** — PMWIN ordinal 857 is `WinSetCp` in the ordinal table but is dispatched as a Warpine-internal `WinSetMenu`; implement `WinSetCp` there and move the internal slot
+- [ ] **Queue codepage in text paths** — `WinSetCp` stores a per-queue codepage but window text (`WinSetWindowText` / `WinQueryWindowText`), GPI text and the CJK face choice still use the process codepage; needs a thread → hmq → codepage lookup at those sites
+- [ ] **Codepage 1004 and 0** — `WinSetCp` / `DosSetProcessCp` reject CP1004 (common in PM programs) and 0 ("default"); needs support in `codepage.rs`
+- [ ] **Menu replacement** — `WinCreateMenu` does not attach to its parent frame, and replacing a frame's menu via `WinSetParent` + `WM_UPDATEFRAME(FCF_MENU)` is not implemented (verify the sequence against the PM reference first)
+- [ ] **`WinQueryCpList`** (PMWIN 811) and a real `WinDestroyMsgQueue` (currently a stub that keeps the queue alive)
 - [ ] **GUI script: more input** — scripted sessions only inject left clicks; add key presses, drags and right clicks so keyboard routing, window dragging and resizing can be regression-tested
 
 ### PM Advanced Controls

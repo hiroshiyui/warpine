@@ -443,7 +443,7 @@ In real OS/2 PM, `WinCreateStdWindow` dispatches `WM_CREATE` **synchronously** t
 
 Applications that create their child controls inside `WM_CREATE` (the standard OS/2 pattern) require this synchronous dispatch.  Without it, `WinCreateStdWindow` returns before any controls exist.
 
-### Menu System (WinLoadMenu / WinSetMenu / WinCreateMenu)
+### Menu System (WinLoadMenu / WinCreateMenu / FCF_MENU)
 
 **Binary MENUTEMPLATE format (RT_MENU = 4):** An 8-byte header (`u16 version`, `u16 codepage`, `u16 reserved`, `u16 cbInfo`) followed by recursive item records. Each item:
 
@@ -455,7 +455,7 @@ Applications that create their child controls inside `WM_CREATE` (the standard O
 | `text` | NUL-terminated `[u8]` | Absent for `MIS_SEPARATOR` items |
 | children | recursive | Present only for `MIS_SUBMENU` items; terminated by the next item with `MIS_END` |
 
-`parse_menu_template()` in `pm_win.rs` builds a `Vec<MenuItem>` tree. `WinLoadMenu` registers a menu pseudo-window carrying this tree; `WinSetMenu` stores the menu hwnd in `OS2Window::menu_hwnd` and returns the previous handle.
+`parse_menu_template()` in `pm_win.rs` builds a `Vec<MenuItem>` tree. `WinLoadMenu` registers a menu pseudo-window carrying this tree and attaches it to the frame through the internal `attach_menu_to_frame()` helper, which stores the menu hwnd in `OS2Window::menu_hwnd`, re-lays out the frame and returns the previous handle; `WinCreateStdWindow` does the same for `FCF_MENU`. (PMWIN has no `WinSetMenu` export.)
 
 ### Dialog System (WinDlgBox / DlgRunLoop)
 
