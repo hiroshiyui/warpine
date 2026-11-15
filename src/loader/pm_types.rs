@@ -53,6 +53,20 @@ pub struct OS2Window {
     pub style: u32,
     /// Items stored by WC_LISTBOX on LM_INSERTITEM.
     pub listbox_items: Vec<String>,
+    /// Selected WC_LISTBOX item (single selection); `None` = no selection.
+    pub listbox_sel: Option<usize>,
+    /// Owner window from `WinCreateWindow` (receives WM_CONTROL notifications);
+    /// 0 = none, in which case the parent is notified.
+    pub owner: u32,
+    /// Caret position of a WC_ENTRYFIELD / WC_MLE, in characters (not bytes)
+    /// from the start of `text`. May exceed the text length after the guest
+    /// replaces the text; readers clamp it.
+    pub edit_caret: usize,
+    /// Horizontal scroll of a WC_ENTRYFIELD / WC_MLE: the first visible
+    /// character column of the caret's line.
+    pub edit_scroll: usize,
+    /// Vertical scroll: first visible line (WC_MLE) or item (WC_LISTBOX).
+    pub top_row: usize,
     /// Items parsed from a MENUTEMPLATE binary resource (WC_MENU windows only).
     pub menu_items: Vec<MenuItem>,
     /// HWND of the menu attached to this frame window via WinSetMenu / WinLoadMenu.
@@ -161,6 +175,10 @@ pub struct WindowManager {
     pub z_order: Vec<u32>,
     /// The currently active (focused) frame window handle; 0 = none.
     pub focused_hwnd: u32,
+    /// The PM focus window: the window that receives keyboard input. 0 means
+    /// "no explicit focus", in which case keys go to the active frame's
+    /// client. Set by `WinSetFocus` and by clicking a built-in text control.
+    pub focus_hwnd: u32,
     /// VDR-B4: set of HWNDs whose visual state has changed since the last composite.
     /// Any non-empty dirty set causes the next compositor tick to recomposite the
     /// full desktop; an empty set allows the tick to be skipped entirely.
@@ -194,6 +212,7 @@ impl WindowManager {
             next_haccel: 0x4000,
             z_order: Vec::new(),
             focused_hwnd: 0,
+            focus_hwnd: 0,
             dirty: HashSet::new(),
         }
     }
@@ -217,6 +236,11 @@ impl WindowManager {
             visible: false,
             style: 0,
             listbox_items: Vec::new(),
+            listbox_sel: None,
+            owner: 0,
+            edit_caret: 0,
+            edit_scroll: 0,
+            top_row: 0,
             menu_items: Vec::new(),
             menu_hwnd: 0,
             dialog_dismissed: false,
@@ -393,6 +417,39 @@ impl WindowManager {
         out
     }
 
+    /// The window keyboard input is delivered to: the focus window while it
+    /// exists, is visible and belongs to the active frame; otherwise the
+    /// active frame itself (whose client `push_msg` resolves).
+    pub fn key_target(&self) -> u32 {
+        match self.windows.get(&self.focus_hwnd) {
+            Some(w) if w.visible && self.focus_hwnd != 0
+                && self.find_frame_for_hwnd(self.focus_hwnd) == self.focused_hwnd => self.focus_hwnd,
+            _ => self.focused_hwnd,
+        }
+    }
+
+    /// The window the owner notifications (WM_CONTROL) of `hwnd` go to: its
+    /// owner, or its parent when it was created without one.
+    pub fn notify_target(&self, hwnd: u32) -> u32 {
+        self.windows.get(&hwnd).map_or(0, |w| if w.owner != 0 { w.owner } else { w.parent })
+    }
+
+    /// Hit-test point `(x, y)` (client coordinates of `frame`, origin at the
+    /// bottom-left) against the frame's built-in controls. Returns the
+    /// top-most enabled control under the point together with the point in
+    /// that control's own coordinates. Static text is transparent to the
+    /// pointer, and windows without a client (dialogs) have no routed controls.
+    pub fn control_at(&self, frame: u32, x: i32, y: i32) -> Option<(u32, i32, i32)> {
+        use super::constants::WS_DISABLED;
+        let &client = self.frame_to_client.get(&frame)?;
+        self.builtin_control_descendants(client).into_iter().rev().find_map(|h| {
+            let w = self.windows.get(&h)?;
+            if w.class_name == "WC_STATIC" || w.style & WS_DISABLED != 0 { return None; }
+            let (ax, ay, cx, cy) = self.get_abs_rect_in_frame(h);
+            (x >= ax && x < ax + cx && y >= ay && y < ay + cy).then_some((h, x - ax, y - ay))
+        })
+    }
+
     // ── Frame layout helpers ─────────────────────────────────────────────────
 
     /// Height of the chrome stacked above a frame's client area: the title bar
@@ -526,6 +583,84 @@ mod tests {
         let h_client = wm.create_window("TestClient".to_string(), h_frame, 0);
         wm.frame_to_client.insert(h_frame, h_client);
         h_frame
+    }
+
+    /// A std window with a button, an overlapping entry field created later,
+    /// a static label and a disabled list box.
+    #[test]
+    fn control_at_finds_topmost_enabled_control_in_local_coords() {
+        use super::super::constants::WS_DISABLED;
+        let mut wm = WindowManager::new();
+        let frame = wm.create_window("App".into(), 0, 0);
+        let client = wm.create_window("App".into(), frame, 0);
+        wm.frame_to_client.insert(frame, client);
+        let add = |wm: &mut WindowManager, class: &str, rect: (i32, i32, i32, i32), style: u32| {
+            let h = wm.create_window(class.into(), client, 0);
+            let w = wm.get_window_mut(h).unwrap();
+            (w.x, w.y, w.cx, w.cy) = rect;
+            w.visible = true;
+            w.style = style;
+            h
+        };
+        let button = add(&mut wm, "WC_BUTTON", (10, 10, 100, 30), 0);
+        let entry = add(&mut wm, "WC_ENTRYFIELD", (50, 20, 100, 30), 0);
+        let _label = add(&mut wm, "WC_STATIC", (200, 10, 50, 20), 0);
+        let _disabled = add(&mut wm, "WC_LISTBOX", (300, 10, 50, 50), WS_DISABLED);
+
+        assert_eq!(wm.control_at(frame, 12, 15), Some((button, 2, 5)));
+        // Overlap: the later sibling is painted on top, so it wins.
+        assert_eq!(wm.control_at(frame, 60, 25), Some((entry, 10, 5)));
+        // Edges: left/bottom inclusive, right/top exclusive.
+        assert_eq!(wm.control_at(frame, 10, 10), Some((button, 0, 0)));
+        assert_eq!(wm.control_at(frame, 150, 49), None);
+        assert_eq!(wm.control_at(frame, 149, 49), Some((entry, 99, 29)));
+        // Static text and disabled controls are transparent; so is empty space.
+        assert_eq!(wm.control_at(frame, 210, 15), None);
+        assert_eq!(wm.control_at(frame, 310, 15), None);
+        assert_eq!(wm.control_at(frame, 400, 400), None);
+        assert_eq!(wm.control_at(frame, -5, -5), None);
+        // Not a std frame (no client): nothing is routed.
+        assert_eq!(wm.control_at(client, 12, 15), None);
+        assert_eq!(wm.control_at(0xDEAD, 12, 15), None);
+    }
+
+    #[test]
+    fn key_target_prefers_valid_focus_window_of_active_frame() {
+        let mut wm = WindowManager::new();
+        let f1 = wm.create_window("App".into(), 0, 0);
+        let c1 = wm.create_window("App".into(), f1, 0);
+        wm.frame_to_client.insert(f1, c1);
+        let f2 = wm.create_window("App".into(), 0, 0);
+        let c2 = wm.create_window("App".into(), f2, 0);
+        wm.frame_to_client.insert(f2, c2);
+        let entry = wm.create_window("WC_ENTRYFIELD".into(), c1, 0);
+        wm.get_window_mut(entry).unwrap().visible = true;
+        wm.focused_hwnd = f1;
+
+        assert_eq!(wm.key_target(), f1, "no focus window: the active frame");
+        wm.focus_hwnd = entry;
+        assert_eq!(wm.key_target(), entry);
+        // The focus window belongs to another frame than the active one.
+        wm.focused_hwnd = f2;
+        assert_eq!(wm.key_target(), f2);
+        wm.focused_hwnd = f1;
+        // Hidden or destroyed focus windows do not swallow keys.
+        wm.get_window_mut(entry).unwrap().visible = false;
+        assert_eq!(wm.key_target(), f1);
+        wm.focus_hwnd = 0xDEAD;
+        assert_eq!(wm.key_target(), f1);
+    }
+
+    #[test]
+    fn notify_target_is_owner_else_parent() {
+        let mut wm = WindowManager::new();
+        let parent = wm.create_window("App".into(), 0, 0);
+        let other = wm.create_window("App".into(), 0, 0);
+        let ctl = wm.create_window("WC_LISTBOX".into(), parent, 0);
+        assert_eq!(wm.notify_target(ctl), parent);
+        wm.get_window_mut(ctl).unwrap().owner = other;
+        assert_eq!(wm.notify_target(ctl), other);
+        assert_eq!(wm.notify_target(0xDEAD), 0);
     }
 
     #[test]

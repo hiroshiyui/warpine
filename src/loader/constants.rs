@@ -79,11 +79,36 @@ pub const WM_ENABLE: u32 = 0x0002;
 pub const LM_INSERTITEM:     u32 = 0x0161;
 pub const LM_QUERYITEMCOUNT: u32 = 0x0160;
 pub const LIT_END:           u32 = 0xFFFF_FFFF; // insert at end of list
+/// mp1 = item index (`LIT_NONE` deselects everything), mp2 = TRUE to select.
+pub const LM_SELECTITEM:     u32 = 0x0164;
+/// mp1 = index to search after (`LIT_FIRST` from the top); returns the
+/// selected index or `LIT_NONE`.
+pub const LM_QUERYSELECTION: u32 = 0x0165;
+/// "No item": `LM_QUERYSELECTION` result and `LM_SELECTITEM` deselect-all index.
+pub const LIT_NONE:  i32 = -1;
+/// `LM_QUERYSELECTION` start index meaning "search from the first item".
+pub const LIT_FIRST: i32 = -1;
 
-// KC_* flags for WM_CHAR message (MP1 high word)
+// List box notification codes (high word of WM_CONTROL mp1); mp2 = list box HWND.
+pub const LN_SELECT: u32 = 1;
+
+// Entry field notification codes (high word of WM_CONTROL mp1); mp2 = field HWND.
+pub const EN_CHANGE: u32 = 0x0004;
+
+// MLE notification codes (high word of WM_CONTROL mp1).
+pub const MLN_CHANGE: u32 = 0x0007;
+
+// WM_CHAR packing (CHRMSG in <pmwin.h>):
+//   mp1 = fs (KC_* flags, low word) | cRepeat << 16 | scancode << 24
+//   mp2 = chr (low word) | vkey (VK_*, high word)
+pub const WM_CHAR_REPEAT_SHIFT:   u32 = 16;
+pub const WM_CHAR_SCANCODE_SHIFT: u32 = 24;
+pub const WM_CHAR_VKEY_SHIFT:     u32 = 16;
+
+// KC_* flags for WM_CHAR message (MP1 low word)
 pub const KC_CHAR:       u32 = 0x0001; // character code in MP2 low word is valid
 pub const KC_VIRTUALKEY: u32 = 0x0002; // virtual key code in MP2 high word is valid
-pub const KC_SCANCODE:   u32 = 0x0004; // hardware scan code in MP1 byte 8-15 is valid
+pub const KC_SCANCODE:   u32 = 0x0004; // hardware scan code in MP1 bits 24-31 is valid
 pub const KC_SHIFT:      u32 = 0x0008; // shift key held
 pub const KC_CTRL:       u32 = 0x0010; // Ctrl key held
 pub const KC_ALT:        u32 = 0x0020; // Alt key held
