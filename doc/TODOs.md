@@ -73,6 +73,45 @@ NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 - [ ] **Menu replacement** — `WinCreateMenu` does not attach to its parent frame, and replacing a frame's menu via `WinSetParent` + `WM_UPDATEFRAME(FCF_MENU)` is not implemented (verify the sequence against the PM reference first)
 - [ ] **`WinQueryCpList`** (PMWIN 811) and a real `WinDestroyMsgQueue` (currently a stub that keeps the queue alive)
 
+### PM Graphics Performance and Architecture
+
+From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `renderer.rs`, `font.rs`, `message.rs`) on 2026-11-15. Nothing was measured: the costs below come from reading the code, so add timing first where an item says so. The steps are in suggested order; the first two groups do not depend on the GPU decision.
+
+**Step 0 — measure**
+
+- [ ] **Timing instrumentation** — record time per composite, per present and per loop iteration (debug log or `WARPINE_TRACE`) so the items below are backed by numbers
+
+**Step 1 — event loop (small, independent)**
+
+- [ ] **Block instead of poll** — `run_pm_loop` sleeps 8 ms per iteration (`PmRenderer::frame_sleep`), adding up to 8 ms latency to every draw and input event and waking ~125 times a second when idle; wait on SDL events with a timeout and wake the loop when a `GUIMessage` arrives
+- [ ] **Stop polling the host clipboard** — `poll_events` calls `clipboard_text()` every iteration (a string allocation and, on X11, possibly a server round trip); read it on focus gain or when the guest asks
+- [ ] **Coalesce presents** — every `PresentBuffer` (six send sites; several per paint cycle) runs a full composite; mark dirty and composite at most once per frame
+- [ ] **Frame pacing** — no vsync today; presents happen on message arrival plus a 16 ms timer
+
+**Step 2 — compositor cost (small, independent)**
+
+- [ ] **Damage rectangles** — `WindowManager::dirty` only decides whether to skip the composite; any change refills the whole desktop and re-blits every window, including occluded ones. Track rectangles and redraw only those
+- [ ] **Row-wise clipped blit** — the frame blit in `composite_and_present` tests bounds and indexes per pixel; clip once and `copy_from_slice` per row
+- [ ] **Cache chrome** — title-bar and menu text are re-rasterised on every composite, and titles / menu items are cloned while the window-manager lock is held
+- [ ] **Glyph cache locking** — `font::rasterize` locks a global `Mutex<HashMap>` and clones an `Arc` per glyph; use a per-thread cache or a glyph atlas
+- [ ] **Keep content on resize** — `FrameBuffer::resize` reallocates and blanks the buffer, so an interactive resize flashes white until the application repaints
+
+**Step 3 — rasterise on the API thread (largest; affects compatibility)**
+
+- [ ] **Shared per-window surface** — GPI calls are sent as one `GUIMessage` per primitive and rasterised later on the GUI thread, so the API thread cannot read pixels back. Draw on the API thread into a shared surface and send only damage to the GUI thread
+- [ ] **Unlocks** — `GpiQueryPel`, `GpiBitBlt` from a window, destination-dependent mix modes (XOR…), memory presentation spaces and bitmaps
+
+**Step 4 — GPU compositing**
+
+- [ ] **Compositor trait** — put compositing behind a small trait; keep the software backend for headless tests (`SDL_VIDEODRIVER=dummy`, golden signatures)
+- [ ] **Intermediate step** — the PM canvas is created with `.software()`; try `.accelerated().present_vsync()` with one SDL texture per window (window moves without re-blit, partial uploads)
+- [ ] **GPU backend** — one texture per window drawn as quads, scaling for HiDPI, vsync. Prefer `wgpu` (Vulkan on Linux, OpenGL fallback) over raw Vulkan via `ash`, which needs far more setup for a handful of textured quads
+- [ ] **Keep GPI on the CPU** — GPI is immediate-mode with pixel-exact semantics, raster operations and readback; mapping it to GPU draw calls is a large effort with poor returns
+
+**Step 5 — only if profiling still shows text as significant**
+
+- [ ] **Glyph atlas** shared by chrome, controls and GPI text
+
 ### PM Advanced Controls
 
 - [ ] **`WC_CONTAINER`** — Icon / Name / Text / Detail / Tree views; record management
