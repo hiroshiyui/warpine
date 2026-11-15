@@ -12,7 +12,7 @@ pub use message::{GUIMessage, GUISender, create_gui_channel};
 pub use renderer::{PmRenderer, run_pm_loop};
 pub use render_utils::{flip_y, text_screen_y,
     render_text_to_buffer, render_text_font_to_buffer, render_rect_to_buffer, render_line_to_buffer};
-pub use font::{FontSpec, FontFamily};
+pub use font::{CjkRegion, FontSpec, FontFamily};
 pub use headless::HeadlessRenderer;
 pub use sdl2_renderer::{Sdl2Renderer, push_msg, sdl_scancode_to_os2, sdl_keycode_to_vk};
 pub use text_renderer::{

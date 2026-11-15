@@ -9,7 +9,7 @@ use log::{debug, warn};
 use super::mutex_ext::MutexExt;
 use super::ApiResult;
 use crate::gui::GUIMessage;
-use crate::gui::font::{self, FontFamily, FontSpec};
+use crate::gui::font::{self, CjkRegion, FontFamily, FontSpec};
 
 // ── GpiCreateLogFont return values ────────────────────────────────────────────
 const FONT_DEFAULT: u32 = 1; // no FATTRS given: the system default font was used
@@ -179,7 +179,12 @@ impl super::Loader {
                 let color = wm.ps_map.get(&hps).map(|ps| ps.color).unwrap_or(0);
                 let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
                 let hwnd = wm.client_to_frame(ps_hwnd);
-                let font = wm.ps_map.get(&hps).map_or(FontSpec::SYSTEM, |ps| ps.current_font());
+                // Fix the CJK regional face now: the text is rasterised later on
+                // the GUI thread, by which time the codepage may have changed.
+                let font = FontSpec {
+                    cjk: CjkRegion::from_codepage(cp),
+                    ..wm.ps_map.get(&hps).map_or(FontSpec::SYSTEM, |ps| ps.current_font())
+                };
                 let advance = font::text_width(&text_str, font);
                 if let Some(ref sender) = wm.gui_tx {
                     let _ = sender.send(GUIMessage::DrawTextFont {
@@ -220,7 +225,12 @@ impl super::Loader {
                 let color  = wm.ps_map.get(&hps).map(|ps| ps.color).unwrap_or(0);
                 let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
                 let frame_hwnd = wm.client_to_frame(ps_hwnd);
-                let font = wm.ps_map.get(&hps).map_or(FontSpec::SYSTEM, |ps| ps.current_font());
+                // Fix the CJK regional face now: the text is rasterised later on
+                // the GUI thread, by which time the codepage may have changed.
+                let font = FontSpec {
+                    cjk: CjkRegion::from_codepage(cp),
+                    ..wm.ps_map.get(&hps).map_or(FontSpec::SYSTEM, |ps| ps.current_font())
+                };
                 let advance = font::text_width(&text_str, font);
                 if let Some(ref sender) = wm.gui_tx {
                     let _ = sender.send(GUIMessage::DrawTextFont {
@@ -233,7 +243,7 @@ impl super::Loader {
                 ApiResult::Normal(1) // GPI_OK
             }
 
-            518 => {
+            504 => {
                 // GpiSetBackColor(HPS hps, LONG lColor)
                 let hps = read_stack(4);
                 let color = self.map_color(read_stack(8));
@@ -242,21 +252,21 @@ impl super::Loader {
                 debug!("  GpiSetBackColor(hps={}, color=0x{:06X})", hps, color);
                 ApiResult::Normal(1)
             }
-            520 => {
+            437 => {
                 // GpiQueryColor(HPS hps) → LONG lColor
                 let hps = read_stack(4);
                 let color = self.shared.window_mgr.lock_or_recover()
                     .ps_map.get(&hps).map(|ps| ps.color).unwrap_or(0);
                 ApiResult::Normal(color)
             }
-            521 => {
+            424 => {
                 // GpiQueryBackColor(HPS hps) → LONG lColor
                 let hps = read_stack(4);
                 let color = self.shared.window_mgr.lock_or_recover()
                     .ps_map.get(&hps).map(|ps| ps.back_color).unwrap_or(0x00FFFFFF);
                 ApiResult::Normal(color)
             }
-            509 => {
+            537 => {
                 // GpiSetMix(HPS hps, LONG lMixMode)
                 let hps = read_stack(4);
                 let mode = read_stack(8);
@@ -264,7 +274,7 @@ impl super::Loader {
                 if let Some(ps) = wm.ps_map.get_mut(&hps) { ps.mix_mode = mode; }
                 ApiResult::Normal(1)
             }
-            503 => {
+            505 => {
                 // GpiSetBackMix(HPS hps, LONG lMixMode)
                 let hps = read_stack(4);
                 let mode = read_stack(8);
@@ -273,7 +283,7 @@ impl super::Loader {
                 ApiResult::Normal(1)
             }
 
-            416 => {
+            441 => {
                 // GpiQueryCurrentPosition(HPS hps, PPOINTL pptl) → BOOL
                 let hps = read_stack(4);
                 let pptl = read_stack(8);
@@ -286,7 +296,7 @@ impl super::Loader {
                 ApiResult::Normal(1) // TRUE
             }
 
-            481 => {
+            513 => {
                 // GpiSetCharSet(HPS hps, LONG lcid) → BOOL
                 let hps = read_stack(4);
                 let lcid = read_stack(8);
@@ -294,7 +304,7 @@ impl super::Loader {
                 if let Some(ps) = wm.ps_map.get_mut(&hps) { ps.char_set = lcid; }
                 ApiResult::Normal(1)
             }
-            482 => {
+            510 => {
                 // GpiSetCharBox(HPS hps, PSIZEF psizfxBox) → BOOL
                 // SIZEF = { FIXED cx; FIXED cy } where FIXED is 16.16 fixed-point.
                 let hps = read_stack(4);
@@ -311,7 +321,7 @@ impl super::Loader {
                 ApiResult::Normal(1)
             }
 
-            381 => {
+            368 => {
                 // GpiCreateLogFont(HPS hps, PSTR8 pszLocalID, LONG lcid, PFATTRS pfatfs) → LONG
                 // Maps the requested face onto an IBM Plex family and registers it
                 // under `lcid`; GpiSetCharSet(lcid) then selects it for text output.
@@ -343,7 +353,7 @@ impl super::Loader {
                 if let Some(ps) = wm.ps_map.get_mut(&hps) { ps.log_fonts.insert(lcid, spec); }
                 ApiResult::Normal(ret)
             }
-            385 => {
+            378 => {
                 // GpiDeleteSetId(HPS hps, LONG lcid) → BOOL
                 let hps = read_stack(4);
                 let lcid = read_stack(8);
@@ -355,33 +365,33 @@ impl super::Loader {
                 ApiResult::Normal(1)
             }
 
-            527 => {
+            530 => {
                 // GpiSetLineType(HPS hps, LONG lLineType) → BOOL  (stub)
                 ApiResult::Normal(1)
             }
-            529 => {
+            531 => {
                 // GpiSetLineWidth(HPS hps, FIXED fxLineWidth) → BOOL  (stub)
                 ApiResult::Normal(1)
             }
-            530 => {
+            532 => {
                 // GpiSetLineWidthGeom(HPS hps, FIXED fxLineWidth) → BOOL  (stub)
                 ApiResult::Normal(1)
             }
 
-            399 => {
+            400 => {
                 // GpiLoadFonts(HAB hab, PSZ pszFilename) → BOOL  (stub)
                 ApiResult::Normal(1)
             }
-            400 => {
+            622 => {
                 // GpiLoadPublicFonts(HAB hab, PSZ pszFilename) → BOOL  (stub)
                 ApiResult::Normal(1)
             }
-            401 => {
+            623 => {
                 // GpiUnloadPublicFonts(HAB hab, PSZ pszFilename) → BOOL  (stub)
                 ApiResult::Normal(1)
             }
 
-            464 => {
+            453 => {
                 // GpiQueryFontMetrics(HPS hps, LONG lMetricsLength, PFONTMETRICS pfmMetrics) → BOOL
                 let hps = read_stack(4);
                 let cb = read_stack(8); // byte length caller wants filled
@@ -394,7 +404,7 @@ impl super::Loader {
                 ApiResult::Normal(1) // TRUE
             }
 
-            459 => {
+            586 => {
                 // GpiQueryFonts(HPS hps, ULONG flOptions, PSZ pszFacename,
                 //               PLONG plReqFonts, LONG lMetricsLength, PFONTMETRICS afmMetrics)
                 // → LONG (count of matching fonts)
@@ -411,7 +421,7 @@ impl super::Loader {
                 ApiResult::Normal(1) // 1 font matches
             }
 
-            476 => {
+            489 => {
                 // GpiQueryTextBox(HPS hps, LONG lCount1, PCH pchString,
                 //                 LONG lCount2, PPOINTL aptlPoints) → BOOL
                 //
@@ -448,7 +458,7 @@ impl super::Loader {
                 ApiResult::Normal(1) // TRUE
             }
 
-            392 => {
+            393 => {
                 // GpiFullArc(HPS hps, LONG lControl, FIXED fxMult) → LONG
                 // Approximated as a filled/outlined box centred on current_pos.
                 // Arc params (GpiSetArcParams) are not tracked; use a fixed 10-unit radius.
@@ -480,7 +490,7 @@ impl super::Loader {
                 ApiResult::Normal(1) // GPI_OK
             }
 
-            353 => {
+            502 => {
                 // GpiSetArcParams(HPS hps, PARCPARAMS parcpArcParams) → BOOL  (stub)
                 ApiResult::Normal(1)
             }
@@ -650,7 +660,10 @@ mod tests {
         let mut found_text: Option<String> = None;
         while let Ok(msg) = rx.try_recv() {
             if let GUIMessage::DrawTextFont { text, font, .. } = msg {
-                assert_eq!(font, crate::gui::font::FontSpec::SYSTEM, "no logical font selected");
+                // No logical font selected: the system font, with the CJK
+                // region pinned from the codepage active at the call (CP850).
+                assert_eq!(font, crate::gui::font::FontSpec {
+                    cjk: crate::gui::font::CjkRegion::Japanese, ..crate::gui::font::FontSpec::SYSTEM });
                 found_text = Some(text);
             }
         }
@@ -704,10 +717,15 @@ mod tests {
         loader.guest_write::<u16>(pfat + super::FATTRS_OFF_SELECTION, super::FATTR_SEL_BOLD).unwrap();
         write_bytes(&loader, pfat + super::FATTRS_OFF_FACENAME, b"Courier\0");
         loader.guest_write::<i32>(pfat + super::FATTRS_OFF_MAXBASELINEEXT, 24).unwrap();
-        let expect = FontSpec { family: FontFamily::Mono, bold: true, italic: false, px: 24 };
+        use crate::gui::font::CjkRegion;
+        // Text drawn under CP936 pins the Simplified Chinese face.
+        loader.shared.active_codepage.store(936, std::sync::atomic::Ordering::Relaxed);
+        let selected = FontSpec { family: FontFamily::Mono, bold: true, italic: false, px: 24,
+                                  cjk: CjkRegion::Auto };
+        let expect = FontSpec { cjk: CjkRegion::SimplifiedChinese, ..selected };
 
-        assert_eq!(call_gpi(&loader, 381, &[hps, 0, 7, pfat]), super::FONT_MATCH);
-        assert_eq!(call_gpi(&loader, 481, &[hps, 7]), 1); // GpiSetCharSet(lcid 7)
+        assert_eq!(call_gpi(&loader, 368, &[hps, 0, 7, pfat]), super::FONT_MATCH);
+        assert_eq!(call_gpi(&loader, 513, &[hps, 7]), 1); // GpiSetCharSet(lcid 7)
 
         // GpiCharStringAt(hps, &pt, 5, "Hello")
         let (ppt, ptext): (u32, u32) = (0x4100, 0x4200);
@@ -728,7 +746,7 @@ mod tests {
 
         // GpiQueryTextBox reports the same width and the font's ascent/descent.
         let aptl: u32 = 0x4300;
-        call_gpi(&loader, 476, &[hps, 5, ptext, 5, aptl]);
+        call_gpi(&loader, 489, &[hps, 5, ptext, 5, aptl]);
         let m = font::metrics(expect);
         let pt = |i: u32| (loader.guest_read::<i32>(aptl + i * 8).unwrap(),
                            loader.guest_read::<i32>(aptl + i * 8 + 4).unwrap());
@@ -738,7 +756,7 @@ mod tests {
 
         // GpiQueryFontMetrics describes the selected face.
         let pfm: u32 = 0x4400;
-        call_gpi(&loader, 464, &[hps, super::FM_SIZE, pfm]);
+        call_gpi(&loader, 453, &[hps, super::FM_SIZE, pfm]);
         assert_eq!(loader.guest_read::<i32>(pfm + super::FM_OFF_MAXBASELINEEXT).unwrap(), 24);
         assert_eq!(loader.guest_read::<i32>(pfm + super::FM_OFF_MAXASCENDER).unwrap(), m.ascent);
         assert_eq!(loader.guest_read::<i32>(pfm + super::FM_OFF_AVECHWIDTH).unwrap(), m.avg_char_width);
@@ -746,7 +764,7 @@ mod tests {
         assert_eq!(&name, b"IBM Plex Mono");
 
         // GpiDeleteSetId drops the logical font and falls back to the system font.
-        assert_eq!(call_gpi(&loader, 385, &[hps, 7]), 1);
+        assert_eq!(call_gpi(&loader, 378, &[hps, 7]), 1);
         let wm = loader.shared.window_mgr.lock_or_recover();
         assert_eq!(wm.ps_map[&hps].current_font(), FontSpec::SYSTEM);
     }
@@ -763,5 +781,48 @@ mod tests {
         assert_eq!(ps.current_font(), FontSpec::SYSTEM);
         ps.char_box = (0, 32);
         assert_eq!(ps.current_font(), FontSpec { px: 32, ..FontSpec::SYSTEM });
+    }
+
+    /// Every `ordinal => { // ApiName(` arm in a PM sub-dispatcher must use the
+    /// ordinal the Open Watcom import libraries assign to that API
+    /// (`doc/os2_ordinals.md`). A wrong ordinal compiles and passes handler
+    /// tests that call it by number, yet no real application ever reaches it.
+    fn assert_arms_match_ordinal_table(source: &str, prefix: &str, not_exported: &[&str]) {
+        let table = include_str!("../../doc/os2_ordinals.md");
+        let mut doc: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
+        for line in table.lines() {
+            let cols: Vec<&str> = line.split('|').map(str::trim).collect();
+            if cols.len() >= 3 && cols[2].starts_with(prefix)
+                && let Ok(ord) = cols[1].parse::<u32>()
+            {
+                doc.entry(cols[2]).or_insert(ord);
+            }
+        }
+        assert!(doc.len() > 50, "ordinal table for {prefix}* not found");
+
+        let lines: Vec<&str> = source.lines().collect();
+        let mut checked = 0;
+        for pair in lines.windows(2) {
+            let Some(ord) = pair[0].trim().strip_suffix(" => {").and_then(|o| o.parse::<u32>().ok())
+                else { continue };
+            let Some(rest) = pair[1].trim().strip_prefix("// ") else { continue };
+            let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+            if !name.starts_with(prefix) || not_exported.contains(&name.as_str()) { continue; }
+            assert_eq!(doc.get(name.as_str()).copied(), Some(ord),
+                       "{name} is dispatched at ordinal {ord}");
+            checked += 1;
+        }
+        assert!(checked >= 25, "only {checked} {prefix}* arms were recognised");
+    }
+
+    #[test]
+    fn test_pmgpi_dispatch_ordinals_match_ordinal_table() {
+        assert_arms_match_ordinal_table(include_str!("pm_gpi.rs"), "Gpi", &[]);
+    }
+
+    #[test]
+    fn test_pmwin_dispatch_ordinals_match_ordinal_table() {
+        // WinSetMenu is not a PMWIN export; its arm is a Warpine-internal slot.
+        assert_arms_match_ordinal_table(include_str!("pm_win.rs"), "Win", &["WinSetMenu"]);
     }
 }

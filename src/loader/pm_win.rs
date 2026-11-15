@@ -937,7 +937,7 @@ impl super::Loader {
                 wm.clipboard_open = true;
                 ApiResult::Normal(1)
             }
-            795 => {
+            851 => {
                 // WinSetActiveWindow(HWND hwndDesktop, HWND hwnd) -> BOOL
                 // VDR-E2: set focused_hwnd and raise to top of Z-order;
                 // post WM_ACTIVATE to both the old and new active windows (VDR-D4).
@@ -982,7 +982,7 @@ impl super::Loader {
                 }
                 ApiResult::Normal(if new_frame != 0 { 1 } else { 0 })
             }
-            797 => {
+            799 => {
                 // WinQueryActiveWindow(HWND hwndDesktop) -> HWND
                 // VDR-E2: return focused_hwnd.
                 let _hwnd_desktop = read_stack(4);
@@ -1408,7 +1408,7 @@ impl super::Loader {
                 }
                 ApiResult::Normal(hwnd)
             }
-            895 => {
+            929 => {
                 // WinSubclassWindow(HWND hwnd, PFNWP pfnwp) → PFNWP (old proc)
                 //
                 // Replace hwnd's window procedure with pfnwp and return the

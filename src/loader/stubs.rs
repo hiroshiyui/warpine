@@ -182,7 +182,7 @@ impl super::Loader {
     /// Validates against the supported list (437, 850, 852, 932, 949, 950, 1250–1258).
     /// Returns ERROR_INVALID_CODE_PAGE (470) for unrecognised values.
     pub fn dos_set_process_cp(&self, cp: u32) -> u32 {
-        const SUPPORTED: &[u32] = &[437, 850, 852, 932, 949, 950, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258];
+        const SUPPORTED: &[u32] = &[437, 850, 852, 866, 932, 936, 949, 950, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258];
         if !SUPPORTED.contains(&cp) {
             debug!("  DosSetProcessCp({}) → ERROR_INVALID_CODE_PAGE", cp);
             return ERROR_INVALID_CODE_PAGE;

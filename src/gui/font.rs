@@ -61,16 +61,48 @@ pub struct FontSpec {
     pub italic: bool,
     /// Line height (ascent + descent) in pixels.
     pub px: u16,
+    /// Which regional CJK face is tried first for characters the Latin face
+    /// lacks.
+    pub cjk: CjkRegion,
+}
+
+/// Regional preference among the CJK fallback faces. Han ideographs are
+/// shared between the Japanese, Chinese and Korean fonts but drawn
+/// differently, so the right face depends on the text's codepage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CjkRegion {
+    /// Follow the process codepage at the time the text is rasterised
+    /// (see [`set_active_codepage`]). Used for chrome and control text.
+    Auto,
+    Japanese,
+    Korean,
+    TraditionalChinese,
+    SimplifiedChinese,
+}
+
+impl CjkRegion {
+    /// Region for a guest codepage; non-DBCS codepages map to Japanese, the
+    /// face with the broadest coverage.
+    pub fn from_codepage(cp: u32) -> CjkRegion {
+        match cp {
+            949 | 1361 => CjkRegion::Korean,
+            950 | 938 | 948 => CjkRegion::TraditionalChinese,
+            936 | 1381 | 1386 => CjkRegion::SimplifiedChinese,
+            _ => CjkRegion::Japanese,
+        }
+    }
 }
 
 impl FontSpec {
     /// The PM system font: IBM Plex Sans Regular at [`SYSTEM_FONT_PX`].
     pub const SYSTEM: FontSpec =
-        FontSpec { family: FontFamily::Sans, bold: false, italic: false, px: SYSTEM_FONT_PX };
+        FontSpec { family: FontFamily::Sans, bold: false, italic: false, px: SYSTEM_FONT_PX,
+                   cjk: CjkRegion::Auto };
 
     /// Bold system font, used for window title bars.
     pub const SYSTEM_BOLD: FontSpec =
-        FontSpec { family: FontFamily::Sans, bold: true, italic: false, px: SYSTEM_FONT_PX };
+        FontSpec { family: FontFamily::Sans, bold: true, italic: false, px: SYSTEM_FONT_PX,
+                   cjk: CjkRegion::Auto };
 
     /// Build a spec from an OS/2 face name (FATTRS `szFacename`) plus the
     /// requested style and line height. `px == 0` selects the system size.
@@ -99,6 +131,7 @@ impl FontSpec {
             bold: bold || name.contains("bold"),
             italic: italic || name.contains("italic") || name.contains("oblique"),
             px,
+            cjk: CjkRegion::Auto,
         }
     }
 
@@ -180,21 +213,24 @@ fn face(id: usize) -> Option<&'static FontRef<'static>> {
 /// Active guest codepage, used only to order the CJK fallback faces.
 static CJK_CODEPAGE: AtomicU32 = AtomicU32::new(0);
 
-/// Tell the font layer which codepage the guest process uses, so that Han
-/// ideographs are drawn with the matching regional face (Japanese forms under
-/// CP932, Simplified Chinese under CP936, and so on).
+/// Tell the font layer which codepage the guest process uses, so that text
+/// drawn with [`CjkRegion::Auto`] uses the matching regional face (Japanese
+/// forms under CP932, Simplified Chinese under CP936, and so on).
 pub fn set_active_codepage(cp: u32) {
     CJK_CODEPAGE.store(cp, Ordering::Relaxed);
 }
 
-/// CJK fallback faces in preference order for `cp`.
-fn cjk_order(cp: u32) -> [usize; 4] {
-    match cp {
-        949 | 1361 => [FACE_KR, FACE_JP, FACE_SC, FACE_TC],
-        950 | 938 | 948 => [FACE_TC, FACE_SC, FACE_JP, FACE_KR],
-        936 | 1381 | 1386 => [FACE_SC, FACE_TC, FACE_JP, FACE_KR],
-        // CP932/942/943 and every non-DBCS codepage.
-        _ => [FACE_JP, FACE_SC, FACE_TC, FACE_KR],
+/// CJK fallback faces in preference order for `region`.
+fn cjk_order(region: CjkRegion) -> [usize; 4] {
+    let region = match region {
+        CjkRegion::Auto => CjkRegion::from_codepage(CJK_CODEPAGE.load(Ordering::Relaxed)),
+        r => r,
+    };
+    match region {
+        CjkRegion::Korean => [FACE_KR, FACE_JP, FACE_SC, FACE_TC],
+        CjkRegion::TraditionalChinese => [FACE_TC, FACE_SC, FACE_JP, FACE_KR],
+        CjkRegion::SimplifiedChinese => [FACE_SC, FACE_TC, FACE_JP, FACE_KR],
+        CjkRegion::Japanese | CjkRegion::Auto => [FACE_JP, FACE_SC, FACE_TC, FACE_KR],
     }
 }
 
@@ -220,12 +256,8 @@ const UNIFONT_NARROW_W: i32 = 8;
 const UNIFONT_WIDE_W: i32 = 16;
 
 fn resolve(ch: char, spec: FontSpec) -> GlyphSource {
-    resolve_for_codepage(ch, spec, CJK_CODEPAGE.load(Ordering::Relaxed))
-}
-
-fn resolve_for_codepage(ch: char, spec: FontSpec, cp: u32) -> GlyphSource {
     let latin = spec.latin_face();
-    let cjk = cjk_order(cp);
+    let cjk = cjk_order(spec.cjk);
     for id in std::iter::once(latin).chain(cjk) {
         if let Some(f) = face(id) {
             let gid = f.glyph_id(ch);
@@ -564,11 +596,16 @@ mod tests {
         // A shared Han ideograph follows the codepage's regional face. The
         // Korean face carries no Hanja, so CP949 falls through to the next one.
         for (cp, first, han) in [(932, FACE_JP, FACE_JP), (936, FACE_SC, FACE_SC),
-                                 (950, FACE_TC, FACE_TC), (949, FACE_KR, FACE_JP)] {
-            assert_eq!(cjk_order(cp)[0], first);
-            assert!(matches!(resolve_for_codepage('中', spec, cp),
+                                 (950, FACE_TC, FACE_TC), (949, FACE_KR, FACE_JP),
+                                 (850, FACE_JP, FACE_JP)] {
+            let region = CjkRegion::from_codepage(cp);
+            assert_eq!(cjk_order(region)[0], first);
+            assert!(matches!(resolve('中', FontSpec { cjk: region, ..spec }),
                              GlyphSource::Outline { face, .. } if face == han), "cp {cp}");
         }
+        // An explicit region is fixed when the spec is built: it does not
+        // follow later changes of the process codepage, unlike `Auto`.
+        assert_ne!(FontSpec { cjk: CjkRegion::Korean, ..spec }, FontSpec { cjk: CjkRegion::Auto, ..spec });
         // CJK glyphs are scaled to the Latin face's em size: full-width, not tiny.
         let w = text_width("中", spec);
         assert!((10..=16).contains(&w), "unexpected CJK advance {w}");
