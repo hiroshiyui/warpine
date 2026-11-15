@@ -1421,14 +1421,44 @@ PM rendering is tested end to end without a display.
 
 **Scripted sessions.** Setting `WARPINE_GUI_SCRIPT` to a script file makes the
 SDL2 PM renderer replay it (`src/gui/gui_script.rs`). Each line is
-`<milliseconds since start> <action>`; `#` starts a comment:
+`<milliseconds since start> <action> [arguments]`; blank lines and lines
+starting with `#` are ignored (a `#` after an action is not a comment):
 
 ```text
-1500 click 52 62        # left click at desktop pixel (52, 62), origin top-left
+# File -> About..., capture the dialog, then move the main window
+1500 click 52 62
 2500 click 62 80
-4000 dump  /tmp/about.ppm   # write the composited desktop as a binary PPM
-4100 quit               # end the session
+4000 dump  /tmp/about.ppm
+4500 drag  300 42 500 242
+5000 quit
 ```
+
+Coordinates are desktop pixels with the origin at the top-left.
+
+| Action | Effect |
+|--------|--------|
+| `click X Y` | Left button press and release. |
+| `rclick X Y` | Right button press and release. |
+| `drag X1 Y1 X2 Y2` | Left button down at `(X1, Y1)`, four evenly spaced mouse moves ending at `(X2, Y2)`, button up there; the six events are 20 ms apart (100 ms in all). Starting on a title bar moves the window, starting on a sizing border resizes it. |
+| `key [MOD+]NAME` | Press and release one key: `enter`, `tab`, `esc`, `backspace`, `delete`, `insert`, `left`, `right`, `up`, `down`, `home`, `end`, `pageup`, `pagedown`, `space`, `f1`..`f12`, or one printable ASCII character (`key a`). Modifiers `shift+`, `ctrl+`, `alt+` may be combined (`key alt+f4`, `key ctrl+shift+tab`); a character that needs Shift on a US keyboard (`key A`, `key ?`) implies it. |
+| `text STRING` | Type the rest of the line, one character every 10 ms. Non-ASCII text is allowed. |
+| `dump PATH` | Write the composited desktop as a binary PPM (P6). The path is the rest of the line. |
+| `quit` | End the session as if the desktop window had been closed. |
+
+Steps run in time order and never interleave: a step scheduled inside a
+preceding `drag` or `text` starts when that one has finished. Input scripted
+before a `dump` has been handled by the renderer when the capture is taken,
+but the application still needs time to react, so leave a pause before
+capturing.
+
+The script injects the SDL events a real mouse and keyboard produce, so the
+normal event handling runs. `key` sends `KeyDown`/`KeyUp`, with the modifier
+keys pressed before and released after, which become `WM_CHAR`. `text` sends,
+per ASCII character, the US-layout keystroke plus a `TextInput` event; any
+other character is a `TextInput` event alone, as an input method would commit
+it. The PM renderer does not act on `TextInput` yet, so today only the
+keystrokes of `text` reach the application, and `WM_CHAR` carries the
+unshifted character with `KC_SHIFT` set.
 
 Run it with SDL's dummy drivers so no window is opened:
 
@@ -1443,6 +1473,12 @@ reference is a *tile signature*: the average colour of each 16×16-pixel tile,
 as text. It is small, tolerates anti-aliasing noise (per-channel tolerance 6),
 and a failure lists the tiles that changed as `(tile x, tile y)`, so multiply
 by 16 to find the area on the desktop.
+
+Tests of an interaction whose outcome is a few known pixels assert on the dump
+directly instead (`gui_pixel`): `gui_drag_title_bar_moves_window` and
+`gui_drag_sizing_border_resizes_window` capture the desktop before and after a
+`drag` and check the title-bar and desktop colours at the old and new
+positions.
 
 After an intentional rendering change, regenerate and review the references:
 

@@ -246,10 +246,21 @@ const TILE_TOLERANCE: i32 = 6;
 /// `steps` are script lines; `{dump}` is replaced by the capture path.
 /// Returns `(width, height, rgb bytes)`.
 fn run_gui_sample(sample: &str, steps: &str) -> (usize, usize, Vec<u8>) {
+    run_gui_sample_dumps(sample, steps, 1).remove(0)
+}
+
+/// Like [`run_gui_sample`] for a script that captures the desktop `count`
+/// times: `{dump0}`, `{dump1}`, … name the capture paths (`{dump}` is
+/// `{dump0}`), and the captures are returned in that order.
+fn run_gui_sample_dumps(sample: &str, steps: &str, count: usize) -> Vec<(usize, usize, Vec<u8>)> {
     let dir = tempfile::tempdir().expect("tempdir");
-    let dump = dir.path().join("desktop.ppm");
+    let dumps: Vec<_> = (0..count).map(|i| dir.path().join(format!("desktop{i}.ppm"))).collect();
     let script = dir.path().join("session.script");
-    std::fs::write(&script, steps.replace("{dump}", dump.to_str().unwrap())).unwrap();
+    let mut text = steps.replace("{dump}", "{dump0}");
+    for (i, dump) in dumps.iter().enumerate() {
+        text = text.replace(&format!("{{dump{i}}}"), dump.to_str().unwrap());
+    }
+    std::fs::write(&script, text).unwrap();
 
     let mut child = Command::new(warpine())
         .arg(sample)
@@ -273,9 +284,19 @@ fn run_gui_sample(sample: &str, steps: &str) -> (usize, usize, Vec<u8>) {
         std::thread::sleep(Duration::from_millis(50));
     }
 
-    let ppm = std::fs::read(&dump)
-        .unwrap_or_else(|e| panic!("{sample} wrote no desktop dump: {e}"));
-    parse_ppm(&ppm)
+    dumps.iter().map(|dump| {
+        let ppm = std::fs::read(dump)
+            .unwrap_or_else(|e| panic!("{sample} wrote no desktop dump {}: {e}", dump.display()));
+        parse_ppm(&ppm)
+    }).collect()
+}
+
+/// Colour of desktop pixel `(x, y)` (origin top-left) as `0xRRGGBB`.
+fn gui_pixel(desktop: &(usize, usize, Vec<u8>), x: usize, y: usize) -> u32 {
+    let (w, h, rgb) = desktop;
+    assert!(x < *w && y < *h, "pixel ({x}, {y}) is outside the {w}x{h} desktop");
+    let i = (y * w + x) * 3;
+    (rgb[i] as u32) << 16 | (rgb[i + 1] as u32) << 8 | rgb[i + 2] as u32
 }
 
 /// Decode a binary PPM (P6, maxval 255) into `(width, height, rgb bytes)`.
@@ -428,4 +449,66 @@ fn gui_menu_pulldown_matches_golden() {
 fn gui_menu_about_dialog_matches_golden() {
     check_gui_golden("pm_menu_about_dialog", "samples/pm_menu_dlg_test/pm_menu_dlg_test.exe",
         "1500 click 52 62\n2500 click 62 80\n4000 dump {dump}\n4100 quit\n");
+}
+
+// Colours the compositor draws with (`src/gui/sdl2_renderer.rs`).
+const GUI_DESKTOP_BG: u32 = 0x40_8040;
+const GUI_TITLE_ACTIVE: u32 = 0x00_0080;
+const GUI_WHITE: u32 = 0xFF_FFFF;
+
+/// `drag` on the title bar moves the frame: the default 640×480 frame sits at
+/// desktop (32, 32) with a 20-px title bar, and is dragged by (+200, +200).
+/// Checked on the pixels themselves, before and after, so the test fails if
+/// the drag does nothing, lands elsewhere, or leaves the old image behind.
+#[test]
+fn gui_drag_title_bar_moves_window() {
+    let sample = "samples/pm_menu_dlg_test/pm_menu_dlg_test.exe";
+    if !kvm_available() || !Path::new(sample).exists() {
+        eprintln!("skipping gui_drag_title_bar_moves_window: KVM or {sample} not available");
+        return;
+    }
+    let dumps = run_gui_sample_dumps(sample,
+        "1500 dump {dump0}\n1600 drag 300 42 500 242\n2600 dump {dump1}\n2700 quit\n", 2);
+    let (before, after) = (&dumps[0], &dumps[1]);
+
+    // Before: title bar across y 32..52, client below, bare desktop elsewhere.
+    assert_eq!(gui_pixel(before, 600, 42), GUI_TITLE_ACTIVE, "title bar at its initial position");
+    assert_eq!(gui_pixel(before, 600, 242), GUI_WHITE, "client area under the initial title bar");
+    assert_eq!(gui_pixel(before, 800, 600), GUI_DESKTOP_BG, "desktop right of / below the frame");
+
+    // After: the frame spans x 232..872 from y 232; its title bar is 200 px lower.
+    assert_eq!(gui_pixel(after, 600, 242), GUI_TITLE_ACTIVE, "title bar at the new position");
+    assert_eq!(gui_pixel(after, 800, 242), GUI_TITLE_ACTIVE, "title bar reaches the new right edge");
+    assert_eq!(gui_pixel(after, 800, 600), GUI_WHITE, "client area moved with the frame");
+    for (x, y) in [(600, 42), (100, 42), (100, 400), (600, 220), (220, 600)] {
+        assert_eq!(gui_pixel(after, x, y), GUI_DESKTOP_BG,
+            "({x}, {y}) should show the desktop once the frame has left");
+    }
+}
+
+/// `drag` on a sizing border resizes the frame: the right edge of the
+/// FCF_SIZEBORDER frame of pm_controls_test (x 32..672) is pulled 100 px to
+/// the right, so title bar and client extend to x ≈ 772 and no further.
+#[test]
+fn gui_drag_sizing_border_resizes_window() {
+    let sample = "samples/pm_controls_test/pm_controls_test.exe";
+    if !kvm_available() || !Path::new(sample).exists() {
+        eprintln!("skipping gui_drag_sizing_border_resizes_window: KVM or {sample} not available");
+        return;
+    }
+    let dumps = run_gui_sample_dumps(sample,
+        "1500 dump {dump0}\n1600 drag 669 300 769 300\n2600 dump {dump1}\n2700 quit\n", 2);
+    let (before, after) = (&dumps[0], &dumps[1]);
+
+    assert_eq!(gui_pixel(before, 600, 42), GUI_TITLE_ACTIVE, "title bar before the resize");
+    assert_eq!(gui_pixel(before, 700, 42), GUI_DESKTOP_BG, "desktop right of the frame");
+    assert_eq!(gui_pixel(before, 720, 300), GUI_DESKTOP_BG, "desktop right of the frame");
+
+    assert_eq!(gui_pixel(after, 700, 42), GUI_TITLE_ACTIVE, "title bar grew to the right");
+    assert_ne!(gui_pixel(after, 720, 300), GUI_DESKTOP_BG, "frame now covers the widened area");
+    assert_eq!(gui_pixel(after, 790, 300), GUI_DESKTOP_BG, "frame grew by the drag distance only");
+    assert_eq!(gui_pixel(after, 790, 42), GUI_DESKTOP_BG, "frame grew by the drag distance only");
+    // The left edge did not move.
+    assert_eq!(gui_pixel(after, 20, 300), GUI_DESKTOP_BG, "left edge stayed in place");
+    assert_eq!(gui_pixel(after, 200, 42), gui_pixel(before, 200, 42), "left part of the title bar unchanged");
 }
