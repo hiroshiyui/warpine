@@ -8,6 +8,16 @@ use log::{debug, warn};
 use super::constants::*;
 use super::mutex_ext::MutexExt;
 
+/// Codepages the guest may select: those `codepage.rs` can convert to and
+/// from Unicode. Shared by `DosSetProcessCp` and `WinSetCp`.
+pub(crate) const SUPPORTED_CODEPAGES: &[u32] =
+    &[437, 850, 852, 866, 932, 936, 949, 950, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258];
+
+/// Whether `cp` is a codepage the guest may select.
+pub(crate) fn is_supported_codepage(cp: u32) -> bool {
+    SUPPORTED_CODEPAGES.contains(&cp)
+}
+
 impl super::Loader {
     // ── Step 1: Critical Init Stubs ──
 
@@ -182,8 +192,7 @@ impl super::Loader {
     /// Validates against the supported list (437, 850, 852, 932, 949, 950, 1250–1258).
     /// Returns ERROR_INVALID_CODE_PAGE (470) for unrecognised values.
     pub fn dos_set_process_cp(&self, cp: u32) -> u32 {
-        const SUPPORTED: &[u32] = &[437, 850, 852, 866, 932, 936, 949, 950, 1250, 1251, 1252, 1253, 1254, 1255, 1256, 1257, 1258];
-        if !SUPPORTED.contains(&cp) {
+        if !is_supported_codepage(cp) {
             debug!("  DosSetProcessCp({}) → ERROR_INVALID_CODE_PAGE", cp);
             return ERROR_INVALID_CODE_PAGE;
         }
