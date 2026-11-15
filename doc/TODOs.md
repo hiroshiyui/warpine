@@ -64,12 +64,14 @@ NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 
 ### PM Rendering Quality
 
-- [ ] **Editable text controls** — `WC_ENTRYFIELD` / `WC_MLE` show their text but have no caret, selection or keyboard editing; `WC_LISTBOX` has no selection highlight or scrolling
+- [ ] **Text controls: remaining editing features** — selection (Shift+arrows, mouse drag), clipboard, word wrap in `WC_MLE`, caret blink, PageUp/PageDown, Tab focus traversal, `EN_SETFOCUS` / `EN_KILLFOCUS`, `LM_DELETEITEM` / `LM_DELETEALL`, multi-select list boxes
+- [ ] **Controls inside dialogs** — `WinDlgBox` dialogs still paint and hit-test their controls with the older `#Dialog` code, so entry fields and list boxes in dialogs are not interactive
+- [ ] **Controls after a window drag** — `get_abs_rect_in_frame` adds the client's x/y and the drag handler copies the frame position into the client; check whether controls paint offset after a window is moved
+- [ ] **Keyboard in samples** — no sample handles `WM_CHAR` or has an accelerator table, so Esc/Enter on dialogs and Alt+F4 have no effect; add default dialog key handling and a sample that exercises it
 - [ ] **Queue codepage in text paths** — `WinSetCp` stores a per-queue codepage but window text (`WinSetWindowText` / `WinQueryWindowText`), GPI text and the CJK face choice still use the process codepage; needs a thread → hmq → codepage lookup at those sites
 - [ ] **Codepage 1004 and 0** — `WinSetCp` / `DosSetProcessCp` reject CP1004 (common in PM programs) and 0 ("default"); needs support in `codepage.rs`
 - [ ] **Menu replacement** — `WinCreateMenu` does not attach to its parent frame, and replacing a frame's menu via `WinSetParent` + `WM_UPDATEFRAME(FCF_MENU)` is not implemented (verify the sequence against the PM reference first)
 - [ ] **`WinQueryCpList`** (PMWIN 811) and a real `WinDestroyMsgQueue` (currently a stub that keeps the queue alive)
-- [ ] **GUI script: more input** — scripted sessions only inject left clicks; add key presses, drags and right clicks so keyboard routing, window dragging and resizing can be regression-tested
 
 ### PM Advanced Controls
 

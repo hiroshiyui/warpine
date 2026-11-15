@@ -466,7 +466,14 @@ impl Loader {
                         }
                     }
                     "WC_STATIC" => {
-                        // Plain text label, no background; left- and top-aligned.
+                        // Text label, left- and top-aligned. Like PM's SS_TEXT it
+                        // erases its rectangle to the window background first:
+                        // anti-aliased text drawn again over itself on a later
+                        // repaint would otherwise grow darker and bolder.
+                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + cy,
+                            color: CONTROL_FIELD_COLOR, fill: true,
+                        });
                         let label = font::fit_text(&text, cx, FontSpec::SYSTEM);
                         if !label.is_empty() {
                             control_text(sender, frame_hwnd, x, y + (cy - CONTROL_LINE_H).max(0), label);

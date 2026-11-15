@@ -512,3 +512,14 @@ fn gui_drag_sizing_border_resizes_window() {
     assert_eq!(gui_pixel(after, 20, 300), GUI_DESKTOP_BG, "left edge stayed in place");
     assert_eq!(gui_pixel(after, 200, 42), gui_pixel(before, 200, 42), "left part of the title bar unchanged");
 }
+
+/// Editing built-in controls end to end: click an entry field and type
+/// (including a shifted and a non-ASCII character), Home then more text at the
+/// start, then click the multi-line field and add a line. The sample ends
+/// itself 3 s after start, so every step happens before that.
+#[test]
+fn gui_typing_into_controls_matches_golden() {
+    check_gui_golden("pm_controls_typing", "samples/pm_controls_test/pm_controls_test.exe",
+        "700 click 230 300\n900 text  Hello, W\u{f6}rld!\n1300 key home\n1400 text >>\n\
+         1600 click 200 470\n1800 key enter\n1900 text three\n2500 dump {dump}\n2600 quit\n");
+}
