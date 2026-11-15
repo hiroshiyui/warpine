@@ -374,13 +374,15 @@ The GUI thread (`GUIApp` in `src/gui.rs`) processes these messages, drawing into
 ### Input Handling
 
 The GUI thread translates SDL2 input events into OS/2 messages:
-- Keyboard events → `WM_CHAR`
+- Keyboard events → `WM_CHAR` in the CHRMSG layout (flags in the low word of `mp1`, repeat count in bits 16–23, scan code in bits 24–31; character in the low word of `mp2`, virtual key in the high word). Typed characters come from SDL `TextInput` events encoded in the active codepage (`text_input_wm_chars`), so shifted and non-ASCII characters arrive correctly; `KeyDown` carries only non-character keys and Ctrl/Alt chords.
 - Mouse movement → `WM_MOUSEMOVE`
 - Mouse buttons → `WM_BUTTON1DOWN` / `WM_BUTTON1UP`
 - Window resize → `WM_SIZE`
 - Close request → `WM_CLOSE`
 
 OS/2 uses a bottom-left coordinate origin (Y increases upward), so Y coordinates are flipped during translation.
+
+**Focus and built-in controls.** `WindowManager::focus_hwnd` is the PM focus window (`WinSetFocus` / `WinQueryFocus`); `key_target()` sends keys to it, falling back to the active frame's client. `route_button1()` delivers button-1 messages to the built-in control under the pointer (`control_at()`), otherwise to the client. `pm_controls.rs` handles those messages for `WC_ENTRYFIELD`, `WC_MLE` and `WC_LISTBOX` — click-to-focus, caret, typing, Backspace/Delete/arrows/Home/End, Enter and Up/Down in the MLE, list-box selection and scrolling — and notifies the owner with `WM_CONTROL` (`EN_CHANGE`, `MLN_CHANGE`, `LN_SELECT`). The editing itself is pure logic in `pm_edit.rs` (caret positions in characters, CRLF as one unit, click-x → caret index via `font::text_width`), which keeps it unit-testable without a window. Controls inside `WinDlgBox` dialogs still use the older `#Dialog` path and are not interactive yet.
 
 ---
 
@@ -1107,6 +1109,8 @@ src/
     font.rs            PM typeface: embedded IBM Plex Sans/Mono/Serif + Plex Sans JP/KR/TC/SC
                        (vendor/ibm-plex), FontSpec, text_width(), metrics(), draw_text();
                        fallback chain Latin → CJK (by codepage) → GNU Unifont
+    gui_script.rs      Scripted GUI sessions (WARPINE_GUI_SCRIPT): step parser, timed inputs,
+                       PPM dump — SDL-free; used by the gui_* integration tests
     renderer.rs        PmRenderer trait + run_pm_loop() (PM/GUI SDL2 event loop)
     render_utils.rs    Geometry helpers (Y-flip, rect/line rendering)
     headless.rs        HeadlessRenderer: no-op PM backend for CI
@@ -1124,7 +1128,7 @@ src/
     ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants (addresses, message IDs, ordinal bases)
-    api_registry.rs    Static sorted API thunk table (135 entries); ApiEntry
+    api_registry.rs    Static sorted API thunk table (186 entries); ApiEntry
     api_dispatch.rs    Registry lookup + per-subsystem dispatcher routing
     api_trace.rs       Structured tracing helpers (ordinal_to_name auto-generated from os2api.def,
                        module_for_ordinal, arg_names_for_ordinal, format_call)
@@ -1138,7 +1142,9 @@ src/
     locale.rs          Os2Locale: country/codepage information
     doscalls.rs        DOSCALLS API implementations (~40 functions)
     pm_win.rs          PMWIN API implementations (~50 ordinals)
-    pm_gpi.rs          PMGPI API implementations (8 ordinals)
+    pm_gpi.rs          PMGPI API implementations (30 ordinals)
+    pm_edit.rs         Edit-buffer logic for text controls (insert/delete/caret/scroll)
+    pm_controls.rs     Interactive WC_ENTRYFIELD / WC_MLE / WC_LISTBOX: messages + painting
     mmpm.rs            MMPM/2 audio: MmpmManager, beep_tone, mciSendCommand/mciSendString
     console.rs         VioManager: screen buffer, cursor state/shape, sdl2_mode,
                        ANSI output, stdin_cooked_chars, CP437→UTF-8 conversion
@@ -1173,7 +1179,7 @@ To add a new OS/2 API call:
 
 3. **Wire up the dispatch** — The dispatch path depends on the subsystem:
 
-   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (124 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
+   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (186 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
 
    - **VIOCALLS / KBDCALLS**: add a match arm in `handle_viocalls()` or `handle_kbdcalls()`, and add the ordinal's stack-byte count to `viocalls_arg_bytes()` / `kbdcalls_arg_bytes()`.
 
@@ -1554,14 +1560,14 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **Virtualization backend abstraction** — `VmBackend`/`VcpuBackend` traits; KVM isolated to `kvm_backend.rs`; `MockVcpu`/`MockVmBackend` for testing without `/dev/kvm`.
 - **Guest memory type safety** — `GuestMemory` struct with safe `read<T>`/`write<T>` replacing raw `*mut u8` + `usize`.
 - **Structured API trace** — `api_trace.rs` with `ordinal_to_name()`, `module_for_ordinal()`, per-argument typed names. `WARPINE_TRACE=strace|json` output modes.
-- **API thunk auto-registration** — `api_registry.rs` static sorted table (124 entries); O(log n) binary search replaces ~120-arm match.
+- **API thunk auto-registration** — `api_registry.rs` static sorted table (186 entries); O(log n) binary search replaces ~120-arm match.
 - **SDL2 GUI backend** — migrated from `winit + softbuffer` to SDL2; full keyboard, mouse, clipboard support.
 - **PM renderer abstraction** — `PmRenderer` trait with `Sdl2Renderer` and `HeadlessRenderer` backends.
 - **GDT tiling** — 4096 tiled 16-bit data descriptors (GDT[6..4101], DPL=2) and 2048 tiled 16-bit code descriptors (GDT[4102..6149]) for 16:16 addressing; GDT[4] 16-bit data alias (0x20), GDT[5] 16-bit code alias (0x28) for Far16 thunks.
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 525 unit tests (496 warpine + 18 gen_api + 11 lx_link), 10 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 658 unit tests (629 warpine + 18 gen_api + 11 lx_link), 18 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

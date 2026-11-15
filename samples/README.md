@@ -49,6 +49,8 @@ cd samples/4os2 && ./fetch_source.sh && make
 | uconv_test | UCONV.DLL Unicode conversion round-trip | DosLoadModule, DosQueryProcAddr, UniCreateUconvObject, UniUconvToUcs, UniUconvFromUcs, UniMapCpToUcsCp, UniFreeUconvObject |
 | audio_test | MMPM/2 audio: beep tones and MCI command string | DosBeep, DosLoadModule/DosQueryProcAddr into MDM.DLL, mciSendString open/capability/close |
 | pm_controls_test | PM built-in controls creation and API verification | WinCreateWindow (WC_STATIC/WC_BUTTON/WC_ENTRYFIELD/WC_SCROLLBAR/WC_LISTBOX/WC_MLE), WinSetWindowText, WinQueryWindowText, WinEnableWindow, WinIsWindowEnabled, LM_INSERTITEM/LM_QUERYITEMCOUNT |
+| pm_menu_dlg_test | PM menu bar and modal About dialog loaded from MENU / DLGTEMPLATE resources | WinCreateStdWindow (FCF_MENU), WM_COMMAND, WinDlgBox, WinDefDlgProc, WinDismissDlg |
+| pm_font_test | GPI font selection and CJK text: Plex Sans/Mono/Serif, bold/italic, sizes, and Japanese/Korean/Chinese lines with measured-width rules | GpiCreateLogFont, GpiSetCharSet, GpiSetCharBox, GpiDeleteSetId, GpiQueryTextBox, GpiCharStringAt, DosSetProcessCp |
 | rust_hello | Rust no_std guest binary: "Hello from Rust on Warpine!" | DosWrite, DosExit (via warpine-os2 crate) |
 | 4os2 | 4OS2 command shell (full interactive) | Nearly all DOSCALLS/VIO/KBD APIs; DLL loading (jpos2dll.dll) |
 

@@ -57,6 +57,8 @@ warpine --compat
 | `WARPINE_TRACE` | _(unset)_, `0`, `false` | _(unset)_ | Default pretty log format |
 | `WARPINE_TRACE` | `1`, `strace` | — | Compact strace-like API call format |
 | `WARPINE_TRACE` | `json` | — | JSON Lines (one object per event) |
+| `WARPINE_DESKTOP_W`, `WARPINE_DESKTOP_H` | Pixels | `1024`, `768` | Size of the virtual PM desktop (also reported by `SV_CXSCREEN`/`SV_CYSCREEN`) |
+| `WARPINE_GUI_SCRIPT` | Path to a script file | _(unset)_ | Replay a scripted PM session (`click`, `rclick`, `drag`, `key`, `text`, `dump`, `quit` steps) for testing; combine with `SDL_VIDEODRIVER=dummy` to run without a display. See the developer guide, "GUI regression tests" |
 | `RUST_LOG` | Filter string | `info` | Log level: `trace`, `debug`, `info`, `warn`, `error`. Module-scoped filters supported (e.g. `warpine::loader=debug`) |
 
 ### Filesystem
@@ -443,19 +445,19 @@ VioGetBuf (31), VioSetCp (42), VioShowBuf (43), VioSetState (51)
 
 KbdCharIn (4), KbdStringIn (9), KbdGetStatus (10)
 
-### PMWIN (73 APIs)
+### PMWIN (70 APIs)
 
-Window management, message queues, painting, input, dialogs, menus, clipboard, and resource loading. Key APIs:
+Window management, message queues, painting, input, focus, codepage, dialogs, menus, clipboard, and resource loading. Ordinals follow the Open Watcom import library (`doc/os2_ordinals.md`):
 
-WinInitialize (763), WinTerminate (888), WinCreateMsgQueue (716), WinDestroyMsgQueue (726), WinGetMsg (915), WinDispatchMsg (728), WinPostMsg (796), WinSendMsg (866), WinCreateWindow (907), WinCreateStdWindow (908), WinDestroyWindow (729), WinShowWindow (883), WinSetWindowPos (903), WinSetWindowText (904), WinQueryWindowText (841), WinDefWindowProc (728), WinRegisterClass (926), WinBeginPaint (703), WinEndPaint (729), WinMessageBox (793), WinStartTimer (898), WinStopTimer (900), WinSetActiveWindow (875), WinSetFocus (879), WinSetCapture (877), WinMapWindowPoints (789), WinQueryWindowRect (854), WinQueryWindowPos (852), WinLoadMenu (781), WinGetClipbrdData (6), WinInvalidateRect (27), WinEnableWindow (735), WinIsWindowEnabled (773), WinQueryWindowPos (852), WinSetParent (859), WinQueryDlgItemText (815)
+WinAlarm (701), WinBeginPaint (703), WinCloseClipbrd (707), WinCreateMsgQueue (716), WinDestroyMsgQueue (726), WinDestroyWindow (728), WinDismissDlg (729), WinEmptyClipbrd (733), WinEnableWindow (735), WinEnableWindowUpdate (736), WinEndPaint (738), WinFillRect (743), WinGetLastError (753), WinInitialize (763), WinInvalidateRect (765), WinIsWindowEnabled (773), WinLoadAccelTable (776), WinLoadMenu (778), WinLoadString (781), WinMessageBox (789), WinOpenClipbrd (793), WinProcessDlg (796), WinQueryActiveWindow (799), WinQueryCapture (804), WinQueryClipbrdData (806), WinQueryCp (810), WinQueryDlgItemText (815), WinQueryFocus (817), WinQuerySysPointer (828), WinQuerySysValue (829), WinQueryWindow (834), WinQueryWindowPos (837), WinQueryWindowRect (840), WinQueryWindowText (841), WinQueryWindowULong (843), WinQueryWindowUShort (844), WinSetAccelTable (850), WinSetActiveWindow (851), WinSetCapture (852), WinSetClipbrdData (854), WinSetCp (857), WinSetDlgItemText (859), WinSetFocus (860), WinSetPointer (866), WinSetWindowPos (875), WinSetWindowText (877), WinSetWindowULong (878), WinSetWindowUShort (879), WinShowWindow (883), WinStartTimer (884), WinStopTimer (885), WinTerminate (888), WinUpdateWindow (892), WinWindowFromID (899), WinSendDlgItemMsg (903), WinTranslateAccel (904), WinCreateMenu (907), WinCreateStdWindow (908), WinCreateWindow (909), WinDefDlgProc (910), WinDefWindowProc (911), WinDispatchMsg (912), WinGetMsg (915), WinPostMsg (919), WinSendMsg (920), WinDlgBox (923), WinLoadDlg (924), WinRegisterClass (926), WinSubclassWindow (929), WinPopupMenu (937)
 
 ### PMGPI (30 APIs: 23 implemented, 7 stub)
 
 **Implemented:**
-GpiBox (356), GpiCharString (358), GpiCharStringAt (359), GpiCreatePS (369), GpiDestroyPS (379), GpiCreateLogFont (381), GpiDeleteSetId (385), GpiErase (389), GpiFullArc (392), GpiLine (398), GpiMove (404), GpiQueryCurrentPosition (416), GpiQueryFonts (459), GpiQueryFontMetrics (464), GpiQueryTextBox (476), GpiSetCharSet (481), GpiSetCharBox (482), GpiSetBackMix (503), GpiSetMix (509), GpiSetColor (517), GpiSetBackColor (518), GpiQueryColor (520), GpiQueryBackColor (521)
+GpiBox (356), GpiCharString (358), GpiCharStringAt (359), GpiCreateLogFont (368), GpiCreatePS (369), GpiDeleteSetId (378), GpiDestroyPS (379), GpiErase (389), GpiFullArc (393), GpiLine (398), GpiMove (404), GpiQueryBackColor (424), GpiQueryColor (437), GpiQueryCurrentPosition (441), GpiQueryFontMetrics (453), GpiQueryTextBox (489), GpiSetBackColor (504), GpiSetBackMix (505), GpiSetCharBox (510), GpiSetCharSet (513), GpiSetColor (517), GpiSetMix (537), GpiQueryFonts (586)
 
 **Stubs:**
-GpiSetArcParams (353), GpiLoadFonts (399), GpiLoadPublicFonts (400), GpiUnloadPublicFonts (401), GpiSetLineType (527), GpiSetLineWidth (529), GpiSetLineWidthGeom (530)
+GpiLoadFonts (400), GpiSetArcParams (502), GpiSetLineType (530), GpiSetLineWidth (531), GpiSetLineWidthGeom (532), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
@@ -469,9 +471,9 @@ GpiSetArcParams (353), GpiLoadFonts (399), GpiLoadPublicFonts (400), GpiUnloadPu
 | UCONV | 5 |
 | VIOCALLS | 21 |
 | KBDCALLS | 3 |
-| PMWIN | 73 |
+| PMWIN | 70 |
 | PMGPI | 30 |
-| **Total** | **262** |
+| **Total** | **259** |
 
 ---
 

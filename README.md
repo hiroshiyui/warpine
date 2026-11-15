@@ -49,7 +49,7 @@ src/
     ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants: MAGIC_API_BASE, ordinal bases, TIB/PIB addresses
-    api_registry.rs    Static sorted API thunk table (142 entries); compat_report()
+    api_registry.rs    Static sorted API thunk table (186 entries); compat_report()
     api_dispatch.rs    Ordinal → handler dispatch + sub-dispatcher routing
     api_trace.rs       ordinal_to_name(), module_for_ordinal() for structured tracing
     api_ring.rs        256-entry API call ring buffer for crash post-mortem
@@ -61,6 +61,8 @@ src/
     pm_win.rs          PMWIN (Window Manager) implementations
     pm_gpi.rs          PMGPI (Graphics) implementations
     pm_types.rs        PM data types (windows, classes, WindowManager)
+    pm_edit.rs         Edit-buffer logic for PM text controls
+    pm_controls.rs     Interactive entry field, MLE and list box controls
     mmpm.rs            MMPM/2 audio: MmpmManager, beep_tone, mciSendCommand/String
     console.rs         VioManager: screen buffer, cursor, raw/SDL2 mode, ANSI output
     process.rs         Process execution and directory tracking
@@ -98,6 +100,8 @@ samples/               OS/2 sample applications and build scripts
   uconv_test/          UCONV.DLL Unicode conversion round-trip
   audio_test/          MMPM/2 audio: DosBeep and mciSendString
   pm_controls_test/    PM built-in controls (WC_BUTTON, WC_STATIC, WC_ENTRYFIELD, etc.)
+  pm_menu_dlg_test/    PM menu bar, pull-down menu and modal dialog from resources
+  pm_font_test/        GPI font selection (IBM Plex families, styles, sizes) and CJK text
   rust_hello/          Rust guest binary: "Hello from Rust on Warpine!" (Phase C)
 crates/                Standalone guest crates (NOT part of the host workspace)
   warpine-os2-sys/     Raw #![no_std] OS/2 API bindings (extern "C" declarations)
