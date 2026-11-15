@@ -6,6 +6,32 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 
 ![4OS2 running under Warpine](doc/screenshots/4os2_20260317_233729.png)
 
+<!-- screenshots:begin -->
+## Screenshots
+
+### Working today
+
+| | |
+|---|---|
+| ![PM Font Test window showing sans, bold, monospace and italic serif lines followed by Japanese, Chinese and Korean lines, each underlined in red](doc/screenshots/pm_font_test.png) | ![PM Demo window with a red filled box, a blue outlined box, two crossing green lines, magenta and yellow boxes with text inside](doc/screenshots/pm_demo.png) |
+| **Typography.** Presentation Manager text is drawn in the embedded IBM Plex families: fonts chosen with `GpiCreateLogFont` (face, bold, italic, size) and CJK text in four DBCS codepages. The red rules are the widths reported by `GpiQueryTextBox`. | **GPI drawing and window chrome.** Filled and outlined boxes, lines and text drawn through GPI, inside a frame with a title bar, system menu and minimise / maximise / close buttons. |
+| ![PM Menu/Dialog Test window with the File menu open, listing About..., a separator and Exit](doc/screenshots/pm_menu_pulldown.png) | ![A small About dialog with a title bar, one line of text and an OK button, below the now inactive main window](doc/screenshots/pm_menu_about_dialog.png) |
+| **Menus.** A menu bar loaded from the program's `MENU` resource, with the *File* pull-down open after a click. | **Dialogs.** Choosing *About...* opens a modal dialog built from a `DLGTEMPLATE` resource; the main window's title bar turns grey while the dialog has the focus. |
+| ![PM Built-in Controls Test window with a static label, a push button, an entry field reading ">>initial textHello, Wörld!" with a caret, a scroll bar, an empty list box and a two-line multi-line field](doc/screenshots/pm_controls_typing.png) | |
+| **Built-in controls and typing.** Static text, push button, entry field, scroll bar, list box and multi-line field. The entry field was clicked and typed into: `Hello, Wörld!` at the end, then *Home* and `>>` at the start. | |
+
+### Work in progress
+
+- **Text editing** — typing, Backspace/Delete, arrows and Home/End work; selection, clipboard, word wrap, a blinking caret and Tab between controls are still missing.
+- **Controls inside dialogs** — dialogs show their controls, but entry fields and list boxes in a dialog cannot be used yet.
+- **Keyboard shortcuts** — Esc and Enter on dialogs and Alt+F4 have no effect; there is no accelerator handling in the samples yet.
+- **Codepages in PM** — `WinSetCp` records a per-queue codepage, but text drawing still follows the process codepage; codepages 1004 and 0 are rejected.
+- **Menus** — pull-downs from resources work; replacing a frame's menu at run time is not implemented.
+- **Advanced controls** — containers, notebooks, drag and drop, custom pointers and printing are not started.
+
+_Screenshots in this section captured from commit `425c306` on 2026-11-15._
+<!-- screenshots:end -->
+
 ## Key Features
 
 - **LX Executable Parser:** Full support for LX headers, object tables, page maps, fixups, resource tables, import tables, entry tables, and non-resident names tables.
