@@ -668,13 +668,11 @@ impl Loader {
                                         });
                                     }
                                 }
-                                "WC_STATIC" => {
-                                    if !ctext.is_empty() {
-                                        let _ = sender.send(crate::gui::GUIMessage::DrawText {
-                                            handle: hwnd, x: chi_x, y: chi_y + chi_cy / 4,
-                                            text: ctext, color: 0x00000000,
-                                        });
-                                    }
+                                "WC_STATIC" if !ctext.is_empty() => {
+                                    let _ = sender.send(crate::gui::GUIMessage::DrawText {
+                                        handle: hwnd, x: chi_x, y: chi_y + chi_cy / 4,
+                                        text: ctext, color: 0x00000000,
+                                    });
                                 }
                                 _ => {}
                             }

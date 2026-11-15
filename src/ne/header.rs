@@ -63,7 +63,7 @@ impl NeHeader {
         reader.read_exact(&mut buf)?;
 
         let signature = [buf[0], buf[1]];
-        if signature != [b'N', b'E'] {
+        if signature != *b"NE" {
             return Err(io::Error::new(io::ErrorKind::InvalidData,
                 format!("Invalid NE signature: {:02X} {:02X}", buf[0], buf[1])));
         }

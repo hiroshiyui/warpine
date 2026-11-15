@@ -45,7 +45,7 @@ impl super::Loader {
             .expect("setup_guest: env alloc failed");
         let cmdline_addr = env_addr + cmdline_offset;
         debug!("  Environment block ({} bytes) at 0x{:08X}: {:02X?}",
-            env_block.len(), env_addr, &env_block);
+            env_block.len(), env_addr, env_block);
         self.guest_write_bytes(env_addr, &env_block).expect("setup_guest: env write OOB");
         // TIB2 is placed right after TIB (TIB is ~0x40 bytes, TIB2 at TIB_BASE + 0x40)
         let tib2_addr = TIB_BASE + 0x40;

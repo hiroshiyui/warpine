@@ -110,7 +110,7 @@ See [doc/developer_guide.md](doc/developer_guide.md) for detailed internals docu
 
 - **CPU:** x86_64 with virtualization support (VT-x or AMD-V enabled).
 - **OS:** Linux with KVM support (`/dev/kvm` must be accessible by the user).
-- **Toolchain:** Rust (Edition 2024).
+- **Toolchain:** Rust 1.100.0 (Edition 2024), pinned in `rust-toolchain.toml`; `rustup` installs it automatically on the first `cargo` invocation.
 - **Library:** `libsdl2-dev` (for PM/GUI window and audio support).
 - **Optional (for samples):** Open Watcom v2 — `./vendor/setup_watcom.sh` to vendor it.
 

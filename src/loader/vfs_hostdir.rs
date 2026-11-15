@@ -312,10 +312,8 @@ fn resolve_path_case_insensitive_cached(root: &Path, rel_path: &str, cache: &Dir
             }
             continue;
         }
-        match resolve_component_case_insensitive(&current, component, cache) {
-            Some(resolved) => current = current.join(resolved),
-            None => return None,
-        }
+        let resolved = resolve_component_case_insensitive(&current, component, cache)?;
+        current = current.join(resolved);
     }
     Some(current)
 }
@@ -377,10 +375,7 @@ fn attributes_match(entry_attrs: FileAttribute, filter: FileAttribute) -> bool {
     let entry_gated = entry_attrs.0 & gated;
 
     // If the entry has any gated attributes, the filter must include them
-    if entry_gated != 0 && (entry_gated & filter.0) != entry_gated {
-        return false;
-    }
-    true
+    entry_gated == 0 || (entry_gated & filter.0) == entry_gated
 }
 
 // ── Sharing mode tracking ──

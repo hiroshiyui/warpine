@@ -786,11 +786,9 @@ impl super::Loader {
         if param1 & MCI_WAIT != 0 {
             // Synchronous: wait until the queue drains.
             let bytes_per_sec = freq as u64 * channels as u64 * 2;
-            let max_ms = if bytes_per_sec > 0 {
-                play_len as u64 * 1000 / bytes_per_sec + 500
-            } else {
-                2000
-            };
+            let max_ms = (play_len as u64 * 1000)
+                .checked_div(bytes_per_sec)
+                .map_or(2000, |ms| ms + 500);
             let deadline = std::time::Instant::now()
                 + std::time::Duration::from_millis(max_ms);
             while unsafe { sdl2::sys::SDL_GetQueuedAudioSize(audio_dev) } > 0
@@ -972,22 +970,14 @@ impl super::Loader {
                         & sdl2::sys::SDL_AUDIO_MASK_BITSIZE;
                     let bytes_per_frame = (bits / 8).max(1) * dev.wav_channels as u32;
                     let bytes_per_sec = dev.wav_freq as u32 * bytes_per_frame;
-                    if bytes_per_sec > 0 {
-                        dev.wav_len / bytes_per_sec * 1000
-                    } else {
-                        0
-                    }
+                    dev.wav_len.checked_div(bytes_per_sec).map_or(0, |secs| secs * 1000)
                 }
                 MCI_STATUS_POSITION => {
                     // Convert current byte offset back to milliseconds.
                     let bits = (dev.wav_format as u32) & sdl2::sys::SDL_AUDIO_MASK_BITSIZE;
                     let bytes_per_frame = (bits / 8).max(1) * dev.wav_channels as u32;
                     let bytes_per_sec = dev.wav_freq as u32 * bytes_per_frame;
-                    if bytes_per_sec > 0 {
-                        dev.current_position / bytes_per_sec * 1000
-                    } else {
-                        0
-                    }
+                    dev.current_position.checked_div(bytes_per_sec).map_or(0, |secs| secs * 1000)
                 }
                 _ => 0,
             };

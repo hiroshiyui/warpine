@@ -1192,7 +1192,7 @@ impl super::Loader {
                 // For CF_TEXT, also bridge the text to the host system clipboard.
                 if fmt == CF_TEXT && data != 0 {
                     let text = self.read_guest_string(data);
-                    debug!("  [VCPU {}] WinSetClipbrdData CF_TEXT: {:?}", vcpu_id, &text);
+                    debug!("  [VCPU {}] WinSetClipbrdData CF_TEXT: {:?}", vcpu_id, text);
                     let mut wm = self.shared.window_mgr.lock_or_recover();
                     wm.clipboard_text = text.clone();
                     if let Some(ref sender) = wm.gui_tx {

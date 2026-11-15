@@ -22,7 +22,7 @@ cargo test                               # Unit tests (511 warpine + 18 gen_api 
 cargo clippy -- -D warnings             # Lint — must pass with zero warnings before every commit/release
 ```
 
-**Prerequisites:** Linux with KVM enabled (`/dev/kvm`), x86_64 CPU with VT-x/AMD-V, Rust 2024 edition, `libsdl2-dev` (for PM/GUI window support).
+**Prerequisites:** Linux with KVM enabled (`/dev/kvm`), x86_64 CPU with VT-x/AMD-V, Rust 2024 edition (toolchain pinned to 1.100.0 in `rust-toolchain.toml`, with `clippy` and `rustfmt`; guest crates still build with `cargo +nightly`, which overrides the pin), `libsdl2-dev` (for PM/GUI window support).
 
 **Rust Guest Toolchain** (building OS/2 guest binaries in Rust):
 ```bash

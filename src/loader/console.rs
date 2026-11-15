@@ -298,9 +298,7 @@ impl VioManager {
             let _ = write!(stdout, "\x1b[{};{}H", row + 1, col + 1);
             self.write_ansi_attr(&mut stdout, attr);
         }
-        let mut c = col;
-        for &ch in text {
-            if c >= self.cols { break; }
+        for (c, &ch) in (col..self.cols).zip(text.iter()) {
             let decoded = Self::decode_vio_byte(ch, cp);
             let idx = row as usize * self.cols as usize + c as usize;
             if idx < self.buffer.len() {
@@ -308,7 +306,6 @@ impl VioManager {
                 self.raw_bytes[idx] = ch;
             }
             if !sdl2 { Self::write_char(&mut stdout, decoded); }
-            c += 1;
         }
         if !sdl2 {
             let _ = stdout.write_all(b"\x1b[0m");
@@ -327,16 +324,13 @@ impl VioManager {
             let _ = write!(stdout, "\x1b[{};{}H", row + 1, col + 1);
             self.write_ansi_attr(&mut stdout, cell.1);
         }
-        let mut c = col;
-        for _ in 0..count {
-            if c >= self.cols { break; }
+        for c in (col..self.cols).take(count as usize) {
             let idx = row as usize * self.cols as usize + c as usize;
             if idx < self.buffer.len() {
                 self.buffer[idx] = cell;
                 self.raw_bytes[idx] = raw_byte;
             }
             if !sdl2 { Self::write_char(&mut stdout, cell.0); }
-            c += 1;
         }
         if !sdl2 {
             let _ = stdout.write_all(b"\x1b[0m");
@@ -353,16 +347,13 @@ impl VioManager {
             let _ = write!(stdout, "\x1b[{};{}H", row + 1, col + 1);
             self.write_ansi_attr(&mut stdout, attr);
         }
-        let mut c = col;
-        for _ in 0..count {
-            if c >= self.cols { break; }
+        for c in (col..self.cols).take(count as usize) {
             let idx = row as usize * self.cols as usize + c as usize;
             if idx < self.buffer.len() {
                 let ch = self.buffer[idx].0;
                 self.buffer[idx].1 = attr;
                 if !sdl2 { Self::write_char(&mut stdout, ch); }
             }
-            c += 1;
         }
         if !sdl2 {
             let _ = stdout.write_all(b"\x1b[0m");
@@ -375,14 +366,11 @@ impl VioManager {
     /// Returns decoded Unicode chars; callers must re-encode to the active codepage for guest writes.
     pub fn read_cell_str(&self, row: u16, col: u16, max_len: u16) -> Vec<(char, u8)> {
         let mut result = Vec::new();
-        let mut c = col;
-        for _ in 0..max_len / 2 {
-            if c >= self.cols { break; }
+        for c in (col..self.cols).take(max_len as usize / 2) {
             let idx = row as usize * self.cols as usize + c as usize;
             if idx < self.buffer.len() {
                 result.push(self.buffer[idx]);
             }
-            c += 1;
         }
         result
     }
