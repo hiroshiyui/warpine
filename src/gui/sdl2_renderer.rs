@@ -1112,16 +1112,16 @@ impl PmRenderer for Sdl2Renderer {
 
         // Scripted session: turn due steps into input events and captures.
         let scripted = self.script.as_mut().map(GuiScript::due).unwrap_or_default();
-        for action in scripted {
-            match action {
-                gui_script::Action::Click { x, y } => {
-                    let btn = sdl2::mouse::MouseButton::Left;
-                    events.push(Event::MouseButtonDown {
-                        timestamp: 0, window_id: 0, which: 0, mouse_btn: btn, clicks: 1, x, y });
-                    events.push(Event::MouseButtonUp {
-                        timestamp: 0, window_id: 0, which: 0, mouse_btn: btn, clicks: 1, x, y });
-                }
-                gui_script::Action::Dump(path) => {
+        for input in scripted {
+            match input {
+                gui_script::Input::Dump(path) => {
+                    // Input scripted before the capture must have taken
+                    // effect by the time the desktop is read.
+                    for event in events.drain(..) {
+                        if !self.handle_sdl_event(event, shared) {
+                            return false;
+                        }
+                    }
                     // Capture what is on screen now, including changes that
                     // have not been composited yet.
                     shared.window_mgr.lock_or_recover().mark_all_dirty();
@@ -1131,7 +1131,7 @@ impl PmRenderer for Sdl2Renderer {
                         eprintln!("warpine: cannot write {}: {e}", path.display());
                     }
                 }
-                gui_script::Action::Quit => events.push(Event::Quit { timestamp: 0 }),
+                input => events.extend(script_input_to_event(&input)),
             }
         }
 
@@ -1442,6 +1442,127 @@ fn build_wm_char(
     let mp1 = (flags << 16) | ((sc as u32) << 8) | 1;
     let mp2 = ch | (vk << 16);
     (mp1, mp2)
+}
+
+// ── Scripted sessions: gui_script::Input → SDL events ──────────────────────
+
+/// SDL button-state bit for the left mouse button (`SDL_BUTTON_LMASK`), the
+/// state a real mouse reports in motion events while dragging.
+const SDL_LEFT_BUTTON_MASK: u32 = 1;
+
+/// SDL key code and hardware scan code a US keyboard reports for a script key.
+/// `None` for a `Key::Char` that is not an unshifted printable key or an
+/// `F` number without a key; the script parser never produces either.
+fn script_key_to_sdl(key: gui_script::Key) -> Option<(Keycode, Scancode)> {
+    use gui_script::Key;
+    Some(match key {
+        Key::Enter     => (Keycode::Return,    Scancode::Return),
+        Key::Tab       => (Keycode::Tab,       Scancode::Tab),
+        Key::Esc       => (Keycode::Escape,    Scancode::Escape),
+        Key::Backspace => (Keycode::Backspace, Scancode::Backspace),
+        Key::Delete    => (Keycode::Delete,    Scancode::Delete),
+        Key::Insert    => (Keycode::Insert,    Scancode::Insert),
+        Key::Left      => (Keycode::Left,      Scancode::Left),
+        Key::Right     => (Keycode::Right,     Scancode::Right),
+        Key::Up        => (Keycode::Up,        Scancode::Up),
+        Key::Down      => (Keycode::Down,      Scancode::Down),
+        Key::Home      => (Keycode::Home,      Scancode::Home),
+        Key::End       => (Keycode::End,       Scancode::End),
+        Key::PageUp    => (Keycode::PageUp,    Scancode::PageUp),
+        Key::PageDown  => (Keycode::PageDown,  Scancode::PageDown),
+        Key::Space     => (Keycode::Space,     Scancode::Space),
+        Key::Shift     => (Keycode::LShift,    Scancode::LShift),
+        Key::Ctrl      => (Keycode::LCtrl,     Scancode::LCtrl),
+        Key::Alt       => (Keycode::LAlt,      Scancode::LAlt),
+        Key::F(n) => match n {
+            1  => (Keycode::F1,  Scancode::F1),
+            2  => (Keycode::F2,  Scancode::F2),
+            3  => (Keycode::F3,  Scancode::F3),
+            4  => (Keycode::F4,  Scancode::F4),
+            5  => (Keycode::F5,  Scancode::F5),
+            6  => (Keycode::F6,  Scancode::F6),
+            7  => (Keycode::F7,  Scancode::F7),
+            8  => (Keycode::F8,  Scancode::F8),
+            9  => (Keycode::F9,  Scancode::F9),
+            10 => (Keycode::F10, Scancode::F10),
+            11 => (Keycode::F11, Scancode::F11),
+            12 => (Keycode::F12, Scancode::F12),
+            _  => return None,
+        },
+        Key::Char(c) => {
+            let scancode = match c {
+                'a' => Scancode::A, 'b' => Scancode::B, 'c' => Scancode::C, 'd' => Scancode::D,
+                'e' => Scancode::E, 'f' => Scancode::F, 'g' => Scancode::G, 'h' => Scancode::H,
+                'i' => Scancode::I, 'j' => Scancode::J, 'k' => Scancode::K, 'l' => Scancode::L,
+                'm' => Scancode::M, 'n' => Scancode::N, 'o' => Scancode::O, 'p' => Scancode::P,
+                'q' => Scancode::Q, 'r' => Scancode::R, 's' => Scancode::S, 't' => Scancode::T,
+                'u' => Scancode::U, 'v' => Scancode::V, 'w' => Scancode::W, 'x' => Scancode::X,
+                'y' => Scancode::Y, 'z' => Scancode::Z,
+                '1' => Scancode::Num1, '2' => Scancode::Num2, '3' => Scancode::Num3,
+                '4' => Scancode::Num4, '5' => Scancode::Num5, '6' => Scancode::Num6,
+                '7' => Scancode::Num7, '8' => Scancode::Num8, '9' => Scancode::Num9,
+                '0' => Scancode::Num0,
+                '`' => Scancode::Grave,       '-' => Scancode::Minus,
+                '=' => Scancode::Equals,      '[' => Scancode::LeftBracket,
+                ']' => Scancode::RightBracket, '\\' => Scancode::Backslash,
+                ';' => Scancode::Semicolon,   '\'' => Scancode::Apostrophe,
+                ',' => Scancode::Comma,       '.' => Scancode::Period,
+                '/' => Scancode::Slash,
+                _ => return None,
+            };
+            // SDL key codes of printable keys are their unshifted ASCII codes.
+            (Keycode::from_i32(c as i32)?, scancode)
+        }
+    })
+}
+
+/// SDL modifier state for script modifiers (left-hand keys, as
+/// [`script_key_to_sdl`] presses).
+fn script_mods_to_sdl(mods: gui_script::Mods) -> KeyMod {
+    let mut keymod = KeyMod::NOMOD;
+    if mods.shift { keymod |= KeyMod::LSHIFTMOD; }
+    if mods.ctrl  { keymod |= KeyMod::LCTRLMOD; }
+    if mods.alt   { keymod |= KeyMod::LALTMOD; }
+    keymod
+}
+
+/// The SDL event a real mouse or keyboard produces for one scripted input, so
+/// that scripted sessions exercise the same `handle_sdl_event` paths as a
+/// user. `None` for `Dump`, which is a request to the renderer rather than
+/// input, and for a key SDL has no code for.
+fn script_input_to_event(input: &gui_script::Input) -> Option<Event> {
+    use gui_script::{Button, Input};
+    use sdl2::mouse::{MouseButton, MouseState};
+    let sdl_button = |b: &Button| match b {
+        Button::Left  => MouseButton::Left,
+        Button::Right => MouseButton::Right,
+    };
+    let (timestamp, window_id, which) = (0, 0, 0);
+    Some(match input {
+        Input::MouseDown { button, x, y } => Event::MouseButtonDown {
+            timestamp, window_id, which, mouse_btn: sdl_button(button), clicks: 1, x: *x, y: *y },
+        Input::MouseUp { button, x, y } => Event::MouseButtonUp {
+            timestamp, window_id, which, mouse_btn: sdl_button(button), clicks: 1, x: *x, y: *y },
+        Input::MouseDrag { x, y, dx, dy } => Event::MouseMotion {
+            timestamp, window_id, which,
+            mousestate: MouseState::from_sdl_state(SDL_LEFT_BUTTON_MASK),
+            x: *x, y: *y, xrel: *dx, yrel: *dy },
+        Input::KeyDown { key, mods } => {
+            let (keycode, scancode) = script_key_to_sdl(*key)?;
+            Event::KeyDown { timestamp, window_id, keycode: Some(keycode),
+                             scancode: Some(scancode), keymod: script_mods_to_sdl(*mods),
+                             repeat: false }
+        }
+        Input::KeyUp { key, mods } => {
+            let (keycode, scancode) = script_key_to_sdl(*key)?;
+            Event::KeyUp { timestamp, window_id, keycode: Some(keycode),
+                           scancode: Some(scancode), keymod: script_mods_to_sdl(*mods),
+                           repeat: false }
+        }
+        Input::TextInput(text) => Event::TextInput { timestamp, window_id, text: text.clone() },
+        Input::Quit => Event::Quit { timestamp },
+        Input::Dump(_) => return None,
+    })
 }
 
 /// Map an SDL2 Keycode to the unshifted OS/2 character code.
@@ -1772,5 +1893,184 @@ mod tests {
         );
         let flags = mp1 >> 16;
         assert!(flags & KC_KEYUP != 0, "KC_KEYUP set on key release");
+    }
+}
+
+#[cfg(test)]
+mod script_tests {
+    use super::*;
+    use super::gui_script::{Input, Key, Mods};
+    use sdl2::mouse::MouseButton;
+
+    /// The SDL events one script line turns into.
+    fn script_events(line: &str) -> Vec<Event> {
+        gui_script::parse(line).expect("script line parses").iter()
+            .flat_map(|step| step.action.expand(step.at_ms))
+            .filter_map(|(_, input)| script_input_to_event(&input))
+            .collect()
+    }
+
+    /// The `WM_CHAR` parameters `handle_sdl_event` posts for a key event:
+    /// `(KC_* flags, scan code, character, virtual key)`.
+    fn wm_char(event: &Event) -> (u32, u32, u32, u32) {
+        let (mp1, mp2) = match event {
+            Event::KeyDown { keycode, scancode, keymod, repeat, .. } =>
+                build_wm_char(*keycode, *scancode, *keymod, *repeat, false),
+            Event::KeyUp { keycode, scancode, keymod, .. } =>
+                build_wm_char(*keycode, *scancode, *keymod, false, true),
+            other => panic!("not a key event: {other:?}"),
+        };
+        (mp1 >> 16, (mp1 >> 8) & 0xFF, mp2 & 0xFFFF, mp2 >> 16)
+    }
+
+    /// Every key a script can name has an SDL key code and scan code that
+    /// agree with each other and that the WM_CHAR tables know.
+    #[test]
+    fn every_script_key_maps_to_a_consistent_sdl_key() {
+        let named = gui_script::KEY_NAMES.iter().map(|&(_, key)| key);
+        let function = (1..=gui_script::MAX_FUNCTION_KEY).map(Key::F);
+        let printable = (' '..='~').map(|c| gui_script::key_for_char(c).expect("printable").0);
+        let modifiers = [Key::Shift, Key::Ctrl, Key::Alt];
+        for key in named.chain(function).chain(printable).chain(modifiers) {
+            let (keycode, scancode) = script_key_to_sdl(key)
+                .unwrap_or_else(|| panic!("{key:?} has no SDL key"));
+            assert_eq!(Keycode::from_scancode(scancode), Some(keycode),
+                "{key:?}: scan code and key code name different keys");
+            assert_ne!(sdl_scancode_to_os2(scancode), 0, "{key:?} has no OS/2 scan code");
+            match key {
+                Key::Char(c) => assert_eq!(sdl_keycode_to_char(keycode), c as u32, "{key:?}"),
+                Key::Shift | Key::Ctrl | Key::Alt => {}
+                Key::F(_) | Key::Left | Key::Right | Key::Up | Key::Down | Key::Home | Key::End
+                | Key::PageUp | Key::PageDown | Key::Insert =>
+                    assert_ne!(sdl_keycode_to_vk(keycode), 0, "{key:?} has no VK_ code"),
+                Key::Enter | Key::Tab | Key::Esc | Key::Backspace | Key::Delete | Key::Space => {
+                    assert_ne!(sdl_keycode_to_vk(keycode), 0, "{key:?} has no VK_ code");
+                    assert_ne!(sdl_keycode_to_char(keycode), 0, "{key:?} has no character");
+                }
+            }
+        }
+        // Keys the parser cannot produce are refused rather than guessed.
+        for key in [Key::F(0), Key::F(13), Key::Char('A'), Key::Char('!'), Key::Char('é'), Key::Char(' ')] {
+            assert_eq!(script_key_to_sdl(key), None, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn script_mods_map_to_left_hand_sdl_modifiers() {
+        assert_eq!(script_mods_to_sdl(Mods::default()), KeyMod::NOMOD);
+        assert_eq!(script_mods_to_sdl(Mods { shift: true, ctrl: false, alt: false }), KeyMod::LSHIFTMOD);
+        assert_eq!(script_mods_to_sdl(Mods { shift: true, ctrl: true, alt: true }),
+                   KeyMod::LSHIFTMOD | KeyMod::LCTRLMOD | KeyMod::LALTMOD);
+    }
+
+    /// `key esc` / `key enter` reach the application as the WM_CHAR pair a
+    /// real key press and release produces.
+    #[test]
+    fn plain_key_becomes_wm_char_down_and_up() {
+        let events = script_events("0 key esc");
+        assert_eq!(events.len(), 2);
+        let (flags, scan, ch, vk) = wm_char(&events[0]);
+        assert_eq!((scan, ch, vk), (0x01, 27, VK_ESC));
+        assert_eq!(flags, KC_SCANCODE | KC_VIRTUALKEY | KC_CHAR);
+        let (flags, scan, ch, vk) = wm_char(&events[1]);
+        assert_eq!((scan, ch, vk), (0x01, 27, VK_ESC));
+        assert_eq!(flags, KC_SCANCODE | KC_VIRTUALKEY | KC_CHAR | KC_KEYUP);
+
+        let (_, scan, ch, vk) = wm_char(&script_events("0 key enter")[0]);
+        assert_eq!((scan, ch, vk), (0x1C, b'\r' as u32, VK_NEWLINE));
+        let (flags, _, ch, vk) = wm_char(&script_events("0 key a")[0]);
+        assert_eq!((flags, ch, vk), (KC_SCANCODE | KC_CHAR, b'a' as u32, 0));
+    }
+
+    /// `key alt+f4`: Alt goes down first and up last, and F4 carries KC_ALT.
+    #[test]
+    fn modified_key_holds_the_modifier_around_the_key() {
+        let events = script_events("0 key alt+f4");
+        let keys: Vec<(bool, Option<Keycode>, KeyMod)> = events.iter().map(|e| match e {
+            Event::KeyDown { keycode, keymod, .. } => (true, *keycode, *keymod),
+            Event::KeyUp { keycode, keymod, .. } => (false, *keycode, *keymod),
+            other => panic!("unexpected {other:?}"),
+        }).collect();
+        assert_eq!(keys, vec![
+            (true, Some(Keycode::LAlt), KeyMod::LALTMOD),
+            (true, Some(Keycode::F4), KeyMod::LALTMOD),
+            (false, Some(Keycode::F4), KeyMod::LALTMOD),
+            (false, Some(Keycode::LAlt), KeyMod::NOMOD),
+        ]);
+        let (flags, scan, ch, vk) = wm_char(&events[1]);
+        assert_eq!((scan, ch, vk), (0x3E, 0, VK_F4));
+        assert_eq!(flags, KC_SCANCODE | KC_VIRTUALKEY | KC_ALT);
+        assert_eq!(wm_char(&events[2]).0, KC_SCANCODE | KC_VIRTUALKEY | KC_ALT | KC_KEYUP);
+
+        let (flags, _, _, vk) = wm_char(&script_events("0 key shift+tab")[1]);
+        assert_eq!(vk, VK_TAB);
+        assert_ne!(flags & KC_SHIFT, 0);
+        let (flags, _, ch, _) = wm_char(&script_events("0 key ctrl+c")[1]);
+        assert_eq!(ch, b'c' as u32);
+        assert_ne!(flags & KC_CTRL, 0);
+    }
+
+    /// `text` produces what a keyboard does: key down, the typed text, key
+    /// up for ASCII; committed text alone for anything else.
+    #[test]
+    fn text_becomes_keystrokes_and_text_input_events() {
+        let events = script_events("0 text aé日");
+        assert_eq!(events.len(), 5);
+        assert!(matches!(&events[0], Event::KeyDown { keycode: Some(k), scancode: Some(Scancode::A),
+            keymod, repeat: false, .. } if *k == Keycode::A && *keymod == KeyMod::NOMOD));
+        assert!(matches!(&events[1], Event::TextInput { text, .. } if text == "a"));
+        assert!(matches!(&events[2], Event::KeyUp { keycode: Some(k), .. } if *k == Keycode::A));
+        assert!(matches!(&events[3], Event::TextInput { text, .. } if text == "é"));
+        assert!(matches!(&events[4], Event::TextInput { text, .. } if text == "日"));
+
+        // A shifted character presses Shift around the key that carries it.
+        let events = script_events("0 text ?");
+        assert_eq!(events.len(), 5);
+        assert!(matches!(&events[0], Event::KeyDown { keycode: Some(k), .. } if *k == Keycode::LShift));
+        assert!(matches!(&events[1], Event::KeyDown { scancode: Some(Scancode::Slash), keymod, .. }
+            if *keymod == KeyMod::LSHIFTMOD));
+        assert!(matches!(&events[2], Event::TextInput { text, .. } if text == "?"));
+        assert!(matches!(&events[4], Event::KeyUp { keycode: Some(k), keymod, .. }
+            if *k == Keycode::LShift && *keymod == KeyMod::NOMOD));
+    }
+
+    /// `drag` is a left press, one motion event per step with the button
+    /// held, and a release: the sequence `DragState`/`ResizeState` consume.
+    #[test]
+    fn drag_becomes_press_motions_and_release() {
+        let events = script_events("0 drag 100 40 300 240");
+        assert_eq!(events.len(), gui_script::DRAG_MOVES as usize + 2);
+        assert!(matches!(events[0],
+            Event::MouseButtonDown { mouse_btn: MouseButton::Left, x: 100, y: 40, .. }));
+        let mut last = (100, 40);
+        for event in &events[1..events.len() - 1] {
+            let Event::MouseMotion { mousestate, x, y, xrel, yrel, .. } = event else {
+                panic!("expected motion, got {event:?}");
+            };
+            assert!(mousestate.left() && !mousestate.right(), "left button held while dragging");
+            assert_eq!((last.0 + xrel, last.1 + yrel), (*x, *y), "relative motion matches position");
+            assert!(*x > last.0 && *y > last.1, "motions advance towards the target");
+            last = (*x, *y);
+        }
+        assert_eq!(last, (300, 240), "the last motion reaches the target");
+        assert!(matches!(events[events.len() - 1],
+            Event::MouseButtonUp { mouse_btn: MouseButton::Left, x: 300, y: 240, .. }));
+    }
+
+    #[test]
+    fn clicks_use_the_scripted_button_and_dump_is_not_an_event() {
+        let events = script_events("0 rclick 7 9");
+        assert!(matches!(events[..], [
+            Event::MouseButtonDown { mouse_btn: MouseButton::Right, clicks: 1, x: 7, y: 9, .. },
+            Event::MouseButtonUp { mouse_btn: MouseButton::Right, clicks: 1, x: 7, y: 9, .. },
+        ]));
+        let events = script_events("0 click 7 9");
+        assert!(matches!(events[..], [
+            Event::MouseButtonDown { mouse_btn: MouseButton::Left, .. },
+            Event::MouseButtonUp { mouse_btn: MouseButton::Left, .. },
+        ]));
+        assert!(matches!(script_events("0 quit")[..], [Event::Quit { .. }]));
+        assert!(script_input_to_event(&Input::Dump("x.ppm".into())).is_none());
+        assert!(script_events("0 dump x.ppm").is_empty());
     }
 }
