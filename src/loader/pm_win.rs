@@ -372,10 +372,18 @@ impl super::Loader {
             738 => {
                 // WinEndPaint
                 let hps = read_stack(4);
-                let wm = self.shared.window_mgr.lock_or_recover();
-                let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
-                let frame_hwnd = wm.client_to_frame(ps_hwnd);
-                if let Some(ref sender) = wm.gui_tx {
+                let (frame_hwnd, controls) = {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
+                    (wm.client_to_frame(ps_hwnd), wm.builtin_control_descendants(ps_hwnd))
+                };
+                // Child controls share the window's FrameBuffer, so whatever the
+                // window just painted (typically a full background fill) has
+                // covered them. Repaint them on top before presenting.
+                for hwnd_ctl in controls {
+                    self.dispatch_builtin_control(hwnd_ctl, WM_PAINT, 0, 0);
+                }
+                if let Some(ref sender) = self.shared.window_mgr.lock_or_recover().gui_tx {
                     let _ = sender.send(GUIMessage::PresentBuffer { handle: frame_hwnd });
                 }
                 ApiResult::Normal(1)
@@ -974,9 +982,6 @@ impl super::Loader {
                 }
                 ApiResult::Normal(if new_frame != 0 { 1 } else { 0 })
             }
-            // WinQueryActiveWindow(HWND hwndDesktop) -> HWND
-            // NOTE: ordinal 795 in some headers; 797 in others — both map here via
-            // the sub-dispatcher fallthrough.  See os2api.def for the canonical ordinal.
             797 => {
                 // WinQueryActiveWindow(HWND hwndDesktop) -> HWND
                 // VDR-E2: return focused_hwnd.

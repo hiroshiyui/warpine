@@ -375,6 +375,24 @@ impl WindowManager {
         None
     }
 
+    /// Visible built-in controls (`WC_*` windows without a guest window
+    /// procedure) below `hwnd`, in paint order: parents before children,
+    /// siblings in creation order.
+    pub fn builtin_control_descendants(&self, hwnd: u32) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut stack: Vec<u32> = self.windows.get(&hwnd)
+            .map(|w| w.children.iter().rev().copied().collect()).unwrap_or_default();
+        while let Some(h) = stack.pop() {
+            let Some(w) = self.windows.get(&h) else { continue };
+            if !w.visible { continue; }
+            if w.pfn_wp == 0 && w.class_name.starts_with("WC_") {
+                out.push(h);
+            }
+            stack.extend(w.children.iter().rev().copied());
+        }
+        out
+    }
+
     // ── Frame layout helpers ─────────────────────────────────────────────────
 
     /// Height of the chrome stacked above a frame's client area: the title bar
@@ -508,6 +526,29 @@ mod tests {
         let h_client = wm.create_window("TestClient".to_string(), h_frame, 0);
         wm.frame_to_client.insert(h_frame, h_client);
         h_frame
+    }
+
+    #[test]
+    fn builtin_control_descendants_lists_visible_controls_in_paint_order() {
+        let mut wm = WindowManager::new();
+        let client = wm.create_window("AppClient".to_string(), 0, 0);
+        let mk = |wm: &mut WindowManager, class: &str, parent: u32, visible: bool, pfn: u32| {
+            let h = wm.create_window(class.to_string(), parent, 0);
+            let w = wm.get_window_mut(h).unwrap();
+            w.visible = visible;
+            w.pfn_wp = pfn;
+            h
+        };
+        let button = mk(&mut wm, "WC_BUTTON", client, true, 0);
+        let hidden = mk(&mut wm, "WC_LISTBOX", client, false, 0);
+        let custom = mk(&mut wm, "AppChild", client, true, 0x1000); // guest-drawn child
+        let nested = mk(&mut wm, "WC_STATIC", custom, true, 0);
+        let entry = mk(&mut wm, "WC_ENTRYFIELD", client, true, 0);
+        let _under_hidden = mk(&mut wm, "WC_STATIC", hidden, true, 0);
+
+        assert_eq!(wm.builtin_control_descendants(client), vec![button, nested, entry]);
+        assert!(wm.builtin_control_descendants(button).is_empty());
+        assert!(wm.builtin_control_descendants(0xDEAD).is_empty());
     }
 
     #[test]

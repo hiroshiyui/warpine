@@ -332,6 +332,19 @@ pub fn text_width(text: &str, spec: FontSpec) -> i32 {
     text.chars().map(|ch| advance_of(resolve(ch, spec), spec)).sum::<f32>().round() as i32
 }
 
+/// The longest prefix of `text` that fits in `max_width` pixels when drawn
+/// with `spec`. Used to clip labels to the control they are drawn in.
+pub fn fit_text(text: &str, max_width: i32, spec: FontSpec) -> &str {
+    let mut pen = 0.0f32;
+    for (idx, ch) in text.char_indices() {
+        pen += advance_of(resolve(ch, spec), spec);
+        if pen.round() as i32 > max_width {
+            return &text[..idx];
+        }
+    }
+    text
+}
+
 /// Pixel metrics of `spec`'s Latin face.
 pub fn metrics(spec: FontSpec) -> FontMetricsPx {
     static CACHE: OnceLock<Mutex<HashMap<FontSpec, FontMetricsPx>>> = OnceLock::new();
@@ -481,6 +494,24 @@ mod tests {
         let regular = text_width(text, FontSpec::SYSTEM);
         assert!(text_width(text, FontSpec::SYSTEM_BOLD) > regular);
         assert!(text_width(text, FontSpec { px: 32, ..FontSpec::SYSTEM }) > regular * 3 / 2);
+    }
+
+    #[test]
+    fn fit_text_returns_the_longest_prefix_that_fits() {
+        let spec = FontSpec::SYSTEM;
+        let text = "initial text — 日本語";
+        assert_eq!(fit_text(text, 10_000, spec), text);
+        assert_eq!(fit_text(text, 0, spec), "");
+        assert_eq!(fit_text(text, -5, spec), "");
+        let w = text_width("initial", spec);
+        assert_eq!(fit_text(text, w, spec), "initial");
+        // Every prefix it returns fits, and adding one more character would not.
+        for max in 1..text_width(text, spec) {
+            let fit = fit_text(text, max, spec);
+            assert!(text_width(fit, spec) <= max, "max={max}");
+            let next: String = text.chars().take(fit.chars().count() + 1).collect();
+            assert!(text_width(&next, spec) > max, "max={max}");
+        }
     }
 
     #[test]

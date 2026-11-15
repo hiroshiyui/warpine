@@ -53,6 +53,7 @@ use std::sync::{Arc, Mutex, Condvar};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32};
 use std::thread;
 use log::{info, warn};
+use crate::gui::font::{self, FontSpec};
 
 /// Key information pushed into the SDL2 text-mode keyboard queue.
 ///
@@ -454,29 +455,19 @@ impl Loader {
 
                 match class_name.as_str() {
                     "WC_BUTTON" => {
-                        // Filled rectangle with gray background, border, centered label.
-                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
-                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + cy,
-                            color: 0x00D4D0C8, fill: true,
-                        });
-                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
-                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + cy,
-                            color: 0x00808080, fill: false,
-                        });
-                        if !text.is_empty() {
-                            let _ = sender.send(crate::gui::GUIMessage::DrawText {
-                                handle: frame_hwnd, x: x + 4, y: y + cy / 4,
-                                text, color: 0x00000000,
-                            });
+                        // Gray face with a border and a centred label.
+                        control_box(sender, frame_hwnd, (x, y, cx, cy), CONTROL_FACE_COLOR);
+                        let label = font::fit_text(&text, cx - 2 * CONTROL_TEXT_INSET, FontSpec::SYSTEM);
+                        if !label.is_empty() {
+                            let w = font::text_width(label, FontSpec::SYSTEM);
+                            control_text(sender, frame_hwnd, x + (cx - w) / 2, y + (cy - CONTROL_LINE_H) / 2, label);
                         }
                     }
                     "WC_STATIC" => {
-                        // Plain text label, no background.
-                        if !text.is_empty() {
-                            let _ = sender.send(crate::gui::GUIMessage::DrawText {
-                                handle: frame_hwnd, x, y: y + cy / 4,
-                                text, color: 0x00000000,
-                            });
+                        // Plain text label, no background; left- and top-aligned.
+                        let label = font::fit_text(&text, cx, FontSpec::SYSTEM);
+                        if !label.is_empty() {
+                            control_text(sender, frame_hwnd, x, y + (cy - CONTROL_LINE_H).max(0), label);
                         }
                     }
                     "WC_SCROLLBAR" => {
@@ -485,32 +476,26 @@ impl Loader {
                             color: 0x00A0A0A0, fill: true,
                         });
                     }
-                    "WC_ENTRYFIELD" | "WC_MLE" => {
-                        // White background with gray border; current text inside.
-                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
-                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + cy,
-                            color: 0x00FFFFFF, fill: true,
-                        });
-                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
-                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + cy,
-                            color: 0x00808080, fill: false,
-                        });
-                        if !text.is_empty() {
-                            let _ = sender.send(crate::gui::GUIMessage::DrawText {
-                                handle: frame_hwnd, x: x + 2, y: y + cy / 4,
-                                text, color: 0x00000000,
-                            });
+                    "WC_ENTRYFIELD" => {
+                        // White field with one vertically centred line of text.
+                        control_box(sender, frame_hwnd, (x, y, cx, cy), CONTROL_FIELD_COLOR);
+                        let line = font::fit_text(&text, cx - 2 * CONTROL_TEXT_INSET, FontSpec::SYSTEM);
+                        if !line.is_empty() {
+                            control_text(sender, frame_hwnd, x + CONTROL_TEXT_INSET,
+                                         y + (cy - CONTROL_LINE_H) / 2, line);
                         }
                     }
+                    "WC_MLE" => {
+                        // White field; one row per line of text, from the top.
+                        control_box(sender, frame_hwnd, (x, y, cx, cy), CONTROL_FIELD_COLOR);
+                        control_rows(sender, frame_hwnd, (x, y, cx, cy), text.lines());
+                    }
                     "WC_LISTBOX" => {
-                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
-                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + cy,
-                            color: 0x00FFFFFF, fill: true,
-                        });
-                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
-                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + cy,
-                            color: 0x00808080, fill: false,
-                        });
+                        // White field; one row per item, from the top.
+                        let items = self.shared.window_mgr.lock_or_recover()
+                            .get_window(hwnd).map(|w| w.listbox_items.clone()).unwrap_or_default();
+                        control_box(sender, frame_hwnd, (x, y, cx, cy), CONTROL_FIELD_COLOR);
+                        control_rows(sender, frame_hwnd, (x, y, cx, cy), items.iter().map(String::as_str));
                     }
                     "#Menu" => {
                         // The menu bar and any open pull-down are frame chrome:
@@ -811,3 +796,90 @@ impl Loader {
     }
 }
 
+
+// ── Built-in control painting helpers ────────────────────────────────────────
+
+/// Face colour of push buttons.
+const CONTROL_FACE_COLOR: u32 = 0x00D4_D0C8;
+/// Background of text-holding controls (entry field, MLE, list box).
+const CONTROL_FIELD_COLOR: u32 = 0x00FF_FFFF;
+const CONTROL_BORDER_COLOR: u32 = 0x0080_8080;
+const CONTROL_TEXT_COLOR: u32 = 0x0000_0000;
+/// Horizontal gap between a control's border and its text.
+const CONTROL_TEXT_INSET: i32 = 4;
+/// Height of one text row in a control (the system font's line height).
+const CONTROL_LINE_H: i32 = font::SYSTEM_FONT_PX as i32;
+
+/// Fill a control's rectangle `(x, y, cx, cy)` and outline it.
+fn control_box(sender: &crate::gui::GUISender, handle: u32, (x, y, cx, cy): (i32, i32, i32, i32), fill: u32) {
+    for (color, fill) in [(fill, true), (CONTROL_BORDER_COLOR, false)] {
+        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
+            handle, x1: x, y1: y, x2: x + cx, y2: y + cy, color, fill,
+        });
+    }
+}
+
+/// Draw one line of system-font text whose line box has its bottom at `y`.
+fn control_text(sender: &crate::gui::GUISender, handle: u32, x: i32, y: i32, text: &str) {
+    let _ = sender.send(crate::gui::GUIMessage::DrawText {
+        handle, x, y, text: text.to_string(), color: CONTROL_TEXT_COLOR,
+    });
+}
+
+/// Layout of text rows inside a control `(x, y, cx, cy)`: rows run from the
+/// top down, each clipped to the control's width, and rows that would not fit
+/// completely above the bottom border are dropped. Returns `(x, y, text)` per
+/// visible row, `y` being the bottom of the row's line box.
+fn control_row_layout<'a>(
+    (x, y, cx, cy): (i32, i32, i32, i32),
+    rows: impl Iterator<Item = &'a str>,
+) -> Vec<(i32, i32, &'a str)> {
+    let top = y + cy - 2;
+    rows.enumerate()
+        .map(|(i, row)| (top - CONTROL_LINE_H * (i as i32 + 1), row))
+        .take_while(|&(row_y, _)| row_y > y)
+        .map(|(row_y, row)| {
+            (x + CONTROL_TEXT_INSET, row_y,
+             font::fit_text(row, cx - 2 * CONTROL_TEXT_INSET, FontSpec::SYSTEM))
+        })
+        .collect()
+}
+
+/// Draw the rows produced by [`control_row_layout`].
+fn control_rows<'a>(sender: &crate::gui::GUISender, handle: u32,
+                    rect: (i32, i32, i32, i32), rows: impl Iterator<Item = &'a str>) {
+    for (rx, ry, row) in control_row_layout(rect, rows) {
+        if !row.is_empty() { control_text(sender, handle, rx, ry, row); }
+    }
+}
+
+#[cfg(test)]
+mod control_paint_tests {
+    use super::*;
+
+    /// Rows are laid out from the top of the control downwards, clipped to its
+    /// width, and rows that do not fit above the bottom border are dropped.
+    #[test]
+    fn control_rows_run_top_down_and_are_clipped() {
+        let rect = (10, 60, 200, 100); // bottom-left (10,60), 200×100
+        let rows = ["first", "second", "third", "fourth", "fifth", "sixth", "seventh"];
+        let layout = control_row_layout(rect, rows.iter().copied());
+        // 100-px control, 16-px rows, 2-px top inset, 1-px bottom border → 6 rows.
+        assert_eq!(layout.len(), 6);
+        assert_eq!(layout[0], (10 + CONTROL_TEXT_INSET, 60 + 100 - 2 - CONTROL_LINE_H, "first"));
+        for pair in layout.windows(2) {
+            assert_eq!(pair[0].1 - pair[1].1, CONTROL_LINE_H, "rows are one line apart");
+        }
+        assert!(layout.iter().all(|&(_, y, _)| y > 60 && y + CONTROL_LINE_H < 60 + 100));
+
+        // A row wider than the control is cut to a prefix that fits.
+        let long = "a very long list box entry that is much wider than the control";
+        let narrow = control_row_layout((0, 0, 80, 40), std::iter::once(long));
+        let (_, _, shown) = narrow[0];
+        assert!(long.starts_with(shown) && shown.len() < long.len());
+        assert!(font::text_width(shown, FontSpec::SYSTEM) <= 80 - 2 * CONTROL_TEXT_INSET);
+
+        // A control too short for a single row shows nothing.
+        assert!(control_row_layout((0, 0, 80, 10), std::iter::once("x")).is_empty());
+    }
+}
