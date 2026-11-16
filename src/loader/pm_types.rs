@@ -843,6 +843,56 @@ impl WindowManager {
         self.windows.get(&hwnd).map_or(0, |w| if w.owner != 0 { w.owner } else { w.parent })
     }
 
+    /// Post `WM_CONTROL` to the owner of control `hwnd`:
+    /// mp1 = MPFROM2SHORT(control id, notify code), mp2 = `data`.
+    pub fn notify_owner(&self, hwnd: u32, code: u32, data: u32) {
+        use super::constants::WM_CONTROL;
+        let target = self.notify_target(hwnd);
+        let Some(id) = self.windows.get(&hwnd).map(|w| w.id) else { return };
+        if target == 0 || target == hwnd {
+            return;
+        }
+        if let Some(mq_arc) = self.find_hmq_for_hwnd(target).and_then(|hmq| self.get_mq(hmq)) {
+            let mut mq = mq_arc.lock_or_recover();
+            mq.messages.push_back(OS2Message {
+                hwnd: target, msg: WM_CONTROL, mp1: (code << 16) | (id & 0xFFFF), mp2: data,
+                time: 0, x: 0, y: 0,
+            });
+            mq.cond.notify_one();
+        }
+    }
+
+    /// Tell the owner of control `hwnd` that it gained (`gained`) or lost
+    /// the focus: `EN_SETFOCUS` / `EN_KILLFOCUS` for an entry field,
+    /// `MLN_*` for an MLE, `LN_*` for a list box (mp2 = the control). Other
+    /// windows have no such notification.
+    pub fn notify_focus(&self, hwnd: u32, gained: bool) {
+        use super::constants::*;
+        let Some(class) = self.windows.get(&hwnd).map(|w| w.class_name.as_str()) else { return };
+        let code = match (class, gained) {
+            ("WC_ENTRYFIELD", true) => EN_SETFOCUS,
+            ("WC_ENTRYFIELD", false) => EN_KILLFOCUS,
+            ("WC_MLE", true) => MLN_SETFOCUS,
+            ("WC_MLE", false) => MLN_KILLFOCUS,
+            ("WC_LISTBOX", true) => LN_SETFOCUS,
+            ("WC_LISTBOX", false) => LN_KILLFOCUS,
+            _ => return,
+        };
+        self.notify_owner(hwnd, code, hwnd);
+    }
+
+    /// Make `hwnd` the focus window (0 = none), notifying the owners of the
+    /// control that lost it and the one that gained it. Returns the
+    /// previous focus window.
+    pub fn set_focus(&mut self, hwnd: u32) -> u32 {
+        let old = std::mem::replace(&mut self.focus_hwnd, hwnd);
+        if old != hwnd {
+            self.notify_focus(old, false);
+            self.notify_focus(hwnd, true);
+        }
+        old
+    }
+
     /// Hit-test point `(x, y)` (client coordinates of `frame`, origin at the
     /// bottom-left) against the frame's built-in controls. Returns the
     /// top-most enabled control under the point together with the point in

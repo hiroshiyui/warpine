@@ -629,7 +629,7 @@ impl Loader {
             }
 
             WM_BUTTON1DOWN if pm_controls::is_input_control(&class_name) => {
-                self.control_button_down(hwnd, &class_name, cy, mp1)
+                self.control_button_down(hwnd, &class_name, cy, mp1, mp2)
             }
 
             WM_MOUSEMOVE if pm_controls::is_input_control(&class_name) => {
@@ -683,7 +683,23 @@ impl Loader {
                 })
             }
 
+            EM_SETREADONLY if class_name == pm_controls::CLASS_ENTRYFIELD => {
+                self.edit_set_read_only(hwnd, mp1 & 0xFFFF != 0)
+            }
+            MLM_SETREADONLY if class_name == pm_controls::CLASS_MLE => {
+                self.edit_set_read_only(hwnd, mp1 & 0xFFFF != 0)
+            }
+            EM_QUERYREADONLY | MLM_QUERYREADONLY if pm_controls::is_edit_control(&class_name) => {
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let style = wm.get_window(hwnd).map_or(0, |w| w.style);
+                ApiResult::Normal((style & pm_controls::read_only_style(&class_name) != 0) as u32)
+            }
+
             LM_SELECTITEM => self.listbox_select_item(hwnd, mp1, mp2),
+
+            LM_DELETEITEM if class_name == pm_controls::CLASS_LISTBOX => self.listbox_delete_item(hwnd, mp1),
+
+            LM_DELETEALL if class_name == pm_controls::CLASS_LISTBOX => self.listbox_delete_all(hwnd),
 
             LM_QUERYSELECTION => self.listbox_query_selection(hwnd, mp1),
 

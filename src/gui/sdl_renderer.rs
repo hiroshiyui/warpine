@@ -604,6 +604,9 @@ pub struct SdlRenderer {
     native_wait: bool,
     /// Mouse capture during drags (`SetMouseCapture`).
     mouse: sdl3::mouse::MouseUtil,
+    /// Shift / Ctrl / Alt as `KC_*` flags, from the last key event; mouse
+    /// messages report them in `fsInp` (high word of mp2).
+    key_mods: u32,
     /// MMPM/2 and DosBeep audio, played on this (main) thread.
     audio: super::audio::SdlAudio,
     /// The loop's wake-up once installed; audio commands use it.
@@ -686,6 +689,7 @@ impl SdlRenderer {
             stats: FrameStats::new(now),
             drag_state: None,
             resize_state: None,
+            key_mods: 0,
             // Long enough ago that the first frame is composited at once.
             last_composite: now.checked_sub(FRAME_INTERVAL).unwrap_or(now),
             script: GuiScript::from_env().inspect(|_| {
@@ -889,6 +893,7 @@ impl SdlRenderer {
             // clicked or given the focus with WinSetFocus), else to the
             // active frame's client.
             Event::KeyDown { keycode, scancode, keymod, repeat, .. } => {
+                self.key_mods = kc_modifiers(keymod);
                 let target = shared.window_mgr.lock_or_recover().key_target();
                 if target != 0 {
                     let (mp1, mp2) = build_wm_char(keycode, scancode, keymod, repeat, false);
@@ -896,6 +901,7 @@ impl SdlRenderer {
                 }
             }
             Event::KeyUp { keycode, scancode, keymod, .. } => {
+                self.key_mods = kc_modifiers(keymod);
                 let target = shared.window_mgr.lock_or_recover().key_target();
                 if target != 0 {
                     let (mp1, mp2) = build_wm_char(keycode, scancode, keymod, false, true);
@@ -1157,7 +1163,7 @@ impl SdlRenderer {
                                 (hwnd, local_x, local_y)
                             };
                             let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
-                            if let Some(m) = msg { push_msg(shared, hwnd, m, mp1, 0); }
+                            if let Some(m) = msg { push_msg(shared, hwnd, m, mp1, mouse_mp2(self.key_mods)); }
                             }
                         }
                     }
@@ -1199,7 +1205,7 @@ impl SdlRenderer {
                     && let Some((button, bx, by)) = pressed_control_release(shared, x, os2_y)
                 {
                     let mp1 = ((bx as u32) & 0xFFFF) | ((by as u32 & 0xFFFF) << 16);
-                    push_msg(shared, button, WM_BUTTON1UP, mp1, 0);
+                    push_msg(shared, button, WM_BUTTON1UP, mp1, mouse_mp2(self.key_mods));
                     return true;
                 }
                 // VDR-D6: captured window overrides hit-test.
@@ -1233,7 +1239,7 @@ impl SdlRenderer {
                         MouseButton::Middle => Some(WM_BUTTON3UP),
                         _ => None,
                     };
-                    if let Some(m) = msg { push_msg(shared, hwnd, m, mp1, 0); }
+                    if let Some(m) = msg { push_msg(shared, hwnd, m, mp1, mouse_mp2(self.key_mods)); }
                 }
             }
             _ => {}
@@ -1557,7 +1563,7 @@ fn route_button1(shared: &Arc<SharedState>, frame: u32, x: i32, y: i32, press: b
     let lost = if press && focus != 0 && wm.frame_to_client.contains_key(&frame)
         && wm.find_frame_for_hwnd(focus) == frame
     {
-        wm.focus_hwnd = 0;
+        wm.set_focus(0);
         focus
     } else {
         0
@@ -1806,11 +1812,7 @@ fn build_wm_char(
     let ch  = keycode.map(sdl_keycode_to_char)
         .filter(|&c| chord || !is_text_input_char(c)).unwrap_or(0);
 
-    // Modifier state → KC_* flags
-    let mut flags = KC_SCANCODE;
-    if keymod.intersects(KeyMod::LSHIFTMOD | KeyMod::RSHIFTMOD) { flags |= KC_SHIFT; }
-    if keymod.intersects(KeyMod::LCTRLMOD  | KeyMod::RCTRLMOD)  { flags |= KC_CTRL;  }
-    if keymod.intersects(KeyMod::LALTMOD   | KeyMod::RALTMOD)   { flags |= KC_ALT;   }
+    let mut flags = KC_SCANCODE | kc_modifiers(keymod);
     if key_up  { flags |= KC_KEYUP;   }
     if repeat  { flags |= KC_PREVDOWN; }
 
@@ -1953,6 +1955,21 @@ fn is_text_input_char(ch: u32) -> bool {
     ch >= SPACE && ch != DEL
 }
 
+/// SDL modifier state → `KC_SHIFT` / `KC_CTRL` / `KC_ALT`.
+fn kc_modifiers(keymod: KeyMod) -> u32 {
+    let mut flags = 0;
+    if keymod.intersects(KeyMod::LSHIFTMOD | KeyMod::RSHIFTMOD) { flags |= KC_SHIFT; }
+    if keymod.intersects(KeyMod::LCTRLMOD  | KeyMod::RCTRLMOD)  { flags |= KC_CTRL;  }
+    if keymod.intersects(KeyMod::LALTMOD   | KeyMod::RALTMOD)   { flags |= KC_ALT;   }
+    flags
+}
+
+/// mp2 of a mouse button message (MSEMSG): `codeHitTest` (low word,
+/// `HT_NORMAL` = 0) and `fsInp`, the `KC_*` modifier flags (high word).
+fn mouse_mp2(key_mods: u32) -> u32 {
+    key_mods << 16
+}
+
 /// Map an SDL Keycode to the unshifted OS/2 character code.
 fn sdl_keycode_to_char(kc: Keycode) -> u32 {
     let name = kc.name();
@@ -1975,7 +1992,8 @@ fn sdl_keycode_to_char(kc: Keycode) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{sdl_keycode_to_char, sdl_keycode_to_vk, sdl_scancode_to_os2, build_wm_char, mb_buttons};
+    use super::{sdl_keycode_to_char, sdl_keycode_to_vk, sdl_scancode_to_os2, build_wm_char, mb_buttons,
+        kc_modifiers, mouse_mp2};
     use super::{wait_timeout, is_wake_event, driver_can_wait, Event, Duration, Instant,
         FRAME_INTERVAL, IDLE_WAIT};
 
@@ -2311,6 +2329,17 @@ mod tests {
         assert!(flags & KC_CHAR == 0,       "KC_CHAR not set for F1");
         assert_eq!(sc, 0x3B, "scan code for F1");
         assert_eq!(vk, VK_F1);
+    }
+
+    #[test]
+    fn mouse_messages_report_the_modifier_keys_in_fsinp() {
+        use crate::loader::*;
+        assert_eq!(kc_modifiers(KeyMod::NOMOD), 0);
+        assert_eq!(kc_modifiers(KeyMod::RSHIFTMOD | KeyMod::LCTRLMOD), KC_SHIFT | KC_CTRL);
+        assert_eq!(kc_modifiers(KeyMod::RALTMOD | KeyMod::CAPSMOD), KC_ALT);
+        // MSEMSG: codeHitTest (HT_NORMAL = 0) in the low word, fsInp high.
+        assert_eq!(mouse_mp2(KC_SHIFT), KC_SHIFT << 16);
+        assert_eq!(mouse_mp2(0), 0);
     }
 
     #[test]

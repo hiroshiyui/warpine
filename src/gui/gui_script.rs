@@ -29,6 +29,9 @@
 //! Coordinates are desktop pixels, origin top-left.
 //!
 //! * `click X Y` — left button press and release at `(X, Y)`.
+//! * `[MOD+]...click X Y` — the same with modifier keys held, e.g.
+//!   `shift+click 10 20`: the modifiers go down before the press and up
+//!   after the release.
 //! * `rclick X Y` — right button press and release at `(X, Y)`.
 //! * `drag X1 Y1 X2 Y2` — left button down at `(X1, Y1)`, [`DRAG_MOVES`]
 //!   evenly spaced mouse moves ending at `(X2, Y2)`, button up there. The
@@ -178,10 +181,26 @@ pub fn parse_key_spec(spec: &str) -> Option<(Key, Mods)> {
     Some((key, mods))
 }
 
+/// Parse `shift+ctrl` style modifier names joined by `+`.
+fn parse_mods(spec: &str) -> Option<Mods> {
+    let mut mods = Mods::default();
+    for name in spec.split('+') {
+        match name.to_ascii_lowercase().as_str() {
+            "shift" => mods.shift = true,
+            "ctrl" => mods.ctrl = true,
+            "alt" => mods.alt = true,
+            _ => return None,
+        }
+    }
+    Some(mods)
+}
+
 /// One scripted action: what the user does.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     Click { x: i32, y: i32 },
+    /// A left click with modifier keys held (`shift+click X Y`).
+    ModClick { x: i32, y: i32, mods: Mods },
     RClick { x: i32, y: i32 },
     Drag { x1: i32, y1: i32, x2: i32, y2: i32 },
     Key { key: Key, mods: Mods },
@@ -211,6 +230,17 @@ pub enum Input {
 /// Append the events of one keystroke: modifiers down, key down, key up,
 /// modifiers up in reverse order. `between` goes between key down and key up.
 fn push_keystroke(out: &mut Vec<(u64, Input)>, at: u64, key: Key, mods: Mods, between: Option<Input>) {
+    push_with_mods(out, at, mods, |out| {
+        out.push((at, Input::KeyDown { key, mods }));
+        out.extend(between.map(|i| (at, i)));
+        out.push((at, Input::KeyUp { key, mods }));
+    });
+}
+
+/// Append the modifier keys of `mods` going down, the events `inner` adds,
+/// then the modifiers going up in reverse order.
+fn push_with_mods(out: &mut Vec<(u64, Input)>, at: u64, mods: Mods,
+                  inner: impl FnOnce(&mut Vec<(u64, Input)>)) {
     let held: Vec<Key> = [(mods.ctrl, Key::Ctrl), (mods.alt, Key::Alt), (mods.shift, Key::Shift)]
         .into_iter().filter_map(|(on, k)| on.then_some(k)).collect();
     let set = |m: &mut Mods, k: Key, on: bool| match k {
@@ -223,9 +253,7 @@ fn push_keystroke(out: &mut Vec<(u64, Input)>, at: u64, key: Key, mods: Mods, be
         set(&mut state, k, true);
         out.push((at, Input::KeyDown { key: k, mods: state }));
     }
-    out.push((at, Input::KeyDown { key, mods }));
-    out.extend(between.map(|i| (at, i)));
-    out.push((at, Input::KeyUp { key, mods }));
+    inner(out);
     for &k in held.iter().rev() {
         set(&mut state, k, false);
         out.push((at, Input::KeyUp { key: k, mods: state }));
@@ -243,6 +271,10 @@ impl Action {
         };
         match self {
             &Action::Click { x, y } => press_release(Button::Left, x, y),
+            &Action::ModClick { x, y, mods } => push_with_mods(&mut out, at, mods, |out| {
+                out.push((at, Input::MouseDown { button: Button::Left, x, y }));
+                out.push((at, Input::MouseUp { button: Button::Left, x, y }));
+            }),
             &Action::RClick { x, y } => press_release(Button::Right, x, y),
             &Action::Drag { x1, y1, x2, y2 } => {
                 out.push((at, Input::MouseDown { button: Button::Left, x: x1, y: y1 }));
@@ -322,6 +354,12 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
         let action = match name {
             "click" => coords(args).map(|[x, y]| Action::Click { x, y })
                 .ok_or_else(|| err("click needs X and Y"))?,
+            _ if name.ends_with("+click") => {
+                let mods = parse_mods(&name[..name.len() - "+click".len()])
+                    .ok_or_else(|| err("unknown modifier (expected shift, ctrl or alt)"))?;
+                coords(args).map(|[x, y]| Action::ModClick { x, y, mods })
+                    .ok_or_else(|| err("click needs X and Y"))?
+            }
             "rclick" => coords(args).map(|[x, y]| Action::RClick { x, y })
                 .ok_or_else(|| err("rclick needs X and Y"))?,
             "drag" => coords(args).map(|[x1, y1, x2, y2]| Action::Drag { x1, y1, x2, y2 })
@@ -344,7 +382,7 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
             "quit" if args.is_empty() => Action::Quit,
             "quit" => return Err(err("unexpected extra arguments")),
             _ => return Err(err(
-                "unknown action (expected click, rclick, drag, key, text, dump or quit)")),
+                "unknown action (expected click, MOD+click, rclick, drag, key, text, dump or quit)")),
         };
         steps.push(Step { at_ms, action });
     }
@@ -506,7 +544,8 @@ mod tests {
                     "10 key", "10 key nosuchkey", "10 key a b", "10 key super+a",
                     "10 key shift+", "10 key f0", "10 key f13", "10 key f01", "10 key é",
                     "10 key ab", "10 key shift+ctrl",
-                    "10 text", "10 text   ", "10 doubleclick 1 2", "-5 quit"] {
+                    "10 text", "10 text   ", "10 doubleclick 1 2", "-5 quit",
+                    "10 shift+click 1", "10 super+click 1 2", "10 +click 1 2", "10 shift+rclick 1 2"] {
             let err = parse(&format!("5 quit\n{bad}\n")).unwrap_err();
             assert!(err.starts_with("line 2:"), "{bad:?} → {err}");
             assert!(err.contains(bad.trim()), "the line is quoted: {err}");
@@ -518,6 +557,22 @@ mod tests {
         assert!(parse("1 rclick 1").unwrap_err().contains("rclick needs X and Y"));
         assert!(parse("1 text").unwrap_err().contains("text needs a string"));
         assert!(parse("1 fly").unwrap_err().contains("rclick, drag, key, text"));
+        assert!(parse("1 super+click 1 2").unwrap_err().contains("unknown modifier"));
+    }
+
+    #[test]
+    fn modifier_clicks_hold_the_keys_around_the_click() {
+        assert_eq!(parse("10 shift+click 3 4\n20 Ctrl+SHIFT+click 5 6").unwrap(), vec![
+            Step { at_ms: 10, action: Action::ModClick { x: 3, y: 4, mods: mods(true, false, false) } },
+            Step { at_ms: 20, action: Action::ModClick { x: 5, y: 6, mods: mods(true, true, false) } },
+        ]);
+        let (shift, none) = (mods(true, false, false), Mods::default());
+        assert_eq!(Action::ModClick { x: 3, y: 4, mods: shift }.expand(50), vec![
+            (50, Input::KeyDown { key: Key::Shift, mods: shift }),
+            (50, Input::MouseDown { button: Button::Left, x: 3, y: 4 }),
+            (50, Input::MouseUp { button: Button::Left, x: 3, y: 4 }),
+            (50, Input::KeyUp { key: Key::Shift, mods: none }),
+        ]);
     }
 
     #[test]

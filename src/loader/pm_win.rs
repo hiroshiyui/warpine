@@ -1658,6 +1658,14 @@ impl super::Loader {
         }
         let (hwnd_dlg, hmq, focus) = self.create_dialog(
             vcpu_id, hwnd_parent, hwnd_owner, pfn_dlg_proc, template);
+        self.queue_dialog_start(hwnd_dlg, hmq, focus, p_create_params);
+        (hwnd_dlg, hmq)
+    }
+
+    /// Queue a new dialog's first messages: WM_INITDLG (mp1 = `focus`, mp2
+    /// = `p_create_params`), WM_PAINT, then the focus notification of the
+    /// control given the focus (`EN_SETFOCUS`...) to its owner.
+    pub(super) fn queue_dialog_start(&self, hwnd_dlg: u32, hmq: u32, focus: u32, p_create_params: u32) {
         let wm = self.shared.window_mgr.lock_or_recover();
         if let Some(mq_arc) = wm.get_mq(hmq) {
             let mut mq = mq_arc.lock_or_recover();
@@ -1666,7 +1674,7 @@ impl super::Loader {
             }
             mq.cond.notify_one();
         }
-        (hwnd_dlg, hmq)
+        wm.notify_focus(focus, true);
     }
 
     /// Create a dialog window and its controls from `template` (an empty
@@ -2742,7 +2750,7 @@ mod tests {
             let wm = loader.shared.window_mgr.lock_or_recover();
             let mq = wm.get_mq(wm.find_hmq_for_hwnd(owner).unwrap()).unwrap();
             let mq = mq.lock_or_recover();
-            mq.messages.iter().filter(|m| m.msg == WM_CONTROL)
+            mq.messages.iter().filter(|m| m.msg == WM_CONTROL && m.mp1 >> 16 == EN_CHANGE)
                 .map(|m| (m.hwnd, m.mp1, m.mp2)).collect()
         };
         assert_eq!(notes, vec![(owner, (EN_CHANGE << 16) | 7, entry); 3]);

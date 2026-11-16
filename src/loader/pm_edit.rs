@@ -38,6 +38,9 @@ pub enum EditKey {
     End,
     Up,
     Down,
+    /// Up / down by a page: the visible rows less one (multi-line only).
+    PageUp,
+    PageDown,
     Enter,
 }
 
@@ -65,6 +68,8 @@ pub fn key_from_wm_char(mp1: u32, mp2: u32, codepage: u32) -> Option<(EditKey, b
             VK_END => Some(EditKey::End),
             VK_UP => Some(EditKey::Up),
             VK_DOWN => Some(EditKey::Down),
+            VK_PAGEUP => Some(EditKey::PageUp),
+            VK_PAGEDOWN => Some(EditKey::PageDown),
             VK_NEWLINE | VK_ENTER => Some(EditKey::Enter),
             // Other virtual keys (VK_SPACE, ...) may still carry a character.
             _ => None,
@@ -109,6 +114,8 @@ pub struct EditBuffer {
     caret: usize,
     anchor: usize,
     multiline: bool,
+    /// Lines PageUp / PageDown move by.
+    page_lines: usize,
 }
 
 impl EditBuffer {
@@ -121,9 +128,20 @@ impl EditBuffer {
     /// Build a buffer with the selection from `anchor` to `caret` (both
     /// clamped to the text).
     pub fn with_selection(text: &str, anchor: usize, caret: usize, multiline: bool) -> Self {
-        let mut buf = EditBuffer { chars: text.chars().collect(), caret: 0, anchor: 0, multiline };
+        let mut buf = EditBuffer { chars: text.chars().collect(), caret: 0, anchor: 0, multiline, page_lines: 1 };
         buf.set_selection(anchor, caret);
         buf
+    }
+
+    /// Make PageUp / PageDown move by a page of a view `rows` rows high:
+    /// `rows - 1` lines, keeping one line of context, at least one.
+    pub fn set_page_rows(&mut self, rows: usize) {
+        self.page_lines = rows.saturating_sub(1).max(1);
+    }
+
+    /// The lines PageUp / PageDown move by.
+    pub fn page_lines(&self) -> usize {
+        self.page_lines
     }
 
     /// The selection anchor (the end of the selection the caret is not at).
@@ -362,8 +380,9 @@ impl EditBuffer {
     pub fn move_vertical(&mut self, delta: i32, width: &dyn Fn(&str) -> i32) -> bool {
         let lines = self.lines();
         let (line, col) = self.caret_line();
-        let target = line as i64 + delta as i64;
-        if target < 0 || target >= lines.len() as i64 || target == line as i64 {
+        // Clamped to the first / last line, so a page move goes as far as it can.
+        let target = (line as i64 + delta as i64).clamp(0, lines.len() as i64 - 1);
+        if target == line as i64 {
             return false;
         }
         let from = &lines[line];
@@ -382,7 +401,8 @@ impl EditBuffer {
     /// remove it, and Left / Right without Shift only drop it, leaving the
     /// caret at its start / end.
     pub fn apply(&mut self, key: EditKey, extend: bool, width: &dyn Fn(&str) -> i32) -> Option<bool> {
-        if !self.multiline && matches!(key, EditKey::Enter | EditKey::Up | EditKey::Down) {
+        if !self.multiline && matches!(key, EditKey::Enter | EditKey::Up | EditKey::Down
+                                                | EditKey::PageUp | EditKey::PageDown) {
             return None;
         }
         let selected = self.has_selection();
@@ -409,6 +429,8 @@ impl EditBuffer {
             EditKey::End => { self.move_end(); false }
             EditKey::Up => { self.move_vertical(-1, width); false }
             EditKey::Down => { self.move_vertical(1, width); false }
+            EditKey::PageUp => { self.move_vertical(-(self.page_lines as i32), width); false }
+            EditKey::PageDown => { self.move_vertical(self.page_lines as i32, width); false }
         };
         let moved = !matches!(key, EditKey::Char(_) | EditKey::Enter | EditKey::Backspace | EditKey::Delete);
         self.anchor = if moved && extend { anchor } else { self.caret };
@@ -948,5 +970,35 @@ mod tests {
         let mut b = EditBuffer::new("ab", 1, false);
         assert!(!b.replace_selection(""), "nothing to paste, nothing selected");
         assert!(!b.delete_selection());
+    }
+
+    #[test]
+    fn page_keys_move_by_the_page_and_stop_at_the_ends() {
+        let text = (0..8).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\n");
+        let mut b = EditBuffer::new(&text, 1, true); // line 0, column 1
+        assert_eq!(b.page_lines(), 1, "default page");
+        b.set_page_rows(4);
+        assert_eq!(b.page_lines(), 3, "rows less one");
+        assert_eq!(b.apply(EditKey::PageDown, false, &mono), Some(false));
+        assert_eq!(b.caret_line(), (3, 1), "same column");
+        b.apply(EditKey::PageDown, false, &mono);
+        b.apply(EditKey::PageDown, false, &mono);
+        assert_eq!(b.caret_line(), (7, 1), "clamped to the last line");
+        b.apply(EditKey::PageUp, true, &mono);
+        assert_eq!(b.caret_line(), (4, 1));
+        assert_eq!(b.selected_text(), "4\nl5\nl6\nl", "Shift+PageUp selects back to column 1");
+        b.set_page_rows(0);
+        assert_eq!(b.page_lines(), 1, "a view with no rows still moves");
+        // A single-line field has no pages.
+        let mut f = EditBuffer::new("abc", 1, false);
+        assert_eq!(f.apply(EditKey::PageDown, false, &mono), None);
+        assert_eq!(f.apply(EditKey::PageUp, false, &mono), None);
+    }
+
+    #[test]
+    fn page_keys_are_decoded_from_wm_char() {
+        let vk = |v: u32| key_from_wm_char(KC_VIRTUALKEY | KC_SCANCODE, v << WM_CHAR_VKEY_SHIFT, 437);
+        assert_eq!(vk(VK_PAGEUP), Some((EditKey::PageUp, false)));
+        assert_eq!(vk(VK_PAGEDOWN), Some((EditKey::PageDown, false)));
     }
 }

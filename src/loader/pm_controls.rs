@@ -149,9 +149,24 @@ fn relative(range: std::ops::Range<usize>, origin: usize) -> std::ops::Range<usi
     range.start.saturating_sub(origin)..range.end.saturating_sub(origin)
 }
 
-/// The edit buffer of an entry field / MLE window, with its selection.
+/// The edit buffer of an entry field / MLE window, with its selection;
+/// PageUp / PageDown move by the rows the window shows.
 fn edit_buffer(win: &super::pm_types::OS2Window, multiline: bool) -> EditBuffer {
-    EditBuffer::with_selection(&win.text, win.edit_anchor, win.edit_caret, multiline)
+    let mut buf = EditBuffer::with_selection(&win.text, win.edit_anchor, win.edit_caret, multiline);
+    buf.set_page_rows(control_visible_rows(win.cy));
+    buf
+}
+
+/// Whether an entry field (`ES_READONLY`) / MLE (`MLS_READONLY`) is
+/// read-only: its text can be selected and copied but not changed.
+fn is_read_only(win: &super::pm_types::OS2Window) -> bool {
+    let flag = if win.class_name == CLASS_MLE { MLS_READONLY } else { ES_READONLY };
+    win.style & flag != 0
+}
+
+/// The read-only style bit of an edit control class.
+pub(super) fn read_only_style(class: &str) -> u32 {
+    if class == CLASS_MLE { MLS_READONLY } else { ES_READONLY }
 }
 
 /// Store the caret and selection of `buf` in its window.
@@ -160,21 +175,37 @@ fn store_selection(win: &mut super::pm_types::OS2Window, buf: &EditBuffer) {
     win.edit_anchor = buf.anchor();
 }
 
+/// The row index (counted from the first visible row `top`) under the
+/// pointer at `local_y` of a control `cy` high: the margins inside the
+/// control belong to the first / last visible row, and a pointer above or
+/// below the control (while dragging) to the row just outside the view, so
+/// that the view scrolls by a row per pointer move. `None` above the first
+/// row of the content.
+fn row_under_pointer(top: usize, cy: i32, local_y: i32) -> Option<usize> {
+    let rows = control_visible_rows(cy);
+    let row = match control_row_at(cy, local_y) {
+        Some(row) => row as i64,
+        None if local_y >= cy => -1,
+        None if local_y < 0 => rows as i64,
+        None if local_y >= control_row_y(cy, 0) => 0,
+        None => rows as i64 - 1,
+    };
+    usize::try_from(top as i64 + row).ok()
+}
+
 /// The character index of an edit control under the pointer at
-/// `(local_x, local_y)` (relative to the control, `cy` high): the clicked
-/// row (clicks above the first row go to it, below the last row to the last
-/// line), then the nearest caret position in it, allowing for the
-/// horizontal scroll of the caret's line.
+/// `(local_x, local_y)` (relative to the control, `cy` high): the row under
+/// the pointer (see [`row_under_pointer`]; clamped to the text), then the
+/// nearest caret position in it, allowing for the horizontal scroll of the
+/// caret's line.
 fn edit_pos_at(win: &super::pm_types::OS2Window, multiline: bool, cy: i32,
                (local_x, local_y): (i32, i32)) -> usize {
     let buf = edit_buffer(win, multiline);
     let lines = buf.lines();
     let (caret_line, _) = buf.caret_line();
     let line = if multiline {
-        let rows = control_visible_rows(cy);
-        let row = control_row_at(cy, local_y).unwrap_or(
-            if local_y >= control_row_y(cy, 0) { 0 } else { rows.saturating_sub(1) });
-        (win.top_row.min(lines.len() - 1) + row).min(lines.len() - 1)
+        let top = win.top_row.min(lines.len() - 1);
+        row_under_pointer(top, cy, local_y).unwrap_or(0).min(lines.len() - 1)
     } else {
         0
     };
@@ -199,13 +230,7 @@ impl Loader {
     /// Post `WM_CONTROL` to the owner of control `hwnd`:
     /// mp1 = MPFROM2SHORT(control id, notify code), mp2 = `data`.
     fn notify_owner(&self, hwnd: u32, code: u32, data: u32) {
-        let (target, id) = {
-            let wm = self.shared.window_mgr.lock_or_recover();
-            (wm.notify_target(hwnd), wm.get_window(hwnd).map_or(0, |w| w.id))
-        };
-        if target != 0 && target != hwnd {
-            self.post_control_message(target, WM_CONTROL, (code << 16) | (id & 0xFFFF), data);
-        }
+        self.shared.window_mgr.lock_or_recover().notify_owner(hwnd, code, data);
     }
 
     /// Repaint built-in control `hwnd` into its frame's buffer and present it.
@@ -226,11 +251,11 @@ impl Loader {
         true
     }
 
-    /// Make `hwnd` the focus window (0 = none) and repaint the controls that
-    /// lost and gained the caret. Returns the previous focus window.
+    /// Make `hwnd` the focus window (0 = none), notify the owners of the
+    /// controls that lost and gained it and repaint them. Returns the
+    /// previous focus window.
     pub(crate) fn set_focus_window(&self, hwnd: u32) -> u32 {
-        let old = std::mem::replace(
-            &mut self.shared.window_mgr.lock_or_recover().focus_hwnd, hwnd);
+        let old = self.shared.window_mgr.lock_or_recover().set_focus(hwnd);
         if old != hwnd {
             self.repaint_control(old);
             self.repaint_control(hwnd);
@@ -375,16 +400,19 @@ impl Loader {
 
     /// WM_BUTTON1DOWN on an entry field, MLE or list box: take the keyboard
     /// focus, then place the caret at / select the item under the pointer.
-    /// `mp1` holds the pointer position relative to the control.
-    pub(super) fn control_button_down(&self, hwnd: u32, class: &str, cy: i32, mp1: u32) -> ApiResult {
+    /// `mp1` holds the pointer position relative to the control; with Shift
+    /// held (`KC_SHIFT` in `fsInp`, the high word of `mp2`) an edit
+    /// control's selection is extended to the pointer instead.
+    pub(super) fn control_button_down(&self, hwnd: u32, class: &str, cy: i32, mp1: u32, mp2: u32) -> ApiResult {
         let (local_x, local_y) = mouse_pos(mp1);
+        let extend = (mp2 >> 16) & KC_SHIFT != 0;
         let old_focus = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             match wm.get_window(hwnd) {
                 Some(w) if w.style & WS_DISABLED == 0 => {}
                 _ => return ApiResult::Normal(0),
             }
-            std::mem::replace(&mut wm.focus_hwnd, hwnd)
+            wm.set_focus(hwnd)
         };
         if old_focus != hwnd {
             self.repaint_control(old_focus);
@@ -411,7 +439,7 @@ impl Loader {
                     let (line_before, _) = edit_buffer(win, multiline).caret_line();
                     let pos = edit_pos_at(win, multiline, cy, (local_x, local_y));
                     let mut buf = edit_buffer(win, multiline);
-                    buf.set_caret(pos);
+                    if extend { buf.extend_to(pos) } else { buf.set_caret(pos) }
                     store_selection(win, &buf);
                     if buf.caret_line().0 != line_before {
                         win.edit_scroll = 0;
@@ -433,12 +461,14 @@ impl Loader {
         }
         let (local_x, local_y) = mouse_pos(mp1);
         if class == CLASS_LISTBOX {
+            // Dragging above or below the list scrolls it an item at a time.
             let item = {
                 let wm = self.shared.window_mgr.lock_or_recover();
                 wm.get_window(hwnd).and_then(|w| {
                     let count = w.listbox_items.len();
                     let top = listbox_top(w.top_row, count, control_visible_rows(cy));
-                    control_row_at(cy, local_y).map(|row| top + row).filter(|&i| i < count)
+                    let last = count.checked_sub(1)?;
+                    Some(row_under_pointer(top, cy, local_y).unwrap_or(0).min(last))
                 })
             };
             if let Some(item) = item {
@@ -570,6 +600,8 @@ impl Loader {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             let paste = wm.clipboard_text.clone();
             let Some(win) = wm.get_window_mut(hwnd) else { return false };
+            // A read-only control only copies.
+            let cmd = if is_read_only(win) && cmd != ClipboardCmd::Copy { return false } else { cmd };
             let mut buf = edit_buffer(win, multiline);
             let copied = matches!(cmd, ClipboardCmd::Cut | ClipboardCmd::Copy)
                 .then(|| buf.selected_text()).filter(|t| !t.is_empty());
@@ -639,12 +671,26 @@ impl Loader {
             if key_up {
                 return true;
             }
+            // A read-only control takes the key but keeps its text and
+            // selection when the key would change the text.
+            if changed && is_read_only(win) {
+                return true;
+            }
             if changed {
                 win.text = buf.text();
             }
             store_selection(win, &buf);
-            if buf.caret_line().0 != line_before {
+            let (line_after, _) = buf.caret_line();
+            if line_after != line_before {
                 win.edit_scroll = 0;
+            }
+            // A page key scrolls the view by as many lines as the caret moved.
+            if matches!(key, EditKey::PageUp | EditKey::PageDown) {
+                win.top_row = if line_after > line_before {
+                    win.top_row + (line_after - line_before)
+                } else {
+                    win.top_row.saturating_sub(line_before - line_after)
+                };
             }
             changed
         };
@@ -659,9 +705,11 @@ impl Loader {
         true
     }
 
-    /// Up/Down/Home/End move the selection of a list box.
+    /// Up/Down/PageUp/PageDown/Home/End move the selection of a list box; a
+    /// page is the visible rows less one.
     fn listbox_key(&self, hwnd: u32, key: EditKey, key_up: bool) -> bool {
-        if !matches!(key, EditKey::Up | EditKey::Down | EditKey::Home | EditKey::End) {
+        if !matches!(key, EditKey::Up | EditKey::Down | EditKey::PageUp | EditKey::PageDown
+                          | EditKey::Home | EditKey::End) {
             return false;
         }
         if key_up {
@@ -671,10 +719,13 @@ impl Loader {
             let wm = self.shared.window_mgr.lock_or_recover();
             let Some(win) = wm.get_window(hwnd) else { return false };
             let Some(last) = win.listbox_items.len().checked_sub(1) else { return true };
+            let page = control_visible_rows(win.cy).saturating_sub(1).max(1);
             match (key, win.listbox_sel) {
                 (EditKey::End, _) => last,
                 (EditKey::Up, Some(sel)) => sel.saturating_sub(1),
                 (EditKey::Down, Some(sel)) => (sel + 1).min(last),
+                (EditKey::PageUp, Some(sel)) => sel.saturating_sub(page),
+                (EditKey::PageDown, Some(sel)) => (sel + page).min(last),
                 // Home, or the first Up/Down in a list without a selection.
                 _ => 0,
             }
@@ -732,6 +783,55 @@ impl Loader {
             in_range
         };
         ApiResult::Normal(ok as u32)
+    }
+
+    /// LM_DELETEITEM: mp1 = index of the item to remove. The selection
+    /// follows the items after it; a removed selected item leaves none.
+    /// Returns the number of items left (the count unchanged for an index
+    /// out of range).
+    pub(super) fn listbox_delete_item(&self, hwnd: u32, mp1: u32) -> ApiResult {
+        let index = mp1 as u16 as i16;
+        let left = {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let Some(win) = wm.get_window_mut(hwnd) else { return ApiResult::Normal(0) };
+            let Ok(index) = usize::try_from(index) else { return ApiResult::Normal(win.listbox_items.len() as u32) };
+            if index >= win.listbox_items.len() {
+                return ApiResult::Normal(win.listbox_items.len() as u32);
+            }
+            win.listbox_items.remove(index);
+            win.listbox_sel = match win.listbox_sel {
+                Some(sel) if sel == index => None,
+                Some(sel) if sel > index => Some(sel - 1),
+                other => other,
+            };
+            win.listbox_items.len()
+        };
+        self.repaint_control(hwnd);
+        ApiResult::Normal(left as u32)
+    }
+
+    /// LM_DELETEALL: remove every item. Returns TRUE.
+    pub(super) fn listbox_delete_all(&self, hwnd: u32) -> ApiResult {
+        {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let Some(win) = wm.get_window_mut(hwnd) else { return ApiResult::Normal(0) };
+            win.listbox_items.clear();
+            win.listbox_sel = None;
+            win.top_row = 0;
+        }
+        self.repaint_control(hwnd);
+        ApiResult::Normal(1)
+    }
+
+    /// EM_SETREADONLY / MLM_SETREADONLY: mp1 = TRUE makes the control
+    /// read-only. Returns the previous state.
+    pub(super) fn edit_set_read_only(&self, hwnd: u32, read_only: bool) -> ApiResult {
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        let Some(win) = wm.get_window_mut(hwnd) else { return ApiResult::Normal(0) };
+        let flag = read_only_style(&win.class_name);
+        let was = win.style & flag != 0;
+        if read_only { win.style |= flag } else { win.style &= !flag }
+        ApiResult::Normal(was as u32)
     }
 
     /// LM_QUERYSELECTION: mp1 = index to search after (`LIT_FIRST` = from the
@@ -1326,7 +1426,8 @@ mod tests {
         assert_eq!(fx.click(list, 50, control_row_y(lcy, 1) + 5), 1);
         assert_eq!(fx.focus(), list);
         assert_eq!(selection(&fx, list), 1);
-        assert_eq!(fx.posted(), vec![(fx.client, WM_CONTROL, control_msg(ID_LIST, LN_SELECT), list)]);
+        assert_eq!(fx.posted(), vec![(fx.client, WM_CONTROL, control_msg(ID_LIST, LN_SETFOCUS), list),
+                                     (fx.client, WM_CONTROL, control_msg(ID_LIST, LN_SELECT), list)]);
 
         // The selected row is highlighted and its text drawn in the highlight colour.
         let fills = fx.drawn_fills(list, CONTROL_SELECT_COLOR);
@@ -1356,7 +1457,7 @@ mod tests {
         assert_eq!(selection(&fx, list), 0, "first Down selects the first item");
         fx.vkey(list, VK_UP);
         assert_eq!(selection(&fx, list), 0, "Up stops at the top");
-        assert_eq!(fx.posted().iter().filter(|m| m.1 == WM_CONTROL).count(), 1);
+        assert_eq!(fx.posted().iter().filter(|m| m.2 == control_msg(ID_LIST, LN_SELECT)).count(), 1);
 
         for _ in 0..3 { fx.vkey(list, VK_DOWN); }
         assert_eq!(selection(&fx, list), 3);
@@ -1531,5 +1632,247 @@ mod tests {
         assert_eq!(fx.text(mle), "owo");
         assert_eq!(fx.loader.shared.window_mgr.lock_or_recover().clipboard_text, "ne\r\nt");
         assert!(fx.posted().iter().any(|&(_, m, mp1, _)| m == WM_CONTROL && mp1 >> 16 == MLN_CHANGE));
+    }
+
+    #[test]
+    fn shift_click_extends_the_selection() {
+        let fx = fixture();
+        let text = "Hello world";
+        let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, text);
+        let y = ENTRY_RECT.3 / 2;
+        fx.click(entry, x_of(text, 2), y);
+        let at = |n: usize| (x_of(text, n) as u32 & 0xFFFF) | ((y as u32) << 16);
+        fx.send(entry, WM_BUTTON1DOWN, at(7), KC_SHIFT << 16);
+        fx.send(entry, WM_BUTTON1UP, at(7), KC_SHIFT << 16);
+        assert_eq!(sel(&fx, entry), (2, 7), "anchor kept, caret at the pointer");
+        // A plain click drops the selection.
+        fx.send(entry, WM_BUTTON1DOWN, at(4), 0);
+        assert_eq!(sel(&fx, entry), (4, 4));
+    }
+
+    // ── focus notifications ──────────────────────────────────────────────
+
+    #[test]
+    fn focus_changes_notify_the_owners() {
+        let fx = fixture();
+        let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, "");
+        let mle = fx.add(CLASS_MLE, ID_MLE, MLE_RECT, "");
+        let list = fx.add(CLASS_LISTBOX, ID_LIST, LIST_RECT, "");
+        let notes = |fx: &Fixture| fx.posted().into_iter()
+            .filter(|m| m.1 == WM_CONTROL).map(|m| (m.0, m.2, m.3)).collect::<Vec<_>>();
+        let c = fx.client;
+
+        fx.click(entry, 5, 5);
+        assert_eq!(notes(&fx), [(c, control_msg(ID_ENTRY, EN_SETFOCUS), entry)]);
+        fx.click(entry, 5, 5);
+        assert_eq!(notes(&fx), [], "no notification while the focus stays");
+        fx.click(mle, 5, 5);
+        assert_eq!(notes(&fx), [(c, control_msg(ID_ENTRY, EN_KILLFOCUS), entry),
+                                (c, control_msg(ID_MLE, MLN_SETFOCUS), mle)]);
+        fx.loader.set_focus_window(list);
+        assert_eq!(notes(&fx), [(c, control_msg(ID_MLE, MLN_KILLFOCUS), mle),
+                                (c, control_msg(ID_LIST, LN_SETFOCUS), list)]);
+        fx.loader.set_focus_window(0);
+        assert_eq!(notes(&fx), [(c, control_msg(ID_LIST, LN_KILLFOCUS), list)]);
+
+        // Windows other than these controls have no focus notifications.
+        let button = fx.add("WC_BUTTON", 7, (300, 10, 80, 30), "OK");
+        fx.loader.set_focus_window(button);
+        fx.loader.set_focus_window(fx.client);
+        assert_eq!(notes(&fx), []);
+    }
+
+    // ── list box deletion ────────────────────────────────────────────────
+
+    #[test]
+    fn listbox_delete_item_keeps_the_selection_on_its_item() {
+        let fx = fixture();
+        let list = list_with(&fx, 5);
+        fx.send(list, LM_SELECTITEM, 3, 1);
+        fx.posted();
+        assert_eq!(fx.send(list, LM_DELETEITEM, 1, 0), 4, "items left");
+        assert_eq!(selection(&fx, list), 2, "the selected item moved up");
+        assert_eq!(fx.with(list, |w| w.listbox_items.clone()), ["Item 0", "Item 2", "Item 3", "Item 4"]);
+        assert_eq!(fx.send(list, LM_DELETEITEM, 3, 0), 3, "after the selection");
+        assert_eq!(selection(&fx, list), 2);
+        assert_eq!(fx.send(list, LM_DELETEITEM, 2, 0), 2, "the selected item");
+        assert_eq!(selection(&fx, list), LIT_NONE);
+        // Out of range: nothing removed.
+        for bad in [2, 0xFFFF, 0x7FFF] {
+            assert_eq!(fx.send(list, LM_DELETEITEM, bad, 0), 2, "index {bad:#x}");
+        }
+        assert_eq!(fx.posted(), [], "deleting sends no LN_SELECT");
+        assert_eq!(fx.send(list, LM_QUERYITEMCOUNT, 0, 0), 2);
+    }
+
+    #[test]
+    fn listbox_delete_all_empties_it() {
+        let fx = fixture();
+        let list = list_with(&fx, 6);
+        fx.vkey(list, VK_END); // select and scroll
+        assert_eq!(fx.send(list, LM_DELETEALL, 0, 0), 1);
+        assert_eq!(fx.send(list, LM_QUERYITEMCOUNT, 0, 0), 0);
+        assert_eq!(selection(&fx, list), LIT_NONE);
+        assert_eq!(fx.with(list, |w| w.top_row), 0);
+        assert!(fx.drawn_texts(list).is_empty());
+        // Items added afterwards show from the top.
+        fx.with(list, |w| w.listbox_items.push("New".into()));
+        assert_eq!(fx.drawn_texts(list).into_iter().map(|t| t.2).collect::<Vec<_>>(), ["New"]);
+    }
+
+    // ── page keys ────────────────────────────────────────────────────────
+
+    #[test]
+    fn page_keys_move_a_list_selection_by_the_visible_rows_less_one() {
+        let fx = fixture();
+        let list = list_with(&fx, 8); // 3 rows visible: a page is 2 items
+        fx.send(list, LM_SELECTITEM, 0, 1);
+        assert_eq!(fx.vkey(list, VK_PAGEDOWN), 1);
+        assert_eq!(selection(&fx, list), 2);
+        fx.vkey(list, VK_PAGEDOWN);
+        fx.vkey(list, VK_PAGEDOWN);
+        fx.vkey(list, VK_PAGEDOWN);
+        assert_eq!(selection(&fx, list), 7, "stops at the last item");
+        fx.vkey(list, VK_PAGEUP);
+        assert_eq!(selection(&fx, list), 5);
+        for _ in 0..4 { fx.vkey(list, VK_PAGEUP); }
+        assert_eq!(selection(&fx, list), 0);
+    }
+
+    #[test]
+    fn page_keys_move_the_mle_caret_and_scroll_by_a_page() {
+        let fx = fixture();
+        let text = (0..10).map(|i| format!("Line {i}")).collect::<Vec<_>>().join("\r\n");
+        let mle = fx.add(CLASS_MLE, ID_MLE, MLE_RECT, &text); // 3 rows: a page is 2 lines
+        let line_of = |fx: &Fixture| fx.with(mle, |w| edit_buffer(w, true).caret_line().0);
+        fx.paint(mle);
+        assert_eq!(fx.vkey(mle, VK_PAGEDOWN), 1);
+        assert_eq!(line_of(&fx), 2);
+        assert_eq!(fx.with(mle, |w| w.top_row), 2, "the view scrolls with the caret");
+        let shown = |fx: &Fixture| fx.drawn_texts(mle).into_iter().map(|t| t.2).collect::<Vec<_>>();
+        assert_eq!(shown(&fx), ["Line 2", "Line 3", "Line 4"]);
+        for _ in 0..6 { fx.vkey(mle, VK_PAGEDOWN); }
+        assert_eq!(line_of(&fx), 9, "stops at the last line");
+        assert_eq!(shown(&fx), ["Line 7", "Line 8", "Line 9"]);
+        // Shift+PageUp selects back a page.
+        shift_vkey(&fx, mle, VK_PAGEUP);
+        assert_eq!(line_of(&fx), 7);
+        assert!(fx.with(mle, |w| w.edit_anchor != w.edit_caret));
+        // An entry field has no pages: the key goes to the owner.
+        let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, "x");
+        fx.posted();
+        assert_eq!(fx.vkey(entry, VK_PAGEDOWN), 0);
+        assert!(fx.posted().iter().any(|m| m.0 == fx.client && m.1 == WM_CHAR));
+    }
+
+    // ── read-only ────────────────────────────────────────────────────────
+
+    #[test]
+    fn read_only_fields_select_and_copy_but_keep_their_text() {
+        let fx = fixture();
+        let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, "Fixed");
+        fx.with(entry, |w| w.style |= ES_READONLY);
+        fx.click(entry, 1, 5);
+        fx.posted();
+        fx.type_text(entry, "xy");
+        fx.vkey(entry, VK_DELETE);
+        assert_eq!(fx.text(entry), "Fixed");
+        assert_eq!(fx.caret(entry), 0, "typing does not move the caret");
+        for _ in 0..3 { shift_vkey(&fx, entry, VK_RIGHT); }
+        assert_eq!(sel(&fx, entry), (0, 3), "selection still works");
+        fx.vkey(entry, VK_BACKSPACE);
+        assert_eq!((fx.text(entry), sel(&fx, entry)), ("Fixed".to_string(), (0, 3)));
+        assert_eq!(fx.send(entry, EM_COPY, 0, 0), 0, "copy changes no text");
+        assert_eq!(fx.loader.shared.window_mgr.lock_or_recover().clipboard_text, "Fix");
+        assert_eq!(fx.send(entry, EM_CUT, 0, 0), 0);
+        assert_eq!(fx.send(entry, EM_PASTE, 0, 0), 0);
+        assert_eq!(fx.send(entry, EM_CLEAR, 0, 0), 0);
+        assert_eq!(fx.text(entry), "Fixed");
+        assert!(fx.posted().iter().all(|m| m.1 != WM_CONTROL), "no EN_CHANGE");
+
+        // EM_SETREADONLY returns the previous state; EM_QUERYREADONLY reports it.
+        assert_eq!(fx.send(entry, EM_QUERYREADONLY, 0, 0), 1);
+        assert_eq!(fx.send(entry, EM_SETREADONLY, 0, 0), 1);
+        assert_eq!(fx.send(entry, EM_QUERYREADONLY, 0, 0), 0);
+        assert_eq!(fx.send(entry, EM_SETREADONLY, 0, 0), 0);
+        fx.type_text(entry, "!");
+        assert_eq!(fx.text(entry), "!ed", "typing replaces the selected \"Fix\"");
+    }
+
+    #[test]
+    fn read_only_mle_through_mlm_setreadonly() {
+        let fx = fixture();
+        let mle = fx.add(CLASS_MLE, ID_MLE, MLE_RECT, "ab\r\ncd");
+        assert_eq!(fx.send(mle, MLM_QUERYREADONLY, 0, 0), 0);
+        assert_eq!(fx.send(mle, MLM_SETREADONLY, 1, 0), 0);
+        assert_eq!(fx.with(mle, |w| w.style & MLS_READONLY), MLS_READONLY);
+        assert_eq!(fx.send(mle, MLM_QUERYREADONLY, 0, 0), 1);
+        fx.click(mle, 1, MLE_RECT.3 - 5);
+        fx.vkey(mle, VK_ENTER);
+        fx.type_text(mle, "z");
+        fx.vkey(mle, VK_DOWN);
+        assert_eq!(fx.text(mle), "ab\r\ncd");
+        assert_eq!(fx.caret(mle), 4, "movement still works");
+        // The entry-field message does not apply to an MLE.
+        assert_eq!(fx.send(mle, EM_SETREADONLY, 0, 0), 0);
+        assert_eq!(fx.send(mle, MLM_QUERYREADONLY, 0, 0), 1);
+    }
+
+    // ── dragging past the edge ───────────────────────────────────────────
+
+    #[test]
+    fn row_under_pointer_reaches_one_row_past_the_view() {
+        let cy = MLE_RECT.3; // 3 rows
+        assert_eq!(row_under_pointer(4, cy, control_row_y(cy, 0) + 1), Some(4));
+        assert_eq!(row_under_pointer(4, cy, control_row_y(cy, 2) + 1), Some(6));
+        assert_eq!(row_under_pointer(4, cy, cy - 1), Some(4), "top margin: first row");
+        assert_eq!(row_under_pointer(4, cy, 0), Some(6), "bottom margin: last row");
+        assert_eq!(row_under_pointer(4, cy, cy), Some(3), "above the control");
+        assert_eq!(row_under_pointer(4, cy, -1), Some(7), "below the control");
+        assert_eq!(row_under_pointer(0, cy, cy + 50), None, "nothing above the first row");
+    }
+
+    #[test]
+    fn dragging_below_an_mle_scrolls_it_a_line_per_move() {
+        let fx = fixture();
+        let text = (0..8).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\r\n");
+        let mle = fx.add(CLASS_MLE, ID_MLE, MLE_RECT, &text);
+        let line_of = |fx: &Fixture| fx.with(mle, |w| edit_buffer(w, true).caret_line().0);
+        fx.click(mle, 2, control_row_y(MLE_RECT.3, 0) + 2);
+        let below = (2u32 & 0xFFFF) | ((-5i32 as u32 & 0xFFFF) << 16);
+        for want in 3..=7 {
+            fx.send(mle, WM_MOUSEMOVE, below, 0);
+            fx.paint(mle); // painting scrolls the view to the caret
+            assert_eq!(line_of(&fx), want);
+            assert_eq!(fx.with(mle, |w| w.top_row), want - 2);
+        }
+        fx.send(mle, WM_MOUSEMOVE, below, 0);
+        assert_eq!(line_of(&fx), 7, "stops at the last line");
+        // And back up above the control.
+        let above = (2u32 & 0xFFFF) | ((MLE_RECT.3 as u32 + 3) << 16);
+        fx.send(mle, WM_MOUSEMOVE, above, 0);
+        fx.paint(mle);
+        assert_eq!(line_of(&fx), 4);
+        assert_eq!(fx.with(mle, |w| w.edit_anchor), 0, "the selection still starts at the click");
+    }
+
+    #[test]
+    fn dragging_below_a_list_box_scrolls_it_an_item_per_move() {
+        let fx = fixture();
+        let list = list_with(&fx, 6);
+        fx.click(list, 50, control_row_y(LIST_RECT.3, 0) + 2);
+        assert_eq!(selection(&fx, list), 0);
+        let below = 50 | ((-5i32 as u32 & 0xFFFF) << 16);
+        for want in 3..=5 {
+            fx.send(list, WM_MOUSEMOVE, below, 0);
+            assert_eq!(selection(&fx, list), want);
+        }
+        fx.send(list, WM_MOUSEMOVE, below, 0);
+        assert_eq!(selection(&fx, list), 5, "stops at the last item");
+        fx.send(list, WM_BUTTON1UP, below, 0);
+        let empty = fx.add(CLASS_LISTBOX, 9, (300, 60, 100, 54), "");
+        fx.click(empty, 5, 5);
+        assert_eq!(fx.send(empty, WM_MOUSEMOVE, below, 0), 1);
+        assert_eq!(selection(&fx, empty), LIT_NONE, "an empty list has nothing to select");
     }
 }

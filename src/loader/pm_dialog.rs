@@ -726,6 +726,19 @@ mod tests {
         Dlg { loader, hmq, dlg, entry, list, ok, cancel, check, focus_at_start }
     }
 
+    #[test]
+    fn the_first_focus_control_notifies_its_owner_after_wm_initdlg() {
+        let d = dialog();
+        assert_eq!(d.focus_at_start, d.entry);
+        d.loader.queue_dialog_start(d.dlg, d.hmq, d.focus_at_start, 0x55);
+        let msgs: Vec<_> = d.take_messages().into_iter().map(|m| (m.hwnd, m.msg, m.mp1, m.mp2)).collect();
+        assert_eq!(msgs, [(d.dlg, WM_INITDLG, d.entry, 0x55), (d.dlg, WM_PAINT, 0, 0),
+                          (d.dlg, WM_CONTROL, (EN_SETFOCUS << 16) | ID_ENTRY as u32, d.entry)]);
+        // Without a focus control there is no notification.
+        d.loader.queue_dialog_start(d.dlg, d.hmq, 0, 0);
+        assert_eq!(d.take_messages().len(), 2);
+    }
+
     impl Dlg {
         fn wm(&self) -> std::sync::MutexGuard<'_, WindowManager> { self.loader.shared.window_mgr.lock_or_recover() }
         fn focus(&self) -> u32 { self.wm().focus_hwnd }
@@ -911,7 +924,7 @@ mod tests {
         d.send(d.check, WM_BUTTON1DOWN, at(2, 2), 0);
         d.send(d.check, WM_BUTTON1UP, at(2, 2), 0);
         let msgs = d.take_messages();
-        let ctl = msgs.iter().find(|m| m.msg == WM_CONTROL).expect("WM_CONTROL");
+        let ctl = msgs.iter().find(|m| m.msg == WM_CONTROL && m.mp1 >> 16 == BN_CLICKED).expect("WM_CONTROL");
         assert_eq!((ctl.hwnd, ctl.mp1, ctl.mp2), (d.dlg, (BN_CLICKED << 16) | ID_CHECK as u32, d.check));
 
         d.wm().get_window_mut(d.ok).unwrap().style |= WS_DISABLED;

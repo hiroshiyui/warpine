@@ -84,16 +84,29 @@ pub const LM_SELECTITEM:     u32 = 0x0164;
 /// mp1 = index to search after (`LIT_FIRST` from the top); returns the
 /// selected index or `LIT_NONE`.
 pub const LM_QUERYSELECTION: u32 = 0x0165;
+/// mp1 = item index; returns the number of items left.
+pub const LM_DELETEITEM:     u32 = 0x0163;
+/// Removes every item; returns TRUE.
+pub const LM_DELETEALL:      u32 = 0x016e;
 /// "No item": `LM_QUERYSELECTION` result and `LM_SELECTITEM` deselect-all index.
 pub const LIT_NONE:  i32 = -1;
 /// `LM_QUERYSELECTION` start index meaning "search from the first item".
 pub const LIT_FIRST: i32 = -1;
 
 // List box notification codes (high word of WM_CONTROL mp1); mp2 = list box HWND.
-pub const LN_SELECT: u32 = 1;
+pub const LN_SELECT:    u32 = 1;
+pub const LN_SETFOCUS:  u32 = 2;
+pub const LN_KILLFOCUS: u32 = 3;
 
 // Entry field notification codes (high word of WM_CONTROL mp1); mp2 = field HWND.
-pub const EN_CHANGE: u32 = 0x0004;
+pub const EN_SETFOCUS:  u32 = 0x0001;
+pub const EN_KILLFOCUS: u32 = 0x0002;
+pub const EN_CHANGE:    u32 = 0x0004;
+
+/// Entry field style: the text can be selected and copied but not changed.
+pub const ES_READONLY: u32 = 0x0000_0020;
+/// MLE style: the text can be selected and copied but not changed.
+pub const MLS_READONLY: u32 = 0x0000_0010;
 
 // WC_ENTRYFIELD messages (EM_*, <pmwin.h>)
 pub const EM_QUERYSEL: u32 = 0x0141;
@@ -102,6 +115,10 @@ pub const EM_CUT:      u32 = 0x0144;
 pub const EM_COPY:     u32 = 0x0145;
 pub const EM_CLEAR:    u32 = 0x0146;
 pub const EM_PASTE:    u32 = 0x0147;
+/// Returns TRUE when the field is read-only.
+pub const EM_QUERYREADONLY: u32 = 0x014a;
+/// mp1 = TRUE for read-only; returns the previous state.
+pub const EM_SETREADONLY:   u32 = 0x014b;
 
 // WC_MLE messages (MLM_*) and MLM_QUERYSEL modes (MLFQS_*, <pmwin.h>)
 pub const MLM_SETSEL:   u32 = 0x01ca;
@@ -110,6 +127,10 @@ pub const MLM_CUT:      u32 = 0x01d8;
 pub const MLM_COPY:     u32 = 0x01d9;
 pub const MLM_PASTE:    u32 = 0x01da;
 pub const MLM_CLEAR:    u32 = 0x01db;
+/// mp1 = TRUE for read-only; returns the previous state.
+pub const MLM_SETREADONLY:   u32 = 0x01b8;
+/// Returns TRUE when the MLE is read-only.
+pub const MLM_QUERYREADONLY: u32 = 0x01b9;
 pub const MLFQS_MINMAXSEL: u32 = 0;
 pub const MLFQS_MINSEL:    u32 = 1;
 pub const MLFQS_MAXSEL:    u32 = 2;
@@ -117,7 +138,9 @@ pub const MLFQS_ANCHORSEL: u32 = 3;
 pub const MLFQS_CURSORSEL: u32 = 4;
 
 // MLE notification codes (high word of WM_CONTROL mp1).
-pub const MLN_CHANGE: u32 = 0x0007;
+pub const MLN_CHANGE:    u32 = 0x0007;
+pub const MLN_SETFOCUS:  u32 = 0x0008;
+pub const MLN_KILLFOCUS: u32 = 0x0009;
 
 // WM_CHAR packing (CHRMSG in <pmwin.h>):
 //   mp1 = fs (KC_* flags, low word) | cRepeat << 16 | scancode << 24
