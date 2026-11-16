@@ -26,7 +26,7 @@ fn bound_window_geometry(x: i32, y: i32, cx: i32, cy: i32) -> (i32, i32, i32, i3
 /// If `ptr` carries the `0xFFFF` high word (or is a small bare atom < 0x10000),
 /// we map it to the canonical class-name string.  Otherwise `string` contains
 /// the already-read guest class-name string.
-fn resolve_class_atom(ptr: u32, string: String) -> String {
+pub(super) fn resolve_class_atom(ptr: u32, string: String) -> String {
     match ptr {
         WC_FRAME_ATOM      => "WC_FRAME".to_string(),
         WC_COMBOBOX_ATOM   => "WC_COMBOBOX".to_string(),
@@ -55,15 +55,6 @@ use crate::gui::surface::{DrawOp, Mix};
 use super::pm_types::{DeviceContext, PsOrigin, TimerStop};
 use crate::lx::header::{RT_STRING, RT_MENU, RT_DIALOG, RT_ACCELTABLE};
 use super::pm_types::MenuItem;
-
-/// Parsed metadata for a single DLGITEMTEMPLATE entry.
-#[derive(Clone)]
-struct DlgItemInfo {
-    x: i16, y: i16, cx: i16, cy: i16,
-    id: u16, fl_style: u32,
-    class_name: String,
-    text: String,
-}
 
 impl super::Loader {
     pub(crate) fn handle_pmwin_call(&self, vcpu: &mut dyn VcpuBackend, vcpu_id: u32, ordinal: u32) -> ApiResult {
@@ -134,6 +125,11 @@ impl super::Loader {
                 let fcf_menu_items = if fl_create_flags & FCF_MENU != 0 {
                     self.load_menu_resource(hmod, id_resources, vcpu_id)
                 } else { None };
+                // FCF_ACCELTABLE: the frame's accelerator table is the RT_ACCELTABLE
+                // resource with the same id.
+                let fcf_accel = if fl_create_flags & FCF_ACCELTABLE != 0 {
+                    self.load_accel_table(hmod, id_resources)
+                } else { None };
 
                 let (h_frame, h_client, pfn_wp_client) = {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
@@ -158,6 +154,9 @@ impl super::Loader {
                         let h_menu = wm.create_window("#Menu".to_string(), h_frame, 0);
                         if let Some(win) = wm.get_window_mut(h_menu) { win.menu_items = items; }
                         if let Some(win) = wm.get_window_mut(h_frame) { win.menu_hwnd = h_menu; }
+                    }
+                    if let Some(haccel) = fcf_accel {
+                        wm.set_window_accel(h_frame, haccel);
                     }
                     // Client fills the frame below the title bar and menu bar.
                     wm.layout_frame(h_frame);
@@ -227,7 +226,11 @@ impl super::Loader {
                         if self.shutting_down() { return ApiResult::Normal(0); }
                         {
                             let mut mq = mq_arc.lock_or_recover();
-                            if let Some(msg) = mq.messages.pop_front() {
+                            if let Some(mut msg) = mq.messages.pop_front() {
+                                drop(mq);
+                                // Keystrokes that are accelerators arrive as the
+                                // command they stand for.
+                                self.translate_queued_accelerator(&mut msg);
                                 if pqmsg_ptr != 0 {
                                     self.guest_write::<u32>(pqmsg_ptr, msg.hwnd);
                                     self.guest_write::<u32>(pqmsg_ptr + 4, msg.msg);
@@ -332,6 +335,11 @@ impl super::Loader {
 
                 match msg {
                     WM_CLOSE => { self.post_wm_quit(hwnd); }
+                    // The system command Close (system menu, Alt+F4) asks the
+                    // window to close.
+                    WM_SYSCOMMAND if mp1 & 0xFFFF == SC_CLOSE => {
+                        self.post_to_window(hwnd, WM_CLOSE, 0, 0);
+                    }
                     WM_BUTTON1DOWN | WM_BUTTON1UP => {
                         // If this frame has a menu, delegate mouse events to the menu
                         // control handler so it can handle menu-bar clicks and dropdown
@@ -684,143 +692,24 @@ impl super::Loader {
             }
             910 => {
                 // WinDefDlgProc(HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2)
-                let hwnd = read_stack(4);
-                let msg  = read_stack(8);
-                let mp1  = read_stack(12);
-                let mp2  = read_stack(16);
-                match msg {
-                    WM_INITDLG => {
-                        // Return FALSE (0): accept the focus set in mp1 as-is.
-                        ApiResult::Normal(0)
-                    }
-                    WM_BUTTON1DOWN => {
-                        // Route through the built-in #Dialog handler so it can
-                        // hit-test child WC_BUTTON controls and post WM_COMMAND.
-                        self.dispatch_builtin_control(hwnd, WM_BUTTON1DOWN, mp1, mp2)
-                    }
-                    WM_COMMAND => {
-                        // If the command is DID_OK or DID_CANCEL, dismiss.
-                        let id = mp1 & 0xFFFF;
-                        if id == DID_OK || id == DID_CANCEL {
-                            let mut wm = self.shared.window_mgr.lock_or_recover();
-                            if let Some(win) = wm.get_window_mut(hwnd) {
-                                win.dialog_dismissed = true;
-                                win.dialog_result    = id;
-                            }
-                            let hmq = wm.find_hmq_for_hwnd(hwnd);
-                            if let Some(hmq) = hmq
-                                && let Some(mq_arc) = wm.get_mq(hmq) {
-                                    mq_arc.lock_or_recover().cond.notify_one();
-                            }
-                        }
-                        ApiResult::Normal(0)
-                    }
-                    WM_CLOSE => {
-                        let mut wm = self.shared.window_mgr.lock_or_recover();
-                        if let Some(win) = wm.get_window_mut(hwnd) {
-                            win.dialog_dismissed = true;
-                            win.dialog_result    = DID_CANCEL;
-                        }
-                        let hmq = wm.find_hmq_for_hwnd(hwnd);
-                        if let Some(hmq) = hmq
-                            && let Some(mq_arc) = wm.get_mq(hmq) {
-                                mq_arc.lock_or_recover().cond.notify_one();
-                        }
-                        ApiResult::Normal(0)
-                    }
-                    _ => ApiResult::Normal(0)
-                }
+                self.def_dlg_proc(read_stack(4), read_stack(8), read_stack(12), read_stack(16))
             }
             729 => {
                 // WinDismissDlg(HWND hwndDlg, ULONG usResult)
                 let hwnd   = read_stack(4);
                 let result = read_stack(8);
                 debug!("  [VCPU {}] WinDismissDlg hwnd={} result={}", vcpu_id, hwnd, result);
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-                if let Some(win) = wm.get_window_mut(hwnd) {
-                    win.dialog_dismissed = true;
-                    win.dialog_result    = result;
-                }
-                // Wake the DlgRunLoop condvar so it notices the dismissal.
-                let hmq = wm.find_hmq_for_hwnd(hwnd);
-                if let Some(hmq) = hmq
-                    && let Some(mq_arc) = wm.get_mq(hmq) {
-                        mq_arc.lock_or_recover().cond.notify_one();
-                }
+                self.dismiss_dialog(hwnd, result);
                 ApiResult::Normal(1)
             }
             923 => {
                 // WinDlgBox(hwndParent, hwndOwner, pfnDlgProc, hmod, idDlg, pCreateParams)
-                let hwnd_parent      = read_stack(4);
-                let _hwnd_owner      = read_stack(8);
-                let pfn_dlg_proc     = read_stack(12);
-                let hmod             = read_stack(16);
-                let id_dlg           = read_stack(20);
-                let p_create_params  = read_stack(24);
-                debug!("  [VCPU {}] WinDlgBox: parent={} idDlg={} pfnDlgProc=0x{:08X}",
-                       vcpu_id, hwnd_parent, id_dlg, pfn_dlg_proc);
-
+                let pfn_dlg_proc = read_stack(12);
                 if pfn_dlg_proc == 0 {
                     return ApiResult::Normal(DID_ERROR);
                 }
-
-                // Parse the dialog template resource.
-                let res = self.shared.resource_mgr.lock_or_recover()
-                    .find(hmod, RT_DIALOG, id_dlg as u16);
-
-                let (hwnd_dlg, hmq) = if let Some((guest_addr, size)) = res {
-                    match self.parse_dlg_template(guest_addr, size) {
-                        Some((dx, dy, dcx, dcy, title, items)) => {
-                            debug!("  [VCPU {}] WinDlgBox: parsed {} items for idDlg={}",
-                                   vcpu_id, items.len(), id_dlg);
-                            self.create_dialog_from_template(
-                                hwnd_parent, pfn_dlg_proc, vcpu_id,
-                                title, dx, dy, dcx, dcy, items,
-                            )
-                        }
-                        None => {
-                            warn!("  [VCPU {}] WinDlgBox: failed to parse template for idDlg={}", vcpu_id, id_dlg);
-                            let mut wm = self.shared.window_mgr.lock_or_recover();
-                            let hmq2 = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
-                            let h = wm.create_window("#Dialog".to_string(), hwnd_parent, hmq2);
-                            if let Some(win) = wm.get_window_mut(h) { win.pfn_wp = pfn_dlg_proc; }
-                            (h, hmq2)
-                        }
-                    }
-                } else {
-                    debug!("  [VCPU {}] WinDlgBox: no RT_DIALOG resource for idDlg={}", vcpu_id, id_dlg);
-                    let mut wm = self.shared.window_mgr.lock_or_recover();
-                    let hmq2 = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
-                    let h = wm.create_window("#Dialog".to_string(), hwnd_parent, hmq2);
-                    if let Some(win) = wm.get_window_mut(h) { win.pfn_wp = pfn_dlg_proc; }
-                    (h, hmq2)
-                };
-
-                // Post WM_INITDLG (mp1 = first child hwnd, mp2 = pCreateParams).
-                let first_child = {
-                    let wm = self.shared.window_mgr.lock_or_recover();
-                    wm.get_window(hwnd_dlg)
-                        .and_then(|w| w.children.first().copied())
-                        .unwrap_or(0)
-                };
-                if hmq != 0 {
-                    let wm = self.shared.window_mgr.lock_or_recover();
-                    if let Some(mq_arc) = wm.get_mq(hmq) {
-                        let mut mq = mq_arc.lock_or_recover();
-                        mq.messages.push_back(OS2Message {
-                            hwnd: hwnd_dlg, msg: WM_INITDLG,
-                            mp1: first_child, mp2: p_create_params,
-                            time: 0, x: 0, y: 0,
-                        });
-                        // WM_PAINT renders the dialog after WM_INITDLG is processed by the dialog proc.
-                        mq.messages.push_back(OS2Message {
-                            hwnd: hwnd_dlg, msg: WM_PAINT,
-                            mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
-                        });
-                        mq.cond.notify_one();
-                    }
-                }
-
+                let (hwnd_dlg, hmq) = self.load_dialog(vcpu_id, read_stack(4), read_stack(8),
+                    pfn_dlg_proc, read_stack(16), read_stack(20), read_stack(24));
                 ApiResult::DlgRunLoop { dlg_proc: pfn_dlg_proc, hwnd_dlg, hmq }
             }
             733 => {
@@ -873,98 +762,12 @@ impl super::Loader {
             }
             776 => {
                 // WinLoadAccelTable(HAB hab, HMODULE hmod, ULONG idAccelTable)
-                let _hab = read_stack(4);
-                let hmod = read_stack(8);
-                let id = read_stack(12);
-                debug!("  [VCPU {}] WinLoadAccelTable id={}", vcpu_id, id);
-                let res_mgr = self.shared.resource_mgr.lock_or_recover();
-                if let Some((guest_addr, size)) = res_mgr.find(hmod, RT_ACCELTABLE, id as u16) {
-                    drop(res_mgr);
-                    // Parse binary accelerator table: u16 count at offset 2, then entries of 6 bytes each
-                    if size >= 4 {
-                        let count = self.guest_read::<u16>(guest_addr + 2).unwrap_or(0) as usize;
-                        let mut entries = Vec::new();
-                        for i in 0..count {
-                            let entry_off = guest_addr + 4 + (i as u32) * 6;
-                            if entry_off + 6 > guest_addr + size { break; }
-                            let flags = self.guest_read::<u16>(entry_off).unwrap_or(0);
-                            let key = self.guest_read::<u16>(entry_off + 2).unwrap_or(0);
-                            let cmd = self.guest_read::<u16>(entry_off + 4).unwrap_or(0);
-                            entries.push(super::pm_types::AccelEntry { flags, key, cmd });
-                        }
-                        let mut wm = self.shared.window_mgr.lock_or_recover();
-                        let haccel = wm.add_accel_table(entries);
-                        ApiResult::Normal(haccel)
-                    } else {
-                        ApiResult::Normal(0)
-                    }
-                } else {
-                    debug!("  [VCPU {}] WinLoadAccelTable: resource not found for id={}", vcpu_id, id);
-                    ApiResult::Normal(0)
-                }
+                ApiResult::Normal(self.load_accel_table(read_stack(8), read_stack(12)).unwrap_or(0))
             }
             924 => {
                 // WinLoadDlg(hwndParent, hwndOwner, pfnDlgProc, hmod, idDlg, pCreateParams)
-                let hwnd_parent      = read_stack(4);
-                let _hwnd_owner      = read_stack(8);
-                let pfn_dlg_proc     = read_stack(12);
-                let hmod             = read_stack(16);
-                let id_dlg           = read_stack(20);
-                let p_create_params  = read_stack(24);
-                debug!("  [VCPU {}] WinLoadDlg: parent={} idDlg={} pfnDlgProc=0x{:08X}",
-                       vcpu_id, hwnd_parent, id_dlg, pfn_dlg_proc);
-
-                let res = self.shared.resource_mgr.lock_or_recover()
-                    .find(hmod, RT_DIALOG, id_dlg as u16);
-
-                let (hwnd_dlg, hmq) = if let Some((guest_addr, size)) = res {
-                    match self.parse_dlg_template(guest_addr, size) {
-                        Some((dx, dy, dcx, dcy, title, items)) => {
-                            self.create_dialog_from_template(
-                                hwnd_parent, pfn_dlg_proc, vcpu_id,
-                                title, dx, dy, dcx, dcy, items,
-                            )
-                        }
-                        None => {
-                            let mut wm = self.shared.window_mgr.lock_or_recover();
-                            let hmq2 = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
-                            let h = wm.create_window("#Dialog".to_string(), hwnd_parent, hmq2);
-                            if let Some(win) = wm.get_window_mut(h) { win.pfn_wp = pfn_dlg_proc; }
-                            (h, hmq2)
-                        }
-                    }
-                } else {
-                    let mut wm = self.shared.window_mgr.lock_or_recover();
-                    let hmq2 = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
-                    let h = wm.create_window("#Dialog".to_string(), hwnd_parent, hmq2);
-                    if let Some(win) = wm.get_window_mut(h) { win.pfn_wp = pfn_dlg_proc; }
-                    (h, hmq2)
-                };
-
-                // Post WM_INITDLG so the first WinProcessDlg call dispatches it.
-                let first_child = {
-                    let wm = self.shared.window_mgr.lock_or_recover();
-                    wm.get_window(hwnd_dlg)
-                        .and_then(|w| w.children.first().copied())
-                        .unwrap_or(0)
-                };
-                if hmq != 0 {
-                    let wm = self.shared.window_mgr.lock_or_recover();
-                    if let Some(mq_arc) = wm.get_mq(hmq) {
-                        let mut mq = mq_arc.lock_or_recover();
-                        mq.messages.push_back(OS2Message {
-                            hwnd: hwnd_dlg, msg: WM_INITDLG,
-                            mp1: first_child, mp2: p_create_params,
-                            time: 0, x: 0, y: 0,
-                        });
-                        // WM_PAINT renders the dialog after WM_INITDLG is processed.
-                        mq.messages.push_back(OS2Message {
-                            hwnd: hwnd_dlg, msg: WM_PAINT,
-                            mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
-                        });
-                        mq.cond.notify_one();
-                    }
-                }
+                let (hwnd_dlg, _) = self.load_dialog(vcpu_id, read_stack(4), read_stack(8),
+                    read_stack(12), read_stack(16), read_stack(20), read_stack(24));
                 ApiResult::Normal(hwnd_dlg)
             }
             778 => {
@@ -1402,29 +1205,25 @@ impl super::Loader {
                 ApiResult::Normal(1)
             }
             904 => {
-                // WinTranslateAccel(HAB hab, HWND hwnd, HACCEL haccel, PQMSG pqmsg)
-                let _hab = read_stack(4);
+                // WinTranslateAccel(HAB hab, HWND hwnd, HACCEL haccel, PQMSG pqmsg):
+                // a WM_CHAR in *pqmsg that is a key of table `haccel` becomes the
+                // command it stands for, addressed to `hwnd`.
                 let hwnd = read_stack(8);
-                let _haccel = read_stack(12);
+                let haccel = read_stack(12);
                 let pqmsg = read_stack(16);
                 if pqmsg == 0 { return ApiResult::Normal(0); }
-                let msg = self.guest_read::<u32>(pqmsg + 4).unwrap_or(0);
-                if msg == WM_CHAR {
-                    let mp1 = self.guest_read::<u32>(pqmsg + 8).unwrap_or(0);
-                    let mp2 = self.guest_read::<u32>(pqmsg + 12).unwrap_or(0);
-                    let flags = (mp1 & 0xFFFF) as u16;
-                    let key = (mp2 & 0xFFFF) as u16;
-                    let wm = self.shared.window_mgr.lock_or_recover();
-                    if let Some(cmd) = wm.translate_accel(hwnd, key, flags) {
-                        drop(wm);
-                        // Rewrite message as WM_COMMAND
-                        self.guest_write::<u32>(pqmsg + 4, WM_COMMAND);
-                        self.guest_write::<u32>(pqmsg + 8, cmd as u32); // mp1 = command id
-                        self.guest_write::<u32>(pqmsg + 12, 0);         // mp2 = 0
-                        return ApiResult::Normal(1); // TRUE - translated
-                    }
-                }
-                ApiResult::Normal(0) // FALSE - not translated
+                if self.guest_read::<u32>(pqmsg + 4) != Some(WM_CHAR) { return ApiResult::Normal(0); }
+                let mp1 = self.guest_read::<u32>(pqmsg + 8).unwrap_or(0);
+                let mp2 = self.guest_read::<u32>(pqmsg + 12).unwrap_or(0);
+                let entry = self.shared.window_mgr.lock_or_recover().accel_table(haccel)
+                    .and_then(|t| t.iter().find(|e| super::pm_dialog::accel_matches(e, mp1, mp2)).cloned());
+                let Some(entry) = entry else { return ApiResult::Normal(0) };
+                let (msg, mp1, mp2) = super::pm_dialog::accel_message(&entry);
+                self.guest_write::<u32>(pqmsg, hwnd);
+                self.guest_write::<u32>(pqmsg + 4, msg);
+                self.guest_write::<u32>(pqmsg + 8, mp1);
+                self.guest_write::<u32>(pqmsg + 12, mp2);
+                ApiResult::Normal(1)
             }
             892 => {
                 // WinUpdateWindow(HWND hwnd)
@@ -1706,93 +1505,6 @@ impl super::Loader {
         self.parse_menu_items(guest_addr, size, &mut offset, item_count, codepage)
     }
 
-    /// Parse a DLGTEMPLATE binary resource at `guest_addr` (size `size`).
-    ///
-    /// Handles the Open Watcom wrc OS/2 DLGTEMPLATE binary layout:
-    ///   Bytes  0- 9: Template header (u32 total_size, u16 codepage, u16 offLastItem, u16 cTopItems)
-    ///   Bytes 10-19: Dialog sub-header ×5 u16  (child_count at [16,17])
-    ///   Bytes 20-29: Dialog metadata   ×5 u16  (title_offset at [24,25])
-    ///   Bytes 30-39: Dialog position   i16 x,y,cx,cy + u16 id
-    ///   Bytes 40-49: Dialog variable data (classname, etc.)
-    ///   Bytes 50+:   Child items — each: 10-byte pre-header (class_ord u16 at [0], text_off u16 at
-    ///                [4]) + 10-byte position (i16 x,y,cx,cy + u16 id) + variable data
-    ///   Bytes [title_off]+: NUL-terminated strings (title then item texts indexed by text_off)
-    ///
-    /// Returns `(x, y, cx, cy, title, items)` or `None` on parse failure.
-    fn parse_dlg_template(
-        &self,
-        guest_addr: u32,
-        size: u32,
-    ) -> Option<(i16, i16, i16, i16, String, Vec<DlgItemInfo>)> {
-        if size < 40 { return None; }
-
-        let c_items   = self.guest_read::<u16>(guest_addr + 16).unwrap_or(0) as usize;
-        let title_off = self.guest_read::<u16>(guest_addr + 24).unwrap_or(0) as u32;
-        let x  = self.guest_read::<i16>(guest_addr + 30).unwrap_or(0);
-        let y  = self.guest_read::<i16>(guest_addr + 32).unwrap_or(0);
-        let cx = self.guest_read::<i16>(guest_addr + 34).unwrap_or(0);
-        let cy = self.guest_read::<i16>(guest_addr + 36).unwrap_or(0);
-
-        // Dialog title sits in the string pool starting at title_off.
-        let title = if title_off > 0 && title_off < size {
-            let mut toff = title_off;
-            self.read_nul_str_at(guest_addr, &mut toff, size, self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed))
-        } else {
-            String::new()
-        };
-
-        // Children start at byte 50; string pool begins at title_off.
-        let items_end = if title_off > 0 && title_off < size { title_off } else { size };
-        let mut off: u32 = 50;
-        let mut items = Vec::with_capacity(c_items);
-        for i in 0..c_items {
-            if off + 20 > items_end { break; }
-            // Pre-header (10 bytes): class ordinal at [0,1], text_off at [4,5]
-            let class_ord = self.guest_read::<u16>(guest_addr + off).unwrap_or(0);
-            let text_off  = self.guest_read::<u16>(guest_addr + off + 4).unwrap_or(0) as u32;
-            off += 10;
-            // Position block (10 bytes): i16 x, y, cx, cy then u16 id
-            let ix  = self.guest_read::<i16>(guest_addr + off).unwrap_or(0);
-            let iy  = self.guest_read::<i16>(guest_addr + off + 2).unwrap_or(0);
-            let icx = self.guest_read::<i16>(guest_addr + off + 4).unwrap_or(0);
-            let icy = self.guest_read::<i16>(guest_addr + off + 6).unwrap_or(0);
-            let id  = self.guest_read::<u16>(guest_addr + off + 8).unwrap_or(0);
-            off += 10;
-            // Skip variable data: scan (2 bytes at a time) for the next item's class ordinal
-            // (valid wrc class ordinals are 1–10) or advance to items_end for the last item.
-            if i + 1 < c_items {
-                while off + 2 <= items_end {
-                    let maybe_class = self.guest_read::<u16>(guest_addr + off).unwrap_or(0);
-                    if (1..=10).contains(&maybe_class) { break; }
-                    off += 2;
-                }
-            } else {
-                off = items_end;
-            }
-            let class_name = match class_ord {
-                3 => "WC_BUTTON",
-                5 => "WC_STATIC",
-                6 => "WC_ENTRYFIELD",
-                7 => "WC_LISTBOX",
-                _ => "WC_STATIC",
-            }.to_string();
-            let text = if text_off > 0 && text_off < size {
-                let mut toff = text_off;
-                self.read_nul_str_at(guest_addr, &mut toff, size, self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed))
-            } else {
-                String::new()
-            };
-            items.push(DlgItemInfo {
-                x: ix, y: iy, cx: icx, cy: icy,
-                id,
-                fl_style: super::constants::WS_VISIBLE,
-                class_name,
-                text,
-            });
-        }
-        Some((x, y, cx, cy, title, items))
-    }
-
     /// Parse the RT_MENU resource `id_menu` of module `hmod` (0 = the
     /// executable) into a menu item tree; `None` when there is none.
     fn load_menu_resource(&self, hmod: u32, id_menu: u32, vcpu_id: u32) -> Option<Vec<MenuItem>> {
@@ -1858,70 +1570,111 @@ impl super::Loader {
         prev
     }
 
-    /// Create a dialog window with child controls from parsed template data.
-    ///
-    /// Returns `(hwnd_dlg, hmq)`.
+    /// Load accelerator table `id` (RT_ACCELTABLE) of module `hmod` and
+    /// return its handle, or `None` without such a resource.
+    pub(super) fn load_accel_table(&self, hmod: u32, id: u32) -> Option<u32> {
+        let (addr, size) = self.shared.resource_mgr.lock_or_recover().find(hmod, RT_ACCELTABLE, id as u16)?;
+        let data = self.guest_read_bytes(addr, size as usize)?;
+        let entries = super::pm_dialog::parse_accel_table(&data);
+        debug!("  WinLoadAccelTable id={}: {} entries", id, entries.len());
+        Some(self.shared.window_mgr.lock_or_recover().add_accel_table(entries))
+    }
+
+    /// WinDlgBox / WinLoadDlg: create dialog `id_dlg` (RT_DIALOG) of module
+    /// `hmod` and queue WM_INITDLG (mp1 = the control given the focus, mp2 =
+    /// `p_create_params`) and WM_PAINT for it. Without a usable template the
+    /// dialog is an empty window. Returns `(hwnd_dlg, hmq)`.
     #[allow(clippy::too_many_arguments)]
-    fn create_dialog_from_template(
-        &self,
-        hwnd_parent: u32,
-        pfn_dlg_proc: u32,
-        vcpu_id: u32,
-        title: String,
-        dlg_x: i16, dlg_y: i16, dlg_cx: i16, dlg_cy: i16,
-        items: Vec<DlgItemInfo>,
-    ) -> (u32, u32) {
-        use super::constants::{dlg_units_to_px_x, dlg_units_to_px_y};
+    fn load_dialog(&self, vcpu_id: u32, hwnd_parent: u32, hwnd_owner: u32, pfn_dlg_proc: u32,
+                   hmod: u32, id_dlg: u32, p_create_params: u32) -> (u32, u32) {
+        debug!("  [VCPU {}] load dialog: parent={} owner={} idDlg={} pfnDlgProc=0x{:08X}",
+               vcpu_id, hwnd_parent, hwnd_owner, id_dlg, pfn_dlg_proc);
+        let codepage = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let res = self.shared.resource_mgr.lock_or_recover().find(hmod, RT_DIALOG, id_dlg as u16);
+        let template = res
+            .and_then(|(addr, size)| self.guest_read_bytes(addr, (size as usize).min(MAX_DLG_TEMPLATE)))
+            .and_then(|data| super::pm_dialog::parse_dlg_template(&data, codepage));
+        if template.is_none() {
+            warn!("  [VCPU {}] dialog {}: no usable RT_DIALOG resource", vcpu_id, id_dlg);
+        }
+        let (hwnd_dlg, hmq, focus) = self.create_dialog(
+            vcpu_id, hwnd_parent, hwnd_owner, pfn_dlg_proc, template);
+        let wm = self.shared.window_mgr.lock_or_recover();
+        if let Some(mq_arc) = wm.get_mq(hmq) {
+            let mut mq = mq_arc.lock_or_recover();
+            for (msg, mp1, mp2) in [(WM_INITDLG, focus, p_create_params), (WM_PAINT, 0, 0)] {
+                mq.messages.push_back(OS2Message { hwnd: hwnd_dlg, msg, mp1, mp2, time: 0, x: 0, y: 0 });
+            }
+            mq.cond.notify_one();
+        }
+        (hwnd_dlg, hmq)
+    }
+
+    /// Create a dialog window and its controls from `template` (an empty
+    /// dialog when `None`), make it the active window and give the focus to
+    /// its first control. Returns `(hwnd_dlg, hmq, focus control or 0)`.
+    pub(super) fn create_dialog(&self, vcpu_id: u32, hwnd_parent: u32, hwnd_owner: u32, pfn_dlg_proc: u32,
+                     template: Option<super::pm_dialog::DlgTemplate>) -> (u32, u32, u32) {
+        use super::constants::{dlg_units_to_px_x as px_x, dlg_units_to_px_y as px_y};
         let mut wm = self.shared.window_mgr.lock_or_recover();
         let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
-        // Template coordinates are relative to the dialog's parent: the desktop
-        // for HWND_DESKTOP, otherwise the parent window's frame.
-        let (origin_x, origin_y) = if hwnd_parent == HWND_DESKTOP {
-            (0, 0)
-        } else {
-            let frame = wm.find_frame_for_hwnd(hwnd_parent);
+        // Template coordinates are relative to the dialog's parent: the
+        // desktop for HWND_DESKTOP, otherwise the parent window's frame.
+        let frame = wm.find_frame_for_hwnd(hwnd_parent);
+        let (origin_x, origin_y) = if wm.is_frame(frame) {
             wm.get_window(frame).map_or((0, 0), |w| (w.x, w.y))
+        } else {
+            (0, 0)
         };
-        let h = wm.create_window("#Dialog".to_string(), hwnd_parent, hmq);
+        let h = wm.create_window(super::pm_types::WindowManager::DIALOG_CLASS.to_string(), hwnd_parent, hmq);
+        let mut controls = Vec::new();
         if let Some(win) = wm.get_window_mut(h) {
-            // Dialogs get the standard frame chrome (title bar, system menu,
-            // dialog border) drawn by the compositor.
-            win.frame_flags = FCF_TITLEBAR | FCF_SYSMENU | FCF_DLGBORDER;
-            win.text    = title.clone();
-            win.pfn_wp  = pfn_dlg_proc;
-            // DLGTEMPLATE geometry is in dialog units, not pixels.
-            win.x       = origin_x + dlg_units_to_px_x(dlg_x);
-            win.y       = origin_y + dlg_units_to_px_y(dlg_y);
-            win.cx      = dlg_units_to_px_x(dlg_cx);
-            win.cy      = dlg_units_to_px_y(dlg_cy);
-            win.visible = true; // dialogs are always shown when created
-        }
-        wm.z_push_top(h);
-        // A new dialog is the active window; z_remove hands focus back to the
-        // window underneath when it is dismissed.
-        wm.focused_hwnd = h;
-        for item in items {
-            let class_name = if !item.class_name.is_empty() {
-                item.class_name.clone()
-            } else {
-                "WC_STATIC".to_string()
-            };
-            let ch = wm.create_window(class_name, h, hmq);
-            if let Some(cwin) = wm.get_window_mut(ch) {
-                cwin.text    = item.text;
-                cwin.x       = dlg_units_to_px_x(item.x);
-                cwin.y       = dlg_units_to_px_y(item.y);
-                cwin.cx      = dlg_units_to_px_x(item.cx);
-                cwin.cy      = dlg_units_to_px_y(item.cy);
-                cwin.id      = item.id as u32;
-                cwin.style   = item.fl_style;
-                cwin.visible = item.fl_style & super::constants::WS_VISIBLE != 0;
+            win.pfn_wp = pfn_dlg_proc;
+            win.owner = hwnd_owner;
+            win.visible = true; // dialogs are shown when created
+            if let Some(t) = &template {
+                // The compositor draws the chrome the template asks for.
+                win.frame_flags = t.frame_flags;
+                win.style = t.dialog.style;
+                win.text = t.dialog.text.clone();
+                win.id = t.dialog.id as u32;
+                win.x = origin_x + px_x(t.dialog.x);
+                win.y = origin_y + px_y(t.dialog.y);
+                win.cx = px_x(t.dialog.cx);
+                win.cy = px_y(t.dialog.cy);
             }
         }
-        // VDR-A5: dialogs are pure Z-stack entries; no CreateWindow / ResizeWindow
-        // needed — the compositor reads position from OS2Window and the FrameBuffer
-        // is allocated lazily on the first draw call (sized from win.cx × win.cy).
-        (h, hmq)
+        if let Some(t) = &template {
+            for item in &t.items {
+                let parent = item.parent.map_or(h, |i| controls[i]);
+                let ch = wm.create_window(item.class_name.clone(), parent, hmq);
+                if let Some(cwin) = wm.get_window_mut(ch) {
+                    cwin.text = item.text.clone();
+                    cwin.x = px_x(item.x);
+                    cwin.y = px_y(item.y);
+                    cwin.cx = px_x(item.cx);
+                    cwin.cy = px_y(item.cy);
+                    cwin.id = item.id as u32;
+                    cwin.style = item.style;
+                    cwin.visible = item.style & WS_VISIBLE != 0;
+                    // Controls notify the dialog.
+                    cwin.owner = h;
+                }
+                controls.push(ch);
+            }
+        }
+        wm.z_push_top(h);
+        // A new dialog is the active window; z_remove hands activation back
+        // to the window underneath when it is dismissed.
+        wm.focused_hwnd = h;
+        let preferred = template.as_ref().and_then(|t| t.focus).map(|i| controls[i]);
+        let focus = wm.initial_dialog_focus(h, preferred).unwrap_or(0);
+        if focus != 0 {
+            wm.focus_hwnd = focus;
+        }
+        // The compositor reads position and size from the window; the
+        // surface is allocated on the first draw (sized from cx × cy).
+        (h, hmq, focus)
     }
 }
 
@@ -2178,25 +1931,30 @@ mod tests {
     }
 
     /// DLGTEMPLATE geometry is in dialog units; the created dialog and its
-    /// children must be scaled to pixels (2× with the 8×16 system font).
+    /// children must be scaled to pixels.
     #[test]
     fn test_create_dialog_scales_dialog_units_to_pixels() {
         use super::super::mutex_ext::MutexExt;
-        use super::DlgItemInfo;
+        use super::super::pm_dialog::{DlgItem, DlgTemplate};
         let loader = Loader::new_mock();
         {
             let mut wm = loader.shared.window_mgr.lock_or_recover();
             let hmq = wm.create_mq(TEST_CODEPAGE);
             wm.tid_to_hmq.insert(0, hmq);
         }
-        let items = vec![DlgItemInfo {
-            x: 70, y: 10, cx: 40, cy: 14, id: 1, fl_style: 0,
-            class_name: "WC_BUTTON".to_string(), text: "OK".to_string(),
-        }];
         use super::super::constants::{dlg_units_to_px_x as dx, dlg_units_to_px_y as dy,
-                                      HWND_DESKTOP, FCF_TITLEBAR, FCF_DLGBORDER};
-        let (hwnd_dlg, _) = loader.create_dialog_from_template(
-            HWND_DESKTOP, 0, 0, "About".to_string(), 40, 40, 180, 80, items.clone());
+                                      HWND_DESKTOP, FCF_TITLEBAR, FCF_DLGBORDER, WS_VISIBLE};
+        let item = |class: &str, text: &str, x, y, cx, cy, id| DlgItem {
+            class_name: class.to_string(), text: text.to_string(),
+            x, y, cx, cy, id, style: WS_VISIBLE, parent: None,
+        };
+        let template = DlgTemplate {
+            dialog: item("WC_FRAME", "About", 40, 40, 180, 80, 101),
+            frame_flags: FCF_TITLEBAR | FCF_DLGBORDER,
+            focus: None,
+            items: vec![item("WC_BUTTON", "OK", 70, 10, 40, 14, 1)],
+        };
+        let (hwnd_dlg, _, _) = loader.create_dialog(0, HWND_DESKTOP, 0, 0, Some(template.clone()));
         // One horizontal unit is 1/4 of the system font's average character
         // width, one vertical unit 1/8 of its 16-px line height (= 2 px).
         let avg_w = crate::gui::font::metrics(crate::gui::font::FontSpec::SYSTEM).avg_char_width;
@@ -2224,8 +1982,7 @@ mod tests {
             f.x = 300; f.y = 200;
             client
         };
-        let (hwnd_dlg, _) = loader.create_dialog_from_template(
-            client, 0, 0, "About".to_string(), 40, 40, 180, 80, items);
+        let (hwnd_dlg, _, _) = loader.create_dialog(0, client, client, 0, Some(template));
         let mut wm = loader.shared.window_mgr.lock_or_recover();
         let dlg = wm.get_window(hwnd_dlg).unwrap();
         assert_eq!((dlg.x, dlg.y), (300 + dx(40), 200 + dy(40)));
@@ -2506,8 +2263,9 @@ mod tests {
         assert!(cmd_msg.is_some(), "WM_COMMAND should be posted");
         let cmd = cmd_msg.unwrap();
         assert_eq!(cmd.hwnd, client_hwnd);
-        assert_eq!(cmd.mp1 & 0xFFFF, 202); // id=202 (Exit)
-        assert_eq!((cmd.mp1 >> 16) & 0xFFFF, 2); // CMDSRC_MENU=2
+        // CMDMSG: mp1 = command id, mp2 = MPFROM2SHORT(source, fPointer).
+        assert_eq!(cmd.mp1, 202); // Exit
+        assert_eq!(cmd.mp2, super::super::constants::CMDSRC_MENU | (1 << 16), "menu, by the pointer");
     }
 
     // ── Parse robustness tests (T-2) ─────────────────────────────────────────
@@ -2576,40 +2334,7 @@ mod tests {
         assert!(items.len() <= 4, "huge item_count must be bounded by available data (got {})", items.len());
     }
 
-    /// parse_dlg_template with a resource shorter than the 40-byte minimum
-    /// must return None without panicking.
-    #[test]
-    fn test_parse_dlg_template_truncated_does_not_panic() {
-        let loader = Loader::new_mock();
-        let base: u32 = 0x5300;
-        // Write only 20 bytes — less than the 40-byte minimum.
-        let data = [0u8; 20];
-        for (i, &b) in data.iter().enumerate() {
-            loader.guest_write::<u8>(base + i as u32, b).unwrap();
-        }
-        let result = loader.parse_dlg_template(base, data.len() as u32);
-        assert!(result.is_none(), "truncated dlg template must return None");
-    }
 
-    /// parse_dlg_template with an all-zero 64-byte resource (c_items=0)
-    /// must return Some with an empty item list, not panic.
-    #[test]
-    fn test_parse_dlg_template_all_zero_does_not_panic() {
-        let loader = Loader::new_mock();
-        let base: u32 = 0x5400;
-        // 64 zero bytes — size >= 40 so the header check passes; c_items=0 so
-        // the child loop body never executes.
-        let data = [0u8; 64];
-        for (i, &b) in data.iter().enumerate() {
-            loader.guest_write::<u8>(base + i as u32, b).unwrap();
-        }
-        let result = loader.parse_dlg_template(base, data.len() as u32);
-        // size=64 >= 40, so result is Some; c_items=0 → empty items vec.
-        assert!(result.is_some(), "all-zero dlg template (size>=40) should return Some");
-        let (_, _, _, _, title, items) = result.unwrap();
-        assert!(items.is_empty(), "c_items=0 must produce no child items");
-        assert!(title.is_empty(), "title_off=0 must produce empty title");
-    }
 
     /// WinQueryWindowText with ASCII-only text must still work after the
     /// codepage-encode path (ASCII encodes identically in all supported CPs).
@@ -2666,6 +2391,90 @@ mod tests {
             _ => panic!("WinCreateWindow should return a handle"),
         };
         (frame, client, owner, entry)
+    }
+
+    const ORD_WIN_DEF_WINDOW_PROC: u32 = 911;
+    const ORD_WIN_GET_MSG: u32 = 915;
+    const ORD_WIN_TRANSLATE_ACCEL: u32 = 904;
+
+    /// A key press of F3 as `WM_CHAR` (mp1, mp2).
+    fn f3_press() -> (u32, u32) {
+        use super::super::constants::*;
+        (KC_VIRTUALKEY | KC_SCANCODE | (1 << WM_CHAR_REPEAT_SHIFT) | (0x3D << WM_CHAR_SCANCODE_SHIFT),
+         VK_F3 << WM_CHAR_VKEY_SHIFT)
+    }
+
+    fn read_qmsg(loader: &Loader, p: u32) -> (u32, u32, u32, u32) {
+        let r = |o| loader.guest_read::<u32>(p + o).unwrap();
+        (r(0), r(4), r(8), r(12))
+    }
+
+    /// WinGetMsg delivers a keystroke that is in the frame's accelerator
+    /// table as the command it stands for, addressed to the client.
+    #[test]
+    fn test_win_get_msg_translates_accelerators() {
+        use super::super::constants::*;
+        use super::super::pm_types::AccelEntry;
+        let loader = Loader::new_mock();
+        let (frame, client, _, entry) = window_with_entry(&loader);
+        {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let t = wm.add_accel_table(vec![AccelEntry { flags: AF_VIRTUALKEY, key: VK_F3 as u16, cmd: 77 }]);
+            wm.set_window_accel(frame, t);
+            // Drop the messages queued while the window was created.
+            let hmq = wm.find_hmq_for_hwnd(client).unwrap();
+            wm.get_mq(hmq).unwrap().lock_or_recover().messages.clear();
+        }
+        let (mp1, mp2) = f3_press();
+        // Sent to the focused entry field: the accelerator still applies.
+        loader.post_to_window(entry, WM_CHAR, mp1, mp2);
+        let mut vcpu = MockVcpu::new();
+        let pqmsg = 0x13200;
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_GET_MSG, &[0, pqmsg, 0, 0, 0]), 1);
+        assert_eq!(read_qmsg(&loader, pqmsg), (client, WM_COMMAND, 77, CMDSRC_ACCELERATOR));
+        // The key release is not an accelerator and stays a WM_CHAR.
+        loader.post_to_window(entry, WM_CHAR, mp1 | KC_KEYUP, mp2);
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_GET_MSG, &[0, pqmsg, 0, 0, 0]);
+        assert_eq!(read_qmsg(&loader, pqmsg).1, WM_CHAR);
+    }
+
+    /// WinTranslateAccel uses the table it is given and the window it names.
+    #[test]
+    fn test_win_translate_accel_rewrites_the_message() {
+        use super::super::constants::*;
+        use super::super::pm_types::AccelEntry;
+        let loader = Loader::new_mock();
+        let haccel = loader.shared.window_mgr.lock_or_recover()
+            .add_accel_table(vec![AccelEntry { flags: AF_VIRTUALKEY | AF_HELP, key: VK_F3 as u16, cmd: 5 }]);
+        let (mp1, mp2) = f3_press();
+        let pqmsg = 0x13200;
+        for (o, v) in [(0, 0x55), (4, WM_CHAR), (8, mp1), (12, mp2)] {
+            loader.guest_write::<u32>(pqmsg + o, v).unwrap();
+        }
+        let mut vcpu = MockVcpu::new();
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_TRANSLATE_ACCEL, &[0, 0x66, haccel + 1, pqmsg]), 0,
+                   "unknown table");
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_TRANSLATE_ACCEL, &[0, 0x66, haccel, pqmsg]), 1);
+        assert_eq!(read_qmsg(&loader, pqmsg), (0x66, WM_HELP, 5, CMDSRC_ACCELERATOR));
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_TRANSLATE_ACCEL, &[0, 0x66, haccel, pqmsg]), 0,
+                   "no longer a WM_CHAR");
+    }
+
+    /// WinDefWindowProc turns the system command Close into WM_CLOSE.
+    #[test]
+    fn test_win_def_window_proc_sc_close_posts_wm_close() {
+        use super::super::constants::*;
+        let loader = Loader::new_mock();
+        let (_, client, _, _) = window_with_entry(&loader);
+        let hmq = loader.shared.window_mgr.lock_or_recover().find_hmq_for_hwnd(client).unwrap();
+        let mq = loader.shared.window_mgr.lock_or_recover().get_mq(hmq).unwrap();
+        mq.lock_or_recover().messages.clear();
+        let mut vcpu = MockVcpu::new();
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_DEF_WINDOW_PROC, &[client, WM_SYSCOMMAND, SC_MINIMIZE, 0]);
+        assert!(mq.lock_or_recover().messages.is_empty());
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_DEF_WINDOW_PROC, &[client, WM_SYSCOMMAND, SC_CLOSE, CMDSRC_ACCELERATOR]);
+        let msgs: Vec<_> = mq.lock_or_recover().messages.drain(..).map(|m| (m.hwnd, m.msg)).collect();
+        assert_eq!(msgs, vec![(client, WM_CLOSE)]);
     }
 
     /// WinSetFocus (860) / WinQueryFocus (817): the focus window defaults to

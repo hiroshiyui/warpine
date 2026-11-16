@@ -7,6 +7,7 @@ pub mod ipc;
 pub mod pm_types;
 pub mod pm_edit;
 mod pm_controls;
+mod pm_dialog;
 pub mod vfs;
 pub mod vfs_hostdir;
 pub mod vm_backend;
@@ -446,10 +447,10 @@ impl Loader {
             let (ax, ay, acx, acy) = wm.get_abs_rect_in_frame(hwnd);
             wm.get_window(hwnd).map(|w| {
                 (w.class_name.clone(), ax, ay, acx, acy,
-                 w.text.clone(), w.id, w.parent)
+                 w.text.clone(), w.parent)
             })
         };
-        let (class_name, x, y, cx, cy, text, id, parent) = match info {
+        let (class_name, x, y, cx, cy, text, parent) = match info {
             Some(v) => v,
             None    => return ApiResult::Normal(0),
         };
@@ -461,20 +462,14 @@ impl Loader {
 
                 match class_name.as_str() {
                     "WC_BUTTON" => {
-                        // Gray face with a border and a centred label.
-                        control_box(&p, (x, y, cx, cy), CONTROL_FACE_COLOR);
-                        let label = font::fit_text(&text, cx - 2 * CONTROL_TEXT_INSET, FontSpec::SYSTEM);
-                        if !label.is_empty() {
-                            let w = font::text_width(label, FontSpec::SYSTEM);
-                            control_text(&p, x + (cx - w) / 2, y + (cy - CONTROL_LINE_H) / 2, label);
-                        }
+                        self.paint_button(&p, hwnd, (x, y, cx, cy), &text);
                     }
                     "WC_STATIC" => {
                         // Text label, left- and top-aligned. Like PM's SS_TEXT it
-                        // erases its rectangle to the window background first:
+                        // erases its rectangle to its parent's background first:
                         // anti-aliased text drawn again over itself on a later
                         // repaint would otherwise grow darker and bolder.
-                        p.fill((x, y, x + cx, y + cy), CONTROL_FIELD_COLOR);
+                        p.fill((x, y, x + cx, y + cy), self.control_background(hwnd));
                         let label = font::fit_text(&text, cx, FontSpec::SYSTEM);
                         if !label.is_empty() {
                             control_text(&p, x, y + (cy - CONTROL_LINE_H).max(0), label);
@@ -500,41 +495,16 @@ impl Loader {
                         // Painting therefore only has to request a recomposite.
                         self.shared.window_mgr.lock_or_recover().mark_dirty(frame_hwnd);
                     }
-                    "#Dialog" => {
-                        // Collect child-window metadata while holding the lock.
-                        let children = {
-                            let wm2 = self.shared.window_mgr.lock_or_recover();
-                            let child_hwnds = wm2.get_window(hwnd)
-                                .map(|w| w.children.clone())
-                                .unwrap_or_default();
-                            child_hwnds.iter().filter_map(|&ch| {
-                                wm2.get_window(ch).map(|w| {
-                                    (w.class_name.clone(), w.x, w.y, w.cx, w.cy, w.text.clone())
-                                })
-                            }).collect::<Vec<_>>()
-                        };
-                        // The dialog has its own surface keyed by hwnd. Its title
-                        // bar and border are frame chrome drawn by the compositor
-                        // (from `frame_flags` and the window text), so only the
-                        // dialog face and the controls are painted here.
+                    pm_types::WindowManager::DIALOG_CLASS => {
+                        // The dialog face, then its controls on top. The title
+                        // bar and border are frame chrome drawn by the
+                        // compositor (from `frame_flags` and the window text).
                         let d = Painter { loader: self, frame: hwnd };
                         d.fill((0, 0, cx, cy), CONTROL_FACE_COLOR);
-                        // Child controls.
-                        for (cname, chi_x, chi_y, chi_cx, chi_cy, ctext) in children {
-                            match cname.as_str() {
-                                "WC_BUTTON" => {
-                                    control_box(&d, (chi_x, chi_y, chi_cx, chi_cy), CONTROL_FACE_COLOR);
-                                    if !ctext.is_empty() {
-                                        d.op(DrawOp::Text { x: chi_x + 2, y: chi_y + chi_cy / 4,
-                                                            text: ctext, color: CONTROL_TEXT_COLOR });
-                                    }
-                                }
-                                "WC_STATIC" if !ctext.is_empty() => {
-                                    d.op(DrawOp::Text { x: chi_x, y: chi_y + chi_cy / 4,
-                                                        text: ctext, color: CONTROL_TEXT_COLOR });
-                                }
-                                _ => {}
-                            }
+                        let controls = self.shared.window_mgr.lock_or_recover()
+                            .builtin_control_descendants(hwnd);
+                        for control in controls {
+                            self.dispatch_builtin_control(control, WM_PAINT, 0, 0);
                         }
                     }
                     _ => {} // Unknown built-in class — silently ignore WM_PAINT
@@ -542,24 +512,11 @@ impl Loader {
                 ApiResult::Normal(0)
             }
 
-            WM_BUTTON1UP if class_name == "WC_BUTTON" => {
-                // Notify parent via WM_CONTROL with BN_CLICKED.
-                // mp1 = MPFROM2SHORT(id, BN_CLICKED) = (BN_CLICKED << 16) | id
-                let mp1_ctrl = (BN_CLICKED << 16) | (id & 0xFFFF);
-                let wm = self.shared.window_mgr.lock_or_recover();
-                let hmq = wm.find_hmq_for_hwnd(parent);
-                if let Some(hmq) = hmq
-                    && let Some(mq_arc) = wm.get_mq(hmq) {
-                        let mut mq = mq_arc.lock_or_recover();
-                        mq.messages.push_back(OS2Message {
-                            hwnd: parent, msg: WM_CONTROL,
-                            mp1: mp1_ctrl, mp2: 0,
-                            time: 0, x: 0, y: 0,
-                        });
-                        mq.cond.notify_one();
-                }
-                ApiResult::Normal(0)
-            }
+            WM_BUTTON1DOWN if class_name == "WC_BUTTON" => self.button_down(hwnd),
+
+            WM_BUTTON1UP if class_name == "WC_BUTTON" => self.button_up(hwnd, cx, cy, mp1),
+
+            WM_CHAR if class_name == "WC_BUTTON" => self.button_char(hwnd, mp1, mp2),
 
             WM_BUTTON1DOWN if class_name == "#Menu" => {
                 // Hit-test: is click in the menu bar or in an open dropdown?
@@ -634,7 +591,7 @@ impl Loader {
                                 // Close dropdown before dispatching.
                                 { self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd).map(|w| w.window_ulong.remove(&-1)); }
                                 self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0);
-                                // Post WM_COMMAND (CMDSRC_MENU=2) to the client window.
+                                // Post WM_COMMAND to the client window.
                                 // parent = frame_hwnd; client = frame_to_client[frame_hwnd].
                                 let (client_hwnd, mq_arc_opt) = {
                                     let wm = self.shared.window_mgr.lock_or_recover();
@@ -645,12 +602,13 @@ impl Loader {
                                 };
                                 if let Some(mq_arc) = mq_arc_opt {
                                     let mut mq = mq_arc.lock_or_recover();
-                                    // mp1 = MPFROM2SHORT(id, CMDSRC_MENU=2)
+                                    // mp1 = command id, mp2 =
+                                    // MPFROM2SHORT(CMDSRC_MENU, fPointer = TRUE).
                                     mq.messages.push_back(OS2Message {
                                         hwnd: client_hwnd,
                                         msg: WM_COMMAND,
-                                        mp1: cmd_id | (2u32 << 16), // CMDSRC_MENU
-                                        mp2: 0,
+                                        mp1: cmd_id,
+                                        mp2: pm_dialog::command_mp2(CMDSRC_MENU, true),
                                         time: 0, x: 0, y: 0,
                                     });
                                     mq.cond.notify_one();
@@ -671,45 +629,6 @@ impl Loader {
                 // Close any open dropdown and redraw the menu bar.
                 { self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd).map(|w| w.window_ulong.remove(&-1)); }
                 self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0)
-            }
-
-            WM_BUTTON1DOWN if class_name == "#Dialog" => {
-                // Hit-test child WC_BUTTON controls; post WM_COMMAND to the dialog's HMQ.
-                let click_x = (mp1 & 0xFFFF) as i32;
-                let click_y = ((mp1 >> 16) & 0xFFFF) as i32;
-                let (child_info, mq_opt) = {
-                    let wm = self.shared.window_mgr.lock_or_recover();
-                    let child_hwnds = wm.get_window(hwnd)
-                        .map(|w| w.children.clone())
-                        .unwrap_or_default();
-                    let info: Vec<(String, i32, i32, i32, i32, u32)> = child_hwnds.iter()
-                        .filter_map(|&ch| {
-                            wm.get_window(ch).map(|w| (w.class_name.clone(), w.x, w.y, w.cx, w.cy, w.id))
-                        }).collect();
-                    let hmq = wm.find_hmq_for_hwnd(hwnd);
-                    let mq = hmq.and_then(|h| wm.get_mq(h));
-                    (info, mq)
-                };
-                for (cname, chi_x, chi_y, chi_cx, chi_cy, chi_id) in child_info {
-                    if cname == "WC_BUTTON"
-                        && click_x >= chi_x && click_x < chi_x + chi_cx
-                        && click_y >= chi_y && click_y < chi_y + chi_cy
-                    {
-                        if let Some(ref mq_arc) = mq_opt {
-                            let mut mq = mq_arc.lock_or_recover();
-                            mq.messages.push_back(OS2Message {
-                                hwnd,
-                                msg: WM_COMMAND,
-                                mp1: chi_id,
-                                mp2: 0,
-                                time: 0, x: 0, y: 0,
-                            });
-                            mq.cond.notify_one();
-                        }
-                        break;
-                    }
-                }
-                ApiResult::Normal(0)
             }
 
             WM_BUTTON1DOWN if pm_controls::is_input_control(&class_name) => {
@@ -774,8 +693,12 @@ impl Loader {
 
 // ── Built-in control painting helpers ────────────────────────────────────────
 
-/// Face colour of push buttons.
+/// Face colour of push buttons and dialogs.
 const CONTROL_FACE_COLOR: u32 = 0x00D4_D0C8;
+/// Face colour of a push button while it is held down.
+const CONTROL_PRESSED_COLOR: u32 = 0x00B0_ACA4;
+/// Outline of the default push button and the focus mark on a button.
+const CONTROL_EMPHASIS_COLOR: u32 = 0x0000_0000;
 /// Background of text-holding controls (entry field, MLE, list box).
 const CONTROL_FIELD_COLOR: u32 = 0x00FF_FFFF;
 const CONTROL_BORDER_COLOR: u32 = 0x0080_8080;

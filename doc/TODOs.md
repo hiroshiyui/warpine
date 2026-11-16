@@ -71,9 +71,10 @@ NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 ### PM Rendering Quality
 
 - [ ] **Text controls: remaining editing features** — selection (Shift+arrows, mouse drag), clipboard, word wrap in `WC_MLE`, caret blink, PageUp/PageDown, Tab focus traversal, `EN_SETFOCUS` / `EN_KILLFOCUS`, `LM_DELETEITEM` / `LM_DELETEALL`, multi-select list boxes
-- [ ] **Controls inside dialogs** — `WinDlgBox` dialogs still paint and hit-test their controls with the older `#Dialog` code, so entry fields and list boxes in dialogs are not interactive
 - [ ] **Controls after a window drag** — `get_abs_rect_in_frame` adds the client's x/y and the drag handler copies the frame position into the client; check whether controls paint offset after a window is moved
-- [ ] **Keyboard in samples** — no sample handles `WM_CHAR` or has an accelerator table, so Esc/Enter on dialogs and Alt+F4 have no effect; add default dialog key handling and a sample that exercises it
+- [ ] **Dialog follow-ups** — arrow keys moving within a `WS_GROUP` of controls, mnemonics (`~` letters, `WM_MATCHMNEMONIC`), `WinDlgBox` disabling its owner while the dialog is up, a focus mark on list boxes, dialogs are not destroyed after `WinDlgBox` returns; unverified against the PM reference: the `CMDSRC_*` code of the `WM_COMMAND(DID_CANCEL)` that Esc posts (`CMDSRC_OTHER` here), and the frame control data of a template built by IBM's resource compiler (Open Watcom `wrc` writes one ULONG of `FCF_*` flags)
+- [ ] **`WinPeekMsg`** (PMWIN 918) — not implemented; it should translate accelerators like `WinGetMsg`
+- [ ] **System accelerators beyond Alt+F4** — Alt+F5/F7/F8/F9/F10 (restore, move, size, minimise, maximise), F10 for the menu bar, F1 for help
 - [ ] **Queue codepage in text paths** — `WinSetCp` stores a per-queue codepage but window text (`WinSetWindowText` / `WinQueryWindowText`), GPI text and the CJK face choice still use the process codepage; needs a thread → hmq → codepage lookup at those sites
 - [ ] **Codepage 1004 and 0** — `WinSetCp` / `DosSetProcessCp` reject CP1004 (common in PM programs) and 0 ("default"); needs support in `codepage.rs`
 - [ ] **Menu replacement** — `WinCreateMenu` does not attach to its parent frame, and replacing a frame's menu via `WinSetParent` + `WM_UPDATEFRAME(FCF_MENU)` is not implemented (verify the sequence against the PM reference first)

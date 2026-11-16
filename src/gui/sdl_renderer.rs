@@ -10,14 +10,14 @@ use crate::loader::{SharedState, OS2Message, MutexExt,
     WM_CLOSE, WM_SIZE, WM_PAINT, WM_CHAR, WM_MOUSEMOVE,
     WM_BUTTON1DOWN, WM_BUTTON1UP, WM_BUTTON2DOWN, WM_BUTTON2UP, WM_BUTTON3DOWN, WM_BUTTON3UP,
     KC_CHAR, KC_VIRTUALKEY, KC_SCANCODE, KC_SHIFT, KC_CTRL, KC_ALT, KC_KEYUP,
-    VK_BACKSPACE, VK_TAB, VK_NEWLINE, VK_ESC, VK_SPACE,
+    VK_BACKSPACE, VK_TAB, VK_BACKTAB, VK_NEWLINE, VK_ESC, VK_SPACE,
     VK_PAGEUP, VK_PAGEDOWN, VK_END, VK_HOME, VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN,
     VK_INSERT, VK_DELETE, VK_SCRLLOCK, VK_NUMLOCK, VK_ENTER,
     VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6,
     VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12,
     CF_TEXT, KC_PREVDOWN, WM_CHAR_REPEAT_SHIFT, WM_CHAR_SCANCODE_SHIFT, WM_CHAR_VKEY_SHIFT,
     FCF_TITLEBAR, FCF_SYSMENU, FCF_MINBUTTON, FCF_MAXBUTTON,
-    FCF_BORDER, FCF_DLGBORDER, FCF_SIZEBORDER,
+    FCF_SIZEBORDER,
     WM_ACTIVATE, WM_SYSCOMMAND, SC_MINIMIZE, SC_MAXIMIZE};
 use crate::loader::constants::{
     MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_BAR_ITEM_PAD, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H,
@@ -237,10 +237,7 @@ fn draw_title_bar(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
     }
 }
 
-/// Width of a frame's border: `CHROME_BORDER_W` with any border style, else 0.
-fn frame_border_px(frame_flags: u32) -> i32 {
-    if frame_flags & (FCF_BORDER | FCF_DLGBORDER | FCF_SIZEBORDER) != 0 { CHROME_BORDER_W } else { 0 }
-}
+use crate::loader::constants::frame_border_width as frame_border_px;
 
 /// Draw a frame's border, only inside `clip`. A sizing border is a raised
 /// bevel; a plain or dialog border is a dark outline with a face-coloured
@@ -1184,6 +1181,15 @@ impl SdlRenderer {
                 }
                 let _ = (x, y); // suppress unused-variable warnings for x/y used above
                 let os2_y = (dh as i32 - 1) - y;
+                // A built-in button held down gets the release wherever the
+                // pointer is, so it pops up (and is clicked only over itself).
+                if mouse_btn == sdl3::mouse::MouseButton::Left
+                    && let Some((button, bx, by)) = pressed_button_release(shared, x, os2_y)
+                {
+                    let mp1 = ((bx as u32) & 0xFFFF) | ((by as u32 & 0xFFFF) << 16);
+                    push_msg(shared, button, WM_BUTTON1UP, mp1, 0);
+                    return true;
+                }
                 // VDR-D6: captured window overrides hit-test.
                 let capture = shared.window_mgr.lock_or_recover().capture_hwnd;
                 let target = if capture != 0 {
@@ -1513,12 +1519,6 @@ fn resize_hit_test(win_x: i32, win_y: i32, win_cx: i32, win_cy: i32,
     }
 }
 
-/// Width of the frame border that offsets the client area horizontally
-/// inside a frame created with `frame_flags`.
-fn frame_border_w(frame_flags: u32) -> i32 {
-    if frame_flags & (FCF_BORDER | FCF_DLGBORDER | FCF_SIZEBORDER) != 0 { CHROME_BORDER_W } else { 0 }
-}
-
 /// Decide which window receives a mouse-button-1 message aimed at `frame`.
 ///
 /// `(x, y)` is the pointer relative to the frame's bottom-left corner. If a
@@ -1534,7 +1534,7 @@ fn route_button1(shared: &Arc<SharedState>, frame: u32, x: i32, y: i32, press: b
 {
     let mut wm = shared.window_mgr.lock_or_recover();
     // The client's buffer starts to the right of the frame's left border.
-    let border = wm.get_window(frame).map_or(0, |w| frame_border_w(w.frame_flags));
+    let border = wm.get_window(frame).map_or(0, |w| frame_border_px(w.frame_flags));
     if let Some(hit) = wm.control_at(frame, x - border, y) {
         return (hit, 0);
     }
@@ -1548,6 +1548,20 @@ fn route_button1(shared: &Arc<SharedState>, frame: u32, x: i32, y: i32, press: b
         0
     };
     ((frame, x, y), lost)
+}
+
+/// The built-in button held down with mouse button 1, if any, and the
+/// desktop point `(x, os2_y)` (bottom-left origin) relative to that button.
+fn pressed_button_release(shared: &Arc<SharedState>, x: i32, os2_y: i32) -> Option<(u32, i32, i32)> {
+    let wm = shared.window_mgr.lock_or_recover();
+    let button = wm.pressed_button;
+    if button == 0 { return None; }
+    let frame = wm.find_frame_for_hwnd(button);
+    let f = wm.get_window(frame)?;
+    // Frame-relative, then relative to the frame's surface, then to the button.
+    let (sx, sy) = (x - f.x - frame_border_px(f.frame_flags), os2_y - f.y);
+    let (bx, by, _, _) = wm.get_abs_rect_in_frame(button);
+    Some((button, sx - bx, sy - by))
 }
 
 /// WM_CHAR `(mp1, mp2)` pairs for text typed or committed by the input
@@ -1778,6 +1792,8 @@ fn build_wm_char(
     if key_up  { flags |= KC_KEYUP;   }
     if repeat  { flags |= KC_PREVDOWN; }
 
+    // PM reports Shift+Tab as its own virtual key.
+    let vk = if vk == VK_TAB && flags & KC_SHIFT != 0 { VK_BACKTAB } else { vk };
     if vk != 0 { flags |= KC_VIRTUALKEY; }
     if ch != 0 { flags |= KC_CHAR;       }
 
@@ -1955,7 +1971,8 @@ mod tests {
     use super::{draw_frame_chrome, FrameChrome, CHROME_TITLE_H, CHROME_BTN_W, CHROME_BTN_GAP,
                 CHROME_BTN_MARGIN, CHROME_BTN_INSET_Y, CHROME_TITLE_ACTIVE, CHROME_TITLE_INACTIVE,
                 CHROME_LIGHT_COLOR, CHROME_SHADOW_COLOR, CHROME_FACE_COLOR, CHROME_DARK_COLOR,
-                FCF_TITLEBAR, FCF_SYSMENU, FCF_MINBUTTON, FCF_MAXBUTTON, FCF_BORDER, FCF_SIZEBORDER};
+                FCF_TITLEBAR, FCF_SYSMENU, FCF_MINBUTTON, FCF_MAXBUTTON, FCF_SIZEBORDER};
+    use crate::loader::constants::FCF_BORDER;
     use super::{draw_menu_chrome, menu_bar_item_width, MenuItem,
                 MENU_BG_COLOR, MENU_EDGE_COLOR, MENU_HILITE_COLOR,
                 MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H, MIS_SEPARATOR};
@@ -2343,6 +2360,15 @@ mod tests {
     }
 
     #[test]
+    fn build_wm_char_reports_shift_tab_as_backtab() {
+        use crate::loader::*;
+        let vk = |km| build_wm_char(Some(Keycode::Tab), Some(Scancode::Tab), km, false, false).1 >> WM_CHAR_VKEY_SHIFT;
+        assert_eq!(vk(KeyMod::NOMOD), VK_TAB);
+        assert_eq!(vk(KeyMod::LSHIFTMOD), VK_BACKTAB);
+        assert_eq!(vk(KeyMod::RSHIFTMOD), VK_BACKTAB);
+    }
+
+    #[test]
     fn text_input_becomes_codepage_wm_chars() {
         use crate::loader::pm_edit::{key_from_wm_char, EditKey};
         let decode = |text: &str, cp| text_input_wm_chars(text, cp).into_iter()
@@ -2390,6 +2416,24 @@ mod tests {
         assert_eq!(route_button1(&shared, frame, 15, 210, false), ((entry, 5, 10), 0));
         // Off the control: the frame gets it unchanged.
         assert_eq!(route_button1(&shared, frame, 300, 100, true), ((frame, 300, 100), 0));
+    }
+
+    #[test]
+    fn a_held_button_gets_the_release_relative_to_itself() {
+        let (shared, frame, _client, entry) = routed_window(FCF_SIZEBORDER);
+        assert_eq!(super::pressed_button_release(&shared, 0, 0), None, "no button held");
+        {
+            let mut wm = shared.window_mgr.lock_or_recover();
+            let f = wm.get_window_mut(frame).unwrap();
+            (f.x, f.y) = (100, 50);
+            wm.pressed_button = entry;
+        }
+        // Desktop point → frame (100, 50) → surface (inside the border) → control (10, 200).
+        let (x, y) = (100 + CHROME_BORDER_W + 10 + 3, 50 + 200 + 4);
+        assert_eq!(super::pressed_button_release(&shared, x, y), Some((entry, 3, 4)));
+        // Far away the position is outside the button, so it is not clicked.
+        let (_, bx, by) = super::pressed_button_release(&shared, 0, 0).unwrap();
+        assert!(bx < 0 && by < 0);
     }
 
     #[test]
@@ -2554,7 +2598,7 @@ mod script_tests {
         assert_eq!(wm_char(&events[2]).0, KC_SCANCODE | KC_VIRTUALKEY | KC_ALT | KC_KEYUP);
 
         let (flags, _, _, vk) = wm_char(&script_events("0 key shift+tab")[1]);
-        assert_eq!(vk, VK_TAB);
+        assert_eq!(vk, VK_BACKTAB, "PM reports Shift+Tab as VK_BACKTAB");
         assert_ne!(flags & KC_SHIFT, 0);
         let (flags, _, ch, _) = wm_char(&script_events("0 key ctrl+c")[1]);
         assert_eq!(ch, b'c' as u32);
@@ -2724,9 +2768,9 @@ mod compositor_tests {
         let mut fb = Surface::new(40, 20);
         fb.buffer.fill(0x00_1234);
         let mut chrome = ChromeCache::new();
-        chrome.sync("T", 44, FCF_TITLEBAR | FCF_BORDER, true, None, 40);
+        chrome.sync("T", 44, FCF_TITLEBAR | crate::loader::constants::FCF_BORDER, true, None, 40);
         chrome.render();
-        let p = place_frame(1, 4, 4, 44, 42, FCF_TITLEBAR | FCF_BORDER, false, None, (40, 20), dh as i32);
+        let p = place_frame(1, 4, 4, 44, 42, FCF_TITLEBAR | crate::loader::constants::FCF_BORDER, false, None, (40, 20), dh as i32);
         let clip = Rect::new(0, 0, 30, 30);
         draw_placed_frame(&mut buf, dw, &p, &fb, &chrome, clip);
         let px = |x: usize, y: usize| buf[y * dw + x];

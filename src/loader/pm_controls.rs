@@ -18,7 +18,8 @@ use super::constants::*;
 use super::pm_edit::{self, EditBuffer, EditKey, CARET_W};
 use super::pm_types::OS2Message;
 use super::{control_box, control_text, ApiResult, Loader, MutexExt, Painter,
-            CONTROL_FIELD_COLOR, CONTROL_LINE_H, CONTROL_TEXT_COLOR, CONTROL_TEXT_INSET};
+            CONTROL_EMPHASIS_COLOR, CONTROL_FACE_COLOR, CONTROL_FIELD_COLOR, CONTROL_LINE_H,
+            CONTROL_PRESSED_COLOR, CONTROL_TEXT_COLOR, CONTROL_TEXT_INSET};
 use crate::gui::font::{self, FontSpec};
 use crate::gui::surface::DrawOp;
 
@@ -34,6 +35,10 @@ const CONTROL_SELECT_COLOR: u32 = 0x0000_0080;
 const CONTROL_SELECT_TEXT_COLOR: u32 = 0x00FF_FFFF;
 /// Gap between a control's top border and its first text row.
 const CONTROL_ROWS_TOP_INSET: i32 = 2;
+/// Gap between a button's border and the focus mark drawn inside it.
+const BUTTON_FOCUS_INSET: i32 = 3;
+/// How far a held-down button's label moves right and down.
+const BUTTON_PRESSED_SHIFT: i32 = 1;
 
 /// WM_CHAR flags that give a key message a meaning beyond "a key moved":
 /// a character, a virtual key, or a Ctrl/Alt chord.
@@ -154,6 +159,45 @@ impl Loader {
     }
 
     // ── Painting ─────────────────────────────────────────────────────────────
+
+    /// Background behind a control: the dialog face inside a dialog, else
+    /// the white of a client window.
+    pub(super) fn control_background(&self, hwnd: u32) -> u32 {
+        let wm = self.shared.window_mgr.lock_or_recover();
+        if wm.is_dialog(wm.find_frame_for_hwnd(hwnd)) { CONTROL_FACE_COLOR } else { CONTROL_FIELD_COLOR }
+    }
+
+    /// WC_BUTTON: grey face with a border and a centred label. A push button
+    /// is darker with its label shifted while held down, has a black outline
+    /// when it is the default button (`BS_DEFAULT`) and a focus mark inside
+    /// while it has the focus.
+    pub(super) fn paint_button(&self, p: &Painter, hwnd: u32,
+                               (x, y, cx, cy): (i32, i32, i32, i32), text: &str) {
+        let (push, pressed, default, focused) = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            let style = wm.get_window(hwnd).map_or(0, |w| w.style);
+            (wm.is_push_button(hwnd), wm.pressed_button == hwnd,
+             style & BS_DEFAULT != 0, wm.focus_hwnd == hwnd)
+        };
+        let push = |flag: bool| push && flag;
+        control_box(p, (x, y, cx, cy), if push(pressed) { CONTROL_PRESSED_COLOR } else { CONTROL_FACE_COLOR });
+        if push(default) {
+            p.op(DrawOp::Box { x1: x, y1: y, x2: x + cx, y2: y + cy, color: CONTROL_EMPHASIS_COLOR,
+                               fill: false, mix: crate::gui::surface::Mix::Overpaint });
+        }
+        let label = font::fit_text(text, cx - 2 * CONTROL_TEXT_INSET, FontSpec::SYSTEM);
+        if !label.is_empty() {
+            let shift = if push(pressed) { BUTTON_PRESSED_SHIFT } else { 0 };
+            let w = system_width(label);
+            control_text(p, x + (cx - w) / 2 + shift, y + (cy - CONTROL_LINE_H) / 2 - shift, label);
+        }
+        if push(focused) {
+            let i = BUTTON_FOCUS_INSET;
+            p.op(DrawOp::Box { x1: x + i, y1: y + i, x2: x + cx - i, y2: y + cy - i,
+                               color: CONTROL_EMPHASIS_COLOR, fill: false,
+                               mix: crate::gui::surface::Mix::Overpaint });
+        }
+    }
 
     /// WC_ENTRYFIELD: white field with one vertically centred line of text,
     /// scrolled horizontally so the caret is visible; caret bar when focused.
@@ -307,6 +351,64 @@ impl Loader {
         }
         self.repaint_control(hwnd);
         ApiResult::Normal(1)
+    }
+
+    /// WM_BUTTON1DOWN on a button: hold it down and take the focus (unless
+    /// `BS_NOPOINTERFOCUS`). The release comes back to it even when the
+    /// pointer has left it.
+    pub(super) fn button_down(&self, hwnd: u32) -> ApiResult {
+        let take_focus = {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let Some(style) = wm.get_window(hwnd).map(|w| w.style) else { return ApiResult::Normal(0) };
+            if style & WS_DISABLED != 0 {
+                return ApiResult::Normal(0);
+            }
+            wm.pressed_button = hwnd;
+            style & BS_NOPOINTERFOCUS == 0
+        };
+        if take_focus {
+            self.set_focus_window(hwnd);
+        }
+        self.repaint_control(hwnd);
+        ApiResult::Normal(1)
+    }
+
+    /// WM_BUTTON1UP on a button: pop it up; released over the button (`mp1`
+    /// = pointer position relative to it) it is clicked.
+    pub(super) fn button_up(&self, hwnd: u32, cx: i32, cy: i32, mp1: u32) -> ApiResult {
+        let was_down = {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            std::mem::replace(&mut wm.pressed_button, 0) == hwnd
+        };
+        if !was_down {
+            return ApiResult::Normal(0);
+        }
+        self.repaint_control(hwnd);
+        let (lx, ly) = mouse_pos(mp1);
+        if (0..cx).contains(&lx) && (0..cy).contains(&ly) {
+            self.click_button(hwnd, true);
+        }
+        ApiResult::Normal(1)
+    }
+
+    /// WM_CHAR on a button: Space clicks it; other keys go to its owner.
+    pub(super) fn button_char(&self, hwnd: u32, mp1: u32, mp2: u32) -> ApiResult {
+        let fs = mp1 & 0xFFFF;
+        let plain = fs & (KC_CTRL | KC_ALT) == 0;
+        let space_key = fs & KC_VIRTUALKEY != 0 && mp2 >> WM_CHAR_VKEY_SHIFT == VK_SPACE;
+        // The typed space arrives again as a character-only message.
+        let space_char = fs & KEY_EVENT_KINDS == KC_CHAR && mp2 & 0xFFFF == b' ' as u32;
+        if plain && (space_key || space_char) {
+            if space_key && fs & KC_KEYUP == 0 {
+                self.click_button(hwnd, false);
+            }
+            return ApiResult::Normal(1);
+        }
+        let owner = self.shared.window_mgr.lock_or_recover().notify_target(hwnd);
+        if owner != 0 && owner != hwnd {
+            self.post_control_message(owner, WM_CHAR, mp1, mp2);
+        }
+        ApiResult::Normal(0)
     }
 
     /// WM_CHAR on an entry field, MLE or list box. Keys the control does not

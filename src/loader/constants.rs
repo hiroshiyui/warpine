@@ -119,6 +119,7 @@ pub const KC_LONEKEY:    u32 = 0x0100; // key pressed without any other key
 // VK_* virtual key codes for WM_CHAR MP2 high word
 pub const VK_BACKSPACE:  u32 = 0x05;
 pub const VK_TAB:        u32 = 0x06;
+pub const VK_BACKTAB:    u32 = 0x07; // Shift+Tab
 pub const VK_NEWLINE:    u32 = 0x08; // main Enter key
 pub const VK_ESC:        u32 = 0x0f;
 pub const VK_SPACE:      u32 = 0x10;
@@ -427,6 +428,8 @@ pub const WM_MENUEND:    u32 = 0x0035; // Menu dismissed
 pub const DID_OK:     u32 = 1;         // OK button
 pub const DID_CANCEL: u32 = 2;         // Cancel button
 pub const DID_ERROR:  u32 = 0xFFFF;    // Error return
+/// Largest DLGTEMPLATE read from a resource (`cbTemplate` is a USHORT).
+pub const MAX_DLG_TEMPLATE: usize = 0x1_0000;
 
 // ── MIS_* menu item style flags (afStyle in MENUITEM) ───────────────────────
 // Values match OS/2 Warp 4 Toolkit <pmwin.h> exactly.
@@ -537,6 +540,11 @@ pub const CHROME_TITLE_H: i32 = 20;
 /// Width of the frame border in desktop pixels (each side).
 pub const CHROME_BORDER_W: i32 = 2;
 
+/// Width of a frame's border: `CHROME_BORDER_W` with any border style, else 0.
+pub fn frame_border_width(frame_flags: u32) -> i32 {
+    if frame_flags & (FCF_BORDER | FCF_DLGBORDER | FCF_SIZEBORDER) != 0 { CHROME_BORDER_W } else { 0 }
+}
+
 // WinQuerySysValue indices (SV_*, <pmwin.h>)
 pub const SV_CXSIZEBORDER: i32 = 4;
 pub const SV_CYSIZEBORDER: i32 = 5;
@@ -571,6 +579,41 @@ pub const BS_CHECKBOX:       u32 = 0x0001;
 pub const BS_AUTOCHECKBOX:   u32 = 0x0002;
 pub const BS_RADIOBUTTON:    u32 = 0x0003;
 pub const BS_AUTORADIOBUTTON: u32 = 0x0004;
+/// Mask of the button kind (`BS_PUSHBUTTON`, `BS_CHECKBOX`, ...) in a style.
+pub const BS_PRIMARYSTYLES:  u32 = 0x000F;
+pub const BS_HELP:           u32 = 0x0100; // click posts WM_HELP
+pub const BS_SYSCOMMAND:     u32 = 0x0200; // click posts WM_SYSCOMMAND
+pub const BS_DEFAULT:        u32 = 0x0400; // default push button (Enter in a dialog)
+pub const BS_NOPOINTERFOCUS: u32 = 0x0800; // a click does not take the focus
+
+// Static control styles (low bits of flStyle for WC_STATIC windows)
+pub const SS_TEXT:     u32 = 0x0001;
+pub const SS_GROUPBOX: u32 = 0x0002;
+
+// Frame styles (FS_*): the border a dialog template asks for.
+pub const FS_DLGBORDER:  u32 = 0x0000_0080;
+pub const FS_BORDER:     u32 = 0x0000_0100;
+pub const FS_SIZEBORDER: u32 = 0x0000_0800;
+
+// WM_COMMAND source codes: mp2 = MPFROM2SHORT(CMDSRC_*, fPointer).
+pub const CMDSRC_OTHER:       u32 = 0;
+pub const CMDSRC_PUSHBUTTON:  u32 = 1;
+pub const CMDSRC_MENU:        u32 = 2;
+pub const CMDSRC_ACCELERATOR: u32 = 3;
+
+// WM_HELP: posted by BS_HELP buttons and AF_HELP accelerators.
+pub const WM_HELP: u32 = 0x0022;
+
+// Accelerator flags (ACCEL.fs, <pmwin.h>)
+pub const AF_CHAR:       u16 = 0x0001;
+pub const AF_VIRTUALKEY: u16 = 0x0002;
+pub const AF_SCANCODE:   u16 = 0x0004;
+pub const AF_SHIFT:      u16 = 0x0008;
+pub const AF_CONTROL:    u16 = 0x0010;
+pub const AF_ALT:        u16 = 0x0020;
+pub const AF_LONEKEY:    u16 = 0x0040;
+pub const AF_SYSCOMMAND: u16 = 0x0100;
+pub const AF_HELP:       u16 = 0x0200;
 
 // DosSetExtLIBPATH / DosQueryExtLIBPATH flags
 pub const BEGIN_LIBPATH: u32 = 1;

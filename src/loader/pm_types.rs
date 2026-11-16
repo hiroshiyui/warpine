@@ -321,6 +321,7 @@ impl PresentationSpace {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AccelEntry {
     pub flags: u16,
     pub key: u16,
@@ -387,6 +388,9 @@ pub struct WindowManager {
     /// "no explicit focus", in which case keys go to the active frame's
     /// client. Set by `WinSetFocus` and by clicking a built-in text control.
     pub focus_hwnd: u32,
+    /// The built-in button held down with mouse button 1 (0 = none): it
+    /// receives the release wherever the pointer is, so it can pop up.
+    pub pressed_button: u32,
     /// VDR-B4: set of HWNDs whose visual state has changed since the last composite.
     /// Any non-empty dirty set causes the next compositor tick to recomposite the
     /// full desktop; an empty set allows the tick to be skipped entirely.
@@ -431,6 +435,7 @@ impl WindowManager {
             z_order: Vec::new(),
             focused_hwnd: 0,
             focus_hwnd: 0,
+            pressed_button: 0,
             dirty: HashSet::new(),
             surfaces: HashMap::new(),
             bitmaps: HashMap::new(),
@@ -586,27 +591,53 @@ impl WindowManager {
         None
     }
 
-    /// Walk up the parent chain to find the top-level frame window for `hwnd`.
+    /// Class name of dialog windows created from a `DLGTEMPLATE`.
+    pub const DIALOG_CLASS: &'static str = "#Dialog";
+
+    /// Whether `hwnd` is a dialog: a frame whose controls are its own
+    /// children (it has no client window) and which has its own surface.
+    pub fn is_dialog(&self, hwnd: u32) -> bool {
+        self.windows.get(&hwnd).is_some_and(|w| w.class_name == Self::DIALOG_CLASS)
+    }
+
+    /// Whether `hwnd` is a frame with its own surface: a standard frame
+    /// (which has a client) or a dialog.
+    pub fn is_frame(&self, hwnd: u32) -> bool {
+        self.frame_to_client.contains_key(&hwnd) || self.is_dialog(hwnd)
+    }
+
+    /// The window under which `frame`'s controls live: a standard frame's
+    /// client, or the dialog itself.
+    pub fn control_root(&self, frame: u32) -> Option<u32> {
+        match self.frame_to_client.get(&frame) {
+            Some(&client) => Some(client),
+            None => self.is_dialog(frame).then_some(frame),
+        }
+    }
+
+    /// Walk up the parent chain to find the frame window `hwnd` draws into:
+    /// the nearest dialog, or the frame of the nearest client window.
     ///
-    /// Stops when the parent is in `frame_to_client` (i.e. it is a frame) or
-    /// when there is no parent.  Returns the frame hwnd, or `hwnd` itself if
-    /// no frame ancestor is found.
+    /// Returns `hwnd` itself when there is no frame above it (a frame, or a
+    /// window whose parent is the desktop or another pseudo window).
     pub fn find_frame_for_hwnd(&self, hwnd: u32) -> u32 {
         let mut h = hwnd;
         loop {
+            if self.is_dialog(h) { return h; }
             let parent = match self.windows.get(&h) { Some(w) => w.parent, None => return h };
-            if parent == 0 { return h; }
             if self.frame_to_client.contains_key(&parent) { return parent; }
+            if !self.windows.contains_key(&parent) { return h; }
             h = parent;
         }
     }
 
-    /// Compute the absolute OS/2-space rectangle of `hwnd` relative to the
-    /// root frame's client area.
+    /// Compute the rectangle of `hwnd` in the coordinates of its frame's
+    /// surface, bottom-left origin: relative to the client area of a
+    /// standard frame, or to a dialog's surface, which starts inside the
+    /// dialog's left border (control positions are relative to the dialog
+    /// window, border included, as in PM).
     ///
-    /// OS/2 PM uses a bottom-left origin, so `(x, y)` is the bottom-left corner
-    /// of `hwnd` in frame-client coordinates.  The caller can pass these
-    /// directly as `(x1=x, y1=y, x2=x+cx, y2=y+cy)` to `GUIMessage::DrawBox`.
+    /// The caller can pass these directly as `(x1=x, y1=y, x2=x+cx, y2=y+cy)`.
     ///
     /// Returns `(x, y, cx, cy)`.
     pub fn get_abs_rect_in_frame(&self, hwnd: u32) -> (i32, i32, i32, i32) {
@@ -616,6 +647,12 @@ impl WindowManager {
         let mut ay = 0i32;
         let mut h = hwnd;
         while let Some(win) = self.windows.get(&h) {
+            if self.is_dialog(h) {
+                if h != hwnd {
+                    ax -= super::constants::frame_border_width(win.frame_flags);
+                }
+                break;
+            }
             ax += win.x;
             ay += win.y;
             let parent = win.parent;
@@ -669,13 +706,86 @@ impl WindowManager {
             .map(|w| w.children.iter().rev().copied().collect()).unwrap_or_default();
         while let Some(h) = stack.pop() {
             let Some(w) = self.windows.get(&h) else { continue };
-            if !w.visible { continue; }
+            // A hidden window hides its children; a dialog owned by this
+            // window draws its controls into its own surface.
+            if !w.visible || self.is_dialog(h) { continue; }
             if w.pfn_wp == 0 && w.class_name.starts_with("WC_") {
                 out.push(h);
             }
             stack.extend(w.children.iter().rev().copied());
         }
         out
+    }
+
+    /// Whether `hwnd` is a push button (a `WC_BUTTON` of kind `BS_PUSHBUTTON`).
+    pub fn is_push_button(&self, hwnd: u32) -> bool {
+        use super::constants::{BS_PRIMARYSTYLES, BS_PUSHBUTTON};
+        self.windows.get(&hwnd).is_some_and(|w| {
+            w.class_name == "WC_BUTTON" && w.style & BS_PRIMARYSTYLES == BS_PUSHBUTTON
+        })
+    }
+
+    /// Whether `hwnd` can hold the keyboard focus: an enabled, visible
+    /// entry field, MLE, list box or button.
+    pub fn can_take_focus(&self, hwnd: u32) -> bool {
+        use super::constants::WS_DISABLED;
+        self.windows.get(&hwnd).is_some_and(|w| {
+            w.visible && w.style & WS_DISABLED == 0
+                && matches!(w.class_name.as_str(), "WC_ENTRYFIELD" | "WC_MLE" | "WC_LISTBOX" | "WC_BUTTON")
+        })
+    }
+
+    /// The controls of `dialog` that Tab visits, in order: `WS_TABSTOP`
+    /// controls that can take the focus.
+    pub fn tab_stops(&self, dialog: u32) -> Vec<u32> {
+        use super::constants::WS_TABSTOP;
+        self.builtin_control_descendants(dialog).into_iter().filter(|&h| {
+            self.can_take_focus(h) && self.windows[&h].style & WS_TABSTOP != 0
+        }).collect()
+    }
+
+    /// The tab stop after the focus window (before it when `backward`),
+    /// wrapping around; the first (last) tab stop when the focus is
+    /// elsewhere. `None` when `dialog` has no tab stops.
+    pub fn next_tab_stop(&self, dialog: u32, backward: bool) -> Option<u32> {
+        let stops = self.tab_stops(dialog);
+        let n = stops.len();
+        if n == 0 { return None; }
+        let i = match stops.iter().position(|&h| h == self.focus_hwnd) {
+            Some(i) if backward => (i + n - 1) % n,
+            Some(i) => (i + 1) % n,
+            None if backward => n - 1,
+            None => 0,
+        };
+        Some(stops[i])
+    }
+
+    /// The control that first gets the focus in `dialog`: `preferred` (the
+    /// template's choice) if it can take the focus, else the first tab stop,
+    /// else the first control that can take the focus.
+    pub fn initial_dialog_focus(&self, dialog: u32, preferred: Option<u32>) -> Option<u32> {
+        preferred.filter(|&h| self.can_take_focus(h))
+            .or_else(|| self.tab_stops(dialog).first().copied())
+            .or_else(|| self.builtin_control_descendants(dialog).into_iter().find(|&h| self.can_take_focus(h)))
+    }
+
+    /// The default push button (`BS_DEFAULT`) of `dialog`, if it has one.
+    pub fn default_button(&self, dialog: u32) -> Option<u32> {
+        use super::constants::{BS_DEFAULT, WS_DISABLED};
+        self.builtin_control_descendants(dialog).into_iter().find(|&h| {
+            let w = &self.windows[&h];
+            self.is_push_button(h) && w.style & BS_DEFAULT != 0 && w.style & WS_DISABLED == 0
+        })
+    }
+
+    /// Accelerator table `haccel`.
+    pub fn accel_table(&self, haccel: u32) -> Option<&Vec<AccelEntry>> {
+        self.accel_tables.get(&haccel)
+    }
+
+    /// The accelerator table set for `hwnd` (0 = the queue's table).
+    pub fn accel_table_of(&self, hwnd: u32) -> Option<&Vec<AccelEntry>> {
+        self.accel_tables.get(self.window_accel.get(&hwnd)?)
     }
 
     /// The window keyboard input is delivered to: the focus window while it
@@ -699,11 +809,11 @@ impl WindowManager {
     /// bottom-left) against the frame's built-in controls. Returns the
     /// top-most enabled control under the point together with the point in
     /// that control's own coordinates. Static text is transparent to the
-    /// pointer, and windows without a client (dialogs) have no routed controls.
+    /// pointer.
     pub fn control_at(&self, frame: u32, x: i32, y: i32) -> Option<(u32, i32, i32)> {
         use super::constants::WS_DISABLED;
-        let &client = self.frame_to_client.get(&frame)?;
-        self.builtin_control_descendants(client).into_iter().rev().find_map(|h| {
+        let root = self.control_root(frame)?;
+        self.builtin_control_descendants(root).into_iter().rev().find_map(|h| {
             let w = self.windows.get(&h)?;
             if w.class_name == "WC_STATIC" || w.style & WS_DISABLED != 0 { return None; }
             let (ax, ay, cx, cy) = self.get_abs_rect_in_frame(h);
@@ -869,6 +979,19 @@ impl WindowManager {
             self.z_order.push(frame_hwnd);
         }
         self.mark_all_dirty();
+    }
+
+    /// Take a dismissed dialog off the screen: out of the Z-order (the
+    /// window below becomes active) and, if one of its controls has the
+    /// focus, the focus is released.
+    pub fn close_dialog(&mut self, dialog: u32) {
+        self.z_remove(dialog);
+        if self.find_frame_for_hwnd(self.focus_hwnd) == dialog {
+            self.focus_hwnd = 0;
+        }
+        if self.find_frame_for_hwnd(self.pressed_button) == dialog {
+            self.pressed_button = 0;
+        }
     }
 
     /// Remove a frame window from the Z-order stack (called on WinDestroyWindow).

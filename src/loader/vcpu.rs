@@ -595,7 +595,7 @@ impl super::Loader {
                                         if let Some((true, dlg_result)) = dismissed {
                                             // Dialog dismissed: remove it from the Z-order,
                                             // which marks the desktop for a repaint.
-                                            self.shared.window_mgr.lock_or_recover().z_remove(hwnd_dlg);
+                                            self.shared.window_mgr.lock_or_recover().close_dialog(hwnd_dlg);
                                             // regs.rip and regs.rsp are already set to saved state
                                             // by the code above the match.
                                             regs.rax = dlg_result as u64;
@@ -952,9 +952,11 @@ fn setup_exception_dispatch(
 /// Drive the modal dialog message loop for WinDlgBox / WinProcessDlg.
 ///
 /// This function either:
-/// * Dispatches the next message from `hmq` to `dlg_proc` (pushes a
-///   `FrameKind::DlgRunLoop` frame onto `callback_stack`, sets guest IP
-///   to `dlg_proc`, then returns — caller must `continue` the VMEXIT loop).
+/// * Dispatches the next message from `hmq` to its window's procedure —
+///   `dlg_proc` for the dialog — (pushes a `FrameKind::DlgRunLoop` frame onto
+///   `callback_stack`, sets guest IP to the procedure, then returns — caller
+///   must `continue` the VMEXIT loop). Messages for built-in controls are
+///   handled on the spot.
 /// * Returns to the WinDlgBox/WinProcessDlg caller (`saved_rip`/`saved_rsp`)
 ///   with EAX = dialog result (sets registers and returns — caller should
 ///   NOT `continue` independently; `vcpu.set_regs` is already done).
@@ -1042,10 +1044,18 @@ fn setup_dlg_dispatch(
                 return false;
             }
 
-            // WM_PAINT: render the dialog via the built-in handler; do not dispatch
-            // to dlg_proc (dialog procs typically ignore WM_PAINT).
-            if msg.msg == WM_PAINT {
-                loader.dispatch_builtin_control(msg.hwnd, WM_PAINT, 0, 0);
+            // Like WinGetMsg + WinDispatchMsg: accelerators are translated,
+            // and each message goes to its own window's procedure (the
+            // dialog procedure for the dialog, the owner's window procedure
+            // for a repaint behind the dialog) or to the built-in controls.
+            let mut msg = msg;
+            loader.translate_queued_accelerator(&mut msg);
+            let wnd_proc = loader.shared.window_mgr.lock_or_recover()
+                .get_window(msg.hwnd).map_or(0, |w| w.pfn_wp);
+            if wnd_proc == 0 {
+                if !(msg.msg == WM_PAINT && loader.repaint_control(msg.hwnd)) {
+                    loader.dispatch_builtin_control(msg.hwnd, msg.msg, msg.mp1, msg.mp2);
+                }
                 continue;
             }
 
@@ -1065,7 +1075,7 @@ fn setup_dlg_dispatch(
             loader.guest_write::<u32>(sp +  8, msg.msg).expect("DlgRunLoop stack OOB");
             loader.guest_write::<u32>(sp + 12, msg.mp1).expect("DlgRunLoop stack OOB");
             loader.guest_write::<u32>(sp + 16, msg.mp2).expect("DlgRunLoop stack OOB");
-            regs.rip = dlg_proc as u64;
+            regs.rip = wnd_proc as u64;
             vcpu.set_regs(&regs).unwrap();
             return true; // caller must `continue` the VMEXIT loop
         }

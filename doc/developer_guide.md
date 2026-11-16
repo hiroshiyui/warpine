@@ -431,7 +431,7 @@ The GUI thread translates SDL input events into OS/2 messages:
 
 OS/2 uses a bottom-left coordinate origin (Y increases upward), so Y coordinates are flipped during translation.
 
-**Focus and built-in controls.** `WindowManager::focus_hwnd` is the PM focus window (`WinSetFocus` / `WinQueryFocus`); `key_target()` sends keys to it, falling back to the active frame's client. `route_button1()` delivers button-1 messages to the built-in control under the pointer (`control_at()`), otherwise to the client. `pm_controls.rs` handles those messages for `WC_ENTRYFIELD`, `WC_MLE` and `WC_LISTBOX` — click-to-focus, caret, typing, Backspace/Delete/arrows/Home/End, Enter and Up/Down in the MLE, list-box selection and scrolling — and notifies the owner with `WM_CONTROL` (`EN_CHANGE`, `MLN_CHANGE`, `LN_SELECT`). The editing itself is pure logic in `pm_edit.rs` (caret positions in characters, CRLF as one unit, click-x → caret index via `font::text_width`), which keeps it unit-testable without a window. Controls inside `WinDlgBox` dialogs still use the older `#Dialog` path and are not interactive yet.
+**Focus and built-in controls.** `WindowManager::focus_hwnd` is the PM focus window (`WinSetFocus` / `WinQueryFocus`); `key_target()` sends keys to it, falling back to the active frame's client. `route_button1()` delivers button-1 messages to the built-in control under the pointer (`control_at()`), otherwise to the client. `pm_controls.rs` handles those messages for `WC_ENTRYFIELD`, `WC_MLE` and `WC_LISTBOX` — click-to-focus, caret, typing, Backspace/Delete/arrows/Home/End, Enter and Up/Down in the MLE, list-box selection and scrolling — and notifies the owner with `WM_CONTROL` (`EN_CHANGE`, `MLN_CHANGE`, `LN_SELECT`). The editing itself is pure logic in `pm_edit.rs` (caret positions in characters, CRLF as one unit, click-x → caret index via `font::text_width`), which keeps it unit-testable without a window. Dialogs use the same paths — see "Dialog System" below.
 
 ---
 
@@ -510,38 +510,41 @@ Applications that create their child controls inside `WM_CREATE` (the standard O
 
 ### Dialog System (WinDlgBox / DlgRunLoop)
 
-**Binary DLGTEMPLATE format (RT_DIALOG = 5):**
+**Binary DLGTEMPLATE format (RT_DIALOG = 4, `<pmwin.h>`), parsed by `pm_dialog::parse_dlg_template`:**
 
 ```
-[8-byte header: u16 version, u16 codepage, u16 reserved, u16 cbInfo]
-[cbInfo padding bytes]
-i16  x, y, cx, cy       -- dialog position/size
-u16  reserved
-u16  cItems             -- number of child controls
-[NUL-str: presparams]   -- presentation parameters (usually empty)
-[NUL-str: classname]    -- dialog frame class (usually empty)
-[NUL-str: title]        -- dialog title bar text
-[cItems × DlgItemInfo]:
-  i16  x, y, cx, cy
-  u16  id
-  u16  reserved
-  u32  flStyle
-  [NUL-str: presparams]
-  [NUL-str: classname]  -- control class (e.g. "#3" = WC_BUTTON)
-  [NUL-str: text]
+DLGTEMPLATE (14 bytes)                 DLGTITEM (30 bytes each)
+  u16 cbTemplate                         u16 fsItemStatus
+  u16 type                               u16 cChildren      -- descendants follow it
+  u16 codepage   (0 = process cp)        u16 cchClassName   -- 0: offClassName is an atom (3 = WC_BUTTON)
+  u16 offadlgti  -- first DLGTITEM       u16 offClassName
+  u16 fsTemplateStatus                   u16 cchText, offText
+  u16 iItemFocus (0xFFFF = none)         u32 flStyle
+  u16 coffPresParams                     i16 x, y, cx, cy   -- dialog units, relative to the parent item
+                                         u16 id, offPresParams, offCtlData
 ```
 
-`parse_dlg_template()` returns the frame geometry, title, and a `Vec<DlgItemInfo>`. `create_dialog_from_template()` calls `WinCreateStdWindow` + `WinCreateWindow` for each item.
+The first item is the dialog frame itself; the controls follow in tree order (each item followed by its `cChildren` descendants), and all strings live in a pool addressed by offsets from the start of the template. Texts are decoded with the template's codepage. The frame control data of the dialog item is one ULONG of `FCF_*` flags — what the Open Watcom resource compiler writes for `DIALOG ..., FCF_TITLEBAR | FCF_SYSMENU` (checked against the `.res` of `samples/pm_menu_dlg_test`) — and the border comes from the dialog's `FS_DLGBORDER` / `FS_BORDER` / `FS_SIZEBORDER` style. `iItemFocus` counts the dialog as item 0.
+
+**Dialog windows.** `WinDlgBox` and `WinLoadDlg` share `load_dialog()` / `create_dialog()` in `pm_win.rs`: the dialog is a `#Dialog` window (`WindowManager::DIALOG_CLASS`) with the template's chrome, positioned relative to its parent's frame (the desktop for `HWND_DESKTOP`), and its controls are its children, owned by it. A dialog is a frame without a client: `find_frame_for_hwnd()` stops at it, `control_root()` returns it (a standard frame's controls live under its client), `get_abs_rect_in_frame()` maps control positions — relative to the dialog window, border included, as in PM — into its surface, which starts inside the left border, and `builtin_control_descendants()` never descends from an owner window into a dialog. The dialog's `WM_PAINT` (default processing) fills the face and paints each control with the same code as controls in client windows, so entry fields, list boxes and buttons in dialogs are fully interactive. The focus goes first to the template's `iItemFocus` control, else the first `WS_TABSTOP` control (`initial_dialog_focus()`); `WM_INITDLG` names it in mp1. When the dialog is dismissed, `close_dialog()` takes it out of the Z-order and releases a focus or pressed button inside it.
+
+**Default dialog processing** (`Loader::def_dlg_proc`, `pm_dialog.rs`): `WM_PAINT` paints; `WM_CHAR` — Tab / Shift+Tab (`VK_BACKTAB`) move between tab stops (`next_tab_stop()`, wrapping), Enter / keypad Enter click the focused push button or else the `BS_DEFAULT` one (`default_button()`), Esc posts `WM_COMMAND(DID_CANCEL)`; any `WM_COMMAND` dismisses the dialog with the command value; `WM_SYSCOMMAND(SC_CLOSE)` posts `WM_CLOSE`, which dismisses with `DID_CANCEL`. Keys a control does not use (Tab, Enter, Esc in an entry field) are posted to its owner, the dialog.
+
+**Buttons** (`pm_controls.rs`): button 1 down holds a button (`WindowManager::pressed_button`, drawn darker) and gives it the focus unless `BS_NOPOINTERFOCUS`; the renderer sends the release to the held button wherever the pointer is (`pressed_button_release()`), and it clicks only when released over itself. Space clicks the focused button. A push button posts `WM_COMMAND` (mp1 = id, mp2 = `MPFROM2SHORT(CMDSRC_PUSHBUTTON, fPointer)`), or `WM_SYSCOMMAND` / `WM_HELP` with `BS_SYSCOMMAND` / `BS_HELP`, to its owner; other button kinds notify `WM_CONTROL(BN_CLICKED)`. The default button has a black outline, the focused push button a focus mark inside.
 
 **DlgRunLoop modal loop:** When `WinDlgBox` or `WinProcessDlg` needs a modal dialog, they return `ApiResult::DlgRunLoop { dlg_proc, hwnd_dlg, hmq }`. The VMEXIT loop handles this via `setup_dlg_dispatch()` — a free function that mirrors `setup_exception_dispatch()`:
 
 1. Saves the caller's RIP/RSP.
 2. Blocks on the `MessageQueue` condvar until a message arrives or the dialog is dismissed.
 3. If dismissed (`OS2Window::dialog_dismissed == true`): restores saved RIP/RSP, writes `dialog_result` to guest EAX, returns `false` (caller falls through).
-4. Otherwise: pushes a `FrameKind::DlgRunLoop` frame, sets guest registers to invoke `dlg_proc(hwnd, msg, mp1, mp2)`, returns `true` (caller does `continue`).
+4. Otherwise, like `WinGetMsg` + `WinDispatchMsg`: translates an accelerator keystroke, then hands a message for a built-in control to `dispatch_builtin_control` and loops, or pushes a `FrameKind::DlgRunLoop` frame and sets guest registers to call the target window's procedure — `dlg_proc` for the dialog, the owner's window procedure for a repaint behind it — and returns `true` (caller does `continue`).
 5. At `CALLBACK_RET_TRAP`, the `DlgRunLoop` frame handler checks dismissal again and either returns to caller or calls `setup_dlg_dispatch()` again for the next message.
 
 `WinDismissDlg` sets `dialog_dismissed = true` and `dialog_result = result`, then calls `condvar.notify_one()` to wake the blocked loop.
+
+### Keyboard accelerators
+
+`ACCELTABLE` resources (`u16 cAccel, u16 codepage`, then `ACCEL { u16 fs, key, cmd }`) are parsed by `pm_dialog::parse_accel_table`; `WinLoadAccelTable` registers one and `FCF_ACCELTABLE` gives a frame the table with its `idResources`. `WinSetAccelTable` with a window sets that window's table, with `NULLHANDLE` the queue's. `WinGetMsg` and the modal dialog loop translate a key press (`translate_queued_accelerator()`): the tables of the target window's frame (or dialog), of the queue and of the system (`SYSTEM_ACCELS`: Alt+F4 → `WM_SYSCOMMAND(SC_CLOSE)`) are searched in that order, and a match is delivered to the frame's client (or the dialog) as `WM_COMMAND` — `WM_SYSCOMMAND` for `AF_SYSCOMMAND`, `WM_HELP` for `AF_HELP` — with mp2 = `CMDSRC_ACCELERATOR`. `accel_matches()` requires Ctrl and Alt exactly as the entry says, Shift too for `AF_VIRTUALKEY` / `AF_SCANCODE` (for `AF_CHAR` the character already includes it), and compares characters without case when Ctrl or Alt is held (chords report the unshifted character). `WinTranslateAccel` applies the table it is given to a `QMSG` and readdresses it to the window it names. `WinDefWindowProc` turns `WM_SYSCOMMAND(SC_CLOSE)` into `WM_CLOSE`.
 
 ---
 
@@ -1202,7 +1205,8 @@ src/
     pm_shapes.rs       Arc geometry (ARCPARAMS, full/partial/point arcs, FIXED) and the PATSYM_* pattern table
     pm_bitmap.rs       Bitmap codec (BITMAPINFOHEADER/2, RT_BITMAP), memory DCs, bitmaps, GpiBitBlt family
     pm_edit.rs         Edit-buffer logic for text controls (insert/delete/caret/scroll)
-    pm_controls.rs     Interactive WC_ENTRYFIELD / WC_MLE / WC_LISTBOX: messages + painting
+    pm_controls.rs     Interactive WC_ENTRYFIELD / WC_MLE / WC_LISTBOX / WC_BUTTON: messages + painting
+    pm_dialog.rs       DLGTEMPLATE / ACCELTABLE parsing, dialog keys (WinDefDlgProc), accelerator translation
     mmpm.rs            MMPM/2: MmpmManager, beep_tone, mciSendCommand/mciSendString, parse_wav
     console.rs         VioManager: screen buffer, cursor state/shape, sdl_mode,
                        ANSI output, stdin_cooked_chars, CP437→UTF-8 conversion
@@ -1635,7 +1639,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 770 unit tests (741 warpine + 18 gen_api + 11 lx_link), 33 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 794 unit tests (765 warpine + 18 gen_api + 11 lx_link), 33 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
