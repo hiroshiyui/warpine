@@ -694,7 +694,9 @@ impl SdlRenderer {
             resize_state: None,
             // Long enough ago that the first frame is composited at once.
             last_composite: now.checked_sub(FRAME_INTERVAL).unwrap_or(now),
-            script: GuiScript::from_env(),
+            script: GuiScript::from_env().inspect(|_| {
+                log::info!("[GUI] GUI script active: host mouse and keyboard input is ignored");
+            }),
         }
     }
 
@@ -1301,9 +1303,14 @@ impl PmRenderer for SdlRenderer {
             self.sync_host_clipboard(shared);
         }
 
+        // A scripted session must not depend on where the host pointer is
+        // or what is typed: a stray motion event during a scripted drag
+        // would move the window off the scripted path. Its input is added
+        // below, after this filter.
+        let scripted_session = self.script.is_some();
         let mut events: Vec<_> = self.pending_events.drain(..)
             .chain(self.event_pump.poll_iter())
-            .filter(|e| !is_wake_event(e))
+            .filter(|e| !is_wake_event(e) && !(scripted_session && is_host_input(e)))
             .collect();
 
         // Scripted session: turn due steps into input events and captures.
@@ -1392,6 +1399,16 @@ impl PmRenderer for SdlRenderer {
             (false, None) => std::thread::sleep(timeout.min(super::renderer::POLL_PERIOD)),
         }
     }
+}
+
+/// Mouse, keyboard and text input from the host. Ignored while a GUI script
+/// runs, so a scripted session behaves the same on a real display as on
+/// the headless drivers; window events (resize, expose, close) still count.
+fn is_host_input(event: &Event) -> bool {
+    matches!(event,
+        Event::MouseMotion { .. } | Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. }
+        | Event::MouseWheel { .. } | Event::KeyDown { .. } | Event::KeyUp { .. }
+        | Event::TextInput { .. } | Event::TextEditing { .. })
 }
 
 /// SDL video drivers with no input source: SDL cannot block on them and
@@ -2417,6 +2434,21 @@ mod script_tests {
     use super::*;
     use super::gui_script::{Input, Key, Mods};
     use sdl3::mouse::MouseButton;
+
+    #[test]
+    fn host_input_is_told_apart_from_window_events() {
+        for line in ["0 click 5 6", "0 rclick 5 6", "0 drag 1 2 3 4", "0 key ctrl+a", "0 text hi"] {
+            for event in script_events(line) {
+                assert!(is_host_input(&event), "{line}: {event:?} is input");
+            }
+        }
+        use sdl3::event::WindowEvent;
+        let window = |win_event| Event::Window { timestamp: 0, window_id: 0, win_event };
+        assert!(!is_host_input(&Event::Quit { timestamp: 0 }));
+        assert!(!is_host_input(&window(WindowEvent::Exposed)));
+        assert!(!is_host_input(&window(WindowEvent::Resized(10, 10))));
+        assert!(!is_host_input(&Event::ClipboardUpdate { timestamp: 0 }));
+    }
 
     /// The SDL events one script line turns into.
     fn script_events(line: &str) -> Vec<Event> {

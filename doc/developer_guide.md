@@ -1509,6 +1509,15 @@ before a `dump` has been handled by the renderer when the capture is taken,
 but the application still needs time to react, so leave a pause before
 capturing.
 
+While a script runs, mouse, keyboard and text input from the host is
+ignored (`is_host_input`), so a session behaves the same on a real display
+as on the `dummy` driver: a stray pointer movement during a scripted drag
+would otherwise move the window off the scripted path. Window events —
+resize, expose, closing the desktop window — still count. This makes
+scripts usable for timing comparisons on a real display, e.g. 50 title-bar
+drags under each `WARPINE_COMPOSITOR` value with
+`RUST_LOG=warpine::gui=debug`.
+
 The script injects the SDL events a real mouse and keyboard produce, so the
 normal event handling runs. `key` sends `KeyDown`/`KeyUp`, with the modifier
 keys pressed before and released after, which become `WM_CHAR`. `text` sends,
@@ -1619,7 +1628,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 733 unit tests (704 warpine + 18 gen_api + 11 lx_link), 28 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 734 unit tests (705 warpine + 18 gen_api + 11 lx_link), 28 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
