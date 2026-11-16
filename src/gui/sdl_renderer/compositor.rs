@@ -338,6 +338,22 @@ fn painted_parts(p: &FramePlacement, fb_w: u32, fb_h: u32) -> Vec<Rect> {
     parts
 }
 
+/// Where changed client pels go in a frame's texture: `(dst, src)`, the
+/// texture rectangle and the same-sized rectangle of the client surface.
+/// `changed` is in surface coordinates; the texture is `size` (frame-local).
+///
+/// The client is drawn from its top-left corner at `p.client`, but the
+/// frame border is drawn on top of it (the client reaches the frame's
+/// bottom edge), so only the part inside the border ring may be replaced.
+fn partial_upload(p: &FramePlacement, changed: Rect, size: (i32, i32)) -> (Rect, Rect) {
+    let client = p.client.offset(-p.frame.x0, -p.frame.y0);
+    let bw = super::frame_border_px(p.frame_flags);
+    let inside_border = Rect::new(bw, bw, size.0 - bw, size.1 - bw);
+    let dst = changed.offset(client.x0, client.y0)
+        .intersect(&client).intersect(&inside_border).intersect(&Rect::at(0, 0, size.0, size.1));
+    (dst, dst.offset(-client.x0, -client.y0))
+}
+
 impl FramePlacement {
     /// The same placement moved by `(dx, dy)`, without its pull-down.
     fn moved_without_pulldown(&self, dx: i32, dy: i32) -> FramePlacement {
@@ -379,12 +395,7 @@ impl LayeredCompositor {
         if reusable {
             let layer = self.layers.get_mut(&p.hwnd).expect("checked above");
             if layer.generation != fb.generation() {
-                // The client sits at `client` in the texture; the surface is
-                // drawn from its top-left, clipped to it.
-                let client = p.client.offset(-p.frame.x0, -p.frame.y0);
-                let dst = fb.take_changes().offset(client.x0, client.y0)
-                    .intersect(&client).intersect(&Rect::at(0, 0, w, h));
-                let src = dst.offset(-client.x0, -client.y0);
+                let (dst, src) = partial_upload(p, fb.take_changes(), (w, h));
                 log::trace!("[GUI] frame {:#x}: partial upload {src:?}", p.hwnd);
                 if let Err(e) = upload(&mut layer.texture, (dst.x0, dst.y0), &fb.buffer, fb.width as usize, src) {
                     warn!("[GUI] frame {:#x} texture upload failed: {e}", p.hwnd);
@@ -545,6 +556,31 @@ mod tests {
         assert_eq!(CompositorKind::choose(Some(" Layered "), false), Layered);
         assert_eq!(CompositorKind::choose(Some("bogus"), false), Software, "unknown: default");
         assert_eq!(CompositorKind::choose(Some(""), true), Layered, "empty: default");
+    }
+
+    /// Partial uploads replace client pels only: never the border drawn
+    /// over the client's bottom rows, never the title bar.
+    #[test]
+    fn partial_uploads_stay_inside_the_border() {
+        use crate::loader::FCF_SIZEBORDER;
+        let p = place_frame(1, 10, 10, 100, 80, FCF_TITLEBAR | FCF_SIZEBORDER, false, None, (96, 60), 600);
+        let size = (p.frame.width(), p.frame.height());
+        let bw = super::super::frame_border_px(FCF_SIZEBORDER);
+        let client = p.client.offset(-p.frame.x0, -p.frame.y0);
+        assert_eq!(client.y1, size.1, "the client reaches the frame's bottom edge");
+        // The whole surface changed: everything but the border ring.
+        let (dst, src) = partial_upload(&p, Rect::at(0, 0, 96, 60), size);
+        assert_eq!(dst, Rect::new(client.x0, client.y0, client.x1, size.1 - bw));
+        assert_eq!(src, dst.offset(-client.x0, -client.y0));
+        assert_eq!((dst.width(), dst.height()), (src.width(), src.height()));
+        // A change in the surface's bottom rows only: clipped above the border.
+        let (dst, _) = partial_upload(&p, Rect::new(0, 58, 96, 60), size);
+        assert!(dst.is_empty() || dst.y1 <= size.1 - bw, "{dst:?}");
+        // A change in the middle is passed through unchanged.
+        let (dst, src) = partial_upload(&p, Rect::new(5, 5, 9, 7), size);
+        assert_eq!(src, Rect::new(5, 5, 9, 7));
+        assert_eq!(dst, Rect::new(5, 5, 9, 7).offset(client.x0, client.y0));
+        assert!(dst.y0 >= p.title.height(), "below the title bar");
     }
 
     #[test]
