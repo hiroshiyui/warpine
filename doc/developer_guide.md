@@ -716,7 +716,7 @@ Handler calling convention is cdecl (caller-cleanup, 4 args).
 When the handler returns via `CALLBACK_RET_TRAP`:
 
 - **`XCPT_CONTINUE_EXECUTION` (0xFFFFFFFF):** calls `read_context_record(ctx_record)` to restore all GP registers and segment selectors to the saved state, then frees `guest_allocs` and resumes execution at `saved.eip`.
-- **`XCPT_CONTINUE_SEARCH` (0x01):** reads `reg_rec->prev` (next handler in chain). If not `XCPT_CHAIN_END`, calls `setup_exception_dispatch()` again with the next handler address. If chain exhausted, falls through to crash dump.
+- **`XCPT_CONTINUE_SEARCH` (0), or any other value:** reads `reg_rec->prev` (next handler in chain). If not `XCPT_CHAIN_END`, calls `setup_exception_dispatch()` again with the next handler address. If chain exhausted, falls through to crash dump.
 
 ### DosRaiseException (ordinal 356)
 
@@ -748,7 +748,7 @@ Maps x86 CPU fault vectors to OS/2 `XCPT_*` codes:
 pub const TIB_EXCHAIN_OFFSET: u32 = 0x00;
 pub const XCPT_CHAIN_END: u32 = 0xFFFF_FFFF;
 pub const XCPT_CONTINUE_EXECUTION: u32 = 0xFFFF_FFFF;
-pub const XCPT_CONTINUE_SEARCH: u32 = 0x0000_0001;
+pub const XCPT_CONTINUE_SEARCH: u32 = 0x0000_0000;
 pub const EXCEPTION_REPORT_SIZE: u32 = 0x38;
 pub const CONTEXT_RECORD_SIZE: u32 = 0xCC;
 pub const EH_NONCONTINUABLE: u32 = 0x0000_0001;

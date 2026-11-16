@@ -372,20 +372,20 @@ pub const ERROR_ACCESS_DENIED: u32 = 5;
 pub const ERROR_INVALID_HANDLE: u32 = 6;
 pub const ERROR_NOT_ENOUGH_MEMORY: u32 = 8;
 pub const ERROR_INVALID_DRIVE: u32 = 15;
-pub const ERROR_INVALID_FUNCTION: u32 = 87;
+pub const ERROR_INVALID_FUNCTION: u32 = 1;
 pub const ERROR_BUFFER_OVERFLOW: u32 = 111;
 pub const ERROR_INVALID_LEVEL: u32 = 124;
 pub const ERROR_MOD_NOT_FOUND: u32 = 126;
 pub const ERROR_PROC_NOT_FOUND: u32 = 127;
-pub const ERROR_ENVVAR_NOT_FOUND: u32 = 204;
-pub const ERROR_INIT_ROUTINE_FAILED: u32 = 199;
+pub const ERROR_ENVVAR_NOT_FOUND: u32 = 203;
+pub const ERROR_INIT_ROUTINE_FAILED: u32 = 295;
 pub const ERROR_INVALID_PARAMETER:    u32 = 87;
-pub const ERROR_INVALID_CODE_PAGE:    u32 = 470;
+pub const ERROR_INVALID_CODE_PAGE:    u32 = 472;
 pub const ERROR_NESTING_NOT_ALLOWED:  u32 = 215;
 
 // ── VIO error codes ───────────────────────────────────────────────────────────
-pub const ERROR_VIO_ROW: u32 = 426; // Row parameter out of range
-pub const ERROR_VIO_COL: u32 = 427; // Column parameter out of range
+pub const ERROR_VIO_ROW: u32 = 358; // Row parameter out of range
+pub const ERROR_VIO_COL: u32 = 359; // Column parameter out of range
 
 // ── WC_* built-in window class atoms ─────────────────────────────────────────
 // These are the numeric atom values passed as the pszClass pointer to
@@ -642,7 +642,7 @@ pub const XCPT_CHAIN_END: u32 = 0xFFFF_FFFF;
 /// Handler fixed the exception — resume at the fault address.
 pub const XCPT_CONTINUE_EXECUTION: u32 = 0xFFFF_FFFF;
 /// Handler did not handle the exception — try the next one in the chain.
-pub const XCPT_CONTINUE_SEARCH:    u32 = 0x0000_0001;
+pub const XCPT_CONTINUE_SEARCH:    u32 = 0x0000_0000;
 
 // Exception report flags (fHandlerFlags in EXCEPTIONREPORTRECORD)
 pub const EH_NONCONTINUABLE: u32 = 0x0000_0001;
@@ -693,25 +693,25 @@ pub const XERREC_PREV:    u32 = 0x00; // prev_structure (next node toward chain 
 pub const XERREC_HANDLER: u32 = 0x04; // ExceptionHandler function pointer
 
 // OS/2 exception codes (XCPT_*) — from IBM bseexpt.h / OS/2 Warp toolkit
-pub const XCPT_GUARD_PAGE_VIOLATION:    u32 = 0xC000_0001;
-pub const XCPT_UNABLE_TO_GROW_STACK:    u32 = 0xC000_0003;
+pub const XCPT_GUARD_PAGE_VIOLATION:    u32 = 0x8000_0001;
+pub const XCPT_UNABLE_TO_GROW_STACK:    u32 = 0x8001_0001;
 pub const XCPT_ACCESS_VIOLATION:        u32 = 0xC000_0005;
 pub const XCPT_IN_PAGE_ERROR:           u32 = 0xC000_0006;
 pub const XCPT_ILLEGAL_INSTRUCTION:     u32 = 0xC000_001C;
-pub const XCPT_INVALID_LOCK_SEQUENCE:   u32 = 0xC000_001E;
-pub const XCPT_FLOAT_DENORMAL_OPERAND:  u32 = 0xC000_0048;
-pub const XCPT_FLOAT_DIVIDE_BY_ZERO:    u32 = 0xC000_0049;
-pub const XCPT_FLOAT_INEXACT_RESULT:    u32 = 0xC000_004A;
-pub const XCPT_FLOAT_INVALID_OPERATION: u32 = 0xC000_004B;
-pub const XCPT_FLOAT_OVERFLOW:          u32 = 0xC000_004C;
-pub const XCPT_FLOAT_STACK_CHECK:       u32 = 0xC000_004D;
-pub const XCPT_FLOAT_UNDERFLOW:         u32 = 0xC000_004E;
+pub const XCPT_INVALID_LOCK_SEQUENCE:   u32 = 0xC000_001D;
+pub const XCPT_FLOAT_DENORMAL_OPERAND:  u32 = 0xC000_0094;
+pub const XCPT_FLOAT_DIVIDE_BY_ZERO:    u32 = 0xC000_0095;
+pub const XCPT_FLOAT_INEXACT_RESULT:    u32 = 0xC000_0096;
+pub const XCPT_FLOAT_INVALID_OPERATION: u32 = 0xC000_0097;
+pub const XCPT_FLOAT_OVERFLOW:          u32 = 0xC000_0098;
+pub const XCPT_FLOAT_STACK_CHECK:       u32 = 0xC000_0099;
+pub const XCPT_FLOAT_UNDERFLOW:         u32 = 0xC000_009A;
 pub const XCPT_INTEGER_DIVIDE_BY_ZERO:  u32 = 0xC000_009B;
-pub const XCPT_INTEGER_OVERFLOW:        u32 = 0xC000_0097;
-pub const XCPT_PRIVILEGED_INSTRUCTION:  u32 = 0xC000_0096;
+pub const XCPT_INTEGER_OVERFLOW:        u32 = 0xC000_009C;
+pub const XCPT_PRIVILEGED_INSTRUCTION:  u32 = 0xC000_009D;
 pub const XCPT_DATATYPE_MISALIGNMENT:   u32 = 0xC000_009E;
-pub const XCPT_BREAKPOINT:              u32 = 0xC000_0009;
-pub const XCPT_SINGLE_STEP:             u32 = 0xC000_000A;
+pub const XCPT_BREAKPOINT:              u32 = 0xC000_009F;
+pub const XCPT_SINGLE_STEP:             u32 = 0xC000_00A0;
 pub const XCPT_SIGNAL:                  u32 = 0xC001_0003;
 /// Catch-all for unclassified hardware faults.
-pub const XCPT_FATAL_EXCEPTION:         u32 = 0xC000_FFFF;
+pub const XCPT_FATAL_EXCEPTION:         u32 = 0xC000_0000;
