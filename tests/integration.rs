@@ -261,20 +261,39 @@ fn run_gui_sample_dumps(sample: &str, steps: &str, count: usize) -> Vec<(usize, 
         text = text.replace(&format!("{{dump{i}}}"), dump.to_str().unwrap());
     }
     std::fs::write(&script, text).unwrap();
+    run_gui_script(sample, &script, false);
 
+    dumps.iter().map(|dump| {
+        let ppm = std::fs::read(dump)
+            .unwrap_or_else(|e| panic!("{sample} wrote no desktop dump {}: {e}", dump.display()));
+        parse_ppm(&ppm)
+    }).collect()
+}
+
+/// Run `sample` on SDL's dummy driver under the GUI script file `script` and
+/// wait for it to exit (30 s at most). Returns its stdout when `capture` is
+/// set, an empty string otherwise.
+fn run_gui_script(sample: &str, script: &Path, capture: bool) -> String {
     let mut child = Command::new(warpine())
         .arg(sample)
         .env("SDL_VIDEODRIVER", "dummy")
         .env("SDL_AUDIODRIVER", "dummy")
-        .env("WARPINE_GUI_SCRIPT", &script)
+        .env("WARPINE_GUI_SCRIPT", script)
         .env_remove("WARPINE_HEADLESS")
         .env_remove("WARPINE_DESKTOP_W")
         .env_remove("WARPINE_DESKTOP_H")
         .env("RUST_LOG", "error")
-        .stdout(Stdio::null())
+        .stdout(if capture { Stdio::piped() } else { Stdio::null() })
         .stderr(Stdio::null())
         .spawn()
         .unwrap_or_else(|e| panic!("Failed to spawn warpine for {sample}: {e}"));
+    // Read stdout on a thread so a chatty sample cannot fill the pipe and block.
+    let reader = child.stdout.take().map(|out| std::thread::spawn(move || {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::BufReader::new(out).read_to_string(&mut buf).ok();
+        buf
+    }));
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while child.try_wait().expect("try_wait failed").is_none() {
         if std::time::Instant::now() >= deadline {
@@ -283,12 +302,7 @@ fn run_gui_sample_dumps(sample: &str, steps: &str, count: usize) -> Vec<(usize, 
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-
-    dumps.iter().map(|dump| {
-        let ppm = std::fs::read(dump)
-            .unwrap_or_else(|e| panic!("{sample} wrote no desktop dump {}: {e}", dump.display()));
-        parse_ppm(&ppm)
-    }).collect()
+    reader.map(|r| r.join().unwrap()).unwrap_or_default()
 }
 
 /// Colour of desktop pixel `(x, y)` (origin top-left) as `0xRRGGBB`.
@@ -449,6 +463,37 @@ fn gui_menu_pulldown_matches_golden() {
 fn gui_menu_about_dialog_matches_golden() {
     check_gui_golden("pm_menu_about_dialog", "samples/pm_menu_dlg_test/pm_menu_dlg_test.exe",
         "1500 click 52 62\n2500 click 62 80\n4000 dump {dump}\n4100 quit\n");
+}
+
+/// pm_bench: the self-benchmark runs every measurement, reports each with a
+/// non-zero count and duration, and runs again when R is pressed. Only the
+/// shape of the report is checked; the numbers depend on the machine.
+#[test]
+fn gui_pm_bench_reports_every_measurement() {
+    let sample = "samples/pm_bench/pm_bench.exe";
+    if !kvm_available() || !Path::new(sample).exists() {
+        eprintln!("skipping gui_pm_bench_reports_every_measurement: KVM or {sample} not available");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("session.script");
+    // One run takes about 3 s; leave room for a loaded test machine.
+    std::fs::write(&script, "6000 text r\n12000 quit\n").unwrap();
+    let out = run_gui_script(sample, &script, true);
+
+    assert_eq!(out.matches("pm_bench: done").count(), 2, "two complete runs:\n{out}");
+    for name in ["GpiBox", "GpiLine", "GpiText", "WinSendMsg", "WinPostMsg", "Paint", "Timer"] {
+        let lines: Vec<&str> = out.lines()
+            .filter(|l| l.starts_with(&format!("pm_bench: {name}: "))).collect();
+        assert_eq!(lines.len(), 2, "{name} reported once per run:\n{out}");
+        for line in lines {
+            // "pm_bench: <name>: <ops> ops in <ms> ms = ..."
+            let words: Vec<&str> = line.split_whitespace().collect();
+            let ops: u32 = words[2].parse().unwrap_or_else(|_| panic!("ops in {line:?}"));
+            let ms: u32 = words[5].parse().unwrap_or_else(|_| panic!("ms in {line:?}"));
+            assert!(ops > 0 && ms > 0, "{line}");
+        }
+    }
 }
 
 // Colours the compositor draws with (`src/gui/sdl2_renderer.rs`).

@@ -7,6 +7,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **`samples/pm_bench`** — self-benchmarking PM application: GPI box / line / text calls per second, `WinSendMsg` and `WinPostMsg` round trips, paint cycles and the `WM_TIMER` rate, shown in its window and printed to stdout; R reruns. New integration test `gui_pm_bench_reports_every_measurement` checks that every measurement is reported in two runs.
+- **`DosQuerySysInfo` `QSV_MS_COUNT` / `QSV_TIME_LOW` / `QSV_TIME_HIGH`** (`stubs.rs`) — the millisecond counter and the 64-bit Unix time; they returned 0 before.
 - **GUI frame statistics** (`src/gui/frame_stats.rs`) — loop passes, composites per second and composite / present times, logged every 5 s with `RUST_LOG=warpine::gui=debug`.
 - **IBM Plex typography for Presentation Manager** (`src/gui/font.rs`, `vendor/ibm-plex`) — all PM text (title bars, menus, dialogs, built-in controls, GPI text) is rendered anti-aliased in the embedded IBM Plex Sans / Mono / Serif families (Regular, Bold, Italic, Bold Italic) with IBM Plex Sans JP / KR / TC / SC for CJK; per-character fallback Latin face → CJK faces (ordered by the active DBCS codepage) → GNU Unifont. Rasterised with the `ab_glyph` crate. The VIO text console keeps its 8×16 bitmap font.
 - **GPI font selection** (`pm_gpi.rs`) — `GpiCreateLogFont` maps the FATTRS face name, bold/italic flags and size onto an IBM Plex face (Courier/System VIO → Mono, Tms Rmn/Times → Serif, others → Sans); `GpiSetCharSet`, `GpiSetCharBox` and `GpiDeleteSetId` update the selection; `GpiQueryTextBox`, `GpiQueryFontMetrics` and the current-position advance use the selected font's real proportional metrics.

@@ -51,6 +51,7 @@ cd samples/4os2 && ./fetch_source.sh && make
 | pm_controls_test | PM built-in controls creation and API verification | WinCreateWindow (WC_STATIC/WC_BUTTON/WC_ENTRYFIELD/WC_SCROLLBAR/WC_LISTBOX/WC_MLE), WinSetWindowText, WinQueryWindowText, WinEnableWindow, WinIsWindowEnabled, LM_INSERTITEM/LM_QUERYITEMCOUNT |
 | pm_menu_dlg_test | PM menu bar and modal About dialog loaded from MENU / DLGTEMPLATE resources | WinCreateStdWindow (FCF_MENU), WM_COMMAND, WinDlgBox, WinDefDlgProc, WinDismissDlg |
 | pm_font_test | GPI font selection and CJK text: Plex Sans/Mono/Serif, bold/italic, sizes, and Japanese/Korean/Chinese lines with measured-width rules | GpiCreateLogFont, GpiSetCharSet, GpiSetCharBox, GpiDeleteSetId, GpiQueryTextBox, GpiCharStringAt, DosSetProcessCp |
+| pm_bench | PM self-benchmark: measures GPI drawing, `WinSendMsg` / `WinPostMsg` round trips, paint cycles and the `WM_TIMER` rate for about 0.3 s each, prints `pm_bench: <name>: <ops> ops in <ms> ms = …` lines plus `pm_bench: done` to stdout and shows them in the window; R runs it again | DosQuerySysInfo (QSV_MS_COUNT), GpiBox, GpiLine, GpiCharStringAt, WinSendMsg, WinPostMsg, WinInvalidateRect, WinStartTimer |
 | rust_hello | Rust no_std guest binary: "Hello from Rust on Warpine!" | DosWrite, DosExit (via warpine-os2 crate) |
 | 4os2 | 4OS2 command shell (full interactive) | Nearly all DOSCALLS/VIO/KBD APIs; DLL loading (jpos2dll.dll) |
 

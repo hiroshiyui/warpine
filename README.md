@@ -105,6 +105,7 @@ samples/               OS/2 sample applications and build scripts
   4os2/                4OS2 command shell (fetch_source.sh + make; includes jpos2dll.dll)
   pm_demo/             Presentation Manager GUI demo
   pm_hello/            Minimal PM "Hello World" window
+  pm_bench/            PM self-benchmark: GPI, message, paint and timer rates
   shapes/              PM graphics: boxes, lines, arcs
   thread_test/         DosCreateThread/DosWaitThread
   pipe_test/           DosCreatePipe/DosWrite/DosRead
@@ -239,7 +240,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 674 unit tests (no KVM required)
+cargo test                        # 676 unit tests (no KVM required)
 cargo test --test integration     # 10 end-to-end tests (requires /dev/kvm)
 cargo clippy -- -D warnings       # Lint — must pass with zero warnings
 ```

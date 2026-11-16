@@ -381,6 +381,14 @@ The GUI thread (`run_pm_loop` in `src/gui/renderer.rs`, backend `Sdl2Renderer` i
 
 **Frame statistics.** `src/gui/frame_stats.rs` counts loop passes and composites (average and maximum composite time, present time) and logs a summary every 5 s at debug level: `RUST_LOG=warpine::gui=debug`. Use it to measure rendering changes.
 
+**Guest-side benchmark.** `samples/pm_bench` measures what an application sees: GPI calls issued per second inside a paint, `WinSendMsg` and `WinPostMsg` round trips, `WinInvalidateRect` → `WM_PAINT` cycles, and the `WM_TIMER` rate of a 10 ms timer, each timed with `DosQuerySysInfo(QSV_MS_COUNT)`. GPI calls only queue drawing for the GUI thread, so its GPI figures are the cost of the calls, not of rasterising them; read them together with the frame statistics. To compare two builds without a display:
+
+```bash
+printf '4500 quit\n' > /tmp/bench.script
+SDL_VIDEODRIVER=dummy WARPINE_GUI_SCRIPT=/tmp/bench.script \
+  cargo run --release -- samples/pm_bench/pm_bench.exe
+```
+
 ### Input Handling
 
 The GUI thread translates SDL2 input events into OS/2 messages:
@@ -1578,7 +1586,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 674 unit tests (645 warpine + 18 gen_api + 11 lx_link), 18 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 676 unit tests (647 warpine + 18 gen_api + 11 lx_link), 19 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

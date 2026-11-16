@@ -77,7 +77,7 @@ NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 
 From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `renderer.rs`, `font.rs`, `message.rs`) on 2026-11-15. The steps are in suggested order. Steps 0 and 1 (frame statistics, a blocking event loop, coalesced presents, clipboard via events) are done — see the developer guide, "Rendering Pipeline"; measure the items below with the frame statistics (`RUST_LOG=warpine::gui=debug`) before and after.
 
-- [ ] **Measure on a real display** — the event-loop change was measured only on SDL's `dummy` driver (idle CPU roughly halved); compare idle CPU and input latency on X11 and Wayland, where the old loop also read the clipboard ~125 times a second
+- [ ] **Measure on a real display** — the event-loop change was measured only on SDL's `dummy` driver (idle CPU roughly halved); compare idle CPU and input latency on X11 and Wayland, where the old loop also read the clipboard ~125 times a second; `samples/pm_bench` gives repeatable guest-side numbers for the comparison
 
 **Step 2 — compositor cost (small, independent)**
 
