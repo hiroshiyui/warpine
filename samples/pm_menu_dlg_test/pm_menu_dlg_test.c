@@ -2,7 +2,9 @@
  * pm_menu_dlg_test.c — PM Menu System + Dialog System test for Warpine.
  *
  * Exercises:
- *   WinLoadMenu (FCF_MENU)   — load and attach a menu from resources
+ *   FCF_MENU               — the frame's menu bar from resources
+ *   WinLoadMenu            — replace it: destroy the FID_MENU window, load a
+ *                            new one, WM_UPDATEFRAME(FCF_MENU) shows it
  *   WinDlgBox              — display a modal dialog loaded from resources
  *   WinDismissDlg          — dismiss the dialog from a button click
  *   WinDefDlgProc          — default dialog procedure (DID_OK/DID_CANCEL)
@@ -95,7 +97,7 @@ int main(void)
     HAB   hab;
     HMQ   hmq;
     HWND  hwndFrame, hwndClient;
-    HWND  hwndMenu;
+    HWND  hwndMenu, hwndOld;
     QMSG  qmsg;
     ULONG flFrameFlags = FCF_TITLEBAR | FCF_SYSMENU | FCF_MENU;
     int   pass = 0, fail = 0;
@@ -119,9 +121,20 @@ int main(void)
 
     check("WinCreateStdWindow returns valid frame", hwndFrame != 0, &pass, &fail);
 
-    /* Test 1: WinLoadMenu */
+    /* Test 1: FCF_MENU made an FID_MENU child; replace it with WinLoadMenu
+     * and WM_UPDATEFRAME, as the PM reference describes. */
+    hwndOld = WinWindowFromID(hwndFrame, FID_MENU);
+    check("FCF_MENU creates the FID_MENU window", hwndOld != NULLHANDLE, &pass, &fail);
+    check("WinDestroyWindow removes the old menu", WinDestroyWindow(hwndOld), &pass, &fail);
+    check("then the frame has no FID_MENU window",
+          WinWindowFromID(hwndFrame, FID_MENU) == NULLHANDLE, &pass, &fail);
     hwndMenu = WinLoadMenu(hwndFrame, NULLHANDLE, ID_MAINMENU);
     check("WinLoadMenu returns non-zero handle", hwndMenu != 0, &pass, &fail);
+    check("WinLoadMenu makes the FID_MENU window",
+          WinWindowFromID(hwndFrame, FID_MENU) == hwndMenu, &pass, &fail);
+    check("its owner is the frame", WinQueryWindow(hwndMenu, QW_OWNER) == hwndFrame, &pass, &fail);
+    check("WM_UPDATEFRAME(FCF_MENU) is processed",
+          (BOOL)WinSendMsg(hwndFrame, WM_UPDATEFRAME, MPFROMLONG(FCF_MENU), 0), &pass, &fail);
 
     /* Test 3: WinDlgBox — show modal dialog, should return DID_OK or DID_CANCEL
      * (Since no real GUI interaction is possible in a test, the dialog will

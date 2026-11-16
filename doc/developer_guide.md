@@ -506,7 +506,7 @@ Applications that create their child controls inside `WM_CREATE` (the standard O
 | `text` | NUL-terminated `[u8]` | Absent for `MIS_SEPARATOR` items |
 | children | recursive | Present only for `MIS_SUBMENU` items; terminated by the next item with `MIS_END` |
 
-`parse_menu_template()` in `pm_win.rs` builds a `Vec<MenuItem>` tree. `WinLoadMenu` registers a menu pseudo-window carrying this tree and attaches it to the frame through the internal `attach_menu_to_frame()` helper, which stores the menu hwnd in `OS2Window::menu_hwnd`, re-lays out the frame and returns the previous handle; `WinCreateStdWindow` does the same for `FCF_MENU`. (PMWIN has no `WinSetMenu` export.)
+`parse_menu_template()` in `pm_win.rs` builds a `Vec<MenuItem>` tree. `WinLoadMenu` and `WinCreateMenu` create a menu pseudo-window carrying this tree (`create_menu_window()`): as the PM reference says, a child of the given frame with the frame as owner and identity `FID_MENU`, so `WinWindowFromID(frame, FID_MENU)` finds it. They do not show it: the PM Guide has the application send `WM_UPDATEFRAME` to the frame after loading a menu, and `WinDefWindowProc` handles `WM_UPDATEFRAME` with `FCF_MENU` on a standard frame by attaching the frame's topmost `FID_MENU` child, or none (`update_frame_menu()` → `attach_menu_to_frame()`, which stores the menu hwnd in `OS2Window::menu_hwnd`, re-lays out the frame, posts `WM_SIZE` / `WM_PAINT` to the client when its size changed and returns the previous handle). A menu bar replacement is therefore: `WinDestroyWindow` of the old `FID_MENU` window, `WinLoadMenu`, `WM_UPDATEFRAME(FCF_MENU)`. `WinDestroyWindow` of the attached menu (or of a window containing it) detaches it from its frame at once. `WinCreateStdWindow` with `FCF_MENU` creates and attaches its menu directly (also as `FID_MENU`). The reference does not describe the frame's response to `WM_UPDATEFRAME` beyond this, so other `FCF_*` flags are ignored; a dialog's `WM_UPDATEFRAME` goes to `WinDefDlgProc` and is not handled yet. (PMWIN has no `WinSetMenu` export.)
 
 ### Dialog System (WinDlgBox / DlgRunLoop)
 
@@ -1649,7 +1649,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 860 unit tests (831 warpine + 18 gen_api + 11 lx_link), 41 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 861 unit tests (832 warpine + 18 gen_api + 11 lx_link), 42 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

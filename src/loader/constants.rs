@@ -60,6 +60,11 @@ pub const NE_THUNK_CODE_SELECTOR: u16 = (NE_THUNK_CODE_GDT_INDEX as u16) * 8; //
 // OS/2 WM_ message constants
 pub const WM_CREATE: u32 = 0x0001;
 pub const WM_SIZE: u32 = 0x0007;
+/// Sent to a frame after frame controls were added or removed; mp1 = the
+/// `FCF_*` flags of those controls.
+pub const WM_UPDATEFRAME: u32 = 0x0042;
+/// Identity of a frame's menu-bar window (`WinLoadMenu`, `WinCreateMenu`).
+pub const FID_MENU: u32 = 0x8005;
 pub const WM_PAINT: u32 = 0x0023;
 pub const WM_TIMER: u32 = 0x0024;
 pub const WM_CLOSE: u32 = 0x0029;

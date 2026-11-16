@@ -480,6 +480,25 @@ fn gui_menu_pulldown_matches_golden() {
         "1500 click 52 62\n3000 dump {dump}\n3100 quit\n");
 }
 
+/// pm_menu_dlg_test replaces its FCF_MENU menu bar the way the PM
+/// reference describes — WinDestroyWindow of the FID_MENU window,
+/// WinLoadMenu, WM_UPDATEFRAME(FCF_MENU) sent to the frame — and every one
+/// of its checks passes (its "Results: n/n passed" line).
+#[test]
+fn gui_menu_dlg_test_replaces_the_menu_bar() {
+    let sample = "samples/pm_menu_dlg_test/pm_menu_dlg_test.exe";
+    if !kvm_available() || !Path::new(sample).exists() {
+        eprintln!("skipping gui_menu_dlg_test_replaces_the_menu_bar: KVM or {sample} not available");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("session.script");
+    std::fs::write(&script, "2000 quit\n").unwrap();
+    let out = run_gui_script(sample, &script, true);
+    assert!(!out.contains("FAILED"), "{out}");
+    assert!(out.contains("Results: 9/9 passed"), "{out}");
+}
+
 /// File → About…: pull-down gone, modal dialog shown and active.
 #[test]
 fn gui_menu_about_dialog_matches_golden() {

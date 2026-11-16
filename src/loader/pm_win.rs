@@ -154,7 +154,11 @@ impl super::Loader {
                     }
                     if let Some(items) = fcf_menu_items {
                         let h_menu = wm.create_window("#Menu".to_string(), h_frame, 0);
-                        if let Some(win) = wm.get_window_mut(h_menu) { win.menu_items = items; }
+                        if let Some(win) = wm.get_window_mut(h_menu) {
+                            win.menu_items = items;
+                            win.id = FID_MENU;
+                            win.owner = h_frame;
+                        }
                         if let Some(win) = wm.get_window_mut(h_frame) { win.menu_hwnd = h_menu; }
                     }
                     if let Some(haccel) = fcf_accel {
@@ -302,6 +306,16 @@ impl super::Loader {
 
                 match msg {
                     WM_CLOSE => { self.post_wm_quit(hwnd); }
+                    // Frame controls changed: show the frame's current menu
+                    // (standard frames; dialogs do not take menus yet).
+                    WM_UPDATEFRAME => {
+                        let is_frame = self.shared.window_mgr.lock_or_recover()
+                            .frame_to_client.contains_key(&hwnd);
+                        if is_frame && mp1 & FCF_MENU != 0 {
+                            self.update_frame_menu(hwnd);
+                        }
+                        return ApiResult::Normal(is_frame as u32);
+                    }
                     // The system command Close (system menu, Alt+F4) asks the
                     // window to close.
                     WM_SYSCOMMAND if mp1 & 0xFFFF == SC_CLOSE => {
@@ -543,8 +557,22 @@ impl super::Loader {
             }
             728 => {
                 // WinDestroyWindow(HWND hwnd): the window and its descendants go.
+                // A frame whose menu bar goes with them loses its bar.
                 let hwnd = read_stack(4);
-                ApiResult::Normal(self.shared.window_mgr.lock_or_recover().destroy_window(hwnd) as u32)
+                let (destroyed, bare_frames) = {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    let frames: Vec<u32> = wm.frame_to_client.keys().copied()
+                        .filter(|&f| wm.get_window(f).is_some_and(|w| w.menu_hwnd != 0
+                            && wm.is_same_or_descendant(w.menu_hwnd, hwnd)))
+                        .collect();
+                    (wm.destroy_window(hwnd), frames)
+                };
+                for frame in bare_frames {
+                    if self.shared.window_mgr.lock_or_recover().is_window(frame) {
+                        self.attach_menu_to_frame(frame, 0);
+                    }
+                }
+                ApiResult::Normal(destroyed as u32)
             }
             772 => {
                 // WinIsWindow(HAB hab, HWND hwnd)
@@ -661,12 +689,8 @@ impl super::Loader {
                 } else {
                     Vec::new()
                 };
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-                let h = wm.create_window("#Menu".to_string(), hwnd_parent, 0);
-                if let Some(win) = wm.get_window_mut(h) {
-                    win.menu_items = items;
-                }
-                ApiResult::Normal(h)
+                // Shown once the frame gets WM_UPDATEFRAME(FCF_MENU).
+                ApiResult::Normal(self.create_menu_window(hwnd_parent, items))
             }
             910 => {
                 // WinDefDlgProc(HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2)
@@ -759,15 +783,9 @@ impl super::Loader {
                 debug!("  [VCPU {}] WinLoadMenu hwnd_frame={} id={}", vcpu_id, hwnd_frame, id_menu);
 
                 let items = self.load_menu_resource(hmod, id_menu, vcpu_id).unwrap_or_default();
-                let h = {
-                    let mut wm = self.shared.window_mgr.lock_or_recover();
-                    let h = wm.create_window("#Menu".to_string(), hwnd_frame, 0);
-                    if let Some(win) = wm.get_window_mut(h) { win.menu_items = items; }
-                    h
-                };
-                // Associate the menu with the frame; the compositor draws the bar.
-                self.attach_menu_to_frame(hwnd_frame, h);
-                ApiResult::Normal(h)
+                // As in PM, the frame shows the new menu once it is sent
+                // WM_UPDATEFRAME(FCF_MENU).
+                ApiResult::Normal(self.create_menu_window(hwnd_frame, items))
             }
             781 => {
                 // WinLoadString(HAB hab, HMODULE hmod, ULONG id, LONG cchMax, PSZ pszBuffer)
@@ -1552,6 +1570,33 @@ impl super::Loader {
     /// it replaces. The client area shrinks (or grows) to make room for the
     /// bar; when its size changes the FrameBuffer is resized and the client is
     /// told via WM_SIZE + WM_PAINT so it redraws at the new size.
+    /// Create a menu window (`WinLoadMenu` / `WinCreateMenu`) with `items`:
+    /// parent and owner `parent`, identity `FID_MENU`. It is not attached to
+    /// a frame here; see [`Self::update_frame_menu`].
+    fn create_menu_window(&self, parent: u32, items: Vec<super::pm_types::MenuItem>) -> u32 {
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        let h = wm.create_window("#Menu".to_string(), parent, 0);
+        if let Some(win) = wm.get_window_mut(h) {
+            win.menu_items = items;
+            win.id = FID_MENU;
+            win.owner = parent;
+        }
+        h
+    }
+
+    /// WM_UPDATEFRAME(FCF_MENU) on `frame`: its menu bar becomes its
+    /// topmost `FID_MENU` child menu, or none without one, and the frame
+    /// is laid out again.
+    fn update_frame_menu(&self, frame: u32) {
+        let menu = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            wm.get_window(frame).and_then(|f| f.children.iter().rev().copied().find(|&c| {
+                wm.get_window(c).is_some_and(|w| w.id == FID_MENU && w.class_name == "#Menu")
+            })).unwrap_or(0)
+        };
+        self.attach_menu_to_frame(frame, menu);
+    }
+
     fn attach_menu_to_frame(&self, hwnd_frame: u32, hwnd_menu: u32) -> u32 {
         let mut wm = self.shared.window_mgr.lock_or_recover();
         let client = wm.frame_to_client.get(&hwnd_frame).copied();
@@ -1921,6 +1966,7 @@ mod tests {
             let menu_hwnd = wm.get_window(frame).unwrap().menu_hwnd;
             assert_ne!(menu_hwnd, 0, "FCF_MENU must attach a menu");
             let menu = wm.get_window(menu_hwnd).unwrap();
+            assert_eq!(wm.find_child_by_id(frame, super::super::constants::FID_MENU), Some(menu_hwnd));
             assert_eq!(menu.menu_items.len(), 1);
             assert_eq!(menu.menu_items[0].text, "File");
             assert_eq!(wm.get_window(client).unwrap().cy,
@@ -1934,6 +1980,66 @@ mod tests {
         let frame = wm.client_to_frame(client);
         assert_eq!(wm.get_window(frame).unwrap().menu_hwnd, 0);
         assert_eq!(wm.get_window(client).unwrap().cy, 480 - CHROME_TITLE_H);
+    }
+
+    /// Replacing a frame's menu as the PM reference describes: WinLoadMenu /
+    /// WinCreateMenu create an FID_MENU child of the frame, which the frame
+    /// shows once it is sent WM_UPDATEFRAME(FCF_MENU); destroying the shown
+    /// menu takes the bar away.
+    #[test]
+    fn test_menus_are_shown_by_wm_updateframe_and_replaced() {
+        use super::super::constants::*;
+        let loader = Loader::new_mock();
+        let (frame, client, _, _) = window_with_entry(&loader);
+        {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let w = wm.get_window_mut(frame).unwrap();
+            (w.cx, w.cy, w.frame_flags) = (640, 480, FCF_TITLEBAR);
+            wm.layout_frame(frame);
+        }
+        // One-item wrc MENUTEMPLATE ("File", id 100), as RT_MENU 7 and inline.
+        let base: u32 = 0x5000;
+        let data: &[u8] = &[
+            0x15, 0x00, 0x00, 0x00, 0x52, 0x03, 0x04, 0x00, 0x01, 0x00,
+            0x01, 0x00, 0x00, 0x00, 0x64, 0x00, b'F', b'i', b'l', b'e', 0x00,
+        ];
+        for (i, &b) in data.iter().enumerate() {
+            loader.guest_write::<u8>(base + i as u32, b).unwrap();
+        }
+        loader.shared.resource_mgr.lock_or_recover().add(0, crate::lx::header::RT_MENU, 7, base, data.len() as u32);
+        let mut vcpu = MockVcpu::new();
+        let mut call = |ord: u32, args: &[u32]| call_pmwin(&loader, &mut vcpu, ord, args);
+        let shown = || loader.shared.window_mgr.lock_or_recover().get_window(frame).unwrap().menu_hwnd;
+        let client_cy = || loader.shared.window_mgr.lock_or_recover().get_window(client).unwrap().cy;
+        let full = 480 - CHROME_TITLE_H;
+
+        let loaded = call(778, &[frame, 0, 7]);
+        assert_ne!(loaded, 0);
+        assert_eq!(shown(), 0, "not shown before WM_UPDATEFRAME");
+        assert_eq!(call(899, &[frame, FID_MENU]), loaded, "WinWindowFromID(frame, FID_MENU)");
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().get_window(loaded).unwrap().owner, frame);
+
+        assert_eq!(call(911, &[frame, WM_UPDATEFRAME, FCF_MENU, 0]), 1);
+        assert_eq!(shown(), loaded);
+        assert_eq!(client_cy(), full - MENU_BAR_HEIGHT as i32, "the client makes room for the bar");
+
+        // A second menu replaces it on the next WM_UPDATEFRAME.
+        let created = call(907, &[frame, base]);
+        assert_eq!(shown(), loaded);
+        call(911, &[frame, WM_UPDATEFRAME, FCF_MENU, 0]);
+        assert_eq!(shown(), created);
+
+        // Destroying the shown menu removes the bar.
+        assert_eq!(call(728, &[created]), 1);
+        assert_eq!(shown(), 0);
+        assert_eq!(client_cy(), full);
+        call(911, &[frame, WM_UPDATEFRAME, FCF_MENU, 0]);
+        assert_eq!(shown(), loaded, "the remaining FID_MENU child");
+
+        // Other flags and windows that are not frames leave it alone.
+        call(911, &[frame, WM_UPDATEFRAME, FCF_TITLEBAR, 0]);
+        assert_eq!(shown(), loaded);
+        assert_eq!(call(911, &[client, WM_UPDATEFRAME, FCF_MENU, 0]), 0);
     }
 
     /// parse_menu_template with a SUBMENU item must recurse into the child
