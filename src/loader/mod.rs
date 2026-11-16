@@ -643,7 +643,7 @@ impl Loader {
             LM_INSERTITEM => {
                 // mp1 = MPFROMSHORT(index) — insert position; LIT_END (0xFFFF) = append
                 // mp2 = MPFROMP(pszItem)   — guest pointer to item string
-                let item_text = if mp2 != 0 { self.read_guest_string(mp2) } else { String::new() };
+                let item_text = if mp2 != 0 { self.read_guest_string_cp(mp2, self.window_codepage(hwnd)) } else { String::new() };
                 let index = {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
                     let Some(win) = wm.get_window_mut(hwnd) else {

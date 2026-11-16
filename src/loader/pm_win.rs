@@ -112,7 +112,9 @@ impl super::Loader {
                 let id_resources = read_stack(32);
                 let phwnd_client_ptr = read_stack(36);
                 let class_name = self.read_guest_string(psz_class_name_ptr);
-                let title = if psz_title_ptr != 0 { self.read_guest_string(psz_title_ptr) } else { "Warpine Window".to_string() };
+                let title = if psz_title_ptr != 0 {
+                    self.read_guest_string_cp(psz_title_ptr, self.thread_codepage(vcpu_id))
+                } else { "Warpine Window".to_string() };
                 // VDR-C1: read the flCreateFlags (FCF_* bits) from the PULONG argument.
                 let fl_create_flags = if pfc_flags_ptr != 0 {
                     self.guest_read::<u32>(pfc_flags_ptr).unwrap_or(0)
@@ -485,8 +487,9 @@ impl super::Loader {
                 let _id             = read_stack(20);
                 let style           = read_stack(24);
 
-                let text    = self.read_guest_string(psz_text_ptr);
-                let caption = self.read_guest_string(psz_caption_ptr);
+                let cp      = self.thread_codepage(vcpu_id);
+                let text    = self.read_guest_string_cp(psz_text_ptr, cp);
+                let caption = self.read_guest_string_cp(psz_caption_ptr, cp);
                 info!("  [VCPU {}] WinMessageBox '{}' : '{}'", vcpu_id, caption, text);
 
                 // Grab the sender while holding the lock for the shortest time.
@@ -621,6 +624,20 @@ impl super::Loader {
                 let ok = self.win_set_cp(hmq, cp);
                 debug!("  [VCPU {}] WinSetCp hmq={} cp={} -> {}", vcpu_id, hmq, cp, ok);
                 ApiResult::Normal(ok as u32)
+            }
+            811 => {
+                // WinQueryCpList(HAB hab, ULONG ccpMax, PULONG prgcp) -> ULONG:
+                // the codepages a message queue can use; up to ccpMax are
+                // written, and the number available is returned.
+                let max = read_stack(8) as usize;
+                let list = read_stack(12);
+                let cps = super::stubs::pm_codepages();
+                if list != 0 {
+                    for (i, &cp) in cps.iter().take(max).enumerate() {
+                        self.guest_write::<u32>(list + 4 * i as u32, cp);
+                    }
+                }
+                ApiResult::Normal(cps.len() as u32)
             }
             810 => {
                 // WinQueryCp(HMQ hmq) -> ULONG (0 on error)
@@ -924,7 +941,7 @@ impl super::Loader {
                 let id_item = read_stack(8);
                 let cch_max = read_stack(12) as usize;
                 let buffer_ptr = read_stack(16);
-                let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+                let cp = self.window_codepage(hwnd_dlg);
                 let wm = self.shared.window_mgr.lock_or_recover();
                 let text = wm.find_child_by_id(hwnd_dlg, id_item)
                     .and_then(|h| wm.get_window(h))
@@ -953,7 +970,7 @@ impl super::Loader {
                 let hwnd = read_stack(4);
                 let cch_max = read_stack(8) as usize;
                 let buffer_ptr = read_stack(12);
-                let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+                let cp = self.window_codepage(hwnd);
                 let wm = self.shared.window_mgr.lock_or_recover();
                 let text = wm.get_window(hwnd).map(|w| w.text.clone()).unwrap_or_default();
                 drop(wm);
@@ -1040,7 +1057,7 @@ impl super::Loader {
                 let _flags = read_stack(16);
                 // For CF_TEXT, also bridge the text to the host system clipboard.
                 if fmt == CF_TEXT && data != 0 {
-                    let text = self.read_guest_string(data);
+                    let text = self.read_guest_string_cp(data, self.thread_codepage(vcpu_id));
                     debug!("  [VCPU {}] WinSetClipbrdData CF_TEXT: {:?}", vcpu_id, text);
                     let mut wm = self.shared.window_mgr.lock_or_recover();
                     wm.clipboard_text = text.clone();
@@ -1059,7 +1076,7 @@ impl super::Loader {
                 let hwnd_dlg = read_stack(4);
                 let id_item = read_stack(8);
                 let psz_text = read_stack(12);
-                let text = self.read_guest_string(psz_text);
+                let text = self.read_guest_string_cp(psz_text, self.window_codepage(hwnd_dlg));
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(child_hwnd) = wm.find_child_by_id(hwnd_dlg, id_item)
                     && let Some(win) = wm.get_window_mut(child_hwnd) {
@@ -1139,7 +1156,7 @@ impl super::Loader {
                 // WinSetWindowText(HWND hwnd, PCSZ pszText)
                 let hwnd = read_stack(4);
                 let psz_text = read_stack(8);
-                let text = self.read_guest_string(psz_text);
+                let text = self.read_guest_string_cp(psz_text, self.window_codepage(hwnd));
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(win) = wm.get_window_mut(hwnd) {
                     win.text = text;
@@ -1230,7 +1247,7 @@ impl super::Loader {
                 } else {
                     resolve_class_atom(psz_class, self.read_guest_string(psz_class))
                 };
-                let text = if psz_name != 0 { self.read_guest_string(psz_name) } else { String::new() };
+                let text = if psz_name != 0 { self.read_guest_string_cp(psz_name, self.thread_codepage(vcpu_id)) } else { String::new() };
                 debug!("  [VCPU {}] WinCreateWindow class='{}' text='{}' parent={} ({},{}) {}x{} id={} style=0x{:08X}",
                        vcpu_id, class_name, text, hwnd_parent, x, y, cx, cy, id, fl_style);
 
@@ -1488,14 +1505,37 @@ impl super::Loader {
         }
     }
 
+    /// The process codepage (`DosSetProcessCp`).
+    pub(crate) fn process_codepage(&self) -> u32 {
+        self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Codepage of PM text belonging to window `hwnd`: its message queue's
+    /// (`WinSetCp`), else the process codepage.
+    pub(crate) fn window_codepage(&self, hwnd: u32) -> u32 {
+        self.shared.window_mgr.lock_or_recover().queue_codepage(hwnd)
+            .unwrap_or_else(|| self.process_codepage())
+    }
+
+    /// Codepage of PM text passed by thread `vcpu_id` where no window says
+    /// otherwise (a window being created, a message box): its message
+    /// queue's, else the process codepage.
+    pub(crate) fn thread_codepage(&self, vcpu_id: u32) -> u32 {
+        let wm = self.shared.window_mgr.lock_or_recover();
+        wm.tid_to_hmq.get(&vcpu_id).and_then(|&hmq| wm.get_mq(hmq))
+            .map(|mq| mq.lock_or_recover().codepage)
+            .unwrap_or_else(|| self.process_codepage())
+    }
+
     /// WinSetCp: set the codepage of message queue `hmq`. Fails for a
     /// codepage warpine cannot convert or an unknown queue, changing nothing.
     ///
     /// The value is per queue and independent of the process codepage
-    /// (`DosSetProcessCp`), as in PM. PM text conversion still follows the
-    /// process codepage, so this only affects what `WinQueryCp` reports.
+    /// (`DosSetProcessCp`), as in PM: text of the queue's windows (window
+    /// text, list items, typed characters) and of presentation spaces created
+    /// afterwards for them is converted with it.
     fn win_set_cp(&self, hmq: u32, cp: u32) -> bool {
-        if !super::stubs::is_supported_codepage(cp) { return false; }
+        if !super::stubs::is_pm_codepage(cp) { return false; }
         let Some(mq) = self.shared.window_mgr.lock_or_recover().get_mq(hmq) else { return false };
         mq.lock_or_recover().codepage = cp;
         true
@@ -1608,7 +1648,7 @@ impl super::Loader {
                    hmod: u32, id_dlg: u32, p_create_params: u32) -> (u32, u32) {
         debug!("  [VCPU {}] load dialog: parent={} owner={} idDlg={} pfnDlgProc=0x{:08X}",
                vcpu_id, hwnd_parent, hwnd_owner, id_dlg, pfn_dlg_proc);
-        let codepage = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let codepage = self.thread_codepage(vcpu_id);
         let res = self.shared.resource_mgr.lock_or_recover().find(hmod, RT_DIALOG, id_dlg as u16);
         let template = res
             .and_then(|(addr, size)| self.guest_read_bytes(addr, (size as usize).min(MAX_DLG_TEMPLATE)))
@@ -2139,6 +2179,56 @@ mod tests {
         assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_CP, &[hmq, 932]), 1);
         assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_QUERY_CP, &[hmq]), 932);
         assert_eq!(loader.shared.active_codepage.load(Ordering::Relaxed), 437);
+    }
+
+    /// CP1004 is a PM codepage: a queue may use it, the process may not.
+    #[test]
+    fn test_win_set_cp_accepts_1004_and_cp_list_reports_it() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let hmq = call_pmwin(&loader, &mut vcpu, ORD_WIN_CREATE_MSG_QUEUE, &[0, 0]);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_CP, &[hmq, 1004]), 1);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_QUERY_CP, &[hmq]), 1004);
+        assert_ne!(loader.dos_set_process_cp(1004), 0, "DosSetProcessCp refuses a PM-only codepage");
+
+        // WinQueryCpList(hab, ccpMax, prgcp): the number available; at most ccpMax written.
+        let list = 0x13300;
+        let all = super::super::stubs::pm_codepages();
+        assert!(all.contains(&1004) && all.contains(&850) && all.is_sorted());
+        loader.guest_write::<u32>(list + 8, 0xFFFF_FFFF).unwrap();
+        assert_eq!(call_pmwin(&loader, &mut vcpu, 811, &[0, 2, list]) as usize, all.len());
+        assert_eq!(loader.guest_read::<u32>(list), Some(all[0]));
+        assert_eq!(loader.guest_read::<u32>(list + 4), Some(all[1]));
+        assert_eq!(loader.guest_read::<u32>(list + 8), Some(0xFFFF_FFFF), "ccpMax respected");
+        assert_eq!(call_pmwin(&loader, &mut vcpu, 811, &[0, 0, 0]) as usize, all.len(), "count only");
+    }
+
+    /// Window text is converted with the codepage of the window's message
+    /// queue, not the process codepage.
+    #[test]
+    fn test_window_text_uses_the_queue_codepage() {
+        let loader = Loader::new_mock();
+        loader.shared.active_codepage.store(437, Ordering::Relaxed);
+        let (frame, client, _, entry) = window_with_entry(&loader);
+        {
+            let wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.find_hmq_for_hwnd(client).unwrap();
+            wm.get_mq(hmq).unwrap().lock_or_recover().codepage = 932;
+        }
+        let mut vcpu = MockVcpu::new();
+        // "日本" in CP932.
+        let (text, buf) = (0x13400u32, 0x13500u32);
+        for (i, b) in [0x93u8, 0xFA, 0x96, 0x7B, 0].iter().enumerate() {
+            loader.guest_write::<u8>(text + i as u32, *b).unwrap();
+        }
+        assert_eq!(call_pmwin(&loader, &mut vcpu, 877, &[frame, text]), 1); // WinSetWindowText
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().get_window(frame).unwrap().text, "日本");
+        assert_eq!(call_pmwin(&loader, &mut vcpu, 841, &[frame, 16, buf]), 4); // WinQueryWindowText
+        assert_eq!(loader.guest_read_bytes(buf, 5).unwrap(), vec![0x93, 0xFA, 0x96, 0x7B, 0]);
+        assert_eq!(loader.window_codepage(entry), 932);
+        assert_eq!(loader.thread_codepage(0), 932, "the calling thread's queue");
+        assert_eq!(loader.thread_codepage(99), 437, "no queue: the process codepage");
+        assert_eq!(loader.window_codepage(0xDEAD), 437);
     }
 
     /// The codepage belongs to the queue: setting one leaves another unchanged.

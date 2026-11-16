@@ -18,6 +18,20 @@ pub(crate) fn is_supported_codepage(cp: u32) -> bool {
     SUPPORTED_CODEPAGES.contains(&cp)
 }
 
+/// Codepages a PM message queue may use (`WinSetCp`, `WinQueryCpList`): the
+/// process codepages plus 1004, the PM-only "Windows Extended" codepage.
+pub(crate) fn pm_codepages() -> Vec<u32> {
+    let mut cps = SUPPORTED_CODEPAGES.to_vec();
+    cps.push(super::codepage::CP1004);
+    cps.sort_unstable();
+    cps
+}
+
+/// Whether `cp` is a codepage a PM message queue may use.
+pub(crate) fn is_pm_codepage(cp: u32) -> bool {
+    is_supported_codepage(cp) || cp == super::codepage::CP1004
+}
+
 impl super::Loader {
     // ── Step 1: Critical Init Stubs ──
 
@@ -189,8 +203,8 @@ impl super::Loader {
     }
 
     /// DosSetProcessCp (ordinal 289): set the active codepage for this process.
-    /// Validates against the supported list (437, 850, 852, 932, 949, 950, 1250–1258).
-    /// Returns ERROR_INVALID_CODE_PAGE (470) for unrecognised values.
+    /// Validates against `SUPPORTED_CODEPAGES`; returns `ERROR_INVALID_CODE_PAGE`
+    /// otherwise (also for 1004, which only a PM message queue can use).
     pub fn dos_set_process_cp(&self, cp: u32) -> u32 {
         if !is_supported_codepage(cp) {
             debug!("  DosSetProcessCp({}) → ERROR_INVALID_CODE_PAGE", cp);

@@ -74,10 +74,10 @@ NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 - [ ] **Controls after a window drag** — `get_abs_rect_in_frame` adds the client's x/y and the drag handler copies the frame position into the client; check whether controls paint offset after a window is moved
 - [ ] **Dialog follow-ups** — a focus mark on list boxes, radio buttons checked by the arrow keys, `WM_MATCHMNEMONIC` / `WM_QUERYDLGCODE` so guest controls can take part in mnemonics and Tab, `WM_DESTROY` sent when a window is destroyed; unverified against the PM reference: the `CMDSRC_*` code of the `WM_COMMAND(DID_CANCEL)` that Esc posts (`CMDSRC_OTHER` here), and the frame control data of a template built by IBM's resource compiler (Open Watcom `wrc` writes one ULONG of `FCF_*` flags), whether clicking a push button by its mnemonic moves the focus (it does not here), and the bounds of the `msgFirst > msgLast` exclusion of `WinGetMsg` / `WinPeekMsg`
 - [ ] **System accelerators beyond Alt+F4** — Alt+F5/F7/F8/F9/F10 (restore, move, size, minimise, maximise), F10 for the menu bar, F1 for help
-- [ ] **Queue codepage in text paths** — `WinSetCp` stores a per-queue codepage but window text (`WinSetWindowText` / `WinQueryWindowText`), GPI text and the CJK face choice still use the process codepage; needs a thread → hmq → codepage lookup at those sites
-- [ ] **Codepage 1004 and 0** — `WinSetCp` / `DosSetProcessCp` reject CP1004 (common in PM programs) and 0 ("default"); needs support in `codepage.rs`
+- [ ] **Codepage follow-ups** — chrome and control text pick their CJK face from the process codepage (`CjkRegion::Auto`), not from the window's queue; menu templates with codepage 0 use the process codepage; unverified: whether CP1004 lacks Windows-1252's ƒ (0x83)
+- [ ] **Codepage 0 in `WinSetCp`** — rejected; find in the PM reference whether 0 means "the process codepage" before accepting it
 - [ ] **Menu replacement** — `WinCreateMenu` does not attach to its parent frame, and replacing a frame's menu via `WinSetParent` + `WM_UPDATEFRAME(FCF_MENU)` is not implemented (verify the sequence against the PM reference first)
-- [ ] **`WinQueryCpList`** (PMWIN 811) and a real `WinDestroyMsgQueue` (currently a stub that keeps the queue alive)
+- [ ] **A real `WinDestroyMsgQueue`** (currently a stub that keeps the queue alive)
 
 ### PM Graphics Performance and Architecture
 

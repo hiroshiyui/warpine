@@ -678,6 +678,12 @@ The Watcom C runtime wraps DosQueryCtryInfo with a caching layer:
 
 This is why NLS ordinal 5 must return full COUNTRYINFO when `cb >= 44` — the CRT wrapper depends on this behavior.
 
+### PM codepages
+
+PM text follows the codepage of the **message queue**, not the process codepage, as in PM: `WinSetCp` (`PM_MsgQueue::codepage`, initialised from the process codepage by `WinCreateMsgQueue`) decides how the text of that queue's windows is converted. `Loader::window_codepage(hwnd)` gives the codepage of a window's queue (window text in `WinSetWindowText` / `WinQueryWindowText` / `WinSetDlgItemText` / `WinQueryDlgItemText`, list-box items, characters typed into a control — both when the renderer encodes `TextInput` and when the control decodes `WM_CHAR`), `Loader::thread_codepage(vcpu_id)` that of the calling thread's queue where no window exists yet (titles in `WinCreateStdWindow` / `WinCreateWindow`, `WinMessageBox`, `CF_TEXT` clipboard data, dialog templates with codepage 0); both fall back to the process codepage. A presentation space has its own codepage (`PresentationSpace::codepage`, `GpiSetCp` / `GpiQueryCp`): its window queue's when created, the creating thread's queue's for a memory PS; GPI text, face names and the CJK face choice use it (`Loader::ps_codepage`). Menu templates with codepage 0 and VIO text still use the process codepage.
+
+`WinQueryCpList` reports the queue codepages (`stubs::pm_codepages()`): the process codepages plus **1004**, IBM's "Windows Extended" codepage, which only a queue can use — `DosSetProcessCp(1004)` fails. CP1004 is Windows-1252 with spacing diacritics in seven C0 positions (0x04 ˉ, 0x05 ˘, 0x06 ˙, 0x08 ˚, 0x0A ˝, 0x0B ˛, 0x0C ˇ; `codepage::CP1004`), from the code-page 1004 table in Wikipedia's "Windows-1252" article; whether 1004 lacks 1252's ƒ (0x83), as another listing claims, is unverified.
+
 ### DosQueryCtryInfo Bounded Writes
 
 `dos_query_ctry_info()` writes only `min(cb, 44)` bytes to respect the caller's buffer size. The CRT init call with `cb=12` only gets the first 12 bytes (country, codepage, fsDateFmt). Writing more would corrupt the CRT's stack frame. Currently returns hardcoded US English defaults (country=1, codepage=437, MDY format).
@@ -1641,7 +1647,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 805 unit tests (776 warpine + 18 gen_api + 11 lx_link), 36 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 810 unit tests (781 warpine + 18 gen_api + 11 lx_link), 36 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

@@ -3,7 +3,8 @@
  *
  * Exercises: GpiCreateLogFont (face name, bold/italic, size), GpiSetCharSet,
  *   GpiDeleteSetId, GpiQueryTextBox, GpiQueryFontMetrics, GpiCharStringAt,
- *   and DosSetProcessCp with DBCS text in CP932 / CP936 / CP949 / CP950.
+ *   and GpiSetCp with DBCS text in CP932 / CP936 / CP949 / CP950 (GPI text is in
+ *   the codepage of its presentation space, not the process codepage).
  *
  * Each line of text is underlined with a rule whose length comes from
  * GpiQueryTextBox, so a mismatch between reported and drawn width is visible:
@@ -68,7 +69,7 @@ static void draw_scene( HWND hwnd, HPS hps )
         LONG        lcid = LCID_BASE + (LONG)i;
         LONG        len  = (LONG)strlen( lines[i].text );
 
-        DosSetProcessCp( lines[i].codepage );
+        GpiSetCp( hps, lines[i].codepage );
 
         memset( &fat, 0, sizeof(fat) );
         fat.usRecordLength  = sizeof(fat);
@@ -100,7 +101,6 @@ static void draw_scene( HWND hwnd, HPS hps )
         GpiDeleteSetId( hps, lcid );
     }
 
-    DosSetProcessCp( 850 );
 }
 
 MRESULT EXPENTRY ClientWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )

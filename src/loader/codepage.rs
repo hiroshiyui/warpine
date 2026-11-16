@@ -151,6 +151,45 @@ const CP852_UPPER: [char; 128] = [
     '\u{0158}', '\u{0159}', '\u{25A0}', '\u{00A0}',
 ];
 
+/// IBM codepage 1004 ("Windows Extended", the Latin-1 desktop-publishing
+/// codepage PM programs often select with `WinSetCp`) is Windows-1252 except
+/// in the C0 range, where seven control positions hold spacing diacritics
+/// (Wikipedia, "Windows-1252", section "OS/2 extensions": code page 1004,
+/// differing rows only). TODO(unverified): another listing says 1004 also
+/// lacks Windows-1252's ƒ (0x83); that is not reflected here.
+pub const CP1004: u32 = 1004;
+const CP1004_C0: [(u8, char); 7] = [
+    (0x04, '\u{02C9}'), // ˉ MODIFIER LETTER MACRON
+    (0x05, '\u{02D8}'), // ˘ BREVE
+    (0x06, '\u{02D9}'), // ˙ DOT ABOVE
+    (0x08, '\u{02DA}'), // ˚ RING ABOVE
+    (0x0A, '\u{02DD}'), // ˝ DOUBLE ACUTE ACCENT
+    (0x0B, '\u{02DB}'), // ˛ OGONEK
+    (0x0C, '\u{02C7}'), // ˇ CARON
+];
+
+fn decode_cp1004(bytes: &[u8]) -> String {
+    let (decoded, _, _) = encoding_rs::WINDOWS_1252.decode(bytes);
+    decoded.chars().map(|c| {
+        CP1004_C0.iter().find(|&&(b, _)| b as u32 == c as u32).map_or(c, |&(_, d)| d)
+    }).collect()
+}
+
+fn encode_cp1004(s: &str) -> Vec<u8> {
+    let mut out = Vec::with_capacity(s.len());
+    for ch in s.chars() {
+        match CP1004_C0.iter().find(|&&(_, d)| d == ch) {
+            Some(&(b, _)) => out.push(b),
+            None => {
+                let mut buf = [0u8; 4];
+                let (encoded, _, _) = encoding_rs::WINDOWS_1252.encode(ch.encode_utf8(&mut buf));
+                out.extend_from_slice(&encoded);
+            }
+        }
+    }
+    out
+}
+
 // ── Public API ────────────────────────────────────────────────────────────────
 
 /// Map a single guest byte to its uppercase equivalent in the given codepage.
@@ -174,6 +213,8 @@ pub fn cp_map_case_upper(byte: u8, cp: u32) -> u8 {
         // DBCS: a single byte may be a multi-byte lead byte — cannot case-map
         // in isolation.  Pair-level mapping is handled by `map_case_guest_buf`.
         932 | 936 | 949 | 950 => byte,
+        // The upper half of 1004 is that of Windows-1252.
+        CP1004 => cp_map_case_upper(byte, 1252),
         _ => {
             // CP866 (IBM Cyrillic DOS) and Windows SBCS (1250–1258): decode
             // single byte → Unicode → uppercase (1:1 only) → re-encode.
@@ -228,6 +269,7 @@ pub fn cp_decode(bytes: &[u8], cp: u32) -> String {
         437 => decode_single_byte(bytes, &CP437_UPPER),
         850 => decode_single_byte(bytes, &CP850_UPPER),
         852 => decode_single_byte(bytes, &CP852_UPPER),
+        CP1004 => decode_cp1004(bytes),
         _ => {
             if let Some(enc) = cp_to_encoding(cp) {
                 let (decoded, _, _) = enc.decode(bytes);
@@ -250,6 +292,7 @@ pub fn cp_encode(s: &str, cp: u32) -> Vec<u8> {
         437 => encode_single_byte(s, &CP437_UPPER),
         850 => encode_single_byte(s, &CP850_UPPER),
         852 => encode_single_byte(s, &CP852_UPPER),
+        CP1004 => encode_cp1004(s),
         _ => {
             if let Some(enc) = cp_to_encoding(cp) {
                 let (encoded, _, _) = enc.encode(s);
@@ -571,5 +614,23 @@ mod tests {
         let ch = decode_dbcs(0xC4, 0xE3, 437);
         // Result is implementation-defined but must not panic; just verify it's a valid char
         let _ = ch as u32;
+    }
+
+    #[test]
+    fn cp1004_is_windows_1252_with_diacritics_in_c0() {
+        assert_eq!(cp_decode(&[0x04, 0x05, 0x06, 0x08, 0x0A, 0x0B, 0x0C], CP1004), "ˉ˘˙˚˝˛ˇ");
+        assert_eq!(cp_decode(&[0x07, 0x09, 0x0D], CP1004), "\u{7}\t\r", "other controls unchanged");
+        assert_eq!(cp_decode(b"caf\xE9 \x80 \x93x\x94", CP1004), "café € “x”");
+        assert_eq!(cp_encode("ˉ˘˙˚˝˛ˇ", CP1004), vec![0x04, 0x05, 0x06, 0x08, 0x0A, 0x0B, 0x0C]);
+        assert_eq!(cp_encode("café €", CP1004), b"caf\xE9 \x80");
+        assert_eq!(cp_encode("日", CP1004), b"&#26085;", "as Windows-1252 does for unmappable text");
+        for b in 0u8..=0xFF {
+            let s = cp_decode(&[b], CP1004);
+            if !s.contains('\u{FFFD}') && ![0x81, 0x8D, 0x8F, 0x90, 0x9D].contains(&b) {
+                assert_eq!(cp_encode(&s, CP1004), vec![b], "round trip of {b:#04x}");
+            }
+        }
+        assert_eq!(cp_map_case_upper(0xE9, CP1004), 0xC9, "é → É as in 1252");
+        assert_eq!(cp_map_case_upper(b'a', CP1004), b'A');
     }
 }

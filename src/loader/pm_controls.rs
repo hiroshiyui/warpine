@@ -12,8 +12,6 @@
 //! client space with the origin at the bottom-left; mouse messages carry the
 //! pointer position relative to the control's own bottom-left corner.
 
-use std::sync::atomic::Ordering;
-
 use super::constants::*;
 use super::pm_edit::{self, EditBuffer, EditKey, CARET_W};
 use super::pm_types::OS2Message;
@@ -413,7 +411,8 @@ impl Loader {
     /// WM_CHAR on an entry field, MLE or list box. Keys the control does not
     /// use are passed on to its owner, as PM controls do.
     pub(super) fn control_char(&self, hwnd: u32, class: &str, mp1: u32, mp2: u32) -> ApiResult {
-        let codepage = self.shared.active_codepage.load(Ordering::Relaxed);
+        // Characters arrive in the codepage of the control's message queue.
+        let codepage = self.window_codepage(hwnd);
         let enabled = self.shared.window_mgr.lock_or_recover()
             .get_window(hwnd).is_some_and(|w| w.style & WS_DISABLED == 0);
         let handled = enabled && match pm_edit::key_from_wm_char(mp1, mp2, codepage) {
@@ -623,9 +622,9 @@ mod tests {
             self.send(hwnd, WM_CHAR, KC_VIRTUALKEY | KC_SCANCODE, vk << WM_CHAR_VKEY_SHIFT)
         }
 
-        /// Type `text` as WM_CHAR messages in the active codepage.
+        /// Type `text` as WM_CHAR messages in the codepage of the queue.
         fn type_text(&self, hwnd: u32, text: &str) {
-            let cp = self.loader.shared.active_codepage.load(Ordering::Relaxed);
+            let cp = self.loader.window_codepage(hwnd);
             for ch in text.chars() {
                 let bytes = super::super::codepage::cp_encode(&ch.to_string(), cp);
                 let chr = bytes.iter().rev().fold(0u32, |acc, &b| (acc << 8) | b as u32);
@@ -881,12 +880,12 @@ mod tests {
         assert_eq!(fx.caret(entry), first, "click on the first visible character");
     }
 
-    /// CP932 guest: typed double-byte characters arrive as lead|trail<<8,
-    /// are stored as Unicode and edited per character.
+    /// CP932 message queue (`WinSetCp`): typed double-byte characters arrive
+    /// as lead|trail<<8, are stored as Unicode and edited per character.
     #[test]
     fn entry_edits_dbcs_text_per_character() {
         let fx = fixture();
-        fx.loader.shared.active_codepage.store(932, Ordering::Relaxed);
+        fx.loader.shared.window_mgr.lock_or_recover().get_mq(fx.hmq).unwrap().lock_or_recover().codepage = 932;
         let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, "");
         fx.click(entry, 5, 12);
         fx.type_text(entry, "日本語abc");

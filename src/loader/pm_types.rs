@@ -248,6 +248,10 @@ pub struct PresentationSpace {
     /// Logical fonts created by `GpiCreateLogFont`, keyed by LCID.
     pub log_fonts: HashMap<u32, FontSpec>,
     pub current_pos: (i32, i32),
+    /// Codepage of the text this PS draws (`GpiSetCp` / `GpiQueryCp`):
+    /// its window's message-queue codepage when created, 0 = not known
+    /// (the process codepage is used).
+    pub codepage: u32,
 }
 
 impl PresentationSpace {
@@ -527,6 +531,7 @@ impl WindowManager {
             char_box: (0, 0),
             log_fonts: HashMap::new(),
             current_pos: (0, 0),
+            codepage: self.queue_codepage(hwnd).unwrap_or(0),
         });
         self.next_hps += 1;
         h
@@ -1009,6 +1014,13 @@ impl WindowManager {
         self.mark_all_dirty();
     }
 
+    /// The codepage of the message queue `hwnd` belongs to (`WinSetCp`), or
+    /// `None` for an unknown window or one without a queue.
+    pub fn queue_codepage(&self, hwnd: u32) -> Option<u32> {
+        let hmq = self.windows.get(&hwnd)?.hmq;
+        Some(self.msg_queues.get(&hmq)?.lock_or_recover().codepage)
+    }
+
     /// Whether `hwnd` is `ancestor` or lies below it in the window tree.
     pub fn is_same_or_descendant(&self, hwnd: u32, ancestor: u32) -> bool {
         let mut h = hwnd;
@@ -1362,6 +1374,24 @@ mod tests {
         let child = wm.create_window("WC_BUTTON".into(), other, 0);
         assert!(wm.destroy_window(child));
         assert!(wm.get_window(other).unwrap().children.is_empty());
+    }
+
+    #[test]
+    fn queue_codepage_follows_the_window_queue() {
+        let mut wm = WindowManager::new();
+        let hmq = wm.create_mq(850);
+        let w = wm.create_window("A".into(), 0, hmq);
+        let orphan = wm.create_window("B".into(), 0, 0);
+        assert_eq!(wm.queue_codepage(w), Some(850));
+        wm.get_mq(hmq).unwrap().lock().unwrap().codepage = 1004;
+        assert_eq!(wm.queue_codepage(w), Some(1004));
+        assert_eq!(wm.queue_codepage(orphan), None);
+        assert_eq!(wm.queue_codepage(0xDEAD), None);
+        // A PS created for the window starts with its queue's codepage.
+        let hps = wm.create_ps(w);
+        assert_eq!(wm.ps_map[&hps].codepage, 1004);
+        let hps_orphan = wm.create_ps(orphan);
+        assert_eq!(wm.ps_map[&hps_orphan].codepage, 0);
     }
 
     #[test]

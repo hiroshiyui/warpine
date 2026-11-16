@@ -908,7 +908,9 @@ impl SdlRenderer {
             Event::TextInput { text, .. } => {
                 let target = shared.window_mgr.lock_or_recover().key_target();
                 if target != 0 {
-                    let cp = shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+                    // Encoded in the codepage of the target's message queue.
+                    let cp = shared.window_mgr.lock_or_recover().queue_codepage(target)
+                        .unwrap_or_else(|| shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed));
                     for (mp1, mp2) in text_input_wm_chars(&text, cp) {
                         push_msg(shared, target, WM_CHAR, mp1, mp2);
                     }

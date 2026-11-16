@@ -145,8 +145,32 @@ impl super::Loader {
                 let hwnd = match dc { Some(DeviceContext::Window(w)) if assoc => w, _ => 0 };
                 let hps = wm.create_ps(hwnd);
                 if assoc && let Some(ps) = wm.ps_map.get_mut(&hps) { ps.hdc = hdc; }
+                // A PS without a window takes the creating thread's queue codepage.
+                let thread_cp = wm.tid_to_hmq.get(&vcpu_id).and_then(|&q| wm.msg_queues.get(&q))
+                    .map(|mq| mq.lock_or_recover().codepage);
+                if let Some(ps) = wm.ps_map.get_mut(&hps) && ps.codepage == 0
+                    && let Some(cp) = thread_cp
+                {
+                    ps.codepage = cp;
+                }
                 debug!("  [VCPU {}] GpiCreatePS(hdc={:#x}, assoc={}) -> HPS {}", vcpu_id, hdc, assoc, hps);
                 ApiResult::Normal(hps)
+            }
+            518 => {
+                // GpiSetCp(HPS hps, ULONG ulCodePage) -> BOOL: the codepage of
+                // the PS's text; one a message queue can use.
+                let (hps, cp) = (read_stack(4), read_stack(8));
+                if !super::stubs::is_pm_codepage(cp) { return ApiResult::Normal(0); }
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let Some(ps) = wm.ps_map.get_mut(&hps) else { return ApiResult::Normal(0) };
+                ps.codepage = cp;
+                ApiResult::Normal(1)
+            }
+            440 => {
+                // GpiQueryCp(HPS hps) -> ULONG (GPI_ERROR for an unknown PS)
+                let hps = read_stack(4);
+                let known = self.shared.window_mgr.lock_or_recover().ps_map.contains_key(&hps);
+                ApiResult::Normal(if known { self.ps_codepage(hps) } else { GPI_ERROR })
             }
             379 => {
                 // GpiDestroyPS(HPS hps)
@@ -387,8 +411,7 @@ impl super::Loader {
                         .map(|i| self.guest_read::<u8>(pfat + FATTRS_OFF_FACENAME + i).unwrap_or(0))
                         .take_while(|&b| b != 0)
                         .collect();
-                    let cp = self.shared.active_codepage.load(Ordering::Relaxed);
-                    let facename = super::codepage::cp_decode(&face_bytes, cp);
+                    let facename = super::codepage::cp_decode(&face_bytes, self.ps_codepage(hps));
                     let max_ext = self.guest_read::<i32>(pfat + FATTRS_OFF_MAXBASELINEEXT).unwrap_or(0);
                     let spec = FontSpec::from_facename(
                         &facename,
@@ -565,7 +588,7 @@ impl super::Loader {
                 let bytes: Vec<u8> = (0..count.clamp(0, MAX_TEXT_BOX_CHARS) as u32)
                     .map(|i| self.guest_read::<u8>(pch + i).unwrap_or(0))
                     .collect();
-                let cp = self.shared.active_codepage.load(Ordering::Relaxed);
+                let cp = self.ps_codepage(hps);
                 let font = self.ps_font(hps);
                 let w = font::text_width(&super::codepage::cp_decode(&bytes, cp), font);
                 let m = font::metrics(font);
@@ -904,11 +927,18 @@ impl super::Loader {
         }
     }
 
-    /// GpiCharString / GpiCharStringAt: draw `bytes` (in the active
-    /// codepage) at `at`, or at the current position, in the current font,
-    /// and advance the current position past the string.
+    /// The codepage text of presentation space `hps` is in (`GpiSetCp`): the
+    /// PS's own, else the process codepage.
+    pub(crate) fn ps_codepage(&self, hps: u32) -> u32 {
+        let cp = self.shared.window_mgr.lock_or_recover().ps_map.get(&hps).map_or(0, |ps| ps.codepage);
+        if cp != 0 { cp } else { self.shared.active_codepage.load(Ordering::Relaxed) }
+    }
+
+    /// GpiCharString / GpiCharStringAt: draw `bytes` (in the PS's codepage)
+    /// at `at`, or at the current position, in the current font, and advance
+    /// the current position past the string.
     fn char_string(&self, hps: u32, at: Option<(i32, i32)>, bytes: &[u8]) -> u32 {
-        let cp = self.shared.active_codepage.load(Ordering::Relaxed);
+        let cp = self.ps_codepage(hps);
         let text = super::codepage::cp_decode(bytes, cp);
         let Some(t) = self.ps_target(hps) else { return GPI_ERROR };
         let (x, y) = at.unwrap_or(t.pos);
@@ -1069,6 +1099,40 @@ mod tests {
         // pinned from the codepage active at the call (CP850).
         assert_eq!(*font, crate::gui::font::FontSpec {
             cjk: crate::gui::font::CjkRegion::Japanese, ..crate::gui::font::FontSpec::SYSTEM });
+    }
+
+    /// A PS draws text in its own codepage: its window queue's when created,
+    /// or what GpiSetCp sets; GpiQueryCp reports it.
+    #[test]
+    fn test_gpi_text_uses_the_ps_codepage() {
+        use super::super::mutex_ext::MutexExt;
+        use std::sync::atomic::Ordering;
+        let loader = Loader::new_mock();
+        loader.shared.active_codepage.store(437, Ordering::Relaxed);
+        let (hwnd, hps, surface) = window_ps(&loader);
+        assert_eq!(call_gpi(&loader, 440, &[hps]), 437, "no queue: the process codepage");
+        // A queue on CP932: a PS created for a window of that queue uses it.
+        let hps932 = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq(932);
+            let w = wm.create_window("Test".to_string(), 0, hmq);
+            (wm.get_window_mut(w).unwrap().cx, wm.get_window_mut(w).unwrap().cy) = (200, 100);
+            wm.create_ps(w)
+        };
+        assert_eq!(call_gpi(&loader, 440, &[hps932]), 932);
+        assert_eq!(call_gpi(&loader, 440, &[0xDEAD]), GPI_ERROR);
+
+        // GpiSetCp: CP1004 is accepted, an unknown codepage refused.
+        assert_eq!(call_gpi(&loader, 518, &[hps, 77]), 0);
+        assert_eq!(call_gpi(&loader, 518, &[hps, 1004]), 1);
+        assert_eq!(call_gpi(&loader, 440, &[hps]), 1004);
+        let text_ptr: u32 = 0x3000;
+        write_bytes(&loader, text_ptr, b"\x05x");
+        assert_eq!(call_gpi(&loader, 358, &[hps, 2, text_ptr]), GPI_OK);
+        let drawn = recorded(&surface);
+        let [DrawOp::TextFont { text, .. }] = drawn.as_slice() else { panic!("{drawn:?}") };
+        assert_eq!(text, "˘x", "decoded with CP1004, not the process CP437");
+        let _ = hwnd;
     }
 
     /// A 200×100 window with a presentation space; its surface records what

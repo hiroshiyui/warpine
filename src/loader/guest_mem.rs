@@ -167,6 +167,13 @@ impl super::Loader {
     /// that non-ASCII characters (accented letters, box-drawing, etc.) are
     /// rendered as the correct Unicode codepoints rather than raw Latin-1 values.
     pub fn read_guest_string(&self, ptr: u32) -> String {
+        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        self.read_guest_string_cp(ptr, cp)
+    }
+
+    /// [`read_guest_string`](Self::read_guest_string) decoded with codepage
+    /// `cp` (PM text uses the codepage of its message queue).
+    pub fn read_guest_string_cp(&self, ptr: u32, cp: u32) -> String {
         const MAX_GUEST_STRING_LEN: usize = 4096;
         let base = ptr as usize;
         let mem_size = self.shared.guest_mem.size();
@@ -178,7 +185,6 @@ impl super::Loader {
             if byte == 0 { break; }
             bytes.push(byte);
         }
-        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
         super::codepage::cp_decode(&bytes, cp)
     }
 

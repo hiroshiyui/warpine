@@ -24,7 +24,7 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 
 - **Text editing** — typing, Backspace/Delete, arrows and Home/End work; selection, clipboard, word wrap and a blinking caret are still missing, and Tab moves between controls only in dialogs.
 - **More GPI** — boxes, lines, arcs, patterns, line widths, text, bitmaps and blits work; paths and areas (`GpiBeginPath`, `GpiBeginArea`), rounded box corners, palettes, coordinate transforms and printing are not implemented.
-- **Codepages in PM** — `WinSetCp` records a per-queue codepage, but text drawing still follows the process codepage; codepages 1004 and 0 are rejected.
+- **Codepages in PM** — window text, typed characters and GPI text follow the message queue's codepage (`WinSetCp`), including 1004; control and title-bar text still pick their CJK face from the process codepage.
 - **Advanced controls** — containers, notebooks, drag and drop, custom pointers and printing are not started.
 
 _Screenshots in this section captured from commit `bd78680` on 2026-11-16._
@@ -241,7 +241,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 805 unit tests (no KVM required)
+cargo test                        # 810 unit tests (no KVM required)
 cargo test --test integration     # 36 end-to-end tests (requires /dev/kvm)
 cargo clippy -- -D warnings       # Lint — must pass with zero warnings
 ```
