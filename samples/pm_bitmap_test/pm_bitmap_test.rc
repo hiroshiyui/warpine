@@ -1,0 +1,12 @@
+/* pm_bitmap_test.rc - resources for pm_bitmap_test
+ *
+ * quadrants.bmp is an 8x8, 24-bit bitmap (BITMAPFILEHEADER + 40-byte info
+ * header, which OS/2 reads as a BITMAPINFOHEADER2): red bottom-left, green
+ * bottom-right, blue top-left, white top-right.
+ */
+#define INCL_WIN
+#include <os2.h>
+
+#define ID_QUADRANTS 1
+
+BITMAP ID_QUADRANTS "quadrants.bmp"

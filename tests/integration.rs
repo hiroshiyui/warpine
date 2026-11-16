@@ -496,14 +496,12 @@ fn gui_pm_bench_reports_every_measurement() {
     }
 }
 
-/// pm_pel_test: drawing is rasterised on the calling thread, so the guest
-/// reads back with GpiQueryPel what GpiSetPel / GpiBox / GpiLine just drew,
-/// and XOR / invert / leave-alone mixes combine with the pels already there.
-#[test]
-fn gui_pm_pel_test_reads_back_pels_and_mixes() {
-    let sample = "samples/pm_pel_test/pm_pel_test.exe";
+/// Run a self-checking sample that prints `<prefix>: <check>: ok` / `FAIL`
+/// lines and `<prefix>: done <passed>/<total>`, and require every check to
+/// pass. `min_checks` guards against a run that stopped early.
+fn assert_sample_checks_pass(sample: &str, prefix: &str, min_checks: usize) {
     if !kvm_available() || !Path::new(sample).exists() {
-        eprintln!("skipping gui_pm_pel_test_reads_back_pels_and_mixes: KVM or {sample} not available");
+        eprintln!("skipping {prefix}: KVM or {sample} not available");
         return;
     }
     let dir = tempfile::tempdir().expect("tempdir");
@@ -511,12 +509,30 @@ fn gui_pm_pel_test_reads_back_pels_and_mixes() {
     std::fs::write(&script, "5000 quit\n").unwrap();
     let out = run_gui_script(sample, &script, true);
 
+    let done = format!("{prefix}: done");
     let checks: Vec<&str> = out.lines()
-        .filter(|l| l.starts_with("pm_pel_test: ") && !l.starts_with("pm_pel_test: done")).collect();
-    assert!(checks.len() >= 16, "every check reported:\n{out}");
+        .filter(|l| l.starts_with(&format!("{prefix}: ")) && !l.starts_with(&done)).collect();
+    assert!(checks.len() >= min_checks, "every check reported:\n{out}");
     let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
     assert!(failed.is_empty(), "failed checks: {failed:#?}");
-    assert!(out.contains(&format!("pm_pel_test: done {n}/{n}", n = checks.len())), "{out}");
+    assert!(out.contains(&format!("{done} {n}/{n}", n = checks.len())), "{out}");
+}
+
+/// pm_pel_test: drawing is rasterised on the calling thread, so the guest
+/// reads back with GpiQueryPel what GpiSetPel / GpiBox / GpiLine just drew,
+/// and XOR / invert / leave-alone mixes combine with the pels already there.
+#[test]
+fn gui_pm_pel_test_reads_back_pels_and_mixes() {
+    assert_sample_checks_pass("samples/pm_pel_test/pm_pel_test.exe", "pm_pel_test", 16);
+}
+
+/// pm_bitmap_test: a memory PS drawing into a bitmap, GpiBitBlt (1:1,
+/// stretched, ROP_DSTINVERT), GpiQueryBitmapBits, GpiLoadBitmap from an
+/// RT_BITMAP resource with WinDrawBitmap, logical colour tables, line types
+/// and bitmap selection rules — checked from the guest side.
+#[test]
+fn gui_pm_bitmap_test_blits_bitmaps() {
+    assert_sample_checks_pass("samples/pm_bitmap_test/pm_bitmap_test.exe", "pm_bitmap_test", 25);
 }
 
 // Colours the compositor draws with (`src/gui/sdl2_renderer.rs`).
