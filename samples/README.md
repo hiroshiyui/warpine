@@ -47,11 +47,14 @@ cd samples/4os2 && ./fetch_source.sh && make
 | ne_hello | 16-bit NE format hello world (pure assembly, no Watcom CRT) | DosWrite (ord 138), DosExit (ord 5) via 16-bit Pascal thunk dispatch |
 | dbcs_test | DBCS VIO cell classification and lead-byte query | DosSetProcessCp, DosQueryDBCSEnv, VioWrtCellStr, VioCheckCharType |
 | uconv_test | UCONV.DLL Unicode conversion round-trip | DosLoadModule, DosQueryProcAddr, UniCreateUconvObject, UniUconvToUcs, UniUconvFromUcs, UniMapCpToUcsCp, UniFreeUconvObject |
-| audio_test | MMPM/2 audio: beep tones and MCI command string | DosBeep, DosLoadModule/DosQueryProcAddr into MDM.DLL, mciSendString open/capability/close |
+| audio_test | MMPM/2 audio from a CLI program: beep tones and MCI command strings (silent when headless) | DosBeep, DosLoadModule/DosQueryProcAddr into MDM.DLL, mciSendString open waveaudio (device by name) / capability / close |
 | pm_controls_test | PM built-in controls creation and API verification | WinCreateWindow (WC_STATIC/WC_BUTTON/WC_ENTRYFIELD/WC_SCROLLBAR/WC_LISTBOX/WC_MLE), WinSetWindowText, WinQueryWindowText, WinEnableWindow, WinIsWindowEnabled, LM_INSERTITEM/LM_QUERYITEMCOUNT |
 | pm_menu_dlg_test | PM menu bar and modal About dialog loaded from MENU / DLGTEMPLATE resources | WinCreateStdWindow (FCF_MENU), WM_COMMAND, WinDlgBox, WinDefDlgProc, WinDismissDlg |
 | pm_font_test | GPI font selection and CJK text: Plex Sans/Mono/Serif, bold/italic, sizes, and Japanese/Korean/Chinese lines with measured-width rules | GpiCreateLogFont, GpiSetCharSet, GpiSetCharBox, GpiDeleteSetId, GpiQueryTextBox, GpiCharStringAt, DosSetProcessCp |
 | pm_bench | PM self-benchmark: measures GPI drawing, `WinSendMsg` / `WinPostMsg` round trips, paint cycles and the `WM_TIMER` rate for about 0.3 s each, prints `pm_bench: <name>: <ops> ops in <ms> ms = …` lines plus `pm_bench: done` to stdout and shows them in the window; R runs it again | DosQuerySysInfo (QSV_MS_COUNT), GpiBox, GpiLine, GpiCharStringAt, WinSendMsg, WinPostMsg, WinInvalidateRect, WinStartTimer |
+| pm_pel_test | GPI read-back and mix modes; one ok/FAIL line per check on stdout and in the window | GpiSetPel, GpiQueryPel, GpiBox, GpiLine, GpiSetMix (FM_XOR / FM_INVERT / FM_LEAVEALONE), GpiQueryMix |
+| pm_bitmap_test | Memory presentation spaces, bitmaps and bit-block transfers; ok/FAIL lines | DevOpenDC (OD_MEMORY), GpiCreatePS (GPIA_ASSOC), GpiCreateBitmap, GpiSetBitmap, GpiBitBlt (1:1, stretched, ROP_DSTINVERT), GpiQueryBitmapBits, GpiLoadBitmap (RT_BITMAP resource) + WinDrawBitmap, GpiCreateLogColorTable, GpiSetLineType, DevQueryCaps |
+| pm_audio_test | DosBeep timing and MMPM/2 waveaudio playback of a WAV file it writes; ok/FAIL lines | DosBeep, mciSendString (open … alias, status, play wait / notify, set volume, close), MM_MCINOTIFY, mciSendCommand (MCI_OPEN by device type ID, MCI_PLAY with MCI_WAIT), linked with mmpm2.lib |
 | rust_hello | Rust no_std guest binary: "Hello from Rust on Warpine!" | DosWrite, DosExit (via warpine-os2 crate) |
 | 4os2 | 4OS2 command shell (full interactive) | Nearly all DOSCALLS/VIO/KBD APIs; DLL loading (jpos2dll.dll) |
 
