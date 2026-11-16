@@ -1,0 +1,13 @@
+/* bmpres.rc - resources of BMPRES.DLL
+ *
+ * dllbmp.bmp is an 8x8, 8-bit, RLE8-compressed bitmap (BITMAPFILEHEADER +
+ * 40-byte info header with compression 1, read by OS/2 as a
+ * BITMAPINFOHEADER2 with BCA_RLE8): yellow left half, magenta right half.
+ * Its id is the same as the executable's bitmap.
+ */
+#define INCL_WIN
+#include <os2.h>
+
+#define ID_QUADRANTS 1
+
+BITMAP ID_QUADRANTS "dllbmp.bmp"

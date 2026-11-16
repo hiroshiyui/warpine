@@ -418,6 +418,10 @@ impl super::Loader {
             let mut dll_mgr = self.shared.dll_mgr.lock_or_recover();
             dll_mgr.decrement_refcount(hmod)
         };
+        if freed.is_some() {
+            // Its resources live in the pages about to be freed.
+            self.shared.resource_mgr.lock_or_recover().remove_module(hmod);
+        }
         match freed {
             Some((bases, Some(addr))) => {
                 // DLL has INITTERM — inject _DLL_InitTerm(hmod, 1) before freeing.
@@ -1416,6 +1420,42 @@ mod tests {
         // Page returned to allocator — re-alloc should succeed at the same address
         let new_base = loader.shared.mem_mgr.lock_or_recover().alloc(64).unwrap();
         assert_eq!(new_base, base, "freed page should be reusable");
+    }
+
+    /// DosGetResource / DosQueryResourceSize look in the module named by
+    /// hmod (0 = the executable); a DLL's resources go with its last
+    /// DosFreeModule.
+    #[test]
+    fn test_resources_are_found_by_module_and_dropped_on_unload() {
+        use super::super::mutex_ext::MutexExt;
+        use super::super::constants::NO_ERROR;
+        use super::super::managers::EXE_RESOURCE_MODULE;
+
+        let loader = Loader::new_mock();
+        let base = loader.shared.mem_mgr.lock_or_recover().alloc(64).unwrap();
+        let h = register_fake_dll(&loader, "RESDLL", vec![base], None);
+        loader.shared.dll_mgr.lock_or_recover().increment_refcount(h);
+        {
+            let mut res = loader.shared.resource_mgr.lock_or_recover();
+            res.add(EXE_RESOURCE_MODULE, 5, 1, 0x7000, 11);
+            res.add(h, 5, 1, base, 22);
+        }
+        let out = loader.shared.mem_mgr.lock_or_recover().alloc(4).unwrap();
+        let size_of = |hmod: u32| {
+            let rc = loader.dos_query_resource_size(hmod, 5, 1, out);
+            (rc == NO_ERROR).then(|| loader.guest_read::<u32>(out).unwrap())
+        };
+        assert_eq!(size_of(0), Some(11), "NULLHANDLE: the executable's");
+        assert_eq!(size_of(h), Some(22), "the DLL's own");
+        assert_eq!(loader.dos_get_resource(h, 5, 1, out), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(out).unwrap(), base);
+        assert_ne!(loader.dos_get_resource(h, 5, 2, out), NO_ERROR, "no such id in the DLL");
+
+        let _ = loader.dos_free_module(h);
+        assert_eq!(size_of(h), Some(22), "still referenced once: still there");
+        let _ = loader.dos_free_module(h);
+        assert_eq!(size_of(h), None, "unloaded: gone");
+        assert_eq!(size_of(0), Some(11), "the executable's stay");
     }
 
     #[test]

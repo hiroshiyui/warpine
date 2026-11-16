@@ -550,11 +550,13 @@ fn gui_pm_pel_test_reads_back_pels_and_mixes() {
 
 /// pm_bitmap_test: a memory PS drawing into a bitmap, GpiBitBlt (1:1,
 /// stretched, ROP_DSTINVERT), GpiQueryBitmapBits, GpiLoadBitmap from an
-/// RT_BITMAP resource with WinDrawBitmap, logical colour tables, line types
-/// and bitmap selection rules — checked from the guest side.
+/// RT_BITMAP resource with WinDrawBitmap, the same-id RLE8 bitmap of a
+/// resource DLL (DosLoadModule + GpiLoadBitmap with its module handle),
+/// logical colour tables, line types and bitmap selection rules — checked
+/// from the guest side.
 #[test]
 fn gui_pm_bitmap_test_blits_bitmaps() {
-    assert_sample_checks_pass("samples/pm_bitmap_test/pm_bitmap_test.exe", "pm_bitmap_test", 25);
+    assert_sample_checks_pass("samples/pm_bitmap_test/pm_bitmap_test.exe", "pm_bitmap_test", 29);
 }
 
 /// pm_shapes_test: arcs (GpiFullArc / GpiPartialArc / GpiPointArc and arc

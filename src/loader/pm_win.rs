@@ -117,7 +117,7 @@ impl super::Loader {
                 let psz_class_name_ptr = read_stack(16);
                 let psz_title_ptr = read_stack(20);
                 let _client_style = read_stack(24);
-                let _hmod = read_stack(28);
+                let hmod = read_stack(28);
                 let id_resources = read_stack(32);
                 let phwnd_client_ptr = read_stack(36);
                 let class_name = self.read_guest_string(psz_class_name_ptr);
@@ -132,7 +132,7 @@ impl super::Loader {
                 // whose id is the idResources argument. A missing resource simply
                 // leaves the frame without a menu.
                 let fcf_menu_items = if fl_create_flags & FCF_MENU != 0 {
-                    self.load_menu_resource(id_resources, vcpu_id)
+                    self.load_menu_resource(hmod, id_resources, vcpu_id)
                 } else { None };
 
                 let (h_frame, h_client, pfn_wp_client) = {
@@ -754,7 +754,7 @@ impl super::Loader {
                 let hwnd_parent      = read_stack(4);
                 let _hwnd_owner      = read_stack(8);
                 let pfn_dlg_proc     = read_stack(12);
-                let _hmod            = read_stack(16);
+                let hmod             = read_stack(16);
                 let id_dlg           = read_stack(20);
                 let p_create_params  = read_stack(24);
                 debug!("  [VCPU {}] WinDlgBox: parent={} idDlg={} pfnDlgProc=0x{:08X}",
@@ -766,7 +766,7 @@ impl super::Loader {
 
                 // Parse the dialog template resource.
                 let res = self.shared.resource_mgr.lock_or_recover()
-                    .find(RT_DIALOG, id_dlg as u16);
+                    .find(hmod, RT_DIALOG, id_dlg as u16);
 
                 let (hwnd_dlg, hmq) = if let Some((guest_addr, size)) = res {
                     match self.parse_dlg_template(guest_addr, size) {
@@ -874,11 +874,11 @@ impl super::Loader {
             776 => {
                 // WinLoadAccelTable(HAB hab, HMODULE hmod, ULONG idAccelTable)
                 let _hab = read_stack(4);
-                let _hmod = read_stack(8);
+                let hmod = read_stack(8);
                 let id = read_stack(12);
                 debug!("  [VCPU {}] WinLoadAccelTable id={}", vcpu_id, id);
                 let res_mgr = self.shared.resource_mgr.lock_or_recover();
-                if let Some((guest_addr, size)) = res_mgr.find(RT_ACCELTABLE, id as u16) {
+                if let Some((guest_addr, size)) = res_mgr.find(hmod, RT_ACCELTABLE, id as u16) {
                     drop(res_mgr);
                     // Parse binary accelerator table: u16 count at offset 2, then entries of 6 bytes each
                     if size >= 4 {
@@ -908,14 +908,14 @@ impl super::Loader {
                 let hwnd_parent      = read_stack(4);
                 let _hwnd_owner      = read_stack(8);
                 let pfn_dlg_proc     = read_stack(12);
-                let _hmod            = read_stack(16);
+                let hmod             = read_stack(16);
                 let id_dlg           = read_stack(20);
                 let p_create_params  = read_stack(24);
                 debug!("  [VCPU {}] WinLoadDlg: parent={} idDlg={} pfnDlgProc=0x{:08X}",
                        vcpu_id, hwnd_parent, id_dlg, pfn_dlg_proc);
 
                 let res = self.shared.resource_mgr.lock_or_recover()
-                    .find(RT_DIALOG, id_dlg as u16);
+                    .find(hmod, RT_DIALOG, id_dlg as u16);
 
                 let (hwnd_dlg, hmq) = if let Some((guest_addr, size)) = res {
                     match self.parse_dlg_template(guest_addr, size) {
@@ -970,11 +970,11 @@ impl super::Loader {
             778 => {
                 // WinLoadMenu(HWND hwndFrame, HMODULE hmod, ULONG idMenu)
                 let hwnd_frame = read_stack(4);
-                let _hmod      = read_stack(8);
+                let hmod       = read_stack(8);
                 let id_menu    = read_stack(12);
                 debug!("  [VCPU {}] WinLoadMenu hwnd_frame={} id={}", vcpu_id, hwnd_frame, id_menu);
 
-                let items = self.load_menu_resource(id_menu, vcpu_id).unwrap_or_default();
+                let items = self.load_menu_resource(hmod, id_menu, vcpu_id).unwrap_or_default();
                 let h = {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
                     let h = wm.create_window("#Menu".to_string(), hwnd_frame, 0);
@@ -988,7 +988,7 @@ impl super::Loader {
             781 => {
                 // WinLoadString(HAB hab, HMODULE hmod, ULONG id, LONG cchMax, PSZ pszBuffer)
                 let _hab = read_stack(4);
-                let _hmod = read_stack(8);
+                let hmod = read_stack(8);
                 let id = read_stack(12);
                 let cch_max = read_stack(16) as i32;
                 let psz_buffer = read_stack(20);
@@ -999,7 +999,7 @@ impl super::Loader {
                 let bundle_id = (id / 16) + 1;
                 let string_index = (id % 16) as usize;
                 let res_mgr = self.shared.resource_mgr.lock_or_recover();
-                if let Some((guest_addr, size)) = res_mgr.find(RT_STRING, bundle_id as u16) {
+                if let Some((guest_addr, size)) = res_mgr.find(hmod, RT_STRING, bundle_id as u16) {
                     drop(res_mgr);
                     // Parse bundle: sequential length-prefixed strings (1-byte length + data)
                     let mut offset = 0u32;
@@ -1806,10 +1806,10 @@ impl super::Loader {
         Some((x, y, cx, cy, title, items))
     }
 
-    /// Parse the RT_MENU resource `id_menu` into a menu item tree.
-    /// Returns `None` when the executable has no such resource.
-    fn load_menu_resource(&self, id_menu: u32, vcpu_id: u32) -> Option<Vec<MenuItem>> {
-        let res = self.shared.resource_mgr.lock_or_recover().find(RT_MENU, id_menu as u16);
+    /// Parse the RT_MENU resource `id_menu` of module `hmod` (0 = the
+    /// executable) into a menu item tree; `None` when there is none.
+    fn load_menu_resource(&self, hmod: u32, id_menu: u32, vcpu_id: u32) -> Option<Vec<MenuItem>> {
+        let res = self.shared.resource_mgr.lock_or_recover().find(hmod, RT_MENU, id_menu as u16);
         match res {
             Some((guest_addr, size)) => {
                 let parsed = self.parse_menu_template(guest_addr, size);
@@ -2020,7 +2020,7 @@ mod tests {
         for (i, &b) in data.iter().enumerate() {
             loader.guest_write::<u8>(base + i as u32, b).unwrap();
         }
-        loader.shared.resource_mgr.lock_or_recover().add(crate::lx::header::RT_MENU, 7, base, data.len() as u32);
+        loader.shared.resource_mgr.lock_or_recover().add(0, crate::lx::header::RT_MENU, 7, base, data.len() as u32);
         // Class name string and flCreateFlags in guest memory.
         let (p_class, p_flags, p_client) = (0x6000u32, 0x6100u32, 0x6200u32);
         for (i, &b) in b"MenuTest\0".iter().enumerate() {

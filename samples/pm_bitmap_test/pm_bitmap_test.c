@@ -7,6 +7,8 @@
  *     one red pel), copied to the window with GpiBitBlt, once 1:1 and once
  *     stretched to 32x32;
  *   - an 8x8 RT_BITMAP resource (GpiLoadBitmap) drawn with WinDrawBitmap;
+ *   - the bitmap with the same id from BMPRES.DLL (DosLoadModule +
+ *     GpiLoadBitmap with its module handle), stored RLE8-compressed;
  *   - a dotted line (GpiSetLineType).
  * On the first WM_PAINT the scene is checked with GpiQueryPel and the other
  * query functions. Each check is shown in the window and written to stdout:
@@ -22,12 +24,13 @@
 #define INCL_GPILOGCOLORTABLE
 #define INCL_DEV
 #define INCL_DOSFILEMGR
+#define INCL_DOSMODULEMGR
 #include <os2.h>
 #include <string.h>
 
 #define ID_QUADRANTS 1
 #define N_CHECKS_MAX 32
-#define LINE_H       18
+#define LINE_H       15
 #define MEM_CX       16
 #define MEM_CY       16
 #define BMP_CX       8
@@ -38,6 +41,8 @@
 #define STRETCH_Y    10
 #define DRAWBMP_X    500    /* WinDrawBitmap of the resource */
 #define DRAWBMP_Y    10
+#define DLLBMP_X     515    /* WinDrawBitmap of the DLL's resource */
+#define DLLBMP_Y     10
 #define LINE_X       420    /* dotted line, 16 pels long */
 #define LINE_Y       60
 #define RGB_PEL_X    530    /* the pel drawn in RGB mode */
@@ -46,7 +51,9 @@
 static HAB     hab;
 static HDC     hdcMem;
 static HPS     hpsMem;
-static HBITMAP hbmMem, hbmRes;
+static HBITMAP hbmMem, hbmRes, hbmDll;
+static HMODULE hmodDll;
+static APIRET  rcDll;
 static BOOL    checked = FALSE;
 static int     n_checks = 0;
 static int     n_passed = 0;
@@ -166,6 +173,12 @@ static void create_resources( HPS hpsWin )
         GpiSetPel( hpsMem, &pt );
     }
     hbmRes = GpiLoadBitmap( hpsWin, NULLHANDLE, ID_QUADRANTS, 0, 0 );
+    {
+        UCHAR failed[64];
+        rcDll = DosLoadModule( failed, sizeof( failed ), "BMPRES", &hmodDll );
+        if( rcDll == 0 )
+            hbmDll = GpiLoadBitmap( hpsWin, hmodDll, ID_QUADRANTS, 0, 0 );
+    }
 }
 
 static void draw_scene( HPS hps )
@@ -188,6 +201,10 @@ static void draw_scene( HPS hps )
     if( hbmRes ) {
         POINTL pt = { DRAWBMP_X, DRAWBMP_Y };
         WinDrawBitmap( hps, hbmRes, NULL, &pt, 0, 0, DBM_NORMAL );
+    }
+    if( hbmDll ) {
+        POINTL pt = { DLLBMP_X, DLLBMP_Y };
+        WinDrawBitmap( hps, hbmDll, NULL, &pt, 0, 0, DBM_NORMAL );
     }
 
     GpiSetColor( hps, CLR_RED );
@@ -238,6 +255,11 @@ static void run_checks( HPS hps )
     check( "WinDrawBitmap: red quadrant", pel_at( hps, DRAWBMP_X + 1, DRAWBMP_Y + 1 ), CLR_RED );
     check( "WinDrawBitmap: green quadrant", pel_at( hps, DRAWBMP_X + 6, DRAWBMP_Y + 1 ), CLR_GREEN );
     check( "WinDrawBitmap: blue quadrant", pel_at( hps, DRAWBMP_X + 1, DRAWBMP_Y + 6 ), CLR_BLUE );
+
+    check( "DosLoadModule BMPRES", (LONG)rcDll, 0 );
+    check( "GpiLoadBitmap from the DLL", hbmDll != NULLHANDLE, TRUE );
+    check( "DLL bitmap (RLE8): yellow left", pel_at( hps, DLLBMP_X + 1, DLLBMP_Y + 1 ), CLR_YELLOW );
+    check( "DLL bitmap (RLE8): magenta right", pel_at( hps, DLLBMP_X + 6, DLLBMP_Y + 6 ), CLR_PINK );
 
     n = 0;
     for( i = LINE_X; i <= LINE_X + 15; i++ )
@@ -359,6 +381,8 @@ int main( void )
         WinDispatchMsg( hab, &qmsg );
 
     if( hbmRes ) GpiDeleteBitmap( hbmRes );
+    if( hbmDll ) GpiDeleteBitmap( hbmDll );
+    if( hmodDll ) DosFreeModule( hmodDll );
     GpiSetBitmap( hpsMem, NULLHANDLE );
     GpiDeleteBitmap( hbmMem );
     GpiDestroyPS( hpsMem );

@@ -548,11 +548,12 @@ impl super::Loader {
         self.shared.window_mgr.lock_or_recover().create_bitmap(surface, fmt.bit_count, fmt.planes)
     }
 
-    /// GpiLoadBitmap: the RT_BITMAP resource `id` of the executable,
-    /// stretched to `cx` × `cy` when both are non-zero.
-    pub(super) fn gpi_load_bitmap(&self, id: u32, cx: i32, cy: i32) -> u32 {
+    /// GpiLoadBitmap: the RT_BITMAP resource `id` of module `hmod` (0 = the
+    /// executable, else a loaded DLL), stretched to `cx` × `cy` when both are
+    /// non-zero.
+    pub(super) fn gpi_load_bitmap(&self, hmod: u32, id: u32, cx: i32, cy: i32) -> u32 {
         let Ok(id) = u16::try_from(id) else { return GPI_ERROR };
-        let res = self.shared.resource_mgr.lock_or_recover().find(crate::lx::header::RT_BITMAP, id);
+        let res = self.shared.resource_mgr.lock_or_recover().find(hmod, crate::lx::header::RT_BITMAP, id);
         let Some((addr, size)) = res else { return GPI_ERROR };
         let Some(bytes) = self.guest_read_bytes(addr, size as usize) else { return GPI_ERROR };
         let Some((fmt, mut surface)) = parse_bitmap_resource(&bytes) else { return GPI_ERROR };
@@ -1370,4 +1371,51 @@ mod api_tests {
         assert_eq!(gpi(&l, 606, &[hdc, CAPS_BITMAP_FORMATS, 1, TBL]), GPI_OK);
         assert_eq!(l.guest_read::<u32>(TBL).unwrap(), 5);
     }
+
+    /// GpiLoadBitmap loads from the module named by hmod: NULLHANDLE is the
+    /// executable, a DLL handle that DLL's resources.
+    #[test]
+    fn load_bitmap_from_the_named_module() {
+        use super::super::managers::EXE_RESOURCE_MODULE;
+        let l = Loader::new_mock();
+        let (_, hps) = window_ps(&l);
+        // A 1×1 24-bit "BM" resource of colour (b, g, r) at `at`.
+        let bm = |at: u32, bgr: [u8; 3]| {
+            let mut f = Vec::new();
+            f.extend(BFT_BMAP.to_le_bytes());
+            f.extend(0u32.to_le_bytes());
+            f.extend([0u8; 4]);
+            f.extend(30u32.to_le_bytes());
+            f.extend(16u32.to_le_bytes());
+            f.extend(1u32.to_le_bytes());
+            f.extend(1u32.to_le_bytes());
+            f.extend(1u16.to_le_bytes());
+            f.extend(24u16.to_le_bytes());
+            f.extend(bgr);
+            f.push(0);
+            l.guest_write_bytes(at, &f).unwrap();
+            f.len() as u32
+        };
+        let dll = 9;
+        {
+            let red = bm(DATA, [0, 0, 0xFF]);
+            let green = bm(DATA + 0x100, [0, 0xFF, 0]);
+            let mut res = l.shared.resource_mgr.lock_or_recover();
+            res.add(EXE_RESOURCE_MODULE, crate::lx::header::RT_BITMAP, 1, DATA, red);
+            res.add(dll, crate::lx::header::RT_BITMAP, 1, DATA + 0x100, green);
+        }
+        let pel = |hbm: u32| {
+            let wm = l.shared.window_mgr.lock_or_recover();
+            let s = wm.bitmaps[&hbm].surface.lock_or_recover();
+            s.pel(0, 0)
+        };
+        let from_exe = gpi(&l, 399, &[hps, 0, 1, 0, 0]);
+        assert_ne!(from_exe, GPI_ERROR);
+        assert_eq!(pel(from_exe), Some(0x00FF_0000));
+        let from_dll = gpi(&l, 399, &[hps, dll, 1, 0, 0]);
+        assert_ne!(from_dll, GPI_ERROR);
+        assert_eq!(pel(from_dll), Some(0x0000_FF00), "the DLL's bitmap, not the executable's");
+        assert_eq!(gpi(&l, 399, &[hps, 10, 1, 0, 0]), GPI_ERROR, "a module without it");
+    }
 }
+

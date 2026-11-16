@@ -713,7 +713,7 @@ impl super::Loader {
             }
             399 => {
                 // GpiLoadBitmap(HPS hps, HMODULE hmod, ULONG idBitmap, LONG cx, LONG cy) → HBITMAP
-                ApiResult::Normal(self.gpi_load_bitmap(read_stack(12), read_stack(16) as i32, read_stack(20) as i32))
+                ApiResult::Normal(self.gpi_load_bitmap(read_stack(8), read_stack(12), read_stack(16) as i32, read_stack(20) as i32))
             }
             371 => {
                 // GpiDeleteBitmap(HBITMAP hbm) → BOOL

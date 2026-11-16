@@ -261,9 +261,15 @@ impl SharedMemManager {
     }
 }
 
+/// Module handle that stands for the executable in resource calls
+/// (`NULLHANDLE` in `GpiLoadBitmap`, `WinLoadString`, `DosGetResource` …).
+pub const EXE_RESOURCE_MODULE: u32 = 0;
+
+/// The resources of the executable and of the loaded DLLs.
 pub struct ResourceManager {
-    // (type_id, name_id) → (guest_addr, size)
-    resources: HashMap<(u16, u16), (u32, u32)>,
+    // (module handle, type_id, name_id) → (guest_addr, size); the
+    // executable is `EXE_RESOURCE_MODULE`, a DLL its module handle.
+    resources: HashMap<(u32, u16, u16), (u32, u32)>,
 }
 
 impl Default for ResourceManager {
@@ -275,12 +281,19 @@ impl ResourceManager {
         ResourceManager { resources: HashMap::new() }
     }
 
-    pub fn add(&mut self, type_id: u16, name_id: u16, guest_addr: u32, size: u32) {
-        self.resources.insert((type_id, name_id), (guest_addr, size));
+    pub fn add(&mut self, hmod: u32, type_id: u16, name_id: u16, guest_addr: u32, size: u32) {
+        self.resources.insert((hmod, type_id, name_id), (guest_addr, size));
     }
 
-    pub fn find(&self, type_id: u16, name_id: u16) -> Option<(u32, u32)> {
-        self.resources.get(&(type_id, name_id)).copied()
+    /// The resource `type_id` / `name_id` of module `hmod`
+    /// (`EXE_RESOURCE_MODULE` for the executable).
+    pub fn find(&self, hmod: u32, type_id: u16, name_id: u16) -> Option<(u32, u32)> {
+        self.resources.get(&(hmod, type_id, name_id)).copied()
+    }
+
+    /// Forget the resources of an unloaded module.
+    pub fn remove_module(&mut self, hmod: u32) {
+        self.resources.retain(|&(m, _, _), _| m != hmod);
     }
 }
 
@@ -450,13 +463,34 @@ mod tests {
     #[test]
     fn test_resource_manager_find() {
         let mut mgr = ResourceManager::new();
-        mgr.add(6, 1, 0x10000, 256);
-        mgr.add(4, 100, 0x20000, 512);
+        let exe = EXE_RESOURCE_MODULE;
+        mgr.add(exe, 6, 1, 0x10000, 256);
+        mgr.add(exe, 4, 100, 0x20000, 512);
 
-        assert_eq!(mgr.find(6, 1), Some((0x10000, 256)));
-        assert_eq!(mgr.find(4, 100), Some((0x20000, 512)));
-        assert_eq!(mgr.find(6, 2), None);
-        assert_eq!(mgr.find(99, 1), None);
+        assert_eq!(mgr.find(exe, 6, 1), Some((0x10000, 256)));
+        assert_eq!(mgr.find(exe, 4, 100), Some((0x20000, 512)));
+        assert_eq!(mgr.find(exe, 6, 2), None);
+        assert_eq!(mgr.find(exe, 99, 1), None);
+    }
+
+    /// Each module has its own resources: the same type and id in a DLL
+    /// and in the executable are different resources, and unloading a DLL
+    /// forgets only its own.
+    #[test]
+    fn test_resource_manager_keys_resources_by_module() {
+        let mut mgr = ResourceManager::new();
+        let (exe, dll) = (EXE_RESOURCE_MODULE, 7);
+        mgr.add(exe, 2, 1, 0x10000, 10);
+        mgr.add(dll, 2, 1, 0x30000, 20);
+        mgr.add(dll, 5, 3, 0x31000, 30);
+        assert_eq!(mgr.find(exe, 2, 1), Some((0x10000, 10)));
+        assert_eq!(mgr.find(dll, 2, 1), Some((0x30000, 20)));
+        assert_eq!(mgr.find(exe, 5, 3), None, "the DLL's resource is not the executable's");
+        assert_eq!(mgr.find(8, 2, 1), None, "unknown module");
+        mgr.remove_module(dll);
+        assert_eq!(mgr.find(dll, 2, 1), None);
+        assert_eq!(mgr.find(dll, 5, 3), None);
+        assert_eq!(mgr.find(exe, 2, 1), Some((0x10000, 10)), "the executable's stay");
     }
 
     #[test]

@@ -57,7 +57,7 @@ impl super::Loader {
                 let obj_idx = (res.object_num as usize).wrapping_sub(1);
                 if obj_idx < lx_file.object_table.len() {
                     let guest_addr = lx_file.object_table[obj_idx].base_address + res.offset;
-                    res_mgr.add(res.type_id, res.name_id, guest_addr, res.size);
+                    res_mgr.add(super::managers::EXE_RESOURCE_MODULE, res.type_id, res.name_id, guest_addr, res.size);
                     debug!("  Resource: type={} id={} addr=0x{:08X} size={}", res.type_id, res.name_id, guest_addr, res.size);
                 }
             }
@@ -299,6 +299,9 @@ impl super::Loader {
             None
         };
 
+        // Kept for step 8: `object_bases` moves into the DLL record.
+        let object_bases_for_res = object_bases.clone();
+
         // 7. Register in dll_mgr
         let handle = {
             let mut dll_mgr = self.shared.dll_mgr.lock_or_recover();
@@ -315,6 +318,18 @@ impl super::Loader {
             });
             handle
         };
+
+        // 8. Its resources, found by module handle (GpiLoadBitmap,
+        //    WinLoadString, DosGetResource … with this hmod).
+        {
+            let mut res_mgr = self.shared.resource_mgr.lock_or_recover();
+            for res in &lx_file.resources {
+                let obj_idx = (res.object_num as usize).wrapping_sub(1);
+                if let Some(&base) = object_bases_for_res.get(obj_idx) {
+                    res_mgr.add(handle, res.type_id, res.name_id, base + res.offset, res.size);
+                }
+            }
+        }
 
         loading.remove(&dll_name_upper);
         Ok(handle)

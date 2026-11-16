@@ -4,6 +4,7 @@ samples/rust_hello/target/
 /vendor/watcom/
 # OS/2 build artifacts
 *.exe
+*.dll
 *.obj
 *.o
 *.err

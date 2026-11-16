@@ -1318,9 +1318,10 @@ impl super::Loader {
         337
     }
 
-    pub fn dos_get_resource(&self, _hmod: u32, id_type: u32, id_name: u32, ppb: u32) -> u32 {
+    /// DosGetResource: the resource of module `hmod` (0 = the executable).
+    pub fn dos_get_resource(&self, hmod: u32, id_type: u32, id_name: u32, ppb: u32) -> u32 {
         let res_mgr = self.shared.resource_mgr.lock_or_recover();
-        if let Some((guest_addr, _size)) = res_mgr.find(id_type as u16, id_name as u16) {
+        if let Some((guest_addr, _size)) = res_mgr.find(hmod, id_type as u16, id_name as u16) {
             self.guest_write::<u32>(ppb, guest_addr);
             0
         } else {
@@ -1332,9 +1333,10 @@ impl super::Loader {
         0
     }
 
-    pub fn dos_query_resource_size(&self, _hmod: u32, id_type: u32, id_name: u32, p_size: u32) -> u32 {
+    /// DosQueryResourceSize: of module `hmod` (0 = the executable).
+    pub fn dos_query_resource_size(&self, hmod: u32, id_type: u32, id_name: u32, p_size: u32) -> u32 {
         let res_mgr = self.shared.resource_mgr.lock_or_recover();
-        if let Some((_guest_addr, size)) = res_mgr.find(id_type as u16, id_name as u16) {
+        if let Some((_guest_addr, size)) = res_mgr.find(hmod, id_type as u16, id_name as u16) {
             self.guest_write::<u32>(p_size, size);
             0
         } else {
