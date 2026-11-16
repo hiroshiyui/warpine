@@ -401,6 +401,11 @@ pub const QSV_PAGE_SIZE: u32 = 10;
 pub const QSV_VERSION_MAJOR: u32 = 11;
 pub const QSV_VERSION_MINOR: u32 = 12;
 pub const QSV_VERSION_REVISION: u32 = 13;
+/// Milliseconds since system start-up (wraps at 2^32, about 49.7 days).
+pub const QSV_MS_COUNT: u32 = 14;
+/// Low and high doublewords of the current time in seconds since 1970-01-01.
+pub const QSV_TIME_LOW: u32 = 15;
+pub const QSV_TIME_HIGH: u32 = 16;
 pub const QSV_TOTPHYSMEM: u32 = 17;
 pub const QSV_TOTRESMEM: u32 = 18;
 pub const QSV_TOTAVAILMEM: u32 = 19;

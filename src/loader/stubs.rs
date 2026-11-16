@@ -895,6 +895,9 @@ impl super::Loader {
                 QSV_VERSION_MAJOR => 20,     // OS/2 Warp 4.5 (major=20, minor=45 → "4.50")
                 QSV_VERSION_MINOR => 45,     // SetOSVersion(): minor≥40 → "4.XX" branch
                 QSV_VERSION_REVISION => 0,
+                QSV_MS_COUNT => ms_count(),
+                QSV_TIME_LOW => unix_time() as u32,
+                QSV_TIME_HIGH => (unix_time() >> 32) as u32,
                 QSV_TOTPHYSMEM => 128 * 1024 * 1024,
                 QSV_TOTRESMEM => 16 * 1024 * 1024,
                 QSV_TOTAVAILMEM => 96 * 1024 * 1024,
@@ -1045,10 +1048,58 @@ impl super::Loader {
     }
 }
 
+/// `QSV_MS_COUNT`: milliseconds since the host booted, truncated to 32 bits
+/// so it wraps like the OS/2 counter.
+fn ms_count() -> u32 {
+    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+    // SAFETY: `ts` is a valid, writable timespec; CLOCK_MONOTONIC always exists.
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts); }
+    (ts.tv_sec as u64).wrapping_mul(1000).wrapping_add(ts.tv_nsec as u64 / 1_000_000) as u32
+}
+
+/// `QSV_TIME_LOW`/`QSV_TIME_HIGH`: seconds since 1970-01-01 00:00 UTC.
+fn unix_time() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::Loader;
     use super::super::mutex_ext::MutexExt;
+
+    /// Query QSV indexes `first..=last` into a fresh guest buffer.
+    fn query_sys_info(loader: &Loader, first: u32, last: u32) -> Vec<u32> {
+        let n = last - first + 1;
+        let buf = loader.shared.mem_mgr.lock_or_recover().alloc(n * 4).unwrap();
+        assert_eq!(loader.dos_query_sys_info(first, last, buf, n * 4),
+                   super::super::constants::NO_ERROR);
+        (0..n).map(|i| loader.guest_read::<u32>(buf + i * 4).unwrap()).collect()
+    }
+
+    #[test]
+    fn test_qsv_ms_count_advances_in_milliseconds() {
+        use super::super::constants::QSV_MS_COUNT;
+        let loader = Loader::new_mock();
+        let before = query_sys_info(&loader, QSV_MS_COUNT, QSV_MS_COUNT)[0];
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let after = query_sys_info(&loader, QSV_MS_COUNT, QSV_MS_COUNT)[0];
+        let elapsed = after.wrapping_sub(before);
+        assert!((50..5000).contains(&elapsed), "elapsed {elapsed} ms");
+    }
+
+    #[test]
+    fn test_qsv_time_low_high_is_the_unix_time() {
+        use super::super::constants::{QSV_TIME_HIGH, QSV_TIME_LOW};
+        let loader = Loader::new_mock();
+        let v = query_sys_info(&loader, QSV_TIME_LOW, QSV_TIME_HIGH);
+        let guest = (v[1] as u64) << 32 | v[0] as u64;
+        let host = super::unix_time();
+        assert!(host.abs_diff(guest) <= 2, "guest {guest}, host {host}");
+        // Well after 2020-01-01, so a wrong index (0) cannot pass.
+        assert!(guest > 1_577_836_800);
+    }
 
     #[test]
     fn test_edit_name_star_extension() {
@@ -1085,6 +1136,9 @@ mod tests {
         assert_eq!(QSV_VERSION_MAJOR, 11);
         assert_eq!(QSV_VERSION_MINOR, 12);
         assert_eq!(QSV_VERSION_REVISION, 13);
+        assert_eq!(QSV_MS_COUNT, 14);
+        assert_eq!(QSV_TIME_LOW, 15);
+        assert_eq!(QSV_TIME_HIGH, 16);
         assert_eq!(QSV_TOTPHYSMEM, 17);
         assert_eq!(QSV_MAX_COMP_LENGTH, 23);
         // Ensure range queries would work: iStart <= iLast
