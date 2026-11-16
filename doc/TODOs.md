@@ -75,17 +75,15 @@ NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 
 ### PM Graphics Performance and Architecture
 
-From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `renderer.rs`, `font.rs`, `message.rs`) on 2026-11-15. The steps are in suggested order. Steps 0 and 1 (frame statistics, a blocking event loop, coalesced presents, clipboard via events) are done — see the developer guide, "Rendering Pipeline"; measure the items below with the frame statistics (`RUST_LOG=warpine::gui=debug`) before and after.
+From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `renderer.rs`, `font.rs`, `message.rs`) on 2026-11-15. The steps are in suggested order. Steps 0–2 (frame statistics, a blocking event loop, coalesced presents, clipboard via events; damage-tracked compositing, row-wise blits, cached chrome, a per-thread glyph cache, content kept on resize) are done — see the developer guide, "Rendering Pipeline"; measure the items below with the frame statistics (`RUST_LOG=warpine::gui=debug`) before and after.
 
 - [ ] **Measure on a real display** — the event-loop change was measured only on SDL's `dummy` driver (idle CPU roughly halved); compare idle CPU and input latency on X11 and Wayland, where the old loop also read the clipboard ~125 times a second; `samples/pm_bench` gives repeatable guest-side numbers for the comparison
 
-**Step 2 — compositor cost (small, independent)**
+**Step 2 follow-ups — compositor**
 
-- [ ] **Damage rectangles** — `WindowManager::dirty` only decides whether to skip the composite; any change refills the whole desktop and re-blits every window, including occluded ones. Track rectangles and redraw only those
-- [ ] **Row-wise clipped blit** — the frame blit in `composite_and_present` tests bounds and indexes per pixel; clip once and `copy_from_slice` per row
-- [ ] **Cache chrome** — title-bar and menu text are re-rasterised on every composite, and titles / menu items are cloned while the window-manager lock is held
-- [ ] **Glyph cache locking** — `font::rasterize` locks a global `Mutex<HashMap>` and clones an `Arc` per glyph; use a per-thread cache or a glyph atlas
-- [ ] **Keep content on resize** — `FrameBuffer::resize` reallocates and blanks the buffer, so an interactive resize flashes white until the application repaints
+- [ ] **Damage smaller than a window** — `WindowManager::dirty` holds window handles, so invalidating a small area still redraws the whole frame; record the invalidated rectangles (`WinInvalidateRect` already receives them) and damage only those
+- [ ] **Tighter damage for moves** — a window dragged a short distance damages the bounding box of its old and new positions; damage the two rectangles separately (or the old one minus the new one)
+- [ ] **Present cost** — after damage tracking, most of a composite (~0.2–0.35 ms on the `dummy` driver) is `canvas.copy` of the whole texture plus `present`, independent of the damage; addressed by step 4
 
 **Step 3 — rasterise on the API thread (largest; affects compatibility)**
 

@@ -20,6 +20,8 @@ pub struct FrameStats {
     composite_total: Duration,
     composite_max: Duration,
     present_total: Duration,
+    /// Sum over composites of the redrawn fraction of the desktop.
+    damaged_total: f64,
 }
 
 impl FrameStats {
@@ -31,6 +33,7 @@ impl FrameStats {
             composite_total: Duration::ZERO,
             composite_max: Duration::ZERO,
             present_total: Duration::ZERO,
+            damaged_total: 0.0,
         }
     }
 
@@ -40,9 +43,11 @@ impl FrameStats {
     }
 
     /// One composite: `total` covers the whole composite including
-    /// `present`, the upload of the desktop buffer and the present itself.
-    pub fn record_composite(&mut self, total: Duration, present: Duration) {
+    /// `present`, the upload of the desktop buffer and the present itself;
+    /// `damaged` is the fraction of the desktop redrawn (0.0–1.0).
+    pub fn record_composite(&mut self, total: Duration, present: Duration, damaged: f64) {
         self.composites += 1;
+        self.damaged_total += damaged;
         self.composite_total += total;
         self.composite_max = self.composite_max.max(total);
         self.present_total += present;
@@ -60,10 +65,12 @@ impl FrameStats {
         let avg = |d: Duration| if self.composites == 0 { 0.0 } else { ms(d) / self.composites as f64 };
         let report = format!(
             "{secs:.1} s: {} loop iterations ({:.0}/s), {} composites ({:.0}/s), \
-             composite avg {:.2} ms max {:.2} ms, of which present avg {:.2} ms",
+             composite avg {:.2} ms max {:.2} ms, of which present avg {:.2} ms; \
+             avg {:.0}% of the desktop redrawn",
             self.iterations, self.iterations as f64 / secs,
             self.composites, self.composites as f64 / secs,
-            avg(self.composite_total), ms(self.composite_max), avg(self.present_total));
+            avg(self.composite_total), ms(self.composite_max), avg(self.present_total),
+            if self.composites == 0 { 0.0 } else { 100.0 * self.damaged_total / self.composites as f64 });
         *self = FrameStats::new(now);
         Some(report)
     }
@@ -86,13 +93,14 @@ mod tests {
         let t0 = Instant::now();
         let mut stats = FrameStats::new(t0);
         for _ in 0..10 { stats.record_iteration(); }
-        stats.record_composite(Duration::from_millis(2), Duration::from_millis(1));
-        stats.record_composite(Duration::from_millis(4), Duration::from_millis(1));
+        stats.record_composite(Duration::from_millis(2), Duration::from_millis(1), 1.0);
+        stats.record_composite(Duration::from_millis(4), Duration::from_millis(1), 0.5);
         let report = stats.take_report(t0 + REPORT_INTERVAL).expect("interval has ended");
         assert!(report.contains("10 loop iterations (2/s)"), "{report}");
         assert!(report.contains("2 composites"), "{report}");
         assert!(report.contains("composite avg 3.00 ms max 4.00 ms"), "{report}");
         assert!(report.contains("present avg 1.00 ms"), "{report}");
+        assert!(report.contains("avg 75% of the desktop redrawn"), "{report}");
 
         // A new interval starts empty.
         let t1 = t0 + REPORT_INTERVAL * 2;

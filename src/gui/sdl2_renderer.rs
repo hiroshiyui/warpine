@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use std::sync::Arc;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use sdl2::event::Event;
 use sdl2::keyboard::{Keycode, Mod as KeyMod, Scancode};
 use sdl2::pixels::PixelFormatEnum;
@@ -25,8 +25,9 @@ use crate::loader::{SharedState, OS2Message, MutexExt,
 use crate::loader::constants::{
     MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_BAR_ITEM_PAD, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H,
     MIS_SEPARATOR};
-use crate::loader::pm_types::{MenuItem, menu_label, menu_bar_item_width};
+use crate::loader::pm_types::{MenuItem, WindowManager, menu_label, menu_bar_item_width};
 use std::time::{Duration, Instant};
+use super::damage::{Damage, Rect, blit_clipped, fill_clipped};
 use super::frame_stats::FrameStats;
 use super::message::{GUIMessage, GuiWake};
 use super::renderer::PmRenderer;
@@ -52,8 +53,8 @@ const IDLE_WAIT: Duration = Duration::from_millis(100);
 
 /// How long the GUI loop may block before it has work again.
 ///
-/// `busy` means a composite is owed (windows are dirty, or a drag or resize
-/// is in progress): the loop then wakes for the next frame. `script_next` is
+/// `busy` means a composite is owed (windows are dirty or a full redraw is
+/// pending): the loop then wakes for the next frame. `script_next` is
 /// when the next scripted step is due. Input and wake-ups end the wait early.
 fn wait_timeout(now: Instant, last_composite: Instant, busy: bool,
                 script_next: Option<Instant>) -> Duration {
@@ -180,16 +181,29 @@ fn draw_chrome_button(buf: &mut [u32], buf_w: usize, x: i32, y: i32, h: i32, gly
     }
 }
 
+/// Draw a frame's title bar and border into the desktop buffer.
+#[cfg(test)]
+fn draw_frame_chrome(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
+    draw_title_bar(buf, buf_w, c);
+    let all = Rect::at(0, 0, buf_w as i32, (buf.len() / buf_w.max(1)) as i32);
+    draw_frame_border(buf, buf_w, c, all);
+}
+
+/// Height of a frame's title bar: `CHROME_TITLE_H`, or 0 without `FCF_TITLEBAR`.
+fn title_bar_h(frame_flags: u32) -> i32 {
+    if frame_flags & FCF_TITLEBAR != 0 { CHROME_TITLE_H } else { 0 }
+}
+
 /// Draw a frame's title bar (with system-menu, minimise, maximise and close
-/// buttons) and border into the desktop buffer.
+/// buttons). Draws nothing without `FCF_TITLEBAR`.
 ///
 /// Button positions mirror `hit_test_chrome`: the close button sits
 /// `CHROME_BTN_MARGIN` from the right edge, then maximise and minimise to its
 /// left with `CHROME_BTN_GAP` between them; the system menu is 3 px from the
 /// left edge.
-fn draw_frame_chrome(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
+fn draw_title_bar(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
     let buf_h = buf.len() / buf_w.max(1);
-    let title_h = if c.frame_flags & FCF_TITLEBAR != 0 { CHROME_TITLE_H } else { 0 };
+    let title_h = title_bar_h(c.frame_flags);
 
     if title_h > 0 {
         let title_color = if c.focused { CHROME_TITLE_ACTIVE } else { CHROME_TITLE_INACTIVE };
@@ -221,32 +235,35 @@ fn draw_frame_chrome(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
         // Title text, clipped so it never runs under the buttons.
         let text_y = c.top + (title_h - GLYPH_H) / 2;
         let avail = btn_x - 4 - text_left;
-        let mut title: String = c.title.to_string();
-        while !title.is_empty() && font::text_width(&title, FontSpec::SYSTEM_BOLD) > avail {
-            title.pop();
-        }
-        draw_text_screen(buf, buf_w, buf_h, text_left, text_y, &title,
+        let title = font::fit_text(c.title, avail.max(0), FontSpec::SYSTEM_BOLD);
+        draw_text_screen(buf, buf_w, buf_h, text_left, text_y, title,
                          CHROME_TEXT_COLOR, FontSpec::SYSTEM_BOLD);
     }
+}
 
-    // Border: a sizing border is a raised bevel; a plain or dialog border is a
-    // dark outline with a face-coloured inner ring.
-    let has_border = c.frame_flags & (FCF_BORDER | FCF_DLGBORDER | FCF_SIZEBORDER) != 0;
-    if has_border {
-        let (outer_lt, outer_rb) = if c.frame_flags & FCF_SIZEBORDER != 0 {
-            (CHROME_LIGHT_COLOR, CHROME_SHADOW_COLOR)
-        } else {
-            (CHROME_SHADOW_COLOR, CHROME_SHADOW_COLOR)
-        };
-        let rings = [(outer_lt, outer_rb), (CHROME_FACE_COLOR, CHROME_FACE_COLOR)];
-        for (i, &(lt, rb)) in rings.iter().enumerate().take(CHROME_BORDER_W as usize) {
-            let i = i as i32;
-            let (x0, y0, x1, y1) = (c.x + i, c.top + i, c.x + c.cx - i, c.top + c.cy - i);
-            draw_filled_rect(buf, buf_w, x0, y0, x1, y0 + 1, lt);
-            draw_filled_rect(buf, buf_w, x0, y0, x0 + 1, y1, lt);
-            draw_filled_rect(buf, buf_w, x0, y1 - 1, x1, y1, rb);
-            draw_filled_rect(buf, buf_w, x1 - 1, y0, x1, y1, rb);
-        }
+/// Width of a frame's border: `CHROME_BORDER_W` with any border style, else 0.
+fn frame_border_px(frame_flags: u32) -> i32 {
+    if frame_flags & (FCF_BORDER | FCF_DLGBORDER | FCF_SIZEBORDER) != 0 { CHROME_BORDER_W } else { 0 }
+}
+
+/// Draw a frame's border, only inside `clip`. A sizing border is a raised
+/// bevel; a plain or dialog border is a dark outline with a face-coloured
+/// inner ring. Draws nothing for a frame without a border.
+fn draw_frame_border(buf: &mut [u32], buf_w: usize, c: &FrameChrome, clip: Rect) {
+    if frame_border_px(c.frame_flags) == 0 { return; }
+    let (outer_lt, outer_rb) = if c.frame_flags & FCF_SIZEBORDER != 0 {
+        (CHROME_LIGHT_COLOR, CHROME_SHADOW_COLOR)
+    } else {
+        (CHROME_SHADOW_COLOR, CHROME_SHADOW_COLOR)
+    };
+    let rings = [(outer_lt, outer_rb), (CHROME_FACE_COLOR, CHROME_FACE_COLOR)];
+    for (i, &(lt, rb)) in rings.iter().enumerate().take(CHROME_BORDER_W as usize) {
+        let i = i as i32;
+        let (x0, y0, x1, y1) = (c.x + i, c.top + i, c.x + c.cx - i, c.top + c.cy - i);
+        fill_clipped(buf, buf_w, Rect::new(x0, y0, x1, y0 + 1), clip, lt);
+        fill_clipped(buf, buf_w, Rect::new(x0, y0, x0 + 1, y1), clip, lt);
+        fill_clipped(buf, buf_w, Rect::new(x0, y1 - 1, x1, y1), clip, rb);
+        fill_clipped(buf, buf_w, Rect::new(x1 - 1, y0, x1, y1), clip, rb);
     }
 }
 
@@ -264,8 +281,19 @@ const MENU_HILITE_TEXT: u32     = 0x00FF_FFFF;
 /// `(x0, bar_top)` is the bar's top-left corner in SDL2 screen space and
 /// `bar_w` its width. Item geometry mirrors the `#Menu` hit-testing in
 /// `Loader::dispatch_builtin_control` (same insets, widths and row height).
+#[cfg(test)]
 fn draw_menu_chrome(buf: &mut [u32], buf_w: usize, x0: i32, bar_top: i32, bar_w: i32,
                     items: &[MenuItem], open_item: u32) {
+    let open_x = draw_menu_bar(buf, buf_w, x0, bar_top, bar_w, items, open_item);
+    if let (Some(drop_x), Some(parent)) = (open_x, items.get(open_item.wrapping_sub(1) as usize)) {
+        draw_menu_pulldown(buf, buf_w, drop_x, bar_top + MENU_BAR_HEIGHT as i32, parent);
+    }
+}
+
+/// Draw a menu bar, highlighting the open item (1-based; 0 = none).
+/// Returns the x of the open item, where its pull-down belongs.
+fn draw_menu_bar(buf: &mut [u32], buf_w: usize, x0: i32, bar_top: i32, bar_w: i32,
+                 items: &[MenuItem], open_item: u32) -> Option<i32> {
     let buf_h = buf.len() / buf_w.max(1);
     let bar_h = MENU_BAR_HEIGHT as i32;
     let bar_bot = bar_top + bar_h;
@@ -288,10 +316,19 @@ fn draw_menu_chrome(buf: &mut [u32], buf_w: usize, x0: i32, bar_top: i32, bar_w:
                          if is_open { MENU_HILITE_TEXT } else { MENU_TEXT_COLOR }, FontSpec::SYSTEM);
         item_x += label_w;
     }
+    open_x
+}
 
-    let (Some(drop_x), Some(parent)) =
-        (open_x, items.get(open_item.wrapping_sub(1) as usize)) else { return };
-    let drop_h = parent.children.len() as i32 * MENU_DROPDOWN_ITEM_H;
+/// Height of the pull-down listing `parent`'s children.
+fn pulldown_h(parent: &MenuItem) -> i32 {
+    parent.children.len() as i32 * MENU_DROPDOWN_ITEM_H
+}
+
+/// Draw the pull-down of `parent` with its top-left corner at
+/// `(drop_x, bar_bot)`; it is `MENU_DROPDOWN_W` × `pulldown_h(parent)`.
+fn draw_menu_pulldown(buf: &mut [u32], buf_w: usize, drop_x: i32, bar_bot: i32, parent: &MenuItem) {
+    let buf_h = buf.len() / buf_w.max(1);
+    let drop_h = pulldown_h(parent);
     let (dx1, dy1) = (drop_x + MENU_DROPDOWN_W, bar_bot + drop_h);
     draw_filled_rect(buf, buf_w, drop_x, bar_bot, dx1, dy1, MENU_EDGE_COLOR);
     draw_filled_rect(buf, buf_w, drop_x + 1, bar_bot, dx1 - 1, dy1 - 1, MENU_BG_COLOR);
@@ -312,17 +349,12 @@ fn draw_menu_chrome(buf: &mut [u32], buf_w: usize, x0: i32, bar_top: i32, bar_w:
 /// Coordinates are in SDL2 screen space (y=0 at top). Clips to buffer bounds.
 fn draw_filled_rect(buf: &mut [u32], buf_w: usize,
                     x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
-    let buf_h = buf.len() / buf_w.max(1);
-    let rx0 = x0.max(0) as usize;
-    let ry0 = y0.max(0) as usize;
-    let rx1 = (x1.min(buf_w as i32)).max(0) as usize;
-    let ry1 = (y1.min(buf_h as i32)).max(0) as usize;
-    for y in ry0..ry1 {
-        for x in rx0..rx1 {
-            buf[y * buf_w + x] = color;
-        }
-    }
+    let r = Rect::new(x0, y0, x1, y1);
+    fill_clipped(buf, buf_w, r, r, color);
 }
+
+/// Colour of a newly allocated (never painted) frame buffer.
+const FRAME_BUFFER_BLANK: u32 = 0xFFFF_FFFF;
 
 /// Off-screen pixel buffer for one PM frame/dialog window.
 struct FrameBuffer {
@@ -334,14 +366,26 @@ struct FrameBuffer {
 impl FrameBuffer {
     fn new(width: u32, height: u32) -> Self {
         let n = (width as usize).saturating_mul(height as usize);
-        FrameBuffer { buffer: vec![0xFFFFFFFF_u32; n], width, height }
+        FrameBuffer { buffer: vec![FRAME_BUFFER_BLANK; n], width, height }
     }
 
+    /// Change the size, keeping the old content where it still fits.
+    ///
+    /// PM coordinates start at the bottom-left corner, so the content stays
+    /// anchored there: the bottom rows are kept when the height changes, the
+    /// left columns when the width changes. Areas the old buffer did not
+    /// cover are blank until the application repaints them; without this, an
+    /// interactive resize would show a blank window until then.
     fn resize(&mut self, width: u32, height: u32) {
-        self.width  = width;
-        self.height = height;
-        let n = (width as usize).saturating_mul(height as usize);
-        self.buffer = vec![0xFFFFFFFF_u32; n];
+        if (width, height) == (self.width, self.height) { return; }
+        let mut next = FrameBuffer::new(width, height);
+        let (ow, oh) = (self.width as i32, self.height as i32);
+        // Old row r (from the top) holds PM y = oh-1-r; that y is new row
+        // r + (height - oh).
+        let shift = height as i32 - oh;
+        blit_clipped(&mut next.buffer, width as usize, &self.buffer, ow.max(1) as usize,
+                     0, shift, ow, oh, Rect::at(0, 0, width as i32, height as i32));
+        *self = next;
     }
 }
 
@@ -394,23 +438,230 @@ impl DesktopCanvas {
         self.buffer = vec![DESKTOP_BG; n];
     }
 
-    /// Upload `buffer` to the texture and present.
-    fn present(&mut self) {
+    /// Upload the `damaged` parts of `buffer` to the texture and present.
+    /// The texture keeps the rest from earlier frames.
+    ///
+    /// Uses `Texture::update` (`SDL_UpdateTexture`), which reads each
+    /// rectangle straight out of `buffer` with the buffer's row pitch.
+    /// `Texture::with_lock` is avoided: with a rectangle, sdl2 0.38 passes
+    /// SDL a pointer to a temporary that has already been dropped, which
+    /// crashes optimised builds.
+    fn present(&mut self, damaged: &[Rect]) {
         let w = self.width as usize;
-        let buf = &self.buffer;
-        self.texture.with_lock(None, |data: &mut [u8], pitch: usize| {
-            for (y, row) in buf.chunks(w).enumerate() {
-                let dst = &mut data[y * pitch..y * pitch + w * 4];
-                // Safety: row is &[u32] aligned to 4; dst has exactly row.len()*4 bytes.
-                let src: &[u8] = unsafe {
-                    std::slice::from_raw_parts(row.as_ptr() as *const u8, row.len() * 4)
-                };
-                dst.copy_from_slice(src);
-            }
-        }).expect("desktop texture lock failed");
+        // Safety: viewing the `u32` pixels as bytes is valid for reads, has
+        // no alignment requirement, and covers exactly the same memory.
+        let bytes: &[u8] = unsafe {
+            std::slice::from_raw_parts(self.buffer.as_ptr() as *const u8, self.buffer.len() * 4)
+        };
+        for r in damaged {
+            let r = r.intersect(&Rect::at(0, 0, self.width as i32, self.height as i32));
+            if r.is_empty() { continue; }
+            let area = sdl2::rect::Rect::new(r.x0, r.y0, r.width() as u32, r.height() as u32);
+            // SDL reads `height` rows of `width` pixels, `w * 4` bytes apart,
+            // from here; `r` lies inside the buffer, so that stays in bounds.
+            let start = (r.y0 as usize * w + r.x0 as usize) * 4;
+            self.texture.update(area, &bytes[start..], w * 4).expect("desktop texture update failed");
+        }
         self.canvas.copy(&self.texture, None, None).expect("canvas copy failed");
         self.canvas.present();
     }
+}
+
+// ── Compositor: chrome cache, frame placement, damage ─────────────────────
+
+/// An open pull-down, pre-rendered (`MENU_DROPDOWN_W` × `h`).
+struct Pulldown {
+    /// Offset of its left edge from the menu bar's left edge.
+    dx: i32,
+    h: i32,
+    pixels: Vec<u32>,
+}
+
+/// A frame's menu bar as last rendered.
+struct MenuChrome {
+    items: Vec<MenuItem>,
+    /// 1-based open item; 0 = none.
+    open_item: u32,
+    bar_w: i32,
+    /// `bar_w` × `MENU_BAR_HEIGHT`.
+    bar_px: Vec<u32>,
+    pulldown: Option<Pulldown>,
+}
+
+/// Pre-rendered chrome of one frame: title bar, menu bar and open pull-down.
+///
+/// Chrome changes only when a frame's title, width, flags, focus or menu do,
+/// so it is rendered into pixmaps once and copied into the desktop on each
+/// composite, instead of rasterising title and menu text every time. The
+/// window state is compared with the cached copy under the window-manager
+/// lock without allocating; only a change copies it, and the pixmaps are
+/// re-rendered after the lock is released.
+struct ChromeCache {
+    title: String,
+    cx: i32,
+    frame_flags: u32,
+    focused: bool,
+    /// `cx` × `title_bar_h(frame_flags)`.
+    title_px: Vec<u32>,
+    menu: Option<MenuChrome>,
+    /// The pixmaps do not match the fields yet.
+    stale: bool,
+}
+
+impl ChromeCache {
+    fn new() -> Self {
+        ChromeCache { title: String::new(), cx: 0, frame_flags: 0, focused: false,
+                      title_px: Vec::new(), menu: None, stale: true }
+    }
+
+    /// Bring the cached state up to date; returns whether it changed (or
+    /// was never rendered), in which case the frame's chrome must be redrawn.
+    fn sync(&mut self, title: &str, cx: i32, frame_flags: u32, focused: bool,
+            menu: Option<(&[MenuItem], u32)>, bar_w: i32) -> bool {
+        let mut changed = self.stale;
+        if self.title != title {
+            self.title.clear();
+            self.title.push_str(title);
+            changed = true;
+        }
+        if (self.cx, self.frame_flags, self.focused) != (cx, frame_flags, focused) {
+            (self.cx, self.frame_flags, self.focused) = (cx, frame_flags, focused);
+            changed = true;
+        }
+        match (menu, &self.menu) {
+            (None, None) => {}
+            (Some((items, open)), Some(m))
+                if m.open_item == open && m.bar_w == bar_w && m.items == items => {}
+            (menu, _) => {
+                self.menu = menu.map(|(items, open_item)| MenuChrome {
+                    items: items.to_vec(), open_item, bar_w, bar_px: Vec::new(), pulldown: None,
+                });
+                changed = true;
+            }
+        }
+        self.stale = changed;
+        changed
+    }
+
+    /// Re-render the pixmaps if the state changed since the last render.
+    fn render(&mut self) {
+        if !std::mem::take(&mut self.stale) { return; }
+        let (w, th) = (self.cx.max(0) as usize, title_bar_h(self.frame_flags));
+        self.title_px = vec![0; w * th as usize];
+        if !self.title_px.is_empty() {
+            draw_title_bar(&mut self.title_px, w, &FrameChrome {
+                x: 0, top: 0, cx: self.cx, cy: th, frame_flags: self.frame_flags,
+                title: &self.title, focused: self.focused,
+            });
+        }
+        let Some(m) = &mut self.menu else { return };
+        let bw = m.bar_w.max(0) as usize;
+        m.bar_px = vec![0; bw * MENU_BAR_HEIGHT as usize];
+        let open_x = if bw > 0 {
+            draw_menu_bar(&mut m.bar_px, bw, 0, 0, m.bar_w, &m.items, m.open_item)
+        } else { None };
+        m.pulldown = match (open_x, m.items.get(m.open_item.wrapping_sub(1) as usize)) {
+            (Some(dx), Some(parent)) if pulldown_h(parent) > 0 => {
+                let h = pulldown_h(parent);
+                let mut pixels = vec![0; MENU_DROPDOWN_W as usize * h as usize];
+                draw_menu_pulldown(&mut pixels, MENU_DROPDOWN_W as usize, 0, 0, parent);
+                Some(Pulldown { dx, h, pixels })
+            }
+            _ => None,
+        };
+    }
+}
+
+/// Where the parts of one frame land on the desktop (screen coordinates).
+#[derive(Debug, PartialEq)]
+struct FramePlacement {
+    hwnd: u32,
+    frame_flags: u32,
+    /// The whole frame window.
+    frame: Rect,
+    /// Title bar (empty without `FCF_TITLEBAR`).
+    title: Rect,
+    /// Menu bar (empty without a menu).
+    menu_bar: Rect,
+    /// Open pull-down (empty when none is open); may extend past the frame.
+    pulldown: Rect,
+    /// Client area, where the frame buffer is drawn (clamped to its size).
+    client: Rect,
+    /// The frame buffer fills `client`, so every pixel of `frame` is painted
+    /// and frames below are hidden.
+    opaque: bool,
+}
+
+impl FramePlacement {
+    /// Everything the frame paints: the frame plus an open pull-down.
+    fn extent(&self) -> Rect {
+        self.frame.union(&self.pulldown)
+    }
+}
+
+/// Lay out a frame at OS/2 position `(x, y)` (bottom-left origin) with size
+/// `cx` × `cy` on a desktop `desktop_h` pixels tall. `pulldown` is the open
+/// pull-down's `(offset from the menu bar's left edge, height)`; `fb` the
+/// frame buffer's size.
+#[allow(clippy::too_many_arguments)]
+fn place_frame(hwnd: u32, x: i32, y: i32, cx: i32, cy: i32, frame_flags: u32, has_menu: bool,
+               pulldown: Option<(i32, i32)>, fb: (u32, u32), desktop_h: i32) -> FramePlacement {
+    let top = desktop_h - y - cy;
+    let th = title_bar_h(frame_flags);
+    let bw = frame_border_px(frame_flags);
+    let mh = if has_menu { MENU_BAR_HEIGHT as i32 } else { 0 };
+    let client = Rect::new(x + bw, top + th + mh, x + cx - bw, top + cy);
+    FramePlacement {
+        hwnd,
+        frame_flags,
+        frame: Rect::at(x, top, cx, cy),
+        title: Rect::at(x, top, cx, th),
+        menu_bar: if has_menu { Rect::at(x + bw, top + th, cx - 2 * bw, mh) } else { Rect::EMPTY },
+        pulldown: pulldown
+            .map(|(dx, h)| Rect::at(x + bw + dx, top + th + mh, MENU_DROPDOWN_W, h))
+            .unwrap_or(Rect::EMPTY),
+        client,
+        opaque: fb.0 as i32 >= client.width() && fb.1 as i32 >= client.height(),
+    }
+}
+
+/// Draw one frame — client content, title bar, border, menu bar and
+/// pull-down, in that order — into the desktop buffer, only inside `clip`.
+fn draw_placed_frame(buf: &mut [u32], buf_w: usize, p: &FramePlacement,
+                     fb: &FrameBuffer, chrome: &ChromeCache, clip: Rect) {
+    let blit = |buf: &mut [u32], px: &[u32], src_w: i32, at: Rect| {
+        blit_clipped(buf, buf_w, px, src_w.max(1) as usize, at.x0, at.y0, at.width(), at.height(), clip);
+    };
+    blit(buf, &fb.buffer, fb.width as i32, p.client);
+    blit(buf, &chrome.title_px, chrome.cx, p.title);
+    draw_frame_border(buf, buf_w, &FrameChrome {
+        x: p.frame.x0, top: p.frame.y0, cx: p.frame.width(), cy: p.frame.height(),
+        frame_flags: p.frame_flags, title: "", focused: false,
+    }, clip);
+    if let Some(m) = &chrome.menu {
+        blit(buf, &m.bar_px, m.bar_w, p.menu_bar);
+        if let Some(pd) = &m.pulldown {
+            blit(buf, &pd.pixels, MENU_DROPDOWN_W, p.pulldown);
+        }
+    }
+}
+
+/// Longest parent chain followed when mapping a dirty window to its frame.
+const MAX_PARENT_DEPTH: usize = 64;
+
+/// The frame in the Z-order that `hwnd` is drawn as part of: `hwnd` itself,
+/// the frame of a client, or the frame above a control. `None` for windows
+/// the compositor does not draw.
+fn owning_frame(wm: &WindowManager, hwnd: u32) -> Option<u32> {
+    let mut h = hwnd;
+    for _ in 0..MAX_PARENT_DEPTH {
+        if wm.z_order.contains(&h) { return Some(h); }
+        let frame = wm.client_to_frame(h);
+        if frame != h && wm.z_order.contains(&frame) { return Some(frame); }
+        h = wm.get_window(h)?.parent;
+        if h == 0 { return None; }
+    }
+    None
 }
 
 /// Active window-drag state (VDR-D3).
@@ -455,6 +706,14 @@ pub struct Sdl2Renderer {
     desktop:     DesktopCanvas,
     /// PM handle → off-screen frame buffer.
     frame_buffers: HashMap<u32, FrameBuffer>,
+    /// Frame → pre-rendered title bar, menu bar and pull-down.
+    chrome: HashMap<u32, ChromeCache>,
+    /// Frame → desktop area it covered at the last composite; what must be
+    /// redrawn when it moves, changes or disappears.
+    placed: HashMap<u32, Rect>,
+    /// Redraw and upload the whole desktop at the next composite (start-up,
+    /// host window resized or exposed).
+    force_full: bool,
     /// Last seen host clipboard text — used to detect changes.
     cached_clipboard: String,
     /// Whether the host clipboard has been read at least once. After that it
@@ -519,6 +778,9 @@ impl Sdl2Renderer {
             event_pump,
             desktop,
             frame_buffers: HashMap::new(),
+            chrome: HashMap::new(),
+            placed: HashMap::new(),
+            force_full: true,
             cached_clipboard: String::new(),
             clipboard_synced: false,
             wake_event_type,
@@ -574,123 +836,111 @@ impl Sdl2Renderer {
         frame_buffers.get_mut(&handle)
     }
 
-    /// Composite all visible PM windows onto `desktop.buffer` and present.
+    /// Redraw the damaged parts of the desktop and present them.
     ///
-    /// Z-order (back-to-front) is read from `shared.window_mgr.z_order`.
-    /// Each frame is blitted at its OS/2 screen position converted to SDL2 coords:
-    ///   `dst_top_y = desktop_height - win.y - win.cy`
-    /// After blitting the client content, window chrome (title bar, border) is drawn
-    /// directly onto the desktop buffer (VDR-C1, VDR-C2, VDR-E3).
+    /// The desktop buffer keeps its pixels between composites. Damage is
+    /// worked out from the windows marked dirty since the last composite
+    /// (`WindowManager::dirty`, mapped to their frames) and from frames whose
+    /// on-screen extent or chrome changed; each damaged rectangle is filled
+    /// with the desktop background and the frames that reach into it are
+    /// drawn back-to-front, skipping frames an opaque frame above hides
+    /// there. Only the damaged rectangles are uploaded to the texture.
+    ///
+    /// Frames are placed at their OS/2 screen position converted to SDL2
+    /// coordinates (`top = desktop_height - win.y - win.cy`), with the client
+    /// frame buffer below the title bar and menu bar (VDR-C1, C2, E3).
     fn composite_and_present(&mut self, shared: &Arc<SharedState>) {
-        // VDR-B4: skip the composite entirely if nothing has changed and no
-        // interactive operation (drag/resize) is in progress.
-        {
-            let wm = shared.window_mgr.lock_or_recover();
-            if wm.dirty.is_empty() && self.drag_state.is_none() && self.resize_state.is_none() {
+        let started = Instant::now();
+        let (dw, dh) = (self.desktop.width as i32, self.desktop.height as i32);
+        let mut damage = Damage::new(dw, dh);
+
+        // Snapshot geometry and bring the chrome cache up to date under the
+        // lock; rendering happens after it is released.
+        struct Snap { hwnd: u32, x: i32, y: i32, cx: i32, cy: i32, frame_flags: u32, has_menu: bool }
+        let mut dirty_frames: HashSet<u32> = HashSet::new();
+        let snaps: Vec<Snap> = {
+            let mut wm = shared.window_mgr.lock_or_recover();
+            if wm.dirty.is_empty() && !self.force_full {
                 return;
             }
-        }
-
-        let started = Instant::now();
-        let dw = self.desktop.width as usize;
-        let dh = self.desktop.height as i32;
-
-        // Fill background.
-        self.desktop.buffer.fill(DESKTOP_BG);
-
-        // Snapshot z_order + window state without holding the lock during blit.
-        struct FrameSnap {
-            hwnd: u32,
-            x: i32, y: i32, cx: i32, cy: i32,
-            visible: bool,
-            frame_flags: u32,
-            title: String,
-            is_focused: bool,
-            /// Attached menu bar: top-level items and the 1-based open item (0 = closed).
-            menu: Option<(Vec<MenuItem>, u32)>,
-        }
-        let frames: Vec<FrameSnap> = {
-            let wm = shared.window_mgr.lock_or_recover();
+            let dirty = std::mem::take(&mut wm.dirty);
+            dirty_frames.extend(dirty.into_iter().filter_map(|h| owning_frame(&wm, h)));
             let focused = wm.focused_hwnd;
+            let (chrome, frame_buffers) = (&mut self.chrome, &self.frame_buffers);
             wm.z_order.iter().filter_map(|&hwnd| {
-                wm.get_window(hwnd).map(|w| FrameSnap {
-                    hwnd,
-                    x: w.x, y: w.y, cx: w.cx, cy: w.cy,
-                    visible: w.visible,
-                    frame_flags: w.frame_flags,
-                    title: w.text.clone(),
-                    is_focused: hwnd == focused,
-                    menu: wm.get_window(w.menu_hwnd).filter(|_| w.menu_hwnd != 0).map(|m| {
-                        (m.menu_items.clone(), m.window_ulong.get(&-1).copied().unwrap_or(0))
-                    }),
-                })
+                let w = wm.get_window(hwnd)?;
+                if !w.visible || !frame_buffers.contains_key(&hwnd) { return None; }
+                let menu = wm.get_window(w.menu_hwnd).filter(|_| w.menu_hwnd != 0).map(|m| {
+                    (m.menu_items.as_slice(), m.window_ulong.get(&-1).copied().unwrap_or(0))
+                });
+                let bar_w = w.cx - 2 * frame_border_px(w.frame_flags);
+                if chrome.entry(hwnd).or_insert_with(ChromeCache::new)
+                    .sync(&w.text, w.cx, w.frame_flags, hwnd == focused, menu, bar_w) {
+                    dirty_frames.insert(hwnd);
+                }
+                Some(Snap { hwnd, x: w.x, y: w.y, cx: w.cx, cy: w.cy,
+                            frame_flags: w.frame_flags, has_menu: menu.is_some() })
             }).collect()
         };
+        self.chrome.retain(|h, _| snaps.iter().any(|s| s.hwnd == *h));
+        for c in self.chrome.values_mut() {
+            c.render();
+        }
 
-        for snap in &frames {
-            if !snap.visible { continue; }
-            let fb = match self.frame_buffers.get(&snap.hwnd) {
-                Some(fb) => fb,
-                None => continue,
-            };
+        let placements: Vec<FramePlacement> = snaps.iter().map(|s| {
+            let fb = &self.frame_buffers[&s.hwnd];
+            let pulldown = self.chrome[&s.hwnd].menu.as_ref()
+                .and_then(|m| m.pulldown.as_ref().map(|p| (p.dx, p.h)));
+            place_frame(s.hwnd, s.x, s.y, s.cx, s.cy, s.frame_flags, s.has_menu, pulldown,
+                        (fb.width, fb.height), dh)
+        }).collect();
 
-            // Compute chrome heights so client content is offset below the title bar.
-            let title_h = if snap.frame_flags & FCF_TITLEBAR != 0 { CHROME_TITLE_H } else { 0 };
-            let border_w = if snap.frame_flags & (FCF_BORDER | FCF_DLGBORDER | FCF_SIZEBORDER) != 0 {
-                CHROME_BORDER_W
-            } else { 0 };
-
-            // OS/2 y=0 is bottom; SDL2 y=0 is top.
-            let dst_top_y = dh - snap.y - snap.cy;
-
-            // Blit frame buffer (client content), offset below the title bar and menu bar.
-            let menu_h = if snap.menu.is_some() { MENU_BAR_HEIGHT as i32 } else { 0 };
-            let content_top_y = dst_top_y + title_h + menu_h;
-            let blit_h = (fb.height as i32)
-                .min(snap.cy - title_h - menu_h)
-                .min(dh - content_top_y.max(0));
-            let blit_w = (fb.width as i32)
-                .min(snap.cx - border_w * 2)
-                .min(dw as i32 - (snap.x + border_w).max(0));
-            if blit_h > 0 && blit_w > 0 {
-                for py in 0..blit_h as usize {
-                    let dy = content_top_y + py as i32;
-                    if dy < 0 || dy >= dh { continue; }
-                    let src_row_start = py * fb.width as usize;
-                    let dst_row_start = dy as usize * dw;
-                    for px in 0..blit_w as usize {
-                        let dx = snap.x + border_w + px as i32;
-                        if dx < 0 || dx >= dw as i32 { continue; }
-                        self.desktop.buffer[dst_row_start + dx as usize] =
-                            fb.buffer[src_row_start + px];
-                    }
-                }
+        // Damage: whatever dirty or changed frames cover now or covered
+        // before, plus the old extent of frames that are gone or hidden.
+        if std::mem::take(&mut self.force_full) {
+            damage.add_all();
+        }
+        let mut placed = HashMap::with_capacity(placements.len());
+        for p in &placements {
+            let now = p.extent();
+            let before = self.placed.get(&p.hwnd).copied().unwrap_or(Rect::EMPTY);
+            if dirty_frames.contains(&p.hwnd) || now != before {
+                damage.add(before);
+                damage.add(now);
             }
+            placed.insert(p.hwnd, now);
+        }
+        for (hwnd, before) in &self.placed {
+            if !placed.contains_key(hwnd) {
+                damage.add(*before);
+            }
+        }
+        self.placed = placed;
+        if damage.is_empty() {
+            return;
+        }
 
-            // VDR-C1–C4: title bar, system menu, min/max/close buttons and border.
-            draw_frame_chrome(&mut self.desktop.buffer, dw, &FrameChrome {
-                x: snap.x, top: dst_top_y, cx: snap.cx, cy: snap.cy,
-                frame_flags: snap.frame_flags, title: &snap.title, focused: snap.is_focused,
-            });
-
-            // Menu bar + open pull-down, drawn last so the pull-down overlays the
-            // client content without ever being written into its FrameBuffer.
-            if let Some((items, open_item)) = &snap.menu {
-                draw_menu_chrome(
-                    &mut self.desktop.buffer, dw,
-                    snap.x + border_w, dst_top_y + title_h, snap.cx - border_w * 2,
-                    items, *open_item);
+        let buf = &mut self.desktop.buffer;
+        for &r in damage.rects() {
+            fill_clipped(buf, dw as usize, r, r, DESKTOP_BG);
+            for (i, p) in placements.iter().enumerate() {
+                let visible = p.extent().intersect(&r);
+                if visible.is_empty()
+                    || placements[i + 1..].iter().any(|q| q.opaque && q.frame.contains(&visible)) {
+                    continue;
+                }
+                draw_placed_frame(buf, dw as usize, p, &self.frame_buffers[&p.hwnd],
+                                  &self.chrome[&p.hwnd], r);
             }
         }
 
         let present_started = Instant::now();
-        self.desktop.present();
+        self.desktop.present(damage.rects());
         let finished = Instant::now();
-        self.stats.record_composite(finished - started, finished - present_started);
+        let damaged: i64 = damage.rects().iter().map(|r| r.width() as i64 * r.height() as i64).sum();
+        self.stats.record_composite(finished - started, finished - present_started,
+                                    damaged as f64 / (dw as f64 * dh as f64).max(1.0));
         self.last_composite = finished;
-
-        // VDR-B4: clear dirty set — everything has now been composited.
-        shared.window_mgr.lock_or_recover().dirty.clear();
     }
 
     /// Handle a single SDL2 event, posting OS/2 messages to `shared` as needed.
@@ -720,6 +970,7 @@ impl Sdl2Renderer {
                     WindowEvent::Resized(w, h) => {
                         let (w, h) = (w as u32, h as u32);
                         self.desktop.resize_texture(w, h);
+                        self.force_full = true;
                         // Sync the focused frame's dimensions.
                         let focused = {
                             let mut wm = shared.window_mgr.lock_or_recover();
@@ -745,8 +996,8 @@ impl Sdl2Renderer {
                         }
                     }
                     WindowEvent::Exposed => {
-                        // Redraw everything: the host discarded our pixels.
-                        shared.window_mgr.lock_or_recover().mark_all_dirty();
+                        // Re-upload everything: the host discarded our pixels.
+                        self.force_full = true;
                         self.composite_and_present(shared);
                     }
                     WindowEvent::FocusGained => {
@@ -1300,8 +1551,12 @@ impl PmRenderer for Sdl2Renderer {
     }
 
     fn wait_for_work(&mut self, shared: &Arc<SharedState>) {
-        let busy = self.drag_state.is_some() || self.resize_state.is_some()
-            || !shared.window_mgr.lock_or_recover().dirty.is_empty();
+        // A composite is owed only for dirty windows (drags and resizes mark
+        // theirs on every mouse move) or a pending full redraw. A drag with
+        // the mouse at rest owes nothing: the compositor would return early
+        // without advancing `last_composite`, and the zero timeout that
+        // follows would spin the loop.
+        let busy = self.force_full || !shared.window_mgr.lock_or_recover().dirty.is_empty();
         let script_next = self.script.as_ref().and_then(GuiScript::next_due);
         let timeout = wait_timeout(Instant::now(), self.last_composite, busy, script_next);
         if timeout.is_zero() {
@@ -2522,5 +2777,147 @@ mod script_tests {
         assert!(matches!(script_events("0 quit")[..], [Event::Quit { .. }]));
         assert!(script_input_to_event(&Input::Dump("x.ppm".into())).is_none());
         assert!(script_events("0 dump x.ppm").is_empty());
+    }
+}
+
+#[cfg(test)]
+mod compositor_tests {
+    use super::*;
+
+    /// A frame buffer whose pixel at (column c, row r from the top) is
+    /// `100 * r + c`.
+    fn numbered_fb(w: u32, h: u32) -> FrameBuffer {
+        let mut fb = FrameBuffer::new(w, h);
+        for (i, p) in fb.buffer.iter_mut().enumerate() {
+            *p = (100 * (i / w as usize) + i % w as usize) as u32;
+        }
+        fb
+    }
+
+    #[test]
+    fn resize_keeps_the_bottom_left_content() {
+        // Grow 3×2 → 4×3: the old rows end up at the bottom, left-aligned.
+        let mut fb = numbered_fb(3, 2);
+        fb.resize(4, 3);
+        let b = FRAME_BUFFER_BLANK;
+        assert_eq!((fb.width, fb.height), (4, 3));
+        assert_eq!(fb.buffer, vec![b, b, b, b,
+                                   0, 1, 2, b,
+                                   100, 101, 102, b]);
+        // Shrink 3×3 → 2×2: the bottom-left 2×2 survives.
+        let mut fb = numbered_fb(3, 3);
+        fb.resize(2, 2);
+        assert_eq!(fb.buffer, vec![100, 101, 200, 201]);
+        // Same size: untouched.
+        let mut fb = numbered_fb(2, 2);
+        fb.resize(2, 2);
+        assert_eq!(fb.buffer, numbered_fb(2, 2).buffer);
+    }
+
+    #[test]
+    fn place_frame_lays_out_chrome_and_client() {
+        let flags = FCF_TITLEBAR | FCF_SIZEBORDER;
+        // 200×150 frame at OS/2 (10, 20) on a 600-px-tall desktop: top = 430.
+        // The client reaches the frame's bottom edge (the bottom border is
+        // drawn over it), so a covering frame buffer is 150 - title - menu tall.
+        let fb_h = (150 - CHROME_TITLE_H - MENU_BAR_HEIGHT as i32) as u32;
+        let p = place_frame(7, 10, 20, 200, 150, flags, true, Some((30, 48)), (196, fb_h), 600);
+        let mh = MENU_BAR_HEIGHT as i32;
+        assert_eq!(p.frame, Rect::at(10, 430, 200, 150));
+        assert_eq!(p.title, Rect::at(10, 430, 200, CHROME_TITLE_H));
+        assert_eq!(p.menu_bar, Rect::at(12, 450, 196, mh));
+        assert_eq!(p.client, Rect::new(12, 450 + mh, 208, 580));
+        assert_eq!(p.pulldown, Rect::at(42, 450 + mh, MENU_DROPDOWN_W, 48));
+        assert_eq!(p.extent(), p.frame.union(&p.pulldown));
+        assert!(p.opaque, "a frame buffer the size of the client covers it");
+
+        let small = place_frame(7, 10, 20, 200, 150, flags, true, None, (100, fb_h), 600);
+        assert!(!small.opaque, "a narrower frame buffer leaves desktop showing");
+        assert!(small.pulldown.is_empty());
+        assert_eq!(small.extent(), small.frame);
+
+        let bare = place_frame(7, 0, 0, 50, 40, 0, false, None, (50, 40), 40);
+        assert!(bare.title.is_empty() && bare.menu_bar.is_empty());
+        assert_eq!(bare.client, Rect::at(0, 0, 50, 40));
+    }
+
+    fn items() -> Vec<MenuItem> {
+        let child = MenuItem { id: 11, style: 0, attr: 0, text: "~Open".into(), children: vec![] };
+        vec![MenuItem { id: 1, style: 0, attr: 0, text: "~File".into(), children: vec![child.clone(), child] }]
+    }
+
+    #[test]
+    fn chrome_cache_reports_only_real_changes() {
+        let mut c = ChromeCache::new();
+        let items = items();
+        assert!(c.sync("App", 200, FCF_TITLEBAR, true, Some((&items, 0)), 196), "first sync renders");
+        c.render();
+        assert!(!c.sync("App", 200, FCF_TITLEBAR, true, Some((&items, 0)), 196), "unchanged");
+        for changed in [
+            c.sync("App 2", 200, FCF_TITLEBAR, true, Some((&items, 0)), 196),
+            c.sync("App 2", 220, FCF_TITLEBAR, true, Some((&items, 0)), 216),
+            c.sync("App 2", 220, FCF_TITLEBAR, false, Some((&items, 0)), 216),
+            c.sync("App 2", 220, FCF_TITLEBAR, false, Some((&items, 1)), 216),
+            c.sync("App 2", 220, FCF_TITLEBAR, false, None, 216),
+        ] {
+            assert!(changed);
+            c.render();
+        }
+        assert!(!c.sync("App 2", 220, FCF_TITLEBAR, false, None, 216));
+    }
+
+    #[test]
+    fn chrome_cache_renders_title_menu_and_open_pulldown() {
+        let mut c = ChromeCache::new();
+        let items = items();
+        c.sync("App", 200, FCF_TITLEBAR, true, Some((&items, 1)), 196);
+        c.render();
+        assert_eq!(c.title_px.len(), 200 * CHROME_TITLE_H as usize);
+        assert_eq!(c.title_px[200 * 5 + 100], CHROME_TITLE_ACTIVE, "title bar background");
+        let m = c.menu.as_ref().unwrap();
+        assert_eq!(m.bar_px.len(), 196 * MENU_BAR_HEIGHT as usize);
+        let pd = m.pulldown.as_ref().expect("item 1 is open");
+        assert_eq!((pd.dx, pd.h), (MENU_BAR_ITEM_INSET, 2 * MENU_DROPDOWN_ITEM_H));
+        assert_eq!(pd.pixels.len(), (MENU_DROPDOWN_W * pd.h) as usize);
+        // Closing the menu drops the pull-down.
+        c.sync("App", 200, FCF_TITLEBAR, true, Some((&items, 0)), 196);
+        c.render();
+        assert!(c.menu.as_ref().unwrap().pulldown.is_none());
+    }
+
+    #[test]
+    fn dirty_windows_map_to_the_frame_that_draws_them() {
+        let mut wm = WindowManager::new();
+        let frame = wm.create_window("Frame".into(), 0, 0);
+        let client = wm.create_window("Client".into(), frame, 0);
+        wm.frame_to_client.insert(frame, client);
+        let button = wm.create_window("WC_BUTTON".into(), client, 0);
+        let loose = wm.create_window("Object".into(), 0, 0);
+        wm.z_order.push(frame);
+        assert_eq!(owning_frame(&wm, frame), Some(frame));
+        assert_eq!(owning_frame(&wm, client), Some(frame));
+        assert_eq!(owning_frame(&wm, button), Some(frame));
+        assert_eq!(owning_frame(&wm, loose), None, "not drawn by the compositor");
+        assert_eq!(owning_frame(&wm, 0xDEAD), None, "unknown window");
+    }
+
+    #[test]
+    fn placed_frame_is_drawn_only_inside_the_clip() {
+        let (dw, dh) = (64usize, 48usize);
+        let mut buf = vec![DESKTOP_BG; dw * dh];
+        let mut fb = FrameBuffer::new(40, 20);
+        fb.buffer.fill(0x00_1234);
+        let mut chrome = ChromeCache::new();
+        chrome.sync("T", 44, FCF_TITLEBAR | FCF_BORDER, true, None, 40);
+        chrome.render();
+        let p = place_frame(1, 4, 4, 44, 42, FCF_TITLEBAR | FCF_BORDER, false, None, (40, 20), dh as i32);
+        let clip = Rect::new(0, 0, 30, 30);
+        draw_placed_frame(&mut buf, dw, &p, &fb, &chrome, clip);
+        let px = |x: usize, y: usize| buf[y * dw + x];
+        // Frame top is 48 - 4 - 42 = 2; (22, 5) is title bar right of the text.
+        assert_eq!(px(22, 5), CHROME_TITLE_ACTIVE, "title bar inside the clip");
+        assert_eq!(px(10, 25), 0x00_1234, "client inside the clip");
+        assert_eq!(px(40, 25), DESKTOP_BG, "client outside the clip is untouched");
+        assert_eq!(px(10, 35), DESKTOP_BG, "below the clip is untouched");
     }
 }

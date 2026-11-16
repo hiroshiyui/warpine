@@ -369,7 +369,16 @@ Drawing in PM uses Presentation Spaces (HPS):
 2. **GpiSetColor / GpiMove / GpiLine / GpiBox / GpiCharStringAt** — Modify the presentation space state and send `GUIMessage::Draw*` commands to the GUI thread.
 3. **WinEndPaint** — Sends `GUIMessage::PresentBuffer` to flush the framebuffer to the screen.
 
-The GUI thread (`run_pm_loop` in `src/gui/renderer.rs`, backend `Sdl2Renderer` in `src/gui/sdl2_renderer.rs`) draws each message into the window's `FrameBuffer`, then composites all visible windows and their chrome onto the desktop buffer, uploads it to an SDL2 streaming texture and presents it.
+The GUI thread (`run_pm_loop` in `src/gui/renderer.rs`, backend `Sdl2Renderer` in `src/gui/sdl2_renderer.rs`) draws each message into the window's `FrameBuffer`, then redraws the changed parts of the desktop buffer from the frame buffers and their chrome, uploads those parts to an SDL2 streaming texture and presents it.
+
+**Compositing.** The desktop buffer keeps its pixels between frames; `composite_and_present` redraws only the *damage*:
+
+- *Damage.* The windows marked dirty since the last composite (`WindowManager::dirty`, taken under the lock) are mapped to the frame that draws them (`owning_frame`: the window itself, the frame of a client, or the frame above a control). For each such frame, and for each frame whose extent (frame plus open pull-down) or chrome changed, both the old and the new extent are damaged; so is the old extent of a frame that was hidden or removed. `src/gui/damage.rs` clips the rectangles to the desktop and merges touching ones, collapsing to one bounding box past `MAX_DAMAGE_RECTS` (8). Start-up, a host resize and an `Exposed` event redraw the whole desktop (`force_full`).
+- *Redraw.* Each damaged rectangle is filled with the desktop colour and the frames reaching into it are drawn back-to-front, clipped to it (`draw_placed_frame`): client frame buffer, title bar, border, menu bar, pull-down. A frame is skipped where an *opaque* frame above — one whose frame buffer covers its whole client area — hides it. Pixels are copied a row slice at a time (`blit_clipped`, `fill_clipped`).
+- *Chrome cache.* Title bars, menu bars and open pull-downs are rendered into per-frame pixmaps (`ChromeCache`) and re-rendered only when the title, width, flags, focus or menu change; the window state is compared with the cached copy under the lock without allocating.
+- *Upload.* Only damaged rectangles are uploaded, with `Texture::update` straight from the desktop buffer. Do not use `Texture::with_lock` with a rectangle: sdl2 0.38 hands SDL a pointer to a dropped temporary, which crashes optimised builds.
+- *Resizing.* `FrameBuffer::resize` keeps the bottom-left part of the old content (PM's origin), so an interactive resize shows the old picture until the application repaints instead of a blank window.
+- *Text.* `font.rs` caches each character's resolved face, advance and coverage bitmap in a per-thread cache (`with_glyph`), so measuring and drawing text takes no lock.
 
 **Event loop.** Each pass rearms the channel's wake-up, drains queued `GUIMessage`s, handles input, composites if due, then blocks in `PmRenderer::wait_for_work`:
 
@@ -379,7 +388,7 @@ The GUI thread (`run_pm_loop` in `src/gui/renderer.rs`, backend `Sdl2Renderer` i
 - *Coalesced presents.* `PresentBuffer` only marks the window dirty; `poll_events` composites at most once per `FRAME_INTERVAL`, so a paint cycle that presents several times costs one composite.
 - *Clipboard.* The host clipboard is read once at start-up and again on SDL `ClipboardUpdate` and `FocusGained` events, not on every pass.
 
-**Frame statistics.** `src/gui/frame_stats.rs` counts loop passes and composites (average and maximum composite time, present time) and logs a summary every 5 s at debug level: `RUST_LOG=warpine::gui=debug`. Use it to measure rendering changes.
+**Frame statistics.** `src/gui/frame_stats.rs` counts loop passes and composites (average and maximum composite time, present time, share of the desktop redrawn) and logs a summary every 5 s at debug level: `RUST_LOG=warpine::gui=debug`. Use it to measure rendering changes.
 
 **Guest-side benchmark.** `samples/pm_bench` measures what an application sees: GPI calls issued per second inside a paint, `WinSendMsg` and `WinPostMsg` round trips, `WinInvalidateRect` → `WM_PAINT` cycles, and the `WM_TIMER` rate of a 10 ms timer, each timed with `DosQuerySysInfo(QSV_MS_COUNT)`. GPI calls only queue drawing for the GUI thread, so its GPI figures are the cost of the calls, not of rasterising them; read them together with the frame statistics. To compare two builds without a display:
 
@@ -1129,6 +1138,7 @@ src/
                        fallback chain Latin → CJK (by codepage) → GNU Unifont
     gui_script.rs      Scripted GUI sessions (WARPINE_GUI_SCRIPT): step parser, timed inputs,
                        PPM dump — SDL-free; used by the gui_* integration tests
+    damage.rs          Rect, damage list, clipped row-wise blit/fill for the compositor
     frame_stats.rs     GUI loop / composite timing statistics (debug log every 5 s)
     renderer.rs        PmRenderer trait + run_pm_loop() (PM/GUI SDL2 event loop)
     render_utils.rs    Geometry helpers (Y-flip, rect/line rendering)
@@ -1586,7 +1596,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 676 unit tests (647 warpine + 18 gen_api + 11 lx_link), 19 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 693 unit tests (664 warpine + 18 gen_api + 11 lx_link), 19 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
