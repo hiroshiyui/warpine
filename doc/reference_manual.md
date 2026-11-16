@@ -457,19 +457,19 @@ Window management, message queues, painting (incl. `WinGetPS` / `WinReleasePS`, 
 
 WinAlarm (701), WinBeginPaint (703), WinCloseClipbrd (707), WinCreateMsgQueue (716), WinDestroyMsgQueue (726), WinDestroyWindow (728), WinDismissDlg (729), WinDrawBitmap (730), WinEmptyClipbrd (733), WinEnableWindow (735), WinEnableWindowUpdate (736), WinEndPaint (738), WinFillRect (743), WinGetLastError (753), WinGetPS (757), WinInitialize (763), WinInvalidateRect (765), WinIsWindowEnabled (773), WinLoadAccelTable (776), WinLoadMenu (778), WinLoadString (781), WinMessageBox (789), WinOpenClipbrd (793), WinOpenWindowDC (794), WinProcessDlg (796), WinQueryActiveWindow (799), WinQueryCapture (804), WinQueryClipbrdData (806), WinQueryCp (810), WinQueryDlgItemText (815), WinQueryFocus (817), WinQuerySysPointer (828), WinQuerySysValue (829), WinQueryWindow (834), WinQueryWindowDC (835), WinQueryWindowPos (837), WinQueryWindowRect (840), WinQueryWindowText (841), WinQueryWindowULong (843), WinQueryWindowUShort (844), WinReleasePS (848), WinSetAccelTable (850), WinSetActiveWindow (851), WinSetCapture (852), WinSetClipbrdData (854), WinSetCp (857), WinSetDlgItemText (859), WinSetFocus (860), WinSetPointer (866), WinSetWindowPos (875), WinSetWindowText (877), WinSetWindowULong (878), WinSetWindowUShort (879), WinShowWindow (883), WinStartTimer (884), WinStopTimer (885), WinTerminate (888), WinUpdateWindow (892), WinWindowFromID (899), WinSendDlgItemMsg (903), WinTranslateAccel (904), WinCreateMenu (907), WinCreateStdWindow (908), WinCreateWindow (909), WinDefDlgProc (910), WinDefWindowProc (911), WinDispatchMsg (912), WinGetMsg (915), WinPostMsg (919), WinSendMsg (920), WinDlgBox (923), WinLoadDlg (924), WinRegisterClass (926), WinSubclassWindow (929), WinPopupMenu (937)
 
-### PMGPI (54 APIs: 48 implemented, 6 stub)
+### PMGPI (64 APIs: 61 implemented, 3 stub)
 
-Drawing primitives, fonts, mix modes and read-back, colour tables, line types, memory device contexts, bitmaps and bit-block transfers (the `Dev*` entry points are exported by PMGPI too).
+Drawing primitives (incl. arcs, area patterns and line widths), fonts, mix modes and read-back, colour tables, line types, memory device contexts, bitmaps (uncompressed 1/4/8/24/32-bit or RLE4 / RLE8 / RLE24) and bit-block transfers (the `Dev*` entry points are exported by PMGPI too). Resource calls — `GpiLoadBitmap`, `WinLoadString`, `WinLoadMenu`, `WinLoadAccelTable`, `WinDlgBox` / `WinLoadDlg`, `WinCreateStdWindow(FCF_MENU)`, `DosGetResource`, `DosQueryResourceSize` — load from the module their `hmod` names: `NULLHANDLE` for the executable, else a DLL loaded with `DosLoadModule` (or imported).
 
 **Implemented:**
-GpiAssociate (351), GpiBitBlt (355), GpiBox (356), GpiCharString (358), GpiCharStringAt (359), GpiCreateLogFont (368), GpiCreatePS (369), GpiDeleteBitmap (371), GpiDeleteSetId (378), GpiDestroyPS (379), GpiErase (389), GpiFullArc (393), GpiLine (398), GpiLoadBitmap (399), GpiMove (404), GpiQueryBackColor (424), GpiQueryBackMix (425), GpiQueryColor (437), GpiQueryColorIndex (439), GpiQueryCurrentPosition (441), GpiQueryFontMetrics (453), GpiQueryLineType (459), GpiQueryMix (467), GpiQueryPel (476), GpiQueryRGBColor (479), GpiQueryTextBox (489), GpiSetBackColor (504), GpiSetBackMix (505), GpiSetBitmap (506), GpiSetCharBox (510), GpiSetCharSet (513), GpiSetColor (517), GpiSetLineType (530), GpiSetMix (537), GpiSetPel (544), GpiWCBitBlt (557), GpiQueryBitmapParameters (573), GpiQueryFonts (586), GpiCreateLogColorTable (592), GpiQueryLogColorTable (593), GpiCreateBitmap (598), GpiQueryBitmapBits (599), GpiQueryBitmapInfoHeader (601), GpiSetBitmapBits (602), GpiDrawBits (603), DevCloseDC (604), DevQueryCaps (606), DevOpenDC (610)
+GpiAssociate (351), GpiBitBlt (355), GpiBox (356), GpiCharString (358), GpiCharStringAt (359), GpiCreateLogFont (368), GpiCreatePS (369), GpiDeleteBitmap (371), GpiDeleteSetId (378), GpiDestroyPS (379), GpiErase (389), GpiFullArc (393), GpiLine (398), GpiLoadBitmap (399), GpiMove (404), GpiPointArc (412), GpiQueryArcParams (422), GpiQueryBackColor (424), GpiQueryBackMix (425), GpiQueryColor (437), GpiQueryColorIndex (439), GpiQueryCurrentPosition (441), GpiQueryDeviceBitmapFormats (445), GpiQueryFontMetrics (453), GpiQueryLineType (459), GpiQueryLineWidth (460), GpiQueryLineWidthGeom (461), GpiQueryMix (467), GpiQueryPattern (473), GpiQueryPatternRefPoint (474), GpiQueryPel (476), GpiQueryRGBColor (479), GpiQueryTextBox (489), GpiSetArcParams (502), GpiSetBackColor (504), GpiSetBackMix (505), GpiSetBitmap (506), GpiSetCharBox (510), GpiSetCharSet (513), GpiSetColor (517), GpiSetLineType (530), GpiSetLineWidth (531), GpiSetLineWidthGeom (532), GpiSetMix (537), GpiSetPattern (541), GpiSetPatternRefPoint (542), GpiSetPel (544), GpiWCBitBlt (557), GpiQueryBitmapParameters (573), GpiQueryFonts (586), GpiCreateLogColorTable (592), GpiQueryLogColorTable (593), GpiCreateBitmap (598), GpiQueryBitmapBits (599), GpiQueryBitmapInfoHeader (601), GpiSetBitmapBits (602), GpiDrawBits (603), DevCloseDC (604), DevQueryCaps (606), DevOpenDC (610), GpiPartialArc (612)
 
 **Stubs:**
-GpiLoadFonts (400), GpiSetArcParams (502), GpiSetLineWidth (531), GpiSetLineWidthGeom (532), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
+GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 186 entries) and the four sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `pm_win.rs`, `pm_gpi.rs`, 154 ordinals). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 186 entries) and the four sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `pm_win.rs`, `pm_gpi.rs`, 164 ordinals). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -484,23 +484,10 @@ Counts are taken from the static registry (`api_registry.rs`, 186 entries) and t
 | VIOCALLS | sub-dispatcher | 17 | 5 | 22 |
 | KBDCALLS | sub-dispatcher | 3 | 0 | 3 |
 | PMWIN | sub-dispatcher | 75 | 0 | 75 |
-| PMGPI | sub-dispatcher | 48 | 6 | 54 |
-| **Total** | | **319** | **21** | **340** |
+| PMGPI | sub-dispatcher | 61 | 3 | 64 |
+| **Total** | | **332** | **18** | **350** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
-
---------|-------|
-| DOSCALLS | 113 |
-| QUECALLS | 7 |
-| NLS | 4 |
-| MSG | 2 |
-| MDM | 4 |
-| UCONV | 5 |
-| VIOCALLS | 21 |
-| KBDCALLS | 3 |
-| PMWIN | 75 |
-| PMGPI | 54 |
-| **Total** | **288** |
 
 ---
 
