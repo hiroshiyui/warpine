@@ -87,8 +87,8 @@ pub struct OS2Window {
     pub style: u32,
     /// Items stored by WC_LISTBOX on LM_INSERTITEM.
     pub listbox_items: Vec<String>,
-    /// Selected WC_LISTBOX item (single selection); `None` = no selection.
-    pub listbox_sel: Option<usize>,
+    /// Selected WC_LISTBOX items, cursor and range anchor.
+    pub listbox_sel: super::pm_list::ListSelection,
     /// Owner window from `WinCreateWindow` (receives WM_CONTROL notifications);
     /// 0 = none, in which case the parent is notified.
     pub owner: u32,
@@ -99,6 +99,9 @@ pub struct OS2Window {
     /// Selection anchor of a WC_ENTRYFIELD / WC_MLE: the selection runs from
     /// here to `edit_caret`; equal to it when nothing is selected.
     pub edit_anchor: usize,
+    /// The caret of a focused WC_ENTRYFIELD / WC_MLE is in the off phase of
+    /// its blink (toggled by `WM_TIMER(TID_CURSOR)`; input shows it again).
+    pub caret_off: bool,
     /// Horizontal scroll of a WC_ENTRYFIELD / WC_MLE: the first visible
     /// character column of the caret's line.
     pub edit_scroll: usize,
@@ -479,10 +482,11 @@ impl WindowManager {
             visible: false,
             style: 0,
             listbox_items: Vec::new(),
-            listbox_sel: None,
+            listbox_sel: Default::default(),
             owner: 0,
             edit_caret: 0,
             edit_anchor: 0,
+            caret_off: false,
             edit_scroll: 0,
             top_row: 0,
             menu_items: Vec::new(),
@@ -886,11 +890,39 @@ impl WindowManager {
     /// previous focus window.
     pub fn set_focus(&mut self, hwnd: u32) -> u32 {
         let old = std::mem::replace(&mut self.focus_hwnd, hwnd);
+        // A control taking the focus shows its caret at once.
+        if let Some(w) = self.windows.get_mut(&hwnd) {
+            w.caret_off = false;
+        }
         if old != hwnd {
             self.notify_focus(old, false);
             self.notify_focus(hwnd, true);
         }
         old
+    }
+
+    /// One step of the caret blink: post `WM_TIMER(TID_CURSOR)` to the focus
+    /// window when it is an enabled entry field or MLE, unless one is still
+    /// waiting in its queue (timer messages do not pile up behind a busy
+    /// application). Returns the window posted to.
+    pub fn post_caret_blink(&self) -> Option<u32> {
+        use super::constants::{TID_CURSOR, WM_TIMER, WS_DISABLED};
+        let hwnd = self.focus_hwnd;
+        let w = self.windows.get(&hwnd)?;
+        if !matches!(w.class_name.as_str(), "WC_ENTRYFIELD" | "WC_MLE") || w.style & WS_DISABLED != 0 {
+            return None;
+        }
+        let mq_arc = self.find_hmq_for_hwnd(hwnd).and_then(|hmq| self.get_mq(hmq))?;
+        let mut mq = mq_arc.lock_or_recover();
+        let pending = mq.messages.iter()
+            .any(|m| m.hwnd == hwnd && m.msg == WM_TIMER && m.mp1 == TID_CURSOR);
+        if !pending {
+            mq.messages.push_back(OS2Message {
+                hwnd, msg: WM_TIMER, mp1: TID_CURSOR, mp2: 0, time: 0, x: 0, y: 0,
+            });
+            mq.cond.notify_one();
+        }
+        Some(hwnd)
     }
 
     /// Hit-test point `(x, y)` (client coordinates of `frame`, origin at the

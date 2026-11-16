@@ -26,6 +26,9 @@ const CHAR_BYTE_MASK: u32 = 0xFF;
 /// Mask of the WM_CHAR flag word (mp1) and character word (mp2).
 const WORD_MASK: u32 = 0xFFFF;
 
+/// A function giving the width in pixels of a string.
+pub type Measure = fn(&str) -> i32;
+
 /// An editing action decoded from a WM_CHAR message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EditKey {
@@ -108,7 +111,16 @@ pub fn key_from_wm_char(mp1: u32, mp2: u32, codepage: u32) -> Option<(EditKey, b
 /// first); it is empty when they are equal. Moving with Shift held keeps the
 /// anchor and so extends the selection; any other move or edit brings the
 /// anchor to the caret.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// With word wrap ([`Self::set_wrap`]) the *lines* of a multi-line buffer
+/// are display rows: each line of the text is broken into rows that fit the
+/// wrap width. A row ends after the spaces that follow its last word (they
+/// may hang past the width); a word wider than the width is broken between
+/// characters. Where a row is *soft-wrapped* (continues on the next row
+/// without a line break) the caret position after its last character is the
+/// start of the next row, so the caret can reach the row's end only up to
+/// its last character.
+#[derive(Debug, Clone)]
 pub struct EditBuffer {
     chars: Vec<char>,
     caret: usize,
@@ -116,6 +128,8 @@ pub struct EditBuffer {
     multiline: bool,
     /// Lines PageUp / PageDown move by.
     page_lines: usize,
+    /// Word wrap: the row width in pixels and the function measuring text.
+    wrap: Option<(i32, Measure)>,
 }
 
 impl EditBuffer {
@@ -128,7 +142,7 @@ impl EditBuffer {
     /// Build a buffer with the selection from `anchor` to `caret` (both
     /// clamped to the text).
     pub fn with_selection(text: &str, anchor: usize, caret: usize, multiline: bool) -> Self {
-        let mut buf = EditBuffer { chars: text.chars().collect(), caret: 0, anchor: 0, multiline, page_lines: 1 };
+        let mut buf = EditBuffer { chars: text.chars().collect(), caret: 0, anchor: 0, multiline, page_lines: 1, wrap: None };
         buf.set_selection(anchor, caret);
         buf
     }
@@ -142,6 +156,14 @@ impl EditBuffer {
     /// The lines PageUp / PageDown move by.
     pub fn page_lines(&self) -> usize {
         self.page_lines
+    }
+
+    /// Wrap the lines of a multi-line buffer into rows `width` pixels wide,
+    /// measured with `measure`. A single-line buffer is never wrapped.
+    pub fn set_wrap(&mut self, width: i32, measure: Measure) {
+        if self.multiline {
+            self.wrap = Some((width, measure));
+        }
     }
 
     /// The selection anchor (the end of the selection the caret is not at).
@@ -266,23 +288,39 @@ impl EditBuffer {
         if self.caret >= self.chars.len() { 0 } else { self.break_len_at(self.caret).max(1) }
     }
 
-    /// Character ranges of the lines, excluding their line breaks. There is
-    /// always at least one line; a single-line buffer is one line throughout.
+    /// Character ranges of the lines (display rows when word wrap is on),
+    /// excluding their line breaks. There is always at least one line; a
+    /// single-line buffer is one line throughout.
     pub fn lines(&self) -> Vec<Range<usize>> {
         let mut out = Vec::new();
+        let mut push = |range: Range<usize>| match self.wrap {
+            Some((width, measure)) => out.extend(wrap_rows(&self.chars, range, width, measure)),
+            None => out.push(range),
+        };
         let (mut start, mut i) = (0, 0);
         while i < self.chars.len() {
             match self.break_len_at(i) {
                 0 => i += 1,
                 n => {
-                    out.push(start..i);
+                    push(start..i);
                     i += n;
                     start = i;
                 }
             }
         }
-        out.push(start..self.chars.len());
+        push(start..self.chars.len());
         out
+    }
+
+    /// The last caret position that belongs to line `line` of `lines`: its
+    /// end, or its last character when the line is soft-wrapped (the end is
+    /// then the start of the next line).
+    fn line_caret_end(lines: &[Range<usize>], line: usize) -> usize {
+        let range = &lines[line];
+        match lines.get(line + 1) {
+            Some(next) if next.start == range.end && !range.is_empty() => range.end - 1,
+            _ => range.end,
+        }
     }
 
     /// The text of a character range (as returned by [`Self::lines`]).
@@ -307,8 +345,8 @@ impl EditBuffer {
     /// The character index of `col` in line `line`, both clamped.
     pub fn pos_in_line(&self, line: usize, col: usize) -> usize {
         let lines = self.lines();
-        let range = &lines[line.min(lines.len() - 1)];
-        range.start + col.min(range.len())
+        let line = line.min(lines.len() - 1);
+        (lines[line].start + col).min(Self::line_caret_end(&lines, line))
     }
 
     /// Insert a printable character at the caret. Control characters are
@@ -369,7 +407,7 @@ impl EditBuffer {
     /// Move the caret to the end of its line.
     pub fn move_end(&mut self) -> bool {
         let (line, _) = self.caret_line();
-        let end = self.lines()[line].end;
+        let end = Self::line_caret_end(&self.lines(), line);
         let moved = end != self.caret;
         self.caret = end;
         moved
@@ -387,8 +425,10 @@ impl EditBuffer {
         }
         let from = &lines[line];
         let x = width(&self.slice(from.start..from.start + col));
-        let to = lines[target as usize].clone();
-        self.caret = to.start + caret_from_x(&self.chars[to], x, width);
+        let target = target as usize;
+        let to = lines[target].clone();
+        self.caret = (to.start + caret_from_x(&self.chars[to], x, width))
+            .min(Self::line_caret_end(&lines, target));
         true
     }
 
@@ -436,6 +476,45 @@ impl EditBuffer {
         self.anchor = if moved && extend { anchor } else { self.caret };
         Some(changed)
     }
+}
+
+/// Break `chars[range]` (one line of text, without its line break) into rows
+/// at most `width` pixels wide as measured by `measure`: a row breaks after
+/// the spaces following the last word that fits (spaces may hang past the
+/// width), or between characters when a single word is wider than the row.
+/// Every row holds at least one character, and an empty line is one empty
+/// row.
+pub fn wrap_rows(chars: &[char], range: Range<usize>, width: i32,
+                 measure: Measure) -> Vec<Range<usize>> {
+    let mut rows = Vec::new();
+    let mut row_start = range.start;
+    // Where the row may break: just after the last space run seen in it.
+    let mut last_break = None;
+    let mut i = range.start;
+    while i < range.end {
+        let ch = chars[i];
+        if ch == ' ' {
+            i += 1;
+            last_break = Some(i);
+            continue;
+        }
+        let row_w = measure(&chars[row_start..=i].iter().collect::<String>());
+        if row_w > width && i > row_start {
+            let brk = match last_break {
+                Some(b) if b > row_start => b,
+                _ => i,
+            };
+            rows.push(row_start..brk);
+            row_start = brk;
+            last_break = None;
+            // Re-measure the moved word against the new row.
+            i = brk;
+            continue;
+        }
+        i += 1;
+    }
+    rows.push(row_start..range.end);
+    rows
 }
 
 /// The caret index (0..=len) in `chars` nearest to pixel offset `x` from the
@@ -1000,5 +1079,86 @@ mod tests {
         let vk = |v: u32| key_from_wm_char(KC_VIRTUALKEY | KC_SCANCODE, v << WM_CHAR_VKEY_SHIFT, 437);
         assert_eq!(vk(VK_PAGEUP), Some((EditKey::PageUp, false)));
         assert_eq!(vk(VK_PAGEDOWN), Some((EditKey::PageDown, false)));
+    }
+
+    // ── Word wrap ────────────────────────────────────────────────────────────
+
+    fn rows_of(buf: &EditBuffer) -> Vec<String> {
+        buf.lines().into_iter().map(|r| buf.slice(r)).collect()
+    }
+
+    fn wrapped(text: &str, caret: usize, width: i32) -> EditBuffer {
+        let mut buf = EditBuffer::new(text, caret, true);
+        buf.set_wrap(width, mono);
+        buf
+    }
+
+    #[test]
+    fn wrap_breaks_after_the_spaces_that_follow_the_last_fitting_word() {
+        // 60 px = 6 characters; the space after "two" hangs.
+        let buf = wrapped("one two three", 0, 60);
+        assert_eq!(rows_of(&buf), ["one ", "two ", "three"]);
+        let buf = wrapped("ab cd ef", 0, 60);
+        assert_eq!(rows_of(&buf), ["ab cd ", "ef"]);
+    }
+
+    #[test]
+    fn wrap_breaks_a_word_wider_than_the_row_between_characters() {
+        let buf = wrapped("abcdefghij xy", 0, 40);
+        assert_eq!(rows_of(&buf), ["abcd", "efgh", "ij ", "xy"]);
+        // Even a row narrower than one character holds one character.
+        assert_eq!(rows_of(&wrapped("abc", 0, 5)), ["a", "b", "c"]);
+    }
+
+    #[test]
+    fn wrap_keeps_line_breaks_and_empty_lines() {
+        let buf = wrapped("aaa bbb\r\n\nccc", 0, 40);
+        assert_eq!(rows_of(&buf), ["aaa ", "bbb", "", "ccc"]);
+    }
+
+    #[test]
+    fn single_line_buffers_ignore_wrap() {
+        let mut buf = EditBuffer::new("one two three", 0, false);
+        buf.set_wrap(40, mono);
+        assert_eq!(rows_of(&buf), ["one two three"]);
+    }
+
+    #[test]
+    fn caret_at_a_soft_wrap_belongs_to_the_next_row() {
+        // Rows "one " 0..4, "two " 4..8, "three" 8..13.
+        let mut buf = wrapped("one two three", 4, 60);
+        assert_eq!(buf.caret_line(), (1, 0));
+        // End stops before the hanging space, Home returns to the row start.
+        buf.apply(EditKey::End, false, &mono);
+        assert_eq!(buf.caret(), 7);
+        assert_eq!(buf.caret_line(), (1, 3));
+        buf.apply(EditKey::Home, false, &mono);
+        assert_eq!(buf.caret(), 4);
+        // On the last row End reaches the end of the text.
+        buf.set_caret(9);
+        buf.apply(EditKey::End, false, &mono);
+        assert_eq!(buf.caret(), 13);
+    }
+
+    #[test]
+    fn vertical_moves_and_clicks_step_through_wrapped_rows() {
+        let mut buf = wrapped("one two three", 2, 60);
+        buf.apply(EditKey::Down, false, &mono);
+        assert_eq!(buf.caret(), 6, "same column on the next row");
+        buf.set_caret(12);
+        buf.apply(EditKey::Up, false, &mono);
+        assert_eq!(buf.caret(), 7, "clamped before the hanging space, not onto the next row");
+        assert_eq!(buf.caret_line(), (1, 3));
+        assert_eq!(buf.pos_in_line(0, 99), 3);
+        assert_eq!(buf.pos_in_line(2, 99), 13);
+    }
+
+    #[test]
+    fn edits_rewrap_the_text() {
+        let mut buf = wrapped("one two", 3, 60);
+        assert_eq!(rows_of(&buf), ["one ", "two"]);
+        buf.apply(EditKey::Backspace, false, &mono);
+        buf.apply(EditKey::Backspace, false, &mono);
+        assert_eq!(rows_of(&buf), ["o two"]);
     }
 }

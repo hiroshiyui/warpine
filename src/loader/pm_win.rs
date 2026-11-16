@@ -307,7 +307,7 @@ impl super::Loader {
                     WM_SYSCOMMAND if mp1 & 0xFFFF == SC_CLOSE => {
                         self.post_to_window(hwnd, WM_CLOSE, 0, 0);
                     }
-                    WM_BUTTON1DOWN | WM_BUTTON1UP => {
+                    WM_BUTTON1DOWN | WM_BUTTON1DBLCLK | WM_BUTTON1UP => {
                         // If this frame has a menu, delegate mouse events to the menu
                         // control handler so it can handle menu-bar clicks and dropdown
                         // item selection.
@@ -329,7 +329,8 @@ impl super::Loader {
                             let cy = wm.get_window(frame_h).map(|w| w.cy).unwrap_or(0);
                             (mh, cy)
                         };
-                        if menu_hwnd != 0 && msg == WM_BUTTON1DOWN {
+                        // The second press of a double click acts as a press.
+                        if menu_hwnd != 0 && msg != WM_BUTTON1UP {
                             let click_y = ((mp1 >> 16) & 0xFFFF) as i32;
                             // Check if click is in the menu bar or open dropdown.
                             // Title bar occupies [frame_cy-CHROME_TITLE_H, frame_cy).

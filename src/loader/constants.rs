@@ -67,10 +67,14 @@ pub const WM_QUIT: u32 = 0x002A;
 pub const WM_MOUSEMOVE: u32 = 0x0070;
 pub const WM_BUTTON1DOWN: u32 = 0x0071;
 pub const WM_BUTTON1UP: u32 = 0x0072;
+/// The second press of a double click (instead of a second `WM_BUTTON1DOWN`).
+pub const WM_BUTTON1DBLCLK: u32 = 0x0073;
 pub const WM_BUTTON2DOWN: u32 = 0x0074;
 pub const WM_BUTTON2UP: u32 = 0x0075;
+pub const WM_BUTTON2DBLCLK: u32 = 0x0076;
 pub const WM_BUTTON3DOWN: u32 = 0x0077;
 pub const WM_BUTTON3UP: u32 = 0x0078;
+pub const WM_BUTTON3DBLCLK: u32 = 0x0079;
 pub const WM_COMMAND: u32 = 0x0020;
 pub const WM_CHAR: u32 = 0x007A;
 pub const WM_ENABLE: u32 = 0x0004;
@@ -88,6 +92,12 @@ pub const LM_QUERYSELECTION: u32 = 0x0165;
 pub const LM_DELETEITEM:     u32 = 0x0163;
 /// Removes every item; returns TRUE.
 pub const LM_DELETEALL:      u32 = 0x016e;
+/// `LM_QUERYSELECTION` index asking for the item with the cursor.
+pub const LIT_CURSOR: i32 = -4;
+/// List box style: a click or Space toggles one item, keeping the others.
+pub const LS_MULTIPLESEL: u32 = 0x0001;
+/// List box style: Shift selects ranges and Ctrl+click toggles items.
+pub const LS_EXTENDEDSEL: u32 = 0x0010;
 /// "No item": `LM_QUERYSELECTION` result and `LM_SELECTITEM` deselect-all index.
 pub const LIT_NONE:  i32 = -1;
 /// `LM_QUERYSELECTION` start index meaning "search from the first item".
@@ -97,6 +107,8 @@ pub const LIT_FIRST: i32 = -1;
 pub const LN_SELECT:    u32 = 1;
 pub const LN_SETFOCUS:  u32 = 2;
 pub const LN_KILLFOCUS: u32 = 3;
+/// Enter pressed in, or an item double-clicked.
+pub const LN_ENTER:     u32 = 5;
 
 // Entry field notification codes (high word of WM_CONTROL mp1); mp2 = field HWND.
 pub const EN_SETFOCUS:  u32 = 0x0001;
@@ -107,6 +119,8 @@ pub const EN_CHANGE:    u32 = 0x0004;
 pub const ES_READONLY: u32 = 0x0000_0020;
 /// MLE style: the text can be selected and copied but not changed.
 pub const MLS_READONLY: u32 = 0x0000_0010;
+/// MLE style: lines wider than the control wrap at word boundaries.
+pub const MLS_WORDWRAP: u32 = 0x0000_0001;
 
 // WC_ENTRYFIELD messages (EM_*, <pmwin.h>)
 pub const EM_QUERYSEL: u32 = 0x0141;
@@ -123,6 +137,10 @@ pub const EM_SETREADONLY:   u32 = 0x014b;
 // WC_MLE messages (MLM_*) and MLM_QUERYSEL modes (MLFQS_*, <pmwin.h>)
 pub const MLM_SETSEL:   u32 = 0x01ca;
 pub const MLM_QUERYSEL: u32 = 0x01cb;
+/// mp1 = TRUE to wrap lines at word boundaries (`MLS_WORDWRAP`).
+pub const MLM_SETWRAP:   u32 = 0x01b4;
+/// Returns TRUE when word wrap is on.
+pub const MLM_QUERYWRAP: u32 = 0x01b5;
 pub const MLM_CUT:      u32 = 0x01d8;
 pub const MLM_COPY:     u32 = 0x01d9;
 pub const MLM_PASTE:    u32 = 0x01da;
@@ -588,6 +606,13 @@ pub const CHROME_BORDER_W: i32 = 2;
 pub fn frame_border_width(frame_flags: u32) -> i32 {
     if frame_flags & (FCF_BORDER | FCF_DLGBORDER | FCF_SIZEBORDER) != 0 { CHROME_BORDER_W } else { 0 }
 }
+
+/// Timer id of the system timer that blinks the cursor (`<pmwin.h>`):
+/// Warpine posts `WM_TIMER(TID_CURSOR)` to the focused entry field or MLE.
+pub const TID_CURSOR: u32 = 0xFFFF;
+/// How long the caret of a text control stays on, then off (Warpine's own
+/// choice).
+pub const CARET_BLINK_MS: u64 = 500;
 
 // WinQuerySysValue indices (SV_*, <pmwin.h>)
 pub const SV_CXSIZEBORDER: i32 = 4;

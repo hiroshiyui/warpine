@@ -9,6 +9,7 @@ use sdl3::messagebox::{show_message_box, ButtonData, MessageBoxButtonFlag, Messa
 use crate::loader::{SharedState, OS2Message, MutexExt,
     WM_CLOSE, WM_SIZE, WM_PAINT, WM_CHAR, WM_MOUSEMOVE,
     WM_BUTTON1DOWN, WM_BUTTON1UP, WM_BUTTON2DOWN, WM_BUTTON2UP, WM_BUTTON3DOWN, WM_BUTTON3UP,
+    WM_BUTTON1DBLCLK, WM_BUTTON2DBLCLK, WM_BUTTON3DBLCLK,
     KC_CHAR, KC_VIRTUALKEY, KC_SCANCODE, KC_SHIFT, KC_CTRL, KC_ALT, KC_KEYUP,
     VK_BACKSPACE, VK_TAB, VK_BACKTAB, VK_NEWLINE, VK_ESC, VK_SPACE,
     VK_PAGEUP, VK_PAGEDOWN, VK_END, VK_HOME, VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN,
@@ -49,19 +50,22 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 /// notice state changes that arrive without a wake-up, such as
 /// `exit_requested` set by the guest thread.
 const IDLE_WAIT: Duration = Duration::from_millis(100);
+/// Half period of the caret blink.
+const CARET_BLINK: Duration = Duration::from_millis(crate::loader::constants::CARET_BLINK_MS);
 
 /// How long the GUI loop may block before it has work again.
 ///
 /// `busy` means a composite is owed (windows are dirty or a full redraw is
-/// pending): the loop then wakes for the next frame. `script_next` is
-/// when the next scripted step is due. Input and wake-ups end the wait early.
+/// pending): the loop then wakes for the next frame. `timed_next` is when
+/// the next timed event is due (scripted step, caret blink). Input and
+/// wake-ups end the wait early.
 fn wait_timeout(now: Instant, last_composite: Instant, busy: bool,
-                script_next: Option<Instant>) -> Duration {
+                timed_next: Option<Instant>) -> Duration {
     let mut deadline = now + IDLE_WAIT;
     if busy {
         deadline = deadline.min(last_composite + FRAME_INTERVAL);
     }
-    if let Some(t) = script_next {
+    if let Some(t) = timed_next {
         deadline = deadline.min(t);
     }
     deadline.saturating_duration_since(now)
@@ -625,6 +629,9 @@ pub struct SdlRenderer {
     last_composite: Instant,
     /// Scripted session replayed against the desktop (`WARPINE_GUI_SCRIPT`).
     script: Option<GuiScript>,
+    /// When the caret of the focused text control blinks next; `None` in a
+    /// scripted session, whose captures must not depend on the blink phase.
+    caret_next: Option<Instant>,
 }
 
 impl SdlRenderer {
@@ -663,7 +670,7 @@ impl SdlRenderer {
                 .is_ok();
         let now = Instant::now();
         let wake_slot: Arc<std::sync::OnceLock<Arc<GuiWake>>> = Arc::default();
-        SdlRenderer {
+        let mut renderer = SdlRenderer {
             video,
             event,
             event_pump,
@@ -695,7 +702,12 @@ impl SdlRenderer {
             script: GuiScript::from_env().inspect(|_| {
                 log::info!("[GUI] GUI script active: host mouse and keyboard input is ignored");
             }),
+            caret_next: None,
+        };
+        if renderer.script.is_none() {
+            renderer.caret_next = Some(now + CARET_BLINK);
         }
+        renderer
     }
 
     /// Copy the host clipboard into `SharedState` so `WinQueryClipbrdData`
@@ -1027,7 +1039,7 @@ impl SdlRenderer {
                     }
                 }
             }
-            Event::MouseButtonDown { mouse_btn, x, y, .. } => {
+            Event::MouseButtonDown { mouse_btn, clicks, x, y, .. } => {
                 // SDL3 reports float pixels; PM works in whole pels.
                 let (x, y) = (x as i32, y as i32);
                 let os2_y = (dh as i32 - 1) - y;
@@ -1143,12 +1155,7 @@ impl SdlRenderer {
                                     .unwrap_or((x, os2_y))
                             };
                             use sdl3::mouse::MouseButton;
-                            let msg = match mouse_btn {
-                                MouseButton::Left   => Some(WM_BUTTON1DOWN),
-                                MouseButton::Right  => Some(WM_BUTTON2DOWN),
-                                MouseButton::Middle => Some(WM_BUTTON3DOWN),
-                                _ => None,
-                            };
+                            let msg = button_down_msg(mouse_btn, clicks);
                             // Button 1 goes to the built-in control under the
                             // pointer, if any; a click elsewhere takes the
                             // keyboard focus away from the focused control.
@@ -1368,6 +1375,15 @@ impl PmRenderer for SdlRenderer {
             }
         }
 
+        // Caret blink: the focused text control toggles its caret.
+        if let Some(next) = self.caret_next {
+            let now = Instant::now();
+            if now >= next {
+                shared.window_mgr.lock_or_recover().post_caret_blink();
+                self.caret_next = Some(now + CARET_BLINK);
+            }
+        }
+
         // Frame pacing: composite at most once per FRAME_INTERVAL.
         // `composite_and_present` itself returns early when nothing is dirty
         // and no drag or resize is in progress.
@@ -1401,7 +1417,8 @@ impl PmRenderer for SdlRenderer {
         // follows would spin the loop.
         let busy = self.force_full || !shared.window_mgr.lock_or_recover().dirty.is_empty();
         let script_next = self.script.as_ref().and_then(GuiScript::next_due);
-        let mut timeout = wait_timeout(Instant::now(), self.last_composite, busy, script_next);
+        let timed_next = script_next.into_iter().chain(self.caret_next).min();
+        let mut timeout = wait_timeout(Instant::now(), self.last_composite, busy, timed_next);
         // Notice finished audio promptly (MCI_WAIT, MM_MCINOTIFY, DosBeep).
         if self.audio.busy() {
             timeout = timeout.min(super::audio::AUDIO_PUMP_INTERVAL);
@@ -1569,6 +1586,20 @@ fn route_button1(shared: &Arc<SharedState>, frame: u32, x: i32, y: i32, press: b
         0
     };
     ((frame, x, y), lost)
+}
+
+/// The PM message for a mouse button press: `WM_BUTTONnDOWN`, or
+/// `WM_BUTTONnDBLCLK` for the second press of a double click (SDL counts
+/// the presses of a multi-click; every second one completes a double click).
+fn button_down_msg(button: sdl3::mouse::MouseButton, clicks: u8) -> Option<u32> {
+    use sdl3::mouse::MouseButton;
+    let double = clicks >= 2 && clicks.is_multiple_of(2);
+    match button {
+        MouseButton::Left   => Some(if double { WM_BUTTON1DBLCLK } else { WM_BUTTON1DOWN }),
+        MouseButton::Right  => Some(if double { WM_BUTTON2DBLCLK } else { WM_BUTTON2DOWN }),
+        MouseButton::Middle => Some(if double { WM_BUTTON3DBLCLK } else { WM_BUTTON3DOWN }),
+        _ => None,
+    }
 }
 
 /// Whether mouse clicks on window `hwnd` are ignored because its frame is
@@ -1923,6 +1954,8 @@ fn script_input_to_event(input: &gui_script::Input) -> Option<Event> {
     Some(match input {
         Input::MouseDown { button, x, y } => Event::MouseButtonDown {
             timestamp, window_id, which, mouse_btn: sdl_button(button), clicks: 1, x: *x as f32, y: *y as f32 },
+        Input::MouseDoubleDown { button, x, y } => Event::MouseButtonDown {
+            timestamp, window_id, which, mouse_btn: sdl_button(button), clicks: 2, x: *x as f32, y: *y as f32 },
         Input::MouseUp { button, x, y } => Event::MouseButtonUp {
             timestamp, window_id, which, mouse_btn: sdl_button(button), clicks: 1, x: *x as f32, y: *y as f32 },
         Input::MouseDrag { x, y, dx, dy } => Event::MouseMotion {
@@ -2329,6 +2362,19 @@ mod tests {
         assert!(flags & KC_CHAR == 0,       "KC_CHAR not set for F1");
         assert_eq!(sc, 0x3B, "scan code for F1");
         assert_eq!(vk, VK_F1);
+    }
+
+    #[test]
+    fn every_second_press_of_a_multi_click_is_a_double_click() {
+        use sdl3::mouse::MouseButton;
+        use crate::loader::*;
+        assert_eq!(super::button_down_msg(MouseButton::Left, 1), Some(WM_BUTTON1DOWN));
+        assert_eq!(super::button_down_msg(MouseButton::Left, 2), Some(WM_BUTTON1DBLCLK));
+        assert_eq!(super::button_down_msg(MouseButton::Left, 3), Some(WM_BUTTON1DOWN));
+        assert_eq!(super::button_down_msg(MouseButton::Left, 4), Some(WM_BUTTON1DBLCLK));
+        assert_eq!(super::button_down_msg(MouseButton::Right, 2), Some(WM_BUTTON2DBLCLK));
+        assert_eq!(super::button_down_msg(MouseButton::Middle, 1), Some(WM_BUTTON3DOWN));
+        assert_eq!(super::button_down_msg(MouseButton::X1, 1), None);
     }
 
     #[test]

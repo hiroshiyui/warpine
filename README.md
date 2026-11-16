@@ -22,7 +22,7 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 
 ### Work in progress
 
-- **Text editing** — typing, editing keys, PageUp/PageDown, selection (Shift+arrows, mouse drag, Shift+click) and the clipboard (Ctrl+Insert, Shift+Delete, Shift+Insert) work, and fields can be read-only; word wrap, a blinking caret and multi-select list boxes are still missing, and Tab moves between controls only in dialogs.
+- **Text editing** — typing, editing keys, PageUp/PageDown, selection (Shift+arrows, mouse drag, Shift+click), the clipboard (Ctrl+Insert, Shift+Delete, Shift+Insert), read-only fields, MLE word wrap, a blinking caret and multi-select list boxes work; Tab moves between controls only in dialogs.
 - **More GPI** — boxes, lines, arcs, patterns, line widths, text, bitmaps and blits work; paths and areas (`GpiBeginPath`, `GpiBeginArea`), rounded box corners, palettes, coordinate transforms and printing are not implemented.
 - **Codepages in PM** — window text, typed characters and GPI text follow the message queue's codepage (`WinSetCp`), including 1004; control and title-bar text still pick their CJK face from the process codepage.
 - **Advanced controls** — containers, notebooks, drag and drop, custom pointers and printing are not started.
@@ -129,6 +129,7 @@ samples/               OS/2 sample applications and build scripts
   audio_test/          MMPM/2 audio: DosBeep and mciSendString
   pm_controls_test/    PM built-in controls (WC_BUTTON, WC_STATIC, WC_ENTRYFIELD, etc.)
   pm_menu_dlg_test/    PM menu bar, pull-down menu and modal dialog from resources
+  pm_list_test/        List box selection modes, LN_ENTER and MLE word wrap
   pm_font_test/        GPI font selection (IBM Plex families, styles, sizes) and CJK text
   rust_hello/          Rust guest binary: "Hello from Rust on Warpine!" (Phase C)
 crates/                Standalone guest crates (NOT part of the host workspace)
@@ -241,7 +242,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 836 unit tests (no KVM required)
+cargo test                        # 859 unit tests (no KVM required)
 cargo test --test integration     # 38 end-to-end tests (requires /dev/kvm)
 cargo clippy -- -D warnings       # Lint — must pass with zero warnings
 ```

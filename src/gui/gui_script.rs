@@ -33,6 +33,8 @@
 //!   `shift+click 10 20`: the modifiers go down before the press and up
 //!   after the release.
 //! * `rclick X Y` — right button press and release at `(X, Y)`.
+//! * `dblclick X Y` — two left clicks at `(X, Y)`, the second press
+//!   reported as the second click of a double click.
 //! * `drag X1 Y1 X2 Y2` — left button down at `(X1, Y1)`, [`DRAG_MOVES`]
 //!   evenly spaced mouse moves ending at `(X2, Y2)`, button up there. The
 //!   events are [`DRAG_STEP_MS`] apart, so a drag takes
@@ -202,6 +204,8 @@ pub enum Action {
     /// A left click with modifier keys held (`shift+click X Y`).
     ModClick { x: i32, y: i32, mods: Mods },
     RClick { x: i32, y: i32 },
+    /// Two left clicks in quick succession (`dblclick X Y`).
+    DblClick { x: i32, y: i32 },
     Drag { x1: i32, y1: i32, x2: i32, y2: i32 },
     Key { key: Key, mods: Mods },
     Text(String),
@@ -214,6 +218,8 @@ pub enum Action {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Input {
     MouseDown { button: Button, x: i32, y: i32 },
+    /// The second press of a double click.
+    MouseDoubleDown { button: Button, x: i32, y: i32 },
     /// Pointer moved to `(x, y)` by `(dx, dy)` with the left button held.
     MouseDrag { x: i32, y: i32, dx: i32, dy: i32 },
     MouseUp { button: Button, x: i32, y: i32 },
@@ -276,6 +282,13 @@ impl Action {
                 out.push((at, Input::MouseUp { button: Button::Left, x, y }));
             }),
             &Action::RClick { x, y } => press_release(Button::Right, x, y),
+            &Action::DblClick { x, y } => {
+                let button = Button::Left;
+                out.push((at, Input::MouseDown { button, x, y }));
+                out.push((at, Input::MouseUp { button, x, y }));
+                out.push((at, Input::MouseDoubleDown { button, x, y }));
+                out.push((at, Input::MouseUp { button, x, y }));
+            }
             &Action::Drag { x1, y1, x2, y2 } => {
                 out.push((at, Input::MouseDown { button: Button::Left, x: x1, y: y1 }));
                 let n = DRAG_MOVES as i64;
@@ -362,6 +375,8 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
             }
             "rclick" => coords(args).map(|[x, y]| Action::RClick { x, y })
                 .ok_or_else(|| err("rclick needs X and Y"))?,
+            "dblclick" => coords(args).map(|[x, y]| Action::DblClick { x, y })
+                .ok_or_else(|| err("dblclick needs X and Y"))?,
             "drag" => coords(args).map(|[x1, y1, x2, y2]| Action::Drag { x1, y1, x2, y2 })
                 .ok_or_else(|| err("drag needs X1 Y1 X2 Y2"))?,
             "key" => {
@@ -382,7 +397,7 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
             "quit" if args.is_empty() => Action::Quit,
             "quit" => return Err(err("unexpected extra arguments")),
             _ => return Err(err(
-                "unknown action (expected click, MOD+click, rclick, drag, key, text, dump or quit)")),
+                "unknown action (expected click, MOD+click, rclick, dblclick, drag, key, text, dump or quit)")),
         };
         steps.push(Step { at_ms, action });
     }
@@ -556,7 +571,7 @@ mod tests {
         assert!(parse("1 drag 1 2").unwrap_err().contains("drag needs X1 Y1 X2 Y2"));
         assert!(parse("1 rclick 1").unwrap_err().contains("rclick needs X and Y"));
         assert!(parse("1 text").unwrap_err().contains("text needs a string"));
-        assert!(parse("1 fly").unwrap_err().contains("rclick, drag, key, text"));
+        assert!(parse("1 fly").unwrap_err().contains("rclick, dblclick, drag, key, text"));
         assert!(parse("1 super+click 1 2").unwrap_err().contains("unknown modifier"));
     }
 
@@ -656,6 +671,19 @@ mod tests {
         assert_eq!(Action::RClick { x: 3, y: 4 }.expand(50), vec![
             (50, Input::MouseDown { button: Button::Right, x: 3, y: 4 }),
             (50, Input::MouseUp { button: Button::Right, x: 3, y: 4 }),
+        ]);
+    }
+
+    #[test]
+    fn double_clicks_expand_to_a_click_then_a_double_press() {
+        assert_eq!(parse("5 dblclick 3 4").unwrap()[0].action, Action::DblClick { x: 3, y: 4 });
+        assert!(parse("5 dblclick 3").is_err());
+        let button = Button::Left;
+        assert_eq!(Action::DblClick { x: 3, y: 4 }.expand(50), vec![
+            (50, Input::MouseDown { button, x: 3, y: 4 }),
+            (50, Input::MouseUp { button, x: 3, y: 4 }),
+            (50, Input::MouseDoubleDown { button, x: 3, y: 4 }),
+            (50, Input::MouseUp { button, x: 3, y: 4 }),
         ]);
     }
 

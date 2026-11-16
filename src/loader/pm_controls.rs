@@ -14,6 +14,7 @@
 
 use super::constants::*;
 use super::pm_edit::{self, EditBuffer, EditKey, CARET_W};
+use super::pm_list::{ListMode, ListSelection};
 use super::pm_types::OS2Message;
 use super::{control_box, control_text, ApiResult, Loader, MutexExt, Painter,
             CONTROL_EMPHASIS_COLOR, CONTROL_FACE_COLOR, CONTROL_FIELD_COLOR, CONTROL_LINE_H,
@@ -150,10 +151,15 @@ fn relative(range: std::ops::Range<usize>, origin: usize) -> std::ops::Range<usi
 }
 
 /// The edit buffer of an entry field / MLE window, with its selection;
-/// PageUp / PageDown move by the rows the window shows.
+/// PageUp / PageDown move by the rows the window shows, and an MLE with
+/// `MLS_WORDWRAP` wraps its lines to the width of its text area (less the
+/// caret, so a caret after the last character of a full row stays inside).
 fn edit_buffer(win: &super::pm_types::OS2Window, multiline: bool) -> EditBuffer {
     let mut buf = EditBuffer::with_selection(&win.text, win.edit_anchor, win.edit_caret, multiline);
     buf.set_page_rows(control_visible_rows(win.cy));
+    if multiline && win.style & MLS_WORDWRAP != 0 {
+        buf.set_wrap(win.cx - 2 * CONTROL_TEXT_INSET - CARET_W, system_width);
+    }
     buf
 }
 
@@ -308,7 +314,7 @@ impl Loader {
     pub(super) fn paint_entry_field(&self, p: &Painter, hwnd: u32,
                                     (x, y, cx, cy): (i32, i32, i32, i32)) {
         let view_w = cx - 2 * CONTROL_TEXT_INSET;
-        let (buf, first, focused) = {
+        let (buf, first, focused, caret_on) = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             let focused = wm.focus_hwnd == hwnd;
             let Some(win) = wm.get_window_mut(hwnd) else { return };
@@ -317,24 +323,25 @@ impl Loader {
                 buf.chars(), buf.caret(), win.edit_scroll, view_w - CARET_W, &system_width);
             store_selection(win, &buf);
             win.edit_scroll = first;
-            (buf, first, focused)
+            (buf, first, focused, focused && !win.caret_off)
         };
         // The selection shows while the field has the focus.
         let selected = if focused { relative(buf.selection(), first) } else { 0..0 };
         control_box(p, (x, y, cx, cy), CONTROL_FIELD_COLOR);
         draw_edit_line(p, (x + CONTROL_TEXT_INSET, y + (cy - CONTROL_LINE_H) / 2),
                        view_w, &buf.chars()[first..], selected,
-                       focused.then(|| buf.caret() - first), (y + 1, y + cy - 1));
+                       caret_on.then(|| buf.caret() - first), (y + 1, y + cy - 1));
     }
 
-    /// WC_MLE: white field, one row per line from the top, no word wrap.
-    /// Scrolled vertically so the caret's line is visible; only the caret's
-    /// line scrolls horizontally.
+    /// WC_MLE: white field, one row per line from the top (per wrapped row
+    /// with `MLS_WORDWRAP`). Scrolled vertically so the caret's row is
+    /// visible; only the caret's row scrolls horizontally (with word wrap
+    /// only when spaces hanging past the edge push the caret out of view).
     pub(super) fn paint_mle(&self, p: &Painter, hwnd: u32,
                             (x, y, cx, cy): (i32, i32, i32, i32)) {
         let view_w = cx - 2 * CONTROL_TEXT_INSET;
         let rows = control_visible_rows(cy);
-        let (buf, top, first, focused) = {
+        let (buf, top, first, focused, caret_on) = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             let focused = wm.focus_hwnd == hwnd;
             let Some(win) = wm.get_window_mut(hwnd) else { return };
@@ -348,7 +355,7 @@ impl Loader {
             store_selection(win, &buf);
             win.edit_scroll = first;
             win.top_row = top;
-            (buf, top, first, focused)
+            (buf, top, first, focused, focused && !win.caret_off)
         };
         control_box(p, (x, y, cx, cy), CONTROL_FIELD_COLOR);
         let (caret_line, col) = buf.caret_line();
@@ -359,7 +366,7 @@ impl Loader {
             let in_line = if in_line.start < in_line.end { in_line } else { 0..0 };
             let chars = &buf.chars()[line];
             let (chars, caret, selected) = if i == caret_line {
-                (&chars[first..], focused.then_some(col - first), relative(in_line, first))
+                (&chars[first..], caret_on.then_some(col - first), relative(in_line, first))
             } else {
                 (chars, None, in_line)
             };
@@ -369,22 +376,30 @@ impl Loader {
     }
 
     /// WC_LISTBOX: white field, one row per item from the first visible item;
-    /// the selected item is drawn highlighted.
+    /// selected items are drawn highlighted and, in a list that selects
+    /// several items, the cursor item is outlined while the list is focused.
     pub(super) fn paint_listbox(&self, p: &Painter, hwnd: u32,
                                 (x, y, cx, cy): (i32, i32, i32, i32)) {
-        let (items, sel, top_row) = {
+        let (items, sel, top_row, mode, focused) = {
             let wm = self.shared.window_mgr.lock_or_recover();
             let Some(win) = wm.get_window(hwnd) else { return };
-            (win.listbox_items.clone(), win.listbox_sel, win.top_row)
+            (win.listbox_items.clone(), win.listbox_sel.clone(), win.top_row,
+             ListMode::from_style(win.style), wm.focus_hwnd == hwnd)
         };
         let rows = control_visible_rows(cy);
         let top = listbox_top(top_row, items.len(), rows);
         control_box(p, (x, y, cx, cy), CONTROL_FIELD_COLOR);
         for (i, item) in items.iter().enumerate().skip(top).take(rows) {
             let row_y = y + control_row_y(cy, i - top);
-            let selected = sel == Some(i);
+            let selected = sel.is_selected(i);
             if selected {
                 p.fill((x + 1, row_y, x + cx - 1, row_y + CONTROL_LINE_H - 1), CONTROL_SELECT_COLOR);
+            }
+            // A list that selects several items shows the cursor while focused.
+            if focused && mode != ListMode::Single && sel.cursor() == Some(i) {
+                p.op(DrawOp::Box { x1: x + 1, y1: row_y, x2: x + cx - 2, y2: row_y + CONTROL_LINE_H - 1,
+                                   color: CONTROL_EMPHASIS_COLOR, fill: false,
+                                   mix: crate::gui::surface::Mix::Overpaint });
             }
             let label = font::fit_text(item, cx - 2 * CONTROL_TEXT_INSET, FontSpec::SYSTEM);
             if !label.is_empty() {
@@ -405,6 +420,7 @@ impl Loader {
     /// control's selection is extended to the pointer instead.
     pub(super) fn control_button_down(&self, hwnd: u32, class: &str, cy: i32, mp1: u32, mp2: u32) -> ApiResult {
         let (local_x, local_y) = mouse_pos(mp1);
+        self.show_caret(hwnd);
         let extend = (mp2 >> 16) & KC_SHIFT != 0;
         let old_focus = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
@@ -429,7 +445,8 @@ impl Loader {
                     })
                 };
                 if let Some(item) = item {
-                    self.listbox_select(hwnd, Some(item));
+                    let ctrl = (mp2 >> 16) & KC_CTRL != 0;
+                    self.listbox_update(hwnd, Some(item), |s, mode| s.click(item, mode, extend, ctrl));
                 }
             }
             _ => {
@@ -453,6 +470,25 @@ impl Loader {
         ApiResult::Normal(1)
     }
 
+    /// WM_BUTTON1DBLCLK on a list box: the second press of a double click
+    /// selects like a press, then tells the owner `LN_ENTER` when an item is
+    /// under the pointer.
+    pub(super) fn listbox_double_click(&self, hwnd: u32, cy: i32, mp1: u32, mp2: u32) -> ApiResult {
+        let result = self.control_button_down(hwnd, CLASS_LISTBOX, cy, mp1, mp2);
+        let on_item = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            wm.get_window(hwnd).is_some_and(|w| {
+                let top = listbox_top(w.top_row, w.listbox_items.len(), control_visible_rows(cy));
+                control_row_at(cy, mouse_pos(mp1).1)
+                    .is_some_and(|row| top + row < w.listbox_items.len())
+            })
+        };
+        if matches!(result, ApiResult::Normal(1)) && on_item {
+            self.notify_owner(hwnd, LN_ENTER, hwnd);
+        }
+        result
+    }
+
     /// WM_MOUSEMOVE on an entry field, MLE or list box held with button 1:
     /// extend the selection to the pointer / select the item under it.
     pub(super) fn control_mouse_move(&self, hwnd: u32, class: &str, cy: i32, mp1: u32) -> ApiResult {
@@ -472,7 +508,7 @@ impl Loader {
                 })
             };
             if let Some(item) = item {
-                self.listbox_select(hwnd, Some(item));
+                self.listbox_update(hwnd, Some(item), |s, mode| s.drag_to(item, mode));
             }
             return ApiResult::Normal(1);
         }
@@ -560,9 +596,31 @@ impl Loader {
         ApiResult::Normal(0)
     }
 
+    /// WM_TIMER(TID_CURSOR) on an entry field or MLE: the next phase of the
+    /// caret blink. Only the focus window blinks; any other has its caret
+    /// on for when it gets the focus.
+    pub(super) fn edit_caret_blink(&self, hwnd: u32) -> ApiResult {
+        {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let focused = wm.focus_hwnd == hwnd;
+            let Some(win) = wm.get_window_mut(hwnd) else { return ApiResult::Normal(0) };
+            win.caret_off = focused && !win.caret_off;
+        }
+        self.repaint_control(hwnd);
+        ApiResult::Normal(0)
+    }
+
+    /// Keyboard or mouse input on a text control: its caret shows at once.
+    fn show_caret(&self, hwnd: u32) {
+        if let Some(w) = self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd) {
+            w.caret_off = false;
+        }
+    }
+
     /// WM_CHAR on an entry field, MLE or list box. Keys the control does not
     /// use are passed on to its owner, as PM controls do.
     pub(super) fn control_char(&self, hwnd: u32, class: &str, mp1: u32, mp2: u32) -> ApiResult {
+        self.show_caret(hwnd);
         // Characters arrive in the codepage of the control's message queue.
         let codepage = self.window_codepage(hwnd);
         let enabled = self.shared.window_mgr.lock_or_recover()
@@ -573,8 +631,13 @@ impl Loader {
                 self.edit_clipboard(hwnd, class == CLASS_MLE, cmd);
             }
             true
+        } else if class == CLASS_LISTBOX && mp1 & KC_VIRTUALKEY != 0
+            && mp2 >> WM_CHAR_VKEY_SHIFT == VK_SPACE {
+            self.listbox_space(hwnd, mp1 & KC_KEYUP != 0)
         } else { match pm_edit::key_from_wm_char(mp1, mp2, codepage) {
-            Some((key, key_up)) if class == CLASS_LISTBOX => self.listbox_key(hwnd, key, key_up),
+            Some((key, key_up)) if class == CLASS_LISTBOX => {
+                self.listbox_key(hwnd, key, mp1 & KC_SHIFT != 0, key_up)
+            }
             // Shift with a movement key extends the selection.
             Some((key, key_up)) => self.edit_key(hwnd, class == CLASS_MLE, key, mp1 & KC_SHIFT != 0, key_up),
             // The bare press/release of a printable key (its character
@@ -705,14 +768,34 @@ impl Loader {
         true
     }
 
-    /// Up/Down/PageUp/PageDown/Home/End move the selection of a list box; a
-    /// page is the visible rows less one.
-    fn listbox_key(&self, hwnd: u32, key: EditKey, key_up: bool) -> bool {
-        if !matches!(key, EditKey::Up | EditKey::Down | EditKey::PageUp | EditKey::PageDown
-                          | EditKey::Home | EditKey::End) {
+    /// Up/Down/PageUp/PageDown/Home/End move the cursor of a list box (and
+    /// with it the selection, see [`ListSelection::move_cursor`]; Shift
+    /// extends an extended selection); a page is the visible rows less one.
+    /// Space (see [`Self::listbox_space`]) toggles the cursor item of a list
+    /// that selects several items. Enter tells the owner `LN_ENTER` and is then passed on to it, so that
+    /// in a dialog it still presses the default button
+    /// (TODO(unverified): whether PM's list box keeps the key instead).
+    fn listbox_key(&self, hwnd: u32, key: EditKey, shift: bool, key_up: bool) -> bool {
+        let mode = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            wm.get_window(hwnd).map_or(ListMode::Single, |w| ListMode::from_style(w.style))
+        };
+        let space = key == EditKey::Char(' ') && mode != ListMode::Single;
+        if !space && !matches!(key, EditKey::Up | EditKey::Down | EditKey::PageUp | EditKey::PageDown
+                                    | EditKey::Home | EditKey::End | EditKey::Enter) {
+            return false;
+        }
+        if key == EditKey::Enter {
+            if !key_up {
+                self.notify_owner(hwnd, LN_ENTER, hwnd);
+            }
             return false;
         }
         if key_up {
+            return true;
+        }
+        if space {
+            // The character of a Space key whose VK_SPACE already toggled.
             return true;
         }
         let target = {
@@ -720,67 +803,83 @@ impl Loader {
             let Some(win) = wm.get_window(hwnd) else { return false };
             let Some(last) = win.listbox_items.len().checked_sub(1) else { return true };
             let page = control_visible_rows(win.cy).saturating_sub(1).max(1);
-            match (key, win.listbox_sel) {
+            match (key, win.listbox_sel.cursor()) {
                 (EditKey::End, _) => last,
                 (EditKey::Up, Some(sel)) => sel.saturating_sub(1),
                 (EditKey::Down, Some(sel)) => (sel + 1).min(last),
                 (EditKey::PageUp, Some(sel)) => sel.saturating_sub(page),
                 (EditKey::PageDown, Some(sel)) => (sel + page).min(last),
-                // Home, or the first Up/Down in a list without a selection.
+                // Home, or the first Up/Down in a list without a cursor.
                 _ => 0,
             }
         };
-        self.listbox_select(hwnd, Some(target));
+        self.listbox_update(hwnd, Some(target), |s, mode| s.move_cursor(target, mode, shift));
         true
     }
 
-    /// Set the selection of a list box (`None` = no selection), scroll it
-    /// into view, repaint, and notify the owner with `LN_SELECT` if the
-    /// selection changed. Returns `false` when the index is out of range.
-    pub(super) fn listbox_select(&self, hwnd: u32, sel: Option<usize>) -> bool {
+    /// The Space key (`VK_SPACE`) on a list box: toggles the cursor item of a
+    /// list that selects several items (its release and its character are
+    /// swallowed too); a single-selection list leaves it to its owner.
+    fn listbox_space(&self, hwnd: u32, key_up: bool) -> bool {
+        let mode = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            wm.get_window(hwnd).map_or(ListMode::Single, |w| ListMode::from_style(w.style))
+        };
+        if mode == ListMode::Single {
+            return false;
+        }
+        if !key_up {
+            self.listbox_update(hwnd, None, |s, mode| s.toggle_cursor(mode));
+        }
+        true
+    }
+
+    /// Change the selection of a list box with `change` (given its mode;
+    /// returns whether the selection changed), scroll item `show` into view,
+    /// repaint, and notify the owner with `LN_SELECT` if the selection
+    /// changed. Returns `false` when `show` is out of range (nothing is
+    /// changed then) or the window is gone.
+    pub(super) fn listbox_update(&self, hwnd: u32, show: Option<usize>,
+                                 change: impl FnOnce(&mut ListSelection, ListMode) -> bool) -> bool {
         let changed = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             let Some(win) = wm.get_window_mut(hwnd) else { return false };
             let count = win.listbox_items.len();
-            if sel.is_some_and(|i| i >= count) {
+            if show.is_some_and(|i| i >= count) {
                 return false;
             }
-            if let Some(i) = sel {
+            if let Some(i) = show {
                 win.top_row = pm_edit::scroll_to_row(
                     i, win.top_row, control_visible_rows(win.cy), count);
             }
-            std::mem::replace(&mut win.listbox_sel, sel) != sel
+            change(&mut win.listbox_sel, ListMode::from_style(win.style))
         };
+        // The cursor outline may have moved even when the selection did not.
+        self.repaint_control(hwnd);
         if changed {
-            self.repaint_control(hwnd);
             self.notify_owner(hwnd, LN_SELECT, hwnd);
         }
         true
     }
 
     /// LM_SELECTITEM: mp1 = item index (`LIT_NONE` deselects all), mp2 = TRUE
-    /// to select / FALSE to deselect. Returns TRUE on success.
+    /// to select / FALSE to deselect. In a list that selects one item,
+    /// selecting replaces the selection; otherwise the other items keep
+    /// theirs. Returns TRUE on success.
     pub(super) fn listbox_select_item(&self, hwnd: u32, mp1: u32, mp2: u32) -> ApiResult {
         // The index is a SHORT; MPFROMSHORT(-1) and MPFROMLONG(-1) both
         // sign-extend from the low word.
         let index = mp1 as u16 as i16 as i32;
         let ok = if index == LIT_NONE {
-            self.listbox_select(hwnd, None)
+            self.listbox_update(hwnd, None, |s, mode| s.clear(mode))
         } else if index < 0 {
             false
-        } else if mp2 != 0 {
-            self.listbox_select(hwnd, Some(index as usize))
         } else {
-            let (in_range, selected) = {
-                let wm = self.shared.window_mgr.lock_or_recover();
-                wm.get_window(hwnd).map_or((false, false), |w| {
-                    ((index as usize) < w.listbox_items.len(), w.listbox_sel == Some(index as usize))
-                })
-            };
-            if selected {
-                self.listbox_select(hwnd, None);
-            }
-            in_range
+            let (item, on) = (index as usize, mp2 != 0);
+            // Selecting scrolls the item into view; deselecting does not.
+            let in_range = self.shared.window_mgr.lock_or_recover()
+                .get_window(hwnd).is_some_and(|w| item < w.listbox_items.len());
+            in_range && self.listbox_update(hwnd, on.then_some(item), |s, mode| s.select(item, on, mode))
         };
         ApiResult::Normal(ok as u32)
     }
@@ -799,11 +898,7 @@ impl Loader {
                 return ApiResult::Normal(win.listbox_items.len() as u32);
             }
             win.listbox_items.remove(index);
-            win.listbox_sel = match win.listbox_sel {
-                Some(sel) if sel == index => None,
-                Some(sel) if sel > index => Some(sel - 1),
-                other => other,
-            };
+            win.listbox_sel.removed(index);
             win.listbox_items.len()
         };
         self.repaint_control(hwnd);
@@ -816,7 +911,7 @@ impl Loader {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             let Some(win) = wm.get_window_mut(hwnd) else { return ApiResult::Normal(0) };
             win.listbox_items.clear();
-            win.listbox_sel = None;
+            win.listbox_sel = ListSelection::default();
             win.top_row = 0;
         }
         self.repaint_control(hwnd);
@@ -825,6 +920,18 @@ impl Loader {
 
     /// EM_SETREADONLY / MLM_SETREADONLY: mp1 = TRUE makes the control
     /// read-only. Returns the previous state.
+    /// MLM_SETWRAP: switch word wrap on or off and repaint. Returns TRUE.
+    pub(super) fn mle_set_wrap(&self, hwnd: u32, wrap: bool) -> ApiResult {
+        {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let Some(win) = wm.get_window_mut(hwnd) else { return ApiResult::Normal(0) };
+            if wrap { win.style |= MLS_WORDWRAP } else { win.style &= !MLS_WORDWRAP }
+            win.edit_scroll = 0;
+        }
+        self.repaint_control(hwnd);
+        ApiResult::Normal(1)
+    }
+
     pub(super) fn edit_set_read_only(&self, hwnd: u32, read_only: bool) -> ApiResult {
         let mut wm = self.shared.window_mgr.lock_or_recover();
         let Some(win) = wm.get_window_mut(hwnd) else { return ApiResult::Normal(0) };
@@ -835,15 +942,20 @@ impl Loader {
     }
 
     /// LM_QUERYSELECTION: mp1 = index to search after (`LIT_FIRST` = from the
-    /// top). Returns the selected item's index, or `LIT_NONE`.
+    /// top; `LIT_CURSOR` asks for the cursor item instead). Returns the
+    /// index of the next selected item, or `LIT_NONE`.
     pub(super) fn listbox_query_selection(&self, hwnd: u32, mp1: u32) -> ApiResult {
-        let after = mp1 as u16 as i16 as i64;
-        let sel = self.shared.window_mgr.lock_or_recover()
-            .get_window(hwnd).and_then(|w| w.listbox_sel);
-        match sel {
-            Some(i) if i as i64 > after => ApiResult::Normal(i as u32),
-            _ => ApiResult::Normal(LIT_NONE as u32),
-        }
+        let after = mp1 as u16 as i16 as i32;
+        let wm = self.shared.window_mgr.lock_or_recover();
+        let Some(sel) = wm.get_window(hwnd).map(|w| &w.listbox_sel) else {
+            return ApiResult::Normal(LIT_NONE as u32);
+        };
+        let found = match after {
+            LIT_CURSOR => sel.cursor(),
+            a if a < 0 => sel.next_after(None),
+            a => sel.next_after(Some(a as usize)),
+        };
+        ApiResult::Normal(found.map_or(LIT_NONE as u32, |i| i as u32))
     }
 }
 
@@ -1446,6 +1558,131 @@ mod tests {
     }
 
     #[test]
+    fn listbox_enter_and_double_click_notify_ln_enter() {
+        let fx = fixture();
+        let lcy = LIST_RECT.3;
+        let list = list_with(&fx, 2);
+        let at = |row: usize| (50u32) | (((control_row_y(lcy, row) + 5) as u32) << 16);
+        fx.click(list, 50, control_row_y(lcy, 0) + 5);
+        fx.posted();
+        fx.vkey(list, VK_ENTER);
+        let posted = fx.posted();
+        assert_eq!(posted[0], (fx.client, WM_CONTROL, control_msg(ID_LIST, LN_ENTER), list));
+        assert_eq!((posted.len(), posted[1].1), (2, WM_CHAR), "then Enter goes on to the owner");
+
+        // The second press of a double click selects, then reports LN_ENTER.
+        assert_eq!(fx.send(list, WM_BUTTON1DBLCLK, at(1), 0), 1);
+        assert_eq!(selection(&fx, list), 1);
+        assert_eq!(fx.posted(), vec![(fx.client, WM_CONTROL, control_msg(ID_LIST, LN_SELECT), list),
+                                     (fx.client, WM_CONTROL, control_msg(ID_LIST, LN_ENTER), list)]);
+        fx.send(list, WM_BUTTON1UP, at(1), 0);
+        // Not on an item: no LN_ENTER.
+        fx.send(list, WM_BUTTON1DBLCLK, at(2), 0);
+        assert_eq!(fx.posted(), vec![]);
+        // A disabled list box ignores it.
+        fx.with(list, |w| w.style |= WS_DISABLED);
+        assert_eq!(fx.send(list, WM_BUTTON1DBLCLK, at(0), 0), 0);
+        assert_eq!(fx.posted(), vec![]);
+    }
+
+    #[test]
+    fn double_clicks_on_other_controls_act_as_presses() {
+        let fx = fixture();
+        let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, "hello");
+        let x = CONTROL_TEXT_INSET + system_width("he");
+        fx.send(entry, WM_BUTTON1DBLCLK, x as u32 | (5 << 16), 0);
+        assert_eq!(fx.focus(), entry);
+        assert_eq!(fx.caret(entry), 2);
+    }
+
+    /// All selected items, walked with LM_QUERYSELECTION as an application does.
+    fn all_selected(fx: &Fixture, list: u32) -> Vec<i32> {
+        let mut out = Vec::new();
+        let mut after = LIT_FIRST;
+        loop {
+            let i = fx.send(list, LM_QUERYSELECTION, after as u32 & 0xFFFF, 0) as i32;
+            if i == LIT_NONE { return out; }
+            out.push(i);
+            after = i;
+        }
+    }
+
+    fn press_row(fx: &Fixture, list: u32, row: usize, kc: u32) {
+        let mp1 = 50 | (((control_row_y(LIST_RECT.3, row) + 5) as u32) << 16);
+        fx.send(list, WM_BUTTON1DOWN, mp1, kc << 16);
+        fx.send(list, WM_BUTTON1UP, mp1, kc << 16);
+    }
+
+    #[test]
+    fn multiple_selection_list_toggles_items_by_click_and_space() {
+        let fx = fixture();
+        let list = list_with(&fx, 3);
+        fx.with(list, |w| w.style |= LS_MULTIPLESEL);
+        press_row(&fx, list, 0, 0);
+        press_row(&fx, list, 2, 0);
+        assert_eq!(all_selected(&fx, list), [0, 2]);
+        press_row(&fx, list, 0, 0);
+        assert_eq!(all_selected(&fx, list), [2]);
+        let selects = fx.posted().iter().filter(|m| m.2 == control_msg(ID_LIST, LN_SELECT)).count();
+        assert_eq!(selects, 3, "one LN_SELECT per toggle");
+
+        // Arrow keys move only the cursor; Space toggles the cursor item.
+        assert_eq!(fx.vkey(list, VK_UP), 1);
+        // LIT_CURSOR asks for the cursor item, as a SHORT or a LONG.
+        assert_eq!(fx.send(list, LM_QUERYSELECTION, LIT_CURSOR as u32 & 0xFFFF, 0), 0);
+        assert_eq!(fx.send(list, LM_QUERYSELECTION, LIT_CURSOR as u32, 0), 0);
+        assert_eq!(all_selected(&fx, list), [2]);
+        assert_eq!(fx.vkey(list, VK_SPACE), 1);
+        assert_eq!(all_selected(&fx, list), [0, 2]);
+        // The typed character of the same key is swallowed, not toggled again.
+        fx.type_text(list, " ");
+        assert_eq!(all_selected(&fx, list), [0, 2]);
+        assert!(fx.posted().iter().all(|m| m.1 != WM_CHAR), "Space is the list's own key");
+
+        // LM_SELECTITEM adds and removes items without touching the others.
+        assert_eq!(fx.send(list, LM_SELECTITEM, 1, 1), 1);
+        assert_eq!(all_selected(&fx, list), [0, 1, 2]);
+        assert_eq!(fx.send(list, LM_SELECTITEM, 0, 0), 1);
+        assert_eq!(all_selected(&fx, list), [1, 2]);
+
+        // Both selected rows are highlighted, and the cursor row is outlined.
+        assert_eq!(fx.drawn_fills(list, CONTROL_SELECT_COLOR).len(), 2);
+        let outlines = fx.paint(list).into_iter().filter(|op| matches!(op,
+            DrawOp::Box { fill: false, color, .. } if *color == CONTROL_EMPHASIS_COLOR)).count();
+        assert_eq!(outlines, 1);
+        assert_eq!(fx.send(list, LM_SELECTITEM, LIT_NONE as u32, 0), 1);
+        assert_eq!(all_selected(&fx, list), Vec::<i32>::new());
+    }
+
+    #[test]
+    fn extended_selection_list_selects_ranges_with_shift_and_toggles_with_ctrl() {
+        let fx = fixture();
+        let list = list_with(&fx, 6);
+        fx.with(list, |w| w.style |= LS_EXTENDEDSEL);
+        press_row(&fx, list, 0, 0);
+        press_row(&fx, list, 2, KC_SHIFT);
+        assert_eq!(all_selected(&fx, list), [0, 1, 2]);
+        press_row(&fx, list, 1, KC_CTRL);
+        assert_eq!(all_selected(&fx, list), [0, 2]);
+        press_row(&fx, list, 1, 0);
+        assert_eq!(all_selected(&fx, list), [1]);
+        // Shift+Down extends from the anchor and scrolls along.
+        for _ in 0..4 {
+            shift_vkey(&fx, list, VK_DOWN);
+        }
+        assert_eq!(all_selected(&fx, list), [1, 2, 3, 4, 5]);
+        assert_eq!(fx.with(list, |w| w.top_row), 3);
+        fx.vkey(list, VK_HOME);
+        assert_eq!(all_selected(&fx, list), [0], "a plain move selects one item");
+        // Dragging extends the range from the press.
+        let at = |row: usize| 50 | (((control_row_y(LIST_RECT.3, row) + 5) as u32) << 16);
+        fx.send(list, WM_BUTTON1DOWN, at(0), 0);
+        fx.send(list, WM_MOUSEMOVE, at(2), 0);
+        fx.send(list, WM_BUTTON1UP, at(2), 0);
+        assert_eq!(all_selected(&fx, list), [0, 1, 2]);
+    }
+
+    #[test]
     fn listbox_arrow_keys_move_the_selection_and_scroll() {
         let fx = fixture();
         let list = list_with(&fx, 6);
@@ -1816,6 +2053,113 @@ mod tests {
         // The entry-field message does not apply to an MLE.
         assert_eq!(fx.send(mle, EM_SETREADONLY, 0, 0), 0);
         assert_eq!(fx.send(mle, MLM_QUERYREADONLY, 0, 0), 1);
+    }
+
+    // ── caret blink ──────────────────────────────────────────────────────
+
+    #[test]
+    fn tid_cursor_timers_blink_the_caret_and_input_shows_it() {
+        let fx = fixture();
+        let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, "abc");
+        let other = fx.add(CLASS_ENTRYFIELD, ID_ENTRY + 1, (10, 150, 200, 25), "x");
+        fx.click(entry, 2, 5);
+        let blink = |h: u32| fx.send(h, WM_TIMER, TID_CURSOR, 0);
+        assert_eq!(fx.caret_bars(entry).len(), 1);
+        blink(entry);
+        assert!(fx.caret_bars(entry).is_empty(), "off phase");
+        blink(entry);
+        assert_eq!(fx.caret_bars(entry).len(), 1, "on again");
+        blink(entry);
+        fx.type_text(entry, "d");
+        assert_eq!(fx.caret_bars(entry).len(), 1, "typing shows the caret at once");
+        blink(entry);
+        fx.vkey(entry, VK_LEFT);
+        assert_eq!(fx.caret_bars(entry).len(), 1, "so does a movement key");
+        // Only the focus window blinks; another keeps its caret on for later.
+        blink(other);
+        assert!(!fx.with(other, |w| w.caret_off));
+        blink(entry);
+        fx.click(other, 2, 5);
+        blink(other);
+        fx.click(entry, 2, 5);
+        assert_eq!(fx.caret_bars(entry).len(), 1, "regaining the focus shows the caret");
+        // Other timers are the owner's business, not the caret's.
+        fx.send(entry, WM_TIMER, 1, 0);
+        assert_eq!(fx.caret_bars(entry).len(), 1);
+    }
+
+    #[test]
+    fn caret_blink_timers_go_to_a_focused_text_control_and_do_not_pile_up() {
+        let fx = fixture();
+        let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, "abc");
+        let list = list_with(&fx, 2);
+        let post = || fx.loader.shared.window_mgr.lock_or_recover().post_caret_blink();
+        assert_eq!(post(), None, "no focus window");
+        fx.click(list, 50, 0);
+        fx.posted();
+        assert_eq!(post(), None, "a list box has no caret");
+        fx.click(entry, 2, 5);
+        fx.posted();
+        assert_eq!(post(), Some(entry));
+        assert_eq!(post(), Some(entry));
+        assert_eq!(fx.posted(), vec![(entry, WM_TIMER, TID_CURSOR, 0)], "one pending at a time");
+        fx.with(entry, |w| w.style |= WS_DISABLED);
+        assert_eq!(post(), None, "a disabled field does not blink");
+    }
+
+    // ── word wrap ────────────────────────────────────────────────────────
+
+    #[test]
+    fn mle_word_wrap_paints_rows_that_fit_and_can_be_switched_off() {
+        let fx = fixture();
+        let (mx, _, mcx, mcy) = MLE_RECT;
+        let text = "The quick brown fox jumps over the lazy dog";
+        let mle = fx.add(CLASS_MLE, ID_MLE, MLE_RECT, text);
+        let rows = |fx: &Fixture| fx.drawn_texts(mle).into_iter().map(|t| t.2).collect::<Vec<_>>();
+        let one_clipped_row = |rows: Vec<String>| rows.len() == 1 && text.starts_with(rows[0].as_str());
+        assert!(one_clipped_row(rows(&fx)), "no wrap by default");
+        assert_eq!(fx.send(mle, MLM_QUERYWRAP, 0, 0), 0);
+
+        assert_eq!(fx.send(mle, MLM_SETWRAP, 1, 0), 1);
+        assert_eq!(fx.send(mle, MLM_QUERYWRAP, 0, 0), 1);
+        let wrapped = rows(&fx);
+        assert!(wrapped.len() > 1, "{wrapped:?}");
+        assert_eq!(wrapped.concat(), text, "rows split the text without losing any of it");
+        let room = mcx - 2 * CONTROL_TEXT_INSET - CARET_W;
+        for row in &wrapped {
+            assert!(system_width(row.trim_end()) <= room, "{row:?} is wider than {room}");
+            assert!(row.ends_with(' ') || row.ends_with("dog"), "{row:?} breaks after a space");
+        }
+        let texts = fx.drawn_texts(mle);
+        assert_eq!(texts[1].0, mx + CONTROL_TEXT_INSET, "every row starts at the left edge");
+        assert_eq!(texts[1].1, MLE_RECT.1 + control_row_y(mcy, 1));
+
+        // Down moves by rows; the caret is reported on its row.
+        fx.click(mle, 1, control_row_y(mcy, 0) + 3);
+        assert_eq!(fx.caret(mle), 0);
+        fx.vkey(mle, VK_DOWN);
+        assert_eq!(fx.caret(mle), wrapped[0].chars().count());
+        assert_eq!(fx.with(mle, |w| edit_buffer(w, true).caret_line()), (1, 0));
+
+        fx.send(mle, MLM_SETWRAP, 0, 0);
+        assert!(one_clipped_row(rows(&fx)));
+        // The entry-field and list-box classes ignore the MLE message.
+        let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, "x");
+        assert_eq!(fx.send(entry, MLM_SETWRAP, 1, 0), 0);
+        assert_eq!(fx.with(entry, |w| w.style & MLS_WORDWRAP), 0);
+    }
+
+    #[test]
+    fn mle_word_wrap_style_rewraps_as_text_is_typed() {
+        let fx = fixture();
+        let mle = fx.add(CLASS_MLE, ID_MLE, MLE_RECT, "");
+        fx.with(mle, |w| w.style |= MLS_WORDWRAP);
+        fx.click(mle, 1, control_row_y(MLE_RECT.3, 0) + 3);
+        fx.type_text(mle, "aaaa bbbb cccc dddd eeee ffff gggg hhhh");
+        let lines = fx.with(mle, |w| edit_buffer(w, true).lines().len());
+        assert!(lines > 1, "typing past the edge starts a new row");
+        assert_eq!(fx.with(mle, |w| w.edit_scroll), 0, "no horizontal scroll while wrapping");
+        assert_eq!(fx.text(mle), "aaaa bbbb cccc dddd eeee ffff gggg hhhh", "no line breaks are inserted");
     }
 
     // ── dragging past the edge ───────────────────────────────────────────

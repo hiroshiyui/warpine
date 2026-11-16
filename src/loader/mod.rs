@@ -6,6 +6,7 @@ pub mod managers;
 pub mod ipc;
 pub mod pm_types;
 pub mod pm_edit;
+pub mod pm_list;
 mod pm_controls;
 mod pm_dialog;
 pub mod vfs;
@@ -455,6 +456,15 @@ impl Loader {
             None    => return ApiResult::Normal(0),
         };
 
+        // The second press of a double click: a list box selects and tells
+        // its owner LN_ENTER; every other built-in control treats it as a press.
+        if msg == WM_BUTTON1DBLCLK {
+            if class_name == pm_controls::CLASS_LISTBOX {
+                return self.listbox_double_click(hwnd, cy, mp1, mp2);
+            }
+            return self.dispatch_builtin_control(hwnd, WM_BUTTON1DOWN, mp1, mp2);
+        }
+
         match msg {
             WM_PAINT => {
                 let frame_hwnd = self.shared.window_mgr.lock_or_recover().find_frame_for_hwnd(hwnd);
@@ -689,6 +699,18 @@ impl Loader {
             MLM_SETREADONLY if class_name == pm_controls::CLASS_MLE => {
                 self.edit_set_read_only(hwnd, mp1 & 0xFFFF != 0)
             }
+            WM_TIMER if mp1 == TID_CURSOR && pm_controls::is_edit_control(&class_name) => {
+                self.edit_caret_blink(hwnd)
+            }
+
+            MLM_SETWRAP if class_name == pm_controls::CLASS_MLE => {
+                self.mle_set_wrap(hwnd, mp1 & 0xFFFF != 0)
+            }
+            MLM_QUERYWRAP if class_name == pm_controls::CLASS_MLE => {
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let style = wm.get_window(hwnd).map_or(0, |w| w.style);
+                ApiResult::Normal((style & MLS_WORDWRAP != 0) as u32)
+            }
             EM_QUERYREADONLY | MLM_QUERYREADONLY if pm_controls::is_edit_control(&class_name) => {
                 let wm = self.shared.window_mgr.lock_or_recover();
                 let style = wm.get_window(hwnd).map_or(0, |w| w.style);
@@ -718,12 +740,9 @@ impl Loader {
                         win.listbox_items.len() as u32 - 1
                     } else {
                         win.listbox_items.insert(idx as usize, item_text);
-                        // The selected item keeps its selection when it is
-                        // pushed down by an item inserted at or before it.
-                        if let Some(sel) = win.listbox_sel.as_mut()
-                            && *sel >= idx as usize {
-                            *sel += 1;
-                        }
+                        // Selected items keep their selection when they are
+                        // pushed down by an item inserted at or before them.
+                        win.listbox_sel.inserted(idx as usize);
                         idx as u32
                     }
                 };
