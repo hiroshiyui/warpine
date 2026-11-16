@@ -623,6 +623,31 @@ fn gui_pm_list_test_selects_with_mouse_and_keyboard() {
     assert_scripted_checks_pass("samples/pm_list_test/pm_list_test.exe", "pm_list_test", 13, &steps);
 }
 
+/// Built-in controls follow their frame when it is dragged: the
+/// pm_list_test window is moved by (+100, +100) by its title bar, then
+/// [`LIST_TEST_STEPS`] are replayed 100 px further right and down. Every
+/// click must land on the same list rows as without the move.
+#[test]
+fn gui_controls_follow_a_dragged_window() {
+    let moved = shift_script(LIST_TEST_STEPS, 1000, 100, 100);
+    let steps = format!("500 drag 300 42 400 142\n{moved}4600 key f3\n9000 quit\n");
+    assert_scripted_checks_pass("samples/pm_list_test/pm_list_test.exe", "pm_list_test", 13, &steps);
+}
+
+/// `steps` (one GUI script step per line) delayed by `dt` ms with the
+/// coordinates of every click moved by `(dx, dy)`.
+fn shift_script(steps: &str, dt: u64, dx: i32, dy: i32) -> String {
+    steps.lines().map(|line| {
+        let mut words: Vec<String> = line.split_whitespace().map(str::to_string).collect();
+        words[0] = (words[0].parse::<u64>().unwrap() + dt).to_string();
+        if words[1].ends_with("click") {
+            words[2] = (words[2].parse::<i32>().unwrap() + dx).to_string();
+            words[3] = (words[3].parse::<i32>().unwrap() + dy).to_string();
+        }
+        words.join(" ") + "\n"
+    }).collect()
+}
+
 /// The lists of pm_list_test after [`LIST_TEST_STEPS`]: several items
 /// highlighted in the multiple and extended lists, one in the single list,
 /// and the MLE text wrapped at word boundaries.

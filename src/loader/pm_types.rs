@@ -978,6 +978,19 @@ impl WindowManager {
         (frame_cx, client_cy)
     }
 
+    /// Move `frame` so its bottom-left corner is at desktop `(x, y)` (a title
+    /// bar drag), kept partly on the desktop: at least
+    /// `FRAME_MIN_VISIBLE_W` pixels of it stay right of the left edge and it
+    /// does not sink below the bottom. Its client and controls are placed
+    /// relative to it and move with it unchanged.
+    pub fn move_frame(&mut self, frame: u32, x: i32, y: i32) {
+        use super::constants::FRAME_MIN_VISIBLE_W;
+        let Some(win) = self.windows.get_mut(&frame) else { return };
+        win.x = x.max(-(win.cx - FRAME_MIN_VISIBLE_W));
+        win.y = y.max(0);
+        self.mark_dirty(frame);
+    }
+
     /// Attach `menu` as the menu bar of `frame` (0 detaches) and re-layout the
     /// frame so the client area no longer overlaps the bar. Returns the
     /// previously attached menu handle.
@@ -1301,6 +1314,33 @@ mod tests {
         let h_client = wm.create_window("TestClient".to_string(), h_frame, 0);
         wm.frame_to_client.insert(h_frame, h_client);
         h_frame
+    }
+
+    #[test]
+    fn moving_a_frame_leaves_its_controls_where_they_are_in_it() {
+        use super::super::constants::FRAME_MIN_VISIBLE_W;
+        let mut wm = WindowManager::new();
+        let frame = make_frame(&mut wm);
+        let client = wm.frame_to_client[&frame];
+        {
+            let w = wm.get_window_mut(frame).unwrap();
+            (w.x, w.y, w.cx, w.cy) = (32, 256, 640, 480);
+        }
+        let entry = wm.create_window("WC_ENTRYFIELD".into(), client, 0);
+        {
+            let w = wm.get_window_mut(entry).unwrap();
+            (w.x, w.y, w.cx, w.cy) = (10, 200, 200, 25);
+            w.visible = true;
+        }
+        let before = wm.get_abs_rect_in_frame(entry);
+        wm.move_frame(frame, 232, 56);
+        assert_eq!(wm.get_window(frame).map(|w| (w.x, w.y)), Some((232, 56)));
+        assert_eq!(wm.get_window(client).map(|w| (w.x, w.y)), Some((0, 0)), "the client stays put in its frame");
+        assert_eq!(wm.get_abs_rect_in_frame(entry), before);
+        assert_eq!(wm.control_at(frame, 20, 210), Some((entry, 10, 10)));
+        // Kept partly on the desktop.
+        wm.move_frame(frame, -5000, -40);
+        assert_eq!(wm.get_window(frame).map(|w| (w.x, w.y)), Some((FRAME_MIN_VISIBLE_W - 640, 0)));
     }
 
     /// A std window with a button, an overlapping entry field created later,

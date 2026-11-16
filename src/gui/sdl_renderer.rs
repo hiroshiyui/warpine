@@ -995,23 +995,9 @@ impl SdlRenderer {
                     let anchor_x = ds.anchor_x;
                     let anchor_y_sdl = ds.anchor_y_sdl;
                     let mut wm = shared.window_mgr.lock_or_recover();
-                    wm.mark_dirty(hwnd); // VDR-B4
-                    if let Some(win) = wm.get_window_mut(hwnd) {
-                        let new_top_y_sdl = y - anchor_y_sdl;
-                        win.x = x - anchor_x;
-                        win.y = dh as i32 - new_top_y_sdl - win.cy;
-                        // Clamp so window is never fully off-screen.
-                        win.x = win.x.max(-(win.cx - 32));
-                        win.y = win.y.max(0);
-                    }
-                    // Also sync client window position.
-                    if let Some(&client) = wm.frame_to_client.get(&hwnd) {
-                        let (fx, fy) = wm.get_window(hwnd).map(|w| (w.x, w.y)).unwrap_or((0, 0));
-                        if let Some(cw) = wm.get_window_mut(client) {
-                            cw.x = fx;
-                            cw.y = fy;
-                        }
-                    }
+                    let cy = wm.get_window(hwnd).map_or(0, |w| w.cy);
+                    let new_top_y_sdl = y - anchor_y_sdl;
+                    wm.move_frame(hwnd, x - anchor_x, dh as i32 - new_top_y_sdl - cy);
                 } else if let Some((control, cx, cy)) = pressed_control_release(shared, x, (dh as i32 - 1) - y) {
                     // A built-in control held with button 1 follows the
                     // pointer (a text control extends its selection).

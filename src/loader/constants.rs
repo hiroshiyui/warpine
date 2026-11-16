@@ -599,6 +599,9 @@ pub fn default_frame_pos(n: usize, cx: i32, cy: i32, desktop: (u32, u32)) -> (i3
 // VDR chrome dimensions, shared by the compositor and WinQuerySysValue.
 /// Height of the title bar chrome in desktop pixels.
 pub const CHROME_TITLE_H: i32 = 20;
+/// Width of a frame that a title-bar drag keeps on the desktop past its
+/// left edge.
+pub const FRAME_MIN_VISIBLE_W: i32 = 32;
 /// Width of the frame border in desktop pixels (each side).
 pub const CHROME_BORDER_W: i32 = 2;
 
