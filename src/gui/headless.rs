@@ -65,8 +65,8 @@ mod tests {
         let (tx, rx) = create_gui_channel();
         let mut renderer = HeadlessRenderer::new();
 
-        tx.send(GUIMessage::ClearBuffer { handle: 1 }).unwrap();
-        tx.send(GUIMessage::PresentBuffer { handle: 1 }).unwrap();
+        tx.send(GUIMessage::SetClipboardText("x".into())).unwrap();
+        tx.send(GUIMessage::SetMouseCapture(0)).unwrap();
         // Signal exit so the loop terminates after draining.
         drop(tx);
         renderer.keep_running = false;
@@ -114,17 +114,12 @@ mod tests {
         let (tx, rx) = create_gui_channel();
         let mut renderer = HeadlessRenderer::new();
 
-        tx.send(GUIMessage::CreateWindow {
-            class: "WC_FRAME".into(), title: "Test".into(), handle: 42,
-        }).unwrap();
-        tx.send(GUIMessage::DrawBox {
-            handle: 42, x1: 0, y1: 0, x2: 10, y2: 10, color: 0xFF0000, fill: true,
-        }).unwrap();
-        tx.send(GUIMessage::DrawLine {
-            handle: 42, x1: 0, y1: 0, x2: 5, y2: 5, color: 0x00FF00,
-        }).unwrap();
-        tx.send(GUIMessage::DrawText {
-            handle: 42, x: 0, y: 0, text: "hi".into(), color: 0x0000FF,
+        tx.send(GUIMessage::SetClipboardText("hi".into())).unwrap();
+        tx.send(GUIMessage::SetMouseCapture(42)).unwrap();
+        tx.send(GUIMessage::SetMouseCapture(0)).unwrap();
+        let (reply_tx, _reply_rx) = std::sync::mpsc::sync_channel::<u32>(1);
+        tx.send(GUIMessage::ShowMessageBox {
+            caption: "c".into(), text: "t".into(), style: 0, reply_tx,
         }).unwrap();
         drop(tx);
         renderer.keep_running = false;

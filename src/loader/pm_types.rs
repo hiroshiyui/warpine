@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex, Condvar};
 use std::sync::atomic::AtomicBool;
 use std::thread;
 use crate::gui::font::FontSpec;
+use crate::gui::surface::{SharedSurface, Surface};
+use super::mutex_ext::MutexExt;
 
 /// Type alias for the timer map to reduce type complexity.
 pub type TimerMap = HashMap<(u32, u32), (Arc<AtomicBool>, Option<thread::JoinHandle<()>>)>;
@@ -90,9 +92,9 @@ pub struct PresentationSpace {
     pub color: u32,
     /// Background colour, stored as 0x00RRGGBB.
     pub back_color: u32,
-    /// Foreground mix mode (FM_* — e.g. FM_OVERPAINT = 6).
+    /// Foreground mix mode (`FM_*`, set by `GpiSetMix`).
     pub mix_mode: u32,
-    /// Background mix mode (BM_* — e.g. BM_OVERPAINT = 6).
+    /// Background mix mode (`BM_*`, set by `GpiSetBackMix`).
     pub back_mix: u32,
     /// Current logical character set (LCID) selected via GpiSetCharSet.
     pub char_set: u32,
@@ -186,6 +188,10 @@ pub struct WindowManager {
     /// Any non-empty dirty set causes the next compositor tick to recomposite the
     /// full desktop; an empty set allows the tick to be skipped entirely.
     pub dirty: HashSet<u32>,
+    /// Frame (or dialog) window → the surface its client area is drawn into.
+    /// API threads draw into it directly; the compositor reads it. See
+    /// `gui::surface` for the locking rule.
+    pub surfaces: HashMap<u32, SharedSurface>,
 }
 
 impl Default for WindowManager {
@@ -217,6 +223,7 @@ impl WindowManager {
             focused_hwnd: 0,
             focus_hwnd: 0,
             dirty: HashSet::new(),
+            surfaces: HashMap::new(),
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
@@ -274,8 +281,8 @@ impl WindowManager {
             hwnd,
             color: 0x00000000,     // CLR_BLACK — default foreground
             back_color: 0x00FFFFFF, // CLR_WHITE — default background
-            mix_mode: 6,            // FM_OVERPAINT
-            back_mix: 6,            // BM_OVERPAINT
+            mix_mode: super::constants::FM_OVERPAINT,
+            back_mix: super::constants::BM_LEAVEALONE,
             char_set: 0,
             char_box: (0, 0),
             log_fonts: HashMap::new(),
@@ -505,6 +512,35 @@ impl WindowManager {
     }
 
     // ── Z-order helpers ──────────────────────────────────────────────────────
+
+    // ── Drawing surfaces ─────────────────────────────────────────────────────
+
+    /// The surface `frame` is drawn into, created on first use (dialogs are
+    /// first drawn without having been created as standard windows). A new
+    /// surface covers the frame below its title bar and menu bar, or the
+    /// whole desktop while the window has no size yet. `None` for handles
+    /// that are not windows.
+    pub fn frame_surface(&mut self, frame: u32) -> Option<SharedSurface> {
+        if let Some(s) = self.surfaces.get(&frame) {
+            return Some(s.clone());
+        }
+        let win = self.windows.get(&frame)?;
+        let (w, h) = if win.cx > 0 && win.cy > 0 {
+            (win.cx as u32, (win.cy - self.frame_chrome_top_h(frame)).max(1) as u32)
+        } else {
+            super::constants::desktop_size()
+        };
+        let s = Surface::shared(w, h);
+        self.surfaces.insert(frame, s.clone());
+        Some(s)
+    }
+
+    /// Resize the surface of `hwnd`, if it has one, keeping its content.
+    pub fn resize_surface(&self, hwnd: u32, width: i32, height: i32) {
+        if let Some(s) = self.surfaces.get(&hwnd) {
+            s.lock_or_recover().resize(width.max(1) as u32, height.max(1) as u32);
+        }
+    }
 
     /// VDR-B4: mark an HWND (frame or client) as visually dirty.
     /// The compositor will recomposite the full desktop on its next frame;

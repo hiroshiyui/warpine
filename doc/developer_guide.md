@@ -349,14 +349,14 @@ The Presentation Manager (PM) is OS/2's GUI subsystem. Warpine implements it usi
 
 - **CLI apps (SDL2 text window)** — default for apps that do not import `PMWIN`. The vCPU runs on a worker thread. `Sdl2TextRenderer` runs `run_text_loop()` on the main thread (required by SDL2), rendering a 640×400 VGA text window.
 - **CLI apps (terminal / headless)** — `WARPINE_HEADLESS=1`. The vCPU runs on the main thread; terminal ANSI output and raw-mode keyboard are used.
-- **PM apps** — SDL2 event loop runs on the main thread. The vCPU is spawned on a worker thread. Communication between the vCPU thread and the GUI thread happens via a channel (`GUISender` / `GUIReceiver`).
+- **PM apps** — SDL2 event loop runs on the main thread. The vCPU is spawned on a worker thread. Drawing goes through shared per-frame surfaces (see Rendering Pipeline); the few requests only the GUI thread can carry out — host clipboard, mouse capture, message boxes — go through a channel (`GUISender` / `GUIReceiver`).
 
 ### Window Lifecycle
 
 1. **WinInitialize** — Returns a handle to the anchor block (HAB).
 2. **WinCreateMsgQueue** — Creates a `PM_MsgQueue` and maps the calling thread to it.
 3. **WinRegisterClass** — Stores a `WindowClass` with the guest's window procedure address.
-4. **WinCreateStdWindow** — Sends a `GUIMessage::CreateWindow` to the GUI thread (which creates the actual SDL2 window), creates frame and client `OS2Window` entries in the `WindowManager`, and returns the frame HWND.
+4. **WinCreateStdWindow** — Creates frame and client `OS2Window` entries in the `WindowManager` and the frame's drawing surface (from then on the compositor shows the frame), and returns the frame HWND.
 5. **WinGetMsg** — Blocks on the message queue condvar until a message is available. Returns FALSE on WM_QUIT (ending the message loop).
 6. **WinDispatchMsg** — Invokes the guest's window procedure via the callback mechanism (see below).
 7. **WinDestroyMsgQueue / WinTerminate** — Cleanup.
@@ -366,31 +366,38 @@ The Presentation Manager (PM) is OS/2's GUI subsystem. Warpine implements it usi
 Drawing in PM uses Presentation Spaces (HPS):
 
 1. **WinBeginPaint** — Creates or retrieves an HPS for the window.
-2. **GpiSetColor / GpiMove / GpiLine / GpiBox / GpiCharStringAt** — Modify the presentation space state and send `GUIMessage::Draw*` commands to the GUI thread.
-3. **WinEndPaint** — Sends `GUIMessage::PresentBuffer` to flush the framebuffer to the screen.
+2. **GpiSetColor / GpiSetMix / GpiMove / GpiLine / GpiBox / GpiSetPel / GpiCharStringAt** — Update the presentation space state and draw, on the calling thread, into the surface of the frame the window belongs to.
+3. **WinEndPaint** — Repaints the window's built-in controls on top and marks the frame dirty.
 
-The GUI thread (`run_pm_loop` in `src/gui/renderer.rs`, backend `Sdl2Renderer` in `src/gui/sdl2_renderer.rs`) draws each message into the window's `FrameBuffer`, then redraws the changed parts of the desktop buffer from the frame buffers and their chrome, uploads those parts to an SDL2 streaming texture and presents it.
+The GUI thread (`run_pm_loop` in `src/gui/renderer.rs`, backend `Sdl2Renderer` in `src/gui/sdl2_renderer.rs`) redraws the changed parts of the desktop buffer from the frame surfaces and their chrome, uploads those parts to an SDL2 streaming texture and presents it.
+
+**Surfaces.** `src/gui/surface.rs`: each frame or dialog has a `Surface` (its client-area pixels, 0x00RRGGBB, top row first) in `WindowManager::surfaces`, shared as `Arc<Mutex<Surface>>`. API threads draw into it directly with `DrawOp`s — `Box`, `Line`, `Text` (system font, line-box bottom at `y`), `TextFont` (GPI, baseline at `y`), `Pel`, `Clear` — through `Loader::draw` (or a `Painter` for built-in controls), in PM coordinates (bottom-left origin, corners inclusive), clipped to the surface.
+
+- *Read-back and mixes.* Because pixels exist as soon as the call returns, `GpiQueryPel` reads them back, and drawing honours the presentation space's foreground mix (`Mix`, the 16 `FM_*` raster operations of `GpiSetMix`: overpaint, XOR, invert, AND, OR…). Overpainted text is anti-aliased; text drawn with another mix uses whole pels (coverage ≥ 50 %) so XOR text can be undone. `GpiQueryPel` returns the default colour-table index of the pel when one matches (`CLR_BLACK` for black) and the RGB value otherwise, and `CLR_NOINDEX` outside the surface; there are no logical colour tables (`GpiCreateLogColorTable`) yet. The background mix (`GpiSetBackMix`) is stored but nothing draws a background yet.
+- *Locking.* `Loader::draw` takes the window-manager lock, gets or creates the surface (`WindowManager::frame_surface`; dialogs get theirs on first draw), locks it, marks the frame dirty, releases the window-manager lock and draws. Marking dirty while the surface is locked means a composite that picks up the mark waits for the drawing to finish. The window-manager lock may be held while locking a surface, never the reverse, so the API threads and the compositor cannot deadlock.
+- *Untrusted coordinates.* Coordinates come from the guest. Lines are clipped to the surface (Liang–Barsky) before Bresenham runs, box corners are clamped to one pel outside it, text positions to ±2²⁴, and surfaces to `MAX_SURFACE_DIM` (8192) per side; `WinSetWindowPos` and `WinCreateWindow` bound window positions and sizes to ±`MAX_WINDOW_COORD` (2²⁰). Nothing a guest passes can overflow the arithmetic or make one call run for long.
+- *Size.* A surface covers the frame below its title bar and menu bar. `WinSetWindowPos` (`SWP_SIZE`), attaching a menu and interactive resizing resize it with `WindowManager::resize_surface`; `Surface::resize` keeps the bottom-left part of the old content (PM's origin), so an interactive resize shows the old picture until the application repaints instead of a blank window. `WinDestroyWindow` drops the surface.
+- *Tests.* In test builds a surface can record the operations applied to it (`Surface::record`), so tests check what was drawn as well as the pixels.
 
 **Compositing.** The desktop buffer keeps its pixels between frames; `composite_and_present` redraws only the *damage*:
 
 - *Damage.* The windows marked dirty since the last composite (`WindowManager::dirty`, taken under the lock) are mapped to the frame that draws them (`owning_frame`: the window itself, the frame of a client, or the frame above a control). For each such frame, and for each frame whose extent (frame plus open pull-down) or chrome changed, both the old and the new extent are damaged; so is the old extent of a frame that was hidden or removed. `src/gui/damage.rs` clips the rectangles to the desktop and merges touching ones, collapsing to one bounding box past `MAX_DAMAGE_RECTS` (8). Start-up, a host resize and an `Exposed` event redraw the whole desktop (`force_full`).
-- *Redraw.* Each damaged rectangle is filled with the desktop colour and the frames reaching into it are drawn back-to-front, clipped to it (`draw_placed_frame`): client frame buffer, title bar, border, menu bar, pull-down. A frame is skipped where an *opaque* frame above — one whose frame buffer covers its whole client area — hides it. Pixels are copied a row slice at a time (`blit_clipped`, `fill_clipped`).
+- *Redraw.* Each damaged rectangle is filled with the desktop colour and the frames reaching into it are drawn back-to-front, clipped to it (`draw_placed_frame`): client surface, title bar, border, menu bar, pull-down. Frames are shown once they have a surface. Each surface is locked only while it is copied. A frame is skipped where an *opaque* frame above — one whose surface covers its whole client area — hides it. Pixels are copied a row slice at a time (`blit_clipped`, `fill_clipped`).
 - *Chrome cache.* Title bars, menu bars and open pull-downs are rendered into per-frame pixmaps (`ChromeCache`) and re-rendered only when the title, width, flags, focus or menu change; the window state is compared with the cached copy under the lock without allocating.
 - *Upload.* Only damaged rectangles are uploaded, with `Texture::update` straight from the desktop buffer. Do not use `Texture::with_lock` with a rectangle: sdl2 0.38 hands SDL a pointer to a dropped temporary, which crashes optimised builds.
-- *Resizing.* `FrameBuffer::resize` keeps the bottom-left part of the old content (PM's origin), so an interactive resize shows the old picture until the application repaints instead of a blank window.
 - *Text.* `font.rs` caches each character's resolved face, advance and coverage bitmap in a per-thread cache (`with_glyph`), so measuring and drawing text takes no lock.
 
 **Event loop.** Each pass rearms the channel's wake-up, drains queued `GUIMessage`s, handles input, composites if due, then blocks in `PmRenderer::wait_for_work`:
 
-- *Waking.* `GUISender::send` and `WindowManager::mark_dirty`/`mark_all_dirty` call `GuiWake::wake` (`src/gui/message.rs`), so a draw from the guest thread or a window moved by `WinSetWindowPos` ends the wait. Wake-ups are coalesced: only the first after each rearm reaches the hook.
+- *Waking.* `GUISender::send` and `WindowManager::mark_dirty`/`mark_all_dirty` call `GuiWake::wake` (`src/gui/message.rs`), so a draw from the guest thread (every draw marks its frame dirty) or a window moved by `WinSetWindowPos` ends the wait. Wake-ups are coalesced: only the first after each rearm reaches the hook.
 - *How it blocks.* With a real video driver, `Sdl2Renderer` waits in `SDL_WaitEventTimeout` and the wake hook pushes an SDL user event, so input and wake-ups end the same wait. SDL's `dummy` and `offscreen` drivers have no input to block on (SDL would poll inside its wait), so there the loop waits on the `GuiWake` condition variable instead (`driver_can_wait`).
 - *How long.* `wait_timeout()` picks the earliest of: the next frame when a composite is owed (`FRAME_INTERVAL`, 16 ms), the next scripted GUI step, and `IDLE_WAIT` (100 ms), which bounds how long state changes that arrive without a wake-up — such as `exit_requested` — go unnoticed.
-- *Coalesced presents.* `PresentBuffer` only marks the window dirty; `poll_events` composites at most once per `FRAME_INTERVAL`, so a paint cycle that presents several times costs one composite.
+- *Coalesced composites.* Drawing, `WinEndPaint` and `WinUpdateWindow` only mark the frame dirty; `poll_events` composites at most once per `FRAME_INTERVAL`, so a paint cycle of many primitives costs one composite (or a few, if it spans frame intervals — drawing outside `WinBeginPaint` shows up too).
 - *Clipboard.* The host clipboard is read once at start-up and again on SDL `ClipboardUpdate` and `FocusGained` events, not on every pass.
 
 **Frame statistics.** `src/gui/frame_stats.rs` counts loop passes and composites (average and maximum composite time, present time, share of the desktop redrawn) and logs a summary every 5 s at debug level: `RUST_LOG=warpine::gui=debug`. Use it to measure rendering changes.
 
-**Guest-side benchmark.** `samples/pm_bench` measures what an application sees: GPI calls issued per second inside a paint, `WinSendMsg` and `WinPostMsg` round trips, `WinInvalidateRect` → `WM_PAINT` cycles, and the `WM_TIMER` rate of a 10 ms timer, each timed with `DosQuerySysInfo(QSV_MS_COUNT)`. GPI calls only queue drawing for the GUI thread, so its GPI figures are the cost of the calls, not of rasterising them; read them together with the frame statistics. To compare two builds without a display:
+**Guest-side benchmark.** `samples/pm_bench` measures what an application sees: GPI calls issued per second inside a paint, `WinSendMsg` and `WinPostMsg` round trips, `WinInvalidateRect` → `WM_PAINT` cycles, and the `WM_TIMER` rate of a 10 ms timer, each timed with `DosQuerySysInfo(QSV_MS_COUNT)`. GPI calls rasterise on the calling thread, so its GPI figures include drawing the pixels (compositing is on the GUI thread; read it from the frame statistics). `samples/pm_pel_test` checks read-back and mix modes from the guest side (`GpiSetPel`/`GpiBox`/`GpiLine` → `GpiQueryPel`, XOR / invert / leave-alone). To compare two builds without a display:
 
 ```bash
 printf '4500 quit\n' > /tmp/bench.script
@@ -434,9 +441,9 @@ binary. The VIO text-mode console is separate and keeps its 8×16 bitmap font.
   the CJK faces in an order chosen by the active codepage (CP932 → JP first,
   CP936 → SC, CP949 → KR, CP950 → TC), then the GNU Unifont bitmap tables.
   CJK glyphs are scaled to the Latin face's em size so mixed text lines up.
-- **Coordinates.** `GUIMessage::DrawText` positions system-font text by the
+- **Coordinates.** `DrawOp::Text` positions system-font text by the
   bottom of its 16-px line box (used by built-in controls);
-  `GUIMessage::DrawTextFont` positions text by its baseline, the GPI
+  `DrawOp::TextFont` positions text by its baseline, the GPI
   convention, and carries the `FontSpec`.
 - **GPI.** `GpiCreateLogFont` registers a `FontSpec` per LCID in
   `PresentationSpace::log_fonts`; `GpiSetCharSet`, `GpiSetCharBox` and
@@ -1132,7 +1139,7 @@ src/
     ne.rs              NE file orchestration (16-bit OS/2 apps, 16 unit tests)
   gui/
     mod.rs             GUI module re-exports; pub use for all renderer types
-    message.rs         GUIMessage channel (PM GUI ↔ renderer communication)
+    message.rs         GUIMessage channel (clipboard, mouse capture, message boxes) + GuiWake
     font.rs            PM typeface: embedded IBM Plex Sans/Mono/Serif + Plex Sans JP/KR/TC/SC
                        (vendor/ibm-plex), FontSpec, text_width(), metrics(), draw_text();
                        fallback chain Latin → CJK (by codepage) → GNU Unifont
@@ -1141,7 +1148,7 @@ src/
     damage.rs          Rect, damage list, clipped row-wise blit/fill for the compositor
     frame_stats.rs     GUI loop / composite timing statistics (debug log every 5 s)
     renderer.rs        PmRenderer trait + run_pm_loop() (PM/GUI SDL2 event loop)
-    render_utils.rs    Geometry helpers (Y-flip, rect/line rendering)
+    surface.rs         Shared per-frame drawing surfaces: Surface, DrawOp, Mix (FM_* raster ops)
     headless.rs        HeadlessRenderer: no-op PM backend for CI
     sdl2_renderer.rs   Sdl2Renderer: PM SDL2 backend; SDL scancode/VK tables; push_msg
     text_renderer.rs   TextModeRenderer trait, VgaTextBuffer, Sdl2TextRenderer,
@@ -1541,7 +1548,7 @@ Memory: `DosAllocMem` / `DosFreeMem`. Filesystem: `DosOpen`/`DosRead`/`DosWrite`
 
 ### Phase 3 — Presentation Manager (GUI)
 
-Dual-path execution: PM apps run the SDL2 event loop on the main thread; CLI apps run the vCPU directly. `GUIMessage` channel carries draw/window commands from vCPU thread to main thread. PMWIN: `WinInitialize`/`WinTerminate`, message queues, `WinRegisterClass`, `WinCreateStdWindow`, `WinGetMsg`/`WinDispatchMsg`, `WinPostMsg`/`WinSendMsg`, `WinDefWindowProc`, `WinBeginPaint`/`WinEndPaint`, `WinMessageBox`, `WinShowWindow`, `WinDestroyWindow`, timers, dialogs (stubs), menus (stubs), clipboard in-process storage, `WinSetWindowPos`, resource loading. PMGPI: `GpiCreatePS`/`GpiDestroyPS`, `GpiSetColor`, `GpiMove`, `GpiBox`, `GpiLine`, `GpiCharStringAt`, `GpiErase`. Callback mechanism: `ApiResult::Callback` for re-entrant guest window-procedure calls via `CALLBACK_RET_TRAP`. Input: `WM_CHAR`, `WM_MOUSEMOVE`, `WM_BUTTON1DOWN`/`UP`, `WM_SIZE`, `WM_CLOSE`. Embedded 8×16 VGA bitmap font for text rendering.
+Dual-path execution: PM apps run the SDL2 event loop on the main thread; CLI apps run the vCPU directly. `GUIMessage` channel carried draw/window commands from vCPU thread to main thread (since replaced by shared surfaces drawn on the vCPU thread). PMWIN: `WinInitialize`/`WinTerminate`, message queues, `WinRegisterClass`, `WinCreateStdWindow`, `WinGetMsg`/`WinDispatchMsg`, `WinPostMsg`/`WinSendMsg`, `WinDefWindowProc`, `WinBeginPaint`/`WinEndPaint`, `WinMessageBox`, `WinShowWindow`, `WinDestroyWindow`, timers, dialogs (stubs), menus (stubs), clipboard in-process storage, `WinSetWindowPos`, resource loading. PMGPI: `GpiCreatePS`/`GpiDestroyPS`, `GpiSetColor`, `GpiMove`, `GpiBox`, `GpiLine`, `GpiCharStringAt`, `GpiErase`. Callback mechanism: `ApiResult::Callback` for re-entrant guest window-procedure calls via `CALLBACK_RET_TRAP`. Input: `WM_CHAR`, `WM_MOUSEMOVE`, `WM_BUTTON1DOWN`/`UP`, `WM_SIZE`, `WM_CLOSE`. Embedded 8×16 VGA bitmap font for text rendering.
 
 ### Phase 3.5 — Text-Mode Application Support (4OS2)
 
@@ -1596,7 +1603,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 693 unit tests (664 warpine + 18 gen_api + 11 lx_link), 19 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 699 unit tests (670 warpine + 18 gen_api + 11 lx_link), 20 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

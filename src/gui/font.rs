@@ -472,11 +472,22 @@ pub fn draw_text(
     buf: &mut [u32], buf_w: usize, buf_h: usize,
     x: i32, baseline: i32, text: &str, color: u32, spec: FontSpec,
 ) -> i32 {
+    draw_text_with(buf, buf_w, buf_h, x, baseline, text, spec, |p, cov| *p = blend(*p, color, cov))
+}
+
+/// Like [`draw_text`], but instead of blending a colour, call `paint` with
+/// each covered pixel and its 8-bit coverage (never 0). Lets callers apply
+/// a raster operation (a GPI mix mode) instead of alpha blending.
+#[allow(clippy::too_many_arguments)]
+pub fn draw_text_with(
+    buf: &mut [u32], buf_w: usize, buf_h: usize,
+    x: i32, baseline: i32, text: &str, spec: FontSpec,
+    mut paint: impl FnMut(&mut u32, u8),
+) -> i32 {
     let buf_h = buf_h.min(buf.len() / buf_w.max(1));
     let mut put = |px: i32, py: i32, cov: u8| {
         if cov != 0 && px >= 0 && py >= 0 && (px as usize) < buf_w && (py as usize) < buf_h {
-            let p = &mut buf[py as usize * buf_w + px as usize];
-            *p = blend(*p, color, cov);
+            paint(&mut buf[py as usize * buf_w + px as usize], cov);
         }
     };
     let mut pen = 0.0f32;

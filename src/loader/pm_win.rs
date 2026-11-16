@@ -12,6 +12,15 @@ use super::constants::*;
 
 // ── Built-in class atom → canonical class name ────────────────────────────────
 
+/// Bound guest-supplied window geometry `(x, y, cx, cy)` to
+/// ±`MAX_WINDOW_COORD` (sizes to `0..=MAX_WINDOW_COORD`), so the arithmetic
+/// on it elsewhere — hit tests, layout, the compositor — cannot overflow.
+fn bound_window_geometry(x: i32, y: i32, cx: i32, cy: i32) -> (i32, i32, i32, i32) {
+    let pos = |v: i32| v.clamp(-MAX_WINDOW_COORD, MAX_WINDOW_COORD);
+    let size = |v: i32| v.clamp(0, MAX_WINDOW_COORD);
+    (pos(x), pos(y), size(cx), size(cy))
+}
+
 /// Resolve a WinCreateWindow `pszClass` argument.
 ///
 /// OS/2 PM encodes built-in class atoms as `MAKEINTATOM(n) = 0xFFFF0000 | n`.
@@ -43,6 +52,7 @@ use super::mutex_ext::MutexExt;
 use super::pm_types::OS2Message;
 use super::ApiResult;
 use crate::gui::GUIMessage;
+use crate::gui::surface::{DrawOp, Mix};
 use crate::lx::header::{RT_STRING, RT_MENU, RT_DIALOG, RT_ACCELTABLE};
 use super::pm_types::MenuItem;
 
@@ -155,9 +165,8 @@ impl super::Loader {
                     wm.z_push_top(h_frame);
                     wm.focused_hwnd = h_frame;
 
-                    if let Some(ref sender) = wm.gui_tx {
-                        let _ = sender.send(GUIMessage::CreateWindow { class: class_name, title, handle: h_frame });
-                    }
+                    // The frame is composited once it has a surface.
+                    wm.frame_surface(h_frame);
 
                     // Post initial WM_PAINT so the guest paints on creation
                     let hmq2 = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
@@ -390,9 +399,7 @@ impl super::Loader {
                 for hwnd_ctl in controls {
                     self.dispatch_builtin_control(hwnd_ctl, WM_PAINT, 0, 0);
                 }
-                if let Some(ref sender) = self.shared.window_mgr.lock_or_recover().gui_tx {
-                    let _ = sender.send(GUIMessage::PresentBuffer { handle: frame_hwnd });
-                }
+                self.shared.window_mgr.lock_or_recover().mark_dirty(frame_hwnd);
                 ApiResult::Normal(1)
             }
             753 => {
@@ -447,9 +454,6 @@ impl super::Loader {
                     win.visible = show;
                 }
                 wm.mark_dirty(hwnd); // VDR-B4
-                if let Some(ref sender) = wm.gui_tx {
-                    let _ = sender.send(GUIMessage::ShowWindow { handle: hwnd, show });
-                }
                 ApiResult::Normal(1)
             }
             840 => {
@@ -477,9 +481,7 @@ impl super::Loader {
                     if wm.frame_to_client.contains_key(&hwnd) {
                         wm.z_remove(hwnd);
                         wm.frame_to_client.remove(&hwnd);
-                        if let Some(ref sender) = wm.gui_tx {
-                            let _ = sender.send(GUIMessage::ShowWindow { handle: hwnd, show: false });
-                        }
+                        wm.surfaces.remove(&hwnd);
                     }
                 }
                 ApiResult::Normal(1)
@@ -749,16 +751,15 @@ impl super::Loader {
                     self.guest_read::<i32>(prcl + 8).unwrap_or(0),
                     self.guest_read::<i32>(prcl + 12).unwrap_or(0),
                 );
-                let wm = self.shared.window_mgr.lock_or_recover();
-                let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
-                let frame_hwnd = wm.client_to_frame(ps_hwnd);
-                if let Some(ref sender) = wm.gui_tx {
-                    let _ = sender.send(GUIMessage::DrawBox {
-                        handle: frame_hwnd,
-                        x1: x_left, y1: y_bottom, x2: x_right, y2: y_top,
-                        color, fill: true,
-                    });
-                }
+                let frame_hwnd = {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    wm.client_to_frame(wm.get_ps_hwnd(hps))
+                };
+                // RECTL is exclusive at the top and right.
+                self.draw(frame_hwnd, DrawOp::Box {
+                    x1: x_left, y1: y_bottom, x2: x_right - 1, y2: y_top - 1,
+                    color, fill: true, mix: Mix::Overpaint,
+                });
                 ApiResult::Normal(1)
             }
             765 => {
@@ -1237,10 +1238,9 @@ impl super::Loader {
                 // WinSetWindowPos(HWND hwnd, HWND hwndInsertBehind, LONG x, LONG y, LONG cx, LONG cy, ULONG fl)
                 let hwnd         = read_stack(4);
                 let hwnd_behind  = read_stack(8);
-                let x  = read_stack(12) as i32;
-                let y  = read_stack(16) as i32;
-                let cx = read_stack(20) as i32;
-                let cy = read_stack(24) as i32;
+                let (x, y, cx, cy) = bound_window_geometry(
+                    read_stack(12) as i32, read_stack(16) as i32,
+                    read_stack(20) as i32, read_stack(24) as i32);
                 let fl = read_stack(28);
                 debug!("  [VCPU {}] WinSetWindowPos hwnd={} behind={} x={} y={} cx={} cy={} fl=0x{:04X}",
                        vcpu_id, hwnd, hwnd_behind, x, y, cx, cy, fl);
@@ -1289,22 +1289,10 @@ impl super::Loader {
                     wm.layout_frame(hwnd)
                 } else { (cx, cy) };
 
-                // Send GUI messages for the actual window operations.
-                if let Some(ref sender) = wm.gui_tx {
-                    if fl & SWP_SIZE != 0 {
-                        let _ = sender.send(GUIMessage::ResizeWindow {
-                            handle: hwnd, width: fb_cx.max(1) as u32, height: fb_cy.max(1) as u32,
-                        });
-                    }
-                    if fl & SWP_MOVE != 0 {
-                        let _ = sender.send(GUIMessage::MoveWindow { handle: hwnd, x, y });
-                    }
-                    if fl & SWP_SHOW != 0 {
-                        let _ = sender.send(GUIMessage::ShowWindow { handle: hwnd, show: true });
-                    }
-                    if fl & SWP_HIDE != 0 {
-                        let _ = sender.send(GUIMessage::ShowWindow { handle: hwnd, show: false });
-                    }
+                // Position and visibility are read by the compositor from
+                // the window; only the surface has to follow a size change.
+                if fl & SWP_SIZE != 0 {
+                    wm.resize_surface(hwnd, fb_cx, fb_cy);
                 }
 
                 ApiResult::Normal(1)
@@ -1372,11 +1360,9 @@ impl super::Loader {
                 // WinUpdateWindow(HWND hwnd)
                 // Trigger a present buffer
                 let hwnd = read_stack(4);
-                let wm = self.shared.window_mgr.lock_or_recover();
+                let mut wm = self.shared.window_mgr.lock_or_recover();
                 let frame_hwnd = wm.client_to_frame(hwnd);
-                if let Some(ref sender) = wm.gui_tx {
-                    let _ = sender.send(GUIMessage::PresentBuffer { handle: frame_hwnd });
-                }
+                wm.mark_dirty(frame_hwnd);
                 ApiResult::Normal(1)
             }
             899 => {
@@ -1395,10 +1381,9 @@ impl super::Loader {
                 let psz_class       = read_stack(8);
                 let psz_name        = read_stack(12);
                 let fl_style        = read_stack(16);
-                let x               = read_stack(20) as i32;
-                let y               = read_stack(24) as i32;
-                let cx              = read_stack(28) as i32;
-                let cy              = read_stack(32) as i32;
+                let (x, y, cx, cy)  = bound_window_geometry(
+                    read_stack(20) as i32, read_stack(24) as i32,
+                    read_stack(28) as i32, read_stack(32) as i32);
                 let hwnd_owner      = read_stack(36);
                 // hwndInsertBehind (+40) — ignored for now
                 let id              = read_stack(44);
@@ -1781,11 +1766,7 @@ impl super::Loader {
         if let (Some(client), Some((cx, cy))) = (client, new_size)
             && old_size != new_size
         {
-            if let Some(ref sender) = wm.gui_tx {
-                let _ = sender.send(GUIMessage::ResizeWindow {
-                    handle: hwnd_frame, width: cx.max(1) as u32, height: cy.max(1) as u32,
-                });
-            }
+            wm.resize_surface(hwnd_frame, cx, cy);
             if let Some(mq_arc) = wm.find_hmq_for_hwnd(client).and_then(|h| wm.get_mq(h)) {
                 let mut mq = mq_arc.lock_or_recover();
                 let mp2 = ((cy as u32 & 0xFFFF) << 16) | (cx as u32 & 0xFFFF);
@@ -1873,6 +1854,16 @@ mod tests {
     use super::super::vm_backend::mock::MockVcpu;
     use super::super::mutex_ext::MutexExt;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn test_window_geometry_is_bounded() {
+        use super::super::constants::MAX_WINDOW_COORD as M;
+        assert_eq!(super::bound_window_geometry(10, -20, 300, 200), (10, -20, 300, 200));
+        assert_eq!(super::bound_window_geometry(i32::MAX, i32::MIN, i32::MAX, -5), (M, -M, M, 0));
+        // x + cx stays far from overflow.
+        let (x, _, cx, _) = super::bound_window_geometry(i32::MAX, 0, i32::MAX, 0);
+        assert!(x.checked_add(cx).is_some());
+    }
 
     fn write_stack(loader: &Loader, esp: u32, args: &[u32]) {
         for (i, &a) in args.iter().enumerate() {

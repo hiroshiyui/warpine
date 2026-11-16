@@ -8,8 +8,9 @@ use log::{debug, warn};
 
 use super::mutex_ext::MutexExt;
 use super::ApiResult;
-use crate::gui::GUIMessage;
+use super::constants::{BM_DESTTRANSPARENT, BM_SRCTRANSPARENT, CLR_BLACK, CLR_NOINDEX, GPI_ERROR, GPI_OK};
 use crate::gui::font::{self, CjkRegion, FontFamily, FontSpec};
+use crate::gui::surface::{DrawOp, Mix};
 
 // ── GpiCreateLogFont return values ────────────────────────────────────────────
 const FONT_DEFAULT: u32 = 1; // no FATTRS given: the system default font was used
@@ -27,6 +28,23 @@ const FATTR_SEL_BOLD:   u16 = 0x0020;
 const MAX_TEXT_BOX_CHARS: i32 = 4096;
 
 const DEVICE_RES: i16 = 96; // device resolution (DPI) reported to apps
+
+// GpiBox / GpiFullArc lControl (<pmgpi.h>)
+const DRO_FILL:        u32 = 1;
+const DRO_OUTLINE:     u32 = 2;
+const DRO_OUTLINEFILL: u32 = 3;
+
+/// Highest colour index of the default logical colour table (CLR_PALEGRAY).
+const MAX_DEFAULT_COLOR_INDEX: u32 = 15;
+
+/// What drawing through a presentation space needs: the frame whose surface
+/// it draws into and the current attributes.
+struct PsTarget {
+    frame: u32,
+    color: u32,
+    mix: Mix,
+    pos: (i32, i32),
+}
 
 // FONTMETRICS byte offsets (OS/2 Warp 4 pmgpi.h, packed struct, no alignment padding)
 const FM_OFF_FAMILYNAME:     u32 = 0;   // STR8[32]
@@ -109,30 +127,10 @@ impl super::Loader {
                     self.guest_read::<i32>(pptl).unwrap_or(0),
                     self.guest_read::<i32>(pptl + 4).unwrap_or(0),
                 );
-                let wm = self.shared.window_mgr.lock_or_recover();
-                if let Some(ps) = wm.ps_map.get(&hps) {
-                    let (x1, y1) = ps.current_pos;
-                    let color = ps.color;
-                    // DRO_FILL=1 (fill only), DRO_OUTLINE=2 (outline only),
-                    // DRO_OUTLINEFILL=3 (fill + outline) — from Open Watcom pmgpi.h
-                    let do_fill    = control == 1 || control == 3;
-                    let do_outline = control == 2 || control == 3;
-                    let hwnd = ps.hwnd;
-                    let frame_hwnd = wm.client_to_frame(hwnd);
-                    if let Some(ref sender) = wm.gui_tx {
-                        if do_fill {
-                            let _ = sender.send(GUIMessage::DrawBox {
-                                handle: frame_hwnd, x1, y1, x2, y2, color, fill: true,
-                            });
-                        }
-                        if do_outline {
-                            let _ = sender.send(GUIMessage::DrawBox {
-                                handle: frame_hwnd, x1, y1, x2, y2, color, fill: false,
-                            });
-                        }
-                    }
-                }
-                ApiResult::Normal(1) // GPI_OK
+                let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
+                let (x1, y1) = t.pos;
+                self.draw_box(&t, (x1, y1, x2, y2), control);
+                ApiResult::Normal(GPI_OK)
             }
             398 => {
                 // GpiLine(HPS hps, PPOINTL pptl)
@@ -142,23 +140,11 @@ impl super::Loader {
                     self.guest_read::<i32>(pptl).unwrap_or(0),
                     self.guest_read::<i32>(pptl + 4).unwrap_or(0),
                 );
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-                if let Some(ps) = wm.ps_map.get(&hps) {
-                    let (x1, y1) = ps.current_pos;
-                    let color = ps.color;
-                    let hwnd = ps.hwnd;
-                    let frame_hwnd = wm.client_to_frame(hwnd);
-                    if let Some(ref sender) = wm.gui_tx {
-                        let _ = sender.send(GUIMessage::DrawLine {
-                            handle: frame_hwnd, x1, y1, x2, y2, color
-                        });
-                    }
-                }
-                // Update current position
-                if let Some(ps) = wm.ps_map.get_mut(&hps) {
-                    ps.current_pos = (x2, y2);
-                }
-                ApiResult::Normal(1) // GPI_OK
+                let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
+                let (x1, y1) = t.pos;
+                self.draw(t.frame, DrawOp::Line { x1, y1, x2, y2, color: t.color, mix: t.mix });
+                self.set_current_pos(hps, (x2, y2));
+                ApiResult::Normal(GPI_OK)
             }
             359 => {
                 // GpiCharStringAt(HPS hps, PPOINTL pptl, LONG lCount, PCH pchString)
@@ -173,40 +159,14 @@ impl super::Loader {
                 let text: Vec<u8> = (0..count).map(|i| {
                     self.guest_read::<u8>(pch + i as u32).unwrap_or(0)
                 }).collect();
-                let cp = self.shared.active_codepage.load(Ordering::Relaxed);
-                let text_str = super::codepage::cp_decode(&text, cp);
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-                let color = wm.ps_map.get(&hps).map(|ps| ps.color).unwrap_or(0);
-                let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
-                let hwnd = wm.client_to_frame(ps_hwnd);
-                // Fix the CJK regional face now: the text is rasterised later on
-                // the GUI thread, by which time the codepage may have changed.
-                let font = FontSpec {
-                    cjk: CjkRegion::from_codepage(cp),
-                    ..wm.ps_map.get(&hps).map_or(FontSpec::SYSTEM, |ps| ps.current_font())
-                };
-                let advance = font::text_width(&text_str, font);
-                if let Some(ref sender) = wm.gui_tx {
-                    let _ = sender.send(GUIMessage::DrawTextFont {
-                        handle: hwnd, x, y, text: text_str, color, font,
-                    });
-                }
-                // Advance the current position by the string's width in its font.
-                if let Some(ps) = wm.ps_map.get_mut(&hps) {
-                    ps.current_pos = (x + advance, y);
-                }
-                ApiResult::Normal(1) // GPI_OK
+                ApiResult::Normal(self.char_string(hps, Some((x, y)), &text))
             }
             389 => {
                 // GpiErase(HPS hps)
                 let hps = read_stack(4);
-                let wm = self.shared.window_mgr.lock_or_recover();
-                let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
-                let frame_hwnd = wm.client_to_frame(ps_hwnd);
-                if let Some(ref sender) = wm.gui_tx {
-                    let _ = sender.send(GUIMessage::ClearBuffer { handle: frame_hwnd });
-                }
-                ApiResult::Normal(1)
+                let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
+                self.draw(t.frame, DrawOp::Clear);
+                ApiResult::Normal(GPI_OK)
             }
 
             358 => {
@@ -218,29 +178,7 @@ impl super::Loader {
                 let text: Vec<u8> = (0..count)
                     .map(|i| self.guest_read::<u8>(pch + i as u32).unwrap_or(0))
                     .collect();
-                let cp = self.shared.active_codepage.load(Ordering::Relaxed);
-                let text_str = super::codepage::cp_decode(&text, cp);
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-                let (x, y) = wm.ps_map.get(&hps).map(|ps| ps.current_pos).unwrap_or((0, 0));
-                let color  = wm.ps_map.get(&hps).map(|ps| ps.color).unwrap_or(0);
-                let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
-                let frame_hwnd = wm.client_to_frame(ps_hwnd);
-                // Fix the CJK regional face now: the text is rasterised later on
-                // the GUI thread, by which time the codepage may have changed.
-                let font = FontSpec {
-                    cjk: CjkRegion::from_codepage(cp),
-                    ..wm.ps_map.get(&hps).map_or(FontSpec::SYSTEM, |ps| ps.current_font())
-                };
-                let advance = font::text_width(&text_str, font);
-                if let Some(ref sender) = wm.gui_tx {
-                    let _ = sender.send(GUIMessage::DrawTextFont {
-                        handle: frame_hwnd, x, y, text: text_str, color, font,
-                    });
-                }
-                if let Some(ps) = wm.ps_map.get_mut(&hps) {
-                    ps.current_pos = (x + advance, y);
-                }
-                ApiResult::Normal(1) // GPI_OK
+                ApiResult::Normal(self.char_string(hps, None, &text))
             }
 
             504 => {
@@ -270,17 +208,62 @@ impl super::Loader {
                 // GpiSetMix(HPS hps, LONG lMixMode)
                 let hps = read_stack(4);
                 let mode = read_stack(8);
+                if Mix::from_fm(mode).is_none() { return ApiResult::Normal(GPI_ERROR); }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
-                if let Some(ps) = wm.ps_map.get_mut(&hps) { ps.mix_mode = mode; }
-                ApiResult::Normal(1)
+                let Some(ps) = wm.ps_map.get_mut(&hps) else { return ApiResult::Normal(GPI_ERROR) };
+                ps.mix_mode = mode;
+                ApiResult::Normal(GPI_OK)
             }
             505 => {
                 // GpiSetBackMix(HPS hps, LONG lMixMode)
+                // Stored for GpiQueryBackMix; nothing draws a background yet.
                 let hps = read_stack(4);
                 let mode = read_stack(8);
+                let valid = Mix::from_fm(mode).is_some()
+                    || mode == BM_SRCTRANSPARENT || mode == BM_DESTTRANSPARENT;
+                if !valid { return ApiResult::Normal(GPI_ERROR); }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
-                if let Some(ps) = wm.ps_map.get_mut(&hps) { ps.back_mix = mode; }
-                ApiResult::Normal(1)
+                let Some(ps) = wm.ps_map.get_mut(&hps) else { return ApiResult::Normal(GPI_ERROR) };
+                ps.back_mix = mode;
+                ApiResult::Normal(GPI_OK)
+            }
+            467 => {
+                // GpiQueryMix(HPS hps) → LONG lMixMode
+                let hps = read_stack(4);
+                let mode = self.shared.window_mgr.lock_or_recover()
+                    .ps_map.get(&hps).map_or(-1i32 as u32, |ps| ps.mix_mode); // FM_ERROR
+                ApiResult::Normal(mode)
+            }
+            425 => {
+                // GpiQueryBackMix(HPS hps) → LONG lMixMode
+                let hps = read_stack(4);
+                let mode = self.shared.window_mgr.lock_or_recover()
+                    .ps_map.get(&hps).map_or(-1i32 as u32, |ps| ps.back_mix); // BM_ERROR
+                ApiResult::Normal(mode)
+            }
+            544 => {
+                // GpiSetPel(HPS hps, PPOINTL pptl) → LONG
+                // Sets one pel to the current colour with the current mix.
+                let hps = read_stack(4);
+                let pptl = read_stack(8);
+                let (Some(x), Some(y)) = (self.guest_read::<i32>(pptl), self.guest_read::<i32>(pptl + 4))
+                    else { return ApiResult::Normal(GPI_ERROR) };
+                let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
+                self.draw(t.frame, DrawOp::Pel { x, y, color: t.color, mix: t.mix });
+                ApiResult::Normal(GPI_OK)
+            }
+            476 => {
+                // GpiQueryPel(HPS hps, PPOINTL pptl) → LONG lColor
+                // Reads back what has been drawn: the colour index of the pel
+                // in the default colour table when it has one, else its RGB.
+                let hps = read_stack(4);
+                let pptl = read_stack(8);
+                let (Some(x), Some(y)) = (self.guest_read::<i32>(pptl), self.guest_read::<i32>(pptl + 4))
+                    else { return ApiResult::Normal(CLR_NOINDEX as u32) };
+                let pel = self.ps_target(hps)
+                    .and_then(|t| self.shared.window_mgr.lock_or_recover().frame_surface(t.frame))
+                    .and_then(|s| s.lock_or_recover().pel(x, y));
+                ApiResult::Normal(pel.map_or(CLR_NOINDEX as u32, |rgb| self.color_index_of(rgb)))
             }
 
             441 => {
@@ -464,30 +447,11 @@ impl super::Loader {
                 // Arc params (GpiSetArcParams) are not tracked; use a fixed 10-unit radius.
                 let hps = read_stack(4);
                 let control = read_stack(8);
-                let wm = self.shared.window_mgr.lock_or_recover();
-                if let Some(ps) = wm.ps_map.get(&hps) {
-                    let (cx, cy) = ps.current_pos;
-                    let r: i32 = 10; // approximate radius
-                    let color = ps.color;
-                    let frame_hwnd = wm.client_to_frame(ps.hwnd);
-                    if let Some(ref sender) = wm.gui_tx {
-                        let do_fill    = control == 1 || control == 3;
-                        let do_outline = control == 2 || control == 3;
-                        if do_fill {
-                            let _ = sender.send(GUIMessage::DrawBox {
-                                handle: frame_hwnd, x1: cx-r, y1: cy-r, x2: cx+r, y2: cy+r,
-                                color, fill: true,
-                            });
-                        }
-                        if do_outline {
-                            let _ = sender.send(GUIMessage::DrawBox {
-                                handle: frame_hwnd, x1: cx-r, y1: cy-r, x2: cx+r, y2: cy+r,
-                                color, fill: false,
-                            });
-                        }
-                    }
-                }
-                ApiResult::Normal(1) // GPI_OK
+                let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
+                let (cx, cy) = t.pos;
+                let r: i32 = 10; // approximate radius
+                self.draw_box(&t, (cx - r, cy - r, cx + r, cy + r), control);
+                ApiResult::Normal(GPI_OK)
             }
 
             502 => {
@@ -500,6 +464,65 @@ impl super::Loader {
                 ApiResult::Normal(0)
             }
         }
+    }
+
+    /// The frame `hps` draws into and its current colour, mix and position;
+    /// `None` for an unknown presentation space. A presentation space without
+    /// a window has frame 0, which [`Loader::draw`] ignores.
+    fn ps_target(&self, hps: u32) -> Option<PsTarget> {
+        let wm = self.shared.window_mgr.lock_or_recover();
+        let ps = wm.ps_map.get(&hps)?;
+        Some(PsTarget {
+            frame: wm.client_to_frame(ps.hwnd),
+            color: ps.color,
+            mix: Mix::from_fm(ps.mix_mode).unwrap_or(Mix::Overpaint),
+            pos: ps.current_pos,
+        })
+    }
+
+    fn set_current_pos(&self, hps: u32, pos: (i32, i32)) {
+        if let Some(ps) = self.shared.window_mgr.lock_or_recover().ps_map.get_mut(&hps) {
+            ps.current_pos = pos;
+        }
+    }
+
+    /// Draw a GpiBox-style rectangle: `control` is `DRO_FILL`,
+    /// `DRO_OUTLINE` or `DRO_OUTLINEFILL`.
+    fn draw_box(&self, t: &PsTarget, (x1, y1, x2, y2): (i32, i32, i32, i32), control: u32) {
+        let mut parts = Vec::with_capacity(2);
+        if control == DRO_FILL || control == DRO_OUTLINEFILL { parts.push(true); }
+        if control == DRO_OUTLINE || control == DRO_OUTLINEFILL { parts.push(false); }
+        for fill in parts {
+            self.draw(t.frame, DrawOp::Box { x1, y1, x2, y2, color: t.color, fill, mix: t.mix });
+        }
+    }
+
+    /// GpiCharString / GpiCharStringAt: draw `bytes` (in the active
+    /// codepage) at `at`, or at the current position, in the current font,
+    /// and advance the current position past the string.
+    fn char_string(&self, hps: u32, at: Option<(i32, i32)>, bytes: &[u8]) -> u32 {
+        let cp = self.shared.active_codepage.load(Ordering::Relaxed);
+        let text = super::codepage::cp_decode(bytes, cp);
+        let Some(t) = self.ps_target(hps) else { return GPI_ERROR };
+        let (x, y) = at.unwrap_or(t.pos);
+        // Pin the CJK regional face to the codepage of this call.
+        let font = FontSpec { cjk: CjkRegion::from_codepage(cp), ..self.ps_font(hps) };
+        let advance = font::text_width(&text, font);
+        self.draw(t.frame, DrawOp::TextFont { x, y, text, color: t.color, font, mix: t.mix });
+        self.set_current_pos(hps, (x + advance, y));
+        GPI_OK
+    }
+
+    /// The colour `GpiQueryPel` reports for pel colour `rgb`: its index in
+    /// the default colour table (CLR_BLACK for black, which has no index),
+    /// or the RGB value itself when no entry matches.
+    ///
+    /// Without logical colour tables (`GpiCreateLogColorTable`) this is
+    /// ambiguous for applications that draw with RGB values equal to table
+    /// colours: they get the index back.
+    fn color_index_of(&self, rgb: u32) -> u32 {
+        (0..=MAX_DEFAULT_COLOR_INDEX).find(|&i| self.map_color(i) == rgb)
+            .unwrap_or(if rgb == self.map_color(CLR_BLACK as u32) { CLR_BLACK as u32 } else { rgb })
     }
 
     /// Font currently selected into presentation space `hps`.
@@ -571,6 +594,7 @@ impl super::Loader {
 #[cfg(test)]
 mod tests {
     use super::super::Loader;
+    use super::{DrawOp, Mix, DRO_FILL, DRO_OUTLINE, DRO_OUTLINEFILL, GPI_ERROR, GPI_OK};
 
     #[test]
     fn test_map_color_clr_black_white() {
@@ -621,55 +645,184 @@ mod tests {
 
     /// GpiCharString (ordinal 358) must decode raw guest bytes through the
     /// active codepage rather than treating them as UTF-8.
-    /// We verify this by setting up a headless GUI channel, writing CP850 bytes
-    /// to guest memory, calling the handler, and inspecting the DrawText message.
     #[test]
     fn test_gpi_char_string_decodes_through_active_codepage() {
-        use super::super::vm_backend::mock::MockVcpu;
-        use super::super::mutex_ext::MutexExt;
-        use crate::gui::GUIMessage;
         use std::sync::atomic::Ordering;
 
         let loader = Loader::new_mock();
         loader.shared.active_codepage.store(850, Ordering::Relaxed);
+        let (_, hps, surface) = window_ps(&loader);
 
-        // Inject a headless GUI channel so DrawText messages are captured.
-        let (tx, rx) = crate::gui::create_gui_channel();
-        {
-            let mut wm = loader.shared.window_mgr.lock_or_recover();
-            wm.gui_tx = Some(tx);
-        }
-
-        // Write CP850 bytes for "caf\x82" (é = 0x82 in CP850) at guest addr 0x3000.
+        // CP850 bytes for "caf\x82" (é = 0x82 in CP850).
         let text_ptr: u32 = 0x3000;
-        let cp850_text = b"caf\x82";
-        for (i, &b) in cp850_text.iter().enumerate() {
-            loader.guest_write::<u8>(text_ptr + i as u32, b).unwrap();
-        }
+        write_bytes(&loader, text_ptr, b"caf\x82");
+        assert_eq!(call_gpi(&loader, 358, &[hps, 4, text_ptr]), GPI_OK);
 
-        // GpiCharString(hps=1, lCount=4, pchString)
-        let mut vcpu = MockVcpu::new();
-        let esp: u32 = 0x1000;
-        vcpu.regs.rsp = esp as u64;
-        for (i, &a) in [1u32, 4, text_ptr].iter().enumerate() {
-            loader.guest_write::<u32>(esp + 4 + i as u32 * 4, a).unwrap();
-        }
-        let _ = loader.handle_pmgpi_call(&mut vcpu, 0, 358);
+        let drawn = recorded(&surface);
+        let [DrawOp::TextFont { text, font, .. }] = drawn.as_slice() else { panic!("{drawn:?}") };
+        // The decoded text is "café" (U+00E9), not "caf\u{FFFD}".
+        assert_eq!(text, "caf\u{00E9}", "GpiCharString should decode CP850 bytes to Unicode");
+        // No logical font selected: the system font, with the CJK region
+        // pinned from the codepage active at the call (CP850).
+        assert_eq!(*font, crate::gui::font::FontSpec {
+            cjk: crate::gui::font::CjkRegion::Japanese, ..crate::gui::font::FontSpec::SYSTEM });
+    }
 
-        // Drain the channel and find the DrawText message.
-        let mut found_text: Option<String> = None;
-        while let Ok(msg) = rx.try_recv() {
-            if let GUIMessage::DrawTextFont { text, font, .. } = msg {
-                // No logical font selected: the system font, with the CJK
-                // region pinned from the codepage active at the call (CP850).
-                assert_eq!(font, crate::gui::font::FontSpec {
-                    cjk: crate::gui::font::CjkRegion::Japanese, ..crate::gui::font::FontSpec::SYSTEM });
-                found_text = Some(text);
-            }
-        }
-        // The decoded text should be "café" (U+00E9), not "caf\u{FFFD}".
-        assert_eq!(found_text.as_deref(), Some("caf\u{00E9}"),
-            "GpiCharString should decode CP850 bytes to Unicode");
+    /// A 200×100 window with a presentation space; its surface records what
+    /// is drawn. Returns `(hwnd, hps, surface)`.
+    fn window_ps(loader: &Loader) -> (u32, u32, crate::gui::SharedSurface) {
+        use super::super::mutex_ext::MutexExt;
+        let mut wm = loader.shared.window_mgr.lock_or_recover();
+        let hwnd = wm.create_window("Test".to_string(), 0, 0);
+        let w = wm.get_window_mut(hwnd).unwrap();
+        (w.cx, w.cy) = (200, 100);
+        let hps = wm.create_ps(hwnd);
+        let surface = wm.frame_surface(hwnd).unwrap();
+        surface.lock().unwrap().record = Some(Vec::new());
+        (hwnd, hps, surface)
+    }
+
+    /// The operations drawn into `surface` since the last call.
+    fn recorded(surface: &crate::gui::SharedSurface) -> Vec<DrawOp> {
+        surface.lock().unwrap().record.replace(Vec::new()).unwrap()
+    }
+
+    fn write_point(loader: &Loader, addr: u32, (x, y): (i32, i32)) {
+        loader.guest_write::<i32>(addr, x).unwrap();
+        loader.guest_write::<i32>(addr + 4, y).unwrap();
+    }
+
+    /// Drawing happens on the calling thread: GpiQueryPel reads back what
+    /// GpiSetPel, GpiBox and GpiLine just drew, as a default colour-table
+    /// index, and outside the window reports CLR_NOINDEX.
+    #[test]
+    fn test_gpi_query_pel_reads_back_what_was_drawn() {
+        use super::super::constants::CLR_NOINDEX;
+        const CLR_RED: u32 = 2;
+        const CLR_BLUE: u32 = 1;
+        let loader = Loader::new_mock();
+        let (_, hps, _) = window_ps(&loader);
+        let ppt: u32 = 0x4000;
+        let query = |pt| { write_point(&loader, ppt, pt); call_gpi(&loader, 476, &[hps, ppt]) };
+
+        assert_eq!(query((5, 5)), 0, "an unpainted pel is the background (CLR_BACKGROUND)");
+        assert_eq!(call_gpi(&loader, 517, &[hps, CLR_RED]), 1); // GpiSetColor
+        write_point(&loader, ppt, (5, 5));
+        assert_eq!(call_gpi(&loader, 544, &[hps, ppt]), GPI_OK); // GpiSetPel
+        assert_eq!(query((5, 5)), CLR_RED);
+        assert_eq!(query((6, 5)), 0);
+
+        // GpiMove + GpiBox(DRO_FILL) with a direct RGB colour.
+        call_gpi(&loader, 517, &[hps, 0x0012_3456]);
+        write_point(&loader, ppt, (20, 20));
+        call_gpi(&loader, 404, &[hps, ppt]);
+        write_point(&loader, ppt, (30, 25));
+        assert_eq!(call_gpi(&loader, 356, &[hps, DRO_FILL, ppt, 0, 0]), GPI_OK);
+        assert_eq!(query((25, 22)), 0x0012_3456, "RGB without a table entry is returned as RGB");
+        assert_eq!(query((31, 22)), 0);
+
+        // GpiLine from (30, 25) to (30, 60).
+        call_gpi(&loader, 517, &[hps, CLR_BLUE]);
+        write_point(&loader, ppt, (30, 25));
+        call_gpi(&loader, 404, &[hps, ppt]);
+        write_point(&loader, ppt, (30, 60));
+        assert_eq!(call_gpi(&loader, 398, &[hps, ppt]), GPI_OK);
+        assert_eq!(query((30, 40)), CLR_BLUE);
+
+        assert_eq!(query((200, 5)), CLR_NOINDEX as u32, "right of the window");
+        assert_eq!(query((-1, 5)), CLR_NOINDEX as u32);
+        assert_eq!(call_gpi(&loader, 476, &[0xBAD, ppt]), CLR_NOINDEX as u32, "unknown HPS");
+    }
+
+    /// GpiSetMix changes how drawing combines with the pels already there;
+    /// GpiQueryMix / GpiQueryBackMix report the modes and invalid modes are
+    /// rejected.
+    #[test]
+    fn test_gpi_mix_modes_combine_with_the_destination() {
+        use super::super::constants::{BM_LEAVEALONE, BM_SRCTRANSPARENT, FM_INVERT, FM_OVERPAINT, FM_XOR};
+        let loader = Loader::new_mock();
+        let (hwnd, hps, surface) = window_ps(&loader);
+        assert_eq!(call_gpi(&loader, 467, &[hps]), FM_OVERPAINT, "default foreground mix");
+        assert_eq!(call_gpi(&loader, 425, &[hps]), BM_LEAVEALONE, "default background mix");
+
+        let ppt: u32 = 0x4000;
+        let pel = |x, y| surface.lock().unwrap().pel(x, y).unwrap();
+        let fill = |(x1, y1), (x2, y2)| {
+            write_point(&loader, ppt, (x1, y1));
+            call_gpi(&loader, 404, &[hps, ppt]);
+            write_point(&loader, ppt, (x2, y2));
+            call_gpi(&loader, 356, &[hps, DRO_FILL, ppt, 0, 0]);
+        };
+        call_gpi(&loader, 517, &[hps, 0x00F0_0F0F]);
+        fill((0, 0), (9, 9));
+        assert_eq!(pel(3, 3), 0x00F0_0F0F);
+
+        assert_eq!(call_gpi(&loader, 537, &[hps, FM_XOR]), GPI_OK);
+        assert_eq!(call_gpi(&loader, 467, &[hps]), FM_XOR);
+        call_gpi(&loader, 517, &[hps, 0x00FF_FFFF]);
+        fill((0, 0), (4, 9));
+        assert_eq!(pel(3, 3), 0x000F_F0F0, "XOR with white inverts");
+        assert_eq!(pel(7, 3), 0x00F0_0F0F, "outside the box unchanged");
+        fill((0, 0), (4, 9));
+        assert_eq!(pel(3, 3), 0x00F0_0F0F, "XOR twice restores");
+
+        call_gpi(&loader, 537, &[hps, FM_INVERT]);
+        write_point(&loader, ppt, (7, 3));
+        call_gpi(&loader, 544, &[hps, ppt]);
+        assert_eq!(pel(7, 3), 0x000F_F0F0, "FM_INVERT ignores the colour");
+
+        // The mix is part of what is drawn.
+        let ops = recorded(&surface);
+        assert!(matches!(ops.last(), Some(DrawOp::Pel { x: 7, y: 3, mix: Mix::Invert, .. })), "{ops:?}");
+
+        assert_eq!(call_gpi(&loader, 537, &[hps, 3]), GPI_ERROR, "3 is not a mix mode");
+        assert_eq!(call_gpi(&loader, 537, &[hps, 18]), GPI_ERROR, "background-only mode");
+        assert_eq!(call_gpi(&loader, 467, &[hps]), FM_INVERT, "rejected modes leave it unchanged");
+        assert_eq!(call_gpi(&loader, 505, &[hps, BM_SRCTRANSPARENT]), GPI_OK);
+        assert_eq!(call_gpi(&loader, 425, &[hps]), BM_SRCTRANSPARENT);
+        assert_eq!(call_gpi(&loader, 505, &[hps, 20]), GPI_ERROR);
+        assert_eq!(call_gpi(&loader, 537, &[0xBAD, FM_XOR]), GPI_ERROR, "unknown HPS");
+
+        // Drawing marks the frame dirty for the compositor.
+        use super::super::mutex_ext::MutexExt;
+        assert!(loader.shared.window_mgr.lock_or_recover().dirty.contains(&hwnd));
+    }
+
+    /// GpiBox outlines and fills; GpiErase clears the window.
+    #[test]
+    fn test_gpi_box_outline_and_erase() {
+        use crate::gui::surface::SURFACE_BLANK;
+        let loader = Loader::new_mock();
+        let (_, hps, surface) = window_ps(&loader);
+        let ppt: u32 = 0x4000;
+        write_point(&loader, ppt, (10, 10));
+        call_gpi(&loader, 404, &[hps, ppt]);
+        write_point(&loader, ppt, (20, 20));
+        assert_eq!(call_gpi(&loader, 356, &[hps, DRO_OUTLINEFILL, ppt, 0, 0]), GPI_OK);
+        let ops = recorded(&surface);
+        assert_eq!(ops.len(), 2, "fill, then outline: {ops:?}");
+        assert!(matches!(ops[0], DrawOp::Box { x1: 10, y1: 10, x2: 20, y2: 20, fill: true, .. }));
+        assert!(matches!(ops[1], DrawOp::Box { fill: false, .. }));
+        call_gpi(&loader, 356, &[hps, DRO_OUTLINE, ppt, 0, 0]);
+        assert!(matches!(recorded(&surface)[..], [DrawOp::Box { fill: false, .. }]));
+
+        assert_eq!(call_gpi(&loader, 389, &[hps]), GPI_OK); // GpiErase
+        assert!(surface.lock().unwrap().buffer.iter().all(|&p| p == SURFACE_BLANK));
+    }
+
+    /// A presentation space without a window draws nothing but still tracks
+    /// its current position.
+    #[test]
+    fn test_gpi_without_a_window_only_moves_the_position() {
+        use super::super::mutex_ext::MutexExt;
+        let loader = Loader::new_mock();
+        let hps = loader.shared.window_mgr.lock_or_recover().create_ps(0);
+        let ppt: u32 = 0x4000;
+        write_point(&loader, ppt, (7, 9));
+        assert_eq!(call_gpi(&loader, 398, &[hps, ppt]), GPI_OK);
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        assert_eq!(wm.ps_map[&hps].current_pos, (7, 9));
+        assert!(wm.surfaces.is_empty());
     }
 
     /// Push `args` as a cdecl argument list and call PMGPI `ordinal`.
@@ -699,17 +852,10 @@ mod tests {
     #[test]
     fn test_gpi_log_font_selects_plex_face_for_drawing_and_metrics() {
         use super::super::mutex_ext::MutexExt;
-        use crate::gui::GUIMessage;
         use crate::gui::font::{self, FontFamily, FontSpec};
 
         let loader = Loader::new_mock();
-        let (tx, rx) = crate::gui::create_gui_channel();
-        let hps = {
-            let mut wm = loader.shared.window_mgr.lock_or_recover();
-            wm.gui_tx = Some(tx);
-            let hwnd = wm.create_window("Test".to_string(), 0, 0);
-            wm.create_ps(hwnd)
-        };
+        let (_, hps, surface) = window_ps(&loader);
 
         // FATTRS: bold "Courier" with a 24-px maximum baseline extent.
         let pfat: u32 = 0x4000;
@@ -733,11 +879,11 @@ mod tests {
         loader.guest_write::<i32>(ppt + 4, 50).unwrap();
         write_bytes(&loader, ptext, b"Hello");
         call_gpi(&loader, 359, &[hps, ppt, 5, ptext]);
-        let mut drawn = None;
-        while let Ok(msg) = rx.try_recv() {
-            if let GUIMessage::DrawTextFont { x, y, text, font, .. } = msg { drawn = Some((x, y, text, font)); }
-        }
-        assert_eq!(drawn, Some((10, 50, "Hello".to_string(), expect)));
+        let drawn: Vec<_> = recorded(&surface).into_iter().filter_map(|op| match op {
+            DrawOp::TextFont { x, y, text, font, .. } => Some((x, y, text, font)),
+            _ => None,
+        }).collect();
+        assert_eq!(drawn, [(10, 50, "Hello".to_string(), expect)]);
         let width = font::text_width("Hello", expect);
         {
             let wm = loader.shared.window_mgr.lock_or_recover();

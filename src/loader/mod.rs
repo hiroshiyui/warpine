@@ -56,6 +56,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32};
 use std::thread;
 use log::{info, warn};
 use crate::gui::font::{self, FontSpec};
+use crate::gui::surface::{DrawOp, Mix};
 
 /// Key information pushed into the SDL2 text-mode keyboard queue.
 ///
@@ -449,20 +450,17 @@ impl Loader {
 
         match msg {
             WM_PAINT => {
-                let (frame_hwnd, gui_tx) = {
-                    let wm = self.shared.window_mgr.lock_or_recover();
-                    (wm.find_frame_for_hwnd(hwnd), wm.gui_tx.clone())
-                };
-                let Some(ref sender) = gui_tx else { return ApiResult::Normal(0); };
+                let frame_hwnd = self.shared.window_mgr.lock_or_recover().find_frame_for_hwnd(hwnd);
+                let p = Painter { loader: self, frame: frame_hwnd };
 
                 match class_name.as_str() {
                     "WC_BUTTON" => {
                         // Gray face with a border and a centred label.
-                        control_box(sender, frame_hwnd, (x, y, cx, cy), CONTROL_FACE_COLOR);
+                        control_box(&p, (x, y, cx, cy), CONTROL_FACE_COLOR);
                         let label = font::fit_text(&text, cx - 2 * CONTROL_TEXT_INSET, FontSpec::SYSTEM);
                         if !label.is_empty() {
                             let w = font::text_width(label, FontSpec::SYSTEM);
-                            control_text(sender, frame_hwnd, x + (cx - w) / 2, y + (cy - CONTROL_LINE_H) / 2, label);
+                            control_text(&p, x + (cx - w) / 2, y + (cy - CONTROL_LINE_H) / 2, label);
                         }
                     }
                     "WC_STATIC" => {
@@ -470,38 +468,31 @@ impl Loader {
                         // erases its rectangle to the window background first:
                         // anti-aliased text drawn again over itself on a later
                         // repaint would otherwise grow darker and bolder.
-                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
-                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + cy,
-                            color: CONTROL_FIELD_COLOR, fill: true,
-                        });
+                        p.fill((x, y, x + cx, y + cy), CONTROL_FIELD_COLOR);
                         let label = font::fit_text(&text, cx, FontSpec::SYSTEM);
                         if !label.is_empty() {
-                            control_text(sender, frame_hwnd, x, y + (cy - CONTROL_LINE_H).max(0), label);
+                            control_text(&p, x, y + (cy - CONTROL_LINE_H).max(0), label);
                         }
                     }
                     "WC_SCROLLBAR" => {
-                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
-                            handle: frame_hwnd, x1: x, y1: y, x2: x + cx, y2: y + cy,
-                            color: 0x00A0A0A0, fill: true,
-                        });
+                        p.fill((x, y, x + cx, y + cy), CONTROL_SCROLLBAR_COLOR);
                     }
                     pm_controls::CLASS_ENTRYFIELD => {
-                        self.paint_entry_field(sender, frame_hwnd, hwnd, (x, y, cx, cy));
+                        self.paint_entry_field(&p, hwnd, (x, y, cx, cy));
                     }
                     pm_controls::CLASS_MLE => {
-                        self.paint_mle(sender, frame_hwnd, hwnd, (x, y, cx, cy));
+                        self.paint_mle(&p, hwnd, (x, y, cx, cy));
                     }
                     pm_controls::CLASS_LISTBOX => {
-                        self.paint_listbox(sender, frame_hwnd, hwnd, (x, y, cx, cy));
+                        self.paint_listbox(&p, hwnd, (x, y, cx, cy));
                     }
                     "#Menu" => {
                         // The menu bar and any open pull-down are frame chrome:
                         // the compositor draws them from `OS2Window::menu_items`
                         // and the open-item state on every composite, so they
-                        // never share pixels with the client's FrameBuffer.
+                        // never share pixels with the client's surface.
                         // Painting therefore only has to request a recomposite.
                         self.shared.window_mgr.lock_or_recover().mark_dirty(frame_hwnd);
-                        let _ = sender.send(crate::gui::GUIMessage::PresentBuffer { handle: frame_hwnd });
                     }
                     "#Dialog" => {
                         // Collect child-window metadata while holding the lock.
@@ -516,45 +507,29 @@ impl Loader {
                                 })
                             }).collect::<Vec<_>>()
                         };
-                        // The dialog has its own FrameBuffer keyed by hwnd. Its title
+                        // The dialog has its own surface keyed by hwnd. Its title
                         // bar and border are frame chrome drawn by the compositor
                         // (from `frame_flags` and the window text), so only the
                         // dialog face and the controls are painted here.
-                        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
-                            handle: hwnd, x1: 0, y1: 0, x2: cx, y2: cy,
-                            color: 0x00D4D0C8, fill: true,
-                        });
+                        let d = Painter { loader: self, frame: hwnd };
+                        d.fill((0, 0, cx, cy), CONTROL_FACE_COLOR);
                         // Child controls.
                         for (cname, chi_x, chi_y, chi_cx, chi_cy, ctext) in children {
                             match cname.as_str() {
                                 "WC_BUTTON" => {
-                                    let _ = sender.send(crate::gui::GUIMessage::DrawBox {
-                                        handle: hwnd, x1: chi_x, y1: chi_y,
-                                        x2: chi_x + chi_cx, y2: chi_y + chi_cy,
-                                        color: 0x00D4D0C8, fill: true,
-                                    });
-                                    let _ = sender.send(crate::gui::GUIMessage::DrawBox {
-                                        handle: hwnd, x1: chi_x, y1: chi_y,
-                                        x2: chi_x + chi_cx, y2: chi_y + chi_cy,
-                                        color: 0x00808080, fill: false,
-                                    });
+                                    control_box(&d, (chi_x, chi_y, chi_cx, chi_cy), CONTROL_FACE_COLOR);
                                     if !ctext.is_empty() {
-                                        let _ = sender.send(crate::gui::GUIMessage::DrawText {
-                                            handle: hwnd, x: chi_x + 2, y: chi_y + chi_cy / 4,
-                                            text: ctext, color: 0x00000000,
-                                        });
+                                        d.op(DrawOp::Text { x: chi_x + 2, y: chi_y + chi_cy / 4,
+                                                            text: ctext, color: CONTROL_TEXT_COLOR });
                                     }
                                 }
                                 "WC_STATIC" if !ctext.is_empty() => {
-                                    let _ = sender.send(crate::gui::GUIMessage::DrawText {
-                                        handle: hwnd, x: chi_x, y: chi_y + chi_cy / 4,
-                                        text: ctext, color: 0x00000000,
-                                    });
+                                    d.op(DrawOp::Text { x: chi_x, y: chi_y + chi_cy / 4,
+                                                        text: ctext, color: CONTROL_TEXT_COLOR });
                                 }
                                 _ => {}
                             }
                         }
-                        let _ = sender.send(crate::gui::GUIMessage::PresentBuffer { handle: hwnd });
                     }
                     _ => {} // Unknown built-in class — silently ignore WM_PAINT
                 }
@@ -828,18 +803,50 @@ const CONTROL_TEXT_INSET: i32 = 4;
 /// Height of one text row in a control (the system font's line height).
 const CONTROL_LINE_H: i32 = font::SYSTEM_FONT_PX as i32;
 
+/// Background of scroll bars (not interactive yet).
+const CONTROL_SCROLLBAR_COLOR: u32 = 0x00A0_A0A0;
+
+/// Draws into one frame's surface (see [`Loader::draw`]).
+pub(crate) struct Painter<'a> {
+    pub loader: &'a Loader,
+    pub frame: u32,
+}
+
+impl Painter<'_> {
+    pub fn op(&self, op: DrawOp) {
+        self.loader.draw(self.frame, op);
+    }
+
+    /// Overpaint the rectangle with corners `(x1, y1)`–`(x2, y2)` (inclusive).
+    pub fn fill(&self, (x1, y1, x2, y2): (i32, i32, i32, i32), color: u32) {
+        self.op(DrawOp::Box { x1, y1, x2, y2, color, fill: true, mix: Mix::Overpaint });
+    }
+}
+
+impl Loader {
+    /// Apply `op` to the surface of `frame` and mark the frame dirty.
+    ///
+    /// The drawing happens here, on the calling thread. The frame is marked
+    /// dirty while its surface is locked, so a composite that picks up the
+    /// dirty mark waits for the drawing to finish before reading the pixels.
+    pub(crate) fn draw(&self, frame: u32, op: DrawOp) {
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        let Some(surface) = wm.frame_surface(frame) else { return };
+        let mut s = surface.lock_or_recover();
+        wm.mark_dirty(frame);
+        drop(wm);
+        s.draw(op);
+    }
+}
+
 /// Fill a control's rectangle `(x, y, cx, cy)` and outline it.
-fn control_box(sender: &crate::gui::GUISender, handle: u32, (x, y, cx, cy): (i32, i32, i32, i32), fill: u32) {
+fn control_box(p: &Painter, (x, y, cx, cy): (i32, i32, i32, i32), fill: u32) {
     for (color, fill) in [(fill, true), (CONTROL_BORDER_COLOR, false)] {
-        let _ = sender.send(crate::gui::GUIMessage::DrawBox {
-            handle, x1: x, y1: y, x2: x + cx, y2: y + cy, color, fill,
-        });
+        p.op(DrawOp::Box { x1: x, y1: y, x2: x + cx, y2: y + cy, color, fill, mix: Mix::Overpaint });
     }
 }
 
 /// Draw one line of system-font text whose line box has its bottom at `y`.
-fn control_text(sender: &crate::gui::GUISender, handle: u32, x: i32, y: i32, text: &str) {
-    let _ = sender.send(crate::gui::GUIMessage::DrawText {
-        handle, x, y, text: text.to_string(), color: CONTROL_TEXT_COLOR,
-    });
+fn control_text(p: &Painter, x: i32, y: i32, text: &str) {
+    p.op(DrawOp::Text { x, y, text: text.to_string(), color: CONTROL_TEXT_COLOR });
 }

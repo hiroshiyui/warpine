@@ -196,6 +196,46 @@ pub const FCF_ACCELTABLE:    u32 = 0x0000_8000; // load accelerator table from h
 pub const FCF_SYSMODAL:      u32 = 0x0001_0000; // system-modal frame
 pub const FCF_STANDARD:      u32 = 0x0000_0CC3; // FCF_TITLEBAR|FCF_SYSMENU|FCF_MINMAX|FCF_SIZEBORDER|FCF_TASKLIST
 
+// ── GPI return values and colour sentinels (<pmgpi.h>) ───────────────────────
+pub const GPI_ERROR: u32 = 0;
+pub const GPI_OK:    u32 = 1;
+/// `GpiQueryPel` result for a point outside the drawing surface.
+pub const CLR_NOINDEX: i32 = -254;
+/// Default colour-table entry that is pure black (no 0–15 index is).
+pub const CLR_BLACK: i32 = -1;
+
+// ── FM_* foreground mix modes (GpiSetMix), <pmgpi.h> ─────────────────────────
+// Each combines the source (current colour) S with the destination pel D.
+pub const FM_DEFAULT:     u32 = 0;  // = FM_OVERPAINT
+pub const FM_OR:          u32 = 1;  // S | D
+pub const FM_OVERPAINT:   u32 = 2;  // S
+pub const FM_XOR:         u32 = 4;  // S ^ D
+pub const FM_LEAVEALONE:  u32 = 5;  // D
+pub const FM_AND:         u32 = 6;  // S & D
+pub const FM_SUBTRACT:    u32 = 7;  // !S & D
+pub const FM_MASKSRCNOT:  u32 = 8;  // S & !D
+pub const FM_ZERO:        u32 = 9;  // 0
+pub const FM_NOTMERGESRC: u32 = 10; // !(S | D)
+pub const FM_NOTXORSRC:   u32 = 11; // !(S ^ D)
+pub const FM_INVERT:      u32 = 12; // !D
+pub const FM_MERGESRCNOT: u32 = 13; // S | !D
+pub const FM_NOTCOPYSRC:  u32 = 14; // !S
+pub const FM_MERGENOTSRC: u32 = 15; // !S | D
+pub const FM_NOTMASKSRC:  u32 = 16; // !(S & D)
+pub const FM_ONE:         u32 = 17; // all ones (white)
+
+// ── BM_* background mix modes (GpiSetBackMix), <pmgpi.h> ─────────────────────
+// BM_DEFAULT..BM_ONE share the FM_* values; two more are background-only.
+pub const BM_LEAVEALONE:      u32 = 5;
+pub const BM_ONE:             u32 = 17;
+pub const BM_SRCTRANSPARENT:  u32 = 18;
+pub const BM_DESTTRANSPARENT: u32 = 19;
+
+/// Window positions are clamped to ± this and sizes to `0..=` this when a
+/// guest sets them (`WinSetWindowPos`, `WinCreateWindow`), far beyond any
+/// desktop, so geometry arithmetic (`x + cx`) cannot overflow.
+pub const MAX_WINDOW_COORD: i32 = 1 << 20;
+
 // Mock handle constants
 pub const MOCK_HAB: u32 = 0x1234;
 pub const MOCK_HPOINTER: u32 = 0x5000;

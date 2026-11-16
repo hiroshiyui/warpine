@@ -33,8 +33,7 @@ use super::message::{GUIMessage, GuiWake};
 use super::renderer::PmRenderer;
 use super::font::{self, FontSpec};
 use super::gui_script::{self, GuiScript};
-use super::render_utils::{render_text_to_buffer, render_text_font_to_buffer,
-    render_rect_to_buffer, render_line_to_buffer};
+use super::surface::{SharedSurface, Surface};
 
 // ── VDR-A: Single-surface desktop renderer ────────────────────────────────
 
@@ -353,42 +352,6 @@ fn draw_filled_rect(buf: &mut [u32], buf_w: usize,
     fill_clipped(buf, buf_w, r, r, color);
 }
 
-/// Colour of a newly allocated (never painted) frame buffer.
-const FRAME_BUFFER_BLANK: u32 = 0xFFFF_FFFF;
-
-/// Off-screen pixel buffer for one PM frame/dialog window.
-struct FrameBuffer {
-    buffer: Vec<u32>,
-    width:  u32,
-    height: u32,
-}
-
-impl FrameBuffer {
-    fn new(width: u32, height: u32) -> Self {
-        let n = (width as usize).saturating_mul(height as usize);
-        FrameBuffer { buffer: vec![FRAME_BUFFER_BLANK; n], width, height }
-    }
-
-    /// Change the size, keeping the old content where it still fits.
-    ///
-    /// PM coordinates start at the bottom-left corner, so the content stays
-    /// anchored there: the bottom rows are kept when the height changes, the
-    /// left columns when the width changes. Areas the old buffer did not
-    /// cover are blank until the application repaints them; without this, an
-    /// interactive resize would show a blank window until then.
-    fn resize(&mut self, width: u32, height: u32) {
-        if (width, height) == (self.width, self.height) { return; }
-        let mut next = FrameBuffer::new(width, height);
-        let (ow, oh) = (self.width as i32, self.height as i32);
-        // Old row r (from the top) holds PM y = oh-1-r; that y is new row
-        // r + (height - oh).
-        let shift = height as i32 - oh;
-        blit_clipped(&mut next.buffer, width as usize, &self.buffer, ow.max(1) as usize,
-                     0, shift, ow, oh, Rect::at(0, 0, width as i32, height as i32));
-        *self = next;
-    }
-}
-
 /// The single SDL2 window that acts as the OS/2 desktop.
 struct DesktopCanvas {
     canvas:  Canvas<Window>,
@@ -628,7 +591,7 @@ fn place_frame(hwnd: u32, x: i32, y: i32, cx: i32, cy: i32, frame_flags: u32, ha
 /// Draw one frame — client content, title bar, border, menu bar and
 /// pull-down, in that order — into the desktop buffer, only inside `clip`.
 fn draw_placed_frame(buf: &mut [u32], buf_w: usize, p: &FramePlacement,
-                     fb: &FrameBuffer, chrome: &ChromeCache, clip: Rect) {
+                     fb: &Surface, chrome: &ChromeCache, clip: Rect) {
     let blit = |buf: &mut [u32], px: &[u32], src_w: i32, at: Rect| {
         blit_clipped(buf, buf_w, px, src_w.max(1) as usize, at.x0, at.y0, at.width(), at.height(), clip);
     };
@@ -693,7 +656,8 @@ struct ResizeState {
 
 /// SDL2-backed Presentation Manager renderer.
 ///
-/// VDR-A: one SDL2 window (the desktop), one `FrameBuffer` per PM frame/dialog.
+/// VDR-A: one SDL2 window (the desktop); each PM frame/dialog is drawn into
+/// its surface (`WindowManager::surfaces`) by the API threads.
 /// `PresentBuffer` composites all visible frames onto the desktop surface using
 /// window positions from `SharedState::window_mgr`.
 ///
@@ -704,8 +668,6 @@ pub struct Sdl2Renderer {
     event:       sdl2::EventSubsystem,
     event_pump:  sdl2::EventPump,
     desktop:     DesktopCanvas,
-    /// PM handle → off-screen frame buffer.
-    frame_buffers: HashMap<u32, FrameBuffer>,
     /// Frame → pre-rendered title bar, menu bar and pull-down.
     chrome: HashMap<u32, ChromeCache>,
     /// Frame → desktop area it covered at the last composite; what must be
@@ -777,7 +739,6 @@ impl Sdl2Renderer {
             event,
             event_pump,
             desktop,
-            frame_buffers: HashMap::new(),
             chrome: HashMap::new(),
             placed: HashMap::new(),
             force_full: true,
@@ -811,31 +772,6 @@ impl Sdl2Renderer {
         }
     }
 
-    /// Return a mutable reference to the `FrameBuffer` for `handle`, allocating
-    /// one lazily if it doesn't exist yet (VDR-A5: dialogs skip `CreateWindow`).
-    ///
-    /// The initial size is read from `OS2Window::cx / cy` in `SharedState`; falls
-    /// back to the desktop size if the window is unknown (e.g. a frame window that
-    /// hasn't received a `WinSetWindowPos` yet).
-    fn get_or_create_fb<'s>(
-        frame_buffers: &'s mut HashMap<u32, FrameBuffer>,
-        desktop: &DesktopCanvas,
-        handle: u32,
-        shared: &Arc<SharedState>,
-    ) -> Option<&'s mut FrameBuffer> {
-        frame_buffers.entry(handle).or_insert_with(|| {
-            let (w, h) = {
-                let wm = shared.window_mgr.lock_or_recover();
-                wm.get_window(handle)
-                    .filter(|win| win.cx > 0 && win.cy > 0)
-                    .map(|win| (win.cx as u32, (win.cy - wm.frame_chrome_top_h(handle)).max(1) as u32))
-                    .unwrap_or((desktop.width, desktop.height))
-            };
-            FrameBuffer::new(w, h)
-        });
-        frame_buffers.get_mut(&handle)
-    }
-
     /// Redraw the damaged parts of the desktop and present them.
     ///
     /// The desktop buffer keeps its pixels between composites. Damage is
@@ -856,7 +792,8 @@ impl Sdl2Renderer {
 
         // Snapshot geometry and bring the chrome cache up to date under the
         // lock; rendering happens after it is released.
-        struct Snap { hwnd: u32, x: i32, y: i32, cx: i32, cy: i32, frame_flags: u32, has_menu: bool }
+        struct Snap { hwnd: u32, x: i32, y: i32, cx: i32, cy: i32, frame_flags: u32, has_menu: bool,
+                      surface: SharedSurface }
         let mut dirty_frames: HashSet<u32> = HashSet::new();
         let snaps: Vec<Snap> = {
             let mut wm = shared.window_mgr.lock_or_recover();
@@ -866,10 +803,11 @@ impl Sdl2Renderer {
             let dirty = std::mem::take(&mut wm.dirty);
             dirty_frames.extend(dirty.into_iter().filter_map(|h| owning_frame(&wm, h)));
             let focused = wm.focused_hwnd;
-            let (chrome, frame_buffers) = (&mut self.chrome, &self.frame_buffers);
+            let chrome = &mut self.chrome;
             wm.z_order.iter().filter_map(|&hwnd| {
                 let w = wm.get_window(hwnd)?;
-                if !w.visible || !frame_buffers.contains_key(&hwnd) { return None; }
+                // Frames are shown once they have a surface.
+                let surface = wm.surfaces.get(&hwnd).filter(|_| w.visible)?.clone();
                 let menu = wm.get_window(w.menu_hwnd).filter(|_| w.menu_hwnd != 0).map(|m| {
                     (m.menu_items.as_slice(), m.window_ulong.get(&-1).copied().unwrap_or(0))
                 });
@@ -879,7 +817,7 @@ impl Sdl2Renderer {
                     dirty_frames.insert(hwnd);
                 }
                 Some(Snap { hwnd, x: w.x, y: w.y, cx: w.cx, cy: w.cy,
-                            frame_flags: w.frame_flags, has_menu: menu.is_some() })
+                            frame_flags: w.frame_flags, has_menu: menu.is_some(), surface })
             }).collect()
         };
         self.chrome.retain(|h, _| snaps.iter().any(|s| s.hwnd == *h));
@@ -888,11 +826,14 @@ impl Sdl2Renderer {
         }
 
         let placements: Vec<FramePlacement> = snaps.iter().map(|s| {
-            let fb = &self.frame_buffers[&s.hwnd];
+            let fb = {
+                let fb = s.surface.lock_or_recover();
+                (fb.width, fb.height)
+            };
             let pulldown = self.chrome[&s.hwnd].menu.as_ref()
                 .and_then(|m| m.pulldown.as_ref().map(|p| (p.dx, p.h)));
             place_frame(s.hwnd, s.x, s.y, s.cx, s.cy, s.frame_flags, s.has_menu, pulldown,
-                        (fb.width, fb.height), dh)
+                        fb, dh)
         }).collect();
 
         // Damage: whatever dirty or changed frames cover now or covered
@@ -929,8 +870,10 @@ impl Sdl2Renderer {
                     || placements[i + 1..].iter().any(|q| q.opaque && q.frame.contains(&visible)) {
                     continue;
                 }
-                draw_placed_frame(buf, dw as usize, p, &self.frame_buffers[&p.hwnd],
-                                  &self.chrome[&p.hwnd], r);
+                // The surface may have been resized since `p` was computed;
+                // the blit clips to its current size.
+                let fb = snaps[i].surface.lock_or_recover();
+                draw_placed_frame(buf, dw as usize, p, &fb, &self.chrome[&p.hwnd], r);
             }
         }
 
@@ -983,9 +926,7 @@ impl Sdl2Renderer {
                                         win.cy = h as i32;
                                     }
                                 }
-                                if let Some(fb) = self.frame_buffers.get_mut(&focused) {
-                                    fb.resize(w, h);
-                                }
+                                wm.resize_surface(focused, w as i32, h as i32);
                             }
                             focused
                         };
@@ -1277,15 +1218,13 @@ impl Sdl2Renderer {
                 if let Some(rs) = self.resize_state.take() {
                     let hwnd = rs.hwnd;
                     // Re-lay out the menu bar and client for the new frame size; the
-                    // FrameBuffer and WM_SIZE both describe the client area.
-                    let (new_cx, new_cy) = shared.window_mgr.lock_or_recover().layout_frame(hwnd);
-                    // Resize the FrameBuffer to match the new client-area dimensions.
-                    let client_w = new_cx.max(1) as u32;
-                    let client_h = new_cy.max(1) as u32;
-                    if let Some(fb) = self.frame_buffers.get_mut(&hwnd)
-                        && (fb.width != client_w || fb.height != client_h) {
-                        fb.resize(client_w, client_h);
-                    }
+                    // surface and WM_SIZE both describe the client area.
+                    let (new_cx, new_cy) = {
+                        let mut wm = shared.window_mgr.lock_or_recover();
+                        let size = wm.layout_frame(hwnd);
+                        wm.resize_surface(hwnd, size.0, size.1);
+                        size
+                    };
                     // Notify the app so it repaints.
                     let mp2 = ((new_cy as u32) << 16) | (new_cx as u32);
                     push_msg(shared, hwnd, WM_SIZE, 0, mp2);
@@ -1369,71 +1308,8 @@ fn mb_buttons(style: u32) -> &'static [(i32, &'static str, bool, bool)] {
 }
 
 impl PmRenderer for Sdl2Renderer {
-    fn handle_message(&mut self, msg: GUIMessage, shared: &Arc<SharedState>) {
+    fn handle_message(&mut self, msg: GUIMessage, _shared: &Arc<SharedState>) {
         match msg {
-            GUIMessage::CreateWindow { handle, .. } => {
-                // VDR-A2: allocate a FrameBuffer sized to the window's client area.
-                // The compositor blits the FrameBuffer below the title bar chrome, so
-                // use the actual window dimensions (not the desktop canvas size).
-                let (w, h) = {
-                    let wm = shared.window_mgr.lock_or_recover();
-                    wm.get_window(handle)
-                        .filter(|win| win.cx > 0 && win.cy > 0)
-                        .map(|win| (win.cx as u32, (win.cy - wm.frame_chrome_top_h(handle)).max(1) as u32))
-                        .unwrap_or((self.desktop.width, self.desktop.height))
-                };
-                let fb = FrameBuffer::new(w, h);
-                self.frame_buffers.insert(handle, fb);
-                debug!("[GUI] Allocated FrameBuffer {}x{} for PM handle {}", w, h, handle);
-            }
-            GUIMessage::ResizeWindow { handle, width, height } => {
-                if let Some(fb) = self.frame_buffers.get_mut(&handle) {
-                    fb.resize(width, height);
-                    debug!("[GUI] Resized FrameBuffer {} to {}x{}", handle, width, height);
-                }
-            }
-            GUIMessage::MoveWindow { .. } | GUIMessage::ShowWindow { .. } => {
-                // No-op: position/visibility live in OS2Window; compositor reads from there.
-            }
-            GUIMessage::DrawBox { handle, x1, y1, x2, y2, color, fill } => {
-                if let Some(fb) = Self::get_or_create_fb(
-                    &mut self.frame_buffers, &self.desktop, handle, shared) {
-                    render_rect_to_buffer(&mut fb.buffer, fb.width, fb.height,
-                                         x1, y1, x2, y2, color, fill);
-                }
-            }
-            GUIMessage::DrawLine { handle, x1, y1, x2, y2, color } => {
-                if let Some(fb) = Self::get_or_create_fb(
-                    &mut self.frame_buffers, &self.desktop, handle, shared) {
-                    render_line_to_buffer(&mut fb.buffer, fb.width, fb.height,
-                                         x1, y1, x2, y2, color);
-                }
-            }
-            GUIMessage::DrawText { handle, x, y, text, color } => {
-                if let Some(fb) = Self::get_or_create_fb(
-                    &mut self.frame_buffers, &self.desktop, handle, shared) {
-                    render_text_to_buffer(&mut fb.buffer, fb.width, fb.height, x, y, &text, color);
-                }
-            }
-            GUIMessage::DrawTextFont { handle, x, y, text, color, font } => {
-                if let Some(fb) = Self::get_or_create_fb(
-                    &mut self.frame_buffers, &self.desktop, handle, shared) {
-                    render_text_font_to_buffer(&mut fb.buffer, fb.width, fb.height,
-                                               x, y, &text, color, font);
-                }
-            }
-            GUIMessage::ClearBuffer { handle } => {
-                if let Some(fb) = Self::get_or_create_fb(
-                    &mut self.frame_buffers, &self.desktop, handle, shared) {
-                    fb.buffer.fill(0xFFFFFFFF);
-                }
-            }
-            GUIMessage::PresentBuffer { handle } => {
-                // Presents are coalesced: mark the frame dirty and let
-                // `poll_events` composite at most once per FRAME_INTERVAL, so
-                // a paint cycle that presents several times costs one composite.
-                shared.window_mgr.lock_or_recover().mark_dirty(handle);
-            }
             GUIMessage::SetClipboardText(text) => {
                 let _ = self.video.clipboard().set_clipboard_text(&text);
                 self.cached_clipboard = text;
@@ -2784,36 +2660,6 @@ mod script_tests {
 mod compositor_tests {
     use super::*;
 
-    /// A frame buffer whose pixel at (column c, row r from the top) is
-    /// `100 * r + c`.
-    fn numbered_fb(w: u32, h: u32) -> FrameBuffer {
-        let mut fb = FrameBuffer::new(w, h);
-        for (i, p) in fb.buffer.iter_mut().enumerate() {
-            *p = (100 * (i / w as usize) + i % w as usize) as u32;
-        }
-        fb
-    }
-
-    #[test]
-    fn resize_keeps_the_bottom_left_content() {
-        // Grow 3×2 → 4×3: the old rows end up at the bottom, left-aligned.
-        let mut fb = numbered_fb(3, 2);
-        fb.resize(4, 3);
-        let b = FRAME_BUFFER_BLANK;
-        assert_eq!((fb.width, fb.height), (4, 3));
-        assert_eq!(fb.buffer, vec![b, b, b, b,
-                                   0, 1, 2, b,
-                                   100, 101, 102, b]);
-        // Shrink 3×3 → 2×2: the bottom-left 2×2 survives.
-        let mut fb = numbered_fb(3, 3);
-        fb.resize(2, 2);
-        assert_eq!(fb.buffer, vec![100, 101, 200, 201]);
-        // Same size: untouched.
-        let mut fb = numbered_fb(2, 2);
-        fb.resize(2, 2);
-        assert_eq!(fb.buffer, numbered_fb(2, 2).buffer);
-    }
-
     #[test]
     fn place_frame_lays_out_chrome_and_client() {
         let flags = FCF_TITLEBAR | FCF_SIZEBORDER;
@@ -2905,7 +2751,7 @@ mod compositor_tests {
     fn placed_frame_is_drawn_only_inside_the_clip() {
         let (dw, dh) = (64usize, 48usize);
         let mut buf = vec![DESKTOP_BG; dw * dh];
-        let mut fb = FrameBuffer::new(40, 20);
+        let mut fb = Surface::new(40, 20);
         fb.buffer.fill(0x00_1234);
         let mut chrome = ChromeCache::new();
         chrome.sync("T", 44, FCF_TITLEBAR | FCF_BORDER, true, None, 40);

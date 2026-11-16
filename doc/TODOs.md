@@ -75,20 +75,23 @@ NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 
 ### PM Graphics Performance and Architecture
 
-From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `renderer.rs`, `font.rs`, `message.rs`) on 2026-11-15. The steps are in suggested order. Steps 0–2 (frame statistics, a blocking event loop, coalesced presents, clipboard via events; damage-tracked compositing, row-wise blits, cached chrome, a per-thread glyph cache, content kept on resize) are done — see the developer guide, "Rendering Pipeline"; measure the items below with the frame statistics (`RUST_LOG=warpine::gui=debug`) before and after.
+From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `renderer.rs`, `font.rs`, `message.rs`) on 2026-11-15. The steps are in suggested order. Steps 0–2 (frame statistics, a blocking event loop, coalesced presents, clipboard via events; damage-tracked compositing, row-wise blits, cached chrome, a per-thread glyph cache, content kept on resize) and the core of step 3 (shared per-frame surfaces drawn on the API thread, `GpiQueryPel`/`GpiSetPel`, `FM_*` mix modes) are done — see the developer guide, "Rendering Pipeline"; measure the items below with the frame statistics (`RUST_LOG=warpine::gui=debug`) before and after.
 
 - [ ] **Measure on a real display** — the event-loop change was measured only on SDL's `dummy` driver (idle CPU roughly halved); compare idle CPU and input latency on X11 and Wayland, where the old loop also read the clipboard ~125 times a second; `samples/pm_bench` gives repeatable guest-side numbers for the comparison
 
 **Step 2 follow-ups — compositor**
 
-- [ ] **Damage smaller than a window** — `WindowManager::dirty` holds window handles, so invalidating a small area still redraws the whole frame; record the invalidated rectangles (`WinInvalidateRect` already receives them) and damage only those
+- [ ] **Damage smaller than a window** — `WindowManager::dirty` holds window handles, so invalidating a small area or drawing one primitive still redraws the whole frame; record the invalidated rectangles (`WinInvalidateRect` already receives them) and the bounds of each `DrawOp` drawn into a surface (`Loader::draw`), and damage only those
 - [ ] **Tighter damage for moves** — a window dragged a short distance damages the bounding box of its old and new positions; damage the two rectangles separately (or the old one minus the new one)
 - [ ] **Present cost** — after damage tracking, most of a composite (~0.2–0.35 ms on the `dummy` driver) is `canvas.copy` of the whole texture plus `present`, independent of the damage; addressed by step 4
 
-**Step 3 — rasterise on the API thread (largest; affects compatibility)**
+**Step 3 follow-ups — what the shared surfaces unlock**
 
-- [ ] **Shared per-window surface** — GPI calls are sent as one `GUIMessage` per primitive and rasterised later on the GUI thread, so the API thread cannot read pixels back. Draw on the API thread into a shared surface and send only damage to the GUI thread
-- [ ] **Unlocks** — `GpiQueryPel`, `GpiBitBlt` from a window, destination-dependent mix modes (XOR…), memory presentation spaces and bitmaps
+- [ ] **`GpiBitBlt`** — window to window first (copy between surface rectangles with a raster operation), then from and to memory presentation spaces
+- [ ] **Memory presentation spaces and bitmaps** — `DevOpenDC` memory DC, `GpiCreatePS` on it, `GpiCreateBitmap` / `GpiSetBitmap` / `GpiDeleteBitmap`; a bitmap is a `Surface` not owned by a window (`GpiCreatePS` without a window draws nothing today)
+- [ ] **Logical colour tables** — `GpiCreateLogColorTable` (`LCOLF_RGB`, `LCOLF_CONSECRGB`…), `GpiQueryRGBColor`, `GpiQueryColorIndex`; `GpiQueryPel` returns a default-table index when the pel matches one and RGB otherwise, which is ambiguous for RGB-mode applications
+- [ ] **Background mix and line styles** — `GpiSetBackMix` is stored but no primitive draws a background (text cell background, patterned fills); `GpiSetLineType` / `GpiSetLineWidth` are stubs
+- [ ] **Flicker during long paints** — every draw marks its frame dirty, so a composite can show a paint half done (e.g. just after the background fill); if visible, defer presentation of a `WinBeginPaint` presentation space to `WinEndPaint`
 
 - [ ] **DIVE (direct framebuffer blitting)** — the API most OS/2 games and video players use instead of GPI: the application fills a buffer and asks for it to be blitted (with scaling and colour conversion) into a window. Maps directly onto the shared per-window surface above. The ordinal table (`doc/os2_ordinals.md`) has no DIVE section, so first find the export list and semantics in public headers / import libraries (clean-room policy); pairs with DART audio in MMPM/2
 

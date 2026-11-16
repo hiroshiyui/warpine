@@ -18,9 +18,10 @@
  *   Timer       WM_TIMER rate for a 10 ms WinStartTimer
  *
  * The clock is DosQuerySysInfo(QSV_MS_COUNT). The numbers are what the
- * application sees: under Warpine, GPI calls queue drawing for the GUI
- * thread, so the GPI figures are the cost of issuing the calls, not of
- * rasterising them. Use RUST_LOG=warpine::gui=debug for the host side.
+ * application sees: under Warpine, GPI calls rasterise into the window's
+ * surface before returning, and the GUI thread composites separately, so the
+ * GPI figures include drawing but not putting it on screen. Use
+ * RUST_LOG=warpine::gui=debug for the host side.
  */
 #define INCL_WIN
 #define INCL_GPI

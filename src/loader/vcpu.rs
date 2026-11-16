@@ -593,19 +593,9 @@ impl super::Loader {
                                                 .map(|w| (w.dialog_dismissed, w.dialog_result))
                                         };
                                         if let Some((true, dlg_result)) = dismissed {
-                                            // Dialog dismissed: remove from Z-order and
-                                            // trigger a desktop repaint.
-                                            {
-                                                let mut wm = self.shared.window_mgr.lock_or_recover();
-                                                wm.z_remove(hwnd_dlg);
-                                            }
-                                            let gui_tx = self.shared.window_mgr
-                                                .lock_or_recover().gui_tx.clone();
-                                            if let Some(ref s) = gui_tx {
-                                                let _ = s.send(crate::gui::GUIMessage::PresentBuffer {
-                                                    handle: hwnd_dlg,
-                                                });
-                                            }
+                                            // Dialog dismissed: remove it from the Z-order,
+                                            // which marks the desktop for a repaint.
+                                            self.shared.window_mgr.lock_or_recover().z_remove(hwnd_dlg);
                                             // regs.rip and regs.rsp are already set to saved state
                                             // by the code above the match.
                                             regs.rax = dlg_result as u64;

@@ -17,10 +17,10 @@ use std::sync::atomic::Ordering;
 use super::constants::*;
 use super::pm_edit::{self, EditBuffer, EditKey, CARET_W};
 use super::pm_types::OS2Message;
-use super::{control_box, control_text, ApiResult, Loader, MutexExt,
+use super::{control_box, control_text, ApiResult, Loader, MutexExt, Painter,
             CONTROL_FIELD_COLOR, CONTROL_LINE_H, CONTROL_TEXT_COLOR, CONTROL_TEXT_INSET};
 use crate::gui::font::{self, FontSpec};
-use crate::gui::{GUIMessage, GUISender};
+use crate::gui::surface::DrawOp;
 
 pub(super) const CLASS_ENTRYFIELD: &str = "WC_ENTRYFIELD";
 pub(super) const CLASS_MLE: &str = "WC_MLE";
@@ -84,21 +84,18 @@ fn mouse_pos(mp1: u32) -> (i32, i32) {
 /// Draw one line of an edit control: `chars` clipped to `view_w` pixels with
 /// its line box bottom-left at `(x, y)`, and the caret bar before `chars[caret]` when
 /// `caret` is given. The caret is clipped vertically to `(clip_lo, clip_hi)`.
-fn draw_edit_line(sender: &GUISender, handle: u32, (x, y): (i32, i32), view_w: i32,
+fn draw_edit_line(p: &Painter, (x, y): (i32, i32), view_w: i32,
                   chars: &[char], caret: Option<usize>, (clip_lo, clip_hi): (i32, i32)) {
     let line: String = chars.iter().collect();
     let shown = font::fit_text(&line, view_w, FontSpec::SYSTEM);
     if !shown.is_empty() {
-        control_text(sender, handle, x, y, shown);
+        control_text(p, x, y, shown);
     }
     if let Some(caret) = caret {
         let caret_x = x + system_width(&chars[..caret.min(chars.len())].iter().collect::<String>());
         let (y1, y2) = (y.max(clip_lo), (y + CONTROL_LINE_H - 1).min(clip_hi));
         if y1 <= y2 {
-            let _ = sender.send(GUIMessage::DrawBox {
-                handle, x1: caret_x, y1, x2: caret_x + CARET_W - 1, y2,
-                color: CONTROL_CARET_COLOR, fill: true,
-            });
+            p.fill((caret_x, y1, caret_x + CARET_W - 1, y2), CONTROL_CARET_COLOR);
         }
     }
 }
@@ -140,11 +137,7 @@ impl Loader {
             }
         };
         self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0);
-        let mut wm = self.shared.window_mgr.lock_or_recover();
-        wm.mark_dirty(frame);
-        if let Some(ref sender) = wm.gui_tx {
-            let _ = sender.send(GUIMessage::PresentBuffer { handle: frame });
-        }
+        self.shared.window_mgr.lock_or_recover().mark_dirty(frame);
         true
     }
 
@@ -164,7 +157,7 @@ impl Loader {
 
     /// WC_ENTRYFIELD: white field with one vertically centred line of text,
     /// scrolled horizontally so the caret is visible; caret bar when focused.
-    pub(super) fn paint_entry_field(&self, sender: &GUISender, handle: u32, hwnd: u32,
+    pub(super) fn paint_entry_field(&self, p: &Painter, hwnd: u32,
                                     (x, y, cx, cy): (i32, i32, i32, i32)) {
         let view_w = cx - 2 * CONTROL_TEXT_INSET;
         let (buf, first, focused) = {
@@ -178,8 +171,8 @@ impl Loader {
             win.edit_scroll = first;
             (buf, first, focused)
         };
-        control_box(sender, handle, (x, y, cx, cy), CONTROL_FIELD_COLOR);
-        draw_edit_line(sender, handle, (x + CONTROL_TEXT_INSET, y + (cy - CONTROL_LINE_H) / 2),
+        control_box(p, (x, y, cx, cy), CONTROL_FIELD_COLOR);
+        draw_edit_line(p, (x + CONTROL_TEXT_INSET, y + (cy - CONTROL_LINE_H) / 2),
                        view_w, &buf.chars()[first..], focused.then(|| buf.caret() - first),
                        (y + 1, y + cy - 1));
     }
@@ -187,7 +180,7 @@ impl Loader {
     /// WC_MLE: white field, one row per line from the top, no word wrap.
     /// Scrolled vertically so the caret's line is visible; only the caret's
     /// line scrolls horizontally.
-    pub(super) fn paint_mle(&self, sender: &GUISender, handle: u32, hwnd: u32,
+    pub(super) fn paint_mle(&self, p: &Painter, hwnd: u32,
                             (x, y, cx, cy): (i32, i32, i32, i32)) {
         let view_w = cx - 2 * CONTROL_TEXT_INSET;
         let rows = control_visible_rows(cy);
@@ -207,7 +200,7 @@ impl Loader {
             win.top_row = top;
             (buf, top, first, focused)
         };
-        control_box(sender, handle, (x, y, cx, cy), CONTROL_FIELD_COLOR);
+        control_box(p, (x, y, cx, cy), CONTROL_FIELD_COLOR);
         let (caret_line, col) = buf.caret_line();
         for (i, line) in buf.lines().into_iter().enumerate().skip(top).take(rows) {
             let chars = &buf.chars()[line];
@@ -216,14 +209,14 @@ impl Loader {
             } else {
                 (chars, None)
             };
-            draw_edit_line(sender, handle, (x + CONTROL_TEXT_INSET, y + control_row_y(cy, i - top)),
+            draw_edit_line(p, (x + CONTROL_TEXT_INSET, y + control_row_y(cy, i - top)),
                            view_w, chars, caret, (y + 1, y + cy - 1));
         }
     }
 
     /// WC_LISTBOX: white field, one row per item from the first visible item;
     /// the selected item is drawn highlighted.
-    pub(super) fn paint_listbox(&self, sender: &GUISender, handle: u32, hwnd: u32,
+    pub(super) fn paint_listbox(&self, p: &Painter, hwnd: u32,
                                 (x, y, cx, cy): (i32, i32, i32, i32)) {
         let (items, sel, top_row) = {
             let wm = self.shared.window_mgr.lock_or_recover();
@@ -232,20 +225,17 @@ impl Loader {
         };
         let rows = control_visible_rows(cy);
         let top = listbox_top(top_row, items.len(), rows);
-        control_box(sender, handle, (x, y, cx, cy), CONTROL_FIELD_COLOR);
+        control_box(p, (x, y, cx, cy), CONTROL_FIELD_COLOR);
         for (i, item) in items.iter().enumerate().skip(top).take(rows) {
             let row_y = y + control_row_y(cy, i - top);
             let selected = sel == Some(i);
             if selected {
-                let _ = sender.send(GUIMessage::DrawBox {
-                    handle, x1: x + 1, y1: row_y, x2: x + cx - 1, y2: row_y + CONTROL_LINE_H - 1,
-                    color: CONTROL_SELECT_COLOR, fill: true,
-                });
+                p.fill((x + 1, row_y, x + cx - 1, row_y + CONTROL_LINE_H - 1), CONTROL_SELECT_COLOR);
             }
             let label = font::fit_text(item, cx - 2 * CONTROL_TEXT_INSET, FontSpec::SYSTEM);
             if !label.is_empty() {
-                let _ = sender.send(GUIMessage::DrawText {
-                    handle, x: x + CONTROL_TEXT_INSET, y: row_y, text: label.to_string(),
+                p.op(DrawOp::Text {
+                    x: x + CONTROL_TEXT_INSET, y: row_y, text: label.to_string(),
                     color: if selected { CONTROL_SELECT_TEXT_COLOR } else { CONTROL_TEXT_COLOR },
                 });
             }
@@ -465,8 +455,6 @@ impl Loader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gui::GUIReceiver;
-    use crate::gui::create_gui_channel;
 
     const FRAME_CX: i32 = 640;
     const FRAME_CY: i32 = 480;
@@ -475,15 +463,14 @@ mod tests {
         loader: Loader,
         client: u32,
         hmq: u32,
-        rx: GUIReceiver,
+        frame: u32,
     }
 
-    /// A std window (frame + client with a guest window procedure) whose GUI
-    /// channel is captured so tests can inspect what the controls draw.
+    /// A std window (frame + client with a guest window procedure) whose
+    /// surface records what the controls draw.
     fn fixture() -> Fixture {
         let loader = Loader::new_mock();
-        let (tx, rx) = create_gui_channel();
-        let (client, hmq) = {
+        let (client, hmq, frame) = {
             let mut wm = loader.shared.window_mgr.lock_or_recover();
             let hmq = wm.create_mq(850);
             wm.tid_to_hmq.insert(0, hmq);
@@ -497,10 +484,9 @@ mod tests {
             }
             wm.z_push_top(frame);
             wm.focused_hwnd = frame;
-            wm.gui_tx = Some(tx);
-            (client, hmq)
+            (client, hmq, frame)
         };
-        Fixture { loader, client, hmq, rx }
+        Fixture { loader, client, hmq, frame }
     }
 
     impl Fixture {
@@ -552,16 +538,19 @@ mod tests {
             mq.lock_or_recover().messages.drain(..).map(|m| (m.hwnd, m.msg, m.mp1, m.mp2)).collect()
         }
 
-        /// Discard pending draw commands, repaint `hwnd`, return its commands.
-        fn paint(&self, hwnd: u32) -> Vec<GUIMessage> {
-            while self.rx.try_recv().is_ok() {}
+        /// Repaint `hwnd` and return the operations drawn into its frame's
+        /// surface.
+        fn paint(&self, hwnd: u32) -> Vec<DrawOp> {
+            let surface = self.loader.shared.window_mgr.lock_or_recover()
+                .frame_surface(self.frame).unwrap();
+            surface.lock_or_recover().record = Some(Vec::new());
             self.send(hwnd, WM_PAINT, 0, 0);
-            self.rx.try_iter().collect()
+            surface.lock_or_recover().record.take().unwrap()
         }
 
         fn drawn_texts(&self, hwnd: u32) -> Vec<(i32, i32, String, u32)> {
             self.paint(hwnd).into_iter().filter_map(|m| match m {
-                GUIMessage::DrawText { x, y, text, color, .. } => Some((x, y, text, color)),
+                DrawOp::Text { x, y, text, color } => Some((x, y, text, color)),
                 _ => None,
             }).collect()
         }
@@ -569,7 +558,7 @@ mod tests {
         /// Filled boxes of `color`: `(x1, y1, x2, y2)`.
         fn drawn_fills(&self, hwnd: u32, color: u32) -> Vec<(i32, i32, i32, i32)> {
             self.paint(hwnd).into_iter().filter_map(|m| match m {
-                GUIMessage::DrawBox { x1, y1, x2, y2, color: c, fill: true, .. } if c == color => {
+                DrawOp::Box { x1, y1, x2, y2, color: c, fill: true, .. } if c == color => {
                     Some((x1, y1, x2, y2))
                 }
                 _ => None,

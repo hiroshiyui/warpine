@@ -6,21 +6,11 @@ use std::sync::mpsc::{Receiver, Sender, SendError, TryRecvError};
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use std::time::Duration;
 
-use super::font::FontSpec;
-
+/// Requests that only the GUI thread can carry out.
+///
+/// Drawing does not go through this channel: API threads draw straight into
+/// the frame's shared surface (`gui::surface`) and mark the frame dirty.
 pub enum GUIMessage {
-    CreateWindow { class: String, title: String, handle: u32 },
-    ResizeWindow { handle: u32, width: u32, height: u32 },
-    MoveWindow { handle: u32, x: i32, y: i32 },
-    ShowWindow { handle: u32, show: bool },
-    DrawBox { handle: u32, x1: i32, y1: i32, x2: i32, y2: i32, color: u32, fill: bool },
-    DrawLine { handle: u32, x1: i32, y1: i32, x2: i32, y2: i32, color: u32 },
-    /// System-font text; `y` is the bottom of the 16-px line box.
-    DrawText { handle: u32, x: i32, y: i32, text: String, color: u32 },
-    /// Text in an explicit font; `y` is the baseline (GPI convention).
-    DrawTextFont { handle: u32, x: i32, y: i32, text: String, color: u32, font: FontSpec },
-    ClearBuffer { handle: u32 },
-    PresentBuffer { handle: u32 },
     /// Copy `text` to the host system clipboard.
     SetClipboardText(String),
     /// Instruct the SDL2 backend to call `SDL_CaptureMouse`.
@@ -237,11 +227,11 @@ mod tests {
     fn sending_a_message_wakes_the_gui_thread() {
         let (tx, rx) = create_gui_channel();
         let calls = counting_hook(&rx.wake_handle());
-        tx.send(GUIMessage::ClearBuffer { handle: 1 }).unwrap();
-        tx.send(GUIMessage::PresentBuffer { handle: 1 }).unwrap();
+        tx.send(GUIMessage::SetClipboardText("a".into())).unwrap();
+        tx.send(GUIMessage::SetMouseCapture(1)).unwrap();
         assert_eq!(calls.load(Ordering::Relaxed), 1);
-        assert!(matches!(rx.try_recv(), Ok(GUIMessage::ClearBuffer { handle: 1 })));
-        assert!(matches!(rx.try_recv(), Ok(GUIMessage::PresentBuffer { handle: 1 })));
+        assert!(matches!(rx.try_recv(), Ok(GUIMessage::SetClipboardText(t)) if t == "a"));
+        assert!(matches!(rx.try_recv(), Ok(GUIMessage::SetMouseCapture(1))));
         assert!(rx.try_recv().is_err());
     }
 }
