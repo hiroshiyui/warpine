@@ -611,6 +611,15 @@ fn gui_pm_dialog_test_matches_golden() {
         &format!("{DIALOG_TEST_FILL_IN}4000 dump {{dump}}\n4100 quit\n"));
 }
 
+/// pm_codepage_test: PM text follows the message queue's codepage
+/// (WinSetCp, including CP1004, which DosSetProcessCp refuses), WinQueryCpList
+/// lists the queue codepages, and a presentation space starts with its queue's
+/// codepage (GpiQueryCp) until GpiSetCp changes it.
+#[test]
+fn gui_pm_codepage_test_follows_the_queue_codepage() {
+    assert_sample_checks_pass("samples/pm_codepage_test/pm_codepage_test.exe", "pm_codepage_test", 15);
+}
+
 /// pm_audio_test: DosBeep and MMPM/2 waveaudio played through the main-thread
 /// SDL3 audio service (dummy audio driver): playback blocks for the file's
 /// length with "wait", "notify" posts MM_MCINOTIFY, aliases and the
