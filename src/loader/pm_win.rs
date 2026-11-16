@@ -1616,17 +1616,18 @@ impl super::Loader {
     // ── Binary resource parser helpers ───────────────────────────────────────────
 
     /// Read a NUL-terminated guest string starting at `base + *offset`, advancing
-    /// `*offset` past the terminating NUL.  Stops at `base + max_size`.
-    fn read_nul_str_at(&self, base: u32, offset: &mut u32, max_size: u32) -> String {
-        let mut s = String::new();
+    /// `*offset` past the terminating NUL, and decode it with `codepage`.
+    /// Stops at `base + max_size`.
+    fn read_nul_str_at(&self, base: u32, offset: &mut u32, max_size: u32, codepage: u32) -> String {
+        let mut bytes = Vec::new();
         loop {
             if *offset >= max_size { break; }
             let b = self.guest_read::<u8>(base + *offset).unwrap_or(0);
             *offset += 1;
             if b == 0 { break; }
-            s.push(b as char);
+            bytes.push(b);
         }
-        s
+        super::codepage::cp_decode(&bytes, codepage)
     }
 
     /// Parse exactly `count` MENUTEMPLATE items from the flat byte stream.
@@ -1639,7 +1640,7 @@ impl super::Loader {
     /// When `count == 0` the function falls back to the MIS_END sentinel
     /// (bit 15 of afStyle) for compatibility with hand-built templates that
     /// omit the count field.
-    fn parse_menu_items(&self, base: u32, size: u32, offset: &mut u32, count: usize) -> Vec<MenuItem> {
+    fn parse_menu_items(&self, base: u32, size: u32, offset: &mut u32, count: usize, codepage: u32) -> Vec<MenuItem> {
         use super::constants::{MIS_END, MIS_SEPARATOR, MIS_SUBMENU};
         let use_count = count > 0;
         let mut items = Vec::new();
@@ -1657,7 +1658,7 @@ impl super::Loader {
 
             // Text is present unless the item is a pure separator.
             let text = if style & MIS_SEPARATOR == 0 {
-                self.read_nul_str_at(base, offset, size)
+                self.read_nul_str_at(base, offset, size, codepage)
             } else {
                 String::new()
             };
@@ -1668,7 +1669,7 @@ impl super::Loader {
                 if *offset + 10 <= size {
                     let child_count = self.guest_read::<u16>(base + *offset + 8).unwrap_or(0) as usize;
                     *offset += 10;
-                    self.parse_menu_items(base, size, offset, child_count)
+                    self.parse_menu_items(base, size, offset, child_count, codepage)
                 } else {
                     Vec::new()
                 }
@@ -1683,7 +1684,8 @@ impl super::Loader {
         items
     }
 
-    /// Parse a MENUTEMPLATE binary resource at `guest_addr` (size `size`).
+    /// Parse a MENUTEMPLATE binary resource at `guest_addr` (size `size`);
+    /// item texts are decoded with the template's codepage.
     ///
     /// The wrc (Open Watcom) OS/2 MENUTEMPLATE header is 10 bytes:
     ///   u32 total_size, u16 codepage, u16 reserved, u16 item_count.
@@ -1695,8 +1697,13 @@ impl super::Loader {
         if size < 10 { return Vec::new(); }
         // Header: u32 total_size, u16 codepage, u16 reserved, u16 item_count
         let item_count = self.guest_read::<u16>(guest_addr + 8).unwrap_or(0) as usize;
+        // Item texts are in the template's codepage; 0 means the process codepage.
+        let codepage = match self.guest_read::<u16>(guest_addr + 4).unwrap_or(0) {
+            0 => self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed),
+            cp => cp as u32,
+        };
         let mut offset = 10u32;
-        self.parse_menu_items(guest_addr, size, &mut offset, item_count)
+        self.parse_menu_items(guest_addr, size, &mut offset, item_count, codepage)
     }
 
     /// Parse a DLGTEMPLATE binary resource at `guest_addr` (size `size`).
@@ -1729,7 +1736,7 @@ impl super::Loader {
         // Dialog title sits in the string pool starting at title_off.
         let title = if title_off > 0 && title_off < size {
             let mut toff = title_off;
-            self.read_nul_str_at(guest_addr, &mut toff, size)
+            self.read_nul_str_at(guest_addr, &mut toff, size, self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed))
         } else {
             String::new()
         };
@@ -1771,7 +1778,7 @@ impl super::Loader {
             }.to_string();
             let text = if text_off > 0 && text_off < size {
                 let mut toff = text_off;
-                self.read_nul_str_at(guest_addr, &mut toff, size)
+                self.read_nul_str_at(guest_addr, &mut toff, size, self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed))
             } else {
                 String::new()
             };
@@ -2009,6 +2016,30 @@ mod tests {
         assert_eq!(items[0].text, "File");
         assert_eq!(items[1].id, 200);
         assert_eq!(items[1].text, "Help");
+    }
+
+    /// Menu item texts are decoded with the template's codepage (the process
+    /// codepage when the template gives 0), not byte by byte as Latin-1.
+    #[test]
+    fn test_menu_template_texts_use_the_template_codepage() {
+        let loader = Loader::new_mock();
+        let base: u32 = 0x5000;
+        let menu = |cp: u16| -> Vec<u8> {
+            let mut d = vec![0x13, 0x00, 0x00, 0x00, cp as u8, (cp >> 8) as u8, 0x04, 0x00, 0x01, 0x00];
+            // One item: MIS_TEXT, id 1, text 0x82 0xA0 (CP932 'あ', CP850 'éá').
+            d.extend_from_slice(&[0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x82, 0xA0, 0x00]);
+            d
+        };
+        let parse = |data: &[u8]| {
+            for (i, &b) in data.iter().enumerate() {
+                loader.guest_write::<u8>(base + i as u32, b).unwrap();
+            }
+            loader.parse_menu_template(base, data.len() as u32)[0].text.clone()
+        };
+        assert_eq!(parse(&menu(932)), "あ");
+        assert_eq!(parse(&menu(850)), "éá");
+        loader.shared.active_codepage.store(932, Ordering::Relaxed);
+        assert_eq!(parse(&menu(0)), "あ", "codepage 0: the process codepage");
     }
 
     /// WinCreateStdWindow (908) with FCF_MENU must load the RT_MENU resource
