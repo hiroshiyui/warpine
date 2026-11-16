@@ -255,21 +255,11 @@ const TILE: usize = 16;
 /// Largest per-channel difference of a tile average that still counts as equal.
 const TILE_TOLERANCE: i32 = 6;
 
-/// Run `sample` under a GUI script and return the desktop it dumps.
-/// `steps` are script lines; `{dump}` is replaced by the capture path.
-/// Returns `(width, height, rgb bytes)`.
-fn run_gui_sample(sample: &str, steps: &str) -> (usize, usize, Vec<u8>) {
-    run_gui_sample_dumps(sample, steps, 1).remove(0)
-}
-
-/// Like [`run_gui_sample`] for a script that captures the desktop `count`
-/// times: `{dump0}`, `{dump1}`, … name the capture paths (`{dump}` is
-/// `{dump0}`), and the captures are returned in that order.
-fn run_gui_sample_dumps(sample: &str, steps: &str, count: usize) -> Vec<(usize, usize, Vec<u8>)> {
-    run_gui_sample_dumps_env(sample, steps, count, &[])
-}
-
-/// [`run_gui_sample_dumps`] with extra environment variables for warpine.
+/// Run `sample` under a GUI script that captures the desktop `count` times,
+/// with extra environment variables `env` for warpine, and return the
+/// captures in order as `(width, height, rgb bytes)`. `steps` are script
+/// lines; `{dump0}`, `{dump1}`, … name the capture paths (`{dump}` is
+/// `{dump0}`).
 fn run_gui_sample_dumps_env(sample: &str, steps: &str, count: usize, env: &[(&str, &str)])
                             -> Vec<(usize, usize, Vec<u8>)> {
     let dir = tempfile::tempdir().expect("tempdir");
