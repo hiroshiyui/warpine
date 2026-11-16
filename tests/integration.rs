@@ -535,6 +535,15 @@ fn gui_pm_bitmap_test_blits_bitmaps() {
     assert_sample_checks_pass("samples/pm_bitmap_test/pm_bitmap_test.exe", "pm_bitmap_test", 25);
 }
 
+/// pm_audio_test: DosBeep and MMPM/2 waveaudio played through the main-thread
+/// SDL3 audio service (dummy audio driver): playback blocks for the file's
+/// length with "wait", "notify" posts MM_MCINOTIFY, aliases and the
+/// mciSendCommand parameter blocks follow the toolkit headers.
+#[test]
+fn gui_pm_audio_test_plays_through_the_audio_service() {
+    assert_sample_checks_pass("samples/pm_audio_test/pm_audio_test.exe", "pm_audio_test", 17);
+}
+
 // Colours the compositor draws with (`src/gui/sdl2_renderer.rs`).
 const GUI_DESKTOP_BG: u32 = 0x40_8040;
 const GUI_TITLE_ACTIVE: u32 = 0x00_0080;
