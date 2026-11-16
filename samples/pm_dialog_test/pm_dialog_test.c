@@ -8,8 +8,15 @@
  *
  *   Ctrl+D, type "Warp", Tab, Down, Down, Enter   -> DID_OK, "Warp", item 1
  *   Ctrl+D, Esc                                   -> DID_CANCEL
+ *   Ctrl+D, Tab, Tab, Right, Enter                -> Cancel (arrow key within
+ *                                                    the OK / Cancel group)
+ *   Ctrl+D, Tab, Tab, Alt+N, type "Zz", Alt+C     -> the ~Name label focuses the
+ *                                                    entry field, ~Cancel cancels
  *   Alt+F4                                        -> WM_SYSCOMMAND(SC_CLOSE),
  *                                                    then WM_CLOSE
+ *
+ * It also checks WinPeekMsg with filters, that the owner is disabled while
+ * the dialog runs, and that WinDlgBox destroys the dialog.
  *
  * Each check is written to stdout:
  *
@@ -32,6 +39,10 @@ static int  round_no = 0;          /* how many times the dialog was opened */
 static char name[32];              /* entry field text when OK was pressed */
 static LONG selection = -2;        /* list box selection when OK was pressed */
 static BOOL saw_sc_close = FALSE;  /* WM_SYSCOMMAND(SC_CLOSE) reached the client */
+static HWND frame;                 /* the main window's frame */
+static HWND dialog;                /* the dialog of the current round */
+static USHORT cancel_source;       /* CMDSRC_* of the last DID_CANCEL */
+static BOOL cancel_in_entry;       /* the entry field had the focus at DID_CANCEL */
 
 /* ---------- output (no libc printf) ---------- */
 
@@ -86,6 +97,7 @@ MRESULT EXPENTRY NameDlgProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
     switch( msg ) {
     case WM_INITDLG: {
         HWND entry = WinWindowFromID( hwnd, ID_NAME );
+        dialog = hwnd;
         WinSendDlgItemMsg( hwnd, ID_LIST, LM_INSERTITEM, MPFROMSHORT( LIT_END ), MPFROMP( "Red" ) );
         WinSendDlgItemMsg( hwnd, ID_LIST, LM_INSERTITEM, MPFROMSHORT( LIT_END ), MPFROMP( "Green" ) );
         WinSendDlgItemMsg( hwnd, ID_LIST, LM_INSERTITEM, MPFROMSHORT( LIT_END ), MPFROMP( "Blue" ) );
@@ -95,6 +107,7 @@ MRESULT EXPENTRY NameDlgProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
             check( "the entry field has the focus", (LONG)WinQueryFocus( HWND_DESKTOP ), (LONG)entry );
             check( "controls are children of the dialog",
                    (LONG)WinQueryWindow( entry, QW_PARENT ), (LONG)hwnd );
+            check( "the owner is disabled while the dialog runs", WinIsWindowEnabled( frame ), FALSE );
         }
         return (MRESULT)FALSE;
     }
@@ -109,6 +122,11 @@ MRESULT EXPENTRY NameDlgProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
                                                                MPFROMSHORT( LIT_FIRST ), 0 ) );
             WinDismissDlg( hwnd, DID_OK );
             return 0;
+        }
+        if( SHORT1FROMMP( mp1 ) == DID_CANCEL ) {
+            cancel_source = SHORT1FROMMP( mp2 );
+            cancel_in_entry = WinQueryFocus( HWND_DESKTOP ) == WinWindowFromID( hwnd, ID_NAME );
+            WinQueryDlgItemText( hwnd, ID_NAME, sizeof( name ), name );
         }
         break;   /* DID_CANCEL: WinDefDlgProc dismisses the dialog with it */
     }
@@ -130,8 +148,17 @@ static void run_dialog( HWND hwnd, MPARAM mp2 )
         check( "Enter ends the dialog with DID_OK", result, DID_OK );
         check( "the typed name was kept", strcmp( name, "Warp" ), 0 );
         check( "Down twice selects the second item", selection, 1 );
+        check( "WinDlgBox destroys the dialog", WinIsWindow( hab, dialog ), FALSE );
+        check( "the owner is enabled again", WinIsWindowEnabled( frame ), TRUE );
     } else if( round_no == 2 ) {
         check( "Esc ends the dialog with DID_CANCEL", result, DID_CANCEL );
+    } else if( round_no == 3 ) {
+        check( "Right then Enter presses Cancel", result, DID_CANCEL );
+        check( "Cancel was a push button", cancel_source, CMDSRC_PUSHBUTTON );
+    } else if( round_no == 4 ) {
+        check( "Alt+C presses ~Cancel", result, DID_CANCEL );
+        check( "Alt+N moved the focus to the entry field", cancel_in_entry, TRUE );
+        check( "text typed after Alt+N went to the entry field", strcmp( name, "Zz" ), 0 );
     }
 }
 
@@ -177,7 +204,7 @@ MRESULT EXPENTRY ClientWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
 int main( void )
 {
     HMQ   hmq;
-    HWND  frame, client;
+    HWND  client;
     QMSG  qmsg;
     ULONG flags = FCF_TITLEBAR | FCF_SYSMENU | FCF_SIZEBORDER | FCF_MENU | FCF_ACCELTABLE;
     char  line[64], *p;
@@ -192,10 +219,21 @@ int main( void )
     check( "the title bar has a height", WinQuerySysValue( HWND_DESKTOP, SV_CYTITLEBAR ) > 0, TRUE );
     check( "the accelerator table loads", WinLoadAccelTable( hab, NULLHANDLE, ID_MAIN ) != NULLHANDLE, TRUE );
 
+    /* WinPeekMsg: a posted message is seen without being removed, then
+     * removed; the filters pass only what they name. */
+    WinPostMsg( client, WM_USER, MPFROMLONG( 42 ), 0 );
+    check( "WinPeekMsg filtered to another message finds nothing",
+           WinPeekMsg( hab, &qmsg, client, WM_USER + 1, WM_USER + 1, PM_REMOVE ), FALSE );
+    check( "WinPeekMsg PM_NOREMOVE sees the message",
+           WinPeekMsg( hab, &qmsg, client, WM_USER, WM_USER, PM_NOREMOVE ) && qmsg.msg == WM_USER, TRUE );
+    check( "WinPeekMsg PM_REMOVE takes it",
+           WinPeekMsg( hab, &qmsg, client, WM_USER, WM_USER, PM_REMOVE ) && LONGFROMMP( qmsg.mp1 ) == 42, TRUE );
+    check( "then it is gone", WinPeekMsg( hab, &qmsg, client, WM_USER, WM_USER, PM_REMOVE ), FALSE );
+
     while( WinGetMsg( hab, &qmsg, NULLHANDLE, 0, 0 ) )
         WinDispatchMsg( hab, &qmsg );
 
-    check( "the dialog was opened twice", round_no, 2 );
+    check( "the dialog was opened four times", round_no, 4 );
     p = append_str( line, "pm_dialog_test: done " );
     p = append_long( p, n_passed );
     p = append_str( p, "/" );

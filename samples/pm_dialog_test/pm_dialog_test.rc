@@ -24,11 +24,11 @@ BEGIN
     DIALOG "Your name and colour", ID_DLG, 60, 150, 200, 110, WS_VISIBLE,
            FCF_TITLEBAR | FCF_SYSMENU
     BEGIN
-        LTEXT         "Name:",   -1,         8,  84,  40,  10
+        LTEXT         "~Name:",  -1,         8,  84,  40,  10
         ENTRYFIELD    "",        ID_NAME,   50,  84, 140,  10, ES_MARGIN | WS_TABSTOP
         LTEXT         "Colour:", -1,         8,  70,  60,  10
         LISTBOX                  ID_LIST,    8,  26, 120,  42, WS_TABSTOP
-        DEFPUSHBUTTON "OK",      DID_OK,     8,   4,  50,  14
-        PUSHBUTTON    "Cancel",  DID_CANCEL, 64,  4,  50,  14
+        DEFPUSHBUTTON "OK",      DID_OK,     8,   4,  50,  14, WS_GROUP | WS_TABSTOP
+        PUSHBUTTON    "~Cancel", DID_CANCEL, 64,  4,  50,  14, WS_TABSTOP
     END
 END

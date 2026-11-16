@@ -588,12 +588,19 @@ const DIALOG_TEST_FILL_IN: &str = "1500 key ctrl+d\n2500 text Warp\n2800 key tab
 /// from the frame's accelerator table (FCF_ACCELTABLE) opens it, typing goes
 /// to the entry field that has the focus, Tab moves to the list box, Enter
 /// presses the default push button (WM_COMMAND DID_OK, CMDSRC_PUSHBUTTON),
-/// Esc cancels, and Alt+F4 (system accelerator) closes the main window
-/// through WM_SYSCOMMAND(SC_CLOSE) and WM_CLOSE.
+/// Esc cancels, Right moves within the OK / Cancel group, Alt+N (the ~Name
+/// label) focuses the entry field and Alt+C presses ~Cancel, and Alt+F4
+/// (system accelerator) closes the main window through
+/// WM_SYSCOMMAND(SC_CLOSE) and WM_CLOSE. The sample also checks WinPeekMsg,
+/// the disabled owner and that WinDlgBox destroys the dialog.
 #[test]
 fn gui_pm_dialog_test_is_driven_by_the_keyboard() {
-    let steps = format!("{DIALOG_TEST_FILL_IN}3700 key enter\n4500 key ctrl+d\n5300 key esc\n6000 key alt+f4\n9000 quit\n");
-    assert_scripted_checks_pass("samples/pm_dialog_test/pm_dialog_test.exe", "pm_dialog_test", 16, &steps);
+    let steps = format!("{DIALOG_TEST_FILL_IN}3700 key enter\n\
+        4500 key ctrl+d\n5300 key esc\n\
+        6000 key ctrl+d\n6800 key tab\n7000 key tab\n7200 key right\n7500 key enter\n\
+        8200 key ctrl+d\n9000 key tab\n9200 key tab\n9400 key alt+n\n9700 text Zz\n10000 key alt+c\n\
+        10800 key alt+f4\n14000 quit\n");
+    assert_scripted_checks_pass("samples/pm_dialog_test/pm_dialog_test.exe", "pm_dialog_test", 28, &steps);
 }
 
 /// The pm_dialog_test dialog filled in: entry field text, list selection,
