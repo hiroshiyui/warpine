@@ -2,14 +2,42 @@
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex, Condvar};
-use std::sync::atomic::AtomicBool;
 use std::thread;
 use crate::gui::font::FontSpec;
 use crate::gui::surface::{SharedSurface, Surface};
 use super::mutex_ext::MutexExt;
 
+/// Stop signal of a `WinStartTimer` thread. The thread sleeps on it, so
+/// stopping the timer wakes the thread at once instead of after the rest of
+/// its period (a `WinStopTimer` that joined a thread sleeping a whole period
+/// blocked the caller for up to that period).
+#[derive(Default)]
+pub struct TimerStop {
+    stopped: Mutex<bool>,
+    cond: Condvar,
+}
+
+impl TimerStop {
+    pub fn stop(&self) {
+        *self.stopped.lock_or_recover() = true;
+        self.cond.notify_all();
+    }
+
+    pub fn is_stopped(&self) -> bool {
+        *self.stopped.lock_or_recover()
+    }
+
+    /// Sleep for `period` unless stopped first; whether it was stopped.
+    pub fn sleep(&self, period: std::time::Duration) -> bool {
+        let guard = self.stopped.lock_or_recover();
+        let (guard, _) = self.cond.wait_timeout_while(guard, period, |stopped| !*stopped)
+            .unwrap_or_else(|e| e.into_inner());
+        *guard
+    }
+}
+
 /// Type alias for the timer map to reduce type complexity.
-pub type TimerMap = HashMap<(u32, u32), (Arc<AtomicBool>, Option<thread::JoinHandle<()>>)>;
+pub type TimerMap = HashMap<(u32, u32), (Arc<TimerStop>, Option<thread::JoinHandle<()>>)>;
 
 
 pub struct OS2Message {
@@ -506,8 +534,8 @@ impl WindowManager {
 
     /// Stop all running timers and join their threads.
     pub fn stop_all_timers(&mut self) {
-        for (_, (running, handle)) in self.timers.drain() {
-            running.store(false, std::sync::atomic::Ordering::Relaxed);
+        for (_, (stop, handle)) in self.timers.drain() {
+            stop.stop();
             if let Some(h) = handle {
                 let _ = h.join();
             }
@@ -853,6 +881,23 @@ impl WindowManager {
 
 #[cfg(test)]
 mod tests {
+    /// Stopping a timer wakes its sleeping thread at once (WinStopTimer used
+    /// to block for the rest of the period).
+    #[test]
+    fn timer_stop_interrupts_the_sleep() {
+        use std::time::{Duration, Instant};
+        let stop = std::sync::Arc::new(super::TimerStop::default());
+        assert!(!stop.sleep(Duration::from_millis(5)), "times out when not stopped");
+        let s2 = stop.clone();
+        let t = std::thread::spawn(move || s2.sleep(Duration::from_secs(60)));
+        std::thread::sleep(Duration::from_millis(20));
+        let start = Instant::now();
+        stop.stop();
+        assert!(t.join().unwrap(), "reports the stop");
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(stop.is_stopped() && stop.sleep(Duration::from_secs(60)), "stays stopped");
+    }
+
     use super::WindowManager;
 
     fn make_frame(wm: &mut WindowManager) -> u32 {

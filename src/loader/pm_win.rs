@@ -3,7 +3,6 @@
 // OS/2 Presentation Manager PMWIN API handler methods.
 
 use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
 use std::thread;
 use super::vm_backend::VcpuBackend;
 use log::{debug, info, warn};
@@ -53,7 +52,7 @@ use super::pm_types::OS2Message;
 use super::ApiResult;
 use crate::gui::GUIMessage;
 use crate::gui::surface::{DrawOp, Mix};
-use super::pm_types::{DeviceContext, PsOrigin};
+use super::pm_types::{DeviceContext, PsOrigin, TimerStop};
 use crate::lx::header::{RT_STRING, RT_MENU, RT_DIALOG, RT_ACCELTABLE};
 use super::pm_types::MenuItem;
 
@@ -587,25 +586,23 @@ impl super::Loader {
                 let dt_timeout = read_stack(16);
                 debug!("  [VCPU {}] WinStartTimer: hwnd={}, id={}, timeout={}ms", vcpu_id, hwnd, id_timer, dt_timeout);
 
-                let running = Arc::new(AtomicBool::new(true));
-                let running_clone = running.clone();
+                let stop = Arc::new(TimerStop::default());
+                let stop_clone = stop.clone();
                 let shared = Arc::clone(&self.shared);
 
-                {
-                    let mut wm = self.shared.window_mgr.lock_or_recover();
-                    // Stop any existing timer with the same id
-                    if let Some((old_flag, old_handle)) = wm.timers.remove(&(hwnd, id_timer)) {
-                        old_flag.store(false, std::sync::atomic::Ordering::Relaxed);
-                        if let Some(h) = old_handle { let _ = h.join(); }
-                    }
+                // Stop any existing timer with the same id (immediate: its
+                // thread sleeps on its TimerStop).
+                let old = self.shared.window_mgr.lock_or_recover().timers.remove(&(hwnd, id_timer));
+                if let Some((old_stop, old_handle)) = old {
+                    old_stop.stop();
+                    if let Some(h) = old_handle { let _ = h.join(); }
                 }
 
                 let timeout = std::time::Duration::from_millis(dt_timeout as u64);
                 let join_handle = thread::spawn(move || {
-                    while running_clone.load(std::sync::atomic::Ordering::Relaxed)
+                    while !stop_clone.is_stopped()
                         && !shared.exit_requested.load(std::sync::atomic::Ordering::Relaxed) {
-                        thread::sleep(timeout);
-                        if !running_clone.load(std::sync::atomic::Ordering::Relaxed) { break; }
+                        if stop_clone.sleep(timeout) { break; }
                         let wm = shared.window_mgr.lock_or_recover();
                         let hmq = wm.find_hmq_for_hwnd(hwnd);
                         if let Some(hmq) = hmq
@@ -621,7 +618,7 @@ impl super::Loader {
                 });
                 {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
-                    wm.timers.insert((hwnd, id_timer), (running, Some(join_handle)));
+                    wm.timers.insert((hwnd, id_timer), (stop, Some(join_handle)));
                 }
                 ApiResult::Normal(id_timer) // Return the timer ID
             }
@@ -631,8 +628,8 @@ impl super::Loader {
                 let hwnd = read_stack(8);
                 let id_timer = read_stack(12);
                 let mut wm = self.shared.window_mgr.lock_or_recover();
-                if let Some((running, handle)) = wm.timers.remove(&(hwnd, id_timer)) {
-                    running.store(false, std::sync::atomic::Ordering::Relaxed);
+                if let Some((stop, handle)) = wm.timers.remove(&(hwnd, id_timer)) {
+                    stop.stop();
                     drop(wm); // Release lock before joining
                     if let Some(h) = handle { let _ = h.join(); }
                 }
