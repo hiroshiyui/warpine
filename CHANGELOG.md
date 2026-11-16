@@ -70,6 +70,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **`sdl2` crate 0.37 → 0.38.**
 
 ### Fixed
+- **Resizing the desktop window resized the focused PM window** — a leftover from one SDL window per frame: the focused frame and its client both took the desktop's size (the client then also covered the title bar) and got `WM_SIZE`. A resize of the host window now only changes the view of the desktop; PM windows keep their size and position.
 - **Built-in controls after a window drag** — dragging a frame by its title bar copied the frame's desktop position into its client, whose position is relative to the frame, so afterwards controls were painted and hit-tested offset by the frame's position (clicks missed them). The drag now goes through `WindowManager::move_frame`, which moves only the frame (and keeps `FRAME_MIN_VISIBLE_W` of it on the desktop). Integration test `gui_controls_follow_a_dragged_window` replays the `pm_list_test` session in a moved window.
 - **`DLGTEMPLATE` parsing** (`pm_dialog.rs`) — templates were read at guessed offsets, scanning for the next item; they are now read as `<pmwin.h>` defines them (14-byte header, 30-byte `DLGTITEM`s in tree order with their children, string pool), so control styles (`WS_TABSTOP`, `BS_DEFAULT`, ...), nested items, the focus item, the frame flags and the template codepage are honoured, and every class (`WC_MLE`, `WC_SCROLLBAR`, ...) is created instead of being turned into a static.
 - **`ACCELTABLE` parsing** — the entry count was read from the codepage field.

@@ -862,29 +862,12 @@ impl SdlRenderer {
                     }
                     WindowEvent::Resized(w, h) => {
                         let (w, h) = (w as u32, h as u32);
+                        // Only the view of the desktop changes: PM windows
+                        // keep their size and position, as on an OS/2
+                        // desktop. (Positions count from the bottom edge, so
+                        // a change of height moves them on the screen.)
                         self.desktop.resize(w, h);
                         self.force_full = true;
-                        // Sync the focused frame's dimensions.
-                        let focused = {
-                            let mut wm = shared.window_mgr.lock_or_recover();
-                            let focused = wm.focused_hwnd;
-                            if focused != 0 {
-                                let client = wm.frame_to_client.get(&focused).copied();
-                                for hwnd in std::iter::once(focused).chain(client) {
-                                    if let Some(win) = wm.get_window_mut(hwnd) {
-                                        win.cx = w as i32;
-                                        win.cy = h as i32;
-                                    }
-                                }
-                                wm.resize_surface(focused, w as i32, h as i32);
-                            }
-                            focused
-                        };
-                        if focused != 0 {
-                            let mp2 = (h << 16) | w;
-                            push_msg(shared, focused, WM_SIZE, 0, mp2);
-                            push_msg(shared, focused, WM_PAINT, 0, 0);
-                        }
                     }
                     WindowEvent::Exposed => {
                         // Re-upload everything: the host discarded our pixels.
