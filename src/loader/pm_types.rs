@@ -626,6 +626,28 @@ impl WindowManager {
         (ax, ay, cx, cy)
     }
 
+    /// WinQueryWindow: the window related to `hwnd` by `code` (`QW_*`), or 0.
+    ///
+    /// A parent's `children` list runs bottom to top (a new window goes on
+    /// top of its siblings), so `QW_TOP` is its last entry and `QW_NEXT`
+    /// (the next window down) the entry before `hwnd`.
+    pub fn query_window(&self, hwnd: u32, code: i32) -> u32 {
+        use super::constants::{QW_BOTTOM, QW_NEXT, QW_OWNER, QW_PARENT, QW_PREV, QW_TOP};
+        let Some(w) = self.windows.get(&hwnd) else { return 0 };
+        let siblings = || self.windows.get(&w.parent).map(|p| p.children.as_slice()).unwrap_or(&[]);
+        let children = w.children.as_slice();
+        let pos = || siblings().iter().position(|&h| h == hwnd);
+        match code {
+            QW_PARENT => w.parent,
+            QW_OWNER => w.owner,
+            QW_TOP => children.last().copied().unwrap_or(0),
+            QW_BOTTOM => children.first().copied().unwrap_or(0),
+            QW_NEXT => pos().and_then(|i| i.checked_sub(1)).map_or(0, |i| siblings()[i]),
+            QW_PREV => pos().and_then(|i| siblings().get(i + 1).copied()).unwrap_or(0),
+            _ => 0,
+        }
+    }
+
     pub fn find_child_by_id(&self, parent: u32, id: u32) -> Option<u32> {
         if let Some(win) = self.windows.get(&parent) {
             for &child_hwnd in &win.children {
@@ -1024,6 +1046,32 @@ mod tests {
         assert_eq!(wm.builtin_control_descendants(client), vec![button, nested, entry]);
         assert!(wm.builtin_control_descendants(button).is_empty());
         assert!(wm.builtin_control_descendants(0xDEAD).is_empty());
+    }
+
+    #[test]
+    fn query_window_follows_parent_owner_and_sibling_order() {
+        use crate::loader::constants::{QW_BOTTOM, QW_NEXT, QW_OWNER, QW_PARENT, QW_PREV, QW_TOP};
+        let mut wm = WindowManager::new();
+        let parent = wm.create_window("App".to_string(), 0, 0);
+        let owner = wm.create_window("App".to_string(), 0, 0);
+        // Created bottom to top: `last` is the top-most sibling.
+        let first = wm.create_window("WC_BUTTON".to_string(), parent, 0);
+        let middle = wm.create_window("WC_BUTTON".to_string(), parent, 0);
+        let last = wm.create_window("WC_BUTTON".to_string(), parent, 0);
+        wm.get_window_mut(middle).unwrap().owner = owner;
+
+        assert_eq!(wm.query_window(middle, QW_PARENT), parent);
+        assert_eq!(wm.query_window(middle, QW_OWNER), owner);
+        assert_eq!(wm.query_window(first, QW_OWNER), 0, "no owner");
+        assert_eq!(wm.query_window(parent, QW_TOP), last);
+        assert_eq!(wm.query_window(parent, QW_BOTTOM), first);
+        assert_eq!(wm.query_window(middle, QW_NEXT), first, "next = one lower");
+        assert_eq!(wm.query_window(middle, QW_PREV), last, "previous = one higher");
+        assert_eq!(wm.query_window(first, QW_NEXT), 0, "bottom has no next");
+        assert_eq!(wm.query_window(last, QW_PREV), 0, "top has no previous");
+        assert_eq!(wm.query_window(first, QW_TOP), 0, "no children");
+        assert_eq!(wm.query_window(middle, 99), 0, "unknown code");
+        assert_eq!(wm.query_window(0xDEAD, QW_PARENT), 0, "unknown window");
     }
 
     #[test]

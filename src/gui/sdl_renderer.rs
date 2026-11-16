@@ -69,10 +69,7 @@ fn wait_timeout(now: Instant, last_composite: Instant, busy: bool,
 
 // ── VDR-C: Window chrome constants ────────────────────────────────────────
 
-/// Height of the title bar chrome in desktop pixels.
-const CHROME_TITLE_H: i32 = 20;
-/// Width of the frame border in desktop pixels (each side).
-const CHROME_BORDER_W: i32 = 2;
+use crate::loader::constants::{CHROME_BORDER_W, CHROME_TITLE_H};
 
 /// Width of each title-bar button (close/min/max/sysmenu), in desktop pixels.
 const CHROME_BTN_W: i32   = 16;

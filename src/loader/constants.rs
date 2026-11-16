@@ -67,13 +67,13 @@ pub const WM_QUIT: u32 = 0x002A;
 pub const WM_MOUSEMOVE: u32 = 0x0070;
 pub const WM_BUTTON1DOWN: u32 = 0x0071;
 pub const WM_BUTTON1UP: u32 = 0x0072;
-pub const WM_BUTTON2DOWN: u32 = 0x0073;
-pub const WM_BUTTON2UP: u32 = 0x0074;
-pub const WM_BUTTON3DOWN: u32 = 0x0075;
-pub const WM_BUTTON3UP: u32 = 0x0076;
+pub const WM_BUTTON2DOWN: u32 = 0x0074;
+pub const WM_BUTTON2UP: u32 = 0x0075;
+pub const WM_BUTTON3DOWN: u32 = 0x0077;
+pub const WM_BUTTON3UP: u32 = 0x0078;
 pub const WM_COMMAND: u32 = 0x0020;
 pub const WM_CHAR: u32 = 0x007A;
-pub const WM_ENABLE: u32 = 0x0002;
+pub const WM_ENABLE: u32 = 0x0004;
 
 // OS/2 WC_LISTBOX messages (LM_*)
 pub const LM_INSERTITEM:     u32 = 0x0161;
@@ -164,16 +164,17 @@ pub const SWP_MOVE: u32 = 0x0002;
 pub const SWP_ZORDER: u32 = 0x0004;
 pub const SWP_SHOW: u32 = 0x0008;
 pub const SWP_HIDE: u32 = 0x0010;
-pub const SWP_ACTIVATE: u32 = 0x0020;
-pub const SWP_MINIMIZE: u32 = 0x0100;
-pub const SWP_MAXIMIZE: u32 = 0x0200;
-pub const SWP_RESTORE: u32 = 0x0400;
+pub const SWP_ACTIVATE: u32 = 0x0080;
+pub const SWP_MINIMIZE: u32 = 0x0400;
+pub const SWP_MAXIMIZE: u32 = 0x0800;
+pub const SWP_RESTORE: u32 = 0x1000;
 
-// OS/2 HWND Z-order sentinels used with SWP_ZORDER in WinSetWindowPos.
-pub const HWND_TOP: u32          = 1; // Place window at the top of Z-order
-pub const HWND_BOTTOM: u32       = 2; // Place window at the bottom of Z-order
-pub const HWND_FLOAT: u32        = 3; // Float above all normal windows (mapped to HWND_TOP)
-pub const HWND_DESKTOP: u32      = 4; // PM desktop pseudo-handle (origin of coordinate space)
+// Pseudo window handles (<pmwin.h>): HWND_TOP / HWND_BOTTOM are the Z-order
+// sentinels used with SWP_ZORDER in WinSetWindowPos.
+pub const HWND_TOP: u32          = 3; // Place window at the top of Z-order
+pub const HWND_BOTTOM: u32       = 4; // Place window at the bottom of Z-order
+pub const HWND_DESKTOP: u32      = 1; // PM desktop pseudo-handle (origin of coordinate space)
+pub const HWND_OBJECT: u32       = 2; // Parent of object windows (never shown)
 
 // ── FCF_* frame creation flags (flCreateFlags in WinCreateStdWindow) ─────────
 // Values match OS/2 Warp 4 Toolkit <pmwin.h>.
@@ -194,7 +195,7 @@ pub const FCF_NOBYTEALIGN:   u32 = 0x0000_1000; // don't byte-align window posit
 pub const FCF_ICON:          u32 = 0x0000_4000; // title bar icon (requires hmod resource)
 pub const FCF_ACCELTABLE:    u32 = 0x0000_8000; // load accelerator table from hmod
 pub const FCF_SYSMODAL:      u32 = 0x0001_0000; // system-modal frame
-pub const FCF_STANDARD:      u32 = 0x0000_0CC3; // FCF_TITLEBAR|FCF_SYSMENU|FCF_MINMAX|FCF_SIZEBORDER|FCF_TASKLIST
+pub const FCF_STANDARD:      u32 = 0x0000_CC3F; // FCF_TITLEBAR|SYSMENU|MENU|SIZEBORDER|MINMAX|SHELLPOSITION|TASKLIST|ICON|ACCELTABLE
 
 // ── GPI return values and colour sentinels (<pmgpi.h>) ───────────────────────
 pub const GPI_ERROR: u32 = 0;
@@ -417,10 +418,10 @@ pub const MENU_DROPDOWN_W: i32 = 120;
 pub const MENU_DROPDOWN_ITEM_H: i32 = 16;
 
 // Dialog and menu message constants
-pub const WM_INITDLG:    u32 = 0x0021; // First message to a dialog box
-pub const WM_INITMENU:   u32 = 0x00E5; // Sent before a menu is displayed
-pub const WM_MENUSELECT: u32 = 0x0078; // Menu item selected (non-activating)
-pub const WM_MENUEND:    u32 = 0x0079; // Menu dismissed
+pub const WM_INITDLG:    u32 = 0x003B; // First message to a dialog box
+pub const WM_INITMENU:   u32 = 0x0033; // Sent before a menu is displayed
+pub const WM_MENUSELECT: u32 = 0x0034; // Menu item selected (non-activating)
+pub const WM_MENUEND:    u32 = 0x0035; // Menu dismissed
 
 // Dialog result IDs returned by WinDlgBox / WinProcessDlg
 pub const DID_OK:     u32 = 1;         // OK button
@@ -454,27 +455,27 @@ pub const MIA_CHECKED:   u16 = 0x2000;
 pub const MIA_DISABLED:  u16 = 0x4000;
 pub const MIA_HILITED:   u16 = 0x8000;
 
-// WM_SYSCOMMAND (0x000A) — system command sent by frame chrome to the frame.
+// WM_SYSCOMMAND (0x0021) — system command sent by frame chrome to the frame.
 // mp1 = SC_* command code, mp2 = unused.
-pub const WM_SYSCOMMAND: u32 = 0x000A;
+pub const WM_SYSCOMMAND: u32 = 0x0021;
 
 // SC_* system command codes (sent in mp1 of WM_SYSCOMMAND).
 pub const SC_CLOSE:    u32 = 0x8004; // close the window
 pub const SC_MINIMIZE: u32 = 0x8002; // minimize the window
 pub const SC_MAXIMIZE: u32 = 0x8003; // maximize the window
-pub const SC_RESTORE:  u32 = 0x8080; // restore from min/max
+pub const SC_RESTORE:  u32 = 0x8008; // restore from min/max
 
-// WM_ACTIVATE (0x0042) — sent to a frame when it gains or loses activation.
+// WM_ACTIVATE (0x000D) — sent to a frame when it gains or loses activation.
 // mp1 = fActivate (TRUE = gaining focus, FALSE = losing); mp2 = other frame HWND.
-pub const WM_ACTIVATE: u32 = 0x0042;
+pub const WM_ACTIVATE: u32 = 0x000D;
 
 // WM_CONTROL — notification message from a child control to its owner.
 // mp1 = MPFROM2SHORT(usID, usNotifyCode); mp2 = control-specific data.
 pub const WM_CONTROL: u32 = 0x0030;
 
 // Button notification codes (high word of WM_CONTROL mp1)
-pub const BN_CLICKED: u32 = 0;
-pub const BN_DBLCLICKED: u32 = 1;
+pub const BN_CLICKED: u32 = 1;
+pub const BN_DBLCLICKED: u32 = 2;
 
 // Dialog units → pixels. OS/2 defines one horizontal dialog unit as 1/4 of the
 // system font's average character width and one vertical unit as 1/8 of its
@@ -530,8 +531,33 @@ pub fn default_frame_pos(n: usize, cx: i32, cy: i32, desktop: (u32, u32)) -> (i3
     (x, y)
 }
 
-// VDR chrome dimensions — must match CHROME_TITLE_H in sdl_renderer.rs
+// VDR chrome dimensions, shared by the compositor and WinQuerySysValue.
+/// Height of the title bar chrome in desktop pixels.
 pub const CHROME_TITLE_H: i32 = 20;
+/// Width of the frame border in desktop pixels (each side).
+pub const CHROME_BORDER_W: i32 = 2;
+
+// WinQuerySysValue indices (SV_*, <pmwin.h>)
+pub const SV_CXSIZEBORDER: i32 = 4;
+pub const SV_CYSIZEBORDER: i32 = 5;
+pub const SV_CXSCREEN:     i32 = 20;
+pub const SV_CYSCREEN:     i32 = 21;
+pub const SV_CXBORDER:     i32 = 26;
+pub const SV_CYBORDER:     i32 = 27;
+pub const SV_CXDLGFRAME:   i32 = 28;
+pub const SV_CYDLGFRAME:   i32 = 29;
+pub const SV_CYTITLEBAR:   i32 = 30;
+pub const SV_CYMENU:       i32 = 35;
+pub const SV_CXFULLSCREEN: i32 = 36;
+pub const SV_CYFULLSCREEN: i32 = 37;
+
+// WinQueryWindow relationship codes (QW_*, <pmwin.h>)
+pub const QW_NEXT:   i32 = 0;
+pub const QW_PREV:   i32 = 1;
+pub const QW_TOP:    i32 = 2;
+pub const QW_BOTTOM: i32 = 3;
+pub const QW_OWNER:  i32 = 4;
+pub const QW_PARENT: i32 = 5;
 
 // Common window style bits (flStyle in WinCreateWindow)
 pub const WS_VISIBLE:  u32 = 0x8000_0000;
@@ -542,9 +568,9 @@ pub const WS_GROUP:    u32 = 0x0001_0000;
 // Button styles (low 16 bits of flStyle for WC_BUTTON windows)
 pub const BS_PUSHBUTTON:     u32 = 0x0000;
 pub const BS_CHECKBOX:       u32 = 0x0001;
-pub const BS_AUTOCHECKBOX:   u32 = 0x0003;
-pub const BS_RADIOBUTTON:    u32 = 0x0005;
-pub const BS_AUTORADIOBUTTON: u32 = 0x0007;
+pub const BS_AUTOCHECKBOX:   u32 = 0x0002;
+pub const BS_RADIOBUTTON:    u32 = 0x0003;
+pub const BS_AUTORADIOBUTTON: u32 = 0x0004;
 
 // DosSetExtLIBPATH / DosQueryExtLIBPATH flags
 pub const BEGIN_LIBPATH: u32 = 1;
@@ -590,10 +616,10 @@ pub const MB_ENTERCANCEL:      u32 = 0x0008;
 
 // Icon bits (bits 4–7 of flStyle)
 pub const MB_NOICON:           u32 = 0x0000;
-pub const MB_ICONHAND:         u32 = 0x0010; // error
-pub const MB_ICONQUESTION:     u32 = 0x0020; // question
-pub const MB_ICONEXCLAMATION:  u32 = 0x0030; // warning
-pub const MB_ICONASTERISK:     u32 = 0x0040; // information
+pub const MB_ICONHAND:         u32 = 0x0040; // error
+pub const MB_ICONQUESTION:     u32 = 0x0010; // question
+pub const MB_ICONEXCLAMATION:  u32 = 0x0020; // warning
+pub const MB_ICONASTERISK:     u32 = 0x0030; // information
 
 // WinMessageBox return values (MBID_*)
 pub const MBID_OK:     u32 = 1;
@@ -603,7 +629,7 @@ pub const MBID_RETRY:  u32 = 4;
 pub const MBID_IGNORE: u32 = 5;
 pub const MBID_YES:    u32 = 6;
 pub const MBID_NO:     u32 = 7;
-pub const MBID_ENTER:  u32 = 8;
+pub const MBID_ENTER:  u32 = 9;
 
 // ── OS/2 Structured Exception Handling (SEH) ─────────────────────────────────
 

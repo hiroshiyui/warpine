@@ -1178,17 +1178,7 @@ impl super::Loader {
                 // WinQuerySysValue(HWND hwndDesktop, LONG iSysValue)
                 let _hwnd = read_stack(4);
                 let sys_val = read_stack(8) as i32;
-                let result = match sys_val {
-                    20 => desktop_size().0,   // SV_CXSCREEN
-                    21 => desktop_size().1,   // SV_CYSCREEN
-                    22 => desktop_size().0,   // SV_CXFULLSCREEN
-                    23 => desktop_size().1.saturating_sub(CHROME_TITLE_H as u32), // SV_CYFULLSCREEN (minus title bar)
-                    24 => 20,    // SV_CYTITLEBAR
-                    27 => 1,     // SV_CXSIZEBORDER
-                    28 => 1,     // SV_CYSIZEBORDER
-                    _ => 0,
-                };
-                ApiResult::Normal(result)
+                ApiResult::Normal(sys_value(sys_val) as u32)
             }
             841 => {
                 // WinQueryWindowText(HWND hwnd, LONG cchBufferMax, PCH pchBuffer)
@@ -1209,17 +1199,7 @@ impl super::Loader {
                 // WinQueryWindow(HWND hwnd, LONG lCode)
                 let hwnd = read_stack(4);
                 let code = read_stack(8) as i32;
-                let wm = self.shared.window_mgr.lock_or_recover();
-                let result = match code {
-                    5 => { // QW_PARENT
-                        wm.get_window(hwnd).map(|w| w.parent).unwrap_or(0)
-                    }
-                    6 => { // QW_OWNER
-                        wm.get_window(hwnd).map(|w| w.parent).unwrap_or(0)
-                    }
-                    _ => 0,
-                };
-                ApiResult::Normal(result)
+                ApiResult::Normal(self.shared.window_mgr.lock_or_recover().query_window(hwnd, code))
             }
             843 => {
                 // WinQueryWindowULong(HWND hwnd, LONG index)
@@ -1354,7 +1334,7 @@ impl super::Loader {
                 // VDR-B2: SWP_ZORDER — update the Z-order stack.
                 if fl & SWP_ZORDER != 0 && wm.frame_to_client.contains_key(&hwnd) {
                     match hwnd_behind {
-                        HWND_TOP | HWND_FLOAT => wm.z_push_top(hwnd),
+                        HWND_TOP              => wm.z_push_top(hwnd),
                         HWND_BOTTOM           => wm.z_push_bottom(hwnd),
                         0                     => {} // no-op
                         behind                => wm.z_insert_behind(hwnd, behind),
@@ -1938,12 +1918,45 @@ impl super::Loader {
     }
 }
 
+/// WinQuerySysValue: the system value `index` (`SV_*`), describing the
+/// desktop and the chrome Warpine draws; 0 for values it does not keep.
+fn sys_value(index: i32) -> i32 {
+    let (dw, dh) = desktop_size();
+    match index {
+        SV_CXSCREEN | SV_CXFULLSCREEN => dw as i32,
+        SV_CYSCREEN => dh as i32,
+        // The full-screen client height leaves out the title bar.
+        SV_CYFULLSCREEN => dh as i32 - CHROME_TITLE_H,
+        SV_CYTITLEBAR => CHROME_TITLE_H,
+        SV_CYMENU => MENU_BAR_HEIGHT as i32,
+        SV_CXSIZEBORDER | SV_CYSIZEBORDER | SV_CXDLGFRAME | SV_CYDLGFRAME => CHROME_BORDER_W,
+        SV_CXBORDER | SV_CYBORDER => 1,
+        _ => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::{Loader, ApiResult};
     use super::super::vm_backend::mock::MockVcpu;
     use super::super::mutex_ext::MutexExt;
     use std::sync::atomic::Ordering;
+
+    #[test]
+    fn test_sys_values_match_the_desktop_and_chrome() {
+        use super::super::constants::*;
+        let (dw, dh) = desktop_size();
+        assert_eq!(super::sys_value(SV_CXSCREEN), dw as i32);
+        assert_eq!(super::sys_value(SV_CYSCREEN), dh as i32);
+        assert_eq!(super::sys_value(SV_CXFULLSCREEN), dw as i32);
+        assert_eq!(super::sys_value(SV_CYFULLSCREEN), dh as i32 - CHROME_TITLE_H);
+        assert_eq!(super::sys_value(SV_CYTITLEBAR), CHROME_TITLE_H);
+        assert_eq!(super::sys_value(SV_CYMENU), MENU_BAR_HEIGHT as i32);
+        assert_eq!(super::sys_value(SV_CXSIZEBORDER), CHROME_BORDER_W);
+        assert_eq!(super::sys_value(SV_CYDLGFRAME), CHROME_BORDER_W);
+        assert_eq!(super::sys_value(SV_CXBORDER), 1);
+        assert_eq!(super::sys_value(-1), 0, "unknown index");
+    }
 
     #[test]
     fn test_window_geometry_is_bounded() {
