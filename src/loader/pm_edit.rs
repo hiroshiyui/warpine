@@ -92,24 +92,99 @@ pub fn key_from_wm_char(mp1: u32, mp2: u32, codepage: u32) -> Option<(EditKey, b
     }
 }
 
-/// The text and caret of an entry field or MLE while it is being edited.
+/// The text, caret and selection of an entry field or MLE while it is
+/// being edited.
 ///
 /// In multi-line mode lines are separated by `\n` or `\r\n`; a `\r\n` pair is
 /// treated as one unit, so the caret never rests between its two characters
 /// and deleting a line break removes both.
+///
+/// The selection runs between the *anchor* and the caret (either may come
+/// first); it is empty when they are equal. Moving with Shift held keeps the
+/// anchor and so extends the selection; any other move or edit brings the
+/// anchor to the caret.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EditBuffer {
     chars: Vec<char>,
     caret: usize,
+    anchor: usize,
     multiline: bool,
 }
 
 impl EditBuffer {
-    /// Build a buffer from a window's text. `caret` is clamped to the text.
+    /// Build a buffer from a window's text with no selection. `caret` is
+    /// clamped to the text.
     pub fn new(text: &str, caret: usize, multiline: bool) -> Self {
-        let mut buf = EditBuffer { chars: text.chars().collect(), caret: 0, multiline };
-        buf.set_caret(caret);
+        Self::with_selection(text, caret, caret, multiline)
+    }
+
+    /// Build a buffer with the selection from `anchor` to `caret` (both
+    /// clamped to the text).
+    pub fn with_selection(text: &str, anchor: usize, caret: usize, multiline: bool) -> Self {
+        let mut buf = EditBuffer { chars: text.chars().collect(), caret: 0, anchor: 0, multiline };
+        buf.set_selection(anchor, caret);
         buf
+    }
+
+    /// The selection anchor (the end of the selection the caret is not at).
+    pub fn anchor(&self) -> usize {
+        self.anchor
+    }
+
+    /// The selected characters, `start..end`; empty when nothing is selected.
+    pub fn selection(&self) -> Range<usize> {
+        self.anchor.min(self.caret)..self.anchor.max(self.caret)
+    }
+
+    pub fn has_selection(&self) -> bool {
+        self.anchor != self.caret
+    }
+
+    /// The selected text.
+    pub fn selected_text(&self) -> String {
+        self.slice(self.selection())
+    }
+
+    /// Select from `anchor` to `caret`, both clamped and kept out of the
+    /// middle of a `\r\n` pair.
+    pub fn set_selection(&mut self, anchor: usize, caret: usize) {
+        self.set_caret(anchor);
+        let anchor = self.caret;
+        self.set_caret(caret);
+        self.anchor = anchor;
+    }
+
+    /// Delete the selected text, leaving the caret where it began. Returns
+    /// whether anything was deleted.
+    pub fn delete_selection(&mut self) -> bool {
+        let sel = self.selection();
+        if sel.is_empty() {
+            return false;
+        }
+        self.chars.drain(sel.clone());
+        self.caret = sel.start;
+        self.anchor = sel.start;
+        true
+    }
+
+    /// Replace the selection with `text` (pasting): line breaks are kept in
+    /// a multi-line buffer, while a single-line buffer takes the text up to
+    /// the first line break; other control characters are dropped. The
+    /// caret ends after the inserted text. Returns whether the text changed.
+    pub fn replace_selection(&mut self, text: &str) -> bool {
+        let mut changed = self.delete_selection();
+        let text = if self.multiline { text } else { text.split(['\r', '\n']).next().unwrap_or("") };
+        let mut chars = text.chars().peekable();
+        while let Some(ch) = chars.next() {
+            let keep = !ch.is_control() || (self.multiline && (ch == '\n' || (ch == '\r' && chars.peek() == Some(&'\n'))));
+            if keep {
+                self.chars.insert(self.caret, ch);
+                self.caret += 1;
+                changed = true;
+            }
+        }
+        self.anchor = self.caret;
+        changed
     }
 
     pub fn text(&self) -> String {
@@ -126,7 +201,7 @@ impl EditBuffer {
     }
 
     /// Move the caret to character index `pos`, clamped to the text and kept
-    /// out of the middle of a `\r\n` pair.
+    /// out of the middle of a `\r\n` pair, without a selection.
     pub fn set_caret(&mut self, pos: usize) {
         self.caret = pos.min(self.chars.len());
         if self.multiline && self.caret > 0
@@ -135,6 +210,14 @@ impl EditBuffer {
         {
             self.caret -= 1;
         }
+        self.anchor = self.caret;
+    }
+
+    /// Move the caret to `pos` keeping the anchor: extend the selection.
+    pub fn extend_to(&mut self, pos: usize) {
+        let anchor = self.anchor;
+        self.set_caret(pos);
+        self.anchor = anchor;
     }
 
     /// Length in characters of the line break starting at `i` (0 = none).
@@ -196,11 +279,18 @@ impl EditBuffer {
         (idx, self.caret - lines[idx].start)
     }
 
-    /// Put the caret at `col` of line `line`; both are clamped.
+    /// Put the caret at `col` of line `line`; both are clamped. The
+    /// selection is dropped.
     pub fn set_caret_in_line(&mut self, line: usize, col: usize) {
+        let pos = self.pos_in_line(line, col);
+        self.set_caret(pos);
+    }
+
+    /// The character index of `col` in line `line`, both clamped.
+    pub fn pos_in_line(&self, line: usize, col: usize) -> usize {
         let lines = self.lines();
         let range = &lines[line.min(lines.len() - 1)];
-        self.caret = range.start + col.min(range.len());
+        range.start + col.min(range.len())
     }
 
     /// Insert a printable character at the caret. Control characters are
@@ -283,23 +373,46 @@ impl EditBuffer {
         true
     }
 
-    /// Apply an editing key. Returns `None` when the key does not apply to
-    /// this kind of buffer (Enter/Up/Down in a single-line field), otherwise
-    /// `Some(text_changed)`.
-    pub fn apply(&mut self, key: EditKey, width: &dyn Fn(&str) -> i32) -> Option<bool> {
-        Some(match key {
-            EditKey::Char(ch) => self.insert(ch),
+    /// Apply an editing key; `extend` (Shift held) makes a movement key
+    /// extend the selection instead of dropping it. Returns `None` when the
+    /// key does not apply to this kind of buffer (Enter/Up/Down in a
+    /// single-line field), otherwise `Some(text_changed)`.
+    ///
+    /// With a selection, typing and Enter replace it, Backspace and Delete
+    /// remove it, and Left / Right without Shift only drop it, leaving the
+    /// caret at its start / end.
+    pub fn apply(&mut self, key: EditKey, extend: bool, width: &dyn Fn(&str) -> i32) -> Option<bool> {
+        if !self.multiline && matches!(key, EditKey::Enter | EditKey::Up | EditKey::Down) {
+            return None;
+        }
+        let selected = self.has_selection();
+        let anchor = self.anchor;
+        let changed = match key {
+            EditKey::Char(ch) => {
+                if ch.is_control() { return Some(false); }
+                self.delete_selection();
+                self.insert(ch)
+            }
+            EditKey::Enter => { self.delete_selection(); self.newline() }
+            EditKey::Backspace if selected => self.delete_selection(),
+            EditKey::Delete if selected => self.delete_selection(),
             EditKey::Backspace => self.backspace(),
             EditKey::Delete => self.delete(),
+            EditKey::Left | EditKey::Right if selected && !extend => {
+                let sel = self.selection();
+                self.caret = if key == EditKey::Left { sel.start } else { sel.end };
+                false
+            }
             EditKey::Left => { self.move_left(); false }
             EditKey::Right => { self.move_right(); false }
             EditKey::Home => { self.move_home(); false }
             EditKey::End => { self.move_end(); false }
-            EditKey::Enter if self.multiline => self.newline(),
-            EditKey::Up if self.multiline => { self.move_vertical(-1, width); false }
-            EditKey::Down if self.multiline => { self.move_vertical(1, width); false }
-            EditKey::Enter | EditKey::Up | EditKey::Down => return None,
-        })
+            EditKey::Up => { self.move_vertical(-1, width); false }
+            EditKey::Down => { self.move_vertical(1, width); false }
+        };
+        let moved = !matches!(key, EditKey::Char(_) | EditKey::Enter | EditKey::Backspace | EditKey::Delete);
+        self.anchor = if moved && extend { anchor } else { self.caret };
+        Some(changed)
     }
 }
 
@@ -483,9 +596,9 @@ mod tests {
         let mut b = EditBuffer::new("a\r\nb", 2, false);
         assert_eq!(b.caret(), 2, "no CRLF snapping in a single-line field");
         assert_eq!(b.lines(), vec![0..4]);
-        assert_eq!(b.apply(EditKey::Enter, &mono), None);
-        assert_eq!(b.apply(EditKey::Up, &mono), None);
-        assert_eq!(b.apply(EditKey::Down, &mono), None);
+        assert_eq!(b.apply(EditKey::Enter, false, &mono), None);
+        assert_eq!(b.apply(EditKey::Up, false, &mono), None);
+        assert_eq!(b.apply(EditKey::Down, false, &mono), None);
         assert_eq!(b.text(), "a\r\nb");
     }
 
@@ -504,7 +617,7 @@ mod tests {
     #[test]
     fn newline_splits_the_line_and_backspace_joins_it() {
         let mut b = EditBuffer::new("hello", 2, true);
-        assert_eq!(b.apply(EditKey::Enter, &mono), Some(true));
+        assert_eq!(b.apply(EditKey::Enter, false, &mono), Some(true));
         assert_eq!((b.text().as_str(), b.caret()), ("he\nllo", 3));
         assert_eq!(b.caret_line(), (1, 0));
         assert!(b.backspace());
@@ -553,7 +666,7 @@ mod tests {
         assert!(b.move_vertical(-2, &mono));
         assert_eq!(b.caret_line(), (0, 2));
         assert!(!b.move_vertical(-1, &mono), "already on the first line");
-        assert_eq!(b.apply(EditKey::Down, &mono), Some(false));
+        assert_eq!(b.apply(EditKey::Down, false, &mono), Some(false));
         assert_eq!(b.caret_line(), (1, 2));
     }
 
@@ -763,5 +876,77 @@ mod tests {
         assert_eq!(key_from_wm_char(mp1, mp2, 437), Some((EditKey::Char('a'), true)));
         let (mp1, mp2) = wm_char(KC_VIRTUALKEY | KC_KEYUP, 0, VK_LEFT);
         assert_eq!(key_from_wm_char(mp1, mp2, 437), Some((EditKey::Left, true)));
+    }
+
+    // ── selection ────────────────────────────────────────────────────────
+
+    #[test]
+    fn shift_moves_extend_and_plain_moves_collapse_the_selection() {
+        let mut b = EditBuffer::new("hello world", 0, false);
+        for _ in 0..5 {
+            b.apply(EditKey::Right, true, &mono);
+        }
+        assert_eq!((b.selection(), b.selected_text().as_str()), (0..5, "hello"));
+        b.apply(EditKey::Left, true, &mono);
+        assert_eq!(b.selection(), 0..4, "Shift+Left shrinks it");
+        b.apply(EditKey::Right, false, &mono);
+        assert_eq!((b.caret(), b.has_selection()), (4, false), "Right drops it at its end");
+        b.apply(EditKey::End, true, &mono);
+        assert_eq!(b.selection(), 4..11);
+        b.apply(EditKey::Left, false, &mono);
+        assert_eq!((b.caret(), b.has_selection()), (4, false), "Left drops it at its start");
+        b.apply(EditKey::Home, true, &mono);
+        assert_eq!((b.anchor(), b.caret()), (4, 0), "the caret may lead");
+        b.apply(EditKey::End, false, &mono);
+        assert_eq!((b.caret(), b.has_selection()), (11, false));
+    }
+
+    #[test]
+    fn edits_replace_or_remove_the_selection() {
+        let sel = |a, c| EditBuffer::with_selection("abcdef", a, c, false);
+        let mut b = sel(1, 4);
+        assert_eq!(b.apply(EditKey::Char('X'), false, &mono), Some(true));
+        assert_eq!((b.text().as_str(), b.caret(), b.has_selection()), ("aXef", 2, false));
+        let mut b = sel(4, 1);
+        b.apply(EditKey::Backspace, false, &mono);
+        assert_eq!((b.text().as_str(), b.caret()), ("aef", 1), "removes only the selection");
+        let mut b = sel(1, 4);
+        b.apply(EditKey::Delete, false, &mono);
+        assert_eq!(b.text(), "aef");
+        // A control character neither inserts nor drops the selection.
+        let mut b = sel(1, 4);
+        assert_eq!(b.apply(EditKey::Char('\t'), false, &mono), Some(false));
+        assert_eq!(b.selection(), 1..4);
+        // Enter replaces it in an MLE.
+        let mut b = EditBuffer::with_selection("abc\r\ndef", 2, 6, true);
+        assert_eq!(b.selected_text(), "c\r\nd");
+        b.apply(EditKey::Enter, false, &mono);
+        assert_eq!(b.text(), "ab\nef");
+    }
+
+    #[test]
+    fn selections_are_clamped_and_never_split_a_line_break() {
+        let b = EditBuffer::with_selection("ab\r\ncd", 3, 99, true);
+        assert_eq!((b.anchor(), b.caret()), (2, 6), "anchor out of the CRLF, caret clamped");
+        let mut b = EditBuffer::new("ab\r\ncd", 0, true);
+        b.extend_to(3);
+        assert_eq!(b.selection(), 0..2);
+        b.extend_to(4);
+        assert_eq!(b.selected_text(), "ab\r\n");
+        assert_eq!(b.pos_in_line(1, 99), 6);
+        assert_eq!(b.pos_in_line(9, 1), 5, "line clamped to the last");
+    }
+
+    #[test]
+    fn pasting_replaces_the_selection_and_filters_control_characters() {
+        let mut b = EditBuffer::with_selection("one two", 4, 7, false);
+        assert!(b.replace_selection("three\r\nfour"));
+        assert_eq!((b.text().as_str(), b.caret()), ("one three", 9), "single line: up to the break");
+        let mut b = EditBuffer::new("ab", 1, true);
+        assert!(b.replace_selection("x\r\ny\tz\nw"));
+        assert_eq!(b.text(), "ax\r\nyz\nwb", "line breaks kept, tab dropped");
+        let mut b = EditBuffer::new("ab", 1, false);
+        assert!(!b.replace_selection(""), "nothing to paste, nothing selected");
+        assert!(!b.delete_selection());
     }
 }

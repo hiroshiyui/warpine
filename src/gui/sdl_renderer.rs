@@ -994,6 +994,11 @@ impl SdlRenderer {
                             cw.y = fy;
                         }
                     }
+                } else if let Some((control, cx, cy)) = pressed_control_release(shared, x, (dh as i32 - 1) - y) {
+                    // A built-in control held with button 1 follows the
+                    // pointer (a text control extends its selection).
+                    let mp1 = ((cx as u32) & 0xFFFF) | ((cy as u32 & 0xFFFF) << 16);
+                    push_msg(shared, control, WM_MOUSEMOVE, mp1, 0);
                 } else {
                     let os2_y = (dh as i32 - 1) - y;
                     // VDR-D6: captured window overrides hit-test.
@@ -1191,7 +1196,7 @@ impl SdlRenderer {
                 // A built-in button held down gets the release wherever the
                 // pointer is, so it pops up (and is clicked only over itself).
                 if mouse_btn == sdl3::mouse::MouseButton::Left
-                    && let Some((button, bx, by)) = pressed_button_release(shared, x, os2_y)
+                    && let Some((button, bx, by)) = pressed_control_release(shared, x, os2_y)
                 {
                     let mp1 = ((bx as u32) & 0xFFFF) | ((by as u32 & 0xFFFF) << 16);
                     push_msg(shared, button, WM_BUTTON1UP, mp1, 0);
@@ -1567,11 +1572,11 @@ fn clicks_blocked(shared: &Arc<SharedState>, hwnd: u32) -> bool {
     wm.frame_disabled(wm.find_frame_for_hwnd(hwnd))
 }
 
-/// The built-in button held down with mouse button 1, if any, and the
-/// desktop point `(x, os2_y)` (bottom-left origin) relative to that button.
-fn pressed_button_release(shared: &Arc<SharedState>, x: i32, os2_y: i32) -> Option<(u32, i32, i32)> {
+/// The built-in control held down with mouse button 1, if any, and the
+/// desktop point `(x, os2_y)` (bottom-left origin) relative to that control.
+fn pressed_control_release(shared: &Arc<SharedState>, x: i32, os2_y: i32) -> Option<(u32, i32, i32)> {
     let wm = shared.window_mgr.lock_or_recover();
-    let button = wm.pressed_button;
+    let button = wm.pressed_control;
     if button == 0 { return None; }
     let frame = wm.find_frame_for_hwnd(button);
     let f = wm.get_window(frame)?;
@@ -2448,18 +2453,18 @@ mod tests {
     #[test]
     fn a_held_button_gets_the_release_relative_to_itself() {
         let (shared, frame, _client, entry) = routed_window(FCF_SIZEBORDER);
-        assert_eq!(super::pressed_button_release(&shared, 0, 0), None, "no button held");
+        assert_eq!(super::pressed_control_release(&shared, 0, 0), None, "no button held");
         {
             let mut wm = shared.window_mgr.lock_or_recover();
             let f = wm.get_window_mut(frame).unwrap();
             (f.x, f.y) = (100, 50);
-            wm.pressed_button = entry;
+            wm.pressed_control = entry;
         }
         // Desktop point → frame (100, 50) → surface (inside the border) → control (10, 200).
         let (x, y) = (100 + CHROME_BORDER_W + 10 + 3, 50 + 200 + 4);
-        assert_eq!(super::pressed_button_release(&shared, x, y), Some((entry, 3, 4)));
+        assert_eq!(super::pressed_control_release(&shared, x, y), Some((entry, 3, 4)));
         // Far away the position is outside the button, so it is not clicked.
-        let (_, bx, by) = super::pressed_button_release(&shared, 0, 0).unwrap();
+        let (_, bx, by) = super::pressed_control_release(&shared, 0, 0).unwrap();
         assert!(bx < 0 && by < 0);
     }
 

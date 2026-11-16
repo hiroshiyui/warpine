@@ -42,9 +42,38 @@ const BUTTON_PRESSED_SHIFT: i32 = 1;
 /// a character, a virtual key, or a Ctrl/Alt chord.
 const KEY_EVENT_KINDS: u32 = KC_CHAR | KC_VIRTUALKEY | KC_CTRL | KC_ALT;
 
+/// The clipboard commands of the text controls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ClipboardCmd {
+    Cut,
+    Copy,
+    Paste,
+    Clear,
+}
+
+/// The CUA clipboard key a WM_CHAR of an entry field / MLE stands for:
+/// Ctrl+Insert copies, Shift+Delete cuts, Shift+Insert pastes.
+fn clipboard_key(class: &str, mp1: u32, mp2: u32) -> Option<ClipboardCmd> {
+    if class == CLASS_LISTBOX || mp1 & KC_VIRTUALKEY == 0 {
+        return None;
+    }
+    let mods = mp1 & (KC_SHIFT | KC_CTRL | KC_ALT);
+    match (mp2 >> WM_CHAR_VKEY_SHIFT, mods) {
+        (VK_INSERT, KC_CTRL) => Some(ClipboardCmd::Copy),
+        (VK_DELETE, KC_SHIFT) => Some(ClipboardCmd::Cut),
+        (VK_INSERT, KC_SHIFT) => Some(ClipboardCmd::Paste),
+        _ => None,
+    }
+}
+
 /// Controls that take keyboard focus and handle mouse and keyboard input here.
 pub(super) fn is_input_control(class: &str) -> bool {
     matches!(class, CLASS_ENTRYFIELD | CLASS_MLE | CLASS_LISTBOX)
+}
+
+/// The text-editing controls: entry field and MLE.
+pub(super) fn is_edit_control(class: &str) -> bool {
+    matches!(class, CLASS_ENTRYFIELD | CLASS_MLE)
 }
 
 fn system_width(s: &str) -> i32 {
@@ -85,22 +114,75 @@ fn mouse_pos(mp1: u32) -> (i32, i32) {
 }
 
 /// Draw one line of an edit control: `chars` clipped to `view_w` pixels with
-/// its line box bottom-left at `(x, y)`, and the caret bar before `chars[caret]` when
-/// `caret` is given. The caret is clipped vertically to `(clip_lo, clip_hi)`.
-fn draw_edit_line(p: &Painter, (x, y): (i32, i32), view_w: i32,
-                  chars: &[char], caret: Option<usize>, (clip_lo, clip_hi): (i32, i32)) {
+/// its line box bottom-left at `(x, y)`, the characters `selected` (indices
+/// into `chars`) highlighted, and the caret bar before `chars[caret]` when
+/// `caret` is given. Highlight and caret are clipped vertically to
+/// `(clip_lo, clip_hi)`.
+fn draw_edit_line(p: &Painter, (x, y): (i32, i32), view_w: i32, chars: &[char],
+                  selected: std::ops::Range<usize>, caret: Option<usize>,
+                  (clip_lo, clip_hi): (i32, i32)) {
     let line: String = chars.iter().collect();
     let shown = font::fit_text(&line, view_w, FontSpec::SYSTEM);
     if !shown.is_empty() {
         control_text(p, x, y, shown);
     }
+    let prefix_w = |n: usize| system_width(&chars[..n.min(chars.len())].iter().collect::<String>());
+    let (y1, y2) = (y.max(clip_lo), (y + CONTROL_LINE_H - 1).min(clip_hi));
+    let shown_n = shown.chars().count();
+    let (s, e) = (selected.start.min(shown_n), selected.end.min(shown_n));
+    if s < e && y1 <= y2 {
+        let (x1, x2) = (x + prefix_w(s), x + prefix_w(e));
+        p.fill((x1, y1, x2 - 1, y2), CONTROL_SELECT_COLOR);
+        p.op(DrawOp::Text { x: x1, y, text: chars[s..e].iter().collect(), color: CONTROL_SELECT_TEXT_COLOR });
+    }
     if let Some(caret) = caret {
-        let caret_x = x + system_width(&chars[..caret.min(chars.len())].iter().collect::<String>());
-        let (y1, y2) = (y.max(clip_lo), (y + CONTROL_LINE_H - 1).min(clip_hi));
+        let caret_x = x + prefix_w(caret);
         if y1 <= y2 {
             p.fill((caret_x, y1, caret_x + CARET_W - 1, y2), CONTROL_CARET_COLOR);
         }
     }
+}
+
+/// `range` shifted to start at `origin` and cut to what lies after it; empty
+/// when it lies wholly before.
+fn relative(range: std::ops::Range<usize>, origin: usize) -> std::ops::Range<usize> {
+    range.start.saturating_sub(origin)..range.end.saturating_sub(origin)
+}
+
+/// The edit buffer of an entry field / MLE window, with its selection.
+fn edit_buffer(win: &super::pm_types::OS2Window, multiline: bool) -> EditBuffer {
+    EditBuffer::with_selection(&win.text, win.edit_anchor, win.edit_caret, multiline)
+}
+
+/// Store the caret and selection of `buf` in its window.
+fn store_selection(win: &mut super::pm_types::OS2Window, buf: &EditBuffer) {
+    win.edit_caret = buf.caret();
+    win.edit_anchor = buf.anchor();
+}
+
+/// The character index of an edit control under the pointer at
+/// `(local_x, local_y)` (relative to the control, `cy` high): the clicked
+/// row (clicks above the first row go to it, below the last row to the last
+/// line), then the nearest caret position in it, allowing for the
+/// horizontal scroll of the caret's line.
+fn edit_pos_at(win: &super::pm_types::OS2Window, multiline: bool, cy: i32,
+               (local_x, local_y): (i32, i32)) -> usize {
+    let buf = edit_buffer(win, multiline);
+    let lines = buf.lines();
+    let (caret_line, _) = buf.caret_line();
+    let line = if multiline {
+        let rows = control_visible_rows(cy);
+        let row = control_row_at(cy, local_y).unwrap_or(
+            if local_y >= control_row_y(cy, 0) { 0 } else { rows.saturating_sub(1) });
+        (win.top_row.min(lines.len() - 1) + row).min(lines.len() - 1)
+    } else {
+        0
+    };
+    let chars = &buf.chars()[lines[line].clone()];
+    // Only the caret's line is scrolled horizontally.
+    let first = if line == caret_line { win.edit_scroll.min(chars.len()) } else { 0 };
+    let col = first + pm_edit::caret_from_x(&chars[first..], local_x - CONTROL_TEXT_INSET, &system_width);
+    buf.pos_in_line(line, col)
 }
 
 impl Loader {
@@ -174,7 +256,7 @@ impl Loader {
         let (push, pressed, default, focused) = {
             let wm = self.shared.window_mgr.lock_or_recover();
             let style = wm.get_window(hwnd).map_or(0, |w| w.style);
-            (wm.is_push_button(hwnd), wm.pressed_button == hwnd,
+            (wm.is_push_button(hwnd), wm.pressed_control == hwnd,
              style & BS_DEFAULT != 0, wm.focus_hwnd == hwnd)
         };
         let push = |flag: bool| push && flag;
@@ -205,17 +287,19 @@ impl Loader {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             let focused = wm.focus_hwnd == hwnd;
             let Some(win) = wm.get_window_mut(hwnd) else { return };
-            let buf = EditBuffer::new(&win.text, win.edit_caret, false);
+            let buf = edit_buffer(win, false);
             let first = pm_edit::scroll_to_caret(
                 buf.chars(), buf.caret(), win.edit_scroll, view_w - CARET_W, &system_width);
-            win.edit_caret = buf.caret();
+            store_selection(win, &buf);
             win.edit_scroll = first;
             (buf, first, focused)
         };
+        // The selection shows while the field has the focus.
+        let selected = if focused { relative(buf.selection(), first) } else { 0..0 };
         control_box(p, (x, y, cx, cy), CONTROL_FIELD_COLOR);
         draw_edit_line(p, (x + CONTROL_TEXT_INSET, y + (cy - CONTROL_LINE_H) / 2),
-                       view_w, &buf.chars()[first..], focused.then(|| buf.caret() - first),
-                       (y + 1, y + cy - 1));
+                       view_w, &buf.chars()[first..], selected,
+                       focused.then(|| buf.caret() - first), (y + 1, y + cy - 1));
     }
 
     /// WC_MLE: white field, one row per line from the top, no word wrap.
@@ -229,29 +313,33 @@ impl Loader {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             let focused = wm.focus_hwnd == hwnd;
             let Some(win) = wm.get_window_mut(hwnd) else { return };
-            let buf = EditBuffer::new(&win.text, win.edit_caret, true);
+            let buf = edit_buffer(win, true);
             let lines = buf.lines();
             let (caret_line, col) = buf.caret_line();
             let top = pm_edit::scroll_to_row(caret_line, win.top_row, rows, lines.len());
             let first = pm_edit::scroll_to_caret(
                 &buf.chars()[lines[caret_line].clone()], col, win.edit_scroll,
                 view_w - CARET_W, &system_width);
-            win.edit_caret = buf.caret();
+            store_selection(win, &buf);
             win.edit_scroll = first;
             win.top_row = top;
             (buf, top, first, focused)
         };
         control_box(p, (x, y, cx, cy), CONTROL_FIELD_COLOR);
         let (caret_line, col) = buf.caret_line();
+        let sel = if focused { buf.selection() } else { 0..0 };
         for (i, line) in buf.lines().into_iter().enumerate().skip(top).take(rows) {
+            // The part of the selection in this line, relative to its start.
+            let in_line = relative(sel.start.max(line.start)..sel.end.min(line.end), line.start);
+            let in_line = if in_line.start < in_line.end { in_line } else { 0..0 };
             let chars = &buf.chars()[line];
-            let (chars, caret) = if i == caret_line {
-                (&chars[first..], focused.then_some(col - first))
+            let (chars, caret, selected) = if i == caret_line {
+                (&chars[first..], focused.then_some(col - first), relative(in_line, first))
             } else {
-                (chars, None)
+                (chars, None, in_line)
             };
             draw_edit_line(p, (x + CONTROL_TEXT_INSET, y + control_row_y(cy, i - top)),
-                           view_w, chars, caret, (y + 1, y + cy - 1));
+                           view_w, chars, selected, caret, (y + 1, y + cy - 1));
         }
     }
 
@@ -302,7 +390,6 @@ impl Loader {
             self.repaint_control(old_focus);
         }
 
-        let text_x = local_x - CONTROL_TEXT_INSET;
         match class {
             CLASS_LISTBOX => {
                 let item = {
@@ -321,32 +408,67 @@ impl Loader {
                 let multiline = class == CLASS_MLE;
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(win) = wm.get_window_mut(hwnd) {
-                    let mut buf = EditBuffer::new(&win.text, win.edit_caret, multiline);
-                    let lines = buf.lines();
-                    let (caret_line, _) = buf.caret_line();
-                    let line = if multiline {
-                        let rows = control_visible_rows(cy);
-                        // Clicks in the top margin go to the first visible
-                        // line, clicks below the last row to the last one.
-                        let row = control_row_at(cy, local_y).unwrap_or(
-                            if local_y >= control_row_y(cy, 0) { 0 } else { rows.saturating_sub(1) });
-                        (win.top_row.min(lines.len() - 1) + row).min(lines.len() - 1)
-                    } else {
-                        0
-                    };
-                    let chars = &buf.chars()[lines[line].clone()];
-                    // Only the caret's line is scrolled horizontally.
-                    let first = if line == caret_line { win.edit_scroll.min(chars.len()) } else { 0 };
-                    let col = first + pm_edit::caret_from_x(&chars[first..], text_x, &system_width);
-                    buf.set_caret_in_line(line, col);
-                    win.edit_caret = buf.caret();
-                    if line != caret_line {
+                    let (line_before, _) = edit_buffer(win, multiline).caret_line();
+                    let pos = edit_pos_at(win, multiline, cy, (local_x, local_y));
+                    let mut buf = edit_buffer(win, multiline);
+                    buf.set_caret(pos);
+                    store_selection(win, &buf);
+                    if buf.caret_line().0 != line_before {
                         win.edit_scroll = 0;
                     }
                 }
             }
         }
+        // Held until released: dragging extends the selection.
+        self.shared.window_mgr.lock_or_recover().pressed_control = hwnd;
         self.repaint_control(hwnd);
+        ApiResult::Normal(1)
+    }
+
+    /// WM_MOUSEMOVE on an entry field, MLE or list box held with button 1:
+    /// extend the selection to the pointer / select the item under it.
+    pub(super) fn control_mouse_move(&self, hwnd: u32, class: &str, cy: i32, mp1: u32) -> ApiResult {
+        if self.shared.window_mgr.lock_or_recover().pressed_control != hwnd {
+            return ApiResult::Normal(0);
+        }
+        let (local_x, local_y) = mouse_pos(mp1);
+        if class == CLASS_LISTBOX {
+            let item = {
+                let wm = self.shared.window_mgr.lock_or_recover();
+                wm.get_window(hwnd).and_then(|w| {
+                    let count = w.listbox_items.len();
+                    let top = listbox_top(w.top_row, count, control_visible_rows(cy));
+                    control_row_at(cy, local_y).map(|row| top + row).filter(|&i| i < count)
+                })
+            };
+            if let Some(item) = item {
+                self.listbox_select(hwnd, Some(item));
+            }
+            return ApiResult::Normal(1);
+        }
+        let multiline = class == CLASS_MLE;
+        let changed = {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let Some(win) = wm.get_window_mut(hwnd) else { return ApiResult::Normal(0) };
+            let pos = edit_pos_at(win, multiline, cy, (local_x, local_y));
+            let mut buf = edit_buffer(win, multiline);
+            let before = buf.caret();
+            buf.extend_to(pos);
+            store_selection(win, &buf);
+            buf.caret() != before
+        };
+        if changed {
+            self.repaint_control(hwnd);
+        }
+        ApiResult::Normal(1)
+    }
+
+    /// WM_BUTTON1UP on an entry field, MLE or list box: let go of it.
+    pub(super) fn control_button_up(&self, hwnd: u32) -> ApiResult {
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        if wm.pressed_control == hwnd {
+            wm.pressed_control = 0;
+        }
         ApiResult::Normal(1)
     }
 
@@ -360,7 +482,7 @@ impl Loader {
             if style & WS_DISABLED != 0 {
                 return ApiResult::Normal(0);
             }
-            wm.pressed_button = hwnd;
+            wm.pressed_control = hwnd;
             style & BS_NOPOINTERFOCUS == 0
         };
         if take_focus {
@@ -375,7 +497,7 @@ impl Loader {
     pub(super) fn button_up(&self, hwnd: u32, cx: i32, cy: i32, mp1: u32) -> ApiResult {
         let was_down = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
-            std::mem::replace(&mut wm.pressed_button, 0) == hwnd
+            std::mem::replace(&mut wm.pressed_control, 0) == hwnd
         };
         if !was_down {
             return ApiResult::Normal(0);
@@ -415,14 +537,21 @@ impl Loader {
         let codepage = self.window_codepage(hwnd);
         let enabled = self.shared.window_mgr.lock_or_recover()
             .get_window(hwnd).is_some_and(|w| w.style & WS_DISABLED == 0);
-        let handled = enabled && match pm_edit::key_from_wm_char(mp1, mp2, codepage) {
+        let handled = enabled && if let Some(cmd) = clipboard_key(class, mp1, mp2) {
+            // CUA clipboard keys; the release of the chord is swallowed too.
+            if mp1 & KC_KEYUP == 0 {
+                self.edit_clipboard(hwnd, class == CLASS_MLE, cmd);
+            }
+            true
+        } else { match pm_edit::key_from_wm_char(mp1, mp2, codepage) {
             Some((key, key_up)) if class == CLASS_LISTBOX => self.listbox_key(hwnd, key, key_up),
-            Some((key, key_up)) => self.edit_key(hwnd, class == CLASS_MLE, key, key_up),
+            // Shift with a movement key extends the selection.
+            Some((key, key_up)) => self.edit_key(hwnd, class == CLASS_MLE, key, mp1 & KC_SHIFT != 0, key_up),
             // The bare press/release of a printable key (its character
             // arrives separately as a character-only WM_CHAR) belongs to the
             // edit control too; it must not leak to the owner as a keystroke.
             None => class != CLASS_LISTBOX && mp1 & KEY_EVENT_KINDS == 0,
-        };
+        } };
         if !handled {
             let owner = self.shared.window_mgr.lock_or_recover().notify_target(hwnd);
             if owner != 0 && owner != hwnd {
@@ -432,22 +561,88 @@ impl Loader {
         ApiResult::Normal(handled as u32)
     }
 
+    /// Cut, copy, paste or clear in an entry field / MLE. Copied text goes to
+    /// the PM clipboard (`CF_TEXT`) and the host clipboard; pasted text comes
+    /// from it. The owner is notified when the text changed. Returns whether
+    /// the text changed.
+    pub(super) fn edit_clipboard(&self, hwnd: u32, multiline: bool, cmd: ClipboardCmd) -> bool {
+        let changed = {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let paste = wm.clipboard_text.clone();
+            let Some(win) = wm.get_window_mut(hwnd) else { return false };
+            let mut buf = edit_buffer(win, multiline);
+            let copied = matches!(cmd, ClipboardCmd::Cut | ClipboardCmd::Copy)
+                .then(|| buf.selected_text()).filter(|t| !t.is_empty());
+            let changed = match cmd {
+                ClipboardCmd::Cut | ClipboardCmd::Clear => buf.delete_selection(),
+                ClipboardCmd::Paste => buf.replace_selection(&paste),
+                ClipboardCmd::Copy => false,
+            };
+            if changed {
+                win.text = buf.text();
+            }
+            store_selection(win, &buf);
+            if let Some(text) = &copied {
+                wm.clipboard_text = text.clone();
+                // A guest CF_TEXT handle no longer holds the clipboard text.
+                wm.clipboard.insert(CF_TEXT, 0);
+                if let Some(tx) = &wm.gui_tx {
+                    let _ = tx.send(crate::gui::GUIMessage::SetClipboardText(text.clone()));
+                }
+            }
+            changed
+        };
+        if changed {
+            self.repaint_control(hwnd);
+            if multiline {
+                self.notify_owner(hwnd, MLN_CHANGE, 0);
+            } else {
+                self.notify_owner(hwnd, EN_CHANGE, hwnd);
+            }
+        }
+        changed
+    }
+
+    /// EM_SETSEL (mp1 = MPFROM2SHORT(first, last)) / MLM_SETSEL (mp1 =
+    /// anchor, mp2 = cursor): set the selection of an entry field / MLE;
+    /// positions are characters, clamped to the text. Returns TRUE.
+    pub(super) fn edit_set_selection(&self, hwnd: u32, multiline: bool, anchor: usize, caret: usize) -> ApiResult {
+        {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let Some(win) = wm.get_window_mut(hwnd) else { return ApiResult::Normal(0) };
+            let mut buf = edit_buffer(win, multiline);
+            buf.set_selection(anchor, caret);
+            store_selection(win, &buf);
+        }
+        self.repaint_control(hwnd);
+        ApiResult::Normal(1)
+    }
+
+    /// The selection of an entry field / MLE as `(anchor, caret)`, clamped.
+    pub(super) fn edit_selection(&self, hwnd: u32, multiline: bool) -> (usize, usize) {
+        let wm = self.shared.window_mgr.lock_or_recover();
+        wm.get_window(hwnd).map_or((0, 0), |w| {
+            let buf = edit_buffer(w, multiline);
+            (buf.anchor(), buf.caret())
+        })
+    }
+
     /// Apply an editing key to an entry field / MLE. Returns whether the key
     /// belongs to the control (its key-up is then swallowed too).
-    fn edit_key(&self, hwnd: u32, multiline: bool, key: EditKey, key_up: bool) -> bool {
+    fn edit_key(&self, hwnd: u32, multiline: bool, key: EditKey, extend: bool, key_up: bool) -> bool {
         let changed = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             let Some(win) = wm.get_window_mut(hwnd) else { return false };
-            let mut buf = EditBuffer::new(&win.text, win.edit_caret, multiline);
+            let mut buf = edit_buffer(win, multiline);
             let (line_before, _) = buf.caret_line();
-            let Some(changed) = buf.apply(key, &system_width) else { return false };
+            let Some(changed) = buf.apply(key, extend, &system_width) else { return false };
             if key_up {
                 return true;
             }
             if changed {
                 win.text = buf.text();
             }
-            win.edit_caret = buf.caret();
+            store_selection(win, &buf);
             if buf.caret_line().0 != line_before {
                 win.edit_scroll = 0;
             }
@@ -1200,5 +1395,141 @@ mod tests {
         assert_eq!(selection(&fx, list), 2, "same item, shifted down by the insert");
         assert_eq!(fx.send(list, LM_INSERTITEM, LIT_END, 0), 4);
         assert_eq!(selection(&fx, list), 2, "appending does not move it");
+    }
+
+    // ── selection and clipboard ──────────────────────────────────────────
+
+    fn shift_vkey(fx: &Fixture, hwnd: u32, vk: u32) -> u32 {
+        fx.send(hwnd, WM_CHAR, KC_VIRTUALKEY | KC_SCANCODE | KC_SHIFT, vk << WM_CHAR_VKEY_SHIFT)
+    }
+
+    fn sel(fx: &Fixture, hwnd: u32) -> (usize, usize) {
+        fx.with(hwnd, |w| (w.edit_anchor, w.edit_caret))
+    }
+
+    /// x offset (relative to the control) of the caret position before `n`
+    /// characters of `text`.
+    fn x_of(text: &str, n: usize) -> i32 {
+        CONTROL_TEXT_INSET + system_width(&text.chars().take(n).collect::<String>())
+    }
+
+    #[test]
+    fn dragging_selects_and_the_release_lets_go() {
+        let fx = fixture();
+        let text = "drag over me";
+        let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, text);
+        fx.click(entry, x_of(text, 5), 12);
+        assert_eq!(sel(&fx, entry), (5, 5));
+        assert_eq!(fx.loader.shared.window_mgr.lock_or_recover().pressed_control, entry);
+        let at = |x: i32| (x as u32 & 0xFFFF) | (12 << 16);
+        fx.send(entry, WM_MOUSEMOVE, at(x_of(text, 9)), 0);
+        assert_eq!(sel(&fx, entry), (5, 9));
+        fx.send(entry, WM_MOUSEMOVE, at(x_of(text, 2)), 0);
+        assert_eq!(sel(&fx, entry), (5, 2), "back past the anchor");
+        fx.send(entry, WM_BUTTON1UP, at(x_of(text, 2)), 0);
+        assert_eq!(fx.loader.shared.window_mgr.lock_or_recover().pressed_control, 0);
+        // Moves after the release do nothing.
+        fx.send(entry, WM_MOUSEMOVE, at(x_of(text, 11)), 0);
+        assert_eq!(sel(&fx, entry), (5, 2));
+        // A new click starts over.
+        fx.click(entry, x_of(text, 7), 12);
+        assert_eq!(sel(&fx, entry), (7, 7));
+    }
+
+    #[test]
+    fn shift_arrows_select_and_typing_replaces_the_selection() {
+        let fx = fixture();
+        let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, "abcdef");
+        fx.click(entry, 5, 12);
+        fx.vkey(entry, VK_HOME);
+        for _ in 0..3 {
+            shift_vkey(&fx, entry, VK_RIGHT);
+        }
+        assert_eq!(sel(&fx, entry), (0, 3));
+        fx.type_text(entry, "Z");
+        assert_eq!((fx.text(entry).as_str(), sel(&fx, entry)), ("Zdef", (1, 1)));
+        assert!(fx.posted().iter().any(|&(h, m, mp1, _)| h == fx.client && m == WM_CONTROL
+                                       && mp1 == (EN_CHANGE << 16) | ID_ENTRY));
+    }
+
+    #[test]
+    fn the_selection_is_highlighted_while_focused() {
+        let fx = fixture();
+        let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, "abcdef");
+        fx.with(entry, |w| (w.edit_anchor, w.edit_caret) = (1, 4));
+        assert!(fx.drawn_fills(entry, CONTROL_SELECT_COLOR).is_empty(), "not without the focus");
+        fx.loader.set_focus_window(entry);
+        let fills = fx.drawn_fills(entry, CONTROL_SELECT_COLOR);
+        assert_eq!(fills.len(), 1);
+        let (x, _, _, _) = ENTRY_RECT;
+        let (x1, _, x2, _) = fills[0];
+        assert_eq!((x1, x2 + 1), (x + x_of("abcdef", 1), x + x_of("abcdef", 4)));
+        let texts = fx.drawn_texts(entry);
+        assert!(texts.iter().any(|(_, _, t, c)| t == "bcd" && *c == CONTROL_SELECT_TEXT_COLOR));
+    }
+
+    #[test]
+    fn mle_selection_spans_lines() {
+        let fx = fixture();
+        let mle = fx.add(CLASS_MLE, ID_MLE, MLE_RECT, "one\r\ntwo\r\nsix");
+        fx.loader.set_focus_window(mle);
+        fx.with(mle, |w| (w.edit_anchor, w.edit_caret) = (1, 7));
+        // "ne" on the first line, "tw" on the second.
+        assert_eq!(fx.drawn_fills(mle, CONTROL_SELECT_COLOR).len(), 2);
+        let texts: Vec<String> = fx.drawn_texts(mle).into_iter()
+            .filter(|(_, _, _, c)| *c == CONTROL_SELECT_TEXT_COLOR).map(|t| t.2).collect();
+        assert_eq!(texts, ["ne", "tw"]);
+    }
+
+    #[test]
+    fn clipboard_keys_and_messages_cut_copy_and_paste() {
+        let fx = fixture();
+        let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, "copy me");
+        fx.loader.set_focus_window(entry);
+        let key = |mods: u32, vk: u32| fx.send(entry, WM_CHAR, KC_VIRTUALKEY | KC_SCANCODE | mods, vk << WM_CHAR_VKEY_SHIFT);
+        let clip = || fx.loader.shared.window_mgr.lock_or_recover().clipboard_text.clone();
+
+        fx.with(entry, |w| (w.edit_anchor, w.edit_caret) = (0, 4));
+        assert_eq!(key(KC_CTRL, VK_INSERT), 1, "Ctrl+Insert copies");
+        assert_eq!((clip().as_str(), fx.text(entry).as_str()), ("copy", "copy me"));
+        assert_eq!(key(KC_SHIFT, VK_DELETE), 1, "Shift+Delete cuts");
+        assert_eq!((clip().as_str(), fx.text(entry).as_str()), ("copy", " me"));
+        fx.vkey(entry, VK_END);
+        assert_eq!(key(KC_SHIFT, VK_INSERT), 1, "Shift+Insert pastes");
+        assert_eq!(fx.text(entry), " mecopy");
+        // The release of a chord is swallowed, not pasted again.
+        assert_eq!(fx.send(entry, WM_CHAR, KC_VIRTUALKEY | KC_SHIFT | KC_KEYUP, VK_INSERT << WM_CHAR_VKEY_SHIFT), 1);
+        assert_eq!(fx.text(entry), " mecopy");
+        // Copying nothing leaves the clipboard alone.
+        key(KC_CTRL, VK_INSERT);
+        assert_eq!(clip(), "copy");
+
+        // The same through messages; EM_SETSEL / EM_QUERYSEL.
+        assert_eq!(fx.send(entry, EM_SETSEL, 1 | (3 << 16), 0), 1);
+        assert_eq!(fx.send(entry, EM_QUERYSEL, 0, 0), 1 | (3 << 16));
+        assert_eq!(fx.send(entry, EM_COPY, 0, 0), 0, "copying does not change the text");
+        assert_eq!(clip(), "me");
+        assert_eq!(fx.send(entry, EM_CLEAR, 0, 0), 1);
+        assert_eq!(fx.text(entry), " copy");
+        assert_eq!(fx.send(entry, EM_PASTE, 0, 0), 1);
+        assert_eq!(fx.text(entry), " mecopy");
+        assert_eq!(fx.send(entry, EM_SETSEL, 99 | (0 << 16), 0), 1);
+        assert_eq!(fx.send(entry, EM_QUERYSEL, 0, 0), (7 << 16), "clamped, reported first..last");
+    }
+
+    #[test]
+    fn mle_selection_messages_report_anchor_and_cursor() {
+        let fx = fixture();
+        let mle = fx.add(CLASS_MLE, ID_MLE, MLE_RECT, "one\r\ntwo");
+        assert_eq!(fx.send(mle, MLM_SETSEL, 6, 1), 1);
+        assert_eq!(fx.send(mle, MLM_QUERYSEL, MLFQS_ANCHORSEL, 0), 6);
+        assert_eq!(fx.send(mle, MLM_QUERYSEL, MLFQS_CURSORSEL, 0), 1);
+        assert_eq!(fx.send(mle, MLM_QUERYSEL, MLFQS_MINSEL, 0), 1);
+        assert_eq!(fx.send(mle, MLM_QUERYSEL, MLFQS_MAXSEL, 0), 6);
+        assert_eq!(fx.send(mle, MLM_QUERYSEL, MLFQS_MINMAXSEL, 0), 1 | (6 << 16));
+        assert_eq!(fx.send(mle, MLM_CUT, 0, 0), 1);
+        assert_eq!(fx.text(mle), "owo");
+        assert_eq!(fx.loader.shared.window_mgr.lock_or_recover().clipboard_text, "ne\r\nt");
+        assert!(fx.posted().iter().any(|&(_, m, mp1, _)| m == WM_CONTROL && mp1 >> 16 == MLN_CHANGE));
     }
 }

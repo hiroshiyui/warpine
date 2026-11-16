@@ -95,6 +95,27 @@ pub const LN_SELECT: u32 = 1;
 // Entry field notification codes (high word of WM_CONTROL mp1); mp2 = field HWND.
 pub const EN_CHANGE: u32 = 0x0004;
 
+// WC_ENTRYFIELD messages (EM_*, <pmwin.h>)
+pub const EM_QUERYSEL: u32 = 0x0141;
+pub const EM_SETSEL:   u32 = 0x0142;
+pub const EM_CUT:      u32 = 0x0144;
+pub const EM_COPY:     u32 = 0x0145;
+pub const EM_CLEAR:    u32 = 0x0146;
+pub const EM_PASTE:    u32 = 0x0147;
+
+// WC_MLE messages (MLM_*) and MLM_QUERYSEL modes (MLFQS_*, <pmwin.h>)
+pub const MLM_SETSEL:   u32 = 0x01ca;
+pub const MLM_QUERYSEL: u32 = 0x01cb;
+pub const MLM_CUT:      u32 = 0x01d8;
+pub const MLM_COPY:     u32 = 0x01d9;
+pub const MLM_PASTE:    u32 = 0x01da;
+pub const MLM_CLEAR:    u32 = 0x01db;
+pub const MLFQS_MINMAXSEL: u32 = 0;
+pub const MLFQS_MINSEL:    u32 = 1;
+pub const MLFQS_MAXSEL:    u32 = 2;
+pub const MLFQS_ANCHORSEL: u32 = 3;
+pub const MLFQS_CURSORSEL: u32 = 4;
+
 // MLE notification codes (high word of WM_CONTROL mp1).
 pub const MLN_CHANGE: u32 = 0x0007;
 

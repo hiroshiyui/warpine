@@ -96,6 +96,9 @@ pub struct OS2Window {
     /// from the start of `text`. May exceed the text length after the guest
     /// replaces the text; readers clamp it.
     pub edit_caret: usize,
+    /// Selection anchor of a WC_ENTRYFIELD / WC_MLE: the selection runs from
+    /// here to `edit_caret`; equal to it when nothing is selected.
+    pub edit_anchor: usize,
     /// Horizontal scroll of a WC_ENTRYFIELD / WC_MLE: the first visible
     /// character column of the caret's line.
     pub edit_scroll: usize,
@@ -399,9 +402,10 @@ pub struct WindowManager {
     /// "no explicit focus", in which case keys go to the active frame's
     /// client. Set by `WinSetFocus` and by clicking a built-in text control.
     pub focus_hwnd: u32,
-    /// The built-in button held down with mouse button 1 (0 = none): it
-    /// receives the release wherever the pointer is, so it can pop up.
-    pub pressed_button: u32,
+    /// The built-in control held down with mouse button 1 (0 = none): it
+    /// receives the pointer's moves and the release wherever the pointer
+    /// is — a button pops up, a text control extends its selection.
+    pub pressed_control: u32,
     /// VDR-B4: set of HWNDs whose visual state has changed since the last composite.
     /// Any non-empty dirty set causes the next compositor tick to recomposite the
     /// full desktop; an empty set allows the tick to be skipped entirely.
@@ -446,7 +450,7 @@ impl WindowManager {
             z_order: Vec::new(),
             focused_hwnd: 0,
             focus_hwnd: 0,
-            pressed_button: 0,
+            pressed_control: 0,
             dirty: HashSet::new(),
             surfaces: HashMap::new(),
             bitmaps: HashMap::new(),
@@ -478,6 +482,7 @@ impl WindowManager {
             listbox_sel: None,
             owner: 0,
             edit_caret: 0,
+            edit_anchor: 0,
             edit_scroll: 0,
             top_row: 0,
             menu_items: Vec::new(),
@@ -1074,7 +1079,7 @@ impl WindowManager {
             self.surfaces.remove(&h);
             self.window_accel.remove(&h);
             self.dirty.remove(&h);
-            for slot in [&mut self.focus_hwnd, &mut self.capture_hwnd, &mut self.pressed_button] {
+            for slot in [&mut self.focus_hwnd, &mut self.capture_hwnd, &mut self.pressed_control] {
                 if *slot == h { *slot = 0; }
             }
         }
@@ -1135,8 +1140,8 @@ impl WindowManager {
         if self.find_frame_for_hwnd(self.focus_hwnd) == dialog {
             self.focus_hwnd = 0;
         }
-        if self.find_frame_for_hwnd(self.pressed_button) == dialog {
-            self.pressed_button = 0;
+        if self.find_frame_for_hwnd(self.pressed_control) == dialog {
+            self.pressed_control = 0;
         }
     }
 
@@ -1355,7 +1360,7 @@ mod tests {
         wm.z_push_top(frame);
         wm.focused_hwnd = frame;
         wm.frame_surface(frame);
-        (wm.focus_hwnd, wm.pressed_button, wm.capture_hwnd) = (button, button, client);
+        (wm.focus_hwnd, wm.pressed_control, wm.capture_hwnd) = (button, button, client);
         let t = wm.add_accel_table(Vec::new());
         wm.set_window_accel(frame, t);
 
@@ -1366,7 +1371,7 @@ mod tests {
         assert!(wm.is_window(other));
         assert!(!wm.z_order.contains(&frame) && !wm.frame_to_client.contains_key(&frame));
         assert!(!wm.surfaces.contains_key(&frame) && wm.accel_table_of(frame).is_none());
-        assert_eq!((wm.focus_hwnd, wm.pressed_button, wm.capture_hwnd), (0, 0, 0));
+        assert_eq!((wm.focus_hwnd, wm.pressed_control, wm.capture_hwnd), (0, 0, 0));
         assert_eq!(wm.focused_hwnd, other, "the next window is active");
         assert!(!wm.destroy_window(frame), "already gone");
 

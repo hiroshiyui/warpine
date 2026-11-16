@@ -870,18 +870,18 @@ mod tests {
         let d = dialog();
         let (cx, cy) = d.wm().get_window(d.cancel).map(|w| (w.cx, w.cy)).unwrap();
         d.send(d.cancel, WM_BUTTON1DOWN, at(5, 5), 0);
-        assert_eq!(d.wm().pressed_button, d.cancel);
+        assert_eq!(d.wm().pressed_control, d.cancel);
         assert_eq!(d.focus(), d.cancel, "a click takes the focus");
         assert!(command(&d.take_messages()).is_none(), "nothing happens on the press");
         d.send(d.cancel, WM_BUTTON1UP, at(5, 5), 0);
-        assert_eq!(d.wm().pressed_button, 0);
+        assert_eq!(d.wm().pressed_control, 0);
         assert_eq!(command(&d.take_messages()),
                    Some((d.dlg, DID_CANCEL, command_mp2(CMDSRC_PUSHBUTTON, true))));
 
         // Released outside: it pops up without a click.
         d.send(d.cancel, WM_BUTTON1DOWN, at(5, 5), 0);
         d.send(d.cancel, WM_BUTTON1UP, at(cx + 3, cy / 2), 0);
-        assert_eq!(d.wm().pressed_button, 0);
+        assert_eq!(d.wm().pressed_control, 0);
         assert!(command(&d.take_messages()).is_none());
         // A release without a press does nothing.
         d.send(d.ok, WM_BUTTON1UP, at(5, 5), 0);
@@ -916,7 +916,7 @@ mod tests {
 
         d.wm().get_window_mut(d.ok).unwrap().style |= WS_DISABLED;
         assert_eq!(d.send(d.ok, WM_BUTTON1DOWN, at(2, 2), 0), 0);
-        assert_eq!(d.wm().pressed_button, 0);
+        assert_eq!(d.wm().pressed_control, 0);
         d.loader.click_button(d.ok, false);
         assert!(d.take_messages().is_empty());
         assert_eq!(d.wm().default_button(d.dlg), None, "a disabled default button is skipped");

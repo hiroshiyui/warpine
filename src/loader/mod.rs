@@ -632,8 +632,55 @@ impl Loader {
                 self.control_button_down(hwnd, &class_name, cy, mp1)
             }
 
+            WM_MOUSEMOVE if pm_controls::is_input_control(&class_name) => {
+                self.control_mouse_move(hwnd, &class_name, cy, mp1)
+            }
+
+            WM_BUTTON1UP if pm_controls::is_input_control(&class_name) => self.control_button_up(hwnd),
+
             WM_CHAR if pm_controls::is_input_control(&class_name) => {
                 self.control_char(hwnd, &class_name, mp1, mp2)
+            }
+
+            EM_CUT | EM_COPY | EM_PASTE | EM_CLEAR | MLM_CUT | MLM_COPY | MLM_PASTE | MLM_CLEAR
+                if pm_controls::is_edit_control(&class_name) =>
+            {
+                let cmd = match msg {
+                    EM_CUT | MLM_CUT => pm_controls::ClipboardCmd::Cut,
+                    EM_COPY | MLM_COPY => pm_controls::ClipboardCmd::Copy,
+                    EM_PASTE | MLM_PASTE => pm_controls::ClipboardCmd::Paste,
+                    _ => pm_controls::ClipboardCmd::Clear,
+                };
+                let changed = self.edit_clipboard(hwnd, class_name == pm_controls::CLASS_MLE, cmd);
+                ApiResult::Normal(changed as u32)
+            }
+
+            // EM_SETSEL: mp1 = MPFROM2SHORT(first, last); the caret ends at last.
+            EM_SETSEL if class_name == pm_controls::CLASS_ENTRYFIELD => {
+                self.edit_set_selection(hwnd, false, (mp1 & 0xFFFF) as usize, (mp1 >> 16) as usize)
+            }
+
+            // EM_QUERYSEL: MRFROM2SHORT(first, last) of the selection.
+            EM_QUERYSEL if class_name == pm_controls::CLASS_ENTRYFIELD => {
+                let (a, c) = self.edit_selection(hwnd, false);
+                ApiResult::Normal((a.min(c) as u32 & 0xFFFF) | ((a.max(c) as u32 & 0xFFFF) << 16))
+            }
+
+            // MLM_SETSEL: mp1 = anchor, mp2 = cursor insertion points.
+            MLM_SETSEL if class_name == pm_controls::CLASS_MLE => {
+                self.edit_set_selection(hwnd, true, mp1 as usize, mp2 as usize)
+            }
+
+            // MLM_QUERYSEL: mp1 = MLFQS_* mode.
+            MLM_QUERYSEL if class_name == pm_controls::CLASS_MLE => {
+                let (a, c) = self.edit_selection(hwnd, true);
+                ApiResult::Normal(match mp1 & 0xFFFF {
+                    MLFQS_MINSEL => a.min(c) as u32,
+                    MLFQS_MAXSEL => a.max(c) as u32,
+                    MLFQS_ANCHORSEL => a as u32,
+                    MLFQS_CURSORSEL => c as u32,
+                    _ => (a.min(c) as u32 & 0xFFFF) | ((a.max(c) as u32 & 0xFFFF) << 16),
+                })
             }
 
             LM_SELECTITEM => self.listbox_select_item(hwnd, mp1, mp2),
