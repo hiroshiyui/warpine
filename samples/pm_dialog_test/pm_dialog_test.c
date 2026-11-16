@@ -12,6 +12,9 @@
  *                                                    the OK / Cancel group)
  *   Ctrl+D, Tab, Tab, Alt+N, type "Zz", Alt+C     -> the ~Name label focuses the
  *                                                    entry field, ~Cancel cancels
+ *   Ctrl+D, type "Hello", Shift+Left twice, type "p!", Shift+Home, Ctrl+Ins,
+ *   End, Shift+Ins, Enter                         -> "Help!Help!" (selection
+ *                                                    replaced, copied, pasted)
  *   Alt+F4                                        -> WM_SYSCOMMAND(SC_CLOSE),
  *                                                    then WM_CLOSE
  *
@@ -38,6 +41,7 @@ static int  n_passed = 0;
 static int  round_no = 0;          /* how many times the dialog was opened */
 static char name[32];              /* entry field text when OK was pressed */
 static LONG selection = -2;        /* list box selection when OK was pressed */
+static ULONG name_sel;             /* EM_QUERYSEL of the entry field at OK */
 static BOOL saw_sc_close = FALSE;  /* WM_SYSCOMMAND(SC_CLOSE) reached the client */
 static HWND frame;                 /* the main window's frame */
 static HWND dialog;                /* the dialog of the current round */
@@ -118,6 +122,7 @@ MRESULT EXPENTRY NameDlgProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
             check( "OK comes from a push button", SHORT1FROMMP( mp2 ), CMDSRC_PUSHBUTTON );
             check( "OK was pressed with the keyboard", SHORT2FROMMP( mp2 ), FALSE );
             WinQueryDlgItemText( hwnd, ID_NAME, sizeof( name ), name );
+            name_sel = (ULONG)WinSendDlgItemMsg( hwnd, ID_NAME, EM_QUERYSEL, 0, 0 );
             selection = (LONG)SHORT1FROMMR( WinSendDlgItemMsg( hwnd, ID_LIST, LM_QUERYSELECTION,
                                                                MPFROMSHORT( LIT_FIRST ), 0 ) );
             WinDismissDlg( hwnd, DID_OK );
@@ -159,6 +164,9 @@ static void run_dialog( HWND hwnd, MPARAM mp2 )
         check( "Alt+C presses ~Cancel", result, DID_CANCEL );
         check( "Alt+N moved the focus to the entry field", cancel_in_entry, TRUE );
         check( "text typed after Alt+N went to the entry field", strcmp( name, "Zz" ), 0 );
+    } else if( round_no == 5 ) {
+        check( "selected text was replaced, copied and pasted", strcmp( name, "Help!Help!" ), 0 );
+        check( "EM_QUERYSEL: no selection, at the end", name_sel, (LONG)MRFROM2SHORT( 10, 10 ) );
     }
 }
 
@@ -233,7 +241,7 @@ int main( void )
     while( WinGetMsg( hab, &qmsg, NULLHANDLE, 0, 0 ) )
         WinDispatchMsg( hab, &qmsg );
 
-    check( "the dialog was opened four times", round_no, 4 );
+    check( "the dialog was opened five times", round_no, 5 );
     p = append_str( line, "pm_dialog_test: done " );
     p = append_long( p, n_passed );
     p = append_str( p, "/" );
