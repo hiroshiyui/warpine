@@ -18,6 +18,10 @@
  *   double-click row 4 of the single list, Enter  -> two LN_ENTERs, item 4
  *   F3                                            -> final checks, exit
  *
+ * After its message loop it checks the queue lifecycle: a second
+ * WinCreateMsgQueue fails, WinDestroyMsgQueue succeeds once, and the thread
+ * can then create a new queue.
+ *
  * Each check is written to stdout:
  *
  *   pm_list_test: <name>: ok
@@ -206,6 +210,15 @@ int main( void )
     while( WinGetMsg( hab, &qmsg, NULLHANDLE, 0, 0 ) )
         WinDispatchMsg( hab, &qmsg );
 
+    /* One message queue per thread; it can be destroyed once and then
+     * created again. */
+    check( "a second WinCreateMsgQueue fails", (LONG)WinCreateMsgQueue( hab, 0 ), (LONG)NULLHANDLE );
+    WinDestroyWindow( frame );
+    check( "WinDestroyMsgQueue destroys the queue", WinDestroyMsgQueue( hmq ), TRUE );
+    check( "a destroyed queue cannot be destroyed again", WinDestroyMsgQueue( hmq ), FALSE );
+    hmq = WinCreateMsgQueue( hab, 0 );
+    check( "then the thread can create a new queue", hmq != NULLHANDLE, TRUE );
+
     p = append_str( line, "pm_list_test: done " );
     p = append_long( p, n_passed );
     p = append_str( p, "/" );
@@ -213,7 +226,6 @@ int main( void )
     append_str( p, "\r\n" );
     write_stdout( line );
 
-    WinDestroyWindow( frame );
     WinDestroyMsgQueue( hmq );
     WinTerminate( hab );
     return 0;

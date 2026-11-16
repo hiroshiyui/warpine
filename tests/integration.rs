@@ -635,11 +635,12 @@ const LIST_TEST_STEPS: &str = "700 click 100 123\n1000 click 100 155\n1300 key d
 /// List box selection modes, LN_ENTER and MLE word wrap, checked by the
 /// guest: LM_SELECTITEM / LM_QUERYSELECTION on a multiple selection, the
 /// clicks and keys of [`LIST_TEST_STEPS`], LIT_CURSOR, MLM_SETWRAP. F3 makes
-/// the sample report and exit.
+/// the sample report and exit, checking the message queue lifecycle on the
+/// way out (one queue per thread, WinDestroyMsgQueue, a new queue).
 #[test]
 fn gui_pm_list_test_selects_with_mouse_and_keyboard() {
     let steps = format!("{LIST_TEST_STEPS}3600 key f3\n8000 quit\n");
-    assert_scripted_checks_pass("samples/pm_list_test/pm_list_test.exe", "pm_list_test", 13, &steps);
+    assert_scripted_checks_pass("samples/pm_list_test/pm_list_test.exe", "pm_list_test", 17, &steps);
 }
 
 /// Built-in controls follow their frame when it is dragged: the
@@ -650,7 +651,7 @@ fn gui_pm_list_test_selects_with_mouse_and_keyboard() {
 fn gui_controls_follow_a_dragged_window() {
     let moved = shift_script(LIST_TEST_STEPS, 1000, 100, 100);
     let steps = format!("500 drag 300 42 400 142\n{moved}4600 key f3\n9000 quit\n");
-    assert_scripted_checks_pass("samples/pm_list_test/pm_list_test.exe", "pm_list_test", 13, &steps);
+    assert_scripted_checks_pass("samples/pm_list_test/pm_list_test.exe", "pm_list_test", 17, &steps);
 }
 
 /// `steps` (one GUI script step per line) delayed by `dt` ms with the

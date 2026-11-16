@@ -77,6 +77,12 @@ impl super::Loader {
                 // WinCreateMsgQueue
                 debug!("  [VCPU {}] WinCreateMsgQueue called.", vcpu_id);
                 let mut wm = self.shared.window_mgr.lock_or_recover();
+                // One queue per thread: a second one fails with NULLHANDLE
+                // (PMERR_MSG_QUEUE_ALREADY_EXISTS; WinGetLastError does not
+                // report errors yet).
+                if wm.thread_queue(vcpu_id).is_some() {
+                    return ApiResult::Normal(0);
+                }
                 // The queue codepage starts as the process codepage.
                 let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
                 let hmq = wm.create_mq(cp);
@@ -84,9 +90,12 @@ impl super::Loader {
                 ApiResult::Normal(hmq)
             }
             726 => {
-                // WinDestroyMsgQueue
-                debug!("  [VCPU {}] WinDestroyMsgQueue called.", vcpu_id);
-                ApiResult::Normal(1) // TRUE
+                // WinDestroyMsgQueue(HMQ hmq): only the thread that created
+                // the queue may destroy it (else FALSE, PMERR_INVALID_HMQ).
+                let hmq = read_stack(4);
+                debug!("  [VCPU {}] WinDestroyMsgQueue hmq={}", vcpu_id, hmq);
+                let destroyed = self.shared.window_mgr.lock_or_recover().destroy_mq(vcpu_id, hmq);
+                ApiResult::Normal(destroyed as u32)
             }
             926 => {
                 // WinRegisterClass
@@ -261,15 +270,16 @@ impl super::Loader {
                 let mp2 = read_stack(16);
                 let wm = self.shared.window_mgr.lock_or_recover();
                 let hmq = wm.find_hmq_for_hwnd(hwnd);
-                if let Some(hmq) = hmq
-                    && let Some(mq_arc) = wm.get_mq(hmq) {
-                        let mut mq = mq_arc.lock_or_recover();
-                        mq.messages.push_back(OS2Message {
-                            hwnd, msg, mp1, mp2, time: 0, x: 0, y: 0,
-                        });
-                        // Wake WinGetMsg if it's waiting on the condvar
-                        mq.cond.notify_one();
-                }
+                // FALSE when there is no queue to post to (e.g. destroyed).
+                let Some(mq_arc) = hmq.and_then(|hmq| wm.get_mq(hmq)) else {
+                    return ApiResult::Normal(0);
+                };
+                let mut mq = mq_arc.lock_or_recover();
+                mq.messages.push_back(OS2Message {
+                    hwnd, msg, mp1, mp2, time: 0, x: 0, y: 0,
+                });
+                // Wake WinGetMsg if it's waiting on the condvar
+                mq.cond.notify_one();
                 ApiResult::Normal(1)
             }
             920 => {
@@ -2255,10 +2265,15 @@ mod tests {
 
     /// Call a PMWIN API with `args` on the stack and return its plain result.
     fn call_pmwin(loader: &Loader, vcpu: &mut MockVcpu, ordinal: u32, args: &[u32]) -> u32 {
+        call_pmwin_on(loader, vcpu, 0, ordinal, args)
+    }
+
+    /// [`call_pmwin`] from thread `tid`.
+    fn call_pmwin_on(loader: &Loader, vcpu: &mut MockVcpu, tid: u32, ordinal: u32, args: &[u32]) -> u32 {
         let esp: u32 = 0x1000;
         vcpu.regs.rsp = esp as u64;
         write_stack(loader, esp, args);
-        match loader.handle_pmwin_call(vcpu, 0, ordinal) {
+        match loader.handle_pmwin_call(vcpu, tid, ordinal) {
             ApiResult::Normal(v) => v,
             other => panic!("PMWIN ordinal {} returned {:?}", ordinal, other),
         }
@@ -2280,6 +2295,43 @@ mod tests {
         let mut vcpu = MockVcpu::new();
         let hmq = call_pmwin(&loader, &mut vcpu, ORD_WIN_CREATE_MSG_QUEUE, &[0, 0]);
         assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_QUERY_CP, &[hmq]), 850);
+    }
+
+    /// One message queue per thread: a second WinCreateMsgQueue fails;
+    /// WinDestroyMsgQueue destroys only the calling thread's own queue, drops
+    /// its messages (posting to its windows then fails), and the thread can
+    /// create a new queue afterwards.
+    #[test]
+    fn test_message_queue_lifecycle() {
+        const ORD_WIN_DESTROY_MSG_QUEUE: u32 = 726;
+        const ORD_WIN_POST_MSG: u32 = 919;
+        use super::super::constants::WM_USER;
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let hmq = call_pmwin(&loader, &mut vcpu, ORD_WIN_CREATE_MSG_QUEUE, &[0, 0]);
+        assert_ne!(hmq, 0);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_CREATE_MSG_QUEUE, &[0, 0]), 0,
+                   "the thread already has a queue");
+        let hwnd = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            wm.create_window("App".into(), 0, hmq)
+        };
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_POST_MSG, &[hwnd, WM_USER, 0, 0]), 1);
+
+        // Another thread may not destroy it, nor may a wrong handle.
+        assert_eq!(call_pmwin_on(&loader, &mut vcpu, 1, ORD_WIN_DESTROY_MSG_QUEUE, &[hmq]), 0,
+                   "another thread's queue");
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_DESTROY_MSG_QUEUE, &[hmq + 99]), 0);
+
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_DESTROY_MSG_QUEUE, &[hmq]), 1);
+        assert!(loader.shared.window_mgr.lock_or_recover().get_mq(hmq).is_none(), "gone with its messages");
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_DESTROY_MSG_QUEUE, &[hmq]), 0, "already destroyed");
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_POST_MSG, &[hwnd, WM_USER, 0, 0]), 0,
+                   "nothing to post to");
+
+        let again = call_pmwin(&loader, &mut vcpu, ORD_WIN_CREATE_MSG_QUEUE, &[0, 0]);
+        assert_ne!(again, 0, "a new queue after the old one is destroyed");
+        assert_ne!(again, hmq);
     }
 
     /// WinSetCp (857) with a supported codepage returns TRUE, WinQueryCp (810)
@@ -2354,7 +2406,8 @@ mod tests {
         loader.shared.active_codepage.store(437, Ordering::Relaxed);
         let mut vcpu = MockVcpu::new();
         let hmq_a = call_pmwin(&loader, &mut vcpu, ORD_WIN_CREATE_MSG_QUEUE, &[0, 0]);
-        let hmq_b = call_pmwin(&loader, &mut vcpu, ORD_WIN_CREATE_MSG_QUEUE, &[0, 0]);
+        // Another thread's queue (one queue per thread).
+        let hmq_b = call_pmwin_on(&loader, &mut vcpu, 1, ORD_WIN_CREATE_MSG_QUEUE, &[0, 0]);
         assert_ne!(hmq_a, hmq_b);
         assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_CP, &[hmq_a, 850]), 1);
         assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_QUERY_CP, &[hmq_a]), 850);

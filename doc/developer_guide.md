@@ -356,12 +356,12 @@ The Presentation Manager (PM) is OS/2's GUI subsystem. Warpine implements it usi
 ### Window Lifecycle
 
 1. **WinInitialize** — Returns a handle to the anchor block (HAB).
-2. **WinCreateMsgQueue** — Creates a `PM_MsgQueue` and maps the calling thread to it.
+2. **WinCreateMsgQueue** — Creates a `PM_MsgQueue` and maps the calling thread to it (`tid_to_hmq`). One queue per thread, as the PM reference says: a second call returns `NULLHANDLE`.
 3. **WinRegisterClass** — Stores a `WindowClass` with the guest's window procedure address.
 4. **WinCreateStdWindow** — Creates frame and client `OS2Window` entries in the `WindowManager` and the frame's drawing surface (from then on the compositor shows the frame), and returns the frame HWND.
 5. **WinGetMsg** — Blocks on the message queue condvar until a message is available. Returns FALSE on WM_QUIT (ending the message loop).
 6. **WinDispatchMsg** — Invokes the guest's window procedure via the callback mechanism (see below).
-7. **WinDestroyMsgQueue / WinTerminate** — Cleanup.
+7. **WinDestroyMsgQueue / WinTerminate** — Cleanup. `WindowManager::destroy_mq` removes the queue and its pending messages if it is the calling thread's own queue (only the creating thread may destroy it; otherwise FALSE); the thread may then create a new one. Windows of the queue are not destroyed (the reference does not say they are); `WinPostMsg` to them returns FALSE and messages for them are dropped. `WinGetLastError` does not report the `PMERR_*` codes yet.
 
 ### Rendering Pipeline
 
@@ -1649,7 +1649,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 861 unit tests (832 warpine + 18 gen_api + 11 lx_link), 42 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 862 unit tests (833 warpine + 18 gen_api + 11 lx_link), 42 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

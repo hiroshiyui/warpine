@@ -77,7 +77,7 @@ NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 - [ ] **A configurable default codepage** — the process codepage always starts as 437 (`locale.rs` `map_country` returns country 1 / CP437 because the Watcom CRT crashes on non-US country codes without NLS DLLs), so an app that relies on the machine's `CODEPAGE=` (e.g. 932) without calling `DosSetProcessCp` shows garbled text — the same failure as a non-Unicode Windows program under a different "Language for non-Unicode programs". Add a setting such as `WARPINE_CODEPAGE=932` (or take it from the host locale) for the process and new message queues, keeping the country code at 1 unless the CRT crash is understood
 - [ ] **Codepage 0 in `WinSetCp`** — rejected; find in the PM reference whether 0 means "the process codepage" before accepting it
 - [ ] **Menus in dialogs and other frame controls** — `WM_UPDATEFRAME(FCF_MENU)` attaches a menu to a standard frame only; a dialog (PM Guide: `WinLoadMenu` then `WM_UPDATEFRAME` to the dialog) goes through `WinDefDlgProc`, which ignores it, and other `FCF_*` flags are ignored; `WinSetParent` / `WinSetOwner` of a menu window are not implemented
-- [ ] **A real `WinDestroyMsgQueue`** (currently a stub that keeps the queue alive)
+- [ ] **`WinGetLastError`** — always returns 0; PM APIs do not record their `PMERR_*` codes (e.g. `PMERR_INVALID_HMQ` from `WinDestroyMsgQueue`, `PMERR_MSG_QUEUE_ALREADY_EXISTS` from `WinCreateMsgQueue`) per thread yet; check in the PM reference whether reading the error resets it
 
 ### PM Graphics Performance and Architecture
 

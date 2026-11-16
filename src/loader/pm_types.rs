@@ -558,6 +558,25 @@ impl WindowManager {
         self.next_hmq += 1;
         h
     }
+    /// The live message queue of thread `tid`, if it has one.
+    pub fn thread_queue(&self, tid: u32) -> Option<u32> {
+        self.tid_to_hmq.get(&tid).copied().filter(|h| self.msg_queues.contains_key(h))
+    }
+
+    /// WinDestroyMsgQueue: destroy queue `hmq` of thread `tid`, dropping the
+    /// messages still in it; the thread may then create a new one. Fails
+    /// (`false`) for a handle that is not `tid`'s live queue — only the
+    /// thread that created a queue may destroy it. Windows of the queue
+    /// stay; messages posted to them are dropped.
+    pub fn destroy_mq(&mut self, tid: u32, hmq: u32) -> bool {
+        if self.thread_queue(tid) != Some(hmq) {
+            return false;
+        }
+        self.tid_to_hmq.remove(&tid);
+        self.msg_queues.remove(&hmq);
+        true
+    }
+
     pub fn get_mq(&self, h: u32) -> Option<Arc<Mutex<PM_MsgQueue>>> {
         self.msg_queues.get(&h).cloned()
     }
