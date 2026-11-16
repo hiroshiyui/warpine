@@ -266,6 +266,12 @@ fn run_gui_sample(sample: &str, steps: &str) -> (usize, usize, Vec<u8>) {
 /// times: `{dump0}`, `{dump1}`, … name the capture paths (`{dump}` is
 /// `{dump0}`), and the captures are returned in that order.
 fn run_gui_sample_dumps(sample: &str, steps: &str, count: usize) -> Vec<(usize, usize, Vec<u8>)> {
+    run_gui_sample_dumps_env(sample, steps, count, &[])
+}
+
+/// [`run_gui_sample_dumps`] with extra environment variables for warpine.
+fn run_gui_sample_dumps_env(sample: &str, steps: &str, count: usize, env: &[(&str, &str)])
+                            -> Vec<(usize, usize, Vec<u8>)> {
     let dir = tempfile::tempdir().expect("tempdir");
     let dumps: Vec<_> = (0..count).map(|i| dir.path().join(format!("desktop{i}.ppm"))).collect();
     let script = dir.path().join("session.script");
@@ -274,7 +280,7 @@ fn run_gui_sample_dumps(sample: &str, steps: &str, count: usize) -> Vec<(usize, 
         text = text.replace(&format!("{{dump{i}}}"), dump.to_str().unwrap());
     }
     std::fs::write(&script, text).unwrap();
-    run_gui_script(sample, &script, false);
+    run_gui_script_env(sample, &script, false, env);
 
     dumps.iter().map(|dump| {
         let ppm = std::fs::read(dump)
@@ -287,8 +293,15 @@ fn run_gui_sample_dumps(sample: &str, steps: &str, count: usize) -> Vec<(usize, 
 /// wait for it to exit (30 s at most). Returns its stdout when `capture` is
 /// set, an empty string otherwise.
 fn run_gui_script(sample: &str, script: &Path, capture: bool) -> String {
+    run_gui_script_env(sample, script, capture, &[])
+}
+
+/// [`run_gui_script`] with extra environment variables for warpine.
+fn run_gui_script_env(sample: &str, script: &Path, capture: bool, env: &[(&str, &str)]) -> String {
     let mut child = Command::new(warpine())
         .arg(sample)
+        .env_remove("WARPINE_COMPOSITOR")
+        .envs(env.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
         .env("SDL_AUDIODRIVER", "dummy")
         .env("WARPINE_GUI_SCRIPT", script)
@@ -399,15 +412,21 @@ fn differing_tiles(a: &[Vec<[u8; 3]>], b: &[Vec<[u8; 3]>]) -> Vec<(usize, usize)
 /// Run `sample` under `steps` and compare its desktop with `tests/golden/<name>.sig`.
 /// Skipped when KVM or the (git-ignored, Open Watcom-built) sample is missing.
 fn check_gui_golden(name: &str, sample: &str, steps: &str) {
+    check_gui_golden_env(name, sample, steps, &[]);
+}
+
+/// [`check_gui_golden`] with extra environment variables for warpine. The
+/// golden files are written by runs without them.
+fn check_gui_golden_env(name: &str, sample: &str, steps: &str, env: &[(&str, &str)]) {
     if !kvm_available() || !Path::new(sample).exists() {
         eprintln!("skipping {name}: KVM or {sample} not available");
         return;
     }
-    let (w, h, rgb) = run_gui_sample(sample, steps);
+    let (w, h, rgb) = run_gui_sample_dumps_env(sample, steps, 1, env).remove(0);
     let sig = tile_signature(w, h, &rgb);
     let golden_path = Path::new("tests/golden").join(format!("{name}.sig"));
 
-    if std::env::var_os("WARPINE_UPDATE_GOLDEN").is_some() {
+    if std::env::var_os("WARPINE_UPDATE_GOLDEN").is_some() && env.is_empty() {
         std::fs::create_dir_all("tests/golden").unwrap();
         std::fs::write(&golden_path, signature_to_text(w, h, &sig)).unwrap();
         eprintln!("updated {}", golden_path.display());
@@ -568,13 +587,17 @@ const GUI_WHITE: u32 = 0xFF_FFFF;
 /// the drag does nothing, lands elsewhere, or leaves the old image behind.
 #[test]
 fn gui_drag_title_bar_moves_window() {
+    check_drag_title_bar_moves_window(&[]);
+}
+
+fn check_drag_title_bar_moves_window(env: &[(&str, &str)]) {
     let sample = "samples/pm_menu_dlg_test/pm_menu_dlg_test.exe";
     if !kvm_available() || !Path::new(sample).exists() {
         eprintln!("skipping gui_drag_title_bar_moves_window: KVM or {sample} not available");
         return;
     }
-    let dumps = run_gui_sample_dumps(sample,
-        "1500 dump {dump0}\n1600 drag 300 42 500 242\n2600 dump {dump1}\n2700 quit\n", 2);
+    let dumps = run_gui_sample_dumps_env(sample,
+        "1500 dump {dump0}\n1600 drag 300 42 500 242\n2600 dump {dump1}\n2700 quit\n", 2, env);
     let (before, after) = (&dumps[0], &dumps[1]);
 
     // Before: title bar across y 32..52, client below, bare desktop elsewhere.
@@ -597,13 +620,17 @@ fn gui_drag_title_bar_moves_window() {
 /// the right, so title bar and client extend to x ≈ 772 and no further.
 #[test]
 fn gui_drag_sizing_border_resizes_window() {
+    check_drag_sizing_border_resizes_window(&[]);
+}
+
+fn check_drag_sizing_border_resizes_window(env: &[(&str, &str)]) {
     let sample = "samples/pm_controls_test/pm_controls_test.exe";
     if !kvm_available() || !Path::new(sample).exists() {
         eprintln!("skipping gui_drag_sizing_border_resizes_window: KVM or {sample} not available");
         return;
     }
-    let dumps = run_gui_sample_dumps(sample,
-        "1500 dump {dump0}\n1600 drag 669 300 769 300\n2600 dump {dump1}\n2700 quit\n", 2);
+    let dumps = run_gui_sample_dumps_env(sample,
+        "1500 dump {dump0}\n1600 drag 669 300 769 300\n2600 dump {dump1}\n2700 quit\n", 2, env);
     let (before, after) = (&dumps[0], &dumps[1]);
 
     assert_eq!(gui_pixel(before, 600, 42), GUI_TITLE_ACTIVE, "title bar before the resize");
@@ -628,4 +655,42 @@ fn gui_typing_into_controls_matches_golden() {
     check_gui_golden("pm_controls_typing", "samples/pm_controls_test/pm_controls_test.exe",
         "700 click 230 300\n900 text  Hello, W\u{f6}rld!\n1300 key home\n1400 text >>\n\
          1600 click 200 470\n1800 key enter\n1900 text three\n2500 dump {dump}\n2600 quit\n");
+}
+
+// ── Layered compositor ───────────────────────────────────────────────────────
+//
+// `WARPINE_COMPOSITOR=layered` keeps one texture per frame and draws them with
+// the SDL renderer (on the dummy driver, SDL's software renderer). It must
+// show the same desktop as the software compositor the golden files come
+// from: frames, chrome, an open pull-down, overlapping frames, moves and
+// resizes.
+
+const LAYERED: &[(&str, &str)] = &[("WARPINE_COMPOSITOR", "layered")];
+
+#[test]
+fn gui_layered_compositor_matches_golden_fonts() {
+    check_gui_golden_env("pm_font_test", "samples/pm_font_test/pm_font_test.exe",
+        "2500 dump {dump}\n2600 quit\n", LAYERED);
+}
+
+#[test]
+fn gui_layered_compositor_matches_golden_pulldown() {
+    check_gui_golden_env("pm_menu_pulldown", "samples/pm_menu_dlg_test/pm_menu_dlg_test.exe",
+        "1500 click 52 62\n3000 dump {dump}\n3100 quit\n", LAYERED);
+}
+
+#[test]
+fn gui_layered_compositor_matches_golden_dialog() {
+    check_gui_golden_env("pm_menu_about_dialog", "samples/pm_menu_dlg_test/pm_menu_dlg_test.exe",
+        "1500 click 52 62\n2500 click 62 80\n4000 dump {dump}\n4100 quit\n", LAYERED);
+}
+
+#[test]
+fn gui_layered_compositor_moves_windows() {
+    check_drag_title_bar_moves_window(LAYERED);
+}
+
+#[test]
+fn gui_layered_compositor_resizes_windows() {
+    check_drag_sizing_border_resizes_window(LAYERED);
 }

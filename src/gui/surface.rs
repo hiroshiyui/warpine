@@ -150,6 +150,11 @@ pub struct Surface {
     pub buffer: Vec<u32>,
     pub width:  u32,
     pub height: u32,
+    /// Bumped by every change to the pixels or size (`draw`, `put_row`,
+    /// `resize`), so a compositor that caches the surface (one texture per
+    /// window) can tell a moved window from a redrawn one. Writes to
+    /// `buffer` from outside these methods do not bump it.
+    generation: u64,
     /// Test builds can record every operation applied, so tests can check
     /// what was drawn as well as the resulting pixels.
     #[cfg(test)]
@@ -165,7 +170,7 @@ impl Surface {
         let (width, height) = (width.min(MAX_SURFACE_DIM), height.min(MAX_SURFACE_DIM));
         let n = width as usize * height as usize;
         Surface {
-            buffer: vec![SURFACE_BLANK; n], width, height,
+            buffer: vec![SURFACE_BLANK; n], width, height, generation: 0,
             #[cfg(test)]
             record: None,
         }
@@ -195,6 +200,13 @@ impl Surface {
         self.buffer = next;
         self.width = width;
         self.height = height;
+        self.generation += 1;
+    }
+
+    /// The change counter (see the field); differs whenever the pixels or
+    /// the size may have changed since it was last read.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Screen row (top-first) of PM row `y`.
@@ -282,6 +294,7 @@ impl Surface {
     /// Overwrite PM row `y` from column 0 with `pels` (clipped).
     pub fn put_row(&mut self, y: i32, pels: &[u32]) {
         if let Some(i) = self.index(0, y) {
+            self.generation += 1;
             let n = pels.len().min(self.width as usize);
             for (d, &p) in self.buffer[i..i + n].iter_mut().zip(pels) {
                 *d = p & RGB_MASK;
@@ -303,6 +316,7 @@ impl Surface {
     /// Apply `op`.
     pub fn draw(&mut self, op: DrawOp) {
         self.apply(&op);
+        self.generation += 1;
         #[cfg(test)]
         if let Some(rec) = &mut self.record {
             rec.push(op);
@@ -708,5 +722,25 @@ mod tests {
         s.record = Some(Vec::new());
         s.draw(DrawOp::Pel { x: 1, y: 1, color: RED, mix: Mix::Overpaint });
         assert_eq!(s.record.as_deref(), Some(&[DrawOp::Pel { x: 1, y: 1, color: RED, mix: Mix::Overpaint }][..]));
+    }
+
+    #[test]
+    fn generation_changes_with_pixels_and_size_only() {
+        let mut s = Surface::new(4, 4);
+        let g0 = s.generation();
+        s.draw(DrawOp::Pel { x: 1, y: 1, color: RED, mix: Mix::Overpaint });
+        let g1 = s.generation();
+        assert_ne!(g1, g0, "drawing changes it");
+        let _ = (s.pel(1, 1), s.row_pels(1));
+        assert_eq!(s.generation(), g1, "reading does not");
+        s.put_row(0, &[RED]);
+        let g2 = s.generation();
+        assert_ne!(g2, g1, "put_row changes it");
+        s.put_row(99, &[RED]);
+        assert_eq!(s.generation(), g2, "a row outside the surface does not");
+        s.resize(4, 4);
+        assert_eq!(s.generation(), g2, "resizing to the same size does not");
+        s.resize(5, 4);
+        assert_ne!(s.generation(), g2, "a real resize does");
     }
 }

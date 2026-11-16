@@ -4,9 +4,6 @@ use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
 use sdl3::event::Event;
 use sdl3::keyboard::{Keycode, Mod as KeyMod, Scancode};
-use sdl3::pixels::PixelFormat;
-use sdl3::render::{BlendMode, Canvas, FRect, Texture, TextureCreator};
-use sdl3::video::{Window, WindowContext};
 use log::debug;
 use sdl3::messagebox::{show_message_box, ButtonData, MessageBoxButtonFlag, MessageBoxFlag};
 use crate::loader::{SharedState, OS2Message, MutexExt,
@@ -28,6 +25,9 @@ use crate::loader::constants::{
 use crate::loader::pm_types::{MenuItem, WindowManager, menu_label, menu_bar_item_width};
 use std::time::{Duration, Instant};
 use super::damage::{Damage, Rect, blit_clipped, fill_clipped};
+
+mod compositor;
+use compositor::{Compositor, CompositorKind, Scene, SceneFrame};
 use super::frame_stats::FrameStats;
 use super::message::{GUIMessage, GuiWake};
 use super::renderer::PmRenderer;
@@ -352,81 +352,6 @@ fn draw_filled_rect(buf: &mut [u32], buf_w: usize,
     fill_clipped(buf, buf_w, r, r, color);
 }
 
-/// The single SDL window that acts as the OS/2 desktop.
-struct DesktopCanvas {
-    canvas:  Canvas<Window>,
-    /// The canvas's texture factory, kept for the life of the process so the
-    /// lifetime-checked texture can be `'static` (no `unsafe_textures`).
-    creator: &'static TextureCreator<WindowContext>,
-    texture: Texture<'static>,
-    buffer:  Vec<u32>,
-    width:   u32,
-    height:  u32,
-}
-
-impl DesktopCanvas {
-    fn new(video: &sdl3::VideoSubsystem, w: u32, h: u32) -> Self {
-        let window = video
-            .window("Warpine \u{2014} OS/2 Compatibility Layer", w, h)
-            .position_centered()
-            .resizable()
-            .build()
-            .expect("Failed to create desktop SDL window");
-        // The compositor does all drawing in software; SDL's software
-        // renderer avoids a GPU round trip for one full-window texture.
-        let canvas = sdl3::render::create_renderer(window, Some(SOFTWARE_RENDERER))
-            .expect("Failed to create desktop canvas");
-        let (cw, ch) = canvas.output_size().expect("output_size failed");
-        let creator: &'static TextureCreator<WindowContext> =
-            Box::leak(Box::new(canvas.texture_creator()));
-        let texture = desktop_texture(creator, cw, ch);
-        let n = (cw as usize).saturating_mul(ch as usize);
-        DesktopCanvas { canvas, creator, texture, buffer: vec![DESKTOP_BG; n], width: cw, height: ch }
-    }
-
-    /// Recreate the streaming texture after a resize.
-    fn resize_texture(&mut self, w: u32, h: u32) {
-        self.width  = w;
-        self.height = h;
-        self.texture = desktop_texture(self.creator, w, h);
-        let n = (w as usize).saturating_mul(h as usize);
-        self.buffer = vec![DESKTOP_BG; n];
-    }
-
-    /// Upload the `damaged` parts of `buffer` to the texture and present.
-    /// The texture keeps the rest from earlier frames.
-    ///
-    /// Uses `Texture::update` (`SDL_UpdateTexture`), which reads each
-    /// rectangle straight out of `buffer` with the buffer's row pitch.
-    fn present(&mut self, damaged: &[Rect]) {
-        let w = self.width as usize;
-        let bytes: &[u8] = bytemuck::cast_slice(&self.buffer);
-        for r in damaged {
-            let r = r.intersect(&Rect::at(0, 0, self.width as i32, self.height as i32));
-            if r.is_empty() { continue; }
-            let area = sdl3::rect::Rect::new(r.x0, r.y0, r.width() as u32, r.height() as u32);
-            // SDL reads `height` rows of `width` pixels, `w * 4` bytes apart,
-            // from here; `r` lies inside the buffer, so that stays in bounds.
-            let start = (r.y0 as usize * w + r.x0 as usize) * 4;
-            self.texture.update(area, &bytes[start..], w * 4).expect("desktop texture update failed");
-        }
-        self.canvas.copy(&self.texture, None::<FRect>, None::<FRect>).expect("canvas copy failed");
-        self.canvas.present();
-    }
-}
-
-/// SDL's software renderer, by name.
-const SOFTWARE_RENDERER: &std::ffi::CStr = c"software";
-
-/// A streaming texture of `w` × `h` desktop pixels (XRGB, no blending).
-fn desktop_texture(creator: &'static TextureCreator<WindowContext>, w: u32, h: u32) -> Texture<'static> {
-    let mut t = creator
-        .create_texture_streaming(PixelFormat::ARGB8888, w, h)
-        .expect("Failed to create desktop texture");
-    t.set_blend_mode(BlendMode::None);
-    t
-}
-
 // ── Compositor: chrome cache, frame placement, damage ─────────────────────
 
 /// An open pull-down, pre-rendered (`MENU_DROPDOWN_W` × `h`).
@@ -664,7 +589,8 @@ pub struct SdlRenderer {
     video:       sdl3::VideoSubsystem,
     event:       sdl3::EventSubsystem,
     event_pump:  sdl3::EventPump,
-    desktop:     DesktopCanvas,
+    /// The desktop window and how frames are put on it.
+    desktop:     Box<dyn Compositor>,
     /// Frame → pre-rendered title bar, menu bar and pull-down.
     chrome: HashMap<u32, ChromeCache>,
     /// Frame → desktop area it covered at the last composite; what must be
@@ -724,14 +650,17 @@ impl SdlRenderer {
         let video      = sdl.video().expect("SDL video subsystem init failed");
         let event      = sdl.event().expect("SDL event subsystem init failed");
         let event_pump = sdl.event_pump().expect("SDL event pump init failed");
-        let desktop    = DesktopCanvas::new(&video, dw, dh);
+        let real_display = driver_can_wait(video.current_video_driver());
+        let kind = CompositorKind::choose(
+            std::env::var(compositor::COMPOSITOR_ENV).ok().as_deref(), real_display);
+        let desktop    = compositor::create(&video, dw, dh, kind);
         // Typed characters are taken from SDL TextInput events (see
         // `build_wm_char`); SDL3 generates them per window, once started.
-        video.text_input().start(desktop.canvas.window());
+        video.text_input().start(desktop.window());
         // Block in SDL's own wait only where the video driver can really
         // block on input; the headless drivers have no input to wait for and
         // SDL would poll internally instead.
-        let native_wait = driver_can_wait(video.current_video_driver())
+        let native_wait = real_display
             && event.register_custom_event::<WakeEvent>()
                 .map_err(|e| log::warn!("[GUI] no SDL user event for wake-ups ({e})"))
                 .is_ok();
@@ -800,7 +729,8 @@ impl SdlRenderer {
     /// frame buffer below the title bar and menu bar (VDR-C1, C2, E3).
     fn composite_and_present(&mut self, shared: &Arc<SharedState>) {
         let started = Instant::now();
-        let (dw, dh) = (self.desktop.width as i32, self.desktop.height as i32);
+        let (dw, dh) = self.desktop.size();
+        let (dw, dh) = (dw as i32, dh as i32);
         let mut damage = Damage::new(dw, dh);
 
         // Snapshot geometry and bring the chrome cache up to date under the
@@ -808,6 +738,7 @@ impl SdlRenderer {
         struct Snap { hwnd: u32, x: i32, y: i32, cx: i32, cy: i32, frame_flags: u32, has_menu: bool,
                       surface: SharedSurface }
         let mut dirty_frames: HashSet<u32> = HashSet::new();
+        let mut chrome_changed: HashSet<u32> = HashSet::new();
         let snaps: Vec<Snap> = {
             let mut wm = shared.window_mgr.lock_or_recover();
             if wm.dirty.is_empty() && !self.force_full {
@@ -828,6 +759,7 @@ impl SdlRenderer {
                 if chrome.entry(hwnd).or_insert_with(ChromeCache::new)
                     .sync(&w.text, w.cx, w.frame_flags, hwnd == focused, menu, bar_w) {
                     dirty_frames.insert(hwnd);
+                    chrome_changed.insert(hwnd);
                 }
                 Some(Snap { hwnd, x: w.x, y: w.y, cx: w.cx, cy: w.cy,
                             frame_flags: w.frame_flags, has_menu: menu.is_some(), surface })
@@ -851,7 +783,8 @@ impl SdlRenderer {
 
         // Damage: whatever dirty or changed frames cover now or covered
         // before, plus the old extent of frames that are gone or hidden.
-        if std::mem::take(&mut self.force_full) {
+        let full = std::mem::take(&mut self.force_full);
+        if full {
             damage.add_all();
         }
         let mut placed = HashMap::with_capacity(placements.len());
@@ -874,27 +807,15 @@ impl SdlRenderer {
             return;
         }
 
-        let buf = &mut self.desktop.buffer;
-        for &r in damage.rects() {
-            fill_clipped(buf, dw as usize, r, r, DESKTOP_BG);
-            for (i, p) in placements.iter().enumerate() {
-                let visible = p.extent().intersect(&r);
-                if visible.is_empty()
-                    || placements[i + 1..].iter().any(|q| q.opaque && q.frame.contains(&visible)) {
-                    continue;
-                }
-                // The surface may have been resized since `p` was computed;
-                // the blit clips to its current size.
-                let fb = snaps[i].surface.lock_or_recover();
-                draw_placed_frame(buf, dw as usize, p, &fb, &self.chrome[&p.hwnd], r);
-            }
-        }
-
-        let present_started = Instant::now();
-        self.desktop.present(damage.rects());
+        let frames = placements.iter().zip(&snaps).map(|(p, s)| SceneFrame {
+            placement: p, surface: &s.surface, chrome: &self.chrome[&p.hwnd],
+        }).collect();
+        let present = self.desktop.compose(&Scene {
+            frames, damage: &damage, chrome_changed: &chrome_changed, full,
+        });
         let finished = Instant::now();
         let damaged: i64 = damage.rects().iter().map(|r| r.width() as i64 * r.height() as i64).sum();
-        self.stats.record_composite(finished - started, finished - present_started,
+        self.stats.record_composite(finished - started, present,
                                     damaged as f64 / (dw as f64 * dh as f64).max(1.0));
         self.last_composite = finished;
     }
@@ -902,8 +823,12 @@ impl SdlRenderer {
     /// Handle a single SDL event, posting OS/2 messages to `shared` as needed.
     /// Returns `false` when the application should exit.
     fn handle_sdl_event(&mut self, event: Event, shared: &Arc<SharedState>) -> bool {
-        let dh = self.desktop.height;
+        let dh = self.desktop.size().1;
         match event {
+            Event::RenderTargetsReset { .. } | Event::RenderDeviceReset { .. } => {
+                // The renderer may have lost its textures.
+                self.force_full = true;
+            }
             Event::Quit { .. } => {
                 shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
                 let focused = shared.window_mgr.lock_or_recover().focused_hwnd;
@@ -925,7 +850,7 @@ impl SdlRenderer {
                     }
                     WindowEvent::Resized(w, h) => {
                         let (w, h) = (w as u32, h as u32);
-                        self.desktop.resize_texture(w, h);
+                        self.desktop.resize(w, h);
                         self.force_full = true;
                         // Sync the focused frame's dimensions.
                         let focused = {
@@ -1397,8 +1322,8 @@ impl PmRenderer for SdlRenderer {
                     // have not been composited yet.
                     shared.window_mgr.lock_or_recover().mark_all_dirty();
                     self.composite_and_present(shared);
-                    if let Err(e) = gui_script::write_ppm(
-                        &path, &self.desktop.buffer, self.desktop.width, self.desktop.height) {
+                    let (pixels, w, h) = self.desktop.snapshot();
+                    if let Err(e) = gui_script::write_ppm(&path, &pixels, w, h) {
                         eprintln!("warpine: cannot write {}: {e}", path.display());
                     }
                 }

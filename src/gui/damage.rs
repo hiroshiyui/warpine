@@ -66,6 +66,26 @@ impl Rect {
                 && other.x1 <= self.x1 && other.y1 <= self.y1)
     }
 
+    /// The rectangle moved by `(dx, dy)`.
+    pub fn offset(&self, dx: i32, dy: i32) -> Rect {
+        Rect { x0: self.x0 + dx, y0: self.y0 + dy, x1: self.x1 + dx, y1: self.y1 + dy }
+    }
+
+    /// `self` minus `other`, as at most four non-overlapping rectangles
+    /// (the bands above and below `other`, then the parts left and right of
+    /// it). An empty `self` gives none.
+    pub fn subtract(&self, other: &Rect) -> Vec<Rect> {
+        if self.is_empty() { return Vec::new(); }
+        let cut = self.intersect(other);
+        if cut.is_empty() { return vec![*self]; }
+        [
+            Rect::new(self.x0, self.y0, self.x1, cut.y0),
+            Rect::new(self.x0, cut.y1, self.x1, self.y1),
+            Rect::new(self.x0, cut.y0, cut.x0, cut.y1),
+            Rect::new(cut.x1, cut.y0, self.x1, cut.y1),
+        ].into_iter().filter(|r| !r.is_empty()).collect()
+    }
+
     /// Whether the rectangles overlap or share an edge. Such rectangles are
     /// merged into their union, which costs little extra area.
     fn touches(&self, other: &Rect) -> bool {
@@ -179,6 +199,23 @@ mod tests {
         assert!(!a.contains(&b));
         assert!(a.contains(&Rect::EMPTY));
         assert_eq!(Rect::EMPTY.union(&b), b);
+    }
+
+    #[test]
+    fn rect_offset_and_subtract() {
+        let a = Rect::new(0, 0, 10, 10);
+        assert_eq!(a.offset(3, -2), Rect::new(3, -2, 13, 8));
+        assert_eq!(a.subtract(&Rect::new(20, 20, 30, 30)), vec![a], "no overlap: unchanged");
+        assert!(a.subtract(&Rect::new(-1, -1, 11, 11)).is_empty(), "covered: nothing left");
+        assert!(Rect::EMPTY.subtract(&a).is_empty());
+        // A hole in the middle leaves four bands that tile the rest.
+        let parts = a.subtract(&Rect::new(3, 4, 6, 7));
+        assert_eq!(parts, vec![Rect::new(0, 0, 10, 4), Rect::new(0, 7, 10, 10),
+                               Rect::new(0, 4, 3, 7), Rect::new(6, 4, 10, 7)]);
+        let area: i32 = parts.iter().map(|r| r.width() * r.height()).sum();
+        assert_eq!(area, 100 - 9);
+        // A strip along the right edge leaves one rectangle.
+        assert_eq!(a.subtract(&Rect::new(8, 0, 10, 10)), vec![Rect::new(0, 0, 8, 10)]);
     }
 
     #[test]

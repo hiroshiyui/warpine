@@ -58,6 +58,7 @@ warpine --compat
 | `WARPINE_TRACE` | `1`, `strace` | — | Compact strace-like API call format |
 | `WARPINE_TRACE` | `json` | — | JSON Lines (one object per event) |
 | `WARPINE_DESKTOP_W`, `WARPINE_DESKTOP_H` | Pixels | `1024`, `768` | Size of the virtual PM desktop (also reported by `SV_CXSCREEN`/`SV_CYSCREEN`) |
+| `WARPINE_COMPOSITOR` | `software`, `layered` | `layered` on a display, `software` on SDL's `dummy`/`offscreen` drivers | How PM frames reach the screen: `layered` keeps one texture per window and draws them with the platform's accelerated SDL renderer (OpenGL, Vulkan, Metal or Direct3D; `SDL_RENDER_DRIVER=gpu` picks SDL_GPU) with vsync, so moving a window costs no redrawing; `software` composites on the CPU into one texture. `layered` falls back to `software` when no renderer can be created |
 | `WARPINE_GUI_SCRIPT` | Path to a script file | _(unset)_ | Replay a scripted PM session (`click`, `rclick`, `drag`, `key`, `text`, `dump`, `quit` steps) for testing; combine with `SDL_VIDEODRIVER=dummy` to run without a display. See the developer guide, "GUI regression tests" |
 | `RUST_LOG` | Filter string | `info` | Log level: `trace`, `debug`, `info`, `warn`, `error`. Module-scoped filters supported (e.g. `warpine::loader=debug`) |
 
