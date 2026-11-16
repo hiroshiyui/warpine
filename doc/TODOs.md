@@ -131,6 +131,59 @@ From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `render
 
 ---
 
+## Modern and High-Soundness Development Toolchain
+
+Open Watcom stays the reference compiler, but it supports C89 plus part of
+C99 and almost no C++11. Teaching it modern C/C++ would mean new front-end
+work and Watcom-specific ABI extensions (name mangling, EH tables). Instead,
+keep Open Watcom frozen as the ABI baseline and add a second, modern guest
+toolchain built only on stable, open formats, so that no single compiler
+project can lock Warpine in.
+
+**Principle — the ELF/LX firewall.** Warpine's toolchain consumes only i386
+ELF relocatable objects (System V i386 ABI) and produces LX. Both formats
+are frozen, so any compiler that emits i386 ELF (GCC, clang, TinyCC, rustc)
+is a replaceable part. `lx-link` (`src/bin/lx_link.rs`) is already this
+ELF → LX bridge for Rust (`R_386_32` / `R_386_PC32`); extend it, don't
+start another tool. No compiler plugins, LLVM passes, lld back ends or BFD
+targets: their internal APIs carry no stability promise.
+
+**M1 — C hello world from GCC (feasibility)**
+
+- [ ] Build `samples/c_hello` with `gcc -m32 -ffreestanding -fno-pic -fno-stack-protector -c` and link with `lx-link`; run it in Warpine and add an integration test (same shape as `test_rust_hello`)
+- [ ] Check what `lx-link` still needs for C objects: `.text.*` / `.rodata.*` / `.data.*` / `.bss` section variants, `COMMON` symbols, string-merge sections, `.init_array` (C constructors), and a clear error for PIC relocations (`R_386_GOTPC`, `R_386_GOTOFF`, `R_386_PLT32`)
+- [ ] Minimal C start-up: `_start` → `main` → `DosExit`, modelled on `crates/warpine-os2-rt`
+
+**M2 — compiler-neutral guest SDK**
+
+- [ ] Guest headers (`os2.h` subset) that compile unchanged with GCC and clang: calling-convention and packing syntax only behind macros (`APIENTRY`, `EXPENTRY`, `_System`), using only the GCC/clang common subset; written from public documentation per the engineering policy
+- [ ] Import resolution from `targets/os2api.def`, shared with the Rust toolchain
+- [ ] A small freestanding C runtime (string, memory, formatted output over `DosWrite`) or a documented choice of an existing freestanding libc
+
+**M3 — two compilers in CI, pinned and reproducible**
+
+- [ ] Build every C guest sample with both GCC and clang (`--target=i386-unknown-none`) in CI; a test that passes with one and fails with the other flags compiler drift early
+- [ ] Pin the guest compilers reproducibly (GNU Guix or Nix) next to the host pin in `rust-toolchain.toml`, so upstream breaking changes are taken on Warpine's schedule
+- [ ] Keep regression binaries built by the frozen Open Watcom as the "plain OS/2 API" baseline
+
+**M4 — debugging and C++**
+
+- [ ] Debug information as DWARF (an open standard): `lx-link` carries it into an LX debug section or a sidecar file, readable by the GDB stub (`gdb_stub.rs`)
+- [ ] Guest C++ on the Itanium C++ ABI (followed by GCC and clang): a runtime (`libsupc++` / `libc++abi` + unwinder) and how C++ exceptions coexist with OS/2 SEH (`seh.rs`)
+
+**Ported-software test tier (bitwiseworks GCC / LIBCn)**
+
+- [ ] Use binaries built by the OS/2-native bitwiseworks GCC toolchain (GCC + LIBCn/kLIBC + LIBCx, linked with WLINK; built inside an ArcaOS VM) as a "real ported software" regression tier. They load several runtime DLLs and lean on exception handling, signals and memory APIs much harder than Open Watcom samples. These are not IBM binaries, so the clean-room policy allows them as test inputs; check each one's licence before adding binaries to the repository
+- [ ] First list which DOSCALLS ordinals LIBCn and LIBCx import (from their import tables) to prioritise API work
+- [ ] Verify the current state before relying on it: GCC versions available for OS/2 (official RPMs vs. unofficial newer builds), LIBCn release status, stabs vs. DWARF debug info
+
+**Notes**
+
+- Rust guests depend on LLVM through `rustc`, but only through Rust's stability guarantees; `rustc_codegen_gcc` / `gccrs` are possible GCC-based alternatives to watch, not to depend on yet.
+- Changing Open Watcom itself is out of scope. Any improvement belongs upstream and must keep default-flag code generation and object output byte-identical; deploying modified OW binaries carries Sybase OWPL source-release obligations.
+
+---
+
 ## Phase 8 — SOM / Workplace Shell (long-term)
 
 The Workplace Shell (WPS) is built entirely on IBM's System Object Model (SOM).
