@@ -605,6 +605,33 @@ fn gui_pm_dialog_test_is_driven_by_the_keyboard() {
     assert_scripted_checks_pass("samples/pm_dialog_test/pm_dialog_test.exe", "pm_dialog_test", 37, &steps);
 }
 
+/// pm_list_test driven with the mouse and keyboard: two clicks and Down,
+/// Space in the multiple-selection list, a click, Shift+click and Ctrl+click
+/// in the extended-selection list, a double-click and Enter in the single
+/// list (row y = 123 + 16 * row).
+const LIST_TEST_STEPS: &str = "700 click 100 123\n1000 click 100 155\n1300 key down\n1500 key space\n\
+    1800 click 300 139\n2100 shift+click 300 171\n2400 ctrl+click 300 155\n\
+    2700 dblclick 500 187\n3000 key enter\n";
+
+/// List box selection modes, LN_ENTER and MLE word wrap, checked by the
+/// guest: LM_SELECTITEM / LM_QUERYSELECTION on a multiple selection, the
+/// clicks and keys of [`LIST_TEST_STEPS`], LIT_CURSOR, MLM_SETWRAP. F3 makes
+/// the sample report and exit.
+#[test]
+fn gui_pm_list_test_selects_with_mouse_and_keyboard() {
+    let steps = format!("{LIST_TEST_STEPS}3600 key f3\n8000 quit\n");
+    assert_scripted_checks_pass("samples/pm_list_test/pm_list_test.exe", "pm_list_test", 13, &steps);
+}
+
+/// The lists of pm_list_test after [`LIST_TEST_STEPS`]: several items
+/// highlighted in the multiple and extended lists, one in the single list,
+/// and the MLE text wrapped at word boundaries.
+#[test]
+fn gui_pm_list_test_matches_golden() {
+    check_gui_golden("pm_list_test", "samples/pm_list_test/pm_list_test.exe",
+        &format!("{LIST_TEST_STEPS}3600 dump {{dump}}\n3700 quit\n"));
+}
+
 /// The pm_dialog_test dialog filled in: entry field text, list selection,
 /// default and focus marks, dialog chrome.
 #[test]
