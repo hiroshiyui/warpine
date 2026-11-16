@@ -927,4 +927,43 @@ mod tests {
         loader.translate_queued_accelerator(&mut paint);
         assert_eq!(paint.msg, WM_PAINT);
     }
+
+    #[test]
+    fn a_modal_dialog_disables_its_owner_and_is_destroyed_when_it_ends() {
+        let loader = Loader::new_mock();
+        let (frame, client) = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq(437);
+            wm.tid_to_hmq.insert(0, hmq);
+            let frame = wm.create_window("App".into(), HWND_DESKTOP, hmq);
+            let client = wm.create_window("App".into(), frame, hmq);
+            wm.frame_to_client.insert(frame, client);
+            wm.z_push_top(frame);
+            (frame, client)
+        };
+        let t = parse_dlg_template(ABOUT_DIALOG, 437).unwrap();
+        let (dlg, _, ok) = loader.create_dialog(0, HWND_DESKTOP, client, 0, Some(t.clone()));
+        let mut wm = loader.shared.window_mgr.lock_or_recover();
+        wm.begin_modal_dialog(dlg, true);
+        assert!(wm.frame_disabled(frame), "the owner's frame is disabled");
+        assert!(!wm.frame_disabled(dlg));
+        wm.get_window_mut(dlg).unwrap().dialog_dismissed = true;
+        wm.get_window_mut(dlg).unwrap().dialog_result = 7;
+        assert_eq!(wm.finish_modal_dialog(dlg), 7);
+        assert!(!wm.frame_disabled(frame), "enabled again");
+        assert!(!wm.is_window(dlg) && !wm.is_window(ok), "WinDlgBox destroys the dialog");
+        assert_eq!(wm.focused_hwnd, frame, "the owner is active again");
+        drop(wm);
+
+        // WinProcessDlg: the dialog stays; an owner that was already
+        // disabled stays disabled.
+        let (dlg, _, _) = loader.create_dialog(0, HWND_DESKTOP, client, 0, Some(t));
+        let mut wm = loader.shared.window_mgr.lock_or_recover();
+        wm.get_window_mut(frame).unwrap().style |= WS_DISABLED;
+        wm.begin_modal_dialog(dlg, false);
+        assert_eq!(wm.finish_modal_dialog(dlg), DID_CANCEL, "ended without being dismissed");
+        assert!(wm.is_window(dlg));
+        assert!(wm.frame_disabled(frame));
+        assert_eq!(wm.finish_modal_dialog(0xDEAD), DID_CANCEL);
+    }
 }

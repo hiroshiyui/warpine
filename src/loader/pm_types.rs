@@ -40,6 +40,7 @@ impl TimerStop {
 pub type TimerMap = HashMap<(u32, u32), (Arc<TimerStop>, Option<thread::JoinHandle<()>>)>;
 
 
+#[derive(Debug, Clone, PartialEq)]
 pub struct OS2Message {
     pub hwnd: u32,
     pub msg: u32,
@@ -108,6 +109,12 @@ pub struct OS2Window {
     pub dialog_dismissed: bool,
     /// The result code passed to WinDismissDlg; returned by WinDlgBox.
     pub dialog_result: u32,
+    /// While a modal dialog runs: the owner frame it disabled (0 = none),
+    /// enabled again when the dialog ends.
+    pub modal_owner: u32,
+    /// Destroy the dialog when its modal loop ends (WinDlgBox; a dialog run
+    /// by WinProcessDlg stays until the program destroys it).
+    pub destroy_on_dismiss: bool,
     /// `flCreateFlags` from `WinCreateStdWindow` (FCF_* bits).
     /// Zero for non-frame windows (dialogs, controls).
     pub frame_flags: u32,
@@ -473,6 +480,8 @@ impl WindowManager {
             menu_hwnd: 0,
             dialog_dismissed: false,
             dialog_result: 0,
+            modal_owner: 0,
+            destroy_on_dismiss: false,
             frame_flags: 0,
         });
         // Register as child of parent
@@ -981,6 +990,112 @@ impl WindowManager {
         self.mark_all_dirty();
     }
 
+    /// Whether `hwnd` is `ancestor` or lies below it in the window tree.
+    pub fn is_same_or_descendant(&self, hwnd: u32, ancestor: u32) -> bool {
+        let mut h = hwnd;
+        // A tree is never deeper than the number of windows.
+        for _ in 0..=self.windows.len() {
+            if h == ancestor { return true; }
+            match self.windows.get(&h) {
+                Some(w) if w.parent != 0 => h = w.parent,
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Whether `hwnd` is an existing window (`WinIsWindow`).
+    pub fn is_window(&self, hwnd: u32) -> bool {
+        self.windows.contains_key(&hwnd)
+    }
+
+    /// Whether input to frame `frame` is blocked: it is disabled, as the
+    /// owner of a modal dialog is.
+    pub fn frame_disabled(&self, frame: u32) -> bool {
+        use super::constants::WS_DISABLED;
+        self.windows.get(&frame).is_some_and(|w| w.style & WS_DISABLED != 0)
+    }
+
+    /// Destroy `hwnd` and all its descendants (`WinDestroyWindow`): they are
+    /// removed from the window tree, the Z-order and the frame map, lose
+    /// their surfaces, accelerator tables and timers, and stop being the
+    /// focus, capture or pressed button. Returns `false` for an unknown
+    /// window. The window procedures are not called (no `WM_DESTROY`).
+    pub fn destroy_window(&mut self, hwnd: u32) -> bool {
+        let Some(parent) = self.windows.get(&hwnd).map(|w| w.parent) else { return false };
+        if let Some(p) = self.windows.get_mut(&parent) {
+            p.children.retain(|&c| c != hwnd);
+        }
+        let mut doomed = vec![hwnd];
+        let mut i = 0;
+        while i < doomed.len() {
+            if let Some(w) = self.windows.get(&doomed[i]) {
+                doomed.extend(w.children.iter().copied());
+            }
+            i += 1;
+        }
+        for &h in &doomed {
+            if self.z_order.contains(&h) {
+                self.z_remove(h);
+            }
+            self.windows.remove(&h);
+            self.frame_to_client.remove(&h);
+            self.surfaces.remove(&h);
+            self.window_accel.remove(&h);
+            self.dirty.remove(&h);
+            for slot in [&mut self.focus_hwnd, &mut self.capture_hwnd, &mut self.pressed_button] {
+                if *slot == h { *slot = 0; }
+            }
+        }
+        // Stop the timers of the destroyed windows; their threads end on
+        // their own (joining here could wait on this lock).
+        self.timers.retain(|&(h, _), (stop, _)| {
+            let keep = !doomed.contains(&h);
+            if !keep { stop.stop(); }
+            keep
+        });
+        self.mark_all_dirty();
+        true
+    }
+
+    /// Start the modal loop of `dialog`: its owner's frame is disabled while
+    /// it runs (if it was enabled), and `destroy` says whether the dialog
+    /// goes away when the loop ends.
+    pub fn begin_modal_dialog(&mut self, dialog: u32, destroy: bool) {
+        use super::constants::WS_DISABLED;
+        let Some(owner) = self.windows.get(&dialog).map(|w| w.owner) else { return };
+        let frame = if self.windows.contains_key(&owner) { self.find_frame_for_hwnd(owner) } else { 0 };
+        let disable = frame != 0 && frame != dialog && !self.frame_disabled(frame);
+        if disable && let Some(f) = self.windows.get_mut(&frame) {
+            f.style |= WS_DISABLED;
+        }
+        if let Some(d) = self.windows.get_mut(&dialog) {
+            d.modal_owner = if disable { frame } else { 0 };
+            d.destroy_on_dismiss = destroy;
+        }
+    }
+
+    /// End the modal loop of `dialog`: take it off the screen
+    /// (`close_dialog`), enable the owner frame it disabled, and destroy it
+    /// when it was started that way. Returns the dialog result
+    /// (`DID_CANCEL` when the dialog no longer exists).
+    pub fn finish_modal_dialog(&mut self, dialog: u32) -> u32 {
+        use super::constants::{DID_CANCEL, WS_DISABLED};
+        let Some((result, owner, destroy, dismissed)) = self.windows.get(&dialog)
+            .map(|w| (w.dialog_result, w.modal_owner, w.destroy_on_dismiss, w.dialog_dismissed))
+            else { return DID_CANCEL };
+        self.close_dialog(dialog);
+        if owner != 0 && let Some(f) = self.windows.get_mut(&owner) {
+            f.style &= !WS_DISABLED;
+        }
+        if destroy {
+            self.destroy_window(dialog);
+        } else if let Some(d) = self.windows.get_mut(&dialog) {
+            d.modal_owner = 0;
+        }
+        if dismissed { result } else { DID_CANCEL }
+    }
+
     /// Take a dismissed dialog off the screen: out of the Z-order (the
     /// window below becomes active) and, if one of its controls has the
     /// focus, the focus is released.
@@ -1195,6 +1310,51 @@ mod tests {
         assert_eq!(wm.query_window(first, QW_TOP), 0, "no children");
         assert_eq!(wm.query_window(middle, 99), 0, "unknown code");
         assert_eq!(wm.query_window(0xDEAD, QW_PARENT), 0, "unknown window");
+    }
+
+    #[test]
+    fn destroy_window_removes_the_whole_subtree() {
+        let mut wm = WindowManager::new();
+        let frame = wm.create_window("App".into(), 1, 0);
+        let client = wm.create_window("App".into(), frame, 0);
+        let button = wm.create_window("WC_BUTTON".into(), client, 0);
+        let other = wm.create_window("App".into(), 1, 0);
+        wm.frame_to_client.insert(frame, client);
+        wm.z_push_top(other);
+        wm.z_push_top(frame);
+        wm.focused_hwnd = frame;
+        wm.frame_surface(frame);
+        (wm.focus_hwnd, wm.pressed_button, wm.capture_hwnd) = (button, button, client);
+        let t = wm.add_accel_table(Vec::new());
+        wm.set_window_accel(frame, t);
+
+        assert!(wm.destroy_window(frame));
+        for h in [frame, client, button] {
+            assert!(!wm.is_window(h));
+        }
+        assert!(wm.is_window(other));
+        assert!(!wm.z_order.contains(&frame) && !wm.frame_to_client.contains_key(&frame));
+        assert!(!wm.surfaces.contains_key(&frame) && wm.accel_table_of(frame).is_none());
+        assert_eq!((wm.focus_hwnd, wm.pressed_button, wm.capture_hwnd), (0, 0, 0));
+        assert_eq!(wm.focused_hwnd, other, "the next window is active");
+        assert!(!wm.destroy_window(frame), "already gone");
+
+        // A child is unlinked from its parent.
+        let child = wm.create_window("WC_BUTTON".into(), other, 0);
+        assert!(wm.destroy_window(child));
+        assert!(wm.get_window(other).unwrap().children.is_empty());
+    }
+
+    #[test]
+    fn descendants_are_found_through_parents() {
+        let mut wm = WindowManager::new();
+        let a = wm.create_window("A".into(), 0, 0);
+        let b = wm.create_window("B".into(), a, 0);
+        let c = wm.create_window("C".into(), b, 0);
+        assert!(wm.is_same_or_descendant(c, a));
+        assert!(wm.is_same_or_descendant(a, a));
+        assert!(!wm.is_same_or_descendant(a, c));
+        assert!(!wm.is_same_or_descendant(0xDEAD, a));
     }
 
     #[test]

@@ -1027,13 +1027,18 @@ impl SdlRenderer {
                     wm.z_hit_test(x, os2_y)
                 };
                 if let Some(hwnd) = target {
+                    // The owner of a modal dialog is disabled: it takes no
+                    // clicks, cannot be activated, moved or resized.
+                    if clicks_blocked(shared, hwnd) {
+                        return true;
+                    }
                     // VDR-D4: activate window on click; post WM_ACTIVATE to both windows.
                     let prev_focused = {
                         let mut wm = shared.window_mgr.lock_or_recover();
                         let frame = wm.client_to_frame(hwnd);
-                        let frame = if wm.frame_to_client.contains_key(&frame) { frame } else { hwnd };
+                        let frame = if wm.is_frame(frame) { frame } else { hwnd };
                         let prev = wm.focused_hwnd;
-                        if wm.frame_to_client.contains_key(&frame) && prev != frame {
+                        if wm.is_frame(frame) && prev != frame {
                             wm.focused_hwnd = frame;
                             wm.z_push_top(frame);
                             prev
@@ -1199,6 +1204,9 @@ impl SdlRenderer {
                     wm.z_hit_test(x, os2_y)
                 };
                 if let Some(hwnd) = target {
+                    if clicks_blocked(shared, hwnd) {
+                        return true;
+                    }
                     let (local_x, local_y) = {
                         let wm = shared.window_mgr.lock_or_recover();
                         wm.get_window(hwnd)
@@ -1548,6 +1556,13 @@ fn route_button1(shared: &Arc<SharedState>, frame: u32, x: i32, y: i32, press: b
         0
     };
     ((frame, x, y), lost)
+}
+
+/// Whether mouse clicks on window `hwnd` are ignored because its frame is
+/// disabled (the owner of a modal dialog).
+fn clicks_blocked(shared: &Arc<SharedState>, hwnd: u32) -> bool {
+    let wm = shared.window_mgr.lock_or_recover();
+    wm.frame_disabled(wm.find_frame_for_hwnd(hwnd))
 }
 
 /// The built-in button held down with mouse button 1, if any, and the
@@ -2416,6 +2431,16 @@ mod tests {
         assert_eq!(route_button1(&shared, frame, 15, 210, false), ((entry, 5, 10), 0));
         // Off the control: the frame gets it unchanged.
         assert_eq!(route_button1(&shared, frame, 300, 100, true), ((frame, 300, 100), 0));
+    }
+
+    #[test]
+    fn clicks_on_a_disabled_frame_are_blocked() {
+        let (shared, frame, client, entry) = routed_window(0);
+        assert!(!super::clicks_blocked(&shared, frame));
+        shared.window_mgr.lock_or_recover().get_window_mut(frame).unwrap().style |= crate::loader::WS_DISABLED;
+        for h in [frame, client, entry] {
+            assert!(super::clicks_blocked(&shared, h), "{h:#x}");
+        }
     }
 
     #[test]

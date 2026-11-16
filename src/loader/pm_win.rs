@@ -201,55 +201,20 @@ impl super::Loader {
                 ApiResult::Normal(h_frame)
             }
             915 => {
-                // WinGetMsg
-                let _hab = read_stack(4);
-                let pqmsg_ptr = read_stack(8);
-                let _hwnd = read_stack(12);
-                let _first = read_stack(16);
-                let _last = read_stack(20);
-
-                // Find the message queue for this thread
-                let (_hmq, mq_arc) = {
-                    let wm = self.shared.window_mgr.lock_or_recover();
-                    let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
-                    let mq = wm.get_mq(hmq);
-                    (hmq, mq)
-                };
-
-                if let Some(mq_arc) = mq_arc {
-                    // Get the condvar/lock for blocking wait
-                    let (cond, wait_lock) = {
-                        let mq = mq_arc.lock_or_recover();
-                        (Arc::clone(&mq.cond), Arc::clone(&mq.lock))
-                    };
-                    loop {
-                        if self.shutting_down() { return ApiResult::Normal(0); }
-                        {
-                            let mut mq = mq_arc.lock_or_recover();
-                            if let Some(mut msg) = mq.messages.pop_front() {
-                                drop(mq);
-                                // Keystrokes that are accelerators arrive as the
-                                // command they stand for.
-                                self.translate_queued_accelerator(&mut msg);
-                                if pqmsg_ptr != 0 {
-                                    self.guest_write::<u32>(pqmsg_ptr, msg.hwnd);
-                                    self.guest_write::<u32>(pqmsg_ptr + 4, msg.msg);
-                                    self.guest_write::<u32>(pqmsg_ptr + 8, msg.mp1);
-                                    self.guest_write::<u32>(pqmsg_ptr + 12, msg.mp2);
-                                    self.guest_write::<u32>(pqmsg_ptr + 16, msg.time);
-                                    self.guest_write::<i16>(pqmsg_ptr + 20, msg.x);
-                                    self.guest_write::<i16>(pqmsg_ptr + 22, msg.y);
-                                }
-                                if msg.msg == WM_QUIT { return ApiResult::Normal(0); }
-                                return ApiResult::Normal(1);
-                            }
-                        }
-                        // Block on condvar instead of spinning
-                        let guard = wait_lock.lock_or_recover();
-                        let _ = cond.wait_timeout(guard, std::time::Duration::from_millis(100)).unwrap();
-                    }
+                // WinGetMsg(HAB hab, PQMSG pqmsg, HWND hwndFilter, ULONG msgFirst, ULONG msgLast):
+                // wait for a message; FALSE when it is WM_QUIT.
+                match self.next_message(vcpu_id, read_stack(8), read_stack(12), read_stack(16),
+                                        read_stack(20), PM_REMOVE, true) {
+                    Some(msg) => ApiResult::Normal((msg != WM_QUIT) as u32),
+                    None => ApiResult::Normal(0),
                 }
-                ApiResult::Normal(0)
+            }
+            918 => {
+                // WinPeekMsg(HAB hab, PQMSG pqmsg, HWND hwndFilter, ULONG msgFirst, ULONG msgLast, ULONG fl):
+                // TRUE when a message is there, removed with PM_REMOVE; never waits.
+                let found = self.next_message(vcpu_id, read_stack(8), read_stack(12), read_stack(16),
+                                              read_stack(20), read_stack(24), false);
+                ApiResult::Normal(found.is_some() as u32)
             }
             912 => {
                 // WinDispatchMsg
@@ -573,18 +538,13 @@ impl super::Loader {
                 ApiResult::Normal(1) // TRUE
             }
             728 => {
-                // WinDestroyWindow(HWND hwnd)
+                // WinDestroyWindow(HWND hwnd): the window and its descendants go.
                 let hwnd = read_stack(4);
-                {
-                    let mut wm = self.shared.window_mgr.lock_or_recover();
-                    // If this is a frame, clean up Z-order and focus.
-                    if wm.frame_to_client.contains_key(&hwnd) {
-                        wm.z_remove(hwnd);
-                        wm.frame_to_client.remove(&hwnd);
-                        wm.surfaces.remove(&hwnd);
-                    }
-                }
-                ApiResult::Normal(1)
+                ApiResult::Normal(self.shared.window_mgr.lock_or_recover().destroy_window(hwnd) as u32)
+            }
+            772 => {
+                // WinIsWindow(HAB hab, HWND hwnd)
+                ApiResult::Normal(self.shared.window_mgr.lock_or_recover().is_window(read_stack(8)) as u32)
             }
             884 => {
                 // WinStartTimer(HAB hab, HWND hwnd, ULONG idTimer, ULONG dtTimeout)
@@ -710,6 +670,9 @@ impl super::Loader {
                 }
                 let (hwnd_dlg, hmq) = self.load_dialog(vcpu_id, read_stack(4), read_stack(8),
                     pfn_dlg_proc, read_stack(16), read_stack(20), read_stack(24));
+                // Modal: the owner is disabled until the dialog ends, and
+                // WinDlgBox destroys the dialog before it returns.
+                self.shared.window_mgr.lock_or_recover().begin_modal_dialog(hwnd_dlg, true);
                 ApiResult::DlgRunLoop { dlg_proc: pfn_dlg_proc, hwnd_dlg, hmq }
             }
             733 => {
@@ -937,6 +900,8 @@ impl super::Loader {
                 if pfn_wp == 0 || hmq == 0 {
                     return ApiResult::Normal(DID_CANCEL);
                 }
+                // Modal until dismissed; the dialog stays for WinDestroyWindow.
+                self.shared.window_mgr.lock_or_recover().begin_modal_dialog(hwnd_dlg, false);
                 ApiResult::DlgRunLoop { dlg_proc: pfn_wp, hwnd_dlg, hmq }
             }
             804 => {
@@ -1570,6 +1535,60 @@ impl super::Loader {
         prev
     }
 
+    /// WinGetMsg / WinPeekMsg: take the first message of the calling
+    /// thread's queue that passes the filters (`hwnd_filter`: that window or
+    /// one of its descendants, 0 = any; `first`..`last`: a message range, see
+    /// [`msg_in_range`]), write it to `pqmsg` as a QMSG with any accelerator
+    /// keystroke translated, and return its message number. The message is
+    /// left in the queue unless `fl` is `PM_REMOVE`. With `wait`, block
+    /// until one arrives; `None` when there is none (or on shutdown).
+    #[allow(clippy::too_many_arguments)]
+    fn next_message(&self, vcpu_id: u32, pqmsg: u32, hwnd_filter: u32, first: u32, last: u32,
+                    fl: u32, wait: bool) -> Option<u32> {
+        let mq_arc = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
+            wm.get_mq(hmq)?
+        };
+        let (cond, wait_lock) = {
+            let mq = mq_arc.lock_or_recover();
+            (Arc::clone(&mq.cond), Arc::clone(&mq.lock))
+        };
+        loop {
+            if self.shutting_down() { return None; }
+            // Window-manager lock before the queue lock, as everywhere else.
+            let found = {
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let mut mq = mq_arc.lock_or_recover();
+                let pos = mq.messages.iter().position(|m| {
+                    // WM_QUIT passes every filter, so a filtered loop still ends.
+                    m.msg == WM_QUIT || (msg_in_range(m.msg, first, last)
+                        && (hwnd_filter == 0 || wm.is_same_or_descendant(m.hwnd, hwnd_filter)))
+                });
+                pos.and_then(|i| if fl & PM_REMOVE != 0 { mq.messages.remove(i) } else { mq.messages.get(i).cloned() })
+            };
+            if let Some(mut msg) = found {
+                // Keystrokes that are accelerators arrive as the command
+                // they stand for.
+                self.translate_queued_accelerator(&mut msg);
+                if pqmsg != 0 {
+                    self.guest_write::<u32>(pqmsg, msg.hwnd);
+                    self.guest_write::<u32>(pqmsg + 4, msg.msg);
+                    self.guest_write::<u32>(pqmsg + 8, msg.mp1);
+                    self.guest_write::<u32>(pqmsg + 12, msg.mp2);
+                    self.guest_write::<u32>(pqmsg + 16, msg.time);
+                    self.guest_write::<i16>(pqmsg + 20, msg.x);
+                    self.guest_write::<i16>(pqmsg + 22, msg.y);
+                }
+                return Some(msg.msg);
+            }
+            if !wait { return None; }
+            // Block on the queue's condvar instead of spinning.
+            let guard = wait_lock.lock_or_recover();
+            let _ = cond.wait_timeout(guard, std::time::Duration::from_millis(100)).unwrap();
+        }
+    }
+
     /// Load accelerator table `id` (RT_ACCELTABLE) of module `hmod` and
     /// return its handle, or `None` without such a resource.
     pub(super) fn load_accel_table(&self, hmod: u32, id: u32) -> Option<u32> {
@@ -1675,6 +1694,18 @@ impl super::Loader {
         // The compositor reads position and size from the window; the
         // surface is allocated on the first draw (sized from cx × cy).
         (h, hmq, focus)
+    }
+}
+
+/// Whether message `msg` passes the `msgFirst` / `msgLast` filter of
+/// WinGetMsg / WinPeekMsg: both 0 = every message; `first <= last` = that
+/// range; `first > last` = every message except those strictly between
+/// `last` and `first` (TODO(unverified): the exact bounds of the exclusion).
+fn msg_in_range(msg: u32, first: u32, last: u32) -> bool {
+    match (first, last) {
+        (0, 0) => true,
+        (f, l) if f <= l => (f..=l).contains(&msg),
+        (f, l) => msg <= l || msg >= f,
     }
 }
 
@@ -2436,6 +2467,72 @@ mod tests {
         loader.post_to_window(entry, WM_CHAR, mp1 | KC_KEYUP, mp2);
         call_pmwin(&loader, &mut vcpu, ORD_WIN_GET_MSG, &[0, pqmsg, 0, 0, 0]);
         assert_eq!(read_qmsg(&loader, pqmsg).1, WM_CHAR);
+    }
+
+    const ORD_WIN_PEEK_MSG: u32 = 918;
+
+    /// WinPeekMsg never waits, leaves the message with PM_NOREMOVE, and
+    /// both it and WinGetMsg honour the window and message-range filters.
+    #[test]
+    fn test_win_peek_msg_and_message_filters() {
+        use super::super::constants::*;
+        let loader = Loader::new_mock();
+        let (_, client, owner, entry) = window_with_entry(&loader);
+        let hmq = loader.shared.window_mgr.lock_or_recover().find_hmq_for_hwnd(client).unwrap();
+        let mq = loader.shared.window_mgr.lock_or_recover().get_mq(hmq).unwrap();
+        mq.lock_or_recover().messages.clear();
+        let mut vcpu = MockVcpu::new();
+        let q = 0x13200;
+        let peek = |vcpu: &mut MockVcpu, hwnd: u32, first: u32, last: u32, fl: u32| {
+            call_pmwin(&loader, vcpu, ORD_WIN_PEEK_MSG, &[0, q, hwnd, first, last, fl])
+        };
+        assert_eq!(peek(&mut vcpu, 0, 0, 0, PM_REMOVE), 0, "empty queue: FALSE at once");
+
+        const WM_USER: u32 = 0x1000;
+        loader.post_to_window(owner, WM_USER + 1, 11, 0);
+        loader.post_to_window(entry, WM_USER + 2, 22, 0);
+        loader.post_to_window(client, WM_TIMER, 33, 0);
+        assert_eq!(peek(&mut vcpu, 0, 0, 0, PM_NOREMOVE), 1);
+        assert_eq!(read_qmsg(&loader, q), (owner, WM_USER + 1, 11, 0));
+        assert_eq!(mq.lock_or_recover().messages.len(), 3, "PM_NOREMOVE leaves it");
+        // Window filter: the client and its descendants (the entry field).
+        assert_eq!(peek(&mut vcpu, client, 0, 0, PM_REMOVE), 1);
+        assert_eq!(read_qmsg(&loader, q).0, entry);
+        // Range filter.
+        assert_eq!(peek(&mut vcpu, 0, WM_TIMER, WM_TIMER, PM_REMOVE), 1);
+        assert_eq!(read_qmsg(&loader, q).1, WM_TIMER);
+        assert_eq!(peek(&mut vcpu, client, 0, 0, PM_REMOVE), 0, "nothing left for the client");
+        // WinGetMsg takes the remaining one.
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_GET_MSG, &[0, q, 0, 0, 0]), 1);
+        assert_eq!(read_qmsg(&loader, q).0, owner);
+        // WM_QUIT passes any filter and makes WinGetMsg return FALSE.
+        loader.post_to_window(owner, WM_QUIT, 0, 0);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_GET_MSG, &[0, q, entry, WM_TIMER, WM_TIMER]), 0);
+    }
+
+    #[test]
+    fn test_message_range_filter() {
+        use super::msg_in_range;
+        assert!(msg_in_range(5, 0, 0));
+        assert!(msg_in_range(5, 5, 5) && !msg_in_range(6, 5, 5));
+        assert!(msg_in_range(3, 2, 4) && !msg_in_range(1, 2, 4));
+        // first > last: everything outside the gap between them.
+        assert!(msg_in_range(1, 10, 2) && msg_in_range(10, 10, 2) && msg_in_range(50, 10, 2));
+        assert!(!msg_in_range(5, 10, 2));
+    }
+
+    /// WinDestroyWindow removes the window; WinIsWindow then reports FALSE.
+    #[test]
+    fn test_win_destroy_window_and_is_window() {
+        let loader = Loader::new_mock();
+        let (frame, client, _, entry) = window_with_entry(&loader);
+        let mut vcpu = MockVcpu::new();
+        assert_eq!(call_pmwin(&loader, &mut vcpu, 772, &[0, entry]), 1);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, 728, &[frame]), 1);
+        for h in [frame, client, entry] {
+            assert_eq!(call_pmwin(&loader, &mut vcpu, 772, &[0, h]), 0);
+        }
+        assert_eq!(call_pmwin(&loader, &mut vcpu, 728, &[frame]), 0, "already destroyed");
     }
 
     /// WinTranslateAccel uses the table it is given and the window it names.

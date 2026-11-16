@@ -601,6 +601,10 @@ pub const CMDSRC_PUSHBUTTON:  u32 = 1;
 pub const CMDSRC_MENU:        u32 = 2;
 pub const CMDSRC_ACCELERATOR: u32 = 3;
 
+// WinPeekMsg flags (fl)
+pub const PM_NOREMOVE: u32 = 0;
+pub const PM_REMOVE:   u32 = 1;
+
 // WM_HELP: posted by BS_HELP buttons and AF_HELP accelerators.
 pub const WM_HELP: u32 = 0x0022;
 

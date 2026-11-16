@@ -592,13 +592,13 @@ impl super::Loader {
                                             wm.get_window(hwnd_dlg)
                                                 .map(|w| (w.dialog_dismissed, w.dialog_result))
                                         };
-                                        if let Some((true, dlg_result)) = dismissed {
-                                            // Dialog dismissed: remove it from the Z-order,
-                                            // which marks the desktop for a repaint.
-                                            self.shared.window_mgr.lock_or_recover().close_dialog(hwnd_dlg);
+                                        if let Some((true, _)) = dismissed {
+                                            // Dialog dismissed: off the screen, its owner
+                                            // enabled again, destroyed for WinDlgBox.
                                             // regs.rip and regs.rsp are already set to saved state
                                             // by the code above the match.
-                                            regs.rax = dlg_result as u64;
+                                            regs.rax = self.shared.window_mgr.lock_or_recover()
+                                                .finish_modal_dialog(hwnd_dlg) as u64;
                                             // Fall through to vcpu.set_regs + continue.
                                         } else {
                                             // Not yet dismissed: dispatch the next queued message.
@@ -977,15 +977,21 @@ fn setup_dlg_dispatch(
 ) -> bool {
     use super::mutex_ext::MutexExt;
 
-    let mq_arc = loader.shared.window_mgr.lock_or_recover().get_mq(hmq);
-    let Some(mq_arc) = mq_arc else {
+    // End the modal loop: return to the WinDlgBox / WinProcessDlg caller with
+    // the dialog result (DID_CANCEL unless it was dismissed), after taking
+    // the dialog off the screen and enabling its owner again.
+    let finish = |vcpu: &mut dyn super::vm_backend::VcpuBackend| {
+        let result = loader.shared.window_mgr.lock_or_recover().finish_modal_dialog(hwnd_dlg);
         let mut regs = vcpu.get_regs().unwrap();
         regs.rip = saved_rip;
         regs.rsp = saved_rsp;
-        regs.rax = DID_CANCEL as u64;
+        regs.rax = result as u64;
         vcpu.set_regs(&regs).unwrap();
-        return false;
+        false
     };
+
+    let mq_arc = loader.shared.window_mgr.lock_or_recover().get_mq(hmq);
+    let Some(mq_arc) = mq_arc else { return finish(vcpu) };
 
     let (cond, wait_lock) = {
         let mq = mq_arc.lock_or_recover();
@@ -994,40 +1000,11 @@ fn setup_dlg_dispatch(
 
     loop {
         // Check if the dialog has been dismissed by WinDismissDlg.
-        {
-            let wm = loader.shared.window_mgr.lock_or_recover();
-            match wm.get_window(hwnd_dlg) {
-                Some(w) if w.dialog_dismissed => {
-                    let result = w.dialog_result;
-                    drop(wm);
-                    let mut regs = vcpu.get_regs().unwrap();
-                    regs.rip = saved_rip;
-                    regs.rsp = saved_rsp;
-                    regs.rax = result as u64;
-                    vcpu.set_regs(&regs).unwrap();
-                    return false;
-                }
-                None => {
-                    // Window destroyed; return DID_CANCEL.
-                    drop(wm);
-                    let mut regs = vcpu.get_regs().unwrap();
-                    regs.rip = saved_rip;
-                    regs.rsp = saved_rsp;
-                    regs.rax = DID_CANCEL as u64;
-                    vcpu.set_regs(&regs).unwrap();
-                    return false;
-                }
-                _ => {}
-            }
-        }
-
-        if loader.shutting_down() {
-            let mut regs = vcpu.get_regs().unwrap();
-            regs.rip = saved_rip;
-            regs.rsp = saved_rsp;
-            regs.rax = DID_CANCEL as u64;
-            vcpu.set_regs(&regs).unwrap();
-            return false;
+        // Dismissed, or destroyed (DID_CANCEL).
+        let ended = loader.shared.window_mgr.lock_or_recover()
+            .get_window(hwnd_dlg).is_none_or(|w| w.dialog_dismissed);
+        if ended || loader.shutting_down() {
+            return finish(vcpu);
         }
 
         // Try to pop the next message from the queue.
@@ -1036,12 +1013,7 @@ fn setup_dlg_dispatch(
         if let Some(msg) = msg_opt {
             // WM_QUIT terminates the dialog loop with DID_CANCEL.
             if msg.msg == WM_QUIT {
-                let mut regs = vcpu.get_regs().unwrap();
-                regs.rip = saved_rip;
-                regs.rsp = saved_rsp;
-                regs.rax = DID_CANCEL as u64;
-                vcpu.set_regs(&regs).unwrap();
-                return false;
+                return finish(vcpu);
             }
 
             // Like WinGetMsg + WinDispatchMsg: accelerators are translated,
