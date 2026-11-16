@@ -19,6 +19,7 @@
 //! The VIO text-mode console does not go through this module: it needs a fixed
 //! cell grid and keeps its 8×16 bitmap font.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
@@ -304,26 +305,11 @@ struct Raster {
     advance: f32,
 }
 
-type RasterKey = (usize, u16, u32);
-
-/// Upper bound on cached glyph bitmaps; the cache is simply cleared when full.
-const RASTER_CACHE_MAX: usize = 4096;
-
-fn raster_cache() -> &'static Mutex<HashMap<RasterKey, std::sync::Arc<Raster>>> {
-    static CACHE: OnceLock<Mutex<HashMap<RasterKey, std::sync::Arc<Raster>>>> = OnceLock::new();
-    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
-fn rasterize(face_id: usize, gid: GlyphId, scale: f32) -> Option<std::sync::Arc<Raster>> {
-    let key = (face_id, gid.0, scale.to_bits());
-    let mut cache = raster_cache().lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(r) = cache.get(&key) {
-        return Some(r.clone());
-    }
+fn rasterize(face_id: usize, gid: GlyphId, scale: f32) -> Option<Raster> {
     let f = face(face_id)?;
     let px_scale = PxScale::from(scale);
     let advance = f.as_scaled(px_scale).h_advance(gid);
-    let raster = match f.outline_glyph(gid.with_scale_and_position(px_scale, point(0.0, 0.0))) {
+    Some(match f.outline_glyph(gid.with_scale_and_position(px_scale, point(0.0, 0.0))) {
         Some(outline) => {
             let b = outline.px_bounds();
             let (width, height) = (b.width() as usize, b.height() as usize);
@@ -337,13 +323,55 @@ fn rasterize(face_id: usize, gid: GlyphId, scale: f32) -> Option<std::sync::Arc<
         }
         // Glyphs without an outline (space) only advance the pen.
         None => Raster { left: 0, top: 0, width: 0, height: 0, coverage: Vec::new(), advance },
-    };
-    if cache.len() >= RASTER_CACHE_MAX {
-        cache.clear();
+    })
+}
+
+/// One character in one font, ready to measure and draw.
+struct Glyph {
+    src: GlyphSource,
+    /// Pen advance in pixels.
+    advance: f32,
+    /// Coverage bitmap for outline glyphs.
+    raster: Option<Raster>,
+}
+
+impl Glyph {
+    fn load(ch: char, spec: FontSpec) -> Glyph {
+        let src = resolve(ch, spec);
+        let raster = match src {
+            GlyphSource::Outline { face: id, id: gid } => rasterize(id, gid, scale_for(id, spec)),
+            _ => None,
+        };
+        let advance = raster.as_ref().map_or_else(|| advance_of(src, spec), |r| r.advance);
+        Glyph { src, advance, raster }
     }
-    let raster = std::sync::Arc::new(raster);
-    cache.insert(key, raster.clone());
-    Some(raster)
+}
+
+/// Glyph cache key: the character, the font, and the CJK face order in
+/// effect (`CjkRegion::Auto` follows the process codepage, which can change).
+type GlyphKey = (char, FontSpec, [usize; 4]);
+
+/// Upper bound on cached glyphs per thread; the cache is cleared when full.
+const GLYPH_CACHE_MAX: usize = 4096;
+
+thread_local! {
+    /// Per-thread glyph cache. Text is drawn almost only on the GUI thread,
+    /// so a thread-local cache costs no lock and no reference counting per
+    /// glyph; the API threads only measure text and fill their own.
+    static GLYPH_CACHE: RefCell<HashMap<GlyphKey, Glyph>> = RefCell::new(HashMap::new());
+}
+
+/// Run `f` on the cached glyph for `ch` in `spec`, loading it on first use.
+/// `f` must not use the glyph cache itself.
+fn with_glyph<R>(ch: char, spec: FontSpec, f: impl FnOnce(&Glyph) -> R) -> R {
+    let key = (ch, spec, cjk_order(spec.cjk));
+    GLYPH_CACHE.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= GLYPH_CACHE_MAX && !cache.contains_key(&key) {
+            cache.clear();
+        }
+        f(cache.entry(key).or_insert_with(|| Glyph::load(ch, spec)))
+    })
 }
 
 /// Horizontal advance of `src` in pixels.
@@ -361,7 +389,7 @@ fn advance_of(src: GlyphSource, spec: FontSpec) -> f32 {
 
 /// Width of `text` in pixels when drawn with `spec`.
 pub fn text_width(text: &str, spec: FontSpec) -> i32 {
-    text.chars().map(|ch| advance_of(resolve(ch, spec), spec)).sum::<f32>().round() as i32
+    text.chars().map(|ch| with_glyph(ch, spec, |g| g.advance)).sum::<f32>().round() as i32
 }
 
 /// The longest prefix of `text` that fits in `max_width` pixels when drawn
@@ -369,7 +397,7 @@ pub fn text_width(text: &str, spec: FontSpec) -> i32 {
 pub fn fit_text(text: &str, max_width: i32, spec: FontSpec) -> &str {
     let mut pen = 0.0f32;
     for (idx, ch) in text.char_indices() {
-        pen += advance_of(resolve(ch, spec), spec);
+        pen += with_glyph(ch, spec, |g| g.advance);
         if pen.round() as i32 > max_width {
             return &text[..idx];
         }
@@ -453,41 +481,39 @@ pub fn draw_text(
     };
     let mut pen = 0.0f32;
     for ch in text.chars() {
-        let src = resolve(ch, spec);
         let gx = x + pen.round() as i32;
-        match src {
-            GlyphSource::Outline { face: id, id: gid } => {
-                if let Some(r) = rasterize(id, gid, scale_for(id, spec)) {
+        pen += with_glyph(ch, spec, |g| {
+            match (&g.raster, g.src) {
+                (Some(r), _) => {
                     for row in 0..r.height {
                         for col in 0..r.width {
                             put(gx + r.left + col as i32, baseline + r.top + row as i32,
                                 r.coverage[row * r.width + col]);
                         }
                     }
-                    pen += r.advance;
-                    continue;
                 }
-            }
-            GlyphSource::BitmapNarrow(rows) => {
-                let top = baseline + UNIFONT_DESCENT - UNIFONT_CELL_H;
-                for (row, bits) in rows.iter().enumerate() {
-                    for col in 0..UNIFONT_NARROW_W {
-                        if bits & (0x80 >> col) != 0 { put(gx + col, top + row as i32, 255); }
+                (None, GlyphSource::BitmapNarrow(rows)) => {
+                    let top = baseline + UNIFONT_DESCENT - UNIFONT_CELL_H;
+                    for (row, bits) in rows.iter().enumerate() {
+                        for col in 0..UNIFONT_NARROW_W {
+                            if bits & (0x80 >> col) != 0 { put(gx + col, top + row as i32, 255); }
+                        }
                     }
                 }
-            }
-            GlyphSource::BitmapWide(bytes) => {
-                let top = baseline + UNIFONT_DESCENT - UNIFONT_CELL_H;
-                for (row, pair) in bytes.as_chunks::<2>().0.iter().enumerate() {
-                    let bits = u16::from_be_bytes(*pair);
-                    for col in 0..UNIFONT_WIDE_W {
-                        if bits & (0x8000 >> col) != 0 { put(gx + col, top + row as i32, 255); }
+                (None, GlyphSource::BitmapWide(bytes)) => {
+                    let top = baseline + UNIFONT_DESCENT - UNIFONT_CELL_H;
+                    for (row, pair) in bytes.as_chunks::<2>().0.iter().enumerate() {
+                        let bits = u16::from_be_bytes(*pair);
+                        for col in 0..UNIFONT_WIDE_W {
+                            if bits & (0x8000 >> col) != 0 { put(gx + col, top + row as i32, 255); }
+                        }
                     }
                 }
+                // Outline faces that failed to load, and blanks, only advance.
+                (None, GlyphSource::Outline { .. } | GlyphSource::Blank) => {}
             }
-            GlyphSource::Blank => {}
-        }
-        pen += advance_of(src, spec);
+            g.advance
+        });
     }
     pen.round() as i32
 }
@@ -609,6 +635,46 @@ mod tests {
         // CJK glyphs are scaled to the Latin face's em size: full-width, not tiny.
         let w = text_width("中", spec);
         assert!((10..=16).contains(&w), "unexpected CJK advance {w}");
+    }
+
+    /// Explicit regions only: `Auto` follows a process-wide codepage that
+    /// other tests change concurrently.
+    const MIXED: &str = "Ag 中あ한 ᚠ";
+    fn mixed_spec() -> FontSpec {
+        FontSpec { cjk: CjkRegion::Korean, ..FontSpec::SYSTEM }
+    }
+
+    #[test]
+    fn cached_glyphs_match_freshly_resolved_ones() {
+        let spec = mixed_spec();
+        for ch in MIXED.chars() {
+            let fresh = Glyph::load(ch, spec);
+            // Twice: the first call fills the cache, the second reads it.
+            for _ in 0..2 {
+                with_glyph(ch, spec, |g| {
+                    assert_eq!(g.src, fresh.src, "{ch:?}");
+                    assert_eq!(g.advance, fresh.advance, "{ch:?}");
+                    assert_eq!(g.raster.as_ref().map(|r| &r.coverage),
+                               fresh.raster.as_ref().map(|r| &r.coverage), "{ch:?}");
+                });
+            }
+            assert_eq!(fresh.advance, advance_of(fresh.src, spec), "{ch:?}: raster and font advance agree");
+        }
+        let sum: f32 = MIXED.chars().map(|ch| Glyph::load(ch, spec).advance).sum();
+        assert_eq!(text_width(MIXED, spec), sum.round() as i32);
+    }
+
+    #[test]
+    fn text_draws_the_same_on_another_thread() {
+        let draw = || {
+            let mut buf = vec![BG; W * H];
+            let adv = draw_text(&mut buf, W, H, 2, 30, MIXED, 0, mixed_spec());
+            (buf, adv)
+        };
+        let here = draw();
+        let there = std::thread::spawn(draw).join().unwrap();
+        assert!(here == there, "each thread's glyph cache renders identically");
+        assert!(!painted(&here.0).is_empty());
     }
 
     #[test]
