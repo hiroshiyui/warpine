@@ -87,7 +87,7 @@ From a code review of the PM rendering path (`src/gui/sdl_renderer.rs`, `rendere
 
 **Step 2 follow-ups — compositor**
 
-- [ ] **Damage smaller than a window** — `WindowManager::dirty` holds window handles, so invalidating a small area or drawing one primitive still redraws the whole frame; record the invalidated rectangles (`WinInvalidateRect` already receives them) and the bounds of each `DrawOp` drawn into a surface (`Loader::draw`), and damage only those
+- [ ] **Damage smaller than a window** — `WindowManager::dirty` holds window handles, so invalidating a small area or drawing one primitive still redraws the whole frame; record the invalidated rectangles (`WinInvalidateRect` already receives them) and damage only those plus what was drawn — surfaces already track the bounds of their drawing (`Surface::take_changes`, used by the layered compositor), but they have one consumer, so the software compositor would need its own copy
 - [ ] **Tighter damage for moves** — a window dragged a short distance damages the bounding box of its old and new positions; damage the two rectangles separately (or the old one minus the new one)
 
 **Step 3 follow-ups — what the shared surfaces unlock**
@@ -100,7 +100,6 @@ From a code review of the PM rendering path (`src/gui/sdl_renderer.rs`, `rendere
 
 **Step 4 follow-ups — GPU compositing** (the `Compositor` trait, `SoftwareCompositor` and the per-window-texture `LayeredCompositor` with vsync are done — see the developer guide, "Compositing")
 
-- [ ] **Partial texture uploads** — a frame whose surface changed re-renders and uploads its whole texture; re-render only the client area when the chrome did not change, and upload only the changed rows (pairs with "Damage smaller than a window")
 - [ ] **HiDPI** — the desktop window is created without high pixel density, so on a scaled display the OS scales it; use SDL3's pixel density / logical presentation to draw frames at the display's density (fonts would need rasterising at the scale)
 - [ ] **Keep GPI on the CPU** — GPI is immediate-mode with pixel-exact semantics, raster operations and readback; mapping it to GPU draw calls is a large effort with poor returns. Use `SDL_GPU` directly (shaders) only if the renderer API proves too limited (e.g. for OpenGL forwarding below), rather than adding `wgpu` or raw Vulkan via `ash` (the conclusion 5thPlanet reached in its ADR-0019 / ADR-0020)
 

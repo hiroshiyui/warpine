@@ -153,6 +153,38 @@ fn xrgb_texture(creator: &'static TextureCreator<WindowContext>, w: u32, h: u32)
     Ok(t)
 }
 
+/// Upload the `src` rectangle of `buf` (rows `buf_w` pixels apart) to the
+/// same-sized rectangle at `dst` of `texture`.
+///
+/// `Texture::update` (`SDL_UpdateTexture`) reads `height` rows of `width`
+/// pixels, `buf_w * 4` bytes apart, from the start of the slice it gets, and
+/// sdl3-rs does not check that the slice holds them; this function does, and
+/// refuses rectangles that do not lie inside `buf`.
+fn upload(texture: &mut Texture, dst: (i32, i32), buf: &[u32], buf_w: usize, src: Rect)
+          -> Result<(), String> {
+    if src.is_empty() { return Ok(()); }
+    if dst.0 < 0 || dst.1 < 0 {
+        return Err(format!("upload to {dst:?} outside the texture"));
+    }
+    let Some(span) = upload_span(src, buf.len(), buf_w) else {
+        return Err(format!("upload of {src:?} outside the {buf_w}-wide buffer of {} pixels", buf.len()));
+    };
+    let pixels = &buf[span];
+    let area = sdl3::rect::Rect::new(dst.0, dst.1, src.width() as u32, src.height() as u32);
+    texture.update(area, bytemuck::cast_slice(pixels), buf_w * 4).map_err(|e| e.to_string())
+}
+
+/// The pixels SDL reads to upload the non-empty rectangle `src` of a
+/// `buf_w`-wide buffer of `len` pixels: from its first pixel to its last;
+/// `None` unless `src` lies inside the buffer.
+fn upload_span(src: Rect, len: usize, buf_w: usize) -> Option<std::ops::Range<usize>> {
+    let buf_h = len / buf_w.max(1);
+    let inside = src.x0 >= 0 && src.y0 >= 0 && !src.is_empty()
+        && src.x1 as usize <= buf_w && src.y1 as usize <= buf_h;
+    inside.then(|| src.y0 as usize * buf_w + src.x0 as usize
+                   ..(src.y1 as usize - 1) * buf_w + src.x1 as usize)
+}
+
 fn frect(r: Rect) -> FRect {
     FRect::new(r.x0 as f32, r.y0 as f32, r.width() as f32, r.height() as f32)
 }
@@ -196,15 +228,10 @@ impl SoftwareCompositor {
     /// rectangle straight out of `buffer` with the buffer's row pitch.
     fn present(&mut self, damaged: &[Rect]) {
         let w = self.width as usize;
-        let bytes: &[u8] = bytemuck::cast_slice(&self.buffer);
         for r in damaged {
             let r = r.intersect(&Rect::at(0, 0, self.width as i32, self.height as i32));
-            if r.is_empty() { continue; }
-            let area = sdl3::rect::Rect::new(r.x0, r.y0, r.width() as u32, r.height() as u32);
-            // SDL reads `height` rows of `width` pixels, `w * 4` bytes apart,
-            // from here; `r` lies inside the buffer, so that stays in bounds.
-            let start = (r.y0 as usize * w + r.x0 as usize) * 4;
-            self.texture.update(area, &bytes[start..], w * 4).expect("desktop texture update failed");
+            upload(&mut self.texture, (r.x0, r.y0), &self.buffer, w, r)
+                .expect("desktop texture update failed");
         }
         self.canvas.copy(&self.texture, None::<FRect>, None::<FRect>).expect("canvas copy failed");
         self.canvas.present();
@@ -265,7 +292,7 @@ struct Layer {
     texture: Texture<'static>,
     /// Frame size the texture holds (clamped to [`MAX_LAYER_DIM`]).
     size: (i32, i32),
-    /// Client surface generation and size it was rendered from.
+    /// Client surface generation and size it holds.
     generation: u64,
     fb_size: (u32, u32),
     /// The parts of the frame it paints, frame-local (see [`painted_parts`]).
@@ -345,13 +372,27 @@ impl LayeredCompositor {
             self.layers.remove(&p.hwnd);
             return false;
         }
-        let fb = f.surface.lock_or_recover();
-        let stale = full || chrome_changed || match self.layers.get(&p.hwnd) {
-            None => true,
-            Some(l) => l.size != (w, h) || l.generation != fb.generation()
-                || l.fb_size != (fb.width, fb.height),
-        };
-        if stale {
+        let mut fb = f.surface.lock_or_recover();
+        // Same size and chrome: only the client's changed pels need copying.
+        let reusable = !full && !chrome_changed && self.layers.get(&p.hwnd)
+            .is_some_and(|l| l.size == (w, h) && l.fb_size == (fb.width, fb.height));
+        if reusable {
+            let layer = self.layers.get_mut(&p.hwnd).expect("checked above");
+            if layer.generation != fb.generation() {
+                // The client sits at `client` in the texture; the surface is
+                // drawn from its top-left, clipped to it.
+                let client = p.client.offset(-p.frame.x0, -p.frame.y0);
+                let dst = fb.take_changes().offset(client.x0, client.y0)
+                    .intersect(&client).intersect(&Rect::at(0, 0, w, h));
+                let src = dst.offset(-client.x0, -client.y0);
+                log::trace!("[GUI] frame {:#x}: partial upload {src:?}", p.hwnd);
+                if let Err(e) = upload(&mut layer.texture, (dst.x0, dst.y0), &fb.buffer, fb.width as usize, src) {
+                    warn!("[GUI] frame {:#x} texture upload failed: {e}", p.hwnd);
+                }
+                layer.generation = fb.generation();
+            }
+            drop(fb);
+        } else {
             // Render the frame at the origin, without its pull-down (which
             // has its own texture), and upload all of it.
             let local = p.moved_without_pulldown(-p.frame.x0, -p.frame.y0);
@@ -362,6 +403,7 @@ impl LayeredCompositor {
                 .map(|r| r.intersect(&Rect::at(0, 0, w, h)))
                 .filter(|r| !r.is_empty())
                 .collect();
+            fb.take_changes();
             let (generation, fb_size) = (fb.generation(), (fb.width, fb.height));
             drop(fb);
             let reuse = self.layers.remove(&p.hwnd).filter(|l| l.size == (w, h));
@@ -373,14 +415,13 @@ impl LayeredCompositor {
                     return false;
                 }
             };
-            if let Err(e) = texture.update(None, bytemuck::cast_slice(&self.scratch), w as usize * 4) {
+            if let Err(e) = upload(&mut texture, (0, 0), &self.scratch, w as usize, Rect::at(0, 0, w, h)) {
                 warn!("[GUI] frame {:#x} texture upload failed: {e}", p.hwnd);
             }
             self.layers.insert(p.hwnd, Layer { texture, size: (w, h), generation, fb_size,
                                                parts, pulldown: None });
-        } else {
-            drop(fb);
         }
+        let stale = !reusable;
 
         // The pull-down's texture follows the chrome.
         let pd = f.chrome.menu.as_ref().and_then(|m| m.pulldown.as_ref());
@@ -392,7 +433,8 @@ impl LayeredCompositor {
                     .map_err(|e| warn!("[GUI] no pull-down texture: {e}"))
                     .ok()
                     .and_then(|mut t| {
-                        t.update(None, bytemuck::cast_slice(&pd.pixels), MENU_DROPDOWN_W as usize * 4)
+                        upload(&mut t, (0, 0), &pd.pixels, MENU_DROPDOWN_W as usize,
+                               Rect::at(0, 0, MENU_DROPDOWN_W, pd.h))
                             .map_err(|e| warn!("[GUI] pull-down upload failed: {e}"))
                             .ok()?;
                         Some((t, pd.h))
@@ -503,6 +545,20 @@ mod tests {
         assert_eq!(CompositorKind::choose(Some(" Layered "), false), Layered);
         assert_eq!(CompositorKind::choose(Some("bogus"), false), Software, "unknown: default");
         assert_eq!(CompositorKind::choose(Some(""), true), Layered, "empty: default");
+    }
+
+    #[test]
+    fn uploads_read_only_inside_the_buffer() {
+        // A 10 x 4 buffer.
+        assert_eq!(upload_span(Rect::at(0, 0, 10, 4), 40, 10), Some(0..40), "everything");
+        assert_eq!(upload_span(Rect::new(2, 1, 5, 3), 40, 10), Some(12..25), "rows 1-2, columns 2-4");
+        assert_eq!(upload_span(Rect::new(9, 3, 10, 4), 40, 10), Some(39..40), "last pixel");
+        for bad in [Rect::new(-1, 0, 3, 3), Rect::new(0, -1, 3, 3), Rect::new(0, 0, 11, 1),
+                    Rect::new(0, 3, 10, 5), Rect::EMPTY] {
+            assert_eq!(upload_span(bad, 40, 10), None, "{bad:?}");
+        }
+        assert_eq!(upload_span(Rect::at(0, 0, 10, 4), 39, 10), None, "a short buffer has 3 full rows");
+        assert_eq!(upload_span(Rect::at(0, 0, 1, 1), 0, 0), None, "zero width");
     }
 
     #[test]

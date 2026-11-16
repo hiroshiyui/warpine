@@ -675,6 +675,22 @@ fn gui_layered_compositor_matches_golden_dialog() {
         "1500 click 52 62\n2500 click 62 80\n4000 dump {dump}\n4100 quit\n", LAYERED);
 }
 
+/// Built-in controls painted over the client's background.
+#[test]
+fn gui_layered_compositor_matches_golden_controls() {
+    check_gui_golden_env("pm_controls_test", "samples/pm_controls_test/pm_controls_test.exe",
+        "2500 dump {dump}\n2600 quit\n", LAYERED);
+}
+
+/// Typing changes small parts of a window that already has its texture,
+/// so only the changed rows are uploaded (`Surface::take_changes`).
+#[test]
+fn gui_layered_compositor_matches_golden_typing() {
+    check_gui_golden_env("pm_controls_typing", "samples/pm_controls_test/pm_controls_test.exe",
+        "700 click 230 300\n900 text  Hello, W\u{f6}rld!\n1300 key home\n1400 text >>\n\
+         1600 click 200 470\n1800 key enter\n1900 text three\n2500 dump {dump}\n2600 quit\n", LAYERED);
+}
+
 #[test]
 fn gui_layered_compositor_moves_windows() {
     check_drag_title_bar_moves_window(LAYERED);

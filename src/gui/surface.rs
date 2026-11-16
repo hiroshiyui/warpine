@@ -155,6 +155,10 @@ pub struct Surface {
     /// window) can tell a moved window from a redrawn one. Writes to
     /// `buffer` from outside these methods do not bump it.
     generation: u64,
+    /// Screen-space rectangle (top-first rows) covering every pel changed
+    /// since the last [`Surface::take_changes`]; may be larger than what
+    /// actually changed (text marks whole rows), never smaller.
+    changed: Rect,
     /// Test builds can record every operation applied, so tests can check
     /// what was drawn as well as the resulting pixels.
     #[cfg(test)]
@@ -170,7 +174,7 @@ impl Surface {
         let (width, height) = (width.min(MAX_SURFACE_DIM), height.min(MAX_SURFACE_DIM));
         let n = width as usize * height as usize;
         Surface {
-            buffer: vec![SURFACE_BLANK; n], width, height, generation: 0,
+            buffer: vec![SURFACE_BLANK; n], width, height, generation: 0, changed: Rect::EMPTY,
             #[cfg(test)]
             record: None,
         }
@@ -201,6 +205,62 @@ impl Surface {
         self.width = width;
         self.height = height;
         self.generation += 1;
+        self.changed = self.bounds();
+    }
+
+    /// The area changed since the last call (screen coordinates, inside the
+    /// surface), and start a new one. A compositor that keeps a copy of the
+    /// surface (the layered compositor's frame textures) refreshes only this
+    /// part; there is one such consumer at a time.
+    pub fn take_changes(&mut self) -> Rect {
+        std::mem::replace(&mut self.changed, Rect::EMPTY)
+    }
+
+    fn note_change(&mut self, r: Rect) {
+        self.changed = self.changed.union(&r.intersect(&self.bounds()));
+    }
+
+    /// Screen rows a string with its baseline on PM row `y` may touch, as a
+    /// full-width band: one line height below the baseline and two above it
+    /// (accents and fallback glyphs can be taller than the face's ascent).
+    fn text_rows(&self, y: i32, spec: FontSpec) -> Rect {
+        let y = y.clamp(-TEXT_COORD_LIMIT, TEXT_COORD_LIMIT);
+        let baseline = self.height as i32 - y;
+        let lh = font::metrics(spec).line_height.max(1);
+        Rect::new(0, baseline - 2 * lh, self.width as i32, baseline + lh)
+    }
+
+    /// A rectangle (screen coordinates, not yet clipped) that contains every
+    /// pel `op` can change.
+    fn op_bounds(&self, op: &DrawOp) -> Rect {
+        match *op {
+            DrawOp::Box { x1, y1, x2, y2, .. } => {
+                let (x1, y1, x2, y2) = (self.clamp(x1), self.clamp(y1), self.clamp(x2), self.clamp(y2));
+                Rect::new(x1.min(x2), self.row(y1.max(y2)), x1.max(x2) + 1, self.row(y1.min(y2)) + 1)
+            }
+            DrawOp::Line { x1, y1, x2, y2, .. } => match self.clip_line(x1, y1, x2, y2) {
+                Some((x1, y1, x2, y2)) =>
+                    Rect::new(x1.min(x2), self.row(y1.max(y2)), x1.max(x2) + 1, self.row(y1.min(y2)) + 1),
+                None => Rect::EMPTY,
+            },
+            DrawOp::Text { y, .. } => {
+                let spec = FontSpec::SYSTEM;
+                self.text_rows(y.saturating_add(font::metrics(spec).descent), spec)
+            }
+            DrawOp::TextFont { y, font, .. } => self.text_rows(y, font),
+            DrawOp::Pel { x, y, .. } => match self.index(x, y) {
+                Some(_) => Rect::at(x, self.row(y), 1, 1),
+                None => Rect::EMPTY,
+            },
+            DrawOp::Blit { x, y, w, h, .. } => {
+                // i64: the guest supplies all four; clamp to just outside.
+                let lim = |v: i64| v.clamp(-1, MAX_SURFACE_DIM as i64 + 1) as i32;
+                let (x, y, w, h) = (x as i64, y as i64, w as i64, h as i64);
+                let height = self.height as i64;
+                Rect::new(lim(x), lim(height - (y + h)), lim(x + w), lim(height - y))
+            }
+            DrawOp::Clear => self.bounds(),
+        }
     }
 
     /// The change counter (see the field); differs whenever the pixels or
@@ -295,6 +355,7 @@ impl Surface {
     pub fn put_row(&mut self, y: i32, pels: &[u32]) {
         if let Some(i) = self.index(0, y) {
             self.generation += 1;
+            self.note_change(Rect::at(0, self.row(y), self.width as i32, 1));
             let n = pels.len().min(self.width as usize);
             for (d, &p) in self.buffer[i..i + n].iter_mut().zip(pels) {
                 *d = p & RGB_MASK;
@@ -315,7 +376,9 @@ impl Surface {
 
     /// Apply `op`.
     pub fn draw(&mut self, op: DrawOp) {
+        let touched = self.op_bounds(&op);
         self.apply(&op);
+        self.note_change(touched);
         self.generation += 1;
         #[cfg(test)]
         if let Some(rec) = &mut self.record {
@@ -742,5 +805,47 @@ mod tests {
         assert_eq!(s.generation(), g2, "resizing to the same size does not");
         s.resize(5, 4);
         assert_ne!(s.generation(), g2, "a real resize does");
+    }
+
+    /// Every pel an operation changes lies inside what `take_changes`
+    /// reports, and the report starts afresh after each call.
+    #[test]
+    fn changes_cover_every_changed_pel() {
+        let ops = vec![
+            DrawOp::Box { x1: 3, y1: 4, x2: 20, y2: 9, color: RED, fill: true, mix: Mix::Overpaint },
+            DrawOp::Box { x1: 30, y1: 20, x2: 2, y2: 28, color: RED, fill: false, mix: Mix::Xor },
+            DrawOp::Line { x1: -50, y1: 3, x2: 70, y2: 37, color: RED, mix: Mix::Overpaint, style: SOLID_LINE },
+            DrawOp::Line { x1: 5, y1: 30, x2: 5, y2: 2, color: RED, mix: Mix::Invert, style: SOLID_LINE },
+            DrawOp::Text { x: 2, y: 10, text: "Hég".into(), color: RED },
+            DrawOp::TextFont { x: 30, y: 25, text: "Åy".into(), color: RED, font: FontSpec::SYSTEM, mix: Mix::Overpaint },
+            DrawOp::Pel { x: 63, y: 0, color: RED, mix: Mix::Overpaint },
+            DrawOp::Pel { x: 64, y: 0, color: RED, mix: Mix::Overpaint },
+            DrawOp::Blit { x: 50, y: 30, w: 30, h: 30, src: None, rop: 0x55, pattern: 0 },
+            DrawOp::Blit { x: i32::MIN, y: i32::MAX, w: u32::MAX, h: 3, src: None, rop: 0xFF, pattern: 0 },
+        ];
+        for op in ops {
+            let mut s = Surface::new(64, 40);
+            for (i, p) in s.buffer.iter_mut().enumerate() { *p = (i as u32).wrapping_mul(2654435761) & RGB_MASK; }
+            let before = s.buffer.clone();
+            s.take_changes();
+            s.draw(op.clone());
+            let changed = s.take_changes();
+            for (i, (a, b)) in before.iter().zip(&s.buffer).enumerate() {
+                if a != b {
+                    let (x, y) = ((i % 64) as i32, (i / 64) as i32);
+                    assert!(changed.contains(&Rect::at(x, y, 1, 1)), "{op:?}: ({x}, {y}) outside {changed:?}");
+                }
+            }
+            assert!(Rect::at(0, 0, 64, 40).contains(&changed), "{op:?}: {changed:?} is clipped");
+            assert_eq!(s.take_changes(), Rect::EMPTY, "taken");
+        }
+        let mut s = Surface::new(8, 8);
+        s.put_row(2, &[RED]);
+        assert_eq!(s.take_changes(), Rect::at(0, 5, 8, 1), "PM row 2 is screen row 5");
+        s.resize(9, 8);
+        assert_eq!(s.take_changes(), Rect::at(0, 0, 9, 8), "a resize changes everything");
+        s.draw(DrawOp::Pel { x: 1, y: 1, color: RED, mix: Mix::Overpaint });
+        s.draw(DrawOp::Pel { x: 3, y: 2, color: RED, mix: Mix::Overpaint });
+        assert_eq!(s.take_changes(), Rect::new(1, 5, 4, 7), "changes accumulate");
     }
 }
