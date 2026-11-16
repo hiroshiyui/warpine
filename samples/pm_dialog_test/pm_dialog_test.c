@@ -6,8 +6,12 @@
  * box and OK (default) / Cancel buttons; F3 exits. The integration test
  * drives a session from the keyboard only:
  *
- *   Ctrl+D, type "Warp", Tab, Down, Down, Enter   -> DID_OK, "Warp", item 1
- *   Ctrl+D, Esc                                   -> DID_CANCEL
+ *   Ctrl+D, type "Warp", Tab, Down, Down, Enter   -> DID_OK, "Warp", item 1;
+ *                                                    EN_ / LN_SETFOCUS and
+ *                                                    _KILLFOCUS on the way
+ *   Ctrl+D, type "ro", Esc                        -> DID_CANCEL; the entry
+ *                                                    field was made read-only
+ *                                                    and the list emptied
  *   Ctrl+D, Tab, Tab, Right, Enter                -> Cancel (arrow key within
  *                                                    the OK / Cancel group)
  *   Ctrl+D, Tab, Tab, Alt+N, type "Zz", Alt+C     -> the ~Name label focuses the
@@ -47,6 +51,9 @@ static HWND frame;                 /* the main window's frame */
 static HWND dialog;                /* the dialog of the current round */
 static USHORT cancel_source;       /* CMDSRC_* of the last DID_CANCEL */
 static BOOL cancel_in_entry;       /* the entry field had the focus at DID_CANCEL */
+static char focus_log[16];         /* focus notifications of round 1: E/e = entry
+                                      field set/kill focus, L/l = list box */
+static BOOL focus_mp2_ok = TRUE;   /* every notification's mp2 was its control */
 
 /* ---------- output (no libc printf) ---------- */
 
@@ -112,15 +119,46 @@ MRESULT EXPENTRY NameDlgProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
             check( "controls are children of the dialog",
                    (LONG)WinQueryWindow( entry, QW_PARENT ), (LONG)hwnd );
             check( "the owner is disabled while the dialog runs", WinIsWindowEnabled( frame ), FALSE );
+            WinSendDlgItemMsg( hwnd, ID_LIST, LM_INSERTITEM, MPFROMSHORT( 0 ), MPFROMP( "Temp" ) );
+            check( "LM_DELETEITEM returns the items left",
+                   SHORT1FROMMR( WinSendDlgItemMsg( hwnd, ID_LIST, LM_DELETEITEM, MPFROMSHORT( 0 ), 0 ) ), 3 );
+        } else if( round_no == 2 ) {
+            check( "LM_DELETEALL", (LONG)WinSendDlgItemMsg( hwnd, ID_LIST, LM_DELETEALL, 0, 0 ), TRUE );
+            check( "the list is empty",
+                   SHORT1FROMMR( WinSendDlgItemMsg( hwnd, ID_LIST, LM_QUERYITEMCOUNT, 0, 0 ) ), 0 );
+            check( "EM_SETREADONLY returns the old state",
+                   (LONG)WinSendMsg( entry, EM_SETREADONLY, MPFROMSHORT( TRUE ), 0 ), FALSE );
+            check( "EM_QUERYREADONLY", (LONG)WinSendMsg( entry, EM_QUERYREADONLY, 0, 0 ), TRUE );
         }
         return (MRESULT)FALSE;
     }
+    case WM_CONTROL:
+        if( round_no == 1 && strlen( focus_log ) < sizeof( focus_log ) - 1 ) {
+            char *end = focus_log + strlen( focus_log );
+            USHORT id = SHORT1FROMMP( mp1 ), code = SHORT2FROMMP( mp1 );
+            if( id == ID_NAME && ( code == EN_SETFOCUS || code == EN_KILLFOCUS ) ) {
+                *end = code == EN_SETFOCUS ? 'E' : 'e';
+            } else if( id == ID_LIST && ( code == LN_SETFOCUS || code == LN_KILLFOCUS ) ) {
+                *end = code == LN_SETFOCUS ? 'L' : 'l';
+            } else {
+                break;
+            }
+            end[1] = '\0';
+            if( HWNDFROMMP( mp2 ) != WinWindowFromID( hwnd, id ) ) focus_mp2_ok = FALSE;
+        }
+        break;
     case WM_COMMAND:
         if( SHORT1FROMMP( mp1 ) == DID_OK ) {
             /* Enter pressed the default button: a push button command
              * that did not come from the pointer. */
             check( "OK comes from a push button", SHORT1FROMMP( mp2 ), CMDSRC_PUSHBUTTON );
             check( "OK was pressed with the keyboard", SHORT2FROMMP( mp2 ), FALSE );
+            if( round_no == 1 ) {
+                /* The entry field had the focus from the start; Tab moved it
+                 * to the list box, which keeps it while Enter presses OK. */
+                check( "focus notifications in order", strcmp( focus_log, "EeL" ), 0 );
+                check( "focus notifications carry the control", focus_mp2_ok, TRUE );
+            }
             WinQueryDlgItemText( hwnd, ID_NAME, sizeof( name ), name );
             name_sel = (ULONG)WinSendDlgItemMsg( hwnd, ID_NAME, EM_QUERYSEL, 0, 0 );
             selection = (LONG)SHORT1FROMMR( WinSendDlgItemMsg( hwnd, ID_LIST, LM_QUERYSELECTION,
@@ -157,6 +195,7 @@ static void run_dialog( HWND hwnd, MPARAM mp2 )
         check( "the owner is enabled again", WinIsWindowEnabled( frame ), TRUE );
     } else if( round_no == 2 ) {
         check( "Esc ends the dialog with DID_CANCEL", result, DID_CANCEL );
+        check( "text typed into a read-only field is ignored", strlen( name ), 0 );
     } else if( round_no == 3 ) {
         check( "Right then Enter presses Cancel", result, DID_CANCEL );
         check( "Cancel was a push button", cancel_source, CMDSRC_PUSHBUTTON );

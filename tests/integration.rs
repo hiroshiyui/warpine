@@ -596,13 +596,13 @@ const DIALOG_TEST_FILL_IN: &str = "1500 key ctrl+d\n2500 text Warp\n2800 key tab
 #[test]
 fn gui_pm_dialog_test_is_driven_by_the_keyboard() {
     let steps = format!("{DIALOG_TEST_FILL_IN}3700 key enter\n\
-        4500 key ctrl+d\n5300 key esc\n\
+        4500 key ctrl+d\n5100 text ro\n5300 key esc\n\
         6000 key ctrl+d\n6800 key tab\n7000 key tab\n7200 key right\n7500 key enter\n\
         8200 key ctrl+d\n9000 key tab\n9200 key tab\n9400 key alt+n\n9700 text Zz\n10000 key alt+c\n\
         10800 key ctrl+d\n11600 text Hello\n11800 key shift+left\n11900 key shift+left\n12000 text p!\n\
         12200 key shift+home\n12300 key ctrl+insert\n12400 key end\n12500 key shift+insert\n12700 key enter\n\
         13500 key alt+f4\n17000 quit\n");
-    assert_scripted_checks_pass("samples/pm_dialog_test/pm_dialog_test.exe", "pm_dialog_test", 30, &steps);
+    assert_scripted_checks_pass("samples/pm_dialog_test/pm_dialog_test.exe", "pm_dialog_test", 37, &steps);
 }
 
 /// The pm_dialog_test dialog filled in: entry field text, list selection,
