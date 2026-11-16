@@ -1,6 +1,6 @@
 # Warpine: OS/2 Compatibility Layer
 
-> ⚠️ **Experimental — not for production use.** Warpine is a research and hobby project in active development. APIs are incomplete, behaviour may be incorrect, and security has not been hardened. Use at your own risk.
+> ⚠️ **Experimental — not for production use.** Warpine is a research and hobby project, worked on in spare time at an irregular pace. APIs are incomplete, behaviour may be incorrect, and security has not been hardened. Use at your own risk.
 
 Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS/2 1.x (NE format) applications natively on Linux using KVM hardware virtualization. Analogous to WINE for Windows, but targeting OS/2 instead.
 
