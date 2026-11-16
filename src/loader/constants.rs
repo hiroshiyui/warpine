@@ -218,8 +218,12 @@ pub const BMB_ERROR: i32 = -1;
 pub const CBM_INIT: u32 = 4;
 /// `GpiCreatePS` flOptions: associate the presentation space with the DC.
 pub const GPIA_ASSOC: u32 = 0x4000;
-/// Bitmap compression `BCA_UNCOMP` (the only one supported).
+/// Bitmap compression (`ulCompression` of BITMAPINFOHEADER2). The RLE
+/// formats are decoded; `BCA_HUFFMAN1D` is not supported.
 pub const BCA_UNCOMP: u32 = 0;
+pub const BCA_RLE8:   u32 = 1;
+pub const BCA_RLE4:   u32 = 2;
+pub const BCA_RLE24:  u32 = 4;
 /// Bitmap file types (`usType` of BITMAPFILEHEADER / BITMAPARRAYFILEHEADER).
 pub const BFT_BMAP: u16 = 0x4d42;        // "BM"
 pub const BFT_BITMAPARRAY: u16 = 0x4142; // "BA"

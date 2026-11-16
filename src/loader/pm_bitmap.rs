@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //
 // OS/2 bitmap formats: BITMAPINFOHEADER / BITMAPINFOHEADER2 parsing, the
-// pel data of uncompressed bitmaps (1, 4, 8, 24 and 32 bits per pel), and
-// RT_BITMAP resources (BITMAPFILEHEADER / BITMAPARRAYFILEHEADER).
+// pel data of uncompressed bitmaps (1, 4, 8, 24 and 32 bits per pel) and of
+// run-length encoded ones (BCA_RLE4 / RLE8 / RLE24), and RT_BITMAP
+// resources (BITMAPFILEHEADER / BITMAPARRAYFILEHEADER).
 //
 // Layouts are from the OS/2 Warp 4 Toolkit header <pmgpi.h>:
 //
@@ -14,6 +15,12 @@
 //       header, RGB2 (4 bytes: blue, green, red, options) otherwise
 //   pel data: rows bottom-up, each padded to a 4-byte boundary; 24-bit pels
 //       are blue, green, red
+//   RLE data (cbImage bytes, cbImage at offset 20): a stream from the bottom
+//       row up of byte pairs — (n > 0, value): n pels of value (RLE4: two
+//       alternating nibbles; RLE24: the value is three bytes, blue, green,
+//       red); (0, 0) end of row; (0, 1) end of bitmap; (0, 2, dx, dy) move
+//       right dx and up dy (skipped pels keep their value); (0, n ≥ 3): n
+//       literal pels follow, padded to a 16-bit boundary
 //
 // The codec works on byte slices. Below it, the GPI / DEV entry points for
 // device contexts, bitmaps and bit-block transfers (dispatched from
@@ -30,6 +37,7 @@ pub const MIN_HEADER2_LEN: u32 = 16;
 pub const MAX_HEADER2_LEN: u32 = 64;
 /// Offsets in BITMAPINFOHEADER2.
 const H2_COMPRESSION: u32 = 16;
+const H2_IMAGE_LEN: u32 = 20;
 const H2_CLR_USED: u32 = 32;
 /// Size of BITMAPFILEHEADER up to the info header, and of the
 /// BITMAPARRAYFILEHEADER fields before its embedded file header.
@@ -47,9 +55,30 @@ pub struct BitmapFormat {
     pub header_len: u32,
     /// Colour table as 0x00RRGGBB, for 1/4/8-bit formats.
     pub palette: Vec<u32>,
+    /// `BCA_UNCOMP` or one of the RLE formats.
+    pub compression: u32,
+    /// cbImage: bytes of compressed data (0 when unknown).
+    pub image_len: u32,
 }
 
 impl BitmapFormat {
+    /// An uncompressed format.
+    pub fn uncompressed(cx: u32, cy: u32, bit_count: u16, header_len: u32, palette: Vec<u32>) -> Self {
+        BitmapFormat { cx, cy, planes: 1, bit_count, header_len, palette,
+                       compression: BCA_UNCOMP, image_len: 0 }
+    }
+
+    /// Bytes of pel data for `rows` rows: padded rows when uncompressed,
+    /// cbImage when compressed (`None` if it is missing or larger than any
+    /// RLE stream of this size can usefully be: [`max_rle_len`]).
+    pub fn data_len(&self, rows: u32) -> Option<usize> {
+        if self.compression == BCA_UNCOMP {
+            return Some(self.row_bytes() * rows as usize);
+        }
+        let n = self.image_len as usize;
+        (n > 0 && n <= max_rle_len(self.cx, rows)).then_some(n)
+    }
+
     /// Bytes per row of pel data (padded to 4 bytes).
     pub fn row_bytes(&self) -> usize {
         (self.cx as usize * self.bit_count as usize).div_ceil(32) * 4
@@ -80,9 +109,20 @@ pub fn header_len(first4: u32) -> Option<u32> {
         .then_some(first4)
 }
 
+/// The longest RLE stream accepted for `cx` × `rows` pels: every pel as a
+/// one-pel run of the widest kind (2 + 3 bytes), every row ended, padded.
+pub fn max_rle_len(cx: u32, rows: u32) -> usize {
+    (cx as usize * 5 + 4).saturating_mul(rows as usize).saturating_add(4)
+}
+
+/// Whether `compression` can be decoded for `bit_count`-bit pels.
+fn compression_supported(compression: u32, bit_count: u16) -> bool {
+    matches!((compression, bit_count), (BCA_UNCOMP, _) | (BCA_RLE8, 8) | (BCA_RLE4, 4) | (BCA_RLE24, 24))
+}
+
 /// Parse a bitmap header from `b` (the header followed by its colour table,
-/// when `with_palette`). Only uncompressed 1/4/8/24/32-bit, single-plane
-/// formats up to [`MAX_SURFACE_DIM`] are accepted.
+/// when `with_palette`). Only 1/4/8/24/32-bit, single-plane formats up to
+/// [`MAX_SURFACE_DIM`] are accepted, uncompressed or RLE4 / RLE8 / RLE24.
 pub fn parse_header(b: &[u8], with_palette: bool) -> Option<BitmapFormat> {
     let len = header_len(u32_at(b, 0)?)?;
     let field = |off: u32, size: u32| (off + size <= len).then_some(());
@@ -93,12 +133,16 @@ pub fn parse_header(b: &[u8], with_palette: bool) -> Option<BitmapFormat> {
     };
     let compression = field(H2_COMPRESSION, 4)
         .and_then(|_| u32_at(b, H2_COMPRESSION as usize)).unwrap_or(BCA_UNCOMP);
+    let image_len = field(H2_IMAGE_LEN, 4)
+        .and_then(|_| u32_at(b, H2_IMAGE_LEN as usize)).unwrap_or(0);
     let clr_used = field(H2_CLR_USED, 4)
         .and_then(|_| u32_at(b, H2_CLR_USED as usize)).unwrap_or(0);
     let valid = planes == 1 && matches!(bit_count, 1 | 4 | 8 | 24 | 32)
-        && compression == BCA_UNCOMP && cx <= MAX_SURFACE_DIM && cy <= MAX_SURFACE_DIM;
+        && compression_supported(compression, bit_count)
+        && cx <= MAX_SURFACE_DIM && cy <= MAX_SURFACE_DIM;
     if !valid { return None; }
-    let mut fmt = BitmapFormat { cx, cy, planes, bit_count, header_len: len, palette: Vec::new() };
+    let mut fmt = BitmapFormat { cx, cy, planes, bit_count, header_len: len, palette: Vec::new(),
+                                 compression, image_len };
     if with_palette && bit_count <= 8 {
         let max = BitmapFormat::palette_len(bit_count);
         let n = if clr_used != 0 && (clr_used as usize) < max { clr_used as usize } else { max };
@@ -197,14 +241,101 @@ pub fn standard_palette(bit_count: u16) -> Vec<u32> {
     }
 }
 
+/// Decode `rows` rows of bottom-up pel data, uncompressed or RLE. A `None`
+/// pel was not given by the data (skipped by an RLE delta or end-of-row)
+/// and keeps whatever the destination has.
+pub fn decode_rows(fmt: &BitmapFormat, data: &[u8], rows: u32) -> Vec<Vec<Option<u32>>> {
+    if fmt.compression != BCA_UNCOMP {
+        return decode_rle(fmt, data, rows);
+    }
+    let rb = fmt.row_bytes();
+    (0..rows as usize).map(|y| {
+        let row = data.get(y * rb..(y + 1) * rb).unwrap_or(&[]);
+        decode_row(fmt, row).into_iter().map(Some).collect()
+    }).collect()
+}
+
+/// Decode an RLE4 / RLE8 / RLE24 stream (see the top of this file) into
+/// `rows` rows of `fmt.cx` pels. Runs past the end of a row are cut off; a
+/// truncated stream leaves the rest undecoded.
+fn decode_rle(fmt: &BitmapFormat, data: &[u8], rows: u32) -> Vec<Vec<Option<u32>>> {
+    let (w, h) = (fmt.cx as usize, rows as usize);
+    let mut out = vec![vec![None; w]; h];
+    let pal = |i: u8| fmt.palette.get(i as usize).copied().unwrap_or(0);
+    let bgr = |b: &[u8]| (b[2] as u32) << 16 | (b[1] as u32) << 8 | b[0] as u32;
+    let (mut x, mut y, mut i) = (0usize, 0usize, 0usize);
+    let mut put = |x: &mut usize, y: usize, c: u32| {
+        if *x < w && y < h { out[y][*x] = Some(c); }
+        *x = x.saturating_add(1);
+    };
+    while y < h && i + 1 < data.len() {
+        let (n, v) = (data[i] as usize, data[i + 1]);
+        i += 2;
+        if n > 0 {
+            // A run of n pels.
+            match fmt.compression {
+                BCA_RLE8 => for _ in 0..n { put(&mut x, y, pal(v)); },
+                BCA_RLE4 => for k in 0..n { put(&mut x, y, pal(if k % 2 == 0 { v >> 4 } else { v & 0x0F })); },
+                _ => {
+                    // RLE24: v is blue, the next two bytes green and red.
+                    let Some(rest) = data.get(i..i + 2) else { break };
+                    let c = bgr(&[v, rest[0], rest[1]]);
+                    i += 2;
+                    for _ in 0..n { put(&mut x, y, c); }
+                }
+            }
+            continue;
+        }
+        match v {
+            0 => { x = 0; y += 1; }
+            1 => break,
+            2 => {
+                let Some(d) = data.get(i..i + 2) else { break };
+                x = x.saturating_add(d[0] as usize);
+                y += d[1] as usize;
+                i += 2;
+            }
+            count => {
+                // `count` literal pels, padded to a 16-bit boundary.
+                let count = count as usize;
+                let len = match fmt.compression {
+                    BCA_RLE8 => count,
+                    BCA_RLE4 => count.div_ceil(2),
+                    _ => count * 3,
+                };
+                let Some(lit) = data.get(i..i + len) else { break };
+                for k in 0..count {
+                    let c = match fmt.compression {
+                        BCA_RLE8 => pal(lit[k]),
+                        BCA_RLE4 => pal(if k % 2 == 0 { lit[k / 2] >> 4 } else { lit[k / 2] & 0x0F }),
+                        _ => bgr(&lit[k * 3..k * 3 + 3]),
+                    };
+                    put(&mut x, y, c);
+                }
+                i += len + len % 2;
+            }
+        }
+    }
+    out
+}
+
+/// Write decoded `rows` into `s` from PM row `start` up; `None` pels keep
+/// their value.
+pub fn put_rows(s: &mut Surface, start: i32, rows: &[Vec<Option<u32>>]) {
+    for (i, row) in rows.iter().enumerate() {
+        let y = start + i as i32;
+        let Some(mut pels) = s.row_pels(y) else { continue };
+        for (d, p) in pels.iter_mut().zip(row) {
+            if let Some(p) = p { *d = *p; }
+        }
+        s.put_row(y, &pels);
+    }
+}
+
 /// Decode `fmt.cy` rows of bottom-up pel data into a new surface.
 pub fn decode_surface(fmt: &BitmapFormat, data: &[u8]) -> Surface {
     let mut s = Surface::new(fmt.cx, fmt.cy);
-    let rb = fmt.row_bytes();
-    for y in 0..fmt.cy as usize {
-        let row = data.get(y * rb..(y + 1) * rb).unwrap_or(&[]);
-        s.put_row(y as i32, &decode_row(fmt, row));
-    }
+    put_rows(&mut s, 0, &decode_rows(fmt, data, fmt.cy));
     s
 }
 
@@ -221,7 +352,7 @@ pub fn parse_bitmap_resource(res: &[u8]) -> Option<(BitmapFormat, Surface)> {
     let off_bits = u32_at(res, base + 10)? as usize;
     let fmt = parse_header(res.get(base + FILE_HEADER_LEN..)?, true)?;
     let data = res.get(off_bits..)?;
-    if data.len() < fmt.row_bytes() * fmt.cy as usize { return None; }
+    if fmt.compression == BCA_UNCOMP && data.len() < fmt.row_bytes() * fmt.cy as usize { return None; }
     let surface = decode_surface(&fmt, data);
     Some((fmt, surface))
 }
@@ -244,6 +375,9 @@ const PELS_PER_METRE_96DPI: u32 = 3780;
 const TRUE_COLORS: u32 = 1 << 24;
 const MOUSE_BUTTONS: u32 = 3;
 const TRUE_COLOR_BITS: u32 = 24;
+/// The bitmap formats (planes, bits per pel) the display accepts, the
+/// device's own first (`GpiQueryDeviceBitmapFormats`).
+const DEVICE_BITMAP_FORMATS: [(u32, u32); 5] = [(1, 24), (1, 1), (1, 4), (1, 8), (1, 32)];
 
 /// Where a blit takes its source pels from.
 enum BlitSource<'a> {
@@ -349,7 +483,7 @@ impl super::Loader {
             CAPS_COLOR_PLANES => 1,
             CAPS_COLOR_BITCOUNT => TRUE_COLOR_BITS,
             CAPS_MOUSE_BUTTONS => MOUSE_BUTTONS,
-            CAPS_BITMAP_FORMATS => 1,
+            CAPS_BITMAP_FORMATS => DEVICE_BITMAP_FORMATS.len() as u32,
             CAPS_FAMILY => 0,
             _ => 0,
         }
@@ -363,6 +497,19 @@ impl super::Loader {
             if self.guest_write::<u32>(at, self.device_cap(start.wrapping_add(i))).is_none() {
                 return GPI_ERROR;
             }
+        }
+        GPI_OK
+    }
+
+    /// GpiQueryDeviceBitmapFormats: up to `count` LONGs of (planes, bits per
+    /// pel) pairs, the device's preferred format first.
+    pub(super) fn gpi_query_device_bitmap_formats(&self, hps: u32, count: u32, array: u32) -> u32 {
+        if (count as i32) < 0 || !self.shared.window_mgr.lock_or_recover().ps_map.contains_key(&hps) {
+            return GPI_ERROR;
+        }
+        let values = DEVICE_BITMAP_FORMATS.iter().flat_map(|&(planes, bits)| [planes, bits]);
+        for (i, v) in values.take(count as usize).enumerate() {
+            if self.guest_write::<u32>(array.wrapping_add(4 * i as u32), v).is_none() { return GPI_ERROR; }
         }
         GPI_OK
     }
@@ -394,12 +541,9 @@ impl super::Loader {
         let mut surface = Surface::new(fmt.cx, fmt.cy);
         if opts & CBM_INIT != 0 && init != 0 {
             let Some(src_fmt) = self.read_format(pbmi, true) else { return GPI_ERROR };
-            let Some(data) = self.guest_read_bytes(init, src_fmt.row_bytes() * src_fmt.cy as usize)
-                else { return GPI_ERROR };
-            let src = decode_surface(&src_fmt, &data);
-            for y in 0..fmt.cy.min(src_fmt.cy) as i32 {
-                if let Some(row) = src.row_pels(y) { surface.put_row(y, &row); }
-            }
+            let Some(len) = src_fmt.data_len(src_fmt.cy) else { return GPI_ERROR };
+            let Some(data) = self.guest_read_bytes(init, len) else { return GPI_ERROR };
+            put_rows(&mut surface, 0, &decode_rows(&src_fmt, &data, src_fmt.cy.min(fmt.cy)));
         }
         self.shared.window_mgr.lock_or_recover().create_bitmap(surface, fmt.bit_count, fmt.planes)
     }
@@ -481,17 +625,14 @@ impl super::Loader {
             let bits_at = if len == OLD_HEADER_LEN { 10 } else { 14 };
             let Some(bits) = self.guest_read::<u16>(pbmi.wrapping_add(bits_at)) else { return err };
             if !matches!(bits, 1 | 4 | 8 | 24 | 32) { return err; }
-            BitmapFormat { cx: bw, cy: bh, planes: 1, bit_count: bits, header_len: len,
-                           palette: standard_palette(bits) }
+            BitmapFormat::uncompressed(bw, bh, bits, len, standard_palette(bits))
         };
-        let rb = fmt.row_bytes();
         if set {
-            let Some(data) = self.guest_read_bytes(buf, rb * n as usize) else { return err };
-            let mut s = surface.lock_or_recover();
-            for i in 0..n as usize {
-                s.put_row(start_i + i as i32, &decode_row(&fmt, &data[i * rb..(i + 1) * rb]));
-            }
+            let Some(len) = fmt.data_len(n) else { return err };
+            let Some(data) = self.guest_read_bytes(buf, len) else { return err };
+            put_rows(&mut surface.lock_or_recover(), start_i, &decode_rows(&fmt, &data, n));
         } else {
+            // Always returned uncompressed; the header says so (BCA_UNCOMP).
             if self.write_header(pbmi, fmt.header_len, (bw, bh), 1, fmt.bit_count).is_none() { return err; }
             let el = fmt.entry_len();
             let mut table = Vec::with_capacity(fmt.palette.len() * el);
@@ -604,7 +745,8 @@ impl super::Loader {
         if !(3..=BLT_MAX_POINTS).contains(&count) { return GPI_ERROR; }
         let Some(p) = self.read_points(aptl, count) else { return GPI_ERROR };
         let Some(fmt) = self.read_format(pbmi, true) else { return GPI_ERROR };
-        let Some(data) = self.guest_read_bytes(bits, fmt.row_bytes() * fmt.cy as usize) else { return GPI_ERROR };
+        let Some(len) = fmt.data_len(fmt.cy) else { return GPI_ERROR };
+        let Some(data) = self.guest_read_bytes(bits, len) else { return GPI_ERROR };
         let image = decode_surface(&fmt, &data);
         let (x0, y0, x1, y1) = normalized((p[0].0, p[0].1, p[1].0, p[1].1));
         let target = (x0, y0, x1 + 1, y1 + 1);
@@ -692,7 +834,7 @@ mod tests {
         let pels = [0x0000_0000, 0x00FF_FFFF, 0x00FF_0000, 0x0000_FF00, 0x0000_00FF];
         for bits in [1u16, 4, 8, 24, 32] {
             let palette = standard_palette(bits);
-            let fmt = BitmapFormat { cx: 5, cy: 1, planes: 1, bit_count: bits, header_len: 16, palette };
+            let fmt = BitmapFormat::uncompressed(5, 1, bits, 16, palette);
             let row = encode_row(&fmt, &pels);
             assert_eq!(row.len(), fmt.row_bytes());
             let back = decode_row(&fmt, &row);
@@ -746,6 +888,112 @@ mod tests {
 
 /// The entry points, called through the PMGPI / PMWIN dispatchers as a guest
 /// would call them.
+#[cfg(test)]
+mod rle_tests {
+    use super::*;
+
+    const PAL: [u32; 4] = [0x000000, 0xFF0000, 0x00FF00, 0x0000FF];
+
+    fn fmt(cx: u32, bits: u16, compression: u32) -> BitmapFormat {
+        BitmapFormat { compression, image_len: 0, ..BitmapFormat::uncompressed(cx, 0, bits, 16, PAL.to_vec()) }
+    }
+
+    fn rows(f: &BitmapFormat, data: &[u8], n: u32) -> Vec<Vec<Option<u32>>> {
+        decode_rows(f, data, n)
+    }
+
+    const K: Option<u32> = Some(0x000000);
+    const R: Option<u32> = Some(0xFF0000);
+    const G: Option<u32> = Some(0x00FF00);
+    const B: Option<u32> = Some(0x0000FF);
+
+    #[test]
+    fn rle8_runs_end_of_line_and_end_of_bitmap() {
+        let f = fmt(5, 8, BCA_RLE8);
+        // Row 0: 3 red, 2 green. Row 1: 1 blue, end of line. End.
+        let data = [3, 1, 2, 2, 0, 0, 1, 3, 0, 0, 0, 1];
+        assert_eq!(rows(&f, &data, 3), vec![
+            vec![R, R, R, G, G],
+            vec![B, None, None, None, None],
+            vec![None; 5],
+        ]);
+    }
+
+    #[test]
+    fn rle8_delta_and_padded_literals() {
+        let f = fmt(6, 8, BCA_RLE8);
+        // Delta right 2, up 1; then 3 literal pels (odd: one pad byte);
+        // then a run of 1 black.
+        let data = [0, 2, 2, 1, 0, 3, 1, 2, 3, 0xEE, 1, 0, 0, 1];
+        assert_eq!(rows(&f, &data, 2), vec![
+            vec![None; 6],
+            vec![None, None, R, G, B, K],
+        ]);
+    }
+
+    #[test]
+    fn rle4_alternates_nibbles() {
+        let f = fmt(5, 4, BCA_RLE4);
+        // Run of 5 from 0x12: 1,2,1,2,1. Then end of line; 3 literal
+        // nibbles 0x30 0x10 → 3,0,1 (2 bytes, already even).
+        let data = [5, 0x12, 0, 0, 0, 3, 0x30, 0x10, 0, 1];
+        assert_eq!(rows(&f, &data, 2), vec![
+            vec![R, G, R, G, R],
+            vec![B, K, R, None, None],
+        ]);
+    }
+
+    #[test]
+    fn rle24_values_are_blue_green_red() {
+        let f = fmt(4, 24, BCA_RLE24);
+        // Run of 2 of (b=0x30, g=0x20, r=0x10); 3 literal pels (9 bytes,
+        // one pad byte).
+        let data = [2, 0x30, 0x20, 0x10, 0, 3, 1, 2, 3, 4, 5, 6, 7, 8, 9, 0, 0, 1];
+        let out = rows(&f, &data, 2);
+        assert_eq!(out[0][..2], [Some(0x102030), Some(0x102030)]);
+        assert_eq!(out[0][2..], [Some(0x030201), Some(0x060504)], "the third pel falls off the row");
+    }
+
+    #[test]
+    fn malformed_streams_are_safe() {
+        let f = fmt(4, 8, BCA_RLE8);
+        for data in [&[255u8, 1][..], &[0, 2][..], &[0, 200, 1][..], &[0, 2, 255, 255, 3, 1][..], &[7][..], &[][..]] {
+            let out = rows(&f, data, 3);
+            assert_eq!(out.len(), 3);
+            assert!(out.iter().all(|r| r.len() == 4));
+        }
+        // A run longer than the row is cut off at its end.
+        assert_eq!(rows(&f, &[255, 1], 1), vec![vec![R, R, R, R]]);
+    }
+
+    #[test]
+    fn headers_accept_matching_rle_formats_only() {
+        let header = |bits: u16, compression: u32, image_len: u32| {
+            let mut b = Vec::new();
+            b.extend(24u32.to_le_bytes());
+            b.extend(4u32.to_le_bytes());
+            b.extend(2u32.to_le_bytes());
+            b.extend(1u16.to_le_bytes());
+            b.extend(bits.to_le_bytes());
+            b.extend(compression.to_le_bytes());
+            b.extend(image_len.to_le_bytes());
+            b
+        };
+        let f = parse_header(&header(8, BCA_RLE8, 10), false).expect("RLE8 at 8 bits");
+        assert_eq!((f.compression, f.image_len, f.data_len(2)), (BCA_RLE8, 10, Some(10)));
+        assert!(parse_header(&header(4, BCA_RLE4, 10), false).is_some());
+        assert!(parse_header(&header(24, BCA_RLE24, 10), false).is_some());
+        assert!(parse_header(&header(4, BCA_RLE8, 10), false).is_none(), "RLE8 needs 8 bits");
+        assert!(parse_header(&header(8, 3, 10), false).is_none(), "BCA_HUFFMAN1D");
+        let missing = parse_header(&header(8, BCA_RLE8, 0), false).unwrap();
+        assert_eq!(missing.data_len(2), None, "compressed data needs cbImage");
+        let huge = parse_header(&header(8, BCA_RLE8, u32::MAX), false).unwrap();
+        assert_eq!(huge.data_len(2), None, "cbImage beyond any useful stream");
+        let plain = parse_header(&header(8, BCA_UNCOMP, 0), false).unwrap();
+        assert_eq!(plain.data_len(2), Some(8), "uncompressed: padded rows");
+    }
+}
+
 #[cfg(test)]
 mod api_tests {
     use super::super::constants::*;
@@ -1062,5 +1310,64 @@ mod api_tests {
         assert_eq!(gpi(&l, 351, &[hps, 0]), GPI_OK, "dissociate");
         fill(&l, hps, CLR_BLUE, (0, 0, 3, 3));
         assert_eq!(surface.lock().unwrap().pel(1, 1), Some(0x00FF_0000), "no longer draws");
+    }
+
+    /// GpiSetBitmapBits decodes RLE8 data (cbImage bytes); GpiQueryBitmapBits
+    /// returns it uncompressed.
+    #[test]
+    fn set_bitmap_bits_decodes_rle8() {
+        let l = Loader::new_mock();
+        let (_, hps, _) = memory_ps(&l);
+        // 8 bpp RLE8 header with cbImage `len` and a table whose index 0 is
+        // black and 1 white.
+        let rle8_header = |len: u32| {
+            let h = header(&l, 8, 4, 8);
+            l.guest_write::<u32>(h, 24).unwrap();
+            l.guest_write::<u32>(h + 16, BCA_RLE8).unwrap();
+            l.guest_write::<u32>(h + 20, len).unwrap();
+            for (i, c) in [0x000000u32, 0xFFFFFF].iter().enumerate() {
+                l.guest_write::<u32>(h + 24 + 4 * i as u32, *c).unwrap();
+            }
+            h
+        };
+        let stream = [8u8, 1, 0, 0, 3, 0, 0, 1];
+        let h = rle8_header(stream.len() as u32);
+        // The rest of the 256-entry table reads as zeros (black).
+        l.guest_write_bytes(DATA, &stream).unwrap();
+        assert_eq!(gpi(&l, 602, &[hps, 0, 2, DATA, h]), 2, "two scans set");
+        // Read back as 24-bit: row 0 all white, row 1 three black then the
+        // pels it did not cover (still the bitmap's initial white).
+        // A 24-byte query header whose compression field still says RLE8.
+        let q = header(&l, 0, 0, 24);
+        l.guest_write::<u32>(q, 24).unwrap();
+        assert_eq!(l.guest_read::<u32>(q + 16).unwrap(), BCA_RLE8);
+        assert_eq!(gpi(&l, 599, &[hps, 0, 2, DATA, q]), 2);
+        let px = |row: u32, x: u32| l.guest_read::<u32>(DATA + row * 24 + x * 3).unwrap() & 0x00FF_FFFF;
+        assert_eq!(px(0, 0), 0xFFFFFF);
+        assert_eq!(px(0, 7), 0xFFFFFF);
+        assert_eq!(px(1, 2), 0x000000);
+        assert_eq!(l.guest_read::<u32>(q + 16).unwrap(), BCA_UNCOMP, "returned uncompressed");
+        // Without cbImage the compressed data cannot be read.
+        let h = rle8_header(0);
+        assert_eq!(gpi(&l, 602, &[hps, 0, 2, DATA, h]), BMB_ERROR as u32);
+    }
+
+    /// GpiQueryDeviceBitmapFormats lists (planes, bits) pairs, 24-bit first;
+    /// DevQueryCaps reports how many there are.
+    #[test]
+    fn device_bitmap_formats() {
+        let l = Loader::new_mock();
+        let (_, hps) = window_ps(&l);
+        assert_eq!(gpi(&l, 445, &[hps, 4, TBL]), GPI_OK);
+        let v: Vec<u32> = (0..4).map(|i| l.guest_read::<u32>(TBL + 4 * i).unwrap()).collect();
+        assert_eq!(v, [1, 24, 1, 1]);
+        l.guest_write::<u32>(TBL + 40, 0xDEAD).unwrap();
+        assert_eq!(gpi(&l, 445, &[hps, 100, TBL]), GPI_OK, "more than there are");
+        assert_eq!(l.guest_read::<u32>(TBL + 40).unwrap(), 0xDEAD, "only 5 pairs written");
+        assert_eq!(gpi(&l, 445, &[hps, -1i32 as u32, TBL]), GPI_ERROR);
+        assert_eq!(gpi(&l, 445, &[0xBAD, 2, TBL]), GPI_ERROR);
+        let hdc = gpi(&l, 610, &[0, OD_INFO, 0, 0, 0, 0]);
+        assert_eq!(gpi(&l, 606, &[hdc, CAPS_BITMAP_FORMATS, 1, TBL]), GPI_OK);
+        assert_eq!(l.guest_read::<u32>(TBL).unwrap(), 5);
     }
 }

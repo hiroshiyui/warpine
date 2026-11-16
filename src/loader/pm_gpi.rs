@@ -723,6 +723,10 @@ impl super::Loader {
                 // GpiSetBitmap(HPS hps, HBITMAP hbm) → HBITMAP (previous)
                 ApiResult::Normal(self.gpi_set_bitmap(read_stack(4), read_stack(8)))
             }
+            445 => {
+                // GpiQueryDeviceBitmapFormats(HPS hps, LONG lCount, PLONG alArray) → BOOL
+                ApiResult::Normal(self.gpi_query_device_bitmap_formats(read_stack(4), read_stack(8), read_stack(12)))
+            }
             601 => {
                 // GpiQueryBitmapInfoHeader(HBITMAP hbm, PBITMAPINFOHEADER2 pbmp) → BOOL
                 ApiResult::Normal(self.query_bitmap_header(read_stack(4), read_stack(8), false))
