@@ -544,7 +544,7 @@ fn gui_pm_audio_test_plays_through_the_audio_service() {
     assert_sample_checks_pass("samples/pm_audio_test/pm_audio_test.exe", "pm_audio_test", 17);
 }
 
-// Colours the compositor draws with (`src/gui/sdl2_renderer.rs`).
+// Colours the compositor draws with (`src/gui/sdl_renderer.rs`).
 const GUI_DESKTOP_BG: u32 = 0x40_8040;
 const GUI_TITLE_ACTIVE: u32 = 0x00_0080;
 const GUI_WHITE: u32 = 0xFF_FFFF;

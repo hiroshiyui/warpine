@@ -131,7 +131,7 @@ fn main() {
 
     // Intercept CMD.EXE / OS2SHELL.EXE directly from the command line.
     // When stdout is a real terminal and WARPINE_HEADLESS is not set, open an
-    // SDL2 640×400 text window just like a normal CLI app.  Otherwise fall back
+    // SDL 640×400 text window just like a normal CLI app.  Otherwise fall back
     // to terminal/headless mode.
     {
         let base = std::path::Path::new(file_path)
@@ -160,17 +160,17 @@ fn main() {
 
                 {
                     let mut vio = shared.console_mgr.lock_or_recover();
-                    vio.enable_sdl2_mode();
+                    vio.enable_sdl_mode();
                 }
-                shared.use_sdl2_text.store(true, Ordering::Relaxed);
+                shared.use_sdl_text.store(true, Ordering::Relaxed);
                 *shared.exe_name.lock_or_recover() = "CMD.EXE".to_string();
 
                 let sdl = sdl3::init().expect("Failed to initialise SDL");
                 // The renderer (and its audio output) exists before the guest runs.
-                let mut renderer = gui::Sdl2TextRenderer::new(&sdl, "Warpine — CMD.EXE", &shared.audio);
+                let mut renderer = gui::SdlTextRenderer::new(&sdl, "Warpine — CMD.EXE", &shared.audio);
 
                 let loader2 = loader.clone();
-                std::thread::spawn(move || loader2.run_builtin_cmd_sdl2(host_args));
+                std::thread::spawn(move || loader2.run_builtin_cmd_sdl(host_args));
 
                 gui::run_text_loop(&mut renderer, shared.clone());
 
@@ -330,7 +330,7 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>) {
     *shared.exe_name.lock_or_recover() = file_path.to_string();
 
     if is_pm {
-        // PM app: SDL2 must be initialised on the main thread.
+        // PM app: SDL must be initialised on the main thread.
         let sdl = sdl3::init().expect("Failed to initialise SDL");
         let (gui_sender, gui_rx) = gui::create_gui_channel();
 
@@ -338,7 +338,7 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>) {
         shared.window_mgr.lock_or_recover().gui_tx = Some(gui_sender);
 
         // The renderer (and its audio output) exists before the guest runs.
-        let mut renderer = gui::Sdl2Renderer::new(&sdl, &shared.audio);
+        let mut renderer = gui::SdlRenderer::new(&sdl, &shared.audio);
 
         // Launch VCPU thread
         let loader = Arc::new(loader);
@@ -354,7 +354,7 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>) {
         let code = shared.exit_code.load(std::sync::atomic::Ordering::Relaxed);
         std::process::exit(code);
     } else {
-        // CLI app: use SDL2 text-mode window only when stdout is a real terminal.
+        // CLI app: use SDL text-mode window only when stdout is a real terminal.
         // When stdout is piped (e.g. spawned as a child by DosExecPgm), fall
         // back to headless mode automatically — no env var needed.
         use std::io::IsTerminal;
@@ -363,19 +363,19 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>) {
             // Headless / terminal mode: run directly (never returns).
             loader.setup_and_run_cli(&lx_file);
         } else {
-            // SDL2 text-mode: enable sdl2 mode on VioManager, then spawn VCPU
-            // on a worker thread while the SDL2 text renderer runs on main.
+            // SDL text-mode: enable sdl mode on VioManager, then spawn VCPU
+            // on a worker thread while the SDL text renderer runs on main.
             {
                 let mut vio = shared.console_mgr.lock_or_recover();
-                vio.enable_sdl2_mode();
+                vio.enable_sdl_mode();
             }
-            shared.use_sdl2_text.store(true, std::sync::atomic::Ordering::Relaxed);
+            shared.use_sdl_text.store(true, std::sync::atomic::Ordering::Relaxed);
 
             let sdl = sdl3::init().expect("Failed to initialise SDL");
             let exe_title = file_path.rsplit('/').next().unwrap_or(file_path);
             let title = format!("Warpine — {exe_title}");
             // The renderer (and its audio output) exists before the guest runs.
-            let mut renderer = gui::Sdl2TextRenderer::new(&sdl, &title, &shared.audio);
+            let mut renderer = gui::SdlTextRenderer::new(&sdl, &title, &shared.audio);
 
             let loader = Arc::new(loader);
             loader.clone().setup_and_spawn_vcpu(&lx_file);

@@ -59,7 +59,7 @@ use log::{info, warn};
 use crate::gui::font::{self, FontSpec};
 use crate::gui::surface::{DrawOp, Mix};
 
-/// Key information pushed into the SDL2 text-mode keyboard queue.
+/// Key information pushed into the SDL text-mode keyboard queue.
 ///
 /// Mirrors the fields that OS/2 `KBDKEYINFO` needs for `KbdCharIn`:
 /// - `ch`    — `chChar`: ASCII character code (0 for extended keys)
@@ -250,14 +250,14 @@ pub struct SharedState {
     /// Active process codepage — updated by DosSetProcessCp; read by DosQueryCp.
     /// Initialized from locale.codepage at startup.
     pub active_codepage: AtomicU32,
-    /// Keyboard event queue for SDL2 text-mode (CLI) apps.
-    /// The VCPU thread blocks on `kbd_cond` when `use_sdl2_text` is set.
+    /// Keyboard event queue for SDL text-mode (CLI) apps.
+    /// The VCPU thread blocks on `kbd_cond` when `use_sdl_text` is set.
     pub kbd_queue: Mutex<VecDeque<KbdKeyInfo>>,
     /// Condvar paired with `kbd_queue` to wake `KbdCharIn` when a key arrives.
     pub kbd_cond: Condvar,
     /// When `true`, `KbdCharIn` reads from `kbd_queue` instead of termios stdin.
-    /// Set before spawning the VCPU for SDL2 text-mode CLI apps.
-    pub use_sdl2_text: AtomicBool,
+    /// Set before spawning the VCPU for SDL text-mode CLI apps.
+    pub use_sdl_text: AtomicBool,
     /// Ring buffer of the last 256 OS/2 API calls — always populated,
     /// regardless of log level, so crash dumps include full call history.
     pub api_ring: Mutex<ApiRingBuffer>,
@@ -340,7 +340,7 @@ impl Loader {
             active_codepage: AtomicU32::new(437), // default CP437; overridden by DosSetProcessCp
             kbd_queue: Mutex::new(VecDeque::new()),
             kbd_cond: Condvar::new(),
-            use_sdl2_text: AtomicBool::new(false),
+            use_sdl_text: AtomicBool::new(false),
             api_ring: Mutex::new(ApiRingBuffer::new()),
             begin_libpath: Mutex::new(String::new()),
             end_libpath: Mutex::new(String::new()),
@@ -418,7 +418,7 @@ impl Loader {
             active_codepage: AtomicU32::new(437),
             kbd_queue:    Mutex::new(VecDeque::new()),
             kbd_cond:     Condvar::new(),
-            use_sdl2_text: AtomicBool::new(false),
+            use_sdl_text: AtomicBool::new(false),
             api_ring:     Mutex::new(ApiRingBuffer::new()),
             begin_libpath: Mutex::new(String::new()),
             end_libpath:  Mutex::new(String::new()),

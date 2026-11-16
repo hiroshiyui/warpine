@@ -495,7 +495,7 @@ pub fn default_frame_pos(n: usize, cx: i32, cy: i32, desktop: (u32, u32)) -> (i3
     (x, y)
 }
 
-// VDR chrome dimensions — must match CHROME_TITLE_H in sdl2_renderer.rs
+// VDR chrome dimensions — must match CHROME_TITLE_H in sdl_renderer.rs
 pub const CHROME_TITLE_H: i32 = 20;
 
 // Common window style bits (flStyle in WinCreateWindow)

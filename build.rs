@@ -1,18 +1,14 @@
-// build.rs — Code generation and linker setup.
+// build.rs — Code generation. (SDL3 is located by the `sdl3` crate's
+// `use-pkg-config` feature; no linker setup is needed here.)
 //
-// 1. SDL2 library path: on Debian/Ubuntu the SDL2 shared library lives in
-//    /usr/lib/x86_64-linux-gnu/ which rust-lld does not search by default.
-//    We query pkg-config for the library directory and emit the appropriate
-//    cargo:rustc-link-search directive.
-//
-// 2. GNU Unifont SBCS glyph table: parses vendor/unifont/unifont.hex and
+// 1. GNU Unifont SBCS glyph table: parses vendor/unifont/unifont.hex and
 //    emits $OUT_DIR/font_unifont_sbcs.rs containing a sorted
 //    `pub static UNIFONT_SBCS: &[(u32, [u8; 16])]` array of (Unicode
 //    codepoint, 8×16 glyph) pairs for all half-width (8-pixel-wide) entries.
 //    Only 8-wide entries (32 hex chars of pixel data) are included; 16-wide
-//    CJK entries are handled by (3).
+//    CJK entries are handled by (2).
 //
-// 3. GNU Unifont wide glyph table (DBCS Phase B5): parses the same
+// 2. GNU Unifont wide glyph table (DBCS Phase B5): parses the same
 //    vendor/unifont/unifont.hex file and emits:
 //      - $OUT_DIR/font_unifont_wide.bin — sorted packed (u32_le, [u8;32])
 //        entries for all 16×16 full-width glyphs (~49,804 entries, ~1.8 MB).
@@ -21,23 +17,8 @@
 //        binary search.
 
 fn main() {
-    if let Ok(lib_dir) = pkg_config_libdir("sdl2") {
-        println!("cargo:rustc-link-search=native={}", lib_dir);
-    }
-
     generate_unifont_sbcs();
     generate_unifont_wide();
-}
-
-fn pkg_config_libdir(lib: &str) -> Result<String, std::io::Error> {
-    let out = std::process::Command::new("pkg-config")
-        .args(["--variable=libdir", lib])
-        .output()?;
-    if out.status.success() {
-        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
-    } else {
-        Err(std::io::Error::other("pkg-config failed"))
-    }
 }
 
 /// Parse vendor/unifont/unifont.hex and emit $OUT_DIR/font_unifont_sbcs.rs.

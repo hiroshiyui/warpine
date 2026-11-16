@@ -44,8 +44,8 @@ impl super::Loader {
     fn kbd_char_in(&self, p_key_info: u32, wait: u32, _hkbd: u32) -> u32 {
         debug!("  KbdCharIn(wait={})", wait);
 
-        if self.shared.use_sdl2_text.load(Ordering::Relaxed) {
-            // SDL2 text mode: block on the keyboard condvar queue.
+        if self.shared.use_sdl_text.load(Ordering::Relaxed) {
+            // SDL text mode: block on the keyboard condvar queue.
             let mut queue = self.shared.kbd_queue.lock().unwrap();
             let ki = loop {
                 if self.shutting_down() { return ERROR_INVALID_FUNCTION; }
@@ -262,13 +262,13 @@ mod tests {
         assert!(matches!(result, ApiResult::Normal(0)));
     }
 
-    // ── KbdCharIn (ordinal 4) — SDL2 mode ───────────────────────────────────
+    // ── KbdCharIn (ordinal 4) — SDL mode ───────────────────────────────────
 
     #[test]
     fn test_kbd_char_in_nowait_empty_queue_returns_zeroed_struct() {
         let loader = Loader::new_mock();
         let mut vcpu = MockVcpu::new();
-        loader.shared.use_sdl2_text.store(true, Ordering::Relaxed);
+        loader.shared.use_sdl_text.store(true, Ordering::Relaxed);
         let esp = 0x1000u32;
         vcpu.regs.rsp = esp as u64;
         let p_key_info = 0x2000u32;
@@ -284,10 +284,10 @@ mod tests {
     }
 
     #[test]
-    fn test_kbd_char_in_sdl2_prequeued_key_delivered() {
+    fn test_kbd_char_in_sdl_prequeued_key_delivered() {
         let loader = Loader::new_mock();
         let mut vcpu = MockVcpu::new();
-        loader.shared.use_sdl2_text.store(true, Ordering::Relaxed);
+        loader.shared.use_sdl_text.store(true, Ordering::Relaxed);
         // Pre-queue a key before the call
         {
             let mut q = loader.shared.kbd_queue.lock().unwrap();
@@ -308,13 +308,13 @@ mod tests {
     }
 
     #[test]
-    fn test_kbd_char_in_sdl2_extended_key_uses_fb_status_02() {
+    fn test_kbd_char_in_sdl_extended_key_uses_fb_status_02() {
         // Extended keys (ch=0, e.g. arrow keys) must use fbStatus=0x02 so that
         // 4OS2's GetKeystroke loop can detect them via (fbStatus & 2) and return
         // the scan code as (chScan | 0x100) rather than looping forever on ch=0.
         let loader = Loader::new_mock();
         let mut vcpu = MockVcpu::new();
-        loader.shared.use_sdl2_text.store(true, Ordering::Relaxed);
+        loader.shared.use_sdl_text.store(true, Ordering::Relaxed);
         {
             let mut q = loader.shared.kbd_queue.lock().unwrap();
             // Up-arrow: ch=0, scan=0x48

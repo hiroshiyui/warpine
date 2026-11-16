@@ -111,7 +111,7 @@ impl super::Loader {
     ///   +0 cb(u16)  +2 fbType(u8)  +3 color(u8)  +4 col(u16)  +6 row(u16)
     ///   +8 hres(u16)  +10 vres(u16)
     ///
-    /// Only text mode (fbType == 1) is supported.  The SDL2 text window will
+    /// Only text mode (fbType == 1) is supported.  The SDL text window will
     /// resize automatically on the next rendered frame.
     fn vio_set_mode(&self, p_mode: u32, _hvio: u32) -> u32 {
         debug!("  VioSetMode(p_mode=0x{:08X})", p_mode);
@@ -491,7 +491,7 @@ mod tests {
         // and the bottom (row 24) should be filled with '.' / 0x4F.
         {
             let mut con = loader.shared.console_mgr.lock_or_recover();
-            con.enable_sdl2_mode(); // fix to 80x25
+            con.enable_sdl_mode(); // fix to 80x25
             let cols = con.cols as usize;
             con.buffer[cols] = ('Z', 0x07); // row 1, col 0
         }
@@ -524,7 +524,7 @@ mod tests {
 
         {
             let mut con = loader.shared.console_mgr.lock_or_recover();
-            con.enable_sdl2_mode();
+            con.enable_sdl_mode();
             con.buffer[0] = ('Q', 0x07); // row 0, col 0
         }
 

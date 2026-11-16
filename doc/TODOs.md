@@ -20,7 +20,8 @@ DLL binaries, no ROM dumps, and no disassembly of original OS/2 system libraries
 | LX/NE loader, KVM vCPU, GDT/IDT | Complete | Developer Guide §3–6 |
 | DOSCALLS core (file I/O, memory, threads, semaphores, IPC) | Complete | Reference Manual §9 |
 | VIO/KBD console subsystem | Complete | Developer Guide §15 |
-| SDL2 VGA text renderer + GNU Unifont (SBCS + DBCS 16×16) | Complete | Developer Guide §15 |
+| VGA text renderer (SDL) + GNU Unifont (SBCS + DBCS 16×16) | Complete | Developer Guide §15 |
+| SDL2 → SDL3 migration — safe sdl3-rs API only (`src/gui`, `mmpm.rs` forbid `unsafe`), main-thread audio service | Complete | Developer Guide, "Rendering Pipeline" and MMPM/2 |
 | DBCS full support (B1–B8: cell annotation, render, encode, keyboard) | Complete | Developer Guide §15 |
 | PM window management + built-in controls | Complete | Developer Guide §11 |
 | GPI drawing primitives (20+ ordinals) | Complete | Developer Guide §12 |
@@ -39,16 +40,17 @@ DLL binaries, no ROM dumps, and no disassembly of original OS/2 system libraries
 | PM Menu System (MENUTEMPLATE parser, WinLoadMenu, WinCreateMenu, FCF_MENU) | Complete | `src/loader/pm_win.rs` |
 | PM Dialog System (DLGTEMPLATE parser, WinDlgBox, WinLoadDlg, WinProcessDlg, WinDismissDlg, WinDefDlgProc, WinSendDlgItemMsg, DlgRunLoop) | Complete | `src/loader/pm_win.rs`, `src/loader/vcpu.rs` |
 | PM typography — IBM Plex Sans/Mono/Serif + Plex Sans JP/KR/TC/SC embedded; `GpiCreateLogFont` face/style/size mapping; real proportional font metrics | Complete | `src/gui/font.rs`, `vendor/ibm-plex`, Developer Guide (PM Typography) |
-| PM menu bar as frame chrome — `FCF_MENU` auto-load, client area below the bar, compositor-drawn bar and pull-down | Complete | `src/loader/pm_types.rs`, `src/gui/sdl2_renderer.rs` |
-| Bevelled window chrome — raised title-bar buttons with pictograms, bevelled sizing border | Complete | `src/gui/sdl2_renderer.rs` |
-| Virtual Desktop Renderer (VDR) — single-surface compositor, full window chrome, input routing, dirty-rect tracking (A1–A5/B1–B4/C1–C5/D1–D6/E1–E3) | Complete | `src/gui/sdl2_renderer.rs`, `src/loader/pm_types.rs` |
+| PM menu bar as frame chrome — `FCF_MENU` auto-load, client area below the bar, compositor-drawn bar and pull-down | Complete | `src/loader/pm_types.rs`, `src/gui/sdl_renderer.rs` |
+| Bevelled window chrome — raised title-bar buttons with pictograms, bevelled sizing border | Complete | `src/gui/sdl_renderer.rs` |
+| Virtual Desktop Renderer (VDR) — single-surface compositor, full window chrome, input routing, dirty-rect tracking (A1–A5/B1–B4/C1–C5/D1–D6/E1–E3) | Complete | `src/gui/sdl_renderer.rs`, `src/loader/pm_types.rs` |
 | TCP/IP Socket API — SO32DLL/TCP32DLL (51 thunks: socket/bind/connect/listen/accept/send/recv/select/setsockopt/getsockopt/gethostbyname/getservbyname/…) | Complete | `src/loader/tcpip.rs`, `samples/socket_test/` |
 
 ---
 
 ## Phase 5 — Multimedia (remaining)
 
-- [ ] **MIDI playback** — device type `midi`; requires FluidSynth / SDL2_mixer or ALSA sequencer; deferred (external dependency cost)
+- [ ] **Audio output follow-ups** — headless runs (`WARPINE_HEADLESS=1`, or a CLI app whose stdout is not a terminal) have no main-thread loop and are silent; `MCI_RECORD` could use an SDL3 recording device; the high words of `MM_MCINOTIFY` (user parameter, message) are not filled in — check the MMPM/2 reference; `SDL_SetTextInputArea` (`TextInputUtil::set_rect`) could place the input-method window at the entry-field / MLE caret
+- [ ] **MIDI playback** — device type `midi`; requires FluidSynth / SDL3_mixer or ALSA sequencer; deferred (external dependency cost)
 
 ---
 
@@ -75,7 +77,7 @@ NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 
 ### PM Graphics Performance and Architecture
 
-From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `renderer.rs`, `font.rs`, `message.rs`) on 2026-11-15. The steps are in suggested order. Steps 0–2 (frame statistics, a blocking event loop, coalesced presents, clipboard via events; damage-tracked compositing, row-wise blits, cached chrome, a per-thread glyph cache, content kept on resize) and step 3 (shared per-frame surfaces drawn on the API thread, `GpiQueryPel`/`GpiSetPel`, `FM_*` mix modes, memory presentation spaces and bitmaps, `GpiBitBlt`, logical colour tables, line types, text background mix) are done — see the developer guide, "Rendering Pipeline"; measure the items below with the frame statistics (`RUST_LOG=warpine::gui=debug`) before and after.
+From a code review of the PM rendering path (`src/gui/sdl_renderer.rs`, `renderer.rs`, `font.rs`, `message.rs`) on 2026-11-15. The steps are in suggested order. Steps 0–2 (frame statistics, a blocking event loop, coalesced presents, clipboard via events; damage-tracked compositing, row-wise blits, cached chrome, a per-thread glyph cache, content kept on resize) and step 3 (shared per-frame surfaces drawn on the API thread, `GpiQueryPel`/`GpiSetPel`, `FM_*` mix modes, memory presentation spaces and bitmaps, `GpiBitBlt`, logical colour tables, line types, text background mix) are done — see the developer guide, "Rendering Pipeline"; measure the items below with the frame statistics (`RUST_LOG=warpine::gui=debug`) before and after.
 
 - [ ] **Measure on a real display** — the event-loop change was measured only on SDL's `dummy` driver (idle CPU roughly halved); compare idle CPU and input latency on X11 and Wayland, where the old loop also read the clipboard ~125 times a second; `samples/pm_bench` gives repeatable guest-side numbers for the comparison
 
@@ -93,7 +95,7 @@ From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `render
 
 - [ ] **DIVE (direct framebuffer blitting)** — the API most OS/2 games and video players use instead of GPI: the application fills a buffer and asks for it to be blitted (with scaling and colour conversion) into a window. Maps directly onto the shared per-window surface above. The ordinal table (`doc/os2_ordinals.md`) has no DIVE section, so first find the export list and semantics in public headers / import libraries (clean-room policy); pairs with DART audio in MMPM/2
 
-**Step 4 — GPU compositing** (after the SDL3 migration below)
+**Step 4 — GPU compositing** (SDL3 is in place)
 
 - [ ] **Compositor trait** — put compositing behind a small trait; keep the software backend for headless tests (`SDL_VIDEODRIVER=dummy`, golden signatures)
 - [ ] **Intermediate step** — the PM canvas is created with `.software()`; try `.accelerated().present_vsync()` with one SDL texture per window (window moves without re-blit, partial uploads). Composites are capped at ~60 Hz today (`FRAME_INTERVAL`) but not synchronised to the display
@@ -105,25 +107,6 @@ From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `render
 **Step 5 — only if profiling still shows text as significant**
 
 - [ ] **Glyph atlas** shared by chrome, controls and GPI text
-
-### SDL2 → SDL3 Migration
-
-SDL2 is in maintenance mode; SDL3 brings `SDL_GPU` (step 4 above), `SDL_AudioStream` (auto-resampling audio for MMPM/2 and DART), better HiDPI and input-method APIs. 5thPlanet migrated its frontend the same way (ADR-0020: experimental branch, validate, then rename and sweep docs). Do it after the step 3 GPI follow-ups and before step 4. The work is contained: `src/gui/sdl2_renderer.rs` (PM desktop), `src/gui/text_renderer.rs` (VGA text window), `src/loader/mmpm.rs` (raw SDL2 audio calls) and SDL start-up in `main.rs`; `gui_script.rs` is already SDL-free.
-
-**Goal: no `unsafe` in the SDL front end.** Use only the safe sdl3-rs API; no direct `sdl3-sys` calls (today's SDL2 code calls `sdl2::sys` for audio, `SDL_CaptureMouse`, the wake-up user event and `SDL_bool`). Where sdl3-rs lacks a safe wrapper, prefer a different safe route, or contribute the wrapper upstream, over an `unsafe` block; an exception needs an explicit decision.
-
-**Spike results (2026-11-16)** — a `#![forbid(unsafe_code)]` program against sdl3 0.22.1 (sdl3-sys 0.7.3, built for SDL 3.4.20) linked to the system SDL 3.4.18, run on the `dummy` and `offscreen` drivers. Everything Warpine uses has a safe wrapper and worked:
-  - window + `create_renderer(window, Some(c"software"))`; streaming texture `update` and `with_lock` with a rect (the sdl2 0.38 dangling-rect bug is fixed: the rect is a local, not a temporary); `copy` with `FRect` + `present`
-  - wake-ups: `register_custom_event::<Wake>()` once, then `EventSender` (which is `Send`) `push_custom_event(Wake)` from any thread ends `EventPump::wait_event_timeout`; a zero-sized `Wake` allocates nothing; `wait_event_timeout` times out correctly
-  - text input is per window and off by default (`text_input().start(&window)`); `set_rect(window, rect, cursor)` places the input-method candidate window at the caret (new: use it for entry fields / MLE); `Event::TextEditing` carries the composition
-  - `mouse().capture(bool)`, clipboard get / set, `Event::ClipboardUpdate`, `show_message_box` with custom buttons (fails at once with "No message system available" on headless drivers — no hang), `Event::Window { win_event: Resized / Exposed / FocusGained / CloseRequested }`, key events with `repeat`, `f32` mouse coordinates
-  - audio on the `dummy` driver: `open_playback_device` → `open_device_stream`, `put_data_i16`, `queued_bytes`, `set_gain`, `resume`
-  - **`SDL_VIDEODRIVER` is still honoured** (as well as SDL3's `SDL_VIDEO_DRIVER`), so the tests, scripts and docs keep working unchanged
-  - **Caution:** without a headless driver SDL3 reaches the user's Wayland session through the default socket even with `WAYLAND_DISPLAY` unset — always set the driver when testing
-**Port done (2026-11-16, branch `experimental/sdl3-migration`)** — sdl3 0.22.1 with no `unsafe` (`src/gui` and `mmpm.rs` are `#![forbid(unsafe_code)]`): PM desktop and VGA text window ported (software renderer by name, lifetime-checked textures from a process-lifetime `TextureCreator`, `bytemuck` for the byte view, custom `WakeEvent`, per-window text input started explicitly), audio moved to the main thread (`gui/audio.rs`: `AudioService` + `SdlAudio`; WAV decoded in Rust). Every `gui_*` golden test passes unchanged in debug and release builds; `samples/pm_audio_test` (17 checks) passes on the `dummy` audio driver; composite times are unchanged within noise.
-- [ ] **Manual acceptance on X11 and Wayland** — typing, including CJK input-method text (also in the VGA text window); clipboard in both directions; drag / resize; `WinMessageBox`; audio you can hear (`samples/pm_audio_test`, `DosBeep`); the window comes up on the expected display
-- [ ] **Audio follow-ups** — headless runs (`WARPINE_HEADLESS=1`, or a CLI app whose stdout is not a terminal) have no main-thread loop and are silent; `MCI_RECORD` could use an SDL3 recording device; the high words of `MM_MCINOTIFY` (user parameter, message) are not filled in — check the MMPM/2 reference; `SDL_SetTextInputArea` (`TextInputUtil::set_rect`) could place the input-method window at the entry-field / MLE caret
-- [ ] **Finish** — rename `sdl2_renderer.rs` / `Sdl2Renderer` / `Sdl2TextRenderer` to version-neutral names, `libsdl2-dev` → `libsdl3-dev` in the README prerequisites, CLAUDE.md and developer guide; consider sdl3's `build-from-source-static` feature for build machines without SDL3
 
 ### PM Advanced Controls
 

@@ -92,25 +92,25 @@ Warpine automatically selects an execution mode based on the executable and envi
 
 **Trigger:** Executable imports `PMWIN` or `PMGPI`.
 
-- Opens an SDL2 window for Presentation Manager rendering.
-- Main thread runs the SDL2 event loop; vCPU runs on a worker thread.
+- Opens an SDL window for Presentation Manager rendering.
+- Main thread runs the SDL event loop; vCPU runs on a worker thread.
 - Window title: `Warpine — <filename>`.
 - All PM APIs (windows, menus, dialogs, graphics, clipboard) are active.
 
-### CLI Text Mode (SDL2)
+### CLI Text Mode (SDL)
 
 **Trigger:** CLI executable (no PM imports) and stdout is a terminal.
 
-- Opens a 640×400 SDL2 window rendering an 80×25 character grid.
+- Opens a 640×400 SDL window rendering an 80×25 character grid.
 - CP437 8×16 VGA font, CGA 16-colour palette, blinking cursor.
 - vCPU runs on a worker thread; main thread runs the text renderer.
-- Keyboard input delivered via SDL2 events.
+- Keyboard input delivered via SDL events.
 
 ### CLI Headless Mode
 
 **Trigger:** CLI executable and stdout is **not** a terminal (piped or redirected).
 
-- No SDL2 window. VIO output rendered as ANSI escape sequences on stdout.
+- No SDL window. VIO output rendered as ANSI escape sequences on stdout.
 - CP437 high bytes (0x80–0xFF) converted to Unicode for terminal display.
 - vCPU runs on the main thread.
 - Keyboard input read from raw terminal (termios).
@@ -126,7 +126,7 @@ Warpine includes a native Rust command shell that requires no Open Watcom compil
 ### Invocation
 
 ```bash
-warpine CMD.EXE                    # Interactive session (SDL2 text window)
+warpine CMD.EXE                    # Interactive session (SDL text window)
 WARPINE_HEADLESS=1 warpine CMD.EXE # Terminal/headless mode
 warpine CMD.EXE /C "DIR C:\"      # Run one command and exit
 warpine CMD.EXE /K "VER"          # Run one command then stay interactive
@@ -134,7 +134,7 @@ warpine CMD.EXE /K "VER"          # Run one command then stay interactive
 
 The shell can also be launched from within a running OS/2 application via `DosExecPgm("CMD.EXE")` or `DosExecPgm("OS2SHELL.EXE")`.
 
-**SDL2 vs terminal:** When stdout is a terminal and `WARPINE_HEADLESS` is not set, the shell opens a 640×400 SDL2 VGA text window (same as any CLI app). Set `WARPINE_HEADLESS=1` or pipe stdout to force terminal/headless mode.
+**SDL vs terminal:** When stdout is a terminal and `WARPINE_HEADLESS` is not set, the shell opens a 640×400 SDL VGA text window (same as any CLI app). Set `WARPINE_HEADLESS=1` or pipe stdout to force terminal/headless mode.
 
 ### Flags
 
@@ -425,7 +425,7 @@ DosPutMessage (8195), DosGetMessage (8198)
 
 mciSendCommand (10241), mciSendString (10242), mciFreeBlock (10243), mciGetLastError (10244)
 
-Supported MCI commands: `MCI_OPEN`, `MCI_CLOSE`, `MCI_PLAY`, `MCI_STOP`, `MCI_STATUS`. Device type: `waveaudio` (WAV playback via SDL2 audio queue).
+Supported MCI commands: `MCI_OPEN`, `MCI_CLOSE`, `MCI_PLAY`, `MCI_STOP`, `MCI_STATUS`. Device type: `waveaudio` (WAV files played through SDL3 audio streams on the main thread; also `MCI_SEEK` and `MCI_SET` volume).
 
 ### UCONV (5 APIs)
 

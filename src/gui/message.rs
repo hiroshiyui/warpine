@@ -13,7 +13,7 @@ use std::time::Duration;
 pub enum GUIMessage {
     /// Copy `text` to the host system clipboard.
     SetClipboardText(String),
-    /// Instruct the SDL2 backend to call `SDL_CaptureMouse`.
+    /// Ask the SDL backend to capture the mouse (`MouseUtil::capture`).
     /// `hwnd` is the capturing window (0 = release capture).
     SetMouseCapture(u32),
     /// Show a modal message box and send the MBID_* result back via `reply_tx`.
@@ -39,7 +39,7 @@ pub type WakeHook = Box<dyn Fn() + Send + Sync>;
 /// can block in two ways:
 ///
 /// * in its own event source, with a hook that interrupts that wait (the
-///   SDL2 backend pushes an SDL user event, so input and wake-ups end the
+///   SDL backend pushes an SDL user event, so input and wake-ups end the
 ///   same wait);
 /// * in [`wait`](Self::wait), when the event source cannot block (SDL's
 ///   `dummy` video driver has no input to wait for).

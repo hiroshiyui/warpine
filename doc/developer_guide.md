@@ -55,7 +55,7 @@ Warpine's execution pipeline has four stages:
 3. **Execute** — `Loader::run_vcpu()` creates a KVM vCPU in 32-bit protected mode and enters the VMEXIT loop.
 4. **Thunk** — When the guest calls an OS/2 API, it hits an INT 3 breakpoint at a magic address. The resulting `VMEXIT_DEBUG` is caught by the host, which reads arguments from the guest stack, executes the API in Rust, and writes the result back to guest RAX.
 
-For **CLI applications**, the vCPU runs on the main thread. For **PM (GUI) applications**, the SDL2 event loop runs on the main thread (as required by most windowing systems), and the vCPU runs on a worker thread.
+For **CLI applications**, the vCPU runs on the main thread. For **PM (GUI) applications**, the SDL event loop runs on the main thread (as required by most windowing systems), and the vCPU runs on a worker thread.
 
 ---
 
@@ -341,17 +341,17 @@ OS/2 queues (`DosCreateQueue` / `DosReadQueue`) are named, prioritized message q
 
 ## Presentation Manager (GUI)
 
-**Modules:** `src/gui/renderer.rs`, `src/gui/sdl2_renderer.rs`, `src/gui/headless.rs`, `src/loader/pm_win.rs`, `src/loader/pm_gpi.rs`, `src/loader/pm_types.rs`
+**Modules:** `src/gui/renderer.rs`, `src/gui/sdl_renderer.rs`, `src/gui/headless.rs`, `src/loader/pm_win.rs`, `src/loader/pm_gpi.rs`, `src/loader/pm_types.rs`
 
-The Presentation Manager (PM) is OS/2's GUI subsystem. Warpine implements it using **SDL2** (window management, event handling, and hardware-accelerated framebuffer rendering via streaming textures).
+The Presentation Manager (PM) is OS/2's GUI subsystem. Warpine implements it using **SDL** (window management, event handling, and hardware-accelerated framebuffer rendering via streaming textures).
 
 ### Three Execution Paths
 
 `main.rs` selects an execution mode based on the executable's imports and environment:
 
-- **CLI apps (SDL2 text window)** — default for apps that do not import `PMWIN`. The vCPU runs on a worker thread. `Sdl2TextRenderer` runs `run_text_loop()` on the main thread (required by SDL2), rendering a 640×400 VGA text window.
+- **CLI apps (SDL text window)** — default for apps that do not import `PMWIN`. The vCPU runs on a worker thread. `SdlTextRenderer` runs `run_text_loop()` on the main thread (required by SDL), rendering a 640×400 VGA text window.
 - **CLI apps (terminal / headless)** — `WARPINE_HEADLESS=1`. The vCPU runs on the main thread; terminal ANSI output and raw-mode keyboard are used.
-- **PM apps** — SDL2 event loop runs on the main thread. The vCPU is spawned on a worker thread. Drawing goes through shared per-frame surfaces (see Rendering Pipeline); the few requests only the GUI thread can carry out — host clipboard, mouse capture, message boxes — go through a channel (`GUISender` / `GUIReceiver`).
+- **PM apps** — SDL event loop runs on the main thread. The vCPU is spawned on a worker thread. Drawing goes through shared per-frame surfaces (see Rendering Pipeline); the few requests only the GUI thread can carry out — host clipboard, mouse capture, message boxes — go through a channel (`GUISender` / `GUIReceiver`).
 
 ### Window Lifecycle
 
@@ -371,7 +371,7 @@ Drawing in PM uses Presentation Spaces (HPS):
 2. **GpiSetColor / GpiSetMix / GpiMove / GpiLine / GpiBox / GpiSetPel / GpiCharStringAt** — Update the presentation space state and draw, on the calling thread, into the surface of the frame the window belongs to.
 3. **WinEndPaint** — Repaints the window's built-in controls on top and marks the frame dirty.
 
-The GUI thread (`run_pm_loop` in `src/gui/renderer.rs`, backend `Sdl2Renderer` in `src/gui/sdl2_renderer.rs`) redraws the changed parts of the desktop buffer from the frame surfaces and their chrome, uploads those parts to an SDL2 streaming texture and presents it.
+The GUI thread (`run_pm_loop` in `src/gui/renderer.rs`, backend `SdlRenderer` in `src/gui/sdl_renderer.rs`) redraws the changed parts of the desktop buffer from the frame surfaces and their chrome, uploads those parts to an SDL streaming texture and presents it.
 
 **Surfaces.** `src/gui/surface.rs`: each frame or dialog has a `Surface` (its client-area pixels, 0x00RRGGBB, top row first) in `WindowManager::surfaces`, shared as `Arc<Mutex<Surface>>`. API threads draw into it directly with `DrawOp`s — `Box`, `Line`, `Text` (system font, line-box bottom at `y`), `TextFont` (GPI, baseline at `y`), `Pel`, `Clear` — through `Loader::draw` (or a `Painter` for built-in controls), in PM coordinates (bottom-left origin, corners inclusive), clipped to the surface.
 
@@ -398,7 +398,7 @@ The GUI thread (`run_pm_loop` in `src/gui/renderer.rs`, backend `Sdl2Renderer` i
 **Event loop.** Each pass rearms the channel's wake-up, drains queued `GUIMessage`s, handles input, composites if due, then blocks in `PmRenderer::wait_for_work`:
 
 - *Waking.* `GUISender::send` and `WindowManager::mark_dirty`/`mark_all_dirty` call `GuiWake::wake` (`src/gui/message.rs`), so a draw from the guest thread (every draw marks its frame dirty) or a window moved by `WinSetWindowPos` ends the wait. Wake-ups are coalesced: only the first after each rearm reaches the hook.
-- *How it blocks.* With a real video driver, `Sdl2Renderer` waits in `SDL_WaitEventTimeout` and the wake hook pushes an SDL user event, so input and wake-ups end the same wait. SDL's `dummy` and `offscreen` drivers have no input to block on (SDL would poll inside its wait), so there the loop waits on the `GuiWake` condition variable instead (`driver_can_wait`).
+- *How it blocks.* With a real video driver, `SdlRenderer` waits in `SDL_WaitEventTimeout` and the wake hook pushes an SDL user event, so input and wake-ups end the same wait. SDL's `dummy` and `offscreen` drivers have no input to block on (SDL would poll inside its wait), so there the loop waits on the `GuiWake` condition variable instead (`driver_can_wait`).
 - *How long.* `wait_timeout()` picks the earliest of: the next frame when a composite is owed (`FRAME_INTERVAL`, 16 ms), the next scripted GUI step, and `IDLE_WAIT` (100 ms), which bounds how long state changes that arrive without a wake-up — such as `exit_requested` — go unnoticed.
 - *Coalesced composites.* Drawing, `WinEndPaint` and `WinUpdateWindow` only mark the frame dirty; `poll_events` composites at most once per `FRAME_INTERVAL`, so a paint cycle of many primitives costs one composite (or a few, if it spans frame intervals — drawing outside `WinBeginPaint` shows up too).
 - *Clipboard.* The host clipboard is read once at start-up and again on SDL `ClipboardUpdate` and `FocusGained` events, not on every pass.
@@ -415,7 +415,7 @@ SDL_VIDEODRIVER=dummy WARPINE_GUI_SCRIPT=/tmp/bench.script \
 
 ### Input Handling
 
-The GUI thread translates SDL2 input events into OS/2 messages:
+The GUI thread translates SDL input events into OS/2 messages:
 - Keyboard events → `WM_CHAR` in the CHRMSG layout (flags in the low word of `mp1`, repeat count in bits 16–23, scan code in bits 24–31; character in the low word of `mp2`, virtual key in the high word). Typed characters come from SDL `TextInput` events encoded in the active codepage (`text_input_wm_chars`), so shifted and non-ASCII characters arrive correctly; `KeyDown` carries only non-character keys and Ctrl/Alt chords.
 - Mouse movement → `WM_MOUSEMOVE`
 - Mouse buttons → `WM_BUTTON1DOWN` / `WM_BUTTON1UP`
@@ -550,33 +550,33 @@ Two rendering backends are available, selected at startup:
 
 | Mode | Condition | Description |
 |---|---|---|
-| **SDL2 text window** | default | 640×400 SDL2 window; CP437 8×16 font; CGA 16-colour palette; blinking block/underline cursor |
+| **SDL text window** | default | 640×400 SDL window; CP437 8×16 font; CGA 16-colour palette; blinking block/underline cursor |
 | **Terminal (ANSI)** | `WARPINE_HEADLESS=1` | ANSI escape sequences on the host terminal; raw-mode termios keyboard |
 
-Set `WARPINE_HEADLESS=1` for headless CI runs or when an SDL2 display is unavailable.
+Set `WARPINE_HEADLESS=1` for headless CI runs or when an SDL display is unavailable.
 
 ### VioManager (console.rs)
 
 `VioManager` is the central state object for text-mode I/O. It maintains:
 
-- A **screen buffer** of `(char, attribute)` cell pairs, row-major, 80×25 in SDL2 mode or terminal-detected dimensions otherwise.
+- A **screen buffer** of `(char, attribute)` cell pairs, row-major, 80×25 in SDL mode or terminal-detected dimensions otherwise.
 - **Cursor position** (`cursor_row`, `cursor_col`) and visibility/shape (`cursor_visible`, `cursor_start`, `cursor_end` — VGA scan-line indices 0–15).
-- An `sdl2_mode` flag. When `true`, all ANSI terminal output is suppressed; the SDL2 renderer reads the buffer directly. `enable_raw_mode()` becomes a no-op; `enable_sdl2_mode()` locks dimensions to 80×25.
+- An `sdl_mode` flag. When `true`, all ANSI terminal output is suppressed; the SDL renderer reads the buffer directly. `enable_raw_mode()` becomes a no-op; `enable_sdl2_mode()` locks dimensions to 80×25.
 - `stdin_pending_lf` — for CR→CRLF translation across consecutive `DosRead` calls.
 - `stdin_cooked_chars` — running count of printable chars echoed since the last CR/LF; used to bound backspace echo in cooked-mode `DosRead` (prevents erasing the shell prompt).
 
-VIO write methods (`write_tty`, `write_char_str_att`, `write_n_cell`, `write_n_attr`, `scroll_up`, `scroll_down`) always update the screen buffer. In terminal mode they also emit ANSI escape sequences. In SDL2 mode only the buffer is updated; the renderer picks it up on the next frame.
+VIO write methods (`write_tty`, `write_char_str_att`, `write_n_cell`, `write_n_attr`, `scroll_up`, `scroll_down`) always update the screen buffer. In terminal mode they also emit ANSI escape sequences. In SDL mode only the buffer is updated; the renderer picks it up on the next frame.
 
 #### VioScrollUp / VioScrollDn — OS/2 special case
 
 `VioScrollUp` / `VioScrollDn` accept a `pCell` pointer to a 2-byte `(char, attr)` fill cell. **If `lines == 0`, OS/2 defines this as "clear the entire region"** (fill all rows from `top` to `bottom` with `fill_cell`). A null `pCell` defaults to `(' ', 0x07)`.
 
-### SDL2 text renderer (gui/text_renderer.rs)
+### SDL text renderer (gui/text_renderer.rs)
 
 ```
 VgaTextBuffer              — per-frame snapshot of VioManager state
 TextModeRenderer (trait)   — render_frame(buf, blink_on), poll_events(shared), frame_sleep()
-  Sdl2TextRenderer         — 640×400 window; streaming ARGB8888 texture; XOR-invert cursor
+  SdlTextRenderer         — 640×400 window; streaming ARGB8888 texture; XOR-invert cursor
   HeadlessTextRenderer     — no-op CI backend (counts frames)
 run_text_loop(renderer, shared)
 ```
@@ -591,9 +591,9 @@ run_text_loop(renderer, shared)
 
 ### Keyboard input
 
-#### SDL2 mode
+#### SDL mode
 
-Keyboard events from `Sdl2TextRenderer::poll_events()` are mapped to OS/2 key codes and pushed into `SharedState::kbd_queue` (a `Mutex<VecDeque<KbdKeyInfo>>`); `kbd_cond` (a `Condvar`) is signalled so waiting threads wake up immediately.
+Keyboard events from `SdlTextRenderer::poll_events()` are mapped to OS/2 key codes and pushed into `SharedState::kbd_queue` (a `Mutex<VecDeque<KbdKeyInfo>>`); `kbd_cond` (a `Condvar`) is signalled so waiting threads wake up immediately.
 
 ```rust
 pub struct KbdKeyInfo {
@@ -605,7 +605,7 @@ pub struct KbdKeyInfo {
 
 `KbdCharIn` (ordinal 4) dequeues from `kbd_queue`, blocking on `kbd_cond` with a 50 ms timeout so it can check `exit_requested`. `IO_NOWAIT` (`wait == 1`) returns immediately if the queue is empty.
 
-`use_sdl2_text: AtomicBool` in `SharedState` signals all subsystems (DosWrite, DosRead, KbdCharIn) to use the SDL2 paths.
+`use_sdl_text: AtomicBool` in `SharedState` signals all subsystems (DosWrite, DosRead, KbdCharIn) to use the SDL paths.
 
 #### Terminal mode (WARPINE_HEADLESS)
 
@@ -624,7 +624,7 @@ pub struct KbdKeyInfo {
 
 `VioGetCurType` (ordinal 33) writes the current `VioManager` state back to the guest struct. Together they support the read-modify-write pattern common in OS/2 shell startup.
 
-### DosRead / DosWrite in SDL2 mode
+### DosRead / DosWrite in SDL mode
 
 - **`DosWrite(fd=1)`** — routed through `VioManager::write_tty()` with attribute `0x07`. This keeps the screen buffer in sync so `VioGetCurPos` always returns the correct cursor column.
 - **`DosRead(fd=0)` (cooked mode)** — reads from `kbd_queue`, echoes printable chars and CR+LF, translates Enter to CR+LF (`stdin_pending_lf` for the second byte). Backspace is only echoed and delivered if `stdin_cooked_chars > 0`; otherwise it is silently discarded to prevent erasing content written before the current input line (e.g. the shell prompt).
@@ -776,7 +776,7 @@ make                 # Cross-compiles with Open Watcom
 cargo run -- samples/4os2/4os2.exe
 ```
 
-4OS2 boots to an interactive `[c:\]` prompt in an SDL2 640×400 text window (CP437 font, CGA colours, blinking cursor). Working commands include `ver`, `set`, `echo`, `dir`, `exit`, and other built-ins. Use `RUST_LOG=debug` to trace API calls. Use `WARPINE_HEADLESS=1` to run in the host terminal instead.
+4OS2 boots to an interactive `[c:\]` prompt in an SDL 640×400 text window (CP437 font, CGA colours, blinking cursor). Working commands include `ver`, `set`, `echo`, `dir`, `exit`, and other built-ins. Use `RUST_LOG=debug` to trace API calls. Use `WARPINE_HEADLESS=1` to run in the host terminal instead.
 
 ### Key implementation details
 
@@ -803,17 +803,17 @@ Several issues were discovered and fixed during 4OS2 bring-up that are worth not
 
 `src/loader/cmd.rs` implements a command shell entirely in host Rust, eliminating the Open Watcom / 4OS2 build dependency for basic interactive use. The shell is invoked in two ways:
 
-1. **From the host command line** — `warpine CMD.EXE [args]`: detected in `main()` by basename before `detect_format()` is called. When stdout is a terminal and `WARPINE_HEADLESS` is not set, enables SDL2 mode on `VioManager`, spawns the shell on a worker thread via `run_builtin_cmd_sdl2()`, and runs `run_text_loop()` on the main thread — the same flow as any CLI LX app. With `WARPINE_HEADLESS=1` or piped stdout, calls `run_builtin_cmd_main()` directly on the main thread (terminal mode).
+1. **From the host command line** — `warpine CMD.EXE [args]`: detected in `main()` by basename before `detect_format()` is called. When stdout is a terminal and `WARPINE_HEADLESS` is not set, enables SDL mode on `VioManager`, spawns the shell on a worker thread via `run_builtin_cmd_sdl()`, and runs `run_text_loop()` on the main thread — the same flow as any CLI LX app. With `WARPINE_HEADLESS=1` or piped stdout, calls `run_builtin_cmd_main()` directly on the main thread (terminal mode).
 
-2. **From a running OS/2 guest** — `DosExecPgm("CMD.EXE")` or `DosExecPgm("OS2SHELL.EXE")`: intercepted in `dos_exec_pgm()` before the VFS path lookup; routes to `Loader::run_builtin_cmd()`. Runs inside the active VIO text window (SDL2 or headless), sharing keyboard queue and screen buffer with the guest.
+2. **From a running OS/2 guest** — `DosExecPgm("CMD.EXE")` or `DosExecPgm("OS2SHELL.EXE")`: intercepted in `dos_exec_pgm()` before the VFS path lookup; routes to `Loader::run_builtin_cmd()`. Runs inside the active VIO text window (SDL or headless), sharing keyboard queue and screen buffer with the guest.
 
 ### Architecture
 
 ```
 main.rs CMD.EXE intercept (stdout is terminal):
-    ├── enable SDL2 mode on VioManager
-    ├── spawn thread → Loader::run_builtin_cmd_sdl2()
-    └── run_text_loop() on main thread (SDL2 window)
+    ├── enable SDL mode on VioManager
+    ├── spawn thread → Loader::run_builtin_cmd_sdl()
+    └── run_text_loop() on main thread (SDL window)
 
 main.rs CMD.EXE intercept (WARPINE_HEADLESS / piped):
     └── Loader::run_builtin_cmd_main()    (terminal mode, blocks)
@@ -835,8 +835,8 @@ All paths converge on:
 
 `CmdShell::read_key()` uses dual-path input matching the rest of the VIO subsystem:
 
-- **SDL2 path** (`shared.use_sdl2_text = true`): blocks on `shared.kbd_cond` condvar, pops from `shared.kbd_queue`. Used when the shell is invoked from a running OS/2 guest with an SDL2 text window open.
-- **Terminal path** (`use_sdl2_text = false`): calls `console_mgr.read_byte()` with a 5 ms sleep loop, using raw termios mode. Used when the shell is invoked directly from the host command line.
+- **SDL path** (`shared.use_sdl_text = true`): blocks on `shared.kbd_cond` condvar, pops from `shared.kbd_queue`. Used when the shell is invoked from a running OS/2 guest with an SDL text window open.
+- **Terminal path** (`use_sdl_text = false`): calls `console_mgr.read_byte()` with a 5 ms sleep loop, using raw termios mode. Used when the shell is invoked directly from the host command line.
 
 Arrow-key sequences (`\x1B[A` / `\x1B[B`) are decoded in the terminal path to `SCAN_UP` / `SCAN_DOWN` for history navigation.
 
@@ -1134,7 +1134,7 @@ The VFS is introduced incrementally:
 
 ```
 src/
-  main.rs              Entry point: CLI/PM/text-mode detection, SDL2 init, thread spawning
+  main.rs              Entry point: CLI/PM/text-mode detection, SDL init, thread spawning
   api.rs               DosWrite/DosExit FFI bridge stubs
   build.rs             Compile-time Unifont parser: emits font_unifont_sbcs.rs + font_unifont_wide.bin
   lx/
@@ -1155,16 +1155,16 @@ src/
                        PPM dump — SDL-free; used by the gui_* integration tests
     damage.rs          Rect, damage list, clipped row-wise blit/fill for the compositor
     frame_stats.rs     GUI loop / composite timing statistics (debug log every 5 s)
-    renderer.rs        PmRenderer trait + run_pm_loop() (PM/GUI SDL2 event loop)
+    renderer.rs        PmRenderer trait + run_pm_loop() (PM/GUI SDL event loop)
     audio.rs           AudioService (thread-safe audio commands) + SdlAudio (main-thread SDL3 streams)
     surface.rs         Shared per-frame drawing surfaces: Surface, DrawOp, Mix (FM_* raster ops), rop3
     headless.rs        HeadlessRenderer: no-op PM backend for CI
-    sdl2_renderer.rs   Sdl2Renderer: PM SDL2 backend; SDL scancode/VK tables; push_msg
-    text_renderer.rs   TextModeRenderer trait, VgaTextBuffer, Sdl2TextRenderer,
+    sdl_renderer.rs   SdlRenderer: PM SDL backend; SDL scancode/VK tables; push_msg
+    text_renderer.rs   TextModeRenderer trait, VgaTextBuffer, SdlTextRenderer,
                        HeadlessTextRenderer, run_text_loop(), get_cp437_glyph(),
                        CGA_PALETTE (22 unit tests)
   loader/
-    mod.rs             Loader struct, SharedState (kbd_queue/kbd_cond/use_sdl2_text), KVM/mock init
+    mod.rs             Loader struct, SharedState (kbd_queue/kbd_cond/use_sdl_text), KVM/mock init
     vcpu.rs            vCPU thread: VMEXIT loop, GDB integration, crash dump hooks
     vm_backend.rs      VmBackend/VcpuBackend traits (KVM + mock implementations)
     kvm_backend.rs     KVM-based VmBackend implementation
@@ -1192,17 +1192,17 @@ src/
     pm_edit.rs         Edit-buffer logic for text controls (insert/delete/caret/scroll)
     pm_controls.rs     Interactive WC_ENTRYFIELD / WC_MLE / WC_LISTBOX: messages + painting
     mmpm.rs            MMPM/2: MmpmManager, beep_tone, mciSendCommand/mciSendString, parse_wav
-    console.rs         VioManager: screen buffer, cursor state/shape, sdl2_mode,
+    console.rs         VioManager: screen buffer, cursor state/shape, sdl_mode,
                        ANSI output, stdin_cooked_chars, CP437→UTF-8 conversion
     viocalls.rs        VIOCALLS API: VioWrtTTY, VioScrollUp/Dn (pCell + lines=0),
                        VioSetCurType, VioGetCurType, VioWrtNCell, VioWrtNAttr, etc.
-    kbdcalls.rs        KBDCALLS API: KbdCharIn (kbd_queue in SDL2, termios in terminal),
+    kbdcalls.rs        KBDCALLS API: KbdCharIn (kbd_queue in SDL, termios in terminal),
                        KbdStringIn, KbdGetStatus
     stubs.rs           Stub handlers for unimplemented/low-priority APIs
     process.rs         ProcessManager: DosExecPgm, DosWaitChild, directory tracking
     vfs.rs             VfsBackend trait, DriveManager, Os2Error, OS/2 data types, handle types
     vfs_hostdir.rs     HostDirBackend: HPFS-on-host-directory VfsBackend implementation
-build.rs               Linker search path for libSDL2 (via pkg-config)
+build.rs               Code generation: GNU Unifont glyph tables
 ```
 
 ---
@@ -1389,7 +1389,7 @@ The test suite covers three areas:
 | `src/loader/mmpm.rs` | MmpmManager waveaudio device open/close/play lifecycle, mciSendCommand dispatch, mciSendString parsing, mciFreeBlock, mciGetLastError |
 | `src/loader/vfs.rs` | DriveManager path resolution, device name detection, drive letter parsing |
 | `src/loader/vfs_hostdir.rs` | HostDirBackend case-insensitive lookup, sandbox enforcement, EA operations |
-| `src/gui/sdl2_renderer.rs` | Y-coordinate flipping, rectangle rendering (filled/outlined), line drawing (horizontal/vertical/diagonal), text rendering pixel output and orientation; scancode/VK mapping |
+| `src/gui/sdl_renderer.rs` | Y-coordinate flipping, rectangle rendering (filled/outlined), line drawing (horizontal/vertical/diagonal), text rendering pixel output and orientation; scancode/VK mapping |
 | `src/gui/text_renderer.rs` | CP437 glyph bitmaps (box-drawing, block elements, ASCII delegation), CGA palette (opaque, correct entries), HeadlessTextRenderer frame counting and loop termination, VgaTextBuffer snapshot, KbdKeyInfo queue push/pop (22 tests) |
 
 ### Integration testing with sample apps
@@ -1472,7 +1472,7 @@ cargo test --test integration     # 9 end-to-end tests (requires /dev/kvm)
 PM rendering is tested end to end without a display.
 
 **Scripted sessions.** Setting `WARPINE_GUI_SCRIPT` to a script file makes the
-SDL2 PM renderer replay it (`src/gui/gui_script.rs`). Each line is
+SDL PM renderer replay it (`src/gui/gui_script.rs`). Each line is
 `<milliseconds since start> <action> [arguments]`; blank lines and lines
 starting with `#` are ignored (a `#` after an action is not a comment):
 

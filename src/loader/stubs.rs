@@ -519,7 +519,7 @@ impl super::Loader {
     pub fn dos_put_message(&self, hf: u32, cb_msg: u32, p_msg: u32) -> u32 {
         debug!("  DosPutMessage(hf={}, cb={})", hf, cb_msg);
         if p_msg == 0 || cb_msg == 0 { return NO_ERROR; }
-        // Route through dos_write so SDL2 text window and terminal both work
+        // Route through dos_write so SDL text window and terminal both work
         self.dos_write(hf, p_msg, cb_msg, 0)
     }
 

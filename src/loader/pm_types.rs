@@ -356,7 +356,7 @@ pub struct WindowManager {
     pub clipboard_open: bool,
     /// Currently captured window handle (0 = none).
     pub capture_hwnd: u32,
-    /// Text-format clipboard content, kept in sync with the host SDL2 clipboard.
+    /// Text-format clipboard content, kept in sync with the host SDL clipboard.
     pub clipboard_text: String,
     accel_tables: HashMap<u32, Vec<AccelEntry>>,
     window_accel: HashMap<u32, u32>, // hwnd → haccel

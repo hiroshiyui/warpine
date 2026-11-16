@@ -2,8 +2,8 @@
 
 //! Phase 6: VGA Text-Mode Renderer
 //!
-//! Renders an 80×25 VGA text buffer into an SDL2 window using an 8×16 GNU
-//! Unifont pixel font.  Keyboard events from SDL2 are pushed into
+//! Renders an 80×25 VGA text buffer into an SDL window using an 8×16 GNU
+//! Unifont pixel font.  Keyboard events from SDL are pushed into
 //! `SharedState::kbd_queue` for consumption by `KbdCharIn`.
 
 use std::sync::Arc;
@@ -209,17 +209,17 @@ pub fn run_text_loop<R: TextModeRenderer>(renderer: &mut R, shared: Arc<SharedSt
     }
 }
 
-// ── SDL2 text-mode renderer ───────────────────────────────────────────────────
+// ── SDL text-mode renderer ───────────────────────────────────────────────────
 
-/// SDL2-backed VGA text-mode renderer.
+/// SDL-backed VGA text-mode renderer.
 ///
-/// Opens an SDL2 window sized to `cols × 8` × `rows × 16` pixels and renders
+/// Opens an SDL window sized to `cols × 8` × `rows × 16` pixels and renders
 /// one 8×16 CP437 cell per screen cell.  When the `VgaTextBuffer` dimensions
 /// change (e.g. after a `VioSetMode` call) the window is automatically
 /// resized to match.
 ///
 /// Must be created and driven on the main thread.
-pub struct Sdl2TextRenderer {
+pub struct SdlTextRenderer {
     canvas: sdl3::render::Canvas<sdl3::video::Window>,
     /// Texture creator kept for the life of the process, so we can recreate
     /// the streaming texture on window resize and the lifetime-checked
@@ -238,7 +238,7 @@ pub struct Sdl2TextRenderer {
     current_rows: u16,
 }
 
-impl Sdl2TextRenderer {
+impl SdlTextRenderer {
     /// Initial (default) window size — 80 columns × 25 rows.
     const INIT_COLS: u16 = 80;
     const INIT_ROWS: u16 = 25;
@@ -256,18 +256,18 @@ impl Sdl2TextRenderer {
             .window(title, init_w, init_h)
             .position_centered()
             .build()
-            .expect("SDL2 window");
+            .expect("SDL window");
         // TextInput (IME-composed text) is per window and off by default.
         video.text_input().start(&window);
         let canvas = window.into_canvas();
         let texture_creator: &'static _ = Box::leak(Box::new(canvas.texture_creator()));
         let mut texture = texture_creator
             .create_texture_streaming(PixelFormat::ARGB8888, init_w, init_h)
-            .expect("SDL2 streaming texture");
+            .expect("SDL streaming texture");
         texture.set_blend_mode(BlendMode::None);
-        let event_pump = sdl.event_pump().expect("SDL2 event pump");
+        let event_pump = sdl.event_pump().expect("SDL event pump");
         let pixels = vec![0xFF_00_00_00u32; (init_w * init_h) as usize];
-        Sdl2TextRenderer {
+        SdlTextRenderer {
             canvas, texture_creator, texture, event_pump, pixels,
             audio: {
                 // This loop polls every 8 ms, so it needs no wake-up hook.
@@ -295,7 +295,7 @@ impl Sdl2TextRenderer {
         self.canvas.present();
     }
 
-    /// Resize the SDL2 window + recreate the streaming texture when the
+    /// Resize the SDL window + recreate the streaming texture when the
     /// VioManager dimensions change.
     fn handle_resize(&mut self, new_cols: u16, new_rows: u16) {
         use sdl3::pixels::PixelFormat;
@@ -304,15 +304,15 @@ impl Sdl2TextRenderer {
         let new_w = new_cols as u32 * 8;
         let new_h = new_rows as u32 * 16;
 
-        // Resize the SDL2 window (best-effort; may fail on some platforms
-        // if the window was created without the RESIZABLE flag, but SDL2 will
+        // Resize the SDL window (best-effort; may fail on some platforms
+        // if the window was created without the RESIZABLE flag, but SDL will
         // silently clamp rather than panic).
         let _ = self.canvas.window_mut().set_size(new_w, new_h);
 
         // Recreate the streaming texture for the new dimensions.
         let mut new_tex = self.texture_creator
             .create_texture_streaming(PixelFormat::ARGB8888, new_w, new_h)
-            .expect("SDL2 texture resize failed");
+            .expect("SDL texture resize failed");
         new_tex.set_blend_mode(BlendMode::None);
         self.texture = new_tex;
 
@@ -322,7 +322,7 @@ impl Sdl2TextRenderer {
     }
 }
 
-impl TextModeRenderer for Sdl2TextRenderer {
+impl TextModeRenderer for SdlTextRenderer {
     fn render_frame(&mut self, buf: &VgaTextBuffer, blink_on: bool) {
         // Resize window + texture when VioManager dimensions change.
         if buf.cols != self.current_cols || buf.rows != self.current_rows {
@@ -472,7 +472,7 @@ impl TextModeRenderer for Sdl2TextRenderer {
     fn poll_events(&mut self, shared: &Arc<SharedState>) -> bool {
         use sdl3::event::Event;
         use sdl3::keyboard::{Keycode, Mod as KeyMod};
-        use crate::gui::sdl2_renderer::sdl_scancode_to_os2;
+        use crate::gui::sdl_renderer::sdl_scancode_to_os2;
         use crate::loader::codepage::cp_encode;
 
         // Audio commands from the vCPU threads.
@@ -563,7 +563,7 @@ impl TextModeRenderer for Sdl2TextRenderer {
     }
 }
 
-/// Convert an SDL2 `Keycode` + modifier flags to an OS/2 ASCII character byte.
+/// Convert an SDL `Keycode` + modifier flags to an OS/2 ASCII character byte.
 ///
 /// Returns 0x00 for pure extended/navigation keys (arrows, F-keys, etc.).
 fn sdl_keycode_to_text_char(kc: sdl3::keyboard::Keycode, mods: sdl3::keyboard::Mod) -> u8 {

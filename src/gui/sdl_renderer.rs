@@ -114,7 +114,7 @@ const CHROME_DARK_COLOR: u32   = 0x0000_0000;
 /// Vertical inset of the title-bar buttons inside the title bar.
 const CHROME_BTN_INSET_Y: i32  = 2;
 
-/// Geometry and state of one frame's chrome, in SDL2 screen space.
+/// Geometry and state of one frame's chrome, in SDL screen space.
 struct FrameChrome<'a> {
     x: i32,
     /// Screen y of the frame's top edge.
@@ -277,7 +277,7 @@ const MENU_HILITE_TEXT: u32     = 0x00FF_FFFF;
 /// Draw a frame's menu bar and, when `open_item` (1-based) is non-zero, the
 /// pull-down of that top-level item, into a desktop-space pixel buffer.
 ///
-/// `(x0, bar_top)` is the bar's top-left corner in SDL2 screen space and
+/// `(x0, bar_top)` is the bar's top-left corner in SDL screen space and
 /// `bar_w` its width. Item geometry mirrors the `#Menu` hit-testing in
 /// `Loader::dispatch_builtin_control` (same insets, widths and row height).
 #[cfg(test)]
@@ -345,14 +345,14 @@ fn draw_menu_pulldown(buf: &mut [u32], buf_w: usize, drop_x: i32, bar_bot: i32, 
 
 /// Draw a filled axis-aligned rectangle into a desktop-space pixel buffer.
 ///
-/// Coordinates are in SDL2 screen space (y=0 at top). Clips to buffer bounds.
+/// Coordinates are in SDL screen space (y=0 at top). Clips to buffer bounds.
 fn draw_filled_rect(buf: &mut [u32], buf_w: usize,
                     x0: i32, y0: i32, x1: i32, y1: i32, color: u32) {
     let r = Rect::new(x0, y0, x1, y1);
     fill_clipped(buf, buf_w, r, r, color);
 }
 
-/// The single SDL2 window that acts as the OS/2 desktop.
+/// The single SDL window that acts as the OS/2 desktop.
 struct DesktopCanvas {
     canvas:  Canvas<Window>,
     /// The canvas's texture factory, kept for the life of the process so the
@@ -628,9 +628,9 @@ fn owning_frame(wm: &WindowManager, hwnd: u32) -> Option<u32> {
 struct DragState {
     /// HWND of the frame being dragged.
     hwnd: u32,
-    /// Horizontal offset (SDL2 pixels) from the frame's left edge to the press point.
+    /// Horizontal offset (SDL pixels) from the frame's left edge to the press point.
     anchor_x: i32,
-    /// Vertical offset (SDL2 pixels) from the top of the frame in SDL2 coords to the press point.
+    /// Vertical offset (SDL pixels) from the top of the frame in SDL coords to the press point.
     anchor_y_sdl: i32,
 }
 
@@ -644,23 +644,23 @@ enum ResizeEdge {
 struct ResizeState {
     hwnd:    u32,
     edge:    ResizeEdge,
-    /// SDL2 cursor position at press.
+    /// SDL cursor position at press.
     press_x: i32,
     press_y: i32,
     /// Window geometry at press time (OS/2 coords).
     orig_x: i32, orig_y: i32, orig_cx: i32, orig_cy: i32,
 }
 
-/// SDL2-backed Presentation Manager renderer.
+/// SDL-backed Presentation Manager renderer.
 ///
-/// VDR-A: one SDL2 window (the desktop); each PM frame/dialog is drawn into
+/// VDR-A: one SDL window (the desktop); each PM frame/dialog is drawn into
 /// its surface (`WindowManager::surfaces`) by the API threads.
 /// `PresentBuffer` composites all visible frames onto the desktop surface using
 /// window positions from `SharedState::window_mgr`.
 ///
 /// Created on the main thread; must stay on the main thread for the duration
 /// of `run_pm_loop`.
-pub struct Sdl2Renderer {
+pub struct SdlRenderer {
     video:       sdl3::VideoSubsystem,
     event:       sdl3::EventSubsystem,
     event_pump:  sdl3::EventPump,
@@ -704,8 +704,8 @@ pub struct Sdl2Renderer {
     script: Option<GuiScript>,
 }
 
-impl Sdl2Renderer {
-    /// Create an `Sdl2Renderer` from an existing SDL2 context.
+impl SdlRenderer {
+    /// Create an `SdlRenderer` from an existing SDL context.
     ///
     /// Reads `WARPINE_DESKTOP_W` / `WARPINE_DESKTOP_H` env vars for the desktop
     /// size; defaults to 1024×768.
@@ -713,7 +713,7 @@ impl Sdl2Renderer {
     /// `sdl` must outlive this renderer.  Typical usage:
     /// ```rust,ignore
     /// let sdl = sdl3::init().unwrap();
-    /// let mut renderer = Sdl2Renderer::new(&sdl, &shared.audio);
+    /// let mut renderer = SdlRenderer::new(&sdl, &shared.audio);
     /// run_pm_loop(&mut renderer, shared, rx);
     /// ```
     /// `audio` gets its output attached here, before the guest starts, so
@@ -721,9 +721,9 @@ impl Sdl2Renderer {
     /// `install_waker` has run.
     pub fn new(sdl: &sdl3::Sdl, audio: &super::audio::AudioService) -> Self {
         let (dw, dh) = crate::loader::constants::desktop_size();
-        let video      = sdl.video().expect("SDL2 video subsystem init failed");
-        let event      = sdl.event().expect("SDL2 event subsystem init failed");
-        let event_pump = sdl.event_pump().expect("SDL2 event pump init failed");
+        let video      = sdl.video().expect("SDL video subsystem init failed");
+        let event      = sdl.event().expect("SDL event subsystem init failed");
+        let event_pump = sdl.event_pump().expect("SDL event pump init failed");
         let desktop    = DesktopCanvas::new(&video, dw, dh);
         // Typed characters are taken from SDL TextInput events (see
         // `build_wm_char`); SDL3 generates them per window, once started.
@@ -737,7 +737,7 @@ impl Sdl2Renderer {
                 .is_ok();
         let now = Instant::now();
         let wake_slot: Arc<std::sync::OnceLock<Arc<GuiWake>>> = Arc::default();
-        Sdl2Renderer {
+        SdlRenderer {
             video,
             event,
             event_pump,
@@ -795,7 +795,7 @@ impl Sdl2Renderer {
     /// drawn back-to-front, skipping frames an opaque frame above hides
     /// there. Only the damaged rectangles are uploaded to the texture.
     ///
-    /// Frames are placed at their OS/2 screen position converted to SDL2
+    /// Frames are placed at their OS/2 screen position converted to SDL
     /// coordinates (`top = desktop_height - win.y - win.cy`), with the client
     /// frame buffer below the title bar and menu bar (VDR-C1, C2, E3).
     fn composite_and_present(&mut self, shared: &Arc<SharedState>) {
@@ -899,7 +899,7 @@ impl Sdl2Renderer {
         self.last_composite = finished;
     }
 
-    /// Handle a single SDL2 event, posting OS/2 messages to `shared` as needed.
+    /// Handle a single SDL event, posting OS/2 messages to `shared` as needed.
     /// Returns `false` when the application should exit.
     fn handle_sdl_event(&mut self, event: Event, shared: &Arc<SharedState>) -> bool {
         let dh = self.desktop.height;
@@ -999,7 +999,7 @@ impl Sdl2Renderer {
                 // VDR-C5: if a resize is active, update window geometry.
                 if let Some(ref rs) = self.resize_state {
                     let dx = x - rs.press_x;
-                    let dy = y - rs.press_y; // dy positive = downward in SDL2
+                    let dy = y - rs.press_y; // dy positive = downward in SDL
                     let hwnd = rs.hwnd;
                     let (orig_x, orig_y, orig_cx, orig_cy) =
                         (rs.orig_x, rs.orig_y, rs.orig_cx, rs.orig_cy);
@@ -1016,7 +1016,7 @@ impl Sdl2Renderer {
                                 win.cx = new_cx;
                             }
                             ResizeEdge::S  => {
-                                // SDL2 dy>0 = downward = decreasing OS/2 y
+                                // SDL dy>0 = downward = decreasing OS/2 y
                                 let new_cy = (orig_cy - dy).max(MIN_SZ);
                                 win.y  = orig_y + (orig_cy - new_cy);
                                 win.cy = new_cy;
@@ -1297,7 +1297,7 @@ impl Sdl2Renderer {
     }
 }
 
-/// Map the low 4 bits of a WinMessageBox `flStyle` to an array of SDL2 button
+/// Map the low 4 bits of a WinMessageBox `flStyle` to an array of SDL button
 /// descriptors: `(button_id, label, returnkey_default, escapekey_default)`.
 fn mb_buttons(style: u32) -> &'static [(i32, &'static str, bool, bool)] {
     use crate::loader::{MBID_OK, MBID_CANCEL, MBID_ABORT, MBID_RETRY, MBID_IGNORE,
@@ -1326,7 +1326,7 @@ fn mb_buttons(style: u32) -> &'static [(i32, &'static str, bool, bool)] {
     }
 }
 
-impl PmRenderer for Sdl2Renderer {
+impl PmRenderer for SdlRenderer {
     fn handle_message(&mut self, msg: GUIMessage, _shared: &Arc<SharedState>) {
         match msg {
             GUIMessage::SetClipboardText(text) => {
@@ -1338,7 +1338,7 @@ impl PmRenderer for Sdl2Renderer {
                 self.mouse.capture(hwnd != 0);
             }
             GUIMessage::ShowMessageBox { caption, text, style, reply_tx } => {
-                // Map MB_ICON* bits to an SDL2 flag.
+                // Map MB_ICON* bits to an SDL flag.
                 let flag = match style & 0x00F0 {
                     x if x == crate::loader::MB_ICONHAND        => MessageBoxFlag::ERROR,
                     x if x == crate::loader::MB_ICONQUESTION    => MessageBoxFlag::WARNING,
@@ -1508,9 +1508,9 @@ enum ChromeHit {
     None,
 }
 
-/// Perform a chrome hit-test for a click at SDL2 `(x, _)` / OS/2 `os2_y` on `win`.
+/// Perform a chrome hit-test for a click at SDL `(x, _)` / OS/2 `os2_y` on `win`.
 ///
-/// Returns the hit target.  `dst_top_y` is the SDL2 y of the top of the frame's
+/// Returns the hit target.  `dst_top_y` is the SDL y of the top of the frame's
 /// title bar.  Call only when the title bar is enabled (`FCF_TITLEBAR`).
 fn chrome_hit_test(win_x: i32, win_cx: i32, win_fcf: u32,
                    x: i32, os2_y: i32, win_y: i32, win_cy: i32) -> ChromeHit {
@@ -1651,7 +1651,7 @@ pub fn push_msg(shared: &Arc<SharedState>, hwnd: u32, msg: u32, mp1: u32, mp2: u
     }
 }
 
-/// Map SDL2 hardware Scancode → IBM PC Set-1 make code (OS/2 scan code field).
+/// Map SDL hardware Scancode → IBM PC Set-1 make code (OS/2 scan code field).
 ///
 /// Extended keys (with E0 prefix on real hardware) share the same Set-1 make
 /// code in OS/2; the distinction is handled via VK_ virtual-key codes instead.
@@ -1761,7 +1761,7 @@ pub fn sdl_scancode_to_os2(sc: Scancode) -> u8 {
     }
 }
 
-/// Map an SDL2 Keycode to the OS/2 VK_* virtual key code.
+/// Map an SDL Keycode to the OS/2 VK_* virtual key code.
 /// Returns 0 for keys that have no VK_ mapping (regular printable characters).
 pub fn sdl_keycode_to_vk(kc: Keycode) -> u32 {
     match kc {
@@ -1799,7 +1799,7 @@ pub fn sdl_keycode_to_vk(kc: Keycode) -> u32 {
     }
 }
 
-/// Build WM_CHAR MP1 and MP2 from SDL2 key event fields.
+/// Build WM_CHAR MP1 and MP2 from SDL key event fields.
 ///
 /// Packing follows CHRMSG in `<pmwin.h>`:
 ///
@@ -1976,7 +1976,7 @@ fn is_text_input_char(ch: u32) -> bool {
     ch >= SPACE && ch != DEL
 }
 
-/// Map an SDL2 Keycode to the unshifted OS/2 character code.
+/// Map an SDL Keycode to the unshifted OS/2 character code.
 fn sdl_keycode_to_char(kc: Keycode) -> u32 {
     let name = kc.name();
     let b = name.as_bytes();
@@ -2236,7 +2236,7 @@ mod tests {
 
     #[test]
     fn test_sdl_keycode_to_char_printable() {
-        // SDL2 printable keycodes equal their ASCII value directly
+        // SDL printable keycodes equal their ASCII value directly
         assert_eq!(sdl_keycode_to_char(Keycode::A), b'a' as u32);
         assert_eq!(sdl_keycode_to_char(Keycode::Space), b' ' as u32);
         assert_eq!(sdl_keycode_to_char(Keycode::_1), b'1' as u32);

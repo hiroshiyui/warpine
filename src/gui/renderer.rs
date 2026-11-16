@@ -23,7 +23,7 @@ pub trait PmRenderer {
     /// from `SharedState::window_mgr` during `PresentBuffer`.
     fn handle_message(&mut self, msg: GUIMessage, shared: &Arc<SharedState>);
 
-    /// Poll the underlying event source (SDL2 events, synthetic events, etc.)
+    /// Poll the underlying event source (SDL events, synthetic events, etc.)
     /// and post OS/2 messages to `shared` message queues.
     ///
     /// Returns `false` to signal the loop should exit (e.g. window closed).
@@ -48,8 +48,8 @@ pub trait PmRenderer {
 
 /// Run the PM GUI event loop using `renderer` as the backend.
 ///
-/// Must be called from the **main thread** when using `Sdl2Renderer`
-/// (SDL2 event pump requirement).  Returns when `shared.exit_requested`
+/// Must be called from the **main thread** when using `SdlRenderer`
+/// (SDL event pump requirement).  Returns when `shared.exit_requested`
 /// is set or `renderer.poll_events` returns `false`.
 pub fn run_pm_loop(
     renderer: &mut dyn PmRenderer,

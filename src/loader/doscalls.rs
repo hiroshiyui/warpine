@@ -103,7 +103,7 @@ impl super::Loader {
 
     /// Read from stdin (handle 0).
     ///
-    /// In SDL2 text mode, reads from `kbd_queue` (populated by the SDL2 renderer)
+    /// In SDL text mode, reads from `kbd_queue` (populated by the SDL renderer)
     /// and echoes typed characters into the VioManager buffer.
     /// In terminal mode, enables raw mode and reads from the real stdin fd.
     /// Translates CR → CR+LF (OS/2 console convention) with a pending-LF mechanism.
@@ -124,8 +124,8 @@ impl super::Loader {
             }
         }
 
-        if self.shared.use_sdl2_text.load(Ordering::Relaxed) {
-            // SDL2 path: block on kbd_queue, delivering one character per call.
+        if self.shared.use_sdl_text.load(Ordering::Relaxed) {
+            // SDL path: block on kbd_queue, delivering one character per call.
             // Loops for characters that must be silently discarded (e.g. backspace
             // at start of line) so we never return 0 bytes to the caller.
             loop {
@@ -223,11 +223,11 @@ impl super::Loader {
     pub fn dos_write(&self, fd: u32, buf_ptr: u32, len: u32, actual_ptr: u32) -> u32 {
         if let Some(data) = self.guest_slice_mut(buf_ptr, len as usize) {
             if fd == 1 || fd == 2 {
-                // In SDL2 text mode, both stdout (fd=1) and stderr (fd=2) route
-                // through VioManager so messages appear in the SDL2 text window.
+                // In SDL text mode, both stdout (fd=1) and stderr (fd=2) route
+                // through VioManager so messages appear in the SDL text window.
                 // Without this, error messages from guest apps (written to stderr)
                 // would be invisible to the user.
-                if self.shared.use_sdl2_text.load(Ordering::Relaxed) {
+                if self.shared.use_sdl_text.load(Ordering::Relaxed) {
                     let written = data.len() as u32;
                     let data_copy = data.to_vec();
                     let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
@@ -1611,9 +1611,9 @@ mod tests {
     // ── DosWrite ─────────────────────────────────────────────────────────────
 
     #[test]
-    fn test_dos_write_to_sdl2_console_updates_buffer() {
+    fn test_dos_write_to_sdl_console_updates_buffer() {
         let loader = Loader::new_mock();
-        loader.shared.use_sdl2_text.store(true, Ordering::Relaxed);
+        loader.shared.use_sdl_text.store(true, Ordering::Relaxed);
         loader.guest_write_bytes(0x3000, b"AB");
         let actual_ptr = 0x2000u32;
         let rc = loader.dos_write(1, 0x3000, 2, actual_ptr);
@@ -1627,7 +1627,7 @@ mod tests {
     #[test]
     fn test_dos_write_len_zero() {
         let loader = Loader::new_mock();
-        loader.shared.use_sdl2_text.store(true, Ordering::Relaxed);
+        loader.shared.use_sdl_text.store(true, Ordering::Relaxed);
         let actual_ptr = 0x2000u32;
         let rc = loader.dos_write(1, 0x3000, 0, actual_ptr);
         assert_eq!(rc, 0);

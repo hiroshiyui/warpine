@@ -5,7 +5,7 @@
 // Invoked by `Loader::run_builtin_cmd()` whenever `DosExecPgm` targets
 // "CMD.EXE" or "OS2SHELL.EXE".  The shell runs entirely on the host; it uses
 // the existing `VioManager` for output and `kbd_queue` / termios for input so
-// it works identically in SDL2 text-mode and headless terminal sessions.
+// it works identically in SDL text-mode and headless terminal sessions.
 //
 // Supported built-ins: DIR, CD, SET, ECHO, CLS, VER, TYPE, MD/MKDIR,
 //   RD/RMDIR, DEL/ERASE, HELP, REM, EXIT.
@@ -140,7 +140,7 @@ impl CmdShell {
 
     /// Block until a key is available. Returns `None` only on shutdown.
     fn read_key(&self) -> Option<KbdKeyInfo> {
-        if self.shared.use_sdl2_text.load(Ordering::Relaxed) {
+        if self.shared.use_sdl_text.load(Ordering::Relaxed) {
             let mut queue = self.shared.kbd_queue.lock().unwrap();
             loop {
                 if self.shared.exit_requested.load(Ordering::Relaxed) {
@@ -1114,10 +1114,10 @@ impl super::Loader {
         std::process::exit(exit_code as i32);
     }
 
-    /// Entry point for the **SDL2 text-window path**: spawned on a worker thread
+    /// Entry point for the **SDL text-window path**: spawned on a worker thread
     /// while `run_text_loop` runs on the main thread. Signals completion via
     /// `SharedState::exit_code` + `exit_requested` so the main thread can clean up.
-    pub fn run_builtin_cmd_sdl2(self: Arc<Self>, host_args: Vec<String>) {
+    pub fn run_builtin_cmd_sdl(self: Arc<Self>, host_args: Vec<String>) {
         let args: Vec<&str> = host_args.iter().map(|s| s.as_str()).collect();
         let exit_code = self.run_builtin_cmd_main_inner(&args);
         self.shared.exit_code.store(exit_code as i32, std::sync::atomic::Ordering::Relaxed);
@@ -1263,10 +1263,10 @@ mod tests {
     use super::super::Loader;
     use super::super::mutex_ext::MutexExt;
 
-    /// Push keystrokes into the SDL2 kbd_queue and return the VioManager
+    /// Push keystrokes into the SDL kbd_queue and return the VioManager
     /// contents after the shell processes them.
     fn push_keys(loader: &Loader, keys: &[KbdKeyInfo]) {
-        loader.shared.use_sdl2_text.store(true, Ordering::Relaxed);
+        loader.shared.use_sdl_text.store(true, Ordering::Relaxed);
         let mut q = loader.shared.kbd_queue.lock().unwrap();
         for &k in keys {
             q.push_back(k);
@@ -1497,7 +1497,7 @@ mod tests {
         let line = format!("echo hello > {tmp_str}");
 
         // Feed the line via /C
-        push_keys(&loader, &[]); // enable SDL2 path
+        push_keys(&loader, &[]); // enable SDL path
         {
             // Run execute_line directly via the shell
             let mut shell = CmdShell::new(Arc::clone(&loader.shared));

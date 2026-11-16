@@ -105,10 +105,10 @@ impl super::Loader {
         match exec_flag {
             0 => {
                 // EXEC_SYNC: pipe only stdout so the child's program output
-                // appears in the same SDL2 text window (or terminal) as the
+                // appears in the same SDL text window (or terminal) as the
                 // parent (e.g. 4OS2).  stderr is left inherited so warpine's
                 // own diagnostic log messages continue going to the terminal
-                // and do NOT clutter the SDL2 window.
+                // and do NOT clutter the SDL window.
                 // The child detects the piped stdout via isatty() and runs in
                 // headless mode automatically — no env var required.
                 cmd.stdout(std::process::Stdio::piped())
@@ -156,10 +156,10 @@ impl super::Loader {
             }
             1 | 2 | 4 => {
                 // EXEC_ASYNC / EXEC_ASYNCRESULT / EXEC_BACKGROUND: pipe stdout
-                // so the child detects it's not a terminal and skips SDL2.
+                // so the child detects it's not a terminal and skips SDL.
                 // stderr inherits so warpine diagnostics reach the terminal.
                 // A background relay thread forwards the child's stdout to the
-                // parent's VioManager so the output appears in the same SDL2
+                // parent's VioManager so the output appears in the same SDL
                 // text window as the parent (e.g. 4OS2).
                 cmd.stdout(std::process::Stdio::piped())
                    .stderr(std::process::Stdio::inherit());
@@ -238,7 +238,7 @@ impl super::Loader {
                             // child process has exited so the pipe write-end is closed,
                             // and the next pipe.read() will return EOF.  We must NOT
                             // call t.join() here — if the relay thread is currently
-                            // inside write_tty (holding console_mgr) while the SDL2
+                            // inside write_tty (holding console_mgr) while the SDL
                             // renderer is also trying to acquire it, the join would
                             // deadlock until the next render frame (≥16 ms), which
                             // would make DosWaitChild appear to hang.
@@ -400,7 +400,7 @@ impl super::Loader {
 }
 
 /// Read from `pipe` in a loop and write every chunk to the parent's
-/// VioManager so the child's text output appears in the same SDL2 text
+/// VioManager so the child's text output appears in the same SDL text
 /// window (or terminal) as the parent process.
 fn relay_pipe_to_vio<R: Read>(mut pipe: R, shared: Arc<super::SharedState>) {
     use super::mutex_ext::MutexExt;

@@ -58,10 +58,10 @@ pub struct VioManager {
     pub cursor_end: u8,
     pub ansi_mode: bool,
     pub codepage: u16,
-    /// When `true`, all ANSI escape output is suppressed; the SDL2 text
+    /// When `true`, all ANSI escape output is suppressed; the SDL text
     /// renderer reads the buffer directly.  Also forces rows/cols to 80×25
     /// and prevents `enable_raw_mode` from touching termios.
-    pub sdl2_mode: bool,
+    pub sdl_mode: bool,
     /// Whether terminal raw mode has been activated.
     raw_mode_active: bool,
     /// Original termios saved for restore.
@@ -94,7 +94,7 @@ impl VioManager {
             cursor_end: 15,
             ansi_mode: true,
             codepage: 437,
-            sdl2_mode: false,
+            sdl_mode: false,
             raw_mode_active: false,
             original_termios: None,
             stdin_pending_lf: false,
@@ -102,11 +102,11 @@ impl VioManager {
         }
     }
 
-    /// Switch to SDL2 text-mode: initialise to 80×25, suppress ANSI output.
-    pub fn enable_sdl2_mode(&mut self) {
-        self.sdl2_mode = true;
+    /// Switch to SDL text-mode: initialise to 80×25, suppress ANSI output.
+    pub fn enable_sdl_mode(&mut self) {
+        self.sdl_mode = true;
         // Start at the standard 80×25 text mode; VioSetMode may later change
-        // the dimensions and the SDL2 window will resize to match.
+        // the dimensions and the SDL window will resize to match.
         self.resize(25, 80);
     }
 
@@ -114,7 +114,7 @@ impl VioManager {
     ///
     /// Preserves as much of the existing buffer content as possible (top-left
     /// content is kept; new cells are initialised to space/attribute 0x07).
-    /// Called by `VioSetMode` and `enable_sdl2_mode`.
+    /// Called by `VioSetMode` and `enable_sdl_mode`.
     pub fn resize(&mut self, new_rows: u16, new_cols: u16) {
         if self.rows == new_rows && self.cols == new_cols { return; }
         let new_size = new_rows as usize * new_cols as usize;
@@ -158,9 +158,9 @@ impl VioManager {
     }
 
     /// Enable terminal raw mode for keyboard input.
-    /// No-op in SDL2 text mode (keyboard events come from SDL2 instead).
+    /// No-op in SDL text mode (keyboard events come from SDL instead).
     pub fn enable_raw_mode(&mut self) {
-        if self.raw_mode_active || self.sdl2_mode { return; }
+        if self.raw_mode_active || self.sdl_mode { return; }
         let mut termios: libc::termios = unsafe { std::mem::zeroed() };
         if unsafe { libc::tcgetattr(libc::STDIN_FILENO, &mut termios) } == 0 {
             self.original_termios = Some(termios);
@@ -218,12 +218,12 @@ impl VioManager {
 
     /// Write a string at the current cursor position, advancing the cursor.
     ///
-    /// Updates the screen buffer.  In terminal (non-SDL2) mode, also emits
+    /// Updates the screen buffer.  In terminal (non-SDL) mode, also emits
     /// ANSI colour escapes so coloured text from `VioWrtTTY` is rendered with
     /// the correct CGA attribute.
     /// `cp` is the active OS/2 codepage used to decode non-ASCII bytes.
     pub fn write_tty(&mut self, text: &[u8], attr: u8, cp: u32) {
-        let sdl2 = self.sdl2_mode;
+        let sdl = self.sdl_mode;
         let mut stdout = io::stdout();
         // Lazily emit the ANSI colour attribute on the first printable byte so
         // that pure-control strings (CR/LF/BS sequences) don't pollute the
@@ -237,7 +237,7 @@ impl VioManager {
                     self.scroll_up(0, self.rows - 1, 1, (' ', 0x07), b' ');
                     self.cursor_row = self.rows - 1;
                 }
-                if !sdl2 {
+                if !sdl {
                     if attr_applied {
                         let _ = stdout.write_all(b"\x1b[0m");
                         attr_applied = false;
@@ -246,16 +246,16 @@ impl VioManager {
                 }
             } else if ch == b'\r' {
                 self.cursor_col = 0;
-                if !sdl2 { let _ = stdout.write_all(b"\r"); }
+                if !sdl { let _ = stdout.write_all(b"\r"); }
             } else if ch == b'\x08' {
                 // Backspace
                 if self.cursor_col > 0 {
                     self.cursor_col -= 1;
                 }
-                if !sdl2 { let _ = stdout.write_all(b"\x08"); }
+                if !sdl { let _ = stdout.write_all(b"\x08"); }
             } else if ch == b'\x07' {
                 // Bell
-                if !sdl2 { let _ = stdout.write_all(b"\x07"); }
+                if !sdl { let _ = stdout.write_all(b"\x07"); }
             } else {
                 let decoded = Self::decode_vio_byte(ch, cp);
                 if self.cursor_row < self.rows && self.cursor_col < self.cols {
@@ -274,7 +274,7 @@ impl VioManager {
                         self.cursor_row = self.rows - 1;
                     }
                 }
-                if !sdl2 {
+                if !sdl {
                     if !attr_applied {
                         self.write_ansi_attr(&mut stdout, attr);
                         attr_applied = true;
@@ -283,7 +283,7 @@ impl VioManager {
                 }
             }
         }
-        if !sdl2 {
+        if !sdl {
             if attr_applied { let _ = stdout.write_all(b"\x1b[0m"); }
             let _ = stdout.flush();
         }
@@ -292,9 +292,9 @@ impl VioManager {
     /// Write an attributed string at a specific position.
     /// `cp` is the active OS/2 codepage used to decode non-ASCII bytes.
     pub fn write_char_str_att(&mut self, row: u16, col: u16, text: &[u8], attr: u8, cp: u32) {
-        let sdl2 = self.sdl2_mode;
+        let sdl = self.sdl_mode;
         let mut stdout = io::stdout();
-        if !sdl2 {
+        if !sdl {
             let _ = write!(stdout, "\x1b[{};{}H", row + 1, col + 1);
             self.write_ansi_attr(&mut stdout, attr);
         }
@@ -305,9 +305,9 @@ impl VioManager {
                 self.buffer[idx] = (decoded, attr);
                 self.raw_bytes[idx] = ch;
             }
-            if !sdl2 { Self::write_char(&mut stdout, decoded); }
+            if !sdl { Self::write_char(&mut stdout, decoded); }
         }
-        if !sdl2 {
+        if !sdl {
             let _ = stdout.write_all(b"\x1b[0m");
             let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
             let _ = stdout.flush();
@@ -318,9 +318,9 @@ impl VioManager {
     /// `cell.0` is already a decoded Unicode char (caller decodes via active codepage).
     /// `raw_byte` is the original guest byte, stored for the DBCS annotation pass.
     pub fn write_n_cell(&mut self, row: u16, col: u16, raw_byte: u8, cell: (char, u8), count: u16) {
-        let sdl2 = self.sdl2_mode;
+        let sdl = self.sdl_mode;
         let mut stdout = io::stdout();
-        if !sdl2 {
+        if !sdl {
             let _ = write!(stdout, "\x1b[{};{}H", row + 1, col + 1);
             self.write_ansi_attr(&mut stdout, cell.1);
         }
@@ -330,9 +330,9 @@ impl VioManager {
                 self.buffer[idx] = cell;
                 self.raw_bytes[idx] = raw_byte;
             }
-            if !sdl2 { Self::write_char(&mut stdout, cell.0); }
+            if !sdl { Self::write_char(&mut stdout, cell.0); }
         }
-        if !sdl2 {
+        if !sdl {
             let _ = stdout.write_all(b"\x1b[0m");
             let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
             let _ = stdout.flush();
@@ -341,9 +341,9 @@ impl VioManager {
 
     /// Fill N attribute bytes starting at (row, col), preserving characters.
     pub fn write_n_attr(&mut self, row: u16, col: u16, attr: u8, count: u16) {
-        let sdl2 = self.sdl2_mode;
+        let sdl = self.sdl_mode;
         let mut stdout = io::stdout();
-        if !sdl2 {
+        if !sdl {
             let _ = write!(stdout, "\x1b[{};{}H", row + 1, col + 1);
             self.write_ansi_attr(&mut stdout, attr);
         }
@@ -352,10 +352,10 @@ impl VioManager {
             if idx < self.buffer.len() {
                 let ch = self.buffer[idx].0;
                 self.buffer[idx].1 = attr;
-                if !sdl2 { Self::write_char(&mut stdout, ch); }
+                if !sdl { Self::write_char(&mut stdout, ch); }
             }
         }
-        if !sdl2 {
+        if !sdl {
             let _ = stdout.write_all(b"\x1b[0m");
             let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
             let _ = stdout.flush();
@@ -393,7 +393,7 @@ impl VioManager {
                     }
                 }
             }
-            if !self.sdl2_mode {
+            if !self.sdl_mode {
                 let mut stdout = io::stdout();
                 let _ = write!(stdout, "\x1b[{};{}r", top + 1, bottom + 1);
                 for _ in 0..(bottom - top + 1) {
@@ -431,7 +431,7 @@ impl VioManager {
         }
 
         // Output ANSI scroll (terminal mode only)
-        if !self.sdl2_mode {
+        if !self.sdl_mode {
             let mut stdout = io::stdout();
             if top == 0 && bottom == self.rows - 1 {
                 for _ in 0..lines {
@@ -463,7 +463,7 @@ impl VioManager {
                     }
                 }
             }
-            if !self.sdl2_mode {
+            if !self.sdl_mode {
                 let mut stdout = io::stdout();
                 let _ = write!(stdout, "\x1b[{};{}r", top + 1, bottom + 1);
                 for _ in 0..(bottom - top + 1) {
@@ -500,7 +500,7 @@ impl VioManager {
             }
         }
 
-        if !self.sdl2_mode {
+        if !self.sdl_mode {
             let mut stdout = io::stdout();
             let _ = write!(stdout, "\x1b[{};{}r", top + 1, bottom + 1);
             let _ = write!(stdout, "\x1b[{}T", lines);
@@ -514,7 +514,7 @@ impl VioManager {
     pub fn set_cursor_pos(&mut self, row: u16, col: u16) {
         self.cursor_row = row.min(self.rows - 1);
         self.cursor_col = col.min(self.cols - 1);
-        if !self.sdl2_mode {
+        if !self.sdl_mode {
             let mut stdout = io::stdout();
             let _ = write!(stdout, "\x1b[{};{}H", self.cursor_row + 1, self.cursor_col + 1);
             let _ = stdout.flush();
@@ -524,7 +524,7 @@ impl VioManager {
     /// Set cursor visibility (in terminal mode, also emits ANSI escape).
     pub fn set_cursor_type(&mut self, visible: bool) {
         self.cursor_visible = visible;
-        if !self.sdl2_mode {
+        if !self.sdl_mode {
             let mut stdout = io::stdout();
             if visible {
                 let _ = stdout.write_all(b"\x1b[?25h");

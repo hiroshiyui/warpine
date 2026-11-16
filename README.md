@@ -39,9 +39,9 @@ _Screenshots in this section captured from commit `425c306` on 2026-11-15._
 - **API Thunking:** System call interception via `INT 3` traps bridging guest OS/2 calls to host Rust implementations. Covers DOSCALLS, PMWIN, PMGPI, KBDCALLS, VIOCALLS, NLS, MDM (MMPM/2), UCONV, SO32DLL, and TCP32DLL — 340 entry points total.
 - **DLL Loader Chain:** Runtime dynamic loading via `DosLoadModule` / `DosQueryProcAddr` / `DosQueryModuleHandle`. User DLLs are loaded into guest memory with rebased objects and export maps. `jpos2dll.dll` (4OS2 extension) loads and resolves all 7 exports at startup.
 - **Multi-Threading:** OS/2 threads mapped 1:1 to host threads, each with its own KVM vCPU.
-- **Presentation Manager (GUI):** Window management, message loop, graphics primitives (drawn on the calling thread, so `GpiQueryPel` reads pixels back and `GpiSetMix` raster operations such as XOR combine with what is there), memory presentation spaces, bitmaps (`GpiCreateBitmap`, `GpiLoadBitmap`) and `GpiBitBlt` with raster operations and stretching, logical colour tables, timers, clipboard, dialogs, menus, and resource loading via SDL2.
+- **Presentation Manager (GUI):** Window management, message loop, graphics primitives (drawn on the calling thread, so `GpiQueryPel` reads pixels back and `GpiSetMix` raster operations such as XOR combine with what is there), memory presentation spaces, bitmaps (`GpiCreateBitmap`, `GpiLoadBitmap`) and `GpiBitBlt` with raster operations and stretching, logical colour tables, timers, clipboard, dialogs, menus, and resource loading via SDL.
 - **IBM Plex Typography:** All PM text (title bars, menus, dialogs, controls, and GPI text) is rendered anti-aliased in the embedded IBM Plex Sans / Mono / Serif families, with IBM Plex Sans JP / KR / TC / SC for CJK and GNU Unifont as the last-resort fallback. `GpiCreateLogFont` maps OS/2 face names, bold/italic and size onto these faces; font metrics APIs report their real proportional widths.
-- **SDL2 VGA Text Renderer:** 640×400 text-mode window with CP437 8×16 font, CGA 16-colour palette, and blinking cursor. CLI apps default to this mode; `WARPINE_HEADLESS=1` falls back to terminal.
+- **SDL VGA Text Renderer:** 640×400 text-mode window with CP437 8×16 font, CGA 16-colour palette, and blinking cursor. CLI apps default to this mode; `WARPINE_HEADLESS=1` falls back to terminal.
 - **Text-Mode Console:** Full VIO and KBD subsystem emulation with screen buffer, cursor management, scroll, and keyboard input.
 - **Filesystem:** HPFS-compatible VFS (`VfsBackend` trait) with `HostDirBackend`: case-insensitive lookup, extended attributes (xattrs + sidecar), file locking, OS/2 wildcard matching, sandbox isolation. C: drive auto-mounted at `~/.local/share/warpine/drive_c/`.
 - **Memory Management:** `DosAllocMem`/`DosFreeMem`, shared memory, guest physical memory manager.
@@ -52,7 +52,7 @@ _Screenshots in this section captured from commit `425c306` on 2026-11-15._
 - **NE Format Execution:** Full NE (New Executable) loader and 16-bit execution — loads OS/2 1.x 16-bit NE binaries into GDT-tiled guest memory, dispatches DOSCALLS/VIOCALLS via Pascal-convention 16-bit thunks. `ne_hello` (pure assembly, no Watcom CRT) runs `DosWrite`+`DosExit` correctly.
 - **GDB Remote Stub:** `--gdb <port>` enables GDB RSP over TCP — attach with `gdb`/`gef`/`pwndbg` for software breakpoints, single-step, and full register/memory access.
 - **Crash Dump Facility:** Structured crash reports on fatal VMEXITs — registers, stack, code bytes, and last 256 API calls written to `warpine-crash-<pid>.txt`.
-- **Builtin CMD.EXE Shell:** Native Rust command shell. `cargo run -- CMD.EXE` opens a 640×400 SDL2 VGA text window (same as any CLI app); `WARPINE_HEADLESS=1` falls back to the host terminal. Also intercepts `DosExecPgm("CMD.EXE")` from running OS/2 guests. No Open Watcom or 4OS2 required. Built-in commands: `DIR`, `CD`, `SET`, `ECHO`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `HELP`, `EXIT`. Line editor with history (↑/↓). `.CMD` script interpreter.
+- **Builtin CMD.EXE Shell:** Native Rust command shell. `cargo run -- CMD.EXE` opens a 640×400 SDL VGA text window (same as any CLI app); `WARPINE_HEADLESS=1` falls back to the host terminal. Also intercepts `DosExecPgm("CMD.EXE")` from running OS/2 guests. No Open Watcom or 4OS2 required. Built-in commands: `DIR`, `CD`, `SET`, `ECHO`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `HELP`, `EXIT`. Line editor with history (↑/↓). `.CMD` script interpreter.
 - **Rust Guest Toolchain (Phase C):** Write OS/2 guest applications in Rust with `no_std`. Three standalone crates: `crates/warpine-os2-sys` (raw API bindings for DOSCALLS/VIOCALLS/KBDCALLS), `crates/warpine-os2-rt` (`_start` + panic handler + global allocator via `DosAllocMem`/`DosFreeMem`), `crates/warpine-os2` (ergonomic wrappers: `mod file`, `mod memory`, `mod thread`, `mod vio`, `mod process`). `samples/rust_hello` demonstrates a full Rust→LX binary with `cargo +nightly build`.
 - **API Compatibility Report:** `warpine --compat` prints a module-grouped report of all implemented APIs with stub annotations.
 
@@ -60,11 +60,11 @@ _Screenshots in this section captured from commit `425c306` on 2026-11-15._
 
 ```
 src/
-  main.rs              Entry point, format detection (LX/NE), CLI/PM/SDL2 dispatch
+  main.rs              Entry point, format detection (LX/NE), CLI/PM/SDL dispatch
   lx/                  LX executable format parser (header, entry table, non-resident names)
   ne/                  NE (16-bit) executable format parser
-  gui/                 SDL2 backends: PmRenderer, Sdl2Renderer, HeadlessRenderer,
-                         Sdl2TextRenderer, HeadlessTextRenderer, run_pm_loop, run_text_loop
+  gui/                 SDL backends: PmRenderer, SdlRenderer, HeadlessRenderer,
+                         SdlTextRenderer, HeadlessTextRenderer, run_pm_loop, run_text_loop
   loader/
     mod.rs             Loader, SharedState (all managers + DllManager), KVM setup
     vcpu.rs            vCPU thread: VMEXIT loop, GDB integration, crash dump hooks
@@ -90,7 +90,7 @@ src/
     pm_edit.rs         Edit-buffer logic for PM text controls
     pm_controls.rs     Interactive entry field, MLE and list box controls
     mmpm.rs            MMPM/2 audio: MmpmManager, beep_tone, mciSendCommand/String
-    console.rs         VioManager: screen buffer, cursor, raw/SDL2 mode, ANSI output
+    console.rs         VioManager: screen buffer, cursor, raw/SDL mode, ANSI output
     process.rs         Process execution and directory tracking
     managers.rs        MemoryManager, HandleManager, DllManager, LoadedDll, and more
     stubs.rs           DosLoadModule, DosQueryProcAddr, and other API implementations
@@ -178,7 +178,7 @@ make -C samples/pm_demo               # Presentation Manager GUI demo
 
 ### 3. Run an OS/2 binary
 ```bash
-cargo run -- samples/hello/hello.exe        # CLI app (SDL2 text window)
+cargo run -- samples/hello/hello.exe        # CLI app (SDL text window)
 cargo run -- samples/pm_demo/pm_demo.exe    # GUI app
 
 WARPINE_HEADLESS=1 cargo run -- samples/hello/hello.exe   # Terminal fallback
@@ -186,7 +186,7 @@ WARPINE_HEADLESS=1 cargo run -- samples/hello/hello.exe   # Terminal fallback
 
 ### 4. Run the builtin CMD.EXE shell
 ```bash
-cargo run -- CMD.EXE                       # Interactive shell (SDL2 text window)
+cargo run -- CMD.EXE                       # Interactive shell (SDL text window)
 WARPINE_HEADLESS=1 cargo run -- CMD.EXE   # Terminal/headless mode
 cargo run -- CMD.EXE /C "ECHO Hello!"     # Run one command and exit
 cargo run -- CMD.EXE /K "VER"             # Run one command then stay interactive
@@ -254,12 +254,12 @@ cargo clippy -- -D warnings       # Lint — must pass with zero warnings
 |-------|-------------|--------|
 | 1 | Foundation — LX parser, KVM loader, basic API thunks | ✅ Complete |
 | 2 | Core Subsystem — memory, filesystem, threading, IPC, process management | ✅ Complete |
-| 3 | Presentation Manager — window management, graphics, input, timers, SDL2 | ✅ Complete |
+| 3 | Presentation Manager — window management, graphics, input, timers, SDL | ✅ Complete |
 | 3.5 | Text-Mode Application Support — VIO/KBD console, 4OS2 shell | ✅ Complete |
 | 4 | HPFS-Compatible VFS — VfsBackend, HostDirBackend, EA, file locking | ✅ Complete |
 | 4.5 | 16-bit Thunk Fix — eliminated 16-bit thunks in 4OS2 via recompilation | ✅ Complete |
 | 5 | Multimedia & 16-bit — MMPM/2 audio baseline; NE parser + full 16-bit NE execution | ✅ Complete |
-| 6 | SDL2 VGA Text Renderer — 640×400 CP437 window, CGA palette, blinking cursor | ✅ Complete |
+| 6 | SDL VGA Text Renderer — 640×400 CP437 window, CGA palette, blinking cursor | ✅ Complete |
 | 7 | Application Compatibility — DLL loader chain baseline (jpos2dll.dll) | 🔄 In progress |
 | 8 | SOM / Workplace Shell | 🔮 Long-term |
 | 9 | XE — 64-bit OS/2-lineage platform (new format + API set + Rust toolchain) | 🔮 Far future |

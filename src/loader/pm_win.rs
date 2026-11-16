@@ -141,7 +141,7 @@ impl super::Loader {
                     let h_frame = wm.create_window(class_name.clone(), parent, hmq);
                     let h_client = wm.create_window(class_name.clone(), h_frame, hmq);
                     wm.frame_to_client.insert(h_frame, h_client);
-                    // Initialise both windows to the default SDL2 window size so that
+                    // Initialise both windows to the default SDL window size so that
                     // WinQueryWindowRect returns correct dimensions before the first resize.
                     // Default placement: cascade from the desktop's top-left corner
                     // so successive windows do not stack exactly on top of each other.
