@@ -152,6 +152,20 @@ impl Drop for MciDevice {
 /// The default format of a device opened without an element.
 const DEFAULT_SPEC: PcmSpec = PcmSpec { freq: 44100, channels: 2, format: SampleFormat::S16 };
 
+/// MCI device type names a string command can open directly (`open
+/// waveaudio alias w`), optionally with a two-digit device number
+/// (`waveaudio01`). Returns the type without the number.
+const MCI_DEVICE_TYPE_NAMES: &[&str] = &[
+    "waveaudio", "sequencer", "cdaudio", "cdxa", "videodisc", "digitalvideo",
+    "ampmix", "speaker", "headphone", "videotape", "overlay", "animation",
+];
+
+fn mci_device_name(word: &str) -> Option<&'static str> {
+    MCI_DEVICE_TYPE_NAMES.iter().copied().find(|&t| {
+        word.strip_prefix(t).is_some_and(|rest| rest.is_empty() || (rest.len() == 2 && rest.bytes().all(|b| b.is_ascii_digit())))
+    })
+}
+
 /// The gain for an MCI volume level (0–100).
 fn gain(volume: u8) -> f32 {
     volume as f32 / 100.0
@@ -424,6 +438,11 @@ impl super::Loader {
                         }
                         // Flags without an argument.
                         "wait" | "notify" | "shareable" => i += 1,
+                        // `open waveaudio …` names a device, not a file.
+                        word if i == 1 && mci_device_name(word).is_some() => {
+                            device_type = mci_device_name(word).unwrap_or_default().to_string();
+                            i += 1;
+                        }
                         _ => {
                             if element_name.is_empty() {
                                 element_name = tokens[i].to_string();
@@ -1229,5 +1248,25 @@ mod tests {
         assert_eq!(loader.guest_read::<u32>(status + 4), Some(MCI_MODE_STOP));
         assert_eq!(loader.mci_send_command(id, MCI_CLOSE as u32, 0, 0), MCIERR_SUCCESS);
         assert_eq!(loader.mci_send_command(id, MCI_PLAY as u32, 0, 0), MCIERR_INVALID_DEVICE_ID);
+    }
+
+    /// `open waveaudio alias w` opens the device by name (no file); a word
+    /// that is not a device name is still the element.
+    #[test]
+    fn test_mci_open_by_device_name() {
+        assert_eq!(mci_device_name("waveaudio"), Some("waveaudio"));
+        assert_eq!(mci_device_name("waveaudio01"), Some("waveaudio"));
+        assert_eq!(mci_device_name("waveaudio1x"), None);
+        assert_eq!(mci_device_name("tone.wav"), None);
+        let loader = super::super::Loader::new_mock();
+        let (cmd, ret) = (0x5000u32, 0x5100u32);
+        let send = |text: &str| {
+            loader.guest_write_bytes(cmd, text.as_bytes()).unwrap();
+            loader.guest_write::<u8>(cmd + text.len() as u32, 0).unwrap();
+            loader.mci_send_string(cmd, ret, 16, 0)
+        };
+        assert_eq!(send("open waveaudio alias wtest"), MCIERR_SUCCESS);
+        assert_eq!(send("close wtest"), MCIERR_SUCCESS);
+        assert_eq!(send("open nosuch.wav alias x"), MCIERR_FILE_NOT_FOUND, "an element that does not exist");
     }
 }

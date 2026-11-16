@@ -205,6 +205,13 @@ impl super::Loader {
                 return 0;
             }
             if n == 0 {
+                // A terminal in raw mode returns 0 while no key is pressed;
+                // anything else (pipe, file, /dev/null) is at end of input,
+                // which DosRead reports as 0 bytes read.
+                if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                    if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, 0); }
+                    return 0;
+                }
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
             }

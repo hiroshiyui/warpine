@@ -191,6 +191,12 @@ impl CmdShell {
                     };
                     return Some(KbdKeyInfo { ch, scan, state: 0 });
                 }
+                // Only a terminal returns "nothing yet"; a pipe or file that
+                // returns nothing is at end of input (`echo dir | warpine
+                // CMD.EXE`), which ends the shell.
+                if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+                    return None;
+                }
                 std::thread::sleep(Duration::from_millis(5));
             }
         }

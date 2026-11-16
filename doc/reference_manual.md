@@ -113,7 +113,8 @@ Warpine automatically selects an execution mode based on the executable and envi
 - No SDL window. VIO output rendered as ANSI escape sequences on stdout.
 - CP437 high bytes (0x80–0xFF) converted to Unicode for terminal display.
 - vCPU runs on the main thread.
-- Keyboard input read from raw terminal (termios).
+- Keyboard input read from raw terminal (termios). When stdin is not a terminal (pipe, file, `/dev/null`), `DosRead` of stdin returns 0 bytes at end of input, and the built-in CMD.EXE exits there (`echo dir | warpine CMD.EXE`).
+- No audio output (MMPM/2 and `DosBeep` are silent; `DosBeep` returns at once).
 - Child processes spawned via `DosExecPgm` automatically use headless mode.
 - Detection is automatic via `is_terminal()` — no environment variable needed.
 
@@ -425,7 +426,11 @@ DosPutMessage (8195), DosGetMessage (8198)
 
 mciSendCommand (10241), mciSendString (10242), mciFreeBlock (10243), mciGetLastError (10244)
 
-Supported MCI commands: `MCI_OPEN`, `MCI_CLOSE`, `MCI_PLAY`, `MCI_STOP`, `MCI_STATUS`. Device type: `waveaudio` (WAV files played through SDL3 audio streams on the main thread; also `MCI_SEEK` and `MCI_SET` volume).
+Device type: `waveaudio` (WAV files: uncompressed 8/16/24/32-bit PCM or 32-bit float). Constants, parameter blocks and error codes follow `<mcios2.h>` / `<meerror.h>`.
+
+- **`mciSendCommand`:** `MCI_OPEN` (`MCI_OPEN_ELEMENT`, `MCI_OPEN_ALIAS`, `MCI_OPEN_TYPE_ID`), `MCI_CLOSE`, `MCI_PLAY` (`MCI_FROM`, `MCI_WAIT`, `MCI_NOTIFY` → `MM_MCINOTIFY`), `MCI_STOP`, `MCI_SEEK`, `MCI_SET` (`MCI_SET_AUDIO | MCI_SET_VOLUME`, also changes a playing sound), `MCI_STATUS` (mode, length, position); `MCI_RECORD` returns `MCIERR_UNSUPPORTED_FUNCTION`.
+- **`mciSendString`:** `open <file | waveaudio> [type t] [alias a] [wait]`, `play <a> [wait] [notify]`, `stop`, `close`, `seek <a> to <ms>`, `set <a> audio volume to <n>`, `status <a> mode`; devices are named by alias, element name or device ID.
+- **Output:** sound is played by the main-thread SDL3 loop; headless runs (`WARPINE_HEADLESS=1`, or a CLI program whose stdout is not a terminal) are silent, and `DosBeep` then returns at once.
 
 ### UCONV (5 APIs)
 

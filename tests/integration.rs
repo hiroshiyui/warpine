@@ -33,6 +33,9 @@ fn run_sample(sample: &str, timeout_secs: u64) -> (String, i32) {
         .env("WARPINE_HEADLESS", "1")
         // Suppress tracing/log noise on stderr; we only care about stdout.
         .env("RUST_LOG", "error")
+        // End of input at once: a sample that waits for a key (audio_test's
+        // "Press ENTER") must not block on the test runner's own stdin.
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -98,6 +101,16 @@ fn test_nls() {
     assert!(out.contains("DosQueryCp returns 0 OK"),       "DosQueryCp:\n{out}");
     assert!(out.contains("DosQueryCtryInfo returns 0 OK"), "DosQueryCtryInfo:\n{out}");
     assert!(out.contains("DosMapCase converts to HELLO OK"), "DosMapCase:\n{out}");
+}
+
+/// audio_test: DosBeep and mciSendString through MDM loaded at run time
+/// (`open waveaudio alias …` opens the device by name). Runs headless, so
+/// no sound is played and DosBeep returns at once.
+#[test]
+fn test_audio() {
+    if !kvm_available() || !Path::new("samples/audio_test/audio_test.exe").exists() { return; }
+    let (out, code) = run_sample("samples/audio_test/audio_test.exe", 15);
+    assert!(out.contains("Failed: 0"), "audio_test failed (exit {code}):\n{out}");
 }
 
 /// thread_test: DosCreateThread / DosWaitThread.

@@ -56,6 +56,10 @@ DLL binaries, no ROM dumps, and no disassembly of original OS/2 system libraries
 
 ## Phase 7 — Application Compatibility (remaining)
 
+### Console Input
+
+- [ ] **`KbdCharIn` / `KbdStringIn` at end of piped input** — in headless mode with stdin not a terminal, a waiting `KbdCharIn` polls forever once the input is exhausted (`DosRead` and the built-in CMD.EXE now stop at end of input). Waiting is the API's contract, so decide what a headless run should do — e.g. end the process, or report an error code — after checking the KBD reference
+
 ### 16-bit (NE) Compatibility
 
 NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
