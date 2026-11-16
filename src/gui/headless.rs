@@ -11,7 +11,7 @@ use super::renderer::PmRenderer;
 ///
 /// All `handle_message` calls are silently discarded.
 /// `poll_events` always returns `keep_running`.
-/// `frame_sleep` is a no-op to keep tests fast.
+/// `wait_for_work` is a no-op to keep tests fast.
 pub struct HeadlessRenderer {
     /// Total number of messages dispatched so far (for test assertions).
     pub message_count: u32,
@@ -43,7 +43,7 @@ impl PmRenderer for HeadlessRenderer {
         self.keep_running
     }
 
-    fn frame_sleep(&self) {
+    fn wait_for_work(&mut self, _shared: &Arc<SharedState>) {
         // No-op: no sleep needed in headless mode.
     }
 }
@@ -99,10 +99,11 @@ mod tests {
     }
 
     #[test]
-    fn headless_frame_sleep_is_noop() {
-        let renderer = HeadlessRenderer::new();
+    fn headless_wait_for_work_is_noop() {
+        let mut renderer = HeadlessRenderer::new();
+        let shared = make_shared();
         let start = std::time::Instant::now();
-        renderer.frame_sleep();
+        renderer.wait_for_work(&shared);
         // Should complete in well under 1 ms.
         assert!(start.elapsed().as_millis() < 5);
     }

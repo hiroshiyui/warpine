@@ -369,7 +369,17 @@ Drawing in PM uses Presentation Spaces (HPS):
 2. **GpiSetColor / GpiMove / GpiLine / GpiBox / GpiCharStringAt** — Modify the presentation space state and send `GUIMessage::Draw*` commands to the GUI thread.
 3. **WinEndPaint** — Sends `GUIMessage::PresentBuffer` to flush the framebuffer to the screen.
 
-The GUI thread (`GUIApp` in `src/gui.rs`) processes these messages, drawing into a pixel buffer (SDL2 streaming texture), and presents it to the window via `Canvas::copy()`.
+The GUI thread (`run_pm_loop` in `src/gui/renderer.rs`, backend `Sdl2Renderer` in `src/gui/sdl2_renderer.rs`) draws each message into the window's `FrameBuffer`, then composites all visible windows and their chrome onto the desktop buffer, uploads it to an SDL2 streaming texture and presents it.
+
+**Event loop.** Each pass rearms the channel's wake-up, drains queued `GUIMessage`s, handles input, composites if due, then blocks in `PmRenderer::wait_for_work`:
+
+- *Waking.* `GUISender::send` and `WindowManager::mark_dirty`/`mark_all_dirty` call `GuiWake::wake` (`src/gui/message.rs`), so a draw from the guest thread or a window moved by `WinSetWindowPos` ends the wait. Wake-ups are coalesced: only the first after each rearm reaches the hook.
+- *How it blocks.* With a real video driver, `Sdl2Renderer` waits in `SDL_WaitEventTimeout` and the wake hook pushes an SDL user event, so input and wake-ups end the same wait. SDL's `dummy` and `offscreen` drivers have no input to block on (SDL would poll inside its wait), so there the loop waits on the `GuiWake` condition variable instead (`driver_can_wait`).
+- *How long.* `wait_timeout()` picks the earliest of: the next frame when a composite is owed (`FRAME_INTERVAL`, 16 ms), the next scripted GUI step, and `IDLE_WAIT` (100 ms), which bounds how long state changes that arrive without a wake-up — such as `exit_requested` — go unnoticed.
+- *Coalesced presents.* `PresentBuffer` only marks the window dirty; `poll_events` composites at most once per `FRAME_INTERVAL`, so a paint cycle that presents several times costs one composite.
+- *Clipboard.* The host clipboard is read once at start-up and again on SDL `ClipboardUpdate` and `FocusGained` events, not on every pass.
+
+**Frame statistics.** `src/gui/frame_stats.rs` counts loop passes and composites (average and maximum composite time, present time) and logs a summary every 5 s at debug level: `RUST_LOG=warpine::gui=debug`. Use it to measure rendering changes.
 
 ### Input Handling
 
@@ -1111,6 +1121,7 @@ src/
                        fallback chain Latin → CJK (by codepage) → GNU Unifont
     gui_script.rs      Scripted GUI sessions (WARPINE_GUI_SCRIPT): step parser, timed inputs,
                        PPM dump — SDL-free; used by the gui_* integration tests
+    frame_stats.rs     GUI loop / composite timing statistics (debug log every 5 s)
     renderer.rs        PmRenderer trait + run_pm_loop() (PM/GUI SDL2 event loop)
     render_utils.rs    Geometry helpers (Y-flip, rect/line rendering)
     headless.rs        HeadlessRenderer: no-op PM backend for CI
@@ -1567,7 +1578,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 658 unit tests (629 warpine + 18 gen_api + 11 lx_link), 18 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 674 unit tests (645 warpine + 18 gen_api + 11 lx_link), 18 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 pub mod font;
+pub mod frame_stats;
 pub mod gui_script;
 pub mod message;
 pub mod renderer;
@@ -9,7 +10,7 @@ pub mod headless;
 pub mod sdl2_renderer;
 pub mod text_renderer;
 
-pub use message::{GUIMessage, GUISender, create_gui_channel};
+pub use message::{GUIMessage, GUISender, GUIReceiver, GuiWake, create_gui_channel};
 pub use renderer::{PmRenderer, run_pm_loop};
 pub use render_utils::{flip_y, text_screen_y,
     render_text_to_buffer, render_text_font_to_buffer, render_rect_to_buffer, render_line_to_buffer};

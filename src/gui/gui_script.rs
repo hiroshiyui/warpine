@@ -399,6 +399,17 @@ impl GuiScript {
         self.due_at(elapsed)
     }
 
+    /// When the next event becomes due, so the GUI loop can sleep until
+    /// then; `None` when the script is exhausted. Before the first
+    /// [`due`](Self::due) the clock has not started, so the answer is "now".
+    pub fn next_due(&self) -> Option<Instant> {
+        let at_ms = self.pending.front()?.0;
+        Some(match self.started {
+            Some(start) => start + std::time::Duration::from_millis(at_ms),
+            None => Instant::now(),
+        })
+    }
+
     fn due_at(&mut self, elapsed_ms: u64) -> Vec<Input> {
         let mut out = Vec::new();
         while self.pending.front().is_some_and(|e| e.0 <= elapsed_ms) {
@@ -431,6 +442,22 @@ mod tests {
     use super::*;
 
     fn mods(shift: bool, ctrl: bool, alt: bool) -> Mods { Mods { shift, ctrl, alt } }
+
+    #[test]
+    fn next_due_follows_the_script_clock() {
+        let mut script = GuiScript::new(parse("100 click 1 2\n500 quit\n").unwrap());
+        // Not started: due now, so the first poll runs at once.
+        let before = Instant::now();
+        assert!(script.next_due().unwrap() >= before);
+
+        let start = Instant::now();
+        script.started = Some(start);
+        assert_eq!(script.next_due(), Some(start + std::time::Duration::from_millis(100)));
+        assert_eq!(script.due_at(100).len(), 2, "press and release");
+        assert_eq!(script.next_due(), Some(start + std::time::Duration::from_millis(500)));
+        script.due_at(500);
+        assert_eq!(script.next_due(), None, "exhausted");
+    }
 
     #[test]
     fn parse_reads_steps_and_orders_them_by_time() {

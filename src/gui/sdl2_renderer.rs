@@ -26,7 +26,9 @@ use crate::loader::constants::{
     MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_BAR_ITEM_PAD, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H,
     MIS_SEPARATOR};
 use crate::loader::pm_types::{MenuItem, menu_label, menu_bar_item_width};
-use super::message::GUIMessage;
+use std::time::{Duration, Instant};
+use super::frame_stats::FrameStats;
+use super::message::{GUIMessage, GuiWake};
 use super::renderer::PmRenderer;
 use super::font::{self, FontSpec};
 use super::gui_script::{self, GuiScript};
@@ -37,6 +39,33 @@ use super::render_utils::{render_text_to_buffer, render_text_font_to_buffer,
 
 /// Desktop background colour (OS/2-style teal).
 const DESKTOP_BG: u32 = 0x00408040;
+
+// ── Event loop pacing ─────────────────────────────────────────────────────
+
+/// Minimum time between composites (~60 Hz). Presents arriving faster are
+/// coalesced into the next frame.
+const FRAME_INTERVAL: Duration = Duration::from_millis(16);
+/// Longest the loop blocks with nothing to do. Bounds how long it takes to
+/// notice state changes that arrive without a wake-up, such as
+/// `exit_requested` set by the guest thread.
+const IDLE_WAIT: Duration = Duration::from_millis(100);
+
+/// How long the GUI loop may block before it has work again.
+///
+/// `busy` means a composite is owed (windows are dirty, or a drag or resize
+/// is in progress): the loop then wakes for the next frame. `script_next` is
+/// when the next scripted step is due. Input and wake-ups end the wait early.
+fn wait_timeout(now: Instant, last_composite: Instant, busy: bool,
+                script_next: Option<Instant>) -> Duration {
+    let mut deadline = now + IDLE_WAIT;
+    if busy {
+        deadline = deadline.min(last_composite + FRAME_INTERVAL);
+    }
+    if let Some(t) = script_next {
+        deadline = deadline.min(t);
+    }
+    deadline.saturating_duration_since(now)
+}
 
 // ── VDR-C: Window chrome constants ────────────────────────────────────────
 
@@ -421,18 +450,31 @@ struct ResizeState {
 /// of `run_pm_loop`.
 pub struct Sdl2Renderer {
     video:       sdl2::VideoSubsystem,
+    event:       sdl2::EventSubsystem,
     event_pump:  sdl2::EventPump,
     desktop:     DesktopCanvas,
     /// PM handle → off-screen frame buffer.
     frame_buffers: HashMap<u32, FrameBuffer>,
-    /// Last seen host clipboard text — used to detect changes between frames.
+    /// Last seen host clipboard text — used to detect changes.
     cached_clipboard: String,
+    /// Whether the host clipboard has been read at least once. After that it
+    /// is re-read only on SDL clipboard-update and focus-gained events.
+    clipboard_synced: bool,
+    /// SDL user-event type pushed by the wake hook; `None` if SDL could not
+    /// register one or the video driver cannot block (see `driver_can_wait`).
+    wake_event_type: Option<u32>,
+    /// The channel's wake-up, for drivers where the loop blocks on it.
+    wake: Option<Arc<GuiWake>>,
+    /// Events received while waiting, handled on the next `poll_events`.
+    pending_events: Vec<Event>,
+    /// Loop and composite timings, logged periodically at debug level.
+    stats: FrameStats,
     /// Active drag operation (VDR-D3); `None` when no drag is in progress.
     drag_state: Option<DragState>,
     /// Active resize operation (VDR-C5); `None` when no resize is in progress.
     resize_state: Option<ResizeState>,
-    /// Timestamp of the last full compositor repaint (VDR-B3).
-    last_composite: std::time::Instant,
+    /// When the compositor last actually composited (frame pacing).
+    last_composite: Instant,
     /// Scripted session replayed against the desktop (`WARPINE_GUI_SCRIPT`).
     script: Option<GuiScript>,
 }
@@ -452,21 +494,58 @@ impl Sdl2Renderer {
     pub fn new(sdl: &sdl2::Sdl) -> Self {
         let (dw, dh) = crate::loader::constants::desktop_size();
         let video      = sdl.video().expect("SDL2 video subsystem init failed");
+        let event      = sdl.event().expect("SDL2 event subsystem init failed");
         let event_pump = sdl.event_pump().expect("SDL2 event pump init failed");
         let desktop    = DesktopCanvas::new(&video, dw, dh);
         // Typed characters are taken from SDL TextInput events (see
         // `build_wm_char`); make sure they are being generated.
         video.text_input().start();
+        // Block in SDL's own wait only where the video driver can really
+        // block on input; the headless drivers have no input to wait for and
+        // SDL would poll internally instead.
+        let wake_event_type = if driver_can_wait(video.current_video_driver()) {
+            // Safety: SDL_RegisterEvents only reserves event numbers; SDL is
+            // initialised and this runs on the main thread.
+            unsafe { event.register_event() }
+                .map_err(|e| log::warn!("[GUI] no SDL user event for wake-ups ({e})"))
+                .ok()
+        } else {
+            None
+        };
+        let now = Instant::now();
         Sdl2Renderer {
             video,
+            event,
             event_pump,
             desktop,
             frame_buffers: HashMap::new(),
             cached_clipboard: String::new(),
+            clipboard_synced: false,
+            wake_event_type,
+            wake: None,
+            pending_events: Vec::new(),
+            stats: FrameStats::new(now),
             drag_state: None,
             resize_state: None,
-            last_composite: std::time::Instant::now(),
+            // Long enough ago that the first frame is composited at once.
+            last_composite: now.checked_sub(FRAME_INTERVAL).unwrap_or(now),
             script: GuiScript::from_env(),
+        }
+    }
+
+    /// Copy the host clipboard into `SharedState` so `WinQueryClipbrdData`
+    /// can read it. Called at start-up and when SDL reports a clipboard
+    /// change or the desktop window gains focus — not on every loop
+    /// iteration, since reading it allocates and on X11 can mean a round
+    /// trip to the display server.
+    fn sync_host_clipboard(&mut self, shared: &Arc<SharedState>) {
+        self.clipboard_synced = true;
+        if let Ok(host_text) = self.video.clipboard().clipboard_text()
+            && host_text != self.cached_clipboard {
+                self.cached_clipboard = host_text.clone();
+                let mut wm = shared.window_mgr.lock_or_recover();
+                wm.clipboard_text = host_text;
+                wm.clipboard.insert(CF_TEXT, 0); // invalidate stale guest pointer
         }
     }
 
@@ -512,6 +591,7 @@ impl Sdl2Renderer {
             }
         }
 
+        let started = Instant::now();
         let dw = self.desktop.width as usize;
         let dh = self.desktop.height as i32;
 
@@ -603,7 +683,11 @@ impl Sdl2Renderer {
             }
         }
 
+        let present_started = Instant::now();
         self.desktop.present();
+        let finished = Instant::now();
+        self.stats.record_composite(finished - started, finished - present_started);
+        self.last_composite = finished;
 
         // VDR-B4: clear dirty set — everything has now been composited.
         shared.window_mgr.lock_or_recover().dirty.clear();
@@ -661,10 +745,19 @@ impl Sdl2Renderer {
                         }
                     }
                     WindowEvent::Exposed => {
+                        // Redraw everything: the host discarded our pixels.
+                        shared.window_mgr.lock_or_recover().mark_all_dirty();
                         self.composite_and_present(shared);
+                    }
+                    WindowEvent::FocusGained => {
+                        // The user may have copied something in another program.
+                        self.sync_host_clipboard(shared);
                     }
                     _ => {}
                 }
+            }
+            Event::ClipboardUpdate { .. } => {
+                self.sync_host_clipboard(shared);
             }
             // Keyboard input goes to the PM focus window (a control that was
             // clicked or given the focus with WinSetFocus), else to the
@@ -1085,10 +1178,10 @@ impl PmRenderer for Sdl2Renderer {
                 }
             }
             GUIMessage::PresentBuffer { handle } => {
-                // VDR-A4: composite all visible frames onto the desktop and present.
-                // VDR-B4: mark the frame dirty so composite_and_present doesn't skip.
+                // Presents are coalesced: mark the frame dirty and let
+                // `poll_events` composite at most once per FRAME_INTERVAL, so
+                // a paint cycle that presents several times costs one composite.
                 shared.window_mgr.lock_or_recover().mark_dirty(handle);
-                self.composite_and_present(shared);
             }
             GUIMessage::SetClipboardText(text) => {
                 let _ = self.video.clipboard().set_clipboard_text(&text);
@@ -1135,16 +1228,18 @@ impl PmRenderer for Sdl2Renderer {
     }
 
     fn poll_events(&mut self, shared: &Arc<SharedState>) -> bool {
-        // Sync the host clipboard into SharedState so WinQueryClipbrdData can read it.
-        if let Ok(host_text) = self.video.clipboard().clipboard_text()
-            && host_text != self.cached_clipboard {
-                self.cached_clipboard = host_text.clone();
-                let mut wm = shared.window_mgr.lock_or_recover();
-                wm.clipboard_text = host_text;
-                wm.clipboard.insert(CF_TEXT, 0); // invalidate stale guest pointer
+        self.stats.record_iteration();
+        // Read the host clipboard once at start-up; after that SDL tells us
+        // when it changes (ClipboardUpdate) and we re-read on focus gain.
+        if !self.clipboard_synced {
+            self.sync_host_clipboard(shared);
         }
 
-        let mut events: Vec<_> = self.event_pump.poll_iter().collect();
+        let wake_type = self.wake_event_type;
+        let mut events: Vec<_> = self.pending_events.drain(..)
+            .chain(self.event_pump.poll_iter())
+            .filter(|e| !is_wake_event(e, wake_type))
+            .collect();
 
         // Scripted session: turn due steps into input events and captures.
         let scripted = self.script.as_mut().map(GuiScript::due).unwrap_or_default();
@@ -1177,18 +1272,71 @@ impl PmRenderer for Sdl2Renderer {
             }
         }
 
-        // VDR-B3: periodic 60Hz compositor tick.
-        // Recomposite unconditionally every ~16ms so drag animations, focus changes,
-        // and any other state updates are visible even without an app PresentBuffer.
-        if self.last_composite.elapsed() >= std::time::Duration::from_millis(16) {
+        // Frame pacing: composite at most once per FRAME_INTERVAL.
+        // `composite_and_present` itself returns early when nothing is dirty
+        // and no drag or resize is in progress.
+        if self.last_composite.elapsed() >= FRAME_INTERVAL {
             self.composite_and_present(shared);
-            self.last_composite = std::time::Instant::now();
         }
 
+        if let Some(report) = self.stats.take_report(Instant::now()) {
+            debug!("[GUI] {report}");
+        }
         true
     }
 
-    // frame_sleep: use default 8 ms implementation
+    fn install_waker(&mut self, wake: Arc<GuiWake>) {
+        self.wake = Some(wake.clone());
+        let Some(type_) = self.wake_event_type else { return };
+        let sender = self.event.event_sender();
+        wake.set_hook(Box::new(move || {
+            // SDL_PushEvent is thread-safe. A failure (queue full, SDL shut
+            // down) only costs latency: the loop still wakes by IDLE_WAIT.
+            let _ = sender.push_event(Event::User {
+                timestamp: 0, window_id: 0, type_, code: 0,
+                data1: std::ptr::null_mut(), data2: std::ptr::null_mut(),
+            });
+        }));
+    }
+
+    fn wait_for_work(&mut self, shared: &Arc<SharedState>) {
+        let busy = self.drag_state.is_some() || self.resize_state.is_some()
+            || !shared.window_mgr.lock_or_recover().dirty.is_empty();
+        let script_next = self.script.as_ref().and_then(GuiScript::next_due);
+        let timeout = wait_timeout(Instant::now(), self.last_composite, busy, script_next);
+        if timeout.is_zero() {
+            return;
+        }
+        match (self.wake_event_type, &self.wake) {
+            // Native wait: input and wake-ups (pushed as user events) both
+            // end it.
+            (Some(_), _) => {
+                let ms = timeout.as_millis().clamp(1, u32::MAX as u128) as u32;
+                if let Some(event) = self.event_pump.wait_event_timeout(ms) {
+                    self.pending_events.push(event);
+                }
+            }
+            // Headless driver: no real input, so wake-ups and the deadline
+            // (which includes the next scripted step) are all there is.
+            (None, Some(wake)) => wake.wait(timeout),
+            (None, None) => std::thread::sleep(timeout.min(super::renderer::POLL_PERIOD)),
+        }
+    }
+}
+
+/// SDL video drivers with no input source: SDL cannot block on them and
+/// would poll inside its wait, so the loop waits on the channel instead.
+const NON_WAITING_DRIVERS: &[&str] = &["dummy", "offscreen"];
+
+/// Whether SDL's event wait can block on `driver` (as named by
+/// `SDL_GetCurrentVideoDriver`).
+fn driver_can_wait(driver: &str) -> bool {
+    !NON_WAITING_DRIVERS.iter().any(|d| d.eq_ignore_ascii_case(driver))
+}
+
+/// Whether `event` is the user event the wake hook pushes.
+fn is_wake_event(event: &Event, wake_type: Option<u32>) -> bool {
+    matches!(event, Event::User { type_, .. } if Some(*type_) == wake_type)
 }
 
 // ── Internal helpers ───────────────────────────────────────────────────────
@@ -1702,6 +1850,17 @@ fn sdl_keycode_to_char(kc: Keycode) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::{sdl_keycode_to_char, sdl_keycode_to_vk, sdl_scancode_to_os2, build_wm_char, mb_buttons};
+    use super::{wait_timeout, is_wake_event, driver_can_wait, Event, Duration, Instant,
+        FRAME_INTERVAL, IDLE_WAIT};
+
+    #[test]
+    fn headless_video_drivers_do_not_use_the_sdl_wait() {
+        assert!(!driver_can_wait("dummy"));
+        assert!(!driver_can_wait("OFFSCREEN"));
+        for real in ["x11", "wayland", "kmsdrm", "windows", "cocoa"] {
+            assert!(driver_can_wait(real), "{real}");
+        }
+    }
     use super::{text_input_wm_chars, route_button1, CHROME_BORDER_W, KC_CHAR, WM_CHAR_REPEAT_SHIFT,
                 SharedState, MutexExt};
     use std::sync::Arc;
@@ -1723,6 +1882,45 @@ mod tests {
 
     /// The bar is drawn at the given screen position; with no open item nothing
     /// is painted below it.
+    #[test]
+    fn idle_loop_waits_the_full_idle_period() {
+        let now = Instant::now();
+        let long_ago = now - Duration::from_secs(1);
+        assert_eq!(wait_timeout(now, long_ago, false, None), IDLE_WAIT);
+    }
+
+    #[test]
+    fn owed_composite_waits_only_until_the_next_frame() {
+        let now = Instant::now();
+        // Composited 10 ms ago: the next frame is 6 ms away.
+        let t = wait_timeout(now, now - Duration::from_millis(10), true, None);
+        assert_eq!(t, FRAME_INTERVAL - Duration::from_millis(10));
+        // Frame already overdue: do not block at all.
+        assert!(wait_timeout(now, now - FRAME_INTERVAL * 2, true, None).is_zero());
+    }
+
+    #[test]
+    fn scripted_step_shortens_the_wait() {
+        let now = Instant::now();
+        let long_ago = now - Duration::from_secs(1);
+        let step = now + Duration::from_millis(30);
+        assert_eq!(wait_timeout(now, long_ago, false, Some(step)), Duration::from_millis(30));
+        // A step already due wins over everything.
+        assert!(wait_timeout(now, now, true, Some(now - Duration::from_millis(1))).is_zero());
+    }
+
+    #[test]
+    fn only_the_registered_user_event_is_a_wake_event() {
+        let user = |type_| Event::User {
+            timestamp: 0, window_id: 0, type_, code: 0,
+            data1: std::ptr::null_mut(), data2: std::ptr::null_mut(),
+        };
+        assert!(is_wake_event(&user(0x8001), Some(0x8001)));
+        assert!(!is_wake_event(&user(0x8002), Some(0x8001)));
+        assert!(!is_wake_event(&user(0x8001), None));
+        assert!(!is_wake_event(&Event::Quit { timestamp: 0 }, Some(0x8001)));
+    }
+
     #[test]
     fn draw_menu_chrome_closed_paints_only_the_bar() {
         const W: usize = 200;

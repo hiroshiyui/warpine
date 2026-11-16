@@ -507,15 +507,25 @@ impl WindowManager {
     // ── Z-order helpers ──────────────────────────────────────────────────────
 
     /// VDR-B4: mark an HWND (frame or client) as visually dirty.
-    /// The compositor will recomposite the full desktop on its next tick.
+    /// The compositor will recomposite the full desktop on its next frame;
+    /// the GUI thread is woken, since it blocks while nothing is dirty.
     pub fn mark_dirty(&mut self, hwnd: u32) {
         self.dirty.insert(hwnd);
+        self.wake_gui();
     }
 
     /// VDR-B4: mark every frame in the Z-order dirty.
     /// Called after Z-order changes, which affect all overlapping windows.
     pub fn mark_all_dirty(&mut self) {
         self.dirty.extend(self.z_order.iter().copied());
+        self.wake_gui();
+    }
+
+    /// Wake the GUI thread (no-op before the GUI channel exists).
+    fn wake_gui(&self) {
+        if let Some(tx) = &self.gui_tx {
+            tx.wake();
+        }
     }
 
     /// Register a frame window into the Z-order stack (top-most position).
@@ -878,6 +888,28 @@ mod tests {
         wm.mark_all_dirty();
         assert!(wm.dirty.contains(&f1));
         assert!(wm.dirty.contains(&f2));
+    }
+
+    /// The GUI thread blocks while nothing is dirty, so marking a window
+    /// dirty (e.g. from WinSetWindowPos on the guest thread) must wake it.
+    #[test]
+    fn marking_dirty_wakes_the_gui_thread() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let (tx, rx) = crate::gui::create_gui_channel();
+        let wake = rx.wake_handle();
+        let calls = Arc::new(AtomicU32::new(0));
+        let c = calls.clone();
+        wake.set_hook(Box::new(move || { c.fetch_add(1, Ordering::Relaxed); }));
+
+        let mut wm = WindowManager::new();
+        wm.mark_dirty(0x1000); // no channel yet: must not panic
+        wm.gui_tx = Some(tx);
+        wm.mark_dirty(0x1000);
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        wake.rearm();
+        wm.mark_all_dirty();
+        assert_eq!(calls.load(Ordering::Relaxed), 2);
     }
 
     #[test]

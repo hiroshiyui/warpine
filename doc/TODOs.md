@@ -75,18 +75,9 @@ NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 
 ### PM Graphics Performance and Architecture
 
-From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `renderer.rs`, `font.rs`, `message.rs`) on 2026-11-15. Nothing was measured: the costs below come from reading the code, so add timing first where an item says so. The steps are in suggested order; the first two groups do not depend on the GPU decision.
+From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `renderer.rs`, `font.rs`, `message.rs`) on 2026-11-15. The steps are in suggested order. Steps 0 and 1 (frame statistics, a blocking event loop, coalesced presents, clipboard via events) are done — see the developer guide, "Rendering Pipeline"; measure the items below with the frame statistics (`RUST_LOG=warpine::gui=debug`) before and after.
 
-**Step 0 — measure**
-
-- [ ] **Timing instrumentation** — record time per composite, per present and per loop iteration (debug log or `WARPINE_TRACE`) so the items below are backed by numbers
-
-**Step 1 — event loop (small, independent)**
-
-- [ ] **Block instead of poll** — `run_pm_loop` sleeps 8 ms per iteration (`PmRenderer::frame_sleep`), adding up to 8 ms latency to every draw and input event and waking ~125 times a second when idle; wait on SDL events with a timeout and wake the loop when a `GUIMessage` arrives
-- [ ] **Stop polling the host clipboard** — `poll_events` calls `clipboard_text()` every iteration (a string allocation and, on X11, possibly a server round trip); read it on focus gain or when the guest asks
-- [ ] **Coalesce presents** — every `PresentBuffer` (six send sites; several per paint cycle) runs a full composite; mark dirty and composite at most once per frame
-- [ ] **Frame pacing** — no vsync today; presents happen on message arrival plus a 16 ms timer
+- [ ] **Measure on a real display** — the event-loop change was measured only on SDL's `dummy` driver (idle CPU roughly halved); compare idle CPU and input latency on X11 and Wayland, where the old loop also read the clipboard ~125 times a second
 
 **Step 2 — compositor cost (small, independent)**
 
@@ -106,7 +97,7 @@ From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `render
 **Step 4 — GPU compositing**
 
 - [ ] **Compositor trait** — put compositing behind a small trait; keep the software backend for headless tests (`SDL_VIDEODRIVER=dummy`, golden signatures)
-- [ ] **Intermediate step** — the PM canvas is created with `.software()`; try `.accelerated().present_vsync()` with one SDL texture per window (window moves without re-blit, partial uploads)
+- [ ] **Intermediate step** — the PM canvas is created with `.software()`; try `.accelerated().present_vsync()` with one SDL texture per window (window moves without re-blit, partial uploads). Composites are capped at ~60 Hz today (`FRAME_INTERVAL`) but not synchronised to the display
 - [ ] **GPU backend** — one texture per window drawn as quads, scaling for HiDPI, vsync. Prefer `wgpu` (Vulkan on Linux, OpenGL fallback) over raw Vulkan via `ash`, which needs far more setup for a handful of textured quads
 - [ ] **Keep GPI on the CPU** — GPI is immediate-mode with pixel-exact semantics, raster operations and readback; mapping it to GPU draw calls is a large effort with poor returns
 

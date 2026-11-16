@@ -3,9 +3,13 @@
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use crate::loader::SharedState;
-use super::message::GUIMessage;
+use super::message::{GUIMessage, GUIReceiver, GuiWake};
 
 // ── PmRenderer trait ───────────────────────────────────────────────────────
+
+/// Fallback wait for a backend that cannot be woken: the loop then polls on
+/// this period.
+pub const POLL_PERIOD: std::time::Duration = std::time::Duration::from_millis(8);
 
 /// Backend abstraction for the Presentation Manager GUI loop.
 ///
@@ -25,11 +29,18 @@ pub trait PmRenderer {
     /// Returns `false` to signal the loop should exit (e.g. window closed).
     fn poll_events(&mut self, shared: &Arc<SharedState>) -> bool;
 
-    /// Yield the calling thread for approximately one frame period.
+    /// Called once before the loop starts with the channel's wake-up, so the
+    /// backend can install a hook that interrupts [`wait_for_work`](Self::wait_for_work)
+    /// when another thread sends a message or marks a window dirty.
+    /// Default: no hook (the backend polls).
+    fn install_waker(&mut self, _wake: Arc<GuiWake>) {}
+
+    /// Block until there may be work: input, a wake-up, or a deadline the
+    /// backend knows about (next frame, next scripted step).
     ///
-    /// Default: 8 ms.  `HeadlessRenderer` overrides with a no-op for speed.
-    fn frame_sleep(&self) {
-        std::thread::sleep(std::time::Duration::from_millis(8));
+    /// Default: sleep [`POLL_PERIOD`], for backends without a wake-up hook.
+    fn wait_for_work(&mut self, _shared: &Arc<SharedState>) {
+        std::thread::sleep(POLL_PERIOD);
     }
 }
 
@@ -43,10 +54,14 @@ pub trait PmRenderer {
 pub fn run_pm_loop(
     renderer: &mut dyn PmRenderer,
     shared: Arc<SharedState>,
-    rx: std::sync::mpsc::Receiver<GUIMessage>,
+    rx: GUIReceiver,
 ) {
+    let wake = rx.wake_handle();
+    renderer.install_waker(wake.clone());
     loop {
-        // Drain all pending GUI messages from the VCPU thread.
+        // Rearm before draining: a message sent from here on wakes the next
+        // wait, one sent before is drained now.
+        wake.rearm();
         while let Ok(msg) = rx.try_recv() {
             renderer.handle_message(msg, &shared);
         }
@@ -60,6 +75,6 @@ pub fn run_pm_loop(
             return;
         }
 
-        renderer.frame_sleep();
+        renderer.wait_for_work(&shared);
     }
 }

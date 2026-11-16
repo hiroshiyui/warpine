@@ -465,7 +465,7 @@ impl Loader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc::Receiver;
+    use crate::gui::GUIReceiver;
     use crate::gui::create_gui_channel;
 
     const FRAME_CX: i32 = 640;
@@ -475,7 +475,7 @@ mod tests {
         loader: Loader,
         client: u32,
         hmq: u32,
-        rx: Receiver<GUIMessage>,
+        rx: GUIReceiver,
     }
 
     /// A std window (frame + client with a guest window procedure) whose GUI
