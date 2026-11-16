@@ -515,7 +515,8 @@ impl super::Loader {
 
     /// Transfer `src_rect` of `src` onto `target` (both exclusive at the top
     /// and right) of the surface `hps` draws into, with raster operation
-    /// `rop`; the pattern is the PS's current colour. Different sizes are
+    /// `rop`; the pattern is the PS's area pattern (`GpiSetPattern`) in its
+    /// foreground and background colours. Different sizes are
     /// stretched or compressed by nearest-pel sampling.
     fn blit(&self, hps: u32, target: Rect64, src: BlitSource, src_rect: Rect64, rop: u32) -> u32 {
         let Ok(rop) = u8::try_from(rop) else { return GPI_ERROR };
@@ -543,7 +544,7 @@ impl super::Loader {
         };
         self.draw_to(pt.target, DrawOp::Blit {
             x: cx0 as i32, y: cy0 as i32, w: (cx1 - cx0) as u32, h: (cy1 - cy0) as u32,
-            src: pels, rop, pattern: pt.color,
+            src: pels, rop, pattern: pt.pattern,
         });
         GPI_OK
     }

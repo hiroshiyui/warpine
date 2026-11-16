@@ -557,6 +557,22 @@ fn gui_pm_bitmap_test_blits_bitmaps() {
     assert_sample_checks_pass("samples/pm_bitmap_test/pm_bitmap_test.exe", "pm_bitmap_test", 25);
 }
 
+/// pm_shapes_test: arcs (GpiFullArc / GpiPartialArc / GpiPointArc and arc
+/// parameters), area patterns in fills and ROP_PATCOPY blits, and cosmetic /
+/// geometric line widths — checked from the guest side.
+#[test]
+fn gui_pm_shapes_test_draws_arcs_patterns_and_wide_lines() {
+    assert_sample_checks_pass("samples/pm_shapes_test/pm_shapes_test.exe", "pm_shapes_test", 29);
+}
+
+/// The picture half of pm_shapes_test: circle, ellipse, pie wedge, pattern
+/// swatches and line widths.
+#[test]
+fn gui_pm_shapes_test_matches_golden() {
+    check_gui_golden("pm_shapes_test", "samples/pm_shapes_test/pm_shapes_test.exe",
+        "2500 dump {dump}\n2600 quit\n");
+}
+
 /// pm_audio_test: DosBeep and MMPM/2 waveaudio played through the main-thread
 /// SDL3 audio service (dummy audio driver): playback blocks for the file's
 /// length with "wait", "notify" posts MM_MCINOTIFY, aliases and the
@@ -689,6 +705,12 @@ fn gui_layered_compositor_matches_golden_typing() {
     check_gui_golden_env("pm_controls_typing", "samples/pm_controls_test/pm_controls_test.exe",
         "700 click 230 300\n900 text  Hello, W\u{f6}rld!\n1300 key home\n1400 text >>\n\
          1600 click 200 470\n1800 key enter\n1900 text three\n2500 dump {dump}\n2600 quit\n", LAYERED);
+}
+
+#[test]
+fn gui_layered_compositor_matches_golden_shapes() {
+    check_gui_golden_env("pm_shapes_test", "samples/pm_shapes_test/pm_shapes_test.exe",
+        "2500 dump {dump}\n2600 quit\n", LAYERED);
 }
 
 #[test]

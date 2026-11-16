@@ -211,6 +211,19 @@ pub struct PresentationSpace {
     pub color_table: std::collections::BTreeMap<u32, u32>,
     /// `LINETYPE_*` set by `GpiSetLineType`.
     pub line_type: u32,
+    /// Cosmetic line width (FIXED multiple of one pel; `LINEWIDTH_DEFAULT`
+    /// = normal), set by `GpiSetLineWidth`.
+    pub line_width: u32,
+    /// Geometric line width (`GpiSetLineWidthGeom`), in world units. Only
+    /// stroked paths use it, which Warpine does not have; it is stored and
+    /// reported back.
+    pub line_width_geom: i32,
+    /// Arc parameters (`GpiSetArcParams`).
+    pub arc_params: super::pm_shapes::ArcParams,
+    /// Area pattern symbol (`PATSYM_*`, `GpiSetPattern`).
+    pub pattern: u32,
+    /// Pattern reference point (`GpiSetPatternRefPoint`).
+    pub pattern_ref: (i32, i32),
     /// Associated device context (0 = none).
     pub hdc: u32,
     /// Bitmap selected with `GpiSetBitmap` (0 = none).
@@ -486,6 +499,11 @@ impl WindowManager {
             rgb_mode: false,
             color_table: std::collections::BTreeMap::new(),
             line_type: super::constants::LINETYPE_DEFAULT,
+            line_width: super::constants::LINEWIDTH_DEFAULT,
+            line_width_geom: 0,
+            arc_params: super::pm_shapes::ArcParams::default(),
+            pattern: super::constants::PATSYM_DEFAULT,
+            pattern_ref: (0, 0),
             hdc: 0,
             bitmap: 0,
             origin: PsOrigin::Created,

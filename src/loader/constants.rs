@@ -264,6 +264,37 @@ pub const LINETYPE_INVISIBLE:     u32 = 8;
 pub const LINETYPE_ALTERNATE:     u32 = 9;
 pub const LINETYPE_ERROR:         i32 = -1;
 
+// ── PATSYM_* (GpiSetPattern), <pmgpi.h> ──────────────────────────────────────
+pub const PATSYM_ERROR:     i32 = -1;
+pub const PATSYM_DEFAULT:   u32 = 0;
+pub const PATSYM_DENSE1:    u32 = 1;
+pub const PATSYM_DENSE8:    u32 = 8;
+pub const PATSYM_VERT:      u32 = 9;
+pub const PATSYM_HORIZ:     u32 = 10;
+pub const PATSYM_DIAG1:     u32 = 11;
+pub const PATSYM_DIAG2:     u32 = 12;
+pub const PATSYM_DIAG3:     u32 = 13;
+pub const PATSYM_DIAG4:     u32 = 14;
+pub const PATSYM_NOSHADE:   u32 = 15;
+pub const PATSYM_SOLID:     u32 = 16;
+pub const PATSYM_HALFTONE:  u32 = 17;
+pub const PATSYM_HATCH:     u32 = 18;
+pub const PATSYM_DIAGHATCH: u32 = 19;
+pub const PATSYM_BLANK:     u32 = 64;
+
+// ── Line widths (GpiSetLineWidth / GpiSetLineWidthGeom), <pmgpi.h> ───────────
+/// Cosmetic widths are FIXED multiples of the normal width (one pel here).
+pub const LINEWIDTH_DEFAULT:   u32 = 0;
+pub const LINEWIDTH_NORMAL:    u32 = 0x0001_0000;
+pub const LINEWIDTH_THICK:     u32 = 0x0002_0000;
+pub const LINEWIDTH_ERROR:     i32 = -1;
+pub const LINEWIDTHGEOM_ERROR: i32 = -1;
+
+// ── GpiBox / GpiFullArc lControl, <pmgpi.h> ──────────────────────────────────
+pub const DRO_FILL:        u32 = 1;
+pub const DRO_OUTLINE:     u32 = 2;
+pub const DRO_OUTLINEFILL: u32 = 3;
+
 // ── Device contexts (<pmdev.h>) ──────────────────────────────────────────────
 pub const OD_INFO:   u32 = 6;
 pub const OD_MEMORY: u32 = 8;

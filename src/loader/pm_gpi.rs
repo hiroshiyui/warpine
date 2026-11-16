@@ -11,7 +11,8 @@ use super::ApiResult;
 use super::constants::*;
 use super::pm_types::{DeviceContext, DrawTarget};
 use crate::gui::font::{self, CjkRegion, FontFamily, FontSpec};
-use crate::gui::surface::{DrawOp, Mix};
+use crate::gui::surface::{AreaFill, DrawOp, Mix, Pattern, Stroke, MAX_STROKE_WIDTH, SOLID_LINE};
+use super::pm_shapes::{self, ArcParams};
 
 // ── GpiCreateLogFont return values ────────────────────────────────────────────
 const FONT_DEFAULT: u32 = 1; // no FATTRS given: the system default font was used
@@ -30,11 +31,6 @@ const MAX_TEXT_BOX_CHARS: i32 = 4096;
 
 const DEVICE_RES: i16 = 96; // device resolution (DPI) reported to apps
 
-// GpiBox / GpiFullArc lControl (<pmgpi.h>)
-const DRO_FILL:        u32 = 1;
-const DRO_OUTLINE:     u32 = 2;
-const DRO_OUTLINEFILL: u32 = 3;
-
 /// What drawing through a presentation space needs: where it draws and the
 /// current attributes.
 pub(super) struct PsTarget {
@@ -46,6 +42,32 @@ pub(super) struct PsTarget {
     pub back_mix: Option<Mix>,
     pub pos: (i32, i32),
     pub line_type: u32,
+    /// Cosmetic line width in pels (at least 1).
+    pub line_width: u32,
+    /// Area pattern in the PS's colours, at its reference point.
+    pub pattern: Pattern,
+    pub arc_params: ArcParams,
+}
+
+impl PsTarget {
+    /// The outline stroke for lines, box and arc boundaries; `None` for
+    /// `LINETYPE_INVISIBLE`.
+    fn stroke(&self) -> Option<Stroke> {
+        line_style(self.line_type)
+            .map(|style| Stroke { color: self.color, mix: self.mix, style, width: self.line_width })
+    }
+
+    /// The area fill for box and arc interiors.
+    fn fill(&self) -> AreaFill {
+        AreaFill { pattern: self.pattern, mix: self.mix, back_mix: self.back_mix }
+    }
+}
+
+/// Pels of a cosmetic line width (FIXED; `LINEWIDTH_DEFAULT` is normal):
+/// rounded to whole pels, at least one, at most `MAX_STROKE_WIDTH`.
+fn cosmetic_pels(width: u32) -> u32 {
+    if width == LINEWIDTH_DEFAULT { return 1; }
+    (pm_shapes::fixed(width).round().max(1.0) as u32).min(MAX_STROKE_WIDTH)
 }
 
 /// Pel mask (16 pels, MSB first) for a `LINETYPE_*`; `None` draws nothing.
@@ -181,8 +203,13 @@ impl super::Loader {
                 );
                 let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
                 let (x1, y1) = t.pos;
-                if let Some(style) = line_style(t.line_type) {
-                    self.draw_to(t.target, DrawOp::Line { x1, y1, x2, y2, color: t.color, mix: t.mix, style });
+                match t.stroke() {
+                    Some(s) if s.width == 1 =>
+                        self.draw_to(t.target, DrawOp::Line { x1, y1, x2, y2, color: s.color, mix: s.mix, style: s.style }),
+                    Some(s) => self.draw_to(t.target, DrawOp::Shape {
+                        points: vec![(x1, y1), (x2, y2)], closed: false, fill: None, stroke: Some(s),
+                    }),
+                    None => {}
                 }
                 self.set_current_pos(hps, (x2, y2));
                 ApiResult::Normal(GPI_OK)
@@ -410,12 +437,74 @@ impl super::Loader {
                 ApiResult::Normal(lt)
             }
             531 => {
-                // GpiSetLineWidth(HPS hps, FIXED fxLineWidth) → BOOL  (stub)
-                ApiResult::Normal(1)
+                // GpiSetLineWidth(HPS hps, FIXED fxLineWidth) → BOOL
+                // Cosmetic width: a multiple of the normal (one-pel) width
+                // (`LINEWIDTH_NORMAL`, `LINEWIDTH_THICK`); applies to lines,
+                // box outlines and arcs (see `cosmetic_pels`).
+                let (hps, width) = (read_stack(4), read_stack(8));
+                if (width as i32) < 0 { return ApiResult::Normal(GPI_ERROR); }
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let Some(ps) = wm.ps_map.get_mut(&hps) else { return ApiResult::Normal(GPI_ERROR) };
+                ps.line_width = width;
+                ApiResult::Normal(GPI_OK)
+            }
+            460 => {
+                // GpiQueryLineWidth(HPS hps) → FIXED
+                let hps = read_stack(4);
+                let w = self.shared.window_mgr.lock_or_recover()
+                    .ps_map.get(&hps).map_or(LINEWIDTH_ERROR as u32, |ps| ps.line_width);
+                ApiResult::Normal(w)
             }
             532 => {
-                // GpiSetLineWidthGeom(HPS hps, FIXED fxLineWidth) → BOOL  (stub)
-                ApiResult::Normal(1)
+                // GpiSetLineWidthGeom(HPS hps, LONG lLineWidth) → BOOL
+                // Used only when a path is stroked (not supported): stored.
+                let (hps, width) = (read_stack(4), read_stack(8) as i32);
+                if width < 0 { return ApiResult::Normal(GPI_ERROR); }
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let Some(ps) = wm.ps_map.get_mut(&hps) else { return ApiResult::Normal(GPI_ERROR) };
+                ps.line_width_geom = width;
+                ApiResult::Normal(GPI_OK)
+            }
+            461 => {
+                // GpiQueryLineWidthGeom(HPS hps) → LONG
+                let hps = read_stack(4);
+                let w = self.shared.window_mgr.lock_or_recover()
+                    .ps_map.get(&hps).map_or(LINEWIDTHGEOM_ERROR, |ps| ps.line_width_geom);
+                ApiResult::Normal(w as u32)
+            }
+
+            541 => {
+                // GpiSetPattern(HPS hps, LONG lPatternSymbol) → BOOL
+                // Fills of boxes and arcs and the pattern of GpiBitBlt use it.
+                let (hps, symbol) = (read_stack(4), read_stack(8));
+                if pm_shapes::pattern_rows(symbol).is_none() { return ApiResult::Normal(GPI_ERROR); }
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let Some(ps) = wm.ps_map.get_mut(&hps) else { return ApiResult::Normal(GPI_ERROR) };
+                ps.pattern = symbol;
+                ApiResult::Normal(GPI_OK)
+            }
+            473 => {
+                // GpiQueryPattern(HPS hps) → LONG
+                let hps = read_stack(4);
+                let p = self.shared.window_mgr.lock_or_recover()
+                    .ps_map.get(&hps).map_or(PATSYM_ERROR as u32, |ps| ps.pattern);
+                ApiResult::Normal(p)
+            }
+            542 => {
+                // GpiSetPatternRefPoint(HPS hps, PPOINTL pptlRefPoint) → BOOL
+                let hps = read_stack(4);
+                let Some(pt) = self.read_pointl(read_stack(8)) else { return ApiResult::Normal(GPI_ERROR) };
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let Some(ps) = wm.ps_map.get_mut(&hps) else { return ApiResult::Normal(GPI_ERROR) };
+                ps.pattern_ref = pt;
+                ApiResult::Normal(GPI_OK)
+            }
+            474 => {
+                // GpiQueryPatternRefPoint(HPS hps, PPOINTL pptlRefPoint) → BOOL
+                let (hps, pptl) = (read_stack(4), read_stack(8));
+                let Some(pt) = self.shared.window_mgr.lock_or_recover().ps_map.get(&hps).map(|ps| ps.pattern_ref)
+                    else { return ApiResult::Normal(GPI_ERROR) };
+                ApiResult::Normal(self.write_pointl(pptl, pt))
             }
 
             400 => {
@@ -499,21 +588,72 @@ impl super::Loader {
             }
 
             393 => {
-                // GpiFullArc(HPS hps, LONG lControl, FIXED fxMult) → LONG
-                // Approximated as a filled/outlined box centred on current_pos.
-                // Arc params (GpiSetArcParams) are not tracked; use a fixed 10-unit radius.
-                let hps = read_stack(4);
-                let control = read_stack(8);
+                // GpiFullArc(HPS hps, LONG lControl, FIXED fxMultiplier) → LONG
+                // The full ellipse of the arc parameters scaled by the
+                // multiplier, centred on the current position (which does
+                // not move); outlined, filled or both (`DRO_*`).
+                let (hps, control, mult) = (read_stack(4), read_stack(8), pm_shapes::fixed(read_stack(12)));
+                if !(DRO_FILL..=DRO_OUTLINEFILL).contains(&control) || mult < 0.0 {
+                    return ApiResult::Normal(GPI_ERROR);
+                }
                 let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
-                let (cx, cy) = t.pos;
-                let r: i32 = 10; // approximate radius
-                self.draw_box(&t, (cx - r, cy - r, cx + r, cy + r), control);
+                let points = pm_shapes::full_arc(t.pos, t.arc_params, mult);
+                self.draw_area(&t, points, control);
+                ApiResult::Normal(GPI_OK)
+            }
+            612 => {
+                // GpiPartialArc(HPS hps, PPOINTL pptlCenter, FIXED fxMultiplier,
+                //               FIXED fxStartAngle, FIXED fxSweepAngle) → LONG
+                // A line from the current position to the start of the arc,
+                // then the arc (degrees, counter-clockwise); the current
+                // position ends at the end of the arc.
+                let hps = read_stack(4);
+                let Some(center) = self.read_pointl(read_stack(8)) else { return ApiResult::Normal(GPI_ERROR) };
+                let (mult, start, sweep) = (pm_shapes::fixed(read_stack(12)), pm_shapes::fixed(read_stack(16)),
+                                            pm_shapes::fixed(read_stack(20)));
+                if mult < 0.0 || sweep < 0.0 { return ApiResult::Normal(GPI_ERROR); }
+                let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
+                let arc = pm_shapes::partial_arc(center, t.arc_params, mult, start, sweep);
+                let end = *arc.last().unwrap_or(&t.pos);
+                let mut points = vec![t.pos];
+                points.extend(arc);
+                self.draw_path(&t, points);
+                self.set_current_pos(hps, end);
+                ApiResult::Normal(GPI_OK)
+            }
+            412 => {
+                // GpiPointArc(HPS hps, PPOINTL pptl2) → LONG
+                // The arc from the current position through pptl2[0] to
+                // pptl2[1]; the current position ends at pptl2[1].
+                let (hps, pptl) = (read_stack(4), read_stack(8));
+                let (Some(p1), Some(p2)) = (self.read_pointl(pptl), self.read_pointl(pptl.wrapping_add(8)))
+                    else { return ApiResult::Normal(GPI_ERROR) };
+                let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
+                self.draw_path(&t, pm_shapes::point_arc(t.pos, p1, p2, t.arc_params));
+                self.set_current_pos(hps, p2);
                 ApiResult::Normal(GPI_OK)
             }
 
             502 => {
-                // GpiSetArcParams(HPS hps, PARCPARAMS parcpArcParams) → BOOL  (stub)
-                ApiResult::Normal(1)
+                // GpiSetArcParams(HPS hps, PARCPARAMS parcpArcParams) → BOOL
+                // ARCPARAMS: LONG lP, lQ, lR, lS.
+                let (hps, ptr) = (read_stack(4), read_stack(8));
+                let read = |i: u32| self.guest_read::<i32>(ptr.wrapping_add(4 * i));
+                let (Some(p), Some(q), Some(r), Some(s)) = (read(0), read(1), read(2), read(3))
+                    else { return ApiResult::Normal(GPI_ERROR) };
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let Some(ps) = wm.ps_map.get_mut(&hps) else { return ApiResult::Normal(GPI_ERROR) };
+                ps.arc_params = ArcParams { p, q, r, s };
+                ApiResult::Normal(GPI_OK)
+            }
+            422 => {
+                // GpiQueryArcParams(HPS hps, PARCPARAMS parcpArcParams) → BOOL
+                let (hps, ptr) = (read_stack(4), read_stack(8));
+                let Some(a) = self.shared.window_mgr.lock_or_recover().ps_map.get(&hps).map(|ps| ps.arc_params)
+                    else { return ApiResult::Normal(GPI_ERROR) };
+                let ok = [a.p, a.q, a.r, a.s].iter().enumerate()
+                    .all(|(i, &v)| self.guest_write::<i32>(ptr.wrapping_add(4 * i as u32), v).is_some());
+                ApiResult::Normal(if ok { GPI_OK } else { GPI_ERROR })
             }
 
             // ── Logical colour tables ────────────────────────────────────────
@@ -644,7 +784,45 @@ impl super::Loader {
             back_mix: background_mix(ps.back_mix),
             pos: ps.current_pos,
             line_type: ps.line_type,
+            line_width: cosmetic_pels(ps.line_width),
+            pattern: Pattern {
+                rows: pm_shapes::pattern_rows(ps.pattern).unwrap_or(Pattern::SOLID_ROWS),
+                fg: ps.color,
+                bg: ps.back_color,
+                origin: ps.pattern_ref,
+            },
+            arc_params: ps.arc_params,
         })
+    }
+
+    /// A POINTL from guest memory.
+    pub(super) fn read_pointl(&self, ptr: u32) -> Option<(i32, i32)> {
+        Some((self.guest_read::<i32>(ptr)?, self.guest_read::<i32>(ptr.wrapping_add(4))?))
+    }
+
+    /// Write a POINTL to guest memory; `GPI_OK` or `GPI_ERROR`.
+    fn write_pointl(&self, ptr: u32, (x, y): (i32, i32)) -> u32 {
+        let ok = self.guest_write::<i32>(ptr, x).is_some()
+            && self.guest_write::<i32>(ptr.wrapping_add(4), y).is_some();
+        if ok { GPI_OK } else { GPI_ERROR }
+    }
+
+    /// Draw an open path (arcs) with the current line attributes.
+    fn draw_path(&self, t: &PsTarget, points: Vec<(i32, i32)>) {
+        if let Some(stroke) = t.stroke() {
+            self.draw_to(t.target, DrawOp::Shape { points, closed: false, fill: None, stroke: Some(stroke) });
+        }
+    }
+
+    /// Draw a closed area (box, full arc): `control` is `DRO_FILL`,
+    /// `DRO_OUTLINE` or `DRO_OUTLINEFILL`; the inside takes the area
+    /// pattern, the outline the line attributes.
+    fn draw_area(&self, t: &PsTarget, points: Vec<(i32, i32)>, control: u32) {
+        let fill = (control == DRO_FILL || control == DRO_OUTLINEFILL).then(|| t.fill());
+        let stroke = if control == DRO_OUTLINE || control == DRO_OUTLINEFILL { t.stroke() } else { None };
+        if fill.is_some() || stroke.is_some() {
+            self.draw_to(t.target, DrawOp::Shape { points, closed: true, fill, stroke });
+        }
     }
 
     /// GpiCreateLogColorTable: `LCOLF_RGB` switches to RGB colour values,
@@ -707,6 +885,13 @@ impl super::Loader {
     /// Draw a GpiBox-style rectangle: `control` is `DRO_FILL`,
     /// `DRO_OUTLINE` or `DRO_OUTLINEFILL`.
     fn draw_box(&self, t: &PsTarget, (x1, y1, x2, y2): (i32, i32, i32, i32), control: u32) {
+        // Patterned fills and wide or styled outlines go through the shape
+        // rasteriser; plain boxes keep the cheaper box primitive.
+        let plain_outline = t.line_width == 1 && line_style(t.line_type) == Some(SOLID_LINE);
+        if !t.pattern.is_solid() || !plain_outline {
+            self.draw_area(t, vec![(x1, y1), (x2, y1), (x2, y2), (x1, y2)], control);
+            return;
+        }
         let mut parts = Vec::with_capacity(2);
         if control == DRO_FILL || control == DRO_OUTLINEFILL { parts.push(true); }
         if control == DRO_OUTLINE || control == DRO_OUTLINEFILL { parts.push(false); }
@@ -946,6 +1131,203 @@ mod tests {
         assert_eq!(query((200, 5)), CLR_NOINDEX as u32, "right of the window");
         assert_eq!(query((-1, 5)), CLR_NOINDEX as u32);
         assert_eq!(call_gpi(&loader, 476, &[0xBAD, ppt]), CLR_NOINDEX as u32, "unknown HPS");
+    }
+
+    /// A window PS plus helpers: move to a point, read a pel as RGB.
+    fn shapes_ps(loader: &Loader) -> (u32, crate::gui::SharedSurface) {
+        let (_, hps, surface) = window_ps(loader);
+        surface.lock().unwrap().record = None;
+        call_gpi(loader, 517, &[hps, 0x00FF_0000]); // GpiSetColor(red RGB)
+        (hps, surface)
+    }
+
+    const PPT: u32 = 0x4000;
+    const RED: u32 = 0x00FF_0000;
+
+    fn move_to(loader: &Loader, hps: u32, pt: (i32, i32)) {
+        write_point(loader, PPT, pt);
+        assert_eq!(call_gpi(loader, 404, &[hps, PPT]), 1);
+    }
+
+    fn rgb(surface: &crate::gui::SharedSurface, x: i32, y: i32) -> Option<u32> {
+        surface.lock().unwrap().pel(x, y)
+    }
+
+    fn current_pos(loader: &Loader, hps: u32) -> (i32, i32) {
+        use super::super::mutex_ext::MutexExt;
+        loader.shared.window_mgr.lock_or_recover().ps_map[&hps].current_pos
+    }
+
+    const fn fx(v: i32) -> u32 { (v << 16) as u32 }
+
+    /// GpiFullArc draws the ellipse of the arc parameters around the
+    /// current position: outline on the curve, fill inside; the current
+    /// position stays; bad controls and negative multipliers are errors.
+    #[test]
+    fn test_gpi_full_arc_draws_ellipses() {
+        let loader = Loader::new_mock();
+        let (hps, surface) = shapes_ps(&loader);
+        move_to(&loader, hps, (50, 50));
+        assert_eq!(call_gpi(&loader, 393, &[hps, DRO_OUTLINE, fx(20)]), GPI_OK);
+        assert_eq!(rgb(&surface, 70, 50), Some(RED), "right end of the circle");
+        assert_eq!(rgb(&surface, 50, 30), Some(RED), "bottom");
+        assert_ne!(rgb(&surface, 50, 50), Some(RED), "outline only: centre untouched");
+        assert_ne!(rgb(&surface, 62, 62), Some(RED), "inside, off the curve");
+        assert_eq!(current_pos(&loader, hps), (50, 50), "the current position does not move");
+
+        assert_eq!(call_gpi(&loader, 393, &[hps, DRO_FILL, fx(10)]), GPI_OK);
+        assert_eq!(rgb(&surface, 50, 50), Some(RED), "filled");
+        assert_eq!(rgb(&surface, 57, 57), Some(RED), "inside the radius-10 disc");
+        assert_ne!(rgb(&surface, 58, 58), Some(RED), "outside it (distance 11.3)");
+
+        assert_eq!(call_gpi(&loader, 393, &[hps, 0, fx(10)]), GPI_ERROR, "no DRO_* control");
+        assert_eq!(call_gpi(&loader, 393, &[hps, 4, fx(10)]), GPI_ERROR);
+        assert_eq!(call_gpi(&loader, 393, &[hps, DRO_FILL, fx(-1)]), GPI_ERROR, "negative multiplier");
+        assert_eq!(call_gpi(&loader, 393, &[0xBAD, DRO_FILL, fx(1)]), GPI_ERROR, "unknown HPS");
+    }
+
+    /// GpiSetArcParams shapes later arcs; GpiQueryArcParams reads them back.
+    #[test]
+    fn test_gpi_arc_params_shape_the_ellipse() {
+        let loader = Loader::new_mock();
+        let (hps, surface) = shapes_ps(&loader);
+        let pap: u32 = 0x4100;
+        call_gpi(&loader, 422, &[hps, pap]);
+        let read = |i: u32| loader.guest_read::<i32>(pap + 4 * i).unwrap();
+        assert_eq!((read(0), read(1), read(2), read(3)), (1, 1, 0, 0), "a unit circle by default");
+        for (i, v) in [3, 1, 0, 0].iter().enumerate() { loader.guest_write::<i32>(pap + 4 * i as u32, *v).unwrap(); }
+        assert_eq!(call_gpi(&loader, 502, &[hps, pap]), GPI_OK);
+        for i in 0..4 { loader.guest_write::<i32>(pap + 4 * i, 0).unwrap(); }
+        assert_eq!(call_gpi(&loader, 422, &[hps, pap]), GPI_OK);
+        assert_eq!((read(0), read(1), read(2), read(3)), (3, 1, 0, 0));
+
+        move_to(&loader, hps, (100, 50));
+        call_gpi(&loader, 393, &[hps, DRO_OUTLINE, fx(20)]);
+        assert_eq!(rgb(&surface, 160, 50), Some(RED), "x semi-axis 3 × 20");
+        assert_eq!(rgb(&surface, 100, 70), Some(RED), "y semi-axis 1 × 20");
+        assert_eq!(call_gpi(&loader, 502, &[0xBAD, pap]), GPI_ERROR);
+    }
+
+    /// GpiPartialArc: a line from the current position to the arc's start,
+    /// the arc counter-clockwise, current position at its end. GpiPointArc:
+    /// an arc through three points, current position at the last.
+    #[test]
+    fn test_gpi_partial_and_point_arcs() {
+        let loader = Loader::new_mock();
+        let (hps, surface) = shapes_ps(&loader);
+        move_to(&loader, hps, (10, 50));
+        write_point(&loader, PPT, (60, 50));
+        // Centre (60, 50), radius 20, from 0° through 90°.
+        assert_eq!(call_gpi(&loader, 612, &[hps, PPT, fx(20), fx(0), fx(90)]), GPI_OK);
+        assert_eq!(rgb(&surface, 30, 50), Some(RED), "the connecting line");
+        assert_eq!(rgb(&surface, 80, 50), Some(RED), "the arc's start (0°)");
+        assert_eq!(rgb(&surface, 60, 70), Some(RED), "its end (90°)");
+        assert_ne!(rgb(&surface, 60, 30), Some(RED), "270° is not swept");
+        assert_eq!(current_pos(&loader, hps), (60, 70));
+        assert_eq!(call_gpi(&loader, 612, &[hps, PPT, fx(20), fx(0), fx(-5)]), GPI_ERROR, "negative sweep");
+
+        // Through (150, 50) → (130, 70) → (110, 50): the upper half of a
+        // circle of radius 20 about (130, 50).
+        move_to(&loader, hps, (150, 50));
+        write_point(&loader, PPT, (130, 70));
+        write_point(&loader, PPT + 8, (110, 50));
+        assert_eq!(call_gpi(&loader, 412, &[hps, PPT]), GPI_OK);
+        assert_eq!(rgb(&surface, 130, 70), Some(RED));
+        assert_eq!(rgb(&surface, 144, 64), Some(RED), "on the arc between the points");
+        assert_ne!(rgb(&surface, 130, 30), Some(RED), "not the lower half");
+        assert_eq!(current_pos(&loader, hps), (110, 50));
+    }
+
+    /// GpiSetPattern / GpiQueryPattern / GpiSetPatternRefPoint: patterned box
+    /// fills, the background mix for the clear pels, and patterns in
+    /// GpiBitBlt (ROP_PATCOPY).
+    #[test]
+    fn test_gpi_area_patterns() {
+        use super::super::constants::{FM_OVERPAINT, PATSYM_HALFTONE, PATSYM_SOLID, ROP_PATCOPY};
+        let loader = Loader::new_mock();
+        let (hps, surface) = shapes_ps(&loader);
+        assert_eq!(call_gpi(&loader, 473, &[hps]), 0, "PATSYM_DEFAULT");
+        assert_eq!(call_gpi(&loader, 541, &[hps, PATSYM_HALFTONE]), GPI_OK);
+        assert_eq!(call_gpi(&loader, 473, &[hps]), PATSYM_HALFTONE);
+        assert_eq!(call_gpi(&loader, 541, &[hps, 20]), GPI_ERROR, "not a pattern symbol");
+        assert_eq!(call_gpi(&loader, 473, &[hps]), PATSYM_HALFTONE, "unchanged after an error");
+
+        let blank = rgb(&surface, 0, 0);
+        move_to(&loader, hps, (0, 0));
+        write_point(&loader, PPT, (15, 15));
+        assert_eq!(call_gpi(&loader, 356, &[hps, DRO_FILL, PPT, 0, 0]), GPI_OK);
+        assert_eq!(rgb(&surface, 0, 0), Some(RED), "set bit");
+        assert_eq!(rgb(&surface, 1, 0), blank, "clear bit, background left alone");
+        assert_eq!(rgb(&surface, 1, 1), Some(RED));
+
+        // The reference point shifts the pattern by one pel.
+        write_point(&loader, PPT, (1, 0));
+        assert_eq!(call_gpi(&loader, 542, &[hps, PPT]), GPI_OK);
+        write_point(&loader, PPT, (0, 0));
+        assert_eq!(call_gpi(&loader, 474, &[hps, PPT]), GPI_OK);
+        assert_eq!(loader.guest_read::<i32>(PPT).unwrap(), 1);
+        // With an opaque background the clear bits take the background colour.
+        call_gpi(&loader, 504, &[hps, 0x0000_00FF]); // GpiSetBackColor(blue)
+        call_gpi(&loader, 505, &[hps, FM_OVERPAINT]); // GpiSetBackMix(BM_OVERPAINT = 2)
+        move_to(&loader, hps, (20, 0));
+        write_point(&loader, PPT, (35, 15));
+        call_gpi(&loader, 356, &[hps, DRO_FILL, PPT, 0, 0]);
+        assert_eq!(rgb(&surface, 21, 0), Some(RED), "shifted: x = 21 is now set");
+        assert_eq!(rgb(&surface, 20, 0), Some(0x0000_00FF), "and x = 20 background");
+
+        // GpiBitBlt with ROP_PATCOPY paints the pattern, not a solid colour.
+        let apt: u32 = 0x4200;
+        for (i, v) in [40, 0, 56, 16].iter().enumerate() { loader.guest_write::<i32>(apt + 4 * i as u32, *v).unwrap(); }
+        write_point(&loader, PPT, (0, 0));
+        call_gpi(&loader, 542, &[hps, PPT]);
+        assert_eq!(call_gpi(&loader, 355, &[hps, 0, 2, apt, ROP_PATCOPY, 0]), GPI_OK);
+        assert_eq!(rgb(&surface, 40, 0), Some(RED));
+        assert_eq!(rgb(&surface, 41, 0), Some(0x0000_00FF), "pattern background colour");
+        call_gpi(&loader, 541, &[hps, PATSYM_SOLID]);
+        assert_eq!(call_gpi(&loader, 355, &[hps, 0, 2, apt, ROP_PATCOPY, 0]), GPI_OK);
+        assert_eq!(rgb(&surface, 41, 0), Some(RED), "solid pattern");
+        assert_eq!(call_gpi(&loader, 541, &[0xBAD, PATSYM_SOLID]), GPI_ERROR);
+    }
+
+    /// GpiSetLineWidth widens lines, box outlines and arcs; the geometric
+    /// width is stored and reported. Dashed line types apply to box
+    /// outlines too.
+    #[test]
+    fn test_gpi_line_widths() {
+        use super::super::constants::{LINETYPE_SHORTDASH, LINEWIDTH_THICK};
+        let loader = Loader::new_mock();
+        let (hps, surface) = shapes_ps(&loader);
+        assert_eq!(call_gpi(&loader, 460, &[hps]), 0, "LINEWIDTH_DEFAULT");
+        assert_eq!(call_gpi(&loader, 531, &[hps, LINEWIDTH_THICK]), GPI_OK);
+        assert_eq!(call_gpi(&loader, 460, &[hps]), LINEWIDTH_THICK);
+        assert_eq!(call_gpi(&loader, 531, &[hps, fx(-1)]), GPI_ERROR, "negative width");
+
+        move_to(&loader, hps, (10, 20));
+        write_point(&loader, PPT, (60, 20));
+        assert_eq!(call_gpi(&loader, 398, &[hps, PPT]), GPI_OK);
+        let rows: Vec<i32> = (15..26).filter(|&y| rgb(&surface, 30, y) == Some(RED)).collect();
+        assert_eq!(rows.len(), 2, "a thick line is two pels wide: {rows:?}");
+
+        call_gpi(&loader, 531, &[hps, fx(5)]);
+        move_to(&loader, hps, (100, 40));
+        call_gpi(&loader, 393, &[hps, DRO_OUTLINE, fx(20)]);
+        let cols: Vec<i32> = (110..131).filter(|&x| rgb(&surface, x, 40) == Some(RED)).collect();
+        assert_eq!(cols, (118..=122).collect::<Vec<_>>(), "a 5-pel arc outline centred on the curve");
+
+        // A dashed box outline at normal width.
+        call_gpi(&loader, 531, &[hps, 0]);
+        call_gpi(&loader, 530, &[hps, LINETYPE_SHORTDASH]);
+        move_to(&loader, hps, (10, 60));
+        write_point(&loader, PPT, (60, 90));
+        call_gpi(&loader, 356, &[hps, DRO_OUTLINE, PPT, 0, 0]);
+        let dashes: Vec<bool> = (10..26).map(|x| rgb(&surface, x, 60) == Some(RED)).collect();
+        assert!(dashes.contains(&true) && dashes.contains(&false), "dashed: {dashes:?}");
+
+        assert_eq!(call_gpi(&loader, 461, &[hps]), 0, "geometric width");
+        assert_eq!(call_gpi(&loader, 532, &[hps, 12]), GPI_OK);
+        assert_eq!(call_gpi(&loader, 461, &[hps]), 12);
+        assert_eq!(call_gpi(&loader, 532, &[hps, -3i32 as u32]), GPI_ERROR);
+        assert_eq!(call_gpi(&loader, 460, &[0xBAD]), -1i32 as u32, "LINEWIDTH_ERROR");
     }
 
     /// GpiSetMix changes how drawing combines with the pels already there;

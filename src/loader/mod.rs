@@ -23,6 +23,7 @@ mod doscalls;
 mod pm_win;
 mod pm_gpi;
 mod pm_bitmap;
+pub mod pm_shapes;
 mod stubs;
 pub mod console;
 mod kbdcalls;
