@@ -1250,6 +1250,7 @@ To add a new OS/2 API call:
    ```
 
 4. **Add a named constant** — If the ordinal is used elsewhere, add it to `constants.rs`.
+   Message numbers, flags, error codes and other values that have a toolkit `#define` keep the toolkit's name and value — copy them from the header (`vendor/watcom/h/os2/*.h`), never from memory. The unit test `constants_match_toolkit_headers` compares every integer `const` in `src/` whose name is a toolkit `#define` with the header value (it runs when the Open Watcom headers are installed); a constant that shares a name but means something else goes in its `NOT_TOOLKIT` list.
 
 5. **Test** — Build with `cargo build`, run with an OS/2 binary that uses the API, verify with `RUST_LOG=debug`.
 
@@ -1634,7 +1635,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 767 unit tests (738 warpine + 18 gen_api + 11 lx_link), 33 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 770 unit tests (741 warpine + 18 gen_api + 11 lx_link), 33 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

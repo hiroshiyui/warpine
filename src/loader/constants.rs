@@ -715,3 +715,123 @@ pub const XCPT_SINGLE_STEP:             u32 = 0xC000_00A0;
 pub const XCPT_SIGNAL:                  u32 = 0xC001_0003;
 /// Catch-all for unclassified hardware faults.
 pub const XCPT_FATAL_EXCEPTION:         u32 = 0xC000_0000;
+
+#[cfg(test)]
+mod header_tests {
+    //! Every constant named after an OS/2 toolkit `#define` must have the
+    //! header's value: guest programs are compiled against those headers.
+    //! Runs when the Open Watcom headers are installed
+    //! (`./vendor/setup_watcom.sh`); they are not part of the repository.
+
+    use std::collections::{HashMap, HashSet};
+    use std::path::Path;
+
+    /// Constants that share a toolkit name but mean something else here.
+    const NOT_TOOLKIT: &[&str] = &[
+        "ATTR_ERROR", // cmd.rs: the VGA text attribute for error messages
+    ];
+
+    fn parse_int(token: &str) -> Option<i64> {
+        let t = token.trim().replace('_', "");
+        let (neg, t) = t.strip_prefix('-').map_or((false, t.as_str()), |r| (true, r));
+        let t = t.trim_end_matches(['L', 'l', 'U', 'u']);
+        let v = match t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
+            Some(hex) => i64::from_str_radix(hex, 16).ok()?,
+            None => t.parse().ok()?,
+        };
+        Some(if neg { -v } else { v })
+    }
+
+    /// The value of a `#define NAME value` line: a plain number, optionally
+    /// in parentheses and with a cast such as `(HWND)1`.
+    fn define_value(rest: &str) -> Option<i64> {
+        let rest = rest.split("/*").next()?.split("//").next()?.trim();
+        let mut t = rest.trim_start_matches('(').trim_end_matches(')').trim();
+        if let Some(i) = t.find(')') {
+            t = t[i + 1..].trim().trim_start_matches('(').trim_end_matches(')');
+        }
+        parse_int(t)
+    }
+
+    fn header_values(dir: &Path) -> HashMap<String, HashSet<i64>> {
+        let mut out: HashMap<String, HashSet<i64>> = HashMap::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for entry in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|e| e == "h") {
+                    let text = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+                    for line in text.lines() {
+                        let Some(rest) = line.trim_start().strip_prefix("#define") else { continue };
+                        let mut parts = rest.trim_start().splitn(2, char::is_whitespace);
+                        let (Some(name), Some(value)) = (parts.next(), parts.next()) else { continue };
+                        if let Some(v) = define_value(value) {
+                            out.entry(name.to_string()).or_default().insert(v);
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// `(file:line, name, value, bits)` of every integer `const` in `src/`.
+    fn source_constants(dir: &Path) -> Vec<(String, String, i64, u32)> {
+        let mut out = Vec::new();
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for entry in std::fs::read_dir(&d).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().is_none_or(|e| e != "rs") { continue; }
+                let text = std::fs::read_to_string(&path).unwrap();
+                for (i, line) in text.lines().enumerate() {
+                    let Some(pos) = line.find("const ") else { continue };
+                    let decl = &line[pos + 6..];
+                    let Some((name, rest)) = decl.split_once(':') else { continue };
+                    let Some((ty, value)) = rest.split_once('=') else { continue };
+                    let bits = match ty.trim() {
+                        "u8" | "i8" => 8, "u16" | "i16" => 16, "u32" | "i32" => 32, _ => continue,
+                    };
+                    let value = value.split(';').next().unwrap_or("").trim();
+                    let value = value.split(" as ").next().unwrap_or("");
+                    if let Some(v) = parse_int(value) {
+                        out.push((format!("{}:{}", path.display(), i + 1),
+                                  name.trim().to_string(), v, bits));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn constants_match_toolkit_headers() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let headers = root.join("vendor/watcom/h/os2");
+        if !headers.is_dir() {
+            eprintln!("skipped: Open Watcom headers not installed ({})", headers.display());
+            return;
+        }
+        let defs = header_values(&headers);
+        assert!(defs.contains_key("WM_COMMAND"), "header parsing found no PM messages");
+        let mut wrong = Vec::new();
+        let mut checked = 0;
+        for (at, name, value, bits) in source_constants(&root.join("src")) {
+            let Some(expected) = defs.get(&name) else { continue };
+            if NOT_TOOLKIT.contains(&name.as_str()) { continue; }
+            checked += 1;
+            let mask = (1i64 << bits) - 1;
+            if !expected.iter().any(|&e| e & mask == value & mask) {
+                wrong.push(format!("{at}: {name} = {value:#x}, header {expected:x?}"));
+            }
+        }
+        assert!(checked > 100, "only {checked} constants compared");
+        assert!(wrong.is_empty(), "constants differ from the toolkit headers:\n{}", wrong.join("\n"));
+    }
+}
