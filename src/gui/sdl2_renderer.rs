@@ -2,13 +2,13 @@
 
 use std::sync::Arc;
 use std::collections::{HashMap, HashSet};
-use sdl2::event::Event;
-use sdl2::keyboard::{Keycode, Mod as KeyMod, Scancode};
-use sdl2::pixels::PixelFormatEnum;
-use sdl2::render::{BlendMode, Canvas, Texture};
-use sdl2::video::Window;
+use sdl3::event::Event;
+use sdl3::keyboard::{Keycode, Mod as KeyMod, Scancode};
+use sdl3::pixels::PixelFormat;
+use sdl3::render::{BlendMode, Canvas, FRect, Texture, TextureCreator};
+use sdl3::video::{Window, WindowContext};
 use log::debug;
-use sdl2::messagebox::{show_message_box, ButtonData, MessageBoxButtonFlag, MessageBoxFlag};
+use sdl3::messagebox::{show_message_box, ButtonData, MessageBoxButtonFlag, MessageBoxFlag};
 use crate::loader::{SharedState, OS2Message, MutexExt,
     WM_CLOSE, WM_SIZE, WM_PAINT, WM_CHAR, WM_MOUSEMOVE,
     WM_BUTTON1DOWN, WM_BUTTON1UP, WM_BUTTON2DOWN, WM_BUTTON2UP, WM_BUTTON3DOWN, WM_BUTTON3UP,
@@ -355,48 +355,40 @@ fn draw_filled_rect(buf: &mut [u32], buf_w: usize,
 /// The single SDL2 window that acts as the OS/2 desktop.
 struct DesktopCanvas {
     canvas:  Canvas<Window>,
-    texture: Texture,
+    /// The canvas's texture factory, kept for the life of the process so the
+    /// lifetime-checked texture can be `'static` (no `unsafe_textures`).
+    creator: &'static TextureCreator<WindowContext>,
+    texture: Texture<'static>,
     buffer:  Vec<u32>,
     width:   u32,
     height:  u32,
 }
 
 impl DesktopCanvas {
-    fn new(video: &sdl2::VideoSubsystem, w: u32, h: u32) -> Self {
+    fn new(video: &sdl3::VideoSubsystem, w: u32, h: u32) -> Self {
         let window = video
             .window("Warpine \u{2014} OS/2 Compatibility Layer", w, h)
             .position_centered()
             .resizable()
             .build()
-            .expect("Failed to create desktop SDL2 window");
-        let canvas = window
-            .into_canvas()
-            .software()
-            .build()
+            .expect("Failed to create desktop SDL window");
+        // The compositor does all drawing in software; SDL's software
+        // renderer avoids a GPU round trip for one full-window texture.
+        let canvas = sdl3::render::create_renderer(window, Some(SOFTWARE_RENDERER))
             .expect("Failed to create desktop canvas");
         let (cw, ch) = canvas.output_size().expect("output_size failed");
-        let texture = {
-            let tc = canvas.texture_creator();
-            let mut t = tc
-                .create_texture_streaming(PixelFormatEnum::ARGB8888, cw, ch)
-                .expect("Failed to create desktop texture");
-            t.set_blend_mode(BlendMode::None);
-            t
-        };
+        let creator: &'static TextureCreator<WindowContext> =
+            Box::leak(Box::new(canvas.texture_creator()));
+        let texture = desktop_texture(creator, cw, ch);
         let n = (cw as usize).saturating_mul(ch as usize);
-        DesktopCanvas { canvas, texture, buffer: vec![DESKTOP_BG; n], width: cw, height: ch }
+        DesktopCanvas { canvas, creator, texture, buffer: vec![DESKTOP_BG; n], width: cw, height: ch }
     }
 
     /// Recreate the streaming texture after a resize.
     fn resize_texture(&mut self, w: u32, h: u32) {
         self.width  = w;
         self.height = h;
-        let tc = self.canvas.texture_creator();
-        let mut t = tc
-            .create_texture_streaming(PixelFormatEnum::ARGB8888, w, h)
-            .expect("Failed to recreate desktop texture");
-        t.set_blend_mode(BlendMode::None);
-        self.texture = t;
+        self.texture = desktop_texture(self.creator, w, h);
         let n = (w as usize).saturating_mul(h as usize);
         self.buffer = vec![DESKTOP_BG; n];
     }
@@ -406,28 +398,33 @@ impl DesktopCanvas {
     ///
     /// Uses `Texture::update` (`SDL_UpdateTexture`), which reads each
     /// rectangle straight out of `buffer` with the buffer's row pitch.
-    /// `Texture::with_lock` is avoided: with a rectangle, sdl2 0.38 passes
-    /// SDL a pointer to a temporary that has already been dropped, which
-    /// crashes optimised builds.
     fn present(&mut self, damaged: &[Rect]) {
         let w = self.width as usize;
-        // Safety: viewing the `u32` pixels as bytes is valid for reads, has
-        // no alignment requirement, and covers exactly the same memory.
-        let bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(self.buffer.as_ptr() as *const u8, self.buffer.len() * 4)
-        };
+        let bytes: &[u8] = bytemuck::cast_slice(&self.buffer);
         for r in damaged {
             let r = r.intersect(&Rect::at(0, 0, self.width as i32, self.height as i32));
             if r.is_empty() { continue; }
-            let area = sdl2::rect::Rect::new(r.x0, r.y0, r.width() as u32, r.height() as u32);
+            let area = sdl3::rect::Rect::new(r.x0, r.y0, r.width() as u32, r.height() as u32);
             // SDL reads `height` rows of `width` pixels, `w * 4` bytes apart,
             // from here; `r` lies inside the buffer, so that stays in bounds.
             let start = (r.y0 as usize * w + r.x0 as usize) * 4;
             self.texture.update(area, &bytes[start..], w * 4).expect("desktop texture update failed");
         }
-        self.canvas.copy(&self.texture, None, None).expect("canvas copy failed");
+        self.canvas.copy(&self.texture, None::<FRect>, None::<FRect>).expect("canvas copy failed");
         self.canvas.present();
     }
+}
+
+/// SDL's software renderer, by name.
+const SOFTWARE_RENDERER: &std::ffi::CStr = c"software";
+
+/// A streaming texture of `w` × `h` desktop pixels (XRGB, no blending).
+fn desktop_texture(creator: &'static TextureCreator<WindowContext>, w: u32, h: u32) -> Texture<'static> {
+    let mut t = creator
+        .create_texture_streaming(PixelFormat::ARGB8888, w, h)
+        .expect("Failed to create desktop texture");
+    t.set_blend_mode(BlendMode::None);
+    t
 }
 
 // ── Compositor: chrome cache, frame placement, damage ─────────────────────
@@ -664,9 +661,9 @@ struct ResizeState {
 /// Created on the main thread; must stay on the main thread for the duration
 /// of `run_pm_loop`.
 pub struct Sdl2Renderer {
-    video:       sdl2::VideoSubsystem,
-    event:       sdl2::EventSubsystem,
-    event_pump:  sdl2::EventPump,
+    video:       sdl3::VideoSubsystem,
+    event:       sdl3::EventSubsystem,
+    event_pump:  sdl3::EventPump,
     desktop:     DesktopCanvas,
     /// Frame → pre-rendered title bar, menu bar and pull-down.
     chrome: HashMap<u32, ChromeCache>,
@@ -681,9 +678,16 @@ pub struct Sdl2Renderer {
     /// Whether the host clipboard has been read at least once. After that it
     /// is re-read only on SDL clipboard-update and focus-gained events.
     clipboard_synced: bool,
-    /// SDL user-event type pushed by the wake hook; `None` if SDL could not
-    /// register one or the video driver cannot block (see `driver_can_wait`).
-    wake_event_type: Option<u32>,
+    /// Wait in SDL's own event wait, woken by a pushed [`WakeEvent`];
+    /// false if the video driver cannot block (see `driver_can_wait`) or
+    /// the event type could not be registered.
+    native_wait: bool,
+    /// Mouse capture during drags (`SetMouseCapture`).
+    mouse: sdl3::mouse::MouseUtil,
+    /// MMPM/2 and DosBeep audio, played on this (main) thread.
+    audio: super::audio::SdlAudio,
+    /// The loop's wake-up once installed; audio commands use it.
+    wake_slot: Arc<std::sync::OnceLock<Arc<GuiWake>>>,
     /// The channel's wake-up, for drivers where the loop blocks on it.
     wake: Option<Arc<GuiWake>>,
     /// Events received while waiting, handled on the next `poll_events`.
@@ -708,32 +712,31 @@ impl Sdl2Renderer {
     ///
     /// `sdl` must outlive this renderer.  Typical usage:
     /// ```rust,ignore
-    /// let sdl = sdl2::init().unwrap();
-    /// let mut renderer = Sdl2Renderer::new(&sdl);
+    /// let sdl = sdl3::init().unwrap();
+    /// let mut renderer = Sdl2Renderer::new(&sdl, &shared.audio);
     /// run_pm_loop(&mut renderer, shared, rx);
     /// ```
-    pub fn new(sdl: &sdl2::Sdl) -> Self {
+    /// `audio` gets its output attached here, before the guest starts, so
+    /// early sounds are not lost; commands wake the loop once
+    /// `install_waker` has run.
+    pub fn new(sdl: &sdl3::Sdl, audio: &super::audio::AudioService) -> Self {
         let (dw, dh) = crate::loader::constants::desktop_size();
         let video      = sdl.video().expect("SDL2 video subsystem init failed");
         let event      = sdl.event().expect("SDL2 event subsystem init failed");
         let event_pump = sdl.event_pump().expect("SDL2 event pump init failed");
         let desktop    = DesktopCanvas::new(&video, dw, dh);
         // Typed characters are taken from SDL TextInput events (see
-        // `build_wm_char`); make sure they are being generated.
-        video.text_input().start();
+        // `build_wm_char`); SDL3 generates them per window, once started.
+        video.text_input().start(desktop.canvas.window());
         // Block in SDL's own wait only where the video driver can really
         // block on input; the headless drivers have no input to wait for and
         // SDL would poll internally instead.
-        let wake_event_type = if driver_can_wait(video.current_video_driver()) {
-            // Safety: SDL_RegisterEvents only reserves event numbers; SDL is
-            // initialised and this runs on the main thread.
-            unsafe { event.register_event() }
+        let native_wait = driver_can_wait(video.current_video_driver())
+            && event.register_custom_event::<WakeEvent>()
                 .map_err(|e| log::warn!("[GUI] no SDL user event for wake-ups ({e})"))
-                .ok()
-        } else {
-            None
-        };
+                .is_ok();
         let now = Instant::now();
+        let wake_slot: Arc<std::sync::OnceLock<Arc<GuiWake>>> = Arc::default();
         Sdl2Renderer {
             video,
             event,
@@ -744,7 +747,17 @@ impl Sdl2Renderer {
             force_full: true,
             cached_clipboard: String::new(),
             clipboard_synced: false,
-            wake_event_type,
+            native_wait,
+            mouse: sdl.mouse(),
+            audio: {
+                let mut a = super::audio::SdlAudio::new(sdl);
+                let slot = wake_slot.clone();
+                a.attach(audio, Box::new(move || {
+                    if let Some(w) = slot.get() { w.wake(); }
+                }));
+                a
+            },
+            wake_slot,
             wake: None,
             pending_events: Vec::new(),
             stats: FrameStats::new(now),
@@ -900,9 +913,9 @@ impl Sdl2Renderer {
                 return false;
             }
             Event::Window { win_event, .. } => {
-                use sdl2::event::WindowEvent;
+                use sdl3::event::WindowEvent;
                 match win_event {
-                    WindowEvent::Close => {
+                    WindowEvent::CloseRequested => {
                         shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
                         let focused = shared.window_mgr.lock_or_recover().focused_hwnd;
                         if focused != 0 {
@@ -981,6 +994,8 @@ impl Sdl2Renderer {
                 }
             }
             Event::MouseMotion { x, y, .. } => {
+                // SDL3 reports float pixels; PM works in whole pels.
+                let (x, y) = (x as i32, y as i32);
                 // VDR-C5: if a resize is active, update window geometry.
                 if let Some(ref rs) = self.resize_state {
                     let dx = x - rs.press_x;
@@ -1079,6 +1094,8 @@ impl Sdl2Renderer {
                 }
             }
             Event::MouseButtonDown { mouse_btn, x, y, .. } => {
+                // SDL3 reports float pixels; PM works in whole pels.
+                let (x, y) = (x as i32, y as i32);
                 let os2_y = (dh as i32 - 1) - y;
                 // VDR-D6: captured window overrides hit-test.
                 let capture = shared.window_mgr.lock_or_recover().capture_hwnd;
@@ -1186,7 +1203,7 @@ impl Sdl2Renderer {
                                     .map(|w| (x - w.x, os2_y - w.y))
                                     .unwrap_or((x, os2_y))
                             };
-                            use sdl2::mouse::MouseButton;
+                            use sdl3::mouse::MouseButton;
                             let msg = match mouse_btn {
                                 MouseButton::Left   => Some(WM_BUTTON1DOWN),
                                 MouseButton::Right  => Some(WM_BUTTON2DOWN),
@@ -1214,6 +1231,8 @@ impl Sdl2Renderer {
                 }
             }
             Event::MouseButtonUp { mouse_btn, x, y, .. } => {
+                // SDL3 reports float pixels; PM works in whole pels.
+                let (x, y) = (x as i32, y as i32);
                 // VDR-C5: end resize on button release.
                 if let Some(rs) = self.resize_state.take() {
                     let hwnd = rs.hwnd;
@@ -1256,7 +1275,7 @@ impl Sdl2Renderer {
                             .map(|w| (x - w.x, os2_y - w.y))
                             .unwrap_or((x, os2_y))
                     };
-                    use sdl2::mouse::MouseButton;
+                    use sdl3::mouse::MouseButton;
                     let (hwnd, local_x, local_y) = if mouse_btn == MouseButton::Left && capture == 0 {
                         route_button1(shared, hwnd, local_x, local_y, false).0
                     } else {
@@ -1316,14 +1335,7 @@ impl PmRenderer for Sdl2Renderer {
             }
             GUIMessage::SetMouseCapture(hwnd) => {
                 // hwnd == 0 releases capture; any other value acquires it.
-                // Safety: SDL2 is initialised; SDL_CaptureMouse is thread-safe.
-                unsafe {
-                    sdl2::sys::SDL_CaptureMouse(if hwnd != 0 {
-                        sdl2::sys::SDL_bool::SDL_TRUE
-                    } else {
-                        sdl2::sys::SDL_bool::SDL_FALSE
-                    });
-                }
+                self.mouse.capture(hwnd != 0);
             }
             GUIMessage::ShowMessageBox { caption, text, style, reply_tx } => {
                 // Map MB_ICON* bits to an SDL2 flag.
@@ -1344,7 +1356,7 @@ impl PmRenderer for Sdl2Renderer {
                 }).collect();
 
                 let mbid = match show_message_box(flag, &buttons, &caption, &text, None, None) {
-                    Ok(sdl2::messagebox::ClickedButton::CustomButton(b)) => b.button_id as u32,
+                    Ok(sdl3::messagebox::ClickedButton::CustomButton(b)) => b.button_id as u32,
                     // Close button or error → default to first button's id
                     _ => button_defs.first().map(|b| b.0 as u32).unwrap_or(crate::loader::MBID_OK),
                 };
@@ -1356,16 +1368,17 @@ impl PmRenderer for Sdl2Renderer {
 
     fn poll_events(&mut self, shared: &Arc<SharedState>) -> bool {
         self.stats.record_iteration();
+        // Audio commands from the vCPU threads (they wake this loop too).
+        self.audio.pump(&shared.audio);
         // Read the host clipboard once at start-up; after that SDL tells us
         // when it changes (ClipboardUpdate) and we re-read on focus gain.
         if !self.clipboard_synced {
             self.sync_host_clipboard(shared);
         }
 
-        let wake_type = self.wake_event_type;
         let mut events: Vec<_> = self.pending_events.drain(..)
             .chain(self.event_pump.poll_iter())
-            .filter(|e| !is_wake_event(e, wake_type))
+            .filter(|e| !is_wake_event(e))
             .collect();
 
         // Scripted session: turn due steps into input events and captures.
@@ -1414,15 +1427,13 @@ impl PmRenderer for Sdl2Renderer {
 
     fn install_waker(&mut self, wake: Arc<GuiWake>) {
         self.wake = Some(wake.clone());
-        let Some(type_) = self.wake_event_type else { return };
+        let _ = self.wake_slot.set(wake.clone());
+        if !self.native_wait { return; }
         let sender = self.event.event_sender();
         wake.set_hook(Box::new(move || {
             // SDL_PushEvent is thread-safe. A failure (queue full, SDL shut
             // down) only costs latency: the loop still wakes by IDLE_WAIT.
-            let _ = sender.push_event(Event::User {
-                timestamp: 0, window_id: 0, type_, code: 0,
-                data1: std::ptr::null_mut(), data2: std::ptr::null_mut(),
-            });
+            let _ = sender.push_custom_event(WakeEvent);
         }));
     }
 
@@ -1434,23 +1445,26 @@ impl PmRenderer for Sdl2Renderer {
         // follows would spin the loop.
         let busy = self.force_full || !shared.window_mgr.lock_or_recover().dirty.is_empty();
         let script_next = self.script.as_ref().and_then(GuiScript::next_due);
-        let timeout = wait_timeout(Instant::now(), self.last_composite, busy, script_next);
+        let mut timeout = wait_timeout(Instant::now(), self.last_composite, busy, script_next);
+        // Notice finished audio promptly (MCI_WAIT, MM_MCINOTIFY, DosBeep).
+        if self.audio.busy() {
+            timeout = timeout.min(super::audio::AUDIO_PUMP_INTERVAL);
+        }
         if timeout.is_zero() {
             return;
         }
-        match (self.wake_event_type, &self.wake) {
+        match (self.native_wait, &self.wake) {
             // Native wait: input and wake-ups (pushed as user events) both
             // end it.
-            (Some(_), _) => {
-                let ms = timeout.as_millis().clamp(1, u32::MAX as u128) as u32;
-                if let Some(event) = self.event_pump.wait_event_timeout(ms) {
+            (true, _) => {
+                if let Some(event) = self.event_pump.wait_event_timeout(timeout.max(Duration::from_millis(1))) {
                     self.pending_events.push(event);
                 }
             }
             // Headless driver: no real input, so wake-ups and the deadline
             // (which includes the next scripted step) are all there is.
-            (None, Some(wake)) => wake.wait(timeout),
-            (None, None) => std::thread::sleep(timeout.min(super::renderer::POLL_PERIOD)),
+            (false, Some(wake)) => wake.wait(timeout),
+            (false, None) => std::thread::sleep(timeout.min(super::renderer::POLL_PERIOD)),
         }
     }
 }
@@ -1465,9 +1479,13 @@ fn driver_can_wait(driver: &str) -> bool {
     !NON_WAITING_DRIVERS.iter().any(|d| d.eq_ignore_ascii_case(driver))
 }
 
-/// Whether `event` is the user event the wake hook pushes.
-fn is_wake_event(event: &Event, wake_type: Option<u32>) -> bool {
-    matches!(event, Event::User { type_, .. } if Some(*type_) == wake_type)
+/// The user event the wake hook pushes: zero-sized, so pushing it
+/// allocates nothing.
+struct WakeEvent;
+
+/// Whether `event` is a [`WakeEvent`]. Warpine pushes no other user events.
+fn is_wake_event(event: &Event) -> bool {
+    event.is_user_event() && event.as_user_event_type::<WakeEvent>().is_some()
 }
 
 // ── Internal helpers ───────────────────────────────────────────────────────
@@ -1640,16 +1658,16 @@ pub fn push_msg(shared: &Arc<SharedState>, hwnd: u32, msg: u32, mp1: u32, mp2: u
 pub fn sdl_scancode_to_os2(sc: Scancode) -> u8 {
     match sc {
         Scancode::Escape       => 0x01,
-        Scancode::Num1         => 0x02,
-        Scancode::Num2         => 0x03,
-        Scancode::Num3         => 0x04,
-        Scancode::Num4         => 0x05,
-        Scancode::Num5         => 0x06,
-        Scancode::Num6         => 0x07,
-        Scancode::Num7         => 0x08,
-        Scancode::Num8         => 0x09,
-        Scancode::Num9         => 0x0A,
-        Scancode::Num0         => 0x0B,
+        Scancode::_1         => 0x02,
+        Scancode::_2         => 0x03,
+        Scancode::_3         => 0x04,
+        Scancode::_4         => 0x05,
+        Scancode::_5         => 0x06,
+        Scancode::_6         => 0x07,
+        Scancode::_7         => 0x08,
+        Scancode::_8         => 0x09,
+        Scancode::_9         => 0x0A,
+        Scancode::_0         => 0x0B,
         Scancode::Minus        => 0x0C,
         Scancode::Equals       => 0x0D,
         Scancode::Backspace    => 0x0E,
@@ -1883,10 +1901,10 @@ fn script_key_to_sdl(key: gui_script::Key) -> Option<(Keycode, Scancode)> {
                 'q' => Scancode::Q, 'r' => Scancode::R, 's' => Scancode::S, 't' => Scancode::T,
                 'u' => Scancode::U, 'v' => Scancode::V, 'w' => Scancode::W, 'x' => Scancode::X,
                 'y' => Scancode::Y, 'z' => Scancode::Z,
-                '1' => Scancode::Num1, '2' => Scancode::Num2, '3' => Scancode::Num3,
-                '4' => Scancode::Num4, '5' => Scancode::Num5, '6' => Scancode::Num6,
-                '7' => Scancode::Num7, '8' => Scancode::Num8, '9' => Scancode::Num9,
-                '0' => Scancode::Num0,
+                '1' => Scancode::_1, '2' => Scancode::_2, '3' => Scancode::_3,
+                '4' => Scancode::_4, '5' => Scancode::_5, '6' => Scancode::_6,
+                '7' => Scancode::_7, '8' => Scancode::_8, '9' => Scancode::_9,
+                '0' => Scancode::_0,
                 '`' => Scancode::Grave,       '-' => Scancode::Minus,
                 '=' => Scancode::Equals,      '[' => Scancode::LeftBracket,
                 ']' => Scancode::RightBracket, '\\' => Scancode::Backslash,
@@ -1896,7 +1914,7 @@ fn script_key_to_sdl(key: gui_script::Key) -> Option<(Keycode, Scancode)> {
                 _ => return None,
             };
             // SDL key codes of printable keys are their unshifted ASCII codes.
-            (Keycode::from_i32(c as i32)?, scancode)
+            (Keycode::from_u32(c as u32)?, scancode)
         }
     })
 }
@@ -1917,7 +1935,7 @@ fn script_mods_to_sdl(mods: gui_script::Mods) -> KeyMod {
 /// input, and for a key SDL has no code for.
 fn script_input_to_event(input: &gui_script::Input) -> Option<Event> {
     use gui_script::{Button, Input};
-    use sdl2::mouse::{MouseButton, MouseState};
+    use sdl3::mouse::{MouseButton, MouseState};
     let sdl_button = |b: &Button| match b {
         Button::Left  => MouseButton::Left,
         Button::Right => MouseButton::Right,
@@ -1925,24 +1943,24 @@ fn script_input_to_event(input: &gui_script::Input) -> Option<Event> {
     let (timestamp, window_id, which) = (0, 0, 0);
     Some(match input {
         Input::MouseDown { button, x, y } => Event::MouseButtonDown {
-            timestamp, window_id, which, mouse_btn: sdl_button(button), clicks: 1, x: *x, y: *y },
+            timestamp, window_id, which, mouse_btn: sdl_button(button), clicks: 1, x: *x as f32, y: *y as f32 },
         Input::MouseUp { button, x, y } => Event::MouseButtonUp {
-            timestamp, window_id, which, mouse_btn: sdl_button(button), clicks: 1, x: *x, y: *y },
+            timestamp, window_id, which, mouse_btn: sdl_button(button), clicks: 1, x: *x as f32, y: *y as f32 },
         Input::MouseDrag { x, y, dx, dy } => Event::MouseMotion {
             timestamp, window_id, which,
             mousestate: MouseState::from_sdl_state(SDL_LEFT_BUTTON_MASK),
-            x: *x, y: *y, xrel: *dx, yrel: *dy },
+            x: *x as f32, y: *y as f32, xrel: *dx as f32, yrel: *dy as f32 },
         Input::KeyDown { key, mods } => {
             let (keycode, scancode) = script_key_to_sdl(*key)?;
             Event::KeyDown { timestamp, window_id, keycode: Some(keycode),
                              scancode: Some(scancode), keymod: script_mods_to_sdl(*mods),
-                             repeat: false }
+                             repeat: false, which, raw: 0 }
         }
         Input::KeyUp { key, mods } => {
             let (keycode, scancode) = script_key_to_sdl(*key)?;
             Event::KeyUp { timestamp, window_id, keycode: Some(keycode),
                            scancode: Some(scancode), keymod: script_mods_to_sdl(*mods),
-                           repeat: false }
+                           repeat: false, which, raw: 0 }
         }
         Input::TextInput(text) => Event::TextInput { timestamp, window_id, text: text.clone() },
         Input::Quit => Event::Quit { timestamp },
@@ -2003,7 +2021,7 @@ mod tests {
                 MENU_BG_COLOR, MENU_EDGE_COLOR, MENU_HILITE_COLOR,
                 MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H, MIS_SEPARATOR};
     use crate::loader::constants::{MIS_TEXT, MIS_SUBMENU};
-    use sdl2::keyboard::{Keycode, Mod as KeyMod, Scancode};
+    use sdl3::keyboard::{Keycode, Mod as KeyMod, Scancode};
     use crate::loader::{MBID_OK, MBID_CANCEL, MBID_RETRY, MBID_YES, MBID_NO, MBID_ENTER,
                         MB_OK, MB_OKCANCEL, MB_RETRYCANCEL, MB_YESNO, MB_ENTERCANCEL};
 
@@ -2040,16 +2058,13 @@ mod tests {
         assert!(wait_timeout(now, now, true, Some(now - Duration::from_millis(1))).is_zero());
     }
 
+    /// Input events are never mistaken for wake-ups. (A real `WakeEvent`
+    /// needs an initialised SDL event subsystem to register its type; the
+    /// GUI integration tests exercise that path.)
     #[test]
-    fn only_the_registered_user_event_is_a_wake_event() {
-        let user = |type_| Event::User {
-            timestamp: 0, window_id: 0, type_, code: 0,
-            data1: std::ptr::null_mut(), data2: std::ptr::null_mut(),
-        };
-        assert!(is_wake_event(&user(0x8001), Some(0x8001)));
-        assert!(!is_wake_event(&user(0x8002), Some(0x8001)));
-        assert!(!is_wake_event(&user(0x8001), None));
-        assert!(!is_wake_event(&Event::Quit { timestamp: 0 }, Some(0x8001)));
+    fn input_events_are_not_wake_events() {
+        assert!(!is_wake_event(&Event::Quit { timestamp: 0 }));
+        assert!(!is_wake_event(&Event::TextInput { timestamp: 0, window_id: 0, text: "a".into() }));
     }
 
     #[test]
@@ -2224,7 +2239,7 @@ mod tests {
         // SDL2 printable keycodes equal their ASCII value directly
         assert_eq!(sdl_keycode_to_char(Keycode::A), b'a' as u32);
         assert_eq!(sdl_keycode_to_char(Keycode::Space), b' ' as u32);
-        assert_eq!(sdl_keycode_to_char(Keycode::Num1), b'1' as u32);
+        assert_eq!(sdl_keycode_to_char(Keycode::_1), b'1' as u32);
     }
 
     #[test]
@@ -2279,7 +2294,7 @@ mod tests {
     #[test]
     fn vk_mapping_returns_zero_for_printable() {
         assert_eq!(sdl_keycode_to_vk(Keycode::A), 0);
-        assert_eq!(sdl_keycode_to_vk(Keycode::Num5), 0);
+        assert_eq!(sdl_keycode_to_vk(Keycode::_5), 0);
     }
 
     #[test]
@@ -2355,7 +2370,7 @@ mod tests {
         };
         for km in [KeyMod::NOMOD, KeyMod::RSHIFTMOD, KeyMod::CAPSMOD] {
             assert_eq!(key(Keycode::A, Scancode::A, km, false), None);
-            assert_eq!(key(Keycode::Num1, Scancode::Num1, km, false), None);
+            assert_eq!(key(Keycode::_1, Scancode::_1, km, false), None);
             assert_eq!(key(Keycode::Space, Scancode::Space, km, false), None);
         }
         assert_eq!(key(Keycode::Backspace, Scancode::Backspace, KeyMod::NOMOD, false), Some((EditKey::Backspace, false)));
@@ -2476,7 +2491,7 @@ mod tests {
 mod script_tests {
     use super::*;
     use super::gui_script::{Input, Key, Mods};
-    use sdl2::mouse::MouseButton;
+    use sdl3::mouse::MouseButton;
 
     /// The SDL events one script line turns into.
     fn script_events(line: &str) -> Vec<Event> {
@@ -2513,7 +2528,8 @@ mod script_tests {
         for key in named.chain(function).chain(printable).chain(modifiers) {
             let (keycode, scancode) = script_key_to_sdl(key)
                 .unwrap_or_else(|| panic!("{key:?} has no SDL key"));
-            assert_eq!(Keycode::from_scancode(scancode), Some(keycode),
+            let no_mods = sdl3::sys::keycode::SDL_Keymod(KeyMod::NOMOD.bits());
+            assert_eq!(Keycode::from_scancode(scancode, no_mods, false), Some(keycode),
                 "{key:?}: scan code and key code name different keys");
             assert_ne!(sdl_scancode_to_os2(scancode), 0, "{key:?} has no OS/2 scan code");
             match key {
@@ -2622,8 +2638,8 @@ mod script_tests {
         let events = script_events("0 drag 100 40 300 240");
         assert_eq!(events.len(), gui_script::DRAG_MOVES as usize + 2);
         assert!(matches!(events[0],
-            Event::MouseButtonDown { mouse_btn: MouseButton::Left, x: 100, y: 40, .. }));
-        let mut last = (100, 40);
+            Event::MouseButtonDown { mouse_btn: MouseButton::Left, x: 100.0, y: 40.0, .. }));
+        let mut last = (100.0, 40.0);
         for event in &events[1..events.len() - 1] {
             let Event::MouseMotion { mousestate, x, y, xrel, yrel, .. } = event else {
                 panic!("expected motion, got {event:?}");
@@ -2633,17 +2649,17 @@ mod script_tests {
             assert!(*x > last.0 && *y > last.1, "motions advance towards the target");
             last = (*x, *y);
         }
-        assert_eq!(last, (300, 240), "the last motion reaches the target");
+        assert_eq!(last, (300.0, 240.0), "the last motion reaches the target");
         assert!(matches!(events[events.len() - 1],
-            Event::MouseButtonUp { mouse_btn: MouseButton::Left, x: 300, y: 240, .. }));
+            Event::MouseButtonUp { mouse_btn: MouseButton::Left, x: 300.0, y: 240.0, .. }));
     }
 
     #[test]
     fn clicks_use_the_scripted_button_and_dump_is_not_an_event() {
         let events = script_events("0 rclick 7 9");
         assert!(matches!(events[..], [
-            Event::MouseButtonDown { mouse_btn: MouseButton::Right, clicks: 1, x: 7, y: 9, .. },
-            Event::MouseButtonUp { mouse_btn: MouseButton::Right, clicks: 1, x: 7, y: 9, .. },
+            Event::MouseButtonDown { mouse_btn: MouseButton::Right, clicks: 1, x: 7.0, y: 9.0, .. },
+            Event::MouseButtonUp { mouse_btn: MouseButton::Right, clicks: 1, x: 7.0, y: 9.0, .. },
         ]));
         let events = script_events("0 click 7 9");
         assert!(matches!(events[..], [

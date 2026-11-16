@@ -165,12 +165,13 @@ fn main() {
                 shared.use_sdl2_text.store(true, Ordering::Relaxed);
                 *shared.exe_name.lock_or_recover() = "CMD.EXE".to_string();
 
-                let sdl = sdl2::init().expect("Failed to initialise SDL2");
+                let sdl = sdl3::init().expect("Failed to initialise SDL");
+                // The renderer (and its audio output) exists before the guest runs.
+                let mut renderer = gui::Sdl2TextRenderer::new(&sdl, "Warpine — CMD.EXE", &shared.audio);
 
                 let loader2 = loader.clone();
                 std::thread::spawn(move || loader2.run_builtin_cmd_sdl2(host_args));
 
-                let mut renderer = gui::Sdl2TextRenderer::new(&sdl, "Warpine — CMD.EXE");
                 gui::run_text_loop(&mut renderer, shared.clone());
 
                 shared.exit_requested.store(true, Ordering::Relaxed);
@@ -330,18 +331,20 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>) {
 
     if is_pm {
         // PM app: SDL2 must be initialised on the main thread.
-        let sdl = sdl2::init().expect("Failed to initialise SDL2");
+        let sdl = sdl3::init().expect("Failed to initialise SDL");
         let (gui_sender, gui_rx) = gui::create_gui_channel();
 
         // Store the sender in the window manager
         shared.window_mgr.lock_or_recover().gui_tx = Some(gui_sender);
 
+        // The renderer (and its audio output) exists before the guest runs.
+        let mut renderer = gui::Sdl2Renderer::new(&sdl, &shared.audio);
+
         // Launch VCPU thread
         let loader = Arc::new(loader);
         loader.clone().setup_and_spawn_vcpu(&lx_file);
 
-        // Run SDL2 GUI event loop on the main thread (returns when done).
-        let mut renderer = gui::Sdl2Renderer::new(&sdl);
+        // Run the GUI event loop on the main thread (returns when done).
         gui::run_pm_loop(&mut renderer, shared.clone(), gui_rx);
 
         // Cleanup: signal shutdown, stop timers, reset terminal, and exit
@@ -368,14 +371,15 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>) {
             }
             shared.use_sdl2_text.store(true, std::sync::atomic::Ordering::Relaxed);
 
-            let sdl = sdl2::init().expect("Failed to initialise SDL2");
+            let sdl = sdl3::init().expect("Failed to initialise SDL");
             let exe_title = file_path.rsplit('/').next().unwrap_or(file_path);
             let title = format!("Warpine — {exe_title}");
+            // The renderer (and its audio output) exists before the guest runs.
+            let mut renderer = gui::Sdl2TextRenderer::new(&sdl, &title, &shared.audio);
 
             let loader = Arc::new(loader);
             loader.clone().setup_and_spawn_vcpu(&lx_file);
 
-            let mut renderer = gui::Sdl2TextRenderer::new(&sdl, &title);
             gui::run_text_loop(&mut renderer, shared.clone());
 
             // Cleanup

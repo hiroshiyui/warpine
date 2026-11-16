@@ -251,9 +251,11 @@ Multimedia Presentation Manager/2 APIs. Dispatched at `MDM_BASE` (10240) + ordin
 | 3 | `mciFreeBlock` | Free an MCI-allocated block |
 | 4 | `mciGetLastError` | Retrieve the last MCI error string |
 
-`DosBeep` (DOSCALLS ordinal 286) is also routed through `mmpm::beep_tone()` which generates a real sine-wave tone at the requested frequency/duration via the SDL2 audio queue.
+`DosBeep` (DOSCALLS ordinal 286) is also routed through `mmpm::beep_tone()`, which generates a sine-wave tone at the requested frequency and blocks for its duration.
 
-`MmpmManager` tracks open waveaudio devices (by alias), queued audio data, and last error strings. Audio playback uses SDL2's audio queue (`AudioQueue<i16>`).
+`MmpmManager` tracks open waveaudio devices (with their alias, decoded PCM, position, volume and playing voice) and the last error. Constants and parameter-block layouts (`MCI_OPEN_PARMS`, `MCI_PLAY_PARMS`, `MCI_SET_PARMS`, `MCI_STATUS_PARMS`), message numbers, `MM_MCINOTIFY` (0x0500) with its notify codes, and the `MCIERR_*` codes (base 5000) follow the toolkit headers `<mcios2.h>` / `<meerror.h>`. WAV files are decoded in Rust (`parse_wav`: uncompressed 8/16/24/32-bit PCM and 32-bit float; compressed formats are refused).
+
+**Audio output** (`src/gui/audio.rs`). SDL3 audio belongs to the main thread: in the safe sdl3-rs API the `Sdl` context is created there and `AudioSubsystem` / `AudioStream` are neither `Send` nor `Sync`. So the API threads never call SDL: they hand PCM data and a gain to `SharedState::audio` (`AudioService`) and get a voice number back. The main-thread loop (PM desktop or VGA text window) owns an `SdlAudio`, attached at renderer creation, before the guest starts; each loop pass drains the commands into SDL audio streams (which convert to the device format and apply the gain) and reports how much of each voice is still queued. `MCI_WAIT` and `DosBeep` block on the service until the voice ends, `MCI_NOTIFY` watcher threads wait on it with a cancel flag, and `MCI_SET` volume changes reach the playing voice. While voices play, the PM loop waits at most `AUDIO_PUMP_INTERVAL` (10 ms). Without a main-thread loop (`WARPINE_HEADLESS=1`, or a CLI app whose stdout is not a terminal) no backend is attached and audio is silent.
 
 ### PMWIN (src/loader/pm_win.rs)
 
@@ -389,7 +391,8 @@ The GUI thread (`run_pm_loop` in `src/gui/renderer.rs`, backend `Sdl2Renderer` i
 - *Damage.* The windows marked dirty since the last composite (`WindowManager::dirty`, taken under the lock) are mapped to the frame that draws them (`owning_frame`: the window itself, the frame of a client, or the frame above a control). For each such frame, and for each frame whose extent (frame plus open pull-down) or chrome changed, both the old and the new extent are damaged; so is the old extent of a frame that was hidden or removed. `src/gui/damage.rs` clips the rectangles to the desktop and merges touching ones, collapsing to one bounding box past `MAX_DAMAGE_RECTS` (8). Start-up, a host resize and an `Exposed` event redraw the whole desktop (`force_full`).
 - *Redraw.* Each damaged rectangle is filled with the desktop colour and the frames reaching into it are drawn back-to-front, clipped to it (`draw_placed_frame`): client surface, title bar, border, menu bar, pull-down. Frames are shown once they have a surface. Each surface is locked only while it is copied. A frame is skipped where an *opaque* frame above — one whose surface covers its whole client area — hides it. Pixels are copied a row slice at a time (`blit_clipped`, `fill_clipped`).
 - *Chrome cache.* Title bars, menu bars and open pull-downs are rendered into per-frame pixmaps (`ChromeCache`) and re-rendered only when the title, width, flags, focus or menu change; the window state is compared with the cached copy under the lock without allocating.
-- *Upload.* Only damaged rectangles are uploaded, with `Texture::update` straight from the desktop buffer. Do not use `Texture::with_lock` with a rectangle: sdl2 0.38 hands SDL a pointer to a dropped temporary, which crashes optimised builds.
+- *Upload.* Only damaged rectangles are uploaded, with `Texture::update` straight from the desktop buffer (viewed as bytes with `bytemuck::cast_slice`). The texture is sdl3-rs's lifetime-checked `Texture<'static>`, made from a `TextureCreator` kept for the life of the process (`Box::leak`) — no `unsafe_textures`.
+- *Safe SDL only.* The GUI module is `#![forbid(unsafe_code)]`: wake-ups are a zero-sized `WakeEvent` pushed with `EventSender::push_custom_event` (the sender is `Send`), mouse capture uses `MouseUtil::capture`, and SDL3's per-window text input is started explicitly for each window.
 - *Text.* `font.rs` caches each character's resolved face, advance and coverage bitmap in a per-thread cache (`with_glyph`), so measuring and drawing text takes no lock.
 
 **Event loop.** Each pass rearms the channel's wake-up, drains queued `GUIMessage`s, handles input, composites if due, then blocks in `PmRenderer::wait_for_work`:
@@ -1153,6 +1156,7 @@ src/
     damage.rs          Rect, damage list, clipped row-wise blit/fill for the compositor
     frame_stats.rs     GUI loop / composite timing statistics (debug log every 5 s)
     renderer.rs        PmRenderer trait + run_pm_loop() (PM/GUI SDL2 event loop)
+    audio.rs           AudioService (thread-safe audio commands) + SdlAudio (main-thread SDL3 streams)
     surface.rs         Shared per-frame drawing surfaces: Surface, DrawOp, Mix (FM_* raster ops), rop3
     headless.rs        HeadlessRenderer: no-op PM backend for CI
     sdl2_renderer.rs   Sdl2Renderer: PM SDL2 backend; SDL scancode/VK tables; push_msg
@@ -1187,7 +1191,7 @@ src/
     pm_bitmap.rs       Bitmap codec (BITMAPINFOHEADER/2, RT_BITMAP), memory DCs, bitmaps, GpiBitBlt family
     pm_edit.rs         Edit-buffer logic for text controls (insert/delete/caret/scroll)
     pm_controls.rs     Interactive WC_ENTRYFIELD / WC_MLE / WC_LISTBOX: messages + painting
-    mmpm.rs            MMPM/2 audio: MmpmManager, beep_tone, mciSendCommand/mciSendString
+    mmpm.rs            MMPM/2: MmpmManager, beep_tone, mciSendCommand/mciSendString, parse_wav
     console.rs         VioManager: screen buffer, cursor state/shape, sdl2_mode,
                        ANSI output, stdin_cooked_chars, CP437→UTF-8 conversion
     viocalls.rs        VIOCALLS API: VioWrtTTY, VioScrollUp/Dn (pCell + lines=0),
@@ -1609,7 +1613,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 715 unit tests (686 warpine + 18 gen_api + 11 lx_link), 21 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 726 unit tests (697 warpine + 18 gen_api + 11 lx_link), 22 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

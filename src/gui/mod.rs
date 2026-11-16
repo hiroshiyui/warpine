@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
+// The SDL front end uses only the safe sdl3-rs API (doc/TODOs.md, SDL3
+// migration): no `unsafe` anywhere in the GUI.
+#![forbid(unsafe_code)]
+
 pub mod font;
 pub mod damage;
 pub mod frame_stats;
@@ -7,6 +11,7 @@ pub mod gui_script;
 pub mod message;
 pub mod renderer;
 pub mod surface;
+pub mod audio;
 pub mod headless;
 pub mod sdl2_renderer;
 pub mod text_renderer;

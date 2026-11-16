@@ -8,86 +8,105 @@
 //   3 = mciFreeBlock(pvBlock)
 //   4 = mciGetLastError(usDeviceID, pszErrorBuf, cbErrorBuf)
 //
-// Audio backend: SDL2 audio queue (no callback; SDL_QueueAudio push model).
+// Audio output goes through `SharedState::audio` (`gui::audio`): PCM data is
+// handed to the main-thread loop, which plays it with SDL3 audio streams;
+// this module never calls SDL. WAV files are parsed here (`parse_wav`).
 // DosBeep tone synthesis also lives here.
-//
-// NOTE: sdl2::sys exports `pub const None: u32 = 0` from C SDL2 bindings.
-// This shadows Rust's `None` inside any scope where `use sdl2::sys::*` is active.
-// Workaround: use `std::option::Option::None` for optional values, and use
-// `if let Some(x) = ...` instead of `match ... { None => ... }` patterns.
+
+#![forbid(unsafe_code)]
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use log::{debug, warn};
 
+use crate::gui::audio::{AudioService, PcmSpec, SampleFormat, WaitEnd};
+
+// Values below are from the OS/2 Toolkit headers <mcios2.h> / <meerror.h>.
+
 // ── MCI message IDs ───────────────────────────────────────────────────────────
 
-pub const MCI_OPEN:   u16 = 0x0001;
-pub const MCI_CLOSE:  u16 = 0x0002;
-pub const MCI_PLAY:   u16 = 0x0006;
-pub const MCI_STOP:   u16 = 0x0008;
-pub const MCI_SEEK:   u16 = 0x0009;
-pub const MCI_RECORD: u16 = 0x000B;
-pub const MCI_SET:    u16 = 0x000D;
-pub const MCI_STATUS: u16 = 0x001E;
+pub const MCI_OPEN:   u16 = 1;
+pub const MCI_CLOSE:  u16 = 2;
+pub const MCI_PLAY:   u16 = 4;
+pub const MCI_SEEK:   u16 = 5;
+pub const MCI_STOP:   u16 = 6;
+pub const MCI_STATUS: u16 = 10;
+pub const MCI_SET:    u16 = 12;
+pub const MCI_RECORD: u16 = 14;
 
-// ── MCI ulParam1 flags ────────────────────────────────────────────────────────
+// ── MCI ulParam1 flags (common) ───────────────────────────────────────────────
 
 /// Post MM_MCINOTIFY to hwndCallback when the command completes (non-blocking).
-pub const MCI_NOTIFY: u32 = 0x0001;
+pub const MCI_NOTIFY: u32 = 0x0000_0001;
 /// Block until command completes.
-const MCI_WAIT: u32 = 0x0002;
+const MCI_WAIT: u32 = 0x0000_0002;
 /// ulFrom field in MCI_PLAY_PARMS is valid — start playback from this position.
-const MCI_FROM: u32 = 0x0040;
+const MCI_FROM: u32 = 0x0000_0004;
 
-// MCI_OPEN ulParam1 flags
-const MCI_OPEN_TYPE:    u32 = 0x2000;
-const MCI_OPEN_ELEMENT: u32 = 0x8000;
+// MCI_OPEN ulParam1 flags. pszDeviceType is always used: a string, or with
+// MCI_OPEN_TYPE_ID a device type in its low word.
+const MCI_OPEN_ELEMENT: u32 = 0x0000_0100;
+const MCI_OPEN_ALIAS:   u32 = 0x0000_0200;
+const MCI_OPEN_TYPE_ID: u32 = 0x0000_1000;
+/// Device type of waveform audio (`MCI_DEVTYPE_WAVEFORM_AUDIO`).
+const MCI_DEVTYPE_WAVEFORM_AUDIO: u32 = 7;
 
 // MCI_SET ulParam1 flags
-/// `ulAudio` and `ulLevel` (volume) fields in MCI_SET_PARMS are valid.
-pub const MCI_SET_AUDIO:  u32 = 0x0000_0800;
-/// Volume level in MCI_SET_PARMS.ulLevel (0–100).
-pub const MCI_SET_VOLUME: u32 = 0x0000_0400;
+/// `ulAudio` (channel) in MCI_SET_PARMS is valid.
+pub const MCI_SET_AUDIO:  u32 = 0x0000_1000;
+/// `ulLevel` (volume 0–100) in MCI_SET_PARMS is valid.
+pub const MCI_SET_VOLUME: u32 = 0x0008_0000;
 
-// MCI_AUDIO channel constants (MCI_SET_PARMS.ulAudio)
-const MCI_AUDIO_ALL:   u32 = 0;
+// MCI_SET_PARMS.ulAudio channels
+const MCI_SET_AUDIO_ALL:   u32 = 0;
 #[allow(dead_code)]
-const MCI_AUDIO_LEFT:  u32 = 1;
+const MCI_SET_AUDIO_LEFT:  u32 = 1;
 #[allow(dead_code)]
-const MCI_AUDIO_RIGHT: u32 = 2;
+const MCI_SET_AUDIO_RIGHT: u32 = 2;
 
-// MCI_STATUS item codes
-const MCI_STATUS_POSITION: u32 = 0x0001;
-const MCI_STATUS_LENGTH:   u32 = 0x0002;
-const MCI_STATUS_MODE:     u32 = 0x0004;
+// MCI_SET_PARMS offsets: hwndCallback, ulTimeFormat, ulSpeedFormat, ulAudio, ulLevel…
+const SET_PARMS_AUDIO: u32 = 12;
+const SET_PARMS_LEVEL: u32 = 16;
+// MCI_OPEN_PARMS offsets: hwndCallback, usDeviceID, usReserved0, pszDeviceType,
+// pszElementName, pszAlias.
+const OPEN_PARMS_DEVICE_ID: u32 = 4;
+const OPEN_PARMS_TYPE:      u32 = 8;
+const OPEN_PARMS_ELEMENT:   u32 = 12;
+const OPEN_PARMS_ALIAS:     u32 = 16;
 
-// MCI mode values
-const MCI_MODE_NOT_READY: u32 = 0x0524;
-const MCI_MODE_STOP:      u32 = 0x0529;
-const MCI_MODE_PLAY:      u32 = 0x0526;
+// MCI_STATUS item codes (MCI_STATUS_PARMS.ulItem)
+const MCI_STATUS_LENGTH:   u32 = 2;
+const MCI_STATUS_MODE:     u32 = 3;
+const MCI_STATUS_POSITION: u32 = 5;
+
+// MCI_STATUS_MODE values
+const MCI_MODE_NOT_READY: u32 = 1;
+const MCI_MODE_PLAY:      u32 = 3;
+const MCI_MODE_STOP:      u32 = 4;
 
 // ── MMPM/2 window messages ────────────────────────────────────────────────────
 
 /// MM_MCINOTIFY — posted to hwndCallback when an MCI command with MCI_NOTIFY
-/// completes.  Defined in os2me.h as `WM_MMPMBASE + 2 = 0x0502`.
-/// mp1 = USHORT usNotifyCode, mp2 = USHORT usDeviceID.
-pub const MM_MCINOTIFY: u32 = 0x0502;
+/// completes. mp1 low word = notify code, mp2 low word = device ID (the
+/// high words — user parameter, message — are not filled in yet).
+pub const MM_MCINOTIFY: u32 = 0x0500;
 
-/// Notify codes for MM_MCINOTIFY.mp1 (bit flags per IBM MMPM/2 Programming Guide).
-pub const MCI_NOTIFY_SUCCESSFUL: u32 = 0x0001;
-pub const MCI_NOTIFY_SUPERSEDED: u32 = 0x0002;
-pub const MCI_NOTIFY_ABORTED:    u32 = 0x0004;
-pub const MCI_NOTIFY_ERROR:      u32 = 0x0008;
+/// Notify codes for MM_MCINOTIFY.
+pub const MCI_NOTIFY_SUCCESSFUL: u32 = 0;
+pub const MCI_NOTIFY_SUPERSEDED: u32 = 1;
+pub const MCI_NOTIFY_ABORTED:    u32 = 2;
+pub const MCI_NOTIFY_ERROR:      u32 = 3;
 
-// ── MCI error codes ───────────────────────────────────────────────────────────
+// ── MCI error codes (<meerror.h>) ─────────────────────────────────────────────
 
 pub const MCIERR_SUCCESS:              u32 = 0;
-pub const MCIERR_INVALID_DEVICE_ID:    u32 = 263;
-pub const MCIERR_CANNOT_LOAD_DRIVER:   u32 = 262;
-pub const MCIERR_UNSUPPORTED_FUNCTION: u32 = 269;
-pub const MCIERR_INVALID_DEVICE_NAME:  u32 = 256;
+const MCIERR_BASE:                     u32 = 5000;
+pub const MCIERR_INVALID_DEVICE_ID:    u32 = MCIERR_BASE + 1;
+pub const MCIERR_INVALID_DEVICE_NAME:  u32 = MCIERR_BASE + 7;
+pub const MCIERR_CANNOT_LOAD_DRIVER:   u32 = MCIERR_BASE + 10;
+pub const MCIERR_UNSUPPORTED_FUNCTION: u32 = MCIERR_BASE + 18;
+pub const MCIERR_FILE_NOT_FOUND:       u32 = MCIERR_BASE + 19;
 
 // ── MCI device state ──────────────────────────────────────────────────────────
 
@@ -99,22 +118,20 @@ pub struct MciDevice {
     pub device_type: String,
     /// Element name (filename in OS/2 path form)
     pub element_name: String,
+    /// Alias given by `open … alias <name>` (empty if none).
+    pub alias: String,
     /// Current playback mode
     pub mode: MciMode,
-    /// SDL2 AudioDeviceID — 0 means no device open
-    pub audio_dev: u32,
-    /// Decoded PCM data from SDL_LoadWAV_RW (null if not loaded)
-    pub wav_buf: *mut sdl2::sys::Uint8,
-    /// Length of wav_buf in bytes
-    pub wav_len: u32,
-    /// Audio format from SDL_LoadWAV_RW (freq, format, channels)
-    pub wav_freq: i32,
-    pub wav_format: u16,
-    pub wav_channels: u8,
+    /// The voice playing this device's audio (`AudioService`), if any.
+    pub voice: Option<u32>,
+    /// Decoded PCM data of the element (empty if none was loaded).
+    pub pcm: Vec<u8>,
+    /// Format of `pcm`.
+    pub spec: PcmSpec,
     /// Playback start position in bytes (set by MCI_SEEK or MCI_FROM flag).
     /// The next MCI_PLAY queues audio starting from this byte offset.
     pub current_position: u32,
-    /// Volume level 0–100 (default 100).  Applied via SDL_MixAudioFormat.
+    /// Volume level 0–100 (default 100), the playing voice's gain.
     pub volume: u8,
     /// Window handle to receive MM_MCINOTIFY when MCI_NOTIFY play completes.
     pub notify_hwnd: u32,
@@ -122,27 +139,30 @@ pub struct MciDevice {
     pub notify_cancel: Option<Arc<AtomicBool>>,
 }
 
-// SAFETY: MciDevice holds raw SDL pointers but access is serialised by
-// the Mutex<MmpmManager> in SharedState, so inter-thread aliasing cannot occur.
-// Arc<AtomicBool> is unconditionally Send+Sync.
-unsafe impl Send for MciDevice {}
-
 impl Drop for MciDevice {
     fn drop(&mut self) {
-        // Cancel any in-flight notify watcher.
+        // Cancel any in-flight notify watcher. (Closing the device stops its
+        // voice first: `mci_close`.)
         if let Some(ref cancel) = self.notify_cancel {
             cancel.store(true, Ordering::Relaxed);
         }
-        unsafe {
-            if self.audio_dev != 0 {
-                sdl2::sys::SDL_CloseAudioDevice(self.audio_dev);
-                self.audio_dev = 0;
-            }
-            if !self.wav_buf.is_null() {
-                sdl2::sys::SDL_FreeWAV(self.wav_buf);
-                self.wav_buf = std::ptr::null_mut();
-            }
-        }
+    }
+}
+
+/// The default format of a device opened without an element.
+const DEFAULT_SPEC: PcmSpec = PcmSpec { freq: 44100, channels: 2, format: SampleFormat::S16 };
+
+/// The gain for an MCI volume level (0–100).
+fn gain(volume: u8) -> f32 {
+    volume as f32 / 100.0
+}
+
+/// Whether a device is playing: it has a voice that has not finished.
+fn device_mode(dev: &MciDevice, audio: &AudioService) -> MciMode {
+    match dev.voice {
+        Some(v) if audio.is_playing(v) => MciMode::Playing,
+        _ if dev.mode == MciMode::NotReady => MciMode::NotReady,
+        _ => MciMode::Stopped,
     }
 }
 
@@ -170,82 +190,37 @@ impl MmpmManager {
 
 // ── DosBeep tone synthesis ────────────────────────────────────────────────────
 
-/// Generate a sine-wave tone using SDL2 audio.
-///
-/// Synchronous: blocks until the tone has finished playing.
-/// Called from the VCPU thread; `SDL_InitSubSystem` / `SDL_OpenAudioDevice`
-/// are safe to call from any thread on Linux after SDL has been initialised
-/// on the main thread.
-pub fn beep_tone(freq_hz: u32, duration_ms: u32) {
-    use sdl2::sys as sys;
-    use std::os::raw::{c_int, c_void};
+/// Sample rate of DosBeep tones.
+const BEEP_RATE: u32 = 44100;
+/// DosBeep amplitude (fraction of full scale).
+const BEEP_AMPLITUDE: f32 = 0.30;
+/// Extra time allowed for MCI playback to drain after its nominal length.
+const PLAY_SLACK_MS: u64 = 500;
+/// Extra time allowed for a tone to drain after its nominal duration.
+const BEEP_SLACK_MS: u64 = 500;
 
+/// A `duration_ms` sine tone at `freq_hz` as mono 16-bit PCM.
+fn beep_pcm(freq_hz: u32, duration_ms: u32) -> Vec<u8> {
+    let frames = (BEEP_RATE as u64 * duration_ms as u64 / 1000) as usize;
+    let amp = i16::MAX as f32 * BEEP_AMPLITUDE;
+    (0..frames).flat_map(|i| {
+        let t = i as f32 / BEEP_RATE as f32;
+        ((amp * (2.0 * std::f32::consts::PI * freq_hz as f32 * t).sin()) as i16).to_le_bytes()
+    }).collect()
+}
+
+/// Play a sine-wave tone and wait until it has finished (DosBeep).
+/// Silent, and immediate, when no audio backend is attached.
+pub fn beep_tone(audio: &AudioService, freq_hz: u32, duration_ms: u32) {
     if freq_hz == 0 || duration_ms == 0 {
         return;
     }
-
-    unsafe {
-        // Ensure audio subsystem is initialised.
-        if sys::SDL_WasInit(sys::SDL_INIT_AUDIO) == 0
-            && sys::SDL_InitSubSystem(sys::SDL_INIT_AUDIO) != 0 {
-                warn!("DosBeep: SDL_InitSubSystem(AUDIO) failed");
-                return;
+    let spec = PcmSpec { freq: BEEP_RATE, channels: 1, format: SampleFormat::S16 };
+    if let Some(voice) = audio.play(spec, beep_pcm(freq_hz, duration_ms), 1.0) {
+        let limit = std::time::Duration::from_millis(duration_ms as u64 + BEEP_SLACK_MS);
+        if audio.wait(voice, None, limit) == WaitEnd::TimedOut {
+            audio.stop(voice);
         }
-
-        let desired = sys::SDL_AudioSpec {
-            freq:     44100,
-            format:   sys::AUDIO_S16LSB as sys::SDL_AudioFormat,
-            channels: 1,
-            silence:  0,
-            samples:  512,
-            padding:  0,
-            size:     0,
-            callback: std::option::Option::None,
-            userdata: std::ptr::null_mut(),
-        };
-        let mut obtained: sys::SDL_AudioSpec = std::mem::zeroed();
-        let dev = sys::SDL_OpenAudioDevice(
-            std::ptr::null(),
-            0 as c_int,
-            &desired,
-            &mut obtained,
-            (sys::SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | sys::SDL_AUDIO_ALLOW_CHANNELS_CHANGE) as c_int,
-        );
-        if dev == 0 {
-            warn!("DosBeep: SDL_OpenAudioDevice failed");
-            return;
-        }
-
-        let rate = obtained.freq as u32;
-        let chans = obtained.channels as usize;
-        let num_frames = (rate * duration_ms / 1000) as usize;
-        let amplitude = (i16::MAX as f32) * 0.30;
-
-        let mut pcm: Vec<i16> = Vec::with_capacity(num_frames * chans);
-        for i in 0..num_frames {
-            let t = i as f32 / rate as f32;
-            let v = (amplitude
-                * (2.0 * std::f32::consts::PI * freq_hz as f32 * t).sin())
-                as i16;
-            for _ in 0..chans {
-                pcm.push(v);
-            }
-        }
-
-        let byte_len = (pcm.len() * std::mem::size_of::<i16>()) as u32;
-        sys::SDL_QueueAudio(dev, pcm.as_ptr() as *const c_void, byte_len);
-        sys::SDL_PauseAudioDevice(dev, 0);
-
-        // Wait for the audio queue to drain fully.
-        let deadline = std::time::Instant::now()
-            + std::time::Duration::from_millis((duration_ms + 200) as u64);
-        while sys::SDL_GetQueuedAudioSize(dev) > 0
-            && std::time::Instant::now() < deadline
-        {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-
-        sys::SDL_CloseAudioDevice(dev);
     }
 }
 
@@ -282,43 +257,73 @@ fn clamp_volume(v: u32) -> u8 {
     v.min(100) as u8
 }
 
-/// Apply volume scaling to a PCM buffer using SDL_MixAudioFormat.
-///
-/// Returns a new `Vec<u8>` with scaled samples, or `None` if volume == 100
-/// (caller should use the original buffer).
-///
-/// SAFETY: `src` must point to valid PCM data of `len` bytes in `format`.
-unsafe fn apply_volume(
-    src: *const u8,
-    len: u32,
-    format: u16,
-    volume: u8,
-) -> std::option::Option<Vec<u8>> {
-    if volume >= 100 || len == 0 {
-        return std::option::Option::None;
-    }
-    // SDL_MIX_MAXVOLUME = 128
-    let sdl_vol = (volume as u32 * 128 / 100) as std::os::raw::c_int;
-    let mut dst = vec![0u8; len as usize];
-    unsafe {
-        sdl2::sys::SDL_MixAudioFormat(
-            dst.as_mut_ptr(),
-            src,
-            format as sdl2::sys::SDL_AudioFormat,
-            len,
-            sdl_vol,
-        );
-    }
-    std::option::Option::Some(dst)
-}
-
 /// Convert a time position in milliseconds to a byte offset in the WAV data,
 /// aligned to a frame boundary (frame = channels × bytes-per-sample).
-fn ms_to_byte_offset(ms: u32, freq: i32, channels: u8, format: u16) -> u32 {
-    let bits = (format as u32) & sdl2::sys::SDL_AUDIO_MASK_BITSIZE;
-    let bytes_per_frame = ((bits / 8).max(1)) * channels as u32;
-    let frames_per_ms = freq as u64 * ms as u64 / 1000;
-    (frames_per_ms * bytes_per_frame as u64) as u32
+fn ms_to_byte_offset(ms: u32, spec: PcmSpec) -> u32 {
+    let frames = spec.freq as u64 * ms as u64 / 1000;
+    (frames * spec.bytes_per_frame() as u64).min(u32::MAX as u64) as u32
+}
+
+/// The inverse: a byte offset in milliseconds.
+fn byte_offset_to_ms(bytes: u32, spec: PcmSpec) -> u32 {
+    let bps = spec.bytes_per_sec() as u64;
+    (bytes as u64 * 1000).checked_div(bps).map_or(0, |ms| ms.min(u32::MAX as u64) as u32)
+}
+
+// ── WAV files ─────────────────────────────────────────────────────────────────
+
+const WAVE_FORMAT_PCM: u16 = 1;
+const WAVE_FORMAT_IEEE_FLOAT: u16 = 3;
+const WAVE_FORMAT_EXTENSIBLE: u16 = 0xFFFE;
+/// Offset of the sub-format GUID's first two bytes in an extensible `fmt `.
+const FMT_EXT_SUBFORMAT: usize = 24;
+
+/// Parse a RIFF WAVE file: uncompressed PCM (8, 16, 24 or 32 bits; 24-bit
+/// samples are widened to 32) or 32-bit IEEE float, also inside
+/// `WAVE_FORMAT_EXTENSIBLE`. Compressed formats (ADPCM, µ-law…) are refused.
+pub fn parse_wav(bytes: &[u8]) -> Result<(PcmSpec, Vec<u8>), String> {
+    let u16_at = |b: &[u8], o: usize| b.get(o..o + 2).map(|v| u16::from_le_bytes([v[0], v[1]]));
+    let u32_at = |b: &[u8], o: usize| b.get(o..o + 4).map(|v| u32::from_le_bytes([v[0], v[1], v[2], v[3]]));
+    if bytes.get(0..4) != Some(b"RIFF") || bytes.get(8..12) != Some(b"WAVE") {
+        return Err("not a RIFF WAVE file".into());
+    }
+    let (mut fmt, mut data) = (None, None);
+    let mut at = 12;
+    while let (Some(id), Some(len)) = (bytes.get(at..at + 4), u32_at(bytes, at + 4)) {
+        let body = at + 8;
+        let end = body.saturating_add(len as usize).min(bytes.len());
+        match id {
+            b"fmt " => fmt = Some(&bytes[body..end]),
+            b"data" => data = Some(&bytes[body..end]),
+            _ => {}
+        }
+        at = body.saturating_add(len as usize + (len as usize & 1)); // chunks are word-aligned
+    }
+    let fmt = fmt.ok_or("no fmt chunk")?;
+    let data = data.ok_or("no data chunk")?;
+    let mut tag = u16_at(fmt, 0).ok_or("short fmt chunk")?;
+    let channels = u16_at(fmt, 2).ok_or("short fmt chunk")?;
+    let freq = u32_at(fmt, 4).ok_or("short fmt chunk")?;
+    let bits = u16_at(fmt, 14).ok_or("short fmt chunk")?;
+    if tag == WAVE_FORMAT_EXTENSIBLE {
+        tag = u16_at(fmt, FMT_EXT_SUBFORMAT).ok_or("short extensible fmt chunk")?;
+    }
+    if channels == 0 || channels > u8::MAX as u16 || freq == 0 {
+        return Err(format!("bad format: {channels} channels at {freq} Hz"));
+    }
+    let (format, pcm) = match (tag, bits) {
+        (WAVE_FORMAT_PCM, 8) => (SampleFormat::U8, data.to_vec()),
+        (WAVE_FORMAT_PCM, 16) => (SampleFormat::S16, data.to_vec()),
+        (WAVE_FORMAT_PCM, 24) => (SampleFormat::S32, data.as_chunks::<3>().0.iter()
+            .flat_map(|s| [0, s[0], s[1], s[2]]).collect()),
+        (WAVE_FORMAT_PCM, 32) => (SampleFormat::S32, data.to_vec()),
+        (WAVE_FORMAT_IEEE_FLOAT, 32) => (SampleFormat::F32, data.to_vec()),
+        _ => return Err(format!("unsupported WAV encoding {tag:#06x}, {bits} bits")),
+    };
+    let spec = PcmSpec { freq, channels: channels as u8, format };
+    // Whole frames only.
+    let n = pcm.len() - pcm.len() % spec.bytes_per_frame() as usize;
+    Ok((spec, pcm[..n].to_vec()))
 }
 
 // ── impl Loader ───────────────────────────────────────────────────────────────
@@ -374,6 +379,9 @@ impl super::Loader {
         cb_ret: u32,
         hwnd_callback: u32,
     ) -> u32 {
+        // cbReturnString is a USHORT: only the low half of its stack slot
+        // is defined.
+        let cb_ret = cb_ret & 0xFFFF;
         let cmd = self.read_guest_string(psz_cmd).to_ascii_lowercase();
         debug!("  mciSendString('{}')", cmd);
 
@@ -398,6 +406,7 @@ impl super::Loader {
                 }
                 let mut device_type = "waveaudio".to_string();
                 let mut element_name = String::new();
+                let mut alias = String::new();
                 let mut i = 1usize;
                 while i < tokens.len() {
                     match tokens[i] {
@@ -409,9 +418,12 @@ impl super::Loader {
                                 i += 1;
                             }
                         }
-                        "alias" | "wait" | "notify" => {
-                            i += 2.min(tokens.len() - i);
+                        "alias" => {
+                            alias = tokens.get(i + 1).copied().unwrap_or("").to_string();
+                            i += 2;
                         }
+                        // Flags without an argument.
+                        "wait" | "notify" | "shareable" => i += 1,
                         _ => {
                             if element_name.is_empty() {
                                 element_name = tokens[i].to_string();
@@ -420,7 +432,7 @@ impl super::Loader {
                         }
                     }
                 }
-                let rc = self.mci_open_internal(&device_type, &element_name, 0);
+                let rc = self.mci_open_internal(&device_type, &element_name, &alias);
                 if rc == MCIERR_SUCCESS {
                     let id = self.shared.mmpm_mgr.lock().unwrap().next_device_id - 1;
                     write_ret(&id.to_string());
@@ -468,13 +480,7 @@ impl super::Loader {
                         .or_else(|| tokens.get(vol_idx + 1))
                         .and_then(|s| s.parse().ok())
                         .unwrap_or(100);
-                    let mut mgr = self.shared.mmpm_mgr.lock().unwrap();
-                    if let Some(dev) = mgr.devices.get_mut(&dev_id) {
-                        dev.volume = clamp_volume(level);
-                        MCIERR_SUCCESS
-                    } else {
-                        MCIERR_INVALID_DEVICE_ID
-                    }
+                    self.mci_set_volume(dev_id as u32, level)
                 } else {
                     MCIERR_UNSUPPORTED_FUNCTION
                 }
@@ -484,7 +490,7 @@ impl super::Loader {
                 let dev_id = self.mci_resolve_alias(tokens.get(1).copied().unwrap_or(""));
                 let item_str = tokens.get(2).copied().unwrap_or("");
                 let mode = self.shared.mmpm_mgr.lock().unwrap()
-                    .devices.get(&dev_id).map(|d| d.mode);
+                    .devices.get(&dev_id).map(|d| device_mode(d, &self.shared.audio));
                 let result = match (item_str, mode) {
                     ("mode", Some(MciMode::Playing))  => "playing",
                     ("mode", Some(MciMode::Stopped))  => "stopped",
@@ -528,67 +534,61 @@ impl super::Loader {
         if param2 == 0 {
             return MCIERR_CANNOT_LOAD_DRIVER;
         }
-        // MCI_OPEN_PARMS layout (guest):
-        //  +0:  hwndCallback (u32)
-        //  +4:  usDeviceID   (u16)  ← output
-        //  +6:  usReserved   (u16)
-        //  +8:  pszDeviceType (u32 ptr)
-        //  +12: pszElementName (u32 ptr)
-        let psz_type = if param1 & MCI_OPEN_TYPE != 0 {
-            self.guest_read::<u32>(param2 + 8).unwrap_or(0)
+        let psz_type = self.guest_read::<u32>(param2 + OPEN_PARMS_TYPE).unwrap_or(0);
+        let psz_elem = if param1 & MCI_OPEN_ELEMENT != 0 {
+            self.guest_read::<u32>(param2 + OPEN_PARMS_ELEMENT).unwrap_or(0)
         } else {
             0
         };
-        let psz_elem = if param1 & MCI_OPEN_ELEMENT != 0 {
-            self.guest_read::<u32>(param2 + 12).unwrap_or(0)
+        let psz_alias = if param1 & MCI_OPEN_ALIAS != 0 {
+            self.guest_read::<u32>(param2 + OPEN_PARMS_ALIAS).unwrap_or(0)
         } else {
             0
         };
 
-        let device_type = if psz_type != 0 {
+        let device_type = if param1 & MCI_OPEN_TYPE_ID != 0 {
+            match psz_type & 0xFFFF {
+                MCI_DEVTYPE_WAVEFORM_AUDIO => "waveaudio".to_string(),
+                other => format!("device type {other}"),
+            }
+        } else if psz_type != 0 {
             self.read_guest_string(psz_type).to_ascii_lowercase()
         } else {
             "waveaudio".to_string()
         };
+        let alias = if psz_alias != 0 { self.read_guest_string(psz_alias) } else { String::new() };
         let element_name = if psz_elem != 0 {
             self.read_guest_string(psz_elem)
         } else {
             String::new()
         };
 
-        let rc = self.mci_open_internal(&device_type, &element_name, 0);
+        let rc = self.mci_open_internal(&device_type, &element_name, &alias);
         if rc == MCIERR_SUCCESS {
             let id = self.shared.mmpm_mgr.lock().unwrap().next_device_id - 1;
-            self.guest_write::<u16>(param2 + 4, id);
+            self.guest_write::<u16>(param2 + OPEN_PARMS_DEVICE_ID, id);
         }
         rc
     }
 
-    fn mci_open_internal(&self, device_type: &str, element_name: &str, _flags: u32) -> u32 {
+    fn mci_open_internal(&self, device_type: &str, element_name: &str, alias: &str) -> u32 {
         if device_type != "waveaudio" {
             warn!("mciOpen: unsupported device type '{}'", device_type);
             return MCIERR_INVALID_DEVICE_NAME;
         }
 
-        let (wav_buf, wav_len, wav_freq, wav_format, wav_channels) =
-            if !element_name.is_empty() {
-                match self.load_wav_via_vfs(element_name) {
-                    Ok(data) => data,
-                    Err(e) => {
-                        warn!("mciOpen: failed to load WAV '{}': {}", element_name, e);
-                        return MCIERR_CANNOT_LOAD_DRIVER;
-                    }
+        let (spec, pcm) = if !element_name.is_empty() {
+            match self.load_wav_via_vfs(element_name) {
+                Ok(data) => data,
+                Err(e) => {
+                    warn!("mciOpen: failed to load WAV '{}': {}", element_name, e);
+                    return MCIERR_FILE_NOT_FOUND;
                 }
-            } else {
-                // Empty waveaudio device — no WAV data
-                (
-                    std::ptr::null_mut(),
-                    0u32,
-                    44100i32,
-                    sdl2::sys::AUDIO_S16LSB as u16,
-                    2u8,
-                )
-            };
+            }
+        } else {
+            // Empty waveaudio device — no WAV data
+            (DEFAULT_SPEC, Vec::new())
+        };
 
         let mut mgr = self.shared.mmpm_mgr.lock().unwrap();
         let id = mgr.next_device_id;
@@ -596,13 +596,11 @@ impl super::Loader {
         mgr.devices.insert(id, MciDevice {
             device_type: device_type.to_string(),
             element_name: element_name.to_string(),
+            alias: alias.to_string(),
             mode: MciMode::Stopped,
-            audio_dev: 0,
-            wav_buf,
-            wav_len,
-            wav_freq,
-            wav_format,
-            wav_channels,
+            voice: None,
+            pcm,
+            spec,
             current_position: 0,
             volume: 100,
             notify_hwnd: 0,
@@ -613,9 +611,9 @@ impl super::Loader {
     }
 
     fn mci_close(&self, device_id: u32) -> u32 {
-        if self.shared.mmpm_mgr.lock().unwrap()
-            .devices.remove(&(device_id as u16)).is_some()
-        {
+        let removed = self.shared.mmpm_mgr.lock().unwrap().devices.remove(&(device_id as u16));
+        if let Some(dev) = removed {
+            if let Some(v) = dev.voice { self.shared.audio.stop(v); }
             debug!("mciClose: closed device {}", device_id);
             MCIERR_SUCCESS
         } else {
@@ -643,6 +641,11 @@ impl super::Loader {
     }
 
     /// Core play implementation; `hwnd_callback` is extracted by the caller.
+    ///
+    /// The PCM from the current position is handed to the audio service; with
+    /// `MCI_WAIT` the call blocks until it has played, with `MCI_NOTIFY` a
+    /// watcher thread posts `MM_MCINOTIFY` when it finishes (or
+    /// `MCI_NOTIFY_SUPERSEDED` when stopped / replaced first).
     fn mci_play_with_notify(
         &self,
         device_id: u32,
@@ -650,212 +653,83 @@ impl super::Loader {
         _param2: u32,
         hwnd_callback: u32,
     ) -> u32 {
-        use sdl2::sys as sys;
-        use std::os::raw::{c_int, c_void};
-
-        // Extract WAV data and playback parameters with lock held briefly, then drop.
-        let (wav_buf, wav_len, freq, format, channels, start_pos, volume) = {
-            let mgr = self.shared.mmpm_mgr.lock().unwrap();
-            if let Some(dev) = mgr.devices.get(&(device_id as u16)) {
-                if dev.wav_buf.is_null() {
-                    return MCIERR_CANNOT_LOAD_DRIVER;
-                }
-                (
-                    dev.wav_buf,
-                    dev.wav_len,
-                    dev.wav_freq,
-                    dev.wav_format,
-                    dev.wav_channels,
-                    dev.current_position.min(dev.wav_len),
-                    dev.volume,
-                )
-            } else {
-                return MCIERR_INVALID_DEVICE_ID;
-            }
-        };
-
-        // If there is already a notify watcher running (a prior non-blocking play),
-        // cancel it with MCI_NOTIFY_SUPERSEDED before starting a new one.
-        {
+        let audio = &self.shared.audio;
+        // Take what to play, and replace any earlier playback, under the lock.
+        let (pcm, spec, volume, old_voice) = {
             let mut mgr = self.shared.mmpm_mgr.lock().unwrap();
-            if let Some(dev) = mgr.devices.get_mut(&(device_id as u16)) {
-                if let Some(ref old_cancel) = dev.notify_cancel {
-                    old_cancel.store(true, Ordering::Relaxed);
-                }
-                dev.notify_cancel = std::option::Option::None;
-            }
-        }
-
-        let play_buf: *const u8;
-        let play_len: u32;
-        // Optionally volume-scaled copy.  Kept alive for the duration of SDL_QueueAudio.
-        let _vol_buf: std::option::Option<Vec<u8>>;
-
-        unsafe {
-            // Apply seek offset.
-            let raw_ptr = (wav_buf as *const u8).add(start_pos as usize);
-            let raw_len = wav_len.saturating_sub(start_pos);
-
-            // Apply volume.
-            _vol_buf = apply_volume(raw_ptr, raw_len, format, volume);
-            if let Some(ref vb) = _vol_buf {
-                play_buf = vb.as_ptr();
-                play_len = vb.len() as u32;
-            } else {
-                play_buf = raw_ptr;
-                play_len = raw_len;
-            }
-        }
-
-        if play_len == 0 {
-            return MCIERR_SUCCESS; // nothing to play (seeked past end)
-        }
-
-        let audio_dev = unsafe {
-            if sys::SDL_WasInit(sys::SDL_INIT_AUDIO) == 0
-                && sys::SDL_InitSubSystem(sys::SDL_INIT_AUDIO) != 0 {
-                    warn!("mciPlay: SDL_InitSubSystem(AUDIO) failed");
-                    return MCIERR_CANNOT_LOAD_DRIVER;
-            }
-
-            let desired = sys::SDL_AudioSpec {
-                freq,
-                format:   format as sys::SDL_AudioFormat,
-                channels,
-                silence:  0,
-                samples:  1024,
-                padding:  0,
-                size:     0,
-                callback: std::option::Option::None,
-                userdata: std::ptr::null_mut(),
+            let Some(dev) = mgr.devices.get_mut(&(device_id as u16)) else {
+                return MCIERR_INVALID_DEVICE_ID;
             };
-            let mut obtained: sys::SDL_AudioSpec = std::mem::zeroed();
-            let dev = sys::SDL_OpenAudioDevice(
-                std::ptr::null(),
-                0 as c_int,
-                &desired,
-                &mut obtained,
-                sys::SDL_AUDIO_ALLOW_ANY_CHANGE as c_int,
-            );
-            if dev == 0 {
-                warn!("mciPlay: SDL_OpenAudioDevice failed");
+            if dev.pcm.is_empty() {
                 return MCIERR_CANNOT_LOAD_DRIVER;
             }
-
-            let needs_conv = obtained.freq != desired.freq
-                || obtained.format != desired.format
-                || obtained.channels != desired.channels;
-
-            if needs_conv {
-                if let Some(converted) = convert_audio(
-                    play_buf as *mut sdl2::sys::Uint8, play_len,
-                    desired.format, desired.channels, desired.freq,
-                    obtained.format, obtained.channels, obtained.freq,
-                ) {
-                    let len = converted.len() as u32;
-                    let ptr = Box::into_raw(converted.into_boxed_slice());
-                    sys::SDL_QueueAudio(dev, (*ptr).as_ptr() as *const c_void, len);
-                    // SDL_QueueAudio copies the data; safe to free.
-                    drop(Box::from_raw(ptr));
-                } else {
-                    sys::SDL_QueueAudio(dev, play_buf as *const c_void, play_len);
-                }
-            } else {
-                sys::SDL_QueueAudio(dev, play_buf as *const c_void, play_len);
+            if let Some(ref old_cancel) = dev.notify_cancel {
+                old_cancel.store(true, Ordering::Relaxed);
             }
-
-            sys::SDL_PauseAudioDevice(dev, 0);
-            dev
+            dev.notify_cancel = None;
+            let start = (dev.current_position as usize).min(dev.pcm.len());
+            (dev.pcm[start..].to_vec(), dev.spec, dev.volume, dev.voice.take())
         };
-
-        // Update device state.
+        if let Some(v) = old_voice { audio.stop(v); }
+        if pcm.is_empty() {
+            return MCIERR_SUCCESS; // nothing to play (seeked past end)
+        }
+        let len = pcm.len() as u64;
+        let Some(voice) = audio.play(spec, pcm, gain(volume)) else {
+            warn!("mciPlay: no audio output");
+            return MCIERR_CANNOT_LOAD_DRIVER;
+        };
         {
             let mut mgr = self.shared.mmpm_mgr.lock().unwrap();
             if let Some(dev) = mgr.devices.get_mut(&(device_id as u16)) {
-                unsafe {
-                    if dev.audio_dev != 0 {
-                        sdl2::sys::SDL_CloseAudioDevice(dev.audio_dev);
-                    }
-                }
-                dev.audio_dev = audio_dev;
+                dev.voice = Some(voice);
                 dev.mode = MciMode::Playing;
                 dev.notify_hwnd = hwnd_callback;
             }
         }
+        // The longest the voice can take, plus slack.
+        let max_wait = std::time::Duration::from_millis(
+            (len * 1000).checked_div(spec.bytes_per_sec() as u64).unwrap_or(0) + PLAY_SLACK_MS);
 
         if param1 & MCI_WAIT != 0 {
-            // Synchronous: wait until the queue drains.
-            let bytes_per_sec = freq as u64 * channels as u64 * 2;
-            let max_ms = (play_len as u64 * 1000)
-                .checked_div(bytes_per_sec)
-                .map_or(2000, |ms| ms + 500);
-            let deadline = std::time::Instant::now()
-                + std::time::Duration::from_millis(max_ms);
-            while unsafe { sdl2::sys::SDL_GetQueuedAudioSize(audio_dev) } > 0
-                && std::time::Instant::now() < deadline
-            {
-                std::thread::sleep(std::time::Duration::from_millis(5));
+            if audio.wait(voice, None, max_wait) == WaitEnd::TimedOut {
+                audio.stop(voice);
             }
             self.mci_stop(device_id);
-            // Notify after synchronous completion if MCI_NOTIFY also set.
             if param1 & MCI_NOTIFY != 0 && hwnd_callback != 0 {
                 post_pm_msg(&self.shared, hwnd_callback,
                             MM_MCINOTIFY, MCI_NOTIFY_SUCCESSFUL, device_id);
             }
         } else if param1 & MCI_NOTIFY != 0 && hwnd_callback != 0 {
-            // Asynchronous: spawn a watcher thread that posts MM_MCINOTIFY when done.
             let cancel = Arc::new(AtomicBool::new(false));
             let cancel_clone = Arc::clone(&cancel);
             {
                 let mut mgr = self.shared.mmpm_mgr.lock().unwrap();
                 if let Some(dev) = mgr.devices.get_mut(&(device_id as u16)) {
-                    dev.notify_cancel = std::option::Option::Some(cancel);
+                    dev.notify_cancel = Some(cancel);
                 }
             }
-
-            let shared_clone = Arc::clone(&self.shared);
-            let dev_id_u16 = device_id as u16;
+            let shared = Arc::clone(&self.shared);
             std::thread::spawn(move || {
-                // Poll until playback finishes or is cancelled.
-                let timeout = std::time::Instant::now()
-                    + std::time::Duration::from_secs(3600);
-                loop {
-                    if cancel_clone.load(Ordering::Relaxed) {
-                        post_pm_msg(&shared_clone, hwnd_callback,
-                                    MM_MCINOTIFY, MCI_NOTIFY_SUPERSEDED, device_id);
-                        return;
-                    }
-                    let queued = unsafe {
-                        sdl2::sys::SDL_GetQueuedAudioSize(audio_dev)
-                    };
-                    if queued == 0 || std::time::Instant::now() > timeout {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(50));
-                }
-
-                if !cancel_clone.load(Ordering::Relaxed) {
-                    // Clean up device state.
-                    {
-                        let mut mgr = shared_clone.mmpm_mgr.lock().unwrap();
-                        if let Some(dev) = mgr.devices.get_mut(&dev_id_u16) {
-                            unsafe {
-                                if dev.audio_dev != 0 {
-                                    sdl2::sys::SDL_CloseAudioDevice(dev.audio_dev);
-                                    dev.audio_dev = 0;
-                                }
-                            }
+                let code = match shared.audio.wait(voice, Some(&cancel_clone), max_wait) {
+                    WaitEnd::Cancelled => MCI_NOTIFY_SUPERSEDED,
+                    WaitEnd::Finished | WaitEnd::TimedOut => {
+                        shared.audio.stop(voice);
+                        let mut mgr = shared.mmpm_mgr.lock().unwrap();
+                        if let Some(dev) = mgr.devices.get_mut(&(device_id as u16))
+                            && dev.voice == Some(voice) {
+                            dev.voice = None;
                             dev.mode = MciMode::Stopped;
-                            dev.notify_cancel = std::option::Option::None;
+                            dev.notify_cancel = None;
                         }
+                        MCI_NOTIFY_SUCCESSFUL
                     }
-                    post_pm_msg(&shared_clone, hwnd_callback,
-                                MM_MCINOTIFY, MCI_NOTIFY_SUCCESSFUL, device_id);
-                }
+                };
+                post_pm_msg(&shared, hwnd_callback, MM_MCINOTIFY, code, device_id);
             });
         }
 
-        debug!("mciPlay: device {} playing (pos={})", device_id, start_pos);
+        debug!("mciPlay: device {} playing voice {}", device_id, voice);
         MCIERR_SUCCESS
     }
 
@@ -866,12 +740,9 @@ impl super::Loader {
             if let Some(ref cancel) = dev.notify_cancel {
                 cancel.store(true, Ordering::Relaxed);
             }
-            dev.notify_cancel = std::option::Option::None;
-            unsafe {
-                if dev.audio_dev != 0 {
-                    sdl2::sys::SDL_CloseAudioDevice(dev.audio_dev);
-                    dev.audio_dev = 0;
-                }
+            dev.notify_cancel = None;
+            if let Some(v) = dev.voice.take() {
+                self.shared.audio.stop(v);
             }
             dev.mode = MciMode::Stopped;
             debug!("mciStop: device {} stopped", device_id);
@@ -879,6 +750,20 @@ impl super::Loader {
         } else {
             MCIERR_INVALID_DEVICE_ID
         }
+    }
+
+    /// Set the volume (0–100) of a device, and of its playing voice.
+    fn mci_set_volume(&self, device_id: u32, level: u32) -> u32 {
+        let mut mgr = self.shared.mmpm_mgr.lock().unwrap();
+        let Some(dev) = mgr.devices.get_mut(&(device_id as u16)) else {
+            return MCIERR_INVALID_DEVICE_ID;
+        };
+        dev.volume = clamp_volume(level);
+        if let Some(v) = dev.voice {
+            self.shared.audio.set_gain(v, gain(dev.volume));
+        }
+        debug!("mciSet: device {} volume → {}%", device_id, dev.volume);
+        MCIERR_SUCCESS
     }
 
     /// MCI_SEEK — seek to a position in the audio stream.
@@ -899,8 +784,8 @@ impl super::Loader {
     fn mci_seek_to(&self, device_id: u32, pos_ms: u32) -> u32 {
         let mut mgr = self.shared.mmpm_mgr.lock().unwrap();
         if let Some(dev) = mgr.devices.get_mut(&(device_id as u16)) {
-            let byte_offset = ms_to_byte_offset(pos_ms, dev.wav_freq, dev.wav_channels, dev.wav_format);
-            dev.current_position = byte_offset.min(dev.wav_len);
+            let byte_offset = ms_to_byte_offset(pos_ms, dev.spec);
+            dev.current_position = byte_offset.min(dev.pcm.len() as u32);
             debug!("mciSeek: device {} → {}ms (byte {})", device_id, pos_ms, dev.current_position);
             MCIERR_SUCCESS
         } else {
@@ -910,7 +795,7 @@ impl super::Loader {
 
     /// MCI_RECORD — audio recording stub.
     ///
-    /// SDL2 audio capture is not yet implemented; returns MCIERR_UNSUPPORTED_FUNCTION.
+    /// Recording is not implemented; returns MCIERR_UNSUPPORTED_FUNCTION.
     fn mci_record(&self, device_id: u32, _param1: u32, _param2: u32) -> u32 {
         warn!("mciRecord: device {} — recording not implemented", device_id);
         MCIERR_UNSUPPORTED_FUNCTION
@@ -921,31 +806,25 @@ impl super::Loader {
     /// Currently handles `MCI_SET_AUDIO | MCI_SET_VOLUME` to set playback volume.
     ///
     /// MCI_SET_PARMS (guest, param2):
-    ///   +0   hwndCallback (u32)
+    ///   +0   hwndCallback  (u32)
     ///   +4   ulTimeFormat  (u32)
     ///   +8   ulSpeedFormat (u32)
-    ///   +12  fReplace      (u32)
-    ///   +16  ulAudio       (u32) — channel: MCI_AUDIO_ALL=0, LEFT=1, RIGHT=2
-    ///   +20  ulValue       (u32)
-    ///   +24  ulLevel       (u32) — volume 0–100 when MCI_SET_VOLUME
+    ///   +12  ulAudio       (u32) — channel: MCI_SET_AUDIO_ALL=0, LEFT=1, RIGHT=2
+    ///   +16  ulLevel       (u32) — volume 0–100 with MCI_SET_VOLUME
     fn mci_set(&self, device_id: u32, param1: u32, param2: u32) -> u32 {
         debug!("  mciSet(devID={}, flags=0x{:08X})", device_id, param1);
         if param2 == 0 {
             return MCIERR_SUCCESS;
         }
 
-        let mut mgr = self.shared.mmpm_mgr.lock().unwrap();
-        if !mgr.devices.contains_key(&(device_id as u16)) {
+        if !self.shared.mmpm_mgr.lock().unwrap().devices.contains_key(&(device_id as u16)) {
             return MCIERR_INVALID_DEVICE_ID;
         }
 
         if param1 & MCI_SET_AUDIO != 0 && param1 & MCI_SET_VOLUME != 0 {
-            let _channel = self.guest_read::<u32>(param2 + 16).unwrap_or(MCI_AUDIO_ALL);
-            let level    = self.guest_read::<u32>(param2 + 24).unwrap_or(100);
-            if let Some(dev) = mgr.devices.get_mut(&(device_id as u16)) {
-                dev.volume = clamp_volume(level);
-                debug!("mciSet: device {} volume → {}%", device_id, dev.volume);
-            }
+            let _channel = self.guest_read::<u32>(param2 + SET_PARMS_AUDIO).unwrap_or(MCI_SET_AUDIO_ALL);
+            let level    = self.guest_read::<u32>(param2 + SET_PARMS_LEVEL).unwrap_or(100);
+            return self.mci_set_volume(device_id, level);
         }
         // Other MCI_SET sub-functions (time format, speed) are accepted silently.
         MCIERR_SUCCESS
@@ -960,25 +839,13 @@ impl super::Loader {
             // MCI_STATUS_PARMS: +0 hwndCallback, +4 ulReturn (out), +8 ulItem
             let item = self.guest_read::<u32>(param2 + 8).unwrap_or(0);
             let val: u32 = match item {
-                MCI_STATUS_MODE => match dev.mode {
+                MCI_STATUS_MODE => match device_mode(dev, &self.shared.audio) {
                     MciMode::Playing  => MCI_MODE_PLAY,
                     MciMode::Stopped  => MCI_MODE_STOP,
                     MciMode::NotReady => MCI_MODE_NOT_READY,
                 },
-                MCI_STATUS_LENGTH => {
-                    let bits = (dev.wav_format as u32)
-                        & sdl2::sys::SDL_AUDIO_MASK_BITSIZE;
-                    let bytes_per_frame = (bits / 8).max(1) * dev.wav_channels as u32;
-                    let bytes_per_sec = dev.wav_freq as u32 * bytes_per_frame;
-                    dev.wav_len.checked_div(bytes_per_sec).map_or(0, |secs| secs * 1000)
-                }
-                MCI_STATUS_POSITION => {
-                    // Convert current byte offset back to milliseconds.
-                    let bits = (dev.wav_format as u32) & sdl2::sys::SDL_AUDIO_MASK_BITSIZE;
-                    let bytes_per_frame = (bits / 8).max(1) * dev.wav_channels as u32;
-                    let bytes_per_sec = dev.wav_freq as u32 * bytes_per_frame;
-                    dev.current_position.checked_div(bytes_per_sec).map_or(0, |secs| secs * 1000)
-                }
+                MCI_STATUS_LENGTH => byte_offset_to_ms(dev.pcm.len() as u32, dev.spec),
+                MCI_STATUS_POSITION => byte_offset_to_ms(dev.current_position, dev.spec),
                 _ => 0,
             };
             self.guest_write::<u32>(param2 + 4, val);
@@ -995,22 +862,15 @@ impl super::Loader {
         }
         let mgr = self.shared.mmpm_mgr.lock().unwrap();
         for (&id, dev) in &mgr.devices {
-            if dev.element_name.eq_ignore_ascii_case(alias) {
+            if dev.alias.eq_ignore_ascii_case(alias) || dev.element_name.eq_ignore_ascii_case(alias) {
                 return id;
             }
         }
         0
     }
 
-    /// Load a WAV file through the VFS and decode it with SDL_LoadWAV_RW.
-    ///
-    /// Returns `(audio_buf, audio_len, freq, format, channels)` on success.
-    fn load_wav_via_vfs(
-        &self,
-        os2_path: &str,
-    ) -> Result<(*mut sdl2::sys::Uint8, u32, i32, u16, u8), String> {
-        use sdl2::sys as sys;
-        use std::os::raw::c_void;
+    /// Load a WAV file through the VFS and decode it (`parse_wav`).
+    fn load_wav_via_vfs(&self, os2_path: &str) -> Result<(PcmSpec, Vec<u8>), String> {
         use super::vfs::{ExistAction, FileAttribute, NewAction, OpenFlags, OpenMode, SharingMode};
 
         // Read file bytes through the VFS
@@ -1042,80 +902,7 @@ impl super::Loader {
             return Err("empty WAV file".to_string());
         }
 
-        unsafe {
-            let rw = sys::SDL_RWFromConstMem(
-                file_bytes.as_ptr() as *const c_void,
-                file_bytes.len() as std::os::raw::c_int,
-            );
-            if rw.is_null() {
-                return Err("SDL_RWFromConstMem failed".to_string());
-            }
-
-            let mut wav_spec: sys::SDL_AudioSpec = std::mem::zeroed();
-            let mut audio_buf: *mut sys::Uint8 = std::ptr::null_mut();
-            let mut audio_len: sys::Uint32 = 0;
-
-            // freesrc=1 → SDL frees the RWops after reading
-            let ret = sys::SDL_LoadWAV_RW(
-                rw, 1,
-                &mut wav_spec,
-                &mut audio_buf,
-                &mut audio_len,
-            );
-            if ret.is_null() {
-                return Err("SDL_LoadWAV_RW failed".to_string());
-            }
-
-            Ok((audio_buf, audio_len, wav_spec.freq, wav_spec.format, wav_spec.channels))
-        }
-    }
-}
-
-// ── Audio format conversion helper ───────────────────────────────────────────
-
-/// Convert PCM audio between formats using SDL_BuildAudioCVT / SDL_ConvertAudio.
-///
-/// Returns converted samples as a `Vec<u8>`, or `None` if conversion not needed or fails.
-///
-/// SAFETY: `src` must point to valid PCM data of `src_len` bytes.
-#[allow(clippy::too_many_arguments)]
-unsafe fn convert_audio(
-    src: *mut sdl2::sys::Uint8,
-    src_len: u32,
-    src_fmt: u16,
-    src_ch: u8,
-    src_rate: i32,
-    dst_fmt: u16,
-    dst_ch: u8,
-    dst_rate: i32,
-) -> std::option::Option<Vec<u8>> {
-    use sdl2::sys as sys;
-    use std::os::raw::c_int;
-
-    unsafe {
-        let mut cvt: sys::SDL_AudioCVT = std::mem::zeroed();
-        let built = sys::SDL_BuildAudioCVT(
-            &mut cvt,
-            src_fmt as sys::SDL_AudioFormat, src_ch, src_rate,
-            dst_fmt as sys::SDL_AudioFormat, dst_ch, dst_rate,
-        );
-        if built <= 0 {
-            return std::option::Option::None;
-        }
-
-        let buf_len = (src_len as f64 * cvt.len_ratio).ceil() as usize + 16;
-        let mut buf: Vec<u8> = vec![0u8; buf_len];
-        std::ptr::copy_nonoverlapping(src, buf.as_mut_ptr(), src_len as usize);
-
-        cvt.buf = buf.as_mut_ptr();
-        cvt.len = src_len as c_int;
-
-        if sys::SDL_ConvertAudio(&mut cvt) != 0 {
-            return std::option::Option::None;
-        }
-
-        buf.truncate(cvt.len_cvt as usize);
-        std::option::Option::Some(buf)
+        parse_wav(&file_bytes)
     }
 }
 
@@ -1166,25 +953,25 @@ mod tests {
 
     #[test]
     fn test_mci_mode_constants() {
-        assert_eq!(MCI_MODE_STOP, 0x0529);
-        assert_eq!(MCI_MODE_PLAY, 0x0526);
+        // <mcios2.h>
+        assert_eq!(MCI_MODE_STOP, 4);
+        assert_eq!(MCI_MODE_PLAY, 3);
+        assert_eq!((MCI_PLAY, MCI_STOP, MCI_STATUS, MCI_SET), (4, 6, 10, 12));
         assert_ne!(MCI_MODE_NOT_READY, MCI_MODE_STOP);
         assert_ne!(MCI_MODE_NOT_READY, MCI_MODE_PLAY);
     }
 
     #[test]
-    fn test_mci_device_drop_null_ptrs() {
-        // MciDevice with null ptrs must drop without panicking or calling SDL.
+    fn test_mci_device_drop_without_audio() {
+        // A device that never played drops without touching audio.
         let dev = MciDevice {
             device_type: "waveaudio".to_string(),
             element_name: String::new(),
+            alias: String::new(),
             mode: MciMode::Stopped,
-            audio_dev: 0,
-            wav_buf: std::ptr::null_mut(),
-            wav_len: 0,
-            wav_freq: 44100,
-            wav_format: sdl2::sys::AUDIO_S16LSB as u16,
-            wav_channels: 2,
+            voice: None,
+            pcm: Vec::new(),
+            spec: DEFAULT_SPEC,
             current_position: 0,
             volume: 100,
             notify_hwnd: 0,
@@ -1201,13 +988,11 @@ mod tests {
         let dev = MciDevice {
             device_type: "waveaudio".to_string(),
             element_name: String::new(),
+            alias: String::new(),
             mode: MciMode::Playing,
-            audio_dev: 0,
-            wav_buf: std::ptr::null_mut(),
-            wav_len: 0,
-            wav_freq: 44100,
-            wav_format: sdl2::sys::AUDIO_S16LSB as u16,
-            wav_channels: 2,
+            voice: None,
+            pcm: Vec::new(),
+            spec: DEFAULT_SPEC,
             current_position: 0,
             volume: 100,
             notify_hwnd: 1,
@@ -1221,32 +1006,33 @@ mod tests {
     #[test]
     fn test_beep_tone_zero_inputs() {
         // Must return immediately without crashing.
-        beep_tone(0, 1000);
-        beep_tone(440, 0);
-        beep_tone(0, 0);
+        let audio = AudioService::default();
+        beep_tone(&audio, 0, 1000);
+        beep_tone(&audio, 440, 0);
+        beep_tone(&audio, 0, 0);
+        // No backend: returns at once.
+        let start = std::time::Instant::now();
+        beep_tone(&audio, 440, 5000);
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
     }
 
     #[test]
     fn test_mm_mcinotify_value() {
-        // WM_MMPMBASE = 0x0500, MM_MCINOTIFY = WM_MMPMBASE + 2.
-        assert_eq!(MM_MCINOTIFY, 0x0502);
+        // <mcios2.h>
+        assert_eq!(MM_MCINOTIFY, 0x0500);
+        assert_eq!(MCIERR_INVALID_DEVICE_ID, 5001);
     }
 
     #[test]
-    fn test_mci_notify_codes_are_distinct_bit_flags() {
+    fn test_mci_notify_codes_are_distinct() {
         let codes = [
             MCI_NOTIFY_SUCCESSFUL,
             MCI_NOTIFY_SUPERSEDED,
             MCI_NOTIFY_ABORTED,
             MCI_NOTIFY_ERROR,
         ];
-        // All non-zero.
-        for &c in &codes { assert_ne!(c, 0); }
-        // All distinct.
-        let mut seen = std::collections::HashSet::new();
-        for &c in &codes { assert!(seen.insert(c)); }
-        // All single bits (power-of-two).
-        for &c in &codes { assert_eq!(c & (c - 1), 0, "0x{:04X} is not a power of two", c); }
+        // Consecutive codes from 0 (<mcios2.h>), not bit flags.
+        assert_eq!(codes, [0, 1, 2, 3]);
     }
 
     #[test]
@@ -1261,15 +1047,15 @@ mod tests {
     #[test]
     fn test_ms_to_byte_offset_basic() {
         // 44100 Hz, 2 ch, 16-bit → 176400 bytes/sec → 1764 bytes/10ms
-        let fmt = sdl2::sys::AUDIO_S16LSB as u16;
-        let offset = ms_to_byte_offset(10, 44100, 2, fmt);
+        let offset = ms_to_byte_offset(10, DEFAULT_SPEC);
         assert_eq!(offset, 1764);
+        assert_eq!(byte_offset_to_ms(176_400, DEFAULT_SPEC), 1000);
     }
 
     #[test]
     fn test_ms_to_byte_offset_zero() {
-        let fmt = sdl2::sys::AUDIO_S16LSB as u16;
-        assert_eq!(ms_to_byte_offset(0, 44100, 2, fmt), 0);
+        assert_eq!(ms_to_byte_offset(0, DEFAULT_SPEC), 0);
+        assert_eq!(byte_offset_to_ms(5, PcmSpec { freq: 0, ..DEFAULT_SPEC }), 0);
     }
 
     #[test]
@@ -1285,5 +1071,163 @@ mod tests {
         assert_ne!(MCI_SET_AUDIO, 0);
         assert_ne!(MCI_SET_VOLUME, 0);
         assert_eq!(MCI_SET_AUDIO & MCI_SET_VOLUME, 0);
+    }
+
+    /// A RIFF WAVE file with one `fmt ` chunk (`tag`, `channels`, `freq`,
+    /// `bits`), an odd-sized chunk to skip, and `data`.
+    fn wav(tag: u16, channels: u16, freq: u32, bits: u16, data: &[u8]) -> Vec<u8> {
+        let mut fmt = Vec::new();
+        fmt.extend(tag.to_le_bytes());
+        fmt.extend(channels.to_le_bytes());
+        fmt.extend(freq.to_le_bytes());
+        fmt.extend((freq * channels as u32 * bits as u32 / 8).to_le_bytes());
+        fmt.extend((channels * bits / 8).to_le_bytes());
+        fmt.extend(bits.to_le_bytes());
+        let mut body = b"WAVE".to_vec();
+        for (id, chunk) in [(b"fmt ", fmt.as_slice()), (b"LIST", &[7u8][..]), (b"data", data)] {
+            body.extend(id);
+            body.extend((chunk.len() as u32).to_le_bytes());
+            body.extend(chunk);
+            if chunk.len() % 2 == 1 { body.push(0); }
+        }
+        let mut f = b"RIFF".to_vec();
+        f.extend((body.len() as u32).to_le_bytes());
+        f.extend(body);
+        f
+    }
+
+    #[test]
+    fn test_parse_wav_formats() {
+        let (spec, pcm) = parse_wav(&wav(1, 2, 22050, 16, &[1, 2, 3, 4, 5, 6, 7])).unwrap();
+        assert_eq!(spec, PcmSpec { freq: 22050, channels: 2, format: SampleFormat::S16 });
+        assert_eq!(pcm, vec![1, 2, 3, 4], "whole frames only");
+        let (spec, pcm) = parse_wav(&wav(1, 1, 8000, 8, &[0x80, 0xFF])).unwrap();
+        assert_eq!((spec.format, pcm), (SampleFormat::U8, vec![0x80, 0xFF]));
+        let (spec, pcm) = parse_wav(&wav(1, 1, 8000, 24, &[1, 2, 3])).unwrap();
+        assert_eq!((spec.format, pcm), (SampleFormat::S32, vec![0, 1, 2, 3]), "24-bit widened");
+        let (spec, _) = parse_wav(&wav(3, 1, 8000, 32, &[0; 4])).unwrap();
+        assert_eq!(spec.format, SampleFormat::F32);
+    }
+
+    #[test]
+    fn test_parse_wav_rejects_bad_files() {
+        assert!(parse_wav(b"RIFX0000WAVE").is_err());
+        assert!(parse_wav(&wav(2, 1, 8000, 4, &[0; 4])).is_err(), "MS ADPCM");
+        assert!(parse_wav(&wav(1, 0, 8000, 16, &[0; 4])).is_err(), "no channels");
+        let mut no_data = wav(1, 1, 8000, 16, &[]);
+        no_data.truncate(no_data.len() - 8);
+        assert!(parse_wav(&no_data).is_err());
+        let mut huge = wav(1, 1, 8000, 16, &[0; 4]);
+        let n = huge.len();
+        huge[n - 8..n - 4].copy_from_slice(&u32::MAX.to_le_bytes()); // data length past the end
+        assert_eq!(parse_wav(&huge).unwrap().1.len(), 4, "clamped to the file");
+    }
+
+    #[test]
+    fn test_beep_pcm_length_and_amplitude() {
+        let pcm = beep_pcm(440, 100);
+        assert_eq!(pcm.len(), 4410 * 2);
+        let peak = pcm.chunks_exact(2).map(|s| i16::from_le_bytes([s[0], s[1]]).unsigned_abs()).max().unwrap();
+        assert!(peak > 9000 && peak < 10000, "about 30% of full scale: {peak}");
+    }
+
+    /// MCI playback through the audio service: play hands the PCM from the
+    /// seek position to the service, the mode follows the voice, volume
+    /// changes reach the playing voice, stop ends it.
+    #[test]
+    fn test_mci_play_through_the_audio_service() {
+        use crate::gui::audio::AudioCommand;
+        let loader = super::super::Loader::new_mock();
+        let audio = &loader.shared.audio;
+        audio.attach(Box::new(|| {}));
+        let id = {
+            let mut mgr = loader.shared.mmpm_mgr.lock().unwrap();
+            mgr.devices.insert(7, MciDevice {
+                device_type: "waveaudio".into(), element_name: "t.wav".into(), alias: "t".into(),
+                mode: MciMode::Stopped, voice: None,
+                pcm: (0..=255u8).collect(), spec: PcmSpec { freq: 1000, channels: 1, format: SampleFormat::U8 },
+                current_position: 0, volume: 100, notify_hwnd: 0, notify_cancel: None,
+            });
+            7u32
+        };
+        assert_eq!(loader.mci_resolve_alias("T"), 7, "aliases are case-insensitive");
+        assert_eq!(loader.mci_resolve_alias("7"), 7);
+        assert_eq!(loader.mci_seek_to(id, 100), MCIERR_SUCCESS); // 100 ms = 100 bytes
+        assert_eq!(loader.mci_play_with_notify(id, 0, 0, 0), MCIERR_SUCCESS);
+        let cmds = audio.take_commands();
+        let [AudioCommand::Play { voice, data, gain, .. }] = cmds.as_slice() else { panic!("{cmds:?}") };
+        assert_eq!((data.len(), data[0], *gain), (156, 100, 1.0));
+        let voice = *voice;
+        let mode = |l: &super::super::Loader| {
+            let mgr = l.shared.mmpm_mgr.lock().unwrap();
+            device_mode(&mgr.devices[&7], &l.shared.audio)
+        };
+        assert_eq!(mode(&loader), MciMode::Playing);
+        assert_eq!(loader.mci_set_volume(id, 50), MCIERR_SUCCESS);
+        assert_eq!(audio.take_commands(), vec![AudioCommand::SetGain { voice, gain: 0.5 }]);
+        audio.finish(voice);
+        assert_eq!(mode(&loader), MciMode::Stopped, "the voice ended");
+        assert_eq!(loader.mci_stop(id), MCIERR_SUCCESS);
+        assert_eq!(loader.mci_close(id), MCIERR_SUCCESS);
+        assert_eq!(loader.mci_close(id), MCIERR_INVALID_DEVICE_ID);
+        // Without a backend, play fails cleanly.
+        audio.detach();
+        loader.shared.mmpm_mgr.lock().unwrap().devices.insert(8, MciDevice {
+            device_type: "waveaudio".into(), element_name: String::new(), alias: String::new(),
+            mode: MciMode::Stopped,
+            voice: None, pcm: vec![0; 4], spec: DEFAULT_SPEC, current_position: 0, volume: 100,
+            notify_hwnd: 0, notify_cancel: None,
+        });
+        assert_eq!(loader.mci_play_with_notify(8, 0, 0, 0), MCIERR_CANNOT_LOAD_DRIVER);
+    }
+
+    /// `open … alias <name> wait` registers the alias (and `wait`, which
+    /// takes no argument, does not swallow the next word); the return
+    /// buffer size is a USHORT, so the high half of its slot is ignored.
+    #[test]
+    fn test_mci_send_string_alias_and_flags() {
+        let loader = super::super::Loader::new_mock();
+        let (cmd, ret) = (0x5000u32, 0x5100u32);
+        let send = |text: &str| {
+            loader.guest_write_bytes(cmd, text.as_bytes()).unwrap();
+            loader.guest_write::<u8>(cmd + text.len() as u32, 0).unwrap();
+            // cbReturnString 16 with garbage in the high half of the slot.
+            loader.mci_send_string(cmd, ret, 0xABCD_0010, 0)
+        };
+        assert_eq!(send("open type waveaudio wait alias Chime"), MCIERR_SUCCESS);
+        assert_eq!(send("status chime mode"), MCIERR_SUCCESS);
+        assert_eq!(loader.read_guest_string(ret), "stopped");
+        assert_eq!(send("set chime audio volume to 30"), MCIERR_SUCCESS);
+        assert_eq!(send("status nosuch mode"), MCIERR_INVALID_DEVICE_ID);
+        assert_eq!(send("close chime"), MCIERR_SUCCESS);
+        assert_eq!(send("close chime"), MCIERR_INVALID_DEVICE_ID);
+    }
+
+    /// mciSendCommand with the <mcios2.h> layouts: MCI_OPEN by device type
+    /// ID with an alias returns the device ID in MCI_OPEN_PARMS, MCI_SET
+    /// reads the volume from ulLevel (+16), MCI_STATUS answers the mode.
+    #[test]
+    fn test_mci_send_command_uses_toolkit_layouts() {
+        let loader = super::super::Loader::new_mock();
+        let (open, set, status, alias) = (0x5000u32, 0x5100u32, 0x5200u32, 0x5300u32);
+        loader.guest_write_bytes(alias, b"bell\0").unwrap();
+        loader.guest_write::<u32>(open + OPEN_PARMS_TYPE, MCI_DEVTYPE_WAVEFORM_AUDIO).unwrap();
+        loader.guest_write::<u32>(open + OPEN_PARMS_ALIAS, alias).unwrap();
+        assert_eq!(loader.mci_send_command(0, MCI_OPEN as u32, MCI_OPEN_TYPE_ID | MCI_OPEN_ALIAS | MCI_WAIT, open),
+                   MCIERR_SUCCESS);
+        let id = loader.guest_read::<u16>(open + OPEN_PARMS_DEVICE_ID).unwrap() as u32;
+        assert_ne!(id, 0);
+        assert_eq!(loader.mci_resolve_alias("bell") as u32, id);
+
+        loader.guest_write::<u32>(set + SET_PARMS_AUDIO, MCI_SET_AUDIO_ALL).unwrap();
+        loader.guest_write::<u32>(set + SET_PARMS_LEVEL, 40).unwrap();
+        assert_eq!(loader.mci_send_command(id, MCI_SET as u32, MCI_SET_AUDIO | MCI_SET_VOLUME, set), MCIERR_SUCCESS);
+        assert_eq!(loader.shared.mmpm_mgr.lock().unwrap().devices[&(id as u16)].volume, 40);
+
+        loader.guest_write::<u32>(status + 8, MCI_STATUS_MODE).unwrap();
+        assert_eq!(loader.mci_send_command(id, MCI_STATUS as u32, 0, status), MCIERR_SUCCESS);
+        assert_eq!(loader.guest_read::<u32>(status + 4), Some(MCI_MODE_STOP));
+        assert_eq!(loader.mci_send_command(id, MCI_CLOSE as u32, 0, 0), MCIERR_SUCCESS);
+        assert_eq!(loader.mci_send_command(id, MCI_PLAY as u32, 0, 0), MCIERR_INVALID_DEVICE_ID);
     }
 }

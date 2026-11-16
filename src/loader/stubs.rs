@@ -33,10 +33,10 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// DosBeep (ordinal 286): produce an audible beep via SDL2 audio.
+    /// DosBeep (ordinal 286): play a tone through the audio service.
     pub fn dos_beep(&self, freq: u32, dur: u32) -> u32 {
         debug!("  DosBeep(freq={}, dur={})", freq, dur);
-        super::mmpm::beep_tone(freq, dur);
+        super::mmpm::beep_tone(&self.shared.audio, freq, dur);
         NO_ERROR
     }
 

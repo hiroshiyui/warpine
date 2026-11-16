@@ -220,13 +220,16 @@ pub fn run_text_loop<R: TextModeRenderer>(renderer: &mut R, shared: Arc<SharedSt
 ///
 /// Must be created and driven on the main thread.
 pub struct Sdl2TextRenderer {
-    canvas: sdl2::render::Canvas<sdl2::video::Window>,
-    /// Texture creator stored alongside the canvas so we can recreate the
-    /// streaming texture on window resize without rebuilding the whole renderer.
-    texture_creator: sdl2::render::TextureCreator<sdl2::video::WindowContext>,
+    canvas: sdl3::render::Canvas<sdl3::video::Window>,
+    /// Texture creator kept for the life of the process, so we can recreate
+    /// the streaming texture on window resize and the lifetime-checked
+    /// texture can be `'static` (no `unsafe_textures`).
+    texture_creator: &'static sdl3::render::TextureCreator<sdl3::video::WindowContext>,
     /// Persistent streaming texture — uploaded once per frame.
-    texture: sdl2::render::Texture,
-    event_pump: sdl2::EventPump,
+    texture: sdl3::render::Texture<'static>,
+    /// MMPM/2 and DosBeep audio, played on this (main) thread.
+    audio: super::audio::SdlAudio,
+    event_pump: sdl3::EventPump,
     /// Pixel framebuffer: `current_cols*8 × current_rows*16` ARGB8888 pixels.
     pixels: Vec<u32>,
     /// Width of the current window in text columns.
@@ -240,11 +243,13 @@ impl Sdl2TextRenderer {
     const INIT_COLS: u16 = 80;
     const INIT_ROWS: u16 = 25;
 
-    pub fn new(sdl: &sdl2::Sdl, title: &str) -> Self {
-        use sdl2::pixels::PixelFormatEnum;
-        use sdl2::render::BlendMode;
+    /// Open the window, and audio output for `audio` (attached before the
+    /// guest starts, so its first DosBeep is not lost).
+    pub fn new(sdl: &sdl3::Sdl, title: &str, audio: &super::audio::AudioService) -> Self {
+        use sdl3::pixels::PixelFormat;
+        use sdl3::render::BlendMode;
 
-        let video = sdl.video().expect("SDL2 video subsystem");
+        let video = sdl.video().expect("SDL video subsystem");
         let init_w = Self::INIT_COLS as u32 * 8;
         let init_h = Self::INIT_ROWS as u32 * 16;
         let window = video
@@ -252,20 +257,24 @@ impl Sdl2TextRenderer {
             .position_centered()
             .build()
             .expect("SDL2 window");
-        let canvas = window
-            .into_canvas()
-            .accelerated()
-            .build()
-            .expect("SDL2 canvas");
-        let texture_creator = canvas.texture_creator();
+        // TextInput (IME-composed text) is per window and off by default.
+        video.text_input().start(&window);
+        let canvas = window.into_canvas();
+        let texture_creator: &'static _ = Box::leak(Box::new(canvas.texture_creator()));
         let mut texture = texture_creator
-            .create_texture_streaming(PixelFormatEnum::ARGB8888, init_w, init_h)
+            .create_texture_streaming(PixelFormat::ARGB8888, init_w, init_h)
             .expect("SDL2 streaming texture");
         texture.set_blend_mode(BlendMode::None);
         let event_pump = sdl.event_pump().expect("SDL2 event pump");
         let pixels = vec![0xFF_00_00_00u32; (init_w * init_h) as usize];
         Sdl2TextRenderer {
             canvas, texture_creator, texture, event_pump, pixels,
+            audio: {
+                // This loop polls every 8 ms, so it needs no wake-up hook.
+                let mut a = super::audio::SdlAudio::new(sdl);
+                a.attach(audio, Box::new(|| {}));
+                a
+            },
             current_cols: Self::INIT_COLS,
             current_rows: Self::INIT_ROWS,
         }
@@ -278,22 +287,19 @@ impl Sdl2TextRenderer {
         self.texture.with_lock(None, |data: &mut [u8], pitch: usize| {
             for (y, row) in pixels.chunks(w).enumerate() {
                 let dst = &mut data[y * pitch..y * pitch + w * 4];
-                // Safety: row is &[u32] aligned to 4; cast to &[u8] with same byte count.
-                let src: &[u8] = unsafe {
-                    std::slice::from_raw_parts(row.as_ptr() as *const u8, row.len() * 4)
-                };
-                dst.copy_from_slice(src);
+                dst.copy_from_slice(bytemuck::cast_slice(row));
             }
         }).expect("texture lock failed");
-        self.canvas.copy(&self.texture, None, None).expect("canvas copy failed");
+        self.canvas.copy(&self.texture, None::<sdl3::render::FRect>, None::<sdl3::render::FRect>)
+            .expect("canvas copy failed");
         self.canvas.present();
     }
 
     /// Resize the SDL2 window + recreate the streaming texture when the
     /// VioManager dimensions change.
     fn handle_resize(&mut self, new_cols: u16, new_rows: u16) {
-        use sdl2::pixels::PixelFormatEnum;
-        use sdl2::render::BlendMode;
+        use sdl3::pixels::PixelFormat;
+        use sdl3::render::BlendMode;
 
         let new_w = new_cols as u32 * 8;
         let new_h = new_rows as u32 * 16;
@@ -305,7 +311,7 @@ impl Sdl2TextRenderer {
 
         // Recreate the streaming texture for the new dimensions.
         let mut new_tex = self.texture_creator
-            .create_texture_streaming(PixelFormatEnum::ARGB8888, new_w, new_h)
+            .create_texture_streaming(PixelFormat::ARGB8888, new_w, new_h)
             .expect("SDL2 texture resize failed");
         new_tex.set_blend_mode(BlendMode::None);
         self.texture = new_tex;
@@ -464,16 +470,19 @@ impl TextModeRenderer for Sdl2TextRenderer {
     }
 
     fn poll_events(&mut self, shared: &Arc<SharedState>) -> bool {
-        use sdl2::event::Event;
-        use sdl2::keyboard::{Keycode, Mod as KeyMod};
+        use sdl3::event::Event;
+        use sdl3::keyboard::{Keycode, Mod as KeyMod};
         use crate::gui::sdl2_renderer::sdl_scancode_to_os2;
         use crate::loader::codepage::cp_encode;
 
-        // Use wait_event_timeout so the thread sleeps inside SDL2 when idle
+        // Audio commands from the vCPU threads.
+        self.audio.pump(&shared.audio);
+
+        // Use wait_event_timeout so the thread sleeps inside SDL when idle
         // instead of busy-polling with poll_iter().  The 8 ms timeout gives
         // ~125 Hz frame rate (matching the PM renderer) while the OS
         // scheduler can keep this core idle between events.
-        let maybe_event = self.event_pump.wait_event_timeout(8);
+        let maybe_event = self.event_pump.wait_event_timeout(std::time::Duration::from_millis(8));
         let events = maybe_event.into_iter().chain(self.event_pump.poll_iter());
 
         for event in events {
@@ -557,8 +566,8 @@ impl TextModeRenderer for Sdl2TextRenderer {
 /// Convert an SDL2 `Keycode` + modifier flags to an OS/2 ASCII character byte.
 ///
 /// Returns 0x00 for pure extended/navigation keys (arrows, F-keys, etc.).
-fn sdl_keycode_to_text_char(kc: sdl2::keyboard::Keycode, mods: sdl2::keyboard::Mod) -> u8 {
-    use sdl2::keyboard::{Keycode, Mod as KeyMod};
+fn sdl_keycode_to_text_char(kc: sdl3::keyboard::Keycode, mods: sdl3::keyboard::Mod) -> u8 {
+    use sdl3::keyboard::{Keycode, Mod as KeyMod};
 
     let shifted = mods.intersects(KeyMod::LSHIFTMOD | KeyMod::RSHIFTMOD);
     let ctrl    = mods.intersects(KeyMod::LCTRLMOD  | KeyMod::RCTRLMOD);
@@ -586,8 +595,8 @@ fn sdl_keycode_to_text_char(kc: sdl2::keyboard::Keycode, mods: sdl2::keyboard::M
     }
 }
 
-fn keycode_to_alpha(kc: sdl2::keyboard::Keycode) -> Option<char> {
-    use sdl2::keyboard::Keycode;
+fn keycode_to_alpha(kc: sdl3::keyboard::Keycode) -> Option<char> {
+    use sdl3::keyboard::Keycode;
     match kc {
         Keycode::A => Some('a'), Keycode::B => Some('b'), Keycode::C => Some('c'),
         Keycode::D => Some('d'), Keycode::E => Some('e'), Keycode::F => Some('f'),
@@ -602,19 +611,19 @@ fn keycode_to_alpha(kc: sdl2::keyboard::Keycode) -> Option<char> {
     }
 }
 
-fn keycode_to_digit_or_symbol(kc: sdl2::keyboard::Keycode, shifted: bool) -> Option<u8> {
-    use sdl2::keyboard::Keycode;
+fn keycode_to_digit_or_symbol(kc: sdl3::keyboard::Keycode, shifted: bool) -> Option<u8> {
+    use sdl3::keyboard::Keycode;
     Some(match kc {
-        Keycode::Num0 => if shifted { b')' } else { b'0' },
-        Keycode::Num1 => if shifted { b'!' } else { b'1' },
-        Keycode::Num2 => if shifted { b'@' } else { b'2' },
-        Keycode::Num3 => if shifted { b'#' } else { b'3' },
-        Keycode::Num4 => if shifted { b'$' } else { b'4' },
-        Keycode::Num5 => if shifted { b'%' } else { b'5' },
-        Keycode::Num6 => if shifted { b'^' } else { b'6' },
-        Keycode::Num7 => if shifted { b'&' } else { b'7' },
-        Keycode::Num8 => if shifted { b'*' } else { b'8' },
-        Keycode::Num9 => if shifted { b'(' } else { b'9' },
+        Keycode::_0 => if shifted { b')' } else { b'0' },
+        Keycode::_1 => if shifted { b'!' } else { b'1' },
+        Keycode::_2 => if shifted { b'@' } else { b'2' },
+        Keycode::_3 => if shifted { b'#' } else { b'3' },
+        Keycode::_4 => if shifted { b'$' } else { b'4' },
+        Keycode::_5 => if shifted { b'%' } else { b'5' },
+        Keycode::_6 => if shifted { b'^' } else { b'6' },
+        Keycode::_7 => if shifted { b'&' } else { b'7' },
+        Keycode::_8 => if shifted { b'*' } else { b'8' },
+        Keycode::_9 => if shifted { b'(' } else { b'9' },
         Keycode::Kp0 => b'0', Keycode::Kp1 => b'1', Keycode::Kp2 => b'2',
         Keycode::Kp3 => b'3', Keycode::Kp4 => b'4', Keycode::Kp5 => b'5',
         Keycode::Kp6 => b'6', Keycode::Kp7 => b'7', Keycode::Kp8 => b'8',
@@ -628,11 +637,11 @@ fn keycode_to_digit_or_symbol(kc: sdl2::keyboard::Keycode, shifted: bool) -> Opt
         Keycode::RightBracket => if shifted { b'}' } else { b']' },
         Keycode::Backslash    => if shifted { b'|' } else { b'\\' },
         Keycode::Semicolon    => if shifted { b':' } else { b';' },
-        Keycode::Quote        => if shifted { b'"' } else { b'\'' },
+        Keycode::Apostrophe        => if shifted { b'"' } else { b'\'' },
         Keycode::Comma        => if shifted { b'<' } else { b',' },
         Keycode::Period       => if shifted { b'>' } else { b'.' },
         Keycode::Slash        => if shifted { b'?' } else { b'/' },
-        Keycode::Backquote    => if shifted { b'~' } else { b'`' },
+        Keycode::Grave    => if shifted { b'~' } else { b'`' },
         _ => return None,
     })
 }
@@ -1003,7 +1012,7 @@ mod tests {
     // code bytes like 0x2A='*' for LShift or 0x36='6' for RShift).
     #[test]
     fn modifier_keys_yield_no_char() {
-        use sdl2::keyboard::{Keycode, Mod as KeyMod};
+        use sdl3::keyboard::{Keycode, Mod as KeyMod};
         let shift_mod = KeyMod::LSHIFTMOD;
         for kc in [Keycode::LShift, Keycode::RShift, Keycode::LCtrl, Keycode::RCtrl,
                    Keycode::LAlt,   Keycode::RAlt,   Keycode::CapsLock] {

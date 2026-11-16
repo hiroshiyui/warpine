@@ -48,7 +48,7 @@ _Screenshots in this section captured from commit `425c306` on 2026-11-15._
 - **IPC:** Event/mutex/muxwait semaphores, pipes, and named message queues.
 - **Process Management:** `DosExecPgm`, `DosWaitChild`, directory tracking, system information queries.
 - **NLS:** `DosQueryCtryInfo`, `DosQueryCp`, `DosMapCase`, `DosGetDateTime` — verified correct.
-- **MMPM/2 Audio:** `DosBeep` plays real sine-wave tones; `mciSendCommand`/`mciSendString` for `waveaudio` devices via SDL2 audio queue.
+- **MMPM/2 Audio:** `DosBeep` plays real sine-wave tones; `mciSendCommand`/`mciSendString` play `waveaudio` WAV files (wait, notify, seek, volume, aliases) through SDL3 audio streams on the main thread.
 - **NE Format Execution:** Full NE (New Executable) loader and 16-bit execution — loads OS/2 1.x 16-bit NE binaries into GDT-tiled guest memory, dispatches DOSCALLS/VIOCALLS via Pascal-convention 16-bit thunks. `ne_hello` (pure assembly, no Watcom CRT) runs `DosWrite`+`DosExit` correctly.
 - **GDB Remote Stub:** `--gdb <port>` enables GDB RSP over TCP — attach with `gdb`/`gef`/`pwndbg` for software breakpoints, single-step, and full register/memory access.
 - **Crash Dump Facility:** Structured crash reports on fatal VMEXITs — registers, stack, code bytes, and last 256 API calls written to `warpine-crash-<pid>.txt`.
@@ -108,6 +108,7 @@ samples/               OS/2 sample applications and build scripts
   pm_bench/            PM self-benchmark: GPI, message, paint and timer rates
   pm_pel_test/         GPI read-back (GpiQueryPel) and mix modes (XOR, invert…)
   pm_bitmap_test/      Memory PS + bitmaps, GpiBitBlt, GpiLoadBitmap / WinDrawBitmap, colour tables
+  pm_audio_test/       DosBeep and MMPM/2 waveaudio (mciSendString / mciSendCommand)
   shapes/              PM graphics: boxes, lines, arcs
   thread_test/         DosCreateThread/DosWaitThread
   pipe_test/           DosCreatePipe/DosWrite/DosRead
@@ -145,7 +146,7 @@ See [doc/developer_guide.md](doc/developer_guide.md) for detailed internals docu
 - **CPU:** x86_64 with virtualization support (VT-x or AMD-V enabled).
 - **OS:** Linux with KVM support (`/dev/kvm` must be accessible by the user).
 - **Toolchain:** Rust 1.100.0 (Edition 2024), pinned in `rust-toolchain.toml`; `rustup` installs it automatically on the first `cargo` invocation.
-- **Library:** `libsdl2-dev` (for PM/GUI window and audio support).
+- **Library:** `libsdl3-dev` — SDL 3, found through pkg-config (for the PM desktop, the VGA text window and audio).
 - **Optional (for samples):** Open Watcom v2 — `./vendor/setup_watcom.sh` to vendor it.
 
 ## Contributing
@@ -242,8 +243,8 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 715 unit tests (no KVM required)
-cargo test --test integration     # 21 end-to-end tests (requires /dev/kvm)
+cargo test                        # 726 unit tests (no KVM required)
+cargo test --test integration     # 22 end-to-end tests (requires /dev/kvm)
 cargo clippy -- -D warnings       # Lint — must pass with zero warnings
 ```
 
