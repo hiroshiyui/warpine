@@ -496,6 +496,29 @@ fn gui_pm_bench_reports_every_measurement() {
     }
 }
 
+/// pm_pel_test: drawing is rasterised on the calling thread, so the guest
+/// reads back with GpiQueryPel what GpiSetPel / GpiBox / GpiLine just drew,
+/// and XOR / invert / leave-alone mixes combine with the pels already there.
+#[test]
+fn gui_pm_pel_test_reads_back_pels_and_mixes() {
+    let sample = "samples/pm_pel_test/pm_pel_test.exe";
+    if !kvm_available() || !Path::new(sample).exists() {
+        eprintln!("skipping gui_pm_pel_test_reads_back_pels_and_mixes: KVM or {sample} not available");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("session.script");
+    std::fs::write(&script, "5000 quit\n").unwrap();
+    let out = run_gui_script(sample, &script, true);
+
+    let checks: Vec<&str> = out.lines()
+        .filter(|l| l.starts_with("pm_pel_test: ") && !l.starts_with("pm_pel_test: done")).collect();
+    assert!(checks.len() >= 16, "every check reported:\n{out}");
+    let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
+    assert!(failed.is_empty(), "failed checks: {failed:#?}");
+    assert!(out.contains(&format!("pm_pel_test: done {n}/{n}", n = checks.len())), "{out}");
+}
+
 // Colours the compositor draws with (`src/gui/sdl2_renderer.rs`).
 const GUI_DESKTOP_BG: u32 = 0x40_8040;
 const GUI_TITLE_ACTIVE: u32 = 0x00_0080;
