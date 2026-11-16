@@ -274,6 +274,29 @@ pub(super) fn accel_message(entry: &AccelEntry) -> (u32, u32, u32) {
     (msg, entry.cmd as u32, CMDSRC_ACCELERATOR)
 }
 
+/// The mnemonic of a control text: the character after the first `~`.
+pub(super) fn mnemonic(text: &str) -> Option<char> {
+    let mut chars = text.chars();
+    chars.find(|&c| c == '~')?;
+    chars.next().filter(|&c| c != '~')
+}
+
+/// A control text as shown: without its `~` mnemonic marker, and the
+/// character index of the mnemonic (to underline), if any.
+pub(crate) fn mnemonic_label(text: &str) -> (String, Option<usize>) {
+    let mut shown = String::with_capacity(text.len());
+    let mut mark = None;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '~' && mark.is_none() && chars.peek().is_some_and(|&n| n != '~') {
+            mark = Some(shown.chars().count());
+            continue;
+        }
+        shown.push(c);
+    }
+    (shown, mark)
+}
+
 /// mp2 of a `WM_COMMAND`: MPFROM2SHORT(source, fPointer).
 pub(super) fn command_mp2(source: u32, pointer: bool) -> u32 {
     source | ((pointer as u32) << 16)
@@ -337,9 +360,20 @@ impl Loader {
         }
     }
 
-    /// The keyboard part of `WinDefDlgProc` for `WM_CHAR` on dialog `hwnd`.
-    /// Returns whether the key was used.
+    /// The keyboard part of `WinDefDlgProc` for `WM_CHAR` on dialog `hwnd`:
+    /// keys the focused control did not use. Returns whether the key was used.
     pub(super) fn dialog_char(&self, hwnd: u32, mp1: u32, mp2: u32) -> bool {
+        let fs = mp1 & 0xFFFF;
+        if fs & KC_KEYUP != 0 {
+            return false;
+        }
+        // A character no control took: a mnemonic, typed plainly (the focus
+        // is on a button) or with Alt.
+        if fs & KC_CHAR != 0 && fs & KC_CTRL == 0
+            && let Some(ch) = char::from_u32(mp2 & 0xFF).filter(char::is_ascii_alphanumeric)
+        {
+            return self.dialog_mnemonic(hwnd, ch);
+        }
         let Some(vk) = vkey_down(mp1, mp2) else { return false };
         let shift = mp1 & KC_SHIFT != 0;
         match vk {
@@ -350,6 +384,14 @@ impl Loader {
                     self.set_focus_window(next);
                 }
                 true
+            }
+            VK_LEFT | VK_UP | VK_RIGHT | VK_DOWN => {
+                let backward = matches!(vk, VK_LEFT | VK_UP);
+                let next = self.shared.window_mgr.lock_or_recover().next_in_group(hwnd, backward);
+                if let Some(next) = next {
+                    self.set_focus_window(next);
+                }
+                next.is_some()
             }
             VK_NEWLINE | VK_ENTER => {
                 let button = {
@@ -373,6 +415,35 @@ impl Loader {
             }
             _ => false,
         }
+    }
+
+    /// Mnemonic `ch` in dialog `hwnd`: the control whose text marks `ch`
+    /// with `~` is activated — a button is clicked, a static label passes the
+    /// focus to the next control that can take it (the field it labels), any
+    /// other control takes the focus. Returns whether a control matched.
+    fn dialog_mnemonic(&self, hwnd: u32, ch: char) -> bool {
+        let (target, is_button) = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            let controls = wm.builtin_control_descendants(hwnd);
+            let Some(i) = controls.iter().position(|&h| {
+                wm.get_window(h).is_some_and(|w| {
+                    w.style & WS_DISABLED == 0
+                        && mnemonic(&w.text).is_some_and(|m| m.eq_ignore_ascii_case(&ch))
+                })
+            }) else { return false };
+            let h = controls[i];
+            match wm.get_window(h).map(|w| w.class_name.as_str()) {
+                Some("WC_BUTTON") => (Some(h), true),
+                Some("WC_STATIC") => (controls[i + 1..].iter().copied().find(|&c| wm.can_take_focus(c)), false),
+                _ => (Some(h).filter(|&c| wm.can_take_focus(c)), false),
+            }
+        };
+        match target {
+            Some(button) if is_button => self.click_button(button, false),
+            Some(control) => { self.set_focus_window(control); }
+            None => {}
+        }
+        true
     }
 
     /// A button was clicked (`pointer`: with the mouse): a push button posts
@@ -926,6 +997,102 @@ mod tests {
         let mut paint = OS2Message { hwnd: client, msg: WM_PAINT, mp1: m1, mp2: m2, time: 0, x: 0, y: 0 };
         loader.translate_queued_accelerator(&mut paint);
         assert_eq!(paint.msg, WM_PAINT);
+    }
+
+    #[test]
+    fn mnemonics_are_the_character_after_the_tilde() {
+        assert_eq!(mnemonic("~OK"), Some('O'));
+        assert_eq!(mnemonic("E~xit"), Some('x'));
+        assert_eq!(mnemonic("No mnemonic"), None);
+        assert_eq!(mnemonic("trailing~"), None);
+        assert_eq!(mnemonic("~~literal"), None);
+        assert_eq!(mnemonic_label("E~xit"), ("Exit".to_string(), Some(1)));
+        assert_eq!(mnemonic_label("~Name:"), ("Name:".to_string(), Some(0)));
+        assert_eq!(mnemonic_label("plain"), ("plain".to_string(), None));
+        assert_eq!(mnemonic_label("a~"), ("a~".to_string(), None));
+        assert_eq!(mnemonic_label("日~本"), ("日本".to_string(), Some(1)));
+    }
+
+    fn chr(d: &Dlg, ch: char, extra: u32) -> u32 {
+        let (m1, m2) = key(KC_CHAR | extra, ch as u32, 0, 0);
+        match d.loader.def_dlg_proc(d.dlg, WM_CHAR, m1, m2) {
+            ApiResult::Normal(v) => v,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn mnemonics_focus_the_labelled_field_or_click_the_button() {
+        let d = dialog();
+        {
+            let mut wm = d.wm();
+            let label = wm.find_child_by_id(d.dlg, ID_LABEL as u32).unwrap();
+            wm.get_window_mut(label).unwrap().text = "~Name:".into();
+            wm.get_window_mut(d.cancel).unwrap().text = "~Cancel".into();
+        }
+        d.loader.set_focus_window(d.ok);
+        assert_eq!(chr(&d, 'n', KC_ALT), 1);
+        assert_eq!(d.focus(), d.entry, "a label passes the focus to the next control");
+        assert_eq!(chr(&d, 'C', 0), 1, "plain letters too, without case");
+        assert_eq!(command(&d.take_messages()), Some((d.dlg, DID_CANCEL, command_mp2(CMDSRC_PUSHBUTTON, false))));
+        assert_eq!(d.focus(), d.entry, "clicking by mnemonic leaves the focus");
+        assert_eq!(chr(&d, 'z', KC_ALT), 0, "no control has it");
+        assert_eq!(chr(&d, 'c', KC_CTRL), 0, "Ctrl chords are not mnemonics");
+        let (m1, m2) = key(KC_CHAR | KC_KEYUP, b'c' as u32, 0, 0);
+        assert!(matches!(d.loader.def_dlg_proc(d.dlg, WM_CHAR, m1, m2), ApiResult::Normal(0)));
+        assert!(d.take_messages().is_empty());
+        // A disabled control's mnemonic is not taken.
+        d.wm().get_window_mut(d.cancel).unwrap().style |= WS_DISABLED;
+        assert_eq!(chr(&d, 'c', 0), 0);
+    }
+
+    #[test]
+    fn arrow_keys_move_within_a_group() {
+        let d = dialog();
+        // OK starts a group that holds OK and Cancel; the controls before it
+        // form the first group.
+        d.wm().get_window_mut(d.ok).unwrap().style |= WS_GROUP;
+        d.loader.set_focus_window(d.ok);
+        assert_eq!(d.vkey(d.dlg, VK_RIGHT, 0), 1);
+        assert_eq!(d.focus(), d.cancel);
+        d.vkey(d.dlg, VK_DOWN, 0);
+        assert_eq!(d.focus(), d.ok, "wraps within the group");
+        d.vkey(d.dlg, VK_LEFT, 0);
+        assert_eq!(d.focus(), d.cancel);
+        d.vkey(d.dlg, VK_UP, 0);
+        assert_eq!(d.focus(), d.ok);
+        // First group: entry, list, check box (the label cannot take the focus).
+        d.loader.set_focus_window(d.check);
+        d.vkey(d.dlg, VK_DOWN, 0);
+        assert_eq!(d.focus(), d.entry, "never into the next group");
+        d.vkey(d.dlg, VK_UP, 0);
+        assert_eq!(d.focus(), d.check);
+        // Alone in a group: the key is not used.
+        d.wm().get_window_mut(d.cancel).unwrap().style |= WS_GROUP;
+        d.loader.set_focus_window(d.ok);
+        assert_eq!(d.vkey(d.dlg, VK_RIGHT, 0), 0);
+        assert_eq!(d.focus(), d.ok);
+    }
+
+    #[test]
+    fn labels_hide_the_tilde_and_underline_the_mnemonic() {
+        use crate::gui::surface::DrawOp;
+        let d = dialog();
+        let label = d.wm().find_child_by_id(d.dlg, ID_LABEL as u32).unwrap();
+        d.wm().get_window_mut(label).unwrap().text = "~Name:".into();
+        let surface = d.wm().frame_surface(d.dlg).unwrap();
+        surface.lock_or_recover().record = Some(Vec::new());
+        d.loader.dispatch_builtin_control(label, WM_PAINT, 0, 0);
+        let ops = surface.lock_or_recover().record.take().unwrap();
+        let (tx, ty) = ops.iter().find_map(|o| match o {
+            DrawOp::Text { x, y, text, .. } if text == "Name:" => Some((*x, *y)),
+            _ => None,
+        }).expect("the label without its tilde");
+        let w = crate::gui::font::text_width("N", crate::gui::font::FontSpec::SYSTEM);
+        assert!(ops.iter().any(|o| matches!(o,
+            DrawOp::Box { x1, y1, x2, y2, fill: true, .. }
+                if *x1 == tx && *x2 == tx + w - 1 && *y1 == *y2 && *y1 > ty)),
+            "a one-pel underline below N: {ops:?}");
     }
 
     #[test]

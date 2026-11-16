@@ -769,6 +769,25 @@ impl WindowManager {
         Some(stops[i])
     }
 
+    /// The control after the focus window (before it when `backward`) in
+    /// its group, wrapping around: the controls of `dialog` from one
+    /// `WS_GROUP` control up to the next, those that can take the focus.
+    /// `None` when the focus is not in `dialog` or alone in its group.
+    pub fn next_in_group(&self, dialog: u32, backward: bool) -> Option<u32> {
+        use super::constants::WS_GROUP;
+        let controls = self.builtin_control_descendants(dialog);
+        let at = controls.iter().position(|&h| h == self.focus_hwnd)?;
+        let starts_group = |h: &u32| self.windows[h].style & WS_GROUP != 0;
+        let start = controls[..=at].iter().rposition(starts_group).unwrap_or(0);
+        let end = controls[at + 1..].iter().position(starts_group).map_or(controls.len(), |i| at + 1 + i);
+        let group: Vec<u32> = controls[start..end].iter().copied()
+            .filter(|&h| h == self.focus_hwnd || self.can_take_focus(h)).collect();
+        let i = group.iter().position(|&h| h == self.focus_hwnd)?;
+        let n = group.len();
+        if n < 2 { return None; }
+        Some(group[if backward { (i + n - 1) % n } else { (i + 1) % n }])
+    }
+
     /// The control that first gets the focus in `dialog`: `preferred` (the
     /// template's choice) if it can take the focus, else the first tab stop,
     /// else the first control that can take the focus.

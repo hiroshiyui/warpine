@@ -185,12 +185,11 @@ impl Loader {
             p.op(DrawOp::Box { x1: x, y1: y, x2: x + cx, y2: y + cy, color: CONTROL_EMPHASIS_COLOR,
                                fill: false, mix: crate::gui::surface::Mix::Overpaint });
         }
-        let label = font::fit_text(text, cx - 2 * CONTROL_TEXT_INSET, FontSpec::SYSTEM);
-        if !label.is_empty() {
-            let shift = if push(pressed) { BUTTON_PRESSED_SHIFT } else { 0 };
-            let w = system_width(label);
-            control_text(p, x + (cx - w) / 2 + shift, y + (cy - CONTROL_LINE_H) / 2 - shift, label);
-        }
+        let max_w = cx - 2 * CONTROL_TEXT_INSET;
+        let (shown, _) = super::pm_dialog::mnemonic_label(text);
+        let w = system_width(font::fit_text(&shown, max_w, FontSpec::SYSTEM));
+        let shift = if push(pressed) { BUTTON_PRESSED_SHIFT } else { 0 };
+        super::control_label(p, x + (cx - w) / 2 + shift, y + (cy - CONTROL_LINE_H) / 2 - shift, text, max_w);
         if push(focused) {
             let i = BUTTON_FOCUS_INSET;
             p.op(DrawOp::Box { x1: x + i, y1: y + i, x2: x + cx - i, y2: y + cy - i,

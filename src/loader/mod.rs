@@ -470,10 +470,7 @@ impl Loader {
                         // anti-aliased text drawn again over itself on a later
                         // repaint would otherwise grow darker and bolder.
                         p.fill((x, y, x + cx, y + cy), self.control_background(hwnd));
-                        let label = font::fit_text(&text, cx, FontSpec::SYSTEM);
-                        if !label.is_empty() {
-                            control_text(&p, x, y + (cy - CONTROL_LINE_H).max(0), label);
-                        }
+                        control_label(&p, x, y + (cy - CONTROL_LINE_H).max(0), &text, cx);
                     }
                     "WC_SCROLLBAR" => {
                         p.fill((x, y, x + cx, y + cy), CONTROL_SCROLLBAR_COLOR);
@@ -757,6 +754,30 @@ fn control_box(p: &Painter, (x, y, cx, cy): (i32, i32, i32, i32), fill: u32) {
     for (color, fill) in [(fill, true), (CONTROL_BORDER_COLOR, false)] {
         p.op(DrawOp::Box { x1: x, y1: y, x2: x + cx, y2: y + cy, color, fill, mix: Mix::Overpaint });
     }
+}
+
+/// Gap between the bottom of a text line box and a mnemonic underline.
+const MNEMONIC_UNDERLINE_Y: i32 = 2;
+
+/// Draw a control label (line-box bottom-left at `(x, y)`) clipped to
+/// `max_w` pixels: its `~` mnemonic marker is not shown and the character
+/// it marks is underlined. Returns the width drawn.
+pub(crate) fn control_label(p: &Painter, x: i32, y: i32, text: &str, max_w: i32) -> i32 {
+    let (shown, mark) = pm_dialog::mnemonic_label(text);
+    let label = font::fit_text(&shown, max_w, FontSpec::SYSTEM);
+    if label.is_empty() {
+        return 0;
+    }
+    control_text(p, x, y, label);
+    if let Some(mark) = mark
+        && let Some((start, ch)) = label.char_indices().nth(mark)
+    {
+        let x1 = x + font::text_width(&label[..start], FontSpec::SYSTEM);
+        let w = font::text_width(&label[start..start + ch.len_utf8()], FontSpec::SYSTEM);
+        let uy = y + MNEMONIC_UNDERLINE_Y;
+        p.fill((x1, uy, x1 + w - 1, uy), CONTROL_TEXT_COLOR);
+    }
+    font::text_width(label, FontSpec::SYSTEM)
 }
 
 /// Draw one line of system-font text whose line box has its bottom at `y`.
