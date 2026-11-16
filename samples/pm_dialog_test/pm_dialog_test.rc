@@ -1,0 +1,34 @@
+/* pm_dialog_test.rc - menu, accelerator table and dialog of pm_dialog_test */
+#define INCL_WIN
+#include <os2.h>
+#include "pm_dialog_test.h"
+
+MENU ID_MAIN
+BEGIN
+    SUBMENU "~File", IDM_FILE
+    BEGIN
+        MENUITEM "~Dialog...\tCtrl+D", IDM_DIALOG
+        MENUITEM SEPARATOR
+        MENUITEM "E~xit\tF3", IDM_EXIT
+    END
+END
+
+ACCELTABLE ID_MAIN
+BEGIN
+    "d",   IDM_DIALOG, CONTROL
+    VK_F3, IDM_EXIT,   VIRTUALKEY
+END
+
+DLGTEMPLATE ID_DLG LOADONCALL MOVEABLE DISCARDABLE
+BEGIN
+    DIALOG "Your name and colour", ID_DLG, 60, 150, 200, 110, WS_VISIBLE,
+           FCF_TITLEBAR | FCF_SYSMENU
+    BEGIN
+        LTEXT         "Name:",   -1,         8,  84,  40,  10
+        ENTRYFIELD    "",        ID_NAME,   50,  84, 140,  10, ES_MARGIN | WS_TABSTOP
+        LTEXT         "Colour:", -1,         8,  70,  60,  10
+        LISTBOX                  ID_LIST,    8,  26, 120,  42, WS_TABSTOP
+        DEFPUSHBUTTON "OK",      DID_OK,     8,   4,  50,  14
+        PUSHBUTTON    "Cancel",  DID_CANCEL, 64,  4,  50,  14
+    END
+END

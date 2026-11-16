@@ -522,13 +522,18 @@ fn gui_pm_bench_reports_every_measurement() {
 /// lines and `<prefix>: done <passed>/<total>`, and require every check to
 /// pass. `min_checks` guards against a run that stopped early.
 fn assert_sample_checks_pass(sample: &str, prefix: &str, min_checks: usize) {
+    assert_scripted_checks_pass(sample, prefix, min_checks, "5000 quit\n");
+}
+
+/// [`assert_sample_checks_pass`] for a sample driven by GUI script `steps`.
+fn assert_scripted_checks_pass(sample: &str, prefix: &str, min_checks: usize, steps: &str) {
     if !kvm_available() || !Path::new(sample).exists() {
         eprintln!("skipping {prefix}: KVM or {sample} not available");
         return;
     }
     let dir = tempfile::tempdir().expect("tempdir");
     let script = dir.path().join("session.script");
-    std::fs::write(&script, "5000 quit\n").unwrap();
+    std::fs::write(&script, steps).unwrap();
     let out = run_gui_script(sample, &script, true);
 
     let done = format!("{prefix}: done");
@@ -573,6 +578,30 @@ fn gui_pm_shapes_test_draws_arcs_patterns_and_wide_lines() {
 fn gui_pm_shapes_test_matches_golden() {
     check_gui_golden("pm_shapes_test", "samples/pm_shapes_test/pm_shapes_test.exe",
         "2500 dump {dump}\n2600 quit\n");
+}
+
+/// Keyboard steps of the pm_dialog_test session up to the open dialog with a
+/// name typed and the second list item selected.
+const DIALOG_TEST_FILL_IN: &str = "1500 key ctrl+d\n2500 text Warp\n2800 key tab\n3000 key down\n3200 key down\n";
+
+/// pm_dialog_test: a modal dialog driven from the keyboard only — Ctrl+D
+/// from the frame's accelerator table (FCF_ACCELTABLE) opens it, typing goes
+/// to the entry field that has the focus, Tab moves to the list box, Enter
+/// presses the default push button (WM_COMMAND DID_OK, CMDSRC_PUSHBUTTON),
+/// Esc cancels, and Alt+F4 (system accelerator) closes the main window
+/// through WM_SYSCOMMAND(SC_CLOSE) and WM_CLOSE.
+#[test]
+fn gui_pm_dialog_test_is_driven_by_the_keyboard() {
+    let steps = format!("{DIALOG_TEST_FILL_IN}3700 key enter\n4500 key ctrl+d\n5300 key esc\n6000 key alt+f4\n9000 quit\n");
+    assert_scripted_checks_pass("samples/pm_dialog_test/pm_dialog_test.exe", "pm_dialog_test", 16, &steps);
+}
+
+/// The pm_dialog_test dialog filled in: entry field text, list selection,
+/// default and focus marks, dialog chrome.
+#[test]
+fn gui_pm_dialog_test_matches_golden() {
+    check_gui_golden("pm_dialog_test", "samples/pm_dialog_test/pm_dialog_test.exe",
+        &format!("{DIALOG_TEST_FILL_IN}4000 dump {{dump}}\n4100 quit\n"));
 }
 
 /// pm_audio_test: DosBeep and MMPM/2 waveaudio played through the main-thread
@@ -691,6 +720,12 @@ fn gui_layered_compositor_matches_golden_pulldown() {
 fn gui_layered_compositor_matches_golden_dialog() {
     check_gui_golden_env("pm_menu_about_dialog", "samples/pm_menu_dlg_test/pm_menu_dlg_test.exe",
         "1500 click 52 62\n2500 click 62 80\n4000 dump {dump}\n4100 quit\n", LAYERED);
+}
+
+#[test]
+fn gui_layered_compositor_matches_golden_dialog_controls() {
+    check_gui_golden_env("pm_dialog_test", "samples/pm_dialog_test/pm_dialog_test.exe",
+        &format!("{DIALOG_TEST_FILL_IN}4000 dump {{dump}}\n4100 quit\n"), LAYERED);
 }
 
 /// Built-in controls painted over the client's background.
