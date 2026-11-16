@@ -7,6 +7,7 @@ samples/rust_hello/target/
 *.obj
 *.o
 *.err
+*.res
 *.map
 *.gz
 # Runtime artifacts from OS/2 sample apps
