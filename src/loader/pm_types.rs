@@ -85,13 +85,110 @@ pub struct OS2Window {
     pub frame_flags: u32,
 }
 
+/// Map a PM colour value to 0x00RRGGBB with the default colour table: the
+/// negative `CLR_*` specials, the 16 indices `CLR_BACKGROUND`..`CLR_PALEGRAY`,
+/// and — leniently, since applications often skip `GpiCreateLogColorTable` —
+/// any value ≥ 16 as a direct RGB value.
+pub fn default_color(clr: u32) -> u32 {
+    // Cast to signed so that CLR_BLACK=-1, CLR_WHITE=-2, CLR_DEFAULT=-3 match.
+    match clr as i32 {
+        -5 | -4     => 0x00000000, // CLR_FALSE / CLR_TRUE — treat as black
+        -3          => 0x00000000, // CLR_DEFAULT — default foreground (black)
+        -2          => 0x00FFFFFF, // CLR_WHITE
+        -1          => 0x00000000, // CLR_BLACK
+         0          => 0x00FFFFFF, // CLR_BACKGROUND — page background (white)
+         1          => 0x000000FF, // CLR_BLUE
+         2          => 0x00FF0000, // CLR_RED
+         3          => 0x00FF00FF, // CLR_PINK (magenta)
+         4          => 0x0000FF00, // CLR_GREEN
+         5          => 0x0000FFFF, // CLR_CYAN
+         6          => 0x00FFFF00, // CLR_YELLOW
+         7          => 0x00808080, // CLR_NEUTRAL (medium grey)
+         8          => 0x00404040, // CLR_DARKGRAY
+         9          => 0x00000080, // CLR_DARKBLUE
+        10          => 0x00800000, // CLR_DARKRED
+        11          => 0x00800080, // CLR_DARKPINK
+        12          => 0x00008000, // CLR_DARKGREEN
+        13          => 0x00008080, // CLR_DARKCYAN
+        14          => 0x00804000, // CLR_BROWN
+        15          => 0x00C0C0C0, // CLR_PALEGRAY
+        n if n >= 16 => clr & 0x00FF_FFFF, // Direct 0x00RRGGBB — mask alpha
+        _           => 0x00808080, // Unknown — grey
+    }
+}
+
+/// Highest index of the default colour table (`CLR_PALEGRAY`).
+pub const MAX_DEFAULT_COLOR_INDEX: u32 = 15;
+
+/// Where a presentation space draws.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DrawTarget {
+    /// Nothing (a presentation space with neither a window nor a bitmap).
+    None,
+    /// The surface of this frame window, composited onto the desktop.
+    Frame(u32),
+    /// This bitmap (selected into a memory presentation space).
+    Bitmap(u32),
+}
+
+/// A bitmap created by `GpiCreateBitmap` / `GpiLoadBitmap`. Pixels are kept
+/// as true colour whatever the format it was created with; `bit_count` and
+/// `planes` are what the application asked for and are reported back.
+pub struct Bitmap {
+    pub surface: SharedSurface,
+    pub bit_count: u16,
+    pub planes: u16,
+}
+
+/// A device context opened with `DevOpenDC` / `WinOpenWindowDC`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeviceContext {
+    /// `OD_MEMORY`: a presentation space associated with it draws into the
+    /// bitmap selected with `GpiSetBitmap`.
+    Memory,
+    /// `OD_INFO`: for `DevQueryCaps` only.
+    Info,
+    /// The window DC of this window: presentation spaces associated with it
+    /// draw into the window.
+    Window(u32),
+}
+
+/// Who created a presentation space.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PsOrigin {
+    /// `GpiCreatePS` (or internal): lives until `GpiDestroyPS`.
+    Created,
+    /// `WinBeginPaint` without a PS: freed by `WinEndPaint`.
+    Paint,
+    /// `WinGetPS`: freed by `WinReleasePS`.
+    Cached,
+}
+
 pub struct PresentationSpace {
     pub hps: u32,
     pub hwnd: u32,
-    /// Foreground (pen/text) colour, stored as 0x00RRGGBB.
+    /// Foreground (pen/text) colour, resolved to 0x00RRGGBB.
     pub color: u32,
-    /// Background colour, stored as 0x00RRGGBB.
+    /// Background colour, resolved to 0x00RRGGBB.
     pub back_color: u32,
+    /// The colour values as set (`GpiSetColor` / `GpiSetBackColor`): an
+    /// index, a `CLR_*` special or an RGB value, reported back by the query
+    /// functions and re-resolved when the colour table changes.
+    pub color_attr: u32,
+    pub back_color_attr: u32,
+    /// `GpiCreateLogColorTable(LCOLF_RGB)`: colour values are RGB.
+    pub rgb_mode: bool,
+    /// Logical colour table entries loaded with `LCOLF_CONSECRGB` /
+    /// `LCOLF_INDRGB`, overriding the default table (index → RGB).
+    pub color_table: std::collections::BTreeMap<u32, u32>,
+    /// `LINETYPE_*` set by `GpiSetLineType`.
+    pub line_type: u32,
+    /// Associated device context (0 = none).
+    pub hdc: u32,
+    /// Bitmap selected with `GpiSetBitmap` (0 = none).
+    pub bitmap: u32,
+    /// Who created it, and so who frees it.
+    pub origin: PsOrigin,
     /// Foreground mix mode (`FM_*`, set by `GpiSetMix`).
     pub mix_mode: u32,
     /// Background mix mode (`BM_*`, set by `GpiSetBackMix`).
@@ -106,6 +203,71 @@ pub struct PresentationSpace {
 }
 
 impl PresentationSpace {
+    /// Resolve a colour value against this presentation space's colour table.
+    pub fn resolve_color(&self, value: u32) -> u32 {
+        if (value as i32) < 0 {
+            default_color(value)
+        } else if self.rgb_mode {
+            value & 0x00FF_FFFF
+        } else {
+            self.color_table.get(&value).copied().unwrap_or_else(|| default_color(value))
+        }
+    }
+
+    /// Set the foreground colour value and resolve it.
+    pub fn set_color(&mut self, value: u32) {
+        self.color_attr = value;
+        self.color = self.resolve_color(value);
+    }
+
+    /// Set the background colour value and resolve it.
+    pub fn set_back_color(&mut self, value: u32) {
+        self.back_color_attr = value;
+        self.back_color = self.resolve_color(value);
+    }
+
+    /// Re-resolve the current colours after the colour table changed.
+    pub fn refresh_colors(&mut self) {
+        self.set_color(self.color_attr);
+        self.set_back_color(self.back_color_attr);
+    }
+
+    /// The entries of the colour table in force, lowest index first: the
+    /// loaded entries over the 16 default ones. Empty in RGB mode.
+    pub fn color_entries(&self) -> Vec<(u32, u32)> {
+        if self.rgb_mode { return Vec::new(); }
+        let mut all: std::collections::BTreeMap<u32, u32> =
+            (0..=MAX_DEFAULT_COLOR_INDEX).map(|i| (i, default_color(i))).collect();
+        all.extend(self.color_table.iter().map(|(&i, &rgb)| (i, rgb)));
+        all.into_iter().collect()
+    }
+
+    /// The colour value `GpiQueryPel` reports for a pel of colour `rgb`:
+    /// the RGB value in RGB mode; otherwise the lowest index of the colour
+    /// table holding exactly that colour (`CLR_BLACK` for black, which the
+    /// default table has no index for), or the RGB value itself when no entry
+    /// matches (Warpine accepts RGB values in index mode too).
+    pub fn value_of_pel(&self, rgb: u32) -> u32 {
+        if self.rgb_mode { return rgb; }
+        self.color_entries().into_iter().find(|&(_, c)| c == rgb).map(|(i, _)| i)
+            .unwrap_or(if rgb == default_color(super::constants::CLR_BLACK as u32) {
+                super::constants::CLR_BLACK as u32
+            } else { rgb })
+    }
+
+    /// `GpiQueryColorIndex`: the index whose colour is nearest `rgb` (exact
+    /// matches first); `rgb` itself in RGB mode.
+    pub fn nearest_index(&self, rgb: u32) -> u32 {
+        if self.rgb_mode { return rgb & 0x00FF_FFFF; }
+        let dist = |c: u32| -> i64 {
+            (0..3).map(|i| {
+                let d = ((c >> (8 * i)) & 0xFF) as i64 - ((rgb >> (8 * i)) & 0xFF) as i64;
+                d * d
+            }).sum()
+        };
+        self.color_entries().into_iter().min_by_key(|&(i, c)| (dist(c), i)).map_or(0, |(i, _)| i)
+    }
+
     /// The font text is currently drawn and measured with: the logical font
     /// selected by `GpiSetCharSet` (the system font for LCID 0 or an unknown
     /// LCID), resized by a `GpiSetCharBox` character box when one is set.
@@ -192,6 +354,12 @@ pub struct WindowManager {
     /// API threads draw into it directly; the compositor reads it. See
     /// `gui::surface` for the locking rule.
     pub surfaces: HashMap<u32, SharedSurface>,
+    /// Bitmaps (`GpiCreateBitmap`, `GpiLoadBitmap`) by handle.
+    pub bitmaps: HashMap<u32, Bitmap>,
+    /// Device contexts (`DevOpenDC`, `WinOpenWindowDC`) by handle.
+    pub dcs: HashMap<u32, DeviceContext>,
+    next_hbm: u32,
+    next_hdc: u32,
 }
 
 impl Default for WindowManager {
@@ -224,6 +392,10 @@ impl WindowManager {
             focus_hwnd: 0,
             dirty: HashSet::new(),
             surfaces: HashMap::new(),
+            bitmaps: HashMap::new(),
+            dcs: HashMap::new(),
+            next_hbm: 0x7000,
+            next_hdc: 0x6000,
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
@@ -279,8 +451,16 @@ impl WindowManager {
         self.ps_map.insert(h, PresentationSpace {
             hps: h,
             hwnd,
-            color: 0x00000000,     // CLR_BLACK — default foreground
-            back_color: 0x00FFFFFF, // CLR_WHITE — default background
+            color: default_color(super::constants::CLR_DEFAULT as u32),
+            back_color: default_color(super::constants::CLR_BACKGROUND),
+            color_attr: super::constants::CLR_DEFAULT as u32,
+            back_color_attr: super::constants::CLR_BACKGROUND,
+            rgb_mode: false,
+            color_table: std::collections::BTreeMap::new(),
+            line_type: super::constants::LINETYPE_DEFAULT,
+            hdc: 0,
+            bitmap: 0,
+            origin: PsOrigin::Created,
             mix_mode: super::constants::FM_OVERPAINT,
             back_mix: super::constants::BM_LEAVEALONE,
             char_set: 0,
@@ -533,6 +713,51 @@ impl WindowManager {
         let s = Surface::shared(w, h);
         self.surfaces.insert(frame, s.clone());
         Some(s)
+    }
+
+    /// Where presentation space `hps` draws: its selected bitmap, else the
+    /// frame of its window.
+    pub fn ps_draw_target(&self, hps: u32) -> Option<DrawTarget> {
+        let ps = self.ps_map.get(&hps)?;
+        Some(if ps.bitmap != 0 {
+            DrawTarget::Bitmap(ps.bitmap)
+        } else if ps.hwnd != 0 {
+            DrawTarget::Frame(self.client_to_frame(ps.hwnd))
+        } else {
+            DrawTarget::None
+        })
+    }
+
+    /// The surface behind `target` (a frame's is created on first use).
+    pub fn target_surface(&mut self, target: DrawTarget) -> Option<SharedSurface> {
+        match target {
+            DrawTarget::None => None,
+            DrawTarget::Frame(frame) => self.frame_surface(frame),
+            DrawTarget::Bitmap(hbm) => self.bitmaps.get(&hbm).map(|b| b.surface.clone()),
+        }
+    }
+
+    /// Register a bitmap of `width` × `height` pels and return its handle.
+    pub fn create_bitmap(&mut self, surface: Surface, bit_count: u16, planes: u16) -> u32 {
+        let h = self.next_hbm;
+        self.next_hbm += 1;
+        self.bitmaps.insert(h, Bitmap {
+            surface: Arc::new(Mutex::new(surface)), bit_count, planes,
+        });
+        h
+    }
+
+    /// The presentation space `hbm` is selected into, if any.
+    pub fn bitmap_owner(&self, hbm: u32) -> Option<u32> {
+        self.ps_map.values().find(|ps| ps.bitmap == hbm).map(|ps| ps.hps)
+    }
+
+    /// Register a device context and return its handle.
+    pub fn open_dc(&mut self, dc: DeviceContext) -> u32 {
+        let h = self.next_hdc;
+        self.next_hdc += 1;
+        self.dcs.insert(h, dc);
+        h
     }
 
     /// Resize the surface of `hwnd`, if it has one, keeping its content.

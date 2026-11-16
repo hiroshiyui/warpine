@@ -53,6 +53,7 @@ use super::pm_types::OS2Message;
 use super::ApiResult;
 use crate::gui::GUIMessage;
 use crate::gui::surface::{DrawOp, Mix};
+use super::pm_types::{DeviceContext, PsOrigin};
 use crate::lx::header::{RT_STRING, RT_MENU, RT_DIALOG, RT_ACCELTABLE};
 use super::pm_types::MenuItem;
 
@@ -378,11 +379,28 @@ impl super::Loader {
                 ApiResult::Normal(0)
             }
             703 => {
-                // WinBeginPaint
+                // WinBeginPaint(HWND hwnd, HPS hps, PRECTL prclPaint) → HPS
+                // With hps = 0 a presentation space is created for the paint
+                // and freed by WinEndPaint; otherwise the given one is used.
+                // The whole window is the update region.
                 let hwnd = read_stack(4);
-                let _hps = read_stack(8);
-                let _prcl_ptr = read_stack(12);
-                let hps = self.shared.window_mgr.lock_or_recover().create_ps(hwnd);
+                let hps_in = read_stack(8);
+                let prcl = read_stack(12);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let hps = if hps_in != 0 && wm.ps_map.contains_key(&hps_in) {
+                    hps_in
+                } else {
+                    let h = wm.create_ps(hwnd);
+                    if let Some(ps) = wm.ps_map.get_mut(&h) { ps.origin = PsOrigin::Paint; }
+                    h
+                };
+                let (cx, cy) = wm.get_window(hwnd).map_or((0, 0), |w| (w.cx, w.cy));
+                drop(wm);
+                if prcl != 0 {
+                    for (i, v) in [0, 0, cx, cy].into_iter().enumerate() {
+                        self.guest_write::<i32>(prcl + 4 * i as u32, v);
+                    }
+                }
                 ApiResult::Normal(hps)
             }
             738 => {
@@ -399,8 +417,83 @@ impl super::Loader {
                 for hwnd_ctl in controls {
                     self.dispatch_builtin_control(hwnd_ctl, WM_PAINT, 0, 0);
                 }
-                self.shared.window_mgr.lock_or_recover().mark_dirty(frame_hwnd);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                wm.mark_dirty(frame_hwnd);
+                // A presentation space WinBeginPaint created ends with the paint.
+                if wm.ps_map.get(&hps).is_some_and(|ps| ps.origin == PsOrigin::Paint) {
+                    wm.ps_map.remove(&hps);
+                }
                 ApiResult::Normal(1)
+            }
+            757 => {
+                // WinGetPS(HWND hwnd) → HPS (freed by WinReleasePS)
+                let hwnd = read_stack(4);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                if wm.get_window(hwnd).is_none() { return ApiResult::Normal(0); }
+                let hps = wm.create_ps(hwnd);
+                if let Some(ps) = wm.ps_map.get_mut(&hps) { ps.origin = PsOrigin::Cached; }
+                ApiResult::Normal(hps)
+            }
+            848 => {
+                // WinReleasePS(HPS hps) → BOOL
+                let hps = read_stack(4);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let ok = wm.ps_map.get(&hps).is_some_and(|ps| ps.origin == PsOrigin::Cached);
+                if ok { wm.ps_map.remove(&hps); }
+                ApiResult::Normal(ok as u32)
+            }
+            794 => {
+                // WinOpenWindowDC(HWND hwnd) → HDC (one per window)
+                let hwnd = read_stack(4);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                if wm.get_window(hwnd).is_none() { return ApiResult::Normal(0); }
+                let existing = wm.dcs.iter()
+                    .find(|&(_, &dc)| dc == DeviceContext::Window(hwnd)).map(|(&h, _)| h);
+                let hdc = existing.unwrap_or_else(|| wm.open_dc(DeviceContext::Window(hwnd)));
+                ApiResult::Normal(hdc)
+            }
+            835 => {
+                // WinQueryWindowDC(HWND hwnd) → HDC (0 if none was opened)
+                let hwnd = read_stack(4);
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let hdc = wm.dcs.iter()
+                    .find(|&(_, &dc)| dc == DeviceContext::Window(hwnd)).map_or(0, |(&h, _)| h);
+                ApiResult::Normal(hdc)
+            }
+            730 => {
+                // WinDrawBitmap(HPS hpsDst, HBITMAP hbm, PRECTL pwrcSrc, PPOINTL pptlDst,
+                //               LONG clrFore, LONG clrBack, ULONG fl) → BOOL
+                // pptlDst is a RECTL with DBM_STRETCH. DBM_INVERT and DBM_XOR
+                // select the raster operation; DBM_HALFTONE / DBM_IMAGEATTRS
+                // (monochrome colouring) are ignored.
+                let (hps, hbm, psrc, pdst, fl) =
+                    (read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(28));
+                let rect = |p: u32| -> Option<(i64, i64, i64, i64)> {
+                    let v = |i: u32| self.guest_read::<i32>(p.wrapping_add(4 * i)).map(|v| v as i64);
+                    Some((v(0)?, v(1)?, v(2)?, v(3)?))
+                };
+                let src = if psrc != 0 {
+                    match rect(psrc) { Some(r) => Some(r), None => return ApiResult::Normal(0) }
+                } else { None };
+                let dst = if fl & DBM_STRETCH != 0 {
+                    rect(pdst)
+                } else {
+                    let size = src.map(|(x0, y0, x1, y1)| (x1 - x0, y1 - y0)).or_else(|| {
+                        let wm = self.shared.window_mgr.lock_or_recover();
+                        wm.bitmaps.get(&hbm).map(|b| {
+                            let s = b.surface.lock_or_recover();
+                            (s.width as i64, s.height as i64)
+                        })
+                    });
+                    match (self.guest_read::<i32>(pdst), self.guest_read::<i32>(pdst.wrapping_add(4)), size) {
+                        (Some(x), Some(y), Some((w, h))) => Some((x as i64, y as i64, x as i64 + w, y as i64 + h)),
+                        _ => None,
+                    }
+                };
+                let Some(dst) = dst else { return ApiResult::Normal(0) };
+                let rop = if fl & DBM_INVERT != 0 { ROP_NOTSRCCOPY }
+                    else if fl & DBM_XOR != 0 { ROP_SRCINVERT } else { ROP_SRCCOPY };
+                ApiResult::Normal(self.draw_bitmap(hps, hbm, src, dst, rop))
             }
             753 => {
                 // WinGetLastError

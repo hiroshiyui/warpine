@@ -201,8 +201,96 @@ pub const GPI_ERROR: u32 = 0;
 pub const GPI_OK:    u32 = 1;
 /// `GpiQueryPel` result for a point outside the drawing surface.
 pub const CLR_NOINDEX: i32 = -254;
+/// `GpiQueryColor` / `GpiQueryBackColor` error result.
+pub const CLR_ERROR: i32 = -255;
 /// Default colour-table entry that is pure black (no 0–15 index is).
 pub const CLR_BLACK: i32 = -1;
+
+pub const GPI_ALTERROR: i32 = -1;
+/// Default colour value (`GpiSetColor`), and the default background index.
+pub const CLR_DEFAULT: i32 = -3;
+pub const CLR_BACKGROUND: u32 = 0;
+/// `GpiSetBitmap` / `GpiLoadBitmap` error handle.
+pub const HBM_ERROR: u32 = 0xFFFF_FFFF;
+/// `GpiSetBitmapBits` / `GpiQueryBitmapBits` error result.
+pub const BMB_ERROR: i32 = -1;
+/// `GpiCreateBitmap` flOptions: initialise the bitmap from the given data.
+pub const CBM_INIT: u32 = 4;
+/// `GpiCreatePS` flOptions: associate the presentation space with the DC.
+pub const GPIA_ASSOC: u32 = 0x4000;
+/// Bitmap compression `BCA_UNCOMP` (the only one supported).
+pub const BCA_UNCOMP: u32 = 0;
+/// Bitmap file types (`usType` of BITMAPFILEHEADER / BITMAPARRAYFILEHEADER).
+pub const BFT_BMAP: u16 = 0x4d42;        // "BM"
+pub const BFT_BITMAPARRAY: u16 = 0x4142; // "BA"
+
+// ── Raster operations (GpiBitBlt lRop), <pmgpi.h> ────────────────────────────
+// Ternary ROPs: bit (P<<2 | S<<1 | D) of the code is the result for that
+// combination of pattern P, source S and destination D.
+pub const ROP_SRCCOPY:    u32 = 0x00CC;
+pub const ROP_SRCPAINT:   u32 = 0x00EE;
+pub const ROP_SRCAND:     u32 = 0x0088;
+pub const ROP_SRCINVERT:  u32 = 0x0066;
+pub const ROP_NOTSRCCOPY: u32 = 0x0033;
+pub const ROP_PATCOPY:    u32 = 0x00F0;
+pub const ROP_PATINVERT:  u32 = 0x005A;
+pub const ROP_DSTINVERT:  u32 = 0x0055;
+pub const ROP_ZERO:       u32 = 0x0000;
+pub const ROP_ONE:        u32 = 0x00FF;
+
+// ── LCOL / LCOLF / QLCT (GpiCreateLogColorTable), <pmgpi.h> ──────────────────
+pub const LCOL_RESET:      u32 = 0x0001;
+pub const LCOLF_DEFAULT:   u32 = 0;
+pub const LCOLF_INDRGB:    u32 = 1;
+pub const LCOLF_CONSECRGB: u32 = 2;
+pub const LCOLF_RGB:       u32 = 3;
+pub const LCOLOPT_INDEX:   u32 = 2;
+pub const QLCT_ERROR:      i32 = -1;
+pub const QLCT_RGB:        i32 = -2;
+pub const QLCT_NOTLOADED:  i32 = -1;
+/// Upper bound on colour-table entries read or written per call.
+pub const MAX_LOG_COLOR_ENTRIES: u32 = 4096;
+
+// ── LINETYPE_* (GpiSetLineType), <pmgpi.h> ───────────────────────────────────
+pub const LINETYPE_DEFAULT:       u32 = 0;
+pub const LINETYPE_DOT:           u32 = 1;
+pub const LINETYPE_SHORTDASH:     u32 = 2;
+pub const LINETYPE_DASHDOT:       u32 = 3;
+pub const LINETYPE_DOUBLEDOT:     u32 = 4;
+pub const LINETYPE_LONGDASH:      u32 = 5;
+pub const LINETYPE_DASHDOUBLEDOT: u32 = 6;
+pub const LINETYPE_SOLID:         u32 = 7;
+pub const LINETYPE_INVISIBLE:     u32 = 8;
+pub const LINETYPE_ALTERNATE:     u32 = 9;
+pub const LINETYPE_ERROR:         i32 = -1;
+
+// ── Device contexts (<pmdev.h>) ──────────────────────────────────────────────
+pub const OD_INFO:   u32 = 6;
+pub const OD_MEMORY: u32 = 8;
+pub const DEV_ERROR: u32 = 0;
+pub const DEV_OK:    u32 = 1;
+pub const CAPS_FAMILY:                u32 = 0;
+pub const CAPS_WIDTH:                 u32 = 4;
+pub const CAPS_HEIGHT:                u32 = 5;
+pub const CAPS_WIDTH_IN_CHARS:        u32 = 6;
+pub const CAPS_HEIGHT_IN_CHARS:       u32 = 7;
+pub const CAPS_HORIZONTAL_RESOLUTION: u32 = 8;
+pub const CAPS_VERTICAL_RESOLUTION:   u32 = 9;
+pub const CAPS_CHAR_WIDTH:            u32 = 10;
+pub const CAPS_CHAR_HEIGHT:           u32 = 11;
+pub const CAPS_COLORS:                u32 = 14;
+pub const CAPS_COLOR_PLANES:          u32 = 15;
+pub const CAPS_COLOR_BITCOUNT:        u32 = 16;
+pub const CAPS_MOUSE_BUTTONS:         u32 = 18;
+pub const CAPS_BITMAP_FORMATS:        u32 = 23;
+pub const CAPS_PHYS_COLORS:           u32 = 33;
+/// Number of CAPS_* entries `DevQueryCaps` reports (indices 0..).
+pub const CAPS_COUNT: u32 = 42;
+
+// ── DBM_* (WinDrawBitmap fl), <pmwin.h> ──────────────────────────────────────
+pub const DBM_INVERT:  u32 = 0x0001;
+pub const DBM_STRETCH: u32 = 0x0004;
+pub const DBM_XOR:     u32 = 0x0010;
 
 // ── FM_* foreground mix modes (GpiSetMix), <pmgpi.h> ─────────────────────────
 // Each combines the source (current colour) S with the destination pel D.

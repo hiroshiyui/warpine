@@ -375,6 +375,11 @@ The GUI thread (`run_pm_loop` in `src/gui/renderer.rs`, backend `Sdl2Renderer` i
 
 - *Read-back and mixes.* Because pixels exist as soon as the call returns, `GpiQueryPel` reads them back, and drawing honours the presentation space's foreground mix (`Mix`, the 16 `FM_*` raster operations of `GpiSetMix`: overpaint, XOR, invert, AND, OR…). Overpainted text is anti-aliased; text drawn with another mix uses whole pels (coverage ≥ 50 %) so XOR text can be undone. `GpiQueryPel` returns the default colour-table index of the pel when one matches (`CLR_BLACK` for black) and the RGB value otherwise, and `CLR_NOINDEX` outside the surface; there are no logical colour tables (`GpiCreateLogColorTable`) yet. The background mix (`GpiSetBackMix`) is stored but nothing draws a background yet.
 - *Locking.* `Loader::draw` takes the window-manager lock, gets or creates the surface (`WindowManager::frame_surface`; dialogs get theirs on first draw), locks it, marks the frame dirty, releases the window-manager lock and draws. Marking dirty while the surface is locked means a composite that picks up the mark waits for the drawing to finish. The window-manager lock may be held while locking a surface, never the reverse, so the API threads and the compositor cannot deadlock.
+- *Bitmaps and memory presentation spaces* (`src/loader/pm_bitmap.rs`). A presentation space draws into its *draw target* (`WindowManager::ps_draw_target`): the bitmap selected with `GpiSetBitmap` if any, else its window's frame. `DevOpenDC(OD_MEMORY)` → `GpiCreatePS(hdc, GPIA_ASSOC)` → `GpiCreateBitmap` → `GpiSetBitmap` gives an off-screen PS whose drawing lands in `WindowManager::bitmaps` (each a `Surface`, kept true colour; the requested depth is only reported back). `WinOpenWindowDC` + `GpiCreatePS(GPIA_ASSOC)` gives a window PS; `GpiAssociate` re-associates. Bitmap data (`GpiCreateBitmap(CBM_INIT)`, `GpiSetBitmapBits` / `GpiQueryBitmapBits`, `GpiDrawBits`, `GpiLoadBitmap` of an `RT_BITMAP` resource — a `BM` file or the first entry of a `BA` array) is decoded and encoded by the codec at the top of `pm_bitmap.rs`: uncompressed 1/4/8/24/32-bit, both `BITMAPINFOHEADER` (cbFix 12, RGB entries) and `BITMAPINFOHEADER2` (cbFix 16–64, RGB2 entries), rows bottom-up padded to 4 bytes. `GpiQueryBitmapBits` writes the size and a standard colour table (black/white, the 16 VGA colours, or those plus a colour cube and grey ramp) into the caller's header.
+- *Bit-block transfers.* `GpiBitBlt` (2, 3 or 4 points; device coordinates, rectangles exclusive at the top and right), `GpiWCBitBlt` and `GpiDrawBits` (target inclusive), and `WinDrawBitmap` (`DBM_STRETCH`, `DBM_INVERT`, `DBM_XOR`) share `Loader::blit`: the target is clipped to its surface, each target pel samples the source by nearest pel (stretching / compressing), and `DrawOp::Blit` applies a ternary raster operation (`rop3`: bit `P<<2|S<<1|D` of the `ROP_*` code) with the PS colour as the pattern. The source is read completely before the target is written, so overlapping copies within one surface are safe, and only one surface is locked at a time.
+- *Colour tables.* `PresentationSpace` keeps colour values as set (`color_attr`, reported by `GpiQueryColor`) and resolved (`color`). `GpiCreateLogColorTable` switches to RGB values (`LCOLF_RGB`), loads entries (`LCOLF_CONSECRGB`, `LCOLF_INDRGB`) over the default table, or resets it; `GpiQueryRGBColor`, `GpiQueryColorIndex` (nearest entry) and `GpiQueryLogColorTable` read it, and `GpiQueryPel` answers in RGB in RGB mode, else with the table index of an exactly matching colour (RGB when none matches).
+- *Lines and text.* `GpiSetLineType` styles `GpiLine` with a 16-pel mask (`DrawOp::Line::style`; the dash lengths are Warpine's choice, `LINETYPE_INVISIBLE` draws nothing). A background mix other than leave-alone (`GpiSetBackMix`) fills a character string's box with the background colour before the text.
+- *Presentation-space lifetime.* `WinBeginPaint` without a PS creates one that `WinEndPaint` frees, and reports the whole window as the update rectangle; `WinGetPS` / `WinReleasePS` pair (`PsOrigin`). `DevQueryCaps` describes a 24-bit display the size of the desktop at 96 dpi.
 - *Untrusted coordinates.* Coordinates come from the guest. Lines are clipped to the surface (Liang–Barsky) before Bresenham runs, box corners are clamped to one pel outside it, text positions to ±2²⁴, and surfaces to `MAX_SURFACE_DIM` (8192) per side; `WinSetWindowPos` and `WinCreateWindow` bound window positions and sizes to ±`MAX_WINDOW_COORD` (2²⁰). Nothing a guest passes can overflow the arithmetic or make one call run for long.
 - *Size.* A surface covers the frame below its title bar and menu bar. `WinSetWindowPos` (`SWP_SIZE`), attaching a menu and interactive resizing resize it with `WindowManager::resize_surface`; `Surface::resize` keeps the bottom-left part of the old content (PM's origin), so an interactive resize shows the old picture until the application repaints instead of a blank window. `WinDestroyWindow` drops the surface.
 - *Tests.* In test builds a surface can record the operations applied to it (`Surface::record`), so tests check what was drawn as well as the pixels.
@@ -397,7 +402,7 @@ The GUI thread (`run_pm_loop` in `src/gui/renderer.rs`, backend `Sdl2Renderer` i
 
 **Frame statistics.** `src/gui/frame_stats.rs` counts loop passes and composites (average and maximum composite time, present time, share of the desktop redrawn) and logs a summary every 5 s at debug level: `RUST_LOG=warpine::gui=debug`. Use it to measure rendering changes.
 
-**Guest-side benchmark.** `samples/pm_bench` measures what an application sees: GPI calls issued per second inside a paint, `WinSendMsg` and `WinPostMsg` round trips, `WinInvalidateRect` → `WM_PAINT` cycles, and the `WM_TIMER` rate of a 10 ms timer, each timed with `DosQuerySysInfo(QSV_MS_COUNT)`. GPI calls rasterise on the calling thread, so its GPI figures include drawing the pixels (compositing is on the GUI thread; read it from the frame statistics). `samples/pm_pel_test` checks read-back and mix modes from the guest side (`GpiSetPel`/`GpiBox`/`GpiLine` → `GpiQueryPel`, XOR / invert / leave-alone). To compare two builds without a display:
+**Guest-side benchmark.** `samples/pm_bench` measures what an application sees: GPI calls issued per second inside a paint, `WinSendMsg` and `WinPostMsg` round trips, `WinInvalidateRect` → `WM_PAINT` cycles, and the `WM_TIMER` rate of a 10 ms timer, each timed with `DosQuerySysInfo(QSV_MS_COUNT)`. GPI calls rasterise on the calling thread, so its GPI figures include drawing the pixels (compositing is on the GUI thread; read it from the frame statistics). `samples/pm_pel_test` checks read-back and mix modes from the guest side (`GpiSetPel`/`GpiBox`/`GpiLine` → `GpiQueryPel`, XOR / invert / leave-alone); `samples/pm_bitmap_test` checks memory presentation spaces, bitmaps, `GpiBitBlt`, `GpiLoadBitmap` + `WinDrawBitmap`, colour tables and line types. To compare two builds without a display:
 
 ```bash
 printf '4500 quit\n' > /tmp/bench.script
@@ -1148,7 +1153,7 @@ src/
     damage.rs          Rect, damage list, clipped row-wise blit/fill for the compositor
     frame_stats.rs     GUI loop / composite timing statistics (debug log every 5 s)
     renderer.rs        PmRenderer trait + run_pm_loop() (PM/GUI SDL2 event loop)
-    surface.rs         Shared per-frame drawing surfaces: Surface, DrawOp, Mix (FM_* raster ops)
+    surface.rs         Shared per-frame drawing surfaces: Surface, DrawOp, Mix (FM_* raster ops), rop3
     headless.rs        HeadlessRenderer: no-op PM backend for CI
     sdl2_renderer.rs   Sdl2Renderer: PM SDL2 backend; SDL scancode/VK tables; push_msg
     text_renderer.rs   TextModeRenderer trait, VgaTextBuffer, Sdl2TextRenderer,
@@ -1178,7 +1183,8 @@ src/
     locale.rs          Os2Locale: country/codepage information
     doscalls.rs        DOSCALLS API implementations (~40 functions)
     pm_win.rs          PMWIN API implementations (~50 ordinals)
-    pm_gpi.rs          PMGPI API implementations (30 ordinals)
+    pm_gpi.rs          PMGPI API implementations (54 ordinals, incl. DevOpenDC/DevCloseDC/DevQueryCaps)
+    pm_bitmap.rs       Bitmap codec (BITMAPINFOHEADER/2, RT_BITMAP), memory DCs, bitmaps, GpiBitBlt family
     pm_edit.rs         Edit-buffer logic for text controls (insert/delete/caret/scroll)
     pm_controls.rs     Interactive WC_ENTRYFIELD / WC_MLE / WC_LISTBOX: messages + painting
     mmpm.rs            MMPM/2 audio: MmpmManager, beep_tone, mciSendCommand/mciSendString
@@ -1603,7 +1609,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 699 unit tests (670 warpine + 18 gen_api + 11 lx_link), 20 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 715 unit tests (686 warpine + 18 gen_api + 11 lx_link), 21 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

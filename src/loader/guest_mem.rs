@@ -149,6 +149,11 @@ impl super::Loader {
         self.shared.guest_mem.write_bytes(offset, data)
     }
 
+    /// Copy `len` bytes out of guest memory; `None` if out of bounds.
+    pub fn guest_read_bytes(&self, offset: u32, len: usize) -> Option<Vec<u8>> {
+        self.shared.guest_mem.slice_mut(offset, len).map(|s| s.to_vec())
+    }
+
     /// Get a mutable slice of guest memory with bounds check.
     pub fn guest_slice_mut(&self, offset: u32, len: usize) -> Option<&mut [u8]> {
         self.shared.guest_mem.slice_mut(offset, len)

@@ -8,7 +8,8 @@ use log::{debug, warn};
 
 use super::mutex_ext::MutexExt;
 use super::ApiResult;
-use super::constants::{BM_DESTTRANSPARENT, BM_SRCTRANSPARENT, CLR_BLACK, CLR_NOINDEX, GPI_ERROR, GPI_OK};
+use super::constants::*;
+use super::pm_types::{DeviceContext, DrawTarget};
 use crate::gui::font::{self, CjkRegion, FontFamily, FontSpec};
 use crate::gui::surface::{DrawOp, Mix};
 
@@ -34,16 +35,42 @@ const DRO_FILL:        u32 = 1;
 const DRO_OUTLINE:     u32 = 2;
 const DRO_OUTLINEFILL: u32 = 3;
 
-/// Highest colour index of the default logical colour table (CLR_PALEGRAY).
-const MAX_DEFAULT_COLOR_INDEX: u32 = 15;
+/// What drawing through a presentation space needs: where it draws and the
+/// current attributes.
+pub(super) struct PsTarget {
+    pub target: DrawTarget,
+    pub color: u32,
+    pub back_color: u32,
+    pub mix: Mix,
+    /// Mix for the background of text; `None` leaves it alone.
+    pub back_mix: Option<Mix>,
+    pub pos: (i32, i32),
+    pub line_type: u32,
+}
 
-/// What drawing through a presentation space needs: the frame whose surface
-/// it draws into and the current attributes.
-struct PsTarget {
-    frame: u32,
-    color: u32,
-    mix: Mix,
-    pos: (i32, i32),
+/// Pel mask (16 pels, MSB first) for a `LINETYPE_*`; `None` draws nothing.
+/// The dash lengths are Warpine's choice: the PM reference names the styles
+/// but does not give pel patterns.
+fn line_style(line_type: u32) -> Option<u16> {
+    Some(match line_type {
+        LINETYPE_DOT | LINETYPE_ALTERNATE => 0xAAAA,
+        LINETYPE_SHORTDASH     => 0xF0F0,
+        LINETYPE_DASHDOT       => 0xFF18,
+        LINETYPE_DOUBLEDOT     => 0xA0A0,
+        LINETYPE_LONGDASH      => 0xFFF0,
+        LINETYPE_DASHDOUBLEDOT => 0xFF24,
+        LINETYPE_INVISIBLE     => return None,
+        _ => crate::gui::surface::SOLID_LINE, // LINETYPE_DEFAULT, LINETYPE_SOLID
+    })
+}
+
+/// The mix a `BM_*` background mix applies to the text background; `None`
+/// for the modes that leave it alone (the default).
+fn background_mix(bm: u32) -> Option<Mix> {
+    match bm {
+        FM_DEFAULT | BM_LEAVEALONE | BM_SRCTRANSPARENT | BM_DESTTRANSPARENT => None,
+        m => Mix::from_fm(m),
+    }
 }
 
 // FONTMETRICS byte offsets (OS/2 Warp 4 pmgpi.h, packed struct, no alignment padding)
@@ -77,12 +104,26 @@ impl super::Loader {
         match ordinal {
             369 => {
                 // GpiCreatePS(HAB hab, HDC hdc, PSIZEL pszl, ULONG flOptions)
+                // With GPIA_ASSOC the PS is associated with hdc: a memory DC
+                // (draws into the bitmap selected with GpiSetBitmap) or a
+                // window DC (draws into the window).
                 let _hab = read_stack(4);
-                let _hdc = read_stack(8);
+                let hdc = read_stack(8);
                 let _pszl = read_stack(12);
-                let _opts = read_stack(16);
-                let hps = self.shared.window_mgr.lock_or_recover().create_ps(0);
-                debug!("  [VCPU {}] GpiCreatePS -> HPS {}", vcpu_id, hps);
+                let opts = read_stack(16);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let dc = match hdc {
+                    0 => None,
+                    h => match wm.dcs.get(&h) {
+                        Some(&dc) => Some(dc),
+                        None => return ApiResult::Normal(GPI_ERROR),
+                    },
+                };
+                let assoc = opts & GPIA_ASSOC != 0;
+                let hwnd = match dc { Some(DeviceContext::Window(w)) if assoc => w, _ => 0 };
+                let hps = wm.create_ps(hwnd);
+                if assoc && let Some(ps) = wm.ps_map.get_mut(&hps) { ps.hdc = hdc; }
+                debug!("  [VCPU {}] GpiCreatePS(hdc={:#x}, assoc={}) -> HPS {}", vcpu_id, hdc, assoc, hps);
                 ApiResult::Normal(hps)
             }
             379 => {
@@ -95,12 +136,10 @@ impl super::Loader {
                 // GpiSetColor(HPS hps, LONG lColor)
                 let hps = read_stack(4);
                 let color = read_stack(8);
-                let mapped = self.map_color(color);
                 let mut wm = self.shared.window_mgr.lock_or_recover();
-                if let Some(ps) = wm.ps_map.get_mut(&hps) {
-                    ps.color = mapped;
-                }
-                ApiResult::Normal(1)
+                let Some(ps) = wm.ps_map.get_mut(&hps) else { return ApiResult::Normal(GPI_ERROR) };
+                ps.set_color(color);
+                ApiResult::Normal(GPI_OK)
             }
             404 => {
                 // GpiMove(HPS hps, PPOINTL pptl)
@@ -142,7 +181,9 @@ impl super::Loader {
                 );
                 let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
                 let (x1, y1) = t.pos;
-                self.draw(t.frame, DrawOp::Line { x1, y1, x2, y2, color: t.color, mix: t.mix });
+                if let Some(style) = line_style(t.line_type) {
+                    self.draw_to(t.target, DrawOp::Line { x1, y1, x2, y2, color: t.color, mix: t.mix, style });
+                }
                 self.set_current_pos(hps, (x2, y2));
                 ApiResult::Normal(GPI_OK)
             }
@@ -165,7 +206,7 @@ impl super::Loader {
                 // GpiErase(HPS hps)
                 let hps = read_stack(4);
                 let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
-                self.draw(t.frame, DrawOp::Clear);
+                self.draw_to(t.target, DrawOp::Clear);
                 ApiResult::Normal(GPI_OK)
             }
 
@@ -184,24 +225,24 @@ impl super::Loader {
             504 => {
                 // GpiSetBackColor(HPS hps, LONG lColor)
                 let hps = read_stack(4);
-                let color = self.map_color(read_stack(8));
+                let color = read_stack(8);
                 let mut wm = self.shared.window_mgr.lock_or_recover();
-                if let Some(ps) = wm.ps_map.get_mut(&hps) { ps.back_color = color; }
-                debug!("  GpiSetBackColor(hps={}, color=0x{:06X})", hps, color);
-                ApiResult::Normal(1)
+                let Some(ps) = wm.ps_map.get_mut(&hps) else { return ApiResult::Normal(GPI_ERROR) };
+                ps.set_back_color(color);
+                ApiResult::Normal(GPI_OK)
             }
             437 => {
-                // GpiQueryColor(HPS hps) → LONG lColor
+                // GpiQueryColor(HPS hps) → LONG lColor (the value as set)
                 let hps = read_stack(4);
                 let color = self.shared.window_mgr.lock_or_recover()
-                    .ps_map.get(&hps).map(|ps| ps.color).unwrap_or(0);
+                    .ps_map.get(&hps).map_or(CLR_ERROR as u32, |ps| ps.color_attr);
                 ApiResult::Normal(color)
             }
             424 => {
-                // GpiQueryBackColor(HPS hps) → LONG lColor
+                // GpiQueryBackColor(HPS hps) → LONG lColor (the value as set)
                 let hps = read_stack(4);
                 let color = self.shared.window_mgr.lock_or_recover()
-                    .ps_map.get(&hps).map(|ps| ps.back_color).unwrap_or(0x00FFFFFF);
+                    .ps_map.get(&hps).map_or(CLR_ERROR as u32, |ps| ps.back_color_attr);
                 ApiResult::Normal(color)
             }
             537 => {
@@ -216,7 +257,7 @@ impl super::Loader {
             }
             505 => {
                 // GpiSetBackMix(HPS hps, LONG lMixMode)
-                // Stored for GpiQueryBackMix; nothing draws a background yet.
+                // Applies to the background box of character strings.
                 let hps = read_stack(4);
                 let mode = read_stack(8);
                 let valid = Mix::from_fm(mode).is_some()
@@ -249,21 +290,23 @@ impl super::Loader {
                 let (Some(x), Some(y)) = (self.guest_read::<i32>(pptl), self.guest_read::<i32>(pptl + 4))
                     else { return ApiResult::Normal(GPI_ERROR) };
                 let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
-                self.draw(t.frame, DrawOp::Pel { x, y, color: t.color, mix: t.mix });
+                self.draw_to(t.target, DrawOp::Pel { x, y, color: t.color, mix: t.mix });
                 ApiResult::Normal(GPI_OK)
             }
             476 => {
                 // GpiQueryPel(HPS hps, PPOINTL pptl) → LONG lColor
-                // Reads back what has been drawn: the colour index of the pel
-                // in the default colour table when it has one, else its RGB.
+                // Reads back what has been drawn, as a colour value of the
+                // PS's colour table (`PresentationSpace::value_of_pel`).
                 let hps = read_stack(4);
                 let pptl = read_stack(8);
                 let (Some(x), Some(y)) = (self.guest_read::<i32>(pptl), self.guest_read::<i32>(pptl + 4))
                     else { return ApiResult::Normal(CLR_NOINDEX as u32) };
                 let pel = self.ps_target(hps)
-                    .and_then(|t| self.shared.window_mgr.lock_or_recover().frame_surface(t.frame))
+                    .and_then(|t| self.shared.window_mgr.lock_or_recover().target_surface(t.target))
                     .and_then(|s| s.lock_or_recover().pel(x, y));
-                ApiResult::Normal(pel.map_or(CLR_NOINDEX as u32, |rgb| self.color_index_of(rgb)))
+                let value = pel.and_then(|rgb| self.shared.window_mgr.lock_or_recover()
+                    .ps_map.get(&hps).map(|ps| ps.value_of_pel(rgb)));
+                ApiResult::Normal(value.unwrap_or(CLR_NOINDEX as u32))
             }
 
             441 => {
@@ -349,8 +392,22 @@ impl super::Loader {
             }
 
             530 => {
-                // GpiSetLineType(HPS hps, LONG lLineType) → BOOL  (stub)
-                ApiResult::Normal(1)
+                // GpiSetLineType(HPS hps, LONG lLineType) → BOOL
+                // Applies to GpiLine (see `line_style`).
+                let hps = read_stack(4);
+                let lt = read_stack(8);
+                if lt > LINETYPE_ALTERNATE { return ApiResult::Normal(GPI_ERROR); }
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let Some(ps) = wm.ps_map.get_mut(&hps) else { return ApiResult::Normal(GPI_ERROR) };
+                ps.line_type = lt;
+                ApiResult::Normal(GPI_OK)
+            }
+            459 => {
+                // GpiQueryLineType(HPS hps) → LONG
+                let hps = read_stack(4);
+                let lt = self.shared.window_mgr.lock_or_recover()
+                    .ps_map.get(&hps).map_or(LINETYPE_ERROR as u32, |ps| ps.line_type);
+                ApiResult::Normal(lt)
             }
             531 => {
                 // GpiSetLineWidth(HPS hps, FIXED fxLineWidth) → BOOL  (stub)
@@ -459,6 +516,112 @@ impl super::Loader {
                 ApiResult::Normal(1)
             }
 
+            // ── Logical colour tables ────────────────────────────────────────
+            592 => {
+                // GpiCreateLogColorTable(HPS hps, ULONG flOptions, LONG lFormat,
+                //                        LONG lStart, LONG lCount, PLONG alTable) → BOOL
+                let (hps, opts, format) = (read_stack(4), read_stack(8), read_stack(12));
+                let (start, count, table) = (read_stack(16), read_stack(20), read_stack(24));
+                ApiResult::Normal(self.create_log_color_table(hps, opts, format, start, count, table))
+            }
+            593 => {
+                // GpiQueryLogColorTable(HPS hps, ULONG flOptions, LONG lStart,
+                //                       LONG lCount, PLONG alArray) → LONG
+                let (hps, opts, start, count, array) =
+                    (read_stack(4), read_stack(8), read_stack(12), read_stack(16), read_stack(20));
+                ApiResult::Normal(self.query_log_color_table(hps, opts, start, count, array))
+            }
+            479 => {
+                // GpiQueryRGBColor(HPS hps, ULONG flOptions, LONG lColor) → LONG
+                let (hps, color) = (read_stack(4), read_stack(12));
+                let rgb = self.shared.window_mgr.lock_or_recover()
+                    .ps_map.get(&hps).map_or(GPI_ALTERROR as u32, |ps| ps.resolve_color(color));
+                ApiResult::Normal(rgb)
+            }
+            439 => {
+                // GpiQueryColorIndex(HPS hps, ULONG flOptions, LONG lRgbColor) → LONG
+                let (hps, rgb) = (read_stack(4), read_stack(12));
+                let index = self.shared.window_mgr.lock_or_recover()
+                    .ps_map.get(&hps).map_or(GPI_ALTERROR as u32, |ps| ps.nearest_index(rgb));
+                ApiResult::Normal(index)
+            }
+
+            // ── Device contexts, bitmaps and bit-block transfers ─────────────
+            // (implemented in pm_bitmap.rs)
+            610 => {
+                // DevOpenDC(HAB hab, LONG lType, PSZ pszToken, LONG lCount,
+                //           PDEVOPENDATA pdopData, HDC hdcComp) → HDC
+                ApiResult::Normal(self.dev_open_dc(read_stack(8)))
+            }
+            604 => {
+                // DevCloseDC(HDC hdc) → HMF
+                ApiResult::Normal(self.dev_close_dc(read_stack(4)))
+            }
+            606 => {
+                // DevQueryCaps(HDC hdc, LONG lStart, LONG lCount, PLONG alArray) → BOOL
+                ApiResult::Normal(self.dev_query_caps(read_stack(4), read_stack(8), read_stack(12), read_stack(16)))
+            }
+            351 => {
+                // GpiAssociate(HPS hps, HDC hdc) → BOOL
+                ApiResult::Normal(self.gpi_associate(read_stack(4), read_stack(8)))
+            }
+            598 => {
+                // GpiCreateBitmap(HPS hps, PBITMAPINFOHEADER2 pbmpNew, ULONG flOptions,
+                //                 PBYTE pbInitData, PBITMAPINFO2 pbmiInfoTable) → HBITMAP
+                ApiResult::Normal(self.gpi_create_bitmap(
+                    read_stack(8), read_stack(12), read_stack(16), read_stack(20)))
+            }
+            399 => {
+                // GpiLoadBitmap(HPS hps, HMODULE hmod, ULONG idBitmap, LONG cx, LONG cy) → HBITMAP
+                ApiResult::Normal(self.gpi_load_bitmap(read_stack(12), read_stack(16) as i32, read_stack(20) as i32))
+            }
+            371 => {
+                // GpiDeleteBitmap(HBITMAP hbm) → BOOL
+                ApiResult::Normal(self.gpi_delete_bitmap(read_stack(4)))
+            }
+            506 => {
+                // GpiSetBitmap(HPS hps, HBITMAP hbm) → HBITMAP (previous)
+                ApiResult::Normal(self.gpi_set_bitmap(read_stack(4), read_stack(8)))
+            }
+            601 => {
+                // GpiQueryBitmapInfoHeader(HBITMAP hbm, PBITMAPINFOHEADER2 pbmp) → BOOL
+                ApiResult::Normal(self.query_bitmap_header(read_stack(4), read_stack(8), false))
+            }
+            573 => {
+                // GpiQueryBitmapParameters(HBITMAP hbm, PBITMAPINFOHEADER pbmp) → BOOL
+                ApiResult::Normal(self.query_bitmap_header(read_stack(4), read_stack(8), true))
+            }
+            602 => {
+                // GpiSetBitmapBits(HPS hps, LONG lScanStart, LONG lScans,
+                //                  PBYTE pbBuffer, PBITMAPINFO2 pbmiInfoTable) → LONG
+                ApiResult::Normal(self.bitmap_bits(read_stack(4), read_stack(8), read_stack(12),
+                                                   read_stack(16), read_stack(20), true))
+            }
+            599 => {
+                // GpiQueryBitmapBits(HPS hps, LONG lScanStart, LONG lScans,
+                //                    PBYTE pbBuffer, PBITMAPINFO2 pbmiInfoTable) → LONG
+                ApiResult::Normal(self.bitmap_bits(read_stack(4), read_stack(8), read_stack(12),
+                                                   read_stack(16), read_stack(20), false))
+            }
+            355 => {
+                // GpiBitBlt(HPS hpsTarget, HPS hpsSource, LONG lCount,
+                //           PPOINTL aptlPoints, LONG lRop, ULONG flOptions) → LONG
+                ApiResult::Normal(self.gpi_bit_blt(read_stack(4), read_stack(8), read_stack(12),
+                                                   read_stack(16), read_stack(20)))
+            }
+            557 => {
+                // GpiWCBitBlt(HPS hpsTarget, HBITMAP hbmSource, LONG lCount,
+                //             PPOINTL aptlPoints, LONG lRop, ULONG flOptions) → LONG
+                ApiResult::Normal(self.gpi_wc_bit_blt(read_stack(4), read_stack(8), read_stack(12),
+                                                      read_stack(16), read_stack(20)))
+            }
+            603 => {
+                // GpiDrawBits(HPS hps, PVOID pBits, PBITMAPINFO2 pbmiInfoTable,
+                //             LONG lCount, PPOINTL aptlPoints, LONG lRop, ULONG flOptions) → LONG
+                ApiResult::Normal(self.gpi_draw_bits(read_stack(4), read_stack(8), read_stack(12),
+                                                     read_stack(16), read_stack(20), read_stack(24)))
+            }
+
             _ => {
                 warn!("Warning: Unknown PMGPI Ordinal {} on VCPU {}", ordinal, vcpu_id);
                 ApiResult::Normal(0)
@@ -466,18 +629,73 @@ impl super::Loader {
         }
     }
 
-    /// The frame `hps` draws into and its current colour, mix and position;
-    /// `None` for an unknown presentation space. A presentation space without
-    /// a window has frame 0, which [`Loader::draw`] ignores.
-    fn ps_target(&self, hps: u32) -> Option<PsTarget> {
+    /// Where `hps` draws and its current attributes; `None` for an unknown
+    /// presentation space. One with neither a window nor a bitmap has
+    /// `DrawTarget::None`, which [`Loader::draw_to`] ignores.
+    pub(super) fn ps_target(&self, hps: u32) -> Option<PsTarget> {
         let wm = self.shared.window_mgr.lock_or_recover();
+        let target = wm.ps_draw_target(hps)?;
         let ps = wm.ps_map.get(&hps)?;
         Some(PsTarget {
-            frame: wm.client_to_frame(ps.hwnd),
+            target,
             color: ps.color,
+            back_color: ps.back_color,
             mix: Mix::from_fm(ps.mix_mode).unwrap_or(Mix::Overpaint),
+            back_mix: background_mix(ps.back_mix),
             pos: ps.current_pos,
+            line_type: ps.line_type,
         })
+    }
+
+    /// GpiCreateLogColorTable: `LCOLF_RGB` switches to RGB colour values,
+    /// `LCOLF_CONSECRGB` loads `count` consecutive entries from `start`,
+    /// `LCOLF_INDRGB` loads (index, RGB) pairs, `LCOLF_DEFAULT` or
+    /// `LCOL_RESET` restore the default table. `LCOLF_PALETTE` (palette
+    /// manager) is not supported.
+    fn create_log_color_table(&self, hps: u32, opts: u32, format: u32, start: u32, count: u32, table: u32) -> u32 {
+        let read = |i: u32| self.guest_read::<u32>(table.wrapping_add(4 * i));
+        let count = count.min(MAX_LOG_COLOR_ENTRIES);
+        let entries: Option<Vec<(u32, u32)>> = match format {
+            LCOLF_DEFAULT | LCOLF_RGB => Some(Vec::new()),
+            LCOLF_CONSECRGB => (0..count).map(|i| Some((start.wrapping_add(i), read(i)? & 0x00FF_FFFF))).collect(),
+            LCOLF_INDRGB => (0..count / 2).map(|k| Some((read(2 * k)?, read(2 * k + 1)? & 0x00FF_FFFF))).collect(),
+            _ => None,
+        };
+        let Some(entries) = entries else { return GPI_ERROR };
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        let Some(ps) = wm.ps_map.get_mut(&hps) else { return GPI_ERROR };
+        if opts & LCOL_RESET != 0 || matches!(format, LCOLF_DEFAULT | LCOLF_RGB) {
+            ps.color_table.clear();
+        }
+        ps.rgb_mode = format == LCOLF_RGB;
+        ps.color_table.extend(entries);
+        ps.refresh_colors();
+        GPI_OK
+    }
+
+    /// GpiQueryLogColorTable: `QLCT_RGB` in RGB mode, `QLCT_NOTLOADED` with
+    /// the default table; otherwise the RGB values of indices `start..` or,
+    /// with `LCOLOPT_INDEX`, (index, RGB) pairs. Returns the LONGs written.
+    fn query_log_color_table(&self, hps: u32, opts: u32, start: u32, count: u32, array: u32) -> u32 {
+        let values: Vec<u32> = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            let Some(ps) = wm.ps_map.get(&hps) else { return QLCT_ERROR as u32 };
+            if ps.rgb_mode { return QLCT_RGB as u32; }
+            if ps.color_table.is_empty() { return QLCT_NOTLOADED as u32; }
+            let count = count.min(MAX_LOG_COLOR_ENTRIES);
+            if opts & LCOLOPT_INDEX != 0 {
+                ps.color_entries().into_iter().filter(|&(i, _)| i >= start)
+                    .flat_map(|(i, rgb)| [i, rgb]).take((count & !1) as usize).collect()
+            } else {
+                (0..count).map(|i| ps.resolve_color(start.wrapping_add(i))).collect()
+            }
+        };
+        for (i, v) in values.iter().enumerate() {
+            if self.guest_write::<u32>(array.wrapping_add(4 * i as u32), *v).is_none() {
+                return QLCT_ERROR as u32;
+            }
+        }
+        values.len() as u32
     }
 
     fn set_current_pos(&self, hps: u32, pos: (i32, i32)) {
@@ -493,7 +711,7 @@ impl super::Loader {
         if control == DRO_FILL || control == DRO_OUTLINEFILL { parts.push(true); }
         if control == DRO_OUTLINE || control == DRO_OUTLINEFILL { parts.push(false); }
         for fill in parts {
-            self.draw(t.frame, DrawOp::Box { x1, y1, x2, y2, color: t.color, fill, mix: t.mix });
+            self.draw_to(t.target, DrawOp::Box { x1, y1, x2, y2, color: t.color, fill, mix: t.mix });
         }
     }
 
@@ -508,21 +726,17 @@ impl super::Loader {
         // Pin the CJK regional face to the codepage of this call.
         let font = FontSpec { cjk: CjkRegion::from_codepage(cp), ..self.ps_font(hps) };
         let advance = font::text_width(&text, font);
-        self.draw(t.frame, DrawOp::TextFont { x, y, text, color: t.color, font, mix: t.mix });
+        // The background mix applies to the string's character box.
+        if let Some(mix) = t.back_mix && advance > 0 {
+            let m = font::metrics(font);
+            self.draw_to(t.target, DrawOp::Box {
+                x1: x, y1: y - m.descent, x2: x + advance - 1, y2: y + m.ascent - 1,
+                color: t.back_color, fill: true, mix,
+            });
+        }
+        self.draw_to(t.target, DrawOp::TextFont { x, y, text, color: t.color, font, mix: t.mix });
         self.set_current_pos(hps, (x + advance, y));
         GPI_OK
-    }
-
-    /// The colour `GpiQueryPel` reports for pel colour `rgb`: its index in
-    /// the default colour table (CLR_BLACK for black, which has no index),
-    /// or the RGB value itself when no entry matches.
-    ///
-    /// Without logical colour tables (`GpiCreateLogColorTable`) this is
-    /// ambiguous for applications that draw with RGB values equal to table
-    /// colours: they get the index back.
-    fn color_index_of(&self, rgb: u32) -> u32 {
-        (0..=MAX_DEFAULT_COLOR_INDEX).find(|&i| self.map_color(i) == rgb)
-            .unwrap_or(if rgb == self.map_color(CLR_BLACK as u32) { CLR_BLACK as u32 } else { rgb })
     }
 
     /// Font currently selected into presentation space `hps`.

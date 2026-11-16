@@ -44,6 +44,23 @@ pub const MAX_SURFACE_DIM: u32 = 8192;
 /// glyph arithmetic on guest-supplied coordinates cannot overflow.
 const TEXT_COORD_LIMIT: i32 = 1 << 24;
 
+/// A solid line style for [`DrawOp::Line`].
+pub const SOLID_LINE: u16 = 0xFFFF;
+
+/// Ternary raster operation `rop` (`ROP_*`) on pattern `p`, source `s` and
+/// destination `d` (0x00RRGGBB): bit `(P<<2)|(S<<1)|D` of `rop` is the result
+/// bit for that combination, applied to every bit of the pels.
+pub fn rop3(rop: u8, p: u32, s: u32, d: u32) -> u32 {
+    let mut out = 0;
+    for i in 0..8 {
+        if rop & (1 << i) != 0 {
+            let pick = |bit: u32, v: u32| if i & bit != 0 { v } else { !v };
+            out |= pick(4, p) & pick(2, s) & pick(1, d);
+        }
+    }
+    out & RGB_MASK
+}
+
 /// A GPI foreground mix: how the source colour S combines with the
 /// destination pel D (`FM_*` in `<pmgpi.h>`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,8 +125,9 @@ pub enum DrawOp {
     /// Rectangle with corners `(x1, y1)` and `(x2, y2)` in any order; filled
     /// or outlined.
     Box { x1: i32, y1: i32, x2: i32, y2: i32, color: u32, fill: bool, mix: Mix },
-    /// Line from `(x1, y1)` to `(x2, y2)`, both end points included.
-    Line { x1: i32, y1: i32, x2: i32, y2: i32, color: u32, mix: Mix },
+    /// Line from `(x1, y1)` to `(x2, y2)`, both end points included, drawn
+    /// with the 16-pel repeating `style` mask (MSB first; [`SOLID_LINE`]).
+    Line { x1: i32, y1: i32, x2: i32, y2: i32, color: u32, mix: Mix, style: u16 },
     /// System-font text whose 16-px line box has its bottom at `y` (how the
     /// built-in controls place labels). Anti-aliased, overpaint.
     Text { x: i32, y: i32, text: String, color: u32 },
@@ -117,6 +135,12 @@ pub enum DrawOp {
     TextFont { x: i32, y: i32, text: String, color: u32, font: FontSpec, mix: Mix },
     /// One pel.
     Pel { x: i32, y: i32, color: u32, mix: Mix },
+    /// Raster-operation blit onto the `w` × `h` area with lower-left corner
+    /// `(x, y)`: each pel becomes [`rop3`]`(rop, pattern, S, D)`. `src`
+    /// holds the source pels bottom row first (`src[row * w + col]`); a
+    /// `None` pel (outside the source) leaves the destination unchanged.
+    /// Without `src`, S is 0 (for operations that ignore the source).
+    Blit { x: i32, y: i32, w: u32, h: u32, src: Option<Vec<Option<u32>>>, rop: u8, pattern: u32 },
     /// Fill the whole surface with [`SURFACE_BLANK`].
     Clear,
 }
@@ -255,6 +279,22 @@ impl Surface {
         Some((ax, ay, bx, by))
     }
 
+    /// Overwrite PM row `y` from column 0 with `pels` (clipped).
+    pub fn put_row(&mut self, y: i32, pels: &[u32]) {
+        if let Some(i) = self.index(0, y) {
+            let n = pels.len().min(self.width as usize);
+            for (d, &p) in self.buffer[i..i + n].iter_mut().zip(pels) {
+                *d = p & RGB_MASK;
+            }
+        }
+    }
+
+    /// PM row `y` (`width` pels); `None` outside the surface.
+    pub fn row_pels(&self, y: i32) -> Option<Vec<u32>> {
+        let i = self.index(0, y)?;
+        Some(self.buffer[i..i + self.width as usize].iter().map(|p| p & RGB_MASK).collect())
+    }
+
     /// The pel at PM `(x, y)` as 0x00RRGGBB; `None` outside the surface.
     pub fn pel(&self, x: i32, y: i32) -> Option<u32> {
         self.index(x, y).map(|i| self.buffer[i] & RGB_MASK)
@@ -293,14 +333,18 @@ impl Surface {
                     }
                 }
             }
-            DrawOp::Line { x1, y1, x2, y2, color, mix } => {
+            DrawOp::Line { x1, y1, x2, y2, color, mix, style } => {
                 let Some((x1, y1, x2, y2)) = self.clip_line(x1, y1, x2, y2) else { return };
                 // Bresenham; each pel is visited once.
                 let (dx, dy) = ((x2 - x1).abs(), (y2 - y1).abs());
                 let (sx, sy) = (if x1 < x2 { 1 } else { -1 }, if y1 < y2 { 1 } else { -1 });
                 let (mut x, mut y, mut err) = (x1, y1, dx - dy);
+                let mut n = 0u32;
                 loop {
-                    self.mix_pel(x, y, color, mix);
+                    if style & (0x8000 >> (n % 16)) != 0 {
+                        self.mix_pel(x, y, color, mix);
+                    }
+                    n += 1;
                     if x == x2 && y == y2 { break; }
                     let e2 = 2 * err;
                     if e2 > -dy { err -= dy; x += sx; }
@@ -316,6 +360,27 @@ impl Surface {
                 self.text(x, y, text, color, font, mix);
             }
             DrawOp::Pel { x, y, color, mix } => self.mix_pel(x, y, color, mix),
+            DrawOp::Blit { x, y, w, h, ref src, rop, pattern } => {
+                if src.as_ref().is_some_and(|v| v.len() != w as usize * h as usize) { return; }
+                // Only the part of the area on the surface (i64: x, y, w, h
+                // come from the guest).
+                let cols = (-(x as i64)).max(0)..(w as i64).min(self.width as i64 - x as i64);
+                let rows = (-(y as i64)).max(0)..(h as i64).min(self.height as i64 - y as i64);
+                for r in rows {
+                    for c in cols.clone() {
+                        let s = match src {
+                            Some(v) => match v[r as usize * w as usize + c as usize] {
+                                Some(s) => s,
+                                None => continue,
+                            },
+                            None => 0,
+                        };
+                        if let Some(i) = self.index((x as i64 + c) as i32, (y as i64 + r) as i32) {
+                            self.buffer[i] = rop3(rop, pattern, s, self.buffer[i]);
+                        }
+                    }
+                }
+            }
             DrawOp::Clear => self.buffer.fill(SURFACE_BLANK),
         }
     }
@@ -407,7 +472,7 @@ mod tests {
         let mut s = Surface::new(10, 10);
         s.draw(fill(-20, -20, -5, -5, RED, Mix::Overpaint));
         s.draw(fill(30, 2, 40, 4, RED, Mix::Overpaint));
-        s.draw(DrawOp::Line { x1: -5, y1: 20, x2: 20, y2: 20, color: RED, mix: Mix::Overpaint });
+        s.draw(DrawOp::Line { x1: -5, y1: 20, x2: 20, y2: 20, color: RED, mix: Mix::Overpaint, style: SOLID_LINE });
         s.draw(DrawOp::Pel { x: 10, y: 0, color: RED, mix: Mix::Overpaint });
         assert_eq!(count(&s, RED), 0);
         // Partly inside: only the inside part.
@@ -427,9 +492,9 @@ mod tests {
         for op in [
             fill(lo, lo, hi, hi, RED, Mix::Overpaint),
             DrawOp::Box { x1: lo, y1: lo, x2: hi, y2: hi, color: RED, fill: false, mix: Mix::Xor },
-            DrawOp::Line { x1: lo, y1: lo, x2: hi, y2: hi, color: 0, mix: Mix::Overpaint },
-            DrawOp::Line { x1: hi, y1: 5, x2: lo, y2: 5, color: 0, mix: Mix::Overpaint },
-            DrawOp::Line { x1: lo, y1: lo, x2: lo, y2: hi, color: 0, mix: Mix::Overpaint },
+            DrawOp::Line { x1: lo, y1: lo, x2: hi, y2: hi, color: 0, mix: Mix::Overpaint, style: SOLID_LINE },
+            DrawOp::Line { x1: hi, y1: 5, x2: lo, y2: 5, color: 0, mix: Mix::Overpaint, style: SOLID_LINE },
+            DrawOp::Line { x1: lo, y1: lo, x2: lo, y2: hi, color: 0, mix: Mix::Overpaint, style: SOLID_LINE },
             DrawOp::Pel { x: lo, y: hi, color: 0, mix: Mix::Overpaint },
             DrawOp::Text { x: hi, y: hi, text: "x".into(), color: 0 },
             DrawOp::TextFont { x: lo, y: lo, text: "x".into(), color: 0,
@@ -455,10 +520,66 @@ mod tests {
     }
 
     #[test]
+    fn rop3_matches_the_named_raster_operations() {
+        use crate::loader::constants::*;
+        let (p, s, d) = (0x00F0_F0F0u32, 0x00CC_CCCC, 0x00AA_AAAA);
+        let r = |rop: u32| rop3(rop as u8, p, s, d);
+        assert_eq!(r(ROP_SRCCOPY), s);
+        assert_eq!(r(ROP_SRCPAINT), s | d);
+        assert_eq!(r(ROP_SRCAND), s & d);
+        assert_eq!(r(ROP_SRCINVERT), s ^ d);
+        assert_eq!(r(ROP_NOTSRCCOPY), !s & RGB_MASK);
+        assert_eq!(r(ROP_PATCOPY), p);
+        assert_eq!(r(ROP_PATINVERT), p ^ d);
+        assert_eq!(r(ROP_DSTINVERT), !d & RGB_MASK);
+        assert_eq!(r(ROP_ZERO), 0);
+        assert_eq!(r(ROP_ONE), RGB_MASK);
+    }
+
+    #[test]
+    fn blit_applies_the_rop_inside_the_surface_only() {
+        let mut s = Surface::new(4, 4);
+        // A 3×2 source, bottom row first, with one hole.
+        let src = vec![Some(1), Some(2), None, Some(4), Some(5), Some(6)];
+        s.draw(DrawOp::Blit { x: 2, y: 0, w: 3, h: 2, src: Some(src), rop: 0xCC, pattern: 0 });
+        assert_eq!(s.pel(2, 0), Some(1));
+        assert_eq!(s.pel(3, 0), Some(2));
+        assert_eq!(s.pel(3, 1), Some(5));
+        assert_eq!(s.pel(2, 1), Some(4));
+        assert_eq!(s.pel(1, 0), Some(WHITE), "left of the area");
+        // No source: pattern copy, and a mismatched source is ignored.
+        s.draw(DrawOp::Blit { x: -1, y: 3, w: 9, h: 9, src: None, rop: 0xF0, pattern: RED });
+        assert_eq!(s.row_pels(3), Some(vec![RED; 4]));
+        s.draw(DrawOp::Blit { x: 0, y: 0, w: 2, h: 2, src: Some(vec![Some(7)]), rop: 0xCC, pattern: 0 });
+        assert_eq!(s.pel(0, 0), Some(WHITE));
+        // Guest extremes do not overflow.
+        s.draw(DrawOp::Blit { x: i32::MIN, y: i32::MAX, w: u32::MAX, h: 1, src: None, rop: 0xF0, pattern: 0 });
+    }
+
+    #[test]
+    fn line_styles_skip_pels() {
+        let mut s = Surface::new(16, 1);
+        s.draw(DrawOp::Line { x1: 0, y1: 0, x2: 15, y2: 0, color: RED, mix: Mix::Overpaint, style: 0xAAAA });
+        assert_eq!(count(&s, RED), 8);
+        assert_eq!(s.pel(0, 0), Some(RED));
+        assert_eq!(s.pel(1, 0), Some(WHITE));
+    }
+
+    #[test]
+    fn rows_can_be_written_and_read() {
+        let mut s = Surface::new(3, 2);
+        s.put_row(1, &[1, 2, 3, 4]);
+        assert_eq!(s.row_pels(1), Some(vec![1, 2, 3]));
+        assert_eq!(s.pel(0, 1), Some(1));
+        assert_eq!(s.row_pels(2), None);
+        s.put_row(-1, &[9]);
+    }
+
+    #[test]
     fn lines_include_both_end_points() {
         for (x1, y1, x2, y2, n) in [(0, 5, 19, 5, 20), (5, 0, 5, 9, 10), (0, 0, 9, 9, 10), (9, 9, 0, 0, 10)] {
             let mut s = Surface::new(20, 10);
-            s.draw(DrawOp::Line { x1, y1, x2, y2, color: RED, mix: Mix::Overpaint });
+            s.draw(DrawOp::Line { x1, y1, x2, y2, color: RED, mix: Mix::Overpaint, style: SOLID_LINE });
             assert_eq!(count(&s, RED), n, "line {x1},{y1} → {x2},{y2}");
             assert_eq!(s.pel(x1, y1), Some(RED));
             assert_eq!(s.pel(x2, y2), Some(RED));
@@ -476,7 +597,7 @@ mod tests {
             fill(2, 2, 20, 10, 0x00FF_00FF, Mix::Xor),
             DrawOp::Box { x1: 5, y1: 5, x2: 25, y2: 25, color: 0x0000_FFFF, fill: false, mix: Mix::Xor },
             DrawOp::Box { x1: 7, y1: 7, x2: 7, y2: 20, color: 0x0000_FFFF, fill: false, mix: Mix::Xor },
-            DrawOp::Line { x1: 0, y1: 29, x2: 29, y2: 3, color: 0x00FF_FFFF, mix: Mix::Xor },
+            DrawOp::Line { x1: 0, y1: 29, x2: 29, y2: 3, color: 0x00FF_FFFF, mix: Mix::Xor, style: SOLID_LINE },
             DrawOp::Pel { x: 4, y: 4, color: 0x0080_8080, mix: Mix::Xor },
             DrawOp::TextFont { x: 2, y: 12, text: "XOR".into(), color: 0x00FF_FFFF,
                                font: FontSpec::SYSTEM, mix: Mix::Xor },

@@ -7,6 +7,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **Memory presentation spaces, bitmaps and bit-block transfers** (new `src/loader/pm_bitmap.rs`) — `DevOpenDC` (`OD_MEMORY`, `OD_INFO`), `DevCloseDC`, `DevQueryCaps`, `GpiAssociate`, `GpiCreatePS` with `GPIA_ASSOC`, `WinOpenWindowDC` / `WinQueryWindowDC`; `GpiCreateBitmap` (with `CBM_INIT`), `GpiSetBitmap`, `GpiDeleteBitmap`, `GpiLoadBitmap` (`RT_BITMAP` resources), `GpiSetBitmapBits` / `GpiQueryBitmapBits`, `GpiQueryBitmapInfoHeader` / `GpiQueryBitmapParameters` for uncompressed 1/4/8/24/32-bit bitmaps in both header layouts; `GpiBitBlt`, `GpiWCBitBlt`, `GpiDrawBits` and `WinDrawBitmap` with all 256 ternary raster operations and nearest-pel stretching. Double-buffered PM programs (draw into a memory PS, `GpiBitBlt` to the window) now work.
+- **Logical colour tables** (`pm_gpi.rs`) — `GpiCreateLogColorTable` (`LCOLF_RGB`, `LCOLF_CONSECRGB`, `LCOLF_INDRGB`, reset), `GpiQueryLogColorTable`, `GpiQueryRGBColor`, `GpiQueryColorIndex`; `GpiQueryPel` answers in RGB in RGB mode.
+- **Line types and text background** — `GpiSetLineType` / `GpiQueryLineType` style `GpiLine` (it was a stub); a background mix such as `BM_OVERPAINT` fills a character string's box with the background colour.
+- **`WinGetPS` / `WinReleasePS`** (PMWIN 757 / 848) — they were missing, so `WinGetPS` returned 0.
+- **`samples/pm_bitmap_test`** — checks the above from the guest side (25 checks, including an `RT_BITMAP` resource); integration test `gui_pm_bitmap_test_blits_bitmaps`.
 - **GPI read-back and mix modes** (`pm_gpi.rs`, `src/gui/surface.rs`) — `GpiQueryPel` (476) reads back what was drawn (default colour-table index when the pel matches one, else RGB; `CLR_NOINDEX` outside the window), `GpiSetPel` (544) sets one pel, and drawing honours all 16 `GpiSetMix` raster operations (`FM_XOR`, `FM_INVERT`, `FM_AND`, `FM_LEAVEALONE`…); `GpiQueryMix` (467) and `GpiQueryBackMix` (425) report the modes, and `GpiSetMix` / `GpiSetBackMix` reject values that are not modes. New sample `samples/pm_pel_test` checks these from the guest side, with the integration test `gui_pm_pel_test_reads_back_pels_and_mixes`.
 - **`samples/pm_bench`** — self-benchmarking PM application: GPI box / line / text calls per second, `WinSendMsg` and `WinPostMsg` round trips, paint cycles and the `WM_TIMER` rate, shown in its window and printed to stdout; R reruns. New integration test `gui_pm_bench_reports_every_measurement` checks that every measurement is reported in two runs.
 - **`DosQuerySysInfo` `QSV_MS_COUNT` / `QSV_TIME_LOW` / `QSV_TIME_HIGH`** (`stubs.rs`) — the millisecond counter and the 64-bit Unix time; they returned 0 before.
@@ -50,6 +55,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **`sdl2` crate 0.37 → 0.38.**
 
 ### Fixed
+- **A presentation space leaked on every paint** — `WinBeginPaint` created one each time and `WinEndPaint` never freed it; it now does (a PS passed to `WinBeginPaint` is kept). `WinBeginPaint` also ignored its `prclPaint` argument, leaving the caller's update rectangle uninitialised; it now reports the whole window.
+- **`GpiQueryColor` / `GpiQueryBackColor` returned the resolved RGB value** instead of the colour value the application set (e.g. `CLR_RED`).
 - **GPI default mix mode** (`pm_types.rs`) — new presentation spaces started with mix 6, which is `FM_AND` in `<pmgpi.h>`, not `FM_OVERPAINT` (2); the background mix now starts as `BM_LEAVEALONE`. It had no visible effect while mixes were ignored.
 - **Primitives outside the window painted its edge** — boxes were drawn by clamping their corners to the window, so a box entirely outside it drew a line along the nearest edge; primitives are now clipped.
 - **`WinFillRect` filled one pel too many** — the `RECTL` top and right edges are exclusive.

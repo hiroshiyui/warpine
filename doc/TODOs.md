@@ -75,7 +75,7 @@ NE execution baseline complete (`ne_hello` runs end-to-end). Remaining:
 
 ### PM Graphics Performance and Architecture
 
-From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `renderer.rs`, `font.rs`, `message.rs`) on 2026-11-15. The steps are in suggested order. Steps 0–2 (frame statistics, a blocking event loop, coalesced presents, clipboard via events; damage-tracked compositing, row-wise blits, cached chrome, a per-thread glyph cache, content kept on resize) and the core of step 3 (shared per-frame surfaces drawn on the API thread, `GpiQueryPel`/`GpiSetPel`, `FM_*` mix modes) are done — see the developer guide, "Rendering Pipeline"; measure the items below with the frame statistics (`RUST_LOG=warpine::gui=debug`) before and after.
+From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `renderer.rs`, `font.rs`, `message.rs`) on 2026-11-15. The steps are in suggested order. Steps 0–2 (frame statistics, a blocking event loop, coalesced presents, clipboard via events; damage-tracked compositing, row-wise blits, cached chrome, a per-thread glyph cache, content kept on resize) and step 3 (shared per-frame surfaces drawn on the API thread, `GpiQueryPel`/`GpiSetPel`, `FM_*` mix modes, memory presentation spaces and bitmaps, `GpiBitBlt`, logical colour tables, line types, text background mix) are done — see the developer guide, "Rendering Pipeline"; measure the items below with the frame statistics (`RUST_LOG=warpine::gui=debug`) before and after.
 
 - [ ] **Measure on a real display** — the event-loop change was measured only on SDL's `dummy` driver (idle CPU roughly halved); compare idle CPU and input latency on X11 and Wayland, where the old loop also read the clipboard ~125 times a second; `samples/pm_bench` gives repeatable guest-side numbers for the comparison
 
@@ -87,10 +87,8 @@ From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `render
 
 **Step 3 follow-ups — what the shared surfaces unlock**
 
-- [ ] **`GpiBitBlt`** — window to window first (copy between surface rectangles with a raster operation), then from and to memory presentation spaces
-- [ ] **Memory presentation spaces and bitmaps** — `DevOpenDC` memory DC, `GpiCreatePS` on it, `GpiCreateBitmap` / `GpiSetBitmap` / `GpiDeleteBitmap`; a bitmap is a `Surface` not owned by a window (`GpiCreatePS` without a window draws nothing today)
-- [ ] **Logical colour tables** — `GpiCreateLogColorTable` (`LCOLF_RGB`, `LCOLF_CONSECRGB`…), `GpiQueryRGBColor`, `GpiQueryColorIndex`; `GpiQueryPel` returns a default-table index when the pel matches one and RGB otherwise, which is ambiguous for RGB-mode applications
-- [ ] **Background mix and line styles** — `GpiSetBackMix` is stored but no primitive draws a background (text cell background, patterned fills); `GpiSetLineType` / `GpiSetLineWidth` are stubs
+- [ ] **Remaining GPI gaps** — `GpiSetLineWidth` / `GpiSetLineWidthGeom` (stubs; lines are 1 pel), area patterns (`GpiSetPattern`, `GpiSetPatternSet`; fills and `ROP_PAT*` use a solid pattern), arcs (`GpiFullArc` draws a box), palettes (`GpiCreatePalette`, `LCOLF_PALETTE`), compressed (`BCA_RLE*`) and 16-bit bitmaps, `GpiQueryDeviceBitmapFormats`, coordinate transforms (presentation spaces are always `PU_PELS`), printer and metafile DCs (`DevOpenDC` refuses all but `OD_MEMORY` / `OD_INFO`), `GpiLoadBitmap` from a DLL (only the executable's resources are indexed)
+- [ ] **Unverified details** — the dash patterns of `LINETYPE_*` are Warpine's own; whether the target of `GpiWCBitBlt` / `GpiDrawBits` is inclusive (as implemented) should be checked against the PM reference
 - [ ] **Flicker during long paints** — every draw marks its frame dirty, so a composite can show a paint half done (e.g. just after the background fill); if visible, defer presentation of a `WinBeginPaint` presentation space to `WinEndPaint`
 
 - [ ] **DIVE (direct framebuffer blitting)** — the API most OS/2 games and video players use instead of GPI: the application fills a buffer and asks for it to be blitted (with scaling and colour conversion) into a window. Maps directly onto the shared per-window surface above. The ordinal table (`doc/os2_ordinals.md`) has no DIVE section, so first find the export list and semantics in public headers / import libraries (clean-room policy); pairs with DART audio in MMPM/2
@@ -106,6 +104,8 @@ From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `render
 
 **Step 5 — only if profiling still shows text as significant**
 
+- [ ] **Glyph atlas** shared by chrome, controls and GPI text
+
 ### SDL2 → SDL3 Migration
 
 SDL2 is in maintenance mode; SDL3 brings `SDL_GPU` (step 4 above), `SDL_AudioStream` (auto-resampling audio for MMPM/2 and DART), better HiDPI and input-method APIs. 5thPlanet migrated its frontend the same way (ADR-0020: experimental branch, validate, then rename and sweep docs). Do it after the step 3 GPI follow-ups and before step 4. The work is contained: `src/gui/sdl2_renderer.rs` (PM desktop), `src/gui/text_renderer.rs` (VGA text window), `src/loader/mmpm.rs` (raw SDL2 audio calls) and SDL start-up in `main.rs`; `gui_script.rs` is already SDL-free.
@@ -117,8 +117,6 @@ SDL2 is in maintenance mode; SDL3 brings `SDL_GPU` (step 4 above), `SDL_AudioStr
 - [ ] **Port MMPM/2 audio** — the raw `sdl2::sys` calls `SDL_OpenAudioDevice` / `SDL_QueueAudio` / `SDL_MixAudioFormat` / `SDL_GetQueuedAudioSize` → sdl3-rs's safe `AudioStream` per device (volume mixing in Rust instead of `SDL_MixAudioFormat`) (resampling is automatic), volume via the stream gain, `SDL_LoadWAV`; consider making `MCI_RECORD` real with an SDL3 recording device
 - [ ] **Acceptance** — every `gui_*` golden test passes unchanged in debug and release builds (the goldens are dumps of Warpine's own desktop buffer, so they do not depend on SDL's output); then manual checks on X11 and Wayland: typing including CJK input-method text, clipboard in both directions, drag / resize, `WinMessageBox`, MMPM audio
 - [ ] **Finish** — rename `sdl2_renderer.rs` / `Sdl2Renderer` / `Sdl2TextRenderer` to version-neutral names, `libsdl2-dev` → `libsdl3-dev` in the README prerequisites, CLAUDE.md and developer guide; consider sdl3's `build-from-source-static` feature for build machines without SDL3
-
-- [ ] **Glyph atlas** shared by chrome, controls and GPI text
 
 ### PM Advanced Controls
 
