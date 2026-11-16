@@ -95,16 +95,28 @@ From a code review of the PM rendering path (`src/gui/sdl2_renderer.rs`, `render
 
 - [ ] **DIVE (direct framebuffer blitting)** — the API most OS/2 games and video players use instead of GPI: the application fills a buffer and asks for it to be blitted (with scaling and colour conversion) into a window. Maps directly onto the shared per-window surface above. The ordinal table (`doc/os2_ordinals.md`) has no DIVE section, so first find the export list and semantics in public headers / import libraries (clean-room policy); pairs with DART audio in MMPM/2
 
-**Step 4 — GPU compositing**
+**Step 4 — GPU compositing** (after the SDL3 migration below)
 
 - [ ] **Compositor trait** — put compositing behind a small trait; keep the software backend for headless tests (`SDL_VIDEODRIVER=dummy`, golden signatures)
 - [ ] **Intermediate step** — the PM canvas is created with `.software()`; try `.accelerated().present_vsync()` with one SDL texture per window (window moves without re-blit, partial uploads). Composites are capped at ~60 Hz today (`FRAME_INTERVAL`) but not synchronised to the display
-- [ ] **GPU backend** — one texture per window drawn as quads, scaling for HiDPI, vsync. Prefer `wgpu` (Vulkan on Linux, OpenGL fallback) over raw Vulkan via `ash`, which needs far more setup for a handful of textured quads
+- [ ] **GPU backend** — one texture per window drawn as quads, scaling for HiDPI, vsync. Use SDL3's `SDL_GPU` (Vulkan / Metal / D3D12, inside the dependency already linked) rather than adding `wgpu` or raw Vulkan via `ash`: a second GPU stack plus window-handle interop for a handful of textured quads is not worth it (the conclusion 5thPlanet reached in its ADR-0019 / ADR-0020)
 - [ ] **Keep GPI on the CPU** — GPI is immediate-mode with pixel-exact semantics, raster operations and readback; mapping it to GPU draw calls is a large effort with poor returns
 
 - [ ] **OpenGL forwarding (`OPENGL.DLL`)** — OS/2 Warp 4 shipped OpenGL 1.0 (later a 1.1 update) with GLU and a small PM binding, PGL (`pglChooseConfig`, `pglCreateContext`, `pglMakeCurrent`, `pglSwapBuffers`…); version details are from memory and need checking against public documentation. GL 1.x calls map one-to-one onto the host's OpenGL compatibility profile, so most thunks only pass arguments and can be generated from a table; the real work is PGL context creation / buffer swap, translating guest pointers for array and pixel-data calls, and the few hundred entry points. Depends on the GPU compositor: the guest context renders into an offscreen framebuffer that is composited as the window's texture (with the CPU compositor every frame would need a GPU readback). No `OPENGL` section in `doc/os2_ordinals.md` yet — find the export list first
 
 **Step 5 — only if profiling still shows text as significant**
+
+### SDL2 → SDL3 Migration
+
+SDL2 is in maintenance mode; SDL3 brings `SDL_GPU` (step 4 above), `SDL_AudioStream` (auto-resampling audio for MMPM/2 and DART), better HiDPI and input-method APIs. 5thPlanet migrated its frontend the same way (ADR-0020: experimental branch, validate, then rename and sweep docs). Do it after the step 3 GPI follow-ups and before step 4. The work is contained: `src/gui/sdl2_renderer.rs` (PM desktop), `src/gui/text_renderer.rs` (VGA text window), `src/loader/mmpm.rs` (raw SDL2 audio calls) and SDL start-up in `main.rs`; `gui_script.rs` is already SDL-free.
+
+**Goal: no `unsafe` in the SDL front end.** Use only the safe sdl3-rs API; no direct `sdl3-sys` calls (today's SDL2 code calls `sdl2::sys` for audio, `SDL_CaptureMouse`, the wake-up user event and `SDL_bool`). Where sdl3-rs lacks a safe wrapper, prefer a different safe route, or contribute the wrapper upstream, over an `unsafe` block; an exception needs an explicit decision.
+
+- [ ] **Spike first** — check on a branch which of these the safe sdl3-rs (0.18.x) API covers: clipboard-update events, message boxes with custom buttons, `SDL_WaitEventTimeout`, `SDL_RegisterEvents` + `SDL_PushEvent` from another thread (the `GuiWake` hook), per-window text input (`SDL_StartTextInput(window)`, off by default in SDL3) and input-method events; the headless driver variable (SDL3 reads `SDL_VIDEO_DRIVER`, not `SDL_VIDEODRIVER` — to verify; the tests and docs set the latter); whether sdl3-rs still has sdl2 0.38's dangling-rect bug in `Texture::with_lock`
+- [ ] **Port the PM desktop and VGA text window** — float `FRect`s for `copy`, `PixelFormat` instead of `PixelFormatEnum`, `f32` mouse coordinates (convert to PM integers), window events as separate event types, renamed keycodes/modifiers (scancode values are unchanged USB HID, so the scancode → OS/2 tables should carry over); replace every raw `sdl2::sys` call (`SDL_CaptureMouse`, the wake-up user event) with safe sdl3-rs calls
+- [ ] **Port MMPM/2 audio** — the raw `sdl2::sys` calls `SDL_OpenAudioDevice` / `SDL_QueueAudio` / `SDL_MixAudioFormat` / `SDL_GetQueuedAudioSize` → sdl3-rs's safe `AudioStream` per device (volume mixing in Rust instead of `SDL_MixAudioFormat`) (resampling is automatic), volume via the stream gain, `SDL_LoadWAV`; consider making `MCI_RECORD` real with an SDL3 recording device
+- [ ] **Acceptance** — every `gui_*` golden test passes unchanged in debug and release builds (the goldens are dumps of Warpine's own desktop buffer, so they do not depend on SDL's output); then manual checks on X11 and Wayland: typing including CJK input-method text, clipboard in both directions, drag / resize, `WinMessageBox`, MMPM audio
+- [ ] **Finish** — rename `sdl2_renderer.rs` / `Sdl2Renderer` / `Sdl2TextRenderer` to version-neutral names, `libsdl2-dev` → `libsdl3-dev` in the README prerequisites, CLAUDE.md and developer guide; consider sdl3's `build-from-source-static` feature for build machines without SDL3
 
 - [ ] **Glyph atlas** shared by chrome, controls and GPI text
 
