@@ -89,7 +89,6 @@ From a code review of the PM rendering path (`src/gui/sdl_renderer.rs`, `rendere
 
 - [ ] **Damage smaller than a window** — `WindowManager::dirty` holds window handles, so invalidating a small area or drawing one primitive still redraws the whole frame; record the invalidated rectangles (`WinInvalidateRect` already receives them) and the bounds of each `DrawOp` drawn into a surface (`Loader::draw`), and damage only those
 - [ ] **Tighter damage for moves** — a window dragged a short distance damages the bounding box of its old and new positions; damage the two rectangles separately (or the old one minus the new one)
-- [ ] **Present cost (software compositor)** — after damage tracking, most of a composite (~0.2–0.35 ms on the `dummy` driver) is `canvas.copy` of the whole texture plus `present`, independent of the damage; the layered compositor avoids the CPU-side copy — measure both on a real display
 
 **Step 3 follow-ups — what the shared surfaces unlock**
 
@@ -101,7 +100,6 @@ From a code review of the PM rendering path (`src/gui/sdl_renderer.rs`, `rendere
 
 **Step 4 follow-ups — GPU compositing** (the `Compositor` trait, `SoftwareCompositor` and the per-window-texture `LayeredCompositor` with vsync are done — see the developer guide, "Compositing")
 
-- [ ] **Layered compositor: timings and default render driver** — checked by hand on a real display with the `opengl` (SDL's default pick) and `gpu` (SDL_GPU, `SDL_RENDER_DRIVER=gpu`) renderers: output looks the same as the software compositor's (2026-11-16). First figures from the frame statistics on that display, `samples/pm_menu_dlg_test`, not the same session: layered on OpenGL averaged 0.90–2.55 ms per composite, of which 0.60–1.57 ms presenting (13–15 composites in 5 s with interaction; the 16.9 ms maximum is a present waiting for vsync); software averaged 5.95 ms, of which 4.27 ms presenting (2 composites at start-up, 70 % of the desktop redrawn) — on a real display the software present pushes the whole desktop image to the window system. Still to do: compare both on the same session (e.g. ten seconds of dragging, or `samples/pm_bench`), try Vulkan, and decide whether to prefer the `gpu` render driver by default
 - [ ] **Partial texture uploads** — a frame whose surface changed re-renders and uploads its whole texture; re-render only the client area when the chrome did not change, and upload only the changed rows (pairs with "Damage smaller than a window")
 - [ ] **HiDPI** — the desktop window is created without high pixel density, so on a scaled display the OS scales it; use SDL3's pixel density / logical presentation to draw frames at the display's density (fonts would need rasterising at the scale)
 - [ ] **Keep GPI on the CPU** — GPI is immediate-mode with pixel-exact semantics, raster operations and readback; mapping it to GPU draw calls is a large effort with poor returns. Use `SDL_GPU` directly (shaders) only if the renderer API proves too limited (e.g. for OpenGL forwarding below), rather than adding `wgpu` or raw Vulkan via `ash` (the conclusion 5thPlanet reached in its ADR-0019 / ADR-0020)
