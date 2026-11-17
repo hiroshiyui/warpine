@@ -182,7 +182,7 @@ This is Warpine's core trick for intercepting OS/2 API calls without modifying t
 
 ### Setup
 
-During loading, `setup_stubs()` fills a 12288-byte region at `MAGIC_API_BASE` with INT 3 (0xCC) instructions. When the LX loader encounters an import fixup for a known module, `resolve_import()` maps it to a specific address:
+During loading, `setup_stubs()` fills an 18432-byte region (`STUB_AREA_SIZE`) at `MAGIC_API_BASE` with INT 3 (0xCC) instructions. When the LX loader encounters an import fixup for a known module, `resolve_import()` maps it to a specific address:
 
 | Module | Base Constant | Address formula | Range |
 |---|---|---|---|
@@ -196,6 +196,14 @@ During loading, `setup_stubs()` fills a 12288-byte region at `MAGIC_API_BASE` wi
 | NLS | `NLS_BASE` (7168) | `MAGIC_API_BASE + 7168 + ordinal` | 7168–8191 |
 | MSG | `MSG_BASE` (8192) | `MAGIC_API_BASE + 8192 + ordinal` | 8192–10239 |
 | MDM | `MDM_BASE` (10240) | `MAGIC_API_BASE + 10240 + ordinal` | 10240–12287 |
+| UCONV | `UCONV_BASE` (12288) | `MAGIC_API_BASE + 12288 + ordinal` | 12288–13311 |
+| SO32DLL | `SO32DLL_BASE` (13312) | `MAGIC_API_BASE + 13312 + ordinal` | 13312–14335 |
+| TCP32DLL | `TCP32DLL_BASE` (14336) | `MAGIC_API_BASE + 14336 + ordinal` | 14336–15359 |
+| MOUCALLS | `MOUCALLS_BASE` (15360) | `MAGIC_API_BASE + 15360 + ordinal` | 15360–16383 |
+| PMSHAPI | `PMSHAPI_BASE` (16384) | `MAGIC_API_BASE + 16384 + ordinal` | 16384–17407 |
+| HELPMGR | `HELPMGR_BASE` (17408) | `MAGIC_API_BASE + 17408 + ordinal` | 17408–18431 |
+
+A new module takes the next 1024-ordinal slot and grows `STUB_AREA_SIZE`; the compile-time asserts in `constants.rs` keep each range 1024 wide, the area below `DYNAMIC_ALLOC_BASE` and addressable by the NE loader's 16-bit offsets. Every place that lists the modules must follow: `resolve_import` / `resolve_import_by_name` (`descriptors.rs`), the range of the previous last module in `api_dispatch.rs`, `vcpu.rs` (Pascal argument pop) and `api_trace.rs`, `lx_loader.rs` `BUILTIN_MODULES`, `stubs.rs` `BUILTINS` (`DosLoadModule`), `lx_link.rs`, `gen_api.rs` (`MODULES`, `base_const` / `upper_const`, `resolve_const`, the `check` / `validate-doc` module lists) and `targets/os2api.def`.
 
 The fixup is patched so the guest's `CALL` instruction targets the appropriate stub address.
 
@@ -230,15 +238,15 @@ The primary OS/2 API module. Implemented functions:
 | **Directory** | DosCreateDir, DosDeleteDir, DosFindFirst, DosFindNext, DosFindClose, DosSetCurrentDir, DosQueryCurrentDir, DosQueryCurrentDisk, DosSetDefaultDisk |
 | **Memory** | DosAllocMem, DosFreeMem, DosAllocSharedMem, DosGetNamedSharedMem, DosGetSharedMem, DosSetMem, DosQueryMem |
 | **Threading** | DosCreateThread, DosSleep, DosWaitThread, DosGetInfoBlocks |
-| **Process** | DosExecPgm, DosWaitChild, DosKillProcess, DosQueryAppType, DosExit |
-| **Semaphores** | DosCreateEventSem, DosCloseEventSem, DosPostEventSem, DosWaitEventSem, DosOpenEventSem, DosCreateMutexSem, DosCloseMutexSem, DosRequestMutexSem, DosReleaseMutexSem, DosOpenMutexSem, DosCreateMuxWaitSem, DosCloseMuxWaitSem, DosWaitMuxWaitSem |
+| **Process** | DosExecPgm, DosWaitChild, DosKillProcess, DosQueryAppType, DosExit, DosExitList |
+| **Semaphores** | DosCreateEventSem, DosCloseEventSem, DosPostEventSem, DosWaitEventSem, DosOpenEventSem, DosResetEventSem, DosQueryEventSem, DosCreateMutexSem, DosCloseMutexSem, DosRequestMutexSem, DosReleaseMutexSem, DosOpenMutexSem, DosQueryMutexSem, DosCreateMuxWaitSem, DosOpenMuxWaitSem, DosCloseMuxWaitSem, DosWaitMuxWaitSem, DosAddMuxWaitSem, DosDeleteMuxWaitSem, DosQueryMuxWaitSem |
 | **Queues** | DosCreateQueue, DosOpenQueue, DosWriteQueue, DosReadQueue, DosCloseQueue, DosPurgeQueue, DosQueryQueue |
 | **Pipes** | DosCreatePipe |
 | **System** | DosQuerySysInfo, DosGetDateTime, DosQueryCp, DosQueryCtryInfo, DosQueryDBCSEnv, DosMapCase, DosQueryCollate, DosDevConfig, DosDevIOCtl |
 | **Audio** | DosBeep (real sine-wave tones via MMPM/2 beep_tone) |
 | **Stubs** | DosError, DosSetMaxFH, DosSetExceptionHandler, DosLoadModule, DosStartSession, and others |
 
-All blocking operations (DosSleep, DosWaitEventSem, DosRequestMutexSem, DosWaitMuxWaitSem, DosReadQueue, DosWaitThread) check the `exit_requested` flag in 100 ms intervals to ensure clean shutdown.
+All blocking operations (DosSleep, DosWaitEventSem, DosRequestMutexSem, DosWaitMuxWaitSem, DosReadQueue, DosWaitThread) check `Loader::shutting_down()` in 100 ms intervals to ensure clean shutdown: true once `exit_requested` is set, and on every thread but the exit-list thread while an exit list runs.
 
 ### MMPM/2 (src/loader/mmpm.rs)
 
@@ -304,13 +312,37 @@ Graphics Primitive Interface, 64 ordinals (see the reference manual for the list
 
 `tcpip.rs` maps the BSD socket calls onto Linux sockets. OS/2's TCP/IP uses BSD numbering for socket options (toolkit `<sys/socket.h>`: `SOL_SOCKET` 0xFFFF, `SO_REUSEADDR` 4, `SO_TYPE` 0x1008, …), which `linux_sockopt` translates; only options whose value has the same layout on both sides (an `int`, `struct linger`) are mapped, others (`SO_SNDTIMEO` / `SO_RCVTIMEO`, a 32-bit `timeval` on OS/2) fail with `SOCENOPROTOOPT`. Every call passes Linux the length of the host buffer Warpine actually copied, never the guest's claimed length (`setsockopt` values are at most `MAX_SOCKOPT_LEN`). `select` cannot report a socket yet: sockets are numbered from 0xA000 while its `fd_set` translation covers handles 0–63, and the 32-bit `fd_set` layout is unsettled (doc/TODOs.md).
 
+### Profiles (PMSHAPI, src/loader/profile.rs + pmshapi.rs)
+
+`profile.rs` is the pure model: a `Profile` holds applications, each with keys and byte values, in insertion order; names are the guest's bytes (never decoded) and compared case-sensitively. Deleting the last key of an application removes the application. `name_list` builds the double-NUL-terminated lists the enumerating calls return; `parse_profile_int` is `PrfQueryProfileInt`'s conversion (optional `-`, digits up to the first other character).
+
+The real OS/2 INI binary layout is not documented by IBM, so Warpine stores profiles in its own text format, ASCII and binary-safe:
+
+```text
+; warpine-profile 1
+["PrfTest"]
+"Greeting" = "hello\0"
+"Blob" = "\0\x01\x02\xff\"\0"
+```
+
+Names and values are quoted byte strings (`\\`, `\"`, `\0`, `\t`, `\n`, `\r`, `\xHH`; other printable ASCII as is). A file without the first line — for example a real binary INI a program ships — is `StoreError::Corrupt` rather than misread. Files are read and written through the VFS backend of their drive (`load` / `save` / `exists`: sandboxed like `DosOpen`; at most `MAX_PROFILE_FILE` bytes read), and a save writes `NAME.~wp` next to the file and renames it over it, so a profile is never half-written.
+
+`pmshapi.rs` holds the `Prf*` handlers and `ProfileTable` (`SharedState::profiles`, locked before `drive_mgr`): `HINI_USERPROFILE` is `C:\OS2\OS2.INI`, `HINI_SYSTEMPROFILE` `C:\OS2\OS2SYS.INI` (`C:\OS2` is created on the first write), `HINI_PROFILE` reads both (user first) and writes the user profile; `PrfOpenProfile` handles start at `FIRST_PROFILE_HANDLE` and map to an absolute OS/2 path. Every call loads the file again and every change saves it, so several processes sharing a profile see each other's writes. Guest strings are read as raw bytes with `prf_string` (bounded by `MAX_PROFILE_VALUE`, NULL → `None`, unterminated → `PMERR_INVALID_PARM`); every output goes through `guest_write_bytes`, and only as many bytes as the guest's buffer size and the data allow. Failures record a `PMERR_*` code for `WinGetLastError` (`pm_error`).
+
+Tests: `profile.rs` (model, format, round trip of all 256 byte values, VFS storage on a temporary drive), `pmshapi.rs` (the calls on a mock loader whose C: is a temporary directory), `samples/pm_profile_test` + `gui_pm_profile_test_reads_and_writes_profiles` (runs with `XDG_DATA_HOME` in a temporary directory and checks the files left on C:).
+
+### Help Manager (HELPMGR, src/loader/helpmgr.rs)
+
+There is no help viewer. `WinCreateHelpInstance` creates a hidden object window of class `#HelpInstance` (its procedure, in `dispatch_builtin_control`, returns 0 for every message, so `HM_*` messages are accepted and ignored), records the readable `HELPINIT` fields (title, library, tutorial, accelerator / action-bar ids, the help table — `MAKELONG(id, 0xFFFF)` is a resource id in `hmodHelpTableModule`) in `WindowManager::help` (`HelpRegistry`), clears `ulReturnCode`, and logs once that help is not available. `WinAssociateHelpInstance` maps an application window to an instance (NULLHANDLE removes it), `WinQueryHelpInstance` searches the window's parent chain and then its owner chains (`find_help_instance`), `WinLoadHelpTable` / `WinCreateHelpTable` append to the instance's tables, `WinDestroyHelpInstance` destroys the window; `WindowManager::destroy_window` forgets the instances and associations of destroyed windows. A viewer would need: an INF/HLP reader (the IPF compiled format is not publicly documented by IBM; the osFree / NewView descriptions would have to be checked for clean-room use), parsing of `RT_HELPTABLE` / `RT_HELPSUBTABLE` resources, F1 → `WM_HELP` routing through the help table to a panel, and the `HM_*` notifications (`HM_HELPSUBITEM_NOT_FOUND`, `HM_INFORM`, `HM_ERROR`) back to the application.
+
 ## Threading Model
 
 Each OS/2 thread maps to a native Rust thread with its own KVM vCPU. The thread table lives in `loader/threads.rs` (`SharedState::threads`): `ThreadTable` records running threads, ended threads not yet waited for (at most `MAX_ENDED_THREADS`), kill flags, each created thread's guest stack and TIB, and the idle vCPUs of ended threads; the `Threads::ended` condition variable is signalled whenever a thread ends.
 
 - **Ids.** Thread 1 is `MAIN_TID` on vCPU id `MAIN_VCPU_ID` (0). Created threads get ids from 2, which are not reused, and use their id as vCPU id.
 - **`DosCreateThread`** allocates the stack (64 KB default, `DEFAULT_THREAD_STACK`) and a TIB with TIB2 (exception chain `XCPT_CHAIN_END`, stack base / limit, thread id), takes an idle vCPU if there is one (KVM vCPUs cannot be destroyed and their ids are limited), starts it with fresh registers at the thread function with `EXIT_TRAP_ADDR` as return address, and returns an error code instead of panicking when memory or vCPUs run out. Host threads are detached.
-- **Ending.** `run_vcpu` = `vcpu_loop` + `end_thread`. `vcpu_loop` returns `ThreadEnd::Thread(rc)` for `DosExit(EXIT_THREAD)` (`ApiResult::ExitThread`), a return to `EXIT_TRAP_ADDR` from a created thread, or a kill flag, and `ThreadEnd::Process` when the process ends (`DosExit(EXIT_PROCESS)` and other process-level events go through `request_process_exit`, where the first result code wins). `end_thread` destroys the thread's PM message queue, frees its stack and TIB, parks its vCPU for reuse and, for the last thread, ends the process with that thread's code. Thread 1 returning from the entry point still ends the process.
+- **Ending.** `run_vcpu` = `vcpu_loop` + `end_thread`. `vcpu_loop` returns `ThreadEnd::Thread(rc)` for `DosExit(EXIT_THREAD)` (`ApiResult::ExitThread`), a return to `EXIT_TRAP_ADDR` from a created thread, or a kill flag, and `ThreadEnd::Process` when the process ends (`DosExit(EXIT_PROCESS)` is `ApiResult::ExitProcess`; process-level events go through `end_process` / `request_process_exit`, where the first result code wins). `end_thread` destroys the thread's PM message queue, frees its stack and TIB, parks its vCPU for reuse and, for the last thread, ends the process with that thread's code. Thread 1 returning from the entry point still ends the process. `run_vcpu` records the thread's initial ESP for exit-list routines.
+- **Exit lists** (`loader/exitlist.rs`, `Threads::exit_list` + `exit_list_active`; lock order `table` → `exit_list`). `ExitList` is pure bookkeeping (routines by order, last added first; `start` once; `take_next` from the live list, so routines can add / remove others). The process ending — `ApiResult::ExitProcess`, thread 1 at `EXIT_TRAP_ADDR`, an unhandled exception (`end_by_exception`, `TC_EXCEPTION`, code 1) — calls `begin_exit_list` on the ending thread: when thread 1 still runs and the list is not empty, `claim_exit_list` records an `ExitRun` (vCPU, host thread, termination code, exit code, initial ESP), the callback stack is dropped and `next_exit_routine` points the vCPU at the first routine (`[ESP] = EXIT_TRAP_ADDR`, `[ESP+4]` = termination code, ESP = initial ESP − 8, the exception chain emptied). `DosExitList(EXLST_EXIT)` (`ApiResult::ExitListNext`), `DosExit`, a return to `EXIT_TRAP_ADDR` or an unhandled exception in the routine move on to the next; when none is left `request_process_exit` ends the process with the recorded code. Thread 1 ending as the last thread claims the list in `end_thread` under the table lock (so two threads ending at once cannot both miss it) and re-enters `vcpu_loop` (`resumed`). Meanwhile every other thread leaves `vcpu_loop` at its next exit (`stopped_by_exit_list`) without setting `exit_requested`, `shutting_down()` is true for them (`Threads::exit_list_stops_caller`, by host thread id) so their blocking calls return, and `wait_for_process_end` waits for `exit_requested` itself. A thread spinning in guest code without exits keeps running (KVM is not interrupted).
 - **Waiting.** `DosWaitThread` supports `DCWW_WAIT` / `DCWW_NOWAIT`, `*ptid == 0` for any thread, reports an already-ended thread at once (once), and returns `ERROR_INVALID_THREADID` for thread 1 or the caller. `DosKillThread` sets the kill flag; the thread ends at its next exit to Warpine. The front ends call `wait_for_process_end()` after thread 1's `run_vcpu` returns, because thread 1 may end before the others.
 - **Unverified** (doc/TODOs.md, "Thread follow-ups"): thread 1 calling `DosExit(EXIT_THREAD)` while others run lets the process go on until its last thread ends.
 
@@ -334,9 +366,11 @@ All mutex acquisitions use `lock_or_recover()` (from the `MutexExt` trait) which
 
 ### Semaphores
 
-- **Event semaphores** — Binary signal (posted/reset). Backed by `Arc<(Mutex<EventSemaphore>, Condvar)>`. `DosPostEventSem` sets `posted = true` and notifies all waiters; `DosWaitEventSem` blocks on the condvar.
-- **Mutex semaphores** — Ownership-based mutual exclusion with a request count for recursive locking. `DosRequestMutexSem` checks `owner_tid`; if unowned or owned by the calling thread, it acquires/increments. Otherwise it blocks on the condvar.
-- **MuxWait semaphores** — Wait on multiple semaphores. Supports `wait_all` (AND) and `wait_any` (OR) modes. Polls constituent semaphores in a loop.
+`SemaphoreManager` keeps every semaphore in one handle space (`SemEntry`: the object, upper-cased name, attributes, usage count). Creating with a name checks `\SEM32\` (`ERROR_INVALID_NAME`) and uniqueness across kinds (`ERROR_DUPLICATE_NAME`); `open(kind, name, handle)` adds a use (`ERROR_SEM_NOT_FOUND`, `ERROR_TOO_MANY_OPENS`), `close` removes one and the last deletes the semaphore. The `Loader` handlers in `doscalls.rs` (`open_sem` for the three `DosOpen*Sem`) only move data between guest memory and the manager.
+
+- **Event semaphores** — `EventSemaphore::post_count` (`Arc<(Mutex<_>, Condvar)>`): `post` counts (`ERROR_ALREADY_POSTED` from the second post, `ERROR_TOO_MANY_POSTS` at `MAX_EVENT_POSTS`) and wakes waiters, `reset` returns the count (`ERROR_ALREADY_RESET` at 0), `DosQueryEventSem` reads it. Waits go through `Loader::wait_sem` (condvar, 100 ms process-end polls, `ERROR_TIMEOUT`).
+- **Mutex semaphores** — `owner_vcpu` (Warpine vCPU id; `tid_of_vcpu` for `DosQueryMutexSem`) + `request_count`; `available_to` / `acquire`. Created owned, the creating thread owns it.
+- **MuxWait semaphores** — `MuxWaitSemaphore { records, kind, wait_all }` behind a `Mutex` so that `DosAddMuxWaitSem` / `DosDeleteMuxWaitSem` change it; `check_records` enforces 64 records, one kind (`ERROR_WRONG_TYPE`; no muxwait in a list) and no duplicates; `check_mux_attr` wants exactly one of `DCMW_WAIT_ANY` / `DCMW_WAIT_ALL`. `try_mux` (under `sem_mgr`, locking the members) decides one poll: events by `posted()`, mutexes by `available_to` and then taken (all of them for wait-all); `DosWaitMuxWaitSem` polls it every 10 ms. `query_mux` feeds `DosQueryMuxWaitSem` (`ERROR_PARAM_TOO_SMALL` + count).
 
 ### Queues
 
@@ -575,6 +609,26 @@ The first item is the dialog frame itself; the controls follow in tree order (ea
 Buttons with a check state live in `src/loader/pm_button.rs` (`has_check_state(style)`: `BS_CHECKBOX`, `BS_AUTOCHECKBOX`, `BS_RADIOBUTTON`, `BS_AUTORADIOBUTTON`, `BS_3STATE`, `BS_AUTO3STATE`); the state is `OS2Window::check_state` (0 unchecked, 1 checked, 2 indeterminate). `BM_SETCHECK` stores it and returns the old one; for the radio styles it sets `WS_TABSTOP` when checked and clears it otherwise (the `BM_SETCHECK` reference), so Tab enters a radio group on its checked button ("the system automatically maintains a tab stop on any selected item in a radio-button group"); it neither unchecks the others nor notifies. `BM_QUERYCHECK` reads the state, `BM_QUERYCHECKINDEX` gives the index of the checked button among the radio buttons of the group (-1 if none or not a radio button). A group is a run of sibling windows from one `WS_GROUP` sibling to the next (`WindowManager::button_group` / `radio_group`). A selection — mouse release over the button, Space, a mnemonic, or a dialog arrow key onto an auto-radio button — goes through `WindowManager::select_button` (called by `Loader::click_button` before it notifies): an auto check box toggles, an auto three-state button cycles 0 → 1 → 2 → 0, an auto-radio button is checked and the other auto-radio buttons of its group unchecked; plain styles are left to their owner; every check box and radio button then posts `WM_CONTROL(id, BN_CLICKED)` (mp2 = the button). In a dialog the arrow keys move within the group, wrapping, and check the auto-radio button they move to unless it has `BS_NOCURSORSELECT`. `paint_check_button` draws Warpine's own 13-px indicator — a box with a tick or a grey indeterminate square, a ring with a dot — the label with its mnemonic, and a dashed focus mark. Unverified (no source): `BM_SETCHECK` with mp1 > 2 counts as checked, the three-state order, `BN_CLICKED` for an arrow-key selection, a group with nothing checked having no tab stop.
 
 Every button also takes `BM_CLICK`, `BM_SETHILITE` / `BM_QUERYHILITE` and `BM_SETDEFAULT` (`Loader::button_message`). `BM_CLICK(TRUE)` is "the default upclick action": the highlight is cleared and `click_button(hwnd, pointer = FALSE)` runs as for a real click (auto styles change, then `WM_COMMAND` with `CMDSRC_PUSHBUTTON` or `BN_CLICKED`); `BM_CLICK(FALSE)`, "the default downclick action", only highlights the button (unverified reading). A disabled button ignores it (unverified). `BM_SETHILITE` returns the old highlight state (`OS2Window::hilite`, or the button being held with the mouse: `WindowManager::button_highlighted`) and repaints: a highlighted push button is drawn pressed, a check box or radio button with a shaded indicator (Warpine's own look); `BM_QUERYHILITE` answers for `BS_PUSHBUTTON` only, FALSE for every other style, as documented. `BM_SETDEFAULT` sets or clears `BS_DEFAULT` on push and user buttons and returns TRUE (FALSE for other styles); `WinDefDlgProc`'s Enter follows the style bit. `BS_USERBUTTON` stores its highlight but gets no `BN_PAINT` yet. The dashed focus mark (`pm_button::focus_mark`, `FOCUS_MARK_STYLE`) is shared with list boxes, which outline their cursor item with it whenever they have the focus (black on an unselected row, white on a selected one).
+
+### Scroll bars (WC_SCROLLBAR)
+
+`src/loader/pm_scrollbar.rs` holds the control. `OS2Window::scrollbar` is a `ScrollBarState` (position, range, optional `SBM_SETTHUMBSIZE` visible/total, and the `Held` part while button 1 is down). `set_range` follows EDM2 `SBM_SETSCROLLBAR` (first bound below 0 becomes 0, a last bound below the first takes it, the position is clamped); `enabled()` is false without a range or when the visible part is the whole (`SBM_SETTHUMBSIZE`: "the scroll bar is disabled"). `Geometry::new(state, len, breadth, pos)` lays the bar out along its axis from the first end (top / left): an arrow button at each end as long as the bar is broad (at most half the length), the shaft between, a slider of `breadth` pels or proportional (`visible / total` of the shaft, at least `MIN_THUMB_LEN`) placed by `(pos − first) / (last − first)`; `part_at` hit-tests and `pos_for` turns a slider start back into a rounded position. `WinCreateWindow` reads `SBCDATA` control data through `scrollbar_init` (a `cTotal` of 0 sets no thumb size).
+
+Messages arrive through `dispatch_builtin_control`: `SBM_*` (`scrollbar_message`), `WM_BUTTON1DOWN` (arrows and shaft post their `SB_*` command at once with slider 0; the slider starts a drag remembering the grab offset; `pressed_control` holds the bar so the renderer's existing routing sends it every move and the release), `WM_MOUSEMOVE` (the dragged slider follows the pointer — drawn at `Held::track`, the owner told `SB_SLIDERTRACK` on every change; a held arrow is drawn pressed only while the pointer is on it), `WM_BUTTON1UP` (`SB_SLIDERPOSITION` with the tracked position after a drag, else `SB_ENDSCROLL`; EDM2 `WM_VSCROLL`: no end-scroll after absolute positioning) and `WM_TIMER(TID_SCROLL)`: `WindowManager::post_drag_scroll` posts it every `DRAG_SCROLL_MS` while an arrow or shaft is held (not in scripted sessions), and `scrollbar_repeat` repeats the command while the pointer is still on that part — a shaft stops once the slider has reached the pointer, since the owner moves the slider. Notifications are posted (EDM2: the control "posts the message to the owner") to `notify_target` as `WM_VSCROLL` (`SBS_VERT`) / `WM_HSCROLL` with mp1 = id and mp2 = `scroll_mp2(slider, command)`. The slider does not move by itself: the application calls `SBM_SETPOS`. `paint_scrollbar` draws the shaft (`CONTROL_SCROLLBAR_COLOR`), two raised arrow buttons with triangles (grey when disabled) and the slider. Frame scroll bars (`FCF_VERTSCROLL` / `FCF_HORZSCROLL`) are not created yet: a client's GPI drawing starts at its frame surface's origin whatever the client's position, and `control_at` only searches the client's children.
+
+### Rectangles and WinDrawText
+
+`pm_rect.rs` holds the eleven rectangle calls (`WinSetRect` … `WinEqualRect`) as pure `Rectl` operations plus guest `RECTL` read / write (`read_rectl` / `write_rectl`; a NULL pointer fails with FALSE). PM rectangles are exclusive at the right and top: empty means `xLeft >= xRight || yBottom >= yTop` (the WinIsRectEmpty page), two empty rectangles are equal, an empty `WinUnionRect` source yields the other, and `WinSubtractRect` returns the first source when the difference is not a rectangle. Warpine's own choices: WinPtInRect leaves the right and top edges out, and the "empty rectangle" the calls write is (0, 0, 0, 0).
+
+`pm_drawtext.rs` implements `WinDrawText`. `layout_line` is pure: the line ends at the first CR or LF; with `DT_WORDBREAK` only whole words that fit are drawn (words split at spaces only, so a DBCS character is never cut), always at least one. Without `DT_WORDBREAK` the result is the whole string's length, as the reference says; with it, the count also takes in trailing blanks and the line end when the whole line fit, so a caller advancing by the count reaches the next line (unverified). The rectangle includes its boundary for placement and for the `DT_QUERYEXTENT` result, as the reference says of `prcl`. Text is drawn with `DrawOp::TextFont` in the PS's font and codepage; `DT_TEXTATTRS` takes the PS colours, `DT_ERASERECT` fills the rectangle with the background colour, `DT_MNEMONIC` strips the `~` and underlines the next character, `DT_HALFTONE` uses the mean of the two colours. The string is read up to `MAX_DRAW_TEXT_CHARS` (4096) bytes.
+
+`GpiPolyLine` (`pm_gpi.rs`, `gpi_poly_line`) draws the current position and the points as one open `DrawOp::Shape`, so a line style runs on across corners and an XOR mix paints shared corners once; at most `MAX_POLYLINE_POINTS` (8192) points, a negative count fails with `PMERR_INV_LENGTH_OR_COUNT`.
+
+### PM text cursor (WinCreateCursor)
+
+`src/loader/pm_cursor.rs`: `WindowManager::cursors` maps a message queue to its `PmCursor` (window, rectangle, `CURSOR_*` flags, optional clip rectangle, hide level). `WinCreateCursor` replaces the queue's cursor with a hidden one (hide level 1; a zero extent is the nominal border, 1 pel; a negative one runs left / down); `CURSOR_SETPOS` moves the queue's cursor if it belongs to `hwnd`. `WinShowCursor` counts the hide level (EDM2: showing a visible cursor fails), `WinDestroyCursor` removes the cursor if it is `hwnd`'s, and `WinQueryCursorInfo` writes the 40-byte `CURSORINFO` (clip = the window's rectangle when none was given). `destroy_window` and `destroy_mq` drop the cursors of what they destroy. Every change marks the window dirty.
+
+The cursor is never drawn into a surface. `WindowManager::cursor_marks()` gives each shown cursor on a visible window as a `gui::cursor::CursorMark` — rectangle and clip in the frame surface's PM coordinates, `CursorKind::Solid` / `Halftone` / `Frame` — and `composite_and_present` passes it with the frame in `SceneFrame::cursor`, redrawing frames whose mark changed. `CursorMark::apply` inverts the covered pels (XOR `0x00FFFFFF`; every other pel for halftone, the outline for a frame, which keeps its edges where clipped). The software compositor applies it after `draw_placed_frame` within the damaged rectangle and `cursor_clip` (the client inside the frame border); the layered compositor applies it to the scratch frame on a full render, and on a partial upload copies any changed rectangle the cursor touches into scratch, applies it and uploads that, re-uploading the old and new cursor rectangles when the mark changes (`Layer::cursor`). So the application's painting never meets cursor pels. `CURSOR_FLASH` cursors blink with the caret timer: `flash_cursors` flips `WindowManager::cursor_blink_off` every `cursor_rate_ms` and marks the flashing cursors' windows dirty (not in scripted sessions, so captures are steady).
 
 ### Window destruction (WinDestroyWindow / WM_DESTROY)
 
@@ -1282,10 +1336,12 @@ src/
     vio_window.rs      VIO program in a PM window: choose_display(), VioWindow
     system_menu.rs     System-menu items of PM frames and the VIO window, can_track, menu_popup_items
     frame_track.rs     KeyTrack: keyboard move / size state machine (Alt+F7 / Alt+F8)
+    cursor.rs          CursorMark: the PM text cursor, inverted over a frame's pels by the compositors
   loader/
     mod.rs             Loader struct, SharedState (kbd_queue/kbd_cond/use_sdl_text), KVM/mock init
     vcpu.rs            vCPU thread: VMEXIT loop, GDB integration, crash dump hooks
     threads.rs         Thread table: running / ended threads, kill flags, per-thread memory, idle vCPUs
+    exitlist.rs        DosExitList: the exit-list routines run when the process ends
     vm_backend.rs      VmBackend/VcpuBackend traits (KVM + mock implementations)
     kvm_backend.rs     KVM-based VmBackend implementation
     guest_mem.rs       Guest memory read/write/translate helpers
@@ -1293,7 +1349,7 @@ src/
     ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants (addresses, message IDs, ordinal bases)
-    api_registry.rs    Static sorted API thunk table (184 entries); ApiEntry
+    api_registry.rs    Static sorted API thunk table (205 entries); ApiEntry
     api_dispatch.rs    Registry lookup + per-subsystem dispatcher routing
     api_trace.rs       Structured tracing helpers (ordinal_to_name auto-generated from os2api.def,
                        module_for_ordinal, arg_names_for_ordinal, format_call)
@@ -1302,7 +1358,7 @@ src/
     gdb_stub.rs        GDB Remote Stub: RSP over TCP, software breakpoints, single-step
     mutex_ext.rs       MutexExt trait (poison-recovering lock)
     managers.rs        MemoryManager, HandleManager, HDirManager, ResourceManager
-    ipc.rs             Semaphores (event, mutex, muxwait) and queues
+    ipc.rs             Semaphores (event, mutex, muxwait; names, usage and post counts) and queues
     pm_types.rs        PM data types (windows, classes, presentation spaces, WindowManager)
     locale.rs          Os2Locale: country/codepage information
     doscalls.rs        DOSCALLS API implementations (~40 functions)
@@ -1314,6 +1370,13 @@ src/
     pm_controls.rs     Interactive WC_ENTRYFIELD / WC_MLE / WC_LISTBOX / WC_BUTTON: messages + painting
     pm_dialog.rs       DLGTEMPLATE / ACCELTABLE parsing, dialog keys (WinDefDlgProc), accelerator translation
     pm_sysmenu.rs      SC_SYSMENU / SC_MOVE / SC_SIZE for frames and dialogs, WinPopupMenu
+    pm_rect.rs         Rectangle helpers (WinSetRect ... WinEqualRect): pure Rectl operations
+    pm_drawtext.rs     WinDrawText: line layout, word break, DT_* placement and attributes
+    pm_scrollbar.rs    WC_SCROLLBAR: SBM_* messages, geometry, WM_VSCROLL / WM_HSCROLL
+    pm_cursor.rs       PM text cursor: WinCreateCursor / WinShowCursor / WinDestroyCursor / WinQueryCursorInfo
+    pmshapi.rs         PMSHAPI Prf* calls, ProfileTable
+    profile.rs         Profile model and Warpine's text profile format, VFS storage
+    helpmgr.rs         HELPMGR help instances (no viewer)
     mmpm.rs            MMPM/2: MmpmManager, beep_tone, mciSendCommand/mciSendString, parse_wav
     console.rs         VioManager: screen buffer, cursor state/shape, sdl_mode,
                        write_tty (ANSI via ansi.rs), stdin_cooked_chars, CP437→UTF-8 conversion
@@ -1349,7 +1412,7 @@ To add a new OS/2 API call:
 
 3. **Wire up the dispatch** — The dispatch path depends on the subsystem:
 
-   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (184 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
+   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (205 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
 
    - **VIOCALLS / KBDCALLS**: add a match arm in `handle_viocalls()` or `handle_kbdcalls()`, and add the ordinal's stack-byte count to `viocalls_arg_bytes()` / `kbdcalls_arg_bytes()`.
 
@@ -1502,7 +1565,7 @@ cargo clippy --all-targets -- -D warnings   # lint, test code included
 
 The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`) runs both and aborts the commit on a failing test or any lint.
 
-The unit tests (1146: 1116 warpine + 18 `gen_api` + 12 `lx_link`) include, among others:
+The unit tests (1243: 1213 warpine + 18 `gen_api` + 12 `lx_link`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -1525,6 +1588,8 @@ The unit tests (1146: 1116 warpine + 18 `gen_api` + 12 `lx_link`) include, among
 | `src/loader/pm_minmax.rs` | Minimize / maximize / restore rectangles, icon slots, restore words, owned frames hidden while minimized or hidden, `WM_MINMAXFRAME` `SWP` layout, `SC_HIDE`, activation hand-over, `WM_SIZE` on resize, `WinQueryWindowPos` flags |
 | `src/loader/pm_destroy.rs` | `WM_DESTROY` order (window, then children, while they exist), owned windows, owner cycles, nested and repeated destroys, focus and presentation spaces, other threads' windows |
 | `src/loader/pm_button.rs` | Check state, `BM_SETCHECK` / `BM_QUERYCHECK` / `BM_QUERYCHECKINDEX`, groups, auto styles, clicks and Space, `BM_CLICK` / `BM_SETHILITE` / `BM_QUERYHILITE` / `BM_SETDEFAULT`, painting |
+| `src/loader/pm_scrollbar.rs` | Scroll-bar range / position clamping, enabled state, geometry (arrows, proportional slider, hit-testing, position rounding), `SBM_*`, line / page / slider notifications and `SB_ENDSCROLL`, repeat while held, painting |
+| `src/loader/pm_cursor.rs`, `src/gui/cursor.rs` | Cursor per queue, hidden on creation, show level, `CURSOR_SETPOS`, `CURSORINFO`, frame-surface marks and clipping, flash phase, errors and cleanup; inverted solid / halftone / frame pels |
 | `src/loader/pm_window.rs` | `WinIsWindowVisible` through the parents, `WinQueryWindowTextLength`, `WinSetParent` (tree, Z-order, descendants refused), `WinSetOwner`, window pointers and `QWP_PFNWP` |
 | `src/loader/pm_pointer.rs` | System pointers, set / query / show level, `RT_POINTER` decoding (formats, arrays, hot spot, truncated and hostile data), destroy rules |
 | `src/loader/pm_error.rs` | `ERRORID` layout, per-thread last error reset on read, `PMERR_*` from queue, window, window-word, message and dialog-item calls, window-word bounds, `SV_CURSORRATE` / `WinSetSysValue` |
@@ -1763,14 +1828,14 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **Virtualization backend abstraction** — `VmBackend`/`VcpuBackend` traits; KVM isolated to `kvm_backend.rs`; `MockVcpu`/`MockVmBackend` for testing without `/dev/kvm`.
 - **Guest memory type safety** — `GuestMemory` struct with safe `read<T>`/`write<T>` replacing raw `*mut u8` + `usize`.
 - **Structured API trace** — `api_trace.rs` with `ordinal_to_name()`, `module_for_ordinal()`, per-argument typed names. `WARPINE_TRACE=strace|json` output modes.
-- **API thunk auto-registration** — `api_registry.rs` static sorted table (184 entries); O(log n) binary search replaces ~120-arm match.
+- **API thunk auto-registration** — `api_registry.rs` static sorted table (205 entries); O(log n) binary search replaces ~120-arm match.
 - **SDL2 GUI backend** — migrated from `winit + softbuffer` to SDL2; full keyboard, mouse, clipboard support.
 - **PM renderer abstraction** — `PmRenderer` trait with `Sdl2Renderer` and `HeadlessRenderer` backends.
 - **GDT tiling** — 4096 tiled 16-bit data descriptors (GDT[6..4101], DPL=2) and 2048 tiled 16-bit code descriptors (GDT[4102..6149]) for 16:16 addressing; GDT[4] 16-bit data alias (0x20), GDT[5] 16-bit code alias (0x28) for Far16 thunks.
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 1146 unit tests (1116 warpine + 18 gen_api + 12 lx_link), 73 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 1243 unit tests (1213 warpine + 18 gen_api + 12 lx_link), 83 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

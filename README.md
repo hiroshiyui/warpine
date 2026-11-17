@@ -78,7 +78,7 @@ src/
     ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants: MAGIC_API_BASE, ordinal bases, TIB/PIB addresses
-    api_registry.rs    Static sorted API thunk table (184 entries); compat_report()
+    api_registry.rs    Static sorted API thunk table (205 entries); compat_report()
     api_dispatch.rs    Ordinal → handler dispatch + sub-dispatcher routing
     api_trace.rs       ordinal_to_name(), module_for_ordinal() for structured tracing
     api_ring.rs        256-entry API call ring buffer for crash post-mortem
@@ -146,6 +146,9 @@ samples/               OS/2 sample applications and build scripts
   mou_test/            MOUCALLS mouse events in a VIO window and full screen
   ansi_test/           ANSI escape sequences in VioWrtTTY and DosWrite output
   pm_sysmenu_test/     PM frame system menu, Alt+F7 / Alt+F8, WinPopupMenu
+  pm_rect_text_test/   Rectangle helpers, WinDrawText, GpiPolyLine
+  pm_scroll_test/      Scroll bars and the PM text cursor
+  pm_profile_test/     PMSHAPI profiles (OS2.INI) and HELPMGR help instances
   pm_typeahead_test/   Keys typed while the program is busy reach the focus window of the moment they are read
   pm_font_test/        GPI font selection (IBM Plex families, styles, sizes) and CJK text
   pm_shapes_test/      GPI arcs, area patterns and line widths, checked with GpiQueryPel
@@ -267,8 +270,8 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 1146 unit tests (no KVM required)
-cargo test --test integration     # 38 end-to-end tests (requires /dev/kvm)
+cargo test                        # 1243 unit tests (no KVM required)
+cargo test --test integration     # 83 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
 

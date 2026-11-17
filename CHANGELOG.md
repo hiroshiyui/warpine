@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **Rectangle helpers** (new `src/loader/pm_rect.rs`) — `WinSetRect`, `WinSetRectEmpty`, `WinCopyRect`, `WinOffsetRect`, `WinInflateRect`, `WinPtInRect`, `WinIntersectRect`, `WinUnionRect`, `WinSubtractRect`, `WinIsRectEmpty`, `WinEqualRect`; they were unknown ordinals that returned FALSE.
+- **`WinDrawText`** (new `src/loader/pm_drawtext.rs`) — one line of text placed in a rectangle (`DT_LEFT` / `DT_CENTER` / `DT_RIGHT`, `DT_TOP` / `DT_VCENTER` / `DT_BOTTOM`), `DT_WORDBREAK`, `DT_QUERYEXTENT`, `DT_ERASERECT`, `DT_TEXTATTRS`, `DT_MNEMONIC`, `DT_UNDERSCORE`, `DT_STRIKEOUT`, `DT_HALFTONE`, `PMERR_INVALID_FLAG`.
+- **`GpiPolyLine`** — lines from the current position through a point array, drawn as one figure.
+- **Scroll bars** (new `src/loader/pm_scrollbar.rs`) — `WC_SCROLLBAR` is interactive: `SBM_SETSCROLLBAR` / `SBM_SETPOS` / `SBM_QUERYPOS` / `SBM_QUERYRANGE` / `SBM_SETTHUMBSIZE`, `SBCDATA` at creation, arrows, shaft and slider dragging reported to the owner as `WM_VSCROLL` / `WM_HSCROLL` (`SB_LINE*`, `SB_PAGE*`, `SB_SLIDERTRACK`, `SB_SLIDERPOSITION`, `SB_ENDSCROLL`), repeating while held. It only drew a grey block before.
+- **PM text cursor** (new `src/loader/pm_cursor.rs`, `src/gui/cursor.rs`) — `WinCreateCursor`, `WinShowCursor`, `WinDestroyCursor`, `WinQueryCursorInfo`: one cursor per message queue, solid / halftone / frame, `CURSOR_FLASH` at `SV_CURSORRATE`, inverted over the window by both compositors so painting under it leaves no trace.
+- **Profiles (PMSHAPI)** (new `src/loader/profile.rs`, `src/loader/pmshapi.rs`) — `PrfOpenProfile`, `PrfCloseProfile`, `PrfQueryProfileInt` / `String` / `Size` / `Data`, `PrfWriteProfileString` / `Data`. The user and system profiles are `C:\OS2\OS2.INI` and `C:\OS2\OS2SYS.INI`, kept in Warpine's own text format (OS/2's binary INI layout is not publicly documented) and written atomically; errors through `WinGetLastError`.
+- **Help Manager (HELPMGR)** (new `src/loader/helpmgr.rs`) — `WinCreateHelpInstance`, `WinDestroyHelpInstance`, `WinQueryHelpInstance`, `WinAssociateHelpInstance`, `WinLoadHelpTable`, `WinCreateHelpTable`, so programs that set up online help start; no help viewer yet (`HM_*` messages are ignored).
+- **`DosExitList`** (new `src/loader/exitlist.rs`) — `EXLST_ADD` (invocation order from bits 8–15) / `EXLST_REMOVE` / `EXLST_EXIT`; the routines run lowest order first, with `TC_EXIT` (or `TC_EXCEPTION` after an unhandled exception), when the process ends by `DosExit(EXIT_PROCESS)` or thread 1 ending, while the other threads stop at their next call into Warpine. They do not run once thread 1 has ended, nor yet for a closed window, end of piped input or `DosKillProcess` from a parent.
+- **Semaphore queries** — `DosResetEventSem` and `DosQueryEventSem` (events count their posts; `ERROR_ALREADY_POSTED`, `ERROR_TOO_MANY_POSTS`, `ERROR_ALREADY_RESET`), `DosQueryMutexSem`, `DosOpenMuxWaitSem`, `DosAddMuxWaitSem`, `DosQueryMuxWaitSem`, and a real `DosDeleteMuxWaitSem` (it was a stub); named semaphores keep usage counts and are deleted by their last close.
+- Samples `pm_rect_text_test`, `pm_scroll_test`, `pm_profile_test`, `exitlist_test` and `semquery_test`.
+
+### Changed
+- **API stub area** grows to 18432 bytes for the new PMSHAPI (`PMSHAPI_BASE` 16384) and HELPMGR (`HELPMGR_BASE` 17408) modules.
+- **Built-in scroll bars look different** — arrows, shaft and slider, greyed when disabled; the `pm_controls_test` golden signatures were regenerated.
+
+### Fixed
+- **Named semaphores** — a name given at creation was ignored, so opening by name never worked (and failed with `ERROR_FILE_NOT_FOUND` instead of `ERROR_SEM_NOT_FOUND`); a mutex created owned belonged to thread 1 whichever thread created it.
+- **Muxwait lists of mutexes** were treated as events, so `DosWaitMuxWaitSem` never took the mutexes; `DosCreateMuxWaitSem` now checks the semaphore types, duplicates, the 64-record limit and its flags.
+- **Huge GPI string counts** — `GpiCharString` / `GpiCharStringAt` used the program's count unchecked, so a count such as 0xFFFFFFFF made Warpine allocate gigabytes; they now draw at most 4096 bytes and fail for a negative count.
+- **Strings at the top of the address space** — `VioWrtTTY`, `VioWrtCharStrAtt`, `UniUconvToUcs` and socket sends kept reading after the first byte outside guest memory, so an address near 4 GiB overflowed (a panic in debug builds) and a huge count meant billions of failing reads; they now stop at the first unreadable byte.
+
 ## [0.0.2] - 2026-11-18
 
 ### Added
