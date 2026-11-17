@@ -25,6 +25,7 @@ use std::sync::{Condvar, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use super::constants::{ERROR_CRITSEC_OVERFLOW, ERROR_CRITSEC_UNDERFLOW, NO_ERROR};
 use super::mutex_ext::MutexExt;
 use super::vm_backend::VcpuBackend;
 
@@ -149,6 +150,13 @@ impl ThreadTable {
         self.idle_vcpus.push(vcpu);
     }
 
+    /// The TIB of thread `tid`: `TIB_BASE` for thread 1, the TIB Warpine
+    /// allocated for a created thread; `None` for a thread that is not running.
+    pub fn tib_of(&self, tid: u32) -> Option<u32> {
+        if tid == MAIN_TID { return Some(super::constants::TIB_BASE); }
+        self.memory.get(&tid).map(|m| m.tib)
+    }
+
     pub fn is_running(&self, tid: u32) -> bool {
         self.running.contains(&tid)
     }
@@ -208,8 +216,66 @@ impl ThreadTable {
     }
 }
 
+/// Highest nesting count of a critical section: the count is a word
+/// (`DosEnterCritSec`).
+pub const MAX_CRITSEC_NESTING: u32 = 0xFFFF;
+
+/// The process's critical section (`DosEnterCritSec` / `DosExitCritSec`):
+/// while a thread owns it, the other threads do not run. Pure bookkeeping.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct CritSection {
+    /// The owning thread (OS/2 thread id) while the count is above 0.
+    owner: Option<u32>,
+    count: u32,
+}
+
+impl CritSection {
+    pub fn owner(&self) -> Option<u32> { self.owner }
+    pub fn count(&self) -> u32 { self.count }
+
+    /// Whether thread `tid` must not run now.
+    pub fn blocks(&self, tid: u32) -> bool {
+        self.owner.is_some_and(|o| o != tid)
+    }
+
+    /// `DosEnterCritSec` by `tid`, which does not block (`blocks` is false).
+    /// At the highest count nothing changes: `ERROR_CRITSEC_OVERFLOW`.
+    pub fn enter(&mut self, tid: u32) -> u32 {
+        debug_assert!(!self.blocks(tid));
+        if self.count >= MAX_CRITSEC_NESTING {
+            return ERROR_CRITSEC_OVERFLOW;
+        }
+        self.owner = Some(tid);
+        self.count += 1;
+        NO_ERROR
+    }
+
+    /// `DosExitCritSec` by `tid`: one level less; the section ends at 0.
+    /// Not in a section: `ERROR_CRITSEC_UNDERFLOW`, nothing changes.
+    pub fn exit(&mut self, tid: u32) -> u32 {
+        if self.owner != Some(tid) || self.count == 0 {
+            return ERROR_CRITSEC_UNDERFLOW;
+        }
+        self.count -= 1;
+        if self.count == 0 {
+            self.owner = None;
+        }
+        NO_ERROR
+    }
+
+    /// Thread `tid` ended: a section it owned ends with it. Whether it did.
+    pub fn release(&mut self, tid: u32) -> bool {
+        if self.owner == Some(tid) {
+            *self = CritSection::default();
+            true
+        } else {
+            false
+        }
+    }
+}
+
 /// The thread table with a condition variable signalled when a thread ends,
-/// and the process's exit list (`exitlist.rs`).
+/// the process's exit list (`exitlist.rs`) and its critical section.
 #[derive(Default)]
 pub struct Threads {
     pub table: Mutex<ThreadTable>,
@@ -218,6 +284,13 @@ pub struct Threads {
     pub exit_list: Mutex<super::exitlist::ExitList>,
     /// Exit-list processing runs (a quick look before `exit_list`).
     pub exit_list_active: AtomicBool,
+    /// Lock order: `crit` before `table` and `exit_list`.
+    pub crit: Mutex<CritSection>,
+    /// Signalled when the critical section ends (and when the process
+    /// ends or a thread is killed, so that blocked threads look again).
+    pub crit_cond: Condvar,
+    /// A thread owns the critical section (a quick look before `crit`).
+    pub crit_held: AtomicBool,
 }
 
 impl Threads {
@@ -244,6 +317,66 @@ impl Threads {
             table = self.ended.wait_timeout(table, WAIT_POLL)
                 .unwrap_or_else(|e| e.into_inner()).0;
         }
+    }
+
+    /// Block thread `tid` while another thread owns the critical section.
+    /// True: it may run; false: `stop()` (process ending, thread killed)
+    /// said to give up first. `stop` runs with `crit` locked.
+    pub fn wait_crit_sec(&self, tid: u32, stop: impl Fn() -> bool) -> bool {
+        if !self.crit_held.load(Ordering::Acquire) {
+            return true;
+        }
+        let mut crit = self.crit.lock_or_recover();
+        while crit.blocks(tid) {
+            if stop() {
+                return false;
+            }
+            crit = self.crit_cond.wait_timeout(crit, WAIT_POLL)
+                .unwrap_or_else(|e| e.into_inner()).0;
+        }
+        true
+    }
+
+    /// `DosEnterCritSec` by `tid`: wait while another thread owns the
+    /// section, then enter it. `None`: `stop()` said to give up.
+    pub fn enter_crit_sec(&self, tid: u32, stop: impl Fn() -> bool) -> Option<u32> {
+        let mut crit = self.crit.lock_or_recover();
+        while crit.blocks(tid) {
+            if stop() {
+                return None;
+            }
+            crit = self.crit_cond.wait_timeout(crit, WAIT_POLL)
+                .unwrap_or_else(|e| e.into_inner()).0;
+        }
+        let rc = crit.enter(tid);
+        self.crit_held.store(crit.owner().is_some(), Ordering::Release);
+        Some(rc)
+    }
+
+    /// `DosExitCritSec` by `tid`.
+    pub fn exit_crit_sec(&self, tid: u32) -> u32 {
+        let mut crit = self.crit.lock_or_recover();
+        let rc = crit.exit(tid);
+        self.crit_held.store(crit.owner().is_some(), Ordering::Release);
+        drop(crit);
+        self.crit_cond.notify_all();
+        rc
+    }
+
+    /// Thread `tid` ended: end a critical section it owned.
+    pub fn release_crit_sec(&self, tid: u32) {
+        let mut crit = self.crit.lock_or_recover();
+        if crit.release(tid) {
+            self.crit_held.store(false, Ordering::Release);
+            drop(crit);
+            self.crit_cond.notify_all();
+        }
+    }
+
+    /// Wake threads blocked by the critical section so that they look at
+    /// the process-exit and kill flags again.
+    pub fn wake_crit_waiters(&self) {
+        self.crit_cond.notify_all();
     }
 
     /// Block until the process ends (the main thread ended by itself while
@@ -383,6 +516,69 @@ mod tests {
         });
         assert_eq!(threads.wait_for(MAIN_TID, 2, false, || false), Some(WaitOutcome::Ended(2)));
         ender.join().unwrap();
+    }
+
+    #[test]
+    fn crit_section_nests_and_ends_at_zero() {
+        let mut c = CritSection::default();
+        assert!(!c.blocks(MAIN_TID));
+        assert_eq!(c.exit(MAIN_TID), ERROR_CRITSEC_UNDERFLOW);
+        assert_eq!(c.enter(2), NO_ERROR);
+        assert_eq!(c.enter(2), NO_ERROR);
+        assert!(c.blocks(MAIN_TID));
+        assert!(!c.blocks(2));
+        assert_eq!(c.exit(MAIN_TID), ERROR_CRITSEC_UNDERFLOW);
+        assert_eq!(c.exit(2), NO_ERROR);
+        assert!(c.blocks(MAIN_TID), "still nested once");
+        assert_eq!(c.exit(2), NO_ERROR);
+        assert!(!c.blocks(MAIN_TID));
+        assert_eq!((c.owner(), c.count()), (None, 0));
+        assert_eq!(c.exit(2), ERROR_CRITSEC_UNDERFLOW);
+    }
+
+    #[test]
+    fn crit_section_overflow_keeps_the_count() {
+        let mut c = CritSection::default();
+        for _ in 0..MAX_CRITSEC_NESTING {
+            assert_eq!(c.enter(2), NO_ERROR);
+        }
+        assert_eq!(c.enter(2), ERROR_CRITSEC_OVERFLOW);
+        assert_eq!(c.count(), MAX_CRITSEC_NESTING);
+        assert_eq!(c.exit(2), NO_ERROR);
+        assert_eq!(c.count(), MAX_CRITSEC_NESTING - 1);
+    }
+
+    #[test]
+    fn crit_section_ends_with_its_thread() {
+        let mut c = CritSection::default();
+        c.enter(2);
+        c.enter(2);
+        assert!(!c.release(3));
+        assert!(c.release(2));
+        assert!(!c.blocks(MAIN_TID));
+    }
+
+    #[test]
+    fn other_threads_wait_until_the_section_ends() {
+        let threads = std::sync::Arc::new(Threads::default());
+        assert!(threads.wait_crit_sec(MAIN_TID, || false), "no section: runs");
+        assert_eq!(threads.enter_crit_sec(2, || false), Some(NO_ERROR));
+        assert!(threads.wait_crit_sec(2, || false), "the owner runs");
+        assert!(!threads.wait_crit_sec(MAIN_TID, || true), "gives up when told to");
+        let other = std::sync::Arc::clone(&threads);
+        let ender = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            other.exit_crit_sec(2)
+        });
+        let start = std::time::Instant::now();
+        assert!(threads.wait_crit_sec(MAIN_TID, || false));
+        assert!(start.elapsed() >= Duration::from_millis(20), "it waited");
+        assert_eq!(ender.join().unwrap(), NO_ERROR);
+        // Entering waits as well, and a thread end releases the section.
+        threads.enter_crit_sec(3, || false);
+        assert_eq!(threads.enter_crit_sec(MAIN_TID, || true), None);
+        threads.release_crit_sec(3);
+        assert_eq!(threads.enter_crit_sec(MAIN_TID, || false), Some(NO_ERROR));
     }
 
     #[test]

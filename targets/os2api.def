@@ -38,9 +38,12 @@ DOSCALLS.224  DosQueryHType
 DOSCALLS.225  DosQueryVerify
 DOSCALLS.226  DosDeleteDir
 DOSCALLS.227  DosScanEnv
+DOSCALLS.228  DosSearchPath
 DOSCALLS.229  DosSleep
 DOSCALLS.230  DosGetDateTime
 DOSCALLS.231  DosDevConfig
+DOSCALLS.232  DosEnterCritSec
+DOSCALLS.233  DosExitCritSec
 DOSCALLS.234  DosExit
 DOSCALLS.235  DosKillProcess
 DOSCALLS.236  DosSetPriority
@@ -78,6 +81,7 @@ DOSCALLS.284  DosDevIOCtl
 DOSCALLS.285  DosFSCtl
 DOSCALLS.286  DosBeep
 DOSCALLS.289  DosSetProcessCp
+DOSCALLS.290  DosStopTimer
 DOSCALLS.291  DosQueryCp
 DOSCALLS.292  DosSetDateTime
 DOSCALLS.296  DosExitList
@@ -93,6 +97,7 @@ DOSCALLS.312  DosGetInfoBlocks
 DOSCALLS.317  DosDebug
 DOSCALLS.318  DosLoadModule
 DOSCALLS.319  DosQueryModuleHandle
+DOSCALLS.320  DosQueryModuleName
 DOSCALLS.321  DosQueryProcAddr
 DOSCALLS.322  DosFreeModule
 DOSCALLS.323  DosQueryAppType
@@ -116,8 +121,14 @@ DOSCALLS.340  DosWaitMuxWaitSem
 DOSCALLS.341  DosAddMuxWaitSem
 DOSCALLS.342  DosDeleteMuxWaitSem
 DOSCALLS.343  DosQueryMuxWaitSem
+DOSCALLS.344  DosSubSetMem
+DOSCALLS.345  DosSubAllocMem
+DOSCALLS.346  DosSubFreeMem
+DOSCALLS.347  DosSubUnsetMem
 DOSCALLS.348  DosQuerySysInfo
 DOSCALLS.349  DosWaitThread
+DOSCALLS.350  DosAsyncTimer
+DOSCALLS.351  DosStartTimer
 DOSCALLS.352  DosGetResource
 DOSCALLS.353  DosFreeResource
 DOSCALLS.354  DosSetExceptionHandler

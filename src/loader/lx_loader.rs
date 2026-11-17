@@ -303,7 +303,8 @@ impl super::Loader {
         // Kept for step 8: `object_bases` moves into the DLL record.
         let object_bases_for_res = object_bases.clone();
 
-        // 7. Register in dll_mgr
+        // 7. Register in dll_mgr, with its OS/2 path (DosQueryModuleName).
+        let os2_path = self.dll_os2_path(&dll_name_upper, dll_path);
         let handle = {
             let mut dll_mgr = self.shared.dll_mgr.lock_or_recover();
             let handle = dll_mgr.alloc_handle();
@@ -317,6 +318,7 @@ impl super::Loader {
                 initterm_addr,
                 is_builtin: false,
             });
+            dll_mgr.set_module_path(handle, os2_path);
             handle
         };
 

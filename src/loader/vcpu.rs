@@ -21,17 +21,8 @@ impl super::Loader {
         let tib_base = TIB_BASE as u64;
         // Build OS/2 environment block: null-terminated KEY=VALUE strings, double-null terminated,
         // followed by the program name (null-terminated).
-        let exe_name = self.shared.exe_name.lock_or_recover().clone();
-        let os2_exe = if exe_name.is_empty() {
-            String::from("C:\\APP.EXE")
-        } else {
-            // Convert Unix path to OS/2 style: C:\path\to\exe
-            let basename = std::path::Path::new(&exe_name)
-                .file_name()
-                .map(|f| f.to_string_lossy().to_uppercase())
-                .unwrap_or_else(|| "APP.EXE".into());
-            format!("C:\\{}", basename)
-        };
+        // The program's OS/2 name (also what DosQueryModuleName reports).
+        let os2_exe = self.os2_exe_path();
         let mut env_block: Vec<u8> = Vec::new();
         env_block.extend_from_slice(b"PATH=C:\\\0");
         env_block.extend_from_slice(b"COMSPEC=C:\\4OS2.EXE\0");
@@ -230,6 +221,8 @@ impl super::Loader {
             mem_mgr.free(mem.stack);
             mem_mgr.free(mem.tib);
         }
+        // A critical section the thread was in ends with it.
+        self.shared.threads.release_crit_sec(tid);
         match end {
             ThreadEnd::Thread(rc) => {
                 info!("  [VCPU {}] Thread {} ended (rc={}).", vcpu_id, tid, rc);
@@ -303,6 +296,10 @@ impl super::Loader {
         let mut callback_stack: Vec<CallbackFrame> = Vec::new();
 
         loop {
+            // Another thread is in a critical section (DosEnterCritSec):
+            // do not enter the guest until it ends. Giving up means the
+            // thread is to end, which the checks below do.
+            self.wait_crit_sec(vcpu_id);
             // Check if shutdown has been requested
             if self.shared.exit_requested.load(Ordering::Relaxed) {
                 return ThreadEnd::Process;
@@ -607,7 +604,7 @@ impl super::Loader {
                             ss:     sregs.ss.selector,
                         };
 
-                        match self.try_hw_exception_dispatch(fault_ctx, vector, error_code) {
+                        match self.try_hw_exception_dispatch(vcpu_id, fault_ctx, vector, error_code) {
                             Some(exc_dispatch) => {
                                 // Install exception handler call on the guest stack.
                                 // We reuse the IDT-stub frame area; the pre-fault ESP
@@ -867,6 +864,13 @@ impl super::Loader {
                                 return ThreadEnd::Process;
                             }
                         }
+                        // A call from a thread that was running when another
+                        // entered a critical section waits for the section to
+                        // end. Giving up: the thread ends at the top of the
+                        // loop, and RIP still points at the API thunk.
+                        if !self.wait_crit_sec(vcpu_id) {
+                            continue;
+                        }
                         let ordinal = (rip - MAGIC_API_BASE) as u32;
                         let api_result = self.handle_api_call_ex(&mut *vcpu, vcpu_id, ordinal);
                         match api_result {
@@ -1016,9 +1020,20 @@ impl super::Loader {
                                     // effectively returns NO_ERROR from DosRaiseException.
                                     saved.eip = return_addr;
                                     saved.esp = regs.rsp as u32;
-                                    // Write these into the CONTEXTRECORD so the handler can see them.
-                                    self.guest_write::<u32>(ctx_record + CTX_EIP, return_addr).unwrap();
-                                    self.guest_write::<u32>(ctx_record + CTX_ESP, regs.rsp as u32).unwrap();
+                                    // The caller's registers too: continuing must not
+                                    // clobber the callee-saved EBX / ESI / EDI / EBP, and
+                                    // DosRaiseException then returns NO_ERROR in EAX.
+                                    saved.eax = NO_ERROR;
+                                    saved.ebx = regs.rbx as u32;
+                                    saved.ecx = regs.rcx as u32;
+                                    saved.edx = regs.rdx as u32;
+                                    saved.esi = regs.rsi as u32;
+                                    saved.edi = regs.rdi as u32;
+                                    saved.ebp = regs.rbp as u32;
+                                    saved.eflags = regs.rflags as u32;
+                                    // Write the context into the CONTEXTRECORD so the
+                                    // handler sees (and may change) it.
+                                    self.write_context_record(ctx_record, &saved);
                                     setup_exception_dispatch(
                                         &mut *vcpu, self, &mut callback_stack,
                                         ApiResult::ExceptionDispatch {

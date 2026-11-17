@@ -219,6 +219,13 @@ impl SemaphoreManager {
         }
     }
 
+    /// Whether `h` is a shared event semaphore: created with
+    /// `DC_SEM_SHARED` or with a name (named semaphores are shared).
+    pub fn is_shared_event(&self, h: u32) -> bool {
+        self.sems.get(&h).is_some_and(|e| matches!(e.object, SemObject::Event(_))
+            && (e.attr & DC_SEM_SHARED != 0 || e.name.is_some()))
+    }
+
     pub fn get_mutex(&self, h: u32) -> Option<MutexArc> {
         match self.sems.get(&h).map(|e| &e.object) {
             Some(SemObject::Mutex(a)) => Some(Arc::clone(a)),

@@ -324,6 +324,8 @@ pub struct LoadedDll {
 pub struct DllManager {
     dlls: Vec<LoadedDll>,
     next_handle: u32,
+    /// OS/2 path of each loaded (non-built-in) module, by handle.
+    paths: HashMap<u32, String>,
 }
 
 impl Default for DllManager {
@@ -332,7 +334,7 @@ impl Default for DllManager {
 
 impl DllManager {
     pub fn new() -> Self {
-        DllManager { dlls: Vec::new(), next_handle: 0x1000 }
+        DllManager { dlls: Vec::new(), next_handle: 0x1000, paths: HashMap::new() }
     }
 
     /// Allocate a new HMODULE handle value.
@@ -353,6 +355,16 @@ impl DllManager {
     pub fn find_by_name(&self, name: &str) -> Option<&LoadedDll> {
         let upper = name.to_ascii_uppercase();
         self.dlls.iter().find(|d| d.name == upper)
+    }
+
+    /// Record the OS/2 path (`DosQueryModuleName`) of loaded module `handle`.
+    pub fn set_module_path(&mut self, handle: u32, path: String) {
+        self.paths.insert(handle, path);
+    }
+
+    /// The OS/2 path recorded for module `handle`.
+    pub fn module_path(&self, handle: u32) -> Option<&str> {
+        self.paths.get(&handle).map(String::as_str)
     }
 
     /// Find a loaded DLL by HMODULE handle.
@@ -396,6 +408,7 @@ impl DllManager {
             let bases = self.dlls[idx].object_bases.clone();
             let initterm_addr = self.dlls[idx].initterm_addr;
             self.dlls.remove(idx);
+            self.paths.remove(&handle);
             Some((bases, initterm_addr))
         } else {
             None

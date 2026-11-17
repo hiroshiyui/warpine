@@ -152,15 +152,7 @@ impl super::Loader {
     /// Set up guest memory for an NE executable and return (entry_cs_sel, entry_ip, ss_sel, sp).
     fn setup_guest_ne(&self, ne_file: &NeFile) -> (u16, u16, u16, u16) {
         // Reuse common setup: TIB, PIB, environment, BDA
-        let exe_name = self.shared.exe_name.lock_or_recover().clone();
-        let os2_exe = if exe_name.is_empty() { String::from("C:\\APP.EXE") }
-        else {
-            let basename = std::path::Path::new(&exe_name)
-                .file_name()
-                .map(|f| f.to_string_lossy().to_uppercase())
-                .unwrap_or_else(|| "APP.EXE".into());
-            format!("C:\\{}", basename)
-        };
+        let os2_exe = self.os2_exe_path();
         let mut env_block: Vec<u8> = Vec::new();
         env_block.extend_from_slice(b"PATH=C:\\\0");
         env_block.extend_from_slice(b"COMSPEC=C:\\CMD.EXE\0");

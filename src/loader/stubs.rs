@@ -58,17 +58,21 @@ impl super::Loader {
     /// per-thread exception chain at TIB+0x00 (tib_pexchain).
     ///
     /// Sets `preg_rec->prev_structure = TIB[0x00]`, then `TIB[0x00] = preg_rec`.
-    pub fn dos_set_exception_handler(&self, preg_rec: u32) -> u32 {
+    /// The chain is the calling thread's own (its TIB, `exception_chain_addr`).
+    /// A record outside guest memory fails with `ERROR_INVALID_PARAMETER`.
+    pub fn dos_set_exception_handler(&self, vcpu_id: u32, preg_rec: u32) -> u32 {
         debug!("  DosSetExceptionHandler(pRegRec=0x{:08X})", preg_rec);
         if preg_rec == 0 {
             return ERROR_INVALID_PARAMETER;
         }
-        let cur_head = self.guest_read::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET)
-            .unwrap_or(XCPT_CHAIN_END);
-        // Link new record to the current chain head.
-        self.guest_write::<u32>(preg_rec + XERREC_PREV, cur_head).unwrap();
-        // New record becomes the chain head.
-        self.guest_write::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET, preg_rec).unwrap();
+        let Some(head) = self.exception_chain_addr(vcpu_id) else { return ERROR_INVALID_PARAMETER };
+        let cur_head = self.guest_read::<u32>(head).unwrap_or(XCPT_CHAIN_END);
+        // Link new record to the current chain head; it becomes the head.
+        if self.guest_write::<u32>(preg_rec.wrapping_add(XERREC_PREV), cur_head).is_none()
+            || self.guest_write::<u32>(head, preg_rec).is_none()
+        {
+            return ERROR_INVALID_PARAMETER;
+        }
         NO_ERROR
     }
 
@@ -76,14 +80,16 @@ impl super::Loader {
     /// per-thread exception chain at TIB+0x00 (tib_pexchain).
     ///
     /// Sets `TIB[0x00] = preg_rec->prev_structure`.
-    pub fn dos_unset_exception_handler(&self, preg_rec: u32) -> u32 {
+    pub fn dos_unset_exception_handler(&self, vcpu_id: u32, preg_rec: u32) -> u32 {
         debug!("  DosUnsetExceptionHandler(pRegRec=0x{:08X})", preg_rec);
         if preg_rec == 0 {
             return ERROR_INVALID_PARAMETER;
         }
-        let prev = self.guest_read::<u32>(preg_rec + XERREC_PREV)
-            .unwrap_or(XCPT_CHAIN_END);
-        self.guest_write::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET, prev).unwrap();
+        let Some(head) = self.exception_chain_addr(vcpu_id) else { return ERROR_INVALID_PARAMETER };
+        let Some(prev) = self.guest_read::<u32>(preg_rec.wrapping_add(XERREC_PREV)) else {
+            return ERROR_INVALID_PARAMETER;
+        };
+        if self.guest_write::<u32>(head, prev).is_none() { return ERROR_INVALID_PARAMETER; }
         NO_ERROR
     }
 
@@ -901,7 +907,8 @@ impl super::Loader {
                 QSV_TOTAVAILMEM => 96 * 1024 * 1024,
                 QSV_MAXPRMEM => 512 * 1024 * 1024, // max private memory
                 QSV_MAXSHMEM => 256 * 1024 * 1024,  // max shared memory
-                QSV_TIMER_INTERVAL => 32,            // milliseconds
+                // Tenths of a millisecond (Control Program Reference).
+                QSV_TIMER_INTERVAL => DOS_TIMER_TICK_MS * 10,
                 QSV_MAX_COMP_LENGTH => 255,
                 _ => 0, // unknown index
             };
@@ -960,6 +967,8 @@ impl super::Loader {
         debug!("  DosKillThread(tid={})", tid);
         let caller = super::threads::tid_of_vcpu(vcpu_id);
         if self.shared.threads.table.lock_or_recover().kill(caller, tid) {
+            // A thread held by the caller's critical section ends now.
+            self.shared.threads.wake_crit_waiters();
             NO_ERROR
         } else {
             ERROR_INVALID_THREADID

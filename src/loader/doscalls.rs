@@ -1045,6 +1045,8 @@ impl super::Loader {
             self.shared.exit_requested.store(true, Ordering::Relaxed);
         }
         self.shared.threads.ended.notify_all();
+        self.shared.threads.wake_crit_waiters();
+        self.shared.dos_timers.lock_or_recover().stop_all();
     }
 
     /// DosCreateThread (ordinal 311): a new thread runs `pfn(param)` on its

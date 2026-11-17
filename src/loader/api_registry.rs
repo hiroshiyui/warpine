@@ -125,6 +125,9 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_delete_dir(a[0])) },
     ApiEntry { ordinal: 227, module: "DOSCALLS", name: "DosScanEnv",       argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_scan_env(a[0],a[1])) },
+    // DosSearchPath(flag, pszPathOrName, pszFilename, pBuf, cbBuf) (`modpath.rs`)
+    ApiEntry { ordinal: 228, module: "DOSCALLS", name: "DosSearchPath",    argc: 5,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_search_path(a[0],a[1],a[2],a[3],a[4])) },
 
     // ── DOSCALLS — time / misc ────────────────────────────────────────────
     ApiEntry { ordinal: 229, module: "DOSCALLS", name: "DosSleep",         argc: 1,
@@ -133,6 +136,12 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_get_date_time(a[0])) },
     ApiEntry { ordinal: 231, module: "DOSCALLS", name: "DosDevConfig",     argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_dev_config(a[0],a[1])) },
+    // DosEnterCritSec / DosExitCritSec: the other threads stop at their
+    // next exit to Warpine until the section ends (`critsec.rs`).
+    ApiEntry { ordinal: 232, module: "DOSCALLS", name: "DosEnterCritSec",  argc: 0,
+               handler: |l,_v,id,_a| ApiResult::Normal(l.dos_enter_crit_sec(id)) },
+    ApiEntry { ordinal: 233, module: "DOSCALLS", name: "DosExitCritSec",   argc: 0,
+               handler: |l,_v,id,_a| ApiResult::Normal(l.dos_exit_crit_sec(id)) },
 
     // DosExit(action, result): EXIT_THREAD ends the calling thread (the
     // vCPU loop ends it; the last thread ends the process), EXIT_PROCESS
@@ -221,6 +230,9 @@ static REGISTRY: &[ApiEntry] = &[
     // ── DOSCALLS — codepage / country ─────────────────────────────────────
     ApiEntry { ordinal: 289, module: "DOSCALLS", name: "DosSetProcessCp",  argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_process_cp(a[0])) },
+    // DosStopTimer(htimer) (`dostimer.rs`)
+    ApiEntry { ordinal: 290, module: "DOSCALLS", name: "DosStopTimer",     argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_stop_timer(a[0])) },
     ApiEntry { ordinal: 291, module: "DOSCALLS", name: "DosQueryCp",       argc: 3,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_cp(a[0],a[1],a[2])) },
     ApiEntry { ordinal: 292, module: "DOSCALLS", name: "DosSetDateTime",   argc: 1,
@@ -262,6 +274,9 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| l.dos_load_module(a[0],a[1],a[2],a[3]) },
     ApiEntry { ordinal: 319, module: "DOSCALLS", name: "DosQueryModuleHandle", argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_module_handle(a[0],a[1])) },
+    // DosQueryModuleName(hmod, cbName, pch) (`modpath.rs`)
+    ApiEntry { ordinal: 320, module: "DOSCALLS", name: "DosQueryModuleName", argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_module_name(a[0],a[1],a[2])) },
     ApiEntry { ordinal: 321, module: "DOSCALLS", name: "DosQueryProcAddr", argc: 4,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_proc_addr(a[0],a[1],a[2],a[3])) },
     ApiEntry { ordinal: 322, module: "DOSCALLS", name: "DosFreeModule",    argc: 1,
@@ -315,11 +330,28 @@ static REGISTRY: &[ApiEntry] = &[
     ApiEntry { ordinal: 343, module: "DOSCALLS", name: "DosQueryMuxWaitSem",  argc: 4,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_mux_wait_sem(a[0],a[1],a[2],a[3])) },
 
+    // ── DOSCALLS — memory suballocation (`suballoc.rs`) ───────────────────
+    ApiEntry { ordinal: 344, module: "DOSCALLS", name: "DosSubSetMem",     argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_sub_set_mem(a[0],a[1],a[2])) },
+    ApiEntry { ordinal: 345, module: "DOSCALLS", name: "DosSubAllocMem",   argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_sub_alloc_mem(a[0],a[1],a[2])) },
+    ApiEntry { ordinal: 346, module: "DOSCALLS", name: "DosSubFreeMem",    argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_sub_free_mem(a[0],a[1],a[2])) },
+    ApiEntry { ordinal: 347, module: "DOSCALLS", name: "DosSubUnsetMem",   argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_sub_unset_mem(a[0])) },
+
     // ── DOSCALLS — system info ────────────────────────────────────────────
     ApiEntry { ordinal: 348, module: "DOSCALLS", name: "DosQuerySysInfo",  argc: 4,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_sys_info(a[0],a[1],a[2],a[3])) },
     ApiEntry { ordinal: 349, module: "DOSCALLS", name: "DosWaitThread",    argc: 2,
                handler: |l,_v,id,a| ApiResult::Normal(l.dos_wait_thread(id,a[0],a[1])) },
+
+    // ── DOSCALLS — timers (`dostimer.rs`) ─────────────────────────────────
+    // DosAsyncTimer / DosStartTimer(msec, hsem, phtimer)
+    ApiEntry { ordinal: 350, module: "DOSCALLS", name: "DosAsyncTimer",    argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_start_timer(a[0],a[1],a[2],false)) },
+    ApiEntry { ordinal: 351, module: "DOSCALLS", name: "DosStartTimer",    argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_start_timer(a[0],a[1],a[2],true)) },
 
     // ── DOSCALLS — resources ──────────────────────────────────────────────
     ApiEntry { ordinal: 352, module: "DOSCALLS", name: "DosGetResource",   argc: 4,
@@ -329,13 +361,13 @@ static REGISTRY: &[ApiEntry] = &[
 
     // ── DOSCALLS — exception handling ─────────────────────────────────────
     ApiEntry { ordinal: 354, module: "DOSCALLS", name: "DosSetExceptionHandler",   argc: 1,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_exception_handler(a[0])) },
+               handler: |l,_v,id,a| ApiResult::Normal(l.dos_set_exception_handler(id,a[0])) },
     ApiEntry { ordinal: 355, module: "DOSCALLS", name: "DosUnsetExceptionHandler", argc: 1,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_unset_exception_handler(a[0])) },
+               handler: |l,_v,id,a| ApiResult::Normal(l.dos_unset_exception_handler(id,a[0])) },
     ApiEntry { ordinal: 356, module: "DOSCALLS", name: "DosRaiseException", argc: 1,
-               handler: |l,_v,_i,a| l.dos_raise_exception(a[0]) },
+               handler: |l,_v,id,a| l.dos_raise_exception(id,a[0]) },
     ApiEntry { ordinal: 357, module: "DOSCALLS", name: "DosUnwindException", argc: 4,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_unwind_exception(a[0],a[1],a[2],a[3])) },
+               handler: |l,_v,id,a| ApiResult::Normal(l.dos_unwind_exception(id,a[0],a[1],a[2],a[3])) },
 
     // ── DOSCALLS — process state / signals ───────────────────────────────
     ApiEntry { ordinal: 368, module: "DOSCALLS", name: "DosQuerySysState", argc: 5,

@@ -217,6 +217,7 @@ impl super::Loader {
             debug!("  [VCPU {}] exit-list processing (tc={}, rc={})", vcpu_id, tc, rc);
             // Wake the threads blocked in the system so that they stop.
             self.shared.threads.ended.notify_all();
+            self.shared.threads.wake_crit_waiters();
             self.shared.kbd_cond.notify_all();
             self.shared.mou_cond.notify_all();
         }
@@ -269,12 +270,9 @@ impl super::Loader {
         if !framed {
             return false;
         }
-        // The handlers' registration records were on the stack just reset.
-        // `seh.rs` keeps every thread's chain in thread 1's TIB for now
-        // (all other threads have stopped), so empty that one too.
-        for tib in [sregs.fs.base as u32, TIB_BASE] {
-            self.guest_write::<u32>(tib + TIB_EXCHAIN_OFFSET, XCPT_CHAIN_END);
-        }
+        // The handlers' registration records were on the stack just reset:
+        // empty this thread's chain (its own TIB, which FS points at).
+        self.guest_write::<u32>((sregs.fs.base as u32).wrapping_add(TIB_EXCHAIN_OFFSET), XCPT_CHAIN_END);
         debug!("  calling exit-list routine {:#x}(tc={})", pfn, run.tc);
         regs.rip = pfn as u64;
         regs.rsp = sp as u64;
