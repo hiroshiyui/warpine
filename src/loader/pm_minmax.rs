@@ -239,9 +239,9 @@ impl WindowManager {
     /// old, mp2 the new size, `MPFROM2SHORT(cx, cy)`) and have it repaint
     /// (`WM_PAINT`). PM sends `WM_SIZE`; Warpine posts it, like every frame
     /// size change, so that it reaches the window procedure on its own thread.
-    pub fn post_size(&self, hwnd: u32, old: (i32, i32), new: (i32, i32)) {
+    pub fn post_size(&mut self, hwnd: u32, old: (i32, i32), new: (i32, i32)) {
         self.post_msg(hwnd, WM_SIZE, pack_size(old), pack_size(new));
-        self.post_msg(hwnd, WM_PAINT, 0, 0);
+        self.invalidate_window_only(hwnd);
     }
 
     /// The window a frame's messages are delivered to: a standard frame's

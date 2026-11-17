@@ -1279,7 +1279,7 @@ mod api_tests {
     }
 
     /// WinBeginPaint frees its presentation space at WinEndPaint and reports
-    /// the window as the update rectangle; WinGetPS / WinReleasePS pair;
+    /// the update rectangle (then empty); WinGetPS / WinReleasePS pair;
     /// a PS on a window DC draws into the window.
     #[test]
     fn paint_and_cached_presentation_spaces() {
@@ -1288,12 +1288,16 @@ mod api_tests {
         let count = || l.shared.window_mgr.lock_or_recover().ps_map.len();
         let before = count();
         for _ in 0..3 {
+            win(&l, 765, &[hwnd, 0, 0]); // WinInvalidateRect: the whole window
             let hps = win(&l, 703, &[hwnd, 0, TBL]);
             assert_eq!(l.guest_read::<i32>(TBL + 8), Some(64), "update rect xRight");
             assert_eq!(l.guest_read::<i32>(TBL + 12), Some(32), "update rect yTop");
             win(&l, 738, &[hps]);
         }
         assert_eq!(count(), before, "no presentation space leaks per paint");
+        let hps = win(&l, 703, &[hwnd, 0, TBL]);
+        assert_eq!(l.guest_read::<i32>(TBL + 8), Some(0), "nothing left to paint");
+        win(&l, 738, &[hps]);
         assert_eq!(win(&l, 703, &[hwnd, wps, 0]), wps, "a given PS is used as is");
         win(&l, 738, &[wps]);
         assert_eq!(win(&l, 848, &[wps]), 1);

@@ -277,6 +277,9 @@ mod tests {
     const ORD_WIN_SHOW_WINDOW: u32 = 883;
     const ORD_WIN_STOP_TIMER: u32 = 885;
     const ORD_WIN_UPDATE_WINDOW: u32 = 892;
+    const ORD_WIN_VALIDATE_RECT: u32 = 895;
+    const ORD_WIN_QUERY_UPDATE_RECT: u32 = 831;
+    const ORD_WIN_SCROLL_WINDOW: u32 = 849;
     const ORD_WIN_SEND_DLG_ITEM_MSG: u32 = 903;
     const ORD_WIN_CREATE_WINDOW: u32 = 909;
     const ORD_WIN_REGISTER_CLASS: u32 = 926;
@@ -299,6 +302,9 @@ mod tests {
             ("WinEnableWindow", ORD_WIN_ENABLE_WINDOW, vec![b, 1], 0),
             ("WinIsWindowEnabled", ORD_WIN_IS_WINDOW_ENABLED, vec![b], 0),
             ("WinInvalidateRect", ORD_WIN_INVALIDATE_RECT, vec![b, 0, 0], 0),
+            ("WinValidateRect", ORD_WIN_VALIDATE_RECT, vec![b, 0, 0], 0),
+            ("WinQueryUpdateRect", ORD_WIN_QUERY_UPDATE_RECT, vec![b, buf], 0),
+            ("WinScrollWindow", ORD_WIN_SCROLL_WINDOW, vec![b, 0, 1, 0, 0, 0, 0, 0], RGN_ERROR),
             ("WinSetFocus", ORD_WIN_SET_FOCUS, vec![HWND_DESKTOP, b], 0),
             ("WinQueryWindow", ORD_WIN_QUERY_WINDOW, vec![b, QW_PARENT as u32], 0),
             ("WinQueryWindowPos", ORD_WIN_QUERY_WINDOW_POS, vec![b, buf], 0),

@@ -432,6 +432,29 @@ impl Surface {
         }
     }
 
+    /// `WinScrollWindow`: fill the PM rectangle `x0..x1` × `y0..y1`
+    /// (exclusive at the right and top, clipped to the surface) with the
+    /// pels `dx` to the left and `dy` below each of them, as they were
+    /// before the call; a pel whose source is off the surface stays.
+    pub fn scroll(&mut self, x0: i32, y0: i32, x1: i32, y1: i32, dx: i32, dy: i32) {
+        let (w, h) = (self.width as i32, self.height as i32);
+        let (x0, y0, x1, y1) = (x0.max(0), y0.max(0), x1.min(w), y1.min(h));
+        if x0 >= x1 || y0 >= y1 { return; }
+        // The sources, read before anything is written (the areas overlap).
+        let src: Vec<Vec<Option<u32>>> = (y0..y1).map(|y| {
+            (x0..x1).map(|x| self.pel(x.saturating_sub(dx), y.saturating_sub(dy))).collect()
+        }).collect();
+        for (y, row) in (y0..y1).zip(src) {
+            for (x, p) in (x0..x1).zip(row) {
+                if let (Some(p), Some(i)) = (p, self.index(x, y)) {
+                    self.buffer[i] = p;
+                }
+            }
+        }
+        self.generation += 1;
+        self.note_change(Rect::new(x0, self.row(y1 - 1), x1, self.row(y0) + 1));
+    }
+
     /// PM row `y` (`width` pels); `None` outside the surface.
     pub fn row_pels(&self, y: i32) -> Option<Vec<u32>> {
         let i = self.index(0, y)?;
@@ -1087,6 +1110,41 @@ mod tests {
         s.draw(DrawOp::Pel { x: 1, y: 1, color: RED, mix: Mix::Overpaint });
         s.draw(DrawOp::Pel { x: 3, y: 2, color: RED, mix: Mix::Overpaint });
         assert_eq!(s.take_changes(), Rect::new(1, 5, 4, 7), "changes accumulate");
+    }
+
+    #[test]
+    fn scroll_moves_pels_and_records_the_change() {
+        let mut s = numbered(16, 12);
+        let before = s.buffer.clone();
+        let at = |p: &[u32], x: i32, y: i32| p[((11 - y) * 16 + x) as usize];
+        s.take_changes();
+        let g = s.generation();
+        // Up 2 and left 3 over the overlapping area x 2..10, y 4..9.
+        s.scroll(2, 4, 10, 9, -3, 2);
+        for y in 0..12 {
+            for x in 0..16 {
+                let want = if (2..10).contains(&x) && (4..9).contains(&y) {
+                    at(&before, x + 3, y - 2)
+                } else {
+                    at(&before, x, y)
+                };
+                assert_eq!(s.pel(x, y), Some(want), "({x}, {y})");
+            }
+        }
+        assert!(s.generation() > g);
+        assert_eq!(s.take_changes(), Rect::new(2, 3, 10, 8), "PM rows 4..9 are screen rows 3..8");
+        // Sources off the surface leave the destination; the destination is clipped.
+        let mut s = numbered(4, 4);
+        let before = s.buffer.clone();
+        s.scroll(-10, -10, 100, 100, 3, 0);
+        assert_eq!(s.pel(3, 0), Some(at4(&before, 0, 0)));
+        assert_eq!(s.pel(2, 0), Some(at4(&before, 2, 0)), "source off the surface");
+        s.scroll(0, 0, 4, 4, i32::MIN, i32::MAX);
+        s.scroll(5, 5, 9, 9, 1, 1);
+    }
+
+    fn at4(p: &[u32], x: i32, y: i32) -> u32 {
+        p[((3 - y) * 4 + x) as usize]
     }
 
     fn rect_points(x1: i32, y1: i32, x2: i32, y2: i32) -> Vec<(i32, i32)> {
