@@ -19,17 +19,19 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 | **Built-in controls and typing.** Static text, push button, entry field, scroll bar, list box and multi-line field. The entry field was clicked and typed into (`Hello, Wörld!` at the end, then *Home* and `>>` at the start); in the multi-line field, Enter after "Line one" and `three` started a new line. | **List selection and word wrap.** Driven by clicks and keys: a multiple-selection list (`LS_MULTIPLESEL`, two clicks plus Down and Space), an extended-selection list (`LS_EXTENDEDSEL`, a click, Shift+click and Ctrl+click) and a single-selection list where a double-click sent `LN_ENTER`. The multi-line field below wraps its text at word boundaries (`MLS_WORDWRAP`). |
 | ![PM Menu/Dialog Test window with the File menu open, listing About..., a separator and Exit](doc/screenshots/pm_menu_pulldown.png) | ![A "Your name and colour" dialog over an inactive main window: the Name field reads Warp, the Colour list box has Green selected, and the OK button has a dark default outline next to Cancel](doc/screenshots/pm_dialog_keyboard.png) |
 | **Menus.** A menu bar loaded from the program's `MENU` resource, with the *File* pull-down open after a click. | **Dialogs from the keyboard.** Ctrl+D, from the window's accelerator table, opens a modal dialog built from a `DLGTEMPLATE` resource. `Warp` was typed into the entry field that had the focus, then Tab and Down twice picked *Green*; Enter would press the default button *OK*. |
+| ![A "Message Box Test" message box with the text "The operation completed." and "Two lines of text in one box." on two lines and an OK button with a default outline, over the inactive PM Message Box Test window](doc/screenshots/pm_msgbox.png) | |
+| **Message boxes.** `WinMessageBox` is a modal PM dialog: the text wraps at word boundaries, the buttons come from the `MB_*` style, and only the owner window is disabled while it is open — its timers and repaints keep running. Keys and clicks answered the three boxes before this one. | |
 
 ### Work in progress
 
-- **Text controls** — editing, selection, the clipboard, word wrap, multi-select lists and a blinking caret work; Tab moves between controls only in dialogs, and a list or MLE scrolls past its edge only while the pointer moves.
-- **Dialogs and the keyboard** — Tab, arrow-key groups, mnemonics, Enter / Esc and Alt+F4 work; radio buttons checked by the arrow keys, the other system accelerators (Alt+F5…F10, F10 for the menu bar) and menus inside dialogs are missing.
+- **Text controls** — editing, selection, the clipboard, word wrap, multi-select lists and a blinking caret work, and keys typed ahead reach the window that has the focus when the program reads them; Tab moves between controls only in dialogs, and a list or MLE scrolls past its edge only while the pointer moves.
+- **Dialogs, menus and message boxes** — Tab, arrow-key groups, mnemonics, Enter / Esc and Alt+F4 work; radio buttons checked by the arrow keys, the other system accelerators (Alt+F5…F10, F10 for the menu bar), menus inside dialogs and the message-box icons and Help button are missing.
 - **More GPI** — boxes, lines, arcs, patterns, line widths, text, bitmaps and blits work; paths and areas (`GpiBeginPath`, `GpiBeginArea`), rounded box corners, palettes, coordinate transforms and printing are not implemented.
 - **Codepages in PM** — window text, typed characters and GPI text follow the message queue's codepage (`WinSetCp`), including 1004; control and title-bar text still pick their CJK face from the process codepage.
 - **Games and video** — DIVE (direct framebuffer blitting) and OpenGL are not implemented yet.
 - **Advanced controls** — containers, notebooks, drag and drop, custom pointers and printing are not started.
 
-_Screenshots in this section captured from commit `63ad51b` on 2026-11-17._
+_Screenshots in this section captured from commit `18377a8` on 2026-11-17._
 <!-- screenshots:end -->
 
 ## Key Features
