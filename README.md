@@ -24,12 +24,12 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 
 ### Work in progress
 
-- **Text controls** — editing, selection, the clipboard, word wrap, multi-select lists and a blinking caret work, and keys typed ahead reach the window that has the focus when the program reads them; Tab moves between controls only in dialogs, and a list or MLE scrolls past its edge only while the pointer moves.
-- **Dialogs, menus and windows** — Tab, arrow-key groups, mnemonics, check boxes and radio buttons, message-box icons and Help, minimize / maximize / restore and Alt+F4/F5/F9/F10 work; keyboard move and size (Alt+F7/F8), the system menu, F10 for the menu bar and menus inside dialogs are missing.
+- **Text controls** — editing, selection, the clipboard, word wrap, multi-select lists and a blinking caret work, keys typed ahead reach the window that has the focus when the program reads them, and the input-method window follows the caret; the pointer does not yet turn into an I-beam over text fields.
+- **Dialogs, menus and windows** — Tab, arrow-key groups, mnemonics, check boxes and radio buttons, message-box icons and Help, minimize / maximize / restore / hide and Alt+F4/F5/F9/F10 work; keyboard move and size (Alt+F7/F8), the system menu, F10 for the menu bar and menus inside dialogs are missing.
 - **More GPI** — boxes, lines, arcs, patterns, line widths, text, bitmaps and blits work; paths and areas (`GpiBeginPath`, `GpiBeginArea`), rounded box corners, palettes, coordinate transforms and printing are not implemented.
 - **Codepages in PM** — window text, typed characters, GPI text and the CJK face of control, title and menu text follow the message queue's codepage (`WinSetCp`), including 1004; menu templates with codepage 0 still use the process codepage.
 - **Games and video** — DIVE (direct framebuffer blitting) and OpenGL are not implemented yet.
-- **Advanced controls** — containers, notebooks, drag and drop, custom pointers and printing are not started.
+- **Advanced controls** — containers, notebooks, drag and drop and printing are not started.
 
 _Screenshots in this section captured from commit `18377a8` on 2026-11-17._
 <!-- screenshots:end -->
@@ -139,6 +139,7 @@ samples/               OS/2 sample applications and build scripts
   pm_minmax_test/      Frame minimize / maximize / restore, WM_MINMAXFRAME, system keys
   pm_destroy_test/     WinDestroyWindow and the order of WM_DESTROY
   pm_error_test/       WinGetLastError and PMERR_* codes per thread
+  pm_pointer_test/     Mouse pointers: system pointers, WinSetPointer, WinLoadPointer
   pm_typeahead_test/   Keys typed while the program is busy reach the focus window of the moment they are read
   pm_font_test/        GPI font selection (IBM Plex families, styles, sizes) and CJK text
   pm_shapes_test/      GPI arcs, area patterns and line widths, checked with GpiQueryPel
@@ -257,7 +258,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 930 unit tests (no KVM required)
+cargo test                        # 975 unit tests (no KVM required)
 cargo test --test integration     # 38 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
