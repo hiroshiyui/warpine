@@ -77,11 +77,9 @@ impl super::Loader {
                 // WinCreateMsgQueue
                 debug!("  [VCPU {}] WinCreateMsgQueue called.", vcpu_id);
                 let mut wm = self.shared.window_mgr.lock_or_recover();
-                // One queue per thread: a second one fails with NULLHANDLE
-                // (PMERR_MSG_QUEUE_ALREADY_EXISTS; WinGetLastError does not
-                // report errors yet).
+                // One queue per thread: a second one fails with NULLHANDLE.
                 if wm.thread_queue(vcpu_id).is_some() {
-                    return ApiResult::Normal(0);
+                    return self.pm_fail(vcpu_id, PMERR_MSG_QUEUE_ALREADY_EXISTS);
                 }
                 // The queue codepage starts as the process codepage.
                 let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
@@ -95,7 +93,8 @@ impl super::Loader {
                 let hmq = read_stack(4);
                 debug!("  [VCPU {}] WinDestroyMsgQueue hmq={}", vcpu_id, hmq);
                 let destroyed = self.shared.window_mgr.lock_or_recover().destroy_mq(vcpu_id, hmq);
-                ApiResult::Normal(destroyed as u32)
+                if !destroyed { return self.pm_fail(vcpu_id, PMERR_INVALID_HMQ); }
+                ApiResult::Normal(1)
             }
             926 => {
                 // WinRegisterClass
@@ -218,6 +217,7 @@ impl super::Loader {
             915 => {
                 // WinGetMsg(HAB hab, PQMSG pqmsg, HWND hwndFilter, ULONG msgFirst, ULONG msgLast):
                 // wait for a message; FALSE when it is WM_QUIT.
+                if !self.has_msg_queue(vcpu_id) { return self.pm_fail(vcpu_id, PMERR_NO_MSG_QUEUE); }
                 match self.next_message(vcpu_id, read_stack(8), read_stack(12), read_stack(16),
                                         read_stack(20), PM_REMOVE, true) {
                     Some(msg) => ApiResult::Normal((msg != WM_QUIT) as u32),
@@ -227,6 +227,7 @@ impl super::Loader {
             918 => {
                 // WinPeekMsg(HAB hab, PQMSG pqmsg, HWND hwndFilter, ULONG msgFirst, ULONG msgLast, ULONG fl):
                 // TRUE when a message is there, removed with PM_REMOVE; never waits.
+                if !self.has_msg_queue(vcpu_id) { return self.pm_fail(vcpu_id, PMERR_NO_MSG_QUEUE); }
                 let found = self.next_message(vcpu_id, read_stack(8), read_stack(12), read_stack(16),
                                               read_stack(20), read_stack(24), false);
                 ApiResult::Normal(found.is_some() as u32)
@@ -268,6 +269,7 @@ impl super::Loader {
                 let msg = read_stack(8);
                 let mp1 = read_stack(12);
                 let mp2 = read_stack(16);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, true) { return ApiResult::Normal(0); }
                 let wm = self.shared.window_mgr.lock_or_recover();
                 let hmq = wm.find_hmq_for_hwnd(hwnd);
                 // FALSE when there is no queue to post to (e.g. destroyed).
@@ -288,6 +290,7 @@ impl super::Loader {
                 let msg = read_stack(8);
                 let mp1 = read_stack(12);
                 let mp2 = read_stack(16);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
 
                 let pfn_wp = {
                     let wm = self.shared.window_mgr.lock_or_recover();
@@ -496,8 +499,8 @@ impl super::Loader {
                 ApiResult::Normal(self.draw_bitmap(hps, hbm, src, dst, rop))
             }
             753 => {
-                // WinGetLastError
-                ApiResult::Normal(0)
+                // WinGetLastError(HAB hab): this thread's last PMERR_*, reset to 0.
+                ApiResult::Normal(self.shared.pm_errors.take(vcpu_id))
             }
             789 => {
                 // WinMessageBox(HWND hwndParent, HWND hwndOwner, PCSZ pszText,
@@ -555,6 +558,7 @@ impl super::Loader {
                 // WinDestroyWindow(HWND hwnd): the window and its descendants go.
                 // A frame whose menu bar goes with them loses its bar.
                 let hwnd = read_stack(4);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 let (destroyed, bare_frames) = {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
                     let frames: Vec<u32> = wm.frame_to_client.keys().copied()
@@ -985,6 +989,7 @@ impl super::Loader {
                 let hwnd = read_stack(4);
                 let cch_max = read_stack(8) as usize;
                 let buffer_ptr = read_stack(12);
+                self.pm_check_hwnd(vcpu_id, hwnd, false);
                 let cp = self.window_codepage(hwnd);
                 let wm = self.shared.window_mgr.lock_or_recover();
                 let text = wm.get_window(hwnd).map(|w| w.text.clone()).unwrap_or_default();
@@ -1114,6 +1119,7 @@ impl super::Loader {
                 let fl = read_stack(28);
                 debug!("  [VCPU {}] WinSetWindowPos hwnd={} behind={} x={} y={} cx={} cy={} fl=0x{:04X}",
                        vcpu_id, hwnd, hwnd_behind, x, y, cx, cy, fl);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
 
                 let mut wm = self.shared.window_mgr.lock_or_recover();
 
@@ -1171,6 +1177,7 @@ impl super::Loader {
                 // WinSetWindowText(HWND hwnd, PCSZ pszText)
                 let hwnd = read_stack(4);
                 let psz_text = read_stack(8);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 let text = self.read_guest_string_cp(psz_text, self.window_codepage(hwnd));
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(win) = wm.get_window_mut(hwnd) {
@@ -1235,6 +1242,7 @@ impl super::Loader {
                 // WinWindowFromID(HWND hwndParent, ULONG id)
                 let hwnd_parent = read_stack(4);
                 let id = read_stack(8);
+                if !self.pm_check_hwnd(vcpu_id, hwnd_parent, false) { return ApiResult::Normal(0); }
                 let wm = self.shared.window_mgr.lock_or_recover();
                 let result = wm.find_child_by_id(hwnd_parent, id).unwrap_or(0);
                 ApiResult::Normal(result)

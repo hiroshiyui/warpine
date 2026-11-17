@@ -11,6 +11,7 @@ pub mod pm_input;
 mod pm_msgbox;
 mod pm_controls;
 mod pm_dialog;
+mod pm_error;
 pub mod vfs;
 pub mod vfs_hostdir;
 pub mod vm_backend;
@@ -239,6 +240,8 @@ pub struct SharedState {
     pub hdir_mgr: Mutex<HDirManager>,
     pub queue_mgr: Mutex<QueueManager>,
     pub window_mgr: Mutex<WindowManager>,
+    /// Last PM error (`WinGetLastError`) of every thread.
+    pub pm_errors: pm_error::PmErrorStore,
     pub drive_mgr: Mutex<DriveManager>,
     pub console_mgr: Mutex<console::VioManager>,
     pub mmpm_mgr: Mutex<mmpm::MmpmManager>,
@@ -331,6 +334,7 @@ impl Loader {
             hdir_mgr: Mutex::new(hdir_mgr),
             queue_mgr: Mutex::new(queue_mgr),
             window_mgr: Mutex::new(window_mgr),
+            pm_errors: Default::default(),
             drive_mgr: Mutex::new(drive_mgr),
             console_mgr: Mutex::new(console_mgr),
             mmpm_mgr: Mutex::new(mmpm::MmpmManager::new()),
@@ -409,6 +413,7 @@ impl Loader {
             hdir_mgr:     Mutex::new(HDirManager::new()),
             queue_mgr:    Mutex::new(QueueManager::new()),
             window_mgr:   Mutex::new(WindowManager::new()),
+            pm_errors:    Default::default(),
             drive_mgr:    Mutex::new(DriveManager::with_default_config()),
             console_mgr:  Mutex::new(console::VioManager::new()),
             mmpm_mgr:     Mutex::new(mmpm::MmpmManager::new()),

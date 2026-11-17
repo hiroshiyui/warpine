@@ -707,6 +707,14 @@ fn gui_pm_msgbox_test_matches_golden() {
         &format!("{MSGBOX_TEST_STEPS}3600 dump {{dump}}\n3700 quit\n"));
 }
 
+/// pm_error_test: failing PM calls leave their PMERR_* code (with
+/// SEVERITY_ERROR) for WinGetLastError, which resets it; a later success
+/// keeps it; each thread has its own last error.
+#[test]
+fn gui_pm_error_test_reports_last_errors() {
+    assert_sample_checks_pass("samples/pm_error_test/pm_error_test.exe", "pm_error_test", 36);
+}
+
 /// pm_typeahead_test: keyboard input is routed when the program reads it.
 /// The client is busy for 600 ms after 'n' and then focuses the first entry
 /// field; "ab" typed meanwhile goes there, and "cd" typed after a click on

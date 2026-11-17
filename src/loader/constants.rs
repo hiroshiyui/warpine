@@ -848,6 +848,19 @@ pub const XCPT_SIGNAL:                  u32 = 0xC001_0003;
 /// Catch-all for unclassified hardware faults.
 pub const XCPT_FATAL_EXCEPTION:         u32 = 0xC000_0000;
 
+// ERRORID severities (<os2def.h>): the high word of a WinGetLastError value.
+pub const SEVERITY_NOERROR:       u32 = 0x0000;
+pub const SEVERITY_WARNING:       u32 = 0x0004;
+pub const SEVERITY_ERROR:         u32 = 0x0008;
+pub const SEVERITY_SEVERE:        u32 = 0x000C;
+pub const SEVERITY_UNRECOVERABLE: u32 = 0x0010;
+
+// PM error codes (<pmerr.h>): the low word of a WinGetLastError value.
+pub const PMERR_INVALID_HWND:             u32 = 0x1001;
+pub const PMERR_INVALID_HMQ:              u32 = 0x1002;
+pub const PMERR_NO_MSG_QUEUE:             u32 = 0x1036;
+pub const PMERR_MSG_QUEUE_ALREADY_EXISTS: u32 = 0x1052;
+
 #[cfg(test)]
 mod header_tests {
     //! Every constant named after an OS/2 toolkit `#define` must have the
@@ -964,6 +977,12 @@ mod header_tests {
             }
         }
         assert!(checked > 100, "only {checked} constants compared");
+        // The WinGetLastError values must be compared, not skipped as unknown.
+        for name in ["SEVERITY_NOERROR", "SEVERITY_WARNING", "SEVERITY_ERROR", "SEVERITY_SEVERE",
+                     "SEVERITY_UNRECOVERABLE", "PMERR_INVALID_HWND", "PMERR_INVALID_HMQ",
+                     "PMERR_NO_MSG_QUEUE", "PMERR_MSG_QUEUE_ALREADY_EXISTS"] {
+            assert!(defs.contains_key(name), "{name} is not defined in the toolkit headers");
+        }
         assert!(wrong.is_empty(), "constants differ from the toolkit headers:\n{}", wrong.join("\n"));
     }
 }
