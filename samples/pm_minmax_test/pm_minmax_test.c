@@ -14,7 +14,15 @@
  *   - a minimized frame sits low on the screen
  *   - WM_SYSCOMMAND(SC_MINIMIZE) through WinDefWindowProc minimizes a frame
  *     with the buttons and does nothing without them
- *   - the client gets WM_SIZE for every change
+ *   - the client gets WM_SIZE for every change, and for a plain
+ *     WinSetWindowPos(SWP_SIZE) (old and new size); a size that does not
+ *     change sends none; a child window gets WM_SIZE for its own size
+ *   - WinQueryWindowPos reports SWP_MINIMIZE / SWP_MAXIMIZE in fl for a
+ *     minimized / maximized frame and SWP_ACTIVATE for the active one
+ *   - minimizing the active frame activates the next frame in Z-order
+ *   - frame C has a hide button (FCF_HIDEMAX): WM_SYSCOMMAND(SC_HIDE)
+ *     through WinDefWindowProc hides it, and hiding the active frame
+ *     activates the next one
  *
  * Then the integration test drives the frame with the mouse and keyboard;
  * each WM_MINMAXFRAME appends X (maximize), N (minimize) or R (restore):
@@ -25,6 +33,7 @@
  *   minimize button                    N      double click on the icon  R
  *   maximize button                    X      restore button            R
  *
+ * then clicks the hide button of frame C (C is hidden, A becomes active),
  * and finally double-clicks the system-menu icon, which closes the window
  * (WM_SYSCOMMAND SC_CLOSE, then WM_CLOSE). Each check is written to stdout:
  *
@@ -43,7 +52,7 @@
 #define INTERACTIVE "XRXRNRNRXR"
 
 static HAB  hab;
-static HWND frame_a, client_a, frame_b, client_b;
+static HWND frame_a, client_a, frame_b, client_b, frame_c, client_c, child;
 static int  n_checks = 0;
 static int  n_passed = 0;
 
@@ -53,7 +62,15 @@ static SWP  last_swp;               /* its SWP */
 static ULONG style_at_minmax;       /* frame style when it arrived */
 static SHORT xrestore_at_minmax;    /* QWS_XRESTORE when it arrived */
 static int  n_size = 0;             /* WM_SIZE received by client A */
+#define MAX_SIZES 8
+static MPARAM size_mp1[MAX_SIZES], size_mp2[MAX_SIZES]; /* their mp1 / mp2 */
 static MPARAM first_size_mp1, first_size_mp2;
+static MPARAM resize_mp1, resize_mp2;   /* expected for the plain SWP_SIZE */
+static int  n_child_size = 0;       /* WM_SIZE received by the child */
+static MPARAM child_size_mp1, child_size_mp2;
+static int  n_hide = 0;             /* SC_HIDE received by client C */
+static BOOL c_visible_after_hide = TRUE;
+static HWND active_after_hide = NULLHANDLE;
 static char ops[32];                /* X / N / R per WM_MINMAXFRAME */
 static int  n_ops = -1;             /* -1 = not recording */
 static BOOL got_sc_close = FALSE;
@@ -124,6 +141,18 @@ static void set_state( HWND frame, ULONG fl )
     WinSetWindowPos( frame, NULLHANDLE, 0, 0, 0, 0, fl );
 }
 
+static BOOL visible( HWND hwnd )
+{
+    return ( WinQueryWindowULong( hwnd, QWL_STYLE ) & WS_VISIBLE ) != 0;
+}
+
+static ULONG swp_fl( HWND hwnd )
+{
+    SWP swp;
+    WinQueryWindowPos( hwnd, &swp );
+    return swp.fl;
+}
+
 static SHORT word( HWND frame, LONG index )
 {
     return (SHORT)WinQueryWindowUShort( frame, index );
@@ -139,8 +168,13 @@ static void api_checks( void )
     LONG  cx = WinQuerySysValue( HWND_DESKTOP, SV_CXSCREEN );
     LONG  cy = WinQuerySysValue( HWND_DESKTOP, SV_CYSCREEN );
 
+    WinSetActiveWindow( HWND_DESKTOP, frame_a );
     WinQueryWindowPos( frame_a, &orig );
     WinQueryWindowRect( client_a, &rc_before );
+    check( "WinQueryWindowPos fl: SWP_MOVE | SWP_SIZE", orig.fl & ( SWP_MOVE | SWP_SIZE ), SWP_MOVE | SWP_SIZE );
+    check( "WinQueryWindowPos fl: neither minimized nor maximized",
+           orig.fl & ( SWP_MINIMIZE | SWP_MAXIMIZE ), 0 );
+    check( "WinQueryWindowPos fl: SWP_ACTIVATE for the active frame", ( orig.fl & SWP_ACTIVATE ) != 0, TRUE );
     check( "QWS_XMINIMIZE is -1 before the first minimize", word( frame_a, QWS_XMINIMIZE ), -1 );
 
     /* A TRUE reply to WM_MINMAXFRAME stops the change. */
@@ -164,6 +198,8 @@ static void api_checks( void )
     check( "maximized cx", swp.cx, cx + 2 * b );
     check( "maximized cy", swp.cy, cy + 2 * b );
     check( "WM_MINMAXFRAME SWP has the new x", last_swp.x, -b );
+    check( "WinQueryWindowPos fl: SWP_MAXIMIZE when maximized",
+           swp.fl & ( SWP_MINIMIZE | SWP_MAXIMIZE ), SWP_MAXIMIZE );
     check( "QWS_XRESTORE", word( frame_a, QWS_XRESTORE ), orig.x );
     check( "QWS_YRESTORE", word( frame_a, QWS_YRESTORE ), orig.y );
     check( "QWS_CXRESTORE", word( frame_a, QWS_CXRESTORE ), orig.cx );
@@ -186,6 +222,13 @@ static void api_checks( void )
     check( "a minimized frame is small", swp.cx < orig.cx && swp.cy < orig.cy, TRUE );
     check( "QWS_XMINIMIZE is its position", word( frame_a, QWS_XMINIMIZE ), swp.x );
     check( "QWS_YMINIMIZE is its position", word( frame_a, QWS_YMINIMIZE ), swp.y );
+    check( "WinQueryWindowPos fl: SWP_MINIMIZE when minimized",
+           swp.fl & ( SWP_MINIMIZE | SWP_MAXIMIZE ), SWP_MINIMIZE );
+    /* Z-order, top first: A, C, B. */
+    check( "minimizing the active frame activates the next one (C)",
+           WinQueryActiveWindow( HWND_DESKTOP ) == frame_c, TRUE );
+    check( "... which then has SWP_ACTIVATE", ( swp_fl( frame_c ) & SWP_ACTIVATE ) != 0, TRUE );
+    check( "... and the minimized frame SWP_DEACTIVATE", ( swp_fl( frame_a ) & SWP_DEACTIVATE ) != 0, TRUE );
     set_state( frame_a, SWP_MINIMIZE | SWP_MAXIMIZE );
     check( "SWP_MINIMIZE | SWP_MAXIMIZE does nothing", state_of( frame_a ), WS_MINIMIZED );
 
@@ -195,7 +238,24 @@ static void api_checks( void )
     WinQueryWindowPos( frame_a, &swp );
     check( "WinSetWindowUShort(QWS_CXRESTORE) changes the restore width", swp.cx, 300 );
     check( "... and keeps the restore x", swp.x, orig.x );
+    /* A plain size change: WM_SIZE with the client's old and new size. */
+    resize_mp1 = MPFROM2SHORT( 300, rc_before.yTop );
+    resize_mp2 = MPFROM2SHORT( rc_before.xRight, rc_before.yTop );
     WinSetWindowPos( frame_a, NULLHANDLE, orig.x, orig.y, orig.cx, orig.cy, SWP_MOVE | SWP_SIZE );
+    /* The same size again: no WM_SIZE. */
+    WinSetWindowPos( frame_a, NULLHANDLE, orig.x, orig.y, orig.cx, orig.cy, SWP_MOVE | SWP_SIZE );
+    /* A child window is told its own size. */
+    WinSetWindowPos( child, NULLHANDLE, 0, 0, 80, 60, SWP_SIZE );
+
+    /* Frame C, active now, hidden by SC_HIDE: A (restored) becomes active. */
+    WinSendMsg( client_c, WM_SYSCOMMAND, MPFROMSHORT( SC_HIDE ), MPFROM2SHORT( CMDSRC_OTHER, FALSE ) );
+    check( "SC_HIDE hides the frame", visible( frame_c ), FALSE );
+    check( "hiding the active frame activates the next one (A)",
+           WinQueryActiveWindow( HWND_DESKTOP ) == frame_a, TRUE );
+    WinShowWindow( frame_c, TRUE );
+    check( "WinShowWindow shows it again", visible( frame_c ), TRUE );
+    check( "... without activating it", WinQueryActiveWindow( HWND_DESKTOP ) == frame_a, TRUE );
+    n_hide = 0;
 
     /* Frame B has no minimize / maximize buttons. */
     WinSendMsg( client_b, WM_SYSCOMMAND, MPFROMSHORT( SC_MAXIMIZE ), MPFROM2SHORT( CMDSRC_OTHER, FALSE ) );
@@ -205,7 +265,7 @@ static void api_checks( void )
     set_state( frame_b, SWP_RESTORE );
     check( "and restores it", state_of( frame_b ), 0 );
 
-    /* WM_SIZE: max, restore, min, restore = 4, posted; checked later. */
+    /* WM_SIZE: max, restore, min, restore, resize = 5, posted; checked later. */
     first_size_mp1 = MPFROM2SHORT( rc_before.xRight, rc_before.yTop );
     first_size_mp2 = MPFROM2SHORT( rc_max.xRight, rc_max.yTop );
     WinPostMsg( client_a, WM_CHECK, 0, 0 );
@@ -215,25 +275,30 @@ static void api_checks( void )
 
 MRESULT EXPENTRY ClientWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
 {
-    static MPARAM size_mp1, size_mp2;
     switch( msg ) {
     case WM_START:
         api_checks();
         return 0;
 
     case WM_CHECK:
-        check( "WM_SIZE for each change", n_size, 4 );
-        check( "WM_SIZE old size", (LONG)size_mp1, (LONG)first_size_mp1 );
-        check( "WM_SIZE new size", (LONG)size_mp2, (LONG)first_size_mp2 );
+        check( "WM_SIZE for each change", n_size, 5 );
+        check( "WM_SIZE old size", (LONG)size_mp1[0], (LONG)first_size_mp1 );
+        check( "WM_SIZE new size", (LONG)size_mp2[0], (LONG)first_size_mp2 );
+        check( "WM_SIZE for SWP_SIZE: old size", (LONG)size_mp1[4], (LONG)resize_mp1 );
+        check( "WM_SIZE for SWP_SIZE: new size", (LONG)size_mp2[4], (LONG)resize_mp2 );
+        check( "WM_SIZE to a resized child window", n_child_size, 1 );
+        check( "... with its old size", (LONG)child_size_mp1, (LONG)MPFROM2SHORT( 50, 40 ) );
+        check( "... and its new size", (LONG)child_size_mp2, (LONG)MPFROM2SHORT( 80, 60 ) );
         n_ops = 0;      /* now the scripted input */
         ops[0] = '\0';
         return 0;
 
     case WM_SIZE:
-        if( n_size++ == 0 ) {
-            size_mp1 = mp1;
-            size_mp2 = mp2;
+        if( n_size < MAX_SIZES ) {
+            size_mp1[n_size] = mp1;
+            size_mp2[n_size] = mp2;
         }
+        n_size++;
         return 0;
 
     case WM_MINMAXFRAME: {
@@ -261,6 +326,11 @@ MRESULT EXPENTRY ClientWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
         check( "the frame ends restored", state_of( frame_a ), 0 );
         WinQueryWindowPos( frame_a, &swp );
         check( "at its normal width", swp.cx, 640 );
+        check( "... and WinQueryWindowPos says neither minimized nor maximized",
+               swp.fl & ( SWP_MINIMIZE | SWP_MAXIMIZE ), 0 );
+        check( "the hide button sends SC_HIDE", n_hide, 1 );
+        check( "... which hides frame C", c_visible_after_hide, FALSE );
+        check( "... and activates frame A", active_after_hide == frame_a, TRUE );
         WinPostMsg( hwnd, WM_QUIT, 0, 0 );
         return 0;
     }
@@ -288,24 +358,63 @@ MRESULT EXPENTRY PlainWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
     return WinDefWindowProc( hwnd, msg, mp1, mp2 );
 }
 
+/* Frame C (hide button): records what SC_HIDE did. */
+MRESULT EXPENTRY HideWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
+{
+    if( msg == WM_SYSCOMMAND && SHORT1FROMMP( mp1 ) == SC_HIDE ) {
+        MRESULT r = WinDefWindowProc( hwnd, msg, mp1, mp2 );
+        n_hide++;
+        c_visible_after_hide = visible( frame_c );
+        active_after_hide = WinQueryActiveWindow( HWND_DESKTOP );
+        return r;
+    }
+    return PlainWndProc( hwnd, msg, mp1, mp2 );
+}
+
+/* A child window of client A, never shown: counts WM_SIZE. */
+MRESULT EXPENTRY ChildWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
+{
+    if( msg == WM_SIZE ) {
+        n_child_size++;
+        child_size_mp1 = mp1;
+        child_size_mp2 = mp2;
+        return 0;
+    }
+    if( msg == WM_PAINT ) {
+        RECTL rc;
+        WinEndPaint( WinBeginPaint( hwnd, NULLHANDLE, &rc ) );
+        return 0;
+    }
+    return WinDefWindowProc( hwnd, msg, mp1, mp2 );
+}
+
 int main( void )
 {
     HMQ   hmq;
     QMSG  qmsg;
     ULONG flags_a = FCF_TITLEBAR | FCF_SYSMENU | FCF_SIZEBORDER | FCF_MINBUTTON | FCF_MAXBUTTON;
     ULONG flags_b = FCF_TITLEBAR | FCF_SYSMENU | FCF_SIZEBORDER;
+    ULONG flags_c = FCF_TITLEBAR | FCF_SYSMENU | FCF_BORDER | FCF_HIDEMAX;
     char  line[64], *p;
 
     hab = WinInitialize( 0 );
     hmq = WinCreateMsgQueue( hab, 0 );
     WinRegisterClass( hab, "MinMaxTest", ClientWndProc, CS_SIZEREDRAW, 0 );
     WinRegisterClass( hab, "MinMaxPlain", PlainWndProc, CS_SIZEREDRAW, 0 );
+    WinRegisterClass( hab, "MinMaxHide", HideWndProc, CS_SIZEREDRAW, 0 );
+    WinRegisterClass( hab, "MinMaxChild", ChildWndProc, 0, 0 );
     frame_a = WinCreateStdWindow( HWND_DESKTOP, WS_VISIBLE, &flags_a, "MinMaxTest",
                                   "PM Min/Max Test", 0, NULLHANDLE, 0, &client_a );
     frame_b = WinCreateStdWindow( HWND_DESKTOP, WS_VISIBLE, &flags_b, "MinMaxPlain",
                                   "No buttons", 0, NULLHANDLE, 0, &client_b );
     /* Out of the way of frame A, at the right of the screen. */
     WinSetWindowPos( frame_b, NULLHANDLE, 700, 400, 250, 150, SWP_MOVE | SWP_SIZE );
+    frame_c = WinCreateStdWindow( HWND_DESKTOP, WS_VISIBLE, &flags_c, "MinMaxHide",
+                                  "Hide button", 0, NULLHANDLE, 0, &client_c );
+    /* Below frame B: title bar at desktop y 518-537, hide button x 896-911. */
+    WinSetWindowPos( frame_c, NULLHANDLE, 700, 100, 250, 150, SWP_MOVE | SWP_SIZE );
+    child = WinCreateWindow( client_a, "MinMaxChild", "", 0, 10, 10, 50, 40,
+                             client_a, HWND_TOP, 99, NULL, NULL );
     WinPostMsg( client_a, WM_START, 0, 0 );
 
     while( WinGetMsg( hab, &qmsg, NULLHANDLE, 0, 0 ) )
@@ -318,6 +427,7 @@ int main( void )
     append_str( p, "\r\n" );
     write_stdout( line );
 
+    WinDestroyWindow( frame_c );
     WinDestroyWindow( frame_b );
     WinDestroyWindow( frame_a );
     WinDestroyMsgQueue( hmq );

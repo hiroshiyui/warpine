@@ -238,6 +238,7 @@ pub const SWP_ZORDER: u32 = 0x0004;
 pub const SWP_SHOW: u32 = 0x0008;
 pub const SWP_HIDE: u32 = 0x0010;
 pub const SWP_ACTIVATE: u32 = 0x0080;
+pub const SWP_DEACTIVATE: u32 = 0x0100;
 pub const SWP_MINIMIZE: u32 = 0x0400;
 pub const SWP_MAXIMIZE: u32 = 0x0800;
 pub const SWP_RESTORE: u32 = 0x1000;
@@ -269,6 +270,8 @@ pub const FCF_NOBYTEALIGN:   u32 = 0x0000_1000; // don't byte-align window posit
 pub const FCF_ICON:          u32 = 0x0000_4000; // title bar icon (requires hmod resource)
 pub const FCF_ACCELTABLE:    u32 = 0x0000_8000; // load accelerator table from hmod
 pub const FCF_SYSMODAL:      u32 = 0x0001_0000; // system-modal frame
+pub const FCF_HIDEBUTTON:    u32 = 0x0100_0000; // hide button (in place of the minimize button)
+pub const FCF_HIDEMAX:       u32 = 0x0100_0020; // hide + maximize buttons
 pub const FCF_STANDARD:      u32 = 0x0000_CC3F; // FCF_TITLEBAR|SYSMENU|MENU|SIZEBORDER|MINMAX|SHELLPOSITION|TASKLIST|ICON|ACCELTABLE
 
 // ── GPI return values and colour sentinels (<pmgpi.h>) ───────────────────────
@@ -539,6 +542,7 @@ pub const SC_CLOSE:    u32 = 0x8004; // close the window
 pub const SC_MINIMIZE: u32 = 0x8002; // minimize the window
 pub const SC_MAXIMIZE: u32 = 0x8003; // maximize the window
 pub const SC_RESTORE:  u32 = 0x8008; // restore from min/max
+pub const SC_HIDE:     u32 = 0x802A; // hide the frame window
 
 // WM_MINMAXFRAME — sent to a frame (passed on to its client) before it is
 // minimized, maximized or restored. mp1 = PSWP; a TRUE reply skips the

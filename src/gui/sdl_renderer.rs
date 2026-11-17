@@ -6,7 +6,7 @@ use sdl3::event::Event;
 use sdl3::keyboard::{Keycode, Mod as KeyMod, Scancode};
 use log::debug;
 use crate::loader::{SharedState, OS2Message, MutexExt,
-    WM_CLOSE, WM_SIZE, WM_PAINT, WM_MOUSEMOVE,
+    WM_CLOSE, WM_PAINT, WM_MOUSEMOVE,
     WM_BUTTON1DOWN, WM_BUTTON1UP, WM_BUTTON2DOWN, WM_BUTTON2UP, WM_BUTTON3DOWN, WM_BUTTON3UP,
     WM_BUTTON1DBLCLK, WM_BUTTON2DBLCLK, WM_BUTTON3DBLCLK,
     KC_CHAR, KC_VIRTUALKEY, KC_SCANCODE, KC_SHIFT, KC_CTRL, KC_ALT, KC_KEYUP,
@@ -16,9 +16,9 @@ use crate::loader::{SharedState, OS2Message, MutexExt,
     VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6,
     VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12,
     CF_TEXT, KC_PREVDOWN, WM_CHAR_REPEAT_SHIFT, WM_CHAR_SCANCODE_SHIFT, WM_CHAR_VKEY_SHIFT,
-    FCF_TITLEBAR, FCF_SYSMENU, FCF_MINBUTTON, FCF_MAXBUTTON,
+    FCF_TITLEBAR, FCF_SYSMENU, FCF_MINBUTTON, FCF_MAXBUTTON, FCF_HIDEBUTTON,
     FCF_SIZEBORDER, FCF_BORDER,
-    WM_ACTIVATE, WM_SYSCOMMAND, SC_MINIMIZE, SC_MAXIMIZE, SC_RESTORE, SC_CLOSE,
+    WM_ACTIVATE, WM_SYSCOMMAND, SC_MINIMIZE, SC_MAXIMIZE, SC_RESTORE, SC_CLOSE, SC_HIDE,
     WS_MINIMIZED, WS_MAXIMIZED, CMDSRC_MENU, CMDSRC_OTHER};
 use crate::loader::constants::{
     MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_BAR_ITEM_PAD, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H,
@@ -137,7 +137,7 @@ struct FrameChrome<'a> {
 
 /// Which pictogram a title-bar button carries.
 #[derive(Clone, Copy)]
-enum ButtonGlyph { Close, Maximize, Restore, Minimize, SysMenu }
+enum ButtonGlyph { Close, Maximize, Restore, Minimize, Hide, SysMenu }
 
 /// The frame flags a frame in `state` is drawn and hit-tested with: a
 /// minimized frame is a bordered title bar whatever its own flags.
@@ -198,12 +198,37 @@ fn draw_chrome_button(buf: &mut [u32], buf_w: usize, x: i32, y: i32, h: i32, gly
             // Bar along the bottom.
             draw_filled_rect(buf, buf_w, gx0, gy1 - 2, gx1, gy1, ink);
         }
+        ButtonGlyph::Hide => {
+            // A small hollow square in the middle: the window shrunk to
+            // nothing (Warpine's own pictogram).
+            let (cx, cy) = ((gx0 + gx1) / 2, (gy0 + gy1) / 2);
+            let (x0, y0, x1, y1) = (cx - 2, cy - 2, cx + 3, cy + 3);
+            draw_filled_rect(buf, buf_w, x0, y0, x1, y0 + 1, ink);
+            draw_filled_rect(buf, buf_w, x0, y1 - 1, x1, y1, ink);
+            draw_filled_rect(buf, buf_w, x0, y0, x0 + 1, y1, ink);
+            draw_filled_rect(buf, buf_w, x1 - 1, y0, x1, y1, ink);
+        }
         ButtonGlyph::SysMenu => {
             // Small raised plate with a horizontal slot.
             let my = (gy0 + gy1) / 2;
             draw_raised_box(buf, buf_w, gx0 - 1, my - 2, gx1 + 1, my + 2,
                             CHROME_LIGHT_COLOR, CHROME_DARK_COLOR, CHROME_DARK_COLOR);
         }
+    }
+}
+
+/// The button left of the maximize button: the hide button for
+/// `FCF_HIDEBUTTON` (`FCF_HIDEMAX` pairs it with the maximize button as
+/// `FCF_MINMAX` pairs the minimize button), else the minimize button for
+/// `FCF_MINBUTTON`. A frame asking for both gets the hide button; what PM
+/// does then is not documented.
+fn min_slot_glyph(frame_flags: u32) -> Option<ButtonGlyph> {
+    if frame_flags & FCF_HIDEBUTTON != 0 {
+        Some(ButtonGlyph::Hide)
+    } else if frame_flags & FCF_MINBUTTON != 0 {
+        Some(ButtonGlyph::Minimize)
+    } else {
+        None
     }
 }
 
@@ -262,9 +287,9 @@ fn draw_title_bar(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
             let glyph = if c.state & WS_MAXIMIZED != 0 { ButtonGlyph::Restore } else { ButtonGlyph::Maximize };
             draw_chrome_button(buf, buf_w, btn_x, btn_y, btn_h, glyph);
         }
-        if c.frame_flags & FCF_MINBUTTON != 0 {
+        if let Some(glyph) = min_slot_glyph(c.frame_flags) {
             btn_x -= CHROME_BTN_W + CHROME_BTN_GAP;
-            draw_chrome_button(buf, buf_w, btn_x, btn_y, btn_h, ButtonGlyph::Minimize);
+            draw_chrome_button(buf, buf_w, btn_x, btn_y, btn_h, glyph);
         }
 
         // Title text, clipped so it never runs under the buttons.
@@ -1145,6 +1170,10 @@ impl SdlRenderer {
                             // VDR-C4: post WM_SYSCOMMAND(SC_MINIMIZE) to the client.
                             syscommand(SC_MINIMIZE, CMDSRC_MENU);
                         }
+                        ChromeHit::Hide => {
+                            // FCF_HIDEBUTTON: WM_SYSCOMMAND(SC_HIDE) to the client.
+                            syscommand(SC_HIDE, CMDSRC_MENU);
+                        }
                         ChromeHit::Maximize => {
                             // VDR-C4: WM_SYSCOMMAND(SC_MAXIMIZE) to the client;
                             // on a maximized frame the button restores it.
@@ -1223,16 +1252,15 @@ impl SdlRenderer {
                     let hwnd = rs.hwnd;
                     // Re-lay out the menu bar and client for the new frame size; the
                     // surface and WM_SIZE both describe the client area.
-                    let (new_cx, new_cy) = {
+                    {
                         let mut wm = shared.window_mgr.lock_or_recover();
-                        let size = wm.layout_frame(hwnd);
-                        wm.resize_surface(hwnd, size.0, size.1);
-                        size
-                    };
-                    // Notify the app so it repaints.
-                    let mp2 = ((new_cy as u32) << 16) | (new_cx as u32);
-                    push_msg(shared, hwnd, WM_SIZE, 0, mp2);
-                    push_msg(shared, hwnd, WM_PAINT, 0, 0);
+                        let client = wm.frame_msg_target(hwnd);
+                        let old = wm.get_window(client).map_or((0, 0), |w| (w.cx, w.cy));
+                        let new = wm.layout_frame(hwnd);
+                        wm.resize_surface(hwnd, new.0, new.1);
+                        // Notify the app (old and new size) so it repaints.
+                        if old != new { wm.post_size(client, old, new); }
+                    }
                     self.composite_and_present(shared);
                     return true;
                 }
@@ -1470,6 +1498,8 @@ enum ChromeHit {
     Minimize,
     /// Click is on the maximize button (VDR-C4) — send WM_SYSCOMMAND(SC_MAXIMIZE).
     Maximize,
+    /// Click is on the hide button (`FCF_HIDEBUTTON`) — send WM_SYSCOMMAND(SC_HIDE).
+    Hide,
     /// Click is in the title bar but not on any button — activate / drag.
     TitleBar,
     /// Click is in the client area — forward to the app.
@@ -1501,10 +1531,10 @@ fn chrome_hit_test(win_x: i32, win_cx: i32, win_fcf: u32,
         }
         btn_right = max_x0 - CHROME_BTN_GAP;
     }
-    if win_fcf & FCF_MINBUTTON != 0 {
+    if let Some(glyph) = min_slot_glyph(win_fcf) {
         let min_x0 = btn_right - CHROME_BTN_W;
         if x >= min_x0 && x < btn_right {
-            return ChromeHit::Minimize;
+            return if matches!(glyph, ButtonGlyph::Hide) { ChromeHit::Hide } else { ChromeHit::Minimize };
         }
     }
     // Left-side: system menu icon.
@@ -2212,6 +2242,40 @@ mod tests {
         assert_eq!(button(&normal, close_x), button(&maximized, close_x));
         assert_eq!(button(&normal, max_x - CHROME_BTN_W - CHROME_BTN_GAP),
                    button(&maximized, max_x - CHROME_BTN_W - CHROME_BTN_GAP));
+    }
+
+    /// FCF_HIDEBUTTON puts a hide button where the minimize button would be
+    /// (it wins when both are asked for), with its own pictogram, and a
+    /// click on it is a hide-button click.
+    #[test]
+    fn hide_button_takes_the_minimize_slot() {
+        use crate::loader::constants::{FCF_HIDEBUTTON, FCF_HIDEMAX, FCF_MINMAX};
+        let draw = |flags: u32| {
+            let mut buf = vec![0u32; 240 * 140];
+            draw_frame_chrome(&mut buf, 240, &FrameChrome {
+                x: 10, top: 10, cx: 200, cy: 100, frame_flags: FCF_TITLEBAR | flags, title: "T",
+                focused: true, state: 0, cjk: super::CjkRegion::Auto,
+            });
+            buf
+        };
+        let close_x = 10 + 200 - CHROME_BTN_MARGIN - CHROME_BTN_W;
+        let slot_x = close_x - 2 * (CHROME_BTN_W + CHROME_BTN_GAP);
+        let button = |buf: &[u32]| -> Vec<u32> {
+            (10..10 + CHROME_TITLE_H).flat_map(|y| (slot_x..slot_x + CHROME_BTN_W).map(move |x| (x, y)))
+                .map(|(x, y)| buf[y as usize * 240 + x as usize]).collect()
+        };
+        let (hide, min, both) = (draw(FCF_HIDEMAX), draw(FCF_MINMAX), draw(FCF_MINMAX | FCF_HIDEBUTTON));
+        assert_eq!(hide[(10 + CHROME_BTN_INSET_Y) as usize * 240 + slot_x as usize], CHROME_LIGHT_COLOR, "a button");
+        assert!(button(&hide).contains(&CHROME_DARK_COLOR), "with a pictogram");
+        assert_ne!(button(&hide), button(&min), "not the minimize pictogram");
+        assert_eq!(button(&both), button(&hide));
+        // Hit-testing (frame at the origin, 200 × 100; title bar at the top).
+        let x = slot_x - 10 + 2;
+        assert_eq!(frame_chrome_hit(0, 0, 200, 100, FCF_TITLEBAR | FCF_HIDEMAX, 0, x, 95), ChromeHit::Hide);
+        assert_eq!(frame_chrome_hit(0, 0, 200, 100, FCF_TITLEBAR | FCF_MINMAX, 0, x, 95), ChromeHit::Minimize);
+        // Without a maximize button the hide button sits next to close.
+        let x = close_x - 10 - CHROME_BTN_GAP - 2;
+        assert_eq!(frame_chrome_hit(0, 0, 200, 100, FCF_TITLEBAR | FCF_HIDEBUTTON, 0, x, 95), ChromeHit::Hide);
     }
 
     /// A minimized frame is drawn as a bordered title bar with its title and

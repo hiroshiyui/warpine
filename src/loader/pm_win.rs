@@ -345,6 +345,14 @@ impl super::Loader {
                     WM_SYSCOMMAND if mp1 & 0xFFFF == SC_CLOSE => {
                         self.post_to_window(hwnd, WM_CLOSE, 0, 0);
                     }
+                    // Hide (the hide button): the frame becomes invisible
+                    // (PM Reference, WM_SYSCOMMAND: "Sets the visibility
+                    // state of the frame window to off").
+                    WM_SYSCOMMAND if mp1 & 0xFFFF == SC_HIDE => {
+                        let mut wm = self.shared.window_mgr.lock_or_recover();
+                        let frame = wm.client_to_frame(hwnd);
+                        if wm.is_frame(frame) { wm.hide_frame(frame); }
+                    }
                     // Minimize, maximize, restore: done by frames with
                     // minimize / maximize buttons (FID_MINMAX), else nothing.
                     WM_SYSCOMMAND => {
@@ -567,6 +575,7 @@ impl super::Loader {
                     win.visible = show;
                 }
                 wm.mark_dirty(hwnd); // VDR-B4
+                wm.frame_visibility_changed(hwnd);
                 ApiResult::Normal(1)
             }
             840 => {
@@ -887,26 +896,14 @@ impl super::Loader {
                     }
                 };
                 if new_frame != 0 && prev != new_frame {
+                    // WM_ACTIVATE goes to each frame's client, as for a click
+                    // and for minimizing (`frame_msg_target`): FALSE to the
+                    // old frame first, then TRUE to the new one.
                     let wm = self.shared.window_mgr.lock_or_recover();
-                    // Post WM_ACTIVATE to old frame (mp1=0 deactivating, mp2=new frame).
-                    if prev != 0
-                        && let Some(mq_arc) = wm.find_hmq_for_hwnd(prev).and_then(|h| wm.get_mq(h)) {
-                        let mut mq = mq_arc.lock_or_recover();
-                        mq.messages.push_back(OS2Message {
-                            hwnd: prev, msg: WM_ACTIVATE, mp1: 0, mp2: new_frame,
-                            time: 0, x: 0, y: 0,
-                        });
-                        mq.cond.notify_one();
+                    if prev != 0 {
+                        wm.post_msg(wm.frame_msg_target(prev), WM_ACTIVATE, 0, new_frame);
                     }
-                    // Post WM_ACTIVATE to new frame (mp1=1 activating, mp2=old frame).
-                    if let Some(mq_arc) = wm.find_hmq_for_hwnd(new_frame).and_then(|h| wm.get_mq(h)) {
-                        let mut mq = mq_arc.lock_or_recover();
-                        mq.messages.push_back(OS2Message {
-                            hwnd: new_frame, msg: WM_ACTIVATE, mp1: 1, mp2: prev,
-                            time: 0, x: 0, y: 0,
-                        });
-                        mq.cond.notify_one();
-                    }
+                    wm.post_msg(wm.frame_msg_target(new_frame), WM_ACTIVATE, 1, prev);
                 }
                 ApiResult::Normal(if new_frame != 0 { 1 } else { 0 })
             }
@@ -1191,6 +1188,12 @@ impl super::Loader {
                 });
                 let fl = if minmax.is_some() { fl & !(SWP_MOVE | SWP_SIZE) } else { fl };
 
+                // WM_SIZE goes to the window, and for a standard frame to its
+                // client, whose size follows the frame's (WM_FORMATFRAME).
+                let is_std_frame = wm.frame_to_client.contains_key(&hwnd);
+                let size_target = wm.frame_msg_target(hwnd);
+                let old_size = wm.get_window(size_target).map(|w| (w.cx, w.cy));
+
                 // Update the OS2Window position/size state.
                 if let Some(win) = wm.get_window_mut(hwnd) {
                     if fl & SWP_MOVE != 0 {
@@ -1237,6 +1240,13 @@ impl super::Loader {
                 // the window; only the surface has to follow a size change.
                 if fl & SWP_SIZE != 0 {
                     wm.resize_surface(hwnd, fb_cx, fb_cy);
+                    let new_size = if is_std_frame { (fb_cx, fb_cy) } else { (cx, cy) };
+                    if let Some(old) = old_size && old != new_size {
+                        wm.post_size(size_target, old, new_size);
+                    }
+                }
+                if fl & (SWP_SHOW | SWP_HIDE) != 0 {
+                    wm.frame_visibility_changed(hwnd);
                 }
                 drop(wm);
 
@@ -1484,15 +1494,18 @@ impl super::Loader {
                 let (x, y, cx, cy) = wm.get_window(hwnd)
                     .map(|w| (w.x, w.y, w.cx, w.cy))
                     .unwrap_or((0, 0, 0, 0));
+                // fl: position and size, minimized / maximized, active.
+                let fl = wm.query_swp_flags(hwnd);
                 drop(wm);
-                // fl: report both position and size are valid
-                self.guest_write::<u32>(pswp_ptr,      SWP_MOVE | SWP_SIZE); // fl
+                self.guest_write::<u32>(pswp_ptr,      fl);                  // fl
                 self.guest_write::<i32>(pswp_ptr +  4, cy);                  // cy
                 self.guest_write::<i32>(pswp_ptr +  8, cx);                  // cx
                 self.guest_write::<i32>(pswp_ptr + 12, y);                   // y
                 self.guest_write::<i32>(pswp_ptr + 16, x);                   // x
                 self.guest_write::<u32>(pswp_ptr + 20, 0);                   // hwndInsertBehind
                 self.guest_write::<u32>(pswp_ptr + 24, hwnd);                // hwnd
+                self.guest_write::<u32>(pswp_ptr + 28, 0);                   // ulReserved1
+                self.guest_write::<u32>(pswp_ptr + 32, 0);                   // ulReserved2
                 ApiResult::Normal(1) // TRUE
             }
             _ => {
@@ -1707,20 +1720,11 @@ impl super::Loader {
         let old_size = client.and_then(|c| wm.get_window(c)).map(|w| (w.cx, w.cy));
         let prev = wm.attach_menu(hwnd_frame, hwnd_menu);
         let new_size = client.and_then(|c| wm.get_window(c)).map(|w| (w.cx, w.cy));
-        if let (Some(client), Some((cx, cy))) = (client, new_size)
-            && old_size != new_size
+        if let (Some(client), Some(old), Some(new)) = (client, old_size, new_size)
+            && old != new
         {
-            wm.resize_surface(hwnd_frame, cx, cy);
-            if let Some(mq_arc) = wm.find_hmq_for_hwnd(client).and_then(|h| wm.get_mq(h)) {
-                let mut mq = mq_arc.lock_or_recover();
-                let mp2 = ((cy as u32 & 0xFFFF) << 16) | (cx as u32 & 0xFFFF);
-                for (msg, mp2) in [(WM_SIZE, mp2), (WM_PAINT, 0)] {
-                    mq.messages.push_back(OS2Message {
-                        hwnd: client, msg, mp1: 0, mp2, time: 0, x: 0, y: 0,
-                    });
-                }
-                mq.cond.notify_one();
-            }
+            wm.resize_surface(hwnd_frame, new.0, new.1);
+            wm.post_size(client, old, new);
         }
         prev
     }
@@ -3084,6 +3088,122 @@ mod tests {
         assert_eq!(pos(&loader), (10, 20, 200, 100));
     }
 
+    /// The messages queued on thread 0's queue, removed from it.
+    fn drain_queue(loader: &Loader) -> Vec<(u32, u32, u32, u32)> {
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        let mq = wm.get_mq(wm.tid_to_hmq[&0]).unwrap();
+        let mut mq = mq.lock_or_recover();
+        mq.messages.drain(..).map(|m| (m.hwnd, m.msg, m.mp1, m.mp2)).collect()
+    }
+
+    /// WinSetWindowPos(SWP_SIZE): a frame's client is told its old and new
+    /// size with WM_SIZE (then WM_PAINT); another window is told its own;
+    /// a size that does not change sends nothing.
+    #[test]
+    fn test_win_set_window_pos_size_sends_wm_size() {
+        use super::super::constants::*;
+        use super::super::pm_minmax::pack_size;
+        let loader = Loader::new_mock();
+        let (frame, client) = minmax_window(&loader);
+        let entry = loader.shared.window_mgr.lock_or_recover()
+            .get_window(client).unwrap().children[0];
+        drain_queue(&loader);
+        let mut vcpu = MockVcpu::new();
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_WINDOW_POS, &[frame, 0, 0, 0, 400, 300, SWP_SIZE]);
+        let title = CHROME_TITLE_H;
+        assert_eq!(drain_queue(&loader), vec![
+            (client, WM_SIZE, pack_size((640, 480 - title)), pack_size((400, 300 - title))),
+            (client, WM_PAINT, 0, 0),
+        ]);
+        // Same size again, or a move only: no WM_SIZE.
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_WINDOW_POS, &[frame, 0, 5, 5, 400, 300, SWP_SIZE | SWP_MOVE]);
+        assert!(drain_queue(&loader).is_empty());
+        // A control: WM_SIZE to itself.
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_WINDOW_POS, &[entry, 0, 0, 0, 100, 30, SWP_SIZE]);
+        assert_eq!(drain_queue(&loader), vec![
+            (entry, WM_SIZE, pack_size((200, 25)), pack_size((100, 30))),
+            (entry, WM_PAINT, 0, 0),
+        ]);
+        // A state change sends its own WM_SIZE (after WM_MINMAXFRAME), not this one.
+        assert!(matches!(call_pmwin_raw(&loader, ORD_WIN_SET_WINDOW_POS, &[frame, 0, 0, 0, 10, 10, SWP_MAXIMIZE | SWP_SIZE]),
+                         ApiResult::MinMaxFrame { .. }));
+        assert!(drain_queue(&loader).is_empty());
+    }
+
+    const ORD_WIN_QUERY_WINDOW_POS: u32 = 837;
+
+    /// WinQueryWindowPos: fl holds SWP_MOVE | SWP_SIZE, SWP_MINIMIZE or
+    /// SWP_MAXIMIZE for a minimized or maximized frame, and the frame's
+    /// activation state.
+    #[test]
+    fn test_win_query_window_pos_reports_the_state() {
+        use super::super::constants::*;
+        let loader = Loader::new_mock();
+        let (frame, client) = minmax_window(&loader);
+        loader.shared.window_mgr.lock_or_recover().get_window_mut(client).unwrap().pfn_wp = 0;
+        let pswp = 0x13400;
+        let mut vcpu = MockVcpu::new();
+        let mut fl = |hwnd: u32| {
+            assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_QUERY_WINDOW_POS, &[hwnd, pswp]), 1);
+            loader.guest_read::<u32>(pswp).unwrap()
+        };
+        assert_eq!(fl(frame), SWP_MOVE | SWP_SIZE | SWP_ACTIVATE);
+        assert_eq!(fl(client), SWP_MOVE | SWP_SIZE, "not a frame");
+        loader.shared.window_mgr.lock_or_recover().set_minmax(frame, SWP_MINIMIZE);
+        assert_eq!(fl(frame), SWP_MOVE | SWP_SIZE | SWP_MINIMIZE | SWP_ACTIVATE, "the only frame stays active");
+        loader.shared.window_mgr.lock_or_recover().set_minmax(frame, SWP_MAXIMIZE);
+        assert_eq!(fl(frame), SWP_MOVE | SWP_SIZE | SWP_MAXIMIZE | SWP_ACTIVATE);
+        loader.shared.window_mgr.lock_or_recover().focused_hwnd = 0;
+        assert_eq!(fl(frame), SWP_MOVE | SWP_SIZE | SWP_MAXIMIZE | SWP_DEACTIVATE);
+        // The whole 36-byte SWP is written: the reserved words are cleared.
+        loader.guest_write::<u32>(pswp + 28, 0xDEAD_BEEF).unwrap();
+        loader.guest_write::<u32>(pswp + 32, 0xDEAD_BEEF).unwrap();
+        fl(frame);
+        assert_eq!((loader.guest_read::<u32>(pswp + 28).unwrap(), loader.guest_read::<u32>(pswp + 32).unwrap()), (0, 0));
+    }
+
+    /// WinDefWindowProc(WM_SYSCOMMAND(SC_HIDE)) hides the frame; the frame
+    /// below it becomes active (WM_ACTIVATE FALSE, then TRUE). WinShowWindow
+    /// shows it again without activating it.
+    #[test]
+    fn test_win_def_window_proc_sc_hide_hides_the_frame() {
+        use super::super::constants::*;
+        let loader = Loader::new_mock();
+        let (frame, client) = minmax_window(&loader);
+        let (f2, c2) = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.tid_to_hmq[&0];
+            let f2 = wm.create_window("App".into(), 0, hmq);
+            let c2 = wm.create_window("App".into(), f2, hmq);
+            wm.frame_to_client.insert(f2, c2);
+            wm.z_push_bottom(f2);
+            for h in [frame, f2] { wm.get_window_mut(h).unwrap().visible = true; }
+            wm.get_window_mut(frame).unwrap().frame_flags |= FCF_HIDEBUTTON;
+            (f2, c2)
+        };
+        drain_queue(&loader);
+        let mut vcpu = MockVcpu::new();
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_DEF_WINDOW_PROC, &[client, WM_SYSCOMMAND, SC_HIDE, CMDSRC_MENU]);
+        let wm = || loader.shared.window_mgr.lock_or_recover();
+        assert!(!wm().get_window(frame).unwrap().visible);
+        assert_eq!(wm().focused_hwnd, f2);
+        assert_eq!(wm().z_order.last(), Some(&f2));
+        assert_eq!(drain_queue(&loader), vec![(client, WM_ACTIVATE, 0, f2), (c2, WM_ACTIVATE, 1, frame)]);
+        // WinShowWindow(TRUE): visible again, f2 stays active.
+        call_pmwin(&loader, &mut vcpu, 883, &[frame, 1]);
+        assert!(wm().get_window(frame).unwrap().visible);
+        assert_eq!(wm().focused_hwnd, f2);
+        // WinShowWindow(FALSE) on the active frame passes activation on too.
+        call_pmwin(&loader, &mut vcpu, 883, &[f2, 0]);
+        assert_eq!(wm().focused_hwnd, frame);
+        // Hiding a frame that is not active changes no activation.
+        drain_queue(&loader);
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_WINDOW_POS, &[f2, 0, 0, 0, 0, 0, SWP_SHOW]);
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_DEF_WINDOW_PROC, &[c2, WM_SYSCOMMAND, SC_HIDE, 0]);
+        assert_eq!(wm().focused_hwnd, frame);
+        assert!(drain_queue(&loader).is_empty());
+    }
+
     /// WinSetFocus (860) / WinQueryFocus (817): the focus window defaults to
     /// the active frame's client, can be moved to a control and cleared, and
     /// a bad handle is rejected without changing it.
@@ -3117,6 +3237,32 @@ mod tests {
         assert_eq!(call(860, &[HWND_DESKTOP, entry]), 1);
         assert_eq!(call(860, &[HWND_DESKTOP, HWND_DESKTOP]), 1, "the desktop clears the focus");
         assert_eq!(call(817, &[HWND_DESKTOP]), client);
+    }
+
+    /// WinSetActiveWindow posts WM_ACTIVATE to the clients of the frames
+    /// (where clicks and minimizing post it): FALSE to the old active frame's
+    /// client, then TRUE to the new one's.
+    #[test]
+    fn test_win_set_active_window_notifies_the_clients() {
+        use super::super::constants::{HWND_DESKTOP, WM_ACTIVATE};
+        let loader = Loader::new_mock();
+        let (frame, client, _owner, _entry) = window_with_entry(&loader);
+        let (frame2, client2, hmq) = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = *wm.tid_to_hmq.get(&0).unwrap();
+            let frame2 = wm.create_window("App".into(), 0, hmq);
+            let client2 = wm.create_window("App".into(), frame2, hmq);
+            wm.frame_to_client.insert(frame2, client2);
+            wm.get_mq(hmq).unwrap().lock_or_recover().messages.clear();
+            (frame2, client2, hmq)
+        };
+        let mut vcpu = MockVcpu::new();
+        assert_eq!(call_pmwin(&loader, &mut vcpu, 851, &[HWND_DESKTOP, frame2]), 1);
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        assert_eq!(wm.focused_hwnd, frame2);
+        let acts: Vec<_> = wm.get_mq(hmq).unwrap().lock_or_recover().messages.iter()
+            .filter(|m| m.msg == WM_ACTIVATE).map(|m| (m.hwnd, m.mp1, m.mp2)).collect();
+        assert_eq!(acts, vec![(client, 0, frame2), (client2, 1, frame)]);
     }
 
     /// WinEnableWindow returns TRUE whenever it updates the state, whatever

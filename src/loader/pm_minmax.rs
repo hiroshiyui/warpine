@@ -77,6 +77,11 @@ pub fn minmax_swp(frame: u32, op: u32, target: WinRect) -> [u32; 9] {
      target.x as u32, 0, frame, 0, 0]
 }
 
+/// `MPFROM2SHORT(cx, cy)`: a size as `WM_SIZE` carries it.
+pub fn pack_size((cx, cy): (i32, i32)) -> u32 {
+    (cx as u32 & 0xFFFF) | ((cy as u32 & 0xFFFF) << 16)
+}
+
 /// The style bit of a state change.
 fn state_style(op: u32) -> u32 {
     match op {
@@ -87,10 +92,15 @@ fn state_style(op: u32) -> u32 {
 }
 
 impl WindowManager {
-    /// Whether `frame` has minimize or maximize buttons (`FID_MINMAX`), so
-    /// that the system commands minimize, maximize and restore apply to it.
+    /// Whether `frame` has minimize, maximize or hide buttons (`FID_MINMAX`),
+    /// so that the system commands minimize, maximize and restore apply to
+    /// it. That the hide button belongs to the `FID_MINMAX` control (it
+    /// takes the minimize button's place, `FCF_HIDEMAX` = hide + maximize)
+    /// is assumed; the PM Reference does not say.
     pub fn has_minmax_buttons(&self, frame: u32) -> bool {
-        self.get_window(frame).is_some_and(|w| w.frame_flags & (FCF_MINBUTTON | FCF_MAXBUTTON) != 0)
+        self.get_window(frame).is_some_and(|w| {
+            w.frame_flags & (FCF_MINBUTTON | FCF_MAXBUTTON | FCF_HIDEBUTTON) != 0
+        })
     }
 
     /// `WS_MINIMIZED` / `WS_MAXIMIZED` of `hwnd` (0 when neither, or unknown).
@@ -198,41 +208,147 @@ impl WindowManager {
     /// set the state style, move and size `frame` to `target`, hide the
     /// frames it (or its client) owns when minimizing and show them again
     /// when it leaves the minimized state, and post `WM_SIZE` (old and new
-    /// client size) and `WM_PAINT` to the client.
+    /// client size) and `WM_PAINT` to the client. A minimized frame that
+    /// was the active window passes activation on ([`Self::activate_next_frame`]).
     pub fn finish_minmax(&mut self, frame: u32, op: u32, target: WinRect) {
         let Some(client) = self.frame_to_client.get(&frame).copied() else { return };
         let old = self.get_window(client).map_or((0, 0), |w| (w.cx, w.cy));
         let Some(w) = self.get_window_mut(frame) else { return };
         w.style = (w.style & !(WS_MINIMIZED | WS_MAXIMIZED)) | state_style(op);
         (w.x, w.y, w.cx, w.cy) = (target.x, target.y, target.cx, target.cy);
-        let (cx, cy) = self.layout_frame(frame);
-        self.resize_surface(frame, cx, cy);
-
-        if op == SWP_MINIMIZE {
-            let owned: Vec<u32> = self.windows()
-                .filter(|w| (w.owner == frame || w.owner == client) && w.visible && w.handle != frame)
-                .map(|w| w.handle)
-                .filter(|&h| self.is_frame(h))
-                .collect();
-            for &h in &owned {
-                if let Some(w) = self.get_window_mut(h) { w.visible = false; }
-            }
-            self.hidden_by_minimize.entry(frame).or_default().extend(owned);
-        } else if let Some(owned) = self.hidden_by_minimize.remove(&frame) {
-            for h in owned {
-                if let Some(w) = self.get_window_mut(h) { w.visible = true; }
-            }
-        }
+        let new = self.layout_frame(frame);
+        self.resize_surface(frame, new.0, new.1);
+        self.sync_owned_frames(frame);
         self.mark_all_dirty();
+        self.post_size(client, old, new);
+        if op == SWP_MINIMIZE {
+            self.activate_next_frame(frame);
+        }
+    }
 
-        let pack = |(cx, cy): (i32, i32)| (cx as u32 & 0xFFFF) | ((cy as u32 & 0xFFFF) << 16);
-        if let Some(mq_arc) = self.find_hmq_for_hwnd(client).and_then(|h| self.get_mq(h)) {
+    /// Post `msg` to `hwnd` on the queue of its thread.
+    pub fn post_msg(&self, hwnd: u32, msg: u32, mp1: u32, mp2: u32) {
+        if let Some(mq_arc) = self.find_hmq_for_hwnd(hwnd).and_then(|h| self.get_mq(h)) {
             let mut mq = mq_arc.lock_or_recover();
-            for (msg, mp1, mp2) in [(WM_SIZE, pack(old), pack((cx, cy))), (WM_PAINT, 0, 0)] {
-                mq.messages.push_back(OS2Message { hwnd: client, msg, mp1, mp2, time: 0, x: 0, y: 0 });
-            }
+            mq.messages.push_back(OS2Message { hwnd, msg, mp1, mp2, time: 0, x: 0, y: 0 });
             mq.cond.notify_one();
         }
+    }
+
+    /// Tell `hwnd` it changed size from `old` to `new` (`WM_SIZE`: mp1 the
+    /// old, mp2 the new size, `MPFROM2SHORT(cx, cy)`) and have it repaint
+    /// (`WM_PAINT`). PM sends `WM_SIZE`; Warpine posts it, like every frame
+    /// size change, so that it reaches the window procedure on its own thread.
+    pub fn post_size(&self, hwnd: u32, old: (i32, i32), new: (i32, i32)) {
+        self.post_msg(hwnd, WM_SIZE, pack_size(old), pack_size(new));
+        self.post_msg(hwnd, WM_PAINT, 0, 0);
+    }
+
+    /// The window a frame's messages are delivered to: a standard frame's
+    /// client (the frame shares the client's window procedure in Warpine),
+    /// otherwise the window itself (a dialog).
+    pub fn frame_msg_target(&self, frame: u32) -> u32 {
+        self.frame_to_client.get(&frame).copied().unwrap_or(frame)
+    }
+
+    /// Hide or show again the frames `frame` (or its client) owns: they are
+    /// hidden while `frame` is minimized or hidden, and the ones hidden that
+    /// way are shown again once it is visible and not minimized (PM Guide,
+    /// "Windows": "When the frame window is minimized or hidden, it hides all
+    /// the windows it owns. Owned windows hidden this way are restored when
+    /// the frame window is restored.").
+    pub fn sync_owned_frames(&mut self, frame: u32) {
+        let Some(w) = self.get_window(frame) else { return };
+        let shown = w.visible && w.style & WS_MINIMIZED == 0;
+        if shown {
+            if let Some(owned) = self.hidden_with_owner.remove(&frame) {
+                for h in owned {
+                    if let Some(w) = self.get_window_mut(h) { w.visible = true; }
+                }
+                self.mark_all_dirty();
+            }
+            return;
+        }
+        let client = self.frame_to_client.get(&frame).copied().unwrap_or(frame);
+        let owned: Vec<u32> = self.windows()
+            .filter(|w| (w.owner == frame || w.owner == client) && w.visible && w.handle != frame)
+            .map(|w| w.handle)
+            .filter(|&h| self.is_frame(h))
+            .collect();
+        if owned.is_empty() { return; }
+        for &h in &owned {
+            if let Some(w) = self.get_window_mut(h) { w.visible = false; }
+        }
+        self.hidden_with_owner.entry(frame).or_default().extend(owned);
+        self.mark_all_dirty();
+    }
+
+    /// When `frame` is the active window, make the next frame in Z-order
+    /// (topmost first) that is visible, enabled and not minimized the
+    /// active window instead: raised to the top, with `WM_ACTIVATE` FALSE
+    /// posted to `frame` first and then `WM_ACTIVATE` TRUE to the new one
+    /// (mp2 = the other frame). `frame` stays active when there is no such
+    /// frame. Returns the newly active frame.
+    ///
+    /// The PM Guide ("Windows") states this for a destroyed active window
+    /// ("the next window, as determined by the Alt+Esc key combination");
+    /// that minimizing or hiding the active window does the same is
+    /// assumed, not documented.
+    pub fn activate_next_frame(&mut self, frame: u32) -> Option<u32> {
+        if self.focused_hwnd != frame { return None; }
+        let next = self.z_order.iter().rev().copied().find(|&h| {
+            h != frame && self.is_frame(h) && self.get_window(h).is_some_and(|w| {
+                w.visible && w.style & (WS_DISABLED | WS_MINIMIZED) == 0
+            })
+        })?;
+        self.focused_hwnd = next;
+        self.z_push_top(next);
+        self.post_msg(self.frame_msg_target(frame), WM_ACTIVATE, 0, next);
+        self.post_msg(self.frame_msg_target(next), WM_ACTIVATE, 1, frame);
+        Some(next)
+    }
+
+    /// Hide `frame` (`WM_SYSCOMMAND(SC_HIDE)`, its hide button): the frames
+    /// it owns are hidden with it and, if it was the active window, another
+    /// frame becomes active. Returns whether it was visible.
+    pub fn hide_frame(&mut self, frame: u32) -> bool {
+        let Some(w) = self.get_window_mut(frame) else { return false };
+        let was_visible = std::mem::replace(&mut w.visible, false);
+        self.mark_all_dirty();
+        self.frame_visibility_changed(frame);
+        was_visible
+    }
+
+    /// After `WinShowWindow` / `WinSetWindowPos(SWP_SHOW | SWP_HIDE)` on
+    /// `hwnd`: a frame hides or shows again the frames it owns, and a hidden
+    /// frame that was active passes activation on. Other windows: nothing.
+    pub fn frame_visibility_changed(&mut self, hwnd: u32) {
+        if !self.is_frame(hwnd) { return; }
+        self.sync_owned_frames(hwnd);
+        if self.get_window(hwnd).is_some_and(|w| !w.visible) {
+            self.activate_next_frame(hwnd);
+        }
+    }
+
+    /// The `fl` of the `SWP` that `WinQueryWindowPos` returns for `hwnd`:
+    /// `SWP_MOVE | SWP_SIZE`, `SWP_MINIMIZE` or `SWP_MAXIMIZE` for a
+    /// minimized or maximized window, and for a frame `SWP_ACTIVATE` when it
+    /// is the active window, else `SWP_DEACTIVATE`; all other bits zero
+    /// (PM Reference, `WinQueryWindowPos`). Which windows the activation
+    /// bits are reported for is not documented; Warpine reports them for
+    /// frames only.
+    pub fn query_swp_flags(&self, hwnd: u32) -> u32 {
+        let state = self.minmax_state(hwnd);
+        let mut fl = SWP_MOVE | SWP_SIZE;
+        if state & WS_MINIMIZED != 0 {
+            fl |= SWP_MINIMIZE;
+        } else if state & WS_MAXIMIZED != 0 {
+            fl |= SWP_MAXIMIZE;
+        }
+        if self.is_frame(hwnd) {
+            fl |= if self.focused_hwnd == hwnd { SWP_ACTIVATE } else { SWP_DEACTIVATE };
+        }
+        fl
     }
 
     /// Minimize, maximize or restore `frame` at once, without asking its
@@ -424,6 +540,100 @@ mod tests {
         assert!(wm.has_minmax_buttons(frame));
         wm.get_window_mut(frame).unwrap().frame_flags = FCF_TITLEBAR | FCF_SYSMENU;
         assert!(!wm.has_minmax_buttons(frame));
+    }
+
+    /// Another visible standard frame on `frame`'s queue, at the bottom of
+    /// the Z-order. Returns `(frame, client)`.
+    fn second_frame(wm: &mut WindowManager, frame: u32) -> (u32, u32) {
+        let hmq = wm.find_hmq_for_hwnd(frame).unwrap();
+        let f = wm.create_window("App".into(), 1, hmq);
+        let c = wm.create_window("App".into(), f, hmq);
+        wm.frame_to_client.insert(f, c);
+        let w = wm.get_window_mut(f).unwrap();
+        (w.x, w.y, w.cx, w.cy) = (10, 10, 200, 200);
+        w.visible = true;
+        wm.z_push_bottom(f);
+        (f, c)
+    }
+
+    #[test]
+    fn minimizing_the_active_frame_activates_the_next_one() {
+        let (mut wm, frame, client) = frame();
+        let (f2, _) = second_frame(&mut wm, frame);
+        let (f3, _) = second_frame(&mut wm, frame);
+        wm.z_push_top(frame);
+        wm.focused_hwnd = frame;
+        // Z-order bottom to top: f3, f2, frame. f2 is disabled, so f3 is next.
+        wm.get_window_mut(f2).unwrap().style |= WS_DISABLED;
+        drain(&wm, client);
+        assert!(wm.set_minmax(frame, SWP_MINIMIZE));
+        assert_eq!(wm.focused_hwnd, f3);
+        assert_eq!(wm.z_order.last(), Some(&f3), "raised");
+        let c3 = wm.frame_to_client[&f3];
+        let mq = wm.get_mq(wm.find_hmq_for_hwnd(client).unwrap()).unwrap();
+        let acts: Vec<_> = mq.lock_or_recover().messages.iter().filter(|m| m.msg == WM_ACTIVATE)
+            .map(|m| (m.hwnd, m.mp1, m.mp2)).collect();
+        assert_eq!(acts, vec![(client, 0, f3), (c3, 1, frame)], "deactivation first");
+        // Minimizing a frame that is not active changes nothing.
+        wm.get_window_mut(f2).unwrap().style &= !WS_DISABLED;
+        assert!(wm.set_minmax(f2, SWP_MINIMIZE));
+        assert_eq!(wm.focused_hwnd, f3);
+        // The last frame that is not minimized stays active when minimized.
+        assert!(wm.set_minmax(f3, SWP_MINIMIZE));
+        assert_eq!(wm.focused_hwnd, f3);
+    }
+
+    #[test]
+    fn hiding_hides_owned_frames_and_passes_activation_on() {
+        let (mut wm, frame, client) = frame();
+        let (f2, _) = second_frame(&mut wm, frame);
+        wm.z_push_top(frame);
+        wm.focused_hwnd = frame;
+        let hmq = wm.find_hmq_for_hwnd(client).unwrap();
+        let dlg = wm.create_window(WindowManager::DIALOG_CLASS.into(), 1, hmq);
+        let w = wm.get_window_mut(dlg).unwrap();
+        (w.owner, w.visible) = (client, true);
+        assert!(wm.hide_frame(frame));
+        assert!(!wm.get_window(dlg).unwrap().visible, "owned frame hidden with it");
+        assert_eq!(wm.focused_hwnd, f2);
+        assert!(!wm.hide_frame(frame), "already hidden");
+        // Shown again: the owned frame comes back.
+        wm.get_window_mut(frame).unwrap().visible = true;
+        wm.frame_visibility_changed(frame);
+        assert!(wm.get_window(dlg).unwrap().visible);
+        // Hidden while minimized, then shown: still minimized, owned frame
+        // stays hidden until restored.
+        assert!(wm.set_minmax(frame, SWP_MINIMIZE));
+        assert!(!wm.get_window(dlg).unwrap().visible);
+        wm.hide_frame(frame);
+        wm.get_window_mut(frame).unwrap().visible = true;
+        wm.frame_visibility_changed(frame);
+        assert!(!wm.get_window(dlg).unwrap().visible);
+        assert!(wm.set_minmax(frame, SWP_RESTORE));
+        assert!(wm.get_window(dlg).unwrap().visible);
+    }
+
+    #[test]
+    fn query_swp_flags_report_state_and_activation() {
+        let (mut wm, frame, client) = frame();
+        wm.focused_hwnd = frame;
+        assert_eq!(wm.query_swp_flags(frame), SWP_MOVE | SWP_SIZE | SWP_ACTIVATE);
+        assert_eq!(wm.query_swp_flags(client), SWP_MOVE | SWP_SIZE);
+        wm.set_minmax(frame, SWP_MINIMIZE);
+        assert_eq!(wm.query_swp_flags(frame) & (SWP_MINIMIZE | SWP_MAXIMIZE), SWP_MINIMIZE);
+        wm.set_minmax(frame, SWP_MAXIMIZE);
+        assert_eq!(wm.query_swp_flags(frame) & (SWP_MINIMIZE | SWP_MAXIMIZE), SWP_MAXIMIZE);
+        wm.focused_hwnd = 0;
+        assert_eq!(wm.query_swp_flags(frame), SWP_MOVE | SWP_SIZE | SWP_MAXIMIZE | SWP_DEACTIVATE);
+    }
+
+    #[test]
+    fn hide_button_counts_as_a_minmax_control() {
+        let (mut wm, frame, _) = frame();
+        wm.get_window_mut(frame).unwrap().frame_flags = FCF_TITLEBAR | FCF_HIDEMAX;
+        assert!(wm.has_minmax_buttons(frame));
+        assert_eq!(FCF_HIDEMAX, FCF_HIDEBUTTON | FCF_MAXBUTTON);
+        assert_eq!(pack_size((0x1_2345, -1)), 0xFFFF_2345);
     }
 
     #[test]

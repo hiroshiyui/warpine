@@ -806,9 +806,10 @@ fn gui_pm_minmax_test_minimizes_maximizes_and_restores() {
         5000 dblclick 80 752\n\
         5500 click 644 42\n\
         6000 click 998 8\n\
+        6200 click 903 527\n\
         6500 dblclick 43 42\n\
         9000 quit\n";
-    assert_scripted_checks_pass("samples/pm_minmax_test/pm_minmax_test.exe", "pm_minmax_test", 39, steps);
+    assert_scripted_checks_pass("samples/pm_minmax_test/pm_minmax_test.exe", "pm_minmax_test", 60, steps);
 }
 
 /// pm_minmax_test with frame A minimized by Alt+F9: a bordered title bar in

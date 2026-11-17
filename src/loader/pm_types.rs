@@ -441,9 +441,24 @@ pub struct WindowManager {
     /// Windows that have been sent `WM_DESTROY` and are waiting to be
     /// removed (`pm_destroy.rs`).
     pub(super) destroying: HashSet<u32>,
-    /// Minimized frame → the windows it owns that it hid when it was
-    /// minimized; shown again when it is restored or maximized.
-    pub(super) hidden_by_minimize: HashMap<u32, Vec<u32>>,
+    /// Minimized or hidden frame → the frames it owns that it hid then;
+    /// shown again once it is visible and not minimized
+    /// (`WindowManager::sync_owned_frames`).
+    pub(super) hidden_with_owner: HashMap<u32, Vec<u32>>,
+}
+
+/// The caret of a text control as last painted, in the surface coordinates
+/// of its frame (origin bottom-left, x from the inside of the left border).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TextCaret {
+    /// The control.
+    pub hwnd: u32,
+    /// The frame whose surface it is drawn in.
+    pub frame: u32,
+    /// The text line the caret is in: left, bottom, width and height.
+    pub line: (i32, i32, i32, i32),
+    /// The caret's offset from the left of `line`.
+    pub cursor: i32,
 }
 
 impl Default for WindowManager {
@@ -483,7 +498,7 @@ impl WindowManager {
             next_hdc: 0x6000,
             input: Default::default(),
             destroying: HashSet::new(),
-            hidden_by_minimize: HashMap::new(),
+            hidden_with_owner: HashMap::new(),
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
@@ -1238,7 +1253,7 @@ impl WindowManager {
             self.window_accel.remove(&h);
             self.dirty.remove(&h);
             self.destroying.remove(&h);
-            self.hidden_by_minimize.remove(&h);
+            self.hidden_with_owner.remove(&h);
             for slot in [&mut self.focus_hwnd, &mut self.capture_hwnd, &mut self.pressed_control] {
                 if *slot == h { *slot = 0; }
             }
