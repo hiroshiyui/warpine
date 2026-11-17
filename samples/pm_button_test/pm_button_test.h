@@ -8,3 +8,5 @@
 #define ID_RIGHT    106    /* ... with BS_NOCURSORSELECT */
 #define ID_SMALL    107    /* radio buttons set by the dialog procedure */
 #define ID_LARGE    108
+#define ID_SHADOW   109    /* auto check box driven by BM_CLICK */
+#define ID_APPLY    110    /* push button for BM_CLICK / BM_SETHILITE / BM_SETDEFAULT */

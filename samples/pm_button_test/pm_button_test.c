@@ -20,6 +20,12 @@
  *   click on Right       -> the pointer checks Right, Left is unchecked
  *   Enter                -> OK: the states are checked
  *
+ * WM_INITDLG also drives the button messages itself: BM_CLICK on the
+ * Shadow auto check box and on the Apply push button (a down-click, which
+ * sends nothing, then an up-click, which sends WM_COMMAND), BM_SETHILITE /
+ * BM_QUERYHILITE on Apply and Shadow, BM_SETDEFAULT on Apply and Shadow.
+ * Apply is left highlighted, so the picture shows it pressed.
+ *
  * Each check is written to stdout:
  *
  *   pm_button_test: <name>: ok
@@ -38,6 +44,10 @@ static int  n_passed = 0;
 static char clicks[32];            /* BN_CLICKED in order, one letter per button */
 static BOOL focus_on_centre;       /* Centre had the focus when it was selected */
 static BOOL owner_set_ok = TRUE;   /* BN_CLICKED of a plain button left its state */
+static int  shadow_clicks;         /* BN_CLICKED from Shadow */
+static int  apply_commands;        /* WM_COMMAND from Apply */
+static LONG apply_source = -1;     /* its CMDSRC_* */
+static LONG apply_pointer = -1;    /* its fPointer */
 
 /* ---------- output (no libc printf) ---------- */
 
@@ -97,6 +107,44 @@ static LONG check_index( HWND hwnd, USHORT id )
     return (LONG)(SHORT)SHORT1FROMMR( WinSendDlgItemMsg( hwnd, id, BM_QUERYCHECKINDEX, 0, 0 ) );
 }
 
+static LONG send_item( HWND hwnd, USHORT id, ULONG msg, USHORT flag )
+{
+    return (LONG)WinSendDlgItemMsg( hwnd, id, msg, MPFROMSHORT( flag ), 0 );
+}
+
+static LONG style_has( HWND hwnd, USHORT id, ULONG bits )
+{
+    return ( WinQueryWindowULong( WinWindowFromID( hwnd, id ), QWL_STYLE ) & bits ) != 0;
+}
+
+/* BM_CLICK, BM_SETHILITE / BM_QUERYHILITE and BM_SETDEFAULT, from WM_INITDLG. */
+static void button_messages( HWND hwnd )
+{
+    send_item( hwnd, ID_SHADOW, BM_CLICK, TRUE );
+    check( "BM_CLICK checks an auto check box", query_check( hwnd, ID_SHADOW ), 1 );
+    send_item( hwnd, ID_APPLY, BM_CLICK, FALSE );
+    send_item( hwnd, ID_APPLY, BM_CLICK, TRUE );
+    check( "BM_CLICK up-click ends the highlight", send_item( hwnd, ID_APPLY, BM_QUERYHILITE, 0 ), FALSE );
+
+    check( "BM_QUERYHILITE of a plain push button", send_item( hwnd, DID_OK, BM_QUERYHILITE, 0 ), FALSE );
+    check( "BM_SETHILITE returns the old state", send_item( hwnd, DID_OK, BM_SETHILITE, TRUE ), FALSE );
+    check( "BM_QUERYHILITE after BM_SETHILITE", send_item( hwnd, DID_OK, BM_QUERYHILITE, 0 ), TRUE );
+    check( "BM_SETHILITE off returns highlighted", send_item( hwnd, DID_OK, BM_SETHILITE, FALSE ), TRUE );
+    check( "BM_QUERYHILITE after it is cleared", send_item( hwnd, DID_OK, BM_QUERYHILITE, 0 ), FALSE );
+    check( "BM_SETHILITE on a check box", send_item( hwnd, ID_SHADOW, BM_SETHILITE, TRUE ), FALSE );
+    check( "BM_SETHILITE on a check box again", send_item( hwnd, ID_SHADOW, BM_SETHILITE, FALSE ), TRUE );
+    check( "BM_QUERYHILITE is FALSE for check boxes", send_item( hwnd, ID_SHADOW, BM_QUERYHILITE, 0 ), FALSE );
+
+    check( "BM_SETDEFAULT on a push button", send_item( hwnd, ID_APPLY, BM_SETDEFAULT, TRUE ), TRUE );
+    check( "BM_SETDEFAULT sets BS_DEFAULT", style_has( hwnd, ID_APPLY, BS_DEFAULT ), TRUE );
+    check( "BM_SETDEFAULT off", send_item( hwnd, ID_APPLY, BM_SETDEFAULT, FALSE ), TRUE );
+    check( "BM_SETDEFAULT clears BS_DEFAULT", style_has( hwnd, ID_APPLY, BS_DEFAULT ), FALSE );
+    check( "BM_SETDEFAULT on a check box fails", send_item( hwnd, ID_SHADOW, BM_SETDEFAULT, TRUE ), FALSE );
+
+    /* Left pressed for the picture. */
+    send_item( hwnd, ID_APPLY, BM_SETHILITE, TRUE );
+}
+
 static void log_click( HWND hwnd, USHORT id )
 {
     static const char letters[] = "BIULCRSG";
@@ -120,6 +168,9 @@ static void log_click( HWND hwnd, USHORT id )
         WinSendDlgItemMsg( hwnd, ID_SMALL, BM_SETCHECK, MPFROMSHORT( id == ID_SMALL ), 0 );
         WinSendDlgItemMsg( hwnd, ID_LARGE, BM_SETCHECK, MPFROMSHORT( id == ID_LARGE ), 0 );
         break;
+    case ID_SHADOW:
+        shadow_clicks++;
+        break;
     }
 }
 
@@ -139,6 +190,7 @@ MRESULT EXPENTRY ButtonDlgProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
         check( "BM_QUERYCHECK of a push button", query_check( hwnd, DID_OK ), 0 );
         WinCheckButton( hwnd, ID_LARGE, 1 );
         check( "WinQueryButtonCheckstate", WinQueryButtonCheckstate( hwnd, ID_LARGE ), 1 );
+        button_messages( hwnd );
         return (MRESULT)FALSE;
     case WM_CONTROL:
         if( SHORT2FROMMP( mp1 ) == BN_CLICKED ) {
@@ -148,7 +200,20 @@ MRESULT EXPENTRY ButtonDlgProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
         }
         return 0;
     case WM_COMMAND:
+        if( SHORT1FROMMP( mp1 ) == ID_APPLY ) {
+            /* Not passed on: WinDefDlgProc would end the dialog. */
+            apply_commands++;
+            apply_source = SHORT1FROMMP( mp2 );
+            apply_pointer = SHORT2FROMMP( mp2 );
+            return 0;
+        }
         if( SHORT1FROMMP( mp1 ) == DID_OK ) {
+            check( "BM_CLICK: one WM_COMMAND from Apply", apply_commands, 1 );
+            check( "BM_CLICK: CMDSRC_PUSHBUTTON", apply_source, CMDSRC_PUSHBUTTON );
+            check( "BM_CLICK: not by the pointer", apply_pointer, FALSE );
+            check( "BM_CLICK: one BN_CLICKED from Shadow", shadow_clicks, 1 );
+            check( "Apply is still highlighted", send_item( hwnd, ID_APPLY, BM_QUERYHILITE, 0 ), TRUE );
+            check( "Shadow is still checked", query_check( hwnd, ID_SHADOW ), 1 );
             check( "BN_CLICKED in order", strcmp( clicks, "BIIUCLGSBR" ), 0 );
             check( "Tab entered the group on the checked button", focus_on_centre, TRUE );
             check( "plain buttons wait for their owner", owner_set_ok, TRUE );

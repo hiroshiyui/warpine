@@ -18,5 +18,7 @@ BEGIN
         RADIOBUTTON     "~Small",     ID_SMALL,    8, 40, 80, 12, WS_GROUP
         RADIOBUTTON     "Lar~ge",     ID_LARGE,    8, 26, 80, 12
         DEFPUSHBUTTON   "OK",         DID_OK,    104,  4, 50, 14, WS_GROUP | WS_TABSTOP
+        AUTOCHECKBOX    "Shado~w",    ID_SHADOW, 104, 40, 80, 12, WS_GROUP
+        PUSHBUTTON      "Apply",      ID_APPLY,  104, 22, 50, 14, WS_GROUP
     END
 END

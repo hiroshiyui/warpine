@@ -279,7 +279,8 @@ impl Loader {
     }
 
     /// WC_BUTTON: grey face with a border and a centred label. A push button
-    /// is darker with its label shifted while held down, has a black outline
+    /// is darker with its label shifted while held down or highlighted
+    /// (`BM_SETHILITE`), has a black outline
     /// when it is the default button (`BS_DEFAULT`) and a focus mark inside
     /// while it has the focus.
     pub(super) fn paint_button(&self, p: &Painter, hwnd: u32,
@@ -287,7 +288,7 @@ impl Loader {
         let (push, pressed, default, focused) = {
             let wm = self.shared.window_mgr.lock_or_recover();
             let style = wm.get_window(hwnd).map_or(0, |w| w.style);
-            (wm.is_push_button(hwnd), wm.pressed_control == hwnd,
+            (wm.is_push_button(hwnd), wm.button_highlighted(hwnd),
              style & BS_DEFAULT != 0, wm.focus_hwnd == hwnd)
         };
         let push = |flag: bool| push && flag;
@@ -376,15 +377,14 @@ impl Loader {
     }
 
     /// WC_LISTBOX: white field, one row per item from the first visible item;
-    /// selected items are drawn highlighted and, in a list that selects
-    /// several items, the cursor item is outlined while the list is focused.
+    /// selected items are drawn highlighted and the cursor item has a dashed
+    /// focus mark (the one of check boxes) while the list has the focus.
     pub(super) fn paint_listbox(&self, p: &Painter, hwnd: u32,
                                 (x, y, cx, cy): (i32, i32, i32, i32)) {
-        let (items, sel, top_row, mode, focused) = {
+        let (items, sel, top_row, focused) = {
             let wm = self.shared.window_mgr.lock_or_recover();
             let Some(win) = wm.get_window(hwnd) else { return };
-            (win.listbox_items.clone(), win.listbox_sel.clone(), win.top_row,
-             ListMode::from_style(win.style), wm.focus_hwnd == hwnd)
+            (win.listbox_items.clone(), win.listbox_sel.clone(), win.top_row, wm.focus_hwnd == hwnd)
         };
         let rows = control_visible_rows(cy);
         let top = listbox_top(top_row, items.len(), rows);
@@ -395,11 +395,10 @@ impl Loader {
             if selected {
                 p.fill((x + 1, row_y, x + cx - 1, row_y + CONTROL_LINE_H - 1), CONTROL_SELECT_COLOR);
             }
-            // A list that selects several items shows the cursor while focused.
-            if focused && mode != ListMode::Single && sel.cursor() == Some(i) {
-                p.op(DrawOp::Box { x1: x + 1, y1: row_y, x2: x + cx - 2, y2: row_y + CONTROL_LINE_H - 1,
-                                   color: CONTROL_EMPHASIS_COLOR, fill: false,
-                                   mix: crate::gui::surface::Mix::Overpaint });
+            // The focused list marks its cursor item, in white on a selected row.
+            if focused && sel.cursor() == Some(i) {
+                let color = if selected { CONTROL_SELECT_TEXT_COLOR } else { CONTROL_EMPHASIS_COLOR };
+                super::pm_button::focus_mark(p, (x + 1, row_y, x + cx - 2, row_y + CONTROL_LINE_H - 1), color);
             }
             let label = font::fit_text(item, cx - 2 * CONTROL_TEXT_INSET, p.font());
             if !label.is_empty() {
@@ -1640,6 +1639,38 @@ mod tests {
         fx.send(list, WM_BUTTON1UP, mp1, kc << 16);
     }
 
+    /// The lines of dashed focus marks in `color` among `ops`.
+    fn focus_mark_lines(ops: &[DrawOp], color: u32) -> usize {
+        ops.iter().filter(|op| matches!(op, DrawOp::Line { style, color: c, .. }
+            if *style == super::super::pm_button::FOCUS_MARK_STYLE && *c == color)).count()
+    }
+
+    #[test]
+    fn a_focused_list_marks_its_cursor_item() {
+        let fx = fixture();
+        let list = list_with(&fx, 3);
+        // Not focused, nothing selected: no mark.
+        assert_eq!(focus_mark_lines(&fx.paint(list), CONTROL_EMPHASIS_COLOR), 0);
+        // A click focuses a single-selection list and puts the cursor on the
+        // selected row: the mark is drawn in white over the highlight.
+        press_row(&fx, list, 1, 0);
+        let ops = fx.paint(list);
+        assert_eq!(focus_mark_lines(&ops, CONTROL_SELECT_TEXT_COLOR), 4, "{ops:?}");
+        assert_eq!(focus_mark_lines(&ops, CONTROL_EMPHASIS_COLOR), 0);
+        // The mark goes around the cursor row, inside the border.
+        let ys: Vec<i32> = ops.iter().filter_map(|op| match op {
+            DrawOp::Line { style, y1, y2, .. } if *style == super::super::pm_button::FOCUS_MARK_STYLE
+                => Some([*y1, *y2]), _ => None }).flatten().collect();
+        let fills = fx.drawn_fills(list, CONTROL_SELECT_COLOR);
+        assert_eq!(fills.len(), 1);
+        let (_, row_bottom, _, row_top) = fills[0];
+        assert_eq!((*ys.iter().min().unwrap(), *ys.iter().max().unwrap()), (row_bottom, row_top));
+        // Losing the focus removes it.
+        fx.loader.shared.window_mgr.lock_or_recover().focus_hwnd = 0;
+        let ops = fx.paint(list);
+        assert_eq!(focus_mark_lines(&ops, CONTROL_SELECT_TEXT_COLOR) + focus_mark_lines(&ops, CONTROL_EMPHASIS_COLOR), 0);
+    }
+
     #[test]
     fn multiple_selection_list_toggles_items_by_click_and_space() {
         let fx = fixture();
@@ -1672,11 +1703,10 @@ mod tests {
         assert_eq!(fx.send(list, LM_SELECTITEM, 0, 0), 1);
         assert_eq!(all_selected(&fx, list), [1, 2]);
 
-        // Both selected rows are highlighted, and the cursor row is outlined.
+        // Both selected rows are highlighted, and the cursor row (0, not
+        // selected) has the dashed focus mark.
         assert_eq!(fx.drawn_fills(list, CONTROL_SELECT_COLOR).len(), 2);
-        let outlines = fx.paint(list).into_iter().filter(|op| matches!(op,
-            DrawOp::Box { fill: false, color, .. } if *color == CONTROL_EMPHASIS_COLOR)).count();
-        assert_eq!(outlines, 1);
+        assert_eq!(focus_mark_lines(&fx.paint(list), CONTROL_EMPHASIS_COLOR), 4);
         assert_eq!(fx.send(list, LM_SELECTITEM, LIT_NONE as u32, 0), 1);
         assert_eq!(all_selected(&fx, list), Vec::<i32>::new());
     }

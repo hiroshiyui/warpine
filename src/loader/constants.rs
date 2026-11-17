@@ -691,6 +691,7 @@ pub const BS_RADIOBUTTON:    u32 = 0x0003;
 pub const BS_AUTORADIOBUTTON: u32 = 0x0004;
 pub const BS_3STATE:         u32 = 0x0005;
 pub const BS_AUTO3STATE:     u32 = 0x0006;
+pub const BS_USERBUTTON:     u32 = 0x0007;
 /// Mask of the button kind (`BS_PUSHBUTTON`, `BS_CHECKBOX`, ...) in a style.
 pub const BS_PRIMARYSTYLES:  u32 = 0x000F;
 pub const BS_HELP:           u32 = 0x0100; // click posts WM_HELP
@@ -700,9 +701,17 @@ pub const BS_NOPOINTERFOCUS: u32 = 0x0800; // a click does not take the focus
 pub const BS_NOCURSORSELECT: u32 = 0x2000; // arrow keys do not check this auto-radio button
 
 // Button messages (BM_*, <pmwin.h>)
+/// mp1 = usUp: TRUE the up-click action (the click), FALSE the down-click.
+pub const BM_CLICK:           u32 = 0x0120;
 pub const BM_QUERYCHECKINDEX: u32 = 0x0121;
+/// Returns whether a push button is highlighted (FALSE for other styles).
+pub const BM_QUERYHILITE:     u32 = 0x0122;
+/// mp1 = usHilite; returns the old highlight state.
+pub const BM_SETHILITE:       u32 = 0x0123;
 pub const BM_QUERYCHECK:      u32 = 0x0124;
 pub const BM_SETCHECK:        u32 = 0x0125;
+/// mp1 = usDefault; TRUE for a push / user button, FALSE for other styles.
+pub const BM_SETDEFAULT:      u32 = 0x0126;
 
 // Static control styles (low bits of flStyle for WC_STATIC windows)
 pub const SS_TEXT:     u32 = 0x0001;

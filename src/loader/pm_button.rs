@@ -2,7 +2,10 @@
 
 //! Check boxes and radio buttons: their check state (`BM_SETCHECK`,
 //! `BM_QUERYCHECK`, `BM_QUERYCHECKINDEX`), what the auto styles do when the
-//! user selects them, radio-button groups, and their painting.
+//! user selects them, radio-button groups, and their painting. Also the
+//! messages every button answers: `BM_CLICK`, `BM_SETHILITE` /
+//! `BM_QUERYHILITE` and `BM_SETDEFAULT` (PM Reference, "Button Control
+//! Window Processing").
 //!
 //! A group is a run of sibling windows from one `WS_GROUP` window up to the
 //! next (the first sibling starts the first group). Radio buttons keep the
@@ -36,8 +39,9 @@ const INDETERMINATE_INSET: i32 = 3;
 const INDETERMINATE_COLOR: u32 = 0x0060_6060;
 /// Gap between the label and the focus mark around it.
 const FOCUS_MARK_GAP: i32 = 2;
-/// Dash pattern of the focus mark around a check box or radio button label.
-const FOCUS_MARK_STYLE: u16 = 0xCCCC;
+/// Dash pattern of the focus mark around a check box or radio button label
+/// and around the cursor item of a focused list box.
+pub(super) const FOCUS_MARK_STYLE: u16 = 0xCCCC;
 
 /// The kind of button (`BS_PUSHBUTTON`, `BS_CHECKBOX`, ...) in `style`.
 fn kind(style: u32) -> u32 {
@@ -49,6 +53,12 @@ fn kind(style: u32) -> u32 {
 pub(super) fn has_check_state(style: u32) -> bool {
     matches!(kind(style), BS_CHECKBOX | BS_AUTOCHECKBOX | BS_RADIOBUTTON
         | BS_AUTORADIOBUTTON | BS_3STATE | BS_AUTO3STATE)
+}
+
+/// Whether a button of `style` can be the default button (`BM_SETDEFAULT`):
+/// a push button or a user button.
+pub(super) fn can_be_default(style: u32) -> bool {
+    matches!(kind(style), BS_PUSHBUTTON | BS_USERBUTTON)
 }
 
 /// Whether a button of `style` is a radio button (plain or auto).
@@ -156,6 +166,41 @@ impl WindowManager {
         self.radio_group(hwnd).iter().position(|&h| self.button_check(h) != CHECK_OFF)
     }
 
+    /// Whether button `hwnd` is drawn highlighted (pressed): highlighted by
+    /// `BM_SETHILITE` / a `BM_CLICK` down-click, or held down with the mouse.
+    pub fn button_highlighted(&self, hwnd: u32) -> bool {
+        self.get_window(hwnd).is_some_and(|w| w.class_name == "WC_BUTTON" && w.hilite)
+            || self.pressed_control == hwnd
+    }
+
+    /// `BM_SETHILITE`: highlight button `hwnd` or not. Returns the previous
+    /// highlight state, `None` when `hwnd` is not a button.
+    pub fn set_button_hilite(&mut self, hwnd: u32, on: bool) -> Option<bool> {
+        let old = self.button_highlighted(hwnd);
+        let w = self.get_window_mut(hwnd).filter(|w| w.class_name == "WC_BUTTON")?;
+        w.hilite = on;
+        Some(old)
+    }
+
+    /// `BM_QUERYHILITE`: whether push button `hwnd` is highlighted; FALSE
+    /// for every other style, as the PM Reference documents.
+    pub fn push_button_hilite(&self, hwnd: u32) -> bool {
+        self.is_push_button(hwnd) && self.button_highlighted(hwnd)
+    }
+
+    /// `BM_SETDEFAULT`: give push / user button `hwnd` the default style
+    /// (`BS_DEFAULT`) or take it away. FALSE (nothing changed) for any other
+    /// window.
+    pub fn set_button_default(&mut self, hwnd: u32, on: bool) -> bool {
+        match self.get_window_mut(hwnd) {
+            Some(w) if w.class_name == "WC_BUTTON" && can_be_default(w.style) => {
+                if on { w.style |= BS_DEFAULT } else { w.style &= !BS_DEFAULT }
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// The user selected button `hwnd` (a click, Space, a mnemonic, or an
     /// arrow key onto an auto-radio button): an auto check box toggles, an
     /// auto three-state button cycles, an auto-radio button is checked and
@@ -183,10 +228,32 @@ impl WindowManager {
 }
 
 impl Loader {
-    /// `BM_SETCHECK` / `BM_QUERYCHECK` / `BM_QUERYCHECKINDEX` sent to button
-    /// `hwnd`.
+    /// `BM_SETCHECK` / `BM_QUERYCHECK` / `BM_QUERYCHECKINDEX` / `BM_CLICK` /
+    /// `BM_SETHILITE` / `BM_QUERYHILITE` / `BM_SETDEFAULT` sent to button
+    /// `hwnd`. Only the low word of mp1 counts (a USHORT in the reference).
     pub(super) fn button_message(&self, hwnd: u32, msg: u32, mp1: u32) -> ApiResult {
+        let flag = mp1 & 0xFFFF != 0;
         match msg {
+            BM_CLICK => {
+                self.bm_click(hwnd, flag);
+                ApiResult::Normal(0)
+            }
+            BM_SETHILITE => {
+                let old = self.shared.window_mgr.lock_or_recover().set_button_hilite(hwnd, flag);
+                if old.is_some_and(|old| old != flag) {
+                    self.repaint_control(hwnd);
+                }
+                ApiResult::Normal(old.unwrap_or(false) as u32)
+            }
+            BM_QUERYHILITE => ApiResult::Normal(
+                self.shared.window_mgr.lock_or_recover().push_button_hilite(hwnd) as u32),
+            BM_SETDEFAULT => {
+                let done = self.shared.window_mgr.lock_or_recover().set_button_default(hwnd, flag);
+                if done {
+                    self.repaint_control(hwnd);
+                }
+                ApiResult::Normal(done as u32)
+            }
             BM_SETCHECK => {
                 let old = self.shared.window_mgr.lock_or_recover()
                     .set_button_check(hwnd, check_state_from(mp1));
@@ -199,6 +266,30 @@ impl Loader {
             BM_QUERYCHECKINDEX => ApiResult::Normal(self.shared.window_mgr.lock_or_recover()
                 .checked_radio_index(hwnd).map_or(NO_CHECK_INDEX, |i| i as u32)),
             _ => ApiResult::Normal(0),
+        }
+    }
+
+    /// `BM_CLICK`: act as if the operator clicked button `hwnd`. The
+    /// up-click (`up`) is the click itself — the button is no longer
+    /// highlighted and does what a click does (`click_button`: the auto
+    /// styles' state change, then `WM_COMMAND` / `WM_SYSCOMMAND` / `WM_HELP`
+    /// or `WM_CONTROL(BN_CLICKED)`, with `fPointer` FALSE). The reference
+    /// names the other value only "the default downclick action";
+    /// Warpine takes that to be what pressing a button does before its
+    /// release: it is drawn highlighted and nothing is sent (unverified).
+    /// A disabled button ignores both, as it ignores clicks (unverified).
+    pub(super) fn bm_click(&self, hwnd: u32, up: bool) {
+        let enabled = self.shared.window_mgr.lock_or_recover().get_window(hwnd)
+            .is_some_and(|w| w.class_name == "WC_BUTTON" && w.style & WS_DISABLED == 0);
+        if !enabled {
+            return;
+        }
+        let old = self.shared.window_mgr.lock_or_recover().set_button_hilite(hwnd, !up);
+        if old.is_some_and(|old| old == up) {
+            self.repaint_control(hwnd);
+        }
+        if up {
+            self.click_button(hwnd, false);
         }
     }
 
@@ -215,14 +306,16 @@ impl Loader {
     /// when checked and a grey square inside when indeterminate, or a
     /// circle with a dot when checked — left of its label, both centred
     /// vertically, on the background of its parent. The indicator is shaded
-    /// while the button is held down; a dashed mark surrounds the label
+    /// while the button is held down or highlighted (`BM_SETHILITE`; the PM
+    /// Reference does not say how a highlighted check box looks, so this is
+    /// Warpine's own); a dashed mark surrounds the label
     /// while the button has the focus.
     pub(super) fn paint_check_button(&self, p: &Painter, hwnd: u32,
                                      (x, y, cx, cy): (i32, i32, i32, i32), text: &str) {
         let (style, state, pressed, focused) = {
             let wm = self.shared.window_mgr.lock_or_recover();
             let Some(w) = wm.get_window(hwnd) else { return };
-            (w.style, w.check_state, wm.pressed_control == hwnd, wm.focus_hwnd == hwnd)
+            (w.style, w.check_state, wm.button_highlighted(hwnd), wm.focus_hwnd == hwnd)
         };
         p.fill((x, y, x + cx, y + cy), self.control_background(hwnd));
         let face = if pressed { CONTROL_PRESSED_COLOR } else { CONTROL_FIELD_COLOR };
@@ -260,11 +353,16 @@ impl Loader {
         let w = control_label(p, lx, ly, text, x + cx - lx);
         if focused {
             let g = FOCUS_MARK_GAP;
-            let (x1, y1, x2, y2) = (lx - g, ly, lx + w + g - 1, ly + CONTROL_LINE_H - 1);
-            for (a, b) in [((x1, y1), (x2, y1)), ((x2, y1), (x2, y2)), ((x2, y2), (x1, y2)), ((x1, y2), (x1, y1))] {
-                line(p, a, b, CONTROL_EMPHASIS_COLOR, FOCUS_MARK_STYLE);
-            }
+            focus_mark(p, (lx - g, ly, lx + w + g - 1, ly + CONTROL_LINE_H - 1), CONTROL_EMPHASIS_COLOR);
         }
+    }
+}
+
+/// The dashed focus mark: a rectangle with corners `(x1, y1)` and
+/// `(x2, y2)` (inclusive) in `color`, drawn with [`FOCUS_MARK_STYLE`].
+pub(super) fn focus_mark(p: &Painter, (x1, y1, x2, y2): (i32, i32, i32, i32), color: u32) {
+    for (a, b) in [((x1, y1), (x2, y1)), ((x2, y1), (x2, y2)), ((x2, y2), (x1, y2)), ((x1, y2), (x1, y1))] {
+        line(p, a, b, color, FOCUS_MARK_STYLE);
     }
 }
 
@@ -585,6 +683,125 @@ mod tests {
         b.loader.shared.window_mgr.lock_or_recover().focus_hwnd = b.radio_a;
         let focused = paint_ops(&b, b.radio_a);
         assert_eq!(focused.iter().filter(|o| matches!(o, DrawOp::Line { style: FOCUS_MARK_STYLE, .. })).count(), 4);
+    }
+
+    /// The `WM_COMMAND`s posted, as (target, id, mp2).
+    fn commands(msgs: &[OS2Message]) -> Vec<(u32, u32, u32)> {
+        msgs.iter().filter(|m| m.msg == WM_COMMAND).map(|m| (m.hwnd, m.mp1, m.mp2)).collect()
+    }
+
+    #[test]
+    fn bm_click_up_clicks_like_the_pointer() {
+        let b = buttons();
+        // Auto check box: toggles and notifies, as a click would.
+        assert_eq!(b.send(b.auto_check, BM_CLICK, 1), 0);
+        assert_eq!(b.state(b.auto_check), 1);
+        assert_eq!(b.clicked(), vec![b.auto_check]);
+        // Auto-radio button: checked, the other auto-radio button unchecked.
+        b.send(b.radio_a, BM_SETCHECK, 1);
+        b.send(b.radio_b, BM_CLICK, 1);
+        assert_eq!((b.state(b.radio_a), b.state(b.radio_b)), (0, 1));
+        assert_eq!(b.clicked(), vec![b.radio_b]);
+        // Plain check box: only BN_CLICKED.
+        b.send(b.check, BM_CLICK, 1);
+        assert_eq!(b.state(b.check), 0);
+        assert_eq!(b.clicked(), vec![b.check]);
+        // Push button: WM_COMMAND to the owner, CMDSRC_PUSHBUTTON, not by the pointer.
+        b.send(b.push, BM_CLICK, 1);
+        assert_eq!(commands(&b.take_messages()), vec![(b.client, 17, CMDSRC_PUSHBUTTON)]);
+        // Only the low word of mp1 is usUp.
+        b.send(b.push, BM_CLICK, 0x1_0001);
+        assert_eq!(commands(&b.take_messages()).len(), 1);
+    }
+
+    #[test]
+    fn bm_click_down_only_highlights() {
+        let b = buttons();
+        b.send(b.push, BM_CLICK, 0);
+        assert!(b.take_messages().is_empty(), "a down-click sends nothing");
+        assert_eq!(b.send(b.push, BM_QUERYHILITE, 0), 1, "drawn pressed");
+        b.send(b.auto_check, BM_CLICK, 0x1_0000);
+        assert_eq!(b.state(b.auto_check), 0, "high word ignored: still a down-click");
+        assert!(b.clicked().is_empty());
+        // The up-click releases it and clicks.
+        b.send(b.push, BM_CLICK, 1);
+        assert_eq!(b.send(b.push, BM_QUERYHILITE, 0), 0);
+        assert_eq!(commands(&b.take_messages()).len(), 1);
+    }
+
+    #[test]
+    fn bm_click_on_a_disabled_button_does_nothing() {
+        let b = buttons();
+        for h in [b.auto_check, b.push] {
+            b.loader.shared.window_mgr.lock_or_recover().get_window_mut(h).unwrap().style |= WS_DISABLED;
+            b.send(h, BM_CLICK, 0);
+            b.send(h, BM_CLICK, 1);
+        }
+        assert!(b.take_messages().is_empty());
+        assert_eq!(b.state(b.auto_check), 0);
+        assert_eq!(b.send(b.push, BM_QUERYHILITE, 0), 0);
+    }
+
+    #[test]
+    fn bm_sethilite_returns_the_old_state_and_bm_queryhilite_reads_push_buttons() {
+        let b = buttons();
+        assert_eq!(b.send(b.push, BM_QUERYHILITE, 0), 0);
+        assert_eq!(b.send(b.push, BM_SETHILITE, 1), 0);
+        assert_eq!(b.send(b.push, BM_QUERYHILITE, 0), 1);
+        assert_eq!(b.send(b.push, BM_SETHILITE, 1), 1);
+        assert_eq!(b.send(b.push, BM_SETHILITE, 0), 1);
+        assert_eq!(b.send(b.push, BM_QUERYHILITE, 0), 0);
+        // A check box keeps and reports its highlight through BM_SETHILITE,
+        // but BM_QUERYHILITE answers FALSE for every style but push buttons.
+        assert_eq!(b.send(b.auto_check, BM_SETHILITE, 1), 0);
+        assert_eq!(b.send(b.auto_check, BM_SETHILITE, 1), 1);
+        assert_eq!(b.send(b.auto_check, BM_QUERYHILITE, 0), 0);
+        // A push button held down with the mouse is highlighted.
+        b.loader.shared.window_mgr.lock_or_recover().pressed_control = b.push;
+        assert_eq!(b.send(b.push, BM_QUERYHILITE, 0), 1);
+        // No notifications.
+        b.loader.shared.window_mgr.lock_or_recover().pressed_control = 0;
+        assert!(b.take_messages().is_empty());
+    }
+
+    #[test]
+    fn highlighted_buttons_paint_pressed() {
+        let b = buttons();
+        let pressed_fills = |ops: &[DrawOp]| ops.iter().filter(|o| matches!(o,
+            DrawOp::Box { color: CONTROL_PRESSED_COLOR, fill: true, .. })).count();
+        assert_eq!(pressed_fills(&paint_ops(&b, b.push)), 0);
+        assert_eq!(pressed_fills(&paint_ops(&b, b.auto_check)), 0);
+        b.send(b.push, BM_SETHILITE, 1);
+        b.send(b.auto_check, BM_SETHILITE, 1);
+        assert!(pressed_fills(&paint_ops(&b, b.push)) > 0, "the darker push-button face");
+        assert_eq!(pressed_fills(&paint_ops(&b, b.auto_check)), 1, "the shaded indicator");
+    }
+
+    #[test]
+    fn bm_setdefault_sets_and_clears_bs_default_on_push_buttons_only() {
+        let b = buttons();
+        let outline = |ops: &[DrawOp]| ops.iter().any(|o| matches!(o,
+            DrawOp::Box { color: CONTROL_EMPHASIS_COLOR, fill: false, x1: 10, y1: 10, .. }));
+        assert!(!outline(&paint_ops(&b, b.push)));
+        assert_eq!(b.send(b.push, BM_SETDEFAULT, 1), 1);
+        assert_ne!(b.style(b.push) & BS_DEFAULT, 0);
+        assert!(outline(&paint_ops(&b, b.push)), "the default outline");
+        assert_eq!(b.send(b.push, BM_SETDEFAULT, 0), 1);
+        assert_eq!(b.style(b.push) & BS_DEFAULT, 0);
+        assert!(!outline(&paint_ops(&b, b.push)));
+        assert_ne!(b.style(b.push) & WS_TABSTOP, 0, "other style bits stay");
+        // Other styles: FALSE, nothing changes.
+        assert_eq!(b.send(b.auto_check, BM_SETDEFAULT, 1), 0);
+        assert_eq!(b.style(b.auto_check) & BS_DEFAULT, 0);
+        // A user button can be the default one too.
+        b.loader.shared.window_mgr.lock_or_recover().get_window_mut(b.check).unwrap().style = BS_USERBUTTON;
+        assert_eq!(b.send(b.check, BM_SETDEFAULT, 1), 1);
+        assert!(can_be_default(BS_PUSHBUTTON) && can_be_default(BS_USERBUTTON));
+        assert!(!can_be_default(BS_RADIOBUTTON));
+        // Not a button at all.
+        let wm = &mut *b.loader.shared.window_mgr.lock_or_recover();
+        assert!(!wm.set_button_default(b.client, true));
+        assert_eq!(wm.set_button_hilite(b.client, true), None);
     }
 
     #[test]

@@ -586,7 +586,8 @@ impl Loader {
 
             WM_CHAR if class_name == "WC_BUTTON" => self.button_char(hwnd, mp1, mp2),
 
-            BM_SETCHECK | BM_QUERYCHECK | BM_QUERYCHECKINDEX if class_name == "WC_BUTTON" => {
+            BM_SETCHECK | BM_QUERYCHECK | BM_QUERYCHECKINDEX | BM_CLICK | BM_QUERYHILITE
+            | BM_SETHILITE | BM_SETDEFAULT if class_name == "WC_BUTTON" => {
                 self.button_message(hwnd, msg, mp1)
             }
 
