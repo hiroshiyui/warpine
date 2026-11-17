@@ -36,6 +36,7 @@
 #define INCL_WIN
 #define INCL_DOSPROCESS
 #define INCL_DOSSEMAPHORES
+#define INCL_DOSERRORS
 #include <os2.h>
 #include <string.h>
 
@@ -129,9 +130,6 @@ static VOID APIENTRY second_thread( ULONG arg )
     thr_peek_err    = WinGetLastError( hab );
     WinTerminate( hab );
     DosPostEventSem( thr_done );
-    /* Warpine ends the whole process on a thread's exit (DosExit with
-       EXIT_THREAD or a return), so this thread idles until the program ends. */
-    for( ;; ) DosSleep( 100 );
 }
 
 int main( void )
@@ -269,6 +267,7 @@ int main( void )
     DosCreateEventSem( NULL, &thr_done, 0, FALSE );
     DosCreateThread( &tid, second_thread, 0, 0, 0x4000 );
     DosWaitEventSem( thr_done, 5000 );
+    check( "DosWaitThread(second thread, which returned)", DosWaitThread( &tid, DCWW_WAIT ), NO_ERROR );
     check( "second thread: no error at start", thr_initial_err, 0 );
     check( "second thread: WinDestroyMsgQueue(main queue) fails", thr_destroy_rc, 0 );
     check( "-> PMERR_INVALID_HMQ", ERRORIDERROR( thr_destroy_err ), PMERR_INVALID_HMQ );

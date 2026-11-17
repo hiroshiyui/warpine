@@ -971,17 +971,23 @@ impl super::Loader {
 
     // ── Step 10: Thread / Environment / LIBPATH ──
 
-    /// DosKillThread (ordinal 111): terminate a thread.
+    /// DosKillThread (ordinal 111): end another thread of the process.
     ///
     /// OS/2 signature: DosKillThread(TID tid)
     ///
-    /// Warpine removes the JoinHandle from the thread table, orphaning the
-    /// host thread.  True async cancellation is not implemented — this is
-    /// sufficient for apps that kill subsidiary worker threads before exit.
-    pub fn dos_kill_thread(&self, tid: u32) -> u32 {
+    /// The thread is flagged and ends at its next exit to Warpine (an API
+    /// call, a callback return, a fault) like `DosExit(EXIT_THREAD)`; a
+    /// thread spinning in guest code without calling the system is not
+    /// interrupted. The calling thread itself and threads that do not run
+    /// give `ERROR_INVALID_THREADID`.
+    pub fn dos_kill_thread(&self, vcpu_id: u32, tid: u32) -> u32 {
         debug!("  DosKillThread(tid={})", tid);
-        let removed = self.shared.threads.lock_or_recover().remove(&tid);
-        if removed.is_some() { NO_ERROR } else { ERROR_INVALID_HANDLE }
+        let caller = super::threads::tid_of_vcpu(vcpu_id);
+        if self.shared.threads.table.lock_or_recover().kill(caller, tid) {
+            NO_ERROR
+        } else {
+            ERROR_INVALID_THREADID
+        }
     }
 
     /// DosScanEnv (ordinal 227): scan the process environment for a variable.
@@ -1178,9 +1184,9 @@ mod tests {
     #[test]
     fn test_dos_kill_thread_invalid_tid() {
         let loader = Loader::new_mock();
-        // No threads registered — should return ERROR_INVALID_HANDLE
-        assert_eq!(loader.dos_kill_thread(99),
-                   super::super::constants::ERROR_INVALID_HANDLE);
+        // No such thread: ERROR_INVALID_THREADID.
+        assert_eq!(loader.dos_kill_thread(0, 99),
+                   super::super::constants::ERROR_INVALID_THREADID);
     }
 
     #[test]

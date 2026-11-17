@@ -72,6 +72,7 @@ impl super::Loader {
 
         let ret_val = match &result {
             ApiResult::Normal(v)               => { debug!(ret = v, "return"); *v }
+            ApiResult::ExitThread(rc)          => { debug!(rc, "exit_thread"); *rc }
             ApiResult::Callback { wnd_proc, .. } => { debug!(wnd_proc, "callback"); 0 }
             ApiResult::WmCreateCallback { wnd_proc, .. } => { debug!(wnd_proc, "wm_create_callback"); 0 }
             ApiResult::MinMaxFrame { wnd_proc, .. } => { debug!(wnd_proc, "minmax_frame"); 0 }

@@ -22,7 +22,6 @@
 
 #![allow(clippy::too_many_arguments)]
 
-use std::sync::atomic::Ordering;
 use tracing::debug;
 
 use super::constants::{NLS_BASE, MSG_BASE, MDM_BASE, UCONV_BASE, SO32DLL_BASE, TCP32DLL_BASE};
@@ -94,7 +93,7 @@ static REGISTRY: &[ApiEntry] = &[
     ApiEntry { ordinal: 110, module: "DOSCALLS", name: "DosForceDelete",   argc: 1,
                handler: |l,_v,_i,a| { debug!("DosForceDelete stub"); ApiResult::Normal(l.dos_delete(a[0])) } },
     ApiEntry { ordinal: 111, module: "DOSCALLS", name: "DosKillThread",    argc: 1,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_kill_thread(a[0])) },
+               handler: |l,_v,id,a| ApiResult::Normal(l.dos_kill_thread(id,a[0])) },
 
     // ── DOSCALLS — init / control ─────────────────────────────────────────
     ApiEntry { ordinal: 209, module: "DOSCALLS", name: "DosSetMaxFH",      argc: 1,
@@ -134,13 +133,11 @@ static REGISTRY: &[ApiEntry] = &[
     ApiEntry { ordinal: 231, module: "DOSCALLS", name: "DosDevConfig",     argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_dev_config(a[0],a[1])) },
 
-    // DosExit: stores exit code and signals shutdown; vcpu loop observes flag
+    // DosExit(action, result): EXIT_THREAD ends the calling thread (the
+    // vCPU loop ends it; the last thread ends the process), EXIT_PROCESS
+    // stores the result code and signals shutdown, observed by every vCPU loop.
     ApiEntry { ordinal: 234, module: "DOSCALLS", name: "DosExit",          argc: 2,
-               handler: |l,_v,_i,a| {
-                   l.shared.exit_code.store(a[1] as i32, Ordering::Relaxed);
-                   l.shared.exit_requested.store(true, Ordering::Relaxed);
-                   ApiResult::Normal(0)
-               } },
+               handler: |l,_v,_i,a| l.dos_exit(a[0], a[1]) },
 
     // ── DOSCALLS — processes / priorities ────────────────────────────────
     ApiEntry { ordinal: 235, module: "DOSCALLS", name: "DosKillProcess",   argc: 2,
@@ -304,7 +301,7 @@ static REGISTRY: &[ApiEntry] = &[
     ApiEntry { ordinal: 348, module: "DOSCALLS", name: "DosQuerySysInfo",  argc: 4,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_sys_info(a[0],a[1],a[2],a[3])) },
     ApiEntry { ordinal: 349, module: "DOSCALLS", name: "DosWaitThread",    argc: 2,
-               handler: |l,_v,id,a| ApiResult::Normal(l.dos_wait_thread(id,a[0])) },
+               handler: |l,_v,id,a| ApiResult::Normal(l.dos_wait_thread(id,a[0],a[1])) },
 
     // ── DOSCALLS — resources ──────────────────────────────────────────────
     ApiEntry { ordinal: 352, module: "DOSCALLS", name: "DosGetResource",   argc: 4,

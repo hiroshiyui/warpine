@@ -18,6 +18,7 @@ pub mod pm_pointer;
 mod pm_window;
 pub mod vio_frame;
 pub mod pm_minmax;
+mod pm_sysmenu;
 pub mod vfs;
 pub mod vfs_hostdir;
 pub mod vm_backend;
@@ -37,6 +38,7 @@ mod pm_bitmap;
 pub mod pm_shapes;
 mod stubs;
 pub mod console;
+pub mod ansi;
 mod kbdcalls;
 mod viocalls;
 mod process;
@@ -51,6 +53,7 @@ pub mod tcpip;
 pub mod moucalls;
 mod seh;
 mod cmd;
+pub mod threads;
 
 pub use constants::*;
 pub use mutex_ext::MutexExt;
@@ -64,10 +67,9 @@ pub use guest_mem::GuestMemory;
 pub use api_ring::{ApiRingBuffer, ApiCallRecord};
 
 use kvm_backend::KvmVmBackend;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, Condvar};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32};
-use std::thread;
 use log::{info, warn};
 use crate::gui::font::{self, CjkRegion, FontSpec};
 use crate::gui::surface::{DrawOp, Mix};
@@ -167,6 +169,8 @@ pub(crate) struct CallbackFrame {
 #[derive(Debug)]
 pub(crate) enum ApiResult {
     Normal(u32),
+    /// `DosExit(EXIT_THREAD, rc)`: end the calling thread with result `rc`.
+    ExitThread(u32),
     Callback {
         wnd_proc: u32,
         hwnd: u32,
@@ -255,7 +259,7 @@ pub(crate) enum ApiResult {
 /// # Lock ordering (acquire in this order to prevent deadlocks)
 ///
 /// ```text
-/// Level 1: next_tid, threads          (lightweight, rarely contended)
+/// Level 1: threads.table              (lightweight, rarely contended)
 /// Level 2: mem_mgr, handle_mgr, hdir_mgr, resource_mgr, shmem_mgr, drive_mgr  (independent resource managers)
 /// Level 3: queue_mgr                  (may lock inner Arc<Mutex<OS2Queue>>)
 /// Level 4: sem_mgr                    (may lock inner semaphore mutexes)
@@ -293,8 +297,8 @@ pub struct SharedState {
     /// Executable name as provided on the command line
     pub exe_name: Mutex<String>,
     pub guest_mem: GuestMemory,
-    pub next_tid: Mutex<u32>,
-    pub threads: Mutex<HashMap<u32, thread::JoinHandle<()>>>,
+    /// The process's threads: running, ended, idle vCPUs (`threads.rs`).
+    pub threads: threads::Threads,
     pub exit_requested: AtomicBool,
     /// A VIO session may switch between its PM window and full screen with
     /// Alt+Home (the program is window-compatible); set by `run_vio_session`.
@@ -401,8 +405,7 @@ impl Loader {
             socket_mgr: Mutex::new(tcpip::SocketManager::new()),
             exe_name: Mutex::new(String::new()),
             guest_mem,
-            next_tid: Mutex::new(1),
-            threads: Mutex::new(HashMap::new()),
+            threads: Default::default(),
             exit_requested: AtomicBool::new(false),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),
@@ -485,8 +488,7 @@ impl Loader {
             socket_mgr:   Mutex::new(tcpip::SocketManager::new()),
             exe_name:     Mutex::new(String::new()),
             guest_mem,
-            next_tid:     Mutex::new(1),
-            threads:      Mutex::new(HashMap::new()),
+            threads:      Default::default(),
             exit_requested: AtomicBool::new(false),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),

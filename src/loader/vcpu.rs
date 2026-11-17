@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread;
 use super::vm_backend::{VcpuBackend, VmExit};
+use super::threads::{tid_of_vcpu, EndOutcome, ThreadEnd, MAIN_TID, MAIN_VCPU_ID};
 use log::{info, debug, warn, error};
 
 impl super::Loader {
@@ -112,7 +113,9 @@ impl super::Loader {
     pub fn setup_and_run_cli(self, lx_file: &LxFile) -> ! {
         let (entry_eip, entry_esp, tib_base) = self.setup_guest(lx_file);
         let vcpu = self.create_initial_vcpu(entry_eip, entry_esp);
-        self.run_vcpu(vcpu, 0, tib_base);
+        self.run_vcpu(vcpu, super::threads::MAIN_VCPU_ID, tib_base);
+        // Thread 1 may end by itself while other threads still run.
+        self.wait_for_process_end();
         // Restore terminal before process::exit() which skips all destructors.
         // Must restore termios FIRST so OPOST is active, then emit ANSI reset.
         self.shared.console_mgr.lock_or_recover().disable_raw_mode();
@@ -125,7 +128,7 @@ impl super::Loader {
         let vcpu = self.create_initial_vcpu(entry_eip, entry_esp);
         let loader = self;
         thread::spawn(move || {
-            loader.run_vcpu(vcpu, 0, tib_base);
+            loader.run_vcpu(vcpu, MAIN_VCPU_ID, tib_base);
         });
     }
 
@@ -135,7 +138,9 @@ impl super::Loader {
 
         let (entry_eip, entry_esp, tib_base) = self.setup_guest(lx_file);
         let vcpu = self.create_initial_vcpu(entry_eip, entry_esp);
-        self.run_vcpu(vcpu, 0, tib_base);
+        self.run_vcpu(vcpu, super::threads::MAIN_VCPU_ID, tib_base);
+        // Thread 1 may end by itself while other threads still run.
+        self.wait_for_process_end();
         self.shared.console_mgr.lock_or_recover().disable_raw_mode();
         let code = self.shared.exit_code.load(Ordering::Relaxed);
         std::process::exit(code);
@@ -164,7 +169,65 @@ impl super::Loader {
         vcpu.set_sregs(&sregs).unwrap();
     }
 
+    /// Run a guest thread on `vcpu` until it ends, then end the thread:
+    /// free what Warpine allocated for it, keep its vCPU for reuse, wake
+    /// `DosWaitThread`, and end the process when it was the last thread
+    /// (or thread 1 returning from the program's entry point).
     pub(crate) fn run_vcpu(&self, mut vcpu: Box<dyn VcpuBackend>, vcpu_id: u32, _tib_base: u64) {
+        let end = self.vcpu_loop(&mut *vcpu, vcpu_id);
+        self.end_thread(vcpu, vcpu_id, end);
+    }
+
+    /// Block until the process ends: the last thread ended or one asked
+    /// for the process to end.
+    pub(crate) fn wait_for_process_end(&self) {
+        self.shared.threads.wait_for_process_end(|| self.shutting_down());
+    }
+
+    /// The end of thread `vcpu_id`'s vCPU loop (see `run_vcpu`).
+    fn end_thread(&self, vcpu: Box<dyn VcpuBackend>, vcpu_id: u32, end: ThreadEnd) {
+        let tid = tid_of_vcpu(vcpu_id);
+        // A thread's PM message queue goes with it, so that input for its
+        // windows is dropped instead of waiting for a reader that is gone.
+        {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            if let Some(hmq) = wm.thread_queue(vcpu_id) {
+                wm.destroy_mq(vcpu_id, hmq);
+            }
+        }
+        let (outcome, memory) = {
+            let mut table = self.shared.threads.table.lock_or_recover();
+            let ended = table.end(tid);
+            // Only created threads' vCPUs are reused (thread 1's runs on the
+            // initial vCPU, which the NE path sets up for 16-bit code).
+            if vcpu_id != MAIN_VCPU_ID {
+                table.put_vcpu(vcpu);
+            }
+            ended
+        };
+        if let Some(mem) = memory {
+            let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
+            mem_mgr.free(mem.stack);
+            mem_mgr.free(mem.tib);
+        }
+        match end {
+            ThreadEnd::Thread(rc) => {
+                info!("  [VCPU {}] Thread {} ended (rc={}).", vcpu_id, tid, rc);
+                if outcome == EndOutcome::LastThread {
+                    self.request_process_exit(rc);
+                }
+            }
+            ThreadEnd::Process => {
+                // Every path that ends a loop this way has already asked
+                // for the process to end; make sure it does.
+                self.shared.exit_requested.store(true, Ordering::Relaxed);
+            }
+        }
+        self.shared.threads.ended.notify_all();
+    }
+
+    fn vcpu_loop(&self, vcpu: &mut dyn VcpuBackend, vcpu_id: u32) -> ThreadEnd {
+        let tid = tid_of_vcpu(vcpu_id);
 
         vcpu.enable_software_breakpoints().unwrap();
 
@@ -181,7 +244,7 @@ impl super::Loader {
                 sregs,
             });
             match gdb.wait_for_resume() {
-                GdbResumeCmd::Kill => return,
+                GdbResumeCmd::Kill => return ThreadEnd::Process,
                 GdbResumeCmd::Step => {
                     vcpu.set_single_step(true).unwrap();
                 }
@@ -194,7 +257,12 @@ impl super::Loader {
         loop {
             // Check if shutdown has been requested
             if self.shared.exit_requested.load(Ordering::Relaxed) {
-                return;
+                return ThreadEnd::Process;
+            }
+            // DosKillThread: end like DosExit(EXIT_THREAD).
+            if self.shared.threads.table.lock_or_recover().is_killed(tid) {
+                info!("  [VCPU {}] Thread {} killed.", vcpu_id, tid);
+                return ThreadEnd::Thread(NO_ERROR);
             }
 
             // GDB Ctrl-C: pause the vCPU and wait for a resume command.
@@ -208,7 +276,7 @@ impl super::Loader {
                     sregs,
                 });
                 match gdb.wait_for_resume() {
-                    GdbResumeCmd::Kill => return,
+                    GdbResumeCmd::Kill => return ThreadEnd::Process,
                     GdbResumeCmd::Step => {
                         vcpu.set_single_step(true).unwrap();
                     }
@@ -227,7 +295,7 @@ impl super::Loader {
                 self.dump_crash_report(&report);
                 self.shared.exit_code.store(1, Ordering::Relaxed);
                 self.shared.exit_requested.store(true, Ordering::Relaxed);
-                return;
+                return ThreadEnd::Process;
             }
             let exit = res.unwrap();
             match exit {
@@ -272,7 +340,7 @@ impl super::Loader {
                                 sregs,
                             });
                             match gdb.wait_for_resume() {
-                                GdbResumeCmd::Kill => return,
+                                GdbResumeCmd::Kill => return ThreadEnd::Process,
                                 GdbResumeCmd::Step => {
                                     vcpu.set_single_step(true).unwrap();
                                 }
@@ -304,7 +372,7 @@ impl super::Loader {
                                 sregs,
                             });
                             match gdb.wait_for_resume() {
-                                GdbResumeCmd::Kill => return,
+                                GdbResumeCmd::Kill => return ThreadEnd::Process,
                                 GdbResumeCmd::Step => {
                                     vcpu.set_single_step(true).unwrap();
                                 }
@@ -512,7 +580,7 @@ impl super::Loader {
                                 self.dump_crash_report(&report);
                                 self.shared.exit_code.store(1, Ordering::Relaxed);
                                 self.shared.exit_requested.store(true, Ordering::Relaxed);
-                                return;
+                                return ThreadEnd::Process;
                             }
                         }
                     }
@@ -560,9 +628,16 @@ impl super::Loader {
                     }
                     if rip >= MAGIC_API_BASE && rip < MAGIC_API_BASE + STUB_AREA_SIZE as u64 {
                         if rip == EXIT_TRAP_ADDR as u64 {
-                            info!("  [VCPU {}] Guest requested thread exit.", vcpu_id);
-                            self.shared.exit_requested.store(true, Ordering::Relaxed);
-                            return;
+                            // The thread function returned: the thread ends with
+                            // its return value; thread 1 returning from the
+                            // program's entry point ends the process.
+                            let rc = vcpu.get_regs().map_or(0, |r| r.rax as u32);
+                            if tid == MAIN_TID {
+                                info!("  [VCPU {}] Main thread returned; the process ends.", vcpu_id);
+                                self.shared.exit_requested.store(true, Ordering::Relaxed);
+                                return ThreadEnd::Process;
+                            }
+                            return ThreadEnd::Thread(rc);
                         }
                         if rip == CALLBACK_RET_TRAP as u64 {
                             if let Some(frame) = callback_stack.pop() {
@@ -688,7 +763,7 @@ impl super::Loader {
                                                 self.free_exception_records(guest_allocs);
                                                 self.shared.exit_code.store(1, Ordering::Relaxed);
                                                 self.shared.exit_requested.store(true, Ordering::Relaxed);
-                                                return;
+                                                return ThreadEnd::Process;
                                             }
                                             let handler_fn = self.guest_read::<u32>(next_handler + XERREC_HANDLER).unwrap_or(0);
                                             let next_next  = self.guest_read::<u32>(next_handler + XERREC_PREV).unwrap_or(XCPT_CHAIN_END);
@@ -697,7 +772,7 @@ impl super::Loader {
                                                 self.free_exception_records(guest_allocs);
                                                 self.shared.exit_code.store(1, Ordering::Relaxed);
                                                 self.shared.exit_requested.store(true, Ordering::Relaxed);
-                                                return;
+                                                return ThreadEnd::Process;
                                             }
                                             debug!("  [VCPU {}] SEH: XCPT_CONTINUE_SEARCH → next handler=0x{:08X} at 0x{:08X}", vcpu_id, next_handler, handler_fn);
                                             // Re-issue the exception dispatch to the next handler.
@@ -721,12 +796,13 @@ impl super::Loader {
                                 continue;
                             } else {
                                 error!("  [VCPU {}] CALLBACK_RET_TRAP with empty callback stack!", vcpu_id);
-                                return;
+                                return ThreadEnd::Process;
                             }
                         }
                         let ordinal = (rip - MAGIC_API_BASE) as u32;
                         let api_result = self.handle_api_call_ex(&mut *vcpu, vcpu_id, ordinal);
                         match api_result {
+                            ApiResult::ExitThread(rc) => return ThreadEnd::Thread(rc),
                             ApiResult::Normal(res) => {
                                 let mut regs = vcpu.get_regs().unwrap();
                                 regs.rax = res as u64;
@@ -908,13 +984,13 @@ impl super::Loader {
                         );
                         self.dump_crash_report(&report);
                         self.shared.exit_requested.store(true, Ordering::Relaxed);
-                        return;
+                        return ThreadEnd::Process;
                     }
                 }
                 VmExit::Hlt => {
                     info!("  [VCPU {}] Guest HLT.", vcpu_id);
                     self.shared.exit_requested.store(true, Ordering::Relaxed);
-                    return;
+                    return ThreadEnd::Process;
                 }
                 VmExit::MmioRead { addr, size } => {
                     // zeros already filled by kvm_backend
@@ -937,7 +1013,7 @@ impl super::Loader {
                     self.dump_crash_report(&report);
                     self.shared.exit_code.store(1, Ordering::Relaxed);
                     self.shared.exit_requested.store(true, Ordering::Relaxed);
-                    return;
+                    return ThreadEnd::Process;
                 }
                 VmExit::Other(e) => {
                     let report = self.collect_crash_report(
@@ -947,7 +1023,7 @@ impl super::Loader {
                     self.dump_crash_report(&report);
                     self.shared.exit_code.store(1, Ordering::Relaxed);
                     self.shared.exit_requested.store(true, Ordering::Relaxed);
-                    return;
+                    return ThreadEnd::Process;
                 }
             }
         }
@@ -1233,4 +1309,179 @@ mod tests {
         }
         assert_eq!(sps, vec![saved_rsp - 4 - DLG_CALL_FRAME_BYTES; 3]);
     }
+
+    // ── Thread ends ──────────────────────────────────────────────────────
+
+    use super::super::threads::{ThreadMemory, WaitOutcome, FIRST_CREATED_TID};
+
+    const STACK_TOP: u32 = 0x8_0000;
+
+    /// A mock vCPU stopped at `rip` (an INT 3 trap) with `rax`, the stack at
+    /// `STACK_TOP`.
+    fn vcpu_at(rip: u32, rax: u32) -> Box<MockVcpu> {
+        let mut vcpu = MockVcpu::new();
+        vcpu.regs.rip = rip as u64;
+        vcpu.regs.rax = rax as u64;
+        vcpu.regs.rsp = STACK_TOP as u64;
+        vcpu.push_exit(VmExit::Debug);
+        Box::new(vcpu)
+    }
+
+    /// A mock vCPU calling `DosExit(action, result)`.
+    fn vcpu_calling_dos_exit(loader: &super::super::Loader, action: u32, result: u32) -> Box<MockVcpu> {
+        const DOS_EXIT: u32 = 234;
+        for (i, v) in [0x1234u32, action, result].into_iter().enumerate() {
+            loader.guest_write::<u32>(STACK_TOP + 4 * i as u32, v).unwrap();
+        }
+        vcpu_at(MAGIC_API_BASE as u32 + DOS_EXIT, 0)
+    }
+
+    fn start_thread(loader: &super::super::Loader, tid: u32) {
+        loader.shared.threads.table.lock_or_recover().start(tid, ThreadMemory { stack: 0, tib: 0 });
+    }
+
+    #[test]
+    fn a_returning_thread_ends_alone() {
+        let loader = super::super::Loader::new_mock();
+        start_thread(&loader, FIRST_CREATED_TID);
+        loader.run_vcpu(vcpu_at(EXIT_TRAP_ADDR, 7), FIRST_CREATED_TID, 0);
+        assert!(!loader.shutting_down(), "the main thread still runs");
+        let mut table = loader.shared.threads.table.lock_or_recover();
+        assert_eq!(table.wait(MAIN_TID, FIRST_CREATED_TID), WaitOutcome::Ended(FIRST_CREATED_TID));
+        assert!(table.take_vcpu().is_ok(), "the vCPU is kept for the next thread");
+    }
+
+    #[test]
+    fn dos_exit_thread_ends_only_the_caller() {
+        let loader = super::super::Loader::new_mock();
+        start_thread(&loader, FIRST_CREATED_TID);
+        loader.run_vcpu(vcpu_calling_dos_exit(&loader, EXIT_THREAD, 3), FIRST_CREATED_TID, 0);
+        assert!(!loader.shutting_down());
+        assert!(!loader.shared.threads.table.lock_or_recover().is_running(FIRST_CREATED_TID));
+    }
+
+    #[test]
+    fn the_last_thread_ending_ends_the_process_with_its_code() {
+        let loader = super::super::Loader::new_mock();
+        start_thread(&loader, FIRST_CREATED_TID);
+        // Thread 1 ends first with EXIT_THREAD; the process lives on.
+        loader.run_vcpu(vcpu_calling_dos_exit(&loader, EXIT_THREAD, 1), MAIN_VCPU_ID, 0);
+        assert!(!loader.shutting_down());
+        loader.run_vcpu(vcpu_calling_dos_exit(&loader, EXIT_THREAD, 9), FIRST_CREATED_TID, 0);
+        assert!(loader.shutting_down());
+        assert_eq!(loader.shared.exit_code.load(Ordering::Relaxed), 9);
+        loader.wait_for_process_end();
+    }
+
+    #[test]
+    fn dos_exit_process_ends_everything_and_the_first_code_wins() {
+        let loader = super::super::Loader::new_mock();
+        start_thread(&loader, FIRST_CREATED_TID);
+        loader.run_vcpu(vcpu_calling_dos_exit(&loader, EXIT_PROCESS, 4), FIRST_CREATED_TID, 0);
+        assert!(loader.shutting_down());
+        assert_eq!(loader.shared.exit_code.load(Ordering::Relaxed), 4);
+        // Another thread ending afterwards does not change the code.
+        loader.run_vcpu(vcpu_calling_dos_exit(&loader, EXIT_THREAD, 8), MAIN_VCPU_ID, 0);
+        assert_eq!(loader.shared.exit_code.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn the_main_thread_returning_ends_the_process() {
+        let loader = super::super::Loader::new_mock();
+        start_thread(&loader, FIRST_CREATED_TID);
+        loader.run_vcpu(vcpu_at(EXIT_TRAP_ADDR, 5), MAIN_VCPU_ID, 0);
+        assert!(loader.shutting_down());
+        assert_eq!(loader.shared.exit_code.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn a_killed_thread_ends_at_its_next_exit() {
+        let loader = super::super::Loader::new_mock();
+        start_thread(&loader, FIRST_CREATED_TID);
+        assert_eq!(loader.dos_kill_thread(MAIN_VCPU_ID, FIRST_CREATED_TID), NO_ERROR);
+        // The mock would halt (ending the process) if the thread ran on.
+        loader.run_vcpu(Box::new(MockVcpu::new()), FIRST_CREATED_TID, 0);
+        assert!(!loader.shutting_down());
+        assert_eq!(loader.dos_kill_thread(MAIN_VCPU_ID, FIRST_CREATED_TID), ERROR_INVALID_THREADID);
+        assert_eq!(loader.dos_kill_thread(MAIN_VCPU_ID, MAIN_VCPU_ID + 1), ERROR_INVALID_THREADID,
+                   "a thread cannot kill itself");
+    }
+
+    #[test]
+    fn a_thread_ending_destroys_its_message_queue() {
+        let loader = super::super::Loader::new_mock();
+        start_thread(&loader, FIRST_CREATED_TID);
+        let hmq = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq(437);
+            wm.tid_to_hmq.insert(FIRST_CREATED_TID, hmq);
+            hmq
+        };
+        loader.run_vcpu(vcpu_at(EXIT_TRAP_ADDR, 0), FIRST_CREATED_TID, 0);
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        assert!(wm.get_mq(hmq).is_none());
+        assert_eq!(wm.thread_queue(FIRST_CREATED_TID), None);
+    }
+
+    #[test]
+    fn dos_wait_thread_reports_ended_threads() {
+        let loader = super::super::Loader::new_mock();
+        const PTID: u32 = 0x7_0000;
+        start_thread(&loader, FIRST_CREATED_TID);
+        start_thread(&loader, FIRST_CREATED_TID + 1);
+        loader.guest_write::<u32>(PTID, FIRST_CREATED_TID).unwrap();
+        assert_eq!(loader.dos_wait_thread(MAIN_VCPU_ID, PTID, DCWW_NOWAIT_OPT), ERROR_THREAD_NOT_TERMINATED);
+        assert_eq!(loader.dos_wait_thread(MAIN_VCPU_ID, PTID, 7), ERROR_INVALID_PARAMETER);
+        loader.run_vcpu(vcpu_at(EXIT_TRAP_ADDR, 0), FIRST_CREATED_TID, 0);
+        assert_eq!(loader.dos_wait_thread(MAIN_VCPU_ID, PTID, DCWW_WAIT_OPT), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(PTID), Some(FIRST_CREATED_TID));
+        // Reported once.
+        assert_eq!(loader.dos_wait_thread(MAIN_VCPU_ID, PTID, DCWW_WAIT_OPT), ERROR_INVALID_THREADID);
+        // Any thread: the other one, once it ends.
+        let other = std::thread::scope(|s| {
+            s.spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                loader.run_vcpu(vcpu_at(EXIT_TRAP_ADDR, 0), FIRST_CREATED_TID + 1, 0);
+            });
+            loader.guest_write::<u32>(PTID, 0).unwrap();
+            loader.dos_wait_thread(MAIN_VCPU_ID, PTID, DCWW_WAIT_OPT)
+        });
+        assert_eq!(other, NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(PTID), Some(FIRST_CREATED_TID + 1));
+        // Thread 1 and the caller itself cannot be waited for.
+        loader.guest_write::<u32>(PTID, MAIN_TID).unwrap();
+        assert_eq!(loader.dos_wait_thread(FIRST_CREATED_TID, PTID, DCWW_WAIT_OPT), ERROR_INVALID_THREADID);
+    }
+
+    #[test]
+    fn dos_create_thread_sets_up_tib_and_frees_it_at_the_end() {
+        let loader = super::super::Loader::new_mock();
+        const PTID: u32 = 0x7_0000;
+        // The mock vCPU halts at once: the thread ends (with the process).
+        assert_eq!(loader.dos_create_thread(MAIN_VCPU_ID, PTID, 0x1_0000, 0x55, 0x2000), NO_ERROR);
+        let tid = loader.guest_read::<u32>(PTID).unwrap();
+        assert_eq!(tid, FIRST_CREATED_TID);
+        loader.wait_for_process_end();
+        // Wait until the thread's end is recorded.
+        let mut tries = 0;
+        while loader.shared.threads.table.lock_or_recover().is_running(tid) && tries < 200 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            tries += 1;
+        }
+        let mut table = loader.shared.threads.table.lock_or_recover();
+        assert!(!table.is_running(tid));
+        assert!(table.take_vcpu().is_ok(), "the vCPU went back to the table");
+        assert_eq!(table.next_tid(), Some(FIRST_CREATED_TID + 1));
+    }
+
+    #[test]
+    fn dos_create_thread_rejects_a_stack_too_small_for_its_frame() {
+        let loader = super::super::Loader::new_mock();
+        assert_eq!(loader.dos_create_thread(MAIN_VCPU_ID, 0x7_0000, 0x1_0000, 0, 4), ERROR_INVALID_PARAMETER);
+    }
+
+    const DCWW_WAIT_OPT: u32 = super::super::threads::DCWW_WAIT;
+    const DCWW_NOWAIT_OPT: u32 = super::super::threads::DCWW_NOWAIT;
+    const EXIT_THREAD: u32 = super::super::threads::EXIT_THREAD;
+    const EXIT_PROCESS: u32 = super::super::threads::EXIT_PROCESS;
 }
