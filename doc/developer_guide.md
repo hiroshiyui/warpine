@@ -86,7 +86,7 @@ Unit tests for the parser live alongside the source in `src/lx/`.
 
 ## NE Format Parser
 
-**Module:** `src/ne/` (`header.rs` for binary structures, `ne.rs` for orchestration)
+**Module:** `src/ne.rs` (orchestration) and `src/ne/header.rs` (binary structures)
 
 The NE (New Executable) format is used by OS/2 1.x 16-bit applications. Warpine now supports both LX (32-bit) and NE (16-bit) execution. The NE parser in `src/ne/` provides the binary structures; `src/loader/ne_exec.rs` provides the full NE loader and 16-bit execution path.
 
@@ -100,7 +100,7 @@ The parser handles:
 - **Import table** — Module reference table listing names of imported DLLs.
 - **Resource table** — Resource type/name table mapping resource IDs to file offsets.
 
-The parser has 16 unit tests in `src/ne/`. NE loading and execution is implemented in `src/loader/ne_exec.rs` — see [§20 Appendix: Development Phases](#appendix-development-phases) for details.
+The parser has 17 unit tests (`src/ne.rs`, `src/ne/header.rs`). NE loading and execution is implemented in `src/loader/ne_exec.rs` — see [§20 Appendix: Development Phases](#appendix-development-phases) for details.
 
 ---
 
@@ -351,7 +351,7 @@ The Presentation Manager (PM) is OS/2's GUI subsystem. Warpine implements it usi
 
 - **CLI apps (SDL text window)** — default for apps that do not import `PMWIN`. The vCPU runs on a worker thread. `SdlTextRenderer` runs `run_text_loop()` on the main thread (required by SDL), rendering a 640×400 VGA text window.
 - **CLI apps (terminal / headless)** — `WARPINE_HEADLESS=1`. The vCPU runs on the main thread; terminal ANSI output and raw-mode keyboard are used.
-- **PM apps** — SDL event loop runs on the main thread. The vCPU is spawned on a worker thread. Drawing goes through shared per-frame surfaces (see Rendering Pipeline); the few requests only the GUI thread can carry out — host clipboard, mouse capture, message boxes — go through a channel (`GUISender` / `GUIReceiver`).
+- **PM apps** — SDL event loop runs on the main thread. The vCPU is spawned on a worker thread. Drawing goes through shared per-frame surfaces (see Rendering Pipeline); the few requests only the GUI thread can carry out — host clipboard, mouse capture — go through a channel (`GUISender` / `GUIReceiver`).
 
 ### Window Lifecycle
 
@@ -541,6 +541,15 @@ The first item is the dialog frame itself; the controls follow in tree order (ea
 5. At `CALLBACK_RET_TRAP`, the `DlgRunLoop` frame handler checks dismissal again and either returns to caller or calls `setup_dlg_dispatch()` again for the next message.
 
 `WinDismissDlg` sets `dialog_dismissed = true` and `dialog_result = result`, then calls `condvar.notify_one()` to wake the blocked loop.
+
+### Message boxes (WinMessageBox)
+
+`WinMessageBox` (`pm_msgbox.rs`) builds a modal dialog in memory and runs it on the same modal loop as `WinDlgBox` (`ApiResult::DlgRunLoop`), so the rest of the desktop and the owner's own window procedure (timers, repaints) keep running while it is open; only the owner's frame is disabled. Before, it was SDL's native message box on the GUI thread, which froze the whole desktop until it closed.
+
+- *Layout* (`layout()`, pure and unit-tested; sizes are Warpine's own): the text breaks at its line breaks and wraps at word boundaries past 400 px (`EditBuffer::set_wrap`), one `WC_STATIC` per row; below it the push buttons of the `MB_*` set (`buttons()`), 80 × 26 px, centred, the first in a `WS_GROUP` so the arrow keys move between them; the default button (`MB_DEFBUTTON1/2/3`, `default_button()`) has `BS_DEFAULT` and the focus. The dialog has a title bar (the caption), a system menu and a dialog border, and is centred on the desktop.
+- *Behaviour*: the dialog has no dialog procedure (`pfn_wp == 0`), so the modal loop gives its messages to `dispatch_builtin_control`, which hands every message except `WM_PAINT` to `procless_dialog_message`: `WinDefDlgProc`, except that a `WM_COMMAND` ends the dialog only when one of its controls has that id, and `WM_CLOSE` counts as `DID_CANCEL` (= `MBID_CANCEL`) under the same rule. A push button's `WM_COMMAND(MBID_*)` therefore ends it with that value; Enter presses the default button, Esc / the close button / Alt+F4 cancel only a box with a Cancel button.
+- A thread without a message queue gets `MBID_ERROR`; a program without a PM desktop (a text-mode program, no GUI channel) gets `MBID_OK` at once.
+- Not yet: the `MB_ICON*` icons, the `MB_HELP` button, `MB_NONMODAL` and `MB_SYSTEMMODAL`.
 
 ### Keyboard accelerators
 
@@ -1162,10 +1171,10 @@ src/
   ne/
     mod.rs             NE module re-exports
     header.rs          NE binary format structures (NeHeader, NeSegmentEntry, NeRelocationEntry)
-    ne.rs              NE file orchestration (16-bit OS/2 apps, 16 unit tests)
+    ne.rs              NE file orchestration (16-bit OS/2 apps; 17 unit tests with ne/header.rs)
   gui/
     mod.rs             GUI module re-exports; pub use for all renderer types
-    message.rs         GUIMessage channel (clipboard, mouse capture, message boxes) + GuiWake
+    message.rs         GUIMessage channel (clipboard, mouse capture) + GuiWake
     font.rs            PM typeface: embedded IBM Plex Sans/Mono/Serif + Plex Sans JP/KR/TC/SC
                        (vendor/ibm-plex), FontSpec, text_width(), metrics(), draw_text();
                        fallback chain Latin → CJK (by codepage) → GNU Unifont
@@ -1184,7 +1193,7 @@ src/
                        LayeredCompositor (one texture per frame, drawn by the SDL renderer)
     text_renderer.rs   TextModeRenderer trait, VgaTextBuffer, SdlTextRenderer,
                        HeadlessTextRenderer, run_text_loop(), get_cp437_glyph(),
-                       CGA_PALETTE (22 unit tests)
+                       CGA_PALETTE (44 unit tests)
   loader/
     mod.rs             Loader struct, SharedState (kbd_queue/kbd_cond/use_sdl_text), KVM/mock init
     vcpu.rs            vCPU thread: VMEXIT loop, GDB integration, crash dump hooks
@@ -1399,13 +1408,13 @@ Run all unit tests with:
 cargo test
 ```
 
-The test suite covers three areas:
+The unit tests (862: 833 warpine + 18 `gen_api` + 11 `lx_link`) include, among others:
 
 | Module | What's tested |
 |---|---|
 | `src/lx/header.rs` | LX header parsing, object table entry parsing, resource entry parsing |
 | `src/lx.rs` | MZ validation, LX signature detection, rejection of malformed binaries (excessive object/page counts, invalid EIP object, invalid page offset shift), parsing of a real `hello.exe` |
-| `src/ne/` | NE header parsing, segment table, relocation records, export/import tables, resource table (16 tests) |
+| `src/ne.rs`, `src/ne/header.rs` | NE header parsing, segment table, relocation records, export/import tables, resource table (17 tests) |
 | `src/loader/managers.rs` | MemoryManager allocation, 4KB alignment, free-list reuse, top-of-heap coalescing, overflow/limit rejection, ResourceManager find operations, SharedMemManager name lookup |
 | `src/loader/console.rs` | VioManager screen buffer operations (scroll up/down, read cell str, defaults), key mapping (enter, printable, backspace → OS/2 charcode/scancode) |
 | `src/loader/stubs.rs` | DosEditName wildcard pattern replacement, DosQuerySysInfo QSV_* constant validation |
@@ -1414,7 +1423,16 @@ The test suite covers three areas:
 | `src/loader/mmpm.rs` | MmpmManager waveaudio device open/close/play lifecycle, mciSendCommand dispatch, mciSendString parsing, mciFreeBlock, mciGetLastError |
 | `src/loader/vfs.rs` | DriveManager path resolution, device name detection, drive letter parsing |
 | `src/loader/vfs_hostdir.rs` | HostDirBackend case-insensitive lookup, sandbox enforcement, EA operations |
-| `src/gui/sdl_renderer.rs` | Y-coordinate flipping, rectangle rendering (filled/outlined), line drawing (horizontal/vertical/diagonal), text rendering pixel output and orientation; scancode/VK mapping |
+| `src/gui/sdl_renderer.rs` | Scancode / VK / WM_CHAR mapping, mouse modifiers (`fsInp`) and double clicks, window chrome and menu drawing, chrome hit-testing, the event-loop wait, scripted input → SDL events |
+| `src/gui/surface.rs`, `damage.rs`, `sdl_renderer/compositor.rs` | Drawing ops and clipping, mix modes, read-back, shapes and patterns, damage rectangles, both compositors |
+| `src/gui/gui_script.rs` | Script parsing and expansion (clicks, modifier clicks, double clicks, drags, keys, text) |
+| `src/loader/pm_edit.rs` | Edit buffer: caret and selection, CRLF units, page keys, word-wrapped rows, scrolling arithmetic, WM_CHAR decoding |
+| `src/loader/pm_list.rs` | List-box selection modes (single, `LS_MULTIPLESEL`, `LS_EXTENDEDSEL`), cursor and anchor, index shifts |
+| `src/loader/pm_controls.rs` | Entry field / MLE / list box input and painting, focus notifications, selection and clipboard, read-only fields, word wrap, multi-select, `LN_ENTER`, caret blink |
+| `src/loader/pm_dialog.rs`, `pm_msgbox.rs` | DLGTEMPLATE / ACCELTABLE parsing, dialog keys, mnemonics, accelerators; message-box layout and behaviour |
+| `src/loader/pm_win.rs`, `pm_types.rs` | Window tree, Z-order, focus, frame layout and moves, menus and `WM_UPDATEFRAME`, message queues, `WinPeekMsg` filters, codepages, system values |
+| `src/loader/pm_gpi.rs`, `pm_bitmap.rs`, `pm_shapes.rs` | GPI calls, bitmaps and the codec, `GpiBitBlt`, colour tables, arcs and patterns |
+| `src/loader/constants.rs` | Every constant against the OS/2 toolkit headers (`constants_match_toolkit_headers`) |
 | `src/gui/text_renderer.rs` | CP437 glyph bitmaps (box-drawing, block elements, ASCII delegation), CGA palette (opaque, correct entries), HeadlessTextRenderer frame counting and loop termination, VgaTextBuffer snapshot, KbdKeyInfo queue push/pop (22 tests) |
 
 ### Integration testing with sample apps
@@ -1472,7 +1490,6 @@ cargo run -- samples/pm_demo/pm_demo.exe
 
 # PM drawing: GpiBox, GpiLine, GpiCharStringAt, GpiSetColor
 cargo run -- samples/shapes/shapes.exe
-```
 
 # Text-mode: 4OS2 command shell (interactive)
 cd samples/4os2 && ./fetch_source.sh && make && cd ../..
@@ -1484,10 +1501,10 @@ CLI samples should print output and exit with code 0. PM samples should open a w
 
 ### Automated integration tests
 
-`tests/integration.rs` contains 9 end-to-end tests that run real OS/2 sample binaries (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test, ne_hello) with headless mode, asserting stdout content and exit code. KVM-gated: tests skip silently when `/dev/kvm` is absent.
+`tests/integration.rs` contains 44 end-to-end tests that run real OS/2 sample binaries under KVM: CLI samples (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test, ne_hello, rust_hello, …) with headless output checks, and PM samples driven by GUI scripts on SDL's `dummy` driver — the self-checking samples (`pm_dialog_test`, `pm_list_test`, `pm_msgbox_test`, `pm_codepage_test`, `pm_audio_test`, `pm_menu_dlg_test`, …) must report every check as passed, and desktop dumps are compared with golden tile signatures (see "GUI regression tests" below). Each test skips itself when `/dev/kvm` or its sample binary is missing.
 
 ```bash
-cargo test --test integration     # 9 end-to-end tests (requires /dev/kvm)
+cargo test --test integration     # 44 end-to-end tests (requires /dev/kvm)
 ```
 
 ---
@@ -1649,7 +1666,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 862 unit tests (833 warpine + 18 gen_api + 11 lx_link), 42 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 862 unit tests (833 warpine + 18 gen_api + 11 lx_link), 44 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

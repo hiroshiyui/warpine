@@ -36,7 +36,7 @@ _Screenshots in this section captured from commit `63ad51b` on 2026-11-17._
 
 - **LX Executable Parser:** Full support for LX headers, object tables, page maps, fixups, resource tables, import tables, entry tables, and non-resident names tables.
 - **KVM Hypervisor:** Custom VMM executing 32-bit OS/2 code at native speed via hardware-accelerated virtualization.
-- **API Thunking:** System call interception via `INT 3` traps bridging guest OS/2 calls to host Rust implementations. Covers DOSCALLS, PMWIN, PMGPI, KBDCALLS, VIOCALLS, NLS, MDM (MMPM/2), UCONV, SO32DLL, and TCP32DLL — 350 entry points total.
+- **API Thunking:** System call interception via `INT 3` traps bridging guest OS/2 calls to host Rust implementations. Covers DOSCALLS, PMWIN, PMGPI, KBDCALLS, VIOCALLS, NLS, MDM (MMPM/2), UCONV, SO32DLL, and TCP32DLL — 355 entry points total.
 - **DLL Loader Chain:** Runtime dynamic loading via `DosLoadModule` / `DosQueryProcAddr` / `DosQueryModuleHandle`. User DLLs are loaded into guest memory with rebased objects and export maps. `jpos2dll.dll` (4OS2 extension) loads and resolves all 7 exports at startup.
 - **Multi-Threading:** OS/2 threads mapped 1:1 to host threads, each with its own KVM vCPU.
 - **Presentation Manager (GUI):** Window management, message loop, graphics primitives (drawn on the calling thread, so `GpiQueryPel` reads pixels back and `GpiSetMix` raster operations such as XOR combine with what is there), memory presentation spaces, bitmaps (`GpiCreateBitmap`, `GpiLoadBitmap`) and `GpiBitBlt` with raster operations and stretching, logical colour tables, timers, clipboard, dialogs, menus, and resource loading via SDL. Each window is kept as its own texture and drawn by the platform's accelerated SDL renderer with vsync, so moving windows costs no redrawing (`WARPINE_COMPOSITOR=software` composites on the CPU instead).
@@ -132,7 +132,13 @@ samples/               OS/2 sample applications and build scripts
   pm_controls_test/    PM built-in controls (WC_BUTTON, WC_STATIC, WC_ENTRYFIELD, etc.)
   pm_menu_dlg_test/    PM menu bar, pull-down menu and modal dialog from resources
   pm_list_test/        List box selection modes, LN_ENTER and MLE word wrap
+  pm_msgbox_test/      WinMessageBox as a modal PM dialog answered by keys and clicks
   pm_font_test/        GPI font selection (IBM Plex families, styles, sizes) and CJK text
+  pm_shapes_test/      GPI arcs, area patterns and line widths, checked with GpiQueryPel
+  pm_codepage_test/    Queue and presentation-space codepages (WinSetCp, CP1004, GpiSetCp)
+  pm_dialog_test/      Keyboard-driven dialog: accelerators, Tab, arrows, mnemonics, clipboard
+  socket_test/         TCP/IP sockets over loopback (SO32DLL via DosLoadModule)
+  cmd_test/            test.cmd: built-in CMD.EXE commands, redirection and pipes
   rust_hello/          Rust guest binary: "Hello from Rust on Warpine!" (Phase C)
 crates/                Standalone guest crates (NOT part of the host workspace)
   warpine-os2-sys/     Raw #![no_std] OS/2 API bindings (extern "C" declarations)
