@@ -1055,6 +1055,29 @@ pub const DEFAULT_THREAD_STACK: u32 = 65536;
 pub const ERROR_MAX_THRDS_REACHED: u32 = 164;
 pub const ERROR_THREAD_NOT_TERMINATED: u32 = 294;
 pub const ERROR_INVALID_THREADID: u32 = 309;
+/// `DosResumeThread` on a thread that is not suspended (`<bseerr.h>`).
+pub const ERROR_NOT_FROZEN: u32 = 90;
+/// `DosCreateThread` flags (`<bsedos.h>`).
+pub const CREATE_READY: u32 = 0;
+pub const CREATE_SUSPENDED: u32 = 1;
+pub const STACK_SPARSE: u32 = 0;
+pub const STACK_COMMITTED: u32 = 2;
+
+// ── Signal exceptions (`<bsedos.h>`, `<bsexcpt.h>`, `<bseerr.h>`) ────────────
+
+/// `DosSetSignalExceptionFocus` flag.
+pub const SIG_UNSETFOCUS: u32 = 0;
+pub const SIG_SETFOCUS: u32 = 1;
+/// Signal numbers: `ExceptionInfo[0]` of an `XCPT_SIGNAL` exception.
+pub const XCPT_SIGNAL_INTR: u32 = 1;
+pub const XCPT_SIGNAL_KILLPROC: u32 = 3;
+pub const XCPT_SIGNAL_BREAK: u32 = 4;
+/// Error codes of the signal-exception calls.
+pub const ERROR_SIGNAL_REFUSED: u32 = 156;
+pub const ERROR_NO_SIGNAL_SENT: u32 = 205;
+pub const ERROR_INVALID_SIGNAL_NUMBER: u32 = 209;
+pub const ERROR_INVALID_PROCID: u32 = 303;
+pub const ERROR_NESTING_TOO_DEEP: u32 = 650;
 
 // ── Semaphores (`<bsedos.h>` INCL_DOSSEMAPHORES, `<bseerr.h>`) ───────────────
 

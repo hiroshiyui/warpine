@@ -401,7 +401,7 @@ impl super::Loader {
         }
     }
 
-    /// DosSetFileLocks (ordinal 349): lock/unlock byte ranges.
+    /// DosSetFileLocks (ordinal 428): lock/unlock byte ranges.
     ///
     /// OS/2 signature: DosSetFileLocks(hFile, pUnlock, pLock, timeout, flags)
     /// - pUnlock/pLock: pointer to FILELOCK struct { offset(4), range(4) }, or 0 if none
@@ -438,7 +438,7 @@ impl super::Loader {
         }
     }
 
-    /// DosProtectSetFileLocks (ordinal 613): lock/unlock with file lock ID.
+    /// DosProtectSetFileLocks (ordinal 639): lock/unlock with file lock ID.
     ///
     /// Same as DosSetFileLocks but with an additional fhFileHandleLockID parameter
     /// for protected file handle operations. We ignore the lock ID.
@@ -1047,12 +1047,17 @@ impl super::Loader {
         self.shared.threads.ended.notify_all();
         self.shared.threads.wake_crit_waiters();
         self.shared.dos_timers.lock_or_recover().stop_all();
+        // Threads spinning in guest code stop too.
+        self.shared.threads.table.lock_or_recover().kick_all_but(0);
     }
 
     /// DosCreateThread (ordinal 311): a new thread runs `pfn(param)` on its
     /// own stack and vCPU (an idle vCPU of an ended thread if there is one);
     /// returning from `pfn` lands on `EXIT_TRAP_ADDR` and ends the thread.
-    pub fn dos_create_thread(&self, vcpu_id: u32, ptid_ptr: u32, pfn: u32, param: u32, cb_stack: u32) -> u32 {
+    /// `CREATE_SUSPENDED` starts it suspended (`DosResumeThread` lets it
+    /// run); `STACK_COMMITTED` changes nothing: Warpine's memory is always
+    /// committed. Other flag bits are ignored.
+    pub fn dos_create_thread(&self, vcpu_id: u32, ptid_ptr: u32, pfn: u32, param: u32, flags: u32, cb_stack: u32) -> u32 {
         use super::threads::ThreadMemory;
         let stack_size = if cb_stack == 0 { DEFAULT_THREAD_STACK } else { cb_stack };
         // Return address + parameter, below the top of the stack.
@@ -1134,8 +1139,13 @@ impl super::Loader {
             return ERROR_MAX_THRDS_REACHED;
         }
 
-        self.shared.threads.table.lock_or_recover()
-            .start(tid, ThreadMemory { stack: stack_base, tib: tib_addr });
+        {
+            let mut table = self.shared.threads.table.lock_or_recover();
+            table.start(tid, ThreadMemory { stack: stack_base, tib: tib_addr });
+            if flags & CREATE_SUSPENDED != 0 {
+                table.suspend(super::threads::tid_of_vcpu(vcpu_id), tid);
+            }
+        }
         if ptid_ptr != 0 { self.guest_write::<u32>(ptid_ptr, tid); }
         let shared_clone = Arc::clone(&self.shared);
         let vm_clone = Arc::clone(&self.vm);

@@ -307,6 +307,35 @@ fn test_thread_exit_ends_only_the_thread() {
     assert_eq!(code, 3, "exit code of DosExit(EXIT_PROCESS, 3)\n{out}");
 }
 
+/// thread_control_test: a thread spinning in a pure loop is stopped at once
+/// by DosSuspendThread, a critical section and DosKillThread (its vCPU is
+/// kicked out of the guest); suspend counts, CREATE_SUSPENDED, a killed
+/// suspended thread ending on resume; DosSendSignalException reaches
+/// thread 1's handler (also while it spins), and — with the program copied
+/// to drive C as two child programs — a child process that asked for
+/// signals handles XCPT_SIGNAL_INTR (exit code 7) while one that did not is
+/// ended by it (exit code 1).
+#[test]
+fn test_thread_control_and_signal_exceptions() {
+    const SAMPLE: &str = "samples/thread_control_test/thread_control_test.exe";
+    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    let data_home = tempfile::tempdir().expect("tempdir");
+    let drive_c = data_home.path().join("warpine/drive_c");
+    std::fs::create_dir_all(&drive_c).unwrap();
+    for name in ["THRDCF.EXE", "THRDCN.EXE"] {
+        std::fs::copy(SAMPLE, drive_c.join(name)).unwrap();
+    }
+    let home = data_home.path().to_str().unwrap();
+    let (out, code) = run_sample_env(SAMPLE, 90, &[("XDG_DATA_HOME", home)]);
+    let checks: Vec<&str> = out.lines()
+        .filter(|l| l.starts_with("thread_control_test: ") && !l.contains(": done")).collect();
+    assert!(checks.len() >= 51, "every check reported, the child ones too:\n{out}");
+    let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
+    assert!(failed.is_empty(), "failed checks: {failed:#?}");
+    assert!(out.contains(&format!("thread_control_test: done {n}/{n}", n = checks.len())), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
 /// xcpt_thread_test: every thread has its own exception-handler chain (a
 /// created thread starts with an empty one; exceptions reach only the
 /// raising thread's handlers), and XCPT_CONTINUE_EXECUTION returns from

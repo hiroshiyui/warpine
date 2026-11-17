@@ -14,7 +14,7 @@ digraph warpine {
     entry [label=<<B>Start-up: PM, VIO window, full screen or headless</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">main.rs, api.rs</FONT>>, fillcolor="#bbdefb"];
     formats [label=<<B>Executable formats</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">lx.rs, lx/header.rs, ne.rs, ne/header.rs</FONT>>, fillcolor="#bbdefb"];
     loading [label=<<B>Loading and guest memory: objects, fixups, GDT / IDT, imports</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/lx_loader.rs, loader/ne_exec.rs, loader/descriptors.rs, loader/guest_mem.rs</FONT>>, fillcolor="#bbdefb"];
-    vcpu [label=<<B>vCPUs and threads: VM exits, callbacks, exceptions (ADR-0007)</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/vm_backend.rs, loader/kvm_backend.rs, loader/vcpu.rs, loader/threads.rs</FONT><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/critsec.rs, loader/exitlist.rs, loader/seh.rs</FONT>>, fillcolor="#bbdefb"];
+    vcpu [label=<<B>vCPUs and threads: VM exits, kicks, callbacks, exceptions, signals (ADR-0007)</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/vm_backend.rs, loader/kvm_backend.rs, loader/vcpu.rs, loader/threads.rs</FONT><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/critsec.rs, loader/exitlist.rs, loader/seh.rs, loader/signals.rs</FONT><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/host_signal.rs</FONT>>, fillcolor="#bbdefb"];
     dispatch [label=<<B>API dispatch: registry, sub-dispatchers, tracing</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/api_registry.rs, loader/api_dispatch.rs, loader/api_trace.rs, loader/api_ring.rs</FONT>>, fillcolor="#bbdefb"];
     core [label=<<B>Loader core: Loader, SharedState, managers, constants</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/mod.rs, loader/managers.rs, loader/mutex_ext.rs, loader/constants.rs</FONT>>, fillcolor="#bbdefb"];
     kernel [label=<<B>Kernel APIs: DOSCALLS, QUECALLS, processes, IPC, timers</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/doscalls.rs, loader/stubs.rs, loader/process.rs, loader/ipc.rs</FONT><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/dostimer.rs, loader/modpath.rs, loader/suballoc.rs, loader/cmd.rs</FONT>>, fillcolor="#bbdefb"];
@@ -36,7 +36,7 @@ digraph warpine {
     sdl [label="SDL3: display, input, audio, clipboard (ADR-0010)", shape=component, fillcolor="#ffffff"];
     hostfs [label="Host file system: drive C: in $XDG_DATA_HOME/warpine/drive_c", shape=component, fillcolor="#ffffff"];
     network [label="Host network (Linux sockets)", shape=component, fillcolor="#ffffff"];
-    children [label="Child Warpine processes (DosExecPgm)", shape=component, fillcolor="#ffffff"];
+    children [label="Child Warpine processes (DosExecPgm, signal exceptions)", shape=component, fillcolor="#ffffff"];
     gdb [label="GDB (remote protocol over TCP)", shape=component, fillcolor="#ffffff"];
   }
   subgraph cluster_build {
@@ -63,6 +63,7 @@ digraph warpine {
   kernel -> vfs;
   kernel -> nls;
   kernel -> children [label="DosExecPgm"];
+  vcpu -> children [label="INTR / BREAK as real-time signals"];
   pmshell -> vfs [label="profiles"];
   vfs -> hostfs;
   net_mm -> network;

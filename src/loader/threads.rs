@@ -20,14 +20,15 @@
 //! KVM cannot destroy a vCPU, and vCPU ids are limited, so the vCPU of an
 //! ended thread is kept here and reused by the next `DosCreateThread`.
 
-use std::collections::{BTreeSet, HashMap, VecDeque};
-use std::sync::{Condvar, Mutex};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::sync::{Arc, Condvar, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-use super::constants::{ERROR_CRITSEC_OVERFLOW, ERROR_CRITSEC_UNDERFLOW, NO_ERROR};
+use super::constants::{ERROR_CRITSEC_OVERFLOW, ERROR_CRITSEC_UNDERFLOW, ERROR_INVALID_THREADID,
+                       ERROR_NOT_FROZEN, NO_ERROR};
 use super::mutex_ext::MutexExt;
-use super::vm_backend::VcpuBackend;
+use super::vm_backend::{VcpuBackend, VcpuKick};
 
 /// OS/2 thread id of the main thread.
 pub const MAIN_TID: u32 = 1;
@@ -101,6 +102,10 @@ pub struct ThreadTable {
     /// vCPU ids handed to KVM so far (the main thread's is `MAIN_VCPU_ID`).
     next_kvm_id: u64,
     idle_vcpus: Vec<Box<dyn VcpuBackend>>,
+    /// Suspend counts of suspended threads (`DosSuspendThread`).
+    suspended: BTreeMap<u32, u32>,
+    /// Kick handles of the vCPUs of running threads (`VcpuKick`).
+    kickers: HashMap<u32, Arc<dyn VcpuKick>>,
 }
 
 impl Default for ThreadTable {
@@ -118,6 +123,8 @@ impl ThreadTable {
             next_tid: FIRST_CREATED_TID,
             next_kvm_id: MAIN_VCPU_ID as u64 + 1,
             idle_vcpus: Vec::new(),
+            suspended: BTreeMap::new(),
+            kickers: HashMap::new(),
         }
     }
 
@@ -170,6 +177,8 @@ impl ThreadTable {
     pub fn end(&mut self, tid: u32) -> (EndOutcome, Option<ThreadMemory>) {
         let was_running = self.running.remove(&tid);
         self.killed.remove(&tid);
+        self.suspended.remove(&tid);
+        self.kickers.remove(&tid);
         if was_running && tid != MAIN_TID {
             if self.ended.len() >= MAX_ENDED_THREADS {
                 self.ended.pop_front();
@@ -213,6 +222,57 @@ impl ThreadTable {
 
     pub fn is_killed(&self, tid: u32) -> bool {
         self.killed.contains(&tid)
+    }
+
+    /// `DosSuspendThread` from `caller`: one more suspension of running
+    /// thread `tid` (not the caller itself).
+    pub fn suspend(&mut self, caller: u32, tid: u32) -> u32 {
+        if tid == caller || !self.running.contains(&tid) {
+            return ERROR_INVALID_THREADID;
+        }
+        let count = self.suspended.entry(tid).or_insert(0);
+        *count = count.saturating_add(1);
+        NO_ERROR
+    }
+
+    /// `DosResumeThread`: one suspension less; the thread runs again at 0.
+    pub fn resume(&mut self, tid: u32) -> u32 {
+        if !self.running.contains(&tid) {
+            return ERROR_INVALID_THREADID;
+        }
+        match self.suspended.get_mut(&tid) {
+            None => ERROR_NOT_FROZEN,
+            Some(count) => {
+                *count -= 1;
+                if *count == 0 {
+                    self.suspended.remove(&tid);
+                }
+                NO_ERROR
+            }
+        }
+    }
+
+    pub fn suspend_count(&self, tid: u32) -> u32 {
+        self.suspended.get(&tid).copied().unwrap_or(0)
+    }
+
+    /// Thread `tid` runs on the vCPU `kicker` kicks.
+    pub fn set_kicker(&mut self, tid: u32, kicker: Arc<dyn VcpuKick>) {
+        self.kickers.insert(tid, kicker);
+    }
+
+    /// Make thread `tid` leave guest code and look at its flags.
+    pub fn kick(&self, tid: u32) {
+        if let Some(k) = self.kickers.get(&tid) {
+            k.kick();
+        }
+    }
+
+    /// Kick every running thread except `except` (0: all of them).
+    pub fn kick_all_but(&self, except: u32) {
+        for (_, k) in self.kickers.iter().filter(|(t, _)| **t != except) {
+            k.kick();
+        }
     }
 }
 
@@ -291,6 +351,12 @@ pub struct Threads {
     pub crit_cond: Condvar,
     /// A thread owns the critical section (a quick look before `crit`).
     pub crit_held: AtomicBool,
+    /// Signalled when a thread is resumed (and when the process ends).
+    pub resumed: Condvar,
+    /// Signal exceptions for thread 1 (`signals.rs`).
+    pub signals: Mutex<super::signals::SignalState>,
+    /// A signal may be deliverable (a quick look before `signals`).
+    pub signal_pending: AtomicBool,
 }
 
 impl Threads {
@@ -338,7 +404,8 @@ impl Threads {
     }
 
     /// `DosEnterCritSec` by `tid`: wait while another thread owns the
-    /// section, then enter it. `None`: `stop()` said to give up.
+    /// section, then enter it. `None`: `stop()` said to give up. The other
+    /// threads are kicked out of guest code, so that they stop at once.
     pub fn enter_crit_sec(&self, tid: u32, stop: impl Fn() -> bool) -> Option<u32> {
         let mut crit = self.crit.lock_or_recover();
         while crit.blocks(tid) {
@@ -350,7 +417,43 @@ impl Threads {
         }
         let rc = crit.enter(tid);
         self.crit_held.store(crit.owner().is_some(), Ordering::Release);
+        // Lock order: `crit` before `table`.
+        self.table.lock_or_recover().kick_all_but(tid);
         Some(rc)
+    }
+
+    /// Block thread `tid` while it is suspended (`DosSuspendThread`) and
+    /// `stop()` (process ending, exit list) does not say to give up. A
+    /// killed thread stays suspended until it is resumed. Whether it was
+    /// suspended (the caller looks at its flags again then).
+    pub fn wait_while_suspended(&self, tid: u32, stop: impl Fn() -> bool) -> bool {
+        let mut table = self.table.lock_or_recover();
+        let suspended = table.suspend_count(tid) > 0;
+        while table.suspend_count(tid) > 0 && !stop() {
+            table = self.resumed.wait_timeout(table, WAIT_POLL)
+                .unwrap_or_else(|e| e.into_inner()).0;
+        }
+        suspended
+    }
+
+    /// `DosSuspendThread` by `caller` for `tid`: the thread stops at once
+    /// if it runs guest code, else when it next leaves Warpine.
+    pub fn suspend(&self, caller: u32, tid: u32) -> u32 {
+        let mut table = self.table.lock_or_recover();
+        let rc = table.suspend(caller, tid);
+        if rc == NO_ERROR {
+            table.kick(tid);
+        }
+        rc
+    }
+
+    /// `DosResumeThread` for `tid`.
+    pub fn resume(&self, tid: u32) -> u32 {
+        let rc = self.table.lock_or_recover().resume(tid);
+        if rc == NO_ERROR {
+            self.resumed.notify_all();
+        }
+        rc
     }
 
     /// `DosExitCritSec` by `tid`.
@@ -377,6 +480,7 @@ impl Threads {
     /// the process-exit and kill flags again.
     pub fn wake_crit_waiters(&self) {
         self.crit_cond.notify_all();
+        self.resumed.notify_all();
     }
 
     /// Block until the process ends (the main thread ended by itself while
@@ -394,6 +498,7 @@ impl Threads {
 mod tests {
     use super::*;
     use crate::loader::vm_backend::mock::MockVcpu;
+    use crate::loader::vm_backend::VcpuBackend;
 
     const MEM: ThreadMemory = ThreadMemory { stack: 0x1000, tib: 0x2000 };
 
@@ -502,6 +607,57 @@ mod tests {
         t.put_vcpu(Box::new(MockVcpu::new()));
         assert!(t.take_vcpu().is_ok());
         assert_eq!(t.take_vcpu().err(), Some(3));
+    }
+
+    #[test]
+    fn suspensions_count_and_end_with_the_thread() {
+        let mut t = with_threads(&[2]);
+        assert_eq!(t.suspend(2, 2), ERROR_INVALID_THREADID, "not itself");
+        assert_eq!(t.suspend(MAIN_TID, 9), ERROR_INVALID_THREADID);
+        assert_eq!(t.resume(2), ERROR_NOT_FROZEN);
+        assert_eq!(t.suspend(MAIN_TID, 2), NO_ERROR);
+        assert_eq!(t.suspend(MAIN_TID, 2), NO_ERROR);
+        assert_eq!(t.suspend_count(2), 2);
+        assert_eq!(t.resume(2), NO_ERROR);
+        assert_eq!(t.suspend_count(2), 1);
+        t.end(2);
+        assert_eq!(t.suspend_count(2), 0);
+        assert_eq!(t.resume(2), ERROR_INVALID_THREADID);
+    }
+
+    #[test]
+    fn kicks_reach_registered_running_threads() {
+        let mut t = with_threads(&[2, 3]);
+        let (a, b, c) = (MockVcpu::new(), MockVcpu::new(), MockVcpu::new());
+        t.set_kicker(MAIN_TID, a.kicker());
+        t.set_kicker(2, b.kicker());
+        t.set_kicker(3, c.kicker());
+        t.kick(2);
+        t.kick(7);
+        t.kick_all_but(3);
+        let n = |v: &MockVcpu| v.kick.kicks.load(Ordering::SeqCst);
+        assert_eq!((n(&a), n(&b), n(&c)), (1, 2, 0));
+        t.end(2);
+        t.kick_all_but(0);
+        assert_eq!((n(&a), n(&b), n(&c)), (2, 2, 1));
+    }
+
+    #[test]
+    fn wait_while_suspended_returns_on_resume_or_stop() {
+        let threads = std::sync::Arc::new(Threads::default());
+        threads.table.lock_or_recover().start(2, MEM);
+        assert!(!threads.wait_while_suspended(2, || false), "not suspended");
+        assert_eq!(threads.suspend(MAIN_TID, 2), NO_ERROR);
+        assert!(threads.wait_while_suspended(2, || true), "gives up when told to");
+        let other = std::sync::Arc::clone(&threads);
+        let resumer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            other.resume(2)
+        });
+        let start = std::time::Instant::now();
+        assert!(threads.wait_while_suspended(2, || false));
+        assert!(start.elapsed() >= Duration::from_millis(20));
+        assert_eq!(resumer.join().unwrap(), NO_ERROR);
     }
 
     #[test]

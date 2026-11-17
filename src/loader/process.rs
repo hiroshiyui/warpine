@@ -352,7 +352,7 @@ impl super::Loader {
         }
     }
 
-    /// DosKillProcess (ordinal 237): kill a process.
+    /// DosKillProcess (ordinal 235): kill a process.
     ///
     /// OS/2 signature: DosKillProcess(action, pid)
     /// - action: 0=DKP_PROCESSTREE, 1=DKP_PROCESS

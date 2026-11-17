@@ -136,8 +136,8 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_get_date_time(a[0])) },
     ApiEntry { ordinal: 231, module: "DOSCALLS", name: "DosDevConfig",     argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_dev_config(a[0],a[1])) },
-    // DosEnterCritSec / DosExitCritSec: the other threads stop at their
-    // next exit to Warpine until the section ends (`critsec.rs`).
+    // DosEnterCritSec / DosExitCritSec: the other threads are kicked out of
+    // guest code and held until the section ends (`critsec.rs`).
     ApiEntry { ordinal: 232, module: "DOSCALLS", name: "DosEnterCritSec",  argc: 0,
                handler: |l,_v,id,_a| ApiResult::Normal(l.dos_enter_crit_sec(id)) },
     ApiEntry { ordinal: 233, module: "DOSCALLS", name: "DosExitCritSec",   argc: 0,
@@ -154,6 +154,12 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_kill_process(a[0],a[1])) },
     ApiEntry { ordinal: 236, module: "DOSCALLS", name: "DosSetPriority",   argc: 4,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_priority(a[0],a[1],a[2],a[3])) },
+    // DosResumeThread / DosSuspendThread: suspend counts (`threads.rs`); a
+    // thread spinning in guest code is kicked out of it at once.
+    ApiEntry { ordinal: 237, module: "DOSCALLS", name: "DosResumeThread",  argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_resume_thread(a[0])) },
+    ApiEntry { ordinal: 238, module: "DOSCALLS", name: "DosSuspendThread", argc: 1,
+               handler: |l,_v,id,a| ApiResult::Normal(l.dos_suspend_thread(id,a[0])) },
 
     // ── DOSCALLS — pipes ──────────────────────────────────────────────────
     ApiEntry { ordinal: 239, module: "DOSCALLS", name: "DosCreatePipe",    argc: 3,
@@ -260,9 +266,9 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_mem(a[0],a[1],a[2])) },
 
     // ── DOSCALLS — threading ──────────────────────────────────────────────
-    // DosCreateThread: ptid, pfn, param, [flags@16 unused], cbStack
+    // DosCreateThread: ptid, pfn, param, flags (CREATE_SUSPENDED), cbStack
     ApiEntry { ordinal: 311, module: "DOSCALLS", name: "DosCreateThread",  argc: 5,
-               handler: |l,_v,id,a| ApiResult::Normal(l.dos_create_thread(id,a[0],a[1],a[2],a[4])) },
+               handler: |l,_v,id,a| ApiResult::Normal(l.dos_create_thread(id,a[0],a[1],a[2],a[3],a[4])) },
     // DosGetInfoBlocks: needs live vcpu to read FS.base for TIB address
     ApiEntry { ordinal: 312, module: "DOSCALLS", name: "DosGetInfoBlocks", argc: 2,
                handler: |l,v,_i,a| ApiResult::Normal(l.dos_get_info_blocks(v,a[0],a[1])) },
@@ -374,8 +380,11 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_sys_state(a[0],a[1],a[2],a[3],a[4])) },
     ApiEntry { ordinal: 372, module: "DOSCALLS", name: "DosEnumAttribute", argc: 7,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_enum_attribute(a[0],a[1],a[2],a[3],a[4],a[5],a[6])) },
-    ApiEntry { ordinal: 378, module: "DOSCALLS", name: "DosSetSignalExceptionFocus", argc: 1,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_signal_exception_focus(a[0])) },
+    // Signal exceptions (`signals.rs`): delivered to thread 1's handlers.
+    ApiEntry { ordinal: 378, module: "DOSCALLS", name: "DosSetSignalExceptionFocus", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_signal_exception_focus(a[0],a[1])) },
+    ApiEntry { ordinal: 379, module: "DOSCALLS", name: "DosSendSignalException", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_send_signal_exception(a[0],a[1])) },
     ApiEntry { ordinal: 380, module: "DOSCALLS", name: "DosEnterMustComplete", argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_enter_must_complete(a[0])) },
     ApiEntry { ordinal: 381, module: "DOSCALLS", name: "DosExitMustComplete",  argc: 1,

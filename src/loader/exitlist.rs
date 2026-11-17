@@ -215,7 +215,9 @@ impl super::Loader {
         if claimed {
             self.shared.threads.exit_list_active.store(true, Ordering::Release);
             debug!("  [VCPU {}] exit-list processing (tc={}, rc={})", vcpu_id, tc, rc);
-            // Wake the threads blocked in the system so that they stop.
+            // Wake the threads blocked in the system so that they stop
+            // (`begin_exit_list` kicks those running guest code; the caller
+            // may hold the thread table here).
             self.shared.threads.ended.notify_all();
             self.shared.threads.wake_crit_waiters();
             self.shared.kbd_cond.notify_all();
@@ -233,6 +235,8 @@ impl super::Loader {
         if !main_alive || !self.claim_exit_list(vcpu_id, rc, tc, initial_esp) {
             return ExitListStart::NotStarted;
         }
+        // The other threads stop, also those spinning in guest code.
+        self.shared.threads.table.lock_or_recover().kick_all_but(super::threads::tid_of_vcpu(vcpu_id));
         // Window procedures, dialog loops … the thread was in are gone.
         callback_stack.clear();
         if self.next_exit_routine(vcpu) { ExitListStart::Running } else { ExitListStart::Finished }

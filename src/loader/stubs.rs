@@ -41,7 +41,7 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// DosSetMaxFH (ordinal 291): set maximum file handles.
+    /// DosSetMaxFH (ordinal 209): set maximum file handles.
     pub fn dos_set_max_fh(&self, count: u32) -> u32 {
         debug!("  DosSetMaxFH({})", count);
         NO_ERROR
@@ -93,19 +93,7 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// DosSetSignalExceptionFocus (ordinal 356).
-    pub fn dos_set_signal_exception_focus(&self, flag: u32) -> u32 {
-        debug!("  DosSetSignalExceptionFocus({})", flag);
-        NO_ERROR
-    }
-
-    /// DosAcknowledgeSignalException (ordinal 418).
-    pub fn dos_acknowledge_signal_exception(&self, signal: u32) -> u32 {
-        debug!("  DosAcknowledgeSignalException({})", signal);
-        NO_ERROR
-    }
-
-    /// DosQuerySysState (ordinal 378): query system state info.
+    /// DosQuerySysState (ordinal 368): query system state info.
     /// Stub — returns ERROR_INVALID_FUNCTION since we don't have real system state.
     pub fn dos_query_sys_state(&self, func: u32, arg1: u32, pid: u32, p_buf: u32, cb_buf: u32) -> u32 {
         debug!("  DosQuerySysState(func={}, arg1={}, pid={}, pBuf=0x{:08X}, cbBuf={})", func, arg1, pid, p_buf, cb_buf);
@@ -567,7 +555,7 @@ impl super::Loader {
         }
     }
 
-    /// DosForceDelete (ordinal 259): delete without undelete.
+    /// DosForceDelete (ordinal 110): delete without undelete.
     pub fn dos_force_delete(&self, psz_name: u32) -> u32 {
         self.dos_delete(psz_name) // alias to existing delete
     }
@@ -631,13 +619,13 @@ impl super::Loader {
         result
     }
 
-    /// DosSetFileInfo (ordinal 279): set file timestamps/attributes.
+    /// DosSetFileInfo (ordinal 218): set file timestamps/attributes.
     pub fn dos_set_file_info(&self, hf: u32, level: u32, _p_info: u32, _cb_info: u32) -> u32 {
         debug!("  DosSetFileInfo(hf={}, level={})", hf, level);
         NO_ERROR
     }
 
-    /// DosSetFileMode (ordinal 267): set file attributes.
+    /// DosSetFileMode (ordinal 84): set file attributes.
     pub fn dos_set_file_mode(&self, psz_name: u32, attr: u32) -> u32 {
         let name = self.read_guest_string(psz_name);
         debug!("  DosSetFileMode('{}', 0x{:04X})", name, attr);
@@ -660,7 +648,7 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// DosSetFHState (ordinal 277): set file handle state.
+    /// DosSetFHState (ordinal 221): set file handle state.
     pub fn dos_set_fh_state(&self, hf: u32, mode: u32) -> u32 {
         debug!("  DosSetFHState(hf={}, mode=0x{:04X})", hf, mode);
         NO_ERROR
@@ -946,7 +934,7 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// DosSetDateTime (ordinal 231): set system date/time. Stub.
+    /// DosSetDateTime (ordinal 292): set system date/time. Stub.
     pub fn dos_set_date_time(&self, _p_dt: u32) -> u32 {
         debug!("  DosSetDateTime (stub)");
         NO_ERROR
@@ -958,21 +946,41 @@ impl super::Loader {
     ///
     /// OS/2 signature: DosKillThread(TID tid)
     ///
-    /// The thread is flagged and ends at its next exit to Warpine (an API
-    /// call, a callback return, a fault) like `DosExit(EXIT_THREAD)`; a
-    /// thread spinning in guest code without calling the system is not
-    /// interrupted. The calling thread itself and threads that do not run
-    /// give `ERROR_INVALID_THREADID`.
+    /// The thread is flagged and ends like `DosExit(EXIT_THREAD)` when it
+    /// next leaves the guest: at once if it runs guest code (its vCPU is
+    /// kicked), after the call if it is blocked in one. A suspended thread
+    /// ends when it is resumed. The calling thread itself and threads that
+    /// do not run give `ERROR_INVALID_THREADID`.
     pub fn dos_kill_thread(&self, vcpu_id: u32, tid: u32) -> u32 {
         debug!("  DosKillThread(tid={})", tid);
         let caller = super::threads::tid_of_vcpu(vcpu_id);
-        if self.shared.threads.table.lock_or_recover().kill(caller, tid) {
+        let mut table = self.shared.threads.table.lock_or_recover();
+        if table.kill(caller, tid) {
+            table.kick(tid);
+            drop(table);
             // A thread held by the caller's critical section ends now.
             self.shared.threads.wake_crit_waiters();
             NO_ERROR
         } else {
             ERROR_INVALID_THREADID
         }
+    }
+
+    /// DosSuspendThread (ordinal 238): stop another thread of the process
+    /// until `DosResumeThread`. Suspensions count: each needs a resume.
+    /// A thread running guest code stops at once (its vCPU is kicked), one
+    /// blocked in a call when the call returns. Not the calling thread;
+    /// threads that do not run give `ERROR_INVALID_THREADID`.
+    pub fn dos_suspend_thread(&self, vcpu_id: u32, tid: u32) -> u32 {
+        debug!("  DosSuspendThread(tid={})", tid);
+        self.shared.threads.suspend(super::threads::tid_of_vcpu(vcpu_id), tid)
+    }
+
+    /// DosResumeThread (ordinal 237): undo one `DosSuspendThread`;
+    /// `ERROR_NOT_FROZEN` if the thread is not suspended.
+    pub fn dos_resume_thread(&self, tid: u32) -> u32 {
+        debug!("  DosResumeThread(tid={})", tid);
+        self.shared.threads.resume(tid)
     }
 
     /// DosScanEnv (ordinal 227): scan the process environment for a variable.

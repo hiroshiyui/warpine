@@ -47,6 +47,8 @@ DOSCALLS.233  DosExitCritSec
 DOSCALLS.234  DosExit
 DOSCALLS.235  DosKillProcess
 DOSCALLS.236  DosSetPriority
+DOSCALLS.237  DosResumeThread
+DOSCALLS.238  DosSuspendThread
 DOSCALLS.239  DosCreatePipe
 DOSCALLS.241  DosConnectNPipe
 DOSCALLS.243  DosCreateNPipe
@@ -138,6 +140,7 @@ DOSCALLS.357  DosUnwindException
 DOSCALLS.368  DosQuerySysState
 DOSCALLS.372  DosEnumAttribute
 DOSCALLS.378  DosSetSignalExceptionFocus
+DOSCALLS.379  DosSendSignalException
 DOSCALLS.380  DosEnterMustComplete
 DOSCALLS.381  DosExitMustComplete
 DOSCALLS.382  DosSetRelMaxFH

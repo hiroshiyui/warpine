@@ -172,7 +172,20 @@ impl super::Loader {
 
         // Access violation passes the faulting address as a parameter.
         let params: &[u32] = if vector == 14 { &[0, fault.eip] } else { &[] };
+        debug!("SEH: hardware exception vector={}", vector);
+        self.chain_dispatch(vcpu_id, fault, xcpt_code, flags, params)
+    }
 
+    /// Dispatch exception `xcpt_code` (raised at `fault`) to the first
+    /// handler of thread `vcpu_id`'s chain. `None`: no usable handler.
+    pub(crate) fn chain_dispatch(
+        &self,
+        vcpu_id: u32,
+        fault: FaultContext,
+        xcpt_code: u32,
+        flags: u32,
+        params: &[u32],
+    ) -> Option<ApiResult> {
         let chain_head = self.exception_chain_addr(vcpu_id)
             .and_then(|head| self.guest_read::<u32>(head))
             .unwrap_or(XCPT_CHAIN_END);
@@ -198,8 +211,8 @@ impl super::Loader {
         let (exc_report, ctx_record, guest_allocs) =
             self.alloc_exception_records(&fault, xcpt_code, flags, fault.eip, params);
 
-        debug!("SEH: dispatching vector={} xcpt=0x{:08X} to handler=0x{:08X} (reg=0x{:08X})",
-               vector, xcpt_code, handler_fn, chain_head);
+        debug!("SEH: dispatching xcpt=0x{:08X} to handler=0x{:08X} (reg=0x{:08X})",
+               xcpt_code, handler_fn, chain_head);
 
         Some(ApiResult::ExceptionDispatch {
             handler_addr: handler_fn,

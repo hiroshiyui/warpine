@@ -16,8 +16,9 @@
 //! the guest again, while another thread owns the section
 //! (`Threads::wait_crit_sec`), and an API call that arrives from a thread
 //! already running in guest code when the section began waits before it is
-//! carried out. A thread that spins in guest code without calling the
-//! system keeps running until its next exit to Warpine.
+//! carried out. Entering a section kicks the other threads' vCPUs
+//! (`VcpuKick`), so a thread spinning in guest code without calling the
+//! system leaves the guest at once and is held there too.
 //!
 //! Warpine's choices where the documents say nothing:
 //! - a thread that ends (`DosExit(EXIT_THREAD)`, returning, `DosKillThread`)
@@ -25,7 +26,7 @@
 //! - a waiting thread gives up when the process ends (the exit list runs on
 //!   another thread) or it is killed, and then ends;
 //! - `ERROR_INVALID_THREADID` (a call from a signal or exception handler)
-//!   is not reported: Warpine has no signals, and exception handlers may
+//!   is not reported: exception handlers (signal exceptions included) may
 //!   enter and leave the section like other code.
 
 use super::constants::*;

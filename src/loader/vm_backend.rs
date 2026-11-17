@@ -25,6 +25,10 @@ pub enum VmExit {
     MmioWrite { addr: u64 },
     /// Guest triple-faulted (shutdown condition).
     Shutdown,
+    /// [`VcpuKick::kick`] made the vCPU leave the guest (KVM: `KVM_RUN`
+    /// returned `EINTR`). Guest state is untouched: the loop looks at its
+    /// flags and enters the guest again where it left off.
+    Interrupted,
     /// Any other exit reason not handled above.
     Other(String),
 }
@@ -91,6 +95,19 @@ pub struct GuestSregs {
     pub cr4: u64,
 }
 
+// ── vCPU kick ────────────────────────────────────────────────────────────────
+
+/// Makes a vCPU that runs guest code leave it, from any host thread.
+///
+/// A kick is never lost: a vCPU in the guest exits with
+/// [`VmExit::Interrupted`] at once; one that is outside the guest returns
+/// `Interrupted` from its next [`VcpuBackend::run`]. Several kicks before
+/// that exit count as one. Whoever kicks first sets the flag the vCPU
+/// loop is to look at (kill, critical section, suspension, process end).
+pub trait VcpuKick: Send + Sync {
+    fn kick(&self);
+}
+
 // ── vCPU trait ───────────────────────────────────────────────────────────────
 
 /// Abstraction over a single virtual CPU.
@@ -123,6 +140,10 @@ pub trait VcpuBackend: Send {
     /// When `enabled` is `true` the vCPU will exit after every instruction with
     /// `VmExit::Debug`.  Call with `false` to return to normal execution.
     fn set_single_step(&mut self, enabled: bool) -> Result<(), String>;
+
+    /// A handle that makes this vCPU leave the guest (see [`VcpuKick`]),
+    /// valid for as long as the vCPU exists.
+    fn kicker(&self) -> std::sync::Arc<dyn VcpuKick>;
 }
 
 // ── VM trait ─────────────────────────────────────────────────────────────────
@@ -160,6 +181,23 @@ pub trait VmBackend: Send + Sync {
 pub mod mock {
     use super::*;
     use std::collections::VecDeque;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+    /// Kick handle of a [`MockVcpu`]: counts kicks, and the next `run()`
+    /// after a kick returns [`VmExit::Interrupted`] like KVM's.
+    #[derive(Default)]
+    pub struct MockKick {
+        pub kicks: AtomicUsize,
+        pending: AtomicBool,
+    }
+
+    impl VcpuKick for MockKick {
+        fn kick(&self) {
+            self.kicks.fetch_add(1, Ordering::SeqCst);
+            self.pending.store(true, Ordering::SeqCst);
+        }
+    }
 
     /// Scriptable vCPU for unit-testing API handlers.
     ///
@@ -171,6 +209,7 @@ pub mod mock {
         pub regs:  GuestRegs,
         pub sregs: GuestSregs,
         exits:     VecDeque<VmExit>,
+        pub kick:  Arc<MockKick>,
     }
 
     impl Default for MockVcpu {
@@ -183,6 +222,7 @@ pub mod mock {
                 regs:  GuestRegs::default(),
                 sregs: GuestSregs::default(),
                 exits: VecDeque::new(),
+                kick:  Arc::new(MockKick::default()),
             }
         }
 
@@ -194,6 +234,9 @@ pub mod mock {
 
     impl VcpuBackend for MockVcpu {
         fn run(&mut self) -> Result<VmExit, String> {
+            if self.kick.pending.swap(false, Ordering::SeqCst) {
+                return Ok(VmExit::Interrupted);
+            }
             Ok(self.exits.pop_front().unwrap_or(VmExit::Hlt))
         }
         fn get_regs(&self) -> Result<GuestRegs, String>          { Ok(self.regs.clone()) }
@@ -202,6 +245,7 @@ pub mod mock {
         fn set_sregs(&mut self, s: &GuestSregs) -> Result<(), String> { self.sregs = s.clone(); Ok(()) }
         fn enable_software_breakpoints(&mut self) -> Result<(), String> { Ok(()) }
         fn set_single_step(&mut self, _enabled: bool) -> Result<(), String> { Ok(()) }
+        fn kicker(&self) -> Arc<dyn VcpuKick> { self.kick.clone() }
     }
 
     /// No-op VM backend for unit tests — no KVM file descriptors opened.
@@ -213,5 +257,17 @@ pub mod mock {
         fn create_vcpu(&self, _id: u64) -> Result<Box<dyn VcpuBackend>, String> {
             Ok(Box::new(MockVcpu::new()))
         }
+    }
+
+    #[test]
+    fn a_kick_interrupts_the_next_run_once() {
+        let mut vcpu = MockVcpu::new();
+        vcpu.push_exit(VmExit::Debug);
+        let kicker = vcpu.kicker();
+        kicker.kick();
+        kicker.kick();
+        assert!(matches!(vcpu.run(), Ok(VmExit::Interrupted)));
+        assert!(matches!(vcpu.run(), Ok(VmExit::Debug)), "kicks before the exit count once");
+        assert_eq!(vcpu.kick.kicks.load(Ordering::SeqCst), 2);
     }
 }

@@ -65,6 +65,8 @@ pub mod helpmgr;
 mod seh;
 mod cmd;
 pub mod threads;
+mod host_signal;
+mod signals;
 mod exitlist;
 mod critsec;
 pub mod dostimer;

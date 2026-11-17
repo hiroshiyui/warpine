@@ -75,10 +75,11 @@ modules = ["loader/lx_loader.rs", "loader/ne_exec.rs", "loader/descriptors.rs", 
 [[layer]]
 id = "vcpu"
 zone = "host"
-label = "vCPUs and threads: VM exits, callbacks, exceptions (ADR-0007)"
+label = "vCPUs and threads: VM exits, kicks, callbacks, exceptions, signals (ADR-0007)"
 modules = [
   "loader/vm_backend.rs", "loader/kvm_backend.rs", "loader/vcpu.rs", "loader/threads.rs",
-  "loader/critsec.rs", "loader/exitlist.rs", "loader/seh.rs",
+  "loader/critsec.rs", "loader/exitlist.rs", "loader/seh.rs", "loader/signals.rs",
+  "loader/host_signal.rs",
 ]
 
 [[layer]]
@@ -216,7 +217,7 @@ label = "Host network (Linux sockets)"
 [[external]]
 id = "children"
 zone = "os"
-label = "Child Warpine processes (DosExecPgm)"
+label = "Child Warpine processes (DosExecPgm, signal exceptions)"
 
 [[external]]
 id = "gdb"
@@ -301,6 +302,11 @@ to = "nls"
 from = "kernel"
 to = "children"
 label = "DosExecPgm"
+
+[[flow]]
+from = "vcpu"
+to = "children"
+label = "INTR / BREAK as real-time signals"
 
 [[flow]]
 from = "pmshell"
