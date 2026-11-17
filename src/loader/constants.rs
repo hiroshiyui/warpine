@@ -544,7 +544,7 @@ pub const WC_LISTBOX_ATOM:    u32 = 0xFFFF_0007;
 pub const WC_SCROLLBAR_ATOM:  u32 = 0xFFFF_0008;
 pub const WC_TITLEBAR_ATOM:   u32 = 0xFFFF_0009;
 pub const WC_MLE_ATOM:        u32 = 0xFFFF_000A;
-pub const WC_SPINBUTTON_ATOM: u32 = 0xFFFF_000F;
+pub const WC_SPINBUTTON_ATOM: u32 = 0xFFFF_0020;
 pub const WC_CONTAINER_ATOM:  u32 = 0xFFFF_0025;
 pub const WC_NOTEBOOK_ATOM:   u32 = 0xFFFF_0028;
 
@@ -834,6 +834,8 @@ pub const WS_TABSTOP:  u32 = 0x0002_0000;
 pub const WS_GROUP:    u32 = 0x0001_0000;
 pub const WS_MINIMIZED: u32 = 0x0100_0000;
 pub const WS_MAXIMIZED: u32 = 0x0080_0000;
+/// Painting the window leaves its children alone (`WinInvalidateRect`).
+pub const WS_CLIPCHILDREN: u32 = 0x2000_0000;
 
 // WinQueryWindowULong index of the window style.
 pub const QWL_STYLE: i32 = -2;
@@ -1102,6 +1104,48 @@ pub const TC_HARDERROR: u32 = 1;
 pub const TC_TRAP: u32 = 2;
 pub const TC_KILLPROCESS: u32 = 3;
 pub const TC_EXCEPTION: u32 = 4;
+
+// ── Critical sections (`<bseerr.h>`: DosEnterCritSec / DosExitCritSec) ───────
+
+pub const ERROR_CRITSEC_OVERFLOW: u32 = 484;
+pub const ERROR_CRITSEC_UNDERFLOW: u32 = 485;
+
+// ── Timers (`<bsedos.h>`: DosAsyncTimer / DosStartTimer / DosStopTimer) ──────
+
+/// Error codes of the timer calls (`<bseerr.h>`).
+pub const ERROR_TS_SEMHANDLE: u32 = 323;
+pub const ERROR_TS_NOTIMER: u32 = 324;
+pub const ERROR_TS_HANDLE: u32 = 326;
+/// Warpine's system clock tick in milliseconds: timer intervals are rounded
+/// up to it, and `DosQuerySysInfo(QSV_TIMER_INTERVAL)` reports it (in tenths
+/// of a millisecond).
+pub const DOS_TIMER_TICK_MS: u32 = 32;
+
+// ── DosSearchPath / DosQueryModuleName (`<bsedos.h>`, `<bseerr.h>`) ──────────
+
+/// PIB byte offset of `pib_pchenv` (the environment block).
+pub const PIB_PCHENV_OFFSET: u32 = 0x10;
+/// The module handle Warpine gives the executable (its initial stack and
+/// resources use 0): `DosQueryModuleName(0)` names the executable.
+pub const EXE_MODULE_HANDLE: u32 = 0;
+pub const SEARCH_PATH: u32 = 0;
+pub const SEARCH_CUR_DIRECTORY: u32 = 1;
+pub const SEARCH_ENVIRONMENT: u32 = 2;
+pub const SEARCH_IGNORENETERRS: u32 = 4;
+pub const ERROR_BAD_LENGTH: u32 = 24;
+
+// ── Memory suballocation (`<bsememf.h>`, `<bseerr.h>`) ───────────────────────
+
+pub const DOSSUB_INIT: u32 = 1;
+pub const DOSSUB_GROW: u32 = 2;
+pub const DOSSUB_SPARSE_OBJ: u32 = 4;
+pub const DOSSUB_SERIALIZE: u32 = 8;
+pub const ERROR_DOSSUB_SHRINK: u32 = 310;
+pub const ERROR_DOSSUB_NOMEM: u32 = 311;
+pub const ERROR_DOSSUB_OVERLAP: u32 = 312;
+pub const ERROR_DOSSUB_BADSIZE: u32 = 313;
+pub const ERROR_DOSSUB_BADFLAG: u32 = 314;
+pub const ERROR_DOSSUB_CORRUPTED: u32 = 532;
 /// Sentinel stored at the tail of the exception handler chain (no further handlers).
 pub const XCPT_CHAIN_END: u32 = 0xFFFF_FFFF;
 
@@ -1200,8 +1244,113 @@ pub const PMERR_INVALID_HACCEL:           u32 = 0x101A;
 pub const PMERR_INVALID_HPTR:             u32 = 0x101B;
 pub const PMERR_NO_MSG_QUEUE:             u32 = 0x1036;
 pub const PMERR_MSG_QUEUE_ALREADY_EXISTS: u32 = 0x1052;
+pub const PMERR_INVALID_STRING_PARM:      u32 = 0x100B;
+pub const PMERR_INVALID_ATOM_NAME:        u32 = 0x1015;
+pub const PMERR_INVALID_INTEGER_ATOM:     u32 = 0x1016;
+pub const PMERR_ATOM_NAME_NOT_FOUND:      u32 = 0x1017;
+pub const PMERR_INV_HDC:                  u32 = 0x207C;
 pub const PMERR_INV_HPS:                  u32 = 0x207F;
+pub const PMERR_INV_DRAW_BORDER_OPTION:   u32 = 0x2068;
+
+// ── Window lookups, input state and system colours (pm_query.rs,
+// pm_keystate.rs, pm_syscolor.rs), <pmwin.h> ─────────────────────────────────
+/// `WinEnumDlgItem` codes.
+pub const EDI_FIRSTTABITEM:   u32 = 0;
+pub const EDI_LASTTABITEM:    u32 = 1;
+pub const EDI_NEXTTABITEM:    u32 = 2;
+pub const EDI_PREVTABITEM:    u32 = 3;
+pub const EDI_FIRSTGROUPITEM: u32 = 4;
+pub const EDI_LASTGROUPITEM:  u32 = 5;
+pub const EDI_NEXTGROUPITEM:  u32 = 6;
+pub const EDI_PREVGROUPITEM:  u32 = 7;
+/// Class styles reported by `WinQueryClassInfo` for the preregistered classes.
+pub const CS_PUBLIC: u32 = 0x0000_0010;
+pub const CS_FRAME:  u32 = 0x0000_0020;
+/// Virtual keys of the pointing-device buttons and the shift keys.
+pub const VK_BUTTON1:   u32 = 0x01;
+pub const VK_BUTTON2:   u32 = 0x02;
+pub const VK_BUTTON3:   u32 = 0x03;
+pub const VK_SHIFT:     u32 = 0x09;
+pub const VK_CTRL:      u32 = 0x0a;
+pub const VK_ALT:       u32 = 0x0b;
+pub const VK_ALTGRAF:   u32 = 0x0c;
+pub const VK_PAUSE:     u32 = 0x0d;
+pub const VK_CAPSLOCK:  u32 = 0x0e;
+pub const VK_PRINTSCRN: u32 = 0x19;
+/// `WinGetKeyState` / `WinGetPhysKeyState` result bits (the PM Reference:
+/// 0x8000 "The key is down", 0x0001 toggled / pressed since the last call).
+pub const KEY_STATE_DOWN:    u32 = 0x8000;
+pub const KEY_STATE_TOGGLED: u32 = 0x0001;
+/// Sent to the main windows when `WinSetSysColors` changes a system colour.
+pub const WM_SYSCOLORCHANGE: u32 = 0x002b;
+/// `WinSetSysColors` option (`<pmgpi.h>`; `LCOL_RESET` is above).
+pub const LCOL_PURECOLOR: u32 = 0x0004;
+/// System colour indices (`SYSCLR_*`): `SYSCLR_CSYSCOLORS` consecutive
+/// negative values from `SYSCLR_SHADOWHILITEBGND` to `SYSCLR_HELPHILITE`.
+pub const SYSCLR_SHADOWHILITEBGND:      i32 = -50;
+pub const SYSCLR_SHADOWHILITEFGND:      i32 = -49;
+pub const SYSCLR_SHADOWTEXT:            i32 = -48;
+pub const SYSCLR_ENTRYFIELD:            i32 = -47;
+pub const SYSCLR_MENUDISABLEDTEXT:      i32 = -46;
+pub const SYSCLR_MENUHILITE:            i32 = -45;
+pub const SYSCLR_MENUHILITEBGND:        i32 = -44;
+pub const SYSCLR_PAGEBACKGROUND:        i32 = -43;
+pub const SYSCLR_FIELDBACKGROUND:       i32 = -42;
+pub const SYSCLR_BUTTONLIGHT:           i32 = -41;
+pub const SYSCLR_BUTTONMIDDLE:          i32 = -40;
+pub const SYSCLR_BUTTONDARK:            i32 = -39;
+pub const SYSCLR_BUTTONDEFAULT:         i32 = -38;
+pub const SYSCLR_TITLEBOTTOM:           i32 = -37;
+pub const SYSCLR_SHADOW:                i32 = -36;
+pub const SYSCLR_ICONTEXT:              i32 = -35;
+pub const SYSCLR_DIALOGBACKGROUND:      i32 = -34;
+pub const SYSCLR_HILITEFOREGROUND:      i32 = -33;
+pub const SYSCLR_HILITEBACKGROUND:      i32 = -32;
+pub const SYSCLR_INACTIVETITLETEXTBGND: i32 = -31;
+pub const SYSCLR_ACTIVETITLETEXTBGND:   i32 = -30;
+pub const SYSCLR_INACTIVETITLETEXT:     i32 = -29;
+pub const SYSCLR_ACTIVETITLETEXT:       i32 = -28;
+pub const SYSCLR_OUTPUTTEXT:            i32 = -27;
+pub const SYSCLR_WINDOWSTATICTEXT:      i32 = -26;
+pub const SYSCLR_SCROLLBAR:             i32 = -25;
+pub const SYSCLR_BACKGROUND:            i32 = -24;
+pub const SYSCLR_ACTIVETITLE:           i32 = -23;
+pub const SYSCLR_INACTIVETITLE:         i32 = -22;
+pub const SYSCLR_MENU:                  i32 = -21;
+pub const SYSCLR_WINDOW:                i32 = -20;
+pub const SYSCLR_WINDOWFRAME:           i32 = -19;
+pub const SYSCLR_MENUTEXT:              i32 = -18;
+pub const SYSCLR_WINDOWTEXT:            i32 = -17;
+pub const SYSCLR_TITLETEXT:             i32 = -16;
+pub const SYSCLR_ACTIVEBORDER:          i32 = -15;
+pub const SYSCLR_INACTIVEBORDER:        i32 = -14;
+pub const SYSCLR_APPWORKSPACE:          i32 = -13;
+pub const SYSCLR_HELPBACKGROUND:        i32 = -12;
+pub const SYSCLR_HELPTEXT:              i32 = -11;
+pub const SYSCLR_HELPHILITE:            i32 = -10;
+pub const SYSCLR_CSYSCOLORS:            u32 = 41;
 pub const PMERR_INV_LENGTH_OR_COUNT:      u32 = 0x2092;
+
+// WinScrollWindow options (<pmwin.h>).
+pub const SW_SCROLLCHILDREN: u32 = 1;
+pub const SW_INVALIDATERGN:  u32 = 2;
+
+// Region complexity (<pmgpi.h>), returned by WinScrollWindow.
+pub const RGN_ERROR:   u32 = 0;
+pub const RGN_NULL:    u32 = 1;
+pub const RGN_RECT:    u32 = 2;
+pub const RGN_COMPLEX: u32 = 3;
+
+// WinDrawBorder flCmd (<pmwin.h>): a raster operation (DB_ROP) and flags.
+pub const DB_PATCOPY:     u32 = 0x0000;
+pub const DB_PATINVERT:   u32 = 0x0001;
+pub const DB_DESTINVERT:  u32 = 0x0002;
+pub const DB_AREAMIXMODE: u32 = 0x0003;
+pub const DB_ROP:         u32 = 0x0007;
+pub const DB_INTERIOR:    u32 = 0x0008;
+pub const DB_AREAATTRS:   u32 = 0x0010;
+pub const DB_STANDARD:    u32 = 0x0100;
+pub const DB_DLGBORDER:   u32 = 0x0200;
 
 // WinDrawText flags (<pmwin.h>).
 pub const DT_LEFT:            u32 = 0x0000_0000;
@@ -1368,5 +1517,29 @@ mod header_tests {
             assert!(defs.contains_key(name), "{name} is not defined in the toolkit headers");
         }
         assert!(wrong.is_empty(), "constants differ from the toolkit headers:\n{}", wrong.join("\n"));
+    }
+
+    /// The `WC_*_ATOM` constants are named differently from the header's
+    /// `WC_*` class names, so the test above does not see them.
+    #[test]
+    fn class_atoms_match_toolkit_headers() {
+        use super::*;
+        let headers = Path::new(env!("CARGO_MANIFEST_DIR")).join("vendor/watcom/h/os2");
+        if !headers.is_dir() {
+            eprintln!("skipped: Open Watcom headers not installed ({})", headers.display());
+            return;
+        }
+        let defs = header_values(&headers);
+        for (name, atom) in [
+            ("WC_FRAME", WC_FRAME_ATOM), ("WC_COMBOBOX", WC_COMBOBOX_ATOM), ("WC_BUTTON", WC_BUTTON_ATOM),
+            ("WC_MENU", WC_MENU_ATOM), ("WC_STATIC", WC_STATIC_ATOM), ("WC_ENTRYFIELD", WC_ENTRYFIELD_ATOM),
+            ("WC_LISTBOX", WC_LISTBOX_ATOM), ("WC_SCROLLBAR", WC_SCROLLBAR_ATOM),
+            ("WC_TITLEBAR", WC_TITLEBAR_ATOM), ("WC_MLE", WC_MLE_ATOM),
+            ("WC_SPINBUTTON", WC_SPINBUTTON_ATOM), ("WC_CONTAINER", WC_CONTAINER_ATOM),
+            ("WC_NOTEBOOK", WC_NOTEBOOK_ATOM),
+        ] {
+            let expected = defs.get(name).unwrap_or_else(|| panic!("{name} not in the headers"));
+            assert!(expected.contains(&(atom as i64)), "{name}: {atom:#x}, header {expected:x?}");
+        }
     }
 }

@@ -115,15 +115,30 @@ impl WindowManager {
             let i = mq.messages.iter().position(|m| Rank::of(m.msg) == rank && pass(wm, m))?;
             if remove { mq.messages.remove(i) } else { mq.messages.get(i).cloned() }
         };
-        if let Some(m) = take(self, Rank::Posted) {
-            return Some(m);
+        let found = take(self, Rank::Posted).or_else(|| {
+            match self.next_input(hmq, false, |_| true) {
+                Some(probe) if pass(self, &probe) =>
+                    if remove { self.next_input(hmq, true, |_| true) } else { Some(probe) },
+                _ => take(self, Rank::Paint).or_else(|| take(self, Rank::Timer)),
+            }
+        });
+        found.map(|m| self.note_read(&mq_arc, m))
+    }
+
+    /// A message the thread of queue `mq` reads: stamped with the time and
+    /// pointer position now if it has none yet (a message that is not
+    /// input), and remembered as the queue's last message
+    /// (`WinQueryMsgTime` / `WinQueryMsgPos`).
+    fn note_read(&self, mq: &std::sync::Arc<std::sync::Mutex<super::pm_types::PM_MsgQueue>>,
+                 mut m: OS2Message) -> OS2Message {
+        if m.time == 0 {
+            m.time = super::stubs::ms_count();
+            (m.x, m.y) = self.key_state.pointer;
         }
-        if let Some(probe) = self.next_input(hmq, false, |_| true)
-            && pass(self, &probe)
-        {
-            return if remove { self.next_input(hmq, true, |_| true) } else { Some(probe) };
-        }
-        take(self, Rank::Paint).or_else(|| take(self, Rank::Timer))
+        let mut q = mq.lock_or_recover();
+        q.last_msg_time = m.time;
+        q.last_msg_pos = (m.x, m.y);
+        m
     }
 
     /// Append `ev` to the system input queue and wake the thread that is to
@@ -133,7 +148,8 @@ impl WindowManager {
             log::warn!("system input queue full: event dropped");
             return;
         }
-        self.input.push_back(ev);
+        let pos = self.key_state.pointer;
+        self.input.push_back(QueuedInput { ev, time: super::stubs::ms_count(), pos });
         self.wake_input_reader();
     }
 
@@ -142,16 +158,16 @@ impl WindowManager {
     /// click), since those keys were typed before that.
     pub fn pin_pending_input(&mut self) {
         let pending = std::mem::take(&mut self.input);
-        for ev in pending {
-            let ev = match ev {
-                InputEvent::Window { .. } => ev,
-                other => match self.resolve_input(&other) {
+        for queued in pending {
+            let ev = match queued.ev {
+                InputEvent::Window { .. } => queued.ev.clone(),
+                _ => match self.resolve_input(&queued) {
                     Head::Deliver { msg, .. } =>
                         InputEvent::Window { hwnd: msg.hwnd, msg: msg.msg, mp1: msg.mp1, mp2: msg.mp2 },
                     Head::Drop => continue,
                 },
             };
-            self.input.push_back(ev);
+            self.input.push_back(QueuedInput { ev, ..queued });
         }
     }
 
@@ -176,6 +192,8 @@ impl WindowManager {
                     }
                     if remove {
                         self.input.pop_front();
+                        // WinGetKeyState answers as of the input read last.
+                        self.key_state.read_input(&msg);
                         self.wake_input_reader();
                     }
                     return Some(msg);
@@ -191,7 +209,8 @@ impl WindowManager {
 
     /// Where event `ev` goes if it is read now. A frame stands for its
     /// client, as for every message the GUI thread sends.
-    fn resolve_input(&self, ev: &InputEvent) -> Head {
+    fn resolve_input(&self, queued: &QueuedInput) -> Head {
+        let ev = &queued.ev;
         let (hwnd, msg, mp1, mp2) = match *ev {
             InputEvent::Key { mp1, mp2 } => (self.key_target(), WM_CHAR, mp1, mp2),
             InputEvent::Char(_) => (self.key_target(), WM_CHAR, 0, 0),
@@ -217,7 +236,8 @@ impl WindowManager {
             }
             _ => (mp1, mp2),
         };
-        Head::Deliver { hmq, msg: OS2Message { hwnd: target, msg, mp1, mp2, time: 0, x: 0, y: 0 } }
+        let (x, y) = queued.pos;
+        Head::Deliver { hmq, msg: OS2Message { hwnd: target, msg, mp1, mp2, time: queued.time, x, y } }
     }
 
     /// Wake the thread that is to read the oldest input event.
@@ -234,8 +254,17 @@ impl WindowManager {
     }
 }
 
+/// An event of the system input queue with when it arrived and where the
+/// pointer was then (`QMSG.time` / `QMSG.ptl` of its message).
+#[derive(Debug, Clone, PartialEq)]
+pub struct QueuedInput {
+    pub ev: InputEvent,
+    pub time: u32,
+    pub pos: (i32, i32),
+}
+
 /// The system input queue itself (a field of `WindowManager`).
-pub type InputQueue = VecDeque<InputEvent>;
+pub type InputQueue = VecDeque<QueuedInput>;
 
 #[cfg(test)]
 mod tests {

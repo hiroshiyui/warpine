@@ -195,15 +195,8 @@ impl super::Loader {
                     // The frame is composited once it has a surface.
                     wm.frame_surface(h_frame);
 
-                    // Post initial WM_PAINT so the guest paints on creation
-                    let hmq2 = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
-                    if let Some(mq_arc) = wm.get_mq(hmq2) {
-                        let mut mq = mq_arc.lock_or_recover();
-                        mq.messages.push_back(OS2Message {
-                            hwnd: h_client, msg: WM_PAINT, mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
-                        });
-                        mq.cond.notify_one();
-                    }
+                    // The new client is invalid: it paints on creation.
+                    wm.invalidate(h_client, None, false);
 
                     let pfn_wp = wm.get_window(h_client).map(|w| w.pfn_wp).unwrap_or(0);
                     (h_frame, h_client, pfn_wp)
@@ -343,6 +336,9 @@ impl super::Loader {
                     // "The default window procedure sets the pointer shape":
                     // the arrow (pm_pointer.rs).
                     WM_MOUSEMOVE => { self.default_mouse_pointer(); }
+                    // As WinBeginPaint + WinEndPaint would: the window is valid.
+                    // (Its children keep their own update rectangles.)
+                    WM_PAINT => { self.shared.window_mgr.lock_or_recover().begin_paint(hwnd); }
                     // Frame controls changed: show the frame's current menu
                     // (standard frames; dialogs do not take menus yet).
                     WM_UPDATEFRAME => {
@@ -433,7 +429,6 @@ impl super::Loader {
                 // WinBeginPaint(HWND hwnd, HPS hps, PRECTL prclPaint) → HPS
                 // With hps = 0 a presentation space is created for the paint
                 // and freed by WinEndPaint; otherwise the given one is used.
-                // The whole window is the update region.
                 let hwnd = read_stack(4);
                 let hps_in = read_stack(8);
                 let prcl = read_stack(12);
@@ -446,13 +441,10 @@ impl super::Loader {
                     if let Some(ps) = wm.ps_map.get_mut(&h) { ps.origin = PsOrigin::Paint; }
                     h
                 };
-                let (cx, cy) = wm.get_window(hwnd).map_or((0, 0), |w| (w.cx, w.cy));
                 drop(wm);
-                if prcl != 0 {
-                    for (i, v) in [0, 0, cx, cy].into_iter().enumerate() {
-                        self.guest_write::<i32>(prcl + 4 * i as u32, v);
-                    }
-                }
+                // prclPaint receives the update rectangle, which is emptied
+                // (pm_paint.rs).
+                self.begin_paint_rect(hwnd, prcl);
                 ApiResult::Normal(hps)
             }
             738 => {
@@ -788,24 +780,26 @@ impl super::Loader {
                 ApiResult::Normal(1)
             }
             765 => {
-                // WinInvalidateRect(HWND hwnd, PRECTL prcl, BOOL fIncludeChildren)
-                let hwnd = read_stack(4);
-                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
-                // Post WM_PAINT to trigger repaint
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-                wm.mark_dirty(hwnd); // VDR-B4
-                let target = wm.frame_to_client.get(&hwnd).copied().unwrap_or(hwnd);
-                let hmq = wm.find_hmq_for_hwnd(target);
-                if let Some(hmq) = hmq
-                    && let Some(mq_arc) = wm.get_mq(hmq) {
-                        let mut mq = mq_arc.lock_or_recover();
-                        mq.messages.push_back(OS2Message {
-                            hwnd: target, msg: WM_PAINT, mp1: 0, mp2: 0,
-                            time: 0, x: 0, y: 0,
-                        });
-                        mq.cond.notify_one();
-                }
-                ApiResult::Normal(1)
+                // WinInvalidateRect(HWND hwnd, PRECTL prcl, BOOL fIncludeChildren) (pm_paint.rs)
+                self.win_invalidate_rect(vcpu_id, read_stack(4), read_stack(8), read_stack(12))
+            }
+            895 => {
+                // WinValidateRect(HWND hwnd, PRECTL prcl, BOOL fIncludeClippedChildren) (pm_paint.rs)
+                self.win_validate_rect(vcpu_id, read_stack(4), read_stack(8), read_stack(12))
+            }
+            831 => {
+                // WinQueryUpdateRect(HWND hwnd, PRECTL prcl) (pm_paint.rs)
+                self.win_query_update_rect(vcpu_id, read_stack(4), read_stack(8))
+            }
+            849 => {
+                // WinScrollWindow(hwnd, lDx, lDy, prclScroll, prclClip, hrgnUpdate, prclUpdate, flOptions)
+                self.win_scroll_window(vcpu_id, read_stack(4), read_stack(8) as i32, read_stack(12) as i32,
+                    read_stack(16), read_stack(20), read_stack(24), read_stack(28), read_stack(32))
+            }
+            731 => {
+                // WinDrawBorder(hps, prcl, cx, cy, clrFore, clrBack, flCmd) (pm_paint.rs)
+                self.win_draw_border(vcpu_id, read_stack(4), read_stack(8), read_stack(12) as i32,
+                    read_stack(16) as i32, read_stack(20), read_stack(24), read_stack(28))
             }
             776 => {
                 // WinLoadAccelTable(HAB hab, HMODULE hmod, ULONG idAccelTable)
@@ -1421,17 +1415,9 @@ impl super::Loader {
                     self.scrollbar_init(hwnd, p_ctl_data);
                 }
 
-                // Post WM_PAINT so the control draws itself on creation.
+                // A visible new window is invalid: it draws itself on creation.
                 if fl_style & WS_VISIBLE != 0 {
-                    let wm = self.shared.window_mgr.lock_or_recover();
-                    let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
-                    if let Some(mq_arc) = wm.get_mq(hmq) {
-                        let mut mq = mq_arc.lock_or_recover();
-                        mq.messages.push_back(OS2Message {
-                            hwnd, msg: WM_PAINT, mp1: 0, mp2: 0, time: 0, x: 0, y: 0,
-                        });
-                        mq.cond.notify_one();
-                    }
+                    self.shared.window_mgr.lock_or_recover().invalidate_window_only(hwnd);
                 }
                 ApiResult::Normal(hwnd)
             }
@@ -1623,6 +1609,81 @@ impl super::Loader {
             741 => {
                 // WinEqualRect(HAB hab, PRECTL prcl1, PRECTL prcl2)
                 ApiResult::Normal(self.win_rect_call(ordinal, rect_args()))
+            }
+            // ── Coordinates and lookups (pm_query.rs) ──
+            788 => {
+                // WinMapWindowPoints(HWND hwndFrom, HWND hwndTo, PPOINTL aptl, LONG cwpt) -> BOOL
+                self.win_map_window_points(vcpu_id, read_stack(4), read_stack(8), read_stack(12), read_stack(16) as i32)
+            }
+            900 => {
+                // WinWindowFromPoint(HWND hwndParent, PPOINTL pptl, BOOL fChildren) -> HWND
+                self.win_window_from_point(vcpu_id, read_stack(4), read_stack(8), read_stack(12) != 0)
+            }
+            813 => {
+                // WinQueryDesktopWindow(HAB hab, HDC hdc) -> HWND
+                self.win_query_desktop_window(vcpu_id, read_stack(8))
+            }
+            800 => {
+                // WinQueryAnchorBlock(HWND hwnd) -> HAB
+                self.win_query_anchor_block(vcpu_id, read_stack(4))
+            }
+            768 => {
+                // WinIsChild(HWND hwnd, HWND hwndParent) -> BOOL
+                self.win_is_child(vcpu_id, read_stack(4), read_stack(8))
+            }
+            838 => {
+                // WinQueryWindowProcess(HWND hwnd, PPID ppid, PTID ptid) -> BOOL
+                self.win_query_window_process(vcpu_id, read_stack(4), read_stack(8), read_stack(12))
+            }
+            917 => {
+                // WinMultWindowFromIDs(HWND hwndParent, PHWND ahwnd, ULONG idFirst, ULONG idLast) -> LONG
+                self.win_mult_window_from_ids(vcpu_id, read_stack(4), read_stack(8), read_stack(12), read_stack(16))
+            }
+            740 => {
+                // WinEnumDlgItem(HWND hwndDlg, HWND hwnd, ULONG code) -> HWND
+                self.win_enum_dlg_item(vcpu_id, read_stack(4), read_stack(8), read_stack(12))
+            }
+            805 => {
+                // WinQueryClassName(HWND hwnd, LONG cchMax, PCH pch) -> LONG
+                self.win_query_class_name(vcpu_id, read_stack(4), read_stack(8) as i32, read_stack(12))
+            }
+            925 => {
+                // WinQueryClassInfo(HAB hab, PCSZ pszClassName, PCLASSINFO pClassInfo) -> BOOL
+                self.win_query_class_info(vcpu_id, read_stack(8), read_stack(12))
+            }
+            // ── Input state (pm_keystate.rs) ──
+            752 => {
+                // WinGetKeyState(HWND hwndDesktop, LONG vkey) -> LONG
+                self.win_get_key_state(vcpu_id, read_stack(4), read_stack(8))
+            }
+            758 => {
+                // WinGetPhysKeyState(HWND hwndDesktop, LONG sc) -> LONG
+                self.win_get_phys_key_state(vcpu_id, read_stack(4), read_stack(8))
+            }
+            818 => {
+                // WinQueryMsgPos(HAB hab, PPOINTL pptl) -> BOOL
+                self.win_query_msg_pos(vcpu_id, read_stack(8))
+            }
+            819 => {
+                // WinQueryMsgTime(HAB hab) -> ULONG
+                self.win_query_msg_time(vcpu_id)
+            }
+            823 => {
+                // WinQueryPointerPos(HWND hwndDesktop, PPOINTL pptl) -> BOOL
+                self.win_query_pointer_pos(vcpu_id, read_stack(4), read_stack(8))
+            }
+            867 => {
+                // WinSetPointerPos(HWND hwndDesktop, LONG x, LONG y) -> BOOL
+                self.win_set_pointer_pos(vcpu_id, read_stack(4), read_stack(8) as i32, read_stack(12) as i32)
+            }
+            // ── System colours (pm_syscolor.rs) ──
+            826 => {
+                // WinQuerySysColor(HWND hwndDesktop, LONG clr, LONG lReserved) -> LONG
+                self.win_query_sys_color(vcpu_id, read_stack(4), read_stack(8) as i32, read_stack(12))
+            }
+            871 => {
+                // WinSetSysColors(HWND hwndDesktop, ULONG flOptions, ULONG flFormat, LONG clrFirst, ULONG cColorData, PLONG pColorData) -> BOOL
+                self.win_set_sys_colors(vcpu_id, std::array::from_fn(|i| read_stack(4 + 4 * i as u64)))
             }
             _ => {
                 warn!("Warning: Unknown PMWIN Ordinal {} on VCPU {}", ordinal, vcpu_id);
@@ -1911,8 +1972,10 @@ impl super::Loader {
                     self.guest_write::<u32>(pqmsg + 8, msg.mp1);
                     self.guest_write::<u32>(pqmsg + 12, msg.mp2);
                     self.guest_write::<u32>(pqmsg + 16, msg.time);
-                    self.guest_write::<i16>(pqmsg + 20, msg.x);
-                    self.guest_write::<i16>(pqmsg + 22, msg.y);
+                    // ptl is a POINTL (two LONGs), then ulReserved.
+                    self.guest_write::<i32>(pqmsg + 20, msg.x);
+                    self.guest_write::<i32>(pqmsg + 24, msg.y);
+                    self.guest_write::<u32>(pqmsg + 28, 0);
                 }
                 return Some(msg.msg);
             }
@@ -1960,14 +2023,15 @@ impl super::Loader {
     /// = `p_create_params`), WM_PAINT, then the focus notification of the
     /// control given the focus (`EN_SETFOCUS`...) to its owner.
     pub(super) fn queue_dialog_start(&self, hwnd_dlg: u32, hmq: u32, focus: u32, p_create_params: u32) {
-        let wm = self.shared.window_mgr.lock_or_recover();
+        let mut wm = self.shared.window_mgr.lock_or_recover();
         if let Some(mq_arc) = wm.get_mq(hmq) {
             let mut mq = mq_arc.lock_or_recover();
-            for (msg, mp1, mp2) in [(WM_INITDLG, focus, p_create_params), (WM_PAINT, 0, 0)] {
-                mq.messages.push_back(OS2Message { hwnd: hwnd_dlg, msg, mp1, mp2, time: 0, x: 0, y: 0 });
-            }
+            mq.messages.push_back(OS2Message {
+                hwnd: hwnd_dlg, msg: WM_INITDLG, mp1: focus, mp2: p_create_params, time: 0, x: 0, y: 0,
+            });
             mq.cond.notify_one();
         }
+        wm.invalidate_window_only(hwnd_dlg);
         wm.notify_focus(focus, true);
     }
 
@@ -2053,7 +2117,7 @@ fn msg_in_range(msg: u32, first: u32, last: u32) -> bool {
 
 /// WinQuerySysValue: the system value `index` (`SV_*`), describing the
 /// desktop and the chrome Warpine draws; 0 for values it does not keep.
-fn sys_value(index: i32) -> i32 {
+pub(super) fn sys_value(index: i32) -> i32 {
     let (dw, dh) = desktop_size();
     match index {
         SV_CXSCREEN | SV_CXFULLSCREEN => dw as i32,

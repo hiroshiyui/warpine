@@ -6,7 +6,7 @@ use sdl3::event::Event;
 use sdl3::keyboard::{Keycode, Mod as KeyMod, Scancode};
 use log::debug;
 use crate::loader::{SharedState, OS2Message, MutexExt,
-    WM_CLOSE, WM_PAINT, WM_MOUSEMOVE,
+    WM_CLOSE, WM_MOUSEMOVE,
     WM_BUTTON1DOWN, WM_BUTTON1UP, WM_BUTTON2DOWN, WM_BUTTON2UP, WM_BUTTON3DOWN, WM_BUTTON3UP,
     WM_BUTTON1DBLCLK, WM_BUTTON2DBLCLK, WM_BUTTON3DBLCLK,
     KC_CHAR, KC_VIRTUALKEY, KC_SCANCODE, KC_SHIFT, KC_CTRL, KC_ALT, KC_KEYUP,
@@ -15,6 +15,7 @@ use crate::loader::{SharedState, OS2Message, MutexExt,
     VK_INSERT, VK_DELETE, VK_SCRLLOCK, VK_NUMLOCK, VK_ENTER,
     VK_F1, VK_F2, VK_F3, VK_F4, VK_F5, VK_F6,
     VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12,
+    VK_SHIFT, VK_CTRL, VK_ALT, VK_ALTGRAF, VK_CAPSLOCK, VK_PAUSE, VK_PRINTSCRN,
     CF_TEXT, KC_PREVDOWN, WM_CHAR_REPEAT_SHIFT, WM_CHAR_SCANCODE_SHIFT, WM_CHAR_VKEY_SHIFT,
     FCF_TITLEBAR, FCF_SYSMENU, FCF_MINBUTTON, FCF_MAXBUTTON, FCF_HIDEBUTTON,
     FCF_SIZEBORDER, FCF_BORDER,
@@ -151,10 +152,44 @@ struct FrameChrome<'a> {
     /// Regional face of CJK characters in the title (the frame's queue
     /// codepage).
     cjk: CjkRegion,
+    /// Title-bar colours (the system colours).
+    colors: TitleColors,
     /// `WS_MINIMIZED` / `WS_MAXIMIZED` of the frame: a minimized frame's
     /// title bar has no buttons, a maximized frame's maximize button is a
     /// restore button.
     state: u32,
+}
+
+/// The colours of a title bar: `SYSCLR_ACTIVETITLE` / `SYSCLR_INACTIVETITLE`
+/// and their text colours, which `WinSetSysColors` changes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TitleColors {
+    active: u32,
+    inactive: u32,
+    active_text: u32,
+    inactive_text: u32,
+}
+
+impl Default for TitleColors {
+    fn default() -> Self {
+        TitleColors { active: CHROME_TITLE_ACTIVE, inactive: CHROME_TITLE_INACTIVE,
+                      active_text: CHROME_TEXT_COLOR, inactive_text: CHROME_TEXT_COLOR }
+    }
+}
+
+impl TitleColors {
+    /// The title-bar colours of the system colour table.
+    fn of(table: &crate::loader::pm_syscolor::SysColorTable) -> Self {
+        use crate::loader::constants::{SYSCLR_ACTIVETITLE, SYSCLR_ACTIVETITLETEXT, SYSCLR_INACTIVETITLE,
+                                       SYSCLR_INACTIVETITLETEXT};
+        let d = TitleColors::default();
+        TitleColors {
+            active: table.get(SYSCLR_ACTIVETITLE).unwrap_or(d.active),
+            inactive: table.get(SYSCLR_INACTIVETITLE).unwrap_or(d.inactive),
+            active_text: table.get(SYSCLR_ACTIVETITLETEXT).unwrap_or(d.active_text),
+            inactive_text: table.get(SYSCLR_INACTIVETITLETEXT).unwrap_or(d.inactive_text),
+        }
+    }
 }
 
 /// Which pictogram a title-bar button carries.
@@ -279,7 +314,8 @@ fn draw_title_bar(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
     let title_h = title_bar_h(c.frame_flags);
 
     if title_h > 0 {
-        let title_color = if c.focused { CHROME_TITLE_ACTIVE } else { CHROME_TITLE_INACTIVE };
+        let title_color = if c.focused { c.colors.active } else { c.colors.inactive };
+        let text_color = if c.focused { c.colors.active_text } else { c.colors.inactive_text };
         draw_filled_rect(buf, buf_w, c.x, c.top, c.x + c.cx, c.top + title_h, title_color);
         // Hairline separating the title bar from the menu bar / client below.
         draw_filled_rect(buf, buf_w, c.x, c.top + title_h - 1, c.x + c.cx, c.top + title_h,
@@ -293,7 +329,7 @@ fn draw_title_bar(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
             let text_y = c.top + (title_h - GLYPH_H) / 2;
             let title = font::fit_text(c.title, c.cx - 8, FontSpec::SYSTEM_BOLD);
             draw_text_screen(buf, buf_w, buf_h, text_left, text_y, title,
-                             CHROME_TEXT_COLOR, FontSpec::SYSTEM_BOLD);
+                             text_color, FontSpec::SYSTEM_BOLD);
             return;
         }
         if c.frame_flags & FCF_SYSMENU != 0 {
@@ -319,7 +355,7 @@ fn draw_title_bar(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
         let avail = btn_x - 4 - text_left;
         let face = FontSpec { cjk: c.cjk, ..FontSpec::SYSTEM_BOLD };
         let title = font::fit_text(c.title, avail.max(0), face);
-        draw_text_screen(buf, buf_w, buf_h, text_left, text_y, title, CHROME_TEXT_COLOR, face);
+        draw_text_screen(buf, buf_w, buf_h, text_left, text_y, title, text_color, face);
     }
 }
 
@@ -470,6 +506,8 @@ struct ChromeCache {
     focused: bool,
     /// Regional face of CJK text in the title and menus.
     cjk: CjkRegion,
+    /// Title-bar colours.
+    colors: TitleColors,
     /// `cx` × `title_bar_h(frame_flags)`.
     title_px: Vec<u32>,
     menu: Option<MenuChrome>,
@@ -480,7 +518,7 @@ struct ChromeCache {
 impl ChromeCache {
     fn new() -> Self {
         ChromeCache { title: String::new(), cx: 0, frame_flags: 0, state: 0, focused: false, cjk: CjkRegion::Auto,
-                      title_px: Vec::new(), menu: None, stale: true }
+                      colors: TitleColors::default(), title_px: Vec::new(), menu: None, stale: true }
     }
 
     /// Bring the cached state up to date; returns whether it changed (or
@@ -522,13 +560,22 @@ impl ChromeCache {
         changed
     }
 
+    /// Draw the title bar in `colors` from now on; returns whether they
+    /// changed (the chrome must then be redrawn).
+    fn set_colors(&mut self, colors: TitleColors) -> bool {
+        let changed = self.colors != colors;
+        self.colors = colors;
+        self.stale |= changed;
+        changed
+    }
+
     /// Re-render the pixmaps if the state changed since the last render.
     fn render(&mut self) {
         if !std::mem::take(&mut self.stale) { return; }
         let (w, th) = (self.cx.max(0) as usize, title_bar_h(self.frame_flags));
         self.title_px = vec![0; w * th as usize];
         if !self.title_px.is_empty() {
-            draw_title_bar(&mut self.title_px, w, &FrameChrome {
+            draw_title_bar(&mut self.title_px, w, &FrameChrome { colors: self.colors,
                 x: 0, top: 0, cx: self.cx, cy: th, frame_flags: self.frame_flags,
                 title: &self.title, focused: self.focused, state: self.state, cjk: self.cjk,
             });
@@ -613,7 +660,7 @@ fn draw_placed_frame(buf: &mut [u32], buf_w: usize, p: &FramePlacement,
     };
     blit(buf, &fb.buffer, fb.width as i32, p.client);
     blit(buf, &chrome.title_px, chrome.cx, p.title);
-    draw_frame_border(buf, buf_w, &FrameChrome {
+    draw_frame_border(buf, buf_w, &FrameChrome { colors: Default::default(),
         x: p.frame.x0, top: p.frame.y0, cx: p.frame.width(), cy: p.frame.height(),
         frame_flags: p.frame_flags, title: "", focused: false, state: 0, cjk: CjkRegion::Auto,
     }, clip);
@@ -1018,7 +1065,7 @@ impl SdlRenderer {
     /// `WM_SIZE` when its size changed.
     fn end_frame_track(&mut self, shared: &SharedState) {
         let Some(ft) = self.frame_track.take() else { return };
-        let wm = shared.window_mgr.lock_or_recover();
+        let mut wm = shared.window_mgr.lock_or_recover();
         let client = wm.frame_msg_target(ft.frame);
         let now = wm.get_window(client).map_or(ft.client, |c| (c.cx, c.cy));
         if now != ft.client { wm.post_size(client, ft.client, now); }
@@ -1321,6 +1368,7 @@ impl SdlRenderer {
                 }
             }
             let focused = wm.focused_hwnd;
+            let title_colors = TitleColors::of(&wm.sys_colors);
             let chrome = &mut self.chrome;
             wm.z_order.iter().filter_map(|&hwnd| {
                 let w = wm.get_window(hwnd)?;
@@ -1336,7 +1384,7 @@ impl SdlRenderer {
                 // Title and menu text follow the frame's queue codepage.
                 let cjk = wm.queue_codepage(hwnd).map_or(CjkRegion::Auto, CjkRegion::from_codepage);
                 let cache = chrome.entry(hwnd).or_insert_with(ChromeCache::new);
-                let cjk_changed = cache.set_cjk(cjk);
+                let cjk_changed = cache.set_cjk(cjk) | cache.set_colors(title_colors);
                 if cache.sync(&w.text, w.cx, frame_flags, state, hwnd == focused, menu, bar_w) || cjk_changed {
                     dirty_frames.insert(hwnd);
                     chrome_changed.insert(hwnd);
@@ -1418,6 +1466,9 @@ impl SdlRenderer {
     /// or (Alt+Home) a VIO session switches to full screen.
     fn handle_sdl_event(&mut self, event: Event, shared: &Arc<SharedState>) -> bool {
         let dh = self.desktop.size().1;
+        // The physical keyboard and the pointer position, whoever gets the
+        // input (WinGetPhysKeyState, WinQueryPointerPos).
+        track_physical_input(shared, &event, dh as i32);
         // A windowed VIO program's mouse (MOUCALLS) sees the pointer over
         // its cells; PM handling (activation, chrome, drags) goes on below.
         // Not while the window uses the mouse itself: an open system menu,
@@ -1589,9 +1640,7 @@ impl SdlRenderer {
                     if let Some(hwnd) = target {
                         let (local_x, local_y) = {
                             let wm = shared.window_mgr.lock_or_recover();
-                            wm.get_window(hwnd)
-                                .map(|w| (x - w.x, os2_y - w.y))
-                                .unwrap_or((x, os2_y))
+                            pointer_local(&wm, hwnd, x, os2_y)
                         };
                         let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
                         push_input(shared, hwnd, WM_MOUSEMOVE, mp1, 0);
@@ -1759,9 +1808,7 @@ impl SdlRenderer {
                             } else {
                             let (local_x, local_y) = {
                                 let wm = shared.window_mgr.lock_or_recover();
-                                wm.get_window(hwnd)
-                                    .map(|w| (x - w.x, os2_y - w.y))
-                                    .unwrap_or((x, os2_y))
+                                pointer_local(&wm, hwnd, x, os2_y)
                             };
                             use sdl3::mouse::MouseButton;
                             let msg = button_down_msg(mouse_btn, clicks);
@@ -1772,7 +1819,7 @@ impl SdlRenderer {
                                 let (target, lost_focus) = route_button1(shared, hwnd, local_x, local_y, true);
                                 if lost_focus != 0 {
                                     // Repaint the control without its caret.
-                                    push_msg(shared, lost_focus, WM_PAINT, 0, 0);
+                                    shared.window_mgr.lock_or_recover().invalidate_window_only(lost_focus);
                                 }
                                 target
                             } else {
@@ -1851,9 +1898,7 @@ impl SdlRenderer {
                     }
                     let (local_x, local_y) = {
                         let wm = shared.window_mgr.lock_or_recover();
-                        wm.get_window(hwnd)
-                            .map(|w| (x - w.x, os2_y - w.y))
-                            .unwrap_or((x, os2_y))
+                        pointer_local(&wm, hwnd, x, os2_y)
                     };
                     use sdl3::mouse::MouseButton;
                     let (hwnd, local_x, local_y) = if mouse_btn == MouseButton::Left && capture == 0 {
@@ -1898,6 +1943,15 @@ impl PmRenderer for SdlRenderer {
                 self.mouse.capture(hwnd != 0);
             }
             GUIMessage::SetPointer(shape) => self.pointer.apply(shape),
+            GUIMessage::SetPointerPos { x, y } => {
+                // A scripted session does not follow the host pointer, so
+                // it does not move it either (WinSetPointerPos has already
+                // set the PM pointer position).
+                if self.script.is_none() {
+                    let dh = self.desktop.size().1 as i32;
+                    self.mouse.warp_mouse_in_window(self.desktop.window(), x as f32, (dh - 1 - y) as f32);
+                }
+            }
         }
     }
 
@@ -2282,8 +2336,13 @@ fn route_button1(shared: &Arc<SharedState>, frame: u32, x: i32, y: i32, press: b
     -> ((u32, i32, i32), u32)
 {
     let mut wm = shared.window_mgr.lock_or_recover();
-    // The client's buffer starts to the right of the frame's left border.
-    let border = wm.get_window(frame).map_or(0, |w| frame_border_px(w.frame_flags));
+    // `(x, y)` is in message coordinates (`pointer_local`): a standard
+    // frame's client, whose buffer is the surface; a dialog's surface
+    // starts inside its left border.
+    let border = match wm.get_window(frame) {
+        Some(w) if !wm.frame_to_client.contains_key(&frame) => frame_border_px(w.frame_flags),
+        _ => 0,
+    };
     if let Some(hit) = wm.control_at(frame, x - border, y) {
         return (hit, 0);
     }
@@ -2299,6 +2358,16 @@ fn route_button1(shared: &Arc<SharedState>, frame: u32, x: i32, y: i32, press: b
         0
     };
     ((frame, x, y), lost)
+}
+
+/// Desktop point `(x, y)` (bottom-left origin) in the coordinates of the
+/// window that gets the pointer messages addressed to `hwnd`: a standard
+/// frame's client (inside the frame's left border), else `hwnd` itself (a
+/// dialog, a window holding the capture).
+fn pointer_local(wm: &WindowManager, hwnd: u32, x: i32, y: i32) -> (i32, i32) {
+    let target = wm.frame_to_client.get(&hwnd).copied().unwrap_or(hwnd);
+    let (ox, oy) = wm.window_origin(target).unwrap_or((0, 0));
+    (x - ox, y - oy)
 }
 
 /// The PM message for a mouse button press: `WM_BUTTONnDOWN`, or
@@ -2334,6 +2403,27 @@ fn pressed_control_release(shared: &Arc<SharedState>, x: i32, os2_y: i32) -> Opt
     let (sx, sy) = (x - f.x - frame_border_px(f.frame_flags), os2_y - f.y);
     let (bx, by, _, _) = wm.get_abs_rect_in_frame(button);
     Some((button, sx - bx, sy - by))
+}
+
+/// Record what `event` says about the physical keyboard (keys by scan code)
+/// and the pointer position (desktop coordinates, bottom-left origin) on a
+/// desktop `desk_h` pixels tall.
+fn track_physical_input(shared: &Arc<SharedState>, event: &Event, desk_h: i32) {
+    let key = |sc: Option<Scancode>, down: bool| sc.map(|sc| (sdl_scancode_to_os2(sc), down));
+    let (key, pointer) = match *event {
+        Event::KeyDown { scancode, .. } => (key(scancode, true), None),
+        Event::KeyUp { scancode, .. } => (key(scancode, false), None),
+        Event::MouseMotion { x, y, .. } | Event::MouseButtonDown { x, y, .. }
+        | Event::MouseButtonUp { x, y, .. } => (None, Some((x as i32, desk_h - 1 - y as i32))),
+        _ => return,
+    };
+    let mut wm = shared.window_mgr.lock_or_recover();
+    if let Some((sc, down)) = key.filter(|&(sc, _)| sc != 0) {
+        wm.key_state.physical_key(sc, down);
+    }
+    if let Some(p) = pointer {
+        wm.key_state.pointer = p;
+    }
 }
 
 /// Queue pointer message `msg` for window `hwnd` (a frame stands for its
@@ -2504,6 +2594,15 @@ pub fn sdl_keycode_to_vk(kc: Keycode) -> u32 {
         Keycode::F10       => VK_F10,
         Keycode::F11       => VK_F11,
         Keycode::F12       => VK_F12,
+        // The shift keys are virtual keys of their own (WM_CHAR with
+        // KC_VIRTUALKEY when pressed alone; WinGetKeyState).
+        Keycode::LShift | Keycode::RShift => VK_SHIFT,
+        Keycode::LCtrl | Keycode::RCtrl   => VK_CTRL,
+        Keycode::LAlt      => VK_ALT,
+        Keycode::RAlt      => VK_ALTGRAF,
+        Keycode::CapsLock  => VK_CAPSLOCK,
+        Keycode::Pause     => VK_PAUSE,
+        Keycode::PrintScreen => VK_PRINTSCRN,
         _                  => 0,
     }
 }
@@ -2875,7 +2974,7 @@ mod tests {
     /// Chrome for a 200×100 frame at (10, 10) in a 240×140 buffer.
     fn chrome_buf(frame_flags: u32, focused: bool) -> Vec<u32> {
         let mut buf = vec![0x00FF_00FFu32; 240 * 140];
-        draw_frame_chrome(&mut buf, 240, &FrameChrome {
+        draw_frame_chrome(&mut buf, 240, &FrameChrome { colors: Default::default(),
             x: 10, top: 10, cx: 200, cy: 100, frame_flags, title: "Title", focused, cjk: super::CjkRegion::Auto, state: 0,
         });
         buf
@@ -2919,7 +3018,7 @@ mod tests {
     #[test]
     fn frame_chrome_omits_absent_buttons_and_clips_title() {
         let mut buf = vec![0u32; 240 * 140];
-        draw_frame_chrome(&mut buf, 240, &FrameChrome {
+        draw_frame_chrome(&mut buf, 240, &FrameChrome { colors: Default::default(),
             x: 10, top: 10, cx: 200, cy: 100, frame_flags: FCF_TITLEBAR,
             title: "A very long window title that cannot possibly fit in the bar", focused: true, cjk: super::CjkRegion::Auto, state: 0,
         });
@@ -2943,7 +3042,7 @@ mod tests {
         let flags = FCF_TITLEBAR | FCF_SYSMENU | FCF_MINBUTTON | FCF_MAXBUTTON;
         let draw = |state: u32| {
             let mut buf = vec![0u32; 240 * 140];
-            draw_frame_chrome(&mut buf, 240, &FrameChrome {
+            draw_frame_chrome(&mut buf, 240, &FrameChrome { colors: Default::default(),
                 x: 10, top: 10, cx: 200, cy: 100, frame_flags: flags, title: "T", focused: true, state, cjk: super::CjkRegion::Auto,
             });
             buf
@@ -2969,7 +3068,7 @@ mod tests {
         use crate::loader::constants::{FCF_HIDEBUTTON, FCF_HIDEMAX, FCF_MINMAX};
         let draw = |flags: u32| {
             let mut buf = vec![0u32; 240 * 140];
-            draw_frame_chrome(&mut buf, 240, &FrameChrome {
+            draw_frame_chrome(&mut buf, 240, &FrameChrome { colors: Default::default(),
                 x: 10, top: 10, cx: 200, cy: 100, frame_flags: FCF_TITLEBAR | flags, title: "T",
                 focused: true, state: 0, cjk: super::CjkRegion::Auto,
             });
@@ -3005,7 +3104,7 @@ mod tests {
         assert_eq!(shown, FCF_TITLEBAR | FCF_BORDER);
         assert_eq!(display_flags(flags, WS_MAXIMIZED), flags);
         let mut buf = vec![0u32; 240 * 40];
-        draw_frame_chrome(&mut buf, 240, &FrameChrome {
+        draw_frame_chrome(&mut buf, 240, &FrameChrome { colors: Default::default(),
             x: 0, top: 0, cx: MINIMIZED_CX, cy: MINIMIZED_CY, frame_flags: shown,
             title: "Iconic", focused: true, state: WS_MINIMIZED, cjk: super::CjkRegion::Auto,
         });
@@ -3097,6 +3196,23 @@ mod tests {
         assert_eq!(sdl_keycode_to_vk(Keycode::KpEnter),   VK_ENTER);
         assert_eq!(sdl_keycode_to_vk(Keycode::Escape),    VK_ESC);
         assert_eq!(sdl_keycode_to_vk(Keycode::Backspace), VK_BACKSPACE);
+    }
+
+    /// The shift keys have virtual keys of their own (WinGetKeyState), so
+    /// their WM_CHAR carries KC_VIRTUALKEY.
+    #[test]
+    fn vk_mapping_for_shift_keys() {
+        use crate::loader::constants::*;
+        for (kc, vk) in [(Keycode::LShift, VK_SHIFT), (Keycode::RShift, VK_SHIFT), (Keycode::LCtrl, VK_CTRL),
+                         (Keycode::RCtrl, VK_CTRL), (Keycode::LAlt, VK_ALT), (Keycode::RAlt, VK_ALTGRAF),
+                         (Keycode::CapsLock, VK_CAPSLOCK), (Keycode::Pause, VK_PAUSE),
+                         (Keycode::PrintScreen, VK_PRINTSCRN)] {
+            assert_eq!(sdl_keycode_to_vk(kc), vk, "{kc:?}");
+        }
+        let (mp1, mp2) = build_wm_char(Some(Keycode::LShift), Some(Scancode::LShift), KeyMod::LSHIFTMOD, false, false);
+        assert!(mp1 & KC_VIRTUALKEY != 0);
+        assert_eq!(mp2 >> WM_CHAR_VKEY_SHIFT, VK_SHIFT);
+        assert_eq!(mp1 >> WM_CHAR_SCANCODE_SHIFT, 0x2A);
     }
 
     #[test]
@@ -3302,10 +3418,19 @@ mod tests {
     #[test]
     fn button1_accounts_for_the_frame_border() {
         let (shared, frame, _client, entry) = routed_window(FCF_SIZEBORDER);
-        // Frame x = border + client x: the control's left edge is at 10 + border.
-        let left = 10 + CHROME_BORDER_W;
-        assert_eq!(route_button1(&shared, frame, left, 200, true), ((entry, 0, 0), 0));
-        assert_eq!(route_button1(&shared, frame, left - 1, 200, true), ((frame, left - 1, 200), 0));
+        // Client coordinates: the control's left edge is at 10, whatever the
+        // border (the client lies inside it).
+        assert_eq!(route_button1(&shared, frame, 10, 200, true), ((entry, 0, 0), 0));
+        assert_eq!(route_button1(&shared, frame, 9, 200, true), ((frame, 9, 200), 0));
+        // A desktop point inside the border is client x 0.
+        let (x, y) = {
+            let mut wm = shared.window_mgr.lock_or_recover();
+            let f = wm.get_window_mut(frame).unwrap();
+            (f.x, f.y) = (100, 50);
+            super::pointer_local(&wm, frame, 100 + CHROME_BORDER_W + 10, 50 + 200)
+        };
+        assert_eq!((x, y), (10, 200));
+        assert_eq!(route_button1(&shared, frame, x, y, true), ((entry, 0, 0), 0));
     }
 
     #[test]
@@ -3606,6 +3731,28 @@ mod compositor_tests {
         c.render();
         assert_ne!(c.title_px, title, "title redrawn in the Chinese face");
         assert_ne!(c.menu.as_ref().unwrap().bar_px, bar, "menu bar redrawn in the Chinese face");
+    }
+
+    /// WinSetSysColors: the title bar follows the system colour table.
+    #[test]
+    fn chrome_cache_follows_the_system_title_colours() {
+        use crate::loader::constants::{SYSCLR_ACTIVETITLE, SYSCLR_INACTIVETITLE};
+        use crate::loader::pm_syscolor::SysColorTable;
+        let table = SysColorTable::default();
+        assert_eq!(TitleColors::of(&table), TitleColors::default(), "defaults match the drawing");
+        let mut c = ChromeCache::new();
+        c.sync("App", 200, FCF_TITLEBAR, 0, true, None, 196);
+        assert!(!c.set_colors(TitleColors::of(&table)), "unchanged");
+        c.render();
+        assert_eq!(c.title_px[200 * 5 + 100], CHROME_TITLE_ACTIVE);
+        table.set(SYSCLR_ACTIVETITLE, 0x00_80_00_00);
+        table.set(SYSCLR_INACTIVETITLE, 0x00_00_80_00);
+        assert!(c.set_colors(TitleColors::of(&table)), "changed: redraw");
+        c.render();
+        assert_eq!(c.title_px[200 * 5 + 100], 0x00_80_00_00, "active title in the new colour");
+        c.sync("App", 200, FCF_TITLEBAR, 0, false, None, 196);
+        c.render();
+        assert_eq!(c.title_px[200 * 5 + 100], 0x00_00_80_00, "inactive title in the new colour");
     }
 
     #[test]

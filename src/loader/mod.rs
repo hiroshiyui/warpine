@@ -23,6 +23,10 @@ pub mod pm_minmax;
 mod pm_sysmenu;
 mod pm_rect;
 mod pm_drawtext;
+mod pm_paint;
+mod pm_query;
+pub mod pm_keystate;
+pub mod pm_syscolor;
 pub mod vfs;
 pub mod vfs_hostdir;
 pub mod vm_backend;
@@ -62,6 +66,10 @@ mod seh;
 mod cmd;
 pub mod threads;
 mod exitlist;
+mod critsec;
+pub mod dostimer;
+pub mod suballoc;
+mod modpath;
 
 pub use constants::*;
 pub use mutex_ext::MutexExt;
@@ -315,6 +323,10 @@ pub struct SharedState {
     pub guest_mem: GuestMemory,
     /// The process's threads: running, ended, idle vCPUs (`threads.rs`).
     pub threads: threads::Threads,
+    /// `DosAsyncTimer` / `DosStartTimer` timers (`dostimer.rs`).
+    pub dos_timers: Mutex<dostimer::DosTimerTable>,
+    /// `DosSubSetMem` pools, kept on the host (`suballoc.rs`).
+    pub suballoc: Mutex<suballoc::SubAllocTable>,
     pub exit_requested: AtomicBool,
     /// A VIO session may switch between its PM window and full screen with
     /// Alt+Home (the program is window-compatible); set by `run_vio_session`.
@@ -423,6 +435,8 @@ impl Loader {
             exe_name: Mutex::new(String::new()),
             guest_mem,
             threads: Default::default(),
+            dos_timers: Default::default(),
+            suballoc: Default::default(),
             exit_requested: AtomicBool::new(false),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),
@@ -482,6 +496,8 @@ impl Loader {
     /// filesystem I/O in pure unit tests.
     #[cfg(test)]
     pub fn new_mock() -> Self {
+        /// Drive C: of mock loaders, relative to the crate root (git-ignored).
+        const MOCK_DRIVE_C: &str = "target/test-drive-c";
         use vm_backend::mock::MockVmBackend;
         let vm: Arc<dyn VmBackend> = Arc::new(MockVmBackend);
         let guest_mem_size = 64 * 1024 * 1024; // 64 MB (must cover DYNAMIC_ALLOC_BASE = 0x02000000)
@@ -500,7 +516,10 @@ impl Loader {
             pm_errors:    Default::default(),
             profiles:     Default::default(),
             pointers:     Default::default(),
-            drive_mgr:    Mutex::new(DriveManager::with_default_config()),
+            // Never the user's own drive C (`$XDG_DATA_HOME/warpine/drive_c`):
+            // a test drive under the build directory, shared by the tests.
+            drive_mgr:    Mutex::new(DriveManager::with_drive_c(
+                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(MOCK_DRIVE_C))),
             console_mgr:  Mutex::new(console::VioManager::new()),
             mmpm_mgr:     Mutex::new(mmpm::MmpmManager::new()),
             audio:        Default::default(),
@@ -510,6 +529,8 @@ impl Loader {
             exe_name:     Mutex::new(String::new()),
             guest_mem,
             threads:      Default::default(),
+            dos_timers:   Default::default(),
+            suballoc:     Default::default(),
             exit_requested: AtomicBool::new(false),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),
@@ -588,7 +609,12 @@ impl Loader {
 
         match msg {
             WM_PAINT => {
-                let frame_hwnd = self.shared.window_mgr.lock_or_recover().find_frame_for_hwnd(hwnd);
+                // A built-in window paints all of itself: it is valid now.
+                let frame_hwnd = {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    wm.painted(hwnd);
+                    wm.find_frame_for_hwnd(hwnd)
+                };
                 let p = Painter::new(self, frame_hwnd, hwnd);
 
                 match class_name.as_str() {
@@ -912,13 +938,6 @@ impl Loader {
         }
     }
 
-    /// Map an OS/2 PM `lColor` value to a 0x00RRGGBB pixel colour.
-    ///
-    /// Handles the full CLR_* palette (negative specials + 0–15 named indices)
-    /// and direct RGB values (>= 16, i.e. `RGB(r,g,b)` macro output).
-    pub(crate) fn map_color(&self, clr: u32) -> u32 {
-        pm_types::default_color(clr)
-    }
 }
 
 

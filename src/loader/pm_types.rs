@@ -46,9 +46,14 @@ pub struct OS2Message {
     pub msg: u32,
     pub mp1: u32,
     pub mp2: u32,
+    /// `QMSG.time`: when the message was posted, in milliseconds since the
+    /// host started (`QSV_MS_COUNT`); 0 until it is stamped (input when it
+    /// arrives, other messages when they are read).
     pub time: u32,
-    pub x: i16,
-    pub y: i16,
+    /// `QMSG.ptl`: the pointer position (desktop coordinates) when the
+    /// message was posted; stamped with `time`.
+    pub x: i32,
+    pub y: i32,
 }
 
 #[allow(non_camel_case_types)]
@@ -59,6 +64,10 @@ pub struct PM_MsgQueue {
     /// Queue codepage (WinSetCp / WinQueryCp). PM keeps one per message
     /// queue; it starts as the process codepage when the queue is created.
     pub codepage: u32,
+    /// Time and pointer position of the message the queue's thread read
+    /// last (`WinQueryMsgTime` / `WinQueryMsgPos`).
+    pub last_msg_time: u32,
+    pub last_msg_pos: (i32, i32),
 }
 
 pub struct WindowClass {
@@ -138,6 +147,10 @@ pub struct OS2Window {
     /// Highlight state of a `WC_BUTTON` set by `BM_SETHILITE` (or a
     /// `BM_CLICK` down-click): drawn pressed until cleared.
     pub hilite: bool,
+    /// Update rectangle (window coordinates; empty = nothing to paint): the
+    /// bounding rectangle of what was invalidated since the window last
+    /// painted (`pm_paint.rs`).
+    pub update: super::pm_rect::Rectl,
 }
 
 /// Map a PM colour value to 0x00RRGGBB with the default colour table: the
@@ -170,6 +183,29 @@ pub fn default_color(clr: u32) -> u32 {
         n if n >= 16 => clr & 0x00FF_FFFF, // Direct 0x00RRGGBB — mask alpha
         _           => 0x00808080, // Unknown — grey
     }
+}
+
+/// The first window of `items` after position `at` (before it when
+/// `backward`) that is `eligible`, wrapping around; `at` itself when no
+/// other is and it is eligible. Without `at`, the first (last) eligible one.
+/// Shared by dialog Tab / arrow-key moves and `WinEnumDlgItem`.
+pub fn step_from(items: &[u32], at: Option<usize>, backward: bool, eligible: impl Fn(u32) -> bool) -> Option<u32> {
+    let n = items.len();
+    let Some(at) = at.filter(|&i| i < n) else {
+        let found = if backward { items.iter().rev().find(|&&h| eligible(h)) } else { items.iter().find(|&&h| eligible(h)) };
+        return found.copied();
+    };
+    (1..=n).map(|k| if backward { (at + n - k) % n } else { (at + k) % n })
+        .map(|i| items[i]).find(|&h| eligible(h))
+}
+
+/// The positions of the group of `items[at]`: from the nearest item at or
+/// before `at` that `starts_group` (`WS_GROUP`; the first item if none) up
+/// to the next one that starts a group.
+pub fn group_range(items: &[u32], at: usize, starts_group: impl Fn(u32) -> bool) -> std::ops::Range<usize> {
+    let start = items[..=at].iter().rposition(|&h| starts_group(h)).unwrap_or(0);
+    let end = items[at + 1..].iter().position(|&h| starts_group(h)).map_or(items.len(), |i| at + 1 + i);
+    start..end
 }
 
 /// Highest index of the default colour table (`CLR_PALEGRAY`).
@@ -272,12 +308,17 @@ pub struct PresentationSpace {
     /// its window's message-queue codepage when created, 0 = not known
     /// (the process codepage is used).
     pub codepage: u32,
+    /// The system colours (`SYSCLR_*` colour values), shared with the
+    /// window manager (`pm_syscolor.rs`).
+    pub sys_colors: Arc<super::pm_syscolor::SysColorTable>,
 }
 
 impl PresentationSpace {
     /// Resolve a colour value against this presentation space's colour table.
     pub fn resolve_color(&self, value: u32) -> u32 {
-        if (value as i32) < 0 {
+        if let Some(rgb) = self.sys_colors.get(value as i32) {
+            rgb
+        } else if (value as i32) < 0 {
             default_color(value)
         } else if self.rgb_mode {
             value & 0x00FF_FFFF
@@ -470,6 +511,12 @@ pub struct WindowManager {
     /// Help Manager instances and the windows associated with them
     /// (`helpmgr.rs`).
     pub help: super::helpmgr::HelpRegistry,
+    /// The system colours (`WinQuerySysColor` / `WinSetSysColors`,
+    /// `pm_syscolor.rs`); presentation spaces share it.
+    pub sys_colors: Arc<super::pm_syscolor::SysColorTable>,
+    /// Key, button and pointer state (`WinGetKeyState`,
+    /// `WinGetPhysKeyState`, `WinQueryPointerPos`; `pm_keystate.rs`).
+    pub key_state: super::pm_keystate::InputState,
 }
 
 /// The caret of a text control as last painted, in the surface coordinates
@@ -532,6 +579,8 @@ impl WindowManager {
             vio_frame: 0,
             vio_screen: (0, 0),
             help: Default::default(),
+            sys_colors: Default::default(),
+            key_state: Default::default(),
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
@@ -576,6 +625,7 @@ impl WindowManager {
             msgbox_icon: 0,
             check_state: 0,
             hilite: false,
+            update: super::pm_rect::EMPTY_RECTL,
         });
         // Register as child of parent
         if parent != 0
@@ -625,6 +675,7 @@ impl WindowManager {
             log_fonts: HashMap::new(),
             current_pos: (0, 0),
             codepage: self.queue_codepage(hwnd).unwrap_or(0),
+            sys_colors: Arc::clone(&self.sys_colors),
         });
         self.next_hps += 1;
         h
@@ -638,6 +689,8 @@ impl WindowManager {
             cond: Arc::new(Condvar::new()),
             lock: Arc::new(Mutex::new(false)),
             codepage,
+            last_msg_time: 0,
+            last_msg_pos: (0, 0),
         })));
         self.next_hmq += 1;
         h
@@ -878,16 +931,12 @@ impl WindowManager {
     /// wrapping around; the first (last) tab stop when the focus is
     /// elsewhere. `None` when `dialog` has no tab stops.
     pub fn next_tab_stop(&self, dialog: u32, backward: bool) -> Option<u32> {
-        let stops = self.tab_stops(dialog);
-        let n = stops.len();
-        if n == 0 { return None; }
-        let i = match stops.iter().position(|&h| h == self.focus_hwnd) {
-            Some(i) if backward => (i + n - 1) % n,
-            Some(i) => (i + 1) % n,
-            None if backward => n - 1,
-            None => 0,
-        };
-        Some(stops[i])
+        use super::constants::WS_TABSTOP;
+        let controls = self.builtin_control_descendants(dialog);
+        let at = controls.iter().position(|&h| h == self.focus_hwnd);
+        step_from(&controls, at, backward, |h| {
+            self.can_take_focus(h) && self.windows[&h].style & WS_TABSTOP != 0
+        })
     }
 
     /// The control after the focus window (before it when `backward`) in
@@ -898,15 +947,10 @@ impl WindowManager {
         use super::constants::WS_GROUP;
         let controls = self.builtin_control_descendants(dialog);
         let at = controls.iter().position(|&h| h == self.focus_hwnd)?;
-        let starts_group = |h: &u32| self.windows[h].style & WS_GROUP != 0;
-        let start = controls[..=at].iter().rposition(starts_group).unwrap_or(0);
-        let end = controls[at + 1..].iter().position(starts_group).map_or(controls.len(), |i| at + 1 + i);
-        let group: Vec<u32> = controls[start..end].iter().copied()
-            .filter(|&h| h == self.focus_hwnd || self.can_take_focus(h)).collect();
-        let i = group.iter().position(|&h| h == self.focus_hwnd)?;
-        let n = group.len();
-        if n < 2 { return None; }
-        Some(group[if backward { (i + n - 1) % n } else { (i + 1) % n }])
+        let range = group_range(&controls, at, |h| self.windows[&h].style & WS_GROUP != 0);
+        let start = range.start;
+        step_from(&controls[range], Some(at - start), backward, |h| self.can_take_focus(h))
+            .filter(|&h| h != self.focus_hwnd)
     }
 
     /// The control that first gets the focus in `dialog`: `preferred` (the

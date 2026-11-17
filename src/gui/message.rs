@@ -26,6 +26,9 @@ pub enum GUIMessage {
     TrackFrame { frame: u32, size: bool },
     /// Show a pop-up menu (`WinPopupMenu`).
     PopupMenu(PopupRequest),
+    /// Move the host pointer to desktop point `(x, y)`, bottom-left origin
+    /// (`WinSetPointerPos`).
+    SetPointerPos { x: i32, y: i32 },
 }
 
 /// A pop-up menu to show (`WinPopupMenu`).
