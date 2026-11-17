@@ -202,6 +202,7 @@ WARPINE_VIO=fullscreen cargo run -- samples/hello/hello.exe   # CLI app in the 6
 cargo run -- samples/pm_demo/pm_demo.exe    # GUI app
 
 WARPINE_HEADLESS=1 cargo run -- samples/hello/hello.exe   # Terminal fallback
+WARPINE_CODEPAGE=437 cargo run -- samples/hello/hello.exe  # Start in CP437 whatever the host locale
 ```
 
 ### 4. Run the builtin CMD.EXE shell
@@ -263,7 +264,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 1062 unit tests (no KVM required)
+cargo test                        # 1064 unit tests (no KVM required)
 cargo test --test integration     # 38 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```

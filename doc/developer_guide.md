@@ -743,7 +743,11 @@ Until this table was checked against the toolkit, Warpine had the NLS ordinals w
 
 During start-up the Open Watcom C runtime calls **NLS 6, `DosQueryDBCSEnv`, with `cb=12`** (EDM2: "A length value of 12 bytes is sufficient") to learn the lead bytes for its multibyte-character functions. A program's own `DosQueryCtryInfo` goes to **NLS 5** with `cb=44`, the size of Watcom's COUNTRYINFO.
 
-With the old table the start-up call got a COUNTRYINFO instead, whose first bytes (country, then codepage) were read as lead-byte ranges. Whether that caused the start-up crash with non-US country codes noted in `doc/TODOs.md` is not yet checked.
+With the old table the start-up call got a COUNTRYINFO instead, whose first bytes (country, then codepage) were read as lead-byte ranges. For every non-US country that hung the runtime before `main` (country 1 happened to be harmless), which is why `locale.rs` used to report country 1 / CP437 whatever the host locale. A build with the old table hangs in `nls_test` for countries 7, 33, 49, 81, 82, 86 and 88; the current one runs `hello`, `alloc_test`, `nls_test`, `dbcs_test` and 4OS2 with all of them, in their own codepages and in 437.
+
+### Starting country and codepage
+
+`locale::resolve_country` turns the host locale into the OS/2 country code and the starting process codepage, as an OS/2 installation in that language would have them (`ja_JP` → 81 / CP932, `de_DE` → 49 / CP850, `C` → 1 / CP437). `WARPINE_COUNTRY` and `WARPINE_CODEPAGE` override them; an unsupported codepage is ignored with a warning. `Loader::new` starts `SharedState::active_codepage`, the VIO screen's codepage and the PM CJK face preference from it, as `DosSetProcessCp` does later; `Loader::new_mock` pins 1 / 437 so unit tests do not depend on the host. The integration tests and the screenshot helper pin `WARPINE_COUNTRY=1 WARPINE_CODEPAGE=437` (`PINNED_LOCALE`). The country codes (dialling codes, 88 for Taiwan, 42 for the Czech Republic and Slovakia) are not checked against an IBM source.
 
 ### PM codepages
 
@@ -1470,7 +1474,7 @@ cargo clippy --all-targets -- -D warnings   # lint, test code included
 
 The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`) runs both and aborts the commit on a failing test or any lint.
 
-The unit tests (1062: 1032 warpine + 18 `gen_api` + 12 `lx_link`) include, among others:
+The unit tests (1064: 1034 warpine + 18 `gen_api` + 12 `lx_link`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -1573,10 +1577,10 @@ CLI samples should print output and exit with code 0. PM samples should open a w
 
 ### Automated integration tests
 
-`tests/integration.rs` contains 63 end-to-end tests that run real OS/2 sample binaries under KVM: CLI samples (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test, ne_hello, rust_hello, …) with headless output checks, and PM samples driven by GUI scripts on SDL's `dummy` driver — the self-checking samples (`pm_dialog_test`, `pm_list_test`, `pm_msgbox_test`, `pm_typeahead_test`, `pm_codepage_test`, `pm_pointer_test`, `pm_audio_test`, `pm_menu_dlg_test`, …) must report every check as passed, and desktop dumps are compared with golden tile signatures (see "GUI regression tests" below). Each test skips itself when `/dev/kvm` or its sample binary is missing.
+`tests/integration.rs` contains 64 end-to-end tests that run real OS/2 sample binaries under KVM: CLI samples (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test, ne_hello, rust_hello, …) with headless output checks, and PM samples driven by GUI scripts on SDL's `dummy` driver — the self-checking samples (`pm_dialog_test`, `pm_list_test`, `pm_msgbox_test`, `pm_typeahead_test`, `pm_codepage_test`, `pm_pointer_test`, `pm_audio_test`, `pm_menu_dlg_test`, …) must report every check as passed, and desktop dumps are compared with golden tile signatures (see "GUI regression tests" below). Each test skips itself when `/dev/kvm` or its sample binary is missing.
 
 ```bash
-cargo test --test integration     # 63 end-to-end tests (requires /dev/kvm)
+cargo test --test integration     # 64 end-to-end tests (requires /dev/kvm)
 ```
 
 ---
@@ -1738,7 +1742,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 1062 unit tests (1032 warpine + 18 gen_api + 12 lx_link), 63 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 1064 unit tests (1034 warpine + 18 gen_api + 12 lx_link), 64 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
