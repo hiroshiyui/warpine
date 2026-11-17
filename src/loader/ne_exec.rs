@@ -331,7 +331,8 @@ impl super::Loader {
         vcpu.enable_software_breakpoints().unwrap();
 
         info!("Starting NE 16-bit execution at 0x{:04X}:0x{:04X}", cs_sel, entry_ip);
-        self.run_vcpu(vcpu, 0, TIB_BASE as u64);
+        self.run_vcpu(vcpu, super::threads::MAIN_VCPU_ID, TIB_BASE as u64);
+        self.wait_for_process_end();
 
         self.shared.console_mgr.lock_or_recover().disable_raw_mode();
         let code = self.shared.exit_code.load(Ordering::Relaxed);
@@ -383,19 +384,18 @@ impl super::Loader {
                     let hf = read_arg16(10);
                     debug!("  16-bit DosWrite(hf={}, buf=0x{:08X}, cb={}, pcb=0x{:08X})",
                         hf, p_buf, cb_buf, pcb_written);
-                    if let Some(data) = self.guest_slice_mut(p_buf, cb_buf as usize)
-                        && (hf == 1 || hf == 2) {
-                            match crate::api::doscalls::dos_write(hf as u32, data) {
-                                Ok(actual) => {
-                                    if pcb_written != 0 {
-                                        self.guest_write::<u16>(pcb_written, actual as u16);
-                                    }
-                                    return 0;
-                                }
-                                Err(_) => return 1,
+                    let Some(data) = self.guest_slice_mut(p_buf, cb_buf as usize).map(|d| d.to_vec()) else {
+                        return ERROR_INVALID_PARAMETER;
+                    };
+                    match self.write_handle(hf as u32, &data) {
+                        Ok(actual) => {
+                            if pcb_written != 0 {
+                                self.guest_write::<u16>(pcb_written, actual as u16);
                             }
+                            0
+                        }
+                        Err(rc) => rc,
                     }
-                    1 // error
                 }
                 // DosGetInfoSeg(pGlobalSeg:far, pLocalSeg:far) — ordinal 8
                 8 => {
@@ -448,7 +448,7 @@ impl super::Loader {
                         let bytes = data.to_vec();
                         let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
                         let mut console = self.shared.console_mgr.lock_or_recover();
-                        console.write_tty(&bytes, 0x07, cp); // default attribute: light-grey on black
+                        console.write_tty(&bytes, cp); // ANSI attribute, light grey on black by default
                     }
                     0
                 }

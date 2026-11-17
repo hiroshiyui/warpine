@@ -10,8 +10,59 @@ use log::{debug, warn};
 
 use super::constants::*;
 use super::mutex_ext::MutexExt;
+use super::doscalls::HandleTarget;
+
+/// What a child process gets for one of its standard handles.
+enum ChildStdio {
+    /// The parent's console: the child's output is relayed into it.
+    Console,
+    /// A host file or pipe the parent's handle was redirected to.
+    Host(std::process::Stdio),
+    /// The parent closed the handle.
+    Closed,
+}
 
 impl super::Loader {
+    /// What the child of `DosExecPgm` inherits for standard handle `hf`: a
+    /// handle the parent redirected (`DosDupHandle(hFile, &1)`, as shells do
+    /// for `prog > file`) is passed on as the host file or pipe.
+    fn child_stdio(&self, hf: u32) -> ChildStdio {
+        match self.handle_target(hf) {
+            Some(HandleTarget::Console(_)) => ChildStdio::Console,
+            Some(HandleTarget::File) => match self.shared.drive_mgr.lock_or_recover().clone_host_file(hf) {
+                Some(f) => ChildStdio::Host(f.into()),
+                None => ChildStdio::Console,
+            },
+            Some(HandleTarget::Pipe) => match self.shared.handle_mgr.lock_or_recover().get(hf).and_then(|f| f.try_clone().ok()) {
+                Some(f) => ChildStdio::Host(f.into()),
+                None => ChildStdio::Console,
+            },
+            None => ChildStdio::Closed,
+        }
+    }
+
+    /// Set up the child's standard handles: input and error output are
+    /// inherited from the host unless redirected; output is piped back for
+    /// relaying into the parent's console unless redirected.
+    fn set_child_stdio(&self, cmd: &mut Command) {
+        use std::process::Stdio;
+        match self.child_stdio(0) {
+            ChildStdio::Host(s) => { cmd.stdin(s); }
+            ChildStdio::Closed => { cmd.stdin(Stdio::null()); }
+            ChildStdio::Console => {}
+        }
+        match self.child_stdio(STDOUT_HANDLE) {
+            ChildStdio::Host(s) => { cmd.stdout(s); }
+            ChildStdio::Closed => { cmd.stdout(Stdio::null()); }
+            ChildStdio::Console => { cmd.stdout(Stdio::piped()); }
+        }
+        match self.child_stdio(2) {
+            ChildStdio::Host(s) => { cmd.stderr(s); }
+            ChildStdio::Closed => { cmd.stderr(Stdio::null()); }
+            ChildStdio::Console => { cmd.stderr(Stdio::inherit()); }
+        }
+    }
+
     /// DosExecPgm (ordinal 283): execute a program.
     ///
     /// OS/2 signature: DosExecPgm(pObjname, cbObjname, execFlag, pArg, pEnv, pRes, pName)
@@ -111,8 +162,9 @@ impl super::Loader {
                 // and do NOT clutter the SDL window.
                 // The child detects the piped stdout via isatty() and runs in
                 // headless mode automatically — no env var required.
-                cmd.stdout(std::process::Stdio::piped())
-                   .stderr(std::process::Stdio::inherit());
+                // Standard handles the parent redirected go to the same file
+                // or pipe instead.
+                self.set_child_stdio(&mut cmd);
 
                 match cmd.spawn() {
                     Ok(mut child) => {
@@ -160,9 +212,9 @@ impl super::Loader {
                 // stderr inherits so warpine diagnostics reach the terminal.
                 // A background relay thread forwards the child's stdout to the
                 // parent's VioManager so the output appears in the same SDL
-                // text window as the parent (e.g. 4OS2).
-                cmd.stdout(std::process::Stdio::piped())
-                   .stderr(std::process::Stdio::inherit());
+                // text window as the parent (e.g. 4OS2). Redirected standard
+                // handles go to their file or pipe instead.
+                self.set_child_stdio(&mut cmd);
                 match cmd.spawn() {
                     Ok(mut child) => {
                         let stdout_pipe = child.stdout.take();
@@ -260,7 +312,10 @@ impl super::Loader {
             // DCWA_PROCESSTREE: wait for any child
             if option == 1 {
                 // NOWAIT: try all children
-                if let Some((pid, code)) = self.shared.process_mgr.lock_or_recover().wait_any() {
+                // Bound first: the guard of an `if let` scrutinee lives through the
+                // block, which locks process_mgr again (a deadlock before).
+                let finished = self.shared.process_mgr.lock_or_recover().wait_any();
+                if let Some((pid, code)) = finished {
                     drop(self.shared.process_mgr.lock_or_recover().take_relay_thread(pid));
                     if p_res != 0 {
                         self.guest_write::<u32>(p_res, 0);
@@ -275,7 +330,10 @@ impl super::Loader {
                 // WAIT: poll until a child finishes
                 loop {
                     if self.shutting_down() { return ERROR_INVALID_FUNCTION; }
-                    if let Some((pid, code)) = self.shared.process_mgr.lock_or_recover().wait_any() {
+                    // Bound first: the guard of an `if let` scrutinee lives through the
+                    // block, which locks process_mgr again (a deadlock before).
+                    let finished = self.shared.process_mgr.lock_or_recover().wait_any();
+                    if let Some((pid, code)) = finished {
                         drop(self.shared.process_mgr.lock_or_recover().take_relay_thread(pid));
                         if p_res != 0 {
                             self.guest_write::<u32>(p_res, 0);
@@ -411,7 +469,7 @@ fn relay_pipe_to_vio<R: Read>(mut pipe: R, shared: Arc<super::SharedState>) {
             Ok(n) => {
                 let cp = shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
                 let mut console = shared.console_mgr.lock_or_recover();
-                console.write_tty(&buf[..n], 0x07, cp);
+                console.write_tty(&buf[..n], cp);
             }
         }
     }
@@ -419,6 +477,7 @@ fn relay_pipe_to_vio<R: Read>(mut pipe: R, shared: Arc<super::SharedState>) {
 
 #[cfg(test)]
 mod tests {
+    use super::ChildStdio;
     use super::super::managers::ProcessManager;
     use super::super::Loader;
     use super::super::mutex_ext::MutexExt;
@@ -495,5 +554,57 @@ mod tests {
         let (rpid, code) = result.unwrap();
         assert_eq!(rpid, pid);
         assert_eq!(code, 0);
+    }
+
+    /// DosWaitChild(DCWA_PROCESSTREE) returns once a child ends. It used to
+    /// lock the process manager again while the `if let` scrutinee's guard
+    /// was still held, a deadlock that hung 4OS2 after every external
+    /// program.
+    #[test]
+    fn test_dos_wait_child_any_child_returns() {
+        let loader = std::sync::Arc::new(Loader::new_mock());
+        let child = std::process::Command::new("true").spawn().unwrap();
+        let pid = loader.shared.process_mgr.lock_or_recover().add_child(child);
+        let (p_res, p_pid) = (0x3000u32, 0x3010u32);
+        let l = loader.clone();
+        let waiter = std::thread::spawn(move || l.dos_wait_child(1, 0, p_res, p_pid, 0));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !waiter.is_finished() {
+            assert!(std::time::Instant::now() < deadline, "DosWaitChild did not return");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(waiter.join().unwrap(), 0);
+        assert_eq!(loader.guest_read::<u32>(p_pid), Some(pid));
+        assert_eq!(loader.guest_read::<u32>(p_res + 4), Some(0), "exit code of `true`");
+    }
+
+    /// A standard handle the parent redirected to a file is passed to the
+    /// child as that host file; the console is relayed (piped).
+    #[test]
+    fn test_child_stdio_follows_redirection() {
+        let dir = tempfile::tempdir().unwrap();
+        let loader = Loader::new_mock();
+        loader.shared.drive_mgr.lock_or_recover().mount(2,
+            Box::new(super::super::vfs_hostdir::HostDirBackend::new(dir.path().to_path_buf()).unwrap()));
+        assert!(matches!(loader.child_stdio(1), ChildStdio::Console));
+        let hf = {
+            let mut dm = loader.shared.drive_mgr.lock_or_recover();
+            let (hf, _) = dm.open_file("C:\\child.txt", super::super::vfs::OpenMode::WriteOnly,
+                super::super::vfs::SharingMode::DenyNone, super::super::vfs::OpenFlags::from_raw(0x12),
+                super::super::vfs::FileAttribute::NORMAL).unwrap();
+            dm.dup_file(hf, Some(1)).unwrap();
+            hf
+        };
+        assert!(matches!(loader.child_stdio(1), ChildStdio::Host(_)));
+        // The child writes into the file through the inherited descriptor.
+        let mut cmd = std::process::Command::new("sh");
+        cmd.args(["-c", "printf child"]);
+        loader.set_child_stdio(&mut cmd);
+        assert!(cmd.status().unwrap().success());
+        loader.shared.drive_mgr.lock_or_recover().close_file(hf).unwrap();
+        assert_eq!(std::fs::read(dir.path().join("child.txt")).unwrap(), b"child");
+        // A closed standard handle gives the child nothing.
+        loader.shared.drive_mgr.lock_or_recover().mark_std_closed(0);
+        assert!(matches!(loader.child_stdio(0), ChildStdio::Closed));
     }
 }

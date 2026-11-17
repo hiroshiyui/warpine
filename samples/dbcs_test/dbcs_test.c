@@ -71,6 +71,9 @@ int main(void) {
     COUNTRYCODE cc;
     char dbcsBuf[20];
     USHORT type;
+    USHORT types[3];
+    APIRET type_rc[3];
+    int col;
     BYTE cells[6];
 
     print("=== DBCS VIO API Test ===\r\n\r\n");
@@ -125,32 +128,32 @@ int main(void) {
     cells[2] = 0xA0; cells[3] = 0x07; /* DBCS trail byte, same attr   */
     cells[4] = ' ';  cells[5] = 0x07; /* SBCS space after the pair    */
     rc = VioWrtCellStr((PCH)cells, 6, 2, 0, 0);
+    /* Classify the cells before printing anything more: DosWrite to the
+       screen scrolls it (as on OS/2), which would move row 2's contents. */
+    for (col = 0; col < 3; col++) {
+        types[col] = 0xFF;
+        type_rc[col] = VioCheckCharType(&types[col], 2, (USHORT)col, 0);
+    }
     print("  VioWrtCellStr rc="); print_num(rc); print("\r\n");
     check("VioWrtCellStr returns 0", rc == 0, &passed, &failed);
 
     /* ── Test 5: col 0 is DBCS-lead ── */
     print("\r\nTest 5: VioCheckCharType(row=2, col=0) — expect DBCS-lead (2)\r\n");
-    type = 0xFF;
-    rc = VioCheckCharType(&type, 2, 0, 0);
-    print("  rc="); print_num(rc); print("  type="); print_num(type); print("\r\n");
-    check("VioCheckCharType(2,0) returns 0", rc == 0, &passed, &failed);
-    check("col 0 classified as DBCS-lead (type==2)", type == 2, &passed, &failed);
+    print("  rc="); print_num(type_rc[0]); print("  type="); print_num(types[0]); print("\r\n");
+    check("VioCheckCharType(2,0) returns 0", type_rc[0] == 0, &passed, &failed);
+    check("col 0 classified as DBCS-lead (type==2)", types[0] == 2, &passed, &failed);
 
     /* ── Test 6: col 1 is DBCS-trail ── */
     print("\r\nTest 6: VioCheckCharType(row=2, col=1) — expect DBCS-trail (3)\r\n");
-    type = 0xFF;
-    rc = VioCheckCharType(&type, 2, 1, 0);
-    print("  rc="); print_num(rc); print("  type="); print_num(type); print("\r\n");
-    check("VioCheckCharType(2,1) returns 0", rc == 0, &passed, &failed);
-    check("col 1 classified as DBCS-trail (type==3)", type == 3, &passed, &failed);
+    print("  rc="); print_num(type_rc[1]); print("  type="); print_num(types[1]); print("\r\n");
+    check("VioCheckCharType(2,1) returns 0", type_rc[1] == 0, &passed, &failed);
+    check("col 1 classified as DBCS-trail (type==3)", types[1] == 3, &passed, &failed);
 
     /* ── Test 7: col 2 is SBCS space ── */
     print("\r\nTest 7: VioCheckCharType(row=2, col=2) — expect SBCS (0)\r\n");
-    type = 0xFF;
-    rc = VioCheckCharType(&type, 2, 2, 0);
-    print("  rc="); print_num(rc); print("  type="); print_num(type); print("\r\n");
-    check("VioCheckCharType(2,2) returns 0", rc == 0, &passed, &failed);
-    check("col 2 classified as SBCS (type==0)", type == 0, &passed, &failed);
+    print("  rc="); print_num(type_rc[2]); print("  type="); print_num(types[2]); print("\r\n");
+    check("VioCheckCharType(2,2) returns 0", type_rc[2] == 0, &passed, &failed);
+    check("col 2 classified as SBCS (type==0)", types[2] == 0, &passed, &failed);
 
     /* ── Test 8: out-of-bounds row returns error ── */
     print("\r\nTest 8: VioCheckCharType(row=9999) — expect non-zero error\r\n");

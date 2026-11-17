@@ -442,11 +442,22 @@ pub trait VfsBackend: Send + Sync {
     /// a child Warpine process.  Returns `None` if the path does not exist or
     /// the backend does not support host-path exposure.
     fn to_host_path(&self, _rel_path: &str) -> Option<std::path::PathBuf> { None }
+
+    /// A host file descriptor duplicate of an open file (sharing its file
+    /// pointer), so `DosExecPgm` can hand a redirected standard handle to a
+    /// child process. `None` if the backend has no host file.
+    fn clone_host_file(&self, _handle: VfsFileHandle) -> Option<std::fs::File> { None }
 }
 
 // ── DriveManager ──
 
-/// An open file tracked by DriveManager.
+/// Standard handles 0 (input), 1 (output) and 2 (error output).
+pub const STD_HANDLES: u32 = 3;
+
+/// An open file tracked by DriveManager. Duplicated handles
+/// (`DosDupHandle`) share one entry's backend handle — and so its file
+/// pointer — which is closed when the last of them is.
+#[derive(Clone, Copy)]
 struct FileEntry {
     drive: u8,
     vfs_handle: VfsFileHandle,
@@ -490,6 +501,13 @@ pub struct DriveManager {
     /// backends so configuration can be set before backends are created.
     drive_configs: [Option<DriveConfig>; 26],
     file_handles: HashMap<u32, FileEntry>,
+    /// How many OS/2 handles share each open backend handle.
+    file_refs: HashMap<(u8, VfsFileHandle), usize>,
+    /// Handles that refer to a standard console stream (0, 1 or 2) without
+    /// being one: duplicates of the console (`DosDupHandle(1, &new)`).
+    console_handles: HashMap<u32, u32>,
+    /// Standard handles 0–2 closed with `DosClose` while they were the console.
+    closed_std: [bool; STD_HANDLES as usize],
     find_handles: HashMap<u32, FindEntry>,
     next_file_handle: u32,
     next_find_handle: u32,
@@ -511,6 +529,9 @@ impl DriveManager {
             drives: std::array::from_fn(|_| None),
             drive_configs: std::array::from_fn(|_| None),
             file_handles: HashMap::new(),
+            file_refs: HashMap::new(),
+            console_handles: HashMap::new(),
+            closed_std: [false; STD_HANDLES as usize],
             find_handles: HashMap::new(),
             next_file_handle: 3,
             next_find_handle: 10,
@@ -705,17 +726,113 @@ impl DriveManager {
         let (drive, rel_path) = self.resolve_path(os2_path)?;
         let backend = self.drives[drive as usize].as_ref().ok_or(Os2Error::INVALID_DRIVE)?;
         let (vfs_handle, action) = backend.open(&rel_path, mode, sharing, flags, attributes)?;
-        let os2_handle = self.next_file_handle;
-        self.next_file_handle += 1;
+        let os2_handle = self.alloc_handle();
         self.file_handles.insert(os2_handle, FileEntry { drive, vfs_handle });
+        self.file_refs.insert((drive, vfs_handle), 1);
         Ok((os2_handle, action))
     }
 
-    /// Close a file handle.
+    /// The lowest free handle number from the allocation counter on.
+    fn alloc_handle(&mut self) -> u32 {
+        while self.file_handles.contains_key(&self.next_file_handle)
+            || self.console_handles.contains_key(&self.next_file_handle) {
+            self.next_file_handle += 1;
+        }
+        let h = self.next_file_handle;
+        self.next_file_handle += 1;
+        h
+    }
+
+    /// Close a file handle: a file, or a duplicate of the console. The
+    /// backend file is closed with the last handle that shares it.
     pub fn close_file(&mut self, handle: u32) -> VfsResult<()> {
+        if self.console_handles.remove(&handle).is_some() {
+            return Ok(());
+        }
         let entry = self.file_handles.remove(&handle).ok_or(Os2Error::INVALID_HANDLE)?;
+        let key = (entry.drive, entry.vfs_handle);
+        let refs = self.file_refs.get(&key).copied().unwrap_or(1);
+        if refs > 1 {
+            self.file_refs.insert(key, refs - 1);
+            return Ok(());
+        }
+        self.file_refs.remove(&key);
         let backend = self.drives[entry.drive as usize].as_ref().ok_or(Os2Error::INVALID_HANDLE)?;
         backend.close(entry.vfs_handle)
+    }
+
+    /// A host duplicate of open file `handle` (see
+    /// `VfsBackend::clone_host_file`).
+    pub fn clone_host_file(&self, handle: u32) -> Option<std::fs::File> {
+        let entry = self.file_handles.get(&handle)?;
+        self.drives[entry.drive as usize].as_ref()?.clone_host_file(entry.vfs_handle)
+    }
+
+    /// Whether `handle` is an open file (also a standard handle redirected
+    /// to one).
+    pub fn is_file(&self, handle: u32) -> bool {
+        self.file_handles.contains_key(&handle)
+    }
+
+    /// The standard console stream (0 = keyboard, 1 = screen, 2 = error
+    /// output) that `handle` refers to: an unredirected, unclosed standard
+    /// handle or a duplicate of one. `None` for files and unknown handles.
+    pub fn console_stream(&self, handle: u32) -> Option<u32> {
+        if let Some(&s) = self.console_handles.get(&handle) {
+            return Some(s);
+        }
+        if handle < STD_HANDLES && !self.file_handles.contains_key(&handle)
+            && !self.closed_std[handle as usize] {
+            return Some(handle);
+        }
+        None
+    }
+
+    /// After `DosClose` of a standard handle: it stays closed (it is not
+    /// the console again) until something is duplicated into it.
+    pub fn mark_std_closed(&mut self, handle: u32) {
+        if handle < STD_HANDLES {
+            self.closed_std[handle as usize] = true;
+        }
+    }
+
+    /// Make `new` free for a duplicate: close what it was (file or console
+    /// duplicate) and clear a closed standard handle's mark.
+    pub fn release_for_dup(&mut self, new: u32) {
+        let _ = self.close_file(new);
+        if new < STD_HANDLES {
+            self.closed_std[new as usize] = false;
+        }
+    }
+
+    /// Duplicate file handle `old` (`DosDupHandle`): into `new` (closing
+    /// what `new` was) or, for `None`, a fresh handle. Both share the file
+    /// and its pointer.
+    pub fn dup_file(&mut self, old: u32, new: Option<u32>) -> VfsResult<u32> {
+        let entry = *self.file_handles.get(&old).ok_or(Os2Error::INVALID_HANDLE)?;
+        if new == Some(old) {
+            return Ok(old);
+        }
+        let target = match new {
+            Some(n) => { self.release_for_dup(n); n }
+            None => self.alloc_handle(),
+        };
+        *self.file_refs.entry((entry.drive, entry.vfs_handle)).or_insert(1) += 1;
+        self.file_handles.insert(target, entry);
+        Ok(target)
+    }
+
+    /// Make a handle refer to console stream `stream` (`DosDupHandle` of a
+    /// console handle): into `new` (closing what it was) or a fresh handle.
+    pub fn dup_console(&mut self, stream: u32, new: Option<u32>) -> u32 {
+        let target = match new {
+            Some(n) => { self.release_for_dup(n); n }
+            None => self.alloc_handle(),
+        };
+        if target != stream {
+            self.console_handles.insert(target, stream);
+        }
+        target
     }
 
     /// Read from an open file.
@@ -1232,5 +1349,59 @@ mod tests {
         dm.set_current_disk(4).unwrap(); // switch to D:
         let (_, path) = dm.resolve_path("readme.txt").unwrap();
         assert_eq!(path, "GAMES/readme.txt");
+    }
+
+    #[test]
+    fn test_console_handles_and_redirection() {
+        let mut dm = DriveManager::new();
+        dm.mount(2, Box::new(MockBackend)); // C:
+        assert_eq!((dm.console_stream(0), dm.console_stream(1), dm.console_stream(2)), (Some(0), Some(1), Some(2)));
+        assert_eq!(dm.console_stream(3), None);
+        // A duplicate of the console takes the next free number.
+        let saved = dm.dup_console(1, None);
+        assert_eq!(saved, 3);
+        assert_eq!(dm.console_stream(saved), Some(1));
+        // A file opened afterwards skips it.
+        let (hf, _) = dm.open_file("a.txt", OpenMode::WriteOnly, SharingMode::DenyNone,
+                                   OpenFlags::from_raw(0x0012), FileAttribute::NORMAL).unwrap();
+        assert_eq!(hf, 4);
+        // Redirect 1 to the file: no longer the console.
+        assert_eq!(dm.dup_file(hf, Some(1)).unwrap(), 1);
+        assert!(dm.is_file(1));
+        assert_eq!(dm.console_stream(1), None);
+        // Back to the console through the saved duplicate.
+        assert_eq!(dm.dup_console(1, Some(1)), 1);
+        assert!(!dm.is_file(1));
+        assert_eq!(dm.console_stream(1), Some(1));
+        assert!(dm.close_file(saved).is_ok());
+        assert_eq!(dm.console_stream(saved), None);
+        // A closed standard handle stays closed until duplicated into.
+        dm.mark_std_closed(2);
+        assert_eq!(dm.console_stream(2), None);
+        dm.dup_console(1, Some(2));
+        assert_eq!(dm.console_stream(2), Some(1), "handle 2 now writes to the screen");
+        dm.mark_std_closed(7); // not a standard handle: no effect
+        assert!(dm.close_file(hf).is_ok());
+    }
+
+    #[test]
+    fn test_dup_file_shares_and_closes_with_the_last_handle() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dm = DriveManager::new();
+        dm.mount(2, Box::new(super::super::vfs_hostdir::HostDirBackend::new(dir.path().to_path_buf()).unwrap()));
+        let (h, _) = dm.open_file("C:\\f.txt", OpenMode::ReadWrite, SharingMode::DenyNone,
+                                  OpenFlags::from_raw(0x0012), FileAttribute::NORMAL).unwrap();
+        let d = dm.dup_file(h, None).unwrap();
+        assert_ne!(d, h);
+        dm.write_file(h, b"12").unwrap();
+        dm.write_file(d, b"34").unwrap();
+        assert_eq!(dm.seek_file(d, 0, SeekMode::Current).unwrap(), 4, "one file pointer");
+        dm.close_file(h).unwrap();
+        dm.write_file(d, b"5").unwrap();
+        assert!(dm.clone_host_file(d).is_some());
+        dm.close_file(d).unwrap();
+        assert_eq!(dm.write_file(d, b"x").unwrap_err(), Os2Error::INVALID_HANDLE);
+        assert_eq!(std::fs::read(dir.path().join("f.txt")).unwrap(), b"12345");
+        assert_eq!(dm.dup_file(99, None).unwrap_err(), Os2Error::INVALID_HANDLE);
     }
 }

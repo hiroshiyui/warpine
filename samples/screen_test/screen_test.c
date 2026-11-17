@@ -100,10 +100,10 @@ int main(void) {
 
     /* Move cursor to a specific position */
     rc = VioSetCurPos(5, 10, 0);
+    /* Verify cursor moved — before printing, since output to the screen
+       (DosWrite, as on OS/2) moves the cursor on. */
+    VioGetCurPos(&row, &col, 0);
     check("VioSetCurPos(5,10) returns 0", rc == 0, &passed, &failed);
-
-    /* Verify cursor moved */
-    rc = VioGetCurPos(&row, &col, 0);
     print("  After SetCurPos: row="); print_num(row);
     print(" col="); print_num(col); print("\r\n");
     check("Cursor at row 5", row == 5, &passed, &failed);

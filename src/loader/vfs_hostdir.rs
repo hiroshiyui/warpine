@@ -908,6 +908,10 @@ impl VfsBackend for HostDirBackend {
         entry.file.flush().map_err(|e| Self::map_io_error(&e))
     }
 
+    fn clone_host_file(&self, handle: VfsFileHandle) -> Option<File> {
+        self.files.lock().unwrap().get(&handle.0)?.file.try_clone().ok()
+    }
+
     fn find_first(
         &self,
         pattern: &str,

@@ -468,6 +468,32 @@ pub const ERROR_NLS_TABLE_TRUNCATED:  u32 = 399;
 pub const ERROR_VIO_ROW: u32 = 358; // Row parameter out of range
 pub const ERROR_VIO_COL: u32 = 359; // Column parameter out of range
 pub const ERROR_VIO_INVALID_PARMS: u32 = 421; // <bseerr.h>
+/// `VioSetAnsi` / `VioGetAnsi` states (`<bsesub.h>`).
+pub const ANSI_ON: u16 = 1;
+pub const ANSI_OFF: u16 = 0;
+
+// ── KBDCALLS wait flags (`<bsesub.h>`) ───────────────────────────────────────
+pub const IO_WAIT: u32 = 0;
+pub const IO_NOWAIT: u32 = 1;
+/// `<bseerr.h>`: returned by a keyboard read that ends the process at the
+/// end of piped input (the guest normally never sees it).
+pub const ERROR_KBD_NO_DEVICE: u32 = 374;
+/// Exit code of a process whose waiting `KbdCharIn` / `KbdStringIn` found
+/// the end of a piped (non-terminal) standard input: Warpine's own choice,
+/// the same as the built-in CMD.EXE at end of input.
+pub const EXIT_CODE_KBD_END_OF_INPUT: i32 = 0;
+
+// ── DosQueryHType handle types (`<bsedos.h>`) ────────────────────────────────
+pub const HANDTYPE_FILE: u32 = 0x0000;
+pub const HANDTYPE_DEVICE: u32 = 0x0001;
+pub const HANDTYPE_PIPE: u32 = 0x0002;
+/// Device attribute word of the console reported by `DosQueryHType`:
+/// bit 0 = standard input device, bit 1 = standard output device.
+pub const CONSOLE_DEVICE_ATTR: u32 = 0x0003;
+/// The standard output handle.
+pub const STDOUT_HANDLE: u32 = 1;
+/// `DosDupHandle` new-handle value asking for a fresh handle.
+pub const NEW_HANDLE_REQUEST: u32 = 0xFFFF_FFFF;
 
 // ── MOUCALLS error codes (<bseerr.h>) ────────────────────────────────────────
 pub const ERROR_MOUSE_NO_DEVICE: u32 = 385;
@@ -577,6 +603,27 @@ pub const SC_MINIMIZE: u32 = 0x8002; // minimize the window
 pub const SC_MAXIMIZE: u32 = 0x8003; // maximize the window
 pub const SC_RESTORE:  u32 = 0x8008; // restore from min/max
 pub const SC_HIDE:     u32 = 0x802A; // hide the frame window
+pub const SC_SYSMENU:  u32 = 0x8007; // open the system menu (MM_STARTMENUMODE to FID_SYSMENU)
+pub const SC_TASKMANAGER: u32 = 0x8011; // activate the window list (task list)
+/// Identity of a frame's system menu (`<pmwin.h>`).
+pub const FID_SYSMENU: u32 = 0x8002;
+
+// WinTrackRect / WM_TRACKFRAME tracking flags (`TRACKINFO.fs`, `<pmwin.h>`):
+// which edges of the rectangle move.
+pub const TF_LEFT:   u32 = 0x0001;
+pub const TF_TOP:    u32 = 0x0002;
+pub const TF_RIGHT:  u32 = 0x0004;
+pub const TF_BOTTOM: u32 = 0x0008;
+pub const TF_MOVE:   u32 = 0x000F;
+
+// WinPopupMenu options (`<pmwin.h>`).
+pub const PU_POSITIONONITEM: u32 = 0x0001;
+pub const PU_HCONSTRAIN:     u32 = 0x0002;
+pub const PU_VCONSTRAIN:     u32 = 0x0004;
+pub const PU_NONE:           u32 = 0x0000;
+pub const PU_MOUSEBUTTON1DOWN: u32 = 0x0008;
+pub const PU_SELECTITEM:     u32 = 0x0020;
+pub const PU_KEYBOARD:       u32 = 0x0200;
 
 // WM_MINMAXFRAME — sent to a frame (passed on to its client) before it is
 // minimized, maximized or restored. mp1 = PSWP; a TRUE reply skips the
@@ -921,6 +968,29 @@ pub const MBID_ERROR:  u32 = 0xFFFF_FFFF;
 
 /// TIB byte offset of `tib_pexchain` (exception handler chain head pointer).
 pub const TIB_EXCHAIN_OFFSET: u32 = 0x00;
+/// TIB byte offsets of `tib_pstack`, `tib_pstacklimit`, `tib_ptib2` and
+/// `tib_ordinal` (`<bsedos.h>`).
+pub const TIB_PSTACK_OFFSET: u32 = 0x04;
+pub const TIB_PSTACKLIMIT_OFFSET: u32 = 0x08;
+pub const TIB_PTIB2_OFFSET: u32 = 0x0C;
+pub const TIB_ORDINAL_OFFSET: u32 = 0x14;
+/// Warpine's own TIB extras past the 0x18-byte `TIB`: a self pointer and
+/// the PIB address.
+pub const TIB_SELF_OFFSET: u32 = 0x18;
+pub const TIB_PIB_OFFSET: u32 = 0x30;
+/// Where Warpine places a thread's `TIB2`, from the start of its TIB.
+pub const TIB2_FROM_TIB: u32 = 0x40;
+/// `TIB2` byte offsets of `tib2_ultid` and `tib2_ulpri`.
+pub const TIB2_TID_OFFSET: u32 = 0x00;
+pub const TIB2_PRI_OFFSET: u32 = 0x04;
+/// Guest memory reserved for a created thread's TIB + TIB2.
+pub const THREAD_TIB_SIZE: u32 = 4096;
+/// Stack size of a created thread when `DosCreateThread` asks for 0 bytes.
+pub const DEFAULT_THREAD_STACK: u32 = 65536;
+/// OS/2 error codes of the thread calls (`<bseerr.h>`).
+pub const ERROR_MAX_THRDS_REACHED: u32 = 164;
+pub const ERROR_THREAD_NOT_TERMINATED: u32 = 294;
+pub const ERROR_INVALID_THREADID: u32 = 309;
 /// Sentinel stored at the tail of the exception handler chain (no further handlers).
 pub const XCPT_CHAIN_END: u32 = 0xFFFF_FFFF;
 

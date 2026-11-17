@@ -2,13 +2,15 @@
 //
 // OS/2 DOSCALLS and QUECALLS API handler methods.
 //
-// Handle routing (no fallback):
-// - Handles 0/1/2: stdin/stdout/stderr (special-cased)
-// - Handles 3..PIPE_HANDLE_BASE-1: VFS file handles (DriveManager)
-// - Handles PIPE_HANDLE_BASE+: pipe handles (HandleManager)
+// Handle routing (no fallback), resolved per handle by `handle_target`:
+// - Pipe handles (HandleManager): PIPE_HANDLE_BASE+, and any handle a pipe
+//   was duplicated into (`DosDupHandle(hPipe, &1)`)
+// - VFS file handles (DriveManager): 3.., and standard handles redirected
+//   to a file (`DosDupHandle(hFile, &1)`)
+// - Console: unredirected standard handles 0/1/2 and duplicates of them
 //
-// VFS file operations never fall back to HandleManager and vice versa.
-// This ensures VFS bugs are caught immediately rather than masked.
+// A handle number is in at most one of these tables; VFS file operations
+// never fall back to HandleManager and vice versa.
 
 use std::fs::File;
 use std::io::{Read, Write, Seek, SeekFrom};
@@ -25,7 +27,31 @@ use super::managers::PIPE_HANDLE_BASE;
 use super::ipc::*;
 use super::vfs::*;
 
+/// What a file handle leads to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandleTarget {
+    /// A pipe (HandleManager).
+    Pipe,
+    /// A file (DriveManager).
+    File,
+    /// The console: standard stream 0 (keyboard), 1 (screen) or 2 (error).
+    Console(u32),
+}
+
 impl super::Loader {
+    /// Where handle `hf` leads, or `None` for a handle that is not open.
+    pub(crate) fn handle_target(&self, hf: u32) -> Option<HandleTarget> {
+        if self.shared.handle_mgr.lock_or_recover().get(hf).is_some() {
+            return Some(HandleTarget::Pipe);
+        }
+        let dm = self.shared.drive_mgr.lock_or_recover();
+        if dm.is_file(hf) {
+            Some(HandleTarget::File)
+        } else {
+            dm.console_stream(hf).map(HandleTarget::Console)
+        }
+    }
+
     // ── File I/O (via DriveManager → VfsBackend) ──
 
     pub fn dos_open(&self, psz_name_ptr: u32, phf_ptr: u32, pul_action_ptr: u32, fs_open_flags: u32, fs_open_mode: u32) -> u32 {
@@ -51,20 +77,40 @@ impl super::Loader {
     }
 
     pub fn dos_close(&self, hf: u32) -> u32 {
-        if hf >= PIPE_HANDLE_BASE {
-            self.shared.handle_mgr.lock_or_recover().close(hf);
-            0
-        } else {
-            match self.shared.drive_mgr.lock_or_recover().close_file(hf) {
-                Ok(()) => 0,
-                Err(e) => e.0,
+        // A standard handle stays closed afterwards — also one that was
+        // redirected — until something is duplicated into it.
+        match self.handle_target(hf) {
+            Some(HandleTarget::Pipe) => {
+                self.shared.handle_mgr.lock_or_recover().close(hf);
+                self.shared.drive_mgr.lock_or_recover().mark_std_closed(hf);
+                NO_ERROR
             }
+            Some(_) => {
+                let mut dm = self.shared.drive_mgr.lock_or_recover();
+                // The console itself (an unredirected standard handle) has
+                // nothing to close but its mark.
+                let rc = if dm.console_stream(hf) == Some(hf) {
+                    NO_ERROR
+                } else {
+                    match dm.close_file(hf) {
+                        Ok(()) => NO_ERROR,
+                        Err(e) => e.0,
+                    }
+                };
+                dm.mark_std_closed(hf);
+                rc
+            }
+            None if hf >= PIPE_HANDLE_BASE => NO_ERROR,
+            None => ERROR_INVALID_HANDLE,
         }
     }
 
     pub fn dos_read(&self, hf: u32, buf_ptr: u32, len: u32, actual_ptr: u32) -> u32 {
         debug!("  DosRead(hf={}, buf=0x{:08X}, len={}, actual=0x{:08X})", hf, buf_ptr, len, actual_ptr);
-        if hf == 0 {
+        let target = self.handle_target(hf);
+        if let Some(HandleTarget::Console(_)) = target {
+            // The console reads the keyboard whichever standard stream the
+            // handle came from.
             return self.dos_read_stdin(buf_ptr, len, actual_ptr);
         }
 
@@ -72,7 +118,7 @@ impl super::Loader {
         // 64 MB is far larger than any realistic single OS/2 file read.
         let len = len.min(64 * 1024 * 1024);
 
-        if hf >= PIPE_HANDLE_BASE {
+        if target == Some(HandleTarget::Pipe) || hf >= PIPE_HANDLE_BASE {
             // Pipe handle
             let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
             if let Some(file) = h_mgr.get_mut(hf) {
@@ -146,7 +192,7 @@ impl super::Loader {
                     let mut console = self.shared.console_mgr.lock_or_recover();
                     console.stdin_pending_lf = true;
                     console.stdin_cooked_chars = 0; // reset for next line
-                    console.write_tty(b"\r\n", 0x07, 437);
+                    console.write_tty(b"\r\n", 437);
                     drop(console);
                     self.guest_write::<u8>(buf_ptr, 0x0D);
                 } else if ch == 0x08 {
@@ -156,7 +202,7 @@ impl super::Loader {
                     let mut console = self.shared.console_mgr.lock_or_recover();
                     if console.stdin_cooked_chars > 0 {
                         console.stdin_cooked_chars -= 1;
-                        console.write_tty(b"\x08 \x08", 0x07, 437);
+                        console.write_tty(b"\x08 \x08", 437);
                         drop(console);
                         self.guest_write::<u8>(buf_ptr, ch);
                     } else {
@@ -169,7 +215,7 @@ impl super::Loader {
                     let mut console = self.shared.console_mgr.lock_or_recover();
                     if ch >= 0x20 {
                         console.stdin_cooked_chars += 1;
-                        console.write_tty(&[ch], 0x07, cp);
+                        console.write_tty(&[ch], cp);
                     }
                     drop(console);
                     self.guest_write::<u8>(buf_ptr, ch);
@@ -228,54 +274,69 @@ impl super::Loader {
     }
 
     pub fn dos_write(&self, fd: u32, buf_ptr: u32, len: u32, actual_ptr: u32) -> u32 {
-        if let Some(data) = self.guest_slice_mut(buf_ptr, len as usize) {
-            if fd == 1 || fd == 2 {
-                // In SDL text mode, both stdout (fd=1) and stderr (fd=2) route
-                // through VioManager so messages appear in the SDL text window.
-                // Without this, error messages from guest apps (written to stderr)
-                // would be invisible to the user.
-                if self.shared.use_sdl_text.load(Ordering::Relaxed) {
-                    let written = data.len() as u32;
-                    let data_copy = data.to_vec();
-                    let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
-                    let mut console = self.shared.console_mgr.lock_or_recover();
-                    console.write_tty(&data_copy, 0x07, cp);
-                    if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, written); }
-                    return 0;
-                }
-                match crate::api::doscalls::dos_write(fd, data) {
-                    Ok(actual) => {
-                        if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, actual); }
-                        0
-                    },
-                    Err(_) => 1,
-                }
-            } else if fd >= PIPE_HANDLE_BASE {
-                let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
-                if let Some(file) = h_mgr.get_mut(fd) {
-                    match file.write(data) {
-                        Ok(n) => {
-                            if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, n as u32); }
-                            0
-                        },
-                        Err(_) => 5,
-                    }
-                } else { 6 }
-            } else {
-                let dm = self.shared.drive_mgr.lock_or_recover();
-                match dm.write_file(fd, data) {
-                    Ok(n) => {
-                        if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, n as u32); }
-                        0
-                    }
-                    Err(e) => e.0,
-                }
+        let Some(data) = self.guest_slice_mut(buf_ptr, len as usize) else { return ERROR_INVALID_PARAMETER };
+        let data = data.to_vec();
+        match self.write_handle(fd, &data) {
+            Ok(n) => {
+                if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, n); }
+                NO_ERROR
             }
-        } else { 87 }
+            Err(rc) => rc,
+        }
+    }
+
+    /// Write `data` to handle `fd` wherever it leads (shared by the 32-bit
+    /// and 16-bit `DosWrite`); returns the bytes written or an OS/2 error.
+    ///
+    /// The console goes through `VioManager::write_tty`, as OS/2's
+    /// `DosWrite` to the screen goes through `VioWrtTTY` — so ANSI escape
+    /// sequences are carried out — in the SDL text window and when the
+    /// host's standard output is a terminal. Output to a host pipe or file
+    /// stays a plain byte stream, while the VIO screen buffer still follows
+    /// it (`VioManager::track_tty`).
+    pub(crate) fn write_handle(&self, fd: u32, data: &[u8]) -> Result<u32, u32> {
+        match self.handle_target(fd) {
+            Some(HandleTarget::Console(stream)) => {
+                // Writing to the keyboard handle writes to the screen (CON).
+                let stream = if stream == 0 { STDOUT_HANDLE } else { stream };
+                let cp = self.shared.active_codepage.load(Ordering::Relaxed);
+                if self.console_is_tty(stream) {
+                    self.shared.console_mgr.lock_or_recover().write_tty(data, cp);
+                    return Ok(data.len() as u32);
+                }
+                // The bytes go to the host pipe or file as they are; the VIO
+                // screen still follows them.
+                self.shared.console_mgr.lock_or_recover().track_tty(data, cp);
+                crate::api::doscalls::dos_write(stream, data).map_err(|_| ERROR_INVALID_HANDLE)
+            }
+            Some(HandleTarget::Pipe) => {
+                let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
+                let file = h_mgr.get_mut(fd).ok_or(ERROR_INVALID_HANDLE)?;
+                file.write(data).map(|n| n as u32).map_err(|_| ERROR_ACCESS_DENIED)
+            }
+            Some(HandleTarget::File) => {
+                let dm = self.shared.drive_mgr.lock_or_recover();
+                dm.write_file(fd, data).map(|n| n as u32).map_err(|e| e.0)
+            }
+            None => Err(ERROR_INVALID_HANDLE),
+        }
+    }
+
+    /// Whether console output on `stream` (1 or 2) goes through the VIO
+    /// screen: always in the SDL text window; on the host only when both
+    /// the stream and the host's standard output are terminals (VIO echoes
+    /// to standard output).
+    fn console_is_tty(&self, stream: u32) -> bool {
+        use std::io::IsTerminal;
+        if self.shared.use_sdl_text.load(Ordering::Relaxed) {
+            return true;
+        }
+        let stdout_tty = std::io::stdout().is_terminal();
+        stdout_tty && (stream == STDOUT_HANDLE || std::io::stderr().is_terminal())
     }
 
     pub fn dos_set_file_ptr(&self, hf: u32, offset: i32, method: u32, actual_ptr: u32) -> u32 {
-        if hf >= PIPE_HANDLE_BASE {
+        if self.handle_target(hf) == Some(HandleTarget::Pipe) || hf >= PIPE_HANDLE_BASE {
             let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
             if let Some(file) = h_mgr.get_mut(hf) {
                 let pos = match method {
@@ -310,7 +371,7 @@ impl super::Loader {
 
     pub fn dos_set_file_size(&self, hf: u32, new_size: u32) -> u32 {
         debug!("DosSetFileSize(hf={}, size={})", hf, new_size);
-        if hf >= PIPE_HANDLE_BASE {
+        if self.handle_target(hf) == Some(HandleTarget::Pipe) || hf >= PIPE_HANDLE_BASE {
             let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
             if let Some(file) = h_mgr.get_mut(hf) {
                 match file.set_len(new_size as u64) {
@@ -466,7 +527,7 @@ impl super::Loader {
             }
             _ => return 124,
         }
-        if hf >= PIPE_HANDLE_BASE {
+        if self.handle_target(hf) == Some(HandleTarget::Pipe) || hf >= PIPE_HANDLE_BASE {
             let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
             if let Some(file) = h_mgr.get_mut(hf)
                 && let Ok(meta) = file.metadata() {
@@ -496,12 +557,15 @@ impl super::Loader {
             self.shared.drive_mgr.lock_or_recover().flush_all();
             self.shared.handle_mgr.lock_or_recover().flush_all();
             0
-        } else if hf >= PIPE_HANDLE_BASE {
+        } else if self.handle_target(hf) == Some(HandleTarget::Pipe) || hf >= PIPE_HANDLE_BASE {
             let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
             if let Some(file) = h_mgr.get_mut(hf) {
                 let _ = file.flush();
                 0
             } else { ERROR_INVALID_HANDLE }
+        } else if let Some(HandleTarget::Console(_)) = self.handle_target(hf) {
+            // Console output is not buffered.
+            0
         } else {
             match self.shared.drive_mgr.lock_or_recover().flush_file(hf) {
                 Ok(()) => 0,
@@ -945,63 +1009,143 @@ impl super::Loader {
         0
     }
 
+    /// DosExit (ordinal 234): `EXIT_THREAD` ends the calling thread (the
+    /// vCPU loop ends it, `run_vcpu` decides whether the process ends with
+    /// it); `EXIT_PROCESS` (and any other action) ends the process.
+    pub(crate) fn dos_exit(&self, action: u32, result: u32) -> super::ApiResult {
+        if action == super::threads::EXIT_THREAD {
+            return super::ApiResult::ExitThread(result);
+        }
+        self.request_process_exit(result);
+        super::ApiResult::Normal(NO_ERROR)
+    }
+
+    /// End the process with `result` unless it is already ending (the first
+    /// result code wins).
+    pub fn request_process_exit(&self, result: u32) {
+        if !self.shared.exit_requested.load(Ordering::Relaxed) {
+            self.shared.exit_code.store(result as i32, Ordering::Relaxed);
+            self.shared.exit_requested.store(true, Ordering::Relaxed);
+        }
+        self.shared.threads.ended.notify_all();
+    }
+
+    /// DosCreateThread (ordinal 311): a new thread runs `pfn(param)` on its
+    /// own stack and vCPU (an idle vCPU of an ended thread if there is one);
+    /// returning from `pfn` lands on `EXIT_TRAP_ADDR` and ends the thread.
     pub fn dos_create_thread(&self, vcpu_id: u32, ptid_ptr: u32, pfn: u32, param: u32, cb_stack: u32) -> u32 {
-        let stack_size = if cb_stack == 0 { 65536 } else { cb_stack };
-        let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
-        if let Some(stack_base) = mem_mgr.alloc(stack_size) {
-            let tib_addr = mem_mgr.alloc(4096).unwrap();
-            let tid = {
-                let mut next_tid = self.shared.next_tid.lock_or_recover();
-                let tid = *next_tid;
-                *next_tid += 1;
-                tid
+        use super::threads::ThreadMemory;
+        let stack_size = if cb_stack == 0 { DEFAULT_THREAD_STACK } else { cb_stack };
+        // Return address + parameter, below the top of the stack.
+        const INITIAL_FRAME: u32 = 12;
+        // EFLAGS bit 1 is reserved and always set.
+        const INITIAL_RFLAGS: u64 = 2;
+        if stack_size < INITIAL_FRAME { return ERROR_INVALID_PARAMETER; }
+        let (stack_base, tib_addr) = {
+            let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
+            let Some(stack_base) = mem_mgr.alloc(stack_size) else { return ERROR_NOT_ENOUGH_MEMORY };
+            let Some(tib_addr) = mem_mgr.alloc(THREAD_TIB_SIZE) else {
+                mem_mgr.free(stack_base);
+                return ERROR_NOT_ENOUGH_MEMORY;
             };
-            debug!("  [VCPU {}] Creating thread {} (ptid_ptr=0x{:08X}, pfn=0x{:08X}, param=0x{:08X})", vcpu_id, tid, ptid_ptr, pfn, param);
-
-            self.guest_write::<u32>(tib_addr + 0x18, tib_addr).expect("dos_create_thread: TIB self-ptr OOB");
-            self.guest_write::<u32>(tib_addr + 0x30, PIB_BASE).expect("dos_create_thread: TIB->PIB OOB");
-
-            let sp_addr = stack_base + stack_size - 12;
-            self.guest_write::<u32>(sp_addr, EXIT_TRAP_ADDR).expect("dos_create_thread: stack write OOB");
-            self.guest_write::<u32>(sp_addr + 4, param).expect("dos_create_thread: stack write OOB");
-
-            {
-                let mut new_vcpu = self.vm.create_vcpu(tid as u64).unwrap();
-                self.setup_vcpu_segments_32bit(&mut *new_vcpu, tib_addr as u64);
-                let mut new_regs = new_vcpu.get_regs().unwrap();
-                new_regs.rip = pfn as u64;
-                new_regs.rsp = (stack_base + stack_size - 12) as u64;
-                new_regs.rax = param as u64;
-                new_regs.rflags = 2;
-                new_vcpu.set_regs(&new_regs).unwrap();
-
-                let shared_clone = Arc::clone(&self.shared);
-                let vm_clone = Arc::clone(&self.vm);
-                let handle = thread::spawn(move || {
-                    let loader = super::Loader { vm: vm_clone, shared: shared_clone };
-                    loader.run_vcpu(new_vcpu, tid, tib_addr as u64);
-                });
-                self.shared.threads.lock_or_recover().insert(tid, handle);
-                self.guest_write::<u32>(ptid_ptr, tid);
+            (stack_base, tib_addr)
+        };
+        let free_memory = || {
+            let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
+            mem_mgr.free(stack_base);
+            mem_mgr.free(tib_addr);
+        };
+        let Some(stack_top) = stack_base.checked_add(stack_size) else {
+            free_memory();
+            return ERROR_NOT_ENOUGH_MEMORY;
+        };
+        let (tid, vcpu) = {
+            let mut table = self.shared.threads.table.lock_or_recover();
+            let Some(tid) = table.next_tid() else {
+                drop(table);
+                free_memory();
+                return ERROR_MAX_THRDS_REACHED;
+            };
+            let vcpu = match table.take_vcpu() {
+                Ok(v) => Ok(v),
+                Err(kvm_id) => self.vm.create_vcpu(kvm_id),
+            };
+            match vcpu {
+                Ok(v) => (tid, v),
+                Err(e) => {
+                    drop(table);
+                    log::warn!("  [VCPU {}] DosCreateThread: no vCPU: {}", vcpu_id, e);
+                    free_memory();
+                    return ERROR_MAX_THRDS_REACHED;
+                }
             }
-            0
-        } else { 8 }
+        };
+        debug!("  [VCPU {}] Creating thread {} (ptid_ptr=0x{:08X}, pfn=0x{:08X}, param=0x{:08X})", vcpu_id, tid, ptid_ptr, pfn, param);
+
+        // TIB + TIB2 (the memory may have belonged to an ended thread).
+        let tib2_addr = tib_addr + TIB2_FROM_TIB;
+        let tib_ok = self.guest_write_bytes(tib_addr, &[0u8; THREAD_TIB_SIZE as usize]).is_some()
+            && self.guest_write::<u32>(tib_addr + TIB_EXCHAIN_OFFSET, XCPT_CHAIN_END).is_some()
+            && self.guest_write::<u32>(tib_addr + TIB_PSTACK_OFFSET, stack_base).is_some()
+            && self.guest_write::<u32>(tib_addr + TIB_PSTACKLIMIT_OFFSET, stack_top).is_some()
+            && self.guest_write::<u32>(tib_addr + TIB_PTIB2_OFFSET, tib2_addr).is_some()
+            && self.guest_write::<u32>(tib_addr + TIB_ORDINAL_OFFSET, tid).is_some()
+            && self.guest_write::<u32>(tib_addr + TIB_SELF_OFFSET, tib_addr).is_some()
+            && self.guest_write::<u32>(tib_addr + TIB_PIB_OFFSET, PIB_BASE).is_some()
+            && self.guest_write::<u32>(tib2_addr + TIB2_TID_OFFSET, tid).is_some()
+            && self.guest_write::<u32>(tib2_addr + TIB2_PRI_OFFSET, 0).is_some();
+        let sp_addr = stack_top - INITIAL_FRAME;
+        let stack_ok = self.guest_write::<u32>(sp_addr, EXIT_TRAP_ADDR).is_some()
+            && self.guest_write::<u32>(sp_addr + 4, param).is_some();
+        if !tib_ok || !stack_ok {
+            self.shared.threads.table.lock_or_recover().put_vcpu(vcpu);
+            free_memory();
+            return ERROR_NOT_ENOUGH_MEMORY;
+        }
+
+        let mut new_vcpu = vcpu;
+        self.setup_vcpu_segments_32bit(&mut *new_vcpu, tib_addr as u64);
+        // Fresh registers: a reused vCPU must not carry the old thread's.
+        let new_regs = super::vm_backend::GuestRegs {
+            rip: pfn as u64, rsp: sp_addr as u64, rax: param as u64,
+            rflags: INITIAL_RFLAGS, ..Default::default()
+        };
+        if new_vcpu.set_regs(&new_regs).is_err() {
+            free_memory();
+            return ERROR_MAX_THRDS_REACHED;
+        }
+
+        self.shared.threads.table.lock_or_recover()
+            .start(tid, ThreadMemory { stack: stack_base, tib: tib_addr });
+        if ptid_ptr != 0 { self.guest_write::<u32>(ptid_ptr, tid); }
+        let shared_clone = Arc::clone(&self.shared);
+        let vm_clone = Arc::clone(&self.vm);
+        // The host thread is detached: DosWaitThread waits on the thread
+        // table, and the vCPU goes back to the table when the thread ends.
+        thread::spawn(move || {
+            let loader = super::Loader { vm: vm_clone, shared: shared_clone };
+            loader.run_vcpu(new_vcpu, tid, tib_addr as u64);
+        });
+        NO_ERROR
     }
 
     pub fn dos_query_h_type(&self, hfile: u32, ptype: u32, pattr: u32) -> u32 {
-        if ptype != 0 { self.guest_write::<u32>(ptype, if hfile < 3 { 1 } else { 0 }); }
-        if pattr != 0 {
-            // For standard handles (stdin=0, stdout=1, stderr=2) report the OS/2
-            // console device attribute word: bit 0 = stdin device, bit 1 = stdout
-            // device.  Both bits are set because the unredirected console (CON:) is
-            // simultaneously the input and output device.  Without these bits,
-            // QueryIsConsole(STDIN) returns false and 4OS2 falls back to getchar()
-            // (DosRead), bypassing KbdCharIn.  That creates double backspace/echo
-            // processing: dos_read_stdin does it once and egets does it again,
-            // producing garbled command-line input.
-            let attr = if hfile < 3 { 0x0003u32 } else { 0 };
-            self.guest_write::<u32>(pattr, attr);
-        }
+        // For the console (unredirected standard handles and duplicates of
+        // them) report a character device with the console device attribute
+        // word: bit 0 = stdin device, bit 1 = stdout device. Both bits are set
+        // because the console (CON:) is simultaneously the input and output
+        // device. Without these bits, QueryIsConsole(STDIN) returns false and
+        // 4OS2 falls back to getchar() (DosRead), bypassing KbdCharIn. That
+        // creates double backspace/echo processing: dos_read_stdin does it
+        // once and egets does it again, producing garbled command-line input.
+        let (htype, attr) = match self.handle_target(hfile) {
+            Some(HandleTarget::Console(_)) => (HANDTYPE_DEVICE, CONSOLE_DEVICE_ATTR),
+            Some(HandleTarget::Pipe) => (HANDTYPE_PIPE, 0),
+            Some(HandleTarget::File) => (HANDTYPE_FILE, 0),
+            None => return ERROR_INVALID_HANDLE,
+        };
+        if ptype != 0 { self.guest_write::<u32>(ptype, htype); }
+        if pattr != 0 { self.guest_write::<u32>(pattr, attr); }
         0
     }
 
@@ -1344,20 +1488,26 @@ impl super::Loader {
         }
     }
 
-    pub fn dos_wait_thread(&self, vcpu_id: u32, ptid_ptr: u32) -> u32 {
-        let tid = self.guest_read::<u32>(ptid_ptr).unwrap_or(0);
-        debug!("  [VCPU {}] Waiting for thread {}...", vcpu_id, tid);
-        let mut handle = None;
-        for _ in 0..100 {
-            if self.shutting_down() { return 309; }
-            handle = self.shared.threads.lock_or_recover().remove(&tid);
-            if handle.is_some() { break; }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+    /// DosWaitThread (ordinal 349): wait for thread `*ptid` (0 = the next
+    /// thread to end) to end. A thread that has already ended is reported
+    /// at once, once; `DCWW_NOWAIT` does not wait. Waiting for the current
+    /// thread or for thread 1 fails with `ERROR_INVALID_THREADID`.
+    pub fn dos_wait_thread(&self, vcpu_id: u32, ptid_ptr: u32, option: u32) -> u32 {
+        use super::threads::{tid_of_vcpu, WaitOutcome, DCWW_NOWAIT, DCWW_WAIT};
+        let Some(tid) = self.guest_read::<u32>(ptid_ptr) else { return ERROR_INVALID_PARAMETER };
+        if option != DCWW_WAIT && option != DCWW_NOWAIT { return ERROR_INVALID_PARAMETER; }
+        let caller = tid_of_vcpu(vcpu_id);
+        debug!("  [VCPU {}] DosWaitThread(tid={}, option={})", vcpu_id, tid, option);
+        match self.shared.threads.wait_for(caller, tid, option == DCWW_NOWAIT, || self.shutting_down()) {
+            Some(WaitOutcome::Ended(ended)) => {
+                self.guest_write::<u32>(ptid_ptr, ended);
+                NO_ERROR
+            }
+            Some(WaitOutcome::Running) => ERROR_THREAD_NOT_TERMINATED,
+            Some(WaitOutcome::Invalid) => ERROR_INVALID_THREADID,
+            // The process is ending; this thread will not run on.
+            None => ERROR_INVALID_THREADID,
         }
-        if let Some(h) = handle {
-            h.join().unwrap();
-            0
-        } else { 309 }
     }
 
     pub fn dos_set_rel_max_fh(&self, p_req_count: u32, p_cur_max_fh: u32) -> u32 {
@@ -1370,35 +1520,57 @@ impl super::Loader {
         0
     }
 
+    /// DosDupHandle (ordinal 260): duplicate `old_hf` into the handle at
+    /// `*p_new_hf` — closing what that handle was — or, when it is
+    /// `NEW_HANDLE_REQUEST` (0xFFFFFFFF), into a new handle written back.
+    /// Works for files, pipes and the console alike, so a shell can redirect
+    /// standard output to a file (`DosDupHandle(hFile, &1)`) and back to a
+    /// saved duplicate of the console.
     pub fn dos_dup_handle(&self, old_hf: u32, p_new_hf: u32) -> u32 {
         debug!("DosDupHandle(old={}, pNew=0x{:08X})", old_hf, p_new_hf);
-        let new_hf_val = self.guest_read::<u32>(p_new_hf).unwrap_or(0xFFFFFFFF);
-        // DupHandle still uses HandleManager — VFS doesn't support dup yet
-        let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
-        if new_hf_val == 0xFFFFFFFF {
-            if let Some(file) = h_mgr.get(old_hf) {
-                match file.try_clone() {
-                    Ok(dup) => {
-                        let new_h = h_mgr.insert(dup);
-                        let _ = self.guest_write::<u32>(p_new_hf, new_h);
-                        0
-                    }
-                    Err(_) => ERROR_INVALID_HANDLE,
-                }
-            } else {
-                ERROR_INVALID_HANDLE
-            }
-        } else if let Some(file) = h_mgr.get(old_hf) {
-            match file.try_clone() {
-                Ok(dup) => {
-                    h_mgr.replace(new_hf_val, dup);
-                    0
-                }
-                Err(_) => ERROR_INVALID_HANDLE,
-            }
-        } else {
-            ERROR_INVALID_HANDLE
+        let Some(new_hf_val) = self.guest_read::<u32>(p_new_hf) else { return ERROR_INVALID_PARAMETER };
+        let requested = (new_hf_val != NEW_HANDLE_REQUEST).then_some(new_hf_val);
+        let Some(target) = self.handle_target(old_hf) else { return ERROR_INVALID_HANDLE };
+        if requested == Some(old_hf) {
+            return NO_ERROR;
         }
+        if let Some(n) = requested && n >= PIPE_HANDLE_BASE && target != HandleTarget::Pipe {
+            // Numbers from PIPE_HANDLE_BASE on belong to the pipe table.
+            return ERROR_INVALID_HANDLE;
+        }
+        let new_h = match target {
+            HandleTarget::Pipe => {
+                let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
+                let Some(dup) = h_mgr.get(old_hf).and_then(|f| f.try_clone().ok()) else {
+                    return ERROR_INVALID_HANDLE;
+                };
+                match requested {
+                    Some(n) => {
+                        self.shared.drive_mgr.lock_or_recover().release_for_dup(n);
+                        h_mgr.replace(n, dup);
+                        n
+                    }
+                    None => h_mgr.insert(dup),
+                }
+            }
+            HandleTarget::File | HandleTarget::Console(_) => {
+                if let Some(n) = requested {
+                    self.shared.handle_mgr.lock_or_recover().close(n);
+                }
+                let mut dm = self.shared.drive_mgr.lock_or_recover();
+                match target {
+                    HandleTarget::Console(stream) => dm.dup_console(stream, requested),
+                    _ => match dm.dup_file(old_hf, requested) {
+                        Ok(h) => h,
+                        Err(e) => return e.0,
+                    },
+                }
+            }
+        };
+        if requested.is_none() {
+            self.guest_write::<u32>(p_new_hf, new_h);
+        }
+        NO_ERROR
     }
 
     /// DosFlatToSel (ordinal 425): convert 32-bit flat address to 16:16 tiled selector:offset.
@@ -1533,6 +1705,7 @@ mod tests {
     use super::super::Loader;
     use super::super::mutex_ext::MutexExt;
     use super::super::constants::*;
+    use super::super::managers::PIPE_HANDLE_BASE;
     use std::sync::atomic::Ordering;
 
     // ── DosFlatToSel / DosSelToFlat ──────────────────────────────────────────
@@ -1622,10 +1795,8 @@ mod tests {
             assert_eq!(loader.guest_read::<u32>(p_type), Some(1));
             assert_eq!(loader.guest_read::<u32>(p_attr), Some(0x0003));
         }
-        // Handle ≥3 (file) → type 0, attr 0
-        assert_eq!(loader.dos_query_h_type(100, p_type, p_attr), 0);
-        assert_eq!(loader.guest_read::<u32>(p_type), Some(0));
-        assert_eq!(loader.guest_read::<u32>(p_attr), Some(0));
+        // A handle that is not open
+        assert_eq!(loader.dos_query_h_type(100, p_type, p_attr), ERROR_INVALID_HANDLE);
     }
 
     #[test]
@@ -1911,5 +2082,161 @@ mod tests {
         assert_eq!(loader.guest_read::<u32>(pcch), Some(16));
         assert_eq!(loader.guest_read::<u8>(buf + 16), Some(0xEE), "nothing past cb");
         assert_eq!(loader.dos_query_collate(256, 0, 0, pcch), ERROR_INVALID_PARAMETER);
+    }
+
+    // ── Handle redirection (DosDupHandle) ────────────────────────────────────
+
+    /// A mock loader whose drive C: is a fresh temporary directory, in SDL
+    /// text mode (console output goes to the VIO buffer, not the test's
+    /// standard output).
+    fn loader_with_drive_c() -> (Loader, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let loader = Loader::new_mock();
+        loader.shared.use_sdl_text.store(true, Ordering::Relaxed);
+        loader.shared.console_mgr.lock_or_recover().enable_sdl_mode();
+        loader.shared.drive_mgr.lock_or_recover().mount(2,
+            Box::new(super::super::vfs_hostdir::HostDirBackend::new(dir.path().to_path_buf()).unwrap()));
+        (loader, dir)
+    }
+
+    const NAME: u32 = 0x4000;
+    const PHF: u32 = 0x4100;
+    const PACTION: u32 = 0x4104;
+    const PNEW: u32 = 0x4108;
+    const TEXT: u32 = 0x4200;
+    const PACTUAL: u32 = 0x4300;
+
+    /// DosOpen of `name` for writing, created or replaced.
+    fn create(loader: &Loader, name: &str) -> u32 {
+        loader.guest_write_bytes(NAME, name.as_bytes());
+        loader.guest_write::<u8>(NAME + name.len() as u32, 0);
+        // OPEN_ACTION_CREATE_IF_NEW | OPEN_ACTION_REPLACE_IF_EXISTS, write-only, deny none.
+        assert_eq!(loader.dos_open(NAME, PHF, PACTION, 0x12, 0x41), 0);
+        loader.guest_read::<u32>(PHF).unwrap()
+    }
+
+    fn write(loader: &Loader, hf: u32, text: &[u8]) -> u32 {
+        loader.guest_write_bytes(TEXT, text);
+        loader.dos_write(hf, TEXT, text.len() as u32, PACTUAL)
+    }
+
+    fn dup(loader: &Loader, old: u32, new: u32) -> (u32, u32) {
+        loader.guest_write::<u32>(PNEW, new);
+        let rc = loader.dos_dup_handle(old, PNEW);
+        (rc, loader.guest_read::<u32>(PNEW).unwrap())
+    }
+
+    /// The redirection a shell does for `echo text > file`: save the console
+    /// with DosDupHandle(1, NEW), DosDupHandle(hFile, 1), write, put the
+    /// console back with DosDupHandle(saved, 1). The text lands in the file,
+    /// the console output after it on the screen.
+    #[test]
+    fn test_dup_handle_redirects_stdout_to_a_file_and_back() {
+        let (loader, dir) = loader_with_drive_c();
+        let hf = create(&loader, "C:\\OUT.TXT");
+        let (rc, saved) = dup(&loader, 1, NEW_HANDLE_REQUEST);
+        assert_eq!(rc, 0);
+        assert!(saved >= 3 && saved != hf, "a new handle: {saved}");
+        assert_eq!(dup(&loader, hf, 1).0, 0);
+        assert_eq!(loader.dos_close(hf), 0, "the file stays open through handle 1");
+        assert_eq!(write(&loader, 1, b"hello\r\n"), 0);
+        assert_eq!(loader.guest_read::<u32>(PACTUAL), Some(7));
+        assert_eq!(dup(&loader, saved, 1).0, 0, "back to the console");
+        assert_eq!(loader.dos_close(saved), 0);
+        assert_eq!(std::fs::read(dir.path().join("OUT.TXT")).unwrap(), b"hello\r\n");
+        assert_eq!(write(&loader, 1, b"Z"), 0);
+        let c = loader.shared.console_mgr.lock_or_recover();
+        assert_eq!(c.buffer[0].0, 'Z', "console output reaches the screen again");
+    }
+
+    /// Duplicated file handles share the file pointer; the file stays open
+    /// until the last of them is closed.
+    #[test]
+    fn test_dup_handle_shares_the_file_pointer() {
+        let (loader, dir) = loader_with_drive_c();
+        let hf = create(&loader, "C:\\SHARE.TXT");
+        let (rc, h2) = dup(&loader, hf, NEW_HANDLE_REQUEST);
+        assert_eq!(rc, 0);
+        assert_eq!(write(&loader, hf, b"ab"), 0);
+        assert_eq!(write(&loader, h2, b"cd"), 0);
+        assert_eq!(loader.dos_close(hf), 0);
+        assert_eq!(write(&loader, h2, b"ef"), 0, "still open through the duplicate");
+        assert_eq!(loader.dos_close(h2), 0);
+        assert_eq!(write(&loader, h2, b"x"), ERROR_INVALID_HANDLE);
+        assert_eq!(std::fs::read(dir.path().join("SHARE.TXT")).unwrap(), b"abcdef");
+    }
+
+    /// DosQueryHType follows the redirection: console = character device
+    /// with the console attribute, file = file, pipe = pipe.
+    #[test]
+    fn test_query_h_type_of_redirected_handles() {
+        let (loader, _dir) = loader_with_drive_c();
+        let (pt, pa) = (0x4400u32, 0x4404u32);
+        assert_eq!(loader.dos_query_h_type(1, pt, pa), 0);
+        assert_eq!(loader.guest_read::<u32>(pt), Some(HANDTYPE_DEVICE));
+        assert_eq!(loader.guest_read::<u32>(pa), Some(CONSOLE_DEVICE_ATTR));
+        let hf = create(&loader, "C:\\T.TXT");
+        dup(&loader, hf, 1);
+        assert_eq!(loader.dos_query_h_type(1, pt, pa), 0);
+        assert_eq!(loader.guest_read::<u32>(pt), Some(HANDTYPE_FILE));
+        assert_eq!(loader.dos_create_pipe(0x4500, 0x4504, 0), 0);
+        let hw = loader.guest_read::<u32>(0x4504).unwrap();
+        dup(&loader, hw, 2);
+        assert_eq!(loader.dos_query_h_type(2, pt, pa), 0);
+        assert_eq!(loader.guest_read::<u32>(pt), Some(HANDTYPE_PIPE));
+        assert_eq!(loader.dos_query_h_type(0x0FFF, pt, pa), ERROR_INVALID_HANDLE);
+    }
+
+    /// A pipe duplicated into handle 1 receives DosWrite(1).
+    #[test]
+    fn test_dup_handle_redirects_stdout_to_a_pipe() {
+        let (loader, _dir) = loader_with_drive_c();
+        assert_eq!(loader.dos_create_pipe(0x4500, 0x4504, 0), 0);
+        let (hr, hw) = (loader.guest_read::<u32>(0x4500).unwrap(), loader.guest_read::<u32>(0x4504).unwrap());
+        assert_eq!(dup(&loader, hw, 1).0, 0);
+        assert_eq!(write(&loader, 1, b"piped"), 0);
+        assert_eq!(loader.dos_read(hr, 0x4600, 5, PACTUAL), 0);
+        assert_eq!(loader.guest_read::<u32>(PACTUAL), Some(5));
+        let mut got = [0u8; 5];
+        for (i, b) in got.iter_mut().enumerate() { *b = loader.guest_read::<u8>(0x4600 + i as u32).unwrap(); }
+        assert_eq!(&got, b"piped");
+    }
+
+    /// DosClose(1) closes standard output: writes fail until something is
+    /// duplicated into it again.
+    #[test]
+    fn test_closed_standard_handle_until_duplicated_into() {
+        let (loader, _dir) = loader_with_drive_c();
+        let (_, saved) = dup(&loader, 1, NEW_HANDLE_REQUEST);
+        assert_eq!(loader.dos_close(1), 0);
+        assert_eq!(write(&loader, 1, b"x"), ERROR_INVALID_HANDLE);
+        assert_eq!(write(&loader, saved, b"y"), 0, "the duplicate still writes to the screen");
+        assert_eq!(dup(&loader, saved, 1).0, 0);
+        assert_eq!(write(&loader, 1, b"z"), 0);
+        let c = loader.shared.console_mgr.lock_or_recover();
+        assert_eq!((c.buffer[0].0, c.buffer[1].0), ('y', 'z'));
+    }
+
+    #[test]
+    fn test_dup_handle_rejects_unknown_handles() {
+        let (loader, _dir) = loader_with_drive_c();
+        assert_eq!(dup(&loader, 0x0FFF, NEW_HANDLE_REQUEST).0, ERROR_INVALID_HANDLE);
+        // Dup into itself: nothing to do.
+        assert_eq!(dup(&loader, 1, 1).0, 0);
+        // Pipe-table numbers are not for files or the console.
+        assert_eq!(dup(&loader, 1, PIPE_HANDLE_BASE + 5).0, ERROR_INVALID_HANDLE);
+    }
+
+    /// DosWrite to the console carries out ANSI sequences (OS/2 routes it
+    /// through VioWrtTTY).
+    #[test]
+    fn test_dos_write_interprets_ansi_on_the_console() {
+        let (loader, _dir) = loader_with_drive_c();
+        assert_eq!(write(&loader, 1, b"abc\x1b[2;3H\x1b[1;32mX"), 0);
+        assert_eq!(loader.guest_read::<u32>(PACTUAL), Some(17), "every byte counts as written");
+        let c = loader.shared.console_mgr.lock_or_recover();
+        let cols = c.cols as usize;
+        assert_eq!(c.buffer[cols + 2], ('X', 0x0A));
+        assert_eq!((c.cursor_row, c.cursor_col), (1, 3));
     }
 }

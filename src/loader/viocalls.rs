@@ -72,7 +72,7 @@ impl super::Loader {
         let data: Vec<u8> = (0..cb).filter_map(|i| self.guest_read::<u8>(psz + i)).collect();
         let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
         let mut console = self.shared.console_mgr.lock_or_recover();
-        console.write_tty(&data, 0x07, cp);
+        console.write_tty(&data, cp);
         NO_ERROR
     }
 
@@ -309,21 +309,27 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// VioSetAnsi (ordinal 5): enable/disable ANSI mode.
+    /// VioSetAnsi (ordinal 5): switch interpretation of ANSI escape sequences
+    /// in `VioWrtTTY` output on (`ANSI_ON`) or off (`ANSI_OFF`); any other
+    /// value is `ERROR_VIO_INVALID_PARMS`.
     fn vio_set_ansi(&self, flag: u32, _hvio: u32) -> u32 {
         debug!("  VioSetAnsi({})", flag);
-        let mut console = self.shared.console_mgr.lock_or_recover();
-        console.ansi_mode = flag != 0;
+        let on = match flag as u16 {
+            ANSI_ON => true,
+            ANSI_OFF => false,
+            _ => return ERROR_VIO_INVALID_PARMS,
+        };
+        self.shared.console_mgr.lock_or_recover().set_ansi(on);
         NO_ERROR
     }
 
-    /// VioGetAnsi (ordinal 3): query ANSI mode.
+    /// VioGetAnsi (ordinal 3): query ANSI support into a USHORT (`PUSHORT`
+    /// in `<bsesub.h>`).
     fn vio_get_ansi(&self, p_flag: u32, _hvio: u32) -> u32 {
         debug!("  VioGetAnsi");
-        let console = self.shared.console_mgr.lock_or_recover();
-        if p_flag != 0 {
-            self.guest_write::<u32>(p_flag, if console.ansi_mode { 1 } else { 0 });
-        }
+        if p_flag == 0 { return ERROR_VIO_INVALID_PARMS; }
+        let on = self.shared.console_mgr.lock_or_recover().ansi_mode;
+        self.guest_write::<u16>(p_flag, if on { ANSI_ON } else { ANSI_OFF });
         NO_ERROR
     }
 
@@ -376,6 +382,7 @@ mod tests {
     use super::super::{Loader, ApiResult};
     use super::super::vm_backend::mock::MockVcpu;
     use super::super::mutex_ext::MutexExt;
+    use super::super::constants::{ANSI_OFF, ERROR_VIO_INVALID_PARMS};
 
     /// Write `args` to the Pascal call stack at `esp`: last arg at esp+4,
     /// second-to-last at esp+8, etc. (matches OS/2 Pascal calling convention).
@@ -699,6 +706,54 @@ mod tests {
         write_stack(&loader, esp, &[0, p_flag]);
         loader.handle_viocalls(&mut vcpu, 0, 3);
         assert_eq!(loader.guest_read::<u32>(p_flag).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_vio_get_ansi_writes_a_ushort_and_set_ansi_rejects_bad_values() {
+        let loader = Loader::new_mock();
+        let mut vcpu = MockVcpu::new();
+        let esp: u32 = 0x1000;
+        let p_flag: u32 = 0x2000;
+        vcpu.regs.rsp = esp as u64;
+        loader.guest_write::<u32>(p_flag, 0xAAAA_AAAA).unwrap();
+        write_stack(&loader, esp, &[0, p_flag]);
+        assert!(matches!(loader.handle_viocalls(&mut vcpu, 0, 3), super::super::ApiResult::Normal(0)));
+        // ANSI is on by default; only the USHORT is written.
+        assert_eq!(loader.guest_read::<u32>(p_flag).unwrap(), 0xAAAA_0001);
+        write_stack(&loader, esp, &[0, 2]);
+        assert!(matches!(loader.handle_viocalls(&mut vcpu, 0, 5),
+                         super::super::ApiResult::Normal(ERROR_VIO_INVALID_PARMS)));
+        assert!(loader.shared.console_mgr.lock().unwrap().ansi_mode, "unchanged");
+    }
+
+    /// VioWrtTTY carries out ANSI sequences while ANSI is on and shows them
+    /// as characters while it is off.
+    #[test]
+    fn test_vio_wrt_tty_interprets_ansi_only_when_on() {
+        let loader = Loader::new_mock();
+        loader.shared.console_mgr.lock().unwrap().enable_sdl_mode();
+        let mut vcpu = MockVcpu::new();
+        let esp: u32 = 0x1000;
+        let text: u32 = 0x3000;
+        vcpu.regs.rsp = esp as u64;
+        let s = b"ab\x1b[2Jc";
+        loader.guest_write_bytes(text, s);
+        // VioWrtTTY(psz, cb, hvio) → ESP+4=hvio, +8=cb, +12=psz
+        write_stack(&loader, esp, &[0, s.len() as u32, text]);
+        loader.handle_viocalls(&mut vcpu, 0, 19);
+        {
+            let c = loader.shared.console_mgr.lock().unwrap();
+            assert_eq!(c.buffer[0].0, 'c', "screen cleared, then c at the top left");
+            assert_eq!(c.buffer[1].0, ' ');
+            assert_eq!((c.cursor_row, c.cursor_col), (0, 1));
+        }
+        write_stack(&loader, esp, &[0, ANSI_OFF as u32]);
+        loader.handle_viocalls(&mut vcpu, 0, 5);
+        write_stack(&loader, esp, &[0, s.len() as u32, text]);
+        loader.handle_viocalls(&mut vcpu, 0, 19);
+        let c = loader.shared.console_mgr.lock().unwrap();
+        let row: String = c.buffer[..10].iter().map(|cell| cell.0).collect();
+        assert_eq!(row, "cab\u{1b}[2Jc  ", "the sequence is written as characters");
     }
 
     // ── VioCheckCharType ──────────────────────────────────────────────────────

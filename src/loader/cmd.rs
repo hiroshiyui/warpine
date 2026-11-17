@@ -320,7 +320,7 @@ impl CmdShell {
             OutputSink::Vio => {
                 let cp = self.shared.active_codepage.load(Ordering::Relaxed);
                 let mut vio = self.shared.console_mgr.lock_or_recover();
-                vio.write_tty(bytes, attr, cp);
+                vio.write_tty_attr(bytes, attr, cp);
             }
             OutputSink::File(f) => { f.write_all(bytes).ok(); }
             OutputSink::Buffer(v) => { v.extend_from_slice(bytes); }
@@ -523,16 +523,9 @@ impl CmdShell {
     }
 
     fn cmd_cls(&self) {
-        let cp = self.shared.active_codepage.load(Ordering::Relaxed);
-        let mut vio = self.shared.console_mgr.lock_or_recover();
-        let rows = vio.rows;
-        let cols = vio.cols;
-        let blank = vec![b' '; cols as usize];
-        for r in 0..rows {
-            vio.write_char_str_att(r, 0, &blank, ATTR_NORMAL, cp);
-        }
-        vio.cursor_row = 0;
-        vio.cursor_col = 0;
+        // Clear the screen and home the cursor on the terminal as well (the
+        // old row-by-row blanking left the terminal cursor where it was).
+        self.shared.console_mgr.lock_or_recover().clear_screen(ATTR_NORMAL);
     }
 
     fn cmd_ver(&self) {
@@ -894,7 +887,7 @@ impl CmdShell {
                                     Ok(n) => {
                                         let cp = shared_relay.active_codepage.load(Ordering::Relaxed);
                                         let mut vio = shared_relay.console_mgr.lock_or_recover();
-                                        vio.write_tty(&buf[..n], ATTR_NORMAL, cp);
+                                        vio.write_tty(&buf[..n], cp);
                                     }
                                 }
                             }

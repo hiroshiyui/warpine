@@ -5,6 +5,17 @@
 
 use std::io::{self, Write};
 
+use super::ansi::{AnsiParser, Csi, Feed, Rendition, DEFAULT_ATTR, ESC};
+
+/// Tab stops of VioWrtTTY output: "standard 8-byte-wide fields".
+const TAB_WIDTH: u16 = 8;
+/// ANSI `ESC[=7h` / `ESC[=7l`: wrap at the end of a line on / off.
+const ANSI_MODE_WRAP: u16 = 7;
+/// ANSI `ESC[2J`: clear the screen.
+const ANSI_ED_SCREEN: u16 = 2;
+/// Glyph shown on a terminal for an ESC written as a character (CP437 0x1B).
+const ESC_GLYPH: char = '\u{2190}';
+
 /// Convert a CP437 byte to its Unicode character.
 /// Bytes 0x00–0x7F are ASCII-identical. Bytes 0x80–0xFF map to CP437-specific glyphs
 /// (box-drawing, accented letters, Greek, math symbols, etc.).
@@ -56,7 +67,18 @@ pub struct VioManager {
     pub cursor_start: u8,
     /// Cursor shape: last scan line (15 = bottom of cell for 8×16 font).
     pub cursor_end: u8,
+    /// ANSI support of TTY output (`VioSetAnsi`); on by default.
     pub ansi_mode: bool,
+    /// Escape-sequence state, kept between writes.
+    ansi: AnsiParser,
+    /// Graphics rendition set by ANSI `ESC[...m`; its attribute colours
+    /// `write_tty` output ("the current attribute defined by ANSI or the
+    /// default value of 7", VioWrtTTY reference).
+    pub rendition: Rendition,
+    /// Cursor saved by `ESC[s` (one level; nested saves are not supported).
+    saved_cursor: Option<(u16, u16)>,
+    /// Wrap at the end of a line (ANSI mode 7; on by default).
+    pub wrap: bool,
     pub codepage: u16,
     /// When `true`, all ANSI escape output is suppressed; the SDL text
     /// renderer reads the buffer directly.  Also forces rows/cols to 80×25
@@ -93,6 +115,10 @@ impl VioManager {
             cursor_start: 14,
             cursor_end: 15,
             ansi_mode: true,
+            ansi: AnsiParser::new(),
+            rendition: Rendition::default(),
+            saved_cursor: None,
+            wrap: true,
             codepage: 437,
             sdl_mode: false,
             raw_mode_active: false,
@@ -216,77 +242,224 @@ impl VioManager {
         let _ = stdout.write_all(s.as_bytes());
     }
 
-    /// Write a string at the current cursor position, advancing the cursor.
+    /// Switch ANSI support on or off (`VioSetAnsi`); an unfinished escape
+    /// sequence is dropped.
+    pub fn set_ansi(&mut self, on: bool) {
+        self.ansi_mode = on;
+        self.ansi.reset();
+    }
+
+    /// The attribute TTY output is written with.
+    pub fn tty_attr(&self) -> u8 { self.rendition.attr() }
+
+    /// Write text as `VioWrtTTY` does, at the cursor, advancing it.
     ///
-    /// Updates the screen buffer.  In terminal (non-SDL) mode, also emits
-    /// ANSI colour escapes so coloured text from `VioWrtTTY` is rendered with
-    /// the correct CGA attribute.
+    /// CR, LF, backspace (non-destructive), BEL and TAB (to the next multiple
+    /// of 8) are commands; the rest is text in the current ANSI attribute.
+    /// While ANSI support is on, escape sequences are carried out — also when
+    /// split across calls. Updates the screen buffer; in terminal (non-SDL)
+    /// mode also echoes the result to the host terminal.
     /// `cp` is the active OS/2 codepage used to decode non-ASCII bytes.
-    pub fn write_tty(&mut self, text: &[u8], attr: u8, cp: u32) {
-        let sdl = self.sdl_mode;
-        let mut stdout = io::stdout();
-        // Lazily emit the ANSI colour attribute on the first printable byte so
-        // that pure-control strings (CR/LF/BS sequences) don't pollute the
-        // terminal colour state unnecessarily.
-        let mut attr_applied = false;
-        for &ch in text {
-            if ch == b'\n' {
-                self.cursor_row += 1;
+    pub fn write_tty(&mut self, text: &[u8], cp: u32) {
+        self.write_tty_to(text, cp, !self.sdl_mode);
+    }
+
+    /// `write_tty` that only updates the screen buffer and cursor, for
+    /// console output whose bytes go to a host pipe or file unchanged: the
+    /// screen the program reads back (`VioReadCellStr`, `VioGetCurPos`)
+    /// stays the one it wrote.
+    pub fn track_tty(&mut self, text: &[u8], cp: u32) {
+        self.write_tty_to(text, cp, false);
+    }
+
+    fn write_tty_to(&mut self, text: &[u8], cp: u32, echo: bool) {
+        let mut out = TtyOut::new(!echo);
+        for &b in text {
+            if !self.ansi_mode {
+                self.tty_byte(b, cp, &mut out);
+                continue;
+            }
+            match self.ansi.feed(b) {
+                Feed::Pending => {}
+                Feed::Text(b) => self.tty_byte(b, cp, &mut out),
+                Feed::EscThen(b) => {
+                    self.tty_byte(ESC, cp, &mut out);
+                    self.tty_byte(b, cp, &mut out);
+                }
+                Feed::Sequence(csi) => self.apply_csi(&csi, &mut out),
+            }
+        }
+        out.finish();
+    }
+
+    /// `write_tty` in attribute `attr` instead of the ANSI one (the built-in
+    /// CMD.EXE's coloured prompt and messages); the ANSI rendition is kept.
+    pub fn write_tty_attr(&mut self, text: &[u8], attr: u8, cp: u32) {
+        let saved = self.rendition;
+        self.rendition = Rendition::from_attr(attr);
+        self.write_tty(text, cp);
+        self.rendition = saved;
+    }
+
+    /// One TTY byte that is not part of an escape sequence.
+    fn tty_byte(&mut self, ch: u8, cp: u32, out: &mut TtyOut) {
+        match ch {
+            b'\n' => {
                 self.cursor_col = 0;
-                if self.cursor_row >= self.rows {
-                    self.scroll_up(0, self.rows - 1, 1, (' ', 0x07), b' ');
-                    self.cursor_row = self.rows - 1;
-                }
-                if !sdl {
-                    if attr_applied {
-                        let _ = stdout.write_all(b"\x1b[0m");
-                        attr_applied = false;
-                    }
-                    let _ = stdout.write_all(b"\n");
-                }
-            } else if ch == b'\r' {
+                self.line_feed();
+                out.newline();
+            }
+            b'\r' => {
                 self.cursor_col = 0;
-                if !sdl { let _ = stdout.write_all(b"\r"); }
-            } else if ch == b'\x08' {
-                // Backspace
-                if self.cursor_col > 0 {
-                    self.cursor_col -= 1;
+                out.raw(b"\r");
+            }
+            0x08 => {
+                self.cursor_col = self.cursor_col.saturating_sub(1);
+                out.raw(b"\x08");
+            }
+            0x07 => out.raw(b"\x07"),
+            b'\t' => {
+                let next = (self.cursor_col / TAB_WIDTH + 1) * TAB_WIDTH;
+                let spaces = next.min(self.cols).saturating_sub(self.cursor_col).max(1);
+                for _ in 0..spaces {
+                    self.put_tty_char(b' ', cp, out);
                 }
-                if !sdl { let _ = stdout.write_all(b"\x08"); }
-            } else if ch == b'\x07' {
-                // Bell
-                if !sdl { let _ = stdout.write_all(b"\x07"); }
-            } else {
-                let decoded = Self::decode_vio_byte(ch, cp);
-                if self.cursor_row < self.rows && self.cursor_col < self.cols {
-                    let idx = self.cursor_row as usize * self.cols as usize + self.cursor_col as usize;
-                    if idx < self.buffer.len() {
-                        self.buffer[idx] = (decoded, attr);
-                        self.raw_bytes[idx] = ch;
-                    }
+            }
+            _ => self.put_tty_char(ch, cp, out),
+        }
+    }
+
+    /// Put one character at the cursor and advance, wrapping (or, with
+    /// wrapping off, staying in the last column) and scrolling.
+    fn put_tty_char(&mut self, ch: u8, cp: u32, out: &mut TtyOut) {
+        if self.rows == 0 || self.cols == 0 { return; }
+        let attr = self.tty_attr();
+        let decoded = Self::decode_vio_byte(ch, cp);
+        self.cursor_row = self.cursor_row.min(self.rows - 1);
+        self.cursor_col = self.cursor_col.min(self.cols - 1);
+        let idx = self.cursor_row as usize * self.cols as usize + self.cursor_col as usize;
+        if idx < self.buffer.len() {
+            self.buffer[idx] = (decoded, attr);
+            self.raw_bytes[idx] = ch;
+        }
+        let shown = if ch == ESC { ESC_GLYPH } else { decoded };
+        out.text(shown, attr);
+        if self.cursor_col + 1 < self.cols {
+            self.cursor_col += 1;
+        } else if self.wrap {
+            self.cursor_col = 0;
+            self.line_feed();
+        } else {
+            // Wrapping off: later characters overwrite the last column.
+            out.cursor(self.cursor_row, self.cursor_col);
+        }
+    }
+
+    /// Move the cursor down a row, scrolling the screen at the bottom. The
+    /// terminal scrolls by itself when the newline or wrapped text reaches it.
+    fn line_feed(&mut self) {
+        if self.cursor_row + 1 < self.rows {
+            self.cursor_row += 1;
+        } else if self.rows > 0 {
+            self.shift_up(0, self.rows - 1, 1, (' ', DEFAULT_ATTR), b' ');
+            self.cursor_row = self.rows - 1;
+        }
+    }
+
+    /// Carry out a complete ANSI control sequence.
+    fn apply_csi(&mut self, csi: &Csi, out: &mut TtyOut) {
+        if self.rows == 0 || self.cols == 0 { return; }
+        let (last_row, last_col) = (self.rows - 1, self.cols - 1);
+        match (csi.private, csi.final_byte) {
+            (None, b'A') => self.cursor_row = self.cursor_row.saturating_sub(csi.count(0)),
+            (None, b'B') => self.cursor_row = self.cursor_row.saturating_add(csi.count(0)).min(last_row),
+            (None, b'C') => self.cursor_col = self.cursor_col.saturating_add(csi.count(0)).min(last_col),
+            (None, b'D') => self.cursor_col = self.cursor_col.saturating_sub(csi.count(0)),
+            (None, b'H' | b'f') => {
+                self.cursor_row = (csi.count(0) - 1).min(last_row);
+                self.cursor_col = (csi.count(1) - 1).min(last_col);
+            }
+            (None, b's') => self.saved_cursor = Some((self.cursor_row, self.cursor_col)),
+            (None, b'u') => {
+                if let Some((r, c)) = self.saved_cursor {
+                    self.cursor_row = r.min(last_row);
+                    self.cursor_col = c.min(last_col);
                 }
-                self.cursor_col += 1;
-                if self.cursor_col >= self.cols {
-                    self.cursor_col = 0;
-                    self.cursor_row += 1;
-                    if self.cursor_row >= self.rows {
-                        self.scroll_up(0, self.rows - 1, 1, (' ', 0x07), b' ');
-                        self.cursor_row = self.rows - 1;
-                    }
+            }
+            (None, b'J') if csi.param(0, 0) == ANSI_ED_SCREEN => {
+                let attr = self.tty_attr();
+                self.buffer.fill((' ', attr));
+                self.raw_bytes.fill(b' ');
+                self.cursor_row = 0;
+                self.cursor_col = 0;
+                out.clear_screen(attr);
+                return;
+            }
+            (None, b'K') if csi.param(0, 0) == 0 => {
+                let attr = self.tty_attr();
+                let start = self.cursor_row as usize * self.cols as usize + self.cursor_col as usize;
+                let end = (self.cursor_row as usize + 1) * self.cols as usize;
+                if end <= self.buffer.len() && start <= end {
+                    self.buffer[start..end].fill((' ', attr));
+                    self.raw_bytes[start..end].fill(b' ');
                 }
-                if !sdl {
-                    if !attr_applied {
-                        self.write_ansi_attr(&mut stdout, attr);
-                        attr_applied = true;
-                    }
-                    Self::write_char(&mut stdout, decoded);
+                out.erase_line(attr);
+                return;
+            }
+            (None, b'm') => {
+                self.rendition.apply_sgr(&csi.params);
+                return;
+            }
+            (Some(_), b'h') if csi.param(0, 0) == ANSI_MODE_WRAP => { self.wrap = true; return; }
+            (Some(_), b'l') if csi.param(0, 0) == ANSI_MODE_WRAP => { self.wrap = false; return; }
+            // Display modes 0–6, the cursor position report (ESC[6n) and
+            // keyboard reassignment (ESC[...p) are not supported; other
+            // sequences are dropped.
+            _ => {
+                log::debug!("ANSI: ignored sequence {:?}", csi);
+                return;
+            }
+        }
+        out.cursor(self.cursor_row, self.cursor_col);
+    }
+
+    /// Scroll rows `top..=bottom` of the buffer up by `lines` (≥ 1), filling
+    /// the vacated rows; no terminal output.
+    fn shift_up(&mut self, top: u16, bottom: u16, lines: u16, fill_cell: (char, u8), fill_raw: u8) {
+        if top > bottom || bottom >= self.rows || lines == 0 { return; }
+        let cols = self.cols as usize;
+        let lines = lines.min(bottom - top + 1);
+        for row in top..(bottom - lines + 1) {
+            let dst = row as usize * cols;
+            let src = (row + lines) as usize * cols;
+            for c in 0..cols {
+                if src + c < self.buffer.len() && dst + c < self.buffer.len() {
+                    self.buffer[dst + c] = self.buffer[src + c];
+                    self.raw_bytes[dst + c] = self.raw_bytes[src + c];
                 }
             }
         }
-        if !sdl {
-            if attr_applied { let _ = stdout.write_all(b"\x1b[0m"); }
-            let _ = stdout.flush();
+        for row in (bottom - lines + 1)..=bottom {
+            let base = row as usize * cols;
+            for c in 0..cols {
+                if base + c < self.buffer.len() {
+                    self.buffer[base + c] = fill_cell;
+                    self.raw_bytes[base + c] = fill_raw;
+                }
+            }
         }
+    }
+
+    /// Clear the whole screen to blanks in `attr` and home the cursor (the
+    /// built-in CMD.EXE's CLS).
+    pub fn clear_screen(&mut self, attr: u8) {
+        self.buffer.fill((' ', attr));
+        self.raw_bytes.fill(b' ');
+        self.cursor_row = 0;
+        self.cursor_col = 0;
+        let mut out = TtyOut::new(self.sdl_mode);
+        out.clear_screen(attr);
+        out.finish();
     }
 
     /// Write an attributed string at a specific position.
@@ -425,30 +598,8 @@ impl VioManager {
             }
             return;
         }
-        let cols = self.cols as usize;
         let lines = lines.min(bottom - top + 1);
-
-        // Shift buffer rows up
-        for row in top..(bottom - lines + 1) {
-            let dst = row as usize * cols;
-            let src = (row + lines) as usize * cols;
-            for c in 0..cols {
-                if src + c < self.buffer.len() && dst + c < self.buffer.len() {
-                    self.buffer[dst + c] = self.buffer[src + c];
-                    self.raw_bytes[dst + c] = self.raw_bytes[src + c];
-                }
-            }
-        }
-        // Fill vacated rows
-        for row in (bottom - lines + 1)..=bottom {
-            let base = row as usize * cols;
-            for c in 0..cols {
-                if base + c < self.buffer.len() {
-                    self.buffer[base + c] = fill_cell;
-                    self.raw_bytes[base + c] = fill_raw;
-                }
-            }
-        }
+        self.shift_up(top, bottom, lines, fill_cell, fill_raw);
 
         // Output ANSI scroll (terminal mode only)
         if !self.sdl_mode {
@@ -557,26 +708,135 @@ impl VioManager {
 
     /// Write ANSI color escape for an OS/2 attribute byte.
     fn write_ansi_attr(&self, stdout: &mut io::Stdout, attr: u8) {
-        let fg_idx = (attr & 0x07) as usize;
-        let fg_bright = (attr & 0x08) != 0;
-        let bg_idx = ((attr >> 4) & 0x07) as usize;
-
-        let fg = CGA_TO_ANSI_FG[fg_idx];
-        let bg = CGA_TO_ANSI_BG[bg_idx];
-
-        if fg_bright {
-            let _ = write!(stdout, "\x1b[{};{};1m", fg, bg);
-        } else {
-            let _ = write!(stdout, "\x1b[{};{}m", fg, bg);
-        }
+        let _ = stdout.write_all(ansi_attr_escape(attr).as_bytes());
     }
 
     /// Read a single byte from stdin (non-blocking with short timeout).
     /// Returns None if no input available within timeout.
     pub fn read_byte(&self) -> Option<u8> {
+        match self.read_input() {
+            HostInput::Byte(b) => Some(b),
+            HostInput::Empty | HostInput::EndOfInput => None,
+        }
+    }
+
+    /// Read a byte from the host's standard input, telling "no key yet" from
+    /// the end of input: a terminal in raw mode returns no bytes while no
+    /// key is pressed, anything else (pipe, file, `/dev/null`) only at its end.
+    pub fn read_input(&self) -> HostInput {
         let mut buf = [0u8; 1];
+        // SAFETY: reads at most one byte into a one-byte local buffer.
         let n = unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr() as *mut libc::c_void, 1) };
-        if n == 1 { Some(buf[0]) } else { None }
+        classify_read(n, buf[0], std::io::IsTerminal::is_terminal(&std::io::stdin()))
+    }
+}
+
+/// What a read of the host's standard input found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostInput {
+    Byte(u8),
+    /// Nothing yet (a terminal with no key pressed, or a read to retry).
+    Empty,
+    /// A pipe or file at its end: no key will ever come.
+    EndOfInput,
+}
+
+/// Classify the result `n` of a one-byte `read(2)` of standard input.
+fn classify_read(n: isize, byte: u8, stdin_is_terminal: bool) -> HostInput {
+    match n {
+        1 => HostInput::Byte(byte),
+        0 if !stdin_is_terminal => HostInput::EndOfInput,
+        _ => HostInput::Empty,
+    }
+}
+
+/// Host-terminal echo of `write_tty` (terminal mode); does nothing in SDL
+/// mode, where the renderer reads the buffer.
+struct TtyOut {
+    bytes: Option<Vec<u8>>,
+    /// The attribute last set on the terminal, if any.
+    attr: Option<u8>,
+}
+
+impl TtyOut {
+    fn new(silent: bool) -> Self {
+        TtyOut { bytes: if silent { None } else { Some(Vec::new()) }, attr: None }
+    }
+
+    fn raw(&mut self, b: &[u8]) {
+        if let Some(v) = self.bytes.as_mut() { v.extend_from_slice(b); }
+    }
+
+    fn set_attr(&mut self, attr: u8) {
+        // The default attribute is the terminal's own colours, so plain
+        // output keeps the user's terminal theme.
+        if attr == DEFAULT_ATTR {
+            self.reset_attr();
+        } else if self.bytes.is_some() && self.attr != Some(attr) {
+            self.raw(ansi_attr_escape(attr).as_bytes());
+            self.attr = Some(attr);
+        }
+    }
+
+    fn reset_attr(&mut self) {
+        if self.attr.take().is_some() { self.raw(b"\x1b[0m"); }
+    }
+
+    fn text(&mut self, ch: char, attr: u8) {
+        if self.bytes.is_none() { return; }
+        self.set_attr(attr);
+        let mut buf = [0u8; 4];
+        self.raw(ch.encode_utf8(&mut buf).as_bytes());
+    }
+
+    fn newline(&mut self) {
+        // Reset first so the scrolled-in line is not painted in the colour.
+        self.reset_attr();
+        self.raw(b"\n");
+    }
+
+    fn cursor(&mut self, row: u16, col: u16) {
+        if self.bytes.is_some() {
+            let s = format!("\x1b[{};{}H", row as u32 + 1, col as u32 + 1);
+            self.raw(s.as_bytes());
+        }
+    }
+
+    fn clear_screen(&mut self, attr: u8) {
+        if self.bytes.is_none() { return; }
+        self.set_attr(attr);
+        self.raw(b"\x1b[2J\x1b[1;1H");
+    }
+
+    fn erase_line(&mut self, attr: u8) {
+        if self.bytes.is_none() { return; }
+        self.set_attr(attr);
+        self.raw(b"\x1b[K");
+    }
+
+    /// Bytes collected so far (tests).
+    #[cfg(test)]
+    fn collected(&self) -> &[u8] { self.bytes.as_deref().unwrap_or(&[]) }
+
+    fn finish(mut self) {
+        self.reset_attr();
+        if let Some(v) = self.bytes.take()
+            && !v.is_empty() {
+            let mut stdout = io::stdout();
+            let _ = stdout.write_all(&v);
+            let _ = stdout.flush();
+        }
+    }
+}
+
+/// Terminal SGR escape for a VIO attribute byte.
+fn ansi_attr_escape(attr: u8) -> String {
+    let fg = CGA_TO_ANSI_FG[(attr & 0x07) as usize];
+    let bg = CGA_TO_ANSI_BG[((attr >> 4) & 0x07) as usize];
+    if attr & 0x08 != 0 {
+        format!("\x1b[{};{};1m", fg, bg)
+    } else {
+        format!("\x1b[{};{}m", fg, bg)
     }
 }
 
@@ -843,5 +1103,166 @@ mod tests {
         let orig_len  = mgr.buffer.len();
         mgr.resize(orig_rows, orig_cols);
         assert_eq!(mgr.buffer.len(), orig_len, "noop resize must not reallocate");
+    }
+
+    // ── ANSI escape sequences in TTY output ─────────────────────────────────
+
+    /// An 80×25 screen whose TTY output does not echo to the test's stdout.
+    fn screen() -> VioManager {
+        let mut m = VioManager::new();
+        m.enable_sdl_mode();
+        m
+    }
+
+    fn row_text(m: &VioManager, row: usize, n: usize) -> String {
+        let cols = m.cols as usize;
+        m.buffer[row * cols..row * cols + n].iter().map(|c| c.0).collect()
+    }
+
+    #[test]
+    fn test_tty_clear_screen_uses_the_ansi_attribute_and_homes() {
+        let mut m = screen();
+        m.write_tty(b"abc\r\ndef\x1b[44m\x1b[2J", 437);
+        assert_eq!((m.cursor_row, m.cursor_col), (0, 0));
+        assert!(m.buffer.iter().all(|&c| c == (' ', 0x17)), "blank in light grey on blue");
+        // ESC[J and ESC[1J are not documented for OS/2: ignored.
+        m.write_tty(b"x\x1b[J\x1b[1J", 437);
+        assert_eq!(m.buffer[0], ('x', 0x17));
+    }
+
+    #[test]
+    fn test_tty_cursor_moves_are_clamped() {
+        let mut m = screen();
+        m.write_tty(b"\x1b[30;100H", 437);
+        assert_eq!((m.cursor_row, m.cursor_col), (24, 79));
+        m.write_tty(b"\x1b[0;0f", 437);
+        assert_eq!((m.cursor_row, m.cursor_col), (0, 0));
+        m.write_tty(b"\x1b[5B\x1b[7C\x1b[2A\x1b[3D", 437);
+        assert_eq!((m.cursor_row, m.cursor_col), (3, 4));
+        m.write_tty(b"\x1b[9999A\x1b[9999D", 437);
+        assert_eq!((m.cursor_row, m.cursor_col), (0, 0));
+    }
+
+    #[test]
+    fn test_tty_save_and_restore_cursor() {
+        let mut m = screen();
+        m.write_tty(b"\x1b[u", 437); // nothing saved: stays
+        assert_eq!((m.cursor_row, m.cursor_col), (0, 0));
+        m.write_tty(b"\x1b[4;6H\x1b[s\x1b[H\x1b[u", 437);
+        assert_eq!((m.cursor_row, m.cursor_col), (3, 5));
+    }
+
+    #[test]
+    fn test_tty_erase_line_from_the_cursor() {
+        let mut m = screen();
+        m.write_tty(b"ABCDEF\r\nGHI\x1b[1;3H\x1b[K", 437);
+        assert_eq!(row_text(&m, 0, 6), "AB    ");
+        assert_eq!(row_text(&m, 1, 3), "GHI", "the next row is untouched");
+        assert_eq!((m.cursor_row, m.cursor_col), (0, 2));
+    }
+
+    #[test]
+    fn test_tty_sgr_colours_the_following_text() {
+        let mut m = screen();
+        m.write_tty(b"\x1b[1;33;41mY\x1b[0mn", 437);
+        assert_eq!(m.buffer[0], ('Y', 0x4E));
+        assert_eq!(m.buffer[1], ('n', 0x07));
+    }
+
+    #[test]
+    fn test_tty_sequence_split_across_writes() {
+        let mut m = screen();
+        m.write_tty(b"ab\x1b", 437);
+        m.write_tty(b"[3", 437);
+        m.write_tty(b";4Hc", 437);
+        assert_eq!(row_text(&m, 0, 3), "ab ", "no part of the sequence is shown");
+        assert_eq!(m.buffer[2 * 80 + 3].0, 'c');
+    }
+
+    #[test]
+    fn test_tty_ansi_off_shows_the_sequence() {
+        let mut m = screen();
+        m.write_tty(b"\x1b", 437); // an unfinished sequence…
+        m.set_ansi(false);          // …is dropped
+        m.write_tty(b"\x1b[2J", 437);
+        assert_eq!(row_text(&m, 0, 4), "\u{1b}[2J");
+        m.set_ansi(true);
+        m.write_tty(b"\x1bQ", 437); // a lone ESC is a character
+        assert_eq!(row_text(&m, 0, 6), "\u{1b}[2J\u{1b}Q");
+    }
+
+    #[test]
+    fn test_tty_wrap_mode_and_scrolling() {
+        let mut m = screen();
+        m.write_tty(b"\x1b[=7l\x1b[1;79HABC", 437);
+        assert_eq!(row_text(&m, 0, 80).trim_end(), format!("{}AC", " ".repeat(78)));
+        assert_eq!((m.cursor_row, m.cursor_col), (0, 79));
+        m.write_tty(b"\x1b[=7h\x1b[25;80HXY", 437);
+        // Wrapping past the bottom row scrolls the screen up one row.
+        assert_eq!(m.buffer[23 * 80 + 79].0, 'X');
+        assert_eq!(m.buffer[24 * 80].0, 'Y');
+        assert_eq!((m.cursor_row, m.cursor_col), (24, 1));
+    }
+
+    #[test]
+    fn test_tty_tab_and_backspace() {
+        let mut m = screen();
+        m.write_tty(b"ab\tc\x08\x08d", 437);
+        assert_eq!(row_text(&m, 0, 9), "ab     dc");
+        m.write_tty(b"\x1b[1;80H\t", 437);
+        assert_eq!((m.cursor_row, m.cursor_col), (1, 0), "a tab in the last column wraps");
+    }
+
+    #[test]
+    fn test_tty_attr_override_keeps_the_ansi_rendition() {
+        let mut m = screen();
+        m.write_tty(b"\x1b[32m", 437);
+        m.write_tty_attr(b"E", 0x0C, 437);
+        m.write_tty(b"g", 437);
+        assert_eq!(m.buffer[0], ('E', 0x0C));
+        assert_eq!(m.buffer[1], ('g', 0x02));
+    }
+
+    #[test]
+    fn test_clear_screen_homes_the_cursor() {
+        let mut m = screen();
+        m.write_tty(b"hello\r\nworld", 437);
+        m.clear_screen(0x1F);
+        assert_eq!((m.cursor_row, m.cursor_col), (0, 0));
+        assert!(m.buffer.iter().all(|&c| c == (' ', 0x1F)));
+    }
+
+    #[test]
+    fn test_track_tty_updates_the_buffer_silently() {
+        let mut m = VioManager::new();
+        m.resize(25, 80);
+        // Not in SDL mode: write_tty would echo; track_tty must not (the
+        // test would otherwise print to stdout) but still move the cursor.
+        m.track_tty(b"\x1b[3;3Hok", 437);
+        assert_eq!(m.buffer[2 * 80 + 2].0, 'o');
+        assert_eq!((m.cursor_row, m.cursor_col), (2, 4));
+    }
+
+    #[test]
+    fn test_terminal_echo_of_tty_output() {
+        let mut out = TtyOut::new(false);
+        out.text('a', 0x07);
+        assert_eq!(out.collected(), b"a", "the default attribute uses the terminal's colours");
+        out.text('b', 0x1F);
+        out.text('c', 0x1F);
+        out.newline();
+        out.clear_screen(0x07);
+        out.cursor(4, 9);
+        assert_eq!(out.collected(), b"a\x1b[37;44;1mbc\x1b[0m\n\x1b[2J\x1b[1;1H\x1b[5;10H");
+        let silent = TtyOut::new(true);
+        assert!(silent.collected().is_empty());
+    }
+
+    #[test]
+    fn test_classify_read_tells_end_of_input_from_no_key() {
+        assert_eq!(classify_read(1, b'x', false), HostInput::Byte(b'x'));
+        assert_eq!(classify_read(0, 0, false), HostInput::EndOfInput);
+        assert_eq!(classify_read(0, 0, true), HostInput::Empty, "a raw terminal with no key pressed");
+        assert_eq!(classify_read(-1, 0, false), HostInput::Empty, "an error such as EAGAIN is retried");
     }
 }

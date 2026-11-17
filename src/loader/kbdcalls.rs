@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use super::constants::*;
 use super::mutex_ext::MutexExt;
-use super::console::map_key_to_os2;
+use super::console::{map_key_to_os2, HostInput};
 
 impl super::Loader {
     pub(crate) fn handle_kbdcalls(&self, vcpu: &mut dyn VcpuBackend, _vcpu_id: u32, ordinal: u32) -> super::ApiResult {
@@ -90,13 +90,35 @@ impl super::Loader {
             let mut console = self.shared.console_mgr.lock_or_recover();
             console.enable_raw_mode();
         }
+        self.kbd_char_in_host(p_key_info, wait, || self.shared.console_mgr.lock_or_recover().read_input())
+    }
 
+    /// End the process because a waiting keyboard read found the end of a
+    /// piped (non-terminal) standard input: no key will ever come, and
+    /// waiting is `KbdCharIn`'s contract, so Warpine ends the program as
+    /// `DosExit(EXIT_PROCESS, EXIT_CODE_KBD_END_OF_INPUT)` would — its own
+    /// choice; the KBD reference lists no end-of-input error.
+    fn kbd_end_of_input(&self) -> u32 {
+        debug!("  keyboard read at the end of piped input: ending the process");
+        // The same path as DosExit(EXIT_PROCESS): it also wakes threads
+        // waiting for the process to end (`threads.rs`).
+        self.request_process_exit(EXIT_CODE_KBD_END_OF_INPUT as u32);
+        self.shared.kbd_cond.notify_all();
+        ERROR_KBD_NO_DEVICE
+    }
+
+    /// `KbdCharIn` from the host's standard input (`read` gives one byte or
+    /// says why it has none).
+    fn kbd_char_in_host(&self, p_key_info: u32, wait: u32, mut read: impl FnMut() -> HostInput) -> u32 {
         loop {
             if self.shutting_down() { return ERROR_INVALID_FUNCTION; }
 
-            let byte = {
-                let console = self.shared.console_mgr.lock_or_recover();
-                console.read_byte()
+            let byte = match read() {
+                HostInput::Byte(b) => Some(b),
+                HostInput::Empty => None,
+                // A non-waiting call still just reports "no character".
+                HostInput::EndOfInput if wait != IO_NOWAIT => return self.kbd_end_of_input(),
+                HostInput::EndOfInput => None,
             };
 
             if let Some(first_byte) = byte {
@@ -116,7 +138,7 @@ impl super::Loader {
                 return NO_ERROR;
             }
 
-            if wait == 1 {
+            if wait == IO_NOWAIT {
                 if p_key_info != 0 {
                     self.guest_write::<u8>(p_key_info, 0);
                     self.guest_write::<u8>(p_key_info + 1, 0);
@@ -161,14 +183,24 @@ impl super::Loader {
             let mut console = self.shared.console_mgr.lock_or_recover();
             console.enable_raw_mode();
         }
+        self.kbd_string_in_host(p_buf, p_length, max_len, wait,
+                                || self.shared.console_mgr.lock_or_recover().read_input())
+    }
 
+    /// `KbdStringIn` from the host's standard input. At the end of piped
+    /// input a partly read line is returned as if Enter ended it; with
+    /// nothing read, a waiting call ends the process (`kbd_end_of_input`).
+    fn kbd_string_in_host(&self, p_buf: u32, p_length: u32, max_len: u32, wait: u32,
+                          mut read: impl FnMut() -> HostInput) -> u32 {
         let mut count = 0u32;
         loop {
             if self.shutting_down() || count >= max_len { break; }
 
-            let byte = {
-                let console = self.shared.console_mgr.lock_or_recover();
-                console.read_byte()
+            let byte = match read() {
+                HostInput::Byte(b) => Some(b),
+                HostInput::Empty => None,
+                HostInput::EndOfInput if count > 0 || wait == IO_NOWAIT => break,
+                HostInput::EndOfInput => return self.kbd_end_of_input(),
             };
 
             if let Some(b) = byte {
@@ -181,7 +213,7 @@ impl super::Loader {
                         count -= 1;
                         // Echo backspace
                         let mut console = self.shared.console_mgr.lock_or_recover();
-                        console.write_tty(b"\x08 \x08", 0x07, 437);
+                        console.write_tty(b"\x08 \x08", 437);
                     }
                 } else if b >= 0x20 {
                     self.guest_write::<u8>(p_buf + count, b);
@@ -189,10 +221,10 @@ impl super::Loader {
                     // Echo character
                     let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
                     let mut console = self.shared.console_mgr.lock_or_recover();
-                    console.write_tty(&[b], 0x07, cp);
+                    console.write_tty(&[b], cp);
                 }
-            } else if wait == 1 {
-                break; // NOWAIT
+            } else if wait == IO_NOWAIT {
+                break;
             } else {
                 std::thread::sleep(std::time::Duration::from_millis(10));
             }
@@ -345,5 +377,64 @@ mod tests {
         write_stack(&loader, esp, &[0, 0, 0, 0x2000]); // hkbd=0, wait=0, pLen=0, pBuf=0x2000
         let result = loader.handle_kbdcalls(&mut vcpu, 0, 9);
         assert!(matches!(result, ApiResult::Normal(ERROR_INVALID_FUNCTION)));
+    }
+
+    // ── End of piped input (terminal path) ───────────────────────────────────
+
+    use super::super::console::HostInput;
+    use super::super::constants::{EXIT_CODE_KBD_END_OF_INPUT, IO_NOWAIT, IO_WAIT};
+
+    /// A waiting KbdCharIn at the end of piped input ends the process.
+    #[test]
+    fn test_kbd_char_in_waiting_at_end_of_input_ends_the_process() {
+        let loader = Loader::new_mock();
+        loader.shared.exit_code.store(99, Ordering::Relaxed);
+        let mut reads = vec![HostInput::Empty, HostInput::EndOfInput].into_iter();
+        let rc = loader.kbd_char_in_host(0x2000, IO_WAIT, || reads.next().unwrap());
+        assert_ne!(rc, 0);
+        assert!(loader.shared.exit_requested.load(Ordering::Relaxed));
+        assert_eq!(loader.shared.exit_code.load(Ordering::Relaxed), EXIT_CODE_KBD_END_OF_INPUT);
+    }
+
+    /// A non-waiting KbdCharIn at the end of input reports "no character".
+    #[test]
+    fn test_kbd_char_in_nowait_at_end_of_input_returns_no_character() {
+        let loader = Loader::new_mock();
+        let p = 0x2000u32;
+        loader.guest_write::<u32>(p, 0xFFFF_FFFF).unwrap();
+        let rc = loader.kbd_char_in_host(p, IO_NOWAIT, || HostInput::EndOfInput);
+        assert_eq!(rc, 0);
+        assert_eq!(loader.guest_read::<u32>(p), Some(0), "zeroed KBDKEYINFO");
+        assert!(!loader.shared.exit_requested.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn test_kbd_char_in_delivers_a_piped_byte() {
+        let loader = Loader::new_mock();
+        let p = 0x2000u32;
+        let rc = loader.kbd_char_in_host(p, IO_WAIT, || HostInput::Byte(b'q'));
+        assert_eq!(rc, 0);
+        assert_eq!(loader.guest_read::<u8>(p), Some(b'q'));
+        assert_eq!(loader.guest_read::<u8>(p + 2), Some(0x40), "final character");
+    }
+
+    /// KbdStringIn: a partly read line is returned at the end of input; the
+    /// next waiting call ends the process.
+    #[test]
+    fn test_kbd_string_in_at_end_of_input() {
+        let loader = Loader::new_mock();
+        loader.shared.console_mgr.lock().unwrap().enable_sdl_mode(); // echo stays in the buffer
+        let (buf, len) = (0x3000u32, 0x2000u32);
+        let mut reads = vec![HostInput::Byte(b'h'), HostInput::Byte(b'i'), HostInput::EndOfInput].into_iter();
+        assert_eq!(loader.kbd_string_in_host(buf, len, 40, IO_WAIT, || reads.next().unwrap()), 0);
+        assert_eq!(loader.guest_read::<u16>(len + 2), Some(2));
+        assert_eq!((loader.guest_read::<u8>(buf), loader.guest_read::<u8>(buf + 1)), (Some(b'h'), Some(b'i')));
+        assert!(!loader.shared.exit_requested.load(Ordering::Relaxed));
+        // Nothing left, not waiting: an empty line.
+        assert_eq!(loader.kbd_string_in_host(buf, len, 40, IO_NOWAIT, || HostInput::EndOfInput), 0);
+        assert_eq!(loader.guest_read::<u16>(len + 2), Some(0));
+        // Nothing left, waiting: the process ends.
+        assert_ne!(loader.kbd_string_in_host(buf, len, 40, IO_WAIT, || HostInput::EndOfInput), 0);
+        assert!(loader.shared.exit_requested.load(Ordering::Relaxed));
     }
 }
