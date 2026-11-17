@@ -5,7 +5,6 @@ use std::collections::{HashMap, HashSet};
 use sdl3::event::Event;
 use sdl3::keyboard::{Keycode, Mod as KeyMod, Scancode};
 use log::debug;
-use sdl3::messagebox::{show_message_box, ButtonData, MessageBoxButtonFlag, MessageBoxFlag};
 use crate::loader::{SharedState, OS2Message, MutexExt,
     WM_CLOSE, WM_SIZE, WM_PAINT, WM_CHAR, WM_MOUSEMOVE,
     WM_BUTTON1DOWN, WM_BUTTON1UP, WM_BUTTON2DOWN, WM_BUTTON2UP, WM_BUTTON3DOWN, WM_BUTTON3UP,
@@ -1224,35 +1223,6 @@ impl SdlRenderer {
     }
 }
 
-/// Map the low 4 bits of a WinMessageBox `flStyle` to an array of SDL button
-/// descriptors: `(button_id, label, returnkey_default, escapekey_default)`.
-fn mb_buttons(style: u32) -> &'static [(i32, &'static str, bool, bool)] {
-    use crate::loader::{MBID_OK, MBID_CANCEL, MBID_ABORT, MBID_RETRY, MBID_IGNORE,
-                        MBID_YES, MBID_NO, MBID_ENTER,
-                        MB_OKCANCEL, MB_RETRYCANCEL, MB_ABORTRETRYIGNORE,
-                        MB_YESNO, MB_YESNOCANCEL, MB_CANCEL, MB_ENTER, MB_ENTERCANCEL};
-    // (button_id, label, returnkey_default, escapekey_default)
-    match style & 0x0F {
-        x if x == MB_OKCANCEL         => &[(MBID_OK as i32,     "OK",     true,  false),
-                                           (MBID_CANCEL as i32, "Cancel", false, true)],
-        x if x == MB_RETRYCANCEL      => &[(MBID_RETRY as i32,  "Retry",  true,  false),
-                                           (MBID_CANCEL as i32, "Cancel", false, true)],
-        x if x == MB_ABORTRETRYIGNORE => &[(MBID_ABORT as i32,  "Abort",  true,  false),
-                                           (MBID_RETRY as i32,  "Retry",  false, false),
-                                           (MBID_IGNORE as i32, "Ignore", false, true)],
-        x if x == MB_YESNO            => &[(MBID_YES as i32,    "Yes",    true,  false),
-                                           (MBID_NO as i32,     "No",     false, true)],
-        x if x == MB_YESNOCANCEL      => &[(MBID_YES as i32,    "Yes",    true,  false),
-                                           (MBID_NO as i32,     "No",     false, false),
-                                           (MBID_CANCEL as i32, "Cancel", false, true)],
-        x if x == MB_CANCEL           => &[(MBID_CANCEL as i32, "Cancel", true,  true)],
-        x if x == MB_ENTER            => &[(MBID_ENTER as i32,  "Enter",  true,  false)],
-        x if x == MB_ENTERCANCEL      => &[(MBID_ENTER as i32,  "Enter",  true,  false),
-                                           (MBID_CANCEL as i32, "Cancel", false, true)],
-        _                             => &[(MBID_OK as i32,     "OK",     true,  true)], // MB_OK
-    }
-}
-
 impl PmRenderer for SdlRenderer {
     fn handle_message(&mut self, msg: GUIMessage, _shared: &Arc<SharedState>) {
         match msg {
@@ -1263,32 +1233,6 @@ impl PmRenderer for SdlRenderer {
             GUIMessage::SetMouseCapture(hwnd) => {
                 // hwnd == 0 releases capture; any other value acquires it.
                 self.mouse.capture(hwnd != 0);
-            }
-            GUIMessage::ShowMessageBox { caption, text, style, reply_tx } => {
-                // Map MB_ICON* bits to an SDL flag.
-                let flag = match style & 0x00F0 {
-                    x if x == crate::loader::MB_ICONHAND        => MessageBoxFlag::ERROR,
-                    x if x == crate::loader::MB_ICONQUESTION    => MessageBoxFlag::WARNING,
-                    x if x == crate::loader::MB_ICONEXCLAMATION => MessageBoxFlag::WARNING,
-                    x if x == crate::loader::MB_ICONASTERISK    => MessageBoxFlag::INFORMATION,
-                    _                                            => MessageBoxFlag::INFORMATION,
-                };
-
-                let button_defs = mb_buttons(style);
-                let buttons: Vec<ButtonData> = button_defs.iter().map(|&(id, label, ret, esc)| {
-                    let mut f = MessageBoxButtonFlag::NOTHING;
-                    if ret { f |= MessageBoxButtonFlag::RETURNKEY_DEFAULT; }
-                    if esc { f |= MessageBoxButtonFlag::ESCAPEKEY_DEFAULT; }
-                    ButtonData { flags: f, button_id: id, text: label }
-                }).collect();
-
-                let mbid = match show_message_box(flag, &buttons, &caption, &text, None, None) {
-                    Ok(sdl3::messagebox::ClickedButton::CustomButton(b)) => b.button_id as u32,
-                    // Close button or error → default to first button's id
-                    _ => button_defs.first().map(|b| b.0 as u32).unwrap_or(crate::loader::MBID_OK),
-                };
-                debug!("[GUI] ShowMessageBox '{}' → MBID={}", caption, mbid);
-                let _ = reply_tx.send(mbid);
             }
         }
     }
@@ -1447,8 +1391,8 @@ fn is_wake_event(event: &Event) -> bool {
 enum ChromeHit {
     /// Click is on the close (×) button — send WM_CLOSE.
     Close,
-    /// Click is on the system-menu icon (VDR-C3) — send WM_SYSCOMMAND(SC_CLOSE) on double-click;
-    /// for single-click, treat as title bar (activate only).
+    /// Click is on the system-menu icon (VDR-C3): treated as the title bar
+    /// (activate and drag). A double-click does not close the window yet.
     SysMenu,
     /// Click is on the minimize button (VDR-C4) — send WM_SYSCOMMAND(SC_MINIMIZE).
     Minimize,
@@ -1994,7 +1938,7 @@ fn sdl_keycode_to_char(kc: Keycode) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{sdl_keycode_to_char, sdl_keycode_to_vk, sdl_scancode_to_os2, build_wm_char, mb_buttons,
+    use super::{sdl_keycode_to_char, sdl_keycode_to_vk, sdl_scancode_to_os2, build_wm_char,
         kc_modifiers, mouse_mp2};
     use super::{wait_timeout, is_wake_event, driver_can_wait, Event, Duration, Instant,
         FRAME_INTERVAL, IDLE_WAIT};
@@ -2020,8 +1964,6 @@ mod tests {
                 MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H, MIS_SEPARATOR};
     use crate::loader::constants::{MIS_TEXT, MIS_SUBMENU};
     use sdl3::keyboard::{Keycode, Mod as KeyMod, Scancode};
-    use crate::loader::{MBID_OK, MBID_CANCEL, MBID_RETRY, MBID_YES, MBID_NO, MBID_ENTER,
-                        MB_OK, MB_OKCANCEL, MB_RETRYCANCEL, MB_YESNO, MB_ENTERCANCEL};
 
     fn menu_item(text: &str, style: u16, children: Vec<MenuItem>) -> MenuItem {
         MenuItem { id: 0, style, attr: 0, text: text.to_string(), children }
@@ -2183,53 +2125,6 @@ mod tests {
         assert_eq!(edge(FCF_SIZEBORDER), (CHROME_LIGHT_COLOR, CHROME_SHADOW_COLOR, CHROME_FACE_COLOR));
         assert_eq!(edge(FCF_BORDER), (CHROME_SHADOW_COLOR, CHROME_SHADOW_COLOR, CHROME_FACE_COLOR));
         assert_eq!(edge(0), (0x00FF_00FF, 0x00FF_00FF, 0x00FF_00FF));
-    }
-
-    #[test]
-    fn mb_buttons_ok_has_one_entry_with_mbid_ok() {
-        let btns = mb_buttons(MB_OK);
-        assert_eq!(btns.len(), 1);
-        assert_eq!(btns[0].0, MBID_OK as i32);
-        assert!(btns[0].2, "OK should be returnkey default");
-    }
-
-    #[test]
-    fn mb_buttons_ok_cancel_has_two_entries() {
-        let btns = mb_buttons(MB_OKCANCEL);
-        assert_eq!(btns.len(), 2);
-        assert_eq!(btns[0].0, MBID_OK as i32);
-        assert_eq!(btns[1].0, MBID_CANCEL as i32);
-        assert!(btns[1].3, "Cancel should be escapekey default");
-    }
-
-    #[test]
-    fn mb_buttons_retry_cancel() {
-        let btns = mb_buttons(MB_RETRYCANCEL);
-        assert_eq!(btns[0].0, MBID_RETRY as i32);
-        assert_eq!(btns[1].0, MBID_CANCEL as i32);
-    }
-
-    #[test]
-    fn mb_buttons_yes_no() {
-        let btns = mb_buttons(MB_YESNO);
-        assert_eq!(btns.len(), 2);
-        assert_eq!(btns[0].0, MBID_YES as i32);
-        assert_eq!(btns[1].0, MBID_NO as i32);
-    }
-
-    #[test]
-    fn mb_buttons_enter_cancel() {
-        let btns = mb_buttons(MB_ENTERCANCEL);
-        assert_eq!(btns[0].0, MBID_ENTER as i32);
-        assert_eq!(btns[1].0, MBID_CANCEL as i32);
-    }
-
-    #[test]
-    fn mb_buttons_icon_bits_ignored_in_button_selection() {
-        // MB_OKCANCEL | MB_ICONEXCLAMATION
-        let btns = mb_buttons(0x0031);
-        assert_eq!(btns.len(), 2);
-        assert_eq!(btns[0].0, MBID_OK as i32);
     }
 
     #[test]

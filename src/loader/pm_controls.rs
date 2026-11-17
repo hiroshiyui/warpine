@@ -77,7 +77,7 @@ pub(super) fn is_edit_control(class: &str) -> bool {
     matches!(class, CLASS_ENTRYFIELD | CLASS_MLE)
 }
 
-fn system_width(s: &str) -> i32 {
+pub(super) fn system_width(s: &str) -> i32 {
     font::text_width(s, FontSpec::SYSTEM)
 }
 

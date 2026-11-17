@@ -31,12 +31,8 @@ impl Default for HeadlessRenderer {
 }
 
 impl PmRenderer for HeadlessRenderer {
-    fn handle_message(&mut self, msg: GUIMessage, _shared: &Arc<SharedState>) {
+    fn handle_message(&mut self, _msg: GUIMessage, _shared: &Arc<SharedState>) {
         self.message_count += 1;
-        // In headless mode modal dialogs are auto-dismissed with MBID_OK.
-        if let GUIMessage::ShowMessageBox { reply_tx, .. } = msg {
-            let _ = reply_tx.send(1); // MBID_OK
-        }
     }
 
     fn poll_events(&mut self, _shared: &Arc<SharedState>) -> bool {
@@ -117,15 +113,11 @@ mod tests {
         tx.send(GUIMessage::SetClipboardText("hi".into())).unwrap();
         tx.send(GUIMessage::SetMouseCapture(42)).unwrap();
         tx.send(GUIMessage::SetMouseCapture(0)).unwrap();
-        let (reply_tx, _reply_rx) = std::sync::mpsc::sync_channel::<u32>(1);
-        tx.send(GUIMessage::ShowMessageBox {
-            caption: "c".into(), text: "t".into(), style: 0, reply_tx,
-        }).unwrap();
         drop(tx);
         renderer.keep_running = false;
 
         run_pm_loop(&mut renderer, shared, rx);
-        assert_eq!(renderer.message_count, 4);
+        assert_eq!(renderer.message_count, 3);
     }
 
     #[test]
@@ -133,21 +125,5 @@ mod tests {
         let r = HeadlessRenderer::default();
         assert_eq!(r.message_count, 0);
         assert!(r.keep_running);
-    }
-
-    #[test]
-    fn headless_show_message_box_replies_mbid_ok() {
-        // The headless renderer must immediately reply MBID_OK (=1) so that
-        // WinMessageBox doesn't hang in tests.
-        let mut renderer = HeadlessRenderer::new();
-        let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel::<u32>(1);
-        renderer.handle_message(GUIMessage::ShowMessageBox {
-            caption: "Title".into(),
-            text:    "Body".into(),
-            style:   0, // MB_OK
-            reply_tx,
-        }, &make_shared());
-        let result = reply_rx.try_recv().expect("reply_tx should have been sent");
-        assert_eq!(result, 1); // MBID_OK
     }
 }

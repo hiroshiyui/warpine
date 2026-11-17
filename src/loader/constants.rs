@@ -741,6 +741,9 @@ pub const MB_ENTER:            u32 = 0x0007;
 pub const MB_ENTERCANCEL:      u32 = 0x0008;
 
 // Icon bits (bits 4–7 of flStyle)
+pub const MB_DEFBUTTON1:       u32 = 0x0000;
+pub const MB_DEFBUTTON2:       u32 = 0x0100;
+pub const MB_DEFBUTTON3:       u32 = 0x0200;
 pub const MB_NOICON:           u32 = 0x0000;
 pub const MB_ICONHAND:         u32 = 0x0040; // error
 pub const MB_ICONQUESTION:     u32 = 0x0010; // question
@@ -755,7 +758,10 @@ pub const MBID_RETRY:  u32 = 4;
 pub const MBID_IGNORE: u32 = 5;
 pub const MBID_YES:    u32 = 6;
 pub const MBID_NO:     u32 = 7;
+pub const MBID_HELP:   u32 = 8;
 pub const MBID_ENTER:  u32 = 9;
+/// `MBID_ERROR` (-1) as the ULONG `WinMessageBox` returns.
+pub const MBID_ERROR:  u32 = 0xFFFF_FFFF;
 
 // ── OS/2 Structured Exception Handling (SEH) ─────────────────────────────────
 

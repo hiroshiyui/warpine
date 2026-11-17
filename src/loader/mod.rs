@@ -7,6 +7,7 @@ pub mod ipc;
 pub mod pm_types;
 pub mod pm_edit;
 pub mod pm_list;
+mod pm_msgbox;
 mod pm_controls;
 mod pm_dialog;
 pub mod vfs;
@@ -123,12 +124,14 @@ pub(crate) enum FrameKind {
     /// After the client window procedure returns, the frame window handle
     /// (`h_frame`) is written into EAX as the return value of WinCreateStdWindow.
     WmCreate { h_frame: u32 },
-    /// A modal dialog message loop (WinDlgBox / WinProcessDlg).
+    /// A modal dialog message loop (WinDlgBox / WinProcessDlg / WinMessageBox).
     ///
     /// After each message callback returns, the CALLBACK_RET_TRAP handler
     /// checks `hwnd_dlg.dialog_dismissed`.  If dismissed, it returns
-    /// `dialog_result` to the WinDlgBox/WinProcessDlg caller.  Otherwise it
-    /// waits for the next queued message and dispatches it to `dlg_proc`.
+    /// `dialog_result` to the caller.  Otherwise it waits for the next queued
+    /// message and dispatches it to its window's procedure (`dlg_proc` for
+    /// the dialog; built-in windows and a message box, whose `dlg_proc` is 0,
+    /// are handled on the host).
     DlgRunLoop {
         dlg_proc: u32,
         hwnd_dlg: u32,
@@ -171,9 +174,10 @@ pub(crate) enum ApiResult {
         phmod:        u32,
         object_bases: Vec<u32>,
     },
-    /// Run a modal dialog message loop on behalf of WinDlgBox / WinProcessDlg.
+    /// Run a modal dialog message loop on behalf of WinDlgBox / WinProcessDlg
+    /// / WinMessageBox (`dlg_proc` 0: a dialog without a dialog procedure).
     ///
-    /// `vcpu.rs` dispatches messages from `hmq` to `dlg_proc` in a loop,
+    /// `vcpu.rs` dispatches messages from `hmq` to their windows' procedures in a loop,
     /// blocking on the queue condvar between messages.  The loop terminates
     /// when `hwnd_dlg.dialog_dismissed` is set by WinDismissDlg, returning
     /// `dialog_result` to the original API caller.
@@ -455,6 +459,16 @@ impl Loader {
             Some(v) => v,
             None    => return ApiResult::Normal(0),
         };
+
+        // A dialog without a dialog procedure (a message box): its default
+        // dialog procedure. (Painting is the dialog's own, below.)
+        if class_name == pm_types::WindowManager::DIALOG_CLASS && msg != WM_PAINT {
+            let procless = self.shared.window_mgr.lock_or_recover()
+                .get_window(hwnd).is_some_and(|w| w.pfn_wp == 0);
+            if procless {
+                return self.procless_dialog_message(hwnd, msg, mp1, mp2);
+            }
+        }
 
         // The second press of a double click: a list box selects and tells
         // its owner LN_ENTER; every other built-in control treats it as a press.

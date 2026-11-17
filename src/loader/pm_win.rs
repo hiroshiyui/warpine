@@ -502,11 +502,11 @@ impl super::Loader {
                 // WinMessageBox(HWND hwndParent, HWND hwndOwner, PCSZ pszText,
                 //               PCSZ pszCaption, ULONG idWindow, ULONG flStyle)
                 //
-                // Shows a modal dialog via the GUI thread and blocks the vCPU
-                // thread until the user dismisses it.  In headless mode the GUI
-                // thread replies immediately with MBID_OK.
+                // A modal PM dialog (pm_msgbox.rs) run by the dialog loop;
+                // other windows keep running. A program without a PM desktop
+                // (a text-mode program) gets MBID_OK at once.
                 let _hwnd_parent    = read_stack(4);
-                let _hwnd_owner     = read_stack(8);
+                let hwnd_owner      = read_stack(8);
                 let psz_text_ptr    = read_stack(12);
                 let psz_caption_ptr = read_stack(16);
                 let _id             = read_stack(20);
@@ -516,26 +516,11 @@ impl super::Loader {
                 let text    = self.read_guest_string_cp(psz_text_ptr, cp);
                 let caption = self.read_guest_string_cp(psz_caption_ptr, cp);
                 info!("  [VCPU {}] WinMessageBox '{}' : '{}'", vcpu_id, caption, text);
-
-                // Grab the sender while holding the lock for the shortest time.
-                let gui_tx = {
-                    let wm = self.shared.window_mgr.lock_or_recover();
-                    wm.gui_tx.clone()
-                };
-
-                if let Some(ref sender) = gui_tx {
-                    // Rendezvous channel: capacity 1 so the send in the GUI
-                    // thread never blocks even if we time out.
-                    let (reply_tx, reply_rx) = std::sync::mpsc::sync_channel::<u32>(1);
-                    if sender.send(GUIMessage::ShowMessageBox {
-                        caption, text, style, reply_tx,
-                    }).is_ok() {
-                        // Block until user clicks a button (or fall back to OK on error).
-                        let mbid = reply_rx.recv().unwrap_or(MBID_OK);
-                        return ApiResult::Normal(mbid);
-                    }
+                let has_desktop = self.shared.window_mgr.lock_or_recover().gui_tx.is_some();
+                if !has_desktop {
+                    return ApiResult::Normal(MBID_OK);
                 }
-                ApiResult::Normal(MBID_OK)
+                self.message_box(vcpu_id, hwnd_owner, caption, &text, style)
             }
             883 => {
                 // WinShowWindow(HWND hwnd, BOOL fShow)

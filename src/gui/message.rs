@@ -16,16 +16,6 @@ pub enum GUIMessage {
     /// Ask the SDL backend to capture the mouse (`MouseUtil::capture`).
     /// `hwnd` is the capturing window (0 = release capture).
     SetMouseCapture(u32),
-    /// Show a modal message box and send the MBID_* result back via `reply_tx`.
-    ///
-    /// `style` contains the MB_* button-set and icon flags (see constants.rs).
-    /// The sender blocks on `reply_tx` until the user dismisses the dialog.
-    ShowMessageBox {
-        caption: String,
-        text:    String,
-        style:   u32,
-        reply_tx: std::sync::mpsc::SyncSender<u32>,
-    },
 }
 
 /// Hook a renderer installs so other threads can interrupt its wait.
