@@ -17,12 +17,10 @@ When capturing screenshots for the README, always follow these steps:
    | `pm_font_test` | `samples/pm_font_test/pm_font_test.exe` | none | IBM Plex typography: families, styles, sizes, CJK text |
    | `pm_shapes_test` | `samples/pm_shapes_test/pm_shapes_test.exe` | none | GPI arcs, patterns, line widths |
    | `pm_controls_typing` | `samples/pm_controls_test/pm_controls_test.exe` | `700 click 230 300;900 text  Hello, Wörld!;1300 key home;1400 text >>;1600 click 200 470;1800 key enter;1900 text three` | Built-in controls after typing (the sample quits about 3 s in, so the default capture at last step + 1.5 s misses it: run the session by hand with `2500 dump`, as `gui_typing_into_controls_matches_golden` does, and trim it like `snap.sh`) |
-   | `pm_list_test` | `samples/pm_list_test/pm_list_test.exe` | the `LIST_TEST_STEPS` of `tests/integration.rs` | List selection modes, focus mark, MLE word wrap |
-   | `pm_buttons` | `samples/pm_button_test/pm_button_test.exe` | the `BUTTON_TEST_STEPS` of `tests/integration.rs` | Check boxes, radio buttons, a highlighted push button |
    | `pm_dialog_keyboard` | `samples/pm_dialog_test/pm_dialog_test.exe` | `1500 key ctrl+d;2500 text Warp;2800 key tab;3000 key down;3200 key down` | Keyboard-driven modal dialog |
    | `pm_msgbox` | `samples/pm_msgbox_test/pm_msgbox_test.exe` | the `MSGBOX_TEST_STEPS` of `tests/integration.rs` | Message box with an icon over its disabled owner |
-   | `pm_minmax` | `samples/pm_minmax_test/pm_minmax_test.exe` | `1500 dblclick 300 42;2000 dblclick 300 8;2500 key alt+f9` | A minimized frame in the icon area, the hide button, activation handed on |
-   | `4os2_window` | `samples/4os2/4os2.exe` | `2500 text ver;2700 key enter;3500 text dir /w;3800 key enter` | A VIO program in a window on the PM desktop (needs a pseudo-terminal: capture it as described under step 3 without `WARPINE_VIO`, and trim it like `snap.sh`) |
+   | `pm_sysmenu` | `samples/pm_sysmenu_test/pm_sysmenu_test.exe` | `1000 click 43 42;1400 key down;1500 key down` | A PM frame's system menu, opened by a click on its icon, Size highlighted |
+   | `4os2_window` | `samples/4os2/4os2.exe` | `2500 text color bright white on blue;2800 key enter;3300 text cls;3500 key enter;4000 text ver;4200 key enter;5000 text dir /w;5300 key enter` | A VIO program in a window on the PM desktop, its colours set by ANSI sequences after `cls` (needs a pseudo-terminal: capture it as described under step 3 without `WARPINE_VIO`, and trim it like `snap.sh`) |
    | `vio_system_menu` | `samples/4os2/4os2.exe` | `2000 text ver;2200 key enter;3000 drag 675 453 400 300;4000 key alt+space` | The VIO window resized with scroll bars and its system menu open (pseudo-terminal capture, trimmed) |
 
    Keep the list to what the README can show (about six to eight images): every shot captured in this run is embedded in step 5, so leave out a shot here rather than capture it and not use it.
