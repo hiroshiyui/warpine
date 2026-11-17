@@ -43,6 +43,8 @@ mod doscalls;
 mod pm_win;
 mod pm_gpi;
 mod pm_bitmap;
+pub mod pm_region;
+pub mod pm_area;
 pub mod pm_shapes;
 mod stubs;
 pub mod console;
@@ -1007,6 +1009,13 @@ impl Loader {
     /// Apply `op` to the surface behind `target`: a frame (marked dirty as
     /// in [`Loader::draw`]) or a bitmap (not on screen, nothing to mark).
     pub(crate) fn draw_to(&self, target: pm_types::DrawTarget, op: DrawOp) {
+        self.draw_clipped(target, op, None);
+    }
+
+    /// [`Loader::draw_to`] keeping only the pels inside `clip` (the clip
+    /// of a presentation space; `None` draws unclipped).
+    pub(crate) fn draw_clipped(&self, target: pm_types::DrawTarget, op: DrawOp,
+                               clip: Option<&crate::gui::region::Region>) {
         let mut wm = self.shared.window_mgr.lock_or_recover();
         let Some(surface) = wm.target_surface(target) else { return };
         let mut s = surface.lock_or_recover();
@@ -1014,7 +1023,7 @@ impl Loader {
             wm.mark_dirty(frame);
         }
         drop(wm);
-        s.draw(op);
+        s.draw_clipped(op, clip);
     }
 }
 

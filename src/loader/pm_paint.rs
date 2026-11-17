@@ -339,11 +339,11 @@ impl Loader {
     /// and with `SW_INVALIDATERGN` it joins the update rectangle (with the
     /// part of the old update rectangle in the scroll rectangle moved too).
     /// `SW_SCROLLCHILDREN` moves the child windows (with a scroll
-    /// rectangle, those that intersect it). Warpine has no GPI regions:
-    /// `hrgnUpdate` is ignored.
+    /// rectangle, those that intersect it). `hrgnUpdate`, when given, is set
+    /// to the uncovered area (window coordinates).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn win_scroll_window(&self, tid: u32, hwnd: u32, dx: i32, dy: i32, prcl_scroll: u32,
-                                    prcl_clip: u32, _hrgn: u32, prcl_update: u32, fl: u32) -> ApiResult {
+                                    prcl_clip: u32, hrgn: u32, prcl_update: u32, fl: u32) -> ApiResult {
         if fl & !(SW_SCROLLCHILDREN | SW_INVALIDATERGN) != 0 {
             self.pm_error(tid, PMERR_INVALID_FLAG);
             return ApiResult::Normal(RGN_ERROR);
@@ -356,6 +356,7 @@ impl Loader {
         let (Ok(scroll), Ok(clip)) = (read(prcl_scroll), read(prcl_clip)) else {
             return ApiResult::Normal(RGN_ERROR);
         };
+        if self.scroll_update_region(tid, hrgn).is_err() { return ApiResult::Normal(RGN_ERROR); }
         let (dx, dy) = (dx.clamp(-MAX_SCROLL, MAX_SCROLL), dy.clamp(-MAX_SCROLL, MAX_SCROLL));
 
         let mut wm = self.shared.window_mgr.lock_or_recover();
@@ -415,6 +416,8 @@ impl Loader {
         }
         drop(wm);
 
+        let in_window: Vec<Rectl> = uncovered.iter().map(|r| r.offset(-ox, -oy)).collect();
+        self.set_region_rects(hrgn, &in_window);
         if prcl_update != 0 {
             let out = if bound.is_empty() { EMPTY_RECTL } else { bound.offset(-ox, -oy) };
             self.write_rectl(prcl_update, out);
@@ -475,12 +478,12 @@ impl Loader {
         };
         let (parts, inside) = border_parts(&rc, cx, cy);
         for part in parts {
-            self.draw_to(t.target, shape(part, border));
+            self.draw_ps(&t, shape(part, border));
         }
         if fl & DB_INTERIOR != 0
             && let Some(inside) = inside
         {
-            self.draw_to(t.target, shape(inside, interior));
+            self.draw_ps(&t, shape(inside, interior));
         }
         ApiResult::Normal(1)
     }

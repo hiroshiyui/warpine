@@ -173,20 +173,20 @@ impl super::Loader {
             x1, y1, x2, y2, color, fill: true, mix,
         };
         if flags & DT_ERASERECT != 0 {
-            self.draw_to(t.target, box_op(rc.x_left, rc.y_bottom, rc.x_right, rc.y_top, bg, Mix::Overpaint));
+            self.draw_ps(&t, box_op(rc.x_left, rc.y_bottom, rc.x_right, rc.y_top, bg, Mix::Overpaint));
         }
         if text_w > 0 {
             if let Some(mix) = t.back_mix {
-                self.draw_to(t.target, box_op(x, bottom, x + text_w - 1, y + m.ascent - 1, bg, mix));
+                self.draw_ps(&t, box_op(x, bottom, x + text_w - 1, y + m.ascent - 1, bg, mix));
             }
-            self.draw_to(t.target, DrawOp::TextFont { x, y, text: text.clone(), color: fg, font, mix: t.mix });
+            self.draw_ps(&t, DrawOp::TextFont { x, y, text: text.clone(), color: fg, font, mix: t.mix });
             if flags & DT_UNDERSCORE != 0 {
                 let uy = bottom + UNDERLINE_RISE;
-                self.draw_to(t.target, box_op(x, uy, x + text_w - 1, uy, fg, t.mix));
+                self.draw_ps(&t, box_op(x, uy, x + text_w - 1, uy, fg, t.mix));
             }
             if flags & DT_STRIKEOUT != 0 {
                 let sy = y + m.x_height / 2;
-                self.draw_to(t.target, box_op(x, sy, x + text_w - 1, sy, fg, t.mix));
+                self.draw_ps(&t, box_op(x, sy, x + text_w - 1, sy, fg, t.mix));
             }
             if let Some(mark) = mark
                 && let Some((start, ch)) = text.char_indices().nth(mark)
@@ -194,7 +194,7 @@ impl super::Loader {
                 let x1 = x + font::text_width(&text[..start], font);
                 let w = font::text_width(&text[start..start + ch.len_utf8()], font);
                 let uy = bottom + UNDERLINE_RISE;
-                self.draw_to(t.target, box_op(x1, uy, x1 + w - 1, uy, fg, t.mix));
+                self.draw_ps(&t, box_op(x1, uy, x1 + w - 1, uy, fg, t.mix));
             }
         }
         ApiResult::Normal(layout.count as u32)

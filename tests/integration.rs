@@ -1386,6 +1386,26 @@ fn gui_pm_shapes_test_matches_golden() {
         "2500 dump {dump}\n2600 quit\n");
 }
 
+/// pm_region_test: regions (create / combine / query / offset / equal,
+/// GpiQueryRegionRects, paint and frame), clipping (clip rectangles, clip
+/// region ownership, clip box, clip path), areas (alternate / winding /
+/// exclusive edges), paths (fill / outline / stroke / path to region),
+/// polygons, curves and window update regions — checked from the guest side
+/// with GpiQueryPel.
+#[test]
+fn gui_pm_region_test_clips_fills_and_strokes() {
+    assert_sample_checks_pass("samples/pm_region_test/pm_region_test.exe", "pm_region_test", 53);
+}
+
+/// The picture half of pm_region_test: pentagrams (alternate / winding),
+/// a patterned and framed region, stripes clipped to a circle path and to
+/// a region with a hole, a stroked zigzag and a spline.
+#[test]
+fn gui_pm_region_test_matches_golden() {
+    check_gui_golden("pm_region_test", "samples/pm_region_test/pm_region_test.exe",
+        "2500 dump {dump}\n2600 quit\n");
+}
+
 /// Keyboard steps of the pm_dialog_test session up to the open dialog with a
 /// name typed and the second list item selected.
 const DIALOG_TEST_FILL_IN: &str = "1500 key ctrl+d\n2500 text Warp\n2800 key tab\n3000 key down\n3200 key down\n";

@@ -55,18 +55,23 @@ pub(super) struct PsTarget {
     /// Area pattern in the PS's colours, at its reference point.
     pub pattern: Pattern,
     pub arc_params: ArcParams,
+    /// Geometric line width (`GpiSetLineWidthGeom`), for stroked paths.
+    pub line_width_geom: i32,
+    /// What drawing is clipped to (clip region and clip path); `None`
+    /// draws unclipped.
+    pub clip: Option<std::sync::Arc<crate::gui::region::Region>>,
 }
 
 impl PsTarget {
     /// The outline stroke for lines, box and arc boundaries; `None` for
     /// `LINETYPE_INVISIBLE`.
-    fn stroke(&self) -> Option<Stroke> {
+    pub(super) fn stroke(&self) -> Option<Stroke> {
         line_style(self.line_type)
             .map(|style| Stroke { color: self.color, mix: self.mix, style, width: self.line_width })
     }
 
     /// The area fill for box and arc interiors.
-    fn fill(&self) -> AreaFill {
+    pub(super) fn fill(&self) -> AreaFill {
         AreaFill { pattern: self.pattern, mix: self.mix, back_mix: self.back_mix }
     }
 }
@@ -131,6 +136,12 @@ impl super::Loader {
         let esp = regs.rsp;
         let read_stack = |off: u64| -> u32 { self.guest_read::<u32>((esp + off) as u32).expect("Stack read OOB") };
 
+        let arg = |off: u64| read_stack(off);
+        if let Some(r) = self.handle_region_call(vcpu_id, ordinal, &arg)
+            .or_else(|| self.handle_area_call(vcpu_id, ordinal, &arg))
+        {
+            return ApiResult::Normal(r);
+        }
         match ordinal {
             369 => {
                 // GpiCreatePS(HAB hab, HDC hdc, PSIZEL pszl, ULONG flOptions)
@@ -183,7 +194,7 @@ impl super::Loader {
             379 => {
                 // GpiDestroyPS(HPS hps)
                 let hps = read_stack(4);
-                self.shared.window_mgr.lock_or_recover().ps_map.remove(&hps);
+                self.shared.window_mgr.lock_or_recover().remove_ps(hps);
                 ApiResult::Normal(1)
             }
             517 => {
@@ -203,6 +214,8 @@ impl super::Loader {
                     self.guest_read::<i32>(pptl).unwrap_or(0),
                     self.guest_read::<i32>(pptl + 4).unwrap_or(0),
                 );
+                // In an area or path bracket a move starts a new figure.
+                self.figure_part(vcpu_id, hps, super::pm_area::Part::Move);
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(ps) = wm.ps_map.get_mut(&hps) {
                     ps.current_pos = (x, y);
@@ -222,6 +235,10 @@ impl super::Loader {
                 );
                 let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
                 let (x1, y1) = t.pos;
+                let corners = vec![(x1, y1), (x2, y1), (x2, y2), (x1, y2)];
+                if let Some(r) = self.figure_part(vcpu_id, hps, super::pm_area::Part::Closed(corners)) {
+                    return ApiResult::Normal(r);
+                }
                 self.draw_box(&t, (x1, y1, x2, y2), control);
                 ApiResult::Normal(GPI_OK)
             }
@@ -233,12 +250,16 @@ impl super::Loader {
                     self.guest_read::<i32>(pptl).unwrap_or(0),
                     self.guest_read::<i32>(pptl + 4).unwrap_or(0),
                 );
+                if let Some(r) = self.figure_part(vcpu_id, hps, super::pm_area::Part::To(vec![(x2, y2)])) {
+                    if r == GPI_OK { self.set_current_pos(hps, (x2, y2)); }
+                    return ApiResult::Normal(r);
+                }
                 let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
                 let (x1, y1) = t.pos;
                 match t.stroke() {
                     Some(s) if s.width == 1 =>
-                        self.draw_to(t.target, DrawOp::Line { x1, y1, x2, y2, color: s.color, mix: s.mix, style: s.style }),
-                    Some(s) => self.draw_to(t.target, DrawOp::Shape {
+                        self.draw_ps(&t, DrawOp::Line { x1, y1, x2, y2, color: s.color, mix: s.mix, style: s.style }),
+                    Some(s) => self.draw_ps(&t, DrawOp::Shape {
                         points: vec![(x1, y1), (x2, y2)], closed: false, fill: None, stroke: Some(s),
                     }),
                     None => {}
@@ -267,7 +288,7 @@ impl super::Loader {
                 // GpiErase(HPS hps)
                 let hps = read_stack(4);
                 let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
-                self.draw_to(t.target, DrawOp::Clear);
+                self.draw_ps(&t, DrawOp::Clear);
                 ApiResult::Normal(GPI_OK)
             }
 
@@ -349,7 +370,7 @@ impl super::Loader {
                 let (Some(x), Some(y)) = (self.guest_read::<i32>(pptl), self.guest_read::<i32>(pptl + 4))
                     else { return ApiResult::Normal(GPI_ERROR) };
                 let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
-                self.draw_to(t.target, DrawOp::Pel { x, y, color: t.color, mix: t.mix });
+                self.draw_ps(&t, DrawOp::Pel { x, y, color: t.color, mix: t.mix });
                 ApiResult::Normal(GPI_OK)
             }
             476 => {
@@ -488,7 +509,7 @@ impl super::Loader {
             }
             532 => {
                 // GpiSetLineWidthGeom(HPS hps, LONG lLineWidth) → BOOL
-                // Used only when a path is stroked (not supported): stored.
+                // The width of stroked paths (GpiStrokePath / GpiModifyPath).
                 let (hps, width) = (read_stack(4), read_stack(8) as i32);
                 if width < 0 { return ApiResult::Normal(GPI_ERROR); }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
@@ -629,6 +650,9 @@ impl super::Loader {
                 }
                 let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
                 let points = pm_shapes::full_arc(t.pos, t.arc_params, mult);
+                if let Some(r) = self.figure_part(vcpu_id, hps, super::pm_area::Part::Closed(points.clone())) {
+                    return ApiResult::Normal(r);
+                }
                 self.draw_area(&t, points, control);
                 ApiResult::Normal(GPI_OK)
             }
@@ -646,6 +670,10 @@ impl super::Loader {
                 let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
                 let arc = pm_shapes::partial_arc(center, t.arc_params, mult, start, sweep);
                 let end = *arc.last().unwrap_or(&t.pos);
+                if let Some(r) = self.figure_part(vcpu_id, hps, super::pm_area::Part::To(arc.clone())) {
+                    if r == GPI_OK { self.set_current_pos(hps, end); }
+                    return ApiResult::Normal(r);
+                }
                 let mut points = vec![t.pos];
                 points.extend(arc);
                 self.draw_path(&t, points);
@@ -660,7 +688,12 @@ impl super::Loader {
                 let (Some(p1), Some(p2)) = (self.read_pointl(pptl), self.read_pointl(pptl.wrapping_add(8)))
                     else { return ApiResult::Normal(GPI_ERROR) };
                 let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
-                self.draw_path(&t, pm_shapes::point_arc(t.pos, p1, p2, t.arc_params));
+                let path = pm_shapes::point_arc(t.pos, p1, p2, t.arc_params);
+                if let Some(r) = self.figure_part(vcpu_id, hps, super::pm_area::Part::To(path.clone())) {
+                    if r == GPI_OK { self.set_current_pos(hps, p2); }
+                    return ApiResult::Normal(r);
+                }
+                self.draw_path(&t, path);
                 self.set_current_pos(hps, p2);
                 ApiResult::Normal(GPI_OK)
             }
@@ -827,6 +860,8 @@ impl super::Loader {
                 origin: ps.pattern_ref,
             },
             arc_params: ps.arc_params,
+            line_width_geom: ps.line_width_geom,
+            clip: ps.clip.clone(),
         })
     }
 
@@ -843,9 +878,9 @@ impl super::Loader {
     }
 
     /// Draw an open path (arcs) with the current line attributes.
-    fn draw_path(&self, t: &PsTarget, points: Vec<(i32, i32)>) {
+    pub(super) fn draw_path(&self, t: &PsTarget, points: Vec<(i32, i32)>) {
         if let Some(stroke) = t.stroke() {
-            self.draw_to(t.target, DrawOp::Shape { points, closed: false, fill: None, stroke: Some(stroke) });
+            self.draw_ps(t, DrawOp::Shape { points, closed: false, fill: None, stroke: Some(stroke) });
         }
     }
 
@@ -856,7 +891,7 @@ impl super::Loader {
         let fill = (control == DRO_FILL || control == DRO_OUTLINEFILL).then(|| t.fill());
         let stroke = if control == DRO_OUTLINE || control == DRO_OUTLINEFILL { t.stroke() } else { None };
         if fill.is_some() || stroke.is_some() {
-            self.draw_to(t.target, DrawOp::Shape { points, closed: true, fill, stroke });
+            self.draw_ps(t, DrawOp::Shape { points, closed: true, fill, stroke });
         }
     }
 
@@ -933,8 +968,12 @@ impl super::Loader {
             self.pm_error(tid, PMERR_INV_LENGTH_OR_COUNT);
             return GPI_ERROR;
         };
-        let Some(t) = self.ps_target(hps) else { return GPI_ERROR };
         let last = pts[pts.len() - 1];
+        if let Some(r) = self.figure_part(tid, hps, super::pm_area::Part::To(pts.clone())) {
+            if r == GPI_OK { self.set_current_pos(hps, last); }
+            return r;
+        }
+        let Some(t) = self.ps_target(hps) else { return GPI_ERROR };
         let mut path = Vec::with_capacity(pts.len() + 1);
         path.push(t.pos);
         path.extend(pts);
@@ -953,7 +992,7 @@ impl super::Loader {
             .collect()
     }
 
-    fn set_current_pos(&self, hps: u32, pos: (i32, i32)) {
+    pub(super) fn set_current_pos(&self, hps: u32, pos: (i32, i32)) {
         if let Some(ps) = self.shared.window_mgr.lock_or_recover().ps_map.get_mut(&hps) {
             ps.current_pos = pos;
         }
@@ -973,7 +1012,7 @@ impl super::Loader {
         if control == DRO_FILL || control == DRO_OUTLINEFILL { parts.push(true); }
         if control == DRO_OUTLINE || control == DRO_OUTLINEFILL { parts.push(false); }
         for fill in parts {
-            self.draw_to(t.target, DrawOp::Box { x1, y1, x2, y2, color: t.color, fill, mix: t.mix });
+            self.draw_ps(t, DrawOp::Box { x1, y1, x2, y2, color: t.color, fill, mix: t.mix });
         }
     }
 
@@ -995,15 +1034,21 @@ impl super::Loader {
         // Pin the CJK regional face to the codepage of this call.
         let font = FontSpec { cjk: CjkRegion::from_codepage(cp), ..self.ps_font(hps) };
         let advance = font::text_width(&text, font);
+        // In an area or path bracket text is not drawn (outline-font text
+        // in paths is not supported); the position still advances.
+        if self.in_bracket(hps) {
+            self.set_current_pos(hps, (x + advance, y));
+            return GPI_OK;
+        }
         // The background mix applies to the string's character box.
         if let Some(mix) = t.back_mix && advance > 0 {
             let m = font::metrics(font);
-            self.draw_to(t.target, DrawOp::Box {
+            self.draw_ps(&t, DrawOp::Box {
                 x1: x, y1: y - m.descent, x2: x + advance - 1, y2: y + m.ascent - 1,
                 color: t.back_color, fill: true, mix,
             });
         }
-        self.draw_to(t.target, DrawOp::TextFont { x, y, text, color: t.color, font, mix: t.mix });
+        self.draw_ps(&t, DrawOp::TextFont { x, y, text, color: t.color, font, mix: t.mix });
         self.set_current_pos(hps, (x + advance, y));
         GPI_OK
     }
@@ -1739,7 +1784,8 @@ mod tests {
 
     #[test]
     fn test_pmgpi_dispatch_ordinals_match_ordinal_table() {
-        assert_arms_match_ordinal_table(include_str!("pm_gpi.rs"), "Gpi", &[]);
+        let sources = [include_str!("pm_gpi.rs"), include_str!("pm_region.rs"), include_str!("pm_area.rs")].concat();
+        assert_arms_match_ordinal_table(&sources, "Gpi", &[]);
     }
 
     #[test]

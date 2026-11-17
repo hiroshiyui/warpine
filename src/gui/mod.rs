@@ -6,6 +6,7 @@
 
 pub mod font;
 pub mod damage;
+pub mod region;
 pub mod frame_stats;
 pub mod gui_script;
 pub mod message;

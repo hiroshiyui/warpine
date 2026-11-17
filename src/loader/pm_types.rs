@@ -277,9 +277,8 @@ pub struct PresentationSpace {
     /// Cosmetic line width (FIXED multiple of one pel; `LINEWIDTH_DEFAULT`
     /// = normal), set by `GpiSetLineWidth`.
     pub line_width: u32,
-    /// Geometric line width (`GpiSetLineWidthGeom`), in world units. Only
-    /// stroked paths use it, which Warpine does not have; it is stored and
-    /// reported back.
+    /// Geometric line width (`GpiSetLineWidthGeom`), in world units (pels):
+    /// the width of `GpiStrokePath` / `GpiModifyPath` lines.
     pub line_width_geom: i32,
     /// Arc parameters (`GpiSetArcParams`).
     pub arc_params: super::pm_shapes::ArcParams,
@@ -311,6 +310,19 @@ pub struct PresentationSpace {
     /// The system colours (`SYSCLR_*` colour values), shared with the
     /// window manager (`pm_syscolor.rs`).
     pub sys_colors: Arc<super::pm_syscolor::SysColorTable>,
+    /// Clip region (`GpiSetClipRegion`): a handle of
+    /// `WindowManager::regions`, 0 = none.
+    pub clip_region: u32,
+    /// Clip path (`GpiSetClipPath`) as the pels it holds.
+    pub clip_path: Option<Arc<crate::gui::region::Region>>,
+    /// What drawing through this PS is clipped to: the clip region and the
+    /// clip path together; `None` draws unclipped
+    /// (`WindowManager::refresh_clip`).
+    pub clip: Option<Arc<crate::gui::region::Region>>,
+    /// Open area bracket (`GpiBeginArea` … `GpiEndArea`).
+    pub area: Option<super::pm_area::AreaBracket>,
+    /// The path (`GpiBeginPath` … `GpiEndPath`, then used once).
+    pub path: Option<super::pm_area::PathState>,
 }
 
 impl PresentationSpace {
@@ -488,6 +500,8 @@ pub struct WindowManager {
     pub surfaces: HashMap<u32, SharedSurface>,
     /// Bitmaps (`GpiCreateBitmap`, `GpiLoadBitmap`) by handle.
     pub bitmaps: HashMap<u32, Bitmap>,
+    /// GPI regions (`GpiCreateRegion`, clip regions), by handle.
+    pub regions: super::pm_region::RegionTable,
     /// Device contexts (`DevOpenDC`, `WinOpenWindowDC`) by handle.
     pub dcs: HashMap<u32, DeviceContext>,
     next_hbm: u32,
@@ -570,6 +584,7 @@ impl WindowManager {
             dirty: HashSet::new(),
             surfaces: HashMap::new(),
             bitmaps: HashMap::new(),
+            regions: Default::default(),
             dcs: HashMap::new(),
             next_hbm: 0x7000,
             next_hdc: 0x6000,
@@ -676,6 +691,11 @@ impl WindowManager {
             current_pos: (0, 0),
             codepage: self.queue_codepage(hwnd).unwrap_or(0),
             sys_colors: Arc::clone(&self.sys_colors),
+            clip_region: 0,
+            clip_path: None,
+            clip: None,
+            area: None,
+            path: None,
         });
         self.next_hps += 1;
         h
@@ -1400,7 +1420,12 @@ impl WindowManager {
         for hdc in &window_dcs {
             self.dcs.remove(hdc);
         }
-        self.ps_map.retain(|_, ps| !(doomed.contains(&ps.hwnd) && ps.origin != PsOrigin::Created));
+        let freed: Vec<u32> = self.ps_map.values()
+            .filter(|ps| doomed.contains(&ps.hwnd) && ps.origin != PsOrigin::Created)
+            .map(|ps| ps.hps).collect();
+        for hps in freed {
+            self.remove_ps(hps);
+        }
         for ps in self.ps_map.values_mut() {
             if doomed.contains(&ps.hwnd) { ps.hwnd = 0; }
             if window_dcs.contains(&ps.hdc) { ps.hdc = 0; }

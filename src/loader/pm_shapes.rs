@@ -158,6 +158,86 @@ pub fn point_arc(p0: (i32, i32), p1: (i32, i32), p2: (i32, i32), params: ArcPara
     dedup(pts)
 }
 
+// ── Curves: fillets and splines ──────────────────────────────────────────────
+
+/// Most points one fillet or spline is flattened into.
+const MAX_CURVE_POINTS: usize = 256;
+/// Fewest points per curve.
+const MIN_CURVE_POINTS: usize = 4;
+
+fn fpt(p: (i32, i32)) -> (f64, f64) {
+    (p.0 as f64, p.1 as f64)
+}
+
+/// Points for a curve whose control polygon is `len` pels long.
+fn curve_points(len: f64) -> usize {
+    let n = (len / ARC_STEP).ceil();
+    if n.is_finite() { (n as usize).clamp(MIN_CURVE_POINTS, MAX_CURVE_POINTS) } else { MAX_CURVE_POINTS }
+}
+
+fn dist_f(a: (f64, f64), b: (f64, f64)) -> f64 {
+    (a.0 - b.0).hypot(a.1 - b.1)
+}
+
+/// The conic from `a` to `c` with control point `b` and sharpness `w`
+/// (`GpiPolyFilletSharp`): the rational quadratic Bézier with weight `w`
+/// on `b`. Its point at t = ½ is D = (W + w·B) / (1 + w), W the midpoint of
+/// AC, so WD / DB = w — the reference's definition of sharpness (w > 1 a
+/// hyperbola, 1 a parabola, < 1 an ellipse). Points after `a`, ending
+/// exactly on `c`.
+pub fn conic(a: (i32, i32), b: (i32, i32), c: (i32, i32), w: f64) -> Vec<(i32, i32)> {
+    let (fa, fb, fc) = (fpt(a), fpt(b), fpt(c));
+    let n = curve_points(dist_f(fa, fb) + dist_f(fb, fc));
+    let mut pts: Vec<(i32, i32)> = (1..=n).map(|i| {
+        let t = i as f64 / n as f64;
+        let (k0, k1, k2) = ((1.0 - t) * (1.0 - t), 2.0 * w * t * (1.0 - t), t * t);
+        let d = k0 + k1 + k2;
+        pel(((k0 * fa.0 + k1 * fb.0 + k2 * fc.0) / d, (k0 * fa.1 + k1 * fb.1 + k2 * fc.1) / d))
+    }).collect();
+    if let Some(last) = pts.last_mut() { *last = c; }
+    dedup(pts)
+}
+
+/// The cubic Bézier spline from `p0` with control points `c1`, `c2` to
+/// `p3` (`GpiPolySpline`); points after `p0`, ending exactly on `p3`.
+pub fn cubic(p0: (i32, i32), c1: (i32, i32), c2: (i32, i32), p3: (i32, i32)) -> Vec<(i32, i32)> {
+    let (a, b, c, d) = (fpt(p0), fpt(c1), fpt(c2), fpt(p3));
+    let n = curve_points(dist_f(a, b) + dist_f(b, c) + dist_f(c, d));
+    let mut pts: Vec<(i32, i32)> = (1..=n).map(|i| {
+        let t = i as f64 / n as f64;
+        let u = 1.0 - t;
+        let (k0, k1, k2, k3) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
+        pel((k0 * a.0 + k1 * b.0 + k2 * c.0 + k3 * d.0, k0 * a.1 + k1 * b.1 + k2 * c.1 + k3 * d.1))
+    }).collect();
+    if let Some(last) = pts.last_mut() { *last = p3; }
+    dedup(pts)
+}
+
+/// The curve of `GpiPolyFillet` from the current position `from` through
+/// the imaginary polyline `from`, `pts[0]`, …: with one point a straight
+/// line; with two a fillet from `from` to `pts[1]` tangent to both lines;
+/// with more, the inner lines are split at their midpoints and a fillet
+/// joins each pair of split points around the corner between them. The
+/// fillets are parabolic (sharpness 1) — the reference does not give their
+/// sharpness, so this is Warpine's choice. Points after `from`.
+pub fn poly_fillet(from: (i32, i32), pts: &[(i32, i32)]) -> Vec<(i32, i32)> {
+    match pts.len() {
+        0 => return Vec::new(),
+        1 => return vec![pts[0]],
+        _ => {}
+    }
+    let mid = |a: (i32, i32), b: (i32, i32)| pel(((a.0 as f64 + b.0 as f64) / 2.0, (a.1 as f64 + b.1 as f64) / 2.0));
+    let mut out = Vec::new();
+    let mut start = from;
+    let corners = pts.len() - 1; // pts[0] .. pts[n-2] are the control points
+    for i in 0..corners {
+        let end = if i + 1 == corners { pts[i + 1] } else { mid(pts[i], pts[i + 1]) };
+        out.extend(conic(start, pts[i], end, 1.0));
+        start = end;
+    }
+    out
+}
+
 /// Bayer 8 × 8 ordered-dither thresholds (0..64), used for the
 /// `PATSYM_DENSE*` densities.
 const BAYER_8: [[u8; 8]; 8] = [
@@ -333,5 +413,30 @@ mod tests {
         for bad in [20, 63, 65, 0xFFFF_FFFF] {
             assert_eq!(pattern_rows(bad), None, "{bad}");
         }
+    }
+
+    #[test]
+    fn curves_end_on_their_end_points() {
+        let c = cubic((0, 0), (0, 100), (100, 100), (100, 0));
+        assert_eq!(*c.last().unwrap(), (100, 0));
+        assert!(c.contains(&(50, 75)), "the cubic's midpoint");
+        assert!(c.len() >= MIN_CURVE_POINTS && c.len() <= MAX_CURVE_POINTS);
+        // Sharpness 1: a parabola through (W + B) / 2.
+        let p = conic((0, 0), (50, 100), (100, 0), 1.0);
+        assert!(p.contains(&(50, 50)));
+        // Sharpness 3: D = (W + 3B) / 4.
+        let h = conic((0, 0), (50, 100), (100, 0), 3.0);
+        assert!(h.contains(&(50, 75)));
+        // Sharpness 0: the straight chord.
+        assert!(conic((0, 0), (50, 100), (100, 0), 0.0).iter().all(|&(_, y)| y == 0));
+        // A fillet chain ends on the last point, through split midpoints.
+        let f = poly_fillet((0, 0), &[(0, 100), (100, 100), (100, 0)]);
+        assert_eq!(*f.last().unwrap(), (100, 0));
+        assert!(f.contains(&(50, 100)), "the midpoint of the inner line");
+        assert_eq!(poly_fillet((0, 0), &[(5, 5)]), vec![(5, 5)]);
+        assert!(poly_fillet((0, 0), &[]).is_empty());
+        // Huge coordinates stay bounded.
+        let far = cubic((i32::MIN, 0), (i32::MAX, 0), (0, i32::MAX), (0, 0));
+        assert!(far.len() <= MAX_CURVE_POINTS);
     }
 }

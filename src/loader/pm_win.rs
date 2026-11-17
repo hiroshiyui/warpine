@@ -465,7 +465,7 @@ impl super::Loader {
                 wm.mark_dirty(frame_hwnd);
                 // A presentation space WinBeginPaint created ends with the paint.
                 if wm.ps_map.get(&hps).is_some_and(|ps| ps.origin == PsOrigin::Paint) {
-                    wm.ps_map.remove(&hps);
+                    wm.remove_ps(hps);
                 }
                 ApiResult::Normal(1)
             }
@@ -484,7 +484,7 @@ impl super::Loader {
                 let hps = read_stack(4);
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 let ok = wm.ps_map.get(&hps).is_some_and(|ps| ps.origin == PsOrigin::Cached);
-                if ok { wm.ps_map.remove(&hps); }
+                if ok { wm.remove_ps(hps); }
                 ApiResult::Normal(ok as u32)
             }
             794 => {
@@ -768,16 +768,31 @@ impl super::Loader {
                     self.guest_read::<i32>(prcl + 8).unwrap_or(0),
                     self.guest_read::<i32>(prcl + 12).unwrap_or(0),
                 );
-                let frame_hwnd = {
-                    let wm = self.shared.window_mgr.lock_or_recover();
-                    wm.client_to_frame(wm.get_ps_hwnd(hps))
-                };
+                // Into whatever the PS draws into (its window or a bitmap),
+                // through its clip region.
+                let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(0) };
                 // RECTL is exclusive at the top and right.
-                self.draw(frame_hwnd, DrawOp::Box {
+                self.draw_ps(&t, DrawOp::Box {
                     x1: x_left, y1: y_bottom, x2: x_right - 1, y2: y_top - 1,
                     color, fill: true, mix: Mix::Overpaint,
                 });
                 ApiResult::Normal(1)
+            }
+            766 => {
+                // WinInvalidateRegion(HWND hwnd, HRGN hrgn, BOOL fIncludeChildren) (pm_region.rs)
+                self.win_invalidate_region(vcpu_id, read_stack(4), read_stack(8), read_stack(12))
+            }
+            896 => {
+                // WinValidateRegion(HWND hwnd, HRGN hrgn, BOOL fIncludeClippedChildren) (pm_region.rs)
+                self.win_validate_region(vcpu_id, read_stack(4), read_stack(8), read_stack(12))
+            }
+            832 => {
+                // WinQueryUpdateRegion(HWND hwnd, HRGN hrgn) (pm_region.rs)
+                self.win_query_update_region(vcpu_id, read_stack(4), read_stack(8))
+            }
+            742 => {
+                // WinExcludeUpdateRegion(HPS hps, HWND hwnd) (pm_region.rs)
+                self.win_exclude_update_region(vcpu_id, read_stack(4), read_stack(8))
             }
             765 => {
                 // WinInvalidateRect(HWND hwnd, PRECTL prcl, BOOL fIncludeChildren) (pm_paint.rs)

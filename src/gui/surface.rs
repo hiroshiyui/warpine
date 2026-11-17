@@ -18,6 +18,7 @@
 use std::sync::{Arc, Mutex};
 
 use super::damage::{Rect, fill_clipped};
+use super::region::{self, FillRule, Region};
 use super::font::{self, CjkRegion, FontSpec};
 use crate::loader::constants::{
     FM_AND, FM_DEFAULT, FM_INVERT, FM_LEAVEALONE, FM_MASKSRCNOT, FM_MERGENOTSRC, FM_MERGESRCNOT,
@@ -54,6 +55,10 @@ pub const MAX_STROKE_WIDTH: u32 = 32;
 /// Most points in one [`DrawOp::Shape`]; longer paths are cut off. Arcs
 /// are generated with far fewer.
 pub const MAX_SHAPE_POINTS: usize = 8192;
+
+/// Widest boundary brush of a [`DrawOp::Figures`] (the geometric width of
+/// `GpiStrokePath`), in pels; bounds the work per pel of the outline.
+pub const MAX_BOUNDARY_WIDTH: u32 = 64;
 
 /// Shape coordinates are clamped to ± this, far outside any surface, so the
 /// rasteriser's arithmetic cannot overflow.
@@ -213,6 +218,21 @@ pub enum DrawOp {
     /// there is no stroke) by the fill. Used for arcs, patterned areas and
     /// wide lines; a closed rectangle covers the same pels as [`DrawOp::Box`].
     Shape { points: Vec<(i32, i32)>, closed: bool, fill: Option<AreaFill>, stroke: Option<Stroke> },
+    /// Several figures drawn as one area (GPI areas, paths, polygons):
+    /// each a list of points, outlined back to its start when its flag is
+    /// set. The inside of all of them together (each closed for the
+    /// purpose) by `rule` (`None`: no inside), plus the pels a
+    /// `boundary`-wide square brush covers along the outlines (0: none, and
+    /// the inside leaves out the bottom and right edges), is painted with
+    /// `fill`; the outlines with `stroke`. Each pel is painted once, the
+    /// stroke winning. At most [`MAX_SHAPE_POINTS`] points in all.
+    Figures {
+        figures: Vec<(Vec<(i32, i32)>, bool)>,
+        rule: Option<FillRule>,
+        boundary: u32,
+        fill: Option<AreaFill>,
+        stroke: Option<Stroke>,
+    },
     /// Raster-operation blit onto the `w` × `h` area with lower-left corner
     /// `(x, y)`: each pel becomes [`rop3`]`(rop, P, S, D)` with P the
     /// `pattern`'s colour at that pel. `src`
@@ -338,7 +358,10 @@ impl Surface {
                 let height = self.height as i64;
                 Rect::new(lim(x), lim(height - (y + h)), lim(x + w), lim(height - y))
             }
-            DrawOp::Shape { ref points, stroke, .. } => self.shape_area(points, stroke),
+            DrawOp::Shape { ref points, stroke, fill, closed } =>
+                self.shape_area(&[(points, closed)], stroke, Self::shape_boundary(fill, stroke)),
+            DrawOp::Figures { ref figures, boundary, stroke, .. } =>
+                self.shape_area(&Self::figure_slices(figures), stroke, boundary),
             DrawOp::Clear => self.bounds(),
         }
     }
@@ -478,6 +501,49 @@ impl Surface {
         }
     }
 
+    /// Apply `op`, keeping only the pels inside `clip` (PM coordinates of
+    /// the surface; `None` = unclipped, as fast as [`Surface::draw`]).
+    ///
+    /// Every operation is clipped the same way: the area it can touch
+    /// (`op_bounds`) is saved, the operation applied, and the pels outside
+    /// the clip region put back. So mixes, patterns, text and blits clip
+    /// pel-exactly without each primitive knowing about regions. When the
+    /// clip holds the whole area the operation is applied as is; when it
+    /// misses it, nothing is drawn.
+    pub fn draw_clipped(&mut self, op: DrawOp, clip: Option<&Region>) {
+        let Some(clip) = clip else { return self.draw(op) };
+        let touched = self.op_bounds(&op).intersect(&self.bounds());
+        if touched.is_empty() { return self.draw(op); }
+        // The touched area in PM coordinates (exclusive at the right / top).
+        let pm = region::RRect::new(touched.x0, self.height as i32 - touched.y1,
+                                    touched.x1, self.height as i32 - touched.y0);
+        match clip.overlap(pm) {
+            region::Overlap::Inside => return self.draw(op),
+            region::Overlap::Outside => return,
+            region::Overlap::Partial => {}
+        }
+        let (w, tw) = (self.width as usize, touched.width() as usize);
+        let saved: Vec<u32> = (touched.y0..touched.y1)
+            .flat_map(|sy| self.buffer[sy as usize * w + touched.x0 as usize..][..tw].iter().copied())
+            .collect();
+        self.draw(op);
+        for (r, sy) in (touched.y0..touched.y1).enumerate() {
+            let y = self.height as i32 - 1 - sy;
+            let row = &mut self.buffer[sy as usize * w..][touched.x0 as usize..touched.x1 as usize];
+            let old = &saved[r * tw..][..tw];
+            // Put back every pel of the row outside the clip's spans.
+            let mut x = touched.x0;
+            for &(s, e) in clip.spans_at(y).iter().chain(std::iter::once(&(touched.x1, touched.x1))) {
+                let s = s.clamp(touched.x0, touched.x1);
+                if s > x {
+                    let (a, b) = ((x - touched.x0) as usize, (s - touched.x0) as usize);
+                    row[a..b].copy_from_slice(&old[a..b]);
+                }
+                x = x.max(e.clamp(touched.x0, touched.x1));
+            }
+        }
+    }
+
     fn apply(&mut self, op: &DrawOp) {
         match *op {
             DrawOp::Box { x1, y1, x2, y2, color, fill, mix } => {
@@ -551,41 +617,64 @@ impl Surface {
                     }
                 }
             }
-            DrawOp::Shape { ref points, closed, fill, stroke } => self.shape(points, closed, fill, stroke),
+            DrawOp::Shape { ref points, closed, fill, stroke } => {
+                let rule = closed.then_some(FillRule::Alternate);
+                self.figures(&[(points, closed)], rule, region::Edges::Centres,
+                             Self::shape_boundary(fill, stroke), fill, stroke);
+            }
+            DrawOp::Figures { ref figures, rule, boundary, fill, stroke } => {
+                let edges = if boundary == 0 { region::Edges::TopLeft } else { region::Edges::Centres };
+                self.figures(&Self::figure_slices(figures), rule, edges, boundary, fill, stroke);
+            }
             DrawOp::Clear => self.buffer.fill(SURFACE_BLANK),
         }
     }
 
-    /// The points of a shape as used: at most [`MAX_SHAPE_POINTS`], each
-    /// clamped to ±[`SHAPE_COORD_LIMIT`].
-    fn shape_points(points: &[(i32, i32)]) -> impl Iterator<Item = (i32, i32)> + '_ {
+    /// The figures of a shape as used: at most [`MAX_SHAPE_POINTS`] points
+    /// in all, each clamped to ±[`SHAPE_COORD_LIMIT`].
+    fn shape_figures(figures: &[(&[(i32, i32)], bool)]) -> Vec<(Vec<(i32, i32)>, bool)> {
         let lim = |v: i32| v.clamp(-SHAPE_COORD_LIMIT, SHAPE_COORD_LIMIT);
-        points.iter().take(MAX_SHAPE_POINTS).map(move |&(x, y)| (lim(x), lim(y)))
+        let mut left = MAX_SHAPE_POINTS;
+        let mut out = Vec::new();
+        for (pts, closed) in figures {
+            if left == 0 { break; }
+            let take: Vec<(i32, i32)> = pts.iter().take(left).map(|&(x, y)| (lim(x), lim(y))).collect();
+            left -= take.len();
+            out.push((take, *closed));
+        }
+        out
     }
 
     /// Screen rectangle (inside the surface) a shape can touch: its points'
-    /// bounding box grown by the stroke's reach.
-    fn shape_area(&self, points: &[(i32, i32)], stroke: Option<Stroke>) -> Rect {
-        let reach = stroke.map_or(0, |s| s.width.clamp(1, MAX_STROKE_WIDTH) as i32 / 2 + 1);
-        let mut it = Self::shape_points(points);
+    /// bounding box grown by the reach of the stroke or the boundary brush.
+    fn shape_area(&self, figures: &[(&[(i32, i32)], bool)], stroke: Option<Stroke>, boundary: u32) -> Rect {
+        let reach = |w: u32| w.clamp(1, MAX_BOUNDARY_WIDTH) as i32 / 2 + 1;
+        let reach = stroke.map_or(0, |s| reach(s.width.min(MAX_STROKE_WIDTH)))
+            .max(if boundary > 0 { reach(boundary) } else { 0 });
+        let mut it = figures.iter().flat_map(|(p, _)| p.iter().copied()).take(MAX_SHAPE_POINTS);
+        let lim = |v: i32| v.clamp(-SHAPE_COORD_LIMIT, SHAPE_COORD_LIMIT);
         let Some((x, y)) = it.next() else { return Rect::EMPTY };
-        let (mut x0, mut x1, mut y0, mut y1) = (x, x, y, y);
+        let (mut x0, mut x1, mut y0, mut y1) = (lim(x), lim(x), lim(y), lim(y));
         for (x, y) in it {
+            let (x, y) = (lim(x), lim(y));
             (x0, x1, y0, y1) = (x0.min(x), x1.max(x), y0.min(y), y1.max(y));
         }
         Rect::new(x0 - reach, self.row(y1) - reach, x1 + 1 + reach, self.row(y0) + 1 + reach)
             .intersect(&self.bounds())
     }
 
-    /// Rasterise a [`DrawOp::Shape`]: mark its pels in a mask over the area
-    /// it can touch (1 = inside, 2 = outline), then paint each marked pel
-    /// once.
-    fn shape(&mut self, points: &[(i32, i32)], closed: bool, fill: Option<AreaFill>, stroke: Option<Stroke>) {
+    /// Rasterise a [`DrawOp::Figures`] (and a [`DrawOp::Shape`], one
+    /// figure): mark its pels in a mask over the area it can touch
+    /// (1 = inside, 2 = outline), then paint each marked pel once.
+    #[allow(clippy::too_many_arguments)]
+    fn figures(&mut self, figures: &[(&[(i32, i32)], bool)], rule: Option<FillRule>, edges: region::Edges,
+               boundary: u32, fill: Option<AreaFill>, stroke: Option<Stroke>) {
         const INSIDE: u8 = 1;
         const OUTLINE: u8 = 2;
-        let area = self.shape_area(points, stroke);
+        let boundary = boundary.min(MAX_BOUNDARY_WIDTH);
+        let area = self.shape_area(figures, stroke, boundary);
         if area.is_empty() || (fill.is_none() && stroke.is_none()) { return; }
-        let pts: Vec<(i32, i32)> = Self::shape_points(points).collect();
+        let figs = Self::shape_figures(figures);
         let (aw, ah) = (area.width() as usize, area.height() as usize);
         let mut mask = vec![0u8; aw * ah];
         let height = self.height as i32;
@@ -597,60 +686,43 @@ impl Surface {
                 *m = (*m).max(v);
             }
         };
-        let mut segments: Vec<((i32, i32), (i32, i32))> = pts.windows(2).map(|w| (w[0], w[1])).collect();
-        if closed && pts.len() > 2 { segments.push((pts[pts.len() - 1], pts[0])); }
-        if pts.len() == 1 { segments.push((pts[0], pts[0])); }
 
-        // Inside: pel centres between pairs of edge crossings on each row
-        // (even-odd; an edge spans [low y, high y) so shared vertices count
-        // once).
-        if fill.is_some() && closed && pts.len() > 2 {
-            let mut xs: Vec<f64> = Vec::new();
+        // Inside: pel centres between edge crossings on each row, by the
+        // rule (every figure closed for the purpose).
+        if fill.is_some() && let Some(rule) = rule {
+            let segs = region::fill_segments(figs.iter().map(|(p, _)| p.as_slice()));
+            let mut spans = Vec::new();
             for sy in area.y0..area.y1 {
-                let y = (height - 1 - sy) as f64;
-                xs.clear();
-                for &((ax, ay), (bx, by)) in &segments {
-                    let (ay, by) = (ay as f64, by as f64);
-                    if (ay <= y && y < by) || (by <= y && y < ay) {
-                        xs.push(ax as f64 + (y - ay) * (bx - ax) as f64 / (by - ay));
-                    }
-                }
-                xs.sort_by(f64::total_cmp);
-                for &[a, b] in xs.as_chunks::<2>().0 {
-                    let from = (a.ceil() as i64).max(area.x0 as i64) as i32;
-                    let to = (b.floor() as i64).min(area.x1 as i64 - 1) as i32;
-                    for x in from..=to { mark(x, height - 1 - sy, INSIDE); }
+                region::scan_row(&segs, rule, edges, height - 1 - sy, &mut spans);
+                for &(a, b) in &spans {
+                    for x in a.max(area.x0)..=b.min(area.x1 - 1) { mark(x, height - 1 - sy, INSIDE); }
                 }
             }
         }
 
-        // Outline: Bresenham along each segment, stamping the brush; the
-        // style runs on across segments. Without a stroke the outline's pels
-        // belong to the inside, so a filled shape includes its boundary.
-        let (outline, width, style) = match stroke {
-            Some(s) => (OUTLINE, s.width.clamp(1, MAX_STROKE_WIDTH) as i32, s.style),
-            None => (INSIDE, 1, SOLID_LINE),
-        };
-        let (lo, hi) = (-(width - 1) / 2, width / 2);
-        let margin = width;
-        let mut n = 0u32;
-        for &((x1, y1), (x2, y2)) in &segments {
-            let Some((x1, y1, x2, y2)) = self.clip_line_margin(x1, y1, x2, y2, margin) else { continue };
-            let (dx, dy) = ((x2 - x1).abs(), (y2 - y1).abs());
-            let (sx, sy) = (if x1 < x2 { 1 } else { -1 }, if y1 < y2 { 1 } else { -1 });
-            let (mut x, mut y, mut err) = (x1, y1, dx - dy);
-            loop {
-                if style & (0x8000 >> (n % 16)) != 0 {
-                    for oy in lo..=hi { for ox in lo..=hi { mark(x + ox, y + oy, outline); } }
+        // Outlines: Bresenham along each segment, stamping the brush; the
+        // style runs on across segments. The boundary brush marks inside
+        // pels (a filled shape includes its boundary).
+        let mut passes: Vec<(u8, i32, u16)> = Vec::new();
+        if let Some(s) = stroke { passes.push((OUTLINE, s.width.clamp(1, MAX_STROKE_WIDTH) as i32, s.style)); }
+        if fill.is_some() && boundary > 0 { passes.push((INSIDE, boundary as i32, SOLID_LINE)); }
+        for (value, width, style) in passes {
+            let (lo, hi) = (-(width - 1) / 2, width / 2);
+            let margin = width;
+            let bounds = (-1 - margin, -1 - margin, self.width as i32 + margin, self.height as i32 + margin);
+            let mut n = 0u32;
+            for (pts, closed) in &figs {
+                for seg in region::outline_segments(pts, *closed) {
+                    region::walk_segment(seg, bounds, |x, y| {
+                        if style & (0x8000 >> (n % 16)) != 0 {
+                            for oy in lo..=hi { for ox in lo..=hi { mark(x + ox, y + oy, value); } }
+                        }
+                        n += 1;
+                    });
+                    // The next segment starts on this end point; do not count it twice.
+                    n = n.wrapping_sub(1);
                 }
-                n += 1;
-                if x == x2 && y == y2 { break; }
-                let e2 = 2 * err;
-                if e2 > -dy { err -= dy; x += sx; }
-                if e2 < dx { err += dx; y += sy; }
             }
-            // The next segment starts on this end point; do not count it twice.
-            n = n.wrapping_sub(1);
         }
 
         let w = self.width as usize;
@@ -677,34 +749,18 @@ impl Surface {
     /// every side, so a wide brush centred just outside still reaches in.
     fn clip_line_margin(&self, x1: i32, y1: i32, x2: i32, y2: i32, margin: i32)
                         -> Option<(i32, i32, i32, i32)> {
-        let (xmin, ymin) = (-1.0 - margin as f64, -1.0 - margin as f64);
-        let (xmax, ymax) = (self.width as f64 + margin as f64, self.height as f64 + margin as f64);
-        let inside = |x: i32, y: i32| {
-            (xmin..=xmax).contains(&(x as f64)) && (ymin..=ymax).contains(&(y as f64))
-        };
-        if inside(x1, y1) && inside(x2, y2) {
-            return Some((x1, y1, x2, y2));
-        }
-        let (fx, fy) = (x1 as f64, y1 as f64);
-        let (dx, dy) = (x2 as f64 - fx, y2 as f64 - fy);
-        let (mut t0, mut t1) = (0.0f64, 1.0f64);
-        for (p, q) in [(-dx, fx - xmin), (dx, xmax - fx), (-dy, fy - ymin), (dy, ymax - fy)] {
-            if p == 0.0 {
-                if q < 0.0 { return None; }
-                continue;
-            }
-            let r = q / p;
-            if p < 0.0 {
-                if r > t1 { return None; }
-                t0 = t0.max(r);
-            } else {
-                if r < t0 { return None; }
-                t1 = t1.min(r);
-            }
-        }
-        let at = |t: f64| ((fx + t * dx).round() as i32, (fy + t * dy).round() as i32);
-        let ((ax, ay), (bx, by)) = (at(t0), at(t1));
-        Some((ax, ay, bx, by))
+        let bounds = (-1 - margin, -1 - margin, self.width as i32 + margin, self.height as i32 + margin);
+        region::clip_segment(((x1, y1), (x2, y2)), bounds).map(|((a, b), (c, d))| (a, b, c, d))
+    }
+
+    /// The boundary brush of a [`DrawOp::Shape`]: without a stroke, a
+    /// filled shape includes its one-pel outline.
+    fn shape_boundary(fill: Option<AreaFill>, stroke: Option<Stroke>) -> u32 {
+        u32::from(fill.is_some() && stroke.is_none())
+    }
+
+    fn figure_slices(figures: &[(Vec<(i32, i32)>, bool)]) -> Vec<(&[(i32, i32)], bool)> {
+        figures.iter().map(|(p, c)| (p.as_slice(), *c)).collect()
     }
 
     /// Draw `text` with its baseline on PM row `y`.
@@ -1264,5 +1320,66 @@ mod tests {
             }
         }
     }
-}
 
+    #[test]
+    fn clipped_drawing_keeps_only_the_region() {
+        use crate::gui::region::{RRect, Region};
+        let clip = Region::from_rects(&[RRect::new(2, 2, 6, 6), RRect::new(10, 0, 12, 20)]).unwrap();
+        let mut s = Surface::new(20, 20);
+        s.draw_clipped(fill(0, 0, 19, 19, RED, Mix::Overpaint), Some(&clip));
+        assert_eq!(count(&s, RED), 16 + 40);
+        assert_eq!(s.pel(2, 2), Some(RED));
+        assert_eq!(s.pel(6, 2), Some(WHITE), "right edge of the clip is out");
+        assert_eq!(s.pel(11, 19), Some(RED));
+        // Mixes: pels outside are left exactly as they were.
+        s.draw_clipped(fill(0, 0, 19, 19, RED, Mix::Xor), Some(&clip));
+        assert_eq!(count(&s, RED), 0);
+        assert_eq!(count(&s, 0), 56, "RED XOR RED");
+        // Text and lines clip too; no clip at all draws everything.
+        let mut t = Surface::new(20, 20);
+        t.draw_clipped(DrawOp::Line { x1: 0, y1: 4, x2: 19, y2: 4, color: RED, mix: Mix::Overpaint, style: SOLID_LINE },
+                       Some(&clip));
+        assert_eq!(count(&t, RED), 4 + 2);
+        t.draw_clipped(fill(0, 0, 19, 19, RED, Mix::Overpaint), None);
+        assert_eq!(count(&t, RED), 400);
+        // A clip that misses the operation draws nothing.
+        let far = Region::rect(RRect::new(100, 100, 120, 120));
+        let mut u = Surface::new(20, 20);
+        u.draw_clipped(fill(0, 0, 19, 19, RED, Mix::Overpaint), Some(&far));
+        assert_eq!(count(&u, RED), 0);
+    }
+
+    #[test]
+    fn figures_fill_by_rule_with_or_without_edges() {
+        let square = |x0: i32, y0: i32, x1: i32, y1: i32| (vec![(x0, y0), (x1, y0), (x1, y1), (x0, y1)], true);
+        let solid = Some(AreaFill { pattern: Pattern::solid(RED), mix: Mix::Overpaint, back_mix: None });
+        let figs = vec![square(0, 0, 9, 9), square(5, 5, 14, 14)];
+        let mut alt = Surface::new(20, 20);
+        alt.draw(DrawOp::Figures { figures: figs.clone(), rule: Some(FillRule::Alternate), boundary: 1,
+                                   fill: solid, stroke: None });
+        assert_eq!(alt.pel(7, 7), Some(WHITE), "overlap outside");
+        assert_eq!(alt.pel(2, 2), Some(RED));
+        let mut wind = Surface::new(20, 20);
+        wind.draw(DrawOp::Figures { figures: figs, rule: Some(FillRule::Winding), boundary: 1,
+                                    fill: solid, stroke: None });
+        assert_eq!(wind.pel(7, 7), Some(RED), "overlap inside");
+        // Exclusive: no bottom and right edges.
+        let mut ex = Surface::new(20, 20);
+        ex.draw(DrawOp::Figures { figures: vec![square(0, 0, 9, 9)], rule: Some(FillRule::Alternate),
+                                  boundary: 0, fill: solid, stroke: None });
+        assert_eq!(count(&ex, RED), 81);
+        assert_eq!(ex.pel(0, 9), Some(RED));
+        assert_eq!(ex.pel(9, 5), Some(WHITE));
+        assert_eq!(ex.pel(5, 0), Some(WHITE));
+        // A wide boundary without an inside (a stroked path).
+        let mut st = Surface::new(20, 20);
+        st.draw(DrawOp::Figures { figures: vec![(vec![(2, 10), (17, 10)], false)], rule: None,
+                                  boundary: 3, fill: solid, stroke: None });
+        assert_eq!(count(&st, RED), 18 * 3, "square brush: one pel past each end");
+        // The boundary brush is bounded.
+        let mut big = Surface::new(20, 20);
+        big.draw(DrawOp::Figures { figures: vec![(vec![(10, 10)], false)], rule: None,
+                                   boundary: u32::MAX, fill: solid, stroke: None });
+        assert_eq!(count(&big, RED), 400, "64 pels wide covers all");
+    }
+}

@@ -684,7 +684,7 @@ impl super::Loader {
             BlitSource::Shared(s) => Some(sample(&s.lock_or_recover())),
             BlitSource::Local(s) => Some(sample(s)),
         };
-        self.draw_to(pt.target, DrawOp::Blit {
+        self.draw_ps(&pt, DrawOp::Blit {
             x: cx0 as i32, y: cy0 as i32, w: (cx1 - cx0) as u32, h: (cy1 - cy0) as u32,
             src: pels, rop, pattern: pt.pattern,
         });

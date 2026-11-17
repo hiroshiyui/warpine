@@ -154,8 +154,11 @@ modules = [
 [[layer]]
 id = "gpi"
 zone = "host"
-label = "GPI: presentation spaces, drawing, fonts, bitmaps"
-modules = ["loader/pm_gpi.rs", "loader/pm_bitmap.rs", "loader/pm_shapes.rs", "loader/pm_drawtext.rs"]
+label = "GPI: presentation spaces, drawing, fonts, bitmaps, regions, clipping, paths"
+modules = [
+  "loader/pm_gpi.rs", "loader/pm_bitmap.rs", "loader/pm_shapes.rs", "loader/pm_drawtext.rs",
+  "loader/pm_region.rs", "loader/pm_area.rs",
+]
 
 [[layer]]
 id = "pmshell"
@@ -169,7 +172,7 @@ zone = "host"
 label = "PM desktop front end: surfaces, compositor, chrome, fonts (ADR-0011, ADR-0012)"
 modules = [
   "gui/mod.rs", "gui/renderer.rs", "gui/sdl_renderer.rs", "gui/sdl_renderer/compositor.rs",
-  "gui/surface.rs", "gui/damage.rs", "gui/font.rs", "gui/message.rs", "gui/pointer.rs",
+  "gui/surface.rs", "gui/region.rs", "gui/damage.rs", "gui/font.rs", "gui/message.rs", "gui/pointer.rs",
   "gui/cursor.rs", "gui/popup_menu.rs", "gui/system_menu.rs", "gui/frame_track.rs",
   "gui/frame_stats.rs", "gui/gui_script.rs", "gui/headless.rs", "gui/audio.rs",
 ]

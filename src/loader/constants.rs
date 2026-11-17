@@ -1364,6 +1364,92 @@ pub const RGN_NULL:    u32 = 1;
 pub const RGN_RECT:    u32 = 2;
 pub const RGN_COMPLEX: u32 = 3;
 
+// ── Regions, clipping, areas, paths and polygons (<pmgpi.h>, <pmerr.h>) ─────
+// GpiCombineRegion lMode.
+pub const CRGN_OR:   u32 = 1;
+pub const CRGN_COPY: u32 = 2;
+pub const CRGN_XOR:  u32 = 4;
+pub const CRGN_AND:  u32 = 6;
+pub const CRGN_DIFF: u32 = 7;
+// GpiEqualRegion results.
+pub const EQRGN_ERROR:    u32 = 0;
+pub const EQRGN_NOTEQUAL: u32 = 1;
+pub const EQRGN_EQUAL:    u32 = 2;
+/// `GpiSetClipRegion` old-region result on error.
+pub const HRGN_ERROR: u32 = 0xFFFF_FFFF;
+// GpiPtInRegion results.
+pub const PRGN_ERROR:   u32 = 0;
+pub const PRGN_OUTSIDE: u32 = 1;
+pub const PRGN_INSIDE:  u32 = 2;
+// GpiRectInRegion results.
+pub const RRGN_ERROR:   u32 = 0;
+pub const RRGN_OUTSIDE: u32 = 1;
+pub const RRGN_PARTIAL: u32 = 2;
+pub const RRGN_INSIDE:  u32 = 3;
+// RGNRECT ulDirection.
+pub const RECTDIR_LFRT_TOPBOT: u32 = 1;
+pub const RECTDIR_RTLF_TOPBOT: u32 = 2;
+pub const RECTDIR_LFRT_BOTTOP: u32 = 3;
+pub const RECTDIR_RTLF_BOTTOP: u32 = 4;
+// GpiBeginArea flOptions.
+pub const BA_NOBOUNDARY: u32 = 0;
+pub const BA_BOUNDARY:   u32 = 1;
+pub const BA_ALTERNATE:  u32 = 0;
+pub const BA_WINDING:    u32 = 2;
+pub const BA_INCL:       u32 = 0;
+pub const BA_EXCL:       u32 = 8;
+// GpiFillPath / GpiPathToRegion lOptions.
+pub const FPATH_ALTERNATE: u32 = 0;
+pub const FPATH_WINDING:   u32 = 2;
+pub const FPATH_INCL:      u32 = 0;
+pub const FPATH_EXCL:      u32 = 8;
+/// GpiModifyPath lMode.
+pub const MPATH_STROKE: u32 = 6;
+// GpiSetClipPath lOptions.
+pub const SCP_ALTERNATE: u32 = 0;
+pub const SCP_WINDING:   u32 = 2;
+pub const SCP_AND:       u32 = 4;
+pub const SCP_RESET:     u32 = 0;
+pub const SCP_INCL:      u32 = 0;
+pub const SCP_EXCL:      u32 = 8;
+// GpiPolygons flOptions / flModel.
+pub const POLYGON_NOBOUNDARY: u32 = 0;
+pub const POLYGON_BOUNDARY:   u32 = 1;
+pub const POLYGON_ALTERNATE:  u32 = 0;
+pub const POLYGON_WINDING:    u32 = 2;
+pub const POLYGON_INCL:       u32 = 0;
+pub const POLYGON_EXCL:       u32 = 8;
+pub const POLYGON_FILL:       u32 = 0;
+pub const POLYGON_NOFILL:     u32 = 16;
+/// Size of a `POLYGON` (ULONG ulPoints, PPOINTL aPointl).
+pub const POLYGON_SIZE: u32 = 8;
+/// Size of a `RGNRECT` (ircStart, crc, crcReturned, ulDirection).
+pub const RGNRECT_SIZE: u32 = 16;
+// Errors of these calls.
+pub const PMERR_ALREADY_IN_AREA:       u32 = 0x2001;
+pub const PMERR_ALREADY_IN_PATH:       u32 = 0x2003;
+pub const PMERR_COORDINATE_OVERFLOW:   u32 = 0x2014;
+pub const PMERR_HRGN_BUSY:             u32 = 0x2034;
+pub const PMERR_INSUFFICIENT_MEMORY:   u32 = 0x203E;
+pub const PMERR_INV_AREA_CONTROL:      u32 = 0x2041;
+pub const PMERR_INV_CLIP_PATH_OPTIONS: u32 = 0x2051;
+pub const PMERR_INV_COORDINATE:        u32 = 0x205B;
+pub const PMERR_INV_FILL_PATH_OPTIONS: u32 = 0x2070;
+pub const PMERR_INV_HRGN:              u32 = 0x2080;
+pub const PMERR_INV_IN_AREA:           u32 = 0x2085;
+pub const PMERR_INV_IN_PATH:           u32 = 0x208B;
+pub const PMERR_INV_MODIFY_PATH_MODE:  u32 = 0x20A6;
+pub const PMERR_INV_PATH_ID:           u32 = 0x20AE;
+pub const PMERR_INV_RECT:              u32 = 0x20BD;
+pub const PMERR_INV_REGION_CONTROL:    u32 = 0x20BE;
+pub const PMERR_INV_REGION_MIX_MODE:   u32 = 0x20BF;
+pub const PMERR_INV_RESERVED_FIELD:    u32 = 0x20C1;
+pub const PMERR_INV_SHARPNESS_PARM:    u32 = 0x20CD;
+pub const PMERR_NOT_IN_AREA:           u32 = 0x20DD;
+pub const PMERR_NOT_IN_PATH:           u32 = 0x20E1;
+pub const PMERR_PATH_UNKNOWN:          u32 = 0x20EE;
+pub const PMERR_REGION_IS_CLIP_REGION: u32 = 0x20F8;
+
 // WinDrawBorder flCmd (<pmwin.h>): a raster operation (DB_ROP) and flags.
 pub const DB_PATCOPY:     u32 = 0x0000;
 pub const DB_PATINVERT:   u32 = 0x0001;
