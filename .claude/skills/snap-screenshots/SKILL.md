@@ -23,6 +23,7 @@ When capturing screenshots for the README, always follow these steps:
    | `pm_msgbox` | `samples/pm_msgbox_test/pm_msgbox_test.exe` | the `MSGBOX_TEST_STEPS` of `tests/integration.rs` | Message box with an icon over its disabled owner |
    | `pm_minmax` | `samples/pm_minmax_test/pm_minmax_test.exe` | `1500 dblclick 300 42;2000 dblclick 300 8;2500 key alt+f9` | A minimized frame in the icon area, the hide button, activation handed on |
    | `4os2_window` | `samples/4os2/4os2.exe` | `2500 text ver;2700 key enter;3500 text dir /w;3800 key enter` | A VIO program in a window on the PM desktop (needs a pseudo-terminal: capture it as described under step 3 without `WARPINE_VIO`, and trim it like `snap.sh`) |
+   | `vio_system_menu` | `samples/4os2/4os2.exe` | `2000 text ver;2200 key enter;3000 drag 675 453 400 300;4000 key alt+space` | The VIO window resized with scroll bars and its system menu open (pseudo-terminal capture, trimmed) |
 
    Keep the list to what the README can show (about six to eight images): every shot captured in this run is embedded in step 5, so leave out a shot here rather than capture it and not use it.
 
