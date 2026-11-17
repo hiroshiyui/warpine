@@ -1005,7 +1005,7 @@ impl super::Loader {
                 // WinQuerySysValue(HWND hwndDesktop, LONG iSysValue)
                 let _hwnd = read_stack(4);
                 let sys_val = read_stack(8) as i32;
-                let v = self.pointer_sys_value(sys_val).unwrap_or_else(|| sys_value(sys_val));
+                let v = self.pointer_sys_value(sys_val).unwrap_or_else(|| self.query_sys_value(sys_val));
                 ApiResult::Normal(v as u32)
             }
             821 => {
@@ -1158,6 +1158,13 @@ impl super::Loader {
                         win.text = text;
                 }
                 ApiResult::Normal(1)
+            }
+            873 => {
+                // WinSetSysValue(HWND hwndDesktop, LONG iSysValue, LONG lValue)
+                let hwnd = read_stack(4);
+                let index = read_stack(8) as i32;
+                let value = read_stack(12) as i32;
+                self.set_sys_value(vcpu_id, hwnd, index, value)
             }
             866 => {
                 // WinSetPointer(HWND hwndDesktop, HPOINTER hptrNew)
@@ -1636,6 +1643,34 @@ impl super::Loader {
     pub(crate) fn window_codepage(&self, hwnd: u32) -> u32 {
         self.shared.window_mgr.lock_or_recover().queue_codepage(hwnd)
             .unwrap_or_else(|| self.process_codepage())
+    }
+
+    /// WinQuerySysValue: the fixed values of [`sys_value`] plus the ones
+    /// `WinSetSysValue` can change (`SV_CURSORRATE`, milliseconds).
+    pub(crate) fn query_sys_value(&self, index: i32) -> i32 {
+        match index {
+            SV_CURSORRATE => self.shared.window_mgr.lock_or_recover().cursor_rate_ms as i32,
+            _ => sys_value(index),
+        }
+    }
+
+    /// WinSetSysValue: set system value `index` for the desktop `hwnd`.
+    /// Warpine keeps only `SV_CURSORRATE` (the caret blink interval, a
+    /// positive number of milliseconds); any other index, or a rate below 1,
+    /// fails with `PMERR_PARAMETER_OUT_OF_RANGE` (TODO(unverified): which
+    /// rates PM accepts; Warpine's choice for the values it does not keep).
+    /// A handle other than `HWND_DESKTOP` fails with `PMERR_INVALID_HWND`.
+    pub(crate) fn set_sys_value(&self, tid: u32, hwnd: u32, index: i32, value: i32) -> ApiResult {
+        if hwnd != HWND_DESKTOP {
+            return self.pm_fail(tid, PMERR_INVALID_HWND);
+        }
+        match index {
+            SV_CURSORRATE if value > 0 => {
+                self.shared.window_mgr.lock_or_recover().cursor_rate_ms = value as u32;
+                ApiResult::Normal(1)
+            }
+            _ => self.pm_fail(tid, PMERR_PARAMETER_OUT_OF_RANGE),
+        }
     }
 
     /// Codepage of PM text passed by thread `vcpu_id` where no window says

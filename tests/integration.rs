@@ -756,10 +756,11 @@ fn gui_pm_msgbox_test_matches_golden() {
 /// SEVERITY_ERROR) for WinGetLastError, which resets it; a later success
 /// keeps it; each thread has its own last error. Covers PMERR_INVALID_HWND
 /// from the window, dialog-item and message calls, PMERR_PARAMETER_OUT_OF_RANGE,
-/// PMERR_INVALID_FLAG and PMERR_INVALID_HACCEL.
+/// PMERR_INVALID_FLAG and PMERR_INVALID_HACCEL. WinSetSysValue sets the
+/// caret blink rate (SV_CURSORRATE) and rejects a rate of 0 / a bad desktop.
 #[test]
 fn gui_pm_error_test_reports_last_errors() {
-    assert_sample_checks_pass("samples/pm_error_test/pm_error_test.exe", "pm_error_test", 104);
+    assert_sample_checks_pass("samples/pm_error_test/pm_error_test.exe", "pm_error_test", 113);
 }
 
 /// pm_pointer_test: system pointer handles and copies, WinSetPointer /

@@ -464,4 +464,28 @@ mod tests {
         assert_eq!(call(&loader, 0, ORD_WIN_PEEK_MSG, &[MOCK_HAB, qmsg, 0, 0, 0, PM_REMOVE]), 0);
         assert_eq!(last_error(&loader, 0), 0, "an empty queue is no error");
     }
+
+    #[test]
+    fn cursor_rate_is_queried_and_set_through_the_sys_value_calls() {
+        const ORD_WIN_QUERY_SYS_VALUE: u32 = 829;
+        const ORD_WIN_SET_SYS_VALUE: u32 = 873;
+        let loader = Loader::new_mock();
+        let query = |i: i32| call(&loader, 0, ORD_WIN_QUERY_SYS_VALUE, &[HWND_DESKTOP, i as u32]);
+        assert_eq!(query(SV_CURSORRATE), CARET_BLINK_MS as u32);
+        assert_eq!(call(&loader, 0, ORD_WIN_SET_SYS_VALUE, &[HWND_DESKTOP, SV_CURSORRATE as u32, 250]), 1);
+        assert_eq!(query(SV_CURSORRATE), 250);
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().cursor_rate_ms, 250, "the renderer's blink interval");
+        assert_eq!(last_error(&loader, 0), 0);
+
+        // A rate below 1 ms, a value Warpine does not keep, a bad desktop.
+        for (args, code) in [([HWND_DESKTOP, SV_CURSORRATE as u32, 0], PMERR_PARAMETER_OUT_OF_RANGE),
+                             ([HWND_DESKTOP, SV_CURSORRATE as u32, -5i32 as u32], PMERR_PARAMETER_OUT_OF_RANGE),
+                             ([HWND_DESKTOP, SV_CXSCREEN as u32, 10], PMERR_PARAMETER_OUT_OF_RANGE),
+                             ([BAD_HWND, SV_CURSORRATE as u32, 100], PMERR_INVALID_HWND)] {
+            assert_eq!(call(&loader, 0, ORD_WIN_SET_SYS_VALUE, &args), 0, "{args:x?}");
+            assert_eq!(last_error(&loader, 0), err(code), "{args:x?}");
+        }
+        assert_eq!(query(SV_CURSORRATE), 250, "failed calls change nothing");
+        assert_eq!(query(SV_CXSCREEN), desktop_size().0);
+    }
 }

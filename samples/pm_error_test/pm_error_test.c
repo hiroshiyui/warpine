@@ -18,6 +18,9 @@
  *     QWL_MIN                              -> PMERR_PARAMETER_OUT_OF_RANGE
  *   - WinPeekMsg with an unknown fl bit    -> PMERR_INVALID_FLAG
  *   - WinSetAccelTable with no such table  -> PMERR_INVALID_HACCEL
+ *   - WinSetSysValue(SV_CURSORRATE, 0)       -> PMERR_PARAMETER_OUT_OF_RANGE
+ *     (and with a handle that is no desktop  -> PMERR_INVALID_HWND), after
+ *     setting the caret blink rate and reading it back
  *
  * and checks that the value carries SEVERITY_ERROR in its high word, that
  * reading resets it to zero, that a later successful call leaves it alone,
@@ -242,6 +245,18 @@ int main( void )
     /* The desktop is a valid parent: no child with that id, but no error. */
     check( "WinWindowFromID(HWND_DESKTOP, unknown id)", WinWindowFromID( HWND_DESKTOP, 4242 ), 0 );
     check( "-> no error", WinGetLastError( hab ), 0 );
+
+    /* System values: the caret blink rate (SV_CURSORRATE, milliseconds) can
+       be read and set; a rate of 0 and a handle that is no desktop fail. */
+    check( "SV_CURSORRATE is positive", WinQuerySysValue( HWND_DESKTOP, SV_CURSORRATE ) > 0, TRUE );
+    check( "WinSetSysValue(SV_CURSORRATE, 300)", WinSetSysValue( HWND_DESKTOP, SV_CURSORRATE, 300 ), TRUE );
+    check( "-> SV_CURSORRATE reads 300", WinQuerySysValue( HWND_DESKTOP, SV_CURSORRATE ), 300 );
+    check( "-> no error", WinGetLastError( hab ), 0 );
+    check_fails( hab, "WinSetSysValue(SV_CURSORRATE, 0)",
+                 WinSetSysValue( HWND_DESKTOP, SV_CURSORRATE, 0 ), PMERR_PARAMETER_OUT_OF_RANGE );
+    check_fails( hab, "WinSetSysValue(bad hwnd)",
+                 WinSetSysValue( BAD_HWND, SV_CURSORRATE, 300 ), PMERR_INVALID_HWND );
+    check( "-> SV_CURSORRATE still 300", WinQuerySysValue( HWND_DESKTOP, SV_CURSORRATE ), 300 );
 
     /* An error survives a later successful call. */
     WinDestroyWindow( BAD_HWND );

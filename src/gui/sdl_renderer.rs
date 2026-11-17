@@ -51,8 +51,22 @@ const FRAME_INTERVAL: Duration = Duration::from_millis(16);
 /// notice state changes that arrive without a wake-up, such as
 /// `exit_requested` set by the guest thread.
 const IDLE_WAIT: Duration = Duration::from_millis(100);
-/// Half period of the caret blink.
+/// Half period of the caret blink until the guest sets `SV_CURSORRATE`.
 const CARET_BLINK: Duration = Duration::from_millis(crate::loader::constants::CARET_BLINK_MS);
+/// Interval of the drag scroll timer (`WM_TIMER(TID_SCROLL)`).
+const DRAG_SCROLL: Duration = Duration::from_millis(crate::loader::constants::DRAG_SCROLL_MS);
+
+/// When the drag scroll timer fires next: off while no control is held,
+/// armed one interval after a control is first seen held, rearmed after
+/// each tick. Returns the new deadline and whether a tick is due now.
+fn drag_scroll_step(held: bool, next: Option<Instant>, now: Instant) -> (Option<Instant>, bool) {
+    match (held, next) {
+        (false, _) => (None, false),
+        (true, None) => (Some(now + DRAG_SCROLL), false),
+        (true, Some(t)) if now >= t => (Some(now + DRAG_SCROLL), true),
+        (true, Some(t)) => (Some(t), false),
+    }
+}
 
 /// How long the GUI loop may block before it has work again.
 ///
@@ -711,6 +725,12 @@ pub struct SdlRenderer {
     /// When the caret of the focused text control blinks next; `None` in a
     /// scripted session, whose captures must not depend on the blink phase.
     caret_next: Option<Instant>,
+    /// When the drag scroll timer fires next (`None` while no control is
+    /// held or in a scripted session).
+    drag_scroll_next: Option<Instant>,
+    /// The host text-input area last given to SDL (`SDL_SetTextInputArea`):
+    /// screen rectangle and caret offset.
+    ime_area: Option<((i32, i32, i32, i32), i32)>,
 }
 
 impl SdlRenderer {
@@ -783,6 +803,8 @@ impl SdlRenderer {
                 log::info!("[GUI] GUI script active: host mouse and keyboard input is ignored");
             }),
             caret_next: None,
+            drag_scroll_next: None,
+            ime_area: None,
         };
         if renderer.script.is_none() {
             renderer.caret_next = Some(now + CARET_BLINK);
@@ -1392,8 +1414,33 @@ impl PmRenderer for SdlRenderer {
         if let Some(next) = self.caret_next {
             let now = Instant::now();
             if now >= next {
-                shared.window_mgr.lock_or_recover().post_caret_blink();
-                self.caret_next = Some(now + CARET_BLINK);
+                let wm = shared.window_mgr.lock_or_recover();
+                wm.post_caret_blink();
+                // SV_CURSORRATE (WinSetSysValue) sets the interval.
+                self.caret_next = Some(now + Duration::from_millis(wm.cursor_rate_ms as u64));
+            }
+        }
+
+        // Drag scroll: an entry field, MLE or list box held with the pointer
+        // resting outside it keeps scrolling. Not in scripted sessions,
+        // which must not depend on timing.
+        if self.script.is_none() {
+            let held = shared.window_mgr.lock_or_recover().pressed_control != 0;
+            let (next, due) = drag_scroll_step(held, self.drag_scroll_next, Instant::now());
+            self.drag_scroll_next = next;
+            if due {
+                shared.window_mgr.lock_or_recover().post_drag_scroll();
+            }
+        }
+
+        // Host input method: its window goes where the focused text
+        // control's caret is.
+        let area = shared.window_mgr.lock_or_recover().text_input_area(self.desktop.size().1 as i32);
+        if area.is_some() && area != self.ime_area {
+            self.ime_area = area;
+            if let Some(((x, y, w, h), cursor)) = area {
+                let rect = sdl3::rect::Rect::new(x, y, w.max(1) as u32, h.max(1) as u32);
+                self.video.text_input().set_rect(self.desktop.window(), rect, cursor);
             }
         }
 
@@ -1430,7 +1477,7 @@ impl PmRenderer for SdlRenderer {
         // follows would spin the loop.
         let busy = self.force_full || !shared.window_mgr.lock_or_recover().dirty.is_empty();
         let script_next = self.script.as_ref().and_then(GuiScript::next_due);
-        let timed_next = script_next.into_iter().chain(self.caret_next).min();
+        let timed_next = script_next.into_iter().chain(self.caret_next).chain(self.drag_scroll_next).min();
         let mut timeout = wait_timeout(Instant::now(), self.last_composite, busy, timed_next);
         // Notice finished audio promptly (MCI_WAIT, MM_MCINOTIFY, DosBeep).
         if self.audio.busy() {
@@ -2102,6 +2149,22 @@ mod tests {
         assert_eq!(wait_timeout(now, long_ago, false, Some(step)), Duration::from_millis(30));
         // A step already due wins over everything.
         assert!(wait_timeout(now, now, true, Some(now - Duration::from_millis(1))).is_zero());
+    }
+
+    #[test]
+    fn drag_scroll_timer_runs_only_while_a_control_is_held() {
+        use super::{drag_scroll_step, DRAG_SCROLL};
+        let now = Instant::now();
+        assert_eq!(drag_scroll_step(false, None, now), (None, false));
+        // Armed when the hold is first seen, no tick yet.
+        let (next, due) = drag_scroll_step(true, None, now);
+        assert_eq!((next, due), (Some(now + DRAG_SCROLL), false));
+        // Not yet due: unchanged; due: a tick and rearmed from now.
+        assert_eq!(drag_scroll_step(true, next, now + DRAG_SCROLL / 2), (next, false));
+        let later = now + DRAG_SCROLL * 3;
+        assert_eq!(drag_scroll_step(true, next, later), (Some(later + DRAG_SCROLL), true));
+        // Released: off.
+        assert_eq!(drag_scroll_step(false, next, later), (None, false));
     }
 
     /// Input events are never mistaken for wake-ups. (A real `WakeEvent`

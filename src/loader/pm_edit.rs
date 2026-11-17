@@ -7,7 +7,8 @@
 //! Text is edited as a sequence of Unicode scalar values, so caret positions
 //! are character indices and a multi-byte character can never be split.
 //! Pixel measurements are supplied by the caller as a `width` function (the
-//! controls pass `font::text_width` of the proportional system font).
+//! controls pass `font::text_width` of the proportional system font in the
+//! CJK face their text is drawn in, `pm_controls::measure_in`).
 
 use std::ops::Range;
 
@@ -26,8 +27,9 @@ const CHAR_BYTE_MASK: u32 = 0xFF;
 /// Mask of the WM_CHAR flag word (mp1) and character word (mp2).
 const WORD_MASK: u32 = 0xFFFF;
 
-/// A function giving the width in pixels of a string.
-pub type Measure = fn(&str) -> i32;
+/// A function giving the width in pixels of a string (shared by the copies
+/// of a buffer; the controls measure with the face their text is drawn in).
+pub type Measure = std::rc::Rc<dyn Fn(&str) -> i32>;
 
 /// An editing action decoded from a WM_CHAR message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -120,7 +122,7 @@ pub fn key_from_wm_char(mp1: u32, mp2: u32, codepage: u32) -> Option<(EditKey, b
 /// without a line break) the caret position after its last character is the
 /// start of the next row, so the caret can reach the row's end only up to
 /// its last character.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct EditBuffer {
     chars: Vec<char>,
     caret: usize,
@@ -130,6 +132,19 @@ pub struct EditBuffer {
     page_lines: usize,
     /// Word wrap: the row width in pixels and the function measuring text.
     wrap: Option<(i32, Measure)>,
+}
+
+impl std::fmt::Debug for EditBuffer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EditBuffer")
+            .field("chars", &self.chars)
+            .field("caret", &self.caret)
+            .field("anchor", &self.anchor)
+            .field("multiline", &self.multiline)
+            .field("page_lines", &self.page_lines)
+            .field("wrap_width", &self.wrap.as_ref().map(|(w, _)| *w))
+            .finish()
+    }
 }
 
 impl EditBuffer {
@@ -160,9 +175,9 @@ impl EditBuffer {
 
     /// Wrap the lines of a multi-line buffer into rows `width` pixels wide,
     /// measured with `measure`. A single-line buffer is never wrapped.
-    pub fn set_wrap(&mut self, width: i32, measure: Measure) {
+    pub fn set_wrap(&mut self, width: i32, measure: impl Fn(&str) -> i32 + 'static) {
         if self.multiline {
-            self.wrap = Some((width, measure));
+            self.wrap = Some((width, std::rc::Rc::new(measure)));
         }
     }
 
@@ -293,8 +308,8 @@ impl EditBuffer {
     /// single-line buffer is one line throughout.
     pub fn lines(&self) -> Vec<Range<usize>> {
         let mut out = Vec::new();
-        let mut push = |range: Range<usize>| match self.wrap {
-            Some((width, measure)) => out.extend(wrap_rows(&self.chars, range, width, measure)),
+        let mut push = |range: Range<usize>| match &self.wrap {
+            Some((width, measure)) => out.extend(wrap_rows(&self.chars, range, *width, &**measure)),
             None => out.push(range),
         };
         let (mut start, mut i) = (0, 0);
@@ -485,7 +500,7 @@ impl EditBuffer {
 /// Every row holds at least one character, and an empty line is one empty
 /// row.
 pub fn wrap_rows(chars: &[char], range: Range<usize>, width: i32,
-                 measure: Measure) -> Vec<Range<usize>> {
+                 measure: &dyn Fn(&str) -> i32) -> Vec<Range<usize>> {
     let mut rows = Vec::new();
     let mut row_start = range.start;
     // Where the row may break: just after the last space run seen in it.

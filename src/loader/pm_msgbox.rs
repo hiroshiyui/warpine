@@ -20,7 +20,7 @@
 //! are Warpine's own.
 
 use super::constants::*;
-use super::pm_edit::{EditBuffer, Measure};
+use super::pm_edit::EditBuffer;
 use super::{ApiResult, Loader, MutexExt, Painter};
 use crate::gui::surface::{DrawOp, Pattern};
 
@@ -118,7 +118,8 @@ pub struct Layout {
 /// at most `max_rows` rows are kept (the rest is cut). An icon goes in the
 /// top-left corner with the text to its right, centred against it when
 /// shorter. Buttons are centred below.
-pub fn layout(text: &str, style: u32, measure: Measure, line_h: i32, max_rows: usize) -> Layout {
+pub fn layout(text: &str, style: u32, measure: impl Fn(&str) -> i32 + Copy + 'static,
+              line_h: i32, max_rows: usize) -> Layout {
     let mut buf = EditBuffer::new(text, 0, true);
     buf.set_wrap(MSGBOX_TEXT_MAX_W, measure);
     let lines: Vec<String> = buf.lines().into_iter().take(max_rows.max(1))
@@ -268,7 +269,10 @@ impl Loader {
         let line_h = super::CONTROL_LINE_H;
         let (dw, dh) = desktop_size();
         let max_rows = ((dh as i32 - 2 * MSGBOX_BUTTON_H - CHROME_TITLE_H) / line_h).max(1) as usize;
-        let lay = layout(text, style, super::pm_controls::system_width, line_h, max_rows);
+        // The text is drawn in the CJK face of the thread's queue codepage
+        // (the box's controls belong to that queue); measure it in the same.
+        let face = super::pm_controls::system_font(self.thread_codepage(vcpu_id));
+        let lay = layout(text, style, super::pm_controls::measure_in(face), line_h, max_rows);
         let (hwnd_dlg, hmq, focus) = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             let Some(hmq) = wm.thread_queue(vcpu_id) else {

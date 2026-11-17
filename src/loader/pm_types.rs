@@ -421,6 +421,16 @@ pub struct WindowManager {
     /// receives the pointer's moves and the release wherever the pointer
     /// is — a button pops up, a text control extends its selection.
     pub pressed_control: u32,
+    /// Where the pointer last was over `pressed_control` while it is held,
+    /// relative to the control's bottom-left corner: the drag scroll timer
+    /// (`WM_TIMER(TID_SCROLL)`) replays it while the pointer rests outside.
+    pub drag_pointer: (i32, i32),
+    /// The caret blink interval in milliseconds (`SV_CURSORRATE`; set with
+    /// `WinSetSysValue`); the renderer rearms the blink timer with it.
+    pub cursor_rate_ms: u32,
+    /// Where the caret of the focused entry field / MLE was last painted;
+    /// the renderer tells the host input method (`SDL_SetTextInputArea`).
+    pub text_caret: Option<TextCaret>,
     /// VDR-B4: set of HWNDs whose visual state has changed since the last composite.
     /// Any non-empty dirty set causes the next compositor tick to recomposite the
     /// full desktop; an empty set allows the tick to be skipped entirely.
@@ -490,6 +500,9 @@ impl WindowManager {
             focused_hwnd: 0,
             focus_hwnd: 0,
             pressed_control: 0,
+            drag_pointer: (0, 0),
+            cursor_rate_ms: super::constants::CARET_BLINK_MS as u32,
+            text_caret: None,
             dirty: HashSet::new(),
             surfaces: HashMap::new(),
             bitmaps: HashMap::new(),
@@ -992,6 +1005,53 @@ impl WindowManager {
             mq.cond.notify_one();
         }
         Some(hwnd)
+    }
+
+    /// One step of the drag scroll: post `WM_TIMER(TID_SCROLL)` to the
+    /// entry field, MLE or list box held with button 1 while the pointer
+    /// rests outside it (`drag_pointer`), unless one is still waiting in its
+    /// queue. The control then scrolls as if the pointer had moved there
+    /// again. Returns the window posted to.
+    pub fn post_drag_scroll(&self) -> Option<u32> {
+        use super::constants::{TID_SCROLL, WM_TIMER};
+        let hwnd = self.pressed_control;
+        let w = self.windows.get(&hwnd)?;
+        if !matches!(w.class_name.as_str(), "WC_ENTRYFIELD" | "WC_MLE" | "WC_LISTBOX") {
+            return None;
+        }
+        let (x, y) = self.drag_pointer;
+        if (0..w.cx).contains(&x) && (0..w.cy).contains(&y) {
+            return None;
+        }
+        let mq_arc = self.find_hmq_for_hwnd(hwnd).and_then(|hmq| self.get_mq(hmq))?;
+        let mut mq = mq_arc.lock_or_recover();
+        let pending = mq.messages.iter()
+            .any(|m| m.hwnd == hwnd && m.msg == WM_TIMER && m.mp1 == TID_SCROLL);
+        if !pending {
+            mq.messages.push_back(OS2Message {
+                hwnd, msg: WM_TIMER, mp1: TID_SCROLL, mp2: 0, time: 0, x: 0, y: 0,
+            });
+            mq.cond.notify_one();
+        }
+        Some(hwnd)
+    }
+
+    /// The host text-input area for the caret of the focused entry field /
+    /// MLE on a desktop `desktop_h` pixels tall: `((left, top, width,
+    /// height), caret offset from left)` in screen coordinates (origin
+    /// top-left), or `None` when no text control with a painted caret has
+    /// the focus.
+    pub fn text_input_area(&self, desktop_h: i32) -> Option<((i32, i32, i32, i32), i32)> {
+        let caret = self.text_caret?;
+        if caret.hwnd != self.focus_hwnd || !self.windows.contains_key(&caret.hwnd) {
+            return None;
+        }
+        let frame = self.windows.get(&caret.frame)?;
+        let border = super::constants::frame_border_width(frame.frame_flags);
+        let (lx, ly, lw, lh) = caret.line;
+        let left = frame.x + border + lx;
+        let top = desktop_h - frame.y - ly - lh;
+        Some(((left, top, lw, lh), caret.cursor))
     }
 
     /// Hit-test point `(x, y)` (client coordinates of `frame`, origin at the

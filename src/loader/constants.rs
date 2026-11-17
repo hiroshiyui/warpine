@@ -641,12 +641,21 @@ pub fn frame_border_width(frame_flags: u32) -> i32 {
 /// Timer id of the system timer that blinks the cursor (`<pmwin.h>`):
 /// Warpine posts `WM_TIMER(TID_CURSOR)` to the focused entry field or MLE.
 pub const TID_CURSOR: u32 = 0xFFFF;
+/// Timer id of the system scroll timer (`<pmwin.h>`): Warpine posts
+/// `WM_TIMER(TID_SCROLL)` to an entry field, MLE or list box held with
+/// button 1 while the pointer rests outside it, so it keeps scrolling.
+pub const TID_SCROLL: u32 = 0xFFFE;
 /// How long the caret of a text control stays on, then off (Warpine's own
-/// choice).
+/// choice): the initial `SV_CURSORRATE`.
 pub const CARET_BLINK_MS: u64 = 500;
+/// Interval of the drag scroll timer (`TID_SCROLL`) — Warpine's own choice;
+/// TODO(unverified): the PM references give no rate for a text control
+/// scrolling under a held pointer (`SV_SCROLLRATE` is for scroll bars).
+pub const DRAG_SCROLL_MS: u64 = 100;
 
 // WinQuerySysValue indices (SV_*, <pmwin.h>)
 pub const SV_CXSIZEBORDER: i32 = 4;
+pub const SV_CURSORRATE:   i32 = 9;
 pub const SV_CYSIZEBORDER: i32 = 5;
 pub const SV_CXSCREEN:     i32 = 20;
 pub const SV_CYSCREEN:     i32 = 21;
@@ -1096,7 +1105,8 @@ mod header_tests {
                      "SEVERITY_UNRECOVERABLE", "PMERR_INVALID_HWND", "PMERR_INVALID_HMQ",
                      "PMERR_NO_MSG_QUEUE", "PMERR_MSG_QUEUE_ALREADY_EXISTS",
                      "PMERR_PARAMETER_OUT_OF_RANGE", "PMERR_INVALID_FLAG", "PMERR_INVALID_HACCEL",
-                     "QW_FRAMEOWNER", "QWL_MIN", "QWS_MIN", "HWND_THREADCAPTURE"] {
+                     "QW_FRAMEOWNER", "QWL_MIN", "QWS_MIN", "HWND_THREADCAPTURE",
+                     "SV_CURSORRATE", "TID_SCROLL"] {
             assert!(defs.contains_key(name), "{name} is not defined in the toolkit headers");
         }
         assert!(wrong.is_empty(), "constants differ from the toolkit headers:\n{}", wrong.join("\n"));

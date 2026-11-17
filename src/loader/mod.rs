@@ -773,6 +773,9 @@ impl Loader {
             WM_TIMER if mp1 == TID_CURSOR && pm_controls::is_edit_control(&class_name) => {
                 self.edit_caret_blink(hwnd)
             }
+            WM_TIMER if mp1 == TID_SCROLL && pm_controls::is_input_control(&class_name) => {
+                self.control_drag_scroll(hwnd, &class_name, cy)
+            }
 
             MLM_SETWRAP if class_name == pm_controls::CLASS_MLE => {
                 self.mle_set_wrap(hwnd, mp1 & 0xFFFF != 0)

@@ -19,7 +19,7 @@ use super::pm_types::OS2Message;
 use super::{control_box, control_text, ApiResult, Loader, MutexExt, Painter,
             CONTROL_EMPHASIS_COLOR, CONTROL_FACE_COLOR, CONTROL_FIELD_COLOR, CONTROL_LINE_H,
             CONTROL_PRESSED_COLOR, CONTROL_TEXT_COLOR, CONTROL_TEXT_INSET};
-use crate::gui::font::{self, FontSpec};
+use crate::gui::font::{self, CjkRegion, FontSpec};
 use crate::gui::surface::DrawOp;
 
 pub(super) const CLASS_ENTRYFIELD: &str = "WC_ENTRYFIELD";
@@ -77,8 +77,16 @@ pub(super) fn is_edit_control(class: &str) -> bool {
     matches!(class, CLASS_ENTRYFIELD | CLASS_MLE)
 }
 
-pub(super) fn system_width(s: &str) -> i32 {
-    font::text_width(s, FontSpec::SYSTEM)
+/// The system font with the CJK face of `codepage`: what control text of a
+/// window whose queue uses `codepage` is drawn in (see `Painter::font`).
+pub(super) fn system_font(codepage: u32) -> FontSpec {
+    FontSpec { cjk: CjkRegion::from_codepage(codepage), ..FontSpec::SYSTEM }
+}
+
+/// Width in pixels of text drawn in `face`: caret positions, clicks, scroll
+/// offsets and word wrap are measured with the face the text is drawn in.
+pub(super) fn measure_in(face: FontSpec) -> impl Fn(&str) -> i32 + Copy + 'static {
+    move |s| font::text_width(s, face)
 }
 
 /// Number of whole text rows that fit in a control `cy` pixels high: rows run
@@ -117,17 +125,20 @@ fn mouse_pos(mp1: u32) -> (i32, i32) {
 /// Draw one line of an edit control: `chars` clipped to `view_w` pixels with
 /// its line box bottom-left at `(x, y)`, the characters `selected` (indices
 /// into `chars`) highlighted, and the caret bar before `chars[caret]` when
-/// `caret` is given. Highlight and caret are clipped vertically to
-/// `(clip_lo, clip_hi)`.
+/// `caret` is given and `caret_on` (the blink phase). Highlight and caret are
+/// clipped vertically to `(clip_lo, clip_hi)`. Returns the x of the caret
+/// (whether or not it is drawn) when `caret` is given.
+#[allow(clippy::too_many_arguments)]
 fn draw_edit_line(p: &Painter, (x, y): (i32, i32), view_w: i32, chars: &[char],
-                  selected: std::ops::Range<usize>, caret: Option<usize>,
-                  (clip_lo, clip_hi): (i32, i32)) {
+                  selected: std::ops::Range<usize>, caret: Option<usize>, caret_on: bool,
+                  (clip_lo, clip_hi): (i32, i32)) -> Option<i32> {
     let line: String = chars.iter().collect();
     let shown = font::fit_text(&line, view_w, p.font());
     if !shown.is_empty() {
         control_text(p, x, y, shown);
     }
-    let prefix_w = |n: usize| system_width(&chars[..n.min(chars.len())].iter().collect::<String>());
+    let width = measure_in(p.font());
+    let prefix_w = |n: usize| width(&chars[..n.min(chars.len())].iter().collect::<String>());
     let (y1, y2) = (y.max(clip_lo), (y + CONTROL_LINE_H - 1).min(clip_hi));
     let shown_n = shown.chars().count();
     let (s, e) = (selected.start.min(shown_n), selected.end.min(shown_n));
@@ -136,12 +147,11 @@ fn draw_edit_line(p: &Painter, (x, y): (i32, i32), view_w: i32, chars: &[char],
         p.fill((x1, y1, x2 - 1, y2), CONTROL_SELECT_COLOR);
         p.op(DrawOp::Text { x: x1, y, text: chars[s..e].iter().collect(), color: CONTROL_SELECT_TEXT_COLOR, cjk: p.cjk });
     }
-    if let Some(caret) = caret {
-        let caret_x = x + prefix_w(caret);
-        if y1 <= y2 {
-            p.fill((caret_x, y1, caret_x + CARET_W - 1, y2), CONTROL_CARET_COLOR);
-        }
+    let caret_x = x + prefix_w(caret?);
+    if caret_on && y1 <= y2 {
+        p.fill((caret_x, y1, caret_x + CARET_W - 1, y2), CONTROL_CARET_COLOR);
     }
+    Some(caret_x)
 }
 
 /// `range` shifted to start at `origin` and cut to what lies after it; empty
@@ -153,12 +163,13 @@ fn relative(range: std::ops::Range<usize>, origin: usize) -> std::ops::Range<usi
 /// The edit buffer of an entry field / MLE window, with its selection;
 /// PageUp / PageDown move by the rows the window shows, and an MLE with
 /// `MLS_WORDWRAP` wraps its lines to the width of its text area (less the
-/// caret, so a caret after the last character of a full row stays inside).
-fn edit_buffer(win: &super::pm_types::OS2Window, multiline: bool) -> EditBuffer {
+/// caret, so a caret after the last character of a full row stays inside),
+/// measured in `face`, the face the window's text is drawn in.
+fn edit_buffer(win: &super::pm_types::OS2Window, multiline: bool, face: FontSpec) -> EditBuffer {
     let mut buf = EditBuffer::with_selection(&win.text, win.edit_anchor, win.edit_caret, multiline);
     buf.set_page_rows(control_visible_rows(win.cy));
     if multiline && win.style & MLS_WORDWRAP != 0 {
-        buf.set_wrap(win.cx - 2 * CONTROL_TEXT_INSET - CARET_W, system_width);
+        buf.set_wrap(win.cx - 2 * CONTROL_TEXT_INSET - CARET_W, measure_in(face));
     }
     buf
 }
@@ -203,10 +214,10 @@ fn row_under_pointer(top: usize, cy: i32, local_y: i32) -> Option<usize> {
 /// `(local_x, local_y)` (relative to the control, `cy` high): the row under
 /// the pointer (see [`row_under_pointer`]; clamped to the text), then the
 /// nearest caret position in it, allowing for the horizontal scroll of the
-/// caret's line.
-fn edit_pos_at(win: &super::pm_types::OS2Window, multiline: bool, cy: i32,
+/// caret's line. Text is measured in `face`.
+fn edit_pos_at(win: &super::pm_types::OS2Window, multiline: bool, face: FontSpec, cy: i32,
                (local_x, local_y): (i32, i32)) -> usize {
-    let buf = edit_buffer(win, multiline);
+    let buf = edit_buffer(win, multiline, face);
     let lines = buf.lines();
     let (caret_line, _) = buf.caret_line();
     let line = if multiline {
@@ -218,11 +229,18 @@ fn edit_pos_at(win: &super::pm_types::OS2Window, multiline: bool, cy: i32,
     let chars = &buf.chars()[lines[line].clone()];
     // Only the caret's line is scrolled horizontally.
     let first = if line == caret_line { win.edit_scroll.min(chars.len()) } else { 0 };
-    let col = first + pm_edit::caret_from_x(&chars[first..], local_x - CONTROL_TEXT_INSET, &system_width);
+    let col = first + pm_edit::caret_from_x(&chars[first..], local_x - CONTROL_TEXT_INSET, &measure_in(face));
     buf.pos_in_line(line, col)
 }
 
 impl Loader {
+    /// The face the text of control `hwnd` is drawn in (the CJK face of its
+    /// queue's codepage, else the process codepage's), for callers that
+    /// already hold the window manager lock.
+    fn control_face(&self, wm: &super::pm_types::WindowManager, hwnd: u32) -> FontSpec {
+        system_font(wm.queue_codepage(hwnd).unwrap_or_else(|| self.process_codepage()))
+    }
+
     /// Queue `msg` for `hwnd` on its message queue.
     fn post_control_message(&self, hwnd: u32, msg: u32, mp1: u32, mp2: u32) {
         let wm = self.shared.window_mgr.lock_or_recover();
@@ -319,9 +337,9 @@ impl Loader {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             let focused = wm.focus_hwnd == hwnd;
             let Some(win) = wm.get_window_mut(hwnd) else { return };
-            let buf = edit_buffer(win, false);
+            let buf = edit_buffer(win, false, p.font());
             let first = pm_edit::scroll_to_caret(
-                buf.chars(), buf.caret(), win.edit_scroll, view_w - CARET_W, &system_width);
+                buf.chars(), buf.caret(), win.edit_scroll, view_w - CARET_W, &measure_in(p.font()));
             store_selection(win, &buf);
             win.edit_scroll = first;
             (buf, first, focused, focused && !win.caret_off)
@@ -329,9 +347,29 @@ impl Loader {
         // The selection shows while the field has the focus.
         let selected = if focused { relative(buf.selection(), first) } else { 0..0 };
         control_box(p, (x, y, cx, cy), CONTROL_FIELD_COLOR);
-        draw_edit_line(p, (x + CONTROL_TEXT_INSET, y + (cy - CONTROL_LINE_H) / 2),
-                       view_w, &buf.chars()[first..], selected,
-                       caret_on.then(|| buf.caret() - first), (y + 1, y + cy - 1));
+        let line_y = y + (cy - CONTROL_LINE_H) / 2;
+        let caret_x = draw_edit_line(p, (x + CONTROL_TEXT_INSET, line_y),
+                                     view_w, &buf.chars()[first..], selected,
+                                     focused.then(|| buf.caret() - first), caret_on, (y + 1, y + cy - 1));
+        self.note_text_caret(p, hwnd, (x, line_y, cx), caret_x);
+    }
+
+    /// Remember where the caret of focused text control `hwnd` was painted
+    /// (`caret_x`; `None` when it has no caret in view): its text line runs
+    /// from `x` for `cx` pixels with its bottom at `line_y`. The renderer
+    /// places the host input method's window there.
+    fn note_text_caret(&self, p: &Painter, hwnd: u32, (x, line_y, cx): (i32, i32, i32),
+                       caret_x: Option<i32>) {
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        match caret_x {
+            Some(caret_x) if wm.focus_hwnd == hwnd => {
+                wm.text_caret = Some(super::pm_types::TextCaret {
+                    hwnd, frame: p.frame, line: (x, line_y, cx, CONTROL_LINE_H), cursor: caret_x - x,
+                });
+            }
+            _ if wm.text_caret.is_some_and(|c| c.hwnd == hwnd) => wm.text_caret = None,
+            _ => {}
+        }
     }
 
     /// WC_MLE: white field, one row per line from the top (per wrapped row
@@ -346,13 +384,13 @@ impl Loader {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             let focused = wm.focus_hwnd == hwnd;
             let Some(win) = wm.get_window_mut(hwnd) else { return };
-            let buf = edit_buffer(win, true);
+            let buf = edit_buffer(win, true, p.font());
             let lines = buf.lines();
             let (caret_line, col) = buf.caret_line();
             let top = pm_edit::scroll_to_row(caret_line, win.top_row, rows, lines.len());
             let first = pm_edit::scroll_to_caret(
                 &buf.chars()[lines[caret_line].clone()], col, win.edit_scroll,
-                view_w - CARET_W, &system_width);
+                view_w - CARET_W, &measure_in(p.font()));
             store_selection(win, &buf);
             win.edit_scroll = first;
             win.top_row = top;
@@ -361,19 +399,25 @@ impl Loader {
         control_box(p, (x, y, cx, cy), CONTROL_FIELD_COLOR);
         let (caret_line, col) = buf.caret_line();
         let sel = if focused { buf.selection() } else { 0..0 };
+        let mut caret_at = None;
         for (i, line) in buf.lines().into_iter().enumerate().skip(top).take(rows) {
             // The part of the selection in this line, relative to its start.
             let in_line = relative(sel.start.max(line.start)..sel.end.min(line.end), line.start);
             let in_line = if in_line.start < in_line.end { in_line } else { 0..0 };
             let chars = &buf.chars()[line];
             let (chars, caret, selected) = if i == caret_line {
-                (&chars[first..], caret_on.then_some(col - first), relative(in_line, first))
+                (&chars[first..], focused.then_some(col - first), relative(in_line, first))
             } else {
                 (chars, None, in_line)
             };
-            draw_edit_line(p, (x + CONTROL_TEXT_INSET, y + control_row_y(cy, i - top)),
-                           view_w, chars, selected, caret, (y + 1, y + cy - 1));
+            let line_y = y + control_row_y(cy, i - top);
+            if let Some(caret_x) = draw_edit_line(p, (x + CONTROL_TEXT_INSET, line_y),
+                                                  view_w, chars, selected, caret, caret_on,
+                                                  (y + 1, y + cy - 1)) {
+                caret_at = Some((line_y, caret_x));
+            }
         }
+        self.note_text_caret(p, hwnd, (x, caret_at.map_or(y, |c| c.0), cx), caret_at.map(|c| c.1));
     }
 
     /// WC_LISTBOX: white field, one row per item from the first visible item;
@@ -452,10 +496,11 @@ impl Loader {
             _ => {
                 let multiline = class == CLASS_MLE;
                 let mut wm = self.shared.window_mgr.lock_or_recover();
+                let face = self.control_face(&wm, hwnd);
                 if let Some(win) = wm.get_window_mut(hwnd) {
-                    let (line_before, _) = edit_buffer(win, multiline).caret_line();
-                    let pos = edit_pos_at(win, multiline, cy, (local_x, local_y));
-                    let mut buf = edit_buffer(win, multiline);
+                    let (line_before, _) = edit_buffer(win, multiline, face).caret_line();
+                    let pos = edit_pos_at(win, multiline, face, cy, (local_x, local_y));
+                    let mut buf = edit_buffer(win, multiline, face);
                     if extend { buf.extend_to(pos) } else { buf.set_caret(pos) }
                     store_selection(win, &buf);
                     if buf.caret_line().0 != line_before {
@@ -465,7 +510,11 @@ impl Loader {
             }
         }
         // Held until released: dragging extends the selection.
-        self.shared.window_mgr.lock_or_recover().pressed_control = hwnd;
+        {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            wm.pressed_control = hwnd;
+            wm.drag_pointer = (local_x, local_y);
+        }
         self.repaint_control(hwnd);
         ApiResult::Normal(1)
     }
@@ -492,10 +541,14 @@ impl Loader {
     /// WM_MOUSEMOVE on an entry field, MLE or list box held with button 1:
     /// extend the selection to the pointer / select the item under it.
     pub(super) fn control_mouse_move(&self, hwnd: u32, class: &str, cy: i32, mp1: u32) -> ApiResult {
-        if self.shared.window_mgr.lock_or_recover().pressed_control != hwnd {
-            return ApiResult::Normal(0);
-        }
         let (local_x, local_y) = mouse_pos(mp1);
+        {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            if wm.pressed_control != hwnd {
+                return ApiResult::Normal(0);
+            }
+            wm.drag_pointer = (local_x, local_y);
+        }
         if class == CLASS_LISTBOX {
             // Dragging above or below the list scrolls it an item at a time.
             let item = {
@@ -515,9 +568,10 @@ impl Loader {
         let multiline = class == CLASS_MLE;
         let changed = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
+            let face = self.control_face(&wm, hwnd);
             let Some(win) = wm.get_window_mut(hwnd) else { return ApiResult::Normal(0) };
-            let pos = edit_pos_at(win, multiline, cy, (local_x, local_y));
-            let mut buf = edit_buffer(win, multiline);
+            let pos = edit_pos_at(win, multiline, face, cy, (local_x, local_y));
+            let mut buf = edit_buffer(win, multiline, face);
             let before = buf.caret();
             buf.extend_to(pos);
             store_selection(win, &buf);
@@ -527,6 +581,23 @@ impl Loader {
             self.repaint_control(hwnd);
         }
         ApiResult::Normal(1)
+    }
+
+    /// WM_TIMER(TID_SCROLL) on an entry field, MLE or list box: while it is
+    /// held with button 1 and the pointer rests outside it, scroll on as if
+    /// the pointer had moved to where it last was (a row per tick).
+    pub(super) fn control_drag_scroll(&self, hwnd: u32, class: &str, cy: i32) -> ApiResult {
+        let ((x, y), cx) = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            match wm.get_window(hwnd) {
+                Some(w) if wm.pressed_control == hwnd => (wm.drag_pointer, w.cx),
+                _ => return ApiResult::Normal(0),
+            }
+        };
+        if (0..cx).contains(&x) && (0..cy).contains(&y) {
+            return ApiResult::Normal(0);
+        }
+        self.control_mouse_move(hwnd, class, cy, (x as u32 & 0xFFFF) | ((y as u32 & 0xFFFF) << 16))
     }
 
     /// WM_BUTTON1UP on an entry field, MLE or list box: let go of it.
@@ -662,10 +733,11 @@ impl Loader {
         let changed = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             let paste = wm.clipboard_text.clone();
+            let face = self.control_face(&wm, hwnd);
             let Some(win) = wm.get_window_mut(hwnd) else { return false };
             // A read-only control only copies.
             let cmd = if is_read_only(win) && cmd != ClipboardCmd::Copy { return false } else { cmd };
-            let mut buf = edit_buffer(win, multiline);
+            let mut buf = edit_buffer(win, multiline, face);
             let copied = matches!(cmd, ClipboardCmd::Cut | ClipboardCmd::Copy)
                 .then(|| buf.selected_text()).filter(|t| !t.is_empty());
             let changed = match cmd {
@@ -704,8 +776,9 @@ impl Loader {
     pub(super) fn edit_set_selection(&self, hwnd: u32, multiline: bool, anchor: usize, caret: usize) -> ApiResult {
         {
             let mut wm = self.shared.window_mgr.lock_or_recover();
+            let face = self.control_face(&wm, hwnd);
             let Some(win) = wm.get_window_mut(hwnd) else { return ApiResult::Normal(0) };
-            let mut buf = edit_buffer(win, multiline);
+            let mut buf = edit_buffer(win, multiline, face);
             buf.set_selection(anchor, caret);
             store_selection(win, &buf);
         }
@@ -716,8 +789,9 @@ impl Loader {
     /// The selection of an entry field / MLE as `(anchor, caret)`, clamped.
     pub(super) fn edit_selection(&self, hwnd: u32, multiline: bool) -> (usize, usize) {
         let wm = self.shared.window_mgr.lock_or_recover();
+        let face = self.control_face(&wm, hwnd);
         wm.get_window(hwnd).map_or((0, 0), |w| {
-            let buf = edit_buffer(w, multiline);
+            let buf = edit_buffer(w, multiline, face);
             (buf.anchor(), buf.caret())
         })
     }
@@ -727,10 +801,11 @@ impl Loader {
     fn edit_key(&self, hwnd: u32, multiline: bool, key: EditKey, extend: bool, key_up: bool) -> bool {
         let changed = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
+            let face = self.control_face(&wm, hwnd);
             let Some(win) = wm.get_window_mut(hwnd) else { return false };
-            let mut buf = edit_buffer(win, multiline);
+            let mut buf = edit_buffer(win, multiline, face);
             let (line_before, _) = buf.caret_line();
-            let Some(changed) = buf.apply(key, extend, &system_width) else { return false };
+            let Some(changed) = buf.apply(key, extend, &measure_in(face)) else { return false };
             if key_up {
                 return true;
             }
@@ -965,6 +1040,13 @@ mod tests {
 
     const FRAME_CX: i32 = 640;
     const FRAME_CY: i32 = 480;
+    /// Codepage of the fixture's message queue.
+    const FIXTURE_CP: u32 = 850;
+
+    /// Width of text in the face the fixture's controls draw in.
+    fn system_width(s: &str) -> i32 {
+        measure_in(system_font(FIXTURE_CP))(s)
+    }
 
     struct Fixture {
         loader: Loader,
@@ -979,7 +1061,7 @@ mod tests {
         let loader = Loader::new_mock();
         let (client, hmq, frame) = {
             let mut wm = loader.shared.window_mgr.lock_or_recover();
-            let hmq = wm.create_mq(850);
+            let hmq = wm.create_mq(FIXTURE_CP);
             wm.tid_to_hmq.insert(0, hmq);
             wm.register_class("App".into(), 0x1234, 0);
             let frame = wm.create_window("App".into(), 0, hmq);
@@ -1111,6 +1193,40 @@ mod tests {
                 assert!(!f.is_empty() && f.iter().all(|&r| r == region), "cp {cp}: {f:?}");
             }
         }
+    }
+
+    /// Clicks, the caret and word wrap are measured in the face the text is
+    /// drawn in — the queue codepage's — not the process codepage's. U+2167
+    /// (Roman numeral eight) is much wider in Plex Sans KR than in JP.
+    #[test]
+    fn caret_and_wrap_are_measured_in_the_face_of_the_queue_codepage() {
+        const EIGHT: &str = "\u{2167}";
+        let kr = measure_in(system_font(949));
+        let jp = measure_in(system_font(932));
+        assert!(kr(EIGHT) > jp(EIGHT) + 4, "the faces must differ for this test");
+        let fx = fixture();
+        let mq = fx.loader.shared.window_mgr.lock_or_recover().get_mq(fx.hmq).unwrap();
+        mq.lock_or_recover().codepage = 949;
+        fx.loader.shared.active_codepage.store(932, std::sync::atomic::Ordering::Relaxed);
+
+        // A click just past the first character in the KR face puts the
+        // caret after it (in the JP face it would be after the second).
+        let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, &EIGHT.repeat(2));
+        fx.click(entry, CONTROL_TEXT_INSET + kr(EIGHT) + 1, 12);
+        assert_eq!(fx.caret(entry), 1);
+        let bars = fx.caret_bars(entry);
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].0, ENTRY_RECT.0 + CONTROL_TEXT_INSET + kr(EIGHT));
+
+        // Rows wrap where the KR face runs out of room.
+        let text = format!("{EIGHT} {EIGHT}");
+        let room = kr(&text) - 2;
+        assert!(jp(&text) <= room);
+        let cx = room + 2 * CONTROL_TEXT_INSET + CARET_W;
+        let mle = fx.add(CLASS_MLE, ID_MLE, (10, 50, cx, 80), &text);
+        fx.with(mle, |w| w.style |= MLS_WORDWRAP);
+        let rows: Vec<String> = fx.drawn_texts(mle).into_iter().map(|t| t.2).collect();
+        assert_eq!(rows, [format!("{EIGHT} "), EIGHT.to_string()]);
     }
 
     // ── Geometry ─────────────────────────────────────────────────────────────
@@ -2038,7 +2154,7 @@ mod tests {
         let fx = fixture();
         let text = (0..10).map(|i| format!("Line {i}")).collect::<Vec<_>>().join("\r\n");
         let mle = fx.add(CLASS_MLE, ID_MLE, MLE_RECT, &text); // 3 rows: a page is 2 lines
-        let line_of = |fx: &Fixture| fx.with(mle, |w| edit_buffer(w, true).caret_line().0);
+        let line_of = |fx: &Fixture| fx.with(mle, |w| edit_buffer(w, true, system_font(FIXTURE_CP)).caret_line().0);
         fx.paint(mle);
         assert_eq!(fx.vkey(mle, VK_PAGEDOWN), 1);
         assert_eq!(line_of(&fx), 2);
@@ -2196,7 +2312,7 @@ mod tests {
         assert_eq!(fx.caret(mle), 0);
         fx.vkey(mle, VK_DOWN);
         assert_eq!(fx.caret(mle), wrapped[0].chars().count());
-        assert_eq!(fx.with(mle, |w| edit_buffer(w, true).caret_line()), (1, 0));
+        assert_eq!(fx.with(mle, |w| edit_buffer(w, true, system_font(FIXTURE_CP)).caret_line()), (1, 0));
 
         fx.send(mle, MLM_SETWRAP, 0, 0);
         assert!(one_clipped_row(rows(&fx)));
@@ -2213,7 +2329,7 @@ mod tests {
         fx.with(mle, |w| w.style |= MLS_WORDWRAP);
         fx.click(mle, 1, control_row_y(MLE_RECT.3, 0) + 3);
         fx.type_text(mle, "aaaa bbbb cccc dddd eeee ffff gggg hhhh");
-        let lines = fx.with(mle, |w| edit_buffer(w, true).lines().len());
+        let lines = fx.with(mle, |w| edit_buffer(w, true, system_font(FIXTURE_CP)).lines().len());
         assert!(lines > 1, "typing past the edge starts a new row");
         assert_eq!(fx.with(mle, |w| w.edit_scroll), 0, "no horizontal scroll while wrapping");
         assert_eq!(fx.text(mle), "aaaa bbbb cccc dddd eeee ffff gggg hhhh", "no line breaks are inserted");
@@ -2238,7 +2354,7 @@ mod tests {
         let fx = fixture();
         let text = (0..8).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\r\n");
         let mle = fx.add(CLASS_MLE, ID_MLE, MLE_RECT, &text);
-        let line_of = |fx: &Fixture| fx.with(mle, |w| edit_buffer(w, true).caret_line().0);
+        let line_of = |fx: &Fixture| fx.with(mle, |w| edit_buffer(w, true, system_font(FIXTURE_CP)).caret_line().0);
         fx.click(mle, 2, control_row_y(MLE_RECT.3, 0) + 2);
         let below = (2u32 & 0xFFFF) | ((-5i32 as u32 & 0xFFFF) << 16);
         for want in 3..=7 {
@@ -2275,5 +2391,105 @@ mod tests {
         fx.click(empty, 5, 5);
         assert_eq!(fx.send(empty, WM_MOUSEMOVE, below, 0), 1);
         assert_eq!(selection(&fx, empty), LIT_NONE, "an empty list has nothing to select");
+    }
+
+    #[test]
+    fn drag_scroll_timer_keeps_scrolling_while_the_pointer_rests_outside() {
+        let fx = fixture();
+        let list = list_with(&fx, 6);
+        let post = || fx.loader.shared.window_mgr.lock_or_recover().post_drag_scroll();
+        assert_eq!(post(), None, "nothing held");
+        fx.click(list, 50, control_row_y(LIST_RECT.3, 0) + 2);
+        fx.posted();
+        assert_eq!(post(), None, "the pointer is inside the list");
+        let below = 50 | ((-5i32 as u32 & 0xFFFF) << 16);
+        fx.send(list, WM_MOUSEMOVE, below, 0);
+        assert_eq!(selection(&fx, list), 3);
+        fx.posted();
+        // The pointer rests below: each tick scrolls an item further.
+        assert_eq!(post(), Some(list));
+        assert_eq!(post(), Some(list));
+        assert_eq!(fx.posted(), vec![(list, WM_TIMER, TID_SCROLL, 0)], "one pending at a time");
+        fx.send(list, WM_TIMER, TID_SCROLL, 0);
+        assert_eq!(selection(&fx, list), 4);
+        fx.send(list, WM_TIMER, TID_SCROLL, 0);
+        assert_eq!(selection(&fx, list), 5);
+        // Back inside, a tick does nothing; released, nothing is posted.
+        fx.send(list, WM_MOUSEMOVE, 50 | ((control_row_y(LIST_RECT.3, 0) as u32 + 2) << 16), 0);
+        let sel = selection(&fx, list);
+        assert_eq!(fx.send(list, WM_TIMER, TID_SCROLL, 0), 0);
+        assert_eq!(selection(&fx, list), sel);
+        fx.send(list, WM_MOUSEMOVE, below, 0);
+        fx.send(list, WM_BUTTON1UP, below, 0);
+        assert_eq!(post(), None, "released");
+        assert_eq!(fx.send(list, WM_TIMER, TID_SCROLL, 0), 0, "a stale tick is ignored");
+    }
+
+    #[test]
+    fn drag_scroll_timer_scrolls_an_mle_a_line_per_tick() {
+        let fx = fixture();
+        let text = (0..8).map(|i| format!("L{i}")).collect::<Vec<_>>().join("\r\n");
+        let mle = fx.add(CLASS_MLE, ID_MLE, MLE_RECT, &text);
+        let line_of = |fx: &Fixture| fx.with(mle, |w| edit_buffer(w, true, system_font(FIXTURE_CP)).caret_line().0);
+        fx.click(mle, 2, control_row_y(MLE_RECT.3, 0) + 2);
+        fx.send(mle, WM_MOUSEMOVE, 2 | ((-5i32 as u32 & 0xFFFF) << 16), 0);
+        assert_eq!(line_of(&fx), 3);
+        for want in 4..=7 {
+            fx.send(mle, WM_TIMER, TID_SCROLL, 0);
+            assert_eq!(line_of(&fx), want);
+            assert_eq!(fx.with(mle, |w| w.top_row), want - 2, "the view follows");
+        }
+        // An entry field takes the timer too (the pointer left of it).
+        let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, "hello");
+        fx.click(entry, 190, 12);
+        fx.send(entry, WM_MOUSEMOVE, (-5i32 as u32 & 0xFFFF) | (12 << 16), 0);
+        assert_eq!(fx.with(entry, |w| (w.edit_anchor, w.edit_caret)), (5, 0));
+        assert_eq!(fx.send(entry, WM_TIMER, TID_SCROLL, 0), 1);
+        assert_eq!(fx.with(entry, |w| (w.edit_anchor, w.edit_caret)), (5, 0));
+    }
+
+    #[test]
+    fn the_caret_of_the_focused_text_control_places_the_input_method() {
+        let fx = fixture();
+        let (ex, ey, ecx, ecy) = ENTRY_RECT;
+        let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, "hello");
+        let area = |fx: &Fixture| fx.loader.shared.window_mgr.lock_or_recover().text_caret;
+        fx.paint(entry);
+        assert_eq!(area(&fx), None, "no focus, no caret");
+        fx.click(entry, CONTROL_TEXT_INSET + system_width("he"), 12);
+        let caret = area(&fx).expect("caret noted when painted with the focus");
+        let line_y = ey + (ecy - CONTROL_LINE_H) / 2;
+        assert_eq!(caret, super::super::pm_types::TextCaret {
+            hwnd: entry, frame: fx.frame, line: (ex, line_y, ecx, CONTROL_LINE_H),
+            cursor: CONTROL_TEXT_INSET + system_width("he"),
+        });
+        // The blink's off phase keeps the area.
+        fx.send(entry, WM_TIMER, TID_CURSOR, 0);
+        assert!(fx.caret_bars(entry).is_empty());
+        assert_eq!(area(&fx), Some(caret));
+
+        // In screen coordinates (origin top-left) on a 768-px desktop, with
+        // the frame at (100, 50) and no border.
+        fx.with(fx.frame, |w| (w.x, w.y) = (100, 50));
+        let screen = fx.loader.shared.window_mgr.lock_or_recover().text_input_area(768);
+        assert_eq!(screen, Some(((100 + ex, 768 - 50 - line_y - CONTROL_LINE_H, ecx, CONTROL_LINE_H),
+                                 caret.cursor)));
+        // A bordered frame shifts the client right by the border.
+        fx.with(fx.frame, |w| w.frame_flags = FCF_SIZEBORDER);
+        let screen = fx.loader.shared.window_mgr.lock_or_recover().text_input_area(768);
+        assert_eq!(screen.unwrap().0.0, 100 + CHROME_BORDER_W + ex);
+
+        // An MLE notes the caret's row.
+        let mle = fx.add(CLASS_MLE, ID_MLE, MLE_RECT, "ab\r\ncd");
+        fx.click(mle, CONTROL_TEXT_INSET + 1, control_row_y(MLE_RECT.3, 1) + 2);
+        let caret = area(&fx).unwrap();
+        assert_eq!(caret.hwnd, mle);
+        assert_eq!(caret.line.1, MLE_RECT.1 + control_row_y(MLE_RECT.3, 1));
+        assert_eq!(fx.loader.shared.window_mgr.lock_or_recover().text_input_area(768).unwrap().1,
+                   caret.cursor);
+
+        // Focus elsewhere: no area until a text control has it again.
+        fx.loader.set_focus_window(0);
+        assert_eq!(fx.loader.shared.window_mgr.lock_or_recover().text_input_area(768), None);
     }
 }
