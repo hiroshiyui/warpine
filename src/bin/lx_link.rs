@@ -35,6 +35,8 @@ const UCONV_BASE: u32 = 12288;
 const SO32DLL_BASE: u32 = 13312;
 const TCP32DLL_BASE: u32 = 14336;
 const MOUCALLS_BASE: u32 = 15360;
+const PMSHAPI_BASE: u32 = 16384;
+const HELPMGR_BASE: u32 = 17408;
 
 /// Base virtual address of the code (text) object in the generated LX file.
 const CODE_OBJECT_BASE: u32 = 0x0001_0000;
@@ -941,6 +943,8 @@ fn resolve_import(module: &str, ordinal: u32) -> u32 {
         "SO32DLL"  => SO32DLL_BASE,
         "TCP32DLL" => TCP32DLL_BASE,
         "MOUCALLS" => MOUCALLS_BASE,
+        "PMSHAPI"  => PMSHAPI_BASE,
+        "HELPMGR"  => HELPMGR_BASE,
         _ => {
             eprintln!("warning: unknown import module '{}'", module);
             return MAGIC_API_BASE;

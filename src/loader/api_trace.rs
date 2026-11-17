@@ -85,6 +85,7 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         289 => "DosSetProcessCp",
         291 => "DosQueryCp",
         292 => "DosSetDateTime",
+        296 => "DosExitList",
         299 => "DosAllocMem",
         300 => "DosAllocSharedMem",
         301 => "DosGetNamedSharedMem",
@@ -103,17 +104,23 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         324 => "DosCreateEventSem",
         325 => "DosOpenEventSem",
         326 => "DosCloseEventSem",
+        327 => "DosResetEventSem",
         328 => "DosPostEventSem",
         329 => "DosWaitEventSem",
+        330 => "DosQueryEventSem",
         331 => "DosCreateMutexSem",
         332 => "DosOpenMutexSem",
         333 => "DosCloseMutexSem",
         334 => "DosRequestMutexSem",
         335 => "DosReleaseMutexSem",
+        336 => "DosQueryMutexSem",
         337 => "DosCreateMuxWaitSem",
+        338 => "DosOpenMuxWaitSem",
         339 => "DosCloseMuxWaitSem",
         340 => "DosWaitMuxWaitSem",
+        341 => "DosAddMuxWaitSem",
         342 => "DosDeleteMuxWaitSem",
+        343 => "DosQueryMuxWaitSem",
         348 => "DosQuerySysInfo",
         349 => "DosWaitThread",
         352 => "DosGetResource",
@@ -282,7 +289,7 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         },
 
         // ── MOUCALLS ───────────────────────────────────────────────
-        o if (MOUCALLS_BASE..STUB_AREA_SIZE).contains(&o) => match o - MOUCALLS_BASE {
+        o if (MOUCALLS_BASE..PMSHAPI_BASE).contains(&o) => match o - MOUCALLS_BASE {
             1  => "MouGetPtrShape",
             2  => "MouSetPtrShape",
             3  => "MouGetNumMickeys",
@@ -303,6 +310,30 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             23 => "MouSynch",
             25 => "MouSetDevStatus",
             26 => "MouDrawPtr",
+            _  => "?",
+        },
+
+        // ── PMSHAPI (profiles) ─────────────────────────────────────
+        o if (PMSHAPI_BASE..HELPMGR_BASE).contains(&o) => match o - PMSHAPI_BASE {
+            101 => "PrfQueryProfileSize",
+            102 => "PrfOpenProfile",
+            103 => "PrfCloseProfile",
+            114 => "PrfQueryProfileInt",
+            115 => "PrfQueryProfileString",
+            116 => "PrfWriteProfileString",
+            117 => "PrfQueryProfileData",
+            118 => "PrfWriteProfileData",
+            _   => "?",
+        },
+
+        // ── HELPMGR ────────────────────────────────────────────────
+        o if (HELPMGR_BASE..STUB_AREA_SIZE).contains(&o) => match o - HELPMGR_BASE {
+            51 => "WinCreateHelpInstance",
+            52 => "WinDestroyHelpInstance",
+            53 => "WinQueryHelpInstance",
+            54 => "WinAssociateHelpInstance",
+            55 => "WinLoadHelpTable",
+            56 => "WinCreateHelpTable",
             _  => "?",
         },
 
@@ -327,7 +358,9 @@ pub fn module_for_ordinal(ordinal: u32) -> &'static str {
     else if ordinal < SO32DLL_BASE  { "UCONV" }     // 12288–13311
     else if ordinal < TCP32DLL_BASE { "SO32DLL" }   // 13312–14335
     else if ordinal < MOUCALLS_BASE { "TCP32DLL" } // 14336–15359
-    else if ordinal < STUB_AREA_SIZE { "MOUCALLS" } // 15360–16383
+    else if ordinal < PMSHAPI_BASE  { "MOUCALLS" } // 15360–16383
+    else if ordinal < HELPMGR_BASE  { "PMSHAPI" }  // 16384–17407
+    else if ordinal < STUB_AREA_SIZE { "HELPMGR" } // 17408–18431
     else                            { "?" }
 }
 
@@ -414,17 +447,24 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
         324 => &["pszName", "phev", "flAttr", "fState"],
         325 => &["pszName", "phev"],
         326 => &["hev"],
+        296 => &["ulOrderCode", "pfn"],
+        327 => &["hev", "pulPostCt"],
         328 => &["hev"],
         329 => &["hev", "ulTimeout"],
+        330 => &["hev", "pulPostCt"],
         331 => &["pszName", "phmtx", "flAttr", "fState"],
         332 => &["pszName", "phmtx"],
         333 => &["hmtx"],
         334 => &["hmtx", "ulTimeout"],
         335 => &["hmtx"],
+        336 => &["hmtx", "ppid", "ptid", "pulCount"],
         337 => &["pszName", "phmux", "cSemRec", "pSemRec", "flAttr"],
+        338 => &["pszName", "phmux"],
         339 => &["hmux"],
         340 => &["hmux", "ulTimeout", "pulUser"],
-        342 => &["hmux", "flAttr"],
+        341 => &["hmux", "pSemRec"],
+        342 => &["hmux", "hsem"],
+        343 => &["hmux", "pcSemRec", "pSemRec", "pflAttr"],
         348 => &["iStart", "iLast", "pBuf", "cbBuf"],
         349 => &["ptid", "option"],
         352 => &["hmod", "ulTypeID", "ulNameID", "ppb"],
@@ -547,6 +587,30 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
             43 => &["port", "pszProto"],
             44 => &["pszName"],
             45 => &["proto"],
+            _ => &[],
+        },
+
+        // ── PMSHAPI ───────────────────────────────────────────────────────
+        o if (PMSHAPI_BASE..HELPMGR_BASE).contains(&o) => match o - PMSHAPI_BASE {
+            101 => &["hini", "pszApp", "pszKey", "pulSize"],
+            102 => &["hab", "pszFileName"],
+            103 => &["hini"],
+            114 => &["hini", "pszApp", "pszKey", "lDefault"],
+            115 => &["hini", "pszApp", "pszKey", "pszDefault", "pBuffer", "cchBufferMax"],
+            116 => &["hini", "pszApp", "pszKey", "pszData"],
+            117 => &["hini", "pszApp", "pszKey", "pBuffer", "pulBufferMax"],
+            118 => &["hini", "pszApp", "pszKey", "pData", "cchDataLen"],
+            _ => &[],
+        },
+
+        // ── HELPMGR ───────────────────────────────────────────────────────
+        o if (HELPMGR_BASE..STUB_AREA_SIZE).contains(&o) => match o - HELPMGR_BASE {
+            51 => &["hab", "phinit"],
+            52 => &["hwndHelp"],
+            53 => &["hwndApp"],
+            54 => &["hwndHelp", "hwndApp"],
+            55 => &["hwndHelp", "idHelpTable", "hmod"],
+            56 => &["hwndHelp", "phtHelpTable"],
             _ => &[],
         },
 
@@ -796,7 +860,27 @@ mod tests {
         assert_eq!(module_for_ordinal(TCP32DLL_BASE),       "TCP32DLL");
         assert_eq!(module_for_ordinal(MOUCALLS_BASE - 1),  "TCP32DLL");
         assert_eq!(module_for_ordinal(MOUCALLS_BASE),       "MOUCALLS");
-        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "MOUCALLS");
+        assert_eq!(module_for_ordinal(PMSHAPI_BASE - 1),   "MOUCALLS");
+        assert_eq!(module_for_ordinal(PMSHAPI_BASE),        "PMSHAPI");
+        assert_eq!(module_for_ordinal(HELPMGR_BASE - 1),   "PMSHAPI");
+        assert_eq!(module_for_ordinal(HELPMGR_BASE),        "HELPMGR");
+        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "HELPMGR");
+        assert_eq!(module_for_ordinal(STUB_AREA_SIZE),     "?");
+    }
+
+    #[test]
+    fn test_pmshapi_and_helpmgr_ordinal_names() {
+        assert_eq!(ordinal_to_name(PMSHAPI_BASE + 101), "PrfQueryProfileSize");
+        assert_eq!(ordinal_to_name(PMSHAPI_BASE + 102), "PrfOpenProfile");
+        assert_eq!(ordinal_to_name(PMSHAPI_BASE + 118), "PrfWriteProfileData");
+        assert_eq!(ordinal_to_name(PMSHAPI_BASE + 104), "?");
+        assert_eq!(ordinal_to_name(HELPMGR_BASE + 51), "WinCreateHelpInstance");
+        assert_eq!(ordinal_to_name(HELPMGR_BASE + 56), "WinCreateHelpTable");
+        assert_eq!(ordinal_to_name(HELPMGR_BASE + 74), "?");
+        // MOUCALLS ends where PMSHAPI begins.
+        assert_eq!(ordinal_to_name(MOUCALLS_BASE + 26), "MouDrawPtr");
+        assert_eq!(arg_names_for_ordinal(PMSHAPI_BASE + 115).len(), 6);
+        assert_eq!(arg_names_for_ordinal(HELPMGR_BASE + 54), &["hwndHelp", "hwndApp"]);
     }
 
     #[test]
