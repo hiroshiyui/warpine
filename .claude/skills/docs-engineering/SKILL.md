@@ -14,7 +14,8 @@ When performing documentation engineering, always follow these steps:
    - `doc/developer_guide.md` — implementation details, VFS/architecture notes, module descriptions
    - `doc/os2_ordinals.md` — ordinal registry; verify newly implemented APIs are listed and stubs are clearly marked
    - `doc/TODOs.md` — roadmap items; identify what is completed vs. still pending
-   - `doc/reference_manual.md` — user-facing OS/2 API reference
+   - `doc/reference_manual.md` — user-facing OS/2 API reference, with the architecture diagram at its head (step 3b)
+   - `doc/adr/` — architecture decision records; a decision made since the last pass needs a record (next number, listed in `doc/adr/README.md`), and a changed decision a new record that supersedes the old one
    - `samples/README.md` — sample programs and their required phases/features
    - Inline code comments in any modules touched by recent changes — ensure they still accurately describe the current behavior
 
@@ -29,6 +30,15 @@ When performing documentation engineering, always follow these steps:
    - If `validate-doc` reports **name mismatches** (⚠ section): investigate each one. For mismatches that are genuine errors in `os2api.def` (wrong ordinal or wrong name), fix the def and update `api_trace.rs` accordingly. For mismatches that are merely 16-bit-vs-32-bit naming conventions that the normaliser cannot auto-detect, add a `# NOTE:` comment on the relevant line in `os2api.def` explaining the discrepancy so future passes do not re-investigate.
    - If `validate-doc` reports entries **only in def** (ℹ section): confirm they are intentional (e.g. ordinals documented in the IBM CPP Reference but absent from the Open Watcom lib snapshot). If not intentional, correct the def.
    - Do **not** add new ordinals to `doc/os2_ordinals.md` based solely on Warpine's own assignments — that file is a snapshot of the Open Watcom import library and should only be updated from authoritative OS/2 SDK sources.
+
+3b. **Keep the architecture diagram up to date** (ADR-0021) — the diagram at the head of `doc/reference_manual.md` is generated from `doc/architecture/layers.toml` and the module list of `src/`:
+   ```bash
+   cargo run --bin gen_arch -- check     # every src/ module in one layer, warpine.dot current
+   cargo run --bin gen_arch -- render    # rewrite warpine.dot / .svg / .png (needs Graphviz)
+   ```
+   - If `check` names a module that is in no layer, or one that no longer exists, edit `layers.toml`: put new modules in the layer they belong to (add a layer only for a new subsystem), drop removed ones, and keep layer labels, ADR references and flows true to the code (read the source when a module's place is unclear).
+   - Also review the map when the architecture changed without a module change — a new host service, a new zone, a flow that no longer exists — even though `check` passes.
+   - Always run `render` after editing the map, open `doc/architecture/warpine.png` to look at the result, and commit `layers.toml`, `warpine.dot`, `warpine.svg` and `warpine.png` together.
 
 4. **Revise stale or incomplete content** — update anything that no longer matches the current code: new features, removed dependencies, behavioral changes, renamed constants, new modules, and architectural decisions. When in doubt, read the source — never assume.
 
