@@ -47,7 +47,8 @@ fi
 echo "$((last_ms + 1500)) dump $work/desktop.ppm" >> "$work/session.script"
 echo "$((last_ms + 1600)) quit"                   >> "$work/session.script"
 
-SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy RUST_LOG=error \
+# Pin the US country and codepage: Warpine follows the host locale otherwise.
+SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy RUST_LOG=error WARPINE_COUNTRY=1 WARPINE_CODEPAGE=437 \
 WARPINE_GUI_SCRIPT="$work/session.script" \
     timeout 60 "$bin" "$sample" >/dev/null 2>"$work/stderr.log" || {
         echo "snap: warpine exited with an error for $sample:" >&2

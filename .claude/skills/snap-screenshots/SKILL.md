@@ -38,7 +38,7 @@ When capturing screenshots for the README, always follow these steps:
    - Text-mode (VIO) programs such as 4OS2 open only on a terminal, so `snap.sh` cannot run them; capture them under a pseudo-terminal with the same GUI scripts. By default they run in a window on the PM desktop (dump the desktop and trim it like `snap.sh`); the README's hero image is the full-screen text window (`WARPINE_VIO=fullscreen`), converted without trimming (the frame is a fixed 640 × 400):
      ```bash
      printf '2500 text ver\n2700 key enter\n3500 text dir /w\n3800 key enter\n5500 dump /ABS/PATH/4os2.ppm\n5600 quit\n' > s.script
-     SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy RUST_LOG=error WARPINE_VIO=fullscreen WARPINE_GUI_SCRIPT=s.script \
+     SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy RUST_LOG=error WARPINE_COUNTRY=1 WARPINE_CODEPAGE=437 WARPINE_VIO=fullscreen WARPINE_GUI_SCRIPT=s.script \
        script -qec "timeout 60 target/debug/warpine samples/4os2/4os2.exe" /dev/null
      magick /ABS/PATH/4os2.ppm -strip doc/screenshots/4os2.png
      ```
