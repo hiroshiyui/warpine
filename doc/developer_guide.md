@@ -2,7 +2,7 @@
 
 Warpine is an OS/2 compatibility layer for Linux. It loads 32-bit OS/2 executables (LX format) and runs them natively using KVM hardware virtualization — analogous to WINE for Windows, but targeting OS/2 instead.
 
-This guide introduces the internals of Warpine and the OS/2 concepts it emulates.
+This guide introduces the internals of Warpine and the OS/2 concepts it emulates. Why the main design choices were made is recorded in the architecture decision records in [`doc/adr/`](adr/README.md).
 
 ---
 
@@ -281,7 +281,7 @@ Multimedia Presentation Manager/2 APIs. Dispatched at `MDM_BASE` (10240) + ordin
 
 ### PMWIN (src/loader/pm_win.rs)
 
-Window management APIs — approximately 50 ordinals including WinInitialize, WinCreateMsgQueue, WinRegisterClass, WinCreateStdWindow, WinGetMsg, WinDispatchMsg, WinSendMsg, WinPostMsg, WinDefWindowProc, WinBeginPaint, WinEndPaint, WinMessageBox, WinStartTimer, WinStopTimer, clipboard operations, and dialog support.
+Window management APIs — 127 ordinals (see the reference manual for the list) including WinInitialize, WinCreateMsgQueue, WinRegisterClass, WinCreateStdWindow, WinGetMsg, WinDispatchMsg, WinSendMsg, WinPostMsg, WinDefWindowProc, WinBeginPaint, WinEndPaint, WinMessageBox, WinStartTimer, WinStopTimer, clipboard operations, and dialog support.
 
 #### Built-in window class atoms (MAKEINTATOM encoding)
 
@@ -318,7 +318,7 @@ The `pszClass` argument to `WinCreateWindow` (ordinal 909) arrives as a 32-bit g
 
 ### PMGPI (src/loader/pm_gpi.rs)
 
-Graphics Primitive Interface, 64 ordinals (see the reference manual for the list): presentation spaces, colours and mixes, lines, boxes, arcs, area patterns, line widths, text and fonts, read-back, colour tables, and — in `pm_bitmap.rs` — device contexts, bitmaps and bit-block transfers. Arc geometry and the pattern table are in `pm_shapes.rs`. How drawing reaches the screen: "Rendering Pipeline" below.
+Graphics Primitive Interface, 67 ordinals (see the reference manual for the list): presentation spaces, colours and mixes, lines, boxes, arcs, area patterns, line widths, text and fonts, read-back, colour tables, and — in `pm_bitmap.rs` — device contexts, bitmaps and bit-block transfers. Arc geometry and the pattern table are in `pm_shapes.rs`. How drawing reaches the screen: "Rendering Pipeline" below.
 
 ---
 
@@ -1404,9 +1404,9 @@ src/
     ipc.rs             Semaphores (event, mutex, muxwait; names, usage and post counts) and queues
     pm_types.rs        PM data types (windows, classes, presentation spaces, WindowManager)
     locale.rs          Os2Locale: country/codepage information
-    doscalls.rs        DOSCALLS API implementations (~40 functions)
-    pm_win.rs          PMWIN API implementations (~50 ordinals)
-    pm_gpi.rs          PMGPI API implementations (64 ordinals, incl. DevOpenDC/DevCloseDC/DevQueryCaps)
+    doscalls.rs        DOSCALLS API implementations (file, memory, process, NLS; others in their own modules)
+    pm_win.rs          PMWIN dispatcher and window calls (127 ordinals, logic in the pm_* modules)
+    pm_gpi.rs          PMGPI API implementations (67 ordinals, incl. DevOpenDC/DevCloseDC/DevQueryCaps)
     pm_shapes.rs       Arc geometry (ARCPARAMS, full/partial/point arcs, FIXED) and the PATSYM_* pattern table
     pm_bitmap.rs       Bitmap codec (BITMAPINFOHEADER/2, RT_BITMAP), memory DCs, bitmaps, GpiBitBlt family
     pm_edit.rs         Edit-buffer logic for text controls (insert/delete/caret/scroll)
@@ -1615,7 +1615,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the 4OS2 / ANSI session helpers), unless the test names its own.
 
-The unit tests (1316: 1286 warpine + 18 `gen_api` + 12 `lx_link`) include, among others:
+The unit tests (1317: 1286 warpine + 19 `gen_api` + 12 `lx_link`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -1888,7 +1888,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 1316 unit tests (1286 warpine + 18 gen_api + 12 lx_link), 89 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 1317 unit tests (1286 warpine + 19 gen_api + 12 lx_link), 89 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
@@ -1905,7 +1905,7 @@ Warpine provides a complete toolchain for writing OS/2 guest programs in Rust wi
 - `check` — validate def file (no duplicates, sorted, no overflow) and drift-detect against `api_trace.rs` by text-scanning `ordinal_to_name()` match arms
 - `gen-trace` — emit replacement Rust source for `ordinal_to_name()` + `module_for_ordinal()` (pipe to a file then paste into `api_trace.rs`)
 - `gen-def` — re-emit a canonically sorted `os2api.def`
-- `validate-doc` — cross-check `os2api.def` against `doc/os2_ordinals.md` (Open Watcom `lib386/os2/os2386.lib` snapshot); reports confirmed ordinals, 16-bit alias pairs auto-detected by uppercase+strip-"16" normalisation, entries only in def, and name mismatches to investigate; it covers DOSCALLS, QUECALLS, KBDCALLS, VIOCALLS, PMGPI, PMWIN, SESMGR, NLS and MOUCALLS
+- `validate-doc` — cross-check `os2api.def` against `doc/os2_ordinals.md` (Open Watcom `lib386/os2/os2386.lib` snapshot); reports confirmed ordinals, 16-bit alias pairs auto-detected by uppercase+strip-"16" normalisation, entries only in def, name differences acknowledged by a `# NOTE:` on the def line (naming conventions the normaliser cannot detect, e.g. DOSCALLS 75 `DosQueryFileMode16` / `DOS16QFILEMODE`; listed with the note, not counted as mismatches), and the remaining name mismatches to investigate; it covers DOSCALLS, QUECALLS, KBDCALLS, VIOCALLS, PMGPI, PMWIN, SESMGR, NLS, MOUCALLS, PMSHAPI and HELPMGR
 
 Run `cargo run --bin gen_api -- check` to verify consistency after any ordinal change. Run `cargo run --bin gen_api -- validate-doc` to cross-reference against the OS/2 ordinal reference.
 

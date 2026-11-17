@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **Architecture decision records** (`doc/adr/`) — 19 ADRs in Nygard format record why Warpine is built the way it is: KVM execution, the near-clean-room policy, API thunks and module slots, threads on vCPUs, Unicode inside, drives on host directories, SDL3 safe-only, the own desktop compositor, fonts, VIO windows, the built-in CMD.EXE, the Rust guest toolchain, the host locale, the profile format, testing and quality gates.
 - **Rectangle helpers** (new `src/loader/pm_rect.rs`) — `WinSetRect`, `WinSetRectEmpty`, `WinCopyRect`, `WinOffsetRect`, `WinInflateRect`, `WinPtInRect`, `WinIntersectRect`, `WinUnionRect`, `WinSubtractRect`, `WinIsRectEmpty`, `WinEqualRect`; they were unknown ordinals that returned FALSE.
 - **`WinDrawText`** (new `src/loader/pm_drawtext.rs`) — one line of text placed in a rectangle (`DT_LEFT` / `DT_CENTER` / `DT_RIGHT`, `DT_TOP` / `DT_VCENTER` / `DT_BOTTOM`), `DT_WORDBREAK`, `DT_QUERYEXTENT`, `DT_ERASERECT`, `DT_TEXTATTRS`, `DT_MNEMONIC`, `DT_UNDERSCORE`, `DT_STRIKEOUT`, `DT_HALFTONE`, `PMERR_INVALID_FLAG`.
 - **`GpiPolyLine`** — lines from the current position through a point array, drawn as one figure.
@@ -28,6 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Samples `pm_rect_text_test`, `pm_scroll_test`, `pm_profile_test`, `exitlist_test`, `semquery_test`, `xcpt_thread_test`, `kernel2_test`, `pm_paint_test` and `pm_query_test`.
 
 ### Changed
+- **`gen_api validate-doc`** lists name differences acknowledged by a `# NOTE:` on the def line (such as DOSCALLS 75, `DosQueryFileMode16` / `DOS16QFILEMODE`) with their note instead of reporting them as mismatches to investigate on every pass.
 - **API stub area** grows to 18432 bytes for the new PMSHAPI (`PMSHAPI_BASE` 16384) and HELPMGR (`HELPMGR_BASE` 17408) modules.
 - **Built-in scroll bars look different** — arrows, shaft and slider, greyed when disabled; the `pm_controls_test` golden signatures were regenerated.
 
