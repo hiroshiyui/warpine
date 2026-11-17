@@ -25,3 +25,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0017](0017-profile-text-format.md) | Store OS/2 profiles (INI files) in Warpine's own text format | Accepted | 2026-11-18 |
 | [0018](0018-testing-oracle-and-goldens.md) | Test against Open Watcom sample programs and golden screen signatures | Accepted | 2026-11-15 |
 | [0019](0019-quality-gates.md) | Gate every commit on tests and lint-free code with a pinned toolchain | Accepted | 2026-03-31 |
+| [0020](0020-one-process-per-host-process.md) | Run each OS/2 process as its own host process | Accepted | 2026-03-13 |

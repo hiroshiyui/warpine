@@ -7,7 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
-- **Architecture decision records** (`doc/adr/`) — 19 ADRs in Nygard format record why Warpine is built the way it is: KVM execution, the near-clean-room policy, API thunks and module slots, threads on vCPUs, Unicode inside, drives on host directories, SDL3 safe-only, the own desktop compositor, fonts, VIO windows, the built-in CMD.EXE, the Rust guest toolchain, the host locale, the profile format, testing and quality gates.
+- **Architecture decision records** (`doc/adr/`) — 20 ADRs in Nygard format record why Warpine is built the way it is: one OS/2 process per host process, KVM execution, the near-clean-room policy, API thunks and module slots, threads on vCPUs, Unicode inside, drives on host directories, SDL3 safe-only, the own desktop compositor, fonts, VIO windows, the built-in CMD.EXE, the Rust guest toolchain, the host locale, the profile format, testing and quality gates.
 - **Rectangle helpers** (new `src/loader/pm_rect.rs`) — `WinSetRect`, `WinSetRectEmpty`, `WinCopyRect`, `WinOffsetRect`, `WinInflateRect`, `WinPtInRect`, `WinIntersectRect`, `WinUnionRect`, `WinSubtractRect`, `WinIsRectEmpty`, `WinEqualRect`; they were unknown ordinals that returned FALSE.
 - **`WinDrawText`** (new `src/loader/pm_drawtext.rs`) — one line of text placed in a rectangle (`DT_LEFT` / `DT_CENTER` / `DT_RIGHT`, `DT_TOP` / `DT_VCENTER` / `DT_BOTTOM`), `DT_WORDBREAK`, `DT_QUERYEXTENT`, `DT_ERASERECT`, `DT_TEXTATTRS`, `DT_MNEMONIC`, `DT_UNDERSCORE`, `DT_STRIKEOUT`, `DT_HALFTONE`, `PMERR_INVALID_FLAG`.
 - **`GpiPolyLine`** — lines from the current position through a point array, drawn as one figure.
