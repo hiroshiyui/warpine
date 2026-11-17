@@ -140,6 +140,7 @@ samples/               OS/2 sample applications and build scripts
   pm_destroy_test/     WinDestroyWindow and the order of WM_DESTROY
   pm_error_test/       WinGetLastError and PMERR_* codes per thread
   pm_pointer_test/     Mouse pointers: system pointers, WinSetPointer, WinLoadPointer
+  pm_window_test/      WinSetParent, WinSetOwner, WinIsWindowVisible, WinQueryWindowPtr
   pm_typeahead_test/   Keys typed while the program is busy reach the focus window of the moment they are read
   pm_font_test/        GPI font selection (IBM Plex families, styles, sizes) and CJK text
   pm_shapes_test/      GPI arcs, area patterns and line widths, checked with GpiQueryPel
@@ -258,7 +259,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 975 unit tests (no KVM required)
+cargo test                        # 980 unit tests (no KVM required)
 cargo test --test integration     # 38 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
