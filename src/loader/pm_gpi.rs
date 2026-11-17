@@ -1063,7 +1063,7 @@ mod tests {
 
     #[test]
     fn test_font_metrics_key_constants() {
-        assert!(super::FM_SIZE <= 256, "FONTMETRICS fits in a reasonable buffer");
+        const { assert!(super::FM_SIZE <= 256, "FONTMETRICS fits in a reasonable buffer") };
         assert!(super::FATTRS_OFF_FACENAME + super::FACESIZE as u32 <= super::FATTRS_OFF_MAXBASELINEEXT);
     }
 

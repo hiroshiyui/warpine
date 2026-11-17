@@ -173,6 +173,10 @@ pub mod mock {
         exits:     VecDeque<VmExit>,
     }
 
+    impl Default for MockVcpu {
+        fn default() -> Self { Self::new() }
+    }
+
     impl MockVcpu {
         pub fn new() -> Self {
             MockVcpu {

@@ -525,8 +525,7 @@ mod tests {
 
     #[test]
     fn test_ne_header_flags() {
-        let mut header = NeHeader::default();
-        header.module_flags = NE_FLAG_LIBRARY;
+        let mut header = NeHeader { module_flags: NE_FLAG_LIBRARY, ..Default::default() };
         assert!(header.is_dll());
         assert!(!header.is_pm_app());
 

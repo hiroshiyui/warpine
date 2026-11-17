@@ -1851,7 +1851,7 @@ mod tests {
         assert_eq!(fx.text(entry), " copy");
         assert_eq!(fx.send(entry, EM_PASTE, 0, 0), 1);
         assert_eq!(fx.text(entry), " mecopy");
-        assert_eq!(fx.send(entry, EM_SETSEL, 99 | (0 << 16), 0), 1);
+        assert_eq!(fx.send(entry, EM_SETSEL, 99, 0), 1);
         assert_eq!(fx.send(entry, EM_QUERYSEL, 0, 0), (7 << 16), "clamped, reported first..last");
     }
 

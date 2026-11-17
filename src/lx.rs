@@ -299,7 +299,7 @@ mod tests {
         let res = LxFile::parse(cursor);
         // It will fail because object tables etc are missing, 
         // but it should at least get past MZ check
-        assert!(res.is_ok() || res.unwrap_err().to_string().contains("Invalid LX signature") == false);
+        assert!(res.is_ok() || !res.unwrap_err().to_string().contains("Invalid LX signature"));
     }
 
     #[test]
@@ -375,7 +375,7 @@ mod tests {
         assert!(res.is_ok(), "Failed to parse actual hello.exe: {:?}", res.err());
         let lx = res.unwrap();
         assert_eq!(lx.header.signature, *b"LX");
-        assert!(lx.object_table.len() > 0);
+        assert!(!lx.object_table.is_empty());
     }
 
     #[test]

@@ -712,12 +712,12 @@ mod tests {
         let mut mgr = VioManager::new();
         let cols = mgr.cols as usize;
         // Seed row 0 with non-blank content
-        for c in 0..cols { mgr.buffer[c] = ('X', 0x07); }
+        for cell in &mut mgr.buffer[..cols] { *cell = ('X', 0x07); }
         // VioScrollUp with lines=0 must clear the whole region
         mgr.scroll_up(0, 0, 0, (' ', 0x1F), b' ');
         // All cells in row 0 should be filled with the fill cell
-        for c in 0..cols {
-            assert_eq!(mgr.buffer[c], (' ', 0x1F), "cell {} not cleared", c);
+        for (c, cell) in mgr.buffer[..cols].iter().enumerate() {
+            assert_eq!(*cell, (' ', 0x1F), "cell {} not cleared", c);
         }
     }
 
@@ -739,10 +739,10 @@ mod tests {
     fn test_scroll_down_lines_zero_clears_region() {
         let mut mgr = VioManager::new();
         let cols = mgr.cols as usize;
-        for c in 0..cols { mgr.buffer[c] = ('Y', 0x07); }
+        for cell in &mut mgr.buffer[..cols] { *cell = ('Y', 0x07); }
         mgr.scroll_down(0, 0, 0, ('-', 0x4E), b'-');
-        for c in 0..cols {
-            assert_eq!(mgr.buffer[c], ('-', 0x4E), "cell {} not cleared", c);
+        for (c, cell) in mgr.buffer[..cols].iter().enumerate() {
+            assert_eq!(*cell, ('-', 0x4E), "cell {} not cleared", c);
         }
     }
 

@@ -285,7 +285,7 @@ mod tests {
         assert!(!ne.header.is_dll());
 
         // Should have at least 1 segment
-        assert!(ne.segment_table.len() >= 1, "Expected at least 1 segment, got {}", ne.segment_table.len());
+        assert!(!ne.segment_table.is_empty(), "Expected at least 1 segment, got {}", ne.segment_table.len());
 
         // Entry point should be valid
         let cs = ne.header.entry_cs();

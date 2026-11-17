@@ -1042,7 +1042,7 @@ VIOCALLS.19   VioWrtTTY\n";
         assert_eq!(map.get("DosExit"),  Some(&("DOSCALLS".to_string(), 234)));
         assert_eq!(map.get("DosWrite"), Some(&("DOSCALLS".to_string(), 282)));
         assert_eq!(map.get("VioWrtTTY"),Some(&("VIOCALLS".to_string(), 19)));
-        assert!(map.get("NonExistent").is_none());
+        assert!(!map.contains_key("NonExistent"));
     }
 
     #[test]

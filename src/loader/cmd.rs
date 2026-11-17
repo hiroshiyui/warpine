@@ -1220,7 +1220,7 @@ mod tests {
     #[test]
     fn test_format_dos_date_epoch() {
         // year=0 (1980), month=1, day=1 → 01-01-80
-        let date: u16 = (0 << 9) | (1 << 5) | 1;
+        let date: u16 = (1 << 5) | 1; // year field (bits 9-15) is 0
         assert_eq!(format_dos_date(date), "01-01-80");
     }
 
@@ -1246,7 +1246,7 @@ mod tests {
     #[test]
     fn test_format_dos_time_noon() {
         // 12:00 → 12:00p
-        let time: u16 = (12 << 11) | (0 << 5);
+        let time: u16 = 12 << 11; // minutes (bits 5-10) are 0
         assert_eq!(format_dos_time(time), "12:00p");
     }
 

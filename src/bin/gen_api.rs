@@ -1110,7 +1110,7 @@ mod tests {
         assert_eq!(map.get(&("VIOCALLS".into(), 19)),  Some(&"VIO16WRTTTY".to_owned()));
         assert_eq!(map.get(&("VIOCALLS".into(), 8)),   Some(&"VIO16PRTSC".to_owned()));
         // Module not in doc — absent
-        assert!(map.get(&("NLS".into(), 5)).is_none());
+        assert!(!map.contains_key(&("NLS".into(), 5)));
     }
 
     #[test]

@@ -1160,8 +1160,8 @@ mod tests {
         assert_eq!(QSV_TOTPHYSMEM, 17);
         assert_eq!(QSV_MAX_COMP_LENGTH, 23);
         // Ensure range queries would work: iStart <= iLast
-        assert!(QSV_VERSION_MAJOR < QSV_VERSION_REVISION);
-        assert!(QSV_MAX_PATH_LENGTH < QSV_MAX_COMP_LENGTH);
+        const { assert!(QSV_VERSION_MAJOR < QSV_VERSION_REVISION) };
+        const { assert!(QSV_MAX_PATH_LENGTH < QSV_MAX_COMP_LENGTH) };
     }
 
     #[test]

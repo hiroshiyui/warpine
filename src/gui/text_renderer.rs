@@ -735,15 +735,19 @@ mod tests {
     #[test]
     fn lower_half_block_correct() {
         let g = get_glyph_for_char('▄'); // U+2584
-        for r in 0..8  { assert_eq!(g[r], 0x00, "upper half must be blank at row {r}"); }
-        for r in 8..16 { assert_eq!(g[r], 0xFF, "lower half must be set at row {r}"); }
+        for (r, &row) in g.iter().enumerate().take(16) {
+            let want = if r < 8 { 0x00 } else { 0xFF };
+            assert_eq!(row, want, "lower half block: row {r}");
+        }
     }
 
     #[test]
     fn upper_half_block_correct() {
         let g = get_glyph_for_char('▀'); // U+2580
-        for r in 0..8  { assert_eq!(g[r], 0xFF, "upper half must be set at row {r}"); }
-        for r in 8..16 { assert_eq!(g[r], 0x00, "lower half must be blank at row {r}"); }
+        for (r, &row) in g.iter().enumerate().take(16) {
+            let want = if r < 8 { 0xFF } else { 0x00 };
+            assert_eq!(row, want, "upper half block: row {r}");
+        }
     }
 
     #[test]

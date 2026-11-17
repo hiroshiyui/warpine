@@ -247,7 +247,7 @@ mod tests {
             assert!((dist(p, (100, 50)) - 20.0).abs() <= 0.75, "{p:?} on the circle");
         }
         assert!(pts.contains(&(120, 50)) && pts.contains(&(80, 50)), "right and left extremes");
-        assert!(pts.iter().any(|&p| p == (100, 70)) && pts.iter().any(|&p| p == (100, 30)));
+        assert!(pts.contains(&(100, 70)) && pts.contains(&(100, 30)));
     }
 
     #[test]

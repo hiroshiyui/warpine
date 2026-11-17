@@ -1146,7 +1146,7 @@ mod tests {
     fn test_beep_pcm_length_and_amplitude() {
         let pcm = beep_pcm(440, 100);
         assert_eq!(pcm.len(), 4410 * 2);
-        let peak = pcm.chunks_exact(2).map(|s| i16::from_le_bytes([s[0], s[1]]).unsigned_abs()).max().unwrap();
+        let peak = pcm.as_chunks::<2>().0.iter().map(|s| i16::from_le_bytes(*s).unsigned_abs()).max().unwrap();
         assert!(peak > 9000 && peak < 10000, "about 30% of full scale: {peak}");
     }
 
