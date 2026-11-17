@@ -60,6 +60,9 @@ impl super::Loader {
                 o if (VIOCALLS_BASE..SESMGR_BASE).contains(&o) => {
                     self.handle_viocalls(vcpu, vcpu_id, o - VIOCALLS_BASE)
                 }
+                o if (MOUCALLS_BASE..STUB_AREA_SIZE).contains(&o) => {
+                    self.handle_moucalls(vcpu, vcpu_id, o - MOUCALLS_BASE)
+                }
                 _ => {
                     warn!("Unknown API ordinal {} ({}) on VCPU {}", ordinal, api_name, vcpu_id);
                     ApiResult::Normal(0)

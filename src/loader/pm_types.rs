@@ -458,6 +458,9 @@ pub struct WindowManager {
     /// The frame showing a VIO program's text screen on the PM desktop
     /// (`vio_frame.rs`); 0 when the program is not windowed.
     pub vio_frame: u32,
+    /// Columns and rows of the VIO screen the VIO frame was last fitted to
+    /// (`WindowManager::fit_vio_frame`).
+    pub vio_screen: (u16, u16),
 }
 
 /// The caret of a text control as last painted, in the surface coordinates
@@ -516,6 +519,7 @@ impl WindowManager {
             destroying: HashSet::new(),
             hidden_with_owner: HashMap::new(),
             vio_frame: 0,
+            vio_screen: (0, 0),
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {

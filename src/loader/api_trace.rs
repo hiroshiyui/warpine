@@ -256,7 +256,7 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         },
 
         // ── TCP32DLL ───────────────────────────────────────────────
-        o if (TCP32DLL_BASE..STUB_AREA_SIZE).contains(&o) => match o - TCP32DLL_BASE {
+        o if (TCP32DLL_BASE..MOUCALLS_BASE).contains(&o) => match o - TCP32DLL_BASE {
             1  => "accept",
             2  => "bind",
             3  => "connect",
@@ -284,6 +284,31 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             _ => "?",
         },
 
+        // ── MOUCALLS ───────────────────────────────────────────────
+        o if (MOUCALLS_BASE..STUB_AREA_SIZE).contains(&o) => match o - MOUCALLS_BASE {
+            1  => "MouGetPtrShape",
+            2  => "MouSetPtrShape",
+            3  => "MouGetNumMickeys",
+            6  => "MouGetScaleFact",
+            7  => "MouFlushQue",
+            8  => "MouGetNumButtons",
+            9  => "MouClose",
+            11 => "MouSetScaleFact",
+            13 => "MouGetNumQueEl",
+            15 => "MouGetEventMask",
+            16 => "MouSetEventMask",
+            17 => "MouOpen",
+            18 => "MouRemovePtr",
+            19 => "MouGetPtrPos",
+            20 => "MouReadEventQue",
+            21 => "MouSetPtrPos",
+            22 => "MouGetDevStatus",
+            23 => "MouSynch",
+            25 => "MouSetDevStatus",
+            26 => "MouDrawPtr",
+            _  => "?",
+        },
+
         _ => "?",
     }
 }
@@ -304,7 +329,8 @@ pub fn module_for_ordinal(ordinal: u32) -> &'static str {
     else if ordinal < UCONV_BASE    { "MDM" }        // 10240–12287
     else if ordinal < SO32DLL_BASE  { "UCONV" }     // 12288–13311
     else if ordinal < TCP32DLL_BASE { "SO32DLL" }   // 13312–14335
-    else if ordinal < STUB_AREA_SIZE { "TCP32DLL" } // 14336–16383
+    else if ordinal < MOUCALLS_BASE { "TCP32DLL" } // 14336–15359
+    else if ordinal < STUB_AREA_SIZE { "MOUCALLS" } // 15360–16383
     else                            { "?" }
 }
 
@@ -503,7 +529,7 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
         },
 
         // ── TCP32DLL ──────────────────────────────────────────────────────
-        o if (TCP32DLL_BASE..STUB_AREA_SIZE).contains(&o) => match o - TCP32DLL_BASE {
+        o if (TCP32DLL_BASE..MOUCALLS_BASE).contains(&o) => match o - TCP32DLL_BASE {
             1  => &["s", "addr", "addrlen"],
             2  => &["s", "name", "namelen"],
             3  => &["s", "name", "namelen"],
@@ -774,7 +800,19 @@ mod tests {
         assert_eq!(module_for_ordinal(SO32DLL_BASE),        "SO32DLL");
         assert_eq!(module_for_ordinal(TCP32DLL_BASE - 1),  "SO32DLL");
         assert_eq!(module_for_ordinal(TCP32DLL_BASE),       "TCP32DLL");
-        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "TCP32DLL");
+        assert_eq!(module_for_ordinal(MOUCALLS_BASE - 1),  "TCP32DLL");
+        assert_eq!(module_for_ordinal(MOUCALLS_BASE),       "MOUCALLS");
+        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "MOUCALLS");
+    }
+
+    #[test]
+    fn test_moucalls_ordinal_names() {
+        assert_eq!(ordinal_to_name(MOUCALLS_BASE + 17), "MouOpen");
+        assert_eq!(ordinal_to_name(MOUCALLS_BASE + 20), "MouReadEventQue");
+        assert_eq!(ordinal_to_name(MOUCALLS_BASE + 26), "MouDrawPtr");
+        assert_eq!(ordinal_to_name(MOUCALLS_BASE + 14), "?");
+        // TCP32DLL ends where MOUCALLS begins.
+        assert_eq!(ordinal_to_name(TCP32DLL_BASE + 19), "socket");
     }
 
     #[test]

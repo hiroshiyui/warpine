@@ -32,6 +32,9 @@ const NLS_BASE: u32 = 7168;
 const MSG_BASE: u32 = 8192;
 const MDM_BASE: u32 = 10240;
 const UCONV_BASE: u32 = 12288;
+const SO32DLL_BASE: u32 = 13312;
+const TCP32DLL_BASE: u32 = 14336;
+const MOUCALLS_BASE: u32 = 15360;
 
 /// Base virtual address of the code (text) object in the generated LX file.
 const CODE_OBJECT_BASE: u32 = 0x0001_0000;
@@ -935,6 +938,9 @@ fn resolve_import(module: &str, ordinal: u32) -> u32 {
         "MSG"      => MSG_BASE,
         "MDM"      => MDM_BASE,
         "UCONV"    => UCONV_BASE,
+        "SO32DLL"  => SO32DLL_BASE,
+        "TCP32DLL" => TCP32DLL_BASE,
+        "MOUCALLS" => MOUCALLS_BASE,
         _ => {
             eprintln!("warning: unknown import module '{}'", module);
             return MAGIC_API_BASE;
@@ -1063,6 +1069,13 @@ VIOCALLS.19   VioWrtTTY\n";
     #[test]
     fn test_resolve_import_viocalls() {
         assert_eq!(resolve_import("VIOCALLS", 19), MAGIC_API_BASE + VIOCALLS_BASE + 19);
+    }
+
+    #[test]
+    fn test_resolve_import_sockets_and_mouse() {
+        assert_eq!(resolve_import("SO32DLL", 19), MAGIC_API_BASE + SO32DLL_BASE + 19);
+        assert_eq!(resolve_import("TCP32DLL", 19), MAGIC_API_BASE + TCP32DLL_BASE + 19);
+        assert_eq!(resolve_import("MOUCALLS", 17), MAGIC_API_BASE + MOUCALLS_BASE + 17);
     }
 
     #[test]

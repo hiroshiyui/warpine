@@ -739,6 +739,8 @@ impl super::Loader {
                                     regs.rsp += self.viocalls_arg_bytes(ordinal - VIOCALLS_BASE);
                                 } else if (KBDCALLS_BASE..VIOCALLS_BASE).contains(&ordinal) {
                                     regs.rsp += self.kbdcalls_arg_bytes(ordinal - KBDCALLS_BASE);
+                                } else if (MOUCALLS_BASE..STUB_AREA_SIZE).contains(&ordinal) {
+                                    regs.rsp += self.moucalls_arg_bytes(ordinal - MOUCALLS_BASE);
                                 }
                                 vcpu.set_regs(&regs).unwrap();
                             }

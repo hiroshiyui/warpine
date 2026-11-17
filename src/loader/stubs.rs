@@ -353,7 +353,7 @@ impl super::Loader {
         const BUILTINS: &[&str] = &[
             "DOSCALLS", "QUECALLS", "PMWIN", "PMGPI", "KBDCALLS",
             "VIOCALLS", "SESMGR", "NLS", "MSG", "MDM", "UCONV",
-            "SO32DLL", "TCP32DLL",
+            "SO32DLL", "TCP32DLL", "MOUCALLS",
         ];
         let name_upper = name.to_ascii_uppercase();
         let stem = name_upper.strip_suffix(".DLL").unwrap_or(&name_upper);
@@ -1068,7 +1068,7 @@ impl super::Loader {
 
 /// `QSV_MS_COUNT`: milliseconds since the host booted, truncated to 32 bits
 /// so it wraps like the OS/2 counter.
-fn ms_count() -> u32 {
+pub(super) fn ms_count() -> u32 {
     let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
     // SAFETY: `ts` is a valid, writable timespec; CLOCK_MONOTONIC always exists.
     unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts); }

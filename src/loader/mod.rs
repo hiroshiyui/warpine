@@ -48,6 +48,7 @@ pub mod api_ring;
 pub mod gdb_stub;
 pub mod uconv;
 pub mod tcpip;
+pub mod moucalls;
 mod seh;
 mod cmd;
 
@@ -295,6 +296,12 @@ pub struct SharedState {
     pub next_tid: Mutex<u32>,
     pub threads: Mutex<HashMap<u32, thread::JoinHandle<()>>>,
     pub exit_requested: AtomicBool,
+    /// A VIO session may switch between its PM window and full screen with
+    /// Alt+Home (the program is window-compatible); set by `run_vio_session`.
+    pub vio_switchable: AtomicBool,
+    /// Alt+Home was pressed in a switchable VIO session: the GUI loop returns
+    /// so `run_vio_session` can show the other display (`gui::vio_window`).
+    pub vio_switch_requested: AtomicBool,
     pub exit_code: AtomicI32,
     pub locale: locale::Os2Locale,
     /// Active process codepage — updated by DosSetProcessCp; read by DosQueryCp.
@@ -308,6 +315,10 @@ pub struct SharedState {
     /// When `true`, `KbdCharIn` reads from `kbd_queue` instead of termios stdin.
     /// Set before spawning the VCPU for SDL text-mode CLI apps.
     pub use_sdl_text: AtomicBool,
+    /// The VIO session's mouse (MOUCALLS): event queue, pointer, settings.
+    pub mou_mgr: Mutex<moucalls::MouManager>,
+    /// Condvar paired with `mou_mgr` to wake `MouReadEventQue` (wait).
+    pub mou_cond: Condvar,
     /// Ring buffer of the last 256 OS/2 API calls — always populated,
     /// regardless of log level, so crash dumps include full call history.
     pub api_ring: Mutex<ApiRingBuffer>,
@@ -387,12 +398,16 @@ impl Loader {
             next_tid: Mutex::new(1),
             threads: Mutex::new(HashMap::new()),
             exit_requested: AtomicBool::new(false),
+            vio_switchable: AtomicBool::new(false),
+            vio_switch_requested: AtomicBool::new(false),
             exit_code: AtomicI32::new(0),
             locale: locale::Os2Locale::from_host(),
             active_codepage: AtomicU32::new(437), // default CP437; overridden by DosSetProcessCp
             kbd_queue: Mutex::new(VecDeque::new()),
             kbd_cond: Condvar::new(),
             use_sdl_text: AtomicBool::new(false),
+            mou_mgr: Mutex::new(moucalls::MouManager::new()),
+            mou_cond: Condvar::new(),
             api_ring: Mutex::new(ApiRingBuffer::new()),
             begin_libpath: Mutex::new(String::new()),
             end_libpath: Mutex::new(String::new()),
@@ -467,12 +482,16 @@ impl Loader {
             next_tid:     Mutex::new(1),
             threads:      Mutex::new(HashMap::new()),
             exit_requested: AtomicBool::new(false),
+            vio_switchable: AtomicBool::new(false),
+            vio_switch_requested: AtomicBool::new(false),
             exit_code:    AtomicI32::new(0),
             locale:       locale::Os2Locale::from_host(),
             active_codepage: AtomicU32::new(437),
             kbd_queue:    Mutex::new(VecDeque::new()),
             kbd_cond:     Condvar::new(),
             use_sdl_text: AtomicBool::new(false),
+            mou_mgr:      Mutex::new(moucalls::MouManager::new()),
+            mou_cond:     Condvar::new(),
             api_ring:     Mutex::new(ApiRingBuffer::new()),
             begin_libpath: Mutex::new(String::new()),
             end_libpath:  Mutex::new(String::new()),

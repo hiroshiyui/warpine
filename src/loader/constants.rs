@@ -16,10 +16,13 @@ pub const MDM_BASE: u32 = 10240;
 pub const UCONV_BASE: u32    = 12288;
 pub const SO32DLL_BASE: u32  = 13312; // 13 * 1024
 pub const TCP32DLL_BASE: u32 = 14336; // 14 * 1024
+pub const MOUCALLS_BASE: u32 = 15360; // 15 * 1024
 pub const STUB_AREA_SIZE: u32 = 16384;
 
-// Compile-time bounds check: TCP32DLL must fit within STUB_AREA_SIZE.
-const _: () = assert!(TCP32DLL_BASE + 1024 <= STUB_AREA_SIZE);
+// Compile-time bounds checks: each module range is 1024 ordinals wide and
+// MOUCALLS, the last one, must fit within STUB_AREA_SIZE.
+const _: () = assert!(TCP32DLL_BASE + 1024 <= MOUCALLS_BASE);
+const _: () = assert!(MOUCALLS_BASE + 1024 <= STUB_AREA_SIZE);
 
 // GDT tiling: 16-bit segment descriptors covering the guest address space
 // so that 16:16 (selector:offset) addressing works for OS/2 16-bit thunks.
@@ -463,6 +466,32 @@ pub const ERROR_NESTING_NOT_ALLOWED:  u32 = 215;
 pub const ERROR_VIO_ROW: u32 = 358; // Row parameter out of range
 pub const ERROR_VIO_COL: u32 = 359; // Column parameter out of range
 
+// ── MOUCALLS error codes (<bseerr.h>) ────────────────────────────────────────
+pub const ERROR_MOUSE_NO_DEVICE: u32 = 385;
+pub const ERROR_MOUSE_INV_HANDLE: u32 = 386;
+pub const ERROR_MOUSE_INV_PARMS: u32 = 387;
+pub const ERROR_MOUSE_INV_MASK: u32 = 392;
+
+// ── MOUCALLS flags (<bsesub.h>, INCL_MOU) ────────────────────────────────────
+/// `MouReadEventQue` read types.
+pub const MOU_NOWAIT: u16 = 0;
+pub const MOU_WAIT: u16 = 1;
+/// `MOUEVENTINFO::fs` state bits; the same bits form the event mask.
+pub const MOUSE_MOTION: u16 = 0x0001;
+pub const MOUSE_MOTION_WITH_BN1_DOWN: u16 = 0x0002;
+pub const MOUSE_BN1_DOWN: u16 = 0x0004;
+pub const MOUSE_MOTION_WITH_BN2_DOWN: u16 = 0x0008;
+pub const MOUSE_BN2_DOWN: u16 = 0x0010;
+pub const MOUSE_MOTION_WITH_BN3_DOWN: u16 = 0x0020;
+pub const MOUSE_BN3_DOWN: u16 = 0x0040;
+/// `MouGetDevStatus` / `MouSetDevStatus` flags.
+pub const MOUSE_QUEUEBUSY: u16 = 0x0001;
+pub const MOUSE_BLOCKREAD: u16 = 0x0002;
+pub const MOUSE_FLUSH: u16 = 0x0004;
+pub const MOUSE_UNSUPPORTED_MODE: u16 = 0x0008;
+pub const MOUSE_DISABLED: u16 = 0x0100;
+pub const MOUSE_MICKEYS: u16 = 0x0200;
+
 // ── WC_* built-in window class atoms ─────────────────────────────────────────
 // These are the numeric atom values passed as the pszClass pointer to
 // WinCreateWindow when creating built-in PM controls (OS/2 pmwin.h).
@@ -538,6 +567,8 @@ pub const MIA_HILITED:   u16 = 0x8000;
 pub const WM_SYSCOMMAND: u32 = 0x0021;
 
 // SC_* system command codes (sent in mp1 of WM_SYSCOMMAND).
+pub const SC_SIZE:     u32 = 0x8000; // size the window with the keyboard
+pub const SC_MOVE:     u32 = 0x8001; // move the window with the keyboard
 pub const SC_CLOSE:    u32 = 0x8004; // close the window
 pub const SC_MINIMIZE: u32 = 0x8002; // minimize the window
 pub const SC_MAXIMIZE: u32 = 0x8003; // maximize the window

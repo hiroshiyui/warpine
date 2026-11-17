@@ -559,14 +559,14 @@ const STUB_ORDINALS: &[u32] = &[
 ];
 
 /// Ordinals handled by the sub-dispatchers rather than the registry:
-/// VIOCALLS 22 + KBDCALLS 3 + PMWIN 70 + PMGPI 30. Maintained manually.
-const SUB_DISPATCHER_ORDINALS: u32 = 22 + 3 + 70 + 30;
+/// VIOCALLS 22 + KBDCALLS 3 + PMWIN 70 + PMGPI 30 + MOUCALLS 20. Maintained manually.
+const SUB_DISPATCHER_ORDINALS: u32 = 22 + 3 + 70 + 30 + 20;
 
 /// Generate a human-readable OS/2 API compatibility report.
 ///
 /// Sections:
 /// 1. Per-module table of all registry entries (implemented vs. stub)
-/// 2. Sub-dispatcher summaries for VIOCALLS, KBDCALLS, PMWIN, PMGPI
+/// 2. Sub-dispatcher summaries for VIOCALLS, KBDCALLS, MOUCALLS, PMWIN, PMGPI
 /// 3. Aggregate statistics
 pub fn compat_report() -> String {
     use std::collections::BTreeMap;
@@ -610,6 +610,10 @@ pub fn compat_report() -> String {
                   VioSetMode[stub], VioGetBuf[stub], VioShowBuf[stub], VioSetState[stub], \
                   VioSetCp[stub], VioWrtCellStr[stub])\n");
     out.push_str("  KBDCALLS    3 implemented  (KbdCharIn, KbdStringIn, KbdGetStatus)\n");
+    out.push_str("  MOUCALLS   20 implemented  (MouOpen, MouClose, MouReadEventQue, MouFlushQue, \
+                  MouGetNumQueEl, MouGet/SetPtrPos, MouGetNumButtons, MouGetNumMickeys, \
+                  MouGet/SetDevStatus, MouGet/SetEventMask, MouGet/SetScaleFact, \
+                  MouDrawPtr, MouRemovePtr, MouGet/SetPtrShape, MouSynch)\n");
     out.push_str("  PMWIN      70 implemented  (WinInitialize, message queues, window mgmt, \
                   input, paint, timers, menus, dialogs, clipboard, resources)\n");
     out.push_str("  PMGPI      23 implemented, 7 stub  (presentation spaces, colour and mix, \
@@ -623,7 +627,7 @@ pub fn compat_report() -> String {
     out.push_str(&format!("  Registry entries:  {registry_total}\n"));
     out.push_str(&format!("    Implemented:     {total_impl}\n"));
     out.push_str(&format!("    Stub (no-op):    {total_stubs}\n"));
-    out.push_str(&format!("  Sub-dispatchers:   {SUB_DISPATCHER_ORDINALS} ordinals (VIOCALLS + KBDCALLS + PMWIN + PMGPI)\n"));
+    out.push_str(&format!("  Sub-dispatchers:   {SUB_DISPATCHER_ORDINALS} ordinals (VIOCALLS + KBDCALLS + MOUCALLS + PMWIN + PMGPI)\n"));
     out.push_str(&format!(
         "  Grand total:       {} API entry points covered\n",
         registry_total + SUB_DISPATCHER_ORDINALS
@@ -655,6 +659,7 @@ mod tests {
         // Must mention all four sub-dispatchers
         assert!(report.contains("VIOCALLS"), "missing VIOCALLS");
         assert!(report.contains("KBDCALLS"), "missing KBDCALLS");
+        assert!(report.contains("MOUCALLS"), "missing MOUCALLS");
         assert!(report.contains("PMWIN"),    "missing PMWIN");
         assert!(report.contains("PMGPI"),    "missing PMGPI");
         // Spot-check a known implemented and a known stub API name

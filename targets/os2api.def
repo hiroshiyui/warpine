@@ -16,6 +16,7 @@
 #   UCONV     base 12288    (MAGIC_API_BASE + 12288 + ordinal)
 #   SO32DLL   base 13312    (MAGIC_API_BASE + 13312 + ordinal)
 #   TCP32DLL  base 14336    (MAGIC_API_BASE + 14336 + ordinal)
+#   MOUCALLS  base 15360    (MAGIC_API_BASE + 15360 + ordinal)
 
 # ── DOSCALLS ─────────────────────────────────────────────────────────────────
 DOSCALLS.8    DosGetInfoSeg
@@ -248,3 +249,25 @@ TCP32DLL.42   getservbyname
 TCP32DLL.43   getservbyport
 TCP32DLL.44   getprotobyname
 TCP32DLL.45   getprotobynumber
+
+# ── MOUCALLS (ordinals from Open Watcom os2386.lib MOU16* imports) ──────────
+MOUCALLS.1    MouGetPtrShape
+MOUCALLS.2    MouSetPtrShape
+MOUCALLS.3    MouGetNumMickeys
+MOUCALLS.6    MouGetScaleFact
+MOUCALLS.7    MouFlushQue
+MOUCALLS.8    MouGetNumButtons
+MOUCALLS.9    MouClose
+MOUCALLS.11   MouSetScaleFact
+MOUCALLS.13   MouGetNumQueEl
+MOUCALLS.15   MouGetEventMask
+MOUCALLS.16   MouSetEventMask
+MOUCALLS.17   MouOpen
+MOUCALLS.18   MouRemovePtr
+MOUCALLS.19   MouGetPtrPos
+MOUCALLS.20   MouReadEventQue
+MOUCALLS.21   MouSetPtrPos
+MOUCALLS.22   MouGetDevStatus
+MOUCALLS.23   MouSynch
+MOUCALLS.25   MouSetDevStatus
+MOUCALLS.26   MouDrawPtr

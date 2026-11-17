@@ -65,6 +65,29 @@ impl super::Loader {
             ("KbdGetStatus",  10),
             ("KbdFlushBuffer", 6),
         ];
+        // MOUCALLS name → ordinal table (Open Watcom os2386.lib MOU16* exports).
+        static MOUCALLS_NAMES: &[(&str, u32)] = &[
+            ("MouGetPtrShape",    1),
+            ("MouSetPtrShape",    2),
+            ("MouGetNumMickeys",  3),
+            ("MouGetScaleFact",   6),
+            ("MouFlushQue",       7),
+            ("MouGetNumButtons",  8),
+            ("MouClose",          9),
+            ("MouSetScaleFact",  11),
+            ("MouGetNumQueEl",   13),
+            ("MouGetEventMask",  15),
+            ("MouSetEventMask",  16),
+            ("MouOpen",          17),
+            ("MouRemovePtr",     18),
+            ("MouGetPtrPos",     19),
+            ("MouReadEventQue",  20),
+            ("MouSetPtrPos",     21),
+            ("MouGetDevStatus",  22),
+            ("MouSynch",         23),
+            ("MouSetDevStatus",  25),
+            ("MouDrawPtr",       26),
+        ];
 
         let ordinal = match module {
             "VIOCALLS" => {
@@ -72,6 +95,9 @@ impl super::Loader {
             }
             "KBDCALLS" => {
                 KBDCALLS_NAMES.iter().find(|(n, _)| *n == proc_name).map(|(_, o)| *o)
+            }
+            "MOUCALLS" => {
+                MOUCALLS_NAMES.iter().find(|(n, _)| *n == proc_name).map(|(_, o)| *o)
             }
             _ => {
                 // For registry-based modules (DOSCALLS, PMWIN, etc.) search api_registry.
@@ -102,6 +128,7 @@ impl super::Loader {
         else if module == "UCONV"    { MAGIC_API_BASE + UCONV_BASE    as u64 + ordinal as u64 }
         else if module == "SO32DLL"  { MAGIC_API_BASE + SO32DLL_BASE  as u64 + ordinal as u64 }
         else if module == "TCP32DLL" { MAGIC_API_BASE + TCP32DLL_BASE as u64 + ordinal as u64 }
+        else if module == "MOUCALLS" { MAGIC_API_BASE + MOUCALLS_BASE as u64 + ordinal as u64 }
         else {
             // Check loaded user DLLs
             let dll_mgr = self.shared.dll_mgr.lock_or_recover();
