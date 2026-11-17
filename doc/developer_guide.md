@@ -1615,7 +1615,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the 4OS2 / ANSI session helpers), unless the test names its own.
 
-The unit tests (1317: 1286 warpine + 19 `gen_api` + 12 `lx_link`) include, among others:
+The unit tests (1322: 1286 warpine + 19 `gen_api` + 12 `lx_link` + 5 `gen_arch`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -1888,7 +1888,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 1317 unit tests (1286 warpine + 19 gen_api + 12 lx_link), 89 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 1322 unit tests (1286 warpine + 19 gen_api + 12 lx_link + 5 gen_arch), 89 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
@@ -1908,6 +1908,13 @@ Warpine provides a complete toolchain for writing OS/2 guest programs in Rust wi
 - `validate-doc` — cross-check `os2api.def` against `doc/os2_ordinals.md` (Open Watcom `lib386/os2/os2386.lib` snapshot); reports confirmed ordinals, 16-bit alias pairs auto-detected by uppercase+strip-"16" normalisation, entries only in def, name differences acknowledged by a `# NOTE:` on the def line (naming conventions the normaliser cannot detect, e.g. DOSCALLS 75 `DosQueryFileMode16` / `DOS16QFILEMODE`; listed with the note, not counted as mismatches), and the remaining name mismatches to investigate; it covers DOSCALLS, QUECALLS, KBDCALLS, VIOCALLS, PMGPI, PMWIN, SESMGR, NLS, MOUCALLS, PMSHAPI and HELPMGR
 
 Run `cargo run --bin gen_api -- check` to verify consistency after any ordinal change. Run `cargo run --bin gen_api -- validate-doc` to cross-reference against the OS/2 ordinal reference.
+
+**`src/bin/gen_arch.rs`** — Architecture diagram generator ([ADR-0021](adr/0021-generated-architecture-diagram.md)). The diagram at the head of the reference manual comes from two sources: `doc/architecture/layers.toml`, a hand-written layer map (a subset of TOML — `[[zone]]`, `[[layer]]` with `modules`, `[[external]]`, `[[flow]]`; a zone's `rank = "min"` / `"max"` pins it to the top / bottom row), and the list of `.rs` files under `src/`, which `gen_arch` reads itself.
+- `check` — validate (every module in exactly one layer, no layer naming a missing module, every flow between known nodes, known zones) and compare the committed `warpine.dot` with what the sources generate
+- `dot` — print the generated DOT
+- `render` — write `doc/architecture/warpine.dot` and run Graphviz `dot` for `warpine.svg` and `warpine.png` (96 dpi)
+
+The test `layer_map_matches_src_and_the_committed_diagram` runs the validation and the comparison, so adding, renaming or removing a module fails `cargo test` until `layers.toml` places it and `render` has been run. Flows describe the architecture and are not checked against the call graph.
 
 **`src/bin/lx_link.rs`** — ELF-to-LX linker. Reads ELF `.o`/`.rlib`/`.a` objects produced by rustc, merges `.text`/`.data` sections, resolves OS/2 API imports via `targets/os2api.def` (embedded via `include_str!` as compile-time fallback), and emits a valid MZ+LX executable. Object layout: code at `0x00010000` (flags `READABLE|EXECUTABLE|BIG`), data at `0x00060000`, stack at `0x00070000`.
 

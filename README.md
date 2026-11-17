@@ -62,6 +62,10 @@ _Screenshots in this section captured from uncommitted changes on top of `2d4dd4
 
 ## Architecture
 
+[![Warpine architecture diagram](doc/architecture/warpine.svg)](doc/architecture/warpine.svg)
+
+The diagram is generated from [`doc/architecture/layers.toml`](doc/architecture/layers.toml) and the module list of `src/` by `cargo run --bin gen_arch -- render`; a test keeps the two in step ([ADR-0021](doc/adr/0021-generated-architecture-diagram.md)).
+
 ```
 src/
   main.rs              Entry point, format detection (LX/NE), CLI/PM/SDL dispatch
@@ -277,7 +281,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 1317 unit tests (no KVM required)
+cargo test                        # 1322 unit tests (no KVM required)
 cargo test --test integration     # 89 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
