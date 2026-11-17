@@ -158,6 +158,7 @@ impl super::Loader {
     /// The `fault` context captures the CPU state at exception time.
     pub(crate) fn try_hw_exception_dispatch(
         &self,
+        vcpu_id: u32,
         fault: FaultContext,
         vector: u32,
         error_code: u32,
@@ -172,7 +173,8 @@ impl super::Loader {
         // Access violation passes the faulting address as a parameter.
         let params: &[u32] = if vector == 14 { &[0, fault.eip] } else { &[] };
 
-        let chain_head = self.guest_read::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET)
+        let chain_head = self.exception_chain_addr(vcpu_id)
+            .and_then(|head| self.guest_read::<u32>(head))
             .unwrap_or(XCPT_CHAIN_END);
         if chain_head == XCPT_CHAIN_END {
             return None; // No handlers registered
@@ -216,18 +218,19 @@ impl super::Loader {
     /// Stops when `reg_rec == stop_at` (exclusive; if 0 walk entire chain).
     /// After walking, restores the stack to the target frame by setting
     /// `TIB_EXCHAIN` to `stop_at`.
-    pub(crate) fn dos_raise_exception(&self, p_exc_rec: u32) -> ApiResult {
+    pub(crate) fn dos_raise_exception(&self, vcpu_id: u32, p_exc_rec: u32) -> ApiResult {
         debug!("  DosRaiseException(pExcRec=0x{:08X})", p_exc_rec);
         if p_exc_rec == 0 {
             return ApiResult::Normal(ERROR_INVALID_PARAMETER);
         }
 
         // Read the exception code from the caller-provided record.
-        let xcpt_code = self.guest_read::<u32>(p_exc_rec + ERR_NUM).unwrap_or(XCPT_FATAL_EXCEPTION);
-        let _flags    = self.guest_read::<u32>(p_exc_rec + ERR_FLAGS).unwrap_or(0);
-        let exc_addr  = self.guest_read::<u32>(p_exc_rec + ERR_ADDR).unwrap_or(0);
+        let xcpt_code = self.guest_read::<u32>(p_exc_rec.wrapping_add(ERR_NUM)).unwrap_or(XCPT_FATAL_EXCEPTION);
+        let _flags    = self.guest_read::<u32>(p_exc_rec.wrapping_add(ERR_FLAGS)).unwrap_or(0);
+        let exc_addr  = self.guest_read::<u32>(p_exc_rec.wrapping_add(ERR_ADDR)).unwrap_or(0);
 
-        let chain_head = self.guest_read::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET)
+        let chain_head = self.exception_chain_addr(vcpu_id)
+            .and_then(|head| self.guest_read::<u32>(head))
             .unwrap_or(XCPT_CHAIN_END);
         if chain_head == XCPT_CHAIN_END {
             warn!("  DosRaiseException: no handlers registered, xcpt=0x{:08X}", xcpt_code);
@@ -285,6 +288,7 @@ impl super::Loader {
     /// setjmp/longjmp internally so this is usually sufficient).
     pub(crate) fn dos_unwind_exception(
         &self,
+        vcpu_id: u32,
         p_reg_rec: u32,
         _reserved: u32,
         p_exc_rec: u32,
@@ -293,8 +297,8 @@ impl super::Loader {
         debug!("  DosUnwindException(pRegRec=0x{:08X}, pExcRec=0x{:08X})", p_reg_rec, p_exc_rec);
 
         // Walk the chain calling handlers with EH_UNWINDING until we reach the target.
-        let mut cur = self.guest_read::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET)
-            .unwrap_or(XCPT_CHAIN_END);
+        let Some(head) = self.exception_chain_addr(vcpu_id) else { return ERROR_INVALID_PARAMETER };
+        let mut cur = self.guest_read::<u32>(head).unwrap_or(XCPT_CHAIN_END);
 
         let mut steps: usize = 0;
         while cur != XCPT_CHAIN_END && cur != p_reg_rec {
@@ -308,12 +312,21 @@ impl super::Loader {
             // For Watcom Open Watcom apps that use __try/__finally via setjmp this
             // is handled by the C runtime before calling DosUnwindException, so the
             // skip-and-truncate approach is sufficient for the common case.
-            cur = self.guest_read::<u32>(cur + XERREC_PREV).unwrap_or(XCPT_CHAIN_END);
+            cur = self.guest_read::<u32>(cur.wrapping_add(XERREC_PREV)).unwrap_or(XCPT_CHAIN_END);
         }
 
-        // Truncate TIB chain to the target record.
-        self.guest_write::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET, p_reg_rec).unwrap();
+        // Truncate the thread's chain to the target record.
+        if self.guest_write::<u32>(head, p_reg_rec).is_none() { return ERROR_INVALID_PARAMETER; }
         NO_ERROR
+    }
+
+    /// Address of the exception-handler chain head (`tib_pexchain`) of the
+    /// thread running on vCPU `vcpu_id`: each thread has its own TIB, which
+    /// its FS selector points at; `None` if the thread is not running.
+    pub(crate) fn exception_chain_addr(&self, vcpu_id: u32) -> Option<u32> {
+        let tid = super::threads::tid_of_vcpu(vcpu_id);
+        let tib = self.shared.threads.table.lock_or_recover().tib_of(tid)?;
+        Some(tib + TIB_EXCHAIN_OFFSET)
     }
 }
 
@@ -366,6 +379,55 @@ mod tests {
         loader.guest_write::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET, XCPT_CHAIN_END).unwrap();
     }
 
+    /// Each thread has its own chain, in its own TIB: a handler a created
+    /// thread registers is not seen by thread 1, and the other way round.
+    #[test]
+    fn test_exception_chains_are_per_thread() {
+        use super::super::threads::ThreadMemory;
+        let loader = Loader::new_mock();
+        init_tib_chain(&loader);
+        let (tib2, stack2) = {
+            let mut mm = loader.shared.mem_mgr.lock_or_recover();
+            (mm.alloc(4096).unwrap(), mm.alloc(4096).unwrap())
+        };
+        loader.guest_write::<u32>(tib2 + TIB_EXCHAIN_OFFSET, XCPT_CHAIN_END).unwrap();
+        // Thread 2 runs on vCPU 2.
+        loader.shared.threads.table.lock_or_recover().start(2, ThreadMemory { stack: stack2, tib: tib2 });
+        let rec_main = loader.shared.mem_mgr.lock_or_recover().alloc(16).unwrap();
+        let rec_t2 = loader.shared.mem_mgr.lock_or_recover().alloc(16).unwrap();
+
+        assert_eq!(loader.dos_set_exception_handler(2, rec_t2), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(tib2 + TIB_EXCHAIN_OFFSET).unwrap(), rec_t2);
+        assert_eq!(loader.guest_read::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET).unwrap(), XCPT_CHAIN_END,
+                   "thread 1's chain untouched");
+        assert_eq!(loader.dos_set_exception_handler(0, rec_main), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET).unwrap(), rec_main);
+        assert_eq!(loader.guest_read::<u32>(rec_main).unwrap(), XCPT_CHAIN_END, "linked to thread 1's own chain");
+
+        // A fault on thread 2 is dispatched to thread 2's handler.
+        write_reg_rec(&loader, rec_t2, XCPT_CHAIN_END, 0x5000);
+        let fault = super::super::FaultContext {
+            eax: 0, ebx: 0, ecx: 0, edx: 0, esi: 0, edi: 0, ebp: 0, esp: 0x8000, eip: 0x1000,
+            eflags: 2, cs: 0x08, ds: 0x10, es: 0x10, fs: 0x18, gs: 0x10, ss: 0x10,
+        };
+        match loader.try_hw_exception_dispatch(2, fault, 14, 0) {
+            Some(ApiResult::ExceptionDispatch { handler_addr, reg_rec, .. }) => {
+                assert_eq!((handler_addr, reg_rec), (0x5000, rec_t2));
+            }
+            _ => panic!("thread 2's handler not found"),
+        }
+
+        assert_eq!(loader.dos_unset_exception_handler(2, rec_t2), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(tib2 + TIB_EXCHAIN_OFFSET).unwrap(), XCPT_CHAIN_END);
+        assert_eq!(loader.guest_read::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET).unwrap(), rec_main);
+
+        // A thread that does not run, and records outside guest memory, fail
+        // instead of panicking.
+        assert_eq!(loader.dos_set_exception_handler(7, rec_t2), ERROR_INVALID_PARAMETER);
+        assert_eq!(loader.dos_set_exception_handler(0, u32::MAX - 1), ERROR_INVALID_PARAMETER);
+        assert_eq!(loader.dos_unset_exception_handler(0, u32::MAX - 1), ERROR_INVALID_PARAMETER);
+    }
+
     #[test]
     fn test_set_exception_handler_pushes_chain() {
         let loader = Loader::new_mock();
@@ -379,7 +441,7 @@ mod tests {
         let buf = loader.shared.mem_mgr.lock_or_recover().alloc(16).unwrap();
         write_reg_rec(&loader, buf, 0, 0x1234);
 
-        assert_eq!(loader.dos_set_exception_handler(buf), NO_ERROR);
+        assert_eq!(loader.dos_set_exception_handler(0, buf), NO_ERROR);
 
         // TIB chain head is now buf
         assert_eq!(
@@ -400,8 +462,8 @@ mod tests {
         let buf = loader.shared.mem_mgr.lock_or_recover().alloc(16).unwrap();
         write_reg_rec(&loader, buf, 0, 0x1234);
 
-        loader.dos_set_exception_handler(buf);
-        assert_eq!(loader.dos_unset_exception_handler(buf), NO_ERROR);
+        loader.dos_set_exception_handler(0, buf);
+        assert_eq!(loader.dos_unset_exception_handler(0, buf), NO_ERROR);
 
         // Chain is back to XCPT_CHAIN_END
         assert_eq!(
@@ -422,8 +484,8 @@ mod tests {
         write_reg_rec(&loader, rec1, 0, 0x1111);
         write_reg_rec(&loader, rec2, 0, 0x2222);
 
-        loader.dos_set_exception_handler(rec1);
-        loader.dos_set_exception_handler(rec2);
+        loader.dos_set_exception_handler(0, rec1);
+        loader.dos_set_exception_handler(0, rec2);
 
         // Chain: TIB → rec2 → rec1 → XCPT_CHAIN_END
         assert_eq!(loader.guest_read::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET).unwrap(), rec2);
@@ -434,13 +496,13 @@ mod tests {
     #[test]
     fn test_set_handler_null_returns_error() {
         let loader = Loader::new_mock();
-        assert_ne!(loader.dos_set_exception_handler(0), NO_ERROR);
+        assert_ne!(loader.dos_set_exception_handler(0, 0), NO_ERROR);
     }
 
     #[test]
     fn test_unset_handler_null_returns_error() {
         let loader = Loader::new_mock();
-        assert_ne!(loader.dos_unset_exception_handler(0), NO_ERROR);
+        assert_ne!(loader.dos_unset_exception_handler(0, 0), NO_ERROR);
     }
 
     // ── try_hw_exception_dispatch ────────────────────────────────────────────
@@ -455,7 +517,7 @@ mod tests {
             esp: 0x1000, eip: 0xDEAD, eflags: 2,
             cs: 0x08, ds: 0x10, es: 0x10, fs: 0x18, gs: 0x10, ss: 0x10,
         };
-        assert!(loader.try_hw_exception_dispatch(fault, 14, 0).is_none());
+        assert!(loader.try_hw_exception_dispatch(0, fault, 14, 0).is_none());
     }
 
     #[test]
@@ -464,14 +526,14 @@ mod tests {
         init_tib_chain(&loader);
         let buf = loader.shared.mem_mgr.lock_or_recover().alloc(16).unwrap();
         write_reg_rec(&loader, buf, XCPT_CHAIN_END, 0x5000);
-        loader.dos_set_exception_handler(buf);
+        loader.dos_set_exception_handler(0, buf);
 
         let fault = super::super::FaultContext {
             eax: 0, ebx: 0, ecx: 0, edx: 0, esi: 0, edi: 0, ebp: 0,
             esp: 0x1000, eip: 0xDEAD, eflags: 2,
             cs: 0x08, ds: 0x10, es: 0x10, fs: 0x18, gs: 0x10, ss: 0x10,
         };
-        let result = loader.try_hw_exception_dispatch(fault, 14, 0);
+        let result = loader.try_hw_exception_dispatch(0, fault, 14, 0);
         assert!(result.is_some());
         if let Some(ApiResult::ExceptionDispatch { handler_addr, next_handler, .. }) = result {
             assert_eq!(handler_addr, 0x5000);
@@ -515,11 +577,11 @@ mod tests {
         drop(mem);
         write_reg_rec(&loader, rec1, XCPT_CHAIN_END, 0x1111);
         write_reg_rec(&loader, rec2, 0, 0x2222);
-        loader.dos_set_exception_handler(rec1);
-        loader.dos_set_exception_handler(rec2);
+        loader.dos_set_exception_handler(0, rec1);
+        loader.dos_set_exception_handler(0, rec2);
 
         // Unwind to rec1 — chain should be truncated to rec1.
-        assert_eq!(loader.dos_unwind_exception(rec1, 0, 0, 0), NO_ERROR);
+        assert_eq!(loader.dos_unwind_exception(0, rec1, 0, 0, 0), NO_ERROR);
         assert_eq!(
             loader.guest_read::<u32>(TIB_BASE + TIB_EXCHAIN_OFFSET).unwrap(),
             rec1
