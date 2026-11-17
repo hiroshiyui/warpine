@@ -165,7 +165,7 @@ fn detect_kernel_casefold(path: &Path) -> bool {
     };
 
     // Try ioctl FS_IOC_GETFLAGS to check for EXT4_CASEFOLD_FL (0x40000000)
-    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY) };
+    let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC) };
     if fd < 0 {
         return false;
     }

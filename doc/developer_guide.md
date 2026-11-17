@@ -236,14 +236,14 @@ The primary OS/2 API module. Implemented functions:
 |---|---|
 | **File I/O** | DosOpen, DosClose, DosRead (including stdin), DosWrite, DosSetFilePtr, DosDelete, DosMove, DosCopy, DosQueryPathInfo, DosQueryFileInfo, DosSetFileInfo, DosSetFileMode, DosSetPathInfo, DosQueryHType, DosQueryFHState, DosSetFHState, DosQueryFSInfo, DosQueryFSAttach, DosQueryVerify, DosSetVerify, DosEditName |
 | **Directory** | DosCreateDir, DosDeleteDir, DosFindFirst, DosFindNext, DosFindClose, DosSetCurrentDir, DosQueryCurrentDir, DosQueryCurrentDisk, DosSetDefaultDisk |
-| **Memory** | DosAllocMem, DosFreeMem, DosAllocSharedMem, DosGetNamedSharedMem, DosGetSharedMem, DosSetMem, DosQueryMem, DosSubSetMem, DosSubAllocMem, DosSubFreeMem, DosSubUnsetMem |
+| **Memory** | DosAllocMem, DosFreeMem, DosAllocSharedMem, DosGetNamedSharedMem, DosGetSharedMem, DosGiveSharedMem, DosSetMem, DosQueryMem, DosSubSetMem, DosSubAllocMem, DosSubFreeMem, DosSubUnsetMem |
 | **Threading** | DosCreateThread, DosSleep, DosWaitThread, DosGetInfoBlocks, DosEnterCritSec, DosExitCritSec |
 | **Timers** | DosAsyncTimer, DosStartTimer, DosStopTimer |
 | **Modules** | DosLoadModule, DosFreeModule, DosQueryModuleHandle, DosQueryProcAddr, DosQueryModuleName, DosSearchPath |
 | **Process** | DosExecPgm, DosWaitChild, DosKillProcess, DosQueryAppType, DosExit, DosExitList |
 | **Semaphores** | DosCreateEventSem, DosCloseEventSem, DosPostEventSem, DosWaitEventSem, DosOpenEventSem, DosResetEventSem, DosQueryEventSem, DosCreateMutexSem, DosCloseMutexSem, DosRequestMutexSem, DosReleaseMutexSem, DosOpenMutexSem, DosQueryMutexSem, DosCreateMuxWaitSem, DosOpenMuxWaitSem, DosCloseMuxWaitSem, DosWaitMuxWaitSem, DosAddMuxWaitSem, DosDeleteMuxWaitSem, DosQueryMuxWaitSem |
 | **Queues** | DosCreateQueue, DosOpenQueue, DosWriteQueue, DosReadQueue, DosCloseQueue, DosPurgeQueue, DosQueryQueue |
-| **Pipes** | DosCreatePipe |
+| **Pipes** | DosCreatePipe, DosCreateNPipe, DosConnectNPipe, DosDisConnectNPipe, DosPeekNPipe, DosTransactNPipe, DosCallNPipe, DosWaitNPipe, DosQueryNPHState, DosSetNPHState, DosQueryNPipeInfo, DosOpen of `\PIPE\…` |
 | **System** | DosQuerySysInfo, DosGetDateTime, DosQueryCp, DosQueryCtryInfo, DosQueryDBCSEnv, DosMapCase, DosQueryCollate, DosDevConfig, DosDevIOCtl |
 | **Audio** | DosBeep (real sine-wave tones via MMPM/2 beep_tone) |
 | **Stubs** | DosError, DosSetMaxFH, DosSetExceptionHandler, DosLoadModule, DosStartSession, and others |
@@ -1244,6 +1244,14 @@ Path resolution flow:
 
 `Loader::handle_target(h)` resolves any handle to `Pipe` (`HandleManager`, also a pipe duplicated into 0–2), `File` (`DriveManager`, also a standard handle redirected to a file) or `Console(stream)`; a number is in at most one table. `DosRead`, `DosWrite`, `DosClose`, `DosDupHandle`, `DosSetFilePtr`, `DosSetFileSize`, `DosQueryFileInfo`, `DosResetBuffer` and `DosQueryHType` route through it. `DosDupHandle` shares the backend file between handles (`file_refs`; one file pointer, closed with the last handle) and records duplicates of the console (`console_handles`); `closed_std` marks standard handles closed by `DosClose` until something is duplicated into them. `DosExecPgm` hands redirected standard handles to the child as host descriptors (`VfsBackend::clone_host_file`), so `prog > file` works from 4OS2.
 
+Files and pipes share one handle space, as in OS/2: `DriveManager::alloc_handle` returns the lowest free number from 3 and skips the numbers the pipe table holds (`pipe_handles`); pipe handles are added and removed through `Loader::add_pipe_handle` / `put_pipe_handle_at` / `close_pipe_handle` (lock order `handle_mgr` → `drive_mgr`). Small, reused numbers matter: C runtimes (Open Watcom's included) keep per-handle tables, and 4OS2's `_hdopen` of a pipe handle at 0x1000 left its standard output unusable. The pipe table (`HandleManager`) holds `PipeHandle { obj, fh_state }`: `PipeObject::Host` (an anonymous pipe, a shared `Arc<File>` read and written without the table's lock), `Server` (a named-pipe instance) or `Client` (a named pipe's client end), and the handle's `DosQueryFHState` flags (`OPEN_FLAGS_NOINHERIT` …).
+
+### Named pipes and handles passed to child processes
+
+`npipe.rs` is the model and the host transport, `npipe_api.rs` the DOSCALLS on top. A named-pipe connection is a host `AF_UNIX` stream socket pair carrying frames `[kind u8][len u32 LE][payload]` (data, or the server's disconnect); each end (`Conn`) drains its non-blocking socket into a local message queue (`Rx`), which gives message reads with `ERROR_MORE_DATA` remainders, byte reads across messages and `DosPeekNPipe`. Blocking calls poll the socket in 100 ms steps and give up with `ERROR_INTERRUPT` when the process ends; a blocked writer drains its own end meanwhile, so two ends writing to each other cannot both stay blocked. The queue stops draining at 4 MiB; frames over 1 MiB end the connection. A pipe name lives in the session's pipe directory (`PipeDir`: `$WARPINE_PIPE_DIR`, else `$XDG_RUNTIME_DIR/warpine-pipes-<uid>-<pid>` (or the temporary directory) chosen by the first Warpine process, passed to children in `WARPINE_PIPE_DIR`, created mode 0700 when first needed and checked to be a private directory of this user); the server process binds `np-<FNV-1a hash of the upper-case name>` there, reached through `/proc/self/fd/<dir fd>/…` so the path never exceeds the socket path limit. An accept thread per name (`accept_loop`) answers a client's request (`O` open: hand the stream to a listening instance and reply with the pipe's modes, sizes and instance count, or busy; `W`: whether an instance listens, for `DosWaitNPipe`) and ends with the name's last instance, removing its socket. Clients in the same process go through the socket too, so one path serves both. A stale socket left by a process that died is replaced on bind; at the end of the process `NamedPipes::close_all` removes the sockets still served and the directory if this process made it and it is empty.
+
+`inherit.rs` carries what a child process gets from its parent through the host `exec`: `WARPINE_OS2ARG0` / `WARPINE_OS2ARGS` (the argument block's strings) and `WARPINE_OS2ENV` (the environment), escaped (`escape`: NUL → `01 30`, `01` → `01 31`), read by `StartupInfo::from_env` into `SharedState::startup`; `Loader::startup_block` builds the process block (environment, program name, command line) for both LX and NE programs; without a parent, the host command line's arguments are the guest's (`set_host_args` in `main.rs`). `WARPINE_HANDLES` lists the inheritable pipe handles (`child_handles`): `handle,fd,a,fhstate` for an anonymous pipe, `handle,fd,c,…,namehex` for a named pipe's client end. The descriptors are close-on-exec duplicates owned by the parent until the child has started; a `pre_exec` hook clears the flag in the forked child only, so no other process — not even another child started at the same moment — receives them. The child (`adopt_inherited_handles`, from `Loader::new`) takes over only pipes and sockets and puts each at its handle number; standard handles 0–2 also arrive as the child's host standard streams and are duplicated. Server ends are not passed.
+
 ### Handle Management (absorbed into VFS)
 
 Currently, file handles and directory search handles are managed by two separate structs in `managers.rs`:
@@ -1726,6 +1734,10 @@ cargo run -- samples/thread_test/thread_test.exe
 
 # Pipes: DosCreatePipe, cross-thread DosRead/DosWrite
 cargo run -- samples/pipe_test/pipe_test.exe
+
+# Named pipes, pipes passed to child processes (the sample starts copies of
+# itself), DosGiveSharedMem; one ok/FAIL line per check
+cargo run -- samples/npipe_test/npipe_test.exe
 
 # Semaphores: DosCreateEventSem, DosPostEventSem, DosWaitEventSem
 cargo run -- samples/ipc_test/ipc_test.exe

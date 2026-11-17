@@ -613,6 +613,71 @@ pub const STDOUT_HANDLE: u32 = 1;
 /// `DosDupHandle` new-handle value asking for a fresh handle.
 pub const NEW_HANDLE_REQUEST: u32 = 0xFFFF_FFFF;
 
+// ── Pipes, handle states and shared memory (`<bsedos.h>`, `<bsememf.h>`,
+//    `<bseerr.h>`) ─────────────────────────────────────────────────────────────
+pub const ERROR_BAD_FORMAT: u32 = 11;
+pub const ERROR_INTERRUPT: u32 = 95;
+pub const ERROR_BROKEN_PIPE: u32 = 109;
+pub const ERROR_SEM_TIMEOUT: u32 = 121;
+pub const ERROR_ALREADY_EXISTS: u32 = 183;
+pub const ERROR_BAD_PIPE: u32 = 230;
+pub const ERROR_PIPE_BUSY: u32 = 231;
+pub const ERROR_NO_DATA: u32 = 232;
+pub const ERROR_PIPE_NOT_CONNECTED: u32 = 233;
+pub const ERROR_MORE_DATA: u32 = 234;
+pub const ERROR_INVALID_PROCID: u32 = 303;
+pub const ERROR_INVALID_ADDRESS: u32 = 487;
+
+/// `DosOpen` / `DosQueryFHState` access and flag bits.
+pub const OPEN_ACCESS_READONLY: u32 = 0x0000;
+pub const OPEN_ACCESS_WRITEONLY: u32 = 0x0001;
+pub const OPEN_ACCESS_READWRITE: u32 = 0x0002;
+pub const OPEN_FLAGS_NOINHERIT: u32 = 0x0080;
+pub const OPEN_FLAGS_NO_CACHE: u32 = 0x1000;
+pub const OPEN_FLAGS_FAIL_ON_ERROR: u32 = 0x2000;
+pub const OPEN_FLAGS_WRITE_THROUGH: u32 = 0x4000;
+/// `DosOpen` action: the file (pipe) existed.
+pub const FILE_EXISTED: u32 = 1;
+
+/// `DosExecPgm` execution flags.
+pub const EXEC_SYNC: u32 = 0;
+pub const EXEC_ASYNC: u32 = 1;
+pub const EXEC_ASYNCRESULT: u32 = 2;
+pub const EXEC_BACKGROUND: u32 = 4;
+
+/// Named-pipe states (`DosPeekNPipe`).
+pub const NP_STATE_DISCONNECTED: u32 = 1;
+pub const NP_STATE_LISTENING: u32 = 2;
+pub const NP_STATE_CONNECTED: u32 = 3;
+pub const NP_STATE_CLOSING: u32 = 4;
+/// `DosCreateNPipe` open mode.
+pub const NP_ACCESS_INBOUND: u32 = 0x0000;
+pub const NP_ACCESS_OUTBOUND: u32 = 0x0001;
+pub const NP_ACCESS_DUPLEX: u32 = 0x0002;
+pub const NP_NOINHERIT: u32 = 0x0080;
+pub const NP_NOWRITEBEHIND: u32 = 0x4000;
+/// `DosCreateNPipe` pipe mode / `DosQueryNPHState` / `DosSetNPHState` state.
+pub const NP_READMODE_MESSAGE: u32 = 0x0100;
+pub const NP_TYPE_MESSAGE: u32 = 0x0400;
+pub const NP_END_SERVER: u32 = 0x4000;
+pub const NP_NOWAIT: u32 = 0x8000;
+pub const NP_UNLIMITED_INSTANCES: u32 = 0x00FF;
+pub const NP_ICOUNT: u32 = 0x00FF;
+/// `DosWaitNPipe` timeouts: the pipe's default, forever.
+pub const NP_DEFAULT_WAIT: u32 = 0;
+pub const NP_INDEFINITE_WAIT: u32 = 0xFFFF_FFFF;
+
+/// `DosAllocSharedMem` / `DosGiveSharedMem` flags.
+pub const PAG_READ: u32 = 0x0001;
+pub const PAG_WRITE: u32 = 0x0002;
+pub const PAG_EXECUTE: u32 = 0x0004;
+pub const PAG_GUARD: u32 = 0x0008;
+pub const PAG_COMMIT: u32 = 0x0010;
+pub const OBJ_TILE: u32 = 0x0040;
+pub const OBJ_GETTABLE: u32 = 0x0100;
+pub const OBJ_GIVEABLE: u32 = 0x0200;
+pub const OBJ_ANY: u32 = 0x0400;
+
 // ── MOUCALLS error codes (<bseerr.h>) ────────────────────────────────────────
 pub const ERROR_MOUSE_NO_DEVICE: u32 = 385;
 pub const ERROR_MOUSE_INV_HANDLE: u32 = 386;
@@ -1186,7 +1251,6 @@ pub const XCPT_SIGNAL_BREAK: u32 = 4;
 pub const ERROR_SIGNAL_REFUSED: u32 = 156;
 pub const ERROR_NO_SIGNAL_SENT: u32 = 205;
 pub const ERROR_INVALID_SIGNAL_NUMBER: u32 = 209;
-pub const ERROR_INVALID_PROCID: u32 = 303;
 pub const ERROR_NESTING_TOO_DEEP: u32 = 650;
 
 // ── Semaphores (`<bsedos.h>` INCL_DOSSEMAPHORES, `<bseerr.h>`) ───────────────

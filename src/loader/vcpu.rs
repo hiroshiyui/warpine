@@ -23,16 +23,11 @@ impl super::Loader {
         // Build OS/2 environment block: null-terminated KEY=VALUE strings, double-null terminated,
         // followed by the program name (null-terminated).
         // The program's OS/2 name (also what DosQueryModuleName reports).
-        let os2_exe = self.os2_exe_path();
-        let mut env_block: Vec<u8> = Vec::new();
-        env_block.extend_from_slice(b"PATH=C:\\\0");
-        env_block.extend_from_slice(b"COMSPEC=C:\\4OS2.EXE\0");
-        env_block.extend_from_slice(b"OS=OS2\0");
-        env_block.extend_from_slice(b"TMP=C:\\TMP\0");
-        env_block.push(0); // double-null terminates the environment
-        let cmdline_offset = env_block.len() as u32;
-        env_block.extend_from_slice(os2_exe.as_bytes());
-        env_block.push(0);
+        // The environment (a parent's, else Warpine's default), the
+        // program's full name, then the command line (`inherit.rs`).
+        let (env_block, cmdline_offset) = self.startup_block(&[
+            b"PATH=C:\\", b"COMSPEC=C:\\4OS2.EXE", b"OS=OS2", b"TMP=C:\\TMP"]);
+        let cmdline_offset = cmdline_offset as u32;
         // Allocate env block via memory manager so it's properly tracked
         let env_addr = self.shared.mem_mgr.lock_or_recover()
             .alloc(env_block.len() as u32)
@@ -113,6 +108,7 @@ impl super::Loader {
         self.wait_for_process_end();
         // Restore terminal before process::exit() which skips all destructors.
         // Must restore termios FIRST so OPOST is active, then emit ANSI reset.
+        self.shared.npipes.lock_or_recover().close_all();
         self.shared.console_mgr.lock_or_recover().disable_raw_mode();
         let code = self.shared.exit_code.load(Ordering::Relaxed);
         std::process::exit(code);
@@ -136,6 +132,7 @@ impl super::Loader {
         self.run_vcpu(vcpu, super::threads::MAIN_VCPU_ID, tib_base);
         // Thread 1 may end by itself while other threads still run.
         self.wait_for_process_end();
+        self.shared.npipes.lock_or_recover().close_all();
         self.shared.console_mgr.lock_or_recover().disable_raw_mode();
         let code = self.shared.exit_code.load(Ordering::Relaxed);
         std::process::exit(code);

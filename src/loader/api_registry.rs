@@ -164,12 +164,27 @@ static REGISTRY: &[ApiEntry] = &[
     // ── DOSCALLS — pipes ──────────────────────────────────────────────────
     ApiEntry { ordinal: 239, module: "DOSCALLS", name: "DosCreatePipe",    argc: 3,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_create_pipe(a[0],a[1],a[2])) },
+    // Named pipes (`npipe_api.rs`).
+    ApiEntry { ordinal: 240, module: "DOSCALLS", name: "DosCallNPipe",     argc: 7,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_call_npipe(a[0],a[1],a[2],a[3],a[4],a[5],a[6])) },
     ApiEntry { ordinal: 241, module: "DOSCALLS", name: "DosConnectNPipe",  argc: 1,
-               handler: |_l,_v,_i,_a| { debug!("DosConnectNPipe stub"); ApiResult::Normal(0) } },
-    ApiEntry { ordinal: 243, module: "DOSCALLS", name: "DosCreateNPipe",   argc: 6,
-               handler: |_l,_v,_i,_a| { debug!("DosCreateNPipe stub");   ApiResult::Normal(0) } },
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_connect_npipe(a[0])) },
+    ApiEntry { ordinal: 242, module: "DOSCALLS", name: "DosDisConnectNPipe", argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_disconnect_npipe(a[0])) },
+    ApiEntry { ordinal: 243, module: "DOSCALLS", name: "DosCreateNPipe",   argc: 7,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_create_npipe(a[0],a[1],a[2],a[3],a[4],a[5],a[6])) },
+    ApiEntry { ordinal: 244, module: "DOSCALLS", name: "DosPeekNPipe",     argc: 6,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_peek_npipe(a[0],a[1],a[2],a[3],a[4],a[5])) },
+    ApiEntry { ordinal: 245, module: "DOSCALLS", name: "DosQueryNPHState", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_nph_state(a[0],a[1])) },
+    ApiEntry { ordinal: 248, module: "DOSCALLS", name: "DosQueryNPipeInfo", argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_npipe_info(a[0],a[1],a[2],a[3])) },
     ApiEntry { ordinal: 250, module: "DOSCALLS", name: "DosSetNPHState",   argc: 2,
-               handler: |_l,_v,_i,_a| { debug!("DosSetNPHState stub");    ApiResult::Normal(0) } },
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_nph_state(a[0],a[1])) },
+    ApiEntry { ordinal: 252, module: "DOSCALLS", name: "DosTransactNPipe", argc: 6,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_transact_npipe(a[0],a[1],a[2],a[3],a[4],a[5])) },
+    ApiEntry { ordinal: 253, module: "DOSCALLS", name: "DosWaitNPipe",     argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_wait_npipe(a[0],a[1])) },
 
     // ── DOSCALLS — file I/O ───────────────────────────────────────────────
     ApiEntry { ordinal: 254, module: "DOSCALLS", name: "DosResetBuffer",   argc: 1,
@@ -258,6 +273,8 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_get_named_shared_mem(a[0],a[1],a[2])) },
     ApiEntry { ordinal: 302, module: "DOSCALLS", name: "DosGetSharedMem",  argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_get_shared_mem(a[0],a[1])) },
+    ApiEntry { ordinal: 303, module: "DOSCALLS", name: "DosGiveSharedMem", argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_give_shared_mem(a[0],a[1],a[2])) },
     ApiEntry { ordinal: 304, module: "DOSCALLS", name: "DosFreeMem",       argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_free_mem(a[0])) },
     ApiEntry { ordinal: 305, module: "DOSCALLS", name: "DosSetMem",        argc: 3,
@@ -619,9 +636,6 @@ static REGISTRY: &[ApiEntry] = &[
 /// Pure-stub ordinals: handlers that return 0 without doing any real work.
 /// These are maintained manually alongside the registry entries above.
 const STUB_ORDINALS: &[u32] = &[
-    241,  // DosConnectNPipe
-    243,  // DosCreateNPipe
-    250,  // DosSetNPHState
     267,  // DOS16REQUESTVDD
     285,  // DosFSCtl
     317,  // DosDebug

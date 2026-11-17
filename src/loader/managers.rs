@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::fs::{File, ReadDir};
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy)]
 struct AllocBlock {
@@ -71,13 +72,41 @@ impl MemoryManager {
     }
 }
 
-pub struct HandleManager {
-    handles: HashMap<u32, File>,
-    next_handle: u32,
+/// What a pipe-table handle leads to.
+#[derive(Clone)]
+pub enum PipeObject {
+    /// An anonymous pipe end (`DosCreatePipe`): a host pipe.
+    Host(Arc<File>),
+    /// The server end of a named-pipe instance (`DosCreateNPipe`).
+    Server(Arc<super::npipe::ServerInstance>),
+    /// The client end of a named pipe (`DosOpen("\\PIPE\\…")`).
+    Client(Arc<super::npipe::ClientEnd>),
 }
 
-/// Pipe/legacy handle base — offset to avoid collision with VFS file handles.
-/// VFS handles occupy 3..PIPE_HANDLE_BASE-1, pipe handles occupy PIPE_HANDLE_BASE+.
+/// One pipe-table handle: the pipe end and the handle's `DosQueryFHState`
+/// flags (access mode, `OPEN_FLAGS_NOINHERIT` …).
+#[derive(Clone)]
+pub struct PipeHandle {
+    pub obj: PipeObject,
+    pub fh_state: u32,
+}
+
+impl PipeHandle {
+    /// Whether a child process started by `DosExecPgm` inherits the handle.
+    pub fn inheritable(&self) -> bool {
+        self.fh_state & super::constants::OPEN_FLAGS_NOINHERIT == 0
+    }
+}
+
+/// The pipe table: pipe ends by handle number. The numbers come from the
+/// process's one handle space (`DriveManager::reserve_pipe_handle`, via
+/// `Loader::add_pipe_handle`).
+pub struct HandleManager {
+    handles: HashMap<u32, PipeHandle>,
+}
+
+/// Handle numbers from here on are never files (`DosDupHandle` refuses to
+/// put a file there); pipes take numbers from the shared handle space.
 pub const PIPE_HANDLE_BASE: u32 = 0x1000;
 
 impl Default for HandleManager {
@@ -86,43 +115,51 @@ impl Default for HandleManager {
 
 impl HandleManager {
     pub fn new() -> Self {
-        HandleManager {
-            handles: HashMap::new(),
-            next_handle: PIPE_HANDLE_BASE,
-        }
+        HandleManager { handles: HashMap::new() }
     }
 
-    pub fn add(&mut self, file: File) -> u32 {
-        let h = self.next_handle;
-        self.handles.insert(h, file);
-        self.next_handle += 1;
-        h
-    }
-
-    pub fn get_mut(&mut self, h: u32) -> Option<&mut File> {
-        self.handles.get_mut(&h)
-    }
-
-    pub fn get(&self, h: u32) -> Option<&File> {
+    pub fn entry(&self, h: u32) -> Option<&PipeHandle> {
         self.handles.get(&h)
     }
 
-    pub fn insert(&mut self, file: File) -> u32 {
-        self.add(file)
+    pub fn entry_mut(&mut self, h: u32) -> Option<&mut PipeHandle> {
+        self.handles.get_mut(&h)
     }
 
-    pub fn replace(&mut self, h: u32, file: File) {
-        self.handles.insert(h, file);
+    /// The host pipe of an anonymous-pipe handle (shared, so a blocking
+    /// read or write runs without the manager's lock).
+    pub fn host_file(&self, h: u32) -> Option<Arc<File>> {
+        match self.handles.get(&h).map(|e| &e.obj) {
+            Some(PipeObject::Host(f)) => Some(f.clone()),
+            _ => None,
+        }
+    }
+
+    /// Whether `h` is open in the pipe table.
+    pub fn contains(&self, h: u32) -> bool {
+        self.handles.contains_key(&h)
+    }
+
+    /// Put `entry` at handle number `h` (what `DosDupHandle` does).
+    pub fn replace(&mut self, h: u32, entry: PipeHandle) {
+        self.handles.insert(h, entry);
     }
 
     pub fn close(&mut self, h: u32) -> bool {
         self.handles.remove(&h).is_some()
     }
 
+    /// Every open handle, for passing to a child process.
+    pub fn iter(&self) -> impl Iterator<Item = (u32, &PipeHandle)> {
+        self.handles.iter().map(|(h, e)| (*h, e))
+    }
+
     pub fn flush_all(&mut self) {
         use std::io::Write;
-        for file in self.handles.values_mut() {
-            let _ = file.flush();
+        for entry in self.handles.values() {
+            if let PipeObject::Host(f) = &entry.obj {
+                let _ = (&**f).flush();
+            }
         }
     }
 }
@@ -239,7 +276,20 @@ impl ProcessManager {
     }
 }
 
+/// A block from `DosAllocSharedMem`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedBlock {
+    pub addr: u32,
+    pub size: u32,
+    /// The allocation flags (`PAG_*`, `OBJ_GETTABLE`, `OBJ_GIVEABLE` …).
+    pub flags: u32,
+    /// `\\SHAREMEM\\…` name (upper case), or none.
+    pub name: Option<String>,
+}
+
+/// The shared memory blocks of the process, by address and by name.
 pub struct SharedMemManager {
+    blocks: HashMap<u32, SharedBlock>,
     named_blocks: HashMap<String, u32>,
 }
 
@@ -249,15 +299,35 @@ impl Default for SharedMemManager {
 
 impl SharedMemManager {
     pub fn new() -> Self {
-        SharedMemManager { named_blocks: HashMap::new() }
+        SharedMemManager { blocks: HashMap::new(), named_blocks: HashMap::new() }
     }
 
-    pub fn register(&mut self, name: String, addr: u32) {
-        self.named_blocks.insert(name, addr);
+    /// Record a block; a name is kept in upper case (names are not case
+    /// sensitive).
+    pub fn register(&mut self, mut block: SharedBlock) {
+        if let Some(name) = &mut block.name {
+            *name = name.to_ascii_uppercase();
+            self.named_blocks.insert(name.clone(), block.addr);
+        }
+        self.blocks.insert(block.addr, block);
     }
 
     pub fn find_by_name(&self, name: &str) -> Option<u32> {
-        self.named_blocks.get(name).copied()
+        self.named_blocks.get(&name.to_ascii_uppercase()).copied()
+    }
+
+    /// The block allocated at `addr`.
+    pub fn block(&self, addr: u32) -> Option<&SharedBlock> {
+        self.blocks.get(&addr)
+    }
+
+    /// Forget the block at `addr` (`DosFreeMem`); its name is free again.
+    pub fn remove(&mut self, addr: u32) -> Option<SharedBlock> {
+        let block = self.blocks.remove(&addr)?;
+        if let Some(name) = &block.name {
+            self.named_blocks.remove(name);
+        }
+        Some(block)
     }
 }
 
@@ -524,9 +594,38 @@ mod tests {
     #[test]
     fn test_shared_mem_manager() {
         let mut mgr = SharedMemManager::new();
-        mgr.register("\\SHAREMEM\\TEST".to_string(), 0x5000);
-        assert_eq!(mgr.find_by_name("\\SHAREMEM\\TEST"), Some(0x5000));
+        mgr.register(SharedBlock { addr: 0x5000, size: 4096, flags: 0x13,
+            name: Some("\\SHAREMEM\\Test".to_string()) });
+        assert_eq!(mgr.find_by_name("\\SHAREMEM\\TEST"), Some(0x5000), "names ignore case");
         assert_eq!(mgr.find_by_name("\\SHAREMEM\\OTHER"), None);
+        assert_eq!(mgr.block(0x5000).map(|b| b.size), Some(4096));
+        // Freeing the block frees its name.
+        assert!(mgr.remove(0x5000).is_some());
+        assert_eq!(mgr.find_by_name("\\SHAREMEM\\TEST"), None);
+        assert!(mgr.remove(0x5000).is_none());
+    }
+
+    /// The pipe table: entries at chosen numbers, the inheritance flag.
+    #[test]
+    fn test_handle_manager_pipe_table() {
+        let mut mgr = HandleManager::new();
+        let (r, w) = std::io::pipe().unwrap();
+        let host = |f: std::io::PipeReader| PipeHandle {
+            obj: PipeObject::Host(Arc::new(File::from(std::os::fd::OwnedFd::from(f)))), fh_state: 0 };
+        mgr.replace(3, host(r));
+        mgr.replace(4, PipeHandle { obj: PipeObject::Host(Arc::new(File::from(std::os::fd::OwnedFd::from(w)))),
+                                    fh_state: 1 });
+        assert!(mgr.host_file(3).is_some());
+        let entry = mgr.entry(4).unwrap().clone();
+        assert!(entry.inheritable());
+        mgr.replace(1, entry);
+        assert!(mgr.contains(1));
+        mgr.entry_mut(1).unwrap().fh_state |= crate::loader::constants::OPEN_FLAGS_NOINHERIT;
+        assert!(!mgr.entry(1).unwrap().inheritable());
+        assert!(mgr.entry(4).unwrap().inheritable(), "the duplicate has its own state");
+        assert!(mgr.close(3));
+        assert!(!mgr.close(3));
+        assert_eq!(mgr.iter().count(), 2);
     }
 
     fn make_dll(handle: u32, name: &str, bases: Vec<u32>) -> LoadedDll {

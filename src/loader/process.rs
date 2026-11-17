@@ -33,9 +33,12 @@ impl super::Loader {
                 Some(f) => ChildStdio::Host(f.into()),
                 None => ChildStdio::Console,
             },
-            Some(HandleTarget::Pipe) => match self.shared.handle_mgr.lock_or_recover().get(hf).and_then(|f| f.try_clone().ok()) {
+            Some(HandleTarget::Pipe) => match self.shared.handle_mgr.lock_or_recover().host_file(hf)
+                .and_then(|f| f.try_clone().ok()) {
                 Some(f) => ChildStdio::Host(f.into()),
-                None => ChildStdio::Console,
+                // A named-pipe end goes as an inherited handle (framed
+                // data, not a byte stream for the host stream).
+                None => ChildStdio::Closed,
             },
             None => ChildStdio::Closed,
         }
@@ -72,7 +75,7 @@ impl super::Loader {
     /// - pName: program path
     #[allow(clippy::too_many_arguments)]
     pub fn dos_exec_pgm(&self, p_objname: u32, cb_objname: u32, exec_flag: u32,
-                         p_arg: u32, _p_env: u32, p_res: u32, p_name: u32) -> u32 {
+                         p_arg: u32, p_env: u32, p_res: u32, p_name: u32) -> u32 {
         let prog_name = self.read_guest_string(p_name);
         debug!("  DosExecPgm(prog='{}', execFlag={})", prog_name, exec_flag);
 
@@ -96,9 +99,14 @@ impl super::Loader {
 
         // Resolve the program path via the DriveManager VFS (handles C:\ → host path,
         // case-insensitive lookup, per-drive current directory, etc.).
+        // The program's own OS/2 name (what a shell starts to run a copy
+        // of itself, as 4OS2 does for a pipe) is its host executable.
+        let own = (!prog_name.is_empty() && prog_name.eq_ignore_ascii_case(&self.os2_exe_path()))
+            .then(|| std::fs::canonicalize(&*self.shared.exe_name.lock_or_recover()).ok())
+            .flatten();
         let prog_path = {
             let dm = self.shared.drive_mgr.lock_or_recover();
-            match dm.resolve_to_host_path(&prog_name) {
+            match own.or_else(|| dm.resolve_to_host_path(&prog_name)) {
                 Some(p) => p,
                 None => {
                     warn!("  DosExecPgm: cannot resolve '{}' via VFS", prog_name);
@@ -125,6 +133,10 @@ impl super::Loader {
         // Build command: warpine <child.exe> [args...]
         let mut cmd = Command::new(&warpine_exe);
         cmd.arg(&prog_path);
+        self.set_child_startup(&mut cmd, p_arg, p_env);
+        // Pipe handles the child inherits; kept open until it has started.
+        let child_handles = self.child_handles();
+        child_handles.apply(&mut cmd);
 
         // Add arguments (skip the first element which is the program name)
         if args.len() > 1 {
@@ -166,7 +178,9 @@ impl super::Loader {
                 // or pipe instead.
                 self.set_child_stdio(&mut cmd);
 
-                match cmd.spawn() {
+                let spawned = cmd.spawn();
+                drop(child_handles);
+                match spawned {
                     Ok(mut child) => {
                         let stdout_pipe = child.stdout.take();
 
@@ -215,7 +229,9 @@ impl super::Loader {
                 // text window as the parent (e.g. 4OS2). Redirected standard
                 // handles go to their file or pipe instead.
                 self.set_child_stdio(&mut cmd);
-                match cmd.spawn() {
+                let spawned = cmd.spawn();
+                drop(child_handles);
+                match spawned {
                     Ok(mut child) => {
                         let stdout_pipe = child.stdout.take();
                         let shared_out = self.shared.clone();
@@ -226,9 +242,11 @@ impl super::Loader {
                             proc_mgr.add_relay_thread(pid, relay);
                         }
                         drop(proc_mgr);
+                        // "The PID is stored in the codeTerminate field"
+                        // (CP Reference, EXEC_ASYNC / EXEC_ASYNCRESULT).
                         if p_res != 0 {
-                            self.guest_write::<u32>(p_res, 0);       // codeTerminate (unused for async)
-                            self.guest_write::<u32>(p_res + 4, pid); // PID
+                            self.guest_write::<u32>(p_res, pid);
+                            self.guest_write::<u32>(p_res + 4, 0);
                         }
                         NO_ERROR
                     }
@@ -432,6 +450,26 @@ impl super::Loader {
         NO_ERROR
     }
 
+    /// Give the child of `DosExecPgm` its command line (`pArg`'s two
+    /// strings), its environment (`pEnv`, or this process's own for NULL —
+    /// "the child process will inherit the environment of its parent", CP
+    /// Reference) and the session's pipe directory.
+    fn set_child_startup(&self, cmd: &mut Command, p_arg: u32, p_env: u32) {
+        use super::inherit::{escape, join_env, ARG0_ENV, ARGS_ENV, ENV_ENV};
+        let (arg0, args) = self.read_arg_block(p_arg);
+        cmd.env(ARG0_ENV, escape(&arg0));
+        cmd.env(ARGS_ENV, escape(&args));
+        let env_ptr = if p_env != 0 { p_env } else { self.guest_read::<u32>(PIB_BASE + 0x10).unwrap_or(0) };
+        let env = if env_ptr != 0 { self.read_env_block(env_ptr) } else { Vec::new() };
+        let mut block = join_env(&env);
+        block.pop(); // the strings with their NULs; the reader adds the end
+        cmd.env(ENV_ENV, escape(&block));
+        match self.shared.npipes.lock_or_recover().dir.path() {
+            Some(dir) => { cmd.env(super::npipe::PIPE_DIR_ENV, dir); }
+            None => { cmd.env_remove(super::npipe::PIPE_DIR_ENV); }
+        }
+    }
+
     /// Parse a double-null-terminated string from guest memory.
     /// Returns a vector of strings (typically: program name, then arguments).
     pub(crate) fn parse_double_null_string(&self, ptr: u32) -> Vec<String> {
@@ -584,6 +622,30 @@ mod tests {
         assert_eq!(waiter.join().unwrap(), 0);
         assert_eq!(loader.guest_read::<u32>(p_pid), Some(pid));
         assert_eq!(loader.guest_read::<u32>(p_res + 4), Some(0), "exit code of `true`");
+    }
+
+    /// The child of DosExecPgm gets the argument block's strings, the
+    /// given environment (or the parent's own) and the pipe directory.
+    #[test]
+    fn test_child_startup_variables() {
+        use super::super::inherit::{unescape, ARG0_ENV, ARGS_ENV, ENV_ENV};
+        let loader = Loader::new_mock();
+        loader.guest_write_bytes(0x3000, b"C:\\FIND.EXE\0\"Warp\" x\0\0").unwrap();
+        loader.guest_write_bytes(0x3100, b"A=1\0B=\x01\0\0").unwrap();
+        let mut cmd = std::process::Command::new("true");
+        loader.set_child_startup(&mut cmd, 0x3000, 0x3100);
+        let envs: std::collections::HashMap<_, _> = cmd.get_envs()
+            .filter_map(|(k, v)| v.map(|v| (k.to_string_lossy().into_owned(), unescape(v)))).collect();
+        assert_eq!(envs[ARG0_ENV], b"C:\\FIND.EXE");
+        assert_eq!(envs[ARGS_ENV], b"\"Warp\" x");
+        assert_eq!(envs[ENV_ENV], b"A=1\0B=\x01\0");
+        // NULL pEnv: the parent's environment from its PIB.
+        loader.guest_write_bytes(0x3200, b"P=2\0\0").unwrap();
+        loader.guest_write::<u32>(super::super::constants::PIB_BASE + 0x10, 0x3200).unwrap();
+        let mut cmd = std::process::Command::new("true");
+        loader.set_child_startup(&mut cmd, 0, 0);
+        let env = cmd.get_envs().find(|(k, _)| *k == ENV_ENV).and_then(|(_, v)| v).map(unescape);
+        assert_eq!(env.as_deref(), Some(&b"P=2\0"[..]));
     }
 
     /// A standard handle the parent redirected to a file is passed to the

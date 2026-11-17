@@ -253,6 +253,57 @@ fn test_4os2_ends_at_the_end_of_piped_input() {
     assert_eq!(saved, "saved\r\n", "echo > file wrote the file");
 }
 
+/// 4OS2 pipes to an external program: `ver | find "…"` creates a pipe,
+/// starts FIND.EXE (npipe_test.exe under that name) with the pipe as its
+/// standard input and the write end not inherited, runs VER into the pipe
+/// and waits for FIND, which prints only the matching line.
+#[test]
+fn test_4os2_pipe_to_an_external_program() {
+    let sample = "samples/4os2/4os2.exe";
+    let find = "samples/npipe_test/npipe_test.exe";
+    if !kvm_available() || !Path::new(sample).exists() || !Path::new(find).exists() { return; }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let drive_c = dir.path().join("warpine/drive_c");
+    std::fs::create_dir_all(&drive_c).unwrap();
+    std::fs::copy(find, drive_c.join("FIND.EXE")).unwrap();
+    let mut child = Command::new(warpine())
+        .arg(sample)
+        .envs(PINNED_LOCALE.iter().copied())
+        .env("RUST_LOG", "error")
+        .env("XDG_DATA_HOME", dir.path())
+        .env("SDL_VIDEODRIVER", "dummy")
+        .env("SDL_AUDIODRIVER", "dummy")
+        .env_remove("WARPINE_VIO")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn warpine");
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"ver | find \"NoSuchTextZq\"\r\nver | find \"OS/2 Version\"\r\necho pipes-done\r\n").unwrap();
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(40);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() { break s; }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("4OS2 hung in a pipeline");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut out = String::new();
+    use std::io::Read;
+    child.stdout.take().unwrap().read_to_string(&mut out).unwrap();
+    assert_eq!(status.code(), Some(0), "{out}");
+    assert!(out.contains("pipes-done"), "4OS2 went on after the pipelines:\n{out}");
+    // VER's own line (two spaces after 4OS2, unlike the start-up banner)
+    // comes out once, through FIND; its copyright lines are filtered.
+    assert_eq!(out.matches("4OS2  5.00").count(), 1, "VER's line through FIND:\n{out}");
+    assert_eq!(out.matches("Copyright (c) 1988").count(), 1, "only the banner's copyright:\n{out}");
+}
+
 /// audio_test: DosBeep and mciSendString through MDM loaded at run time
 /// (`open waveaudio alias …` opens the device by name). Runs headless, so
 /// no sound is played and DosBeep returns at once.
@@ -333,6 +384,24 @@ fn test_thread_control_and_signal_exceptions() {
     let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
     assert!(failed.is_empty(), "failed checks: {failed:#?}");
     assert!(out.contains(&format!("thread_control_test: done {n}/{n}", n = checks.len())), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
+/// npipe_test: named pipes in one process and across processes, pipes
+/// passed to child processes (an inherited handle, standard input,
+/// standard output), the environment given to DosExecPgm, and
+/// DosGiveSharedMem. The sample starts copies of itself.
+#[test]
+fn test_named_pipes_and_child_pipes() {
+    const SAMPLE: &str = "samples/npipe_test/npipe_test.exe";
+    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    let (out, code) = run_sample(SAMPLE, 60);
+    let checks: Vec<&str> = out.lines()
+        .filter(|l| l.starts_with("npipe_test: ") && !l.contains(": done")).collect();
+    assert!(checks.len() >= 60, "every check reported:\n{out}");
+    let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
+    assert!(failed.is_empty(), "failed checks: {failed:#?}");
+    assert!(out.contains(&format!("npipe_test: done {n}/{n}", n = checks.len())), "{out}");
     assert_eq!(code, 0, "{out}");
 }
 

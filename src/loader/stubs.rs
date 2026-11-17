@@ -120,31 +120,49 @@ impl super::Loader {
 
     // ── Step 2: Shared Memory ──
 
-    /// DosAllocSharedMem (ordinal 300): allocate shared memory.
-    /// Delegates to existing MemoryManager; if named, registers in SharedMemManager.
-    pub fn dos_alloc_shared_mem(&self, ppb: u32, psz_name: u32, cb: u32, _flag: u32) -> u32 {
+    /// DosAllocSharedMem (ordinal 300): allocate shared memory. A name must
+    /// be `\SHAREMEM\…` and not in use (`ERROR_ALREADY_EXISTS`); the
+    /// flags need an access bit (`PAG_READ` / `PAG_WRITE` / `PAG_EXECUTE`).
+    /// Warpine's processes are separate host processes: the block is
+    /// shared by the threads of this process only.
+    pub fn dos_alloc_shared_mem(&self, ppb: u32, psz_name: u32, cb: u32, flag: u32) -> u32 {
         let name = if psz_name != 0 {
             let n = self.read_guest_string(psz_name);
             if !n.is_empty() { Some(n) } else { None }
         } else {
             None
         };
-        debug!("  DosAllocSharedMem(name={:?}, cb={})", name, cb);
-        match self.shared.mem_mgr.lock_or_recover().alloc(cb) {
-            Some(addr) => {
-                self.guest_write::<u32>(ppb, addr);
-                if let Some(name) = name {
-                    self.shared.shmem_mgr.lock_or_recover().register(name, addr);
-                }
-                NO_ERROR
-            }
-            None => ERROR_NOT_ENOUGH_MEMORY,
+        debug!("  DosAllocSharedMem(name={:?}, cb={}, flag=0x{:X})", name, cb, flag);
+        const VALID: u32 = PAG_READ | PAG_WRITE | PAG_EXECUTE | PAG_GUARD | PAG_COMMIT
+            | OBJ_TILE | OBJ_GETTABLE | OBJ_GIVEABLE | OBJ_ANY;
+        if ppb == 0 || cb == 0 || flag & !VALID != 0 || flag & (PAG_READ | PAG_WRITE | PAG_EXECUTE) == 0 {
+            return ERROR_INVALID_PARAMETER;
         }
+        if let Some(n) = &name {
+            let upper = n.replace('/', "\\").to_ascii_uppercase();
+            if !upper.starts_with("\\SHAREMEM\\") || upper.len() <= "\\SHAREMEM\\".len() {
+                return ERROR_INVALID_NAME;
+            }
+            if self.shared.shmem_mgr.lock_or_recover().find_by_name(&upper).is_some() {
+                return ERROR_ALREADY_EXISTS;
+            }
+        }
+        let Some(addr) = self.shared.mem_mgr.lock_or_recover().alloc(cb) else {
+            return ERROR_NOT_ENOUGH_MEMORY;
+        };
+        if self.guest_write::<u32>(ppb, addr).is_none() {
+            self.shared.mem_mgr.lock_or_recover().free(addr);
+            return ERROR_INVALID_PARAMETER;
+        }
+        self.shared.shmem_mgr.lock_or_recover().register(super::managers::SharedBlock {
+            addr, size: cb, flags: flag, name: name.map(|n| n.replace('/', "\\")),
+        });
+        NO_ERROR
     }
 
     /// DosGetNamedSharedMem (ordinal 301): get existing shared memory by name.
     pub fn dos_get_named_shared_mem(&self, ppb: u32, psz_name: u32, _flag: u32) -> u32 {
-        let name = self.read_guest_string(psz_name);
+        let name = self.read_guest_string(psz_name).replace('/', "\\");
         debug!("  DosGetNamedSharedMem(name='{}')", name);
         if let Some(addr) = self.shared.shmem_mgr.lock_or_recover().find_by_name(&name) {
             self.guest_write::<u32>(ppb, addr);
@@ -152,6 +170,37 @@ impl super::Loader {
         } else {
             ERROR_FILE_NOT_FOUND
         }
+    }
+
+    /// DosGiveSharedMem (ordinal 303): give process `pid` access to a
+    /// giveable shared block. `pb` must be the base of a block allocated
+    /// with `OBJ_GIVEABLE` (else `ERROR_INVALID_ADDRESS` /
+    /// `ERROR_ACCESS_DENIED`); `flag` needs an access bit and may not ask
+    /// for more than the block allows. The calling process itself already
+    /// has the block (`NO_ERROR`, unverified); an unknown process is
+    /// `ERROR_INVALID_PROCID`. A child process is a separate Warpine (host)
+    /// process whose memory this process cannot map into, so giving to it
+    /// fails with `ERROR_ACCESS_DENIED` (Warpine's limit).
+    pub fn dos_give_shared_mem(&self, pb: u32, pid: u32, flag: u32) -> u32 {
+        debug!("  DosGiveSharedMem(pb=0x{:08X}, pid={}, flag=0x{:X})", pb, pid, flag);
+        const PERM: u32 = PAG_READ | PAG_WRITE | PAG_EXECUTE;
+        if flag & !(PERM | PAG_GUARD) != 0 || flag & PERM == 0 {
+            return ERROR_INVALID_PARAMETER;
+        }
+        let Some(block) = self.shared.shmem_mgr.lock_or_recover().block(pb).cloned() else {
+            return ERROR_INVALID_ADDRESS;
+        };
+        if block.flags & OBJ_GIVEABLE == 0 || flag & PERM & !block.flags != 0 {
+            return ERROR_ACCESS_DENIED;
+        }
+        if pid == PROCESS_ID {
+            return NO_ERROR;
+        }
+        if self.shared.process_mgr.lock_or_recover().children.contains_key(&pid) {
+            warn!("  DosGiveSharedMem: process {} is another Warpine process; its memory is out of reach", pid);
+            return ERROR_ACCESS_DENIED;
+        }
+        ERROR_INVALID_PROCID
     }
 
     /// DosGetSharedMem (ordinal 302): get access to shared memory.
@@ -639,18 +688,29 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// DosQueryFHState (ordinal 276): get file handle state.
+    /// DosQueryFHState (ordinal 276): get file handle state. Pipe handles
+    /// report their access and flags (`OPEN_FLAGS_NOINHERIT` …); other
+    /// handles 0.
     pub fn dos_query_fh_state(&self, hf: u32, p_mode: u32) -> u32 {
         debug!("  DosQueryFHState(hf={})", hf);
+        let state = self.shared.handle_mgr.lock_or_recover().entry(hf).map(|e| e.fh_state).unwrap_or(0);
         if p_mode != 0 {
-            self.guest_write::<u32>(p_mode, 0);
+            self.guest_write::<u32>(p_mode, state);
         }
         NO_ERROR
     }
 
-    /// DosSetFHState (ordinal 221): set file handle state.
+    /// DosSetFHState (ordinal 221): set file handle state. On a pipe handle
+    /// the settable flags (`OPEN_FLAGS_NOINHERIT`, `_FAIL_ON_ERROR`,
+    /// `_WRITE_THROUGH`, `_NO_CACHE`) are kept — a non-inheritable handle
+    /// is not passed to child processes; other handles accept the call.
     pub fn dos_set_fh_state(&self, hf: u32, mode: u32) -> u32 {
         debug!("  DosSetFHState(hf={}, mode=0x{:04X})", hf, mode);
+        const SETTABLE: u32 = OPEN_FLAGS_NOINHERIT | OPEN_FLAGS_FAIL_ON_ERROR
+            | OPEN_FLAGS_WRITE_THROUGH | OPEN_FLAGS_NO_CACHE;
+        if let Some(e) = self.shared.handle_mgr.lock_or_recover().entry_mut(hf) {
+            e.fh_state = (e.fh_state & !SETTABLE) | (mode & SETTABLE);
+        }
         NO_ERROR
     }
 
@@ -821,25 +881,6 @@ impl super::Loader {
     /// DosOpenMutexSem (ordinal 332): open a mutex semaphore by name or handle.
     pub fn dos_open_mutex_sem(&self, psz_name: u32, phmtx: u32) -> u32 {
         self.open_sem(super::ipc::SemKind::Mutex, psz_name, phmtx)
-    }
-
-    // ── Step 8: Named Pipe Stubs ──
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn dos_create_npipe(&self, psz_name: u32, _ph: u32, _open_mode: u32, _pipe_mode: u32, _out_sz: u32, _in_sz: u32, _timeout: u32) -> u32 {
-        let name = self.read_guest_string(psz_name);
-        warn!("  DosCreateNPipe('{}') - not implemented", name);
-        ERROR_INVALID_FUNCTION
-    }
-
-    pub fn dos_connect_npipe(&self, _h: u32) -> u32 {
-        warn!("  DosConnectNPipe - not implemented");
-        ERROR_INVALID_FUNCTION
-    }
-
-    pub fn dos_set_nph_state(&self, _h: u32, _state: u32) -> u32 {
-        warn!("  DosSetNPHState - not implemented");
-        ERROR_INVALID_FUNCTION
     }
 
     // ── Step 9: Session Management Stubs ──
@@ -1089,6 +1130,64 @@ fn unix_time() -> u64 {
 mod tests {
     use super::super::Loader;
     use super::super::mutex_ext::MutexExt;
+
+    use super::super::constants::*;
+
+    fn put(l: &Loader, at: u32, s: &str) -> u32 {
+        l.guest_write_bytes(at, s.as_bytes()).unwrap();
+        l.guest_write::<u8>(at + s.len() as u32, 0).unwrap();
+        at
+    }
+
+    /// Named shared memory: \SHAREMEM\ names only, one block per name (any
+    /// case), the name free again after DosFreeMem; flags need an access bit.
+    #[test]
+    fn test_alloc_shared_mem_names_and_flags() {
+        let l = Loader::new_mock();
+        const PPB: u32 = 0x3000;
+        let rw = PAG_COMMIT | PAG_READ | PAG_WRITE;
+        let name = put(&l, 0x3100, "\\SHAREMEM\\Unit");
+        assert_eq!(l.dos_alloc_shared_mem(PPB, name, 4096, rw), NO_ERROR);
+        let addr = l.guest_read::<u32>(PPB).unwrap();
+        let upper = put(&l, 0x3200, "\\sharemem\\UNIT");
+        assert_eq!(l.dos_alloc_shared_mem(PPB, upper, 4096, rw), ERROR_ALREADY_EXISTS);
+        assert_eq!(l.dos_get_named_shared_mem(PPB, upper, PAG_READ), NO_ERROR);
+        assert_eq!(l.guest_read::<u32>(PPB), Some(addr));
+        let bad = put(&l, 0x3300, "\\SEM32\\X");
+        assert_eq!(l.dos_alloc_shared_mem(PPB, bad, 4096, rw), ERROR_INVALID_NAME);
+        assert_eq!(l.dos_alloc_shared_mem(PPB, 0, 4096, PAG_COMMIT), ERROR_INVALID_PARAMETER, "no access bit");
+        assert_eq!(l.dos_alloc_shared_mem(PPB, 0, 4096, rw | 0x8000_0000), ERROR_INVALID_PARAMETER);
+        assert_eq!(l.dos_alloc_shared_mem(0, 0, 4096, rw), ERROR_INVALID_PARAMETER);
+        assert_eq!(l.dos_alloc_shared_mem(PPB, 0, 0, rw), ERROR_INVALID_PARAMETER);
+        assert_eq!(l.dos_free_mem(addr), NO_ERROR);
+        assert_eq!(l.dos_get_named_shared_mem(PPB, name, PAG_READ), ERROR_FILE_NOT_FOUND);
+        assert_eq!(l.dos_alloc_shared_mem(PPB, name, 4096, rw), NO_ERROR, "name free again");
+        assert_eq!(l.dos_free_mem(addr + 1), ERROR_INVALID_ADDRESS);
+    }
+
+    /// DosGiveSharedMem: giveable blocks only, compatible access, known
+    /// processes; a child process is out of reach (separate Warpine).
+    #[test]
+    fn test_give_shared_mem() {
+        let l = Loader::new_mock();
+        const PPB: u32 = 0x3000;
+        assert_eq!(l.dos_alloc_shared_mem(PPB, 0, 4096, PAG_COMMIT | PAG_READ | PAG_WRITE | OBJ_GIVEABLE), 0);
+        let give = l.guest_read::<u32>(PPB).unwrap();
+        assert_eq!(l.dos_alloc_shared_mem(PPB, 0, 4096, PAG_COMMIT | PAG_READ | OBJ_GETTABLE), 0);
+        let get = l.guest_read::<u32>(PPB).unwrap();
+        assert_eq!(l.dos_give_shared_mem(give, PROCESS_ID, PAG_READ | PAG_WRITE), NO_ERROR);
+        assert_eq!(l.dos_give_shared_mem(give, PROCESS_ID, PAG_READ | PAG_GUARD), NO_ERROR);
+        assert_eq!(l.dos_give_shared_mem(give, PROCESS_ID, PAG_COMMIT), ERROR_INVALID_PARAMETER);
+        assert_eq!(l.dos_give_shared_mem(give, PROCESS_ID, 0), ERROR_INVALID_PARAMETER);
+        assert_eq!(l.dos_give_shared_mem(give, PROCESS_ID, PAG_EXECUTE), ERROR_ACCESS_DENIED, "more than the block");
+        assert_eq!(l.dos_give_shared_mem(get, PROCESS_ID, PAG_READ), ERROR_ACCESS_DENIED, "not giveable");
+        assert_eq!(l.dos_give_shared_mem(give + 4096 * 8, PROCESS_ID, PAG_READ), ERROR_INVALID_ADDRESS);
+        assert_eq!(l.dos_give_shared_mem(give, 0x7777, PAG_READ), ERROR_INVALID_PROCID);
+        let child = std::process::Command::new("true").spawn().unwrap();
+        let pid = l.shared.process_mgr.lock_or_recover().add_child(child);
+        assert_eq!(l.dos_give_shared_mem(give, pid, PAG_READ), ERROR_ACCESS_DENIED, "another Warpine process");
+        if let Some(mut c) = l.shared.process_mgr.lock_or_recover().take_child(pid) { let _ = c.wait(); }
+    }
 
     /// DosMapCase on a buffer at the top of the address space: no overflow.
     #[test]

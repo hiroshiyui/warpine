@@ -327,7 +327,9 @@ impl super::Loader {
     pub fn so_socket(&self, domain: u32, sock_type: u32, protocol: u32) -> u32 {
         debug!("socket(domain={}, type={}, protocol={})", domain, sock_type, protocol);
         // SAFETY: domain/type/protocol are valid i32 values passed from guest args.
-        let fd = unsafe { libc::socket(domain as i32, sock_type as i32, protocol as i32) };
+        // Close-on-exec: a child process (DosExecPgm) must not keep the
+        // socket open.
+        let fd = unsafe { libc::socket(domain as i32, sock_type as i32 | libc::SOCK_CLOEXEC, protocol as i32) };
         if fd < 0 {
             let e = errno_to_soce(last_errno());
             self.shared.socket_mgr.lock_or_recover().set_errno(e);
@@ -444,7 +446,7 @@ impl super::Loader {
 
         // SAFETY: storage is stack-allocated; len is bounded by sockaddr_storage size.
         let new_fd = unsafe {
-            libc::accept(fd, &mut storage as *mut _ as *mut libc::sockaddr, &mut len)
+            libc::accept4(fd, &mut storage as *mut _ as *mut libc::sockaddr, &mut len, libc::SOCK_CLOEXEC)
         };
         if new_fd < 0 {
             let e = errno_to_soce(last_errno());
@@ -1297,6 +1299,20 @@ mod tests {
         // soclose on an invalid handle → sets sock_errno to SOCE_BADF.
         loader.so_close(0xDEAD);
         assert_eq!(loader.so_sock_errno(), SOCE_BADF as u32);
+    }
+
+    /// Sockets are close-on-exec: a child process started by DosExecPgm
+    /// does not inherit them.
+    #[test]
+    fn test_so_socket_is_close_on_exec() {
+        let loader = Loader::new_mock();
+        let h = loader.so_socket(libc::AF_INET as u32, libc::SOCK_STREAM as u32, 0);
+        assert_ne!(h, SOCK_ERROR);
+        let fd = loader.shared.socket_mgr.lock_or_recover().lookup(h).unwrap();
+        // SAFETY: fcntl F_GETFD on an open descriptor.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+        assert_eq!(flags & libc::FD_CLOEXEC, libc::FD_CLOEXEC);
+        loader.so_close(h);
     }
 
     #[test]

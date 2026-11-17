@@ -152,15 +152,9 @@ impl super::Loader {
     /// Set up guest memory for an NE executable and return (entry_cs_sel, entry_ip, ss_sel, sp).
     fn setup_guest_ne(&self, ne_file: &NeFile) -> (u16, u16, u16, u16) {
         // Reuse common setup: TIB, PIB, environment, BDA
-        let os2_exe = self.os2_exe_path();
-        let mut env_block: Vec<u8> = Vec::new();
-        env_block.extend_from_slice(b"PATH=C:\\\0");
-        env_block.extend_from_slice(b"COMSPEC=C:\\CMD.EXE\0");
-        env_block.extend_from_slice(b"OS=OS2\0");
-        env_block.push(0);
-        let cmdline_offset = env_block.len() as u32;
-        env_block.extend_from_slice(os2_exe.as_bytes());
-        env_block.push(0);
+        let (env_block, cmdline_offset) = self.startup_block(&[
+            b"PATH=C:\\", b"COMSPEC=C:\\CMD.EXE", b"OS=OS2"]);
+        let cmdline_offset = cmdline_offset as u32;
         let env_addr = self.shared.mem_mgr.lock_or_recover()
             .alloc(env_block.len() as u32)
             .expect("setup_guest_ne: env alloc failed");
@@ -326,6 +320,7 @@ impl super::Loader {
         self.run_vcpu(vcpu, super::threads::MAIN_VCPU_ID, TIB_BASE as u64);
         self.wait_for_process_end();
 
+        self.shared.npipes.lock_or_recover().close_all();
         self.shared.console_mgr.lock_or_recover().disable_raw_mode();
         let code = self.shared.exit_code.load(Ordering::Relaxed);
         std::process::exit(code);

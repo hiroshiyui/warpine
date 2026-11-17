@@ -50,9 +50,16 @@ DOSCALLS.236  DosSetPriority
 DOSCALLS.237  DosResumeThread
 DOSCALLS.238  DosSuspendThread
 DOSCALLS.239  DosCreatePipe
+DOSCALLS.240  DosCallNPipe
 DOSCALLS.241  DosConnectNPipe
+DOSCALLS.242  DosDisConnectNPipe
 DOSCALLS.243  DosCreateNPipe
+DOSCALLS.244  DosPeekNPipe
+DOSCALLS.245  DosQueryNPHState
+DOSCALLS.248  DosQueryNPipeInfo
 DOSCALLS.250  DosSetNPHState
+DOSCALLS.252  DosTransactNPipe
+DOSCALLS.253  DosWaitNPipe
 DOSCALLS.254  DosResetBuffer
 DOSCALLS.255  DosSetCurrentDir
 DOSCALLS.256  DosSetFilePtr
@@ -91,6 +98,7 @@ DOSCALLS.299  DosAllocMem
 DOSCALLS.300  DosAllocSharedMem
 DOSCALLS.301  DosGetNamedSharedMem
 DOSCALLS.302  DosGetSharedMem
+DOSCALLS.303  DosGiveSharedMem
 DOSCALLS.304  DosFreeMem
 DOSCALLS.305  DosSetMem
 DOSCALLS.306  DosQueryMem

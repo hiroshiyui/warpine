@@ -212,7 +212,8 @@ static LONG run_signalled_child( const char *exe, LONG *send_rc )
     *p = '\0';
     rc = DosExecPgm( NULL, 0, EXEC_ASYNC, args, NULL, &res, exe );
     if( rc != NO_ERROR ) return -(LONG)rc;
-    pid = res.codeTerminate == 0 ? res.codeResult : 0;
+    /* EXEC_ASYNC: the child's process id is in codeTerminate (CP Reference). */
+    pid = res.codeTerminate;
     for( tries = 0; tries < 200; tries++ ) {
         if( DosQueryPathInfo( READY_FILE, FIL_STANDARD, &fs, sizeof( fs ) ) == NO_ERROR ) break;
         DosSleep( 50 );

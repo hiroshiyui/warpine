@@ -63,6 +63,9 @@ pub mod api_ring;
 pub mod gdb_stub;
 pub mod uconv;
 pub mod tcpip;
+pub mod npipe;
+mod npipe_api;
+pub mod inherit;
 pub mod moucalls;
 pub mod profile;
 mod pmshapi;
@@ -336,6 +339,10 @@ pub struct SharedState {
     pub dll_mgr: Mutex<DllManager>,
     pub uconv_mgr: Mutex<uconv::UconvManager>,
     pub socket_mgr: Mutex<tcpip::SocketManager>,
+    /// Named pipes served by this process and the session's pipe directory.
+    pub npipes: Mutex<npipe::NamedPipes>,
+    /// Command line and environment the process was started with.
+    pub startup: Mutex<inherit::StartupInfo>,
     /// Executable name as provided on the command line
     pub exe_name: Mutex<String>,
     pub guest_mem: GuestMemory,
@@ -450,6 +457,8 @@ impl Loader {
             dll_mgr: Mutex::new(DllManager::new()),
             uconv_mgr: Mutex::new(uconv::UconvManager::new()),
             socket_mgr: Mutex::new(tcpip::SocketManager::new()),
+            npipes: Mutex::new(npipe::NamedPipes::new(npipe::PipeDir::from_env())),
+            startup: Mutex::new(inherit::StartupInfo::from_env()),
             exe_name: Mutex::new(String::new()),
             guest_mem,
             threads: Default::default(),
@@ -472,7 +481,10 @@ impl Loader {
             gdb_state: None,
         });
 
-        Loader { vm, shared }
+        let loader = Loader { vm, shared };
+        // Pipes a parent process passed on (DosExecPgm).
+        loader.adopt_inherited_handles();
+        loader
     }
 
     /// Attach a GDB state to this loader.
@@ -544,6 +556,8 @@ impl Loader {
             dll_mgr:      Mutex::new(DllManager::new()),
             uconv_mgr:    Mutex::new(uconv::UconvManager::new()),
             socket_mgr:   Mutex::new(tcpip::SocketManager::new()),
+            npipes:       Default::default(),
+            startup:      Default::default(),
             exe_name:     Mutex::new(String::new()),
             guest_mem,
             threads:      Default::default(),

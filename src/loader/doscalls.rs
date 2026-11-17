@@ -52,9 +52,37 @@ pub(crate) enum HandleTarget {
 }
 
 impl super::Loader {
+    /// Put `entry` in the pipe table under a new number. Files and pipes
+    /// share one handle space (as in OS/2), the lowest free number from 3.
+    pub(crate) fn add_pipe_handle(&self, entry: super::managers::PipeHandle) -> u32 {
+        let mut hm = self.shared.handle_mgr.lock_or_recover();
+        let h = self.shared.drive_mgr.lock_or_recover().reserve_pipe_handle();
+        hm.replace(h, entry);
+        h
+    }
+
+    /// Put `entry` in the pipe table at number `h`, closing what `h` was.
+    pub(crate) fn put_pipe_handle_at(&self, h: u32, entry: super::managers::PipeHandle) {
+        let mut hm = self.shared.handle_mgr.lock_or_recover();
+        let mut dm = self.shared.drive_mgr.lock_or_recover();
+        dm.release_for_dup(h);
+        dm.reserve_pipe_handle_at(h);
+        hm.replace(h, entry);
+    }
+
+    /// Remove `h` from the pipe table; false when it was not there.
+    pub(crate) fn close_pipe_handle(&self, h: u32) -> bool {
+        let mut hm = self.shared.handle_mgr.lock_or_recover();
+        let closed = hm.close(h);
+        if closed {
+            self.shared.drive_mgr.lock_or_recover().release_pipe_handle(h);
+        }
+        closed
+    }
+
     /// Where handle `hf` leads, or `None` for a handle that is not open.
     pub(crate) fn handle_target(&self, hf: u32) -> Option<HandleTarget> {
-        if self.shared.handle_mgr.lock_or_recover().get(hf).is_some() {
+        if self.shared.handle_mgr.lock_or_recover().contains(hf) {
             return Some(HandleTarget::Pipe);
         }
         let dm = self.shared.drive_mgr.lock_or_recover();
@@ -69,6 +97,10 @@ impl super::Loader {
 
     pub fn dos_open(&self, psz_name_ptr: u32, phf_ptr: u32, pul_action_ptr: u32, fs_open_flags: u32, fs_open_mode: u32) -> u32 {
         let name = self.read_guest_string(psz_name_ptr);
+        if super::npipe::is_pipe_name(&name) {
+            // The client end of a named pipe (`npipe_api.rs`).
+            return self.np_open_client(&name, phf_ptr, pul_action_ptr, fs_open_mode);
+        }
         let mode = match OpenMode::from_raw(fs_open_mode) {
             Ok(m) => m,
             Err(e) => return e.0,
@@ -94,7 +126,7 @@ impl super::Loader {
         // redirected — until something is duplicated into it.
         match self.handle_target(hf) {
             Some(HandleTarget::Pipe) => {
-                self.shared.handle_mgr.lock_or_recover().close(hf);
+                self.close_pipe_handle(hf);
                 self.shared.drive_mgr.lock_or_recover().mark_std_closed(hf);
                 NO_ERROR
             }
@@ -113,7 +145,6 @@ impl super::Loader {
                 dm.mark_std_closed(hf);
                 rc
             }
-            None if hf >= PIPE_HANDLE_BASE => NO_ERROR,
             None => ERROR_INVALID_HANDLE,
         }
     }
@@ -132,19 +163,25 @@ impl super::Loader {
         let len = len.min(64 * 1024 * 1024);
 
         if target == Some(HandleTarget::Pipe) || hf >= PIPE_HANDLE_BASE {
-            // Pipe handle
-            let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
-            if let Some(file) = h_mgr.get_mut(hf) {
-                let mut data = vec![0u8; len as usize];
-                match file.read(&mut data) {
-                    Ok(n) => {
-                        self.guest_write_bytes(buf_ptr, &data[..n]);
-                        if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, n as u32); }
-                        0
-                    },
-                    Err(_) => 5,
-                }
-            } else { 6 }
+            // A pipe: the read may block, so it runs without the table's
+            // lock (another thread may write the other end meanwhile).
+            if let Some((end, fh_state)) = self.np_end(hf) {
+                return self.np_read(&end, fh_state, buf_ptr, len, actual_ptr);
+            }
+            let Some(file) = self.shared.handle_mgr.lock_or_recover().host_file(hf) else {
+                return ERROR_INVALID_HANDLE;
+            };
+            let mut data = vec![0u8; len as usize];
+            match (&*file).read(&mut data) {
+                Ok(n) => {
+                    if self.guest_write_bytes(buf_ptr, &data[..n]).is_none() {
+                        return ERROR_INVALID_PARAMETER;
+                    }
+                    if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, n as u32); }
+                    NO_ERROR
+                },
+                Err(_) => ERROR_ACCESS_DENIED,
+            }
         } else {
             // VFS file handle
             let dm = self.shared.drive_mgr.lock_or_recover();
@@ -323,9 +360,16 @@ impl super::Loader {
                 crate::api::doscalls::dos_write(stream, data).map_err(|_| ERROR_INVALID_HANDLE)
             }
             Some(HandleTarget::Pipe) => {
-                let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
-                let file = h_mgr.get_mut(fd).ok_or(ERROR_INVALID_HANDLE)?;
-                file.write(data).map(|n| n as u32).map_err(|_| ERROR_ACCESS_DENIED)
+                if let Some((end, fh_state)) = self.np_end(fd) {
+                    return self.np_write(&end, fh_state, data);
+                }
+                // Written without the table's lock: a full pipe blocks
+                // until its reader (maybe another thread) takes data.
+                let file = self.shared.handle_mgr.lock_or_recover().host_file(fd).ok_or(ERROR_INVALID_HANDLE)?;
+                (&*file).write_all(data).map(|()| data.len() as u32).map_err(|e| match e.kind() {
+                    std::io::ErrorKind::BrokenPipe => ERROR_BROKEN_PIPE,
+                    _ => ERROR_ACCESS_DENIED,
+                })
             }
             Some(HandleTarget::File) => {
                 let dm = self.shared.drive_mgr.lock_or_recover();
@@ -350,15 +394,15 @@ impl super::Loader {
 
     pub fn dos_set_file_ptr(&self, hf: u32, offset: i32, method: u32, actual_ptr: u32) -> u32 {
         if self.handle_target(hf) == Some(HandleTarget::Pipe) || hf >= PIPE_HANDLE_BASE {
-            let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
-            if let Some(file) = h_mgr.get_mut(hf) {
+            let file = self.shared.handle_mgr.lock_or_recover().host_file(hf);
+            if let Some(file) = file {
                 let pos = match method {
                     0 => SeekFrom::Start(offset as u64),
                     1 => SeekFrom::Current(offset as i64),
                     2 => SeekFrom::End(offset as i64),
                     _ => return 1,
                 };
-                match file.seek(pos) {
+                match (&*file).seek(pos) {
                     Ok(new_pos) => {
                         if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, new_pos as u32); }
                         0
@@ -385,8 +429,8 @@ impl super::Loader {
     pub fn dos_set_file_size(&self, hf: u32, new_size: u32) -> u32 {
         debug!("DosSetFileSize(hf={}, size={})", hf, new_size);
         if self.handle_target(hf) == Some(HandleTarget::Pipe) || hf >= PIPE_HANDLE_BASE {
-            let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
-            if let Some(file) = h_mgr.get_mut(hf) {
+            let file = self.shared.handle_mgr.lock_or_recover().host_file(hf);
+            if let Some(file) = file {
                 match file.set_len(new_size as u64) {
                     Ok(_) => 0,
                     Err(_) => ERROR_ACCESS_DENIED,
@@ -541,8 +585,8 @@ impl super::Loader {
             _ => return 124,
         }
         if self.handle_target(hf) == Some(HandleTarget::Pipe) || hf >= PIPE_HANDLE_BASE {
-            let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
-            if let Some(file) = h_mgr.get_mut(hf)
+            let file = self.shared.handle_mgr.lock_or_recover().host_file(hf);
+            if let Some(file) = file
                 && let Ok(meta) = file.metadata() {
                     self.write_filestatus3_internal(&meta, buf_ptr);
                     if level == 2 { self.guest_write::<u32>(buf_ptr + 24, 4); }
@@ -571,11 +615,14 @@ impl super::Loader {
             self.shared.handle_mgr.lock_or_recover().flush_all();
             0
         } else if self.handle_target(hf) == Some(HandleTarget::Pipe) || hf >= PIPE_HANDLE_BASE {
-            let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
-            if let Some(file) = h_mgr.get_mut(hf) {
-                let _ = file.flush();
-                0
-            } else { ERROR_INVALID_HANDLE }
+            let h_mgr = self.shared.handle_mgr.lock_or_recover();
+            match h_mgr.entry(hf) {
+                Some(e) => {
+                    if let super::managers::PipeObject::Host(f) = &e.obj { let _ = (&**f).flush(); }
+                    NO_ERROR
+                }
+                None => ERROR_INVALID_HANDLE,
+            }
         } else if let Some(HandleTarget::Console(_)) = self.handle_target(hf) {
             // Console output is not buffered.
             0
@@ -1178,21 +1225,27 @@ impl super::Loader {
         0
     }
 
+    /// DosCreatePipe (ordinal 239): an anonymous pipe, a host pipe whose
+    /// descriptors are close-on-exec — a child process gets an end only as
+    /// an inheritable handle (`inherit.rs`), so a reader sees the end of
+    /// data once every write handle is closed.
     pub fn dos_create_pipe(&self, phf_read_ptr: u32, phf_write_ptr: u32, _size: u32) -> u32 {
-        let mut fds = [0i32; 2];
-        if unsafe { libc::pipe(fds.as_mut_ptr()) } == 0 {
-            use std::os::unix::io::FromRawFd;
-            let f_read = unsafe { File::from_raw_fd(fds[0]) };
-            let f_write = unsafe { File::from_raw_fd(fds[1]) };
-
-            let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
-            let h_read = h_mgr.add(f_read);
-            let h_write = h_mgr.add(f_write);
-
-            self.guest_write::<u32>(phf_read_ptr, h_read);
-            self.guest_write::<u32>(phf_write_ptr, h_write);
-            0
-        } else { 8 }
+        use super::managers::{PipeHandle, PipeObject};
+        if phf_read_ptr == 0 || phf_write_ptr == 0 {
+            return ERROR_INVALID_PARAMETER;
+        }
+        let Ok((r, w)) = std::io::pipe() else { return ERROR_NOT_ENOUGH_MEMORY };
+        let f_read = File::from(std::os::fd::OwnedFd::from(r));
+        let f_write = File::from(std::os::fd::OwnedFd::from(w));
+        let h_read = self.add_pipe_handle(PipeHandle { obj: PipeObject::Host(Arc::new(f_read)), fh_state: OPEN_ACCESS_READONLY });
+        let h_write = self.add_pipe_handle(PipeHandle { obj: PipeObject::Host(Arc::new(f_write)), fh_state: OPEN_ACCESS_WRITEONLY });
+        if self.guest_write::<u32>(phf_read_ptr, h_read).is_none()
+            || self.guest_write::<u32>(phf_write_ptr, h_write).is_none() {
+            self.close_pipe_handle(h_read);
+            self.close_pipe_handle(h_write);
+            return ERROR_INVALID_PARAMETER;
+        }
+        NO_ERROR
     }
 
     pub fn dos_get_info_blocks(&self, vcpu: &dyn VcpuBackend, ptib: u32, ppib: u32) -> u32 {
@@ -1215,8 +1268,11 @@ impl super::Loader {
     }
 
     pub fn dos_free_mem(&self, pb: u32) -> u32 {
-        if self.shared.mem_mgr.lock_or_recover().free(pb) { 0 }
-        else { 487 }
+        if self.shared.mem_mgr.lock_or_recover().free(pb) {
+            // A shared block's name is free again.
+            self.shared.shmem_mgr.lock_or_recover().remove(pb);
+            NO_ERROR
+        } else { ERROR_INVALID_ADDRESS }
     }
 
     // ── Semaphores (`ipc.rs` holds the model) ──
@@ -1642,22 +1698,23 @@ impl super::Loader {
         }
         let new_h = match target {
             HandleTarget::Pipe => {
-                let mut h_mgr = self.shared.handle_mgr.lock_or_recover();
-                let Some(dup) = h_mgr.get(old_hf).and_then(|f| f.try_clone().ok()) else {
+                // The duplicate shares the pipe end and copies the handle
+                // state ("ties all handle-specific information", CP
+                // Reference); the end closes with its last handle.
+                let Some(dup) = self.shared.handle_mgr.lock_or_recover().entry(old_hf).cloned() else {
                     return ERROR_INVALID_HANDLE;
                 };
                 match requested {
                     Some(n) => {
-                        self.shared.drive_mgr.lock_or_recover().release_for_dup(n);
-                        h_mgr.replace(n, dup);
+                        self.put_pipe_handle_at(n, dup);
                         n
                     }
-                    None => h_mgr.insert(dup),
+                    None => self.add_pipe_handle(dup),
                 }
             }
             HandleTarget::File | HandleTarget::Console(_) => {
                 if let Some(n) = requested {
-                    self.shared.handle_mgr.lock_or_recover().close(n);
+                    self.close_pipe_handle(n);
                 }
                 let mut dm = self.shared.drive_mgr.lock_or_recover();
                 match target {
@@ -2562,6 +2619,57 @@ mod tests {
         let mut got = [0u8; 5];
         for (i, b) in got.iter_mut().enumerate() { *b = loader.guest_read::<u8>(0x4600 + i as u32).unwrap(); }
         assert_eq!(&got, b"piped");
+    }
+
+    /// Files and pipes share one handle space: a pipe takes the lowest free
+    /// number, a file opened next does not get the same one, closed numbers
+    /// are used again, and a second close fails.
+    #[test]
+    fn test_pipes_and_files_share_small_handle_numbers() {
+        let (loader, _dir) = loader_with_drive_c();
+        assert_eq!(loader.dos_create_pipe(0x4500, 0x4504, 0), 0);
+        let (hr, hw) = (loader.guest_read::<u32>(0x4500).unwrap(), loader.guest_read::<u32>(0x4504).unwrap());
+        assert_eq!((hr, hw), (3, 4), "the lowest free numbers");
+        loader.guest_write_bytes(0x4700, b"C:\\SHARE.TXT\0").unwrap();
+        assert_eq!(loader.dos_open(0x4700, 0x4800, 0x4804, 0x12, 0x42), 0);
+        let hf = loader.guest_read::<u32>(0x4800).unwrap();
+        assert_eq!(hf, 5, "a file after the pipe");
+        assert_eq!(loader.dos_close(hr), 0);
+        assert_eq!(loader.dos_close(hr), ERROR_INVALID_HANDLE, "closed twice");
+        assert_eq!(loader.dos_create_pipe(0x4500, 0x4504, 0), 0);
+        assert_eq!(loader.guest_read::<u32>(0x4500), Some(3), "number 3 used again");
+        assert_eq!(loader.guest_read::<u32>(0x4504), Some(6));
+        assert_eq!(loader.dos_close(hf), 0);
+        assert_eq!(loader.dos_close(hw), 0);
+        // A pipe duplicated over a file closes the file.
+        assert_eq!(loader.dos_open(0x4700, 0x4800, 0x4804, 0x01, 0x42), 0);
+        let hf = loader.guest_read::<u32>(0x4800).unwrap();
+        assert_eq!(dup(&loader, 3, hf).0, 0);
+        assert_eq!(loader.handle_target(hf), Some(super::HandleTarget::Pipe));
+        assert_eq!(loader.dos_create_pipe(0, 0x4504, 0), ERROR_INVALID_PARAMETER);
+    }
+
+    /// DosQueryFHState / DosSetFHState on pipe handles: access mode and the
+    /// inheritance flag; a duplicate copies the state.
+    #[test]
+    fn test_pipe_handle_state() {
+        let loader = Loader::new_mock();
+        assert_eq!(loader.dos_create_pipe(0x4500, 0x4504, 0), 0);
+        let (hr, hw) = (loader.guest_read::<u32>(0x4500).unwrap(), loader.guest_read::<u32>(0x4504).unwrap());
+        assert_eq!(loader.dos_query_fh_state(hr, 0x4600), 0);
+        assert_eq!(loader.guest_read::<u32>(0x4600), Some(OPEN_ACCESS_READONLY));
+        assert_eq!(loader.dos_query_fh_state(hw, 0x4600), 0);
+        assert_eq!(loader.guest_read::<u32>(0x4600), Some(OPEN_ACCESS_WRITEONLY));
+        // Only the settable flags change; the access mode stays.
+        assert_eq!(loader.dos_set_fh_state(hw, OPEN_FLAGS_NOINHERIT | OPEN_ACCESS_READWRITE), 0);
+        assert_eq!(loader.dos_query_fh_state(hw, 0x4600), 0);
+        assert_eq!(loader.guest_read::<u32>(0x4600), Some(OPEN_ACCESS_WRITEONLY | OPEN_FLAGS_NOINHERIT));
+        assert_eq!(dup(&loader, hw, 9).0, 0);
+        assert_eq!(loader.dos_query_fh_state(9, 0x4600), 0);
+        assert_eq!(loader.guest_read::<u32>(0x4600), Some(OPEN_ACCESS_WRITEONLY | OPEN_FLAGS_NOINHERIT));
+        // Only the read end is passed to a child (both write handles are not).
+        let spec = loader.child_handles().spec();
+        assert!(spec.starts_with(&format!("{hr},")) && !spec.contains(';'), "{spec}");
     }
 
     /// DosClose(1) closes standard output: writes fail until something is

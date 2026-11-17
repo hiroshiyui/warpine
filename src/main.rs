@@ -175,12 +175,21 @@ fn main() {
     };
 
     match format {
-        ExeFormat::NE => run_ne(file_path),
-        ExeFormat::LX => run_lx(file_path, gdb_port),
+        ExeFormat::NE => run_ne(file_path, &remaining_args[1..]),
+        ExeFormat::LX => run_lx(file_path, gdb_port, &remaining_args[1..]),
     }
 }
 
-fn run_ne(file_path: &str) -> ! {
+/// The guest's arguments from the host command line (`warpine prog.exe
+/// a b` → `a b`), unless a parent Warpine process passed its own
+/// (`DosExecPgm`, `loader::inherit`).
+fn set_host_args(loader: &loader::Loader, args: &[&str]) {
+    if !loader::inherit::StartupInfo::from_parent() {
+        loader.get_shared().startup.lock_or_recover().args = args.join(" ").into_bytes();
+    }
+}
+
+fn run_ne(file_path: &str, args: &[&str]) -> ! {
     let ne_file = match ne::NeFile::open(file_path) {
         Ok(ne) => ne,
         Err(e) => {
@@ -197,6 +206,7 @@ fn run_ne(file_path: &str) -> ! {
     }
 
     let mut loader = loader::Loader::new();
+    set_host_args(&loader, args);
     if let Err(e) = loader.load_ne(&ne_file, file_path) {
         eprintln!("Failed to load NE executable: {}", e);
         std::process::exit(1);
@@ -267,12 +277,13 @@ fn run_vio_session(shared: Arc<loader::SharedState>, title: &str, app_type: lx::
     shared.exit_requested.store(true, Ordering::Relaxed);
     shared.kbd_cond.notify_all();
     shared.mou_cond.notify_all();
+    shared.npipes.lock_or_recover().close_all();
     shared.console_mgr.lock_or_recover().disable_raw_mode();
     let code = shared.exit_code.load(Ordering::Relaxed);
     std::process::exit(code);
 }
 
-fn run_lx(file_path: &str, gdb_port: Option<u16>) {
+fn run_lx(file_path: &str, gdb_port: Option<u16>, args: &[&str]) {
     // Phase 1: Try to open and parse LX executable
     let lx_file = match lx::LxFile::open(file_path) {
         Ok(lx) => lx,
@@ -360,6 +371,7 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>) {
     info!("Initializing KVM loader...");
 
     let mut loader = loader::Loader::new();
+    set_host_args(&loader, args);
 
     // Attach GDB stub if --gdb was requested.
     // Must be done before get_shared() so Arc::get_mut() succeeds inside
@@ -400,6 +412,7 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>) {
         // Cleanup: signal shutdown, stop timers, reset terminal, and exit
         shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
         shared.window_mgr.lock_or_recover().stop_all_timers();
+        shared.npipes.lock_or_recover().close_all();
         shared.console_mgr.lock_or_recover().disable_raw_mode();
         let code = shared.exit_code.load(std::sync::atomic::Ordering::Relaxed);
         std::process::exit(code);

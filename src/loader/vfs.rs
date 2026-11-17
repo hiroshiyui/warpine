@@ -10,7 +10,7 @@
 //
 // See doc/developer_guide.md "Filesystem I/O Design" for architecture details.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -509,6 +509,9 @@ pub struct DriveManager {
     /// Standard handles 0–2 closed with `DosClose` while they were the console.
     closed_std: [bool; STD_HANDLES as usize],
     find_handles: HashMap<u32, FindEntry>,
+    /// Numbers the pipe table (`HandleManager`) holds: one handle space
+    /// for files and pipes, as in OS/2.
+    pipe_handles: HashSet<u32>,
     next_file_handle: u32,
     next_find_handle: u32,
     current_disk: u8,          // 0=A, 1=B, 2=C (internal), default 2
@@ -533,6 +536,7 @@ impl DriveManager {
             console_handles: HashMap::new(),
             closed_std: [false; STD_HANDLES as usize],
             find_handles: HashMap::new(),
+            pipe_handles: HashSet::new(),
             next_file_handle: 3,
             next_find_handle: 10,
             current_disk: 2, // C:
@@ -756,15 +760,37 @@ impl DriveManager {
         Ok((os2_handle, action))
     }
 
-    /// The lowest free handle number from the allocation counter on.
+    /// The lowest free handle number from 3 on (closed numbers are used
+    /// again, so handles stay small — C runtimes index tables by them).
     fn alloc_handle(&mut self) -> u32 {
-        while self.file_handles.contains_key(&self.next_file_handle)
-            || self.console_handles.contains_key(&self.next_file_handle) {
-            self.next_file_handle += 1;
+        let mut h = self.next_file_handle;
+        while self.handle_in_use(h) {
+            h += 1;
         }
-        let h = self.next_file_handle;
-        self.next_file_handle += 1;
         h
+    }
+
+    fn handle_in_use(&self, h: u32) -> bool {
+        self.file_handles.contains_key(&h) || self.console_handles.contains_key(&h)
+            || self.pipe_handles.contains(&h)
+    }
+
+    /// A new handle number for the pipe table.
+    pub fn reserve_pipe_handle(&mut self) -> u32 {
+        let h = self.alloc_handle();
+        self.pipe_handles.insert(h);
+        h
+    }
+
+    /// Mark `h` as a pipe-table number (a pipe duplicated into it, or
+    /// inherited at it); free it first with `release_for_dup`.
+    pub fn reserve_pipe_handle_at(&mut self, h: u32) {
+        self.pipe_handles.insert(h);
+    }
+
+    /// The pipe table no longer holds `h`.
+    pub fn release_pipe_handle(&mut self, h: u32) {
+        self.pipe_handles.remove(&h);
     }
 
     /// Close a file handle: a file, or a duplicate of the console. The

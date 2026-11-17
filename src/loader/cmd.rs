@@ -850,6 +850,8 @@ impl CmdShell {
         let mut cmd = std::process::Command::new(&warpine_exe);
         cmd.arg(prog_path);
         for a in args { cmd.arg(a); }
+        // What this process got from its own parent is not the child's.
+        super::inherit::clear_parent_vars(&mut cmd);
 
         // Set CWD from ProcessManager so the child inherits the shell's directory.
         let cwd = {
