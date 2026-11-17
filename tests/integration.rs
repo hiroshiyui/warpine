@@ -318,6 +318,74 @@ fn test_thread_exit_of_the_last_thread_ends_the_process() {
     assert_eq!(code, 5, "exit code of the last thread's DosExit(EXIT_THREAD, 5)\n{out}");
 }
 
+/// Run one exitlist_test variant: every check before the process ends and
+/// (when `runs` is set) in the exit-list routines passes; returns stdout.
+fn run_exitlist_variant(exe: &str, code_want: i32, runs: bool) -> Option<String> {
+    let sample = format!("samples/exitlist_test/{exe}");
+    if !kvm_available() || !Path::new(&sample).exists() { return None; }
+    let (out, code) = run_sample(&sample, 20);
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.lines().any(|l| l.starts_with("exitlist_test: done ")), "{out}");
+    if runs {
+        assert!(out.contains("exitlist_test: sequence BCAL"), "routines in order:\n{out}");
+        assert!(out.contains("exitlist_test: exit list done "), "{out}");
+        assert!(!out.contains("routine N"), "a removed routine ran:\n{out}");
+        assert!(out.lines().filter(|l| l.contains(": routine ")).all(|l| l.ends_with("tc=0")), "TC_EXIT:\n{out}");
+    } else {
+        assert!(!out.contains(": routine "), "no exit list once thread 1 has ended:\n{out}");
+    }
+    assert_eq!(code, code_want, "{out}");
+    Some(out)
+}
+
+/// exitlist_test: DosExitList error codes; DosExit(EXIT_PROCESS, 3) from
+/// thread 1 runs the routines (by order, last added first, one added and
+/// one removed while the list runs) before the process ends with code 3.
+#[test]
+fn test_exit_list_runs_at_dos_exit_process() {
+    let Some(out) = run_exitlist_variant("exitlist_test.exe", 3, true) else { return };
+    let routines = out.find("routine B").unwrap();
+    assert!(out.find("exitlist_test: done ").unwrap() < routines, "the routines run at the end:\n{out}");
+}
+
+/// exitlist_thread: thread 2 ends the process (DosExit(EXIT_PROCESS, 4))
+/// while thread 1 waits; the exit list runs.
+#[test]
+fn test_exit_list_runs_when_another_thread_ends_the_process() {
+    run_exitlist_variant("exitlist_thread.exe", 4, true);
+}
+
+/// exitlist_mainlast: thread 1 is the last thread and ends with
+/// DosExit(EXIT_THREAD, 6); the exit list runs.
+#[test]
+fn test_exit_list_runs_when_thread_1_ends_last() {
+    run_exitlist_variant("exitlist_mainlast.exe", 6, true);
+}
+
+/// exitlist_nomain: thread 1 ends first; the last thread ending the
+/// process does not run the exit list (thread 1 is gone).
+#[test]
+fn test_exit_list_does_not_run_after_thread_1_ended() {
+    run_exitlist_variant("exitlist_nomain.exe", 5, false);
+}
+
+/// semquery_test: post counts (DosResetEventSem / DosQueryEventSem),
+/// DosQueryMutexSem, DosOpenMuxWaitSem / DosAddMuxWaitSem /
+/// DosDeleteMuxWaitSem / DosQueryMuxWaitSem and their error codes.
+#[test]
+fn test_semaphore_queries() {
+    const SAMPLE: &str = "samples/semquery_test/semquery_test.exe";
+    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    let (out, code) = run_sample(SAMPLE, 30);
+    let checks: Vec<&str> = out.lines()
+        .filter(|l| l.starts_with("semquery_test: ") && !l.contains(": done")).collect();
+    assert!(checks.len() >= 70, "every check reported:\n{out}");
+    let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
+    assert!(failed.is_empty(), "failed checks: {failed:#?}");
+    assert!(out.contains(&format!("semquery_test: done {n}/{n}", n = checks.len())), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
 /// pipe_test: DosCreatePipe, DosWrite, DosRead.
 #[test]
 fn test_pipe() {
@@ -1151,14 +1219,22 @@ fn assert_sample_checks_pass(sample: &str, prefix: &str, min_checks: usize) {
 
 /// [`assert_sample_checks_pass`] for a sample driven by GUI script `steps`.
 fn assert_scripted_checks_pass(sample: &str, prefix: &str, min_checks: usize, steps: &str) {
+    assert_scripted_checks_pass_env(sample, prefix, min_checks, steps, &[]);
+}
+
+/// [`assert_scripted_checks_pass`] with extra environment variables for
+/// warpine. Returns whether the sample ran (false: KVM or the sample is
+/// not available).
+fn assert_scripted_checks_pass_env(sample: &str, prefix: &str, min_checks: usize, steps: &str,
+                                   env: &[(&str, &str)]) -> bool {
     if !kvm_available() || !Path::new(sample).exists() {
         eprintln!("skipping {prefix}: KVM or {sample} not available");
-        return;
+        return false;
     }
     let dir = tempfile::tempdir().expect("tempdir");
     let script = dir.path().join("session.script");
     std::fs::write(&script, steps).unwrap();
-    let out = run_gui_script(sample, &script, true);
+    let out = run_gui_script_env(sample, &script, true, env);
 
     let done = format!("{prefix}: done");
     let checks: Vec<&str> = out.lines()
@@ -1167,6 +1243,7 @@ fn assert_scripted_checks_pass(sample: &str, prefix: &str, min_checks: usize, st
     let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
     assert!(failed.is_empty(), "failed checks: {failed:#?}");
     assert!(out.contains(&format!("{done} {n}/{n}", n = checks.len())), "{out}");
+    true
 }
 
 /// pm_pel_test: drawing is rasterised on the calling thread, so the guest
@@ -1175,6 +1252,14 @@ fn assert_scripted_checks_pass(sample: &str, prefix: &str, min_checks: usize, st
 #[test]
 fn gui_pm_pel_test_reads_back_pels_and_mixes() {
     assert_sample_checks_pass("samples/pm_pel_test/pm_pel_test.exe", "pm_pel_test", 16);
+}
+
+/// pm_rect_text_test: the rectangle helpers, WinDrawText (counts, extent,
+/// word break, erasing) and GpiPolyLine (from the current position, read
+/// back with GpiQueryPel), checked by the guest itself.
+#[test]
+fn gui_pm_rect_text_test_checks_rectangles_draw_text_and_polylines() {
+    assert_sample_checks_pass("samples/pm_rect_text_test/pm_rect_text_test.exe", "pm_rect_text_test", 39);
 }
 
 /// pm_bitmap_test: a memory PS drawing into a bitmap, GpiBitBlt (1:1,
@@ -1368,6 +1453,36 @@ fn gui_pm_error_test_reports_last_errors() {
     assert_sample_checks_pass("samples/pm_error_test/pm_error_test.exe", "pm_error_test", 114);
 }
 
+/// pm_profile_test: PMSHAPI profiles — PrfWriteProfileString / Data,
+/// PrfQueryProfileString / Int / Size / Data with defaults, truncation,
+/// enumeration and deletion, PrfOpenProfile / PrfCloseProfile and their
+/// PMERR_* codes — and the HELPMGR calls (help instance, association,
+/// help tables, HM_* messages accepted). Drive C: is a temporary
+/// directory; the profiles left there are Warpine's text format.
+#[test]
+fn gui_pm_profile_test_reads_and_writes_profiles() {
+    let drive = tempfile::tempdir().expect("tempdir");
+    let xdg = drive.path().to_str().unwrap();
+    if !assert_scripted_checks_pass_env("samples/pm_profile_test/pm_profile_test.exe",
+                                        "pm_profile_test", 65, "5000 quit\n",
+                                        &[("XDG_DATA_HOME", xdg)]) {
+        return;
+    }
+    let drive_c = drive.path().join("warpine/drive_c");
+    let user = std::fs::read_to_string(drive_c.join("OS2/OS2.INI")).expect("user profile");
+    assert!(user.starts_with("; warpine-profile 1\n"), "{user}");
+    assert!(user.contains("[\"PrfTest\"]\n\"Greeting\" = \"hello\\0\"\n"), "{user}");
+    assert!(user.contains("\"Blob\" = \"\\0\\x01\\x02\\xff\\\"\\0\"\n"), "{user}");
+    assert!(!user.contains("PrfTemp"), "the deleted application is gone: {user}");
+    let private = std::fs::read_to_string(drive_c.join("PRFTEST.INI")).expect("private profile");
+    assert!(private.contains("[\"Private\"]\n\"Key\" = \"private value\\0\""), "{private}");
+    // Only the profiles: the temporary files were renamed over them.
+    let mut names: Vec<_> = std::fs::read_dir(&drive_c).unwrap().flatten()
+        .map(|e| e.file_name().into_string().unwrap()).collect();
+    names.sort();
+    assert_eq!(names, ["OS2", "PRFTEST.INI"]);
+}
+
 /// pm_window_test: WinIsWindowVisible (the window and all its parents),
 /// WinQueryWindowTextLength, WinSetParent (to another window, the desktop
 /// and back; not under a descendant), WinSetOwner, and WinQueryWindowPtr /
@@ -1484,6 +1599,39 @@ fn gui_pm_sysmenu_test_opens_the_system_menu_and_tracks_with_the_keyboard() {
 fn gui_pm_sysmenu_test_matches_golden() {
     check_gui_golden("pm_sysmenu_test", "samples/pm_sysmenu_test/pm_sysmenu_test.exe",
         "1000 click 43 42\n1300 dump {dump}\n1400 quit\n");
+}
+
+/// pm_scroll_test: the client (default frame at desktop (32, 32), title bar
+/// only, client from (34, 52): PM y = 511 − screen y) holds a vertical
+/// scroll bar at client (400, 100) 16 × 200 — screen x 434–449, y 212–411 —
+/// and a horizontal one at (50, 40) 200 × 16 — screen x 84–283, y 456–471.
+/// Clicks on the up and down arrows and the shaft, a slider drag 70 pels
+/// down (position 40 → 90) and clicks on the horizontal bar's right arrow
+/// and shaft arrive as WM_VSCROLL / WM_HSCROLL (SB_LINE*, SB_PAGE*,
+/// SB_SLIDERTRACK, SB_SLIDERPOSITION, SB_ENDSCROLL), which the client
+/// answers with SBM_SETPOS; SBM_* messages, SBCDATA and the PM text cursor
+/// calls are checked from the guest side.
+const SCROLL_TEST_STEPS: &str = "\
+    1000 click 441 218\n\
+    1300 click 441 404\n\
+    1600 click 441 250\n\
+    1900 drag 441 290 441 360\n\
+    2400 click 276 463\n\
+    2700 click 200 463\n";
+
+#[test]
+fn gui_pm_scroll_test_scrolls_with_the_mouse() {
+    let steps = format!("{SCROLL_TEST_STEPS}3200 key alt+f4\n6000 quit\n");
+    assert_scripted_checks_pass("samples/pm_scroll_test/pm_scroll_test.exe", "pm_scroll_test", 83, &steps);
+}
+
+/// pm_scroll_test after the session: the vertical slider (thumb size 20 of
+/// 120) near the bottom, the horizontal one at 4 of 10, and the frame
+/// cursor inverted over the blue box.
+#[test]
+fn gui_pm_scroll_test_matches_golden() {
+    check_gui_golden("pm_scroll_test", "samples/pm_scroll_test/pm_scroll_test.exe",
+        &format!("{SCROLL_TEST_STEPS}3000 dump {{dump}}\n3100 quit\n"));
 }
 
 /// pm_codepage_test: PM text follows the message queue's codepage
@@ -1648,6 +1796,14 @@ fn gui_layered_compositor_matches_golden_typing() {
 fn gui_layered_compositor_matches_golden_shapes() {
     check_gui_golden_env("pm_shapes_test", "samples/pm_shapes_test/pm_shapes_test.exe",
         "2500 dump {dump}\n2600 quit\n", LAYERED);
+}
+
+/// Scroll bars repainted in place and the PM text cursor laid over a
+/// texture that already exists (partial uploads with the cursor applied).
+#[test]
+fn gui_layered_compositor_matches_golden_scroll_bars_and_cursor() {
+    check_gui_golden_env("pm_scroll_test", "samples/pm_scroll_test/pm_scroll_test.exe",
+        &format!("{SCROLL_TEST_STEPS}3000 dump {{dump}}\n3100 quit\n"), LAYERED);
 }
 
 #[test]

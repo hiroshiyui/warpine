@@ -17,6 +17,8 @@
 #   SO32DLL   base 13312    (MAGIC_API_BASE + 13312 + ordinal)
 #   TCP32DLL  base 14336    (MAGIC_API_BASE + 14336 + ordinal)
 #   MOUCALLS  base 15360    (MAGIC_API_BASE + 15360 + ordinal)
+#   PMSHAPI   base 16384    (MAGIC_API_BASE + 16384 + ordinal)
+#   HELPMGR   base 17408    (MAGIC_API_BASE + 17408 + ordinal)
 
 # ── DOSCALLS ─────────────────────────────────────────────────────────────────
 DOSCALLS.8    DosGetInfoSeg
@@ -78,6 +80,7 @@ DOSCALLS.286  DosBeep
 DOSCALLS.289  DosSetProcessCp
 DOSCALLS.291  DosQueryCp
 DOSCALLS.292  DosSetDateTime
+DOSCALLS.296  DosExitList
 DOSCALLS.299  DosAllocMem
 DOSCALLS.300  DosAllocSharedMem
 DOSCALLS.301  DosGetNamedSharedMem
@@ -96,17 +99,23 @@ DOSCALLS.323  DosQueryAppType
 DOSCALLS.324  DosCreateEventSem
 DOSCALLS.325  DosOpenEventSem
 DOSCALLS.326  DosCloseEventSem
+DOSCALLS.327  DosResetEventSem
 DOSCALLS.328  DosPostEventSem
 DOSCALLS.329  DosWaitEventSem
+DOSCALLS.330  DosQueryEventSem
 DOSCALLS.331  DosCreateMutexSem
 DOSCALLS.332  DosOpenMutexSem
 DOSCALLS.333  DosCloseMutexSem
 DOSCALLS.334  DosRequestMutexSem
 DOSCALLS.335  DosReleaseMutexSem
+DOSCALLS.336  DosQueryMutexSem
 DOSCALLS.337  DosCreateMuxWaitSem
+DOSCALLS.338  DosOpenMuxWaitSem
 DOSCALLS.339  DosCloseMuxWaitSem
 DOSCALLS.340  DosWaitMuxWaitSem
+DOSCALLS.341  DosAddMuxWaitSem
 DOSCALLS.342  DosDeleteMuxWaitSem
+DOSCALLS.343  DosQueryMuxWaitSem
 DOSCALLS.348  DosQuerySysInfo
 DOSCALLS.349  DosWaitThread
 DOSCALLS.352  DosGetResource
@@ -268,3 +277,21 @@ MOUCALLS.22   MouGetDevStatus
 MOUCALLS.23   MouSynch
 MOUCALLS.25   MouSetDevStatus
 MOUCALLS.26   MouDrawPtr
+
+# ── PMSHAPI (profiles; ordinals from Open Watcom os2386.lib) ─────────────────
+PMSHAPI.101   PrfQueryProfileSize
+PMSHAPI.102   PrfOpenProfile
+PMSHAPI.103   PrfCloseProfile
+PMSHAPI.114   PrfQueryProfileInt
+PMSHAPI.115   PrfQueryProfileString
+PMSHAPI.116   PrfWriteProfileString
+PMSHAPI.117   PrfQueryProfileData
+PMSHAPI.118   PrfWriteProfileData
+
+# ── HELPMGR (Help Manager; ordinals from Open Watcom os2386.lib) ─────────────
+HELPMGR.51    WinCreateHelpInstance
+HELPMGR.52    WinDestroyHelpInstance
+HELPMGR.53    WinQueryHelpInstance
+HELPMGR.54    WinAssociateHelpInstance
+HELPMGR.55    WinLoadHelpTable
+HELPMGR.56    WinCreateHelpTable

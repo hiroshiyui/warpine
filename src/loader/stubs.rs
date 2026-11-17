@@ -295,6 +295,9 @@ impl super::Loader {
         use super::codepage::{cp_map_case_upper, cp_to_encoding, decode_dbcs};
         use super::locale::is_dbcs_lead_byte;
 
+        // Keep `p_str + i` (and `+ 1`) from overflowing near the top of
+        // the address space; reads there fail anyway.
+        let cb = cb.min(u32::MAX - p_str);
         let mut i = 0u32;
         while i < cb {
             let Some(b) = self.guest_read::<u8>(p_str + i) else { break };
@@ -357,7 +360,7 @@ impl super::Loader {
         const BUILTINS: &[&str] = &[
             "DOSCALLS", "QUECALLS", "PMWIN", "PMGPI", "KBDCALLS",
             "VIOCALLS", "SESMGR", "NLS", "MSG", "MDM", "UCONV",
-            "SO32DLL", "TCP32DLL", "MOUCALLS",
+            "SO32DLL", "TCP32DLL", "MOUCALLS", "PMSHAPI", "HELPMGR",
         ];
         let name_upper = name.to_ascii_uppercase();
         let stem = name_upper.strip_suffix(".DLL").unwrap_or(&name_upper);
@@ -816,41 +819,14 @@ impl super::Loader {
 
     // ── Step 7: Semaphore Extensions ──
 
-    /// DosOpenEventSem (ordinal 325): open existing event semaphore by name.
+    /// DosOpenEventSem (ordinal 325): open an event semaphore by name or handle.
     pub fn dos_open_event_sem(&self, psz_name: u32, phev: u32) -> u32 {
-        if psz_name != 0 {
-            let name = self.read_guest_string(psz_name);
-            debug!("  DosOpenEventSem('{}')", name);
-            let sem_mgr = self.shared.sem_mgr.lock_or_recover();
-            if let Some(h) = sem_mgr.open_event_by_name(&name) {
-                self.guest_write::<u32>(phev, h);
-                return NO_ERROR;
-            }
-            return ERROR_FILE_NOT_FOUND;
-        }
-        // If name is null, phev should already contain a valid handle
-        let h = self.guest_read::<u32>(phev).unwrap_or(0);
-        debug!("  DosOpenEventSem(handle={})", h);
-        let sem_mgr = self.shared.sem_mgr.lock_or_recover();
-        if sem_mgr.get_event(h).is_some() { NO_ERROR } else { ERROR_INVALID_HANDLE }
+        self.open_sem(super::ipc::SemKind::Event, psz_name, phev)
     }
 
-    /// DosOpenMutexSem (ordinal 332): open existing mutex semaphore by name.
+    /// DosOpenMutexSem (ordinal 332): open a mutex semaphore by name or handle.
     pub fn dos_open_mutex_sem(&self, psz_name: u32, phmtx: u32) -> u32 {
-        if psz_name != 0 {
-            let name = self.read_guest_string(psz_name);
-            debug!("  DosOpenMutexSem('{}')", name);
-            let sem_mgr = self.shared.sem_mgr.lock_or_recover();
-            if let Some(h) = sem_mgr.open_mutex_by_name(&name) {
-                self.guest_write::<u32>(phmtx, h);
-                return NO_ERROR;
-            }
-            return ERROR_FILE_NOT_FOUND;
-        }
-        let h = self.guest_read::<u32>(phmtx).unwrap_or(0);
-        debug!("  DosOpenMutexSem(handle={})", h);
-        let sem_mgr = self.shared.sem_mgr.lock_or_recover();
-        if sem_mgr.get_mutex(h).is_some() { NO_ERROR } else { ERROR_INVALID_HANDLE }
+        self.open_sem(super::ipc::SemKind::Mutex, psz_name, phmtx)
     }
 
     // ── Step 8: Named Pipe Stubs ──
@@ -1096,6 +1072,14 @@ fn unix_time() -> u64 {
 mod tests {
     use super::super::Loader;
     use super::super::mutex_ext::MutexExt;
+
+    /// DosMapCase on a buffer at the top of the address space: no overflow.
+    #[test]
+    fn test_map_case_at_the_top_of_memory() {
+        let loader = Loader::new_mock();
+        loader.map_case_guest_buf(u32::MAX - 1, 16, 932);
+        loader.map_case_guest_buf(u32::MAX, 1, 437);
+    }
 
     /// Query QSV indexes `first..=last` into a fresh guest buffer.
     fn query_sys_info(loader: &Loader, first: u32, last: u32) -> Vec<u32> {

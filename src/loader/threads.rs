@@ -22,6 +22,7 @@
 
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Condvar, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use super::mutex_ext::MutexExt;
@@ -207,14 +208,27 @@ impl ThreadTable {
     }
 }
 
-/// The thread table with a condition variable signalled when a thread ends.
+/// The thread table with a condition variable signalled when a thread ends,
+/// and the process's exit list (`exitlist.rs`).
 #[derive(Default)]
 pub struct Threads {
     pub table: Mutex<ThreadTable>,
     pub ended: Condvar,
+    /// Lock order: `table` before `exit_list`.
+    pub exit_list: Mutex<super::exitlist::ExitList>,
+    /// Exit-list processing runs (a quick look before `exit_list`).
+    pub exit_list_active: AtomicBool,
 }
 
 impl Threads {
+    /// Whether the calling host thread must stop waiting because another
+    /// thread runs the exit list.
+    pub fn exit_list_stops_caller(&self) -> bool {
+        self.exit_list_active.load(Ordering::Acquire)
+            && self.exit_list.lock_or_recover().run()
+                .is_some_and(|r| r.host != std::thread::current().id())
+    }
+
     /// Block until `wait` gives an answer other than `Running`, the process
     /// ends (`None`), or — with `DCWW_NOWAIT` — at once.
     pub fn wait_for(&self, caller: u32, tid: u32, no_wait: bool, exiting: impl Fn() -> bool) -> Option<WaitOutcome> {

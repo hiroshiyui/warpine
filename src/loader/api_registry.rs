@@ -24,7 +24,8 @@
 
 use tracing::debug;
 
-use super::constants::{NLS_BASE, MSG_BASE, MDM_BASE, UCONV_BASE, SO32DLL_BASE, TCP32DLL_BASE};
+use super::constants::{NLS_BASE, MSG_BASE, MDM_BASE, UCONV_BASE, SO32DLL_BASE, TCP32DLL_BASE,
+                       PMSHAPI_BASE, HELPMGR_BASE};
 use super::ApiResult;
 use super::vm_backend::VcpuBackend;
 
@@ -135,9 +136,9 @@ static REGISTRY: &[ApiEntry] = &[
 
     // DosExit(action, result): EXIT_THREAD ends the calling thread (the
     // vCPU loop ends it; the last thread ends the process), EXIT_PROCESS
-    // stores the result code and signals shutdown, observed by every vCPU loop.
+    // runs the exit list (DosExitList) and ends the process.
     ApiEntry { ordinal: 234, module: "DOSCALLS", name: "DosExit",          argc: 2,
-               handler: |l,_v,_i,a| l.dos_exit(a[0], a[1]) },
+               handler: |l,_v,id,a| l.dos_exit(id, a[0], a[1]) },
 
     // ── DOSCALLS — processes / priorities ────────────────────────────────
     ApiEntry { ordinal: 235, module: "DOSCALLS", name: "DosKillProcess",   argc: 2,
@@ -225,6 +226,11 @@ static REGISTRY: &[ApiEntry] = &[
     ApiEntry { ordinal: 292, module: "DOSCALLS", name: "DosSetDateTime",   argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_date_time(a[0])) },
 
+    // DosExitList(ordercode, pfn): EXLST_EXIT ends the running exit-list
+    // routine; the vCPU loop calls the next one (`exitlist.rs`).
+    ApiEntry { ordinal: 296, module: "DOSCALLS", name: "DosExitList",      argc: 2,
+               handler: |l,_v,id,a| l.dos_exit_list(id, a[0], a[1]) },
+
     // ── DOSCALLS — memory ─────────────────────────────────────────────────
     ApiEntry { ordinal: 299, module: "DOSCALLS", name: "DosAllocMem",      argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_alloc_mem(a[0],a[1])) },
@@ -270,14 +276,18 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_open_event_sem(a[0],a[1])) },
     ApiEntry { ordinal: 326, module: "DOSCALLS", name: "DosCloseEventSem", argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_close_event_sem(a[0])) },
+    ApiEntry { ordinal: 327, module: "DOSCALLS", name: "DosResetEventSem", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_reset_event_sem(a[0],a[1])) },
     ApiEntry { ordinal: 328, module: "DOSCALLS", name: "DosPostEventSem",  argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_post_event_sem(a[0])) },
     ApiEntry { ordinal: 329, module: "DOSCALLS", name: "DosWaitEventSem",  argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_wait_event_sem(a[0],a[1])) },
+    ApiEntry { ordinal: 330, module: "DOSCALLS", name: "DosQueryEventSem", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_event_sem(a[0],a[1])) },
 
     // ── DOSCALLS — mutex semaphores ───────────────────────────────────────
     ApiEntry { ordinal: 331, module: "DOSCALLS", name: "DosCreateMutexSem", argc: 4,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_create_mutex_sem(a[0],a[1],a[2],a[3])) },
+               handler: |l,_v,id,a| ApiResult::Normal(l.dos_create_mutex_sem(id,a[0],a[1],a[2],a[3])) },
     ApiEntry { ordinal: 332, module: "DOSCALLS", name: "DosOpenMutexSem",  argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_open_mutex_sem(a[0],a[1])) },
     ApiEntry { ordinal: 333, module: "DOSCALLS", name: "DosCloseMutexSem", argc: 1,
@@ -286,16 +296,24 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,id,a| ApiResult::Normal(l.dos_request_mutex_sem(id,a[0],a[1])) },
     ApiEntry { ordinal: 335, module: "DOSCALLS", name: "DosReleaseMutexSem", argc: 1,
                handler: |l,_v,id,a| ApiResult::Normal(l.dos_release_mutex_sem(id,a[0])) },
+    ApiEntry { ordinal: 336, module: "DOSCALLS", name: "DosQueryMutexSem", argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_mutex_sem(a[0],a[1],a[2],a[3])) },
 
     // ── DOSCALLS — muxwait semaphores ─────────────────────────────────────
     ApiEntry { ordinal: 337, module: "DOSCALLS", name: "DosCreateMuxWaitSem", argc: 5,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_create_mux_wait_sem(a[0],a[1],a[2],a[3],a[4])) },
+    ApiEntry { ordinal: 338, module: "DOSCALLS", name: "DosOpenMuxWaitSem",   argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_open_mux_wait_sem(a[0],a[1])) },
     ApiEntry { ordinal: 339, module: "DOSCALLS", name: "DosCloseMuxWaitSem",  argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_close_mux_wait_sem(a[0])) },
     ApiEntry { ordinal: 340, module: "DOSCALLS", name: "DosWaitMuxWaitSem",   argc: 3,
                handler: |l,_v,id,a| ApiResult::Normal(l.dos_wait_mux_wait_sem(id,a[0],a[1],a[2])) },
+    ApiEntry { ordinal: 341, module: "DOSCALLS", name: "DosAddMuxWaitSem",    argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_add_mux_wait_sem(a[0],a[1])) },
     ApiEntry { ordinal: 342, module: "DOSCALLS", name: "DosDeleteMuxWaitSem", argc: 2,
-               handler: |_l,_v,_i,_a| { debug!("DosDeleteMuxWaitSem stub"); ApiResult::Normal(0) } },
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_delete_mux_wait_sem(a[0],a[1])) },
+    ApiEntry { ordinal: 343, module: "DOSCALLS", name: "DosQueryMuxWaitSem",  argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_mux_wait_sem(a[0],a[1],a[2],a[3])) },
 
     // ── DOSCALLS — system info ────────────────────────────────────────────
     ApiEntry { ordinal: 348, module: "DOSCALLS", name: "DosQuerySysInfo",  argc: 4,
@@ -522,6 +540,37 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.so_getprotobyname(a[0])) },
     ApiEntry { ordinal: TCP32DLL_BASE + 45, module: "TCP32DLL", name: "getprotobynumber", argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.so_getprotobynumber(a[0])) },
+    // ── PMSHAPI — profiles (base PMSHAPI_BASE = 16384) ───────────────────────
+    ApiEntry { ordinal: PMSHAPI_BASE + 101, module: "PMSHAPI", name: "PrfQueryProfileSize",   argc: 4,
+               handler: |l,_v,i,a| ApiResult::Normal(l.prf_query_profile_size(i,a[0],a[1],a[2],a[3])) },
+    ApiEntry { ordinal: PMSHAPI_BASE + 102, module: "PMSHAPI", name: "PrfOpenProfile",        argc: 2,
+               handler: |l,_v,i,a| ApiResult::Normal(l.prf_open_profile(i,a[0],a[1])) },
+    ApiEntry { ordinal: PMSHAPI_BASE + 103, module: "PMSHAPI", name: "PrfCloseProfile",       argc: 1,
+               handler: |l,_v,i,a| ApiResult::Normal(l.prf_close_profile(i,a[0])) },
+    ApiEntry { ordinal: PMSHAPI_BASE + 114, module: "PMSHAPI", name: "PrfQueryProfileInt",    argc: 4,
+               handler: |l,_v,i,a| ApiResult::Normal(l.prf_query_profile_int(i,a[0],a[1],a[2],a[3])) },
+    ApiEntry { ordinal: PMSHAPI_BASE + 115, module: "PMSHAPI", name: "PrfQueryProfileString", argc: 6,
+               handler: |l,_v,i,a| ApiResult::Normal(l.prf_query_profile_string(i,a[0],a[1],a[2],a[3],a[4],a[5])) },
+    ApiEntry { ordinal: PMSHAPI_BASE + 116, module: "PMSHAPI", name: "PrfWriteProfileString", argc: 4,
+               handler: |l,_v,i,a| ApiResult::Normal(l.prf_write_profile_string(i,a[0],a[1],a[2],a[3])) },
+    ApiEntry { ordinal: PMSHAPI_BASE + 117, module: "PMSHAPI", name: "PrfQueryProfileData",   argc: 5,
+               handler: |l,_v,i,a| ApiResult::Normal(l.prf_query_profile_data(i,a[0],a[1],a[2],a[3],a[4])) },
+    ApiEntry { ordinal: PMSHAPI_BASE + 118, module: "PMSHAPI", name: "PrfWriteProfileData",   argc: 5,
+               handler: |l,_v,i,a| ApiResult::Normal(l.prf_write_profile_data(i,a[0],a[1],a[2],a[3],a[4])) },
+
+    // ── HELPMGR — Help Manager (base HELPMGR_BASE = 17408) ───────────────────
+    ApiEntry { ordinal: HELPMGR_BASE + 51, module: "HELPMGR", name: "WinCreateHelpInstance",    argc: 2,
+               handler: |l,_v,i,a| ApiResult::Normal(l.win_create_help_instance(i,a[0],a[1])) },
+    ApiEntry { ordinal: HELPMGR_BASE + 52, module: "HELPMGR", name: "WinDestroyHelpInstance",   argc: 1,
+               handler: |l,_v,i,a| ApiResult::Normal(l.win_destroy_help_instance(i,a[0])) },
+    ApiEntry { ordinal: HELPMGR_BASE + 53, module: "HELPMGR", name: "WinQueryHelpInstance",     argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.win_query_help_instance(a[0])) },
+    ApiEntry { ordinal: HELPMGR_BASE + 54, module: "HELPMGR", name: "WinAssociateHelpInstance", argc: 2,
+               handler: |l,_v,i,a| ApiResult::Normal(l.win_associate_help_instance(i,a[0],a[1])) },
+    ApiEntry { ordinal: HELPMGR_BASE + 55, module: "HELPMGR", name: "WinLoadHelpTable",         argc: 3,
+               handler: |l,_v,i,a| ApiResult::Normal(l.win_load_help_table(i,a[0],a[1],a[2])) },
+    ApiEntry { ordinal: HELPMGR_BASE + 56, module: "HELPMGR", name: "WinCreateHelpTable",       argc: 2,
+               handler: |l,_v,i,a| ApiResult::Normal(l.win_create_help_table(i,a[0],a[1])) },
 ];
 
 // ── Compatibility report ──────────────────────────────────────────────────────
@@ -535,7 +584,6 @@ const STUB_ORDINALS: &[u32] = &[
     267,  // DOS16REQUESTVDD
     285,  // DosFSCtl
     317,  // DosDebug
-    342,  // DosDeleteMuxWaitSem
     356,  // DosRaiseException
     357,  // DosUnwindException
     415,  // DosShutdown

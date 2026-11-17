@@ -27,6 +27,19 @@ use super::managers::PIPE_HANDLE_BASE;
 use super::ipc::*;
 use super::vfs::*;
 
+/// How often a semaphore wait looks at the process end.
+const SEM_POLL: Duration = Duration::from_millis(100);
+/// How often `DosWaitMuxWaitSem` looks at its semaphores again.
+const MUX_POLL: Duration = Duration::from_millis(10);
+
+/// When a semaphore wait of `msec` ms (`SEM_INDEFINITE_WAIT`: forever) ends.
+fn sem_deadline(msec: u32) -> std::time::Instant {
+    // "Forever": far enough not to matter, near enough not to overflow.
+    const FOREVER: Duration = Duration::from_secs(100 * 365 * 24 * 3600);
+    let wait = if msec == u32::MAX { FOREVER } else { Duration::from_millis(msec as u64) };
+    std::time::Instant::now() + wait
+}
+
 /// What a file handle leads to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum HandleTarget {
@@ -1011,13 +1024,17 @@ impl super::Loader {
 
     /// DosExit (ordinal 234): `EXIT_THREAD` ends the calling thread (the
     /// vCPU loop ends it, `run_vcpu` decides whether the process ends with
-    /// it); `EXIT_PROCESS` (and any other action) ends the process.
-    pub(crate) fn dos_exit(&self, action: u32, result: u32) -> super::ApiResult {
+    /// it); `EXIT_PROCESS` (and any other action) ends the process, after
+    /// its exit list (the vCPU loop runs it). In an exit-list routine
+    /// DosExit ends the routine.
+    pub(crate) fn dos_exit(&self, vcpu_id: u32, action: u32, result: u32) -> super::ApiResult {
+        if self.runs_exit_list(vcpu_id) {
+            return super::ApiResult::ExitListNext;
+        }
         if action == super::threads::EXIT_THREAD {
             return super::ApiResult::ExitThread(result);
         }
-        self.request_process_exit(result);
-        super::ApiResult::Normal(NO_ERROR)
+        super::ApiResult::ExitProcess(result)
     }
 
     /// End the process with `result` unless it is already ending (the first
@@ -1190,176 +1207,249 @@ impl super::Loader {
         else { 487 }
     }
 
-    pub fn dos_create_event_sem(&self, _psz_name_ptr: u32, phev_ptr: u32, fl_attr: u32, f_state: u32) -> u32 {
-        let mut sem_mgr = self.shared.sem_mgr.lock_or_recover();
-        let h = sem_mgr.create_event(None, fl_attr, f_state != 0);
-        self.guest_write::<u32>(phev_ptr, h);
-        0
+    // ── Semaphores (`ipc.rs` holds the model) ──
+
+    /// The semaphore name at `psz` (none for a NULL pointer).
+    fn sem_name(&self, psz: u32) -> Option<String> {
+        (psz != 0).then(|| self.read_guest_string(psz))
     }
 
+    /// Write a new semaphore's handle to `ph`, or return the error.
+    fn store_sem_handle(&self, created: Result<u32, u32>, ph: u32) -> u32 {
+        match created {
+            Ok(h) => {
+                if self.guest_write::<u32>(ph, h).is_some() { NO_ERROR } else { ERROR_INVALID_PARAMETER }
+            }
+            Err(e) => e,
+        }
+    }
+
+    /// Wait on `cvar` / `guard` until `ready` or `msec` ms
+    /// (`SEM_INDEFINITE_WAIT`: forever) pass; polls the process end.
+    fn wait_sem<'a, T>(&self, cvar: &std::sync::Condvar, mut guard: std::sync::MutexGuard<'a, T>,
+                       msec: u32, mut ready: impl FnMut(&mut T) -> bool) -> Result<std::sync::MutexGuard<'a, T>, u32> {
+        let deadline = sem_deadline(msec);
+        loop {
+            if ready(&mut guard) { return Ok(guard); }
+            if self.shutting_down() { return Err(ERROR_TIMEOUT); }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() { return Err(ERROR_TIMEOUT); }
+            guard = cvar.wait_timeout(guard, remaining.min(SEM_POLL))
+                .unwrap_or_else(|e| e.into_inner()).0;
+        }
+    }
+
+    /// DosCreateEventSem (ordinal 324).
+    pub fn dos_create_event_sem(&self, psz_name_ptr: u32, phev_ptr: u32, fl_attr: u32, f_state: u32) -> u32 {
+        let name = self.sem_name(psz_name_ptr);
+        let created = self.shared.sem_mgr.lock_or_recover().create_event(name.as_deref(), fl_attr, f_state != 0);
+        self.store_sem_handle(created, phev_ptr)
+    }
+
+    /// DosCloseEventSem (ordinal 326).
     pub fn dos_close_event_sem(&self, hev: u32) -> u32 {
-        if self.shared.sem_mgr.lock_or_recover().close_event(hev) { 0 }
-        else { 6 }
+        self.shared.sem_mgr.lock_or_recover().close(SemKind::Event, hev)
     }
 
+    /// DosResetEventSem (ordinal 327): the post count goes to `*pulPostCount`
+    /// and back to 0.
+    pub fn dos_reset_event_sem(&self, hev: u32, pul_post_count: u32) -> u32 {
+        let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_event(hev) else { return ERROR_INVALID_HANDLE };
+        if pul_post_count == 0 { return ERROR_INVALID_PARAMETER; }
+        let mut sem = sem_arc.0.lock_or_recover();
+        let (rc, count) = match sem.reset() {
+            Ok(count) => (NO_ERROR, count),
+            Err(e) => (e, 0),
+        };
+        if self.guest_write::<u32>(pul_post_count, count).is_none() { return ERROR_INVALID_PARAMETER; }
+        rc
+    }
+
+    /// DosPostEventSem (ordinal 328).
     pub fn dos_post_event_sem(&self, hev: u32) -> u32 {
-        let sem_mgr = self.shared.sem_mgr.lock_or_recover();
-        if let Some(sem_arc) = sem_mgr.get_event(hev) {
-            let (lock, cvar) = &*sem_arc;
-            let mut sem = lock.lock_or_recover();
-            if sem.posted { 299 }
-            else {
-                sem.posted = true;
-                cvar.notify_all();
-                0
-            }
-        } else { 6 }
+        let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_event(hev) else { return ERROR_INVALID_HANDLE };
+        let (lock, cvar) = &*sem_arc;
+        let rc = lock.lock_or_recover().post();
+        cvar.notify_all();
+        rc
     }
 
+    /// DosWaitEventSem (ordinal 329).
     pub fn dos_wait_event_sem(&self, hev: u32, msec: u32) -> u32 {
-        let sem_arc = self.shared.sem_mgr.lock_or_recover().get_event(hev);
-        if let Some(sem_arc) = sem_arc {
-            let (lock, cvar) = &*sem_arc;
-            let mut sem = lock.lock_or_recover();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(
-                if msec == u32::MAX { u64::MAX / 2 } else { msec as u64 }
-            );
-            while !sem.posted {
-                if self.shutting_down() { return 640; }
-                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                if remaining.is_zero() { return 640; }
-                let wait_time = remaining.min(std::time::Duration::from_millis(100));
-                let (guard, result) = cvar.wait_timeout(sem, wait_time).unwrap();
-                sem = guard;
-                if result.timed_out() && !sem.posted
-                    && deadline.saturating_duration_since(std::time::Instant::now()).is_zero() {
-                        return 640;
-                }
-            }
-            0
-        } else { 6 }
+        let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_event(hev) else { return ERROR_INVALID_HANDLE };
+        let (lock, cvar) = &*sem_arc;
+        match self.wait_sem(cvar, lock.lock_or_recover(), msec, |s| s.posted()) {
+            Ok(_) => NO_ERROR,
+            Err(e) => e,
+        }
     }
 
-    pub fn dos_create_mutex_sem(&self, _psz_name_ptr: u32, phmtx_ptr: u32, fl_attr: u32, f_state: u32) -> u32 {
-        let mut sem_mgr = self.shared.sem_mgr.lock_or_recover();
-        let h = sem_mgr.create_mutex(None, fl_attr, f_state != 0);
-        self.guest_write::<u32>(phmtx_ptr, h);
-        0
+    /// DosQueryEventSem (ordinal 330): the post count.
+    pub fn dos_query_event_sem(&self, hev: u32, pul_post_count: u32) -> u32 {
+        let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_event(hev) else { return ERROR_INVALID_HANDLE };
+        if pul_post_count == 0 { return ERROR_INVALID_PARAMETER; }
+        let count = sem_arc.0.lock_or_recover().post_count;
+        if self.guest_write::<u32>(pul_post_count, count).is_some() { NO_ERROR } else { ERROR_INVALID_PARAMETER }
     }
 
+    /// DosCreateMutexSem (ordinal 331); created owned, it belongs to the caller.
+    pub fn dos_create_mutex_sem(&self, vcpu_id: u32, psz_name_ptr: u32, phmtx_ptr: u32, fl_attr: u32, f_state: u32) -> u32 {
+        let name = self.sem_name(psz_name_ptr);
+        let owner = (f_state != 0).then_some(vcpu_id);
+        let created = self.shared.sem_mgr.lock_or_recover().create_mutex(name.as_deref(), fl_attr, owner);
+        self.store_sem_handle(created, phmtx_ptr)
+    }
+
+    /// DosCloseMutexSem (ordinal 333).
     pub fn dos_close_mutex_sem(&self, hmtx: u32) -> u32 {
-        if self.shared.sem_mgr.lock_or_recover().close_mutex(hmtx) { 0 }
-        else { 6 }
+        self.shared.sem_mgr.lock_or_recover().close(SemKind::Mutex, hmtx)
     }
 
-    pub fn dos_request_mutex_sem(&self, tid: u32, hmtx: u32, msec: u32) -> u32 {
-        let sem_arc = self.shared.sem_mgr.lock_or_recover().get_mutex(hmtx);
-        if let Some(sem_arc) = sem_arc {
-            let (lock, cvar) = &*sem_arc;
-            let mut sem = lock.lock_or_recover();
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(
-                if msec == u32::MAX { u64::MAX / 2 } else { msec as u64 }
-            );
-            loop {
-                if self.shutting_down() { return 640; }
-                match sem.owner_tid {
-                    None => {
-                        sem.owner_tid = Some(tid);
-                        sem.request_count = 1;
-                        return 0;
-                    }
-                    Some(owner) if owner == tid => {
-                        sem.request_count += 1;
-                        return 0;
-                    }
-                    _ => {
-                        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                        if remaining.is_zero() { return 640; }
-                        let wait_time = remaining.min(std::time::Duration::from_millis(100));
-                        let (guard, _result) = cvar.wait_timeout(sem, wait_time).unwrap();
-                        sem = guard;
-                    }
-                }
-            }
-        } else { 6 }
-    }
-
-    pub fn dos_release_mutex_sem(&self, tid: u32, hmtx: u32) -> u32 {
-        let sem_arc = self.shared.sem_mgr.lock_or_recover().get_mutex(hmtx);
-        if let Some(sem_arc) = sem_arc {
-            let (lock, cvar) = &*sem_arc;
-            let mut sem = lock.lock_or_recover();
-            match sem.owner_tid {
-                Some(owner) if owner == tid => {
-                    sem.request_count -= 1;
-                    if sem.request_count == 0 {
-                        sem.owner_tid = None;
-                        cvar.notify_all();
-                    }
-                    0
-                }
-                _ => 288,
-            }
-        } else { 6 }
-    }
-
-    pub fn dos_create_mux_wait_sem(&self, _psz_name_ptr: u32, phmux_ptr: u32, count: u32, records_ptr: u32, fl_attr: u32) -> u32 {
-        let mut records = Vec::new();
-        for i in 0..count {
-            let hsem = self.guest_read::<u32>(records_ptr + i * 8).unwrap_or(0);
-            let user = self.guest_read::<u32>(records_ptr + i * 8 + 4).unwrap_or(0);
-            records.push(MuxWaitRecord { hsem: SemHandle::Event(hsem), user });
+    /// DosRequestMutexSem (ordinal 334).
+    pub fn dos_request_mutex_sem(&self, vcpu_id: u32, hmtx: u32, msec: u32) -> u32 {
+        let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_mutex(hmtx) else { return ERROR_INVALID_HANDLE };
+        let (lock, cvar) = &*sem_arc;
+        match self.wait_sem(cvar, lock.lock_or_recover(), msec, |s| s.available_to(vcpu_id)) {
+            Ok(mut sem) => { sem.acquire(vcpu_id); NO_ERROR }
+            Err(e) => e,
         }
-        let wait_all = (fl_attr & 4) != 0;
-        let mut sem_mgr = self.shared.sem_mgr.lock_or_recover();
-        let h = sem_mgr.create_mux(None, fl_attr, records, wait_all);
-        self.guest_write::<u32>(phmux_ptr, h);
-        0
     }
 
+    /// DosReleaseMutexSem (ordinal 335).
+    pub fn dos_release_mutex_sem(&self, vcpu_id: u32, hmtx: u32) -> u32 {
+        let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_mutex(hmtx) else { return ERROR_INVALID_HANDLE };
+        let (lock, cvar) = &*sem_arc;
+        let mut sem = lock.lock_or_recover();
+        if sem.owner_vcpu != Some(vcpu_id) { return ERROR_NOT_OWNER; }
+        sem.request_count -= 1;
+        if sem.request_count == 0 {
+            sem.owner_vcpu = None;
+            cvar.notify_all();
+        }
+        NO_ERROR
+    }
+
+    /// DosQueryMutexSem (ordinal 336): owner process and thread and the
+    /// request count (all 0 when unowned).
+    pub fn dos_query_mutex_sem(&self, hmtx: u32, ppid: u32, ptid: u32, pul_count: u32) -> u32 {
+        let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_mutex(hmtx) else { return ERROR_INVALID_HANDLE };
+        if ppid == 0 || ptid == 0 || pul_count == 0 { return ERROR_INVALID_PARAMETER; }
+        let (pid, tid, count) = {
+            let sem = sem_arc.0.lock_or_recover();
+            match sem.owner_vcpu {
+                Some(v) => (PROCESS_ID, super::threads::tid_of_vcpu(v), sem.request_count),
+                None => (0, 0, 0),
+            }
+        };
+        let written = self.guest_write::<u32>(ppid, pid).is_some()
+            && self.guest_write::<u32>(ptid, tid).is_some()
+            && self.guest_write::<u32>(pul_count, count).is_some();
+        if written { NO_ERROR } else { ERROR_INVALID_PARAMETER }
+    }
+
+    /// Read `count` SEMRECORDs at `ptr`.
+    fn read_sem_records(&self, ptr: u32, count: u32) -> Option<Vec<MuxWaitRecord>> {
+        (0..count).map(|i| {
+            let at = ptr.checked_add(i.checked_mul(SEMRECORD_SIZE)?)?;
+            Some(MuxWaitRecord {
+                hsem: self.guest_read::<u32>(at)?,
+                user: self.guest_read::<u32>(at.checked_add(4)?)?,
+            })
+        }).collect()
+    }
+
+    /// DosCreateMuxWaitSem (ordinal 337).
+    pub fn dos_create_mux_wait_sem(&self, psz_name_ptr: u32, phmux_ptr: u32, count: u32, records_ptr: u32, fl_attr: u32) -> u32 {
+        if count as usize > MAX_MUXWAIT_SEMS { return ERROR_TOO_MANY_SEMAPHORES; }
+        let Some(records) = self.read_sem_records(records_ptr, count) else { return ERROR_INVALID_PARAMETER };
+        let name = self.sem_name(psz_name_ptr);
+        let created = self.shared.sem_mgr.lock_or_recover().create_mux(name.as_deref(), fl_attr, &records);
+        self.store_sem_handle(created, phmux_ptr)
+    }
+
+    /// DosOpenMuxWaitSem (ordinal 338): by name, else the handle at `phmux`.
+    pub fn dos_open_mux_wait_sem(&self, psz_name_ptr: u32, phmux_ptr: u32) -> u32 {
+        self.open_sem(SemKind::MuxWait, psz_name_ptr, phmux_ptr)
+    }
+
+    /// DosOpenEventSem / DosOpenMutexSem / DosOpenMuxWaitSem: open by the
+    /// name at `psz_name` or else by the handle at `ph`; the handle goes to `ph`.
+    pub fn open_sem(&self, kind: SemKind, psz_name: u32, ph: u32) -> u32 {
+        let name = self.sem_name(psz_name);
+        let h = if name.is_some() { 0 } else {
+            let Some(h) = self.guest_read::<u32>(ph) else { return ERROR_INVALID_PARAMETER };
+            h
+        };
+        debug!("  open {:?} semaphore name={:?} handle={}", kind, name, h);
+        let opened = self.shared.sem_mgr.lock_or_recover().open(kind, name.as_deref(), h);
+        self.store_sem_handle(opened, ph)
+    }
+
+    /// DosCloseMuxWaitSem (ordinal 339).
     pub fn dos_close_mux_wait_sem(&self, hmux: u32) -> u32 {
-        if self.shared.sem_mgr.lock_or_recover().close_mux(hmux) { 0 }
-        else { 6 }
+        self.shared.sem_mgr.lock_or_recover().close(SemKind::MuxWait, hmux)
     }
 
-    pub fn dos_wait_mux_wait_sem(&self, tid: u32, hmux: u32, msec: u32, pul_user_ptr: u32) -> u32 {
-        let mux = self.shared.sem_mgr.lock_or_recover().get_mux(hmux);
-        if let Some(mux) = mux {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(
-                if msec == u32::MAX { u64::MAX / 2 } else { msec as u64 }
-            );
-            loop {
-                if self.shutting_down() { return 640; }
-                let mut ready_idx = None;
-                let mut all_ready = true;
-
-                for (i, rec) in mux.records.iter().enumerate() {
-                    let h = match rec.hsem { SemHandle::Event(h) | SemHandle::Mutex(h) => h };
-                    let sem_mgr = self.shared.sem_mgr.lock_or_recover();
-                    let is_ready = if let Some(ev_arc) = sem_mgr.get_event(h) {
-                        ev_arc.0.lock_or_recover().posted
-                    } else if let Some(mtx_arc) = sem_mgr.get_mutex(h) {
-                        let mtx = mtx_arc.0.lock_or_recover();
-                        mtx.owner_tid.is_none() || mtx.owner_tid == Some(tid)
-                    } else { false };
-
-                    if is_ready { ready_idx = Some(i); }
-                    else { all_ready = false; }
-                }
-
-                if (mux.wait_all && all_ready) || (!mux.wait_all && ready_idx.is_some()) {
-                    if let Some(idx) = ready_idx
-                        && pul_user_ptr != 0 {
-                            self.guest_write::<u32>(pul_user_ptr, mux.records[idx].user);
+    /// DosWaitMuxWaitSem (ordinal 340): wait for any or all of the list's
+    /// semaphores; `*pulUser` gets the user value of the record that ended
+    /// the wait.
+    pub fn dos_wait_mux_wait_sem(&self, vcpu_id: u32, hmux: u32, msec: u32, pul_user_ptr: u32) -> u32 {
+        let deadline = sem_deadline(msec);
+        loop {
+            let ready = self.shared.sem_mgr.lock_or_recover().try_mux(hmux, vcpu_id);
+            match ready {
+                Err(e) => return e,
+                Ok(Some(user)) => {
+                    if pul_user_ptr != 0 {
+                        self.guest_write::<u32>(pul_user_ptr, user);
                     }
-                    return 0;
+                    return NO_ERROR;
                 }
-                let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-                if remaining.is_zero() { return 640; }
-                thread::sleep(remaining.min(std::time::Duration::from_millis(10)));
+                Ok(None) => {}
             }
+            if self.shutting_down() { return ERROR_TIMEOUT; }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() { return ERROR_TIMEOUT; }
+            thread::sleep(remaining.min(MUX_POLL));
         }
-        6
+    }
+
+    /// DosAddMuxWaitSem (ordinal 341).
+    pub fn dos_add_mux_wait_sem(&self, hmux: u32, psem_record: u32) -> u32 {
+        let Some(rec) = self.read_sem_records(psem_record, 1) else { return ERROR_INVALID_PARAMETER };
+        self.shared.sem_mgr.lock_or_recover().add_mux_record(hmux, rec[0])
+    }
+
+    /// DosDeleteMuxWaitSem (ordinal 342).
+    pub fn dos_delete_mux_wait_sem(&self, hmux: u32, hsem: u32) -> u32 {
+        self.shared.sem_mgr.lock_or_recover().delete_mux_record(hmux, hsem)
+    }
+
+    /// DosQueryMuxWaitSem (ordinal 343): `*pcSemRec` records fit at
+    /// `pSemRec`; too few → `ERROR_PARAM_TOO_SMALL` with the number needed.
+    pub fn dos_query_mux_wait_sem(&self, hmux: u32, pc_sem_rec: u32, p_sem_rec: u32, pfl_attr: u32) -> u32 {
+        let (records, attr) = match self.shared.sem_mgr.lock_or_recover().query_mux(hmux) {
+            Ok(q) => q,
+            Err(e) => return e,
+        };
+        let Some(room) = self.guest_read::<u32>(pc_sem_rec) else { return ERROR_INVALID_PARAMETER };
+        let needed = records.len() as u32;
+        if room < needed {
+            self.guest_write::<u32>(pc_sem_rec, needed);
+            return ERROR_PARAM_TOO_SMALL;
+        }
+        for (i, rec) in (0u32..).zip(&records) {
+            let written = p_sem_rec.checked_add(i * SEMRECORD_SIZE).is_some_and(|at| {
+                self.guest_write::<u32>(at, rec.hsem).is_some()
+                    && at.checked_add(4).and_then(|u| self.guest_write::<u32>(u, rec.user)).is_some()
+            });
+            if !written { return ERROR_INVALID_PARAMETER; }
+        }
+        if self.guest_write::<u32>(pc_sem_rec, needed).is_none()
+            || self.guest_write::<u32>(pfl_attr, attr).is_none() {
+            return ERROR_INVALID_PARAMETER;
+        }
+        NO_ERROR
     }
 
     pub fn dos_create_queue(&self, phq_ptr: u32, attr: u32, psz_name_ptr: u32) -> u32 {
@@ -1923,7 +2013,7 @@ mod tests {
         let loader = Loader::new_mock();
         let phmtx = 0x2000u32;
         // Create unowned mutex (f_state=0)
-        assert_eq!(loader.dos_create_mutex_sem(0, phmtx, 0, 0), 0);
+        assert_eq!(loader.dos_create_mutex_sem(0, 0, phmtx, 0, 0), 0);
         let hmtx = loader.guest_read::<u32>(phmtx).unwrap();
         assert_ne!(hmtx, 0);
         // Request from tid=1 with 0 ms timeout — unowned, must succeed
@@ -1938,6 +2028,266 @@ mod tests {
     fn test_dos_mutex_sem_invalid_handle() {
         let loader = Loader::new_mock();
         assert_eq!(loader.dos_close_mutex_sem(9999), 6); // ERROR_INVALID_HANDLE
+    }
+
+    // ── Post counts, mutex queries, names, muxwait lists ─────────────────────
+
+    const PH: u32 = 0x2000;
+    const PUL: u32 = 0x2004;
+    const PNAME: u32 = 0x2100;
+    const PREC: u32 = 0x3000;
+
+    fn new_event(loader: &Loader, posted: bool) -> u32 {
+        assert_eq!(loader.dos_create_event_sem(0, PH, 0, posted as u32), NO_ERROR);
+        loader.guest_read::<u32>(PH).unwrap()
+    }
+
+    fn new_mutex(loader: &Loader, owner: Option<u32>) -> u32 {
+        assert_eq!(loader.dos_create_mutex_sem(owner.unwrap_or(0), 0, PH, 0, owner.is_some() as u32), NO_ERROR);
+        loader.guest_read::<u32>(PH).unwrap()
+    }
+
+    fn put_name(loader: &Loader, name: &str) -> u32 {
+        loader.guest_write_bytes(PNAME, name.as_bytes()).unwrap();
+        loader.guest_write::<u8>(PNAME + name.len() as u32, 0).unwrap();
+        PNAME
+    }
+
+    fn put_records(loader: &Loader, recs: &[(u32, u32)]) -> u32 {
+        for (i, &(h, user)) in recs.iter().enumerate() {
+            loader.guest_write::<u32>(PREC + 8 * i as u32, h).unwrap();
+            loader.guest_write::<u32>(PREC + 8 * i as u32 + 4, user).unwrap();
+        }
+        PREC
+    }
+
+    fn new_mux(loader: &Loader, recs: &[(u32, u32)], attr: u32) -> u32 {
+        let p = put_records(loader, recs);
+        assert_eq!(loader.dos_create_mux_wait_sem(0, PH, recs.len() as u32, p, attr), NO_ERROR);
+        loader.guest_read::<u32>(PH).unwrap()
+    }
+
+    #[test]
+    fn test_event_post_count_reset_and_query() {
+        let loader = Loader::new_mock();
+        let hev = new_event(&loader, false);
+        assert_eq!(loader.dos_query_event_sem(hev, PUL), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(PUL), Some(0));
+        assert_eq!(loader.dos_reset_event_sem(hev, PUL), ERROR_ALREADY_RESET);
+        assert_eq!(loader.dos_post_event_sem(hev), NO_ERROR);
+        assert_eq!(loader.dos_post_event_sem(hev), ERROR_ALREADY_POSTED, "still counted");
+        assert_eq!(loader.dos_post_event_sem(hev), ERROR_ALREADY_POSTED);
+        assert_eq!(loader.dos_query_event_sem(hev, PUL), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(PUL), Some(3));
+        assert_eq!(loader.dos_reset_event_sem(hev, PUL), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(PUL), Some(3), "the count before the reset");
+        assert_eq!(loader.dos_reset_event_sem(hev, PUL), ERROR_ALREADY_RESET);
+        assert_eq!(loader.guest_read::<u32>(PUL), Some(0));
+        assert_eq!(loader.dos_wait_event_sem(hev, 0), ERROR_TIMEOUT);
+        // Created posted: one post.
+        let posted = new_event(&loader, true);
+        assert_eq!(loader.dos_query_event_sem(posted, PUL), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(PUL), Some(1));
+        // Bad handles and pointers.
+        assert_eq!(loader.dos_reset_event_sem(9999, PUL), ERROR_INVALID_HANDLE);
+        assert_eq!(loader.dos_query_event_sem(9999, PUL), ERROR_INVALID_HANDLE);
+        assert_eq!(loader.dos_query_event_sem(hev, 0), ERROR_INVALID_PARAMETER);
+        assert_eq!(loader.dos_reset_event_sem(posted, 0), ERROR_INVALID_PARAMETER);
+        // A mutex is not an event.
+        let hmtx = new_mutex(&loader, None);
+        assert_eq!(loader.dos_query_event_sem(hmtx, PUL), ERROR_INVALID_HANDLE);
+    }
+
+    #[test]
+    fn test_event_post_count_limit() {
+        let loader = Loader::new_mock();
+        let hev = new_event(&loader, false);
+        let sem = loader.shared.sem_mgr.lock_or_recover().get_event(hev).unwrap();
+        sem.0.lock_or_recover().post_count = MAX_EVENT_POSTS;
+        assert_eq!(loader.dos_post_event_sem(hev), ERROR_TOO_MANY_POSTS);
+        assert_eq!(sem.0.lock_or_recover().post_count, MAX_EVENT_POSTS);
+    }
+
+    #[test]
+    fn test_query_mutex_reports_owner_and_requests() {
+        let loader = Loader::new_mock();
+        const PPID: u32 = 0x2010;
+        const PTID: u32 = 0x2014;
+        let hmtx = new_mutex(&loader, None);
+        assert_eq!(loader.dos_query_mutex_sem(hmtx, PPID, PTID, PUL), NO_ERROR);
+        assert_eq!([PPID, PTID, PUL].map(|p| loader.guest_read::<u32>(p).unwrap()), [0, 0, 0]);
+        // vCPU 0 is thread 1.
+        assert_eq!(loader.dos_request_mutex_sem(0, hmtx, 0), NO_ERROR);
+        assert_eq!(loader.dos_request_mutex_sem(0, hmtx, 0), NO_ERROR);
+        assert_eq!(loader.dos_query_mutex_sem(hmtx, PPID, PTID, PUL), NO_ERROR);
+        assert_eq!([PPID, PTID, PUL].map(|p| loader.guest_read::<u32>(p).unwrap()), [PROCESS_ID, 1, 2]);
+        assert_eq!(loader.dos_request_mutex_sem(3, hmtx, 0), ERROR_TIMEOUT);
+        assert_eq!(loader.dos_release_mutex_sem(3, hmtx), ERROR_NOT_OWNER);
+        assert_eq!(loader.dos_release_mutex_sem(0, hmtx), NO_ERROR);
+        assert_eq!(loader.dos_release_mutex_sem(0, hmtx), NO_ERROR);
+        assert_eq!(loader.dos_release_mutex_sem(0, hmtx), ERROR_NOT_OWNER);
+        // Created owned: owned by the creating thread.
+        let owned = new_mutex(&loader, Some(3));
+        assert_eq!(loader.dos_query_mutex_sem(owned, PPID, PTID, PUL), NO_ERROR);
+        assert_eq!([PPID, PTID, PUL].map(|p| loader.guest_read::<u32>(p).unwrap()), [PROCESS_ID, 3, 1]);
+        assert_eq!(loader.dos_request_mutex_sem(0, owned, 0), ERROR_TIMEOUT);
+        assert_eq!(loader.dos_query_mutex_sem(9999, PPID, PTID, PUL), ERROR_INVALID_HANDLE);
+        assert_eq!(loader.dos_query_mutex_sem(owned, 0, PTID, PUL), ERROR_INVALID_PARAMETER);
+    }
+
+    #[test]
+    fn test_named_semaphores_open_and_close_by_use() {
+        let loader = Loader::new_mock();
+        let name = put_name(&loader, "\\SEM32\\WARPINE\\EV");
+        assert_eq!(loader.dos_create_event_sem(name, PH, 0, 0), NO_ERROR);
+        let hev = loader.guest_read::<u32>(PH).unwrap();
+        assert_eq!(loader.dos_create_mutex_sem(0, name, PH, 0, 0), ERROR_DUPLICATE_NAME);
+        let bad = put_name(&loader, "\\PIPE\\X");
+        assert_eq!(loader.dos_create_event_sem(bad, PH, 0, 0), ERROR_INVALID_NAME);
+        // Open by name (any case) and by handle: three uses.
+        let lower = put_name(&loader, "\\sem32\\warpine\\ev");
+        loader.guest_write::<u32>(PH, 0).unwrap();
+        assert_eq!(loader.dos_open_event_sem(lower, PH), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(PH), Some(hev));
+        assert_eq!(loader.dos_open_event_sem(0, PH), NO_ERROR);
+        assert_eq!(loader.dos_open_mutex_sem(lower, PH), ERROR_SEM_NOT_FOUND, "not a mutex");
+        let unknown = put_name(&loader, "\\SEM32\\NONE");
+        assert_eq!(loader.dos_open_event_sem(unknown, PH), ERROR_SEM_NOT_FOUND);
+        for _ in 0..3 {
+            assert!(matches!(loader.dos_post_event_sem(hev), NO_ERROR | ERROR_ALREADY_POSTED));
+            assert_eq!(loader.dos_close_event_sem(hev), NO_ERROR);
+        }
+        assert_eq!(loader.dos_post_event_sem(hev), ERROR_INVALID_HANDLE, "the last close deletes it");
+    }
+
+    #[test]
+    fn test_mux_records_checked_on_create_and_add() {
+        let loader = Loader::new_mock();
+        let (e1, e2) = (new_event(&loader, false), new_event(&loader, false));
+        let m1 = new_mutex(&loader, None);
+        let p = put_records(&loader, &[(e1, 1), (m1, 2)]);
+        assert_eq!(loader.dos_create_mux_wait_sem(0, PH, 2, p, DCMW_WAIT_ANY), ERROR_WRONG_TYPE);
+        let p = put_records(&loader, &[(e1, 1), (e1, 2)]);
+        assert_eq!(loader.dos_create_mux_wait_sem(0, PH, 2, p, DCMW_WAIT_ANY), ERROR_DUPLICATE_HANDLE);
+        let p = put_records(&loader, &[(9999, 1)]);
+        assert_eq!(loader.dos_create_mux_wait_sem(0, PH, 1, p, DCMW_WAIT_ANY), ERROR_INVALID_HANDLE);
+        assert_eq!(loader.dos_create_mux_wait_sem(0, PH, MAX_MUXWAIT_SEMS as u32 + 1, PREC, DCMW_WAIT_ANY),
+                   ERROR_TOO_MANY_SEMAPHORES);
+        let p = put_records(&loader, &[(e1, 1)]);
+        for attr in [0, DCMW_WAIT_ANY | DCMW_WAIT_ALL, DCMW_WAIT_ANY | 0x100] {
+            assert_eq!(loader.dos_create_mux_wait_sem(0, PH, 1, p, attr), ERROR_INVALID_PARAMETER, "{attr:#x}");
+        }
+        let hmux = new_mux(&loader, &[(e1, 1)], DCMW_WAIT_ANY);
+        let rec = |h: u32, user: u32| put_records(&loader, &[(h, user)]);
+        assert_eq!(loader.dos_add_mux_wait_sem(hmux, rec(e1, 5)), ERROR_DUPLICATE_HANDLE);
+        assert_eq!(loader.dos_add_mux_wait_sem(hmux, rec(m1, 5)), ERROR_WRONG_TYPE);
+        assert_eq!(loader.dos_add_mux_wait_sem(hmux, rec(hmux, 5)), ERROR_WRONG_TYPE, "no muxwait in a list");
+        assert_eq!(loader.dos_add_mux_wait_sem(hmux, rec(9999, 5)), ERROR_INVALID_HANDLE);
+        assert_eq!(loader.dos_add_mux_wait_sem(9999, rec(e2, 5)), ERROR_INVALID_HANDLE);
+        assert_eq!(loader.dos_add_mux_wait_sem(hmux, rec(e2, 2)), NO_ERROR);
+        for _ in 2..MAX_MUXWAIT_SEMS {
+            let e = new_event(&loader, false);
+            assert_eq!(loader.dos_add_mux_wait_sem(hmux, rec(e, 0)), NO_ERROR);
+        }
+        let extra = new_event(&loader, false);
+        assert_eq!(loader.dos_add_mux_wait_sem(hmux, rec(extra, 0)), ERROR_TOO_MANY_SEMAPHORES);
+    }
+
+    #[test]
+    fn test_query_mux_wait_sem() {
+        let loader = Loader::new_mock();
+        const PC: u32 = 0x2020;
+        const PATTR: u32 = 0x2024;
+        const PBUF: u32 = 0x4000;
+        let (e1, e2) = (new_event(&loader, false), new_event(&loader, false));
+        let hmux = new_mux(&loader, &[(e1, 10), (e2, 20)], DCMW_WAIT_ALL);
+        loader.guest_write::<u32>(PC, 1).unwrap();
+        loader.guest_write::<u32>(PBUF, 0xDEAD).unwrap();
+        assert_eq!(loader.dos_query_mux_wait_sem(hmux, PC, PBUF, PATTR), ERROR_PARAM_TOO_SMALL);
+        assert_eq!(loader.guest_read::<u32>(PC), Some(2), "the number needed");
+        assert_eq!(loader.guest_read::<u32>(PBUF), Some(0xDEAD), "nothing written");
+        loader.guest_write::<u32>(PC, 8).unwrap();
+        assert_eq!(loader.dos_query_mux_wait_sem(hmux, PC, PBUF, PATTR), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(PC), Some(2));
+        let got: Vec<u32> = (0..4).map(|i| loader.guest_read::<u32>(PBUF + 4 * i).unwrap()).collect();
+        assert_eq!(got, vec![e1, 10, e2, 20]);
+        assert_eq!(loader.guest_read::<u32>(PATTR), Some(DCMW_WAIT_ALL));
+        assert_eq!(loader.dos_query_mux_wait_sem(e1, PC, PBUF, PATTR), ERROR_INVALID_HANDLE);
+        // A named muxwait semaphore is shared; it opens by name.
+        let name = put_name(&loader, "\\SEM32\\MUX");
+        let p = put_records(&loader, &[(e1, 1)]);
+        assert_eq!(loader.dos_create_mux_wait_sem(name, PH, 1, p, DCMW_WAIT_ANY), NO_ERROR);
+        let named = loader.guest_read::<u32>(PH).unwrap();
+        loader.guest_write::<u32>(PC, 8).unwrap();
+        assert_eq!(loader.dos_query_mux_wait_sem(named, PC, PBUF, PATTR), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(PATTR), Some(DCMW_WAIT_ANY | DC_SEM_SHARED));
+        loader.guest_write::<u32>(PH, 0).unwrap();
+        assert_eq!(loader.dos_open_mux_wait_sem(name, PH), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(PH), Some(named));
+        assert_eq!(loader.dos_open_mux_wait_sem(0, PH), NO_ERROR);
+        loader.guest_write::<u32>(PH, e1).unwrap();
+        assert_eq!(loader.dos_open_mux_wait_sem(0, PH), ERROR_INVALID_HANDLE, "an event is not a muxwait");
+        for _ in 0..3 {
+            assert_eq!(loader.dos_close_mux_wait_sem(named), NO_ERROR);
+        }
+        assert_eq!(loader.dos_close_mux_wait_sem(named), ERROR_INVALID_HANDLE);
+    }
+
+    #[test]
+    fn test_delete_mux_wait_sem() {
+        let loader = Loader::new_mock();
+        let e1 = new_event(&loader, false);
+        let m1 = new_mutex(&loader, None);
+        let hmux = new_mux(&loader, &[(e1, 1)], DCMW_WAIT_ANY);
+        assert_eq!(loader.dos_delete_mux_wait_sem(hmux, m1), ERROR_INVALID_HANDLE, "not in the list");
+        assert_eq!(loader.dos_delete_mux_wait_sem(hmux, e1), NO_ERROR);
+        assert_eq!(loader.dos_delete_mux_wait_sem(hmux, e1), ERROR_EMPTY_MUXWAIT);
+        assert_eq!(loader.dos_wait_mux_wait_sem(0, hmux, 0, PUL), ERROR_EMPTY_MUXWAIT);
+        // Empty again: the list takes the other kind.
+        let p = put_records(&loader, &[(m1, 7)]);
+        assert_eq!(loader.dos_add_mux_wait_sem(hmux, p), NO_ERROR);
+        assert_eq!(loader.dos_delete_mux_wait_sem(9999, m1), ERROR_INVALID_HANDLE);
+    }
+
+    #[test]
+    fn test_wait_mux_on_events() {
+        let loader = Loader::new_mock();
+        let (e1, e2) = (new_event(&loader, false), new_event(&loader, false));
+        let any = new_mux(&loader, &[(e1, 11), (e2, 22)], DCMW_WAIT_ANY);
+        let all = new_mux(&loader, &[(e1, 11), (e2, 22)], DCMW_WAIT_ALL);
+        assert_eq!(loader.dos_wait_mux_wait_sem(0, any, 0, PUL), ERROR_TIMEOUT);
+        assert_eq!(loader.dos_post_event_sem(e2), NO_ERROR);
+        assert_eq!(loader.dos_wait_mux_wait_sem(0, any, 0, PUL), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(PUL), Some(22));
+        assert_eq!(loader.dos_wait_mux_wait_sem(0, all, 0, PUL), ERROR_TIMEOUT);
+        assert_eq!(loader.dos_post_event_sem(e1), NO_ERROR);
+        assert_eq!(loader.dos_wait_mux_wait_sem(0, all, 0, PUL), NO_ERROR);
+        assert_eq!(loader.dos_wait_mux_wait_sem(0, 9999, 0, PUL), ERROR_INVALID_HANDLE);
+        // A semaphore of the list closed meanwhile.
+        assert_eq!(loader.dos_close_event_sem(e1), NO_ERROR);
+        assert_eq!(loader.dos_wait_mux_wait_sem(0, all, 0, PUL), ERROR_INVALID_HANDLE);
+    }
+
+    #[test]
+    fn test_wait_mux_takes_the_mutexes() {
+        let loader = Loader::new_mock();
+        let (m1, m2) = (new_mutex(&loader, Some(3)), new_mutex(&loader, None));
+        let any = new_mux(&loader, &[(m1, 1), (m2, 2)], DCMW_WAIT_ANY);
+        let all = new_mux(&loader, &[(m1, 1), (m2, 2)], DCMW_WAIT_ALL);
+        // m1 belongs to thread 3: waiting for any takes m2.
+        assert_eq!(loader.dos_wait_mux_wait_sem(0, any, 0, PUL), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(PUL), Some(2));
+        let owner = |h: u32| loader.shared.sem_mgr.lock_or_recover().get_mutex(h).unwrap()
+            .0.lock_or_recover().owner_vcpu;
+        assert_eq!(owner(m2), Some(0));
+        assert_eq!(loader.dos_wait_mux_wait_sem(0, all, 0, PUL), ERROR_TIMEOUT);
+        assert_eq!(owner(m1), Some(3), "nothing taken by a wait that did not end");
+        assert_eq!(loader.dos_release_mutex_sem(3, m1), NO_ERROR);
+        assert_eq!(loader.dos_wait_mux_wait_sem(0, all, 0, PUL), NO_ERROR);
+        assert_eq!((owner(m1), owner(m2)), (Some(0), Some(0)));
+        assert_eq!(loader.dos_release_mutex_sem(0, m2), NO_ERROR);
+        assert_eq!(loader.dos_release_mutex_sem(0, m2), NO_ERROR, "taken twice: by both waits");
+        assert_eq!(loader.dos_release_mutex_sem(0, m2), ERROR_NOT_OWNER);
     }
 
     // ── Queue ─────────────────────────────────────────────────────────────────

@@ -17,12 +17,20 @@ pub const UCONV_BASE: u32    = 12288;
 pub const SO32DLL_BASE: u32  = 13312; // 13 * 1024
 pub const TCP32DLL_BASE: u32 = 14336; // 14 * 1024
 pub const MOUCALLS_BASE: u32 = 15360; // 15 * 1024
-pub const STUB_AREA_SIZE: u32 = 16384;
+pub const PMSHAPI_BASE: u32  = 16384; // 16 * 1024 — profiles (Prf*)
+pub const HELPMGR_BASE: u32  = 17408; // 17 * 1024 — Help Manager
+pub const STUB_AREA_SIZE: u32 = 18432;
 
 // Compile-time bounds checks: each module range is 1024 ordinals wide and
-// MOUCALLS, the last one, must fit within STUB_AREA_SIZE.
+// HELPMGR, the last one, must fit within STUB_AREA_SIZE.
 const _: () = assert!(TCP32DLL_BASE + 1024 <= MOUCALLS_BASE);
-const _: () = assert!(MOUCALLS_BASE + 1024 <= STUB_AREA_SIZE);
+const _: () = assert!(MOUCALLS_BASE + 1024 <= PMSHAPI_BASE);
+const _: () = assert!(PMSHAPI_BASE + 1024 <= HELPMGR_BASE);
+const _: () = assert!(HELPMGR_BASE + 1024 <= STUB_AREA_SIZE);
+// The INT 3 stub area must not reach the dynamic allocation pool.
+const _: () = assert!(MAGIC_API_BASE + STUB_AREA_SIZE as u64 <= DYNAMIC_ALLOC_BASE as u64);
+// The NE loader addresses stubs with 16-bit offsets.
+const _: () = assert!(STUB_AREA_SIZE <= u16::MAX as u32);
 
 // GDT tiling: 16-bit segment descriptors covering the guest address space
 // so that 16:16 (selector:offset) addressing works for OS/2 16-bit thunks.
@@ -734,6 +742,60 @@ pub const CARET_BLINK_MS: u64 = 500;
 /// scrolling under a held pointer (`SV_SCROLLRATE` is for scroll bars).
 pub const DRAG_SCROLL_MS: u64 = 100;
 
+// ── Scroll bars (WC_SCROLLBAR, <pmwin.h> INCL_WINSCROLLBARS) ──────────────
+/// Scroll-bar notifications to the owner: mp1 = MPFROMSHORT(id),
+/// mp2 = MPFROM2SHORT(slider position, SB_* command).
+pub const WM_VSCROLL: u32 = 0x0031;
+pub const WM_HSCROLL: u32 = 0x0032;
+/// Scroll-bar styles: horizontal (0) or vertical.
+pub const SBS_HORZ:      u32 = 0x0000;
+pub const SBS_VERT:      u32 = 0x0001;
+pub const SBS_THUMBSIZE: u32 = 0x0002;
+pub const SBS_AUTOTRACK: u32 = 0x0004;
+pub const SBS_AUTOSIZE:  u32 = 0x2000;
+/// `WM_VSCROLL` / `WM_HSCROLL` commands (high word of mp2).
+pub const SB_LINEUP:         u32 = 1;
+pub const SB_LINEDOWN:       u32 = 2;
+pub const SB_LINELEFT:       u32 = 1;
+pub const SB_LINERIGHT:      u32 = 2;
+pub const SB_PAGEUP:         u32 = 3;
+pub const SB_PAGEDOWN:       u32 = 4;
+pub const SB_PAGELEFT:       u32 = 3;
+pub const SB_PAGERIGHT:      u32 = 4;
+pub const SB_SLIDERTRACK:    u32 = 5;
+pub const SB_SLIDERPOSITION: u32 = 6;
+pub const SB_ENDSCROLL:      u32 = 7;
+/// Scroll-bar control messages.
+pub const SBM_SETSCROLLBAR: u32 = 0x01a0;
+pub const SBM_SETPOS:       u32 = 0x01a1;
+pub const SBM_QUERYPOS:     u32 = 0x01a2;
+pub const SBM_QUERYRANGE:   u32 = 0x01a3;
+pub const SBM_SETTHUMBSIZE: u32 = 0x01a6;
+/// Frame scroll-bar identities (`FCF_VERTSCROLL` / `FCF_HORZSCROLL`).
+pub const FID_VERTSCROLL: u32 = 0x8006;
+pub const FID_HORZSCROLL: u32 = 0x8007;
+/// `SBCDATA` (pCtlData of a WC_SCROLLBAR, packed to 2): byte offsets of
+/// `cb`, `sHilite`, `posFirst`, `posLast`, `posThumb`, `cVisible`, `cTotal`.
+pub const SBCDATA_POS_FIRST: u32 = 4;
+pub const SBCDATA_POS_LAST:  u32 = 6;
+pub const SBCDATA_POS_THUMB: u32 = 8;
+pub const SBCDATA_C_VISIBLE: u32 = 10;
+pub const SBCDATA_C_TOTAL:   u32 = 12;
+/// Size of `SBCDATA` (with `cVisible` / `cTotal`; a smaller `cb` has no
+/// thumb size).
+pub const SBCDATA_SIZE: u32 = 14;
+
+// ── PM text cursor (WinCreateCursor, <pmwin.h> INCL_WINCURSORS) ────────────
+pub const CURSOR_SOLID:    u32 = 0x0000;
+pub const CURSOR_HALFTONE: u32 = 0x0001;
+pub const CURSOR_FRAME:    u32 = 0x0002;
+pub const CURSOR_FLASH:    u32 = 0x0004;
+pub const CURSOR_SETPOS:   u32 = 0x8000;
+pub const CURSOR_BIDI_FIRST: u32 = 0x0100;
+pub const CURSOR_BIDI_LAST:  u32 = 0x0200;
+/// `CURSORINFO`: hwnd, x, y, cx, cy, fs, rclClip (4 LONGs).
+pub const CURSORINFO_SIZE: u32 = 40;
+
 // WinQuerySysValue indices (SV_*, <pmwin.h>)
 pub const SV_CXSIZEBORDER: i32 = 4;
 pub const SV_CURSORRATE:   i32 = 9;
@@ -991,6 +1053,55 @@ pub const DEFAULT_THREAD_STACK: u32 = 65536;
 pub const ERROR_MAX_THRDS_REACHED: u32 = 164;
 pub const ERROR_THREAD_NOT_TERMINATED: u32 = 294;
 pub const ERROR_INVALID_THREADID: u32 = 309;
+
+// ── Semaphores (`<bsedos.h>` INCL_DOSSEMAPHORES, `<bseerr.h>`) ───────────────
+
+/// The process id Warpine reports (`pib_ulpid`, `DosQueryMutexSem`).
+pub const PROCESS_ID: u32 = 42;
+/// Semaphore attribute flags.
+pub const DC_SEM_SHARED: u32 = 0x0001;
+pub const DCMW_WAIT_ANY: u32 = 0x0002;
+pub const DCMW_WAIT_ALL: u32 = 0x0004;
+/// Name prefix every named 32-bit semaphore carries.
+pub const SEM32_PREFIX: &str = "\\SEM32\\";
+/// `sizeof(SEMRECORD)`: `HSEM hsemCur` + `ULONG ulUser`.
+pub const SEMRECORD_SIZE: u32 = 8;
+/// Most semaphores a muxwait list holds (Control Program Reference).
+pub const MAX_MUXWAIT_SEMS: usize = 64;
+/// Highest post count of an event semaphore.
+pub const MAX_EVENT_POSTS: u32 = 65535;
+/// Highest usage (open) count of a semaphore.
+pub const MAX_SEM_OPENS: u32 = 65535;
+/// Error codes of the semaphore calls.
+pub const ERROR_INVALID_DATA: u32 = 13;
+pub const ERROR_TOO_MANY_SEMAPHORES: u32 = 100;
+pub const ERROR_INVALID_NAME: u32 = 123;
+pub const ERROR_SEM_NOT_FOUND: u32 = 187;
+pub const ERROR_DUPLICATE_HANDLE: u32 = 284;
+pub const ERROR_DUPLICATE_NAME: u32 = 285;
+pub const ERROR_EMPTY_MUXWAIT: u32 = 286;
+pub const ERROR_NOT_OWNER: u32 = 288;
+pub const ERROR_PARAM_TOO_SMALL: u32 = 289;
+pub const ERROR_TOO_MANY_HANDLES: u32 = 290;
+pub const ERROR_TOO_MANY_OPENS: u32 = 291;
+pub const ERROR_WRONG_TYPE: u32 = 292;
+pub const ERROR_TOO_MANY_POSTS: u32 = 298;
+pub const ERROR_ALREADY_POSTED: u32 = 299;
+pub const ERROR_ALREADY_RESET: u32 = 300;
+pub const ERROR_TIMEOUT: u32 = 640;
+
+// ── Exit lists (`<bsedos.h>`: DosExitList) ───────────────────────────────────
+
+/// `DosExitList` actions (low byte of the order code).
+pub const EXLST_ADD: u32 = 1;
+pub const EXLST_REMOVE: u32 = 2;
+pub const EXLST_EXIT: u32 = 3;
+/// Termination codes an exit-list routine receives at `[ESP+4]`.
+pub const TC_EXIT: u32 = 0;
+pub const TC_HARDERROR: u32 = 1;
+pub const TC_TRAP: u32 = 2;
+pub const TC_KILLPROCESS: u32 = 3;
+pub const TC_EXCEPTION: u32 = 4;
 /// Sentinel stored at the tail of the exception handler chain (no further handlers).
 pub const XCPT_CHAIN_END: u32 = 0xFFFF_FFFF;
 
@@ -1089,6 +1200,47 @@ pub const PMERR_INVALID_HACCEL:           u32 = 0x101A;
 pub const PMERR_INVALID_HPTR:             u32 = 0x101B;
 pub const PMERR_NO_MSG_QUEUE:             u32 = 0x1036;
 pub const PMERR_MSG_QUEUE_ALREADY_EXISTS: u32 = 0x1052;
+pub const PMERR_INV_HPS:                  u32 = 0x207F;
+pub const PMERR_INV_LENGTH_OR_COUNT:      u32 = 0x2092;
+
+// WinDrawText flags (<pmwin.h>).
+pub const DT_LEFT:            u32 = 0x0000_0000;
+pub const DT_QUERYEXTENT:     u32 = 0x0000_0002;
+pub const DT_UNDERSCORE:      u32 = 0x0000_0010;
+pub const DT_STRIKEOUT:       u32 = 0x0000_0020;
+pub const DT_TEXTATTRS:       u32 = 0x0000_0040;
+pub const DT_EXTERNALLEADING: u32 = 0x0000_0080;
+pub const DT_CENTER:          u32 = 0x0000_0100;
+pub const DT_RIGHT:           u32 = 0x0000_0200;
+pub const DT_TOP:             u32 = 0x0000_0000;
+pub const DT_VCENTER:         u32 = 0x0000_0400;
+pub const DT_BOTTOM:          u32 = 0x0000_0800;
+pub const DT_HALFTONE:        u32 = 0x0000_1000;
+pub const DT_MNEMONIC:        u32 = 0x0000_2000;
+pub const DT_WORDBREAK:       u32 = 0x0000_4000;
+pub const DT_ERASERECT:       u32 = 0x0000_8000;
+
+// Profile (Prf*) errors (<pmerr.h>).
+pub const PMERR_BUFFER_TOO_SMALL:         u32 = 0x110B;
+pub const PMERR_INVALID_INI_FILE_HANDLE:  u32 = 0x1115;
+pub const PMERR_INI_FILE_IS_SYS_OR_USER:  u32 = 0x1124;
+pub const PMERR_OPENING_INI_FILE:         u32 = 0x1301;
+pub const PMERR_INI_FILE_CORRUPT:         u32 = 0x1302;
+pub const PMERR_INVALID_PARM:             u32 = 0x1303;
+pub const PMERR_NOT_IN_IDX:               u32 = 0x1304;
+pub const PMERR_INI_WRITE_FAIL:           u32 = 0x1306;
+
+// Profile handles (<pmwin.h>, INCL_WINSHELLDATA): HINI_PROFILE is both the
+// user and the system profile (user first), the others one of them.
+pub const HINI_PROFILE:       u32 = 0;
+pub const HINI_USERPROFILE:   u32 = 0xFFFF_FFFF; // (HINI)-1
+pub const HINI_SYSTEMPROFILE: u32 = 0xFFFF_FFFE; // (HINI)-2
+
+// Help Manager (<pmhelp.h>): HM_* messages start at HM_MSG_BASE.
+pub const HM_MSG_BASE:          u32 = 0x0220;
+pub const HM_DISPLAY_HELP:      u32 = HM_MSG_BASE + 0x0002;
+pub const HM_SET_ACTIVE_WINDOW: u32 = HM_MSG_BASE + 0x0004;
+pub const HM_CONTROL:           u32 = HM_MSG_BASE + 0x0024;
 
 #[cfg(test)]
 mod header_tests {

@@ -60,7 +60,7 @@ impl super::Loader {
                 o if (VIOCALLS_BASE..SESMGR_BASE).contains(&o) => {
                     self.handle_viocalls(vcpu, vcpu_id, o - VIOCALLS_BASE)
                 }
-                o if (MOUCALLS_BASE..STUB_AREA_SIZE).contains(&o) => {
+                o if (MOUCALLS_BASE..PMSHAPI_BASE).contains(&o) => {
                     self.handle_moucalls(vcpu, vcpu_id, o - MOUCALLS_BASE)
                 }
                 _ => {
@@ -73,6 +73,8 @@ impl super::Loader {
         let ret_val = match &result {
             ApiResult::Normal(v)               => { debug!(ret = v, "return"); *v }
             ApiResult::ExitThread(rc)          => { debug!(rc, "exit_thread"); *rc }
+            ApiResult::ExitProcess(rc)         => { debug!(rc, "exit_process"); *rc }
+            ApiResult::ExitListNext            => { debug!("exit_list_next"); 0 }
             ApiResult::Callback { wnd_proc, .. } => { debug!(wnd_proc, "callback"); 0 }
             ApiResult::WmCreateCallback { wnd_proc, .. } => { debug!(wnd_proc, "wm_create_callback"); 0 }
             ApiResult::MinMaxFrame { wnd_proc, .. } => { debug!(wnd_proc, "minmax_frame"); 0 }
