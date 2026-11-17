@@ -101,6 +101,24 @@ fn test_nls() {
     assert!(out.contains("DosQueryCp returns 0 OK"),       "DosQueryCp:\n{out}");
     assert!(out.contains("DosQueryCtryInfo returns 0 OK"), "DosQueryCtryInfo:\n{out}");
     assert!(out.contains("DosMapCase converts to HELLO OK"), "DosMapCase:\n{out}");
+    // NLS ordinals 6 and 8 (<bseord.h>): DosQueryDBCSEnv used to be answered
+    // with country information.
+    assert!(out.contains("CP932 lead bytes 81-9F, E0-FC, then 0,0 OK"), "DosQueryDBCSEnv:\n{out}");
+    assert!(out.contains("short buffer: ERROR_NLS_TABLE_TRUNCATED OK"), "truncation:\n{out}");
+    assert!(out.contains("'a' and 'A' weigh the same OK"), "DosQueryCollate:\n{out}");
+}
+
+/// dbcs_test: DosQueryDBCSEnv after DosSetProcessCp(932), through the import
+/// library's NLS ordinal 6. Only the lead-byte checks are asserted: the
+/// sample's VioCheckCharType checks still fail (see doc/TODOs.md).
+#[test]
+fn test_dbcs_env_after_set_process_cp() {
+    if !kvm_available() || !Path::new("samples/dbcs_test/dbcs_test.exe").exists() { return; }
+    let (out, _code) = run_sample("samples/dbcs_test/dbcs_test.exe", 15);
+    for line in ["DosQueryDBCSEnv returns 0 OK", "CP932 range (0x81,0x9F) present OK",
+                 "CP932 range (0xE0,0xFC) present OK"] {
+        assert!(out.contains(line), "missing '{line}':\n{out}");
+    }
 }
 
 /// audio_test: DosBeep and mciSendString through MDM loaded at run time

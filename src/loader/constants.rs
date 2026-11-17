@@ -461,6 +461,8 @@ pub const ERROR_INIT_ROUTINE_FAILED: u32 = 295;
 pub const ERROR_INVALID_PARAMETER:    u32 = 87;
 pub const ERROR_INVALID_CODE_PAGE:    u32 = 472;
 pub const ERROR_NESTING_NOT_ALLOWED:  u32 = 215;
+/// An NLS table did not fit the caller's buffer (`<bseerr.h>`).
+pub const ERROR_NLS_TABLE_TRUNCATED:  u32 = 399;
 
 // ── VIO error codes ───────────────────────────────────────────────────────────
 pub const ERROR_VIO_ROW: u32 = 358; // Row parameter out of range

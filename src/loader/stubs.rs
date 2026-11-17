@@ -217,7 +217,7 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// DosQueryCtryInfo (ordinal 397): get country/locale information.
+    /// DosQueryCtryInfo (NLS ordinal 5): get country/locale information.
     pub fn dos_query_ctry_info(&self, cb: u32, _p_ctry_code: u32, p_ctry_info: u32, pcb_actual: u32) -> u32 {
         debug!("  DosQueryCtryInfo(cb={}, pcc=0x{:08X}, p_ctry_info=0x{:08X}, pcb_actual=0x{:08X})", cb, _p_ctry_code, p_ctry_info, pcb_actual);
         // COUNTRYINFO struct layout (38 bytes):

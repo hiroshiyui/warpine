@@ -651,10 +651,11 @@ fn normalize_for_alias(s: &str) -> String {
 }
 
 fn cmd_validate_doc(entries: &[OrdEntry], doc_path: &Path) {
-    // Only modules present in both os2api.def and os2_ordinals.md.
-    // NLS, MSG, MDM, UCONV are Warpine-specific and absent from the OW snapshot.
+    // Only modules present in both os2api.def and os2_ordinals.md. MSG,
+    // MDM, UCONV and the socket DLLs are not in the os2386.lib snapshot.
     const DOC_MODULES: &[&str] = &[
         "DOSCALLS", "QUECALLS", "KBDCALLS", "VIOCALLS", "PMGPI", "PMWIN", "SESMGR",
+        "NLS", "MOUCALLS",
     ];
 
     let doc_map = match parse_ordinals_doc(doc_path) {

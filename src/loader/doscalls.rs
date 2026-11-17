@@ -1445,39 +1445,68 @@ impl super::Loader {
         0
     }
 
-    /// Write the DBCS lead-byte vector to a guest buffer.
+    /// The codepage an NLS call works on: `COUNTRYCODE.codepage` (offset 4)
+    /// when `pcc` is given and the field is not 0, else the process codepage
+    /// ("If codepage is set to 0, ... the current process code page of the
+    /// caller", CP Reference). `COUNTRYCODE.country` is not used: Warpine
+    /// has one set of country data, from the host locale.
+    pub fn nls_codepage(&self, pcc: u32) -> u32 {
+        let given = if pcc != 0 { pcc.checked_add(4).and_then(|p| self.guest_read::<u32>(p)).unwrap_or(0) } else { 0 };
+        if given != 0 { given } else { self.shared.active_codepage.load(Ordering::Relaxed) }
+    }
+
+    /// DosQueryDBCSEnv (NLS ordinal 6): the DBCS environmental vector.
     ///
     /// The vector is a series of `(first, last)` byte pairs representing the
-    /// lead-byte ranges for the active codepage, terminated by `(0x00, 0x00)`.
-    /// For SBCS codepages the vector contains only the terminator.
+    /// lead-byte ranges of the codepage (`nls_codepage`), terminated by
+    /// `(0x00, 0x00)`; for SBCS codepages only the terminator. The 16-bit
+    /// `DOS16GETDBCSEV` (NLS ordinal 4) is not implemented.
     ///
-    /// Used by both `DosQueryDBCSEnv` (DOSCALLS ord 373) and `NlsGetDBCSEv`
-    /// (NLS ord 8).
-    ///
-    /// Returns `NO_ERROR` on success or `ERROR_BUFFER_OVERFLOW` (113) if the
-    /// caller's buffer is too small to hold all ranges plus the terminator.
-    pub fn dos_query_dbcs_env(&self, cb: u32, _pcc: u32, pbuf: u32) -> u32 {
+    /// A buffer that is too small gets "as much information as possible ...
+    /// in the order in which the data would appear" (CP Reference); the call
+    /// then returns `ERROR_NLS_TABLE_TRUNCATED` — Warpine's choice: the
+    /// reference lists the code but does not say when it is returned.
+    pub fn dos_query_dbcs_env(&self, cb: u32, pcc: u32, pbuf: u32) -> u32 {
         use crate::loader::locale::dbcs_lead_ranges;
-        use std::sync::atomic::Ordering;
         if pbuf == 0 {
-            return 0;
+            return ERROR_INVALID_PARAMETER;
         }
-        let cp = self.shared.active_codepage.load(Ordering::Relaxed);
-        let ranges = dbcs_lead_ranges(cp);
-        // Each range needs 2 bytes; terminator is an additional 2 bytes.
-        let needed = (ranges.len() as u32 + 1) * 2;
-        if cb < needed {
-            return 113; // ERROR_BUFFER_OVERFLOW
+        let mut vec: Vec<u8> = dbcs_lead_ranges(self.nls_codepage(pcc))
+            .iter()
+            .flat_map(|&(first, last)| [first, last])
+            .collect();
+        vec.extend_from_slice(&[0, 0]);
+        self.write_nls_table(cb, pbuf, &vec)
+    }
+
+    /// DosQueryCollate (NLS ordinal 8): the collating sequence table of the
+    /// codepage (`nls_codepage`) — one sort weight for each byte 0x00..0xFF,
+    /// 256 bytes ("A length value of 256 bytes is sufficient"). `*pcch` gets
+    /// the number of bytes returned. The weights are Warpine's own
+    /// (`codepage::collate_table`); a short buffer is handled as in
+    /// [`dos_query_dbcs_env`](Self::dos_query_dbcs_env).
+    pub fn dos_query_collate(&self, cb: u32, pcc: u32, pch: u32, pcch: u32) -> u32 {
+        if pch == 0 {
+            return ERROR_INVALID_PARAMETER;
         }
-        let mut vec: Vec<u8> = Vec::with_capacity(needed as usize);
-        for &(first, last) in ranges {
-            vec.push(first);
-            vec.push(last);
+        let table = super::codepage::collate_table(self.nls_codepage(pcc));
+        let rc = self.write_nls_table(cb, pch, &table);
+        if pcch != 0 {
+            let _ = self.guest_write::<u32>(pcch, cb.min(table.len() as u32));
         }
-        vec.push(0);
-        vec.push(0);
-        let _ = self.guest_write_bytes(pbuf, &vec);
-        0
+        rc
+    }
+
+    /// Write `data` into a caller's `cb`-byte NLS buffer: all of it, or as
+    /// much as fits and `ERROR_NLS_TABLE_TRUNCATED`. A null or unwritable
+    /// buffer fails with `ERROR_INVALID_PARAMETER` (not in the reference's
+    /// list of codes: Warpine's choice).
+    fn write_nls_table(&self, cb: u32, pbuf: u32, data: &[u8]) -> u32 {
+        let n = (cb as usize).min(data.len());
+        if self.guest_write_bytes(pbuf, &data[..n]).is_none() {
+            return ERROR_INVALID_PARAMETER;
+        }
+        if n < data.len() { ERROR_NLS_TABLE_TRUNCATED } else { NO_ERROR }
     }
 
     pub fn dos_query_file_mode_16(&self, p_filename: u32, p_attr: u32) -> u32 {
@@ -1825,17 +1854,62 @@ mod tests {
     }
 
     #[test]
-    fn test_dos_query_dbcs_env_buffer_too_small_returns_overflow() {
+    fn test_dos_query_dbcs_env_short_buffer_gets_what_fits() {
         let loader = Loader::new_mock();
         loader.shared.active_codepage.store(932, Ordering::Relaxed);
-        // CP932 needs 6 bytes; supply only 4.
-        assert_eq!(loader.dos_query_dbcs_env(4, 0, 0x5000), 113); // ERROR_BUFFER_OVERFLOW
+        let buf = 0x5000u32;
+        loader.guest_write_bytes(buf, &[0xEE; 6]).unwrap();
+        // CP932 needs 6 bytes; supply only 4: the first range and the start
+        // of the second, in order, and nothing past cb.
+        assert_eq!(loader.dos_query_dbcs_env(4, 0, buf), ERROR_NLS_TABLE_TRUNCATED);
+        let got = loader.guest_read_bytes(buf, 6).unwrap();
+        assert_eq!(got, [0x81, 0x9F, 0xE0, 0xFC, 0xEE, 0xEE]);
     }
 
     #[test]
-    fn test_dos_query_dbcs_env_null_buf_returns_ok() {
+    fn test_dos_query_dbcs_env_null_buf_is_invalid() {
         let loader = Loader::new_mock();
-        // pbuf == 0 is a no-op; must return NO_ERROR without panicking.
-        assert_eq!(loader.dos_query_dbcs_env(256, 0, 0), 0);
+        assert_eq!(loader.dos_query_dbcs_env(256, 0, 0), ERROR_INVALID_PARAMETER);
+    }
+
+    #[test]
+    fn test_nls_calls_follow_the_countrycode_codepage() {
+        // COUNTRYCODE { country, codepage }: a non-zero codepage is used
+        // instead of the process codepage (CP437 here).
+        let loader = Loader::new_mock();
+        let (pcc, buf) = (0x4000u32, 0x5000u32);
+        loader.guest_write::<u32>(pcc, 0).unwrap();
+        loader.guest_write::<u32>(pcc + 4, 936).unwrap();
+        assert_eq!(loader.nls_codepage(pcc), 936);
+        assert_eq!(loader.dos_query_dbcs_env(4, pcc, buf), NO_ERROR);
+        assert_eq!(loader.guest_read::<u8>(buf), Some(0x81));
+        // codepage 0 → the process codepage; no COUNTRYCODE likewise.
+        loader.guest_write::<u32>(pcc + 4, 0).unwrap();
+        assert_eq!(loader.nls_codepage(pcc), 437);
+        assert_eq!(loader.nls_codepage(0), 437);
+        // A COUNTRYCODE pointer at the top of the address space does not wrap.
+        assert_eq!(loader.nls_codepage(u32::MAX - 1), 437);
+    }
+
+    #[test]
+    fn test_dos_query_collate_returns_256_weights() {
+        let loader = Loader::new_mock();
+        let (buf, pcch) = (0x5000u32, 0x4800u32);
+        assert_eq!(loader.dos_query_collate(256, 0, buf, pcch), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(pcch), Some(256));
+        let table = loader.guest_read_bytes(buf, 256).unwrap();
+        assert_eq!(table, crate::loader::codepage::collate_table(437));
+        assert_eq!(table[b'a' as usize], table[b'A' as usize], "case-blind letters");
+    }
+
+    #[test]
+    fn test_dos_query_collate_short_buffer_is_truncated() {
+        let loader = Loader::new_mock();
+        let (buf, pcch) = (0x5000u32, 0x4800u32);
+        loader.guest_write::<u8>(buf + 16, 0xEE).unwrap();
+        assert_eq!(loader.dos_query_collate(16, 0, buf, pcch), ERROR_NLS_TABLE_TRUNCATED);
+        assert_eq!(loader.guest_read::<u32>(pcch), Some(16));
+        assert_eq!(loader.guest_read::<u8>(buf + 16), Some(0xEE), "nothing past cb");
+        assert_eq!(loader.dos_query_collate(256, 0, 0, pcch), ERROR_INVALID_PARAMETER);
     }
 }

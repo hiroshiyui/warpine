@@ -8,6 +8,8 @@
  *  4. DosMapCase — uppercase conversion
  *  5. COUNTRYINFO field verification (separators, formats)
  *  6. Date formatting sanity check
+ *  7. DosQueryDBCSEnv — SBCS and CP932 vectors, a short buffer
+ *  8. DosQueryCollate — 256 sort weights, letters without case
  */
 
 #define INCL_DOS
@@ -140,6 +142,47 @@ int main(void) {
             print("  Cannot format date (no separator)\r\n");
             failed++;
         }
+    }
+
+    /* ── Test 7: DosQueryDBCSEnv (NLS ordinal 6) ── */
+    print("\r\nTest 7: DosQueryDBCSEnv\r\n");
+    {
+        UCHAR dbcs[12];
+        memset(dbcs, 0xEE, sizeof(dbcs));
+        cc.country = 0;
+        cc.codepage = 437;
+        rc = DosQueryDBCSEnv(sizeof(dbcs), &cc, (PCHAR)dbcs);
+        print("  rc="); print_num(rc); print("\r\n");
+        check("DosQueryDBCSEnv(437) returns 0", rc == 0, &passed, &failed);
+        check("SBCS vector is the (0,0) terminator", dbcs[0] == 0 && dbcs[1] == 0, &passed, &failed);
+        cc.codepage = 932;
+        memset(dbcs, 0xEE, sizeof(dbcs));
+        rc = DosQueryDBCSEnv(sizeof(dbcs), &cc, (PCHAR)dbcs);
+        check("DosQueryDBCSEnv(932) returns 0", rc == 0, &passed, &failed);
+        check("CP932 lead bytes 81-9F, E0-FC, then 0,0",
+              dbcs[0] == 0x81 && dbcs[1] == 0x9F && dbcs[2] == 0xE0 && dbcs[3] == 0xFC
+              && dbcs[4] == 0 && dbcs[5] == 0, &passed, &failed);
+        memset(dbcs, 0xEE, sizeof(dbcs));
+        rc = DosQueryDBCSEnv(2, &cc, (PCHAR)dbcs);
+        print("  short buffer rc="); print_num(rc); print("\r\n");
+        check("short buffer: ERROR_NLS_TABLE_TRUNCATED", rc == ERROR_NLS_TABLE_TRUNCATED, &passed, &failed);
+        check("short buffer: first range, nothing past cb",
+              dbcs[0] == 0x81 && dbcs[1] == 0x9F && dbcs[2] == 0xEE, &passed, &failed);
+    }
+
+    /* ── Test 8: DosQueryCollate (NLS ordinal 8) ── */
+    print("\r\nTest 8: DosQueryCollate\r\n");
+    {
+        UCHAR table[256];
+        ULONG len = 0;
+        cc.country = 0;
+        cc.codepage = 0;
+        rc = DosQueryCollate(sizeof(table), &cc, (PCHAR)table, &len);
+        print("  rc="); print_num(rc); print("  len="); print_num(len); print("\r\n");
+        check("DosQueryCollate returns 0", rc == 0, &passed, &failed);
+        check("table is 256 bytes", len == 256, &passed, &failed);
+        check("'a' and 'A' weigh the same", table['a'] == table['A'], &passed, &failed);
+        check("'B' after 'A'", table['B'] > table['A'], &passed, &failed);
     }
 
     /* ── Summary ── */

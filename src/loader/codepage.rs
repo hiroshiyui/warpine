@@ -196,7 +196,7 @@ fn encode_cp1004(s: &str) -> Vec<u8> {
 ///
 /// Only 1:1 Unicode case mappings are applied.  Multi-char results (e.g. ß→SS)
 /// leave the byte unchanged — this matches OS/2's fixed-width NLS behaviour
-/// where `DosMapCase`/`NlsMapCase` operate on a fixed-length byte buffer.
+/// where `DosMapCase` operates on a fixed-length byte buffer.
 ///
 /// DBCS codepages (CP932/949/950) are not supported here: a single byte is not
 /// a complete character so the byte is returned unchanged.  Unknown codepages
@@ -238,6 +238,21 @@ pub fn cp_map_case_upper(byte: u8, cp: u32) -> u8 {
             byte
         }
     }
+}
+
+/// The collating sequence table of `cp` for `DosQueryCollate`: one sort
+/// weight per byte 0x00..0xFF.
+///
+/// IBM's weights live in COUNTRY.SYS and are not published, so these are
+/// Warpine's own: a byte weighs as its uppercase form (`cp_map_case_upper`),
+/// so letters sort without regard to case and everything else in byte
+/// order. DBCS lead bytes keep their own value.
+pub fn collate_table(cp: u32) -> [u8; 256] {
+    let mut table = [0u8; 256];
+    for (b, weight) in (0..=u8::MAX).zip(table.iter_mut()) {
+        *weight = cp_map_case_upper(b, cp);
+    }
+    table
 }
 
 /// Uppercase a single byte using a DOS codepage upper-half table.
@@ -376,6 +391,19 @@ pub fn decode_dbcs(lead: u8, trail: u8, cp: u32) -> char {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn collate_table_sorts_letters_without_case() {
+        let t = super::collate_table(437);
+        assert_eq!(t[b'a' as usize], b'A');
+        assert_eq!(t[b'A' as usize], b'A');
+        assert_eq!(t[b'1' as usize], b'1');
+        assert!(t[b'b' as usize] > t[b'A' as usize], "b after A");
+        // CP437 0x82 'é' weighs as 0x90 'É'.
+        assert_eq!(t[0x82], 0x90);
+        // CP932 lead bytes keep their value.
+        assert_eq!(super::collate_table(932)[0x82], 0x82);
+    }
+
     use super::*;
 
     // ASCII bytes are identical in all codepages.

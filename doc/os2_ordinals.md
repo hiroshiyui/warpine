@@ -502,6 +502,19 @@ These are the definitive ordinal numbers used when resolving LX fixup imports.
 | 29 | MOU16GETTHRESHOLD |
 | 30 | MOU16SETTHRESHOLD |
 
+## NLS (8 exports)
+
+| Ordinal | Function |
+|---------|----------|
+| 1 | DOS16CASEMAP |
+| 2 | DOS16GETCOLLATE |
+| 3 | DOS16GETCTRYINFO |
+| 4 | DOS16GETDBCSEV |
+| 5 | DosQueryCtryInfo |
+| 6 | DosQueryDBCSEnv |
+| 7 | DosMapCase |
+| 8 | DosQueryCollate |
+
 ## PMDRAG (42 exports)
 
 | Ordinal | Function |

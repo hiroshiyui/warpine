@@ -124,12 +124,10 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         357 => "DosUnwindException",
         368 => "DosQuerySysState",
         372 => "DosEnumAttribute",
-        373 => "DosQueryDBCSEnv",
         378 => "DosSetSignalExceptionFocus",
         380 => "DosEnterMustComplete",
         381 => "DosExitMustComplete",
         382 => "DosSetRelMaxFH",
-        397 => "DosQueryCtryInfo",
         415 => "DosShutdown",
         418 => "DosAcknowledgeSignalException",
         425 => "DosFlatToSel",
@@ -189,11 +187,10 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
 
         // ── NLS ───────────────────────────────────────────────────
         o if (NLS_BASE..MSG_BASE).contains(&o) => match o - NLS_BASE {
-            5 => "NlsQueryCp",
-            6 => "NlsQueryCtryInfo",
-            7 => "NlsMapCase",
-            8 => "NlsGetDBCSEv",
-            9 => "NlsDosMapCase",
+            5 => "DosQueryCtryInfo",
+            6 => "DosQueryDBCSEnv",
+            7 => "DosMapCase",
+            8 => "DosQueryCollate",
             _ => "?",
         },
 
@@ -438,12 +435,10 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
         357 => &["pHandler", "pTargetIP", "pexcept"],
         368 => &["EntityList", "EntityLevel", "PID", "TID", "pDataBuf", "cbBuf"],
         372 => &["ulRefType", "pvFile", "ulEntry", "pvBuf", "cbBuf", "pcbActual", "ulInfoLevel"],
-        373 => &["cb", "pcc", "pBuf"],
         378 => &["fEnable", "pulTimes"],
         380 => &["pulNesting"],
         381 => &["pulNesting"],
         382 => &["pcbReqCount", "pcbCurMaxFH"],
-        397 => &["cb", "pCountryCode", "pCountryInfo", "pcb"],
         415 => &["ulReserved"],
         418 => &["ulSignalNum"],
         425 => &["ptr"],
@@ -466,10 +461,10 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
 
         // ── NLS ───────────────────────────────────────────────────────────
         o if (NLS_BASE..MSG_BASE).contains(&o) => match o - NLS_BASE {
-            5 => &["cb", "arCP", "pcCP"],
-            6 => &["cb", "pCountryCode", "pCountryInfo", "pcb"],
-            7 => &["cb", "pCC", "pString"],
-            8 => &["cb", "pCC", "pBuf"],
+            5 => &["cb", "pcc", "pci", "pcbActual"],
+            6 => &["cb", "pcc", "pBuf"],
+            7 => &["cb", "pcc", "pch"],
+            8 => &["cb", "pcc", "pch", "pcch"],
             _ => &[],
         },
 
@@ -751,11 +746,10 @@ mod tests {
 
     #[test]
     fn test_nls_all_ordinals_named() {
-        assert_eq!(ordinal_to_name(NLS_BASE + 5), "NlsQueryCp");
-        assert_eq!(ordinal_to_name(NLS_BASE + 6), "NlsQueryCtryInfo");
-        assert_eq!(ordinal_to_name(NLS_BASE + 7), "NlsMapCase");
-        assert_eq!(ordinal_to_name(NLS_BASE + 8), "NlsGetDBCSEv");
-        assert_eq!(ordinal_to_name(NLS_BASE + 9), "NlsDosMapCase");
+        assert_eq!(ordinal_to_name(NLS_BASE + 5), "DosQueryCtryInfo");
+        assert_eq!(ordinal_to_name(NLS_BASE + 6), "DosQueryDBCSEnv");
+        assert_eq!(ordinal_to_name(NLS_BASE + 7), "DosMapCase");
+        assert_eq!(ordinal_to_name(NLS_BASE + 8), "DosQueryCollate");
     }
 
     #[test]
@@ -835,10 +829,10 @@ mod tests {
             312, 283, 280, 235, 264, 265, 263, 223, 255, 274, 275, 220, 278,
             299, 304, 324, 326, 328, 329, 331, 333, 334, 335, 337, 339, 340,
             323, 342, 349, 352, 353, 572, 212, 209, 286, 354, 355, 356, 418,
-            368, 378, 380, 381, 300, 301, 302, 305, 306, 291, 289, 397, 318,
+            368, 378, 380, 381, 300, 301, 302, 305, 306, 291, 289, 318,
             322, 319, 321, 317, 258, 261, 279, 267, 219, 276, 277, 284, 231,
             325, 332, 230, 348, 382, 272, 260, 254, 210, 225, 292, 218, 285,
-            357, 372, 373, 428, 639, 415, 425, 426, 241, 243, 250, 221, 224, 110,
+            357, 372, 428, 639, 415, 425, 426, 241, 243, 250, 221, 224, 110,
             8, 75, 84,
         ];
         for &ord in dispatched {

@@ -327,9 +327,6 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_sys_state(a[0],a[1],a[2],a[3],a[4])) },
     ApiEntry { ordinal: 372, module: "DOSCALLS", name: "DosEnumAttribute", argc: 7,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_enum_attribute(a[0],a[1],a[2],a[3],a[4],a[5],a[6])) },
-    // a[0]=cb, a[1]=pCountryCode, a[2]=pBuf
-    ApiEntry { ordinal: 373, module: "DOSCALLS", name: "DosQueryDBCSEnv",  argc: 3,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_dbcs_env(a[0],a[1],a[2])) },
     ApiEntry { ordinal: 378, module: "DOSCALLS", name: "DosSetSignalExceptionFocus", argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_signal_exception_focus(a[0])) },
     ApiEntry { ordinal: 380, module: "DOSCALLS", name: "DosEnterMustComplete", argc: 1,
@@ -338,8 +335,6 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_exit_must_complete(a[0])) },
     ApiEntry { ordinal: 382, module: "DOSCALLS", name: "DosSetRelMaxFH",   argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_rel_max_fh(a[0],a[1])) },
-    ApiEntry { ordinal: 397, module: "DOSCALLS", name: "DosQueryCtryInfo", argc: 4,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_ctry_info(a[0],a[1],a[2],a[3])) },
     ApiEntry { ordinal: 415, module: "DOSCALLS", name: "DosShutdown",      argc: 1,
                handler: |_l,_v,_i,_a| { debug!("DosShutdown stub"); ApiResult::Normal(0) } },
     ApiEntry { ordinal: 418, module: "DOSCALLS", name: "DosAcknowledgeSignalException", argc: 1,
@@ -380,30 +375,21 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_create_queue(a[0],a[1],a[2])) },
 
     // ── NLS — National Language Support (base NLS_BASE = 7168) ───────────
-    // Ordinal 5: dual behavior — acts as DosQueryCp (cb < 44) or
-    //            DosQueryCtryInfo (cb ≥ 44) depending on caller's buffer size
-    ApiEntry { ordinal: NLS_BASE + 5, module: "NLS", name: "NlsQueryCp",       argc: 3,
-               handler: |l,_v,_i,a| {
-                   if a[0] >= 44 {
-                       ApiResult::Normal(l.dos_query_ctry_info(a[0], a[1], a[2], 0))
-                   } else {
-                       ApiResult::Normal(l.dos_query_cp(a[0], a[1], a[2]))
-                   }
-               } },
-    ApiEntry { ordinal: NLS_BASE + 6, module: "NLS", name: "NlsQueryCtryInfo", argc: 4,
+    // The 32-bit NLS calls, at the ordinals of the toolkit's <bseord.h>
+    // (ORD_DOS32QUERYCTRYINFO … ORD_DOS32QUERYCOLLATE) and os2386.lib.
+    ApiEntry { ordinal: NLS_BASE + 5, module: "NLS", name: "DosQueryCtryInfo", argc: 4,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_ctry_info(a[0],a[1],a[2],a[3])) },
-    ApiEntry { ordinal: NLS_BASE + 7, module: "NLS", name: "NlsMapCase",       argc: 3,
+    ApiEntry { ordinal: NLS_BASE + 6, module: "NLS", name: "DosQueryDBCSEnv",  argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_dbcs_env(a[0],a[1],a[2])) },
+    ApiEntry { ordinal: NLS_BASE + 7, module: "NLS", name: "DosMapCase",       argc: 3,
                handler: |l,_v,_i,a| {
-                   let (cb, pch) = (a[0], a[2]);
-                   let cp = l.shared.active_codepage.load(Ordering::Relaxed);
-                   l.map_case_guest_buf(pch, cb, cp);
+                   // a[0]=cb, a[1]=pcc, a[2]=pch
+                   let cp = l.nls_codepage(a[1]);
+                   l.map_case_guest_buf(a[2], a[0], cp);
                    ApiResult::Normal(0)
                } },
-    ApiEntry { ordinal: NLS_BASE + 8, module: "NLS", name: "NlsGetDBCSEv",     argc: 3,
-               handler: |l,_v,_i,a| {
-                   // a[0]=cb, a[1]=pCountryCode, a[2]=pBuf
-                   ApiResult::Normal(l.dos_query_dbcs_env(a[0], a[1], a[2]))
-               } },
+    ApiEntry { ordinal: NLS_BASE + 8, module: "NLS", name: "DosQueryCollate",  argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_collate(a[0],a[1],a[2],a[3])) },
 
     // ── MSG — OS/2 Message DLL (base MSG_BASE = 8192) ────────────────────
     // 4OS2 imports DosGetMessage from MSG.DLL ordinal 6, not from DOSCALLS.
@@ -751,9 +737,17 @@ mod tests {
         assert_eq!(e.name, "DosCreateQueue");
         assert_eq!(e.module, "QUECALLS");
 
-        let e = find(NLS_BASE + 5).expect("NlsQueryCp missing from registry");
-        assert_eq!(e.name, "NlsQueryCp");
-        assert_eq!(e.module, "NLS");
+        // NLS ordinals as in <bseord.h> (ORD_DOS32QUERYCTRYINFO = 5 …).
+        for (ord, name) in [(5, "DosQueryCtryInfo"), (6, "DosQueryDBCSEnv"),
+                            (7, "DosMapCase"), (8, "DosQueryCollate")] {
+            let e = find(NLS_BASE + ord).unwrap_or_else(|| panic!("{name} missing from registry"));
+            assert_eq!(e.name, name);
+            assert_eq!(e.module, "NLS");
+        }
+        // DOSCALLS 373 is DosQueryDOSProperty (not implemented), not an NLS call.
+        assert!(find(373).is_none());
+        // DOSCALLS 397 is no DOSCALLS export at all (<bseord.h>); DosQueryCtryInfo is NLS 5.
+        assert!(find(397).is_none());
 
         let e = find(MDM_BASE + 1).expect("mciSendCommand missing from registry");
         assert_eq!(e.name, "mciSendCommand");
@@ -776,7 +770,7 @@ mod tests {
             312, 283, 280, 235, 264, 265, 263, 223, 255, 274, 275, 220, 278,
             299, 304, 324, 326, 328, 329, 331, 333, 334, 335, 337, 339, 340,
             323, 342, 349, 352, 353, 572, 212, 209, 286, 354, 355, 356, 418,
-            368, 378, 380, 381, 300, 301, 302, 305, 306, 291, 289, 397, 318,
+            368, 378, 380, 381, 300, 301, 302, 305, 306, 291, 289, 318,
             322, 319, 321, 317, 258, 261, 279, 267, 219, 276, 277, 284, 231,
             325, 332, 230, 348, 382, 272, 260, 254, 210, 225, 292, 218, 285,
             357, 372, 428, 639, 415, 425, 426, 241, 243, 250, 221, 224, 110,
