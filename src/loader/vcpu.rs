@@ -1018,6 +1018,10 @@ fn setup_exception_dispatch(
 /// Use `setup_dlg_dispatch_returns_to_caller` as a boolean:
 /// The function sets `*dispatched = false` when returning to caller, and
 /// `true` when dispatching a message.  Caller should `continue` iff `true`.
+/// Bytes of a window-procedure call frame on the guest stack: the return
+/// address and the four arguments (hwnd, msg, mp1, mp2).
+const DLG_CALL_FRAME_BYTES: u64 = 20;
+
 #[allow(clippy::too_many_arguments)]
 fn setup_dlg_dispatch(
     vcpu: &mut dyn super::vm_backend::VcpuBackend,
@@ -1087,9 +1091,14 @@ fn setup_dlg_dispatch(
                 kind: FrameKind::DlgRunLoop { dlg_proc, hwnd_dlg, hmq },
             });
 
-            // Set up the guest stack for a standard WndProc call.
+            // Set up the guest stack for a standard WndProc call, always at
+            // the same place: just below the WinDlgBox / WinProcessDlg
+            // return address (`saved_rsp - 4`). The procedure's `ret`
+            // leaves rsp 16 bytes below where its frame began, so building
+            // the next call from the current rsp would sink the stack by 16
+            // bytes for every message dispatched during the dialog.
             let mut regs = vcpu.get_regs().unwrap();
-            regs.rsp -= 20;
+            regs.rsp = saved_rsp - 4 - DLG_CALL_FRAME_BYTES;
             let sp = regs.rsp as u32;
             loader.guest_write::<u32>(sp,      CALLBACK_RET_TRAP).expect("DlgRunLoop stack OOB");
             loader.guest_write::<u32>(sp +  4, msg.hwnd).expect("DlgRunLoop stack OOB");
@@ -1178,4 +1187,48 @@ fn continue_destroy(
         }
     }
     vcpu.set_regs(&regs).unwrap();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::mutex_ext::MutexExt;
+    use super::super::pm_types::OS2Message;
+    use super::super::vm_backend::mock::MockVcpu;
+    use super::super::vm_backend::VcpuBackend;
+
+    /// Every message the modal loop dispatches is called at the same stack
+    /// position: a procedure returning (which leaves rsp 16 bytes below its
+    /// frame) does not make the next call sink lower.
+    #[test]
+    fn modal_loop_calls_do_not_sink_the_stack() {
+        let loader = super::super::Loader::new_mock();
+        let (hmq, dlg) = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq(437);
+            wm.tid_to_hmq.insert(0, hmq);
+            wm.register_class("Dlg".into(), 0x1234, 0);
+            let dlg = wm.create_window("Dlg".into(), 0, hmq);
+            let mq = wm.get_mq(hmq).unwrap();
+            for msg in [0x1000, 0x1001, 0x1002] {
+                mq.lock_or_recover().messages.push_back(
+                    OS2Message { hwnd: dlg, msg, mp1: 0, mp2: 0, time: 0, x: 0, y: 0 });
+            }
+            (hmq, dlg)
+        };
+        let mut vcpu = MockVcpu::new();
+        let saved_rsp: u64 = 0x8_0000;
+        vcpu.regs.rsp = saved_rsp - 4; // at the API's return address
+        let mut stack = Vec::new();
+        let mut sps = Vec::new();
+        for _ in 0..3 {
+            assert!(setup_dlg_dispatch(&mut vcpu, &loader, &mut stack, 0x1234, dlg, hmq, 0x4000, saved_rsp));
+            let sp = vcpu.get_regs().unwrap().rsp;
+            sps.push(sp);
+            // The procedure returns: `ret` pops the return address.
+            vcpu.regs.rsp = sp + 4;
+            stack.pop();
+        }
+        assert_eq!(sps, vec![saved_rsp - 4 - DLG_CALL_FRAME_BYTES; 3]);
+    }
 }
