@@ -3,3 +3,7 @@ set -euo pipefail
 
 echo "Running cargo test before commit..."
 cargo test
+
+# --all-targets lints the test code too, not only the binaries.
+echo "Running cargo clippy before commit..."
+cargo clippy --all-targets -- -D warnings

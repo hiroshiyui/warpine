@@ -161,7 +161,7 @@ See [doc/developer_guide.md](doc/developer_guide.md) for detailed internals docu
 
 ### Git Hooks
 
-This repo ships a pre-commit hook that runs `cargo test` and `cargo clippy -- -D warnings` before every commit. Activate it once after cloning:
+This repo ships a pre-commit hook that runs `cargo test` and `cargo clippy --all-targets -- -D warnings` (the test code is linted too) before every commit. Activate it once after cloning:
 
 ```bash
 git config core.hooksPath githooks
@@ -253,7 +253,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 ```bash
 cargo test                        # 870 unit tests (no KVM required)
 cargo test --test integration     # 38 end-to-end tests (requires /dev/kvm)
-cargo clippy -- -D warnings       # Lint — must pass with zero warnings
+cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
 
 ## Status
