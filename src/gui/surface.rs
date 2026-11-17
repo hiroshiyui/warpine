@@ -416,6 +416,22 @@ impl Surface {
         }
     }
 
+    /// Overwrite PM row `y` from column `x` with `pels`, clipped to the
+    /// surface (the VIO window writes its text screen this way).
+    pub fn put_span(&mut self, x: i32, y: i32, pels: &[u32]) {
+        if y < 0 || y >= self.height as i32 || x >= self.width as i32 { return; }
+        let skip = (-x).max(0) as usize;
+        if skip >= pels.len() { return; }
+        let x0 = x.max(0);
+        let n = (pels.len() - skip).min((self.width as i32 - x0) as usize);
+        let Some(i) = self.index(x0, y) else { return };
+        self.generation += 1;
+        self.note_change(Rect::at(x0, self.row(y), n as i32, 1));
+        for (d, &p) in self.buffer[i..i + n].iter_mut().zip(&pels[skip..]) {
+            *d = p & RGB_MASK;
+        }
+    }
+
     /// PM row `y` (`width` pels); `None` outside the surface.
     pub fn row_pels(&self, y: i32) -> Option<Vec<u32>> {
         let i = self.index(0, y)?;
@@ -692,6 +708,24 @@ impl Surface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn put_span_writes_a_clipped_run_of_pels() {
+        const W: u32 = 0x00FF_FFFF; // a blank pel, as row_pels reports it
+        let mut s = Surface::new(8, 4);
+        s.put_span(2, 1, &[0xFF_11_22_33, 0x00_44_55_66]);
+        assert_eq!(s.row_pels(1).unwrap()[1..5], [W, 0x11_22_33, 0x44_55_66, W]);
+        // Clipped at both ends, and outside the surface nothing happens.
+        s.put_span(-1, 0, &[1, 2, 3]);
+        assert_eq!(s.row_pels(0).unwrap()[..3], [2, 3, W]);
+        s.put_span(6, 2, &[7, 8, 9]);
+        assert_eq!(s.row_pels(2).unwrap()[6..], [7, 8]);
+        let generation = s.generation;
+        s.put_span(0, 4, &[1]);
+        s.put_span(8, 0, &[1]);
+        s.put_span(-3, 0, &[1, 2]);
+        assert_eq!(s.generation, generation, "nothing written");
+    }
 
     const RED: u32 = 0x00FF_0000;
     const WHITE: u32 = 0x00FF_FFFF;

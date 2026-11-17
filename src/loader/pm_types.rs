@@ -455,6 +455,9 @@ pub struct WindowManager {
     /// shown again once it is visible and not minimized
     /// (`WindowManager::sync_owned_frames`).
     pub(super) hidden_with_owner: HashMap<u32, Vec<u32>>,
+    /// The frame showing a VIO program's text screen on the PM desktop
+    /// (`vio_frame.rs`); 0 when the program is not windowed.
+    pub vio_frame: u32,
 }
 
 /// The caret of a text control as last painted, in the surface coordinates
@@ -512,6 +515,7 @@ impl WindowManager {
             input: Default::default(),
             destroying: HashSet::new(),
             hidden_with_owner: HashMap::new(),
+            vio_frame: 0,
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {

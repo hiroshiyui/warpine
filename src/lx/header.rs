@@ -274,8 +274,40 @@ impl LxFixupRecord {
     }
 }
 
+/// The application type of a program module: the bits of the LX module
+/// flags that say whether it can run in a PM window ("LX - Linear eXecutable
+/// Module Format Description": 100h "Incompatible with PM windowing", 200h
+/// "Compatible with PM windowing", 300h "Uses PM windowing API").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppType {
+    /// No type given.
+    Unspecified,
+    /// A VIO program that may only run full screen.
+    NotWindowCompatible,
+    /// A VIO program that may run full screen or in a window.
+    WindowCompatible,
+    /// A Presentation Manager program.
+    Pm,
+}
+
+/// Mask of the application-type bits in the LX module flags.
+pub const MODULE_APP_TYPE_MASK: u32 = 0x0000_0300;
+pub const MODULE_NOT_WINDOW_COMPAT: u32 = 0x0000_0100;
+pub const MODULE_WINDOW_COMPAT: u32 = 0x0000_0200;
+pub const MODULE_WINDOW_API: u32 = 0x0000_0300;
+
 impl LxHeader {
     pub const SIGNATURE: [u8; 2] = *b"LX";
+
+    /// The application type in the module flags.
+    pub fn app_type(&self) -> AppType {
+        match self.module_flags & MODULE_APP_TYPE_MASK {
+            MODULE_NOT_WINDOW_COMPAT => AppType::NotWindowCompatible,
+            MODULE_WINDOW_COMPAT => AppType::WindowCompatible,
+            MODULE_WINDOW_API => AppType::Pm,
+            _ => AppType::Unspecified,
+        }
+    }
 
     pub fn read<R: Read + Seek>(reader: &mut R, offset: u64) -> io::Result<Self> {
         reader.seek(SeekFrom::Start(offset))?;
@@ -345,6 +377,17 @@ impl LxHeader {
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn app_type_comes_from_the_module_flags() {
+        let with = |flags| LxHeader { module_flags: flags, ..Default::default() }.app_type();
+        assert_eq!(with(0), AppType::Unspecified);
+        assert_eq!(with(0x0000_0100), AppType::NotWindowCompatible);
+        assert_eq!(with(0x0000_0200), AppType::WindowCompatible);
+        assert_eq!(with(0x0000_0300), AppType::Pm);
+        // Other flag bits (here the library and per-process init bits) are ignored.
+        assert_eq!(with(0x0000_8204), AppType::WindowCompatible);
+    }
 
     #[test]
     fn test_read_lx_header_minimal() {

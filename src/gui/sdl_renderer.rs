@@ -701,6 +701,9 @@ pub struct SdlRenderer {
     mouse: sdl3::mouse::MouseUtil,
     /// The host cursor showing the PM pointer (`SetPointer`).
     pointer: super::pointer::HostPointer,
+    /// A VIO program's text screen in a frame on the desktop (a windowed
+    /// VIO session, `vio_window.rs`); `None` for PM programs.
+    vio: Option<super::vio_window::VioWindow>,
     /// Shift / Ctrl / Alt as `KC_*` flags, from the last key event; mouse
     /// messages report them in `fsInp` (high word of mp2).
     key_mods: u32,
@@ -748,6 +751,23 @@ impl SdlRenderer {
     /// `audio` gets its output attached here, before the guest starts, so
     /// early sounds are not lost; commands wake the loop once
     /// `install_waker` has run.
+    /// Show a VIO program in a window on the desktop titled `title`: the
+    /// frame is created now, at the size of the VIO buffer, and drawn from it
+    /// on every pass.
+    pub fn attach_vio_window(&mut self, shared: &SharedState, title: &str) {
+        let (cols, rows) = {
+            let con = shared.console_mgr.lock_or_recover();
+            (con.cols, con.rows)
+        };
+        let frame = shared.window_mgr.lock_or_recover().create_vio_frame(title, cols, rows);
+        self.vio = Some(super::vio_window::VioWindow::new(frame));
+    }
+
+    /// Whether the active window is the VIO window, which takes the keys.
+    fn vio_active(&self, shared: &SharedState) -> bool {
+        self.vio.as_ref().is_some_and(|v| shared.window_mgr.lock_or_recover().focused_hwnd == v.frame())
+    }
+
     pub fn new(sdl: &sdl3::Sdl, audio: &super::audio::AudioService) -> Self {
         let (dw, dh) = crate::loader::constants::desktop_size();
         let video      = sdl.video().expect("SDL video subsystem init failed");
@@ -804,6 +824,7 @@ impl SdlRenderer {
             }),
             caret_next: None,
             drag_scroll_next: None,
+            vio: None,
             ime_area: None,
         };
         if renderer.script.is_none() {
@@ -996,6 +1017,16 @@ impl SdlRenderer {
             // that reads it delivers it to the PM focus window of that
             // moment (a control that was clicked or given the focus with
             // WinSetFocus), else to the active frame's client.
+            // Keys for a windowed VIO program go to its keyboard queue
+            // (KbdCharIn), as in the text window.
+            Event::KeyDown { keycode: Some(kc), scancode: Some(sc), keymod, .. }
+                if self.vio_active(shared) => {
+                super::text_renderer::kbd_key_down(shared, kc, sc, keymod);
+            }
+            Event::KeyUp { .. } | Event::TextEditing { .. } if self.vio_active(shared) => {}
+            Event::TextInput { text, .. } if self.vio_active(shared) => {
+                super::text_renderer::kbd_text_input(shared, &text);
+            }
             Event::KeyDown { keycode, scancode, keymod, repeat, .. } => {
                 self.key_mods = kc_modifiers(keymod);
                 let (mp1, mp2) = build_wm_char(keycode, scancode, keymod, repeat, false);
@@ -1160,7 +1191,16 @@ impl SdlRenderer {
                         && button_down_msg(mouse_btn, clicks) == Some(WM_BUTTON1DBLCLK);
                     // System commands from the chrome: MPFROM2SHORT(source, fPointer).
                     let syscommand = |sc: u32, source: u32| push_msg(shared, hwnd, WM_SYSCOMMAND, sc, source | (1 << 16));
+                    // The VIO window has no message queue: closing it ends
+                    // the program; its other chrome only moves it.
+                    let is_vio = shared.window_mgr.lock_or_recover().is_vio_window(hwnd);
                     match chrome_hit {
+                        ChromeHit::Close | ChromeHit::SysMenu if is_vio
+                            && (matches!(chrome_hit, ChromeHit::Close) || double) => {
+                            if let Some(vio) = &self.vio { vio.close(shared); }
+                            return false;
+                        }
+                        ChromeHit::TitleBar if is_vio && double => {}
                         ChromeHit::Close => {
                             push_msg(shared, hwnd, WM_CLOSE, 0, 0);
                         }
@@ -1363,6 +1403,10 @@ impl PmRenderer for SdlRenderer {
         self.stats.record_iteration();
         // Audio commands from the vCPU threads (they wake this loop too).
         self.audio.pump(&shared.audio);
+        // A windowed VIO program: show what it wrote since the last pass.
+        if let Some(vio) = self.vio.as_mut() {
+            vio.update(shared);
+        }
         // Read the host clipboard once at start-up; after that SDL tells us
         // when it changes (ClipboardUpdate) and we re-read on focus gain.
         if !self.clipboard_synced {
@@ -1482,6 +1526,10 @@ impl PmRenderer for SdlRenderer {
         // Notice finished audio promptly (MCI_WAIT, MM_MCINOTIFY, DosBeep).
         if self.audio.busy() {
             timeout = timeout.min(super::audio::AUDIO_PUMP_INTERVAL);
+        }
+        // A VIO program writes its screen without waking the loop.
+        if self.vio.is_some() {
+            timeout = timeout.min(super::vio_window::VIO_POLL);
         }
         if timeout.is_zero() {
             return;

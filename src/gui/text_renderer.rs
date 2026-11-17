@@ -214,6 +214,148 @@ pub fn run_text_loop<R: TextModeRenderer>(renderer: &mut R, shared: Arc<SharedSt
     }
 }
 
+
+/// Draw the cells of `buf` — 8 × 16 Unifont glyphs in the CGA colours, 16-pel
+/// wide DBCS characters, the cursor XOR-inverted while `blink_on` — into
+/// `pixels`, an ARGB buffer `win_w` × `win_h` pels with rows from the top.
+/// Shared by the text window and the VIO window on the PM desktop.
+pub fn render_cells(buf: &VgaTextBuffer, blink_on: bool, pixels: &mut [u32], win_w: usize, win_h: usize) {
+    let cols = buf.cols as usize;
+    let rows = buf.rows as usize;
+
+    for row in 0..rows {
+        let mut col = 0usize;
+        while col < cols {
+            let idx = row * cols + col;
+            let (ch, attr) = if idx < buf.cells.len() { buf.cells[idx] } else { (' ', 0x07) };
+            let kind = if idx < buf.cell_kind.len() { buf.cell_kind[idx] } else { CellKind::Sbcs };
+
+            let fg = CGA_PALETTE[(attr & 0x0F) as usize];
+            let bg = CGA_PALETTE[((attr >> 4) & 0x0F) as usize];
+            let base_x = col * 8;
+            let base_y = row * 16;
+            let cursor_here = buf.cursor_visible && blink_on
+                && row as u16 == buf.cursor_row && col as u16 == buf.cursor_col;
+
+            match kind {
+                CellKind::DbcsLead => {
+                    // ch holds the correct Unicode codepoint decoded from the
+                    // lead+trail raw byte pair by VgaTextBuffer::snapshot() (B4).
+                    // Phase B5 will replace the stub get_glyph_dbcs() with a real
+                    // lookup in the Unifont wide-glyph binary table.
+                    let glyph = get_glyph_dbcs(ch);
+
+                    for gr in 0..16usize {
+                        let py = base_y + gr;
+                        if py >= win_h { break; }
+                        let hi = glyph[gr * 2];
+                        let lo = glyph[gr * 2 + 1];
+                        for gc in 0..8usize {
+                            let px = base_x + gc;
+                            if px < win_w {
+                                pixels[py * win_w + px] =
+                                    if hi & (0x80 >> gc) != 0 { fg } else { bg };
+                            }
+                        }
+                        for gc in 0..8usize {
+                            let px = base_x + 8 + gc;
+                            if px < win_w {
+                                pixels[py * win_w + px] =
+                                    if lo & (0x80 >> gc) != 0 { fg } else { bg };
+                            }
+                        }
+                    }
+
+                    // Cursor overlay: XOR-invert both 8-pixel halves.
+                    if cursor_here {
+                        let cstart = buf.cursor_start as usize;
+                        let cend   = (buf.cursor_end as usize).min(15);
+                        let (cstart, cend) = if cstart <= cend { (cstart, cend) } else { (14, 15) };
+                        for gr in cstart..=cend {
+                            let py = base_y + gr;
+                            if py >= win_h { break; }
+                            for gc in 0..16usize {
+                                let px = base_x + gc;
+                                if px < win_w {
+                                    let old = pixels[py * win_w + px];
+                                    pixels[py * win_w + px] =
+                                        (old ^ 0x00_FF_FF_FF) | 0xFF_00_00_00;
+                                }
+                            }
+                        }
+                    }
+
+                    col += 2;
+                }
+
+                CellKind::DbcsTail => {
+                    // Already rendered by the preceding DbcsLead cell.
+                    // If the cursor lands on the tail cell, invert only the
+                    // right 8-pixel half (this cell's column).
+                    if buf.cursor_visible && blink_on
+                        && row as u16 == buf.cursor_row && col as u16 == buf.cursor_col
+                    {
+                        let cstart = buf.cursor_start as usize;
+                        let cend   = (buf.cursor_end as usize).min(15);
+                        let (cstart, cend) = if cstart <= cend { (cstart, cend) } else { (14, 15) };
+                        for gr in cstart..=cend {
+                            let py = base_y + gr;
+                            if py >= win_h { break; }
+                            for gc in 0..8usize {
+                                let px = base_x + gc;
+                                if px < win_w {
+                                    let old = pixels[py * win_w + px];
+                                    pixels[py * win_w + px] =
+                                        (old ^ 0x00_FF_FF_FF) | 0xFF_00_00_00;
+                                }
+                            }
+                        }
+                    }
+                    col += 1;
+                }
+
+                CellKind::Sbcs => {
+                    let glyph = get_glyph_for_char(ch);
+
+                    for (gr, &bits) in glyph.iter().enumerate() {
+                        let py = base_y + gr;
+                        if py >= win_h { break; }
+                        for gc in 0..8usize {
+                            let px = base_x + gc;
+                            if px >= win_w { break; }
+                            pixels[py * win_w + px] =
+                                if bits & (0x80 >> gc) != 0 { fg } else { bg };
+                        }
+                    }
+
+                    // Cursor overlay for the cursor cell.
+                    if cursor_here {
+                        let cstart = buf.cursor_start as usize;
+                        let cend   = (buf.cursor_end as usize).min(15);
+                        // Guard against inverted/degenerate shapes from guest.
+                        let (cstart, cend) = if cstart <= cend { (cstart, cend) } else { (14, 15) };
+                        for gr in cstart..=cend {
+                            let py = base_y + gr;
+                            if py >= win_h { break; }
+                            for gc in 0..8usize {
+                                let px = base_x + gc;
+                                if px >= win_w { break; }
+                                // XOR-invert RGB channels: always visible regardless of
+                                // cell fg/bg colour (including black-on-black attr=0x00).
+                                let old = pixels[py * win_w + px];
+                                pixels[py * win_w + px] =
+                                    (old ^ 0x00_FF_FF_FF) | 0xFF_00_00_00;
+                            }
+                        }
+                    }
+
+                    col += 1;
+                }
+            }
+        }
+    }
+}
+
 // ── SDL text-mode renderer ───────────────────────────────────────────────────
 
 /// SDL-backed VGA text-mode renderer.
@@ -347,142 +489,8 @@ impl TextModeRenderer for SdlTextRenderer {
             self.handle_resize(buf.cols, buf.rows);
         }
 
-        let cols = buf.cols as usize;
-        let rows = buf.rows as usize;
-        let win_w = self.current_cols as usize * 8;
-        let win_h = self.current_rows as usize * 16;
-
-        for row in 0..rows {
-            let mut col = 0usize;
-            while col < cols {
-                let idx = row * cols + col;
-                let (ch, attr) = if idx < buf.cells.len() { buf.cells[idx] } else { (' ', 0x07) };
-                let kind = if idx < buf.cell_kind.len() { buf.cell_kind[idx] } else { CellKind::Sbcs };
-
-                let fg = CGA_PALETTE[(attr & 0x0F) as usize];
-                let bg = CGA_PALETTE[((attr >> 4) & 0x0F) as usize];
-                let base_x = col * 8;
-                let base_y = row * 16;
-                let cursor_here = buf.cursor_visible && blink_on
-                    && row as u16 == buf.cursor_row && col as u16 == buf.cursor_col;
-
-                match kind {
-                    CellKind::DbcsLead => {
-                        // ch holds the correct Unicode codepoint decoded from the
-                        // lead+trail raw byte pair by VgaTextBuffer::snapshot() (B4).
-                        // Phase B5 will replace the stub get_glyph_dbcs() with a real
-                        // lookup in the Unifont wide-glyph binary table.
-                        let glyph = get_glyph_dbcs(ch);
-
-                        for gr in 0..16usize {
-                            let py = base_y + gr;
-                            if py >= win_h { break; }
-                            let hi = glyph[gr * 2];
-                            let lo = glyph[gr * 2 + 1];
-                            for gc in 0..8usize {
-                                let px = base_x + gc;
-                                if px < win_w {
-                                    self.pixels[py * win_w + px] =
-                                        if hi & (0x80 >> gc) != 0 { fg } else { bg };
-                                }
-                            }
-                            for gc in 0..8usize {
-                                let px = base_x + 8 + gc;
-                                if px < win_w {
-                                    self.pixels[py * win_w + px] =
-                                        if lo & (0x80 >> gc) != 0 { fg } else { bg };
-                                }
-                            }
-                        }
-
-                        // Cursor overlay: XOR-invert both 8-pixel halves.
-                        if cursor_here {
-                            let cstart = buf.cursor_start as usize;
-                            let cend   = (buf.cursor_end as usize).min(15);
-                            let (cstart, cend) = if cstart <= cend { (cstart, cend) } else { (14, 15) };
-                            for gr in cstart..=cend {
-                                let py = base_y + gr;
-                                if py >= win_h { break; }
-                                for gc in 0..16usize {
-                                    let px = base_x + gc;
-                                    if px < win_w {
-                                        let old = self.pixels[py * win_w + px];
-                                        self.pixels[py * win_w + px] =
-                                            (old ^ 0x00_FF_FF_FF) | 0xFF_00_00_00;
-                                    }
-                                }
-                            }
-                        }
-
-                        col += 2;
-                    }
-
-                    CellKind::DbcsTail => {
-                        // Already rendered by the preceding DbcsLead cell.
-                        // If the cursor lands on the tail cell, invert only the
-                        // right 8-pixel half (this cell's column).
-                        if buf.cursor_visible && blink_on
-                            && row as u16 == buf.cursor_row && col as u16 == buf.cursor_col
-                        {
-                            let cstart = buf.cursor_start as usize;
-                            let cend   = (buf.cursor_end as usize).min(15);
-                            let (cstart, cend) = if cstart <= cend { (cstart, cend) } else { (14, 15) };
-                            for gr in cstart..=cend {
-                                let py = base_y + gr;
-                                if py >= win_h { break; }
-                                for gc in 0..8usize {
-                                    let px = base_x + gc;
-                                    if px < win_w {
-                                        let old = self.pixels[py * win_w + px];
-                                        self.pixels[py * win_w + px] =
-                                            (old ^ 0x00_FF_FF_FF) | 0xFF_00_00_00;
-                                    }
-                                }
-                            }
-                        }
-                        col += 1;
-                    }
-
-                    CellKind::Sbcs => {
-                        let glyph = get_glyph_for_char(ch);
-
-                        for (gr, &bits) in glyph.iter().enumerate() {
-                            let py = base_y + gr;
-                            if py >= win_h { break; }
-                            for gc in 0..8usize {
-                                let px = base_x + gc;
-                                if px >= win_w { break; }
-                                self.pixels[py * win_w + px] =
-                                    if bits & (0x80 >> gc) != 0 { fg } else { bg };
-                            }
-                        }
-
-                        // Cursor overlay for the cursor cell.
-                        if cursor_here {
-                            let cstart = buf.cursor_start as usize;
-                            let cend   = (buf.cursor_end as usize).min(15);
-                            // Guard against inverted/degenerate shapes from guest.
-                            let (cstart, cend) = if cstart <= cend { (cstart, cend) } else { (14, 15) };
-                            for gr in cstart..=cend {
-                                let py = base_y + gr;
-                                if py >= win_h { break; }
-                                for gc in 0..8usize {
-                                    let px = base_x + gc;
-                                    if px >= win_w { break; }
-                                    // XOR-invert RGB channels: always visible regardless of
-                                    // cell fg/bg colour (including black-on-black attr=0x00).
-                                    let old = self.pixels[py * win_w + px];
-                                    self.pixels[py * win_w + px] =
-                                        (old ^ 0x00_FF_FF_FF) | 0xFF_00_00_00;
-                                }
-                            }
-                        }
-
-                        col += 1;
-                    }
-                }
-            }
-        }
+        let (win_w, win_h) = (self.current_cols as usize * 8, self.current_rows as usize * 16);
+        render_cells(buf, blink_on, &mut self.pixels, win_w, win_h);
 
         self.present();
     }
@@ -490,8 +498,6 @@ impl TextModeRenderer for SdlTextRenderer {
     fn poll_events(&mut self, shared: &Arc<SharedState>) -> bool {
         use sdl3::event::Event;
         use sdl3::keyboard::{Keycode, Mod as KeyMod};
-        use crate::gui::sdl_renderer::sdl_scancode_to_os2;
-        use crate::loader::codepage::cp_encode;
 
         // Audio commands from the vCPU threads.
         self.audio.pump(&shared.audio);
@@ -530,33 +536,7 @@ impl TextModeRenderer for SdlTextRenderer {
                         return false;
                     }
 
-                    // OS/2 KbdCharIn does not deliver events for pure modifier
-                    // keys (Shift, Ctrl, Alt, CapsLock, NumLock, ScrollLock).
-                    // Their state is reflected in the `state` field of the next
-                    // real keystroke.  Enqueuing them causes the scan code byte
-                    // (0x2A / 0x36 / …) to appear as a spurious character.
-                    if matches!(kc,
-                        Keycode::LShift | Keycode::RShift |
-                        Keycode::LCtrl  | Keycode::RCtrl  |
-                        Keycode::LAlt   | Keycode::RAlt   |
-                        Keycode::CapsLock | Keycode::NumLockClear | Keycode::ScrollLock |
-                        Keycode::LGui   | Keycode::RGui
-                    ) {
-                        continue;
-                    }
-
-                    let scan = sdl_scancode_to_os2(sc);
-                    let ch   = sdl_keycode_to_text_char(kc, keymod);
-                    let mut state: u16 = 0;
-                    if keymod.intersects(KeyMod::LSHIFTMOD | KeyMod::RSHIFTMOD) { state |= 0x0008; }
-                    if keymod.intersects(KeyMod::LCTRLMOD  | KeyMod::RCTRLMOD)  { state |= 0x0004; }
-                    if keymod.intersects(KeyMod::LALTMOD   | KeyMod::RALTMOD)   { state |= 0x0002; }
-
-                    {
-                        let mut q = shared.kbd_queue.lock().unwrap();
-                        q.push_back(KbdKeyInfo { ch, scan, state });
-                    }
-                    shared.kbd_cond.notify_one();
+                    kbd_key_down(shared, kc, sc, keymod);
                 }
 
                 // TextInput carries UTF-8 text composed by the IME (e.g. CJK characters).
@@ -564,24 +544,7 @@ impl TextModeRenderer for SdlTextRenderer {
                 // enqueued the character, so skip it here to avoid double-delivery.
                 // For non-ASCII (DBCS or multi-byte sequences), re-encode to the active
                 // codepage and push each resulting byte as a separate KbdKeyInfo.
-                Event::TextInput { text, .. } => {
-                    // Skip pure-ASCII single chars — KeyDown already handled them.
-                    if text.len() == 1 && text.as_bytes()[0] < 0x80 {
-                        continue;
-                    }
-                    let cp = shared.active_codepage.load(Ordering::Relaxed);
-                    let encoded = cp_encode(&text, cp);
-                    {
-                        let mut q = shared.kbd_queue.lock().unwrap();
-                        for byte in encoded {
-                            // Scan code 0 — IME-composed characters have no OS/2 scan code.
-                            q.push_back(KbdKeyInfo { ch: byte, scan: 0, state: 0 });
-                        }
-                    }
-                    if !text.is_empty() {
-                        shared.kbd_cond.notify_one();
-                    }
-                }
+                Event::TextInput { text, .. } => kbd_text_input(shared, &text),
 
                 _ => {}
             }
@@ -596,6 +559,52 @@ impl TextModeRenderer for SdlTextRenderer {
         // No additional sleep needed — wait_event_timeout(8) in poll_events
         // already provides the frame-rate throttle and CPU yield.
     }
+}
+
+/// A key press for a VIO program (`KbdCharIn`): the character, scan code and
+/// shift state go into `kbd_queue`. Pure modifier keys are not delivered —
+/// OS/2 reports their state with the next real keystroke. Used by the text
+/// window and the VIO window on the PM desktop.
+pub fn kbd_key_down(shared: &SharedState, kc: sdl3::keyboard::Keycode, sc: sdl3::keyboard::Scancode,
+                    keymod: sdl3::keyboard::Mod) {
+    use sdl3::keyboard::{Keycode, Mod as KeyMod};
+    use crate::gui::sdl_renderer::sdl_scancode_to_os2;
+    if matches!(kc,
+        Keycode::LShift | Keycode::RShift |
+        Keycode::LCtrl  | Keycode::RCtrl  |
+        Keycode::LAlt   | Keycode::RAlt   |
+        Keycode::CapsLock | Keycode::NumLockClear | Keycode::ScrollLock |
+        Keycode::LGui   | Keycode::RGui
+    ) {
+        return;
+    }
+    let scan = sdl_scancode_to_os2(sc);
+    let ch   = sdl_keycode_to_text_char(kc, keymod);
+    let mut state: u16 = 0;
+    if keymod.intersects(KeyMod::LSHIFTMOD | KeyMod::RSHIFTMOD) { state |= 0x0008; }
+    if keymod.intersects(KeyMod::LCTRLMOD  | KeyMod::RCTRLMOD)  { state |= 0x0004; }
+    if keymod.intersects(KeyMod::LALTMOD   | KeyMod::RALTMOD)   { state |= 0x0002; }
+    shared.kbd_queue.lock_or_recover().push_back(KbdKeyInfo { ch, scan, state });
+    shared.kbd_cond.notify_one();
+}
+
+/// Text from SDL `TextInput` for a VIO program. Single ASCII characters
+/// already came with their key press ([`kbd_key_down`]); anything else
+/// (IME-composed CJK, accented letters) is encoded in the active codepage and
+/// queued byte by byte with scan code 0.
+pub fn kbd_text_input(shared: &SharedState, text: &str) {
+    use crate::loader::codepage::cp_encode;
+    if text.is_empty() || (text.len() == 1 && text.as_bytes()[0] < 0x80) {
+        return;
+    }
+    let cp = shared.active_codepage.load(Ordering::Relaxed);
+    {
+        let mut q = shared.kbd_queue.lock_or_recover();
+        for byte in cp_encode(text, cp) {
+            q.push_back(KbdKeyInfo { ch: byte, scan: 0, state: 0 });
+        }
+    }
+    shared.kbd_cond.notify_one();
 }
 
 /// Convert an SDL `Keycode` + modifier flags to an OS/2 ASCII character byte.

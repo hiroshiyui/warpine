@@ -16,6 +16,7 @@ pub mod audio;
 pub mod headless;
 pub mod sdl_renderer;
 pub mod text_renderer;
+pub mod vio_window;
 
 pub use message::{GUIMessage, GUISender, GUIReceiver, GuiWake, create_gui_channel};
 pub use renderer::{PmRenderer, run_pm_loop};

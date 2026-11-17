@@ -142,7 +142,6 @@ fn main() {
         if base == "CMD.EXE" || base == "OS2SHELL.EXE" {
             use std::io::IsTerminal;
             use std::sync::Arc;
-            use std::sync::atomic::Ordering;
 
             let headless = headless_requested(std::env::var_os("WARPINE_HEADLESS").is_some(),
                                               std::io::stdout().is_terminal());
@@ -157,28 +156,11 @@ fn main() {
             } else {
                 let loader = Arc::new(loader::Loader::new());
                 let shared = loader.get_shared();
-
-                {
-                    let mut vio = shared.console_mgr.lock_or_recover();
-                    vio.enable_sdl_mode();
-                }
-                shared.use_sdl_text.store(true, Ordering::Relaxed);
                 *shared.exe_name.lock_or_recover() = "CMD.EXE".to_string();
-
-                let sdl = sdl3::init().expect("Failed to initialise SDL");
-                // The renderer (and its audio output) exists before the guest runs.
-                let mut renderer = gui::SdlTextRenderer::new(&sdl, "Warpine — CMD.EXE", &shared.audio);
-
-                let loader2 = loader.clone();
-                std::thread::spawn(move || loader2.run_builtin_cmd_sdl(host_args));
-
-                gui::run_text_loop(&mut renderer, shared.clone());
-
-                shared.exit_requested.store(true, Ordering::Relaxed);
-                shared.kbd_cond.notify_all();
-                shared.console_mgr.lock_or_recover().disable_raw_mode();
-                let code = shared.exit_code.load(Ordering::Relaxed);
-                std::process::exit(code);
+                // CMD.EXE runs windowed or full screen on OS/2.
+                run_vio_session(shared, "Warpine — CMD.EXE", lx::header::AppType::WindowCompatible, move || {
+                    std::thread::spawn(move || loader.run_builtin_cmd_sdl(host_args));
+                });
             }
             return;
         }
@@ -227,6 +209,48 @@ fn run_ne(file_path: &str) -> ! {
 /// by `DosExecPgm` with its output piped back).
 fn headless_requested(env_set: bool, stdout_is_terminal: bool) -> bool {
     env_set || !stdout_is_terminal
+}
+
+/// Run a VIO program on the SDL front end: `start` launches its guest
+/// thread once the display exists. A windowed session (the default) puts
+/// the text screen in a frame on the PM desktop; a full-screen one
+/// (`WARPINE_VIO=fullscreen`, or a program that is not window-compatible)
+/// uses the separate 640 × 400 text window. Never returns.
+fn run_vio_session(shared: Arc<loader::SharedState>, title: &str, app_type: lx::header::AppType,
+                   start: impl FnOnce()) -> ! {
+    use std::sync::atomic::Ordering;
+    use gui::vio_window::{choose_display, VioDisplay, VIO_ENV};
+    shared.console_mgr.lock_or_recover().enable_sdl_mode();
+    shared.use_sdl_text.store(true, Ordering::Relaxed);
+
+    let env = std::env::var(VIO_ENV).ok();
+    let (display, warning) = choose_display(app_type, env.as_deref());
+    if let Some(warning) = warning {
+        eprintln!("warpine: {warning}");
+    }
+    let sdl = sdl3::init().expect("Failed to initialise SDL");
+    // The renderer (and its audio output) exists before the guest runs.
+    match display {
+        VioDisplay::FullScreen => {
+            let mut renderer = gui::SdlTextRenderer::new(&sdl, title, &shared.audio);
+            start();
+            gui::run_text_loop(&mut renderer, shared.clone());
+        }
+        VioDisplay::Window => {
+            let (gui_sender, gui_rx) = gui::create_gui_channel();
+            shared.window_mgr.lock_or_recover().gui_tx = Some(gui_sender);
+            let mut renderer = gui::SdlRenderer::new(&sdl, &shared.audio);
+            renderer.attach_vio_window(&shared, title);
+            start();
+            gui::run_pm_loop(&mut renderer, shared.clone(), gui_rx);
+        }
+    }
+
+    shared.exit_requested.store(true, Ordering::Relaxed);
+    shared.kbd_cond.notify_all();
+    shared.console_mgr.lock_or_recover().disable_raw_mode();
+    let code = shared.exit_code.load(Ordering::Relaxed);
+    std::process::exit(code);
 }
 
 fn run_lx(file_path: &str, gdb_port: Option<u16>) {
@@ -371,31 +395,16 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>) {
             // Headless / terminal mode: run directly (never returns).
             loader.setup_and_run_cli(&lx_file);
         } else {
-            // SDL text-mode: enable sdl mode on VioManager, then spawn VCPU
-            // on a worker thread while the SDL text renderer runs on main.
-            {
-                let mut vio = shared.console_mgr.lock_or_recover();
-                vio.enable_sdl_mode();
-            }
-            shared.use_sdl_text.store(true, std::sync::atomic::Ordering::Relaxed);
-
-            let sdl = sdl3::init().expect("Failed to initialise SDL");
+            // A VIO program on a terminal: in a window on the PM desktop or
+            // in the separate text window, as the module flags and
+            // WARPINE_VIO say; the VCPU runs on a worker thread.
             let exe_title = file_path.rsplit('/').next().unwrap_or(file_path);
             let title = format!("Warpine — {exe_title}");
-            // The renderer (and its audio output) exists before the guest runs.
-            let mut renderer = gui::SdlTextRenderer::new(&sdl, &title, &shared.audio);
-
+            let app_type = lx_file.header.app_type();
             let loader = Arc::new(loader);
-            loader.clone().setup_and_spawn_vcpu(&lx_file);
-
-            gui::run_text_loop(&mut renderer, shared.clone());
-
-            // Cleanup
-            shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
-            shared.kbd_cond.notify_all();
-            shared.console_mgr.lock_or_recover().disable_raw_mode();
-            let code = shared.exit_code.load(std::sync::atomic::Ordering::Relaxed);
-            std::process::exit(code);
+            run_vio_session(shared, &title, app_type, move || {
+                loader.clone().setup_and_spawn_vcpu(&lx_file);
+            });
         }
     }
 }
