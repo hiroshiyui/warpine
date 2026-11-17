@@ -22,6 +22,7 @@ When capturing screenshots for the README, always follow these steps:
    | `pm_dialog_keyboard` | `samples/pm_dialog_test/pm_dialog_test.exe` | `1500 key ctrl+d;2500 text Warp;2800 key tab;3000 key down;3200 key down` | Keyboard-driven modal dialog |
    | `pm_msgbox` | `samples/pm_msgbox_test/pm_msgbox_test.exe` | the `MSGBOX_TEST_STEPS` of `tests/integration.rs` | Message box with an icon over its disabled owner |
    | `pm_minmax` | `samples/pm_minmax_test/pm_minmax_test.exe` | `1500 dblclick 300 42;2000 dblclick 300 8;2500 key alt+f9` | A minimized frame in the icon area, the hide button, activation handed on |
+   | `4os2_window` | `samples/4os2/4os2.exe` | `2500 text ver;2700 key enter;3500 text dir /w;3800 key enter` | A VIO program in a window on the PM desktop (needs a pseudo-terminal: capture it as described under step 3 without `WARPINE_VIO`, and trim it like `snap.sh`) |
 
    Keep the list to what the README can show (about six to eight images): every shot captured in this run is embedded in step 5, so leave out a shot here rather than capture it and not use it.
 
@@ -33,10 +34,10 @@ When capturing screenshots for the README, always follow these steps:
    ```
    It runs the sample on SDL's dummy video driver (no display needed), replays the steps, dumps the desktop, trims the desktop background and writes `doc/screenshots/<name>.png`. Capture independent shots in parallel.
    - If a sample binary is missing, build it (`./vendor/setup_watcom.sh` once, then `make -C samples/<name>`). If it cannot be built, skip that shot and say so in the final report — do not reuse an old image under a new claim.
-   - Text-mode (VIO) programs such as 4OS2 use the VGA text window, which `snap.sh` does not drive, but it replays the same GUI scripts. It opens only on a terminal, so capture it under a pseudo-terminal and convert the dump without trimming (the frame is a fixed 640 × 400):
+   - Text-mode (VIO) programs such as 4OS2 open only on a terminal, so `snap.sh` cannot run them; capture them under a pseudo-terminal with the same GUI scripts. By default they run in a window on the PM desktop (dump the desktop and trim it like `snap.sh`); the README's hero image is the full-screen text window (`WARPINE_VIO=fullscreen`), converted without trimming (the frame is a fixed 640 × 400):
      ```bash
      printf '2500 text ver\n2700 key enter\n3500 text dir /w\n3800 key enter\n5500 dump /ABS/PATH/4os2.ppm\n5600 quit\n' > s.script
-     SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy RUST_LOG=error WARPINE_GUI_SCRIPT=s.script \
+     SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy RUST_LOG=error WARPINE_VIO=fullscreen WARPINE_GUI_SCRIPT=s.script \
        script -qec "timeout 60 target/debug/warpine samples/4os2/4os2.exe" /dev/null
      magick /ABS/PATH/4os2.ppm -strip doc/screenshots/4os2.png
      ```
