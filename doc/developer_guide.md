@@ -300,19 +300,24 @@ Graphics Primitive Interface, 64 ordinals (see the reference manual for the list
 
 ---
 
+### Sockets (SO32DLL / TCP32DLL)
+
+`tcpip.rs` maps the BSD socket calls onto Linux sockets. OS/2's TCP/IP uses BSD numbering for socket options (toolkit `<sys/socket.h>`: `SOL_SOCKET` 0xFFFF, `SO_REUSEADDR` 4, `SO_TYPE` 0x1008, …), which `linux_sockopt` translates; only options whose value has the same layout on both sides (an `int`, `struct linger`) are mapped, others (`SO_SNDTIMEO` / `SO_RCVTIMEO`, a 32-bit `timeval` on OS/2) fail with `SOCENOPROTOOPT`. Every call passes Linux the length of the host buffer Warpine actually copied, never the guest's claimed length (`setsockopt` values are at most `MAX_SOCKOPT_LEN`). `select` cannot report a socket yet: sockets are numbered from 0xA000 while its `fd_set` translation covers handles 0–63, and the 32-bit `fd_set` layout is unsettled (doc/TODOs.md).
+
 ## Threading Model
 
-Each OS/2 thread maps to a native Rust thread with its own KVM vCPU. When `DosCreateThread` is called:
+Each OS/2 thread maps to a native Rust thread with its own KVM vCPU. The thread table lives in `loader/threads.rs` (`SharedState::threads`): `ThreadTable` records running threads, ended threads not yet waited for (at most `MAX_ENDED_THREADS`), kill flags, each created thread's guest stack and TIB, and the idle vCPUs of ended threads; the `Threads::ended` condition variable is signalled whenever a thread ends.
 
-1. Allocate a stack in guest memory (64 KB default).
-2. Create a Thread Information Block (TIB) for the new thread.
-3. Assign a thread ID from the `next_tid` counter.
-4. Spawn a Rust thread that creates a new `VcpuFd`, configures it identically to the primary vCPU, sets ESP to the new stack and EIP to the guest's thread function, and enters its own VMEXIT loop.
+- **Ids.** Thread 1 is `MAIN_TID` on vCPU id `MAIN_VCPU_ID` (0). Created threads get ids from 2, which are not reused, and use their id as vCPU id.
+- **`DosCreateThread`** allocates the stack (64 KB default, `DEFAULT_THREAD_STACK`) and a TIB with TIB2 (exception chain `XCPT_CHAIN_END`, stack base / limit, thread id), takes an idle vCPU if there is one (KVM vCPUs cannot be destroyed and their ids are limited), starts it with fresh registers at the thread function with `EXIT_TRAP_ADDR` as return address, and returns an error code instead of panicking when memory or vCPUs run out. Host threads are detached.
+- **Ending.** `run_vcpu` = `vcpu_loop` + `end_thread`. `vcpu_loop` returns `ThreadEnd::Thread(rc)` for `DosExit(EXIT_THREAD)` (`ApiResult::ExitThread`), a return to `EXIT_TRAP_ADDR` from a created thread, or a kill flag, and `ThreadEnd::Process` when the process ends (`DosExit(EXIT_PROCESS)` and other process-level events go through `request_process_exit`, where the first result code wins). `end_thread` destroys the thread's PM message queue, frees its stack and TIB, parks its vCPU for reuse and, for the last thread, ends the process with that thread's code. Thread 1 returning from the entry point still ends the process.
+- **Waiting.** `DosWaitThread` supports `DCWW_WAIT` / `DCWW_NOWAIT`, `*ptid == 0` for any thread, reports an already-ended thread at once (once), and returns `ERROR_INVALID_THREADID` for thread 1 or the caller. `DosKillThread` sets the kill flag; the thread ends at its next exit to Warpine. The front ends call `wait_for_process_end()` after thread 1's `run_vcpu` returns, because thread 1 may end before the others.
+- **Unverified** (doc/TODOs.md, "Thread follow-ups"): thread 1 calling `DosExit(EXIT_THREAD)` while others run lets the process go on until its last thread ends.
 
 All threads share the same `SharedState` via `Arc`. Managers are protected by `Mutex` with a documented lock ordering to prevent deadlocks:
 
 ```
-Level 1: next_tid, threads          (lightweight counters)
+Level 1: threads                    (thread table)
 Level 2: mem_mgr, handle_mgr, hdir_mgr   (independent managers)
 Level 3: queue_mgr                  (may lock inner queue mutexes)
 Level 4: sem_mgr                    (may lock inner semaphore mutexes)
@@ -595,6 +600,14 @@ Every button also takes `BM_CLICK`, `BM_SETHILITE` / `BM_QUERYHILITE` and `BM_SE
 
 ---
 
+### System menu, keyboard move / size and WinPopupMenu
+
+There is no `FID_SYSMENU` window. `WinDefWindowProc` / `WinDefDlgProc` turn `WM_SYSCOMMAND(SC_SYSMENU)` into `GUIMessage::SystemMenu` (`loader/pm_sysmenu.rs`, `Loader::frame_syscommand`), and the renderer opens a `PopupMenu` built by `system_menu::frame_system_menu_items(frame_flags, state)` below the icon; a click on the icon opens it directly, and Alt+Space / Shift+Esc are in `SYSTEM_ACCELS`. `PopupOwner` decides where a choice goes: a frame's menu → `WM_SYSCOMMAND(SC_*, MPFROM2SHORT(CMDSRC_MENU, fPointer))` to the client; a `WinPopupMenu` menu → `WM_COMMAND` / `WM_SYSCOMMAND` / `WM_HELP` to the owner; the VIO menu → `vio_command`. Item order, accelerator texts and enabling follow the GG24-3732 screenshot also used for the VIO menu (unverified against a reference page).
+
+`SC_MOVE` / `SC_SIZE` (Alt+F7 / Alt+F8) become `GUIMessage::TrackFrame` when `system_menu::can_track` allows (Move unless maximized; Size only with `FCF_SIZEBORDER` in the normal state). The renderer keeps a `FrameTrack` around `frame_track::KeyTrack`, a pure state machine: arrows move by `FRAME_TRACK_STEP` (8 pels) or, when sizing, first pick an edge or corner; Enter keeps, Esc restores; one `WM_SIZE` is posted at the end. The VIO window uses the same `KeyTrack` with a cell-sized step. No `WM_TRACKFRAME` / `WM_QUERYTRACKINFO` is sent and the frame moves rather than an outline (doc/TODOs.md).
+
+`WinPopupMenu` maps `(x, y)` from the parent window to the desktop — the menu's bottom-left corner, or the middle of the item's row with `PU_POSITIONONITEM` — and sends `GUIMessage::PopupMenu`; submenu items are shown greyed.
+
 ## Text-Mode Console Subsystem
 
 **Modules:** `src/loader/console.rs`, `src/loader/viocalls.rs`, `src/loader/kbdcalls.rs`, `src/gui/text_renderer.rs`
@@ -665,7 +678,13 @@ On OS/2 the session type is chosen when a program starts, not by the program: a 
 
 **Scripted sessions**: `SdlTextRenderer` loads `WARPINE_GUI_SCRIPT` like the PM renderer (`GuiScript::from_env`). Each pass turns the due `key` / `text` steps into SDL key and text events (`sdl_renderer::script_input_to_event`) that go through the normal keyboard path into `kbd_queue`, drops host keyboard events meanwhile (`is_host_input`), and after them carries out `dump PATH`: the text buffer is rendered afresh with the cursor shown and written as a PPM (`gui_script::write_ppm`). Mouse steps have no effect in the text window. The window opens only when stdout is a terminal, so a headless capture runs under a pseudo-terminal: `SDL_VIDEODRIVER=dummy WARPINE_GUI_SCRIPT=s.script script -qec "target/debug/warpine samples/4os2/4os2.exe" /dev/null` (the integration test `text_mode_window_replays_a_gui_script_and_dumps_the_screen` and the README screenshot do this).
 
+### TTY output and ANSI escape sequences
+
+`VioManager::write_tty` is OS/2's `VioWrtTTY`: CR, LF, BS, BEL and TAB (to the next multiple of 8), wrapping and scrolling of the buffer, text in "the current attribute defined by ANSI or the default value of 7". While `ansi_mode` is on (the default, as on OS/2; `VioSetAnsi`), bytes go through `ansi::AnsiParser`, whose state lives in `VioManager` so a sequence split across writes works; parameters and sequence length are bounded. Supported: cursor position and movement (clamped), save / restore, `ESC[2J`, `ESC[K`, SGR (bold, blink, reverse, concealed, colours 30–37 / 40–47 in CGA order, kept in `Rendition`) and wrap mode `ESC[=7h` / `ESC[=7l`; other sequences are swallowed (doc/TODOs.md, "ANSI follow-ups"). `DosWrite` to the console (`Loader::write_handle`, also the 16-bit `DosWrite`) uses `write_tty` when the SDL window or a host terminal shows the console — the terminal echo goes through `TtyOut` — and otherwise passes the bytes to the host pipe unchanged while `track_tty` keeps the VIO buffer and cursor in step.
+
 ### Keyboard input
+
+**End of piped input.** In the terminal path a waiting `KbdCharIn` / `KbdStringIn` that finds the end of a piped (non-terminal) stdin (`HostInput::EndOfInput`) ends the process with `EXIT_CODE_KBD_END_OF_INPUT` (0) through `request_process_exit`; `KbdStringIn` first returns a partly read line, and `IO_NOWAIT` still returns "no character" at once. The KBD reference lists no end-of-input error, so this is Warpine's choice.
 
 #### SDL mode
 
@@ -1095,6 +1114,10 @@ Path resolution flow:
 4. Check for reserved device names (CON, NUL, CLOCK$, KBD$, SCREEN$) → redirect to internal handlers
 5. Pass the resolved relative path to the backend
 
+### Redirected and duplicated handles
+
+`Loader::handle_target(h)` resolves any handle to `Pipe` (`HandleManager`, also a pipe duplicated into 0–2), `File` (`DriveManager`, also a standard handle redirected to a file) or `Console(stream)`; a number is in at most one table. `DosRead`, `DosWrite`, `DosClose`, `DosDupHandle`, `DosSetFilePtr`, `DosSetFileSize`, `DosQueryFileInfo`, `DosResetBuffer` and `DosQueryHType` route through it. `DosDupHandle` shares the backend file between handles (`file_refs`; one file pointer, closed with the last handle) and records duplicates of the console (`console_handles`); `closed_std` marks standard handles closed by `DosClose` until something is duplicated into them. `DosExecPgm` hands redirected standard handles to the child as host descriptors (`VfsBackend::clone_host_file`), so `prog > file` works from 4OS2.
+
 ### Handle Management (absorbed into VFS)
 
 Currently, file handles and directory search handles are managed by two separate structs in `managers.rs`:
@@ -1257,9 +1280,12 @@ src/
                        HeadlessTextRenderer, run_text_loop(), get_cp437_glyph(),
                        CGA_PALETTE, render_cells(), kbd_key_down() (44 unit tests)
     vio_window.rs      VIO program in a PM window: choose_display(), VioWindow
+    system_menu.rs     System-menu items of PM frames and the VIO window, can_track, menu_popup_items
+    frame_track.rs     KeyTrack: keyboard move / size state machine (Alt+F7 / Alt+F8)
   loader/
     mod.rs             Loader struct, SharedState (kbd_queue/kbd_cond/use_sdl_text), KVM/mock init
     vcpu.rs            vCPU thread: VMEXIT loop, GDB integration, crash dump hooks
+    threads.rs         Thread table: running / ended threads, kill flags, per-thread memory, idle vCPUs
     vm_backend.rs      VmBackend/VcpuBackend traits (KVM + mock implementations)
     kvm_backend.rs     KVM-based VmBackend implementation
     guest_mem.rs       Guest memory read/write/translate helpers
@@ -1287,9 +1313,11 @@ src/
     pm_edit.rs         Edit-buffer logic for text controls (insert/delete/caret/scroll)
     pm_controls.rs     Interactive WC_ENTRYFIELD / WC_MLE / WC_LISTBOX / WC_BUTTON: messages + painting
     pm_dialog.rs       DLGTEMPLATE / ACCELTABLE parsing, dialog keys (WinDefDlgProc), accelerator translation
+    pm_sysmenu.rs      SC_SYSMENU / SC_MOVE / SC_SIZE for frames and dialogs, WinPopupMenu
     mmpm.rs            MMPM/2: MmpmManager, beep_tone, mciSendCommand/mciSendString, parse_wav
     console.rs         VioManager: screen buffer, cursor state/shape, sdl_mode,
-                       ANSI output, stdin_cooked_chars, CP437→UTF-8 conversion
+                       write_tty (ANSI via ansi.rs), stdin_cooked_chars, CP437→UTF-8 conversion
+    ansi.rs            ANSI escape-sequence parser for TTY output (state kept across writes)
     viocalls.rs        VIOCALLS API: VioWrtTTY, VioScrollUp/Dn (pCell + lines=0),
                        VioSetCurType, VioGetCurType, VioWrtNCell, VioWrtNAttr, etc.
     kbdcalls.rs        KBDCALLS API: KbdCharIn (kbd_queue in SDL, termios in terminal),
@@ -1474,7 +1502,7 @@ cargo clippy --all-targets -- -D warnings   # lint, test code included
 
 The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`) runs both and aborts the commit on a failing test or any lint.
 
-The unit tests (1064: 1034 warpine + 18 `gen_api` + 12 `lx_link`) include, among others:
+The unit tests (1146: 1116 warpine + 18 `gen_api` + 12 `lx_link`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -1577,10 +1605,10 @@ CLI samples should print output and exit with code 0. PM samples should open a w
 
 ### Automated integration tests
 
-`tests/integration.rs` contains 64 end-to-end tests that run real OS/2 sample binaries under KVM: CLI samples (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test, ne_hello, rust_hello, …) with headless output checks, and PM samples driven by GUI scripts on SDL's `dummy` driver — the self-checking samples (`pm_dialog_test`, `pm_list_test`, `pm_msgbox_test`, `pm_typeahead_test`, `pm_codepage_test`, `pm_pointer_test`, `pm_audio_test`, `pm_menu_dlg_test`, …) must report every check as passed, and desktop dumps are compared with golden tile signatures (see "GUI regression tests" below). Each test skips itself when `/dev/kvm` or its sample binary is missing.
+`tests/integration.rs` contains 73 end-to-end tests that run real OS/2 sample binaries under KVM: CLI samples (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test, ne_hello, rust_hello, …) with headless output checks, and PM samples driven by GUI scripts on SDL's `dummy` driver — the self-checking samples (`pm_dialog_test`, `pm_list_test`, `pm_msgbox_test`, `pm_typeahead_test`, `pm_codepage_test`, `pm_pointer_test`, `pm_audio_test`, `pm_menu_dlg_test`, …) must report every check as passed, and desktop dumps are compared with golden tile signatures (see "GUI regression tests" below). Each test skips itself when `/dev/kvm` or its sample binary is missing.
 
 ```bash
-cargo test --test integration     # 64 end-to-end tests (requires /dev/kvm)
+cargo test --test integration     # 73 end-to-end tests (requires /dev/kvm)
 ```
 
 ---
@@ -1742,7 +1770,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 1064 unit tests (1034 warpine + 18 gen_api + 12 lx_link), 64 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 1146 unit tests (1116 warpine + 18 gen_api + 12 lx_link), 73 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

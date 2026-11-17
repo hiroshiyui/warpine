@@ -406,6 +406,8 @@ DosAllocMem (299), DosFreeMem (304), DosSetMem (305), DosQueryMem (306), DosAllo
 **Threading:**
 DosCreateThread (311), DosWaitThread (349), DosGetInfoBlocks (312), DosSleep (229), DosResumeThread (237), DosSuspendThread (238), DosKillThread (111)
 
+`DosExit(EXIT_THREAD)` and a thread function returning end only that thread; the process ends with its last thread, with that thread's result code. `DosWaitThread` supports `DCWW_WAIT` / `DCWW_NOWAIT` and 0 for any thread; `DosKillThread` ends the thread at its next call into Warpine. Thread ids of created threads start at 2. Unverified: thread 1 calling `DosExit(EXIT_THREAD)` while other threads run lets the process go on until the last one ends. `DosCreateThread`'s `CREATE_SUSPENDED` / `STACK_COMMITTED` flags and `DosExitList` are not implemented.
+
 **Semaphores:**
 DosCreateEventSem (324), DosOpenEventSem (325), DosCloseEventSem (326), DosPostEventSem (328), DosWaitEventSem (329), DosResetEventSem (327), DosCreateMutexSem (331), DosOpenMutexSem (332), DosCloseMutexSem (333), DosRequestMutexSem (334), DosReleaseMutexSem (335), DosCreateMuxWaitSem (337), DosCloseMuxWaitSem (339), DosWaitMuxWaitSem (340), DosAddMuxWaitSem (341)
 
@@ -440,6 +442,10 @@ DosQueryCtryInfo (NLS 5), DosQueryDBCSEnv (NLS 6), DosMapCase (NLS 7), DosQueryC
 - `DosQueryCollate` returns 256 sort weights. IBM's tables (COUNTRY.SYS) are not published: Warpine weighs each byte as its uppercase form, so letters sort without regard to case.
 - The 16-bit `DOS16*` calls (NLS 1–4) are not implemented.
 
+### Sockets (SO32DLL 27, TCP32DLL 24 APIs)
+
+BSD socket calls on Linux sockets. Socket options use OS/2's BSD numbering (`SOL_SOCKET` 0xFFFF, `SO_REUSEADDR`, `SO_KEEPALIVE`, `SO_LINGER`, `SO_SNDBUF` / `SO_RCVBUF`, `SO_ERROR`, `SO_TYPE`, …, and `TCP_NODELAY`) and are translated; `SO_SNDTIMEO` / `SO_RCVTIMEO` and IP-level options fail with `SOCENOPROTOOPT`. `select` does not report sockets yet.
+
 ### MSG (2 APIs)
 
 DosPutMessage (8195), DosGetMessage (8198)
@@ -467,12 +473,17 @@ VioGetAnsi (3), VioSetAnsi (5), VioScrollUp (7), VioGetCurPos (9), VioWrtCellStr
 
 The ordinals are those of Open Watcom's `os2386.lib` (`VIO16*` exports), which programs built with the standard headers call through a 16-bit thunk. `VioCheckCharType` is `VIO16CHECKCHARTYPE` (75); its type values (0 SBCS, 2 DBCS lead, 3 DBCS trail) are not in the public reference page. `VioWrtCellStr` writes 2-byte cells, continues on the next row and stops at the end of the screen. The VIO screen's codepage follows `DosSetProcessCp` (`VioSetCp` is still a stub).
 
+
+**ANSI.** `VioWrtTTY` and `DosWrite` to the screen interpret ANSI escape sequences while ANSI is on (the default; `VioSetAnsi` / `VioGetAnsi`): cursor position and movement, save / restore (`ESC[s` / `ESC[u`), `ESC[2J`, `ESC[K`, colours and attributes (`ESC[…m`) and wrap mode (`ESC[=7h` / `ESC[=7l`). `ESC[6n` and key reassignment are not implemented; unknown sequences are swallowed.
+
 **Stubs:**
 VioGetBuf (31), VioSetCp (42), VioShowBuf (43), VioSetState (51)
 
 ### KBDCALLS (3 APIs)
 
 KbdCharIn (4), KbdStringIn (9), KbdGetStatus (10)
+
+On a host terminal or pipe (headless): a waiting `KbdCharIn` / `KbdStringIn` at the end of piped standard input ends the process with exit code 0 (Warpine's choice; the KBD reference lists no end-of-input error).
 
 ### MOUCALLS (20 APIs)
 
@@ -491,6 +502,8 @@ WinAlarm (701), WinBeginPaint (703), WinCloseClipbrd (707), WinCreateMsgQueue (7
 **Dialogs and the keyboard.** Dialog templates are read as `<pmwin.h>` lays them out (chrome from the template's `FCF_*` / `FS_*` flags, texts in the template's codepage); their entry fields, list boxes and buttons work like those in client windows. The first `WS_TABSTOP` control (or the template's focus item) has the focus when `WM_INITDLG` arrives. `WinDefDlgProc` moves the focus with Tab / Shift+Tab, presses the focused or default (`BS_DEFAULT`) push button on Enter, posts `WM_COMMAND(DID_CANCEL)` on Esc, and ends the dialog on any `WM_COMMAND` with the command value. Push buttons post `WM_COMMAND` with `CMDSRC_PUSHBUTTON`; other buttons send `WM_CONTROL(BN_CLICKED)`. Accelerator tables (`WinLoadAccelTable`, `FCF_ACCELTABLE`, `WinSetAccelTable`, `WinTranslateAccel`) are applied by `WinGetMsg` and inside modal dialogs: the active frame's table, then the queue's, then the system table, where Alt+F4 is `WM_SYSCOMMAND(SC_CLOSE)`; `WinDefWindowProc` turns that into `WM_CLOSE`. Arrow keys move the focus within a group of controls (from one `WS_GROUP` control to the next); a mnemonic (the letter after `~` in a control's text, shown underlined) typed with Alt — or plainly while a button has the focus — clicks that button or, for a label, focuses the control after it. While a modal dialog runs (`WinDlgBox`, `WinProcessDlg`) its owner's frame is disabled and takes no clicks; `WinDlgBox` destroys the dialog before it returns. `WinGetMsg` and `WinPeekMsg` (`PM_REMOVE` / `PM_NOREMOVE`) honour the window filter (the window and its descendants) and the message range; `WM_QUIT` passes every filter. `WinDestroyWindow` removes a window and its descendants; `WinIsWindow` reports whether a handle is still a window.
 
 **Menus, message boxes and message queues.** `WinLoadMenu` and `WinCreateMenu` create the menu as the frame's `FID_MENU` window; the frame shows it once the application sends it `WM_UPDATEFRAME` with `FCF_MENU` (a menu loaded through `FCF_MENU` at creation is shown at once), so a menu bar is replaced by destroying the old `FID_MENU` window, loading the new one and sending `WM_UPDATEFRAME`. `WinMessageBox` shows a modal PM dialog with the caption, the text, an icon for the `MB_ICON*` / `MB_ERROR` / `MB_WARNING` / `MB_INFORMATION` / `MB_QUERY` styles (Warpine's own pictures: a red circle with a line across it, "i", "!", "?") and the buttons of its `MB_*` style (default button from `MB_DEFBUTTON*`; `MB_HELP` adds a Help button, which sends `WM_HELP` to the box and leaves it open), and returns the `MBID_*` of the button pressed; other windows keep running while it is open and only its owner is disabled; Close (the close button, Alt+F4) returns `MBID_CANCEL` whatever the buttons, Esc only when the box has a Cancel button. A thread has at most one message queue: a second `WinCreateMsgQueue` returns `NULLHANDLE`, and `WinDestroyMsgQueue` destroys only the calling thread's own queue, after which the thread may create a new one. The second press of a double click arrives as `WM_BUTTONnDBLCLK`. Dragging a window by its title bar moves its controls with it.
+
+**System menu and keyboard move / size.** A frame with `FCF_SYSMENU` opens its system menu on a click on the icon, Alt+Space, Shift+Esc or `WM_SYSCOMMAND(SC_SYSMENU)`: Restore, Move, Size, Minimize, Maximize, Hide, Close and Window list, greyed by the frame's state and buttons (Window list is always greyed). A choice is posted as `WM_SYSCOMMAND(SC_*)` with `CMDSRC_MENU` to the client, which may handle it; `WinDefWindowProc` / `WinDefDlgProc` carry it out. Move and Size (also Alt+F7 / Alt+F8; no Size without `FCF_SIZEBORDER` or outside the normal state, no Move when maximized) take the arrow keys — sizing first picks an edge or corner — then Enter keeps and Esc restores. Programs cannot yet change the system menu's items (there is no `FID_SYSMENU` window), and `WinTrackRect` / `WM_TRACKFRAME` are not available. `WinPopupMenu` shows a loaded menu's items at a point in the parent window (`PU_POSITIONONITEM`, `PU_SELECTITEM`) and posts `WM_COMMAND` to the owner; submenus are shown greyed.
 
 **Minimize, maximize and restore.** `WinSetWindowPos` with exactly one of `SWP_MINIMIZE`, `SWP_MAXIMIZE`, `SWP_RESTORE` changes a frame's state (no effect if it is already in that state); the frame's client first receives `WM_MINMAXFRAME` (mp1 = PSWP with the new position) and can return TRUE to cancel it, and gets `WM_SIZE` afterwards. `WinDefWindowProc` carries out `WM_SYSCOMMAND` `SC_MINIMIZE` / `SC_MAXIMIZE` / `SC_RESTORE` for frames created with `FCF_MINBUTTON` or `FCF_MAXBUTTON` and ignores them otherwise. `WinQueryWindowULong(QWL_STYLE)` reports `WS_MINIMIZED` / `WS_MAXIMIZED`; `WinQueryWindowUShort` / `WinSetWindowUShort` read and write `QWS_XRESTORE`, `QWS_YRESTORE`, `QWS_CXRESTORE`, `QWS_CYRESTORE` and `QWS_XMINIMIZE` / `QWS_YMINIMIZE` (-1 before the first minimize). A maximized frame fills the desktop; a minimized one becomes a small title bar at the bottom of the desktop. A frame created with `FCF_HIDEBUTTON` (or `FCF_HIDEMAX`) has a hide button, which sends `WM_SYSCOMMAND(SC_HIDE)`; `WinDefWindowProc` then hides the frame and the frames it owns. Minimizing or hiding the active frame makes the next visible frame active. `WinSetWindowPos` with `SWP_SIZE` sends `WM_SIZE` (old and new size) to the window, or to a frame's client. `WinQueryWindowPos` reports `SWP_MINIMIZE` / `SWP_MAXIMIZE` and, for frames, `SWP_ACTIVATE` / `SWP_DEACTIVATE` in `fl`. Alt+F5 restores, Alt+F9 minimizes, Alt+F10 maximizes, Alt+F4 closes; a title-bar double click maximizes or restores, and a double click on the system-menu icon closes the window. Not yet: Alt+F7 / Alt+F8, the system menu, F10 for the menu bar.
 
