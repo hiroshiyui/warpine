@@ -144,8 +144,8 @@ fn main() {
             use std::sync::Arc;
             use std::sync::atomic::Ordering;
 
-            let headless = std::env::var("WARPINE_HEADLESS").is_ok()
-                || !std::io::stdout().is_terminal();
+            let headless = headless_requested(std::env::var_os("WARPINE_HEADLESS").is_some(),
+                                              std::io::stdout().is_terminal());
 
             let host_args: Vec<String> = remaining_args[1..].iter()
                 .map(|s| s.to_string()).collect();
@@ -220,6 +220,13 @@ fn run_ne(file_path: &str) -> ! {
         std::process::exit(1);
     }
     loader.setup_and_run_ne_cli(&ne_file)
+}
+
+/// Whether a VIO program runs headless (host terminal / plain output): when
+/// `WARPINE_HEADLESS` is set, or stdout is not a terminal (a program started
+/// by `DosExecPgm` with its output piped back).
+fn headless_requested(env_set: bool, stdout_is_terminal: bool) -> bool {
+    env_set || !stdout_is_terminal
 }
 
 fn run_lx(file_path: &str, gdb_port: Option<u16>) {
@@ -358,7 +365,8 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>) {
         // When stdout is piped (e.g. spawned as a child by DosExecPgm), fall
         // back to headless mode automatically — no env var needed.
         use std::io::IsTerminal;
-        let headless = !std::io::stdout().is_terminal();
+        let headless = headless_requested(std::env::var_os("WARPINE_HEADLESS").is_some(),
+                                          std::io::stdout().is_terminal());
         if headless {
             // Headless / terminal mode: run directly (never returns).
             loader.setup_and_run_cli(&lx_file);
@@ -389,5 +397,20 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>) {
             let code = shared.exit_code.load(std::sync::atomic::Ordering::Relaxed);
             std::process::exit(code);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::headless_requested;
+
+    /// WARPINE_HEADLESS forces headless mode even on a terminal; a piped
+    /// stdout is headless anyway.
+    #[test]
+    fn headless_when_asked_or_without_a_terminal() {
+        assert!(!headless_requested(false, true));
+        assert!(headless_requested(true, true));
+        assert!(headless_requested(false, false));
+        assert!(headless_requested(true, false));
     }
 }
