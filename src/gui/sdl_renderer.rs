@@ -32,6 +32,7 @@ use crate::loader::pm_types::{MenuItem, WindowManager, menu_label, menu_bar_item
 use crate::loader::pm_input::InputEvent;
 use std::time::{Duration, Instant};
 use super::damage::{Damage, Rect, blit_clipped, fill_clipped};
+use super::cursor::CursorMark;
 
 mod compositor;
 use compositor::{Compositor, CompositorKind, Overlay, Scene, SceneFrame};
@@ -741,6 +742,8 @@ pub struct SdlRenderer {
     overlay_changed: bool,
     /// Counts overlay changes (the layered compositor re-uploads on a change).
     overlay_generation: u64,
+    /// The PM text cursor shown on each frame at the last composite.
+    cursor_marks: HashMap<u32, CursorMark>,
     /// Ignore the next button release: its press closed a pop-up menu.
     swallow_release: bool,
     /// Shift / Ctrl / Alt as `KC_*` flags, from the last key event; mouse
@@ -1248,6 +1251,7 @@ impl SdlRenderer {
             overlay_placed: Rect::EMPTY,
             overlay_changed: false,
             overlay_generation: 0,
+            cursor_marks: HashMap::new(),
             swallow_release: false,
             ime_area: None,
         };
@@ -1298,6 +1302,7 @@ impl SdlRenderer {
                       surface: SharedSurface }
         let mut dirty_frames: HashSet<u32> = HashSet::new();
         let mut chrome_changed: HashSet<u32> = HashSet::new();
+        let mut cursor_marks: HashMap<u32, CursorMark> = HashMap::new();
         let snaps: Vec<Snap> = {
             let mut wm = shared.window_mgr.lock_or_recover();
             if wm.dirty.is_empty() && !self.force_full && !self.overlay_changed {
@@ -1305,6 +1310,16 @@ impl SdlRenderer {
             }
             let dirty = std::mem::take(&mut wm.dirty);
             dirty_frames.extend(dirty.into_iter().filter_map(|h| owning_frame(&wm, h)));
+            // PM text cursors: a frame whose cursor appeared, moved, changed
+            // or went is redrawn.
+            for (frame, mark) in wm.cursor_marks() {
+                cursor_marks.entry(frame).or_insert(mark);
+            }
+            for frame in cursor_marks.keys().chain(self.cursor_marks.keys()) {
+                if cursor_marks.get(frame) != self.cursor_marks.get(frame) {
+                    dirty_frames.insert(*frame);
+                }
+            }
             let focused = wm.focused_hwnd;
             let chrome = &mut self.chrome;
             wm.z_order.iter().filter_map(|&hwnd| {
@@ -1382,6 +1397,7 @@ impl SdlRenderer {
 
         let frames = placements.iter().zip(&snaps).map(|(p, s)| SceneFrame {
             placement: p, surface: &s.surface, chrome: &self.chrome[&p.hwnd],
+            cursor: cursor_marks.get(&p.hwnd).copied(),
         }).collect();
         let overlay = self.popup.as_mut().map(|p| Overlay {
             rect: overlay_rect, pixels: p.pixels(), generation: self.overlay_generation,
@@ -1389,6 +1405,7 @@ impl SdlRenderer {
         let present = self.desktop.compose(&Scene {
             frames, damage: &damage, chrome_changed: &chrome_changed, full, overlay,
         });
+        self.cursor_marks = cursor_marks;
         let finished = Instant::now();
         let damaged: i64 = damage.rects().iter().map(|r| r.width() as i64 * r.height() as i64).sum();
         self.stats.record_composite(finished - started, present,
@@ -1943,8 +1960,10 @@ impl PmRenderer for SdlRenderer {
         if let Some(next) = self.caret_next {
             let now = Instant::now();
             if now >= next {
-                let wm = shared.window_mgr.lock_or_recover();
+                let mut wm = shared.window_mgr.lock_or_recover();
                 wm.post_caret_blink();
+                // CURSOR_FLASH cursors blink at the same rate.
+                wm.flash_cursors();
                 // SV_CURSORRATE (WinSetSysValue) sets the interval.
                 self.caret_next = Some(now + Duration::from_millis(wm.cursor_rate_ms as u64));
             }

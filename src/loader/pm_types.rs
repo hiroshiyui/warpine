@@ -105,6 +105,8 @@ pub struct OS2Window {
     /// The caret of a focused WC_ENTRYFIELD / WC_MLE is in the off phase of
     /// its blink (toggled by `WM_TIMER(TID_CURSOR)`; input shows it again).
     pub caret_off: bool,
+    /// WC_SCROLLBAR: range, slider position, thumb size and held part.
+    pub scrollbar: super::pm_scrollbar::ScrollBarState,
     /// Horizontal scroll of a WC_ENTRYFIELD / WC_MLE: the first visible
     /// character column of the caret's line.
     pub edit_scroll: usize,
@@ -428,6 +430,10 @@ pub struct WindowManager {
     /// The caret blink interval in milliseconds (`SV_CURSORRATE`; set with
     /// `WinSetSysValue`); the renderer rearms the blink timer with it.
     pub cursor_rate_ms: u32,
+    /// PM text cursors (`WinCreateCursor`): one per message queue, by queue.
+    pub cursors: HashMap<u32, super::pm_cursor::PmCursor>,
+    /// Off phase of the `CURSOR_FLASH` blink (toggled every `cursor_rate_ms`).
+    pub cursor_blink_off: bool,
     /// Where the caret of the focused entry field / MLE was last painted;
     /// the renderer tells the host input method (`SDL_SetTextInputArea`).
     pub text_caret: Option<TextCaret>,
@@ -461,6 +467,9 @@ pub struct WindowManager {
     /// Columns and rows of the VIO screen the VIO frame was last fitted to
     /// (`WindowManager::fit_vio_frame`).
     pub vio_screen: (u16, u16),
+    /// Help Manager instances and the windows associated with them
+    /// (`helpmgr.rs`).
+    pub help: super::helpmgr::HelpRegistry,
 }
 
 /// The caret of a text control as last painted, in the surface coordinates
@@ -508,6 +517,8 @@ impl WindowManager {
             pressed_control: 0,
             drag_pointer: (0, 0),
             cursor_rate_ms: super::constants::CARET_BLINK_MS as u32,
+            cursors: HashMap::new(),
+            cursor_blink_off: false,
             text_caret: None,
             dirty: HashSet::new(),
             surfaces: HashMap::new(),
@@ -520,6 +531,7 @@ impl WindowManager {
             hidden_with_owner: HashMap::new(),
             vio_frame: 0,
             vio_screen: (0, 0),
+            help: Default::default(),
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
@@ -551,6 +563,7 @@ impl WindowManager {
             edit_caret: 0,
             edit_anchor: 0,
             caret_off: false,
+            scrollbar: Default::default(),
             edit_scroll: 0,
             top_row: 0,
             menu_items: Vec::new(),
@@ -645,6 +658,10 @@ impl WindowManager {
         }
         self.tid_to_hmq.remove(&tid);
         self.msg_queues.remove(&hmq);
+        // The queue's cursor goes with it.
+        if let Some(c) = self.cursors.remove(&hmq) {
+            self.mark_dirty(c.hwnd);
+        }
         true
     }
 
@@ -1024,12 +1041,17 @@ impl WindowManager {
         use super::constants::{TID_SCROLL, WM_TIMER};
         let hwnd = self.pressed_control;
         let w = self.windows.get(&hwnd)?;
-        if !matches!(w.class_name.as_str(), "WC_ENTRYFIELD" | "WC_MLE" | "WC_LISTBOX") {
+        if w.class_name == "WC_SCROLLBAR" {
+            // A held arrow or shaft repeats (the scroll bar checks that the
+            // pointer is still on it); a dragged slider does not.
+            w.scrollbar.held.and_then(|h| h.part.command())?;
+        } else if !matches!(w.class_name.as_str(), "WC_ENTRYFIELD" | "WC_MLE" | "WC_LISTBOX") {
             return None;
-        }
-        let (x, y) = self.drag_pointer;
-        if (0..w.cx).contains(&x) && (0..w.cy).contains(&y) {
-            return None;
+        } else {
+            let (x, y) = self.drag_pointer;
+            if (0..w.cx).contains(&x) && (0..w.cy).contains(&y) {
+                return None;
+            }
         }
         let mq_arc = self.find_hmq_for_hwnd(hwnd).and_then(|hmq| self.get_mq(hmq))?;
         let mut mq = mq_arc.lock_or_recover();
@@ -1326,6 +1348,7 @@ impl WindowManager {
                 if *slot == h { *slot = 0; }
             }
         }
+        self.help.forget_windows(&doomed);
         // Presentation spaces and window device contexts of the windows.
         let window_dcs: Vec<u32> = self.dcs.iter()
             .filter(|&(_, dc)| matches!(dc, DeviceContext::Window(w) if doomed.contains(w)))
@@ -1345,6 +1368,8 @@ impl WindowManager {
             if !keep { stop.stop(); }
             keep
         });
+        // A cursor dies with its window.
+        self.cursors.retain(|_, c| !doomed.contains(&c.hwnd));
         self.mark_all_dirty();
         true
     }

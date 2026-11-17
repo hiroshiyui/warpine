@@ -22,6 +22,7 @@ pub mod vio_view;
 pub mod popup_menu;
 pub mod system_menu;
 pub mod frame_track;
+pub mod cursor;
 
 pub use message::{GUIMessage, GUISender, GUIReceiver, GuiWake, create_gui_channel};
 pub use renderer::{PmRenderer, run_pm_loop};

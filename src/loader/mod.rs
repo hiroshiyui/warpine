@@ -13,12 +13,16 @@ mod pm_controls;
 mod pm_dialog;
 mod pm_error;
 mod pm_button;
+pub mod pm_scrollbar;
+pub mod pm_cursor;
 mod pm_destroy;
 pub mod pm_pointer;
 mod pm_window;
 pub mod vio_frame;
 pub mod pm_minmax;
 mod pm_sysmenu;
+mod pm_rect;
+mod pm_drawtext;
 pub mod vfs;
 pub mod vfs_hostdir;
 pub mod vm_backend;
@@ -51,9 +55,13 @@ pub mod gdb_stub;
 pub mod uconv;
 pub mod tcpip;
 pub mod moucalls;
+pub mod profile;
+mod pmshapi;
+pub mod helpmgr;
 mod seh;
 mod cmd;
 pub mod threads;
+mod exitlist;
 
 pub use constants::*;
 pub use mutex_ext::MutexExt;
@@ -171,6 +179,12 @@ pub(crate) enum ApiResult {
     Normal(u32),
     /// `DosExit(EXIT_THREAD, rc)`: end the calling thread with result `rc`.
     ExitThread(u32),
+    /// `DosExit(EXIT_PROCESS, rc)`: end the process with result `rc`
+    /// (after its exit list, `exitlist.rs`).
+    ExitProcess(u32),
+    /// The running exit-list routine has ended (`DosExitList(EXLST_EXIT)`):
+    /// call the next one.
+    ExitListNext,
     Callback {
         wnd_proc: u32,
         hwnd: u32,
@@ -287,6 +301,8 @@ pub struct SharedState {
     /// PM pointers and the one shown (taken before `window_mgr`).
     pub pointers: Mutex<pm_pointer::PointerManager>,
     pub drive_mgr: Mutex<DriveManager>,
+    /// Profiles opened with `PrfOpenProfile` (taken before `drive_mgr`).
+    pub profiles: Mutex<pmshapi::ProfileTable>,
     pub console_mgr: Mutex<console::VioManager>,
     pub mmpm_mgr: Mutex<mmpm::MmpmManager>,
     /// Audio output, played by the main-thread loop (`gui::audio`).
@@ -395,6 +411,7 @@ impl Loader {
             queue_mgr: Mutex::new(queue_mgr),
             window_mgr: Mutex::new(window_mgr),
             pm_errors: Default::default(),
+            profiles: Default::default(),
             pointers: Default::default(),
             drive_mgr: Mutex::new(drive_mgr),
             console_mgr: Mutex::new(console_mgr),
@@ -437,8 +454,11 @@ impl Loader {
     }
 
     /// Check whether a shutdown has been requested.
+    /// Whether the calling thread must give up waiting: the process ends,
+    /// or another thread runs the exit list (`exitlist.rs`).
     pub(crate) fn shutting_down(&self) -> bool {
         self.shared.exit_requested.load(std::sync::atomic::Ordering::Relaxed)
+            || self.shared.threads.exit_list_stops_caller()
     }
 
     pub(crate) fn post_wm_quit(&self, hwnd: u32) {
@@ -478,6 +498,7 @@ impl Loader {
             queue_mgr:    Mutex::new(QueueManager::new()),
             window_mgr:   Mutex::new(WindowManager::new()),
             pm_errors:    Default::default(),
+            profiles:     Default::default(),
             pointers:     Default::default(),
             drive_mgr:    Mutex::new(DriveManager::with_default_config()),
             console_mgr:  Mutex::new(console::VioManager::new()),
@@ -540,6 +561,12 @@ impl Loader {
             None    => return ApiResult::Normal(0),
         };
 
+        // A help instance (helpmgr.rs) accepts every message (HM_*) and
+        // does nothing: Warpine has no help viewer.
+        if class_name == helpmgr::HELP_INSTANCE_CLASS {
+            return ApiResult::Normal(0);
+        }
+
         // A dialog without a dialog procedure (a message box): its default
         // dialog procedure. (Painting is the dialog's own, below.)
         if class_name == pm_types::WindowManager::DIALOG_CLASS && msg != WM_PAINT {
@@ -582,8 +609,8 @@ impl Loader {
                         p.fill((x, y, x + cx, y + cy), self.control_background(hwnd));
                         control_label(&p, x, y + (cy - CONTROL_LINE_H).max(0), &text, cx);
                     }
-                    "WC_SCROLLBAR" => {
-                        p.fill((x, y, x + cx, y + cy), CONTROL_SCROLLBAR_COLOR);
+                    pm_scrollbar::CLASS_SCROLLBAR => {
+                        self.paint_scrollbar(&p, hwnd, (x, y, cx, cy));
                     }
                     pm_controls::CLASS_ENTRYFIELD => {
                         self.paint_entry_field(&p, hwnd, (x, y, cx, cy));
@@ -744,6 +771,22 @@ impl Loader {
                 self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0)
             }
 
+            WM_BUTTON1DOWN if class_name == pm_scrollbar::CLASS_SCROLLBAR => {
+                self.scrollbar_button_down(hwnd, mp1)
+            }
+            WM_MOUSEMOVE if class_name == pm_scrollbar::CLASS_SCROLLBAR => {
+                self.scrollbar_mouse_move(hwnd, mp1)
+            }
+            WM_BUTTON1UP if class_name == pm_scrollbar::CLASS_SCROLLBAR => self.scrollbar_button_up(hwnd),
+            WM_TIMER if mp1 == TID_SCROLL && class_name == pm_scrollbar::CLASS_SCROLLBAR => {
+                self.scrollbar_repeat(hwnd)
+            }
+            SBM_SETSCROLLBAR | SBM_SETPOS | SBM_QUERYPOS | SBM_QUERYRANGE | SBM_SETTHUMBSIZE
+                if class_name == pm_scrollbar::CLASS_SCROLLBAR =>
+            {
+                self.scrollbar_message(hwnd, msg, mp1, mp2).unwrap_or(ApiResult::Normal(0))
+            }
+
             WM_BUTTON1DOWN if pm_controls::is_input_control(&class_name) => {
                 self.control_button_down(hwnd, &class_name, cy, mp1, mp2)
             }
@@ -896,7 +939,7 @@ const CONTROL_TEXT_INSET: i32 = 4;
 /// Height of one text row in a control (the system font's line height).
 const CONTROL_LINE_H: i32 = font::SYSTEM_FONT_PX as i32;
 
-/// Background of scroll bars (not interactive yet).
+/// Shaft of scroll bars.
 const CONTROL_SCROLLBAR_COLOR: u32 = 0x00A0_A0A0;
 
 /// Draws into one frame's surface (see [`Loader::draw`]).

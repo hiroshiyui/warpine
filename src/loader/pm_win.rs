@@ -61,6 +61,11 @@ impl super::Loader {
         let regs = vcpu.get_regs().unwrap();
         let esp = regs.rsp;
         let read_stack = |off: u64| -> u32 { self.guest_read::<u32>((esp + off) as u32).expect("Stack read OOB") };
+        // The five arguments after `hab` of the rectangle calls; ones a call
+        // does not take are read without failing (and ignored).
+        let rect_args = || -> [u32; 5] {
+            std::array::from_fn(|i| self.guest_read::<u32>((esp + 8 + 4 * i as u64) as u32).unwrap_or(0))
+        };
 
         match ordinal {
             763 => {
@@ -1174,6 +1179,24 @@ impl super::Loader {
                 let value = read_stack(12) as i32;
                 self.set_sys_value(vcpu_id, hwnd, index, value)
             }
+            715 => {
+                // WinCreateCursor(HWND hwnd, LONG x, LONG y, LONG cx, LONG cy, ULONG fs, PRECTL prclClip)
+                let rect = (read_stack(8) as i32, read_stack(12) as i32,
+                            read_stack(16) as i32, read_stack(20) as i32);
+                self.win_create_cursor(vcpu_id, read_stack(4), rect, read_stack(24), read_stack(28))
+            }
+            880 => {
+                // WinShowCursor(HWND hwnd, BOOL fShow) (pm_cursor.rs)
+                self.win_show_cursor(vcpu_id, read_stack(4), read_stack(8) != 0)
+            }
+            725 => {
+                // WinDestroyCursor(HWND hwnd) (pm_cursor.rs)
+                self.win_destroy_cursor(vcpu_id, read_stack(4))
+            }
+            812 => {
+                // WinQueryCursorInfo(HWND hwndDesktop, PCURSORINFO pCursorInfo) (pm_cursor.rs)
+                self.win_query_cursor_info(vcpu_id, read_stack(4), read_stack(8))
+            }
             866 => {
                 // WinSetPointer(HWND hwndDesktop, HPOINTER hptrNew)
                 self.win_set_pointer(vcpu_id, read_stack(4), read_stack(8))
@@ -1361,7 +1384,8 @@ impl super::Loader {
                 let hwnd_owner      = read_stack(36);
                 // hwndInsertBehind (+40) — ignored for now
                 let id              = read_stack(44);
-                // pCtlData (+48), pPresParams (+52) — ignored
+                let p_ctl_data      = read_stack(48);
+                // pPresParams (+52) — ignored
                 if !self.pm_check_hwnd(vcpu_id, hwnd_parent, false)
                     || !self.pm_check_hwnd(vcpu_id, hwnd_owner, true) {
                     return ApiResult::Normal(0);
@@ -1393,6 +1417,9 @@ impl super::Loader {
                     }
                     h
                 };
+                if class_name == "WC_SCROLLBAR" {
+                    self.scrollbar_init(hwnd, p_ctl_data);
+                }
 
                 // Post WM_PAINT so the control draws itself on creation.
                 if fl_style & WS_VISIBLE != 0 {
@@ -1546,6 +1573,56 @@ impl super::Loader {
                 self.guest_write::<u32>(pswp_ptr + 28, 0);                   // ulReserved1
                 self.guest_write::<u32>(pswp_ptr + 32, 0);                   // ulReserved2
                 ApiResult::Normal(1) // TRUE
+            }
+            913 => {
+                // WinDrawText(HPS hps, LONG cchText, PCH lpchText, PRECTL prcl, LONG clrFore, LONG clrBack, ULONG flCmd)
+                self.win_draw_text(vcpu_id, read_stack(4), read_stack(8) as i32, read_stack(12), read_stack(16),
+                                   read_stack(20), read_stack(24), read_stack(28))
+            }
+            // ── Rectangle helpers (pm_rect.rs); the first argument is hab ──
+            868 => {
+                // WinSetRect(HAB hab, PRECTL prcl, LONG xLeft, LONG yBottom, LONG xRight, LONG yTop)
+                ApiResult::Normal(self.win_rect_call(ordinal, rect_args()))
+            }
+            869 => {
+                // WinSetRectEmpty(HAB hab, PRECTL prcl)
+                ApiResult::Normal(self.win_rect_call(ordinal, rect_args()))
+            }
+            710 => {
+                // WinCopyRect(HAB hab, PRECTL prclDst, PRECTL prclSrc)
+                ApiResult::Normal(self.win_rect_call(ordinal, rect_args()))
+            }
+            792 => {
+                // WinOffsetRect(HAB hab, PRECTL prcl, LONG cx, LONG cy)
+                ApiResult::Normal(self.win_rect_call(ordinal, rect_args()))
+            }
+            762 => {
+                // WinInflateRect(HAB hab, PRECTL prcl, LONG cx, LONG cy)
+                ApiResult::Normal(self.win_rect_call(ordinal, rect_args()))
+            }
+            797 => {
+                // WinPtInRect(HAB hab, PRECTL prcl, PPOINTL pptl)
+                ApiResult::Normal(self.win_rect_call(ordinal, rect_args()))
+            }
+            764 => {
+                // WinIntersectRect(HAB hab, PRECTL prclDst, PRECTL prclSrc1, PRECTL prclSrc2)
+                ApiResult::Normal(self.win_rect_call(ordinal, rect_args()))
+            }
+            891 => {
+                // WinUnionRect(HAB hab, PRECTL prclDst, PRECTL prclSrc1, PRECTL prclSrc2)
+                ApiResult::Normal(self.win_rect_call(ordinal, rect_args()))
+            }
+            887 => {
+                // WinSubtractRect(HAB hab, PRECTL prclDst, PRECTL prclSrc1, PRECTL prclSrc2)
+                ApiResult::Normal(self.win_rect_call(ordinal, rect_args()))
+            }
+            770 => {
+                // WinIsRectEmpty(HAB hab, PRECTL prcl)
+                ApiResult::Normal(self.win_rect_call(ordinal, rect_args()))
+            }
+            741 => {
+                // WinEqualRect(HAB hab, PRECTL prcl1, PRECTL prcl2)
+                ApiResult::Normal(self.win_rect_call(ordinal, rect_args()))
             }
             _ => {
                 warn!("Warning: Unknown PMWIN Ordinal {} on VCPU {}", ordinal, vcpu_id);

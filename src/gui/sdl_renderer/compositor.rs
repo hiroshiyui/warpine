@@ -29,6 +29,7 @@ use log::{info, warn};
 use sdl3::pixels::{Color, PixelFormat};
 use sdl3::render::{BlendMode, Canvas, FRect, Texture, TextureCreator};
 use sdl3::video::{Window, WindowContext};
+use crate::gui::cursor::CursorMark;
 use crate::gui::damage::{Damage, Rect, blit_clipped, fill_clipped};
 use crate::gui::surface::{MAX_SURFACE_DIM, SharedSurface};
 use crate::loader::MutexExt;
@@ -56,6 +57,8 @@ pub(super) struct SceneFrame<'a> {
     pub placement: &'a FramePlacement,
     pub surface: &'a SharedSurface,
     pub chrome: &'a ChromeCache,
+    /// The PM text cursor laid over the client pels (see `gui::cursor`).
+    pub cursor: Option<CursorMark>,
 }
 
 /// Something drawn over all frames: an open pop-up menu.
@@ -197,6 +200,16 @@ fn upload_span(src: Rect, len: usize, buf_w: usize) -> Option<std::ops::Range<us
                    ..(src.y1 as usize - 1) * buf_w + src.x1 as usize)
 }
 
+/// Copy rectangle `r` (inside the buffer) of `buf` (`buf_w` pels a row)
+/// into `out`, row after row.
+fn copy_rect(buf: &[u32], buf_w: usize, r: Rect, out: &mut Vec<u32>) {
+    out.clear();
+    for y in r.y0..r.y1 {
+        let start = y as usize * buf_w;
+        out.extend_from_slice(&buf[start + r.x0 as usize..start + r.x1 as usize]);
+    }
+}
+
 fn frect(r: Rect) -> FRect {
     FRect::new(r.x0 as f32, r.y0 as f32, r.width() as f32, r.height() as f32)
 }
@@ -285,6 +298,10 @@ impl Compositor for SoftwareCompositor {
                 // the blit clips to its current size.
                 let fb = f.surface.lock_or_recover();
                 draw_placed_frame(&mut self.buffer, dw, p, &fb, f.chrome, r);
+                if let Some(c) = &f.cursor {
+                    c.apply(&mut self.buffer, dw, (p.client.x0, p.client.y0), fb.height,
+                            cursor_clip(p).intersect(&r));
+                }
             }
             if let Some(o) = &scene.overlay {
                 draw_overlay(&mut self.buffer, dw, o, r);
@@ -307,6 +324,14 @@ fn draw_overlay(buf: &mut [u32], buf_w: usize, o: &Overlay, clip: Rect) {
     blit_clipped(buf, buf_w, o.pixels, w as usize, o.rect.x0, o.rect.y0, w, h, clip);
 }
 
+/// Where a frame's cursor may show on the desktop: its client area inside
+/// the frame border (the border is drawn over the client's bottom rows).
+fn cursor_clip(p: &FramePlacement) -> Rect {
+    let bw = super::frame_border_px(p.frame_flags);
+    let f = p.frame;
+    p.client.intersect(&Rect::new(f.x0 + bw, f.y0 + bw, f.x1 - bw, f.y1 - bw))
+}
+
 // ── Layered ───────────────────────────────────────────────────────────────
 
 /// A frame's texture and what it was rendered from.
@@ -321,6 +346,8 @@ struct Layer {
     parts: Vec<Rect>,
     /// The open pull-down's texture and height.
     pulldown: Option<(Texture<'static>, i32)>,
+    /// The cursor laid over the texture's client pels.
+    cursor: Option<CursorMark>,
 }
 
 /// One frame to draw: its texture's top-left on the desktop and where its
@@ -418,13 +445,33 @@ impl LayeredCompositor {
             .is_some_and(|l| l.size == (w, h) && l.fb_size == (fb.width, fb.height));
         if reusable {
             let layer = self.layers.get_mut(&p.hwnd).expect("checked above");
+            let mut changed = Vec::new();
             if layer.generation != fb.generation() {
-                let (dst, src) = partial_upload(p, fb.take_changes(), (w, h));
+                changed.push(fb.take_changes());
+                layer.generation = fb.generation();
+            }
+            // A cursor that appeared, moved or went: its old and new pels.
+            if layer.cursor != f.cursor {
+                changed.extend([layer.cursor, f.cursor].iter().flatten().map(|c| c.surface_rect(fb.height)));
+                layer.cursor = f.cursor;
+            }
+            for rect in changed {
+                let (dst, src) = partial_upload(p, rect, (w, h));
                 log::trace!("[GUI] frame {:#x}: partial upload {src:?}", p.hwnd);
-                if let Err(e) = upload(&mut layer.texture, (dst.x0, dst.y0), &fb.buffer, fb.width as usize, src) {
+                let result = match &f.cursor {
+                    // The pels under the cursor go up with it laid over them.
+                    Some(c) if !c.surface_rect(fb.height).intersect(&src).is_empty() => {
+                        copy_rect(&fb.buffer, fb.width as usize, src, &mut self.scratch);
+                        c.apply(&mut self.scratch, src.width() as usize, (-src.x0, -src.y0), fb.height,
+                                Rect::at(0, 0, src.width(), src.height()));
+                        upload(&mut layer.texture, (dst.x0, dst.y0), &self.scratch, src.width() as usize,
+                               Rect::at(0, 0, src.width(), src.height()))
+                    }
+                    _ => upload(&mut layer.texture, (dst.x0, dst.y0), &fb.buffer, fb.width as usize, src),
+                };
+                if let Err(e) = result {
                     warn!("[GUI] frame {:#x} texture upload failed: {e}", p.hwnd);
                 }
-                layer.generation = fb.generation();
             }
             drop(fb);
         } else {
@@ -434,6 +481,10 @@ impl LayeredCompositor {
             self.scratch.clear();
             self.scratch.resize(w as usize * h as usize, DESKTOP_BG);
             draw_placed_frame(&mut self.scratch, w as usize, &local, &fb, f.chrome, Rect::at(0, 0, w, h));
+            if let Some(c) = &f.cursor {
+                c.apply(&mut self.scratch, w as usize, (local.client.x0, local.client.y0), fb.height,
+                        cursor_clip(&local));
+            }
             let parts: Vec<Rect> = painted_parts(&local, fb.width, fb.height).iter()
                 .map(|r| r.intersect(&Rect::at(0, 0, w, h)))
                 .filter(|r| !r.is_empty())
@@ -454,7 +505,7 @@ impl LayeredCompositor {
                 warn!("[GUI] frame {:#x} texture upload failed: {e}", p.hwnd);
             }
             self.layers.insert(p.hwnd, Layer { texture, size: (w, h), generation, fb_size,
-                                               parts, pulldown: None });
+                                               parts, pulldown: None, cursor: f.cursor });
         }
         let stale = !reusable;
 
@@ -630,6 +681,26 @@ mod tests {
         assert_eq!(src, Rect::new(5, 5, 9, 7));
         assert_eq!(dst, Rect::new(5, 5, 9, 7).offset(client.x0, client.y0));
         assert!(dst.y0 >= p.title.height(), "below the title bar");
+    }
+
+    /// The cursor shows on the client inside the border, never on the
+    /// title bar or the border drawn over the client's bottom rows.
+    #[test]
+    fn cursors_are_clipped_to_the_client_inside_the_border() {
+        use crate::loader::FCF_SIZEBORDER;
+        let p = place_frame(1, 10, 10, 100, 80, FCF_TITLEBAR | FCF_SIZEBORDER, false, None, (96, 60), 600);
+        let bw = super::super::frame_border_px(FCF_SIZEBORDER);
+        let clip = cursor_clip(&p);
+        assert_eq!(clip, Rect::new(p.client.x0, p.client.y0, p.client.x1, p.frame.y1 - bw));
+        assert!(clip.y0 >= p.title.y1, "below the title bar");
+    }
+
+    #[test]
+    fn copy_rect_takes_rows_of_a_rectangle() {
+        let buf: Vec<u32> = (0..20).collect(); // 5 x 4
+        let mut out = vec![99];
+        copy_rect(&buf, 5, Rect::new(1, 1, 3, 3), &mut out);
+        assert_eq!(out, vec![6, 7, 11, 12]);
     }
 
     #[test]
