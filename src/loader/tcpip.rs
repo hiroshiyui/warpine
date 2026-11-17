@@ -85,6 +85,63 @@ const SOCK_SUCCESS: u32 = 0;
 // OS/2 socket error sentinel (returned from socket API on error)
 const SOCK_ERROR: u32 = u32::MAX; // -1 as u32
 
+// ── Socket option numbers (OS/2 toolkit <sys/socket.h>, <netinet/in.h>,
+//    <netinet/tcp.h>; BSD numbering, unlike Linux's) ──────────────────────────
+pub const OS2_SOL_SOCKET:     u32 = 0xFFFF;
+pub const OS2_IPPROTO_TCP:    u32 = 6;
+pub const OS2_TCP_NODELAY:    u32 = 0x0001;
+pub const OS2_SO_DEBUG:       u32 = 0x0001;
+pub const OS2_SO_ACCEPTCONN:  u32 = 0x0002;
+pub const OS2_SO_REUSEADDR:   u32 = 0x0004;
+pub const OS2_SO_KEEPALIVE:   u32 = 0x0008;
+pub const OS2_SO_DONTROUTE:   u32 = 0x0010;
+pub const OS2_SO_BROADCAST:   u32 = 0x0020;
+pub const OS2_SO_LINGER:      u32 = 0x0080;
+pub const OS2_SO_OOBINLINE:   u32 = 0x0100;
+pub const OS2_SO_REUSEPORT:   u32 = 0x1000;
+pub const OS2_SO_SNDBUF:      u32 = 0x1001;
+pub const OS2_SO_RCVBUF:      u32 = 0x1002;
+pub const OS2_SO_SNDLOWAT:    u32 = 0x1003;
+pub const OS2_SO_RCVLOWAT:    u32 = 0x1004;
+pub const OS2_SO_ERROR:       u32 = 0x1007;
+pub const OS2_SO_TYPE:        u32 = 0x1008;
+/// Longest option value passed through `setsockopt` (the largest supported
+/// option, `struct linger`, is 8 bytes).
+const MAX_SOCKOPT_LEN: u32 = 64;
+
+/// The Linux `(level, optname)` of an OS/2 socket option, or `None` when
+/// Warpine does not support it. Only options whose value has the same
+/// layout on both sides (an `int`, or `struct linger` = two `int`s) are
+/// mapped; `SO_SNDTIMEO` / `SO_RCVTIMEO` (a 32-bit `struct timeval` on
+/// OS/2, 64-bit on Linux) and IP-level options are not.
+pub fn linux_sockopt(level: u32, optname: u32) -> Option<(i32, i32)> {
+    match level {
+        OS2_SOL_SOCKET => {
+            let name = match optname {
+                OS2_SO_DEBUG => libc::SO_DEBUG,
+                OS2_SO_ACCEPTCONN => libc::SO_ACCEPTCONN,
+                OS2_SO_REUSEADDR => libc::SO_REUSEADDR,
+                OS2_SO_KEEPALIVE => libc::SO_KEEPALIVE,
+                OS2_SO_DONTROUTE => libc::SO_DONTROUTE,
+                OS2_SO_BROADCAST => libc::SO_BROADCAST,
+                OS2_SO_LINGER => libc::SO_LINGER,
+                OS2_SO_OOBINLINE => libc::SO_OOBINLINE,
+                OS2_SO_REUSEPORT => libc::SO_REUSEPORT,
+                OS2_SO_SNDBUF => libc::SO_SNDBUF,
+                OS2_SO_RCVBUF => libc::SO_RCVBUF,
+                OS2_SO_SNDLOWAT => libc::SO_SNDLOWAT,
+                OS2_SO_RCVLOWAT => libc::SO_RCVLOWAT,
+                OS2_SO_ERROR => libc::SO_ERROR,
+                OS2_SO_TYPE => libc::SO_TYPE,
+                _ => return None,
+            };
+            Some((libc::SOL_SOCKET, name))
+        }
+        OS2_IPPROTO_TCP if optname == OS2_TCP_NODELAY => Some((libc::IPPROTO_TCP, libc::TCP_NODELAY)),
+        _ => None,
+    }
+}
+
 // OS/2 `fd_set` layout: 2 × u32 = 64 bits (max 64 sockets per set).
 const OS2_FD_SET_WORDS: usize = 2;
 
@@ -448,11 +505,19 @@ impl super::Loader {
         let data = self.read_guest_bytes(buf_ptr, len as usize);
         let sent = if to_ptr != 0 && tolen > 0 {
             let addr = self.read_guest_bytes(to_ptr, tolen as usize);
+            if addr.len() < tolen as usize {
+                // Unreadable or longer than Warpine copies: never let the
+                // host read past `addr`.
+                self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_FAULT);
+                return SOCK_ERROR;
+            }
+            // SAFETY: `data` and `addr` are host buffers whose own lengths
+            // are passed, so the host never reads past them.
             unsafe {
                 libc::sendto(fd, data.as_ptr() as *const libc::c_void, data.len(),
                     flags as i32,
                     addr.as_ptr() as *const libc::sockaddr,
-                    tolen as libc::socklen_t)
+                    addr.len() as libc::socklen_t)
             }
         } else {
             unsafe {
@@ -612,11 +677,21 @@ impl super::Loader {
                          optval_ptr: u32, optlen: u32) -> u32 {
         debug!("setsockopt(s=0x{:X}, level={}, optname={}, optlen={})", s, level, optname, optlen);
         let Some(fd) = self.so_fd(s) else { return SOCK_ERROR; };
+        let Some((level, optname)) = linux_sockopt(level, optname) else {
+            self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_NOPROTOOPT);
+            return SOCK_ERROR;
+        };
+        if optlen > MAX_SOCKOPT_LEN {
+            self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_INVAL);
+            return SOCK_ERROR;
+        }
         let optval = self.read_guest_bytes(optval_ptr, optlen as usize);
+        // SAFETY: `optval` is a host buffer of exactly `optval.len()` bytes,
+        // and that length (≤ MAX_SOCKOPT_LEN) is what is passed.
         let rc = unsafe {
-            libc::setsockopt(fd, level as i32, optname as i32,
+            libc::setsockopt(fd, level, optname,
                 optval.as_ptr() as *const libc::c_void,
-                optlen as libc::socklen_t)
+                optval.len() as libc::socklen_t)
         };
         self.translate_rc(rc, SOCK_SUCCESS)
     }
@@ -629,6 +704,10 @@ impl super::Loader {
                          optval_ptr: u32, optlen_ptr: u32) -> u32 {
         debug!("getsockopt(s=0x{:X}, level={}, optname={})", s, level, optname);
         let Some(fd) = self.so_fd(s) else { return SOCK_ERROR; };
+        let Some((level, optname)) = linux_sockopt(level, optname) else {
+            self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_NOPROTOOPT);
+            return SOCK_ERROR;
+        };
         let buf_len = self.guest_read::<u32>(optlen_ptr).unwrap_or(0);
         let Some(buf) = self.guest_slice_mut(optval_ptr, buf_len as usize) else {
             self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_FAULT);
@@ -636,7 +715,7 @@ impl super::Loader {
         };
         let mut actual_len = buf_len as libc::socklen_t;
         let rc = unsafe {
-            libc::getsockopt(fd, level as i32, optname as i32,
+            libc::getsockopt(fd, level, optname,
                 buf.as_mut_ptr() as *mut libc::c_void,
                 &mut actual_len)
         };
@@ -1378,4 +1457,38 @@ mod tests {
         loader.so_close(cli_h);
         loader.so_close(srv_h);
     }
+
+    #[test]
+    fn os2_socket_options_map_to_linux() {
+        use super::{linux_sockopt, OS2_SOL_SOCKET, OS2_SO_REUSEADDR, OS2_SO_TYPE,
+                    OS2_IPPROTO_TCP, OS2_TCP_NODELAY};
+        assert_eq!(linux_sockopt(OS2_SOL_SOCKET, OS2_SO_REUSEADDR),
+                   Some((libc::SOL_SOCKET, libc::SO_REUSEADDR)));
+        assert_eq!(linux_sockopt(OS2_SOL_SOCKET, OS2_SO_TYPE),
+                   Some((libc::SOL_SOCKET, libc::SO_TYPE)));
+        assert_eq!(linux_sockopt(OS2_IPPROTO_TCP, OS2_TCP_NODELAY),
+                   Some((libc::IPPROTO_TCP, libc::TCP_NODELAY)));
+        // Linux's own numbers are not OS/2's: SOL_SOCKET 1 is no OS/2 level.
+        assert_eq!(linux_sockopt(libc::SOL_SOCKET as u32, libc::SO_REUSEADDR as u32), None);
+        // SO_SNDTIMEO (0x1005) takes a timeval of a different size: refused.
+        assert_eq!(linux_sockopt(OS2_SOL_SOCKET, 0x1005), None);
+    }
+
+    #[test]
+    fn setsockopt_and_getsockopt_use_os2_numbers() {
+        let loader = Loader::new_mock();
+        let s = loader.so_socket(libc::AF_INET as u32, libc::SOCK_STREAM as u32, 0);
+        assert_ne!(s, SOCK_ERROR);
+        let (val, len) = (0x3000u32, 0x3100u32);
+        loader.guest_write::<u32>(val, 1).unwrap();
+        assert_eq!(loader.so_setsockopt(s, super::OS2_SOL_SOCKET, super::OS2_SO_REUSEADDR, val, 4), SOCK_SUCCESS);
+        loader.guest_write::<u32>(len, 4).unwrap();
+        assert_eq!(loader.so_getsockopt(s, super::OS2_SOL_SOCKET, super::OS2_SO_TYPE, val, len), SOCK_SUCCESS);
+        assert_eq!(loader.guest_read::<u32>(val), Some(libc::SOCK_STREAM as u32));
+        // An unsupported option and an oversized value fail without reaching the host.
+        assert_eq!(loader.so_setsockopt(s, super::OS2_SOL_SOCKET, 0x1005, val, 8), SOCK_ERROR);
+        assert_eq!(loader.so_setsockopt(s, super::OS2_SOL_SOCKET, super::OS2_SO_REUSEADDR, val, 4096), SOCK_ERROR);
+        loader.so_close(s);
+    }
+
 }
