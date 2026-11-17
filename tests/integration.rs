@@ -763,6 +763,16 @@ fn gui_pm_error_test_reports_last_errors() {
     assert_sample_checks_pass("samples/pm_error_test/pm_error_test.exe", "pm_error_test", 113);
 }
 
+/// pm_window_test: WinIsWindowVisible (the window and all its parents),
+/// WinQueryWindowTextLength, WinSetParent (to another window, the desktop
+/// and back; not under a descendant), WinSetOwner, and WinQueryWindowPtr /
+/// WinSetWindowPtr (application words shared with WinQueryWindowULong,
+/// QWP_PFNWP, the cbWindowData bound).
+#[test]
+fn gui_pm_window_test_checks_the_window_tree_calls() {
+    assert_sample_checks_pass("samples/pm_window_test/pm_window_test.exe", "pm_window_test", 36);
+}
+
 /// pm_pointer_test: system pointer handles and copies, WinSetPointer /
 /// WinQueryPointer (NULLHANDLE removes the pointer), the WinShowPointer
 /// display level, WinLoadPointer from RT_POINTER resources (a

@@ -117,7 +117,7 @@ impl super::Loader {
                 let pfc_flags_ptr = read_stack(12);
                 let psz_class_name_ptr = read_stack(16);
                 let psz_title_ptr = read_stack(20);
-                let _client_style = read_stack(24);
+                let client_style = read_stack(24);
                 let hmod = read_stack(28);
                 let id_resources = read_stack(32);
                 let phwnd_client_ptr = read_stack(36);
@@ -162,6 +162,12 @@ impl super::Loader {
                         win.style = style;
                         win.visible = style & WS_VISIBLE != 0;
                         win.text = title.clone();
+                    }
+                    // The client takes flClientStyle (the PM Guide's samples
+                    // pass WS_VISIBLE there to "make client window visible").
+                    if let Some(win) = wm.get_window_mut(h_client) {
+                        win.style = client_style;
+                        win.visible = client_style & WS_VISIBLE != 0;
                     }
                     if let Some(items) = fcf_menu_items {
                         let h_menu = wm.create_window("#Menu".to_string(), h_frame, 0);
@@ -1399,6 +1405,30 @@ impl super::Loader {
                     }
                 }
                 ApiResult::Normal(hwnd)
+            }
+            775 => {
+                // WinIsWindowVisible(HWND hwnd) -> BOOL (pm_window.rs)
+                self.win_is_window_visible(vcpu_id, read_stack(4))
+            }
+            842 => {
+                // WinQueryWindowTextLength(HWND hwnd) -> LONG
+                self.win_query_window_text_length(vcpu_id, read_stack(4))
+            }
+            865 => {
+                // WinSetParent(HWND hwnd, HWND hwndNewParent, BOOL fRedraw) -> BOOL
+                self.win_set_parent(vcpu_id, read_stack(4), read_stack(8))
+            }
+            864 => {
+                // WinSetOwner(HWND hwnd, HWND hwndNewOwner) -> BOOL
+                self.win_set_owner(vcpu_id, read_stack(4), read_stack(8))
+            }
+            839 => {
+                // WinQueryWindowPtr(HWND hwnd, LONG index) -> PVOID
+                self.win_query_window_ptr(vcpu_id, read_stack(4), read_stack(8) as i32)
+            }
+            876 => {
+                // WinSetWindowPtr(HWND hwnd, LONG index, PVOID p) -> BOOL
+                self.win_set_window_ptr(vcpu_id, read_stack(4), read_stack(8) as i32, read_stack(12))
             }
             929 => {
                 // WinSubclassWindow(HWND hwnd, PFNWP pfnwp) → PFNWP (old proc)

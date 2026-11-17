@@ -15,6 +15,7 @@ mod pm_error;
 mod pm_button;
 mod pm_destroy;
 pub mod pm_pointer;
+mod pm_window;
 pub mod pm_minmax;
 pub mod vfs;
 pub mod vfs_hostdir;

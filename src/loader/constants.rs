@@ -694,6 +694,8 @@ pub const WS_MAXIMIZED: u32 = 0x0080_0000;
 
 // WinQueryWindowULong index of the window style.
 pub const QWL_STYLE: i32 = -2;
+// WinQueryWindowPtr / WinSetWindowPtr index of the window procedure.
+pub const QWP_PFNWP: i32 = -3;
 // Lowest reserved window-word indices: WinQuery/SetWindowULong accept
 // QWL_MIN..=-1 and WinQuery/SetWindowUShort QWS_MIN..=-1 below the
 // application's own words (0 .. cbWindowData).
