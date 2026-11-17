@@ -6,7 +6,7 @@ use sdl3::event::Event;
 use sdl3::keyboard::{Keycode, Mod as KeyMod, Scancode};
 use log::debug;
 use crate::loader::{SharedState, OS2Message, MutexExt,
-    WM_CLOSE, WM_SIZE, WM_PAINT, WM_CHAR, WM_MOUSEMOVE,
+    WM_CLOSE, WM_SIZE, WM_PAINT, WM_MOUSEMOVE,
     WM_BUTTON1DOWN, WM_BUTTON1UP, WM_BUTTON2DOWN, WM_BUTTON2UP, WM_BUTTON3DOWN, WM_BUTTON3UP,
     WM_BUTTON1DBLCLK, WM_BUTTON2DBLCLK, WM_BUTTON3DBLCLK,
     KC_CHAR, KC_VIRTUALKEY, KC_SCANCODE, KC_SHIFT, KC_CTRL, KC_ALT, KC_KEYUP,
@@ -23,6 +23,7 @@ use crate::loader::constants::{
     MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_BAR_ITEM_PAD, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H,
     MIS_SEPARATOR};
 use crate::loader::pm_types::{MenuItem, WindowManager, menu_label, menu_bar_item_width};
+use crate::loader::pm_input::InputEvent;
 use std::time::{Duration, Instant};
 use super::damage::{Damage, Rect, blit_clipped, fill_clipped};
 
@@ -883,37 +884,28 @@ impl SdlRenderer {
             Event::ClipboardUpdate { .. } => {
                 self.sync_host_clipboard(shared);
             }
-            // Keyboard input goes to the PM focus window (a control that was
-            // clicked or given the focus with WinSetFocus), else to the
-            // active frame's client.
+            // Keyboard input goes to the system input queue; the thread
+            // that reads it delivers it to the PM focus window of that
+            // moment (a control that was clicked or given the focus with
+            // WinSetFocus), else to the active frame's client.
             Event::KeyDown { keycode, scancode, keymod, repeat, .. } => {
                 self.key_mods = kc_modifiers(keymod);
-                let target = shared.window_mgr.lock_or_recover().key_target();
-                if target != 0 {
-                    let (mp1, mp2) = build_wm_char(keycode, scancode, keymod, repeat, false);
-                    push_msg(shared, target, WM_CHAR, mp1, mp2);
-                }
+                let (mp1, mp2) = build_wm_char(keycode, scancode, keymod, repeat, false);
+                shared.window_mgr.lock_or_recover().post_input(InputEvent::Key { mp1, mp2 });
             }
             Event::KeyUp { keycode, scancode, keymod, .. } => {
                 self.key_mods = kc_modifiers(keymod);
-                let target = shared.window_mgr.lock_or_recover().key_target();
-                if target != 0 {
-                    let (mp1, mp2) = build_wm_char(keycode, scancode, keymod, false, true);
-                    push_msg(shared, target, WM_CHAR, mp1, mp2);
-                }
+                let (mp1, mp2) = build_wm_char(keycode, scancode, keymod, false, true);
+                shared.window_mgr.lock_or_recover().post_input(InputEvent::Key { mp1, mp2 });
             }
             // Typed text: the final characters after keyboard layout, Shift,
             // dead keys and input-method composition. KeyDown above carries no
-            // printable character, so nothing is delivered twice.
+            // printable character, so nothing is delivered twice. Each
+            // character is encoded in the codepage of the queue that reads it.
             Event::TextInput { text, .. } => {
-                let target = shared.window_mgr.lock_or_recover().key_target();
-                if target != 0 {
-                    // Encoded in the codepage of the target's message queue.
-                    let cp = shared.window_mgr.lock_or_recover().queue_codepage(target)
-                        .unwrap_or_else(|| shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed));
-                    for (mp1, mp2) in text_input_wm_chars(&text, cp) {
-                        push_msg(shared, target, WM_CHAR, mp1, mp2);
-                    }
+                let mut wm = shared.window_mgr.lock_or_recover();
+                for ch in text.chars().filter(|ch| !ch.is_control()) {
+                    wm.post_input(InputEvent::Char(ch));
                 }
             }
             Event::MouseMotion { x, y, .. } => {
@@ -984,7 +976,7 @@ impl SdlRenderer {
                     // A built-in control held with button 1 follows the
                     // pointer (a text control extends its selection).
                     let mp1 = ((cx as u32) & 0xFFFF) | ((cy as u32 & 0xFFFF) << 16);
-                    push_msg(shared, control, WM_MOUSEMOVE, mp1, 0);
+                    push_input(shared, control, WM_MOUSEMOVE, mp1, 0);
                 } else {
                     let os2_y = (dh as i32 - 1) - y;
                     // VDR-D6: captured window overrides hit-test.
@@ -1003,7 +995,7 @@ impl SdlRenderer {
                                 .unwrap_or((x, os2_y))
                         };
                         let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
-                        push_msg(shared, hwnd, WM_MOUSEMOVE, mp1, 0);
+                        push_input(shared, hwnd, WM_MOUSEMOVE, mp1, 0);
                     }
                 }
             }
@@ -1032,6 +1024,9 @@ impl SdlRenderer {
                         let frame = if wm.is_frame(frame) { frame } else { hwnd };
                         let prev = wm.focused_hwnd;
                         if wm.is_frame(frame) && prev != frame {
+                            // Keys typed before the click were meant for
+                            // the old active window.
+                            wm.pin_pending_input();
                             wm.focused_hwnd = frame;
                             wm.z_push_top(frame);
                             prev
@@ -1138,7 +1133,7 @@ impl SdlRenderer {
                                 (hwnd, local_x, local_y)
                             };
                             let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
-                            if let Some(m) = msg { push_msg(shared, hwnd, m, mp1, mouse_mp2(self.key_mods)); }
+                            if let Some(m) = msg { push_input(shared, hwnd, m, mp1, mouse_mp2(self.key_mods)); }
                             }
                         }
                     }
@@ -1180,7 +1175,7 @@ impl SdlRenderer {
                     && let Some((button, bx, by)) = pressed_control_release(shared, x, os2_y)
                 {
                     let mp1 = ((bx as u32) & 0xFFFF) | ((by as u32 & 0xFFFF) << 16);
-                    push_msg(shared, button, WM_BUTTON1UP, mp1, mouse_mp2(self.key_mods));
+                    push_input(shared, button, WM_BUTTON1UP, mp1, mouse_mp2(self.key_mods));
                     return true;
                 }
                 // VDR-D6: captured window overrides hit-test.
@@ -1214,7 +1209,7 @@ impl SdlRenderer {
                         MouseButton::Middle => Some(WM_BUTTON3UP),
                         _ => None,
                     };
-                    if let Some(m) = msg { push_msg(shared, hwnd, m, mp1, mouse_mp2(self.key_mods)); }
+                    if let Some(m) = msg { push_input(shared, hwnd, m, mp1, mouse_mp2(self.key_mods)); }
                 }
             }
             _ => {}
@@ -1493,6 +1488,8 @@ fn route_button1(shared: &Arc<SharedState>, frame: u32, x: i32, y: i32, press: b
     let lost = if press && focus != 0 && wm.frame_to_client.contains_key(&frame)
         && wm.find_frame_for_hwnd(focus) == frame
     {
+        // Keys typed before the click were meant for the control.
+        wm.pin_pending_input();
         wm.set_focus(0);
         focus
     } else {
@@ -1536,26 +1533,10 @@ fn pressed_control_release(shared: &Arc<SharedState>, x: i32, os2_y: i32) -> Opt
     Some((button, sx - bx, sy - by))
 }
 
-/// WM_CHAR `(mp1, mp2)` pairs for text typed or committed by the input
-/// method (an SDL `TextInput` event).
-///
-/// Each character is encoded in the guest codepage `cp` and sent as one
-/// character message: a single byte, or for a double-byte character the lead
-/// byte in the low byte and the trail byte in the high byte of the character
-/// word. Control characters and characters the codepage cannot represent are
-/// dropped.
-fn text_input_wm_chars(text: &str, cp: u32) -> Vec<(u32, u32)> {
-    text.chars().filter(|ch| !ch.is_control()).filter_map(|ch| {
-        let mut utf8 = [0u8; 4];
-        let s = ch.encode_utf8(&mut utf8);
-        let chr = match crate::loader::codepage::cp_encode(s, cp)[..] {
-            // `cp_encode` substitutes '?' for unrepresentable characters.
-            [b] if b != b'?' || ch == '?' => b as u32,
-            [lead, trail] => lead as u32 | ((trail as u32) << 8),
-            _ => return None,
-        };
-        Some((KC_CHAR | (1 << WM_CHAR_REPEAT_SHIFT), chr))
-    }).collect()
+/// Queue pointer message `msg` for window `hwnd` (a frame stands for its
+/// client) in the system input queue, behind the keys typed before it.
+fn push_input(shared: &Arc<SharedState>, hwnd: u32, msg: u32, mp1: u32, mp2: u32) {
+    shared.window_mgr.lock_or_recover().post_input(InputEvent::Window { hwnd, msg, mp1, mp2 });
 }
 
 /// Post an OS/2 message to the queue associated with `hwnd`.
@@ -1740,7 +1721,7 @@ pub fn sdl_keycode_to_vk(kc: Keycode) -> u32 {
 /// A key event only carries a character when no `TextInput` event will: for
 /// control characters (Enter, Tab, Backspace, Esc, Delete) and for Ctrl/Alt
 /// chords, which report the key's unshifted character for accelerators.
-/// Printable characters are delivered by `text_input_wm_chars` instead, with
+/// Printable characters are delivered by `pm_input::char_message` instead, with
 /// the keyboard layout and Shift state applied, so they never arrive twice.
 fn build_wm_char(
     keycode:  Option<Keycode>,
@@ -1951,7 +1932,7 @@ mod tests {
             assert!(driver_can_wait(real), "{real}");
         }
     }
-    use super::{text_input_wm_chars, route_button1, CHROME_BORDER_W, KC_CHAR, WM_CHAR_REPEAT_SHIFT,
+    use super::{route_button1, CHROME_BORDER_W,
                 SharedState, MutexExt};
     use std::sync::Arc;
     use super::{draw_frame_chrome, FrameChrome, CHROME_TITLE_H, CHROME_BTN_W, CHROME_BTN_GAP,
@@ -2327,29 +2308,6 @@ mod tests {
         assert_eq!(vk(KeyMod::NOMOD), VK_TAB);
         assert_eq!(vk(KeyMod::LSHIFTMOD), VK_BACKTAB);
         assert_eq!(vk(KeyMod::RSHIFTMOD), VK_BACKTAB);
-    }
-
-    #[test]
-    fn text_input_becomes_codepage_wm_chars() {
-        use crate::loader::pm_edit::{key_from_wm_char, EditKey};
-        let decode = |text: &str, cp| text_input_wm_chars(text, cp).into_iter()
-            .map(|(mp1, mp2)| match key_from_wm_char(mp1, mp2, cp) {
-                Some((EditKey::Char(ch), false)) => ch,
-                other => panic!("not a character: {other:?}"),
-            }).collect::<String>();
-        // Capitals and punctuation arrive exactly as SDL composed them.
-        assert_eq!(decode("Hello, World? ~!@", 437), "Hello, World? ~!@");
-        // é is 0x82 in CP850; KC_CHAR with a repeat count of one.
-        assert_eq!(text_input_wm_chars("é", 850), vec![(KC_CHAR | (1 << WM_CHAR_REPEAT_SHIFT), 0x82)]);
-        // 日本 in CP932: lead byte low, trail byte high.
-        let msgs = text_input_wm_chars("a日本", 932);
-        assert_eq!(msgs.iter().map(|m| m.1).collect::<Vec<_>>(), vec![b'a' as u32, 0xFA93, 0x7B96]);
-        assert_eq!(decode("a日本", 932), "a日本");
-        // Unrepresentable characters are dropped, not sent as '?'; a real '?'
-        // is kept. Control characters never come through as text.
-        assert_eq!(decode("日?x", 437), "?x");
-        assert!(text_input_wm_chars("\r\n\t\u{8}", 437).is_empty());
-        assert!(text_input_wm_chars("", 437).is_empty());
     }
 
     /// A std window with one entry field; returns `(shared, frame, client, entry)`.

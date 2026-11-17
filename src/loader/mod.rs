@@ -7,6 +7,7 @@ pub mod ipc;
 pub mod pm_types;
 pub mod pm_edit;
 pub mod pm_list;
+pub mod pm_input;
 mod pm_msgbox;
 mod pm_controls;
 mod pm_dialog;

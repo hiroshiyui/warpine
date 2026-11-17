@@ -1626,27 +1626,42 @@ impl super::Loader {
     #[allow(clippy::too_many_arguments)]
     fn next_message(&self, vcpu_id: u32, pqmsg: u32, hwnd_filter: u32, first: u32, last: u32,
                     fl: u32, wait: bool) -> Option<u32> {
-        let mq_arc = {
+        let (hmq, mq_arc) = {
             let wm = self.shared.window_mgr.lock_or_recover();
             let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
-            wm.get_mq(hmq)?
+            (hmq, wm.get_mq(hmq)?)
         };
         let (cond, wait_lock) = {
             let mq = mq_arc.lock_or_recover();
             (Arc::clone(&mq.cond), Arc::clone(&mq.lock))
         };
+        let remove = fl & PM_REMOVE != 0;
         loop {
             if self.shutting_down() { return None; }
             // Window-manager lock before the queue lock, as everywhere else.
             let found = {
-                let wm = self.shared.window_mgr.lock_or_recover();
-                let mut mq = mq_arc.lock_or_recover();
-                let pos = mq.messages.iter().position(|m| {
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let passes = |wm: &super::pm_types::WindowManager, m: &OS2Message| {
                     // WM_QUIT passes every filter, so a filtered loop still ends.
                     m.msg == WM_QUIT || (msg_in_range(m.msg, first, last)
                         && (hwnd_filter == 0 || wm.is_same_or_descendant(m.hwnd, hwnd_filter)))
-                });
-                pos.and_then(|i| if fl & PM_REMOVE != 0 { mq.messages.remove(i) } else { mq.messages.get(i).cloned() })
+                };
+                let posted = {
+                    let mut mq = mq_arc.lock_or_recover();
+                    let pos = mq.messages.iter().position(|m| passes(&wm, m));
+                    pos.and_then(|i| if remove { mq.messages.remove(i) } else { mq.messages.get(i).cloned() })
+                };
+                // Posted messages come first, then input from the system
+                // input queue (with this queue's lock released: reading it
+                // may lock other queues).
+                posted.or_else(|| {
+                    let filter_ok = |m: &OS2Message| m.msg == WM_QUIT || msg_in_range(m.msg, first, last);
+                    let probe = wm.next_input(hmq, false, filter_ok)?;
+                    if hwnd_filter != 0 && !wm.is_same_or_descendant(probe.hwnd, hwnd_filter) {
+                        return None;
+                    }
+                    if remove { wm.next_input(hmq, true, |_| true) } else { Some(probe) }
+                })
             };
             if let Some(mut msg) = found {
                 // Keystrokes that are accelerators arrive as the command
@@ -2751,6 +2766,49 @@ mod tests {
         // WM_QUIT passes any filter and makes WinGetMsg return FALSE.
         loader.post_to_window(owner, WM_QUIT, 0, 0);
         assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_GET_MSG, &[0, q, entry, WM_TIMER, WM_TIMER]), 0);
+    }
+
+    /// Keys wait in the system input queue: WinGetMsg / WinPeekMsg deliver
+    /// them after the posted messages, to the focus window of the moment
+    /// they are read, as accelerators where they are ones.
+    #[test]
+    fn test_win_get_msg_reads_input_after_posted_messages() {
+        use super::super::constants::*;
+        use super::super::pm_input::InputEvent;
+        use super::super::pm_types::AccelEntry;
+        let loader = Loader::new_mock();
+        let (frame, client, _, entry) = window_with_entry(&loader);
+        {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.find_hmq_for_hwnd(client).unwrap();
+            wm.get_mq(hmq).unwrap().lock_or_recover().messages.clear();
+            wm.set_focus(0);
+            let t = wm.add_accel_table(vec![AccelEntry { flags: AF_VIRTUALKEY, key: VK_F3 as u16, cmd: 77 }]);
+            wm.set_window_accel(frame, t);
+            wm.post_input(InputEvent::Key { mp1: 1, mp2: 0 });
+            wm.post_input(InputEvent::Char('x'));
+            let (mp1, mp2) = f3_press();
+            wm.post_input(InputEvent::Key { mp1, mp2 });
+        }
+        const WM_USER: u32 = 0x1000;
+        loader.post_to_window(client, WM_USER, 0, 0);
+        let mut vcpu = MockVcpu::new();
+        let q = 0x13200;
+        let get = |vcpu: &mut MockVcpu| {
+            call_pmwin(&loader, vcpu, ORD_WIN_GET_MSG, &[0, q, 0, 0, 0]);
+            read_qmsg(&loader, q)
+        };
+        assert_eq!(get(&mut vcpu).1, WM_USER, "posted messages first");
+        // A window filter that the key's target is outside of: not taken.
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_PEEK_MSG, &[0, q, entry, 0, 0, PM_REMOVE]), 0);
+        assert_eq!(get(&mut vcpu), (client, WM_CHAR, 1, 0), "no focus window: the client");
+        // The first key moved the focus: the next ones go to the entry field.
+        // Its notification is a posted message and comes before them.
+        loader.shared.window_mgr.lock_or_recover().set_focus(entry);
+        assert_eq!(get(&mut vcpu).1, WM_CONTROL);
+        assert_eq!(get(&mut vcpu), (entry, WM_CHAR, KC_CHAR | (1 << WM_CHAR_REPEAT_SHIFT), b'x' as u32));
+        assert_eq!(get(&mut vcpu), (client, WM_COMMAND, 77, CMDSRC_ACCELERATOR));
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().pending_input(), 0);
     }
 
     #[test]

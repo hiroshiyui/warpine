@@ -423,6 +423,9 @@ pub struct WindowManager {
     pub dcs: HashMap<u32, DeviceContext>,
     next_hbm: u32,
     next_hdc: u32,
+    /// The system input queue: keyboard and pointer input not yet read by
+    /// any thread (`pm_input.rs`).
+    pub(super) input: super::pm_input::InputQueue,
 }
 
 impl Default for WindowManager {
@@ -460,6 +463,7 @@ impl WindowManager {
             dcs: HashMap::new(),
             next_hbm: 0x7000,
             next_hdc: 0x6000,
+            input: Default::default(),
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
