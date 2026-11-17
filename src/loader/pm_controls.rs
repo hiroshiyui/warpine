@@ -123,7 +123,7 @@ fn draw_edit_line(p: &Painter, (x, y): (i32, i32), view_w: i32, chars: &[char],
                   selected: std::ops::Range<usize>, caret: Option<usize>,
                   (clip_lo, clip_hi): (i32, i32)) {
     let line: String = chars.iter().collect();
-    let shown = font::fit_text(&line, view_w, FontSpec::SYSTEM);
+    let shown = font::fit_text(&line, view_w, p.font());
     if !shown.is_empty() {
         control_text(p, x, y, shown);
     }
@@ -134,7 +134,7 @@ fn draw_edit_line(p: &Painter, (x, y): (i32, i32), view_w: i32, chars: &[char],
     if s < e && y1 <= y2 {
         let (x1, x2) = (x + prefix_w(s), x + prefix_w(e));
         p.fill((x1, y1, x2 - 1, y2), CONTROL_SELECT_COLOR);
-        p.op(DrawOp::Text { x: x1, y, text: chars[s..e].iter().collect(), color: CONTROL_SELECT_TEXT_COLOR });
+        p.op(DrawOp::Text { x: x1, y, text: chars[s..e].iter().collect(), color: CONTROL_SELECT_TEXT_COLOR, cjk: p.cjk });
     }
     if let Some(caret) = caret {
         let caret_x = x + prefix_w(caret);
@@ -298,7 +298,7 @@ impl Loader {
         }
         let max_w = cx - 2 * CONTROL_TEXT_INSET;
         let (shown, _) = super::pm_dialog::mnemonic_label(text);
-        let w = system_width(font::fit_text(&shown, max_w, FontSpec::SYSTEM));
+        let w = font::text_width(font::fit_text(&shown, max_w, p.font()), p.font());
         let shift = if push(pressed) { BUTTON_PRESSED_SHIFT } else { 0 };
         super::control_label(p, x + (cx - w) / 2 + shift, y + (cy - CONTROL_LINE_H) / 2 - shift, text, max_w);
         if push(focused) {
@@ -401,11 +401,12 @@ impl Loader {
                                    color: CONTROL_EMPHASIS_COLOR, fill: false,
                                    mix: crate::gui::surface::Mix::Overpaint });
             }
-            let label = font::fit_text(item, cx - 2 * CONTROL_TEXT_INSET, FontSpec::SYSTEM);
+            let label = font::fit_text(item, cx - 2 * CONTROL_TEXT_INSET, p.font());
             if !label.is_empty() {
                 p.op(DrawOp::Text {
                     x: x + CONTROL_TEXT_INSET, y: row_y, text: label.to_string(),
                     color: if selected { CONTROL_SELECT_TEXT_COLOR } else { CONTROL_TEXT_COLOR },
+                    cjk: p.cjk,
                 });
             }
         }
@@ -1057,7 +1058,7 @@ mod tests {
 
         fn drawn_texts(&self, hwnd: u32) -> Vec<(i32, i32, String, u32)> {
             self.paint(hwnd).into_iter().filter_map(|m| match m {
-                DrawOp::Text { x, y, text, color } => Some((x, y, text, color)),
+                DrawOp::Text { x, y, text, color, .. } => Some((x, y, text, color)),
                 _ => None,
             }).collect()
         }
@@ -1086,6 +1087,32 @@ mod tests {
     const ID_ENTRY: u32 = 103;
     const ID_LIST: u32 = 105;
     const ID_MLE: u32 = 106;
+
+    /// Control text takes its CJK face from the codepage of its window's
+    /// queue (WinSetCp), not from the process codepage.
+    #[test]
+    fn control_text_uses_the_cjk_face_of_the_queue_codepage() {
+        use crate::gui::font::CjkRegion;
+        let fx = fixture();
+        let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, "漢字");
+        let list = fx.add(CLASS_LISTBOX, ID_LIST, (10, 100, 200, 80), "");
+        fx.with(list, |w| w.listbox_items = vec!["한국어".into()]);
+        let faces = |hwnd| -> Vec<CjkRegion> {
+            fx.paint(hwnd).into_iter().filter_map(|op| match op {
+                DrawOp::Text { cjk, .. } => Some(cjk),
+                _ => None,
+            }).collect()
+        };
+        for (cp, region) in [(949, CjkRegion::Korean), (950, CjkRegion::TraditionalChinese),
+                             (936, CjkRegion::SimplifiedChinese), (932, CjkRegion::Japanese)] {
+            let mq = fx.loader.shared.window_mgr.lock_or_recover().get_mq(fx.hmq).unwrap();
+            mq.lock_or_recover().codepage = cp;
+            for hwnd in [entry, list] {
+                let f = faces(hwnd);
+                assert!(!f.is_empty() && f.iter().all(|&r| r == region), "cp {cp}: {f:?}");
+            }
+        }
+    }
 
     // ── Geometry ─────────────────────────────────────────────────────────────
 

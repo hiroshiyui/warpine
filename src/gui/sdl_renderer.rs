@@ -32,7 +32,7 @@ use compositor::{Compositor, CompositorKind, Scene, SceneFrame};
 use super::frame_stats::FrameStats;
 use super::message::{GUIMessage, GuiWake};
 use super::renderer::PmRenderer;
-use super::font::{self, FontSpec};
+use super::font::{self, CjkRegion, FontSpec};
 use super::gui_script::{self, GuiScript};
 use super::surface::{SharedSurface, Surface};
 
@@ -125,6 +125,9 @@ struct FrameChrome<'a> {
     frame_flags: u32,
     title: &'a str,
     focused: bool,
+    /// Regional face of CJK characters in the title (the frame's queue
+    /// codepage).
+    cjk: CjkRegion,
 }
 
 /// Which pictogram a title-bar button carries.
@@ -235,9 +238,9 @@ fn draw_title_bar(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
         // Title text, clipped so it never runs under the buttons.
         let text_y = c.top + (title_h - GLYPH_H) / 2;
         let avail = btn_x - 4 - text_left;
-        let title = font::fit_text(c.title, avail.max(0), FontSpec::SYSTEM_BOLD);
-        draw_text_screen(buf, buf_w, buf_h, text_left, text_y, title,
-                         CHROME_TEXT_COLOR, FontSpec::SYSTEM_BOLD);
+        let face = FontSpec { cjk: c.cjk, ..FontSpec::SYSTEM_BOLD };
+        let title = font::fit_text(c.title, avail.max(0), face);
+        draw_text_screen(buf, buf_w, buf_h, text_left, text_y, title, CHROME_TEXT_COLOR, face);
     }
 }
 
@@ -281,16 +284,17 @@ const MENU_HILITE_TEXT: u32     = 0x00FF_FFFF;
 #[cfg(test)]
 fn draw_menu_chrome(buf: &mut [u32], buf_w: usize, x0: i32, bar_top: i32, bar_w: i32,
                     items: &[MenuItem], open_item: u32) {
-    let open_x = draw_menu_bar(buf, buf_w, x0, bar_top, bar_w, items, open_item);
+    let open_x = draw_menu_bar(buf, buf_w, x0, bar_top, bar_w, items, open_item, CjkRegion::Auto);
     if let (Some(drop_x), Some(parent)) = (open_x, items.get(open_item.wrapping_sub(1) as usize)) {
-        draw_menu_pulldown(buf, buf_w, drop_x, bar_top + MENU_BAR_HEIGHT as i32, parent);
+        draw_menu_pulldown(buf, buf_w, drop_x, bar_top + MENU_BAR_HEIGHT as i32, parent, CjkRegion::Auto);
     }
 }
 
 /// Draw a menu bar, highlighting the open item (1-based; 0 = none).
 /// Returns the x of the open item, where its pull-down belongs.
+#[allow(clippy::too_many_arguments)]
 fn draw_menu_bar(buf: &mut [u32], buf_w: usize, x0: i32, bar_top: i32, bar_w: i32,
-                 items: &[MenuItem], open_item: u32) -> Option<i32> {
+                 items: &[MenuItem], open_item: u32, cjk: CjkRegion) -> Option<i32> {
     let buf_h = buf.len() / buf_w.max(1);
     let bar_h = MENU_BAR_HEIGHT as i32;
     let bar_bot = bar_top + bar_h;
@@ -310,7 +314,8 @@ fn draw_menu_bar(buf: &mut [u32], buf_w: usize, x0: i32, bar_top: i32, bar_w: i3
         }
         draw_text_screen(buf, buf_w, buf_h, item_x + MENU_BAR_ITEM_PAD / 2, text_y,
                          &menu_label(&item.text),
-                         if is_open { MENU_HILITE_TEXT } else { MENU_TEXT_COLOR }, FontSpec::SYSTEM);
+                         if is_open { MENU_HILITE_TEXT } else { MENU_TEXT_COLOR },
+                         FontSpec { cjk, ..FontSpec::SYSTEM });
         item_x += label_w;
     }
     open_x
@@ -323,7 +328,8 @@ fn pulldown_h(parent: &MenuItem) -> i32 {
 
 /// Draw the pull-down of `parent` with its top-left corner at
 /// `(drop_x, bar_bot)`; it is `MENU_DROPDOWN_W` × `pulldown_h(parent)`.
-fn draw_menu_pulldown(buf: &mut [u32], buf_w: usize, drop_x: i32, bar_bot: i32, parent: &MenuItem) {
+fn draw_menu_pulldown(buf: &mut [u32], buf_w: usize, drop_x: i32, bar_bot: i32, parent: &MenuItem,
+                      cjk: CjkRegion) {
     let buf_h = buf.len() / buf_w.max(1);
     let drop_h = pulldown_h(parent);
     let (dx1, dy1) = (drop_x + MENU_DROPDOWN_W, bar_bot + drop_h);
@@ -336,7 +342,7 @@ fn draw_menu_pulldown(buf: &mut [u32], buf_w: usize, drop_x: i32, bar_bot: i32, 
             draw_filled_rect(buf, buf_w, drop_x + 2, sep_y, dx1 - 2, sep_y + 1, MENU_EDGE_COLOR);
         } else {
             draw_text_screen(buf, buf_w, buf_h, drop_x + 4, row_top,
-                             &menu_label(&child.text), MENU_TEXT_COLOR, FontSpec::SYSTEM);
+                             &menu_label(&child.text), MENU_TEXT_COLOR, FontSpec { cjk, ..FontSpec::SYSTEM });
         }
     }
 }
@@ -384,6 +390,8 @@ struct ChromeCache {
     cx: i32,
     frame_flags: u32,
     focused: bool,
+    /// Regional face of CJK text in the title and menus.
+    cjk: CjkRegion,
     /// `cx` × `title_bar_h(frame_flags)`.
     title_px: Vec<u32>,
     menu: Option<MenuChrome>,
@@ -393,7 +401,7 @@ struct ChromeCache {
 
 impl ChromeCache {
     fn new() -> Self {
-        ChromeCache { title: String::new(), cx: 0, frame_flags: 0, focused: false,
+        ChromeCache { title: String::new(), cx: 0, frame_flags: 0, focused: false, cjk: CjkRegion::Auto,
                       title_px: Vec::new(), menu: None, stale: true }
     }
 
@@ -426,6 +434,15 @@ impl ChromeCache {
         changed
     }
 
+    /// Use `cjk` for CJK text from now on; returns whether it changed (the
+    /// chrome must then be redrawn, as after [`ChromeCache::sync`]).
+    fn set_cjk(&mut self, cjk: CjkRegion) -> bool {
+        let changed = self.cjk != cjk;
+        self.cjk = cjk;
+        self.stale |= changed;
+        changed
+    }
+
     /// Re-render the pixmaps if the state changed since the last render.
     fn render(&mut self) {
         if !std::mem::take(&mut self.stale) { return; }
@@ -434,20 +451,20 @@ impl ChromeCache {
         if !self.title_px.is_empty() {
             draw_title_bar(&mut self.title_px, w, &FrameChrome {
                 x: 0, top: 0, cx: self.cx, cy: th, frame_flags: self.frame_flags,
-                title: &self.title, focused: self.focused,
+                title: &self.title, focused: self.focused, cjk: self.cjk,
             });
         }
         let Some(m) = &mut self.menu else { return };
         let bw = m.bar_w.max(0) as usize;
         m.bar_px = vec![0; bw * MENU_BAR_HEIGHT as usize];
         let open_x = if bw > 0 {
-            draw_menu_bar(&mut m.bar_px, bw, 0, 0, m.bar_w, &m.items, m.open_item)
+            draw_menu_bar(&mut m.bar_px, bw, 0, 0, m.bar_w, &m.items, m.open_item, self.cjk)
         } else { None };
         m.pulldown = match (open_x, m.items.get(m.open_item.wrapping_sub(1) as usize)) {
             (Some(dx), Some(parent)) if pulldown_h(parent) > 0 => {
                 let h = pulldown_h(parent);
                 let mut pixels = vec![0; MENU_DROPDOWN_W as usize * h as usize];
-                draw_menu_pulldown(&mut pixels, MENU_DROPDOWN_W as usize, 0, 0, parent);
+                draw_menu_pulldown(&mut pixels, MENU_DROPDOWN_W as usize, 0, 0, parent, self.cjk);
                 Some(Pulldown { dx, h, pixels })
             }
             _ => None,
@@ -519,7 +536,7 @@ fn draw_placed_frame(buf: &mut [u32], buf_w: usize, p: &FramePlacement,
     blit(buf, &chrome.title_px, chrome.cx, p.title);
     draw_frame_border(buf, buf_w, &FrameChrome {
         x: p.frame.x0, top: p.frame.y0, cx: p.frame.width(), cy: p.frame.height(),
-        frame_flags: p.frame_flags, title: "", focused: false,
+        frame_flags: p.frame_flags, title: "", focused: false, cjk: CjkRegion::Auto,
     }, clip);
     if let Some(m) = &chrome.menu {
         blit(buf, &m.bar_px, m.bar_w, p.menu_bar);
@@ -768,8 +785,11 @@ impl SdlRenderer {
                     (m.menu_items.as_slice(), m.window_ulong.get(&-1).copied().unwrap_or(0))
                 });
                 let bar_w = w.cx - 2 * frame_border_px(w.frame_flags);
-                if chrome.entry(hwnd).or_insert_with(ChromeCache::new)
-                    .sync(&w.text, w.cx, w.frame_flags, hwnd == focused, menu, bar_w) {
+                // Title and menu text follow the frame's queue codepage.
+                let cjk = wm.queue_codepage(hwnd).map_or(CjkRegion::Auto, CjkRegion::from_codepage);
+                let cache = chrome.entry(hwnd).or_insert_with(ChromeCache::new);
+                let cjk_changed = cache.set_cjk(cjk);
+                if cache.sync(&w.text, w.cx, w.frame_flags, hwnd == focused, menu, bar_w) || cjk_changed {
                     dirty_frames.insert(hwnd);
                     chrome_changed.insert(hwnd);
                 }
@@ -2034,7 +2054,7 @@ mod tests {
     fn chrome_buf(frame_flags: u32, focused: bool) -> Vec<u32> {
         let mut buf = vec![0x00FF_00FFu32; 240 * 140];
         draw_frame_chrome(&mut buf, 240, &FrameChrome {
-            x: 10, top: 10, cx: 200, cy: 100, frame_flags, title: "Title", focused,
+            x: 10, top: 10, cx: 200, cy: 100, frame_flags, title: "Title", focused, cjk: super::CjkRegion::Auto,
         });
         buf
     }
@@ -2079,7 +2099,7 @@ mod tests {
         let mut buf = vec![0u32; 240 * 140];
         draw_frame_chrome(&mut buf, 240, &FrameChrome {
             x: 10, top: 10, cx: 200, cy: 100, frame_flags: FCF_TITLEBAR,
-            title: "A very long window title that cannot possibly fit in the bar", focused: true,
+            title: "A very long window title that cannot possibly fit in the bar", focused: true, cjk: super::CjkRegion::Auto,
         });
         let px = |x: i32, y: i32| buf[y as usize * 240 + x as usize];
         let close_x = 10 + 200 - CHROME_BTN_MARGIN - CHROME_BTN_W;
@@ -2653,6 +2673,25 @@ mod compositor_tests {
             c.render();
         }
         assert!(!c.sync("App 2", 220, FCF_TITLEBAR, false, None, 216));
+    }
+
+    /// The title and menus are drawn in the CJK face of the frame's queue
+    /// codepage: changing it re-renders the chrome with other glyphs (直 and
+    /// 骨 have different forms in Japanese and Simplified Chinese).
+    #[test]
+    fn chrome_cache_follows_the_cjk_face() {
+        let mut c = ChromeCache::new();
+        let items = vec![MenuItem { id: 1, style: 0, attr: 0, text: "直骨".into(), children: vec![] }];
+        assert!(!c.set_cjk(CjkRegion::Auto), "unchanged");
+        c.set_cjk(CjkRegion::Japanese);
+        c.sync("直骨", 200, FCF_TITLEBAR, true, Some((&items, 0)), 196);
+        c.render();
+        let (title, bar) = (c.title_px.clone(), c.menu.as_ref().unwrap().bar_px.clone());
+        assert!(c.set_cjk(CjkRegion::SimplifiedChinese), "a new face");
+        assert!(!c.sync("直骨", 200, FCF_TITLEBAR, true, Some((&items, 0)), 196) || c.stale);
+        c.render();
+        assert_ne!(c.title_px, title, "title redrawn in the Chinese face");
+        assert_ne!(c.menu.as_ref().unwrap().bar_px, bar, "menu bar redrawn in the Chinese face");
     }
 
     #[test]

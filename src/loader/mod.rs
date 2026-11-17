@@ -61,7 +61,7 @@ use std::sync::{Arc, Mutex, Condvar};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32};
 use std::thread;
 use log::{info, warn};
-use crate::gui::font::{self, FontSpec};
+use crate::gui::font::{self, CjkRegion, FontSpec};
 use crate::gui::surface::{DrawOp, Mix};
 
 /// Key information pushed into the SDL text-mode keyboard queue.
@@ -483,7 +483,7 @@ impl Loader {
         match msg {
             WM_PAINT => {
                 let frame_hwnd = self.shared.window_mgr.lock_or_recover().find_frame_for_hwnd(hwnd);
-                let p = Painter { loader: self, frame: frame_hwnd };
+                let p = Painter::new(self, frame_hwnd, hwnd);
 
                 match class_name.as_str() {
                     "WC_BUTTON" => {
@@ -521,7 +521,7 @@ impl Loader {
                         // The dialog face, then its controls on top. The title
                         // bar and border are frame chrome drawn by the
                         // compositor (from `frame_flags` and the window text).
-                        let d = Painter { loader: self, frame: hwnd };
+                        let d = Painter::new(self, hwnd, hwnd);
                         d.fill((0, 0, cx, cy), CONTROL_FACE_COLOR);
                         let controls = self.shared.window_mgr.lock_or_recover()
                             .builtin_control_descendants(hwnd);
@@ -809,11 +809,25 @@ const CONTROL_SCROLLBAR_COLOR: u32 = 0x00A0_A0A0;
 pub(crate) struct Painter<'a> {
     pub loader: &'a Loader,
     pub frame: u32,
+    /// The regional face of CJK text: that of the painted window's queue
+    /// codepage, so a window whose queue is set to CP949 (`WinSetCp`) shows
+    /// Hangul and hanja in the Korean face whatever the process codepage.
+    pub cjk: CjkRegion,
 }
 
-impl Painter<'_> {
+impl<'a> Painter<'a> {
+    /// A painter for window `hwnd`, drawing into `frame`'s surface.
+    pub fn new(loader: &'a Loader, frame: u32, hwnd: u32) -> Self {
+        Painter { loader, frame, cjk: CjkRegion::from_codepage(loader.window_codepage(hwnd)) }
+    }
+
     pub fn op(&self, op: DrawOp) {
         self.loader.draw(self.frame, op);
+    }
+
+    /// The system font with this painter's CJK face.
+    pub fn font(&self) -> FontSpec {
+        FontSpec { cjk: self.cjk, ..FontSpec::SYSTEM }
     }
 
     /// Overpaint the rectangle with corners `(x1, y1)`–`(x2, y2)` (inclusive).
@@ -861,7 +875,7 @@ const MNEMONIC_UNDERLINE_Y: i32 = 2;
 /// it marks is underlined. Returns the width drawn.
 pub(crate) fn control_label(p: &Painter, x: i32, y: i32, text: &str, max_w: i32) -> i32 {
     let (shown, mark) = pm_dialog::mnemonic_label(text);
-    let label = font::fit_text(&shown, max_w, FontSpec::SYSTEM);
+    let label = font::fit_text(&shown, max_w, p.font());
     if label.is_empty() {
         return 0;
     }
@@ -869,15 +883,15 @@ pub(crate) fn control_label(p: &Painter, x: i32, y: i32, text: &str, max_w: i32)
     if let Some(mark) = mark
         && let Some((start, ch)) = label.char_indices().nth(mark)
     {
-        let x1 = x + font::text_width(&label[..start], FontSpec::SYSTEM);
-        let w = font::text_width(&label[start..start + ch.len_utf8()], FontSpec::SYSTEM);
+        let x1 = x + font::text_width(&label[..start], p.font());
+        let w = font::text_width(&label[start..start + ch.len_utf8()], p.font());
         let uy = y + MNEMONIC_UNDERLINE_Y;
         p.fill((x1, uy, x1 + w - 1, uy), CONTROL_TEXT_COLOR);
     }
-    font::text_width(label, FontSpec::SYSTEM)
+    font::text_width(label, p.font())
 }
 
 /// Draw one line of system-font text whose line box has its bottom at `y`.
 fn control_text(p: &Painter, x: i32, y: i32, text: &str) {
-    p.op(DrawOp::Text { x, y, text: text.to_string(), color: CONTROL_TEXT_COLOR });
+    p.op(DrawOp::Text { x, y, text: text.to_string(), color: CONTROL_TEXT_COLOR, cjk: p.cjk });
 }

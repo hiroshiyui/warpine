@@ -18,7 +18,7 @@
 use std::sync::{Arc, Mutex};
 
 use super::damage::{Rect, fill_clipped};
-use super::font::{self, FontSpec};
+use super::font::{self, CjkRegion, FontSpec};
 use crate::loader::constants::{
     FM_AND, FM_DEFAULT, FM_INVERT, FM_LEAVEALONE, FM_MASKSRCNOT, FM_MERGENOTSRC, FM_MERGESRCNOT,
     FM_NOTCOPYSRC, FM_NOTMASKSRC, FM_NOTMERGESRC, FM_NOTXORSRC, FM_ONE, FM_OR, FM_OVERPAINT,
@@ -198,8 +198,10 @@ pub enum DrawOp {
     /// with the 16-pel repeating `style` mask (MSB first; [`SOLID_LINE`]).
     Line { x1: i32, y1: i32, x2: i32, y2: i32, color: u32, mix: Mix, style: u16 },
     /// System-font text whose 16-px line box has its bottom at `y` (how the
-    /// built-in controls place labels). Anti-aliased, overpaint.
-    Text { x: i32, y: i32, text: String, color: u32 },
+    /// built-in controls place labels), with CJK characters from the `cjk`
+    /// regional face (the codepage of the window's queue). Anti-aliased,
+    /// overpaint.
+    Text { x: i32, y: i32, text: String, color: u32, cjk: CjkRegion },
     /// Text in `font` with its baseline at `y` (the GPI convention).
     TextFont { x: i32, y: i32, text: String, color: u32, font: FontSpec, mix: Mix },
     /// One pel.
@@ -320,8 +322,8 @@ impl Surface {
                     Rect::new(x1.min(x2), self.row(y1.max(y2)), x1.max(x2) + 1, self.row(y1.min(y2)) + 1),
                 None => Rect::EMPTY,
             },
-            DrawOp::Text { y, .. } => {
-                let spec = FontSpec::SYSTEM;
+            DrawOp::Text { y, cjk, .. } => {
+                let spec = FontSpec { cjk, ..FontSpec::SYSTEM };
                 self.text_rows(y.saturating_add(font::metrics(spec).descent), spec)
             }
             DrawOp::TextFont { y, font, .. } => self.text_rows(y, font),
@@ -479,8 +481,8 @@ impl Surface {
                     if e2 < dx { err += dx; y += sy; }
                 }
             }
-            DrawOp::Text { x, y, ref text, color } => {
-                let spec = FontSpec::SYSTEM;
+            DrawOp::Text { x, y, ref text, color, cjk } => {
+                let spec = FontSpec { cjk, ..FontSpec::SYSTEM };
                 let descent = font::metrics(spec).descent;
                 self.text(x, y.saturating_add(descent), text, color, spec, Mix::Overpaint);
             }
@@ -777,7 +779,7 @@ mod tests {
             DrawOp::Line { x1: hi, y1: 5, x2: lo, y2: 5, color: 0, mix: Mix::Overpaint, style: SOLID_LINE },
             DrawOp::Line { x1: lo, y1: lo, x2: lo, y2: hi, color: 0, mix: Mix::Overpaint, style: SOLID_LINE },
             DrawOp::Pel { x: lo, y: hi, color: 0, mix: Mix::Overpaint },
-            DrawOp::Text { x: hi, y: hi, text: "x".into(), color: 0 },
+            DrawOp::Text { x: hi, y: hi, text: "x".into(), color: 0, cjk: CjkRegion::Auto },
             DrawOp::TextFont { x: lo, y: lo, text: "x".into(), color: 0,
                                font: FontSpec::SYSTEM, mix: Mix::Xor },
         ] {
@@ -922,7 +924,7 @@ mod tests {
         let (w, h) = (32u32, 64u32);
         let y = 20;
         let mut s = Surface::new(w, h);
-        s.draw(DrawOp::Text { x: 0, y, text: "Tg".into(), color: 0 });
+        s.draw(DrawOp::Text { x: 0, y, text: "Tg".into(), color: 0, cjk: CjkRegion::Auto });
         let (top, bot) = painted_rows(&s);
         assert!(top >= h as i32 - y - 16 && bot < h as i32 - y, "top={top} bot={bot}");
 
@@ -1020,7 +1022,7 @@ mod tests {
             DrawOp::Box { x1: 30, y1: 20, x2: 2, y2: 28, color: RED, fill: false, mix: Mix::Xor },
             DrawOp::Line { x1: -50, y1: 3, x2: 70, y2: 37, color: RED, mix: Mix::Overpaint, style: SOLID_LINE },
             DrawOp::Line { x1: 5, y1: 30, x2: 5, y2: 2, color: RED, mix: Mix::Invert, style: SOLID_LINE },
-            DrawOp::Text { x: 2, y: 10, text: "Hég".into(), color: RED },
+            DrawOp::Text { x: 2, y: 10, text: "Hég".into(), color: RED, cjk: CjkRegion::Auto },
             DrawOp::TextFont { x: 30, y: 25, text: "Åy".into(), color: RED, font: FontSpec::SYSTEM, mix: Mix::Overpaint },
             DrawOp::Pel { x: 63, y: 0, color: RED, mix: Mix::Overpaint },
             DrawOp::Pel { x: 64, y: 0, color: RED, mix: Mix::Overpaint },
