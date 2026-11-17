@@ -1505,7 +1505,7 @@ impl PmRenderer for SdlRenderer {
 /// Mouse, keyboard and text input from the host. Ignored while a GUI script
 /// runs, so a scripted session behaves the same on a real display as on
 /// the headless drivers; window events (resize, expose, close) still count.
-fn is_host_input(event: &Event) -> bool {
+pub(crate) fn is_host_input(event: &Event) -> bool {
     matches!(event,
         Event::MouseMotion { .. } | Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. }
         | Event::MouseWheel { .. } | Event::KeyDown { .. } | Event::KeyUp { .. }
@@ -2008,7 +2008,7 @@ fn script_mods_to_sdl(mods: gui_script::Mods) -> KeyMod {
 /// that scripted sessions exercise the same `handle_sdl_event` paths as a
 /// user. `None` for `Dump`, which is a request to the renderer rather than
 /// input, and for a key SDL has no code for.
-fn script_input_to_event(input: &gui_script::Input) -> Option<Event> {
+pub(crate) fn script_input_to_event(input: &gui_script::Input) -> Option<Event> {
     use gui_script::{Button, Input};
     use sdl3::mouse::{MouseButton, MouseState};
     let sdl_button = |b: &Button| match b {

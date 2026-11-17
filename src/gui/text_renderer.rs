@@ -5,6 +5,11 @@
 //! Renders an 80×25 VGA text buffer into an SDL window using an 8×16 GNU
 //! Unifont pixel font.  Keyboard events from SDL are pushed into
 //! `SharedState::kbd_queue` for consumption by `KbdCharIn`.
+//!
+//! Like the PM desktop, the text window replays a GUI script
+//! (`WARPINE_GUI_SCRIPT`, `gui_script.rs`): its keys and text are fed in as
+//! SDL key events, `dump PATH` writes the current frame as a PPM, `quit`
+//! ends the session, and host keyboard input is ignored meanwhile.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -236,6 +241,8 @@ pub struct SdlTextRenderer {
     current_cols: u16,
     /// Height of the current window in text rows.
     current_rows: u16,
+    /// The GUI script being replayed (`WARPINE_GUI_SCRIPT`), if any.
+    script: Option<super::gui_script::GuiScript>,
 }
 
 impl SdlTextRenderer {
@@ -277,6 +284,17 @@ impl SdlTextRenderer {
             },
             current_cols: Self::INIT_COLS,
             current_rows: Self::INIT_ROWS,
+            script: super::gui_script::GuiScript::from_env(),
+        }
+    }
+
+    /// Write the frame now on screen — the text buffer rendered afresh,
+    /// cursor shown — to `path` as a PPM (the `dump` step of a GUI script).
+    fn dump_frame(&mut self, shared: &SharedState, path: &std::path::Path) {
+        self.render_frame(&VgaTextBuffer::snapshot(shared), true);
+        let (w, h) = (self.current_cols as u32 * 8, self.current_rows as u32 * 16);
+        if let Err(e) = super::gui_script::write_ppm(path, &self.pixels, w, h) {
+            eprintln!("warpine: cannot write {}: {e}", path.display());
         }
     }
 
@@ -483,7 +501,21 @@ impl TextModeRenderer for SdlTextRenderer {
         // ~125 Hz frame rate (matching the PM renderer) while the OS
         // scheduler can keep this core idle between events.
         let maybe_event = self.event_pump.wait_event_timeout(std::time::Duration::from_millis(8));
-        let events = maybe_event.into_iter().chain(self.event_pump.poll_iter());
+        // A scripted session ignores the host keyboard, so it runs the same
+        // on a real display as on the dummy driver.
+        let scripted = self.script.is_some();
+        let mut events: Vec<Event> = maybe_event.into_iter().chain(self.event_pump.poll_iter())
+            .filter(|e| !(scripted && crate::gui::sdl_renderer::is_host_input(e)))
+            .collect();
+        // Dumps wait until the input scheduled before them has been queued.
+        let mut dumps = Vec::new();
+        let due = self.script.as_mut().map(super::gui_script::GuiScript::due).unwrap_or_default();
+        for input in due {
+            match input {
+                super::gui_script::Input::Dump(path) => dumps.push(path),
+                input => events.extend(crate::gui::sdl_renderer::script_input_to_event(&input)),
+            }
+        }
 
         for event in events {
             match event {
@@ -553,6 +585,9 @@ impl TextModeRenderer for SdlTextRenderer {
 
                 _ => {}
             }
+        }
+        for path in dumps {
+            self.dump_frame(shared, &path);
         }
         true
     }

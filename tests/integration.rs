@@ -435,6 +435,43 @@ fn check_gui_golden_env(name: &str, sample: &str, steps: &str, env: &[(&str, &st
         &diff[..diff.len().min(12)]);
 }
 
+/// The VGA text window replays a GUI script too: under a pseudo-terminal
+/// (the text window opens only when stdout is a terminal; `script` from
+/// util-linux provides one) 4OS2 gets `ver` typed and Enter, and the `dump`
+/// step writes the 640×400 text frame, with light-grey text on black.
+#[test]
+fn text_mode_window_replays_a_gui_script_and_dumps_the_screen() {
+    let sample = "samples/4os2/4os2.exe";
+    let has_script = Command::new("script").arg("--version").output().is_ok_and(|o| o.status.success());
+    if !kvm_available() || !Path::new(sample).exists() || !has_script {
+        eprintln!("skipping: KVM, {sample} or util-linux script not available");
+        return;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let dump = dir.path().join("text.ppm");
+    let session = dir.path().join("session.script");
+    std::fs::write(&session, format!("1500 text ver\n1700 key enter\n3000 dump {}\n3100 quit\n",
+                                     dump.display())).unwrap();
+    let status = Command::new("script")
+        .args(["-qec", &format!("timeout 30 {} {sample}", warpine())])
+        .arg("/dev/null")
+        .env("SDL_VIDEODRIVER", "dummy")
+        .env("SDL_AUDIODRIVER", "dummy")
+        .env("RUST_LOG", "error")
+        .env("WARPINE_GUI_SCRIPT", &session)
+        .stdout(Stdio::null())
+        .status()
+        .expect("run script");
+    assert!(status.success(), "4OS2 session failed: {status}");
+    let ppm = std::fs::read(&dump).expect("the text window wrote no dump");
+    let (w, h, rgb) = parse_ppm(&ppm);
+    assert_eq!((w, h), (640, 400), "80×25 cells of 8×16 pels");
+    // The banner and the echoed command are drawn in CGA light grey.
+    const LIGHT_GREY: [u8; 3] = [0xAA, 0xAA, 0xAA];
+    let lit = rgb.chunks(3).filter(|p| *p == LIGHT_GREY).count();
+    assert!(lit > 1000, "only {lit} light-grey pels: no text on the screen");
+}
+
 /// The tile comparison itself: identical signatures match, a visible change
 /// is reported at the right tile, and sub-tolerance noise is ignored.
 #[test]
