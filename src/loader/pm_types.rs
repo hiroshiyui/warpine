@@ -127,6 +127,9 @@ pub struct OS2Window {
     /// A message box's icon as the system pointer it shows (`SPTR_ICON*`),
     /// painted with the dialog face; 0 = none (every other window).
     pub msgbox_icon: u32,
+    /// Check state of a check box / radio button (`WC_BUTTON`): 0 unchecked,
+    /// 1 checked, 2 indeterminate (`BM_SETCHECK` / `BM_QUERYCHECK`).
+    pub check_state: u32,
 }
 
 /// Map a PM colour value to 0x00RRGGBB with the default colour table: the
@@ -504,6 +507,7 @@ impl WindowManager {
             destroy_on_dismiss: false,
             frame_flags: 0,
             msgbox_icon: 0,
+            check_state: 0,
         });
         // Register as child of parent
         if parent != 0

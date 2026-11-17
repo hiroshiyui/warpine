@@ -685,6 +685,37 @@ fn gui_pm_dialog_test_matches_golden() {
         &format!("{DIALOG_TEST_FILL_IN}4000 dump {{dump}}\n4100 quit\n"));
 }
 
+/// pm_button_test session up to the last state of its dialog: Space on the
+/// auto check box, Space twice on the auto three-state button, Space on the
+/// plain check box, Tab into the auto-radio group (onto the button checked
+/// in WM_INITDLG) and Space, Down twice (past the BS_NOCURSORSELECT button,
+/// wrapping to the first), Tab into the plain radio group and Space, Up and
+/// Space, Alt+B, a click on the Right radio button (desktop (240, 468)).
+const BUTTON_TEST_STEPS: &str = "1600 key space\n1700 key tab\n1800 key space\n1900 key space\n\
+    2000 key tab\n2100 key space\n2200 key tab\n2300 key space\n2400 key down\n2500 key down\n\
+    2600 key tab\n2700 key space\n2800 key up\n2900 key space\n3000 key alt+b\n3200 click 240 468\n";
+
+/// pm_button_test: check boxes and radio buttons — BM_SETCHECK /
+/// BM_QUERYCHECK / BM_QUERYCHECKINDEX, auto check boxes toggling, an auto
+/// three-state button cycling, auto-radio buttons unchecking each other, the
+/// arrow keys checking auto-radio buttons unless BS_NOCURSORSELECT, Tab
+/// landing on a group's checked radio button, plain buttons left to their
+/// owner, BN_CLICKED for each selection, then Enter.
+#[test]
+fn gui_pm_button_test_checks_boxes_and_radio_buttons() {
+    let steps = format!("{BUTTON_TEST_STEPS}3500 key enter\n7000 quit\n");
+    assert_scripted_checks_pass("samples/pm_button_test/pm_button_test.exe", "pm_button_test", 32, &steps);
+}
+
+/// The pm_button_test dialog after [`BUTTON_TEST_STEPS`]: unchecked, ticked
+/// and indeterminate check boxes, radio buttons with and without the dot,
+/// the focus mark around the Right label.
+#[test]
+fn gui_pm_button_test_matches_golden() {
+    check_gui_golden("pm_button_test", "samples/pm_button_test/pm_button_test.exe",
+        &format!("{BUTTON_TEST_STEPS}3400 dump {{dump}}\n3500 quit\n"));
+}
+
 /// Answers to the first three message boxes of pm_msgbox_test: Enter on the
 /// MB_DEFBUTTON2 default, Esc, a click on Yes (desktop (468, 416): the box
 /// is centred on the desktop).

@@ -12,6 +12,7 @@ mod pm_msgbox;
 mod pm_controls;
 mod pm_dialog;
 mod pm_error;
+mod pm_button;
 pub mod vfs;
 pub mod vfs_hostdir;
 pub mod vm_backend;
@@ -492,7 +493,13 @@ impl Loader {
 
                 match class_name.as_str() {
                     "WC_BUTTON" => {
-                        self.paint_button(&p, hwnd, (x, y, cx, cy), &text);
+                        let style = self.shared.window_mgr.lock_or_recover()
+                            .get_window(hwnd).map_or(0, |w| w.style);
+                        if pm_button::has_check_state(style) {
+                            self.paint_check_button(&p, hwnd, (x, y, cx, cy), &text);
+                        } else {
+                            self.paint_button(&p, hwnd, (x, y, cx, cy), &text);
+                        }
                     }
                     "WC_STATIC" => {
                         // Text label, left- and top-aligned. Like PM's SS_TEXT it
@@ -545,6 +552,10 @@ impl Loader {
             WM_BUTTON1UP if class_name == "WC_BUTTON" => self.button_up(hwnd, cx, cy, mp1),
 
             WM_CHAR if class_name == "WC_BUTTON" => self.button_char(hwnd, mp1, mp2),
+
+            BM_SETCHECK | BM_QUERYCHECK | BM_QUERYCHECKINDEX if class_name == "WC_BUTTON" => {
+                self.button_message(hwnd, msg, mp1)
+            }
 
             WM_BUTTON1DOWN if class_name == "#Menu" => {
                 // Hit-test: is click in the menu bar or in an open dropdown?

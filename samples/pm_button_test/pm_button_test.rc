@@ -1,0 +1,22 @@
+/* pm_button_test.rc - the check box and radio button dialog of pm_button_test */
+#define INCL_WIN
+#include <os2.h>
+#include "pm_button_test.h"
+
+DLGTEMPLATE ID_DLG LOADONCALL MOVEABLE DISCARDABLE
+BEGIN
+    DIALOG "Buttons", ID_DLG, 40, 80, 200, 116, WS_VISIBLE, FCF_TITLEBAR | FCF_SYSMENU
+    BEGIN
+        AUTOCHECKBOX    "~Bold",      ID_BOLD,     8, 92, 80, 12, WS_GROUP | WS_TABSTOP
+        CONTROL         "~Italic",    ID_ITALIC,   8, 78, 80, 12, WC_BUTTON,
+                        BS_AUTO3STATE | WS_TABSTOP | WS_VISIBLE
+        CHECKBOX        "~Underline", ID_UNDER,    8, 64, 80, 12, WS_TABSTOP
+        AUTORADIOBUTTON "~Left",      ID_LEFT,   104, 92, 80, 12, WS_GROUP
+        AUTORADIOBUTTON "~Centre",    ID_CENTRE, 104, 78, 80, 12
+        CONTROL         "~Right",     ID_RIGHT,  104, 64, 80, 12, WC_BUTTON,
+                        BS_AUTORADIOBUTTON | BS_NOCURSORSELECT | WS_VISIBLE
+        RADIOBUTTON     "~Small",     ID_SMALL,    8, 40, 80, 12, WS_GROUP
+        RADIOBUTTON     "Lar~ge",     ID_LARGE,    8, 26, 80, 12
+        DEFPUSHBUTTON   "OK",         DID_OK,    104,  4, 50, 14, WS_GROUP | WS_TABSTOP
+    END
+END

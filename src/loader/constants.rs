@@ -658,12 +658,20 @@ pub const BS_CHECKBOX:       u32 = 0x0001;
 pub const BS_AUTOCHECKBOX:   u32 = 0x0002;
 pub const BS_RADIOBUTTON:    u32 = 0x0003;
 pub const BS_AUTORADIOBUTTON: u32 = 0x0004;
+pub const BS_3STATE:         u32 = 0x0005;
+pub const BS_AUTO3STATE:     u32 = 0x0006;
 /// Mask of the button kind (`BS_PUSHBUTTON`, `BS_CHECKBOX`, ...) in a style.
 pub const BS_PRIMARYSTYLES:  u32 = 0x000F;
 pub const BS_HELP:           u32 = 0x0100; // click posts WM_HELP
 pub const BS_SYSCOMMAND:     u32 = 0x0200; // click posts WM_SYSCOMMAND
 pub const BS_DEFAULT:        u32 = 0x0400; // default push button (Enter in a dialog)
 pub const BS_NOPOINTERFOCUS: u32 = 0x0800; // a click does not take the focus
+pub const BS_NOCURSORSELECT: u32 = 0x2000; // arrow keys do not check this auto-radio button
+
+// Button messages (BM_*, <pmwin.h>)
+pub const BM_QUERYCHECKINDEX: u32 = 0x0121;
+pub const BM_QUERYCHECK:      u32 = 0x0124;
+pub const BM_SETCHECK:        u32 = 0x0125;
 
 // Static control styles (low bits of flStyle for WC_STATIC windows)
 pub const SS_TEXT:     u32 = 0x0001;

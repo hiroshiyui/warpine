@@ -21,7 +21,7 @@
 
 use super::constants::*;
 use super::pm_types::{AccelEntry, OS2Message};
-use super::{ApiResult, Loader, MutexExt};
+use super::{pm_button, ApiResult, Loader, MutexExt};
 
 // ── DLGTEMPLATE layout (<pmwin.h>) ───────────────────────────────────────────
 
@@ -387,9 +387,18 @@ impl Loader {
             }
             VK_LEFT | VK_UP | VK_RIGHT | VK_DOWN => {
                 let backward = matches!(vk, VK_LEFT | VK_UP);
-                let next = self.shared.window_mgr.lock_or_recover().next_in_group(hwnd, backward);
-                if let Some(next) = next {
+                let next = {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    wm.next_in_group(hwnd, backward).map(|h| {
+                        (h, wm.get_window(h).is_some_and(|w| pm_button::cursor_selects(w.style)))
+                    })
+                };
+                if let Some((next, select)) = next {
                     self.set_focus_window(next);
+                    // The cursor moves the selection along an auto-radio group.
+                    if select {
+                        self.click_button(next, false);
+                    }
                 }
                 next.is_some()
             }
@@ -457,6 +466,8 @@ impl Loader {
             if w.style & WS_DISABLED != 0 { return; }
             (wm.notify_target(hwnd), w.id & 0xFFFF, w.style)
         };
+        // Auto check boxes and radio buttons change their state themselves.
+        self.select_button(hwnd);
         if owner == 0 {
             return;
         }
@@ -1085,6 +1096,110 @@ mod tests {
         d.loader.set_focus_window(d.ok);
         assert_eq!(d.vkey(d.dlg, VK_RIGHT, 0), 0);
         assert_eq!(d.focus(), d.ok);
+    }
+
+    /// A dialog with an entry field, a group of three auto-radio buttons
+    /// (the last with `BS_NOCURSORSELECT`), a group label, a plain radio
+    /// button group of two and OK; returns the dialog and its controls.
+    fn radio_dialog() -> (Loader, u32, [u32; 7]) {
+        let loader = Loader::new_mock();
+        {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq(437);
+            wm.tid_to_hmq.insert(0, hmq);
+        }
+        let auto = BS_AUTORADIOBUTTON;
+        let t = DlgTemplate {
+            dialog: item("WC_FRAME", "Radio", (10, 10, 200, 120), 100, FS_DLGBORDER),
+            frame_flags: FCF_TITLEBAR | FCF_DLGBORDER,
+            focus: None,
+            items: vec![
+                item("WC_ENTRYFIELD", "", (4, 100, 100, 10), 20, WS_TABSTOP | WS_GROUP),
+                item("WC_BUTTON", "~Red", (4, 80, 60, 10), 21, auto | WS_GROUP),
+                item("WC_BUTTON", "Green", (4, 70, 60, 10), 22, auto),
+                item("WC_BUTTON", "Blue", (4, 60, 60, 10), 23, auto | BS_NOCURSORSELECT),
+                item("WC_STATIC", "Size", (80, 80, 40, 10), 24, SS_TEXT | WS_GROUP),
+                item("WC_BUTTON", "Small", (80, 70, 60, 10), 25, BS_RADIOBUTTON),
+                item("WC_BUTTON", "Large", (80, 60, 60, 10), 26, BS_RADIOBUTTON),
+                item("WC_BUTTON", "OK", (4, 4, 40, 14), DID_OK as u16, WS_TABSTOP | WS_GROUP | BS_DEFAULT),
+            ],
+        };
+        let (dlg, _, _) = loader.create_dialog(0, HWND_DESKTOP, 0, 0, Some(t));
+        let ids = [20, 21, 22, 23, 25, 26, DID_OK];
+        let h = ids.map(|i| loader.shared.window_mgr.lock_or_recover().find_child_by_id(dlg, i).unwrap());
+        (loader, dlg, h)
+    }
+
+    fn checks(loader: &Loader, hs: &[u32]) -> Vec<u32> {
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        hs.iter().map(|&h| wm.button_check(h)).collect()
+    }
+
+    fn dlg_vkey(loader: &Loader, dlg: u32, vk: u32) -> u32 {
+        let (m1, m2) = key(KC_VIRTUALKEY | KC_SCANCODE, 0, vk, 0);
+        match loader.def_dlg_proc(dlg, WM_CHAR, m1, m2) {
+            ApiResult::Normal(v) => v,
+            _ => unreachable!(),
+        }
+    }
+
+    #[test]
+    fn arrow_keys_check_auto_radio_buttons_as_they_move_and_wrap() {
+        let (loader, dlg, [_, red, green, blue, ..]) = radio_dialog();
+        let focus = || loader.shared.window_mgr.lock_or_recover().focus_hwnd;
+        loader.set_focus_window(red);
+        assert_eq!(dlg_vkey(&loader, dlg, VK_DOWN), 1);
+        assert_eq!(focus(), green);
+        assert_eq!(checks(&loader, &[red, green, blue]), [0, 1, 0], "the cursor selects");
+        dlg_vkey(&loader, dlg, VK_DOWN);
+        assert_eq!(focus(), blue);
+        assert_eq!(checks(&loader, &[red, green, blue]), [0, 1, 0], "BS_NOCURSORSELECT: focus only");
+        dlg_vkey(&loader, dlg, VK_RIGHT);
+        assert_eq!(focus(), red, "wraps around within the group");
+        assert_eq!(checks(&loader, &[red, green, blue]), [1, 0, 0]);
+        dlg_vkey(&loader, dlg, VK_UP);
+        assert_eq!(focus(), blue, "and backwards");
+        assert_eq!(checks(&loader, &[red, green, blue]), [1, 0, 0]);
+        // The owner hears of each selection.
+        let mq = {
+            let wm = loader.shared.window_mgr.lock_or_recover();
+            wm.get_mq(wm.tid_to_hmq[&0]).unwrap()
+        };
+        let clicked: Vec<u32> = mq.lock_or_recover().messages.iter()
+            .filter(|m| m.msg == WM_CONTROL && m.mp1 >> 16 == BN_CLICKED).map(|m| m.mp1 & 0xFFFF).collect();
+        assert_eq!(clicked, [22, 21]);
+    }
+
+    #[test]
+    fn arrow_keys_only_move_the_focus_over_plain_radio_buttons() {
+        let (loader, dlg, [_, _, _, _, small, large, _]) = radio_dialog();
+        loader.set_focus_window(small);
+        dlg_vkey(&loader, dlg, VK_DOWN);
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().focus_hwnd, large,
+                   "the static label is not in the enumeration");
+        assert_eq!(checks(&loader, &[small, large]), [0, 0]);
+    }
+
+    #[test]
+    fn tab_enters_a_radio_group_on_its_checked_button() {
+        let (loader, dlg, [entry, red, green, blue, small, large, ok]) = radio_dialog();
+        let focus = || loader.shared.window_mgr.lock_or_recover().focus_hwnd;
+        // No button checked: the group has no tab stop.
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().tab_stops(dlg), vec![entry, ok]);
+        loader.dispatch_builtin_control(green, BM_SETCHECK, 1, 0);
+        loader.dispatch_builtin_control(large, BM_SETCHECK, 1, 0);
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().tab_stops(dlg), vec![entry, green, large, ok]);
+        loader.set_focus_window(entry);
+        dlg_vkey(&loader, dlg, VK_TAB);
+        assert_eq!(focus(), green);
+        // A click moves the check, and the tab stop with it.
+        loader.click_button(blue, true);
+        loader.set_focus_window(entry);
+        dlg_vkey(&loader, dlg, VK_TAB);
+        assert_eq!(focus(), blue);
+        dlg_vkey(&loader, dlg, VK_TAB);
+        assert_eq!(focus(), large);
+        assert_eq!(checks(&loader, &[red, green, blue, small]), [0, 0, 1, 0]);
     }
 
     #[test]
