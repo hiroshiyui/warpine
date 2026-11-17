@@ -157,9 +157,66 @@ No open items.
 
 ---
 
+## OS/2 2.0 parity
+
+Small but fundamental gaps between Warpine and what OS/2 2.0 offered a 32-bit program, found on 2026-11-18 by searching `src/` for each API name. Large subsystems (DOS and Windows sessions, the Workplace Shell, containers, notebooks, drag and drop, printing, the help viewer, REXX) are tracked elsewhere.
+
+### Kernel (DOSCALLS)
+
+- [ ] **Thread control** — `DosEnterCritSec` / `DosExitCritSec`, `DosSuspendThread` / `DosResumeThread`, `DosSendSignalException`
+- [ ] **Timers** — `DosAsyncTimer`, `DosStartTimer`, `DosStopTimer` (post event semaphores)
+- [ ] **Memory suballocation** — `DosSubSetMem`, `DosSubAllocMem`, `DosSubFreeMem`, `DosSubUnsetMem`; `DosGiveSharedMem`
+- [ ] **Named pipes** — only create, connect and set-state exist: `DosDisConnectNPipe`, `DosPeekNPipe`, `DosTransactNPipe`, `DosCallNPipe`, `DosWaitNPipe`, `DosQueryNPHState`, `DosQueryNPipeInfo`
+- [ ] **Modules and messages** — `DosSearchPath`, `DosQueryModuleName`, `DosInsertMessage`, `DosQueryMessageCP`
+
+### PM window manager (PMWIN)
+
+- [ ] **Coordinates and lookups** — `WinMapWindowPoints`, `WinWindowFromPoint`, `WinQueryDesktopWindow`, `WinQueryAnchorBlock`, `WinIsChild`, `WinQueryWindowProcess`, `WinMultWindowFromIDs`, `WinEnumDlgItem`, `WinQueryClassName`, `WinQueryClassInfo`
+- [ ] **Painting** — `WinDrawBorder`, `WinScrollWindow`, `WinValidateRect`, `WinQueryUpdateRect`, `WinInvalidateRegion`, `WinExcludeUpdateRegion`, `WinLockWindowUpdate`, `WM_ERASEBACKGROUND`
+- [ ] **Input state** — `WinGetKeyState`, `WinGetPhysKeyState`, `WinQueryMsgPos`, `WinQueryMsgTime`, `WinQueryPointerPos`, `WinSetPointerPos`
+- [ ] **Messaging** — `WinPostQueueMsg`, `WinBroadcastMsg`, `WinInSendMsg`, `WinWaitMsg`, `WinWaitEventSem`, `WinRequestMutexSem`
+- [ ] **Colours and presentation parameters** — `WinQuerySysColor`, `WinSetSysColors`, `WinSetPresParam`, `WinQueryPresParam`, `WinRemovePresParam`, `WM_PRESPARAMCHANGED`
+- [ ] **Frames and accelerators** — `WinCreateFrameControls`, `WinCalcFrameRect`, `WinFormatFrame`; `WinCreateAccelTable`, `WinDestroyAccelTable`, `WinCopyAccelTable`
+- [ ] **Other window calls** — `WinLoadMessage`, `WinQueryVersion`, `WinFlashWindow`, `WinSetWindowBits`, `WinSetMultWindowPos`, `WinSetDlgItemShort` / `WinQueryDlgItemShort`, `WinSetHook` / `WinReleaseHook` (help and message-filter hooks at least)
+
+### Built-in controls
+
+- [ ] **Owner-drawn items** — `WM_DRAWITEM` / `WM_MEASUREITEM` for list boxes, menus and buttons
+- [ ] **Combo boxes, spin buttons, sliders, value sets** — `WC_COMBOBOX` and `WC_SPINBUTTON` exist only as class names; `WC_SLIDER` and `WC_VALUESET` not at all
+- [ ] **Static and class styles** — `SS_ICON`, `SS_BITMAP`, `SS_FGNDRECT`; `CS_SIZEREDRAW`, `CS_SYNCPAINT`, `CS_CLIPCHILDREN`, `WS_CLIPSIBLINGS`
+
+### GPI
+
+- [ ] **Polylines and polygons** — `GpiPolygons`, `GpiPolyFillet`, `GpiPolySpline`
+- [ ] **Areas, paths and clipping** — `GpiBeginArea` / `GpiEndArea`, `GpiBeginPath` / `GpiStrokePath` / `GpiFillPath`, `GpiCreateRegion`, `GpiSetClipRegion`
+- [ ] **State and coordinate spaces** — `GpiSavePS` / `GpiRestorePS` / `GpiResetPS`, `GpiSetAttrs`, `GpiSetPageViewport`, `GpiSetDefaultViewMatrix`, `GpiConvert`, model transforms
+- [ ] **Text layout** — `GpiCharStringPos`, `GpiQueryCharStringPos`, `GpiQueryWidthTable`, character angle and shear
+
+### System DLLs not present at all
+
+- [ ] **PMSHAPI** — `WinStartApp`, the switch list (`WinAddSwitchEntry`, `WinCreateSwitchEntry`, `WinQuerySwitchList`)
+- [ ] **Atoms and DDE** — `WinCreateAtomTable`, `WinAddAtom`, `WinFindAtom`, `WinQueryAtomName`; `WinDdeInitiate` / `WinDdePostMsg`
+- [ ] **Standard dialogs** — `WinFileDlg`, `WinFontDlg`
+- [ ] **Printing stubs** — the spooler (`SplQmOpen`, …) reporting no printers, `DevEscape`, `DevPostDeviceModes`
+
+
+### Follow-ups of the first parity batch
+
+- [ ] **Exception chains are per process, not per thread** — `DosSetExceptionHandler`, `DosUnsetExceptionHandler` and `seh.rs` keep every thread's exception-handler chain in thread 1's TIB (`TIB_BASE`) instead of the calling thread's TIB (`fs.base`, `threads.rs`); each thread needs its own chain. The exit-list code works around it by emptying both
+- [ ] **Exit-list follow-ups** — the routines run on the thread that ends the process (OS/2 uses thread 1); they do not run yet for a closed window, Ctrl+Esc, the end of piped keyboard input, triple faults / KVM errors, or `DosKillProcess` from a parent (catch SIGTERM, `TC_KILLPROCESS`); `TC_HARDERROR` / `TC_TRAP` are never produced; a thread spinning in guest code is not stopped during the list. Unverified: a routine that returns, calls `DosExit` or faults counts as `EXLST_EXIT` (the reference says the process hangs), `EXLST_EXIT` outside processing → `ERROR_INVALID_FUNCTION`, removing an unlisted routine or adding NULL → `ERROR_INVALID_DATA`, re-adding moves a routine to its new order, at most 256 routines (`ERROR_NOT_ENOUGH_MEMORY`), the exception chain emptied before each routine
+- [ ] **Semaphore follow-ups** — `ERROR_SEM_OWNER_DIED` for a mutex whose owner ended, `DCE_POSTONE` / `DCE_AUTORESET`, `ERROR_SEM_BUSY` when closing a semaphore with waiters or an owner, `DosWaitMuxWaitSem` polling every 10 ms instead of waiting on a condition variable, named semaphores shared between processes. Unverified: pid / tid 0 for an unowned mutex, `ERROR_INVALID_PARAMETER` for NULL output pointers, 0 written by `DosResetEventSem` when already reset, names case-insensitive and unique across kinds, `ERROR_SEM_NOT_FOUND` for a name of the wrong kind, `ERROR_INVALID_HANDLE` deleting a non-member, `ERROR_TOO_MANY_SEMAPHORES` reported before a duplicate, `ERROR_INVALID_PARAMETER` for muxwait flags with neither / both `DCMW_*` bits, a waiter whose member was closed getting `ERROR_INVALID_HANDLE`, wait-all returning the last record's user value
+- [ ] **Scroll-bar follow-ups** — frame scroll bars (`FCF_VERTSCROLL` / `FCF_HORZSCROLL`; blocked: client GPI drawing ignores the client's position in the frame surface and `control_at` searches only the client's children), the keyboard on a focused scroll bar, `SBS_AUTOTRACK`, the slider's tracking rectangle (slider 0 when released far from the bar), repeat rates from `SV_FIRSTSCROLLRATE` / `SV_SCROLLRATE` (now `DRAG_SCROLL_MS`); unverified: an 8-pel minimum slider, a new bar starting with range 0..0 (disabled), `SBCDATA` with `cTotal` 0 setting no thumb size, a click not taking the focus, the bar's look
+- [ ] **Text-cursor follow-ups** — hide the cursor while the user tracks a frame; unverified: one cursor per message queue (the reference's "destroys any existing one" may mean one in the system), `CURSOR_SETPOS` from a window that does not own the cursor returning FALSE, a negative width / height extending left / down, `rclClip` reported as the window rectangle when none was given, `WinQueryCursorInfo` reading the caller's queue, no `WM_TIMER(TID_CURSOR)` posted to the application for `CURSOR_FLASH`
+- [ ] **Rectangles and WinDrawText: unverified details** — WinPtInRect leaving the right and top edges out, (0, 0, 0, 0) as the empty result of WinIntersectRect / WinUnionRect / WinSubtractRect, NULL pointers failing without an error code, coordinates not limited to 16 bits; WinDrawText's count with `DT_WORDBREAK` including trailing blanks and the line end, nothing drawn with `DT_QUERYEXTENT`, the inclusive extent it writes, `DT_ERASERECT` using the background colour, `DT_HALFTONE` as the mean colour, `~` as the `DT_MNEMONIC` prefix, no clipping to the rectangle, `DT_EXTERNALLEADING` adding nothing
+- [ ] **Profile follow-ups** — `PrfQueryProfile`, `PrfReset`, the program-list calls (`PrfAddProgram`, …), the 16-bit `PRF16*` / `WIN16*` exports; reading binary OS/2 INI files shipped with programs (format not publicly documented; refused as corrupt now). Unverified: truncated `PrfQueryProfileData` returning TRUE with the bytes copied, a truncated string's last byte forced to NUL, list sizes with both NULs but counts without the last, `HINI_PROFILE` enumeration merging user and system names, deleting what does not exist succeeding, deleting the last key removing the application, a NULL application on a write rejected, integer overflow in `PrfQueryProfileInt` wrapping, the 64 KB value limit, `PrfOpenProfile` creating a missing file and returning the same handle on a re-open, `PrfCloseProfile(HINI_USER/SYSTEMPROFILE)` failing, `PMERR_INVALID_HWND` / `PMERR_INVALID_PARM` from the help calls, the owner-chain walk of `WinQueryHelpInstance`
+- [ ] **Help viewer** — an INF / HLP reader (the IPF format is not published by IBM: check osFree / NewView descriptions for clean-room use first), `RT_HELPTABLE` / `RT_HELPSUBTABLE`, F1 → `WM_HELP` → the help-table panel, the `HM_*` notifications back to the program, the `Ddf*` calls
+- [ ] **Tests use the real drive C** — the GUI integration tests (`run_gui_script`) do not set `XDG_DATA_HOME`, and `Loader::new_mock` creates `$XDG_DATA_HOME/warpine/drive_c` through `DriveManager::with_default_config()`, so tests write to the user's own drive C (`ANSI_TEST.OUT`); give them a temporary drive as `gui_pm_profile_test_reads_and_writes_profiles` and the `pmshapi` unit tests do
+
+---
+
 ## Application compatibility
 
-- [ ] **Thread follow-ups** — ending a thread ends only that thread (`threads.rs`); still missing: `DosExitList` (not implemented at all: no exit-list routines run at process end), `DosCreateThread` flags (`CREATE_SUSPENDED`, `STACK_COMMITTED`) and `DosSuspendThread` / `DosResumeThread`, `DosKillThread` interrupting a thread that spins in guest code or blocks in a call (it ends at the thread's next exit to Warpine), `ERROR_SEM_OWNER_DIED` for mutex semaphores owned by an ended thread, a PM thread's windows destroyed with it (its message queue is); unverified: thread 1 ending with `DosExit(EXIT_THREAD)` while other threads run (the reference only says "do not end thread 1 without ending the process"; here the process goes on until its last thread ends), the exit code when thread 1 returns from the entry point (unchanged here, 0 unless set), `DosWaitThread(0)` when no thread that could end is left (`ERROR_INVALID_THREADID` here, instead of waiting forever), an ended thread reported once and then `ERROR_INVALID_THREADID`, `DosKillThread` on the calling thread (`ERROR_INVALID_THREADID` here), a thread's message queue destroyed when the thread ends, thread ids not reused
+- [ ] **Thread follow-ups** — ending a thread ends only that thread (`threads.rs`); still missing: `DosCreateThread` flags (`CREATE_SUSPENDED`, `STACK_COMMITTED`) and `DosSuspendThread` / `DosResumeThread`, `DosKillThread` interrupting a thread that spins in guest code or blocks in a call (it ends at the thread's next exit to Warpine), `ERROR_SEM_OWNER_DIED` for mutex semaphores owned by an ended thread, a PM thread's windows destroyed with it (its message queue is); unverified: thread 1 ending with `DosExit(EXIT_THREAD)` while other threads run (the reference only says "do not end thread 1 without ending the process"; here the process goes on until its last thread ends), the exit code when thread 1 returns from the entry point (unchanged here, 0 unless set), `DosWaitThread(0)` when no thread that could end is left (`ERROR_INVALID_THREADID` here, instead of waiting forever), an ended thread reported once and then `ERROR_INVALID_THREADID`, `DosKillThread` on the calling thread (`ERROR_INVALID_THREADID` here), a thread's message queue destroyed when the thread ends, thread ids not reused
 - [ ] **Sockets: `select` never reports a socket** — `samples/socket_test` fails `select(srv readable)`. Warpine numbers sockets from 0xA000 (`SocketManager::next_handle`), but `so_select` reads the guest's `fd_set` as a 64-bit mask of handles 0–63, so no socket can ever be in it (and the guest's own `FD_SET(0xA000)` writes far past an 8-byte set). The layout is also uncertain: Open Watcom's OS/2 `<types.h>` declares `fd_set` as `{ u_short fd_count; int fd_array[FD_SETSIZE]; }` (WinSock style, `FD_SETSIZE` 64, `MAXSOCKETS` 32768), while the sample and `so_select` assume a bitmask. Find in public IBM TCP/IP programming references which layout(s) the 32-bit `select` (SO32DLL / TCP32DLL ordinal 13) and `os2_select` take and how socket numbers are allocated, then renumber sockets and translate the set accordingly
 
 ### 16-bit (NE) programs
