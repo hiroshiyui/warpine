@@ -104,6 +104,11 @@ struct OrdEntry {
     name: String,
     /// Source line number in os2api.def (1-based), for diagnostics.
     line: usize,
+    /// The text after `# NOTE:` on the entry's line: an explanation of a
+    /// known difference from the OW snapshot (a naming convention the alias
+    /// normaliser cannot detect), which `validate-doc` then reports as
+    /// acknowledged instead of as a mismatch.
+    note: Option<String>,
 }
 
 // ── Module helpers ───────────────────────────────────────────────────────────
@@ -118,6 +123,15 @@ fn module_upper(module: &str) -> u32 {
 }
 
 // ── Parser ───────────────────────────────────────────────────────────────────
+
+/// The marker that starts an acknowledged-difference note on a def line.
+const NOTE_MARKER: &str = "# NOTE:";
+
+/// The note of a def line (`... # NOTE: reason`), trimmed; `None` if absent.
+fn def_note(line: &str) -> Option<String> {
+    let note = line.split_once(NOTE_MARKER)?.1.trim();
+    (!note.is_empty()).then(|| note.to_owned())
+}
 
 fn parse_def(path: &Path) -> Result<Vec<OrdEntry>, String> {
     let content = fs::read_to_string(path)
@@ -159,6 +173,7 @@ fn parse_def(path: &Path) -> Result<Vec<OrdEntry>, String> {
             flat_ordinal: base + local_ordinal,
             name: name.to_owned(),
             line: line_num,
+            note: def_note(raw),
         });
     }
 
@@ -675,6 +690,7 @@ fn cmd_validate_doc(entries: &[OrdEntry], doc_path: &Path) {
     let mut alias_ok:     usize = 0;
     let mut only_in_def:  Vec<&OrdEntry> = Vec::new();
     let mut mismatches:   Vec<(&OrdEntry, String)> = Vec::new();
+    let mut acknowledged: Vec<(&OrdEntry, String)> = Vec::new();
 
     let in_scope: Vec<&OrdEntry> = entries
         .iter()
@@ -690,6 +706,8 @@ fn cmd_validate_doc(entries: &[OrdEntry], doc_path: &Path) {
                     confirmed += 1;
                 } else if normalize_for_alias(doc_name) == normalize_for_alias(&e.name) {
                     alias_ok += 1;
+                } else if e.note.is_some() {
+                    acknowledged.push((e, doc_name.clone()));
                 } else {
                     mismatches.push((e, doc_name.clone()));
                 }
@@ -726,6 +744,20 @@ fn cmd_validate_doc(entries: &[OrdEntry], doc_path: &Path) {
         }
     }
 
+    if !acknowledged.is_empty() {
+        println!();
+        println!(
+            "  ≈  Name differences acknowledged by a {NOTE_MARKER} in os2api.def ({}):",
+            acknowledged.len()
+        );
+        for (e, doc_name) in &acknowledged {
+            println!(
+                "    {}.{:>4}: def={:<40} doc={} — {}",
+                e.module, e.local_ordinal, e.name, doc_name, e.note.as_deref().unwrap_or("")
+            );
+        }
+    }
+
     if !mismatches.is_empty() {
         println!();
         println!(
@@ -742,7 +774,7 @@ fn cmd_validate_doc(entries: &[OrdEntry], doc_path: &Path) {
 
     println!();
     if mismatches.is_empty() {
-        println!("✓  All in-scope def entries confirmed or recognised as 16-bit aliases.");
+        println!("✓  All in-scope def entries confirmed, recognised as 16-bit aliases or acknowledged.");
     } else {
         println!(
             "⚠  {} mismatch(es) need investigation — see list above.",
@@ -909,11 +941,11 @@ mod tests {
 
     fn sample_entries() -> Vec<OrdEntry> {
         vec![
-            OrdEntry { module: "DOSCALLS".into(), local_ordinal: 234, flat_ordinal: 234, name: "DosExit".into(), line: 1 },
-            OrdEntry { module: "DOSCALLS".into(), local_ordinal: 282, flat_ordinal: 282, name: "DosWrite".into(), line: 2 },
-            OrdEntry { module: "QUECALLS".into(), local_ordinal: 9,   flat_ordinal: 1033, name: "DosReadQueue".into(), line: 3 },
-            OrdEntry { module: "NLS".into(),      local_ordinal: 5,   flat_ordinal: 7173, name: "NlsQueryCp".into(), line: 4 },
-            OrdEntry { module: "UCONV".into(),    local_ordinal: 1,   flat_ordinal: 12289, name: "UniCreateUconvObject".into(), line: 5 },
+            OrdEntry { module: "DOSCALLS".into(), local_ordinal: 234, flat_ordinal: 234, name: "DosExit".into(), line: 1, note: None },
+            OrdEntry { module: "DOSCALLS".into(), local_ordinal: 282, flat_ordinal: 282, name: "DosWrite".into(), line: 2, note: None },
+            OrdEntry { module: "QUECALLS".into(), local_ordinal: 9,   flat_ordinal: 1033, name: "DosReadQueue".into(), line: 3, note: None },
+            OrdEntry { module: "NLS".into(),      local_ordinal: 5,   flat_ordinal: 7173, name: "NlsQueryCp".into(), line: 4, note: None },
+            OrdEntry { module: "UCONV".into(),    local_ordinal: 1,   flat_ordinal: 12289, name: "UniCreateUconvObject".into(), line: 5, note: None },
         ]
     }
 
@@ -979,6 +1011,15 @@ mod tests {
         let path = dir.path().join("test.def");
         fs::write(&path, content).unwrap();
         assert!(parse_def(&path).is_err());
+    }
+
+    #[test]
+    fn test_def_note_is_read_from_the_line() {
+        assert_eq!(def_note("DOSCALLS.75   DosQueryFileMode16  # NOTE: 16-bit alias").as_deref(),
+                   Some("16-bit alias"));
+        assert_eq!(def_note("DOSCALLS.234  DosExit"), None);
+        assert_eq!(def_note("DOSCALLS.234  DosExit  # plain comment"), None);
+        assert_eq!(def_note("DOSCALLS.234  DosExit  # NOTE:   "), None, "an empty note acknowledges nothing");
     }
 
     #[test]
