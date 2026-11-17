@@ -14,6 +14,7 @@ mod pm_dialog;
 mod pm_error;
 mod pm_button;
 mod pm_destroy;
+pub mod pm_minmax;
 pub mod vfs;
 pub mod vfs_hostdir;
 pub mod vm_backend;
@@ -128,6 +129,11 @@ pub(crate) enum FrameKind {
     /// After the client window procedure returns, the frame window handle
     /// (`h_frame`) is written into EAX as the return value of WinCreateStdWindow.
     WmCreate { h_frame: u32 },
+    /// `WM_MINMAXFRAME` sent to a frame's client before the frame is
+    /// minimized, maximized or restored (`op`, one `SWP_*` state flag) to
+    /// `target`. A FALSE reply lets the change happen
+    /// (`WindowManager::finish_minmax`); the API caller then gets `ret`.
+    MinMaxFrame { frame: u32, op: u32, target: pm_minmax::WinRect, ret: u32 },
     /// A modal dialog message loop (WinDlgBox / WinProcessDlg / WinMessageBox).
     ///
     /// After each message callback returns, the CALLBACK_RET_TRAP handler
@@ -172,6 +178,18 @@ pub(crate) enum ApiResult {
         wnd_proc: u32,
         hwnd:     u32,
         h_frame:  u32,
+    },
+    /// Send `WM_MINMAXFRAME` to `client` (procedure `wnd_proc`) before frame
+    /// `frame` changes state (`op`) to `target`: `vcpu.rs` puts the `SWP`
+    /// on the guest stack and calls the procedure; unless it returns TRUE
+    /// the change is made. The API returns `ret`.
+    MinMaxFrame {
+        wnd_proc: u32,
+        client:   u32,
+        frame:    u32,
+        op:       u32,
+        target:   pm_minmax::WinRect,
+        ret:      u32,
     },
     /// Inject a guest call to `addr` with two _System args `(hmod, flag)`.
     /// Used for DLL INITTERM.  `phmod` is the address to write the handle on

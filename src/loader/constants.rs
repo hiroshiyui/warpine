@@ -540,6 +540,13 @@ pub const SC_MINIMIZE: u32 = 0x8002; // minimize the window
 pub const SC_MAXIMIZE: u32 = 0x8003; // maximize the window
 pub const SC_RESTORE:  u32 = 0x8008; // restore from min/max
 
+// WM_MINMAXFRAME — sent to a frame (passed on to its client) before it is
+// minimized, maximized or restored. mp1 = PSWP; a TRUE reply skips the
+// default action.
+pub const WM_MINMAXFRAME: u32 = 0x0046;
+/// Identity of a frame's minimize / maximize buttons (`<pmwin.h>`).
+pub const FID_MINMAX: u32 = 0x8004;
+
 // WM_ACTIVATE (0x000D) — sent to a frame when it gains or loses activation.
 // mp1 = fActivate (TRUE = gaining focus, FALSE = losing); mp2 = other frame HWND.
 pub const WM_ACTIVATE: u32 = 0x000D;
@@ -614,6 +621,13 @@ pub const CHROME_TITLE_H: i32 = 20;
 pub const FRAME_MIN_VISIBLE_W: i32 = 32;
 /// Width of the frame border in desktop pixels (each side).
 pub const CHROME_BORDER_W: i32 = 2;
+/// Size of a minimized frame (Warpine's own choice): a title bar with a
+/// border, `MINIMIZED_CX` wide.
+pub const MINIMIZED_CX: i32 = 160;
+pub const MINIMIZED_CY: i32 = CHROME_TITLE_H + CHROME_BORDER_W;
+/// Gap between minimized frames in the icon area along the bottom of the
+/// desktop, and between them and the desktop's edges.
+pub const ICON_AREA_GAP: i32 = 4;
 
 /// Width of a frame's border: `CHROME_BORDER_W` with any border style, else 0.
 pub fn frame_border_width(frame_flags: u32) -> i32 {
@@ -654,6 +668,20 @@ pub const WS_VISIBLE:  u32 = 0x8000_0000;
 pub const WS_DISABLED: u32 = 0x4000_0000;
 pub const WS_TABSTOP:  u32 = 0x0002_0000;
 pub const WS_GROUP:    u32 = 0x0001_0000;
+pub const WS_MINIMIZED: u32 = 0x0100_0000;
+pub const WS_MAXIMIZED: u32 = 0x0080_0000;
+
+// WinQueryWindowULong index of the window style.
+pub const QWL_STYLE: i32 = -2;
+
+// Frame window words (WinQueryWindowUShort / WinSetWindowUShort): where a
+// minimized or maximized frame is restored to, and where it was minimized.
+pub const QWS_XRESTORE:  i32 = 0x000c;
+pub const QWS_YRESTORE:  i32 = 0x000e;
+pub const QWS_CXRESTORE: i32 = 0x0010;
+pub const QWS_CYRESTORE: i32 = 0x0012;
+pub const QWS_XMINIMIZE: i32 = 0x0014;
+pub const QWS_YMINIMIZE: i32 = 0x0016;
 
 // Button styles (low 16 bits of flStyle for WC_BUTTON windows)
 pub const BS_PUSHBUTTON:     u32 = 0x0000;

@@ -157,6 +157,7 @@ impl super::Loader {
                         win.x = def_x; win.y = def_y;
                         win.cx = FRAME_DEFAULT_CX; win.cy = FRAME_DEFAULT_CY;
                         win.frame_flags = fl_create_flags;
+                        win.style = style;
                         win.visible = style & WS_VISIBLE != 0;
                         win.text = title.clone();
                     }
@@ -333,6 +334,22 @@ impl super::Loader {
                     // window to close.
                     WM_SYSCOMMAND if mp1 & 0xFFFF == SC_CLOSE => {
                         self.post_to_window(hwnd, WM_CLOSE, 0, 0);
+                    }
+                    // Minimize, maximize, restore: done by frames with
+                    // minimize / maximize buttons (FID_MINMAX), else nothing.
+                    WM_SYSCOMMAND => {
+                        if let Some(op) = super::pm_minmax::syscommand_state(mp1 & 0xFFFF) {
+                            let prepared = {
+                                let mut wm = self.shared.window_mgr.lock_or_recover();
+                                let frame = wm.client_to_frame(hwnd);
+                                if wm.has_minmax_buttons(frame) {
+                                    wm.begin_minmax(frame, op, None, None).map(|t| (frame, t))
+                                } else { None }
+                            };
+                            if let Some((frame, target)) = prepared {
+                                return self.send_minmax(frame, op, target, 0);
+                            }
+                        }
                     }
                     WM_BUTTON1DOWN | WM_BUTTON1DBLCLK | WM_BUTTON1UP => {
                         // If this frame has a menu, delegate mouse events to the menu
@@ -996,21 +1013,19 @@ impl super::Loader {
                 let hwnd = read_stack(4);
                 let index = read_stack(8) as i32;
                 let wm = self.shared.window_mgr.lock_or_recover();
-                let val = wm.get_window(hwnd)
-                    .and_then(|w| w.window_ulong.get(&index))
-                    .copied()
-                    .unwrap_or(0);
+                let val = wm.get_window(hwnd).map_or(0, |w| if index == QWL_STYLE {
+                    // The style, with WS_VISIBLE as the window is now.
+                    (w.style & !WS_VISIBLE) | if w.visible { WS_VISIBLE } else { 0 }
+                } else {
+                    w.window_ulong.get(&index).copied().unwrap_or(0)
+                });
                 ApiResult::Normal(val)
             }
             844 => {
                 // WinQueryWindowUShort(HWND hwnd, LONG index)
                 let hwnd = read_stack(4);
                 let index = read_stack(8) as i32;
-                let wm = self.shared.window_mgr.lock_or_recover();
-                let val = wm.get_window(hwnd)
-                    .and_then(|w| w.window_ushort.get(&index))
-                    .copied()
-                    .unwrap_or(0);
+                let val = self.shared.window_mgr.lock_or_recover().query_window_ushort(hwnd, index);
                 ApiResult::Normal(val as u32)
             }
             903 => {
@@ -1108,6 +1123,17 @@ impl super::Loader {
 
                 let mut wm = self.shared.window_mgr.lock_or_recover();
 
+                // SWP_MINIMIZE / SWP_MAXIMIZE / SWP_RESTORE of a standard
+                // frame: its position comes from the state change, which is
+                // made after the rest, once the client has been asked.
+                let state_op = super::pm_minmax::state_change(fl);
+                let minmax = state_op.and_then(|op| {
+                    let pos = (fl & SWP_MOVE != 0).then_some((x, y));
+                    let size = (fl & SWP_SIZE != 0).then_some((cx, cy));
+                    wm.begin_minmax(hwnd, op, pos, size).map(|t| (op, t))
+                });
+                let fl = if minmax.is_some() { fl & !(SWP_MOVE | SWP_SIZE) } else { fl };
+
                 // Update the OS2Window position/size state.
                 if let Some(win) = wm.get_window_mut(hwnd) {
                     if fl & SWP_MOVE != 0 {
@@ -1155,7 +1181,11 @@ impl super::Loader {
                 if fl & SWP_SIZE != 0 {
                     wm.resize_surface(hwnd, fb_cx, fb_cy);
                 }
+                drop(wm);
 
+                if let Some((op, target)) = minmax {
+                    return self.send_minmax(hwnd, op, target, 1);
+                }
                 ApiResult::Normal(1)
             }
             877 => {
@@ -1571,6 +1601,21 @@ impl super::Loader {
             win.owner = parent;
         }
         h
+    }
+
+    /// Minimize, maximize or restore `frame` (`op`) to `target`, prepared by
+    /// `WindowManager::begin_minmax`: `WM_MINMAXFRAME` goes to its client
+    /// first, which can stop the change by returning TRUE. A client without
+    /// a window procedure is not asked. The API returns `ret`.
+    fn send_minmax(&self, frame: u32, op: u32, target: super::pm_minmax::WinRect, ret: u32) -> ApiResult {
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        let client = wm.frame_to_client.get(&frame).copied().unwrap_or(0);
+        let wnd_proc = wm.get_window(client).map_or(0, |w| w.pfn_wp);
+        if wnd_proc != 0 {
+            return ApiResult::MinMaxFrame { wnd_proc, client, frame, op, target, ret };
+        }
+        wm.finish_minmax(frame, op, target);
+        ApiResult::Normal(ret)
     }
 
     /// WM_UPDATEFRAME(FCF_MENU) on `frame`: its menu bar becomes its
@@ -2858,6 +2903,115 @@ mod tests {
         call_pmwin(&loader, &mut vcpu, ORD_WIN_DEF_WINDOW_PROC, &[client, WM_SYSCOMMAND, SC_CLOSE, CMDSRC_ACCELERATOR]);
         let msgs: Vec<_> = mq.lock_or_recover().messages.drain(..).map(|m| (m.hwnd, m.msg)).collect();
         assert_eq!(msgs, vec![(client, WM_CLOSE)]);
+    }
+
+    /// Call a PMWIN API with `args` on the stack and return its result as is.
+    fn call_pmwin_raw(loader: &Loader, ordinal: u32, args: &[u32]) -> ApiResult {
+        let mut vcpu = MockVcpu::new();
+        let esp: u32 = 0x1000;
+        vcpu.regs.rsp = esp as u64;
+        write_stack(loader, esp, args);
+        loader.handle_pmwin_call(&mut vcpu, 0, ordinal)
+    }
+
+    const ORD_WIN_SET_WINDOW_POS: u32 = 875;
+    const ORD_WIN_QUERY_WINDOW_USHORT: u32 = 844;
+    const ORD_WIN_SET_WINDOW_USHORT: u32 = 879;
+    const ORD_WIN_QUERY_WINDOW_ULONG: u32 = 843;
+
+    /// `window_with_entry` whose 640×480 frame at (50, 60) has a sizing
+    /// border and minimize / maximize buttons.
+    fn minmax_window(loader: &Loader) -> (u32, u32) {
+        use super::super::constants::*;
+        let (frame, client, _, _) = window_with_entry(loader);
+        let mut wm = loader.shared.window_mgr.lock_or_recover();
+        let w = wm.get_window_mut(frame).unwrap();
+        (w.x, w.y, w.cx, w.cy) = (50, 60, 640, 480);
+        w.frame_flags = FCF_TITLEBAR | FCF_SYSMENU | FCF_SIZEBORDER | FCF_MINBUTTON | FCF_MAXBUTTON;
+        wm.layout_frame(frame);
+        (frame, client)
+    }
+
+    /// WinDefWindowProc carries out SC_MAXIMIZE / SC_MINIMIZE / SC_RESTORE
+    /// for a frame with minimize / maximize buttons, asking the client with
+    /// WM_MINMAXFRAME first; without the buttons nothing happens.
+    #[test]
+    fn test_win_def_window_proc_minmax_system_commands() {
+        use super::super::constants::*;
+        use super::super::pm_minmax::WinRect;
+        let loader = Loader::new_mock();
+        let (frame, client) = minmax_window(&loader);
+        let state = || loader.shared.window_mgr.lock_or_recover().minmax_state(frame);
+        let ApiResult::MinMaxFrame { wnd_proc, client: to, frame: f, op, target, ret } =
+            call_pmwin_raw(&loader, ORD_WIN_DEF_WINDOW_PROC, &[client, WM_SYSCOMMAND, SC_MAXIMIZE, CMDSRC_MENU])
+        else { panic!("WM_MINMAXFRAME expected") };
+        assert_eq!((wnd_proc, to, f, op, ret), (0x1234, client, frame, SWP_MAXIMIZE, 0));
+        let (dw, dh) = desktop_size();
+        assert_eq!(target, WinRect { x: -2, y: -2, cx: dw as i32 + 4, cy: dh as i32 + 4 });
+        // Not changed yet: the client may refuse.
+        assert_eq!(state(), 0);
+        loader.shared.window_mgr.lock_or_recover().finish_minmax(frame, op, target);
+        assert_eq!(state(), WS_MAXIMIZED);
+        // Already maximized: nothing to do.
+        assert!(matches!(call_pmwin_raw(&loader, ORD_WIN_DEF_WINDOW_PROC, &[client, WM_SYSCOMMAND, SC_MAXIMIZE, 0]),
+                         ApiResult::Normal(0)));
+        let ApiResult::MinMaxFrame { op, target, .. } =
+            call_pmwin_raw(&loader, ORD_WIN_DEF_WINDOW_PROC, &[client, WM_SYSCOMMAND, SC_RESTORE, 0])
+        else { panic!("WM_MINMAXFRAME expected") };
+        assert_eq!((op, target), (SWP_RESTORE, WinRect { x: 50, y: 60, cx: 640, cy: 480 }));
+        // Without minimize / maximize buttons the commands are ignored.
+        loader.shared.window_mgr.lock_or_recover().get_window_mut(frame).unwrap().frame_flags = FCF_TITLEBAR;
+        assert!(matches!(call_pmwin_raw(&loader, ORD_WIN_DEF_WINDOW_PROC, &[client, WM_SYSCOMMAND, SC_MINIMIZE, 0]),
+                         ApiResult::Normal(0)));
+        // WM_MINMAXFRAME itself: the default answer is FALSE.
+        assert!(matches!(call_pmwin_raw(&loader, ORD_WIN_DEF_WINDOW_PROC, &[client, WM_MINMAXFRAME, 0, 0]),
+                         ApiResult::Normal(0)));
+    }
+
+    /// WinSetWindowPos with SWP_MINIMIZE / SWP_RESTORE (any frame, buttons
+    /// or not), the restore and icon positions in the frame's window words,
+    /// and WS_MINIMIZED in QWL_STYLE.
+    #[test]
+    fn test_win_set_window_pos_minimize_and_restore() {
+        use super::super::constants::*;
+        let loader = Loader::new_mock();
+        let (frame, client) = minmax_window(&loader);
+        {
+            // A client without a window procedure is not asked.
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            wm.get_window_mut(client).unwrap().pfn_wp = 0;
+            wm.get_window_mut(frame).unwrap().frame_flags = FCF_TITLEBAR | FCF_SIZEBORDER;
+        }
+        let mut vcpu = MockVcpu::new();
+        let ushort = |vcpu: &mut MockVcpu, i: i32| call_pmwin(&loader, vcpu, ORD_WIN_QUERY_WINDOW_USHORT, &[frame, i as u32]);
+        assert_eq!(ushort(&mut vcpu, QWS_XMINIMIZE), 0xFFFF);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_WINDOW_POS, &[frame, 0, 0, 0, 0, 0, SWP_MINIMIZE]), 1);
+        let style = call_pmwin(&loader, &mut vcpu, ORD_WIN_QUERY_WINDOW_ULONG, &[frame, QWL_STYLE as u32]);
+        assert_ne!(style & WS_MINIMIZED, 0);
+        assert_eq!(style & WS_MAXIMIZED, 0);
+        let pos = |l: &Loader| l.shared.window_mgr.lock_or_recover().get_window(frame).map(|w| (w.x, w.y, w.cx, w.cy)).unwrap();
+        assert_eq!(pos(&loader), (ICON_AREA_GAP, ICON_AREA_GAP, MINIMIZED_CX, MINIMIZED_CY));
+        assert_eq!(ushort(&mut vcpu, QWS_XMINIMIZE), ICON_AREA_GAP as u32);
+        assert_eq!((ushort(&mut vcpu, QWS_XRESTORE), ushort(&mut vcpu, QWS_YRESTORE)), (50, 60));
+        assert_eq!((ushort(&mut vcpu, QWS_CXRESTORE), ushort(&mut vcpu, QWS_CYRESTORE)), (640, 480));
+        // Minimizing again has no effect; mutually exclusive flags neither.
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_WINDOW_POS, &[frame, 0, 0, 0, 0, 0, SWP_MINIMIZE]);
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_WINDOW_POS, &[frame, 0, 0, 0, 0, 0, SWP_MAXIMIZE | SWP_RESTORE]);
+        assert_eq!(pos(&loader).2, MINIMIZED_CX);
+        // A changed restore width is honoured.
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_WINDOW_USHORT, &[frame, QWS_CXRESTORE as u32, 300]);
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_WINDOW_POS, &[frame, 0, 0, 0, 0, 0, SWP_RESTORE]);
+        assert_eq!(pos(&loader), (50, 60, 300, 480));
+        let style = call_pmwin(&loader, &mut vcpu, ORD_WIN_QUERY_WINDOW_ULONG, &[frame, QWL_STYLE as u32]);
+        assert_eq!(style & (WS_MINIMIZED | WS_MAXIMIZED), 0);
+        // Restoring a normal window only moves it as asked.
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_WINDOW_POS, &[frame, 0, 7, 8, 0, 0, SWP_RESTORE | SWP_MOVE]);
+        assert_eq!(pos(&loader), (7, 8, 300, 480));
+        // Maximized, then restored to an explicit position and size.
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_WINDOW_POS, &[frame, 0, 0, 0, 0, 0, SWP_MAXIMIZE]);
+        assert_eq!(pos(&loader).0, -CHROME_BORDER_W);
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_WINDOW_POS, &[frame, 0, 10, 20, 200, 100, SWP_RESTORE | SWP_MOVE | SWP_SIZE]);
+        assert_eq!(pos(&loader), (10, 20, 200, 100));
     }
 
     /// WinSetFocus (860) / WinQueryFocus (817): the focus window defaults to

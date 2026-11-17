@@ -435,6 +435,9 @@ pub struct WindowManager {
     /// Windows that have been sent `WM_DESTROY` and are waiting to be
     /// removed (`pm_destroy.rs`).
     pub(super) destroying: HashSet<u32>,
+    /// Minimized frame → the windows it owns that it hid when it was
+    /// minimized; shown again when it is restored or maximized.
+    pub(super) hidden_by_minimize: HashMap<u32, Vec<u32>>,
 }
 
 impl Default for WindowManager {
@@ -474,6 +477,7 @@ impl WindowManager {
             next_hdc: 0x6000,
             input: Default::default(),
             destroying: HashSet::new(),
+            hidden_by_minimize: HashMap::new(),
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
@@ -526,6 +530,10 @@ impl WindowManager {
     }
     pub fn get_window_mut(&mut self, h: u32) -> Option<&mut OS2Window> {
         self.windows.get_mut(&h)
+    }
+    /// All windows, in no particular order.
+    pub fn windows(&self) -> impl Iterator<Item = &OS2Window> {
+        self.windows.values()
     }
     pub fn get_ps_hwnd(&self, hps: u32) -> u32 {
         self.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0)
@@ -1219,6 +1227,7 @@ impl WindowManager {
             self.window_accel.remove(&h);
             self.dirty.remove(&h);
             self.destroying.remove(&h);
+            self.hidden_by_minimize.remove(&h);
             for slot in [&mut self.focus_hwnd, &mut self.capture_hwnd, &mut self.pressed_control] {
                 if *slot == h { *slot = 0; }
             }

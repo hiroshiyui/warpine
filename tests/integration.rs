@@ -772,6 +772,39 @@ fn gui_pm_typeahead_test_routes_keys_when_they_are_read() {
     assert_scripted_checks_pass("samples/pm_typeahead_test/pm_typeahead_test.exe", "pm_typeahead_test", 5, steps);
 }
 
+/// pm_minmax_test: frames are minimized, maximized and restored through
+/// WinSetWindowPos and WM_SYSCOMMAND (checked from the guest), then with
+/// the mouse and the system keys. Frame A is the default 640×480 frame at
+/// desktop (32, 32): title bar y 32–51, minimize button x 618–633, maximize
+/// x 636–651, system menu x 35–50. Maximized it covers the desktop with its
+/// 2-px border outside (title bar y −2–17, restore button x 990–1005);
+/// minimized it is a 160×22 bar in the first icon slot, desktop (4, 742).
+#[test]
+fn gui_pm_minmax_test_minimizes_maximizes_and_restores() {
+    let steps = "\
+        1500 dblclick 300 42\n\
+        2000 dblclick 300 8\n\
+        2500 key alt+f10\n\
+        3000 key alt+f5\n\
+        3500 key alt+f9\n\
+        4000 dblclick 80 752\n\
+        4500 click 626 42\n\
+        5000 dblclick 80 752\n\
+        5500 click 644 42\n\
+        6000 click 998 8\n\
+        6500 dblclick 43 42\n\
+        9000 quit\n";
+    assert_scripted_checks_pass("samples/pm_minmax_test/pm_minmax_test.exe", "pm_minmax_test", 39, steps);
+}
+
+/// pm_minmax_test with frame A minimized by Alt+F9: a bordered title bar in
+/// the first icon slot at the bottom-left of the desktop, frame B unchanged.
+#[test]
+fn gui_pm_minmax_test_matches_golden() {
+    check_gui_golden("pm_minmax_test", "samples/pm_minmax_test/pm_minmax_test.exe",
+        "1500 dblclick 300 42\n2000 dblclick 300 8\n2500 key alt+f9\n3000 dump {dump}\n3100 quit\n");
+}
+
 /// pm_codepage_test: PM text follows the message queue's codepage
 /// (WinSetCp, including CP1004, which DosSetProcessCp refuses), WinQueryCpList
 /// lists the queue codepages, and a presentation space starts with its queue's

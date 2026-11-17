@@ -17,8 +17,9 @@ use crate::loader::{SharedState, OS2Message, MutexExt,
     VK_F7, VK_F8, VK_F9, VK_F10, VK_F11, VK_F12,
     CF_TEXT, KC_PREVDOWN, WM_CHAR_REPEAT_SHIFT, WM_CHAR_SCANCODE_SHIFT, WM_CHAR_VKEY_SHIFT,
     FCF_TITLEBAR, FCF_SYSMENU, FCF_MINBUTTON, FCF_MAXBUTTON,
-    FCF_SIZEBORDER,
-    WM_ACTIVATE, WM_SYSCOMMAND, SC_MINIMIZE, SC_MAXIMIZE};
+    FCF_SIZEBORDER, FCF_BORDER,
+    WM_ACTIVATE, WM_SYSCOMMAND, SC_MINIMIZE, SC_MAXIMIZE, SC_RESTORE, SC_CLOSE,
+    WS_MINIMIZED, WS_MAXIMIZED, CMDSRC_MENU, CMDSRC_OTHER};
 use crate::loader::constants::{
     MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_BAR_ITEM_PAD, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H,
     MIS_SEPARATOR};
@@ -128,11 +129,21 @@ struct FrameChrome<'a> {
     /// Regional face of CJK characters in the title (the frame's queue
     /// codepage).
     cjk: CjkRegion,
+    /// `WS_MINIMIZED` / `WS_MAXIMIZED` of the frame: a minimized frame's
+    /// title bar has no buttons, a maximized frame's maximize button is a
+    /// restore button.
+    state: u32,
 }
 
 /// Which pictogram a title-bar button carries.
 #[derive(Clone, Copy)]
-enum ButtonGlyph { Close, Maximize, Minimize, SysMenu }
+enum ButtonGlyph { Close, Maximize, Restore, Minimize, SysMenu }
+
+/// The frame flags a frame in `state` is drawn and hit-tested with: a
+/// minimized frame is a bordered title bar whatever its own flags.
+fn display_flags(frame_flags: u32, state: u32) -> u32 {
+    if state & WS_MINIMIZED != 0 { FCF_TITLEBAR | FCF_BORDER } else { frame_flags }
+}
 
 /// Fill `[x0,x1) × [y0,y1)` with `face` and give it a 1-px raised bevel:
 /// `light` along the top and left edges, `shadow` along the bottom and right.
@@ -170,6 +181,18 @@ fn draw_chrome_button(buf: &mut [u32], buf_w: usize, x: i32, y: i32, h: i32, gly
             draw_filled_rect(buf, buf_w, gx0, gy1 - 1, gx1, gy1, ink);
             draw_filled_rect(buf, buf_w, gx0, gy0, gx0 + 1, gy1, ink);
             draw_filled_rect(buf, buf_w, gx1 - 1, gy0, gx1, gy1, ink);
+        }
+        ButtonGlyph::Restore => {
+            // Two overlapping window outlines.
+            let (dx, dy) = ((gx1 - gx0) / 3, (gy1 - gy0) / 3);
+            for (x0, y0, x1, y1) in [(gx0 + dx, gy0, gx1, gy1 - dy), (gx0, gy0 + dy, gx1 - dx, gy1)] {
+                draw_filled_rect(buf, buf_w, x0, y0, x1, y0 + 2, ink);
+                draw_filled_rect(buf, buf_w, x0, y1 - 1, x1, y1, ink);
+                draw_filled_rect(buf, buf_w, x0, y0, x0 + 1, y1, ink);
+                draw_filled_rect(buf, buf_w, x1 - 1, y0, x1, y1, ink);
+            }
+            // The front window hides the back one's lines.
+            draw_filled_rect(buf, buf_w, gx0 + 1, gy0 + dy + 2, gx1 - dx - 1, gy1 - 1, CHROME_FACE_COLOR);
         }
         ButtonGlyph::Minimize => {
             // Bar along the bottom.
@@ -218,6 +241,14 @@ fn draw_title_bar(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
         let btn_y = c.top + CHROME_BTN_INSET_Y;
         let btn_h = title_h - 2 * CHROME_BTN_INSET_Y - 1;
         let mut text_left = c.x + 4;
+        if c.state & WS_MINIMIZED != 0 {
+            // A minimized frame: its title only.
+            let text_y = c.top + (title_h - GLYPH_H) / 2;
+            let title = font::fit_text(c.title, c.cx - 8, FontSpec::SYSTEM_BOLD);
+            draw_text_screen(buf, buf_w, buf_h, text_left, text_y, title,
+                             CHROME_TEXT_COLOR, FontSpec::SYSTEM_BOLD);
+            return;
+        }
         if c.frame_flags & FCF_SYSMENU != 0 {
             draw_chrome_button(buf, buf_w, c.x + 3, btn_y, btn_h, ButtonGlyph::SysMenu);
             text_left = c.x + 3 + CHROME_BTN_W + 4;
@@ -228,7 +259,8 @@ fn draw_title_bar(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
         draw_chrome_button(buf, buf_w, btn_x, btn_y, btn_h, ButtonGlyph::Close);
         if c.frame_flags & FCF_MAXBUTTON != 0 {
             btn_x -= CHROME_BTN_W + CHROME_BTN_GAP;
-            draw_chrome_button(buf, buf_w, btn_x, btn_y, btn_h, ButtonGlyph::Maximize);
+            let glyph = if c.state & WS_MAXIMIZED != 0 { ButtonGlyph::Restore } else { ButtonGlyph::Maximize };
+            draw_chrome_button(buf, buf_w, btn_x, btn_y, btn_h, glyph);
         }
         if c.frame_flags & FCF_MINBUTTON != 0 {
             btn_x -= CHROME_BTN_W + CHROME_BTN_GAP;
@@ -389,6 +421,8 @@ struct ChromeCache {
     title: String,
     cx: i32,
     frame_flags: u32,
+    /// `WS_MINIMIZED` / `WS_MAXIMIZED`.
+    state: u32,
     focused: bool,
     /// Regional face of CJK text in the title and menus.
     cjk: CjkRegion,
@@ -401,13 +435,14 @@ struct ChromeCache {
 
 impl ChromeCache {
     fn new() -> Self {
-        ChromeCache { title: String::new(), cx: 0, frame_flags: 0, focused: false, cjk: CjkRegion::Auto,
+        ChromeCache { title: String::new(), cx: 0, frame_flags: 0, state: 0, focused: false, cjk: CjkRegion::Auto,
                       title_px: Vec::new(), menu: None, stale: true }
     }
 
     /// Bring the cached state up to date; returns whether it changed (or
     /// was never rendered), in which case the frame's chrome must be redrawn.
-    fn sync(&mut self, title: &str, cx: i32, frame_flags: u32, focused: bool,
+    #[allow(clippy::too_many_arguments)]
+    fn sync(&mut self, title: &str, cx: i32, frame_flags: u32, state: u32, focused: bool,
             menu: Option<(&[MenuItem], u32)>, bar_w: i32) -> bool {
         let mut changed = self.stale;
         if self.title != title {
@@ -415,8 +450,8 @@ impl ChromeCache {
             self.title.push_str(title);
             changed = true;
         }
-        if (self.cx, self.frame_flags, self.focused) != (cx, frame_flags, focused) {
-            (self.cx, self.frame_flags, self.focused) = (cx, frame_flags, focused);
+        if (self.cx, self.frame_flags, self.state, self.focused) != (cx, frame_flags, state, focused) {
+            (self.cx, self.frame_flags, self.state, self.focused) = (cx, frame_flags, state, focused);
             changed = true;
         }
         match (menu, &self.menu) {
@@ -451,7 +486,7 @@ impl ChromeCache {
         if !self.title_px.is_empty() {
             draw_title_bar(&mut self.title_px, w, &FrameChrome {
                 x: 0, top: 0, cx: self.cx, cy: th, frame_flags: self.frame_flags,
-                title: &self.title, focused: self.focused, cjk: self.cjk,
+                title: &self.title, focused: self.focused, state: self.state, cjk: self.cjk,
             });
         }
         let Some(m) = &mut self.menu else { return };
@@ -536,7 +571,7 @@ fn draw_placed_frame(buf: &mut [u32], buf_w: usize, p: &FramePlacement,
     blit(buf, &chrome.title_px, chrome.cx, p.title);
     draw_frame_border(buf, buf_w, &FrameChrome {
         x: p.frame.x0, top: p.frame.y0, cx: p.frame.width(), cy: p.frame.height(),
-        frame_flags: p.frame_flags, title: "", focused: false, cjk: CjkRegion::Auto,
+        frame_flags: p.frame_flags, title: "", focused: false, state: 0, cjk: CjkRegion::Auto,
     }, clip);
     if let Some(m) = &chrome.menu {
         blit(buf, &m.bar_px, m.bar_w, p.menu_bar);
@@ -781,20 +816,23 @@ impl SdlRenderer {
                 let w = wm.get_window(hwnd)?;
                 // Frames are shown once they have a surface.
                 let surface = wm.surfaces.get(&hwnd).filter(|_| w.visible)?.clone();
-                let menu = wm.get_window(w.menu_hwnd).filter(|_| w.menu_hwnd != 0).map(|m| {
+                // A minimized frame shows neither its own chrome nor its menu.
+                let state = w.style & (WS_MINIMIZED | WS_MAXIMIZED);
+                let frame_flags = display_flags(w.frame_flags, state);
+                let menu = wm.get_window(w.menu_hwnd).filter(|_| w.menu_hwnd != 0 && state & WS_MINIMIZED == 0).map(|m| {
                     (m.menu_items.as_slice(), m.window_ulong.get(&-1).copied().unwrap_or(0))
                 });
-                let bar_w = w.cx - 2 * frame_border_px(w.frame_flags);
+                let bar_w = w.cx - 2 * frame_border_px(frame_flags);
                 // Title and menu text follow the frame's queue codepage.
                 let cjk = wm.queue_codepage(hwnd).map_or(CjkRegion::Auto, CjkRegion::from_codepage);
                 let cache = chrome.entry(hwnd).or_insert_with(ChromeCache::new);
                 let cjk_changed = cache.set_cjk(cjk);
-                if cache.sync(&w.text, w.cx, w.frame_flags, hwnd == focused, menu, bar_w) || cjk_changed {
+                if cache.sync(&w.text, w.cx, frame_flags, state, hwnd == focused, menu, bar_w) || cjk_changed {
                     dirty_frames.insert(hwnd);
                     chrome_changed.insert(hwnd);
                 }
                 Some(Snap { hwnd, x: w.x, y: w.y, cx: w.cx, cy: w.cy,
-                            frame_flags: w.frame_flags, has_menu: menu.is_some(), surface })
+                            frame_flags, has_menu: menu.is_some(), surface })
             }).collect()
         };
         self.chrome.retain(|h, _| snaps.iter().any(|s| s.hwnd == *h));
@@ -1060,23 +1098,34 @@ impl SdlRenderer {
                         push_msg(shared, new_focused, WM_ACTIVATE, 2, prev_focused);
                     }
                     // VDR-D2/C3/C4: chrome hit-testing (title bar + buttons).
-                    let chrome_hit = {
+                    let (chrome_hit, state) = {
                         let wm = shared.window_mgr.lock_or_recover();
-                        if let Some(win) = wm.get_window(hwnd) {
-                            if win.frame_flags & FCF_TITLEBAR != 0 {
-                                chrome_hit_test(win.x, win.cx, win.frame_flags,
-                                                x, os2_y, win.y, win.cy)
-                            } else {
-                                ChromeHit::None
-                            }
-                        } else {
-                            ChromeHit::None
-                        }
+                        wm.get_window(hwnd).map_or((ChromeHit::None, 0), |win| {
+                            let state = win.style & (WS_MINIMIZED | WS_MAXIMIZED);
+                            (frame_chrome_hit(win.x, win.y, win.cx, win.cy, win.frame_flags, state, x, os2_y),
+                             state)
+                        })
                     };
+                    let double = mouse_btn == sdl3::mouse::MouseButton::Left
+                        && button_down_msg(mouse_btn, clicks) == Some(WM_BUTTON1DBLCLK);
+                    // System commands from the chrome: MPFROM2SHORT(source, fPointer).
+                    let syscommand = |sc: u32, source: u32| push_msg(shared, hwnd, WM_SYSCOMMAND, sc, source | (1 << 16));
                     match chrome_hit {
                         ChromeHit::Close => {
                             push_msg(shared, hwnd, WM_CLOSE, 0, 0);
                         }
+                        ChromeHit::SysMenu if double => {
+                            // Double click on the system-menu icon: Close.
+                            syscommand(SC_CLOSE, CMDSRC_MENU);
+                        }
+                        ChromeHit::TitleBar if double => {
+                            // Double click on the title bar (or on a minimized
+                            // frame): restore a minimized or maximized frame,
+                            // maximize any other.
+                            syscommand(if state != 0 { SC_RESTORE } else { SC_MAXIMIZE }, CMDSRC_OTHER);
+                        }
+                        // A maximized frame is not dragged.
+                        ChromeHit::SysMenu | ChromeHit::TitleBar if state & WS_MAXIMIZED != 0 => {}
                         ChromeHit::SysMenu => {
                             // VDR-C3: single-click on system menu — treat as title bar drag.
                             let (anchor_x, dst_top_y) = {
@@ -1091,11 +1140,13 @@ impl SdlRenderer {
                         }
                         ChromeHit::Minimize => {
                             // VDR-C4: post WM_SYSCOMMAND(SC_MINIMIZE) to the client.
-                            push_msg(shared, hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
+                            syscommand(SC_MINIMIZE, CMDSRC_MENU);
                         }
                         ChromeHit::Maximize => {
-                            // VDR-C4: post WM_SYSCOMMAND(SC_MAXIMIZE) to the client.
-                            push_msg(shared, hwnd, WM_SYSCOMMAND, SC_MAXIMIZE, 0);
+                            // VDR-C4: WM_SYSCOMMAND(SC_MAXIMIZE) to the client;
+                            // on a maximized frame the button restores it.
+                            let sc = if state & WS_MAXIMIZED != 0 { SC_RESTORE } else { SC_MAXIMIZE };
+                            syscommand(sc, CMDSRC_MENU);
                         }
                         ChromeHit::TitleBar => {
                             // VDR-D3: start drag — record how far into the title bar the user clicked.
@@ -1114,6 +1165,8 @@ impl SdlRenderer {
                             let resize_edge = {
                                 let wm = shared.window_mgr.lock_or_recover();
                                 wm.get_window(hwnd).and_then(|win| {
+                                    // Minimized and maximized frames are not resized.
+                                    if win.style & (WS_MINIMIZED | WS_MAXIMIZED) != 0 { return None; }
                                     resize_hit_test(win.x, win.y, win.cx, win.cy,
                                                     win.frame_flags, x, os2_y)
                                 })
@@ -1402,12 +1455,12 @@ fn is_wake_event(event: &Event) -> bool {
 // ── Internal helpers ───────────────────────────────────────────────────────
 
 /// Result of a chrome hit-test on a mouse click.
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 enum ChromeHit {
     /// Click is on the close (×) button — send WM_CLOSE.
     Close,
     /// Click is on the system-menu icon (VDR-C3): treated as the title bar
-    /// (activate and drag). A double-click does not close the window yet.
+    /// (activate and drag); a double click closes the window.
     SysMenu,
     /// Click is on the minimize button (VDR-C4) — send WM_SYSCOMMAND(SC_MINIMIZE).
     Minimize,
@@ -1458,6 +1511,23 @@ fn chrome_hit_test(win_x: i32, win_cx: i32, win_fcf: u32,
         }
     }
     ChromeHit::TitleBar
+}
+
+/// Chrome hit-test of a click at `(x, os2_y)` on a frame at `(win_x, win_y)`
+/// of size `win_cx` × `win_cy` in `state` (`WS_MINIMIZED` / `WS_MAXIMIZED`):
+/// a minimized frame is all title bar; other frames are tested by
+/// [`chrome_hit_test`] when they have a title bar.
+#[allow(clippy::too_many_arguments)]
+fn frame_chrome_hit(win_x: i32, win_y: i32, win_cx: i32, win_cy: i32, frame_flags: u32, state: u32,
+                    x: i32, os2_y: i32) -> ChromeHit {
+    if state & WS_MINIMIZED != 0 {
+        let inside = x >= win_x && x < win_x + win_cx && os2_y >= win_y && os2_y < win_y + win_cy;
+        return if inside { ChromeHit::TitleBar } else { ChromeHit::None };
+    }
+    if frame_flags & FCF_TITLEBAR == 0 {
+        return ChromeHit::None;
+    }
+    chrome_hit_test(win_x, win_cx, frame_flags, x, os2_y, win_y, win_cy)
 }
 
 /// Test if a click at `(x, os2_y)` is on a resize edge of the window (VDR-C5).
@@ -1959,7 +2029,8 @@ mod tests {
                 CHROME_BTN_MARGIN, CHROME_BTN_INSET_Y, CHROME_TITLE_ACTIVE, CHROME_TITLE_INACTIVE,
                 CHROME_LIGHT_COLOR, CHROME_SHADOW_COLOR, CHROME_FACE_COLOR, CHROME_DARK_COLOR,
                 FCF_TITLEBAR, FCF_SYSMENU, FCF_MINBUTTON, FCF_MAXBUTTON, FCF_SIZEBORDER};
-    use crate::loader::constants::FCF_BORDER;
+    use crate::loader::constants::{FCF_BORDER, WS_MINIMIZED, WS_MAXIMIZED};
+    use super::{display_flags, frame_chrome_hit, ChromeHit, CHROME_TEXT_COLOR};
     use super::{draw_menu_chrome, menu_bar_item_width, MenuItem,
                 MENU_BG_COLOR, MENU_EDGE_COLOR, MENU_HILITE_COLOR,
                 MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H, MIS_SEPARATOR};
@@ -2054,7 +2125,7 @@ mod tests {
     fn chrome_buf(frame_flags: u32, focused: bool) -> Vec<u32> {
         let mut buf = vec![0x00FF_00FFu32; 240 * 140];
         draw_frame_chrome(&mut buf, 240, &FrameChrome {
-            x: 10, top: 10, cx: 200, cy: 100, frame_flags, title: "Title", focused, cjk: super::CjkRegion::Auto,
+            x: 10, top: 10, cx: 200, cy: 100, frame_flags, title: "Title", focused, cjk: super::CjkRegion::Auto, state: 0,
         });
         buf
     }
@@ -2099,7 +2170,7 @@ mod tests {
         let mut buf = vec![0u32; 240 * 140];
         draw_frame_chrome(&mut buf, 240, &FrameChrome {
             x: 10, top: 10, cx: 200, cy: 100, frame_flags: FCF_TITLEBAR,
-            title: "A very long window title that cannot possibly fit in the bar", focused: true, cjk: super::CjkRegion::Auto,
+            title: "A very long window title that cannot possibly fit in the bar", focused: true, cjk: super::CjkRegion::Auto, state: 0,
         });
         let px = |x: i32, y: i32| buf[y as usize * 240 + x as usize];
         let close_x = 10 + 200 - CHROME_BTN_MARGIN - CHROME_BTN_W;
@@ -2112,6 +2183,64 @@ mod tests {
                 assert_eq!(px(x, y), CHROME_TITLE_ACTIVE, "title text ran into the buttons at ({x},{y})");
             }
         }
+    }
+
+    /// A maximized frame's maximize button shows the restore pictogram; the
+    /// other buttons stay as they are.
+    #[test]
+    fn frame_chrome_maximized_shows_a_restore_button() {
+        let flags = FCF_TITLEBAR | FCF_SYSMENU | FCF_MINBUTTON | FCF_MAXBUTTON;
+        let draw = |state: u32| {
+            let mut buf = vec![0u32; 240 * 140];
+            draw_frame_chrome(&mut buf, 240, &FrameChrome {
+                x: 10, top: 10, cx: 200, cy: 100, frame_flags: flags, title: "T", focused: true, state, cjk: super::CjkRegion::Auto,
+            });
+            buf
+        };
+        let (normal, maximized) = (draw(0), draw(WS_MAXIMIZED));
+        let close_x = 10 + 200 - CHROME_BTN_MARGIN - CHROME_BTN_W;
+        let max_x = close_x - CHROME_BTN_W - CHROME_BTN_GAP;
+        let button = |buf: &[u32], x0: i32| -> Vec<u32> {
+            (10..10 + CHROME_TITLE_H).flat_map(|y| (x0..x0 + CHROME_BTN_W).map(move |x| (x, y)))
+                .map(|(x, y)| buf[y as usize * 240 + x as usize]).collect()
+        };
+        assert_ne!(button(&normal, max_x), button(&maximized, max_x), "restore pictogram");
+        assert_eq!(button(&normal, close_x), button(&maximized, close_x));
+        assert_eq!(button(&normal, max_x - CHROME_BTN_W - CHROME_BTN_GAP),
+                   button(&maximized, max_x - CHROME_BTN_W - CHROME_BTN_GAP));
+    }
+
+    /// A minimized frame is drawn as a bordered title bar with its title and
+    /// no buttons, and every click on it is a title-bar click.
+    #[test]
+    fn minimized_frame_is_a_title_bar_without_buttons() {
+        use crate::loader::constants::{ICON_AREA_GAP, MINIMIZED_CX, MINIMIZED_CY};
+        let flags = FCF_TITLEBAR | FCF_SYSMENU | FCF_SIZEBORDER | FCF_MINBUTTON | FCF_MAXBUTTON;
+        let shown = display_flags(flags, WS_MINIMIZED);
+        assert_eq!(shown, FCF_TITLEBAR | FCF_BORDER);
+        assert_eq!(display_flags(flags, WS_MAXIMIZED), flags);
+        let mut buf = vec![0u32; 240 * 40];
+        draw_frame_chrome(&mut buf, 240, &FrameChrome {
+            x: 0, top: 0, cx: MINIMIZED_CX, cy: MINIMIZED_CY, frame_flags: shown,
+            title: "Iconic", focused: true, state: WS_MINIMIZED, cjk: super::CjkRegion::Auto,
+        });
+        let px = |x: i32, y: i32| buf[y as usize * 240 + x as usize];
+        let close_x = MINIMIZED_CX - CHROME_BTN_MARGIN - CHROME_BTN_W;
+        assert_eq!(px(close_x + 1, CHROME_BTN_INSET_Y + 1), CHROME_TITLE_ACTIVE, "no close button");
+        assert_eq!(px(5, CHROME_BTN_INSET_Y + 1), CHROME_TITLE_ACTIVE, "no system-menu button");
+        assert!((0..MINIMIZED_CX).any(|x| (0..CHROME_TITLE_H).any(|y| px(x, y) == CHROME_TEXT_COLOR)),
+                "the title is drawn");
+        // Hit-testing: anywhere on the icon is the title bar.
+        let (wx, wy) = (ICON_AREA_GAP, ICON_AREA_GAP);
+        let hit = |x, y| frame_chrome_hit(wx, wy, MINIMIZED_CX, MINIMIZED_CY, flags, WS_MINIMIZED, x, y);
+        assert_eq!(hit(wx + MINIMIZED_CX - 5, wy + MINIMIZED_CY - 5), ChromeHit::TitleBar, "where close was");
+        assert_eq!(hit(wx + 5, wy), ChromeHit::TitleBar, "the bottom border");
+        assert_eq!(hit(wx + MINIMIZED_CX, wy), ChromeHit::None);
+        // A normal frame keeps its buttons; without a title bar it has none.
+        let close = frame_chrome_hit(0, 0, 200, 100, flags, 0, 200 - CHROME_BTN_MARGIN - 4, 95);
+        assert_eq!(close, ChromeHit::Close);
+        assert_eq!(frame_chrome_hit(0, 0, 200, 100, FCF_SIZEBORDER, 0, 195, 95), ChromeHit::None);
+        assert_eq!(frame_chrome_hit(0, 0, 200, 100, flags, WS_MAXIMIZED, 10, 95), ChromeHit::SysMenu);
     }
 
     /// A sizing border is a raised bevel; a plain border is a uniform outline;
@@ -2659,20 +2788,20 @@ mod compositor_tests {
     fn chrome_cache_reports_only_real_changes() {
         let mut c = ChromeCache::new();
         let items = items();
-        assert!(c.sync("App", 200, FCF_TITLEBAR, true, Some((&items, 0)), 196), "first sync renders");
+        assert!(c.sync("App", 200, FCF_TITLEBAR, 0, true, Some((&items, 0)), 196), "first sync renders");
         c.render();
-        assert!(!c.sync("App", 200, FCF_TITLEBAR, true, Some((&items, 0)), 196), "unchanged");
+        assert!(!c.sync("App", 200, FCF_TITLEBAR, 0, true, Some((&items, 0)), 196), "unchanged");
         for changed in [
-            c.sync("App 2", 200, FCF_TITLEBAR, true, Some((&items, 0)), 196),
-            c.sync("App 2", 220, FCF_TITLEBAR, true, Some((&items, 0)), 216),
-            c.sync("App 2", 220, FCF_TITLEBAR, false, Some((&items, 0)), 216),
-            c.sync("App 2", 220, FCF_TITLEBAR, false, Some((&items, 1)), 216),
-            c.sync("App 2", 220, FCF_TITLEBAR, false, None, 216),
+            c.sync("App 2", 200, FCF_TITLEBAR, 0, true, Some((&items, 0)), 196),
+            c.sync("App 2", 220, FCF_TITLEBAR, 0, true, Some((&items, 0)), 216),
+            c.sync("App 2", 220, FCF_TITLEBAR, 0, false, Some((&items, 0)), 216),
+            c.sync("App 2", 220, FCF_TITLEBAR, 0, false, Some((&items, 1)), 216),
+            c.sync("App 2", 220, FCF_TITLEBAR, 0, false, None, 216),
         ] {
             assert!(changed);
             c.render();
         }
-        assert!(!c.sync("App 2", 220, FCF_TITLEBAR, false, None, 216));
+        assert!(!c.sync("App 2", 220, FCF_TITLEBAR, 0, false, None, 216));
     }
 
     /// The title and menus are drawn in the CJK face of the frame's queue
@@ -2684,11 +2813,11 @@ mod compositor_tests {
         let items = vec![MenuItem { id: 1, style: 0, attr: 0, text: "直骨".into(), children: vec![] }];
         assert!(!c.set_cjk(CjkRegion::Auto), "unchanged");
         c.set_cjk(CjkRegion::Japanese);
-        c.sync("直骨", 200, FCF_TITLEBAR, true, Some((&items, 0)), 196);
+        c.sync("直骨", 200, FCF_TITLEBAR, 0, true, Some((&items, 0)), 196);
         c.render();
         let (title, bar) = (c.title_px.clone(), c.menu.as_ref().unwrap().bar_px.clone());
         assert!(c.set_cjk(CjkRegion::SimplifiedChinese), "a new face");
-        assert!(!c.sync("直骨", 200, FCF_TITLEBAR, true, Some((&items, 0)), 196) || c.stale);
+        assert!(!c.sync("直骨", 200, FCF_TITLEBAR, 0, true, Some((&items, 0)), 196) || c.stale);
         c.render();
         assert_ne!(c.title_px, title, "title redrawn in the Chinese face");
         assert_ne!(c.menu.as_ref().unwrap().bar_px, bar, "menu bar redrawn in the Chinese face");
@@ -2698,7 +2827,7 @@ mod compositor_tests {
     fn chrome_cache_renders_title_menu_and_open_pulldown() {
         let mut c = ChromeCache::new();
         let items = items();
-        c.sync("App", 200, FCF_TITLEBAR, true, Some((&items, 1)), 196);
+        c.sync("App", 200, FCF_TITLEBAR, 0, true, Some((&items, 1)), 196);
         c.render();
         assert_eq!(c.title_px.len(), 200 * CHROME_TITLE_H as usize);
         assert_eq!(c.title_px[200 * 5 + 100], CHROME_TITLE_ACTIVE, "title bar background");
@@ -2708,7 +2837,7 @@ mod compositor_tests {
         assert_eq!((pd.dx, pd.h), (MENU_BAR_ITEM_INSET, 2 * MENU_DROPDOWN_ITEM_H));
         assert_eq!(pd.pixels.len(), (MENU_DROPDOWN_W * pd.h) as usize);
         // Closing the menu drops the pull-down.
-        c.sync("App", 200, FCF_TITLEBAR, true, Some((&items, 0)), 196);
+        c.sync("App", 200, FCF_TITLEBAR, 0, true, Some((&items, 0)), 196);
         c.render();
         assert!(c.menu.as_ref().unwrap().pulldown.is_none());
     }
@@ -2736,7 +2865,7 @@ mod compositor_tests {
         let mut fb = Surface::new(40, 20);
         fb.buffer.fill(0x00_1234);
         let mut chrome = ChromeCache::new();
-        chrome.sync("T", 44, FCF_TITLEBAR | crate::loader::constants::FCF_BORDER, true, None, 40);
+        chrome.sync("T", 44, FCF_TITLEBAR | crate::loader::constants::FCF_BORDER, 0, true, None, 40);
         chrome.render();
         let p = place_frame(1, 4, 4, 44, 42, FCF_TITLEBAR | crate::loader::constants::FCF_BORDER, false, None, (40, 20), dh as i32);
         let clip = Rect::new(0, 0, 30, 30);

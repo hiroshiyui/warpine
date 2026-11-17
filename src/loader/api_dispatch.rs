@@ -71,6 +71,7 @@ impl super::Loader {
             ApiResult::Normal(v)               => { debug!(ret = v, "return"); *v }
             ApiResult::Callback { wnd_proc, .. } => { debug!(wnd_proc, "callback"); 0 }
             ApiResult::WmCreateCallback { wnd_proc, .. } => { debug!(wnd_proc, "wm_create_callback"); 0 }
+            ApiResult::MinMaxFrame { wnd_proc, .. } => { debug!(wnd_proc, "minmax_frame"); 0 }
             ApiResult::CallGuest { addr, .. }  => { debug!(addr, "call_guest"); 0 }
             ApiResult::DlgRunLoop { dlg_proc, .. } => { debug!(dlg_proc, "dlg_run_loop"); 0 }
             ApiResult::DestroyWindows { wnd_proc, .. } => { debug!(wnd_proc, "destroy_windows"); 0 }

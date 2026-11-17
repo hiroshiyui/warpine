@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 use super::constants::*;
-use super::{ApiResult, CallbackFrame, FaultContext, FrameKind, MutexExt};
+use super::{ApiResult, CallbackFrame, FaultContext, FrameKind, MutexExt, pm_minmax};
 use super::crash_dump::CrashContext;
 use super::gdb_stub::{GdbResumeCmd, GdbStopInfo, GdbVcpuStopReason};
 use crate::lx::LxFile;
@@ -584,6 +584,14 @@ impl super::Loader {
                                         // ignore vetoes for now and always return h_frame.)
                                         regs.rax = h_frame as u64;
                                     }
+                                    FrameKind::MinMaxFrame { frame, op, target, ret } => {
+                                        // FALSE: the client lets the frame change state.
+                                        if result == 0 {
+                                            self.shared.window_mgr.lock_or_recover()
+                                                .finish_minmax(frame, op, target);
+                                        }
+                                        regs.rax = ret as u64;
+                                    }
                                     FrameKind::DlgRunLoop { dlg_proc, hwnd_dlg, hmq } => {
                                         // Check whether the dialog was dismissed while the
                                         // last message callback was executing.
@@ -753,6 +761,31 @@ impl super::Loader {
                                 self.guest_write::<u32>(sp + 8, msg).expect("Callback stack write OOB");
                                 self.guest_write::<u32>(sp + 12, mp1).expect("Callback stack write OOB");
                                 self.guest_write::<u32>(sp + 16, mp2).expect("Callback stack write OOB");
+                                regs.rip = wnd_proc as u64;
+                                vcpu.set_regs(&regs).unwrap();
+                            }
+                            ApiResult::MinMaxFrame { wnd_proc, client, frame, op, target, ret } => {
+                                // Send WM_MINMAXFRAME (mp1 = PSWP) to the client;
+                                // FrameKind::MinMaxFrame finishes the change.
+                                let mut regs = vcpu.get_regs().unwrap();
+                                let return_addr = self.guest_read::<u32>(regs.rsp as u32)
+                                    .expect("Stack read OOB for WM_MINMAXFRAME return address");
+                                callback_stack.push(CallbackFrame {
+                                    saved_rip: return_addr as u64,
+                                    saved_rsp: regs.rsp + 4,
+                                    kind: FrameKind::MinMaxFrame { frame, op, target, ret },
+                                });
+                                // The SWP lies just below the caller's stack, above
+                                // the callback's return address and arguments.
+                                regs.rsp -= 20 + pm_minmax::SWP_STRUCT_SIZE as u64;
+                                let sp = regs.rsp as u32;
+                                let pswp = sp + 20;
+                                for (i, v) in pm_minmax::minmax_swp(frame, op, target).into_iter().enumerate() {
+                                    self.guest_write::<u32>(pswp + 4 * i as u32, v).expect("Callback stack write OOB");
+                                }
+                                for (o, v) in [(0, CALLBACK_RET_TRAP), (4, client), (8, WM_MINMAXFRAME), (12, pswp), (16, 0)] {
+                                    self.guest_write::<u32>(sp + o, v).expect("Callback stack write OOB");
+                                }
                                 regs.rip = wnd_proc as u64;
                                 vcpu.set_regs(&regs).unwrap();
                             }

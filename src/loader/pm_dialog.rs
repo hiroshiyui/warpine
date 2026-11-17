@@ -12,7 +12,8 @@
 //! * Accelerator tables (`ACCELTABLE`): parsed by [`parse_accel_table`] and
 //!   matched against `WM_CHAR` by [`accel_matches`]; `WinGetMsg` and the
 //!   modal dialog loop translate keystrokes through the active window's
-//!   table, the queue's table and the system table (Alt+F4 → `SC_CLOSE`).
+//!   table, the queue's table and the system table (Alt+F4 → `SC_CLOSE`,
+//!   Alt+F5 / Alt+F9 / Alt+F10 → `SC_RESTORE` / `SC_MINIMIZE` / `SC_MAXIMIZE`).
 //!
 //! Dialog coordinates: controls keep the template position converted to
 //! pixels, relative to the dialog frame's bottom-left corner as in PM. The
@@ -214,8 +215,13 @@ pub(super) fn parse_accel_table(data: &[u8]) -> Vec<AccelEntry> {
 }
 
 /// The system accelerator table: keystrokes every frame understands.
+/// Alt+F4 closes, Alt+F5 restores, Alt+F9 minimizes, Alt+F10 maximizes
+/// (IBM OS/2 1.2 Quick Reference).
 pub(super) const SYSTEM_ACCELS: &[AccelEntry] = &[
     AccelEntry { flags: AF_VIRTUALKEY | AF_ALT | AF_SYSCOMMAND, key: VK_F4 as u16, cmd: SC_CLOSE as u16 },
+    AccelEntry { flags: AF_VIRTUALKEY | AF_ALT | AF_SYSCOMMAND, key: VK_F5 as u16, cmd: SC_RESTORE as u16 },
+    AccelEntry { flags: AF_VIRTUALKEY | AF_ALT | AF_SYSCOMMAND, key: VK_F9 as u16, cmd: SC_MINIMIZE as u16 },
+    AccelEntry { flags: AF_VIRTUALKEY | AF_ALT | AF_SYSCOMMAND, key: VK_F10 as u16, cmd: SC_MAXIMIZE as u16 },
 ];
 
 /// Whether `WM_CHAR` `(mp1, mp2)` is the keystroke accelerator `entry`
@@ -669,10 +675,17 @@ mod tests {
     }
 
     #[test]
-    fn system_accelerators_close_with_alt_f4() {
+    fn system_accelerators_close_restore_minimize_maximize() {
         let (m1, m2) = key(KC_VIRTUALKEY | KC_ALT | KC_SCANCODE, 0, VK_F4, 0x3E);
         let hit = SYSTEM_ACCELS.iter().find(|e| accel_matches(e, m1, m2)).expect("Alt+F4");
         assert_eq!(accel_message(hit), (WM_SYSCOMMAND, SC_CLOSE, CMDSRC_ACCELERATOR));
+        for (vk, scan, sc) in [(VK_F5, 0x3F, SC_RESTORE), (VK_F9, 0x43, SC_MINIMIZE), (VK_F10, 0x44, SC_MAXIMIZE)] {
+            let (m1, m2) = key(KC_VIRTUALKEY | KC_ALT | KC_SCANCODE, 0, vk, scan);
+            let hit = SYSTEM_ACCELS.iter().find(|e| accel_matches(e, m1, m2)).expect("Alt+Fn");
+            assert_eq!(accel_message(hit), (WM_SYSCOMMAND, sc, CMDSRC_ACCELERATOR));
+            let (m1, m2) = key(KC_VIRTUALKEY | KC_SCANCODE, 0, vk, scan);
+            assert!(!SYSTEM_ACCELS.iter().any(|e| accel_matches(e, m1, m2)), "without Alt: no accelerator");
+        }
         let plain = AccelEntry { flags: AF_CHAR, key: b'q' as u16, cmd: 7 };
         assert_eq!(accel_message(&plain), (WM_COMMAND, 7, CMDSRC_ACCELERATOR));
         let help = AccelEntry { flags: AF_VIRTUALKEY | AF_HELP, key: VK_F1 as u16, cmd: 9 };
