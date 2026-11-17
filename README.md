@@ -21,6 +21,8 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 | **Check boxes and radio buttons.** A dialog driven by Space, Tab, the arrow keys, a mnemonic and a click: an unchecked, an indeterminate (`BS_AUTO3STATE`) and a ticked check box, two radio groups, and *Apply* highlighted with `BM_SETHILITE`, so it is drawn pressed. | **Dialogs from the keyboard.** Ctrl+D, from the window's accelerator table, opens a modal dialog built from a `DLGTEMPLATE` resource. `Warp` was typed into the entry field that had the focus, then Tab and Down twice picked *Green*; Enter would press the default button *OK*. |
 | ![A "Message Box Test" message box with a blue information icon left of the text "The operation completed." and "Two lines of text in one box.", and an OK button with a default outline, over the inactive PM Message Box Test window](doc/screenshots/pm_msgbox.png) | ![The desktop with the PM Min/Max Test frame minimized to a small title bar at the bottom-left, an active "Hide button" frame whose title bar has hide, maximize and close buttons, and an inactive "No buttons" frame with only a close button](doc/screenshots/pm_minmax.png) |
 | **Message boxes.** `WinMessageBox` is a modal PM dialog: an icon for the `MB_INFORMATION` style, text wrapped at word boundaries, buttons from the `MB_*` style; only the owner window is disabled while it is open, and its timers and repaints keep running. Keys and clicks answered the three boxes before this one. | **Minimize, maximize and hide.** The main frame was maximized and restored with title-bar double clicks, then minimized with Alt+F9: it became a title bar in the icon area at the bottom-left, and the next frame, created with `FCF_HIDEMAX`, took over as the active window. |
+| ![The 4OS2 command shell in a "Warpine — 4os2.exe" frame on the PM desktop: its version banner, then the ver command and a wide dir listing of drive C:, ending at the [c:\\] prompt](doc/screenshots/4os2_window.png) | |
+| **Text-mode programs in a PM window.** A VIO program such as 4OS2 runs in a frame on the PM desktop, as in an OS/2 window session; keys typed while the frame is active go to the program. `WARPINE_VIO=fullscreen` gives it the separate text window shown at the top of this page instead. | |
 
 ### Work in progress
 
@@ -31,7 +33,7 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 - **Games and video** — DIVE (direct framebuffer blitting) and OpenGL are not implemented yet.
 - **Advanced controls** — containers, notebooks, drag and drop and printing are not started.
 
-_Screenshots in this section captured from uncommitted changes on top of `0c8a619` on 2026-11-17._
+_Screenshots in this section captured from uncommitted changes on top of `3705715` on 2026-11-17._
 <!-- screenshots:end -->
 
 ## Key Features
@@ -43,7 +45,7 @@ _Screenshots in this section captured from uncommitted changes on top of `0c8a61
 - **Multi-Threading:** OS/2 threads mapped 1:1 to host threads, each with its own KVM vCPU.
 - **Presentation Manager (GUI):** Window management, message loop, graphics primitives (drawn on the calling thread, so `GpiQueryPel` reads pixels back and `GpiSetMix` raster operations such as XOR combine with what is there), memory presentation spaces, bitmaps (`GpiCreateBitmap`, `GpiLoadBitmap`) and `GpiBitBlt` with raster operations and stretching, logical colour tables, timers, clipboard, dialogs, menus, and resource loading via SDL. Each window is kept as its own texture and drawn by the platform's accelerated SDL renderer with vsync, so moving windows costs no redrawing (`WARPINE_COMPOSITOR=software` composites on the CPU instead).
 - **IBM Plex Typography:** All PM text (title bars, menus, dialogs, controls, and GPI text) is rendered anti-aliased in the embedded IBM Plex Sans / Mono / Serif families, with IBM Plex Sans JP / KR / TC / SC for CJK and GNU Unifont as the last-resort fallback. `GpiCreateLogFont` maps OS/2 face names, bold/italic and size onto these faces; font metrics APIs report their real proportional widths.
-- **SDL VGA Text Renderer:** 640×400 text-mode window with CP437 8×16 font, CGA 16-colour palette, and blinking cursor. CLI apps default to this mode; `WARPINE_HEADLESS=1` falls back to terminal.
+- **Text-mode programs in a PM window:** a VIO program runs in a window on the PM desktop, as in an OS/2 window session — CP437 8×16 font, CGA 16-colour palette, blinking cursor. `WARPINE_VIO=fullscreen` gives it the separate 640×400 text window instead (the only choice for programs marked incompatible with PM windowing), and `WARPINE_HEADLESS=1` the host terminal.
 - **Text-Mode Console:** Full VIO and KBD subsystem emulation with screen buffer, cursor management, scroll, and keyboard input.
 - **Filesystem:** HPFS-compatible VFS (`VfsBackend` trait) with `HostDirBackend`: case-insensitive lookup, extended attributes (xattrs + sidecar), file locking, OS/2 wildcard matching, sandbox isolation. C: drive auto-mounted at `~/.local/share/warpine/drive_c/`.
 - **Memory Management:** `DosAllocMem`/`DosFreeMem`, shared memory, guest physical memory manager.
@@ -54,7 +56,7 @@ _Screenshots in this section captured from uncommitted changes on top of `0c8a61
 - **NE Format Execution:** Full NE (New Executable) loader and 16-bit execution — loads OS/2 1.x 16-bit NE binaries into GDT-tiled guest memory, dispatches DOSCALLS/VIOCALLS via Pascal-convention 16-bit thunks. `ne_hello` (pure assembly, no Watcom CRT) runs `DosWrite`+`DosExit` correctly.
 - **GDB Remote Stub:** `--gdb <port>` enables GDB RSP over TCP — attach with `gdb`/`gef`/`pwndbg` for software breakpoints, single-step, and full register/memory access.
 - **Crash Dump Facility:** Structured crash reports on fatal VMEXITs — registers, stack, code bytes, and last 256 API calls written to `warpine-crash-<pid>.txt`.
-- **Builtin CMD.EXE Shell:** Native Rust command shell. `cargo run -- CMD.EXE` opens a 640×400 SDL VGA text window (same as any CLI app); `WARPINE_HEADLESS=1` falls back to the host terminal. Also intercepts `DosExecPgm("CMD.EXE")` from running OS/2 guests. No Open Watcom or 4OS2 required. Built-in commands: `DIR`, `CD`, `SET`, `ECHO`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `HELP`, `EXIT`. Line editor with history (↑/↓). `.CMD` script interpreter.
+- **Builtin CMD.EXE Shell:** Native Rust command shell. `cargo run -- CMD.EXE` opens it in a window on the PM desktop (same as any CLI app); `WARPINE_HEADLESS=1` falls back to the host terminal. Also intercepts `DosExecPgm("CMD.EXE")` from running OS/2 guests. No Open Watcom or 4OS2 required. Built-in commands: `DIR`, `CD`, `SET`, `ECHO`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `HELP`, `EXIT`. Line editor with history (↑/↓). `.CMD` script interpreter.
 - **Rust Guest Toolchain (Phase C):** Write OS/2 guest applications in Rust with `no_std`. Three standalone crates: `crates/warpine-os2-sys` (raw API bindings for DOSCALLS/VIOCALLS/KBDCALLS), `crates/warpine-os2-rt` (`_start` + panic handler + global allocator via `DosAllocMem`/`DosFreeMem`), `crates/warpine-os2` (ergonomic wrappers: `mod file`, `mod memory`, `mod thread`, `mod vio`, `mod process`). `samples/rust_hello` demonstrates a full Rust→LX binary with `cargo +nightly build`.
 - **API Compatibility Report:** `warpine --compat` prints a module-grouped report of all implemented APIs with stub annotations.
 
@@ -194,7 +196,8 @@ make -C samples/pm_demo               # Presentation Manager GUI demo
 
 ### 3. Run an OS/2 binary
 ```bash
-cargo run -- samples/hello/hello.exe        # CLI app (SDL text window)
+cargo run -- samples/hello/hello.exe        # CLI app (in a window on the PM desktop)
+WARPINE_VIO=fullscreen cargo run -- samples/hello/hello.exe   # CLI app in the 640×400 text window
 cargo run -- samples/pm_demo/pm_demo.exe    # GUI app
 
 WARPINE_HEADLESS=1 cargo run -- samples/hello/hello.exe   # Terminal fallback
@@ -202,7 +205,7 @@ WARPINE_HEADLESS=1 cargo run -- samples/hello/hello.exe   # Terminal fallback
 
 ### 4. Run the builtin CMD.EXE shell
 ```bash
-cargo run -- CMD.EXE                       # Interactive shell (SDL text window)
+cargo run -- CMD.EXE                       # Interactive shell (in a window on the PM desktop)
 WARPINE_HEADLESS=1 cargo run -- CMD.EXE   # Terminal/headless mode
 cargo run -- CMD.EXE /C "ECHO Hello!"     # Run one command and exit
 cargo run -- CMD.EXE /K "VER"             # Run one command then stay interactive
@@ -259,7 +262,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 981 unit tests (no KVM required)
+cargo test                        # 989 unit tests (no KVM required)
 cargo test --test integration     # 38 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```

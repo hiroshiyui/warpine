@@ -59,6 +59,8 @@ warpine --compat
 | `WARPINE_TRACE` | `json` | — | JSON Lines (one object per event) |
 | `WARPINE_DESKTOP_W`, `WARPINE_DESKTOP_H` | Pixels | `1024`, `768` | Size of the virtual PM desktop (also reported by `SV_CXSCREEN`/`SV_CYSCREEN`) |
 | `WARPINE_COMPOSITOR` | `software`, `layered` | `layered` on a display, `software` on SDL's `dummy`/`offscreen` drivers | How PM frames reach the screen: `layered` keeps one texture per window and draws them with the platform's accelerated SDL renderer (OpenGL, Vulkan, Metal or Direct3D; `SDL_RENDER_DRIVER=gpu` picks SDL_GPU) with vsync, so moving a window costs no redrawing; `software` composites on the CPU into one texture. `layered` falls back to `software` when no renderer can be created |
+| `WARPINE_VIO` | `window`, `fullscreen` | `window` | How a text-mode (VIO) program on a terminal is shown: in a window on the PM desktop (an "OS/2 window" session) or in the separate 640 × 400 text window ("OS/2 full screen"). A program whose LX module flags mark it incompatible with PM windowing always runs full screen |
+| `WARPINE_HEADLESS` | any value | _(unset)_ | Run a text-mode program on the host terminal (ANSI output, raw keyboard) even when stdout is a terminal; a piped stdout is headless anyway |
 | `WARPINE_GUI_SCRIPT` | Path to a script file | _(unset)_ | Replay a scripted PM session (`click`, `rclick`, `drag`, `key`, `text`, `dump`, `quit` steps) for testing; combine with `SDL_VIDEODRIVER=dummy` to run without a display. On a real display, host mouse and keyboard input is ignored while the script runs. See the developer guide, "GUI regression tests" |
 | `RUST_LOG` | Filter string | `info` | Log level: `trace`, `debug`, `info`, `warn`, `error`. Module-scoped filters supported (e.g. `warpine::loader=debug`) |
 
@@ -98,9 +100,17 @@ Warpine automatically selects an execution mode based on the executable and envi
 - Window title: `Warpine — <filename>`.
 - All PM APIs (windows, menus, dialogs, graphics, clipboard) are active.
 
-### CLI Text Mode (SDL)
+### CLI Text Mode in a PM Window (default)
 
-**Trigger:** CLI executable (no PM imports) and stdout is a terminal.
+**Trigger:** CLI executable (no PM imports), stdout is a terminal, `WARPINE_VIO` unset or `window`, and the program is not marked incompatible with PM windowing.
+
+- Opens the PM desktop with the program's 80×25 text screen in a frame titled `Warpine — <filename>`, sized to the screen (it follows `VioSetMode`) and moved by its title bar.
+- CP437 8×16 VGA font, CGA 16-colour palette, blinking cursor, as in the full-screen mode.
+- Keys typed while the frame is active go to the program (`KbdCharIn`); the close button or a double click on the system-menu icon ends it.
+
+### CLI Text Mode, Full Screen (SDL)
+
+**Trigger:** as above with `WARPINE_VIO=fullscreen`, or a program marked incompatible with PM windowing (LX module flags).
 
 - Opens a 640×400 SDL window rendering an 80×25 character grid.
 - CP437 8×16 VGA font, CGA 16-colour palette, blinking cursor.
@@ -128,7 +138,7 @@ Warpine includes a native Rust command shell that requires no Open Watcom compil
 ### Invocation
 
 ```bash
-warpine CMD.EXE                    # Interactive session (SDL text window)
+warpine CMD.EXE                    # Interactive session (in a window on the PM desktop)
 WARPINE_HEADLESS=1 warpine CMD.EXE # Terminal/headless mode
 warpine CMD.EXE /C "DIR C:\"      # Run one command and exit
 warpine CMD.EXE /K "VER"          # Run one command then stay interactive
@@ -136,7 +146,7 @@ warpine CMD.EXE /K "VER"          # Run one command then stay interactive
 
 The shell can also be launched from within a running OS/2 application via `DosExecPgm("CMD.EXE")` or `DosExecPgm("OS2SHELL.EXE")`.
 
-**SDL vs terminal:** When stdout is a terminal and `WARPINE_HEADLESS` is not set, the shell opens a 640×400 SDL VGA text window (same as any CLI app). Set `WARPINE_HEADLESS=1` or pipe stdout to force terminal/headless mode.
+**SDL vs terminal:** When stdout is a terminal and `WARPINE_HEADLESS` is not set, the shell runs like any CLI app: in a window on the PM desktop, or in the 640×400 text window with `WARPINE_VIO=fullscreen`. Set `WARPINE_HEADLESS=1` or pipe stdout to force terminal/headless mode.
 
 ### Flags
 

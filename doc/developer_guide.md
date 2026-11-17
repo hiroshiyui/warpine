@@ -349,8 +349,9 @@ The Presentation Manager (PM) is OS/2's GUI subsystem. Warpine implements it usi
 
 `main.rs` selects an execution mode based on the executable's imports and environment:
 
-- **CLI apps (SDL text window)** — default for apps that do not import `PMWIN`. The vCPU runs on a worker thread. `SdlTextRenderer` runs `run_text_loop()` on the main thread (required by SDL), rendering a 640×400 VGA text window.
-- **CLI apps (terminal / headless)** — `WARPINE_HEADLESS=1`. The vCPU runs on the main thread; terminal ANSI output and raw-mode keyboard are used.
+- **CLI apps in a PM window** — default for apps that do not import `PMWIN` when stdout is a terminal (`run_vio_session` in `main.rs`, `VioDisplay::Window`). The PM desktop runs on the main thread with a host-owned frame showing the VIO buffer (see "VIO programs in a PM window" below); the vCPU runs on a worker thread.
+- **CLI apps full screen (SDL text window)** — `WARPINE_VIO=fullscreen`, or a program whose LX module flags say "incompatible with PM windowing". `SdlTextRenderer` runs `run_text_loop()` on the main thread (required by SDL), rendering a 640×400 VGA text window.
+- **CLI apps (terminal / headless)** — `WARPINE_HEADLESS=1` or stdout not a terminal (`headless_requested`). The vCPU runs on the main thread; terminal ANSI output and raw-mode keyboard are used.
 - **PM apps** — SDL event loop runs on the main thread. The vCPU is spawned on a worker thread. Drawing goes through shared per-frame surfaces (see Rendering Pipeline); the few requests only the GUI thread can carry out — host clipboard, mouse capture — go through a channel (`GUISender` / `GUIReceiver`).
 
 ### Window Lifecycle
@@ -606,8 +607,9 @@ Two rendering backends are available, selected at startup:
 
 | Mode | Condition | Description |
 |---|---|---|
-| **SDL text window** | default | 640×400 SDL window; CP437 8×16 font; CGA 16-colour palette; blinking block/underline cursor |
-| **Terminal (ANSI)** | `WARPINE_HEADLESS=1` | ANSI escape sequences on the host terminal; raw-mode termios keyboard |
+| **PM window** | default | A frame on the PM desktop showing the 80×25 screen (`gui/vio_window.rs`), same font, palette and cursor as the text window |
+| **SDL text window** | `WARPINE_VIO=fullscreen`, or not window-compatible | 640×400 SDL window; CP437 8×16 font; CGA 16-colour palette; blinking block/underline cursor |
+| **Terminal (ANSI)** | `WARPINE_HEADLESS=1`, or stdout not a terminal | ANSI escape sequences on the host terminal; raw-mode termios keyboard |
 
 Set `WARPINE_HEADLESS=1` for headless CI runs or when an SDL display is unavailable.
 
@@ -644,6 +646,14 @@ run_text_loop(renderer, shared)
 **Glyph rendering**: `get_glyph_for_char(ch: char) -> [u8; 16]` does a binary search over the `UNIFONT_SBCS` table (7282 half-width 8×16 entries generated from GNU Unifont 17 by `build.rs`). Characters absent from Unifont return a blank glyph. For DBCS wide characters, `get_glyph_dbcs(ch: char) -> [u8; 32]` searches the `font_unifont_wide.bin` binary blob (49,804 16×16 entries). The old hand-crafted `src/font8x16.rs` was removed in Unifont Phase A.
 
 **CGA palette**: `CGA_PALETTE: [u32; 16]` — ARGB8888 values indexed by 4-bit colour nibble (bits 3:0 for foreground, 7:4 for background in the attribute byte).
+
+**Shared pieces**: `render_cells(buf, blink_on, pixels, w, h)` draws a `VgaTextBuffer` into an ARGB buffer, and `kbd_key_down` / `kbd_text_input` turn SDL key and text events into `KbdKeyInfo` entries of `kbd_queue`; the text window and the VIO window on the PM desktop both use them.
+
+### VIO programs in a PM window
+
+On OS/2 the session type is chosen when a program starts, not by the program: a window-compatible VIO program runs either "OS/2 full screen" or in an "OS/2 window" on the PM desktop (`DosStartSession` `SSF_TYPE_FULLSCREEN` / `SSF_TYPE_WINDOWABLEVIO`; the default type is the program's own). The program only says what it allows, in the application-type bits of its LX module flags (`LxHeader::app_type`: 100h "Incompatible with PM windowing", 200h "Compatible with PM windowing", 300h "Uses PM windowing API"). Warpine runs a VIO program in a window unless `WARPINE_VIO=fullscreen` asks for the text window or the program is not window-compatible (`gui::vio_window::choose_display`; which type `SSF_TYPE_DEFAULT` gives a window-compatible program is not stated in the sources found, so the window default is Warpine's choice).
+
+`run_vio_session` (`main.rs`) enables the VIO buffer and the SDL keyboard queue as for the text window, then starts the PM renderer and calls `SdlRenderer::attach_vio_window`, which creates the frame through `WindowManager::create_vio_frame` (`loader/vio_frame.rs`): class `#VioWindow`, `FCF_TITLEBAR | FCF_SYSMENU | FCF_BORDER`, no message queue, `cols × 8` by `rows × 16` pels inside its border and title bar (`vio_frame_size`), active and on top (`WindowManager::vio_frame`). On every pass of the GUI loop `VioWindow::update` snapshots the buffer and, when the cells, the size or the cursor's blink phase changed, draws the screen with `render_cells` and writes it into the frame's surface inside the left border (`Surface::put_span`); a mode change resizes the frame keeping its top edge (`fit_vio_frame`). The program writes the buffer without waking the loop, so the loop waits at most `VIO_POLL` (30 ms) while a VIO window exists. While the frame is the active window, key presses and text go to `kbd_queue` (`kbd_key_down` / `kbd_text_input`) instead of the PM input queue; the close button and a double click on the system-menu icon end the program (`VioWindow::close`), and the title bar moves it. Not yet: resizing (OS/2 shows scroll bars or changes the font), minimize / maximize, the system menu's items, Alt+Home between window and full screen, the mouse, marking text for the clipboard.
 
 **Scripted sessions**: `SdlTextRenderer` loads `WARPINE_GUI_SCRIPT` like the PM renderer (`GuiScript::from_env`). Each pass turns the due `key` / `text` steps into SDL key and text events (`sdl_renderer::script_input_to_event`) that go through the normal keyboard path into `kbd_queue`, drops host keyboard events meanwhile (`is_host_input`), and after them carries out `dump PATH`: the text buffer is rendered afresh with the cursor shown and written as a PPM (`gui_script::write_ppm`). Mouse steps have no effect in the text window. The window opens only when stdout is a terminal, so a headless capture runs under a pseudo-terminal: `SDL_VIDEODRIVER=dummy WARPINE_GUI_SCRIPT=s.script script -qec "target/debug/warpine samples/4os2/4os2.exe" /dev/null` (the integration test `text_mode_window_replays_a_gui_script_and_dumps_the_screen` and the README screenshot do this).
 
@@ -1230,7 +1240,8 @@ src/
                        LayeredCompositor (one texture per frame, drawn by the SDL renderer)
     text_renderer.rs   TextModeRenderer trait, VgaTextBuffer, SdlTextRenderer,
                        HeadlessTextRenderer, run_text_loop(), get_cp437_glyph(),
-                       CGA_PALETTE (44 unit tests)
+                       CGA_PALETTE, render_cells(), kbd_key_down() (44 unit tests)
+    vio_window.rs      VIO program in a PM window: choose_display(), VioWindow
   loader/
     mod.rs             Loader struct, SharedState (kbd_queue/kbd_cond/use_sdl_text), KVM/mock init
     vcpu.rs            vCPU thread: VMEXIT loop, GDB integration, crash dump hooks
@@ -1448,7 +1459,7 @@ cargo clippy --all-targets -- -D warnings   # lint, test code included
 
 The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`) runs both and aborts the commit on a failing test or any lint.
 
-The unit tests (981: 952 warpine + 18 `gen_api` + 11 `lx_link`) include, among others:
+The unit tests (989: 960 warpine + 18 `gen_api` + 11 `lx_link`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -1480,6 +1491,7 @@ The unit tests (981: 952 warpine + 18 `gen_api` + 11 `lx_link`) include, among o
 | `src/loader/pm_win.rs`, `pm_types.rs` | Window tree, Z-order, focus, frame layout and moves, menus and `WM_UPDATEFRAME`, message queues, `WinPeekMsg` filters, codepages, system values |
 | `src/loader/pm_gpi.rs`, `pm_bitmap.rs`, `pm_shapes.rs` | GPI calls, bitmaps and the codec, `GpiBitBlt`, colour tables, arcs and patterns |
 | `src/loader/constants.rs` | Every constant against the OS/2 toolkit headers (`constants_match_toolkit_headers`) |
+| `src/gui/vio_window.rs`, `src/loader/vio_frame.rs` | Display choice (`WARPINE_VIO`, LX application type), the VIO frame's size and chrome, drawing the screen into its surface only on a change, following a mode change, closing ends the program |
 | `src/gui/text_renderer.rs` | CP437 glyph bitmaps (box-drawing, block elements, ASCII delegation), CGA palette (opaque, correct entries), HeadlessTextRenderer frame counting and loop termination, VgaTextBuffer snapshot, KbdKeyInfo queue push/pop (44 tests) |
 
 ### Integration testing with sample apps
@@ -1548,10 +1560,10 @@ CLI samples should print output and exit with code 0. PM samples should open a w
 
 ### Automated integration tests
 
-`tests/integration.rs` contains 54 end-to-end tests that run real OS/2 sample binaries under KVM: CLI samples (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test, ne_hello, rust_hello, …) with headless output checks, and PM samples driven by GUI scripts on SDL's `dummy` driver — the self-checking samples (`pm_dialog_test`, `pm_list_test`, `pm_msgbox_test`, `pm_typeahead_test`, `pm_codepage_test`, `pm_pointer_test`, `pm_audio_test`, `pm_menu_dlg_test`, …) must report every check as passed, and desktop dumps are compared with golden tile signatures (see "GUI regression tests" below). Each test skips itself when `/dev/kvm` or its sample binary is missing.
+`tests/integration.rs` contains 55 end-to-end tests that run real OS/2 sample binaries under KVM: CLI samples (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test, ne_hello, rust_hello, …) with headless output checks, and PM samples driven by GUI scripts on SDL's `dummy` driver — the self-checking samples (`pm_dialog_test`, `pm_list_test`, `pm_msgbox_test`, `pm_typeahead_test`, `pm_codepage_test`, `pm_pointer_test`, `pm_audio_test`, `pm_menu_dlg_test`, …) must report every check as passed, and desktop dumps are compared with golden tile signatures (see "GUI regression tests" below). Each test skips itself when `/dev/kvm` or its sample binary is missing.
 
 ```bash
-cargo test --test integration     # 54 end-to-end tests (requires /dev/kvm)
+cargo test --test integration     # 55 end-to-end tests (requires /dev/kvm)
 ```
 
 ---
@@ -1713,7 +1725,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 981 unit tests (952 warpine + 18 gen_api + 11 lx_link), 54 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 989 unit tests (960 warpine + 18 gen_api + 11 lx_link), 55 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
