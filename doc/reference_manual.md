@@ -390,7 +390,7 @@ APIs marked `[stub]` accept calls and return `NO_ERROR` but perform no operation
 
 ## Implemented APIs
 
-### DOSCALLS (113 APIs: 103 implemented, 10 stub)
+### DOSCALLS (111 APIs: 101 implemented, 10 stub)
 
 **File I/O:**
 DosOpen (273), DosClose (257), DosRead (281), DosWrite (282), DosDelete (259), DosCopy (258), DosMove (271), DosSetFilePtr (256), DosSetFileSize (272), DosQueryFileInfo (279), DosSetFileInfo (218), DosQueryPathInfo (223), DosSetPathInfo (219), DosEnumAttribute (372)
@@ -431,7 +431,12 @@ DosCreateQueue (1040), DosOpenQueue (1039), DosCloseQueue (1035), DosReadQueue (
 
 ### NLS (4 APIs)
 
-NlsQueryCp (7173), NlsQueryCtryInfo (7174), NlsMapCase (7175), NlsGetDBCSEv (7176)
+DosQueryCtryInfo (NLS 5), DosQueryDBCSEnv (NLS 6), DosMapCase (NLS 7), DosQueryCollate (NLS 8) — the 32-bit NLS calls at the ordinals of `<bseord.h>` and Open Watcom's `os2386.lib`.
+
+- The `COUNTRYCODE` codepage selects the codepage when it is not 0, else the process codepage is used; the country is not used (country data comes from the host locale).
+- A buffer that is too small gets as much of the table as fits, in order, and the call returns `ERROR_NLS_TABLE_TRUNCATED` (399). The reference lists that code without saying when it is returned, so this is Warpine's choice.
+- `DosQueryCollate` returns 256 sort weights. IBM's tables (COUNTRY.SYS) are not published: Warpine weighs each byte as its uppercase form, so letters sort without regard to case.
+- The 16-bit `DOS16*` calls (NLS 1–4) are not implemented.
 
 ### MSG (2 APIs)
 
@@ -509,11 +514,11 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 186 entries) and the four sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `pm_win.rs`, `pm_gpi.rs`, 169 ordinals). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 184 entries) and the four sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `pm_win.rs`, `pm_gpi.rs`, 169 ordinals). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
-| DOSCALLS | registry | 103 | 10 | 113 |
+| DOSCALLS | registry | 101 | 10 | 111 |
 | QUECALLS | registry | 7 | 0 | 7 |
 | NLS | registry | 4 | 0 | 4 |
 | MSG | registry | 2 | 0 | 2 |
@@ -526,7 +531,7 @@ Counts are taken from the static registry (`api_registry.rs`, 186 entries) and t
 | MOUCALLS | sub-dispatcher | 20 | 0 | 20 |
 | PMWIN | sub-dispatcher | 89 | 0 | 89 |
 | PMGPI | sub-dispatcher | 63 | 3 | 66 |
-| **Total** | | **368** | **18** | **386** |
+| **Total** | | **366** | **18** | **384** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

@@ -234,7 +234,7 @@ The primary OS/2 API module. Implemented functions:
 | **Semaphores** | DosCreateEventSem, DosCloseEventSem, DosPostEventSem, DosWaitEventSem, DosOpenEventSem, DosCreateMutexSem, DosCloseMutexSem, DosRequestMutexSem, DosReleaseMutexSem, DosOpenMutexSem, DosCreateMuxWaitSem, DosCloseMuxWaitSem, DosWaitMuxWaitSem |
 | **Queues** | DosCreateQueue, DosOpenQueue, DosWriteQueue, DosReadQueue, DosCloseQueue, DosPurgeQueue, DosQueryQueue |
 | **Pipes** | DosCreatePipe |
-| **System** | DosQuerySysInfo, DosGetDateTime, DosQueryCp, DosQueryCtryInfo, DosMapCase, DosDevConfig, DosDevIOCtl |
+| **System** | DosQuerySysInfo, DosGetDateTime, DosQueryCp, DosQueryCtryInfo, DosQueryDBCSEnv, DosMapCase, DosQueryCollate, DosDevConfig, DosDevIOCtl |
 | **Audio** | DosBeep (real sine-wave tones via MMPM/2 beep_tone) |
 | **Stubs** | DosError, DosSetMaxFH, DosSetExceptionHandler, DosLoadModule, DosStartSession, and others |
 
@@ -719,28 +719,31 @@ This is different from DOSCALLS which uses **_System** convention:
 
 ## NLS (National Language Support)
 
-NLS functions (DosQueryCp, DosQueryCtryInfo, DosMapCase, DosGetDBCSEv) can be imported from either DOSCALLS (by ordinal) or the NLS DLL. Both paths use **_System** calling convention.
+32-bit programs import the NLS calls from the **NLS** module (`DosQueryCp` and `DosSetProcessCp` are DOSCALLS 291 / 289). They use the **_System** calling convention, as DOSCALLS does.
 
-### NLS DLL Dispatch
+### NLS ordinals
 
-NLS DLL imports are dispatched at `NLS_BASE` (7168) + ordinal:
+NLS imports are dispatched at `NLS_BASE` (7168) + ordinal, from the static registry. The ordinals are those of the toolkit's `<bseord.h>` (`ORD_DOS32QUERYCTRYINFO` … `ORD_DOS32QUERYCOLLATE`) and Open Watcom's `os2386.lib` (see `doc/os2_ordinals.md`, NLS):
 
 | Ordinal | Function | Notes |
 |---|---|---|
-| 5 | DosQueryCp / COUNTRYINFO | Dual behavior: returns codepages for cb < 44, full COUNTRYINFO for cb >= 44 |
-| 6 | DosQueryCtryInfo | Standard DosQueryCtryInfo with _System args |
-| 7 | DosMapCase | Full case mapping: SBCS (CP437/850/852/866/1250–1258) and DBCS (CP932/936/949/950) |
-| 8 | DosGetDBCSEv | Returns empty DBCS table (Western locales) |
+| 1–4 | `DOS16CASEMAP` / `DOS16GETCOLLATE` / `DOS16GETCTRYINFO` / `DOS16GETDBCSEV` | 16-bit; not implemented |
+| 5 | `DosQueryCtryInfo(cb, pcc, pci, pcbActual)` | COUNTRYINFO from the host locale, at most `min(cb, 44)` bytes |
+| 6 | `DosQueryDBCSEnv(cb, pcc, pBuf)` | Lead-byte ranges of the codepage, `(0,0)`-terminated |
+| 7 | `DosMapCase(cb, pcc, pch)` | Full case mapping: SBCS (CP437/850/852/866/1250–1258) and DBCS (CP932/936/949/950) |
+| 8 | `DosQueryCollate(cb, pcc, pch, pcch)` | 256 sort weights (`codepage::collate_table`) |
 
-### Watcom CRT NLS Caching
+- `Loader::nls_codepage(pcc)` gives the codepage for 6–8: `COUNTRYCODE.codepage` when it is not 0, else the process codepage. The country is not used.
+- A short buffer gets as much of the table as fits, in order ("as much information as possible is provided in the available space", CP Reference), and `ERROR_NLS_TABLE_TRUNCATED`. The reference does not say when that code is returned; Warpine's choice.
+- IBM's collating tables (COUNTRY.SYS) are not published. Warpine weighs each byte as its uppercase form (`cp_map_case_upper`): letters sort without regard to case, everything else in byte order, DBCS lead bytes as themselves.
 
-The Watcom C runtime wraps DosQueryCtryInfo with a caching layer:
+Until this table was checked against the toolkit, Warpine had the NLS ordinals wrong: 5 was a mix of `DosQueryCp` and `DosQueryCtryInfo` chosen by `cb`, 6 was `DosQueryCtryInfo` and 8 the DBCS query. `DOSCALLS.373` was served as `DosQueryDBCSEnv` and `DOSCALLS.397` as `DosQueryCtryInfo`, but 373 is `DosQueryDOSProperty` and 397 is no DOSCALLS export. `gen_api validate-doc` now checks NLS (and MOUCALLS) against `doc/os2_ordinals.md`, so this cannot drift again unnoticed.
 
-1. During CRT init, calls **NLS ordinal 6** with `cb=12` (first 3 ULONGs: country, codepage, fsDateFmt)
-2. When user code calls DosQueryCtryInfo, the wrapper calls **NLS ordinal 5** with `cb=44` (full COUNTRYINFO size) to retrieve complete locale data
-3. The wrapper caches the result and returns it without calling NLS again
+### Watcom C runtime start-up
 
-This is why NLS ordinal 5 must return full COUNTRYINFO when `cb >= 44` — the CRT wrapper depends on this behavior.
+During start-up the Open Watcom C runtime calls **NLS 6, `DosQueryDBCSEnv`, with `cb=12`** (EDM2: "A length value of 12 bytes is sufficient") to learn the lead bytes for its multibyte-character functions. A program's own `DosQueryCtryInfo` goes to **NLS 5** with `cb=44`, the size of Watcom's COUNTRYINFO.
+
+With the old table the start-up call got a COUNTRYINFO instead, whose first bytes (country, then codepage) were read as lead-byte ranges. Whether that caused the start-up crash with non-US country codes noted in `doc/TODOs.md` is not yet checked.
 
 ### PM codepages
 
@@ -750,7 +753,7 @@ PM text follows the codepage of the **message queue**, not the process codepage,
 
 ### DosQueryCtryInfo Bounded Writes
 
-`dos_query_ctry_info()` writes only `min(cb, 44)` bytes to respect the caller's buffer size. The CRT init call with `cb=12` only gets the first 12 bytes (country, codepage, fsDateFmt). Writing more would corrupt the CRT's stack frame. Currently returns hardcoded US English defaults (country=1, codepage=437, MDY format).
+`dos_query_ctry_info()` writes only `min(cb, 44)` bytes to respect the caller's buffer size; writing more would corrupt a caller's stack frame. It returns the host locale's formats with country 1 and codepage 437 (`locale.rs` `map_country`).
 
 ---
 
@@ -870,7 +873,7 @@ Several issues were discovered and fixed during 4OS2 bring-up that are worth not
   - *Purpose 2 — correctness fixes* (`os2init.c`, `os2calls.c`): these fix 4OS2 bugs unrelated to calling convention (DosGetInfoSeg → DosGetInfoBlocks, correct DosFindFirst buffer layout). These patches should stay regardless.
 - **JPOS2DLL still uses `__Far16` thunks** — 4OS2 itself is pure 32-bit after patching, but JPOS2DLL (its extension DLL) was compiled with its own build rules and still calls some of its entry points via `__Far16` far pointers. The thunk stubs in 4OS2's code do `JMP FAR 0x0028:offset` to enter 16-bit execution. This requires GDT[5] (selector 0x0028) to be a valid 16-bit code descriptor — see the [GDT layout](#kvm-virtualization-engine) in §5.
 - **VIOCALLS/KBDCALLS use Pascal calling convention** — Arguments pushed left-to-right (last arg at ESP+4), callee cleans stack. This is different from DOSCALLS which uses `_System` (right-to-left, caller cleans). The loader adds callee stack cleanup after VIO/KBD API returns via `viocalls_arg_bytes()` and `kbdcalls_arg_bytes()`.
-- **NLS DLL calling convention** — NLS functions (DosQueryCp, DosQueryCtryInfo, DosMapCase) are imported through the NLS DLL, which uses `_System` convention (same as DOSCALLS, NOT Pascal like VIOCALLS). The Watcom CRT wrapper caches NLS data: it calls NLS ordinal 6 (DosQueryCtryInfo) once during init with cb=12, then calls NLS ordinal 5 with cb=44 to fill the full COUNTRYINFO. NLS ordinal 5 has dual behavior — returns codepages for small cb, returns full COUNTRYINFO for cb >= 44.
+- **NLS DLL calling convention** — the NLS functions (`DosQueryCtryInfo`, `DosQueryDBCSEnv`, `DosMapCase`, `DosQueryCollate`, NLS 5–8) use the `_System` convention (same as DOSCALLS, NOT Pascal like VIOCALLS). The Watcom CRT calls NLS 6 (`DosQueryDBCSEnv`) with cb=12 during start-up; see [NLS](#nls-national-language-support).
 - **FSQBUFFER2 layout** — Uses fixed 8-byte header (iType+cbName+cbFSDName+cbFSAData) followed by variable-length strings, not the older FSQBUFFER interleaved format. Getting this wrong causes 4OS2's `ifs_type()` to read garbage, preventing `dir` from calling DosFindFirst.
 - **DosFindNext level tracking** — DosFindFirst stores the info level (1=FILEFINDBUF3, 2=FILEFINDBUF4 with EA size). DosFindNext must use the same level, otherwise filenames are offset by 4 bytes (the cbList field size difference).
 - **PIB field ordering** — `pib_pchcmd` is at offset `+0x0C` and `pib_pchenv` is at `+0x10`. Getting these swapped causes the app to read the command line string as the environment block.
@@ -1260,7 +1263,7 @@ src/
     ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants (addresses, message IDs, ordinal bases)
-    api_registry.rs    Static sorted API thunk table (186 entries); ApiEntry
+    api_registry.rs    Static sorted API thunk table (184 entries); ApiEntry
     api_dispatch.rs    Registry lookup + per-subsystem dispatcher routing
     api_trace.rs       Structured tracing helpers (ordinal_to_name auto-generated from os2api.def,
                        module_for_ordinal, arg_names_for_ordinal, format_call)
@@ -1314,7 +1317,7 @@ To add a new OS/2 API call:
 
 3. **Wire up the dispatch** — The dispatch path depends on the subsystem:
 
-   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (186 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
+   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (184 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
 
    - **VIOCALLS / KBDCALLS**: add a match arm in `handle_viocalls()` or `handle_kbdcalls()`, and add the ordinal's stack-byte count to `viocalls_arg_bytes()` / `kbdcalls_arg_bytes()`.
 
@@ -1467,7 +1470,7 @@ cargo clippy --all-targets -- -D warnings   # lint, test code included
 
 The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`) runs both and aborts the commit on a failing test or any lint.
 
-The unit tests (1057: 1027 warpine + 18 `gen_api` + 12 `lx_link`) include, among others:
+The unit tests (1061: 1031 warpine + 18 `gen_api` + 12 `lx_link`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -1570,10 +1573,10 @@ CLI samples should print output and exit with code 0. PM samples should open a w
 
 ### Automated integration tests
 
-`tests/integration.rs` contains 62 end-to-end tests that run real OS/2 sample binaries under KVM: CLI samples (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test, ne_hello, rust_hello, …) with headless output checks, and PM samples driven by GUI scripts on SDL's `dummy` driver — the self-checking samples (`pm_dialog_test`, `pm_list_test`, `pm_msgbox_test`, `pm_typeahead_test`, `pm_codepage_test`, `pm_pointer_test`, `pm_audio_test`, `pm_menu_dlg_test`, …) must report every check as passed, and desktop dumps are compared with golden tile signatures (see "GUI regression tests" below). Each test skips itself when `/dev/kvm` or its sample binary is missing.
+`tests/integration.rs` contains 63 end-to-end tests that run real OS/2 sample binaries under KVM: CLI samples (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test, ne_hello, rust_hello, …) with headless output checks, and PM samples driven by GUI scripts on SDL's `dummy` driver — the self-checking samples (`pm_dialog_test`, `pm_list_test`, `pm_msgbox_test`, `pm_typeahead_test`, `pm_codepage_test`, `pm_pointer_test`, `pm_audio_test`, `pm_menu_dlg_test`, …) must report every check as passed, and desktop dumps are compared with golden tile signatures (see "GUI regression tests" below). Each test skips itself when `/dev/kvm` or its sample binary is missing.
 
 ```bash
-cargo test --test integration     # 62 end-to-end tests (requires /dev/kvm)
+cargo test --test integration     # 63 end-to-end tests (requires /dev/kvm)
 ```
 
 ---
@@ -1728,14 +1731,14 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **Virtualization backend abstraction** — `VmBackend`/`VcpuBackend` traits; KVM isolated to `kvm_backend.rs`; `MockVcpu`/`MockVmBackend` for testing without `/dev/kvm`.
 - **Guest memory type safety** — `GuestMemory` struct with safe `read<T>`/`write<T>` replacing raw `*mut u8` + `usize`.
 - **Structured API trace** — `api_trace.rs` with `ordinal_to_name()`, `module_for_ordinal()`, per-argument typed names. `WARPINE_TRACE=strace|json` output modes.
-- **API thunk auto-registration** — `api_registry.rs` static sorted table (186 entries); O(log n) binary search replaces ~120-arm match.
+- **API thunk auto-registration** — `api_registry.rs` static sorted table (184 entries); O(log n) binary search replaces ~120-arm match.
 - **SDL2 GUI backend** — migrated from `winit + softbuffer` to SDL2; full keyboard, mouse, clipboard support.
 - **PM renderer abstraction** — `PmRenderer` trait with `Sdl2Renderer` and `HeadlessRenderer` backends.
 - **GDT tiling** — 4096 tiled 16-bit data descriptors (GDT[6..4101], DPL=2) and 2048 tiled 16-bit code descriptors (GDT[4102..6149]) for 16:16 addressing; GDT[4] 16-bit data alias (0x20), GDT[5] 16-bit code alias (0x28) for Far16 thunks.
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 1057 unit tests (1027 warpine + 18 gen_api + 12 lx_link), 62 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 1061 unit tests (1031 warpine + 18 gen_api + 12 lx_link), 63 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
@@ -1752,7 +1755,7 @@ Warpine provides a complete toolchain for writing OS/2 guest programs in Rust wi
 - `check` — validate def file (no duplicates, sorted, no overflow) and drift-detect against `api_trace.rs` by text-scanning `ordinal_to_name()` match arms
 - `gen-trace` — emit replacement Rust source for `ordinal_to_name()` + `module_for_ordinal()` (pipe to a file then paste into `api_trace.rs`)
 - `gen-def` — re-emit a canonically sorted `os2api.def`
-- `validate-doc` — cross-check `os2api.def` against `doc/os2_ordinals.md` (Open Watcom `lib386/os2/os2386.lib` snapshot); reports confirmed ordinals, 16-bit alias pairs auto-detected by uppercase+strip-"16" normalisation, entries only in def (e.g. `DosQueryCtryInfo`, `VioCheckCharType`), and name mismatches to investigate
+- `validate-doc` — cross-check `os2api.def` against `doc/os2_ordinals.md` (Open Watcom `lib386/os2/os2386.lib` snapshot); reports confirmed ordinals, 16-bit alias pairs auto-detected by uppercase+strip-"16" normalisation, entries only in def (e.g. `VioCheckCharType`, which the library has only as 16-bit ordinal 75 — see `doc/TODOs.md`), and name mismatches to investigate; it covers DOSCALLS, QUECALLS, KBDCALLS, VIOCALLS, PMGPI, PMWIN, SESMGR, NLS and MOUCALLS
 
 Run `cargo run --bin gen_api -- check` to verify consistency after any ordinal change. Run `cargo run --bin gen_api -- validate-doc` to cross-reference against the OS/2 ordinal reference.
 

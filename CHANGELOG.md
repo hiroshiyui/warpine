@@ -101,6 +101,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **`sdl2` crate 0.37 → 0.38.**
 
 ### Fixed
+- **NLS calls at the wrong ordinals** — Warpine's NLS table did not match the toolkit's `<bseord.h>` or Open Watcom's `os2386.lib`. NLS 6 answered `DosQueryDBCSEnv` (called by the Watcom C runtime at start-up) with country information; NLS 5 chose between `DosQueryCp` and `DosQueryCtryInfo` by buffer size; NLS 8 served the DBCS query instead of `DosQueryCollate`. NLS 5–8 are now `DosQueryCtryInfo`, `DosQueryDBCSEnv`, `DosMapCase` and the new `DosQueryCollate`; they honour the `COUNTRYCODE` codepage, and a short buffer gets what fits plus `ERROR_NLS_TABLE_TRUNCATED` (a short `DosQueryDBCSEnv` buffer used to get error 113). The invented `DOSCALLS.373` / `DOSCALLS.397` entries are gone (373 is `DosQueryDOSProperty`), and `gen_api validate-doc` now checks NLS and MOUCALLS.
 - **Dragging a frame's top or bottom sizing border moved it the wrong way** — the vertical direction was inverted for the N, S and corner edges of every PM frame; the drag is now the tested pure function `resized_rect`.
 - **A second SDL window resized the PM desktop** — the PM renderer acted on window events without checking which window sent them, so the text window's resize after Alt+Home shrank the desktop; it now ignores other windows' events.
 - **SO32DLL / TCP32DLL imports** — the Rust guest linker (`lx_link`) resolved them to ordinal 0 of DOSCALLS, and the DLL loader did not treat them as built-in modules.

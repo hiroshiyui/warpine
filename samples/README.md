@@ -39,7 +39,7 @@ cd samples/4os2 && ./fetch_source.sh && make
 | queue_test | Inter-thread message queue | DosCreateQueue, DosWriteQueue, DosReadQueue |
 | ipc_test | Event semaphore IPC with threads | DosCreateEventSem, DosPostEventSem, DosWaitEventSem |
 | thunk_test | TIB/PIB layout, address conversion | DosGetInfoBlocks, DosQuerySysInfo |
-| nls_test | National Language Support | DosQueryCtryInfo, DosQueryCp, DosMapCase |
+| nls_test | National Language Support | DosQueryCtryInfo, DosQueryCp, DosMapCase, DosQueryDBCSEnv, DosQueryCollate |
 | screen_test | VIO screen buffer and cursor | VioGetMode, VioSetCurPos, VioWrtTTY |
 | pm_demo | PM GUI window with graphics and timers | WinCreateStdWindow, GpiBox, GpiLine, WinStartTimer |
 | pm_hello | Minimal PM message box | WinInitialize, WinMessageBox |

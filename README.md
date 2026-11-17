@@ -79,7 +79,7 @@ src/
     ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants: MAGIC_API_BASE, ordinal bases, TIB/PIB addresses
-    api_registry.rs    Static sorted API thunk table (186 entries); compat_report()
+    api_registry.rs    Static sorted API thunk table (184 entries); compat_report()
     api_dispatch.rs    Ordinal → handler dispatch + sub-dispatcher routing
     api_trace.rs       ordinal_to_name(), module_for_ordinal() for structured tracing
     api_ring.rs        256-entry API call ring buffer for crash post-mortem
@@ -121,7 +121,7 @@ samples/               OS/2 sample applications and build scripts
   queue_test/          DosCreateQueue/DosWriteQueue/DosReadQueue
   ipc_test/            Combined IPC exerciser (semaphores + pipes)
   thunk_test/          TIB/PIB layout, DosGetInfoBlocks, DosQuerySysInfo
-  nls_test/            DosQueryCtryInfo, DosQueryCp, DosMapCase
+  nls_test/            DosQueryCtryInfo, DosQueryCp, DosMapCase, DosQueryDBCSEnv, DosQueryCollate
   file_test/           DosOpen/Read/Write/Close file I/O
   dir_test/            DosCreateDir/DeleteDir/FindFirst directory ops
   find_test/           DosFindFirst/Next wildcard search
@@ -263,7 +263,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 1057 unit tests (no KVM required)
+cargo test                        # 1061 unit tests (no KVM required)
 cargo test --test integration     # 38 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
