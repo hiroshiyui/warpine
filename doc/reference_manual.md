@@ -458,13 +458,15 @@ UniCreateUconvObject (12289), UniFreeUconvObject (12290), UniUconvToUcs (12291),
 
 UCS-2 name parser accepts `"IBM-NNN"`, `"CP-NNN"`, and `"UTF-8"` (case-insensitive). Conversion delegates to `cp_decode`/`cp_encode` in `codepage.rs`.
 
-### VIOCALLS (22 APIs: 17 implemented, 5 stub)
+### VIOCALLS (22 APIs: 18 implemented, 4 stub)
 
 **Implemented:**
-VioGetAnsi (3), VioSetAnsi (5), VioScrollUp (7), VioGetCurPos (9), VioSetCurPos (15), VioWrtTTY (19), VioGetMode (21), VioSetMode (22), VioReadCellStr (24), VioWrtNAttr (26), VioGetCurType (27), VioSetCurType (32), VioCheckCharType (39), VioGetConfig (46), VioScrollDn (47), VioWrtCharStrAtt (48), VioWrtNCell (52)
+VioGetAnsi (3), VioSetAnsi (5), VioScrollUp (7), VioGetCurPos (9), VioWrtCellStr (10), VioSetCurPos (15), VioWrtTTY (19), VioGetMode (21), VioSetMode (22), VioReadCellStr (24), VioWrtNAttr (26), VioGetCurType (27), VioSetCurType (32), VioGetConfig (46), VioScrollDn (47), VioWrtCharStrAtt (48), VioWrtNCell (52), VioCheckCharType (75)
+
+The ordinals are those of Open Watcom's `os2386.lib` (`VIO16*` exports), which programs built with the standard headers call through a 16-bit thunk. `VioCheckCharType` is `VIO16CHECKCHARTYPE` (75); its type values (0 SBCS, 2 DBCS lead, 3 DBCS trail) are not in the public reference page. `VioWrtCellStr` writes 2-byte cells, continues on the next row and stops at the end of the screen. The VIO screen's codepage follows `DosSetProcessCp` (`VioSetCp` is still a stub).
 
 **Stubs:**
-VioWrtCellStr (10), VioGetBuf (31), VioSetCp (42), VioShowBuf (43), VioSetState (51)
+VioGetBuf (31), VioSetCp (42), VioShowBuf (43), VioSetState (51)
 
 ### KBDCALLS (3 APIs)
 
@@ -526,12 +528,12 @@ Counts are taken from the static registry (`api_registry.rs`, 184 entries) and t
 | UCONV | registry | 5 | 0 | 5 |
 | SO32DLL (sockets) | registry | 27 | 0 | 27 |
 | TCP32DLL (sockets, resolver) | registry | 24 | 0 | 24 |
-| VIOCALLS | sub-dispatcher | 17 | 5 | 22 |
+| VIOCALLS | sub-dispatcher | 18 | 4 | 22 |
 | KBDCALLS | sub-dispatcher | 3 | 0 | 3 |
 | MOUCALLS | sub-dispatcher | 20 | 0 | 20 |
 | PMWIN | sub-dispatcher | 89 | 0 | 89 |
 | PMGPI | sub-dispatcher | 63 | 3 | 66 |
-| **Total** | | **366** | **18** | **384** |
+| **Total** | | **367** | **17** | **384** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

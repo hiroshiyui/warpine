@@ -263,7 +263,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 1061 unit tests (no KVM required)
+cargo test                        # 1062 unit tests (no KVM required)
 cargo test --test integration     # 38 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```

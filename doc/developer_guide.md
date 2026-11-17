@@ -1470,7 +1470,7 @@ cargo clippy --all-targets -- -D warnings   # lint, test code included
 
 The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`) runs both and aborts the commit on a failing test or any lint.
 
-The unit tests (1061: 1031 warpine + 18 `gen_api` + 12 `lx_link`) include, among others:
+The unit tests (1062: 1032 warpine + 18 `gen_api` + 12 `lx_link`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -1738,7 +1738,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 1061 unit tests (1031 warpine + 18 gen_api + 12 lx_link), 63 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 1062 unit tests (1032 warpine + 18 gen_api + 12 lx_link), 63 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
@@ -1755,7 +1755,7 @@ Warpine provides a complete toolchain for writing OS/2 guest programs in Rust wi
 - `check` — validate def file (no duplicates, sorted, no overflow) and drift-detect against `api_trace.rs` by text-scanning `ordinal_to_name()` match arms
 - `gen-trace` — emit replacement Rust source for `ordinal_to_name()` + `module_for_ordinal()` (pipe to a file then paste into `api_trace.rs`)
 - `gen-def` — re-emit a canonically sorted `os2api.def`
-- `validate-doc` — cross-check `os2api.def` against `doc/os2_ordinals.md` (Open Watcom `lib386/os2/os2386.lib` snapshot); reports confirmed ordinals, 16-bit alias pairs auto-detected by uppercase+strip-"16" normalisation, entries only in def (e.g. `VioCheckCharType`, which the library has only as 16-bit ordinal 75 — see `doc/TODOs.md`), and name mismatches to investigate; it covers DOSCALLS, QUECALLS, KBDCALLS, VIOCALLS, PMGPI, PMWIN, SESMGR, NLS and MOUCALLS
+- `validate-doc` — cross-check `os2api.def` against `doc/os2_ordinals.md` (Open Watcom `lib386/os2/os2386.lib` snapshot); reports confirmed ordinals, 16-bit alias pairs auto-detected by uppercase+strip-"16" normalisation, entries only in def, and name mismatches to investigate; it covers DOSCALLS, QUECALLS, KBDCALLS, VIOCALLS, PMGPI, PMWIN, SESMGR, NLS and MOUCALLS
 
 Run `cargo run --bin gen_api -- check` to verify consistency after any ordinal change. Run `cargo run --bin gen_api -- validate-doc` to cross-reference against the OS/2 ordinal reference.
 

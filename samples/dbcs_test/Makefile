@@ -1,10 +1,11 @@
 # samples/dbcs_test/Makefile
-# Uses separate compile + link steps so wlink can import VioCheckCharType
-# explicitly from VIOCALLS.DLL (not in Open Watcom's standard import libs).
+# Built against 4OS2's bsesub.h, which declares the Vio* calls _Pascal
+# instead of APIENTRY16, so they are direct 32-bit imports from VIOCALLS
+# (VioWrtCellStr 10, VIO16CHECKCHARTYPE 75 from os2386.lib).
 WATCOM_ROOT = $(CURDIR)/../../vendor/watcom
 WCC386      = $(WATCOM_ROOT)/binl64/wcc386
 WLINK       = $(WATCOM_ROOT)/binl64/wlink
-INCLUDE     = $(WATCOM_ROOT)/h/os2:$(WATCOM_ROOT)/h
+INCLUDE     = $(CURDIR)/../4os2/h:$(WATCOM_ROOT)/h/os2:$(WATCOM_ROOT)/h
 
 all: dbcs_test.exe
 
@@ -12,7 +13,6 @@ dbcs_test.exe: dbcs_test.obj
 	INCLUDE=$(INCLUDE) WATCOM=$(WATCOM_ROOT) PATH=$(WATCOM_ROOT)/binl64:$(PATH) \
 	$(WLINK) system os2v2 \
 	    file dbcs_test.obj \
-	    import VioCheckCharType VIOCALLS.39 \
 	    name dbcs_test.exe
 
 dbcs_test.obj: dbcs_test.c

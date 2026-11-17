@@ -55,16 +55,17 @@ impl super::Loader {
             22 => self.vio_set_mode(read_stack(8), read_stack(4)),
             31 => { debug!("  VioGetBuf (stub)"); NO_ERROR },
             43 => { debug!("  VioShowBuf (stub)"); NO_ERROR },
-            // VioCheckCharType(pType, usRow, usCol, hvio) → ESP+4=hvio, +8=usCol, +12=usRow, +16=pType
-            39 => self.vio_check_char_type(read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
-            // VioWrtCellStr(pchCells, cb, usRow, usCol, hvio) — ordinal 10 per Open Watcom VIOCALLS.LIB.
-            10 => { debug!("  VioWrtCellStr (stub)"); NO_ERROR },
+            // VioCheckCharType(pType, usRow, usCol, hvio) → ESP+4=hvio, +8=usCol, +12=usRow, +16=pType.
+            // Ordinal 75 (os2386.lib VIO16CHECKCHARTYPE, <bseord.h> ORD_VIOCHECKCHARTYPE).
+            75 => self.vio_check_char_type(read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
+            // VioWrtCellStr(pchCells, cb, usRow, usCol, hvio) → ESP+4=hvio, +8=col, +12=row, +16=cb, +20=pchCells
+            10 => self.vio_wrt_cell_str(read_stack(20), read_stack(16), read_stack(12), read_stack(8), read_stack(4)),
             _ => { warn!("Warning: Unknown VIOCALLS Ordinal {}", ordinal); NO_ERROR }
         };
         super::ApiResult::Normal(res)
     }
 
-    /// VioWrtTTY (ordinal 30): write string to display at current cursor position.
+    /// VioWrtTTY (ordinal 19): write string to display at current cursor position.
     fn vio_wrt_tty(&self, psz: u32, cb: u32, _hvio: u32) -> u32 {
         debug!("  VioWrtTTY(psz=0x{:08X}, cb={})", psz, cb);
         if cb == 0 || psz == 0 { return NO_ERROR; }
@@ -83,12 +84,12 @@ impl super::Loader {
             5 => 8, 3 => 8, 51 => 8, 42 => 12, 46 => 12,
             22 => 8, 31 => 12, 43 => 12,
             10 => 20, // VioWrtCellStr — ordinal per Open Watcom VIOCALLS.LIB
-            39 => 16, // VioCheckCharType(pType, usRow, usCol, hvio) — 4 args × 4 bytes
+            75 => 16, // VioCheckCharType(pType, usRow, usCol, hvio) — 4 args × 4 bytes
             _ => 0,
         }
     }
 
-    /// VioGetMode (ordinal 3): get screen mode (rows/cols).
+    /// VioGetMode (ordinal 21): get screen mode (rows/cols).
     fn vio_get_mode(&self, p_mode: u32, _hvio: u32) -> u32 {
         debug!("  VioGetMode(p_mode=0x{:08X}, hvio={})", p_mode, _hvio);
         let console = self.shared.console_mgr.lock_or_recover();
@@ -139,7 +140,7 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// VioGetCurPos (ordinal 4): get cursor position.
+    /// VioGetCurPos (ordinal 9): get cursor position.
     fn vio_get_cur_pos(&self, p_row: u32, p_col: u32, _hvio: u32) -> u32 {
         debug!("  VioGetCurPos");
         let console = self.shared.console_mgr.lock_or_recover();
@@ -174,7 +175,7 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// VioScrollDn (ordinal 8): scroll a screen region down.
+    /// VioScrollDn (ordinal 47): scroll a screen region down.
     /// `p_cell` points to a 2-byte (char, attr) fill cell; NULL → space/grey.
     #[allow(clippy::too_many_arguments)]
     fn vio_scroll_dn(&self, top: u32, _left: u32, bottom: u32, _right: u32, lines: u32, p_cell: u32, _hvio: u32) -> u32 {
@@ -192,7 +193,7 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// VioWrtCharStrAtt (ordinal 26): write attributed character string.
+    /// VioWrtCharStrAtt (ordinal 48): write attributed character string.
     fn vio_wrt_char_str_att(&self, psz: u32, cb: u32, row: u32, col: u32, p_attr: u32) -> u32 {
         debug!("  VioWrtCharStrAtt(cb={}, row={}, col={})", cb, row, col);
         let attr = if p_attr != 0 { self.guest_read::<u8>(p_attr).unwrap_or(0x07) } else { 0x07 };
@@ -203,7 +204,7 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// VioWrtNCell (ordinal 28): write a cell (char+attr) N times.
+    /// VioWrtNCell (ordinal 52): write a cell (char+attr) N times.
     fn vio_wrt_n_cell(&self, p_cell: u32, count: u32, row: u32, col: u32, _hvio: u32) -> u32 {
         debug!("  VioWrtNCell(count={}, row={}, col={})", count, row, col);
         let ch_byte = self.guest_read::<u8>(p_cell).unwrap_or(b' ');
@@ -215,12 +216,36 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// VioWrtNAttr (ordinal 27): write an attribute N times.
+    /// VioWrtNAttr (ordinal 26): write an attribute N times.
     fn vio_wrt_n_attr(&self, p_attr: u32, count: u32, row: u32, col: u32, _hvio: u32) -> u32 {
         debug!("  VioWrtNAttr(count={}, row={}, col={})", count, row, col);
         let attr = self.guest_read::<u8>(p_attr).unwrap_or(0x07);
         let mut console = self.shared.console_mgr.lock_or_recover();
         console.write_n_attr(row as u16, col as u16, attr, count as u16);
+        NO_ERROR
+    }
+
+    /// VioWrtCellStr (ordinal 10): write `cb` bytes of (character, attribute)
+    /// cells from (row, col). "If a string write gets to the end of the line
+    /// and is not complete, it continues at the beginning of the next line",
+    /// and it stops at the end of the screen (CP Reference); a start outside
+    /// the screen is `ERROR_VIO_ROW` / `ERROR_VIO_COL`. Cells are 2 bytes
+    /// (the text modes Warpine has); an odd last byte is ignored.
+    fn vio_wrt_cell_str(&self, p_cells: u32, cb: u32, row: u32, col: u32, _hvio: u32) -> u32 {
+        debug!("  VioWrtCellStr(cb={}, row={}, col={})", cb, row, col);
+        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let mut console = self.shared.console_mgr.lock_or_recover();
+        let (rows, cols) = (console.rows as u32, console.cols as u32);
+        if row >= rows { return ERROR_VIO_ROW; }
+        if col >= cols { return ERROR_VIO_COL; }
+        // Never read more cells than fit between (row, col) and the end of the screen.
+        let room = (rows - row) * cols - col;
+        let n = (cb / 2).min(room);
+        let Some(bytes) = self.guest_read_bytes(p_cells, (n * 2) as usize) else {
+            return ERROR_VIO_INVALID_PARMS;
+        };
+        let cells: Vec<(u8, u8)> = bytes.as_chunks::<2>().0.iter().map(|&[ch, attr]| (ch, attr)).collect();
+        console.write_cell_str(row as u16, col as u16, &cells, cp);
         NO_ERROR
     }
 
@@ -249,7 +274,7 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// VioSetCurType (ordinal 16): set cursor shape/visibility.
+    /// VioSetCurType (ordinal 32): set cursor shape/visibility.
     ///
     /// VIOCURSORINFO layout: yStart(u16) cEnd(u16) cx(u16) attr(u16).
     /// attr == 0xFFFF means hidden.
@@ -267,7 +292,7 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// VioGetCurType (ordinal 33): read current cursor shape/visibility.
+    /// VioGetCurType (ordinal 27): read current cursor shape/visibility.
     ///
     /// VIOCURSORINFO layout: yStart(u16) cEnd(u16) cx(u16) attr(u16).
     /// attr == 0xFFFF means hidden; 0 means normal.
@@ -284,7 +309,7 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// VioSetAnsi (ordinal 38): enable/disable ANSI mode.
+    /// VioSetAnsi (ordinal 5): enable/disable ANSI mode.
     fn vio_set_ansi(&self, flag: u32, _hvio: u32) -> u32 {
         debug!("  VioSetAnsi({})", flag);
         let mut console = self.shared.console_mgr.lock_or_recover();
@@ -292,7 +317,7 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// VioGetAnsi (ordinal 39): query ANSI mode.
+    /// VioGetAnsi (ordinal 3): query ANSI mode.
     fn vio_get_ansi(&self, p_flag: u32, _hvio: u32) -> u32 {
         debug!("  VioGetAnsi");
         let console = self.shared.console_mgr.lock_or_recover();
@@ -302,7 +327,7 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// VioCheckCharType (ordinal 39): classify a screen cell as SBCS, DBCS lead, or DBCS trail.
+    /// VioCheckCharType (ordinal 75): classify a screen cell as SBCS, DBCS lead, or DBCS trail.
     ///
     /// Scans from column 0 of the queried row left-to-right using `annotate_dbcs()` so
     /// mid-row queries correctly reflect the DBCS pairing state.  Writes:
@@ -716,11 +741,10 @@ mod tests {
         assert_ne!(loader.vio_check_char_type(0x2000, rows as u32, 0, 0), 0);
     }
 
-    /// VioWrtCellStr (ordinal 10): stub must return NO_ERROR and its Pascal
-    /// arg-byte count must be 20 (5 args × 4 bytes). Ordinal 10 is the
-    /// canonical Open Watcom VIOCALLS.LIB ordinal for VioWrtCellStr.
+    /// VioWrtCellStr (ordinal 10): dispatched with the Pascal layout, and its
+    /// arg-byte count must be 20 (5 args × 4 bytes).
     #[test]
-    fn test_vio_wrt_cell_str_stub_and_arg_bytes() {
+    fn test_vio_wrt_cell_str_dispatch_and_arg_bytes() {
         let loader = Loader::new_mock();
         let mut vcpu = MockVcpu::new();
         let esp: u32 = 0x1000;
@@ -737,13 +761,53 @@ mod tests {
             "Wrong arg-byte count for VioWrtCellStr (ordinal 10): stack corruption bug");
     }
 
-    /// VioCheckCharType (ordinal 39): Pascal arg-byte count must be 16
-    /// (4 args × 4 bytes). Missing this entry was part of the dbcs_test
-    /// stack-corruption bug.
+    /// VioCheckCharType is VIOCALLS 75 (os2386.lib VIO16CHECKCHARTYPE,
+    /// <bseord.h> ORD_VIOCHECKCHARTYPE): Pascal arg-byte count 16 (4 args ×
+    /// 4 bytes); 39 is not a VIOCALLS export.
     #[test]
-    fn test_vio_check_char_type_arg_bytes() {
+    fn test_vio_check_char_type_ordinal_and_arg_bytes() {
         let loader = Loader::new_mock();
-        assert_eq!(loader.viocalls_arg_bytes(39), 16,
-            "Wrong arg-byte count for VioCheckCharType (ordinal 39): stack corruption bug");
+        assert_eq!(loader.viocalls_arg_bytes(75), 16);
+        assert_eq!(loader.viocalls_arg_bytes(39), 0, "39 is not VioCheckCharType");
+    }
+
+    /// VioWrtCellStr writes cells, wraps to the next row, stops at the end
+    /// of the screen, and VioCheckCharType then sees a CP932 pair.
+    #[test]
+    fn test_vio_wrt_cell_str_wraps_and_feeds_check_char_type() {
+        use crate::loader::constants::{ERROR_VIO_COL, ERROR_VIO_ROW, NO_ERROR};
+        let loader = Loader::new_mock();
+        loader.shared.active_codepage.store(932, std::sync::atomic::Ordering::Relaxed);
+        let (rows, cols) = {
+            let mut c = loader.shared.console_mgr.lock_or_recover();
+            c.enable_sdl_mode();
+            c.codepage = 932;
+            (c.rows as u32, c.cols as u32)
+        };
+        let p = 0x3000u32;
+        // SJIS あ (0x82 0xA0) then 'A', starting at the last column of row 1.
+        loader.guest_write_bytes(p, &[0x82, 0x07, 0xA0, 0x07, b'A', 0x1E]).unwrap();
+        assert_eq!(loader.vio_wrt_cell_str(p, 6, 1, cols - 1, 0), NO_ERROR);
+        {
+            let c = loader.shared.console_mgr.lock_or_recover();
+            let at = |r: u32, col: u32| (r * cols + col) as usize;
+            assert_eq!(c.raw_bytes[at(1, cols - 1)], 0x82);
+            assert_eq!(c.raw_bytes[at(2, 0)], 0xA0, "wrapped to the next row");
+            assert_eq!(c.buffer[at(2, 1)], ('A', 0x1E));
+        }
+        let pt = 0x2000u32;
+        assert_eq!(loader.vio_check_char_type(pt, 2, 1, 0), NO_ERROR);
+        assert_eq!(loader.guest_read::<u16>(pt), Some(0), "SBCS");
+        // Write a pair at row 3, col 0 and classify it.
+        loader.guest_write_bytes(p, &[0x82, 0x07, 0xA0, 0x07]).unwrap();
+        assert_eq!(loader.vio_wrt_cell_str(p, 4, 3, 0, 0), NO_ERROR);
+        assert_eq!(loader.vio_check_char_type(pt, 3, 0, 0), NO_ERROR);
+        assert_eq!(loader.guest_read::<u16>(pt), Some(2), "DBCS lead");
+        assert_eq!(loader.vio_check_char_type(pt, 3, 1, 0), NO_ERROR);
+        assert_eq!(loader.guest_read::<u16>(pt), Some(3), "DBCS trail");
+        // The end of the screen stops the write; a start outside fails.
+        assert_eq!(loader.vio_wrt_cell_str(p, 4, rows - 1, cols - 1, 0), NO_ERROR);
+        assert_eq!(loader.vio_wrt_cell_str(p, 4, rows, 0, 0), ERROR_VIO_ROW);
+        assert_eq!(loader.vio_wrt_cell_str(p, 4, 0, cols, 0), ERROR_VIO_COL);
     }
 }

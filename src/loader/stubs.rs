@@ -213,6 +213,10 @@ impl super::Loader {
         self.shared.active_codepage.store(cp, std::sync::atomic::Ordering::Relaxed);
         // PM text picks its CJK fallback face (JP/KR/TC/SC) from the codepage.
         crate::gui::font::set_active_codepage(cp);
+        // The VIO screen follows it too: the text renderer pairs DBCS cells
+        // and VioCheckCharType classifies them with `VioManager::codepage`.
+        // (Every supported codepage fits in a u16.)
+        self.shared.console_mgr.lock_or_recover().codepage = cp as u16;
         debug!("  DosSetProcessCp({}) → NO_ERROR", cp);
         NO_ERROR
     }
@@ -1258,6 +1262,9 @@ mod tests {
         let loader = Loader::new_mock();
         assert_eq!(loader.dos_set_process_cp(850), NO_ERROR);
         assert_eq!(loader.shared.active_codepage.load(Ordering::Relaxed), 850);
+        // The VIO screen's codepage follows (DBCS pairing, VioCheckCharType).
+        assert_eq!(loader.dos_set_process_cp(932), NO_ERROR);
+        assert_eq!(loader.shared.console_mgr.lock_or_recover().codepage, 932);
     }
 
     #[test]

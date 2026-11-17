@@ -160,7 +160,6 @@ VIOCALLS.26   VioWrtNAttr
 VIOCALLS.27   VioGetCurType
 VIOCALLS.31   VioGetBuf
 VIOCALLS.32   VioSetCurType
-VIOCALLS.39   VioCheckCharType
 VIOCALLS.42   VioSetCp
 VIOCALLS.43   VioShowBuf
 VIOCALLS.46   VioGetConfig
@@ -168,6 +167,7 @@ VIOCALLS.47   VioScrollDn
 VIOCALLS.48   VioWrtCharStrAtt
 VIOCALLS.51   VioSetState
 VIOCALLS.52   VioWrtNCell
+VIOCALLS.75   VioCheckCharType
 
 # ── NLS (ordinal relative to module, linker uses NLS.N) ──────────────────────
 NLS.5         DosQueryCtryInfo

@@ -339,6 +339,26 @@ impl VioManager {
         }
     }
 
+    /// Write (byte, attribute) cells from (row, col) onwards, continuing at the
+    /// start of the next row and stopping at the end of the screen
+    /// (`VioWrtCellStr`). Bytes are decoded in codepage `cp`; the raw bytes are
+    /// kept for DBCS annotation.
+    pub fn write_cell_str(&mut self, row: u16, col: u16, cells: &[(u8, u8)], cp: u32) {
+        let start = row as usize * self.cols as usize + col as usize;
+        let room = self.buffer.len().saturating_sub(start);
+        let cols = self.cols.max(1) as usize;
+        for (i, &(raw, attr)) in cells.iter().take(room).enumerate() {
+            let idx = start + i;
+            let cell = (Self::decode_vio_byte(raw, cp), attr);
+            if self.sdl_mode {
+                self.buffer[idx] = cell;
+                self.raw_bytes[idx] = raw;
+            } else {
+                self.write_n_cell((idx / cols) as u16, (idx % cols) as u16, raw, cell, 1);
+            }
+        }
+    }
+
     /// Fill N attribute bytes starting at (row, col), preserving characters.
     pub fn write_n_attr(&mut self, row: u16, col: u16, attr: u8, count: u16) {
         let sdl = self.sdl_mode;

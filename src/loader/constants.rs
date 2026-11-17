@@ -467,6 +467,7 @@ pub const ERROR_NLS_TABLE_TRUNCATED:  u32 = 399;
 // ── VIO error codes ───────────────────────────────────────────────────────────
 pub const ERROR_VIO_ROW: u32 = 358; // Row parameter out of range
 pub const ERROR_VIO_COL: u32 = 359; // Column parameter out of range
+pub const ERROR_VIO_INVALID_PARMS: u32 = 421; // <bseerr.h>
 
 // ── MOUCALLS error codes (<bseerr.h>) ────────────────────────────────────────
 pub const ERROR_MOUSE_NO_DEVICE: u32 = 385;

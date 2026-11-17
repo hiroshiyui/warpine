@@ -27,9 +27,9 @@ impl super::Loader {
     /// Resolve an import by procedure name rather than ordinal.
     ///
     /// Used for `FixupTarget::ExternalName` fixups where the linker emits a
-    /// name-based fixup instead of an ordinal (e.g. Open Watcom imports
-    /// `VioCheckCharType` by name because it is absent from the standard
-    /// VIOCALLS.LIB shipped with the toolkit).
+    /// name-based fixup instead of an ordinal (e.g. a program that imports
+    /// `VioCheckCharType` by name, which `os2386.lib` has only as
+    /// `VIO16CHECKCHARTYPE`, ordinal 75).
     ///
     /// Returns 0 if the name cannot be resolved.
     pub(crate) fn resolve_import_by_name(&self, module: &str, proc_name: &str) -> u64 {
@@ -50,7 +50,7 @@ impl super::Loader {
             ("VioGetBuf",        31),
             ("VioSetCurType",    32),
             ("VioGetCurType",    27),
-            ("VioCheckCharType", 39),
+            ("VioCheckCharType", 75),
             ("VioSetCp",         42),
             ("VioShowBuf",       43),
             ("VioGetConfig",     46),  // was incorrectly 6 (VIO16DEREGISTER); real ord = 46

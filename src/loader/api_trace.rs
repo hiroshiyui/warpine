@@ -175,7 +175,7 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             31 => "VioGetBuf",
             32 => "VioSetCurType",
             47 => "VioScrollDn",
-            39 => "VioCheckCharType",
+            75 => "VioCheckCharType",
             42 => "VioSetCp",
             43 => "VioShowBuf",
             46 => "VioGetConfig",
@@ -731,7 +731,7 @@ mod tests {
         assert_eq!(ordinal_to_name(VIOCALLS_BASE + 19), "VioWrtTTY");
         assert_eq!(ordinal_to_name(VIOCALLS_BASE + 9),  "VioGetCurPos");
         assert_eq!(ordinal_to_name(VIOCALLS_BASE + 15), "VioSetCurPos");
-        assert_eq!(ordinal_to_name(VIOCALLS_BASE + 39), "VioCheckCharType");
+        assert_eq!(ordinal_to_name(VIOCALLS_BASE + 75), "VioCheckCharType");
         assert_eq!(ordinal_to_name(VIOCALLS_BASE + 99), "?");
     }
 
