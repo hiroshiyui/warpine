@@ -1,0 +1,361 @@
+# Warpine architecture: the layer map the diagram is generated from.
+#
+#   cargo run --bin gen_arch -- render   # writes warpine.dot, .svg, .png
+#   cargo run --bin gen_arch -- check    # validates this file against src/
+#
+# This file is the hand-written half of the diagram's source; the other half
+# is the list of modules in src/, which gen_arch reads itself. A test
+# (`cargo test --bin gen_arch`) fails when a module under src/ is in no
+# layer or in two, when a module named here does not exist, when a flow
+# names an unknown node, or when warpine.dot is not what this file and
+# src/ generate. After changing the code's module list or this file, run
+# `render` and commit the three outputs with it.
+#
+# Syntax: a subset of TOML. Tables [[zone]], [[layer]], [[external]] and
+# [[flow]]; string values in double quotes; `modules` an array of strings
+# (one line or several). Module names are paths relative to src/.
+#
+# Zones are the boxes the layers sit in; `rank = "min"` / `"max"` puts a
+# zone's nodes in the top / bottom row. Layers belong to a zone; their
+# modules are listed in the node. Externals are things outside Warpine's
+# source (the guest program, KVM, SDL, the host file system …). Flows are
+# the arrows, between layers and externals.
+
+[[zone]]
+id = "guest"
+label = "Guest: inside the KVM virtual machine (ADR-0003)"
+rank = "min"
+
+[[zone]]
+id = "host"
+label = "Warpine host process (one per OS/2 process, ADR-0020)"
+
+[[zone]]
+id = "os"
+label = "Host system"
+rank = "max"
+
+[[zone]]
+id = "build"
+label = "Build tools (separate programs)"
+rank = "max"
+
+# ── Guest side ──────────────────────────────────────────────────────────────
+
+[[external]]
+id = "program"
+zone = "guest"
+label = "OS/2 program (LX / NE) and its DLLs"
+
+[[external]]
+id = "thunks"
+zone = "guest"
+label = "API stub area at MAGIC_API_BASE: INT 3 per ordinal (ADR-0005)"
+
+# ── Warpine host process ────────────────────────────────────────────────────
+
+[[layer]]
+id = "entry"
+zone = "host"
+label = "Start-up: PM, VIO window, full screen or headless"
+modules = ["main.rs", "api.rs"]
+
+[[layer]]
+id = "formats"
+zone = "host"
+label = "Executable formats"
+modules = ["lx.rs", "lx/header.rs", "ne.rs", "ne/header.rs"]
+
+[[layer]]
+id = "loading"
+zone = "host"
+label = "Loading and guest memory: objects, fixups, GDT / IDT, imports"
+modules = ["loader/lx_loader.rs", "loader/ne_exec.rs", "loader/descriptors.rs", "loader/guest_mem.rs"]
+
+[[layer]]
+id = "vcpu"
+zone = "host"
+label = "vCPUs and threads: VM exits, callbacks, exceptions (ADR-0007)"
+modules = [
+  "loader/vm_backend.rs", "loader/kvm_backend.rs", "loader/vcpu.rs", "loader/threads.rs",
+  "loader/critsec.rs", "loader/exitlist.rs", "loader/seh.rs",
+]
+
+[[layer]]
+id = "dispatch"
+zone = "host"
+label = "API dispatch: registry, sub-dispatchers, tracing"
+modules = ["loader/api_registry.rs", "loader/api_dispatch.rs", "loader/api_trace.rs", "loader/api_ring.rs"]
+
+[[layer]]
+id = "core"
+zone = "host"
+label = "Loader core: Loader, SharedState, managers, constants"
+modules = ["loader/mod.rs", "loader/managers.rs", "loader/mutex_ext.rs", "loader/constants.rs"]
+
+[[layer]]
+id = "kernel"
+zone = "host"
+label = "Kernel APIs: DOSCALLS, QUECALLS, processes, IPC, timers"
+modules = [
+  "loader/doscalls.rs", "loader/stubs.rs", "loader/process.rs", "loader/ipc.rs",
+  "loader/dostimer.rs", "loader/modpath.rs", "loader/suballoc.rs", "loader/cmd.rs",
+]
+
+[[layer]]
+id = "nls"
+zone = "host"
+label = "NLS and codepages: Unicode inside (ADR-0008, ADR-0016)"
+modules = ["loader/codepage.rs", "loader/locale.rs", "loader/uconv.rs"]
+
+[[layer]]
+id = "vfs"
+zone = "host"
+label = "Virtual file system: drives on host directories (ADR-0009)"
+modules = ["loader/vfs.rs", "loader/vfs_hostdir.rs"]
+
+[[layer]]
+id = "net_mm"
+zone = "host"
+label = "Sockets and multimedia: SO32DLL / TCP32DLL, MMPM/2"
+modules = ["loader/tcpip.rs", "loader/mmpm.rs"]
+
+[[layer]]
+id = "textmode"
+zone = "host"
+label = "Text mode: VIOCALLS, KBDCALLS, MOUCALLS, ANSI console"
+modules = [
+  "loader/console.rs", "loader/ansi.rs", "loader/viocalls.rs", "loader/kbdcalls.rs",
+  "loader/moucalls.rs", "loader/vio_frame.rs",
+]
+
+[[layer]]
+id = "pmwin"
+zone = "host"
+label = "PM window manager: PMWIN windows, messages, input, painting"
+modules = [
+  "loader/pm_win.rs", "loader/pm_types.rs", "loader/pm_window.rs", "loader/pm_input.rs",
+  "loader/pm_dialog.rs", "loader/pm_msgbox.rs", "loader/pm_destroy.rs", "loader/pm_error.rs",
+  "loader/pm_pointer.rs", "loader/pm_minmax.rs", "loader/pm_sysmenu.rs", "loader/pm_paint.rs",
+  "loader/pm_query.rs", "loader/pm_keystate.rs", "loader/pm_syscolor.rs", "loader/pm_rect.rs",
+  "loader/pm_cursor.rs",
+]
+
+[[layer]]
+id = "controls"
+zone = "host"
+label = "Built-in controls: buttons, entry fields, MLE, list box, scroll bar"
+modules = [
+  "loader/pm_controls.rs", "loader/pm_button.rs", "loader/pm_list.rs", "loader/pm_edit.rs",
+  "loader/pm_scrollbar.rs",
+]
+
+[[layer]]
+id = "gpi"
+zone = "host"
+label = "GPI: presentation spaces, drawing, fonts, bitmaps"
+modules = ["loader/pm_gpi.rs", "loader/pm_bitmap.rs", "loader/pm_shapes.rs", "loader/pm_drawtext.rs"]
+
+[[layer]]
+id = "pmshell"
+zone = "host"
+label = "PM shell DLLs: PMSHAPI profiles (ADR-0017), HELPMGR"
+modules = ["loader/pmshapi.rs", "loader/profile.rs", "loader/helpmgr.rs"]
+
+[[layer]]
+id = "desktop"
+zone = "host"
+label = "PM desktop front end: surfaces, compositor, chrome, fonts (ADR-0011, ADR-0012)"
+modules = [
+  "gui/mod.rs", "gui/renderer.rs", "gui/sdl_renderer.rs", "gui/sdl_renderer/compositor.rs",
+  "gui/surface.rs", "gui/damage.rs", "gui/font.rs", "gui/message.rs", "gui/pointer.rs",
+  "gui/cursor.rs", "gui/popup_menu.rs", "gui/system_menu.rs", "gui/frame_track.rs",
+  "gui/frame_stats.rs", "gui/gui_script.rs", "gui/headless.rs", "gui/audio.rs",
+]
+
+[[layer]]
+id = "textdisplay"
+zone = "host"
+label = "Text-mode display: VIO window and full-screen text (ADR-0013)"
+modules = ["gui/text_renderer.rs", "gui/vio_window.rs", "gui/vio_view.rs", "gui/vio_switch.rs"]
+
+[[layer]]
+id = "debug"
+zone = "host"
+label = "Debugging: GDB stub, crash dumps"
+modules = ["loader/gdb_stub.rs", "loader/crash_dump.rs"]
+
+[[layer]]
+id = "tools"
+zone = "build"
+label = "Build tools: lx-link, gen_api, gen_arch (ADR-0006, ADR-0015)"
+modules = ["bin/lx_link.rs", "bin/gen_api.rs", "bin/gen_arch.rs"]
+
+# ── Host system ─────────────────────────────────────────────────────────────
+
+[[external]]
+id = "kvm"
+zone = "os"
+label = "Linux KVM (/dev/kvm)"
+
+[[external]]
+id = "sdl"
+zone = "os"
+label = "SDL3: display, input, audio, clipboard (ADR-0010)"
+
+[[external]]
+id = "hostfs"
+zone = "os"
+label = "Host file system: drive C: in $XDG_DATA_HOME/warpine/drive_c"
+
+[[external]]
+id = "network"
+zone = "os"
+label = "Host network (Linux sockets)"
+
+[[external]]
+id = "children"
+zone = "os"
+label = "Child Warpine processes (DosExecPgm)"
+
+[[external]]
+id = "gdb"
+zone = "os"
+label = "GDB (remote protocol over TCP)"
+
+# ── Flows ───────────────────────────────────────────────────────────────────
+
+[[flow]]
+from = "entry"
+to = "formats"
+label = "parse"
+
+[[flow]]
+from = "entry"
+to = "loading"
+label = "load"
+
+[[flow]]
+from = "loading"
+to = "program"
+label = "map pages, apply fixups"
+
+[[flow]]
+from = "program"
+to = "thunks"
+label = "call an import"
+
+[[flow]]
+from = "thunks"
+to = "vcpu"
+label = "INT 3 → VM exit"
+
+[[flow]]
+from = "vcpu"
+to = "kvm"
+label = "KVM_RUN"
+
+[[flow]]
+from = "vcpu"
+to = "dispatch"
+label = "module + ordinal"
+
+[[flow]]
+from = "vcpu"
+to = "program"
+label = "callbacks: window procedures, exception handlers, exit lists"
+
+[[flow]]
+from = "dispatch"
+to = "kernel"
+
+[[flow]]
+from = "dispatch"
+to = "textmode"
+
+[[flow]]
+from = "dispatch"
+to = "pmwin"
+
+[[flow]]
+from = "dispatch"
+to = "gpi"
+
+[[flow]]
+from = "dispatch"
+to = "pmshell"
+
+[[flow]]
+from = "dispatch"
+to = "net_mm"
+
+[[flow]]
+from = "kernel"
+to = "vfs"
+
+[[flow]]
+from = "kernel"
+to = "nls"
+
+[[flow]]
+from = "kernel"
+to = "children"
+label = "DosExecPgm"
+
+[[flow]]
+from = "pmshell"
+to = "vfs"
+label = "profiles"
+
+[[flow]]
+from = "vfs"
+to = "hostfs"
+
+[[flow]]
+from = "net_mm"
+to = "network"
+
+[[flow]]
+from = "net_mm"
+to = "sdl"
+label = "audio"
+
+[[flow]]
+from = "pmwin"
+to = "controls"
+
+[[flow]]
+from = "pmwin"
+to = "gpi"
+label = "paint"
+
+[[flow]]
+from = "controls"
+to = "gpi"
+
+[[flow]]
+from = "gpi"
+to = "desktop"
+label = "draw into frame surfaces"
+
+[[flow]]
+from = "desktop"
+to = "pmwin"
+label = "input events, GUIMessage replies"
+
+[[flow]]
+from = "textmode"
+to = "textdisplay"
+label = "VIO buffer (keys and mouse back)"
+
+[[flow]]
+from = "desktop"
+to = "sdl"
+
+[[flow]]
+from = "textdisplay"
+to = "sdl"
+
+[[flow]]
+from = "debug"
+to = "gdb"
