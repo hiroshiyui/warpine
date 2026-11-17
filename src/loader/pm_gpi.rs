@@ -26,10 +26,18 @@ const FACESIZE: usize = 32;
 const FATTR_SEL_ITALIC: u16 = 0x0001;
 const FATTR_SEL_BOLD:   u16 = 0x0020;
 
-/// Upper bound on the string length GpiQueryTextBox will read from the guest.
+/// Upper bound on the string length GpiQueryTextBox, GpiCharString and
+/// GpiCharStringAt read from the guest (bounds the host allocation).
 const MAX_TEXT_BOX_CHARS: i32 = 4096;
 
 const DEVICE_RES: i16 = 96; // device resolution (DPI) reported to apps
+
+/// Most points GpiPolyLine takes in one call. The reference makes the limit
+/// device dependent but "always greater than 3 500" lines for GPIF_LONG
+/// presentation spaces; this also bounds what a call reads from the guest.
+const MAX_POLYLINE_POINTS: i32 = 8192;
+/// Size of a POINTL in guest memory.
+const POINTL_SIZE: u32 = 8;
 
 /// What drawing through a presentation space needs: where it draws and the
 /// current attributes.
@@ -238,19 +246,21 @@ impl super::Loader {
                 self.set_current_pos(hps, (x2, y2));
                 ApiResult::Normal(GPI_OK)
             }
+            415 => {
+                // GpiPolyLine(HPS hps, LONG lCount, PPOINTL aptlPoints)
+                ApiResult::Normal(self.gpi_poly_line(vcpu_id, read_stack(4), read_stack(8) as i32, read_stack(12)))
+            }
             359 => {
                 // GpiCharStringAt(HPS hps, PPOINTL pptl, LONG lCount, PCH pchString)
                 let hps = read_stack(4);
                 let pptl = read_stack(8);
-                let count = read_stack(12) as usize;
+                let count = read_stack(12) as i32;
                 let pch = read_stack(16);
                 let (x, y) = (
                     self.guest_read::<i32>(pptl).unwrap_or(0),
-                    self.guest_read::<i32>(pptl + 4).unwrap_or(0),
+                    self.guest_read::<i32>(pptl.wrapping_add(4)).unwrap_or(0),
                 );
-                let text: Vec<u8> = (0..count).map(|i| {
-                    self.guest_read::<u8>(pch + i as u32).unwrap_or(0)
-                }).collect();
+                let Some(text) = self.gpi_string_bytes(count, pch) else { return ApiResult::Normal(GPI_ERROR) };
                 ApiResult::Normal(self.char_string(hps, Some((x, y)), &text))
             }
             389 => {
@@ -265,11 +275,9 @@ impl super::Loader {
                 // GpiCharString(HPS hps, LONG lCount, PCH pchString)
                 // Draw text at current position; advance current_pos.
                 let hps = read_stack(4);
-                let count = read_stack(8) as usize;
+                let count = read_stack(8) as i32;
                 let pch = read_stack(12);
-                let text: Vec<u8> = (0..count)
-                    .map(|i| self.guest_read::<u8>(pch + i as u32).unwrap_or(0))
-                    .collect();
+                let Some(text) = self.gpi_string_bytes(count, pch) else { return ApiResult::Normal(GPI_ERROR) };
                 ApiResult::Normal(self.char_string(hps, None, &text))
             }
 
@@ -586,7 +594,7 @@ impl super::Loader {
                 let aptl    = read_stack(20);
                 // Measure the actual string in the presentation space's font.
                 let bytes: Vec<u8> = (0..count.clamp(0, MAX_TEXT_BOX_CHARS) as u32)
-                    .map(|i| self.guest_read::<u8>(pch + i).unwrap_or(0))
+                    .map(|i| pch.checked_add(i).and_then(|a| self.guest_read::<u8>(a)).unwrap_or(0))
                     .collect();
                 let cp = self.ps_codepage(hps);
                 let font = self.ps_font(hps);
@@ -903,6 +911,48 @@ impl super::Loader {
         values.len() as u32
     }
 
+    /// GpiPolyLine: lines from the current position through `count` points
+    /// at `points`, drawn as one figure (a line style runs on across the
+    /// corners and each pel is painted once, so XOR corners stay drawn); the
+    /// current position ends at the last point. A negative or too large
+    /// count fails with `PMERR_INV_LENGTH_OR_COUNT`, zero draws nothing.
+    fn gpi_poly_line(&self, tid: u32, hps: u32, count: i32, points: u32) -> u32 {
+        if !self.shared.window_mgr.lock_or_recover().ps_map.contains_key(&hps) {
+            self.pm_error(tid, PMERR_INV_HPS);
+            return GPI_ERROR;
+        }
+        if !(0..=MAX_POLYLINE_POINTS).contains(&count) {
+            self.pm_error(tid, PMERR_INV_LENGTH_OR_COUNT);
+            return GPI_ERROR;
+        }
+        if count == 0 { return GPI_OK; }
+        let Some(pts) = (0..count as u32)
+            .map(|i| self.read_pointl(points.wrapping_add(i * POINTL_SIZE)))
+            .collect::<Option<Vec<_>>>()
+        else {
+            self.pm_error(tid, PMERR_INV_LENGTH_OR_COUNT);
+            return GPI_ERROR;
+        };
+        let Some(t) = self.ps_target(hps) else { return GPI_ERROR };
+        let last = pts[pts.len() - 1];
+        let mut path = Vec::with_capacity(pts.len() + 1);
+        path.push(t.pos);
+        path.extend(pts);
+        self.draw_path(&t, path);
+        self.set_current_pos(hps, last);
+        GPI_OK
+    }
+
+    /// The string of GpiCharString / GpiCharStringAt: `count` bytes at
+    /// `pch`, at most `MAX_TEXT_BOX_CHARS` (a longer string is cut there);
+    /// `None` for a negative count or a string outside guest memory.
+    fn gpi_string_bytes(&self, count: i32, pch: u32) -> Option<Vec<u8>> {
+        if count < 0 { return None; }
+        (0..count.min(MAX_TEXT_BOX_CHARS) as u32)
+            .map(|i| self.guest_read::<u8>(pch.checked_add(i)?))
+            .collect()
+    }
+
     fn set_current_pos(&self, hps: u32, pos: (i32, i32)) {
         if let Some(ps) = self.shared.window_mgr.lock_or_recover().ps_map.get_mut(&hps) {
             ps.current_pos = pos;
@@ -959,7 +1009,7 @@ impl super::Loader {
     }
 
     /// Font currently selected into presentation space `hps`.
-    fn ps_font(&self, hps: u32) -> FontSpec {
+    pub(super) fn ps_font(&self, hps: u32) -> FontSpec {
         self.shared.window_mgr.lock_or_recover()
             .ps_map.get(&hps).map_or(FontSpec::SYSTEM, |ps| ps.current_font())
     }
@@ -1078,6 +1128,26 @@ mod tests {
 
     /// GpiCharString (ordinal 358) must decode raw guest bytes through the
     /// active codepage rather than treating them as UTF-8.
+    #[test]
+    fn test_gpi_char_string_bounds_the_guest_count() {
+        let loader = Loader::new_mock();
+        let (_, hps, surface) = window_ps(&loader);
+        let text_ptr: u32 = 0x3000;
+        write_bytes(&loader, text_ptr, b"abc");
+        // A negative count fails; a huge one is cut at MAX_TEXT_BOX_CHARS
+        // instead of making the host read (and allocate) gigabytes.
+        assert_eq!(call_gpi(&loader, 358, &[hps, (-1i32) as u32, text_ptr]), GPI_ERROR);
+        assert_eq!(call_gpi(&loader, 358, &[hps, u32::MAX / 2, text_ptr]), GPI_OK);
+        let drawn = recorded(&surface);
+        let [DrawOp::TextFont { text, .. }] = drawn.as_slice() else { panic!("{drawn:?}") };
+        assert_eq!(text.chars().count(), super::MAX_TEXT_BOX_CHARS as usize);
+        // A string running off the top of the address space fails, no overflow.
+        let pt: u32 = 0x3100;
+        write_point(&loader, pt, (0, 0));
+        assert_eq!(call_gpi(&loader, 359, &[hps, pt, 8, u32::MAX - 2]), GPI_ERROR);
+        assert_eq!(call_gpi(&loader, 358, &[hps, 8, u32::MAX - 2]), GPI_ERROR);
+    }
+
     #[test]
     fn test_gpi_char_string_decodes_through_active_codepage() {
         use std::sync::atomic::Ordering;
@@ -1360,6 +1430,48 @@ mod tests {
     /// GpiSetLineWidth widens lines, box outlines and arcs; the geometric
     /// width is stored and reported. Dashed line types apply to box
     /// outlines too.
+    #[test]
+    fn test_gpi_poly_line_draws_from_the_current_position() {
+        use super::super::constants::{FM_XOR, PMERR_INV_HPS, PMERR_INV_LENGTH_OR_COUNT, SEVERITY_ERROR};
+        use super::super::pm_error::error_id;
+        let loader = Loader::new_mock();
+        let (hps, surface) = shapes_ps(&loader);
+        let background = rgb(&surface, 70, 70);
+        let pts: u32 = 0x4100;
+        let write_points = |points: &[(i32, i32)]| {
+            for (i, &p) in points.iter().enumerate() { write_point(&loader, pts + 8 * i as u32, p); }
+        };
+
+        // Three sides of a square, starting at the current position.
+        move_to(&loader, hps, (10, 10));
+        write_points(&[(40, 10), (40, 40), (10, 40)]);
+        assert_eq!(call_gpi(&loader, 415, &[hps, 3, pts]), GPI_OK);
+        assert_eq!(rgb(&surface, 25, 10), Some(RED), "first side from the current position");
+        assert_eq!(rgb(&surface, 40, 25), Some(RED));
+        assert_eq!(rgb(&surface, 25, 40), Some(RED));
+        assert_eq!(rgb(&surface, 10, 25), background, "not closed");
+        assert_eq!(current_pos(&loader, hps), (10, 40), "position at the last point");
+
+        // XOR: the shared corners are painted once, so they stay drawn.
+        assert_eq!(call_gpi(&loader, 537, &[hps, FM_XOR]), GPI_OK);
+        move_to(&loader, hps, (50, 50));
+        write_points(&[(60, 50), (60, 60)]);
+        assert_eq!(call_gpi(&loader, 415, &[hps, 2, pts]), GPI_OK);
+        assert_ne!(rgb(&surface, 60, 50), background, "corner drawn once under XOR");
+
+        // Zero points: nothing drawn, position kept; negative count and bad PS fail.
+        assert_eq!(call_gpi(&loader, 415, &[hps, 0, pts]), GPI_OK);
+        assert_eq!(current_pos(&loader, hps), (60, 60));
+        assert_eq!(call_gpi(&loader, 415, &[hps, (-1i32) as u32, pts]), GPI_ERROR);
+        assert_eq!(loader.shared.pm_errors.take(0), error_id(SEVERITY_ERROR, PMERR_INV_LENGTH_OR_COUNT));
+        assert_eq!(call_gpi(&loader, 415, &[hps, (super::MAX_POLYLINE_POINTS + 1) as u32, pts]), GPI_ERROR);
+        assert_eq!(call_gpi(&loader, 415, &[0xDEAD, 1, pts]), GPI_ERROR);
+        assert_eq!(loader.shared.pm_errors.take(0), error_id(SEVERITY_ERROR, PMERR_INV_HPS));
+        // Points outside guest memory.
+        assert_eq!(call_gpi(&loader, 415, &[hps, 2, u32::MAX - 8]), GPI_ERROR);
+        assert_eq!(current_pos(&loader, hps), (60, 60));
+    }
+
     #[test]
     fn test_gpi_line_widths() {
         use super::super::constants::{LINETYPE_SHORTDASH, LINEWIDTH_THICK};
