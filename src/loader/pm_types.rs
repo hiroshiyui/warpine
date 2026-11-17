@@ -432,6 +432,9 @@ pub struct WindowManager {
     /// The system input queue: keyboard and pointer input not yet read by
     /// any thread (`pm_input.rs`).
     pub(super) input: super::pm_input::InputQueue,
+    /// Windows that have been sent `WM_DESTROY` and are waiting to be
+    /// removed (`pm_destroy.rs`).
+    pub(super) destroying: HashSet<u32>,
 }
 
 impl Default for WindowManager {
@@ -470,6 +473,7 @@ impl WindowManager {
             next_hbm: 0x7000,
             next_hdc: 0x6000,
             input: Default::default(),
+            destroying: HashSet::new(),
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
@@ -1171,6 +1175,11 @@ impl WindowManager {
         self.windows.contains_key(&hwnd)
     }
 
+    /// The handles of all existing windows, in no particular order.
+    pub fn window_handles(&self) -> Vec<u32> {
+        self.windows.keys().copied().collect()
+    }
+
     /// Whether input to frame `frame` is blocked: it is disabled, as the
     /// owner of a modal dialog is.
     pub fn frame_disabled(&self, frame: u32) -> bool {
@@ -1178,11 +1187,15 @@ impl WindowManager {
         self.windows.get(&frame).is_some_and(|w| w.style & WS_DISABLED != 0)
     }
 
-    /// Destroy `hwnd` and all its descendants (`WinDestroyWindow`): they are
-    /// removed from the window tree, the Z-order and the frame map, lose
-    /// their surfaces, accelerator tables and timers, and stop being the
-    /// focus, capture or pressed button. Returns `false` for an unknown
-    /// window. The window procedures are not called (no `WM_DESTROY`).
+    /// Remove `hwnd` and all its descendants: the last step of
+    /// `WinDestroyWindow`, after `WM_DESTROY` was sent (`pm_destroy.rs`).
+    /// They are removed from the window tree, the Z-order and the frame
+    /// map, lose their surfaces, accelerator tables, timers and window
+    /// device contexts, and stop being the focus, capture or pressed
+    /// button. A `WinGetPS` / `WinBeginPaint` presentation space of theirs
+    /// is released; a `GpiCreatePS` one is disassociated (it stays, drawing
+    /// nowhere). Returns `false` for an unknown window. No window procedure
+    /// is called here.
     pub fn destroy_window(&mut self, hwnd: u32) -> bool {
         let Some(parent) = self.windows.get(&hwnd).map(|w| w.parent) else { return false };
         if let Some(p) = self.windows.get_mut(&parent) {
@@ -1205,9 +1218,22 @@ impl WindowManager {
             self.surfaces.remove(&h);
             self.window_accel.remove(&h);
             self.dirty.remove(&h);
+            self.destroying.remove(&h);
             for slot in [&mut self.focus_hwnd, &mut self.capture_hwnd, &mut self.pressed_control] {
                 if *slot == h { *slot = 0; }
             }
+        }
+        // Presentation spaces and window device contexts of the windows.
+        let window_dcs: Vec<u32> = self.dcs.iter()
+            .filter(|&(_, dc)| matches!(dc, DeviceContext::Window(w) if doomed.contains(w)))
+            .map(|(&h, _)| h).collect();
+        for hdc in &window_dcs {
+            self.dcs.remove(hdc);
+        }
+        self.ps_map.retain(|_, ps| !(doomed.contains(&ps.hwnd) && ps.origin != PsOrigin::Created));
+        for ps in self.ps_map.values_mut() {
+            if doomed.contains(&ps.hwnd) { ps.hwnd = 0; }
+            if window_dcs.contains(&ps.hdc) { ps.hdc = 0; }
         }
         // Stop the timers of the destroyed windows; their threads end on
         // their own (joining here could wait on this lock).
@@ -1242,20 +1268,30 @@ impl WindowManager {
     /// when it was started that way. Returns the dialog result
     /// (`DID_CANCEL` when the dialog no longer exists).
     pub fn finish_modal_dialog(&mut self, dialog: u32) -> u32 {
+        let (result, destroy) = self.end_modal_dialog(dialog);
+        if destroy {
+            self.destroy_window(dialog);
+        }
+        result
+    }
+
+    /// [`finish_modal_dialog`](Self::finish_modal_dialog) without the
+    /// destruction: returns the dialog result and whether the dialog is to
+    /// be destroyed now (`WinDlgBox`), which the modal loop does with
+    /// `WM_DESTROY` (`pm_destroy.rs`).
+    pub fn end_modal_dialog(&mut self, dialog: u32) -> (u32, bool) {
         use super::constants::{DID_CANCEL, WS_DISABLED};
         let Some((result, owner, destroy, dismissed)) = self.windows.get(&dialog)
             .map(|w| (w.dialog_result, w.modal_owner, w.destroy_on_dismiss, w.dialog_dismissed))
-            else { return DID_CANCEL };
+            else { return (DID_CANCEL, false) };
         self.close_dialog(dialog);
         if owner != 0 && let Some(f) = self.windows.get_mut(&owner) {
             f.style &= !WS_DISABLED;
         }
-        if destroy {
-            self.destroy_window(dialog);
-        } else if let Some(d) = self.windows.get_mut(&dialog) {
+        if let Some(d) = self.windows.get_mut(&dialog) {
             d.modal_owner = 0;
         }
-        if dismissed { result } else { DID_CANCEL }
+        (if dismissed { result } else { DID_CANCEL }, destroy)
     }
 
     /// Take a dismissed dialog off the screen: out of the Z-order (the

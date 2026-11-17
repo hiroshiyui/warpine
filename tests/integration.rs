@@ -733,6 +733,16 @@ fn gui_pm_msgbox_test_answers_message_boxes() {
     assert_scripted_checks_pass("samples/pm_msgbox_test/pm_msgbox_test.exe", "pm_msgbox_test", 9, &steps);
 }
 
+/// pm_destroy_test: WinDestroyWindow sends WM_DESTROY to the window and then
+/// to its children while they all still exist, a frame destroys the
+/// windows it and its children own, nested WinDestroyWindow calls from a
+/// WM_DESTROY handler send nothing twice, and WinDlgBox destroys its
+/// dialog with WM_DESTROY before it returns.
+#[test]
+fn gui_pm_destroy_test_sends_wm_destroy() {
+    assert_sample_checks_pass("samples/pm_destroy_test/pm_destroy_test.exe", "pm_destroy_test", 23);
+}
+
 /// The fourth box of pm_msgbox_test: the information icon left of two
 /// lines of text, the OK button with the default outline, centred on the
 /// desktop over its inactive owner.

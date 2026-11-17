@@ -594,12 +594,13 @@ impl super::Loader {
                                         };
                                         if let Some((true, _)) = dismissed {
                                             // Dialog dismissed: off the screen, its owner
-                                            // enabled again, destroyed for WinDlgBox.
-                                            // regs.rip and regs.rsp are already set to saved state
-                                            // by the code above the match.
-                                            regs.rax = self.shared.window_mgr.lock_or_recover()
-                                                .finish_modal_dialog(hwnd_dlg) as u64;
-                                            // Fall through to vcpu.set_regs + continue.
+                                            // enabled again, destroyed (with WM_DESTROY)
+                                            // for WinDlgBox; then back to the caller.
+                                            finish_dlg_loop(
+                                                &mut *vcpu, self, &mut callback_stack,
+                                                hwnd_dlg, frame.saved_rip, frame.saved_rsp,
+                                            );
+                                            continue;
                                         } else {
                                             // Not yet dismissed: dispatch the next queued message.
                                             if setup_dlg_dispatch(
@@ -613,6 +614,16 @@ impl super::Loader {
                                             // regs were set by setup_dlg_dispatch; skip set below.
                                             continue;
                                         }
+                                    }
+                                    FrameKind::DestroyWindows { mut chain } => {
+                                        // WM_DESTROY returned: on to the next window,
+                                        // or back to the caller when all are done.
+                                        let next = self.advance_destroy(&mut chain);
+                                        continue_destroy(
+                                            &mut *vcpu, self, &mut callback_stack,
+                                            chain, next, frame.saved_rip, frame.saved_rsp,
+                                        );
+                                        continue;
                                     }
                                     FrameKind::InitTerm { hmod, phmod } => {
                                         // _DLL_InitTerm returns 1 on success, 0 on failure.
@@ -784,6 +795,16 @@ impl super::Loader {
                                 }
                                 // setup_dlg_dispatch returned false (dismissed immediately or
                                 // no queue) — registers already set, fall through.
+                            }
+                            ApiResult::DestroyWindows { chain, hwnd, wnd_proc } => {
+                                let regs = vcpu.get_regs().unwrap();
+                                let return_addr = self.guest_read::<u32>(regs.rsp as u32)
+                                    .expect("Stack read OOB for WinDestroyWindow return address");
+                                continue_destroy(
+                                    &mut *vcpu, self, &mut callback_stack,
+                                    chain, Some((hwnd, wnd_proc)),
+                                    return_addr as u64, regs.rsp + 4,
+                                );
                             }
                             ApiResult::ExceptionDispatch { .. } => {
                                 let mut regs = vcpu.get_regs().unwrap();
@@ -980,18 +1001,13 @@ fn setup_dlg_dispatch(
     // End the modal loop: return to the WinDlgBox / WinProcessDlg caller with
     // the dialog result (DID_CANCEL unless it was dismissed), after taking
     // the dialog off the screen and enabling its owner again.
-    let finish = |vcpu: &mut dyn super::vm_backend::VcpuBackend| {
-        let result = loader.shared.window_mgr.lock_or_recover().finish_modal_dialog(hwnd_dlg);
-        let mut regs = vcpu.get_regs().unwrap();
-        regs.rip = saved_rip;
-        regs.rsp = saved_rsp;
-        regs.rax = result as u64;
-        vcpu.set_regs(&regs).unwrap();
+    let finish = |vcpu: &mut dyn super::vm_backend::VcpuBackend, callback_stack: &mut Vec<CallbackFrame>| {
+        finish_dlg_loop(vcpu, loader, callback_stack, hwnd_dlg, saved_rip, saved_rsp);
         false
     };
 
     let mq_arc = loader.shared.window_mgr.lock_or_recover().get_mq(hmq);
-    let Some(mq_arc) = mq_arc else { return finish(vcpu) };
+    let Some(mq_arc) = mq_arc else { return finish(vcpu, callback_stack) };
 
     let (cond, wait_lock) = {
         let mq = mq_arc.lock_or_recover();
@@ -1004,7 +1020,7 @@ fn setup_dlg_dispatch(
         let ended = loader.shared.window_mgr.lock_or_recover()
             .get_window(hwnd_dlg).is_none_or(|w| w.dialog_dismissed);
         if ended || loader.shutting_down() {
-            return finish(vcpu);
+            return finish(vcpu, callback_stack);
         }
 
         // The next message in PM's order, as WinGetMsg takes it.
@@ -1013,7 +1029,7 @@ fn setup_dlg_dispatch(
         if let Some(msg) = msg_opt {
             // WM_QUIT terminates the dialog loop with DID_CANCEL.
             if msg.msg == WM_QUIT {
-                return finish(vcpu);
+                return finish(vcpu, callback_stack);
             }
 
             // Like WinGetMsg + WinDispatchMsg: accelerators are translated,
@@ -1056,4 +1072,77 @@ fn setup_dlg_dispatch(
         let guard = wait_lock.lock_or_recover();
         let _ = cond.wait_timeout(guard, std::time::Duration::from_millis(100)).unwrap();
     }
+}
+
+/// End a modal dialog loop and return to the WinDlgBox / WinProcessDlg
+/// caller (`saved_rip` / `saved_rsp`) with the dialog result: the dialog
+/// leaves the screen, its owner is enabled again, and for WinDlgBox it is
+/// destroyed first — with `WM_DESTROY`, which may call the guest
+/// (`continue_destroy`). The registers are set either way; the caller
+/// `continue`s the VMEXIT loop.
+fn finish_dlg_loop(
+    vcpu: &mut dyn super::vm_backend::VcpuBackend,
+    loader: &super::Loader,
+    callback_stack: &mut Vec<CallbackFrame>,
+    hwnd_dlg: u32,
+    saved_rip: u64,
+    saved_rsp: u64,
+) {
+    let (result, destroy) = loader.shared.window_mgr.lock_or_recover().end_modal_dialog(hwnd_dlg);
+    let outcome = if destroy { loader.destroy_dialog(hwnd_dlg, result) } else { ApiResult::Normal(result) };
+    match outcome {
+        ApiResult::DestroyWindows { chain, hwnd, wnd_proc } => continue_destroy(
+            vcpu, loader, callback_stack, chain, Some((hwnd, wnd_proc)), saved_rip, saved_rsp,
+        ),
+        other => {
+            let result = match other { ApiResult::Normal(v) => v, _ => result };
+            let mut regs = vcpu.get_regs().unwrap();
+            regs.rip = saved_rip;
+            regs.rsp = saved_rsp;
+            regs.rax = result as u64;
+            vcpu.set_regs(&regs).unwrap();
+        }
+    }
+}
+
+/// Go on with a window destruction (`pm_destroy.rs`): with `next` =
+/// `Some((hwnd, wnd_proc))`, call `wnd_proc(hwnd, WM_DESTROY, 0, 0)` under a
+/// `FrameKind::DestroyWindows` frame that resumes the chain on return;
+/// with `None` (the chain has ended and the windows are gone), return the
+/// chain's result to the caller at `saved_rip` / `saved_rsp`. Every call
+/// is built just below `saved_rsp`, so a long chain does not use up stack.
+fn continue_destroy(
+    vcpu: &mut dyn super::vm_backend::VcpuBackend,
+    loader: &super::Loader,
+    callback_stack: &mut Vec<CallbackFrame>,
+    chain: Box<super::pm_destroy::DestroyChain>,
+    next: Option<(u32, u32)>,
+    saved_rip: u64,
+    saved_rsp: u64,
+) {
+    let mut regs = vcpu.get_regs().unwrap();
+    match next {
+        Some((hwnd, wnd_proc)) => {
+            callback_stack.push(CallbackFrame {
+                saved_rip,
+                saved_rsp,
+                kind: FrameKind::DestroyWindows { chain },
+            });
+            // _System window procedure: return address + 4 arguments.
+            regs.rsp = saved_rsp - 20;
+            let sp = regs.rsp as u32;
+            loader.guest_write::<u32>(sp,      CALLBACK_RET_TRAP).expect("WM_DESTROY stack OOB");
+            loader.guest_write::<u32>(sp +  4, hwnd).expect("WM_DESTROY stack OOB");
+            loader.guest_write::<u32>(sp +  8, WM_DESTROY).expect("WM_DESTROY stack OOB");
+            loader.guest_write::<u32>(sp + 12, 0).expect("WM_DESTROY stack OOB");
+            loader.guest_write::<u32>(sp + 16, 0).expect("WM_DESTROY stack OOB");
+            regs.rip = wnd_proc as u64;
+        }
+        None => {
+            regs.rip = saved_rip;
+            regs.rsp = saved_rsp;
+            regs.rax = chain.result as u64;
+        }
+    }
+    vcpu.set_regs(&regs).unwrap();
 }

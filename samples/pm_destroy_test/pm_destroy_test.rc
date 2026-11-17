@@ -1,0 +1,13 @@
+/* pm_destroy_test.rc - the dialog of pm_destroy_test */
+#define INCL_WIN
+#include <os2.h>
+#include "pm_destroy_test.h"
+
+DLGTEMPLATE ID_DLG LOADONCALL MOVEABLE DISCARDABLE
+BEGIN
+    DIALOG "Destroy test dialog", ID_DLG, 40, 40, 120, 50, 0,
+           FCF_TITLEBAR | FCF_SYSMENU
+    BEGIN
+        DEFPUSHBUTTON "OK", ID_DLG_OK, 40, 10, 40, 14
+    END
+END

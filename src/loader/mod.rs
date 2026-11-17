@@ -13,6 +13,7 @@ mod pm_controls;
 mod pm_dialog;
 mod pm_error;
 mod pm_button;
+mod pm_destroy;
 pub mod vfs;
 pub mod vfs_hostdir;
 pub mod vm_backend;
@@ -140,6 +141,11 @@ pub(crate) enum FrameKind {
         hwnd_dlg: u32,
         hmq:      u32,
     },
+    /// A `WM_DESTROY` sent while windows are destroyed (`pm_destroy.rs`).
+    /// When the window procedure returns, the chain goes on with the next
+    /// window; after the last one the windows are removed and the chain's
+    /// result is returned to the caller.
+    DestroyWindows { chain: Box<pm_destroy::DestroyChain> },
 }
 
 pub(crate) struct CallbackFrame {
@@ -188,6 +194,15 @@ pub(crate) enum ApiResult {
         dlg_proc: u32,
         hwnd_dlg: u32,
         hmq:      u32,
+    },
+    /// Send `WM_DESTROY` to `hwnd` through `wnd_proc` as part of a window
+    /// destruction (`WinDestroyWindow`, the end of `WinDlgBox`); `vcpu.rs`
+    /// continues `chain` when the procedure returns
+    /// (`FrameKind::DestroyWindows`).
+    DestroyWindows {
+        chain:    Box<pm_destroy::DestroyChain>,
+        hwnd:     u32,
+        wnd_proc: u32,
     },
     /// Invoke an OS/2 exception handler as a guest callback.
     ///

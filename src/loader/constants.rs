@@ -59,6 +59,9 @@ pub const NE_THUNK_CODE_SELECTOR: u16 = (NE_THUNK_CODE_GDT_INDEX as u16) * 8; //
 
 // OS/2 WM_ message constants
 pub const WM_CREATE: u32 = 0x0001;
+/// Sent to a window being destroyed (`WinDestroyWindow`), after it has been
+/// hidden and before its children are destroyed.
+pub const WM_DESTROY: u32 = 0x0002;
 pub const WM_SIZE: u32 = 0x0007;
 /// First message number free for applications.
 pub const WM_USER: u32 = 0x1000;

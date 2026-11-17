@@ -555,24 +555,9 @@ impl super::Loader {
                 ApiResult::Normal(1) // TRUE
             }
             728 => {
-                // WinDestroyWindow(HWND hwnd): the window and its descendants go.
-                // A frame whose menu bar goes with them loses its bar.
-                let hwnd = read_stack(4);
-                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
-                let (destroyed, bare_frames) = {
-                    let mut wm = self.shared.window_mgr.lock_or_recover();
-                    let frames: Vec<u32> = wm.frame_to_client.keys().copied()
-                        .filter(|&f| wm.get_window(f).is_some_and(|w| w.menu_hwnd != 0
-                            && wm.is_same_or_descendant(w.menu_hwnd, hwnd)))
-                        .collect();
-                    (wm.destroy_window(hwnd), frames)
-                };
-                for frame in bare_frames {
-                    if self.shared.window_mgr.lock_or_recover().is_window(frame) {
-                        self.attach_menu_to_frame(frame, 0);
-                    }
-                }
-                ApiResult::Normal(destroyed as u32)
+                // WinDestroyWindow(HWND hwnd): WM_DESTROY to the window and
+                // its descendants, then they go (`pm_destroy.rs`).
+                self.win_destroy_window(vcpu_id, read_stack(4))
             }
             772 => {
                 // WinIsWindow(HAB hab, HWND hwnd)
@@ -1601,7 +1586,7 @@ impl super::Loader {
         self.attach_menu_to_frame(frame, menu);
     }
 
-    fn attach_menu_to_frame(&self, hwnd_frame: u32, hwnd_menu: u32) -> u32 {
+    pub(super) fn attach_menu_to_frame(&self, hwnd_frame: u32, hwnd_menu: u32) -> u32 {
         let mut wm = self.shared.window_mgr.lock_or_recover();
         let client = wm.frame_to_client.get(&hwnd_frame).copied();
         let old_size = client.and_then(|c| wm.get_window(c)).map(|w| (w.cx, w.cy));
@@ -2812,14 +2797,24 @@ mod tests {
         assert!(!msg_in_range(5, 10, 2));
     }
 
-    /// WinDestroyWindow removes the window; WinIsWindow then reports FALSE.
+    /// WinDestroyWindow sends WM_DESTROY to the client (the frame and the
+    /// entry field have Warpine's default handling), then removes the
+    /// windows; WinIsWindow then reports FALSE.
     #[test]
     fn test_win_destroy_window_and_is_window() {
         let loader = Loader::new_mock();
         let (frame, client, _, entry) = window_with_entry(&loader);
         let mut vcpu = MockVcpu::new();
         assert_eq!(call_pmwin(&loader, &mut vcpu, 772, &[0, entry]), 1);
-        assert_eq!(call_pmwin(&loader, &mut vcpu, 728, &[frame]), 1);
+        let esp: u32 = 0x1000;
+        vcpu.regs.rsp = esp as u64;
+        write_stack(&loader, esp, &[frame]);
+        let ApiResult::DestroyWindows { mut chain, hwnd, wnd_proc } = loader.handle_pmwin_call(&mut vcpu, 0, 728)
+            else { panic!("WM_DESTROY goes to the client's procedure") };
+        assert_eq!((hwnd, wnd_proc), (client, 0x1234));
+        assert_eq!(call_pmwin(&loader, &mut vcpu, 772, &[0, entry]), 1, "still there during WM_DESTROY");
+        assert_eq!(loader.advance_destroy(&mut chain), None);
+        assert_eq!(chain.result, 1);
         for h in [frame, client, entry] {
             assert_eq!(call_pmwin(&loader, &mut vcpu, 772, &[0, h]), 0);
         }
