@@ -215,11 +215,18 @@ pub(super) fn parse_accel_table(data: &[u8]) -> Vec<AccelEntry> {
 }
 
 /// The system accelerator table: keystrokes every frame understands.
-/// Alt+F4 closes, Alt+F5 restores, Alt+F9 minimizes, Alt+F10 maximizes
-/// (IBM OS/2 1.2 Quick Reference).
+/// Alt+F4 closes, Alt+F5 restores, Alt+F7 moves, Alt+F8 sizes, Alt+F9
+/// minimizes, Alt+F10 maximizes, Alt+Space and Shift+Esc open the system
+/// menu (IBM OS/2 1.2 Quick Reference; Alt+F7 also from OS/2 Warp key
+/// lists). Alt+F11 (Hide, as the system menu shows it) is left out: no
+/// source maps it, and a frame hidden without a window list stays hidden.
 pub(super) const SYSTEM_ACCELS: &[AccelEntry] = &[
     AccelEntry { flags: AF_VIRTUALKEY | AF_ALT | AF_SYSCOMMAND, key: VK_F4 as u16, cmd: SC_CLOSE as u16 },
     AccelEntry { flags: AF_VIRTUALKEY | AF_ALT | AF_SYSCOMMAND, key: VK_F5 as u16, cmd: SC_RESTORE as u16 },
+    AccelEntry { flags: AF_VIRTUALKEY | AF_ALT | AF_SYSCOMMAND, key: VK_F7 as u16, cmd: SC_MOVE as u16 },
+    AccelEntry { flags: AF_VIRTUALKEY | AF_ALT | AF_SYSCOMMAND, key: VK_F8 as u16, cmd: SC_SIZE as u16 },
+    AccelEntry { flags: AF_VIRTUALKEY | AF_ALT | AF_SYSCOMMAND, key: VK_SPACE as u16, cmd: SC_SYSMENU as u16 },
+    AccelEntry { flags: AF_VIRTUALKEY | AF_SHIFT | AF_SYSCOMMAND, key: VK_ESC as u16, cmd: SC_SYSMENU as u16 },
     AccelEntry { flags: AF_VIRTUALKEY | AF_ALT | AF_SYSCOMMAND, key: VK_F9 as u16, cmd: SC_MINIMIZE as u16 },
     AccelEntry { flags: AF_VIRTUALKEY | AF_ALT | AF_SYSCOMMAND, key: VK_F10 as u16, cmd: SC_MAXIMIZE as u16 },
 ];
@@ -507,6 +514,11 @@ impl Loader {
                 self.post_to_window(hwnd, WM_CLOSE, 0, 0);
                 ApiResult::Normal(0)
             }
+            // The system menu and keyboard move / size (pm_sysmenu.rs).
+            WM_SYSCOMMAND => {
+                self.frame_syscommand(hwnd, mp1 & 0xFFFF, mp2);
+                ApiResult::Normal(0)
+            }
             WM_CLOSE => {
                 self.dismiss_dialog(hwnd, DID_CANCEL);
                 ApiResult::Normal(0)
@@ -679,13 +691,21 @@ mod tests {
         let (m1, m2) = key(KC_VIRTUALKEY | KC_ALT | KC_SCANCODE, 0, VK_F4, 0x3E);
         let hit = SYSTEM_ACCELS.iter().find(|e| accel_matches(e, m1, m2)).expect("Alt+F4");
         assert_eq!(accel_message(hit), (WM_SYSCOMMAND, SC_CLOSE, CMDSRC_ACCELERATOR));
-        for (vk, scan, sc) in [(VK_F5, 0x3F, SC_RESTORE), (VK_F9, 0x43, SC_MINIMIZE), (VK_F10, 0x44, SC_MAXIMIZE)] {
+        for (vk, scan, sc) in [(VK_F5, 0x3F, SC_RESTORE), (VK_F7, 0x41, SC_MOVE), (VK_F8, 0x42, SC_SIZE),
+                               (VK_F9, 0x43, SC_MINIMIZE), (VK_F10, 0x44, SC_MAXIMIZE),
+                               (VK_SPACE, 0x39, SC_SYSMENU)] {
             let (m1, m2) = key(KC_VIRTUALKEY | KC_ALT | KC_SCANCODE, 0, vk, scan);
             let hit = SYSTEM_ACCELS.iter().find(|e| accel_matches(e, m1, m2)).expect("Alt+Fn");
             assert_eq!(accel_message(hit), (WM_SYSCOMMAND, sc, CMDSRC_ACCELERATOR));
             let (m1, m2) = key(KC_VIRTUALKEY | KC_SCANCODE, 0, vk, scan);
             assert!(!SYSTEM_ACCELS.iter().any(|e| accel_matches(e, m1, m2)), "without Alt: no accelerator");
         }
+        // Shift+Esc opens the system menu; Esc alone is left to the window.
+        let (m1, m2) = key(KC_VIRTUALKEY | KC_SHIFT | KC_SCANCODE, 0, VK_ESC, 0x01);
+        let hit = SYSTEM_ACCELS.iter().find(|e| accel_matches(e, m1, m2)).expect("Shift+Esc");
+        assert_eq!(accel_message(hit), (WM_SYSCOMMAND, SC_SYSMENU, CMDSRC_ACCELERATOR));
+        let (m1, m2) = key(KC_VIRTUALKEY | KC_SCANCODE, 0, VK_ESC, 0x01);
+        assert!(!SYSTEM_ACCELS.iter().any(|e| accel_matches(e, m1, m2)));
         let plain = AccelEntry { flags: AF_CHAR, key: b'q' as u16, cmd: 7 };
         assert_eq!(accel_message(&plain), (WM_COMMAND, 7, CMDSRC_ACCELERATOR));
         let help = AccelEntry { flags: AF_VIRTUALKEY | AF_HELP, key: VK_F1 as u16, cmd: 9 };

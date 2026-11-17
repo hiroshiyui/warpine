@@ -28,15 +28,17 @@ use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 use crate::lx::header::AppType;
-use crate::loader::constants::{
-    frame_border_width, CHROME_TITLE_H, SC_CLOSE, SC_HIDE, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE,
-    SC_RESTORE, SC_SIZE, WS_MAXIMIZED, WS_MINIMIZED,
-};
+use crate::loader::constants::{frame_border_width, CHROME_TITLE_H, WS_MAXIMIZED, WS_MINIMIZED};
 use crate::loader::moucalls::{self, MouButton};
 use crate::loader::pm_minmax::WinRect;
-use crate::loader::vio_frame::{clamp_vio_size, vio_client_size, VIO_CELL_H, VIO_CELL_W, VIO_SCROLLBAR_W};
+use crate::loader::vio_frame::{
+    clamp_vio_size, vio_client_size, VIO_CELL_H, VIO_CELL_W, VIO_FRAME_FLAGS, VIO_SCROLLBAR_W,
+};
 use crate::loader::{MutexExt, SharedState};
+use super::frame_track::{KeyTrack, TrackOutcome};
+pub use super::frame_track::TrackKey;
 use super::popup_menu::PopupItem;
+use super::system_menu::{can_track, window_items};
 use super::text_renderer::{render_cells, VgaTextBuffer};
 use super::vio_view::{follow_cursor, paste_keys, rect_text, BarHit, CellRect, ScrollBar, VioLayout};
 
@@ -80,16 +82,10 @@ pub const CMD_PASTE: u32 = 0x0107;
 /// mode; Copy needs a marked rectangle, Paste clipboard text (these
 /// conditions are Warpine's choice).
 pub fn system_menu_items(state: u32, marking: bool, has_mark: bool, can_paste: bool) -> Vec<PopupItem> {
-    let normal = state & (WS_MINIMIZED | WS_MAXIMIZED) == 0;
-    vec![
-        PopupItem::new(SC_RESTORE, "~Restore", "Alt+F5", !normal),
-        PopupItem::new(SC_MOVE, "~Move", "Alt+F7", state & WS_MAXIMIZED == 0),
-        PopupItem::new(SC_SIZE, "~Size", "Alt+F8", normal),
-        PopupItem::new(SC_MINIMIZE, "Mi~nimize", "Alt+F9", state & WS_MINIMIZED == 0),
-        PopupItem::new(SC_MAXIMIZE, "Ma~ximize", "Alt+F10", state & WS_MAXIMIZED == 0),
-        PopupItem::new(SC_HIDE, "~Hide", "Alt+F11", false),
-        PopupItem::separator(),
-        PopupItem::new(SC_CLOSE, "~Close", "Alt+F4", true),
+    // The window items as for a PM frame with the VIO frame's flags (no
+    // hide button: Hide is greyed).
+    let mut items = window_items(VIO_FRAME_FLAGS, state);
+    items.extend([
         PopupItem::separator(),
         PopupItem::new(CMD_HELP, "H~elp...", "", false),
         PopupItem::new(CMD_FONT_SIZE, "~Font Size...", "", false),
@@ -98,7 +94,8 @@ pub fn system_menu_items(state: u32, marking: bool, has_mark: bool, can_paste: b
         PopupItem::new(CMD_COPY, "C~opy", "", has_mark),
         PopupItem::new(CMD_COPY_ALL, "Cop~y All", "", true),
         PopupItem::new(CMD_PASTE, "~Paste", "", can_paste),
-    ]
+    ]);
+    items
 }
 
 /// How a VIO program is shown.
@@ -151,18 +148,6 @@ enum Drag {
     Thumb { vertical: bool, offset: i32 },
 }
 
-/// A key that works a keyboard move or size.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TrackKey { Left, Right, Up, Down, Enter, Esc }
-
-/// A keyboard move or size (system menu Move / Size), from the frame's
-/// position and size `orig`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Track {
-    size: bool,
-    orig: WinRect,
-}
-
 /// The VIO program's text screen in its frame on the PM desktop.
 pub struct VioWindow {
     frame: u32,
@@ -184,7 +169,7 @@ pub struct VioWindow {
     drag: Option<Drag>,
     /// The frame's title outside Mark mode.
     title: Option<String>,
-    track: Option<Track>,
+    track: Option<KeyTrack>,
 }
 
 impl VioWindow {
@@ -488,18 +473,16 @@ impl VioWindow {
     }
 
     /// Start moving (`size` false) or sizing the window with the keyboard
-    /// (system menu Move / Size): the arrow keys move it, or move its right
-    /// and bottom edges, a cell at a time; Enter keeps the result, Esc puts
-    /// the window back. PM lets the user pick the edges to size and move
-    /// the pointer with the keys; Warpine's keyboard size moves the right
-    /// and bottom edges only (simplification). Returns whether it started.
+    /// (system menu Move / Size): the arrow keys move it, or the edges they
+    /// pick (`frame_track.rs`), a cell at a time; Enter keeps the result,
+    /// Esc puts the window back. Returns whether it started.
     pub fn start_track(&mut self, shared: &SharedState, size: bool) -> bool {
         let wm = shared.window_mgr.lock_or_recover();
         let Some(f) = wm.get_window(self.frame) else { return false };
-        let state = f.style & (WS_MINIMIZED | WS_MAXIMIZED);
-        let allowed = if size { state == 0 } else { state & WS_MAXIMIZED == 0 };
+        let allowed = can_track(f.frame_flags, f.style & (WS_MINIMIZED | WS_MAXIMIZED), size);
         if allowed {
-            self.track = Some(Track { size, orig: WinRect { x: f.x, y: f.y, cx: f.cx, cy: f.cy } });
+            let orig = WinRect { x: f.x, y: f.y, cx: f.cx, cy: f.cy };
+            self.track = Some(KeyTrack::new(orig, size, (VIO_CELL_W, VIO_CELL_H)));
         }
         allowed
     }
@@ -507,30 +490,20 @@ impl VioWindow {
     /// Work a keyboard move or size with `key`. Returns whether one is in
     /// progress (the key was used).
     pub fn track_key(&mut self, shared: &SharedState, key: TrackKey) -> bool {
-        let Some(track) = self.track else { return false };
+        let Some(track) = self.track.as_mut() else { return false };
         let mut wm = shared.window_mgr.lock_or_recover();
         let Some(f) = wm.get_window(self.frame) else { self.track = None; return true };
-        let mut r = WinRect { x: f.x, y: f.y, cx: f.cx, cy: f.cy };
-        let (dx, dy) = match key {
-            TrackKey::Left => (-VIO_CELL_W, 0),
-            TrackKey::Right => (VIO_CELL_W, 0),
-            TrackKey::Up => (0, VIO_CELL_H),
-            TrackKey::Down => (0, -VIO_CELL_H),
-            TrackKey::Enter => { self.track = None; return true; }
-            TrackKey::Esc => {
+        let current = WinRect { x: f.x, y: f.y, cx: f.cx, cy: f.cy };
+        let (cols, rows) = wm.vio_screen;
+        match track.key(current, key, |cx, cy| clamp_vio_size(cx, cy, cols, rows)) {
+            TrackOutcome::Continue(None) => {}
+            TrackOutcome::Continue(Some(r)) if track.size => wm.set_vio_rect(r),
+            TrackOutcome::Continue(Some(r)) => wm.move_frame(self.frame, r.x, r.y),
+            TrackOutcome::Accept => self.track = None,
+            TrackOutcome::Cancel(orig) => {
                 self.track = None;
-                wm.set_vio_rect(track.orig);
-                return true;
+                wm.set_vio_rect(orig);
             }
-        };
-        if track.size {
-            let (cols, rows) = wm.vio_screen;
-            let top = r.y + r.cy;
-            (r.cx, r.cy) = clamp_vio_size(r.cx + dx, r.cy - dy, cols, rows);
-            r.y = top - r.cy;
-            wm.set_vio_rect(r);
-        } else {
-            wm.move_frame(self.frame, r.x + dx, r.y + dy);
         }
         true
     }
@@ -578,7 +551,9 @@ fn compose_client(out: &mut Vec<u32>, (cw, ch): (usize, usize), pixels: &[u32], 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::loader::constants::{SWP_MAXIMIZE, SWP_MINIMIZE};
+    use crate::loader::constants::{
+        SC_CLOSE, SC_HIDE, SC_MAXIMIZE, SC_MINIMIZE, SC_MOVE, SC_RESTORE, SC_SIZE, SWP_MAXIMIZE, SWP_MINIMIZE,
+    };
 
     #[test]
     fn window_is_the_default_unless_the_program_or_the_user_says_otherwise() {
@@ -883,8 +858,12 @@ mod tests {
         vio.track_key(&shared, TrackKey::Esc);
         assert_eq!(rect(&shared), start, "Esc puts it back");
         assert!(!vio.tracking());
-        // Size: the full screen cannot grow, but it shrinks a cell at a time.
+        // Size: the first arrows pick the right and bottom edges; the full
+        // screen cannot grow, but it shrinks a cell at a time.
         assert!(vio.start_track(&shared, true));
+        vio.track_key(&shared, TrackKey::Right);
+        vio.track_key(&shared, TrackKey::Down);
+        assert_eq!(rect(&shared), start, "picking edges moves nothing");
         vio.track_key(&shared, TrackKey::Right);
         assert_eq!(rect(&shared), start, "not larger than the screen");
         vio.track_key(&shared, TrackKey::Left);

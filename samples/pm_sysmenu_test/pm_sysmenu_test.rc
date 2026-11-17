@@ -1,0 +1,17 @@
+/* pm_sysmenu_test.rc - the pop-up menu of pm_sysmenu_test (WinPopupMenu) */
+
+#define INCL_WIN
+#include <os2.h>
+
+#define ID_POPUP    100
+#define IDM_RED     301
+#define IDM_GREEN   302
+#define IDM_BLUE    303
+
+MENU ID_POPUP
+BEGIN
+    MENUITEM "~Red",   IDM_RED
+    MENUITEM "~Green", IDM_GREEN
+    MENUITEM SEPARATOR
+    MENUITEM "~Blue",  IDM_BLUE, , MIA_DISABLED
+END

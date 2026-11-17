@@ -329,9 +329,11 @@ impl super::Loader {
                 let hwnd = read_stack(4);
                 let msg = read_stack(8);
                 let mp1 = read_stack(12);
-                let _mp2 = read_stack(16);
+                let mp2 = read_stack(16);
 
                 match msg {
+                    // The system menu and keyboard move / size (pm_sysmenu.rs).
+                    WM_SYSCOMMAND if self.frame_syscommand(hwnd, mp1 & 0xFFFF, mp2) => {}
                     WM_CLOSE => { self.post_wm_quit(hwnd); }
                     // "The default window procedure sets the pointer shape":
                     // the arrow (pm_pointer.rs).
@@ -947,9 +949,9 @@ impl super::Loader {
             }
             937 => {
                 // WinPopupMenu(HWND hwndParent, HWND hwndOwner, HWND hwndMenu, LONG x, LONG y, LONG idItem, ULONG fs)
-                // Stub
-                debug!("  [VCPU {}] WinPopupMenu (stub)", vcpu_id);
-                ApiResult::Normal(1)
+                let args = [read_stack(4), read_stack(8), read_stack(12), read_stack(16),
+                            read_stack(20), read_stack(24), read_stack(28)];
+                self.win_popup_menu(vcpu_id, args)
             }
             796 => {
                 // WinProcessDlg(HWND hwndDlg) — run the modal dialog loop

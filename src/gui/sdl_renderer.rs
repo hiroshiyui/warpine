@@ -22,7 +22,10 @@ use crate::loader::{SharedState, OS2Message, MutexExt,
     WS_MINIMIZED, WS_MAXIMIZED, CMDSRC_MENU, CMDSRC_OTHER};
 use crate::loader::constants::{
     MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_BAR_ITEM_PAD, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H,
-    MIS_SEPARATOR, SC_MOVE, SC_SIZE};
+    MIS_SEPARATOR, MIS_SYSCOMMAND, MIS_HELP, SC_MOVE, SC_SIZE, WM_COMMAND, WM_HELP};
+use super::frame_track::{KeyTrack, TrackKey, TrackOutcome};
+use super::system_menu::{can_track, frame_system_menu_items, menu_popup_items};
+use crate::loader::pm_minmax::WinRect;
 use super::popup_menu::{PopupAction, PopupKey, PopupMenu};
 use super::vio_window::system_menu_items;
 use crate::loader::pm_types::{MenuItem, WindowManager, menu_label, menu_bar_item_width};
@@ -666,6 +669,25 @@ struct ResizeState {
     orig_x: i32, orig_y: i32, orig_cx: i32, orig_cy: i32,
 }
 
+/// What an open pop-up menu belongs to: where its choice goes.
+enum PopupOwner {
+    /// The VIO window's system menu (`vio_command`).
+    Vio,
+    /// A PM frame's system menu: `WM_SYSCOMMAND(SC_*)` to the frame.
+    Frame(u32),
+    /// A `WinPopupMenu` menu: notifications go to `owner`; `styles` holds
+    /// the items' `MIS_*` styles by id (`MIS_SYSCOMMAND` / `MIS_HELP`).
+    Menu { owner: u32, styles: HashMap<u32, u16> },
+}
+
+/// A keyboard move or size of a PM frame in progress (`frame_track.rs`).
+struct FrameTrack {
+    frame: u32,
+    track: super::frame_track::KeyTrack,
+    /// The client's size when tracking started (for `WM_SIZE` at the end).
+    client: (i32, i32),
+}
+
 /// SDL-backed Presentation Manager renderer.
 ///
 /// VDR-A: one SDL window (the desktop); each PM frame/dialog is drawn into
@@ -705,9 +727,14 @@ pub struct SdlRenderer {
     /// A VIO program's text screen in a frame on the desktop (a windowed
     /// VIO session, `vio_window.rs`); `None` for PM programs.
     vio: Option<super::vio_window::VioWindow>,
-    /// An open pop-up menu (the VIO window's system menu), drawn over
+    /// An open pop-up menu (a system menu or a `WinPopupMenu` menu), drawn over
     /// everything as an overlay; it takes the mouse and the keyboard.
     popup: Option<PopupMenu>,
+    /// What the open pop-up menu belongs to.
+    popup_owner: PopupOwner,
+    /// A keyboard move or size of a PM frame (Alt+F7 / Alt+F8, system menu
+    /// Move / Size); it takes the arrows, Enter and Esc.
+    frame_track: Option<FrameTrack>,
     /// Desktop area the overlay covered at the last composite.
     overlay_placed: Rect,
     /// The overlay opened, closed or changed its look since then.
@@ -812,6 +839,12 @@ impl SdlRenderer {
         self.vio.as_ref().is_some_and(|v| shared.window_mgr.lock_or_recover().focused_hwnd == v.frame())
     }
 
+    /// Whether the keyboard goes to the renderer itself rather than to PM:
+    /// an open pop-up menu, a keyboard move or size, the active VIO window.
+    fn takes_keys(&self, shared: &SharedState) -> bool {
+        self.popup.is_some() || self.frame_track.is_some() || self.vio_active(shared)
+    }
+
     /// Open the VIO window's system menu below its system-menu icon, from
     /// the keyboard (`keyboard`: the first item is highlighted) or a click.
     fn open_vio_menu(&mut self, shared: &SharedState, keyboard: bool) {
@@ -825,8 +858,58 @@ impl SdlRenderer {
                                           !wm.clipboard_text.is_empty());
             (items, f.x + SYSMENU_ICON_X, dh as i32 - f.y - f.cy + CHROME_TITLE_H)
         };
-        self.popup = Some(PopupMenu::new(items, x, top, (dw as i32, dh as i32), keyboard));
+        self.show_popup(PopupMenu::new(items, x, top, (dw as i32, dh as i32), keyboard), PopupOwner::Vio);
+    }
+
+    /// Show `menu`, belonging to `owner`, as the pop-up menu (replacing any
+    /// open one). A keyboard move or size in progress ends where it is.
+    fn show_popup(&mut self, menu: PopupMenu, owner: PopupOwner) {
+        self.popup = Some(menu);
+        self.popup_owner = owner;
         self.overlay_changed = true;
+    }
+
+    /// Open the system menu of PM frame `frame` below its system-menu icon,
+    /// from the keyboard (`keyboard`: the first item is highlighted) or a
+    /// click (`system_menu.rs`). Nothing for a frame without a system menu
+    /// or a hidden one.
+    fn open_frame_menu(&mut self, shared: &SharedState, frame: u32, keyboard: bool) {
+        if self.vio.as_ref().is_some_and(|v| v.frame() == frame) {
+            return self.open_vio_menu(shared, keyboard);
+        }
+        let (dw, dh) = self.desktop.size();
+        let (items, x, top) = {
+            let wm = shared.window_mgr.lock_or_recover();
+            let Some(f) = wm.get_window(frame).filter(|f| f.visible && f.frame_flags & FCF_SYSMENU != 0)
+                else { return };
+            let state = f.style & (WS_MINIMIZED | WS_MAXIMIZED);
+            (frame_system_menu_items(f.frame_flags, state), f.x + SYSMENU_ICON_X,
+             dh as i32 - f.y - f.cy + title_bar_h(f.frame_flags))
+        };
+        self.end_frame_track(shared);
+        self.show_popup(PopupMenu::new(items, x, top, (dw as i32, dh as i32), keyboard), PopupOwner::Frame(frame));
+    }
+
+    /// Show the pop-up menu `req` asks for (`WinPopupMenu`): its bottom-left
+    /// corner at `(x, y)`, or with item `item`'s row there
+    /// (`PU_POSITIONONITEM`), kept on the desktop.
+    fn open_popup_request(&mut self, req: super::message::PopupRequest) {
+        let (dw, dh) = self.desktop.size();
+        let (dw, dh) = (dw as i32, dh as i32);
+        let items = menu_popup_items(&req.items);
+        let styles = req.items.iter().map(|m| (m.id as u32, m.style)).collect();
+        // The menu's height, then where its top goes (screen rows from the top).
+        let probe = PopupMenu::new(items.clone(), 0, 0, (dw, dh), false);
+        let screen_y = dh - 1 - req.y;
+        let top = match req.item.filter(|_| req.position_on_item).and_then(|id| probe.item_middle(id)) {
+            Some(middle) => screen_y - middle,
+            None => screen_y + 1 - probe.rect().height(),
+        };
+        let mut menu = PopupMenu::new(items, req.x, top, (dw, dh), false);
+        if let Some(id) = req.item {
+            menu.highlight(id);
+        }
+        self.show_popup(menu, PopupOwner::Menu { owner: req.owner, styles });
     }
 
     /// Close the pop-up menu, if one is open.
@@ -836,9 +919,10 @@ impl SdlRenderer {
         }
     }
 
-    /// Carry out what an input did to the pop-up menu. Returns whether
-    /// Warpine keeps running.
-    fn popup_action(&mut self, shared: &SharedState, action: PopupAction) -> bool {
+    /// Carry out what an input did to the pop-up menu, chosen with the
+    /// mouse (`pointer`) or the keyboard. Returns whether Warpine keeps
+    /// running.
+    fn popup_action(&mut self, shared: &SharedState, action: PopupAction, pointer: bool) -> bool {
         match action {
             PopupAction::Stay => {
                 self.overlay_changed = true;
@@ -850,34 +934,115 @@ impl SdlRenderer {
             }
             PopupAction::Choose(id) => {
                 self.close_popup();
-                self.vio_command(shared, id)
+                // mp2 = MPFROM2SHORT(CMDSRC_MENU, fPointer).
+                let mp2 = CMDSRC_MENU | (pointer as u32) << 16;
+                match std::mem::replace(&mut self.popup_owner, PopupOwner::Vio) {
+                    PopupOwner::Vio => return self.vio_command(shared, id),
+                    // The frame's client (or the dialog) may handle the
+                    // command itself; WinDefWindowProc carries it out.
+                    PopupOwner::Frame(frame) => push_msg(shared, frame, WM_SYSCOMMAND, id, mp2),
+                    PopupOwner::Menu { owner, styles } => {
+                        let style = styles.get(&id).copied().unwrap_or(0);
+                        let msg = if style & MIS_SYSCOMMAND != 0 { WM_SYSCOMMAND }
+                            else if style & MIS_HELP != 0 { WM_HELP } else { WM_COMMAND };
+                        push_msg(shared, owner, msg, id, mp2);
+                    }
+                }
+                true
             }
         }
+    }
+
+    /// A key while a pop-up menu is open: it works the menu (Alt+Space and
+    /// Shift+Esc close it). Returns whether Warpine keeps running.
+    fn popup_key(&mut self, shared: &SharedState, kc: Keycode, keymod: KeyMod) -> bool {
+        let Some(popup) = self.popup.as_mut() else { return true };
+        let key = match kc {
+            _ if is_system_menu_key(kc, keymod) => Some(PopupKey::Esc),
+            Keycode::Up => Some(PopupKey::Up),
+            Keycode::Down => Some(PopupKey::Down),
+            Keycode::Home => Some(PopupKey::Home),
+            Keycode::End => Some(PopupKey::End),
+            Keycode::Return | Keycode::KpEnter => Some(PopupKey::Enter),
+            Keycode::Escape => Some(PopupKey::Esc),
+            kc => char::from_u32(sdl_keycode_to_char(kc)).filter(char::is_ascii_alphanumeric).map(PopupKey::Char),
+        };
+        let Some(key) = key else { return true };
+        let action = popup.key(key);
+        self.popup_action(shared, action, false)
+    }
+
+    /// Start a keyboard move (`size` false) or size of PM frame `frame`
+    /// (`GUIMessage::TrackFrame`), if its state and sizing border allow it.
+    fn start_frame_track(&mut self, shared: &SharedState, frame: u32, size: bool) {
+        self.end_frame_track(shared);
+        let wm = shared.window_mgr.lock_or_recover();
+        let Some(f) = wm.get_window(frame) else { return };
+        if !can_track(f.frame_flags, f.style & (WS_MINIMIZED | WS_MAXIMIZED), size) { return; }
+        let orig = WinRect { x: f.x, y: f.y, cx: f.cx, cy: f.cy };
+        let client = wm.get_window(wm.frame_msg_target(frame)).map_or((0, 0), |c| (c.cx, c.cy));
+        let step = super::frame_track::FRAME_TRACK_STEP;
+        self.frame_track = Some(FrameTrack { frame, track: KeyTrack::new(orig, size, (step, step)), client });
+    }
+
+    /// Work the keyboard move or size with `key`.
+    fn frame_track_key(&mut self, shared: &SharedState, key: TrackKey) {
+        let Some(ft) = self.frame_track.as_mut() else { return };
+        let frame = ft.frame;
+        let outcome = {
+            let mut wm = shared.window_mgr.lock_or_recover();
+            let Some(f) = wm.get_window(frame) else {
+                drop(wm);
+                self.frame_track = None;
+                return;
+            };
+            let current = WinRect { x: f.x, y: f.y, cx: f.cx, cy: f.cy };
+            let outcome = ft.track.key(current, key, |cx, cy| (cx.max(MIN_RESIZE), cy.max(MIN_RESIZE)));
+            match outcome {
+                TrackOutcome::Continue(Some(r)) | TrackOutcome::Cancel(r) => {
+                    if ft.track.size { set_frame_rect(&mut wm, frame, r); } else { wm.move_frame(frame, r.x, r.y); }
+                }
+                TrackOutcome::Continue(None) | TrackOutcome::Accept => {}
+            }
+            outcome
+        };
+        if !matches!(outcome, TrackOutcome::Continue(_)) {
+            self.end_frame_track(shared);
+        }
+    }
+
+    /// End a keyboard move or size where the frame is: the client gets
+    /// `WM_SIZE` when its size changed.
+    fn end_frame_track(&mut self, shared: &SharedState) {
+        let Some(ft) = self.frame_track.take() else { return };
+        let wm = shared.window_mgr.lock_or_recover();
+        let client = wm.frame_msg_target(ft.frame);
+        let now = wm.get_window(client).map_or(ft.client, |c| (c.cx, c.cy));
+        if now != ft.client { wm.post_size(client, ft.client, now); }
     }
 
     /// Button `button` went down at screen `(x, y)` while a pop-up menu is
     /// open. Button 1 on the menu works it; any other press closes it and
     /// is otherwise ignored (Warpine's choice), except a double click on
-    /// the VIO window's system-menu icon, which goes on to close the window
-    /// (`None`: handle the click as usual). Returns whether Warpine keeps
-    /// running.
+    /// a system-menu icon, which goes on to close the window (`None`:
+    /// handle the click as usual). Returns whether Warpine keeps running.
     fn popup_press(&mut self, shared: &SharedState, button: sdl3::mouse::MouseButton, clicks: u8,
                    x: i32, y: i32) -> Option<bool> {
         let popup = self.popup.as_mut()?;
         let left = button == sdl3::mouse::MouseButton::Left;
         if left && popup.contains(x, y) {
             let action = popup.press(x, y);
-            return Some(self.popup_action(shared, action));
+            return Some(self.popup_action(shared, action, true));
         }
         self.close_popup();
         let dh = self.desktop.size().1 as i32;
-        let on_icon = self.vio.as_ref().is_some_and(|v| {
+        let on_icon = {
             let wm = shared.window_mgr.lock_or_recover();
-            wm.get_window(v.frame()).is_some_and(|f| {
+            wm.z_hit_test(x, dh - 1 - y).and_then(|h| wm.get_window(h)).is_some_and(|f| {
                 let state = f.style & (WS_MINIMIZED | WS_MAXIMIZED);
                 frame_chrome_hit(f.x, f.y, f.cx, f.cy, f.frame_flags, state, x, dh - 1 - y) == ChromeHit::SysMenu
             })
-        });
+        };
         if left && on_icon && button_down_msg(button, clicks) == Some(WM_BUTTON1DBLCLK) {
             return None;
         }
@@ -937,54 +1102,44 @@ impl SdlRenderer {
         self.cached_clipboard = text;
     }
 
-    /// A key pressed while the VIO window is active or a pop-up menu is
-    /// open. An open menu takes the keys; a keyboard move or size takes the
-    /// arrows, Enter and Esc; Alt+Space and Shift+Esc open the system menu
-    /// (unverified: the keys PM uses for a frame's system menu; whether a
-    /// VIO window keeps them from the program is not documented); Alt+F4 /
-    /// F5 / F7 / F8 / F9 / F10 run the system command the menu shows next
-    /// to its item (unverified for a VIO window); in Mark mode Esc leaves it
-    /// and other keys are ignored (Warpine's choice). Every other key goes
-    /// to the program. Returns whether Warpine keeps running.
+    /// A key pressed while a pop-up menu is open, a PM frame is moved or
+    /// sized with the keyboard, or the VIO window is active. An open menu
+    /// takes the keys; a keyboard move or size takes the arrows, Enter and
+    /// Esc (other keys are ignored meanwhile, Warpine's choice). Returns
+    /// whether Warpine keeps running.
+    fn window_key(&mut self, shared: &SharedState, kc: Keycode, sc: Scancode, keymod: KeyMod) -> bool {
+        if self.popup.is_some() {
+            return self.popup_key(shared, kc, keymod);
+        }
+        if self.frame_track.is_some() {
+            if let Some(key) = track_key_of(kc) {
+                self.frame_track_key(shared, key);
+            }
+            return true;
+        }
+        self.vio_key(shared, kc, sc, keymod)
+    }
+
+    /// A key pressed while the VIO window is active. A keyboard move or
+    /// size takes the arrows, Enter and Esc; Alt+Space and Shift+Esc open
+    /// the system menu (whether a VIO window keeps them from the program
+    /// is not documented); Alt+F4 / F5 / F7 / F8 / F9 / F10 run the system
+    /// command the menu shows next to its item (unverified for a VIO
+    /// window); in Mark mode Esc leaves it and other keys are ignored
+    /// (Warpine's choice). Every other key goes to the program. Returns
+    /// whether Warpine keeps running.
     fn vio_key(&mut self, shared: &SharedState, kc: Keycode, sc: Scancode, keymod: KeyMod) -> bool {
         let alt = keymod.intersects(KeyMod::LALTMOD | KeyMod::RALTMOD);
-        let shift = keymod.intersects(KeyMod::LSHIFTMOD | KeyMod::RSHIFTMOD);
         let ctrl = keymod.intersects(KeyMod::LCTRLMOD | KeyMod::RCTRLMOD);
-        let menu_key = (alt && kc == Keycode::Space) || (shift && kc == Keycode::Escape);
-        if let Some(popup) = self.popup.as_mut() {
-            let key = match kc {
-                _ if menu_key => Some(PopupKey::Esc),
-                Keycode::Up => Some(PopupKey::Up),
-                Keycode::Down => Some(PopupKey::Down),
-                Keycode::Home => Some(PopupKey::Home),
-                Keycode::End => Some(PopupKey::End),
-                Keycode::Return | Keycode::KpEnter => Some(PopupKey::Enter),
-                Keycode::Escape => Some(PopupKey::Esc),
-                kc => char::from_u32(sdl_keycode_to_char(kc)).filter(char::is_ascii_alphanumeric).map(PopupKey::Char),
-            };
-            let Some(key) = key else { return true };
-            let action = popup.key(key);
-            return self.popup_action(shared, action);
-        }
         let Some(vio) = self.vio.as_mut() else { return true };
         if vio.tracking() {
-            use super::vio_window::TrackKey;
-            let key = match kc {
-                Keycode::Left => Some(TrackKey::Left),
-                Keycode::Right => Some(TrackKey::Right),
-                Keycode::Up => Some(TrackKey::Up),
-                Keycode::Down => Some(TrackKey::Down),
-                Keycode::Return | Keycode::KpEnter => Some(TrackKey::Enter),
-                Keycode::Escape => Some(TrackKey::Esc),
-                _ => None,
-            };
-            if let Some(key) = key {
+            if let Some(key) = track_key_of(kc) {
                 vio.track_key(shared, key);
                 vio.update(shared);
             }
             return true;
         }
-        if menu_key {
+        if is_system_menu_key(kc, keymod) {
             self.open_vio_menu(shared, true);
             return true;
         }
@@ -1088,6 +1243,8 @@ impl SdlRenderer {
             drag_scroll_next: None,
             vio: None,
             popup: None,
+            popup_owner: PopupOwner::Vio,
+            frame_track: None,
             overlay_placed: Rect::EMPTY,
             overlay_changed: false,
             overlay_generation: 0,
@@ -1313,17 +1470,20 @@ impl SdlRenderer {
             // The window's own keys (its system menu, Mark mode, a keyboard
             // move or size) come first; Alt+Home sends the session full
             // screen (the loop returns; input after it in this pass is dropped).
+            // A pop-up menu or a keyboard move / size of a PM frame takes
+            // the keyboard too.
             Event::KeyDown { keycode: Some(kc), scancode: Some(sc), keymod, repeat, .. }
-                if self.popup.is_some() || self.vio_active(shared) => {
-                if self.popup.is_none() && super::vio_switch::request_switch(shared, kc, keymod, repeat) {
+                if self.takes_keys(shared) => {
+                if self.popup.is_none() && self.frame_track.is_none()
+                    && super::vio_switch::request_switch(shared, kc, keymod, repeat) {
                     return false;
                 }
-                return self.vio_key(shared, kc, sc, keymod);
+                return self.window_key(shared, kc, sc, keymod);
             }
-            Event::KeyUp { .. } | Event::TextEditing { .. }
-                if self.popup.is_some() || self.vio_active(shared) => {}
-            Event::TextInput { text, .. } if self.popup.is_some() || self.vio_active(shared) => {
-                if self.vio.as_ref().is_some_and(|v| !v.marking() && !v.tracking()) && self.popup.is_none() {
+            Event::KeyUp { .. } | Event::TextEditing { .. } if self.takes_keys(shared) => {}
+            Event::TextInput { text, .. } if self.takes_keys(shared) => {
+                if self.popup.is_none() && self.frame_track.is_none() && self.vio_active(shared)
+                    && self.vio.as_ref().is_some_and(|v| !v.marking() && !v.tracking()) {
                     super::text_renderer::kbd_text_input(shared, &text);
                 }
             }
@@ -1430,6 +1590,9 @@ impl SdlRenderer {
                     && let Some(keep_running) = self.popup_press(shared, mouse_btn, clicks, x, y) {
                     return keep_running;
                 }
+                // A click ends a keyboard move or size where the frame is
+                // (Warpine's choice: PM lets the mouse take the tracking over).
+                self.end_frame_track(shared);
                 // VDR-D6: captured window overrides hit-test.
                 let capture = shared.window_mgr.lock_or_recover().capture_hwnd;
                 let target = if capture != 0 {
@@ -1492,6 +1655,7 @@ impl SdlRenderer {
                         ChromeHit::SysMenu if is_vio => {
                             // A single click opens the system menu.
                             self.open_vio_menu(shared, false);
+                            self.swallow_release = true;
                         }
                         ChromeHit::TitleBar if is_vio && double => {
                             return self.vio_command(shared, if state != 0 { SC_RESTORE } else { SC_MAXIMIZE });
@@ -1514,20 +1678,14 @@ impl SdlRenderer {
                             // maximize any other.
                             syscommand(if state != 0 { SC_RESTORE } else { SC_MAXIMIZE }, CMDSRC_OTHER);
                         }
-                        // A maximized frame is not dragged.
-                        ChromeHit::SysMenu | ChromeHit::TitleBar if state & WS_MAXIMIZED != 0 => {}
+                        // A single click on the icon opens the system menu
+                        // (its release is not the menu's).
                         ChromeHit::SysMenu => {
-                            // VDR-C3: single-click on system menu — treat as title bar drag.
-                            let (anchor_x, dst_top_y) = {
-                                let wm = shared.window_mgr.lock_or_recover();
-                                wm.get_window(hwnd)
-                                    .map(|w| (x - w.x, dh as i32 - w.y - w.cy))
-                                    .unwrap_or((0, 0))
-                            };
-                            self.drag_state = Some(DragState {
-                                hwnd, anchor_x, anchor_y_sdl: y - dst_top_y,
-                            });
+                            self.open_frame_menu(shared, hwnd, false);
+                            self.swallow_release = self.popup.is_some();
                         }
+                        // A maximized frame is not dragged.
+                        ChromeHit::TitleBar if state & WS_MAXIMIZED != 0 => {}
                         ChromeHit::Minimize => {
                             // VDR-C4: post WM_SYSCOMMAND(SC_MINIMIZE) to the client.
                             syscommand(SC_MINIMIZE, CMDSRC_MENU);
@@ -1617,7 +1775,7 @@ impl SdlRenderer {
                 // A pop-up menu chooses the item the button comes up over.
                 if left && let Some(p) = self.popup.as_mut() && p.is_pressed() {
                     let action = p.release(x, y);
-                    return self.popup_action(shared, action);
+                    return self.popup_action(shared, action, true);
                 }
                 // The release of a click that closed a pop-up menu.
                 if std::mem::take(&mut self.swallow_release) {
@@ -1703,8 +1861,17 @@ impl SdlRenderer {
 }
 
 impl PmRenderer for SdlRenderer {
-    fn handle_message(&mut self, msg: GUIMessage, _shared: &Arc<SharedState>) {
+    fn handle_message(&mut self, msg: GUIMessage, shared: &Arc<SharedState>) {
         match msg {
+            GUIMessage::SystemMenu { frame, keyboard } => self.open_frame_menu(shared, frame, keyboard),
+            GUIMessage::TrackFrame { frame, size } => {
+                self.close_popup();
+                self.start_frame_track(shared, frame, size);
+            }
+            GUIMessage::PopupMenu(req) => {
+                self.end_frame_track(shared);
+                self.open_popup_request(req);
+            }
             GUIMessage::SetClipboardText(text) => {
                 let _ = self.video.clipboard().set_clipboard_text(&text);
                 self.cached_clipboard = text;
@@ -1915,6 +2082,36 @@ fn driver_can_wait(driver: &str) -> bool {
     !NON_WAITING_DRIVERS.iter().any(|d| d.eq_ignore_ascii_case(driver))
 }
 
+/// Whether `kc` with `keymod` is a key that opens (or closes) a system
+/// menu: Alt+Space or Shift+Esc (IBM OS/2 1.2 Quick Reference).
+fn is_system_menu_key(kc: Keycode, keymod: KeyMod) -> bool {
+    let alt = keymod.intersects(KeyMod::LALTMOD | KeyMod::RALTMOD);
+    let shift = keymod.intersects(KeyMod::LSHIFTMOD | KeyMod::RSHIFTMOD);
+    (alt && kc == Keycode::Space) || (shift && kc == Keycode::Escape)
+}
+
+/// The keyboard move / size key `kc` stands for, if any.
+fn track_key_of(kc: Keycode) -> Option<TrackKey> {
+    match kc {
+        Keycode::Left => Some(TrackKey::Left),
+        Keycode::Right => Some(TrackKey::Right),
+        Keycode::Up => Some(TrackKey::Up),
+        Keycode::Down => Some(TrackKey::Down),
+        Keycode::Return | Keycode::KpEnter => Some(TrackKey::Enter),
+        Keycode::Escape => Some(TrackKey::Esc),
+        _ => None,
+    }
+}
+
+/// Give PM frame `frame` the position and size `r` (a keyboard size): its
+/// menu bar, client and surface are laid out again at once.
+fn set_frame_rect(wm: &mut WindowManager, frame: u32, r: WinRect) {
+    let Some(w) = wm.get_window_mut(frame) else { return };
+    (w.x, w.y, w.cx, w.cy) = (r.x, r.y, r.cx, r.cy);
+    let (cx, cy) = wm.layout_frame(frame);
+    wm.resize_surface(frame, cx, cy);
+}
+
 /// The user event the wake hook pushes: zero-sized, so pushing it
 /// allocates nothing.
 struct WakeEvent;
@@ -1931,8 +2128,8 @@ fn is_wake_event(event: &Event) -> bool {
 enum ChromeHit {
     /// Click is on the close (×) button — send WM_CLOSE.
     Close,
-    /// Click is on the system-menu icon (VDR-C3): treated as the title bar
-    /// (activate and drag); a double click closes the window.
+    /// Click is on the system-menu icon (VDR-C3): a click opens the system
+    /// menu (`system_menu.rs`); a double click closes the window.
     SysMenu,
     /// Click is on the minimize button (VDR-C4) — send WM_SYSCOMMAND(SC_MINIMIZE).
     Minimize,
@@ -2130,7 +2327,7 @@ fn push_input(shared: &Arc<SharedState>, hwnd: u32, msg: u32, mp1: u32, mp2: u32
 ///
 /// Looks up the client window via `frame_to_client` first; falls back to
 /// `hwnd` itself.  Notifies the condvar so `WinGetMsg` wakes up.
-pub fn push_msg(shared: &Arc<SharedState>, hwnd: u32, msg: u32, mp1: u32, mp2: u32) {
+pub fn push_msg(shared: &SharedState, hwnd: u32, msg: u32, mp1: u32, mp2: u32) {
     let wm = shared.window_mgr.lock_or_recover();
     let target = wm.frame_to_client.get(&hwnd).copied().unwrap_or(hwnd);
     let hmq = wm.find_hmq_for_hwnd(target).or_else(|| wm.find_hmq_for_hwnd(hwnd));

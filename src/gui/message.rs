@@ -18,6 +18,30 @@ pub enum GUIMessage {
     SetMouseCapture(u32),
     /// Show this pointer as the host mouse cursor (`None` hides it).
     SetPointer(Option<super::pointer::PointerShape>),
+    /// Open the system menu of `frame` (`WM_SYSCOMMAND(SC_SYSMENU)`), with
+    /// its first item highlighted when opened from the `keyboard`.
+    SystemMenu { frame: u32, keyboard: bool },
+    /// Move (`size` false) or size `frame` with the keyboard
+    /// (`WM_SYSCOMMAND(SC_MOVE / SC_SIZE)`).
+    TrackFrame { frame: u32, size: bool },
+    /// Show a pop-up menu (`WinPopupMenu`).
+    PopupMenu(PopupRequest),
+}
+
+/// A pop-up menu to show (`WinPopupMenu`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PopupRequest {
+    /// The window its notifications (`WM_COMMAND` …) go to.
+    pub owner: u32,
+    /// The menu's top-level items.
+    pub items: Vec<crate::loader::pm_types::MenuItem>,
+    /// Where it opens: desktop point, bottom-left origin (PM coordinates).
+    pub x: i32,
+    pub y: i32,
+    /// `PU_POSITIONONITEM`: the item `item` lies under `(x, y)`.
+    pub position_on_item: bool,
+    /// The item to highlight (`PU_POSITIONONITEM` / `PU_SELECTITEM`).
+    pub item: Option<u32>,
 }
 
 /// Hook a renderer installs so other threads can interrupt its wait.

@@ -158,6 +158,23 @@ impl PopupMenu {
         POPUP_EDGE + self.items[..index].iter().map(PopupItem::height).sum::<i32>()
     }
 
+    /// The index of the item `id` (not a separator), if any.
+    fn index_of(&self, id: u32) -> Option<usize> {
+        self.items.iter().position(|i| !i.separator && i.id == id)
+    }
+
+    /// The middle of item `id`'s row, relative to the menu's top edge.
+    pub fn item_middle(&self, id: u32) -> Option<i32> {
+        self.index_of(id).map(|i| self.item_top(i) + self.items[i].height() / 2)
+    }
+
+    /// Highlight item `id` when it can be chosen.
+    pub fn highlight(&mut self, id: u32) {
+        if let Some(i) = self.index_of(id).filter(|&i| self.items[i].selectable()) {
+            self.select(Some(i));
+        }
+    }
+
     /// The item under screen point `(x, y)`, if any.
     pub fn item_at(&self, x: i32, y: i32) -> Option<usize> {
         if !self.rect.contains(&Rect::at(x, y, 1, 1)) { return None; }
@@ -390,6 +407,19 @@ mod tests {
         assert_eq!(m.release(r.x0 + 5, row(0)), PopupAction::Stay);
         // A press outside closes it.
         assert_eq!(m.press(r.x1 + 3, row(0)), PopupAction::Close);
+    }
+
+    #[test]
+    fn items_can_be_found_and_highlighted_by_id() {
+        let mut m = PopupMenu::new(items(), 0, 0, (1024, 768), false);
+        assert_eq!(m.item_middle(2), Some(1 + POPUP_ITEM_H + POPUP_ITEM_H / 2));
+        assert_eq!(m.item_middle(3), Some(1 + 2 * POPUP_ITEM_H + POPUP_SEPARATOR_H + POPUP_ITEM_H / 2));
+        assert_eq!(m.item_middle(99), None);
+        m.highlight(1);
+        assert_eq!(m.selected(), None, "Restore is disabled");
+        m.highlight(3);
+        assert_eq!(m.selected(), Some(3));
+        assert_eq!(m.key(PopupKey::Enter), PopupAction::Choose(3));
     }
 
     #[test]
