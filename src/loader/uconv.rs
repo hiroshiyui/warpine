@@ -154,7 +154,7 @@ impl super::Loader {
 
         // Read input bytes from guest memory.
         let bytes: Vec<u8> = (0..in_left)
-            .filter_map(|i| self.guest_read::<u8>(in_ptr + i))
+            .map_while(|i| self.guest_read::<u8>(in_ptr.checked_add(i)?))
             .collect();
 
         // Decode to internal UTF-8.

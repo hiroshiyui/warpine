@@ -69,7 +69,7 @@ impl super::Loader {
     fn vio_wrt_tty(&self, psz: u32, cb: u32, _hvio: u32) -> u32 {
         debug!("  VioWrtTTY(psz=0x{:08X}, cb={})", psz, cb);
         if cb == 0 || psz == 0 { return NO_ERROR; }
-        let data: Vec<u8> = (0..cb).filter_map(|i| self.guest_read::<u8>(psz + i)).collect();
+        let data: Vec<u8> = (0..cb).map_while(|i| self.guest_read::<u8>(psz.checked_add(i)?)).collect();
         let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
         let mut console = self.shared.console_mgr.lock_or_recover();
         console.write_tty(&data, cp);
@@ -197,7 +197,7 @@ impl super::Loader {
     fn vio_wrt_char_str_att(&self, psz: u32, cb: u32, row: u32, col: u32, p_attr: u32) -> u32 {
         debug!("  VioWrtCharStrAtt(cb={}, row={}, col={})", cb, row, col);
         let attr = if p_attr != 0 { self.guest_read::<u8>(p_attr).unwrap_or(0x07) } else { 0x07 };
-        let data: Vec<u8> = (0..cb).filter_map(|i| self.guest_read::<u8>(psz + i)).collect();
+        let data: Vec<u8> = (0..cb).map_while(|i| self.guest_read::<u8>(psz.checked_add(i)?)).collect();
         let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
         let mut console = self.shared.console_mgr.lock_or_recover();
         console.write_char_str_att(row as u16, col as u16, &data, attr, cp);
@@ -383,6 +383,15 @@ mod tests {
     use super::super::vm_backend::mock::MockVcpu;
     use super::super::mutex_ext::MutexExt;
     use super::super::constants::{ANSI_OFF, ERROR_VIO_INVALID_PARMS};
+
+    /// A string running off the top of the address space is cut there: no
+    /// address overflow, and no billions of failing reads for a huge count.
+    #[test]
+    fn test_vio_strings_at_the_top_of_memory() {
+        let loader = Loader::new_mock();
+        assert_eq!(loader.vio_wrt_tty(u32::MAX - 1, u32::MAX, 0), 0);
+        assert_eq!(loader.vio_wrt_char_str_att(u32::MAX - 1, 16, 0, 0, 0), 0);
+    }
 
     /// Write `args` to the Pascal call stack at `esp`: last arg at esp+4,
     /// second-to-last at esp+8, etc. (matches OS/2 Pascal calling convention).

@@ -1153,7 +1153,7 @@ impl super::Loader {
         } else {
             // guest_slice_mut failed (OOB or zero len); fall back to safe byte-by-byte.
             (0..capped)
-                .filter_map(|i| self.guest_read::<u8>(addr + i as u32))
+                .map_while(|i| self.guest_read::<u8>(addr.checked_add(i as u32)?))
                 .collect()
         }
     }

@@ -441,7 +441,7 @@ impl super::Loader {
         let max = 4096u32; // safety limit
 
         while offset < max {
-            let byte = self.guest_read::<u8>(ptr + offset).unwrap_or(0);
+            let byte = ptr.checked_add(offset).and_then(|a| self.guest_read::<u8>(a)).unwrap_or(0);
             if byte == 0 {
                 if current.is_empty() {
                     break; // double null — done
@@ -481,6 +481,14 @@ mod tests {
     use super::super::managers::ProcessManager;
     use super::super::Loader;
     use super::super::mutex_ext::MutexExt;
+
+    /// An argument string at the top of the address space stops there
+    /// instead of overflowing the address.
+    #[test]
+    fn test_double_null_string_at_the_top_of_memory() {
+        let loader = Loader::new_mock();
+        assert!(loader.parse_double_null_string(u32::MAX - 1).is_empty());
+    }
 
     /// DosQueryAppType resolves paths through the DriveManager VFS and
     /// classifies MZ+LX executables as FAPPTYP_NOTWINDOWCOMPAT (1).
