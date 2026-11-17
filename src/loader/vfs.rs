@@ -546,8 +546,12 @@ impl DriveManager {
     /// The directory is created if it does not exist.
     /// Falls back to `./drive_c/` if the home directory cannot be determined.
     pub fn with_default_config() -> Self {
-        let mut dm = Self::new();
+        Self::with_drive_c(Self::default_drive_c_path())
+    }
 
+    /// The user's drive C: `$XDG_DATA_HOME/warpine/drive_c` (by default
+    /// `~/.local/share/warpine/drive_c`). Nothing is created.
+    pub fn default_drive_c_path() -> PathBuf {
         let base_dir = std::env::var("XDG_DATA_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|_| {
@@ -555,7 +559,13 @@ impl DriveManager {
                     .map(|h| PathBuf::from(h).join(".local/share"))
                     .unwrap_or_else(|_| PathBuf::from("."))
             });
-        let drive_c_path = base_dir.join("warpine/drive_c");
+        base_dir.join("warpine/drive_c")
+    }
+
+    /// A drive manager whose C: is the host directory `drive_c_path`
+    /// (created if missing), the current drive.
+    pub fn with_drive_c(drive_c_path: PathBuf) -> Self {
+        let mut dm = Self::new();
 
         if let Err(e) = std::fs::create_dir_all(&drive_c_path) {
             log::warn!("Failed to create default C: drive directory {}: {}",
@@ -605,6 +615,20 @@ impl DriveManager {
         let (drive, rel) = self.resolve_path(os2_path).ok()?;
         let backend = self.drives[drive as usize].as_ref()?;
         backend.to_host_path(&rel)
+    }
+
+    /// The OS/2 path (`X:\DIR\FILE`) of host file `host`, when it lies
+    /// inside a configured drive's host directory (both canonicalised, so
+    /// symbolic links cannot place it elsewhere); `None` otherwise.
+    pub fn host_to_os2_path(&self, host: &std::path::Path) -> Option<String> {
+        let host = host.canonicalize().ok()?;
+        self.drive_configs.iter().enumerate().find_map(|(i, cfg)| {
+            let root = cfg.as_ref()?.host_path.canonicalize().ok()?;
+            let rel = host.strip_prefix(&root).ok()?;
+            let parts: Vec<String> = rel.components()
+                .map(|c| c.as_os_str().to_string_lossy().into_owned()).collect();
+            Some(format!("{}:\\{}", (b'A' + i as u8) as char, parts.join("\\")))
+        })
     }
 
     /// Get the backend for a drive, or INVALID_DRIVE if not mounted.
@@ -1182,13 +1206,18 @@ mod tests {
 
     #[test]
     fn test_drive_manager_with_default_config() {
-        let dm = DriveManager::with_default_config();
+        // The default path, computed without creating the user's directory.
+        assert!(DriveManager::default_drive_c_path().ends_with("warpine/drive_c"));
+
+        let dir = tempfile::tempdir().unwrap();
+        let drive_c = dir.path().join("warpine/drive_c");
+        let dm = DriveManager::with_drive_c(drive_c.clone());
         assert_eq!(dm.current_disk(), 2); // C:
+        assert!(drive_c.is_dir(), "C: directory created");
 
         // C: should have a config
         let config = dm.drive_config(2).expect("C: config should exist");
-        assert!(config.host_path.ends_with("warpine/drive_c"),
-                "C: should map to warpine/drive_c, got {:?}", config.host_path);
+        assert_eq!(config.host_path, drive_c);
         assert_eq!(config.label, "OS2");
         assert!(!config.read_only);
 

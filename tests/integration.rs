@@ -38,9 +38,13 @@ fn run_sample(sample: &str, timeout_secs: u64) -> (String, i32) {
 /// [`run_sample`] with extra environment variables (applied after the
 /// pinned locale, so they can override it).
 fn run_sample_env(sample: &str, timeout_secs: u64, env: &[(&str, &str)]) -> (String, i32) {
+    // Drive C: is $XDG_DATA_HOME/warpine/drive_c: a fresh one per run, never
+    // the user's own (`env` may still name another).
+    let data_home = tempfile::tempdir().expect("tempdir");
     let mut child = Command::new(warpine())
         .arg(sample)
         .env("WARPINE_HEADLESS", "1")
+        .env("XDG_DATA_HOME", data_home.path())
         .envs(PINNED_LOCALE.iter().copied())
         .envs(env.iter().copied())
         // Suppress tracing/log noise on stderr; we only care about stdout.
@@ -303,6 +307,24 @@ fn test_thread_exit_ends_only_the_thread() {
     assert_eq!(code, 3, "exit code of DosExit(EXIT_PROCESS, 3)\n{out}");
 }
 
+/// xcpt_thread_test: every thread has its own exception-handler chain (a
+/// created thread starts with an empty one; exceptions reach only the
+/// raising thread's handlers), and XCPT_CONTINUE_EXECUTION returns from
+/// DosRaiseException with the caller's registers intact.
+#[test]
+fn test_exception_chains_are_per_thread() {
+    const SAMPLE: &str = "samples/xcpt_thread_test/xcpt_thread_test.exe";
+    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    let (out, code) = run_sample(SAMPLE, 30);
+    let checks: Vec<&str> = out.lines()
+        .filter(|l| l.starts_with("xcpt_thread_test: ") && !l.contains(": done")).collect();
+    assert!(checks.len() >= 17, "every check reported:\n{out}");
+    let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
+    assert!(failed.is_empty(), "failed checks: {failed:#?}");
+    assert!(out.contains(&format!("xcpt_thread_test: done {n}/{n}", n = checks.len())), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
 /// thread_last_test: thread 1 ends with DosExit(EXIT_THREAD) while another
 /// thread runs; the process goes on until that last thread ends with
 /// DosExit(EXIT_THREAD, 5), whose result becomes the exit code.
@@ -383,6 +405,28 @@ fn test_semaphore_queries() {
     let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
     assert!(failed.is_empty(), "failed checks: {failed:#?}");
     assert!(out.contains(&format!("semquery_test: done {n}/{n}", n = checks.len())), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
+/// kernel2_test: DosEnterCritSec / DosExitCritSec, DosAsyncTimer /
+/// DosStartTimer / DosStopTimer, DosSearchPath, DosQueryModuleName and the
+/// DosSub* suballocator. Drive C is a temporary directory (the sample
+/// creates and removes `K2DIR` in its current directory).
+#[test]
+fn test_kernel_batch2() {
+    const SAMPLE: &str = "samples/kernel2_test/kernel2_test.exe";
+    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let xdg = dir.path().to_string_lossy().into_owned();
+    let (out, code) = run_sample_env(SAMPLE, 60, &[("XDG_DATA_HOME", xdg.as_str())]);
+    let checks: Vec<&str> = out.lines()
+        .filter(|l| l.starts_with("kernel2_test: ") && !l.contains(": done") && !l.contains(": note "))
+        .collect();
+    assert!(checks.len() >= 90, "every check reported:\n{out}");
+    let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
+    assert!(failed.is_empty(), "failed checks: {failed:#?}");
+    assert!(out.contains(&format!("kernel2_test: done {n}/{n}", n = checks.len())), "{out}");
+    assert!(out.contains("kernel2_test: note exe = C:\\KERNEL2_TEST.EXE"), "{out}");
     assert_eq!(code, 0, "{out}");
 }
 
@@ -552,9 +596,12 @@ fn run_gui_script(sample: &str, script: &Path, capture: bool) -> String {
 
 /// [`run_gui_script`] with extra environment variables for warpine.
 fn run_gui_script_env(sample: &str, script: &Path, capture: bool, env: &[(&str, &str)]) -> String {
+    // A fresh drive C: per run, never the user's own (`env` may name another).
+    let data_home = tempfile::tempdir().expect("tempdir");
     let mut child = Command::new(warpine())
         .arg(sample)
         .env_remove("WARPINE_COMPOSITOR")
+        .env("XDG_DATA_HOME", data_home.path())
         .envs(env.iter().copied())
         .envs(PINNED_LOCALE.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
@@ -734,6 +781,8 @@ fn run_4os2_script(vio: Option<&str>, dumps: &[&str], script: impl FnOnce(&[std:
         .env("SDL_AUDIODRIVER", "dummy")
         .env("RUST_LOG", "error")
         .env("WARPINE_GUI_SCRIPT", &session)
+        // Drive C: in the session's temporary directory, not the user's own.
+        .env("XDG_DATA_HOME", dir.path())
         .env_remove("WARPINE_VIO")
         .stdout(Stdio::null());
     if let Some(vio) = vio {
@@ -1262,6 +1311,25 @@ fn gui_pm_rect_text_test_checks_rectangles_draw_text_and_polylines() {
     assert_sample_checks_pass("samples/pm_rect_text_test/pm_rect_text_test.exe", "pm_rect_text_test", 39);
 }
 
+/// pm_paint_test: update rectangles (WinInvalidateRect / WinValidateRect /
+/// WinQueryUpdateRect / WinBeginPaint, one WM_PAINT for two invalidations,
+/// none once valid), WinScrollWindow (moved pels read back with
+/// GpiQueryPel, uncovered area, SW_INVALIDATERGN, clip rectangle,
+/// SW_SCROLLCHILDREN) and WinDrawBorder (sides, interior, DB_DESTINVERT,
+/// DB_STANDARD, errors) — checked by the guest itself.
+#[test]
+fn gui_pm_paint_test_checks_update_rectangles_scrolling_and_borders() {
+    assert_sample_checks_pass("samples/pm_paint_test/pm_paint_test.exe", "pm_paint_test", 59);
+}
+
+/// The picture of pm_paint_test: borders (plain, standard, dialog,
+/// inverted) and a stripe pattern whose lower half was scrolled.
+#[test]
+fn gui_pm_paint_test_matches_golden() {
+    check_gui_golden("pm_paint_test", "samples/pm_paint_test/pm_paint_test.exe",
+        "2500 dump {dump}\n2600 quit\n");
+}
+
 /// pm_bitmap_test: a memory PS drawing into a bitmap, GpiBitBlt (1:1,
 /// stretched, ROP_DSTINVERT), GpiQueryBitmapBits, GpiLoadBitmap from an
 /// RT_BITMAP resource with WinDrawBitmap, the same-id RLE8 bitmap of a
@@ -1491,6 +1559,20 @@ fn gui_pm_profile_test_reads_and_writes_profiles() {
 #[test]
 fn gui_pm_window_test_checks_the_window_tree_calls() {
     assert_sample_checks_pass("samples/pm_window_test/pm_window_test.exe", "pm_window_test", 36);
+}
+
+/// pm_query_test: window lookups (WinMapWindowPoints, WinWindowFromPoint,
+/// WinIsChild, WinMultWindowFromIDs, WinEnumDlgItem, WinQueryClassName /
+/// WinQueryClassInfo …), system colours (WinSetSysColors changes the title
+/// bar and SYSCLR_WINDOW, WM_SYSCOLORCHANGE arrives) and input state: a
+/// Shift+click in the client (frame at (100, 100), 500×400: screen
+/// (400, 600) is client (298, 67), away from the buttons) and Shift+F5 —
+/// WinGetKeyState as of the message being processed, WinQueryMsgPos at the
+/// click, WinGetPhysKeyState of the Shift key after its second release.
+#[test]
+fn gui_pm_query_test_checks_lookups_input_state_and_system_colours() {
+    let steps = "1000 shift+click 400 600\n1500 key shift+f5\n6000 quit\n";
+    assert_scripted_checks_pass("samples/pm_query_test/pm_query_test.exe", "pm_query_test", 83, steps);
 }
 
 /// pm_pointer_test: system pointer handles and copies, WinSetPointer /
@@ -1795,6 +1877,14 @@ fn gui_layered_compositor_matches_golden_typing() {
 #[test]
 fn gui_layered_compositor_matches_golden_shapes() {
     check_gui_golden_env("pm_shapes_test", "samples/pm_shapes_test/pm_shapes_test.exe",
+        "2500 dump {dump}\n2600 quit\n", LAYERED);
+}
+
+/// WinScrollWindow moves pels inside a surface the layered compositor
+/// already holds as a texture: the moved area must reach it (partial upload).
+#[test]
+fn gui_layered_compositor_matches_golden_paint() {
+    check_gui_golden_env("pm_paint_test", "samples/pm_paint_test/pm_paint_test.exe",
         "2500 dump {dump}\n2600 quit\n", LAYERED);
 }
 
