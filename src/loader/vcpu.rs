@@ -1007,12 +1007,8 @@ fn setup_dlg_dispatch(
             return finish(vcpu);
         }
 
-        // The next posted message, else the next input event for this
-        // queue (like WinGetMsg).
-        // (The queue's lock is released before the window manager's.)
-        let posted = mq_arc.lock_or_recover().messages.pop_front();
-        let msg_opt = posted
-            .or_else(|| loader.shared.window_mgr.lock_or_recover().next_input(hmq, true, |_| true));
+        // The next message in PM's order, as WinGetMsg takes it.
+        let msg_opt = loader.shared.window_mgr.lock_or_recover().next_queued(hmq, true, |_, _| true);
 
         if let Some(msg) = msg_opt {
             // WM_QUIT terminates the dialog loop with DID_CANCEL.

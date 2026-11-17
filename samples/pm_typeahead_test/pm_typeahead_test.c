@@ -14,6 +14,11 @@
  *                read after
  *   click on the second entry field, then cd -> the second entry field
  *
+ * At start-up the client also posts itself a WM_TIMER, invalidates itself
+ * (WM_PAINT) and posts a user message, in that order: PM hands out posted
+ * messages first, then WM_PAINT, then WM_TIMER (the PM Reference ranks
+ * WM_TIMER below every message but WM_SEM4).
+ *
  * A timer then checks the result. Each check is written to stdout:
  *
  *   pm_typeahead_test: <name>: ok
@@ -27,9 +32,11 @@
 #include <string.h>
 
 #define ID_TIMER    1
+#define ID_ORDER    2           /* the WM_TIMER posted for the order check */
 #define ID_ENTRY1   101
 #define ID_ENTRY2   102
 #define WM_START    ( WM_USER + 1 )
+#define WM_ORDER    ( WM_USER + 2 )
 #define BUSY_MS     600
 #define CHECK_MS    2500
 
@@ -38,6 +45,17 @@ static HWND entry1, entry2;
 static int  n_checks = 0;
 static int  n_passed = 0;
 static int  client_chars = 0;   /* characters the client got */
+static char order[4];           /* U(ser), P(aint), T(imer) as they arrive */
+static int  n_order = -1;       /* -1 = not recording */
+
+static void record( char c )
+{
+    int i;
+    if( n_order < 0 || n_order >= 3 ) return;
+    for( i = 0; i < n_order; i++ ) if( order[i] == c ) return;   /* first only */
+    order[n_order++] = c;
+    order[n_order] = '\0';
+}
 
 /* ---------- output (no libc printf) ---------- */
 
@@ -111,6 +129,14 @@ MRESULT EXPENTRY ClientWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
         entry2 = WinCreateWindow( hwnd, WC_ENTRYFIELD, "", WS_VISIBLE | ES_MARGIN,
                                   20, 330, 200, 24, hwnd, HWND_TOP, ID_ENTRY2, NULL, NULL );
         WinStartTimer( hab, hwnd, ID_TIMER, CHECK_MS );
+        n_order = 0;
+        WinPostMsg( hwnd, WM_TIMER, MPFROMSHORT( ID_ORDER ), 0 );
+        WinInvalidateRect( hwnd, NULL, FALSE );
+        WinPostMsg( hwnd, WM_ORDER, 0, 0 );
+        return 0;
+
+    case WM_ORDER:
+        record( 'U' );
         return 0;
 
     case WM_CHAR: {
@@ -127,17 +153,23 @@ MRESULT EXPENTRY ClientWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
     }
 
     case WM_TIMER:
+        if( SHORT1FROMMP( mp1 ) == ID_ORDER ) {
+            record( 'T' );
+            return 0;
+        }
         WinStopTimer( hab, hwnd, ID_TIMER );
         check( "only 'n' reached the client", client_chars, 1 );
         check_text( "keys typed ahead go to the new focus window", entry1, "ab" );
         check_text( "keys typed after a click go to the clicked field", entry2, "cd" );
         check( "the clicked field has the focus", WinQueryFocus( HWND_DESKTOP ) == entry2, TRUE );
+        report( "posted messages, then WM_PAINT, then WM_TIMER", strcmp( order, "UPT" ) == 0, order, "UPT" );
         WinPostMsg( hwnd, WM_QUIT, 0, 0 );
         return 0;
 
     case WM_PAINT: {
         RECTL rc;
         HPS hps = WinBeginPaint( hwnd, NULLHANDLE, &rc );
+        record( 'P' );
         WinFillRect( hps, &rc, CLR_WHITE );
         WinEndPaint( hps );
         return 0;

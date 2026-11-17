@@ -1640,30 +1640,11 @@ impl super::Loader {
         loop {
             if self.shutting_down() { return None; }
             // Window-manager lock before the queue lock, as everywhere else.
-            let found = {
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-                let passes = |wm: &super::pm_types::WindowManager, m: &OS2Message| {
-                    // WM_QUIT passes every filter, so a filtered loop still ends.
-                    m.msg == WM_QUIT || (msg_in_range(m.msg, first, last)
-                        && (hwnd_filter == 0 || wm.is_same_or_descendant(m.hwnd, hwnd_filter)))
-                };
-                let posted = {
-                    let mut mq = mq_arc.lock_or_recover();
-                    let pos = mq.messages.iter().position(|m| passes(&wm, m));
-                    pos.and_then(|i| if remove { mq.messages.remove(i) } else { mq.messages.get(i).cloned() })
-                };
-                // Posted messages come first, then input from the system
-                // input queue (with this queue's lock released: reading it
-                // may lock other queues).
-                posted.or_else(|| {
-                    let filter_ok = |m: &OS2Message| m.msg == WM_QUIT || msg_in_range(m.msg, first, last);
-                    let probe = wm.next_input(hmq, false, filter_ok)?;
-                    if hwnd_filter != 0 && !wm.is_same_or_descendant(probe.hwnd, hwnd_filter) {
-                        return None;
-                    }
-                    if remove { wm.next_input(hmq, true, |_| true) } else { Some(probe) }
-                })
-            };
+            let found = self.shared.window_mgr.lock_or_recover().next_queued(hmq, remove, |wm, m| {
+                // WM_QUIT passes every filter, so a filtered loop still ends.
+                m.msg == WM_QUIT || (msg_in_range(m.msg, first, last)
+                    && (hwnd_filter == 0 || wm.is_same_or_descendant(m.hwnd, hwnd_filter)))
+            });
             if let Some(mut msg) = found {
                 // Keystrokes that are accelerators arrive as the command
                 // they stand for.

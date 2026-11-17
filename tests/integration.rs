@@ -711,11 +711,12 @@ fn gui_pm_msgbox_test_matches_golden() {
 /// The client is busy for 600 ms after 'n' and then focuses the first entry
 /// field; "ab" typed meanwhile goes there, and "cd" typed after a click on
 /// the second entry field (client (20, 330, 200, 24): desktop y 161–185)
-/// goes to that one.
+/// goes to that one. The sample also checks the order of a queue: posted
+/// messages, then WM_PAINT, then WM_TIMER.
 #[test]
 fn gui_pm_typeahead_test_routes_keys_when_they_are_read() {
     let steps = "1000 text n\n1100 text ab\n1300 click 120 173\n1400 text cd\n6000 quit\n";
-    assert_scripted_checks_pass("samples/pm_typeahead_test/pm_typeahead_test.exe", "pm_typeahead_test", 4, steps);
+    assert_scripted_checks_pass("samples/pm_typeahead_test/pm_typeahead_test.exe", "pm_typeahead_test", 5, steps);
 }
 
 /// pm_codepage_test: PM text follows the message queue's codepage

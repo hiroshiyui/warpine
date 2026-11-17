@@ -9,8 +9,8 @@
 //! the modal dialog loop take the oldest event when its target window
 //! belongs to the reading thread's queue. As in PM:
 //!
-//! - posted messages come before input (`next_message` looks here only
-//!   when the thread's own queue has nothing that passes its filters);
+//! - a thread reads its posted messages, then input, then `WM_PAINT`, then
+//!   `WM_TIMER` ([`WindowManager::next_queued`], [`Rank`]);
 //! - input is taken in order: an event for another thread's window blocks
 //!   the events behind it until that thread has read it;
 //! - a key goes to the focus window at the time it is read (`key_target`),
@@ -25,7 +25,7 @@
 
 use std::collections::VecDeque;
 
-use super::constants::{KC_CHAR, WM_CHAR, WM_CHAR_REPEAT_SHIFT};
+use super::constants::{KC_CHAR, WM_CHAR, WM_CHAR_REPEAT_SHIFT, WM_PAINT, WM_TIMER};
 use super::mutex_ext::MutexExt;
 use super::pm_types::{OS2Message, WindowManager};
 
@@ -75,7 +75,57 @@ enum Head {
     Drop,
 }
 
+/// Where a queued message ranks when a thread reads its queue. The PM
+/// Reference ranks `WM_TIMER` "lower than all other messages except
+/// WM_SEM4" and the `WM_PAINT` / `WM_TIMER` messages the system generates
+/// below `WM_SEM2`, itself "lower than any other message": so posted
+/// messages and input come first, then `WM_PAINT`, then `WM_TIMER`.
+/// (Warpine has no `WM_SEMn` messages.)
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rank {
+    Posted,
+    Paint,
+    Timer,
+}
+
+impl Rank {
+    pub fn of(msg: u32) -> Rank {
+        match msg {
+            WM_PAINT => Rank::Paint,
+            WM_TIMER => Rank::Timer,
+            _ => Rank::Posted,
+        }
+    }
+}
+
 impl WindowManager {
+    /// `WinGetMsg` / `WinPeekMsg` / the modal loop: the next message for
+    /// queue `hmq` that passes `pass`, in PM's order — its posted messages
+    /// in the order they were posted, then input from the system input
+    /// queue, then `WM_PAINT`, then `WM_TIMER` (see [`Rank`]). Removed from
+    /// its queue when `remove` is set.
+    pub fn next_queued(&mut self, hmq: u32, remove: bool, pass: impl Fn(&WindowManager, &OS2Message) -> bool)
+        -> Option<OS2Message>
+    {
+        let mq_arc = self.get_mq(hmq)?;
+        // The queue's lock is held only while it is searched: reading input
+        // may lock other queues.
+        let take = |wm: &WindowManager, rank: Rank| {
+            let mut mq = mq_arc.lock_or_recover();
+            let i = mq.messages.iter().position(|m| Rank::of(m.msg) == rank && pass(wm, m))?;
+            if remove { mq.messages.remove(i) } else { mq.messages.get(i).cloned() }
+        };
+        if let Some(m) = take(self, Rank::Posted) {
+            return Some(m);
+        }
+        if let Some(probe) = self.next_input(hmq, false, |_| true)
+            && pass(self, &probe)
+        {
+            return if remove { self.next_input(hmq, true, |_| true) } else { Some(probe) };
+        }
+        take(self, Rank::Paint).or_else(|| take(self, Rank::Timer))
+    }
+
     /// Append `ev` to the system input queue and wake the thread that is to
     /// read the oldest event.
     pub fn post_input(&mut self, ev: InputEvent) {
@@ -290,6 +340,48 @@ mod tests {
         wm.post_input(InputEvent::Window { hwnd: c1, msg: WM_BUTTON1DOWN, mp1: 0, mp2: 0 });
         assert_eq!(take(&mut wm, q1), Some((c1, WM_BUTTON1DOWN, 0, 0)));
         assert_eq!(wm.pending_input(), 0);
+    }
+
+    fn post(wm: &WindowManager, hmq: u32, hwnd: u32, msg: u32) {
+        wm.get_mq(hmq).unwrap().lock_or_recover().messages.push_back(
+            OS2Message { hwnd, msg, mp1: 0, mp2: 0, time: 0, x: 0, y: 0 });
+    }
+
+    fn next_msg(wm: &mut WindowManager, hmq: u32) -> Option<u32> {
+        wm.next_queued(hmq, true, |_, _| true).map(|m| m.msg)
+    }
+
+    #[test]
+    fn posted_messages_then_input_then_paint_then_timer() {
+        use crate::loader::constants::{WM_COMMAND, WM_SIZE};
+        let (mut wm, [q1, _], [_, c1, ..], _) = two_frames();
+        post(&wm, q1, c1, WM_TIMER);
+        post(&wm, q1, c1, WM_PAINT);
+        post(&wm, q1, c1, WM_SIZE);
+        wm.post_input(InputEvent::Key { mp1: 0, mp2: 0 });
+        post(&wm, q1, c1, WM_COMMAND);
+        assert_eq!(next_msg(&mut wm, q1), Some(WM_SIZE));
+        assert_eq!(next_msg(&mut wm, q1), Some(WM_COMMAND), "posted messages in posting order");
+        assert_eq!(next_msg(&mut wm, q1), Some(WM_CHAR), "input after posted messages");
+        assert_eq!(next_msg(&mut wm, q1), Some(WM_PAINT));
+        assert_eq!(next_msg(&mut wm, q1), Some(WM_TIMER), "WM_TIMER last");
+        assert_eq!(next_msg(&mut wm, q1), None);
+    }
+
+    #[test]
+    fn a_filter_reaches_past_messages_of_higher_rank() {
+        let (mut wm, [q1, _], [_, c1, ..], entry) = two_frames();
+        post(&wm, q1, c1, WM_PAINT);
+        post(&wm, q1, entry, WM_TIMER);
+        wm.post_input(InputEvent::Key { mp1: 0, mp2: 0 });
+        // Only the entry field's messages: the key (for the client) and the
+        // client's WM_PAINT stay.
+        let m = wm.next_queued(q1, true, |wm, m| wm.is_same_or_descendant(m.hwnd, entry));
+        assert_eq!(m.map(|m| (m.hwnd, m.msg)), Some((entry, WM_TIMER)));
+        // Peeking leaves the message.
+        assert_eq!(wm.next_queued(q1, false, |_, _| true).map(|m| m.msg), Some(WM_CHAR));
+        assert_eq!(next_msg(&mut wm, q1), Some(WM_CHAR));
+        assert_eq!(next_msg(&mut wm, q1), Some(WM_PAINT));
     }
 
     #[test]
