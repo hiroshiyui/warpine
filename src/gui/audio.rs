@@ -186,7 +186,6 @@ pub const AUDIO_PUMP_INTERVAL: Duration = Duration::from_millis(10);
 pub struct SdlAudio {
     audio: Option<sdl3::AudioSubsystem>,
     streams: HashMap<u32, sdl3::audio::AudioStreamOwner>,
-    attached: bool,
 }
 
 impl SdlAudio {
@@ -196,15 +195,16 @@ impl SdlAudio {
         let audio = sdl.audio()
             .map_err(|e| warn!("[audio] SDL audio unavailable ({e}); MMPM/2 and DosBeep are silent"))
             .ok();
-        SdlAudio { audio, streams: HashMap::new(), attached: false }
+        SdlAudio { audio, streams: HashMap::new() }
     }
 
-    /// Start serving `service` (once): from now on `play` succeeds, and
-    /// `wake` interrupts the owning loop's wait when a command arrives.
+    /// Start serving `service`: from now on `play` succeeds, and `wake`
+    /// interrupts the owning loop's wait when a command arrives. Attaching
+    /// again (the output handed to another loop when a VIO session switches
+    /// displays) replaces the wake-up.
     pub fn attach(&mut self, service: &AudioService, wake: WakeFn) {
-        if self.audio.is_some() && !self.attached {
+        if self.audio.is_some() {
             service.attach(wake);
-            self.attached = true;
         }
     }
 

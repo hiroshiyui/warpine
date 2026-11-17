@@ -29,7 +29,7 @@ use log::{info, warn};
 use sdl3::pixels::{Color, PixelFormat};
 use sdl3::render::{BlendMode, Canvas, FRect, Texture, TextureCreator};
 use sdl3::video::{Window, WindowContext};
-use crate::gui::damage::{Damage, Rect, fill_clipped};
+use crate::gui::damage::{Damage, Rect, blit_clipped, fill_clipped};
 use crate::gui::surface::{MAX_SURFACE_DIM, SharedSurface};
 use crate::loader::MutexExt;
 use super::{ChromeCache, FramePlacement, DESKTOP_BG, MENU_DROPDOWN_W, draw_placed_frame};
@@ -58,6 +58,16 @@ pub(super) struct SceneFrame<'a> {
     pub chrome: &'a ChromeCache,
 }
 
+/// Something drawn over all frames: an open pop-up menu.
+pub(super) struct Overlay<'a> {
+    /// Where it goes on the desktop.
+    pub rect: Rect,
+    /// Its pixels, `rect`-sized, top row first.
+    pub pixels: &'a [u32],
+    /// Changes whenever `pixels` or `rect` do.
+    pub generation: u64,
+}
+
 /// What to show: the visible frames back to front, and what changed.
 pub(super) struct Scene<'a> {
     pub frames: Vec<SceneFrame<'a>>,
@@ -68,6 +78,8 @@ pub(super) struct Scene<'a> {
     /// Everything must be redrawn (start-up, host window resized or
     /// exposed, render device reset).
     pub full: bool,
+    /// Drawn over the frames.
+    pub overlay: Option<Overlay<'a>>,
 }
 
 /// Puts a [`Scene`] on the desktop window.
@@ -274,6 +286,9 @@ impl Compositor for SoftwareCompositor {
                 let fb = f.surface.lock_or_recover();
                 draw_placed_frame(&mut self.buffer, dw, p, &fb, f.chrome, r);
             }
+            if let Some(o) = &scene.overlay {
+                draw_overlay(&mut self.buffer, dw, o, r);
+            }
         }
         let started = Instant::now();
         self.present(scene.damage.rects());
@@ -283,6 +298,13 @@ impl Compositor for SoftwareCompositor {
     fn snapshot(&mut self) -> (Vec<u32>, u32, u32) {
         (self.buffer.clone(), self.width, self.height)
     }
+}
+
+/// Draw `o` into a desktop buffer `buf_w` pels wide, only inside `clip`.
+fn draw_overlay(buf: &mut [u32], buf_w: usize, o: &Overlay, clip: Rect) {
+    let (w, h) = (o.rect.width(), o.rect.height());
+    if w == 0 || o.pixels.len() < w as usize * h as usize { return; }
+    blit_clipped(buf, buf_w, o.pixels, w as usize, o.rect.x0, o.rect.y0, w, h, clip);
 }
 
 // ── Layered ───────────────────────────────────────────────────────────────
@@ -318,6 +340,8 @@ pub(super) struct LayeredCompositor {
     draw_list: Vec<DrawItem>,
     /// Frame pixels being rendered, reused between frames.
     scratch: Vec<u32>,
+    /// The overlay's texture, where it goes and the generation it holds.
+    overlay: Option<(Texture<'static>, Rect, u64)>,
     width:   u32,
     height:  u32,
 }
@@ -376,7 +400,7 @@ impl LayeredCompositor {
         let creator: &'static TextureCreator<WindowContext> =
             Box::leak(Box::new(canvas.texture_creator()));
         LayeredCompositor { canvas, creator, layers: HashMap::new(), draw_list: Vec::new(),
-                            scratch: Vec::new(), width: w, height: h }
+                            scratch: Vec::new(), overlay: None, width: w, height: h }
     }
 
     /// Bring `f`'s textures up to date; returns whether the frame can be
@@ -473,6 +497,30 @@ impl LayeredCompositor {
                 warn!("[GUI] drawing a pull-down failed: {e}");
             }
         }
+        if let Some((t, rect, _)) = &self.overlay
+            && let Err(e) = self.canvas.copy(t, None::<FRect>, frect(*rect)) {
+            warn!("[GUI] drawing a pop-up menu failed: {e}");
+        }
+    }
+
+    /// Bring the overlay's texture up to date with `o`.
+    fn update_overlay(&mut self, o: Option<&Overlay>, full: bool) {
+        let Some(o) = o else {
+            self.overlay = None;
+            return;
+        };
+        if !full && self.overlay.as_ref().is_some_and(|(_, _, g)| *g == o.generation) {
+            return;
+        }
+        let (w, h) = (o.rect.width(), o.rect.height());
+        self.overlay = (w > 0 && h > 0).then(|| xrgb_texture(self.creator, w as u32, h as u32))
+            .and_then(|t| t.map_err(|e| warn!("[GUI] no pop-up menu texture: {e}")).ok())
+            .and_then(|mut t| {
+                upload(&mut t, (0, 0), o.pixels, w as usize, Rect::at(0, 0, w, h))
+                    .map_err(|e| warn!("[GUI] pop-up menu upload failed: {e}"))
+                    .ok()?;
+                Some((t, o.rect, o.generation))
+            });
     }
 }
 
@@ -508,6 +556,7 @@ impl Compositor for LayeredCompositor {
         }
         self.layers.retain(|h, _| scene.frames.iter().any(|f| f.placement.hwnd == *h));
         self.draw_list = draw_list;
+        self.update_overlay(scene.overlay.as_ref(), scene.full);
         let started = Instant::now();
         self.draw();
         self.canvas.present();

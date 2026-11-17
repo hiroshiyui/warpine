@@ -215,39 +215,58 @@ fn headless_requested(env_set: bool, stdout_is_terminal: bool) -> bool {
 /// thread once the display exists. A windowed session (the default) puts
 /// the text screen in a frame on the PM desktop; a full-screen one
 /// (`WARPINE_VIO=fullscreen`, or a program that is not window-compatible)
-/// uses the separate 640 × 400 text window. Never returns.
+/// uses the full-screen text display. Alt+Home switches a window-compatible
+/// program between the two (`gui::vio_switch`): the current display's loop
+/// returns, its window is parked and the other display opens on the same SDL
+/// context, while the guest, its VIO buffer and keyboard queue carry on.
+/// Never returns.
 fn run_vio_session(shared: Arc<loader::SharedState>, title: &str, app_type: lx::header::AppType,
                    start: impl FnOnce()) -> ! {
     use std::sync::atomic::Ordering;
     use gui::vio_window::{choose_display, VioDisplay, VIO_ENV};
+    use gui::vio_switch::{alt_home_target, take_switch_request, Parked};
     shared.console_mgr.lock_or_recover().enable_sdl_mode();
     shared.use_sdl_text.store(true, Ordering::Relaxed);
 
     let env = std::env::var(VIO_ENV).ok();
-    let (display, warning) = choose_display(app_type, env.as_deref());
+    let (mut display, warning) = choose_display(app_type, env.as_deref());
     if let Some(warning) = warning {
         eprintln!("warpine: {warning}");
     }
+    shared.vio_switchable.store(alt_home_target(app_type, display).is_some(), Ordering::Relaxed);
     let sdl = sdl3::init().expect("Failed to initialise SDL");
-    // The renderer (and its audio output) exists before the guest runs.
-    match display {
-        VioDisplay::FullScreen => {
-            let mut renderer = gui::SdlTextRenderer::new(&sdl, title, &shared.audio);
-            start();
-            gui::run_text_loop(&mut renderer, shared.clone());
+    // The PM side's channel outlives each of its renderers.
+    let (gui_sender, gui_rx) = gui::create_gui_channel();
+    shared.window_mgr.lock_or_recover().gui_tx = Some(gui_sender);
+    let mut parked = Parked::default();
+    let mut start = Some(start);
+    loop {
+        // The renderer (and its audio output) exists before the guest runs.
+        match display {
+            VioDisplay::FullScreen => {
+                let mut renderer = gui::SdlTextRenderer::open(&sdl, title, &shared.audio, &mut parked);
+                if let Some(start) = start.take() { start(); }
+                gui::run_text_loop(&mut renderer, shared.clone());
+                renderer.park(&mut parked);
+            }
+            VioDisplay::Window => {
+                let mut renderer = gui::SdlRenderer::open(&sdl, &shared.audio, &mut parked);
+                renderer.attach_vio_window(&shared, title);
+                if let Some(start) = start.take() { start(); }
+                gui::run_pm_loop(&mut renderer, shared.clone(), &gui_rx);
+                renderer.park(&mut parked);
+            }
         }
-        VioDisplay::Window => {
-            let (gui_sender, gui_rx) = gui::create_gui_channel();
-            shared.window_mgr.lock_or_recover().gui_tx = Some(gui_sender);
-            let mut renderer = gui::SdlRenderer::new(&sdl, &shared.audio);
-            renderer.attach_vio_window(&shared, title);
-            start();
-            gui::run_pm_loop(&mut renderer, shared.clone(), gui_rx);
+        let switch = take_switch_request(&shared);
+        match alt_home_target(app_type, display) {
+            Some(next) if switch && !shared.exit_requested.load(Ordering::Relaxed) => display = next,
+            _ => break,
         }
     }
 
     shared.exit_requested.store(true, Ordering::Relaxed);
     shared.kbd_cond.notify_all();
+    shared.mou_cond.notify_all();
     shared.console_mgr.lock_or_recover().disable_raw_mode();
     let code = shared.exit_code.load(Ordering::Relaxed);
     std::process::exit(code);
@@ -376,7 +395,7 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>) {
         loader.clone().setup_and_spawn_vcpu(&lx_file);
 
         // Run the GUI event loop on the main thread (returns when done).
-        gui::run_pm_loop(&mut renderer, shared.clone(), gui_rx);
+        gui::run_pm_loop(&mut renderer, shared.clone(), &gui_rx);
 
         // Cleanup: signal shutdown, stop timers, reset terminal, and exit
         shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);

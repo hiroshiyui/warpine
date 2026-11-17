@@ -50,11 +50,14 @@ pub trait PmRenderer {
 ///
 /// Must be called from the **main thread** when using `SdlRenderer`
 /// (SDL event pump requirement).  Returns when `shared.exit_requested`
-/// is set or `renderer.poll_events` returns `false`.
+/// is set or `renderer.poll_events` returns `false` (which is also how a
+/// VIO session leaves its PM window for full screen on Alt+Home). The
+/// channel stays with the caller, so a later loop — another renderer — can
+/// carry on with it.
 pub fn run_pm_loop(
     renderer: &mut dyn PmRenderer,
     shared: Arc<SharedState>,
-    rx: GUIReceiver,
+    rx: &GUIReceiver,
 ) {
     let wake = rx.wake_handle();
     renderer.install_waker(wake.clone());

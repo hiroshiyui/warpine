@@ -67,7 +67,7 @@ mod tests {
         drop(tx);
         renderer.keep_running = false;
 
-        run_pm_loop(&mut renderer, shared, rx);
+        run_pm_loop(&mut renderer, shared, &rx);
         assert_eq!(renderer.message_count, 2);
     }
 
@@ -79,7 +79,7 @@ mod tests {
         renderer.keep_running = false;
 
         // Must return immediately without hanging.
-        run_pm_loop(&mut renderer, shared, rx);
+        run_pm_loop(&mut renderer, shared, &rx);
         // Reaching here means the loop exited correctly.
     }
 
@@ -91,7 +91,24 @@ mod tests {
         let (_tx, rx) = create_gui_channel();
         let mut renderer = HeadlessRenderer::new();
 
-        run_pm_loop(&mut renderer, shared, rx);
+        run_pm_loop(&mut renderer, shared, &rx);
+    }
+
+    /// A VIO session runs the loop again with the same channel after a
+    /// stretch full screen: messages sent meanwhile are handled then.
+    #[test]
+    fn the_loop_can_run_again_on_the_same_channel() {
+        let shared = make_shared();
+        let (tx, rx) = create_gui_channel();
+        let mut renderer = HeadlessRenderer::new();
+        renderer.keep_running = false;
+        tx.send(GUIMessage::SetMouseCapture(0)).unwrap();
+        run_pm_loop(&mut renderer, shared.clone(), &rx);
+        tx.send(GUIMessage::SetMouseCapture(1)).unwrap();
+        let mut again = HeadlessRenderer::new();
+        again.keep_running = false;
+        run_pm_loop(&mut again, shared, &rx);
+        assert_eq!((renderer.message_count, again.message_count), (1, 1));
     }
 
     #[test]
@@ -116,7 +133,7 @@ mod tests {
         drop(tx);
         renderer.keep_running = false;
 
-        run_pm_loop(&mut renderer, shared, rx);
+        run_pm_loop(&mut renderer, shared, &rx);
         assert_eq!(renderer.message_count, 3);
     }
 

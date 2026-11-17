@@ -440,6 +440,17 @@ fn check_gui_golden_env(name: &str, sample: &str, steps: &str, env: &[(&str, &st
 /// `WARPINE_VIO` set to `vio` (None: the default), type `ver` and Enter, and
 /// return the dumped screen. `None` when KVM, 4OS2 or `script` is missing.
 fn run_4os2_session(vio: Option<&str>) -> Option<(usize, usize, Vec<u8>)> {
+    run_4os2_script(vio, &["screen"], |dumps| {
+        format!("1500 text ver\n1700 key enter\n3000 dump {}\n3100 quit\n", dumps[0].display())
+    }).map(|mut frames| frames.remove(0))
+}
+
+/// Run 4OS2 under a pseudo-terminal with the GUI script `script` makes from
+/// the paths of the `dumps` it writes; returns each dump decoded, in order.
+/// `None` (test skipped) without KVM, the gitignored 4OS2 binary or
+/// util-linux `script`.
+fn run_4os2_script(vio: Option<&str>, dumps: &[&str], script: impl FnOnce(&[std::path::PathBuf]) -> String)
+                   -> Option<Vec<(usize, usize, Vec<u8>)>> {
     let sample = "samples/4os2/4os2.exe";
     let has_script = Command::new("script").arg("--version").output().is_ok_and(|o| o.status.success());
     if !kvm_available() || !Path::new(sample).exists() || !has_script {
@@ -447,10 +458,9 @@ fn run_4os2_session(vio: Option<&str>) -> Option<(usize, usize, Vec<u8>)> {
         return None;
     }
     let dir = tempfile::tempdir().expect("tempdir");
-    let dump = dir.path().join("screen.ppm");
+    let paths: Vec<_> = dumps.iter().map(|name| dir.path().join(format!("{name}.ppm"))).collect();
     let session = dir.path().join("session.script");
-    std::fs::write(&session, format!("1500 text ver\n1700 key enter\n3000 dump {}\n3100 quit\n",
-                                     dump.display())).unwrap();
+    std::fs::write(&session, script(&paths)).unwrap();
     let mut cmd = Command::new("script");
     cmd.args(["-qec", &format!("timeout 30 {} {sample}", warpine())])
         .arg("/dev/null")
@@ -465,14 +475,84 @@ fn run_4os2_session(vio: Option<&str>) -> Option<(usize, usize, Vec<u8>)> {
     }
     let status = cmd.status().expect("run script");
     assert!(status.success(), "4OS2 session failed: {status}");
-    let ppm = std::fs::read(&dump).expect("no screen dump was written");
-    Some(parse_ppm(&ppm))
+    Some(paths.iter().map(|path| {
+        let ppm = std::fs::read(path).unwrap_or_else(|_| panic!("no dump {} was written", path.display()));
+        parse_ppm(&ppm)
+    }).collect())
 }
 
 /// Pels of CGA light grey, the colour of 4OS2's text.
 fn light_grey_pels(rgb: &[u8]) -> usize {
     const LIGHT_GREY: [u8; 3] = [0xAA, 0xAA, 0xAA];
     rgb.chunks(3).filter(|p| *p == LIGHT_GREY).count()
+}
+
+/// Run samples/mou_test under a pseudo-terminal (a VIO program gets a
+/// display only when stdout is a terminal), windowed or with `WARPINE_VIO`
+/// = `vio`, clicking, right-clicking and dragging on the cells the sample
+/// expects. `origin` is the desktop point of the top-left corner of the
+/// cells. Returns the sample's result file (C:\MOU_TEST.OUT), or `None`
+/// when the test cannot run here.
+fn run_mou_session(vio: Option<&str>, origin: (i32, i32)) -> Option<String> {
+    let sample = "samples/mou_test/mou_test.exe";
+    let has_script = Command::new("script").arg("--version").output().is_ok_and(|o| o.status.success());
+    if !kvm_available() || !Path::new(sample).exists() || !has_script {
+        eprintln!("skipping: KVM, {sample} or util-linux script not available");
+        return None;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    // The centre of cell (row, col): cells are 8 × 16 pels.
+    let at = |row: i32, col: i32| (origin.0 + col * 8 + 4, origin.1 + row * 16 + 8);
+    let ((x1, y1), (x2, y2), (x3, y3), (x4, y4)) = (at(5, 10), at(7, 20), at(9, 30), at(9, 40));
+    let session = dir.path().join("session.script");
+    std::fs::write(&session, format!(
+        "2000 click {x1} {y1}\n2400 rclick {x2} {y2}\n2800 drag {x3} {y3} {x4} {y4}\n4500 quit\n")).unwrap();
+    let mut cmd = Command::new("script");
+    cmd.args(["-qec", &format!("timeout 30 {} {sample}", warpine())])
+        .arg("/dev/null")
+        .env("SDL_VIDEODRIVER", "dummy")
+        .env("SDL_AUDIODRIVER", "dummy")
+        .env("RUST_LOG", "error")
+        // C: is $XDG_DATA_HOME/warpine/drive_c: the sample's file lands here.
+        .env("XDG_DATA_HOME", dir.path())
+        .env("WARPINE_GUI_SCRIPT", &session)
+        .env_remove("WARPINE_VIO")
+        .stdout(Stdio::null());
+    if let Some(vio) = vio {
+        cmd.env("WARPINE_VIO", vio);
+    }
+    let status = cmd.status().expect("run script");
+    assert!(status.success(), "mou_test session failed: {status}");
+    let drive_c = dir.path().join("warpine/drive_c");
+    let file = std::fs::read_dir(&drive_c).expect("no C: drive").flatten()
+        .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case("MOU_TEST.OUT"))
+        .expect("mou_test wrote no result file");
+    Some(std::fs::read_to_string(file.path()).unwrap())
+}
+
+/// Every check of the sample passed and it saw all the scripted events.
+fn assert_mou_results(out: &str) {
+    let failures: Vec<&str> = out.lines().filter(|l| l.starts_with("FAIL")).collect();
+    assert!(failures.is_empty(), "failures: {failures:?}\n{out}");
+    assert!(out.contains("ok drag: release at (9, 40)"), "events missing:\n{out}");
+    assert!(out.contains("done: 0 failed"), "incomplete:\n{out}");
+}
+
+/// MOUCALLS in a windowed VIO session: the pointer over the frame's cells
+/// reaches MouReadEventQue in text cells. The frame is the first cascaded
+/// one (32, 32 from the desktop's top-left: FRAME_CASCADE_ORIGIN); its
+/// cells start inside the 2-pel border, below the 20-pel title bar.
+#[test]
+fn mouse_events_reach_a_windowed_vio_program() {
+    let Some(out) = run_mou_session(None, (32 + 2, 32 + 20)) else { return };
+    assert_mou_results(&out);
+}
+
+/// MOUCALLS full screen: the 640 × 400 text window maps the pointer to cells.
+#[test]
+fn mouse_events_reach_a_full_screen_vio_program() {
+    let Some(out) = run_mou_session(Some("fullscreen"), (0, 0)) else { return };
+    assert_mou_results(&out);
 }
 
 /// WARPINE_VIO=fullscreen: the separate text window replays the GUI script —
@@ -497,6 +577,220 @@ fn vio_program_runs_in_a_pm_window_by_default() {
     const NAVY: [u8; 3] = [0x00, 0x00, 0x80];
     let title = rgb.chunks(3).filter(|p| *p == NAVY).count();
     assert!(title > 1000, "only {title} navy pels: no active title bar");
+}
+
+/// Alt+Home switches a running VIO program from its PM window to full
+/// screen (the dump is the 640×400 text screen) and back to the desktop;
+/// the program and its screen carry on across both switches, and keys typed
+/// full screen reach it.
+#[test]
+fn alt_home_switches_a_vio_program_between_window_and_full_screen() {
+    let Some(frames) = run_4os2_script(None, &["window", "full", "back"], |d| format!(
+        "1500 text ver\n1700 key enter\n2800 dump {}\n3000 key alt+home\n\
+         4000 text ver\n4200 key enter\n5000 dump {}\n5500 key alt+home\n6500 dump {}\n6600 quit\n",
+        d[0].display(), d[1].display(), d[2].display())) else { return };
+    let [(ww, wh, window), (fw, fh, full), (bw, bh, back)] = &frames[..] else { unreachable!() };
+    assert!((*ww, *wh) != (640, 400), "starts in a window on the desktop");
+    assert_eq!((*fw, *fh), (640, 400), "full screen: the 80×25 text screen");
+    assert_eq!((*bw, *bh), (*ww, *wh), "back on the desktop");
+    let (before, full_lit, after) = (light_grey_pels(window), light_grey_pels(full), light_grey_pels(back));
+    assert!(before > 1000, "only {before} light-grey pels in the window");
+    // `ver` typed full screen adds its output to what was there.
+    assert!(full_lit > before, "full screen shows the screen and the new output: {full_lit} <= {before}");
+    assert!(after >= full_lit, "the window shows the same screen again: {after} < {full_lit}");
+    const NAVY: [u8; 3] = [0x00, 0x00, 0x80];
+    let title = back.chunks(3).filter(|p| *p == NAVY).count();
+    assert!(title > 1000, "only {title} navy pels: the VIO window is not active again");
+}
+
+/// WARPINE_VIO=fullscreen starts full screen; Alt+Home then opens the PM
+/// desktop with the program's screen in a window, and switches back.
+#[test]
+fn alt_home_from_full_screen_opens_the_pm_window() {
+    let Some(frames) = run_4os2_script(Some("fullscreen"), &["full", "window", "again"], |d| format!(
+        "1500 text ver\n1700 key enter\n2800 dump {}\n3000 key alt+home\n4000 dump {}\n\
+         4200 key alt+home\n5200 dump {}\n5300 quit\n",
+        d[0].display(), d[1].display(), d[2].display())) else { return };
+    let sizes: Vec<_> = frames.iter().map(|(w, h, _)| (*w, *h)).collect();
+    assert_eq!(sizes[0], (640, 400), "starts full screen");
+    assert!(sizes[1] != (640, 400), "then the desktop");
+    assert_eq!(sizes[2], (640, 400), "full screen again");
+    let lit: Vec<_> = frames.iter().map(|(_, _, rgb)| light_grey_pels(rgb)).collect();
+    assert!(lit.iter().all(|&n| n > 1000), "the screen is shown every time: {lit:?}");
+}
+
+/// A desktop dump: width, height and RGB pels.
+type Screen = (usize, usize, Vec<u8>);
+/// What [`run_4os2_windowed`] returns: the dumps, drive C:'s host directory
+/// and the temporary directory holding it.
+type WindowedSession = (Vec<Screen>, std::path::PathBuf, tempfile::TempDir);
+
+/// Run 4OS2 in a window on the PM desktop, on a pseudo-terminal like
+/// [`run_4os2_session`], under the GUI script `steps` (`{dumpN}` stands for
+/// the N-th of `dumps` screen dumps), with drive C: in a fresh directory.
+/// Returns the dumps and C:'s host directory (removed when the `TempDir`
+/// is dropped); `None` when KVM, 4OS2 or `script` is missing.
+fn run_4os2_windowed(steps: &str, dumps: usize) -> Option<WindowedSession> {
+    let sample = "samples/4os2/4os2.exe";
+    let has_script = Command::new("script").arg("--version").output().is_ok_and(|o| o.status.success());
+    if !kvm_available() || !Path::new(sample).exists() || !has_script {
+        eprintln!("skipping: KVM, {sample} or util-linux script not available");
+        return None;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let paths: Vec<_> = (0..dumps).map(|i| dir.path().join(format!("screen{i}.ppm"))).collect();
+    let mut text = steps.to_string();
+    for (i, p) in paths.iter().enumerate() {
+        text = text.replace(&format!("{{dump{i}}}"), p.to_str().unwrap());
+    }
+    let session = dir.path().join("session.script");
+    std::fs::write(&session, text).unwrap();
+    let status = Command::new("script")
+        .args(["-qec", &format!("timeout 40 {} {sample}", warpine())])
+        .arg("/dev/null")
+        .env("SDL_VIDEODRIVER", "dummy")
+        .env("SDL_AUDIODRIVER", "dummy")
+        .env("RUST_LOG", "error")
+        .env("WARPINE_GUI_SCRIPT", &session)
+        // Drive C: is $XDG_DATA_HOME/warpine/drive_c.
+        .env("XDG_DATA_HOME", dir.path())
+        .env_remove("WARPINE_VIO")
+        .env_remove("WARPINE_COMPOSITOR")
+        .env_remove("WARPINE_DESKTOP_W")
+        .env_remove("WARPINE_DESKTOP_H")
+        .stdout(Stdio::null())
+        .status()
+        .expect("run script");
+    assert!(status.success(), "4OS2 session failed: {status}");
+    let shots = paths.iter().map(|p| {
+        parse_ppm(&std::fs::read(p).unwrap_or_else(|e| panic!("no screen dump {}: {e}", p.display())))
+    }).collect();
+    let drive_c = dir.path().join("warpine/drive_c");
+    Some((shots, drive_c, dir))
+}
+
+/// Whether drive C: (host directory `drive_c`) holds a directory named
+/// `name`, in any case.
+fn has_dir(drive_c: &Path, name: &str) -> bool {
+    std::fs::read_dir(drive_c).map(|d| d.flatten().any(|e| {
+        e.file_name().to_string_lossy().eq_ignore_ascii_case(name) && e.path().is_dir()
+    })).unwrap_or(false)
+}
+
+/// Pels of the active title bar's navy in desktop row `y`.
+fn navy_in_row(shot: &(usize, usize, Vec<u8>), y: usize) -> usize {
+    (0..shot.0).filter(|&x| gui_pixel(shot, x, y) == 0x00_0080).count()
+}
+
+/// Geometry of the VIO window on the default 1024 × 768 desktop: the frame
+/// of an 80 × 25 screen (644 × 422 with its 2-pel border and 20-pel title
+/// bar) at the first cascade position, 32 pels from the top-left corner.
+const VIO_FRAME_X: usize = 32;
+const VIO_FRAME_TOP: usize = 32;
+const VIO_FRAME_CX: usize = 644;
+const VIO_FRAME_CY: usize = 422;
+/// The top-left of the text cells, and a cell's size.
+const VIO_CELLS_X: usize = VIO_FRAME_X + 2;
+const VIO_CELLS_Y: usize = VIO_FRAME_TOP + 20;
+/// A row of the title bar, clear of its buttons' pictograms.
+const VIO_TITLE_Y: usize = VIO_FRAME_TOP + 3;
+
+/// The VIO window has minimize and maximize buttons and a sizing border:
+/// dragging its bottom-right corner makes it smaller (scroll bars appear),
+/// dragging it past the screen's size stops at the whole screen, the
+/// maximize button fits it to the screen, Alt+F5 restores and Alt+F9
+/// minimizes it to a title bar along the bottom of the desktop.
+#[test]
+fn vio_window_resizes_maximizes_restores_and_minimizes() {
+    let corner = (VIO_FRAME_X + VIO_FRAME_CX - 2, VIO_FRAME_TOP + VIO_FRAME_CY - 2);
+    // Shrunk by 275 × 150 pels: the maximize button of the smaller frame
+    // (close, then maximize, 16 pels each with 2-pel gaps).
+    let small_right = VIO_FRAME_X + VIO_FRAME_CX - 275;
+    let max_button = small_right - 2 - 16 - 2 - 8;
+    let steps = format!("\
+        1500 text ver\n1600 key enter\n\
+        2000 drag {cx} {cy} {sx} {sy}\n\
+        2300 dump {{dump0}}\n\
+        2400 drag {sx} {sy} 1000 760\n\
+        2700 dump {{dump1}}\n\
+        2800 drag {cx} {cy} {sx} {sy}\n\
+        3100 click {max_button} {ty}\n\
+        3400 dump {{dump2}}\n\
+        3500 key alt+f5\n\
+        3800 dump {{dump3}}\n\
+        3900 key alt+f9\n\
+        4200 dump {{dump4}}\n\
+        4300 quit\n",
+        cx = corner.0, cy = corner.1, sx = corner.0 - 275, sy = corner.1 - 150, ty = VIO_FRAME_TOP + 10);
+    let Some((shots, _, _dir)) = run_4os2_windowed(&steps, 5) else { return };
+    let full = navy_in_row(&shots[1], VIO_TITLE_Y);
+    let small = navy_in_row(&shots[0], VIO_TITLE_Y);
+    assert!(small + 200 < full, "shrunk: {small} navy title pels, {full} at full size");
+    // Scroll bars: the grey track and the light-grey buttons inside the frame.
+    let track = |s: &(usize, usize, Vec<u8>)| (VIO_FRAME_X..small_right).flat_map(|x| {
+        (VIO_CELLS_Y..VIO_FRAME_TOP + VIO_FRAME_CY - 150).map(move |y| (x, y))
+    }).filter(|&(x, y)| gui_pixel(s, x, y) == 0xA0_A0A0).count();
+    assert!(track(&shots[0]) > 300, "scroll bars in the smaller window: {}", track(&shots[0]));
+    // Dragged past the screen: the whole screen, no larger.
+    assert_eq!(gui_pixel(&shots[1], VIO_FRAME_X + VIO_FRAME_CX + 4, VIO_TITLE_Y), 0x40_8040,
+               "the desktop right of the full-size frame");
+    assert_eq!(track(&shots[1]), 0, "no scroll bars at full size");
+    // Maximized: the whole screen again; restored: the smaller window.
+    let maxed = navy_in_row(&shots[2], VIO_TITLE_Y);
+    assert!(maxed + 50 > full, "maximized: {maxed} navy pels, full size {full}");
+    assert_eq!(navy_in_row(&shots[3], VIO_TITLE_Y), small, "restored to the smaller size");
+    // Minimized: no title bar at the top any more, one along the bottom.
+    assert_eq!(navy_in_row(&shots[4], VIO_TITLE_Y), 0, "minimized");
+    let bottom = (shots[4].1 - 40..shots[4].1).map(|y| navy_in_row(&shots[4], y)).sum::<usize>();
+    assert!(bottom > 500, "a minimized title bar at the bottom: {bottom} navy pels");
+}
+
+/// The system menu's Copy All copies the screen and Paste types it back:
+/// with the prompt `md ` and a screen of `rem` lines, the pasted screen
+/// ends with the command line `md Mq9`, which creates the directory.
+#[test]
+fn vio_window_copy_all_and_paste_round_trip() {
+    let steps = "\
+        1500 text prompt md$s\n1600 key enter\n\
+        1900 text for /l %i in (1,1,40) echo rem\n2000 key enter\n\
+        2600 text Mq9\n\
+        2800 key alt+space\n2900 key y\n\
+        3000 key esc\n\
+        3100 dump {dump0}\n\
+        3200 key alt+space\n3300 key p\n\
+        5000 key enter\n\
+        5600 quit\n";
+    let Some((_, drive_c, _dir)) = run_4os2_windowed(steps, 1) else { return };
+    assert!(has_dir(&drive_c, "Mq9"), "the pasted `md Mq9` ran: {:?}",
+            std::fs::read_dir(&drive_c).map(|d| d.flatten().map(|e| e.file_name()).collect::<Vec<_>>()));
+}
+
+/// Mark a rectangle with the mouse (shown inverted, title "Marking: "),
+/// Copy it, and Paste it: the marked `md Zk4` runs.
+#[test]
+fn vio_window_mark_copy_and_paste() {
+    // Row 7 holds the prompt `md ` and the typed `Zk4` (4OS2's banner and
+    // the `prompt` command above it); mark its first 11 cells.
+    let row_y = VIO_CELLS_Y + 7 * 16 + 8;
+    let steps = format!("\
+        1500 text prompt md$s\n1600 key enter\n\
+        2000 text Zk4\n\
+        2300 key alt+space\n2400 key a\n\
+        2600 drag {x0} {row_y} {x1} {row_y}\n\
+        2900 dump {{dump0}}\n\
+        3000 key alt+space\n3100 key o\n\
+        3300 dump {{dump1}}\n\
+        3400 key esc\n\
+        3500 key alt+space\n3600 key p\n\
+        3900 key enter\n\
+        4500 quit\n",
+        x0 = VIO_CELLS_X + 4, x1 = VIO_CELLS_X + 10 * 8 + 4);
+    let Some((shots, drive_c, _dir)) = run_4os2_windowed(&steps, 2) else { return };
+    let white = |s: &(usize, usize, Vec<u8>)| (VIO_CELLS_X..VIO_CELLS_X + 88)
+        .filter(|&x| gui_pixel(s, x, row_y) == 0xFF_FFFF).count();
+    assert!(white(&shots[0]) > 50, "the marked cells are inverted: {}", white(&shots[0]));
+    assert!(white(&shots[1]) < 10, "Copy left Mark mode: {}", white(&shots[1]));
+    assert!(has_dir(&drive_c, "Zk4"), "the pasted `md Zk4` ran");
 }
 
 /// The tile comparison itself: identical signatures match, a visible change

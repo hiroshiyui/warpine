@@ -173,6 +173,27 @@ impl VgaTextBuffer {
     }
 }
 
+/// The text cell (row, column) nearest to point (`x`, `y`) of a window of
+/// `cols × rows` 8 × 16 cells.
+pub fn cell_in_window(x: f32, y: f32, cols: u16, rows: u16) -> (u16, u16) {
+    let cell = |v: f32, size: f32, n: u16| ((v / size).max(0.0) as u16).min(n.saturating_sub(1));
+    (cell(y, 16.0, rows), cell(x, 8.0, cols))
+}
+
+/// The screen of the full-screen text window: the VIO buffer with the
+/// program's text-mode mouse pointer (MOUCALLS, drawn after `MouDrawPtr`)
+/// applied to its cell's attribute.
+pub fn full_screen_snapshot(shared: &SharedState) -> VgaTextBuffer {
+    let mut buf = VgaTextBuffer::snapshot(shared);
+    if let Some(p) = crate::loader::moucalls::text_pointer(shared)
+        && p.row < buf.rows && p.col < buf.cols
+        && let Some(cell) = buf.cells.get_mut(p.row as usize * buf.cols as usize + p.col as usize)
+    {
+        cell.1 = p.apply_attr(cell.1);
+    }
+    buf
+}
+
 // ── TextModeRenderer trait ────────────────────────────────────────────────────
 
 pub trait TextModeRenderer {
@@ -189,7 +210,10 @@ pub trait TextModeRenderer {
 
 // ── Main text-mode event loop ─────────────────────────────────────────────────
 
-/// Drive a text-mode application's event loop on the main thread.
+/// Drive a text-mode application's event loop on the main thread. Returns
+/// when the program ends, or with `SharedState::vio_switch_requested` set
+/// when Alt+Home asks for the other display of a VIO session (`vio_switch`);
+/// the program then keeps running.
 pub fn run_text_loop<R: TextModeRenderer>(renderer: &mut R, shared: Arc<SharedState>) {
     // Use wall-clock time for cursor blink so it is frame-rate independent.
     // 500 ms on / 500 ms off → 1 Hz blink, matching real VGA behaviour.
@@ -198,7 +222,10 @@ pub fn run_text_loop<R: TextModeRenderer>(renderer: &mut R, shared: Arc<SharedSt
     loop {
         if shared.exit_requested.load(Ordering::Relaxed) { break; }
 
-        if !renderer.poll_events(&shared) {
+        let keep_going = renderer.poll_events(&shared);
+        // Alt+Home in a VIO session: the caller shows the other display.
+        if super::vio_switch::switch_pending(&shared) { break; }
+        if !keep_going {
             shared.exit_requested.store(true, Ordering::Relaxed);
             shared.kbd_cond.notify_all();
             break;
@@ -207,7 +234,7 @@ pub fn run_text_loop<R: TextModeRenderer>(renderer: &mut R, shared: Arc<SharedSt
         if shared.exit_requested.load(Ordering::Relaxed) { break; }
 
         let blink_on = (blink_epoch.elapsed().as_millis() / 500).is_multiple_of(2);
-        let buf = VgaTextBuffer::snapshot(&shared);
+        let buf = full_screen_snapshot(&shared);
         renderer.render_frame(&buf, blink_on);
 
         renderer.frame_sleep();
@@ -358,19 +385,25 @@ pub fn render_cells(buf: &VgaTextBuffer, blink_on: bool, pixels: &mut [u32], win
 
 // ── SDL text-mode renderer ───────────────────────────────────────────────────
 
-/// SDL-backed VGA text-mode renderer.
+/// SDL-backed VGA text-mode renderer: the full-screen display of a VIO
+/// session.
 ///
-/// Opens an SDL window sized to `cols × 8` × `rows × 16` pixels and renders
-/// one 8×16 CP437 cell per screen cell.  When the `VgaTextBuffer` dimensions
-/// change (e.g. after a `VioSetMode` call) the window is automatically
-/// resized to match.
+/// Opens a desktop-full-screen SDL window (an ordinary window when full
+/// screen is refused) showing the `cols × 8` × `rows × 16` text screen, one
+/// 8×16 Unifont cell per screen cell, scaled up by whole multiples with its
+/// aspect ratio kept and black bars around it (SDL's integer-scale logical
+/// presentation). Host pointer positions are converted back to that logical
+/// size, and a GUI-script `dump` writes the logical frame. When the
+/// `VgaTextBuffer` dimensions change (e.g. after a `VioSetMode` call) the
+/// texture and logical size follow.
 ///
 /// Must be created and driven on the main thread.
 pub struct SdlTextRenderer {
     canvas: sdl3::render::Canvas<sdl3::video::Window>,
     /// Texture creator kept for the life of the process, so we can recreate
     /// the streaming texture on window resize and the lifetime-checked
-    /// texture can be `'static` (no `unsafe_textures`).
+    /// texture can be `'static` (no `unsafe_textures`). It keeps the window
+    /// alive, so a parked window is reused ([`TextWindow`]).
     texture_creator: &'static sdl3::render::TextureCreator<sdl3::video::WindowContext>,
     /// Persistent streaming texture — uploaded once per frame.
     texture: sdl3::render::Texture<'static>,
@@ -387,62 +420,143 @@ pub struct SdlTextRenderer {
     script: Option<super::gui_script::GuiScript>,
 }
 
+/// The text display's SDL window while the other display of a VIO session
+/// is shown (Alt+Home): hidden, to be shown again by the next
+/// [`SdlTextRenderer::open`].
+pub struct TextWindow {
+    canvas: sdl3::render::Canvas<sdl3::video::Window>,
+    texture_creator: &'static sdl3::render::TextureCreator<sdl3::video::WindowContext>,
+    texture: sdl3::render::Texture<'static>,
+    cols: u16,
+    rows: u16,
+}
+
+/// How the text screen is scaled to the window: by whole multiples, aspect
+/// ratio kept, black bars around it.
+const TEXT_PRESENTATION: sdl3::sys::render::SDL_RendererLogicalPresentation =
+    sdl3::sys::render::SDL_LOGICAL_PRESENTATION_INTEGER_SCALE;
+
+/// Width and height in pels of one text cell.
+const CELL_W: u32 = 8;
+const CELL_H: u32 = 16;
+
+/// Pixel size of a `cols × rows` text screen.
+fn text_screen_px(cols: u16, rows: u16) -> (u32, u32) {
+    (cols as u32 * CELL_W, rows as u32 * CELL_H)
+}
+
+/// A streaming texture for a `w × h` text screen, scaled with the nearest
+/// pel so the glyphs stay sharp.
+fn text_texture(creator: &'static sdl3::render::TextureCreator<sdl3::video::WindowContext>,
+                w: u32, h: u32) -> sdl3::render::Texture<'static> {
+    use sdl3::pixels::PixelFormat;
+    use sdl3::render::{BlendMode, ScaleMode};
+    let mut texture = creator
+        .create_texture_streaming(PixelFormat::ARGB8888, w, h)
+        .expect("SDL streaming texture");
+    texture.set_blend_mode(BlendMode::None);
+    texture.set_scale_mode(ScaleMode::Nearest);
+    texture
+}
+
 impl SdlTextRenderer {
     /// Initial (default) window size — 80 columns × 25 rows.
     const INIT_COLS: u16 = 80;
     const INIT_ROWS: u16 = 25;
 
-    /// Open the window, and audio output for `audio` (attached before the
+    /// Open the display, and audio output for `audio` (attached before the
     /// guest starts, so its first DosBeep is not lost).
     pub fn new(sdl: &sdl3::Sdl, title: &str, audio: &super::audio::AudioService) -> Self {
-        use sdl3::pixels::PixelFormat;
-        use sdl3::render::BlendMode;
+        Self::open(sdl, title, audio, &mut super::vio_switch::Parked::default())
+    }
 
+    /// Open the display full screen, reusing what `parked` holds: the
+    /// window, audio output and GUI script of an earlier display of the
+    /// session.
+    pub fn open(sdl: &sdl3::Sdl, title: &str, audio: &super::audio::AudioService,
+                parked: &mut super::vio_switch::Parked) -> Self {
         let video = sdl.video().expect("SDL video subsystem");
-        let init_w = Self::INIT_COLS as u32 * 8;
-        let init_h = Self::INIT_ROWS as u32 * 16;
-        let window = video
-            .window(title, init_w, init_h)
-            .position_centered()
-            .build()
-            .expect("SDL window");
+        let TextWindow { mut canvas, texture_creator, texture, cols, rows } = match parked.text.take() {
+            Some(window) => window,
+            None => {
+                let (w, h) = text_screen_px(Self::INIT_COLS, Self::INIT_ROWS);
+                let window = video
+                    .window(title, w, h)
+                    .position_centered()
+                    .build()
+                    .expect("SDL window");
+                let canvas = window.into_canvas();
+                let texture_creator: &'static _ = Box::leak(Box::new(canvas.texture_creator()));
+                let texture = text_texture(texture_creator, w, h);
+                TextWindow { canvas, texture_creator, texture, cols: Self::INIT_COLS, rows: Self::INIT_ROWS }
+            }
+        };
+        let (w, h) = text_screen_px(cols, rows);
+        if let Err(e) = canvas.set_logical_size(w, h, TEXT_PRESENTATION) {
+            log::warn!("[TEXT] no scaled presentation ({e}); the screen is drawn 1:1");
+        }
+        {
+            let window = canvas.window_mut();
+            let _ = window.set_title(title);
+            window.show();
+            // Desktop full screen (no video mode change); the window stays
+            // an ordinary one if that is refused.
+            if let Err(e) = window.set_fullscreen(true) {
+                log::warn!("[TEXT] full screen refused ({e}); using a window");
+            }
+            window.raise();
+        }
         // TextInput (IME-composed text) is per window and off by default.
-        video.text_input().start(&window);
-        let canvas = window.into_canvas();
-        let texture_creator: &'static _ = Box::leak(Box::new(canvas.texture_creator()));
-        let mut texture = texture_creator
-            .create_texture_streaming(PixelFormat::ARGB8888, init_w, init_h)
-            .expect("SDL streaming texture");
-        texture.set_blend_mode(BlendMode::None);
+        video.text_input().start(canvas.window());
         let event_pump = sdl.event_pump().expect("SDL event pump");
-        let pixels = vec![0xFF_00_00_00u32; (init_w * init_h) as usize];
+        let pixels = vec![0xFF_00_00_00u32; (w * h) as usize];
+        let mut audio_out = parked.take_audio(sdl);
+        // This loop polls every 8 ms, so it needs no wake-up hook.
+        audio_out.attach(audio, Box::new(|| {}));
         SdlTextRenderer {
             canvas, texture_creator, texture, event_pump, pixels,
-            audio: {
-                // This loop polls every 8 ms, so it needs no wake-up hook.
-                let mut a = super::audio::SdlAudio::new(sdl);
-                a.attach(audio, Box::new(|| {}));
-                a
-            },
-            current_cols: Self::INIT_COLS,
-            current_rows: Self::INIT_ROWS,
-            script: super::gui_script::GuiScript::from_env(),
+            audio: audio_out,
+            current_cols: cols,
+            current_rows: rows,
+            script: parked.take_script(),
         }
+    }
+
+    /// Hide the display and leave its window, audio output and GUI script
+    /// in `parked` for the next display of the session.
+    pub fn park(self, parked: &mut super::vio_switch::Parked) {
+        let SdlTextRenderer { mut canvas, texture_creator, texture, audio, current_cols, current_rows,
+                              script, .. } = self;
+        {
+            let window = canvas.window_mut();
+            let _ = window.set_fullscreen(false);
+            window.hide();
+        }
+        parked.text = Some(TextWindow { canvas, texture_creator, texture,
+                                        cols: current_cols, rows: current_rows });
+        parked.audio = Some(audio);
+        parked.script = Some(script);
     }
 
     /// Write the frame now on screen — the text buffer rendered afresh,
     /// cursor shown — to `path` as a PPM (the `dump` step of a GUI script).
     fn dump_frame(&mut self, shared: &SharedState, path: &std::path::Path) {
-        self.render_frame(&VgaTextBuffer::snapshot(shared), true);
-        let (w, h) = (self.current_cols as u32 * 8, self.current_rows as u32 * 16);
+        self.render_frame(&full_screen_snapshot(shared), true);
+        // The logical text screen, whatever the window's size.
+        let (w, h) = text_screen_px(self.current_cols, self.current_rows);
         if let Err(e) = super::gui_script::write_ppm(path, &self.pixels, w, h) {
             eprintln!("warpine: cannot write {}: {e}", path.display());
         }
     }
 
+    /// The text cell (row, column) nearest to window point (`x`, `y`).
+    fn cell_at(&self, x: f32, y: f32) -> (u16, u16) {
+        cell_in_window(x, y, self.current_cols, self.current_rows)
+    }
+
     /// Upload the pixel buffer to the texture and blit to the screen.
     fn present(&mut self) {
-        let w = self.current_cols as usize * 8;
+        let w = text_screen_px(self.current_cols, self.current_rows).0 as usize;
         let pixels = &self.pixels;
         self.texture.with_lock(None, |data: &mut [u8], pitch: usize| {
             for (y, row) in pixels.chunks(w).enumerate() {
@@ -450,32 +564,28 @@ impl SdlTextRenderer {
                 dst.copy_from_slice(bytemuck::cast_slice(row));
             }
         }).expect("texture lock failed");
+        // The bars around the scaled screen are the clear colour.
+        self.canvas.set_draw_color(sdl3::pixels::Color::RGB(0, 0, 0));
+        self.canvas.clear();
         self.canvas.copy(&self.texture, None::<sdl3::render::FRect>, None::<sdl3::render::FRect>)
             .expect("canvas copy failed");
         self.canvas.present();
     }
 
-    /// Resize the SDL window + recreate the streaming texture when the
-    /// VioManager dimensions change.
+    /// Follow a change of the VioManager dimensions: a new streaming texture
+    /// and logical size. A full-screen window keeps its size; the windowed
+    /// fallback is resized to the screen (best effort: SDL clamps rather
+    /// than fails).
     fn handle_resize(&mut self, new_cols: u16, new_rows: u16) {
-        use sdl3::pixels::PixelFormat;
-        use sdl3::render::BlendMode;
-
-        let new_w = new_cols as u32 * 8;
-        let new_h = new_rows as u32 * 16;
-
-        // Resize the SDL window (best-effort; may fail on some platforms
-        // if the window was created without the RESIZABLE flag, but SDL will
-        // silently clamp rather than panic).
-        let _ = self.canvas.window_mut().set_size(new_w, new_h);
-
-        // Recreate the streaming texture for the new dimensions.
-        let mut new_tex = self.texture_creator
-            .create_texture_streaming(PixelFormat::ARGB8888, new_w, new_h)
-            .expect("SDL texture resize failed");
-        new_tex.set_blend_mode(BlendMode::None);
-        self.texture = new_tex;
-
+        let (new_w, new_h) = text_screen_px(new_cols, new_rows);
+        if let Err(e) = self.canvas.set_logical_size(new_w, new_h, TEXT_PRESENTATION) {
+            log::warn!("[TEXT] logical size {new_w}×{new_h} refused ({e})");
+        }
+        let window = self.canvas.window_mut();
+        if window.fullscreen_state() == sdl3::video::FullscreenType::Off {
+            let _ = window.set_size(new_w, new_h);
+        }
+        self.texture = text_texture(self.texture_creator, new_w, new_h);
         self.pixels = vec![0xFF_00_00_00u32; (new_w * new_h) as usize];
         self.current_cols = new_cols;
         self.current_rows = new_rows;
@@ -510,8 +620,13 @@ impl TextModeRenderer for SdlTextRenderer {
         // A scripted session ignores the host keyboard, so it runs the same
         // on a real display as on the dummy driver.
         let scripted = self.script.is_some();
+        // Host pointer positions are in window pels; the screen is scaled,
+        // so they are converted to the logical text screen (`cols × 8` by
+        // `rows × 16`). Scripted input is already in those coordinates.
+        let canvas = &self.canvas;
         let mut events: Vec<Event> = maybe_event.into_iter().chain(self.event_pump.poll_iter())
             .filter(|e| !(scripted && crate::gui::sdl_renderer::is_host_input(e)))
+            .map(|mut e| { e.convert_coords(canvas); e })
             .collect();
         // Dumps wait until the input scheduled before them has been queued.
         let mut dumps = Vec::new();
@@ -526,6 +641,10 @@ impl TextModeRenderer for SdlTextRenderer {
         for event in events {
             match event {
                 Event::Quit { .. } => return false,
+                // SDL sends Quit only when the last window closes; after
+                // Alt+Home the hidden desktop window still exists.
+                Event::Window { win_event: sdl3::event::WindowEvent::CloseRequested, window_id, .. }
+                    if window_id == self.canvas.window().id() => return false,
                 Event::KeyDown { keycode: Some(kc), scancode: Some(sc), keymod, repeat: false, .. } => {
                     // Ctrl+Esc → graceful exit
                     if kc == Keycode::Escape
@@ -533,6 +652,11 @@ impl TextModeRenderer for SdlTextRenderer {
                     {
                         shared.exit_requested.store(true, Ordering::Relaxed);
                         shared.kbd_cond.notify_all();
+                        return false;
+                    }
+                    // Alt+Home: back to the PM window. The loop returns;
+                    // input after it in this pass is dropped.
+                    if super::vio_switch::request_switch(shared, kc, keymod, false) {
                         return false;
                     }
 
@@ -545,6 +669,19 @@ impl TextModeRenderer for SdlTextRenderer {
                 // For non-ASCII (DBCS or multi-byte sequences), re-encode to the active
                 // codepage and push each resulting byte as a separate KbdKeyInfo.
                 Event::TextInput { text, .. } => kbd_text_input(shared, &text),
+
+                // The program's mouse (MOUCALLS): the cell under the pointer.
+                Event::MouseMotion { x, y, .. } => {
+                    let (row, col) = self.cell_at(x, y);
+                    crate::loader::moucalls::mouse_moved(shared, row, col);
+                }
+                Event::MouseButtonDown { mouse_btn, x, y, .. } | Event::MouseButtonUp { mouse_btn, x, y, .. } => {
+                    let down = matches!(event, Event::MouseButtonDown { .. });
+                    if let Some(b) = crate::gui::sdl_renderer::mou_button(mouse_btn) {
+                        let (row, col) = self.cell_at(x, y);
+                        crate::loader::moucalls::mouse_button(shared, row, col, b, down);
+                    }
+                }
 
                 _ => {}
             }
@@ -866,6 +1003,17 @@ mod tests {
     }
 
     #[test]
+    fn a_display_switch_returns_without_ending_the_program() {
+        let shared = make_shared();
+        shared.vio_switch_requested.store(true, Ordering::Relaxed);
+        // poll_events says stop, as the text window does on Alt+Home.
+        let mut r = HeadlessTextRenderer { frame_count: 0, keep_running: false };
+        run_text_loop(&mut r, shared.clone());
+        assert!(!shared.exit_requested.load(Ordering::Relaxed));
+        assert_eq!(r.frame_count, 0);
+    }
+
+    #[test]
     fn headless_renderer_stops_on_exit_requested() {
         let shared = make_shared();
         shared.exit_requested.store(true, Ordering::Relaxed);
@@ -1067,6 +1215,30 @@ mod tests {
             let ch = sdl_keycode_to_text_char(kc, shift_mod);
             assert_eq!(ch, 0x00, "{:?} should produce ch=0x00, got 0x{:02X}", kc, ch);
         }
+    }
+
+    #[test]
+    fn window_points_map_to_the_nearest_cell() {
+        assert_eq!(cell_in_window(0.0, 0.0, 80, 25), (0, 0));
+        assert_eq!(cell_in_window(15.9, 31.9, 80, 25), (1, 1));
+        assert_eq!(cell_in_window(639.0, 399.0, 80, 25), (24, 79));
+        assert_eq!(cell_in_window(-4.0, 900.0, 80, 25), (24, 0));
+    }
+
+    #[test]
+    fn the_mouse_pointer_is_drawn_in_the_full_screen_snapshot() {
+        let shared = crate::loader::Loader::new_mock().get_shared();
+        shared.console_mgr.lock_or_recover().enable_sdl_mode();
+        let attr_at = |row: usize, col: usize| full_screen_snapshot(&shared).cells[row * 80 + col].1;
+        let plain = attr_at(12, 40);
+        shared.mou_mgr.lock_or_recover().open(25, 80);
+        assert_eq!(attr_at(12, 40), plain, "not drawn before MouDrawPtr");
+        shared.mou_mgr.lock_or_recover().draw_pointer();
+        let p = crate::loader::moucalls::text_pointer(&shared).unwrap();
+        assert_eq!(attr_at(12, 40), p.apply_attr(plain));
+        assert_ne!(attr_at(12, 40), plain);
+        crate::loader::moucalls::mouse_moved(&shared, 0, 0);
+        assert_eq!((attr_at(12, 40), attr_at(0, 0)), (plain, p.apply_attr(plain)));
     }
 
     #[test]

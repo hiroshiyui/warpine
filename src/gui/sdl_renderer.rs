@@ -22,14 +22,16 @@ use crate::loader::{SharedState, OS2Message, MutexExt,
     WS_MINIMIZED, WS_MAXIMIZED, CMDSRC_MENU, CMDSRC_OTHER};
 use crate::loader::constants::{
     MENU_BAR_HEIGHT, MENU_BAR_ITEM_INSET, MENU_BAR_ITEM_PAD, MENU_DROPDOWN_W, MENU_DROPDOWN_ITEM_H,
-    MIS_SEPARATOR};
+    MIS_SEPARATOR, SC_MOVE, SC_SIZE};
+use super::popup_menu::{PopupAction, PopupKey, PopupMenu};
+use super::vio_window::system_menu_items;
 use crate::loader::pm_types::{MenuItem, WindowManager, menu_label, menu_bar_item_width};
 use crate::loader::pm_input::InputEvent;
 use std::time::{Duration, Instant};
 use super::damage::{Damage, Rect, blit_clipped, fill_clipped};
 
 mod compositor;
-use compositor::{Compositor, CompositorKind, Scene, SceneFrame};
+use compositor::{Compositor, CompositorKind, Overlay, Scene, SceneFrame};
 use super::frame_stats::FrameStats;
 use super::message::{GUIMessage, GuiWake};
 use super::renderer::PmRenderer;
@@ -92,6 +94,8 @@ use crate::loader::constants::{CHROME_BORDER_W, CHROME_TITLE_H};
 
 /// Width of each title-bar button (close/min/max/sysmenu), in desktop pixels.
 const CHROME_BTN_W: i32   = 16;
+/// Offset of the system-menu icon from the frame's left edge.
+const SYSMENU_ICON_X: i32 = 3;
 /// Gap between adjacent title-bar buttons.
 const CHROME_BTN_GAP: i32 = 2;
 /// Right margin before the close button.
@@ -289,8 +293,8 @@ fn draw_title_bar(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
             return;
         }
         if c.frame_flags & FCF_SYSMENU != 0 {
-            draw_chrome_button(buf, buf_w, c.x + 3, btn_y, btn_h, ButtonGlyph::SysMenu);
-            text_left = c.x + 3 + CHROME_BTN_W + 4;
+            draw_chrome_button(buf, buf_w, c.x + SYSMENU_ICON_X, btn_y, btn_h, ButtonGlyph::SysMenu);
+            text_left = c.x + SYSMENU_ICON_X + CHROME_BTN_W + 4;
         }
 
         // Right-side buttons: close, then maximise and minimise when present.
@@ -340,11 +344,8 @@ fn draw_frame_border(buf: &mut [u32], buf_w: usize, c: &FrameChrome, clip: Rect)
 
 /// Line height of the PM system font (pixels).
 const GLYPH_H: i32 = font::SYSTEM_FONT_PX as i32;
-const MENU_BG_COLOR: u32        = 0x00D4_D0C8;
-const MENU_EDGE_COLOR: u32      = 0x0080_8080;
-const MENU_TEXT_COLOR: u32      = 0x0000_0000;
-const MENU_HILITE_COLOR: u32    = 0x0000_0080;
-const MENU_HILITE_TEXT: u32     = 0x00FF_FFFF;
+use super::popup_menu::{MENU_BG_COLOR, MENU_EDGE_COLOR, MENU_TEXT_COLOR, MENU_HILITE_COLOR,
+                         MENU_HILITE_TEXT};
 
 /// Draw a frame's menu bar and, when `open_item` (1-based) is non-zero, the
 /// pull-down of that top-level item, into a desktop-space pixel buffer.
@@ -704,6 +705,17 @@ pub struct SdlRenderer {
     /// A VIO program's text screen in a frame on the desktop (a windowed
     /// VIO session, `vio_window.rs`); `None` for PM programs.
     vio: Option<super::vio_window::VioWindow>,
+    /// An open pop-up menu (the VIO window's system menu), drawn over
+    /// everything as an overlay; it takes the mouse and the keyboard.
+    popup: Option<PopupMenu>,
+    /// Desktop area the overlay covered at the last composite.
+    overlay_placed: Rect,
+    /// The overlay opened, closed or changed its look since then.
+    overlay_changed: bool,
+    /// Counts overlay changes (the layered compositor re-uploads on a change).
+    overlay_generation: u64,
+    /// Ignore the next button release: its press closed a pop-up menu.
+    swallow_release: bool,
     /// Shift / Ctrl / Alt as `KC_*` flags, from the last key event; mouse
     /// messages report them in `fsInp` (high word of mp2).
     key_mods: u32,
@@ -736,6 +748,12 @@ pub struct SdlRenderer {
     ime_area: Option<((i32, i32, i32, i32), i32)>,
 }
 
+/// The desktop window and its compositor while a VIO session is full screen
+/// (Alt+Home): hidden, to be shown again by the next [`SdlRenderer::open`].
+/// Kept rather than dropped because the compositor's process-lifetime
+/// texture creator would keep the window alive anyway.
+pub struct ParkedDesktop(Box<dyn Compositor>);
+
 impl SdlRenderer {
     /// Create an `SdlRenderer` from an existing SDL context.
     ///
@@ -751,16 +769,42 @@ impl SdlRenderer {
     /// `audio` gets its output attached here, before the guest starts, so
     /// early sounds are not lost; commands wake the loop once
     /// `install_waker` has run.
-    /// Show a VIO program in a window on the desktop titled `title`: the
-    /// frame is created now, at the size of the VIO buffer, and drawn from it
-    /// on every pass.
+    pub fn new(sdl: &sdl3::Sdl, audio: &super::audio::AudioService) -> Self {
+        Self::open(sdl, audio, &mut super::vio_switch::Parked::default())
+    }
+
+    /// Show a VIO program in a window on the desktop titled `title`, drawn
+    /// from the VIO buffer on every pass. The frame is created now, at the
+    /// size of the VIO buffer — or, when the session comes back from full
+    /// screen (Alt+Home) and the frame still exists, that frame is brought
+    /// to the top and activated again.
     pub fn attach_vio_window(&mut self, shared: &SharedState, title: &str) {
         let (cols, rows) = {
             let con = shared.console_mgr.lock_or_recover();
             (con.cols, con.rows)
         };
-        let frame = shared.window_mgr.lock_or_recover().create_vio_frame(title, cols, rows);
+        let frame = {
+            let mut wm = shared.window_mgr.lock_or_recover();
+            let existing = wm.vio_frame;
+            if existing != 0 && wm.get_window(existing).is_some() {
+                wm.z_push_top(existing);
+                wm.focused_hwnd = existing;
+                existing
+            } else {
+                wm.create_vio_frame(title, cols, rows)
+            }
+        };
         self.vio = Some(super::vio_window::VioWindow::new(frame));
+    }
+
+    /// Hide the desktop and leave its window, audio output and GUI script in
+    /// `parked` for the next display of a VIO session (Alt+Home).
+    pub fn park(self, parked: &mut super::vio_switch::Parked) {
+        let SdlRenderer { desktop, audio, script, .. } = self;
+        desktop.window().clone().hide();
+        parked.desktop = Some(ParkedDesktop(desktop));
+        parked.audio = Some(audio);
+        parked.script = Some(script);
     }
 
     /// Whether the active window is the VIO window, which takes the keys.
@@ -768,15 +812,233 @@ impl SdlRenderer {
         self.vio.as_ref().is_some_and(|v| shared.window_mgr.lock_or_recover().focused_hwnd == v.frame())
     }
 
-    pub fn new(sdl: &sdl3::Sdl, audio: &super::audio::AudioService) -> Self {
+    /// Open the VIO window's system menu below its system-menu icon, from
+    /// the keyboard (`keyboard`: the first item is highlighted) or a click.
+    fn open_vio_menu(&mut self, shared: &SharedState, keyboard: bool) {
+        let Some(vio) = &self.vio else { return };
+        let (dw, dh) = self.desktop.size();
+        let (items, x, top) = {
+            let wm = shared.window_mgr.lock_or_recover();
+            let Some(f) = wm.get_window(vio.frame()) else { return };
+            let state = f.style & (WS_MINIMIZED | WS_MAXIMIZED);
+            let items = system_menu_items(state, vio.marking(), vio.mark().is_some(),
+                                          !wm.clipboard_text.is_empty());
+            (items, f.x + SYSMENU_ICON_X, dh as i32 - f.y - f.cy + CHROME_TITLE_H)
+        };
+        self.popup = Some(PopupMenu::new(items, x, top, (dw as i32, dh as i32), keyboard));
+        self.overlay_changed = true;
+    }
+
+    /// Close the pop-up menu, if one is open.
+    fn close_popup(&mut self) {
+        if self.popup.take().is_some() {
+            self.overlay_changed = true;
+        }
+    }
+
+    /// Carry out what an input did to the pop-up menu. Returns whether
+    /// Warpine keeps running.
+    fn popup_action(&mut self, shared: &SharedState, action: PopupAction) -> bool {
+        match action {
+            PopupAction::Stay => {
+                self.overlay_changed = true;
+                true
+            }
+            PopupAction::Close => {
+                self.close_popup();
+                true
+            }
+            PopupAction::Choose(id) => {
+                self.close_popup();
+                self.vio_command(shared, id)
+            }
+        }
+    }
+
+    /// Button `button` went down at screen `(x, y)` while a pop-up menu is
+    /// open. Button 1 on the menu works it; any other press closes it and
+    /// is otherwise ignored (Warpine's choice), except a double click on
+    /// the VIO window's system-menu icon, which goes on to close the window
+    /// (`None`: handle the click as usual). Returns whether Warpine keeps
+    /// running.
+    fn popup_press(&mut self, shared: &SharedState, button: sdl3::mouse::MouseButton, clicks: u8,
+                   x: i32, y: i32) -> Option<bool> {
+        let popup = self.popup.as_mut()?;
+        let left = button == sdl3::mouse::MouseButton::Left;
+        if left && popup.contains(x, y) {
+            let action = popup.press(x, y);
+            return Some(self.popup_action(shared, action));
+        }
+        self.close_popup();
+        let dh = self.desktop.size().1 as i32;
+        let on_icon = self.vio.as_ref().is_some_and(|v| {
+            let wm = shared.window_mgr.lock_or_recover();
+            wm.get_window(v.frame()).is_some_and(|f| {
+                let state = f.style & (WS_MINIMIZED | WS_MAXIMIZED);
+                frame_chrome_hit(f.x, f.y, f.cx, f.cy, f.frame_flags, state, x, dh - 1 - y) == ChromeHit::SysMenu
+            })
+        });
+        if left && on_icon && button_down_msg(button, clicks) == Some(WM_BUTTON1DBLCLK) {
+            return None;
+        }
+        self.swallow_release = true;
+        Some(true)
+    }
+
+    /// Carry out system-menu command `id` (`SC_*` or a `vio_window::CMD_*`)
+    /// for the VIO window. Returns whether Warpine keeps running (Close
+    /// ends the program).
+    fn vio_command(&mut self, shared: &SharedState, id: u32) -> bool {
+        use super::vio_window::{CMD_COPY, CMD_COPY_ALL, CMD_MARK, CMD_PASTE};
+        let Some(vio) = self.vio.as_mut() else { return true };
+        let mut copied = None;
+        match id {
+            SC_CLOSE => {
+                vio.close(shared);
+                return false;
+            }
+            SC_RESTORE | SC_MINIMIZE | SC_MAXIMIZE => {
+                if let Some(op) = crate::loader::pm_minmax::syscommand_state(id) {
+                    shared.window_mgr.lock_or_recover().vio_minmax(op);
+                }
+            }
+            SC_MOVE | SC_SIZE => { vio.start_track(shared, id == SC_SIZE); }
+            CMD_MARK => {
+                let on = !vio.marking();
+                vio.set_marking(shared, on);
+            }
+            CMD_COPY => copied = vio.copy_mark(shared),
+            CMD_COPY_ALL => copied = Some(vio.copy_all(shared)),
+            CMD_PASTE => {
+                let text = shared.window_mgr.lock_or_recover().clipboard_text.clone();
+                vio.paste(shared, &text);
+            }
+            _ => {}
+        }
+        vio.update(shared);
+        if let Some(text) = copied {
+            self.set_clipboard_text(shared, text);
+        }
+        true
+    }
+
+    /// Put `text` on the PM clipboard (`CF_TEXT`) and the host clipboard,
+    /// as an entry field's Copy does (`pm_controls.rs`), from this thread.
+    fn set_clipboard_text(&mut self, shared: &SharedState, text: String) {
+        {
+            let mut wm = shared.window_mgr.lock_or_recover();
+            wm.clipboard_text = text.clone();
+            // A guest CF_TEXT handle no longer holds the clipboard text.
+            wm.clipboard.insert(CF_TEXT, 0);
+        }
+        if let Err(e) = self.video.clipboard().set_clipboard_text(&text) {
+            log::warn!("[GUI] cannot set the host clipboard: {e}");
+        }
+        self.cached_clipboard = text;
+    }
+
+    /// A key pressed while the VIO window is active or a pop-up menu is
+    /// open. An open menu takes the keys; a keyboard move or size takes the
+    /// arrows, Enter and Esc; Alt+Space and Shift+Esc open the system menu
+    /// (unverified: the keys PM uses for a frame's system menu; whether a
+    /// VIO window keeps them from the program is not documented); Alt+F4 /
+    /// F5 / F7 / F8 / F9 / F10 run the system command the menu shows next
+    /// to its item (unverified for a VIO window); in Mark mode Esc leaves it
+    /// and other keys are ignored (Warpine's choice). Every other key goes
+    /// to the program. Returns whether Warpine keeps running.
+    fn vio_key(&mut self, shared: &SharedState, kc: Keycode, sc: Scancode, keymod: KeyMod) -> bool {
+        let alt = keymod.intersects(KeyMod::LALTMOD | KeyMod::RALTMOD);
+        let shift = keymod.intersects(KeyMod::LSHIFTMOD | KeyMod::RSHIFTMOD);
+        let ctrl = keymod.intersects(KeyMod::LCTRLMOD | KeyMod::RCTRLMOD);
+        let menu_key = (alt && kc == Keycode::Space) || (shift && kc == Keycode::Escape);
+        if let Some(popup) = self.popup.as_mut() {
+            let key = match kc {
+                _ if menu_key => Some(PopupKey::Esc),
+                Keycode::Up => Some(PopupKey::Up),
+                Keycode::Down => Some(PopupKey::Down),
+                Keycode::Home => Some(PopupKey::Home),
+                Keycode::End => Some(PopupKey::End),
+                Keycode::Return | Keycode::KpEnter => Some(PopupKey::Enter),
+                Keycode::Escape => Some(PopupKey::Esc),
+                kc => char::from_u32(sdl_keycode_to_char(kc)).filter(char::is_ascii_alphanumeric).map(PopupKey::Char),
+            };
+            let Some(key) = key else { return true };
+            let action = popup.key(key);
+            return self.popup_action(shared, action);
+        }
+        let Some(vio) = self.vio.as_mut() else { return true };
+        if vio.tracking() {
+            use super::vio_window::TrackKey;
+            let key = match kc {
+                Keycode::Left => Some(TrackKey::Left),
+                Keycode::Right => Some(TrackKey::Right),
+                Keycode::Up => Some(TrackKey::Up),
+                Keycode::Down => Some(TrackKey::Down),
+                Keycode::Return | Keycode::KpEnter => Some(TrackKey::Enter),
+                Keycode::Escape => Some(TrackKey::Esc),
+                _ => None,
+            };
+            if let Some(key) = key {
+                vio.track_key(shared, key);
+                vio.update(shared);
+            }
+            return true;
+        }
+        if menu_key {
+            self.open_vio_menu(shared, true);
+            return true;
+        }
+        if alt && !ctrl {
+            let command = match kc {
+                Keycode::F4 => Some(SC_CLOSE),
+                Keycode::F5 => Some(SC_RESTORE),
+                Keycode::F7 => Some(SC_MOVE),
+                Keycode::F8 => Some(SC_SIZE),
+                Keycode::F9 => Some(SC_MINIMIZE),
+                Keycode::F10 => Some(SC_MAXIMIZE),
+                _ => None,
+            };
+            if let Some(id) = command {
+                return self.vio_command(shared, id);
+            }
+        }
+        if vio.marking() {
+            if kc == Keycode::Escape {
+                vio.set_marking(shared, false);
+                vio.update(shared);
+            }
+            return true;
+        }
+        super::text_renderer::kbd_key_down(shared, kc, sc, keymod);
+        true
+    }
+
+    /// Create an `SdlRenderer`, reusing what `parked` holds: the desktop
+    /// window, audio output and GUI script of an earlier display of a VIO
+    /// session (Alt+Home). See [`new`](Self::new).
+    pub fn open(sdl: &sdl3::Sdl, audio: &super::audio::AudioService,
+                parked: &mut super::vio_switch::Parked) -> Self {
+        /// SDL accepts a custom event type once per process; whether that
+        /// worked is remembered for every later renderer.
+        static WAKE_EVENT_REGISTERED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let (dw, dh) = crate::loader::constants::desktop_size();
         let video      = sdl.video().expect("SDL video subsystem init failed");
         let event      = sdl.event().expect("SDL event subsystem init failed");
         let event_pump = sdl.event_pump().expect("SDL event pump init failed");
         let real_display = driver_can_wait(video.current_video_driver());
-        let kind = CompositorKind::choose(
-            std::env::var(compositor::COMPOSITOR_ENV).ok().as_deref(), real_display);
-        let desktop    = compositor::create(&video, dw, dh, kind);
+        let desktop = match parked.desktop.take() {
+            Some(ParkedDesktop(desktop)) => {
+                let mut window = desktop.window().clone();
+                window.show();
+                window.raise();
+                desktop
+            }
+            None => {
+                let kind = CompositorKind::choose(
+                    std::env::var(compositor::COMPOSITOR_ENV).ok().as_deref(), real_display);
+                compositor::create(&video, dw, dh, kind)
+            }
+        };
         // Typed characters are taken from SDL TextInput events (see
         // `build_wm_char`); SDL3 generates them per window, once started.
         video.text_input().start(desktop.window());
@@ -784,9 +1046,9 @@ impl SdlRenderer {
         // block on input; the headless drivers have no input to wait for and
         // SDL would poll internally instead.
         let native_wait = real_display
-            && event.register_custom_event::<WakeEvent>()
+            && *WAKE_EVENT_REGISTERED.get_or_init(|| event.register_custom_event::<WakeEvent>()
                 .map_err(|e| log::warn!("[GUI] no SDL user event for wake-ups ({e})"))
-                .is_ok();
+                .is_ok());
         let now = Instant::now();
         let wake_slot: Arc<std::sync::OnceLock<Arc<GuiWake>>> = Arc::default();
         let mut renderer = SdlRenderer {
@@ -803,7 +1065,7 @@ impl SdlRenderer {
             mouse: sdl.mouse(),
             pointer: super::pointer::HostPointer::new(sdl.mouse()),
             audio: {
-                let mut a = super::audio::SdlAudio::new(sdl);
+                let mut a = parked.take_audio(sdl);
                 let slot = wake_slot.clone();
                 a.attach(audio, Box::new(move || {
                     if let Some(w) = slot.get() { w.wake(); }
@@ -819,12 +1081,17 @@ impl SdlRenderer {
             key_mods: 0,
             // Long enough ago that the first frame is composited at once.
             last_composite: now.checked_sub(FRAME_INTERVAL).unwrap_or(now),
-            script: GuiScript::from_env().inspect(|_| {
+            script: parked.take_script().inspect(|_| {
                 log::info!("[GUI] GUI script active: host mouse and keyboard input is ignored");
             }),
             caret_next: None,
             drag_scroll_next: None,
             vio: None,
+            popup: None,
+            overlay_placed: Rect::EMPTY,
+            overlay_changed: false,
+            overlay_generation: 0,
+            swallow_release: false,
             ime_area: None,
         };
         if renderer.script.is_none() {
@@ -876,7 +1143,7 @@ impl SdlRenderer {
         let mut chrome_changed: HashSet<u32> = HashSet::new();
         let snaps: Vec<Snap> = {
             let mut wm = shared.window_mgr.lock_or_recover();
-            if wm.dirty.is_empty() && !self.force_full {
+            if wm.dirty.is_empty() && !self.force_full && !self.overlay_changed {
                 return;
             }
             let dirty = std::mem::take(&mut wm.dirty);
@@ -944,6 +1211,14 @@ impl SdlRenderer {
             }
         }
         self.placed = placed;
+        // The pop-up menu: where it was and where it is now.
+        let overlay_rect = self.popup.as_ref().map_or(Rect::EMPTY, PopupMenu::rect);
+        if std::mem::take(&mut self.overlay_changed) {
+            self.overlay_generation += 1;
+            damage.add(self.overlay_placed);
+            damage.add(overlay_rect);
+        }
+        self.overlay_placed = overlay_rect;
         if damage.is_empty() {
             return;
         }
@@ -951,8 +1226,11 @@ impl SdlRenderer {
         let frames = placements.iter().zip(&snaps).map(|(p, s)| SceneFrame {
             placement: p, surface: &s.surface, chrome: &self.chrome[&p.hwnd],
         }).collect();
+        let overlay = self.popup.as_mut().map(|p| Overlay {
+            rect: overlay_rect, pixels: p.pixels(), generation: self.overlay_generation,
+        });
         let present = self.desktop.compose(&Scene {
-            frames, damage: &damage, chrome_changed: &chrome_changed, full,
+            frames, damage: &damage, chrome_changed: &chrome_changed, full, overlay,
         });
         let finished = Instant::now();
         let damaged: i64 = damage.rects().iter().map(|r| r.width() as i64 * r.height() as i64).sum();
@@ -962,9 +1240,18 @@ impl SdlRenderer {
     }
 
     /// Handle a single SDL event, posting OS/2 messages to `shared` as needed.
-    /// Returns `false` when the application should exit.
+    /// Returns `false` when the loop should return: the application exits,
+    /// or (Alt+Home) a VIO session switches to full screen.
     fn handle_sdl_event(&mut self, event: Event, shared: &Arc<SharedState>) -> bool {
         let dh = self.desktop.size().1;
+        // A windowed VIO program's mouse (MOUCALLS) sees the pointer over
+        // its cells; PM handling (activation, chrome, drags) goes on below.
+        // Not while the window uses the mouse itself: an open system menu,
+        // Mark mode, a scroll-bar drag, or a frame drag or resize.
+        if let Some(vio) = &self.vio && self.drag_state.is_none() && self.resize_state.is_none()
+            && self.popup.is_none() && !vio.marking() && !vio.dragging() {
+            vio_pointer_event(vio, shared, dh as i32, &event);
+        }
         match event {
             Event::RenderTargetsReset { .. } | Event::RenderDeviceReset { .. } => {
                 // The renderer may have lost its textures.
@@ -978,6 +1265,10 @@ impl SdlRenderer {
                 }
                 return false;
             }
+            // Events of another SDL window — the full-screen text display of
+            // a VIO session, still queued after Alt+Home — are not the
+            // desktop's: its size change must not resize the desktop.
+            Event::Window { window_id, .. } if window_id != self.desktop.window().id() => {}
             Event::Window { win_event, .. } => {
                 use sdl3::event::WindowEvent;
                 match win_event {
@@ -1019,13 +1310,22 @@ impl SdlRenderer {
             // WinSetFocus), else to the active frame's client.
             // Keys for a windowed VIO program go to its keyboard queue
             // (KbdCharIn), as in the text window.
-            Event::KeyDown { keycode: Some(kc), scancode: Some(sc), keymod, .. }
-                if self.vio_active(shared) => {
-                super::text_renderer::kbd_key_down(shared, kc, sc, keymod);
+            // The window's own keys (its system menu, Mark mode, a keyboard
+            // move or size) come first; Alt+Home sends the session full
+            // screen (the loop returns; input after it in this pass is dropped).
+            Event::KeyDown { keycode: Some(kc), scancode: Some(sc), keymod, repeat, .. }
+                if self.popup.is_some() || self.vio_active(shared) => {
+                if self.popup.is_none() && super::vio_switch::request_switch(shared, kc, keymod, repeat) {
+                    return false;
+                }
+                return self.vio_key(shared, kc, sc, keymod);
             }
-            Event::KeyUp { .. } | Event::TextEditing { .. } if self.vio_active(shared) => {}
-            Event::TextInput { text, .. } if self.vio_active(shared) => {
-                super::text_renderer::kbd_text_input(shared, &text);
+            Event::KeyUp { .. } | Event::TextEditing { .. }
+                if self.popup.is_some() || self.vio_active(shared) => {}
+            Event::TextInput { text, .. } if self.popup.is_some() || self.vio_active(shared) => {
+                if self.vio.as_ref().is_some_and(|v| !v.marking() && !v.tracking()) && self.popup.is_none() {
+                    super::text_renderer::kbd_text_input(shared, &text);
+                }
             }
             Event::KeyDown { keycode, scancode, keymod, repeat, .. } => {
                 self.key_mods = kc_modifiers(keymod);
@@ -1050,57 +1350,40 @@ impl SdlRenderer {
             Event::MouseMotion { x, y, .. } => {
                 // SDL3 reports float pixels; PM works in whole pels.
                 let (x, y) = (x as i32, y as i32);
+                // A pop-up menu takes the pointer: the item under it lights up.
+                if let Some(p) = self.popup.as_mut() {
+                    self.overlay_changed |= p.hover(x, y);
+                    return true;
+                }
+                // The VIO window's own drags (marking, a scroll-bar thumb).
+                if let Some(vio) = self.vio.as_mut() && vio.dragging() {
+                    vio.drag_to(shared, x, (dh as i32 - 1) - y);
+                    vio.update(shared);
+                    return true;
+                }
                 // VDR-C5: if a resize is active, update window geometry.
                 if let Some(ref rs) = self.resize_state {
-                    let dx = x - rs.press_x;
-                    let dy = y - rs.press_y; // dy positive = downward in SDL
                     let hwnd = rs.hwnd;
-                    let (orig_x, orig_y, orig_cx, orig_cy) =
-                        (rs.orig_x, rs.orig_y, rs.orig_cx, rs.orig_cy);
+                    let orig = (rs.orig_x, rs.orig_y, rs.orig_cx, rs.orig_cy);
+                    let (dx, dy) = (x - rs.press_x, y - rs.press_y);
                     let edge = rs.edge;
-                    const MIN_SZ: i32 = 32;
                     let mut wm = shared.window_mgr.lock_or_recover();
+                    // The VIO frame shows at most its whole screen.
+                    let is_vio = wm.vio_frame == hwnd;
+                    let rect = resized_rect(orig, edge, dx, dy, |cx, cy| {
+                        wm.vio_clamp_size(hwnd, cx, cy).unwrap_or((cx.max(MIN_RESIZE), cy.max(MIN_RESIZE)))
+                    });
                     wm.mark_dirty(hwnd); // VDR-B4
                     if let Some(win) = wm.get_window_mut(hwnd) {
-                        match edge {
-                            ResizeEdge::E  => { win.cx = (orig_cx + dx).max(MIN_SZ); }
-                            ResizeEdge::W  => {
-                                let new_cx = (orig_cx - dx).max(MIN_SZ);
-                                win.x  = orig_x + (orig_cx - new_cx);
-                                win.cx = new_cx;
-                            }
-                            ResizeEdge::S  => {
-                                // SDL dy>0 = downward = decreasing OS/2 y
-                                let new_cy = (orig_cy - dy).max(MIN_SZ);
-                                win.y  = orig_y + (orig_cy - new_cy);
-                                win.cy = new_cy;
-                            }
-                            ResizeEdge::N  => { win.cy = (orig_cy + dy).max(MIN_SZ); }
-                            ResizeEdge::SE => {
-                                win.cx = (orig_cx + dx).max(MIN_SZ);
-                                let new_cy = (orig_cy - dy).max(MIN_SZ);
-                                win.y  = orig_y + (orig_cy - new_cy);
-                                win.cy = new_cy;
-                            }
-                            ResizeEdge::SW => {
-                                let new_cx = (orig_cx - dx).max(MIN_SZ);
-                                win.x  = orig_x + (orig_cx - new_cx);
-                                win.cx = new_cx;
-                                let new_cy = (orig_cy - dy).max(MIN_SZ);
-                                win.y  = orig_y + (orig_cy - new_cy);
-                                win.cy = new_cy;
-                            }
-                            ResizeEdge::NE => {
-                                win.cx = (orig_cx + dx).max(MIN_SZ);
-                                win.cy = (orig_cy + dy).max(MIN_SZ);
-                            }
-                            ResizeEdge::NW => {
-                                let new_cx = (orig_cx - dx).max(MIN_SZ);
-                                win.x  = orig_x + (orig_cx - new_cx);
-                                win.cx = new_cx;
-                                win.cy = (orig_cy + dy).max(MIN_SZ);
-                            }
-                        }
+                        (win.x, win.y, win.cx, win.cy) = rect;
+                    }
+                    if is_vio {
+                        // Lay the VIO window out at once: its view and
+                        // scroll bars follow the drag.
+                        let (scx, scy) = wm.layout_frame(hwnd);
+                        wm.resize_surface(hwnd, scx, scy);
+                        drop(wm);
+                        if let Some(vio) = self.vio.as_mut() { vio.update(shared); }
                     }
                 // VDR-D3: if a drag is active, move the window.
                 } else if let Some(ref ds) = self.drag_state {
@@ -1142,6 +1425,11 @@ impl SdlRenderer {
                 // SDL3 reports float pixels; PM works in whole pels.
                 let (x, y) = (x as i32, y as i32);
                 let os2_y = (dh as i32 - 1) - y;
+                // An open pop-up menu takes the click.
+                if self.popup.is_some()
+                    && let Some(keep_running) = self.popup_press(shared, mouse_btn, clicks, x, y) {
+                    return keep_running;
+                }
                 // VDR-D6: captured window overrides hit-test.
                 let capture = shared.window_mgr.lock_or_recover().capture_hwnd;
                 let target = if capture != 0 {
@@ -1191,16 +1479,28 @@ impl SdlRenderer {
                         && button_down_msg(mouse_btn, clicks) == Some(WM_BUTTON1DBLCLK);
                     // System commands from the chrome: MPFROM2SHORT(source, fPointer).
                     let syscommand = |sc: u32, source: u32| push_msg(shared, hwnd, WM_SYSCOMMAND, sc, source | (1 << 16));
-                    // The VIO window has no message queue: closing it ends
-                    // the program; its other chrome only moves it.
+                    // The VIO window has no message queue: its system commands
+                    // are carried out here (`vio_command`); closing it ends the program.
                     let is_vio = shared.window_mgr.lock_or_recover().is_vio_window(hwnd);
                     match chrome_hit {
+                        // The VIO window's system commands are carried out
+                        // here (it has no message queue to post them to).
                         ChromeHit::Close | ChromeHit::SysMenu if is_vio
                             && (matches!(chrome_hit, ChromeHit::Close) || double) => {
-                            if let Some(vio) = &self.vio { vio.close(shared); }
-                            return false;
+                            return self.vio_command(shared, SC_CLOSE);
                         }
-                        ChromeHit::TitleBar if is_vio && double => {}
+                        ChromeHit::SysMenu if is_vio => {
+                            // A single click opens the system menu.
+                            self.open_vio_menu(shared, false);
+                        }
+                        ChromeHit::TitleBar if is_vio && double => {
+                            return self.vio_command(shared, if state != 0 { SC_RESTORE } else { SC_MAXIMIZE });
+                        }
+                        ChromeHit::Minimize if is_vio => return self.vio_command(shared, SC_MINIMIZE),
+                        ChromeHit::Maximize if is_vio => {
+                            let sc = if state & WS_MAXIMIZED != 0 { SC_RESTORE } else { SC_MAXIMIZE };
+                            return self.vio_command(shared, sc);
+                        }
                         ChromeHit::Close => {
                             push_msg(shared, hwnd, WM_CLOSE, 0, 0);
                         }
@@ -1277,6 +1577,10 @@ impl SdlRenderer {
                                     press_x: x, press_y: y,
                                     orig_x, orig_y, orig_cx, orig_cy,
                                 });
+                            } else if is_vio && mouse_btn == sdl3::mouse::MouseButton::Left
+                                && let Some(vio) = self.vio.as_mut() && vio.press(shared, x, os2_y) {
+                                // The VIO window's scroll bars, and marking.
+                                vio.update(shared);
                             } else {
                             let (local_x, local_y) = {
                                 let wm = shared.window_mgr.lock_or_recover();
@@ -1309,6 +1613,20 @@ impl SdlRenderer {
             Event::MouseButtonUp { mouse_btn, x, y, .. } => {
                 // SDL3 reports float pixels; PM works in whole pels.
                 let (x, y) = (x as i32, y as i32);
+                let left = mouse_btn == sdl3::mouse::MouseButton::Left;
+                // A pop-up menu chooses the item the button comes up over.
+                if left && let Some(p) = self.popup.as_mut() && p.is_pressed() {
+                    let action = p.release(x, y);
+                    return self.popup_action(shared, action);
+                }
+                // The release of a click that closed a pop-up menu.
+                if std::mem::take(&mut self.swallow_release) {
+                    return true;
+                }
+                if left && let Some(vio) = self.vio.as_mut() && vio.release() {
+                    vio.update(shared);
+                    return true;
+                }
                 // VDR-C5: end resize on button release.
                 if let Some(rs) = self.resize_state.take() {
                     let hwnd = rs.hwnd;
@@ -1519,7 +1837,8 @@ impl PmRenderer for SdlRenderer {
         // the mouse at rest owes nothing: the compositor would return early
         // without advancing `last_composite`, and the zero timeout that
         // follows would spin the loop.
-        let busy = self.force_full || !shared.window_mgr.lock_or_recover().dirty.is_empty();
+        let busy = self.force_full || self.overlay_changed
+            || !shared.window_mgr.lock_or_recover().dirty.is_empty();
         let script_next = self.script.as_ref().and_then(GuiScript::next_due);
         let timed_next = script_next.into_iter().chain(self.caret_next).chain(self.drag_scroll_next).min();
         let mut timeout = wait_timeout(Instant::now(), self.last_composite, busy, timed_next);
@@ -1547,6 +1866,32 @@ impl PmRenderer for SdlRenderer {
             (false, Some(wake)) => wake.wait(timeout),
             (false, None) => std::thread::sleep(timeout.min(super::renderer::POLL_PERIOD)),
         }
+    }
+}
+
+/// Pass a mouse event to the windowed VIO program's mouse queue.
+fn vio_pointer_event(vio: &super::vio_window::VioWindow, shared: &SharedState, desk_h: i32, event: &Event) {
+    match *event {
+        Event::MouseMotion { x, y, .. } => vio.pointer_event(shared, desk_h, x as i32, y as i32, None),
+        Event::MouseButtonDown { mouse_btn, x, y, .. } | Event::MouseButtonUp { mouse_btn, x, y, .. } => {
+            if let Some(b) = mou_button(mouse_btn) {
+                let down = matches!(event, Event::MouseButtonDown { .. });
+                vio.pointer_event(shared, desk_h, x as i32, y as i32, Some((b, down)));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The OS/2 mouse button of an SDL button: 1 left, 2 right, 3 middle.
+pub(crate) fn mou_button(button: sdl3::mouse::MouseButton) -> Option<crate::loader::moucalls::MouButton> {
+    use crate::loader::moucalls::MouButton;
+    use sdl3::mouse::MouseButton;
+    match button {
+        MouseButton::Left => Some(MouButton::B1),
+        MouseButton::Right => Some(MouButton::B2),
+        MouseButton::Middle => Some(MouButton::B3),
+        _ => None,
     }
 }
 
@@ -1634,8 +1979,8 @@ fn chrome_hit_test(win_x: i32, win_cx: i32, win_fcf: u32,
     }
     // Left-side: system menu icon.
     if win_fcf & FCF_SYSMENU != 0 {
-        let sysmenu_x1 = win_x + 3 + CHROME_BTN_W;
-        if x >= win_x + 3 && x < sysmenu_x1 {
+        let sysmenu_x1 = win_x + SYSMENU_ICON_X + CHROME_BTN_W;
+        if x >= win_x + SYSMENU_ICON_X && x < sysmenu_x1 {
             return ChromeHit::SysMenu;
         }
     }
@@ -1682,6 +2027,29 @@ fn resize_hit_test(win_x: i32, win_y: i32, win_cx: i32, win_cy: i32,
         (false, true,  false, true ) => Some(ResizeEdge::NE),
         _ => None,
     }
+}
+
+/// Smallest frame width and height a sizing-border drag leaves.
+const MIN_RESIZE: i32 = 32;
+
+/// A frame at `orig` (`x, y, cx, cy`, OS/2 coordinates, bottom-left origin)
+/// after its `edge` was dragged by `(dx, dy)` desktop pels (`dy` positive
+/// downwards, as SDL counts): the dragged edges follow the pointer, the
+/// opposite ones stay, and `clamp` limits the size.
+fn resized_rect(orig: (i32, i32, i32, i32), edge: ResizeEdge, dx: i32, dy: i32,
+                clamp: impl Fn(i32, i32) -> (i32, i32)) -> (i32, i32, i32, i32) {
+    use ResizeEdge::*;
+    let (x, y, cx, cy) = orig;
+    let left = matches!(edge, W | NW | SW);
+    let right = matches!(edge, E | NE | SE);
+    let top = matches!(edge, N | NE | NW);
+    let bottom = matches!(edge, S | SE | SW);
+    let ncx = if right { cx + dx } else if left { cx - dx } else { cx };
+    // Dragging the bottom edge down or the top edge up makes it taller.
+    let ncy = if bottom { cy + dy } else if top { cy - dy } else { cy };
+    let (ncx, ncy) = clamp(ncx, ncy);
+    // PM y is the bottom edge: it moves when the bottom edge is dragged.
+    (if left { x + cx - ncx } else { x }, if bottom { y + cy - ncy } else { y }, ncx, ncy)
 }
 
 /// Decide which window receives a mouse-button-1 message aimed at `frame`.
@@ -2168,6 +2536,28 @@ mod tests {
 
     fn menu_item(text: &str, style: u16, children: Vec<MenuItem>) -> MenuItem {
         MenuItem { id: 0, style, attr: 0, text: text.to_string(), children }
+    }
+
+    #[test]
+    fn dragged_edges_follow_the_pointer_and_the_others_stay() {
+        use super::ResizeEdge::*;
+        let orig = (100, 200, 400, 300); // x, y (bottom), cx, cy
+        let free = |cx: i32, cy: i32| (cx.max(super::MIN_RESIZE), cy.max(super::MIN_RESIZE));
+        let r = |edge, dx, dy| super::resized_rect(orig, edge, dx, dy, free);
+        assert_eq!(r(E, 10, 99), (100, 200, 410, 300), "right edge: wider");
+        assert_eq!(r(W, 10, 0), (110, 200, 390, 300), "left edge moved right: narrower");
+        // SDL dy > 0 is downwards: the bottom edge goes down (y smaller,
+        // taller), the top edge comes down (shorter, bottom unchanged).
+        assert_eq!(r(S, 0, 20), (100, 180, 400, 320));
+        assert_eq!(r(N, 0, 20), (100, 200, 400, 280));
+        assert_eq!(r(N, 0, -20), (100, 200, 400, 320), "top edge up: taller");
+        assert_eq!(r(SE, 5, 5), (100, 195, 405, 305));
+        assert_eq!(r(NW, -5, -5), (95, 200, 405, 305));
+        assert_eq!(r(E, -1000, 0).2, super::MIN_RESIZE, "never below the minimum");
+        // Limits: the size stays inside them, the fixed edges stay put.
+        let limits = |cx: i32, cy: i32| (cx.clamp(160, 420), cy.clamp(70, 330));
+        assert_eq!(super::resized_rect(orig, SW, -100, 100, limits), (80, 170, 420, 330));
+        assert_eq!(super::resized_rect(orig, NE, -1000, 1000, limits), (100, 200, 160, 70));
     }
 
     /// The bar is drawn at the given screen position; with no open item nothing
