@@ -1408,7 +1408,10 @@ Run all unit tests with:
 
 ```bash
 cargo test
+cargo clippy --all-targets -- -D warnings   # lint, test code included
 ```
+
+The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`) runs both and aborts the commit on a failing test or any lint.
 
 The unit tests (870: 841 warpine + 18 `gen_api` + 11 `lx_link`) include, among others:
 
@@ -1436,7 +1439,7 @@ The unit tests (870: 841 warpine + 18 `gen_api` + 11 `lx_link`) include, among o
 | `src/loader/pm_win.rs`, `pm_types.rs` | Window tree, Z-order, focus, frame layout and moves, menus and `WM_UPDATEFRAME`, message queues, `WinPeekMsg` filters, codepages, system values |
 | `src/loader/pm_gpi.rs`, `pm_bitmap.rs`, `pm_shapes.rs` | GPI calls, bitmaps and the codec, `GpiBitBlt`, colour tables, arcs and patterns |
 | `src/loader/constants.rs` | Every constant against the OS/2 toolkit headers (`constants_match_toolkit_headers`) |
-| `src/gui/text_renderer.rs` | CP437 glyph bitmaps (box-drawing, block elements, ASCII delegation), CGA palette (opaque, correct entries), HeadlessTextRenderer frame counting and loop termination, VgaTextBuffer snapshot, KbdKeyInfo queue push/pop (22 tests) |
+| `src/gui/text_renderer.rs` | CP437 glyph bitmaps (box-drawing, block elements, ASCII delegation), CGA palette (opaque, correct entries), HeadlessTextRenderer frame counting and loop termination, VgaTextBuffer snapshot, KbdKeyInfo queue push/pop (44 tests) |
 
 ### Integration testing with sample apps
 
