@@ -348,14 +348,8 @@ impl super::Loader {
         let filename_upper = format!("{}.DLL", stem);
 
         // 1. Next to the running exe
-        let exe_dir = {
-            let exe = self.shared.exe_name.lock_or_recover();
-            Path::new(exe.as_str())
-                .parent()
-                .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_default()
-        };
-        if !exe_dir.is_empty() {
+        let exe_dir = exe_dir(&self.shared.exe_name.lock_or_recover());
+        if let Some(exe_dir) = exe_dir {
             for fname in &[filename_lower.as_str(), filename_upper.as_str()] {
                 let p = format!("{}/{}", exe_dir, fname);
                 if Path::new(&p).exists() { return Some(p); }
@@ -378,6 +372,15 @@ impl super::Loader {
 
         None
     }
+}
+
+/// The host directory of the executable `exe` (as given on the command
+/// line): its parent, or the current directory for a bare file name such as
+/// `4os2.exe` run from its own directory; `None` when there is no executable.
+fn exe_dir(exe: &str) -> Option<String> {
+    if exe.is_empty() { return None; }
+    let parent = Path::new(exe).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+    Some(if parent.is_empty() { ".".to_string() } else { parent })
 }
 
 #[cfg(test)]
@@ -426,6 +429,17 @@ mod tests {
 
         let found_missing = loader.find_dll_path("NONEXISTENT_DLL_ABCD");
         assert!(found_missing.is_none(), "nonexistent DLL should return None");
+    }
+
+    /// The executable's directory: its parent, or "." for a bare file name
+    /// (a program started from its own directory finds the DLLs beside it).
+    #[test]
+    fn exe_dir_of_a_bare_name_is_the_current_directory() {
+        use super::exe_dir;
+        assert_eq!(exe_dir("samples/4os2/4os2.exe").as_deref(), Some("samples/4os2"));
+        assert_eq!(exe_dir("/opt/os2/app.exe").as_deref(), Some("/opt/os2"));
+        assert_eq!(exe_dir("4os2.exe").as_deref(), Some("."));
+        assert_eq!(exe_dir(""), None);
     }
 
     /// Verify BUILTIN_MODULES covers all modules handled by the thunk mechanism.
