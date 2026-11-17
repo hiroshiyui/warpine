@@ -34,4 +34,4 @@ When performing documentation engineering, always follow these steps:
 
 5. **Update `doc/TODOs.md`** — remove completed items. Before removing, if the completed work is non-obvious or architectural, capture a concise summary in `doc/developer_guide.md` or `doc/reference_manual.md` as appropriate so the implementation rationale is preserved.
 
-6. **Commit** documentation changes using the `commit-and-push` skill (which runs `cargo test` and `cargo clippy -- -D warnings` before committing). Group related files per commit — for example, `CLAUDE.md` + `CHANGELOG.md` together when covering the same feature; `doc/TODOs.md` alone for a cleanup pass. Do not mix unrelated documentation changes in a single commit.
+6. **Commit** documentation changes using the `commit-and-push` skill (which runs `cargo test` and `cargo clippy --all-targets -- -D warnings` before committing). Group related files per commit — for example, `CLAUDE.md` + `CHANGELOG.md` together when covering the same feature; `doc/TODOs.md` alone for a cleanup pass. Do not mix unrelated documentation changes in a single commit.

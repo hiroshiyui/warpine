@@ -16,7 +16,7 @@ Determine which files to review:
 
 ```bash
 cargo test 2>&1          # All unit + integration tests must pass
-cargo clippy -- -D warnings 2>&1   # Zero warnings required
+cargo clippy --all-targets -- -D warnings 2>&1   # Zero warnings required, test code included
 ```
 
 Report any failures immediately. Do not proceed to manual review until both are clean.
