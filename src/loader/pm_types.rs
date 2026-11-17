@@ -855,7 +855,7 @@ impl WindowManager {
 
     /// The window keyboard input is delivered to: the focus window while it
     /// exists, is visible and belongs to the active frame; otherwise the
-    /// active frame itself (whose client `push_msg` resolves).
+    /// active frame itself (whose client the input queue delivers to).
     pub fn key_target(&self) -> u32 {
         match self.windows.get(&self.focus_hwnd) {
             Some(w) if w.visible && self.focus_hwnd != 0

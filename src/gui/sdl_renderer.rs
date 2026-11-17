@@ -1470,7 +1470,7 @@ fn resize_hit_test(win_x: i32, win_y: i32, win_cx: i32, win_cy: i32,
 /// `(x, y)` is the pointer relative to the frame's bottom-left corner. If a
 /// built-in control lies under the pointer the message goes to that control,
 /// with the position relative to the control; otherwise it goes to the frame
-/// (whose client `push_msg` resolves) unchanged.
+/// (whose client the input queue delivers to) unchanged.
 ///
 /// With `press` set, a click that is not on a control ends that frame's
 /// control focus: the second return value is the control that lost the focus

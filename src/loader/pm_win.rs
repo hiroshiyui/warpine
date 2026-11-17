@@ -336,7 +336,8 @@ impl super::Loader {
                         // control handler so it can handle menu-bar clicks and dropdown
                         // item selection.
                         //
-                        // push_msg() translates frame_hwnd → client_hwnd via frame_to_client,
+                        // The input queue (pm_input.rs) delivers a frame's pointer messages to
+                        // its client (frame_to_client),
                         // so WM_BUTTON1DOWN arrives with hwnd = client_hwnd.  We must also
                         // check the frame window (via client_to_frame) for menu_hwnd.
                         let (menu_hwnd, frame_cy) = {
