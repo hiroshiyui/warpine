@@ -21,8 +21,8 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 | **Check boxes and radio buttons.** A dialog driven by Space, Tab, the arrow keys, a mnemonic and a click: an unchecked, an indeterminate (`BS_AUTO3STATE`) and a ticked check box, two radio groups, and *Apply* highlighted with `BM_SETHILITE`, so it is drawn pressed. | **Dialogs from the keyboard.** Ctrl+D, from the window's accelerator table, opens a modal dialog built from a `DLGTEMPLATE` resource. `Warp` was typed into the entry field that had the focus, then Tab and Down twice picked *Green*; Enter would press the default button *OK*. |
 | ![A "Message Box Test" message box with a blue information icon left of the text "The operation completed." and "Two lines of text in one box.", and an OK button with a default outline, over the inactive PM Message Box Test window](doc/screenshots/pm_msgbox.png) | ![The desktop with the PM Min/Max Test frame minimized to a small title bar at the bottom-left, an active "Hide button" frame whose title bar has hide, maximize and close buttons, and an inactive "No buttons" frame with only a close button](doc/screenshots/pm_minmax.png) |
 | **Message boxes.** `WinMessageBox` is a modal PM dialog: an icon for the `MB_INFORMATION` style, text wrapped at word boundaries, buttons from the `MB_*` style; only the owner window is disabled while it is open, and its timers and repaints keep running. Keys and clicks answered the three boxes before this one. | **Minimize, maximize and hide.** The main frame was maximized and restored with title-bar double clicks, then minimized with Alt+F9: it became a title bar in the icon area at the bottom-left, and the next frame, created with `FCF_HIDEMAX`, took over as the active window. |
-| ![The 4OS2 command shell in a "Warpine — 4os2.exe" frame on the PM desktop: its version banner, then the ver command and a wide dir listing of drive C:, ending at the [c:\\] prompt](doc/screenshots/4os2_window.png) | |
-| **Text-mode programs in a PM window.** A VIO program such as 4OS2 runs in a frame on the PM desktop, as in an OS/2 window session; keys typed while the frame is active go to the program. `WARPINE_VIO=fullscreen` gives it the separate text window shown at the top of this page instead. | |
+| ![The 4OS2 command shell in a "Warpine — 4os2.exe" frame on the PM desktop: its version banner, then the ver command and a wide dir listing of drive C:, ending at the [c:\\] prompt](doc/screenshots/4os2_window.png) | ![The 4OS2 window resized smaller than its screen, with vertical and horizontal scroll bars, and its system menu open: Restore (greyed), Move, Size, Minimize, Maximize, Hide (greyed), Close, then Help, Font Size and Scroll greyed, Mark, Copy (greyed), Copy All and Paste (greyed), each with its Alt key](doc/screenshots/vio_system_menu.png) |
+| **Text-mode programs in a PM window.** A VIO program such as 4OS2 runs in a frame on the PM desktop, as in an OS/2 window session; keys typed while the frame is active go to the program. `WARPINE_VIO=fullscreen` runs it full screen instead (the text window shown at the top of this page), and Alt+Home switches between the two. | **The VIO window's system menu.** Dragged smaller than its screen, the window shows scroll bars over it. Alt+Space opened the system menu with the items of an OS/2 window: Mark, Copy and Copy All work with the clipboard, and Paste types it into the program. |
 
 ### Work in progress
 
@@ -33,7 +33,7 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 - **Games and video** — DIVE (direct framebuffer blitting) and OpenGL are not implemented yet.
 - **Advanced controls** — containers, notebooks, drag and drop and printing are not started.
 
-_Screenshots in this section captured from uncommitted changes on top of `3705715` on 2026-11-17._
+_Screenshots in this section captured from uncommitted changes on top of `b1e75da` on 2026-11-17._
 <!-- screenshots:end -->
 
 ## Key Features
@@ -45,7 +45,7 @@ _Screenshots in this section captured from uncommitted changes on top of `370571
 - **Multi-Threading:** OS/2 threads mapped 1:1 to host threads, each with its own KVM vCPU.
 - **Presentation Manager (GUI):** Window management, message loop, graphics primitives (drawn on the calling thread, so `GpiQueryPel` reads pixels back and `GpiSetMix` raster operations such as XOR combine with what is there), memory presentation spaces, bitmaps (`GpiCreateBitmap`, `GpiLoadBitmap`) and `GpiBitBlt` with raster operations and stretching, logical colour tables, timers, clipboard, dialogs, menus, and resource loading via SDL. Each window is kept as its own texture and drawn by the platform's accelerated SDL renderer with vsync, so moving windows costs no redrawing (`WARPINE_COMPOSITOR=software` composites on the CPU instead).
 - **IBM Plex Typography:** All PM text (title bars, menus, dialogs, controls, and GPI text) is rendered anti-aliased in the embedded IBM Plex Sans / Mono / Serif families, with IBM Plex Sans JP / KR / TC / SC for CJK and GNU Unifont as the last-resort fallback. `GpiCreateLogFont` maps OS/2 face names, bold/italic and size onto these faces; font metrics APIs report their real proportional widths.
-- **Text-mode programs in a PM window:** a VIO program runs in a window on the PM desktop, as in an OS/2 window session — CP437 8×16 font, CGA 16-colour palette, blinking cursor. `WARPINE_VIO=fullscreen` gives it the separate 640×400 text window instead (the only choice for programs marked incompatible with PM windowing), and `WARPINE_HEADLESS=1` the host terminal.
+- **Text-mode programs in a PM window:** a VIO program runs in a window on the PM desktop, as in an OS/2 window session — CP437 8×16 font, CGA 16-colour palette, blinking cursor. The window can be resized (scroll bars over the screen), minimized and maximized, its system menu marks and copies text and pastes the clipboard as keystrokes, and the mouse reaches programs through MOUCALLS. `WARPINE_VIO=fullscreen` runs it full screen instead (the only choice for programs marked incompatible with PM windowing), Alt+Home switches between the two while it runs, and `WARPINE_HEADLESS=1` uses the host terminal.
 - **Text-Mode Console:** Full VIO and KBD subsystem emulation with screen buffer, cursor management, scroll, and keyboard input.
 - **Filesystem:** HPFS-compatible VFS (`VfsBackend` trait) with `HostDirBackend`: case-insensitive lookup, extended attributes (xattrs + sidecar), file locking, OS/2 wildcard matching, sandbox isolation. C: drive auto-mounted at `~/.local/share/warpine/drive_c/`.
 - **Memory Management:** `DosAllocMem`/`DosFreeMem`, shared memory, guest physical memory manager.
@@ -143,6 +143,7 @@ samples/               OS/2 sample applications and build scripts
   pm_error_test/       WinGetLastError and PMERR_* codes per thread
   pm_pointer_test/     Mouse pointers: system pointers, WinSetPointer, WinLoadPointer
   pm_window_test/      WinSetParent, WinSetOwner, WinIsWindowVisible, WinQueryWindowPtr
+  mou_test/            MOUCALLS mouse events in a VIO window and full screen
   pm_typeahead_test/   Keys typed while the program is busy reach the focus window of the moment they are read
   pm_font_test/        GPI font selection (IBM Plex families, styles, sizes) and CJK text
   pm_shapes_test/      GPI arcs, area patterns and line widths, checked with GpiQueryPel
@@ -262,7 +263,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 989 unit tests (no KVM required)
+cargo test                        # 1057 unit tests (no KVM required)
 cargo test --test integration     # 38 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```

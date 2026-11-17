@@ -107,12 +107,16 @@ Warpine automatically selects an execution mode based on the executable and envi
 - Opens the PM desktop with the program's 80×25 text screen in a frame titled `Warpine — <filename>`, sized to the screen (it follows `VioSetMode`) and moved by its title bar.
 - CP437 8×16 VGA font, CGA 16-colour palette, blinking cursor, as in the full-screen mode.
 - Keys typed while the frame is active go to the program (`KbdCharIn`); the close button or a double click on the system-menu icon ends it.
+- The frame has minimize and maximize buttons and a sizing border. Smaller than the screen, it shows scroll bars over it; it cannot grow past the whole screen; maximize fits it to the screen (up to the desktop); the view follows the cursor.
+- The system menu (a click on its icon, Alt+Space or Shift+Esc) has Restore, Move, Size, Minimize, Maximize, Close, Mark, Copy, Copy All and Paste (Hide, Help, Font Size and Scroll are shown greyed). Mark, then drag over the text and Copy, puts that rectangle on the clipboard (shared with the host); Copy All copies the whole screen; Paste types the clipboard text into the program. Alt+F4 / F5 / F7 / F8 / F9 / F10 close, restore, move, size, minimize and maximize the window.
+- Alt+Home switches the program to full screen and back; it keeps running.
+- The mouse reaches programs that use the MOUCALLS API, in text cells.
 
 ### CLI Text Mode, Full Screen (SDL)
 
 **Trigger:** as above with `WARPINE_VIO=fullscreen`, or a program marked incompatible with PM windowing (LX module flags).
 
-- Opens a 640×400 SDL window rendering an 80×25 character grid.
+- Fills the screen with the 80×25 character grid, scaled by whole multiples with black borders (an ordinary 640×400 window when full screen is refused). Alt+Home switches a window-compatible program to its PM window and back.
 - CP437 8×16 VGA font, CGA 16-colour palette, blinking cursor.
 - vCPU runs on a worker thread; main thread runs the text renderer.
 - Keyboard input delivered via SDL events.
@@ -461,6 +465,10 @@ VioWrtCellStr (10), VioGetBuf (31), VioSetCp (42), VioShowBuf (43), VioSetState 
 
 KbdCharIn (4), KbdStringIn (9), KbdGetStatus (10)
 
+### MOUCALLS (20 APIs)
+
+MouGetPtrShape (1), MouSetPtrShape (2), MouGetNumMickeys (3), MouGetScaleFact (6), MouFlushQue (7), MouGetNumButtons (8), MouClose (9), MouSetScaleFact (11), MouGetNumQueEl (13), MouGetEventMask (15), MouSetEventMask (16), MouOpen (17), MouRemovePtr (18), MouGetPtrPos (19), MouReadEventQue (20), MouSetPtrPos (21), MouGetDevStatus (22), MouSynch (23, no operation), MouSetDevStatus (25), MouDrawPtr (26). Positions are text cells. Events come from the VIO window or the full-screen text window; one mouse handle, a queue of 64 events, 3 buttons. `MouOpen` fails with `ERROR_MOUSE_NO_DEVICE` without a display (terminal sessions). In a PM window the desktop pointer is used; full screen, `MouDrawPtr` draws the text-mode pointer as an inverted cell. Not implemented: MouGetHotKey / MouSetHotKey, MouRegister / MouDeRegister, MouInitReal, MouGetThreshold / MouSetThreshold (`ERROR_INVALID_FUNCTION`).
+
 ### PMWIN (89 APIs)
 
 Window management, message queues, painting (incl. `WinGetPS` / `WinReleasePS`, window DCs, `WinDrawBitmap`), input, focus, codepage, dialogs, menus, clipboard, and resource loading. Ordinals follow the Open Watcom import library (`doc/os2_ordinals.md`):
@@ -515,9 +523,10 @@ Counts are taken from the static registry (`api_registry.rs`, 186 entries) and t
 | TCP32DLL (sockets, resolver) | registry | 24 | 0 | 24 |
 | VIOCALLS | sub-dispatcher | 17 | 5 | 22 |
 | KBDCALLS | sub-dispatcher | 3 | 0 | 3 |
+| MOUCALLS | sub-dispatcher | 20 | 0 | 20 |
 | PMWIN | sub-dispatcher | 89 | 0 | 89 |
 | PMGPI | sub-dispatcher | 63 | 3 | 66 |
-| **Total** | | **348** | **18** | **366** |
+| **Total** | | **368** | **18** | **386** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 
