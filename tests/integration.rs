@@ -1765,6 +1765,40 @@ fn gui_pm_scroll_test_matches_golden() {
         &format!("{SCROLL_TEST_STEPS}3000 dump {{dump}}\n3100 quit\n"));
 }
 
+/// pm_combo_spin_test (same frame placement as pm_scroll_test: client from
+/// screen (34, 52), PM y = 511 − screen y): clicks the drop-down arrow of
+/// the CBS_DROPDOWN combination box (client (162..180, 348..370)) and the
+/// second item of its dropped list (client y 314..330), the up arrow of the
+/// numeric spin button (client (104..120, 212..224)), the down arrow of the
+/// day spin button (client (244..260, 200..212)) and the second 24-pel item
+/// of the owner-drawn list box (client y 130..154), then drops the
+/// combination box again. Notifications (CBN_*, SPBN_*, LN_SELECT,
+/// WM_MEASUREITEM / WM_DRAWITEM, BN_PAINT) and the values reached are
+/// checked from the guest side.
+const COMBO_SPIN_STEPS: &str = "\
+    1000 click 205 152\n\
+    1400 click 94 189\n\
+    1800 click 146 293\n\
+    2100 click 286 305\n\
+    2400 click 94 369\n\
+    2800 click 205 152\n";
+
+#[test]
+fn gui_pm_combo_spin_test_drops_picks_spins_and_owner_draws() {
+    let steps = format!("{COMBO_SPIN_STEPS}3300 key alt+f4\n6000 quit\n");
+    assert_scripted_checks_pass("samples/pm_combo_spin_test/pm_combo_spin_test.exe", "pm_combo_spin_test", 59, &steps);
+}
+
+/// pm_combo_spin_test after the session: "Green" picked and the list
+/// dropped again over the client, the spin buttons at 6 and "Sun", the
+/// owner-drawn colour swatches with item 1 selected (drawn by the owner)
+/// and item 3 drawn by the list box, the cyan user button.
+#[test]
+fn gui_pm_combo_spin_test_matches_golden() {
+    check_gui_golden("pm_combo_spin_test", "samples/pm_combo_spin_test/pm_combo_spin_test.exe",
+        &format!("{COMBO_SPIN_STEPS}3200 dump {{dump}}\n3300 quit\n"));
+}
+
 /// pm_codepage_test: PM text follows the message queue's codepage
 /// (WinSetCp, including CP1004, which DosSetProcessCp refuses), WinQueryCpList
 /// lists the queue codepages, and a presentation space starts with its queue's

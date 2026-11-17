@@ -770,6 +770,37 @@ mod tests {
         Dlg { loader, hmq, dlg, entry, list, ok, cancel, check, focus_at_start }
     }
 
+    /// Combination boxes and spin buttons in a template get their parts; the
+    /// focus and the tab order go to their entry fields.
+    #[test]
+    fn templates_with_combination_boxes_and_spin_buttons() {
+        let loader = Loader::new_mock();
+        {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq(437);
+            wm.tid_to_hmq.insert(0, hmq);
+        }
+        let t = DlgTemplate {
+            dialog: item("WC_FRAME", "Test", (10, 10, 200, 120), 100, FS_DLGBORDER),
+            frame_flags: FCF_TITLEBAR | FCF_DLGBORDER,
+            focus: Some(0),
+            items: vec![
+                item("WC_COMBOBOX", "", (4, 40, 100, 70), 1, WS_TABSTOP | CBS_DROPDOWN),
+                item("WC_SPINBUTTON", "", (110, 90, 60, 12), 2, WS_TABSTOP | SPBS_MASTER),
+            ],
+        };
+        let (dlg, _, focus) = loader.create_dialog(0, HWND_DESKTOP, 0, 0x1234, Some(t));
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        let combo = wm.find_child_by_id(dlg, 1).unwrap();
+        let spin = wm.find_child_by_id(dlg, 2).unwrap();
+        let entry = wm.find_child_by_id(combo, CBID_EDIT).expect("the combination box's field");
+        assert!(wm.find_child_by_id(combo, CBID_LIST).is_some());
+        let field = wm.text_window(spin);
+        assert_ne!(field, spin, "the spin button's field");
+        assert_eq!(focus, entry, "the template's focus item gives the focus to its field");
+        assert_eq!(wm.tab_stops(dlg), vec![entry, field]);
+    }
+
     #[test]
     fn the_first_focus_control_notifies_its_owner_after_wm_initdlg() {
         let d = dialog();

@@ -13,6 +13,9 @@ mod pm_controls;
 mod pm_dialog;
 mod pm_error;
 mod pm_button;
+mod pm_owner;
+mod pm_combo;
+mod pm_spin;
 pub mod pm_scrollbar;
 pub mod pm_cursor;
 mod pm_destroy;
@@ -178,6 +181,17 @@ pub(crate) enum FrameKind {
     /// window; after the last one the windows are removed and the chain's
     /// result is returned to the caller.
     DestroyWindows { chain: Box<pm_destroy::DestroyChain> },
+    /// An owner-draw call (`pm_owner.rs`): `call` was sent with presentation
+    /// space `hps` and its structure (`block_len` words) at `block_at` on
+    /// the guest stack. On return the call is finished and the chain goes
+    /// on with the next one.
+    OwnerDraw {
+        chain: Box<pm_owner::OwnerChain>,
+        call: pm_owner::OwnerCall,
+        hps: u32,
+        block_at: u32,
+        block_len: u32,
+    },
 }
 
 pub(crate) struct CallbackFrame {
@@ -611,6 +625,17 @@ impl Loader {
             return self.dispatch_builtin_control(hwnd, WM_BUTTON1DOWN, mp1, mp2);
         }
 
+        // Combination boxes and spin buttons (their parts are ordinary
+        // built-in controls).
+        if msg != WM_PAINT && class_name == pm_combo::CLASS_COMBOBOX
+            && let Some(r) = self.combo_message(hwnd, msg, mp1, mp2) {
+            return r;
+        }
+        if msg != WM_PAINT && class_name == pm_spin::CLASS_SPINBUTTON
+            && let Some(r) = self.spin_message(hwnd, msg, mp1, mp2) {
+            return r;
+        }
+
         match msg {
             WM_PAINT => {
                 // A built-in window paints all of itself: it is valid now.
@@ -627,6 +652,13 @@ impl Loader {
                             .get_window(hwnd).map_or(0, |w| w.style);
                         if pm_button::has_check_state(style) {
                             self.paint_check_button(&p, hwnd, (x, y, cx, cy), &text);
+                        } else if style & BS_PRIMARYSTYLES == BS_USERBUTTON {
+                            // The owner paints it (BN_PAINT, pm_owner.rs) on
+                            // the button face.
+                            p.fill((x, y, x + cx - 1, y + cy - 1), CONTROL_FACE_COLOR);
+                            self.shared.window_mgr.lock_or_recover().queue_owner_call(pm_owner::OwnerCall {
+                                control: hwnd, kind: pm_owner::OwnerCallKind::UserButton,
+                            });
                         } else {
                             self.paint_button(&p, hwnd, (x, y, cx, cy), &text);
                         }
@@ -651,6 +683,8 @@ impl Loader {
                     pm_controls::CLASS_LISTBOX => {
                         self.paint_listbox(&p, hwnd, (x, y, cx, cy));
                     }
+                    pm_combo::CLASS_COMBOBOX => self.paint_combo(&p, hwnd, (x, y, cx, cy)),
+                    pm_spin::CLASS_SPINBUTTON => self.paint_spin(&p, hwnd, (x, y, cx, cy)),
                     "#Menu" => {
                         // The menu bar and any open pull-down are frame chrome:
                         // the compositor draws them from `OS2Window::menu_items`
@@ -673,6 +707,12 @@ impl Loader {
                         }
                     }
                     _ => {} // Unknown built-in class — silently ignore WM_PAINT
+                }
+                // A dropped combination box list over this control is drawn
+                // over it again (pm_combo.rs).
+                let over = self.shared.window_mgr.lock_or_recover().dropped_lists_over(hwnd);
+                for list in over {
+                    self.dispatch_builtin_control(list, WM_PAINT, 0, 0);
                 }
                 ApiResult::Normal(0)
             }
@@ -724,6 +764,15 @@ impl Loader {
                             if let Some(win) = wm.get_window_mut(hwnd) {
                                 if new_open == 0 { win.window_ulong.remove(&-1); }
                                 else { win.window_ulong.insert(-1, new_open); }
+                            }
+                            // Owner-drawn items of the opening pull-down are
+                            // drawn by the owner (pm_owner.rs).
+                            if new_open != 0 && let Some(parent) = items.get(idx) {
+                                for child in parent.children.iter().filter(|c| c.style & MIS_OWNERDRAW != 0) {
+                                    wm.queue_owner_call(pm_owner::OwnerCall {
+                                        control: hwnd, kind: pm_owner::OwnerCallKind::DrawMenuItem { id: child.id },
+                                    });
+                                }
                             }
                         }
                         // Repaint the menu bar (and dropdown if newly opened).
@@ -828,6 +877,10 @@ impl Loader {
             WM_BUTTON1UP if pm_controls::is_input_control(&class_name) => self.control_button_up(hwnd),
 
             WM_CHAR if pm_controls::is_input_control(&class_name) => {
+                // SPBS_NUMERICONLY fields take digits only (pm_spin.rs).
+                if self.spin_refuses_char(hwnd, mp1, mp2) {
+                    return ApiResult::Normal(1);
+                }
                 self.control_char(hwnd, &class_name, mp1, mp2)
             }
 
@@ -911,25 +964,58 @@ impl Loader {
                 // mp1 = MPFROMSHORT(index) — insert position; LIT_END (0xFFFF) = append
                 // mp2 = MPFROMP(pszItem)   — guest pointer to item string
                 let item_text = if mp2 != 0 { self.read_guest_string_cp(mp2, self.window_codepage(hwnd)) } else { String::new() };
-                let index = {
+                // LIT_SORTASCENDING / LIT_SORTDESCENDING insert in order.
+                let (index, owner_draw) = {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
                     let Some(win) = wm.get_window_mut(hwnd) else {
-                        return ApiResult::Normal(u32::MAX); // LIT_ERROR
+                        return ApiResult::Normal(LIT_ERROR as u32);
                     };
-                    let idx = mp1 as i32;
-                    if idx < 0 || idx as usize >= win.listbox_items.len() {
-                        win.listbox_items.push(item_text);
-                        win.listbox_items.len() as u32 - 1
-                    } else {
-                        win.listbox_items.insert(idx as usize, item_text);
-                        // Selected items keep their selection when they are
-                        // pushed down by an item inserted at or before them.
-                        win.listbox_sel.inserted(idx as usize);
-                        idx as u32
+                    if win.listbox_items.len() >= pm_controls::MAX_LIST_ITEMS {
+                        return ApiResult::Normal(LIT_MEMERROR as u32);
                     }
+                    let idx = mp1 as u16 as i16 as i32;
+                    let at = match idx {
+                        LIT_SORTASCENDING => win.listbox_items.iter().position(|t| t.as_str() > item_text.as_str()),
+                        LIT_SORTDESCENDING => win.listbox_items.iter().position(|t| t.as_str() < item_text.as_str()),
+                        i if i < 0 => None,
+                        i => Some(i as usize).filter(|&i| i < win.listbox_items.len()),
+                    };
+                    let at = at.unwrap_or(win.listbox_items.len());
+                    win.listbox_items.insert(at, item_text);
+                    if at < win.item_handles.len() {
+                        win.item_handles.insert(at, 0);
+                    }
+                    // Selected items keep their selection when they are
+                    // pushed down by an item inserted at or before them.
+                    win.listbox_sel.inserted(at);
+                    (at as u32, win.style & LS_OWNERDRAW != 0)
                 };
+                if owner_draw {
+                    // The owner gives the item height (pm_owner.rs).
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    let measuring = wm.owner_calls.iter().any(|c| c.control == hwnd
+                        && matches!(c.kind, pm_owner::OwnerCallKind::MeasureList { .. }));
+                    if !measuring {
+                        wm.queue_owner_call(pm_owner::OwnerCall {
+                            control: hwnd, kind: pm_owner::OwnerCallKind::MeasureList { index },
+                        });
+                    }
+                }
                 self.repaint_control(hwnd);
                 ApiResult::Normal(index)
+            }
+
+            LM_QUERYITEMTEXT | LM_QUERYITEMTEXTLENGTH | LM_SETITEMTEXT | LM_SETITEMHANDLE
+            | LM_QUERYITEMHANDLE | LM_SEARCHSTRING | LM_SETTOPINDEX | LM_QUERYTOPINDEX
+            | LM_SETITEMHEIGHT if class_name == pm_controls::CLASS_LISTBOX => {
+                self.listbox_message(hwnd, msg, mp1, mp2)
+            }
+
+            EM_SETTEXTLIMIT if class_name == pm_controls::CLASS_ENTRYFIELD => {
+                if let Some(w) = self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd) {
+                    w.text_limit = (mp1 & 0xFFFF) as usize;
+                }
+                ApiResult::Normal(1)
             }
 
             LM_QUERYITEMCOUNT => {

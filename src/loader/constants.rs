@@ -135,6 +135,8 @@ pub const LN_ENTER:     u32 = 5;
 pub const EN_SETFOCUS:  u32 = 0x0001;
 pub const EN_KILLFOCUS: u32 = 0x0002;
 pub const EN_CHANGE:    u32 = 0x0004;
+pub const EN_SCROLL:    u32 = 0x0008;
+pub const EN_MEMERROR:  u32 = 0x0010;
 
 /// Entry field style: the text can be selected and copied but not changed.
 pub const ES_READONLY: u32 = 0x0000_0020;
@@ -154,6 +156,114 @@ pub const EM_PASTE:    u32 = 0x0147;
 pub const EM_QUERYREADONLY: u32 = 0x014a;
 /// mp1 = TRUE for read-only; returns the previous state.
 pub const EM_SETREADONLY:   u32 = 0x014b;
+
+/// The first and last `EM_*` message.
+pub const EM_QUERYCHANGED:  u32 = 0x0140;
+pub const EM_SETINSERTMODE: u32 = 0x014c;
+/// mp1 = maximum number of characters (`EM_SETTEXTLIMIT`); returns TRUE.
+pub const EM_SETTEXTLIMIT: u32 = 0x0143;
+/// Entry field styles: text alignment (`ES_LEFT` is 0).
+pub const ES_CENTER: u32 = 0x0000_0001;
+pub const ES_RIGHT:  u32 = 0x0000_0002;
+
+// More WC_LISTBOX messages (LM_*, <pmwin.h>).
+pub const LM_SETTOPINDEX:         u32 = 0x0162;
+pub const LM_SETITEMTEXT:         u32 = 0x0166;
+pub const LM_QUERYITEMTEXTLENGTH: u32 = 0x0167;
+/// mp1 = MPFROM2SHORT(index, cchMax), mp2 = buffer; returns the length.
+pub const LM_QUERYITEMTEXT:       u32 = 0x0168;
+pub const LM_SETITEMHANDLE:       u32 = 0x0169;
+pub const LM_QUERYITEMHANDLE:     u32 = 0x016a;
+/// mp1 = MPFROM2SHORT(LSS_* flags, index to start after), mp2 = string.
+pub const LM_SEARCHSTRING:        u32 = 0x016b;
+pub const LM_SETITEMHEIGHT:       u32 = 0x016c;
+pub const LM_QUERYTOPINDEX:       u32 = 0x016d;
+/// `LM_*` error results.
+pub const LIT_ERROR: i32 = -3;
+pub const LIT_MEMERROR: i32 = -2;
+/// `LM_INSERTITEM` positions: in ascending / descending order.
+pub const LIT_SORTASCENDING: i32 = -2;
+pub const LIT_SORTDESCENDING: i32 = -3;
+/// `LM_SEARCHSTRING` flags.
+pub const LSS_SUBSTRING:     u32 = 1;
+pub const LSS_PREFIX:        u32 = 2;
+pub const LSS_CASESENSITIVE: u32 = 4;
+/// List box style: the owner draws the items (`WM_MEASUREITEM`, `WM_DRAWITEM`).
+pub const LS_OWNERDRAW: u32 = 0x0002;
+/// List box notification: the list is about to scroll.
+pub const LN_SCROLL: u32 = 4;
+
+// Owner drawing (<pmwin.h>).
+/// Sent to the owner to draw an item: mp1 = control id, mp2 = `POWNERITEM`.
+pub const WM_DRAWITEM:    u32 = 0x0036;
+/// Sent to the owner for an item's size: mp1 = control id, mp2 = item
+/// index (list box) or `POWNERITEM` (menu); returns the height.
+pub const WM_MEASUREITEM: u32 = 0x0037;
+/// `WM_CONTROL` code of a `BS_USERBUTTON` that needs painting; mp2 =
+/// `PUSERBUTTON`.
+pub const BN_PAINT:     u32 = 3;
+/// `USERBUTTON.fsState` bits.
+pub const BDS_HILITED:  u32 = 0x0100;
+pub const BDS_DISABLED: u32 = 0x0200;
+pub const BDS_DEFAULT:  u32 = 0x0400;
+/// Size of `OWNERITEM` (hwnd, hps, fsState, fsAttribute, fsStateOld,
+/// fsAttributeOld, rclItem, idItem, hItem) and `USERBUTTON` (hwnd, hps,
+/// fsState, fsStateOld) in bytes.
+pub const OWNERITEM_SIZE:  u32 = 44;
+pub const USERBUTTON_SIZE: u32 = 16;
+
+// Combination boxes (WC_COMBOBOX, <pmwin.h>).
+pub const CBS_SIMPLE:       u32 = 1;
+pub const CBS_DROPDOWN:     u32 = 2;
+pub const CBS_DROPDOWNLIST: u32 = 4;
+/// mp1 = TRUE to show the list; returns TRUE when its state changed.
+pub const CBM_SHOWLIST:      u32 = 0x0170;
+/// mp1 = TRUE to highlight the entry field; returns TRUE when changed.
+pub const CBM_HILITE:        u32 = 0x0171;
+pub const CBM_ISLISTSHOWING: u32 = 0x0172;
+/// Ids of a combination box's list box and entry field.
+pub const CBID_LIST: u32 = 0x029A;
+pub const CBID_EDIT: u32 = 0x029B;
+/// Combination box notifications (high word of `WM_CONTROL` mp1; mp2 =
+/// the combination box).
+pub const CBN_EFCHANGE: u32 = 1;
+pub const CBN_EFSCROLL: u32 = 2;
+pub const CBN_MEMERROR: u32 = 3;
+pub const CBN_LBSELECT: u32 = 4;
+pub const CBN_LBSCROLL: u32 = 5;
+pub const CBN_SHOWLIST: u32 = 6;
+pub const CBN_ENTER:    u32 = 7;
+
+// Spin buttons (WC_SPINBUTTON, <pmstddlg.h>).
+pub const SPBS_NUMERICONLY:  u32 = 0x0000_0001;
+pub const SPBS_READONLY:     u32 = 0x0000_0002;
+pub const SPBS_JUSTRIGHT:    u32 = 0x0000_0004;
+pub const SPBS_JUSTLEFT:     u32 = 0x0000_0008;
+pub const SPBS_JUSTCENTER:   u32 = 0x0000_000C;
+pub const SPBS_MASTER:       u32 = 0x0000_0010;
+pub const SPBS_NOBORDER:     u32 = 0x0000_0020;
+pub const SPBS_PADWITHZEROS: u32 = 0x0000_0080;
+pub const SPBS_FASTSPIN:     u32 = 0x0000_0100;
+pub const SPBN_UPARROW:   u32 = 0x20A;
+pub const SPBN_DOWNARROW: u32 = 0x20B;
+pub const SPBN_ENDSPIN:   u32 = 0x20C;
+pub const SPBN_CHANGE:    u32 = 0x20D;
+pub const SPBN_SETFOCUS:  u32 = 0x20E;
+pub const SPBN_KILLFOCUS: u32 = 0x20F;
+pub const SPBM_OVERRIDESETLIMITS: u32 = 0x200;
+pub const SPBM_QUERYLIMITS:       u32 = 0x201;
+pub const SPBM_SETTEXTLIMIT:      u32 = 0x202;
+pub const SPBM_SPINUP:            u32 = 0x203;
+pub const SPBM_SPINDOWN:          u32 = 0x204;
+pub const SPBM_QUERYVALUE:        u32 = 0x205;
+pub const SPBM_SETARRAY:          u32 = 0x206;
+pub const SPBM_SETLIMITS:         u32 = 0x207;
+pub const SPBM_SETCURRENTVALUE:   u32 = 0x208;
+pub const SPBM_SETMASTER:         u32 = 0x209;
+/// `SPBM_QUERYVALUE` update modes (high word of mp2).
+pub const SPBQ_UPDATEIFVALID: u32 = 0;
+pub const SPBQ_ALWAYSUPDATE:  u32 = 1;
+pub const SPBQ_DONOTUPDATE:   u32 = 3;
 
 // WC_MLE messages (MLM_*) and MLM_QUERYSEL modes (MLFQS_*, <pmwin.h>)
 pub const MLM_SETSEL:   u32 = 0x01ca;

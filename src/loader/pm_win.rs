@@ -1009,7 +1009,7 @@ impl super::Loader {
                 let cp = self.window_codepage(hwnd_dlg);
                 let wm = self.shared.window_mgr.lock_or_recover();
                 let text = wm.find_child_by_id(hwnd_dlg, id_item)
-                    .and_then(|h| wm.get_window(h))
+                    .and_then(|h| wm.get_window(wm.text_window(h)))
                     .map(|w| w.text.clone())
                     .unwrap_or_default();
                 drop(wm);
@@ -1054,7 +1054,7 @@ impl super::Loader {
                 self.pm_check_hwnd(vcpu_id, hwnd, false);
                 let cp = self.window_codepage(hwnd);
                 let wm = self.shared.window_mgr.lock_or_recover();
-                let text = wm.get_window(hwnd).map(|w| w.text.clone()).unwrap_or_default();
+                let text = wm.get_window(wm.text_window(hwnd)).map(|w| w.text.clone()).unwrap_or_default();
                 drop(wm);
                 let bytes = super::codepage::cp_encode(&text, cp);
                 let copy_len = bytes.len().min(cch_max.saturating_sub(1));
@@ -1174,10 +1174,18 @@ impl super::Loader {
                 let psz_text = read_stack(12);
                 if !self.pm_check_hwnd(vcpu_id, hwnd_dlg, false) { return ApiResult::Normal(0); }
                 let text = self.read_guest_string_cp(psz_text, self.window_codepage(hwnd_dlg));
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-                if let Some(child_hwnd) = wm.find_child_by_id(hwnd_dlg, id_item)
-                    && let Some(win) = wm.get_window_mut(child_hwnd) {
+                let target = {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    let Some(child_hwnd) = wm.find_child_by_id(hwnd_dlg, id_item) else { return ApiResult::Normal(1) };
+                    let target = wm.text_window(child_hwnd);
+                    if let Some(win) = wm.get_window_mut(target) {
                         win.text = text;
+                    }
+                    (target != child_hwnd).then_some(target)
+                };
+                // The field of a combination box / spin button shows it.
+                if let Some(field) = target {
+                    self.set_field_text_done(field);
                 }
                 ApiResult::Normal(1)
             }
@@ -1254,6 +1262,11 @@ impl super::Loader {
                     if fl & SWP_SHOW != 0 { win.visible = true; }
                     if fl & SWP_HIDE != 0 { win.visible = false; }
                 }
+                // Combination boxes and spin buttons place their parts.
+                if fl & SWP_SIZE != 0 {
+                    wm.layout_combo(hwnd);
+                    wm.layout_spin(hwnd);
+                }
 
                 // VDR-B2: SWP_ZORDER — update the Z-order stack.
                 if fl & SWP_ZORDER != 0 && wm.frame_to_client.contains_key(&hwnd) {
@@ -1309,10 +1322,16 @@ impl super::Loader {
                 if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 let text = self.read_guest_string_cp(psz_text, self.window_codepage(hwnd));
                 let mut wm = self.shared.window_mgr.lock_or_recover();
-                if let Some(win) = wm.get_window_mut(hwnd) {
+                let target = wm.text_window(hwnd);
+                if let Some(win) = wm.get_window_mut(target) {
                     win.text = text;
                 }
                 wm.mark_dirty(hwnd); // VDR-B4: title bar text changed
+                drop(wm);
+                // The field of a combination box / spin button shows it.
+                if target != hwnd {
+                    self.set_field_text_done(target);
+                }
                 ApiResult::Normal(1)
             }
             878 => {
@@ -1429,6 +1448,8 @@ impl super::Loader {
                 if class_name == "WC_SCROLLBAR" {
                     self.scrollbar_init(hwnd, p_ctl_data);
                 }
+                // The parts of a combination box / spin button.
+                self.build_compound_control(hwnd);
 
                 // A visible new window is invalid: it draws itself on creation.
                 if fl_style & WS_VISIBLE != 0 {
@@ -1771,7 +1792,7 @@ impl super::Loader {
                 Vec::new()
             };
 
-            items.push(MenuItem { id, style, attr, text, children });
+            items.push(MenuItem { id, style, attr, text, children, image: None });
             if use_count { remaining -= 1; }
             if is_last { break; }
         }
@@ -2100,6 +2121,8 @@ impl super::Loader {
                     // Controls notify the dialog.
                     cwin.owner = h;
                 }
+                // The parts of a combination box / spin button.
+                wm.build_combo_or_spin(ch);
                 controls.push(ch);
             }
         }
@@ -2153,6 +2176,38 @@ mod tests {
     use super::super::vm_backend::mock::MockVcpu;
     use super::super::mutex_ext::MutexExt;
     use std::sync::atomic::Ordering;
+
+    /// WinFillRect on a memory presentation space fills the bitmap selected
+    /// into it (it used to look for the PS's window and draw nothing).
+    #[test]
+    fn test_win_fill_rect_fills_the_bitmap_of_a_memory_ps() {
+        use crate::gui::surface::Surface;
+        /// `CLR_RED` (`<pmgpi.h>`).
+        const CLR_RED: u32 = 2;
+        const ORD_WIN_FILL_RECT: u32 = 743;
+        let loader = Loader::new_mock();
+        let (hps, hbm) = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hbm = wm.create_bitmap(Surface::new(8, 8), 24, 1);
+            let hps = wm.create_ps(0);
+            wm.ps_map.get_mut(&hps).unwrap().bitmap = hbm;
+            (hps, hbm)
+        };
+        let prcl = 0x0008_0000;
+        for (i, v) in [1i32, 1, 4, 4].into_iter().enumerate() {
+            loader.guest_write::<i32>(prcl + 4 * i as u32, v).unwrap();
+        }
+        let mut vcpu = MockVcpu::new();
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_FILL_RECT, &[hps, prcl, CLR_RED]), 1);
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        let s = wm.bitmaps[&hbm].surface.lock_or_recover();
+        assert_eq!(s.pel(1, 1), Some(0xFF_0000));
+        assert_eq!(s.pel(3, 3), Some(0xFF_0000));
+        assert_ne!(s.pel(4, 4), Some(0xFF_0000), "RECTL exclusive at the top and right");
+        drop(s);
+        drop(wm);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_FILL_RECT, &[0xDEAD, prcl, 0]), 0, "no such PS");
+    }
 
     #[test]
     fn test_sys_values_match_the_desktop_and_chrome() {
@@ -2829,9 +2884,10 @@ mod tests {
                 id: 200, style: MIS_TEXT | MIS_SUBMENU, attr: 0,
                 text: "~File".to_string(),
                 children: vec![
-                    MenuItem { id: 201, style: MIS_TEXT, attr: 0, text: "~About".to_string(), children: vec![] },
-                    MenuItem { id: 202, style: MIS_TEXT, attr: 0, text: "Exit".to_string(),   children: vec![] },
+                    MenuItem { id: 201, style: MIS_TEXT, attr: 0, text: "~About".to_string(), children: vec![], image: None },
+                    MenuItem { id: 202, style: MIS_TEXT, attr: 0, text: "Exit".to_string(),   children: vec![], image: None },
                 ],
+                image: None,
             };
             wm.get_window_mut(menu).unwrap().menu_items = vec![file_item];
             (frame, menu, client, hmq)

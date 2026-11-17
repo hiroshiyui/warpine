@@ -151,6 +151,20 @@ pub struct OS2Window {
     /// bounding rectangle of what was invalidated since the window last
     /// painted (`pm_paint.rs`).
     pub update: super::pm_rect::Rectl,
+    /// Height of a list box item in pels (`WM_MEASUREITEM` /
+    /// `LM_SETITEMHEIGHT`); 0 = the system font's line height.
+    pub item_height: i32,
+    /// List box item handles (`LM_SETITEMHANDLE`), parallel to
+    /// `listbox_items` (missing entries are 0).
+    pub item_handles: Vec<u32>,
+    /// Entry field text limit in characters (`EM_SETTEXTLIMIT`); 0 = none.
+    pub text_limit: usize,
+    /// The `BDS_*` state a user button was last painted in (`fsStateOld`).
+    pub drawn_state: u32,
+    /// A combination box's parts and state (`pm_combo.rs`).
+    pub combo: Option<super::pm_combo::ComboState>,
+    /// A spin button's values and state (`pm_spin.rs`).
+    pub spin: Option<Box<super::pm_spin::SpinState>>,
 }
 
 /// Map a PM colour value to 0x00RRGGBB with the default colour table: the
@@ -426,6 +440,15 @@ pub struct MenuItem {
     pub text: String,
     /// Nested items for `MIS_SUBMENU` entries.
     pub children: Vec<MenuItem>,
+    /// What the owner drew for a `MIS_OWNERDRAW` pull-down item
+    /// (`pm_owner.rs`): `owner_menu_item_w()` × `MENU_DROPDOWN_ITEM_H`
+    /// pels, rows top down; `None` = drawn as text.
+    pub image: Option<std::sync::Arc<Vec<u32>>>,
+}
+
+/// Width of an owner-drawn pull-down item: the pull-down less its edges.
+pub fn owner_menu_item_w() -> i32 {
+    super::constants::MENU_DROPDOWN_W - 2
 }
 
 /// Strip the `~` mnemonic marker from a menu item's text for display.
@@ -531,6 +554,11 @@ pub struct WindowManager {
     /// Key, button and pointer state (`WinGetKeyState`,
     /// `WinGetPhysKeyState`, `WinQueryPointerPos`; `pm_keystate.rs`).
     pub key_state: super::pm_keystate::InputState,
+    /// Owner-draw requests waiting to be sent to the owners of controls
+    /// (`pm_owner.rs`): `WM_MEASUREITEM`, `WM_DRAWITEM`, `BN_PAINT`.
+    pub owner_calls: Vec<super::pm_owner::OwnerCall>,
+    /// Message queues whose thread is running owner-draw calls now.
+    pub owner_drawing: HashSet<u32>,
 }
 
 /// The caret of a text control as last painted, in the surface coordinates
@@ -596,6 +624,8 @@ impl WindowManager {
             help: Default::default(),
             sys_colors: Default::default(),
             key_state: Default::default(),
+            owner_calls: Vec::new(),
+            owner_drawing: HashSet::new(),
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
@@ -641,6 +671,12 @@ impl WindowManager {
             check_state: 0,
             hilite: false,
             update: super::pm_rect::EMPTY_RECTL,
+            item_height: 0,
+            item_handles: Vec::new(),
+            text_limit: 0,
+            drawn_state: 0,
+            combo: None,
+            spin: None,
         });
         // Register as child of parent
         if parent != 0
@@ -917,7 +953,32 @@ impl WindowManager {
             }
             stack.extend(w.children.iter().rev().copied());
         }
+        // A dropped combination box list lies over the controls below it:
+        // painted last, hit first (pm_combo.rs).
+        if out.iter().any(|&h| self.is_dropped_list(h)) {
+            let (dropped, rest): (Vec<u32>, Vec<u32>) = out.into_iter().partition(|&h| self.is_dropped_list(h));
+            out = rest;
+            out.extend(dropped);
+        }
         out
+    }
+
+    /// The window holding the text of `hwnd`: the entry field of a
+    /// combination box or spin button, else `hwnd` itself.
+    pub fn text_window(&self, hwnd: u32) -> u32 {
+        let w = self.windows.get(&hwnd);
+        w.and_then(|w| w.combo.map(|c| c.entry).or_else(|| w.spin.as_ref().map(|s| s.entry)))
+            .unwrap_or(hwnd)
+    }
+
+    /// The window that takes the keyboard focus for `hwnd`: the entry field
+    /// of a combination box (also for its list) or of a spin button, else
+    /// `hwnd` itself.
+    pub fn focus_window_for(&self, hwnd: u32) -> u32 {
+        match self.combo_of(hwnd) {
+            Some(combo) => self.text_window(combo),
+            None => self.text_window(hwnd),
+        }
     }
 
     /// Whether `hwnd` is a push button (a `WC_BUTTON` of kind `BS_PUSHBUTTON`).
@@ -977,7 +1038,7 @@ impl WindowManager {
     /// template's choice) if it can take the focus, else the first tab stop,
     /// else the first control that can take the focus.
     pub fn initial_dialog_focus(&self, dialog: u32, preferred: Option<u32>) -> Option<u32> {
-        preferred.filter(|&h| self.can_take_focus(h))
+        preferred.map(|h| self.focus_window_for(h)).filter(|&h| self.can_take_focus(h))
             .or_else(|| self.tab_stops(dialog).first().copied())
             .or_else(|| self.builtin_control_descendants(dialog).into_iter().find(|&h| self.can_take_focus(h)))
     }
@@ -1060,6 +1121,7 @@ impl WindowManager {
     /// control that lost it and the one that gained it. Returns the
     /// previous focus window.
     pub fn set_focus(&mut self, hwnd: u32) -> u32 {
+        let hwnd = self.focus_window_for(hwnd);
         let old = std::mem::replace(&mut self.focus_hwnd, hwnd);
         // A control taking the focus shows its caret at once.
         if let Some(w) = self.windows.get_mut(&hwnd) {
@@ -1109,6 +1171,9 @@ impl WindowManager {
             // A held arrow or shaft repeats (the scroll bar checks that the
             // pointer is still on it); a dragged slider does not.
             w.scrollbar.held.and_then(|h| h.part.command())?;
+        } else if w.class_name == "WC_SPINBUTTON" {
+            // A held spin arrow repeats (pm_spin.rs).
+            w.spin.as_ref().and_then(|s| s.held)?;
         } else if !matches!(w.class_name.as_str(), "WC_ENTRYFIELD" | "WC_MLE" | "WC_LISTBOX") {
             return None;
         } else {
@@ -1160,7 +1225,10 @@ impl WindowManager {
             let w = self.windows.get(&h)?;
             if w.class_name == "WC_STATIC" || w.style & WS_DISABLED != 0 { return None; }
             let (ax, ay, cx, cy) = self.get_abs_rect_in_frame(h);
-            (x >= ax && x < ax + cx && y >= ay && y < ay + cy).then_some((h, x - ax, y - ay))
+            // A combination box itself is only its entry row (its arrow);
+            // below it lies its list, or what is under the box.
+            let bottom = if w.combo.is_some() { ay + cy - super::pm_combo::COMBO_ENTRY_H } else { ay };
+            (x >= ax && x < ax + cx && y >= bottom && y < ay + cy).then_some((h, x - ax, y - ay))
         })
     }
 

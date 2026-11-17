@@ -220,8 +220,8 @@ mod tests {
             let hmq = wm.tid_to_hmq[&0];
             let menu = wm.create_window("#Menu".into(), HWND_DESKTOP, hmq);
             wm.get_window_mut(menu).unwrap().menu_items = vec![
-                MenuItem { id: 7, style: 0, attr: 0, text: "~Open".into(), children: vec![] },
-                MenuItem { id: 8, style: 0, attr: 0, text: "~Save".into(), children: vec![] },
+                MenuItem { id: 7, style: 0, attr: 0, text: "~Open".into(), children: vec![], image: None },
+                MenuItem { id: 8, style: 0, attr: 0, text: "~Save".into(), children: vec![], image: None },
             ];
             menu
         };

@@ -100,8 +100,9 @@ impl super::Loader {
     pub(super) fn win_query_window_text_length(&self, tid: u32, hwnd: u32) -> ApiResult {
         if !self.pm_check_hwnd(tid, hwnd, false) { return ApiResult::Normal(0); }
         let cp = self.window_codepage(hwnd);
-        let text = self.shared.window_mgr.lock_or_recover().get_window(hwnd)
-            .map(|w| w.text.clone()).unwrap_or_default();
+        let wm = self.shared.window_mgr.lock_or_recover();
+        let text = wm.get_window(wm.text_window(hwnd)).map(|w| w.text.clone()).unwrap_or_default();
+        drop(wm);
         ApiResult::Normal(super::codepage::cp_encode(&text, cp).len() as u32)
     }
 

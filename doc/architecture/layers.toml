@@ -145,10 +145,10 @@ modules = [
 [[layer]]
 id = "controls"
 zone = "host"
-label = "Built-in controls: buttons, entry fields, MLE, list box, scroll bar"
+label = "Built-in controls: buttons, entry fields, MLE, list box, scroll bar, combo box, spin button, owner draw"
 modules = [
   "loader/pm_controls.rs", "loader/pm_button.rs", "loader/pm_list.rs", "loader/pm_edit.rs",
-  "loader/pm_scrollbar.rs",
+  "loader/pm_scrollbar.rs", "loader/pm_combo.rs", "loader/pm_spin.rs", "loader/pm_owner.rs",
 ]
 
 [[layer]]

@@ -29,7 +29,7 @@ use super::system_menu::{can_track, frame_system_menu_items, menu_popup_items};
 use crate::loader::pm_minmax::WinRect;
 use super::popup_menu::{PopupAction, PopupKey, PopupMenu};
 use super::vio_window::system_menu_items;
-use crate::loader::pm_types::{MenuItem, WindowManager, menu_label, menu_bar_item_width};
+use crate::loader::pm_types::{MenuItem, WindowManager, menu_label, menu_bar_item_width, owner_menu_item_w};
 use crate::loader::pm_input::InputEvent;
 use std::time::{Duration, Instant};
 use super::damage::{Damage, Rect, blit_clipped, fill_clipped};
@@ -452,6 +452,19 @@ fn draw_menu_pulldown(buf: &mut [u32], buf_w: usize, drop_x: i32, bar_bot: i32, 
         if child.style & MIS_SEPARATOR != 0 {
             let sep_y = row_top + MENU_DROPDOWN_ITEM_H / 2;
             draw_filled_rect(buf, buf_w, drop_x + 2, sep_y, dx1 - 2, sep_y + 1, MENU_EDGE_COLOR);
+        } else if let Some(image) = &child.image {
+            // MIS_OWNERDRAW: what the owner drew (pm_owner.rs), rows top down.
+            let w = owner_menu_item_w() as usize;
+            for (r, row) in image.chunks(w).enumerate() {
+                let y = row_top + r as i32;
+                if y < 0 || y as usize >= buf_h { continue; }
+                for (c, &p) in row.iter().enumerate() {
+                    let x = drop_x + 1 + c as i32;
+                    if x >= 0 && (x as usize) < buf_w {
+                        buf[y as usize * buf_w + x as usize] = p;
+                    }
+                }
+            }
         } else {
             draw_text_screen(buf, buf_w, buf_h, drop_x + 4, row_top,
                              &menu_label(&child.text), MENU_TEXT_COLOR, FontSpec { cjk, ..FontSpec::SYSTEM });
@@ -2850,7 +2863,7 @@ mod tests {
     use sdl3::keyboard::{Keycode, Mod as KeyMod, Scancode};
 
     fn menu_item(text: &str, style: u16, children: Vec<MenuItem>) -> MenuItem {
-        MenuItem { id: 0, style, attr: 0, text: text.to_string(), children }
+        MenuItem { id: 0, style, attr: 0, text: text.to_string(), children, image: None }
     }
 
     #[test]
@@ -3690,8 +3703,8 @@ mod compositor_tests {
     }
 
     fn items() -> Vec<MenuItem> {
-        let child = MenuItem { id: 11, style: 0, attr: 0, text: "~Open".into(), children: vec![] };
-        vec![MenuItem { id: 1, style: 0, attr: 0, text: "~File".into(), children: vec![child.clone(), child] }]
+        let child = MenuItem { id: 11, style: 0, attr: 0, text: "~Open".into(), children: vec![], image: None };
+        vec![MenuItem { id: 1, style: 0, attr: 0, text: "~File".into(), children: vec![child.clone(), child], image: None }]
     }
 
     #[test]
@@ -3720,7 +3733,7 @@ mod compositor_tests {
     #[test]
     fn chrome_cache_follows_the_cjk_face() {
         let mut c = ChromeCache::new();
-        let items = vec![MenuItem { id: 1, style: 0, attr: 0, text: "直骨".into(), children: vec![] }];
+        let items = vec![MenuItem { id: 1, style: 0, attr: 0, text: "直骨".into(), children: vec![], image: None }];
         assert!(!c.set_cjk(CjkRegion::Auto), "unchanged");
         c.set_cjk(CjkRegion::Japanese);
         c.sync("直骨", 200, FCF_TITLEBAR, 0, true, Some((&items, 0)), 196);

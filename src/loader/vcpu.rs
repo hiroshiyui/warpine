@@ -792,6 +792,19 @@ impl super::Loader {
                                             continue;
                                         }
                                     }
+                                    FrameKind::OwnerDraw { chain, call, hps, block_at, block_len } => {
+                                        // The owner drew (or measured): finish the
+                                        // call, then on with the chain.
+                                        let block: Vec<u32> = (0..block_len)
+                                            .map(|i| self.guest_read::<u32>(block_at + 4 * i).unwrap_or(0))
+                                            .collect();
+                                        self.owner_call_finish(&call, hps, result, &block);
+                                        continue_owner_draw(
+                                            &mut *vcpu, self, &mut callback_stack,
+                                            chain, frame.saved_rip, frame.saved_rsp,
+                                        );
+                                        continue;
+                                    }
                                     FrameKind::DestroyWindows { mut chain } => {
                                         // WM_DESTROY returned: on to the next window,
                                         // or back to the caller when all are done.
@@ -939,6 +952,15 @@ impl super::Loader {
                                     regs.rsp += self.moucalls_arg_bytes(ordinal - MOUCALLS_BASE);
                                 }
                                 vcpu.set_regs(&regs).unwrap();
+                                // Owner drawing queued by the call runs before
+                                // its result reaches the caller (pm_owner.rs).
+                                if let Some(hmq) = self.begin_owner_chain_for_thread(vcpu_id) {
+                                    let chain = Box::new(super::pm_owner::OwnerChain {
+                                        hmq, then: super::pm_owner::OwnerThen::Return(res),
+                                    });
+                                    continue_owner_draw(&mut *vcpu, self, &mut callback_stack,
+                                                        chain, regs.rip, regs.rsp);
+                                }
                             }
                             ApiResult::Callback { wnd_proc, hwnd, msg, mp1, mp2 } => {
                                 let mut regs = vcpu.get_regs().unwrap();
@@ -1293,6 +1315,15 @@ fn setup_dlg_dispatch(
                 if !(msg.msg == WM_PAINT && loader.repaint_control(msg.hwnd)) {
                     loader.dispatch_builtin_control(msg.hwnd, msg.msg, msg.mp1, msg.mp2);
                 }
+                // Owner drawing the control queued runs now; the loop goes
+                // on when it is done (pm_owner.rs).
+                if loader.shared.window_mgr.lock_or_recover().begin_owner_chain(hmq) {
+                    let chain = Box::new(super::pm_owner::OwnerChain {
+                        hmq, then: super::pm_owner::OwnerThen::DlgLoop { dlg_proc, hwnd_dlg, hmq },
+                    });
+                    continue_owner_draw(vcpu, loader, callback_stack, chain, saved_rip, saved_rsp);
+                    return true;
+                }
                 continue;
             }
 
@@ -1401,6 +1432,70 @@ fn continue_destroy(
     vcpu.set_regs(&regs).unwrap();
 }
 
+/// Go on with an owner-draw chain (`pm_owner.rs`): send the next owner
+/// call of the chain's queue under a `FrameKind::OwnerDraw` frame, its
+/// structure and arguments just below `saved_rsp`; calls without a guest
+/// procedure are finished at once. When none is left the chain ends with
+/// its `then`: the API result back to `saved_rip` / `saved_rsp`, or the
+/// modal dialog loop again.
+fn continue_owner_draw(
+    vcpu: &mut dyn super::vm_backend::VcpuBackend,
+    loader: &super::Loader,
+    callback_stack: &mut Vec<CallbackFrame>,
+    chain: Box<super::pm_owner::OwnerChain>,
+    saved_rip: u64,
+    saved_rsp: u64,
+) {
+    use super::pm_owner::{OwnerSetup, OwnerThen, OWNER_BLOCK_BYTES};
+    loop {
+        let next = loader.shared.window_mgr.lock_or_recover().next_owner_call(chain.hmq);
+        let Some(call) = next else {
+            loader.shared.window_mgr.lock_or_recover().end_owner_chain(chain.hmq);
+            match chain.then {
+                OwnerThen::Return(result) => {
+                    let mut regs = vcpu.get_regs().unwrap();
+                    regs.rip = saved_rip;
+                    regs.rsp = saved_rsp;
+                    regs.rax = result as u64;
+                    vcpu.set_regs(&regs).unwrap();
+                }
+                OwnerThen::DlgLoop { dlg_proc, hwnd_dlg, hmq } => {
+                    setup_dlg_dispatch(vcpu, loader, callback_stack, dlg_proc, hwnd_dlg, hmq,
+                                       saved_rip, saved_rsp);
+                }
+            }
+            return;
+        };
+        match loader.owner_call_setup(&call) {
+            OwnerSetup::Skip => loader.owner_call_finish(&call, 0, 0, &[]),
+            OwnerSetup::Call { wnd_proc, owner, msg, mp1, mp2, block, hps } => {
+                // The structure lies below the slot under saved_rsp, the
+                // call's return address and arguments below it.
+                let block_at = (saved_rsp - 4) as u32 - OWNER_BLOCK_BYTES;
+                let block_len = block.len().min((OWNER_BLOCK_BYTES / 4) as usize) as u32;
+                for (i, w) in block.iter().take(block_len as usize).enumerate() {
+                    loader.guest_write::<u32>(block_at + 4 * i as u32, *w).expect("owner-draw stack OOB");
+                }
+                let mp2 = if block_len > 0 { block_at } else { mp2 };
+                callback_stack.push(CallbackFrame {
+                    saved_rip,
+                    saved_rsp,
+                    kind: FrameKind::OwnerDraw { chain, call, hps, block_at, block_len },
+                });
+                let mut regs = vcpu.get_regs().unwrap();
+                regs.rsp = (block_at - 20) as u64;
+                let sp = regs.rsp as u32;
+                for (o, v) in [(0, CALLBACK_RET_TRAP), (4, owner), (8, msg), (12, mp1), (16, mp2)] {
+                    loader.guest_write::<u32>(sp + o, v).expect("owner-draw stack OOB");
+                }
+                regs.rip = wnd_proc as u64;
+                vcpu.set_regs(&regs).unwrap();
+                return;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1442,6 +1537,58 @@ mod tests {
             stack.pop();
         }
         assert_eq!(sps, vec![saved_rsp - 4 - DLG_CALL_FRAME_BYTES; 3]);
+    }
+
+    /// An owner-draw chain calls the owner's procedure with the structure
+    /// on the guest stack below the caller's, one call after the other, and
+    /// then returns the API's result to the caller.
+    #[test]
+    fn owner_draw_calls_run_below_the_callers_stack_then_return_the_result() {
+        use super::super::pm_owner::{OwnerCall, OwnerCallKind, OwnerChain, OwnerThen, OWNER_BLOCK_BYTES};
+        let loader = super::super::Loader::new_mock();
+        let (hmq, client, buttons) = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq(437);
+            wm.tid_to_hmq.insert(0, hmq);
+            wm.register_class("App".into(), 0x5000, 0);
+            let client = wm.create_window("App".into(), 0, hmq);
+            let mut buttons = Vec::new();
+            for id in [1, 2] {
+                let b = wm.create_window("WC_BUTTON".into(), client, hmq);
+                let w = wm.get_window_mut(b).unwrap();
+                (w.id, w.owner, w.style, w.cx, w.cy) = (id, client, BS_USERBUTTON, 40, 20);
+                wm.queue_owner_call(OwnerCall { control: b, kind: OwnerCallKind::UserButton });
+                buttons.push(b);
+            }
+            assert!(wm.begin_owner_chain(hmq));
+            (hmq, client, buttons)
+        };
+        let mut vcpu = MockVcpu::new();
+        let saved_rsp: u64 = 0x8_0000;
+        let mut stack = Vec::new();
+        let chain = Box::new(OwnerChain { hmq, then: OwnerThen::Return(77) });
+        continue_owner_draw(&mut vcpu, &loader, &mut stack, chain, 0x4000, saved_rsp);
+        for &button in &buttons {
+            let regs = vcpu.get_regs().unwrap();
+            assert_eq!(regs.rip, 0x5000, "the owner's window procedure");
+            let sp = regs.rsp as u32;
+            let block = saved_rsp as u32 - 4 - OWNER_BLOCK_BYTES;
+            assert_eq!(sp, block - 20);
+            let arg = |o: u32| loader.guest_read::<u32>(sp + o).unwrap();
+            assert_eq!((arg(0), arg(4), arg(8)), (CALLBACK_RET_TRAP, client, WM_CONTROL));
+            assert_eq!(arg(12) >> 16, BN_PAINT);
+            assert_eq!(arg(16), block, "mp2 = the USERBUTTON");
+            assert_eq!(loader.guest_read::<u32>(block).unwrap(), button);
+            // The procedure returns.
+            let Some(CallbackFrame { kind: FrameKind::OwnerDraw { chain, call, hps, .. }, saved_rip, saved_rsp }) = stack.pop()
+            else { panic!("an owner-draw frame") };
+            loader.owner_call_finish(&call, hps, 0, &[]);
+            continue_owner_draw(&mut vcpu, &loader, &mut stack, chain, saved_rip, saved_rsp);
+        }
+        let regs = vcpu.get_regs().unwrap();
+        assert_eq!((regs.rip, regs.rsp, regs.rax), (0x4000, saved_rsp, 77));
+        assert!(stack.is_empty());
+        assert!(!loader.shared.window_mgr.lock_or_recover().owner_drawing.contains(&hmq), "the chain ended");
     }
 
     // ── Thread ends ──────────────────────────────────────────────────────

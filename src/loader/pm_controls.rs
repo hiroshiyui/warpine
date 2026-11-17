@@ -26,6 +26,10 @@ pub(super) const CLASS_ENTRYFIELD: &str = "WC_ENTRYFIELD";
 pub(super) const CLASS_MLE: &str = "WC_MLE";
 pub(super) const CLASS_LISTBOX: &str = "WC_LISTBOX";
 
+/// Most items a list box holds (`LM_INSERTITEM` answers `LIT_MEMERROR`
+/// beyond; PM's indices are SHORTs).
+pub(super) const MAX_LIST_ITEMS: usize = 32767;
+
 /// Colour of the caret bar.
 const CONTROL_CARET_COLOR: u32 = 0x0000_0000;
 /// Background of the selected list box row.
@@ -92,23 +96,66 @@ pub(super) fn measure_in(face: FontSpec) -> impl Fn(&str) -> i32 + Copy + 'stati
 /// Number of whole text rows that fit in a control `cy` pixels high: rows run
 /// from the top down and a row must end above the bottom border.
 pub(super) fn control_visible_rows(cy: i32) -> usize {
-    ((cy - CONTROL_ROWS_TOP_INSET - 1).max(0) / CONTROL_LINE_H) as usize
+    rows_of(cy, CONTROL_LINE_H)
+}
+
+/// Number of whole rows `h` pixels high that fit in a control `cy` high.
+pub(super) fn rows_of(cy: i32, h: i32) -> usize {
+    ((cy - CONTROL_ROWS_TOP_INSET - 1).max(0) / h.max(1)) as usize
 }
 
 /// Bottom of visible row `row` (0 = top row), relative to the control's bottom.
 pub(super) fn control_row_y(cy: i32, row: usize) -> i32 {
-    cy - CONTROL_ROWS_TOP_INSET - CONTROL_LINE_H * (row as i32 + 1)
+    row_y_of(cy, row, CONTROL_LINE_H)
+}
+
+/// Bottom of visible row `row` of rows `h` pixels high.
+pub(super) fn row_y_of(cy: i32, row: usize, h: i32) -> i32 {
+    cy - CONTROL_ROWS_TOP_INSET - h * (row as i32 + 1)
 }
 
 /// The visible row under `local_y` (pixels above the control's bottom edge),
 /// or `None` in the margins above the first and below the last row.
+#[cfg(test)]
 pub(super) fn control_row_at(cy: i32, local_y: i32) -> Option<usize> {
+    row_at_of(cy, local_y, CONTROL_LINE_H)
+}
+
+/// [`control_row_at`] for rows `h` pixels high.
+pub(super) fn row_at_of(cy: i32, local_y: i32, h: i32) -> Option<usize> {
     let top = cy - CONTROL_ROWS_TOP_INSET;
     if local_y < 0 || local_y >= top {
         return None;
     }
-    let row = ((top - 1 - local_y) / CONTROL_LINE_H) as usize;
-    (row < control_visible_rows(cy)).then_some(row)
+    let row = ((top - 1 - local_y) / h.max(1)) as usize;
+    (row < rows_of(cy, h)).then_some(row)
+}
+
+/// `LM_SEARCHSTRING`: the first item of `items` after `start` (`None` =
+/// from the first item), wrapping round, that matches `needle` the way
+/// `flags` (`LSS_*`) asks.
+pub(super) fn search_items(items: &[String], needle: &str, flags: u32, start: Option<usize>) -> Option<usize> {
+    let fold = |s: &str| if flags & LSS_CASESENSITIVE != 0 { s.to_string() } else { s.to_lowercase() };
+    let needle = fold(needle);
+    let matches = |item: &str| {
+        let item = fold(item);
+        if flags & LSS_SUBSTRING != 0 {
+            item.contains(&needle)
+        } else if flags & LSS_PREFIX != 0 {
+            item.starts_with(&needle)
+        } else {
+            item == needle
+        }
+    };
+    let n = items.len();
+    let first = start.map_or(0, |s| s + 1);
+    (0..n).map(|k| (first + k) % n).find(|&i| matches(&items[i]))
+}
+
+/// Height of one item row of list box `win`: the owner's
+/// (`WM_MEASUREITEM`, `LM_SETITEMHEIGHT`) or the system font's.
+pub(super) fn list_row_h(win: &super::pm_types::OS2Window) -> i32 {
+    if win.item_height > 0 { win.item_height } else { CONTROL_LINE_H }
 }
 
 /// First visible item of a list box: the stored scroll position, pulled back
@@ -199,15 +246,36 @@ fn store_selection(win: &mut super::pm_types::OS2Window, buf: &EditBuffer) {
 /// that the view scrolls by a row per pointer move. `None` above the first
 /// row of the content.
 fn row_under_pointer(top: usize, cy: i32, local_y: i32) -> Option<usize> {
-    let rows = control_visible_rows(cy);
-    let row = match control_row_at(cy, local_y) {
+    row_under_pointer_of(top, cy, local_y, CONTROL_LINE_H)
+}
+
+/// [`row_under_pointer`] for rows `h` pixels high.
+fn row_under_pointer_of(top: usize, cy: i32, local_y: i32, h: i32) -> Option<usize> {
+    let rows = rows_of(cy, h);
+    let row = match row_at_of(cy, local_y, h) {
         Some(row) => row as i64,
         None if local_y >= cy => -1,
         None if local_y < 0 => rows as i64,
-        None if local_y >= control_row_y(cy, 0) => 0,
+        None if local_y >= row_y_of(cy, 0, h) => 0,
         None => rows as i64 - 1,
     };
     usize::try_from(top as i64 + row).ok()
+}
+
+/// How far right the text of entry field `win` starts in its view `view_w`
+/// wide: `ES_CENTER` and `ES_RIGHT` place text that fits (with the caret)
+/// in the middle or at the right; text that does not fit scrolls from the
+/// left as with `ES_LEFT`.
+fn align_offset(win: &super::pm_types::OS2Window, face: FontSpec, view_w: i32) -> i32 {
+    let align = win.style & (ES_CENTER | ES_RIGHT);
+    if align == 0 || win.class_name != CLASS_ENTRYFIELD {
+        return 0;
+    }
+    let room = view_w - CARET_W - font::text_width(&win.text, face);
+    if room <= 0 {
+        return 0;
+    }
+    if align & ES_RIGHT != 0 { room } else { room / 2 }
 }
 
 /// The character index of an edit control under the pointer at
@@ -229,7 +297,8 @@ fn edit_pos_at(win: &super::pm_types::OS2Window, multiline: bool, face: FontSpec
     let chars = &buf.chars()[lines[line].clone()];
     // Only the caret's line is scrolled horizontally.
     let first = if line == caret_line { win.edit_scroll.min(chars.len()) } else { 0 };
-    let col = first + pm_edit::caret_from_x(&chars[first..], local_x - CONTROL_TEXT_INSET, &measure_in(face));
+    let shift = if multiline { 0 } else { align_offset(win, face, win.cx - 2 * CONTROL_TEXT_INSET) };
+    let col = first + pm_edit::caret_from_x(&chars[first..], local_x - CONTROL_TEXT_INSET - shift, &measure_in(face));
     buf.pos_in_line(line, col)
 }
 
@@ -242,7 +311,7 @@ impl Loader {
     }
 
     /// Queue `msg` for `hwnd` on its message queue.
-    fn post_control_message(&self, hwnd: u32, msg: u32, mp1: u32, mp2: u32) {
+    pub(super) fn post_control_message(&self, hwnd: u32, msg: u32, mp1: u32, mp2: u32) {
         let wm = self.shared.window_mgr.lock_or_recover();
         if let Some(mq_arc) = wm.find_hmq_for_hwnd(hwnd).and_then(|hmq| wm.get_mq(hmq)) {
             let mut mq = mq_arc.lock_or_recover();
@@ -333,22 +402,27 @@ impl Loader {
     pub(super) fn paint_entry_field(&self, p: &Painter, hwnd: u32,
                                     (x, y, cx, cy): (i32, i32, i32, i32)) {
         let view_w = cx - 2 * CONTROL_TEXT_INSET;
-        let (buf, first, focused, caret_on) = {
+        let (buf, first, focused, caret_on, hilite, shift) = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             let focused = wm.focus_hwnd == hwnd;
+            // CBM_HILITE shows a combination box's field highlighted.
+            let hilite = wm.combo_of(hwnd).and_then(|c| wm.get_window(c)?.combo).is_some_and(|c| c.hilite);
             let Some(win) = wm.get_window_mut(hwnd) else { return };
             let buf = edit_buffer(win, false, p.font());
             let first = pm_edit::scroll_to_caret(
                 buf.chars(), buf.caret(), win.edit_scroll, view_w - CARET_W, &measure_in(p.font()));
             store_selection(win, &buf);
             win.edit_scroll = first;
-            (buf, first, focused, focused && !win.caret_off)
+            let shift = align_offset(win, p.font(), view_w);
+            (buf, first, focused, focused && !win.caret_off, hilite, shift)
         };
         // The selection shows while the field has the focus.
-        let selected = if focused { relative(buf.selection(), first) } else { 0..0 };
+        let selected = if hilite {
+            0..buf.chars().len()
+        } else if focused { relative(buf.selection(), first) } else { 0..0 };
         control_box(p, (x, y, cx, cy), CONTROL_FIELD_COLOR);
         let line_y = y + (cy - CONTROL_LINE_H) / 2;
-        let caret_x = draw_edit_line(p, (x + CONTROL_TEXT_INSET, line_y),
+        let caret_x = draw_edit_line(p, (x + CONTROL_TEXT_INSET + shift, line_y),
                                      view_w, &buf.chars()[first..], selected,
                                      focused.then(|| buf.caret() - first), caret_on, (y + 1, y + cy - 1));
         self.note_text_caret(p, hwnd, (x, line_y, cx), caret_x);
@@ -423,36 +497,75 @@ impl Loader {
     /// WC_LISTBOX: white field, one row per item from the first visible item;
     /// selected items are drawn highlighted and the cursor item has a dashed
     /// focus mark (the one of check boxes) while the list has the focus.
+    /// The items of an `LS_OWNERDRAW` list are left to its owner: each
+    /// visible item gets a `WM_DRAWITEM` (`pm_owner.rs`).
     pub(super) fn paint_listbox(&self, p: &Painter, hwnd: u32,
                                 (x, y, cx, cy): (i32, i32, i32, i32)) {
-        let (items, sel, top_row, focused) = {
+        let (count, top_row, row_h, owner_draw) = {
             let wm = self.shared.window_mgr.lock_or_recover();
             let Some(win) = wm.get_window(hwnd) else { return };
-            (win.listbox_items.clone(), win.listbox_sel.clone(), win.top_row, wm.focus_hwnd == hwnd)
+            (win.listbox_items.len(), win.top_row, list_row_h(win), win.style & LS_OWNERDRAW != 0)
         };
-        let rows = control_visible_rows(cy);
-        let top = listbox_top(top_row, items.len(), rows);
+        let rows = rows_of(cy, row_h);
+        let top = listbox_top(top_row, count, rows);
         control_box(p, (x, y, cx, cy), CONTROL_FIELD_COLOR);
-        for (i, item) in items.iter().enumerate().skip(top).take(rows) {
-            let row_y = y + control_row_y(cy, i - top);
-            let selected = sel.is_selected(i);
-            if selected {
-                p.fill((x + 1, row_y, x + cx - 1, row_y + CONTROL_LINE_H - 1), CONTROL_SELECT_COLOR);
-            }
-            // The focused list marks its cursor item, in white on a selected row.
-            if focused && sel.cursor() == Some(i) {
-                let color = if selected { CONTROL_SELECT_TEXT_COLOR } else { CONTROL_EMPHASIS_COLOR };
-                super::pm_button::focus_mark(p, (x + 1, row_y, x + cx - 2, row_y + CONTROL_LINE_H - 1), color);
-            }
-            let label = font::fit_text(item, cx - 2 * CONTROL_TEXT_INSET, p.font());
-            if !label.is_empty() {
-                p.op(DrawOp::Text {
-                    x: x + CONTROL_TEXT_INSET, y: row_y, text: label.to_string(),
-                    color: if selected { CONTROL_SELECT_TEXT_COLOR } else { CONTROL_TEXT_COLOR },
-                    cjk: p.cjk,
-                });
-            }
+        let visible = top..(top + rows).min(count);
+        if owner_draw {
+            self.queue_list_item_draws(hwnd, visible);
+            return;
         }
+        for i in visible {
+            self.paint_list_item(p, hwnd, i, (x, y, cx, cy));
+        }
+    }
+
+    /// Draw item `index` of list box `hwnd` (at `(x, y, cx, cy)` in its
+    /// frame's surface) the default way: its row background, the selection
+    /// highlight, the focus mark of the cursor item and the item's text,
+    /// centred in rows taller than the font. Nothing for an item out of view.
+    pub(super) fn paint_list_item(&self, p: &Painter, hwnd: u32, index: usize,
+                                  (x, y, cx, cy): (i32, i32, i32, i32)) {
+        let (item, selected, cursor, focused, row_h, top) = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            let Some(win) = wm.get_window(hwnd) else { return };
+            let Some(item) = win.listbox_items.get(index) else { return };
+            let row_h = list_row_h(win);
+            let top = listbox_top(win.top_row, win.listbox_items.len(), rows_of(cy, row_h));
+            (item.clone(), win.listbox_sel.is_selected(index), win.listbox_sel.cursor() == Some(index),
+             wm.focus_hwnd == hwnd, row_h, top)
+        };
+        let Some(row) = index.checked_sub(top).filter(|&r| r < rows_of(cy, row_h)) else { return };
+        let row_y = y + row_y_of(cy, row, row_h);
+        let rect = (x + 1, row_y, x + cx - 1, row_y + row_h - 1);
+        p.fill(rect, if selected { CONTROL_SELECT_COLOR } else { CONTROL_FIELD_COLOR });
+        // The focused list marks its cursor item, in white on a selected row.
+        if focused && cursor {
+            let color = if selected { CONTROL_SELECT_TEXT_COLOR } else { CONTROL_EMPHASIS_COLOR };
+            super::pm_button::focus_mark(p, (x + 1, row_y, x + cx - 2, row_y + row_h - 1), color);
+        }
+        let label = font::fit_text(&item, cx - 2 * CONTROL_TEXT_INSET, p.font());
+        if !label.is_empty() {
+            p.op(DrawOp::Text {
+                x: x + CONTROL_TEXT_INSET, y: row_y + (row_h - CONTROL_LINE_H).max(0) / 2,
+                text: label.to_string(),
+                color: if selected { CONTROL_SELECT_TEXT_COLOR } else { CONTROL_TEXT_COLOR },
+                cjk: p.cjk,
+            });
+        }
+    }
+
+    /// The rectangle of visible item `index` of list box `hwnd`, relative to
+    /// the list box, as `RECTL` (left, bottom, right, top; right and top
+    /// exclusive). `None` when the item is not in view.
+    pub(super) fn list_item_rect(&self, hwnd: u32, index: usize) -> Option<(i32, i32, i32, i32)> {
+        let wm = self.shared.window_mgr.lock_or_recover();
+        let win = wm.get_window(hwnd)?;
+        let row_h = list_row_h(win);
+        let rows = rows_of(win.cy, row_h);
+        let top = listbox_top(win.top_row, win.listbox_items.len(), rows);
+        let row = index.checked_sub(top).filter(|&r| r < rows && index < win.listbox_items.len())?;
+        let y = row_y_of(win.cy, row, row_h);
+        Some((1, y, win.cx - 1, y + row_h))
     }
 
     // ── Input ────────────────────────────────────────────────────────────────
@@ -484,8 +597,9 @@ impl Loader {
                     let wm = self.shared.window_mgr.lock_or_recover();
                     wm.get_window(hwnd).and_then(|w| {
                         let count = w.listbox_items.len();
-                        let top = listbox_top(w.top_row, count, control_visible_rows(cy));
-                        control_row_at(cy, local_y).map(|row| top + row).filter(|&i| i < count)
+                        let h = list_row_h(w);
+                        let top = listbox_top(w.top_row, count, rows_of(cy, h));
+                        row_at_of(cy, local_y, h).map(|row| top + row).filter(|&i| i < count)
                     })
                 };
                 if let Some(item) = item {
@@ -516,6 +630,8 @@ impl Loader {
             wm.drag_pointer = (local_x, local_y);
         }
         self.repaint_control(hwnd);
+        // The field of a CBS_DROPDOWNLIST drops its list (pm_combo.rs).
+        self.combo_part_pressed(hwnd);
         ApiResult::Normal(1)
     }
 
@@ -527,8 +643,9 @@ impl Loader {
         let on_item = {
             let wm = self.shared.window_mgr.lock_or_recover();
             wm.get_window(hwnd).is_some_and(|w| {
-                let top = listbox_top(w.top_row, w.listbox_items.len(), control_visible_rows(cy));
-                control_row_at(cy, mouse_pos(mp1).1)
+                let h = list_row_h(w);
+                let top = listbox_top(w.top_row, w.listbox_items.len(), rows_of(cy, h));
+                row_at_of(cy, mouse_pos(mp1).1, h)
                     .is_some_and(|row| top + row < w.listbox_items.len())
             })
         };
@@ -555,9 +672,10 @@ impl Loader {
                 let wm = self.shared.window_mgr.lock_or_recover();
                 wm.get_window(hwnd).and_then(|w| {
                     let count = w.listbox_items.len();
-                    let top = listbox_top(w.top_row, count, control_visible_rows(cy));
+                    let h = list_row_h(w);
+                    let top = listbox_top(w.top_row, count, rows_of(cy, h));
                     let last = count.checked_sub(1)?;
-                    Some(row_under_pointer(top, cy, local_y).unwrap_or(0).min(last))
+                    Some(row_under_pointer_of(top, cy, local_y, h).unwrap_or(0).min(last))
                 })
             };
             if let Some(item) = item {
@@ -602,10 +720,15 @@ impl Loader {
 
     /// WM_BUTTON1UP on an entry field, MLE or list box: let go of it.
     pub(super) fn control_button_up(&self, hwnd: u32) -> ApiResult {
-        let mut wm = self.shared.window_mgr.lock_or_recover();
-        if wm.pressed_control == hwnd {
+        {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            if wm.pressed_control != hwnd {
+                return ApiResult::Normal(1);
+            }
             wm.pressed_control = 0;
         }
+        // An item picked in a dropped combination box list closes it.
+        self.combo_part_released(hwnd);
         ApiResult::Normal(1)
     }
 
@@ -814,6 +937,11 @@ impl Loader {
             if changed && is_read_only(win) {
                 return true;
             }
+            // EM_SETTEXTLIMIT: typing stops at the limit.
+            if changed && win.text_limit > 0 && buf.chars().len() > win.text_limit
+                && buf.chars().len() > win.text.chars().count() {
+                return true;
+            }
             if changed {
                 win.text = buf.text();
             }
@@ -877,7 +1005,7 @@ impl Loader {
             let wm = self.shared.window_mgr.lock_or_recover();
             let Some(win) = wm.get_window(hwnd) else { return false };
             let Some(last) = win.listbox_items.len().checked_sub(1) else { return true };
-            let page = control_visible_rows(win.cy).saturating_sub(1).max(1);
+            let page = rows_of(win.cy, list_row_h(win)).saturating_sub(1).max(1);
             match (key, win.listbox_sel.cursor()) {
                 (EditKey::End, _) => last,
                 (EditKey::Up, Some(sel)) => sel.saturating_sub(1),
@@ -925,7 +1053,7 @@ impl Loader {
             }
             if let Some(i) = show {
                 win.top_row = pm_edit::scroll_to_row(
-                    i, win.top_row, control_visible_rows(win.cy), count);
+                    i, win.top_row, rows_of(win.cy, list_row_h(win)), count);
             }
             change(&mut win.listbox_sel, ListMode::from_style(win.style))
         };
@@ -1014,6 +1142,119 @@ impl Loader {
         let was = win.style & flag != 0;
         if read_only { win.style |= flag } else { win.style &= !flag }
         ApiResult::Normal(was as u32)
+    }
+
+    /// The other `LM_*` messages of a list box: item text, handles,
+    /// searching, the top index and the item height.
+    ///
+    /// * `LM_QUERYITEMTEXT`: mp1 = MPFROM2SHORT(index, cchMax), mp2 = buffer;
+    ///   copies at most cchMax − 1 bytes and a NUL, returns the bytes copied.
+    /// * `LM_QUERYITEMTEXTLENGTH`: mp1 = index; the text's length in bytes.
+    /// * `LM_SETITEMTEXT`: mp1 = index, mp2 = text. `LM_SETITEMHANDLE`:
+    ///   mp1 = index, mp2 = handle. `LM_QUERYITEMHANDLE`: mp1 = index.
+    /// * `LM_SEARCHSTRING`: mp1 = MPFROM2SHORT(`LSS_*`, index to start
+    ///   after or `LIT_FIRST`), mp2 = text; the first matching item after
+    ///   the start, wrapping round, or `LIT_NONE`. Without `LSS_PREFIX` or
+    ///   `LSS_SUBSTRING` the whole text must match; without
+    ///   `LSS_CASESENSITIVE` case is ignored.
+    /// * `LM_SETTOPINDEX` / `LM_QUERYTOPINDEX`: the first visible item.
+    /// * `LM_SETITEMHEIGHT`: mp1 = height in pels.
+    ///
+    /// An index out of range answers `LIT_ERROR` (the queries) or FALSE.
+    pub(super) fn listbox_message(&self, hwnd: u32, msg: u32, mp1: u32, mp2: u32) -> ApiResult {
+        let cp = self.window_codepage(hwnd);
+        let index = (mp1 & 0xFFFF) as u16 as i16;
+        let item = |w: &super::pm_types::OS2Window| usize::try_from(index).ok().filter(|&i| i < w.listbox_items.len());
+        let err = ApiResult::Normal(LIT_ERROR as u32);
+        match msg {
+            LM_QUERYITEMTEXT | LM_QUERYITEMTEXTLENGTH => {
+                let text = {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    let Some(w) = wm.get_window(hwnd) else { return err };
+                    let Some(i) = item(w) else { return err };
+                    super::codepage::cp_encode(&w.listbox_items[i], cp)
+                };
+                if msg == LM_QUERYITEMTEXTLENGTH {
+                    return ApiResult::Normal(text.len() as u32);
+                }
+                let max = (mp1 >> 16) as usize;
+                if max == 0 || mp2 == 0 {
+                    return ApiResult::Normal(0);
+                }
+                let n = text.len().min(max - 1);
+                let mut out = text[..n].to_vec();
+                out.push(0);
+                if self.guest_write_bytes(mp2, &out).is_none() {
+                    return ApiResult::Normal(0);
+                }
+                ApiResult::Normal(n as u32)
+            }
+            LM_SETITEMTEXT => {
+                let text = if mp2 != 0 { self.read_guest_string_cp(mp2, cp) } else { String::new() };
+                let ok = {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    let Some(w) = wm.get_window_mut(hwnd) else { return ApiResult::Normal(0) };
+                    match item(w) {
+                        Some(i) => { w.listbox_items[i] = text; true }
+                        None => false,
+                    }
+                };
+                if ok { self.repaint_control(hwnd); }
+                ApiResult::Normal(ok as u32)
+            }
+            LM_SETITEMHANDLE | LM_QUERYITEMHANDLE => {
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let Some(w) = wm.get_window_mut(hwnd) else { return ApiResult::Normal(0) };
+                let Some(i) = item(w) else { return ApiResult::Normal(0) };
+                if msg == LM_QUERYITEMHANDLE {
+                    return ApiResult::Normal(w.item_handles.get(i).copied().unwrap_or(0));
+                }
+                if w.item_handles.len() < w.listbox_items.len() {
+                    w.item_handles.resize(w.listbox_items.len(), 0);
+                }
+                w.item_handles[i] = mp2;
+                ApiResult::Normal(1)
+            }
+            LM_SEARCHSTRING => {
+                let needle = if mp2 != 0 { self.read_guest_string_cp(mp2, cp) } else { String::new() };
+                let flags = mp1 & 0xFFFF;
+                let start = (mp1 >> 16) as u16 as i16;
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let Some(w) = wm.get_window(hwnd) else { return err };
+                let found = search_items(&w.listbox_items, &needle, flags, usize::try_from(start).ok());
+                ApiResult::Normal(found.map_or(LIT_NONE as u32, |i| i as u32))
+            }
+            LM_SETTOPINDEX => {
+                let ok = {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    let Some(w) = wm.get_window_mut(hwnd) else { return ApiResult::Normal(0) };
+                    match item(w) {
+                        Some(i) => { w.top_row = i; true }
+                        None => false,
+                    }
+                };
+                if ok { self.repaint_control(hwnd); }
+                ApiResult::Normal(ok as u32)
+            }
+            LM_QUERYTOPINDEX => {
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let Some(w) = wm.get_window(hwnd) else { return ApiResult::Normal(LIT_NONE as u32) };
+                if w.listbox_items.is_empty() {
+                    return ApiResult::Normal(LIT_NONE as u32);
+                }
+                ApiResult::Normal(listbox_top(w.top_row, w.listbox_items.len(), rows_of(w.cy, list_row_h(w))) as u32)
+            }
+            LM_SETITEMHEIGHT => {
+                let h = (mp1 as i32).clamp(0, super::pm_owner::MAX_ITEM_HEIGHT);
+                if h == 0 { return ApiResult::Normal(0); }
+                if let Some(w) = self.shared.window_mgr.lock_or_recover().get_window_mut(hwnd) {
+                    w.item_height = h;
+                }
+                self.repaint_control(hwnd);
+                ApiResult::Normal(1)
+            }
+            _ => ApiResult::Normal(0),
+        }
     }
 
     /// LM_QUERYSELECTION: mp1 = index to search after (`LIT_FIRST` = from the
@@ -2491,5 +2732,84 @@ mod tests {
         // Focus elsewhere: no area until a text control has it again.
         fx.loader.set_focus_window(0);
         assert_eq!(fx.loader.shared.window_mgr.lock_or_recover().text_input_area(768), None);
+    }
+
+    fn put_str(fx: &Fixture, at: u32, t: &str) -> u32 {
+        fx.loader.guest_write_bytes(at, format!("{t}\0").as_bytes()).unwrap();
+        at
+    }
+
+    #[test]
+    fn list_item_text_handles_and_top_index_messages() {
+        let fx = fixture();
+        let list = list_with(&fx, 5);
+        let buf = 0x0008_0000;
+        assert_eq!(fx.send(list, LM_QUERYITEMTEXT, 2 | (16 << 16), buf), 6);
+        assert_eq!(fx.loader.guest_read_bytes(buf, 7).unwrap(), b"Item 2\0");
+        assert_eq!(fx.send(list, LM_QUERYITEMTEXT, 2 | (4 << 16), buf), 3, "cut to cchMax - 1");
+        assert_eq!(fx.loader.guest_read_bytes(buf, 4).unwrap(), b"Ite\0");
+        assert_eq!(fx.send(list, LM_QUERYITEMTEXTLENGTH, 4, 0), 6);
+        assert_eq!(fx.send(list, LM_QUERYITEMTEXTLENGTH, 9, 0) as i32, LIT_ERROR);
+        let t = put_str(&fx, 0x0008_0100, "Changed");
+        assert_eq!(fx.send(list, LM_SETITEMTEXT, 1, t), 1);
+        assert_eq!(fx.with(list, |w| w.listbox_items[1].clone()), "Changed");
+        assert_eq!(fx.send(list, LM_SETITEMHANDLE, 3, 0xCAFE), 1);
+        assert_eq!(fx.send(list, LM_QUERYITEMHANDLE, 3, 0), 0xCAFE);
+        assert_eq!(fx.send(list, LM_QUERYITEMHANDLE, 2, 0), 0);
+        // Handles follow their items when one is inserted before them.
+        fx.send(list, LM_INSERTITEM, 0, t);
+        assert_eq!(fx.send(list, LM_QUERYITEMHANDLE, 4, 0), 0xCAFE);
+        assert_eq!(fx.send(list, LM_SETTOPINDEX, 2, 0), 1);
+        assert_eq!(fx.send(list, LM_QUERYTOPINDEX, 0, 0), 2);
+        assert_eq!(fx.send(list, LM_SETTOPINDEX, 99, 0), 0);
+        assert_eq!(fx.send(list, LM_SETITEMHEIGHT, 30, 0), 1);
+        assert_eq!(fx.with(list, |w| w.item_height), 30);
+    }
+
+    #[test]
+    fn list_search_and_sorted_insertion() {
+        let items: Vec<String> = ["apple", "Banana", "cherry", "banana split"].iter().map(|s| s.to_string()).collect();
+        assert_eq!(search_items(&items, "banana", 0, None), Some(1), "whole text, any case");
+        assert_eq!(search_items(&items, "banana", LSS_CASESENSITIVE, None), None);
+        assert_eq!(search_items(&items, "ban", LSS_PREFIX, Some(1)), Some(3), "after the start");
+        assert_eq!(search_items(&items, "an", LSS_SUBSTRING, Some(3)), Some(1), "wraps round");
+        let fx = fixture();
+        let list = fx.add(CLASS_LISTBOX, ID_LIST, LIST_RECT, "");
+        for (i, t) in ["pear", "apple", "fig"].iter().enumerate() {
+            let at = put_str(&fx, 0x0008_0000 + 32 * i as u32, t);
+            fx.send(list, LM_INSERTITEM, LIT_SORTASCENDING as u32 & 0xFFFF, at);
+        }
+        assert_eq!(fx.with(list, |w| w.listbox_items.clone()), vec!["apple", "fig", "pear"]);
+        let needle = put_str(&fx, 0x0008_0200, "FI");
+        assert_eq!(fx.send(list, LM_SEARCHSTRING, LSS_PREFIX | ((LIT_FIRST as u32 & 0xFFFF) << 16), needle), 1);
+    }
+
+    #[test]
+    fn owner_drawn_rows_take_the_measured_height() {
+        let fx = fixture();
+        let list = list_with(&fx, 5);
+        fx.with(list, |w| w.item_height = 18);
+        // LIST_RECT is 54 high: two 18-pel rows fit (the top inset).
+        let texts = fx.drawn_texts(list);
+        assert_eq!(texts.len(), 2);
+        assert_eq!(fx.loader.list_item_rect(list, 1), Some((1, 54 - CONTROL_ROWS_TOP_INSET - 36, 199, 54 - CONTROL_ROWS_TOP_INSET - 18)));
+        assert_eq!(fx.loader.list_item_rect(list, 2), None);
+    }
+
+    #[test]
+    fn centred_and_right_aligned_entry_fields_and_the_text_limit() {
+        let fx = fixture();
+        let entry = fx.add(CLASS_ENTRYFIELD, ID_ENTRY, ENTRY_RECT, "ab");
+        let left = fx.drawn_texts(entry)[0].0;
+        fx.with(entry, |w| w.style |= ES_RIGHT);
+        let right = fx.drawn_texts(entry)[0].0;
+        fx.with(entry, |w| w.style = (w.style & !ES_RIGHT) | ES_CENTER);
+        let centre = fx.drawn_texts(entry)[0].0;
+        assert!(left < centre && centre < right, "{left} {centre} {right}");
+        assert_eq!(fx.send(entry, EM_SETTEXTLIMIT, 3, 0), 1);
+        fx.loader.set_focus_window(entry);
+        fx.with(entry, |w| (w.edit_anchor, w.edit_caret) = (2, 2));
+        fx.type_text(entry, "cd");
+        assert_eq!(fx.text(entry), "abc", "typing stops at the limit");
     }
 }

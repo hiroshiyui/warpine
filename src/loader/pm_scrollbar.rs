@@ -436,7 +436,7 @@ impl Loader {
 
 /// A filled triangle in the button `(x, y, w, h)` pointing to the bar's
 /// first end (`first`: up / left) or its last end.
-fn draw_arrow(p: &Painter, (x, y, w, h): (i32, i32, i32, i32), vertical: bool, first: bool, color: u32) {
+pub(super) fn draw_arrow(p: &Painter, (x, y, w, h): (i32, i32, i32, i32), vertical: bool, first: bool, color: u32) {
     // As many rows as half its base: 1, 3, 5, ... pels wide.
     let height = ((w.min(h) - 2 * ARROW_GLYPH_INSET) / 2).max(1);
     let (mx, my) = (x + (w - 1) / 2, y + (h - 1) / 2);
