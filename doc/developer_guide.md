@@ -645,6 +645,8 @@ run_text_loop(renderer, shared)
 
 **CGA palette**: `CGA_PALETTE: [u32; 16]` — ARGB8888 values indexed by 4-bit colour nibble (bits 3:0 for foreground, 7:4 for background in the attribute byte).
 
+**Scripted sessions**: `SdlTextRenderer` loads `WARPINE_GUI_SCRIPT` like the PM renderer (`GuiScript::from_env`). Each pass turns the due `key` / `text` steps into SDL key and text events (`sdl_renderer::script_input_to_event`) that go through the normal keyboard path into `kbd_queue`, drops host keyboard events meanwhile (`is_host_input`), and after them carries out `dump PATH`: the text buffer is rendered afresh with the cursor shown and written as a PPM (`gui_script::write_ppm`). Mouse steps have no effect in the text window. The window opens only when stdout is a terminal, so a headless capture runs under a pseudo-terminal: `SDL_VIDEODRIVER=dummy WARPINE_GUI_SCRIPT=s.script script -qec "target/debug/warpine samples/4os2/4os2.exe" /dev/null` (the integration test `text_mode_window_replays_a_gui_script_and_dumps_the_screen` and the README screenshot do this).
+
 ### Keyboard input
 
 #### SDL mode
@@ -1446,7 +1448,7 @@ cargo clippy --all-targets -- -D warnings   # lint, test code included
 
 The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`) runs both and aborts the commit on a failing test or any lint.
 
-The unit tests (980: 951 warpine + 18 `gen_api` + 11 `lx_link`) include, among others:
+The unit tests (981: 952 warpine + 18 `gen_api` + 11 `lx_link`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -1546,10 +1548,10 @@ CLI samples should print output and exit with code 0. PM samples should open a w
 
 ### Automated integration tests
 
-`tests/integration.rs` contains 53 end-to-end tests that run real OS/2 sample binaries under KVM: CLI samples (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test, ne_hello, rust_hello, …) with headless output checks, and PM samples driven by GUI scripts on SDL's `dummy` driver — the self-checking samples (`pm_dialog_test`, `pm_list_test`, `pm_msgbox_test`, `pm_typeahead_test`, `pm_codepage_test`, `pm_pointer_test`, `pm_audio_test`, `pm_menu_dlg_test`, …) must report every check as passed, and desktop dumps are compared with golden tile signatures (see "GUI regression tests" below). Each test skips itself when `/dev/kvm` or its sample binary is missing.
+`tests/integration.rs` contains 54 end-to-end tests that run real OS/2 sample binaries under KVM: CLI samples (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test, ne_hello, rust_hello, …) with headless output checks, and PM samples driven by GUI scripts on SDL's `dummy` driver — the self-checking samples (`pm_dialog_test`, `pm_list_test`, `pm_msgbox_test`, `pm_typeahead_test`, `pm_codepage_test`, `pm_pointer_test`, `pm_audio_test`, `pm_menu_dlg_test`, …) must report every check as passed, and desktop dumps are compared with golden tile signatures (see "GUI regression tests" below). Each test skips itself when `/dev/kvm` or its sample binary is missing.
 
 ```bash
-cargo test --test integration     # 53 end-to-end tests (requires /dev/kvm)
+cargo test --test integration     # 54 end-to-end tests (requires /dev/kvm)
 ```
 
 ---
@@ -1711,7 +1713,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 980 unit tests (951 warpine + 18 gen_api + 11 lx_link), 53 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 981 unit tests (952 warpine + 18 gen_api + 11 lx_link), 54 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
