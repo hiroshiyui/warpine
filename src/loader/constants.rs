@@ -435,7 +435,6 @@ pub const MAX_WINDOW_COORD: i32 = 1 << 20;
 
 // Mock handle constants
 pub const MOCK_HAB: u32 = 0x1234;
-pub const MOCK_HPOINTER: u32 = 0x5000;
 
 // OS/2 error codes
 pub const NO_ERROR: u32 = 0;
@@ -654,6 +653,10 @@ pub const SV_CYTITLEBAR:   i32 = 30;
 pub const SV_CYMENU:       i32 = 35;
 pub const SV_CXFULLSCREEN: i32 = 36;
 pub const SV_CYFULLSCREEN: i32 = 37;
+pub const SV_CXPOINTER:    i32 = 40;
+pub const SV_CYPOINTER:    i32 = 41;
+pub const SV_POINTERLEVEL: i32 = 44;
+pub const SV_MOUSEPRESENT: i32 = 48;
 
 // WinQueryWindow relationship codes (QW_*, <pmwin.h>)
 pub const QW_NEXT:   i32 = 0;
@@ -811,11 +814,36 @@ pub const MB_ERROR:            u32 = MB_CRITICAL;
 /// Adds a Help push button that sends `WM_HELP` to the message box.
 pub const MB_HELP:             u32 = 0x2000;
 
-// System pointers of the message-box icons (WinQuerySysPointer SPTR_*).
+// System pointers (WinQuerySysPointer SPTR_*, <pmwin.h>); the icons are
+// also the message-box icons.
+pub const SPTR_ARROW:           u32 = 1;
+pub const SPTR_TEXT:            u32 = 2;
+pub const SPTR_WAIT:            u32 = 3;
+pub const SPTR_SIZE:            u32 = 4;
+pub const SPTR_MOVE:            u32 = 5;
+pub const SPTR_SIZENWSE:        u32 = 6;
+pub const SPTR_SIZENESW:        u32 = 7;
+pub const SPTR_SIZEWE:          u32 = 8;
+pub const SPTR_SIZENS:          u32 = 9;
+pub const SPTR_APPICON:         u32 = 10;
 pub const SPTR_ICONINFORMATION: u32 = 11;
 pub const SPTR_ICONQUESTION:    u32 = 12;
 pub const SPTR_ICONERROR:       u32 = 13;
 pub const SPTR_ICONWARNING:     u32 = 14;
+pub const SPTR_ILLEGAL:         u32 = 18;
+pub const SPTR_FILE:            u32 = 19;
+pub const SPTR_PROGRAM:         u32 = 22;
+pub const SPTR_PENFIRST:        u32 = 23;
+pub const SPTR_CPTR:            u32 = 39;
+/// System pointer handles are this plus the `SPTR_*` index; pointers made
+/// by WinLoadPointer and copies from WinQuerySysPointer get handles from
+/// `FIRST_CREATED_HPOINTER` up, never reused.
+pub const SYS_HPOINTER_BASE:      u32 = 0x5000;
+pub const FIRST_CREATED_HPOINTER: u32 = 0x5100;
+/// Side of the pointers of the display (SV_CXPOINTER / SV_CYPOINTER) and
+/// the largest pointer image WinLoadPointer accepts.
+pub const POINTER_SIZE:    u32 = 32;
+pub const MAX_POINTER_DIM: u32 = 256;
 
 // WinMessageBox return values (MBID_*)
 pub const MBID_OK:     u32 = 1;
@@ -925,6 +953,9 @@ pub const SEVERITY_UNRECOVERABLE: u32 = 0x0010;
 // PM error codes (<pmerr.h>): the low word of a WinGetLastError value.
 pub const PMERR_INVALID_HWND:             u32 = 0x1001;
 pub const PMERR_INVALID_HMQ:              u32 = 0x1002;
+pub const PMERR_PARAMETER_OUT_OF_RANGE:   u32 = 0x1003;
+pub const PMERR_RESOURCE_NOT_FOUND:       u32 = 0x100A;
+pub const PMERR_INVALID_HPTR:             u32 = 0x101B;
 pub const PMERR_NO_MSG_QUEUE:             u32 = 0x1036;
 pub const PMERR_MSG_QUEUE_ALREADY_EXISTS: u32 = 0x1052;
 

@@ -9,6 +9,7 @@ pub mod damage;
 pub mod frame_stats;
 pub mod gui_script;
 pub mod message;
+pub mod pointer;
 pub mod renderer;
 pub mod surface;
 pub mod audio;

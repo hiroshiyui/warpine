@@ -320,6 +320,9 @@ impl super::Loader {
 
                 match msg {
                     WM_CLOSE => { self.post_wm_quit(hwnd); }
+                    // "The default window procedure sets the pointer shape":
+                    // the arrow (pm_pointer.rs).
+                    WM_MOUSEMOVE => { self.default_mouse_pointer(); }
                     // Frame controls changed: show the frame's current menu
                     // (standard frames; dialogs do not take menus yet).
                     WM_UPDATEFRAME => {
@@ -976,15 +979,31 @@ impl super::Loader {
                 ApiResult::Normal(copy_len as u32)
             }
             828 => {
-                // WinQuerySysPointer(HWND hwndDesktop, LONG iptr, BOOL fLoad)
-                // Return a fake pointer handle
-                ApiResult::Normal(MOCK_HPOINTER)
+                // WinQuerySysPointer(HWND hwndDesktop, LONG iptr, BOOL fCopy)
+                self.win_query_sys_pointer(vcpu_id, read_stack(4), read_stack(8), read_stack(12) != 0)
             }
             829 => {
                 // WinQuerySysValue(HWND hwndDesktop, LONG iSysValue)
                 let _hwnd = read_stack(4);
                 let sys_val = read_stack(8) as i32;
-                ApiResult::Normal(sys_value(sys_val) as u32)
+                let v = self.pointer_sys_value(sys_val).unwrap_or_else(|| sys_value(sys_val));
+                ApiResult::Normal(v as u32)
+            }
+            821 => {
+                // WinQueryPointer(HWND hwndDesktop)
+                self.win_query_pointer(vcpu_id, read_stack(4))
+            }
+            881 => {
+                // WinShowPointer(HWND hwndDesktop, BOOL fShow)
+                self.win_show_pointer(vcpu_id, read_stack(4), read_stack(8) != 0)
+            }
+            780 => {
+                // WinLoadPointer(HWND hwndDesktop, HMODULE hmod, ULONG idres)
+                self.win_load_pointer(vcpu_id, read_stack(4), read_stack(8), read_stack(12))
+            }
+            727 => {
+                // WinDestroyPointer(HPOINTER hptr)
+                self.win_destroy_pointer(vcpu_id, read_stack(4))
             }
             841 => {
                 // WinQueryWindowText(HWND hwnd, LONG cchBufferMax, PCH pchBuffer)
@@ -1106,8 +1125,7 @@ impl super::Loader {
             }
             866 => {
                 // WinSetPointer(HWND hwndDesktop, HPOINTER hptrNew)
-                // Stub - cursor changing not supported
-                ApiResult::Normal(1)
+                self.win_set_pointer(vcpu_id, read_stack(4), read_stack(8))
             }
             875 => {
                 // WinSetWindowPos(HWND hwnd, HWND hwndInsertBehind, LONG x, LONG y, LONG cx, LONG cy, ULONG fl)

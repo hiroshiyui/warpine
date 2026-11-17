@@ -16,6 +16,8 @@ pub enum GUIMessage {
     /// Ask the SDL backend to capture the mouse (`MouseUtil::capture`).
     /// `hwnd` is the capturing window (0 = release capture).
     SetMouseCapture(u32),
+    /// Show this pointer as the host mouse cursor (`None` hides it).
+    SetPointer(Option<super::pointer::PointerShape>),
 }
 
 /// Hook a renderer installs so other threads can interrupt its wait.

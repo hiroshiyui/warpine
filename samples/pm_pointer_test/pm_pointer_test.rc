@@ -1,0 +1,5 @@
+/* pm_pointer_test.rc - pointers built by make_ptr.py */
+#include "pm_pointer_test.h"
+
+POINTER ID_PTR_CROSS cross.ptr
+POINTER ID_PTR_ARRAY array.ptr

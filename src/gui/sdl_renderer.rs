@@ -660,6 +660,8 @@ pub struct SdlRenderer {
     native_wait: bool,
     /// Mouse capture during drags (`SetMouseCapture`).
     mouse: sdl3::mouse::MouseUtil,
+    /// The host cursor showing the PM pointer (`SetPointer`).
+    pointer: super::pointer::HostPointer,
     /// Shift / Ctrl / Alt as `KC_*` flags, from the last key event; mouse
     /// messages report them in `fsInp` (high word of mp2).
     key_mods: u32,
@@ -734,6 +736,7 @@ impl SdlRenderer {
             clipboard_synced: false,
             native_wait,
             mouse: sdl.mouse(),
+            pointer: super::pointer::HostPointer::new(sdl.mouse()),
             audio: {
                 let mut a = super::audio::SdlAudio::new(sdl);
                 let slot = wake_slot.clone();
@@ -1302,6 +1305,7 @@ impl PmRenderer for SdlRenderer {
                 // hwnd == 0 releases capture; any other value acquires it.
                 self.mouse.capture(hwnd != 0);
             }
+            GUIMessage::SetPointer(shape) => self.pointer.apply(shape),
         }
     }
 

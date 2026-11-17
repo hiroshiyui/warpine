@@ -760,6 +760,18 @@ fn gui_pm_error_test_reports_last_errors() {
     assert_sample_checks_pass("samples/pm_error_test/pm_error_test.exe", "pm_error_test", 36);
 }
 
+/// pm_pointer_test: system pointer handles and copies, WinSetPointer /
+/// WinQueryPointer (NULLHANDLE removes the pointer), the WinShowPointer
+/// display level, WinLoadPointer from RT_POINTER resources (a
+/// black-and-white pointer and a bitmap array written by make_ptr.py),
+/// WinDestroyPointer, and the arrow set by WinDefWindowProc on
+/// WM_MOUSEMOVE. The host cursor follows; the dummy video driver has none,
+/// which the program must not notice.
+#[test]
+fn gui_pm_pointer_test_sets_and_loads_pointers() {
+    assert_sample_checks_pass("samples/pm_pointer_test/pm_pointer_test.exe", "pm_pointer_test", 42);
+}
+
 /// pm_typeahead_test: keyboard input is routed when the program reads it.
 /// The client is busy for 600 ms after 'n' and then focuses the first entry
 /// field; "ab" typed meanwhile goes there, and "cd" typed after a click on
