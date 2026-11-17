@@ -66,6 +66,7 @@ Open work is grouped by topic:
 | Codepages and NLS | DosMapCase — full SBCS + DBCS + CP866 | Complete | Developer Guide §16 |
 | Codepages and NLS | NLS ordinals 5–8 as in `<bseord.h>` (`DosQueryCtryInfo`, `DosQueryDBCSEnv`, `DosMapCase`, `DosQueryCollate`), short buffers truncated | Complete | Developer Guide, NLS; `samples/nls_test/` |
 | Console | `VioCheckCharType` at VIOCALLS 75 (`VIO16CHECKCHARTYPE`), `VioWrtCellStr`, VIO screen codepage from `DosSetProcessCp`; VIOCALLS by-name table and 4OS2 `viowrap.c` checked against `os2386.lib` | Complete | `src/loader/viocalls.rs`, `samples/dbcs_test/` |
+| Codepages and NLS | Starting country and codepage from the host locale, `WARPINE_COUNTRY` / `WARPINE_CODEPAGE` (the Watcom CRT no longer hangs with non-US countries) | Complete | `src/loader/locale.rs`, Developer Guide, NLS |
 | Networking | TCP/IP Socket API — SO32DLL/TCP32DLL (51 thunks: socket/bind/connect/listen/accept/send/recv/select/setsockopt/getsockopt/gethostbyname/getservbyname/…) | Complete | `src/loader/tcpip.rs`, `samples/socket_test/` |
 | Developer tools | Developer tooling (crash dump, GDB stub, API ring buffer) | Complete | Developer Guide §19 |
 | Developer tools | Rust Guest Toolchain | Complete | Targets, lx-link linker, warpine-os2 crate family, rust_hello sample, test_rust_hello |
@@ -148,7 +149,8 @@ From a code review of the PM rendering path (`src/gui/sdl_renderer.rs`, `rendere
 
 Codepages of PM text (message queues, presentation spaces) are under "Presentation Manager".
 
-- [ ] **A configurable default codepage** — the process codepage always starts as 437 (`locale.rs` `map_country` returns country 1 / CP437 because the Watcom CRT crashes on non-US country codes without NLS DLLs), so an app that relies on the machine's `CODEPAGE=` (e.g. 932) without calling `DosSetProcessCp` shows garbled text — the same failure as a non-Unicode Windows program under a different "Language for non-Unicode programs". Add a setting such as `WARPINE_CODEPAGE=932` (or take it from the host locale) for the process and new message queues, keeping the country code at 1 unless the CRT crash is understood. The CRT start-up call to `DosQueryDBCSEnv` (NLS 6) used to get country information, which made the country and codepage bytes look like lead-byte ranges; NLS 5–8 are now right, so check whether non-US country codes still crash
+No open items.
+
 
 ---
 
