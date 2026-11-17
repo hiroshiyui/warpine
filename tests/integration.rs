@@ -151,6 +151,104 @@ fn test_dbcs_env_and_vio_char_types() {
     }
 }
 
+/// ansi_test: ANSI escape sequences written with VioWrtTTY and DosWrite,
+/// read back with VioReadCellStr / VioGetCurPos. Headless with a piped
+/// standard output the bytes reach the pipe unchanged, and the VIO screen
+/// still follows them.
+#[test]
+fn test_ansi_escape_sequences_headless() {
+    let sample = "samples/ansi_test/ansi_test.exe";
+    if !kvm_available() || !Path::new(sample).exists() { return; }
+    let (out, code) = run_sample(sample, 15);
+    let failures: Vec<&str> = out.lines().filter(|l| l.contains("FAIL")).collect();
+    assert!(failures.is_empty(), "failures: {failures:?}\n{out}");
+    assert!(out.contains("done: 0 failed"), "incomplete (exit {code}):\n{out}");
+    assert!(out.contains("ok ESC[2J clears the screen") && out.contains("ok a sequence split across writes"),
+            "checks missing:\n{out}");
+    assert!(out.contains("\x1b[2J"), "the escape bytes reach the pipe as they are");
+    assert_eq!(code, 0);
+}
+
+/// ansi_test in a VIO window (a pseudo-terminal; WARPINE_GUI_SCRIPT only
+/// ends the session): the same checks on the screen the window shows. The
+/// results are read from C:\ANSI_TEST.OUT.
+#[test]
+fn test_ansi_escape_sequences_in_a_vio_window() {
+    let sample = "samples/ansi_test/ansi_test.exe";
+    let has_script = Command::new("script").arg("--version").output().is_ok_and(|o| o.status.success());
+    if !kvm_available() || !Path::new(sample).exists() || !has_script { return; }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let session = dir.path().join("session.script");
+    std::fs::write(&session, "5000 quit\n").unwrap();
+    let status = Command::new("script")
+        .args(["-qec", &format!("timeout 30 {} {sample}", warpine())])
+        .arg("/dev/null")
+        .envs(PINNED_LOCALE.iter().copied())
+        .env("SDL_VIDEODRIVER", "dummy")
+        .env("SDL_AUDIODRIVER", "dummy")
+        .env("RUST_LOG", "error")
+        .env("XDG_DATA_HOME", dir.path())
+        .env("WARPINE_GUI_SCRIPT", &session)
+        .env_remove("WARPINE_VIO")
+        .env_remove("WARPINE_HEADLESS")
+        .stdout(Stdio::null())
+        .status()
+        .expect("run script");
+    assert!(status.success(), "ansi_test session failed: {status}");
+    let drive_c = dir.path().join("warpine/drive_c");
+    let file = std::fs::read_dir(&drive_c).expect("no C: drive").flatten()
+        .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case("ANSI_TEST.OUT"))
+        .expect("ansi_test wrote no result file");
+    let out = std::fs::read_to_string(file.path()).unwrap();
+    let failures: Vec<&str> = out.lines().filter(|l| l.contains("FAIL")).collect();
+    assert!(failures.is_empty(), "failures: {failures:?}\n{out}");
+    assert!(out.contains("done: 0 failed"), "incomplete:\n{out}");
+}
+
+/// 4OS2 reading commands from a pipe: once the input is used up, its
+/// waiting KbdCharIn ends the process (exit code 0) instead of polling
+/// forever.
+#[test]
+fn test_4os2_ends_at_the_end_of_piped_input() {
+    let sample = "samples/4os2/4os2.exe";
+    if !kvm_available() || !Path::new(sample).exists() { return; }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut child = Command::new(warpine())
+        .arg(sample)
+        .envs(PINNED_LOCALE.iter().copied())
+        .env("RUST_LOG", "error")
+        .env("XDG_DATA_HOME", dir.path())
+        .env("SDL_VIDEODRIVER", "dummy")
+        .env("SDL_AUDIODRIVER", "dummy")
+        .env_remove("WARPINE_VIO")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn warpine");
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"echo piped-Qz7\r\necho saved > out.txt\r\n").unwrap();
+    } // closed: end of input
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() { break s; }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("4OS2 kept waiting for keys after the end of its piped input");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut out = String::new();
+    use std::io::Read;
+    child.stdout.take().unwrap().read_to_string(&mut out).unwrap();
+    assert_eq!(status.code(), Some(0), "exit status at the end of input:\n{out}");
+    assert!(out.contains("piped-Qz7"), "the piped command ran:\n{out}");
+    let saved = std::fs::read_to_string(dir.path().join("warpine/drive_c/out.txt")).unwrap_or_default();
+    assert_eq!(saved, "saved\r\n", "echo > file wrote the file");
+}
+
 /// audio_test: DosBeep and mciSendString through MDM loaded at run time
 /// (`open waveaudio alias …` opens the device by name). Runs headless, so
 /// no sound is played and DosBeep returns at once.
@@ -161,6 +259,22 @@ fn test_audio() {
     assert!(out.contains("Failed: 0"), "audio_test failed (exit {code}):\n{out}");
 }
 
+/// socket_test: SO32DLL loaded at run time, sockets over loopback. The only
+/// accepted failure is `select` (see doc/TODOs.md, "Sockets: select").
+#[test]
+fn test_sockets_over_loopback() {
+    if !kvm_available() || !Path::new("samples/socket_test/socket_test.exe").exists() { return; }
+    let (out, _code) = run_sample("samples/socket_test/socket_test.exe", 20);
+    for line in ["PASS  setsockopt(SO_REUSEADDR)", "PASS  getsockopt(SO_TYPE)",
+                 "PASS  connect(loopback)", "PASS  accept()"] {
+        assert!(out.contains(line), "missing '{line}':\n{out}");
+    }
+    let unexpected: Vec<&str> = out.lines()
+        .filter(|l| l.contains("FAIL") && !l.contains("select("))
+        .collect();
+    assert!(unexpected.is_empty(), "unexpected failures {unexpected:?}:\n{out}");
+}
+
 /// thread_test: DosCreateThread / DosWaitThread.
 #[test]
 fn test_thread() {
@@ -168,6 +282,40 @@ fn test_thread() {
     let (out, code) = run_sample("samples/thread_test/thread_test.exe", 15);
     assert_eq!(code, 0, "thread_test exited with {code}\nstdout:\n{out}");
     assert!(out.contains("Hello from child thread!"), "thread output:\n{out}");
+}
+
+/// thread_exit_test: a thread ending with DosExit(EXIT_THREAD) or by
+/// returning ends only itself; DosWaitThread reports it (once, by id or as
+/// "any thread"; not thread 1 or the caller); 100 threads come and go; the
+/// main thread carries on and the exit code is that of its final
+/// DosExit(EXIT_PROCESS, 3).
+#[test]
+fn test_thread_exit_ends_only_the_thread() {
+    const SAMPLE: &str = "samples/thread_exit_test/thread_exit_test.exe";
+    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    let (out, code) = run_sample(SAMPLE, 30);
+    let checks: Vec<&str> = out.lines()
+        .filter(|l| l.starts_with("thread_exit_test: ") && !l.contains(": done")).collect();
+    assert!(checks.len() >= 21, "every check reported:\n{out}");
+    let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
+    assert!(failed.is_empty(), "failed checks: {failed:#?}");
+    assert!(out.contains(&format!("thread_exit_test: done {n}/{n}", n = checks.len())), "{out}");
+    assert_eq!(code, 3, "exit code of DosExit(EXIT_PROCESS, 3)\n{out}");
+}
+
+/// thread_last_test: thread 1 ends with DosExit(EXIT_THREAD) while another
+/// thread runs; the process goes on until that last thread ends with
+/// DosExit(EXIT_THREAD, 5), whose result becomes the exit code.
+#[test]
+fn test_thread_exit_of_the_last_thread_ends_the_process() {
+    const SAMPLE: &str = "samples/thread_exit_test/thread_last_test.exe";
+    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    let (out, code) = run_sample(SAMPLE, 15);
+    assert!(out.contains("thread_exit_test: DosCreateThread(last thread): ok"), "{out}");
+    assert!(out.contains("thread_exit_test: main thread ends"), "{out}");
+    assert!(out.contains("thread_exit_test: last thread ends the process"), "{out}");
+    assert!(!out.contains("FAIL"), "{out}");
+    assert_eq!(code, 5, "exit code of the last thread's DosExit(EXIT_THREAD, 5)\n{out}");
 }
 
 /// pipe_test: DosCreatePipe, DosWrite, DosRead.
@@ -682,13 +830,26 @@ type WindowedSession = (Vec<Screen>, std::path::PathBuf, tempfile::TempDir);
 /// Returns the dumps and C:'s host directory (removed when the `TempDir`
 /// is dropped); `None` when KVM, 4OS2 or `script` is missing.
 fn run_4os2_windowed(steps: &str, dumps: usize) -> Option<WindowedSession> {
+    run_4os2_windowed_with(steps, dumps, &[])
+}
+
+/// [`run_4os2_windowed`] with `files` (host paths) copied to drive C:'s root
+/// first; `None` also when one of them is missing.
+fn run_4os2_windowed_with(steps: &str, dumps: usize, files: &[&str]) -> Option<WindowedSession> {
     let sample = "samples/4os2/4os2.exe";
     let has_script = Command::new("script").arg("--version").output().is_ok_and(|o| o.status.success());
-    if !kvm_available() || !Path::new(sample).exists() || !has_script {
-        eprintln!("skipping: KVM, {sample} or util-linux script not available");
+    if !kvm_available() || !Path::new(sample).exists() || !has_script
+        || files.iter().any(|f| !Path::new(f).exists()) {
+        eprintln!("skipping: KVM, {sample}, {files:?} or util-linux script not available");
         return None;
     }
     let dir = tempfile::tempdir().expect("tempdir");
+    let drive_c = dir.path().join("warpine/drive_c");
+    std::fs::create_dir_all(&drive_c).unwrap();
+    for f in files {
+        let name = Path::new(f).file_name().unwrap();
+        std::fs::copy(f, drive_c.join(name)).unwrap();
+    }
     let paths: Vec<_> = (0..dumps).map(|i| dir.path().join(format!("screen{i}.ppm"))).collect();
     let mut text = steps.to_string();
     for (i, p) in paths.iter().enumerate() {
@@ -717,7 +878,7 @@ fn run_4os2_windowed(steps: &str, dumps: usize) -> Option<WindowedSession> {
     let shots = paths.iter().map(|p| {
         parse_ppm(&std::fs::read(p).unwrap_or_else(|e| panic!("no screen dump {}: {e}", p.display())))
     }).collect();
-    let drive_c = dir.path().join("warpine/drive_c");
+    // `drive_c` was created above.
     Some((shots, drive_c, dir))
 }
 
@@ -815,6 +976,40 @@ fn vio_window_copy_all_and_paste_round_trip() {
     let Some((_, drive_c, _dir)) = run_4os2_windowed(steps, 1) else { return };
     assert!(has_dir(&drive_c, "Mq9"), "the pasted `md Mq9` ran: {:?}",
             std::fs::read_dir(&drive_c).map(|d| d.flatten().map(|e| e.file_name()).collect::<Vec<_>>()));
+}
+
+/// Pels of row `row` of the VIO window's cells that are not black, from the
+/// second cell on (the first pels of the first cell are the frame's edge).
+fn lit_in_cell_row(shot: &(usize, usize, Vec<u8>), row: usize) -> usize {
+    (VIO_CELLS_Y + row * 16..VIO_CELLS_Y + row * 16 + 16).flat_map(|y| {
+        (VIO_CELLS_X + 8..VIO_CELLS_X + 80 * 8).map(move |x| (x, y))
+    }).filter(|&(x, y)| gui_pixel(shot, x, y) != 0).count()
+}
+
+/// 4OS2's `cls` writes `ESC[2J`, which the VIO screen carries out (it was
+/// shown as a literal `[2J`); `echo … > file`, `>>` and an external program's
+/// `> file` write the file (DosDupHandle redirects handle 1 to the file).
+#[test]
+fn vio_window_4os2_cls_and_redirection() {
+    let steps = "\
+        1500 text echo one > a.txt\n1600 key enter\n\
+        1900 text echo two >> a.txt\n2000 key enter\n\
+        2300 text hello.exe > c.txt\n2400 key enter\n\
+        3300 dump {dump0}\n\
+        3400 text cls\n3500 key enter\n\
+        3900 dump {dump1}\n\
+        4000 quit\n";
+    let Some((shots, drive_c, _dir)) = run_4os2_windowed_with(steps, 2, &["samples/hello/hello.exe"]) else { return };
+    let read = |name: &str| std::fs::read(drive_c.join(name)).unwrap_or_default();
+    assert_eq!(read("a.txt"), b"one\r\ntwo\r\n", "echo > and >> wrote the file");
+    assert!(read("c.txt").starts_with(b"Hello from Warpine OS/2 Environment!\r\n"),
+            "the child's output went to the file: {:?}", String::from_utf8_lossy(&read("c.txt")));
+    // Before cls: the banner on rows 1-3; after: blank rows below the prompt.
+    assert!(lit_in_cell_row(&shots[0], 2) > 200, "the banner before cls");
+    assert!(lit_in_cell_row(&shots[1], 0) + lit_in_cell_row(&shots[1], 1) > 50, "the prompt after cls");
+    for row in 2..8 {
+        assert_eq!(lit_in_cell_row(&shots[1], row), 0, "row {row} is blank after cls");
+    }
 }
 
 /// Mark a rectangle with the mouse (shown inverted, title "Marking: "),
@@ -1170,7 +1365,7 @@ fn gui_pm_msgbox_test_matches_golden() {
 /// caret blink rate (SV_CURSORRATE) and rejects a rate of 0 / a bad desktop.
 #[test]
 fn gui_pm_error_test_reports_last_errors() {
-    assert_sample_checks_pass("samples/pm_error_test/pm_error_test.exe", "pm_error_test", 113);
+    assert_sample_checks_pass("samples/pm_error_test/pm_error_test.exe", "pm_error_test", 114);
 }
 
 /// pm_window_test: WinIsWindowVisible (the window and all its parents),
@@ -1239,6 +1434,56 @@ fn gui_pm_minmax_test_minimizes_maximizes_and_restores() {
 fn gui_pm_minmax_test_matches_golden() {
     check_gui_golden("pm_minmax_test", "samples/pm_minmax_test/pm_minmax_test.exe",
         "1500 dblclick 300 42\n2000 dblclick 300 8\n2500 key alt+f9\n3000 dump {dump}\n3100 quit\n");
+}
+
+/// pm_sysmenu_test: a frame's system menu opened by a click on its icon,
+/// Shift+Esc and Alt+Space; items chosen by mnemonic and by a click arrive
+/// as WM_SYSCOMMAND(SC_*, CMDSRC_MENU, fPointer) — one the client
+/// intercepts —; Alt+F7 / Alt+F8 and the menu's Move / Size move and size
+/// the frame with the arrow keys (Esc restores); WinPopupMenu with
+/// PU_POSITIONONITEM puts the item under the pointer and a click on it
+/// posts WM_COMMAND. The frame is the default one at desktop (32, 32):
+/// system-menu icon around (43, 42); after the keyboard moves it is at
+/// (40, 40) and its menu's Close item at y 165–180.
+#[test]
+fn gui_pm_sysmenu_test_opens_the_system_menu_and_tracks_with_the_keyboard() {
+    let steps = "\
+        1000 click 43 42\n\
+        1500 key m\n\
+        1800 key right\n\
+        1900 key right\n\
+        2000 key down\n\
+        2100 key enter\n\
+        2500 key alt+f8\n\
+        2800 key right\n\
+        2900 key right\n\
+        3000 key down\n\
+        3100 key down\n\
+        3200 key esc\n\
+        3600 key alt+f7\n\
+        3900 key left\n\
+        4000 key enter\n\
+        4400 key shift+esc\n\
+        4700 key x\n\
+        5100 key alt+space\n\
+        5400 key s\n\
+        5700 key right\n\
+        5800 key right\n\
+        5900 key enter\n\
+        6300 rclick 310 300\n\
+        6700 click 316 300\n\
+        7100 key alt+space\n\
+        7400 click 60 173\n\
+        9000 quit\n";
+    assert_scripted_checks_pass("samples/pm_sysmenu_test/pm_sysmenu_test.exe", "pm_sysmenu_test", 44, steps);
+}
+
+/// pm_sysmenu_test with its system menu open (a click on the icon): Restore
+/// and Hide greyed, accelerator texts right-aligned, Window list greyed.
+#[test]
+fn gui_pm_sysmenu_test_matches_golden() {
+    check_gui_golden("pm_sysmenu_test", "samples/pm_sysmenu_test/pm_sysmenu_test.exe",
+        "1000 click 43 42\n1300 dump {dump}\n1400 quit\n");
 }
 
 /// pm_codepage_test: PM text follows the message queue's codepage
