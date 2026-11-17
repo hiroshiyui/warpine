@@ -65,6 +65,9 @@ pub struct WindowClass {
     pub name: String,
     pub pfn_wp: u32,
     pub style: u32,
+    /// Bytes of window words the class reserves (`cbWindowData` of
+    /// `WinRegisterClass`); `None` when not known.
+    pub cb_window_data: Option<u32>,
 }
 
 pub struct OS2Window {
@@ -484,7 +487,11 @@ impl WindowManager {
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
-        self.classes.insert(name.clone(), WindowClass { name, pfn_wp, style });
+        self.classes.insert(name.clone(), WindowClass { name, pfn_wp, style, cb_window_data: None });
+    }
+    /// Record the `cbWindowData` class `name` was registered with.
+    pub fn set_class_window_data(&mut self, name: &str, cb: u32) {
+        if let Some(c) = self.classes.get_mut(name) { c.cb_window_data = Some(cb); }
     }
     pub fn get_class(&self, name: &str) -> Option<&WindowClass> {
         self.classes.get(name)

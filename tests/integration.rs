@@ -754,10 +754,12 @@ fn gui_pm_msgbox_test_matches_golden() {
 
 /// pm_error_test: failing PM calls leave their PMERR_* code (with
 /// SEVERITY_ERROR) for WinGetLastError, which resets it; a later success
-/// keeps it; each thread has its own last error.
+/// keeps it; each thread has its own last error. Covers PMERR_INVALID_HWND
+/// from the window, dialog-item and message calls, PMERR_PARAMETER_OUT_OF_RANGE,
+/// PMERR_INVALID_FLAG and PMERR_INVALID_HACCEL.
 #[test]
 fn gui_pm_error_test_reports_last_errors() {
-    assert_sample_checks_pass("samples/pm_error_test/pm_error_test.exe", "pm_error_test", 36);
+    assert_sample_checks_pass("samples/pm_error_test/pm_error_test.exe", "pm_error_test", 104);
 }
 
 /// pm_pointer_test: system pointer handles and copies, WinSetPointer /

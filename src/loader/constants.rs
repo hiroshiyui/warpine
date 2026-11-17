@@ -248,6 +248,7 @@ pub const HWND_TOP: u32          = 3; // Place window at the top of Z-order
 pub const HWND_BOTTOM: u32       = 4; // Place window at the bottom of Z-order
 pub const HWND_DESKTOP: u32      = 1; // PM desktop pseudo-handle (origin of coordinate space)
 pub const HWND_OBJECT: u32       = 2; // Parent of object windows (never shown)
+pub const HWND_THREADCAPTURE: u32 = 5; // WinSetCapture: capture to the calling thread
 
 // ── FCF_* frame creation flags (flCreateFlags in WinCreateStdWindow) ─────────
 // Values match OS/2 Warp 4 Toolkit <pmwin.h>.
@@ -665,6 +666,10 @@ pub const QW_TOP:    i32 = 2;
 pub const QW_BOTTOM: i32 = 3;
 pub const QW_OWNER:  i32 = 4;
 pub const QW_PARENT: i32 = 5;
+pub const QW_NEXTTOP:    i32 = 6;
+pub const QW_PREVTOP:    i32 = 7;
+/// The last relationship code; a larger (or negative) `lCode` is out of range.
+pub const QW_FRAMEOWNER: i32 = 8;
 
 // Common window style bits (flStyle in WinCreateWindow)
 pub const WS_VISIBLE:  u32 = 0x8000_0000;
@@ -676,6 +681,11 @@ pub const WS_MAXIMIZED: u32 = 0x0080_0000;
 
 // WinQueryWindowULong index of the window style.
 pub const QWL_STYLE: i32 = -2;
+// Lowest reserved window-word indices: WinQuery/SetWindowULong accept
+// QWL_MIN..=-1 and WinQuery/SetWindowUShort QWS_MIN..=-1 below the
+// application's own words (0 .. cbWindowData).
+pub const QWL_MIN: i32 = -11;
+pub const QWS_MIN: i32 = -1;
 
 // Frame window words (WinQueryWindowUShort / WinSetWindowUShort): where a
 // minimized or maximized frame is restored to, and where it was minimized.
@@ -955,6 +965,8 @@ pub const PMERR_INVALID_HWND:             u32 = 0x1001;
 pub const PMERR_INVALID_HMQ:              u32 = 0x1002;
 pub const PMERR_PARAMETER_OUT_OF_RANGE:   u32 = 0x1003;
 pub const PMERR_RESOURCE_NOT_FOUND:       u32 = 0x100A;
+pub const PMERR_INVALID_FLAG:             u32 = 0x1019;
+pub const PMERR_INVALID_HACCEL:           u32 = 0x101A;
 pub const PMERR_INVALID_HPTR:             u32 = 0x101B;
 pub const PMERR_NO_MSG_QUEUE:             u32 = 0x1036;
 pub const PMERR_MSG_QUEUE_ALREADY_EXISTS: u32 = 0x1052;
@@ -1078,7 +1090,9 @@ mod header_tests {
         // The WinGetLastError values must be compared, not skipped as unknown.
         for name in ["SEVERITY_NOERROR", "SEVERITY_WARNING", "SEVERITY_ERROR", "SEVERITY_SEVERE",
                      "SEVERITY_UNRECOVERABLE", "PMERR_INVALID_HWND", "PMERR_INVALID_HMQ",
-                     "PMERR_NO_MSG_QUEUE", "PMERR_MSG_QUEUE_ALREADY_EXISTS"] {
+                     "PMERR_NO_MSG_QUEUE", "PMERR_MSG_QUEUE_ALREADY_EXISTS",
+                     "PMERR_PARAMETER_OUT_OF_RANGE", "PMERR_INVALID_FLAG", "PMERR_INVALID_HACCEL",
+                     "QW_FRAMEOWNER", "QWL_MIN", "QWS_MIN", "HWND_THREADCAPTURE"] {
             assert!(defs.contains_key(name), "{name} is not defined in the toolkit headers");
         }
         assert!(wrong.is_empty(), "constants differ from the toolkit headers:\n{}", wrong.join("\n"));

@@ -102,10 +102,12 @@ impl super::Loader {
                 let psz_class_name_ptr = read_stack(8);
                 let pfn_wp = read_stack(12);
                 let style = read_stack(16);
-                let _cb_window_data = read_stack(20);
+                let cb_window_data = read_stack(20);
                 let name = self.read_guest_string(psz_class_name_ptr);
                 debug!("  [VCPU {}] WinRegisterClass: name='{}', pfn_wp=0x{:08X}", vcpu_id, name, pfn_wp);
-                self.shared.window_mgr.lock_or_recover().register_class(name, pfn_wp, style);
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                wm.register_class(name.clone(), pfn_wp, style);
+                wm.set_class_window_data(&name, cb_window_data);
                 ApiResult::Normal(1) // TRUE
             }
             908 => {
@@ -219,6 +221,8 @@ impl super::Loader {
                 // WinGetMsg(HAB hab, PQMSG pqmsg, HWND hwndFilter, ULONG msgFirst, ULONG msgLast):
                 // wait for a message; FALSE when it is WM_QUIT.
                 if !self.has_msg_queue(vcpu_id) { return self.pm_fail(vcpu_id, PMERR_NO_MSG_QUEUE); }
+                // A filter that is no window: FALSE, PMERR_INVALID_HWND.
+                if !self.pm_check_hwnd(vcpu_id, read_stack(12), true) { return ApiResult::Normal(0); }
                 match self.next_message(vcpu_id, read_stack(8), read_stack(12), read_stack(16),
                                         read_stack(20), PM_REMOVE, true) {
                     Some(msg) => ApiResult::Normal((msg != WM_QUIT) as u32),
@@ -229,6 +233,9 @@ impl super::Loader {
                 // WinPeekMsg(HAB hab, PQMSG pqmsg, HWND hwndFilter, ULONG msgFirst, ULONG msgLast, ULONG fl):
                 // TRUE when a message is there, removed with PM_REMOVE; never waits.
                 if !self.has_msg_queue(vcpu_id) { return self.pm_fail(vcpu_id, PMERR_NO_MSG_QUEUE); }
+                if !self.pm_check_hwnd(vcpu_id, read_stack(12), true) { return ApiResult::Normal(0); }
+                // fl is PM_REMOVE or PM_NOREMOVE; other bits are invalid.
+                if read_stack(24) & !PM_REMOVE != 0 { return self.pm_fail(vcpu_id, PMERR_INVALID_FLAG); }
                 let found = self.next_message(vcpu_id, read_stack(8), read_stack(12), read_stack(16),
                                               read_stack(20), read_stack(24), false);
                 ApiResult::Normal(found.is_some() as u32)
@@ -409,6 +416,7 @@ impl super::Loader {
                 let hwnd = read_stack(4);
                 let hps_in = read_stack(8);
                 let prcl = read_stack(12);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 let hps = if hps_in != 0 && wm.ps_map.contains_key(&hps_in) {
                     hps_in
@@ -451,6 +459,7 @@ impl super::Loader {
             757 => {
                 // WinGetPS(HWND hwnd) → HPS (freed by WinReleasePS)
                 let hwnd = read_stack(4);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 if wm.get_window(hwnd).is_none() { return ApiResult::Normal(0); }
                 let hps = wm.create_ps(hwnd);
@@ -468,6 +477,7 @@ impl super::Loader {
             794 => {
                 // WinOpenWindowDC(HWND hwnd) → HDC (one per window)
                 let hwnd = read_stack(4);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 if wm.get_window(hwnd).is_none() { return ApiResult::Normal(0); }
                 let existing = wm.dcs.iter()
@@ -551,6 +561,7 @@ impl super::Loader {
                 let hwnd = read_stack(4);
                 let show = read_stack(8) != 0;
                 debug!("  [VCPU {}] WinShowWindow hwnd={} show={}", vcpu_id, hwnd, show);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(win) = wm.get_window_mut(hwnd) {
                     win.visible = show;
@@ -562,6 +573,7 @@ impl super::Loader {
                 // WinQueryWindowRect(HWND hwnd, PRECTL prcl)
                 let hwnd = read_stack(4);
                 let prcl_ptr = read_stack(8);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 if prcl_ptr != 0 {
                     let wm = self.shared.window_mgr.lock_or_recover();
                     let (cx, cy) = wm.get_window(hwnd)
@@ -632,6 +644,7 @@ impl super::Loader {
                 let _hab = read_stack(4);
                 let hwnd = read_stack(8);
                 let id_timer = read_stack(12);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, true) { return ApiResult::Normal(0); }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some((stop, handle)) = wm.timers.remove(&(hwnd, id_timer)) {
                     stop.stop();
@@ -706,6 +719,7 @@ impl super::Loader {
                 let hwnd   = read_stack(4);
                 let result = read_stack(8);
                 debug!("  [VCPU {}] WinDismissDlg hwnd={} result={}", vcpu_id, hwnd, result);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 self.dismiss_dialog(hwnd, result);
                 ApiResult::Normal(1)
             }
@@ -754,6 +768,7 @@ impl super::Loader {
             765 => {
                 // WinInvalidateRect(HWND hwnd, PRECTL prcl, BOOL fIncludeChildren)
                 let hwnd = read_stack(4);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 // Post WM_PAINT to trigger repaint
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 wm.mark_dirty(hwnd); // VDR-B4
@@ -855,6 +870,7 @@ impl super::Loader {
                 // post WM_ACTIVATE to both the old and new active windows (VDR-D4).
                 let _hwnd_desktop = read_stack(4);
                 let hwnd = read_stack(8);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 let (prev, new_frame) = {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
                     let frame = {
@@ -898,8 +914,12 @@ impl super::Loader {
                 // WinSetFocus(HWND hwndDesktop, HWND hwndNewFocus) -> BOOL
                 // The focus window receives keyboard input; NULLHANDLE means
                 // no window has the focus (keys go to the active frame's client).
+                // A desktop window means the same (PM Reference, WinSetFocus
+                // remarks: no window on that desktop receives the focus).
                 let _hwnd_desktop = read_stack(4);
                 let hwnd = read_stack(8);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, true) { return ApiResult::Normal(0); }
+                let hwnd = if hwnd == HWND_DESKTOP { 0 } else { hwnd };
                 let exists = hwnd == 0
                     || self.shared.window_mgr.lock_or_recover().get_window(hwnd).is_some();
                 if exists {
@@ -932,6 +952,7 @@ impl super::Loader {
                 // WinProcessDlg(HWND hwndDlg) — run the modal dialog loop
                 let hwnd_dlg = read_stack(4);
                 debug!("  [VCPU {}] WinProcessDlg hwnd={}", vcpu_id, hwnd_dlg);
+                if !self.pm_check_hwnd(vcpu_id, hwnd_dlg, false) { return ApiResult::Normal(DID_CANCEL); }
                 let (pfn_wp, hmq) = {
                     let wm = self.shared.window_mgr.lock_or_recover();
                     let pfn = wm.get_window(hwnd_dlg).map(|w| w.pfn_wp).unwrap_or(0);
@@ -965,6 +986,7 @@ impl super::Loader {
                 let id_item = read_stack(8);
                 let cch_max = read_stack(12) as usize;
                 let buffer_ptr = read_stack(16);
+                if !self.pm_check_hwnd(vcpu_id, hwnd_dlg, false) { return ApiResult::Normal(0); }
                 let cp = self.window_codepage(hwnd_dlg);
                 let wm = self.shared.window_mgr.lock_or_recover();
                 let text = wm.find_child_by_id(hwnd_dlg, id_item)
@@ -1025,12 +1047,17 @@ impl super::Loader {
                 // WinQueryWindow(HWND hwnd, LONG lCode)
                 let hwnd = read_stack(4);
                 let code = read_stack(8) as i32;
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
+                if !(QW_NEXT..=QW_FRAMEOWNER).contains(&code) {
+                    return self.pm_fail(vcpu_id, PMERR_PARAMETER_OUT_OF_RANGE);
+                }
                 ApiResult::Normal(self.shared.window_mgr.lock_or_recover().query_window(hwnd, code))
             }
             843 => {
                 // WinQueryWindowULong(HWND hwnd, LONG index)
                 let hwnd = read_stack(4);
                 let index = read_stack(8) as i32;
+                if !self.pm_check_window_word(vcpu_id, hwnd, index, 4) { return ApiResult::Normal(0); }
                 let wm = self.shared.window_mgr.lock_or_recover();
                 let val = wm.get_window(hwnd).map_or(0, |w| if index == QWL_STYLE {
                     // The style, with WS_VISIBLE as the window is now.
@@ -1044,6 +1071,7 @@ impl super::Loader {
                 // WinQueryWindowUShort(HWND hwnd, LONG index)
                 let hwnd = read_stack(4);
                 let index = read_stack(8) as i32;
+                if !self.pm_check_window_word(vcpu_id, hwnd, index, 2) { return ApiResult::Normal(0); }
                 let val = self.shared.window_mgr.lock_or_recover().query_window_ushort(hwnd, index);
                 ApiResult::Normal(val as u32)
             }
@@ -1054,13 +1082,15 @@ impl super::Loader {
                 let msg      = read_stack(12);
                 let mp1      = read_stack(16);
                 let mp2      = read_stack(20);
+                if !self.pm_check_hwnd(vcpu_id, hwnd_dlg, false) { return ApiResult::Normal(0); }
                 let (child_hwnd, pfn_wp) = {
                     let wm = self.shared.window_mgr.lock_or_recover();
                     if let Some(ch) = wm.find_child_by_id(hwnd_dlg, id_item) {
                         (ch, wm.get_window(ch).map(|w| w.pfn_wp).unwrap_or(0))
                     } else { (0, 0) }
                 };
-                if child_hwnd == 0 { return ApiResult::Normal(0); }
+                // No such item: as WinSendMsg(WinWindowFromID(...)) to NULLHANDLE.
+                if child_hwnd == 0 { return self.pm_fail(vcpu_id, PMERR_INVALID_HWND); }
                 if pfn_wp != 0 {
                     return ApiResult::Callback { wnd_proc: pfn_wp, hwnd: child_hwnd, msg, mp1, mp2 };
                 }
@@ -1072,7 +1102,12 @@ impl super::Loader {
                 let haccel = read_stack(8);
                 let hwnd = read_stack(12);
                 debug!("  [VCPU {}] WinSetAccelTable haccel={} hwnd={}", vcpu_id, haccel, hwnd);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, true) { return ApiResult::Normal(0); }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
+                if haccel != 0 && wm.accel_table(haccel).is_none() {
+                    drop(wm);
+                    return self.pm_fail(vcpu_id, PMERR_INVALID_HACCEL);
+                }
                 wm.set_window_accel(hwnd, haccel);
                 ApiResult::Normal(1)
             }
@@ -1081,6 +1116,9 @@ impl super::Loader {
                 let _hwnd_desktop = read_stack(4);
                 let hwnd = read_stack(8);
                 debug!("  [VCPU {}] WinSetCapture hwnd={}", vcpu_id, hwnd);
+                if hwnd != HWND_THREADCAPTURE && !self.pm_check_hwnd(vcpu_id, hwnd, true) {
+                    return ApiResult::Normal(0);
+                }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 wm.capture_hwnd = hwnd;
                 if let Some(ref sender) = wm.gui_tx {
@@ -1115,6 +1153,7 @@ impl super::Loader {
                 let hwnd_dlg = read_stack(4);
                 let id_item = read_stack(8);
                 let psz_text = read_stack(12);
+                if !self.pm_check_hwnd(vcpu_id, hwnd_dlg, false) { return ApiResult::Normal(0); }
                 let text = self.read_guest_string_cp(psz_text, self.window_codepage(hwnd_dlg));
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(child_hwnd) = wm.find_child_by_id(hwnd_dlg, id_item)
@@ -1224,6 +1263,7 @@ impl super::Loader {
                 let hwnd = read_stack(4);
                 let index = read_stack(8) as i32;
                 let value = read_stack(12);
+                if !self.pm_check_window_word(vcpu_id, hwnd, index, 4) { return ApiResult::Normal(0); }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(win) = wm.get_window_mut(hwnd) {
                     win.window_ulong.insert(index, value);
@@ -1235,6 +1275,7 @@ impl super::Loader {
                 let hwnd = read_stack(4);
                 let index = read_stack(8) as i32;
                 let value = read_stack(12) as u16;
+                if !self.pm_check_window_word(vcpu_id, hwnd, index, 2) { return ApiResult::Normal(0); }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(win) = wm.get_window_mut(hwnd) {
                     win.window_ushort.insert(index, value);
@@ -1266,6 +1307,7 @@ impl super::Loader {
                 // WinUpdateWindow(HWND hwnd)
                 // Trigger a present buffer
                 let hwnd = read_stack(4);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 let frame_hwnd = wm.client_to_frame(hwnd);
                 wm.mark_dirty(frame_hwnd);
@@ -1295,6 +1337,10 @@ impl super::Loader {
                 // hwndInsertBehind (+40) — ignored for now
                 let id              = read_stack(44);
                 // pCtlData (+48), pPresParams (+52) — ignored
+                if !self.pm_check_hwnd(vcpu_id, hwnd_parent, false)
+                    || !self.pm_check_hwnd(vcpu_id, hwnd_owner, true) {
+                    return ApiResult::Normal(0);
+                }
 
                 // MAKEINTATOM atoms have high word 0xFFFF; also accept bare
                 // small integers (< 0x10000) for robustness.
@@ -1345,6 +1391,7 @@ impl super::Loader {
                 let hwnd   = read_stack(4);
                 let pfn_wp = read_stack(8);
                 debug!("  [VCPU {}] WinSubclassWindow hwnd={} pfn_wp=0x{:08X}", vcpu_id, hwnd, pfn_wp);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(win) = wm.get_window_mut(hwnd) {
                     let old = win.pfn_wp;
@@ -1356,26 +1403,24 @@ impl super::Loader {
             735 => {
                 // WinEnableWindow(HWND hwnd, BOOL fEnable) -> BOOL
                 //
-                // Toggles the WS_DISABLED style bit.  Returns the previous
-                // enabled state (TRUE = was enabled before this call).
+                // Sets or clears the WS_DISABLED style bit and returns TRUE:
+                // the PM Reference defines the result as "enabled state
+                // successfully updated", not the previous state.
                 let hwnd    = read_stack(4);
                 let enable  = read_stack(8) != 0;
                 debug!("  [VCPU {}] WinEnableWindow hwnd={} enable={}", vcpu_id, hwnd, enable);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
 
-                let was_enabled = {
+                {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
                     if let Some(win) = wm.get_window_mut(hwnd) {
-                        let prev = win.style & WS_DISABLED == 0; // was enabled?
                         if enable {
                             win.style &= !WS_DISABLED;
                         } else {
                             win.style |= WS_DISABLED;
                         }
-                        prev
-                    } else {
-                        true // non-existent window: treat as already enabled
                     }
-                };
+                }
 
                 // Notify the window proc of the state change via WM_ENABLE.
                 {
@@ -1393,7 +1438,7 @@ impl super::Loader {
                             mq.cond.notify_one();
                     }
                 }
-                ApiResult::Normal(was_enabled as u32)
+                ApiResult::Normal(1)
             }
             736 => {
                 // WinEnableWindowUpdate(HWND hwnd, BOOL fEnable)
@@ -1404,6 +1449,7 @@ impl super::Loader {
             773 => {
                 // WinIsWindowEnabled(HWND hwnd) -> BOOL
                 let hwnd = read_stack(4);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 let wm = self.shared.window_mgr.lock_or_recover();
                 let enabled = wm.get_window(hwnd)
                     .map(|w| w.style & WS_DISABLED == 0)
@@ -1413,18 +1459,24 @@ impl super::Loader {
             837 => {
                 // WinQueryWindowPos(HWND hwnd, PSWP pswp) -> BOOL
                 //
-                // Fills in a SWP structure (28 bytes) with the window's current
-                // position and size.
+                // Fills in the whole 36-byte SWP structure (<pmwin.h>) with
+                // the window's current position and size.
                 //
-                //   LONG   fl;               +0  SWP_MOVE | SWP_SIZE
+                //   LONG   fl;               +0  SWP_MOVE | SWP_SIZE, plus
+                //                                SWP_MINIMIZE / SWP_MAXIMIZE and
+                //                                SWP_ACTIVATE / SWP_DEACTIVATE
+                //                                (`WindowManager::query_swp_flags`)
                 //   LONG   cy;               +4  height
                 //   LONG   cx;               +8  width
                 //   LONG   y;                +12 y position
                 //   LONG   x;                +16 x position
                 //   HWND   hwndInsertBehind; +20 (always 0 here)
                 //   HWND   hwnd;             +24 window handle
+                //   ULONG  ulReserved1;      +28 0
+                //   ULONG  ulReserved2;      +32 0
                 let hwnd     = read_stack(4);
                 let pswp_ptr = read_stack(8);
+                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 if pswp_ptr == 0 {
                     return ApiResult::Normal(0); // FALSE — null pointer
                 }
@@ -3061,6 +3113,30 @@ mod tests {
         assert_eq!(call(860, &[HWND_DESKTOP, entry]), 1);
         assert_eq!(call(860, &[HWND_DESKTOP, 0]), 1, "NULLHANDLE clears the focus");
         assert_eq!(call(817, &[HWND_DESKTOP]), client);
+        // A desktop window as the new focus: no window gets it.
+        assert_eq!(call(860, &[HWND_DESKTOP, entry]), 1);
+        assert_eq!(call(860, &[HWND_DESKTOP, HWND_DESKTOP]), 1, "the desktop clears the focus");
+        assert_eq!(call(817, &[HWND_DESKTOP]), client);
+    }
+
+    /// WinEnableWindow returns TRUE whenever it updates the state, whatever
+    /// the state was before (PM Reference: "enabled state successfully
+    /// updated"), and FALSE only for a handle that is no window.
+    #[test]
+    fn test_win_enable_window_returns_success() {
+        use super::super::constants::WS_DISABLED;
+        let loader = Loader::new_mock();
+        let (_frame, _client, _owner, entry) = window_with_entry(&loader);
+        let mut vcpu = MockVcpu::new();
+        let disabled = || loader.shared.window_mgr.lock_or_recover()
+            .get_window(entry).is_some_and(|w| w.style & WS_DISABLED != 0);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, 735, &[entry, 1]), 1, "already enabled");
+        assert_eq!(call_pmwin(&loader, &mut vcpu, 735, &[entry, 0]), 1);
+        assert!(disabled());
+        assert_eq!(call_pmwin(&loader, &mut vcpu, 735, &[entry, 0]), 1, "already disabled");
+        assert_eq!(call_pmwin(&loader, &mut vcpu, 735, &[entry, 1]), 1);
+        assert!(!disabled());
+        assert_eq!(call_pmwin(&loader, &mut vcpu, 735, &[0xDEAD, 1]), 0, "no window");
     }
 
     /// End to end through the PMWIN API: a click and keystrokes dispatched

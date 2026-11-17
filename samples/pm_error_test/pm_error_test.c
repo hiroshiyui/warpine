@@ -10,6 +10,14 @@
  *     handle that is no window               -> PMERR_INVALID_HWND
  *   - WinDestroyMsgQueue of another thread's queue -> PMERR_INVALID_HMQ
  *   - WinPeekMsg on a thread without a queue -> PMERR_NO_MSG_QUEUE
+ *   - WinShowWindow, WinQueryWindowRect / Pos, the window words,
+ *     WinEnableWindow, WinInvalidateRect, WinSetFocus, WinQueryWindow, the
+ *     dialog-item calls, WinCreateWindow, WinPeekMsg / WinGetMsg filters ...
+ *     with a handle that is no window       -> PMERR_INVALID_HWND
+ *   - WinQueryWindow lCode, window words outside cbWindowData or below
+ *     QWL_MIN                              -> PMERR_PARAMETER_OUT_OF_RANGE
+ *   - WinPeekMsg with an unknown fl bit    -> PMERR_INVALID_FLAG
+ *   - WinSetAccelTable with no such table  -> PMERR_INVALID_HACCEL
  *
  * and checks that the value carries SEVERITY_ERROR in its high word, that
  * reading resets it to zero, that a later successful call leaves it alone,
@@ -132,6 +140,9 @@ int main( void )
     TID     tid;
     char    text[16];
     char    line[64], *p;
+    RECTL   rcl;
+    SWP     swp;
+    QMSG    qmsg;
 
     hab = WinInitialize( 0 );
     check( "no error at start", WinGetLastError( hab ), 0 );
@@ -162,6 +173,72 @@ int main( void )
                  PMERR_INVALID_HWND );
     check_fails( hab, "WinDestroyMsgQueue(bad hmq)", WinDestroyMsgQueue( (HMQ)0xDEAD ), PMERR_INVALID_HMQ );
 
+    /* More calls that take a window handle. */
+    check_fails( hab, "WinShowWindow(bad hwnd)", WinShowWindow( BAD_HWND, TRUE ), PMERR_INVALID_HWND );
+    check_fails( hab, "WinQueryWindowRect(bad hwnd)", WinQueryWindowRect( BAD_HWND, &rcl ),
+                 PMERR_INVALID_HWND );
+    check_fails( hab, "WinQueryWindowPos(bad hwnd)", WinQueryWindowPos( BAD_HWND, &swp ),
+                 PMERR_INVALID_HWND );
+    check_fails( hab, "WinSetWindowULong(bad hwnd)", WinSetWindowULong( BAD_HWND, QWL_USER, 1 ),
+                 PMERR_INVALID_HWND );
+    check_fails( hab, "WinQueryWindowULong(bad hwnd)", WinQueryWindowULong( BAD_HWND, QWL_STYLE ),
+                 PMERR_INVALID_HWND );
+    check_fails( hab, "WinSetWindowUShort(bad hwnd)", WinSetWindowUShort( BAD_HWND, QWS_USER, 1 ),
+                 PMERR_INVALID_HWND );
+    check_fails( hab, "WinQueryWindowUShort(bad hwnd)", WinQueryWindowUShort( BAD_HWND, QWS_ID ),
+                 PMERR_INVALID_HWND );
+    check_fails( hab, "WinEnableWindow(bad hwnd)", WinEnableWindow( BAD_HWND, TRUE ), PMERR_INVALID_HWND );
+    check_fails( hab, "WinIsWindowEnabled(bad hwnd)", WinIsWindowEnabled( BAD_HWND ), PMERR_INVALID_HWND );
+    check_fails( hab, "WinInvalidateRect(bad hwnd)", WinInvalidateRect( BAD_HWND, NULL, FALSE ),
+                 PMERR_INVALID_HWND );
+    check_fails( hab, "WinUpdateWindow(bad hwnd)", WinUpdateWindow( BAD_HWND ), PMERR_INVALID_HWND );
+    check_fails( hab, "WinSetFocus(bad hwnd)", WinSetFocus( HWND_DESKTOP, BAD_HWND ), PMERR_INVALID_HWND );
+    check_fails( hab, "WinSetActiveWindow(bad hwnd)", WinSetActiveWindow( HWND_DESKTOP, BAD_HWND ),
+                 PMERR_INVALID_HWND );
+    check_fails( hab, "WinSetCapture(bad hwnd)", WinSetCapture( HWND_DESKTOP, BAD_HWND ),
+                 PMERR_INVALID_HWND );
+    check_fails( hab, "WinQueryWindow(bad hwnd)", WinQueryWindow( BAD_HWND, QW_PARENT ),
+                 PMERR_INVALID_HWND );
+    check_fails( hab, "WinGetPS(bad hwnd)", WinGetPS( BAD_HWND ), PMERR_INVALID_HWND );
+    check_fails( hab, "WinSubclassWindow(bad hwnd)", (ULONG)WinSubclassWindow( BAD_HWND, ClientWndProc ),
+                 PMERR_INVALID_HWND );
+    check_fails( hab, "WinDismissDlg(bad hwnd)", WinDismissDlg( BAD_HWND, 1 ), PMERR_INVALID_HWND );
+    check_fails( hab, "WinSetDlgItemText(bad hwnd)", WinSetDlgItemText( BAD_HWND, 1, "x" ),
+                 PMERR_INVALID_HWND );
+    check_fails( hab, "WinQueryDlgItemText(bad hwnd)",
+                 WinQueryDlgItemText( BAD_HWND, 1, sizeof( text ), text ), PMERR_INVALID_HWND );
+    check_fails( hab, "WinSendDlgItemMsg(bad hwnd)",
+                 (ULONG)WinSendDlgItemMsg( BAD_HWND, 1, WM_USER, 0, 0 ), PMERR_INVALID_HWND );
+    check_fails( hab, "WinSendDlgItemMsg(no such item)",
+                 (ULONG)WinSendDlgItemMsg( frame, 4242, WM_USER, 0, 0 ), PMERR_INVALID_HWND );
+    check_fails( hab, "WinCreateWindow(bad parent)",
+                 WinCreateWindow( BAD_HWND, WC_STATIC, "x", 0, 0, 0, 10, 10, NULLHANDLE, HWND_TOP,
+                                  1, NULL, NULL ), PMERR_INVALID_HWND );
+    check_fails( hab, "WinPeekMsg(bad filter)", WinPeekMsg( hab, &qmsg, BAD_HWND, 0, 0, PM_NOREMOVE ),
+                 PMERR_INVALID_HWND );
+    check_fails( hab, "WinGetMsg(bad filter)", WinGetMsg( hab, &qmsg, BAD_HWND, 0, 0 ), PMERR_INVALID_HWND );
+
+    /* Parameters out of range, invalid flags and handles. */
+    check_fails( hab, "WinQueryWindow(lCode 99)", WinQueryWindow( frame, 99 ), PMERR_PARAMETER_OUT_OF_RANGE );
+    check_fails( hab, "WinSetWindowULong(QWL_USER, cbWindowData 0)", WinSetWindowULong( client, QWL_USER, 1 ),
+                 PMERR_PARAMETER_OUT_OF_RANGE );
+    check_fails( hab, "WinQueryWindowULong(below QWL_MIN)", WinQueryWindowULong( client, QWL_MIN - 1 ),
+                 PMERR_PARAMETER_OUT_OF_RANGE );
+    check_fails( hab, "WinQueryWindowUShort(QWS_USER, cbWindowData 0)", WinQueryWindowUShort( client, QWS_USER ),
+                 PMERR_PARAMETER_OUT_OF_RANGE );
+    check_fails( hab, "WinPeekMsg(invalid fl)", WinPeekMsg( hab, &qmsg, NULLHANDLE, 0, 0, 0x10 ),
+                 PMERR_INVALID_FLAG );
+    check_fails( hab, "WinSetAccelTable(bad haccel)", WinSetAccelTable( hab, (HACCEL)0xBAD, frame ),
+                 PMERR_INVALID_HACCEL );
+
+    /* Valid calls of the same APIs record nothing. */
+    check( "WinQueryWindowRect(client)", WinQueryWindowRect( client, &rcl ), TRUE );
+    check( "WinQueryWindowPos(frame)", WinQueryWindowPos( frame, &swp ), TRUE );
+    check( "WinQueryWindow(client, QW_PARENT)", WinQueryWindow( client, QW_PARENT ), frame );
+    WinQueryWindowULong( client, QWL_STYLE );
+    WinSetFocus( HWND_DESKTOP, client );
+    check( "-> no error", WinGetLastError( hab ), 0 );
+
     /* The desktop is a valid parent: no child with that id, but no error. */
     check( "WinWindowFromID(HWND_DESKTOP, unknown id)", WinWindowFromID( HWND_DESKTOP, 4242 ), 0 );
     check( "-> no error", WinGetLastError( hab ), 0 );
@@ -183,6 +260,10 @@ int main( void )
     check( "second thread: WinPeekMsg without a queue fails", thr_peek_rc, 0 );
     check( "-> PMERR_NO_MSG_QUEUE", ERRORIDERROR( thr_peek_err ), PMERR_NO_MSG_QUEUE );
     check( "main thread keeps its own error", ERRORIDERROR( WinGetLastError( hab ) ), PMERR_INVALID_HWND );
+
+    /* Successes the reference defines as TRUE whatever the earlier state. */
+    check( "WinEnableWindow(enabled frame, TRUE)", WinEnableWindow( frame, TRUE ), TRUE );
+    check( "WinSetFocus(HWND_DESKTOP) clears the focus", WinSetFocus( HWND_DESKTOP, HWND_DESKTOP ), TRUE );
 
     check( "WinDestroyWindow(frame)", WinDestroyWindow( frame ), TRUE );
     check( "WinDestroyMsgQueue(own queue)", WinDestroyMsgQueue( main_hmq ), TRUE );

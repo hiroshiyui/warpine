@@ -11,7 +11,8 @@
 use std::collections::HashMap;
 use std::sync::Mutex;
 
-use super::constants::{HWND_DESKTOP, HWND_OBJECT, PMERR_INVALID_HWND, SEVERITY_ERROR};
+use super::constants::{HWND_DESKTOP, HWND_OBJECT, PMERR_INVALID_HWND, PMERR_PARAMETER_OUT_OF_RANGE,
+                       QWL_MIN, QWS_MIN, SEVERITY_ERROR};
 use super::mutex_ext::MutexExt;
 use super::pm_types::WindowManager;
 use super::ApiResult;
@@ -50,6 +51,27 @@ pub fn valid_hwnd(wm: &WindowManager, hwnd: u32) -> bool {
     hwnd == HWND_DESKTOP || hwnd == HWND_OBJECT || wm.is_window(hwnd)
 }
 
+/// Whether window-word `index` of `size` bytes (4 for `WinQuery/SetWindowULong`,
+/// 2 for `...UShort`) is valid for `hwnd`.
+///
+/// The PM Reference: valid values are zero through `cbWindowData - size`
+/// (the class's own words) plus the reserved `QWL_*` / `QWS_*` indices,
+/// which are negative down to `QWL_MIN` / `QWS_MIN`. The upper bound is
+/// enforced only where Warpine knows `cbWindowData`: windows of a class the
+/// program registered, except frames (Warpine gives a standard frame its
+/// client's class, but a frame's words are the frame class's `QWS_FLAGS`
+/// ... `QWL_PSTATBLK`).
+pub fn window_word_in_range(wm: &WindowManager, hwnd: u32, index: i32, size: u32) -> bool {
+    if index < 0 {
+        return index >= if size == 4 { QWL_MIN } else { QWS_MIN };
+    }
+    if wm.frame_to_client.contains_key(&hwnd) { return true; }
+    let cb = wm.get_window(hwnd)
+        .and_then(|w| wm.get_class(&w.class_name))
+        .and_then(|c| c.cb_window_data);
+    cb.is_none_or(|cb| index as u64 + size as u64 <= cb as u64)
+}
+
 impl super::Loader {
     /// Record `PMERR_*` `code` as the last error of thread `tid`.
     pub(super) fn pm_error(&self, tid: u32, code: u32) {
@@ -70,6 +92,18 @@ impl super::Loader {
         let ok = (allow_null && hwnd == 0) || valid_hwnd(&self.shared.window_mgr.lock_or_recover(), hwnd);
         if !ok {
             self.pm_error(tid, PMERR_INVALID_HWND);
+        }
+        ok
+    }
+
+    /// Whether `hwnd` is valid ([`Self::pm_check_hwnd`]) and window-word
+    /// `index` of `size` bytes is in range for it ([`window_word_in_range`],
+    /// else `PMERR_PARAMETER_OUT_OF_RANGE`).
+    pub(super) fn pm_check_window_word(&self, tid: u32, hwnd: u32, index: i32, size: u32) -> bool {
+        if !self.pm_check_hwnd(tid, hwnd, false) { return false; }
+        let ok = window_word_in_range(&self.shared.window_mgr.lock_or_recover(), hwnd, index, size);
+        if !ok {
+            self.pm_error(tid, PMERR_PARAMETER_OUT_OF_RANGE);
         }
         ok
     }
@@ -216,6 +250,205 @@ mod tests {
         assert_eq!(call(&loader, 0, ORD_WIN_WINDOW_FROM_ID, &[HWND_DESKTOP, 42]), 0, "no such child");
         assert_eq!(last_error(&loader, 0), 0, "the desktop is a valid parent");
         assert_eq!(call(&loader, 0, ORD_WIN_DESTROY_WINDOW, &[hwnd]), 1);
+        assert_eq!(last_error(&loader, 0), 0);
+    }
+
+    const ORD_WIN_BEGIN_PAINT: u32 = 703;
+    const ORD_WIN_DISMISS_DLG: u32 = 729;
+    const ORD_WIN_ENABLE_WINDOW: u32 = 735;
+    const ORD_WIN_GET_PS: u32 = 757;
+    const ORD_WIN_INVALIDATE_RECT: u32 = 765;
+    const ORD_WIN_IS_WINDOW_ENABLED: u32 = 773;
+    const ORD_WIN_OPEN_WINDOW_DC: u32 = 794;
+    const ORD_WIN_PROCESS_DLG: u32 = 796;
+    const ORD_WIN_QUERY_DLG_ITEM_TEXT: u32 = 815;
+    const ORD_WIN_QUERY_WINDOW: u32 = 834;
+    const ORD_WIN_QUERY_WINDOW_POS: u32 = 837;
+    const ORD_WIN_QUERY_WINDOW_RECT: u32 = 840;
+    const ORD_WIN_QUERY_WINDOW_ULONG: u32 = 843;
+    const ORD_WIN_QUERY_WINDOW_USHORT: u32 = 844;
+    const ORD_WIN_SET_ACCEL_TABLE: u32 = 850;
+    const ORD_WIN_SET_ACTIVE_WINDOW: u32 = 851;
+    const ORD_WIN_SET_CAPTURE: u32 = 852;
+    const ORD_WIN_SET_DLG_ITEM_TEXT: u32 = 859;
+    const ORD_WIN_SET_FOCUS: u32 = 860;
+    const ORD_WIN_SET_WINDOW_ULONG: u32 = 878;
+    const ORD_WIN_SET_WINDOW_USHORT: u32 = 879;
+    const ORD_WIN_SHOW_WINDOW: u32 = 883;
+    const ORD_WIN_STOP_TIMER: u32 = 885;
+    const ORD_WIN_UPDATE_WINDOW: u32 = 892;
+    const ORD_WIN_SEND_DLG_ITEM_MSG: u32 = 903;
+    const ORD_WIN_CREATE_WINDOW: u32 = 909;
+    const ORD_WIN_REGISTER_CLASS: u32 = 926;
+    const ORD_WIN_SUBCLASS_WINDOW: u32 = 929;
+
+    #[test]
+    fn more_calls_with_a_bad_hwnd_report_invalid_hwnd() {
+        let loader = Loader::new_mock();
+        call(&loader, 0, ORD_WIN_CREATE_MSG_QUEUE, &[MOCK_HAB, 0]);
+        let buf = 0x2000;
+        let b = BAD_HWND;
+        let cases: &[(&str, u32, Vec<u32>, u32)] = &[
+            ("WinShowWindow", ORD_WIN_SHOW_WINDOW, vec![b, 1], 0),
+            ("WinQueryWindowRect", ORD_WIN_QUERY_WINDOW_RECT, vec![b, buf], 0),
+            ("WinSetWindowULong", ORD_WIN_SET_WINDOW_ULONG, vec![b, 0, 7], 0),
+            ("WinQueryWindowULong", ORD_WIN_QUERY_WINDOW_ULONG, vec![b, QWL_STYLE as u32], 0),
+            ("WinSetWindowUShort", ORD_WIN_SET_WINDOW_USHORT, vec![b, 0, 7], 0),
+            ("WinQueryWindowUShort", ORD_WIN_QUERY_WINDOW_USHORT, vec![b, 0], 0),
+            ("WinSendDlgItemMsg", ORD_WIN_SEND_DLG_ITEM_MSG, vec![b, 1, WM_USER, 0, 0], 0),
+            ("WinEnableWindow", ORD_WIN_ENABLE_WINDOW, vec![b, 1], 0),
+            ("WinIsWindowEnabled", ORD_WIN_IS_WINDOW_ENABLED, vec![b], 0),
+            ("WinInvalidateRect", ORD_WIN_INVALIDATE_RECT, vec![b, 0, 0], 0),
+            ("WinSetFocus", ORD_WIN_SET_FOCUS, vec![HWND_DESKTOP, b], 0),
+            ("WinQueryWindow", ORD_WIN_QUERY_WINDOW, vec![b, QW_PARENT as u32], 0),
+            ("WinQueryWindowPos", ORD_WIN_QUERY_WINDOW_POS, vec![b, buf], 0),
+            ("WinSubclassWindow", ORD_WIN_SUBCLASS_WINDOW, vec![b, 0x1234], 0),
+            ("WinUpdateWindow", ORD_WIN_UPDATE_WINDOW, vec![b], 0),
+            ("WinGetPS", ORD_WIN_GET_PS, vec![b], 0),
+            ("WinBeginPaint", ORD_WIN_BEGIN_PAINT, vec![b, 0, buf], 0),
+            ("WinOpenWindowDC", ORD_WIN_OPEN_WINDOW_DC, vec![b], 0),
+            ("WinSetActiveWindow", ORD_WIN_SET_ACTIVE_WINDOW, vec![HWND_DESKTOP, b], 0),
+            ("WinQueryDlgItemText", ORD_WIN_QUERY_DLG_ITEM_TEXT, vec![b, 1, 16, buf], 0),
+            ("WinSetDlgItemText", ORD_WIN_SET_DLG_ITEM_TEXT, vec![b, 1, 0], 0),
+            ("WinStopTimer", ORD_WIN_STOP_TIMER, vec![MOCK_HAB, b, 1], 0),
+            ("WinSetCapture", ORD_WIN_SET_CAPTURE, vec![HWND_DESKTOP, b], 0),
+            ("WinDismissDlg", ORD_WIN_DISMISS_DLG, vec![b, 1], 0),
+            ("WinProcessDlg", ORD_WIN_PROCESS_DLG, vec![b], DID_CANCEL),
+            ("WinSetAccelTable", ORD_WIN_SET_ACCEL_TABLE, vec![MOCK_HAB, 0, b], 0),
+            ("WinCreateWindow (parent)", ORD_WIN_CREATE_WINDOW,
+             vec![b, WC_STATIC_ATOM, 0, 0, 0, 0, 10, 10, 0, 0, 1, 0, 0], 0),
+            ("WinCreateWindow (owner)", ORD_WIN_CREATE_WINDOW,
+             vec![HWND_DESKTOP, WC_STATIC_ATOM, 0, 0, 0, 0, 10, 10, b, 0, 1, 0, 0], 0),
+        ];
+        let windows = loader.shared.window_mgr.lock_or_recover().window_handles().len();
+        for (name, ordinal, args, fail) in cases {
+            assert_eq!(call(&loader, 0, *ordinal, args), *fail, "{name} fails");
+            assert_eq!(last_error(&loader, 0), err(PMERR_INVALID_HWND), "{name}");
+        }
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().window_handles().len(), windows,
+                   "no window was created");
+    }
+
+    #[test]
+    fn calls_with_good_or_null_handles_record_nothing() {
+        let loader = Loader::new_mock();
+        let hmq = call(&loader, 0, ORD_WIN_CREATE_MSG_QUEUE, &[MOCK_HAB, 0]);
+        let hwnd = loader.shared.window_mgr.lock_or_recover().create_window("App".into(), 0, hmq);
+        let buf = 0x2000;
+        assert_eq!(call(&loader, 0, ORD_WIN_SHOW_WINDOW, &[hwnd, 1]), 1);
+        assert_eq!(call(&loader, 0, ORD_WIN_QUERY_WINDOW_RECT, &[hwnd, buf]), 1);
+        assert_eq!(call(&loader, 0, ORD_WIN_ENABLE_WINDOW, &[hwnd, 1]), 1);
+        assert_eq!(call(&loader, 0, ORD_WIN_IS_WINDOW_ENABLED, &[hwnd]), 1);
+        assert_eq!(call(&loader, 0, ORD_WIN_INVALIDATE_RECT, &[hwnd, 0, 0]), 1);
+        assert_eq!(call(&loader, 0, ORD_WIN_UPDATE_WINDOW, &[hwnd]), 1);
+        assert_eq!(call(&loader, 0, ORD_WIN_QUERY_WINDOW_POS, &[hwnd, buf]), 1);
+        assert_eq!(call(&loader, 0, ORD_WIN_SET_FOCUS, &[HWND_DESKTOP, 0]), 1, "NULLHANDLE focus");
+        assert_eq!(call(&loader, 0, ORD_WIN_STOP_TIMER, &[MOCK_HAB, 0, 1]), 1, "queue timer");
+        assert_eq!(call(&loader, 0, ORD_WIN_SET_CAPTURE, &[HWND_DESKTOP, 0]), 1, "release");
+        assert_eq!(call(&loader, 0, ORD_WIN_SET_CAPTURE, &[HWND_DESKTOP, HWND_THREADCAPTURE]), 1);
+        assert_eq!(call(&loader, 0, ORD_WIN_SET_ACCEL_TABLE, &[MOCK_HAB, 0, 0]), 1, "no queue table");
+        assert_eq!(call(&loader, 0, ORD_WIN_QUERY_WINDOW, &[hwnd, QW_FRAMEOWNER as u32]), 0);
+        assert_ne!(call(&loader, 0, ORD_WIN_CREATE_WINDOW,
+                        &[HWND_DESKTOP, WC_STATIC_ATOM, 0, 0, 0, 0, 10, 10, 0, 0, 1, 0, 0]), 0);
+        assert_eq!(last_error(&loader, 0), 0);
+    }
+
+    #[test]
+    fn query_window_rejects_an_unknown_relationship() {
+        let loader = Loader::new_mock();
+        let hwnd = loader.shared.window_mgr.lock_or_recover().create_window("App".into(), 0, 1);
+        for code in [-1i32, QW_FRAMEOWNER + 1] {
+            assert_eq!(call(&loader, 0, ORD_WIN_QUERY_WINDOW, &[hwnd, code as u32]), 0);
+            assert_eq!(last_error(&loader, 0), err(PMERR_PARAMETER_OUT_OF_RANGE), "lCode {code}");
+        }
+    }
+
+    #[test]
+    fn window_words_outside_the_class_data_are_out_of_range() {
+        let loader = Loader::new_mock();
+        let name = 0x3000;
+        loader.guest_write_bytes(name, b"Words\0");
+        // cbWindowData = 8: ULONGs at 0 and 4, USHORTs at 0..=6.
+        assert_eq!(call(&loader, 0, ORD_WIN_REGISTER_CLASS, &[MOCK_HAB, name, 0x1234, 0, 8]), 1);
+        let hwnd = loader.shared.window_mgr.lock_or_recover().create_window("Words".into(), 0, 1);
+        assert_eq!(call(&loader, 0, ORD_WIN_SET_WINDOW_ULONG, &[hwnd, 4, 0xCAFE]), 1);
+        assert_eq!(call(&loader, 0, ORD_WIN_QUERY_WINDOW_ULONG, &[hwnd, 4]), 0xCAFE);
+        assert_eq!(call(&loader, 0, ORD_WIN_SET_WINDOW_USHORT, &[hwnd, 6, 0xBEEF]), 1);
+        assert_eq!(call(&loader, 0, ORD_WIN_QUERY_WINDOW_USHORT, &[hwnd, 6]), 0xBEEF);
+        assert_eq!(call(&loader, 0, ORD_WIN_QUERY_WINDOW_ULONG, &[hwnd, QWL_STYLE as u32]), 0);
+        assert_eq!(call(&loader, 0, ORD_WIN_QUERY_WINDOW_ULONG, &[hwnd, QWL_MIN as u32]), 0);
+        assert_eq!(call(&loader, 0, ORD_WIN_QUERY_WINDOW_USHORT, &[hwnd, QWS_MIN as u32]), 0);
+        assert_eq!(last_error(&loader, 0), 0, "all in range");
+
+        let cases: &[(&str, u32, Vec<u32>)] = &[
+            ("ULONG past the data", ORD_WIN_SET_WINDOW_ULONG, vec![hwnd, 5, 1]),
+            ("ULONG past the data", ORD_WIN_QUERY_WINDOW_ULONG, vec![hwnd, 8]),
+            ("ULONG below QWL_MIN", ORD_WIN_SET_WINDOW_ULONG, vec![hwnd, (QWL_MIN - 1) as u32, 1]),
+            ("ULONG below QWL_MIN", ORD_WIN_QUERY_WINDOW_ULONG, vec![hwnd, (QWL_MIN - 1) as u32]),
+            ("USHORT past the data", ORD_WIN_SET_WINDOW_USHORT, vec![hwnd, 7, 1]),
+            ("USHORT past the data", ORD_WIN_QUERY_WINDOW_USHORT, vec![hwnd, 8]),
+            ("USHORT below QWS_MIN", ORD_WIN_SET_WINDOW_USHORT, vec![hwnd, (QWS_MIN - 1) as u32, 1]),
+            ("USHORT below QWS_MIN", ORD_WIN_QUERY_WINDOW_USHORT, vec![hwnd, (QWS_MIN - 1) as u32]),
+        ];
+        for (name, ordinal, args) in cases {
+            assert_eq!(call(&loader, 0, *ordinal, args), 0, "{name} fails");
+            assert_eq!(last_error(&loader, 0), err(PMERR_PARAMETER_OUT_OF_RANGE), "{name}");
+        }
+        assert_eq!(call(&loader, 0, ORD_WIN_QUERY_WINDOW_ULONG, &[hwnd, 4]), 0xCAFE, "unchanged");
+    }
+
+    #[test]
+    fn frame_and_builtin_window_words_are_not_bounded() {
+        let loader = Loader::new_mock();
+        let name = 0x3000;
+        loader.guest_write_bytes(name, b"Client\0");
+        call(&loader, 0, ORD_WIN_REGISTER_CLASS, &[MOCK_HAB, name, 0x1234, 0, 0]);
+        let (frame, control) = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            // A standard frame carries its client's class name.
+            let frame = wm.create_window("Client".into(), 0, 1);
+            let client = wm.create_window("Client".into(), frame, 1);
+            wm.frame_to_client.insert(frame, client);
+            (frame, wm.create_window("WC_STATIC".into(), frame, 1))
+        };
+        assert_eq!(call(&loader, 0, ORD_WIN_SET_WINDOW_USHORT, &[frame, QWS_CXRESTORE as u32, 300]), 1);
+        assert_eq!(call(&loader, 0, ORD_WIN_SET_WINDOW_ULONG, &[control, 0, 1]), 1);
+        assert_eq!(last_error(&loader, 0), 0);
+    }
+
+    #[test]
+    fn send_dlg_item_msg_to_a_missing_item_reports_invalid_hwnd() {
+        let loader = Loader::new_mock();
+        let dlg = loader.shared.window_mgr.lock_or_recover().create_window("App".into(), 0, 1);
+        assert_eq!(call(&loader, 0, ORD_WIN_SEND_DLG_ITEM_MSG, &[dlg, 42, WM_USER, 0, 0]), 0);
+        assert_eq!(last_error(&loader, 0), err(PMERR_INVALID_HWND));
+    }
+
+    #[test]
+    fn set_accel_table_with_a_bad_table_reports_invalid_haccel() {
+        let loader = Loader::new_mock();
+        assert_eq!(call(&loader, 0, ORD_WIN_SET_ACCEL_TABLE, &[MOCK_HAB, 0xBAD, 0]), 0);
+        assert_eq!(last_error(&loader, 0), err(PMERR_INVALID_HACCEL));
+        let haccel = loader.shared.window_mgr.lock_or_recover().add_accel_table(Vec::new());
+        assert_eq!(call(&loader, 0, ORD_WIN_SET_ACCEL_TABLE, &[MOCK_HAB, haccel, 0]), 1);
+        assert_eq!(last_error(&loader, 0), 0);
+    }
+
+    #[test]
+    fn get_or_peek_with_a_bad_filter_or_flag_fails() {
+        let loader = Loader::new_mock();
+        let hmq = call(&loader, 0, ORD_WIN_CREATE_MSG_QUEUE, &[MOCK_HAB, 0]);
+        let hwnd = loader.shared.window_mgr.lock_or_recover().create_window("App".into(), 0, hmq);
+        call(&loader, 0, ORD_WIN_POST_MSG, &[hwnd, WM_USER, 0, 0]);
+        let qmsg = 0x2000;
+        assert_eq!(call(&loader, 0, ORD_WIN_PEEK_MSG, &[MOCK_HAB, qmsg, BAD_HWND, 0, 0, PM_NOREMOVE]), 0);
+        assert_eq!(last_error(&loader, 0), err(PMERR_INVALID_HWND), "WinPeekMsg filter");
+        assert_eq!(call(&loader, 0, ORD_WIN_PEEK_MSG, &[MOCK_HAB, qmsg, 0, 0, 0, 0x10]), 0);
+        assert_eq!(last_error(&loader, 0), err(PMERR_INVALID_FLAG), "WinPeekMsg fl");
+        assert_eq!(call(&loader, 0, ORD_WIN_GET_MSG, &[MOCK_HAB, qmsg, BAD_HWND, 0, 0]), 0);
+        assert_eq!(last_error(&loader, 0), err(PMERR_INVALID_HWND), "WinGetMsg filter");
+        // The message is still there for a valid filter.
+        assert_eq!(call(&loader, 0, ORD_WIN_PEEK_MSG, &[MOCK_HAB, qmsg, hwnd, 0, 0, PM_REMOVE]), 1);
         assert_eq!(last_error(&loader, 0), 0);
     }
 
