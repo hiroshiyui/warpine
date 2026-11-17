@@ -685,22 +685,26 @@ fn gui_pm_dialog_test_matches_golden() {
         &format!("{DIALOG_TEST_FILL_IN}4000 dump {{dump}}\n4100 quit\n"));
 }
 
-/// Answers to the four message boxes of pm_msgbox_test: Enter on the
-/// MB_DEFBUTTON2 default, Esc, a click on Yes (desktop (468, 408): the box
-/// is centred on the desktop), Enter on OK.
-const MSGBOX_TEST_STEPS: &str = "1500 key enter\n2200 key esc\n2900 click 468 408\n";
+/// Answers to the first three message boxes of pm_msgbox_test: Enter on the
+/// MB_DEFBUTTON2 default, Esc, a click on Yes (desktop (468, 416): the box
+/// is centred on the desktop).
+const MSGBOX_TEST_STEPS: &str = "1500 key enter\n2200 key esc\n2900 click 468 416\n";
 
 /// WinMessageBox is a modal PM dialog: the default button, Esc for Cancel and
 /// clicks pick its result, while the owner's frame is disabled and its
-/// window procedure keeps getting timer messages.
+/// window procedure keeps getting timer messages. Then Enter on OK, and in
+/// the last box a click on Help (desktop (600, 416); the box stays open)
+/// and one on the close button (desktop (643, 334)), which ends it with
+/// MBID_CANCEL although it has no Cancel button.
 #[test]
 fn gui_pm_msgbox_test_answers_message_boxes() {
-    let steps = format!("{MSGBOX_TEST_STEPS}3700 key enter\n8000 quit\n");
-    assert_scripted_checks_pass("samples/pm_msgbox_test/pm_msgbox_test.exe", "pm_msgbox_test", 7, &steps);
+    let steps = format!("{MSGBOX_TEST_STEPS}3700 key enter\n4400 click 600 416\n5100 click 643 334\n9000 quit\n");
+    assert_scripted_checks_pass("samples/pm_msgbox_test/pm_msgbox_test.exe", "pm_msgbox_test", 9, &steps);
 }
 
-/// The last box of pm_msgbox_test: two lines of text, the OK button with
-/// the default outline, centred on the desktop over its inactive owner.
+/// The fourth box of pm_msgbox_test: the information icon left of two
+/// lines of text, the OK button with the default outline, centred on the
+/// desktop over its inactive owner.
 #[test]
 fn gui_pm_msgbox_test_matches_golden() {
     check_gui_golden("pm_msgbox_test", "samples/pm_msgbox_test/pm_msgbox_test.exe",

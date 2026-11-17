@@ -1,13 +1,20 @@
 /*
  * pm_msgbox_test.c - WinMessageBox as a modal PM dialog under Warpine
  *
- * After start-up the client opens four message boxes, one after another,
+ * After start-up the client opens five message boxes, one after another,
  * owned by its frame. The integration test answers them:
  *
  *   MB_YESNOCANCEL | MB_DEFBUTTON2, Enter   -> MBID_NO (the default button)
  *   MB_OKCANCEL, Esc                        -> MBID_CANCEL
  *   MB_YESNO, click on Yes                  -> MBID_YES
  *   MB_OK with two lines of text, Enter     -> MBID_OK
+ *   MB_YESNO | MB_HELP, click on Help, then
+ *     a click on the close button           -> MBID_CANCEL
+ *
+ * The boxes show the four icons (question, none, warning, information,
+ * error). Help sends WM_HELP to the message box itself, which stays open;
+ * the box's parent is the desktop, so the owner's client never sees it.
+ * Close ends a box with MBID_CANCEL although it has no Cancel button.
  *
  * A timer keeps running on the client while the boxes are open: the
  * owner's window procedure gets its WM_TIMERs during the modal loop, and
@@ -34,6 +41,7 @@ static int  n_passed = 0;
 static int  ticks_while_open = 0;   /* WM_TIMERs during a message box */
 static int  box_open = 0;
 static BOOL owner_disabled = TRUE;  /* the frame was disabled at every such tick */
+static int  help_seen = 0;          /* WM_HELPs that reached the client */
 
 /* ---------- output (no libc printf) ---------- */
 
@@ -104,11 +112,18 @@ MRESULT EXPENTRY ClientWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
         check( "Enter on OK",
                box( hwnd, "The operation completed.\nTwo lines of text in one box.", MB_OK | MB_INFORMATION ),
                MBID_OK );
+        check( "Close without a Cancel button",
+               box( hwnd, "Delete the file anyway?", MB_YESNO | MB_HELP | MB_ERROR ), MBID_CANCEL );
+        check( "WM_HELP stays with the message box", help_seen, 0 );
         WinStopTimer( hab, hwnd, ID_TIMER );
         check( "the owner's timer ran while a box was open", ticks_while_open > 0, TRUE );
         check( "the owner was disabled while a box was open", owner_disabled, TRUE );
         check( "and is enabled again", WinIsWindowEnabled( frame ), TRUE );
         WinPostMsg( hwnd, WM_QUIT, 0, 0 );
+        return 0;
+
+    case WM_HELP:
+        help_seen++;
         return 0;
 
     case WM_TIMER:

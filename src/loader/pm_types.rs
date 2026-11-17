@@ -124,6 +124,9 @@ pub struct OS2Window {
     /// `flCreateFlags` from `WinCreateStdWindow` (FCF_* bits).
     /// Zero for non-frame windows (dialogs, controls).
     pub frame_flags: u32,
+    /// A message box's icon as the system pointer it shows (`SPTR_ICON*`),
+    /// painted with the dialog face; 0 = none (every other window).
+    pub msgbox_icon: u32,
 }
 
 /// Map a PM colour value to 0x00RRGGBB with the default colour table: the
@@ -500,6 +503,7 @@ impl WindowManager {
             modal_owner: 0,
             destroy_on_dismiss: false,
             frame_flags: 0,
+            msgbox_icon: 0,
         });
         // Register as child of parent
         if parent != 0

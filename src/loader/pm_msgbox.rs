@@ -10,11 +10,19 @@
 //! ends it with the button's `MBID_*` value. Other windows keep running
 //! while it is open, and only its owner's frame is disabled.
 //!
-//! The layout — sizes, margins, where the text wraps — is Warpine's own.
+//! An `MB_ICON*` style puts a pictogram left of the text (painted with the
+//! dialog face, [`Loader::paint_message_box_icon`]); `MB_HELP` adds a Help
+//! push button (`BS_HELP`) whose `WM_HELP` goes to the box and leaves it
+//! open; Close from the title bar ends the box with `MBID_CANCEL` whatever
+//! its buttons.
+//!
+//! The layout — sizes, margins, where the text wraps — and the pictograms
+//! are Warpine's own.
 
 use super::constants::*;
 use super::pm_edit::{EditBuffer, Measure};
-use super::{ApiResult, Loader, MutexExt};
+use super::{ApiResult, Loader, MutexExt, Painter};
+use crate::gui::surface::{DrawOp, Pattern};
 
 /// Margin around the text and the buttons inside the dialog border.
 const MSGBOX_MARGIN: i32 = 12;
@@ -26,16 +34,23 @@ const MSGBOX_MIN_CONTENT_W: i32 = 200;
 const MSGBOX_BUTTON_W: i32 = 80;
 const MSGBOX_BUTTON_H: i32 = 26;
 const MSGBOX_BUTTON_GAP: i32 = 8;
+/// Width and height of the icon pictogram, and the gap between it and the
+/// text.
+pub const MSGBOX_ICON_SIZE: i32 = 32;
+const MSGBOX_ICON_GAP: i32 = 12;
 /// Mask of the button-set value in `flStyle` (`MB_OK` ... `MB_ENTERCANCEL`).
 const MB_BUTTON_SET_MASK: u32 = 0x000F;
+/// Mask of the icon choice in `flStyle` (`MB_ICONQUESTION` ... `MB_CUSTOMICON`).
+const MB_ICON_MASK: u32 = 0x00F0;
 /// Mask and shift of the default-button choice (`MB_DEFBUTTON1/2/3`).
 const MB_DEFBUTTON_MASK: u32 = 0x0300;
 const MB_DEFBUTTON_SHIFT: u32 = 8;
 
 /// The buttons of a message box with style `style`, left to right: the
-/// `MBID_*` value each returns and its label.
-pub fn buttons(style: u32) -> &'static [(u32, &'static str)] {
-    match style & MB_BUTTON_SET_MASK {
+/// `MBID_*` value each returns and its label. `MB_HELP` adds Help last
+/// (`MBID_HELP`; it sends `WM_HELP` instead of ending the box).
+pub fn buttons(style: u32) -> Vec<(u32, &'static str)> {
+    let set: &[(u32, &'static str)] = match style & MB_BUTTON_SET_MASK {
         MB_OKCANCEL => &[(MBID_OK, "OK"), (MBID_CANCEL, "Cancel")],
         MB_RETRYCANCEL => &[(MBID_RETRY, "Retry"), (MBID_CANCEL, "Cancel")],
         MB_ABORTRETRYIGNORE => &[(MBID_ABORT, "Abort"), (MBID_RETRY, "Retry"), (MBID_IGNORE, "Ignore")],
@@ -46,7 +61,12 @@ pub fn buttons(style: u32) -> &'static [(u32, &'static str)] {
         MB_ENTERCANCEL => &[(MBID_ENTER, "Enter"), (MBID_CANCEL, "Cancel")],
         // MB_OK and values outside the documented set.
         _ => &[(MBID_OK, "OK")],
+    };
+    let mut v = set.to_vec();
+    if style & MB_HELP != 0 {
+        v.push((MBID_HELP, "Help"));
     }
+    v
 }
 
 /// Index of the default button (`MB_DEFBUTTON1/2/3`) among `count`
@@ -56,12 +76,35 @@ pub fn default_button(style: u32, count: usize) -> usize {
     if i < count { i } else { 0 }
 }
 
+/// The icon a message box with style `style` shows, as the system pointer
+/// of that icon (`SPTR_ICON*`); 0 for `MB_NOICON`, `MB_CUSTOMICON` (no
+/// application icon reaches `WinMessageBox`) and undocumented values.
+pub fn icon(style: u32) -> u32 {
+    match style & MB_ICON_MASK {
+        MB_ICONHAND => SPTR_ICONERROR,
+        MB_ICONASTERISK => SPTR_ICONINFORMATION,
+        MB_ICONEXCLAMATION => SPTR_ICONWARNING,
+        MB_ICONQUESTION => SPTR_ICONQUESTION,
+        _ => 0,
+    }
+}
+
+/// Bottom-left corner of the icon in a message box `cy` high (dialog
+/// coordinates, border included): the top-left corner of the content.
+pub fn icon_origin(cy: i32) -> (i32, i32) {
+    let border = CHROME_BORDER_W;
+    (border + MSGBOX_MARGIN, cy - CHROME_TITLE_H - border - MSGBOX_MARGIN - MSGBOX_ICON_SIZE)
+}
+
 /// Where everything goes in a message box. Coordinates are PM's: relative
 /// to the dialog's bottom-left corner, border included, y up.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Layout {
     pub cx: i32,
     pub cy: i32,
+    /// The icon (`SPTR_ICON*`) and its bottom-left corner;
+    /// `MSGBOX_ICON_SIZE` square.
+    pub icon: Option<(u32, i32, i32)>,
     /// Each line of text and the bottom-left of its row.
     pub rows: Vec<(String, i32, i32)>,
     /// Each button: `(MBID_*, label, x, y)`; all `MSGBOX_BUTTON_W` ×
@@ -69,11 +112,12 @@ pub struct Layout {
     pub buttons: Vec<(u32, &'static str, i32, i32)>,
 }
 
-/// Lay out a message box with `text` and the buttons of `style`, text
-/// measured with `measure` in rows `line_h` high. The text breaks at its
-/// line breaks and wraps at word boundaries past `MSGBOX_TEXT_MAX_W`; at
-/// most `max_rows` rows are kept (the rest is cut). Buttons are centred
-/// below it.
+/// Lay out a message box with `text`, the icon and the buttons of `style`,
+/// text measured with `measure` in rows `line_h` high. The text breaks at
+/// its line breaks and wraps at word boundaries past `MSGBOX_TEXT_MAX_W`;
+/// at most `max_rows` rows are kept (the rest is cut). An icon goes in the
+/// top-left corner with the text to its right, centred against it when
+/// shorter. Buttons are centred below.
 pub fn layout(text: &str, style: u32, measure: Measure, line_h: i32, max_rows: usize) -> Layout {
     let mut buf = EditBuffer::new(text, 0, true);
     buf.set_wrap(MSGBOX_TEXT_MAX_W, measure);
@@ -84,20 +128,133 @@ pub fn layout(text: &str, style: u32, measure: Measure, line_h: i32, max_rows: u
     let n = set.len() as i32;
     let buttons_w = n * MSGBOX_BUTTON_W + (n - 1) * MSGBOX_BUTTON_GAP;
     let border = CHROME_BORDER_W;
-    let content_w = text_w.max(buttons_w).max(MSGBOX_MIN_CONTENT_W);
+    let sptr = icon(style);
+    let icon_w = if sptr != 0 { MSGBOX_ICON_SIZE + MSGBOX_ICON_GAP } else { 0 };
+    let content_w = (icon_w + text_w).max(buttons_w).max(MSGBOX_MIN_CONTENT_W);
     let cx = content_w + 2 * (MSGBOX_MARGIN + border);
     let text_bottom = border + 2 * MSGBOX_MARGIN + MSGBOX_BUTTON_H;
     let text_h = lines.len() as i32 * line_h;
-    let cy = text_bottom + text_h + MSGBOX_MARGIN + CHROME_TITLE_H + border;
+    let content_h = if sptr != 0 { text_h.max(MSGBOX_ICON_SIZE) } else { text_h };
+    let cy = text_bottom + content_h + MSGBOX_MARGIN + CHROME_TITLE_H + border;
+    let text_top = text_bottom + content_h - (content_h - text_h) / 2;
+    let text_x = border + MSGBOX_MARGIN + icon_w;
     let rows = lines.into_iter().enumerate()
-        .map(|(i, l)| (l, border + MSGBOX_MARGIN, text_bottom + text_h - (i as i32 + 1) * line_h))
+        .map(|(i, l)| (l, text_x, text_top - (i as i32 + 1) * line_h))
         .collect();
+    let icon = (sptr != 0).then(|| {
+        let (x, y) = icon_origin(cy);
+        (sptr, x, y)
+    });
     let left = (cx - buttons_w) / 2;
     let buttons = set.iter().enumerate()
         .map(|(i, &(id, label))| (id, label, left + i as i32 * (MSGBOX_BUTTON_W + MSGBOX_BUTTON_GAP),
                                   border + MSGBOX_MARGIN))
         .collect();
-    Layout { cx, cy, rows, buttons }
+    Layout { cx, cy, icon, rows, buttons }
+}
+
+// Pictogram colours (Warpine's own).
+const ICON_RED: u32 = 0x00D0_1010;
+const ICON_RED_DARK: u32 = 0x0080_0000;
+const ICON_BLUE: u32 = 0x0020_50C0;
+const ICON_BLUE_DARK: u32 = 0x0010_2870;
+const ICON_YELLOW: u32 = 0x00F0_C820;
+const ICON_YELLOW_DARK: u32 = 0x0080_6000;
+const ICON_WHITE: u32 = 0x00FF_FFFF;
+const ICON_BLACK: u32 = 0x0000_0000;
+
+/// The marks drawn on the information, warning and question pictograms
+/// (`#` = set), Warpine's own.
+const GLYPH_I: [&str; 17] = [
+    "....###...", "...#####..", "....###...", "..........", "..........",
+    "..#####...", "....###...", "....###...", "....###...", "....###...",
+    "....###...", "....###...", "....###...", "....###...", "....###...",
+    "..#######.", "..#######.",
+];
+const GLYPH_EXCLAMATION: [&str; 15] = [
+    "...####...", "...####...", "...####...", "...####...", "....##....",
+    "....##....", "....##....", "....##....", "....##....", "..........",
+    "..........", "...####...", "...####...", "...####...", "..........",
+];
+const GLYPH_QUESTION: [&str; 17] = [
+    "..######..", ".########.", "###....###", "##......##", "........##",
+    ".......###", "......###.", ".....###..", "....###...", "....##....",
+    "....##....", "....##....", "..........", "..........", "....##....",
+    "...####...", "....##....",
+];
+
+/// The `MSGBOX_ICON_SIZE`² pels of the pictogram for `sptr`
+/// (`SPTR_ICON*`), top row first; `None` = transparent. `None` overall
+/// for anything else. Error: a red circle with a red line across it;
+/// information: a white "i" on a blue disc; warning: a black "!" on a
+/// yellow triangle; question: a white "?" on a blue disc.
+pub fn icon_pels(sptr: u32) -> Option<Vec<Option<u32>>> {
+    let n = MSGBOX_ICON_SIZE;
+    let mut pels = vec![None; (n * n) as usize];
+    let centre = n as f32 / 2.0;
+    // Distance of pel (x, y)'s centre from the icon's centre.
+    let dist = |x: i32, y: i32| ((x as f32 + 0.5 - centre).powi(2) + (y as f32 + 0.5 - centre).powi(2)).sqrt();
+    let outer = centre - 0.5;
+    let disc = |pels: &mut [Option<u32>], fill: u32, edge: u32| {
+        for y in 0..n {
+            for x in 0..n {
+                let d = dist(x, y);
+                if d <= outer {
+                    pels[(y * n + x) as usize] = Some(if d > outer - 1.5 { edge } else { fill });
+                }
+            }
+        }
+    };
+    let glyph = |pels: &mut [Option<u32>], rows: &[&str], top: i32, color: u32| {
+        let left = (n - rows[0].len() as i32) / 2;
+        for (dy, row) in rows.iter().enumerate() {
+            for (dx, c) in row.bytes().enumerate() {
+                if c == b'#' {
+                    pels[((top + dy as i32) * n + left + dx as i32) as usize] = Some(color);
+                }
+            }
+        }
+    };
+    match sptr {
+        SPTR_ICONERROR => {
+            // A red ring (white inside) crossed by a red bar from the top
+            // left to the bottom right.
+            disc(&mut pels, ICON_RED, ICON_RED_DARK);
+            let inner = outer - 5.0;
+            for y in 0..n {
+                for x in 0..n {
+                    let across = ((x - y) as f32).abs() / std::f32::consts::SQRT_2;
+                    if dist(x, y) <= inner && across > 2.5 {
+                        pels[(y * n + x) as usize] = Some(ICON_WHITE);
+                    }
+                }
+            }
+        }
+        SPTR_ICONINFORMATION => {
+            disc(&mut pels, ICON_BLUE, ICON_BLUE_DARK);
+            glyph(&mut pels, &GLYPH_I, 7, ICON_WHITE);
+        }
+        SPTR_ICONQUESTION => {
+            disc(&mut pels, ICON_BLUE, ICON_BLUE_DARK);
+            glyph(&mut pels, &GLYPH_QUESTION, 7, ICON_WHITE);
+        }
+        SPTR_ICONWARNING => {
+            // A triangle standing on the bottom row, apex in the top row.
+            for y in 0..n {
+                let half = (y as f32 + 0.5) / 2.0 + 0.5;
+                for x in 0..n {
+                    let off = (x as f32 + 0.5 - centre).abs();
+                    if off <= half {
+                        let edge = off > half - 1.5 || y == n - 1;
+                        pels[(y * n + x) as usize] = Some(if edge { ICON_YELLOW_DARK } else { ICON_YELLOW });
+                    }
+                }
+            }
+            glyph(&mut pels, &GLYPH_EXCLAMATION, 12, ICON_BLACK);
+        }
+        _ => return None,
+    }
+    Some(pels)
 }
 
 impl Loader {
@@ -127,6 +284,7 @@ impl Loader {
                 w.cy = lay.cy;
                 w.x = (dw as i32 - lay.cx) / 2;
                 w.y = (dh as i32 - lay.cy) / 2;
+                w.msgbox_icon = lay.icon.map_or(0, |i| i.0);
             }
             let add = |wm: &mut super::pm_types::WindowManager, class: &str, text: &str,
                            (x, y, cx, cy): (i32, i32, i32, i32), id: u32, style: u32| {
@@ -141,8 +299,9 @@ impl Loader {
                 }
                 c
             };
-            let text_w = lay.cx - 2 * (CHROME_BORDER_W + MSGBOX_MARGIN);
             for (line, x, y) in &lay.rows {
+                // From the row's left edge to the right margin.
+                let text_w = lay.cx - CHROME_BORDER_W - MSGBOX_MARGIN - x;
                 // Static text has no id of its own (-1, as in templates).
                 add(&mut wm, "WC_STATIC", line, (*x, *y, text_w, line_h), 0xFFFF, SS_TEXT);
             }
@@ -152,6 +311,8 @@ impl Loader {
                 let mut bstyle = BS_PUSHBUTTON | WS_TABSTOP;
                 if i == 0 { bstyle |= WS_GROUP; }
                 if i == default { bstyle |= BS_DEFAULT; }
+                // Help sends WM_HELP to the box instead of a command.
+                if id == MBID_HELP { bstyle |= BS_HELP; }
                 let b = add(&mut wm, "WC_BUTTON", label, (x, y, MSGBOX_BUTTON_W, MSGBOX_BUTTON_H), id, bstyle);
                 if i == default { focus = b; }
             }
@@ -165,27 +326,61 @@ impl Loader {
         ApiResult::DlgRunLoop { dlg_proc: 0, hwnd_dlg, hmq }
     }
 
-    /// A message for a dialog without a dialog procedure (a message box):
-    /// `WinDefDlgProc`, except that a command ends it only when one of its
-    /// controls has that id (a push button), and closing it counts as
-    /// `DID_CANCEL` under the same rule — so Esc and the close button end a
-    /// message box only when it has a Cancel button
-    /// (TODO(unverified): what PM does for a box without one).
-    pub(super) fn procless_dialog_message(&self, hwnd: u32, msg: u32, mp1: u32, mp2: u32) -> ApiResult {
-        let command = match msg {
-            WM_COMMAND => Some(mp1 & 0xFFFF),
-            WM_CLOSE => Some(DID_CANCEL),
-            _ => None,
+    /// Paint a message box's icon (`OS2Window::msgbox_icon`) onto the face
+    /// of dialog `dlg`, whose painter is `d`; nothing for other dialogs.
+    pub(super) fn paint_message_box_icon(&self, d: &Painter, dlg: u32) {
+        let (sptr, cy, border) = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            let Some(w) = wm.get_window(dlg) else { return };
+            (w.msgbox_icon, w.cy, frame_border_width(w.frame_flags))
         };
-        match command {
-            Some(id) => {
+        let Some(pels) = icon_pels(sptr) else { return };
+        let (x, y) = icon_origin(cy);
+        let n = MSGBOX_ICON_SIZE as usize;
+        // The blit takes the bottom row first.
+        let src = pels.chunks(n).rev().flatten().copied().collect();
+        // The surface starts inside the left border (as the controls do).
+        d.op(DrawOp::Blit {
+            x: x - border, y, w: n as u32, h: n as u32, src: Some(src),
+            rop: ROP_SRCCOPY as u8, pattern: Pattern::solid(0),
+        });
+    }
+
+    /// A message for a dialog without a dialog procedure (a message box):
+    /// `WinDefDlgProc`, except that
+    /// - a command ends it only when one of its controls has that id (a push
+    ///   button), so Esc (`WM_COMMAND(DID_CANCEL)`) ends a message box only
+    ///   when it has a Cancel button (TODO(unverified): what PM does on Esc
+    ///   in a box without one);
+    /// - closing it (`WM_CLOSE`: the close button, the system menu's Close,
+    ///   Alt+F4) ends it with `MBID_CANCEL` whether or not it has a Cancel
+    ///   button, as documented for `WinMessageBox`;
+    /// - `WM_HELP` (its Help button) leaves it open and goes on to the parent
+    ///   unless that is the desktop, as the default window procedure does —
+    ///   and a message box's parent is the desktop.
+    pub(super) fn procless_dialog_message(&self, hwnd: u32, msg: u32, mp1: u32, mp2: u32) -> ApiResult {
+        match msg {
+            WM_COMMAND => {
+                let id = mp1 & 0xFFFF;
                 let known = self.shared.window_mgr.lock_or_recover().find_child_by_id(hwnd, id).is_some();
                 if known {
                     self.dismiss_dialog(hwnd, id);
                 }
                 ApiResult::Normal(0)
             }
-            None => self.def_dlg_proc(hwnd, msg, mp1, mp2),
+            WM_CLOSE => {
+                self.dismiss_dialog(hwnd, MBID_CANCEL);
+                ApiResult::Normal(0)
+            }
+            WM_HELP => {
+                let parent = self.shared.window_mgr.lock_or_recover().get_window(hwnd).map_or(0, |w| w.parent);
+                if parent != 0 && parent != HWND_DESKTOP {
+                    // TODO(unverified): PM sends it; Warpine posts it.
+                    self.post_to_window(parent, WM_HELP, mp1, mp2);
+                }
+                ApiResult::Normal(0)
+            }
+            _ => self.def_dlg_proc(hwnd, msg, mp1, mp2),
         }
     }
 }
@@ -215,6 +410,15 @@ mod tests {
     }
 
     #[test]
+    fn mb_help_adds_a_help_button_last() {
+        assert_eq!(buttons(MB_OK | MB_HELP), [(MBID_OK, "OK"), (MBID_HELP, "Help")]);
+        assert_eq!(buttons(MB_YESNOCANCEL | MB_HELP).last(), Some(&(MBID_HELP, "Help")));
+        assert_eq!(buttons(MB_YESNOCANCEL | MB_HELP).len(), 4);
+        // MB_DEFBUTTON counts it like the other buttons.
+        assert_eq!(default_button(MB_OK | MB_HELP | MB_DEFBUTTON2, 2), 1);
+    }
+
+    #[test]
     fn the_default_button_is_chosen_by_mb_defbutton() {
         assert_eq!(default_button(MB_YESNOCANCEL, 3), 0);
         assert_eq!(default_button(MB_YESNOCANCEL | MB_DEFBUTTON2, 3), 1);
@@ -223,9 +427,30 @@ mod tests {
     }
 
     #[test]
+    fn icons_follow_the_style_and_its_aliases() {
+        // The aliases of <pmwin.h>.
+        assert_eq!((MB_ERROR, MB_CRITICAL, MB_CUACRITICAL), (MB_ICONHAND, MB_ICONHAND, MB_ICONHAND));
+        assert_eq!((MB_WARNING, MB_CUAWARNING), (MB_ICONEXCLAMATION, MB_ICONEXCLAMATION));
+        assert_eq!((MB_INFORMATION, MB_QUERY), (MB_ICONASTERISK, MB_ICONQUESTION));
+        assert_eq!(MB_CUANOTIFICATION, MB_NOICON);
+
+        assert_eq!(icon(MB_OK | MB_ERROR), SPTR_ICONERROR);
+        assert_eq!(icon(MB_YESNO | MB_ICONHAND | MB_DEFBUTTON2 | MB_HELP), SPTR_ICONERROR);
+        assert_eq!(icon(MB_INFORMATION), SPTR_ICONINFORMATION);
+        assert_eq!(icon(MB_ICONASTERISK), SPTR_ICONINFORMATION);
+        assert_eq!(icon(MB_WARNING), SPTR_ICONWARNING);
+        assert_eq!(icon(MB_ICONEXCLAMATION), SPTR_ICONWARNING);
+        assert_eq!(icon(MB_QUERY), SPTR_ICONQUESTION);
+        assert_eq!(icon(MB_NOICON | MB_OKCANCEL), 0);
+        assert_eq!(icon(MB_CUSTOMICON), 0, "no application icon in WinMessageBox");
+        assert_eq!(icon(0x0050), 0, "undocumented");
+    }
+
+    #[test]
     fn short_text_gets_the_minimum_width_and_centred_buttons() {
         let lay = layout("Saved.", MB_YESNO, mono, 16, 50);
         let border = CHROME_BORDER_W;
+        assert_eq!(lay.icon, None);
         assert_eq!(lay.cx, MSGBOX_MIN_CONTENT_W + 2 * (MSGBOX_MARGIN + border));
         assert_eq!(lay.rows, vec![("Saved.".to_string(), border + MSGBOX_MARGIN,
                                    border + 2 * MSGBOX_MARGIN + MSGBOX_BUTTON_H)]);
@@ -237,6 +462,73 @@ mod tests {
         assert_eq!(yes.3, border + MSGBOX_MARGIN);
         // Title bar, text, buttons and margins stack up to the height.
         assert_eq!(lay.cy, border + 3 * MSGBOX_MARGIN + MSGBOX_BUTTON_H + 16 + CHROME_TITLE_H + border);
+    }
+
+    #[test]
+    fn an_icon_goes_top_left_with_the_text_right_of_it() {
+        let border = CHROME_BORDER_W;
+        let plain = layout("Disk full.", MB_OK, mono, 16, 50);
+        let lay = layout("Disk full.", MB_OK | MB_ERROR, mono, 16, 50);
+        let (sptr, ix, iy) = lay.icon.unwrap();
+        assert_eq!(sptr, SPTR_ICONERROR);
+        assert_eq!((ix, iy), icon_origin(lay.cy));
+        assert_eq!(ix, border + MSGBOX_MARGIN);
+        // The icon's top is a margin below the title bar.
+        assert_eq!(iy + MSGBOX_ICON_SIZE, lay.cy - CHROME_TITLE_H - border - MSGBOX_MARGIN);
+        // and a margin above the buttons.
+        assert_eq!(iy, lay.buttons[0].3 + MSGBOX_BUTTON_H + MSGBOX_MARGIN);
+        // One row, taller with the icon, centred against it.
+        assert_eq!(lay.cy - plain.cy, MSGBOX_ICON_SIZE - 16);
+        let (_, tx, ty) = &lay.rows[0];
+        assert_eq!(*tx, ix + MSGBOX_ICON_SIZE + MSGBOX_ICON_GAP);
+        assert_eq!(*ty, iy + (MSGBOX_ICON_SIZE - 16) / 2);
+
+        // Long text: the icon widens the box and the rows start at its top.
+        let long = "word ".repeat(30);
+        let lay = layout(&format!("{long}\n{long}"), MB_OK | MB_WARNING, mono, 16, 50);
+        let widest = lay.rows.iter().map(|r| mono(&r.0)).max().unwrap();
+        assert_eq!(lay.cx, MSGBOX_ICON_SIZE + MSGBOX_ICON_GAP + widest + 2 * (MSGBOX_MARGIN + border));
+        let (_, _, iy) = lay.icon.unwrap();
+        assert_eq!(lay.rows[0].2 + 16, iy + MSGBOX_ICON_SIZE, "first row level with the icon's top");
+        assert!(lay.rows.iter().all(|r| r.1 == border + MSGBOX_MARGIN + MSGBOX_ICON_SIZE + MSGBOX_ICON_GAP));
+    }
+
+    #[test]
+    fn each_icon_has_its_own_pictogram() {
+        let n = MSGBOX_ICON_SIZE as usize;
+        let at = |p: &[Option<u32>], x: usize, y: usize| p[y * n + x];
+        let all: Vec<Vec<Option<u32>>> = [SPTR_ICONERROR, SPTR_ICONINFORMATION, SPTR_ICONWARNING, SPTR_ICONQUESTION]
+            .iter().map(|&s| icon_pels(s).expect("a pictogram")).collect();
+        for p in &all {
+            assert_eq!(p.len(), n * n);
+            assert_eq!(at(p, 0, 0), None, "transparent corners");
+            assert_eq!(at(p, n - 1, 0), None);
+        }
+        for i in 0..all.len() {
+            for j in i + 1..all.len() {
+                assert_ne!(all[i], all[j], "pictograms {i} and {j} differ");
+            }
+        }
+        let [error, info, warning, question] = &all[..] else { unreachable!() };
+        // Error: red ring, red bar through the centre, white either side of it.
+        assert_eq!(at(error, 16, 16), Some(ICON_RED));
+        assert_eq!(at(error, 8, 8), Some(ICON_RED), "the bar runs top left to bottom right");
+        assert_eq!(at(error, 22, 10), Some(ICON_WHITE));
+        assert_eq!(at(error, 10, 22), Some(ICON_WHITE));
+        assert_eq!(at(error, 16, 2), Some(ICON_RED), "the ring");
+        // Information and question: white marks on a blue disc.
+        assert_eq!(at(info, 16, 7), Some(ICON_WHITE), "the dot of the i");
+        assert_eq!(at(info, 16, 18), Some(ICON_WHITE), "its stem");
+        assert_eq!(at(info, 8, 16), Some(ICON_BLUE));
+        assert_eq!(at(question, 16, 8), Some(ICON_WHITE));
+        assert_eq!(at(question, 8, 16), Some(ICON_BLUE));
+        // Warning: a yellow triangle (point at the top) with a black "!".
+        assert_eq!(at(warning, 16, 0), Some(ICON_YELLOW_DARK));
+        assert_eq!(at(warning, 2, 3), None, "outside the triangle");
+        assert_eq!(at(warning, 16, 14), Some(ICON_BLACK));
+        assert_eq!(at(warning, 9, 26), Some(ICON_YELLOW));
+        assert_eq!(icon_pels(0), None);
+        assert_eq!(icon_pels(SPTR_ICONWARNING + 1), None);
     }
 
     #[test]
@@ -278,6 +570,19 @@ mod tests {
         }
     }
 
+    fn result(loader: &Loader, dlg: u32) -> (bool, u32) {
+        loader.shared.window_mgr.lock_or_recover().get_window(dlg)
+            .map(|w| (w.dialog_dismissed, w.dialog_result)).unwrap()
+    }
+
+    /// Messages waiting in thread 0's queue, removed.
+    fn take_messages(loader: &Loader) -> Vec<(u32, u32, u32, u32)> {
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        let mq = wm.get_mq(wm.thread_queue(0).unwrap()).unwrap();
+        let mut mq = mq.lock_or_recover();
+        mq.messages.drain(..).map(|m| (m.hwnd, m.msg, m.mp1, m.mp2)).collect()
+    }
+
     #[test]
     fn a_message_box_is_a_modal_dialog_with_its_buttons() {
         let (loader, frame) = with_owner();
@@ -285,11 +590,13 @@ mod tests {
         let wm = loader.shared.window_mgr.lock_or_recover();
         let d = wm.get_window(dlg).unwrap();
         assert_eq!((d.class_name.as_str(), d.text.as_str(), d.pfn_wp), ("#Dialog", "Title", 0));
+        assert_eq!(d.msgbox_icon, 0, "no icon");
         assert_eq!(wm.focused_hwnd, dlg, "the active window");
         let no = wm.find_child_by_id(dlg, MBID_NO).unwrap();
         assert_eq!(wm.focus_hwnd, no, "the focus is on the default button");
         assert_ne!(wm.get_window(no).unwrap().style & BS_DEFAULT, 0);
         assert!(wm.find_child_by_id(dlg, MBID_YES).is_some() && wm.find_child_by_id(dlg, MBID_CANCEL).is_some());
+        assert!(wm.find_child_by_id(dlg, MBID_HELP).is_none(), "no Help without MB_HELP");
         assert_ne!(wm.get_window(frame).unwrap().style & WS_DISABLED, 0, "the owner is disabled");
         let label = d.children.iter().filter_map(|&c| wm.get_window(c))
             .find(|w| w.class_name == "WC_STATIC").map(|w| w.text.clone());
@@ -297,18 +604,14 @@ mod tests {
     }
 
     #[test]
-    fn button_commands_end_it_and_cancel_only_with_a_cancel_button() {
+    fn button_commands_end_it_and_esc_cancels_only_with_a_cancel_button() {
         let (loader, frame) = with_owner();
-        let result = |dlg: u32| loader.shared.window_mgr.lock_or_recover().get_window(dlg)
-            .map(|w| (w.dialog_dismissed, w.dialog_result)).unwrap();
-
         let dlg = open(&loader, frame, MB_YESNO);
-        loader.procless_dialog_message(dlg, WM_CLOSE, 0, 0);
         loader.procless_dialog_message(dlg, WM_COMMAND, DID_CANCEL, 0);
         loader.procless_dialog_message(dlg, WM_COMMAND, MBID_OK, 0);
-        assert!(!result(dlg).0, "no Cancel or OK button: still open");
+        assert!(!result(&loader, dlg).0, "no Cancel or OK button: still open");
         loader.procless_dialog_message(dlg, WM_COMMAND, MBID_NO, 0);
-        assert_eq!(result(dlg), (true, MBID_NO));
+        assert_eq!(result(&loader, dlg), (true, MBID_NO));
         assert_eq!(loader.shared.window_mgr.lock_or_recover().finish_modal_dialog(dlg), MBID_NO);
         let wm = loader.shared.window_mgr.lock_or_recover();
         assert!(!wm.is_window(dlg), "destroyed when it ends");
@@ -316,8 +619,84 @@ mod tests {
         drop(wm);
 
         let dlg = open(&loader, frame, MB_OKCANCEL);
+        loader.procless_dialog_message(dlg, WM_COMMAND, DID_CANCEL, 0);
+        assert_eq!(result(&loader, dlg), (true, MBID_CANCEL), "Esc is Cancel");
+    }
+
+    #[test]
+    fn close_ends_it_with_mbid_cancel_whatever_its_buttons() {
+        let (loader, frame) = with_owner();
+        for style in [MB_YESNO, MB_OK | MB_HELP, MB_ENTER, MB_OKCANCEL] {
+            let dlg = open(&loader, frame, style);
+            loader.procless_dialog_message(dlg, WM_CLOSE, 0, 0);
+            assert_eq!(result(&loader, dlg), (true, MBID_CANCEL), "style {style:#x}");
+            loader.shared.window_mgr.lock_or_recover().finish_modal_dialog(dlg);
+        }
+        // The close button / system-menu Close arrive as WM_SYSCOMMAND(SC_CLOSE),
+        // which becomes WM_CLOSE.
+        let dlg = open(&loader, frame, MB_YESNO);
+        take_messages(&loader);
+        loader.procless_dialog_message(dlg, WM_SYSCOMMAND, SC_CLOSE, 0);
+        let msgs = take_messages(&loader);
+        assert!(msgs.iter().any(|m| (m.0, m.1) == (dlg, WM_CLOSE)), "{msgs:?}");
         loader.procless_dialog_message(dlg, WM_CLOSE, 0, 0);
-        assert_eq!(result(dlg), (true, MBID_CANCEL), "closing is Cancel");
+        assert_eq!(result(&loader, dlg), (true, MBID_CANCEL));
+    }
+
+    #[test]
+    fn the_help_button_sends_wm_help_to_the_box_which_stays_open() {
+        let (loader, frame) = with_owner();
+        let dlg = open(&loader, frame, MB_YESNO | MB_HELP);
+        let help = {
+            let wm = loader.shared.window_mgr.lock_or_recover();
+            let help = wm.find_child_by_id(dlg, MBID_HELP).expect("a Help button");
+            let w = wm.get_window(help).unwrap();
+            assert_eq!((w.text.as_str(), w.class_name.as_str()), ("Help", "WC_BUTTON"));
+            assert_eq!(w.style & BS_PRIMARYSTYLES, BS_PUSHBUTTON);
+            assert_ne!(w.style & BS_HELP, 0);
+            assert_eq!(w.style & BS_DEFAULT, 0, "not the default button");
+            help
+        };
+        take_messages(&loader);
+        loader.click_button(help, true);
+        let msgs = take_messages(&loader);
+        assert_eq!(msgs, [(dlg, WM_HELP, MBID_HELP, (1 << 16) | CMDSRC_PUSHBUTTON)],
+                   "WM_HELP to the box with the button id, pushed with the pointer");
+        assert!(matches!(loader.procless_dialog_message(dlg, WM_HELP, MBID_HELP, CMDSRC_PUSHBUTTON),
+                         ApiResult::Normal(0)));
+        assert!(!result(&loader, dlg).0, "still open");
+        assert!(take_messages(&loader).is_empty(), "the desktop parent gets nothing");
+        // The other buttons still end it.
+        loader.procless_dialog_message(dlg, WM_COMMAND, MBID_YES, 0);
+        assert_eq!(result(&loader, dlg), (true, MBID_YES));
+    }
+
+    #[test]
+    fn the_icon_is_painted_left_of_the_text() {
+        let (loader, frame) = with_owner();
+        let dlg = open(&loader, frame, MB_OK | MB_ERROR);
+        let (cy, label_x) = {
+            let wm = loader.shared.window_mgr.lock_or_recover();
+            let d = wm.get_window(dlg).unwrap();
+            assert_eq!(d.msgbox_icon, SPTR_ICONERROR);
+            let label = d.children.iter().filter_map(|&c| wm.get_window(c))
+                .find(|w| w.class_name == "WC_STATIC").unwrap();
+            (d.cy, label.x)
+        };
+        let (ix, iy) = icon_origin(cy);
+        assert!(label_x >= ix + MSGBOX_ICON_SIZE, "the text is right of the icon");
+        loader.dispatch_builtin_control(dlg, WM_PAINT, 0, 0);
+        let surface = loader.shared.window_mgr.lock_or_recover().frame_surface(dlg).unwrap();
+        let s = surface.lock_or_recover();
+        let sx = ix - CHROME_BORDER_W;
+        let pels = icon_pels(SPTR_ICONERROR).unwrap();
+        let n = MSGBOX_ICON_SIZE;
+        for (x, y) in [(16, 16), (22, 10), (10, 22), (16, 2)] {
+            // Top-row-first pel (x, y) is PM y = iy + n - 1 - y.
+            assert_eq!(s.pel(sx + x, iy + n - 1 - y), pels[(y * n + x) as usize], "pel ({x}, {y})");
+        }
+        assert_eq!(s.pel(sx, iy + n - 1), Some(super::super::CONTROL_FACE_COLOR),
+                   "a transparent corner shows the face");
     }
 
     #[test]

@@ -528,6 +528,7 @@ impl Loader {
                         // compositor (from `frame_flags` and the window text).
                         let d = Painter::new(self, hwnd, hwnd);
                         d.fill((0, 0, cx, cy), CONTROL_FACE_COLOR);
+                        self.paint_message_box_icon(&d, hwnd);
                         let controls = self.shared.window_mgr.lock_or_recover()
                             .builtin_control_descendants(hwnd);
                         for control in controls {

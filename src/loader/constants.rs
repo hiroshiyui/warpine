@@ -749,6 +749,25 @@ pub const MB_ICONHAND:         u32 = 0x0040; // error
 pub const MB_ICONQUESTION:     u32 = 0x0010; // question
 pub const MB_ICONEXCLAMATION:  u32 = 0x0020; // warning
 pub const MB_ICONASTERISK:     u32 = 0x0030; // information
+pub const MB_CUANOTIFICATION:  u32 = 0x0000;
+pub const MB_CUAWARNING:       u32 = 0x0020;
+pub const MB_CUACRITICAL:      u32 = 0x0040;
+/// An application icon (WinMessageBox2); `WinMessageBox` shows none.
+pub const MB_CUSTOMICON:       u32 = 0x0080;
+// Aliases (<pmwin.h> defines them by name; values repeated here).
+pub const MB_QUERY:            u32 = MB_ICONQUESTION;
+pub const MB_WARNING:          u32 = MB_CUAWARNING;
+pub const MB_INFORMATION:      u32 = MB_ICONASTERISK;
+pub const MB_CRITICAL:         u32 = MB_CUACRITICAL;
+pub const MB_ERROR:            u32 = MB_CRITICAL;
+/// Adds a Help push button that sends `WM_HELP` to the message box.
+pub const MB_HELP:             u32 = 0x2000;
+
+// System pointers of the message-box icons (WinQuerySysPointer SPTR_*).
+pub const SPTR_ICONINFORMATION: u32 = 11;
+pub const SPTR_ICONQUESTION:    u32 = 12;
+pub const SPTR_ICONERROR:       u32 = 13;
+pub const SPTR_ICONWARNING:     u32 = 14;
 
 // WinMessageBox return values (MBID_*)
 pub const MBID_OK:     u32 = 1;
