@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.0.2] - 2026-11-18
+
 ### Added
 - **System menu for PM frames** (new `src/gui/system_menu.rs`, `src/loader/pm_sysmenu.rs`) — a click on a frame's system-menu icon, Alt+Space / Shift+Esc or `WM_SYSCOMMAND(SC_SYSMENU)` opens Restore, Move, Size, Minimize, Maximize, Hide, Close and Window list, greyed by the frame's state and buttons. A choice posts `WM_SYSCOMMAND(SC_*)` with `CMDSRC_MENU` to the client, which can handle it or leave it to `WinDefWindowProc`. Sample `pm_sysmenu_test`.
 - **Keyboard move and size of PM frames** (new `src/gui/frame_track.rs`) — Alt+F7 / Alt+F8 or the menu's Move / Size, then the arrow keys (sizing first picks an edge or corner), Enter to keep and Esc to restore; no Size without a sizing border or outside the normal state, no Move when maximized. The VIO window's keyboard Size picks edges the same way.
