@@ -14,6 +14,10 @@ use std::time::Duration;
 
 /// Return the path to the compiled warpine binary.  Cargo sets
 /// CARGO_BIN_EXE_warpine automatically when building integration tests.
+/// Country and codepage for every run: Warpine takes them from the host
+/// locale, so tests pin the US defaults to stay reproducible on any machine.
+const PINNED_LOCALE: &[(&str, &str)] = &[("WARPINE_COUNTRY", "1"), ("WARPINE_CODEPAGE", "437")];
+
 fn warpine() -> &'static str {
     env!("CARGO_BIN_EXE_warpine")
 }
@@ -28,9 +32,17 @@ fn kvm_available() -> bool {
 ///
 /// Panics if the process cannot be spawned or times out.
 fn run_sample(sample: &str, timeout_secs: u64) -> (String, i32) {
+    run_sample_env(sample, timeout_secs, &[])
+}
+
+/// [`run_sample`] with extra environment variables (applied after the
+/// pinned locale, so they can override it).
+fn run_sample_env(sample: &str, timeout_secs: u64, env: &[(&str, &str)]) -> (String, i32) {
     let mut child = Command::new(warpine())
         .arg(sample)
         .env("WARPINE_HEADLESS", "1")
+        .envs(PINNED_LOCALE.iter().copied())
+        .envs(env.iter().copied())
         // Suppress tracing/log noise on stderr; we only care about stdout.
         .env("RUST_LOG", "error")
         // End of input at once: a sample that waits for a key (audio_test's
@@ -106,6 +118,22 @@ fn test_nls() {
     assert!(out.contains("CP932 lead bytes 81-9F, E0-FC, then 0,0 OK"), "DosQueryDBCSEnv:\n{out}");
     assert!(out.contains("short buffer: ERROR_NLS_TABLE_TRUNCATED OK"), "truncation:\n{out}");
     assert!(out.contains("'a' and 'A' weigh the same OK"), "DosQueryCollate:\n{out}");
+}
+
+/// The country and starting codepage come from WARPINE_COUNTRY /
+/// WARPINE_CODEPAGE (else the host locale): a non-US country and a DBCS
+/// codepage reach DosQueryCp / DosQueryCtryInfo, and the Watcom C runtime
+/// starts normally with them (its start-up DosQueryDBCSEnv call used to
+/// hang it for every non-US country).
+#[test]
+fn test_country_and_codepage_from_the_environment() {
+    if !kvm_available() { return; }
+    let (out, code) = run_sample_env("samples/nls_test/nls_test.exe", 15,
+                                     &[("WARPINE_COUNTRY", "81"), ("WARPINE_CODEPAGE", "932")]);
+    assert_eq!(code, 0, "nls_test exited with {code}\nstdout:\n{out}");
+    assert!(out.contains("codepage[0]=932"), "DosQueryCp:\n{out}");
+    assert!(out.contains("country=81"), "DosQueryCtryInfo country:\n{out}");
+    assert!(out.contains("All tests PASSED!"), "NLS tests failed:\n{out}");
 }
 
 /// dbcs_test: DosQueryDBCSEnv after DosSetProcessCp(932) (NLS 6), then
@@ -312,6 +340,7 @@ fn run_gui_script_env(sample: &str, script: &Path, capture: bool, env: &[(&str, 
         .arg(sample)
         .env_remove("WARPINE_COMPOSITOR")
         .envs(env.iter().copied())
+        .envs(PINNED_LOCALE.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
         .env("SDL_AUDIODRIVER", "dummy")
         .env("WARPINE_GUI_SCRIPT", script)
@@ -484,6 +513,7 @@ fn run_4os2_script(vio: Option<&str>, dumps: &[&str], script: impl FnOnce(&[std:
     let mut cmd = Command::new("script");
     cmd.args(["-qec", &format!("timeout 30 {} {sample}", warpine())])
         .arg("/dev/null")
+        .envs(PINNED_LOCALE.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
         .env("SDL_AUDIODRIVER", "dummy")
         .env("RUST_LOG", "error")
@@ -530,6 +560,7 @@ fn run_mou_session(vio: Option<&str>, origin: (i32, i32)) -> Option<String> {
     let mut cmd = Command::new("script");
     cmd.args(["-qec", &format!("timeout 30 {} {sample}", warpine())])
         .arg("/dev/null")
+        .envs(PINNED_LOCALE.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
         .env("SDL_AUDIODRIVER", "dummy")
         .env("RUST_LOG", "error")
@@ -668,6 +699,7 @@ fn run_4os2_windowed(steps: &str, dumps: usize) -> Option<WindowedSession> {
     let status = Command::new("script")
         .args(["-qec", &format!("timeout 40 {} {sample}", warpine())])
         .arg("/dev/null")
+        .envs(PINNED_LOCALE.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
         .env("SDL_AUDIODRIVER", "dummy")
         .env("RUST_LOG", "error")

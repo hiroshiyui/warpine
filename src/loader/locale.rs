@@ -5,6 +5,89 @@
 
 use log::debug;
 
+/// Environment variable that overrides the OS/2 country code.
+pub const COUNTRY_VAR: &str = "WARPINE_COUNTRY";
+/// Environment variable that overrides the starting process codepage.
+pub const CODEPAGE_VAR: &str = "WARPINE_CODEPAGE";
+/// The country and codepage of the C / POSIX locale (and of no locale).
+pub const DEFAULT_COUNTRY_CP: (u32, u32) = (1, 437);
+
+/// The OS/2 country code and starting process codepage for a host locale
+/// (`lang`, `territory` from e.g. `ja_JP.UTF-8`), like an OS/2 installation
+/// in that language: Japanese → 81 / CP932, German → 49 / CP850.
+///
+/// - The country code is OS/2's, mostly the international dialling code
+///   of the territory (or of the language's main country without one).
+/// - The codepage is the language's usual OS/2 codepage among those
+///   Warpine supports: 932 / 936 / 949 / 950 for CJK, 866 for Cyrillic,
+///   852 for Central European languages, 437 for US English and 850 for
+///   the rest (languages whose OS/2 codepage Warpine lacks, e.g. Greek
+///   869, also get 850).
+/// - `country_var` / `codepage_var` (`WARPINE_COUNTRY` /
+///   `WARPINE_CODEPAGE`) override each; a codepage Warpine does not
+///   support, or a value that is not a number, is ignored with a warning.
+///
+/// The country codes are from common knowledge of OS/2's COUNTRY.SYS
+/// numbering (dialling codes, 88 for Taiwan, 42 for the Czech Republic and
+/// Slovakia) and are not checked against an IBM source.
+pub fn resolve_country(lang: &str, territory: &str,
+                       country_var: Option<&str>, codepage_var: Option<&str>) -> (u32, u32) {
+    let (mut country, mut cp) = locale_country(lang, territory);
+    if let Some(v) = country_var {
+        match v.trim().parse::<u32>() {
+            Ok(c) if c > 0 => country = c,
+            _ => log::warn!("{COUNTRY_VAR}={v:?} is not a country code; using {country}"),
+        }
+    }
+    if let Some(v) = codepage_var {
+        match v.trim().parse::<u32>() {
+            Ok(c) if super::stubs::is_supported_codepage(c) => cp = c,
+            _ => log::warn!("{CODEPAGE_VAR}={v:?} is not a supported codepage; using {cp}"),
+        }
+    }
+    (country, cp)
+}
+
+/// [`resolve_country`] without the overrides.
+fn locale_country(lang: &str, territory: &str) -> (u32, u32) {
+    let lang = lang.to_ascii_lowercase();
+    let territory = territory.to_ascii_uppercase();
+    if lang.is_empty() || lang == "c" || lang == "posix" {
+        return DEFAULT_COUNTRY_CP;
+    }
+    let cp = match lang.as_str() {
+        "ja" => 932,
+        "ko" => 949,
+        "zh" if matches!(territory.as_str(), "TW" | "HK" | "MO") => 950,
+        "zh" => 936,
+        "ru" | "uk" | "be" | "bg" | "mk" => 866,
+        "pl" | "cs" | "sk" | "hu" | "hr" | "sl" | "ro" | "bs" | "sq" => 852,
+        "en" if matches!(territory.as_str(), "US" | "") => 437,
+        _ => 850,
+    };
+    let by_territory = match territory.as_str() {
+        "US" => Some(1), "CA" => Some(2), "MX" | "AR" | "CL" | "CO" | "PE" | "VE" => Some(3),
+        "RU" | "KZ" => Some(7), "GR" => Some(30), "NL" => Some(31), "BE" => Some(32),
+        "FR" => Some(33), "ES" => Some(34), "HU" => Some(36), "HR" | "SI" | "RS" | "BA" | "MK" => Some(38),
+        "IT" => Some(39), "RO" => Some(40), "CH" => Some(41), "CZ" | "SK" => Some(42),
+        "AT" => Some(43), "GB" | "IE" => Some(44), "DK" => Some(45), "SE" => Some(46),
+        "NO" => Some(47), "PL" => Some(48), "DE" => Some(49), "BR" => Some(55),
+        "AU" => Some(61), "NZ" => Some(64), "JP" => Some(81), "KR" => Some(82),
+        "CN" | "SG" => Some(86), "TW" => Some(88), "TR" => Some(90), "IN" => Some(91),
+        "PT" => Some(351), "IS" => Some(354), "FI" => Some(358), "BG" => Some(359),
+        "UA" => Some(380), "BY" => Some(375),
+        "HK" => Some(852), "MO" => Some(853),
+        _ => None,
+    };
+    let country = by_territory.unwrap_or(match lang.as_str() {
+        "ja" => 81, "ko" => 82, "zh" => 86, "ru" => 7, "de" => 49, "fr" => 33,
+        "es" => 34, "it" => 39, "nl" => 31, "pl" => 48, "cs" => 42, "hu" => 36,
+        "pt" => 351, "fi" => 358, "sv" => 46, "da" => 45, "nb" | "nn" | "no" => 47,
+        _ => 1,
+    });
+    (country, cp)
+}
+
 /// OS/2 COUNTRYINFO fields derived from the host locale.
 #[derive(Debug, Clone)]
 pub struct Os2Locale {
@@ -67,16 +150,16 @@ impl Os2Locale {
         locale
     }
 
-    /// Map language/territory to OS/2 country code and codepage.
-    /// Country code is always 1 (US) and codepage is always 437 because:
-    /// - Non-US country codes trigger Watcom CRT initialization paths that
-    ///   try to load collation/DBCS tables, causing crashes without real NLS DLL
-    /// - Guest executables are compiled for CP 437 (single-byte)
-    ///
-    /// Host locale formatting (date/time separators, currency, etc.) is still
-    /// applied through the other COUNTRYINFO fields.
-    fn map_country(_lang: &str, _territory: &str) -> (u32, u32) {
-        (1, 437)
+    /// The OS/2 country code and process codepage for a host locale, unless
+    /// `WARPINE_COUNTRY` / `WARPINE_CODEPAGE` override them (see
+    /// [`resolve_country`]).
+    fn map_country(lang: &str, territory: &str) -> (u32, u32) {
+        resolve_country(
+            lang,
+            territory,
+            std::env::var(COUNTRY_VAR).ok().as_deref(),
+            std::env::var(CODEPAGE_VAR).ok().as_deref(),
+        )
     }
 
     /// Map to OS/2 date format: 0=MDY, 1=DMY, 2=YMD.
@@ -258,6 +341,41 @@ struct HostLconv {
 
 #[cfg(test)]
 mod tests {
+    use super::{resolve_country, DEFAULT_COUNTRY_CP};
+
+    #[test]
+    fn country_and_codepage_follow_the_host_locale() {
+        let r = |l, t| resolve_country(l, t, None, None);
+        assert_eq!(r("ja", "JP"), (81, 932));
+        assert_eq!(r("ko", "KR"), (82, 949));
+        assert_eq!(r("zh", "CN"), (86, 936));
+        assert_eq!(r("zh", "TW"), (88, 950));
+        assert_eq!(r("zh", "HK"), (852, 950));
+        assert_eq!(r("ru", "RU"), (7, 866));
+        assert_eq!(r("de", "DE"), (49, 850));
+        assert_eq!(r("de", "AT"), (43, 850));
+        assert_eq!(r("pl", "PL"), (48, 852));
+        assert_eq!(r("en", "US"), (1, 437));
+        assert_eq!(r("en", "GB"), (44, 850));
+        assert_eq!(r("en", ""), (1, 437));
+        assert_eq!(r("fr", ""), (33, 850), "no territory: the language's country");
+        assert_eq!(r("eo", ""), (1, 850), "unknown language: country 1");
+        assert_eq!(r("", ""), DEFAULT_COUNTRY_CP);
+        assert_eq!(r("C", ""), DEFAULT_COUNTRY_CP);
+        assert_eq!(r("POSIX", ""), DEFAULT_COUNTRY_CP);
+    }
+
+    #[test]
+    fn overrides_win_and_bad_values_are_ignored() {
+        assert_eq!(resolve_country("ja", "JP", Some("1"), Some("437")), (1, 437));
+        assert_eq!(resolve_country("en", "US", None, Some(" 932 ")), (1, 932));
+        assert_eq!(resolve_country("en", "US", Some("49"), None), (49, 437));
+        // 1004 is a PM queue codepage only; 1200 is not supported at all.
+        assert_eq!(resolve_country("ja", "JP", None, Some("1004")), (81, 932));
+        assert_eq!(resolve_country("ja", "JP", Some("x"), Some("1200")), (81, 932));
+        assert_eq!(resolve_country("ja", "JP", Some("0"), None), (81, 932));
+    }
+
     use super::*;
 
     // ── dbcs_lead_ranges ─────────────────────────────────────────────────────

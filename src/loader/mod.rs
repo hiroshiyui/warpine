@@ -305,7 +305,7 @@ pub struct SharedState {
     pub exit_code: AtomicI32,
     pub locale: locale::Os2Locale,
     /// Active process codepage — updated by DosSetProcessCp; read by DosQueryCp.
-    /// Initialized from locale.codepage at startup.
+    /// Starts as `locale.codepage` (host locale or `WARPINE_CODEPAGE`).
     pub active_codepage: AtomicU32,
     /// Keyboard event queue for SDL text-mode (CLI) apps.
     /// The VCPU thread blocks on `kbd_cond` when `use_sdl_text` is set.
@@ -372,7 +372,13 @@ impl Loader {
                 }
             }
         }
-        let console_mgr = console::VioManager::new();
+        // The host locale (or WARPINE_COUNTRY / WARPINE_CODEPAGE) chooses the
+        // country and the starting process codepage, which the VIO screen and
+        // the PM CJK face preference follow (as DosSetProcessCp does later).
+        let locale = locale::Os2Locale::from_host();
+        let mut console_mgr = console::VioManager::new();
+        console_mgr.codepage = locale.codepage as u16;
+        crate::gui::font::set_active_codepage(locale.codepage);
 
         let shared = Arc::new(SharedState {
             mem_mgr: Mutex::new(mem_mgr),
@@ -401,8 +407,8 @@ impl Loader {
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),
             exit_code: AtomicI32::new(0),
-            locale: locale::Os2Locale::from_host(),
-            active_codepage: AtomicU32::new(437), // default CP437; overridden by DosSetProcessCp
+            active_codepage: AtomicU32::new(locale.codepage),
+            locale,
             kbd_queue: Mutex::new(VecDeque::new()),
             kbd_cond: Condvar::new(),
             use_sdl_text: AtomicBool::new(false),
@@ -485,8 +491,14 @@ impl Loader {
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),
             exit_code:    AtomicI32::new(0),
-            locale:       locale::Os2Locale::from_host(),
-            active_codepage: AtomicU32::new(437),
+            // Pinned to the default country / codepage so tests do not
+            // depend on the host's locale.
+            locale:       {
+                let mut l = locale::Os2Locale::from_host();
+                (l.country, l.codepage) = locale::DEFAULT_COUNTRY_CP;
+                l
+            },
+            active_codepage: AtomicU32::new(locale::DEFAULT_COUNTRY_CP.1),
             kbd_queue:    Mutex::new(VecDeque::new()),
             kbd_cond:     Condvar::new(),
             use_sdl_text: AtomicBool::new(false),
