@@ -343,6 +343,9 @@ pub struct PresentationSpace {
     pub area: Option<super::pm_area::AreaBracket>,
     /// The path (`GpiBeginPath` … `GpiEndPath`, then used once).
     pub path: Option<super::pm_area::PathState>,
+    /// Character attributes of GPI text: angle, shear, direction, extra
+    /// spacing, alignment, mode (`pm_text.rs`).
+    pub text: super::pm_text::TextAttrs,
 }
 
 impl PresentationSpace {
@@ -754,6 +757,7 @@ impl WindowManager {
             clip: None,
             area: None,
             path: None,
+            text: super::pm_text::TextAttrs::default(),
         });
         self.next_hps += 1;
         h

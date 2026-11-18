@@ -5,6 +5,7 @@
 #![forbid(unsafe_code)]
 
 pub mod font;
+pub mod glyph_transform;
 pub mod damage;
 pub mod region;
 pub mod frame_stats;

@@ -1401,6 +1401,25 @@ fn gui_pm_pel_test_reads_back_pels_and_mixes() {
     assert_sample_checks_pass("samples/pm_pel_test/pm_pel_test.exe", "pm_pel_test", 16);
 }
 
+/// pm_textpos_test: GPI text layout — GpiQueryCharStringPos(At) with and
+/// without increments, GpiQueryWidthTable, GpiQueryTextBox (TXTBOX_* order,
+/// angle, alignment, shear), the character attributes and their queries,
+/// GpiCharStringPosAt with CHS_OPAQUE / CHS_CLIP and rotated text read back
+/// with GpiQueryPel — checked by the guest itself.
+#[test]
+fn gui_pm_textpos_test_checks_text_layout() {
+    assert_sample_checks_pass("samples/pm_textpos_test/pm_textpos_test.exe", "pm_textpos_test", 36);
+}
+
+/// pm_textpos_test's picture: text at six angles around a mark, sheared,
+/// top to bottom, right to left, spaced by an increment vector and
+/// underscored, centred and struck out on an opaque box.
+#[test]
+fn gui_pm_textpos_test_matches_golden() {
+    check_gui_golden("pm_textpos_test", "samples/pm_textpos_test/pm_textpos_test.exe",
+        "3000 dump {dump}\n3100 quit\n");
+}
+
 /// pm_rect_text_test: the rectangle helpers, WinDrawText (counts, extent,
 /// word break, erasing) and GpiPolyLine (from the current position, read
 /// back with GpiQueryPel), checked by the guest itself.

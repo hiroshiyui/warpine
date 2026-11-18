@@ -55,6 +55,7 @@ mod api_dispatch;
 mod doscalls;
 mod pm_win;
 mod pm_gpi;
+pub mod pm_text;
 mod pm_bitmap;
 pub mod pm_region;
 pub mod pm_area;

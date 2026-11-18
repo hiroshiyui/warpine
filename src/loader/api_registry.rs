@@ -651,11 +651,11 @@ const MOUCALLS_ORDINALS: u32 = 20;
 /// PMWIN ordinals dispatched by `pm_win.rs` (checked against its
 /// `N => { // WinName(` arms by a test).
 const PMWIN_ORDINALS: u32 = 157;
-/// PMGPI ordinals dispatched by `pm_gpi.rs`, `pm_region.rs` and
-/// `pm_area.rs` (checked against their arms by a test), of which
+/// PMGPI ordinals dispatched by `pm_gpi.rs`, `pm_region.rs`, `pm_area.rs`
+/// and `pm_text.rs` (checked against their arms by a test), of which
 /// `PMGPI_STUBS` are stubs (`GpiLoadFonts`, `GpiLoadPublicFonts`,
 /// `GpiUnloadPublicFonts`).
-const PMGPI_ORDINALS: u32 = 100;
+const PMGPI_ORDINALS: u32 = 119;
 const PMGPI_STUBS: u32 = 3;
 
 /// Ordinals handled by the sub-dispatchers rather than the registry.
@@ -716,7 +716,7 @@ pub fn compat_report() -> String {
     out.push_str(&format!("  PMWIN     {PMWIN_ORDINALS} implemented  (WinInitialize, message queues, hooks, broadcasts, window mgmt, \
                   input, paint, timers, menus, dialogs, controls, clipboard, resources, regions)\n"));
     out.push_str(&format!("  PMGPI     {} implemented, {PMGPI_STUBS} stub  (presentation spaces, colour and mix, \
-                  lines, boxes, arcs, text, logical fonts, font metrics, bitmaps, regions, clipping, \
+                  lines, boxes, arcs, text, text layout and character attributes, logical fonts, font metrics, bitmaps, regions, clipping, \
                   areas, paths, curves)\n", PMGPI_ORDINALS - PMGPI_STUBS));
     out.push('\n');
 
@@ -808,7 +808,7 @@ mod tests {
         let win = dispatched_ordinals(&[include_str!("pm_win.rs")]);
         assert_eq!(win.len() as u32, super::PMWIN_ORDINALS, "PMWIN_ORDINALS is stale");
         let gpi = dispatched_ordinals(&[include_str!("pm_gpi.rs"), include_str!("pm_region.rs"),
-                                        include_str!("pm_area.rs")]);
+                                        include_str!("pm_area.rs"), include_str!("pm_text.rs")]);
         assert_eq!(gpi.len() as u32, super::PMGPI_ORDINALS, "PMGPI_ORDINALS is stale");
     }
 

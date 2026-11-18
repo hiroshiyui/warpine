@@ -473,7 +473,7 @@ The GUI thread (`run_pm_loop` in `src/gui/renderer.rs`, backend `SdlRenderer` in
 
 **Frame statistics.** `src/gui/frame_stats.rs` counts loop passes and composites (average and maximum composite time, present time, share of the desktop redrawn) and logs a summary every 5 s at debug level: `RUST_LOG=warpine::gui=debug`. Use it to measure rendering changes.
 
-**Guest-side benchmark.** `samples/pm_bench` measures what an application sees: GPI calls issued per second inside a paint, `WinSendMsg` and `WinPostMsg` round trips, `WinInvalidateRect` → `WM_PAINT` cycles, and the `WM_TIMER` rate of a 10 ms timer, each timed with `DosQuerySysInfo(QSV_MS_COUNT)`. GPI calls rasterise on the calling thread, so its GPI figures include drawing the pixels (compositing is on the GUI thread; read it from the frame statistics). `samples/pm_pel_test` checks read-back and mix modes from the guest side (`GpiSetPel`/`GpiBox`/`GpiLine` → `GpiQueryPel`, XOR / invert / leave-alone); `samples/pm_bitmap_test` checks memory presentation spaces, bitmaps, `GpiBitBlt`, `GpiLoadBitmap` + `WinDrawBitmap`, colour tables and line types; `samples/pm_shapes_test` arcs, area patterns and line widths; `samples/pm_region_test` regions, clipping, areas, paths, polygons and curves. To compare two builds without a display:
+**Guest-side benchmark.** `samples/pm_bench` measures what an application sees: GPI calls issued per second inside a paint, `WinSendMsg` and `WinPostMsg` round trips, `WinInvalidateRect` → `WM_PAINT` cycles, and the `WM_TIMER` rate of a 10 ms timer, each timed with `DosQuerySysInfo(QSV_MS_COUNT)`. GPI calls rasterise on the calling thread, so its GPI figures include drawing the pixels (compositing is on the GUI thread; read it from the frame statistics). `samples/pm_pel_test` checks read-back and mix modes from the guest side (`GpiSetPel`/`GpiBox`/`GpiLine` → `GpiQueryPel`, XOR / invert / leave-alone); `samples/pm_bitmap_test` checks memory presentation spaces, bitmaps, `GpiBitBlt`, `GpiLoadBitmap` + `WinDrawBitmap`, colour tables and line types; `samples/pm_shapes_test` arcs, area patterns and line widths; `samples/pm_region_test` regions, clipping, areas, paths, polygons and curves; `samples/pm_textpos_test` text layout (character positions, width tables, text boxes, character attributes, rotated text). To compare two builds without a display:
 
 ```bash
 printf '4500 quit\n' > /tmp/bench.script
@@ -528,6 +528,29 @@ binary. The VIO text-mode console is separate and keeps its 8×16 bitmap font.
   `GpiDeleteSetId` update the selection; `GpiQueryTextBox`,
   `GpiQueryFontMetrics` and the current-position advance after
   `GpiCharString` all use the selected font's real proportional metrics.
+- **Text layout** (`loader/pm_text.rs`). The character attributes live in
+  `PresentationSpace::text` (`TextAttrs`: angle, shear, direction, char /
+  break extra, alignment, mode). `pm_text::layout` is pure: from the
+  characters' advances (`font::char_advance`, which measures without
+  rasterising) it places each character in the *text frame* (`u` along
+  the baseline, `v` up), with the direction, the extras or an increment
+  vector, computes the concatenation point and the `TXTBOX_*` corners and
+  applies the alignment; `Frame` maps the frame to world coordinates (the
+  angle) and `TextAttrs::glyph_matrix` gives each glyph's shape transform
+  (shear, then the angle). `GpiCharString(At)`, `GpiCharStringPos(At)`,
+  `GpiQueryCharStringPos(At)`, `GpiQueryTextBox` and `GpiQueryWidthTable`
+  share it. Plain text (upright, left to right, no extras, increments or
+  alignment) is still one `DrawOp::TextFont`, so its pels are unchanged;
+  everything else is a `DrawOp::GlyphRun` of glyphs at whole-pel origins
+  with a `glyph_transform::Matrix`. With the identity matrix the run draws
+  the cached upright glyphs; otherwise `gui/glyph_transform.rs` transforms
+  the outline (`font::glyph_shape`) in font units and rasterises it with
+  ab_glyph (Unifont bitmaps are mapped pel by pel through the inverse
+  matrix), in its own per-thread cache bounded at `TRANSFORMED_CACHE_MAX`
+  glyphs; matrices with an entry beyond ±16 or no inverse draw nothing.
+  Underscore / strikeout bands and a non-upright background box are
+  `DrawOp::Shape` polygons; `CHS_CLIP` intersects the rectangle with the
+  PS clip and draws through `Loader::draw_clipped`.
 
 ## PM Callback Mechanism
 
@@ -1436,6 +1459,7 @@ src/
   gui/
     mod.rs             GUI module re-exports; pub use for all renderer types
     message.rs         GUIMessage channel (clipboard, mouse capture) + GuiWake
+    glyph_transform.rs Rotated / sheared glyphs (GPI character angle and shear): transformed outlines, bounded cache
     font.rs            PM typeface: embedded IBM Plex Sans/Mono/Serif + Plex Sans JP/KR/TC/SC
                        (vendor/ibm-plex), FontSpec, text_width(), metrics(), draw_text();
                        fallback chain Latin → CJK (by codepage) → GNU Unifont
@@ -1493,6 +1517,7 @@ src/
     pm_hook.rs         WinSetHook / WinReleaseHook / WinCallMsgFilter: HookTable, call chains of guest calls (ApiResult::CallChain)
     pm_gpi.rs          PMGPI API implementations (67 ordinals, incl. DevOpenDC/DevCloseDC/DevQueryCaps)
     pm_shapes.rs       Arc geometry (ARCPARAMS, full/partial/point arcs, FIXED) and the PATSYM_* pattern table
+    pm_text.rs         GPI text layout: character angle/shear/direction/extra/alignment, GpiCharStringPos, GpiQueryCharStringPos, GpiQueryTextBox, GpiQueryWidthTable
     pm_bitmap.rs       Bitmap codec (BITMAPINFOHEADER/2, RT_BITMAP), memory DCs, bitmaps, GpiBitBlt family
     pm_edit.rs         Edit-buffer logic for text controls (insert/delete/caret/scroll)
     pm_controls.rs     Interactive WC_ENTRYFIELD / WC_MLE / WC_LISTBOX / WC_BUTTON: messages + painting

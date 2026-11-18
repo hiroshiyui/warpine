@@ -251,10 +251,10 @@ enum GlyphSource {
 }
 
 /// Unifont's baseline sits this many pixels above the bottom of its 16-px cell.
-const UNIFONT_DESCENT: i32 = 2;
-const UNIFONT_CELL_H: i32 = 16;
-const UNIFONT_NARROW_W: i32 = 8;
-const UNIFONT_WIDE_W: i32 = 16;
+pub(crate) const UNIFONT_DESCENT: i32 = 2;
+pub(crate) const UNIFONT_CELL_H: i32 = 16;
+pub(crate) const UNIFONT_NARROW_W: i32 = 8;
+pub(crate) const UNIFONT_WIDE_W: i32 = 16;
 
 fn resolve(ch: char, spec: FontSpec) -> GlyphSource {
     let latin = spec.latin_face();
@@ -449,8 +449,48 @@ pub fn metrics(spec: FontSpec) -> FontMetricsPx {
     m
 }
 
+/// Advance of one character in `spec`, in (fractional) pixels: the amounts
+/// [`text_width`] adds up. Uses the glyph cache when the glyph is there and
+/// otherwise reads the advance from the font without rasterising the glyph,
+/// so measuring many characters (GPI width tables) stays cheap.
+pub fn char_advance(ch: char, spec: FontSpec) -> f32 {
+    let key = (ch, spec, cjk_order(spec.cjk));
+    GLYPH_CACHE.with(|cache| cache.borrow().get(&key).map(|g| g.advance))
+        .unwrap_or_else(|| advance_of(resolve(ch, spec), spec))
+}
+
+/// The shape of a character's glyph, for drawing it under a transform
+/// (`glyph_transform.rs`).
+pub(crate) enum GlyphShape {
+    /// Outline in font units (y up), with the factor from font units to
+    /// pixels.
+    Outline { outline: ab_glyph::Outline, scale: ab_glyph::PxScaleFactor },
+    /// 8×16 GNU Unifont bitmap (rows top first, MSB = left pel).
+    Narrow([u8; 16]),
+    /// 16×16 GNU Unifont bitmap (two bytes per row, big-endian).
+    Wide([u8; 32]),
+    /// Nothing to draw.
+    Blank,
+}
+
+/// The glyph shape of `ch` in `spec`, from the same face the upright path
+/// would draw it from.
+pub(crate) fn glyph_shape(ch: char, spec: FontSpec) -> GlyphShape {
+    match resolve(ch, spec) {
+        GlyphSource::Outline { face: id, id: gid } => face(id)
+            .and_then(|f| {
+                let scale = f.as_scaled(PxScale::from(scale_for(id, spec))).scale_factor();
+                Some(GlyphShape::Outline { outline: f.outline(gid)?, scale })
+            })
+            .unwrap_or(GlyphShape::Blank),
+        GlyphSource::BitmapNarrow(rows) => GlyphShape::Narrow(rows),
+        GlyphSource::BitmapWide(rows) => GlyphShape::Wide(rows),
+        GlyphSource::Blank => GlyphShape::Blank,
+    }
+}
+
 /// Blend `color` (0x00RRGGBB) over `dst` with 8-bit coverage `cov`.
-fn blend(dst: u32, color: u32, cov: u8) -> u32 {
+pub(crate) fn blend(dst: u32, color: u32, cov: u8) -> u32 {
     if cov == 255 {
         return color & 0x00FF_FFFF;
     }

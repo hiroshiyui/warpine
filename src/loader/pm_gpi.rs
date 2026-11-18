@@ -10,7 +10,7 @@ use super::mutex_ext::MutexExt;
 use super::ApiResult;
 use super::constants::*;
 use super::pm_types::{DeviceContext, DrawTarget};
-use crate::gui::font::{self, CjkRegion, FontFamily, FontSpec};
+use crate::gui::font::{self, FontFamily, FontSpec};
 use crate::gui::surface::{AreaFill, DrawOp, Mix, Pattern, Stroke, MAX_STROKE_WIDTH, SOLID_LINE};
 use super::pm_shapes::{self, ArcParams};
 
@@ -139,6 +139,7 @@ impl super::Loader {
         let arg = |off: u64| read_stack(off);
         if let Some(r) = self.handle_region_call(vcpu_id, ordinal, &arg)
             .or_else(|| self.handle_area_call(vcpu_id, ordinal, &arg))
+            .or_else(|| self.handle_text_call(vcpu_id, ordinal, &arg))
         {
             return ApiResult::Normal(r);
         }
@@ -605,38 +606,10 @@ impl super::Loader {
             489 => {
                 // GpiQueryTextBox(HPS hps, LONG lCount1, PCH pchString,
                 //                 LONG lCount2, PPOINTL aptlPoints) → BOOL
-                //
-                // Returns up to TXTBOX_COUNT (5) corner points of the text bounding
-                // box in current-coordinate space (baseline at y=0).
-                let hps     = read_stack(4);
-                let count   = read_stack(8) as i32;
-                let pch     = read_stack(12);
-                let npoints = read_stack(16); // how many POINTLs to fill (≤5)
-                let aptl    = read_stack(20);
-                // Measure the actual string in the presentation space's font.
-                let bytes: Vec<u8> = (0..count.clamp(0, MAX_TEXT_BOX_CHARS) as u32)
-                    .map(|i| pch.checked_add(i).and_then(|a| self.guest_read::<u8>(a)).unwrap_or(0))
-                    .collect();
-                let cp = self.ps_codepage(hps);
-                let font = self.ps_font(hps);
-                let w = font::text_width(&super::codepage::cp_decode(&bytes, cp), font);
-                let m = font::metrics(font);
-                // TXTBOX_TOPLEFT(0), TXTBOX_BOTTOMLEFT(1), TXTBOX_BOTTOMRIGHT(2),
-                // TXTBOX_TOPRIGHT(3), TXTBOX_CONCAT(4) — each is a POINTL (2×i32 = 8 bytes).
-                let pts: [(i32, i32); 5] = [
-                    (0,  m.ascent),   // top-left
-                    (0, -m.descent),  // bottom-left
-                    (w, -m.descent),  // bottom-right
-                    (w,  m.ascent),   // top-right
-                    (w,  0),               // concat point (at baseline)
-                ];
-                if aptl != 0 {
-                    for (i, &pt) in pts.iter().enumerate().take(npoints.min(5) as usize) {
-                        self.guest_write::<i32>(aptl + (i as u32 * 8),     pt.0);
-                        self.guest_write::<i32>(aptl + (i as u32 * 8) + 4, pt.1);
-                    }
-                }
-                ApiResult::Normal(1) // TRUE
+                // The TXTBOX_* corners and concatenation point relative to
+                // the start point (pm_text.rs).
+                ApiResult::Normal(self.query_text_box(vcpu_id, read_stack(4), read_stack(8) as i32, read_stack(12),
+                                                      read_stack(16) as i32, read_stack(20)))
             }
 
             393 => {
@@ -985,7 +958,7 @@ impl super::Loader {
     /// The string of GpiCharString / GpiCharStringAt: `count` bytes at
     /// `pch`, at most `MAX_TEXT_BOX_CHARS` (a longer string is cut there);
     /// `None` for a negative count or a string outside guest memory.
-    fn gpi_string_bytes(&self, count: i32, pch: u32) -> Option<Vec<u8>> {
+    pub(super) fn gpi_string_bytes(&self, count: i32, pch: u32) -> Option<Vec<u8>> {
         if count < 0 { return None; }
         (0..count.min(MAX_TEXT_BOX_CHARS) as u32)
             .map(|i| self.guest_read::<u8>(pch.checked_add(i)?))
@@ -1021,36 +994,6 @@ impl super::Loader {
     pub(crate) fn ps_codepage(&self, hps: u32) -> u32 {
         let cp = self.shared.window_mgr.lock_or_recover().ps_map.get(&hps).map_or(0, |ps| ps.codepage);
         if cp != 0 { cp } else { self.shared.active_codepage.load(Ordering::Relaxed) }
-    }
-
-    /// GpiCharString / GpiCharStringAt: draw `bytes` (in the PS's codepage)
-    /// at `at`, or at the current position, in the current font, and advance
-    /// the current position past the string.
-    fn char_string(&self, hps: u32, at: Option<(i32, i32)>, bytes: &[u8]) -> u32 {
-        let cp = self.ps_codepage(hps);
-        let text = super::codepage::cp_decode(bytes, cp);
-        let Some(t) = self.ps_target(hps) else { return GPI_ERROR };
-        let (x, y) = at.unwrap_or(t.pos);
-        // Pin the CJK regional face to the codepage of this call.
-        let font = FontSpec { cjk: CjkRegion::from_codepage(cp), ..self.ps_font(hps) };
-        let advance = font::text_width(&text, font);
-        // In an area or path bracket text is not drawn (outline-font text
-        // in paths is not supported); the position still advances.
-        if self.in_bracket(hps) {
-            self.set_current_pos(hps, (x + advance, y));
-            return GPI_OK;
-        }
-        // The background mix applies to the string's character box.
-        if let Some(mix) = t.back_mix && advance > 0 {
-            let m = font::metrics(font);
-            self.draw_ps(&t, DrawOp::Box {
-                x1: x, y1: y - m.descent, x2: x + advance - 1, y2: y + m.ascent - 1,
-                color: t.back_color, fill: true, mix,
-            });
-        }
-        self.draw_ps(&t, DrawOp::TextFont { x, y, text, color: t.color, font, mix: t.mix });
-        self.set_current_pos(hps, (x + advance, y));
-        GPI_OK
     }
 
     /// Font currently selected into presentation space `hps`.
@@ -1718,7 +1661,9 @@ mod tests {
         let pt = |i: u32| (loader.guest_read::<i32>(aptl + i * 8).unwrap(),
                            loader.guest_read::<i32>(aptl + i * 8 + 4).unwrap());
         assert_eq!(pt(0), (0, m.ascent));
-        assert_eq!(pt(2), (width, -m.descent));
+        assert_eq!(pt(1), (0, -m.descent));
+        assert_eq!(pt(2), (width, m.ascent), "TXTBOX_TOPRIGHT is index 2 (pmgpi.h)");
+        assert_eq!(pt(3), (width, -m.descent), "TXTBOX_BOTTOMRIGHT is index 3");
         assert_eq!(pt(4), (width, 0));
 
         // GpiQueryFontMetrics describes the selected face.
@@ -1784,7 +1729,8 @@ mod tests {
 
     #[test]
     fn test_pmgpi_dispatch_ordinals_match_ordinal_table() {
-        let sources = [include_str!("pm_gpi.rs"), include_str!("pm_region.rs"), include_str!("pm_area.rs")].concat();
+        let sources = [include_str!("pm_gpi.rs"), include_str!("pm_region.rs"), include_str!("pm_area.rs"),
+                       include_str!("pm_text.rs")].concat();
         assert_arms_match_ordinal_table(&sources, "Gpi", &[]);
     }
 

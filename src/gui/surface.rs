@@ -20,6 +20,7 @@ use std::sync::{Arc, Mutex};
 use super::damage::{Rect, fill_clipped};
 use super::region::{self, FillRule, Region};
 use super::font::{self, CjkRegion, FontSpec};
+use super::glyph_transform;
 use crate::loader::constants::{
     FM_AND, FM_DEFAULT, FM_INVERT, FM_LEAVEALONE, FM_MASKSRCNOT, FM_MERGENOTSRC, FM_MERGESRCNOT,
     FM_NOTCOPYSRC, FM_NOTMASKSRC, FM_NOTMERGESRC, FM_NOTXORSRC, FM_ONE, FM_OR, FM_OVERPAINT,
@@ -44,6 +45,9 @@ pub const MAX_SURFACE_DIM: u32 = 8192;
 /// Text positions are clamped to ± this, far outside any surface, so that
 /// glyph arithmetic on guest-supplied coordinates cannot overflow.
 const TEXT_COORD_LIMIT: i32 = 1 << 24;
+
+/// Most glyphs one [`DrawOp::GlyphRun`] draws (the GPI string limit).
+pub const MAX_RUN_GLYPHS: usize = 4096;
 
 /// A solid line style for [`DrawOp::Line`].
 pub const SOLID_LINE: u16 = 0xFFFF;
@@ -209,6 +213,15 @@ pub enum DrawOp {
     Text { x: i32, y: i32, text: String, color: u32, cjk: CjkRegion },
     /// Text in `font` with its baseline at `y` (the GPI convention).
     TextFont { x: i32, y: i32, text: String, color: u32, font: FontSpec, mix: Mix },
+    /// Characters in `font` placed one by one (GPI text with increments,
+    /// extra spacing, a direction, alignment, an angle or a shear): each
+    /// glyph's origin on its baseline at PM `(x, y)`, its shape mapped by
+    /// `matrix` (glyph-local `(u, v)`, y up → PM offsets; see
+    /// [`glyph_transform::Matrix`]). With [`glyph_transform::IDENTITY`] the
+    /// glyphs are the upright ones [`DrawOp::TextFont`] draws. At most
+    /// [`MAX_RUN_GLYPHS`] glyphs are drawn.
+    GlyphRun { glyphs: Vec<(char, i32, i32)>, color: u32, font: FontSpec, mix: Mix,
+               matrix: glyph_transform::Matrix },
     /// One pel.
     Pel { x: i32, y: i32, color: u32, mix: Mix },
     /// A path through `points` (closed back to the first when `closed`),
@@ -347,6 +360,7 @@ impl Surface {
                 self.text_rows(y.saturating_add(font::metrics(spec).descent), spec)
             }
             DrawOp::TextFont { y, font, .. } => self.text_rows(y, font),
+            DrawOp::GlyphRun { ref glyphs, font, matrix, .. } => self.glyph_run_area(glyphs, font, matrix),
             DrawOp::Pel { x, y, .. } => match self.index(x, y) {
                 Some(_) => Rect::at(x, self.row(y), 1, 1),
                 None => Rect::EMPTY,
@@ -594,6 +608,9 @@ impl Surface {
             DrawOp::TextFont { x, y, ref text, color, font, mix } => {
                 self.text(x, y, text, color, font, mix);
             }
+            DrawOp::GlyphRun { ref glyphs, color, font, mix, matrix } => {
+                self.glyph_run(glyphs, color, font, mix, matrix);
+            }
             DrawOp::Pel { x, y, color, mix } => self.mix_pel(x, y, color, mix),
             DrawOp::Blit { x, y, w, h, ref src, rop, pattern } => {
                 if src.as_ref().is_some_and(|v| v.len() != w as usize * h as usize) { return; }
@@ -764,6 +781,48 @@ impl Surface {
     }
 
     /// Draw `text` with its baseline on PM row `y`.
+    /// Screen rectangle (inside the surface) a [`DrawOp::GlyphRun`] can
+    /// touch: the box of the glyph origins grown by two line heights (one
+    /// glyph's reach in any direction) scaled by the matrix.
+    fn glyph_run_area(&self, glyphs: &[(char, i32, i32)], spec: FontSpec, m: glyph_transform::Matrix) -> Rect {
+        if !glyph_transform::drawable(m) { return Rect::EMPTY; }
+        let lim = |v: i32| v.clamp(-TEXT_COORD_LIMIT, TEXT_COORD_LIMIT);
+        let mut it = glyphs.iter().take(MAX_RUN_GLYPHS).map(|&(_, x, y)| (lim(x), lim(y)));
+        let Some((x, y)) = it.next() else { return Rect::EMPTY };
+        let (mut x0, mut x1, mut y0, mut y1) = (x, x, y, y);
+        for (x, y) in it {
+            (x0, x1, y0, y1) = (x0.min(x), x1.max(x), y0.min(y), y1.max(y));
+        }
+        let norm = (m[0].abs() + m[1].abs()).max(m[2].abs() + m[3].abs());
+        let reach = (2.0 * font::metrics(spec).line_height.max(1) as f32 * norm).ceil() as i32 + 2;
+        Rect::new(x0 - reach, self.row(y1) - reach, x1 + 1 + reach, self.row(y0) + 1 + reach)
+            .intersect(&self.bounds())
+    }
+
+    fn glyph_run(&mut self, glyphs: &[(char, i32, i32)], color: u32, spec: FontSpec, mix: Mix,
+                 m: glyph_transform::Matrix) {
+        if self.width == 0 || self.height == 0 { return; }
+        let (w, h) = (self.width as usize, self.height as usize);
+        let paint = |p: &mut u32, cov: u8| {
+            if mix == Mix::Overpaint {
+                *p = font::blend(*p, color, cov);
+            } else if cov >= MIX_TEXT_COVERAGE {
+                *p = mix.apply(color, *p);
+            }
+        };
+        let mut one = [0u8; 4];
+        for &(ch, x, y) in glyphs.iter().take(MAX_RUN_GLYPHS) {
+            let (x, y) = (x.clamp(-TEXT_COORD_LIMIT, TEXT_COORD_LIMIT), y.clamp(-TEXT_COORD_LIMIT, TEXT_COORD_LIMIT));
+            let baseline = self.height as i32 - y;
+            if m == glyph_transform::IDENTITY {
+                let text = ch.encode_utf8(&mut one);
+                font::draw_text_with(&mut self.buffer, w, h, x, baseline, text, spec, paint);
+            } else {
+                glyph_transform::draw_glyph(&mut self.buffer, w, h, x, baseline, ch, spec, m, paint);
+            }
+        }
+    }
+
     fn text(&mut self, x: i32, y: i32, text: &str, color: u32, spec: FontSpec, mix: Mix) {
         if self.width == 0 || self.height == 0 { return; }
         let (x, y) = (x.clamp(-TEXT_COORD_LIMIT, TEXT_COORD_LIMIT),
