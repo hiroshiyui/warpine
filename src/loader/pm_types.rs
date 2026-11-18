@@ -629,6 +629,9 @@ pub struct WindowManager {
     /// Owner-draw requests waiting to be sent to the owners of controls
     /// (`pm_owner.rs`): `WM_MEASUREITEM`, `WM_DRAWITEM`, `BN_PAINT`.
     pub owner_calls: Vec<super::pm_owner::OwnerCall>,
+    /// Drag and drop: string handles, `DRAGINFO`s, the running drag
+    /// (`pm_drag.rs`).
+    pub drag: super::pm_drag::DragTable,
     /// Guest memory blocks of destroyed windows (container arenas) for the
     /// loader to give back to the memory manager, whose lock is never
     /// taken under this one (ADR-0043).
@@ -717,6 +720,7 @@ impl WindowManager {
             sys_colors: Default::default(),
             key_state: Default::default(),
             owner_calls: Vec::new(),
+            drag: Default::default(),
             pending_guest_frees: Vec::new(),
             owner_drawing: HashSet::new(),
             hooks: Default::default(),

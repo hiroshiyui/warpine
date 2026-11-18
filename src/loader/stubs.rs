@@ -405,7 +405,7 @@ impl super::Loader {
             "DOSCALLS", "QUECALLS", "PMWIN", "PMGPI", "KBDCALLS",
             "VIOCALLS", "SESMGR", "NLS", "MSG", "MDM", "UCONV",
             "SO32DLL", "TCP32DLL", "MOUCALLS", "PMSHAPI", "HELPMGR",
-            "PMSPL", "PMCTLS", "WARPINE",
+            "PMSPL", "PMCTLS", "WARPINE", "PMDRAG",
         ];
         let name_upper = name.to_ascii_uppercase();
         let stem = name_upper.strip_suffix(".DLL").unwrap_or(&name_upper);

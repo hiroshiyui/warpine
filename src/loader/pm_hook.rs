@@ -317,10 +317,17 @@ pub(crate) enum ChainThen {
     /// (`FDM_*`, `FNTM_*`; `pm_stddlg.rs`): act on the answers, free the
     /// strings at `buf`, and return `ret` (the default procedure's result).
     StdDialog { hwnd: u32, buf: u32, ret: u32 },
+    /// A comparison of container `hwnd`'s sort `job` (`pm_container.rs`):
+    /// feed the answer to the sort and ask the next one, or return `ret`
+    /// (`keep`: also when the sort could not be applied).
+    ContainerSort { hwnd: u32, job: u32, ret: u32, keep: bool },
+    /// A step of `DrgDrag`'s conversation (`pm_drag.rs`, `DRAG_STAGE_*`):
+    /// record the `DM_DRAGOVER` reply and wait for the next input, or end.
+    Drag { stage: u8 },
 }
 
 /// Guest calls an API makes before it returns (see the module comment).
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct CallChain {
     /// The thread making the calls.
     pub tid: u32,
@@ -350,6 +357,8 @@ pub(crate) enum ChainEnd {
     /// Back to the modal loop of dialog `hwnd_dlg`: dispatch `msg` (None
     /// when a filter hook swallowed it), then take the next message.
     ModalLoop { dlg_proc: u32, hwnd_dlg: u32, hmq: u32, msg: Option<OS2Message> },
+    /// Go on with another chain (a container sort's next comparison).
+    Next(Box<CallChain>),
 }
 
 /// PMWIN ordinal of `WinSendMsg`.
@@ -408,6 +417,8 @@ impl Loader {
                 let msg = self.finish_hooked_message(pqmsg);
                 ChainEnd::Return(if peek { 1 } else { (msg != WM_QUIT) as u32 })
             }
+            ChainThen::ContainerSort { hwnd, job, ret, keep } => self.container_sort_step(hwnd, job, ret, keep, chain.last),
+            ChainThen::Drag { stage } => self.drag_chain_done(stage, chain.last),
             ChainThen::StdDialog { hwnd, buf, ret } => {
                 self.std_chain_done(hwnd, buf, &chain.results);
                 ChainEnd::Return(ret)

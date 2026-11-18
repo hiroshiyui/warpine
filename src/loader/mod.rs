@@ -22,6 +22,7 @@ mod pm_slider;
 mod pm_valueset;
 mod pm_notebook;
 mod pm_container;
+pub mod pm_drag;
 pub mod pm_scrollbar;
 pub mod pm_cursor;
 mod pm_destroy;
@@ -375,6 +376,9 @@ pub struct SharedState {
     pub pm_errors: pm_error::PmErrorStore,
     /// PM pointers and the one shown (taken before `window_mgr`).
     pub pointers: Mutex<pm_pointer::PointerManager>,
+    /// Pointer input for a drag, from the GUI thread to `DrgDrag`
+    /// (`pm_drag.rs`; its lock is taken alone).
+    pub drag_channel: pm_drag::DragChannel,
     pub drive_mgr: Mutex<DriveManager>,
     /// Profiles opened with `PrfOpenProfile` (taken before `drive_mgr`).
     pub profiles: Mutex<pmshapi::ProfileTable>,
@@ -532,6 +536,7 @@ impl Loader {
             kills: Default::default(),
             clock: clock::SessionClock::from_env(),
             infoseg_refresher: AtomicBool::new(false),
+            drag_channel: Default::default(),
             exit_requested: AtomicBool::new(false),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),
@@ -636,6 +641,7 @@ impl Loader {
             kills:        Default::default(),
             clock:        Default::default(),
             infoseg_refresher: AtomicBool::new(false),
+            drag_channel: Default::default(),
             exit_requested: AtomicBool::new(false),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),

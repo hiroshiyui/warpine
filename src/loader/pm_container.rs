@@ -32,6 +32,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::constants::*;
+use super::pm_hook::{CallChain, CallStep, ChainEnd, ChainThen};
 use super::pm_owner::{OwnerCall, OwnerCallKind};
 use super::pm_types::WindowManager;
 use super::{ApiResult, Loader, MutexExt, Painter};
@@ -58,13 +59,23 @@ pub const CM_SCROLLWINDOW: u32 = 0x0347;
 pub const CM_SEARCHSTRING: u32 = 0x0348;
 pub const CM_SETCNRINFO: u32 = 0x0349;
 pub const CM_SETRECORDEMPHASIS: u32 = 0x034a;
+pub const CM_SORTRECORD: u32 = 0x034b;
+pub const CM_COLLAPSETREE: u32 = 0x034e;
+pub const CM_EXPANDTREE: u32 = 0x034f;
 pub const CM_QUERYRECORDINFO: u32 = 0x0350;
 pub const CM_INSERTRECORDARRAY: u32 = 0x0351;
 
+pub const CN_DRAGLEAVE: u32 = 102;
+pub const CN_DRAGOVER: u32 = 103;
+pub const CN_DROP: u32 = 104;
 pub const CN_ENTER: u32 = 106;
+pub const CN_INITDRAG: u32 = 107;
 pub const CN_EMPHASIS: u32 = 108;
 pub const CN_KILLFOCUS: u32 = 109;
 pub const CN_SETFOCUS: u32 = 112;
+pub const CN_SCROLL: u32 = 110;
+pub const CN_COLLAPSETREE: u32 = 116;
+pub const CN_EXPANDTREE: u32 = 117;
 
 pub const CCS_EXTENDSEL: u32 = 0x0000_0001;
 pub const CCS_MULTIPLESEL: u32 = 0x0000_0002;
@@ -98,6 +109,11 @@ pub const CRA_SELECTED: u32 = 0x0000_0001;
 pub const CRA_CURSORED: u32 = 0x0000_0004;
 pub const CRA_FILTERED: u32 = 0x0000_0010;
 pub const CRA_DISABLED: u32 = 0x0000_1000;
+pub const CRA_EXPANDED: u32 = 0x0000_0080;
+pub const CRA_COLLAPSED: u32 = 0x0000_0100;
+
+/// The id of a container's vertical scroll bar (`<pmstddlg.h>`).
+pub const CID_VSCROLL: u32 = 0x7FF9;
 
 pub const CMA_PARENT: u16 = 0x0001;
 pub const CMA_FIRSTCHILD: u16 = 0x0002;
@@ -184,6 +200,12 @@ const SELECT_COLOR: u32 = 0x0000_0080;
 const SELECT_TEXT_COLOR: u32 = 0x00FF_FFFF;
 const DISABLED_TEXT_COLOR: u32 = 0x0080_8080;
 const SEPARATOR_COLOR: u32 = 0x0080_8080;
+/// Breadth of the vertical scroll bar.
+const SCROLLBAR_W: i32 = 16;
+/// Tree indentation per level when `cxTreeIndent` is not set.
+const TREE_INDENT: i32 = 16;
+/// Side of a tree view's expander box.
+const EXPANDER: i32 = 9;
 
 /// What an allocated item is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,6 +363,9 @@ pub struct CnrState {
     pub anchor: Option<u32>,
     /// `CCS_MINIRECORDCORE`: records are `MINIRECORDCORE`s.
     pub mini: bool,
+    /// A sort waiting for the application's comparisons.
+    pub sort: Option<SortJob>,
+    next_sort_id: u32,
 }
 
 impl CnrState {
@@ -348,7 +373,7 @@ impl CnrState {
         CnrState {
             heap: RecordHeap::default(), records: Vec::new(), inserted: HashSet::new(), fields: Vec::new(),
             info: CnrInfo { window_attr: CV_ICON, ..CnrInfo::default() },
-            top: 0, anchor: None, mini: style & CCS_MINIRECORDCORE != 0,
+            top: 0, anchor: None, mini: style & CCS_MINIRECORDCORE != 0, sort: None, next_sort_id: 0,
         }
     }
 
@@ -464,6 +489,46 @@ impl CnrState {
         Ok(self.fields.len() as u32)
     }
 
+    /// The inserted records grouped by parent, each group in item order
+    /// (`only`: just the children of that parent).
+    pub fn sibling_groups(&self, only: Option<u32>) -> Vec<(u32, Vec<u32>)> {
+        let mut index: HashMap<u32, usize> = HashMap::new();
+        let mut out: Vec<(u32, Vec<u32>)> = Vec::new();
+        for &(r, p) in self.records.iter().filter(|&&(_, p)| only.is_none_or(|o| o == p)) {
+            let i = *index.entry(p).or_insert_with(|| { out.push((p, Vec::new())); out.len() - 1 });
+            out[i].1.push(r);
+        }
+        out
+    }
+
+    /// Put each group of `groups` (from [`Self::sibling_groups`], sorted)
+    /// into the places its records hold; FALSE (nothing changed) when a
+    /// group no longer holds the same records.
+    pub fn apply_sorted(&mut self, groups: &[(u32, Vec<u32>)]) -> bool {
+        let mut slots: HashMap<u32, Vec<usize>> = HashMap::new();
+        for (i, &(_, p)) in self.records.iter().enumerate() {
+            slots.entry(p).or_default().push(i);
+        }
+        for (p, g) in groups {
+            let mut have: Vec<u32> = slots.get(p).map_or(Vec::new(), |v| v.iter().map(|&i| self.records[i].0).collect());
+            let mut want = g.clone();
+            have.sort_unstable();
+            want.sort_unstable();
+            if have != want { return false; }
+        }
+        for (p, g) in groups {
+            for (k, &i) in slots.get(p).map_or(&[][..], |v| v.as_slice()).iter().enumerate() {
+                self.records[i].0 = g[k];
+            }
+        }
+        true
+    }
+
+    fn new_sort_id(&mut self) -> u32 {
+        self.next_sort_id = self.next_sort_id.wrapping_add(1);
+        self.next_sort_id
+    }
+
     /// `CM_QUERYDETAILFIELDINFO`.
     pub fn query_field(&self, reference: u32, cmd: u32) -> Result<u32, ()> {
         match cmd {
@@ -477,6 +542,137 @@ impl CnrState {
             _ => Err(()),
         }
     }
+}
+
+/// The records a tree view shows, depth first: each with its depth and
+/// whether it has children. Children are shown under `expanded` records
+/// only; a record that is not `shown` (filtered) is left out with its
+/// subtree.
+pub fn tree_order(records: &[(u32, u32)], expanded: &dyn Fn(u32) -> bool, shown: &dyn Fn(u32) -> bool)
+                  -> Vec<(u32, u16, bool)> {
+    let mut kids: HashMap<u32, Vec<u32>> = HashMap::new();
+    for &(r, p) in records { kids.entry(p).or_default().push(r); }
+    let mut out = Vec::new();
+    let mut seen = HashSet::new();
+    let mut stack: Vec<(u32, u16)> = kids.get(&0).map_or(Vec::new(), |v| v.iter().rev().map(|&r| (r, 0)).collect());
+    while let Some((r, d)) = stack.pop() {
+        if !seen.insert(r) || !shown(r) { continue; }
+        let children = kids.get(&r).filter(|v| !v.is_empty());
+        out.push((r, d, children.is_some()));
+        if let Some(c) = children && expanded(r) {
+            stack.extend(c.iter().rev().map(|&c| (c, d.saturating_add(1))));
+        }
+    }
+    out
+}
+
+/// A stable merge sort of sibling groups made one comparison at a time:
+/// the container asks the application's comparison function about each
+/// pair (one call chain per call, ADR-0026) and feeds the answer back.
+#[derive(Debug, Clone)]
+pub struct SortJob {
+    pub id: u32,
+    /// The comparison function and its `pStorage`.
+    pub pfn: u32,
+    pub storage: u32,
+    /// Groups still to sort (last first) and groups sorted.
+    todo: Vec<(u32, Vec<u32>)>,
+    done: Vec<(u32, Vec<u32>)>,
+    parent: u32,
+    a: Vec<u32>,
+    buf: Vec<u32>,
+    width: usize,
+    lo: usize,
+    i: usize,
+    j: usize,
+    pending: bool,
+}
+
+impl SortJob {
+    pub fn new(id: u32, pfn: u32, storage: u32, mut groups: Vec<(u32, Vec<u32>)>) -> Self {
+        groups.reverse();
+        let mut job = SortJob { id, pfn, storage, todo: groups, done: Vec::new(), parent: 0, a: Vec::new(),
+                                buf: Vec::new(), width: 1, lo: 0, i: 0, j: 0, pending: false };
+        job.next_group();
+        job
+    }
+
+    /// Take the next group with two records or more (shorter ones are
+    /// sorted already); FALSE when none is left.
+    fn next_group(&mut self) -> bool {
+        while let Some((p, g)) = self.todo.pop() {
+            if g.len() < 2 {
+                self.done.push((p, g));
+                continue;
+            }
+            self.parent = p;
+            self.a = g;
+            self.buf.clear();
+            self.width = 1;
+            self.start_merge(0);
+            return true;
+        }
+        false
+    }
+
+    fn start_merge(&mut self, lo: usize) {
+        self.lo = lo;
+        self.i = lo;
+        self.j = (lo + self.width).min(self.a.len());
+    }
+
+    /// The next pair to compare, after `answer` (the comparison of the
+    /// pair asked last: negative or 0 keeps the first one first; `None` at
+    /// the start). `None` when the sort is done.
+    pub fn step(&mut self, answer: Option<i16>) -> Option<(u32, u32)> {
+        if let Some(ans) = answer && self.pending {
+            self.pending = false;
+            if ans <= 0 {
+                self.buf.push(self.a[self.i]);
+                self.i += 1;
+            } else {
+                self.buf.push(self.a[self.j]);
+                self.j += 1;
+            }
+        }
+        loop {
+            if self.a.is_empty() { return None; }
+            let n = self.a.len();
+            let (mid, hi) = ((self.lo + self.width).min(n), (self.lo + 2 * self.width).min(n));
+            if self.i < mid && self.j < hi {
+                self.pending = true;
+                return Some((self.a[self.i], self.a[self.j]));
+            }
+            self.buf.extend_from_slice(&self.a[self.i..mid]);
+            self.buf.extend_from_slice(&self.a[self.j..hi]);
+            if hi < n {
+                self.start_merge(hi);
+                continue;
+            }
+            // The pass is over.
+            self.a = std::mem::take(&mut self.buf);
+            self.width *= 2;
+            if self.width >= n {
+                let g = std::mem::take(&mut self.a);
+                self.done.push((self.parent, g));
+                if !self.next_group() { return None; }
+            } else {
+                self.start_merge(0);
+            }
+        }
+    }
+
+    /// The sorted groups (once [`Self::step`] returned `None`).
+    pub fn into_groups(self) -> Vec<(u32, Vec<u32>)> {
+        self.done
+    }
+}
+
+/// The chain asking sort `job`'s comparison function `pfn` about `(a, b)`:
+/// `SHORT pfnCompare(PRECORDCORE p1, PRECORDCORE p2, PVOID pStorage)`.
+fn sort_chain(hwnd: u32, job: u32, pfn: u32, storage: u32, (a, b): (u32, u32), ret: u32, keep: bool) -> CallChain {
+    CallChain::new(super::interrupt::current_vcpu().unwrap_or(0), vec![CallStep::hook(pfn, vec![a, b, storage], false)], false,
+                   ChainThen::ContainerSort { hwnd, job, ret, keep })
 }
 
 /// The selection mode of container style `style`.
@@ -627,17 +823,66 @@ struct Snapshot {
     info: CnrInfo,
     mini: bool,
     top: usize,
-    /// Shown records (top level, not filtered) with their sizes.
+    /// Shown records with their sizes: the top-level, unfiltered ones, or
+    /// in the tree view the expanded tree depth first.
     rows: Vec<(u32, u32)>,
+    /// Each row's depth and whether it has children (tree view).
+    tree: Vec<(u16, bool)>,
     fields: Vec<(u32, u32)>,
 }
 
+impl Snapshot {
+    fn view(&self) -> View { view_of(self.info.window_attr) }
+
+    fn flow(&self) -> bool {
+        self.info.window_attr & CV_FLOW != 0 && matches!(self.view(), View::Text | View::Name)
+    }
+
+    /// Whether the rows need the vertical scroll bar (not in flowed views).
+    fn bar(&self) -> bool {
+        !self.flow() && self.rows.len() > self.plain_frame().capacity()
+    }
+
+    fn plain_frame(&self) -> Frame {
+        Frame::new(self.info.window_attr, self.info.line_spacing as i32, self.cx, self.cy)
+    }
+
+    /// The view's frame, the rows narrowed by the scroll bar when shown.
+    fn frame(&self) -> Frame {
+        let mut f = self.plain_frame();
+        if self.bar() { f.rows.2 = (f.rows.2 - SCROLLBAR_W).max(0); }
+        f
+    }
+
+    /// The first row that can be on top (the last page starts there).
+    fn max_top(&self) -> usize {
+        if self.flow() { self.rows.len().saturating_sub(1) } else { self.rows.len().saturating_sub(self.frame().capacity()) }
+    }
+
+    fn indent(&self) -> i32 {
+        match self.info.tree_indent as i32 { i if i > 0 => i.min(256), _ => TREE_INDENT }
+    }
+
+    /// Where row `i`'s text starts, from its rectangle's left edge (tree
+    /// view: after its indentation and expander).
+    fn text_inset(&self, i: usize) -> i32 {
+        if self.view() != View::Tree { return 0; }
+        let depth = self.tree.get(i).map_or(0, |t| i32::from(t.0)).min(64);
+        depth * self.indent() + EXPANDER + 2 * CELL_PAD
+    }
+}
+
 impl WindowManager {
-    /// Give a new `WC_CONTAINER` window its state.
+    /// Give a new `WC_CONTAINER` window its state and its vertical scroll
+    /// bar (`CID_VSCROLL`, hidden until the rows need it).
     pub fn build_container(&mut self, hwnd: u32) {
-        if let Some(w) = self.get_window_mut(hwnd)
-            && w.class_name == CLASS_CONTAINER && w.container.is_none() {
-            w.container = Some(Box::new(CnrState::new(w.style)));
+        let Some(w) = self.get_window_mut(hwnd) else { return };
+        if w.class_name != CLASS_CONTAINER || w.container.is_some() { return; }
+        w.container = Some(Box::new(CnrState::new(w.style)));
+        let hmq = w.hmq;
+        let bar = self.create_window("WC_SCROLLBAR".to_string(), hwnd, hmq);
+        if let Some(b) = self.get_window_mut(bar) {
+            (b.id, b.owner, b.style, b.visible) = (CID_VSCROLL, hwnd, SBS_VERT, false);
         }
     }
 }
@@ -659,17 +904,25 @@ impl Loader {
     }
 
     fn snapshot(&self, hwnd: u32) -> Option<Snapshot> {
-        let (cx, cy, info, mini, top, records, fields) = {
+        let (cx, cy, info, mini, top, records, sizes, fields) = {
             let wm = self.shared.window_mgr.lock_or_recover();
             let w = wm.get_window(hwnd)?;
             let s = w.container.as_deref()?;
             let size = |a: u32| s.heap.item(a).map_or(0, |i| i.size);
-            let records: Vec<(u32, u32)> = s.records.iter().filter(|&&(_, p)| p == 0).map(|&(r, _)| (r, size(r))).collect();
+            let sizes: HashMap<u32, u32> = s.records.iter().map(|&(r, _)| (r, size(r))).collect();
             let fields: Vec<(u32, u32)> = s.fields.iter().map(|&f| (f, size(f))).collect();
-            (w.cx, w.cy, s.info, s.mini, s.top, records, fields)
+            (w.cx, w.cy, s.info, s.mini, s.top, s.records.clone(), sizes, fields)
         };
-        let rows = records.into_iter().filter(|&(r, _)| self.rec_attr(r) & CRA_FILTERED == 0).collect();
-        Some(Snapshot { cx, cy, info, mini, top, rows, fields })
+        let shown = |r: u32| self.rec_attr(r) & CRA_FILTERED == 0;
+        let size = |r: u32| sizes.get(&r).copied().unwrap_or(0);
+        type Rows = (Vec<(u32, u32)>, Vec<(u16, bool)>);
+        let (rows, tree): Rows = if view_of(info.window_attr) == View::Tree {
+            tree_order(&records, &|r| self.rec_attr(r) & CRA_EXPANDED != 0, &shown)
+                .into_iter().map(|(r, d, k)| ((r, size(r)), (d, k))).unzip()
+        } else {
+            records.iter().filter(|&&(r, p)| p == 0 && shown(r)).map(|&(r, _)| ((r, size(r)), (0, false))).unzip()
+        };
+        Some(Snapshot { cx, cy, info, mini, top, rows, tree, fields })
     }
 
     fn cnr_text(&self, hwnd: u32, ptr: u32) -> String {
@@ -734,9 +987,9 @@ impl Loader {
 
     /// Where the shown records of `snap` are: `(row index, rectangle)`.
     fn placements(&self, hwnd: u32, snap: &Snapshot, font: crate::gui::font::FontSpec) -> (Frame, Placed) {
-        let f = Frame::new(snap.info.window_attr, snap.info.line_spacing as i32, snap.cx, snap.cy);
-        let view = view_of(snap.info.window_attr);
-        let flow = snap.info.window_attr & CV_FLOW != 0 && matches!(view, View::Text | View::Name);
+        let f = snap.frame();
+        let view = snap.view();
+        let flow = snap.flow();
         let widths: Vec<i32> = if flow {
             snap.rows.iter().map(|&(r, _)| crate::gui::font::text_width(&self.record_text(hwnd, r, view, snap.mini), font)).collect()
         } else { vec![0; snap.rows.len()] };
@@ -871,6 +1124,9 @@ impl Loader {
                 ok(true)
             }
             WM_CHAR => ok(self.cnr_char(hwnd, style, mp1, mp2)),
+            // The drag button pressed and moved over the container: the owner
+            // hears CN_INITDRAG (a CNRDRAGINIT) and may start the drag.
+            super::pm_drag::WM_BEGINDRAG => ok(self.cnr_init_drag(hwnd, mp1)),
             // mp1 = cbRecordData, mp2 = number of records.
             CM_ALLOCRECORD => {
                 if mp1 > MAX_RECORD_DATA { return Some(ApiResult::Normal(0)); }
@@ -902,8 +1158,11 @@ impl Loader {
                 else { return Some(ApiResult::Normal(0)) };
                 let recs = if msg == CM_INSERTRECORD { self.read_chain(mp1, n, RC_NEXT) } else { self.read_ptr_array(mp1, n) };
                 let Some(recs) = recs.filter(|r| !r.is_empty()) else { return Some(ApiResult::Normal(0)) };
-                match self.with_cnr(hwnd, |s, _| s.insert(&recs, order, parent)) {
-                    Some(Ok(count)) => {
+                match self.with_cnr(hwnd, |s, _| s.insert(&recs, order, parent).map(|c| (c, s.info.sort_record))) {
+                    // With a sort function (CNRINFO.pSortRecord) the
+                    // parent's children are sorted before the call returns.
+                    Some(Ok((count, sort))) if sort != 0 => self.cnr_start_sort(hwnd, sort, 0, Some(parent), count, true),
+                    Some(Ok((count, _))) => {
                         if inval != 0 { self.repaint_control(hwnd); }
                         ApiResult::Normal(count)
                     }
@@ -1014,15 +1273,34 @@ impl Loader {
             CM_SCROLLWINDOW => {
                 if mp1 & 0xFFFF == CMA_VERTICAL {
                     let Some(snap) = self.snapshot(hwnd) else { return Some(ok(false)) };
-                    let f = Frame::new(snap.info.window_attr, snap.info.line_spacing as i32, snap.cx, snap.cy);
-                    let rows = (mp2 as i32) / f.row_h;
-                    let max_top = snap.rows.len().saturating_sub(f.capacity());
-                    let top = (snap.top as i64 + i64::from(rows)).clamp(0, max_top as i64) as usize;
-                    self.with_cnr(hwnd, |s, _| s.top = top);
-                    self.repaint_control(hwnd);
+                    let rows = (mp2 as i32) / snap.frame().row_h;
+                    self.cnr_scroll_to(hwnd, &snap, snap.top as i64 + i64::from(rows));
                 }
                 ok(true)
             }
+            // From the vertical scroll bar: mp2 = MPFROM2SHORT(slider, SB_*).
+            WM_VSCROLL => {
+                let Some(snap) = self.snapshot(hwnd) else { return Some(ok(false)) };
+                let page = snap.frame().capacity().saturating_sub(1).max(1) as i64;
+                let top = snap.top as i64;
+                let to = match mp2 >> 16 {
+                    SB_LINEUP => top - 1,
+                    SB_LINEDOWN => top + 1,
+                    SB_PAGEUP => top - page,
+                    SB_PAGEDOWN => top + page,
+                    SB_SLIDERTRACK | SB_SLIDERPOSITION => i64::from(mp2 as u16 as i16),
+                    _ => return Some(ok(false)),
+                };
+                self.cnr_scroll_to(hwnd, &snap, to);
+                ok(true)
+            }
+            // mp1 = comparison function, mp2 = pStorage.
+            CM_SORTRECORD => {
+                if mp1 == 0 { return Some(ok(false)); }
+                self.cnr_start_sort(hwnd, mp1, mp2, None, 1, false)
+            }
+            // mp1 = record (NULL: every record).
+            CM_EXPANDTREE | CM_COLLAPSETREE => ok(self.cnr_expand(hwnd, mp1, msg == CM_EXPANDTREE)),
             // mp1 = PSEARCHSTRING, mp2 = start after (CMA_FIRST = from the start).
             CM_SEARCHSTRING => self.cnr_search(hwnd, mini, mp1, mp2).map_or(minus1, ApiResult::Normal),
             // mp1 = PRECTL out, mp2 = PQUERYRECORDRECT.
@@ -1038,7 +1316,7 @@ impl Loader {
             CM_QUERYVIEWPORTRECT => {
                 if lo != u32::from(CMA_WINDOW) { return Some(ok(false)); }
                 let Some(snap) = self.snapshot(hwnd) else { return Some(ok(false)) };
-                let (x, y, w, h) = Frame::new(snap.info.window_attr, snap.info.line_spacing as i32, snap.cx, snap.cy).rows;
+                let (x, y, w, h) = snap.frame().rows;
                 ok(self.write_rectl(mp1, super::pm_rect::Rectl { x_left: x, y_bottom: y, x_right: x + w, y_top: y + h }))
             }
             _ => return None,
@@ -1065,8 +1343,100 @@ impl Loader {
 
     /// Keep the first shown row within the records.
     fn cnr_clamp_top(&self, hwnd: u32) {
-        let Some(n) = self.snapshot(hwnd).map(|s| s.rows.len()) else { return };
-        self.with_cnr(hwnd, |s, _| s.top = s.top.min(n.saturating_sub(1)));
+        let Some(max) = self.snapshot(hwnd).map(|s| s.max_top()) else { return };
+        self.with_cnr(hwnd, |s, _| s.top = s.top.min(max));
+    }
+
+    /// Scroll so that row `to` (clamped) is the first shown, telling the
+    /// owner (`CN_SCROLL`, a `NOTIFYSCROLL` with the pels scrolled).
+    fn cnr_scroll_to(&self, hwnd: u32, snap: &Snapshot, to: i64) {
+        let top = to.clamp(0, snap.max_top() as i64) as usize;
+        if top == snap.top { return; }
+        self.with_cnr(hwnd, |s, _| s.top = top);
+        let pels = (top as i64 - snap.top as i64) * i64::from(snap.frame().row_h);
+        self.shared.window_mgr.lock_or_recover().queue_owner_call(OwnerCall {
+            control: hwnd, kind: OwnerCallKind::ContainerNotify { code: CN_SCROLL as u16, block: [hwnd, pels as i32 as u32, CMA_VERTICAL] },
+        });
+        self.repaint_control(hwnd);
+    }
+
+    /// Expand (or collapse) record `rec` — every record with children for
+    /// 0 — and tell the owner (`CN_EXPANDTREE` / `CN_COLLAPSETREE`, mp2 =
+    /// the record). A collapse moves the cursor out of the hidden subtree.
+    fn cnr_expand(&self, hwnd: u32, rec: u32, expand: bool) -> bool {
+        let Some(targets) = self.with_cnr(hwnd, |s, _| {
+            if rec == 0 {
+                let parents: HashSet<u32> = s.records.iter().map(|&(_, p)| p).filter(|&p| p != 0).collect();
+                Some(s.records.iter().map(|&(r, _)| r).filter(|r| parents.contains(r)).collect::<Vec<_>>())
+            } else if s.is_inserted(rec) {
+                Some(vec![rec])
+            } else { None }
+        }).flatten() else { return false };
+        let code = if expand { CN_EXPANDTREE } else { CN_COLLAPSETREE };
+        for r in targets {
+            let a = self.rec_attr(r);
+            let new = if expand { (a | CRA_EXPANDED) & !CRA_COLLAPSED } else { (a | CRA_COLLAPSED) & !CRA_EXPANDED };
+            if new == a { continue; }
+            self.set_rec_attr(r, new);
+            if !expand {
+                let hidden = self.with_cnr(hwnd, |s, _| s.removal(&[r]).unwrap_or_default()).unwrap_or_default();
+                if hidden.iter().skip(1).any(|&d| self.rec_attr(d) & CRA_CURSORED != 0) {
+                    self.cnr_set_emphasis(hwnd, r, true, CRA_CURSORED);
+                }
+            }
+            self.shared.window_mgr.lock_or_recover().queue_owner_call(OwnerCall {
+                control: hwnd, kind: OwnerCallKind::ContainerValue { code: code as u16, mp2: r },
+            });
+        }
+        self.cnr_clamp_top(hwnd);
+        self.repaint_control(hwnd);
+        true
+    }
+
+    /// Start sorting the records (`only`: the children of one parent) with
+    /// the application's function `pfn`: a call chain asking for each
+    /// comparison, then `ret` (`keep`: also when the records changed
+    /// meanwhile and the order was left alone).
+    fn cnr_start_sort(&self, hwnd: u32, pfn: u32, storage: u32, only: Option<u32>, ret: u32, keep: bool) -> ApiResult {
+        let started = self.with_cnr(hwnd, |s, _| {
+            let id = s.new_sort_id();
+            let mut job = SortJob::new(id, pfn, storage, s.sibling_groups(only));
+            match job.step(None) {
+                Some(pair) => { s.sort = Some(job); Some((id, pair)) }
+                None => { s.sort = None; s.apply_sorted(&job.into_groups()); None }
+            }
+        });
+        match started {
+            None => ApiResult::Normal(0),
+            Some(None) => { self.repaint_control(hwnd); ApiResult::Normal(ret) }
+            Some(Some((job, (a, b)))) => self.start_chain(sort_chain(hwnd, job, pfn, storage, (a, b), ret, keep)),
+        }
+    }
+
+    /// A comparison of sort `job` returned `result` (a `SHORT`): the chain
+    /// asking for the next one, or the end of the sort with its result.
+    pub(crate) fn container_sort_step(&self, hwnd: u32, job: u32, ret: u32, keep: bool, result: u32) -> ChainEnd {
+        enum Next { Ask(u32, u32, (u32, u32)), Done(bool) }
+        let next = self.with_cnr(hwnd, |s, _| {
+            let j = s.sort.as_mut().filter(|j| j.id == job)?;
+            let (pfn, storage) = (j.pfn, j.storage);
+            Some(match j.step(Some(result as u16 as i16)) {
+                Some(pair) => Next::Ask(pfn, storage, pair),
+                None => {
+                    let groups = s.sort.take().map(SortJob::into_groups).unwrap_or_default();
+                    Next::Done(s.apply_sorted(&groups))
+                }
+            })
+        }).flatten();
+        match next {
+            Some(Next::Ask(pfn, storage, pair)) => ChainEnd::Next(Box::new(sort_chain(hwnd, job, pfn, storage, pair, ret, keep))),
+            Some(Next::Done(applied)) => {
+                self.repaint_control(hwnd);
+                ChainEnd::Return(if applied || keep { ret } else { 0 })
+            }
+            // The container is gone or another sort replaced this one.
+            None => ChainEnd::Return(if keep { ret } else { 0 }),
+        }
     }
 
     /// Scroll so that record `rec` is shown.
@@ -1075,9 +1445,33 @@ impl Loader {
         let Some(cursor) = snap.rows.iter().position(|&(r, _)| r == rec) else { return };
         let font = Painter::new(self, 0, hwnd).font();
         let (f, placed) = self.placements(hwnd, &snap, font);
-        let flow = snap.info.window_attr & CV_FLOW != 0 && matches!(view_of(snap.info.window_attr), View::Text | View::Name);
+        let flow = snap.flow();
         let top = scroll_to(snap.top, cursor, f.capacity(), flow, &placed, f.rows.0 + f.rows.2);
         self.with_cnr(hwnd, |s, _| s.top = top);
+    }
+
+    /// The shown record at container point `local`, or 0 (white space).
+    pub(crate) fn container_record_at(&self, hwnd: u32, local: (i32, i32)) -> u32 {
+        self.snapshot(hwnd).and_then(|snap| self.record_at(hwnd, &snap, local).map(|i| snap.rows[i].0)).unwrap_or(0)
+    }
+
+    /// `CN_INITDRAG` for a drag starting at container point `mp1`: the
+    /// record there (or NULL), the pointer in desktop coordinates and its
+    /// offset to the record's origin.
+    fn cnr_init_drag(&self, hwnd: u32, mp1: u32) -> bool {
+        let at = ((mp1 & 0xFFFF) as i16 as i32, (mp1 >> 16) as i16 as i32);
+        let Some(snap) = self.snapshot(hwnd) else { return false };
+        let font = Painter::new(self, 0, hwnd).font();
+        let (_, placed) = self.placements(hwnd, &snap, font);
+        let hit = placed.iter().find(|&&(_, (x, y, w, h))| at.0 >= x && at.0 < x + w && at.1 >= y && at.1 < y + h);
+        let (rec, origin) = hit.map_or((0, at), |&(i, (x, y, _, _))| (snap.rows[i].0, (x, y)));
+        let (ox, oy) = self.shared.window_mgr.lock_or_recover().window_origin(hwnd).unwrap_or((0, 0));
+        let block = [hwnd, rec, (ox + at.0) as u32, (oy + at.1) as u32,
+                     (origin.0 - at.0) as u32, (origin.1 - at.1) as u32];
+        self.shared.window_mgr.lock_or_recover().queue_owner_call(OwnerCall {
+            control: hwnd, kind: OwnerCallKind::ContainerInitDrag { block },
+        });
+        true
     }
 
     /// `CN_ENTER` with a `NOTIFYRECORDENTER` (`fKey`: from the keyboard).
@@ -1134,6 +1528,14 @@ impl Loader {
         let Some(snap) = self.snapshot(hwnd) else { return false };
         let at = ((mp1 & 0xFFFF) as i16 as i32, (mp1 >> 16) as i16 as i32);
         if let Some(i) = self.record_at(hwnd, &snap, at) {
+            // A tree record's expander box opens or closes it.
+            if snap.view() == View::Tree && snap.tree[i].1 {
+                let ex = BORDER + snap.text_inset(i) - EXPANDER - CELL_PAD;
+                if (ex - 2..=ex + EXPANDER + 1).contains(&at.0) {
+                    let open = self.rec_attr(snap.rows[i].0) & CRA_EXPANDED != 0;
+                    return self.cnr_expand(hwnd, snap.rows[i].0, !open);
+                }
+            }
             self.cnr_pick(hwnd, style, &snap.rows, i, mp2 >> 16, true);
         } else {
             self.repaint_control(hwnd);
@@ -1147,17 +1549,21 @@ impl Loader {
     /// multiple and extended mode; Enter sends `CN_ENTER`.
     fn cnr_char(&self, hwnd: u32, style: u32, mp1: u32, mp2: u32) -> bool {
         let fs = mp1 & 0xFFFF;
-        if fs & KC_KEYUP != 0 || fs & KC_VIRTUALKEY == 0 || style & WS_DISABLED != 0 { return false; }
-        let vk = mp2 >> WM_CHAR_VKEY_SHIFT;
+        if fs & KC_KEYUP != 0 || style & WS_DISABLED != 0 { return false; }
         let Some(snap) = self.snapshot(hwnd) else { return false };
         let cur = snap.rows.iter().position(|&(r, _)| self.rec_attr(r) & CRA_CURSORED != 0);
+        if snap.view() == View::Tree && let Some(i) = cur && let Some(done) = self.cnr_tree_key(hwnd, style, &snap, i, fs, mp2) {
+            return done;
+        }
+        if fs & KC_VIRTUALKEY == 0 { return false; }
+        let vk = mp2 >> WM_CHAR_VKEY_SHIFT;
         if matches!(vk, VK_ENTER | VK_NEWLINE) {
             self.cnr_enter(hwnd, true, cur.map_or(0, |i| snap.rows[i].0));
             return true;
         }
         if snap.rows.is_empty() { return matches!(vk, VK_UP | VK_DOWN | VK_HOME | VK_END | VK_PAGEUP | VK_PAGEDOWN); }
-        let f = Frame::new(snap.info.window_attr, snap.info.line_spacing as i32, snap.cx, snap.cy);
-        let flow = snap.info.window_attr & CV_FLOW != 0 && matches!(view_of(snap.info.window_attr), View::Text | View::Name);
+        let f = snap.frame();
+        let flow = snap.flow();
         let (cap, last, c) = (f.capacity(), snap.rows.len() - 1, cur.unwrap_or(0));
         let target = match vk {
             VK_SPACE => {
@@ -1191,6 +1597,55 @@ impl Loader {
             self.repaint_control(hwnd);
         }
         true
+    }
+
+    /// Tree keys on the cursored row `i`: `+` / Right expand (Right on an
+    /// expanded record goes to its first child), `-` / Left collapse (Left
+    /// on a collapsed or childless record goes to its parent). `None` for
+    /// other keys.
+    fn cnr_tree_key(&self, hwnd: u32, style: u32, snap: &Snapshot, i: usize, fs: u32, mp2: u32) -> Option<bool> {
+        let rec = snap.rows[i].0;
+        let (depth, kids) = snap.tree[i];
+        let open = self.rec_attr(rec) & CRA_EXPANDED != 0;
+        let ch = if fs & KC_CHAR != 0 { mp2 & 0xFFFF } else { 0 };
+        let vk = if fs & KC_VIRTUALKEY != 0 { mp2 >> WM_CHAR_VKEY_SHIFT } else { 0 };
+        let expand = ch == u32::from(b'+') || vk == VK_RIGHT;
+        let collapse = ch == u32::from(b'-') || vk == VK_LEFT;
+        if expand {
+            if kids && !open { return Some(self.cnr_expand(hwnd, rec, true)); }
+            if kids && vk == VK_RIGHT && i + 1 < snap.rows.len() {
+                self.cnr_pick(hwnd, style, &snap.rows, i + 1, 0, false);
+            }
+            return Some(true);
+        }
+        if collapse {
+            if kids && open { return Some(self.cnr_expand(hwnd, rec, false)); }
+            if vk == VK_LEFT && depth > 0
+                && let Some(p) = (0..i).rev().find(|&k| snap.tree[k].0 < depth) {
+                self.cnr_pick(hwnd, style, &snap.rows, p, 0, false);
+            }
+            return Some(true);
+        }
+        None
+    }
+
+    /// Show, place and set the vertical scroll bar of container `hwnd` for
+    /// `snap`, or hide it; it paints itself over the container afterwards.
+    fn cnr_sync_scrollbar(&self, hwnd: u32, snap: &Snapshot) {
+        let f = snap.frame();
+        let bar = snap.bar();
+        let n = snap.rows.len();
+        let cap = f.capacity();
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        let Some(sb) = wm.find_child_by_id(hwnd, CID_VSCROLL) else { return };
+        let Some(w) = wm.get_window_mut(sb) else { return };
+        w.visible = bar;
+        if !bar { return; }
+        (w.x, w.y, w.cx, w.cy) = (snap.cx - BORDER - SCROLLBAR_W, f.rows.1, SCROLLBAR_W, f.rows.3);
+        let clamp = |v: usize| v.min(i16::MAX as usize) as i16;
+        w.scrollbar.set_range(clamp(snap.top), 0, clamp(snap.max_top()));
+        w.scrollbar.thumb_size = Some((cap.min(u16::MAX as usize) as u16, n.min(u16::MAX as usize) as u16));
+        wm.invalidate_window_only(sb);
     }
 
     /// Paint container `hwnd` at `(x, y, cx, cy)` in its frame's surface.
@@ -1262,6 +1717,18 @@ impl Loader {
                 if focused && a & CRA_CURSORED != 0 { super::pm_button::focus_mark(&rp, (l, b, right, t), color); }
             } else {
                 let text = self.record_text(hwnd, rec, view, snap.mini);
+                let l = l + snap.text_inset(i);
+                if view == View::Tree && snap.tree[i].1 {
+                    // The expander: a box with a minus, or a plus when closed.
+                    let ex = l - EXPANDER - CELL_PAD;
+                    let (eb, et) = (b + (r.3 - EXPANDER) / 2, b + (r.3 - EXPANDER) / 2 + EXPANDER - 1);
+                    let (er, mid_x, mid_y) = (ex + EXPANDER - 1, ex + EXPANDER / 2, eb + EXPANDER / 2);
+                    for edge in [(ex, eb, er, eb), (ex, et, er, et), (ex, eb, ex, et), (er, eb, er, et)] {
+                        rp.fill(edge, SEPARATOR_COLOR);
+                    }
+                    rp.fill((ex + 2, mid_y, er - 2, mid_y), fg);
+                    if a & CRA_EXPANDED == 0 { rp.fill((mid_x, eb + 2, mid_x, et - 2), fg); }
+                }
                 let w = crate::gui::font::text_width(&text, font) + 2 * CELL_PAD;
                 let right = (l + w - 1).min(rr);
                 if selected { rp.fill((l, b, right, t), SELECT_COLOR); }
@@ -1274,6 +1741,7 @@ impl Loader {
             let cr = x + c.x + c.w;
             rp.fill((cr, rows_clip.1, cr, rows_clip.3), SEPARATOR_COLOR);
         }
+        self.cnr_sync_scrollbar(hwnd, &snap);
     }
 }
 
@@ -1281,6 +1749,7 @@ impl Loader {
 mod tests {
     use super::*;
     use crate::loader::pm_types::OS2Message;
+    use crate::loader::pm_hook::CallStep;
 
 
     struct Fx {
@@ -1543,6 +2012,266 @@ mod tests {
         assert_eq!(f.send(CM_SEARCHSTRING, BUF + 0x780, r[0]), r[2], "substring");
         f.wr(BUF + 0x780 + SS_CASE, 1);
         assert_eq!(f.send(CM_SEARCHSTRING, BUF + 0x780, CMA_FIRST), r[2], "case-sensitive");
+    }
+
+
+    /// Run sort `r` (a call chain or an immediate result) to its end,
+    /// answering each comparison as `cmp` says; the result and how many
+    /// comparisons were asked.
+    fn run_sort(f: &Fx, r: ApiResult, cmp: &dyn Fn(u32, u32) -> i16) -> (u32, usize) {
+        use crate::loader::pm_hook::ChainEnd;
+        let mut chain = match r {
+            ApiResult::Normal(v) => return (v, 0),
+            ApiResult::CallChain(c) => c,
+            other => panic!("{other:?}"),
+        };
+        let mut asked = 0;
+        loop {
+            let CallStep::Guest { proc_addr, args, .. } = chain.steps.pop_front().unwrap() else { panic!() };
+            assert_eq!((proc_addr, args.len(), args[2]), (SORT_PROC, 3, SORT_STORAGE));
+            asked += 1;
+            chain.returned(cmp(args[0], args[1]) as u16 as u32, false);
+            match f.loader.finish_chain(&chain) {
+                ChainEnd::Next(next) => chain = next,
+                ChainEnd::Return(v) => return (v, asked),
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    const SORT_PROC: u32 = 0x0050_0000;
+    const SORT_STORAGE: u32 = 0x1234;
+
+    fn order(f: &Fx) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut r = f.send(CM_QUERYRECORD, 0, CMA_FIRST);
+        while r != 0 && r != u32::MAX {
+            out.push(r);
+            r = f.send(CM_QUERYRECORD, r, CMA_NEXT);
+        }
+        out
+    }
+
+    #[test]
+    fn the_sort_job_is_a_stable_merge_sort() {
+        let keys: Vec<u32> = vec![5, 3, 9, 3, 1, 8, 2, 7, 3, 0, 6];
+        // Records 100.. carry keys; equal keys keep their order.
+        let recs: Vec<u32> = (0..keys.len() as u32).map(|i| 100 + i).collect();
+        let key = |r: u32| keys[(r - 100) as usize];
+        let mut job = SortJob::new(1, 0, 0, vec![(0, recs.clone()), (7, vec![200]), (8, vec![])]);
+        let mut answer = None;
+        let mut asked = 0;
+        while let Some((a, b)) = job.step(answer) {
+            asked += 1;
+            answer = Some(key(a).cmp(&key(b)) as i16);
+        }
+        assert!(asked <= keys.len() * 4, "n log n comparisons, got {asked}");
+        let groups = job.into_groups();
+        let mut want = recs.clone();
+        want.sort_by_key(|&r| key(r));
+        assert_eq!(groups.iter().find(|g| g.0 == 0).unwrap().1, want);
+        assert_eq!(groups.len(), 3, "short groups pass through");
+        let mut empty = SortJob::new(2, 0, 0, vec![(0, vec![1])]);
+        assert_eq!(empty.step(None), None);
+    }
+
+    #[test]
+    fn tree_order_follows_expansion_and_filters() {
+        let records = [(1, 0), (2, 0), (11, 1), (12, 1), (111, 11), (21, 2)];
+        let all = tree_order(&records, &|_| true, &|_| true);
+        assert_eq!(all, vec![(1, 0, true), (11, 1, true), (111, 2, false), (12, 1, false), (2, 0, true), (21, 1, false)]);
+        let closed = tree_order(&records, &|r| r == 1, &|r| r != 12);
+        assert_eq!(closed, vec![(1, 0, true), (11, 1, true), (2, 0, true)], "11 and 2 closed, 12 filtered");
+    }
+
+    #[test]
+    fn sorted_groups_go_back_into_their_places() {
+        let (mut s, r) = heap_with(5);
+        s.insert(&r[0..3], CMA_END, 0).unwrap();
+        s.insert(&r[3..5], CMA_END, r[0]).unwrap();
+        let groups = s.sibling_groups(None);
+        assert_eq!(groups, vec![(0, r[0..3].to_vec()), (r[0], r[3..5].to_vec())]);
+        assert!(s.apply_sorted(&[(0, vec![r[2], r[0], r[1]]), (r[0], vec![r[4], r[3]])]));
+        assert_eq!(s.records, vec![(r[2], 0), (r[0], 0), (r[1], 0), (r[4], r[0]), (r[3], r[0])]);
+        assert!(!s.apply_sorted(&[(0, vec![r[0], r[1]])]), "a group that changed");
+        assert_eq!(s.sibling_groups(Some(r[0])), vec![(r[0], vec![r[4], r[3]])]);
+    }
+
+    /// Records whose ULONG after the core is `keys[i]`, inserted in order.
+    fn keyed(f: &Fx, keys: &[u32]) -> Vec<u32> {
+        let r = f.alloc(keys.len() as u32, 4);
+        for (i, &k) in keys.iter().enumerate() { f.wr(r[i] + RECORDCORE_SIZE, k); }
+        f.insert(r[0], keys.len() as u32, CMA_END, 0);
+        r
+    }
+
+    #[test]
+    fn cm_sortrecord_asks_the_application_for_each_comparison() {
+        let f = fixture(0);
+        let r = keyed(&f, &[40, 10, 30, 20]);
+        let cmp = |a: u32, b: u32| (f.rd(a + RECORDCORE_SIZE) as i32 - f.rd(b + RECORDCORE_SIZE) as i32) as i16;
+        let (ret, asked) = run_sort(&f, f.loader.dispatch_builtin_control(f.cnr, CM_SORTRECORD, SORT_PROC, SORT_STORAGE), &cmp);
+        assert_eq!(ret, 1);
+        assert!(asked >= 3);
+        assert_eq!(order(&f), vec![r[1], r[3], r[2], r[0]]);
+        // One record: no call at all.
+        let g = fixture(0);
+        keyed(&g, &[1]);
+        assert!(matches!(g.loader.dispatch_builtin_control(g.cnr, CM_SORTRECORD, SORT_PROC, 0), ApiResult::Normal(1)));
+        assert_eq!(g.send(CM_SORTRECORD, 0, 0), 0, "no function");
+    }
+
+    #[test]
+    fn a_sort_function_in_cnrinfo_sorts_on_insertion() {
+        let f = fixture(0);
+        for i in 0..23 { f.wr(BUF + 0x200 + 4 * i, 0); }
+        f.wr(BUF + 0x200 + 4, SORT_PROC);
+        f.send(CM_SETCNRINFO, BUF + 0x200, CMA_PSORTRECORD);
+        let r = f.alloc(3, 4);
+        for (i, k) in [3u32, 1, 2].iter().enumerate() { f.wr(r[i] + RECORDCORE_SIZE, *k); }
+        for (o, v) in [(0, 24), (RI_ORDER, CMA_END), (RI_PARENT, 0), (RI_INVALIDATE, 1), (16, 0), (RI_COUNT, 3)] {
+            f.wr(BUF + o, v);
+        }
+        let cmp = |a: u32, b: u32| (f.rd(a + RECORDCORE_SIZE) as i32 - f.rd(b + RECORDCORE_SIZE) as i32) as i16;
+        let res = f.loader.dispatch_builtin_control(f.cnr, CM_INSERTRECORD, r[0], BUF);
+        let ApiResult::CallChain(c) = &res else { panic!("expected a sort chain") };
+        let Some(CallStep::Guest { proc_addr, args, .. }) = c.steps.front() else { panic!() };
+        assert_eq!((*proc_addr, args[2]), (SORT_PROC, 0), "pStorage is NULL when inserting");
+        let (count, _) = run_sort_any_storage(&f, res, &cmp);
+        assert_eq!(count, 3, "the insertion count");
+        assert_eq!(order(&f), vec![r[1], r[2], r[0]]);
+    }
+
+    /// [`run_sort`] without checking `pStorage`.
+    fn run_sort_any_storage(f: &Fx, r: ApiResult, cmp: &dyn Fn(u32, u32) -> i16) -> (u32, usize) {
+        use crate::loader::pm_hook::ChainEnd;
+        let mut chain = match r {
+            ApiResult::Normal(v) => return (v, 0),
+            ApiResult::CallChain(c) => c,
+            other => panic!("{other:?}"),
+        };
+        let mut asked = 0;
+        loop {
+            let CallStep::Guest { args, .. } = chain.steps.pop_front().unwrap() else { panic!() };
+            asked += 1;
+            chain.returned(cmp(args[0], args[1]) as u16 as u32, false);
+            match f.loader.finish_chain(&chain) {
+                ChainEnd::Next(next) => chain = next,
+                ChainEnd::Return(v) => return (v, asked),
+                other => panic!("{other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn records_removed_during_a_sort_leave_the_order_alone() {
+        let f = fixture(0);
+        let r = keyed(&f, &[3, 2, 1]);
+        let ApiResult::CallChain(mut chain) = f.loader.dispatch_builtin_control(f.cnr, CM_SORTRECORD, SORT_PROC, SORT_STORAGE)
+        else { panic!() };
+        // The comparison function removes a record.
+        f.send(CM_REMOVERECORD, f.array(&[r[1]]), 1);
+        use crate::loader::pm_hook::ChainEnd;
+        let mut steps = 0;
+        let ret = loop {
+            chain.steps.clear();
+            chain.returned(1, false);
+            steps += 1;
+            match f.loader.finish_chain(&chain) {
+                ChainEnd::Next(n) => chain = n,
+                ChainEnd::Return(v) => break v,
+                other => panic!("{other:?}"),
+            }
+            assert!(steps < 20);
+        };
+        assert_eq!(ret, 0, "not applied");
+        assert_eq!(order(&f), vec![r[0], r[2]]);
+    }
+
+    #[test]
+    fn the_scroll_bar_follows_the_rows() {
+        let f = fixture(0);
+        // 200 high: 198 for rows of 18 = 11 rows; 15 records need the bar.
+        keyed(&f, &[0; 15]);
+        let snap = f.loader.snapshot(f.cnr).unwrap();
+        assert!(snap.bar());
+        assert_eq!(snap.frame().rows.2, 298 - SCROLLBAR_W);
+        assert_eq!(snap.max_top(), 4);
+        f.loader.cnr_sync_scrollbar(f.cnr, &snap);
+        let sb = f.loader.shared.window_mgr.lock_or_recover().find_child_by_id(f.cnr, CID_VSCROLL).unwrap();
+        {
+            let wm = f.loader.shared.window_mgr.lock_or_recover();
+            let w = wm.get_window(sb).unwrap();
+            assert!(w.visible);
+            assert_eq!((w.x, w.cx, w.scrollbar.last, w.scrollbar.thumb_size), (300 - 1 - 16, 16, 4, Some((11, 15))));
+        }
+        // WM_VSCROLL scrolls, clamped, and tells the owner.
+        f.send(WM_VSCROLL, CID_VSCROLL, SB_PAGEDOWN << 16);
+        assert_eq!(f.loader.snapshot(f.cnr).unwrap().top, 4);
+        let scrolls: Vec<[u32; 3]> = std::mem::take(&mut f.loader.shared.window_mgr.lock_or_recover().owner_calls)
+            .into_iter().filter_map(|c| match c.kind {
+                OwnerCallKind::ContainerNotify { code, block } if u32::from(code) == CN_SCROLL => Some(block),
+                _ => None,
+            }).collect();
+        assert_eq!(scrolls, vec![[f.cnr, 4 * 18, CMA_VERTICAL]]);
+        f.send(WM_VSCROLL, CID_VSCROLL, 2 | SB_SLIDERPOSITION << 16);
+        assert_eq!(f.loader.snapshot(f.cnr).unwrap().top, 2);
+        f.send(WM_VSCROLL, CID_VSCROLL, SB_LINEUP << 16);
+        f.send(WM_VSCROLL, CID_VSCROLL, SB_LINEUP << 16);
+        f.send(WM_VSCROLL, CID_VSCROLL, SB_LINEUP << 16);
+        assert_eq!(f.loader.snapshot(f.cnr).unwrap().top, 0);
+        // Few records: no bar.
+        f.send(CM_REMOVERECORD, 0, 0);
+        let snap = f.loader.snapshot(f.cnr).unwrap();
+        assert!(!snap.bar());
+        f.loader.cnr_sync_scrollbar(f.cnr, &snap);
+        assert!(!f.loader.shared.window_mgr.lock_or_recover().get_window(sb).unwrap().visible);
+    }
+
+    #[test]
+    fn the_tree_view_expands_collapses_and_notifies() {
+        let f = fixture(0);
+        let r = f.alloc(4, 0);
+        f.insert(r[0], 2, CMA_END, 0);
+        f.insert(r[2], 2, CMA_END, r[0]);
+        for i in 0..23 { f.wr(BUF + 0x200 + 4 * i, 0); }
+        f.wr(BUF + 0x200 + 20, CV_TREE);
+        f.send(CM_SETCNRINFO, BUF + 0x200, CMA_FLWINDOWATTR);
+        let rows = |f: &Fx| f.loader.snapshot(f.cnr).unwrap().rows.iter().map(|&(x, _)| x).collect::<Vec<_>>();
+        assert_eq!(rows(&f), vec![r[0], r[1]], "collapsed");
+        let values = |f: &Fx| -> Vec<(u32, u32)> {
+            std::mem::take(&mut f.loader.shared.window_mgr.lock_or_recover().owner_calls).into_iter().filter_map(|c| match c.kind {
+                OwnerCallKind::ContainerValue { code, mp2 } => Some((u32::from(code), mp2)),
+                _ => None,
+            }).collect()
+        };
+        assert_eq!(f.send(CM_EXPANDTREE, r[0], 0), 1);
+        assert_eq!(rows(&f), vec![r[0], r[2], r[3], r[1]]);
+        assert_eq!(values(&f), vec![(CN_EXPANDTREE, r[0])]);
+        assert_eq!(f.rd(r[0] + RC_ATTR) & (CRA_EXPANDED | CRA_COLLAPSED), CRA_EXPANDED);
+        // Cursor on a child; collapsing moves it to the parent.
+        f.send(CM_SETRECORDEMPHASIS, r[3], 1 | CRA_CURSORED << 16);
+        f.send(CM_COLLAPSETREE, r[0], 0);
+        assert_eq!(rows(&f), vec![r[0], r[1]]);
+        assert_ne!(f.rd(r[0] + RC_ATTR) & CRA_CURSORED, 0);
+        assert_eq!(values(&f), vec![(CN_COLLAPSETREE, r[0])]);
+        // Keys: + opens, Right goes to the first child, Left back, - closes.
+        f.send(WM_CHAR, KC_CHAR, u32::from(b'+'));
+        assert_eq!(rows(&f).len(), 4);
+        f.key(VK_RIGHT, 0);
+        assert_ne!(f.rd(r[2] + RC_ATTR) & CRA_CURSORED, 0);
+        f.key(VK_LEFT, 0);
+        assert_ne!(f.rd(r[0] + RC_ATTR) & CRA_CURSORED, 0);
+        f.send(WM_CHAR, KC_CHAR, u32::from(b'-'));
+        assert_eq!(rows(&f).len(), 2);
+        // A click on the expander box opens it: row 0 at y 181..198, box
+        // after a 0 indentation at x 1 + 4 + ... (text inset 0 + 9 + 8).
+        let snap = f.loader.snapshot(f.cnr).unwrap();
+        let ex = BORDER + snap.text_inset(0) - EXPANDER - CELL_PAD;
+        values(&f);
+        f.send(WM_BUTTON1DOWN, Fx::at(ex + 4, 190), 0);
+        assert_eq!(rows(&f).len(), 4, "the expander opened it");
+        assert_eq!(f.send(CM_EXPANDTREE, 0x7777, 0), 0, "not a record");
     }
 
     fn heap_with(n: u32) -> (CnrState, Vec<u32>) {

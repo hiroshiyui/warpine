@@ -379,6 +379,10 @@ impl super::Loader {
                 if let Some(r) = self.frame_default_message(hwnd, msg, mp1, mp2) {
                     return ApiResult::Normal(r);
                 }
+                // A window takes no drop unless its procedure says so.
+                if msg == super::pm_drag::DM_DRAGOVER {
+                    return ApiResult::Normal(super::pm_drag::DOR_NEVERDROP);
+                }
                 match msg {
                     // The system menu and keyboard move / size (pm_sysmenu.rs).
                     WM_SYSCOMMAND if self.frame_syscommand(hwnd, mp1 & 0xFFFF, mp2) => {}

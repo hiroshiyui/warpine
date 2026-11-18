@@ -2505,6 +2505,56 @@ fn gui_pm_container_test_matches_golden() {
         &format!("{CONTAINER_STEPS}2300 dump {{dump}}\n2400 quit\n"));
 }
 
+/// pm_cnrtree_test: a WC_CONTAINER in the tree view with twenty items and a
+/// folder of three children inserted out of order. The guest checks that
+/// CM_SORTRECORD calls its comparison function (through call chains) and
+/// sorts each level, that a CNRINFO sort function places a new record and
+/// that CM_EXPANDTREE / CM_COLLAPSETREE notify before they return; the
+/// steps click the folder's expander and the scroll bar's down arrow twice
+/// (CN_EXPANDTREE, CN_SCROLL).
+const CNRTREE_STEPS: &str = "\
+    1000 click 119 320\n\
+    1300 click 481 550\n\
+    1600 click 481 550\n";
+
+#[test]
+fn gui_pm_cnrtree_test_sorts_expands_and_scrolls() {
+    let steps = format!("{CNRTREE_STEPS}2000 key alt+f4\n4500 quit\n");
+    assert_scripted_checks_pass("samples/pm_cnrtree_test/pm_cnrtree_test.exe", "pm_cnrtree_test", 27, &steps);
+}
+
+/// pm_cnrtree_test's picture: the expanded tree scrolled by two rows
+/// (child b on top, indented), the items below, the scroll bar on the right.
+#[test]
+fn gui_pm_cnrtree_test_matches_golden() {
+    check_gui_golden("pm_cnrtree_test", "samples/pm_cnrtree_test/pm_cnrtree_test.exe",
+        &format!("{CNRTREE_STEPS}1900 dump {{dump}}\n2000 quit\n"));
+}
+
+/// pm_drag_test: drag and drop within a process. The guest checks the
+/// PMDRAG data calls (string handles, DRAGINFO items, DrgVerify*); the
+/// steps drag with button 2 from the client onto a container (WM_BEGINDRAG,
+/// DrgDrag, CN_DRAGOVER, CN_DROP inserting a record, DrgFreeDraginfo
+/// refused during the drop) and from that record onto the client's left
+/// half (CN_INITDRAG, DOR_NEVERDROP, DM_DRAGLEAVE, NULLHANDLE).
+const DRAG_STEPS: &str = "\
+    1000 rdrag 152 467 352 467\n\
+    1800 rdrag 322 319 130 520\n";
+
+#[test]
+fn gui_pm_drag_test_drags_and_drops() {
+    let steps = format!("{DRAG_STEPS}2700 key alt+f4\n5000 quit\n");
+    assert_scripted_checks_pass("samples/pm_drag_test/pm_drag_test.exe", "pm_drag_test", 32, &steps);
+}
+
+/// pm_drag_test's picture: the dark source half of the client and the
+/// container holding the dropped "dropped.txt" record.
+#[test]
+fn gui_pm_drag_test_matches_golden() {
+    check_gui_golden("pm_drag_test", "samples/pm_drag_test/pm_drag_test.exe",
+        &format!("{DRAG_STEPS}2600 dump {{dump}}\n2700 quit\n"));
+}
+
 /// pm_charbundle_test: GpiSetAttrs / GpiQueryAttrs with a CHARBUNDLE set
 /// and report the character mode, angle, shear, direction, alignment,
 /// extra and break extra that the single GpiSetChar* calls use, reject

@@ -23,7 +23,9 @@ pub const PMSPL_BASE: u32    = 18432; // 18 * 1024 — spooler (Spl*), no printe
 pub const PMCTLS_BASE: u32   = 19456; // 19 * 1024 — standard file / font dialogs
 /// Warpine's own extensions (`WARPINE.DLL`: 64-bit time, `warpine_api.rs`).
 pub const WARPINE_BASE: u32  = 20480; // 20 * 1024
-pub const STUB_AREA_SIZE: u32 = 21504;
+/// Drag and drop (`Drg*`, `pm_drag.rs`).
+pub const PMDRAG_BASE: u32   = 21504; // 21 * 1024
+pub const STUB_AREA_SIZE: u32 = 22528;
 /// QUECALLS ordinals follow DOSCALLS' 1024.
 pub const QUECALLS_BASE: u32 = 1024;
 
@@ -51,19 +53,21 @@ pub fn module_base(module: &str) -> Option<u32> {
         "PMSPL"    => PMSPL_BASE,
         "PMCTLS"   => PMCTLS_BASE,
         "WARPINE"  => WARPINE_BASE,
+        "PMDRAG"   => PMDRAG_BASE,
         _ => return None,
     })
 }
 
 // Compile-time bounds checks: each module range is 1024 ordinals wide and
-// WARPINE, the last one, must fit within STUB_AREA_SIZE.
+// PMDRAG, the last one, must fit within STUB_AREA_SIZE.
 const _: () = assert!(TCP32DLL_BASE + 1024 <= MOUCALLS_BASE);
 const _: () = assert!(MOUCALLS_BASE + 1024 <= PMSHAPI_BASE);
 const _: () = assert!(PMSHAPI_BASE + 1024 <= HELPMGR_BASE);
 const _: () = assert!(HELPMGR_BASE + 1024 <= PMSPL_BASE);
 const _: () = assert!(PMSPL_BASE + 1024 <= PMCTLS_BASE);
 const _: () = assert!(PMCTLS_BASE + 1024 <= WARPINE_BASE);
-const _: () = assert!(WARPINE_BASE + 1024 <= STUB_AREA_SIZE);
+const _: () = assert!(WARPINE_BASE + 1024 <= PMDRAG_BASE);
+const _: () = assert!(PMDRAG_BASE + 1024 <= STUB_AREA_SIZE);
 // The INT 3 stub area must not reach the dynamic allocation pool.
 const _: () = assert!(MAGIC_API_BASE + STUB_AREA_SIZE as u64 <= DYNAMIC_ALLOC_BASE as u64);
 // The NE loader addresses stubs with 16-bit offsets.
@@ -1906,6 +1910,7 @@ pub const PMERR_ALREADY_IN_PATH:       u32 = 0x2003;
 pub const PMERR_COORDINATE_OVERFLOW:   u32 = 0x2014;
 pub const PMERR_HRGN_BUSY:             u32 = 0x2034;
 pub const PMERR_INSUFFICIENT_MEMORY:   u32 = 0x203E;
+pub const PMERR_INVALID_PARAMETERS:    u32 = 0x1208;
 pub const PMERR_INV_AREA_CONTROL:      u32 = 0x2041;
 pub const PMERR_INV_CLIP_PATH_OPTIONS: u32 = 0x2051;
 pub const PMERR_INV_COORDINATE:        u32 = 0x205B;

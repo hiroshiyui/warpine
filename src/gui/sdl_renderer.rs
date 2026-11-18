@@ -360,6 +360,7 @@ fn draw_title_bar(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
 }
 
 use crate::loader::constants::frame_border_width as frame_border_px;
+use crate::loader::pm_drag as loader_drag;
 
 /// Draw a frame's border, only inside `clip`. A sizing border is a raised
 /// bevel; a plain or dialog border is a dark outline with a face-coloured
@@ -758,6 +759,15 @@ struct FrameTrack {
 ///
 /// Created on the main thread; must stay on the main thread for the duration
 /// of `run_pm_loop`.
+/// A press of the drag button that may become a drag.
+#[derive(Debug, Clone, Copy)]
+struct DragPress {
+    x: i32,
+    y: i32,
+    target: Option<(u32, i32, i32)>,
+    fired: bool,
+}
+
 pub struct SdlRenderer {
     video:       sdl3::VideoSubsystem,
     event:       sdl3::EventSubsystem,
@@ -821,6 +831,11 @@ pub struct SdlRenderer {
     stats: FrameStats,
     /// Active drag operation (VDR-D3); `None` when no drag is in progress.
     drag_state: Option<DragState>,
+    /// Button 2 went down here (desktop coordinates, the window under it
+    /// with the point in its coordinates); `WM_BEGINDRAG` is posted once
+    /// the pointer moves `DRAG_THRESHOLD` pels with the button held
+    /// (`pm_drag.rs`).
+    drag_press: Option<DragPress>,
     /// Active resize operation (VDR-C5); `None` when no resize is in progress.
     resize_state: Option<ResizeState>,
     /// When the compositor last actually composited (frame pacing).
@@ -1293,6 +1308,7 @@ impl SdlRenderer {
             pending_events: Vec::new(),
             stats: FrameStats::new(now),
             drag_state: None,
+            drag_press: None,
             resize_state: None,
             key_mods: 0,
             // Long enough ago that the first frame is composited at once.
@@ -1542,6 +1558,8 @@ impl SdlRenderer {
             // screen (the loop returns; input after it in this pass is dropped).
             // A pop-up menu or a keyboard move / size of a PM frame takes
             // the keyboard too.
+            // Esc ends a running drag without a drop (pm_drag.rs).
+            Event::KeyDown { keycode: Some(Keycode::Escape), .. } if shared.drag_channel.cancel() => {}
             Event::KeyDown { keycode: Some(kc), scancode: Some(sc), keymod, repeat, .. }
                 if self.takes_keys(shared) => {
                 if self.popup.is_none() && self.frame_track.is_none()
@@ -1580,6 +1598,25 @@ impl SdlRenderer {
             Event::MouseMotion { x, y, .. } => {
                 // SDL3 reports float pixels; PM works in whole pels.
                 let (x, y) = (x as i32, y as i32);
+                // A drag (DrgDrag) takes the pointer; before it starts, the
+                // drag button held and moved far enough posts WM_BEGINDRAG.
+                let pm = (x, (dh as i32 - 1) - y);
+                if shared.drag_channel.active() {
+                    shared.drag_channel.moved(pm);
+                    return true;
+                }
+                shared.drag_channel.moved(pm);
+                if let Some(p) = self.drag_press.as_mut()
+                    && !p.fired
+                    && ((pm.0 - p.x).abs() >= loader_drag::DRAG_THRESHOLD || (pm.1 - p.y).abs() >= loader_drag::DRAG_THRESHOLD)
+                {
+                    p.fired = true;
+                    if let Some((hwnd, lx, ly)) = p.target {
+                        shared.drag_channel.arm(loader_drag::DRAG_BUTTON, pm);
+                        let mp1 = ((lx as u32) & 0xFFFF) | ((ly as u32 & 0xFFFF) << 16);
+                        push_input(shared, hwnd, loader_drag::WM_BEGINDRAG, mp1, 1);
+                    }
+                }
                 // A pop-up menu takes the pointer: the item under it lights up.
                 if let Some(p) = self.popup.as_mut() {
                     self.overlay_changed |= p.hover(x, y);
@@ -1653,6 +1690,15 @@ impl SdlRenderer {
                 // SDL3 reports float pixels; PM works in whole pels.
                 let (x, y) = (x as i32, y as i32);
                 let os2_y = (dh as i32 - 1) - y;
+                // No clicks reach windows while a drag runs.
+                if shared.drag_channel.active() {
+                    return true;
+                }
+                if mouse_btn == sdl3::mouse::MouseButton::Right {
+                    shared.drag_channel.reset_if_idle();
+                    let target = shared.window_mgr.lock_or_recover().window_under(x, os2_y);
+                    self.drag_press = Some(DragPress { x, y: os2_y, target, fired: false });
+                }
                 // An open pop-up menu takes the click.
                 if self.popup.is_some()
                     && let Some(keep_running) = self.popup_press(shared, mouse_btn, clicks, x, y) {
@@ -1838,6 +1884,17 @@ impl SdlRenderer {
                 // SDL3 reports float pixels; PM works in whole pels.
                 let (x, y) = (x as i32, y as i32);
                 let left = mouse_btn == sdl3::mouse::MouseButton::Left;
+                // A drag takes the release of a button (the drop).
+                let number = match mouse_btn {
+                    sdl3::mouse::MouseButton::Left => 1,
+                    sdl3::mouse::MouseButton::Right => 2,
+                    sdl3::mouse::MouseButton::Middle => 3,
+                    _ => 0,
+                };
+                if number == 2 { self.drag_press = None; }
+                if number != 0 && shared.drag_channel.released(number, (x, (dh as i32 - 1) - y)) {
+                    return true;
+                }
                 // A pop-up menu chooses the item the button comes up over.
                 if left && let Some(p) = self.popup.as_mut() && p.is_pressed() {
                     let action = p.release(x, y);
@@ -2674,6 +2731,8 @@ fn build_wm_char(
 /// SDL button-state bit for the left mouse button (`SDL_BUTTON_LMASK`), the
 /// state a real mouse reports in motion events while dragging.
 const SDL_LEFT_BUTTON_MASK: u32 = 1;
+/// The right button's bit (`SDL_BUTTON_RMASK`, button 3 in SDL's order).
+const SDL_RIGHT_BUTTON_MASK: u32 = 4;
 
 /// SDL key code and hardware scan code a US keyboard reports for a script key.
 /// `None` for a `Key::Char` that is not an unshifted printable key or an
@@ -2770,9 +2829,12 @@ pub(crate) fn script_input_to_event(input: &gui_script::Input) -> Option<Event> 
             timestamp, window_id, which, mouse_btn: sdl_button(button), clicks: 2, x: *x as f32, y: *y as f32 },
         Input::MouseUp { button, x, y } => Event::MouseButtonUp {
             timestamp, window_id, which, mouse_btn: sdl_button(button), clicks: 1, x: *x as f32, y: *y as f32 },
-        Input::MouseDrag { x, y, dx, dy } => Event::MouseMotion {
+        Input::MouseDrag { button, x, y, dx, dy } => Event::MouseMotion {
             timestamp, window_id, which,
-            mousestate: MouseState::from_sdl_state(SDL_LEFT_BUTTON_MASK),
+            mousestate: MouseState::from_sdl_state(match button {
+                Button::Left => SDL_LEFT_BUTTON_MASK,
+                Button::Right => SDL_RIGHT_BUTTON_MASK,
+            }),
             x: *x as f32, y: *y as f32, xrel: *dx as f32, yrel: *dy as f32 },
         Input::KeyDown { key, mods } => {
             let (keycode, scancode) = script_key_to_sdl(*key)?;

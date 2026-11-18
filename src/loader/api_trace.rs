@@ -404,11 +404,49 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         },
 
         // ── WARPINE (Warpine's own extensions) ─────────────────────
-        o if (WARPINE_BASE..STUB_AREA_SIZE).contains(&o) => match o - WARPINE_BASE {
+        o if (WARPINE_BASE..PMDRAG_BASE).contains(&o) => match o - WARPINE_BASE {
             1 => "WrpTime64",
             2 => "WrpGetDateTime64",
             3 => "WrpLocalTime64",
             4 => "WrpMakeTime64",
+            _ => "?",
+        },
+
+        // ── PMDRAG (drag and drop; pm_drag.rs) ─────────────────────────
+        o if (PMDRAG_BASE..STUB_AREA_SIZE).contains(&o) => match o - PMDRAG_BASE {
+            32 => "DrgAccessDraginfo",
+            33 => "DrgAddStrHandle",
+            34 => "DrgAllocDraginfo",
+            35 => "DrgAllocDragtransfer",
+            36 => "DrgDeleteDraginfoStrHandles",
+            37 => "DrgDeleteStrHandle",
+            38 => "DrgDrag",
+            39 => "DrgFreeDraginfo",
+            40 => "DrgFreeDragtransfer",
+            41 => "DrgGetPS",
+            42 => "DrgPostTransferMsg",
+            43 => "DrgPushDraginfo",
+            44 => "DrgQueryDragitem",
+            45 => "DrgQueryDragitemCount",
+            46 => "DrgQueryDragitemPtr",
+            47 => "DrgQueryNativeRMF",
+            48 => "DrgQueryNativeRMFLen",
+            49 => "DrgQueryStrName",
+            50 => "DrgQueryStrNameLen",
+            51 => "DrgQueryTrueType",
+            52 => "DrgQueryTrueTypeLen",
+            53 => "DrgReleasePS",
+            54 => "DrgSendTransferMsg",
+            55 => "DrgSetDragPointer",
+            56 => "DrgSetDragImage",
+            57 => "DrgSetDragitem",
+            58 => "DrgVerifyNativeRMF",
+            59 => "DrgVerifyRMF",
+            60 => "DrgVerifyTrueType",
+            61 => "DrgVerifyType",
+            62 => "DrgVerifyTypeSet",
+            72 => "DrgQueryDraginfoPtrFromDragitem",
+            73 => "DrgQueryDragStatus",
             _ => "?",
         },
 
@@ -438,7 +476,8 @@ pub fn module_for_ordinal(ordinal: u32) -> &'static str {
     else if ordinal < PMSPL_BASE    { "HELPMGR" }  // 17408–18431
     else if ordinal < PMCTLS_BASE   { "PMSPL" }    // 18432–19455
     else if ordinal < WARPINE_BASE { "PMCTLS" }    // 19456–20479
-    else if ordinal < STUB_AREA_SIZE { "WARPINE" } // 20480–21503
+    else if ordinal < PMDRAG_BASE  { "WARPINE" }   // 20480–21503
+    else if ordinal < STUB_AREA_SIZE { "PMDRAG" }  // 21504–22527
     else                            { "?" }
 }
 
@@ -750,11 +789,49 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
         },
 
         // ── WARPINE ───────────────────────────────────────────────────────
-        o if (WARPINE_BASE..STUB_AREA_SIZE).contains(&o) => match o - WARPINE_BASE {
+        o if (WARPINE_BASE..PMDRAG_BASE).contains(&o) => match o - WARPINE_BASE {
             1 => &["ptime"],
             2 => &["pdt", "ptime"],
             3 => &["ptime", "pdt"],
             4 => &["pdt", "ptime"],
+            _ => &[],
+        },
+
+        // ── PMDRAG ────────────────────────────────────────────────────────
+        o if (PMDRAG_BASE..STUB_AREA_SIZE).contains(&o) => match o - PMDRAG_BASE {
+            32 => &["pdinfo"],
+            33 => &["pszString"],
+            34 => &["cditem"],
+            35 => &["cdxfer"],
+            36 => &["pdinfo"],
+            37 => &["hstr"],
+            38 => &["hwndSource", "pdinfo", "pdimg", "cdimg", "vkTerminate", "pRsvd"],
+            39 => &["pdinfo"],
+            40 => &["pdxfer"],
+            41 => &["hwnd"],
+            42 => &["hwnd", "msg", "pdxfer", "fl", "ulRsvd", "fRetry"],
+            43 => &["pdinfo", "hwndDest"],
+            44 => &["pdinfo", "cbBuffer", "pditem", "iItem"],
+            45 => &["pdinfo"],
+            46 => &["pdinfo", "i"],
+            47 => &["pditem", "cbBuffer", "pBuffer"],
+            48 => &["pditem"],
+            49 => &["hstr", "cbBuffer", "pBuffer"],
+            50 => &["hstr"],
+            51 => &["pditem", "cbBuffer", "pBuffer"],
+            52 => &["pditem"],
+            53 => &["hps"],
+            54 => &["hwnd", "msg", "mp1", "mp2"],
+            55 => &["pdinfo", "hptr"],
+            56 => &["pdinfo", "pdimg", "cdimg", "pRsvd"],
+            57 => &["pdinfo", "pditem", "cbBuffer", "iItem"],
+            58 => &["pditem", "pszRMF"],
+            59 => &["pditem", "pszMech", "pszFmt"],
+            60 => &["pditem", "pszType"],
+            61 => &["pditem", "pszType"],
+            62 => &["pditem", "pszType", "cbMatch", "pszMatch"],
+            72 => &["pditem"],
+            73 => &[],
             _ => &[],
         },
 
@@ -1014,7 +1091,9 @@ mod tests {
         assert_eq!(module_for_ordinal(PMCTLS_BASE),         "PMCTLS");
         assert_eq!(module_for_ordinal(WARPINE_BASE - 1),   "PMCTLS");
         assert_eq!(module_for_ordinal(WARPINE_BASE),       "WARPINE");
-        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "WARPINE");
+        assert_eq!(module_for_ordinal(PMDRAG_BASE - 1),    "WARPINE");
+        assert_eq!(module_for_ordinal(PMDRAG_BASE),        "PMDRAG");
+        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "PMDRAG");
         assert_eq!(module_for_ordinal(STUB_AREA_SIZE),     "?");
     }
 

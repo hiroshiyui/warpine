@@ -207,6 +207,9 @@ pub enum Action {
     /// Two left clicks in quick succession (`dblclick X Y`).
     DblClick { x: i32, y: i32 },
     Drag { x1: i32, y1: i32, x2: i32, y2: i32 },
+    /// A drag with the right button (`rdrag X1 Y1 X2 Y2`): the OS/2 drag
+    /// button.
+    RDrag { x1: i32, y1: i32, x2: i32, y2: i32 },
     Key { key: Key, mods: Mods },
     Text(String),
     Dump(PathBuf),
@@ -220,8 +223,8 @@ pub enum Input {
     MouseDown { button: Button, x: i32, y: i32 },
     /// The second press of a double click.
     MouseDoubleDown { button: Button, x: i32, y: i32 },
-    /// Pointer moved to `(x, y)` by `(dx, dy)` with the left button held.
-    MouseDrag { x: i32, y: i32, dx: i32, dy: i32 },
+    /// Pointer moved to `(x, y)` by `(dx, dy)` with `button` held.
+    MouseDrag { button: Button, x: i32, y: i32, dx: i32, dy: i32 },
     MouseUp { button: Button, x: i32, y: i32 },
     /// `mods` is the modifier state including the effect of this event, so
     /// pressing Shift reports `shift: true` and releasing it `shift: false`.
@@ -266,6 +269,22 @@ fn push_with_mods(out: &mut Vec<(u64, Input)>, at: u64, mods: Mods,
     }
 }
 
+/// Append a drag with `button` from `(x1, y1)` to `(x2, y2)`: the press,
+/// `DRAG_MOVES` moves `DRAG_STEP_MS` apart, the release.
+fn push_drag(out: &mut Vec<(u64, Input)>, at: u64, button: Button, (x1, y1): (i32, i32), (x2, y2): (i32, i32)) {
+    out.push((at, Input::MouseDown { button, x: x1, y: y1 }));
+    let n = DRAG_MOVES as i64;
+    // 64-bit so that extreme coordinates cannot overflow.
+    let lerp = |a: i32, b: i32, i: i64| (a as i64 + (b as i64 - a as i64) * i / n) as i32;
+    for i in 1..=n {
+        let (px, py) = (lerp(x1, x2, i - 1), lerp(y1, y2, i - 1));
+        let (x, y) = (lerp(x1, x2, i), lerp(y1, y2, i));
+        out.push((at + i as u64 * DRAG_STEP_MS, Input::MouseDrag {
+            button, x, y, dx: x.wrapping_sub(px), dy: y.wrapping_sub(py) }));
+    }
+    out.push((at + (DRAG_MOVES + 1) * DRAG_STEP_MS, Input::MouseUp { button, x: x2, y: y2 }));
+}
+
 impl Action {
     /// The primitive events this action consists of, starting at `at` ms,
     /// each with the time it becomes due. Times never decrease.
@@ -289,20 +308,8 @@ impl Action {
                 out.push((at, Input::MouseDoubleDown { button, x, y }));
                 out.push((at, Input::MouseUp { button, x, y }));
             }
-            &Action::Drag { x1, y1, x2, y2 } => {
-                out.push((at, Input::MouseDown { button: Button::Left, x: x1, y: y1 }));
-                let n = DRAG_MOVES as i64;
-                // 64-bit so that extreme coordinates cannot overflow.
-                let lerp = |a: i32, b: i32, i: i64| (a as i64 + (b as i64 - a as i64) * i / n) as i32;
-                for i in 1..=n {
-                    let (px, py) = (lerp(x1, x2, i - 1), lerp(y1, y2, i - 1));
-                    let (x, y) = (lerp(x1, x2, i), lerp(y1, y2, i));
-                    out.push((at + i as u64 * DRAG_STEP_MS, Input::MouseDrag {
-                        x, y, dx: x.wrapping_sub(px), dy: y.wrapping_sub(py) }));
-                }
-                out.push((at + (DRAG_MOVES + 1) * DRAG_STEP_MS,
-                          Input::MouseUp { button: Button::Left, x: x2, y: y2 }));
-            }
+            &Action::Drag { x1, y1, x2, y2 } => push_drag(&mut out, at, Button::Left, (x1, y1), (x2, y2)),
+            &Action::RDrag { x1, y1, x2, y2 } => push_drag(&mut out, at, Button::Right, (x1, y1), (x2, y2)),
             &Action::Key { key, mods } => push_keystroke(&mut out, at, key, mods, None),
             Action::Text(text) => {
                 for (i, c) in text.chars().enumerate() {
@@ -379,6 +386,8 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
                 .ok_or_else(|| err("dblclick needs X and Y"))?,
             "drag" => coords(args).map(|[x1, y1, x2, y2]| Action::Drag { x1, y1, x2, y2 })
                 .ok_or_else(|| err("drag needs X1 Y1 X2 Y2"))?,
+            "rdrag" => coords(args).map(|[x1, y1, x2, y2]| Action::RDrag { x1, y1, x2, y2 })
+                .ok_or_else(|| err("rdrag needs X1 Y1 X2 Y2"))?,
             "key" => {
                 if args.is_empty() || args.contains(char::is_whitespace) {
                     return Err(err("key needs one key name"));
@@ -510,6 +519,15 @@ mod tests {
         assert_eq!(script.next_due(), Some(start + std::time::Duration::from_millis(500)));
         script.due_at(500);
         assert_eq!(script.next_due(), None, "exhausted");
+    }
+
+    #[test]
+    fn rdrag_holds_the_right_button() {
+        let steps = parse("100 rdrag 10 20 50 60\n").unwrap();
+        let events = steps[0].action.expand(100);
+        assert_eq!(events[0].1, Input::MouseDown { button: Button::Right, x: 10, y: 20 });
+        assert!(events[1..events.len() - 1].iter().all(|(_, e)| matches!(e, Input::MouseDrag { button: Button::Right, .. })));
+        assert_eq!(events.last().unwrap().1, Input::MouseUp { button: Button::Right, x: 50, y: 60 });
     }
 
     #[test]
@@ -692,17 +710,17 @@ mod tests {
         let events = Action::Drag { x1: 100, y1: 40, x2: 300, y2: 140 }.expand(1000);
         assert_eq!(events, vec![
             (1000, Input::MouseDown { button: Button::Left, x: 100, y: 40 }),
-            (1020, Input::MouseDrag { x: 150, y: 65, dx: 50, dy: 25 }),
-            (1040, Input::MouseDrag { x: 200, y: 90, dx: 50, dy: 25 }),
-            (1060, Input::MouseDrag { x: 250, y: 115, dx: 50, dy: 25 }),
-            (1080, Input::MouseDrag { x: 300, y: 140, dx: 50, dy: 25 }),
+            (1020, Input::MouseDrag { button: Button::Left, x: 150, y: 65, dx: 50, dy: 25 }),
+            (1040, Input::MouseDrag { button: Button::Left, x: 200, y: 90, dx: 50, dy: 25 }),
+            (1060, Input::MouseDrag { button: Button::Left, x: 250, y: 115, dx: 50, dy: 25 }),
+            (1080, Input::MouseDrag { button: Button::Left, x: 300, y: 140, dx: 50, dy: 25 }),
             (1100, Input::MouseUp { button: Button::Left, x: 300, y: 140 }),
         ]);
         // The last move always lands exactly on the target, also when the
         // distance does not divide evenly or runs backwards.
         let events = Action::Drag { x1: 10, y1: 10, x2: 3, y2: 11 }.expand(0);
         assert_eq!(events[DRAG_MOVES as usize], (DRAG_MOVES * DRAG_STEP_MS,
-            Input::MouseDrag { x: 3, y: 11, dx: -2, dy: 1 }));
+            Input::MouseDrag { button: Button::Left, x: 3, y: 11, dx: -2, dy: 1 }));
         // Extreme coordinates must not overflow.
         let events = Action::Drag { x1: i32::MIN, y1: 0, x2: i32::MAX, y2: 0 }.expand(0);
         assert_eq!(events.len(), DRAG_MOVES as usize + 2);
@@ -782,14 +800,14 @@ mod tests {
         // The click is scheduled in the middle of the drag; it must wait.
         let mut script = GuiScript::new(parse("100 drag 0 0 40 0\n150 click 9 9\n").unwrap());
         assert_eq!(script.due_at(100), vec![Input::MouseDown { button: Button::Left, x: 0, y: 0 }]);
-        assert_eq!(script.due_at(120), vec![Input::MouseDrag { x: 10, y: 0, dx: 10, dy: 0 }]);
+        assert_eq!(script.due_at(120), vec![Input::MouseDrag { button: Button::Left, x: 10, y: 0, dx: 10, dy: 0 }]);
         assert_eq!(script.due_at(165), vec![
-            Input::MouseDrag { x: 20, y: 0, dx: 10, dy: 0 },
-            Input::MouseDrag { x: 30, y: 0, dx: 10, dy: 0 },
+            Input::MouseDrag { button: Button::Left, x: 20, y: 0, dx: 10, dy: 0 },
+            Input::MouseDrag { button: Button::Left, x: 30, y: 0, dx: 10, dy: 0 },
         ]);
         // A late poll still delivers everything, in order.
         assert_eq!(script.due_at(10_000), vec![
-            Input::MouseDrag { x: 40, y: 0, dx: 10, dy: 0 },
+            Input::MouseDrag { button: Button::Left, x: 40, y: 0, dx: 10, dy: 0 },
             Input::MouseUp { button: Button::Left, x: 40, y: 0 },
             Input::MouseDown { button: Button::Left, x: 9, y: 9 },
             Input::MouseUp { button: Button::Left, x: 9, y: 9 },

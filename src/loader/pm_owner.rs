@@ -97,6 +97,12 @@ pub enum OwnerCallKind {
     /// `WM_CONTROL(code)` from a container with a three-ULONG structure
     /// (`NOTIFYRECORDEMPHASIS`, `NOTIFYRECORDENTER`; `pm_container.rs`).
     ContainerNotify { code: u16, block: [u32; 3] },
+    /// `WM_CONTROL(code)` from a container with a plain mp2 (a record:
+    /// `CN_EXPANDTREE`, `CN_COLLAPSETREE`).
+    ContainerValue { code: u16, mp2: u32 },
+    /// `WM_CONTROL(CN_INITDRAG)` with a `CNRDRAGINIT` (container, record,
+    /// x, y, cx, cy).
+    ContainerInitDrag { block: [u32; 6] },
 }
 
 /// The menu item `id` in `items` (searched through the submenus).
@@ -319,6 +325,15 @@ impl Loader {
                 mp1: (u32::from(code) << 16) | (id & 0xFFFF), mp2: 0,
                 block: block.to_vec(), hps: 0,
             },
+            OwnerCallKind::ContainerInitDrag { block } => OwnerSetup::Call {
+                wnd_proc, owner, msg: WM_CONTROL,
+                mp1: (super::pm_container::CN_INITDRAG << 16) | (id & 0xFFFF), mp2: 0,
+                block: block.to_vec(), hps: 0,
+            },
+            OwnerCallKind::ContainerValue { code, mp2 } => OwnerSetup::Call {
+                wnd_proc, owner, msg: WM_CONTROL,
+                mp1: (u32::from(code) << 16) | (id & 0xFFFF), mp2, block: Vec::new(), hps: 0,
+            },
             OwnerCallKind::UserButton => {
                 let state = self.user_button_state(call.control, style);
                 let old = self.shared.window_mgr.lock_or_recover().get_window_mut(call.control)
@@ -483,7 +498,8 @@ impl Loader {
             OwnerCallKind::UserButton | OwnerCallKind::DrawMenuItem { .. }
             | OwnerCallKind::EraseBackground | OwnerCallKind::SyncPaint
             | OwnerCallKind::NotebookSelected { .. } | OwnerCallKind::NotebookDeleted { .. }
-            | OwnerCallKind::ContainerNotify { .. } => {}
+            | OwnerCallKind::ContainerNotify { .. } | OwnerCallKind::ContainerValue { .. }
+            | OwnerCallKind::ContainerInitDrag { .. } => {}
         }
     }
 }

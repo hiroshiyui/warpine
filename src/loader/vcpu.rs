@@ -1764,6 +1764,11 @@ fn continue_call_chain(
             regs.rip = MAGIC_API_BASE + (PMWIN_BASE + ordinal) as u64;
             regs.rsp = saved_rsp - 4;
         }
+        ChainEnd::Next(next) => {
+            // One more round of calls (a container sort's next comparison).
+            continue_call_chain(vcpu, loader, callback_stack, next, saved_rip, saved_rsp);
+            return;
+        }
         ChainEnd::ModalLoop { dlg_proc, hwnd_dlg, hmq, msg } => {
             // The message-filter hooks of a modal loop returned: dispatch
             // what they let through, then on with the loop.

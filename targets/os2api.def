@@ -22,6 +22,7 @@
 #   PMSPL     base 18432    (MAGIC_API_BASE + 18432 + ordinal)
 #   PMCTLS    base 19456    (MAGIC_API_BASE + 19456 + ordinal)
 #   WARPINE   base 20480    (MAGIC_API_BASE + 20480 + ordinal) — Warpine's own extensions
+#   PMDRAG    base 21504    (MAGIC_API_BASE + 21504 + ordinal)
 
 # ── DOSCALLS ─────────────────────────────────────────────────────────────────
 DOSCALLS.8    DosGetInfoSeg
@@ -364,3 +365,38 @@ WARPINE.1     WrpTime64           # NOTE: Warpine extension, not in os2386.lib
 WARPINE.2     WrpGetDateTime64    # NOTE: Warpine extension, not in os2386.lib
 WARPINE.3     WrpLocalTime64      # NOTE: Warpine extension, not in os2386.lib
 WARPINE.4     WrpMakeTime64       # NOTE: Warpine extension, not in os2386.lib
+
+# ── PMDRAG (drag and drop; pm_drag.rs, ADR-0045)
+PMDRAG.32     DrgAccessDraginfo
+PMDRAG.33     DrgAddStrHandle
+PMDRAG.34     DrgAllocDraginfo
+PMDRAG.35     DrgAllocDragtransfer
+PMDRAG.36     DrgDeleteDraginfoStrHandles
+PMDRAG.37     DrgDeleteStrHandle
+PMDRAG.38     DrgDrag
+PMDRAG.39     DrgFreeDraginfo
+PMDRAG.40     DrgFreeDragtransfer
+PMDRAG.41     DrgGetPS
+PMDRAG.42     DrgPostTransferMsg
+PMDRAG.43     DrgPushDraginfo
+PMDRAG.44     DrgQueryDragitem
+PMDRAG.45     DrgQueryDragitemCount
+PMDRAG.46     DrgQueryDragitemPtr
+PMDRAG.47     DrgQueryNativeRMF
+PMDRAG.48     DrgQueryNativeRMFLen
+PMDRAG.49     DrgQueryStrName
+PMDRAG.50     DrgQueryStrNameLen
+PMDRAG.51     DrgQueryTrueType
+PMDRAG.52     DrgQueryTrueTypeLen
+PMDRAG.53     DrgReleasePS
+PMDRAG.54     DrgSendTransferMsg
+PMDRAG.55     DrgSetDragPointer
+PMDRAG.56     DrgSetDragImage
+PMDRAG.57     DrgSetDragitem
+PMDRAG.58     DrgVerifyNativeRMF
+PMDRAG.59     DrgVerifyRMF
+PMDRAG.60     DrgVerifyTrueType
+PMDRAG.61     DrgVerifyType
+PMDRAG.62     DrgVerifyTypeSet
+PMDRAG.72     DrgQueryDraginfoPtrFromDragitem
+PMDRAG.73     DrgQueryDragStatus
