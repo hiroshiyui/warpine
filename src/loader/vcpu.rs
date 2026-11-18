@@ -160,6 +160,7 @@ impl super::Loader {
         // Restore terminal before process::exit() which skips all destructors.
         // Must restore termios FIRST so OPOST is active, then emit ANSI reset.
         self.shared.npipes.lock_or_recover().close_all();
+        self.shared.pipe_sems.lock_or_recover().stop_all();
         self.shared.leave_thread_session();
         self.shared.console_mgr.lock_or_recover().disable_raw_mode();
         let code = self.shared.exit_code.load(Ordering::Relaxed);
@@ -185,6 +186,7 @@ impl super::Loader {
         // Thread 1 may end by itself while other threads still run.
         self.wait_for_process_end();
         self.shared.npipes.lock_or_recover().close_all();
+        self.shared.pipe_sems.lock_or_recover().stop_all();
         self.shared.leave_thread_session();
         self.shared.console_mgr.lock_or_recover().disable_raw_mode();
         let code = self.shared.exit_code.load(Ordering::Relaxed);
@@ -263,6 +265,9 @@ impl super::Loader {
             // So do its hook and send-call state (pm_hook.rs).
             wm.hooks.forget_thread(vcpu_id);
         }
+        // Mutex semaphores it still owns lose their owner (ERROR_SEM_OWNER_DIED
+        // for the next requester); before its vCPU can go to a new thread.
+        self.shared.sem_mgr.lock_or_recover().owner_ended(vcpu_id, tid);
         let (outcome, memory) = {
             let mut table = self.shared.threads.table.lock_or_recover();
             let ended = table.end(tid);

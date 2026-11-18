@@ -164,18 +164,19 @@
 <!-- kernel -->
 <g id="node9" class="node">
 <title>kernel</title>
-<path fill="#bbdefb" stroke="black" d="M3493.3,-507.33C3493.3,-507.33 2574.7,-507.33 2574.7,-507.33 2568.7,-507.33 2562.7,-501.33 2562.7,-495.33 2562.7,-495.33 2562.7,-464.81 2562.7,-464.81 2562.7,-458.81 2568.7,-452.81 2574.7,-452.81 2574.7,-452.81 3493.3,-452.81 3493.3,-452.81 3499.3,-452.81 3505.3,-458.81 3505.3,-464.81 3505.3,-464.81 3505.3,-495.33 3505.3,-495.33 3505.3,-501.33 3499.3,-507.33 3493.3,-507.33"/>
-<text xml:space="preserve" text-anchor="start" x="2573.5" y="-492.12" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Kernel APIs: DOSCALLS, QUECALLS, MSG, processes and WinStartApp (nesting limit, ADR&#45;0028), CONFIG.SYS THREADS= session limit, IPC, named pipes (ADR&#45;0022), timers</text>
-<text xml:space="preserve" text-anchor="start" x="2917.75" y="-483.97" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/doscalls.rs, loader/stubs.rs, loader/process.rs, loader/ipc.rs</text>
-<text xml:space="preserve" text-anchor="start" x="2907.25" y="-475.97" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/dostimer.rs, loader/modpath.rs, loader/suballoc.rs, loader/cmd.rs</text>
-<text xml:space="preserve" text-anchor="start" x="2905.75" y="-467.97" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/npipe.rs, loader/npipe_dir.rs, loader/npipe_api.rs, loader/inherit.rs</text>
-<text xml:space="preserve" text-anchor="start" x="2875" y="-459.97" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/msgcalls.rs, loader/pm_startapp.rs, loader/config_sys.rs, loader/session_threads.rs</text>
+<path fill="#bbdefb" stroke="black" d="M3493.3,-511.33C3493.3,-511.33 2574.7,-511.33 2574.7,-511.33 2568.7,-511.33 2562.7,-505.33 2562.7,-499.33 2562.7,-499.33 2562.7,-460.81 2562.7,-460.81 2562.7,-454.81 2568.7,-448.81 2574.7,-448.81 2574.7,-448.81 3493.3,-448.81 3493.3,-448.81 3499.3,-448.81 3505.3,-454.81 3505.3,-460.81 3505.3,-460.81 3505.3,-499.33 3505.3,-499.33 3505.3,-505.33 3499.3,-511.33 3493.3,-511.33"/>
+<text xml:space="preserve" text-anchor="start" x="2573.5" y="-496.12" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Kernel APIs: DOSCALLS, QUECALLS, MSG, processes and WinStartApp (nesting limit, ADR&#45;0028), CONFIG.SYS THREADS= session limit, IPC, named pipes (ADR&#45;0022), timers</text>
+<text xml:space="preserve" text-anchor="start" x="2917.75" y="-487.97" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/doscalls.rs, loader/stubs.rs, loader/process.rs, loader/ipc.rs</text>
+<text xml:space="preserve" text-anchor="start" x="2907.25" y="-479.97" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/dostimer.rs, loader/modpath.rs, loader/suballoc.rs, loader/cmd.rs</text>
+<text xml:space="preserve" text-anchor="start" x="2897.12" y="-471.97" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/npipe.rs, loader/npipe_dir.rs, loader/npipe_api.rs, loader/npipe_sem.rs</text>
+<text xml:space="preserve" text-anchor="start" x="2893" y="-463.97" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/inherit.rs, loader/msgcalls.rs, loader/pm_startapp.rs, loader/config_sys.rs</text>
+<text xml:space="preserve" text-anchor="start" x="2988.25" y="-455.97" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/session_threads.rs</text>
 </g>
 <!-- dispatch&#45;&gt;kernel -->
 <g id="edge9" class="edge">
 <title>dispatch&#45;&gt;kernel</title>
-<path fill="none" stroke="#455a64" d="M1591.7,-567.19C1808.34,-558.45 2208.74,-541.06 2550,-519.33 2599.18,-516.2 2651.13,-512.5 2702.04,-508.66"/>
-<polygon fill="#455a64" stroke="#455a64" points="2702.01,-512.17 2711.71,-507.93 2701.48,-505.19 2702.01,-512.17"/>
+<path fill="none" stroke="#455a64" d="M1591.7,-567.19C1808.34,-558.45 2208.74,-541.06 2550,-519.33 2581.93,-517.3 2615.03,-515.02 2648.26,-512.63"/>
+<polygon fill="#455a64" stroke="#455a64" points="2648.3,-516.14 2658.02,-511.92 2647.79,-509.16 2648.3,-516.14"/>
 </g>
 <!-- net_mm -->
 <g id="node12" class="node">
@@ -281,8 +282,8 @@
 <!-- kernel&#45;&gt;nls -->
 <g id="edge16" class="edge">
 <title>kernel&#45;&gt;nls</title>
-<path fill="none" stroke="#455a64" d="M2983.05,-452.34C2949.18,-434.58 2905.21,-411.5 2873.09,-394.65"/>
-<polygon fill="#455a64" stroke="#455a64" points="2874.93,-391.67 2864.44,-390.12 2871.67,-397.86 2874.93,-391.67"/>
+<path fill="none" stroke="#455a64" d="M2975.54,-448.4C2943,-431.33 2903.17,-410.44 2873.42,-394.83"/>
+<polygon fill="#455a64" stroke="#455a64" points="2875.16,-391.79 2864.68,-390.24 2871.91,-397.99 2875.16,-391.79"/>
 </g>
 <!-- vfs -->
 <g id="node11" class="node">
@@ -294,13 +295,13 @@
 <!-- kernel&#45;&gt;vfs -->
 <g id="edge15" class="edge">
 <title>kernel&#45;&gt;vfs</title>
-<path fill="none" stroke="#455a64" d="M2846.18,-452.34C2712.34,-433.29 2535.65,-408.15 2415.92,-391.11"/>
-<polygon fill="#455a64" stroke="#455a64" points="2416.77,-387.69 2406.38,-389.75 2415.78,-394.62 2416.77,-387.69"/>
+<path fill="none" stroke="#455a64" d="M2818,-448.33C2688.36,-429.88 2527.53,-406.99 2416.03,-391.13"/>
+<polygon fill="#455a64" stroke="#455a64" points="2416.62,-387.67 2406.22,-389.73 2415.63,-394.6 2416.62,-387.67"/>
 </g>
 <!-- kernel&#45;&gt;children -->
 <g id="edge17" class="edge">
 <title>kernel&#45;&gt;children</title>
-<path fill="none" stroke="#455a64" d="M3034,-452.68C3034,-431.02 3034,-399.55 3034,-372.05 3034,-372.05 3034,-372.05 3034,-150.51 3034,-100.65 2987.28,-72.06 2938.56,-55.8"/>
+<path fill="none" stroke="#455a64" d="M3034,-448.62C3034,-427.21 3034,-397.88 3034,-372.05 3034,-372.05 3034,-372.05 3034,-150.51 3034,-100.65 2987.28,-72.06 2938.56,-55.8"/>
 <polygon fill="#455a64" stroke="#455a64" points="2939.85,-52.53 2929.26,-52.87 2937.75,-59.21 2939.85,-52.53"/>
 <text xml:space="preserve" text-anchor="middle" x="3211" y="-249.23" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">DosExecPgm / WinStartApp (arguments, environment, inherited handles), named pipes</text>
 </g>

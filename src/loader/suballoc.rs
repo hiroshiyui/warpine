@@ -19,7 +19,9 @@
 //! - `DosSubFreeMem(pOffset, pBlock, size)` returns a block (its size
 //!   rounded up the same way); `ERROR_DOSSUB_OVERLAP` when it overlaps free
 //!   space;
-//! - `DosSubUnsetMem(pOffset)` ends the pool (before its memory is freed).
+//! - `DosSubUnsetMem(pOffset)` ends the pool (before its memory is freed);
+//!   a pool whose memory `DosFreeMem` frees without it ends then
+//!   (`forget_range`), so the memory can hold a new pool later.
 //!
 //! The pool's bookkeeping lives on the host (`SubAllocTable`), never in
 //! guest memory: the 64 control bytes stay reserved but unused, and a guest
@@ -211,6 +213,17 @@ impl SubAllocTable {
             self.pools.remove(&base);
         }
         NO_ERROR
+    }
+
+    /// `DosFreeMem` freed `[start, start + len)`: pools that overlap it end,
+    /// whatever their attach count, so a new pool may be set up there (the
+    /// reference asks for `DosSubUnsetMem` first; a program that skips it
+    /// would otherwise leave a stale pool behind). How many ended.
+    pub fn forget_range(&mut self, start: u32, len: u32) -> usize {
+        let end = start.saturating_add(len);
+        let before = self.pools.len();
+        self.pools.retain(|&b, p| !(b < end && start < b.saturating_add(p.size)));
+        before - self.pools.len()
     }
 
     /// Bytes free in the pool at `base` (tests and tracing).
@@ -411,5 +424,37 @@ mod tests {
         assert_eq!(loader.dos_sub_free_mem(base, base + DOSSUB_CONTROL_SIZE, 16), NO_ERROR);
         assert_eq!(loader.dos_sub_unset_mem(base), NO_ERROR);
         assert_eq!(loader.dos_sub_set_mem(base, DOSSUB_INIT, 0x1000_0000), ERROR_INVALID_PARAMETER);
+    }
+
+    #[test]
+    fn forget_range_ends_overlapping_pools_only() {
+        let mut t = pool(4096);
+        assert_eq!(t.set(BASE, 0, 4096, MEM), NO_ERROR, "attached twice");
+        assert_eq!(t.set(BASE + 8192, DOSSUB_INIT, 4096, MEM), NO_ERROR);
+        assert_eq!(t.forget_range(BASE + 4096, 4096), 0, "between the pools");
+        assert_eq!(t.forget_range(BASE, 4096), 1);
+        assert_eq!(t.free_bytes(BASE), None, "gone whatever its attach count");
+        assert!(t.free_bytes(BASE + 8192).is_some());
+        assert_eq!(t.forget_range(BASE + 8192 + 4000, 8), 1, "any overlap ends it");
+        assert_eq!(t.forget_range(u32::MAX - 4, 100), 0, "no overflow");
+    }
+
+    #[test]
+    fn free_mem_without_unset_ends_the_pool() {
+        let loader = super::super::Loader::new_mock();
+        const PPB: u32 = 0x0000_1000;
+        assert_eq!(loader.dos_alloc_mem(PPB, 8192), NO_ERROR);
+        let base = loader.guest_read::<u32>(PPB).unwrap();
+        assert_eq!(loader.dos_sub_set_mem(base, DOSSUB_INIT, 8192), NO_ERROR);
+        assert_eq!(loader.dos_sub_set_mem(base, DOSSUB_INIT, 8192), ERROR_DOSSUB_OVERLAP);
+        // Freed without DosSubUnsetMem.
+        assert_eq!(loader.dos_free_mem(base), NO_ERROR);
+        assert_eq!(loader.dos_sub_alloc_mem(base, base, 16), ERROR_DOSSUB_CORRUPTED);
+        // The same memory again: a new pool can be set up there.
+        assert_eq!(loader.dos_alloc_mem(PPB, 8192), NO_ERROR);
+        let again = loader.guest_read::<u32>(PPB).unwrap();
+        assert_eq!(again, base, "the freed block is handed out again");
+        assert_eq!(loader.dos_sub_set_mem(again, DOSSUB_INIT, 8192), NO_ERROR);
+        assert_eq!(loader.dos_sub_unset_mem(again), NO_ERROR);
     }
 }

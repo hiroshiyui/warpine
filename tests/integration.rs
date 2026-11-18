@@ -735,6 +735,24 @@ fn test_semaphore_queries() {
     assert_eq!(code, 0, "{out}");
 }
 
+/// semfollow_test: DCE_POSTONE / DCE_AUTORESET, ERROR_SEM_OWNER_DIED for a
+/// mutex whose owner thread ended, ERROR_SEM_BUSY, muxwait wake-ups, pipe
+/// semaphores (DosSetNPipeSem / DosQueryNPipeSemState), and a suballocation
+/// pool freed with DosFreeMem without DosSubUnsetMem.
+#[test]
+fn test_semaphore_pipe_and_suballoc_follow_ups() {
+    const SAMPLE: &str = "samples/semfollow_test/semfollow_test.exe";
+    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    let (out, code) = run_sample(SAMPLE, 60);
+    let checks: Vec<&str> = out.lines()
+        .filter(|l| l.starts_with("semfollow_test: ") && !l.contains(": done")).collect();
+    assert!(checks.len() >= 60, "every check reported:\n{out}");
+    let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
+    assert!(failed.is_empty(), "failed checks: {failed:#?}");
+    assert!(out.contains(&format!("semfollow_test: done {n}/{n}", n = checks.len())), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
 /// kernel2_test: DosEnterCritSec / DosExitCritSec, DosAsyncTimer /
 /// DosStartTimer / DosStopTimer, DosSearchPath, DosQueryModuleName and the
 /// DosSub* suballocator. Drive C is a temporary directory (the sample

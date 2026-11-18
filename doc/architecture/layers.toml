@@ -101,7 +101,7 @@ label = "Kernel APIs: DOSCALLS, QUECALLS, MSG, processes and WinStartApp (nestin
 modules = [
   "loader/doscalls.rs", "loader/stubs.rs", "loader/process.rs", "loader/ipc.rs",
   "loader/dostimer.rs", "loader/modpath.rs", "loader/suballoc.rs", "loader/cmd.rs",
-  "loader/npipe.rs", "loader/npipe_dir.rs", "loader/npipe_api.rs", "loader/inherit.rs", "loader/msgcalls.rs",
+  "loader/npipe.rs", "loader/npipe_dir.rs", "loader/npipe_api.rs", "loader/npipe_sem.rs", "loader/inherit.rs", "loader/msgcalls.rs",
   "loader/pm_startapp.rs", "loader/config_sys.rs", "loader/session_threads.rs",
 ]
 

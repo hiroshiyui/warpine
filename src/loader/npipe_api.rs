@@ -40,7 +40,7 @@ const NP_MESSAGE_HEADER: usize = 2;
 const NP_MAX_READ: u32 = 64 * 1024 * 1024;
 
 impl NpEnd {
-    fn spec(&self) -> &PipeSpec {
+    pub(crate) fn spec(&self) -> &PipeSpec {
         match self {
             NpEnd::Server(i) => &i.pipe.spec,
             NpEnd::Client(c) => &c.spec,
@@ -71,7 +71,7 @@ impl NpEnd {
     /// The connection to read and write, or the error of an end without
     /// one: a server not connected (`ERROR_PIPE_NOT_CONNECTED`, unverified
     /// for DosRead / DosWrite).
-    fn conn(&self) -> Result<Arc<npipe::Conn>, u32> {
+    pub(crate) fn conn(&self) -> Result<Arc<npipe::Conn>, u32> {
         match self {
             NpEnd::Server(i) => i.conn().ok_or(ERROR_PIPE_NOT_CONNECTED),
             NpEnd::Client(c) => Ok(c.conn.clone()),
@@ -99,7 +99,7 @@ impl NpEnd {
         }
     }
 
-    fn may_write(&self, handle_access: u32) -> bool {
+    pub(crate) fn may_write(&self, handle_access: u32) -> bool {
         let a = self.spec().access();
         match self {
             NpEnd::Server(_) => a == NP_ACCESS_OUTBOUND || a == NP_ACCESS_DUPLEX,

@@ -180,8 +180,12 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_nph_state(a[0],a[1])) },
     ApiEntry { ordinal: 248, module: "DOSCALLS", name: "DosQueryNPipeInfo", argc: 4,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_npipe_info(a[0],a[1],a[2],a[3])) },
+    ApiEntry { ordinal: 249, module: "DOSCALLS", name: "DosQueryNPipeSemState", argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_npipe_sem_state(a[0],a[1],a[2])) },
     ApiEntry { ordinal: 250, module: "DOSCALLS", name: "DosSetNPHState",   argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_nph_state(a[0],a[1])) },
+    ApiEntry { ordinal: 251, module: "DOSCALLS", name: "DosSetNPipeSem",   argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_npipe_sem(a[0],a[1],a[2])) },
     ApiEntry { ordinal: 252, module: "DOSCALLS", name: "DosTransactNPipe", argc: 6,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_transact_npipe(a[0],a[1],a[2],a[3],a[4],a[5])) },
     ApiEntry { ordinal: 253, module: "DOSCALLS", name: "DosWaitNPipe",     argc: 2,
@@ -893,7 +897,7 @@ mod tests {
             assert!(!super::STUB_ORDINALS.contains(&ord), "ordinal {ord} is implemented");
         }
         let report = super::compat_report();
-        assert!(report.contains("DOSCALLS  (136 implemented, 4 stub)"), "{report}");
+        assert!(report.contains("DOSCALLS  (138 implemented, 4 stub)"), "{report}");
     }
 
     // ── registry ─────────────────────────────────────────────────────────────

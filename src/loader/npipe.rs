@@ -61,10 +61,16 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// `poll(2)` one descriptor for `events` up to `ms`; true when ready.
 fn poll_fd(fd: RawFd, events: i16, ms: i32) -> bool {
+    poll_revents(fd, events, ms) != 0
+}
+
+/// `poll(2)` one descriptor for `events` up to `ms`; the events that came
+/// (0 on a timeout or an error).
+pub fn poll_revents(fd: RawFd, events: i16, ms: i32) -> i16 {
     let mut p = libc::pollfd { fd, events, revents: 0 };
     // SAFETY: `p` is one valid pollfd for the duration of the call.
     let n = unsafe { libc::poll(&mut p, 1, ms) };
-    n > 0
+    if n > 0 { p.revents } else { 0 }
 }
 
 /// Whether `name` is a local pipe name (`\PIPE\` followed by something).
@@ -321,12 +327,24 @@ pub struct Conn {
     sock: UnixStream,
     rx: Mutex<Rx>,
     tx: Mutex<()>,
+    /// A write found the socket full: a pipe semaphore is posted once
+    /// there is room again (`npipe_sem.rs`).
+    pub write_blocked: std::sync::atomic::AtomicBool,
 }
 
 impl Conn {
     pub fn new(sock: UnixStream) -> std::io::Result<Self> {
         sock.set_nonblocking(true)?;
-        Ok(Conn { sock, rx: Mutex::new(Rx::default()), tx: Mutex::new(()) })
+        Ok(Conn { sock, rx: Mutex::new(Rx::default()), tx: Mutex::new(()),
+                  write_blocked: std::sync::atomic::AtomicBool::new(false) })
+    }
+
+    /// Unread bytes on this end and whether the peer closed or the server
+    /// disconnected (what a pipe semaphore reports).
+    pub fn watch_state(&self) -> (usize, bool) {
+        let mut rx = self.rx.lock_or_recover();
+        self.drain_locked(&mut rx);
+        (rx.bytes, rx.eof || rx.disconnected)
     }
 
     /// A connected pair (tests).
@@ -435,6 +453,7 @@ impl Conn {
                 Ok(n) => off += n,
                 Err(e) if e.kind() == ErrorKind::Interrupted => {}
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    self.write_blocked.store(true, Ordering::Relaxed);
                     if off == 0 && nowait {
                         return Ok(false);
                     }

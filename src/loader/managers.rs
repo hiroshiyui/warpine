@@ -52,8 +52,14 @@ impl MemoryManager {
     }
 
     pub fn free(&mut self, addr: u32) -> bool {
+        self.free_block(addr).is_some()
+    }
+
+    /// Free the block at `addr`; its size (rounded to pages) when it was one.
+    pub fn free_block(&mut self, addr: u32) -> Option<u32> {
         if let Some(idx) = self.allocated.iter().position(|b| b.addr == addr) {
             let block = self.allocated.remove(idx);
+            let size = block._size;
             self.free_list.push(block);
             // Coalesce: if the top free block is at next_free boundary, reclaim it
             self.free_list.sort_by_key(|b| b.addr);
@@ -65,9 +71,9 @@ impl MemoryManager {
                     break;
                 }
             }
-            true
+            Some(size)
         } else {
-            false
+            None
         }
     }
 }

@@ -29,8 +29,6 @@ use super::vfs::*;
 
 /// How often a semaphore wait looks at the process end.
 const SEM_POLL: Duration = Duration::from_millis(100);
-/// How often `DosWaitMuxWaitSem` looks at its semaphores again.
-const MUX_POLL: Duration = Duration::from_millis(10);
 
 /// When a semaphore wait of `msec` ms (`SEM_INDEFINITE_WAIT`: forever) ends.
 fn sem_deadline(msec: u32) -> std::time::Instant {
@@ -1298,12 +1296,15 @@ impl super::Loader {
         }
     }
 
+    /// DosFreeMem (ordinal 304).
     pub fn dos_free_mem(&self, pb: u32) -> u32 {
-        if self.shared.mem_mgr.lock_or_recover().free(pb) {
-            // A shared block's name is free again.
-            self.shared.shmem_mgr.lock_or_recover().remove(pb);
-            NO_ERROR
-        } else { ERROR_INVALID_ADDRESS }
+        let freed = self.shared.mem_mgr.lock_or_recover().free_block(pb);
+        let Some(size) = freed else { return ERROR_INVALID_ADDRESS };
+        // A shared block's name is free again.
+        self.shared.shmem_mgr.lock_or_recover().remove(pb);
+        // So are suballocation pools in it that were never unset.
+        self.shared.suballoc.lock_or_recover().forget_range(pb, size);
+        NO_ERROR
     }
 
     // ── Semaphores (`ipc.rs` holds the model) ──
@@ -1324,19 +1325,26 @@ impl super::Loader {
     }
 
     /// Wait on `cvar` / `guard` until `ready` or `msec` ms
-    /// (`SEM_INDEFINITE_WAIT`: forever) pass; polls the process end.
-    fn wait_sem<'a, T>(&self, cvar: &std::sync::Condvar, mut guard: std::sync::MutexGuard<'a, T>,
+    /// (`SEM_INDEFINITE_WAIT`: forever) pass; polls the process end. While
+    /// it blocks the thread counts among the semaphore's waiters
+    /// (`ERROR_SEM_BUSY` on close); `SemaphoreManager::wake_all` wakes it.
+    fn wait_sem<'a, T: Waiters>(&self, cvar: &std::sync::Condvar, mut guard: std::sync::MutexGuard<'a, T>,
                        msec: u32, mut ready: impl FnMut(&mut T) -> bool) -> Result<std::sync::MutexGuard<'a, T>, u32> {
+        if ready(&mut guard) { return Ok(guard); }
         let deadline = sem_deadline(msec);
-        loop {
-            if ready(&mut guard) { return Ok(guard); }
-            if self.interrupted() { return Err(ERROR_INTERRUPT); }
-            if self.shutting_down() { return Err(ERROR_TIMEOUT); }
+        *guard.waiters_mut() += 1;
+        let result = loop {
+            if self.interrupted() { break Err(ERROR_INTERRUPT); }
+            if self.shutting_down() { break Err(ERROR_TIMEOUT); }
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() { return Err(ERROR_TIMEOUT); }
+            if remaining.is_zero() { break Err(ERROR_TIMEOUT); }
             guard = cvar.wait_timeout(guard, remaining.min(SEM_POLL))
                 .unwrap_or_else(|e| e.into_inner()).0;
-        }
+            if ready(&mut guard) { break Ok(()); }
+        };
+        let w = guard.waiters_mut();
+        *w = w.saturating_sub(1);
+        result.map(|()| guard)
     }
 
     /// DosCreateEventSem (ordinal 324).
@@ -1367,19 +1375,16 @@ impl super::Loader {
 
     /// DosPostEventSem (ordinal 328).
     pub fn dos_post_event_sem(&self, hev: u32) -> u32 {
-        let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_event(hev) else { return ERROR_INVALID_HANDLE };
-        let (lock, cvar) = &*sem_arc;
-        let rc = lock.lock_or_recover().post();
-        cvar.notify_all();
-        rc
+        self.shared.sem_mgr.lock_or_recover().post_event(hev)
     }
 
-    /// DosWaitEventSem (ordinal 329).
+    /// DosWaitEventSem (ordinal 329); a `DCE_POSTONE` / `DCE_AUTORESET`
+    /// semaphore takes its post(s) when it releases the wait.
     pub fn dos_wait_event_sem(&self, hev: u32, msec: u32) -> u32 {
         let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_event(hev) else { return ERROR_INVALID_HANDLE };
         let (lock, cvar) = &*sem_arc;
         match self.wait_sem(cvar, lock.lock_or_recover(), msec, |s| s.posted()) {
-            Ok(_) => NO_ERROR,
+            Ok(mut sem) => { sem.consume(); NO_ERROR }
             Err(e) => e,
         }
     }
@@ -1405,47 +1410,42 @@ impl super::Loader {
         self.shared.sem_mgr.lock_or_recover().close(SemKind::Mutex, hmtx)
     }
 
-    /// DosRequestMutexSem (ordinal 334).
+    /// DosRequestMutexSem (ordinal 334): `ERROR_SEM_OWNER_DIED` (with the
+    /// mutex) when its last owner ended without releasing it.
     pub fn dos_request_mutex_sem(&self, vcpu_id: u32, hmtx: u32, msec: u32) -> u32 {
         let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_mutex(hmtx) else { return ERROR_INVALID_HANDLE };
         let (lock, cvar) = &*sem_arc;
         match self.wait_sem(cvar, lock.lock_or_recover(), msec, |s| s.available_to(vcpu_id)) {
-            Ok(mut sem) => { sem.acquire(vcpu_id); NO_ERROR }
+            Ok(mut sem) => if sem.acquire(vcpu_id) { ERROR_SEM_OWNER_DIED } else { NO_ERROR },
             Err(e) => e,
         }
     }
 
     /// DosReleaseMutexSem (ordinal 335).
     pub fn dos_release_mutex_sem(&self, vcpu_id: u32, hmtx: u32) -> u32 {
-        let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_mutex(hmtx) else { return ERROR_INVALID_HANDLE };
-        let (lock, cvar) = &*sem_arc;
-        let mut sem = lock.lock_or_recover();
-        if sem.owner_vcpu != Some(vcpu_id) { return ERROR_NOT_OWNER; }
-        sem.request_count -= 1;
-        if sem.request_count == 0 {
-            sem.owner_vcpu = None;
-            cvar.notify_all();
-        }
-        NO_ERROR
+        self.shared.sem_mgr.lock_or_recover().release_mutex(hmtx, vcpu_id)
     }
 
     /// DosQueryMutexSem (ordinal 336): owner process and thread and the
-    /// request count (all 0 when unowned).
+    /// request count (all 0 when unowned). An owner that ended without
+    /// releasing it: its process and thread, count 0 (unverified), and
+    /// `ERROR_SEM_OWNER_DIED`.
     pub fn dos_query_mutex_sem(&self, hmtx: u32, ppid: u32, ptid: u32, pul_count: u32) -> u32 {
         let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_mutex(hmtx) else { return ERROR_INVALID_HANDLE };
         if ppid == 0 || ptid == 0 || pul_count == 0 { return ERROR_INVALID_PARAMETER; }
         let own_pid = self.shared.process_id();
-        let (pid, tid, count) = {
+        let (pid, tid, count, rc) = {
             let sem = sem_arc.0.lock_or_recover();
-            match sem.owner_vcpu {
-                Some(v) => (own_pid, super::threads::tid_of_vcpu(v), sem.request_count),
-                None => (0, 0, 0),
+            match (sem.died_tid, sem.owner_vcpu) {
+                (Some(tid), _) => (own_pid, tid, 0, ERROR_SEM_OWNER_DIED),
+                (None, Some(v)) => (own_pid, super::threads::tid_of_vcpu(v), sem.request_count, NO_ERROR),
+                (None, None) => (0, 0, 0, NO_ERROR),
             }
         };
         let written = self.guest_write::<u32>(ppid, pid).is_some()
             && self.guest_write::<u32>(ptid, tid).is_some()
             && self.guest_write::<u32>(pul_count, count).is_some();
-        if written { NO_ERROR } else { ERROR_INVALID_PARAMETER }
+        if written { rc } else { ERROR_INVALID_PARAMETER }
     }
 
     /// Read `count` SEMRECORDs at `ptr`.
@@ -1493,18 +1493,30 @@ impl super::Loader {
 
     /// DosWaitMuxWaitSem (ordinal 340): wait for any or all of the list's
     /// semaphores; `*pulUser` gets the user value of the record that ended
-    /// the wait.
+    /// the wait; `ERROR_SEM_OWNER_DIED` when a mutex it took had lost its
+    /// owner. Blocks on the manager's `SemSignal` (ipc.rs), woken by every
+    /// post, release, ended owner, close and list change, and by
+    /// `SemaphoreManager::wake_all`; the process end is looked at every
+    /// `SEM_POLL` as in `wait_sem`.
     pub fn dos_wait_mux_wait_sem(&self, vcpu_id: u32, hmux: u32, msec: u32, pul_user_ptr: u32) -> u32 {
         let deadline = sem_deadline(msec);
+        let (mux, signal) = {
+            let sm = self.shared.sem_mgr.lock_or_recover();
+            (sm.get_mux(hmux), sm.signal.clone())
+        };
+        let Some(mux) = mux else { return ERROR_INVALID_HANDLE };
+        let mut waiting = None;
         loop {
+            // The generation first: a change after this look wakes the wait.
+            let seen = signal.generation();
             let ready = self.shared.sem_mgr.lock_or_recover().try_mux(hmux, vcpu_id);
             match ready {
                 Err(e) => return e,
-                Ok(Some(user)) => {
+                Ok(Some((user, died))) => {
                     if pul_user_ptr != 0 {
                         self.guest_write::<u32>(pul_user_ptr, user);
                     }
-                    return NO_ERROR;
+                    return if died { ERROR_SEM_OWNER_DIED } else { NO_ERROR };
                 }
                 Ok(None) => {}
             }
@@ -1512,7 +1524,9 @@ impl super::Loader {
             if self.shutting_down() { return ERROR_TIMEOUT; }
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() { return ERROR_TIMEOUT; }
-            thread::sleep(remaining.min(MUX_POLL));
+            // Counted among the list's waiters while blocked (ERROR_SEM_BUSY).
+            waiting.get_or_insert_with(|| MuxWaiting::new(mux.clone()));
+            signal.wait_change(seen, remaining.min(SEM_POLL));
         }
     }
 
@@ -2394,6 +2408,147 @@ mod tests {
         assert_eq!(loader.dos_release_mutex_sem(0, m2), NO_ERROR);
         assert_eq!(loader.dos_release_mutex_sem(0, m2), NO_ERROR, "taken twice: by both waits");
         assert_eq!(loader.dos_release_mutex_sem(0, m2), ERROR_NOT_OWNER);
+    }
+
+    /// Wait until `h` (of `kind`) has `n` blocked threads.
+    fn wait_for_waiters(loader: &Loader, kind: super::SemKind, h: u32, n: u32) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let w = {
+                let sm = loader.shared.sem_mgr.lock_or_recover();
+                match kind {
+                    super::SemKind::Event => sm.get_event(h).unwrap().0.lock_or_recover().waiters,
+                    super::SemKind::Mutex => sm.get_mutex(h).unwrap().0.lock_or_recover().waiters,
+                    super::SemKind::MuxWait => sm.get_mux(h).unwrap().lock_or_recover().waiters,
+                }
+            };
+            if w == n { return; }
+            assert!(std::time::Instant::now() < deadline, "no waiter came");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn test_event_postone_and_autoreset() {
+        let loader = Loader::new_mock();
+        assert_eq!(loader.dos_create_event_sem(0, PH, 0x0002, 0), ERROR_INVALID_PARAMETER);
+        assert_eq!(loader.dos_create_event_sem(0, PH, DCE_POSTONE | DC_SEM_SHARED, 0), NO_ERROR);
+        let one = loader.guest_read::<u32>(PH).unwrap();
+        assert_eq!(loader.dos_create_event_sem(0, PH, DCE_AUTORESET, 0), NO_ERROR);
+        let auto = loader.guest_read::<u32>(PH).unwrap();
+        let count = |h: u32| { loader.dos_query_event_sem(h, PUL); loader.guest_read::<u32>(PUL).unwrap() };
+        // DCE_POSTONE: each post releases one wait.
+        assert_eq!(loader.dos_post_event_sem(one), NO_ERROR);
+        assert_eq!(loader.dos_post_event_sem(one), ERROR_ALREADY_POSTED);
+        assert_eq!(loader.dos_wait_event_sem(one, 0), NO_ERROR);
+        assert_eq!(count(one), 1);
+        assert_eq!(loader.dos_wait_event_sem(one, 0), NO_ERROR);
+        assert_eq!(loader.dos_wait_event_sem(one, 0), ERROR_TIMEOUT);
+        // DCE_AUTORESET: a released wait resets it.
+        loader.dos_post_event_sem(auto);
+        loader.dos_post_event_sem(auto);
+        assert_eq!(loader.dos_wait_event_sem(auto, 0), NO_ERROR);
+        assert_eq!(count(auto), 0);
+        assert_eq!(loader.dos_wait_event_sem(auto, 0), ERROR_TIMEOUT);
+        // A plain event stays posted.
+        let plain = new_event(&loader, true);
+        assert_eq!(loader.dos_wait_event_sem(plain, 0), NO_ERROR);
+        assert_eq!(count(plain), 1);
+        // In a muxwait list the event that ends the wait takes its post.
+        let any = new_mux(&loader, &[(one, 1), (auto, 2)], DCMW_WAIT_ANY);
+        loader.dos_post_event_sem(auto);
+        assert_eq!(loader.dos_wait_mux_wait_sem(0, any, 0, PUL), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(PUL), Some(2));
+        assert_eq!(loader.dos_wait_mux_wait_sem(0, any, 0, PUL), ERROR_TIMEOUT);
+    }
+
+    #[test]
+    fn test_mutex_owner_died() {
+        let loader = Loader::new_mock();
+        let m = new_mutex(&loader, Some(3));
+        assert_eq!(loader.dos_request_mutex_sem(3, m, 0), NO_ERROR);
+        assert_eq!(loader.shared.sem_mgr.lock_or_recover().owner_ended(4, 4), 0, "not the owner");
+        assert_eq!(loader.shared.sem_mgr.lock_or_recover().owner_ended(3, 3), 1);
+        const PPID: u32 = 0x2010;
+        const PTID: u32 = 0x2014;
+        assert_eq!(loader.dos_query_mutex_sem(m, PPID, PTID, PUL), ERROR_SEM_OWNER_DIED);
+        assert_eq!(loader.guest_read::<u32>(PTID), Some(3), "the dead owner");
+        assert_eq!(loader.guest_read::<u32>(PUL), Some(0));
+        // A new thread on the dead owner's vCPU does not own it.
+        assert_eq!(loader.dos_release_mutex_sem(3, m), ERROR_NOT_OWNER);
+        // The next request gets it, once with ERROR_SEM_OWNER_DIED.
+        assert_eq!(loader.dos_request_mutex_sem(5, m, 0), ERROR_SEM_OWNER_DIED);
+        assert_eq!(loader.dos_query_mutex_sem(m, PPID, PTID, PUL), NO_ERROR);
+        assert_eq!((loader.guest_read::<u32>(PTID), loader.guest_read::<u32>(PUL)), (Some(5), Some(1)));
+        assert_eq!(loader.dos_request_mutex_sem(5, m, 0), NO_ERROR);
+        assert_eq!(loader.dos_release_mutex_sem(5, m), NO_ERROR);
+        assert_eq!(loader.dos_release_mutex_sem(5, m), NO_ERROR);
+        // Muxwait lists of mutexes report it too.
+        let (m1, m2) = (new_mutex(&loader, Some(6)), new_mutex(&loader, Some(7)));
+        let all = new_mux(&loader, &[(m1, 1), (m2, 2)], DCMW_WAIT_ALL);
+        loader.shared.sem_mgr.lock_or_recover().owner_ended(6, 6);
+        assert_eq!(loader.dos_wait_mux_wait_sem(0, all, 0, PUL), ERROR_TIMEOUT, "m2 still owned");
+        assert_eq!(loader.dos_release_mutex_sem(7, m2), NO_ERROR);
+        assert_eq!(loader.dos_wait_mux_wait_sem(0, all, 0, PUL), ERROR_SEM_OWNER_DIED);
+        assert_eq!(loader.guest_read::<u32>(PUL), Some(2));
+        assert_eq!(loader.dos_release_mutex_sem(0, m1), NO_ERROR, "taken all the same");
+    }
+
+    #[test]
+    fn test_owner_died_wakes_a_waiter() {
+        let loader = Loader::new_mock();
+        let m = new_mutex(&loader, Some(3));
+        std::thread::scope(|s| {
+            let waiter = s.spawn(|| loader.dos_request_mutex_sem(4, m, u32::MAX));
+            wait_for_waiters(&loader, super::SemKind::Mutex, m, 1);
+            assert_eq!(loader.dos_close_mutex_sem(m), ERROR_SEM_BUSY);
+            loader.shared.sem_mgr.lock_or_recover().owner_ended(3, 3);
+            assert_eq!(waiter.join().unwrap(), ERROR_SEM_OWNER_DIED);
+        });
+        assert_eq!(loader.dos_release_mutex_sem(4, m), NO_ERROR);
+        assert_eq!(loader.dos_close_mutex_sem(m), NO_ERROR, "an owned mutex closes");
+    }
+
+    #[test]
+    fn test_close_busy_while_a_thread_waits() {
+        let loader = Loader::new_mock();
+        let ev = new_event(&loader, false);
+        let mux = new_mux(&loader, &[(ev, 9)], DCMW_WAIT_ANY);
+        std::thread::scope(|s| {
+            let on_event = s.spawn(|| loader.dos_wait_event_sem(ev, u32::MAX));
+            let on_mux = s.spawn(|| {
+                let rc = loader.dos_wait_mux_wait_sem(1, mux, u32::MAX, 0);
+                (rc, std::time::Instant::now())
+            });
+            wait_for_waiters(&loader, super::SemKind::Event, ev, 1);
+            wait_for_waiters(&loader, super::SemKind::MuxWait, mux, 1);
+            assert_eq!(loader.dos_close_event_sem(ev), ERROR_SEM_BUSY);
+            assert_eq!(loader.dos_close_mux_wait_sem(mux), ERROR_SEM_BUSY);
+            let posted = std::time::Instant::now();
+            assert_eq!(loader.dos_post_event_sem(ev), NO_ERROR);
+            assert_eq!(on_event.join().unwrap(), NO_ERROR);
+            let (rc, woke) = on_mux.join().unwrap();
+            assert_eq!(rc, NO_ERROR);
+            assert!(woke.duration_since(posted) < std::time::Duration::from_secs(5));
+        });
+        assert_eq!(loader.dos_close_mux_wait_sem(mux), NO_ERROR);
+        assert_eq!(loader.dos_close_event_sem(ev), NO_ERROR);
+    }
+
+    #[test]
+    fn test_wait_all_mutexes_woken_by_release() {
+        let loader = Loader::new_mock();
+        let (m1, m2) = (new_mutex(&loader, Some(3)), new_mutex(&loader, Some(4)));
+        let all = new_mux(&loader, &[(m1, 1), (m2, 2)], DCMW_WAIT_ALL);
+        std::thread::scope(|s| {
+            let waiter = s.spawn(|| loader.dos_wait_mux_wait_sem(5, all, u32::MAX, 0));
+            wait_for_waiters(&loader, super::SemKind::MuxWait, all, 1);
+            assert_eq!(loader.dos_release_mutex_sem(3, m1), NO_ERROR);
+            assert_eq!(loader.dos_release_mutex_sem(4, m2), NO_ERROR);
+            assert_eq!(waiter.join().unwrap(), NO_ERROR);
+        });
+        assert_eq!(loader.dos_release_mutex_sem(5, m1), NO_ERROR);
+        assert_eq!(loader.dos_release_mutex_sem(5, m2), NO_ERROR);
     }
 
     // ── Queue ─────────────────────────────────────────────────────────────────

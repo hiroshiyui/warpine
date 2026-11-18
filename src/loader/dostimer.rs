@@ -109,11 +109,7 @@ impl DosTimerTable {
 
 /// Post event semaphore `hsem`; false when it no longer exists.
 fn post(shared: &SharedState, hsem: u32) -> bool {
-    let Some(sem) = shared.sem_mgr.lock_or_recover().get_event(hsem) else { return false };
-    let (lock, cvar) = &*sem;
-    lock.lock_or_recover().post();
-    cvar.notify_all();
-    true
+    shared.sem_mgr.lock_or_recover().post_event(hsem) != ERROR_INVALID_HANDLE
 }
 
 /// Sleep until `deadline`, waking for the stop signal and to look at the

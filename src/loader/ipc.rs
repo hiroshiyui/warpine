@@ -19,22 +19,71 @@
 //! - named semaphores start with `\SEM32\` (`ERROR_INVALID_NAME`), are
 //!   unique (`ERROR_DUPLICATE_NAME`) and shared; opening one by name or
 //!   handle adds to its usage count, closing takes from it and the last
-//!   close deletes the semaphore.
+//!   close deletes the semaphore;
+//! - closing a semaphore another thread is blocked on fails with
+//!   `ERROR_SEM_BUSY` (EDM2: "Another thread in this process is blocked on
+//!   the semaphore"); an owned mutex nobody waits for closes (the
+//!   reference does not call it busy);
+//! - a mutex whose owner thread ended without releasing it is left in the
+//!   "owner died" state: `DosQueryMutexSem` reports the dead owner with
+//!   `ERROR_SEM_OWNER_DIED`, and the next `DosRequestMutexSem` — or
+//!   `DosWaitMuxWaitSem` that takes it — gets the mutex and
+//!   `ERROR_SEM_OWNER_DIED`. The reference describes this for a process
+//!   end; for a thread that ends while the process goes on, that the next
+//!   requester becomes the owner and the state clears is Warpine's reading
+//!   (unverified);
+//! - `DCE_POSTONE` / `DCE_AUTORESET` (`DosCreateEventSem`, `<bsedos.h>`)
+//!   are named by the toolkit headers but described by no public reference
+//!   Warpine has; Warpine's reading (unverified): a wait released by a
+//!   `DCE_AUTORESET` semaphore resets it, so one post releases one waiter;
+//!   with `DCE_POSTONE` every released wait takes one post, so each post
+//!   releases one waiter. Other flag bits are `ERROR_INVALID_PARAMETER`.
+//!
+//! Waking waiters: event and mutex waits block on their semaphore's own
+//! condition variable. A muxwait wait cannot block on several, so every
+//! change a muxwait list may wait for — a post, a release, an owner that
+//! ended, a semaphore deleted, a record added or deleted — also bumps the
+//! manager's `SemSignal` generation, and muxwait waiters block on that. A
+//! waiter reads the generation before it looks at its list, so a change
+//! between the look and the wait is never lost. `SemaphoreManager::wake_all`
+//! wakes every waiter (event, mutex, muxwait) so that it looks at its stop
+//! conditions again: whatever ends a thread or the process sets its flag
+//! and then calls it.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Condvar};
+use std::time::Duration;
 use super::constants::*;
 use super::mutex_ext::MutexExt;
 
 /// The longest semaphore name, `\SEM32\` included.
 const MAX_SEM_NAME: usize = 255;
+/// The `DosCreateEventSem` flags.
+const EVENT_FLAGS: u32 = DC_SEM_SHARED | DCE_POSTONE | DCE_AUTORESET;
+
+/// A semaphore that counts the threads blocked on it (`ERROR_SEM_BUSY`).
+pub trait Waiters {
+    fn waiters_mut(&mut self) -> &mut u32;
+}
 
 pub struct EventSemaphore {
     /// Posts since the last reset.
     pub post_count: u32,
+    /// Its `DCE_POSTONE` / `DCE_AUTORESET` flags.
+    pub flags: u32,
+    /// Threads in `DosWaitEventSem` on it.
+    pub waiters: u32,
+}
+
+impl Waiters for EventSemaphore {
+    fn waiters_mut(&mut self) -> &mut u32 { &mut self.waiters }
 }
 
 impl EventSemaphore {
+    pub fn new(posted: bool, flags: u32) -> Self {
+        EventSemaphore { post_count: posted as u32, flags: flags & (DCE_POSTONE | DCE_AUTORESET), waiters: 0 }
+    }
+
     pub fn posted(&self) -> bool { self.post_count > 0 }
 
     /// `DosPostEventSem`: one more post.
@@ -53,6 +102,16 @@ impl EventSemaphore {
         }
         Ok(std::mem::take(&mut self.post_count))
     }
+
+    /// A wait was released by the semaphore: `DCE_POSTONE` takes one post,
+    /// `DCE_AUTORESET` all of them, a plain event stays posted.
+    pub fn consume(&mut self) {
+        if self.flags & DCE_POSTONE != 0 {
+            self.post_count = self.post_count.saturating_sub(1);
+        } else if self.flags & DCE_AUTORESET != 0 {
+            self.post_count = 0;
+        }
+    }
 }
 
 pub struct MutexSemaphore {
@@ -60,22 +119,100 @@ pub struct MutexSemaphore {
     pub owner_vcpu: Option<u32>,
     /// Requests less releases by the owner.
     pub request_count: u32,
+    /// The owner ended without releasing the mutex: its thread id, kept
+    /// for `DosQueryMutexSem` (its vCPU may run another thread by now).
+    pub died_tid: Option<u32>,
+    /// Threads in `DosRequestMutexSem` on it.
+    pub waiters: u32,
+}
+
+impl Waiters for MutexSemaphore {
+    fn waiters_mut(&mut self) -> &mut u32 { &mut self.waiters }
 }
 
 impl MutexSemaphore {
+    pub fn new(owner: Option<u32>) -> Self {
+        MutexSemaphore { owner_vcpu: owner, request_count: owner.is_some() as u32, died_tid: None, waiters: 0 }
+    }
+
     /// Whether thread `vcpu` can take the mutex without waiting.
     pub fn available_to(&self, vcpu: u32) -> bool {
-        self.owner_vcpu.is_none_or(|o| o == vcpu)
+        self.died_tid.is_some() || self.owner_vcpu.is_none_or(|o| o == vcpu)
+    }
+
+    /// Whether thread `vcpu` owns the mutex (a new thread on a dead owner's
+    /// reused vCPU does not).
+    pub fn owned_by(&self, vcpu: u32) -> bool {
+        self.died_tid.is_none() && self.owner_vcpu == Some(vcpu)
     }
 
     /// Take (or take again) the mutex for `vcpu`; it must be available.
-    pub fn acquire(&mut self, vcpu: u32) {
+    /// True when its last owner had died (`ERROR_SEM_OWNER_DIED`).
+    pub fn acquire(&mut self, vcpu: u32) -> bool {
+        if self.died_tid.take().is_some() {
+            self.owner_vcpu = Some(vcpu);
+            self.request_count = 1;
+            return true;
+        }
         if self.owner_vcpu == Some(vcpu) {
             self.request_count += 1;
         } else {
             self.owner_vcpu = Some(vcpu);
             self.request_count = 1;
         }
+        false
+    }
+
+    /// `DosReleaseMutexSem` by `vcpu`; true when the mutex is free now.
+    pub fn release(&mut self, vcpu: u32) -> Result<bool, u32> {
+        if !self.owned_by(vcpu) {
+            return Err(ERROR_NOT_OWNER);
+        }
+        self.request_count -= 1;
+        if self.request_count == 0 {
+            self.owner_vcpu = None;
+        }
+        Ok(self.request_count == 0)
+    }
+
+    /// Thread `vcpu` (thread id `tid`) ended: a mutex it owned goes to the
+    /// owner-died state. True when it owned this one.
+    pub fn owner_ended(&mut self, vcpu: u32, tid: u32) -> bool {
+        if !self.owned_by(vcpu) {
+            return false;
+        }
+        self.died_tid = Some(tid);
+        self.request_count = 0;
+        true
+    }
+}
+
+/// The generation counter muxwait waiters block on (see the module notes).
+/// Its lock is a leaf: nothing else is locked while it is held.
+#[derive(Default)]
+pub struct SemSignal {
+    generation: Mutex<u64>,
+    cond: Condvar,
+}
+
+impl SemSignal {
+    /// The current generation; read it before looking at the semaphores.
+    pub fn generation(&self) -> u64 {
+        *self.generation.lock_or_recover()
+    }
+
+    /// Something a muxwait list may wait for changed: wake its waiters.
+    pub fn bump(&self) {
+        let mut g = self.generation.lock_or_recover();
+        *g = g.wrapping_add(1);
+        self.cond.notify_all();
+    }
+
+    /// Block until the generation is no longer `seen` or `timeout` passes.
+    pub fn wait_change(&self, seen: u64, timeout: Duration) {
+        let g = self.generation.lock_or_recover();
+        drop(self.cond.wait_timeout_while(g, timeout, |g| *g == seen)
+            .unwrap_or_else(|e| e.into_inner()));
     }
 }
 
@@ -99,11 +236,30 @@ pub struct MuxWaitSemaphore {
     /// The kind of the semaphores in the list (`None` while it is empty).
     pub kind: Option<SemKind>,
     pub wait_all: bool,
+    /// Threads in `DosWaitMuxWaitSem` on it.
+    pub waiters: u32,
 }
 
 pub type EventArc = Arc<(Mutex<EventSemaphore>, Condvar)>;
 pub type MutexArc = Arc<(Mutex<MutexSemaphore>, Condvar)>;
 pub type MuxArc = Arc<Mutex<MuxWaitSemaphore>>;
+
+/// Counts a thread among a muxwait semaphore's waiters while it lives.
+pub struct MuxWaiting(MuxArc);
+
+impl MuxWaiting {
+    pub fn new(mux: MuxArc) -> Self {
+        mux.lock_or_recover().waiters += 1;
+        MuxWaiting(mux)
+    }
+}
+
+impl Drop for MuxWaiting {
+    fn drop(&mut self) {
+        let mut m = self.0.lock_or_recover();
+        m.waiters = m.waiters.saturating_sub(1);
+    }
+}
 
 enum SemObject {
     Event(EventArc),
@@ -117,6 +273,15 @@ impl SemObject {
             SemObject::Event(_) => SemKind::Event,
             SemObject::Mutex(_) => SemKind::Mutex,
             SemObject::MuxWait(_) => SemKind::MuxWait,
+        }
+    }
+
+    /// Threads blocked on the semaphore.
+    fn waiters(&self) -> u32 {
+        match self {
+            SemObject::Event(a) => a.0.lock_or_recover().waiters,
+            SemObject::Mutex(a) => a.0.lock_or_recover().waiters,
+            SemObject::MuxWait(a) => a.lock_or_recover().waiters,
         }
     }
 }
@@ -133,6 +298,9 @@ struct SemEntry {
 pub struct SemaphoreManager {
     sems: HashMap<u32, SemEntry>,
     next_handle: u32,
+    /// Wakes muxwait waiters; cloned out and waited on without this
+    /// manager's lock.
+    pub signal: Arc<SemSignal>,
 }
 
 impl Default for SemaphoreManager {
@@ -141,7 +309,7 @@ impl Default for SemaphoreManager {
 
 impl SemaphoreManager {
     pub fn new() -> Self {
-        SemaphoreManager { sems: HashMap::new(), next_handle: 1 }
+        SemaphoreManager { sems: HashMap::new(), next_handle: 1, signal: Arc::default() }
     }
 
     /// Check a new semaphore's name: `\SEM32\…`, not too long, not in use.
@@ -166,16 +334,19 @@ impl SemaphoreManager {
         Ok(h)
     }
 
-    /// `DosCreateEventSem`.
+    /// `DosCreateEventSem`: `DC_SEM_SHARED`, `DCE_POSTONE`, `DCE_AUTORESET`.
     pub fn create_event(&mut self, name: Option<&str>, attr: u32, posted: bool) -> Result<u32, u32> {
-        let sem = EventSemaphore { post_count: posted as u32 };
+        if attr & !EVENT_FLAGS != 0 {
+            return Err(ERROR_INVALID_PARAMETER);
+        }
+        let sem = EventSemaphore::new(posted, attr);
         self.insert(name, attr, SemObject::Event(Arc::new((Mutex::new(sem), Condvar::new()))))
     }
 
     /// `DosCreateMutexSem`; `owner` is the creating thread's vCPU when it
     /// is created owned.
     pub fn create_mutex(&mut self, name: Option<&str>, attr: u32, owner: Option<u32>) -> Result<u32, u32> {
-        let sem = MutexSemaphore { owner_vcpu: owner, request_count: owner.is_some() as u32 };
+        let sem = MutexSemaphore::new(owner);
         self.insert(name, attr, SemObject::Mutex(Arc::new((Mutex::new(sem), Condvar::new()))))
     }
 
@@ -183,7 +354,7 @@ impl SemaphoreManager {
     pub fn create_mux(&mut self, name: Option<&str>, attr: u32, records: &[MuxWaitRecord]) -> Result<u32, u32> {
         let wait_all = check_mux_attr(attr)?;
         let kind = self.check_records(None, &[], records)?;
-        let mux = MuxWaitSemaphore { records: records.to_vec(), kind, wait_all };
+        let mux = MuxWaitSemaphore { records: records.to_vec(), kind, wait_all, waiters: 0 };
         self.insert(name, attr, SemObject::MuxWait(Arc::new(Mutex::new(mux))))
     }
 
@@ -263,15 +434,81 @@ impl SemaphoreManager {
     }
 
     /// `DosClose*Sem`: one use less; the last one deletes the semaphore.
+    /// `ERROR_SEM_BUSY` while another thread is blocked on it.
     pub fn close(&mut self, kind: SemKind, h: u32) -> u32 {
         let Some(entry) = self.sems.get_mut(&h).filter(|e| e.object.kind() == kind) else {
             return ERROR_INVALID_HANDLE;
         };
+        if entry.object.waiters() > 0 {
+            return ERROR_SEM_BUSY;
+        }
         entry.opens -= 1;
         if entry.opens == 0 {
             self.sems.remove(&h);
+            // A muxwait wait on a list that holds it fails now.
+            self.signal.bump();
         }
         NO_ERROR
+    }
+
+    /// `DosPostEventSem` (and the posts of timers and pipes): one post,
+    /// waiters woken.
+    pub fn post_event(&self, h: u32) -> u32 {
+        let Some(sem) = self.get_event(h) else { return ERROR_INVALID_HANDLE };
+        let rc = {
+            let (lock, cvar) = &*sem;
+            let rc = lock.lock_or_recover().post();
+            cvar.notify_all();
+            rc
+        };
+        self.signal.bump();
+        rc
+    }
+
+    /// `DosReleaseMutexSem` by thread `vcpu`.
+    pub fn release_mutex(&self, h: u32, vcpu: u32) -> u32 {
+        let Some(sem) = self.get_mutex(h) else { return ERROR_INVALID_HANDLE };
+        let freed = match sem.0.lock_or_recover().release(vcpu) {
+            Ok(freed) => freed,
+            Err(e) => return e,
+        };
+        if freed {
+            sem.1.notify_all();
+            self.signal.bump();
+        }
+        NO_ERROR
+    }
+
+    /// Thread `vcpu` (thread id `tid`) ended: every mutex it owned goes to
+    /// the owner-died state and its waiters are woken. How many it owned.
+    pub fn owner_ended(&self, vcpu: u32, tid: u32) -> usize {
+        let mut n = 0;
+        for e in self.sems.values() {
+            if let SemObject::Mutex(a) = &e.object && a.0.lock_or_recover().owner_ended(vcpu, tid) {
+                n += 1;
+                a.1.notify_all();
+            }
+        }
+        if n > 0 {
+            self.signal.bump();
+        }
+        n
+    }
+
+    /// Wake every thread blocked on a semaphore of this process, so that it
+    /// looks at its stop conditions again (a thread or the process ending:
+    /// set the flag first, then call this). Each semaphore's lock is held
+    /// while it is notified, so a waiter between its check and its wait is
+    /// not missed.
+    pub fn wake_all(&self) {
+        for e in self.sems.values() {
+            match &e.object {
+                SemObject::Event(a) => { let _g = a.0.lock_or_recover(); a.1.notify_all(); }
+                SemObject::Mutex(a) => { let _g = a.0.lock_or_recover(); a.1.notify_all(); }
+                SemObject::MuxWait(_) => {}
+            }
+        }
+        self.signal.bump();
     }
 
     /// `DosAddMuxWaitSem`.
@@ -282,6 +519,8 @@ impl SemaphoreManager {
             Ok(kind) => {
                 mux.kind = kind;
                 mux.records.push(rec);
+                drop(mux);
+                self.signal.bump();
                 NO_ERROR
             }
             Err(e) => e,
@@ -302,6 +541,9 @@ impl SemaphoreManager {
         if mux.records.is_empty() {
             mux.kind = None;
         }
+        drop(mux);
+        // A wait for all of them may be complete now.
+        self.signal.bump();
         NO_ERROR
     }
 
@@ -315,11 +557,13 @@ impl SemaphoreManager {
     }
 
     /// One look at muxwait semaphore `hmux` for thread `vcpu`: the user
-    /// value of the record that ends the wait (the mutexes waited for are
-    /// then taken), or `None` to wait on. Waiting for any semaphore takes
-    /// the first ready one in list order; waiting for all returns the last
-    /// record's user value.
-    pub fn try_mux(&self, hmux: u32, vcpu: u32) -> Result<Option<u32>, u32> {
+    /// value of the record that ends the wait and whether a mutex it took
+    /// had lost its owner (`ERROR_SEM_OWNER_DIED`), or `None` to wait on.
+    /// The mutexes waited for are taken, and `DCE_POSTONE` /
+    /// `DCE_AUTORESET` events that end the wait consume their posts.
+    /// Waiting for any semaphore takes the first ready one in list order;
+    /// waiting for all returns the last record's user value.
+    pub fn try_mux(&self, hmux: u32, vcpu: u32) -> Result<Option<(u32, bool)>, u32> {
         let mux = self.get_mux(hmux).ok_or(ERROR_INVALID_HANDLE)?;
         let mux = mux.lock_or_recover();
         let Some(last) = mux.records.last() else { return Err(ERROR_EMPTY_MUXWAIT) };
@@ -330,22 +574,25 @@ impl SemaphoreManager {
             let mut guards: Vec<_> = arcs.iter().map(|a| a.0.lock_or_recover()).collect();
             if mux.wait_all {
                 if !guards.iter().all(|g| g.available_to(vcpu)) { return Ok(None) }
-                guards.iter_mut().for_each(|g| g.acquire(vcpu));
-                return Ok(Some(last.user));
+                let died = guards.iter_mut().fold(false, |died, g| g.acquire(vcpu) | died);
+                return Ok(Some((last.user, died)));
             }
             let Some(i) = guards.iter().position(|g| g.available_to(vcpu)) else { return Ok(None) };
-            guards[i].acquire(vcpu);
-            return Ok(Some(mux.records[i].user));
+            let died = guards[i].acquire(vcpu);
+            return Ok(Some((mux.records[i].user, died)));
         }
-        let posted = mux.records.iter()
-            .map(|r| self.get_event(r.hsem).ok_or(ERROR_INVALID_HANDLE)
-                .map(|a| a.0.lock_or_recover().posted()))
+        let arcs = mux.records.iter()
+            .map(|r| self.get_event(r.hsem).ok_or(ERROR_INVALID_HANDLE))
             .collect::<Result<Vec<_>, _>>()?;
+        let mut guards: Vec<_> = arcs.iter().map(|a| a.0.lock_or_recover()).collect();
         if mux.wait_all {
-            Ok(posted.iter().all(|&p| p).then_some(last.user))
-        } else {
-            Ok(posted.iter().position(|&p| p).map(|i| mux.records[i].user))
+            if !guards.iter().all(|g| g.posted()) { return Ok(None) }
+            guards.iter_mut().for_each(|g| g.consume());
+            return Ok(Some((last.user, false)));
         }
+        let Some(i) = guards.iter().position(|g| g.posted()) else { return Ok(None) };
+        guards[i].consume();
+        Ok(Some((mux.records[i].user, false)))
     }
 }
 
@@ -412,5 +659,79 @@ impl QueueManager {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    fn signal_wait_ends_on_a_bump() {
+        let signal = Arc::new(SemSignal::default());
+        let seen = signal.generation();
+        let s2 = signal.clone();
+        let t = std::thread::spawn(move || {
+            let start = Instant::now();
+            s2.wait_change(seen, Duration::from_secs(30));
+            start.elapsed()
+        });
+        std::thread::sleep(Duration::from_millis(20));
+        signal.bump();
+        assert!(t.join().unwrap() < Duration::from_secs(10));
+        // A bump between the look and the wait is not lost.
+        let seen = signal.generation();
+        signal.bump();
+        let start = Instant::now();
+        signal.wait_change(seen, Duration::from_secs(30));
+        assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn changes_bump_the_signal() {
+        let mut sm = SemaphoreManager::new();
+        let ev = sm.create_event(None, 0, false).unwrap();
+        let m = sm.create_mutex(None, 0, Some(1)).unwrap();
+        let mux = sm.create_mux(None, DCMW_WAIT_ANY, &[MuxWaitRecord { hsem: ev, user: 1 }]).unwrap();
+        let mut g = sm.signal.generation();
+        let mut bumped = |sm: &SemaphoreManager| {
+            let now = sm.signal.generation();
+            let b = now != g;
+            g = now;
+            b
+        };
+        sm.post_event(ev);
+        assert!(bumped(&sm), "post");
+        assert_eq!(sm.release_mutex(m, 2), ERROR_NOT_OWNER);
+        assert!(!bumped(&sm), "a failed release");
+        assert_eq!(sm.release_mutex(m, 1), NO_ERROR);
+        assert!(bumped(&sm), "release");
+        sm.delete_mux_record(mux, ev);
+        assert!(bumped(&sm), "record deleted");
+        sm.add_mux_record(mux, MuxWaitRecord { hsem: ev, user: 1 });
+        assert!(bumped(&sm), "record added");
+        sm.wake_all();
+        assert!(bumped(&sm), "wake_all");
+        assert_eq!(sm.owner_ended(1, 1), 0);
+        assert!(!bumped(&sm), "no mutex owned");
+        assert_eq!(sm.close(SemKind::MuxWait, mux), NO_ERROR);
+        assert!(bumped(&sm), "deleted");
+    }
+
+    #[test]
+    fn mutex_owner_died_state() {
+        let mut m = MutexSemaphore::new(Some(7));
+        assert!(!m.acquire(7));
+        assert_eq!(m.request_count, 2);
+        assert!(m.owner_ended(7, 7));
+        assert!(!m.owner_ended(7, 7), "only once");
+        assert!(m.available_to(9) && !m.owned_by(7));
+        assert_eq!(m.release(7), Err(ERROR_NOT_OWNER));
+        assert!(m.acquire(9), "the next owner hears of it");
+        assert!(!m.acquire(9));
+        assert_eq!(m.release(9), Ok(false));
+        assert_eq!(m.release(9), Ok(true));
+        assert_eq!(m.owner_vcpu, None);
     }
 }

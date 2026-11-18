@@ -59,7 +59,9 @@ DOSCALLS.243  DosCreateNPipe
 DOSCALLS.244  DosPeekNPipe
 DOSCALLS.245  DosQueryNPHState
 DOSCALLS.248  DosQueryNPipeInfo
+DOSCALLS.249  DosQueryNPipeSemState
 DOSCALLS.250  DosSetNPHState
+DOSCALLS.251  DosSetNPipeSem
 DOSCALLS.252  DosTransactNPipe
 DOSCALLS.253  DosWaitNPipe
 DOSCALLS.254  DosResetBuffer

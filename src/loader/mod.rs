@@ -85,6 +85,7 @@ pub mod tcpip;
 pub mod npipe;
 mod npipe_dir;
 mod npipe_api;
+mod npipe_sem;
 pub mod inherit;
 pub mod config_sys;
 pub mod session_threads;
@@ -350,6 +351,11 @@ pub(crate) enum ApiResult {
 ///   are always acquired *after* their parent manager and released *before*
 ///   acquiring any other SharedState mutex.
 /// - Release locks before blocking (condvar wait, thread join, sleep).
+/// - `sem_mgr` may lock, inside, the semaphore objects and then the
+///   `SemSignal` generation lock (`ipc.rs`), which is a leaf; muxwait
+///   waiters block on `SemSignal` holding nothing else.
+/// - `pipe_sems` is taken alone (no other `SharedState` lock held or taken
+///   inside it); its watcher threads lock `sem_mgr` only after releasing it.
 pub struct SharedState {
     pub mem_mgr: Mutex<MemoryManager>,
     pub handle_mgr: Mutex<HandleManager>,
@@ -376,6 +382,9 @@ pub struct SharedState {
     pub socket_mgr: Mutex<tcpip::SocketManager>,
     /// Named pipes served by this process and the session's pipe directory.
     pub npipes: Mutex<npipe::NamedPipes>,
+    /// Semaphores attached to named-pipe ends (`npipe_sem.rs`); taken alone,
+    /// with no other `SharedState` lock held or taken inside it.
+    pub pipe_sems: Mutex<npipe_sem::PipeSemTable>,
     /// Command line and environment the process was started with.
     pub startup: Mutex<inherit::StartupInfo>,
     /// Executable name as provided on the command line
@@ -502,6 +511,7 @@ impl Loader {
             uconv_mgr: Mutex::new(uconv::UconvManager::new()),
             socket_mgr: Mutex::new(tcpip::SocketManager::new()),
             npipes: Mutex::new(npipe::NamedPipes::new(npipe::PipeDir::from_env())),
+            pipe_sems: Default::default(),
             startup: Mutex::new(startup),
             exe_name: Mutex::new(String::new()),
             guest_mem,
@@ -603,6 +613,7 @@ impl Loader {
             uconv_mgr:    Mutex::new(uconv::UconvManager::new()),
             socket_mgr:   Mutex::new(tcpip::SocketManager::new()),
             npipes:       Default::default(),
+            pipe_sems:    Default::default(),
             startup:      Default::default(),
             exe_name:     Mutex::new(String::new()),
             guest_mem,

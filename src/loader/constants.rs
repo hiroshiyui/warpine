@@ -891,6 +891,16 @@ pub const NP_ICOUNT: u32 = 0x00FF;
 /// `DosWaitNPipe` timeouts: the pipe's default, forever.
 pub const NP_DEFAULT_WAIT: u32 = 0;
 pub const NP_INDEFINITE_WAIT: u32 = 0xFFFF_FFFF;
+/// `PIPESEMSTATE.fStatus` (`DosQueryNPipeSemState`, `<bsedos.h>`): end of
+/// the records, data to read, space to write, the pipe closed.
+pub const NPSS_EOI: u8 = 0;
+pub const NPSS_RDATA: u8 = 1;
+pub const NPSS_WSPACE: u8 = 2;
+pub const NPSS_CLOSE: u8 = 3;
+/// `PIPESEMSTATE.fFlag`: a thread waits at the other end of the pipe.
+pub const NPSS_WAIT: u8 = 0x01;
+/// `sizeof(PIPESEMSTATE)`: two BYTEs and two USHORTs.
+pub const PIPESEMSTATE_SIZE: u32 = 6;
 
 /// `DosAllocSharedMem` / `DosGiveSharedMem` flags.
 pub const PAG_READ: u32 = 0x0001;
@@ -1502,6 +1512,10 @@ pub const PROCESS_ID: u32 = 42;
 pub const DC_SEM_SHARED: u32 = 0x0001;
 pub const DCMW_WAIT_ANY: u32 = 0x0002;
 pub const DCMW_WAIT_ALL: u32 = 0x0004;
+/// `DosCreateEventSem` flags of `<bsedos.h>`: a post releases one waiter
+/// (`DCE_POSTONE`), a released wait resets the semaphore (`DCE_AUTORESET`).
+pub const DCE_POSTONE: u32 = 0x0800;
+pub const DCE_AUTORESET: u32 = 0x1000;
 /// Name prefix every named 32-bit semaphore carries.
 pub const SEM32_PREFIX: &str = "\\SEM32\\";
 /// `sizeof(SEMRECORD)`: `HSEM hsemCur` + `ULONG ulUser`.
@@ -1515,6 +1529,8 @@ pub const MAX_SEM_OPENS: u32 = 65535;
 /// Error codes of the semaphore calls.
 pub const ERROR_INVALID_DATA: u32 = 13;
 pub const ERROR_TOO_MANY_SEMAPHORES: u32 = 100;
+/// A mutex semaphore's owner ended without releasing it.
+pub const ERROR_SEM_OWNER_DIED: u32 = 105;
 pub const ERROR_INVALID_NAME: u32 = 123;
 pub const ERROR_SEM_NOT_FOUND: u32 = 187;
 pub const ERROR_DUPLICATE_HANDLE: u32 = 284;
@@ -1526,6 +1542,8 @@ pub const ERROR_TOO_MANY_HANDLES: u32 = 290;
 pub const ERROR_TOO_MANY_OPENS: u32 = 291;
 pub const ERROR_WRONG_TYPE: u32 = 292;
 pub const ERROR_TOO_MANY_POSTS: u32 = 298;
+/// Closing a semaphore another thread is blocked on.
+pub const ERROR_SEM_BUSY: u32 = 301;
 pub const ERROR_ALREADY_POSTED: u32 = 299;
 pub const ERROR_ALREADY_RESET: u32 = 300;
 pub const ERROR_TIMEOUT: u32 = 640;
