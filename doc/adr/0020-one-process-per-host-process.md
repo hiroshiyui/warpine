@@ -1,6 +1,6 @@
 # ADR-0020: Run each OS/2 process as its own host process
 
-- **Status:** Accepted; pipes inherited by children and named pipes are decided in ADR-0022, signal exceptions between processes in ADR-0023, the process nesting limit in ADR-0028, the switch list, atoms and DDE in ADR-0030
+- **Status:** Accepted; pipes inherited by children and named pipes are decided in ADR-0022, signal exceptions between processes in ADR-0023, the process nesting limit in ADR-0028, the switch list, atoms and DDE in ADR-0030; process ids are session-unique since ADR-0036
 - **Date:** 2026-03-13
 - **Sources:** commit 6e0ed6b ("implement process execution APIs (DosExecPgm, DosWaitChild)"); `src/loader/process.rs` (`dos_exec_pgm`), `src/loader/managers.rs` (`ProcessManager`); the maintainer's question on how the Workplace Shell starts programs (2026-11-18)
 

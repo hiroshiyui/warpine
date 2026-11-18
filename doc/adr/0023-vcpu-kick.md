@@ -1,6 +1,6 @@
 # ADR-0023: Kick vCPUs out of guest code with `immediate_exit` and a real-time signal
 
-- **Status:** Accepted; supersedes the consequence of ADR-0003 and ADR-0007 that a thread running guest code cannot be stopped
+- **Status:** Accepted; supersedes the consequence of ADR-0003 and ADR-0007 that a thread running guest code cannot be stopped; ADR-0034 and ADR-0035 extend it (ending a process from outside, interrupting blocked calls)
 - **Date:** 2026-11-18
 - **Sources:** commit 925680e; `src/loader/host_signal.rs`, `src/loader/kvm_backend.rs` (`KvmKick`), `src/loader/vm_backend.rs` (`VcpuKick`, `VmExit::Interrupted`), `src/loader/threads.rs` (`kick`, `kick_all_but`), `src/loader/signals.rs`; Linux KVM API documentation (`kvm_run.immediate_exit`)
 

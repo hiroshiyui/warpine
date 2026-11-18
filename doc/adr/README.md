@@ -39,3 +39,8 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0031](0031-capped-test-runs.md) | Run the commit checks inside a capped systemd scope | Accepted | 2026-11-18 |
 | [0032](0032-session-thread-limit.md) | Enforce CONFIG.SYS THREADS= across a session with per-process records in a private directory | Accepted | 2026-11-18 |
 | [0033](0033-generated-compatibility-chart.md) | Generate the API compatibility chart from Warpine's source and a dated, cited API table | Accepted | 2026-11-18 |
+| [0034](0034-ending-a-process-from-outside.md) | End a process from outside with KILLPROC, its exit list and a grace period | Accepted | 2026-11-18 |
+| [0035](0035-interrupting-blocking-calls.md) | Interrupt blocking calls through a per-thread call marker and one semaphore wake-up path | Accepted | 2026-11-18 |
+| [0036](0036-session-unique-process-ids.md) | Give every process a session-unique id chosen by its parent; follow the documented entry ABI | Accepted | 2026-11-18 |
+| [0037](0037-pipe-semaphores-and-session-directory-hygiene.md) | Post pipe semaphores from per-end watcher threads, and sweep stale session directories by liveness | Accepted | 2026-11-18 |
+| [0038](0038-client-origin-and-dialog-notifications.md) | Draw client windows at their place in the frame surface; send dialog notifications through call chains | Accepted | 2026-11-18 |
