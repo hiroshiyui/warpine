@@ -85,6 +85,8 @@ pub mod tcpip;
 pub mod npipe;
 mod npipe_api;
 pub mod inherit;
+pub mod config_sys;
+pub mod session_threads;
 pub mod moucalls;
 pub mod profile;
 mod pmshapi;
@@ -379,6 +381,8 @@ pub struct SharedState {
     pub guest_mem: GuestMemory,
     /// The process's threads: running, ended, idle vCPUs (`threads.rs`).
     pub threads: threads::Threads,
+    /// Its part of the session's `THREADS=` accounting (`session_threads.rs`).
+    pub thread_slots: Mutex<session_threads::ThreadSlots>,
     /// `DosAsyncTimer` / `DosStartTimer` timers (`dostimer.rs`).
     pub dos_timers: Mutex<dostimer::DosTimerTable>,
     /// `DosSubSetMem` pools, kept on the host (`suballoc.rs`).
@@ -493,6 +497,7 @@ impl Loader {
             exe_name: Mutex::new(String::new()),
             guest_mem,
             threads: Default::default(),
+            thread_slots: Default::default(),
             dos_timers: Default::default(),
             suballoc: Default::default(),
             exit_requested: AtomicBool::new(false),
@@ -592,6 +597,7 @@ impl Loader {
             exe_name:     Mutex::new(String::new()),
             guest_mem,
             threads:      Default::default(),
+            thread_slots: Default::default(),
             dos_timers:   Default::default(),
             suballoc:     Default::default(),
             exit_requested: AtomicBool::new(false),

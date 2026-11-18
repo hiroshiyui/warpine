@@ -160,10 +160,12 @@ fn main() {
 
             if headless {
                 let mut loader = loader::Loader::new();
+                join_thread_session(&loader);
                 let args: Vec<&str> = host_args.iter().map(|s| s.as_str()).collect();
                 loader.run_builtin_cmd_main(&args);
             } else {
                 let loader = Arc::new(loader::Loader::new());
+                join_thread_session(&loader);
                 let shared = loader.get_shared();
                 *shared.exe_name.lock_or_recover() = "CMD.EXE".to_string();
                 // CMD.EXE runs windowed or full screen on OS/2.
@@ -186,6 +188,16 @@ fn main() {
     match format {
         ExeFormat::NE => run_ne(file_path, &remaining_args[1..]),
         ExeFormat::LX => run_lx(file_path, gdb_port, &remaining_args[1..]),
+    }
+}
+
+/// Enter the session's `THREADS=` accounting with thread 1, or end with
+/// `ERROR_NO_PROC_SLOTS` before any guest code runs when it has no slot left
+/// (`loader::session_threads`).
+fn join_thread_session(loader: &loader::Loader) {
+    if !loader.join_thread_session() {
+        eprintln!("warpine: the session's THREADS= limit is reached; not starting the program");
+        std::process::exit(loader::session_threads::EXIT_NO_THREAD_SLOT);
     }
 }
 
@@ -215,6 +227,7 @@ fn run_ne(file_path: &str, args: &[&str]) -> ! {
     }
 
     let mut loader = loader::Loader::new();
+    join_thread_session(&loader);
     set_host_args(&loader, args);
     if let Err(e) = loader.load_ne(&ne_file, file_path) {
         eprintln!("Failed to load NE executable: {}", e);
@@ -287,6 +300,7 @@ fn run_vio_session(shared: Arc<loader::SharedState>, title: &str, app_type: lx::
     shared.kbd_cond.notify_all();
     shared.mou_cond.notify_all();
     shared.npipes.lock_or_recover().close_all();
+    shared.leave_thread_session();
     shared.console_mgr.lock_or_recover().disable_raw_mode();
     let code = shared.exit_code.load(Ordering::Relaxed);
     std::process::exit(code);
@@ -380,6 +394,7 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>, args: &[&str]) {
     info!("Initializing KVM loader...");
 
     let mut loader = loader::Loader::new();
+    join_thread_session(&loader);
     set_host_args(&loader, args);
 
     // Attach GDB stub if --gdb was requested.
@@ -422,6 +437,7 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>, args: &[&str]) {
         shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
         shared.window_mgr.lock_or_recover().stop_all_timers();
         shared.npipes.lock_or_recover().close_all();
+        shared.leave_thread_session();
         shared.console_mgr.lock_or_recover().disable_raw_mode();
         let code = shared.exit_code.load(std::sync::atomic::Ordering::Relaxed);
         std::process::exit(code);

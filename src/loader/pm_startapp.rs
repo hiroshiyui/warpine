@@ -250,7 +250,9 @@ impl super::Loader {
         let warpine = std::env::current_exe().map_err(|_| PMERR_CANNOT_START)?;
         let mut cmd = Command::new(warpine);
         // Bounded nesting and number of children (inherit.rs).
-        self.admit_child(&mut cmd).map_err(|_| PMERR_CANNOT_START)?;
+        // A slot of the session's THREADS= limit too (no PM error of its
+        // own in <pmerr.h>: PMERR_CANNOT_START).
+        let slot = self.admit_child(&mut cmd).map_err(|_| PMERR_CANNOT_START)?;
         cmd.arg(&prog_path);
         // A session of its own: nothing of this process's start-up or
         // handles, only what is set here.
@@ -276,7 +278,9 @@ impl super::Loader {
         if let Some(dir) = cwd { cmd.current_dir(dir); }
         cmd.stdin(Stdio::null());
         debug!("WinStartApp: {} {:?}", prog_path.display(), String::from_utf8_lossy(&params));
-        let child = cmd.spawn().map_err(|e| {
+        let spawned = cmd.spawn();
+        self.child_started(slot, spawned.as_ref().ok().map(std::process::Child::id));
+        let child = spawned.map_err(|e| {
             warn!("WinStartApp: cannot start {}: {e}", prog_path.display());
             PMERR_CANNOT_START
         })?;

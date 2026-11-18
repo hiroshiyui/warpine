@@ -125,9 +125,11 @@ impl super::Loader {
         // Build command: warpine <child.exe> [args...]
         let mut cmd = Command::new(&warpine_exe);
         // Bounded nesting and number of children (inherit.rs).
-        if self.admit_child(&mut cmd).is_err() {
+        // A slot of the session's THREADS= limit for the child's thread 1
+        // is reserved too: ERROR_NO_PROC_SLOTS when there is none.
+        let Ok(slot) = self.admit_child(&mut cmd) else {
             return super::inherit::ERROR_NO_PROC_SLOTS;
-        }
+        };
         cmd.arg(&prog_path);
         self.set_child_startup(&mut cmd, p_arg, p_env);
         // Pipe handles the child inherits; kept open until it has started.
@@ -176,6 +178,7 @@ impl super::Loader {
 
                 let spawned = cmd.spawn();
                 drop(child_handles);
+                self.child_started(slot, spawned.as_ref().ok().map(std::process::Child::id));
                 match spawned {
                     Ok(mut child) => {
                         let stdout_pipe = child.stdout.take();
@@ -227,6 +230,7 @@ impl super::Loader {
                 self.set_child_stdio(&mut cmd);
                 let spawned = cmd.spawn();
                 drop(child_handles);
+                self.child_started(slot, spawned.as_ref().ok().map(std::process::Child::id));
                 match spawned {
                     Ok(mut child) => {
                         let stdout_pipe = child.stdout.take();
@@ -253,6 +257,7 @@ impl super::Loader {
                 }
             }
             _ => {
+                self.child_started(slot, None);
                 warn!("  DosExecPgm: unsupported execFlag={}", exec_flag);
                 ERROR_INVALID_FUNCTION
             }

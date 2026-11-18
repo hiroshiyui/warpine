@@ -321,6 +321,7 @@ impl super::Loader {
         self.wait_for_process_end();
 
         self.shared.npipes.lock_or_recover().close_all();
+        self.shared.leave_thread_session();
         self.shared.console_mgr.lock_or_recover().disable_raw_mode();
         let code = self.shared.exit_code.load(Ordering::Relaxed);
         std::process::exit(code);

@@ -109,6 +109,7 @@ impl super::Loader {
         // Restore terminal before process::exit() which skips all destructors.
         // Must restore termios FIRST so OPOST is active, then emit ANSI reset.
         self.shared.npipes.lock_or_recover().close_all();
+        self.shared.leave_thread_session();
         self.shared.console_mgr.lock_or_recover().disable_raw_mode();
         let code = self.shared.exit_code.load(Ordering::Relaxed);
         std::process::exit(code);
@@ -133,6 +134,7 @@ impl super::Loader {
         // Thread 1 may end by itself while other threads still run.
         self.wait_for_process_end();
         self.shared.npipes.lock_or_recover().close_all();
+        self.shared.leave_thread_session();
         self.shared.console_mgr.lock_or_recover().disable_raw_mode();
         let code = self.shared.exit_code.load(Ordering::Relaxed);
         std::process::exit(code);
@@ -227,6 +229,8 @@ impl super::Loader {
         }
         // A critical section the thread was in ends with it.
         self.shared.threads.release_crit_sec(tid);
+        // So does its slot of the session's THREADS= limit.
+        self.shared.thread_slots.lock_or_recover().release_thread();
         match end {
             ThreadEnd::Thread(rc) => {
                 info!("  [VCPU {}] Thread {} ended (rc={}).", vcpu_id, tid, rc);

@@ -32,6 +32,7 @@ use log::{debug, warn};
 use super::managers::{PipeHandle, PipeObject};
 use super::mutex_ext::MutexExt;
 use super::npipe::{self, PipeSpec};
+use super::session_threads::Reservation;
 
 pub const HANDLES_ENV: &str = "WARPINE_HANDLES";
 pub const ARG0_ENV: &str = "WARPINE_OS2ARG0";
@@ -135,6 +136,9 @@ pub enum ChildLimit {
     Depth,
     /// It already has `MAX_LIVE_CHILDREN` children.
     Live,
+    /// The session runs as many threads as `THREADS=` allows
+    /// (`session_threads.rs`): no slot for the child's thread 1.
+    Threads,
 }
 
 /// Check both limits for a process at `depth` with `live` children and set
@@ -156,22 +160,39 @@ pub(crate) fn live_children(shared: &super::SharedState) -> usize {
 }
 
 /// Allow a new child of the process of `shared` (see the nesting guard
-/// above) and give `cmd` its depth.
+/// above), give `cmd` its depth and reserve the slot of its thread 1 in the
+/// session's thread accounting (`session_threads.rs`). The reservation is
+/// settled with [`child_started`] once the spawn succeeded or failed.
 pub(crate) fn admit_child(shared: &super::SharedState, cmd: &mut std::process::Command)
-    -> Result<(), ChildLimit>
+    -> Result<Reservation, ChildLimit>
 {
     let r = set_child_depth(cmd, own_depth(), live_children(shared));
     if let Err(limit) = r {
         warn!("not starting a child process: {limit:?} limit (depth {} of {MAX_PROCESS_DEPTH}, \
                at most {MAX_LIVE_CHILDREN} children)", own_depth());
+        return Err(limit);
     }
-    r
+    shared.thread_slots.lock_or_recover().reserve_for(cmd).map_err(|_| {
+        warn!("not starting a child process: the session is at its THREADS= limit");
+        ChildLimit::Threads
+    })
+}
+
+/// The child of `res` started as host process `pid` (`None`: it did not
+/// start): its reserved slot becomes its own, or is given back.
+pub(crate) fn child_started(shared: &super::SharedState, res: Reservation, pid: Option<u32>) {
+    shared.thread_slots.lock_or_recover().settle(res, pid);
 }
 
 impl super::Loader {
     /// [`admit_child`] for this process.
-    pub(crate) fn admit_child(&self, cmd: &mut std::process::Command) -> Result<(), ChildLimit> {
+    pub(crate) fn admit_child(&self, cmd: &mut std::process::Command) -> Result<Reservation, ChildLimit> {
         admit_child(&self.shared, cmd)
+    }
+
+    /// [`child_started`] for this process.
+    pub(crate) fn child_started(&self, res: Reservation, pid: Option<u32>) {
+        child_started(&self.shared, res, pid)
     }
 }
 

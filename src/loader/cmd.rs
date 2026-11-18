@@ -852,12 +852,21 @@ impl CmdShell {
         for a in args { cmd.arg(a); }
         // What this process got from its own parent is not the child's.
         super::inherit::clear_parent_vars(&mut cmd);
-        // Bounded nesting and number of children (inherit.rs).
-        if super::inherit::admit_child(&self.shared, &mut cmd).is_err() {
-            self.writeln_attr("Cannot start another process: too many nested or running processes",
-                              ATTR_ERROR);
-            return;
-        }
+        // Bounded nesting and number of children, and a slot of the
+        // session's THREADS= limit (inherit.rs).
+        let slot = match super::inherit::admit_child(&self.shared, &mut cmd) {
+            Ok(slot) => slot,
+            Err(super::inherit::ChildLimit::Threads) => {
+                self.writeln_attr("Cannot start another process: the THREADS= limit is reached",
+                                  ATTR_ERROR);
+                return;
+            }
+            Err(_) => {
+                self.writeln_attr("Cannot start another process: too many nested or running processes",
+                                  ATTR_ERROR);
+                return;
+            }
+        };
 
         // Set CWD from ProcessManager so the child inherits the shell's directory.
         let cwd = {
@@ -877,7 +886,10 @@ impl CmdShell {
 
         let to_vio = matches!(&*self.output_sink.borrow(), OutputSink::Vio);
 
-        match cmd.spawn() {
+        let spawned = cmd.spawn();
+        super::inherit::child_started(&self.shared, slot,
+                                      spawned.as_ref().ok().map(std::process::Child::id));
+        match spawned {
             Err(e) => {
                 self.writeln_attr(&format!("Failed to spawn program: {e}"), ATTR_ERROR);
             }
@@ -1118,6 +1130,7 @@ impl super::Loader {
     /// synchronously and calls `std::process::exit` when done.
     pub fn run_builtin_cmd_main(&mut self, host_args: &[&str]) {
         let exit_code = self.run_builtin_cmd_main_inner(host_args);
+        self.shared.leave_thread_session();
         std::process::exit(exit_code as i32);
     }
 

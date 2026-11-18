@@ -97,12 +97,12 @@ modules = ["loader/mod.rs", "loader/managers.rs", "loader/mutex_ext.rs", "loader
 [[layer]]
 id = "kernel"
 zone = "host"
-label = "Kernel APIs: DOSCALLS, QUECALLS, MSG, processes and WinStartApp, IPC, named pipes (ADR-0022), timers"
+label = "Kernel APIs: DOSCALLS, QUECALLS, MSG, processes and WinStartApp, CONFIG.SYS THREADS= session limit, IPC, named pipes (ADR-0022), timers"
 modules = [
   "loader/doscalls.rs", "loader/stubs.rs", "loader/process.rs", "loader/ipc.rs",
   "loader/dostimer.rs", "loader/modpath.rs", "loader/suballoc.rs", "loader/cmd.rs",
   "loader/npipe.rs", "loader/npipe_api.rs", "loader/inherit.rs", "loader/msgcalls.rs",
-  "loader/pm_startapp.rs",
+  "loader/pm_startapp.rs", "loader/config_sys.rs", "loader/session_threads.rs",
 ]
 
 [[layer]]

@@ -1185,6 +1185,13 @@ impl super::Loader {
             free_memory();
             return ERROR_MAX_THRDS_REACHED;
         }
+        // A slot of the session's THREADS= limit (session_threads.rs).
+        if self.shared.thread_slots.lock_or_recover().acquire_thread().is_err() {
+            log::warn!("  [VCPU {}] DosCreateThread: THREADS= limit reached", vcpu_id);
+            self.shared.threads.table.lock_or_recover().put_vcpu(new_vcpu);
+            free_memory();
+            return ERROR_MAX_THRDS_REACHED;
+        }
 
         {
             let mut table = self.shared.threads.table.lock_or_recover();

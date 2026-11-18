@@ -1721,6 +1721,90 @@ fn test_nest_test_stops_at_the_nesting_limit() {
     assert_eq!(out.matches("nest_test: child ended with").count(), 8, "{out}");
 }
 
+/// threads_limit_test with `THREADS=70` in drive C's CONFIG.SYS: the limit
+/// covers the whole session — DosCreateThread fails with
+/// ERROR_MAX_THRDS_REACHED (164) after 69 threads besides thread 1, a child
+/// running beside 10 threads of its parent gets 59, DosExecPgm fails with
+/// ERROR_NO_PROC_SLOTS (89) when no slot is left, and the slots of ended
+/// threads and processes come back. No Warpine process or accounting
+/// record is left.
+#[test]
+fn test_threads_limit_from_config_sys() {
+    const SAMPLE: &str = "samples/threads_limit_test/threads_limit_test.exe";
+    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    let data = tempfile::tempdir().unwrap();
+    let run = tempfile::tempdir().unwrap();
+    let drive_c = data.path().join("warpine/drive_c");
+    std::fs::create_dir_all(&drive_c).unwrap();
+    let config = b"REM THREADS=500\r\nthreads = 300\r\nTHREADS=70\r\n";
+    std::fs::write(drive_c.join("CONFIG.SYS"), config).unwrap();
+    let (out, code) = run_sample_env(SAMPLE, 120, &[
+        ("XDG_DATA_HOME", data.path().to_str().unwrap()),
+        ("XDG_RUNTIME_DIR", run.path().to_str().unwrap()),
+    ]);
+    assert_eq!(code, 0, "stdout:\n{out}");
+    assert!(!out.contains("FAIL"), "{out}");
+    for line in ["ok DosCreateThread at the limit rc=164", "ok created threads=69",
+                 "ok child created threads=59", "ok children started=2",
+                 "ok DosExecPgm without a slot rc=89",
+                 "ok synchronous DosExecPgm without a slot rc=89",
+                 "ok child after the slots came back result=7", "ok created again threads=69"] {
+        assert!(out.contains(line), "missing {line:?}:\n{out}");
+    }
+    // CONFIG.SYS is only read; the session directory is gone.
+    assert_eq!(std::fs::read(drive_c.join("CONFIG.SYS")).unwrap(), config);
+    assert_eq!(std::fs::read_dir(run.path()).unwrap().count(), 0);
+}
+
+/// `WARPINE_THREADS` overrides CONFIG.SYS (and is clamped to 64 … 4095).
+#[test]
+fn test_threads_limit_from_the_environment() {
+    const SAMPLE: &str = "samples/threads_limit_test/threads_limit_test.exe";
+    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    let run = tempfile::tempdir().unwrap();
+    let (out, code) = run_sample_env(SAMPLE, 120, &[
+        ("WARPINE_THREADS", "66"),
+        ("XDG_RUNTIME_DIR", run.path().to_str().unwrap()),
+    ]);
+    assert_eq!(code, 0, "stdout:\n{out}");
+    assert!(out.contains("ok created threads=65"), "{out}");
+    assert!(out.contains("ok child created threads=55"), "{out}");
+    let (out, _) = run_sample_env(SAMPLE, 120, &[
+        ("WARPINE_THREADS", "5"),
+        ("XDG_RUNTIME_DIR", run.path().to_str().unwrap()),
+    ]);
+    assert!(out.contains("ok created threads=63"), "clamped to 64:\n{out}");
+}
+
+/// A process joining a session whose threads are all in use ends with
+/// ERROR_NO_PROC_SLOTS (89) before running guest code; a record of a dead
+/// process does not count.
+#[test]
+fn test_threads_limit_refuses_a_process_without_a_slot() {
+    use std::os::unix::fs::PermissionsExt;
+    if !kvm_available() { return; }
+    let dir = tempfile::tempdir().unwrap();
+    let session = dir.path().join("s");
+    std::fs::create_dir(&session).unwrap();
+    std::fs::set_permissions(&session, std::fs::Permissions::from_mode(0o700)).unwrap();
+    // This test process, holding every slot.
+    let stat = std::fs::read_to_string("/proc/self/stat").unwrap();
+    let start = stat[stat.rfind(')').unwrap() + 1..].split_whitespace().nth(19).unwrap().to_string();
+    let me = std::process::id();
+    let record = session.join(format!("p-{me}"));
+    std::fs::write(&record, format!("{me} {start} 4095\n")).unwrap();
+    let dir_s = session.to_str().unwrap();
+    let (out, code) = run_sample_env("samples/hello/hello.exe", 30, &[("WARPINE_THREAD_DIR", dir_s)]);
+    assert_eq!(code, 89, "stdout:\n{out}");
+    assert!(!out.contains("Hello"), "{out}");
+    // The same record with another start time is a dead process.
+    std::fs::write(&record, format!("{me} 1 4095\n")).unwrap();
+    let (out, code) = run_sample_env("samples/hello/hello.exe", 30, &[("WARPINE_THREAD_DIR", dir_s)]);
+    assert_eq!(code, 0, "stdout:\n{out}");
+    assert!(out.contains("Hello"), "{out}");
+    assert!(!record.exists(), "the stale record is removed");
+}
+
 /// pm_switch_dde_test: the switch list (FCF_TASKLIST entry, WinAddSwitchEntry
 /// … WinSwitchToProgram, the entry gone with its frame), atom tables
 /// (string and integer atoms, usage counts, the system table), a DDE
