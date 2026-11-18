@@ -639,14 +639,28 @@ const STUB_ORDINALS: &[u32] = &[
     267,  // DOS16REQUESTVDD
     285,  // DosFSCtl
     317,  // DosDebug
-    356,  // DosRaiseException
-    357,  // DosUnwindException
     415,  // DosShutdown
 ];
 
-/// Ordinals handled by the sub-dispatchers rather than the registry:
-/// VIOCALLS 22 + KBDCALLS 3 + PMWIN 70 + PMGPI 30 + MOUCALLS 20. Maintained manually.
-const SUB_DISPATCHER_ORDINALS: u32 = 22 + 3 + 70 + 30 + 20;
+/// VIOCALLS ordinals of `viocalls.rs` (18 implemented, 4 stubs).
+const VIOCALLS_ORDINALS: u32 = 22;
+/// KBDCALLS ordinals of `kbdcalls.rs`.
+const KBDCALLS_ORDINALS: u32 = 3;
+/// MOUCALLS ordinals of `moucalls.rs`.
+const MOUCALLS_ORDINALS: u32 = 20;
+/// PMWIN ordinals dispatched by `pm_win.rs` (checked against its
+/// `N => { // WinName(` arms by a test).
+const PMWIN_ORDINALS: u32 = 131;
+/// PMGPI ordinals dispatched by `pm_gpi.rs`, `pm_region.rs` and
+/// `pm_area.rs` (checked against their arms by a test), of which
+/// `PMGPI_STUBS` are stubs (`GpiLoadFonts`, `GpiLoadPublicFonts`,
+/// `GpiUnloadPublicFonts`).
+const PMGPI_ORDINALS: u32 = 100;
+const PMGPI_STUBS: u32 = 3;
+
+/// Ordinals handled by the sub-dispatchers rather than the registry.
+const SUB_DISPATCHER_ORDINALS: u32 =
+    VIOCALLS_ORDINALS + KBDCALLS_ORDINALS + MOUCALLS_ORDINALS + PMWIN_ORDINALS + PMGPI_ORDINALS;
 
 /// Generate a human-readable OS/2 API compatibility report.
 ///
@@ -689,21 +703,21 @@ pub fn compat_report() -> String {
     // Sub-dispatcher summaries
     out.push_str("Sub-dispatchers (separate from registry)\n");
     out.push_str("----------------------------------------\n");
-    out.push_str("  VIOCALLS   17 implemented, 5 stub  (VioWrtTTY, VioGetMode, VioSetCurPos, \
-                  VioGetCurPos, VioScrollUp, VioScrollDn, VioWrtCharStrAtt, VioWrtNCell, \
+    out.push_str("  VIOCALLS   18 implemented, 4 stub  (VioWrtTTY, VioGetMode, VioSetMode, VioSetCurPos, \
+                  VioGetCurPos, VioScrollUp, VioScrollDn, VioWrtCharStrAtt, VioWrtCellStr, VioWrtNCell, \
                   VioWrtNAttr, VioReadCellStr, VioSetCurType, VioGetCurType, VioGetConfig, VioGetAnsi, VioSetAnsi, \
                   VioCheckCharType, \
-                  VioSetMode[stub], VioGetBuf[stub], VioShowBuf[stub], VioSetState[stub], \
-                  VioSetCp[stub], VioWrtCellStr[stub])\n");
+                  VioGetBuf[stub], VioShowBuf[stub], VioSetState[stub], VioSetCp[stub])\n");
     out.push_str("  KBDCALLS    3 implemented  (KbdCharIn, KbdStringIn, KbdGetStatus)\n");
     out.push_str("  MOUCALLS   20 implemented  (MouOpen, MouClose, MouReadEventQue, MouFlushQue, \
                   MouGetNumQueEl, MouGet/SetPtrPos, MouGetNumButtons, MouGetNumMickeys, \
                   MouGet/SetDevStatus, MouGet/SetEventMask, MouGet/SetScaleFact, \
                   MouDrawPtr, MouRemovePtr, MouGet/SetPtrShape, MouSynch)\n");
-    out.push_str("  PMWIN      70 implemented  (WinInitialize, message queues, window mgmt, \
-                  input, paint, timers, menus, dialogs, clipboard, resources)\n");
-    out.push_str("  PMGPI      23 implemented, 7 stub  (presentation spaces, colour and mix, \
-                  lines, boxes, arcs, text, logical fonts, font metrics)\n");
+    out.push_str(&format!("  PMWIN     {PMWIN_ORDINALS} implemented  (WinInitialize, message queues, window mgmt, \
+                  input, paint, timers, menus, dialogs, controls, clipboard, resources, regions)\n"));
+    out.push_str(&format!("  PMGPI     {} implemented, {PMGPI_STUBS} stub  (presentation spaces, colour and mix, \
+                  lines, boxes, arcs, text, logical fonts, font metrics, bitmaps, regions, clipping, \
+                  areas, paths, curves)\n", PMGPI_ORDINALS - PMGPI_STUBS));
     out.push('\n');
 
     // Aggregate statistics
@@ -769,6 +783,43 @@ mod tests {
         assert_eq!(stub_lines, super::STUB_ORDINALS.len(),
             "stub count in report ({stub_lines}) != STUB_ORDINALS len ({})",
             super::STUB_ORDINALS.len());
+    }
+
+    /// Distinct ordinals of the `N => {` arms followed by a `// ApiName(`
+    /// comment, the form every PM sub-dispatcher arm takes.
+    fn dispatched_ordinals(sources: &[&str]) -> std::collections::BTreeSet<u32> {
+        let mut ords = std::collections::BTreeSet::new();
+        for src in sources {
+            let lines: Vec<&str> = src.lines().map(str::trim).collect();
+            for pair in lines.windows(2) {
+                let Some(ord) = pair[0].strip_suffix(" => {").and_then(|o| o.parse::<u32>().ok())
+                    else { continue };
+                let Some(rest) = pair[1].strip_prefix("// ") else { continue };
+                if rest.starts_with(|c: char| c.is_ascii_uppercase()) {
+                    ords.insert(ord);
+                }
+            }
+        }
+        ords
+    }
+
+    #[test]
+    fn test_compat_report_pm_counts_match_the_dispatchers() {
+        let win = dispatched_ordinals(&[include_str!("pm_win.rs")]);
+        assert_eq!(win.len() as u32, super::PMWIN_ORDINALS, "PMWIN_ORDINALS is stale");
+        let gpi = dispatched_ordinals(&[include_str!("pm_gpi.rs"), include_str!("pm_region.rs"),
+                                        include_str!("pm_area.rs")]);
+        assert_eq!(gpi.len() as u32, super::PMGPI_ORDINALS, "PMGPI_ORDINALS is stale");
+    }
+
+    #[test]
+    fn test_compat_report_marks_only_no_op_stubs() {
+        // SEH works: DosRaiseException / DosUnwindException are not stubs.
+        for ord in [356, 357] {
+            assert!(!super::STUB_ORDINALS.contains(&ord), "ordinal {ord} is implemented");
+        }
+        let report = super::compat_report();
+        assert!(report.contains("DOSCALLS  (136 implemented, 4 stub)"), "{report}");
     }
 
     // ── registry ─────────────────────────────────────────────────────────────
