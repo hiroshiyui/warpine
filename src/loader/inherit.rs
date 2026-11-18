@@ -18,6 +18,15 @@
 //   receives them. Standard handles 0–2 also go to the child's host
 //   standard streams.
 //
+// - `WARPINE_PID` / `WARPINE_PPID` — the child's process id, which the
+//   parent chose (`admit_child`), and the parent's own: the child reports
+//   them in `pib_ulpid` / `pib_ulppid`, and the parent uses the same id in
+//   `DosExecPgm`'s result, `DosWaitChild`, `DosKillProcess` and
+//   `DosSendSignalException`. A process without them (the first of a
+//   session) is `PROCESS_ID` with parent `NO_PARENT_PROCESS_ID`. Ids come
+//   from a counter in the session's private directory
+//   (`session_threads.rs`), so they are unique within the session.
+//
 // The server end of a named pipe is not passed on (unverified whether OS/2
 // lets a child serve its parent's instance; Warpine keeps it in the
 // process that created it).
@@ -32,12 +41,17 @@ use log::{debug, warn};
 use super::managers::{PipeHandle, PipeObject};
 use super::mutex_ext::MutexExt;
 use super::npipe::{self, PipeSpec};
+use super::constants::{FIRST_CHILD_PROCESS_ID, MAX_PROCESS_ID, NO_PARENT_PROCESS_ID, PROCESS_ID};
 use super::session_threads::Reservation;
 
 pub const HANDLES_ENV: &str = "WARPINE_HANDLES";
 pub const ARG0_ENV: &str = "WARPINE_OS2ARG0";
 pub const ARGS_ENV: &str = "WARPINE_OS2ARGS";
 pub const ENV_ENV: &str = "WARPINE_OS2ENV";
+/// The child's process id (decimal).
+pub const PID_ENV: &str = "WARPINE_PID";
+/// The parent's process id (decimal).
+pub const PPID_ENV: &str = "WARPINE_PPID";
 /// Largest environment block passed on or built (an OS/2 environment
 /// segment is at most 64 KiB).
 pub const MAX_ENV_BLOCK: usize = 64 * 1024;
@@ -58,6 +72,10 @@ pub struct StartupInfo {
     pub args: Vec<u8>,
     /// The environment's strings (else Warpine's default environment).
     pub env: Option<Vec<Vec<u8>>>,
+    /// The process id the parent chose (else `PROCESS_ID`).
+    pub pid: Option<u32>,
+    /// The parent's process id (else `NO_PARENT_PROCESS_ID`).
+    pub ppid: Option<u32>,
 }
 
 impl StartupInfo {
@@ -68,7 +86,19 @@ impl StartupInfo {
             arg0: get(ARG0_ENV).filter(|a| !a.is_empty()),
             args: get(ARGS_ENV).map(|mut a| { a.truncate(MAX_ARGS); a }).unwrap_or_default(),
             env: get(ENV_ENV).map(|e| split_env(&e)),
+            pid: parse_process_id(std::env::var_os(PID_ENV).as_deref()),
+            ppid: parse_process_id(std::env::var_os(PPID_ENV).as_deref()),
         }
+    }
+
+    /// This process's id.
+    pub fn process_id(&self) -> u32 {
+        self.pid.unwrap_or(PROCESS_ID)
+    }
+
+    /// The parent's id: only with an id of its own from that parent.
+    pub fn parent_process_id(&self) -> u32 {
+        self.pid.and(self.ppid).unwrap_or(NO_PARENT_PROCESS_ID)
     }
 
     /// Whether a parent passed the command line (else the host's own
@@ -76,6 +106,20 @@ impl StartupInfo {
     pub fn from_parent() -> bool {
         std::env::var_os(ARGS_ENV).is_some()
     }
+}
+
+/// A process id passed in `WARPINE_PID` / `WARPINE_PPID`: decimal numbers
+/// only, 1 … `MAX_PROCESS_ID`; anything else is ignored.
+pub fn parse_process_id(value: Option<&OsStr>) -> Option<u32> {
+    let s = value?.to_str()?;
+    if s.is_empty() || s.len() > 5 || !s.bytes().all(|b| b.is_ascii_digit()) { return None; }
+    s.parse::<u32>().ok().filter(|&p| (1..=MAX_PROCESS_ID).contains(&p))
+}
+
+/// The id after `id` in a session's numbering (`FIRST_CHILD_PROCESS_ID` …
+/// `MAX_PROCESS_ID`, then from the start again).
+pub fn next_process_id(id: u32) -> u32 {
+    if (FIRST_CHILD_PROCESS_ID..MAX_PROCESS_ID).contains(&id) { id + 1 } else { FIRST_CHILD_PROCESS_ID }
 }
 
 // ── Process nesting guard ───────────────────────────────────────────────────
@@ -159,12 +203,24 @@ pub(crate) fn live_children(shared: &super::SharedState) -> usize {
     execs + shared.window_mgr.lock_or_recover().apps.len()
 }
 
+/// A child allowed to start: its slot in the session's thread accounting
+/// and the process id it gets.
+#[derive(Debug)]
+#[must_use = "an admission is settled with child_started"]
+pub struct Admission {
+    slot: Reservation,
+    /// The child's OS/2 process id (`WARPINE_PID`).
+    pub pid: u32,
+}
+
 /// Allow a new child of the process of `shared` (see the nesting guard
-/// above), give `cmd` its depth and reserve the slot of its thread 1 in the
-/// session's thread accounting (`session_threads.rs`). The reservation is
-/// settled with [`child_started`] once the spawn succeeded or failed.
+/// above), give `cmd` its depth, reserve the slot of its thread 1 in the
+/// session's thread accounting (`session_threads.rs`) and choose its process
+/// id (`WARPINE_PID`, with this process's own in `WARPINE_PPID`). The
+/// admission is settled with [`child_started`] once the spawn succeeded or
+/// failed.
 pub(crate) fn admit_child(shared: &super::SharedState, cmd: &mut std::process::Command)
-    -> Result<Reservation, ChildLimit>
+    -> Result<Admission, ChildLimit>
 {
     let r = set_child_depth(cmd, own_depth(), live_children(shared));
     if let Err(limit) = r {
@@ -172,27 +228,64 @@ pub(crate) fn admit_child(shared: &super::SharedState, cmd: &mut std::process::C
                at most {MAX_LIVE_CHILDREN} children)", own_depth());
         return Err(limit);
     }
-    shared.thread_slots.lock_or_recover().reserve_for(cmd).map_err(|_| {
+    let slot = shared.thread_slots.lock_or_recover().reserve_for(cmd).map_err(|_| {
         warn!("not starting a child process: the session is at its THREADS= limit");
         ChildLimit::Threads
-    })
+    })?;
+    let pid = shared.allocate_process_id();
+    cmd.env(PID_ENV, pid.to_string());
+    cmd.env(PPID_ENV, shared.process_id().to_string());
+    Ok(Admission { slot, pid })
 }
 
-/// The child of `res` started as host process `pid` (`None`: it did not
+/// The child of `adm` started as host process `pid` (`None`: it did not
 /// start): its reserved slot becomes its own, or is given back.
-pub(crate) fn child_started(shared: &super::SharedState, res: Reservation, pid: Option<u32>) {
-    shared.thread_slots.lock_or_recover().settle(res, pid);
+pub(crate) fn child_started(shared: &super::SharedState, adm: Admission, pid: Option<u32>) {
+    shared.thread_slots.lock_or_recover().settle(adm.slot, pid);
+}
+
+impl super::SharedState {
+    /// This process's OS/2 id (`pib_ulpid`).
+    pub fn process_id(&self) -> u32 {
+        self.startup.lock_or_recover().process_id()
+    }
+
+    /// The parent's OS/2 id (`pib_ulppid`).
+    pub fn parent_process_id(&self) -> u32 {
+        self.startup.lock_or_recover().parent_process_id()
+    }
+
+    /// A new id for a child: the session's next one, or — when the session
+    /// directory cannot be used — the next one this process has not given
+    /// out (unique among its own children only).
+    pub(crate) fn allocate_process_id(&self) -> u32 {
+        let session = self.thread_slots.lock_or_recover().next_process_id();
+        session.unwrap_or_else(|| {
+            let avoid = [self.process_id(), self.parent_process_id()];
+            self.process_mgr.lock_or_recover().alloc_pid(&avoid)
+        })
+    }
 }
 
 impl super::Loader {
     /// [`admit_child`] for this process.
-    pub(crate) fn admit_child(&self, cmd: &mut std::process::Command) -> Result<Reservation, ChildLimit> {
+    pub(crate) fn admit_child(&self, cmd: &mut std::process::Command) -> Result<Admission, ChildLimit> {
         admit_child(&self.shared, cmd)
     }
 
     /// [`child_started`] for this process.
-    pub(crate) fn child_started(&self, res: Reservation, pid: Option<u32>) {
-        child_started(&self.shared, res, pid)
+    pub(crate) fn child_started(&self, adm: Admission, pid: Option<u32>) {
+        child_started(&self.shared, adm, pid)
+    }
+
+    /// Put this process's id and its parent's into the PIB (`pib_ulpid`,
+    /// `pib_ulppid`).
+    pub(crate) fn write_pib_process_ids(&self) {
+        use super::constants::{PIB_BASE, PIB_PID_OFFSET, PIB_PPID_OFFSET};
+        self.guest_write::<u32>(PIB_BASE + PIB_PID_OFFSET, self.shared.process_id())
+            .expect("PIB pib_ulpid out of guest memory");
+        self.guest_write::<u32>(PIB_BASE + PIB_PPID_OFFSET, self.shared.parent_process_id())
+            .expect("PIB pib_ulppid out of guest memory");
     }
 }
 
@@ -549,6 +642,74 @@ mod tests {
     }
 
     #[test]
+    fn process_ids_are_parsed_strictly() {
+        let p = |s: &str| parse_process_id(Some(OsStr::new(s)));
+        assert_eq!(p("100"), Some(100));
+        assert_eq!(p("65535"), Some(MAX_PROCESS_ID));
+        for bad in ["", "0", "65536", "-1", "+5", " 5", "5 ", "1e3", "999999999999", "\u{663}"] {
+            assert_eq!(p(bad), None, "{bad:?}");
+        }
+        assert_eq!(parse_process_id(None), None);
+        assert_eq!(next_process_id(FIRST_CHILD_PROCESS_ID), FIRST_CHILD_PROCESS_ID + 1);
+        assert_eq!(next_process_id(MAX_PROCESS_ID), FIRST_CHILD_PROCESS_ID);
+        assert_eq!(next_process_id(PROCESS_ID), FIRST_CHILD_PROCESS_ID, "below the range");
+        assert_eq!(next_process_id(u32::MAX), FIRST_CHILD_PROCESS_ID);
+    }
+
+    #[test]
+    fn a_process_reports_the_ids_its_parent_gave() {
+        let first = StartupInfo::default();
+        assert_eq!((first.process_id(), first.parent_process_id()), (PROCESS_ID, NO_PARENT_PROCESS_ID));
+        let child = StartupInfo { pid: Some(105), ppid: Some(101), ..Default::default() };
+        assert_eq!((child.process_id(), child.parent_process_id()), (105, 101));
+        // A parent id without an own id is not believed.
+        let odd = StartupInfo { ppid: Some(101), ..Default::default() };
+        assert_eq!(odd.parent_process_id(), NO_PARENT_PROCESS_ID);
+
+        let l = Loader::new_mock();
+        l.shared.startup.lock_or_recover().pid = Some(105);
+        l.shared.startup.lock_or_recover().ppid = Some(101);
+        l.write_pib_process_ids();
+        use super::super::constants::{PIB_BASE, PIB_PID_OFFSET, PIB_PPID_OFFSET};
+        assert_eq!(l.guest_read::<u32>(PIB_BASE + PIB_PID_OFFSET), Some(105));
+        assert_eq!(l.guest_read::<u32>(PIB_BASE + PIB_PPID_OFFSET), Some(101));
+    }
+
+    #[test]
+    fn an_admitted_child_gets_its_id_and_its_parents() {
+        if own_depth() >= MAX_PROCESS_DEPTH { return; }
+        let l = Loader::new_mock();
+        l.shared.startup.lock_or_recover().pid = Some(PROCESS_ID + 1);
+        let env_of = |cmd: &std::process::Command, name: &str| cmd.get_envs()
+            .find(|(k, _)| *k == OsStr::new(name)).and_then(|(_, v)| v)
+            .and_then(|v| v.to_str()).map(str::to_owned);
+        let mut cmd = std::process::Command::new("true");
+        let a = l.admit_child(&mut cmd).unwrap();
+        assert_eq!(a.pid, FIRST_CHILD_PROCESS_ID);
+        assert_eq!(env_of(&cmd, PID_ENV), Some(a.pid.to_string()));
+        assert_eq!(env_of(&cmd, PPID_ENV), Some((PROCESS_ID + 1).to_string()));
+        let mut cmd2 = std::process::Command::new("true");
+        let b = l.admit_child(&mut cmd2).unwrap();
+        assert_ne!(a.pid, b.pid);
+        l.child_started(a, None);
+        l.child_started(b, None);
+    }
+
+    #[test]
+    fn fallback_ids_avoid_this_process_and_its_children() {
+        let l = Loader::new_mock();
+        // Without a session (unit-test loaders) ids come from this process.
+        l.shared.startup.lock_or_recover().pid = Some(FIRST_CHILD_PROCESS_ID);
+        l.shared.startup.lock_or_recover().ppid = Some(FIRST_CHILD_PROCESS_ID + 1);
+        let child = std::process::Command::new("true").spawn().unwrap();
+        l.shared.process_mgr.lock_or_recover().insert_child(FIRST_CHILD_PROCESS_ID + 2, child);
+        assert_eq!(l.shared.allocate_process_id(), FIRST_CHILD_PROCESS_ID + 3);
+        assert_eq!(l.shared.allocate_process_id(), FIRST_CHILD_PROCESS_ID + 4);
+        let mut child = l.shared.process_mgr.lock_or_recover().take_child(FIRST_CHILD_PROCESS_ID + 2).unwrap();
+        let _ = child.wait();
+    }
+
+    #[test]
     fn escape_round_trip() {
         let raw = b"A=1\0B=\x01x\0\0\xff".to_vec();
         let e = escape(&raw);
@@ -608,6 +769,7 @@ mod tests {
             arg0: Some(unescape(&escape(b"FIND"))),
             args: unescape(&escape(b"\"Warp\"")),
             env: Some(split_env(&unescape(&escape(b"A=1\0B=2\0")))),
+            ..Default::default()
         };
         assert_eq!(info.env.as_ref().unwrap().len(), 2);
         assert_eq!(info.args, b"\"Warp\"");

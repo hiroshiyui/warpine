@@ -44,6 +44,8 @@ use std::sync::Arc;
 use log::warn;
 
 use super::config_sys::MAX_THREADS;
+use super::constants::{FIRST_CHILD_PROCESS_ID, MAX_PROCESS_ID};
+use super::inherit::next_process_id;
 use super::mutex_ext::MutexExt;
 
 /// The session's accounting directory.
@@ -60,6 +62,11 @@ const PID_MAX: u32 = 4_194_304;
 const MAX_STAT: usize = 4096;
 /// Attempts to lock a directory another process removes meanwhile.
 const LOCK_ATTEMPTS: usize = 8;
+/// The file holding the next OS/2 process id the session gives a child
+/// (`inherit.rs`); not a record (`parse_name` passes over it).
+const PID_COUNTER: &str = "pid-next";
+/// Largest process-id counter file.
+const MAX_COUNTER: usize = 16;
 
 /// A process: pid and start time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -180,6 +187,37 @@ impl Locked {
     fn remove(&self, name: &str) {
         let _ = std::fs::remove_file(self.path(name));
     }
+
+    /// The session's next process id (`FIRST_CHILD_PROCESS_ID` when the
+    /// counter is missing or malformed); the counter moves on past it.
+    fn take_process_id(&self) -> std::io::Result<u32> {
+        let current = match OpenOptions::new().read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(self.path(PID_COUNTER)) {
+            Ok(f) => {
+                let meta = f.metadata()?;
+                let mut buf = Vec::with_capacity(MAX_COUNTER);
+                if meta.is_file() && meta.len() <= MAX_COUNTER as u64 {
+                    f.take(MAX_COUNTER as u64).read_to_end(&mut buf)?;
+                }
+                parse_counter(&buf)
+            }
+            Err(e) if e.kind() == ErrorKind::NotFound => None,
+            // A link or something else odd: start again.
+            Err(_) => { self.remove(PID_COUNTER); None }
+        };
+        let id = current.unwrap_or(FIRST_CHILD_PROCESS_ID);
+        let mut f = OpenOptions::new().write(true).create(true).truncate(true).mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW).open(self.path(PID_COUNTER))?;
+        f.write_all(format!("{}\n", next_process_id(id)).as_bytes())?;
+        Ok(id)
+    }
+}
+
+/// The id in a process-id counter file: `<id>\n` within the numbering.
+fn parse_counter(bytes: &[u8]) -> Option<u32> {
+    let text = std::str::from_utf8(bytes).ok()?.strip_suffix('\n')?;
+    let id = parse_u32(text)?;
+    (FIRST_CHILD_PROCESS_ID..=MAX_PROCESS_ID).contains(&id).then_some(id)
 }
 
 /// Where the session directory is.
@@ -442,6 +480,16 @@ impl ThreadSession {
         }
     }
 
+    /// A new OS/2 process id for a child (`None`: the session directory
+    /// cannot be used, or the process is leaving).
+    pub fn next_process_id(&mut self) -> Option<u32> {
+        if self.local_only || self.left { return None; }
+        match self.dir.lock().and_then(|l| l.take_process_id()) {
+            Ok(id) => Some(id),
+            Err(e) => { self.fall_back("cannot number a child process", &e); None }
+        }
+    }
+
     /// The process ends: its record goes, and the directory too once empty.
     pub fn leave(&mut self) {
         self.threads = 0;
@@ -449,11 +497,23 @@ impl ThreadSession {
         if let Ok(l) = self.dir.lock() {
             l.remove(&process_name(self.me.pid));
             // Records of processes that were killed go too (a scan removes
-            // them), then the directory — which fails, harmlessly, while
-            // live records are there.
+            // them), then — with no live process left — the process-id
+            // counter and the directory. Removing the directory fails,
+            // harmlessly, while live records are there.
             let _ = self.others(&l);
+            if !self.any_record(&l) {
+                l.remove(PID_COUNTER);
+            }
             let _ = std::fs::remove_dir(&self.dir.path);
         }
+    }
+
+    /// Whether the directory still holds a record (of a live process with
+    /// no threads counted, or one being started).
+    fn any_record(&self, l: &Locked) -> bool {
+        std::fs::read_dir(l.path("")).map_or(true, |entries| {
+            entries.take(MAX_ENTRIES).flatten().any(|e| parse_name(&e.file_name()).is_some())
+        })
     }
 }
 
@@ -497,6 +557,11 @@ impl ThreadSlots {
 
     pub fn leave(&mut self) {
         if let ThreadSlots::Session(s) = self { s.leave(); }
+    }
+
+    /// A new process id from the session (`None`: inactive or unusable).
+    pub fn next_process_id(&mut self) -> Option<u32> {
+        match self { ThreadSlots::Inactive => None, ThreadSlots::Session(s) => s.next_process_id() }
     }
 }
 
@@ -726,6 +791,83 @@ mod tests {
         }
         let total: u32 = handles.into_iter().map(|h| h.join().unwrap()).sum();
         assert_eq!(total, LIMIT);
+    }
+
+    #[test]
+    fn processes_of_a_session_get_distinct_ids() {
+        let d = tempfile::tempdir().unwrap();
+        let procs = Procs::default();
+        let mut a = procs.session(d.path(), 64, 10);
+        let mut b = procs.session(d.path(), 64, 20);
+        a.join(None).unwrap();
+        b.join(None).unwrap();
+        let ids = [a.next_process_id(), b.next_process_id(), a.next_process_id()];
+        assert_eq!(ids, [Some(FIRST_CHILD_PROCESS_ID), Some(FIRST_CHILD_PROCESS_ID + 1),
+                         Some(FIRST_CHILD_PROCESS_ID + 2)]);
+        assert!(files(d.path()).contains(&PID_COUNTER.to_string()));
+        // The counter outlives a process that leaves while others live …
+        a.leave();
+        assert!(files(d.path()).contains(&PID_COUNTER.to_string()));
+        assert_eq!(a.next_process_id(), None, "a process that left numbers none");
+        assert_eq!(b.next_process_id(), Some(FIRST_CHILD_PROCESS_ID + 3));
+        // … and goes with the last one, with the directory.
+        b.leave();
+        assert!(!d.path().join("s").exists());
+    }
+
+    #[test]
+    fn racing_processes_never_share_an_id() {
+        let d = tempfile::tempdir().unwrap();
+        let procs = Procs::default();
+        let handles: Vec<_> = (1..=6u32).map(|pid| {
+            let mut s = procs.session(d.path(), 64, pid * 10);
+            std::thread::spawn(move || {
+                s.join(None).unwrap();
+                (0..20).filter_map(|_| s.next_process_id()).collect::<Vec<u32>>()
+            })
+        }).collect();
+        let mut all: Vec<u32> = handles.into_iter().flat_map(|h| h.join().unwrap()).collect();
+        assert_eq!(all.len(), 120);
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), 120, "an id was given out twice");
+    }
+
+    #[test]
+    fn a_bad_counter_starts_the_numbering_again() {
+        let d = tempfile::tempdir().unwrap();
+        let procs = Procs::default();
+        let mut a = procs.session(d.path(), 64, 10);
+        a.join(None).unwrap();
+        let counter = d.path().join("s").join(PID_COUNTER);
+        for junk in [&b"junk\n"[..], b"99\n", b"65536\n", b"", b"123", b"0000000000000000000000000"] {
+            std::fs::write(&counter, junk).unwrap();
+            assert_eq!(a.next_process_id(), Some(FIRST_CHILD_PROCESS_ID), "{junk:?}");
+        }
+        std::fs::write(&counter, format!("{MAX_PROCESS_ID}\n")).unwrap();
+        assert_eq!(a.next_process_id(), Some(MAX_PROCESS_ID));
+        assert_eq!(a.next_process_id(), Some(FIRST_CHILD_PROCESS_ID), "wraps");
+        // A link is not followed: the counter starts again in a file of its own.
+        let target = d.path().join("elsewhere");
+        std::fs::write(&target, b"5000\n").unwrap();
+        std::fs::remove_file(&counter).unwrap();
+        std::os::unix::fs::symlink(&target, &counter).unwrap();
+        assert_eq!(a.next_process_id(), Some(FIRST_CHILD_PROCESS_ID));
+        assert_eq!(std::fs::read(&target).unwrap(), b"5000\n", "the link's target is untouched");
+        assert!(!std::fs::symlink_metadata(&counter).unwrap().file_type().is_symlink());
+        assert_eq!(parse_counter(b"150\n"), Some(150));
+        assert_eq!(parse_counter(b"+150\n"), None);
+    }
+
+    #[test]
+    fn an_unusable_session_numbers_no_process() {
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("s"), b"a file").unwrap();
+        let procs = Procs::default();
+        let mut s = procs.session(d.path(), 64, 10);
+        let _ = s.join(None);
+        assert_eq!(s.next_process_id(), None);
+        assert_eq!(ThreadSlots::Inactive.next_process_id(), None);
     }
 
     #[test]

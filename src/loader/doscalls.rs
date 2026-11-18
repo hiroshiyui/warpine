@@ -1409,10 +1409,11 @@ impl super::Loader {
     pub fn dos_query_mutex_sem(&self, hmtx: u32, ppid: u32, ptid: u32, pul_count: u32) -> u32 {
         let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_mutex(hmtx) else { return ERROR_INVALID_HANDLE };
         if ppid == 0 || ptid == 0 || pul_count == 0 { return ERROR_INVALID_PARAMETER; }
+        let own_pid = self.shared.process_id();
         let (pid, tid, count) = {
             let sem = sem_arc.0.lock_or_recover();
             match sem.owner_vcpu {
-                Some(v) => (PROCESS_ID, super::threads::tid_of_vcpu(v), sem.request_count),
+                Some(v) => (own_pid, super::threads::tid_of_vcpu(v), sem.request_count),
                 None => (0, 0, 0),
             }
         };

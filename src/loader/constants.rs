@@ -1488,7 +1488,9 @@ pub const ERROR_NESTING_TOO_DEEP: u32 = 650;
 
 // ── Semaphores (`<bsedos.h>` INCL_DOSSEMAPHORES, `<bseerr.h>`) ───────────────
 
-/// The process id Warpine reports (`pib_ulpid`, `DosQueryMutexSem`).
+/// The process id of a process started without a Warpine parent (the
+/// first process of a session); children get theirs from their parent
+/// (`FIRST_CHILD_PROCESS_ID`, `inherit.rs`).
 pub const PROCESS_ID: u32 = 42;
 /// Semaphore attribute flags.
 pub const DC_SEM_SHARED: u32 = 0x0001;
@@ -1906,6 +1908,23 @@ pub const HM_MSG_BASE:          u32 = 0x0220;
 pub const HM_DISPLAY_HELP:      u32 = HM_MSG_BASE + 0x0002;
 pub const HM_SET_ACTIVE_WINDOW: u32 = HM_MSG_BASE + 0x0004;
 pub const HM_CONTROL:           u32 = HM_MSG_BASE + 0x0024;
+
+// ── Process ids (`pib_ulpid` / `pib_ulppid`, `inherit.rs`) ──────────────────
+
+/// PIB byte offset of `pib_ulpid`.
+pub const PIB_PID_OFFSET: u32 = 0x00;
+/// PIB byte offset of `pib_ulppid`.
+pub const PIB_PPID_OFFSET: u32 = 0x04;
+/// PIB byte offset of `pib_pchcmd` (the command line).
+pub const PIB_PCHCMD_OFFSET: u32 = 0x0C;
+/// The parent id of a process started without a Warpine parent.
+pub const NO_PARENT_PROCESS_ID: u32 = 0;
+/// The first id a session gives a child process; ids below it are never
+/// handed out, so they cannot meet `PROCESS_ID`.
+pub const FIRST_CHILD_PROCESS_ID: u32 = 100;
+/// The largest process id: ids stay within the 16-bit `PID` of the 16-bit
+/// API; after it, numbering starts again at `FIRST_CHILD_PROCESS_ID`.
+pub const MAX_PROCESS_ID: u32 = 0xFFFF;
 
 #[cfg(test)]
 mod header_tests {

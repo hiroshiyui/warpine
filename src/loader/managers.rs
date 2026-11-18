@@ -224,7 +224,7 @@ impl ProcessManager {
             current_dir: String::from("\\"),
             children: HashMap::new(),
             relay_threads: HashMap::new(),
-            next_pid: 100,
+            next_pid: super::constants::FIRST_CHILD_PROCESS_ID,
         }
     }
 
@@ -234,12 +234,30 @@ impl ProcessManager {
         self.current_dir.trim_start_matches('\\')
     }
 
-    /// Track a child process, returning its assigned PID.
+    /// Track a child process under a new id of this process's own
+    /// numbering, returning it.
     pub fn add_child(&mut self, child: std::process::Child) -> u32 {
-        let pid = self.next_pid;
+        let pid = self.alloc_pid(&[]);
         self.children.insert(pid, child);
-        self.next_pid += 1;
         pid
+    }
+
+    /// Track child process `pid` (the id it was started with).
+    pub fn insert_child(&mut self, pid: u32, child: std::process::Child) {
+        self.children.insert(pid, child);
+    }
+
+    /// The next id of this process's own numbering that is none of `avoid`
+    /// and no child's (the fallback when the session cannot number
+    /// processes, `inherit.rs`).
+    pub fn alloc_pid(&mut self, avoid: &[u32]) -> u32 {
+        loop {
+            let pid = self.next_pid;
+            self.next_pid = super::inherit::next_process_id(pid);
+            if !avoid.contains(&pid) && !self.children.contains_key(&pid) {
+                return pid;
+            }
+        }
     }
 
     /// Remove and return a child process by PID.

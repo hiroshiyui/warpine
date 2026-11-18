@@ -160,7 +160,7 @@ impl super::Loader {
         if signal != XCPT_SIGNAL_INTR && signal != XCPT_SIGNAL_BREAK {
             return ERROR_INVALID_SIGNAL_NUMBER;
         }
-        if pid == PROCESS_ID {
+        if pid == self.shared.process_id() {
             self.post_signal(signal);
             return NO_ERROR;
         }

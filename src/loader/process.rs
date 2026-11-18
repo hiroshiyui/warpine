@@ -127,9 +127,12 @@ impl super::Loader {
         // Bounded nesting and number of children (inherit.rs).
         // A slot of the session's THREADS= limit for the child's thread 1
         // is reserved too: ERROR_NO_PROC_SLOTS when there is none.
+        // The child's process id is chosen here too (WARPINE_PID): what
+        // EXEC_ASYNC returns and DosWaitChild / DosKillProcess take.
         let Ok(slot) = self.admit_child(&mut cmd) else {
             return super::inherit::ERROR_NO_PROC_SLOTS;
         };
+        let child_pid = slot.pid;
         cmd.arg(&prog_path);
         self.set_child_startup(&mut cmd, p_arg, p_env);
         // Pipe handles the child inherits; kept open until it has started.
@@ -236,7 +239,8 @@ impl super::Loader {
                         let stdout_pipe = child.stdout.take();
                         let shared_out = self.shared.clone();
                         let mut proc_mgr = self.shared.process_mgr.lock_or_recover();
-                        let pid = proc_mgr.add_child(child);
+                        let pid = child_pid;
+                        proc_mgr.insert_child(pid, child);
                         if let Some(pipe) = stdout_pipe {
                             let relay = std::thread::spawn(move || relay_pipe_to_vio(pipe, shared_out));
                             proc_mgr.add_relay_thread(pid, relay);

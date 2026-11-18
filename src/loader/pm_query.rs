@@ -389,7 +389,7 @@ impl super::Loader {
         if !self.pm_check_hwnd(tid, hwnd, false) { return ApiResult::Normal(0); }
         let thread = self.shared.window_mgr.lock_or_recover().window_thread(hwnd)
             .unwrap_or(super::threads::MAIN_TID);
-        for (ptr, value) in [(ppid, PROCESS_ID), (ptid, thread)] {
+        for (ptr, value) in [(ppid, self.shared.process_id()), (ptid, thread)] {
             if ptr != 0 && self.guest_write::<u32>(ptr, value).is_none() {
                 return self.pm_fail(tid, PMERR_PARAMETER_OUT_OF_RANGE);
             }

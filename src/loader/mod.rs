@@ -450,7 +450,7 @@ impl Loader {
         let sem_mgr = SemaphoreManager::new();
         let hdir_mgr = HDirManager::new();
         let queue_mgr = QueueManager::new();
-        let window_mgr = WindowManager::new();
+        let mut window_mgr = WindowManager::new();
         let mut drive_mgr = DriveManager::with_default_config();
         // Mount HostDirBackend on C: using the configured path
         if let Some(config) = drive_mgr.drive_config(2).cloned() {
@@ -471,6 +471,10 @@ impl Loader {
         let mut console_mgr = console::VioManager::new();
         console_mgr.codepage = locale.codepage as u16;
         crate::gui::font::set_active_codepage(locale.codepage);
+
+        // The command line, environment and process id a parent passed.
+        let startup = inherit::StartupInfo::from_env();
+        window_mgr.switch_list.own_process = startup.process_id();
 
         let shared = Arc::new(SharedState {
             mem_mgr: Mutex::new(mem_mgr),
@@ -493,7 +497,7 @@ impl Loader {
             uconv_mgr: Mutex::new(uconv::UconvManager::new()),
             socket_mgr: Mutex::new(tcpip::SocketManager::new()),
             npipes: Mutex::new(npipe::NamedPipes::new(npipe::PipeDir::from_env())),
-            startup: Mutex::new(inherit::StartupInfo::from_env()),
+            startup: Mutex::new(startup),
             exe_name: Mutex::new(String::new()),
             guest_mem,
             threads: Default::default(),

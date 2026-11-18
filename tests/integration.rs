@@ -38,11 +38,17 @@ fn run_sample(sample: &str, timeout_secs: u64) -> (String, i32) {
 /// [`run_sample`] with extra environment variables (applied after the
 /// pinned locale, so they can override it).
 fn run_sample_env(sample: &str, timeout_secs: u64, env: &[(&str, &str)]) -> (String, i32) {
+    run_sample_args(sample, &[], timeout_secs, env)
+}
+
+/// [`run_sample_env`] with command-line arguments for the program.
+fn run_sample_args(sample: &str, args: &[&str], timeout_secs: u64, env: &[(&str, &str)]) -> (String, i32) {
     // Drive C: is $XDG_DATA_HOME/warpine/drive_c: a fresh one per run, never
     // the user's own (`env` may still name another).
     let data_home = tempfile::tempdir().expect("tempdir");
     let mut child = Command::new(warpine())
         .arg(sample)
+        .args(args)
         .env("WARPINE_HEADLESS", "1")
         .env("XDG_DATA_HOME", data_home.path())
         // Named-pipe and thread-session directories go there too, never
@@ -1743,6 +1749,63 @@ fn test_nest_test_stops_at_the_nesting_limit() {
     assert_eq!(code, 8, "exit code (copies started below the first)\nstdout:\n{out}");
     assert_eq!(out.matches("nest_test: DosExecPgm refused rc=89").count(), 1, "{out}");
     assert_eq!(out.matches("nest_test: child ended with").count(), 8, "{out}");
+}
+
+/// Whether `exe` was linked with the start-up code of the Open Watcom
+/// snapshots that read the entry stack one slot off (Open Watcom #1649,
+/// fixed 2026-08-11): `__OS2Main`'s `mov eax,[ebp+0x10]; mov ebx,[ebp+4];
+/// push eax`. Such a program sees no argv and no environment on any system.
+fn built_with_shifted_ow_startup(exe: &str) -> bool {
+    const SHIFTED_ARGS: [u8; 7] = [0x8B, 0x45, 0x10, 0x8B, 0x5D, 0x04, 0x50];
+    std::fs::read(exe).is_ok_and(|b| b.windows(SHIFTED_ARGS.len()).any(|w| w == SHIFTED_ARGS))
+}
+
+/// argv_test, started with arguments: the C runtime's argc / argv and
+/// environment come from the entry stack ([esp+12] environment, [esp+16]
+/// command line) in the first process and in its DosExecPgm children; every
+/// process of the session has its own id, which its parent also uses
+/// (EXEC_ASYNC's result, DosWaitChild, DosKillProcess) and which its
+/// children see as `pib_ulppid`.
+#[test]
+fn test_argv_and_process_ids() {
+    const SAMPLE: &str = "samples/argv_test/argv_test.exe";
+    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    if built_with_shifted_ow_startup(SAMPLE) {
+        eprintln!("skipped: {SAMPLE} was built with an Open Watcom snapshot older than 2026-08-11 \
+                   (#1649); rebuild it with a newer one (vendor/setup_watcom.sh --refresh)");
+        return;
+    }
+    let (out, code) = run_sample_args(SAMPLE, &["alpha", "beta", "gamma"], 120, &[]);
+    assert_eq!(code, 0, "exit code\n{out}");
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("argv_test: done, 0 failed"), "{out}");
+    for line in ["argv_test: parent argv[1]=alpha", "argv_test: parent argv[3]=gamma",
+                 "argv_test: child argv[1]=child", "argv_test: child argv[5]=three",
+                 "argv_test: childsync argv[3]=x", "argv_test: grandchild argv[1]=grandchild",
+                 "argv_test: ok child environment from DosExecPgm",
+                 "argv_test: parent argv[0]=C:\\ARGV_TEST.EXE"] {
+        assert!(out.contains(line), "missing {line:?}\n{out}");
+    }
+    // "argv_test: <who> pid=<pid> ppid=<ppid> argc=<n>"
+    let ids: std::collections::HashMap<&str, (u32, u32)> = out.lines().filter_map(|l| {
+        let rest = l.strip_prefix("argv_test: ")?;
+        let (who, rest) = rest.split_once(" pid=")?;
+        let (pid, rest) = rest.split_once(" ppid=")?;
+        let (ppid, _) = rest.split_once(' ')?;
+        Some((who, (pid.parse().ok()?, ppid.parse().ok()?)))
+    }).collect();
+    assert_eq!(ids.len(), 4, "{out}");
+    let (parent, child, sync, grand) = (ids["parent"], ids["child"], ids["childsync"], ids["grandchild"]);
+    assert_eq!(parent, (42, 0), "the first process of a session");
+    assert_eq!(child.1, parent.0);
+    assert_eq!(sync.1, parent.0);
+    assert_eq!(grand.1, sync.0, "a grandchild's parent is the child that started it");
+    let mut pids = vec![parent.0, child.0, sync.0, grand.0];
+    pids.sort_unstable();
+    pids.dedup();
+    assert_eq!(pids.len(), 4, "process ids are unique in the session: {ids:?}");
+    assert!(out.contains(&format!("child's own pid is the one DosExecPgm returned ({}, exit {})",
+                                  child.0, child.0 & 0xFF)), "{out}");
 }
 
 /// threads_limit_test with `THREADS=70` in drive C's CONFIG.SYS: the limit

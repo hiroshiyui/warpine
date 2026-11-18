@@ -144,10 +144,14 @@ pub type SwitchResult<T> = Result<T, u32>;
 pub struct SwitchList {
     entries: BTreeMap<u32, Entry>,
     next: u32,
+    /// This process's id (`idProcess` 0 means it).
+    pub own_process: u32,
 }
 
 impl Default for SwitchList {
-    fn default() -> Self { SwitchList { entries: BTreeMap::new(), next: FIRST_SWITCH_HANDLE } }
+    fn default() -> Self {
+        SwitchList { entries: BTreeMap::new(), next: FIRST_SWITCH_HANDLE, own_process: PROCESS_ID }
+    }
 }
 
 impl SwitchList {
@@ -156,7 +160,7 @@ impl SwitchList {
         if self.entries.len() >= MAX_SWITCH_ENTRIES {
             return Err(PMERR_NO_SPACE);
         }
-        if ctl.process == 0 { ctl.process = PROCESS_ID; }
+        if ctl.process == 0 { ctl.process = self.own_process; }
         ctl.title.truncate(MAXNAMEL);
         let h = self.next;
         self.next += 1;
@@ -176,7 +180,7 @@ impl SwitchList {
 
     pub fn change(&mut self, h: u32, mut ctl: SwControl) -> SwitchResult<()> {
         let e = self.entries.get_mut(&h).ok_or(PMERR_INVALID_SWITCH_HANDLE)?;
-        if ctl.process == 0 { ctl.process = PROCESS_ID; }
+        if ctl.process == 0 { ctl.process = self.own_process; }
         ctl.title.truncate(MAXNAMEL);
         e.ctl = ctl;
         Ok(())
@@ -322,7 +326,8 @@ impl super::Loader {
             let frame = wm.find_frame_for_hwnd(hwnd);
             wm.switch_list.handle_for(&[hwnd, frame], 0)
         } else {
-            wm.switch_list.handle_for(&[], if pid == 0 { PROCESS_ID } else { pid })
+            let own = wm.switch_list.own_process;
+            wm.switch_list.handle_for(&[], if pid == 0 { own } else { pid })
         };
         drop(wm);
         self.switch_handle(tid, r.ok_or(PMERR_NO_HANDLE))
@@ -378,6 +383,17 @@ mod tests {
         let mut long = [b'x'; SWCNTRL_SIZE];
         long[..SWC_TITLE].fill(0);
         assert_eq!(SwControl::from_bytes(&long).title.len(), MAXNAMEL);
+    }
+
+    #[test]
+    fn entries_of_this_process_carry_its_own_id() {
+        let mut list = SwitchList { own_process: 123, ..Default::default() };
+        let a = list.add(ctl(0x1000, "A"), false).unwrap();
+        assert_eq!(list.query(a).unwrap().process, 123);
+        list.change(a, ctl(0x1000, "A2")).unwrap();
+        assert_eq!(list.query(a).unwrap().process, 123);
+        assert_eq!(list.handle_for(&[], 123), Some(a));
+        assert_eq!(list.handle_for(&[], PROCESS_ID), None);
     }
 
     #[test]

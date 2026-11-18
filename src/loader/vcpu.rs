@@ -14,6 +14,37 @@ use super::exitlist::ExitListStart;
 use super::signals::{SignalAction, SIGNAL_EXIT_CODE};
 use log::{info, debug, warn, error};
 
+/// Length of a near `jmp rel32`.
+const ENTRY_JMP_LEN: usize = 5;
+/// How much of `__OS2Main` is looked at.
+const OW_MAIN_SCAN_LEN: usize = 0x60;
+/// Prologue of the broken `__OS2Main`: `push ebp; mov ebp,esp; sub esp,8`.
+const OW_SHIFTED_PROLOGUE: [u8; 6] = [0x55, 0x89, 0xE5, 0x83, 0xEC, 0x08];
+/// Its argument loads: `mov eax,[ebp+0x10]` (cmd taken from `[esp+12]`),
+/// `mov ebx,[ebp+4]` (hmod from the return-address slot), `push eax`.
+const OW_SHIFTED_ARGS: [u8; 7] = [0x8B, 0x45, 0x10, 0x8B, 0x5D, 0x04, 0x50];
+
+/// The initial stack of an executable, from `[esp]` up: return address
+/// (Warpine's exit trap), module handle, reserved, environment, command
+/// line (see `create_initial_vcpu`).
+fn exe_entry_stack(env_addr: u32, cmdline_addr: u32) -> [u32; 5] {
+    [EXIT_TRAP_ADDR, EXE_MODULE_HANDLE, 0, env_addr, cmdline_addr]
+}
+
+/// The target of the `jmp rel32` at `at` (`code` = its bytes).
+fn jmp_target(at: u32, code: &[u8]) -> Option<u32> {
+    if code.len() < ENTRY_JMP_LEN || code[0] != 0xE9 { return None; }
+    let rel = i32::from_le_bytes([code[1], code[2], code[3], code[4]]);
+    Some(at.wrapping_add(ENTRY_JMP_LEN as u32).wrapping_add(rel as u32))
+}
+
+/// Whether `code` is the broken Open Watcom `__OS2Main` (see
+/// `Loader::entry_misreads_stack`).
+fn is_shifted_ow_main(code: &[u8]) -> bool {
+    code.starts_with(&OW_SHIFTED_PROLOGUE)
+        && code.windows(OW_SHIFTED_ARGS.len()).any(|w| w == OW_SHIFTED_ARGS)
+}
+
 impl super::Loader {
     pub(crate) fn setup_guest(&self, lx_file: &LxFile) -> (u64, u64, u64) {
         let entry_eip = lx_file.object_table[lx_file.header.eip_object as usize - 1].base_address as u64 + lx_file.header.eip as u64;
@@ -47,9 +78,9 @@ impl super::Loader {
         // TIB2 fields
         self.guest_write::<u32>(tib2_addr, 1).expect("setup_guest: TIB2.tid OOB"); // tib2_ultid = thread 1
         self.guest_write::<u32>(tib2_addr + 0x04, 0).expect("setup_guest: TIB2.pri OOB"); // tib2_ulpri = normal
-        self.guest_write::<u32>(PIB_BASE, PROCESS_ID).expect("setup_guest: PIB PID OOB");
-        self.guest_write::<u32>(PIB_BASE + 0x0C, cmdline_addr).expect("setup_guest: PIB pchcmd OOB");
-        self.guest_write::<u32>(PIB_BASE + 0x10, env_addr).expect("setup_guest: PIB pchenv OOB");
+        self.write_pib_process_ids();
+        self.guest_write::<u32>(PIB_BASE + PIB_PCHCMD_OFFSET, cmdline_addr).expect("setup_guest: PIB pchcmd OOB");
+        self.guest_write::<u32>(PIB_BASE + PIB_PCHENV_OFFSET, env_addr).expect("setup_guest: PIB pchenv OOB");
 
         // Initialize BIOS Data Area (BDA) at flat address 0x400 with VGA 80x25 text mode.
         // Some OS/2 code and C runtime libraries read BDA directly for screen dimensions.
@@ -87,17 +118,36 @@ impl super::Loader {
         regs.rflags = 2;
         vcpu.set_regs(&regs).unwrap();
 
-        // OS/2 initial stack: [return_addr] [hmod] [reserved] [env_ptr] [cmdline_ptr]
-        // PIB layout: +0x0C = pib_pchcmd, +0x10 = pib_pchenv
-        let cmdline_addr = self.guest_read::<u32>(PIB_BASE + 0x0C).unwrap_or(ENV_ADDR);
-        let env_addr = self.guest_read::<u32>(PIB_BASE + 0x10).unwrap_or(ENV_ADDR);
+        // OS/2 initial stack of an executable (cdecl call of the entry
+        // point): [esp] return address, [esp+4] module handle, [esp+8]
+        // reserved (0), [esp+12] environment, [esp+16] command line — the
+        // `pib_pchenv` / `pib_pchcmd` strings. Open Watcom's start-up code
+        // (`__OS2Main( hmod, reserved, env, cmd )`, cstrto32.asm / main2o32.c)
+        // reads it so; see `entry_misreads_stack` for a broken snapshot.
+        let cmdline_addr = self.guest_read::<u32>(PIB_BASE + PIB_PCHCMD_OFFSET).unwrap_or(ENV_ADDR);
+        let env_addr = self.guest_read::<u32>(PIB_BASE + PIB_PCHENV_OFFSET).unwrap_or(ENV_ADDR);
         let sp = regs.rsp as u32;
-        self.guest_write::<u32>(sp, EXIT_TRAP_ADDR).expect("create_initial_vcpu: stack write OOB");
-        self.guest_write::<u32>(sp + 4, 0).expect("create_initial_vcpu: stack write OOB");
-        self.guest_write::<u32>(sp + 8, 0).expect("create_initial_vcpu: stack write OOB");
-        self.guest_write::<u32>(sp + 12, env_addr).expect("create_initial_vcpu: stack write OOB");
-        self.guest_write::<u32>(sp + 16, cmdline_addr).expect("create_initial_vcpu: stack write OOB");
+        for (slot, value) in exe_entry_stack(env_addr, cmdline_addr).into_iter().enumerate() {
+            self.guest_write::<u32>(sp + 4 * slot as u32, value).expect("create_initial_vcpu: stack write OOB");
+        }
+        if self.entry_misreads_stack(entry_eip as u32) {
+            warn!("this program was built with an Open Watcom snapshot whose start-up code reads the \
+                   entry stack one slot off (Open Watcom #1649, fixed 2026-08-11): its argv and \
+                   environment are wrong; rebuild it with a newer Open Watcom");
+        }
         vcpu
+    }
+
+    /// Whether the executable's entry point is the start-up code of the
+    /// Open Watcom snapshots that declared `__OS2Main` "no return" (Open
+    /// Watcom issue #1649): `jmp __OS2Main`, which then takes its four
+    /// arguments one slot too low — the command line from `[esp+12]`, where
+    /// the environment is. Only diagnosed: on OS/2 itself such programs
+    /// fail at start-up.
+    fn entry_misreads_stack(&self, entry: u32) -> bool {
+        let Some(jmp) = self.guest_read_bytes(entry, ENTRY_JMP_LEN) else { return false };
+        let Some(target) = jmp_target(entry, &jmp) else { return false };
+        self.guest_read_bytes(target, OW_MAIN_SCAN_LEN).is_some_and(|code| is_shifted_ow_main(&code))
     }
 
     pub fn setup_and_run_cli(self, lx_file: &LxFile) -> ! {
@@ -1636,6 +1686,68 @@ fn continue_call_chain(
         }
     }
     vcpu.set_regs(&regs).unwrap();
+}
+
+#[cfg(test)]
+mod entry_tests {
+    use super::*;
+
+    #[test]
+    fn exe_entry_stack_is_return_hmod_reserved_env_cmd() {
+        let st = exe_entry_stack(0x2000_0000, 0x2000_0123);
+        assert_eq!(st, [EXIT_TRAP_ADDR, EXE_MODULE_HANDLE, 0, 0x2000_0000, 0x2000_0123]);
+        // Open Watcom's __OS2Main(hmod, reserved, env, cmd) after `jmp`:
+        // env at [esp+12], cmd at [esp+16].
+        assert_eq!(st[3], 0x2000_0000);
+        assert_eq!(st[4], 0x2000_0123);
+    }
+
+    #[test]
+    fn jmp_targets_are_relative_to_the_next_instruction() {
+        assert_eq!(jmp_target(0x10000, &[0xE9, 0x10, 0, 0, 0]), Some(0x10015));
+        assert_eq!(jmp_target(0x10000, &[0xE9, 0xFB, 0xFF, 0xFF, 0xFF]), Some(0x10000));
+        assert_eq!(jmp_target(0x10000, &[0xEB, 0x10, 0, 0, 0]), None, "short jmp is not it");
+        assert_eq!(jmp_target(0x10000, &[0xE9, 0x10]), None, "too short");
+        assert_eq!(jmp_target(0xFFFF_FFF0, &[0xE9, 0x20, 0, 0, 0]), Some(0x15), "wraps, no overflow");
+    }
+
+    /// `__OS2Main` of the Open Watcom snapshot of March 2026 (`wdis` of
+    /// clib3r.lib main2o32): arguments read one slot low.
+    const SHIFTED: &[u8] = &[
+        0x55, 0x89, 0xE5, 0x83, 0xEC, 0x08, 0xB8, 0x01, 0, 0, 0, 0xE8, 0, 0, 0, 0,
+        0xA1, 0, 0, 0, 0, 0x83, 0xC0, 0x03, 0x24, 0xFC, 0x31, 0xD2, 0x2B, 0xE0, 0x89, 0xE6,
+        0x8B, 0x1D, 0, 0, 0, 0, 0x89, 0xF0, 0xE8, 0, 0, 0, 0, 0xA1, 0, 0, 0, 0,
+        0x89, 0x86, 0xFC, 0, 0, 0, 0x89, 0xF0, 0x8B, 0x4D, 0x0C, 0xE8, 0, 0, 0, 0,
+        0x8B, 0x45, 0x10, 0x8B, 0x5D, 0x04, 0x50, 0x89, 0xF2, 0x8D, 0x45, 0xF8, 0xE8, 0, 0, 0, 0,
+    ];
+    /// The same after the fix (November 2026 snapshot): `[ebp+0x18]` …
+    const FIXED: &[u8] = &[
+        0x53, 0x51, 0x52, 0x56, 0x55, 0x89, 0xE5, 0x83, 0xEC, 0x08, 0xB8, 0x01, 0, 0, 0,
+        0x8B, 0x4D, 0x20, 0xE8, 0, 0, 0, 0, 0x8B, 0x45, 0x24, 0x8B, 0x5D, 0x18, 0x50,
+    ];
+
+    #[test]
+    fn the_broken_open_watcom_start_up_is_recognised() {
+        assert!(is_shifted_ow_main(SHIFTED));
+        assert!(!is_shifted_ow_main(FIXED));
+        assert!(!is_shifted_ow_main(&SHIFTED[..20]), "argument loads not seen");
+        assert!(!is_shifted_ow_main(&[]));
+    }
+
+    #[test]
+    fn a_loader_checks_the_entry_jump() {
+        let loader = super::super::Loader::new_mock();
+        const ENTRY: u32 = 0x0001_0000;
+        const MAIN: u32 = 0x0001_0100;
+        let rel = (MAIN - (ENTRY + ENTRY_JMP_LEN as u32)).to_le_bytes();
+        loader.guest_write_bytes(ENTRY, &[0xE9, rel[0], rel[1], rel[2], rel[3]]).unwrap();
+        loader.guest_write_bytes(MAIN, SHIFTED).unwrap();
+        assert!(loader.entry_misreads_stack(ENTRY));
+        loader.guest_write_bytes(MAIN, FIXED).unwrap();
+        assert!(!loader.entry_misreads_stack(ENTRY));
+        assert!(!loader.entry_misreads_stack(MAIN), "no jmp at the entry point");
+        assert!(!loader.entry_misreads_stack(u32::MAX - 2), "out of guest memory");
+    }
 }
 
 #[cfg(test)]

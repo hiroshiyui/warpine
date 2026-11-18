@@ -193,7 +193,7 @@ impl super::Loader {
         if block.flags & OBJ_GIVEABLE == 0 || flag & PERM & !block.flags != 0 {
             return ERROR_ACCESS_DENIED;
         }
-        if pid == PROCESS_ID {
+        if pid == self.shared.process_id() {
             return NO_ERROR;
         }
         if self.shared.process_mgr.lock_or_recover().children.contains_key(&pid) {

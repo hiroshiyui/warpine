@@ -168,9 +168,9 @@ impl super::Loader {
         self.guest_write::<u32>(TIB_BASE + 0x30, PIB_BASE).unwrap();
         self.guest_write::<u32>(tib2_addr, 1).unwrap();
         self.guest_write::<u32>(tib2_addr + 0x04, 0).unwrap();
-        self.guest_write::<u32>(PIB_BASE, PROCESS_ID).unwrap();
-        self.guest_write::<u32>(PIB_BASE + 0x0C, cmdline_addr).unwrap();
-        self.guest_write::<u32>(PIB_BASE + 0x10, env_addr).unwrap();
+        self.write_pib_process_ids();
+        self.guest_write::<u32>(PIB_BASE + PIB_PCHCMD_OFFSET, cmdline_addr).unwrap();
+        self.guest_write::<u32>(PIB_BASE + PIB_PCHENV_OFFSET, env_addr).unwrap();
 
         // BDA
         {
