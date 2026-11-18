@@ -56,6 +56,16 @@ pub(crate) fn begin_call(tid: u32, signals: bool) {
     CALL.with(|c| c.set(CallState { tid, signals, restart: false }));
 }
 
+/// The vCPU of the API call this host thread is in (`None`: not in a
+/// call), the key of per-thread state such as `WinGetLastError`'s.
+pub(crate) fn current_vcpu() -> Option<u32> {
+    match CALL.with(Cell::get).tid {
+        0 => None,
+        MAIN_TID => Some(super::threads::MAIN_VCPU_ID),
+        tid => Some(tid),
+    }
+}
+
 /// The call is over: whether it gave up to be made again.
 pub(crate) fn end_call() -> bool {
     CALL.with(|c| c.replace(CallState::default()).restart)
@@ -105,6 +115,18 @@ mod tests {
     use super::super::Loader;
     use super::super::constants::*;
     use super::super::threads::ThreadMemory;
+
+    #[test]
+    fn the_current_vcpu_follows_the_call() {
+        assert_eq!(current_vcpu(), None, "not in a call");
+        begin_call(MAIN_TID, false);
+        assert_eq!(current_vcpu(), Some(super::super::threads::MAIN_VCPU_ID));
+        end_call();
+        begin_call(3, false);
+        assert_eq!(current_vcpu(), Some(3));
+        end_call();
+        assert_eq!(current_vcpu(), None);
+    }
 
     #[test]
     fn nothing_interrupts_outside_a_call() {

@@ -249,6 +249,7 @@ impl Loader {
             }
         }
         let bare = self.shared.window_mgr.lock_or_recover().destroy_finish(chain);
+        self.free_pending_guest_blocks();
         for frame in bare {
             if self.shared.window_mgr.lock_or_recover().is_window(frame) {
                 self.attach_menu_to_frame(frame, 0);

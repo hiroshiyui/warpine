@@ -1424,6 +1424,7 @@ impl super::Loader {
                 // columns (VSCDATA), a notebook's (empty) pages.
                 self.init_slider_or_valueset(hwnd, p_ctl_data);
                 self.shared.window_mgr.lock_or_recover().build_notebook(hwnd);
+                self.shared.window_mgr.lock_or_recover().build_container(hwnd);
                 // The parts of a combination box / spin button.
                 self.build_compound_control(hwnd);
                 // The client of a WC_FRAME window (pm_frame.rs).
@@ -2190,6 +2191,7 @@ impl super::Loader {
                 wm.build_combo_or_spin(ch);
                 wm.build_slider_or_valueset(ch, &item.ctl_data);
                 wm.build_notebook(ch);
+                wm.build_container(ch);
                 controls.push(ch);
             }
         }

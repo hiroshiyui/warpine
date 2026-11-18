@@ -176,6 +176,8 @@ pub struct OS2Window {
     pub valueset: Option<Box<super::pm_valueset::ValueSetState>>,
     /// A notebook's pages (`pm_notebook.rs`).
     pub notebook: Option<Box<super::pm_notebook::NotebookState>>,
+    /// A container's records and views (`pm_container.rs`).
+    pub container: Option<Box<super::pm_container::CnrState>>,
 }
 
 /// Map a PM colour value to 0x00RRGGBB with the default colour table: the
@@ -627,6 +629,10 @@ pub struct WindowManager {
     /// Owner-draw requests waiting to be sent to the owners of controls
     /// (`pm_owner.rs`): `WM_MEASUREITEM`, `WM_DRAWITEM`, `BN_PAINT`.
     pub owner_calls: Vec<super::pm_owner::OwnerCall>,
+    /// Guest memory blocks of destroyed windows (container arenas) for the
+    /// loader to give back to the memory manager, whose lock is never
+    /// taken under this one (ADR-0043).
+    pub pending_guest_frees: Vec<u32>,
     /// Message queues whose thread is running owner-draw calls now.
     pub owner_drawing: HashSet<u32>,
     /// Hooks (`WinSetHook`) and the per-thread state of hook and send
@@ -711,6 +717,7 @@ impl WindowManager {
             sys_colors: Default::default(),
             key_state: Default::default(),
             owner_calls: Vec::new(),
+            pending_guest_frees: Vec::new(),
             owner_drawing: HashSet::new(),
             hooks: Default::default(),
             update_locked: 0,
@@ -774,6 +781,7 @@ impl WindowManager {
             slider: None,
             valueset: None,
             notebook: None,
+            container: None,
         });
         // Register as child of parent
         if parent != 0
@@ -1168,7 +1176,7 @@ impl WindowManager {
         self.windows.get(&hwnd).is_some_and(|w| {
             w.visible && w.style & WS_DISABLED == 0
                 && (matches!(w.class_name.as_str(), "WC_ENTRYFIELD" | "WC_MLE" | "WC_LISTBOX" | "WC_BUTTON"
-                                                    | "WC_VALUESET" | "WC_NOTEBOOK")
+                                                    | "WC_VALUESET" | "WC_NOTEBOOK" | "WC_CONTAINER")
                     || (w.class_name == "WC_SLIDER" && w.style & SLS_READONLY == 0))
         })
     }
@@ -1291,6 +1299,8 @@ impl WindowManager {
             ("WC_SLIDER", false) => SLN_KILLFOCUS,
             ("WC_VALUESET", true) => VN_SETFOCUS,
             ("WC_VALUESET", false) => VN_KILLFOCUS,
+            ("WC_CONTAINER", true) => super::pm_container::CN_SETFOCUS,
+            ("WC_CONTAINER", false) => super::pm_container::CN_KILLFOCUS,
             _ => return,
         };
         self.notify_owner(hwnd, code, hwnd);
@@ -1692,6 +1702,10 @@ impl WindowManager {
             i += 1;
         }
         for &h in &doomed {
+            if let Some(c) = self.windows.get_mut(&h).and_then(|w| w.container.as_deref_mut()) {
+                let arenas = c.heap.take_all();
+                self.pending_guest_frees.extend(arenas);
+            }
             if self.z_order.contains(&h) {
                 self.z_remove(h);
             }

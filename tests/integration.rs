@@ -2475,6 +2475,36 @@ fn gui_pm_notebook_test_matches_golden() {
         &format!("{NOTEBOOK_STEPS}2300 dump {{dump}}\n2400 quit\n"));
 }
 
+/// pm_container_test: a WC_CONTAINER (client (8, 8), 380 × 250, extended
+/// selection) with five records in the detail view (a title, column
+/// titles, name / size / date columns). The guest checks record and field
+/// allocation, insertion orders, queries, CNRINFO, CM_SEARCHSTRING,
+/// CN_EMPHASIS before CM_SETRECORDEMPHASIS returns and
+/// PMERR_RECORD_CURRENTLY_INSERTED; the steps click row 1, shift+click
+/// row 3 (three selected), double click row 0 (CN_ENTER from the mouse),
+/// press Down and Enter (CN_ENTER from the keyboard).
+const CONTAINER_STEPS: &str = "\
+    1000 click 140 376\n\
+    1300 shift+click 140 412\n\
+    1600 dblclick 140 358\n\
+    1900 key down\n\
+    2100 key enter\n";
+
+#[test]
+fn gui_pm_container_test_selects_and_notifies() {
+    let steps = format!("{CONTAINER_STEPS}2400 key alt+f4\n4500 quit\n");
+    assert_scripted_checks_pass("samples/pm_container_test/pm_container_test.exe", "pm_container_test", 47, &steps);
+}
+
+/// pm_container_test's picture: the "Files" title, the column titles over
+/// a separator, five rows with column separators, alpha.txt selected and
+/// cursored.
+#[test]
+fn gui_pm_container_test_matches_golden() {
+    check_gui_golden("pm_container_test", "samples/pm_container_test/pm_container_test.exe",
+        &format!("{CONTAINER_STEPS}2300 dump {{dump}}\n2400 quit\n"));
+}
+
 /// pm_charbundle_test: GpiSetAttrs / GpiQueryAttrs with a CHARBUNDLE set
 /// and report the character mode, angle, shear, direction, alignment,
 /// extra and break extra that the single GpiSetChar* calls use, reject

@@ -21,6 +21,7 @@ mod pm_spin;
 mod pm_slider;
 mod pm_valueset;
 mod pm_notebook;
+mod pm_container;
 pub mod pm_scrollbar;
 pub mod pm_cursor;
 mod pm_destroy;
@@ -721,6 +722,12 @@ impl Loader {
             && let Some(r) = self.notebook_message(hwnd, msg, mp1, mp2) {
             return r;
         }
+        // Containers (pm_container.rs); a container answers a double click
+        // itself (CN_ENTER).
+        if msg != WM_PAINT && class_name == pm_container::CLASS_CONTAINER
+            && let Some(r) = self.container_message(hwnd, msg, mp1, mp2) {
+            return r;
+        }
 
         // The second press of a double click: a list box selects and tells
         // its owner LN_ENTER; every other built-in control treats it as a press.
@@ -804,6 +811,10 @@ impl Loader {
                     pm_notebook::CLASS_NOTEBOOK => {
                         let p = Painter::new(self, frame_hwnd, hwnd).clipped_to((x, y, cx, cy));
                         self.paint_notebook(&p, hwnd, (x, y, cx, cy));
+                    }
+                    pm_container::CLASS_CONTAINER => {
+                        let p = Painter::new(self, frame_hwnd, hwnd).clipped_to((x, y, cx, cy));
+                        self.paint_container(&p, hwnd, (x, y, cx, cy));
                     }
                     "#Menu" => {
                         // The menu bar and any open pull-down are frame chrome:
@@ -1227,6 +1238,19 @@ impl<'a> Painter<'a> {
         use crate::gui::region::{Region, RRect};
         self.clip = Some(Region::rect(RRect::new(x, y, x.saturating_add(cx), y.saturating_add(cy))));
         self
+    }
+
+    /// A copy of this painter drawing only inside `(x, y, cx, cy)` and its
+    /// own clip (a column or cell of a control).
+    pub fn clone_clipped(&self, (x, y, cx, cy): (i32, i32, i32, i32)) -> Painter<'a> {
+        use crate::gui::region::{Region, RRect, SetOp};
+        let cell = Region::rect(RRect::new(x, y, x.saturating_add(cx), y.saturating_add(cy)));
+        let clip = match &self.clip {
+            None => Some(cell),
+            Some(c) => Some(Region::combine(c, &cell, SetOp::And).unwrap_or_else(Region::empty)),
+        };
+        Painter { loader: self.loader, frame: self.frame, cjk: self.cjk, fg: self.fg, bg: self.bg,
+                  own_bg: self.own_bg, face: self.face, clip }
     }
 
     pub fn op(&self, op: DrawOp) {

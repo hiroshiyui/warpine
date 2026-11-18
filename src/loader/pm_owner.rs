@@ -94,6 +94,9 @@ pub enum OwnerCallKind {
     /// `WM_CONTROL(BKN_PAGEDELETED)` with a `DELETENOTIFY` for a deleted
     /// page (its window, data and tab bitmap).
     NotebookDeleted { page: u32, data: u32, bitmap: u32 },
+    /// `WM_CONTROL(code)` from a container with a three-ULONG structure
+    /// (`NOTIFYRECORDEMPHASIS`, `NOTIFYRECORDENTER`; `pm_container.rs`).
+    ContainerNotify { code: u16, block: [u32; 3] },
 }
 
 /// The menu item `id` in `items` (searched through the submenus).
@@ -311,6 +314,11 @@ impl Loader {
                 mp1: (super::pm_notebook::BKN_PAGEDELETED << 16) | (id & 0xFFFF), mp2: 0,
                 block: vec![call.control, page, data, bitmap], hps: 0,
             },
+            OwnerCallKind::ContainerNotify { code, block } => OwnerSetup::Call {
+                wnd_proc, owner, msg: WM_CONTROL,
+                mp1: (u32::from(code) << 16) | (id & 0xFFFF), mp2: 0,
+                block: block.to_vec(), hps: 0,
+            },
             OwnerCallKind::UserButton => {
                 let state = self.user_button_state(call.control, style);
                 let old = self.shared.window_mgr.lock_or_recover().get_window_mut(call.control)
@@ -474,7 +482,8 @@ impl Loader {
             OwnerCallKind::ValueSetBackground => self.valueset_owner_done(call.control, None, result != 0),
             OwnerCallKind::UserButton | OwnerCallKind::DrawMenuItem { .. }
             | OwnerCallKind::EraseBackground | OwnerCallKind::SyncPaint
-            | OwnerCallKind::NotebookSelected { .. } | OwnerCallKind::NotebookDeleted { .. } => {}
+            | OwnerCallKind::NotebookSelected { .. } | OwnerCallKind::NotebookDeleted { .. }
+            | OwnerCallKind::ContainerNotify { .. } => {}
         }
     }
 }
