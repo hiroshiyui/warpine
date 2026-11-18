@@ -181,15 +181,15 @@
 <!-- net_mm -->
 <g id="node12" class="node">
 <title>net_mm</title>
-<path fill="#bbdefb" stroke="black" d="M1207.92,-169.51C1207.92,-169.51 914.08,-169.51 914.08,-169.51 908.08,-169.51 902.08,-163.51 902.08,-157.51 902.08,-157.51 902.08,-145.51 902.08,-145.51 902.08,-139.51 908.08,-133.51 914.08,-133.51 914.08,-133.51 1207.92,-133.51 1207.92,-133.51 1213.92,-133.51 1219.92,-139.51 1219.92,-145.51 1219.92,-145.51 1219.92,-157.51 1219.92,-157.51 1219.92,-163.51 1213.92,-169.51 1207.92,-169.51"/>
-<text xml:space="preserve" text-anchor="start" x="912.88" y="-151.56" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Sockets and multimedia: SO32DLL / TCP32DLL, MMPM/2</text>
-<text xml:space="preserve" text-anchor="start" x="1004.38" y="-143.41" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/tcpip.rs, loader/mmpm.rs</text>
+<path fill="#bbdefb" stroke="black" d="M1313.92,-169.51C1313.92,-169.51 1020.08,-169.51 1020.08,-169.51 1014.08,-169.51 1008.08,-163.51 1008.08,-157.51 1008.08,-157.51 1008.08,-145.51 1008.08,-145.51 1008.08,-139.51 1014.08,-133.51 1020.08,-133.51 1020.08,-133.51 1313.92,-133.51 1313.92,-133.51 1319.92,-133.51 1325.92,-139.51 1325.92,-145.51 1325.92,-145.51 1325.92,-157.51 1325.92,-157.51 1325.92,-163.51 1319.92,-169.51 1313.92,-169.51"/>
+<text xml:space="preserve" text-anchor="start" x="1018.88" y="-151.56" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Sockets and multimedia: SO32DLL / TCP32DLL, MMPM/2</text>
+<text xml:space="preserve" text-anchor="start" x="1110.38" y="-143.41" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/tcpip.rs, loader/mmpm.rs</text>
 </g>
 <!-- dispatch&#45;&gt;net_mm -->
 <g id="edge14" class="edge">
 <title>dispatch&#45;&gt;net_mm</title>
-<path fill="none" stroke="#455a64" d="M1500.15,-581.79C1162.55,-582.09 383.05,-579.09 120,-546.33 68.03,-539.86 17,-541.45 17,-489.07 17,-489.07 17,-489.07 17,-251.53 17,-164.88 594.29,-152.35 890.31,-151.61"/>
-<polygon fill="#455a64" stroke="#455a64" points="890.08,-155.11 900.07,-151.59 890.07,-148.11 890.08,-155.11"/>
+<path fill="none" stroke="#455a64" d="M1500.15,-581.84C1162.53,-582.25 383.01,-579.44 120,-546.33 68.03,-539.79 17,-541.45 17,-489.07 17,-489.07 17,-489.07 17,-251.53 17,-202.98 676.24,-171.18 996.46,-158.6"/>
+<polygon fill="#455a64" stroke="#455a64" points="996.33,-162.11 1006.19,-158.22 996.06,-155.12 996.33,-162.11"/>
 </g>
 <!-- textmode -->
 <g id="node13" class="node">
@@ -227,17 +227,17 @@
 <!-- gpi -->
 <g id="node16" class="node">
 <title>gpi</title>
-<path fill="#bbdefb" stroke="black" d="M779.42,-275.79C779.42,-275.79 176.58,-275.79 176.58,-275.79 170.58,-275.79 164.57,-269.79 164.57,-263.79 164.57,-263.79 164.57,-241.27 164.57,-241.27 164.57,-235.27 170.57,-229.27 176.57,-229.27 176.57,-229.27 779.42,-229.27 779.42,-229.27 785.42,-229.27 791.42,-235.27 791.42,-241.27 791.42,-241.27 791.42,-263.79 791.42,-263.79 791.42,-269.79 785.42,-275.79 779.42,-275.79"/>
-<text xml:space="preserve" text-anchor="start" x="175.38" y="-260.58" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">GPI: presentation spaces, state, transforms, drawing, fonts, bitmaps, regions, clipping, paths (ADR&#45;0024, ADR&#45;0027)</text>
-<text xml:space="preserve" text-anchor="start" x="326.88" y="-252.43" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_gpi.rs, loader/pm_bitmap.rs, loader/pm_shapes.rs, loader/pm_drawtext.rs</text>
-<text xml:space="preserve" text-anchor="start" x="336.25" y="-244.43" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_region.rs, loader/pm_area.rs, loader/pm_text.rs, loader/pm_xform.rs</text>
-<text xml:space="preserve" text-anchor="start" x="401.5" y="-236.43" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_coords.rs, loader/pm_psstate.rs</text>
+<path fill="#bbdefb" stroke="black" d="M780.42,-275.79C780.42,-275.79 177.58,-275.79 177.58,-275.79 171.58,-275.79 165.57,-269.79 165.57,-263.79 165.57,-263.79 165.57,-241.27 165.57,-241.27 165.57,-235.27 171.57,-229.27 177.57,-229.27 177.57,-229.27 780.42,-229.27 780.42,-229.27 786.42,-229.27 792.42,-235.27 792.42,-241.27 792.42,-241.27 792.42,-263.79 792.42,-263.79 792.42,-269.79 786.42,-275.79 780.42,-275.79"/>
+<text xml:space="preserve" text-anchor="start" x="176.38" y="-260.58" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">GPI: presentation spaces, state, transforms, drawing, fonts, bitmaps, regions, clipping, paths (ADR&#45;0024, ADR&#45;0027)</text>
+<text xml:space="preserve" text-anchor="start" x="327.88" y="-252.43" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_gpi.rs, loader/pm_bitmap.rs, loader/pm_shapes.rs, loader/pm_drawtext.rs</text>
+<text xml:space="preserve" text-anchor="start" x="337.25" y="-244.43" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_region.rs, loader/pm_area.rs, loader/pm_text.rs, loader/pm_xform.rs</text>
+<text xml:space="preserve" text-anchor="start" x="402.5" y="-236.43" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_coords.rs, loader/pm_psstate.rs</text>
 </g>
 <!-- dispatch&#45;&gt;gpi -->
 <g id="edge12" class="edge">
 <title>dispatch&#45;&gt;gpi</title>
-<path fill="none" stroke="#455a64" d="M1499.95,-581.85C1104.99,-582.37 107.55,-578.58 58,-527.33 33.74,-502.24 41.34,-479.47 58,-448.81 118.44,-337.56 180.24,-342.76 297,-293.79 310.13,-288.28 324.12,-283.48 338.29,-279.3"/>
-<polygon fill="#455a64" stroke="#455a64" points="339.03,-282.72 347.7,-276.63 337.12,-275.99 339.03,-282.72"/>
+<path fill="none" stroke="#455a64" d="M1499.95,-581.85C1104.99,-582.37 107.55,-578.58 58,-527.33 21.26,-489.33 61.83,-326.94 103,-293.79 110.41,-287.83 133.73,-282.5 165.38,-277.83"/>
+<polygon fill="#455a64" stroke="#455a64" points="165.51,-281.34 174.92,-276.48 164.53,-274.41 165.51,-281.34"/>
 </g>
 <!-- pmshell -->
 <g id="node17" class="node">
@@ -330,9 +330,9 @@
 <!-- net_mm&#45;&gt;sdl -->
 <g id="edge25" class="edge">
 <title>net_mm&#45;&gt;sdl</title>
-<path fill="none" stroke="#455a64" d="M1126.7,-133.02C1158.31,-125.32 1196.88,-116.97 1232,-112.25 1298.48,-103.31 1769.11,-96.28 1835,-83.75 1866.03,-77.85 1899.5,-66.72 1926.26,-56.58"/>
-<polygon fill="#455a64" stroke="#455a64" points="1927.44,-59.87 1935.5,-53 1924.91,-53.34 1927.44,-59.87"/>
-<text xml:space="preserve" text-anchor="middle" x="1740.42" y="-93.7" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">audio</text>
+<path fill="none" stroke="#455a64" d="M1233.13,-133.08C1264.66,-125.44 1303.05,-117.13 1338,-112.25 1392.78,-104.6 1780.71,-94.35 1835,-83.75 1865.88,-77.72 1899.23,-66.63 1925.94,-56.56"/>
+<polygon fill="#455a64" stroke="#455a64" points="1927.09,-59.86 1935.17,-53.01 1924.58,-53.33 1927.09,-59.86"/>
+<text xml:space="preserve" text-anchor="middle" x="1748.34" y="-93.7" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">audio</text>
 </g>
 <!-- network -->
 <g id="node25" class="node">
@@ -345,69 +345,69 @@
 <!-- net_mm&#45;&gt;network -->
 <g id="edge24" class="edge">
 <title>net_mm&#45;&gt;network</title>
-<path fill="none" stroke="#455a64" d="M1133.58,-133.1C1163.9,-126.13 1199.56,-118.33 1232,-112.25 1377.5,-84.99 1547.74,-60.72 1650.1,-46.95"/>
-<polygon fill="#455a64" stroke="#455a64" points="1650.38,-50.45 1659.83,-45.65 1649.45,-43.51 1650.38,-50.45"/>
+<path fill="none" stroke="#455a64" d="M1242.65,-133.05C1272.34,-126.34 1306.72,-118.74 1338,-112.25 1444.85,-90.09 1568.09,-66.86 1650.08,-51.73"/>
+<polygon fill="#455a64" stroke="#455a64" points="1650.68,-55.18 1659.88,-49.93 1649.41,-48.3 1650.68,-55.18"/>
 </g>
 <!-- textdisplay -->
 <g id="node20" class="node">
 <title>textdisplay</title>
-<path fill="#bbdefb" stroke="black" d="M2215.8,-329.79C2215.8,-329.79 1888.2,-329.79 1888.2,-329.79 1882.2,-329.79 1876.2,-323.79 1876.2,-317.79 1876.2,-317.79 1876.2,-305.79 1876.2,-305.79 1876.2,-299.79 1882.2,-293.79 1888.2,-293.79 1888.2,-293.79 2215.8,-293.79 2215.8,-293.79 2221.8,-293.79 2227.8,-299.79 2227.8,-305.79 2227.8,-305.79 2227.8,-317.79 2227.8,-317.79 2227.8,-323.79 2221.8,-329.79 2215.8,-329.79"/>
-<text xml:space="preserve" text-anchor="start" x="1887" y="-311.84" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Text&#45;mode display: VIO window and full&#45;screen text (ADR&#45;0013)</text>
-<text xml:space="preserve" text-anchor="start" x="1924.88" y="-303.69" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/text_renderer.rs, gui/vio_window.rs, gui/vio_view.rs, gui/vio_switch.rs</text>
+<path fill="#bbdefb" stroke="black" d="M2233.8,-329.79C2233.8,-329.79 1906.2,-329.79 1906.2,-329.79 1900.2,-329.79 1894.2,-323.79 1894.2,-317.79 1894.2,-317.79 1894.2,-305.79 1894.2,-305.79 1894.2,-299.79 1900.2,-293.79 1906.2,-293.79 1906.2,-293.79 2233.8,-293.79 2233.8,-293.79 2239.8,-293.79 2245.8,-299.79 2245.8,-305.79 2245.8,-305.79 2245.8,-317.79 2245.8,-317.79 2245.8,-323.79 2239.8,-329.79 2233.8,-329.79"/>
+<text xml:space="preserve" text-anchor="start" x="1905" y="-311.84" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Text&#45;mode display: VIO window and full&#45;screen text (ADR&#45;0013)</text>
+<text xml:space="preserve" text-anchor="start" x="1942.88" y="-303.69" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/text_renderer.rs, gui/vio_window.rs, gui/vio_view.rs, gui/vio_switch.rs</text>
 </g>
 <!-- textmode&#45;&gt;textdisplay -->
 <g id="edge31" class="edge">
 <title>textmode&#45;&gt;textdisplay</title>
-<path fill="none" stroke="#455a64" d="M2052,-468.42C2052,-437.97 2052,-377.37 2052,-341.43"/>
-<polygon fill="#455a64" stroke="#455a64" points="2055.5,-341.78 2052,-331.78 2048.5,-341.78 2055.5,-341.78"/>
-<text xml:space="preserve" text-anchor="middle" x="2120.62" y="-422.26" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">VIO buffer (keys and mouse back)</text>
+<path fill="none" stroke="#455a64" d="M2053.93,-468.42C2057.07,-437.97 2063.33,-377.37 2067.04,-341.43"/>
+<polygon fill="#455a64" stroke="#455a64" points="2070.49,-342.08 2068.04,-331.77 2063.53,-341.36 2070.49,-342.08"/>
+<text xml:space="preserve" text-anchor="middle" x="2127.33" y="-422.26" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">VIO buffer (keys and mouse back)</text>
 </g>
 <!-- controls -->
 <g id="node15" class="node">
 <title>controls</title>
-<path fill="#bbdefb" stroke="black" d="M1351.3,-402.31C1351.3,-402.31 330.7,-402.31 330.7,-402.31 324.7,-402.31 318.7,-396.31 318.7,-390.31 318.7,-390.31 318.7,-359.79 318.7,-359.79 318.7,-353.79 324.7,-347.79 330.7,-347.79 330.7,-347.79 1351.3,-347.79 1351.3,-347.79 1357.3,-347.79 1363.3,-353.79 1363.3,-359.79 1363.3,-359.79 1363.3,-390.31 1363.3,-390.31 1363.3,-396.31 1357.3,-402.31 1351.3,-402.31"/>
-<text xml:space="preserve" text-anchor="start" x="329.5" y="-387.1" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Built&#45;in controls: statics, buttons, entry fields, MLE, list box, scroll bar, combo box, spin button, slider, value set, notebook, container (records in guest memory, ADR&#45;0043), owner draw (ADR&#45;0025)</text>
-<text xml:space="preserve" text-anchor="start" x="699.25" y="-378.95" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_controls.rs, loader/pm_button.rs, loader/pm_list.rs, loader/pm_edit.rs</text>
-<text xml:space="preserve" text-anchor="start" x="690.62" y="-370.95" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_scrollbar.rs, loader/pm_combo.rs, loader/pm_spin.rs, loader/pm_owner.rs</text>
-<text xml:space="preserve" text-anchor="start" x="684.62" y="-362.95" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_static.rs, loader/pm_notebook.rs, loader/pm_container.rs, loader/pm_slider.rs</text>
-<text xml:space="preserve" text-anchor="start" x="801.62" y="-354.95" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_valueset.rs</text>
+<path fill="#bbdefb" stroke="black" d="M1537.55,-402.31C1537.55,-402.31 152.45,-402.31 152.45,-402.31 146.45,-402.31 140.45,-396.31 140.45,-390.31 140.45,-390.31 140.45,-359.79 140.45,-359.79 140.45,-353.79 146.45,-347.79 152.45,-347.79 152.45,-347.79 1537.55,-347.79 1537.55,-347.79 1543.55,-347.79 1549.55,-353.79 1549.55,-359.79 1549.55,-359.79 1549.55,-390.31 1549.55,-390.31 1549.55,-396.31 1543.55,-402.31 1537.55,-402.31"/>
+<text xml:space="preserve" text-anchor="start" x="151.25" y="-387.1" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Built&#45;in controls: statics, buttons, entry fields, MLE, list box, scroll bar, combo box, spin button, slider, value set, notebook, container (records in guest memory, ADR&#45;0043; sorting by chained guest calls, ADR&#45;0044), drag and drop (ADR&#45;0045), owner draw (ADR&#45;0025)</text>
+<text xml:space="preserve" text-anchor="start" x="703.25" y="-378.95" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_controls.rs, loader/pm_button.rs, loader/pm_list.rs, loader/pm_edit.rs</text>
+<text xml:space="preserve" text-anchor="start" x="694.62" y="-370.95" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_scrollbar.rs, loader/pm_combo.rs, loader/pm_spin.rs, loader/pm_owner.rs</text>
+<text xml:space="preserve" text-anchor="start" x="689.38" y="-362.95" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_static.rs, loader/pm_notebook.rs, loader/pm_container.rs, loader/pm_drag.rs</text>
+<text xml:space="preserve" text-anchor="start" x="769.62" y="-354.95" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_slider.rs, loader/pm_valueset.rs</text>
 </g>
 <!-- pmwin&#45;&gt;controls -->
 <g id="edge26" class="edge">
 <title>pmwin&#45;&gt;controls</title>
-<path fill="none" stroke="#455a64" d="M629.86,-448.4C670.1,-434.61 714.79,-419.3 752.66,-406.32"/>
-<polygon fill="#455a64" stroke="#455a64" points="753.4,-409.77 761.72,-403.21 751.13,-403.14 753.4,-409.77"/>
+<path fill="none" stroke="#455a64" d="M631.26,-448.4C671.9,-434.64 717.05,-419.36 755.34,-406.4"/>
+<polygon fill="#455a64" stroke="#455a64" points="756.16,-409.82 764.51,-403.29 753.92,-403.18 756.16,-409.82"/>
 </g>
 <!-- pmwin&#45;&gt;gpi -->
 <g id="edge27" class="edge">
 <title>pmwin&#45;&gt;gpi</title>
-<path fill="none" stroke="#455a64" d="M338.65,-448.34C317.91,-436.77 299.34,-421.77 285.75,-402.31 248.53,-349.02 325.67,-306 393.05,-280.18"/>
-<polygon fill="#455a64" stroke="#455a64" points="394.19,-283.49 402.34,-276.72 391.75,-276.93 394.19,-283.49"/>
-<text xml:space="preserve" text-anchor="middle" x="295.88" y="-371.75" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">paint</text>
+<path fill="none" stroke="#455a64" d="M205.72,-448.41C160.3,-436.72 123.5,-421.65 107.75,-402.31 53.66,-335.87 137.94,-298.92 239.78,-278.46"/>
+<polygon fill="#455a64" stroke="#455a64" points="240.34,-281.91 249.49,-276.57 239.01,-275.04 240.34,-281.91"/>
+<text xml:space="preserve" text-anchor="middle" x="117.88" y="-371.75" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">paint</text>
 </g>
 <!-- controls&#45;&gt;gpi -->
 <g id="edge28" class="edge">
 <title>controls&#45;&gt;gpi</title>
-<path fill="none" stroke="#455a64" d="M760.44,-347.3C699.85,-327.19 617.25,-299.76 557.04,-279.77"/>
-<polygon fill="#455a64" stroke="#455a64" points="558.47,-276.56 547.88,-276.73 556.26,-283.2 558.47,-276.56"/>
+<path fill="none" stroke="#455a64" d="M763.77,-347.3C702.68,-327.19 619.4,-299.76 558.69,-279.77"/>
+<polygon fill="#455a64" stroke="#455a64" points="560.04,-276.53 549.44,-276.73 557.85,-283.18 560.04,-276.53"/>
 </g>
 <!-- desktop -->
 <g id="node19" class="node">
 <title>desktop</title>
-<path fill="#bbdefb" stroke="black" d="M1683.3,-182.77C1683.3,-182.77 1256.7,-182.77 1256.7,-182.77 1250.7,-182.77 1244.7,-176.77 1244.7,-170.77 1244.7,-170.77 1244.7,-132.25 1244.7,-132.25 1244.7,-126.25 1250.7,-120.25 1256.7,-120.25 1256.7,-120.25 1683.3,-120.25 1683.3,-120.25 1689.3,-120.25 1695.3,-126.25 1695.3,-132.25 1695.3,-132.25 1695.3,-170.77 1695.3,-170.77 1695.3,-176.77 1689.3,-182.77 1683.3,-182.77"/>
-<text xml:space="preserve" text-anchor="start" x="1255.5" y="-167.56" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">PM desktop front end: surfaces, compositor, chrome, fonts (ADR&#45;0011, ADR&#45;0012)</text>
-<text xml:space="preserve" text-anchor="start" x="1330.88" y="-159.41" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/mod.rs, gui/renderer.rs, gui/sdl_renderer.rs, gui/sdl_renderer/compositor.rs</text>
-<text xml:space="preserve" text-anchor="start" x="1374" y="-151.41" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/surface.rs, gui/region.rs, gui/damage.rs, gui/font.rs</text>
-<text xml:space="preserve" text-anchor="start" x="1351.88" y="-143.41" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/glyph_transform.rs, gui/message.rs, gui/pointer.rs, gui/cursor.rs</text>
-<text xml:space="preserve" text-anchor="start" x="1329" y="-135.41" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/popup_menu.rs, gui/system_menu.rs, gui/frame_track.rs, gui/frame_stats.rs</text>
-<text xml:space="preserve" text-anchor="start" x="1390.5" y="-127.41" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/gui_script.rs, gui/headless.rs, gui/audio.rs</text>
+<path fill="#bbdefb" stroke="black" d="M1789.3,-182.77C1789.3,-182.77 1362.7,-182.77 1362.7,-182.77 1356.7,-182.77 1350.7,-176.77 1350.7,-170.77 1350.7,-170.77 1350.7,-132.25 1350.7,-132.25 1350.7,-126.25 1356.7,-120.25 1362.7,-120.25 1362.7,-120.25 1789.3,-120.25 1789.3,-120.25 1795.3,-120.25 1801.3,-126.25 1801.3,-132.25 1801.3,-132.25 1801.3,-170.77 1801.3,-170.77 1801.3,-176.77 1795.3,-182.77 1789.3,-182.77"/>
+<text xml:space="preserve" text-anchor="start" x="1361.5" y="-167.56" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">PM desktop front end: surfaces, compositor, chrome, fonts (ADR&#45;0011, ADR&#45;0012)</text>
+<text xml:space="preserve" text-anchor="start" x="1436.88" y="-159.41" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/mod.rs, gui/renderer.rs, gui/sdl_renderer.rs, gui/sdl_renderer/compositor.rs</text>
+<text xml:space="preserve" text-anchor="start" x="1480" y="-151.41" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/surface.rs, gui/region.rs, gui/damage.rs, gui/font.rs</text>
+<text xml:space="preserve" text-anchor="start" x="1457.88" y="-143.41" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/glyph_transform.rs, gui/message.rs, gui/pointer.rs, gui/cursor.rs</text>
+<text xml:space="preserve" text-anchor="start" x="1435" y="-135.41" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/popup_menu.rs, gui/system_menu.rs, gui/frame_track.rs, gui/frame_stats.rs</text>
+<text xml:space="preserve" text-anchor="start" x="1496.5" y="-127.41" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/gui_script.rs, gui/headless.rs, gui/audio.rs</text>
 </g>
 <!-- gpi&#45;&gt;desktop -->
 <g id="edge29" class="edge">
 <title>gpi&#45;&gt;desktop</title>
-<path fill="none" stroke="#455a64" d="M753.1,-228.8C896.06,-216.4 1073.56,-200.06 1232,-182.77 1232.38,-182.73 1232.76,-182.69 1233.14,-182.65"/>
-<polygon fill="#455a64" stroke="#455a64" points="1233.16,-186.16 1242.71,-181.59 1232.39,-179.21 1233.16,-186.16"/>
-<text xml:space="preserve" text-anchor="middle" x="1095.92" y="-202.72" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">draw into frame surfaces</text>
+<path fill="none" stroke="#455a64" d="M792.72,-229.94C955.56,-217.85 1157.66,-201.44 1338,-182.77 1338.38,-182.73 1338.76,-182.69 1339.14,-182.65"/>
+<polygon fill="#455a64" stroke="#455a64" points="1339.14,-186.17 1348.72,-181.64 1338.4,-179.21 1339.14,-186.17"/>
+<text xml:space="preserve" text-anchor="middle" x="1199.91" y="-202.72" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">draw into frame surfaces</text>
 </g>
 <!-- pmshell&#45;&gt;vfs -->
 <g id="edge19" class="edge">
@@ -419,42 +419,42 @@
 <!-- stddlg&#45;&gt;vfs -->
 <g id="edge22" class="edge">
 <title>stddlg&#45;&gt;vfs</title>
-<path fill="none" stroke="#455a64" d="M1550.08,-469.59C1660.19,-455.16 1822.24,-434.77 1964,-420.31 2088.62,-407.6 2229.6,-396.21 2336.81,-388.17"/>
-<polygon fill="#455a64" stroke="#455a64" points="2336.84,-391.68 2346.55,-387.45 2336.32,-384.7 2336.84,-391.68"/>
-<text xml:space="preserve" text-anchor="middle" x="1992.5" y="-422.26" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">browse drives</text>
+<path fill="none" stroke="#455a64" d="M1552.09,-469.58C1663.4,-455.19 1826.94,-434.87 1970,-420.31 2092.46,-407.85 2230.87,-396.52 2336.64,-388.45"/>
+<polygon fill="#455a64" stroke="#455a64" points="2336.85,-391.94 2346.56,-387.69 2336.32,-384.96 2336.85,-391.94"/>
+<text xml:space="preserve" text-anchor="middle" x="1998.5" y="-422.26" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">browse drives</text>
 </g>
 <!-- stddlg&#45;&gt;controls -->
 <g id="edge21" class="edge">
 <title>stddlg&#45;&gt;controls</title>
-<path fill="none" stroke="#455a64" d="M1328.89,-469.6C1238.54,-452.28 1098.51,-425.43 991.61,-404.93"/>
-<polygon fill="#455a64" stroke="#455a64" points="992.35,-401.51 981.87,-403.06 991.03,-408.38 992.35,-401.51"/>
-<text xml:space="preserve" text-anchor="middle" x="1165.26" y="-422.26" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">dialogs of built&#45;in controls</text>
+<path fill="none" stroke="#455a64" d="M1329.52,-469.6C1239.8,-452.28 1100.74,-425.43 994.57,-404.93"/>
+<polygon fill="#455a64" stroke="#455a64" points="995.39,-401.52 984.91,-403.06 994.06,-408.4 995.39,-401.52"/>
+<text xml:space="preserve" text-anchor="middle" x="1167.38" y="-422.26" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">dialogs of built&#45;in controls</text>
 </g>
 <!-- desktop&#45;&gt;pmwin -->
 <g id="edge30" class="edge">
 <title>desktop&#45;&gt;pmwin</title>
-<path fill="none" stroke="#455a64" d="M1468.4,-183.07C1463.79,-237.07 1445.84,-348.71 1376,-402.31 1366.96,-409.25 1172.58,-428.73 971.03,-447.27"/>
-<polygon fill="#455a64" stroke="#455a64" points="970.73,-443.78 961.1,-448.18 971.37,-450.75 970.73,-443.78"/>
-<text xml:space="preserve" text-anchor="middle" x="1514.21" y="-308.49" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">input events, GUIMessage replies</text>
+<path fill="none" stroke="#455a64" d="M1585.53,-183.24C1599.77,-235.99 1619.22,-343.75 1562,-402.31 1516.35,-449.03 1041.1,-443.51 976,-448.81 975.88,-448.82 975.76,-448.83 975.64,-448.84"/>
+<polygon fill="#455a64" stroke="#455a64" points="975.48,-445.34 965.8,-449.64 976.05,-452.32 975.48,-445.34"/>
+<text xml:space="preserve" text-anchor="middle" x="1669.09" y="-308.49" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">input events, GUIMessage replies</text>
 </g>
 <!-- desktop&#45;&gt;sdl -->
 <g id="edge32" class="edge">
 <title>desktop&#45;&gt;sdl</title>
-<path fill="none" stroke="#455a64" d="M1668.17,-119.76C1722.6,-109.82 1781.39,-97.71 1835,-83.75 1863.98,-76.2 1895.56,-65.69 1921.65,-56.36"/>
-<polygon fill="#455a64" stroke="#455a64" points="1922.84,-59.65 1931.05,-52.96 1920.46,-53.07 1922.84,-59.65"/>
+<path fill="none" stroke="#455a64" d="M1703,-119.83C1745.19,-109.09 1792.29,-96.51 1835,-83.75 1862.93,-75.4 1893.55,-65.12 1919.27,-56.15"/>
+<polygon fill="#455a64" stroke="#455a64" points="1920.27,-59.51 1928.55,-52.9 1917.95,-52.9 1920.27,-59.51"/>
 </g>
 <!-- textdisplay&#45;&gt;sdl -->
 <g id="edge33" class="edge">
 <title>textdisplay&#45;&gt;sdl</title>
-<path fill="none" stroke="#455a64" d="M2052.16,-293.49C2051.97,-258.29 2048.86,-176.25 2026,-112.25 2019.53,-94.13 2008.34,-75.75 1998.39,-61.47"/>
-<polygon fill="#455a64" stroke="#455a64" points="2001.35,-59.59 1992.66,-53.52 1995.67,-63.68 2001.35,-59.59"/>
+<path fill="none" stroke="#455a64" d="M2071.84,-293.38C2074.86,-257.62 2078.02,-174.1 2050,-112.25 2040.83,-92.01 2024.2,-73.62 2009.24,-59.86"/>
+<polygon fill="#455a64" stroke="#455a64" points="2011.63,-57.31 2001.82,-53.32 2007,-62.56 2011.63,-57.31"/>
 </g>
 <!-- debug -->
 <g id="node21" class="node">
 <title>debug</title>
-<path fill="#bbdefb" stroke="black" d="M2001.67,-169.51C2001.67,-169.51 1814.33,-169.51 1814.33,-169.51 1808.33,-169.51 1802.33,-163.51 1802.33,-157.51 1802.33,-157.51 1802.33,-145.51 1802.33,-145.51 1802.33,-139.51 1808.33,-133.51 1814.33,-133.51 1814.33,-133.51 2001.67,-133.51 2001.67,-133.51 2007.67,-133.51 2013.67,-139.51 2013.67,-145.51 2013.67,-145.51 2013.67,-157.51 2013.67,-157.51 2013.67,-163.51 2007.67,-169.51 2001.67,-169.51"/>
-<text xml:space="preserve" text-anchor="start" x="1813.12" y="-151.56" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Debugging: GDB stub, crash dumps</text>
-<text xml:space="preserve" text-anchor="start" x="1833.38" y="-143.41" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/gdb_stub.rs, loader/crash_dump.rs</text>
+<path fill="#bbdefb" stroke="black" d="M2025.67,-169.51C2025.67,-169.51 1838.33,-169.51 1838.33,-169.51 1832.33,-169.51 1826.33,-163.51 1826.33,-157.51 1826.33,-157.51 1826.33,-145.51 1826.33,-145.51 1826.33,-139.51 1832.33,-133.51 1838.33,-133.51 1838.33,-133.51 2025.67,-133.51 2025.67,-133.51 2031.67,-133.51 2037.67,-139.51 2037.67,-145.51 2037.67,-145.51 2037.67,-157.51 2037.67,-157.51 2037.67,-163.51 2031.67,-169.51 2025.67,-169.51"/>
+<text xml:space="preserve" text-anchor="start" x="1837.12" y="-151.56" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Debugging: GDB stub, crash dumps</text>
+<text xml:space="preserve" text-anchor="start" x="1857.38" y="-143.41" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/gdb_stub.rs, loader/crash_dump.rs</text>
 </g>
 <!-- gdb -->
 <g id="node27" class="node">
@@ -467,8 +467,8 @@
 <!-- debug&#45;&gt;gdb -->
 <g id="edge34" class="edge">
 <title>debug&#45;&gt;gdb</title>
-<path fill="none" stroke="#455a64" d="M1971.7,-133.05C2014.45,-120.72 2071.74,-103.02 2121,-83.75 2140.71,-76.04 2161.94,-66.26 2179.97,-57.48"/>
-<polygon fill="#455a64" stroke="#455a64" points="2181.4,-60.68 2188.83,-53.12 2178.31,-54.4 2181.4,-60.68"/>
+<path fill="none" stroke="#455a64" d="M1985.91,-133.11C2024.03,-120.4 2076.12,-102.24 2121,-83.75 2140.42,-75.75 2161.45,-66 2179.41,-57.33"/>
+<polygon fill="#455a64" stroke="#455a64" points="2180.77,-60.56 2188.23,-53.03 2177.71,-54.26 2180.77,-60.56"/>
 </g>
 <!-- tools -->
 <g id="node28" class="node">

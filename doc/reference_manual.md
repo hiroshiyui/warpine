@@ -724,13 +724,33 @@ A bad page id gives `BOOKERR_INVALID_PARAMETERS`.
 - The arrow keys, PageUp / PageDown and Home / End move the cursor, and the selection with it except in multiple selection or with Ctrl. Space toggles the selection.
 - `CM_SETRECORDEMPHASIS` (mp2 = `MPFROM2SHORT(on, CRA_*)`) and `CM_QUERYRECORDEMPHASIS` (the next record with all the given bits) work on `flRecordAttr`.
 
+*Tree view.* `CV_TREE` shows the top-level records and, under each expanded record (`CRA_EXPANDED`), its children, indented by `cxTreeIndent` (16 pels by default). It shows `pszTree`. A record with children has an expander box: a click on it, `+` / `-`, or Right / Left on the cursored record opens and closes it. Right on an open record goes to its first child, and Left on a child goes to its parent. `CM_EXPANDTREE` / `CM_COLLAPSETREE` (mp1 = record, NULL = every record) do the same in code. Each change sends `CN_EXPANDTREE` / `CN_COLLAPSETREE` (mp2 = the record). Collapsing a record moves the cursor out of its hidden children.
+
+*Sorting.* `CM_SORTRECORD` (mp1 = `SHORT EXPENTRY pfnCompare(PRECORDCORE p1, PRECORDCORE p2, PVOID pStorage)`, mp2 = `pStorage`) sorts each level, the top level and each record's children separately. It calls the function once per comparison before it returns, and the result is stable. A negative or 0 result keeps p1 first. With `CNRINFO.pSortRecord` set (`CMA_PSORTRECORD`), each insertion sorts the parent's children with that function (`pStorage` NULL). If the function adds or removes records meanwhile, the order is left as it was and `CM_SORTRECORD` returns FALSE.
+
+*Scrolling.* When the rows do not fit (and the view does not flow), a vertical scroll bar (`CID_VSCROLL`, `WinWindowFromID(hwndCnr, CID_VSCROLL)`) appears on the right. Its arrows, shaft and slider scroll the rows, and each move sends `CN_SCROLL` (mp2 → `NOTIFYSCROLL`: container, pels scrolled, `CMA_VERTICAL`).
+
 `CM_SEARCHSTRING` finds a record by prefix or substring, with or without case. `CM_QUERYRECORDRECT` gives a shown record's rectangle, and `CM_QUERYVIEWPORTRECT(CMA_WINDOW)` gives the rows' area. `CM_SCROLLWINDOW(CMA_VERTICAL)` scrolls by rows.
 
 *Notifications* go to the owner as `WM_CONTROL`:
 - `CN_EMPHASIS` (mp2 → `NOTIFYRECORDEMPHASIS`: container, record, changed bits) and `CN_ENTER` (mp2 → `NOTIFYRECORDENTER`: container, `fKey`, record; from a double click or Enter) are sent, so the owner has read them when the call that caused them returns.
 - `CN_SETFOCUS` / `CN_KILLFOCUS` are posted.
 
-*Not yet:* the icon view (records are listed by `pszIcon`), the tree view (top-level records listed by `pszTree`), icons and bitmaps, sorting and filtering, direct editing, owner drawing, scroll bars and the split bar, and records shared between containers.
+*Drag and drop.* A container takes part in drags (see "Drag and drop" below): `WM_BEGINDRAG` over it sends `CN_INITDRAG` to the owner (mp2 → `CNRDRAGINIT`: container, record under the pointer or NULL, desktop position, offset to the record's origin), and as a target it asks the owner with `CN_DRAGOVER` / `CN_DRAGLEAVE` / `CN_DROP` (mp2 → `CNRDRAGINFO`: the `DRAGINFO` and the record under the pointer), passing the owner's reply to `DM_DRAGOVER` on.
+
+*Not yet:* the icon view (records are listed by `pszIcon`), icons and bitmaps, tree lines, filtering, direct editing, owner drawing, horizontal scrolling and the split bar, and records shared between containers.
+
+**Drag and drop** (PMDRAG, within one program). Pressing button 2 (the drag button) and moving the pointer 4 pels posts `WM_BEGINDRAG` (mp1 = the press point in the window's coordinates, mp2 = TRUE) to the window under the press. A source then builds a `DRAGINFO`:
+- `DrgAllocDraginfo(cditem)` returns it zeroed with its sizes, `usOperation` = `DO_DEFAULT` and the pointer position; `DrgSetDragitem` / `DrgQueryDragitem` / `DrgQueryDragitemPtr` / `DrgQueryDragitemCount` fill and read its `DRAGITEM`s.
+- String handles (`DrgAddStrHandle`, `DrgQueryStrName` / `Len`, `DrgDeleteStrHandle`, `DrgDeleteDraginfoStrHandles`) hold the type list (`"type[,type…]"`, the first the true type), the rendering mechanisms and formats (`<mech,fmt>` pairs and `(m1,m2)x(f1,f2)` cross products, the first pair native) and the container, source and target names.
+- `DrgVerifyType` / `DrgVerifyTrueType` / `DrgVerifyTypeSet` / `DrgQueryTrueType`, `DrgVerifyRMF` (NULL = any) / `DrgVerifyNativeRMF` / `DrgQueryNativeRMF` test them.
+
+`DrgDrag(hwndSource, pdinfo, pdimg, cdimg, vkTerminate, pRsvd)` runs the drag and returns when it ends: `VK_BUTTON1`..`3` or `VK_ENDDRAG` (button 2) end it on release, Esc abandons it.
+- Each move sends `DM_DRAGOVER` (mp1 = the `DRAGINFO`, mp2 = the pointer in desktop coordinates) to the window under the pointer and `DM_DRAGLEAVE` to the one it left. The reply `MRFROM2SHORT(DOR_*, DO_*)` decides the pointer: the illegal sign unless `DOR_DROP`. After `DOR_NEVERDROP` the window gets no more `DM_DRAGOVER` until the pointer leaves it. `WinDefWindowProc` answers `DOR_NEVERDROP`; built-in controls other than containers never accept.
+- On the release, `DM_DROP` goes to the window if its last reply was `DOR_DROP`, and `DrgDrag` returns that window; otherwise the window gets `DM_DRAGLEAVE` and `DrgDrag` returns NULLHANDLE. `xDrop` / `yDrop` hold the last pointer position.
+- While `DrgDrag` runs, `DrgFreeDraginfo` of its `DRAGINFO` fails with `PMERR_SOURCE_SAME_AS_TARGET`: the target only reads it, the source frees it after `DrgDrag` returns. `DrgQueryDragStatus` reports `DGS_DRAGINPROGRESS`.
+
+`DrgAllocDragtransfer` / `DrgFreeDragtransfer`, `DrgSendTransferMsg` / `DrgPostTransferMsg` (which clear `fsReply` and send or post), `DrgGetPS` / `DrgReleasePS` and `DrgSetDragPointer` support the rendering conversation and target emphasis between the program's windows. *Not yet:* drags between programs, host files dropped on a window, `DrgDragFiles` / `DrgAcceptDroppedFiles`, lazy drag, the drag image, and changing the operation with Ctrl / Shift.
 
 **Value sets.** A `WC_VALUESET` is a grid of items created with `VSCDATA` (rows × columns; 1 × 1 without). Items are addressed by `MPFROM2SHORT(row, column)` from 1, rows from the top, columns from the left — from the right with `VS_RIGHTTOLEFT`. An item is a bit map (`VIA_BITMAP`, the default), an icon (`VIA_ICON`, a pointer handle), a text (`VIA_TEXT`, with a `~` mnemonic underlined), an RGB colour (`VIA_RGB`) or a colour index (`VIA_COLORINDEX`); the `VS_*` style of the same name sets the type of every item, `VM_SETITEMATTR` changes one item's type or sets `VIA_DISABLED` (shown dimmed, cannot be selected), `VIA_OWNERDRAW`, `VIA_DRAGGABLE` and `VIA_DROPONABLE` (the last two are only stored). Items fill the window divided by rows and columns until `VM_SETMETRICS(VMA_ITEMSIZE)` sets their size; `VMA_ITEMSPACING` sets the gaps (0 by default). `VS_BORDER` draws a border round the control, `VS_ITEMBORDER` one round each item, `VS_SCALEBITMAPS` stretches bit maps to the item (else they are centred). Messages: `VM_SETITEM`, `VM_QUERYITEM` (a text item through a `VSTEXT`; a buffer length of 0 returns the length), `VM_SETITEMATTR`, `VM_QUERYITEMATTR`, `VM_SELECTITEM`, `VM_QUERYSELECTEDITEM`, `VM_SETMETRICS`, `VM_QUERYMETRICS`. Row 1, column 1 is selected at first; the selected item has a black box, the selection cursor of a focused value set a dotted outline. A click selects an item, a double click or Enter sends `VN_ENTER`; the arrow keys move the selection, Home / End to the ends of the row, Ctrl+Home / Ctrl+End to the first / last item, PageUp / PageDown to the top / bottom row. The owner gets `WM_CONTROL` with `VN_SELECT` and `VN_ENTER` (mp2 = `MPFROM2SHORT(row, column)`), `VN_SETFOCUS` and `VN_KILLFOCUS`. A `VIA_OWNERDRAW` item is drawn by the owner (`WM_DRAWITEM`, `idItem` = `VDA_ITEM`, `hItem` = `MPFROM2SHORT(row, column)`), and a `VS_OWNERDRAW` value set has its background drawn by the owner (`VDA_BACKGROUND`). Not yet: drag and drop (`VN_INITDRAG`, `VN_DROP` …) and `VN_HELP`.
 
@@ -762,7 +782,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 265 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 359 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 298 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 359 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -782,9 +802,10 @@ Counts are taken from the static registry (`api_registry.rs`, 265 entries) and t
 | PMSPL (no printers) | registry | 15 | 0 | 15 |
 | PMCTLS (standard dialogs) | registry | 5 | 0 | 5 |
 | WARPINE (Warpine's own extensions) | registry | 4 | 0 | 4 |
+| PMDRAG (drag and drop within a process) | registry | 33 | 0 | 33 |
 | PMWIN | sub-dispatcher | 169 | 0 | 169 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **613** | **11** | **624** |
+| **Total** | | **646** | **11** | **657** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

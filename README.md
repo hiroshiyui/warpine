@@ -193,6 +193,8 @@ samples/               OS/2 sample applications and build scripts
   pm_child_dialog_test/ A dialog embedded in a client window (WinLoadDlg with the client as parent)
   pm_notebook_test/    WC_NOTEBOOK: pages, major / minor tabs, notifications, embedded page dialogs
   pm_container_test/   WC_CONTAINER: records in guest memory, detail view, selection, CN_* notifications
+  pm_cnrtree_test/     WC_CONTAINER: sorting by a guest comparison function, tree view, scroll bar
+  pm_drag_test/        Drag and drop within a process: DrgDrag, DM_* messages, container drags
   semfollow_test/      Semaphore and pipe-semaphore follow-ups, suballocation
   pm_frame_scroll_test/ Frame scroll bars with the mouse, client drawing inside the frame
   pm_charbundle_test/  GpiSetAttrs / GpiQueryAttrs character bundle
@@ -323,8 +325,8 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 1798 unit tests (no KVM required)
-cargo test --test integration     # 135 end-to-end tests (requires /dev/kvm)
+cargo test                        # 1819 unit tests (no KVM required)
+cargo test --test integration     # 139 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
 

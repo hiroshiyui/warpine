@@ -1474,8 +1474,22 @@ Tests: `config_sys.rs` (parser, clamping, env override, reading through drive C)
 - **Guest copy only:** texts, positions and attributes are read from the records when painting, searching or answering; only `flRecordAttr` is written (emphasis).
 - **Views:** `Frame` stacks the title band, the detail header band and the rows. `place_list` places a list or flowed columns, and `scroll_to` keeps the cursor in view. `paint_container` draws the text, name and detail views (`columns` sizes detail columns to their contents when `cxWidth` is 0). The icon and tree views are listed by `pszIcon` / `pszTree` for now.
 - **Input and notifications:** `cnr_click` / `cnr_char` / `cnr_pick` select by `sel_mode`. `cnr_set_emphasis` keeps one selection (single mode) and one cursored record, and queues `CN_EMPHASIS` as `OwnerCallKind::ContainerNotify` (a `NOTIFYRECORDEMPHASIS`), like `CN_ENTER` (`NOTIFYRECORDENTER`). `CN_SETFOCUS` / `CN_KILLFOCUS` are posted through `notify_focus`. PM errors (`PMERR_RECORD_CURRENTLY_INSERTED`) go to the calling vCPU (`interrupt::current_vcpu`).
+- **Tree view:** `tree_order` lists the records depth first, children only under records with `CRA_EXPANDED`, filtered subtrees left out. The snapshot keeps each row's depth and whether it has children; `text_inset` places the expander box and text. `cnr_expand` sets `CRA_EXPANDED` / `CRA_COLLAPSED`, moves the cursor out of a closed subtree and queues `CN_EXPANDTREE` / `CN_COLLAPSETREE` (`OwnerCallKind::ContainerValue`, mp2 = the record). `cnr_tree_key` handles + / - / Left / Right.
+- **Scroll bar:** `build_container` creates a `WC_SCROLLBAR` child `CID_VSCROLL` owned by the container. `Snapshot::bar` decides whether the rows need it, `frame` narrows the rows for it, and `cnr_sync_scrollbar` (after each paint) places, shows and sets it. Its `WM_VSCROLL` comes back to the container, and `cnr_scroll_to` moves the top row and queues `CN_SCROLL`.
+- **Sorting (ADR-0044):** `SortJob` is a stable bottom-up merge sort of the sibling groups that asks for one pair at a time (`step`). `cnr_start_sort` stores it in `CnrState::sort` and returns a one-call chain (`sort_chain`: `pfnCompare(p1, p2, pStorage)`, `ChainThen::ContainerSort`). `finish_chain` calls `container_sort_step`, which feeds the answer and returns `ChainEnd::Next` with the next chain, or applies the groups (`apply_sorted`, only if they still hold the same records) and returns. Insertion with `CNRINFO.pSortRecord` sorts the parent's children the same way.
 - **Destruction:** `destroy_window` moves a container's arenas to `WindowManager::pending_guest_frees`; `run_destroy` hands them to the memory manager (`free_pending_guest_blocks`).
 - **Tests:** `pm_container.rs` (heap, model, layout, messages through a mock loader), `samples/pm_container_test` with a golden picture.
+
+### Drag and drop
+
+`pm_drag.rs` (ADR-0045):
+- **Module:** PMDRAG is a built-in module at `PMDRAG_BASE` (21504; `STUB_AREA_SIZE` 22528), its ordinals from Open Watcom's `os2386.lib` (`targets/os2api.def`, registry entries, `api_trace.rs`).
+- **Data:** `DragTable` (in `WindowManager::drag`) registers `DRAGINFO` blocks (`DrgAllocDraginfo`, from the memory manager: the 20-byte header then 36-byte `DRAGITEM`s) and `DRAGTRANSFER` arrays by address; `info_of_item` maps an item pointer to its block. `StrHandles` keeps reference-counted strings, one handle per distinct string. `types`, `rmf_pairs` (with the cross-product form), `rmf_has` and `native_rmf` are pure.
+- **Starting a drag:** the renderer remembers a button-2 press (`DragPress`, with `window_under` at the press) and, once the pointer moves `DRAG_THRESHOLD` pels, arms `SharedState::drag_channel` and posts `WM_BEGINDRAG`. A container answers it with `CN_INITDRAG` (`OwnerCallKind::ContainerInitDrag`).
+- **The loop:** `drg_drag` records a `DragSession` and calls `drag_continue`, which waits on the `DragFeed` (`drag_wait`, waking every 100 ms for `interrupted()`). For a move it finds the window under the pointer and returns a chain of `DM_DRAGLEAVE` / `DM_DRAGOVER` sends (`drag_step`: the window's procedure, a container's owner with `CN_*` and a `CNRDRAGINFO` block, or none). `drag_chain_done` (from `finish_chain`, `ChainThen::Drag`) records the reply, sets the pointer (`drag_feedback`) and continues with `ChainEnd::Next`. The release sends `DM_DROP` or `DM_DRAGLEAVE`; `drag_end` clears the session and the feed.
+- **Feeding:** while `DragChannel::active`, the renderer gives moves (`moved`), releases (`released`) and Esc (`cancel`) to the channel and routes nothing; a release that comes before `DrgDrag` starts stays in the feed until the next button-2 press (`reset_if_idle`).
+- **Scripts:** `rdrag X1 Y1 X2 Y2` drags with the right button (`gui_script.rs`, `Input::MouseDrag { button, .. }`).
+- **Tests:** `pm_drag.rs` (strings, RMF parsing, the data calls, `window_under`, drags over a client and a container run through their chains, the feed), `samples/pm_drag_test` with a golden picture.
 
 ### File attributes
 
@@ -1910,7 +1924,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the 4OS2 / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (1798: 1756 warpine + 19 `gen_api` + 12 `lx_link` + 5 `gen_arch` + 6 `gen_compat`) include, among others:
+The unit tests (1819: 1777 warpine + 19 `gen_api` + 12 `lx_link` + 5 `gen_arch` + 6 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2195,7 +2209,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 1798 unit tests (1756 warpine + 19 gen_api + 12 lx_link + 5 gen_arch + 6 gen_compat), 135 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 1819 unit tests (1777 warpine + 19 gen_api + 12 lx_link + 5 gen_arch + 6 gen_compat), 139 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

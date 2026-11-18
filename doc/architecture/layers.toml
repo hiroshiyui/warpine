@@ -150,11 +150,11 @@ modules = [
 [[layer]]
 id = "controls"
 zone = "host"
-label = "Built-in controls: statics, buttons, entry fields, MLE, list box, scroll bar, combo box, spin button, slider, value set, notebook, container (records in guest memory, ADR-0043), owner draw (ADR-0025)"
+label = "Built-in controls: statics, buttons, entry fields, MLE, list box, scroll bar, combo box, spin button, slider, value set, notebook, container (records in guest memory, ADR-0043; sorting by chained guest calls, ADR-0044), drag and drop (ADR-0045), owner draw (ADR-0025)"
 modules = [
   "loader/pm_controls.rs", "loader/pm_button.rs", "loader/pm_list.rs", "loader/pm_edit.rs",
   "loader/pm_scrollbar.rs", "loader/pm_combo.rs", "loader/pm_spin.rs", "loader/pm_owner.rs",
-  "loader/pm_static.rs", "loader/pm_notebook.rs", "loader/pm_container.rs",
+  "loader/pm_static.rs", "loader/pm_notebook.rs", "loader/pm_container.rs", "loader/pm_drag.rs",
   "loader/pm_slider.rs", "loader/pm_valueset.rs",
 ]
 
