@@ -188,7 +188,7 @@ This is Warpine's core trick for intercepting OS/2 API calls without modifying t
 
 ### Setup
 
-During loading, `setup_stubs()` fills a 20480-byte region (`STUB_AREA_SIZE`) at `MAGIC_API_BASE` with INT 3 (0xCC) instructions. When the LX loader encounters an import fixup for a known module, `resolve_import()` maps it to a specific address:
+During loading, `setup_stubs()` fills a 21504-byte region (`STUB_AREA_SIZE`) at `MAGIC_API_BASE` with INT 3 (0xCC) instructions. When the LX loader encounters an import fixup for a known module, `resolve_import()` maps it to a specific address:
 
 | Module | Base Constant | Address formula | Range |
 |---|---|---|---|
@@ -210,8 +210,9 @@ During loading, `setup_stubs()` fills a 20480-byte region (`STUB_AREA_SIZE`) at 
 | HELPMGR | `HELPMGR_BASE` (17408) | `MAGIC_API_BASE + 17408 + ordinal` | 17408–18431 |
 | PMSPL | `PMSPL_BASE` (18432) | `MAGIC_API_BASE + 18432 + ordinal` | 18432–19455 |
 | PMCTLS | `PMCTLS_BASE` (19456) | `MAGIC_API_BASE + 19456 + ordinal` | 19456–20479 |
+| WARPINE | `WARPINE_BASE` (20480) | `MAGIC_API_BASE + 20480 + ordinal` | 20480–21503 |
 
-A new module takes the next 1024-ordinal slot and grows `STUB_AREA_SIZE`; the compile-time asserts in `constants.rs` keep each range 1024 wide, the area below `DYNAMIC_ALLOC_BASE` and addressable by the NE loader's 16-bit offsets. Every place that lists the modules must follow: `resolve_import` / `resolve_import_by_name` (`descriptors.rs`), the range of the previous last module in `api_dispatch.rs`, `vcpu.rs` (Pascal argument pop) and `api_trace.rs`, `lx_loader.rs` `BUILTIN_MODULES`, `stubs.rs` `BUILTINS` (`DosLoadModule`), `lx_link.rs`, `gen_api.rs` (`MODULES`, `base_const` / `upper_const`, `resolve_const`, the `check` / `validate-doc` module lists) and `targets/os2api.def`.
+A new module takes the next 1024-ordinal slot, an entry in `constants::module_base` (which `resolve_import` and the name lookup use) and grows `STUB_AREA_SIZE`; the compile-time asserts in `constants.rs` keep each range 1024 wide, the area below `DYNAMIC_ALLOC_BASE` and addressable by the NE loader's 16-bit offsets. Every place that lists the modules must follow: `resolve_import` / `resolve_import_by_name` (`descriptors.rs`), the range of the previous last module in `api_dispatch.rs`, `vcpu.rs` (Pascal argument pop) and `api_trace.rs`, `lx_loader.rs` `BUILTIN_MODULES`, `stubs.rs` `BUILTINS` (`DosLoadModule`), `lx_link.rs`, `gen_api.rs` (`MODULES`, `base_const` / `upper_const`, `resolve_const`, the `check` / `validate-doc` module lists) and `targets/os2api.def`.
 
 The fixup is patched so the guest's `CALL` instruction targets the appropriate stub address.
 
@@ -252,9 +253,9 @@ The primary OS/2 API module. Implemented functions:
 | **Semaphores** | DosCreateEventSem, DosCloseEventSem, DosPostEventSem, DosWaitEventSem, DosOpenEventSem, DosResetEventSem, DosQueryEventSem, DosCreateMutexSem, DosCloseMutexSem, DosRequestMutexSem, DosReleaseMutexSem, DosOpenMutexSem, DosQueryMutexSem, DosCreateMuxWaitSem, DosOpenMuxWaitSem, DosCloseMuxWaitSem, DosWaitMuxWaitSem, DosAddMuxWaitSem, DosDeleteMuxWaitSem, DosQueryMuxWaitSem |
 | **Queues** | DosCreateQueue, DosOpenQueue, DosWriteQueue, DosReadQueue, DosCloseQueue, DosPurgeQueue, DosQueryQueue |
 | **Pipes** | DosCreatePipe, DosCreateNPipe, DosConnectNPipe, DosDisConnectNPipe, DosPeekNPipe, DosTransactNPipe, DosCallNPipe, DosWaitNPipe, DosQueryNPHState, DosSetNPHState, DosQueryNPipeInfo, DosSetNPipeSem, DosQueryNPipeSemState, DosOpen of `\PIPE\…` |
-| **System** | DosQuerySysInfo, DosGetDateTime, DosQueryCp, DosQueryCtryInfo, DosQueryDBCSEnv, DosMapCase, DosQueryCollate, DosDevConfig, DosDevIOCtl |
+| **System** | DosQuerySysInfo, DosGetDateTime, DosSetDateTime, DosQueryCp, DosQueryCtryInfo, DosQueryDBCSEnv, DosMapCase, DosQueryCollate, DosDevConfig, DosDevIOCtl |
 | **Audio** | DosBeep (real sine-wave tones via MMPM/2 beep_tone) |
-| **Stubs** | DosError, DosSetMaxFH, DosSetExceptionHandler, DosLoadModule, DosStartSession, and others |
+| **Stubs** | DosDebug, DosShutdown, DOS16REQUESTVDD, DosFSCtl (`STUB_ORDINALS` in `api_registry.rs`); DosStartSession and the other session calls return `ERROR_INVALID_FUNCTION` |
 
 All blocking operations (DosSleep, DosWaitEventSem, DosRequestMutexSem, DosWaitMuxWaitSem, DosReadQueue, DosWaitThread) check `Loader::shutting_down()` in 100 ms intervals to ensure clean shutdown: true once `exit_requested` is set, and on every thread but the exit-list thread while an exit list runs. They also check `Loader::interrupted()` (a signal for thread 1, a killed thread; see "Interrupting blocking calls").
 
@@ -1402,6 +1403,34 @@ OS/2 bounds the threads of the whole system with `THREADS=` (64 … 4095, defaul
 
 Tests: `config_sys.rs` (parser, clamping, env override, reading through drive C), `session_threads.rs` (several simulated processes sharing a directory, killed processes and reused pids, junk and symbolic links, reservations taken over / settled / cancelled, a dead parent's reservation, racing reservations from 8 threads, a non-private directory, the unusable-directory fallback, `DosCreateThread` and `admit_child` at the limit); `samples/threads_limit_test` + `test_threads_limit_from_config_sys` (`THREADS=70` in a temporary drive C), `test_threads_limit_from_the_environment` (`WARPINE_THREADS`, clamping), `test_threads_limit_refuses_a_process_without_a_slot` (exit 89 in a full session; a stale record is removed). The sample's children recognise their mode from `pib_pchcmd`, not `argv`.
 
+### Session clock and dates after 2038 (ADR-0039)
+
+`clock.rs` holds everything about the current date:
+
+- **`SessionClock`** (`SharedState::clock`) is the host's time plus an `AtomicI64` offset in milliseconds.
+  - `SessionClock::from_env` reads the parent's `WARPINE_CLOCK_OFFSET`, else a `WARPINE_CLOCK` start date (`parse_clock_setting`: exact `YYYY-MM-DD[THH:MM[:SS]]`, years 1980–9999, local time), else 0.
+  - `set_now_ms` (from `DosSetDateTime`) stores target − host now.
+  - `inherit::admit_child` always passes the offset on, which also overrides a `WARPINE_CLOCK` the child would otherwise reread.
+- **Conversions** go through libc `localtime_r` / `mktime` on a 64-bit `time_t` (checked at compile time):
+  - `LocalTime` holds the fields, plus the weekday and the offset east of UTC; `os2_timezone()` gives the `DATETIME` value, minutes west.
+  - `unix_to_local` / `local_to_unix` convert in both directions; `local_to_unix` rejects invalid dates through `is_valid`, before `mktime` normalises them.
+  - `pack_fdate_ftime` clamps to 1980-01-01 … 2107-12-31 23:59:58 instead of wrapping, and `unpack_fdate_ftime` checks every field.
+  - `fdate_request` maps a set call's pair to `Keep` (0 / 0), `Set(SystemTime)` or `Invalid`.
+- **Readers of the clock:**
+  - `Loader::dos_get_date_time` and `write_datetime` / `read_datetime` (`stubs.rs`), shared with `warpine_api.rs`;
+  - `DosQuerySysInfo`, which reads the clock once for `QSV_TIME_LOW` / `QSV_TIME_HIGH`.
+- **File times:**
+  - `vfs_hostdir.rs` reports host times through `system_time_to_fdate` (local time).
+  - `set_file_info` / `set_path_info` apply the access and write times with `File::set_times`, and `DriveManager::set_file_info` / `set_path_info` route to the backend.
+  - `Loader::read_set_status` checks the level, the buffer size and every date first.
+- **Built-in modules by name:** `constants::module_base` is the one table of module bases. `api_registry::find_by_module_and_name` returns the module's own ordinal, which `resolve_import` adds to the base, and `DosQueryProcAddr` with a name uses `resolve_import_by_name` for built-in modules.
+- **Tests:**
+  - `clock.rs`: calendar, round trips at 2³¹ / 2³² / 2200, clamping, settings, offsets;
+  - `warpine_api.rs`;
+  - `stubs.rs`: `test_dos_query_proc_addr_builtin_name`;
+  - `inherit.rs`: the offset passed to children;
+  - `samples/datetime_test` and `test_dates_after_2038`, with `TZ=JST-9` and `WARPINE_CLOCK=2040-03-01T12:00:00`.
+
 ### Handle Management (absorbed into VFS)
 
 Currently, file handles and directory search handles are managed by two separate structs in `managers.rs`:
@@ -1584,7 +1613,7 @@ src/
     ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants (addresses, message IDs, ordinal bases)
-    api_registry.rs    Static sorted API thunk table (261 entries); ApiEntry
+    api_registry.rs    Static sorted API thunk table (265 entries); ApiEntry
     api_dispatch.rs    Registry lookup + per-subsystem dispatcher routing
     api_trace.rs       Structured tracing helpers (ordinal_to_name auto-generated from os2api.def,
                        module_for_ordinal, arg_names_for_ordinal, format_call)
@@ -1672,7 +1701,7 @@ To add a new OS/2 API call:
 
 3. **Wire up the dispatch** — The dispatch path depends on the subsystem:
 
-   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (261 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
+   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (265 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
 
    - **VIOCALLS / KBDCALLS**: add a match arm in `handle_viocalls()` or `handle_kbdcalls()`, and add the ordinal's stack-byte count to `viocalls_arg_bytes()` / `kbdcalls_arg_bytes()`.
 
@@ -1827,7 +1856,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the 4OS2 / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (1749: 1707 warpine + 19 `gen_api` + 12 `lx_link` + 5 `gen_arch` + 6 `gen_compat`) include, among others:
+The unit tests (1762: 1720 warpine + 19 `gen_api` + 12 `lx_link` + 5 `gen_arch` + 6 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2105,14 +2134,14 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **Virtualization backend abstraction** — `VmBackend`/`VcpuBackend` traits; KVM isolated to `kvm_backend.rs`; `MockVcpu`/`MockVmBackend` for testing without `/dev/kvm`.
 - **Guest memory type safety** — `GuestMemory` struct with safe `read<T>`/`write<T>` replacing raw `*mut u8` + `usize`.
 - **Structured API trace** — `api_trace.rs` with `ordinal_to_name()`, `module_for_ordinal()`, per-argument typed names. `WARPINE_TRACE=strace|json` output modes.
-- **API thunk auto-registration** — `api_registry.rs` static sorted table (261 entries); O(log n) binary search replaces ~120-arm match.
+- **API thunk auto-registration** — `api_registry.rs` static sorted table (265 entries); O(log n) binary search replaces ~120-arm match.
 - **SDL2 GUI backend** — migrated from `winit + softbuffer` to SDL2; full keyboard, mouse, clipboard support.
 - **PM renderer abstraction** — `PmRenderer` trait with `Sdl2Renderer` and `HeadlessRenderer` backends.
 - **GDT tiling** — 4096 tiled 16-bit data descriptors (GDT[6..4101], DPL=2) and 2048 tiled 16-bit code descriptors (GDT[4102..6149]) for 16:16 addressing; GDT[4] 16-bit data alias (0x20), GDT[5] 16-bit code alias (0x28) for Far16 thunks.
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 1749 unit tests (1707 warpine + 19 gen_api + 12 lx_link + 5 gen_arch + 6 gen_compat), 126 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 1762 unit tests (1720 warpine + 19 gen_api + 12 lx_link + 5 gen_arch + 6 gen_compat), 127 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

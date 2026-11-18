@@ -16,7 +16,7 @@ Open work is grouped by topic:
 - [Multimedia](#multimedia) — audio
 - [Console and text mode](#console-and-text-mode)
 - [Codepages and NLS](#codepages-and-nls)
-- [Application compatibility](#application-compatibility) — 16-bit (NE) programs, REXX, dates after 2038
+- [Application compatibility](#application-compatibility) — 16-bit (NE) programs, REXX, date and time follow-ups
 - [Development toolchain](#development-toolchain) — modern guest compilers next to Open Watcom
 - [Long-term](#long-term) — SOM / Workplace Shell, XE (64-bit)
 
@@ -81,6 +81,7 @@ Open work is grouped by topic:
 | Presentation Manager | `WinStartApp`, switch list, atom tables, DDE (per process, ADR-0030); standard file and font dialogs, PMSPL / PMCTLS module slots, printing stubs (ADR-0029) | Complete | `src/loader/pm_startapp.rs`, `pm_switch.rs`, `pm_atom.rs`, `pm_dde.rs`, `pm_filedlg.rs`, `pm_fontdlg.rs`, `pmspl.rs`; samples `pm_switch_dde_test`, `pm_stddlg_test` |
 | Core | MSG `DosInsertMessage` / `DosQueryMessageCP`, MSG ordinals from `os2386.lib`; process nesting limit (ADR-0028) | Complete | `src/loader/msgcalls.rs`, `src/loader/inherit.rs`; sample `nest_test` |
 | Core | Parity follow-ups: `DosKillProcess` with KILLPROC and exit lists (ADR-0034), interruptible blocking calls (ADR-0035), session-unique process ids (ADR-0036), semaphore owner death / busy / auto-reset, pipe semaphores and stale-directory sweeps (ADR-0037), frame scroll-bar input and client origins, modal message-filter hooks, standard-dialog notifications, `GpiSetAttrs` character bundle (ADR-0038) | Complete | `src/loader/signals.rs`, `interrupt.rs`, `inherit.rs`, `ipc.rs`, `npipe_sem.rs`, `npipe_dir.rs`, `pm_stddlg.rs`; samples `kill_test`, `argv_test`, `semfollow_test`, `pm_frame_scroll_test`, `pm_charbundle_test`, `pm_modal_filter_test` |
+| Core | Dates after 2038 — session clock for `DosSetDateTime` (`WARPINE_CLOCK`, inherited offset), `DATETIME` time zone west of UTC, file times in local time clamped to 1980–2107 and set by `DosSetFileInfo` / `DosSetPathInfo`, `WARPINE.DLL` 64-bit time calls, `DosQueryProcAddr` by name for built-in modules (ADR-0039); redirecting third-party C-runtime time imports dropped (a signed 32-bit `time_t` cannot be fixed from outside) | Complete | `src/loader/clock.rs`, `warpine_api.rs`; sample `datetime_test` |
 | Project | Development history (the baseline phases 1–7) | Complete | [Developer Guide §20](developer_guide.md#appendix-development-phases) |
 
 ---
@@ -218,13 +219,13 @@ NE execution works (`ne_hello` runs end-to-end). Open work:
 - [ ] Bridge `REXXAPI.DLL` exports (`RexxStart`, `RexxRegisterSubcomDll`, `RexxVariablePool`) to [Regina REXX](http://regina-rexx.sourceforge.net/)
 - [ ] Unlocks: OS/2 install programs, system tools, 4OS2 `.cmd` scripts
 
-### Dates after 2038
+### Date and time follow-ups
 
-- [ ] Audit `time_t` usage in DOSCALLS and CRT shim functions
-- [ ] `DosGetDateTime` / `DosSetDateTime` use `DATETIME` (`USHORT` year) — verify not affected
-- [ ] `FILESTATUS3` timestamps use `FDATE`/`FTIME` (7-bit year from 1980, max 2107) — verify not affected
-- [ ] Redirect CRT time imports (`CLIB.DLL` / `CRTL.DLL` / `EMX.DLL`) to 64-bit-clean host implementations
-- [ ] Optional: `WARPINE.DLL` escape — `WrpGetDateTime64` / `WrpTime64` for recompilable apps
+The 2038 audit is done (ADR-0039). What remains:
+
+- [ ] **`DosGetInfoSeg` time fields** — the 16-bit global information segment (`GINFOSEG`: seconds since 1970, hour / minutes / day / year, time zone) is not filled in; `DosGetInfoSeg` hands out a selector of the PIB page
+- [ ] **File attributes on set** — `DosSetFileInfo` / `DosSetPathInfo` set the access and write times only; the `FILESTATUS3` attributes, like `DosSetFileMode`, are not applied (read-only could map to the host permissions)
+- [ ] **A clock shared by the session** — `DosSetDateTime` moves the clock of the calling process and of the children it starts afterwards, not of processes already running (ADR-0039)
 
 ---
 

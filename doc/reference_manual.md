@@ -75,6 +75,8 @@ warpine --compat
 | `WARPINE_THREAD_DIR` | Path | _(unset)_: a new `$XDG_RUNTIME_DIR/warpine-threads-<uid>-<pid>` | Set by Warpine for its child processes: the session's private thread-accounting directory (mode 0700, owned by the user) |
 | `WARPINE_THREAD_SLOT` | `r-<pid>-<n>` | _(unset)_ | Set by Warpine for a child process: the thread slot its parent reserved for it |
 | `WARPINE_PID`, `WARPINE_PPID` | `1` … `65535` | _(unset)_: 42 and 0 | Set by Warpine for a child process: its OS/2 process id, chosen by the parent from a counter shared by the session (from 100), and the parent's id. The process reports them in `pib_ulpid` / `pib_ulppid`; a malformed value is ignored |
+| `WARPINE_CLOCK` | `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM`, `YYYY-MM-DDTHH:MM:SS` (local time, years 1980–9999; a space may replace the `T`) | _(unset)_: the host's clock | The date and time the session's clock starts at: `DosGetDateTime`, `DosQuerySysInfo(QSV_TIME_LOW / QSV_TIME_HIGH)` and `WARPINE.DLL` report it, running on from there, without touching the host's clock (ADR-0039). A malformed value is reported and ignored |
+| `WARPINE_CLOCK_OFFSET` | Milliseconds (signed) | _(unset)_ | Set by Warpine for a child process: its parent's clock offset from the host's (after `WARPINE_CLOCK` or `DosSetDateTime`); it takes precedence over `WARPINE_CLOCK` |
 | `RUST_LOG` | Filter string | `info` | Log level: `trace`, `debug`, `info`, `warn`, `error`. Module-scoped filters supported (e.g. `warpine::loader=debug`) |
 
 ### Filesystem
@@ -480,10 +482,16 @@ DosCreatePipe (239), DosCreateNPipe (243), DosConnectNPipe (241), DosDisConnectN
 **Modules:**
 DosLoadModule (318), DosFreeModule (322), DosQueryModuleHandle (319), DosQueryModuleName (320), DosQueryProcAddr (321), DosSearchPath (228)
 
+Built-in modules (DOSCALLS, PMWIN, UCONV, WARPINE …) load without a file; `DosQueryProcAddr` finds their entry points by ordinal or by name.
+
 `DosSearchPath` looks for a file in each directory of a `;`-separated path (quoted elements may contain `;`), the current directory first with `SEARCH_CUR_DIRECTORY`, the path taken from an environment variable with `SEARCH_ENVIRONMENT` (`ERROR_ENVVAR_NOT_FOUND`); `SEARCH_IGNORENETERRS` is accepted. The result is fully qualified (`C:\DIR\FILE`); a name with wildcards is matched like `DosFindFirst` and returned with them. Errors: `ERROR_FILE_NOT_FOUND`, `ERROR_BUFFER_OVERFLOW` (result and NUL do not fit; nothing written), `ERROR_INVALID_PARAMETER` (reserved flag bits, NULL strings). `DosQueryModuleName` writes a module's fully qualified name: module handle 0 (the executable's handle in Warpine: `pib_hmte`, the entry point's argument) is the executable as named in its command line (`C:\NAME.EXE`), a DLL beside the executable `C:\NAME.DLL`, a DLL elsewhere on a drive its OS/2 path, and a built-in module loaded with `DosLoadModule` (DOSCALLS, PMWIN, UCONV …) `C:\OS2\DLL\NAME.DLL`; `ERROR_INVALID_HANDLE`, `ERROR_BAD_LENGTH` when the name and NUL do not fit. Warpine's own choices (unverified): reserved flags and NULL pointers `ERROR_INVALID_PARAMETER`; path elements that do not resolve are skipped whatever `SEARCH_IGNORENETERRS` says; only files match, directories do not; the names reported for the executable and built-in modules.
 
 **System:**
-DosQuerySysInfo (348), DosGetDateTime (230), DosFlatToSel (425), DosSelToFlat (426), DosSetExceptionHandler (354), DosUnsetExceptionHandler (355)
+DosQuerySysInfo (348), DosGetDateTime (230), DosSetDateTime (292), DosFlatToSel (425), DosSelToFlat (426), DosSetExceptionHandler (354), DosUnsetExceptionHandler (355)
+
+Date and time (ADR-0039): Warpine cannot set the host's clock, so each process has a **session clock** — the host's time plus an offset. `DosGetDateTime` reports it in local time; the `DATETIME` time-zone field is minutes **west** of UTC (positive west of Greenwich, as the reference defines it) and the weekday 0 = Sunday. `DosQuerySysInfo(QSV_TIME_LOW / QSV_TIME_HIGH)` gives its seconds since 1970-01-01 UTC as two halves read at once (the low half wraps in 2106, the high half carries on). `DosSetDateTime` moves the clock of the calling process and of the children it starts afterwards, not of processes already running; a field out of range, hundredths over 99 or a year outside 1980–9999 fail with `ERROR_TS_DATETIME` and change nothing; its weekday and time zone are not used. `WARPINE_CLOCK` starts a session at a given date. Nothing here ends in 2038: the host's `time_t` is 64-bit, and Open Watcom programs, whose `time_t` is `unsigned long`, are good until 2106.
+
+File times are local time in `FDATE` / `FTIME`, clamped to 1980-01-01 00:00:00 … 2107-12-31 23:59:58 (what the 7-bit year from 1980 can hold) and not shifted by the session clock. `DosSetFileInfo` / `DosSetPathInfo` (`FIL_STANDARD`, a `FILESTATUS3` of at least 24 bytes, else `ERROR_BUFFER_OVERFLOW`) set the last-access and last-write times; a date and time of 0 / 0 leave a time unchanged, an invalid date or time fails with `ERROR_INVALID_PARAMETER`. The creation time (Linux cannot set one) and the attributes are not set; level 2 (EAs) is accepted and ignored, other levels are `ERROR_INVALID_LEVEL`.
 
 **Exception Handling:**
 DosRaiseException (356), DosUnwindException (357), DosSetSignalExceptionFocus (378), DosSendSignalException (379), DosAcknowledgeSignalException (418)
@@ -595,6 +603,19 @@ WinFontDlg (2), WinDefFontDlgProc (3), WinFileDlg (4), WinDefFileDlgProc (5), Wi
 - **File dialog.** An Open or Save As dialog (`FDS_OPEN_DIALOG` / `FDS_SAVEAS_DIALOG`) with the file name, the current directory, the type of file ("<All Files>" and `pszIType` / `papszITypeList`, matched against a file's `.TYPE` extended attribute), the drives (the mounted ones, or `papszIDriveList`), the directories and the files; OK / Cancel and, with `FDS_APPLYBUTTON` / `FDS_HELPBUTTON`, Apply / Help. `szFullFile` gives the starting drive, directory and file name or wildcard filter. A click on a file puts its name in the entry field, a double click is OK; a double click on a directory enters it. OK with a wildcard changes the filter, with a directory enters it, with a valid name in an existing directory ends the dialog (the name takes the case of an existing file). The dialog only sees Warpine's drives. It writes back `lReturn` (`DID_OK` / `DID_CANCEL`), `lSRC`, `szFullFile` and `ulFQFCount`; with `FDS_MULTIPLESEL` several files can be selected and `papszFQFilename` lists them until `WinFreeFileDlgList`. `FDS_CENTER`, `x` / `y`, `pszTitle`, `pszOKButton`, `FDS_ENABLEFILELB` (Save As disables the file list otherwise), `FDS_MODELESS` (returns the dialog's handle; it hides itself when done), `pfnDlgProc` (subclassing; pass the rest to `WinDefFileDlgProc`; the `FILEDLG` is in `QWL_USER`) and `FDS_CUSTOM` templates (`hMod` / `usDlgId`, filled by control id) are supported. Modal calls return TRUE (NULLHANDLE with `lSRC` set on an error). A dialog procedure is sent, through `WinDefFileDlgProc`, `FDM_FILTER` for each file listed (mp1 the name, mp2 its first `.TYPE` or NULL; FALSE leaves it out — the first call of the default procedure, normally for `WM_INITDLG`, filters the lists filled at creation), `FDM_VALIDATE` for each file OK or Apply takes (mp1 the fully qualified name, mp2 `DID_FILENAME_ED` or `DID_FILES_LB`; FALSE keeps the dialog open) and `FDM_ERROR` for a name it cannot use (mp1 `FDS_ERR_INVALID_DRIVE` or `FDS_ERR_INVALID_PATHFILE`); `WinDefFileDlgProc` answers TRUE, TRUE and 0. Not supported: a default error box for `FDM_ERROR`, `FDS_INCLUDE_EAS` / `FDS_PRELOAD_VOLINFO` / `FDS_FILTERUNION` are ignored, Help shows nothing, no overwrite question for Save As.
 - **Font dialog.** Name (IBM Plex Mono / Sans / Serif; `FNTS_FIXEDWIDTHONLY` / `FNTS_PROPORTIONALONLY` filter them), style (Normal, Italic, Bold, Bold Italic), size (`pszPtSizeList` or a default list; any size can be typed), emphasis (outline, underscore, strikeout) and a sample (`pszPreview`, `clrFore` / `clrBack`) drawn in the chosen font; Reset / Apply / Help with `FNTS_RESETBUTTON` / `FNTS_APPLYBUTTON` / `FNTS_HELPBUTTON`. It starts from `fAttrs` (`FNTS_INITFROMFATTRS`) or `pszFamilyname` / `flStyle` / `fxPointSize`, and OK writes back the family name, `fxPointSize`, `sNominalPointSize`, `flStyle`, `flType`, `usWeight` / `usWidth`, the em / x heights and an `fAttrs` that `GpiCreateLogFont` turns into the same font. `FNTS_CENTER`, `FNTS_MODELESS`, `pfnDlgProc` with `WinDefFontDlgProc` and `FNTS_CUSTOM` templates work as for the file dialog. A dialog procedure is sent, through `WinDefFontDlgProc`, `FNTM_FILTERLIST` for each family and size listed (mp1 the text, mp2 `MPFROM2SHORT(DID_NAME or DID_SIZE, FNTI_*)`; FALSE leaves it out, a refused chosen family gives way to the first one left) and, when the choice changes, `FNTM_FACENAMECHANGED` (the family name), `FNTM_POINTSIZECHANGED` (the size as text and as FIXED) and `FNTM_STYLECHANGED` (a `STYLECHANGE`). Not supported: printer fonts, `FNTS_OWNERDRAWPREVIEW` (`FNTM_UPDATEPREVIEW`), colour choices (`FNTM_COLORCHANGED`), filtering the style list; `FNTS_BITMAPONLY` is ignored (all of Warpine's fonts are outline fonts); the sample does not show the emphasis.
 
+### WARPINE — Warpine's own extensions (4 APIs)
+
+`WARPINE.DLL` is not an OS/2 module: a program that can be recompiled loads it with `DosLoadModule("WARPINE")` (which fails on OS/2, so it can fall back) and finds the calls with `DosQueryProcAddr` by name or ordinal. They are `_System` (`APIENTRY`) calls returning an `APIRET`, and they take a signed 64-bit count of seconds since 1970-01-01 00:00 UTC (`long long`) on the session clock:
+
+| Ordinal | Call | Does |
+|--------:|------|------|
+| 1 | `WrpTime64(long long *ptime)` | the current time |
+| 2 | `WrpGetDateTime64(DATETIME *pdt, long long *ptime)` | the current time as a local `DATETIME` and as seconds, from one reading |
+| 3 | `WrpLocalTime64(const long long *ptime, DATETIME *pdt)` | seconds → local `DATETIME` (hundredths 0) |
+| 4 | `WrpMakeTime64(const DATETIME *pdt, long long *ptime)` | local `DATETIME` → seconds (hundredths, weekday and time zone ignored) |
+
+A null pointer, or a time whose year is outside 1–9999, is `ERROR_INVALID_PARAMETER`; a `DATETIME` that names no real date or time is `ERROR_TS_DATETIME`. Sample: `datetime_test`.
+
 ### PMWIN (169 APIs)
 
 Window management, message queues, painting (incl. `WinGetPS` / `WinReleasePS`, window DCs, `WinDrawBitmap`), input, focus, codepage, dialogs, menus, clipboard, and resource loading. Ordinals follow the Open Watcom import library (`doc/os2_ordinals.md`):
@@ -685,7 +706,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 261 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 359 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 265 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 359 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -704,9 +725,10 @@ Counts are taken from the static registry (`api_registry.rs`, 261 entries) and t
 | HELPMGR (no viewer) | registry | 6 | 0 | 6 |
 | PMSPL (no printers) | registry | 15 | 0 | 15 |
 | PMCTLS (standard dialogs) | registry | 5 | 0 | 5 |
+| WARPINE (Warpine's own extensions) | registry | 4 | 0 | 4 |
 | PMWIN | sub-dispatcher | 169 | 0 | 169 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **609** | **11** | **620** |
+| **Total** | | **613** | **11** | **624** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 
@@ -761,7 +783,7 @@ All addresses are guest physical (GPA = GVA in Warpine's flat model):
 | `0x00092000` | 4 KB | Environment string block |
 | `0x00100000` | — | NE (16-bit) segment base |
 | `0x00F00000` | — | NE API thunk stubs |
-| `0x01000000` | 18,432 B | LX API thunk stub area (`MAGIC_API_BASE`, `STUB_AREA_SIZE`) |
+| `0x01000000` | 21,504 B | LX API thunk stub area (`MAGIC_API_BASE`, `STUB_AREA_SIZE`) |
 | `0x010003FE` | 1 B | PM callback return trap |
 | `0x010003FF` | 1 B | Exit trap address |
 | `0x02000000` | ~30 MB | Dynamic allocation pool (`DosAllocMem`) |
