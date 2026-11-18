@@ -2037,7 +2037,7 @@ impl super::Loader {
         };
         let remove = fl & PM_REMOVE != 0;
         loop {
-            if self.shutting_down() { return None; }
+            if self.stop_or_restart() { return None; }
             // Window-manager lock before the queue lock, as everywhere else.
             let found = self.shared.window_mgr.lock_or_recover().next_queued(hmq, remove, |wm, m| {
                 // WM_QUIT passes every filter, so a filtered loop still ends.

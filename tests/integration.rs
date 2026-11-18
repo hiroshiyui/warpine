@@ -405,6 +405,217 @@ fn test_thread_control_and_signal_exceptions() {
     assert_eq!(code, 0, "{out}");
 }
 
+const KILL_TEST: &str = "samples/kill_test/kill_test.exe";
+
+/// Run kill_test as child `mode` (WARPINE_OS2ARGS = "child <mode>") with
+/// `stdin` as its piped input; (stdout, exit code, drive C).
+fn run_kill_test_mode(mode: &str, stdin: &[u8]) -> (String, i32, tempfile::TempDir) {
+    use std::io::Write;
+    let data_home = tempfile::tempdir().expect("tempdir");
+    let mut child = Command::new(warpine())
+        .arg(KILL_TEST)
+        .env("WARPINE_HEADLESS", "1")
+        .env("WARPINE_OS2ARGS", format!("child {mode}"))
+        .env("XDG_DATA_HOME", data_home.path())
+        .env("XDG_RUNTIME_DIR", data_home.path())
+        .envs(PINNED_LOCALE.iter().copied())
+        .env("RUST_LOG", "error")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn warpine");
+    child.stdin.take().unwrap().write_all(stdin).unwrap();
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("kill_test {mode} did not end within 30s");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let out = child.wait_with_output().unwrap();
+    (String::from_utf8_lossy(&out.stdout).into_owned(), out.status.code().unwrap_or(-1), data_home)
+}
+
+/// The file `name` on drive C under `data_home`, if any.
+fn drive_c_file(data_home: &Path, name: &str) -> Option<String> {
+    std::fs::read_dir(data_home.join("warpine/drive_c")).ok()?.flatten()
+        .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case(name))
+        .and_then(|e| std::fs::read_to_string(e.path()).ok())
+}
+
+/// kill_test: DosSleep / DosWaitEventSem interrupted by a signal with
+/// ERROR_INTERRUPT, DosRead of a pipe made again after it; DosKillProcess
+/// to child processes: the exit list runs with TC_KILLPROCESS and the
+/// parent sees TC_KILLPROCESS, a handler that continues makes DosSleep fail
+/// with ERROR_INTERRUPT, a child that ignores the signal is ended after the
+/// grace period, DKP_PROCESSTREE reaches the grandchild.
+#[test]
+fn test_kill_process_and_interrupted_waits() {
+    if !kvm_available() || !Path::new(KILL_TEST).exists() { return; }
+    let (out, code) = run_sample(KILL_TEST, 90);
+    let checks: Vec<&str> = out.lines()
+        .filter(|l| l.starts_with("kill_test: ") && !l.contains(": done")).collect();
+    assert!(checks.len() >= 28, "every check reported:\n{out}");
+    let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
+    assert!(failed.is_empty(), "failed checks: {failed:#?}");
+    assert!(out.contains(&format!("kill_test: done {n}/{n}", n = checks.len())), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
+/// Ctrl+C in piped keyboard input is XCPT_SIGNAL_INTR for KbdCharIn, which
+/// returns the next key.
+#[test]
+fn test_ctrl_c_from_the_keyboard_is_a_signal() {
+    if !kvm_available() || !Path::new(KILL_TEST).exists() { return; }
+    let (out, code, _c) = run_kill_test_mode("kbd", b"\x03x");
+    assert!(!out.contains("FAIL") && out.matches(": ok").count() == 3, "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
+/// The end of piped keyboard input ends the process like DosExit: its exit
+/// list runs with TC_EXIT.
+#[test]
+fn test_exit_list_runs_at_the_end_of_piped_input() {
+    if !kvm_available() || !Path::new(KILL_TEST).exists() { return; }
+    let (out, code, c) = run_kill_test_mode("eof", b"");
+    assert!(out.contains("kill_test: eof waiting") && !out.contains("FAIL"), "{out}");
+    assert_eq!(drive_c_file(c.path(), "KT_EOF.OUT").as_deref(), Some("tc=0;"), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
+/// SIGTERM from the host is XCPT_SIGNAL_KILLPROC: the exit list runs with
+/// TC_KILLPROCESS and the process ends with code 1.
+#[test]
+fn test_sigterm_runs_the_exit_list() {
+    if !kvm_available() || !Path::new(KILL_TEST).exists() { return; }
+    let data_home = tempfile::tempdir().expect("tempdir");
+    let mut child = Command::new(warpine())
+        .arg(KILL_TEST)
+        .env("WARPINE_HEADLESS", "1")
+        .env("WARPINE_OS2ARGS", "child exitlist")
+        .env("XDG_DATA_HOME", data_home.path())
+        .env("XDG_RUNTIME_DIR", data_home.path())
+        .envs(PINNED_LOCALE.iter().copied())
+        .env("RUST_LOG", "error")
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+        .spawn().expect("spawn warpine");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while drive_c_file(data_home.path(), "KT_EXITLIST.RDY").is_none() {
+        if std::time::Instant::now() >= deadline || child.try_wait().unwrap().is_some() {
+            let _ = child.kill();
+            panic!("the child never got ready");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let sent = Command::new("kill").args(["-TERM", &child.id().to_string()]).status().unwrap();
+    assert!(sent.success());
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() { break s; }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("SIGTERM did not end the process");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(status.code(), Some(1));
+    assert_eq!(drive_c_file(data_home.path(), "KT_EXITLIST.OUT").as_deref(), Some("tc=3;"));
+}
+
+/// A named-pipe session directory left behind by a killed Warpine process
+/// is removed when a new session starts; one whose process lives (here: a
+/// record naming the test itself) is kept, and so is anything that is not
+/// a pipe directory.
+#[test]
+fn test_stale_pipe_directories_are_removed() {
+    if !kvm_available() || !Path::new(KILL_TEST).exists() { return; }
+    use std::os::unix::fs::DirBuilderExt;
+    let runtime = tempfile::tempdir().expect("tempdir");
+    let uid = std::fs::metadata("/proc/self").map(|m| { use std::os::unix::fs::MetadataExt; m.uid() }).unwrap();
+    let make = |pid: u32| {
+        let p = runtime.path().join(format!("warpine-pipes-{uid}-{pid}"));
+        std::fs::DirBuilder::new().mode(0o700).create(&p).unwrap();
+        p
+    };
+    // A process that has ended (spawned and reaped: its pid is free).
+    let mut gone = Command::new("true").spawn().unwrap();
+    let gone_pid = gone.id();
+    gone.wait().unwrap();
+    let stale = make(gone_pid);
+    std::fs::write(stale.join(format!("p-{gone_pid}")), format!("{gone_pid} 1\n")).unwrap();
+    std::fs::write(stale.join("np-0123456789abcdef"), b"").unwrap();
+    // A live session: the record names this test process and its start time.
+    let me = std::process::id();
+    let stat = std::fs::read_to_string(format!("/proc/{me}/stat")).unwrap();
+    let start = stat[stat.rfind(')').unwrap() + 2..].split(' ').nth(19).unwrap().to_string();
+    let live = make(me);
+    std::fs::write(live.join(format!("p-{me}")), format!("{me} {start}\n")).unwrap();
+    // Not Warpine's.
+    let foreign = make(gone_pid + 1);
+    std::fs::write(foreign.join("notes.txt"), b"keep").unwrap();
+
+    // Any program: the sweep runs when a session starts ("eof" ends at once).
+    let (out, code) = run_sample_env(KILL_TEST, 15,
+                                     &[("XDG_RUNTIME_DIR", runtime.path().to_str().unwrap()),
+                                       ("WARPINE_OS2ARGS", "child eof")]);
+    assert_eq!(code, 0, "{out}");
+    assert!(!stale.exists(), "the dead session's directory is removed");
+    assert!(live.join(format!("p-{me}")).exists(), "a live session's directory is kept");
+    assert!(foreign.join("notes.txt").exists(), "a directory with other files is kept");
+}
+
+/// run kill_test as "child win" in a VIO display (`vio`: None = the PM
+/// window, or "fullscreen") under a GUI script that types Ctrl+C and then
+/// closes the session; returns C:\KT_WIN.OUT.
+fn run_kill_test_window(vio: Option<&str>) -> Option<String> {
+    let has_script = Command::new("script").arg("--version").output().is_ok_and(|o| o.status.success());
+    if !kvm_available() || !Path::new(KILL_TEST).exists() || !has_script {
+        eprintln!("skipping: KVM, {KILL_TEST} or util-linux script not available");
+        return None;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let session = dir.path().join("session.script");
+    std::fs::write(&session, "2000 key ctrl+c\n3500 quit\n").unwrap();
+    let mut cmd = Command::new("script");
+    cmd.args(["-qec", &format!("timeout 30 {} {KILL_TEST}", warpine())])
+        .arg("/dev/null")
+        .envs(PINNED_LOCALE.iter().copied())
+        .env("SDL_VIDEODRIVER", "dummy")
+        .env("SDL_AUDIODRIVER", "dummy")
+        .env("RUST_LOG", "error")
+        .env("WARPINE_OS2ARGS", "child win")
+        .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_RUNTIME_DIR", dir.path())
+        .env("WARPINE_GUI_SCRIPT", &session)
+        .env_remove("WARPINE_VIO")
+        .env_remove("WARPINE_HEADLESS")
+        .stdout(Stdio::null());
+    if let Some(vio) = vio {
+        cmd.env("WARPINE_VIO", vio);
+    }
+    // Ended by XCPT_SIGNAL_KILLPROC: exit code 1 (signals.rs).
+    let status = cmd.status().expect("run script");
+    assert_eq!(status.code(), Some(1), "kill_test session: {status}");
+    drive_c_file(dir.path(), "KT_WIN.OUT").or(Some(String::new()))
+}
+
+/// Ctrl+C typed in a VIO window is XCPT_SIGNAL_INTR; closing the window
+/// asks the program to end: its exit list runs with TC_KILLPROCESS.
+#[test]
+fn gui_ctrl_c_and_close_in_a_vio_window() {
+    let Some(out) = run_kill_test_window(None) else { return };
+    assert_eq!(out, "intr;tc=3;");
+}
+
+/// The same in the full-screen text window.
+#[test]
+fn gui_ctrl_c_and_close_in_the_full_screen_text_window() {
+    let Some(out) = run_kill_test_window(Some("fullscreen")) else { return };
+    assert_eq!(out, "intr;tc=3;");
+}
+
 /// npipe_test: named pipes in one process and across processes, pipes
 /// passed to child processes (an inherited handle, standard input,
 /// standard output), the environment given to DosExecPgm, and

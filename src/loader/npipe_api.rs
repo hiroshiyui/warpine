@@ -161,7 +161,7 @@ impl super::Loader {
         let message = mode.read_message && end.spec().message_type();
         let _blocked = BlockedGuard::new(end.blocked());
         let len = len.min(NP_MAX_READ) as usize;
-        match conn.read(len, message, mode.nowait, &|| self.np_stop()) {
+        match conn.read(len, message, mode.nowait, &|| self.stop_or_restart()) {
             Ok(ReadOut { data, more }) => {
                 if self.guest_write_bytes(buf_ptr, &data).is_none() {
                     return ERROR_INVALID_PARAMETER;
@@ -284,7 +284,7 @@ impl super::Loader {
                 NP_STATE_DISCONNECTED => return ERROR_PIPE_NOT_CONNECTED,
                 _ => {}
             }
-            if self.np_stop() {
+            if self.np_stop() || self.interrupted() {
                 return ERROR_INTERRUPT;
             }
             st = inst.cond.wait_timeout(st, std::time::Duration::from_millis(100))
@@ -425,7 +425,7 @@ impl super::Loader {
             Ok(p) => p,
             Err(e) => return e,
         };
-        match npipe::wait_for_instance(&path, &name, msec, &|| self.np_stop()) {
+        match npipe::wait_for_instance(&path, &name, msec, &|| self.np_stop() || self.interrupted()) {
             Ok(()) => NO_ERROR,
             Err(e) => e,
         }

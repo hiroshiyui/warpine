@@ -101,12 +101,17 @@ pub struct PipeDir {
     dir: Option<File>,
     /// This process created the directory (and removes it when empty).
     created: bool,
+    /// This process's record is in the directory (`npipe_dir.rs`).
+    joined: bool,
 }
+
+/// Attempts to open a directory another process removes meanwhile.
+const DIR_ATTEMPTS: usize = 8;
 
 impl PipeDir {
     /// A directory at `path` (created when needed).
     pub fn at(path: PathBuf) -> Self {
-        PipeDir { path: Some(path), dir: None, created: false }
+        PipeDir { path: Some(path), dir: None, created: false, joined: false }
     }
 
     /// The session's directory: `WARPINE_PIPE_DIR`, else a new one for this
@@ -121,7 +126,11 @@ impl PipeDir {
             .unwrap_or_else(std::env::temp_dir);
         // SAFETY: geteuid has no preconditions.
         let uid = unsafe { libc::geteuid() };
-        Self::at(base.join(format!("warpine-pipes-{uid}-{}", std::process::id())))
+        let path = base.join(format!("{}{uid}-{}", super::npipe_dir::SESSION_PREFIX, std::process::id()));
+        // A new session: remove what killed sessions left behind.
+        let start_time: super::session_threads::StartTimeFn = std::sync::Arc::new(super::session_threads::proc_start_time);
+        super::npipe_dir::sweep(&base, &path, &start_time);
+        Self::at(path)
     }
 
     /// The directory's path (what child processes get).
@@ -142,26 +151,45 @@ impl PipeDir {
             self.dir = None;
         }
         let path = self.path.clone().ok_or_else(|| std::io::Error::other("no pipe directory"))?;
-        match std::fs::DirBuilder::new().mode(0o700).create(&path) {
-            Ok(()) => self.created = true,
-            Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e),
+        let me = super::session_threads::Identity {
+            pid: std::process::id(),
+            start: super::session_threads::proc_start_time(std::process::id()).unwrap_or(0),
+        };
+        for _ in 0..DIR_ATTEMPTS {
+            match std::fs::DirBuilder::new().mode(0o700).create(&path) {
+                Ok(()) => self.created = true,
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {}
+                Err(e) => return Err(e),
+            }
+            let meta = std::fs::symlink_metadata(&path)?;
+            // SAFETY: geteuid has no preconditions.
+            let uid = unsafe { libc::geteuid() };
+            if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
+                return Err(std::io::Error::other("pipe directory is not private"));
+            }
+            let dir = std::fs::OpenOptions::new().read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW).open(&path)?;
+            // Record this process as a user, so that the directory is not
+            // taken for a dead session's (`npipe_dir.rs`); a directory
+            // removed while this process waited for its lock is made again.
+            if !super::npipe_dir::join(&dir, &path, me)? {
+                continue;
+            }
+            self.joined = true;
+            let fd = dir.as_raw_fd();
+            self.dir = Some(dir);
+            return Ok(fd);
         }
-        let meta = std::fs::symlink_metadata(&path)?;
-        // SAFETY: geteuid has no preconditions.
-        let uid = unsafe { libc::geteuid() };
-        if !meta.is_dir() || meta.uid() != uid || meta.mode() & 0o077 != 0 {
-            return Err(std::io::Error::other("pipe directory is not private"));
-        }
-        let dir = std::fs::OpenOptions::new().read(true)
-            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW).open(&path)?;
-        let fd = dir.as_raw_fd();
-        self.dir = Some(dir);
-        Ok(fd)
+        Err(std::io::Error::other("pipe directory keeps disappearing"))
     }
 
-    /// Remove the directory if this process made it and it is empty.
+    /// At the end of the process: remove this process's record, and the
+    /// directory if this process made it and it is empty.
     fn remove_if_empty(&mut self) {
+        if self.joined && let Some(p) = &self.path {
+            super::npipe_dir::leave(p, std::process::id());
+            self.joined = false;
+        }
         if self.created && let Some(p) = &self.path {
             // Fails, harmlessly, while sockets of the session are in it.
             if std::fs::remove_dir(p).is_ok() {

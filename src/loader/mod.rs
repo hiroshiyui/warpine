@@ -83,6 +83,7 @@ pub mod gdb_stub;
 pub mod uconv;
 pub mod tcpip;
 pub mod npipe;
+mod npipe_dir;
 mod npipe_api;
 pub mod inherit;
 pub mod config_sys;
@@ -99,7 +100,8 @@ mod seh;
 mod cmd;
 pub mod threads;
 mod host_signal;
-mod signals;
+pub(crate) mod signals;
+mod interrupt;
 mod exitlist;
 mod critsec;
 pub mod dostimer;
@@ -387,6 +389,9 @@ pub struct SharedState {
     pub dos_timers: Mutex<dostimer::DosTimerTable>,
     /// `DosSubSetMem` pools, kept on the host (`suballoc.rs`).
     pub suballoc: Mutex<suballoc::SubAllocTable>,
+    /// Children `DosKillProcess` was used on; whether this process is
+    /// being ended from outside (`signals.rs`).
+    pub kills: Mutex<signals::KillTable>,
     pub exit_requested: AtomicBool,
     /// A VIO session may switch between its PM window and full screen with
     /// Alt+Home (the program is window-compatible); set by `run_vio_session`.
@@ -504,6 +509,7 @@ impl Loader {
             thread_slots: Default::default(),
             dos_timers: Default::default(),
             suballoc: Default::default(),
+            kills: Default::default(),
             exit_requested: AtomicBool::new(false),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),
@@ -604,6 +610,7 @@ impl Loader {
             thread_slots: Default::default(),
             dos_timers:   Default::default(),
             suballoc:     Default::default(),
+            kills:        Default::default(),
             exit_requested: AtomicBool::new(false),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),

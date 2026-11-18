@@ -59,7 +59,7 @@
 <text xml:space="preserve" text-anchor="start" x="3027.38" y="-670.14" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">vCPUs and threads: VM exits, kicks, callbacks, exceptions, signals (ADR&#45;0007, ADR&#45;0023)</text>
 <text xml:space="preserve" text-anchor="start" x="3118.12" y="-661.99" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/vm_backend.rs, loader/kvm_backend.rs, loader/vcpu.rs, loader/threads.rs</text>
 <text xml:space="preserve" text-anchor="start" x="3146.62" y="-653.99" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/critsec.rs, loader/exitlist.rs, loader/seh.rs, loader/signals.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3224.25" y="-645.99" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/host_signal.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3190.12" y="-645.99" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/host_signal.rs, loader/interrupt.rs</text>
 </g>
 <!-- thunks&#45;&gt;vcpu -->
 <g id="edge5" class="edge">
@@ -159,7 +159,7 @@
 <title>vcpu&#45;&gt;children</title>
 <path fill="none" stroke="#455a64" d="M3505.88,-642.53C3578,-630.18 3638,-609.6 3638,-575.33 3638,-575.33 3638,-575.33 3638,-150.51 3638,-107.81 3602.16,-106.24 3562,-91.75 3537.74,-82.99 3355.74,-85.45 3330,-83.75 3218.03,-76.37 3092.32,-64.09 2994.96,-53.71"/>
 <polygon fill="#455a64" stroke="#455a64" points="2995.35,-50.23 2985.04,-52.64 2994.61,-57.19 2995.35,-50.23"/>
-<text xml:space="preserve" text-anchor="middle" x="3708.12" y="-367.75" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">INTR / BREAK as real&#45;time signals</text>
+<text xml:space="preserve" text-anchor="middle" x="3749" y="-367.75" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">signals and DosKillProcess as real&#45;time signals (pidfd)</text>
 </g>
 <!-- kernel -->
 <g id="node9" class="node">
@@ -168,8 +168,8 @@
 <text xml:space="preserve" text-anchor="start" x="2573.5" y="-492.12" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Kernel APIs: DOSCALLS, QUECALLS, MSG, processes and WinStartApp (nesting limit, ADR&#45;0028), CONFIG.SYS THREADS= session limit, IPC, named pipes (ADR&#45;0022), timers</text>
 <text xml:space="preserve" text-anchor="start" x="2917.75" y="-483.97" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/doscalls.rs, loader/stubs.rs, loader/process.rs, loader/ipc.rs</text>
 <text xml:space="preserve" text-anchor="start" x="2907.25" y="-475.97" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/dostimer.rs, loader/modpath.rs, loader/suballoc.rs, loader/cmd.rs</text>
-<text xml:space="preserve" text-anchor="start" x="2906.88" y="-467.97" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/npipe.rs, loader/npipe_api.rs, loader/inherit.rs, loader/msgcalls.rs</text>
-<text xml:space="preserve" text-anchor="start" x="2909.12" y="-459.97" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_startapp.rs, loader/config_sys.rs, loader/session_threads.rs</text>
+<text xml:space="preserve" text-anchor="start" x="2905.75" y="-467.97" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/npipe.rs, loader/npipe_dir.rs, loader/npipe_api.rs, loader/inherit.rs</text>
+<text xml:space="preserve" text-anchor="start" x="2875" y="-459.97" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/msgcalls.rs, loader/pm_startapp.rs, loader/config_sys.rs, loader/session_threads.rs</text>
 </g>
 <!-- dispatch&#45;&gt;kernel -->
 <g id="edge9" class="edge">

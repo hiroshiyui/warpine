@@ -8,49 +8,101 @@
 //!   scenario where a signal is used to 'kick' a VCPU out of KVM_RUN …").
 //!   Its handler does nothing; `SA_RESTART` restarts the system calls it
 //!   might interrupt on other threads.
-//! - **OS/2 signal exceptions between Warpine processes**
-//!   (`DosSendSignalException` to a child process): `XCPT_SIGNAL_INTR` and
-//!   `XCPT_SIGNAL_BREAK` travel as two other real-time signals. Their
-//!   handler only stores the signal in an atomic and writes one byte to a
-//!   pipe (both async-signal-safe); a listener thread reads the pipe and
-//!   hands the signal to the process (`signals.rs`).
+//! - **Requests from other processes** (`HostRequest`): the OS/2 signal
+//!   exceptions `XCPT_SIGNAL_INTR`, `XCPT_SIGNAL_BREAK` and
+//!   `XCPT_SIGNAL_KILLPROC` (`DosSendSignalException`, `DosKillProcess`
+//!   with `DKP_PROCESS`) and "end this process and its descendants"
+//!   (`DosKillProcess` with `DKP_PROCESSTREE`) travel as four other
+//!   real-time signals. `SIGINT` (Ctrl+C at a terminal that is not in raw
+//!   mode, `kill -INT`) arrives as `XCPT_SIGNAL_INTR` and `SIGTERM` as
+//!   `XCPT_SIGNAL_KILLPROC`, so a host that ends a Warpine process the
+//!   polite way runs its exit list. The handler only stores the request in
+//!   an atomic and writes one byte to a pipe (both async-signal-safe); a
+//!   listener thread reads the pipe and hands the request to the process
+//!   (`signals.rs`).
+//! - **Child processes by pidfd** (`ProcessHandle`): `DosKillProcess`
+//!   signals a child through a pidfd taken while the child is known not to
+//!   have been reaped, so the signal (and the `SIGKILL` after the grace
+//!   period) can never reach another process that reused the pid.
 //!
 //! All `unsafe` here is a libc call whose arguments are plain values or
 //! point at memory owned by this module; each block says why it is sound.
 
 use std::io::Read;
-use std::os::fd::IntoRawFd;
+use std::os::fd::{AsRawFd, FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::sync::Once;
 use std::sync::atomic::{AtomicI32, AtomicU32, Ordering};
+use std::time::Duration;
 
-use super::constants::{XCPT_SIGNAL_BREAK, XCPT_SIGNAL_INTR};
+use super::constants::{XCPT_SIGNAL_BREAK, XCPT_SIGNAL_INTR, XCPT_SIGNAL_KILLPROC};
 
 /// Offsets from `SIGRTMIN` of Warpine's signals (glibc reserves the ones
 /// below its `SIGRTMIN`).
 const KICK_OFFSET: i32 = 2;
 const INTR_OFFSET: i32 = 3;
 const BREAK_OFFSET: i32 = 4;
+const KILLPROC_OFFSET: i32 = 5;
+const KILL_TREE_OFFSET: i32 = 6;
+
+/// What another process (or the host) asks of this one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostRequest {
+    /// An OS/2 signal exception (`XCPT_SIGNAL_*`).
+    Signal(u32),
+    /// `DosKillProcess(DKP_PROCESSTREE)`: end this process and its
+    /// descendants.
+    KillTree,
+}
+
+/// Every request, in the order the listener hands them on.
+const REQUESTS: [HostRequest; 4] = [
+    HostRequest::Signal(XCPT_SIGNAL_INTR),
+    HostRequest::Signal(XCPT_SIGNAL_KILLPROC),
+    HostRequest::Signal(XCPT_SIGNAL_BREAK),
+    HostRequest::KillTree,
+];
+
+/// Bit of `request` in the pending set (signal numbers are 1 … 4).
+const fn request_bit(request: HostRequest) -> u32 {
+    match request {
+        HostRequest::Signal(s) => 1 << (s & 0xF),
+        HostRequest::KillTree => 1 << 16,
+    }
+}
 
 /// The host signal that kicks a vCPU out of `KVM_RUN`.
 pub fn kick_signal() -> i32 {
     libc::SIGRTMIN() + KICK_OFFSET
 }
 
+/// The real-time signal that carries `request` to another Warpine process.
+pub fn request_signal(request: HostRequest) -> Option<i32> {
+    let offset = match request {
+        HostRequest::Signal(XCPT_SIGNAL_INTR) => INTR_OFFSET,
+        HostRequest::Signal(XCPT_SIGNAL_BREAK) => BREAK_OFFSET,
+        HostRequest::Signal(XCPT_SIGNAL_KILLPROC) => KILLPROC_OFFSET,
+        HostRequest::KillTree => KILL_TREE_OFFSET,
+        HostRequest::Signal(_) => return None,
+    };
+    Some(libc::SIGRTMIN() + offset)
+}
+
 /// The host signal that carries OS/2 signal exception `os2_signal` to
 /// another Warpine process, if there is one for it.
 pub fn host_signal_for(os2_signal: u32) -> Option<i32> {
-    match os2_signal {
-        XCPT_SIGNAL_INTR => Some(libc::SIGRTMIN() + INTR_OFFSET),
-        XCPT_SIGNAL_BREAK => Some(libc::SIGRTMIN() + BREAK_OFFSET),
-        _ => None,
-    }
+    request_signal(HostRequest::Signal(os2_signal))
 }
 
-/// The OS/2 signal exception a host signal carries (inverse of `host_signal_for`).
-pub fn os2_signal_for(host_signal: i32) -> Option<u32> {
-    [XCPT_SIGNAL_INTR, XCPT_SIGNAL_BREAK].into_iter()
-        .find(|&s| host_signal_for(s) == Some(host_signal))
+/// The request a host signal carries: Warpine's real-time signals, and
+/// `SIGINT` / `SIGTERM` from the host (async-signal-safe: arithmetic only).
+pub fn request_for(host_signal: i32) -> Option<HostRequest> {
+    match host_signal {
+        libc::SIGINT => return Some(HostRequest::Signal(XCPT_SIGNAL_INTR)),
+        libc::SIGTERM => return Some(HostRequest::Signal(XCPT_SIGNAL_KILLPROC)),
+        _ => {}
+    }
+    REQUESTS.into_iter().find(|&r| request_signal(r) == Some(host_signal))
 }
 
 /// No-op handler of the kick signal: its only purpose is to be delivered.
@@ -117,16 +169,63 @@ pub fn send_to_process(host_pid: u32, os2_signal: u32) -> bool {
     unsafe { libc::kill(pid, sig) == 0 }
 }
 
-/// Signals received but not yet read by the listener (bit = OS/2 number).
+/// A child process held by a pidfd (Linux 5.3+): what is sent through it
+/// reaches exactly that process, never one that reused its pid.
+#[derive(Debug)]
+pub struct ProcessHandle(OwnedFd);
+
+impl ProcessHandle {
+    /// Take a pidfd of process `host_pid`. The caller must know the process
+    /// has not been reaped (a child not yet waited for), so the pid is its.
+    pub fn open(host_pid: u32) -> Option<Self> {
+        let pid = libc::pid_t::try_from(host_pid).ok().filter(|&p| p > 0)?;
+        // SAFETY: `pidfd_open(pid, 0)` takes plain values and returns a new
+        // descriptor or -1.
+        let fd = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
+        let fd = i32::try_from(fd).ok().filter(|&fd| fd >= 0)?;
+        // SAFETY: `fd` was just returned by the kernel and is owned by no
+        // one else.
+        Some(ProcessHandle(unsafe { OwnedFd::from_raw_fd(fd) }))
+    }
+
+    /// Send host signal `sig` to the process. False once it has ended.
+    pub fn send(&self, sig: i32) -> bool {
+        // SAFETY: plain values; the pidfd is open; no `siginfo` (null).
+        unsafe {
+            libc::syscall(libc::SYS_pidfd_send_signal, self.0.as_raw_fd(), sig,
+                          std::ptr::null::<libc::siginfo_t>(), 0) == 0
+        }
+    }
+
+    /// Wait up to `timeout` for the process to end; true when it has.
+    pub fn wait_exit(&self, timeout: Duration) -> bool {
+        let ms = i32::try_from(timeout.as_millis()).unwrap_or(i32::MAX);
+        let mut p = libc::pollfd { fd: self.0.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            let wait = i32::try_from(left.as_millis()).unwrap_or(ms);
+            // SAFETY: `p` is one valid pollfd for the duration of the call.
+            let n = unsafe { libc::poll(&mut p, 1, wait) };
+            if n > 0 { return true; }
+            if n == 0 { return false; }
+            if std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                return false;
+            }
+        }
+    }
+}
+
+/// Requests received but not yet read by the listener (`request_bit`).
 static RECEIVED: AtomicU32 = AtomicU32::new(0);
 /// Write end of the listener's pipe (-1: none).
 static WAKE_FD: AtomicI32 = AtomicI32::new(-1);
 
-/// Handler of the OS/2-signal host signals: async-signal-safe only (atomic
-/// store, `write`).
-extern "C" fn on_os2_signal(sig: libc::c_int) {
-    if let Some(s) = os2_signal_for(sig) {
-        RECEIVED.fetch_or(1 << s, Ordering::SeqCst);
+/// Handler of the request signals: async-signal-safe only (arithmetic,
+/// atomic store, `write`).
+extern "C" fn on_request(sig: libc::c_int) {
+    if let Some(r) = request_for(sig) {
+        RECEIVED.fetch_or(request_bit(r), Ordering::SeqCst);
         let fd = WAKE_FD.load(Ordering::SeqCst);
         if fd >= 0 {
             let byte = 1u8;
@@ -138,9 +237,16 @@ extern "C" fn on_os2_signal(sig: libc::c_int) {
     }
 }
 
-/// Start listening for OS/2 signal exceptions from other Warpine processes
-/// (once per process): `deliver(signal)` runs on a listener thread for each.
-pub fn listen(deliver: impl Fn(u32) + Send + 'static) {
+/// The host signals the listener takes.
+fn request_host_signals() -> Vec<i32> {
+    let mut sigs: Vec<i32> = REQUESTS.into_iter().filter_map(request_signal).collect();
+    sigs.extend([libc::SIGINT, libc::SIGTERM]);
+    sigs
+}
+
+/// Start listening for requests from other processes and the host (once
+/// per process): `deliver(request)` runs on a listener thread for each.
+pub fn listen(deliver: impl Fn(HostRequest) + Send + 'static) {
     static ONCE: Once = Once::new();
     let mut deliver = Some(deliver);
     ONCE.call_once(|| {
@@ -161,15 +267,14 @@ pub fn listen(deliver: impl Fn(u32) + Send + 'static) {
                     _ => {}
                 }
                 let bits = RECEIVED.swap(0, Ordering::SeqCst);
-                for s in [XCPT_SIGNAL_INTR, XCPT_SIGNAL_BREAK] {
-                    if bits & (1 << s) != 0 { deliver(s); }
+                for r in REQUESTS {
+                    if bits & request_bit(r) != 0 { deliver(r); }
                 }
             }
         });
         if spawned.is_err() { return; }
-        for s in [XCPT_SIGNAL_INTR, XCPT_SIGNAL_BREAK] {
-            if let Some(sig) = host_signal_for(s)
-                && !install(sig, on_os2_signal) {
+        for sig in request_host_signals() {
+            if !install(sig, on_request) {
                 log::warn!("cannot install the handler of signal {}", sig);
             }
         }
@@ -183,14 +288,22 @@ mod tests {
     #[test]
     fn signal_numbers_are_distinct_real_time_signals() {
         let kick = kick_signal();
-        let intr = host_signal_for(XCPT_SIGNAL_INTR).unwrap();
-        let brk = host_signal_for(XCPT_SIGNAL_BREAK).unwrap();
-        assert!(kick >= libc::SIGRTMIN() && brk <= libc::SIGRTMAX());
-        assert!(kick != intr && intr != brk && kick != brk);
-        assert_eq!(os2_signal_for(intr), Some(XCPT_SIGNAL_INTR));
-        assert_eq!(os2_signal_for(brk), Some(XCPT_SIGNAL_BREAK));
-        assert_eq!(os2_signal_for(kick), None);
-        assert_eq!(host_signal_for(super::super::constants::XCPT_SIGNAL_KILLPROC), None);
+        let mut sigs: Vec<i32> = REQUESTS.into_iter().map(|r| request_signal(r).unwrap()).collect();
+        sigs.push(kick);
+        for (i, a) in sigs.iter().enumerate() {
+            assert!(*a >= libc::SIGRTMIN() && *a <= libc::SIGRTMAX());
+            assert!(sigs[i + 1..].iter().all(|b| b != a), "{sigs:?}");
+        }
+        for r in REQUESTS {
+            assert_eq!(request_for(request_signal(r).unwrap()), Some(r));
+        }
+        assert_eq!(request_for(kick), None);
+        assert_eq!(request_for(libc::SIGINT), Some(HostRequest::Signal(XCPT_SIGNAL_INTR)));
+        assert_eq!(request_for(libc::SIGTERM), Some(HostRequest::Signal(XCPT_SIGNAL_KILLPROC)));
+        assert_eq!(request_for(libc::SIGHUP), None);
+        assert_eq!(host_signal_for(2), None);
+        let bits: Vec<u32> = REQUESTS.into_iter().map(request_bit).collect();
+        assert!(bits.iter().enumerate().all(|(i, b)| bits[i + 1..].iter().all(|c| c != b)));
     }
 
     #[test]
@@ -216,6 +329,21 @@ mod tests {
     fn sending_to_no_process_fails() {
         assert!(!send_to_process(0, XCPT_SIGNAL_INTR));
         assert!(!send_to_process(u32::MAX, XCPT_SIGNAL_INTR));
-        assert!(!send_to_process(std::process::id(), super::super::constants::XCPT_SIGNAL_KILLPROC));
+        assert!(!send_to_process(std::process::id(), 2));
+        assert!(ProcessHandle::open(0).is_none());
+        assert!(ProcessHandle::open(u32::MAX).is_none());
+    }
+
+    #[test]
+    fn a_pidfd_reaches_only_its_child_and_sees_it_end() {
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let h = ProcessHandle::open(child.id()).expect("pidfd_open (Linux 5.3+)");
+        assert!(!h.wait_exit(Duration::from_millis(20)), "still running");
+        assert!(h.send(libc::SIGKILL));
+        assert!(h.wait_exit(Duration::from_secs(5)), "ended");
+        child.wait().unwrap();
+        // Reaped: nothing reaches a process that may reuse the pid.
+        assert!(!h.send(libc::SIGKILL));
+        assert!(h.wait_exit(Duration::from_millis(1)));
     }
 }

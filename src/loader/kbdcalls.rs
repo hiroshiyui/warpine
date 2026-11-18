@@ -48,7 +48,7 @@ impl super::Loader {
             // SDL text mode: block on the keyboard condvar queue.
             let mut queue = self.shared.kbd_queue.lock().unwrap();
             let ki = loop {
-                if self.shutting_down() { return ERROR_INVALID_FUNCTION; }
+                if self.stop_or_restart() { return ERROR_INVALID_FUNCTION; }
                 if let Some(ki) = queue.pop_front() { break ki; }
                 if wait == 1 {
                     // IO_NOWAIT: return immediately with status 0 (no char)
@@ -100,10 +100,12 @@ impl super::Loader {
     /// choice; the KBD reference lists no end-of-input error.
     fn kbd_end_of_input(&self) -> u32 {
         debug!("  keyboard read at the end of piped input: ending the process");
-        // The same path as DosExit(EXIT_PROCESS): it also wakes threads
-        // waiting for the process to end (`threads.rs`).
-        self.request_process_exit(EXIT_CODE_KBD_END_OF_INPUT as u32);
+        // As DosExit(EXIT_PROCESS) would: thread 1 runs the exit list
+        // (TC_EXIT) and ends the process; this call, on thread 1, gives up
+        // so that it can (another thread gets the error and is stopped).
+        super::signals::request_termination(&self.shared, EXIT_CODE_KBD_END_OF_INPUT as u32, TC_EXIT);
         self.shared.kbd_cond.notify_all();
+        self.interrupt_restart();
         ERROR_KBD_NO_DEVICE
     }
 
@@ -111,9 +113,11 @@ impl super::Loader {
     /// says why it has none).
     fn kbd_char_in_host(&self, p_key_info: u32, wait: u32, mut read: impl FnMut() -> HostInput) -> u32 {
         loop {
-            if self.shutting_down() { return ERROR_INVALID_FUNCTION; }
+            if self.stop_or_restart() { return ERROR_INVALID_FUNCTION; }
 
             let byte = match read() {
+                // Ctrl+C is a signal, not a character (cooked mode).
+                HostInput::Byte(b) if self.keyboard_signal(b) => None,
                 HostInput::Byte(b) => Some(b),
                 HostInput::Empty => None,
                 // A non-waiting call still just reports "no character".
@@ -195,8 +199,15 @@ impl super::Loader {
         let mut count = 0u32;
         loop {
             if self.shutting_down() || count >= max_len { break; }
+            // A signal: with nothing typed yet the call is made again after
+            // it; a partly typed line is returned as it is.
+            if self.interrupted() {
+                if count == 0 { self.interrupt_restart(); }
+                break;
+            }
 
             let byte = match read() {
+                HostInput::Byte(b) if self.keyboard_signal(b) => None,
                 HostInput::Byte(b) => Some(b),
                 HostInput::Empty => None,
                 HostInput::EndOfInput if count > 0 || wait == IO_NOWAIT => break,
@@ -384,16 +395,43 @@ mod tests {
     use super::super::console::HostInput;
     use super::super::constants::{EXIT_CODE_KBD_END_OF_INPUT, IO_NOWAIT, IO_WAIT};
 
-    /// A waiting KbdCharIn at the end of piped input ends the process.
+    /// A waiting KbdCharIn at the end of piped input ends the process: as
+    /// DosExit(EXIT_PROCESS) would, thread 1 is asked to run the exit list
+    /// (TC_EXIT); the call on thread 1 gives up to let it.
     #[test]
     fn test_kbd_char_in_waiting_at_end_of_input_ends_the_process() {
+        use super::super::interrupt;
         let loader = Loader::new_mock();
         loader.shared.exit_code.store(99, Ordering::Relaxed);
         let mut reads = vec![HostInput::Empty, HostInput::EndOfInput].into_iter();
+        interrupt::begin_call(super::super::threads::MAIN_TID, true);
         let rc = loader.kbd_char_in_host(0x2000, IO_WAIT, || reads.next().unwrap());
+        assert!(interrupt::end_call(), "thread 1 goes on to its exit list");
+        assert_ne!(rc, 0);
+        let mut signals = loader.shared.threads.signals.lock().unwrap();
+        assert_eq!(signals.take_termination(),
+                   Some((EXIT_CODE_KBD_END_OF_INPUT as u32, super::super::constants::TC_EXIT)));
+        drop(signals);
+        // With thread 1 gone, the process ends at once.
+        let loader = Loader::new_mock();
+        loader.shared.threads.table.lock().unwrap().end(super::super::threads::MAIN_TID);
+        let rc = loader.kbd_char_in_host(0x2000, IO_WAIT, || HostInput::EndOfInput);
         assert_ne!(rc, 0);
         assert!(loader.shared.exit_requested.load(Ordering::Relaxed));
         assert_eq!(loader.shared.exit_code.load(Ordering::Relaxed), EXIT_CODE_KBD_END_OF_INPUT);
+    }
+
+    /// Ctrl+C read from the keyboard (here: piped input) is XCPT_SIGNAL_INTR,
+    /// not a character.
+    #[test]
+    fn test_kbd_char_in_ctrl_c_is_a_signal() {
+        let loader = Loader::new_mock();
+        let p = 0x2000u32;
+        let mut reads = vec![HostInput::Byte(0x03), HostInput::Byte(b'x')].into_iter();
+        assert_eq!(loader.kbd_char_in_host(p, IO_WAIT, || reads.next().unwrap()), 0);
+        assert_eq!(loader.guest_read::<u8>(p), Some(b'x'));
+        let mut signals = loader.shared.threads.signals.lock().unwrap();
+        assert_eq!(signals.take(), Some(super::super::constants::XCPT_SIGNAL_INTR));
     }
 
     /// A non-waiting KbdCharIn at the end of input reports "no character".
@@ -433,8 +471,32 @@ mod tests {
         // Nothing left, not waiting: an empty line.
         assert_eq!(loader.kbd_string_in_host(buf, len, 40, IO_NOWAIT, || HostInput::EndOfInput), 0);
         assert_eq!(loader.guest_read::<u16>(len + 2), Some(0));
-        // Nothing left, waiting: the process ends.
+        // Nothing left, waiting: the process ends (thread 1 runs its exit list).
         assert_ne!(loader.kbd_string_in_host(buf, len, 40, IO_WAIT, || HostInput::EndOfInput), 0);
-        assert!(loader.shared.exit_requested.load(Ordering::Relaxed));
+        assert!(loader.shared.threads.signals.lock().unwrap().termination_pending());
+    }
+
+    /// A signal while KbdStringIn waits: with nothing typed the call is
+    /// made again after it; a partly typed line is returned.
+    #[test]
+    fn test_kbd_string_in_interrupted() {
+        use super::super::interrupt;
+        use super::super::threads::MAIN_TID;
+        let loader = Loader::new_mock();
+        loader.shared.console_mgr.lock().unwrap().enable_sdl_mode();
+        loader.dos_set_signal_exception_focus(super::super::constants::SIG_SETFOCUS, 0);
+        let (buf, len) = (0x3000u32, 0x2000u32);
+        interrupt::begin_call(MAIN_TID, true);
+        let mut reads = vec![HostInput::Byte(0x03)].into_iter().chain(std::iter::repeat(HostInput::Empty));
+        loader.kbd_string_in_host(buf, len, 40, IO_WAIT, || reads.next().unwrap());
+        assert!(interrupt::end_call(), "made again");
+        loader.shared.threads.signals.lock().unwrap().take();
+        loader.shared.threads.signals.lock().unwrap().acknowledge(super::super::constants::XCPT_SIGNAL_INTR);
+        interrupt::begin_call(MAIN_TID, true);
+        let mut reads = vec![HostInput::Byte(b'a'), HostInput::Byte(0x03)].into_iter()
+            .chain(std::iter::repeat(HostInput::Empty));
+        assert_eq!(loader.kbd_string_in_host(buf, len, 40, IO_WAIT, || reads.next().unwrap()), 0);
+        assert!(!interrupt::end_call(), "a partly typed line is returned");
+        assert_eq!(loader.guest_read::<u16>(len + 2), Some(1));
     }
 }

@@ -12,6 +12,7 @@ use super::vm_backend::{VcpuBackend, VmExit};
 use super::threads::{tid_of_vcpu, EndOutcome, ThreadEnd, MAIN_TID, MAIN_VCPU_ID};
 use super::exitlist::ExitListStart;
 use super::signals::{SignalAction, SIGNAL_EXIT_CODE};
+use super::interrupt;
 use log::{info, debug, warn, error};
 
 /// Length of a near `jmp rel32`.
@@ -324,11 +325,61 @@ impl super::Loader {
         }
     }
 
+    /// A fault no exception handler can see — a triple fault (`TC_TRAP`), a
+    /// KVM error or an exit Warpine cannot handle (`TC_HARDERROR`) — on
+    /// thread `vcpu_id`: the process ends with exit code 1, after its exit
+    /// list where that is safe:
+    /// - on another thread, thread 1 runs the exit list (asked for like a
+    ///   termination from outside); the faulting thread waits for the end
+    ///   (at most `KILL_GRACE`) and is not used again;
+    /// - on thread 1, only when its vCPU can run again: `restart` holds the
+    ///   segment state it started with (32-bit code), which is put back;
+    /// - in an exit-list routine, the routine has ended (the next one runs
+    ///   when the vCPU can run again).
+    ///
+    /// `None`: the vCPU now runs an exit-list routine.
+    fn end_by_fault(&self, vcpu: &mut dyn VcpuBackend, vcpu_id: u32, initial_esp: u32,
+                    restart: Option<&super::vm_backend::GuestSregs>,
+                    callback_stack: &mut Vec<CallbackFrame>, tc: u32) -> Option<ThreadEnd> {
+        const FAULT_EXIT_CODE: u32 = 1;
+        let reset = |vcpu: &mut dyn VcpuBackend| restart.is_some_and(|s| vcpu.set_sregs(s).is_ok());
+        if self.runs_exit_list(vcpu_id) {
+            if reset(vcpu) && self.next_exit_routine(vcpu) { return None; }
+            self.request_process_exit(FAULT_EXIT_CODE);
+            return Some(ThreadEnd::Process);
+        }
+        if tid_of_vcpu(vcpu_id) != MAIN_TID {
+            super::signals::request_termination(&self.shared, FAULT_EXIT_CODE, tc);
+            let deadline = std::time::Instant::now() + super::signals::KILL_GRACE;
+            while !self.shutting_down() && std::time::Instant::now() < deadline {
+                thread::sleep(std::time::Duration::from_millis(20));
+            }
+            if !self.shutting_down() {
+                self.request_process_exit(FAULT_EXIT_CODE);
+            }
+            return Some(ThreadEnd::Process);
+        }
+        if reset(vcpu) {
+            match self.begin_exit_list(vcpu, vcpu_id, FAULT_EXIT_CODE, tc, initial_esp, callback_stack) {
+                ExitListStart::Running => return None,
+                ExitListStart::Finished => return Some(ThreadEnd::Process),
+                ExitListStart::NotStarted => {}
+            }
+        }
+        if !self.stopped_by_exit_list(vcpu_id) {
+            self.request_process_exit(FAULT_EXIT_CODE);
+        }
+        Some(ThreadEnd::Process)
+    }
+
     /// Run thread `vcpu_id` until it ends. `initial_esp` is where its
     /// stack started (exit-list routines start there); `resumed`: the loop
     /// goes on after the thread's own end to run the exit list.
     fn vcpu_loop(&self, vcpu: &mut dyn VcpuBackend, vcpu_id: u32, initial_esp: u32, resumed: bool) -> ThreadEnd {
         let tid = tid_of_vcpu(vcpu_id);
+        // The segment state an exit-list routine can run with after a fault
+        // (32-bit threads only; see `end_by_fault`).
+        let restart_sregs = vcpu.get_sregs().ok().filter(|s| s.cs.db != 0 && s.ss.db != 0);
 
         vcpu.enable_software_breakpoints().unwrap();
 
@@ -397,6 +448,20 @@ impl super::Loader {
                     self.end_process(SIGNAL_EXIT_CODE);
                     return ThreadEnd::Process;
                 }
+                SignalAction::Terminate { rc, tc, exit_list } => {
+                    // The process ends as DosExit(EXIT_PROCESS) would, its exit
+                    // list with `tc` (a closed session, the end of piped input,
+                    // a fault on another thread).
+                    if exit_list {
+                        match self.begin_exit_list(&mut *vcpu, vcpu_id, rc, tc, initial_esp, &mut callback_stack) {
+                            ExitListStart::Running => continue,
+                            ExitListStart::Finished => return ThreadEnd::Process,
+                            ExitListStart::NotStarted => {}
+                        }
+                    }
+                    self.end_process(rc);
+                    return ThreadEnd::Process;
+                }
             }
 
             // GDB Ctrl-C: pause the vCPU and wait for a resume command.
@@ -427,9 +492,12 @@ impl super::Loader {
                     CrashContext::KvmRunError { description: e.clone() },
                 );
                 self.dump_crash_report(&report);
-                self.shared.exit_code.store(1, Ordering::Relaxed);
-                self.shared.exit_requested.store(true, Ordering::Relaxed);
-                return ThreadEnd::Process;
+                // KVM_RUN failed: this vCPU may not run again, so only
+                // another thread's exit list is safe (TC_HARDERROR).
+                match self.end_by_fault(&mut *vcpu, vcpu_id, initial_esp, None, &mut callback_stack, TC_HARDERROR) {
+                    Some(end) => return end,
+                    None => continue,
+                }
             }
             let exit = res.unwrap();
             match exit {
@@ -983,7 +1051,18 @@ impl super::Loader {
                             continue;
                         }
                         let ordinal = (rip - MAGIC_API_BASE) as u32;
+                        // A blocking call may be interrupted (interrupt.rs): a
+                        // signal for thread 1 only when it can take it now.
+                        let signals_ok = tid == MAIN_TID && self.can_take_signal(&*vcpu);
+                        interrupt::begin_call(tid, signals_ok);
                         let api_result = self.handle_api_call_ex(&mut *vcpu, vcpu_id, ordinal);
+                        if interrupt::end_call() && matches!(api_result, ApiResult::Normal(_)) {
+                            // Interrupted, to be made again: the guest stays at
+                            // the thunk with the call's stack; the top of the
+                            // loop delivers the signal (or ends the thread).
+                            debug!("  [VCPU {}] call {} interrupted; it is made again", vcpu_id, ordinal);
+                            continue;
+                        }
                         match api_result {
                             ApiResult::ExitThread(rc) => return ThreadEnd::Thread(rc),
                             ApiResult::ExitProcess(rc) => {
@@ -1241,9 +1320,13 @@ impl super::Loader {
                         &*vcpu, vcpu_id, CrashContext::TripleFault,
                     );
                     self.dump_crash_report(&report);
-                    self.shared.exit_code.store(1, Ordering::Relaxed);
-                    self.shared.exit_requested.store(true, Ordering::Relaxed);
-                    return ThreadEnd::Process;
+                    // The guest's own fault: its exit list runs (TC_TRAP),
+                    // on this vCPU with its starting segment state put back.
+                    match self.end_by_fault(&mut *vcpu, vcpu_id, initial_esp, restart_sregs.as_ref(),
+                                            &mut callback_stack, TC_TRAP) {
+                        Some(end) => return end,
+                        None => continue,
+                    }
                 }
                 VmExit::Other(e) => {
                     let report = self.collect_crash_report(
@@ -1251,9 +1334,13 @@ impl super::Loader {
                         CrashContext::UnhandledVmexit { description: e.clone() },
                     );
                     self.dump_crash_report(&report);
-                    self.shared.exit_code.store(1, Ordering::Relaxed);
-                    self.shared.exit_requested.store(true, Ordering::Relaxed);
-                    return ThreadEnd::Process;
+                    // An exit the guest caused that Warpine cannot handle
+                    // (port I/O …): like a trap.
+                    match self.end_by_fault(&mut *vcpu, vcpu_id, initial_esp, restart_sregs.as_ref(),
+                                            &mut callback_stack, TC_TRAP) {
+                        Some(end) => return end,
+                        None => continue,
+                    }
                 }
             }
         }

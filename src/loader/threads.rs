@@ -369,19 +369,28 @@ impl Threads {
     }
 
     /// Block until `wait` gives an answer other than `Running`, the process
-    /// ends (`None`), or — with `DCWW_NOWAIT` — at once.
+    /// ends or the wait is interrupted (`exiting`: `None`), or — with
+    /// `DCWW_NOWAIT` — at once. `exiting` runs without the table locked (it
+    /// may look at the table itself).
     pub fn wait_for(&self, caller: u32, tid: u32, no_wait: bool, exiting: impl Fn() -> bool) -> Option<WaitOutcome> {
-        let mut table = self.table.lock_or_recover();
         loop {
-            let outcome = table.wait(caller, tid);
+            let outcome = self.table.lock_or_recover().wait(caller, tid);
             if outcome != WaitOutcome::Running || no_wait {
                 return Some(outcome);
             }
             if exiting() {
                 return None;
             }
+            let mut table = self.table.lock_or_recover();
+            // Look again under this lock: an end notified between the two
+            // locks would otherwise be missed until `WAIT_POLL`.
+            let outcome = table.wait(caller, tid);
+            if outcome != WaitOutcome::Running {
+                return Some(outcome);
+            }
             table = self.ended.wait_timeout(table, WAIT_POLL)
                 .unwrap_or_else(|e| e.into_inner()).0;
+            drop(table);
         }
     }
 

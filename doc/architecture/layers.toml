@@ -79,7 +79,7 @@ label = "vCPUs and threads: VM exits, kicks, callbacks, exceptions, signals (ADR
 modules = [
   "loader/vm_backend.rs", "loader/kvm_backend.rs", "loader/vcpu.rs", "loader/threads.rs",
   "loader/critsec.rs", "loader/exitlist.rs", "loader/seh.rs", "loader/signals.rs",
-  "loader/host_signal.rs",
+  "loader/host_signal.rs", "loader/interrupt.rs",
 ]
 
 [[layer]]
@@ -101,7 +101,7 @@ label = "Kernel APIs: DOSCALLS, QUECALLS, MSG, processes and WinStartApp (nestin
 modules = [
   "loader/doscalls.rs", "loader/stubs.rs", "loader/process.rs", "loader/ipc.rs",
   "loader/dostimer.rs", "loader/modpath.rs", "loader/suballoc.rs", "loader/cmd.rs",
-  "loader/npipe.rs", "loader/npipe_api.rs", "loader/inherit.rs", "loader/msgcalls.rs",
+  "loader/npipe.rs", "loader/npipe_dir.rs", "loader/npipe_api.rs", "loader/inherit.rs", "loader/msgcalls.rs",
   "loader/pm_startapp.rs", "loader/config_sys.rs", "loader/session_threads.rs",
 ]
 
@@ -322,7 +322,7 @@ label = "DosExecPgm / WinStartApp (arguments, environment, inherited handles), n
 [[flow]]
 from = "vcpu"
 to = "children"
-label = "INTR / BREAK as real-time signals"
+label = "signals and DosKillProcess as real-time signals (pidfd)"
 
 [[flow]]
 from = "pmshell"

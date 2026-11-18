@@ -226,9 +226,11 @@ pub fn run_text_loop<R: TextModeRenderer>(renderer: &mut R, shared: Arc<SharedSt
         // Alt+Home in a VIO session: the caller shows the other display.
         if super::vio_switch::switch_pending(&shared) { break; }
         if !keep_going {
-            shared.exit_requested.store(true, Ordering::Relaxed);
-            shared.kbd_cond.notify_all();
-            break;
+            // The window was closed (or Ctrl+Esc): the program is asked to
+            // end (XCPT_SIGNAL_KILLPROC, then its exit list); the window
+            // stays until it has, at most `KILL_GRACE`. Closing it again
+            // ends the program at once.
+            crate::loader::signals::end_session(&shared);
         }
 
         if shared.exit_requested.load(Ordering::Relaxed) { break; }
@@ -646,12 +648,10 @@ impl TextModeRenderer for SdlTextRenderer {
                 Event::Window { win_event: sdl3::event::WindowEvent::CloseRequested, window_id, .. }
                     if window_id == self.canvas.window().id() => return false,
                 Event::KeyDown { keycode: Some(kc), scancode: Some(sc), keymod, repeat: false, .. } => {
-                    // Ctrl+Esc → graceful exit
+                    // Ctrl+Esc ends the session, as closing the window does.
                     if kc == Keycode::Escape
                         && (keymod.contains(KeyMod::LCTRLMOD) || keymod.contains(KeyMod::RCTRLMOD))
                     {
-                        shared.exit_requested.store(true, Ordering::Relaxed);
-                        shared.kbd_cond.notify_all();
                         return false;
                     }
                     // Alt+Home: back to the PM window. The loop returns;
@@ -713,6 +713,14 @@ pub fn kbd_key_down(shared: &SharedState, kc: sdl3::keyboard::Keycode, sc: sdl3:
         Keycode::CapsLock | Keycode::NumLockClear | Keycode::ScrollLock |
         Keycode::LGui   | Keycode::RGui
     ) {
+        return;
+    }
+    // Ctrl+C and Ctrl+Break are signal exceptions for the program, not
+    // keystrokes (the KBD subsystem's ASCII mode).
+    let ctrl = keymod.intersects(KeyMod::LCTRLMOD | KeyMod::RCTRLMOD);
+    if let Some(signal) = crate::loader::signals::key_signal(
+        ctrl, kc == Keycode::C, kc == Keycode::Pause, kc == Keycode::Cancel) {
+        crate::loader::signals::post_signal(shared, signal);
         return;
     }
     let scan = sdl_scancode_to_os2(sc);

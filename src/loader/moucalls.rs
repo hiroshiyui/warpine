@@ -519,7 +519,7 @@ impl super::Loader {
             }
             if let Some(ev) = mou.read() { break ev; }
             if !wait { break MouEvent::default(); }
-            if self.shutting_down() { return ERROR_MOUSE_NO_DEVICE; }
+            if self.stop_or_restart() { return ERROR_MOUSE_NO_DEVICE; }
             // Wait for an event; look at the exit flag every 50 ms.
             mou.readers += 1;
             let (guard, _) = self.shared.mou_cond

@@ -335,14 +335,6 @@ impl VioWindow {
         }
     }
 
-    /// The window was closed (close button, system-menu double click): the
-    /// program ends, as when its session is closed on OS/2.
-    pub fn close(&self, shared: &SharedState) {
-        shared.exit_requested.store(true, Ordering::Relaxed);
-        shared.kbd_cond.notify_all();
-        shared.mou_cond.notify_all();
-    }
-
     /// Desktop point `(x, os2_y)` (bottom-left origin) relative to the
     /// client's top-left corner.
     fn client_point(&self, shared: &SharedState, x: i32, os2_y: i32) -> Option<(i32, i32)> {
@@ -636,13 +628,6 @@ mod tests {
         vio.origin = (10, 3);
         assert_eq!(vio.cell_at(0, 0), Some((3, 10)));
         assert_eq!(vio.cell_at(8 * 2 + 1, 16 + 1), Some((4, 12)));
-    }
-
-    #[test]
-    fn closing_the_window_ends_the_program() {
-        let (shared, vio) = setup();
-        vio.close(&shared);
-        assert!(shared.exit_requested.load(Ordering::Relaxed));
     }
 
     #[test]

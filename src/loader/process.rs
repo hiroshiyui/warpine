@@ -12,6 +12,9 @@ use super::constants::*;
 use super::mutex_ext::MutexExt;
 use super::doscalls::HandleTarget;
 
+/// How often a waiting DosWaitChild looks at its children.
+const CHILD_WAIT_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
 /// What a child process gets for one of its standard handles.
 enum ChildStdio {
     /// The parent's console: the child's output is relayed into it.
@@ -293,55 +296,43 @@ impl super::Loader {
         debug!("  DosWaitChild(action={}, option={}, target_pid={})", action, option, target_pid);
 
         if action == 0 && target_pid != 0 {
-            // DCWA_PROCESS: wait for specific child
-            let child = self.shared.process_mgr.lock_or_recover().take_child(target_pid);
-            if let Some(mut child) = child {
-                if option == 1 {
-                    // DCWW_NOWAIT
+            // DCWA_PROCESS: wait for a specific child. It stays in the table
+            // while it runs, so DosKillProcess and DosSendSignalException
+            // reach it meanwhile; a signal for this process interrupts the
+            // wait (ERROR_INTERRUPT).
+            loop {
+                let status = {
+                    let mut procs = self.shared.process_mgr.lock_or_recover();
+                    let Some(child) = procs.children.get_mut(&target_pid) else { return ERROR_INVALID_HANDLE };
                     match child.try_wait() {
                         Ok(Some(status)) => {
-                            let code = status.code().unwrap_or(1) as u32;
-                            if p_res != 0 {
-                                self.guest_write::<u32>(p_res, 0);
-                                self.guest_write::<u32>(p_res + 4, code);
-                            }
-                            self.guest_write::<u32>(p_pid, target_pid);
-                            NO_ERROR
+                            procs.take_child(target_pid);
+                            // Drop the relay thread handle (detaches it): it ends
+                            // on its own at the closed pipe's EOF. Joining it here
+                            // could deadlock with the renderer over console_mgr.
+                            drop(procs.take_relay_thread(target_pid));
+                            status
                         }
                         Ok(None) => {
-                            // Not done yet — put it back
-                            self.shared.process_mgr.lock_or_recover().children.insert(target_pid, child);
-                            128 // ERROR_CHILD_NOT_COMPLETE
-                        }
-                        Err(_) => ERROR_INVALID_HANDLE,
-                    }
-                } else {
-                    // DCWW_WAIT: blocking wait
-                    match child.wait() {
-                        Ok(status) => {
-                            let code = status.code().unwrap_or(1) as u32;
-                            // Drop the relay thread handle (detaches it).  The relay
-                            // thread will exit on its own within microseconds: the
-                            // child process has exited so the pipe write-end is closed,
-                            // and the next pipe.read() will return EOF.  We must NOT
-                            // call t.join() here — if the relay thread is currently
-                            // inside write_tty (holding console_mgr) while the SDL
-                            // renderer is also trying to acquire it, the join would
-                            // deadlock until the next render frame (≥16 ms), which
-                            // would make DosWaitChild appear to hang.
-                            drop(self.shared.process_mgr.lock_or_recover().take_relay_thread(target_pid));
-                            if p_res != 0 {
-                                self.guest_write::<u32>(p_res, 0);
-                                self.guest_write::<u32>(p_res + 4, code);
+                            if option == 1 {
+                                return 128; // ERROR_CHILD_NOT_COMPLETE (DCWW_NOWAIT)
                             }
-                            self.guest_write::<u32>(p_pid, target_pid);
-                            NO_ERROR
+                            drop(procs);
+                            if self.interrupted() { return ERROR_INTERRUPT; }
+                            if self.shutting_down() { return ERROR_INVALID_FUNCTION; }
+                            std::thread::sleep(CHILD_WAIT_POLL);
+                            continue;
                         }
-                        Err(_) => ERROR_INVALID_HANDLE,
+                        Err(_) => return ERROR_INVALID_HANDLE,
                     }
+                };
+                let code = status.code().unwrap_or(1) as u32;
+                if p_res != 0 {
+                    self.guest_write::<u32>(p_res, self.child_termination_code(target_pid, code));
+                    self.guest_write::<u32>(p_res + 4, code);
                 }
-            } else {
-                ERROR_INVALID_HANDLE
+                self.guest_write::<u32>(p_pid, target_pid);
+                return NO_ERROR;
             }
         } else {
             // DCWA_PROCESSTREE: wait for any child
@@ -353,7 +344,7 @@ impl super::Loader {
                 if let Some((pid, code)) = finished {
                     drop(self.shared.process_mgr.lock_or_recover().take_relay_thread(pid));
                     if p_res != 0 {
-                        self.guest_write::<u32>(p_res, 0);
+                        self.guest_write::<u32>(p_res, self.child_termination_code(pid, code as u32));
                         self.guest_write::<u32>(p_res + 4, code as u32);
                     }
                     self.guest_write::<u32>(p_pid, pid);
@@ -364,6 +355,7 @@ impl super::Loader {
             } else {
                 // WAIT: poll until a child finishes
                 loop {
+                    if self.interrupted() { return ERROR_INTERRUPT; }
                     if self.shutting_down() { return ERROR_INVALID_FUNCTION; }
                     // Bound first: the guard of an `if let` scrutinee lives through the
                     // block, which locks process_mgr again (a deadlock before).
@@ -371,7 +363,7 @@ impl super::Loader {
                     if let Some((pid, code)) = finished {
                         drop(self.shared.process_mgr.lock_or_recover().take_relay_thread(pid));
                         if p_res != 0 {
-                            self.guest_write::<u32>(p_res, 0);
+                            self.guest_write::<u32>(p_res, self.child_termination_code(pid, code as u32));
                             self.guest_write::<u32>(p_res + 4, code as u32);
                         }
                         self.guest_write::<u32>(p_pid, pid);
@@ -381,29 +373,9 @@ impl super::Loader {
                     if self.shared.process_mgr.lock_or_recover().children.is_empty() {
                         return ERROR_INVALID_HANDLE; // no children to wait for
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    std::thread::sleep(CHILD_WAIT_POLL);
                 }
             }
-        }
-    }
-
-    /// DosKillProcess (ordinal 235): kill a process.
-    ///
-    /// OS/2 signature: DosKillProcess(action, pid)
-    /// - action: 0=DKP_PROCESSTREE, 1=DKP_PROCESS
-    pub fn dos_kill_process(&self, _action: u32, pid: u32) -> u32 {
-        debug!("  DosKillProcess(pid={})", pid);
-        let child = self.shared.process_mgr.lock_or_recover().take_child(pid);
-        if let Some(mut child) = child {
-            match child.kill() {
-                Ok(_) => {
-                    let _ = child.wait(); // reap zombie
-                    NO_ERROR
-                }
-                Err(_) => ERROR_INVALID_HANDLE,
-            }
-        } else {
-            ERROR_INVALID_HANDLE
         }
     }
 

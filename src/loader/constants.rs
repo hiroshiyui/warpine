@@ -1485,6 +1485,12 @@ pub const ERROR_SIGNAL_REFUSED: u32 = 156;
 pub const ERROR_NO_SIGNAL_SENT: u32 = 205;
 pub const ERROR_INVALID_SIGNAL_NUMBER: u32 = 209;
 pub const ERROR_NESTING_TOO_DEEP: u32 = 650;
+/// `DosKillProcess` actions.
+pub const DKP_PROCESSTREE: u32 = 0;
+pub const DKP_PROCESS: u32 = 1;
+/// Error codes of `DosKillProcess`.
+pub const ERROR_ZOMBIE_PROCESS: u32 = 217;
+pub const ERROR_NOT_DESCENDANT: u32 = 305;
 
 // ── Semaphores (`<bsedos.h>` INCL_DOSSEMAPHORES, `<bseerr.h>`) ───────────────
 

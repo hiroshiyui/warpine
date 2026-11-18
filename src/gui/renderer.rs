@@ -50,8 +50,10 @@ pub trait PmRenderer {
 ///
 /// Must be called from the **main thread** when using `SdlRenderer`
 /// (SDL event pump requirement).  Returns when `shared.exit_requested`
-/// is set or `renderer.poll_events` returns `false` (which is also how a
-/// VIO session leaves its PM window for full screen on Alt+Home). The
+/// is set, or when `renderer.poll_events` returns `false` for Alt+Home (a
+/// VIO session leaving its PM window for full screen); any other `false`
+/// (the session closed) asks the program to end and goes on until it
+/// has (`signals::end_session`). The
 /// channel stays with the caller, so a later loop — another renderer — can
 /// carry on with it.
 pub fn run_pm_loop(
@@ -69,9 +71,16 @@ pub fn run_pm_loop(
             renderer.handle_message(msg, &shared);
         }
 
-        // Poll backend events; false means exit.
+        // Poll backend events; false: the session was closed (desktop
+        // window, VIO window), or Alt+Home switches a VIO session's display.
         if !renderer.poll_events(&shared) {
-            return;
+            if super::vio_switch::switch_pending(&shared) {
+                return;
+            }
+            // The program is asked to end (XCPT_SIGNAL_KILLPROC, then its
+            // exit list); the desktop stays until it has, at most
+            // `KILL_GRACE`. A second close ends it at once.
+            crate::loader::signals::end_session(&shared);
         }
 
         if shared.exit_requested.load(Ordering::Relaxed) {

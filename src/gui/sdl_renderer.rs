@@ -1121,10 +1121,8 @@ impl SdlRenderer {
         let Some(vio) = self.vio.as_mut() else { return true };
         let mut copied = None;
         match id {
-            SC_CLOSE => {
-                vio.close(shared);
-                return false;
-            }
+            // The program is asked to end (`run_pm_loop`).
+            SC_CLOSE => return false,
             SC_RESTORE | SC_MINIMIZE | SC_MAXIMIZE => {
                 if let Some(op) = crate::loader::pm_minmax::syscommand_state(id) {
                     shared.window_mgr.lock_or_recover().vio_minmax(op);
@@ -1497,14 +1495,10 @@ impl SdlRenderer {
                 // The renderer may have lost its textures.
                 self.force_full = true;
             }
-            Event::Quit { .. } => {
-                shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
-                let focused = shared.window_mgr.lock_or_recover().focused_hwnd;
-                if focused != 0 {
-                    push_msg(shared, focused, WM_CLOSE, 0, 0);
-                }
-                return false;
-            }
+            // The desktop closed: the session ends (`run_pm_loop` asks the
+            // program to end; it gets XCPT_SIGNAL_KILLPROC and its exit list
+            // runs).
+            Event::Quit { .. } => return false,
             // Events of another SDL window — the full-screen text display of
             // a VIO session, still queued after Alt+Home — are not the
             // desktop's: its size change must not resize the desktop.
@@ -1512,14 +1506,7 @@ impl SdlRenderer {
             Event::Window { win_event, .. } => {
                 use sdl3::event::WindowEvent;
                 match win_event {
-                    WindowEvent::CloseRequested => {
-                        shared.exit_requested.store(true, std::sync::atomic::Ordering::Relaxed);
-                        let focused = shared.window_mgr.lock_or_recover().focused_hwnd;
-                        if focused != 0 {
-                            push_msg(shared, focused, WM_CLOSE, 0, 0);
-                        }
-                        return false;
-                    }
+                    WindowEvent::CloseRequested => return false,
                     WindowEvent::Resized(w, h) => {
                         let (w, h) = (w as u32, h as u32);
                         // Only the view of the desktop changes: PM windows

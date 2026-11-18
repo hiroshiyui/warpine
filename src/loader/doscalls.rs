@@ -171,6 +171,12 @@ impl super::Loader {
             let Some(file) = self.shared.handle_mgr.lock_or_recover().host_file(hf) else {
                 return ERROR_INVALID_HANDLE;
             };
+            // Wait for data (or the writer's end) in steps, so that a
+            // signal or the end of the process can interrupt the read; an
+            // interrupted read has taken nothing and is made again.
+            if len > 0 && !self.wait_host_readable(&file) {
+                return ERROR_INTERRUPT;
+            }
             let mut data = vec![0u8; len as usize];
             match (&*file).read(&mut data) {
                 Ok(n) => {
@@ -228,7 +234,7 @@ impl super::Loader {
                 let ki = {
                     let mut queue = self.shared.kbd_queue.lock().unwrap();
                     loop {
-                        if self.shutting_down() { return ERROR_INVALID_FUNCTION; }
+                        if self.stop_or_restart() { return ERROR_INVALID_FUNCTION; }
                         if let Some(ki) = queue.pop_front() { break ki; }
                         let (new_q, _) = self.shared.kbd_cond
                             .wait_timeout(queue, Duration::from_millis(50))
@@ -281,9 +287,14 @@ impl super::Loader {
             console.enable_raw_mode();
         }
         loop {
-            if self.shutting_down() { return ERROR_INVALID_FUNCTION; }
+            if self.stop_or_restart() { return ERROR_INVALID_FUNCTION; }
             let mut buf = [0u8; 1];
             let n = unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr() as *mut libc::c_void, 1) };
+            // Ctrl+C typed at a terminal is a signal, not input (piped
+            // standard input is data: it may hold any byte).
+            if n == 1 && std::io::IsTerminal::is_terminal(&std::io::stdin()) && self.keyboard_signal(buf[0]) {
+                continue;
+            }
             if n == 1 {
                 let byte = buf[0];
                 if byte == 0x0D {
@@ -1059,9 +1070,30 @@ impl super::Loader {
 
     // ── Non-filesystem APIs (unchanged) ──
 
+    /// Wait until host file `file` (a pipe) has data or its writer is gone;
+    /// false when the wait gave up (the process ends, or `interrupt_restart`).
+    pub(crate) fn wait_host_readable(&self, file: &std::fs::File) -> bool {
+        use std::os::fd::AsRawFd;
+        const READ_POLL_MS: i32 = 100;
+        loop {
+            let mut p = libc::pollfd { fd: file.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+            // SAFETY: `p` is one valid pollfd for the duration of the call.
+            let n = unsafe { libc::poll(&mut p, 1, READ_POLL_MS) };
+            let interrupted = n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted;
+            if n != 0 && !interrupted {
+                // Ready, closed, or an error the read itself reports.
+                return true;
+            }
+            if self.stop_or_restart() {
+                return false;
+            }
+        }
+    }
+
     pub fn dos_sleep(&self, msec: u32) -> u32 {
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(msec as u64);
         while std::time::Instant::now() < deadline {
+            if self.interrupted() { return ERROR_INTERRUPT; }
             if self.shutting_down() { return 0; }
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             thread::sleep(remaining.min(std::time::Duration::from_millis(100)));
@@ -1087,15 +1119,7 @@ impl super::Loader {
     /// End the process with `result` unless it is already ending (the first
     /// result code wins).
     pub fn request_process_exit(&self, result: u32) {
-        if !self.shared.exit_requested.load(Ordering::Relaxed) {
-            self.shared.exit_code.store(result as i32, Ordering::Relaxed);
-            self.shared.exit_requested.store(true, Ordering::Relaxed);
-        }
-        self.shared.threads.ended.notify_all();
-        self.shared.threads.wake_crit_waiters();
-        self.shared.dos_timers.lock_or_recover().stop_all();
-        // Threads spinning in guest code stop too.
-        self.shared.threads.table.lock_or_recover().kick_all_but(0);
+        super::signals::request_exit(&self.shared, result);
     }
 
     /// DosCreateThread (ordinal 311): a new thread runs `pfn(param)` on its
@@ -1306,6 +1330,7 @@ impl super::Loader {
         let deadline = sem_deadline(msec);
         loop {
             if ready(&mut guard) { return Ok(guard); }
+            if self.interrupted() { return Err(ERROR_INTERRUPT); }
             if self.shutting_down() { return Err(ERROR_TIMEOUT); }
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() { return Err(ERROR_TIMEOUT); }
@@ -1483,6 +1508,7 @@ impl super::Loader {
                 }
                 Ok(None) => {}
             }
+            if self.interrupted() { return ERROR_INTERRUPT; }
             if self.shutting_down() { return ERROR_TIMEOUT; }
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() { return ERROR_TIMEOUT; }
@@ -1577,7 +1603,7 @@ impl super::Loader {
         };
 
         loop {
-            if self.shutting_down() { return 342; }
+            if self.stop_or_restart() { return 342; }
             {
                 let mut q = q_arc.lock_or_recover();
                 if let Some(entry) = q.items.pop_front() {
@@ -1664,13 +1690,16 @@ impl super::Loader {
         if option != DCWW_WAIT && option != DCWW_NOWAIT { return ERROR_INVALID_PARAMETER; }
         let caller = tid_of_vcpu(vcpu_id);
         debug!("  [VCPU {}] DosWaitThread(tid={}, option={})", vcpu_id, tid, option);
-        match self.shared.threads.wait_for(caller, tid, option == DCWW_NOWAIT, || self.shutting_down()) {
+        match self.shared.threads.wait_for(caller, tid, option == DCWW_NOWAIT,
+                                           || self.shutting_down() || self.interrupted()) {
             Some(WaitOutcome::Ended(ended)) => {
                 self.guest_write::<u32>(ptid_ptr, ended);
                 NO_ERROR
             }
             Some(WaitOutcome::Running) => ERROR_THREAD_NOT_TERMINATED,
             Some(WaitOutcome::Invalid) => ERROR_INVALID_THREADID,
+            // A signal for thread 1, or this thread was killed.
+            None if self.interrupted() => ERROR_INTERRUPT,
             // The process is ending; this thread will not run on.
             None => ERROR_INVALID_THREADID,
         }
