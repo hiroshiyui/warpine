@@ -1,0 +1,70 @@
+module	ordinal	name	since	source_id	note
+MSG	4	DosInsertMessage	2.0	S1	documented in OS/2 2.0 CP Reference
+MSG	5	DosPutMessage	2.0	S1	documented in OS/2 2.0 CP Reference
+MSG	6	DosGetMessage	2.0	S1	documented in OS/2 2.0 CP Reference
+MSG	8	DosQueryMessageCP	2.0	S1	documented in OS/2 2.0 CP Reference
+PMCTLS	2	WinFontDlg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMCTLS	3	WinDefFontDlgProc	2.0	S2	documented in OS/2 2.0 PM Reference
+PMCTLS	4	WinFileDlg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMCTLS	5	WinDefFileDlgProc	2.0	S2	documented in OS/2 2.0 PM Reference
+PMCTLS	6	WinFreeFileDlgList	2.0	S2	documented in OS/2 2.0 PM Reference
+UCONV	1	UniCreateUconvObject	4.0	S11	Universal Language Support headers/docs first in the Warp 4 Toolkit
+UCONV	2	UniFreeUconvObject	4.0	S11	Universal Language Support headers/docs first in the Warp 4 Toolkit
+UCONV	3	UniUconvToUcs	4.0	S11	Universal Language Support headers/docs first in the Warp 4 Toolkit
+UCONV	4	UniUconvFromUcs	4.0	S11	Universal Language Support headers/docs first in the Warp 4 Toolkit
+UCONV	6	UniMapCpToUcsCp	4.0	S11	Universal Language Support headers/docs first in the Warp 4 Toolkit
+MDM	1	mciSendCommand	3.0	S17	MMPM/2 installed from the Warp 3 base CD; separate add-on for 2.1 (low confidence)
+MDM	2	mciSendString	3.0	S17	MMPM/2 installed from the Warp 3 base CD; separate add-on for 2.1 (low confidence)
+MDM	3	mciFreeBlock	3.0	S17	MMPM/2 installed from the Warp 3 base CD; separate add-on for 2.1 (low confidence)
+MDM	4	mciGetLastError	3.0	S17	MMPM/2 installed from the Warp 3 base CD; separate add-on for 2.1 (low confidence)
+SO32DLL	1	accept	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	2	bind	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	3	connect	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	4	gethostid	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	5	gethostname	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	6	getpeername	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	7	getsockname	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	8	getsockopt	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	10	listen	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	11	recv	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	12	recvfrom	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	13	select	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	14	send	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	15	sendto	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	16	setsockopt	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	17	shutdown	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	18	sock_errno	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	19	socket	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	20	soclose	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	21	psock_errno	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	22	sock_init	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	40	gethostbyname	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	41	gethostbyaddr	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	42	getservbyname	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	43	getservbyport	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	44	getprotobyname	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+SO32DLL	45	getprotobynumber	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	1	accept	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	2	bind	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	3	connect	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	6	getpeername	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	7	getsockname	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	8	getsockopt	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	10	listen	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	11	recv	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	12	recvfrom	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	13	select	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	14	send	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	15	sendto	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	16	setsockopt	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	17	shutdown	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	18	sock_errno	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	19	socket	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	20	soclose	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	22	sock_init	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	40	gethostbyname	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	41	gethostbyaddr	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	42	getservbyname	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	43	getservbyport	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	44	getprotobyname	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)
+TCP32DLL	45	getprotobynumber	4.0	S18	TCP/IP 4.0 ships with Warp 4; Warp 3 had only the BonusPak Internet Connection / Warp Connect (low confidence)

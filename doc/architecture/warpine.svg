@@ -26,7 +26,7 @@
 </g>
 <g id="clust4" class="cluster">
 <title>cluster_build</title>
-<path fill="#f1f8e9" stroke="#90a4ae" d="M3441,-8C3441,-8 3773,-8 3773,-8 3779,-8 3785,-14 3785,-20 3785,-20 3785,-71.75 3785,-71.75 3785,-77.75 3779,-83.75 3773,-83.75 3773,-83.75 3441,-83.75 3441,-83.75 3435,-83.75 3429,-77.75 3429,-71.75 3429,-71.75 3429,-20 3429,-20 3429,-14 3435,-8 3441,-8"/>
+<path fill="#f1f8e9" stroke="#90a4ae" d="M3348,-8C3348,-8 3866,-8 3866,-8 3872,-8 3878,-14 3878,-20 3878,-20 3878,-71.75 3878,-71.75 3878,-77.75 3872,-83.75 3866,-83.75 3866,-83.75 3348,-83.75 3348,-83.75 3342,-83.75 3336,-77.75 3336,-71.75 3336,-71.75 3336,-20 3336,-20 3336,-14 3342,-8 3348,-8"/>
 <text xml:space="preserve" text-anchor="middle" x="3607" y="-66.45" font-family="Helvetica,sans-Serif" font-size="14.00">Build tools (separate programs)</text>
 </g>
 <!-- program -->
@@ -157,8 +157,8 @@
 <!-- vcpu&#45;&gt;children -->
 <g id="edge18" class="edge">
 <title>vcpu&#45;&gt;children</title>
-<path fill="none" stroke="#455a64" d="M3505.88,-642.53C3578,-630.18 3638,-609.6 3638,-575.33 3638,-575.33 3638,-575.33 3638,-150.51 3638,-107.81 3601.99,-106.7 3562,-91.75 3533.02,-80.91 3453.86,-85.91 3423,-83.75 3295.47,-74.84 3152.67,-63.15 3039.15,-53.45"/>
-<polygon fill="#455a64" stroke="#455a64" points="3039.68,-49.99 3029.42,-52.62 3039.09,-56.96 3039.68,-49.99"/>
+<path fill="none" stroke="#455a64" d="M3505.88,-642.53C3578,-630.18 3638,-609.6 3638,-575.33 3638,-575.33 3638,-575.33 3638,-150.51 3638,-107.81 3602.16,-106.24 3562,-91.75 3537.74,-82.99 3355.74,-85.45 3330,-83.75 3218.03,-76.37 3092.32,-64.09 2994.96,-53.71"/>
+<polygon fill="#455a64" stroke="#455a64" points="2995.35,-50.23 2985.04,-52.64 2994.61,-57.19 2995.35,-50.23"/>
 <text xml:space="preserve" text-anchor="middle" x="3708.12" y="-367.75" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">INTR / BREAK as real&#45;time signals</text>
 </g>
 <!-- kernel -->
@@ -471,9 +471,9 @@
 <!-- tools -->
 <g id="node28" class="node">
 <title>tools</title>
-<path fill="#dcedc8" stroke="black" d="M3764.8,-52C3764.8,-52 3449.2,-52 3449.2,-52 3443.2,-52 3437.2,-46 3437.2,-40 3437.2,-40 3437.2,-28 3437.2,-28 3437.2,-22 3443.2,-16 3449.2,-16 3449.2,-16 3764.8,-16 3764.8,-16 3770.8,-16 3776.8,-22 3776.8,-28 3776.8,-28 3776.8,-40 3776.8,-40 3776.8,-46 3770.8,-52 3764.8,-52"/>
-<text xml:space="preserve" text-anchor="start" x="3448" y="-34.05" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Build tools: lx&#45;link, gen_api, gen_arch (ADR&#45;0006, ADR&#45;0015)</text>
-<text xml:space="preserve" text-anchor="start" x="3528.25" y="-25.9" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">bin/lx_link.rs, bin/gen_api.rs, bin/gen_arch.rs</text>
+<path fill="#dcedc8" stroke="black" d="M3857.8,-52C3857.8,-52 3356.2,-52 3356.2,-52 3350.2,-52 3344.2,-46 3344.2,-40 3344.2,-40 3344.2,-28 3344.2,-28 3344.2,-22 3350.2,-16 3356.2,-16 3356.2,-16 3857.8,-16 3857.8,-16 3863.8,-16 3869.8,-22 3869.8,-28 3869.8,-28 3869.8,-40 3869.8,-40 3869.8,-46 3863.8,-52 3857.8,-52"/>
+<text xml:space="preserve" text-anchor="start" x="3355" y="-34.05" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Build tools: lx&#45;link, gen_api, gen_arch, gen_compat (ADR&#45;0006, ADR&#45;0015, ADR&#45;0021, ADR&#45;0033)</text>
+<text xml:space="preserve" text-anchor="start" x="3493" y="-25.9" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">bin/lx_link.rs, bin/gen_api.rs, bin/gen_arch.rs, bin/gen_compat.rs</text>
 </g>
 </g>
 </svg>

@@ -1,0 +1,950 @@
+module	ordinal	name	since	source_id	note
+DOSCALLS	110	DosForceDelete	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	111	DosKillThread	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	112	DosQueryRASInfo	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	113	DosDumpProcess	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	114	DosSuppressPopUps	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	209	DosSetMaxFH	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	210	DosSetVerify	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	211	DosErrClass	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	212	DosError	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	218	DosSetFileInfo	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	219	DosSetPathInfo	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	220	DosSetDefaultDisk	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	221	DosSetFHState	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	222	DosSetFSInfo	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	223	DosQueryPathInfo	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	224	DosQueryHType	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	225	DosQueryVerify	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	226	DosDeleteDir	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	227	DosScanEnv	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	228	DosSearchPath	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	229	DosSleep	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	230	DosGetDateTime	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	231	DosDevConfig	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	232	DosEnterCritSec	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	233	DosExitCritSec	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	234	DosExit	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	235	DosKillProcess	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	236	DosSetPriority	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	237	DosResumeThread	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	238	DosSuspendThread	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	239	DosCreatePipe	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	240	DosCallNPipe	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	241	DosConnectNPipe	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	242	DosDisConnectNPipe	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	243	DosCreateNPipe	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	244	DosPeekNPipe	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	245	DosQueryNPHState	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	246	DosRawReadNPipe	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	247	DosRawWriteNPipe	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	248	DosQueryNPipeInfo	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	249	DosQueryNPipeSemState	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	250	DosSetNPHState	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	251	DosSetNPipeSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	252	DosTransactNPipe	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	253	DosWaitNPipe	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	254	DosResetBuffer	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	255	DosSetCurrentDir	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	256	DosSetFilePtr	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	257	DosClose	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	258	DosCopy	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	259	DosDelete	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	260	DosDupHandle	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	261	DosEditName	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	263	DosFindClose	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	264	DosFindFirst	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	265	DosFindNext	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	269	DosFSAttach	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	270	DosCreateDir	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	271	DosMove	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	272	DosSetFileSize	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	273	DosOpen	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	274	DosQueryCurrentDir	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	275	DosQueryCurrentDisk	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	276	DosQueryFHState	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	277	DosQueryFSAttach	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	278	DosQueryFSInfo	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	279	DosQueryFileInfo	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	280	DosWaitChild	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	281	DosRead	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	282	DosWrite	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	283	DosExecPgm	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	284	DosDevIOCtl	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	285	DosFSCtl	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	286	DosBeep	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	287	DosPhysicalDisk	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	288	DosSetCp	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	289	DosSetProcessCp	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	290	DosStopTimer	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	291	DosQueryCp	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	292	DosSetDateTime	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	296	DosExitList	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	299	DosAllocMem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	300	DosAllocSharedMem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	301	DosGetNamedSharedMem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	302	DosGetSharedMem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	303	DosGiveSharedMem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	304	DosFreeMem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	305	DosSetMem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	306	DosQueryMem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	308	DosOpenVDD	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	309	DosRequestVDD	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	310	DosCloseVDD	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	311	DosCreateThread	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	312	DosGetInfoBlocks	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	316	DosDynamicTrace	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	317	DosDebug	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	318	DosLoadModule	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	319	DosQueryModuleHandle	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	320	DosQueryModuleName	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	321	DosQueryProcAddr	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	322	DosFreeModule	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	323	DosQueryAppType	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	324	DosCreateEventSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	325	DosOpenEventSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	326	DosCloseEventSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	327	DosResetEventSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	328	DosPostEventSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	329	DosWaitEventSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	330	DosQueryEventSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	331	DosCreateMutexSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	332	DosOpenMutexSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	333	DosCloseMutexSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	334	DosRequestMutexSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	335	DosReleaseMutexSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	336	DosQueryMutexSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	337	DosCreateMuxWaitSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	338	DosOpenMuxWaitSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	339	DosCloseMuxWaitSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	340	DosWaitMuxWaitSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	341	DosAddMuxWaitSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	342	DosDeleteMuxWaitSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	343	DosQueryMuxWaitSem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	344	DosSubSetMem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	345	DosSubAllocMem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	346	DosSubFreeMem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	347	DosSubUnsetMem	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	348	DosQuerySysInfo	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	349	DosWaitThread	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	350	DosAsyncTimer	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	351	DosStartTimer	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	352	DosGetResource	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	353	DosFreeResource	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	354	DosSetExceptionHandler	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	355	DosUnsetExceptionHandler	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	356	DosRaiseException	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	357	DosUnwindException	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	360	DosQueryModFromEIP	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	362	DosTmrQueryFreq	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	363	DosTmrQueryTime	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	364	DosAliasPerfCtrs	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	365	DosConfigurePerf	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	366	DosDeconPerf	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	367	DosRegisterPerfCtrs	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	368	DosQuerySysState	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	371	DosQueryABIOSSupport	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	372	DosEnumAttribute	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	373	DosQueryDOSProperty	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	374	DosSetDOSProperty	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	377	DosProfile	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	378	DosSetSignalExceptionFocus	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	379	DosSendSignalException	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	380	DosEnterMustComplete	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	381	DosExitMustComplete	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	382	DosSetRelMaxFH	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	415	DosShutdown	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	417	DosReplaceModule	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	418	DosAcknowledgeSignalException	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	419	DosTIB	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	425	DosFlatToSel	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	426	DosSelToFlat	2.0	S6;H1	in Warp 3 DOSCALLS export table; ordinal inside the 2.0-documented block 209-429, undocumented in 2.0 CP Reference
+DOSCALLS	428	DosSetFileLocks	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	429	DosCancelLockRequest	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	440	DosOpenChangeNotify	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	441	DosResetChangeNotify	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	442	DosCloseChangeNotify	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	444	DosForceSystemDump	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	454	DosAllocThreadLocalMemory	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	455	DosFreeThreadLocalMemory	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	460	DosVerifyPidTid	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	572	DosQueryResourceSize	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	580	DosInitializePorthole	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	582	DosQueryHeaderInfo	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	586	DosQueryProcType	2.0	S1	documented in OS/2 2.0 CP Reference
+DOSCALLS	590	DosPMPostEventSem	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	591	DosPMWaitEventSem	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	593	DosPMRequestMutexSem	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	595	DosPMWaitMuxWaitSem	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	596	DosPM16SemChk	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	621	DosProtectSetFilePtr	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+DOSCALLS	636	DosProtectEnumAttribute	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+DOSCALLS	637	DosProtectOpen	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+DOSCALLS	638	DosProtectClose	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+DOSCALLS	639	DosProtectSetFileLocks	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+DOSCALLS	640	DosProtectSetFileSize	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+DOSCALLS	641	DosProtectRead	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+DOSCALLS	642	DosProtectWrite	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+DOSCALLS	643	DosProtectSetFileInfo	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+DOSCALLS	644	DosProtectSetFHState	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+DOSCALLS	645	DosProtectQueryFHState	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+DOSCALLS	646	DosProtectQueryFileInfo	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+DOSCALLS	873	DosSetExtLIBPATH	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	874	DosQueryExtLIBPATH	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	875	DosPM16SemRst	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	876	DosSysCtl	3.0	S6	in Warp 3 DOSCALLS export table (Debugging Handbook, Feb 1996, Warp 3 + fixpaks)
+DOSCALLS	877	DosQueryThreadContext	4.0	S7	not in Warp 3 table; documented in Toolkit 4 CP Reference
+DOSCALLS	878	DosSGQueryTopmost	4.0	H1	ordinal 878 follows DosQueryThreadContext 877 (Warp 4); undocumented
+DOSCALLS	976	DosPerfSysCall	4.0	S7	not in Warp 3 table; documented in Toolkit 4 CP Reference
+DOSCALLS	981	DosOpenL	later	S9	new in Warp Server for e-business (4.5) Addendum
+DOSCALLS	982	DosProtectOpenL	later	S9	new in Warp Server for e-business (4.5) Addendum
+DOSCALLS	983	DosProtectSetFileLocksL	later	S9	new in Warp Server for e-business (4.5) Addendum
+DOSCALLS	984	DosProtectSetFilePtrL	later	S9	new in Warp Server for e-business (4.5) Addendum
+DOSCALLS	985	DosProtectSetFileSizeL	later	S9	new in Warp Server for e-business (4.5) Addendum
+DOSCALLS	986	DosSetFileLocksL	later	S9	new in Warp Server for e-business (4.5) Addendum
+DOSCALLS	987	DosCancelLockRequestL	later	S9	new in Warp Server for e-business (4.5) Addendum
+DOSCALLS	988	DosSetFilePtrL	later	S9	new in Warp Server for e-business (4.5) Addendum
+DOSCALLS	989	DosSetFileSizeL	later	S9	new in Warp Server for e-business (4.5) Addendum
+DOSCALLS	990	DosListIOL	later	S9	new in Warp Server for e-business (4.5) Addendum
+DOSCALLS	995	DosSystemService	later	H1	32-bit ordinal 995 sits among the 4.5 large-file ordinals 981-997; only the 16-bit DOSSYSTEMSERVICE (88) is in the Warp 3 table
+DOSCALLS	996	DosListIO	later	S9	new in Warp Server for e-business (4.5) Addendum
+DOSCALLS	997	DosCreateThread2	later	S9	new in Warp Server for e-business (4.5) Addendum
+HELPMGR	51	WinCreateHelpInstance	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	52	WinDestroyHelpInstance	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	53	WinQueryHelpInstance	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	54	WinAssociateHelpInstance	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	55	WinLoadHelpTable	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	56	WinCreateHelpTable	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	74	DdfInitialize	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	75	DdfPara	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	76	DdfSetFormat	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	77	DdfSetTextAlign	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	78	DdfSetColor	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	79	DdfInform	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	80	DdfSetFontStyle	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	81	DdfHyperText	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	82	DdfBeginList	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	83	DdfListItem	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	84	DdfEndList	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	85	DdfText	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	86	DdfMetafile	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	87	DdfSetFont	2.0	S2	documented in OS/2 2.0 PM Reference
+HELPMGR	88	DdfBitmap	2.0	S2	documented in OS/2 2.0 PM Reference
+NLS	5	DosQueryCtryInfo	2.0	S1	documented in OS/2 2.0 CP Reference
+NLS	6	DosQueryDBCSEnv	2.0	S1	documented in OS/2 2.0 CP Reference
+NLS	7	DosMapCase	2.0	S1	documented in OS/2 2.0 CP Reference
+NLS	8	DosQueryCollate	2.0	S1	documented in OS/2 2.0 CP Reference
+PMDRAG	32	DrgAccessDraginfo	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	33	DrgAddStrHandle	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	34	DrgAllocDraginfo	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	35	DrgAllocDragtransfer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	36	DrgDeleteDraginfoStrHandles	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	37	DrgDeleteStrHandle	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	38	DrgDrag	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	39	DrgFreeDraginfo	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	40	DrgFreeDragtransfer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	41	DrgGetPS	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	42	DrgPostTransferMsg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	43	DrgPushDraginfo	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	44	DrgQueryDragitem	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	45	DrgQueryDragitemCount	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	46	DrgQueryDragitemPtr	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	47	DrgQueryNativeRMF	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	48	DrgQueryNativeRMFLen	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	49	DrgQueryStrName	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	50	DrgQueryStrNameLen	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	51	DrgQueryTrueType	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	52	DrgQueryTrueTypeLen	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	53	DrgReleasePS	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	54	DrgSendTransferMsg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	55	DrgSetDragPointer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	56	DrgSetDragImage	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	57	DrgSetDragitem	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	58	DrgVerifyNativeRMF	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	59	DrgVerifyRMF	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	60	DrgVerifyTrueType	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	61	DrgVerifyType	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	62	DrgVerifyTypeSet	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	65	DrgDragFiles	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	66	DrgAcceptDroppedFiles	2.0	S2	documented in OS/2 2.0 PM Reference
+PMDRAG	67	DrgLazyDrag	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMDRAG	68	DrgCancelLazyDrag	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMDRAG	69	DrgLazyDrop	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMDRAG	70	DrgQueryDraginfoPtr	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMDRAG	71	DrgQueryDraginfoPtrFromHwnd	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMDRAG	72	DrgQueryDraginfoPtrFromDragitem	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMDRAG	73	DrgQueryDragStatus	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMDRAG	74	DrgReallocDraginfo	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMDRAG	75	DrgQueryFormat	unknown		undocumented in every IBM reference used; no public version evidence
+PMGPI	351	GpiAssociate	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	352	GpiBeginArea	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	353	GpiBeginElement	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	354	GpiBeginPath	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	355	GpiBitBlt	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	356	GpiBox	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	357	GpiCallSegmentMatrix	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	358	GpiCharString	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	359	GpiCharStringAt	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	360	GpiCloseFigure	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	361	GpiCloseSegment	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	362	GpiCombineRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	363	GpiComment	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	364	GpiConvert	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	365	GpiCopyMetaFile	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	366	GpiCorrelateChain	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	367	GpiCorrelateFrom	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	368	GpiCreateLogFont	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	369	GpiCreatePS	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	370	GpiCreateRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	371	GpiDeleteBitmap	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	372	GpiDeleteElement	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	373	GpiDeleteElementRange	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	374	GpiDeleteElementsBetweenLabels	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	375	GpiDeleteMetaFile	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	376	GpiDeleteSegment	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	377	GpiDeleteSegments	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	378	GpiDeleteSetId	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	379	GpiDestroyPS	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	380	GpiDrawChain	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	381	GpiDrawDynamics	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	382	GpiDrawFrom	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	383	GpiDrawSegment	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	384	GpiElement	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	385	GpiEndArea	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	386	GpiEndElement	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	387	GpiEndPath	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	388	GpiEqualRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	389	GpiErase	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	390	GpiErrorSegmentData	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	391	GpiExcludeClipRectangle	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	392	GpiFillPath	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	393	GpiFullArc	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	394	GpiGetData	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	395	GpiImage	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	396	GpiIntersectClipRectangle	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	397	GpiLabel	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	398	GpiLine	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	399	GpiLoadBitmap	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	400	GpiLoadFonts	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	401	GpiLoadMetaFile	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	402	GpiMarker	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	403	GpiModifyPath	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	404	GpiMove	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	405	GpiOffsetClipRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	406	GpiOffsetElementPointer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	407	GpiOffsetRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	408	GpiOpenSegment	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	409	GpiPaintRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	411	GpiPlayMetaFile	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	412	GpiPointArc	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	413	GpiPolyFillet	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	414	GpiPolyFilletSharp	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	415	GpiPolyLine	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	416	GpiPolyMarker	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	417	GpiPolySpline	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	418	GpiPop	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	419	GpiPtInRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	420	GpiPtVisible	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	421	GpiPutData	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	422	GpiQueryArcParams	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	423	GpiQueryAttrMode	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	424	GpiQueryBackColor	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	425	GpiQueryBackMix	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	426	GpiQueryBitmapDimension	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	427	GpiQueryBitmapHandle	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	428	GpiQueryBoundaryData	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	429	GpiQueryCharAngle	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	430	GpiQueryCharBox	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	431	GpiQueryCharDirection	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	432	GpiQueryCharMode	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	433	GpiQueryCharSet	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	434	GpiQueryCharShear	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	435	GpiQueryClipBox	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	436	GpiQueryClipRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	437	GpiQueryColor	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	438	GpiQueryColorData	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	439	GpiQueryColorIndex	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	440	GpiQueryCp	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	441	GpiQueryCurrentPosition	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	442	GpiQueryDefCharBox	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	443	GpiQueryDefaultViewMatrix	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	444	GpiQueryDevice	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	445	GpiQueryDeviceBitmapFormats	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	446	GpiQueryDrawControl	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	447	GpiQueryDrawingMode	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	448	GpiQueryEditMode	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	449	GpiQueryElement	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	450	GpiQueryElementPointer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	451	GpiQueryElementType	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	452	GpiQueryFontFileDescriptions	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	453	GpiQueryFontMetrics	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	454	GpiQueryGraphicsField	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	455	GpiQueryInitialSegmentAttrs	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	456	GpiQueryKerningPairs	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	457	GpiQueryLineEnd	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	458	GpiQueryLineJoin	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	459	GpiQueryLineType	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	460	GpiQueryLineWidth	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	461	GpiQueryLineWidthGeom	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	462	GpiQueryMarker	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	463	GpiQueryMarkerBox	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	464	GpiQueryMarkerSet	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	465	GpiQueryMetaFileBits	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	466	GpiQueryMetaFileLength	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	467	GpiQueryMix	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	468	GpiQueryModelTransformMatrix	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	469	GpiQueryNearestColor	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	470	GpiQueryNumberSetIds	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	471	GpiQueryPS	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	472	GpiQueryPageViewport	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	473	GpiQueryPattern	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	474	GpiQueryPatternRefPoint	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	475	GpiQueryPatternSet	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	476	GpiQueryPel	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	477	GpiQueryPickAperturePosition	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	478	GpiQueryPickApertureSize	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	479	GpiQueryRGBColor	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	480	GpiQueryRealColors	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	481	GpiQueryRegionBox	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	482	GpiQuerySegmentAttrs	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	483	GpiQuerySegmentNames	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	484	GpiQuerySegmentPriority	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	485	GpiQuerySegmentTransformMatrix	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	486	GpiQuerySetIds	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	487	GpiQueryStopDraw	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	488	GpiQueryTag	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	489	GpiQueryTextBox	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	490	GpiQueryViewingLimits	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	491	GpiQueryViewingTransformMatrix	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	492	GpiQueryWidthTable	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	494	GpiRectInRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	495	GpiRectVisible	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	496	GpiRemoveDynamics	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	497	GpiResetBoundaryData	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	498	GpiResetPS	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	499	GpiRestorePS	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	500	GpiSaveMetaFile	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	501	GpiSavePS	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	502	GpiSetArcParams	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	503	GpiSetAttrMode	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	504	GpiSetBackColor	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	505	GpiSetBackMix	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	506	GpiSetBitmap	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	507	GpiSetBitmapDimension	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	508	GpiSetBitmapId	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	509	GpiSetCharAngle	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	510	GpiSetCharBox	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	511	GpiSetCharDirection	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	512	GpiSetCharMode	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	513	GpiSetCharSet	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	514	GpiSetCharShear	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	515	GpiSetClipPath	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	516	GpiSetClipRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	517	GpiSetColor	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	518	GpiSetCp	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	519	GpiSetCurrentPosition	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	520	GpiSetDefaultViewMatrix	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	521	GpiSetDrawControl	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	522	GpiSetDrawingMode	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	523	GpiSetEditMode	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	524	GpiSetElementPointer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	525	GpiSetElementPointerAtLabel	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	526	GpiSetGraphicsField	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	527	GpiSetInitialSegmentAttrs	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	528	GpiSetLineEnd	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	529	GpiSetLineJoin	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	530	GpiSetLineType	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	531	GpiSetLineWidth	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	532	GpiSetLineWidthGeom	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	533	GpiSetMarker	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	534	GpiSetMarkerBox	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	535	GpiSetMarkerSet	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	536	GpiSetMetaFileBits	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	537	GpiSetMix	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	538	GpiSetModelTransformMatrix	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	539	GpiSetPS	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	540	GpiSetPageViewport	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	541	GpiSetPattern	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	542	GpiSetPatternRefPoint	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	543	GpiSetPatternSet	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	544	GpiSetPel	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	545	GpiSetPickAperturePosition	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	546	GpiSetRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	547	GpiSetSegmentAttrs	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	548	GpiSetSegmentPriority	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	549	GpiSetSegmentTransformMatrix	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	550	GpiSetStopDraw	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	551	GpiSetTag	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	552	GpiSetViewingLimits	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	553	GpiSetViewingTransformMatrix	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	554	GpiStrokePath	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	555	GpiUnloadFonts	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	557	GpiWCBitBlt	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	558	GpiPolyLineDisjoint	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	559	GpiPathToRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	560	GpiFloodFill	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	561	GpiSuspendPlay	2.0	H1	undocumented; PMGPI ordinal inside the 2.0-documented range 351-650
+PMGPI	562	GpiResumePlay	2.0	H1	undocumented; PMGPI ordinal inside the 2.0-documented range 351-650
+PMGPI	563	GpiOutlinePath	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	564	GpiTranslate	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	565	GpiScale	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	566	GpiRotate	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	567	GpiQueryDefArcParams	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	568	GpiQueryDefTag	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	569	GpiQueryDefViewingLimits	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	570	GpiSetDefArcParams	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	571	GpiSetDefTag	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	572	GpiSetDefViewingLimits	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	573	GpiQueryBitmapParameters	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	574	GpiQueryLogicalFont	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	575	GpiQueryFaceString	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	576	GpiQueryFontAction	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	577	GpiDeletePalette	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	578	GpiSelectPalette	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	579	GpiQueryPalette	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	580	GpiCharStringPos	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	581	GpiCharStringPosAt	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	582	GpiCorrelateSegment	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	583	GpiQueryAttrs	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	584	GpiQueryCharStringPos	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	585	GpiQueryCharStringPosAt	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	586	GpiQueryFonts	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	587	GpiQueryRegionRects	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	588	GpiSetAttrs	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	589	GpiSetPickApertureSize	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	590	GpiQueryDefAttrs	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	591	GpiSetDefAttrs	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	592	GpiCreateLogColorTable	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	593	GpiQueryLogColorTable	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	594	GpiCreatePalette	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	595	GpiAnimatePalette	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	596	GpiSetPaletteEntries	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	597	GpiQueryPaletteInfo	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	598	GpiCreateBitmap	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	599	GpiQueryBitmapBits	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	601	GpiQueryBitmapInfoHeader	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	602	GpiSetBitmapBits	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	603	GpiDrawBits	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	604	DevCloseDC	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	605	DevEscape	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	606	DevQueryCaps	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	607	DevQueryDeviceNames	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	608	DevQueryHardcopyCaps	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	609	DevPostDeviceModes	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	610	DevOpenDC	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	611	GpiDestroyRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	612	GpiPartialArc	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	613	GpiQueryCharExtra	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	614	GpiSetCharExtra	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	615	GpiQueryCharBreakExtra	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	616	GpiSetCharBreakExtra	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	617	GpiFrameRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	618	GpiConvertWithMatrix	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	622	GpiLoadPublicFonts	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	623	GpiUnloadPublicFonts	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	625	DevStdOpen	2.0	H1	undocumented; PMGPI ordinal inside the 2.0-documented range 351-650
+PMGPI	648	GpiQueryTextAlignment	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	649	GpiSetTextAlignment	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	650	GpiPolygons	2.0	S2	documented in OS/2 2.0 PM Reference
+PMGPI	657	GpiQueryFullFontFileDescs	3.0	S5	named in the Warp 3 PM Reference PMERR list; documented in Toolkit 4.x GPI Reference
+PMGPI	658	GpiQueryTabbedTextExtent	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	659	GpiTabbedCharStringAt	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	660	GpiQueryRasterizerCaps	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	661	GpiCreateRoundRectRegion	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	662	GpiCreateEllipticRegion	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	663	GpiCreatePolygonRegion	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	666	GpiResizePalette	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	667	GpiQueryNearestPaletteIndex	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	668	GpiSetFontMappingFlags	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	669	GpiQueryFontMappingFlags	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	670	GpiBeginInkPath	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	671	GpiEndInkPath	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	672	GpiStrokeInkPath	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	722	GpiAbortPath	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	724	GpiQueryMitreLimit	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	725	GpiQueryPath	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	727	GpiSetMitreLimit	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	729	DevPostEscape	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMGPI	730	GpiOval	unknown	S13	undocumented in every IBM reference used; no public version evidence
+PMSHAPI	101	PrfQueryProfileSize	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	102	PrfOpenProfile	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	103	PrfCloseProfile	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	104	PrfRemoveProgram	2.0	H1	undocumented (OS/2 1.x program-list API kept for compatibility); ordinal inside the 2.0 range 101-131
+PMSHAPI	106	PrfDestroyGroup	2.0	H1	undocumented (OS/2 1.x program-list API kept for compatibility); ordinal inside the 2.0 range 101-131
+PMSHAPI	107	PrfQueryProfile	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	108	PrfReset	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	109	PrfAddProgram	2.0	H1	undocumented (OS/2 1.x program-list API kept for compatibility); ordinal inside the 2.0 range 101-131
+PMSHAPI	110	PrfChangeProgram	2.0	H1	undocumented (OS/2 1.x program-list API kept for compatibility); ordinal inside the 2.0 range 101-131
+PMSHAPI	111	PrfQueryDefinition	2.0	H1	undocumented (OS/2 1.x program-list API kept for compatibility); ordinal inside the 2.0 range 101-131
+PMSHAPI	113	PrfQueryProgramTitles	2.0	H1	undocumented (OS/2 1.x program-list API kept for compatibility); ordinal inside the 2.0 range 101-131
+PMSHAPI	114	PrfQueryProfileInt	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	115	PrfQueryProfileString	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	116	PrfWriteProfileString	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	117	PrfQueryProfileData	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	118	PrfWriteProfileData	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	119	WinStartApp	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	120	WinAddSwitchEntry	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	121	WinCreateSwitchEntry	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	122	WinQuerySessionTitle	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	123	WinChangeSwitchEntry	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	124	WinQuerySwitchEntry	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	125	WinQuerySwitchHandle	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	126	WinQuerySwitchList	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	127	WinQueryTaskSizePos	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	128	WinQueryTaskTitle	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	129	WinRemoveSwitchEntry	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	130	WinTerminateApp	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	131	WinSwitchToProgram	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSHAPI	156	WinSwitchProgramRegister	3.0	S6	undocumented; has a PMSHAPI trace point in the Warp 3 System Trace Reference (Debugging Handbook Vol 3)
+PMSPL	301	SplQmOpen	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	302	SplQmStartDoc	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	303	SplQmEndDoc	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	304	SplQmWrite	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	305	SplQmAbort	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	306	SplQmClose	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	307	SplMessageBox	3.0	S5	documented in Warp 3 PM Reference
+PMSPL	308	SplQmAbortDoc	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	320	SplInit	2.0	H1	undocumented (1.x spooler/printer API); ordinal interleaved with 2.0-documented Spl* functions
+PMSPL	350	SplStdOpen	2.0	H1	undocumented (1.x spooler/printer API); ordinal interleaved with 2.0-documented Spl* functions
+PMSPL	351	SplStdClose	2.0	H1	undocumented (1.x spooler/printer API); ordinal interleaved with 2.0-documented Spl* functions
+PMSPL	352	SplStdStart	2.0	H1	undocumented (1.x spooler/printer API); ordinal interleaved with 2.0-documented Spl* functions
+PMSPL	353	SplStdStop	2.0	H1	undocumented (1.x spooler/printer API); ordinal interleaved with 2.0-documented Spl* functions
+PMSPL	354	SplStdDelete	2.0	H1	undocumented (1.x spooler/printer API); ordinal interleaved with 2.0-documented Spl* functions
+PMSPL	355	SplStdGetBits	2.0	H1	undocumented (1.x spooler/printer API); ordinal interleaved with 2.0-documented Spl* functions
+PMSPL	356	SplStdQueryLength	2.0	H1	undocumented (1.x spooler/printer API); ordinal interleaved with 2.0-documented Spl* functions
+PMSPL	370	PrtOpen	2.0	H1	undocumented (1.x spooler/printer API); ordinal interleaved with 2.0-documented Spl* functions
+PMSPL	371	PrtWrite	2.0	H1	undocumented (1.x spooler/printer API); ordinal interleaved with 2.0-documented Spl* functions
+PMSPL	372	PrtDevIOCtl	2.0	H1	undocumented (1.x spooler/printer API); ordinal interleaved with 2.0-documented Spl* functions
+PMSPL	373	PrtClose	2.0	H1	undocumented (1.x spooler/printer API); ordinal interleaved with 2.0-documented Spl* functions
+PMSPL	375	PrtAbort	2.0	H1	undocumented (1.x spooler/printer API); ordinal interleaved with 2.0-documented Spl* functions
+PMSPL	380	SplControlDevice	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	381	SplQueryDevice	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	382	SplEnumDevice	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	384	SplReleaseJob	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	385	SplHoldJob	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	386	SplDeleteJob	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	390	SplQueryJob	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	391	SplSetJob	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	392	SplEnumJob	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	393	SplCreateQueue	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	394	SplHoldQueue	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	395	SplReleaseQueue	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	396	SplDeleteQueue	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	397	SplQueryQueue	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	398	SplSetQueue	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	399	SplEnumQueue	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	401	SplCreateDevice	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	402	SplSetDevice	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	403	SplDeleteDevice	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	404	SplPurgeQueue	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	405	SplQueryJobId	2.0	H1	undocumented (1.x spooler/printer API); ordinal interleaved with 2.0-documented Spl* functions
+PMSPL	406	SplEnumDriver	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	407	SplEnumQueueProcessor	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	408	SplEnumPort	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	441	SplEnumPrinter	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	442	SplCopyJob	2.0	S2	documented in OS/2 2.0 PM Reference
+PMSPL	443	SplQmSetup	2.0	H1	undocumented (1.x spooler/printer API); ordinal interleaved with 2.0-documented Spl* functions
+PMWIN	174	KbdPacket	2.0	H1	undocumented; PMWIN ordinal below 977 (2.0-documented WinSetErrorInfo..WinDeleteProcedure)
+PMWIN	700	WinAddAtom	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	701	WinAlarm	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	702	WinBeginEnumWindows	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	703	WinBeginPaint	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	704	WinCalcFrameRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	705	WinCancelShutdown	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	707	WinCloseClipbrd	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	708	WinCompareStrings	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	709	WinCopyAccelTable	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	710	WinCopyRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	711	WinCpTranslateChar	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	712	WinCpTranslateString	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	713	WinCreateAccelTable	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	714	WinCreateAtomTable	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	715	WinCreateCursor	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	716	WinCreateMsgQueue	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	717	WinCreatePointer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	718	WinDdeInitiate	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	719	WinDdePostMsg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	720	WinDdeRespond	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	721	WinDeleteAtom	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	722	WinDeleteLibrary	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	723	WinDestroyAccelTable	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	724	WinDestroyAtomTable	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	725	WinDestroyCursor	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	726	WinDestroyMsgQueue	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	727	WinDestroyPointer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	728	WinDestroyWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	729	WinDismissDlg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	730	WinDrawBitmap	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	731	WinDrawBorder	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	732	WinDrawPointer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	733	WinEmptyClipbrd	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	734	WinEnablePhysInput	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	735	WinEnableWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	736	WinEnableWindowUpdate	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	737	WinEndEnumWindows	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	738	WinEndPaint	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	739	WinEnumClipbrdFmts	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	740	WinEnumDlgItem	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	741	WinEqualRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	742	WinExcludeUpdateRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	743	WinFillRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	744	WinFindAtom	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	745	WinFlashWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	746	WinFocusChange	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	748	WinFreeErrorInfo	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	749	WinGetClipPS	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	750	WinGetCurrentTime	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	751	WinGetErrorInfo	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	752	WinGetKeyState	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	753	WinGetLastError	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	754	WinGetMaxPosition	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	755	WinGetMinPosition	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	756	WinGetNextWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	757	WinGetPS	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	758	WinGetPhysKeyState	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	759	WinGetScreenPS	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	760	WinGetSysBitmap	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	761	WinInSendMsg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	762	WinInflateRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	763	WinInitialize	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	764	WinIntersectRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	765	WinInvalidateRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	766	WinInvalidateRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	767	WinInvertRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	768	WinIsChild	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	769	WinIsPhysInputEnabled	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	770	WinIsRectEmpty	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	771	WinIsThreadActive	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	772	WinIsWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	773	WinIsWindowEnabled	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	774	WinIsWindowShowing	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	775	WinIsWindowVisible	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	776	WinLoadAccelTable	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	777	WinLoadLibrary	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	778	WinLoadMenu	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	779	WinLoadMessage	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	780	WinLoadPointer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	781	WinLoadString	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	782	WinLockVisRegions	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	784	WinLockWindowUpdate	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	785	WinMakePoints	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	786	WinMakeRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	787	WinMapDlgPoints	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	788	WinMapWindowPoints	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	789	WinMessageBox	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	790	WinMsgSemWait	2.0	H1	undocumented; PMWIN ordinal below 977 (2.0-documented WinSetErrorInfo..WinDeleteProcedure)
+PMWIN	791	WinNextChar	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	792	WinOffsetRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	793	WinOpenClipbrd	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	794	WinOpenWindowDC	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	795	WinPrevChar	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	796	WinProcessDlg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	797	WinPtInRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	798	WinQueryAccelTable	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	799	WinQueryActiveWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	800	WinQueryAnchorBlock	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	801	WinQueryAtomLength	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	802	WinQueryAtomName	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	803	WinQueryAtomUsage	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	804	WinQueryCapture	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	805	WinQueryClassName	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	806	WinQueryClipbrdData	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	807	WinQueryClipbrdFmtInfo	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	808	WinQueryClipbrdOwner	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	809	WinQueryClipbrdViewer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	810	WinQueryCp	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	811	WinQueryCpList	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	812	WinQueryCursorInfo	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	813	WinQueryDesktopWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	814	WinQueryDlgItemShort	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	815	WinQueryDlgItemText	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	816	WinQueryDlgItemTextLength	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	817	WinQueryFocus	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	818	WinQueryMsgPos	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	819	WinQueryMsgTime	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	820	WinQueryObjectWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	821	WinQueryPointer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	822	WinQueryPointerInfo	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	823	WinQueryPointerPos	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	824	WinQueryQueueInfo	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	825	WinQueryQueueStatus	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	826	WinQuerySysColor	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	827	WinQuerySysModalWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	828	WinQuerySysPointer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	829	WinQuerySysValue	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	830	WinQuerySystemAtomTable	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	831	WinQueryUpdateRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	832	WinQueryUpdateRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	833	WinQueryVersion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	834	WinQueryWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	835	WinQueryWindowDC	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	837	WinQueryWindowPos	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	838	WinQueryWindowProcess	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	839	WinQueryWindowPtr	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	840	WinQueryWindowRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	841	WinQueryWindowText	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	842	WinQueryWindowTextLength	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	843	WinQueryWindowULong	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	844	WinQueryWindowUShort	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	845	WinRegisterUserDatatype	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	846	WinRegisterUserMsg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	848	WinReleasePS	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	849	WinScrollWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	850	WinSetAccelTable	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	851	WinSetActiveWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	852	WinSetCapture	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	853	WinSetClassMsgInterest	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	854	WinSetClipbrdData	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	855	WinSetClipbrdOwner	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	856	WinSetClipbrdViewer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	857	WinSetCp	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	858	WinSetDlgItemShort	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	859	WinSetDlgItemText	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	860	WinSetFocus	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	861	WinSetMsgInterest	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	862	WinSetMsgMode	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	863	WinSetMultWindowPos	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	864	WinSetOwner	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	865	WinSetParent	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	866	WinSetPointer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	867	WinSetPointerPos	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	868	WinSetRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	869	WinSetRectEmpty	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	870	WinSetSynchroMode	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	871	WinSetSysColors	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	872	WinSetSysModalWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	873	WinSetSysValue	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	874	WinSetWindowBits	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	875	WinSetWindowPos	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	876	WinSetWindowPtr	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	877	WinSetWindowText	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	878	WinSetWindowULong	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	879	WinSetWindowUShort	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	880	WinShowCursor	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	881	WinShowPointer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	882	WinShowTrackRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	883	WinShowWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	884	WinStartTimer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	885	WinStopTimer	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	886	WinSubstituteStrings	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	887	WinSubtractRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	888	WinTerminate	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	890	WinTrackRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	891	WinUnionRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	892	WinUpdateWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	893	WinUpper	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	894	WinUpperChar	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	895	WinValidateRect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	896	WinValidateRegion	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	897	WinWaitMsg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	898	WinWindowFromDC	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	899	WinWindowFromID	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	900	WinWindowFromPoint	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	901	WinBroadcastMsg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	902	WinPostQueueMsg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	903	WinSendDlgItemMsg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	904	WinTranslateAccel	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	905	WinCallMsgFilter	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	906	WinCreateFrameControls	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	907	WinCreateMenu	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	908	WinCreateStdWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	909	WinCreateWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	910	WinDefDlgProc	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	911	WinDefWindowProc	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	912	WinDispatchMsg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	913	WinDrawText	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	914	WinGetDlgMsg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	915	WinGetMsg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	916	WinMsgMuxSemWait	2.0	H1	undocumented; PMWIN ordinal below 977 (2.0-documented WinSetErrorInfo..WinDeleteProcedure)
+PMWIN	917	WinMultWindowFromIDs	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	918	WinPeekMsg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	919	WinPostMsg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	920	WinSendMsg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	921	WinSetKeyboardStateTable	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	922	WinCreateDlg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	923	WinDlgBox	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	924	WinLoadDlg	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	925	WinQueryClassInfo	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	926	WinRegisterClass	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	927	WinReleaseHook	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	928	WinSetHook	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	929	WinSubclassWindow	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	930	WinSetClassThunkProc	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	931	WinQueryClassThunkProc	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	932	WinSetWindowThunkProc	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	933	WinQueryWindowThunkProc	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	934	WinQueryWindowModel	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	935	WinSetDesktopBkgnd	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	936	WinQueryDesktopBkgnd	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	937	WinPopupMenu	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	938	WinSetPresParam	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	939	WinQueryPresParam	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	940	WinRemovePresParam	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	941	WinRealizePalette	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	942	WinCreatePointerIndirect	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	943	WinSaveWindowPos	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	952	WinGetErasePS	2.0	H1	undocumented; PMWIN ordinal below 977 (2.0-documented WinSetErrorInfo..WinDeleteProcedure)
+PMWIN	953	WinReleaseErasePS	2.0	H1	undocumented; PMWIN ordinal below 977 (2.0-documented WinSetErrorInfo..WinDeleteProcedure)
+PMWIN	968	WinStretchPointer	2.0	H1	undocumented; PMWIN ordinal below 977 (2.0-documented WinSetErrorInfo..WinDeleteProcedure)
+PMWIN	971	WinSetPointerOwner	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+PMWIN	977	WinSetErrorInfo	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	978	WinWaitEventSem	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	979	WinRequestMutexSem	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	980	WinWaitMuxWaitSem	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	986	WinLoadProcedure	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	987	WinDeleteProcedure	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWIN	997	WinLockPointerUpdate	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+PMWIN	998	WinCheckInput	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+PMWIN	1000	WinQueryVisibleRegion	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMWIN	1001	WinSetVisibleRegionNotify	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMWIN	1002	WinSetSysPointerData	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+PMWIN	1003	WinQuerySysPointerData	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+PMWIN	1015	WinMessageBox2	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMWIN	1043	WinSetClipRegion	unknown		undocumented in every IBM reference used; no public version evidence
+PMWIN	1044	WinQueryClipRegion	unknown		undocumented in every IBM reference used; no public version evidence
+PMWP	149	WinShutdownSystem	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWP	152	WinShutdownAndReboot	2.0	H1	undocumented; ordinal inside the 2.0-documented range 149-224
+PMWP	153	WinShutdown	2.0	H1	only WinShutdownSystem is documented; ordinal 153 inside the 2.0-documented range 149-224
+PMWP	200	WinRegisterObjectClass	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWP	201	WinDeregisterObjectClass	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWP	202	OldWinCreateObject	2.0	H1	undocumented; ordinal inside the 2.0-documented range 149-224
+PMWP	205	WinEnumObjectClasses	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWP	207	WinStoreWindowPos	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWP	208	WinRestoreWindowPos	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWP	209	WinLoadFileIcon	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWP	210	WinSetFileIcon	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWP	216	WinFreeFileIcon	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWP	219	WinReplaceObjectClass	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWP	221	WinRestartWorkplace	4.0	S9	Addendum: "applicable to OS/2 Warp 4, or higher"
+PMWP	224	ShlGetUserWordPtr	2.0	H1	undocumented; ordinal inside the 2.0-documented range 149-224
+PMWP	250	WinSetObjectData	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWP	251	WinDestroyObject	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWP	252	WinQueryObject	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWP	262	WinQueryActiveDesktopPathname	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMWP	263	WinQueryObjectPath	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMWP	281	WinCreateObject	2.0	S2	documented in OS/2 2.0 PM Reference
+PMWP	282	WinUnlockSystem	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+PMWP	283	WinLockupSystem	2.0	S4	new in OS/2 2.1 (folded into 2.x)
+PMWP	285	WinSaveObject	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMWP	286	WinOpenObject	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMWP	287	WinMoveObject	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMWP	288	WinCopyObject	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMWP	289	WinCreateShadow	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMWP	463	WinRestartWPDServer	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMWP	464	WinRestartSOMDD	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMWP	465	WinIsWPDServerReady	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMWP	480	WinIsSOMDDReady	3.0	S5	first documented in Warp 3 PM Reference (Oct 1994)
+PMWP	511	WinNotebookButtonFromID	later	H1	ordinal 511 next to WinWaitForShell 512 (4.5 Addendum); undocumented
+PMWP	512	WinWaitForShell	later	S9	documented only in the Warp Server for e-business (4.5) Addendum
+QUECALLS	9	DosReadQueue	2.0	S1	documented in OS/2 2.0 CP Reference
+QUECALLS	10	DosPurgeQueue	2.0	S1	documented in OS/2 2.0 CP Reference
+QUECALLS	11	DosCloseQueue	2.0	S1	documented in OS/2 2.0 CP Reference
+QUECALLS	12	DosQueryQueue	2.0	S1	documented in OS/2 2.0 CP Reference
+QUECALLS	13	DosPeekQueue	2.0	S1	documented in OS/2 2.0 CP Reference
+QUECALLS	14	DosWriteQueue	2.0	S1	documented in OS/2 2.0 CP Reference
+QUECALLS	15	DosOpenQueue	2.0	S1	documented in OS/2 2.0 CP Reference
+QUECALLS	16	DosCreateQueue	2.0	S1	documented in OS/2 2.0 CP Reference
+SESMGR	37	DosStartSession	2.0	S1	documented in OS/2 2.0 CP Reference
+SESMGR	38	DosSelectSession	2.0	S1	documented in OS/2 2.0 CP Reference
+SESMGR	39	DosSetSession	2.0	S1	documented in OS/2 2.0 CP Reference
+SESMGR	40	DosStopSession	2.0	S1	documented in OS/2 2.0 CP Reference

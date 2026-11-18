@@ -42,7 +42,7 @@ digraph warpine {
   }
   subgraph cluster_build {
     label="Build tools (separate programs)"; style="rounded,filled"; fillcolor="#f1f8e9"; color="#90a4ae";
-    tools [label=<<B>Build tools: lx-link, gen_api, gen_arch (ADR-0006, ADR-0015)</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">bin/lx_link.rs, bin/gen_api.rs, bin/gen_arch.rs</FONT>>, fillcolor="#dcedc8"];
+    tools [label=<<B>Build tools: lx-link, gen_api, gen_arch, gen_compat (ADR-0006, ADR-0015, ADR-0021, ADR-0033)</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">bin/lx_link.rs, bin/gen_api.rs, bin/gen_arch.rs, bin/gen_compat.rs</FONT>>, fillcolor="#dcedc8"];
   }
   { rank=min; program; thunks; }
   { rank=max; kvm; sdl; hostfs; network; children; gdb; }
