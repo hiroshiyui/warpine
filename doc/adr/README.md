@@ -54,3 +54,5 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0046](0046-container-icon-view-filter-and-editing.md) | Container icon view, filtering and direct editing: one filter chain, edits written back through the owner's buffer | Accepted | 2026-11-18 |
 | [0047](0047-light-hinting-with-skrifa.md) | Light hinting of Latin text with skrifa, and a contrast curve | Accepted | 2026-11-18 |
 | [0048](0048-builtin-window-procedure-and-tier-1-pm.md) | A guest-callable procedure for built-in windows; standard frames run the default procedure; child presentation spaces in the frame surface | Accepted | 2026-11-18 |
+| [0049](0049-shared-memory-across-processes.md) | Shared memory across processes: a sealed memfd arena at the top of guest memory, a table in the session directory | Accepted | 2026-11-19 |
+| [0050](0050-shared-semaphores-across-processes.md) | Shared semaphores across processes: a host-only memfd of slots, an OFD lock and a futex | Accepted | 2026-11-19 |
