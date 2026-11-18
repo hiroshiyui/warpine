@@ -45,3 +45,6 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0037](0037-pipe-semaphores-and-session-directory-hygiene.md) | Post pipe semaphores from per-end watcher threads, and sweep stale session directories by liveness | Accepted | 2026-11-18 |
 | [0038](0038-client-origin-and-dialog-notifications.md) | Draw client windows at their place in the frame surface; send dialog notifications through call chains | Accepted | 2026-11-18 |
 | [0039](0039-session-clock-and-64-bit-time.md) | Keep a per-process session clock for DosSetDateTime; add 64-bit time calls in WARPINE.DLL | Accepted | 2026-11-18 |
+| [0040](0040-reserved-tiles-for-info-segments.md) | Keep the 16-bit information segments in reserved tiles, refreshed by a host thread | Accepted | 2026-11-18 |
+| [0041](0041-socket-select-fd-set.md) | Read select()'s fd_set as OS/2 TCP/IP's count-and-array layout; wait with poll(2) | Accepted | 2026-11-18 |
+| [0042](0042-embedded-dialogs.md) | Embed a dialog whose parent is a window into that window | Accepted | 2026-11-18 |
