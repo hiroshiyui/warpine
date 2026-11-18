@@ -238,7 +238,7 @@ impl WindowManager {
             let c = self.client_to_frame(hwnd);
             if self.frame_to_client.contains_key(&c) { c } else { hwnd }
         };
-        let is_frame = self.frame_to_client.contains_key(&frame) || self.is_dialog(frame);
+        let is_frame = self.is_frame(frame);
         if !is_frame { return false; }
         if let Some(w) = self.get_window_mut(frame) { w.visible = true; }
         let prev = self.focused_hwnd;

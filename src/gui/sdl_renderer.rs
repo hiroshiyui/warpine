@@ -2356,6 +2356,12 @@ fn route_button1(shared: &Arc<SharedState>, frame: u32, x: i32, y: i32, press: b
     if let Some(hit) = wm.control_at(frame, sx, sy) {
         return (hit, 0);
     }
+    // A dialog embedded in the frame (ADR-0042) gets the click on its own
+    // area, in its own coordinates.
+    if let Some(root) = wm.control_root(frame)
+        && let Some(hit) = wm.embedded_dialog_at(root, sx, sy) {
+        return (hit, 0);
+    }
     let focus = wm.focus_hwnd;
     let lost = if press && focus != 0 && wm.frame_to_client.contains_key(&frame)
         && wm.find_frame_for_hwnd(focus) == frame

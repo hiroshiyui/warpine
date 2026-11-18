@@ -369,7 +369,7 @@ impl Loader {
         if let Some(rgb) = wm.pres_color(hwnd, super::pm_presparam::PP_BACKGROUNDCOLOR, false) {
             return rgb;
         }
-        if wm.is_dialog(wm.find_frame_for_hwnd(hwnd)) { CONTROL_FACE_COLOR } else { CONTROL_FIELD_COLOR }
+        if wm.in_dialog(hwnd) { CONTROL_FACE_COLOR } else { CONTROL_FIELD_COLOR }
     }
 
     /// The face of push button `hwnd` set by presentation parameters:

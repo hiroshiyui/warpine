@@ -1,0 +1,12 @@
+/* pm_child_dialog_test.rc - a dialog without a frame, embedded in a client */
+#include <os2.h>
+#include "pm_child_dialog_test.h"
+
+DLGTEMPLATE ID_CHILD
+BEGIN
+    DIALOG "", ID_CHILD, 0, 0, 100, 60, WS_VISIBLE
+    BEGIN
+        ENTRYFIELD "",      ID_NAME,  4, 40, 80, 10, ES_MARGIN | WS_TABSTOP
+        PUSHBUTTON "Press", ID_PRESS, 4,  4, 40, 14, WS_TABSTOP
+    END
+END

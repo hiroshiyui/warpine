@@ -514,6 +514,11 @@ impl super::Loader {
                     self.dispatch_builtin_control(hwnd_ctl, WM_PAINT, 0, 0);
                 }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
+                // Dialogs embedded in the window (ADR-0042) paint over it again.
+                let ps_hwnd = wm.ps_map.get(&hps).map(|ps| ps.hwnd).unwrap_or(0);
+                for d in wm.embedded_dialogs(ps_hwnd) {
+                    wm.invalidate_window_only(d);
+                }
                 wm.mark_dirty(frame_hwnd);
                 // A presentation space WinBeginPaint created ends with the paint.
                 if wm.ps_map.get(&hps).is_some_and(|ps| ps.origin == PsOrigin::Paint) {
@@ -1416,8 +1421,9 @@ impl super::Loader {
                     self.scrollbar_init(hwnd, p_ctl_data);
                 }
                 // A slider's scales (SLDCDATA), a value set's rows and
-                // columns (VSCDATA).
+                // columns (VSCDATA), a notebook's (empty) pages.
                 self.init_slider_or_valueset(hwnd, p_ctl_data);
+                self.shared.window_mgr.lock_or_recover().build_notebook(hwnd);
                 // The parts of a combination box / spin button.
                 self.build_compound_control(hwnd);
                 // The client of a WC_FRAME window (pm_frame.rs).
@@ -2127,10 +2133,13 @@ impl super::Loader {
         use super::constants::{dlg_units_to_px_x as px_x, dlg_units_to_px_y as px_y};
         let mut wm = self.shared.window_mgr.lock_or_recover();
         let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
-        // Template coordinates are relative to the dialog's parent: the
-        // desktop for HWND_DESKTOP, otherwise the parent window's frame.
+        // A dialog whose parent is another window is embedded in it
+        // (ADR-0042): a child window placed relative to that parent, as PM
+        // places every child. A dialog on the desktop is a frame of its
+        // own, placed relative to the desktop.
+        let embedded = hwnd_parent != HWND_DESKTOP && hwnd_parent != 0 && wm.get_window(hwnd_parent).is_some();
         let frame = wm.find_frame_for_hwnd(hwnd_parent);
-        let (origin_x, origin_y) = if wm.is_frame(frame) {
+        let (origin_x, origin_y) = if !embedded && wm.is_frame(frame) {
             wm.get_window(frame).map_or((0, 0), |w| (w.x, w.y))
         } else {
             (0, 0)
@@ -2152,6 +2161,11 @@ impl super::Loader {
                 win.cx = px_x(t.dialog.cx);
                 win.cy = px_y(t.dialog.cy);
                 for (id, v) in &t.dialog.pres_params { win.pres_params.set(*id, v); }
+                // An embedded dialog is shown when its template says so
+                // (a notebook page is shown by the notebook).
+                if embedded {
+                    win.visible = t.dialog.style & WS_VISIBLE != 0;
+                }
             }
         }
         if let Some(t) = &template {
@@ -2175,8 +2189,17 @@ impl super::Loader {
                 // of a slider / value set (from the item's control data).
                 wm.build_combo_or_spin(ch);
                 wm.build_slider_or_valueset(ch, &item.ctl_data);
+                wm.build_notebook(ch);
                 controls.push(ch);
             }
+        }
+        if embedded {
+            // Part of the window it lies in: no Z-order place, activation
+            // or focus of its own.
+            if wm.get_window(h).is_some_and(|w| w.visible) {
+                wm.invalidate_window_only(h);
+            }
+            return (h, hmq, 0);
         }
         wm.z_push_top(h);
         // A new dialog is the active window; z_remove hands activation back
@@ -2594,7 +2617,18 @@ mod tests {
             assert_eq!((child.x, child.y, child.cx, child.cy), (dx(70), dy(10), dx(40), dy(14)));
         }
 
-        // Parent is a window: the template position is relative to its frame.
+        // The newest dialog on the desktop is the active window until it
+        // is removed.
+        {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            assert_eq!(wm.focused_hwnd, hwnd_dlg);
+            wm.z_remove(hwnd_dlg);
+            assert_ne!(wm.focused_hwnd, hwnd_dlg);
+        }
+
+        // Parent is a window: the dialog is embedded in it (ADR-0042), its
+        // template position relative to that window, and it takes no
+        // activation or Z-order place.
         let client = {
             let mut wm = loader.shared.window_mgr.lock_or_recover();
             let frame = wm.create_window("F".to_string(), 0, 0);
@@ -2604,14 +2638,15 @@ mod tests {
             f.x = 300; f.y = 200;
             client
         };
-        let (hwnd_dlg, _, _) = loader.create_dialog(0, client, client, 0, Some(template));
-        let mut wm = loader.shared.window_mgr.lock_or_recover();
+        let active = loader.shared.window_mgr.lock_or_recover().focused_hwnd;
+        let (hwnd_dlg, _, focus) = loader.create_dialog(0, client, client, 0, Some(template));
+        let wm = loader.shared.window_mgr.lock_or_recover();
         let dlg = wm.get_window(hwnd_dlg).unwrap();
-        assert_eq!((dlg.x, dlg.y), (300 + dx(40), 200 + dy(40)));
-        // The newest dialog is the active window until it is removed.
-        assert_eq!(wm.focused_hwnd, hwnd_dlg);
-        wm.z_remove(hwnd_dlg);
-        assert_ne!(wm.focused_hwnd, hwnd_dlg);
+        assert_eq!((dlg.x, dlg.y), (dx(40), dy(40)));
+        assert!(wm.is_embedded_dialog(hwnd_dlg));
+        assert!(!wm.z_order.contains(&hwnd_dlg));
+        assert_eq!(wm.focused_hwnd, active);
+        assert_eq!(focus, 0);
     }
 
     /// Frames created without an explicit position cascade from the desktop's

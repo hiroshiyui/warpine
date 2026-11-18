@@ -20,6 +20,7 @@ mod pm_combo;
 mod pm_spin;
 mod pm_slider;
 mod pm_valueset;
+mod pm_notebook;
 pub mod pm_scrollbar;
 pub mod pm_cursor;
 mod pm_destroy;
@@ -70,6 +71,7 @@ mod pm_coords;
 pub mod pm_psstate;
 mod stubs;
 pub mod clock;
+pub mod infoseg;
 mod warpine_api;
 pub mod console;
 pub mod ansi;
@@ -406,6 +408,8 @@ pub struct SharedState {
     /// The process's clock: the host's plus the offset `DosSetDateTime`
     /// set or the parent passed on (`clock.rs`, ADR-0039).
     pub clock: clock::SessionClock,
+    /// Whether the `GINFOSEG` refresher thread runs (`infoseg.rs`).
+    pub infoseg_refresher: AtomicBool,
     pub exit_requested: AtomicBool,
     /// A VIO session may switch between its PM window and full screen with
     /// Alt+Home (the program is window-compatible); set by `run_vio_session`.
@@ -526,6 +530,7 @@ impl Loader {
             suballoc: Default::default(),
             kills: Default::default(),
             clock: clock::SessionClock::from_env(),
+            infoseg_refresher: AtomicBool::new(false),
             exit_requested: AtomicBool::new(false),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),
@@ -629,6 +634,7 @@ impl Loader {
             suballoc:     Default::default(),
             kills:        Default::default(),
             clock:        Default::default(),
+            infoseg_refresher: AtomicBool::new(false),
             exit_requested: AtomicBool::new(false),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),
@@ -710,6 +716,11 @@ impl Loader {
             && let Some(r) = self.valueset_message(hwnd, msg, mp1, mp2) {
             return r;
         }
+        // Notebooks (pm_notebook.rs).
+        if msg != WM_PAINT && class_name == pm_notebook::CLASS_NOTEBOOK
+            && let Some(r) = self.notebook_message(hwnd, msg, mp1, mp2) {
+            return r;
+        }
 
         // The second press of a double click: a list box selects and tells
         // its owner LN_ENTER; every other built-in control treats it as a press.
@@ -734,9 +745,14 @@ impl Loader {
         match msg {
             WM_PAINT => {
                 // A built-in window paints all of itself: it is valid now.
+                // One in a hidden embedded dialog (a notebook page turned
+                // away) draws nothing.
                 let frame_hwnd = {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
                     wm.painted(hwnd);
+                    if wm.in_hidden_embedded_dialog(hwnd) {
+                        return ApiResult::Normal(0);
+                    }
                     wm.find_frame_for_hwnd(hwnd)
                 };
                 let p = Painter::new(self, frame_hwnd, hwnd);
@@ -785,6 +801,10 @@ impl Loader {
                         let p = Painter::new(self, frame_hwnd, hwnd).clipped_to((x, y, cx, cy));
                         self.paint_valueset(&p, hwnd, (x, y, cx, cy));
                     }
+                    pm_notebook::CLASS_NOTEBOOK => {
+                        let p = Painter::new(self, frame_hwnd, hwnd).clipped_to((x, y, cx, cy));
+                        self.paint_notebook(&p, hwnd, (x, y, cx, cy));
+                    }
                     "#Menu" => {
                         // The menu bar and any open pull-down are frame chrome:
                         // the compositor draws them from `OS2Window::menu_items`
@@ -797,13 +817,25 @@ impl Loader {
                         // The dialog face, then its controls on top. The title
                         // bar and border are frame chrome drawn by the
                         // compositor (from `frame_flags` and the window text).
-                        let d = Painter::new(self, hwnd, hwnd);
-                        d.fill((0, 0, cx, cy), d.bg.unwrap_or(CONTROL_FACE_COLOR));
+                        // A dialog on the desktop fills its own surface
+                        // from (0, 0); an embedded one (ADR-0042) its place
+                        // in the surface of the frame it lies in, clipped.
+                        let d = if frame_hwnd == hwnd {
+                            Painter::new(self, hwnd, hwnd)
+                        } else {
+                            Painter::new(self, frame_hwnd, hwnd).clipped_to((x, y, cx, cy))
+                        };
+                        d.fill((x, y, x + cx, y + cy), d.bg.unwrap_or(CONTROL_FACE_COLOR));
                         self.paint_message_box_icon(&d, hwnd);
                         let controls = self.shared.window_mgr.lock_or_recover()
                             .builtin_control_descendants(hwnd);
                         for control in controls {
                             self.dispatch_builtin_control(control, WM_PAINT, 0, 0);
+                        }
+                        // Dialogs embedded in this one paint over it again.
+                        let mut wm = self.shared.window_mgr.lock_or_recover();
+                        for inner in wm.embedded_dialogs(hwnd) {
+                            wm.invalidate_window_only(inner);
                         }
                     }
                     _ => {} // Unknown built-in class — silently ignore WM_PAINT

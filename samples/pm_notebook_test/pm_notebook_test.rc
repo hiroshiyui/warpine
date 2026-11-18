@@ -1,0 +1,28 @@
+/* pm_notebook_test.rc - three page dialogs, shown by the notebook */
+#include <os2.h>
+#include "pm_notebook_test.h"
+
+DLGTEMPLATE ID_PAGE1
+BEGIN
+    DIALOG "", ID_PAGE1, 0, 0, 100, 60, 0
+    BEGIN
+        LTEXT      "Name:", -1,      4, 46, 30,  8
+        ENTRYFIELD "",      ID_NAME, 4, 34, 80, 10, ES_MARGIN | WS_TABSTOP
+    END
+END
+
+DLGTEMPLATE ID_PAGE2
+BEGIN
+    DIALOG "", ID_PAGE2, 0, 0, 100, 60, 0
+    BEGIN
+        AUTOCHECKBOX "Option", ID_OPTION, 4, 40, 60, 10, WS_TABSTOP
+    END
+END
+
+DLGTEMPLATE ID_PAGE3
+BEGIN
+    DIALOG "", ID_PAGE3, 0, 0, 100, 60, 0
+    BEGIN
+        LTEXT "The second section", ID_LABEL, 4, 40, 90, 8
+    END
+END

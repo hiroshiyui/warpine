@@ -156,7 +156,7 @@ impl WindowManager {
             x = x.saturating_add(dx);
             y = y.saturating_add(dy);
             let parent = self.get_window(h)?.parent;
-            if self.is_dialog(h) || !self.is_window(parent) {
+            if self.is_top_dialog(h) || !self.is_window(parent) {
                 return Some((x, y));
             }
             h = parent;

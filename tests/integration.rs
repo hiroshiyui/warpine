@@ -332,20 +332,19 @@ fn test_audio() {
     assert!(out.contains("Failed: 0"), "audio_test failed (exit {code}):\n{out}");
 }
 
-/// socket_test: SO32DLL loaded at run time, sockets over loopback. The only
-/// accepted failure is `select` (see doc/TODOs.md, "Sockets: select").
+/// socket_test: SO32DLL loaded at run time, sockets over loopback, with
+/// `select` on the OS/2 TCP/IP `fd_set` (a count and socket numbers).
 #[test]
 fn test_sockets_over_loopback() {
     if !kvm_available() || !Path::new("samples/socket_test/socket_test.exe").exists() { return; }
     let (out, _code) = run_sample("samples/socket_test/socket_test.exe", 20);
     for line in ["PASS  setsockopt(SO_REUSEADDR)", "PASS  getsockopt(SO_TYPE)",
-                 "PASS  connect(loopback)", "PASS  accept()"] {
+                 "PASS  connect(loopback)", "PASS  accept()", "PASS  select(srv readable)",
+                 "PASS  select(fd_count is the ready count)"] {
         assert!(out.contains(line), "missing '{line}':\n{out}");
     }
-    let unexpected: Vec<&str> = out.lines()
-        .filter(|l| l.contains("FAIL") && !l.contains("select("))
-        .collect();
-    assert!(unexpected.is_empty(), "unexpected failures {unexpected:?}:\n{out}");
+    let failures: Vec<&str> = out.lines().filter(|l| l.contains("FAIL")).collect();
+    assert!(failures.is_empty(), "failures {failures:?}:\n{out}");
 }
 
 /// thread_test: DosCreateThread / DosWaitThread.
@@ -2003,6 +2002,33 @@ fn built_with_shifted_ow_startup(exe: &str) -> bool {
     std::fs::read(exe).is_ok_and(|b| b.windows(SHIFTED_ARGS.len()).any(|w| w == SHIFTED_ARGS))
 }
 
+/// Run an ok/FAIL sample and check that every check passed (its last line is
+/// "<name>: done <passed>/<total>" and its exit code the failures).
+fn assert_all_checks_pass(sample: &str, env: &[(&str, &str)]) {
+    if !kvm_available() || !Path::new(sample).exists() { return; }
+    let (out, code) = run_sample_args(sample, &[], 60, env);
+    assert_eq!(code, 0, "exit code\n{out}");
+    assert!(!out.contains("FAIL"), "{out}");
+    let done = out.lines().find_map(|l| l.split_once(": done ").map(|(_, n)| n.to_owned()))
+        .unwrap_or_else(|| panic!("no done line\n{out}"));
+    let (passed, total) = done.split_once('/').expect("passed/total");
+    assert_eq!(passed, total, "{out}");
+}
+
+/// infoseg_test: DosGetInfoSeg's GINFOSEG (time kept current, date, time
+/// zone, version) and LINFOSEG (ids), through their selectors.
+#[test]
+fn test_info_segments() {
+    assert_all_checks_pass("samples/infoseg_test/infoseg_test.exe", &[("TZ", "JST-9")]);
+}
+
+/// fileattr_test: FILE_READONLY set and cleared by path, by handle and with
+/// DosSetFileMode; a read-only file cannot be written or deleted.
+#[test]
+fn test_file_attributes() {
+    assert_all_checks_pass("samples/fileattr_test/fileattr_test.exe", &[]);
+}
+
 /// datetime_test: dates after 2038 (ADR-0039). The session starts at
 /// 2040-03-01 (`WARPINE_CLOCK`) in a fixed zone nine hours east of UTC
 /// (`TZ=JST-9`, no daylight saving): DosGetDateTime / QSV_TIME / the C
@@ -2390,6 +2416,63 @@ fn gui_pm_frame_scroll_test_takes_the_pointer_on_frame_scroll_bars() {
 fn gui_pm_frame_scroll_test_matches_golden() {
     check_gui_golden("pm_frame_scroll_test", "samples/pm_frame_scroll_test/pm_frame_scroll_test.exe",
         &format!("{FRAME_SCROLL_STEPS}3300 dump {{dump}}\n3400 quit\n"));
+}
+
+/// pm_child_dialog_test: a dialog loaded with the client as parent is
+/// embedded in it (ADR-0042). The frame is at desktop (100, 200), 400 × 300,
+/// the client's (0, 0) at screen (102, 567); the dialog at client (20, 20),
+/// 300 × 200, its push button at dialog (10, 10), 100 × 30, its entry field
+/// at (10, 150), 200 × 24. The steps click the button, click the entry field
+/// and type, click the dialog's own area at its (250, 100); the guest checks
+/// the messages, focus, text, activation and destruction.
+const CHILD_DIALOG_STEPS: &str = "\
+    1000 click 182 522\n\
+    1300 click 232 385\n\
+    1500 text abc\n\
+    1800 click 372 447\n";
+
+#[test]
+fn gui_pm_child_dialog_test_embeds_a_dialog_in_a_client() {
+    let steps = format!("{CHILD_DIALOG_STEPS}2100 key alt+f4\n4000 quit\n");
+    assert_scripted_checks_pass("samples/pm_child_dialog_test/pm_child_dialog_test.exe",
+                                "pm_child_dialog_test", 15, &steps);
+}
+
+/// pm_child_dialog_test's picture: the dialog face with its entry field
+/// ("abc") and push button inside the grey client, below the title bar.
+#[test]
+fn gui_pm_child_dialog_test_matches_golden() {
+    check_gui_golden("pm_child_dialog_test", "samples/pm_child_dialog_test/pm_child_dialog_test.exe",
+        &format!("{CHILD_DIALOG_STEPS}2000 dump {{dump}}\n2100 quit\n"));
+}
+
+/// pm_notebook_test: a WC_NOTEBOOK (client (8, 8), 380 × 250, major tabs on
+/// the right) with three pages, each an embedded dialog. The steps click the
+/// "First" major tab, the "Sub" minor tab, "First" again, and the entry
+/// field on page 1, and type; the guest checks the BKM_* messages, that
+/// BKN_PAGESELECTED arrives (with its PAGESELECTNOTIFY) before the turn
+/// returns, the shown and hidden page windows, the typed text and
+/// BKN_PAGEDELETED.
+const NOTEBOOK_STEPS: &str = "\
+    1000 click 446 325\n\
+    1300 click 144 545\n\
+    1600 click 446 325\n\
+    1900 click 175 422\n\
+    2100 text xyz\n";
+
+#[test]
+fn gui_pm_notebook_test_turns_pages_and_notifies() {
+    let steps = format!("{NOTEBOOK_STEPS}2400 key alt+f4\n4500 quit\n");
+    assert_scripted_checks_pass("samples/pm_notebook_test/pm_notebook_test.exe", "pm_notebook_test", 42, &steps);
+}
+
+/// pm_notebook_test's picture: page 1 (a label and "xyz" in its entry
+/// field) with the status line and page buttons below it, the "First" and
+/// "Second" major tabs on the right, the "Sub" minor tab at the bottom.
+#[test]
+fn gui_pm_notebook_test_matches_golden() {
+    check_gui_golden("pm_notebook_test", "samples/pm_notebook_test/pm_notebook_test.exe",
+        &format!("{NOTEBOOK_STEPS}2300 dump {{dump}}\n2400 quit\n"));
 }
 
 /// pm_charbundle_test: GpiSetAttrs / GpiQueryAttrs with a CHARBUNDLE set

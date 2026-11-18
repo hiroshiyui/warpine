@@ -174,6 +174,8 @@ pub struct OS2Window {
     pub slider: Option<Box<super::pm_slider::SliderState>>,
     /// A value set's items and selection (`pm_valueset.rs`).
     pub valueset: Option<Box<super::pm_valueset::ValueSetState>>,
+    /// A notebook's pages (`pm_notebook.rs`).
+    pub notebook: Option<Box<super::pm_notebook::NotebookState>>,
 }
 
 /// Map a PM colour value to 0x00RRGGBB with the default colour table: the
@@ -771,6 +773,7 @@ impl WindowManager {
             pres_params: Default::default(),
             slider: None,
             valueset: None,
+            notebook: None,
         });
         // Register as child of parent
         if parent != 0
@@ -904,16 +907,62 @@ impl WindowManager {
     /// Class name of dialog windows created from a `DLGTEMPLATE`.
     pub const DIALOG_CLASS: &'static str = "#Dialog";
 
-    /// Whether `hwnd` is a dialog: a frame whose controls are its own
-    /// children (it has no client window) and which has its own surface.
+    /// Whether `hwnd` is a dialog: a window whose controls are its own
+    /// children (it has no client window). A dialog on the desktop is a
+    /// frame with its own surface; one whose parent is another window is
+    /// embedded in it ([`Self::is_embedded_dialog`]).
     pub fn is_dialog(&self, hwnd: u32) -> bool {
         self.windows.get(&hwnd).is_some_and(|w| w.class_name == Self::DIALOG_CLASS)
     }
 
+    /// Whether `hwnd` is a dialog whose parent is another window (not the
+    /// desktop): a child window like any other, positioned relative to its
+    /// parent and drawn into the surface of the frame it lies in, without a
+    /// surface, Z-order place or chrome of its own (ADR-0042) — as PM clips
+    /// a dialog to the window it is a child of (a notebook page, a dialog
+    /// in a client window).
+    pub fn is_embedded_dialog(&self, hwnd: u32) -> bool {
+        self.windows.get(&hwnd).is_some_and(|w| {
+            w.class_name == Self::DIALOG_CLASS && w.parent != hwnd && self.windows.contains_key(&w.parent)
+        })
+    }
+
+    /// Whether `hwnd` is a dialog on the desktop: a frame with its own surface.
+    pub fn is_top_dialog(&self, hwnd: u32) -> bool {
+        self.is_dialog(hwnd) && !self.is_embedded_dialog(hwnd)
+    }
+
+    /// Whether `hwnd` lies in a dialog: it is one, or one is among its
+    /// ancestors.
+    pub fn in_dialog(&self, hwnd: u32) -> bool {
+        let mut h = hwnd;
+        for _ in 0..=self.windows.len() {
+            if self.is_dialog(h) { return true; }
+            match self.windows.get(&h) {
+                Some(w) if w.parent != h && self.windows.contains_key(&w.parent) => h = w.parent,
+                _ => return false,
+            }
+        }
+        false
+    }
+
+    /// Whether `hwnd` is, or lies in, an embedded dialog that is hidden
+    /// (ADR-0042): it must not draw over the window it is embedded in.
+    pub fn in_hidden_embedded_dialog(&self, hwnd: u32) -> bool {
+        let mut h = hwnd;
+        for _ in 0..=self.windows.len() {
+            let Some(w) = self.windows.get(&h) else { return false };
+            if self.is_embedded_dialog(h) && !w.visible { return true; }
+            if w.parent == h || !self.windows.contains_key(&w.parent) { return false; }
+            h = w.parent;
+        }
+        false
+    }
+
     /// Whether `hwnd` is a frame with its own surface: a standard frame
-    /// (which has a client) or a dialog.
+    /// (which has a client) or a dialog on the desktop.
     pub fn is_frame(&self, hwnd: u32) -> bool {
-        self.frame_to_client.contains_key(&hwnd) || self.is_dialog(hwnd)
+        self.frame_to_client.contains_key(&hwnd) || self.is_top_dialog(hwnd)
     }
 
     /// The window under which `frame`'s controls live: a standard frame's
@@ -921,19 +970,20 @@ impl WindowManager {
     pub fn control_root(&self, frame: u32) -> Option<u32> {
         match self.frame_to_client.get(&frame) {
             Some(&client) => Some(client),
-            None => self.is_dialog(frame).then_some(frame),
+            None => self.is_top_dialog(frame).then_some(frame),
         }
     }
 
     /// Walk up the parent chain to find the frame window `hwnd` draws into:
-    /// the nearest dialog, or the frame of the nearest client window.
+    /// the nearest dialog on the desktop, or the frame of the nearest client
+    /// window (an embedded dialog draws into the frame it lies in).
     ///
     /// Returns `hwnd` itself when there is no frame above it (a frame, or a
     /// window whose parent is the desktop or another pseudo window).
     pub fn find_frame_for_hwnd(&self, hwnd: u32) -> u32 {
         let mut h = hwnd;
         loop {
-            if self.is_dialog(h) { return h; }
+            if self.is_top_dialog(h) { return h; }
             let parent = match self.windows.get(&h) { Some(w) => w.parent, None => return h };
             if self.frame_to_client.contains_key(&parent) { return parent; }
             if !self.windows.contains_key(&parent) { return h; }
@@ -957,7 +1007,7 @@ impl WindowManager {
         let mut ay = 0i32;
         let mut h = hwnd;
         while let Some(win) = self.windows.get(&h) {
-            if self.is_dialog(h) {
+            if self.is_top_dialog(h) {
                 if h != hwnd {
                     ax -= super::constants::frame_border_width(win.frame_flags);
                 }
@@ -1034,6 +1084,56 @@ impl WindowManager {
         out
     }
 
+    /// The built-in controls under `hwnd` that the pointer can hit, in paint
+    /// order: [`Self::builtin_control_descendants`], each visible embedded
+    /// dialog's controls coming after the controls before it.
+    pub fn hit_controls(&self, hwnd: u32) -> Vec<u32> {
+        let mut out = Vec::new();
+        self.collect_hit_controls(hwnd, &mut out, 0);
+        out
+    }
+
+    fn collect_hit_controls(&self, hwnd: u32, out: &mut Vec<u32>, depth: usize) {
+        // Nesting is bounded by the number of windows.
+        if depth > self.windows.len() { return; }
+        let mut placed = self.builtin_control_descendants(hwnd);
+        for d in self.embedded_dialogs(hwnd) {
+            let mut inner = Vec::new();
+            self.collect_hit_controls(d, &mut inner, depth + 1);
+            placed.extend(inner);
+        }
+        out.extend(placed);
+    }
+
+    /// The visible dialogs embedded under `hwnd` (not inside one another),
+    /// bottom to top: they paint over what lies below them.
+    pub fn embedded_dialogs(&self, hwnd: u32) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut stack: Vec<u32> = self.windows.get(&hwnd)
+            .map(|w| w.children.iter().rev().copied().collect()).unwrap_or_default();
+        while let Some(h) = stack.pop() {
+            let Some(w) = self.windows.get(&h) else { continue };
+            if !w.visible || self.is_top_dialog(h) { continue; }
+            if self.is_dialog(h) {
+                out.push(h);
+                continue;
+            }
+            stack.extend(w.children.iter().rev().copied());
+        }
+        out
+    }
+
+    /// The topmost visible embedded dialog under `root` (of frame `frame`)
+    /// containing surface point `(x, y)`, with the point in its coordinates.
+    pub fn embedded_dialog_at(&self, root: u32, x: i32, y: i32) -> Option<(u32, i32, i32)> {
+        self.embedded_dialogs(root).into_iter().rev().find_map(|d| {
+            let (ax, ay, cx, cy) = self.get_abs_rect_in_frame(d);
+            if !(x >= ax && x < ax + cx && y >= ay && y < ay + cy) { return None; }
+            // A dialog inside it lies on top.
+            Some(self.embedded_dialog_at(d, x, y).unwrap_or((d, x - ax, y - ay)))
+        })
+    }
+
     /// The window holding the text of `hwnd`: the entry field of a
     /// combination box or spin button, else `hwnd` itself.
     pub fn text_window(&self, hwnd: u32) -> u32 {
@@ -1061,14 +1161,14 @@ impl WindowManager {
     }
 
     /// Whether `hwnd` can hold the keyboard focus: an enabled, visible
-    /// entry field, MLE, list box, button, value set or slider (not a
-    /// read-only one).
+    /// entry field, MLE, list box, button, value set, notebook or slider
+    /// (not a read-only one).
     pub fn can_take_focus(&self, hwnd: u32) -> bool {
         use super::constants::{SLS_READONLY, WS_DISABLED};
         self.windows.get(&hwnd).is_some_and(|w| {
             w.visible && w.style & WS_DISABLED == 0
                 && (matches!(w.class_name.as_str(), "WC_ENTRYFIELD" | "WC_MLE" | "WC_LISTBOX" | "WC_BUTTON"
-                                                    | "WC_VALUESET")
+                                                    | "WC_VALUESET" | "WC_NOTEBOOK")
                     || (w.class_name == "WC_SLIDER" && w.style & SLS_READONLY == 0))
         })
     }
@@ -1307,6 +1407,7 @@ impl WindowManager {
     pub fn control_at(&self, frame: u32, x: i32, y: i32) -> Option<(u32, i32, i32)> {
         use super::constants::WS_DISABLED;
         let root = self.control_root(frame)?;
+        // Embedded dialogs' controls are hit too, above the controls they cover.
         // Frame controls (FID_VERTSCROLL / FID_HORZSCROLL) first: they lie
         // beside the client, below its controls.
         let mut candidates: Vec<u32> = if root != frame {
@@ -1317,7 +1418,7 @@ impl WindowManager {
         } else {
             Vec::new()
         };
-        candidates.extend(self.builtin_control_descendants(root));
+        candidates.extend(self.hit_controls(root));
         candidates.into_iter().rev().find_map(|h| {
             let w = self.windows.get(&h)?;
             if w.class_name == "WC_STATIC" || w.style & WS_DISABLED != 0 { return None; }

@@ -1125,8 +1125,11 @@ mod tests {
         assert_eq!(wm.control_at(d.dlg, lx + 1, ly + 1), None);
     }
 
+    /// A dialog whose parent is a client is embedded in it (ADR-0042): it
+    /// draws into the client's frame, its controls are found there by the
+    /// pointer but are not the client's own (they paint with the dialog).
     #[test]
-    fn a_dialog_owned_by_a_window_keeps_its_controls_to_itself() {
+    fn a_dialog_in_a_client_is_embedded() {
         let loader = Loader::new_mock();
         let (frame, client) = {
             let mut wm = loader.shared.window_mgr.lock_or_recover();
@@ -1138,15 +1141,40 @@ mod tests {
             (frame, client)
         };
         let t = parse_dlg_template(ABOUT_DIALOG, 437).unwrap();
-        let (dlg, _, ok) = loader.create_dialog(0, client, client, 0, Some(t));
+        let (dlg, _, focus) = loader.create_dialog(0, client, client, 0, Some(t.clone()));
+        assert_eq!(focus, 0, "an embedded dialog takes no focus when created");
+        {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            wm.get_window_mut(dlg).unwrap().visible = true;
+            let ok = *wm.get_window(dlg).unwrap().children.iter()
+                .find(|&&h| wm.get_window(h).is_some_and(|w| w.class_name == "WC_BUTTON")).expect("a button");
+            assert!(wm.is_embedded_dialog(dlg) && !wm.is_frame(dlg) && wm.in_dialog(ok));
+            assert_eq!(wm.find_frame_for_hwnd(ok), frame, "drawn into the client's frame");
+            assert_eq!(wm.find_frame_for_hwnd(dlg), frame);
+            assert_eq!(wm.find_frame_for_hwnd(frame), frame, "parent is the desktop pseudo window");
+            assert!(wm.builtin_control_descendants(client).is_empty(), "the dialog's controls are not the client's");
+            assert_eq!(wm.embedded_dialogs(client), vec![dlg]);
+            assert!(wm.hit_controls(client).contains(&ok), "but the pointer finds them");
+            assert_eq!(wm.control_root(dlg), None, "no frame of its own");
+            // The OK button lies at its place inside the dialog.
+            let (dx, dy, _, _) = wm.get_abs_rect_in_frame(dlg);
+            let (bx, by, _, _) = wm.get_abs_rect_in_frame(ok);
+            let b = wm.get_window(ok).unwrap();
+            assert_eq!((bx, by), (dx + b.x, dy + b.y));
+            assert_eq!(wm.control_at(frame, bx + 1, by + 1).map(|h| h.0), Some(ok));
+            // A click beside the button lands on the dialog itself.
+            let d = wm.get_window(dlg).unwrap();
+            let (ix, iy) = (dx + d.cx - 1, dy + d.cy - 1);
+            if wm.control_at(frame, ix, iy).is_none() {
+                assert_eq!(wm.embedded_dialog_at(client, ix, iy), Some((dlg, d.cx - 1, d.cy - 1)));
+            }
+        }
+        // On the desktop, the same template is a frame of its own.
+        let (top, _, top_ok) = loader.create_dialog(0, HWND_DESKTOP, client, 0, Some(t));
         let wm = loader.shared.window_mgr.lock_or_recover();
-        assert_eq!(wm.find_frame_for_hwnd(ok), dlg, "not the owner's frame");
-        assert_eq!(wm.find_frame_for_hwnd(dlg), dlg);
-        assert_eq!(wm.find_frame_for_hwnd(client), frame);
-        assert_eq!(wm.find_frame_for_hwnd(frame), frame, "parent is the desktop pseudo window");
-        assert!(wm.builtin_control_descendants(client).is_empty(), "the dialog's controls are not the client's");
-        assert_eq!(wm.control_root(frame), Some(client));
-        assert_eq!(wm.control_root(dlg), Some(dlg));
+        assert!(wm.is_frame(top) && !wm.is_embedded_dialog(top));
+        assert_eq!(wm.find_frame_for_hwnd(top_ok), top);
+        assert_eq!(wm.control_root(top), Some(top));
     }
 
     #[test]

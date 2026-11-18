@@ -88,6 +88,12 @@ pub enum OwnerCallKind {
     ValueSetItem { row: u16, col: u16 },
     /// `WM_DRAWITEM` (`VDA_BACKGROUND`) for a `VS_OWNERDRAW` value set.
     ValueSetBackground,
+    /// `WM_CONTROL(BKN_PAGESELECTED)` with a `PAGESELECTNOTIFY`: the
+    /// notebook turned from page `cur` to page `new` (`pm_notebook.rs`).
+    NotebookSelected { cur: u32, new: u32 },
+    /// `WM_CONTROL(BKN_PAGEDELETED)` with a `DELETENOTIFY` for a deleted
+    /// page (its window, data and tab bitmap).
+    NotebookDeleted { page: u32, data: u32, bitmap: u32 },
 }
 
 /// The menu item `id` in `items` (searched through the submenus).
@@ -295,6 +301,16 @@ impl Loader {
                 ];
                 OwnerSetup::Call { wnd_proc, owner, msg: WM_DRAWITEM, mp1: id & 0xFFFF, mp2: 0, block, hps }
             }
+            OwnerCallKind::NotebookSelected { cur, new } => OwnerSetup::Call {
+                wnd_proc, owner, msg: WM_CONTROL,
+                mp1: (super::pm_notebook::BKN_PAGESELECTED << 16) | (id & 0xFFFF), mp2: 0,
+                block: vec![call.control, cur, new], hps: 0,
+            },
+            OwnerCallKind::NotebookDeleted { page, data, bitmap } => OwnerSetup::Call {
+                wnd_proc, owner, msg: WM_CONTROL,
+                mp1: (super::pm_notebook::BKN_PAGEDELETED << 16) | (id & 0xFFFF), mp2: 0,
+                block: vec![call.control, page, data, bitmap], hps: 0,
+            },
             OwnerCallKind::UserButton => {
                 let state = self.user_button_state(call.control, style);
                 let old = self.shared.window_mgr.lock_or_recover().get_window_mut(call.control)
@@ -457,7 +473,8 @@ impl Loader {
             }
             OwnerCallKind::ValueSetBackground => self.valueset_owner_done(call.control, None, result != 0),
             OwnerCallKind::UserButton | OwnerCallKind::DrawMenuItem { .. }
-            | OwnerCallKind::EraseBackground | OwnerCallKind::SyncPaint => {}
+            | OwnerCallKind::EraseBackground | OwnerCallKind::SyncPaint
+            | OwnerCallKind::NotebookSelected { .. } | OwnerCallKind::NotebookDeleted { .. } => {}
         }
     }
 }
