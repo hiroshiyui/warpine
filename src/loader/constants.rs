@@ -24,6 +24,8 @@ pub const PMCTLS_BASE: u32   = 19456; // 19 * 1024 — standard file / font dial
 /// Warpine's own extensions (`WARPINE.DLL`: 64-bit time, `warpine_api.rs`).
 pub const WARPINE_BASE: u32  = 20480; // 20 * 1024
 /// Drag and drop (`Drg*`, `pm_drag.rs`).
+/// `WARPINE.5`: the window procedure of the built-in classes.
+pub const WRP_BUILTIN_WINDOW_PROC: u32 = 5;
 pub const PMDRAG_BASE: u32   = 21504; // 21 * 1024
 pub const STUB_AREA_SIZE: u32 = 22528;
 /// QUECALLS ordinals follow DOSCALLS' 1024.
@@ -1330,6 +1332,21 @@ pub const BS_PRIMARYSTYLES:  u32 = 0x000F;
 pub const BS_HELP:           u32 = 0x0100; // click posts WM_HELP
 pub const BS_SYSCOMMAND:     u32 = 0x0200; // click posts WM_SYSCOMMAND
 pub const BS_DEFAULT:        u32 = 0x0400; // default push button (Enter in a dialog)
+
+// Dialog codes (`<pmwin.h>`): what `WM_QUERYDLGCODE` answers.
+pub const WM_SETFOCUS:       u32 = 0x000F;
+pub const WM_QUERYDLGCODE:   u32 = 0x003A;
+pub const WM_MATCHMNEMONIC:  u32 = 0x003D;
+pub const DLGC_ENTRYFIELD:   u32 = 0x0001;
+pub const DLGC_BUTTON:       u32 = 0x0002;
+pub const DLGC_RADIOBUTTON:  u32 = 0x0004;
+pub const DLGC_STATIC:       u32 = 0x0008;
+pub const DLGC_DEFAULT:      u32 = 0x0010;
+pub const DLGC_PUSHBUTTON:   u32 = 0x0020;
+pub const DLGC_CHECKBOX:     u32 = 0x0040;
+pub const DLGC_SCROLLBAR:    u32 = 0x0080;
+pub const DLGC_MENU:         u32 = 0x0100;
+pub const DLGC_MLE:          u32 = 0x0400;
 pub const BS_NOPOINTERFOCUS: u32 = 0x0800; // a click does not take the focus
 pub const BS_NOCURSORSELECT: u32 = 0x2000; // arrow keys do not check this auto-radio button
 

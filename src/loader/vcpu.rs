@@ -260,11 +260,16 @@ impl super::Loader {
         {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             if let Some(hmq) = wm.thread_queue(vcpu_id) {
+                // Its windows go too, without WM_DESTROY: there is no thread
+                // left to run their procedures.
+                wm.destroy_queue_windows(hmq);
                 wm.destroy_mq(vcpu_id, hmq);
             }
             // So do its hook and send-call state (pm_hook.rs).
             wm.hooks.forget_thread(vcpu_id);
         }
+        // Arenas of containers destroyed with them (pm_container.rs).
+        self.free_pending_guest_blocks();
         // Mutex semaphores it still owns lose their owner (ERROR_SEM_OWNER_DIED
         // for the next requester); before its vCPU can go to a new thread.
         self.shared.sem_mgr.lock_or_recover().owner_ended(vcpu_id, tid);
@@ -1454,9 +1459,14 @@ fn setup_dlg_dispatch(
     loop {
         // Check if the dialog has been dismissed by WinDismissDlg.
         // Dismissed, or destroyed (DID_CANCEL).
-        let ended = loader.shared.window_mgr.lock_or_recover()
-            .get_window(hwnd_dlg).is_none_or(|w| w.dialog_dismissed);
-        if ended || loader.shutting_down() {
+        let (ended, owner) = {
+            let wm = loader.shared.window_mgr.lock_or_recover();
+            (wm.get_window(hwnd_dlg).is_none_or(|w| w.dialog_dismissed), wm.queue_thread(hmq))
+        };
+        // A thread killed (DosKillThread) leaves its modal loop, which ends
+        // the dialog as DID_CANCEL; the thread then ends at its next pass.
+        let killed = owner.is_some_and(|v| loader.shared.threads.table.lock_or_recover().is_killed(tid_of_vcpu(v)));
+        if ended || killed || loader.shutting_down() {
             return finish(vcpu, callback_stack);
         }
 
@@ -1646,7 +1656,7 @@ fn continue_owner_draw(
     saved_rip: u64,
     saved_rsp: u64,
 ) {
-    use super::pm_owner::{OwnerSetup, OwnerThen, OWNER_BLOCK_BYTES};
+    use super::pm_owner::{OwnerCallKind, OwnerSetup, OwnerThen, MAX_OWNER_BLOCK_BYTES, OWNER_BLOCK_BYTES};
     loop {
         let next = loader.shared.window_mgr.lock_or_recover().next_owner_call(chain.hmq);
         let Some(call) = next else {
@@ -1671,12 +1681,21 @@ fn continue_owner_draw(
             OwnerSetup::Call { wnd_proc, owner, msg, mp1, mp2, block, hps } => {
                 // The structure lies below the slot under saved_rsp, the
                 // call's return address and arguments below it.
-                let block_at = (saved_rsp - 4) as u32 - OWNER_BLOCK_BYTES;
-                let block_len = block.len().min((OWNER_BLOCK_BYTES / 4) as usize) as u32;
+                // Room for the structure (more than the usual block for a
+                // WM_FORMATFRAME's SWP array), 16-byte aligned.
+                let room = (block.len() as u32 * 4).next_multiple_of(16).clamp(OWNER_BLOCK_BYTES, MAX_OWNER_BLOCK_BYTES);
+                let block_at = (saved_rsp - 4) as u32 - room;
+                let block_len = block.len().min((room / 4) as usize) as u32;
                 for (i, w) in block.iter().take(block_len as usize).enumerate() {
                     loader.guest_write::<u32>(block_at + 4 * i as u32, *w).expect("owner-draw stack OOB");
                 }
                 let mp2 = if block_len > 0 { block_at } else { mp2 };
+                // WM_FORMATFRAME: mp2 → the client RECTL at the block's
+                // start, mp1 → the SWP array after it.
+                let mp1 = match call.kind {
+                    OwnerCallKind::FrameFormat { count: Some(_) } => block_at + super::pm_frame::FORMAT_RECTL_BYTES,
+                    _ => mp1,
+                };
                 callback_stack.push(CallbackFrame {
                     saved_rip,
                     saved_rsp,

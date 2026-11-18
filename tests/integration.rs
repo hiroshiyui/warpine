@@ -2559,6 +2559,33 @@ fn gui_pm_cnricon_test_matches_golden() {
         &format!("{CNRICON_STEPS}2500 dump {{dump}}\n2600 quit\n"));
 }
 
+/// pm_subclass_test: WinUpdateWindow and the WinBeginPaint clip, a child
+/// window's presentation space, WinShowWindow invalidating, subclassing an
+/// entry field and a standard frame (WM_QUERYFRAMECTLCOUNT /
+/// WM_FORMATFRAME placing a tool bar), WM_QUERYDLGCODE / WM_MATCHMNEMONIC,
+/// a thread's windows going with it; the steps drive a dialog whose own
+/// "Dial" control takes a mnemonic (Alt+Z, asked through WM_MATCHMNEMONIC)
+/// and passes Tab and Alt+O on to the dialog through WinDefWindowProc.
+const SUBCLASS_STEPS: &str = "\
+    1500 key alt+z\n\
+    1800 key tab\n\
+    2100 key shift+tab\n";
+
+#[test]
+fn gui_pm_subclass_test_paints_subclasses_and_formats() {
+    let steps = format!("{SUBCLASS_STEPS}2400 key alt+o\n5000 quit\n");
+    assert_scripted_checks_pass("samples/pm_subclass_test/pm_subclass_test.exe", "pm_subclass_test", 28, &steps);
+}
+
+/// pm_subclass_test's picture: the frame with the subclass's "Tools" bar
+/// above the blue client, the green child window and the entry field, and
+/// the dialog with the cyan Dial control focused.
+#[test]
+fn gui_pm_subclass_test_matches_golden() {
+    check_gui_golden("pm_subclass_test", "samples/pm_subclass_test/pm_subclass_test.exe",
+        &format!("{SUBCLASS_STEPS}2300 dump {{dump}}\n2400 quit\n"));
+}
+
 /// pm_drag_test: drag and drop within a process. The guest checks the
 /// PMDRAG data calls (string handles, DRAGINFO items, DrgVerify*); the
 /// steps drag with button 2 from the client onto a container (WM_BEGINDRAG,

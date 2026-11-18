@@ -17,6 +17,15 @@
 //! - `WinQueryWindowPtr` / `WinSetWindowPtr`: the application's window words
 //!   ("zero through cbWindowData - 4") or `QWP_PFNWP`, the window procedure.
 //!
+//! Built-in classes (`WC_*`, frames, dialogs, menus) run in the host. Their
+//! window procedure as the guest sees it is `WrpBuiltinWindowProc`
+//! (`WARPINE.5`, [`super::Loader::builtin_window_proc`]): `WinSubclassWindow`,
+//! `WinQueryWindowPtr(QWP_PFNWP)` and `WinQueryClassInfo` hand it out, a
+//! subclass procedure calls it to pass a message on, and setting it back
+//! restores the plain built-in window. Messages Warpine gives a control
+//! directly (repainting controls after `WinEndPaint`, `WinDefDlgProc` pressing
+//! a button) do not pass through a subclass procedure.
+//!
 //! Unverified (no source): an `HWND_OBJECT` ancestor makes a window not
 //! visible (object windows are never shown); `WinSetParent` with a
 //! descendant fails with `PMERR_INVALID_HWND`; `WinSetWindowPtr(QWP_PFNWP)`
@@ -25,6 +34,7 @@
 
 use super::constants::{
     HWND_DESKTOP, HWND_OBJECT, PMERR_INVALID_HWND, PMERR_PARAMETER_OUT_OF_RANGE, QWP_PFNWP,
+    WRP_BUILTIN_WINDOW_PROC,
 };
 use super::mutex_ext::MutexExt;
 use super::pm_types::WindowManager;
@@ -132,6 +142,38 @@ impl super::Loader {
         ApiResult::Normal(1)
     }
 
+    /// The guest address of the built-in classes' window procedure
+    /// (`WrpBuiltinWindowProc`, `WARPINE.5`).
+    pub(crate) fn builtin_window_proc(&self) -> u32 {
+        self.resolve_import("WARPINE", WRP_BUILTIN_WINDOW_PROC) as u32
+    }
+
+    /// Give `hwnd` window procedure `pfn`: `WinSubclassWindow`,
+    /// `WinSetWindowPtr(QWP_PFNWP)`. Returns the previous procedure (the
+    /// built-in one for a built-in window not subclassed yet); setting the
+    /// built-in procedure makes the window plain built-in again. `None` for
+    /// a window that is gone.
+    pub(crate) fn set_window_proc(&self, hwnd: u32, pfn: u32) -> Option<u32> {
+        let builtin = self.builtin_window_proc();
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        let frame = wm.is_frame(hwnd);
+        let w = wm.get_window_mut(hwnd)?;
+        let is_builtin = WindowManager::is_builtin_class(&w.class_name) || frame;
+        let old = if w.pfn_wp == 0 && is_builtin { builtin } else { w.pfn_wp };
+        w.pfn_wp = if pfn == builtin && is_builtin { 0 } else { pfn };
+        Some(old)
+    }
+
+    /// `WrpBuiltinWindowProc(hwnd, msg, mp1, mp2)` (`WARPINE.5`): the
+    /// host's procedure of built-in window `hwnd`, as `WinDispatchMsg`
+    /// runs it for a window that is not subclassed.
+    pub(crate) fn wrp_builtin_window_proc(&self, hwnd: u32, msg: u32, mp1: u32, mp2: u32) -> ApiResult {
+        if msg == super::constants::WM_PAINT && self.repaint_control(hwnd) {
+            return ApiResult::Normal(0);
+        }
+        self.dispatch_builtin_control(hwnd, msg, mp1, mp2)
+    }
+
     /// Whether `index` is valid for `WinQueryWindowPtr` / `WinSetWindowPtr`
     /// on `hwnd`: `QWP_PFNWP`, or a pointer inside the application's window
     /// words (the other reserved negative indices are not pointers).
@@ -151,8 +193,9 @@ impl super::Loader {
         if !self.pm_check_window_ptr(tid, hwnd, index) { return ApiResult::Normal(0); }
         let wm = self.shared.window_mgr.lock_or_recover();
         let Some(w) = wm.get_window(hwnd) else { return ApiResult::Normal(0) };
+        let builtin = WindowManager::is_builtin_class(&w.class_name) || wm.is_frame(hwnd);
         ApiResult::Normal(if index == QWP_PFNWP {
-            w.pfn_wp
+            if w.pfn_wp == 0 && builtin { self.builtin_window_proc() } else { w.pfn_wp }
         } else {
             w.window_ulong.get(&index).copied().unwrap_or(0)
         })
@@ -162,11 +205,12 @@ impl super::Loader {
     /// `QWP_PFNWP` replaces the window procedure.
     pub(super) fn win_set_window_ptr(&self, tid: u32, hwnd: u32, index: i32, p: u32) -> ApiResult {
         if !self.pm_check_window_ptr(tid, hwnd, index) { return ApiResult::Normal(0); }
+        if index == QWP_PFNWP {
+            return ApiResult::Normal(self.set_window_proc(hwnd, p).is_some() as u32);
+        }
         let mut wm = self.shared.window_mgr.lock_or_recover();
         let Some(w) = wm.get_window_mut(hwnd) else { return ApiResult::Normal(0) };
-        if index == QWP_PFNWP {
-            w.pfn_wp = p;
-        } else {
+        {
             w.window_ulong.insert(index, p);
         }
         ApiResult::Normal(1)
@@ -326,5 +370,82 @@ mod tests {
         assert_eq!(last_error(&loader), error_id(SEVERITY_ERROR, PMERR_INVALID_HWND));
         assert_eq!(call(&loader, ORD_WIN_SET_WINDOW_PTR, &[BAD_HWND, QWP_PFNWP as u32, 1]), 0);
         assert_eq!(last_error(&loader), error_id(SEVERITY_ERROR, PMERR_INVALID_HWND));
+    }
+
+    const ORD_WIN_SUBCLASS_WINDOW: u32 = 929;
+
+    /// Subclassing a built-in control hands out the built-in procedure,
+    /// which the subclass calls to pass messages on; setting it back makes
+    /// the control plain built-in again.
+    #[test]
+    fn built_in_controls_subclass_onto_their_own_procedure() {
+        let loader = Loader::new_mock();
+        let (frame, client, _, _) = tree(&loader);
+        let builtin = loader.builtin_window_proc();
+        assert_ne!(builtin, 0);
+        let field = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.tid_to_hmq[&0];
+            let f = wm.create_window("WC_ENTRYFIELD".into(), client, hmq);
+            let w = wm.get_window_mut(f).unwrap();
+            (w.cx, w.cy, w.visible, w.style) = (100, 20, true, WS_VISIBLE | WS_TABSTOP);
+            f
+        };
+        assert_eq!(call(&loader, ORD_WIN_QUERY_WINDOW_PTR, &[field, QWP_PFNWP as u32]), builtin, "unsubclassed");
+        assert_eq!(call(&loader, ORD_WIN_SUBCLASS_WINDOW, &[field, 0x7000]), builtin, "the old procedure");
+        assert_eq!(call(&loader, ORD_WIN_QUERY_WINDOW_PTR, &[field, QWP_PFNWP as u32]), 0x7000);
+        {
+            let wm = loader.shared.window_mgr.lock_or_recover();
+            assert!(wm.builtin_control_descendants(client).contains(&field), "still painted and hit as a control");
+        }
+        // The subclass passes a typed character on: the field takes it.
+        loader.set_focus_window(field);
+        let r = loader.wrp_builtin_window_proc(field, WM_CHAR, KC_CHAR, u32::from(b'x'));
+        assert!(matches!(r, ApiResult::Normal(_)));
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().get_window(field).unwrap().text, "x");
+        // Back to the built-in procedure: no procedure of its own again.
+        assert_eq!(call(&loader, ORD_WIN_SET_WINDOW_PTR, &[field, QWP_PFNWP as u32, builtin]), 1);
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().get_window(field).unwrap().pfn_wp, 0);
+        // A standard frame (no procedure of its own, as WinCreateStdWindow
+        // makes it) is built-in too; an application window is not.
+        loader.shared.window_mgr.lock_or_recover().get_window_mut(frame).unwrap().pfn_wp = 0;
+        assert_eq!(call(&loader, ORD_WIN_SUBCLASS_WINDOW, &[frame, 0x7100]), builtin);
+        assert_eq!(call(&loader, ORD_WIN_SUBCLASS_WINDOW, &[client, 0x7200]), 0x1234);
+        assert_eq!(call(&loader, ORD_WIN_SUBCLASS_WINDOW, &[client, builtin]), 0x7200);
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().get_window(client).unwrap().pfn_wp, builtin,
+                   "an application window keeps whatever it is given");
+    }
+
+    /// WinDefWindowProc sends WM_CHAR on to the window's owner (a key a
+    /// control does not use reaches its dialog); without an owner, FALSE.
+    #[test]
+    fn def_window_proc_passes_keys_to_the_owner() {
+        let loader = Loader::new_mock();
+        let (_, client, child, _) = tree(&loader);
+        loader.shared.window_mgr.lock_or_recover().get_window_mut(child).unwrap().owner = client;
+        match loader.def_window_proc(0, child, WM_CHAR, KC_CHAR, u32::from(b'q')) {
+            ApiResult::Callback { wnd_proc, hwnd, msg, mp2, .. } => {
+                assert_eq!((wnd_proc, hwnd, msg, mp2), (0x1234, client, WM_CHAR, u32::from(b'q')));
+            }
+            other => panic!("{other:?}"),
+        }
+        loader.shared.window_mgr.lock_or_recover().get_window_mut(child).unwrap().owner = 0;
+        assert!(matches!(loader.def_window_proc(0, child, WM_CHAR, KC_CHAR, 0), ApiResult::Normal(0)));
+    }
+
+    /// Focus changes post WM_SETFOCUS to windows with a procedure of their
+    /// own: FALSE to the one losing it, TRUE to the one gaining it.
+    #[test]
+    fn focus_changes_post_wm_setfocus() {
+        let loader = Loader::new_mock();
+        let (_, client, child, _) = tree(&loader);
+        let mut wm = loader.shared.window_mgr.lock_or_recover();
+        wm.set_focus(client);
+        let hmq = wm.tid_to_hmq[&0];
+        wm.get_mq(hmq).unwrap().lock_or_recover().messages.clear();
+        wm.set_focus(child);
+        let msgs: Vec<(u32, u32, u32)> = wm.get_mq(hmq).unwrap().lock_or_recover().messages.iter()
+            .filter(|m| m.msg == WM_SETFOCUS).map(|m| (m.hwnd, m.mp1, m.mp2)).collect();
+        assert_eq!(msgs, vec![(client, child, 0), (child, client, 1)]);
     }
 }

@@ -62,18 +62,15 @@
 //! `PMERR_INVALID_STRING_PARM` for `cchMax` ≤ 0 or an unwritable buffer;
 //! `WinQueryClassInfo` reports the preregistered classes with `CS_PUBLIC`
 //! (plus `CS_FRAME` for the frame class), no window words, and
-//! `WinDefWindowProc` as their window procedure (Warpine runs the built-in
-//! controls in the host, so there is no guest procedure to subclass);
+//! `WrpBuiltinWindowProc` (`WARPINE.5`) as their window procedure: the
+//! host's code of the built-in classes, callable from the guest, so a
+//! subclass procedure can chain to it (`pm_window.rs`);
 //! application class names are case-sensitive.
 
 use super::constants::*;
 use super::mutex_ext::MutexExt;
 use super::pm_types::{group_range, step_from, DeviceContext, WindowManager};
 use super::ApiResult;
-
-/// PMWIN ordinal of `WinDefWindowProc`: the window procedure
-/// `WinQueryClassInfo` reports for the preregistered classes.
-const ORD_WIN_DEF_WINDOW_PROC: u32 = 911;
 
 /// Size of a `CLASSINFO` (`flClassStyle`, `pfnWindowProc`, `cbWindowData`).
 const CLASSINFO_SIZE: usize = 12;
@@ -115,7 +112,7 @@ fn class_atom_of_name(name: &str) -> Option<u32> {
 /// The atom of the preregistered class Warpine names `class_name`:
 /// "WC_BUTTON" etc., the "WC_ATOM_…" names of other atoms, the internal
 /// "#Menu" (a menu) and "#Dialog" (a frame).
-fn class_atom_of_window_class(class_name: &str) -> Option<u32> {
+pub(super) fn class_atom_of_window_class(class_name: &str) -> Option<u32> {
     if let Some(&(atom, _)) = PUBLIC_CLASSES.iter().find(|(_, n)| *n == class_name) {
         return Some(atom);
     }
@@ -487,7 +484,7 @@ impl super::Loader {
     fn builtin_class_info(&self, atom: u32) -> Option<(u32, u32, u32)> {
         PUBLIC_CLASSES.iter().find(|(a, _)| *a == atom)?;
         let style = if atom == WC_FRAME_ATOM & 0xFFFF { CS_PUBLIC | CS_FRAME } else { CS_PUBLIC };
-        Some((style, self.resolve_import("PMWIN", ORD_WIN_DEF_WINDOW_PROC) as u32, 0))
+        Some((style, self.builtin_window_proc(), 0))
     }
 }
 
@@ -845,7 +842,9 @@ mod tests {
                 (r(0), r(1), r(2))
             })
         };
-        let def_proc = loader.resolve_import("PMWIN", ORD_WIN_DEF_WINDOW_PROC) as u32;
+        // The built-in classes' own procedure (WrpBuiltinWindowProc).
+        let def_proc = loader.builtin_window_proc();
+        assert_ne!(def_proc, 0);
         assert_eq!(info(WC_BUTTON_ATOM), Some((CS_PUBLIC, def_proc, 0)));
         assert_eq!(info(WC_FRAME_ATOM), Some((CS_PUBLIC | CS_FRAME, def_proc, 0)));
         loader.guest_write_bytes(BUF, b"#6\0");

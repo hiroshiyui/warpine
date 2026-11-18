@@ -250,6 +250,11 @@ pub enum DrawTarget {
     /// horizontal frame scroll bar) and clipped to the client
     /// ([`WindowManager::client_view`]).
     Client(u32),
+    /// A window inside `frame` other than its client (a child of the client,
+    /// a control, a frame control): the frame's surface, drawn in the
+    /// window's coordinates — moved to its place
+    /// ([`WindowManager::get_abs_rect_in_frame`]) and clipped to it.
+    Child { frame: u32, hwnd: u32 },
     /// This bitmap (selected into a memory presentation space).
     Bitmap(u32),
 }
@@ -352,6 +357,9 @@ pub struct PresentationSpace {
     /// clip path together; `None` draws unclipped
     /// (`WindowManager::refresh_clip`).
     pub clip: Option<Arc<crate::gui::region::Region>>,
+    /// `WinBeginPaint`: the window's update rectangle, which the PS is
+    /// clipped to until `WinEndPaint` (window coordinates).
+    pub paint_clip: Option<crate::gui::region::RRect>,
     /// Open area bracket (`GpiBeginArea` … `GpiEndArea`).
     pub area: Option<super::pm_area::AreaBracket>,
     /// The path (`GpiBeginPath` … `GpiEndPath`, then used once).
@@ -399,6 +407,7 @@ impl PresentationSpace {
             sys_colors,
             clip_region: 0,
             clip_path: None,
+            paint_clip: None,
             clip: None,
             area: None,
             path: None,
@@ -871,6 +880,12 @@ impl WindowManager {
         // Search through tid_to_hmq for a match
         self.tid_to_hmq.values().find(|&&hmq| self.msg_queues.contains_key(&hmq)).copied()
     }
+    /// Whether windows of class `class_name` are built-in ones run by the
+    /// host (`WC_*`, frames, dialogs, menus).
+    pub fn is_builtin_class(class_name: &str) -> bool {
+        super::pm_query::class_atom_of_window_class(class_name).is_some()
+    }
+
     /// Reverse lookup: given a client hwnd, find the frame hwnd.
     /// Returns the client hwnd itself if no mapping exists.
     pub fn client_to_frame(&self, client_hwnd: u32) -> u32 {
@@ -997,7 +1012,7 @@ impl WindowManager {
         loop {
             if self.is_top_dialog(h) { return h; }
             let parent = match self.windows.get(&h) { Some(w) => w.parent, None => return h };
-            if self.frame_to_client.contains_key(&parent) { return parent; }
+            if self.frames_its_children(parent) { return parent; }
             if !self.windows.contains_key(&parent) { return h; }
             h = parent;
         }
@@ -1029,7 +1044,7 @@ impl WindowManager {
             ay += win.y;
             let parent = win.parent;
             if parent == 0 { break; }
-            if self.frame_to_client.contains_key(&parent) { break; }
+            if self.frames_its_children(parent) { break; }
             h = parent;
         }
         (ax, ay, cx, cy)
@@ -1081,7 +1096,9 @@ impl WindowManager {
             // A hidden window hides its children; a dialog owned by this
             // window draws its controls into its own surface.
             if !w.visible || self.is_dialog(h) { continue; }
-            if w.pfn_wp == 0 && w.class_name.starts_with("WC_") {
+            // Subclassed controls too: their procedure passes messages on
+            // to the built-in one (pm_window.rs).
+            if w.class_name.starts_with("WC_") {
                 out.push(h);
             }
             stack.extend(w.children.iter().rev().copied());
@@ -1181,15 +1198,44 @@ impl WindowManager {
             w.visible && w.style & WS_DISABLED == 0
                 && (matches!(w.class_name.as_str(), "WC_ENTRYFIELD" | "WC_MLE" | "WC_LISTBOX" | "WC_BUTTON"
                                                     | "WC_VALUESET" | "WC_NOTEBOOK" | "WC_CONTAINER")
-                    || (w.class_name == "WC_SLIDER" && w.style & SLS_READONLY == 0))
+                    || (w.class_name == "WC_SLIDER" && w.style & SLS_READONLY == 0)
+                    || self.is_guest_control(hwnd))
         })
+    }
+
+    /// Whether `hwnd` is a control of the application's own class (a
+    /// window procedure in the guest, not a built-in class, a frame or a
+    /// dialog): in a dialog it takes the focus and Tab like a built-in one
+    /// (Warpine does not ask it `WM_QUERYDLGCODE` for that).
+    pub fn is_guest_control(&self, hwnd: u32) -> bool {
+        self.windows.get(&hwnd).is_some_and(|w| {
+            w.pfn_wp != 0 && !w.class_name.starts_with("WC_") && !self.is_frame(hwnd) && !self.is_dialog(hwnd)
+        })
+    }
+
+    /// The items of `dialog` in order: its built-in controls
+    /// ([`Self::builtin_control_descendants`]) and controls of the
+    /// application's own classes.
+    pub fn dialog_items(&self, dialog: u32) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut stack: Vec<u32> = self.windows.get(&dialog)
+            .map(|w| w.children.iter().rev().copied().collect()).unwrap_or_default();
+        while let Some(h) = stack.pop() {
+            let Some(w) = self.windows.get(&h) else { continue };
+            if !w.visible || self.is_dialog(h) { continue; }
+            if w.class_name.starts_with("WC_") || self.is_guest_control(h) {
+                out.push(h);
+            }
+            stack.extend(w.children.iter().rev().copied());
+        }
+        out
     }
 
     /// The controls of `dialog` that Tab visits, in order: `WS_TABSTOP`
     /// controls that can take the focus.
     pub fn tab_stops(&self, dialog: u32) -> Vec<u32> {
         use super::constants::WS_TABSTOP;
-        self.builtin_control_descendants(dialog).into_iter().filter(|&h| {
+        self.dialog_items(dialog).into_iter().filter(|&h| {
             self.can_take_focus(h) && self.windows[&h].style & WS_TABSTOP != 0
         }).collect()
     }
@@ -1199,7 +1245,7 @@ impl WindowManager {
     /// elsewhere. `None` when `dialog` has no tab stops.
     pub fn next_tab_stop(&self, dialog: u32, backward: bool) -> Option<u32> {
         use super::constants::WS_TABSTOP;
-        let controls = self.builtin_control_descendants(dialog);
+        let controls = self.dialog_items(dialog);
         let at = controls.iter().position(|&h| h == self.focus_hwnd);
         step_from(&controls, at, backward, |h| {
             self.can_take_focus(h) && self.windows[&h].style & WS_TABSTOP != 0
@@ -1212,7 +1258,7 @@ impl WindowManager {
     /// `None` when the focus is not in `dialog` or alone in its group.
     pub fn next_in_group(&self, dialog: u32, backward: bool) -> Option<u32> {
         use super::constants::WS_GROUP;
-        let controls = self.builtin_control_descendants(dialog);
+        let controls = self.dialog_items(dialog);
         let at = controls.iter().position(|&h| h == self.focus_hwnd)?;
         let range = group_range(&controls, at, |h| self.windows[&h].style & WS_GROUP != 0);
         let start = range.start;
@@ -1226,7 +1272,7 @@ impl WindowManager {
     pub fn initial_dialog_focus(&self, dialog: u32, preferred: Option<u32>) -> Option<u32> {
         preferred.map(|h| self.focus_window_for(h)).filter(|&h| self.can_take_focus(h))
             .or_else(|| self.tab_stops(dialog).first().copied())
-            .or_else(|| self.builtin_control_descendants(dialog).into_iter().find(|&h| self.can_take_focus(h)))
+            .or_else(|| self.dialog_items(dialog).into_iter().find(|&h| self.can_take_focus(h)))
     }
 
     /// The default push button (`BS_DEFAULT`) of `dialog`, if it has one.
@@ -1323,6 +1369,14 @@ impl WindowManager {
         if old != hwnd {
             self.notify_focus(old, false);
             self.notify_focus(hwnd, true);
+            // Windows with a procedure of their own hear of it: WM_SETFOCUS
+            // (mp1 = the other window, mp2 = gained), the loser first.
+            // (PM sends it; Warpine posts it.)
+            for (h, other, gained) in [(old, hwnd, false), (hwnd, old, true)] {
+                if self.windows.get(&h).is_some_and(|w| w.pfn_wp != 0) {
+                    self.post_msg(h, super::constants::WM_SETFOCUS, other, gained as u32);
+                }
+            }
         }
         old
     }
@@ -1426,7 +1480,7 @@ impl WindowManager {
         // beside the client, below its controls.
         let mut candidates: Vec<u32> = if root != frame {
             self.windows.get(&frame).map(|f| f.children.iter().copied().filter(|&h| {
-                h != root && self.windows.get(&h).is_some_and(|w| w.visible && w.pfn_wp == 0
+                h != root && self.windows.get(&h).is_some_and(|w| w.visible
                     && w.class_name.starts_with("WC_"))
             }).collect()).unwrap_or_default()
         } else {
@@ -1482,8 +1536,22 @@ impl WindowManager {
                 cw.y = layout.client.y;
             }
         }
+        // A subclassed frame's procedure lays out its controls itself:
+        // WM_QUERYFRAMECTLCOUNT, then WM_FORMATFRAME (pm_frame.rs).
+        if self.frame_to_client.contains_key(&frame) && self.windows.get(&frame).is_some_and(|w| w.pfn_wp != 0) {
+            self.queue_owner_call(super::pm_owner::OwnerCall {
+                control: frame, kind: super::pm_owner::OwnerCallKind::FrameFormat { count: None },
+            });
+        }
         self.mark_dirty(frame);
         layout.surface
+    }
+
+    /// Whether `hwnd` is a frame for the placement of its descendants: a
+    /// frame with a client, or a `WC_FRAME` window (perhaps without one).
+    fn frames_its_children(&self, hwnd: u32) -> bool {
+        self.frame_to_client.contains_key(&hwnd)
+            || self.windows.get(&hwnd).is_some_and(|w| w.class_name == super::pm_frame::FRAME_CLASS)
     }
 
     /// Move `frame` so its bottom-left corner is at desktop `(x, y)` (a title
@@ -1543,7 +1611,12 @@ impl WindowManager {
         } else if ps.hwnd != 0 {
             match self.client_to_frame(ps.hwnd) {
                 frame if frame != ps.hwnd => DrawTarget::Client(frame),
-                frame => DrawTarget::Frame(frame),
+                _ if self.frame_to_client.contains_key(&ps.hwnd) => DrawTarget::Frame(ps.hwnd),
+                _ => match self.find_frame_for_hwnd(ps.hwnd) {
+                    frame if frame != ps.hwnd && self.windows.contains_key(&frame) =>
+                        DrawTarget::Child { frame, hwnd: ps.hwnd },
+                    _ => DrawTarget::Frame(ps.hwnd),
+                },
             }
         } else {
             DrawTarget::None
@@ -1554,7 +1627,8 @@ impl WindowManager {
     pub fn target_surface(&mut self, target: DrawTarget) -> Option<SharedSurface> {
         match target {
             DrawTarget::None => None,
-            DrawTarget::Frame(frame) | DrawTarget::Client(frame) => self.frame_surface(frame),
+            DrawTarget::Frame(frame) | DrawTarget::Client(frame) | DrawTarget::Child { frame, .. } =>
+                self.frame_surface(frame),
             DrawTarget::Bitmap(hbm) => self.bitmaps.get(&hbm).map(|b| b.surface.clone()),
         }
     }
@@ -1575,6 +1649,10 @@ impl WindowManager {
                 Some((x, y, cx, cy)) => ((x, y), Some((cx, cy))),
                 None => ((0, 0), None),
             },
+            DrawTarget::Child { hwnd, .. } => {
+                let (x, y, cx, cy) = self.get_abs_rect_in_frame(hwnd);
+                ((x, y), Some((cx.max(0), cy.max(0))))
+            }
             _ => ((0, 0), None),
         }
     }
@@ -1681,6 +1759,23 @@ impl WindowManager {
     pub fn frame_disabled(&self, frame: u32) -> bool {
         use super::constants::WS_DISABLED;
         self.windows.get(&frame).is_some_and(|w| w.style & WS_DISABLED != 0)
+    }
+
+    /// Destroy every window of message queue `hmq` (its thread ends) with
+    /// its descendants, no window procedure called. Returns how many trees
+    /// went.
+    pub fn destroy_queue_windows(&mut self, hmq: u32) -> usize {
+        if hmq == 0 { return 0; }
+        let mine: HashSet<u32> = self.windows.iter().filter(|(_, w)| w.hmq == hmq).map(|(&h, _)| h).collect();
+        // The topmost of them: whose parent is not one of them.
+        let roots: Vec<u32> = mine.iter().copied()
+            .filter(|h| self.windows.get(h).is_some_and(|w| !mine.contains(&w.parent)))
+            .collect();
+        let n = roots.len();
+        for h in roots {
+            self.destroy_window(h);
+        }
+        n
     }
 
     /// Remove `hwnd` and all its descendants: the last step of
@@ -2109,6 +2204,26 @@ mod tests {
         assert!(wm.is_same_or_descendant(a, a));
         assert!(!wm.is_same_or_descendant(a, c));
         assert!(!wm.is_same_or_descendant(0xDEAD, a));
+    }
+
+    /// A thread's windows go with it: every window of its queue, with the
+    /// descendants; other queues' windows stay.
+    #[test]
+    fn a_queues_windows_are_destroyed_with_it() {
+        let mut wm = WindowManager::new();
+        let (q1, q2) = (wm.create_mq(437), wm.create_mq(437));
+        let frame = wm.create_window("App".into(), 1, q1);
+        let client = wm.create_window("App".into(), frame, q1);
+        wm.frame_to_client.insert(frame, client);
+        wm.z_push_top(frame);
+        let kid = wm.create_window("WC_BUTTON".into(), client, q1);
+        let other = wm.create_window("App".into(), 1, q2);
+        let obj = wm.create_window("Obj".into(), 0, q1);
+        assert_eq!(wm.destroy_queue_windows(q1), 2, "the frame tree and the object window");
+        for h in [frame, client, kid, obj] { assert!(wm.get_window(h).is_none(), "{h}"); }
+        assert!(!wm.z_order.contains(&frame));
+        assert!(wm.get_window(other).is_some());
+        assert_eq!(wm.destroy_queue_windows(0), 0);
     }
 
     #[test]

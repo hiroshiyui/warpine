@@ -324,6 +324,10 @@ pub(crate) enum ChainThen {
     /// Container `hwnd`'s filter `job` asked its function about every
     /// record: mark the ones it rejected and return TRUE.
     ContainerFilter { hwnd: u32, job: u32 },
+    /// `WinDefDlgProc` asked the application's controls of dialog `dlg`
+    /// `WM_MATCHMNEMONIC` (`pm_dialog.rs`): the one that said TRUE takes
+    /// the focus; returns whether one did.
+    DialogMnemonic { dlg: u32 },
     /// A step of `DrgDrag`'s conversation (`pm_drag.rs`, `DRAG_STAGE_*`):
     /// record the `DM_DRAGOVER` reply and wait for the next input, or end.
     Drag { stage: u8 },
@@ -422,6 +426,7 @@ impl Loader {
             }
             ChainThen::ContainerSort { hwnd, job, ret, keep } => self.container_sort_step(hwnd, job, ret, keep, chain.last),
             ChainThen::ContainerFilter { hwnd, job } => self.container_filter_done(hwnd, job, &chain.results),
+            ChainThen::DialogMnemonic { dlg } => self.dialog_mnemonic_done(dlg, chain),
             ChainThen::Drag { stage } => self.drag_chain_done(stage, chain.last),
             ChainThen::StdDialog { hwnd, buf, ret } => {
                 self.std_chain_done(hwnd, buf, &chain.results);

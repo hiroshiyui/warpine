@@ -147,6 +147,13 @@ impl super::Loader {
         self.shutting_down()
     }
 
+    /// A blocked pipe write is interrupted (ADR-0035): with nothing written
+    /// yet (`fresh`) the call is made again after the signal; later it
+    /// stops with what it wrote.
+    fn np_interrupt(&self, fresh: bool) -> bool {
+        if fresh { self.interrupt_restart() } else { self.interrupted() }
+    }
+
     /// `DosRead` on a named-pipe end: `ERROR_MORE_DATA` with the first part
     /// of a message that did not fit.
     pub(crate) fn np_read(&self, end: &NpEnd, fh_state: u32, buf_ptr: u32, len: u32, actual_ptr: u32) -> u32 {
@@ -185,7 +192,8 @@ impl super::Loader {
         let conn = end.conn()?;
         let mode = end.mode();
         let _blocked = BlockedGuard::new(end.blocked());
-        conn.write(data, end.spec().message_type(), mode.nowait, &|| self.np_stop()).map(|n| n as u32)
+        conn.write(data, end.spec().message_type(), mode.nowait, &|| self.np_stop(), &|fresh| self.np_interrupt(fresh))
+            .map(|n| n as u32)
     }
 
     /// DosCreateNPipe (ordinal 243): create an instance of a named pipe
@@ -357,7 +365,7 @@ impl super::Loader {
         };
         let _blocked = BlockedGuard::new(end.blocked());
         // Non-blocking mode has no effect on a transaction.
-        if let Err(e) = conn.write(&msg, true, false, &|| self.np_stop()) {
+        if let Err(e) = conn.write(&msg, true, false, &|| self.np_stop(), &|fresh| self.np_interrupt(fresh)) {
             return e;
         }
         match conn.read(cb_in.min(NP_MAX_READ) as usize, true, false, &|| self.np_stop()) {

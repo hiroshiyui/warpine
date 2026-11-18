@@ -441,6 +441,14 @@ impl Conn {
     /// Send one frame; `Ok(false)` when non-blocking and the socket is
     /// full. A frame once started is always finished.
     fn send_frame(&self, kind: u8, body: &[u8], nowait: bool, stop: &dyn Fn() -> bool) -> Result<bool, u32> {
+        self.send_frame_or_interrupt(kind, body, nowait, stop, &|| false)
+    }
+
+    /// [`Self::send_frame`] that also gives up (`ERROR_INTERRUPT`) when
+    /// `interrupt` says so while none of the frame is written yet — never
+    /// in the middle of a frame, which would break the stream.
+    fn send_frame_or_interrupt(&self, kind: u8, body: &[u8], nowait: bool, stop: &dyn Fn() -> bool,
+                               interrupt: &dyn Fn() -> bool) -> Result<bool, u32> {
         let _tx = self.tx.lock_or_recover();
         let mut frame = Vec::with_capacity(FRAME_HEADER + body.len());
         frame.push(kind);
@@ -457,7 +465,7 @@ impl Conn {
                     if off == 0 && nowait {
                         return Ok(false);
                     }
-                    if stop() {
+                    if stop() || (off == 0 && interrupt()) {
                         return Err(ERROR_INTERRUPT);
                     }
                     // Take in what the peer sends meanwhile, so two ends
@@ -472,8 +480,12 @@ impl Conn {
     }
 
     /// Write `data` as one message (`message`) or as a byte stream; returns
-    /// the bytes written (0 when non-blocking and full).
-    pub fn write(&self, data: &[u8], message: bool, nowait: bool, stop: &dyn Fn() -> bool) -> Result<usize, u32> {
+    /// the bytes written (0 when non-blocking and full). A blocked write
+    /// gives up when `interrupt(fresh)` says so between frames: with
+    /// nothing written (`fresh`, `ERROR_INTERRUPT`; the caller makes the
+    /// call again), or a byte stream with some chunks written (their count).
+    pub fn write(&self, data: &[u8], message: bool, nowait: bool, stop: &dyn Fn() -> bool,
+                 interrupt: &dyn Fn(bool) -> bool) -> Result<usize, u32> {
         if message && data.len() > MAX_MESSAGE {
             return Err(ERROR_INVALID_PARAMETER);
         }
@@ -481,14 +493,19 @@ impl Conn {
             return Err(ERROR_BROKEN_PIPE);
         }
         if message {
-            return Ok(if self.send_frame(FRAME_DATA, data, nowait, stop)? { data.len() } else { 0 });
+            return Ok(if self.send_frame_or_interrupt(FRAME_DATA, data, nowait, stop, &|| interrupt(true))? {
+                data.len()
+            } else { 0 });
         }
         let mut done = 0;
         for chunk in data.chunks(BYTE_CHUNK) {
-            if !self.send_frame(FRAME_DATA, chunk, nowait, stop)? {
-                break;
+            let fresh = done == 0;
+            match self.send_frame_or_interrupt(FRAME_DATA, chunk, nowait, stop, &|| interrupt(fresh)) {
+                Ok(true) => done += chunk.len(),
+                Ok(false) => break,
+                Err(ERROR_INTERRUPT) if !fresh && !stop() => break,
+                Err(e) => return Err(e),
             }
-            done += chunk.len();
         }
         Ok(done)
     }
@@ -892,9 +909,9 @@ mod tests {
     #[test]
     fn messages_and_remainders() {
         let (a, b) = Conn::pair();
-        a.write(b"hello", true, false, &no_stop).unwrap();
-        a.write(b"", true, false, &no_stop).unwrap();
-        a.write(b"world!", true, false, &no_stop).unwrap();
+        a.write(b"hello", true, false, &no_stop, &|_| false).unwrap();
+        a.write(b"", true, false, &no_stop, &|_| false).unwrap();
+        a.write(b"world!", true, false, &no_stop, &|_| false).unwrap();
         let p = b.peek(64, true);
         assert_eq!((p.data.as_slice(), p.bytes, p.messages, p.current), (&b"hello"[..], 11, 3, 5));
         assert_eq!(b.read(3, true, false, &no_stop).unwrap(), ReadOut { data: b"hel".to_vec(), more: true });
@@ -902,7 +919,7 @@ mod tests {
         assert_eq!(b.read(64, true, false, &no_stop).unwrap(), ReadOut { data: b"lo".to_vec(), more: false });
         assert_eq!(b.read(64, true, false, &no_stop).unwrap(), ReadOut { data: vec![], more: false }, "empty message");
         // Byte read mode reads across what is left.
-        a.write(b"tail", true, false, &no_stop).unwrap();
+        a.write(b"tail", true, false, &no_stop, &|_| false).unwrap();
         assert_eq!(b.read(64, false, false, &no_stop).unwrap().data, b"world!tail");
         assert_eq!(b.read(64, false, true, &no_stop), Err(ERROR_NO_DATA), "non-blocking, empty");
         assert!(!b.has_unread());
@@ -913,19 +930,19 @@ mod tests {
     #[test]
     fn close_and_disconnect() {
         let (a, b) = Conn::pair();
-        a.write(b"left", false, false, &no_stop).unwrap();
+        a.write(b"left", false, false, &no_stop, &|_| false).unwrap();
         drop(a);
         assert!(b.peer_closed());
         assert_eq!(b.read(64, false, false, &no_stop).unwrap().data, b"left", "data before the close");
         assert_eq!(b.read(64, false, false, &no_stop).unwrap().data, b"");
-        assert_eq!(b.write(b"x", false, false, &no_stop), Err(ERROR_BROKEN_PIPE));
+        assert_eq!(b.write(b"x", false, false, &no_stop, &|_| false), Err(ERROR_BROKEN_PIPE));
 
         let (server, client) = Conn::pair();
-        server.write(b"lost", false, false, &no_stop).unwrap();
+        server.write(b"lost", false, false, &no_stop, &|_| false).unwrap();
         server.disconnect();
         assert!(client.disconnected());
         assert!(!client.has_unread(), "unread data is lost");
-        assert_eq!(client.write(b"x", false, false, &no_stop), Err(ERROR_BROKEN_PIPE));
+        assert_eq!(client.write(b"x", false, false, &no_stop, &|_| false), Err(ERROR_BROKEN_PIPE));
     }
 
     /// A blocked read wakes when data comes from another thread.
@@ -934,7 +951,7 @@ mod tests {
         let (a, b) = Conn::pair();
         let t = std::thread::spawn(move || b.read(16, false, false, &no_stop));
         std::thread::sleep(Duration::from_millis(50));
-        a.write(b"late", false, false, &no_stop).unwrap();
+        a.write(b"late", false, false, &no_stop, &|_| false).unwrap();
         assert_eq!(t.join().unwrap().unwrap().data, b"late");
     }
 
@@ -959,9 +976,25 @@ mod tests {
             }
             assert_eq!(got, expect);
         });
-        assert_eq!(a.write(&data, false, false, &no_stop), Ok(300_000));
+        assert_eq!(a.write(&data, false, false, &no_stop, &|_| false), Ok(300_000));
         t.join().unwrap();
-        assert_eq!(a.write(&vec![0; MAX_MESSAGE + 1], true, false, &no_stop), Err(ERROR_INVALID_PARAMETER));
+        assert_eq!(a.write(&vec![0; MAX_MESSAGE + 1], true, false, &no_stop, &|_| false), Err(ERROR_INVALID_PARAMETER));
+    }
+
+    /// A write blocked on a full pipe gives up when interrupted with nothing
+    /// written: it fails, and the caller makes the call again. (A byte
+    /// stream with some chunks out stops with their count; a frame is never
+    /// abandoned in the middle.)
+    #[test]
+    fn blocked_writes_are_interrupted_between_frames() {
+        let (a, _b) = Conn::pair();
+        // Nobody reads: fill the socket until a write would block.
+        let chunk = vec![7u8; 4096];
+        while a.write(&chunk, false, true, &no_stop, &|_| false) == Ok(chunk.len()) {}
+        let asked = std::cell::Cell::new(Vec::new());
+        let interrupt = |fresh: bool| { let mut v = asked.take(); v.push(fresh); asked.set(v); true };
+        assert_eq!(a.write(b"msg", true, false, &no_stop, &interrupt), Err(ERROR_INTERRUPT));
+        assert_eq!(asked.take(), vec![true], "nothing written yet");
     }
 
     /// A foreign byte stream (no valid frames) ends the connection instead
@@ -1001,7 +1034,7 @@ mod tests {
             assert!(Instant::now() < deadline, "not connected");
             std::thread::sleep(Duration::from_millis(5));
         }
-        client.conn.write(b"ping", true, false, &no_stop).unwrap();
+        client.conn.write(b"ping", true, false, &no_stop, &|_| false).unwrap();
         let sconn = inst.conn().unwrap();
         assert_eq!(sconn.read(16, true, false, &no_stop).unwrap().data, b"ping");
         drop(client);

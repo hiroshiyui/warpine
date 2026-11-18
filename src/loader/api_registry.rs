@@ -719,6 +719,8 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.wrp_local_time64(a[0],a[1])) },
     ApiEntry { ordinal: WARPINE_BASE + 4, module: "WARPINE", name: "WrpMakeTime64",    argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.wrp_make_time64(a[0],a[1])) },
+    ApiEntry { ordinal: WARPINE_BASE + 5, module: "WARPINE", name: "WrpBuiltinWindowProc", argc: 4,
+               handler: |l,_v,_i,a| l.wrp_builtin_window_proc(a[0],a[1],a[2],a[3]) },
 
     // ── PMDRAG — drag and drop (base PMDRAG_BASE = 21504; pm_drag.rs, ADR-0045)
     ApiEntry { ordinal: PMDRAG_BASE + 32, module: "PMDRAG", name: "DrgAccessDraginfo",          argc: 1,

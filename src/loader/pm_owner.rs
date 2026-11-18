@@ -62,6 +62,9 @@ use crate::gui::surface::{DrawOp, Mix};
 pub(crate) const MAX_OWNER_CALLS: usize = 1024;
 /// Bytes reserved on the guest stack for the structure a call passes.
 pub(crate) const OWNER_BLOCK_BYTES: u32 = 64;
+/// The largest structure an owner call passes (a `WM_FORMATFRAME`'s
+/// `RECTL` and `SWP` array).
+pub(crate) const MAX_OWNER_BLOCK_BYTES: u32 = 1024;
 /// Tallest list box item an owner can ask for, in pels.
 pub(crate) const MAX_ITEM_HEIGHT: i32 = 1024;
 
@@ -106,6 +109,10 @@ pub enum OwnerCallKind {
     /// `WM_CONTROL(code)` from a container with a `CNREDITDATA`
     /// (`CN_BEGINEDIT`, `CN_REALLOCPSZ`, `CN_ENDEDIT`).
     ContainerEdit { code: u16, block: [u32; 7] },
+    /// A subclassed frame lays itself out (`pm_frame.rs`): `count` `None`
+    /// asks `WM_QUERYFRAMECTLCOUNT`, `Some(n)` sends `WM_FORMATFRAME` with
+    /// room for `n` `SWP`s, which are applied when it returns.
+    FrameFormat { count: Option<u16> },
 }
 
 /// The menu item `id` in `items` (searched through the submenus).
@@ -280,6 +287,7 @@ impl Loader {
             OwnerCallKind::DrawMenuItem { id } => return self.menu_item_setup(call.control, id),
             OwnerCallKind::EraseBackground => return self.erase_background_setup(call.control),
             OwnerCallKind::SyncPaint => return self.sync_paint_setup(call.control),
+            OwnerCallKind::FrameFormat { count } => return self.frame_format_setup(call.control, count),
             _ => {}
         }
         let (owner, wnd_proc, id, style, item) = {
@@ -376,7 +384,7 @@ impl Loader {
                 OwnerSetup::Call { wnd_proc, owner, msg: WM_DRAWITEM, mp1: id & 0xFFFF, mp2: 0, block, hps }
             }
             OwnerCallKind::DrawMenuItem { .. } | OwnerCallKind::EraseBackground
-            | OwnerCallKind::SyncPaint => OwnerSetup::Skip,
+            | OwnerCallKind::SyncPaint | OwnerCallKind::FrameFormat { .. } => OwnerSetup::Skip,
         }
     }
 
@@ -450,6 +458,7 @@ impl Loader {
                 return self.erase_background_finish(call.control, hps, result, block);
             }
             OwnerCallKind::SyncPaint => return,
+            OwnerCallKind::FrameFormat { count } => return self.frame_format_finish(call.control, count, result, block),
             // The owner's answer decides whether the edited text is kept.
             OwnerCallKind::ContainerEdit { code, block } if u32::from(code) == super::pm_container::CN_REALLOCPSZ => {
                 return self.container_realloc_done(call.control, result, block);
@@ -511,7 +520,8 @@ impl Loader {
             | OwnerCallKind::EraseBackground | OwnerCallKind::SyncPaint
             | OwnerCallKind::NotebookSelected { .. } | OwnerCallKind::NotebookDeleted { .. }
             | OwnerCallKind::ContainerNotify { .. } | OwnerCallKind::ContainerValue { .. }
-            | OwnerCallKind::ContainerInitDrag { .. } | OwnerCallKind::ContainerEdit { .. } => {}
+            | OwnerCallKind::ContainerInitDrag { .. } | OwnerCallKind::ContainerEdit { .. }
+            | OwnerCallKind::FrameFormat { .. } => {}
         }
     }
 }

@@ -47,6 +47,8 @@ pub const DLG_BORDER_INACTIVE_COLOR: u32 = 0x0040_4040;
 /// Scroll distances beyond this are clamped: no surface is that large, so
 /// the result is the same and the arithmetic cannot overflow.
 const MAX_SCROLL: i32 = 1 << 20;
+/// The most windows one `WinUpdateWindow` repaints.
+const MAX_UPDATE_WINDOWS: usize = 4096;
 
 /// `a` less `b` as disjoint rectangles (at most four; none when `b` covers
 /// `a`).
@@ -268,6 +270,37 @@ impl WindowManager {
         if r.is_empty() { r } else { r.offset(-ox, -oy) }
     }
 
+    /// Clip `hps` to update rectangle `r` (window coordinates) for a
+    /// `WinBeginPaint`; an empty `r` removes the paint clip. (A
+    /// `WinBeginPaint` with nothing to update draws unclipped: Warpine's
+    /// choice, so painting outside `WM_PAINT` still shows.)
+    pub fn set_paint_clip(&mut self, hps: u32, r: Rectl) {
+        let Some(ps) = self.ps_map.get_mut(&hps) else { return };
+        ps.paint_clip = (!r.is_empty())
+            .then(|| crate::gui::region::RRect::new(r.x_left, r.y_bottom, r.x_right, r.y_top));
+        self.refresh_clip(hps);
+    }
+
+    /// WinUpdateWindow: `hwnd` and its descendants with a window procedure
+    /// and something to paint get `WM_PAINT` before the call returns,
+    /// parents first (the owner-call queue, as `WS_SYNCPAINT`).
+    pub fn queue_update_window(&mut self, hwnd: u32) {
+        let mut stack = vec![hwnd];
+        let mut left = MAX_UPDATE_WINDOWS;
+        while let Some(h) = stack.pop() {
+            if left == 0 { break; }
+            left -= 1;
+            let Some(w) = self.get_window(h) else { continue };
+            let (paint, kids) = (w.pfn_wp != 0 && w.visible && !w.update.is_empty(), w.children.clone());
+            if paint {
+                self.queue_owner_call(super::pm_owner::OwnerCall {
+                    control: h, kind: super::pm_owner::OwnerCallKind::SyncPaint,
+                });
+            }
+            stack.extend(kids.into_iter().rev());
+        }
+    }
+
     /// The whole of `hwnd` was painted without `WinBeginPaint` (a built-in
     /// control, `WinDefWindowProc`): it is valid now.
     pub fn painted(&mut self, hwnd: u32) {
@@ -328,12 +361,14 @@ impl Loader {
         ApiResult::Normal(!r.is_empty() as u32)
     }
 
-    /// WinBeginPaint's update rectangle, written to `prcl` (if not NULL).
-    pub(super) fn begin_paint_rect(&self, hwnd: u32, prcl: u32) {
+    /// WinBeginPaint's update rectangle, written to `prcl` (if not NULL)
+    /// and returned.
+    pub(super) fn begin_paint_rect(&self, hwnd: u32, prcl: u32) -> Rectl {
         let r = self.shared.window_mgr.lock_or_recover().begin_paint(hwnd);
         if prcl != 0 {
             self.write_rectl(prcl, r);
         }
+        r
     }
 
     /// WinScrollWindow(hwnd, dx, dy, prclScroll, prclClip, hrgnUpdate,
@@ -565,6 +600,134 @@ mod tests {
 
     fn update(loader: &Loader, hwnd: u32) -> Rectl {
         loader.shared.window_mgr.lock_or_recover().update_rect(hwnd)
+    }
+
+    const ORD_WIN_FILL_RECT: u32 = 743;
+    const ORD_WIN_GET_PS: u32 = 757;
+    const ORD_WIN_END_PAINT: u32 = 738;
+    const ORD_WIN_SHOW_WINDOW: u32 = 883;
+    const ORD_WIN_UPDATE_WINDOW: u32 = 892;
+    const ORD_GPI_QUERY_PEL: u32 = 476;
+    const RED: u32 = 0x00FF_0000;
+
+    /// A 300×200 frame whose client sits at (5, 10) in the frame's surface,
+    /// 280×170, with a 40×30 child of the client at (20, 30).
+    fn framed() -> (Loader, u32, u32, u32, u32) {
+        let loader = Loader::new_mock();
+        let hmq = call(&loader, ORD_WIN_CREATE_MSG_QUEUE, &[0, 0]);
+        let (frame, client, child) = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let frame = wm.create_window("Frame".into(), HWND_DESKTOP, hmq);
+            let client = wm.create_window("App".into(), frame, hmq);
+            wm.frame_to_client.insert(frame, client);
+            let child = wm.create_window("Kid".into(), client, hmq);
+            for (h, geo) in [(frame, (0, 0, 300, 200)), (client, (5, 10, 280, 170)), (child, (20, 30, 40, 30))] {
+                let w = wm.get_window_mut(h).unwrap();
+                (w.x, w.y, w.cx, w.cy) = geo;
+                w.visible = true;
+            }
+            (frame, client, child)
+        };
+        (loader, hmq, frame, client, child)
+    }
+
+    fn pel(loader: &Loader, frame: u32, x: i32, y: i32) -> Option<u32> {
+        let s = loader.shared.window_mgr.lock_or_recover().frame_surface(frame).unwrap();
+        let s = s.lock_or_recover();
+        s.pel(x, y)
+    }
+
+    fn fill(loader: &Loader, hps: u32, r: Rectl, color: u32) {
+        put_rect(loader, RC, r);
+        assert_eq!(call(loader, ORD_WIN_FILL_RECT, &[hps, RC, color]), 1);
+    }
+
+    fn query_pel(loader: &Loader, hps: u32, x: i32, y: i32) -> u32 {
+        let mut vcpu = MockVcpu::new();
+        vcpu.regs.rsp = 0x1000;
+        for (i, v) in [hps, OUT + 0x40].iter().enumerate() { loader.guest_write::<u32>(0x1004 + 4 * i as u32, *v).unwrap(); }
+        loader.guest_write::<i32>(OUT + 0x40, x).unwrap();
+        loader.guest_write::<i32>(OUT + 0x44, y).unwrap();
+        match loader.handle_pmgpi_call(&mut vcpu, 0, ORD_GPI_QUERY_PEL) {
+            ApiResult::Normal(v) => v,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A child window's PS draws at the child's place in its frame's
+    /// surface, clipped to the child, and reads back from there.
+    #[test]
+    fn a_child_windows_ps_draws_at_its_place() {
+        let (loader, _, frame, _, child) = framed();
+        let hps = call(&loader, ORD_WIN_GET_PS, &[child]);
+        assert_ne!(hps, 0);
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().ps_draw_target(hps),
+                   Some(super::super::pm_types::DrawTarget::Child { frame, hwnd: child }));
+        let before = pel(&loader, frame, 5, 5);
+        fill(&loader, hps, Rectl::new(-10, -10, 100, 100), RED);
+        // The child spans the frame surface's (25, 40) .. (65, 70).
+        assert_eq!(pel(&loader, frame, 25, 40), Some(RED), "its bottom-left corner");
+        assert_eq!(pel(&loader, frame, 64, 69), Some(RED), "its top-right pel");
+        assert_eq!(pel(&loader, frame, 65, 50), before, "clipped at its right edge");
+        assert_eq!(pel(&loader, frame, 24, 50), before, "and its left");
+        assert_eq!(pel(&loader, frame, 5, 5), before, "the rest is left alone");
+        // GpiQueryPel reads the child's own coordinates.
+        assert_eq!(query_pel(&loader, hps, 0, 0), 2, "red, as its colour-table index (CLR_RED)");
+        assert_eq!(query_pel(&loader, hps, 40, 0), CLR_NOINDEX as u32, "outside the child");
+    }
+
+    /// WinBeginPaint clips its PS to the update rectangle until WinEndPaint.
+    #[test]
+    fn a_begin_paint_ps_is_clipped_to_the_update_rectangle() {
+        let (loader, _, frame, client, _) = framed();
+        // Paint the client white, validate it, then invalidate (10,10)-(30,30).
+        let hps = call(&loader, ORD_WIN_GET_PS, &[client]);
+        fill(&loader, hps, Rectl::new(0, 0, 280, 170), 0x00FF_FFFF);
+        loader.shared.window_mgr.lock_or_recover().validate(client, None, true);
+        put_rect(&loader, RC, Rectl::new(10, 10, 30, 30));
+        call(&loader, ORD_WIN_INVALIDATE_RECT, &[client, RC, 0]);
+        let ps = call(&loader, ORD_WIN_BEGIN_PAINT, &[client, 0, OUT]);
+        assert_eq!(get_rect(&loader, OUT), Rectl::new(10, 10, 30, 30));
+        fill(&loader, ps, Rectl::new(0, 0, 280, 170), RED);
+        // The client is at (5, 10) in the frame's surface.
+        assert_eq!(pel(&loader, frame, 5 + 15, 10 + 15), Some(RED), "inside the update rectangle");
+        assert_eq!(pel(&loader, frame, 5 + 50, 10 + 50), Some(0x00FF_FFFF), "outside: clipped");
+        assert_eq!(call(&loader, ORD_WIN_END_PAINT, &[ps]), 1);
+        // A PS passed in loses the clip at WinEndPaint; nothing to update
+        // means no clip at all.
+        call(&loader, ORD_WIN_INVALIDATE_RECT, &[client, RC, 0]);
+        assert_eq!(call(&loader, ORD_WIN_BEGIN_PAINT, &[client, hps, OUT]), hps);
+        assert!(loader.shared.window_mgr.lock_or_recover().ps_map[&hps].paint_clip.is_some());
+        call(&loader, ORD_WIN_END_PAINT, &[hps]);
+        assert!(loader.shared.window_mgr.lock_or_recover().ps_map[&hps].paint_clip.is_none());
+        assert_eq!(call(&loader, ORD_WIN_BEGIN_PAINT, &[client, hps, OUT]), hps);
+        assert!(loader.shared.window_mgr.lock_or_recover().ps_map[&hps].paint_clip.is_none());
+    }
+
+    /// WinShowWindow invalidates a window it shows; WinUpdateWindow has the
+    /// window and its descendants that need painting paint before it returns.
+    #[test]
+    fn show_invalidates_and_update_window_paints_at_once() {
+        let (loader, hmq, _, client, child) = framed();
+        {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            for h in [client, child] {
+                let w = wm.get_window_mut(h).unwrap();
+                w.pfn_wp = 0x5000;
+            }
+            wm.validate(client, None, true);
+            wm.get_window_mut(child).unwrap().visible = false;
+        }
+        call(&loader, ORD_WIN_SHOW_WINDOW, &[child, 1]);
+        assert!(!update(&loader, child).is_empty(), "shown: to be painted");
+        assert!(paints(&loader, hmq).contains(&child));
+        call(&loader, ORD_WIN_SHOW_WINDOW, &[child, 1]);
+        // WinUpdateWindow on the client: only the child needs painting.
+        loader.shared.window_mgr.lock_or_recover().owner_calls.clear();
+        assert_eq!(call(&loader, ORD_WIN_UPDATE_WINDOW, &[client]), 1);
+        let calls: Vec<u32> = loader.shared.window_mgr.lock_or_recover().owner_calls.iter()
+            .filter(|c| c.kind == super::super::pm_owner::OwnerCallKind::SyncPaint).map(|c| c.control).collect();
+        assert_eq!(calls, vec![child]);
     }
 
     #[test]

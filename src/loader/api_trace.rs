@@ -409,6 +409,7 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             2 => "WrpGetDateTime64",
             3 => "WrpLocalTime64",
             4 => "WrpMakeTime64",
+            5 => "WrpBuiltinWindowProc",
             _ => "?",
         },
 
@@ -794,6 +795,7 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
             2 => &["pdt", "ptime"],
             3 => &["ptime", "pdt"],
             4 => &["pdt", "ptime"],
+            5 => &["hwnd", "msg", "mp1", "mp2"],
             _ => &[],
         },
 

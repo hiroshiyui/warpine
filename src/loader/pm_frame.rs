@@ -90,6 +90,12 @@ pub const MAX_MULT_SWP: u32 = 4096;
 /// Class name of frame windows created with `WinCreateWindow(WC_FRAME)`.
 pub const FRAME_CLASS: &str = "WC_FRAME";
 
+/// Bytes of the client `RECTL` before the `SWP` array of a `WM_FORMATFRAME`
+/// owner call.
+pub const FORMAT_RECTL_BYTES: u32 = 16;
+/// The most `SWP`s a subclassed frame's `WM_FORMATFRAME` is given room for.
+pub const MAX_FRAME_SWPS: u32 = 16;
+
 /// What decides a frame's layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct FrameShape {
@@ -411,9 +417,32 @@ impl Loader {
         self.shared.window_mgr.lock_or_recover().invalidate(hwnd, None, false);
     }
 
+    /// `WinCreateWindow` hook: a `WC_FRAME` window on the desktop is a
+    /// top-level window from the start, with or without frame controls or
+    /// a client — in the Z-order, with a surface.
+    pub(super) fn show_created_frame(&self, hwnd: u32) {
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        let Some(w) = wm.get_window(hwnd) else { return };
+        let top_level = w.class_name == FRAME_CLASS && (w.parent == 0 || w.parent == HWND_DESKTOP);
+        if top_level && !wm.z_order.contains(&hwnd) {
+            wm.z_push_top(hwnd);
+            wm.frame_surface(hwnd);
+        }
+    }
+
     /// `WinCalcFrameRect(hwndFrame, prcl, fClient)`.
     pub(super) fn win_calc_frame_rect(&self, tid: u32, frame: u32, prcl: u32, from_frame: bool) -> ApiResult {
         if !self.pm_check_hwnd(tid, frame, false) { return ApiResult::Normal(0); }
+        // A subclassed frame answers WM_CALCFRAMERECT itself.
+        let pfn = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            if wm.is_frame_window(frame) { wm.get_window(frame).map_or(0, |w| w.pfn_wp) } else { 0 }
+        };
+        if pfn != 0 {
+            use super::pm_hook::{CallChain, CallStep, ChainThen};
+            let step = CallStep::send(pfn, frame, WM_CALCFRAMERECT, prcl, from_frame as u32);
+            return self.start_chain(CallChain::new(tid, vec![step], false, ChainThen::ReturnLast));
+        }
         ApiResult::Normal(self.calc_frame_rect(frame, prcl, from_frame) as u32)
     }
 
@@ -429,6 +458,65 @@ impl Loader {
         let (Some(shape), Some(r)) = (shape, self.read_rectl(prcl)) else { return false };
         let out = if from_frame { client_rect_from_frame(r, &shape) } else { frame_rect_from_client(r, &shape) };
         self.write_rectl(prcl, out) && !out.is_empty()
+    }
+
+    /// Owner call `FrameFormat` for subclassed frame `frame`: ask its
+    /// procedure how many `SWP`s it lays out, then have it fill them in.
+    pub(super) fn frame_format_setup(&self, frame: u32, count: Option<u16>) -> super::pm_owner::OwnerSetup {
+        use super::pm_owner::OwnerSetup;
+        let wm = self.shared.window_mgr.lock_or_recover();
+        let Some(w) = wm.get_window(frame).filter(|w| w.pfn_wp != 0) else { return OwnerSetup::Skip };
+        let wnd_proc = w.pfn_wp;
+        match count {
+            None => OwnerSetup::Call { wnd_proc, owner: frame, msg: WM_QUERYFRAMECTLCOUNT, mp1: 0, mp2: 0, block: Vec::new(), hps: 0 },
+            Some(n) => {
+                // The client RECTL, then n zeroed SWPs (vcpu.rs points mp1
+                // at them, mp2 at the RECTL).
+                let mut block = vec![0u32; (FORMAT_RECTL_BYTES + u32::from(n) * SWP_SIZE_BYTES) as usize / 4];
+                if let Some(c) = wm.frame_shape(frame).map(|s| format_frame(&s).client) {
+                    block[..4].copy_from_slice(&[c.x as u32, c.y as u32, (c.x + c.cx) as u32, (c.y + c.cy) as u32]);
+                }
+                OwnerSetup::Call { wnd_proc, owner: frame, msg: WM_FORMATFRAME, mp1: 0, mp2: 0, block, hps: 0 }
+            }
+        }
+    }
+
+    /// Owner call `FrameFormat` returned `result` with `block` (the
+    /// `RECTL` and `SWP`s as the procedure left them): after the count,
+    /// ask for the layout; after the layout, apply the `SWP`s it filled in
+    /// to the frame's children (without laying the frame out again).
+    pub(super) fn frame_format_finish(&self, frame: u32, count: Option<u16>, result: u32, block: &[u32]) {
+        let Some(n) = count else {
+            let n = result.min(MAX_FRAME_SWPS) as u16;
+            if n > 0 {
+                self.shared.window_mgr.lock_or_recover().queue_owner_call(super::pm_owner::OwnerCall {
+                    control: frame, kind: super::pm_owner::OwnerCallKind::FrameFormat { count: Some(n) },
+                });
+            }
+            return;
+        };
+        let filled = result.min(u32::from(n)) as usize;
+        let swps = block.get(FORMAT_RECTL_BYTES as usize / 4..).unwrap_or(&[]);
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        let client = wm.frame_to_client.get(&frame).copied();
+        for words in swps.as_chunks::<{ (SWP_SIZE_BYTES / 4) as usize }>().0.iter().take(filled) {
+            let w = |off: u32| words[(off / 4) as usize];
+            let (fl, hwnd) = (w(SWP_FL), w(SWP_HWND));
+            if wm.get_window(hwnd).is_none_or(|c| c.parent != frame) { continue; }
+            let old = wm.get_window(hwnd).map(|c| (c.cx, c.cy));
+            let Some(c) = wm.get_window_mut(hwnd) else { continue };
+            let clamp = |v: u32| (v as i32).clamp(-MAX_WINDOW_COORD, MAX_WINDOW_COORD);
+            if fl & SWP_MOVE != 0 { (c.x, c.y) = (clamp(w(SWP_X)), clamp(w(SWP_Y))); }
+            if fl & SWP_SIZE != 0 { (c.cx, c.cy) = (clamp(w(SWP_CX)).max(0), clamp(w(SWP_CY)).max(0)); }
+            if fl & SWP_HIDE != 0 { c.visible = false; }
+            if fl & SWP_SHOW != 0 { c.visible = true; }
+            let new = (c.cx, c.cy);
+            if Some(hwnd) == client && let Some(old) = old && old != new {
+                wm.post_size(hwnd, old, new);
+            }
+            wm.invalidate(hwnd, None, true);
+        }
+        wm.mark_dirty(frame);
     }
 
     /// `WinDefWindowProc` for the frame formatting messages of a frame
@@ -917,5 +1005,105 @@ mod tests {
         assert_eq!(loader.read_swp(BUF, 1), Some(s));
         assert!(!loader.write_swp(0xFFFF_FFF0, 0, &s), "past the end of guest memory");
         assert_eq!(loader.read_swp(0xFFFF_FFF0, 0), None);
+    }
+
+    /// The frame procedure's formatting messages reach an unsubclassed
+    /// frame through the built-in path (WinSendMsg / WinDispatchMsg).
+    #[test]
+    fn frame_formatting_messages_reach_a_plain_frame() {
+        let loader = Loader::new_mock();
+        let (frame, _) = std_frame(&loader, FCF_TITLEBAR | FCF_VERTSCROLL);
+        let want = loader.frame_default_message(frame, WM_QUERYFRAMECTLCOUNT, 0, 0).unwrap();
+        assert!(want >= 1, "at least the client");
+        let r = loader.dispatch_builtin_control(frame, WM_QUERYFRAMECTLCOUNT, 0, 0);
+        assert!(matches!(r, ApiResult::Normal(n) if n == want), "{r:?}");
+    }
+
+    /// A subclassed frame lays out its controls: WM_QUERYFRAMECTLCOUNT,
+    /// then WM_FORMATFRAME with room for that many SWPs, whose answers are
+    /// applied to the frame's children.
+    #[test]
+    fn a_subclassed_frame_formats_itself() {
+        use super::super::pm_owner::{OwnerCall, OwnerCallKind, OwnerSetup};
+        let loader = Loader::new_mock();
+        let (frame, client) = std_frame(&loader, FCF_TITLEBAR);
+        let bar = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.tid_to_hmq[&0];
+            let bar = wm.create_window("WC_STATIC".into(), frame, hmq);
+            wm.get_window_mut(frame).unwrap().pfn_wp = 0x7000;
+            wm.owner_calls.clear();
+            wm.layout_frame(frame);
+            assert_eq!(wm.owner_calls, vec![OwnerCall { control: frame, kind: OwnerCallKind::FrameFormat { count: None } }]);
+            wm.owner_calls.clear();
+            bar
+        };
+        let OwnerSetup::Call { msg, wnd_proc, .. } = loader.frame_format_setup(frame, None) else { panic!() };
+        assert_eq!((msg, wnd_proc), (WM_QUERYFRAMECTLCOUNT, 0x7000));
+        // The procedure says 2 (the client and its tool bar): WM_FORMATFRAME
+        // with room for two SWPs after the client RECTL.
+        loader.frame_format_finish(frame, None, 2, &[]);
+        let next = loader.shared.window_mgr.lock_or_recover().owner_calls.clone();
+        assert_eq!(next, vec![OwnerCall { control: frame, kind: OwnerCallKind::FrameFormat { count: Some(2) } }]);
+        let OwnerSetup::Call { msg, block, .. } = loader.frame_format_setup(frame, Some(2)) else { panic!() };
+        assert_eq!(msg, WM_FORMATFRAME);
+        assert_eq!(block.len() as u32 * 4, FORMAT_RECTL_BYTES + 2 * SWP_SIZE_BYTES);
+        // It answers: the client 20 pels lower, the tool bar above it, and
+        // an SWP for a window that is not the frame's child (ignored).
+        let mut words = block.clone();
+        let swp = |fl: u32, x: i32, y: i32, cx: i32, cy: i32, hwnd: u32| -> Vec<u32> {
+            vec![fl, cy as u32, cx as u32, y as u32, x as u32, 0, hwnd, 0, 0]
+        };
+        words.truncate(4);
+        words.extend(swp(SWP_SIZE | SWP_MOVE, 0, 0, 300, 160, client));
+        words.extend(swp(SWP_SIZE | SWP_MOVE | SWP_SHOW, 0, 160, 300, 20, bar));
+        loader.frame_format_finish(frame, Some(2), 2, &words);
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        let b = wm.get_window(bar).unwrap();
+        assert_eq!((b.x, b.y, b.cx, b.cy, b.visible), (0, 160, 300, 20, true));
+        assert_eq!(wm.get_window(client).unwrap().cy, 160);
+        // Too many SWPs are capped.
+        drop(wm);
+        loader.frame_format_finish(frame, None, 1000, &[]);
+        let capped = loader.shared.window_mgr.lock_or_recover().owner_calls.last().copied();
+        assert_eq!(capped, Some(OwnerCall { control: frame, kind: OwnerCallKind::FrameFormat { count: Some(MAX_FRAME_SWPS as u16) } }));
+    }
+
+    /// WinCalcFrameRect asks a subclassed frame (WM_CALCFRAMERECT).
+    #[test]
+    fn win_calc_frame_rect_asks_a_subclassed_frame() {
+        let loader = Loader::new_mock();
+        let (frame, _) = std_frame(&loader, FCF_TITLEBAR);
+        loader.shared.window_mgr.lock_or_recover().get_window_mut(frame).unwrap().pfn_wp = 0x7000;
+        write_rect(&loader, BUF, [0, 0, 300, 200]);
+        let mut vcpu = MockVcpu::new();
+        vcpu.regs.rsp = 0x1000;
+        for (i, v) in [frame, BUF, 1].iter().enumerate() { loader.guest_write::<u32>(0x1004 + 4 * i as u32, *v).unwrap(); }
+        match loader.handle_pmwin_call(&mut vcpu, 0, ORD_WIN_CALC_FRAME_RECT) {
+            ApiResult::CallChain(c) => {
+                let Some(super::super::pm_hook::CallStep::Guest { proc_addr, args, .. }) = c.steps.front() else { panic!() };
+                assert_eq!((*proc_addr, args[1], args[2], args[3]), (0x7000, WM_CALCFRAMERECT, BUF, 1));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// A WC_FRAME made with WinCreateWindow is on the desktop at once, and
+    /// its children are placed relative to it even without a client.
+    #[test]
+    fn a_created_wc_frame_without_a_client_is_shown() {
+        let loader = Loader::new_mock();
+        let (_, _) = std_frame(&loader, FCF_TITLEBAR);
+        let frame = call(&loader, ORD_WIN_CREATE_WINDOW,
+                         &[HWND_DESKTOP, WC_FRAME_ATOM, 0, WS_VISIBLE, 50, 60, 200, 100, 0, HWND_TOP, 7, 0, 0]);
+        assert_ne!(frame, 0);
+        let mut wm = loader.shared.window_mgr.lock_or_recover();
+        assert!(wm.z_order.contains(&frame), "composited");
+        let hmq = wm.tid_to_hmq[&0];
+        let kid = wm.create_window("WC_BUTTON".into(), frame, hmq);
+        let k = wm.get_window_mut(kid).unwrap();
+        (k.x, k.y, k.cx, k.cy) = (10, 20, 30, 40);
+        assert_eq!(wm.get_abs_rect_in_frame(kid), (10, 20, 30, 40), "not moved by the frame's own position");
+        assert_eq!(wm.find_frame_for_hwnd(kid), frame);
     }
 }

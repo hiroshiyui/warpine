@@ -698,6 +698,34 @@ impl Loader {
         if class_name == helpmgr::HELP_INSTANCE_CLASS {
             return ApiResult::Normal(0);
         }
+        // A standard frame (of the application's class, without a procedure
+        // of its own) runs the system frame procedure: WinDefWindowProc,
+        // with the frame formatting messages (pm_frame.rs).
+        let std_frame = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            wm.frame_to_client.contains_key(&hwnd) && !wm.is_dialog(hwnd)
+                && !pm_types::WindowManager::is_builtin_class(&class_name)
+        };
+        if std_frame {
+            return self.def_window_proc(interrupt::current_vcpu().unwrap_or(0), hwnd, msg, mp1, mp2);
+        }
+        // The frame procedure's formatting messages (pm_frame.rs), also
+        // for a subclass procedure passing them on.
+        if let Some(r) = self.frame_default_message(hwnd, msg, mp1, mp2) {
+            return ApiResult::Normal(r);
+        }
+        // What a dialog asks its controls: their kind, and whether a
+        // mnemonic is theirs (pm_dialog.rs).
+        if msg == WM_QUERYDLGCODE {
+            let style = self.shared.window_mgr.lock_or_recover().get_window(hwnd).map_or(0, |w| w.style);
+            return ApiResult::Normal(pm_dialog::dialog_code(&class_name, style));
+        }
+        if msg == WM_MATCHMNEMONIC {
+            let matched = char::from_u32(mp1 & 0xFF).is_some_and(|ch| {
+                pm_dialog::mnemonic(&text).is_some_and(|m| m.eq_ignore_ascii_case(&ch))
+            });
+            return ApiResult::Normal(matched as u32);
+        }
 
         // A dialog without a dialog procedure (a message box): its default
         // dialog procedure. (Painting is the dialog's own, below.)
@@ -1322,7 +1350,7 @@ impl Loader {
         use pm_types::DrawTarget;
         let mut wm = self.shared.window_mgr.lock_or_recover();
         let frame = match target {
-            DrawTarget::Frame(f) | DrawTarget::Client(f) => Some(f),
+            DrawTarget::Frame(f) | DrawTarget::Client(f) | DrawTarget::Child { frame: f, .. } => Some(f),
             _ => None,
         };
         // WinLockWindowUpdate: nothing reaches a locked frame (pm_paint_style.rs).

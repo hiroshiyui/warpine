@@ -21,6 +21,7 @@
 //! `WindowManager::get_abs_rect_in_frame` accounts for.
 
 use super::constants::*;
+use super::pm_hook::{CallChain, CallStep, ChainThen};
 use super::pm_types::{AccelEntry, OS2Message};
 use super::{pm_button, ApiResult, Loader, MutexExt};
 
@@ -316,6 +317,24 @@ pub(super) fn accel_message(entry: &AccelEntry) -> (u32, u32, u32) {
 }
 
 /// The mnemonic of a control text: the character after the first `~`.
+/// `WM_QUERYDLGCODE` of a built-in control of class `class` and `style`.
+pub fn dialog_code(class: &str, style: u32) -> u32 {
+    match class {
+        "WC_ENTRYFIELD" => DLGC_ENTRYFIELD,
+        "WC_MLE" => DLGC_MLE,
+        "WC_STATIC" => DLGC_STATIC,
+        "WC_SCROLLBAR" => DLGC_SCROLLBAR,
+        "WC_MENU" | "#Menu" => DLGC_MENU,
+        "WC_BUTTON" => DLGC_BUTTON | match style & BS_PRIMARYSTYLES {
+            BS_PUSHBUTTON => DLGC_PUSHBUTTON | if style & BS_DEFAULT != 0 { DLGC_DEFAULT } else { 0 },
+            BS_CHECKBOX | BS_AUTOCHECKBOX | BS_3STATE | BS_AUTO3STATE => DLGC_CHECKBOX,
+            BS_RADIOBUTTON | BS_AUTORADIOBUTTON => DLGC_RADIOBUTTON,
+            _ => 0,
+        },
+        _ => 0,
+    }
+}
+
 pub(super) fn mnemonic(text: &str) -> Option<char> {
     let mut chars = text.chars();
     chars.find(|&c| c == '~')?;
@@ -401,6 +420,46 @@ impl Loader {
         if let Some(mq_arc) = wm.find_hmq_for_hwnd(hwnd).and_then(|hmq| wm.get_mq(hmq)) {
             mq_arc.lock_or_recover().cond.notify_one();
         }
+    }
+
+    /// `WinDefDlgProc(WM_CHAR)`: [`Self::dialog_char`], and a mnemonic no
+    /// built-in control has asked of the application's own controls
+    /// (`WM_MATCHMNEMONIC`, a call chain stopping at the first TRUE).
+    fn dialog_char_result(&self, hwnd: u32, mp1: u32, mp2: u32) -> ApiResult {
+        if self.dialog_char(hwnd, mp1, mp2) { return ApiResult::Normal(1); }
+        let fs = mp1 & 0xFFFF;
+        let Some(ch) = char::from_u32(mp2 & 0xFF).filter(|c| c.is_ascii_alphanumeric())
+            .filter(|_| fs & KC_KEYUP == 0 && fs & KC_CHAR != 0 && fs & KC_CTRL == 0) else { return ApiResult::Normal(0) };
+        let controls = self.mnemonic_candidates(hwnd);
+        if controls.is_empty() { return ApiResult::Normal(0); }
+        let steps = controls.iter().map(|&(h, pfn)| {
+            let mut s = CallStep::send(pfn, h, WM_MATCHMNEMONIC, ch as u32, 0);
+            if let CallStep::Guest { stop_on_true, .. } = &mut s { *stop_on_true = true; }
+            s
+        }).collect();
+        let tid = super::interrupt::current_vcpu().unwrap_or(0);
+        self.start_chain(CallChain::new(tid, steps, false, ChainThen::DialogMnemonic { dlg: hwnd }))
+    }
+
+    /// The application's own controls of dialog `hwnd` that a mnemonic may
+    /// match, in order, with their procedures.
+    fn mnemonic_candidates(&self, hwnd: u32) -> Vec<(u32, u32)> {
+        let wm = self.shared.window_mgr.lock_or_recover();
+        wm.dialog_items(hwnd).into_iter()
+            .filter(|&h| wm.is_guest_control(h) && wm.get_window(h).is_some_and(|w| w.style & WS_DISABLED == 0))
+            .filter_map(|h| wm.get_window(h).map(|w| (h, w.pfn_wp)))
+            .collect()
+    }
+
+    /// The `WM_MATCHMNEMONIC` chain of dialog `dlg` ended: the control that
+    /// answered TRUE (the last one asked) takes the focus.
+    pub(crate) fn dialog_mnemonic_done(&self, dlg: u32, chain: &super::pm_hook::CallChain) -> super::pm_hook::ChainEnd {
+        if !chain.stopped { return super::pm_hook::ChainEnd::Return(0); }
+        let controls = self.mnemonic_candidates(dlg);
+        if let Some(&(h, _)) = chain.results.len().checked_sub(1).and_then(|i| controls.get(i)) {
+            self.set_focus_window(h);
+        }
+        super::pm_hook::ChainEnd::Return(1)
     }
 
     /// The keyboard part of `WinDefDlgProc` for `WM_CHAR` on dialog `hwnd`:
@@ -534,7 +593,7 @@ impl Loader {
             // FALSE: the focus chosen when the dialog was created stays.
             WM_INITDLG => ApiResult::Normal(0),
             WM_PAINT => self.dispatch_builtin_control(hwnd, WM_PAINT, 0, 0),
-            WM_CHAR => ApiResult::Normal(self.dialog_char(hwnd, mp1, mp2) as u32),
+            WM_CHAR => self.dialog_char_result(hwnd, mp1, mp2),
             // Any command ends the dialog with the command value as result.
             WM_COMMAND => {
                 self.dismiss_dialog(hwnd, mp1 & 0xFFFF);
@@ -1331,6 +1390,77 @@ mod tests {
             ApiResult::Normal(v) => v,
             _ => unreachable!(),
         }
+    }
+
+    #[test]
+    fn built_in_controls_answer_dialog_codes() {
+        assert_eq!(dialog_code("WC_ENTRYFIELD", 0), DLGC_ENTRYFIELD);
+        assert_eq!(dialog_code("WC_BUTTON", BS_PUSHBUTTON | BS_DEFAULT), DLGC_BUTTON | DLGC_PUSHBUTTON | DLGC_DEFAULT);
+        assert_eq!(dialog_code("WC_BUTTON", BS_AUTOCHECKBOX), DLGC_BUTTON | DLGC_CHECKBOX);
+        assert_eq!(dialog_code("WC_BUTTON", BS_RADIOBUTTON), DLGC_BUTTON | DLGC_RADIOBUTTON);
+        assert_eq!(dialog_code("WC_STATIC", 0), DLGC_STATIC);
+        assert_eq!(dialog_code("WC_MLE", 0), DLGC_MLE);
+        assert_eq!(dialog_code("MyClass", 0), 0);
+        // Through the built-in path, as WinSendMsg reaches them.
+        let (loader, dlg, [_, red, ..]) = radio_dialog();
+        let send = |h: u32, msg: u32, mp1: u32| match loader.dispatch_builtin_control(h, msg, mp1, 0) {
+            ApiResult::Normal(v) => v,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(send(red, WM_QUERYDLGCODE, 0), DLGC_BUTTON | DLGC_RADIOBUTTON);
+        assert_eq!(send(red, WM_MATCHMNEMONIC, u32::from(b'r')), 1, "~Red, any case");
+        assert_eq!(send(red, WM_MATCHMNEMONIC, u32::from(b'g')), 0);
+        let _ = dlg;
+    }
+
+    /// Controls of the application's own classes take part in Tab, and a
+    /// mnemonic no built-in control has is asked of them
+    /// (WM_MATCHMNEMONIC, a chain stopping at the first TRUE).
+    #[test]
+    fn application_controls_take_tab_and_mnemonics() {
+        let loader = Loader::new_mock();
+        let hmq = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq(437);
+            wm.tid_to_hmq.insert(0, hmq);
+            wm.register_class("Dial".into(), 0x7000, 0);
+            hmq
+        };
+        let t = DlgTemplate {
+            dialog: item("WC_FRAME", "Mine", (10, 10, 200, 120), 100, FS_DLGBORDER),
+            frame_flags: FCF_TITLEBAR | FCF_DLGBORDER,
+            focus: None,
+            items: vec![
+                item("WC_ENTRYFIELD", "", (4, 100, 100, 10), 20, WS_TABSTOP),
+                item("Dial", "", (4, 80, 40, 10), 21, WS_TABSTOP),
+                item("Dial", "", (50, 80, 40, 10), 22, WS_TABSTOP),
+                item("WC_BUTTON", "~OK", (4, 4, 40, 14), DID_OK as u16, WS_TABSTOP | BS_DEFAULT),
+            ],
+        };
+        let (dlg, _, _) = loader.create_dialog(0, HWND_DESKTOP, hmq, 0, Some(t));
+        let h = |id: u32| loader.shared.window_mgr.lock_or_recover().find_child_by_id(dlg, id).unwrap();
+        let (entry, d1, d2, ok) = (h(20), h(21), h(22), h(DID_OK));
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().tab_stops(dlg), vec![entry, d1, d2, ok]);
+        loader.set_focus_window(entry);
+        assert_eq!(dlg_vkey(&loader, dlg, VK_TAB), 1);
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().focus_hwnd, d1, "Tab reaches the application's control");
+        // A mnemonic of a built-in control needs no chain.
+        let (m1, m2) = key(KC_CHAR, u32::from(b'o'), 0, 0);
+        assert!(matches!(loader.def_dlg_proc(dlg, WM_CHAR, m1, m2), ApiResult::Normal(1)));
+        // 'z': asked of the two Dial controls, in order, stopping at TRUE.
+        let (m1, m2) = key(KC_CHAR, u32::from(b'z'), 0, 0);
+        let ApiResult::CallChain(mut chain) = loader.def_dlg_proc(dlg, WM_CHAR, m1, m2) else { panic!("a chain") };
+        let asked: Vec<(u32, u32, u32)> = chain.steps.iter().map(|s| match s {
+            CallStep::Guest { args, stop_on_true, .. } => { assert!(stop_on_true); (args[0], args[1], args[2]) }
+            other => panic!("{other:?}"),
+        }).collect();
+        assert_eq!(asked, vec![(d1, WM_MATCHMNEMONIC, u32::from(b'z')), (d2, WM_MATCHMNEMONIC, u32::from(b'z'))]);
+        chain.steps.pop_front();
+        chain.returned(0, true);
+        chain.steps.pop_front();
+        chain.returned(1, true);
+        assert_eq!(loader.finish_chain(&chain), super::super::pm_hook::ChainEnd::Return(1));
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().focus_hwnd, d2, "the one that said TRUE");
     }
 
     #[test]

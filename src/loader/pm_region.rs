@@ -163,12 +163,16 @@ impl WindowManager {
             (Some(r), None) | (None, Some(r)) => Some(r),
             (Some(a), Some(b)) => Some(Region::combine(&a, &b, SetOp::And).map(Arc::new).unwrap_or(a)),
         };
-        // Viewing limits and graphics field (pm_xform.rs).
-        let clip = match (clip, ps.coords.device_limits()) {
-            (clip, None) => clip,
-            (None, Some(r)) => Some(Arc::new(Region::rect(r))),
-            (Some(c), Some(r)) => Some(Region::combine(&c, &Region::rect(r), SetOp::And).map(Arc::new).unwrap_or(c)),
-        };
+        // Viewing limits and graphics field (pm_xform.rs), and the update
+        // rectangle of a WinBeginPaint PS.
+        let mut clip = clip;
+        for limit in [ps.coords.device_limits(), ps.paint_clip] {
+            clip = match (clip, limit) {
+                (clip, None) => clip,
+                (None, Some(r)) => Some(Arc::new(Region::rect(r))),
+                (Some(c), Some(r)) => Some(Region::combine(&c, &Region::rect(r), SetOp::And).map(Arc::new).unwrap_or(c)),
+            };
+        }
         if let Some(ps) = self.ps_map.get_mut(&hps) { ps.clip = clip; }
     }
 

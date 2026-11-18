@@ -335,7 +335,7 @@ impl Loader {
         let frame = {
             let wm = self.shared.window_mgr.lock_or_recover();
             match wm.get_window(hwnd) {
-                Some(w) if w.pfn_wp == 0 && w.class_name.starts_with("WC_") => {
+                Some(w) if w.class_name.starts_with("WC_") => {
                     wm.find_frame_for_hwnd(hwnd)
                 }
                 _ => return false,

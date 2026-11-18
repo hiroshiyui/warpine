@@ -16,6 +16,7 @@
 //! | 2 | `WrpGetDateTime64(PDATETIME pdt, PLONGLONG ptime)` | the current time as a local `DATETIME` and as seconds, read once |
 //! | 3 | `WrpLocalTime64(const LONGLONG *ptime, PDATETIME pdt)` | seconds → local `DATETIME` |
 //! | 4 | `WrpMakeTime64(const DATETIME *pdt, PLONGLONG ptime)` | local `DATETIME` → seconds |
+//! | 5 | `WrpBuiltinWindowProc(HWND, ULONG, MPARAM, MPARAM)` | the window procedure of the built-in classes (`pm_window.rs`): programs get its address from `WinSubclassWindow`, `QWP_PFNWP` or `WinQueryClassInfo`, not by name |
 //!
 //! Errors: `ERROR_INVALID_PARAMETER` for a null or unreadable pointer, or a
 //! time whose year is outside 1–9999; `ERROR_TS_DATETIME` for a `DATETIME`

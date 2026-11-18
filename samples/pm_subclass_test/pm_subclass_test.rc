@@ -1,0 +1,15 @@
+/* pm_subclass_test.rc - a dialog with a control of the application's own
+ * class ("Dial") between an entry field and an OK button. */
+#define INCL_WIN
+#include <os2.h>
+#include "pm_subclass_test.h"
+
+DLGTEMPLATE ID_DLG LOADONCALL MOVEABLE DISCARDABLE
+BEGIN
+    DIALOG "Own controls", ID_DLG, 40, 40, 180, 80, WS_VISIBLE, FCF_TITLEBAR
+    BEGIN
+        ENTRYFIELD    "",       ID_NAME, 10, 56, 100, 10, ES_MARGIN | WS_TABSTOP
+        CONTROL       "",       ID_DIAL, 10, 30,  40, 16, "Dial", WS_TABSTOP | WS_VISIBLE
+        DEFPUSHBUTTON "~OK",    DID_OK,  10,  4,  50, 14, WS_TABSTOP
+    END
+END

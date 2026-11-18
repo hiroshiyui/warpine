@@ -173,6 +173,9 @@ impl super::Loader {
                         win.style = style;
                         win.visible = style & WS_VISIBLE != 0;
                         win.text = title.clone();
+                        // The frame runs the system frame procedure, not the
+                        // client's (subclassing gives it one: pm_window.rs).
+                        win.pfn_wp = 0;
                     }
                     // The client takes flClientStyle (the PM Guide's samples
                     // pass WS_VISIBLE there to "make client window visible").
@@ -369,117 +372,8 @@ impl super::Loader {
                 self.win_call_msg_filter(vcpu_id, read_stack(8), read_stack(12))
             }
             911 => {
-                // WinDefWindowProc
-                let hwnd = read_stack(4);
-                let msg = read_stack(8);
-                let mp1 = read_stack(12);
-                let mp2 = read_stack(16);
-
-                // Frame formatting messages of frame windows (pm_frame.rs).
-                if let Some(r) = self.frame_default_message(hwnd, msg, mp1, mp2) {
-                    return ApiResult::Normal(r);
-                }
-                // A window takes no drop unless its procedure says so.
-                if msg == super::pm_drag::DM_DRAGOVER {
-                    return ApiResult::Normal(super::pm_drag::DOR_NEVERDROP);
-                }
-                match msg {
-                    // The system menu and keyboard move / size (pm_sysmenu.rs).
-                    WM_SYSCOMMAND if self.frame_syscommand(hwnd, mp1 & 0xFFFF, mp2) => {}
-                    WM_CLOSE => { self.post_wm_quit(hwnd); }
-                    // Help: the help hooks of a frame (pm_message.rs).
-                    WM_HELP => return self.help_hook(vcpu_id, hwnd, mp1, mp2),
-                    // "The default window procedure sets the pointer shape":
-                    // the arrow (pm_pointer.rs).
-                    WM_MOUSEMOVE => { self.default_mouse_pointer(); }
-                    // As WinBeginPaint + WinEndPaint would: the window is valid.
-                    // (Its children keep their own update rectangles.)
-                    WM_PAINT => { self.shared.window_mgr.lock_or_recover().begin_paint(hwnd); }
-                    // Frame controls changed: show the frame's current menu
-                    // (standard frames; dialogs do not take menus yet).
-                    WM_UPDATEFRAME => {
-                        let is_frame = self.shared.window_mgr.lock_or_recover()
-                            .frame_to_client.contains_key(&hwnd);
-                        if is_frame && mp1 & FCF_MENU != 0 {
-                            self.update_frame_menu(hwnd);
-                        }
-                        return ApiResult::Normal(is_frame as u32);
-                    }
-                    // The system command Close (system menu, Alt+F4) asks the
-                    // window to close.
-                    WM_SYSCOMMAND if mp1 & 0xFFFF == SC_CLOSE => {
-                        self.post_to_window(hwnd, WM_CLOSE, 0, 0);
-                    }
-                    // Hide (the hide button): the frame becomes invisible
-                    // (PM Reference, WM_SYSCOMMAND: "Sets the visibility
-                    // state of the frame window to off").
-                    WM_SYSCOMMAND if mp1 & 0xFFFF == SC_HIDE => {
-                        let mut wm = self.shared.window_mgr.lock_or_recover();
-                        let frame = wm.client_to_frame(hwnd);
-                        if wm.is_frame(frame) { wm.hide_frame(frame); }
-                    }
-                    // Minimize, maximize, restore: done by frames with
-                    // minimize / maximize buttons (FID_MINMAX), else nothing.
-                    WM_SYSCOMMAND => {
-                        if let Some(op) = super::pm_minmax::syscommand_state(mp1 & 0xFFFF) {
-                            let prepared = {
-                                let mut wm = self.shared.window_mgr.lock_or_recover();
-                                let frame = wm.client_to_frame(hwnd);
-                                if wm.has_minmax_buttons(frame) {
-                                    wm.begin_minmax(frame, op, None, None).map(|t| (frame, t))
-                                } else { None }
-                            };
-                            if let Some((frame, target)) = prepared {
-                                return self.send_minmax(frame, op, target, 0);
-                            }
-                        }
-                    }
-                    WM_BUTTON1DOWN | WM_BUTTON1DBLCLK | WM_BUTTON1UP => {
-                        // If this frame has a menu, delegate mouse events to the menu
-                        // control handler so it can handle menu-bar clicks and dropdown
-                        // item selection.
-                        //
-                        // The input queue (pm_input.rs) delivers a frame's pointer messages to
-                        // its client (frame_to_client),
-                        // so WM_BUTTON1DOWN arrives with hwnd = client_hwnd.  We must also
-                        // check the frame window (via client_to_frame) for menu_hwnd.
-                        let (menu_hwnd, frame_cy) = {
-                            let wm = self.shared.window_mgr.lock_or_recover();
-                            // First try hwnd directly, then its frame ancestor.
-                            let mut mh = wm.get_window(hwnd).map(|w| w.menu_hwnd).unwrap_or(0);
-                            let mut frame_h = hwnd;
-                            if mh == 0 {
-                                frame_h = wm.client_to_frame(hwnd);
-                                if frame_h != hwnd {
-                                    mh = wm.get_window(frame_h).map(|w| w.menu_hwnd).unwrap_or(0);
-                                }
-                            }
-                            let cy = wm.get_window(frame_h).map(|w| w.cy).unwrap_or(0);
-                            (mh, cy)
-                        };
-                        // The second press of a double click acts as a press.
-                        if menu_hwnd != 0 && msg != WM_BUTTON1UP {
-                            let click_y = ((mp1 >> 16) & 0xFFFF) as i32;
-                            // Check if click is in the menu bar or open dropdown.
-                            // Title bar occupies [frame_cy-CHROME_TITLE_H, frame_cy).
-                            // Menu bar occupies [frame_cy-CHROME_TITLE_H-MENU_BAR_HEIGHT, frame_cy-CHROME_TITLE_H).
-                            // Dropdown is further below; we forward any click at or below menu bar top edge.
-                            let menu_y1 = frame_cy - CHROME_TITLE_H - MENU_BAR_HEIGHT as i32;
-                            // Only intercept clicks that are at or above menu_y1 (in bar),
-                            // or check if there's an open dropdown covering the click area.
-                            let open_item = {
-                                let wm = self.shared.window_mgr.lock_or_recover();
-                                wm.get_window(menu_hwnd)
-                                    .and_then(|w| w.window_ulong.get(&-1)).copied().unwrap_or(0)
-                            };
-                            if click_y >= menu_y1 || open_item > 0 {
-                                return self.dispatch_builtin_control(menu_hwnd, WM_BUTTON1DOWN, mp1, 0);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-                ApiResult::Normal(0)
+                // WinDefWindowProc(hwnd, msg, mp1, mp2)
+                self.def_window_proc(vcpu_id, read_stack(4), read_stack(8), read_stack(12), read_stack(16))
             }
             703 => {
                 // WinBeginPaint(HWND hwnd, HPS hps, PRECTL prclPaint) → HPS
@@ -499,8 +393,9 @@ impl super::Loader {
                 };
                 drop(wm);
                 // prclPaint receives the update rectangle, which is emptied
-                // (pm_paint.rs).
-                self.begin_paint_rect(hwnd, prcl);
+                // (pm_paint.rs); the PS is clipped to it until WinEndPaint.
+                let r = self.begin_paint_rect(hwnd, prcl);
+                self.shared.window_mgr.lock_or_recover().set_paint_clip(hps, r);
                 ApiResult::Normal(hps)
             }
             738 => {
@@ -524,9 +419,12 @@ impl super::Loader {
                     wm.invalidate_window_only(d);
                 }
                 wm.mark_dirty(frame_hwnd);
-                // A presentation space WinBeginPaint created ends with the paint.
+                // A presentation space WinBeginPaint created ends with the
+                // paint; one the program passed in loses the paint clip.
                 if wm.ps_map.get(&hps).is_some_and(|ps| ps.origin == PsOrigin::Paint) {
                     wm.remove_ps(hps);
+                } else {
+                    wm.set_paint_clip(hps, super::pm_rect::EMPTY_RECTL);
                 }
                 ApiResult::Normal(1)
             }
@@ -637,8 +535,13 @@ impl super::Loader {
                 debug!("  [VCPU {}] WinShowWindow hwnd={} show={}", vcpu_id, hwnd, show);
                 if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
+                let was = wm.get_window(hwnd).is_some_and(|w| w.visible);
                 if let Some(win) = wm.get_window_mut(hwnd) {
                     win.visible = show;
+                }
+                // A window shown again needs painting, with its children.
+                if show && !was {
+                    wm.invalidate(hwnd, None, true);
                 }
                 wm.mark_dirty(hwnd); // VDR-B4
                 wm.frame_visibility_changed(hwnd);
@@ -1352,11 +1255,13 @@ impl super::Loader {
                 ApiResult::Normal(1)
             }
             892 => {
-                // WinUpdateWindow(HWND hwnd)
-                // Trigger a present buffer
+                // WinUpdateWindow(HWND hwnd): the window and its descendants
+                // that need painting get WM_PAINT before the call returns
+                // (pm_paint.rs).
                 let hwnd = read_stack(4);
                 if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
+                wm.queue_update_window(hwnd);
                 let frame_hwnd = wm.client_to_frame(hwnd);
                 wm.mark_dirty(frame_hwnd);
                 ApiResult::Normal(1)
@@ -1431,8 +1336,10 @@ impl super::Loader {
                 self.shared.window_mgr.lock_or_recover().build_container(hwnd);
                 // The parts of a combination box / spin button.
                 self.build_compound_control(hwnd);
-                // The client of a WC_FRAME window (pm_frame.rs).
+                // The client of a WC_FRAME window (pm_frame.rs); a WC_FRAME
+                // on the desktop is composited from the start.
                 self.adopt_frame_client(hwnd);
+                self.show_created_frame(hwnd);
 
                 // A visible new window is invalid: it draws itself on creation.
                 if fl_style & WS_VISIBLE != 0 {
@@ -1473,13 +1380,9 @@ impl super::Loader {
                 let pfn_wp = read_stack(8);
                 debug!("  [VCPU {}] WinSubclassWindow hwnd={} pfn_wp=0x{:08X}", vcpu_id, hwnd, pfn_wp);
                 if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-                if let Some(win) = wm.get_window_mut(hwnd) {
-                    let old = win.pfn_wp;
-                    win.pfn_wp = pfn_wp;
-                    return ApiResult::Normal(old);
-                }
-                ApiResult::Normal(0)
+                // A built-in window's previous procedure is the built-in one
+                // (WrpBuiltinWindowProc), which the new one chains to.
+                ApiResult::Normal(self.set_window_proc(hwnd, pfn_wp).unwrap_or(0))
             }
             735 => {
                 // WinEnableWindow(HWND hwnd, BOOL fEnable) -> BOOL
@@ -2250,6 +2153,131 @@ pub(super) fn sys_value(index: i32) -> i32 {
         SV_CXSIZEBORDER | SV_CYSIZEBORDER | SV_CXDLGFRAME | SV_CYDLGFRAME => CHROME_BORDER_W,
         SV_CXBORDER | SV_CYBORDER => 1,
         _ => 0,
+    }
+}
+
+
+impl super::Loader {
+    /// `WinDefWindowProc`: the default handling of a message. It is also the
+    /// procedure of a standard frame, which has none of its own until it is
+    /// subclassed (`WrpBuiltinWindowProc`, pm_window.rs).
+    pub(crate) fn def_window_proc(&self, vcpu_id: u32, hwnd: u32, msg: u32, mp1: u32, mp2: u32) -> ApiResult {
+        // "The default window procedure sends the message to the owner
+        // window if it exists" (WM_CHAR): a key a control does not use
+        // reaches its dialog.
+        if msg == WM_CHAR {
+            let owner = {
+                let wm = self.shared.window_mgr.lock_or_recover();
+                wm.get_window(hwnd).map_or(0, |w| w.owner)
+            };
+            let ok = owner != 0 && owner != hwnd && self.shared.window_mgr.lock_or_recover().is_window(owner);
+            return if ok { self.win_send_msg(vcpu_id, owner, msg, mp1, mp2) } else { ApiResult::Normal(0) };
+        }
+        // Frame formatting messages of frame windows (pm_frame.rs).
+        if let Some(r) = self.frame_default_message(hwnd, msg, mp1, mp2) {
+            return ApiResult::Normal(r);
+        }
+        // A window takes no drop unless its procedure says so.
+        if msg == super::pm_drag::DM_DRAGOVER {
+            return ApiResult::Normal(super::pm_drag::DOR_NEVERDROP);
+        }
+        match msg {
+            // The system menu and keyboard move / size (pm_sysmenu.rs).
+            WM_SYSCOMMAND if self.frame_syscommand(hwnd, mp1 & 0xFFFF, mp2) => {}
+            WM_CLOSE => { self.post_wm_quit(hwnd); }
+            // Help: the help hooks of a frame (pm_message.rs).
+            WM_HELP => return self.help_hook(vcpu_id, hwnd, mp1, mp2),
+            // "The default window procedure sets the pointer shape":
+            // the arrow (pm_pointer.rs).
+            WM_MOUSEMOVE => { self.default_mouse_pointer(); }
+            // As WinBeginPaint + WinEndPaint would: the window is valid.
+            // (Its children keep their own update rectangles.)
+            WM_PAINT => { self.shared.window_mgr.lock_or_recover().begin_paint(hwnd); }
+            // Frame controls changed: show the frame's current menu
+            // (standard frames; dialogs do not take menus yet).
+            WM_UPDATEFRAME => {
+                let is_frame = self.shared.window_mgr.lock_or_recover()
+                    .frame_to_client.contains_key(&hwnd);
+                if is_frame && mp1 & FCF_MENU != 0 {
+                    self.update_frame_menu(hwnd);
+                }
+                return ApiResult::Normal(is_frame as u32);
+            }
+            // The system command Close (system menu, Alt+F4) asks the
+            // window to close.
+            WM_SYSCOMMAND if mp1 & 0xFFFF == SC_CLOSE => {
+                self.post_to_window(hwnd, WM_CLOSE, 0, 0);
+            }
+            // Hide (the hide button): the frame becomes invisible
+            // (PM Reference, WM_SYSCOMMAND: "Sets the visibility
+            // state of the frame window to off").
+            WM_SYSCOMMAND if mp1 & 0xFFFF == SC_HIDE => {
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let frame = wm.client_to_frame(hwnd);
+                if wm.is_frame(frame) { wm.hide_frame(frame); }
+            }
+            // Minimize, maximize, restore: done by frames with
+            // minimize / maximize buttons (FID_MINMAX), else nothing.
+            WM_SYSCOMMAND => {
+                if let Some(op) = super::pm_minmax::syscommand_state(mp1 & 0xFFFF) {
+                    let prepared = {
+                        let mut wm = self.shared.window_mgr.lock_or_recover();
+                        let frame = wm.client_to_frame(hwnd);
+                        if wm.has_minmax_buttons(frame) {
+                            wm.begin_minmax(frame, op, None, None).map(|t| (frame, t))
+                        } else { None }
+                    };
+                    if let Some((frame, target)) = prepared {
+                        return self.send_minmax(frame, op, target, 0);
+                    }
+                }
+            }
+            WM_BUTTON1DOWN | WM_BUTTON1DBLCLK | WM_BUTTON1UP => {
+                // If this frame has a menu, delegate mouse events to the menu
+                // control handler so it can handle menu-bar clicks and dropdown
+                // item selection.
+                //
+                // The input queue (pm_input.rs) delivers a frame's pointer messages to
+                // its client (frame_to_client),
+                // so WM_BUTTON1DOWN arrives with hwnd = client_hwnd.  We must also
+                // check the frame window (via client_to_frame) for menu_hwnd.
+                let (menu_hwnd, frame_cy) = {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    // First try hwnd directly, then its frame ancestor.
+                    let mut mh = wm.get_window(hwnd).map(|w| w.menu_hwnd).unwrap_or(0);
+                    let mut frame_h = hwnd;
+                    if mh == 0 {
+                        frame_h = wm.client_to_frame(hwnd);
+                        if frame_h != hwnd {
+                            mh = wm.get_window(frame_h).map(|w| w.menu_hwnd).unwrap_or(0);
+                        }
+                    }
+                    let cy = wm.get_window(frame_h).map(|w| w.cy).unwrap_or(0);
+                    (mh, cy)
+                };
+                // The second press of a double click acts as a press.
+                if menu_hwnd != 0 && msg != WM_BUTTON1UP {
+                    let click_y = ((mp1 >> 16) & 0xFFFF) as i32;
+                    // Check if click is in the menu bar or open dropdown.
+                    // Title bar occupies [frame_cy-CHROME_TITLE_H, frame_cy).
+                    // Menu bar occupies [frame_cy-CHROME_TITLE_H-MENU_BAR_HEIGHT, frame_cy-CHROME_TITLE_H).
+                    // Dropdown is further below; we forward any click at or below menu bar top edge.
+                    let menu_y1 = frame_cy - CHROME_TITLE_H - MENU_BAR_HEIGHT as i32;
+                    // Only intercept clicks that are at or above menu_y1 (in bar),
+                    // or check if there's an open dropdown covering the click area.
+                    let open_item = {
+                        let wm = self.shared.window_mgr.lock_or_recover();
+                        wm.get_window(menu_hwnd)
+                            .and_then(|w| w.window_ulong.get(&-1)).copied().unwrap_or(0)
+                    };
+                    if click_y >= menu_y1 || open_item > 0 {
+                        return self.dispatch_builtin_control(menu_hwnd, WM_BUTTON1DOWN, mp1, 0);
+                    }
+                }
+            }
+            _ => {}
+        }
+        ApiResult::Normal(0)
     }
 }
 
