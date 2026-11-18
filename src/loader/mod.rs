@@ -14,6 +14,8 @@ mod pm_dialog;
 mod pm_error;
 mod pm_button;
 mod pm_owner;
+mod pm_hook;
+mod pm_message;
 mod pm_combo;
 mod pm_spin;
 pub mod pm_scrollbar;
@@ -188,6 +190,10 @@ pub(crate) enum FrameKind {
     /// space `hps` and its structure (`block_len` words) at `block_at` on
     /// the guest stack. On return the call is finished and the chain goes
     /// on with the next one.
+    /// A call of a chain of guest calls (`pm_hook.rs`: hooks, the window
+    /// procedures of a broadcast). `stops`: the call was one whose TRUE
+    /// result ends the chain's calls.
+    CallChain { chain: Box<pm_hook::CallChain>, stops: bool },
     OwnerDraw {
         chain: Box<pm_owner::OwnerChain>,
         call: pm_owner::OwnerCall,
@@ -273,6 +279,10 @@ pub(crate) enum ApiResult {
         hwnd:     u32,
         wnd_proc: u32,
     },
+    /// Make the guest calls of `chain` (`pm_hook.rs`) before the API
+    /// returns: hooks, or the window procedures of a broadcast; `vcpu.rs`
+    /// (`continue_call_chain`) then returns or runs the API again.
+    CallChain(Box<pm_hook::CallChain>),
     /// Invoke an OS/2 exception handler as a guest callback.
     ///
     /// Emitted by `DosRaiseException` and by the IDT exception dispatch path.

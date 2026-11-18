@@ -227,8 +227,14 @@ impl super::Loader {
                 if !self.has_msg_queue(vcpu_id) { return self.pm_fail(vcpu_id, PMERR_NO_MSG_QUEUE); }
                 // A filter that is no window: FALSE, PMERR_INVALID_HWND.
                 if !self.pm_check_hwnd(vcpu_id, read_stack(12), true) { return ApiResult::Normal(0); }
-                match self.next_message(vcpu_id, read_stack(8), read_stack(12), read_stack(16),
-                                        read_stack(20), PM_REMOVE, true) {
+                // The input hooks (pm_hook.rs) see the message before it is
+                // returned and accelerators are translated.
+                let pqmsg = read_stack(8);
+                let hooks = self.input_hooks(vcpu_id, pqmsg);
+                match self.next_message(vcpu_id, pqmsg, read_stack(12), read_stack(16),
+                                        read_stack(20), PM_REMOVE, true, hooks.is_empty()) {
+                    Some(_) if !hooks.is_empty() =>
+                        self.input_hook_chain(vcpu_id, hooks, ordinal, pqmsg, PM_REMOVE, false),
                     Some(msg) => ApiResult::Normal((msg != WM_QUIT) as u32),
                     None => ApiResult::Normal(0),
                 }
@@ -240,8 +246,13 @@ impl super::Loader {
                 if !self.pm_check_hwnd(vcpu_id, read_stack(12), true) { return ApiResult::Normal(0); }
                 // fl is PM_REMOVE or PM_NOREMOVE; other bits are invalid.
                 if read_stack(24) & !PM_REMOVE != 0 { return self.pm_fail(vcpu_id, PMERR_INVALID_FLAG); }
-                let found = self.next_message(vcpu_id, read_stack(8), read_stack(12), read_stack(16),
-                                              read_stack(20), read_stack(24), false);
+                let (pqmsg, fl) = (read_stack(8), read_stack(24));
+                let hooks = self.input_hooks(vcpu_id, pqmsg);
+                let found = self.next_message(vcpu_id, pqmsg, read_stack(12), read_stack(16),
+                                              read_stack(20), fl, false, hooks.is_empty());
+                if found.is_some() && !hooks.is_empty() {
+                    return self.input_hook_chain(vcpu_id, hooks, ordinal, pqmsg, fl, true);
+                }
                 ApiResult::Normal(found.is_some() as u32)
             }
             912 => {
@@ -297,30 +308,48 @@ impl super::Loader {
                 ApiResult::Normal(1)
             }
             920 => {
-                // WinSendMsg - synchronous, needs callback
-                let hwnd = read_stack(4);
-                let msg = read_stack(8);
-                let mp1 = read_stack(12);
-                let mp2 = read_stack(16);
-                if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
-
-                let pfn_wp = {
-                    let wm = self.shared.window_mgr.lock_or_recover();
-                    wm.get_window(hwnd).map(|w| w.pfn_wp).unwrap_or(0)
-                };
-
-                if pfn_wp != 0 {
-                    return ApiResult::Callback {
-                        wnd_proc: pfn_wp,
-                        hwnd,
-                        msg,
-                        mp1,
-                        mp2,
-                    };
-                }
-                // No guest window proc — route to built-in control handler
-                // (handles LM_INSERTITEM, LM_QUERYITEMCOUNT, etc.)
-                self.dispatch_builtin_control(hwnd, msg, mp1, mp2)
+                // WinSendMsg(HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2):
+                // synchronous, after the send hooks (pm_message.rs).
+                self.win_send_msg(vcpu_id, read_stack(4), read_stack(8), read_stack(12), read_stack(16))
+            }
+            902 => {
+                // WinPostQueueMsg(HMQ hmq, ULONG msg, MPARAM mp1, MPARAM mp2) -> BOOL
+                self.win_post_queue_msg(vcpu_id, read_stack(4), read_stack(8), read_stack(12), read_stack(16))
+            }
+            901 => {
+                // WinBroadcastMsg(HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2, ULONG rgf) -> BOOL
+                self.win_broadcast_msg(vcpu_id, read_stack(4), read_stack(8), read_stack(12),
+                                       read_stack(16), read_stack(20))
+            }
+            761 => {
+                // WinInSendMsg(HAB hab) -> BOOL
+                self.win_in_send_msg(vcpu_id)
+            }
+            897 => {
+                // WinWaitMsg(HAB hab, ULONG msgFirst, ULONG msgLast) -> BOOL
+                self.win_wait_msg(vcpu_id, read_stack(8), read_stack(12))
+            }
+            978 => {
+                // WinWaitEventSem(HEV hev, ULONG ulTimeout) -> APIRET: as
+                // DosWaitEventSem (pm_message.rs: no sent messages to process).
+                ApiResult::Normal(self.dos_wait_event_sem(read_stack(4), read_stack(8)))
+            }
+            979 => {
+                // WinRequestMutexSem(HMTX hmtx, ULONG ulTimeout) -> APIRET:
+                // as DosRequestMutexSem.
+                ApiResult::Normal(self.dos_request_mutex_sem(vcpu_id, read_stack(4), read_stack(8)))
+            }
+            928 => {
+                // WinSetHook(HAB hab, HMQ hmq, LONG iHook, PFN pfnHook, HMODULE hmod) -> BOOL
+                self.win_set_hook(vcpu_id, read_stack(8), read_stack(12) as i32, read_stack(16))
+            }
+            927 => {
+                // WinReleaseHook(HAB hab, HMQ hmq, LONG iHook, PFN pfnHook, HMODULE hmod) -> BOOL
+                self.win_release_hook(vcpu_id, read_stack(8), read_stack(12) as i32, read_stack(16))
+            }
+            905 => {
+                // WinCallMsgFilter(HAB hab, PQMSG pqmsg, ULONG msgf) -> BOOL
+                self.win_call_msg_filter(vcpu_id, read_stack(8), read_stack(12))
             }
             911 => {
                 // WinDefWindowProc
@@ -333,6 +362,8 @@ impl super::Loader {
                     // The system menu and keyboard move / size (pm_sysmenu.rs).
                     WM_SYSCOMMAND if self.frame_syscommand(hwnd, mp1 & 0xFFFF, mp2) => {}
                     WM_CLOSE => { self.post_wm_quit(hwnd); }
+                    // Help: the help hooks of a frame (pm_message.rs).
+                    WM_HELP => return self.help_hook(vcpu_id, hwnd, mp1, mp2),
                     // "The default window procedure sets the pointer shape":
                     // the arrow (pm_pointer.rs).
                     WM_MOUSEMOVE => { self.default_mouse_pointer(); }
@@ -1977,9 +2008,12 @@ impl super::Loader {
     /// keystroke translated, and return its message number. The message is
     /// left in the queue unless `fl` is `PM_REMOVE`. With `wait`, block
     /// until one arrives; `None` when there is none (or on shutdown).
+    /// Without `translate` the message is written as it was queued (the
+    /// input hooks see it first and the accelerator is translated after
+    /// them, `pm_hook.rs`).
     #[allow(clippy::too_many_arguments)]
-    fn next_message(&self, vcpu_id: u32, pqmsg: u32, hwnd_filter: u32, first: u32, last: u32,
-                    fl: u32, wait: bool) -> Option<u32> {
+    pub(super) fn next_message(&self, vcpu_id: u32, pqmsg: u32, hwnd_filter: u32, first: u32, last: u32,
+                    fl: u32, wait: bool, translate: bool) -> Option<u32> {
         let (hmq, mq_arc) = {
             let wm = self.shared.window_mgr.lock_or_recover();
             let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
@@ -2001,7 +2035,7 @@ impl super::Loader {
             if let Some(mut msg) = found {
                 // Keystrokes that are accelerators arrive as the command
                 // they stand for.
-                self.translate_queued_accelerator(&mut msg);
+                if translate { self.translate_queued_accelerator(&mut msg); }
                 if pqmsg != 0 {
                     self.guest_write::<u32>(pqmsg, msg.hwnd);
                     self.guest_write::<u32>(pqmsg + 4, msg.msg);

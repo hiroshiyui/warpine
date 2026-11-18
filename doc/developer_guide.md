@@ -281,7 +281,7 @@ Multimedia Presentation Manager/2 APIs. Dispatched at `MDM_BASE` (10240) + ordin
 
 ### PMWIN (src/loader/pm_win.rs)
 
-Window management APIs — 127 ordinals (see the reference manual for the list) including WinInitialize, WinCreateMsgQueue, WinRegisterClass, WinCreateStdWindow, WinGetMsg, WinDispatchMsg, WinSendMsg, WinPostMsg, WinDefWindowProc, WinBeginPaint, WinEndPaint, WinMessageBox, WinStartTimer, WinStopTimer, clipboard operations, and dialog support.
+Window management APIs — 140 ordinals (see the reference manual for the list) including WinInitialize, WinCreateMsgQueue, WinRegisterClass, WinCreateStdWindow, WinGetMsg, WinDispatchMsg, WinSendMsg, WinPostMsg, WinDefWindowProc, WinBeginPaint, WinEndPaint, WinMessageBox, WinStartTimer, WinStopTimer, clipboard operations, and dialog support.
 
 #### Built-in window class atoms (MAKEINTATOM encoding)
 
@@ -602,6 +602,24 @@ The first item is the dialog frame itself; the controls follow in tree order (ea
 5. At `CALLBACK_RET_TRAP`, the `DlgRunLoop` frame handler checks dismissal again and either returns to caller or calls `setup_dlg_dispatch()` again for the next message.
 
 `WinDismissDlg` sets `dialog_dismissed = true` and `dialog_result = result`, then calls `condvar.notify_one()` to wake the blocked loop.
+
+### Messages and hooks (pm_message.rs, pm_hook.rs)
+
+`pm_message.rs` holds the message calls beyond `WinPostMsg` / `WinGetMsg`: `WinSendMsg` (920), `WinPostQueueMsg` (902), `WinBroadcastMsg` (901), `WinInSendMsg` (761), `WinWaitMsg` (897), `WinWaitEventSem` (978), `WinRequestMutexSem` (979) and the `WM_HELP` default (`help_hook`). `pm_hook.rs` holds the hooks — `WinSetHook` (928), `WinReleaseHook` (927), `WinCallMsgFilter` (905) — in `HookTable` (`WindowManager::hooks`): hooks by scope (a queue, or 0 for the process), the one set last first, at most `MAX_HOOKS_PER_SCOPE` per scope; a destroyed queue (`destroy_mq`) drops its hooks, an ended thread (`end_thread`) its per-thread state.
+
+*Scope (ADR-0020).* One OS/2 process runs per Warpine process, so system-wide hooks are out of reach: `hmq` NULLHANDLE makes a *process* hook, called for every queue of this process after the queue's own hooks. `HMQ_CURRENT` is the calling thread's queue (`PMERR_NO_MSG_QUEUE` without one); any other live queue of the process is accepted.
+
+*Call chains.* A hook is guest code that must run before the API returns. Such an API returns `ApiResult::CallChain(Box<CallChain>)`: a list of `CallStep`s (`Guest`: a `_System` call with up to `MAX_CHAIN_ARGS` arguments and an optional structure — `SMHSTRUCT`, `RECTL` — copied into `CHAIN_BLOCK_BYTES` just below the caller's stack, its address replacing one argument; `Builtin`: a message for a window without a guest procedure, handled on the host) and a `ChainThen`. `continue_call_chain` in `vcpu.rs` makes each call under a `FrameKind::CallChain` frame built below the caller's return address, so a long chain does not use up stack; a `stop_on_true` call returning TRUE ends the calls (`CallChain::returned`). `Loader::finish_chain` then gives `ChainEnd::Return(v)` or `ChainEnd::Rerun(ordinal)`: the vCPU goes back to the PMWIN thunk (`MAGIC_API_BASE + PMWIN_BASE + ordinal`) with the return address on top of the stack, and the API runs again with its arguments as they were.
+
+- `WinGetMsg` / `WinPeekMsg` with input hooks (`Loader::input_hooks`, none without a `QMSG`) write the message untranslated (`next_message(.., translate = false)`) and call the hooks with `(hab, pqmsg, fs)`. Let through, the message is read back from the `QMSG` (the hook may have changed it), an accelerator keystroke translated, and the call returns (`WinGetMsg`: FALSE for `WM_QUIT`). Swallowed, `WinGetMsg` and `WinPeekMsg(PM_REMOVE)` run again for the next message; `WinPeekMsg(PM_NOREMOVE)` returns FALSE (the message stays queued).
+- `WinSendMsg` with send hooks on the receiving window's queue calls them (`SMHSTRUCT` = mp2, mp1, msg, hwnd, `PM_MODEL_2X`; `fInterTask` = the window belongs to another thread's queue), notes `HookTable::mark_send_hooks_done` and runs again; the rerun takes the note (first thing, so it cannot outlive the call) and delivers the message.
+- A window procedure runs on the sending thread. A send to another thread's window runs as a one-call chain with `inter_thread_send`, during which `WinInSendMsg` is TRUE on that thread (`HookTable::in_send`).
+- `WinBroadcastMsg(BMSG_SEND)` is a chain of the targets' send hooks and procedures (`WindowManager::broadcast_targets`: children, or descendants pre-order, optionally frames only; a window destroyed by an earlier call is skipped); `BMSG_POST` posts to each target, `BMSG_POSTQUEUE` to every queue with no window.
+- While a thread runs a hook chain (`HookTable::in_hook`) no hooks are called for what the hooks do, so a send hook that sends cannot call itself without end.
+
+*Unverified choices* (the PM Reference is silent or ambiguous): the hooks of the *receiving* queue run for a send; a hook set twice moves to the front instead of being chained twice; accelerators are translated after the input hooks; a message swallowed during `WinPeekMsg(PM_NOREMOVE)` stays queued and the peek returns FALSE; `BMSG_POSTQUEUE` ignores `hwnd` and the other flags; error codes (`PMERR_PARAMETER_OUT_OF_RANGE` for an unknown hook type, a null procedure, a full scope or releasing a hook that is not set; `PMERR_INVALID_FLAG` for unknown `BMSG_*` bits); the help-hook arguments (`HLPM_MENU` with `FID_MENU` and the item id for `CMDSRC_MENU`, `HLPM_FRAME` with the frame's id and the focus window's id, `HLPM_WINDOW` for another main window, and `prcPosition` = the frame's rectangle on the desktop); `WM_HELP` in a child window is *posted* to its parent; no hooks inside hooks. Not done: the message-filter hook in the modal loops (`MSGF_DIALOGBOX`, `MSGF_MESSAGEBOX`, `MSGF_TRACK`), the help hook of a message box (`idWindow`), journal and the other hook types (accepted, never called), sent messages processed by the receiving thread.
+
+The sample `samples/pm_msg_hook_test/` (68 checks) runs as `gui_pm_msg_hook_test_calls_hooks_and_broadcasts`.
 
 ### Message boxes (WinMessageBox)
 
@@ -1446,7 +1464,9 @@ src/
     pm_types.rs        PM data types (windows, classes, presentation spaces, WindowManager)
     locale.rs          Os2Locale: country/codepage information
     doscalls.rs        DOSCALLS API implementations (file, memory, process, NLS; others in their own modules)
-    pm_win.rs          PMWIN dispatcher and window calls (127 ordinals, logic in the pm_* modules)
+    pm_win.rs          PMWIN dispatcher and window calls (140 ordinals, logic in the pm_* modules)
+    pm_message.rs      WinSendMsg (send hooks, inter-thread sends), WinPostQueueMsg, WinBroadcastMsg, WinInSendMsg, WinWaitMsg, WM_HELP help hook
+    pm_hook.rs         WinSetHook / WinReleaseHook / WinCallMsgFilter: HookTable, call chains of guest calls (ApiResult::CallChain)
     pm_gpi.rs          PMGPI API implementations (67 ordinals, incl. DevOpenDC/DevCloseDC/DevQueryCaps)
     pm_shapes.rs       Arc geometry (ARCPARAMS, full/partial/point arcs, FIXED) and the PATSYM_* pattern table
     pm_bitmap.rs       Bitmap codec (BITMAPINFOHEADER/2, RT_BITMAP), memory DCs, bitmaps, GpiBitBlt family

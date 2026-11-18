@@ -650,7 +650,7 @@ const KBDCALLS_ORDINALS: u32 = 3;
 const MOUCALLS_ORDINALS: u32 = 20;
 /// PMWIN ordinals dispatched by `pm_win.rs` (checked against its
 /// `N => { // WinName(` arms by a test).
-const PMWIN_ORDINALS: u32 = 131;
+const PMWIN_ORDINALS: u32 = 140;
 /// PMGPI ordinals dispatched by `pm_gpi.rs`, `pm_region.rs` and
 /// `pm_area.rs` (checked against their arms by a test), of which
 /// `PMGPI_STUBS` are stubs (`GpiLoadFonts`, `GpiLoadPublicFonts`,
@@ -713,7 +713,7 @@ pub fn compat_report() -> String {
                   MouGetNumQueEl, MouGet/SetPtrPos, MouGetNumButtons, MouGetNumMickeys, \
                   MouGet/SetDevStatus, MouGet/SetEventMask, MouGet/SetScaleFact, \
                   MouDrawPtr, MouRemovePtr, MouGet/SetPtrShape, MouSynch)\n");
-    out.push_str(&format!("  PMWIN     {PMWIN_ORDINALS} implemented  (WinInitialize, message queues, window mgmt, \
+    out.push_str(&format!("  PMWIN     {PMWIN_ORDINALS} implemented  (WinInitialize, message queues, hooks, broadcasts, window mgmt, \
                   input, paint, timers, menus, dialogs, controls, clipboard, resources, regions)\n"));
     out.push_str(&format!("  PMGPI     {} implemented, {PMGPI_STUBS} stub  (presentation spaces, colour and mix, \
                   lines, boxes, arcs, text, logical fonts, font metrics, bitmaps, regions, clipping, \

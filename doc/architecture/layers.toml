@@ -140,7 +140,7 @@ modules = [
   "loader/pm_dialog.rs", "loader/pm_msgbox.rs", "loader/pm_destroy.rs", "loader/pm_error.rs",
   "loader/pm_pointer.rs", "loader/pm_minmax.rs", "loader/pm_sysmenu.rs", "loader/pm_paint.rs",
   "loader/pm_query.rs", "loader/pm_keystate.rs", "loader/pm_syscolor.rs", "loader/pm_rect.rs",
-  "loader/pm_cursor.rs",
+  "loader/pm_cursor.rs", "loader/pm_message.rs", "loader/pm_hook.rs",
 ]
 
 [[layer]]

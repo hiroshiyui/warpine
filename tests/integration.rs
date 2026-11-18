@@ -1858,6 +1858,15 @@ fn gui_pm_combo_spin_test_drops_picks_spins_and_owner_draws() {
     assert_scripted_checks_pass("samples/pm_combo_spin_test/pm_combo_spin_test.exe", "pm_combo_spin_test", 59, &steps);
 }
 
+/// pm_msg_hook_test: input, send, message-filter and help hooks on the
+/// calling queue (a swallowed, a changed message; SMHSTRUCT; an inter-task
+/// send from a second thread seen by WinInSendMsg), WinPostQueueMsg,
+/// WinBroadcastMsg, WinWaitMsg, WinWaitEventSem and WinRequestMutexSem.
+#[test]
+fn gui_pm_msg_hook_test_calls_hooks_and_broadcasts() {
+    assert_sample_checks_pass("samples/pm_msg_hook_test/pm_msg_hook_test.exe", "pm_msg_hook_test", 68);
+}
+
 /// pm_combo_spin_test after the session: "Green" picked and the list
 /// dropped again over the client, the spin buttons at 6 and "Sun", the
 /// owner-drawn colour swatches with item 1 selected (drawn by the owner)

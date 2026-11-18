@@ -207,6 +207,8 @@ impl super::Loader {
             if let Some(hmq) = wm.thread_queue(vcpu_id) {
                 wm.destroy_mq(vcpu_id, hmq);
             }
+            // So do its hook and send-call state (pm_hook.rs).
+            wm.hooks.forget_thread(vcpu_id);
         }
         let (outcome, memory) = {
             let mut table = self.shared.threads.table.lock_or_recover();
@@ -802,6 +804,16 @@ impl super::Loader {
                                         );
                                         continue;
                                     }
+                                    FrameKind::CallChain { mut chain, stops } => {
+                                        // A hook or broadcast call returned: on
+                                        // with the chain (pm_hook.rs).
+                                        chain.returned(result, stops);
+                                        continue_call_chain(
+                                            &mut *vcpu, self, &mut callback_stack,
+                                            chain, frame.saved_rip, frame.saved_rsp,
+                                        );
+                                        continue;
+                                    }
                                     FrameKind::DestroyWindows { mut chain } => {
                                         // WM_DESTROY returned: on to the next window,
                                         // or back to the caller when all are done.
@@ -1054,6 +1066,15 @@ impl super::Loader {
                                     &mut *vcpu, self, &mut callback_stack,
                                     chain, Some((hwnd, wnd_proc)),
                                     return_addr as u64, regs.rsp + 4,
+                                );
+                            }
+                            ApiResult::CallChain(chain) => {
+                                let regs = vcpu.get_regs().unwrap();
+                                let return_addr = self.guest_read::<u32>(regs.rsp as u32)
+                                    .expect("Stack read OOB for call-chain return address");
+                                continue_call_chain(
+                                    &mut *vcpu, self, &mut callback_stack,
+                                    chain, return_addr as u64, regs.rsp + 4,
                                 );
                             }
                             ApiResult::ExceptionDispatch { .. } => {
@@ -1493,6 +1514,78 @@ fn continue_owner_draw(
     }
 }
 
+/// Go on with a chain of guest calls (`pm_hook.rs`): make its next call
+/// under a `FrameKind::CallChain` frame — a structure the call passes just
+/// below the API caller's stack (`saved_rsp`), the return address and the
+/// arguments below it —, handle messages for built-in windows on the spot,
+/// and once no call is left finish the chain: return its result to
+/// `saved_rip` / `saved_rsp`, or run the PMWIN API again (its arguments are
+/// still on the stack above the return address at `saved_rsp - 4`).
+fn continue_call_chain(
+    vcpu: &mut dyn super::vm_backend::VcpuBackend,
+    loader: &super::Loader,
+    callback_stack: &mut Vec<CallbackFrame>,
+    mut chain: Box<super::pm_hook::CallChain>,
+    saved_rip: u64,
+    saved_rsp: u64,
+) {
+    use super::pm_hook::{CallStep, ChainEnd, CHAIN_BLOCK_BYTES, MAX_CHAIN_ARGS};
+    while let Some(step) = chain.steps.pop_front() {
+        match step {
+            CallStep::Builtin { hwnd, msg, mp1, mp2 } => {
+                match loader.dispatch_builtin_control(hwnd, msg, mp1, mp2) {
+                    ApiResult::Normal(v) => chain.returned(v, false),
+                    other => debug!("call chain: built-in result {:?} of msg 0x{:X} for {} dropped", other, msg, hwnd),
+                }
+            }
+            CallStep::Guest { proc_addr, mut args, block, block_arg, stop_on_true, window } => {
+                if window != 0 && !loader.shared.window_mgr.lock_or_recover().is_window(window) {
+                    continue; // destroyed by an earlier call
+                }
+                args.truncate(MAX_CHAIN_ARGS);
+                let block_at = (saved_rsp - 4) as u32 - CHAIN_BLOCK_BYTES;
+                let words = block.len().min((CHAIN_BLOCK_BYTES / 4) as usize);
+                for (i, w) in block.iter().take(words).enumerate() {
+                    loader.guest_write::<u32>(block_at + 4 * i as u32, *w).expect("call-chain stack OOB");
+                }
+                if words > 0 && block_arg < args.len() {
+                    args[block_arg] = block_at;
+                }
+                callback_stack.push(CallbackFrame {
+                    saved_rip,
+                    saved_rsp,
+                    kind: FrameKind::CallChain { chain, stops: stop_on_true },
+                });
+                let mut regs = vcpu.get_regs().unwrap();
+                let sp = block_at - 4 * (args.len() as u32 + 1);
+                loader.guest_write::<u32>(sp, CALLBACK_RET_TRAP).expect("call-chain stack OOB");
+                for (i, a) in args.iter().enumerate() {
+                    loader.guest_write::<u32>(sp + 4 * (i as u32 + 1), *a).expect("call-chain stack OOB");
+                }
+                regs.rsp = sp as u64;
+                regs.rip = proc_addr as u64;
+                vcpu.set_regs(&regs).unwrap();
+                return;
+            }
+        }
+    }
+    let mut regs = vcpu.get_regs().unwrap();
+    match loader.finish_chain(&chain) {
+        ChainEnd::Return(v) => {
+            regs.rip = saved_rip;
+            regs.rsp = saved_rsp;
+            regs.rax = v as u64;
+        }
+        ChainEnd::Rerun(ordinal) => {
+            // Back at the API thunk with the return address on top of the
+            // stack: the call is made again.
+            regs.rip = MAGIC_API_BASE + (PMWIN_BASE + ordinal) as u64;
+            regs.rsp = saved_rsp - 4;
+        }
+    }
+    vcpu.set_regs(&regs).unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1586,6 +1679,52 @@ mod tests {
         assert_eq!((regs.rip, regs.rsp, regs.rax), (0x4000, saved_rsp, 77));
         assert!(stack.is_empty());
         assert!(!loader.shared.window_mgr.lock_or_recover().owner_drawing.contains(&hmq), "the chain ended");
+    }
+
+    /// A call chain makes its calls just below the caller's stack, the
+    /// structure a call passes above its arguments; a TRUE result of a
+    /// stopping call skips the rest, and WinSendMsg after its send hooks is
+    /// made again from the API thunk with the caller's return address on
+    /// top of the stack.
+    #[test]
+    fn call_chain_calls_hooks_below_the_callers_stack_then_reruns_or_returns() {
+        use super::super::pm_hook::{CallChain, CallStep, ChainThen, CHAIN_BLOCK_BYTES, ORD_WIN_SEND_MSG};
+        let loader = super::super::Loader::new_mock();
+        let saved_rsp: u64 = 0x8_0000;
+        let mut vcpu = MockVcpu::new();
+        let mut stack = Vec::new();
+        let steps = vec![
+            CallStep::hook_with_block(0x7000, vec![1, 0, 3], vec![10, 11, 12], 1, false),
+            CallStep::hook(0x7100, vec![4], true),
+            CallStep::hook(0x7200, vec![5], true),
+        ];
+        let chain = Box::new(CallChain::new(0, steps, true, ChainThen::SendAgain));
+        continue_call_chain(&mut vcpu, &loader, &mut stack, chain, 0x4000, saved_rsp);
+        let block = saved_rsp as u32 - 4 - CHAIN_BLOCK_BYTES;
+        let regs = vcpu.get_regs().unwrap();
+        assert_eq!((regs.rip, regs.rsp as u32), (0x7000, block - 16));
+        let rd = |a: u32| loader.guest_read::<u32>(a).unwrap();
+        assert_eq!([rd(block - 16), rd(block - 12), rd(block - 8), rd(block - 4)],
+                   [CALLBACK_RET_TRAP, 1, block, 3], "the block's address replaces argument 1");
+        assert_eq!([rd(block), rd(block + 4), rd(block + 8)], [10, 11, 12]);
+        // Each call returns; the second one returns TRUE.
+        for result in [0, 1] {
+            let Some(CallbackFrame { kind: FrameKind::CallChain { mut chain, stops }, saved_rip, saved_rsp }) = stack.pop()
+            else { panic!("a call-chain frame") };
+            chain.returned(result, stops);
+            continue_call_chain(&mut vcpu, &loader, &mut stack, chain, saved_rip, saved_rsp);
+        }
+        assert!(stack.is_empty(), "the third hook is not called");
+        let regs = vcpu.get_regs().unwrap();
+        assert_eq!((regs.rip, regs.rsp), (MAGIC_API_BASE + (PMWIN_BASE + ORD_WIN_SEND_MSG) as u64, saved_rsp - 4));
+        let mut wm = loader.shared.window_mgr.lock_or_recover();
+        assert!(!wm.hooks.in_hook(0) && wm.hooks.take_send_hooks_done(0));
+        drop(wm);
+        // A chain that returns a value.
+        let chain = Box::new(CallChain::new(0, vec![], false, ChainThen::Return(1)));
+        continue_call_chain(&mut vcpu, &loader, &mut stack, chain, 0x4000, saved_rsp);
+        let regs = vcpu.get_regs().unwrap();
+        assert_eq!((regs.rip, regs.rsp, regs.rax), (0x4000, saved_rsp, 1));
     }
 
     // ── Thread ends ──────────────────────────────────────────────────────

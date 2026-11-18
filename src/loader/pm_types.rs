@@ -559,6 +559,9 @@ pub struct WindowManager {
     pub owner_calls: Vec<super::pm_owner::OwnerCall>,
     /// Message queues whose thread is running owner-draw calls now.
     pub owner_drawing: HashSet<u32>,
+    /// Hooks (`WinSetHook`) and the per-thread state of hook and send
+    /// calls (`pm_hook.rs`).
+    pub hooks: super::pm_hook::HookTable,
 }
 
 /// The caret of a text control as last painted, in the surface coordinates
@@ -626,6 +629,7 @@ impl WindowManager {
             key_state: Default::default(),
             owner_calls: Vec::new(),
             owner_drawing: HashSet::new(),
+            hooks: Default::default(),
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
@@ -767,6 +771,8 @@ impl WindowManager {
         }
         self.tid_to_hmq.remove(&tid);
         self.msg_queues.remove(&hmq);
+        // Hooks set on the queue go with it.
+        self.hooks.drop_queue(hmq);
         // The queue's cursor goes with it.
         if let Some(c) = self.cursors.remove(&hmq) {
             self.mark_dirty(c.hwnd);

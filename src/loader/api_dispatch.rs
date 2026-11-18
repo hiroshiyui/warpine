@@ -81,6 +81,7 @@ impl super::Loader {
             ApiResult::CallGuest { addr, .. }  => { debug!(addr, "call_guest"); 0 }
             ApiResult::DlgRunLoop { dlg_proc, .. } => { debug!(dlg_proc, "dlg_run_loop"); 0 }
             ApiResult::DestroyWindows { wnd_proc, .. } => { debug!(wnd_proc, "destroy_windows"); 0 }
+            ApiResult::CallChain(chain)        => { debug!(steps = chain.steps.len(), "call_chain"); 0 }
             ApiResult::ExceptionDispatch { handler_addr, .. } => {
                 debug!(handler_addr, "exception_dispatch"); 0
             }
