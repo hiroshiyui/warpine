@@ -91,7 +91,7 @@ pub fn all() -> &'static [ApiEntry] {
 static REGISTRY: &[ApiEntry] = &[
     // ── 16-bit shim ordinals (DOSCALLS) ──────────────────────────────────
     ApiEntry { ordinal: 8,   module: "DOSCALLS", name: "DosGetInfoSeg",    argc: 2,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_get_info_seg(a[0],a[1])) },
+               handler: |l,_v,i,a| ApiResult::Normal(l.dos_get_info_seg(i,a[0],a[1])) },
     ApiEntry { ordinal: 75,  module: "DOSCALLS", name: "DosQueryFileMode16", argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_file_mode_16(a[0],a[1])) },
     ApiEntry { ordinal: 84,  module: "DOSCALLS", name: "DosSetFileMode",   argc: 2,

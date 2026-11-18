@@ -387,20 +387,18 @@ impl super::Loader {
                     }
                 }
                 // DosGetInfoSeg(pGlobalSeg:far, pLocalSeg:far) — ordinal 8
+                // Pascal: the last argument (pLocalSeg) is nearest the top.
                 8 => {
-                    debug!("  16-bit DosGetInfoSeg (stub)");
-                    0
+                    let p_local = read_far_ptr(0);
+                    let p_global = read_far_ptr(4);
+                    self.dos_get_info_seg(vcpu_id, p_global, p_local)
                 }
                 // DosSetSigHandler — ordinal 41
                 41 => { debug!("  16-bit DosSetSigHandler (stub)"); 0 }
                 // DosSetVec (exception vector) — ordinal 49
                 49 => { debug!("  16-bit DosSetVec (stub)"); 0 }
-                // DosGetInfoSeg (16-bit, get GINFOSEG/LINFOSEG selectors) — ordinal 8
-                // Already handled above
-                // DosGetHugeShift — ordinal 41? No, that's DosSetSigHandler
-                // DosGetMachineMode — ordinal 49? No, that's DosSetVec
                 // DosGetPID — ordinal 92
-                92 => { debug!("  16-bit DosGetInfoSeg (ordinal 92, stub)"); 0 }
+                92 => { debug!("  16-bit DosGetPID (ordinal 92, stub)"); 0 }
                 // DosGetEnv — ordinal 94
                 94 => {
                     // Returns environment selector and command line offset

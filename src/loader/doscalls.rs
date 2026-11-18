@@ -1816,17 +1816,6 @@ impl super::Loader {
         flat
     }
 
-    pub fn dos_get_info_seg(&self, p_global_sel: u32, p_local_sel: u32) -> u32 {
-        debug!("DosGetInfoSeg(pGlobal=0x{:08X}, pLocal=0x{:08X})", p_global_sel, p_local_sel);
-        if p_global_sel != 0 {
-            let _ = self.guest_write::<u16>(p_global_sel, (PIB_BASE >> 4) as u16);
-        }
-        if p_local_sel != 0 {
-            let _ = self.guest_write::<u16>(p_local_sel, (TIB_BASE >> 4) as u16);
-        }
-        0
-    }
-
     /// The codepage an NLS call works on: `COUNTRYCODE.codepage` (offset 4)
     /// when `pcc` is given and the field is not 0, else the process codepage
     /// ("If codepage is set to 0, ... the current process code page of the
