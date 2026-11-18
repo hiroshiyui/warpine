@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Changed
+- **Pointer input is routed when it is read** — a click on a client area or dialog is hit-tested, activates its frame (`WM_ACTIVATE` before the click) and takes the focus from a control beside it when it reaches the head of the system input queue, strictly after the input before it, as the PM Programming Guide describes; moves and releases go to the window under the pointer at read time, so a click follows a window the busy program has moved; a disabled frame takes no pointer input (ADR-0051). Clicks on frame chrome and the sizing border still act at once. Sample `pm_inputorder_test`.
+
 ## [0.0.5] - 2026-11-19
 
 ### Added

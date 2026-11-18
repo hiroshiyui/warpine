@@ -201,6 +201,7 @@ samples/               OS/2 sample applications and build scripts
   pm_modal_filter_test/ Message-filter hooks in modal loops, standard-dialog notifications
   pm_query_test/       Window lookups, key state, message position, system colours
   pm_typeahead_test/   Keys typed while the program is busy reach the focus window of the moment they are read
+  pm_inputorder_test/  Clicks are hit-tested and activate their frame when read, after the input before them
   pm_font_test/        GPI font selection (IBM Plex families, styles, sizes) and CJK text
   pm_shapes_test/      GPI arcs, area patterns and line widths, checked with GpiQueryPel
   pm_codepage_test/    Queue and presentation-space codepages (WinSetCp, CP1004, GpiSetCp)
@@ -325,7 +326,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 1867 unit tests (no KVM required)
+cargo test                        # 1872 unit tests (no KVM required)
 cargo test --test integration     # 139 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
