@@ -53,3 +53,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0045](0045-drag-and-drop-within-a-process.md) | Drag and drop within a process: a GUI-fed drag channel and DM_* messages as call chains | Accepted | 2026-11-18 |
 | [0046](0046-container-icon-view-filter-and-editing.md) | Container icon view, filtering and direct editing: one filter chain, edits written back through the owner's buffer | Accepted | 2026-11-18 |
 | [0047](0047-light-hinting-with-skrifa.md) | Light hinting of Latin text with skrifa, and a contrast curve | Accepted | 2026-11-18 |
+| [0048](0048-builtin-window-procedure-and-tier-1-pm.md) | A guest-callable procedure for built-in windows; standard frames run the default procedure; child presentation spaces in the frame surface | Accepted | 2026-11-18 |
