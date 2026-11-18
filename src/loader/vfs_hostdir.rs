@@ -35,6 +35,29 @@ fn systemtime_to_dos(st: SystemTime) -> (u16, u16) {
 /// The access and write times `info` asks to set; `None` when both are
 /// "not changed" (0 / 0). Linux cannot set a creation time, so the
 /// creation date and time are ignored.
+/// The host permission bits for OS/2 attributes `attrs` on a file whose
+/// mode is `mode`: `FILE_READONLY` clears every write bit, its absence gives
+/// the owner write access back (group and others stay as they are).
+/// Hidden, system and archive have no host counterpart and change nothing.
+fn mode_for_attributes(mode: u32, attrs: FileAttribute) -> u32 {
+    const WRITE_BITS: u32 = 0o222;
+    const OWNER_WRITE: u32 = 0o200;
+    if attrs.0 & FileAttribute::READONLY.0 != 0 { mode & !WRITE_BITS } else { mode | OWNER_WRITE }
+}
+
+/// The permissions to give a file for `attrs`; `None` for a directory
+/// (a read-only directory would refuse new files on the host, which OS/2
+/// does not do) or when nothing changes.
+fn requested_permissions(meta: &fs::Metadata, attrs: FileAttribute) -> Option<fs::Permissions> {
+    use std::os::unix::fs::PermissionsExt;
+    if meta.is_dir() {
+        return None;
+    }
+    let mode = meta.permissions().mode();
+    let new = mode_for_attributes(mode, attrs);
+    (new != mode).then(|| fs::Permissions::from_mode(new))
+}
+
 fn requested_file_times(info: &FileStatus) -> Option<fs::FileTimes> {
     use super::clock::{fdate_request, FileTimeRequest};
     let mut times = fs::FileTimes::new();
@@ -1003,8 +1026,14 @@ impl VfsBackend for HostDirBackend {
         result
     }
 
+    /// Delete a file. A read-only file is refused with
+    /// `ERROR_ACCESS_DENIED`, as on OS/2 (the host would unlink it, since
+    /// only the directory's permissions count there).
     fn delete(&self, path: &str) -> VfsResult<()> {
         let host_path = self.resolve_existing(path)?;
+        if fs::symlink_metadata(&host_path).is_ok_and(|m| m.is_file() && m.permissions().readonly()) {
+            return Err(Os2Error::ACCESS_DENIED);
+        }
         let result = fs::remove_file(&host_path).map_err(|e| Self::map_io_error(&e));
         if result.is_ok()
             && let Some(parent) = host_path.parent() { self.dir_cache.invalidate(parent); }
@@ -1053,20 +1082,30 @@ impl VfsBackend for HostDirBackend {
     ) -> VfsResult<()> {
         let files = self.files.lock().unwrap();
         let entry = files.get(&handle.0).ok_or(Os2Error::INVALID_HANDLE)?;
-        match requested_file_times(info) {
-            Some(times) => entry.file.set_times(times).map_err(|e| Self::map_io_error(&e)),
+        if let Some(times) = requested_file_times(info) {
+            entry.file.set_times(times).map_err(|e| Self::map_io_error(&e))?;
+        }
+        let meta = entry.file.metadata().map_err(|e| Self::map_io_error(&e))?;
+        match requested_permissions(&meta, info.attributes) {
+            Some(perm) => entry.file.set_permissions(perm).map_err(|e| Self::map_io_error(&e)),
             None => Ok(()),
         }
     }
 
-    /// Set the access and write times of a file or directory by path, as
-    /// [`set_file_info`](Self::set_file_info) does.
+    /// Set the access and write times and the read-only attribute of a file
+    /// or directory by path, as [`set_file_info`](Self::set_file_info) does.
     fn set_path_info(&self, path: &str, _level: u32, info: &FileStatus) -> VfsResult<()> {
         let host_path = self.resolve_existing(path)?;
-        let Some(times) = requested_file_times(info) else { return Ok(()) };
-        File::open(&host_path)
-            .and_then(|f| f.set_times(times))
-            .map_err(|e| Self::map_io_error(&e))
+        if let Some(times) = requested_file_times(info) {
+            File::open(&host_path)
+                .and_then(|f| f.set_times(times))
+                .map_err(|e| Self::map_io_error(&e))?;
+        }
+        let meta = fs::metadata(&host_path).map_err(|e| Self::map_io_error(&e))?;
+        match requested_permissions(&meta, info.attributes) {
+            Some(perm) => fs::set_permissions(&host_path, perm).map_err(|e| Self::map_io_error(&e)),
+            None => Ok(()),
+        }
     }
 
     fn get_ea(&self, path: &str, name: &str) -> VfsResult<EaEntry> {
@@ -1223,6 +1262,52 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let backend = HostDirBackend::new(tmp.path().to_path_buf()).unwrap();
         (tmp, backend)
+    }
+
+    // ── Setting file information ──
+
+    fn status(attrs: u32, write: (u16, u16)) -> FileStatus {
+        FileStatus {
+            creation_date: 0, creation_time: 0, last_access_date: 0, last_access_time: 0,
+            last_write_date: write.0, last_write_time: write.1, file_size: 0, file_alloc: 0,
+            attributes: FileAttribute(attrs),
+        }
+    }
+
+    #[test]
+    fn read_only_maps_to_the_write_bits() {
+        assert_eq!(mode_for_attributes(0o100644, FileAttribute::READONLY), 0o100444);
+        assert_eq!(mode_for_attributes(0o100666, FileAttribute(0x21)), 0o100444, "archive ignored");
+        assert_eq!(mode_for_attributes(0o100444, FileAttribute::NORMAL), 0o100644);
+        assert_eq!(mode_for_attributes(0o100640, FileAttribute(0x06)), 0o100640, "hidden / system ignored");
+    }
+
+    #[test]
+    fn set_path_info_applies_times_and_read_only() {
+        use super::super::clock::{pack_fdate_ftime, LocalTime};
+        let (tmp, backend) = create_temp_backend();
+        std::fs::write(tmp.path().join("A.TXT"), b"x").unwrap();
+        std::fs::create_dir(tmp.path().join("DIR")).unwrap();
+        let when = pack_fdate_ftime(&LocalTime::new(2099, 12, 31, 23, 59, 58));
+        backend.set_path_info("a.txt", 1, &status(0x01, when)).unwrap();
+        let st = backend.query_path_info("A.TXT", 1).unwrap();
+        assert_eq!((st.last_write_date, st.last_write_time), when);
+        assert_ne!(st.attributes.0 & FileAttribute::READONLY.0, 0, "read-only now");
+        assert!(std::fs::OpenOptions::new().write(true).open(tmp.path().join("A.TXT")).is_err());
+        // Times 0 / 0 keep the time; no FILE_READONLY makes it writable again.
+        backend.set_path_info("a.txt", 1, &status(0x20, (0, 0))).unwrap();
+        let st = backend.query_path_info("A.TXT", 1).unwrap();
+        assert_eq!(st.attributes.0 & FileAttribute::READONLY.0, 0);
+        assert_eq!((st.last_write_date, st.last_write_time), when);
+        // A directory keeps its write bits (new files can still be made in it).
+        backend.set_path_info("dir", 1, &status(0x11, (0, 0))).unwrap();
+        std::fs::write(tmp.path().join("DIR").join("B.TXT"), b"y").unwrap();
+        assert_eq!(backend.set_path_info("missing", 1, &status(0, (0, 0))).unwrap_err(), Os2Error::FILE_NOT_FOUND);
+        // A read-only file cannot be deleted until the attribute is cleared.
+        backend.set_path_info("a.txt", 1, &status(0x01, (0, 0))).unwrap();
+        assert_eq!(backend.delete("a.txt").unwrap_err(), Os2Error::ACCESS_DENIED);
+        backend.set_path_info("a.txt", 1, &status(0, (0, 0))).unwrap();
+        backend.delete("a.txt").unwrap();
     }
 
     // ── Wildcard matching ──

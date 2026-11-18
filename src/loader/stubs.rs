@@ -694,10 +694,22 @@ impl super::Loader {
     }
 
     /// DosSetFileMode (ordinal 84): set file attributes.
+    ///
+    /// Sets the attributes only, as `DosSetPathInfo` with times of 0 / 0
+    /// would: `FILE_READONLY` is applied (`vfs_hostdir.rs`), hidden, system
+    /// and archive have no host counterpart.
     pub fn dos_set_file_mode(&self, psz_name: u32, attr: u32) -> u32 {
         let name = self.read_guest_string(psz_name);
         debug!("  DosSetFileMode('{}', 0x{:04X})", name, attr);
-        NO_ERROR
+        let status = super::vfs::FileStatus {
+            creation_date: 0, creation_time: 0, last_access_date: 0, last_access_time: 0,
+            last_write_date: 0, last_write_time: 0, file_size: 0, file_alloc: 0,
+            attributes: super::vfs::FileAttribute(attr),
+        };
+        match self.shared.drive_mgr.lock_or_recover().set_path_info(&name, FIL_STANDARD, &status) {
+            Ok(()) => NO_ERROR,
+            Err(e) => e.0,
+        }
     }
 
     /// DosSetPathInfo (ordinal 219): set a file's or directory's times by
@@ -723,8 +735,9 @@ impl super::Loader {
     ///
     /// The access and write times are set; a date and time of 0 / 0 leave
     /// that time unchanged (Control Program Reference). Linux cannot set a
-    /// creation time and the attributes are not set (`DosSetFileMode` is a
-    /// stub too). Unverified: the error OS/2 gives for an invalid date
+    /// creation time. Of the attributes, `FILE_READONLY` is applied to files
+    /// (`vfs_hostdir.rs`); hidden, system and archive have no host
+    /// counterpart. Unverified: the error OS/2 gives for an invalid date
     /// (Warpine: `ERROR_INVALID_PARAMETER`).
     fn read_set_status(&self, level: u32, p_info: u32, cb_info: u32)
         -> Result<Option<super::vfs::FileStatus>, u32>
