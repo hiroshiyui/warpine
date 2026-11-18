@@ -32,3 +32,9 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0024](0024-regions-and-clipping.md) | Represent regions as y-bands of x spans and clip by saving and restoring pels | Accepted | 2026-11-18 |
 | [0025](0025-owner-draw-and-combo-lists.md) | Run owner-draw calls before the API returns, and drop combination-box lists inside the parent | Accepted | 2026-11-18 |
 | [0026](0026-call-chains-and-process-hooks.md) | Run hooks and broadcast sends as call chains that may re-run the API, and scope system hooks to the process | Accepted | 2026-11-18 |
+| [0027](0027-gpi-transforms-per-primitive.md) | Apply GPI transforms to each primitive when it is called, with an identity fast path | Accepted | 2026-11-18 |
+| [0028](0028-process-nesting-limit.md) | Limit how deeply Warpine processes start one another and how many children each keeps | Accepted | 2026-11-18 |
+| [0029](0029-standard-dialogs-and-print-modules.md) | Build the standard file and font dialogs in memory, and give PMCTLS and PMSPL module slots | Accepted | 2026-11-18 |
+| [0030](0030-process-local-shell-services.md) | Keep the switch list, atom tables and DDE within one Warpine process | Accepted | 2026-11-18 |
+| [0031](0031-capped-test-runs.md) | Run the commit checks inside a capped systemd scope | Accepted | 2026-11-18 |
+| [0032](0032-session-thread-limit.md) | Enforce CONFIG.SYS THREADS= across a session with per-process records in a private directory | Accepted | 2026-11-18 |

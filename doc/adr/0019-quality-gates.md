@@ -1,6 +1,6 @@
 # ADR-0019: Gate every commit on tests and lint-free code with a pinned toolchain
 
-- **Status:** Accepted
+- **Status:** Accepted; ADR-0031 runs these checks inside a capped systemd scope
 - **Date:** 2026-03-31 (pre-commit hook); 2026-11-15 (pinned toolchain)
 - **Sources:** commits 46c8460 ("enforce cargo test in pre-commit hook"), 24ddc05 ("pin Rust 1.100.0 via rust-toolchain.toml"); `githooks/pre-commit`; `rust-toolchain.toml`; `CLAUDE.md`
 
