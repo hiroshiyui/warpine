@@ -331,6 +331,13 @@ of the OS/2 lineage. XE apps run natively on Warpine alongside existing 32-bit L
 #### XE Executable Format
 
 - [ ] Define spec: XE header (`"XE"` signature, `cpu_type`, `object_count`, `entry_rip: u64`), 64-bit object table, fixup records, import/export tables
+- [ ] **MZ stub in front of the XE header**, as NE / LE / LX / PE have it (record it in the spec and an ADR). Every XE file starts with a valid MZ executable whose `e_lfanew` (offset 0x3C) points to the XE header, aligned to 8 bytes; the stub prints a compatibility warning, e.g. "This program requires a 64-bit OS/2 (Warpine XE).", and exits (INT 21h AH=09h, then AH=4Ch). Why:
+  - MS-DOS runs the stub instead of treating a file without `MZ` as a `.COM` program and executing the header bytes;
+  - real OS/2, or a Warpine without XE, finds the unknown signature at `e_lfanew` and refuses cleanly with `ERROR_BAD_EXE_FORMAT` (193);
+  - `detect_format()` keeps one path, MZ → `e_lfanew` → signature;
+  - tools such as `file` still recognise an executable.
+
+  The XE linker reuses `lx_link`'s stub writer. Optional, for the spec to decide: a "fat" executable carrying both a 32-bit LX and a 64-bit XE program, which needs a second header pointer because MZ has only one `e_lfanew`.
 - [ ] `src/xe/` parser module mirroring `src/lx/`
 - [ ] `detect_format()` in `main.rs` recognises `"XE"` signature
 - [ ] `Loader::load_xe()` / `run_xe()` path
