@@ -627,6 +627,12 @@ pub struct WindowManager {
     /// The standard file and font dialogs and the file lists they handed
     /// out (`pm_stddlg.rs`).
     pub std_dialogs: super::pm_stddlg::StdDialogs,
+    /// The process's atom tables, the system table included (`pm_atom.rs`).
+    pub atoms: super::pm_atom::AtomTables,
+    /// The process's switch list (`pm_switch.rs`).
+    pub switch_list: super::pm_switch::SwitchList,
+    /// Applications started with `WinStartApp` (`pm_startapp.rs`).
+    pub apps: super::pm_startapp::AppTable,
 }
 
 /// The caret of a text control as last painted, in the surface coordinates
@@ -699,6 +705,9 @@ impl WindowManager {
             hooks: Default::default(),
             update_locked: 0,
             std_dialogs: Default::default(),
+            atoms: Default::default(),
+            switch_list: Default::default(),
+            apps: Default::default(),
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
@@ -1548,6 +1557,7 @@ impl WindowManager {
         }
         self.help.forget_windows(&doomed);
         self.std_dialogs.forget_windows(&doomed);
+        self.switch_list.forget_windows(&doomed);
         // Presentation spaces and window device contexts of the windows.
         let window_dcs: Vec<u32> = self.dcs.iter()
             .filter(|&(_, dc)| matches!(dc, DeviceContext::Window(w) if doomed.contains(w)))

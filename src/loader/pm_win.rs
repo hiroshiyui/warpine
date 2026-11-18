@@ -150,6 +150,10 @@ impl super::Loader {
                     self.load_accel_table(hmod, id_resources)
                 } else { None };
 
+                // The switch-list title, in the thread's codepage (taken
+                // before the window manager is locked).
+                let tasklist_title = (fl_create_flags & FCF_TASKLIST != 0)
+                    .then(|| super::codepage::cp_encode(&title, self.thread_codepage(vcpu_id)));
                 let (h_frame, h_client, pfn_wp_client) = {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
                     let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
@@ -196,6 +200,12 @@ impl super::Loader {
                     // VDR-B1/E1: register in Z-order stack (top-most) and set focus.
                     wm.z_push_top(h_frame);
                     wm.focused_hwnd = h_frame;
+                    // FCF_TASKLIST: a switch-list entry with the frame's
+                    // title, removed with the frame (pm_switch.rs). A full
+                    // list leaves the frame without one.
+                    if let Some(t) = tasklist_title {
+                        let _ = wm.switch_list.add_frame(h_frame, t);
+                    }
 
                     // The frame is composited once it has a surface.
                     wm.frame_surface(h_frame);
@@ -1699,6 +1709,58 @@ impl super::Loader {
             871 => {
                 // WinSetSysColors(HWND hwndDesktop, ULONG flOptions, ULONG flFormat, LONG clrFirst, ULONG cColorData, PLONG pColorData) -> BOOL
                 self.win_set_sys_colors(vcpu_id, std::array::from_fn(|i| read_stack(4 + 4 * i as u64)))
+            }
+            // ── Atom tables (pm_atom.rs) ──
+            714 => {
+                // WinCreateAtomTable(ULONG cbInitial, ULONG cBuckets) -> HATOMTBL
+                self.win_create_atom_table(vcpu_id)
+            }
+            724 => {
+                // WinDestroyAtomTable(HATOMTBL hAtomTbl) -> HATOMTBL
+                self.win_destroy_atom_table(vcpu_id, read_stack(4))
+            }
+            830 => {
+                // WinQuerySystemAtomTable() -> HATOMTBL
+                self.win_query_system_atom_table()
+            }
+            700 => {
+                // WinAddAtom(HATOMTBL hAtomTbl, PCSZ pszAtomName) -> ATOM
+                self.win_add_atom(vcpu_id, read_stack(4), read_stack(8))
+            }
+            744 => {
+                // WinFindAtom(HATOMTBL hAtomTbl, PCSZ pszAtomName) -> ATOM
+                self.win_find_atom(vcpu_id, read_stack(4), read_stack(8))
+            }
+            721 => {
+                // WinDeleteAtom(HATOMTBL hAtomTbl, ATOM atom) -> ATOM
+                self.win_delete_atom(vcpu_id, read_stack(4), read_stack(8))
+            }
+            801 => {
+                // WinQueryAtomLength(HATOMTBL hAtomTbl, ATOM atom) -> ULONG
+                self.win_query_atom_length(vcpu_id, read_stack(4), read_stack(8))
+            }
+            802 => {
+                // WinQueryAtomName(HATOMTBL hAtomTbl, ATOM atom, PSZ pchBuffer, ULONG cchBufferMax) -> ULONG
+                self.win_query_atom_name(vcpu_id, read_stack(4), read_stack(8), read_stack(12), read_stack(16))
+            }
+            803 => {
+                // WinQueryAtomUsage(HATOMTBL hAtomTbl, ATOM atom) -> ULONG
+                self.win_query_atom_usage(vcpu_id, read_stack(4), read_stack(8))
+            }
+            // ── Dynamic Data Exchange (pm_dde.rs) ──
+            718 => {
+                // WinDdeInitiate(HWND hwndClient, PCSZ pszAppName, PCSZ pszTopicName, PCONVCONTEXT pcctxt) -> BOOL
+                self.win_dde_initiate(vcpu_id, read_stack(4), read_stack(8), read_stack(12), read_stack(16))
+            }
+            720 => {
+                // WinDdeRespond(HWND hwndClient, HWND hwndServer, PCSZ pszAppName, PCSZ pszTopicName, PCONVCONTEXT pcctxt) -> MRESULT
+                self.win_dde_respond(vcpu_id, read_stack(4), read_stack(8), read_stack(12), read_stack(16),
+                                     read_stack(20))
+            }
+            719 => {
+                // WinDdePostMsg(HWND hwndTo, HWND hwndFrom, ULONG wm, PDDESTRUCT pddest, ULONG flOptions) -> BOOL
+                self.win_dde_post_msg(vcpu_id, read_stack(4), read_stack(8), read_stack(12), read_stack(16),
+                                      read_stack(20))
             }
             _ => {
                 warn!("Warning: Unknown PMWIN Ordinal {} on VCPU {}", ordinal, vcpu_id);

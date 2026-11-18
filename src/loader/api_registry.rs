@@ -466,11 +466,17 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_collate(a[0],a[1],a[2],a[3])) },
 
     // ── MSG — OS/2 Message DLL (base MSG_BASE = 8192) ────────────────────
-    // 4OS2 imports DosGetMessage from MSG.DLL ordinal 6, not from DOSCALLS.
-    ApiEntry { ordinal: MSG_BASE + 3, module: "MSG", name: "DosPutMessage",     argc: 3,
+    // 32-bit ordinals of Open Watcom's os2386.lib (msgcalls.rs). MSG.6 is
+    // DOS32TRUEGETMESSAGE: the library's DosGetMessage (4OS2 uses it)
+    // passes the message segment first, then DosGetMessage's arguments.
+    ApiEntry { ordinal: MSG_BASE + 4, module: "MSG", name: "DosInsertMessage",  argc: 7,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_insert_message(a[0],a[1],a[2],a[3],a[4],a[5],a[6])) },
+    ApiEntry { ordinal: MSG_BASE + 5, module: "MSG", name: "DosPutMessage",     argc: 3,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_put_message(a[0],a[1],a[2])) },
-    ApiEntry { ordinal: MSG_BASE + 6, module: "MSG", name: "DosGetMessage",     argc: 7,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_get_message(a[0],a[1],a[2],a[3],a[4],a[5],a[6])) },
+    ApiEntry { ordinal: MSG_BASE + 6, module: "MSG", name: "DosGetMessage",     argc: 8,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_get_message(a[1],a[2],a[3],a[4],a[5],a[6],a[7])) },
+    ApiEntry { ordinal: MSG_BASE + 8, module: "MSG", name: "DosQueryMessageCP", argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_message_cp(a[0],a[1],a[2],a[3])) },
 
     // ── MDM — MMPM/2 Media Device Manager (base MDM_BASE = 10240) ────────
     ApiEntry { ordinal: MDM_BASE + 1, module: "MDM", name: "mciSendCommand",   argc: 4,
@@ -616,6 +622,27 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,i,a| ApiResult::Normal(l.prf_query_profile_data(i,a[0],a[1],a[2],a[3],a[4])) },
     ApiEntry { ordinal: PMSHAPI_BASE + 118, module: "PMSHAPI", name: "PrfWriteProfileData",   argc: 5,
                handler: |l,_v,i,a| ApiResult::Normal(l.prf_write_profile_data(i,a[0],a[1],a[2],a[3],a[4])) },
+    // ── PMSHAPI — starting applications, switch list (pm_startapp.rs, pm_switch.rs) ──
+    ApiEntry { ordinal: PMSHAPI_BASE + 119, module: "PMSHAPI", name: "WinStartApp",           argc: 5,
+               handler: |l,_v,i,a| ApiResult::Normal(l.win_start_app(i,a[0],a[1],a[2],a[4])) },
+    ApiEntry { ordinal: PMSHAPI_BASE + 120, module: "PMSHAPI", name: "WinAddSwitchEntry",     argc: 1,
+               handler: |l,_v,i,a| ApiResult::Normal(l.win_add_switch_entry(i,a[0])) },
+    ApiEntry { ordinal: PMSHAPI_BASE + 121, module: "PMSHAPI", name: "WinCreateSwitchEntry",  argc: 2,
+               handler: |l,_v,i,a| ApiResult::Normal(l.win_add_switch_entry(i,a[1])) },
+    ApiEntry { ordinal: PMSHAPI_BASE + 123, module: "PMSHAPI", name: "WinChangeSwitchEntry",  argc: 2,
+               handler: |l,_v,i,a| ApiResult::Normal(l.win_change_switch_entry(i,a[0],a[1])) },
+    ApiEntry { ordinal: PMSHAPI_BASE + 124, module: "PMSHAPI", name: "WinQuerySwitchEntry",   argc: 2,
+               handler: |l,_v,i,a| ApiResult::Normal(l.win_query_switch_entry(i,a[0],a[1])) },
+    ApiEntry { ordinal: PMSHAPI_BASE + 125, module: "PMSHAPI", name: "WinQuerySwitchHandle",  argc: 2,
+               handler: |l,_v,i,a| ApiResult::Normal(l.win_query_switch_handle(i,a[0],a[1])) },
+    ApiEntry { ordinal: PMSHAPI_BASE + 126, module: "PMSHAPI", name: "WinQuerySwitchList",    argc: 3,
+               handler: |l,_v,i,a| ApiResult::Normal(l.win_query_switch_list(i,a[1],a[2])) },
+    ApiEntry { ordinal: PMSHAPI_BASE + 129, module: "PMSHAPI", name: "WinRemoveSwitchEntry",  argc: 1,
+               handler: |l,_v,i,a| ApiResult::Normal(l.win_remove_switch_entry(i,a[0])) },
+    ApiEntry { ordinal: PMSHAPI_BASE + 130, module: "PMSHAPI", name: "WinTerminateApp",       argc: 1,
+               handler: |l,_v,i,a| ApiResult::Normal(l.win_terminate_app(i,a[0])) },
+    ApiEntry { ordinal: PMSHAPI_BASE + 131, module: "PMSHAPI", name: "WinSwitchToProgram",    argc: 1,
+               handler: |l,_v,i,a| ApiResult::Normal(l.win_switch_to_program(i,a[0])) },
 
     // ── HELPMGR — Help Manager (base HELPMGR_BASE = 17408) ───────────────────
     ApiEntry { ordinal: HELPMGR_BASE + 51, module: "HELPMGR", name: "WinCreateHelpInstance",    argc: 2,
@@ -695,7 +722,7 @@ const KBDCALLS_ORDINALS: u32 = 3;
 const MOUCALLS_ORDINALS: u32 = 20;
 /// PMWIN ordinals dispatched by `pm_win.rs` (checked against its
 /// `N => { // WinName(` arms by a test).
-const PMWIN_ORDINALS: u32 = 157;
+const PMWIN_ORDINALS: u32 = 169;
 /// PMGPI ordinals dispatched by `pm_gpi.rs`, `pm_region.rs`, `pm_area.rs`,
 /// `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs` (checked against
 /// their arms by a test), of which `PMGPI_STUBS` are stubs (`GpiLoadFonts`,
@@ -759,7 +786,7 @@ pub fn compat_report() -> String {
                   MouGet/SetDevStatus, MouGet/SetEventMask, MouGet/SetScaleFact, \
                   MouDrawPtr, MouRemovePtr, MouGet/SetPtrShape, MouSynch)\n");
     out.push_str(&format!("  PMWIN     {PMWIN_ORDINALS} implemented  (WinInitialize, message queues, hooks, broadcasts, window mgmt, \
-                  input, paint, timers, menus, dialogs, controls, clipboard, resources, regions)\n"));
+                  input, paint, timers, menus, dialogs, controls, clipboard, resources, regions, atoms, DDE)\n"));
     out.push_str(&format!("  PMGPI     {} implemented, {PMGPI_STUBS} stub  (presentation spaces, colour and mix, \
                   lines, boxes, arcs, text, text layout and character attributes, logical fonts, font metrics, bitmaps, regions, clipping, \
                   areas, paths, curves, transforms, save / restore)\n", PMGPI_ORDINALS - PMGPI_STUBS));

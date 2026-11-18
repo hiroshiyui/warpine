@@ -1707,6 +1707,35 @@ fn gui_pm_profile_test_reads_and_writes_profiles() {
     assert_eq!(names, ["OS2", "PRFTEST.INI"]);
 }
 
+/// nest_test: a program that starts itself without end stops at the
+/// process nesting limit (`inherit::MAX_PROCESS_DEPTH`, 8): the deepest copy
+/// gets ERROR_NO_PROC_SLOTS (89) from DosExecPgm, every copy above it
+/// reports its child, and the first copy's exit code counts the copies
+/// below it. No Warpine process is left running.
+#[test]
+fn test_nest_test_stops_at_the_nesting_limit() {
+    if !kvm_available() || !Path::new("samples/nest_test/nest_test.exe").exists() { return; }
+    let (out, code) = run_sample("samples/nest_test/nest_test.exe", 120);
+    assert_eq!(code, 8, "exit code (copies started below the first)\nstdout:\n{out}");
+    assert_eq!(out.matches("nest_test: DosExecPgm refused rc=89").count(), 1, "{out}");
+    assert_eq!(out.matches("nest_test: child ended with").count(), 8, "{out}");
+}
+
+/// pm_switch_dde_test: the switch list (FCF_TASKLIST entry, WinAddSwitchEntry
+/// … WinSwitchToProgram, the entry gone with its frame), atom tables
+/// (string and integer atoms, usage counts, the system table), a DDE
+/// conversation between two frames of the process (initiate / respond,
+/// request → data, execute → ack, terminate), WinStartApp of a second copy
+/// of the program (parameters, environment, WM_APPTERMINATENOTIFY with its
+/// return code), WinTerminateApp of a sleeping copy, and the MSG.DLL calls
+/// (DosInsertMessage, DosPutMessage, DosGetMessage, DosQueryMessageCP) —
+/// checked by the guest itself.
+#[test]
+fn gui_pm_switch_dde_test_checks_switch_list_atoms_dde_and_start_app() {
+    assert_scripted_checks_pass("samples/pm_switch_dde_test/pm_switch_dde_test.exe", "pm_switch_dde_test",
+                                90, "20000 quit\n");
+}
+
 /// pm_window_test: WinIsWindowVisible (the window and all its parents),
 /// WinQueryWindowTextLength, WinSetParent (to another window, the desktop
 /// and back; not under a descendant), WinSetOwner, and WinQueryWindowPtr /

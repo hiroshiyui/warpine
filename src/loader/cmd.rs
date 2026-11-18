@@ -852,6 +852,12 @@ impl CmdShell {
         for a in args { cmd.arg(a); }
         // What this process got from its own parent is not the child's.
         super::inherit::clear_parent_vars(&mut cmd);
+        // Bounded nesting and number of children (inherit.rs).
+        if super::inherit::admit_child(&self.shared, &mut cmd).is_err() {
+            self.writeln_attr("Cannot start another process: too many nested or running processes",
+                              ATTR_ERROR);
+            return;
+        }
 
         // Set CWD from ProcessManager so the child inherits the shell's directory.
         let cwd = {

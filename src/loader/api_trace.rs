@@ -225,8 +225,10 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
 
         // ── MSG ───────────────────────────────────────────────────
         o if (MSG_BASE..MDM_BASE).contains(&o) => match o - MSG_BASE {
-            3 => "DosPutMessage",
+            4 => "DosInsertMessage",
+            5 => "DosPutMessage",
             6 => "DosGetMessage",
+            8 => "DosQueryMessageCP",
             _ => "?",
         },
 
@@ -345,6 +347,16 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             116 => "PrfWriteProfileString",
             117 => "PrfQueryProfileData",
             118 => "PrfWriteProfileData",
+            119 => "WinStartApp",
+            120 => "WinAddSwitchEntry",
+            121 => "WinCreateSwitchEntry",
+            123 => "WinChangeSwitchEntry",
+            124 => "WinQuerySwitchEntry",
+            125 => "WinQuerySwitchHandle",
+            126 => "WinQuerySwitchList",
+            129 => "WinRemoveSwitchEntry",
+            130 => "WinTerminateApp",
+            131 => "WinSwitchToProgram",
             _   => "?",
         },
 
@@ -583,8 +595,10 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
 
         // ── MSG ───────────────────────────────────────────────────────────
         o if (MSG_BASE..MDM_BASE).contains(&o) => match o - MSG_BASE {
-            3 => &["pszPathName", "pszBuffer", "cbBuffer", "ulMsgNumber", "pTable", "cTable", "hFile"],
-            6 => &["ulMsgNumber", "pTable", "cTable", "pBuffer", "cbBuffer", "pcbMsg", "pszFile"],
+            4 => &["pTable", "cTable", "pszMsg", "cbMsg", "pBuf", "cbBuf", "pcbMsg"],
+            5 => &["hFile", "cbMsg", "pBuf"],
+            6 => &["pMsgSeg", "pTable", "cTable", "pBuf", "cbBuf", "ulMsgNumber", "pszFile", "pcbMsg"],
+            8 => &["pb", "cb", "pszFilename", "pcbBuf"],
             _ => &[],
         },
 
@@ -673,6 +687,16 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
             116 => &["hini", "pszApp", "pszKey", "pszData"],
             117 => &["hini", "pszApp", "pszKey", "pBuffer", "pulBufferMax"],
             118 => &["hini", "pszApp", "pszKey", "pData", "cchDataLen"],
+            119 => &["hwndNotifyWindow", "pDetails", "pszParams", "Reserved", "fbOptions"],
+            120 => &["pswctl"],
+            121 => &["hab", "pswctl"],
+            123 => &["hswitch", "pswctl"],
+            124 => &["hswitch", "pswctl"],
+            125 => &["hwnd", "pid"],
+            126 => &["hab", "pswblk", "usDataLength"],
+            129 => &["hswitch"],
+            130 => &["happ"],
+            131 => &["hswitch"],
             _ => &[],
         },
 

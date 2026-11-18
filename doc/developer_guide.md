@@ -283,7 +283,7 @@ Multimedia Presentation Manager/2 APIs. Dispatched at `MDM_BASE` (10240) + ordin
 
 ### PMWIN (src/loader/pm_win.rs)
 
-Window management APIs — 157 ordinals (see the reference manual for the list) including WinInitialize, WinCreateMsgQueue, WinRegisterClass, WinCreateStdWindow, WinGetMsg, WinDispatchMsg, WinSendMsg, WinPostMsg, WinDefWindowProc, WinBeginPaint, WinEndPaint, WinMessageBox, WinStartTimer, WinStopTimer, clipboard operations, and dialog support.
+Window management APIs — 169 ordinals (see the reference manual for the list) including WinInitialize, WinCreateMsgQueue, WinRegisterClass, WinCreateStdWindow, WinGetMsg, WinDispatchMsg, WinSendMsg, WinPostMsg, WinDefWindowProc, WinBeginPaint, WinEndPaint, WinMessageBox, WinStartTimer, WinStopTimer, clipboard operations, and dialog support.
 
 #### Built-in window class atoms (MAKEINTATOM encoding)
 
@@ -366,6 +366,26 @@ Tests: pure parts and the dialogs on a mock loader with a temporary drive (`pm_f
 ### Printing (PMSPL, src/loader/pmspl.rs)
 
 Printing is not supported: there are no printer drivers, queues or ports. The `PMSPL` enumerations (`SplEnumQueue` 399, `SplEnumPrinter` 441, `SplEnumDevice` 382, `SplEnumDriver` 406, `SplEnumQueueProcessor` 407, `SplEnumPort` 408) return `NO_ERROR` with zero counts (`ERROR_INVALID_LEVEL` for an undocumented level, `NERR_InvalidComputer` for a computer name); `SplQueryQueue` / `SplQueryDevice` return `NERR_QNotFound` / `NERR_DestNotFound`; `SplQmOpen` fails with `PMERR_SPL_QUEUE_NOT_FOUND` (or `PMERR_SPL_NO_DEFAULT_QUEUE`) and the other `SplQm*` calls with `PMERR_SPL_INV_HSPL`. In PMGPI, `DevOpenDC(OD_QUEUED / OD_DIRECT)` fails with `PMERR_DRIVER_NOT_FOUND` (other unsupported types `PMERR_INV_DC_TYPE`), `DevEscape` (605) returns `DEVESC_NOTIMPLEMENTED` on Warpine's DCs and `DEVESC_ERROR` / `PMERR_INV_HDC` otherwise, and `DevPostDeviceModes` (609) returns `DPDM_ERROR` (`handle_print_call`, chained from `handle_pmgpi_call`; its source is in the PMGPI arm-count test's list).
+
+### Switch list (PMSHAPI, src/loader/pm_switch.rs)
+
+`SwitchList` (`WindowManager::switch_list`) holds the process's `SWCNTRL`s by `HSWITCH` (from `FIRST_SWITCH_HANDLE`, in the order added, at most `MAX_SWITCH_ENTRIES`, titles cut to `MAXNAMEL` bytes and kept in the program's codepage). `WinCreateStdWindow` with `FCF_TASKLIST` adds an entry for the frame (title encoded in the thread's codepage, `PROG_PM`, visible and jumpable), and `WindowManager::destroy_window` removes such entries with their frame (`forget_windows`); entries a program adds itself stay until it removes them. `SwControl::from_bytes` / `to_bytes` are the 96-byte `SWCNTRL` layout, `switch_block` builds an `SWBLOCK` with as many 100-byte `SWENTRY`s as fit. `WinQuerySwitchHandle` looks for the window, then its frame (`find_frame_for_hwnd`), or with NULLHANDLE for the first entry of the process; `WinSwitchToProgram` shows the entry's frame, raises it and makes it active with `WM_ACTIVATE` to the old and new frame (`switch_to_frame`). The list is per Warpine process — each OS/2 process is one (ADR-0020) and there is no shared desktop yet — so a program sees only its own entries. Choices where the PM Reference is silent are listed in the module comment ("Unverified").
+
+### Starting applications (WinStartApp, src/loader/pm_startapp.rs)
+
+`WinStartApp` reads the `PROGDETAILS` fields up to `pszEnvironment` (`PD_READ` bytes), accepts the categories `PROG_DEFAULT` / `PROG_FULLSCREEN` / `PROG_WINDOWABLEVIO` / `PROG_PM`, resolves `pszExecutable` with `Loader::resolve_program` (shared with `DosExecPgm`: the program's own OS/2 name is its host executable, else the VFS) and checks the file starts with `MZ` / `LX` / `NE`. It then runs Warpine on the program like `DosExecPgm`, but as a session of its own: `inherit::clear_parent_vars` and no `child_handles` (no handle is inherited; host descriptors stay close-on-exec), no GUI script (`WARPINE_GUI_SCRIPT` removed), standard input empty, output where the parent's goes, `WARPINE_OS2ARG0` = the executable, `WARPINE_OS2ARGS` = the parameters (`app_parameters`: `SAF_INSTALLEDCMDLINE` → `pszParameters`, else `pszParams`, else `pszParameters`), `WARPINE_OS2ENV` = the parent's environment merged with `pszEnvironment` (`merge_env`), `WARPINE_PIPE_DIR`, `WARPINE_VIO` for the full-screen / windowable-VIO categories, and the host working directory from `pszStartupDir`. The host `Child` goes into `AppTable` (`WindowManager::apps`, HAPPs from `FIRST_HAPP`, at most `MAX_APPS`); a watcher thread polls it every `APP_POLL` under the window-manager lock and, once it ended, forgets it and posts `WM_APPTERMINATENOTIFY(happ, rc)` to `hwndNotify` if that is still a window (a killed program's code is `KILLED_RC`). `WinTerminateApp` kills the host process; the watcher still posts the notification.
+
+### Atom tables (PMWIN, src/loader/pm_atom.rs)
+
+`AtomTables` (`WindowManager::atoms`) holds the system table (`SYSTEM_ATOM_TABLE`, per process: ADR-0020) and up to `MAX_ATOM_TABLES` - 1 tables from `WinCreateAtomTable`. An `AtomTable` maps string atoms (`FIRST_STRING_ATOM` 0xC000 … 0xFFFF, lowest free number first) to a name and a usage count, with a lower-case index for case-insensitive lookup; names are bytes in the program's codepage, 1 to `MAX_ATOM_NAME` bytes, read with `Loader::guest_cstr` (bounded, unterminated → error). Integer atoms (1 … `MAX_INTEGER_ATOM`, from `MAKEINTATOM` — high word 0xFFFF — or `"#n"`, `AtomName::from_bytes`) are not stored: their name is `"#n"`, their usage `MAX_USAGE`. A usage count stops at `MAX_USAGE`, which locks the atom. Failures record `PMERR_INVALID_HATOMTBL` / `INVALID_ATOM` / `INVALID_ATOM_NAME` / `INVALID_INTEGER_ATOM` / `ATOM_NAME_NOT_FOUND` / `HEAP_OUT_OF_MEMORY`; `WinDeleteAtom` and `WinDestroyAtomTable` return their argument on failure, 0 on success.
+
+### Dynamic Data Exchange (PMWIN, src/loader/pm_dde.rs)
+
+`WinDdeInitiate` sends `WM_DDE_INITIATE` (mp1 the client, mp2 a `DDEINIT`) to the message target (`frame_msg_target`: the client of a standard frame) of every frame window of the process (`broadcast_targets(HWND_DESKTOP, false, true)`), the client's own included, as one call chain (`CallChain`, after each queue's send hooks) that returns TRUE; each receiver gets its own `DDEINIT` (`ddeinit_bytes`: the structure, the `CONVCONTEXT` if one was given, the two names) in giveable shared memory registered with `shmem_mgr`, so its `DosFreeMem` frees it. `WinDdeRespond` sends `WM_DDE_INITIATEACK` (mp1 the server) the same way and returns the client's result. `WinDdePostMsg` checks the windows, the flags (`DDEPM_RETRY` / `DDEPM_NOFREE`), the message range (`WM_DDE_FIRST` … `WM_DDE_LAST`) and that the `DDESTRUCT` header is in guest memory, then posts the message with mp1 the sender and mp2 the `DDESTRUCT`; Warpine neither copies nor frees the `DDESTRUCT` (sender and receiver share the address space). DDE between OS/2 processes is out of scope: they are separate Warpine processes without shared windows or memory (ADR-0020).
+
+### MSG.DLL (src/loader/msgcalls.rs, src/loader/stubs.rs)
+
+The 32-bit MSG ordinals are those of Open Watcom's `os2386.lib`: 4 `DosInsertMessage`, 5 `DosPutMessage`, 6 `DOS32TRUEGETMESSAGE`, 8 `DOS32IQUERYMESSAGECP` (1–3 and 7 are 16-bit). The library's `DosGetMessage` (object `msgseg32`) passes the program's message segment as an extra first argument to MSG.6, so the registry skips it and `vcpu.rs` removes it from the stack on return (`msg_callee_pop`; the stub's caller removes only `DosGetMessage`'s seven arguments, and the stack was 4 bytes off before). `DosInsertMessage` (`insert_strings`) replaces `%1` … `%9` by the table strings (at most `MAX_INSERTIONS`, each bounded), copies what fits and returns `ERROR_MR_MSG_TOO_LONG` when the result was cut. Warpine reads no message files: `DosGetMessage` returns a placeholder text and `DosQueryMessageCP` reports, for a file that exists, the process codepage (`message_cp_list`: count, codepages, language family and dialect as USHORTs).
 
 ## Threading Model
 
@@ -1335,6 +1355,10 @@ Files and pipes share one handle space, as in OS/2: `DriveManager::alloc_handle`
 
 `inherit.rs` carries what a child process gets from its parent through the host `exec`: `WARPINE_OS2ARG0` / `WARPINE_OS2ARGS` (the argument block's strings) and `WARPINE_OS2ENV` (the environment), escaped (`escape`: NUL → `01 30`, `01` → `01 31`), read by `StartupInfo::from_env` into `SharedState::startup`; `Loader::startup_block` builds the process block (environment, program name, command line) for both LX and NE programs; without a parent, the host command line's arguments are the guest's (`set_host_args` in `main.rs`). `WARPINE_HANDLES` lists the inheritable pipe handles (`child_handles`): `handle,fd,a,fhstate` for an anonymous pipe, `handle,fd,c,…,namehex` for a named pipe's client end. The descriptors are close-on-exec duplicates owned by the parent until the child has started; a `pre_exec` hook clears the flag in the forked child only, so no other process — not even another child started at the same moment — receives them. The child (`adopt_inherited_handles`, from `Loader::new`) takes over only pipes and sockets and puts each at its handle number; standard handles 0–2 also arrive as the child's host standard streams and are duplicated. Server ends are not passed.
 
+### Process nesting guard
+
+Every child is a whole Warpine process with its own VM and guest memory (some hundreds of MB), so a program that starts itself — on purpose, or because it misreads its command line — could exhaust the host (a test program that did so once started some 230 Warpine processes before the kernel's OOM killer stopped it). `inherit.rs` bounds this: each child gets its depth in `WARPINE_DEPTH` (the first process is depth 0); `admit_child` (used by `DosExecPgm`, `WinStartApp` and CMD.EXE's external commands before they spawn) refuses a child of a process at `MAX_PROCESS_DEPTH` (8) or of one that already keeps `MAX_LIVE_CHILDREN` (16) children (`DosExecPgm` asynchronous children not yet waited for plus `WinStartApp` applications). The refused call fails: `DosExecPgm` with `ERROR_NO_PROC_SLOTS` (89), `WinStartApp` with `PMERR_CANNOT_START`, CMD.EXE with a message. `main.rs` checks the depth before anything else and ends a process started deeper, or with a malformed `WARPINE_DEPTH`, with exit code `EXIT_NESTING_LIMIT` (89) without running guest code. `clear_parent_vars` keeps `WARPINE_DEPTH`. Tests: `inherit.rs` (`depth_parses_and_bounds`, `children_get_their_depth_within_the_limits`), `samples/nest_test` + `test_nest_test_stops_at_the_nesting_limit` (a program that runs itself with `DosExecPgm` ends after 8 copies).
+
 ### Handle Management (absorbed into VFS)
 
 Currently, file handles and directory search handles are managed by two separate structs in `managers.rs`:
@@ -1517,7 +1541,7 @@ src/
     ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants (addresses, message IDs, ordinal bases)
-    api_registry.rs    Static sorted API thunk table (247 entries); ApiEntry
+    api_registry.rs    Static sorted API thunk table (259 entries); ApiEntry
     api_dispatch.rs    Registry lookup + per-subsystem dispatcher routing
     api_trace.rs       Structured tracing helpers (ordinal_to_name auto-generated from os2api.def,
                        module_for_ordinal, arg_names_for_ordinal, format_call)
@@ -1530,7 +1554,7 @@ src/
     pm_types.rs        PM data types (windows, classes, presentation spaces, WindowManager)
     locale.rs          Os2Locale: country/codepage information
     doscalls.rs        DOSCALLS API implementations (file, memory, process, NLS; others in their own modules)
-    pm_win.rs          PMWIN dispatcher and window calls (157 ordinals, logic in the pm_* modules)
+    pm_win.rs          PMWIN dispatcher and window calls (169 ordinals, logic in the pm_* modules)
     pm_message.rs      WinSendMsg (send hooks, inter-thread sends), WinPostQueueMsg, WinBroadcastMsg, WinInSendMsg, WinWaitMsg, WM_HELP help hook
     pm_hook.rs         WinSetHook / WinReleaseHook / WinCallMsgFilter: HookTable, call chains of guest calls (ApiResult::CallChain)
     pm_gpi.rs          PMGPI API implementations (67 ordinals, incl. DevOpenDC/DevCloseDC/DevQueryCaps)
@@ -1556,6 +1580,11 @@ src/
     pm_filedlg.rs      PMCTLS WinFileDlg / WinDefFileDlgProc / WinFreeFileDlgList: Open / Save As over the VFS
     pm_fontdlg.rs      PMCTLS WinFontDlg / WinDefFontDlgProc: family / style / size / emphasis over IBM Plex, sample
     pmspl.rs           PMSPL spooler without printers; DevEscape / DevPostDeviceModes (PMGPI)
+    pm_switch.rs       Switch list: SwitchList, SWCNTRL / SWBLOCK, FCF_TASKLIST entries, WinSwitchToProgram
+    pm_startapp.rs     WinStartApp / WinTerminateApp: AppTable, watcher threads, WM_APPTERMINATENOTIFY
+    pm_atom.rs         Atom tables: WinCreateAtomTable ... WinQuerySystemAtomTable, integer atoms
+    pm_dde.rs          DDE: WinDdeInitiate / WinDdeRespond / WinDdePostMsg, DDEINIT blocks
+    msgcalls.rs        MSG.DLL: DosInsertMessage, DosQueryMessageCP
     pm_paint.rs        Update rectangles, WinScrollWindow, WinDrawBorder
     pm_query.rs        WinMapWindowPoints, WinWindowFromPoint, WinEnumDlgItem, class names / info, ...
     pm_keystate.rs     WinGetKeyState / WinGetPhysKeyState, message time and position, pointer position
@@ -1599,7 +1628,7 @@ To add a new OS/2 API call:
 
 3. **Wire up the dispatch** — The dispatch path depends on the subsystem:
 
-   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (247 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
+   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (259 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
 
    - **VIOCALLS / KBDCALLS**: add a match arm in `handle_viocalls()` or `handle_kbdcalls()`, and add the ordinal's stack-byte count to `viocalls_arg_bytes()` / `kbdcalls_arg_bytes()`.
 

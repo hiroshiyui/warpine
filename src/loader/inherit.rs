@@ -77,6 +77,104 @@ impl StartupInfo {
     }
 }
 
+// ── Process nesting guard ───────────────────────────────────────────────────
+//
+// Every child is a whole Warpine process (a VM and its guest memory, some
+// hundreds of MB), so a program that starts itself — on purpose or because
+// it misreads its command line — could exhaust the host. Each child gets
+// its depth in `WARPINE_DEPTH` (the first process is depth 0, its children
+// 1, …); a process at `MAX_PROCESS_DEPTH` starts no more children, and a
+// process started deeper (or with a malformed value) refuses to run guest
+// code at all. A process also has at most `MAX_LIVE_CHILDREN` children it
+// keeps track of at once (`DosExecPgm` asynchronous children not yet waited
+// for, and `WinStartApp` applications). The starting call fails:
+// `DosExecPgm` with `ERROR_NO_PROC_SLOTS`, `WinStartApp` with
+// `PMERR_CANNOT_START`, CMD.EXE with a message.
+
+/// Environment variable carrying a child process's nesting depth.
+pub const DEPTH_ENV: &str = "WARPINE_DEPTH";
+/// Deepest process nesting: a process at this depth starts no children.
+pub const MAX_PROCESS_DEPTH: u32 = 8;
+/// Most children a process keeps track of at once.
+pub const MAX_LIVE_CHILDREN: usize = 16;
+/// `ERROR_NO_PROC_SLOTS` (`<bseerr.h>`): `DosExecPgm`'s error at a limit.
+pub const ERROR_NO_PROC_SLOTS: u32 = 89;
+/// Exit code of a Warpine process started past `MAX_PROCESS_DEPTH`.
+pub const EXIT_NESTING_LIMIT: i32 = 89;
+
+/// The nesting depth in `value` (the `WARPINE_DEPTH` of this process):
+/// none is depth 0; a malformed value counts as past the limit.
+pub fn parse_depth(value: Option<&OsStr>) -> u32 {
+    match value {
+        None => 0,
+        Some(v) => v.to_str().and_then(|s| s.parse::<u32>().ok())
+            .map_or(MAX_PROCESS_DEPTH + 1, |d| d.min(MAX_PROCESS_DEPTH + 1)),
+    }
+}
+
+/// This process's nesting depth.
+pub fn own_depth() -> u32 {
+    parse_depth(std::env::var_os(DEPTH_ENV).as_deref())
+}
+
+/// The depth a child of a process at `depth` gets, or `None` when it may
+/// not start one.
+pub fn child_depth(depth: u32) -> Option<u32> {
+    (depth < MAX_PROCESS_DEPTH).then_some(depth + 1)
+}
+
+/// Whether a process at `depth` may run at all.
+pub fn depth_allowed(depth: u32) -> bool {
+    depth <= MAX_PROCESS_DEPTH
+}
+
+/// Why a child cannot be started.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChildLimit {
+    /// This process is at `MAX_PROCESS_DEPTH`.
+    Depth,
+    /// It already has `MAX_LIVE_CHILDREN` children.
+    Live,
+}
+
+/// Check both limits for a process at `depth` with `live` children and set
+/// the child's depth on `cmd`.
+pub fn set_child_depth(cmd: &mut std::process::Command, depth: u32, live: usize) -> Result<(), ChildLimit> {
+    if live >= MAX_LIVE_CHILDREN {
+        return Err(ChildLimit::Live);
+    }
+    let d = child_depth(depth).ok_or(ChildLimit::Depth)?;
+    cmd.env(DEPTH_ENV, d.to_string());
+    Ok(())
+}
+
+/// Children the process of `shared` keeps track of now (`DosExecPgm`
+/// asynchronous children, `WinStartApp` applications).
+pub(crate) fn live_children(shared: &super::SharedState) -> usize {
+    let execs = shared.process_mgr.lock_or_recover().children.len();
+    execs + shared.window_mgr.lock_or_recover().apps.len()
+}
+
+/// Allow a new child of the process of `shared` (see the nesting guard
+/// above) and give `cmd` its depth.
+pub(crate) fn admit_child(shared: &super::SharedState, cmd: &mut std::process::Command)
+    -> Result<(), ChildLimit>
+{
+    let r = set_child_depth(cmd, own_depth(), live_children(shared));
+    if let Err(limit) = r {
+        warn!("not starting a child process: {limit:?} limit (depth {} of {MAX_PROCESS_DEPTH}, \
+               at most {MAX_LIVE_CHILDREN} children)", own_depth());
+    }
+    r
+}
+
+impl super::Loader {
+    /// [`admit_child`] for this process.
+    pub(crate) fn admit_child(&self, cmd: &mut std::process::Command) -> Result<(), ChildLimit> {
+        admit_child(&self.shared, cmd)
+    }
+}
+
 /// Remove the variables a parent passed to this process from `cmd`, so a
 /// child started without `DosExecPgm`'s set-up (the built-in CMD.EXE) does
 /// not take this process's command line, environment or handles.
@@ -388,6 +486,46 @@ mod tests {
     use super::super::Loader;
     use super::super::constants::OPEN_FLAGS_NOINHERIT;
     use std::io::{Read, Write};
+
+    #[test]
+    fn depth_parses_and_bounds() {
+        assert_eq!(parse_depth(None), 0);
+        assert_eq!(parse_depth(Some(OsStr::new("3"))), 3);
+        assert_eq!(parse_depth(Some(OsStr::new("junk"))), MAX_PROCESS_DEPTH + 1);
+        assert_eq!(parse_depth(Some(OsStr::new("-1"))), MAX_PROCESS_DEPTH + 1);
+        assert_eq!(parse_depth(Some(OsStr::new("99999999999"))), MAX_PROCESS_DEPTH + 1);
+        assert_eq!(parse_depth(Some(OsStr::new("1000"))), MAX_PROCESS_DEPTH + 1);
+        assert!(depth_allowed(MAX_PROCESS_DEPTH));
+        assert!(!depth_allowed(MAX_PROCESS_DEPTH + 1));
+        assert_eq!(child_depth(0), Some(1));
+        assert_eq!(child_depth(MAX_PROCESS_DEPTH - 1), Some(MAX_PROCESS_DEPTH));
+        assert_eq!(child_depth(MAX_PROCESS_DEPTH), None);
+    }
+
+    #[test]
+    fn children_get_their_depth_within_the_limits() {
+        let depth_of = |cmd: &std::process::Command| cmd.get_envs()
+            .find(|(k, _)| *k == OsStr::new(DEPTH_ENV)).and_then(|(_, v)| v).map(|v| v.to_owned());
+        let mut cmd = std::process::Command::new("true");
+        assert_eq!(set_child_depth(&mut cmd, 2, 0), Ok(()));
+        assert_eq!(depth_of(&cmd).as_deref(), Some(OsStr::new("3")));
+        let mut cmd = std::process::Command::new("true");
+        assert_eq!(set_child_depth(&mut cmd, MAX_PROCESS_DEPTH, 0), Err(ChildLimit::Depth));
+        assert_eq!(depth_of(&cmd), None);
+        assert_eq!(set_child_depth(&mut cmd, 0, MAX_LIVE_CHILDREN), Err(ChildLimit::Live));
+        assert_eq!(set_child_depth(&mut cmd, 0, MAX_LIVE_CHILDREN - 1), Ok(()));
+        // Clearing what the parent passed keeps the depth.
+        clear_parent_vars(&mut cmd);
+        assert!(depth_of(&cmd).is_some());
+    }
+
+    #[test]
+    fn a_loader_counts_its_children() {
+        let l = Loader::new_mock();
+        assert_eq!(live_children(&l.shared), 0);
+        let mut cmd = std::process::Command::new("true");
+        assert!(l.admit_child(&mut cmd).is_ok() || own_depth() >= MAX_PROCESS_DEPTH);
+    }
 
     #[test]
     fn escape_round_trip() {

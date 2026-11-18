@@ -97,16 +97,8 @@ impl super::Loader {
         };
         debug!("    args: {:?}", args);
 
-        // Resolve the program path via the DriveManager VFS (handles C:\ → host path,
-        // case-insensitive lookup, per-drive current directory, etc.).
-        // The program's own OS/2 name (what a shell starts to run a copy
-        // of itself, as 4OS2 does for a pipe) is its host executable.
-        let own = (!prog_name.is_empty() && prog_name.eq_ignore_ascii_case(&self.os2_exe_path()))
-            .then(|| std::fs::canonicalize(&*self.shared.exe_name.lock_or_recover()).ok())
-            .flatten();
         let prog_path = {
-            let dm = self.shared.drive_mgr.lock_or_recover();
-            match own.or_else(|| dm.resolve_to_host_path(&prog_name)) {
+            match self.resolve_program(&prog_name) {
                 Some(p) => p,
                 None => {
                     warn!("  DosExecPgm: cannot resolve '{}' via VFS", prog_name);
@@ -132,6 +124,10 @@ impl super::Loader {
 
         // Build command: warpine <child.exe> [args...]
         let mut cmd = Command::new(&warpine_exe);
+        // Bounded nesting and number of children (inherit.rs).
+        if self.admit_child(&mut cmd).is_err() {
+            return super::inherit::ERROR_NO_PROC_SLOTS;
+        }
         cmd.arg(&prog_path);
         self.set_child_startup(&mut cmd, p_arg, p_env);
         // Pipe handles the child inherits; kept open until it has started.
@@ -261,6 +257,18 @@ impl super::Loader {
                 ERROR_INVALID_FUNCTION
             }
         }
+    }
+
+    /// The host file of program `prog_name` (DosExecPgm, WinStartApp):
+    /// resolved via the DriveManager VFS (C:\ → host path, case-insensitive
+    /// lookup, per-drive current directory, etc.). The program's own OS/2
+    /// name (what a shell starts to run a copy of itself, as 4OS2 does for
+    /// a pipe) is its host executable.
+    pub(crate) fn resolve_program(&self, prog_name: &str) -> Option<std::path::PathBuf> {
+        let own = (!prog_name.is_empty() && prog_name.eq_ignore_ascii_case(&self.os2_exe_path()))
+            .then(|| std::fs::canonicalize(&*self.shared.exe_name.lock_or_recover()).ok())
+            .flatten();
+        own.or_else(|| self.shared.drive_mgr.lock_or_recover().resolve_to_host_path(prog_name))
     }
 
     /// DosWaitChild (ordinal 280): wait for a child process.

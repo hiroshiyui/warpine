@@ -101,6 +101,15 @@ fn main() {
         return;
     }
 
+    // A process started past the nesting limit runs no guest code
+    // (loader::inherit, process nesting guard).
+    let depth = loader::inherit::own_depth();
+    if !loader::inherit::depth_allowed(depth) {
+        eprintln!("warpine: process nesting limit ({}) exceeded; not starting {}",
+                  loader::inherit::MAX_PROCESS_DEPTH, args[1]);
+        std::process::exit(loader::inherit::EXIT_NESTING_LIMIT);
+    }
+
     // Parse optional --gdb <port> flag (position-independent).
     let mut gdb_port: Option<u16> = None;
     let mut remaining_args: Vec<&str> = Vec::new();

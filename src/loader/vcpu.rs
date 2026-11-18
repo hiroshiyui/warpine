@@ -959,6 +959,8 @@ impl super::Loader {
                                     regs.rsp += self.kbdcalls_arg_bytes(ordinal - KBDCALLS_BASE);
                                 } else if (MOUCALLS_BASE..PMSHAPI_BASE).contains(&ordinal) {
                                     regs.rsp += self.moucalls_arg_bytes(ordinal - MOUCALLS_BASE);
+                                } else if (MSG_BASE..MDM_BASE).contains(&ordinal) {
+                                    regs.rsp += super::msgcalls::msg_callee_pop(ordinal - MSG_BASE);
                                 }
                                 vcpu.set_regs(&regs).unwrap();
                                 // Owner drawing queued by the call runs before

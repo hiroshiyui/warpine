@@ -97,11 +97,12 @@ modules = ["loader/mod.rs", "loader/managers.rs", "loader/mutex_ext.rs", "loader
 [[layer]]
 id = "kernel"
 zone = "host"
-label = "Kernel APIs: DOSCALLS, QUECALLS, processes, IPC, named pipes (ADR-0022), timers"
+label = "Kernel APIs: DOSCALLS, QUECALLS, MSG, processes and WinStartApp, IPC, named pipes (ADR-0022), timers"
 modules = [
   "loader/doscalls.rs", "loader/stubs.rs", "loader/process.rs", "loader/ipc.rs",
   "loader/dostimer.rs", "loader/modpath.rs", "loader/suballoc.rs", "loader/cmd.rs",
-  "loader/npipe.rs", "loader/npipe_api.rs", "loader/inherit.rs",
+  "loader/npipe.rs", "loader/npipe_api.rs", "loader/inherit.rs", "loader/msgcalls.rs",
+  "loader/pm_startapp.rs",
 ]
 
 [[layer]]
@@ -134,7 +135,7 @@ modules = [
 [[layer]]
 id = "pmwin"
 zone = "host"
-label = "PM window manager: PMWIN windows, messages, hooks (ADR-0026), input, painting, presentation parameters"
+label = "PM window manager: PMWIN windows, messages, hooks (ADR-0026), input, painting, presentation parameters, atoms, DDE"
 modules = [
   "loader/pm_win.rs", "loader/pm_types.rs", "loader/pm_window.rs", "loader/pm_input.rs",
   "loader/pm_dialog.rs", "loader/pm_msgbox.rs", "loader/pm_destroy.rs", "loader/pm_error.rs",
@@ -142,7 +143,7 @@ modules = [
   "loader/pm_query.rs", "loader/pm_keystate.rs", "loader/pm_syscolor.rs", "loader/pm_rect.rs",
   "loader/pm_cursor.rs", "loader/pm_message.rs", "loader/pm_hook.rs",
   "loader/pm_frame.rs", "loader/pm_accel.rs", "loader/pm_winmisc.rs",
-  "loader/pm_presparam.rs", "loader/pm_paint_style.rs",
+  "loader/pm_presparam.rs", "loader/pm_paint_style.rs", "loader/pm_atom.rs", "loader/pm_dde.rs",
 ]
 
 [[layer]]
@@ -169,8 +170,8 @@ modules = [
 [[layer]]
 id = "pmshell"
 zone = "host"
-label = "PM shell DLLs: PMSHAPI profiles (ADR-0017), HELPMGR"
-modules = ["loader/pmshapi.rs", "loader/profile.rs", "loader/helpmgr.rs"]
+label = "PM shell DLLs: PMSHAPI profiles (ADR-0017), switch list, HELPMGR"
+modules = ["loader/pmshapi.rs", "loader/profile.rs", "loader/helpmgr.rs", "loader/pm_switch.rs"]
 
 [[layer]]
 id = "stddlg"
@@ -232,7 +233,7 @@ label = "Host network (Linux sockets)"
 [[external]]
 id = "children"
 zone = "os"
-label = "Child Warpine processes (DosExecPgm, pipes, signal exceptions)"
+label = "Child Warpine processes (DosExecPgm, WinStartApp, pipes, signal exceptions)"
 
 [[external]]
 id = "gdb"
@@ -316,7 +317,7 @@ to = "nls"
 [[flow]]
 from = "kernel"
 to = "children"
-label = "DosExecPgm (arguments, environment, inherited handles), named pipes"
+label = "DosExecPgm / WinStartApp (arguments, environment, inherited handles), named pipes"
 
 [[flow]]
 from = "vcpu"
