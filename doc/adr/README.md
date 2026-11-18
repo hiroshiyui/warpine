@@ -51,3 +51,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0043](0043-container-record-memory.md) | Keep container records in guest memory, carved from per-container arenas | Accepted | 2026-11-18 |
 | [0044](0044-container-sort-call-chains.md) | Run a container sort as a resumable merge sort, one comparison per call chain | Accepted | 2026-11-18 |
 | [0045](0045-drag-and-drop-within-a-process.md) | Drag and drop within a process: a GUI-fed drag channel and DM_* messages as call chains | Accepted | 2026-11-18 |
+| [0046](0046-container-icon-view-filter-and-editing.md) | Container icon view, filtering and direct editing: one filter chain, edits written back through the owner's buffer | Accepted | 2026-11-18 |
