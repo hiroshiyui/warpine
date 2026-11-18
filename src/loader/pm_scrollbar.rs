@@ -219,12 +219,14 @@ impl Loader {
     }
 
     /// Post `WM_VSCROLL` / `WM_HSCROLL` with `command` and `slider` to the
-    /// owner of scroll bar `hwnd` (its parent without one).
+    /// owner of scroll bar `hwnd` (its parent without one). A frame passes
+    /// them to its client, as the frame window procedure does for its
+    /// frame scroll bars (`FID_VERTSCROLL` / `FID_HORZSCROLL`).
     fn notify_scroll(&self, hwnd: u32, command: u32, slider: i16) {
         let (target, id, style) = {
             let wm = self.shared.window_mgr.lock_or_recover();
             let Some(w) = wm.get_window(hwnd) else { return };
-            (wm.notify_target(hwnd), w.id, w.style)
+            (wm.frame_msg_target(wm.notify_target(hwnd)), w.id, w.style)
         };
         if target == 0 || target == hwnd {
             return;

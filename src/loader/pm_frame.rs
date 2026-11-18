@@ -37,7 +37,11 @@
 //!   `WM_FORMATFRAME` / `WM_CALCFRAMERECT` to a subclassed frame
 //!   procedure; the messages are answered when an application sends them.
 //! - Frame scroll bars are `FRAME_SCROLLBAR_W` pels thick (`SV_CXVSCROLL` /
-//!   `SV_CYHSCROLL`); they are painted but not yet reached by the pointer.
+//!   `SV_CYHSCROLL`). They take the pointer like any scroll bar
+//!   (`WindowManager::control_at` hits the frame's built-in children), and
+//!   their `WM_VSCROLL` / `WM_HSCROLL` go to the client, as the frame
+//!   procedure passes them on; the client draws at its place above a
+//!   horizontal bar (`DrawTarget::Client`).
 //! - A `FRAMECDATA` whose `cb` is less than its size fails
 //!   (`PMERR_PARAMETER_OUT_OF_RANGE`).
 //! - `WinFlashWindow` flashes by drawing the title bar active and inactive
@@ -745,6 +749,74 @@ mod tests {
         assert_eq!(read_rect(&loader, BUF), [c.0, c.1, c.0 + c.2, c.1 + c.3]);
         // Not a frame: the messages are not frame messages there.
         assert_eq!(call(&loader, ORD_WIN_DEF_WINDOW_PROC, &[client, WM_QUERYFRAMECTLCOUNT, 0, 0]), 0);
+    }
+
+    /// A frame with both frame scroll bars, the client's surface recording.
+    fn scrolled_frame(loader: &Loader) -> (u32, u32, u32, u32) {
+        let (frame, client) = std_frame(loader, FCF_TITLEBAR | FCF_SIZEBORDER);
+        write_fcdata(loader, BUF, FRAMECDATA_SIZE, FCF_VERTSCROLL | FCF_HORZSCROLL);
+        assert_eq!(call(loader, ORD_WIN_CREATE_FRAME_CONTROLS, &[frame, BUF, 0]), 1);
+        let vbar = call(loader, ORD_WIN_WINDOW_FROM_ID, &[frame, FID_VERTSCROLL]);
+        let hbar = call(loader, ORD_WIN_WINDOW_FROM_ID, &[frame, FID_HORZSCROLL]);
+        let mut wm = loader.shared.window_mgr.lock_or_recover();
+        let (w, h) = wm.layout_frame(frame);
+        wm.resize_surface(frame, w, h);
+        for b in [vbar, hbar] {
+            wm.get_window_mut(b).unwrap().scrollbar.set_range(5, 0, 10);
+        }
+        (frame, client, vbar, hbar)
+    }
+
+    /// The pointer reaches the frame scroll bars (in the frame's surface
+    /// coordinates); their notifications go to the client.
+    #[test]
+    fn frame_scroll_bars_take_the_pointer_and_tell_the_client() {
+        let loader = Loader::new_mock();
+        let (frame, client, vbar, hbar) = scrolled_frame(&loader);
+        let (v, h, c) = {
+            let wm = loader.shared.window_mgr.lock_or_recover();
+            (wm.get_abs_rect_in_frame(vbar), wm.get_abs_rect_in_frame(hbar), wm.client_view(frame).unwrap())
+        };
+        assert_eq!(c.1, CHROME_BORDER_W + FRAME_SCROLLBAR_W, "the client sits above the horizontal bar");
+        {
+            let wm = loader.shared.window_mgr.lock_or_recover();
+            assert_eq!(wm.control_at(frame, v.0 + 3, v.1 + 4), Some((vbar, 3, 4)));
+            assert_eq!(wm.control_at(frame, h.0 + 30, h.1 + 2), Some((hbar, 30, 2)));
+            assert_eq!(wm.control_at(frame, 10, c.1 + 10), None, "the client itself");
+        }
+        // A press on the down arrow of the vertical bar (its bottom end).
+        loader.dispatch_builtin_control(vbar, WM_BUTTON1DOWN, 2 | (2 << 16), 0);
+        loader.dispatch_builtin_control(vbar, WM_BUTTON1UP, 2 | (2 << 16), 0);
+        let hmq = loader.shared.window_mgr.lock_or_recover().thread_queue(0).unwrap();
+        let mq = loader.shared.window_mgr.lock_or_recover().get_mq(hmq).unwrap();
+        let got: Vec<(u32, u32, u32, u32)> = mq.lock_or_recover().messages.drain(..)
+            .filter(|m| m.msg == WM_VSCROLL).map(|m| (m.hwnd, m.msg, m.mp1, m.mp2 >> 16)).collect();
+        assert_eq!(got, [(client, WM_VSCROLL, FID_VERTSCROLL, SB_LINEDOWN),
+                         (client, WM_VSCROLL, FID_VERTSCROLL, SB_ENDSCROLL)]);
+    }
+
+    /// The client's presentation space draws at the client's place in the
+    /// frame's surface (above the horizontal bar) and inside the client.
+    #[test]
+    fn client_drawing_honours_its_place_in_the_frame() {
+        use crate::gui::surface::{DrawOp, Mix};
+        let loader = Loader::new_mock();
+        let (frame, client, _, _) = scrolled_frame(&loader);
+        let (hps, c, surface) = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hps = wm.create_ps(client);
+            (hps, wm.client_view(frame).unwrap(), wm.frame_surface(frame).unwrap())
+        };
+        let t = loader.ps_target(hps).unwrap();
+        assert_eq!(t.target, super::super::pm_types::DrawTarget::Client(frame));
+        const RED: u32 = 0xFF0000;
+        loader.draw_ps(&t, DrawOp::Box { x1: -50, y1: -50, x2: 4000, y2: 4000, color: RED, fill: true,
+                                         mix: Mix::Overpaint });
+        let s = surface.lock_or_recover();
+        assert_eq!(s.pel(0, c.1), Some(RED), "client (0, 0)");
+        assert_eq!(s.pel(c.2 - 1, c.1 + c.3 - 1), Some(RED), "client top right");
+        assert_ne!(s.pel(5, c.1 - 1), Some(RED), "not on the horizontal bar");
+        assert_ne!(s.pel(c.2, c.1 + 5), Some(RED), "not on the vertical bar");
     }
 
     #[test]

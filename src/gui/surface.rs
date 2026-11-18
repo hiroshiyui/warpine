@@ -257,6 +257,40 @@ pub enum DrawOp {
     Clear,
 }
 
+impl DrawOp {
+    /// The same operation moved by `(dx, dy)` pels (saturating), patterns
+    /// with it; [`DrawOp::Clear`] stays the whole surface. Used to draw a
+    /// window's coordinates into the surface of the frame it lies in.
+    pub fn translate(&mut self, dx: i32, dy: i32) {
+        let mv = |p: &mut (i32, i32)| *p = (p.0.saturating_add(dx), p.1.saturating_add(dy));
+        let mv_xy = |x: &mut i32, y: &mut i32| (*x, *y) = (x.saturating_add(dx), y.saturating_add(dy));
+        let mv_fill = |f: &mut Option<AreaFill>| if let Some(f) = f { mv(&mut f.pattern.origin) };
+        match self {
+            DrawOp::Box { x1, y1, x2, y2, .. } | DrawOp::Line { x1, y1, x2, y2, .. } => {
+                mv_xy(x1, y1);
+                mv_xy(x2, y2);
+            }
+            DrawOp::Text { x, y, .. } | DrawOp::TextFont { x, y, .. } | DrawOp::Pel { x, y, .. } => mv_xy(x, y),
+            DrawOp::GlyphRun { glyphs, .. } => {
+                for (_, x, y) in glyphs { mv_xy(x, y); }
+            }
+            DrawOp::Shape { points, fill, .. } => {
+                points.iter_mut().for_each(mv);
+                mv_fill(fill);
+            }
+            DrawOp::Figures { figures, fill, .. } => {
+                for (points, _) in figures.iter_mut() { points.iter_mut().for_each(mv); }
+                mv_fill(fill);
+            }
+            DrawOp::Blit { x, y, pattern, .. } => {
+                mv_xy(x, y);
+                mv(&mut pattern.origin);
+            }
+            DrawOp::Clear => {}
+        }
+    }
+}
+
 /// The pixels of one frame window's client area (0x00RRGGBB, top row first).
 pub struct Surface {
     pub buffer: Vec<u32>,
@@ -846,6 +880,33 @@ impl Surface {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn translated_operations_move_their_points_and_patterns() {
+        let pat = Pattern { rows: [0x80; 8], fg: 1, bg: 2, origin: (1, 1) };
+        let fill = Some(AreaFill { pattern: pat, mix: Mix::Overpaint, back_mix: None });
+        let mut ops = vec![
+            DrawOp::Box { x1: 0, y1: 1, x2: 2, y2: 3, color: 0, fill: true, mix: Mix::Overpaint },
+            DrawOp::Pel { x: 4, y: 5, color: 0, mix: Mix::Overpaint },
+            DrawOp::Shape { points: vec![(0, 0), (1, 1)], closed: true, fill, stroke: None },
+            DrawOp::Figures { figures: vec![(vec![(2, 2)], true)], rule: None, boundary: 0, fill, stroke: None },
+            DrawOp::Blit { x: 1, y: 1, w: 1, h: 1, src: None, rop: 0, pattern: pat },
+            DrawOp::Clear,
+        ];
+        for op in &mut ops { op.translate(10, 20); }
+        assert_eq!(ops[0], DrawOp::Box { x1: 10, y1: 21, x2: 12, y2: 23, color: 0, fill: true, mix: Mix::Overpaint });
+        assert_eq!(ops[1], DrawOp::Pel { x: 14, y: 25, color: 0, mix: Mix::Overpaint });
+        let moved = Some(AreaFill { pattern: Pattern { origin: (11, 21), ..pat }, mix: Mix::Overpaint, back_mix: None });
+        assert_eq!(ops[2], DrawOp::Shape { points: vec![(10, 20), (11, 21)], closed: true, fill: moved, stroke: None });
+        assert_eq!(ops[3], DrawOp::Figures { figures: vec![(vec![(12, 22)], true)], rule: None, boundary: 0,
+                                              fill: moved, stroke: None });
+        assert_eq!(ops[4], DrawOp::Blit { x: 11, y: 21, w: 1, h: 1, src: None, rop: 0,
+                                           pattern: Pattern { origin: (11, 21), ..pat } });
+        assert_eq!(ops[5], DrawOp::Clear);
+        let mut far = DrawOp::Pel { x: i32::MAX - 1, y: 0, color: 0, mix: Mix::Overpaint };
+        far.translate(10, 0);
+        assert_eq!(far, DrawOp::Pel { x: i32::MAX, y: 0, color: 0, mix: Mix::Overpaint }, "saturates");
+    }
 
     #[test]
     fn put_span_writes_a_clipped_run_of_pels() {

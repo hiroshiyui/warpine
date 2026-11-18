@@ -2022,6 +2022,63 @@ fn gui_pm_scroll_test_matches_golden() {
         &format!("{SCROLL_TEST_STEPS}3000 dump {{dump}}\n3100 quit\n"));
 }
 
+/// pm_frame_scroll_test: a frame at desktop (100, 200), 400 × 300, with
+/// FCF_VERTSCROLL | FCF_HORZSCROLL and a sizing border (screen y = 767 − PM
+/// y). The vertical bar lies at screen x 484–499 (its right edge under the
+/// border) from y 296 (up arrow) to 542 (down arrow), the horizontal bar at
+/// screen y 550–565 from x 104 (left arrow) to 483 (right arrow), the
+/// client above it from screen (102, 268) to (483, 549). Clicks on the
+/// vertical bar's arrows, a slider drag 100 pels down, a click on the
+/// shaft below the slider, on the horizontal bar's right arrow and shaft,
+/// and on the client at its (50, 50) arrive as WM_VSCROLL / WM_HSCROLL at
+/// the client (and WM_BUTTON1DOWN in client coordinates); the client's
+/// drawing lies above the horizontal bar (GpiQueryPel inside and outside
+/// it), all checked from the guest side.
+const FRAME_SCROLL_STEPS: &str = "\
+    1000 click 490 296\n\
+    1300 click 490 542\n\
+    1600 drag 490 313 490 413\n\
+    2100 click 490 527\n\
+    2400 click 476 557\n\
+    2700 click 300 557\n\
+    3000 click 152 499\n";
+
+#[test]
+fn gui_pm_frame_scroll_test_takes_the_pointer_on_frame_scroll_bars() {
+    let steps = format!("{FRAME_SCROLL_STEPS}3400 key alt+f4\n6000 quit\n");
+    assert_scripted_checks_pass("samples/pm_frame_scroll_test/pm_frame_scroll_test.exe",
+                                "pm_frame_scroll_test", 68, &steps);
+}
+
+/// pm_frame_scroll_test after the session: the client (pale grey, a blue
+/// box at its (0, 0), a red one at its top-right corner) above the
+/// horizontal frame scroll bar and left of the vertical one, the sliders
+/// where the clicks left them.
+#[test]
+fn gui_pm_frame_scroll_test_matches_golden() {
+    check_gui_golden("pm_frame_scroll_test", "samples/pm_frame_scroll_test/pm_frame_scroll_test.exe",
+        &format!("{FRAME_SCROLL_STEPS}3300 dump {{dump}}\n3400 quit\n"));
+}
+
+/// pm_charbundle_test: GpiSetAttrs / GpiQueryAttrs with a CHARBUNDLE set
+/// and report the character mode, angle, shear, direction, alignment,
+/// extra and break extra that the single GpiSetChar* calls use, reject
+/// invalid values and reset to the defaults.
+#[test]
+fn gui_pm_charbundle_test_maps_the_character_bundle() {
+    assert_sample_checks_pass("samples/pm_charbundle_test/pm_charbundle_test.exe", "pm_charbundle_test", 37);
+}
+
+/// pm_modal_filter_test: message-filter hooks in the modal loops of
+/// WinMessageBox (MSGF_MESSAGEBOX: a swallowed, a changed message) and the
+/// standard dialogs (MSGF_DIALOGBOX); FDM_FILTER / FDM_ERROR / FDM_VALIDATE
+/// and FNTM_FILTERLIST / FNTM_FACENAMECHANGED sent to the dialog
+/// procedures, which drive the dialogs themselves.
+#[test]
+fn gui_pm_modal_filter_test_filters_modal_loops_and_answers_standard_dialogs() {
+    assert_sample_checks_pass("samples/pm_modal_filter_test/pm_modal_filter_test.exe", "pm_modal_filter_test", 29);
+}
+
 /// pm_combo_spin_test (same frame placement as pm_scroll_test: client from
 /// screen (34, 52), PM y = 511 − screen y): clicks the drop-down arrow of
 /// the CBS_DROPDOWN combination box (client (162..180, 348..370)) and the

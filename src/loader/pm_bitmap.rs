@@ -382,7 +382,9 @@ const DEVICE_BITMAP_FORMATS: [(u32, u32); 5] = [(1, 24), (1, 1), (1, 4), (1, 8),
 /// Where a blit takes its source pels from.
 enum BlitSource<'a> {
     None,
-    Shared(SharedSurface),
+    /// A shared surface, its source coordinates starting at the origin
+    /// given (a client's place in its frame's surface).
+    Shared(SharedSurface, (i64, i64)),
     Local(&'a Surface),
 }
 
@@ -673,25 +675,33 @@ impl super::Loader {
         let Ok(rop) = u8::try_from(rop) else { return GPI_ERROR };
         let Some(pt) = self.ps_target(hps) else { return GPI_ERROR };
         if matches!(src, BlitSource::None) && rop_uses_source(rop) { return GPI_ERROR; }
-        let Some(surface) = self.shared.window_mgr.lock_or_recover().target_surface(pt.target)
-            else { return GPI_OK };
-        let (w, h) = { let s = surface.lock_or_recover(); (s.width as i64, s.height as i64) };
+        let (surface, extent) = {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let Some(surface) = wm.target_surface(pt.target) else { return GPI_OK };
+            (surface, wm.target_view(pt.target).1)
+        };
+        // A client's own extent (its place in the frame is applied when
+        // the blit is drawn).
+        let (w, h) = match extent {
+            Some((cx, cy)) => (cx as i64, cy as i64),
+            None => { let s = surface.lock_or_recover(); (s.width as i64, s.height as i64) }
+        };
         let (tx0, ty0, tx1, ty1) = normalized(target);
         let (sx0, sy0, sx1, sy1) = normalized(src_rect);
         let (tw, th, sw, sh) = (tx1 - tx0, ty1 - ty0, sx1 - sx0, sy1 - sy0);
         let (cx0, cy0, cx1, cy1) = (tx0.max(0), ty0.max(0), tx1.min(w), ty1.min(h));
         if tw <= 0 || th <= 0 || cx0 >= cx1 || cy0 >= cy1 { return GPI_OK; }
-        let sample = |s: &Surface| -> Vec<Option<u32>> {
+        let sample = |s: &Surface, (ox, oy): (i64, i64)| -> Vec<Option<u32>> {
             (cy0..cy1).flat_map(|y| (cx0..cx1).map(move |x| (x, y))).map(|(x, y)| {
-                let sx = sx0 + (x - tx0) * sw / tw;
-                let sy = sy0 + (y - ty0) * sh / th;
+                let sx = sx0 + (x - tx0) * sw / tw + ox;
+                let sy = sy0 + (y - ty0) * sh / th + oy;
                 s.pel(i32::try_from(sx).ok()?, i32::try_from(sy).ok()?)
             }).collect()
         };
         let pels = match src {
             BlitSource::None => None,
-            BlitSource::Shared(s) => Some(sample(&s.lock_or_recover())),
-            BlitSource::Local(s) => Some(sample(s)),
+            BlitSource::Shared(s, origin) => Some(sample(&s.lock_or_recover(), origin)),
+            BlitSource::Local(s) => Some(sample(s, (0, 0))),
         };
         self.draw_ps(&pt, DrawOp::Blit {
             x: cx0 as i32, y: cy0 as i32, w: (cx1 - cx0) as u32, h: (cy1 - cy0) as u32,
@@ -738,7 +748,10 @@ impl super::Loader {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             match wm.ps_draw_target(hps_s) {
                 Some(t) if t != DrawTarget::None => match wm.target_surface(t) {
-                    Some(s) => BlitSource::Shared(s),
+                    Some(s) => {
+                        let (ox, oy) = wm.target_view(t).0;
+                        BlitSource::Shared(s, (ox as i64, oy as i64))
+                    }
                     None => return GPI_ERROR,
                 },
                 _ => return GPI_ERROR,
@@ -760,7 +773,7 @@ impl super::Loader {
         } else {
             (p[2].0, p[2].1, p[3].0, p[3].1)
         };
-        self.blit(hps, target, BlitSource::Shared(surface), src_rect, rop)
+        self.blit(hps, target, BlitSource::Shared(surface, (0, 0)), src_rect, rop)
     }
 
     /// GpiDrawBits: draw bitmap data at `bits` (format at `pbmi`) like
@@ -788,7 +801,7 @@ impl super::Loader {
         let Some(surface) = self.bitmap_surface(hbm) else { return GPI_ERROR };
         let (w, h) = { let s = surface.lock_or_recover(); (s.width as i64, s.height as i64) };
         let src = src.unwrap_or((0, 0, w, h));
-        self.blit(hps, dst, BlitSource::Shared(surface), src, rop)
+        self.blit(hps, dst, BlitSource::Shared(surface, (0, 0)), src, rop)
     }
 }
 

@@ -1220,18 +1220,42 @@ impl Loader {
     /// of a presentation space; `None` draws unclipped).
     pub(crate) fn draw_clipped(&self, target: pm_types::DrawTarget, op: DrawOp,
                                clip: Option<&crate::gui::region::Region>) {
+        use crate::gui::region::{RRect, Region, SetOp};
+        use pm_types::DrawTarget;
         let mut wm = self.shared.window_mgr.lock_or_recover();
+        let frame = match target {
+            DrawTarget::Frame(f) | DrawTarget::Client(f) => Some(f),
+            _ => None,
+        };
         // WinLockWindowUpdate: nothing reaches a locked frame (pm_paint_style.rs).
-        if let pm_types::DrawTarget::Frame(frame) = target && wm.is_update_locked(frame) {
+        if let Some(frame) = frame && wm.is_update_locked(frame) {
             return;
         }
         let Some(surface) = wm.target_surface(target) else { return };
+        let (origin, extent) = wm.target_view(target);
         let mut s = surface.lock_or_recover();
-        if let pm_types::DrawTarget::Frame(frame) = target {
+        if let Some(frame) = frame {
             wm.mark_dirty(frame);
         }
         drop(wm);
-        s.draw_clipped(op, clip);
+        // A client that lies elsewhere in its frame's surface (above a
+        // horizontal frame scroll bar) or covers only part of it (beside a
+        // vertical one): the drawing moves to the client's place and stays
+        // inside the client.
+        match extent {
+            Some((cx, cy)) if origin != (0, 0) || (cx, cy) != (s.width as i32, s.height as i32) => {
+                let mut op = op;
+                op.translate(origin.0, origin.1);
+                let inside = Region::rect(RRect::new(0, 0, cx, cy));
+                let mut c = match clip {
+                    Some(c) => Region::combine(c, &inside, SetOp::And).unwrap_or(inside),
+                    None => inside,
+                };
+                c.offset(origin.0, origin.1);
+                s.draw_clipped(op, Some(&c));
+            }
+            _ => s.draw_clipped(op, clip),
+        }
     }
 }
 

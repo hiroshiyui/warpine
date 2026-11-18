@@ -1327,60 +1327,92 @@ fn setup_dlg_dispatch(
                 return finish(vcpu, callback_stack);
             }
 
-            // Like WinGetMsg + WinDispatchMsg: accelerators are translated,
-            // and each message goes to its own window's procedure (the
-            // dialog procedure for the dialog, the owner's window procedure
-            // for a repaint behind the dialog) or to the built-in controls.
+            // Like WinGetMsg + WinCallMsgFilter + WinDispatchMsg:
+            // accelerators are translated, the message-filter hooks see the
+            // message (a chain; the loop goes on when they returned,
+            // pm_hook.rs), and each message goes to its own window's
+            // procedure.
             let mut msg = msg;
             loader.translate_queued_accelerator(&mut msg);
-            let wnd_proc = loader.shared.window_mgr.lock_or_recover()
-                .get_window(msg.hwnd).map_or(0, |w| w.pfn_wp);
-            if wnd_proc == 0 {
-                if !(msg.msg == WM_PAINT && loader.repaint_control(msg.hwnd)) {
-                    loader.dispatch_builtin_control(msg.hwnd, msg.msg, msg.mp1, msg.mp2);
-                }
-                // Owner drawing the control queued runs now; the loop goes
-                // on when it is done (pm_owner.rs).
-                if loader.shared.window_mgr.lock_or_recover().begin_owner_chain(hmq) {
-                    let chain = Box::new(super::pm_owner::OwnerChain {
-                        hmq, then: super::pm_owner::OwnerThen::DlgLoop { dlg_proc, hwnd_dlg, hmq },
-                    });
-                    continue_owner_draw(vcpu, loader, callback_stack, chain, saved_rip, saved_rsp);
-                    return true;
-                }
-                continue;
+            let pqmsg = (saved_rsp - 4) as u32 - super::pm_hook::CHAIN_BLOCK_BYTES;
+            if let Some(chain) = loader.modal_filter_chain(dlg_proc, hwnd_dlg, hmq, &msg, pqmsg) {
+                continue_call_chain(vcpu, loader, callback_stack, chain, saved_rip, saved_rsp);
+                return true;
             }
-
-            // Push the DlgRunLoop frame so the loop continues after the callback.
-            callback_stack.push(CallbackFrame {
-                saved_rip,
-                saved_rsp,
-                kind: FrameKind::DlgRunLoop { dlg_proc, hwnd_dlg, hmq },
-            });
-
-            // Set up the guest stack for a standard WndProc call, always at
-            // the same place: just below the WinDlgBox / WinProcessDlg
-            // return address (`saved_rsp - 4`). The procedure's `ret`
-            // leaves rsp 16 bytes below where its frame began, so building
-            // the next call from the current rsp would sink the stack by 16
-            // bytes for every message dispatched during the dialog.
-            let mut regs = vcpu.get_regs().unwrap();
-            regs.rsp = saved_rsp - 4 - DLG_CALL_FRAME_BYTES;
-            let sp = regs.rsp as u32;
-            loader.guest_write::<u32>(sp,      CALLBACK_RET_TRAP).expect("DlgRunLoop stack OOB");
-            loader.guest_write::<u32>(sp +  4, msg.hwnd).expect("DlgRunLoop stack OOB");
-            loader.guest_write::<u32>(sp +  8, msg.msg).expect("DlgRunLoop stack OOB");
-            loader.guest_write::<u32>(sp + 12, msg.mp1).expect("DlgRunLoop stack OOB");
-            loader.guest_write::<u32>(sp + 16, msg.mp2).expect("DlgRunLoop stack OOB");
-            regs.rip = wnd_proc as u64;
-            vcpu.set_regs(&regs).unwrap();
-            return true; // caller must `continue` the VMEXIT loop
+            if dispatch_dlg_message(vcpu, loader, callback_stack, dlg_proc, hwnd_dlg, hmq, &msg,
+                                    saved_rip, saved_rsp) {
+                return true;
+            }
+            continue;
         }
 
         // No message; block on the condvar for up to 100 ms.
         let guard = wait_lock.lock_or_recover();
         let _ = cond.wait_timeout(guard, std::time::Duration::from_millis(100)).unwrap();
     }
+}
+
+/// Dispatch `msg`, taken by the modal loop of dialog `hwnd_dlg`, to its
+/// window's procedure (the dialog procedure for the dialog, the owner's
+/// window procedure for a repaint behind the dialog) under a
+/// `FrameKind::DlgRunLoop` frame, or to the built-in controls. TRUE when a
+/// guest call was set up (the caller `continue`s the VMEXIT loop), FALSE
+/// when the message was handled on the host and the loop takes the next.
+#[allow(clippy::too_many_arguments)]
+fn dispatch_dlg_message(
+    vcpu: &mut dyn super::vm_backend::VcpuBackend,
+    loader: &super::Loader,
+    callback_stack: &mut Vec<CallbackFrame>,
+    dlg_proc: u32,
+    hwnd_dlg: u32,
+    hmq: u32,
+    msg: &super::pm_types::OS2Message,
+    saved_rip: u64,
+    saved_rsp: u64,
+) -> bool {
+    use super::mutex_ext::MutexExt;
+    let wnd_proc = loader.shared.window_mgr.lock_or_recover()
+        .get_window(msg.hwnd).map_or(0, |w| w.pfn_wp);
+    if wnd_proc == 0 {
+        if !(msg.msg == WM_PAINT && loader.repaint_control(msg.hwnd)) {
+            loader.dispatch_builtin_control(msg.hwnd, msg.msg, msg.mp1, msg.mp2);
+        }
+        // Owner drawing the control queued runs now; the loop goes
+        // on when it is done (pm_owner.rs).
+        if loader.shared.window_mgr.lock_or_recover().begin_owner_chain(hmq) {
+            let chain = Box::new(super::pm_owner::OwnerChain {
+                hmq, then: super::pm_owner::OwnerThen::DlgLoop { dlg_proc, hwnd_dlg, hmq },
+            });
+            continue_owner_draw(vcpu, loader, callback_stack, chain, saved_rip, saved_rsp);
+            return true;
+        }
+        return false;
+    }
+
+    // Push the DlgRunLoop frame so the loop continues after the callback.
+    callback_stack.push(CallbackFrame {
+        saved_rip,
+        saved_rsp,
+        kind: FrameKind::DlgRunLoop { dlg_proc, hwnd_dlg, hmq },
+    });
+
+    // Set up the guest stack for a standard WndProc call, always at
+    // the same place: just below the WinDlgBox / WinProcessDlg
+    // return address (`saved_rsp - 4`). The procedure's `ret`
+    // leaves rsp 16 bytes below where its frame began, so building
+    // the next call from the current rsp would sink the stack by 16
+    // bytes for every message dispatched during the dialog.
+    let mut regs = vcpu.get_regs().unwrap();
+    regs.rsp = saved_rsp - 4 - DLG_CALL_FRAME_BYTES;
+    let sp = regs.rsp as u32;
+    loader.guest_write::<u32>(sp,      CALLBACK_RET_TRAP).expect("DlgRunLoop stack OOB");
+    loader.guest_write::<u32>(sp +  4, msg.hwnd).expect("DlgRunLoop stack OOB");
+    loader.guest_write::<u32>(sp +  8, msg.msg).expect("DlgRunLoop stack OOB");
+    loader.guest_write::<u32>(sp + 12, msg.mp1).expect("DlgRunLoop stack OOB");
+    loader.guest_write::<u32>(sp + 16, msg.mp2).expect("DlgRunLoop stack OOB");
+    regs.rip = wnd_proc as u64;
+    vcpu.set_regs(&regs).unwrap();
+    true
 }
 
 /// End a modal dialog loop and return to the WinDlgBox / WinProcessDlg
@@ -1590,6 +1622,18 @@ fn continue_call_chain(
             regs.rip = MAGIC_API_BASE + (PMWIN_BASE + ordinal) as u64;
             regs.rsp = saved_rsp - 4;
         }
+        ChainEnd::ModalLoop { dlg_proc, hwnd_dlg, hmq, msg } => {
+            // The message-filter hooks of a modal loop returned: dispatch
+            // what they let through, then on with the loop.
+            if let Some(msg) = msg
+                && dispatch_dlg_message(vcpu, loader, callback_stack, dlg_proc, hwnd_dlg, hmq, &msg,
+                                        saved_rip, saved_rsp)
+            {
+                return;
+            }
+            setup_dlg_dispatch(vcpu, loader, callback_stack, dlg_proc, hwnd_dlg, hmq, saved_rip, saved_rsp);
+            return;
+        }
     }
     vcpu.set_regs(&regs).unwrap();
 }
@@ -1733,6 +1777,70 @@ mod tests {
         continue_call_chain(&mut vcpu, &loader, &mut stack, chain, 0x4000, saved_rsp);
         let regs = vcpu.get_regs().unwrap();
         assert_eq!((regs.rip, regs.rsp, regs.rax), (0x4000, saved_rsp, 1));
+    }
+
+    /// The modal loop calls the message-filter hooks with each message in
+    /// a QMSG below the caller's stack (MSGF_DIALOGBOX, MSGF_MESSAGEBOX for
+    /// a message box); TRUE swallows it, FALSE dispatches what the hook left
+    /// in the QMSG.
+    #[test]
+    fn modal_loop_calls_message_filter_hooks() {
+        use super::super::pm_hook::{CHAIN_BLOCK_BYTES, HK_MSGFILTER, HMQ_CURRENT, MSGF_DIALOGBOX, MSGF_MESSAGEBOX};
+        let loader = super::super::Loader::new_mock();
+        let (hmq, dlg) = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq(437);
+            wm.tid_to_hmq.insert(0, hmq);
+            wm.register_class("Dlg".into(), 0x1234, 0);
+            let dlg = wm.create_window("Dlg".into(), 0, hmq);
+            let mq = wm.get_mq(hmq).unwrap();
+            for msg in [0x1000, 0x1001] {
+                mq.lock_or_recover().messages.push_back(
+                    OS2Message { hwnd: dlg, msg, mp1: 7, mp2: 8, time: 0, x: 0, y: 0 });
+            }
+            (hmq, dlg)
+        };
+        assert!(matches!(loader.win_set_hook(0, HMQ_CURRENT, HK_MSGFILTER, 0x7000), ApiResult::Normal(1)));
+        let mut vcpu = MockVcpu::new();
+        let saved_rsp: u64 = 0x8_0000;
+        let qmsg = saved_rsp as u32 - 4 - CHAIN_BLOCK_BYTES;
+        let rd = |a: u32| loader.guest_read::<u32>(a).unwrap();
+        let mut stack = Vec::new();
+        let filter_return = |vcpu: &mut MockVcpu, stack: &mut Vec<CallbackFrame>, result: u32| {
+            let Some(CallbackFrame { kind: FrameKind::CallChain { mut chain, stops }, saved_rip, saved_rsp }) = stack.pop()
+            else { panic!("a call-chain frame") };
+            chain.returned(result, stops);
+            continue_call_chain(vcpu, &loader, stack, chain, saved_rip, saved_rsp);
+        };
+        // The first message: the hook sees it and swallows it.
+        assert!(setup_dlg_dispatch(&mut vcpu, &loader, &mut stack, 0x1234, dlg, hmq, 0x4000, saved_rsp));
+        let sp = vcpu.get_regs().unwrap().rsp as u32;
+        assert_eq!(vcpu.get_regs().unwrap().rip, 0x7000);
+        assert_eq!([rd(sp + 4), rd(sp + 8), rd(sp + 12)], [MOCK_HAB, qmsg, MSGF_DIALOGBOX]);
+        assert_eq!([rd(qmsg), rd(qmsg + 4), rd(qmsg + 8)], [dlg, 0x1000, 7]);
+        filter_return(&mut vcpu, &mut stack, 1);
+        // The loop goes on with the second message, which the hook changes
+        // and lets through: the dialog procedure gets the changed message.
+        assert_eq!(vcpu.get_regs().unwrap().rip, 0x7000);
+        assert_eq!(rd(qmsg + 4), 0x1001);
+        loader.guest_write::<u32>(qmsg + 8, 99).unwrap();
+        filter_return(&mut vcpu, &mut stack, 0);
+        let regs = vcpu.get_regs().unwrap();
+        assert_eq!(regs.rip, 0x1234, "the dialog procedure");
+        let sp = regs.rsp as u32;
+        assert_eq!([rd(sp + 4), rd(sp + 8), rd(sp + 12)], [dlg, 0x1001, 99]);
+        assert!(matches!(stack.pop(), Some(CallbackFrame { kind: FrameKind::DlgRunLoop { .. }, .. })));
+        assert!(!loader.shared.window_mgr.lock_or_recover().hooks.in_hook(0));
+        // A message box passes MSGF_MESSAGEBOX.
+        {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            wm.get_window_mut(dlg).unwrap().message_box = true;
+            wm.get_mq(hmq).unwrap().lock_or_recover().messages.push_back(
+                OS2Message { hwnd: dlg, msg: 0x1002, mp1: 0, mp2: 0, time: 0, x: 0, y: 0 });
+        }
+        assert!(setup_dlg_dispatch(&mut vcpu, &loader, &mut stack, 0x1234, dlg, hmq, 0x4000, saved_rsp));
+        let sp = vcpu.get_regs().unwrap().rsp as u32;
+        assert_eq!(rd(sp + 12), MSGF_MESSAGEBOX);
     }
 
     // ── Thread ends ──────────────────────────────────────────────────────

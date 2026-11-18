@@ -416,8 +416,15 @@ impl super::Loader {
                 let pel = self.ps_target(hps)
                     .and_then(|t| {
                         let (x, y) = t.dev((x, y));
-                        let s = self.shared.window_mgr.lock_or_recover().target_surface(t.target)?;
-                        s.lock_or_recover().pel(x, y)
+                        let mut wm = self.shared.window_mgr.lock_or_recover();
+                        let s = wm.target_surface(t.target)?;
+                        // A client's pels lie at its place in the frame.
+                        let ((ox, oy), extent) = wm.target_view(t.target);
+                        drop(wm);
+                        if extent.is_some_and(|(cx, cy)| !(0..cx).contains(&x) || !(0..cy).contains(&y)) {
+                            return None;
+                        }
+                        s.lock_or_recover().pel(x.checked_add(ox)?, y.checked_add(oy)?)
                     });
                 let value = pel.and_then(|rgb| self.shared.window_mgr.lock_or_recover()
                     .ps_map.get(&hps).map(|ps| ps.value_of_pel(rgb)));

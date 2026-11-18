@@ -289,6 +289,7 @@ impl Loader {
                 w.x = (dw as i32 - lay.cx) / 2;
                 w.y = (dh as i32 - lay.cy) / 2;
                 w.msgbox_icon = lay.icon.map_or(0, |i| i.0);
+                w.message_box = true;
             }
             let add = |wm: &mut super::pm_types::WindowManager, class: &str, text: &str,
                            (x, y, cx, cy): (i32, i32, i32, i32), id: u32, style: u32| {

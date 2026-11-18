@@ -33,7 +33,16 @@
 //!   window belongs to another thread's queue; `SMHSTRUCT.model` is
 //!   `PM_MODEL_2X`.
 //! * `HK_MSGFILTER` — `BOOL MsgFilterHook(HAB, PQMSG, ULONG msgf)`: by
-//!   `WinCallMsgFilter`, which returns TRUE when a hook did.
+//!   `WinCallMsgFilter`, which returns TRUE when a hook did, and by the
+//!   modal loops for every message they take, after accelerators are
+//!   translated and before it is dispatched — `MSGF_DIALOGBOX` in
+//!   `WinDlgBox` / `WinProcessDlg` (and the standard file and font
+//!   dialogs), `MSGF_MESSAGEBOX` in `WinMessageBox`. The `QMSG` lies on the
+//!   stack below the loop's caller; the hooks may change it, and the loop
+//!   dispatches what they leave there. A hook returning TRUE swallows the
+//!   message: the loop takes the next one. Warpine has no guest-side
+//!   tracking loop (frames are moved and sized by the GUI thread), so
+//!   `MSGF_TRACK` is never passed.
 //! * `HK_HELP` — `BOOL HelpHook(HAB, ULONG usMode, ULONG idTopic,
 //!   ULONG idSubTopic, PRECTL prcPosition)`: by `WinDefWindowProc` for a
 //!   `WM_HELP` that reaches a frame or a frame's client (`pm_message.rs`).
@@ -92,6 +101,12 @@ pub const KNOWN_HOOKS: [i32; 20] = [
     HK_CODEPAGECHANGED, HK_CALLHOOK, HK_WINDOWDC, HK_DESTROYWINDOW, HK_CHECKMSGFILTER,
     HK_MSGINPUT, HK_LOCKUP, HK_FLUSHBUF,
 ];
+
+/// `msgf` of a message-filter hook (`<pmwin.h>`): the modal loop of a
+/// dialog (`WinDlgBox`, `WinProcessDlg`).
+pub const MSGF_DIALOGBOX: u32 = 1;
+/// `msgf`: the modal loop of `WinMessageBox`.
+pub const MSGF_MESSAGEBOX: u32 = 2;
 
 /// `hmq` of `WinSetHook` / `WinReleaseHook`: the calling thread's queue.
 pub const HMQ_CURRENT: u32 = 1;
@@ -294,6 +309,14 @@ pub(crate) enum ChainThen {
     /// `WinGetMsg` / `WinPeekMsg` (`ordinal`) after the input hooks, the
     /// message in the `QMSG` at `pqmsg`.
     Message { ordinal: u32, pqmsg: u32, remove: bool, peek: bool },
+    /// The message-filter hooks of a modal loop saw the message in the
+    /// `QMSG` at `pqmsg`: dispatch it (unless swallowed) and go on with
+    /// the loop.
+    ModalLoop { dlg_proc: u32, hwnd_dlg: u32, hmq: u32, pqmsg: u32 },
+    /// Messages a standard dialog `hwnd` sent to its dialog procedure
+    /// (`FDM_*`, `FNTM_*`; `pm_stddlg.rs`): act on the answers, free the
+    /// strings at `buf`, and return `ret` (the default procedure's result).
+    StdDialog { hwnd: u32, buf: u32, ret: u32 },
 }
 
 /// Guest calls an API makes before it returns (see the module comment).
@@ -305,6 +328,8 @@ pub(crate) struct CallChain {
     pub steps: VecDeque<CallStep>,
     /// Result of the last call made.
     pub last: u32,
+    /// Results of the calls made, in order.
+    pub results: Vec<u32>,
     /// Whether a `stop_on_true` call returned TRUE.
     pub stopped: bool,
     /// The calls are hook calls: no hooks run for what they do.
@@ -316,12 +341,15 @@ pub(crate) struct CallChain {
 }
 
 /// How a finished [`CallChain`] goes on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum ChainEnd {
     /// Return this value to the caller.
     Return(u32),
     /// Run PMWIN API `ordinal` again (its arguments are still on the stack).
     Rerun(u32),
+    /// Back to the modal loop of dialog `hwnd_dlg`: dispatch `msg` (None
+    /// when a filter hook swallowed it), then take the next message.
+    ModalLoop { dlg_proc: u32, hwnd_dlg: u32, hmq: u32, msg: Option<OS2Message> },
 }
 
 /// PMWIN ordinal of `WinSendMsg`.
@@ -329,12 +357,13 @@ pub(crate) const ORD_WIN_SEND_MSG: u32 = 920;
 
 impl CallChain {
     pub fn new(tid: u32, steps: Vec<CallStep>, hooks: bool, then: ChainThen) -> Self {
-        CallChain { tid, steps: steps.into(), last: 0, stopped: false, hooks, inter_thread_send: false, then }
+        CallChain { tid, steps: steps.into(), last: 0, results: Vec::new(), stopped: false, hooks, inter_thread_send: false, then }
     }
 
     /// A call returned `result`; `stops` = it was a `stop_on_true` call.
     pub fn returned(&mut self, result: u32, stops: bool) {
         self.last = result;
+        self.results.push(result);
         if stops && result != 0 {
             self.stopped = true;
             self.steps.clear();
@@ -379,6 +408,53 @@ impl Loader {
                 let msg = self.finish_hooked_message(pqmsg);
                 ChainEnd::Return(if peek { 1 } else { (msg != WM_QUIT) as u32 })
             }
+            ChainThen::StdDialog { hwnd, buf, ret } => {
+                self.std_chain_done(hwnd, buf, &chain.results);
+                ChainEnd::Return(ret)
+            }
+            ChainThen::ModalLoop { dlg_proc, hwnd_dlg, hmq, pqmsg } => {
+                let msg = (!chain.stopped).then(|| self.read_qmsg(pqmsg));
+                ChainEnd::ModalLoop { dlg_proc, hwnd_dlg, hmq, msg }
+            }
+        }
+    }
+
+    /// The `QMSG` at `pqmsg` (fields that cannot be read are 0).
+    fn read_qmsg(&self, pqmsg: u32) -> OS2Message {
+        let rd = |o: u32| self.guest_read::<u32>(pqmsg.wrapping_add(o)).unwrap_or(0);
+        OS2Message {
+            hwnd: rd(QMSG_HWND), msg: rd(QMSG_MSG), mp1: rd(QMSG_MP1), mp2: rd(QMSG_MP2),
+            time: rd(QMSG_TIME), x: rd(QMSG_PTL_X) as i32, y: rd(QMSG_PTL_Y) as i32,
+        }
+    }
+
+    /// The message-filter hooks a modal loop of dialog `hwnd_dlg` (queue
+    /// `hmq`) calls for `msg`: a chain passing the message in a `QMSG`
+    /// written to `pqmsg` (free guest stack below the loop's caller), with
+    /// `MSGF_MESSAGEBOX` for a message box and `MSGF_DIALOGBOX` otherwise.
+    /// None when no hook is set (or the queue's thread runs hooks now).
+    pub(crate) fn modal_filter_chain(&self, dlg_proc: u32, hwnd_dlg: u32, hmq: u32, msg: &OS2Message,
+                                     pqmsg: u32) -> Option<Box<CallChain>> {
+        let (tid, msgf) = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            let tid = wm.queue_thread(hmq)?;
+            let message_box = wm.get_window(hwnd_dlg).is_some_and(|w| w.message_box);
+            (tid, if message_box { MSGF_MESSAGEBOX } else { MSGF_DIALOGBOX })
+        };
+        let procs = self.hooks_to_call(tid, hmq, HK_MSGFILTER);
+        if procs.is_empty() {
+            return None;
+        }
+        let fields = [(QMSG_HWND, msg.hwnd), (QMSG_MSG, msg.msg), (QMSG_MP1, msg.mp1), (QMSG_MP2, msg.mp2),
+                      (QMSG_TIME, msg.time), (QMSG_PTL_X, msg.x as u32), (QMSG_PTL_Y, msg.y as u32)];
+        for (o, v) in fields {
+            self.guest_write::<u32>(pqmsg.wrapping_add(o), v)?;
+        }
+        let steps = procs.into_iter().map(|p| CallStep::hook(p, vec![MOCK_HAB, pqmsg, msgf], true)).collect();
+        let then = ChainThen::ModalLoop { dlg_proc, hwnd_dlg, hmq, pqmsg };
+        match self.start_chain(CallChain::new(tid, steps, true, then)) {
+            ApiResult::CallChain(chain) => Some(chain),
+            _ => None,
         }
     }
 
@@ -386,11 +462,7 @@ impl Loader {
     /// translate an accelerator keystroke in it, as `WinGetMsg` does, and
     /// return its message number.
     fn finish_hooked_message(&self, pqmsg: u32) -> u32 {
-        let rd = |o: u32| self.guest_read::<u32>(pqmsg.wrapping_add(o)).unwrap_or(0);
-        let mut msg = OS2Message {
-            hwnd: rd(QMSG_HWND), msg: rd(QMSG_MSG), mp1: rd(QMSG_MP1), mp2: rd(QMSG_MP2),
-            time: rd(QMSG_TIME), x: rd(QMSG_PTL_X) as i32, y: rd(QMSG_PTL_Y) as i32,
-        };
+        let mut msg = self.read_qmsg(pqmsg);
         let before = (msg.hwnd, msg.msg, msg.mp1, msg.mp2);
         self.translate_queued_accelerator(&mut msg);
         if (msg.hwnd, msg.msg, msg.mp1, msg.mp2) != before {

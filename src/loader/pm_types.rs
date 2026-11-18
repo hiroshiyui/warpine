@@ -141,6 +141,9 @@ pub struct OS2Window {
     /// A message box's icon as the system pointer it shows (`SPTR_ICON*`),
     /// painted with the dialog face; 0 = none (every other window).
     pub msgbox_icon: u32,
+    /// The dialog is a `WinMessageBox` (its modal loop passes
+    /// `MSGF_MESSAGEBOX` to the message-filter hooks).
+    pub message_box: bool,
     /// Check state of a check box / radio button (`WC_BUTTON`): 0 unchecked,
     /// 1 checked, 2 indeterminate (`BM_SETCHECK` / `BM_QUERYCHECK`).
     pub check_state: u32,
@@ -238,6 +241,11 @@ pub enum DrawTarget {
     None,
     /// The surface of this frame window, composited onto the desktop.
     Frame(u32),
+    /// The client window of this frame: its surface, drawn in the client's
+    /// coordinates — moved to the client's place in the frame (above a
+    /// horizontal frame scroll bar) and clipped to the client
+    /// ([`WindowManager::client_view`]).
+    Client(u32),
     /// This bitmap (selected into a memory presentation space).
     Bitmap(u32),
 }
@@ -750,6 +758,7 @@ impl WindowManager {
             destroy_on_dismiss: false,
             frame_flags: 0,
             msgbox_icon: 0,
+            message_box: false,
             check_state: 0,
             hilite: false,
             update: super::pm_rect::EMPTY_RECTL,
@@ -805,6 +814,11 @@ impl WindowManager {
         })));
         self.next_hmq += 1;
         h
+    }
+    /// The thread whose live message queue is `hmq`.
+    pub fn queue_thread(&self, hmq: u32) -> Option<u32> {
+        if !self.msg_queues.contains_key(&hmq) { return None; }
+        self.tid_to_hmq.iter().find(|&(_, &h)| h == hmq).map(|(&tid, _)| tid)
     }
     /// The live message queue of thread `tid`, if it has one.
     pub fn thread_queue(&self, tid: u32) -> Option<u32> {
@@ -1283,15 +1297,28 @@ impl WindowManager {
         Some(((left, top, lw, lh), caret.cursor))
     }
 
-    /// Hit-test point `(x, y)` (client coordinates of `frame`, origin at the
-    /// bottom-left) against the frame's built-in controls. Returns the
+    /// Hit-test point `(x, y)` (coordinates of `frame`'s surface, origin at
+    /// the bottom-left: a standard frame's client is at its place in it,
+    /// [`Self::client_view`]) against the frame's built-in controls — the
+    /// client's and the frame's own (its frame scroll bars). Returns the
     /// top-most enabled control under the point together with the point in
     /// that control's own coordinates. Static text is transparent to the
     /// pointer.
     pub fn control_at(&self, frame: u32, x: i32, y: i32) -> Option<(u32, i32, i32)> {
         use super::constants::WS_DISABLED;
         let root = self.control_root(frame)?;
-        self.builtin_control_descendants(root).into_iter().rev().find_map(|h| {
+        // Frame controls (FID_VERTSCROLL / FID_HORZSCROLL) first: they lie
+        // beside the client, below its controls.
+        let mut candidates: Vec<u32> = if root != frame {
+            self.windows.get(&frame).map(|f| f.children.iter().copied().filter(|&h| {
+                h != root && self.windows.get(&h).is_some_and(|w| w.visible && w.pfn_wp == 0
+                    && w.class_name.starts_with("WC_"))
+            }).collect()).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        candidates.extend(self.builtin_control_descendants(root));
+        candidates.into_iter().rev().find_map(|h| {
             let w = self.windows.get(&h)?;
             if w.class_name == "WC_STATIC" || w.style & WS_DISABLED != 0 { return None; }
             let (ax, ay, cx, cy) = self.get_abs_rect_in_frame(h);
@@ -1399,7 +1426,10 @@ impl WindowManager {
         Some(if ps.bitmap != 0 {
             DrawTarget::Bitmap(ps.bitmap)
         } else if ps.hwnd != 0 {
-            DrawTarget::Frame(self.client_to_frame(ps.hwnd))
+            match self.client_to_frame(ps.hwnd) {
+                frame if frame != ps.hwnd => DrawTarget::Client(frame),
+                frame => DrawTarget::Frame(frame),
+            }
         } else {
             DrawTarget::None
         })
@@ -1409,8 +1439,28 @@ impl WindowManager {
     pub fn target_surface(&mut self, target: DrawTarget) -> Option<SharedSurface> {
         match target {
             DrawTarget::None => None,
-            DrawTarget::Frame(frame) => self.frame_surface(frame),
+            DrawTarget::Frame(frame) | DrawTarget::Client(frame) => self.frame_surface(frame),
             DrawTarget::Bitmap(hbm) => self.bitmaps.get(&hbm).map(|b| b.surface.clone()),
+        }
+    }
+
+    /// Where the client of `frame` lies in the frame's surface: `(x, y,
+    /// cx, cy)`; `None` without a client.
+    pub fn client_view(&self, frame: u32) -> Option<(i32, i32, i32, i32)> {
+        let client = self.frame_to_client.get(&frame)?;
+        self.windows.get(client).map(|w| (w.x, w.y, w.cx.max(0), w.cy.max(0)))
+    }
+
+    /// The origin of `target`'s coordinates in its surface and the extent
+    /// drawing reaches from there (`None`: the whole surface): a client's
+    /// place in its frame, else `(0, 0)`.
+    pub fn target_view(&self, target: DrawTarget) -> ((i32, i32), Option<(i32, i32)>) {
+        match target {
+            DrawTarget::Client(frame) => match self.client_view(frame) {
+                Some((x, y, cx, cy)) => ((x, y), Some((cx, cy))),
+                None => ((0, 0), None),
+            },
+            _ => ((0, 0), None),
         }
     }
 

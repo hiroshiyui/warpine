@@ -28,6 +28,24 @@
 //! ([`Loader::std_dialog_return`]), a modeless one returned the dialog's
 //! handle when it was created.
 //!
+//! # Messages to the dialog procedure
+//!
+//! A dialog with a dialog procedure is sent `FDM_FILTER` / `FDM_VALIDATE` /
+//! `FDM_ERROR` (file dialog) and `FNTM_FILTERLIST` / `FNTM_FACENAMECHANGED`
+//! / `FNTM_POINTSIZECHANGED` / `FNTM_STYLECHANGED` (font dialog). The
+//! dialog logic runs on the host inside `WinDefFileDlgProc` /
+//! `WinDefFontDlgProc`, so it queues these messages ([`StdSend`], in
+//! [`StdDialogs`]) while it works, and the default procedure, before it
+//! returns, sends them synchronously to the dialog procedure as a call
+//! chain (ADR-0026, `pm_hook.rs` `ChainThen::StdDialog`): the strings they
+//! point to are copied to a guest block freed afterwards, and when every
+//! call has returned the dialog acts on the answers
+//! ([`Loader::std_chain_done`]) — a file the filter refused leaves the
+//! list, a name the validation refused keeps the dialog open — and the
+//! default procedure returns its own result. Messages queued while such a
+//! chain runs wait for the next call of the default procedure. A dialog
+//! without a dialog procedure sends nothing.
+//!
 //! Layouts and sizes are Warpine's own.
 
 use std::collections::{HashMap, HashSet};
@@ -36,6 +54,9 @@ use super::constants::*;
 use super::pm_types::WindowManager;
 use crate::lx::header::RT_DIALOG;
 use super::{Loader, MutexExt};
+
+/// `CCHMAXPATH`: the longest string a standard dialog passes its procedure.
+const CCHMAXPATH_STD: usize = 260;
 
 /// `QWL_USER`: the window word that holds the `FILEDLG` / `FONTDLG`.
 pub const QWL_USER: i32 = 0;
@@ -60,12 +81,54 @@ pub enum StdDialog {
     Font(Box<super::pm_fontdlg::FontDlgState>),
 }
 
+/// What the answer to a message a standard dialog sends its dialog
+/// procedure is for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StdTag {
+    /// `FDM_FILTER` for file `name` of the file list (FALSE: not listed).
+    FileFilter(String),
+    /// `FDM_VALIDATE` for one of the files OK / Apply takes (FALSE: the
+    /// dialog stays).
+    FileValidate,
+    /// `FNTM_FILTERLIST` for item `text` of list `id` (FALSE: not listed).
+    FontFilter { id: u32, text: String },
+    /// A message whose answer the dialog does not use (`FDM_ERROR`, the
+    /// `FNTM_*CHANGED` notifications).
+    Notify,
+}
+
+/// A message parameter of a [`StdSend`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StdArg {
+    Value(u32),
+    /// A string, passed as a pointer to it in the dialog's codepage.
+    Text(String),
+    /// A structure, passed as a pointer to a copy of it.
+    Block(Vec<u8>),
+}
+
+/// A message a standard dialog sends its dialog procedure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StdSend {
+    pub msg: u32,
+    pub mp1: StdArg,
+    pub mp2: StdArg,
+    pub tag: StdTag,
+}
+
+/// Bytes of the guest block holding the strings of one chain at most.
+pub const MAX_STD_SEND_BYTES: usize = 1 << 20;
+
 /// Standard dialogs by window handle, and the file lists
 /// (`papszFQFilename`) handed to the program until `WinFreeFileDlgList`.
 #[derive(Debug, Default)]
 pub struct StdDialogs {
     dialogs: HashMap<u32, StdDialog>,
     file_lists: HashSet<u32>,
+    /// Messages to send to each dialog's procedure.
+    pending: HashMap<u32, Vec<StdSend>>,
+    /// What the messages being sent to each dialog's procedure are for.
+    in_flight: HashMap<u32, Vec<StdTag>>,
 }
 
 impl StdDialogs {
@@ -94,7 +157,26 @@ impl StdDialogs {
     pub fn forget_windows(&mut self, doomed: &[u32]) {
         for h in doomed {
             self.dialogs.remove(h);
+            self.pending.remove(h);
+            self.in_flight.remove(h);
         }
+    }
+    /// Queue `send` for dialog `hwnd`'s procedure.
+    pub fn queue(&mut self, hwnd: u32, send: StdSend) {
+        self.pending.entry(hwnd).or_default().push(send);
+    }
+    /// Drop the queued messages of dialog `hwnd` that `drop` selects.
+    pub fn unqueue(&mut self, hwnd: u32, drop: impl Fn(&StdSend) -> bool) {
+        if let Some(v) = self.pending.get_mut(&hwnd) {
+            v.retain(|s| !drop(s));
+        }
+    }
+    /// The queued messages of dialog `hwnd`, unless some are being sent.
+    fn take_pending(&mut self, hwnd: u32) -> Vec<StdSend> {
+        if self.in_flight.contains_key(&hwnd) {
+            return Vec::new();
+        }
+        self.pending.remove(&hwnd).unwrap_or_default()
     }
     /// Record file list `papsz` as handed out.
     pub fn add_file_list(&mut self, papsz: u32) {
@@ -183,6 +265,116 @@ pub fn parent_area(wm: &WindowManager, hwnd_p: u32) -> (i32, i32, i32, i32) {
 }
 
 impl Loader {
+    /// The default procedure of standard dialog `hwnd` returns `result`:
+    /// first send the messages it queued to the dialog's procedure (a call
+    /// chain that returns `result` when done; see the module comment).
+    pub(super) fn std_flush(&self, hwnd: u32, result: super::ApiResult) -> super::ApiResult {
+        use super::pm_hook::{CallChain, CallStep, ChainThen};
+        let super::ApiResult::Normal(ret) = result else { return result };
+        let (pfn, tid, sends) = {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let Some((pfn, hmq)) = wm.get_window(hwnd).map(|w| (w.pfn_wp, w.hmq)) else { return result };
+            let Some(tid) = wm.queue_thread(hmq) else { return result };
+            if pfn == 0 || wm.std_dialogs.get(hwnd).is_none() {
+                return result;
+            }
+            let sends = wm.std_dialogs.take_pending(hwnd);
+            if sends.is_empty() {
+                return result;
+            }
+            (pfn, tid, sends)
+        };
+        // The strings and structures, each NUL-terminated (strings) and
+        // 4-byte aligned, in one block.
+        let cp = self.window_codepage(hwnd);
+        let bytes_of = |a: &StdArg| match a {
+            StdArg::Value(_) => None,
+            StdArg::Text(t) => {
+                let mut b = super::codepage::cp_encode(t, cp);
+                b.truncate(CCHMAXPATH_STD - 1);
+                b.push(0);
+                Some(b)
+            }
+            StdArg::Block(b) => Some(b.clone()),
+        };
+        let mut data: Vec<u8> = Vec::new();
+        let mut offsets: Vec<(Option<usize>, Option<usize>)> = Vec::with_capacity(sends.len());
+        let mut sends: Vec<StdSend> = sends;
+        let mut kept = 0;
+        for s in &sends {
+            let place = |a: &StdArg, data: &mut Vec<u8>| bytes_of(a).map(|b| {
+                let at = data.len();
+                data.extend_from_slice(&b);
+                data.resize(data.len().next_multiple_of(4), 0);
+                at
+            });
+            let before = data.len();
+            let o = (place(&s.mp1, &mut data), place(&s.mp2, &mut data));
+            if data.len() > MAX_STD_SEND_BYTES {
+                data.truncate(before);
+                break;
+            }
+            offsets.push(o);
+            kept += 1;
+        }
+        sends.truncate(kept);
+        let buf = if data.is_empty() {
+            0
+        } else {
+            match self.shared.mem_mgr.lock_or_recover().alloc(data.len() as u32) {
+                Some(b) => b,
+                None => return result,
+            }
+        };
+        if buf != 0 && self.guest_write_bytes(buf, &data).is_none() {
+            self.shared.mem_mgr.lock_or_recover().free(buf);
+            return result;
+        }
+        let value = |a: &StdArg, off: Option<usize>| match (a, off) {
+            (StdArg::Value(v), _) => *v,
+            (_, Some(o)) => buf + o as u32,
+            _ => 0,
+        };
+        let steps: Vec<CallStep> = sends.iter().zip(&offsets)
+            .map(|(s, &(o1, o2))| CallStep::send(pfn, hwnd, s.msg, value(&s.mp1, o1), value(&s.mp2, o2)))
+            .collect();
+        let tags: Vec<StdTag> = sends.into_iter().map(|s| s.tag).collect();
+        self.shared.window_mgr.lock_or_recover().std_dialogs.in_flight.insert(hwnd, tags);
+        self.start_chain(CallChain::new(tid, steps, false, ChainThen::StdDialog { hwnd, buf, ret }))
+    }
+
+    /// The messages standard dialog `hwnd` sent its procedure were
+    /// answered with `results`: free their strings at `buf` and act on the
+    /// answers.
+    pub(crate) fn std_chain_done(&self, hwnd: u32, buf: u32, results: &[u32]) {
+        if buf != 0 {
+            self.shared.mem_mgr.lock_or_recover().free(buf);
+        }
+        let tags = self.shared.window_mgr.lock_or_recover().std_dialogs.in_flight.remove(&hwnd);
+        // A call skipped (the dialog destroyed meanwhile): nothing to act on.
+        let Some(tags) = tags.filter(|t| t.len() == results.len()) else { return };
+        let mut refused_files = Vec::new();
+        let mut validated: Option<bool> = None;
+        let mut refused_items: Vec<(u32, String)> = Vec::new();
+        for (tag, &r) in tags.into_iter().zip(results) {
+            match tag {
+                StdTag::FileFilter(name) if r == 0 => refused_files.push(name),
+                StdTag::FileValidate => validated = Some(validated.unwrap_or(true) && r != 0),
+                StdTag::FontFilter { id, text } if r == 0 => refused_items.push((id, text)),
+                _ => {}
+            }
+        }
+        if !refused_files.is_empty() {
+            self.file_dlg_drop_files(hwnd, &refused_files);
+        }
+        if let Some(ok) = validated {
+            self.file_dlg_validated(hwnd, ok);
+        }
+        if !refused_items.is_empty() {
+            self.font_dlg_drop_items(hwnd, &refused_items);
+        }
+    }
+
     /// A standard dialog from the program's template `id` of module `hmod`
     /// (`FDS_CUSTOM` / `FNTS_CUSTOM`); `None` without a usable template.
     pub(super) fn std_custom_dialog(&self, tid: u32, parent: u32, owner: u32, pfn: u32,

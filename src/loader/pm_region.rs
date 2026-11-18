@@ -176,11 +176,15 @@ impl WindowManager {
     pub fn effective_clip(&mut self, hps: u32) -> Region {
         let Some(ps) = self.ps_map.get(&hps) else { return Region::empty() };
         let clip = ps.clip.clone();
-        let visible = self.ps_draw_target(hps)
-            .filter(|t| *t != DrawTarget::None)
-            .and_then(|t| self.target_surface(t))
-            .map(|s| { let s = s.lock_or_recover(); Region::rect(RRect::new(0, 0, s.width as i32, s.height as i32)) })
-            .unwrap_or_else(Region::infinite);
+        let target = self.ps_draw_target(hps).filter(|t| *t != DrawTarget::None);
+        // A client's extent, else its surface's.
+        let extent = target.and_then(|t| self.target_view(t).1);
+        let visible = match extent {
+            Some((cx, cy)) => Region::rect(RRect::new(0, 0, cx, cy)),
+            None => target.and_then(|t| self.target_surface(t))
+                .map(|s| { let s = s.lock_or_recover(); Region::rect(RRect::new(0, 0, s.width as i32, s.height as i32)) })
+                .unwrap_or_else(Region::infinite),
+        };
         match clip {
             Some(c) => Region::combine(&c, &visible, SetOp::And).unwrap_or_else(|| (*c).clone()),
             None => visible,

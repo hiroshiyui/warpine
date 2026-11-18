@@ -34,11 +34,25 @@
 //! `lAveCharWidth`, `FATTR_FONTUSE_OUTLINE`; `usCodePage` kept), with
 //! `lReturn` / `lSRC`.
 //!
-//! Not supported: `FNTS_OWNERDRAWPREVIEW` (Warpine draws the sample),
-//! printer fonts (`hpsPrinter`, `FNTS_*FILTER`), `FNTS_BITMAPONLY` (all of
-//! Warpine's fonts are outline fonts that scale to any size, so the
-//! filter is ignored rather than leaving nothing), and the `FNTM_*`
-//! notifications are not sent.
+//! With a dialog procedure, the dialog sends it, through
+//! `WinDefFontDlgProc` (`pm_stddlg.rs`): `FNTM_FILTERLIST` (mp1 = the
+//! name, mp2 = `MPFROM2SHORT(DID_NAME or DID_SIZE, FNTI_*)`) for every
+//! family and size it lists — FALSE leaves it out; the lists are filled
+//! when the dialog is created, so the first call of the default procedure
+//! (normally for `WM_INITDLG`) filters them —; and, when the choice
+//! changes, `FNTM_FACENAMECHANGED` (mp1 = the family name),
+//! `FNTM_POINTSIZECHANGED` (mp1 = the size as text, mp2 = the FIXED size)
+//! and `FNTM_STYLECHANGED` (mp1 = a `STYLECHANGE`: new and old weight,
+//! width, type and style with their masks). Unverified: the
+//! `FNTM_FILTERLIST` font-type bits and the `STYLECHANGE` layout (taken
+//! from the PM Reference; `<pmstddlg.h>` of Open Watcom lacks it).
+//!
+//! Not supported: `FNTS_OWNERDRAWPREVIEW` (Warpine draws the sample;
+//! `FNTM_UPDATEPREVIEW` is never sent), colour choices
+//! (`FNTM_COLORCHANGED`), printer fonts (`hpsPrinter`, `FNTS_*FILTER`),
+//! `FNTS_BITMAPONLY` (all of Warpine's fonts are outline fonts that scale
+//! to any size, so the filter is ignored rather than leaving nothing), and
+//! filtering the style list.
 
 use crate::gui::font::{self, FontFamily, FontSpec};
 
@@ -82,6 +96,23 @@ pub const DID_STYLE_PREFIX: u32 = 314;
 pub const DID_SIZE_PREFIX: u32 = 315;
 pub const DID_SAMPLE_GROUPBOX: u32 = 316;
 pub const DID_EMPHASIS_GROUPBOX: u32 = 317;
+
+/// Messages to the dialog procedure (`<pmstddlg.h>`).
+pub const FNTM_FACENAMECHANGED: u32 = WM_USER + 50;
+pub const FNTM_POINTSIZECHANGED: u32 = WM_USER + 51;
+pub const FNTM_STYLECHANGED: u32 = WM_USER + 52;
+pub const FNTM_COLORCHANGED: u32 = WM_USER + 53;
+pub const FNTM_UPDATEPREVIEW: u32 = WM_USER + 54;
+pub const FNTM_FILTERLIST: u32 = WM_USER + 55;
+/// Font-type bits of `FNTM_FILTERLIST` (`<pmstddlg.h>`).
+pub const FNTI_VECTORFONT: u32 = 0x0002;
+pub const FNTI_FIXEDWIDTHFONT: u32 = 0x0004;
+pub const FNTI_PROPORTIONALFONT: u32 = 0x0008;
+pub const FNTI_DEFAULTLIST: u32 = 0x0020;
+pub const FNTI_FAMILYNAME: u32 = 0x0100;
+pub const FNTI_POINTSIZE: u32 = 0x0400;
+/// `sizeof(STYLECHANGE)`.
+pub const STYLECHANGE_SIZE: usize = 40;
 
 pub const FATTR_SEL_ITALIC: u16 = 0x0001;
 pub const FATTR_SEL_UNDERSCORE: u16 = 0x0002;
@@ -412,6 +443,48 @@ pub struct FontDlgState {
     pub modeless: bool,
 }
 
+/// The `STYLECHANGE` of a change from `old` to `new`: weight, width, type
+/// and style, new and old, with the masks of the bits the dialog sets.
+pub fn style_change(new: &FontChoice, old: &FontChoice) -> [u8; STYLECHANGE_SIZE] {
+    let weight = |c: &FontChoice| if c.bold { FWEIGHT_BOLD } else { FWEIGHT_NORMAL };
+    let ftype = |c: &FontChoice| if c.italic { FTYPE_ITALIC } else { 0 };
+    let style_mask = (EMPHASIS | FATTR_SEL_BOLD | FATTR_SEL_ITALIC) as u32;
+    let mut b = [0u8; STYLECHANGE_SIZE];
+    for (i, v) in [weight(new), weight(old), FWIDTH_NORMAL, FWIDTH_NORMAL].into_iter().enumerate() {
+        b[2 * i..2 * i + 2].copy_from_slice(&v.to_le_bytes());
+    }
+    let longs = [ftype(new), ftype(old), FTYPE_ITALIC, FTYPE_ITALIC,
+                 new.selection() as u32, old.selection() as u32, style_mask, style_mask];
+    for (i, v) in longs.into_iter().enumerate() {
+        b[8 + 4 * i..12 + 4 * i].copy_from_slice(&v.to_le_bytes());
+    }
+    b
+}
+
+/// The `FNTM_*CHANGED` notifications of a change from `old` to `new`.
+pub fn change_notifications(old: &FontChoice, new: &FontChoice) -> Vec<StdSend> {
+    let mut out = Vec::new();
+    if new.family != old.family {
+        out.push(StdSend {
+            msg: FNTM_FACENAMECHANGED, mp1: StdArg::Text(family_name(new.family).to_string()),
+            mp2: StdArg::Value(0), tag: StdTag::Notify,
+        });
+    }
+    if new.points != old.points {
+        out.push(StdSend {
+            msg: FNTM_POINTSIZECHANGED, mp1: StdArg::Text(new.points.to_string()),
+            mp2: StdArg::Value(new.points << 16), tag: StdTag::Notify,
+        });
+    }
+    if (new.bold, new.italic, new.emphasis) != (old.bold, old.italic, old.emphasis) {
+        out.push(StdSend {
+            msg: FNTM_STYLECHANGED, mp1: StdArg::Block(style_change(new, old).to_vec()),
+            mp2: StdArg::Value(0), tag: StdTag::Notify,
+        });
+    }
+    out
+}
+
 /// RGB of the sample's colours `clrFore` / `clrBack` (`CLR_*` indices or
 /// RGB); black on white when they would be the same.
 pub fn sample_colors(fore: u32, back: u32) -> (u32, u32) {
@@ -478,6 +551,23 @@ impl Loader {
         self.std_set_list(hwnd, DID_NAME, offered.iter().map(|&f| family_name(f).to_string()).collect());
         self.std_set_list(hwnd, DID_STYLE, STYLES.iter().map(|s| s.to_string()).collect());
         self.std_set_list(hwnd, DID_SIZE, sizes.iter().map(u32::to_string).collect());
+        if fd.pfn_dlg_proc != 0 {
+            // The dialog procedure filters the lists (FNTM_FILTERLIST).
+            let default_sizes = fd.psz_pt_size_list == 0;
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let mut filter = |id: u32, text: String, fnti: u32| wm.std_dialogs.queue(hwnd, StdSend {
+                msg: FNTM_FILTERLIST, mp1: StdArg::Text(text.clone()), mp2: StdArg::Value(id | (fnti << 16)),
+                tag: StdTag::FontFilter { id, text },
+            });
+            for &f in &offered {
+                let pitch = if f == FontFamily::Mono { FNTI_FIXEDWIDTHFONT } else { FNTI_PROPORTIONALFONT };
+                filter(DID_NAME, family_name(f).to_string(), FNTI_FAMILYNAME | FNTI_VECTORFONT | pitch);
+            }
+            for p in &sizes {
+                let list = if default_sizes { FNTI_DEFAULTLIST } else { 0 };
+                filter(DID_SIZE, p.to_string(), FNTI_POINTSIZE | list);
+            }
+        }
         self.std_set_item_text(hwnd, DID_SAMPLE, &preview);
         self.font_dlg_show(hwnd, &choice);
         let focus = {
@@ -523,23 +613,64 @@ impl Loader {
         self.repaint_control(sample);
     }
 
-    /// Change the choice with `f` and show it.
+    /// Change the choice with `f` and show it; a dialog procedure is told
+    /// what changed (`FNTM_*CHANGED`).
     fn font_dlg_change(&self, hwnd: u32, f: impl FnOnce(&mut FontChoice)) {
         let changed = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
+            let has_proc = wm.get_window(hwnd).is_some_and(|w| w.pfn_wp != 0);
             let Some(s) = wm.std_dialogs.font_mut(hwnd) else { return };
             let before = s.choice;
             f(&mut s.choice);
-            s.choice != before
+            let after = s.choice;
+            if has_proc {
+                for send in change_notifications(&before, &after) {
+                    wm.std_dialogs.queue(hwnd, send);
+                }
+            }
+            after != before
         };
         if changed {
             self.font_dlg_preview(hwnd);
         }
     }
 
+    /// The dialog procedure refused `items` (`FNTM_FILTERLIST`): take them
+    /// out of their lists (families from `DID_NAME`, sizes from
+    /// `DID_SIZE`); a refused chosen family gives way to the first left.
+    pub(super) fn font_dlg_drop_items(&self, hwnd: u32, items: &[(u32, String)]) {
+        let refused = |id: u32, t: &str| items.iter().any(|(i, x)| *i == id && x == t);
+        let choice = {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let Some(s) = wm.std_dialogs.font_mut(hwnd) else { return };
+            let families: Vec<FontFamily> = s.families.iter().copied()
+                .filter(|&f| !refused(DID_NAME, family_name(f))).collect();
+            // A list may not end up empty (unverified: what PM does).
+            if !families.is_empty() {
+                s.families = families;
+            }
+            s.sizes.retain(|p| !refused(DID_SIZE, &p.to_string()));
+            if !s.families.contains(&s.choice.family) {
+                s.choice.family = s.families[0];
+            }
+            (s.choice, s.families.clone(), s.sizes.clone())
+        };
+        let (choice, families, sizes) = choice;
+        self.std_set_list(hwnd, DID_NAME, families.iter().map(|&f| family_name(f).to_string()).collect());
+        self.std_set_list(hwnd, DID_SIZE, sizes.iter().map(u32::to_string).collect());
+        self.font_dlg_show(hwnd, &choice);
+    }
+
     /// `WinDefFontDlgProc` (and the messages of a font dialog without a
-    /// dialog procedure): the font dialog's default processing.
+    /// dialog procedure): the font dialog's default processing, then the
+    /// messages it has for the dialog procedure (`FNTM_*`).
     pub(crate) fn font_dlg_message(&self, hwnd: u32, msg: u32, mp1: u32, mp2: u32) -> ApiResult {
+        let result = self.font_dlg_default(hwnd, msg, mp1, mp2);
+        self.std_flush(hwnd, result)
+    }
+
+    /// The font dialog's default processing of one message.
+    fn font_dlg_default(&self, hwnd: u32, msg: u32, mp1: u32, mp2: u32) -> ApiResult {
         let state = self.shared.window_mgr.lock_or_recover().std_dialogs.font(hwnd).cloned();
         let Some(s) = state else { return self.def_dlg_proc(hwnd, msg, mp1, mp2) };
         match msg {
@@ -596,6 +727,11 @@ impl Loader {
                 ApiResult::Normal(0)
             }
             WM_HELP => ApiResult::Normal(0),
+            // Every family and size is listed; the notifications need
+            // nothing.
+            FNTM_FILTERLIST => ApiResult::Normal(1),
+            FNTM_FACENAMECHANGED | FNTM_POINTSIZECHANGED | FNTM_STYLECHANGED | FNTM_COLORCHANGED
+            | FNTM_UPDATEPREVIEW => ApiResult::Normal(0),
             _ => self.def_dlg_proc(hwnd, msg, mp1, mp2),
         }
     }
@@ -896,6 +1032,70 @@ mod tests {
         l.std_dialog_procless(dlg, WM_COMMAND, DID_OK, 0).unwrap();
         assert_eq!(l.read_guest_string(FAMILY), "IBM ");
         assert_eq!(l.guest_read::<u8>(FAMILY + 5), Some(b'Z'), "nothing past the buffer");
+    }
+
+    #[test]
+    fn a_dialog_procedure_filters_the_lists_and_hears_changes() {
+        use super::super::pm_hook::{CallChain, CallStep, ChainEnd};
+        const PROC: u32 = 0x0040_0000;
+        fn sends(r: ApiResult) -> (Box<CallChain>, Vec<[u32; 4]>) {
+            let ApiResult::CallChain(chain) = r else { panic!("expected a call chain, got {r:?}") };
+            let v = chain.steps.iter().map(|s| match s {
+                CallStep::Guest { proc_addr: PROC, args, .. } => [args[0], args[1], args[2], args[3]],
+                other => panic!("{other:?}"),
+            }).collect();
+            (chain, v)
+        }
+        let answer = |l: &Loader, mut chain: Box<CallChain>, results: &[u32]| {
+            for &r in results { chain.returned(r, false); }
+            chain.steps.clear();
+            assert!(matches!(l.finish_chain(&chain), ChainEnd::Return(_)));
+        };
+        let (l, frame) = session();
+        fontdlg(&l, 0, "Courier", 12, 0);
+        l.guest_write::<u32>(FD + FN_PFN_DLG_PROC as u32, PROC).unwrap();
+        let dlg = open(&l, frame);
+        assert_eq!(choice(&l, dlg).family, FontFamily::Mono);
+        // FNTM_FILTERLIST for the three families and the default sizes.
+        let (chain, s) = sends(l.font_dlg_message(dlg, WM_INITDLG, 0, FD));
+        assert!(s.iter().all(|m| m[0] == dlg && m[1] == FNTM_FILTERLIST));
+        let names: Vec<String> = s.iter().map(|m| l.read_guest_string(m[2])).collect();
+        assert_eq!(&names[..3], ["IBM Plex Mono", "IBM Plex Sans", "IBM Plex Serif"]);
+        assert_eq!(s[0][3], DID_NAME | ((FNTI_FAMILYNAME | FNTI_VECTORFONT | FNTI_FIXEDWIDTHFONT) << 16));
+        assert_eq!(s[1][3] >> 16 & FNTI_PROPORTIONALFONT, FNTI_PROPORTIONALFONT);
+        assert_eq!(s[3][3], DID_SIZE | ((FNTI_POINTSIZE | FNTI_DEFAULTLIST) << 16));
+        assert_eq!(names.len(), 3 + DEFAULT_SIZES.len());
+        // Mono and the first size refused: gone, and the choice moves on.
+        let mut results = vec![1; names.len()];
+        results[0] = 0;
+        results[3] = 0;
+        answer(&l, chain, &results);
+        assert_eq!(l.shared.window_mgr.lock_or_recover().std_dialogs.font(dlg).unwrap().families,
+                   [FontFamily::Sans, FontFamily::Serif]);
+        assert_eq!(choice(&l, dlg).family, FontFamily::Sans);
+        assert!(!l.shared.window_mgr.lock_or_recover().std_dialogs.font(dlg).unwrap().sizes.contains(&DEFAULT_SIZES[0]));
+        // Choosing Serif Bold Italic: FNTM_FACENAMECHANGED, then FNTM_STYLECHANGED.
+        l.std_select_item(dlg, DID_NAME, 1);
+        let (chain, s) = sends(l.font_dlg_message(dlg, WM_CONTROL, (CBN_LBSELECT << 16) | DID_NAME, 0));
+        assert_eq!((s.len(), s[0][1]), (1, FNTM_FACENAMECHANGED));
+        assert_eq!(l.read_guest_string(s[0][2]), "IBM Plex Serif");
+        answer(&l, chain, &[0]);
+        l.std_select_item(dlg, DID_STYLE, 3);
+        let (chain, s) = sends(l.font_dlg_message(dlg, WM_CONTROL, (CBN_LBSELECT << 16) | DID_STYLE, 0));
+        assert_eq!(s[0][1], FNTM_STYLECHANGED);
+        let sc = l.guest_read_bytes(s[0][2], STYLECHANGE_SIZE).unwrap();
+        assert_eq!(&sc[0..4], [FWEIGHT_BOLD as u8, 0, FWEIGHT_NORMAL as u8, 0], "usWeight, usWeightOld");
+        assert_eq!(u32::from_le_bytes(sc[8..12].try_into().unwrap()), FTYPE_ITALIC, "flType");
+        assert_eq!(u32::from_le_bytes(sc[24..28].try_into().unwrap()),
+                   (FATTR_SEL_BOLD | FATTR_SEL_ITALIC) as u32, "flStyle");
+        answer(&l, chain, &[0]);
+        // A typed size: FNTM_POINTSIZECHANGED with the text and the FIXED size.
+        l.std_set_item_text(dlg, DID_SIZE, "17");
+        let (_, s) = sends(l.font_dlg_message(dlg, WM_CONTROL, (CBN_EFCHANGE << 16) | DID_SIZE, 0));
+        assert_eq!((s[0][1], s[0][3]), (FNTM_POINTSIZECHANGED, 17 << 16));
+        assert_eq!(l.read_guest_string(s[0][2]), "17");
+        // The default procedure's answers.
+        assert!(matches!(l.font_dlg_message(dlg, FNTM_FILTERLIST, 0, 0), ApiResult::Normal(1)));
     }
 
     #[test]

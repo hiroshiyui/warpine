@@ -43,9 +43,21 @@
 //!   unless `FDS_ENABLEFILELB`; `FDS_CENTER` centres it on its parent,
 //!   otherwise `x` / `y` place it relative to the parent; `pszTitle` and
 //!   `pszOKButton` replace the title and the OK text.
-//! * Not supported: the `FDM_FILTER` / `FDM_VALIDATE` / `FDM_ERROR`
-//!   messages are not sent (every file passes the filter and every valid
-//!   name is accepted), `FDS_INCLUDE_EAS` / `FDS_PRELOAD_VOLINFO` /
+//! * With a dialog procedure (`pfnDlgProc`), the dialog sends it, through
+//!   `WinDefFileDlgProc` (`pm_stddlg.rs`): `FDM_FILTER` (mp1 = the file
+//!   name, mp2 = the first type of its `.TYPE` extended attribute or
+//!   NULL) for every file it lists — FALSE leaves the file out; the lists
+//!   are filled when the dialog is created, so the first call of the
+//!   default procedure (normally for `WM_INITDLG`) filters them —;
+//!   `FDM_VALIDATE` (mp1 = the fully qualified name, mp2 = the id of the
+//!   control it came from, `DID_FILENAME_ED` or `DID_FILES_LB`) for each
+//!   file OK or Apply takes — FALSE for any keeps the dialog open —; and
+//!   `FDM_ERROR` (mp1 = `FDS_ERR_INVALID_DRIVE` / `FDS_ERR_INVALID_PATHFILE`)
+//!   for a name it cannot use. Unverified: the parameters beyond the file
+//!   name, and the error ids (the reference calls them message ids).
+//!   `WinDefFileDlgProc` answers `FDM_FILTER` / `FDM_VALIDATE` TRUE and
+//!   `FDM_ERROR` 0 (show the default message — Warpine shows none yet).
+//! * Not supported: `FDS_INCLUDE_EAS` / `FDS_PRELOAD_VOLINFO` /
 //!   `FDS_FILTERUNION` / `FDS_NATIONAL_LANGUAGE` are accepted and ignored,
 //!   the Help button does nothing (no help viewer), there is no read-only
 //!   check box (`DID_READ_ONLY`), and Warpine does not ask before a
@@ -85,6 +97,13 @@ pub const DID_FILES_TXT: u32 = 265;
 pub const DID_FILES_LB: u32 = 266;
 pub const DID_HELP_PB: u32 = 267;
 pub const DID_APPLY_PB: u32 = 268;
+
+/// Messages to the dialog procedure (`<pmstddlg.h>`).
+pub const FDM_FILTER: u32 = WM_USER + 40;
+pub const FDM_VALIDATE: u32 = WM_USER + 41;
+pub const FDM_ERROR: u32 = WM_USER + 42;
+pub const FDS_ERR_INVALID_DRIVE: u32 = 4;
+pub const FDS_ERR_INVALID_PATHFILE: u32 = 6;
 
 /// `CCHMAXPATH` (`<bsedos.h>`): a full path with its NUL.
 pub const CCHMAXPATH: usize = 260;
@@ -398,6 +417,16 @@ pub fn list_directory(dm: &DriveManager, drive: u8, dir: &[String], pattern: &st
     Some(out)
 }
 
+/// The first type of the `.TYPE` extended attribute of file `name` in
+/// directory `dir` of `drive`.
+pub fn file_type(dm: &DriveManager, drive: u8, dir: &[String], name: &str) -> Option<String> {
+    let backend = dm.backend(drive).ok()?;
+    let r = rel(dir);
+    let path = if r.is_empty() { name.to_string() } else { format!("{r}/{name}") };
+    let ea = backend.get_ea(&path, TYPE_EA).ok()?;
+    type_names(&ea.value).into_iter().next()
+}
+
 /// Existing directory `dir` of `drive` with each name in the case it has
 /// on the drive (a typed "docs" shows as "Docs").
 pub fn on_disk_case(dm: &DriveManager, drive: u8, dir: Vec<String>) -> Vec<String> {
@@ -492,6 +521,9 @@ pub struct FileDlgState {
     pub committed: bool,
     /// The dialog is modeless (it hides itself when dismissed).
     pub modeless: bool,
+    /// The files OK (`false`) or Apply (`true`) took while the dialog
+    /// procedure validates them (`FDM_VALIDATE`).
+    pub validating: Option<(Vec<String>, bool)>,
 }
 
 impl Loader {
@@ -602,7 +634,7 @@ impl Loader {
         }
         let state = FileDlgState {
             pfiledlg: pfild, fl: fd.fl, cp, drive, dir, pattern, types, type_sel, drives,
-            accepted: Vec::new(), committed: false, modeless,
+            accepted: Vec::new(), committed: false, modeless, validating: None,
         };
         self.shared.window_mgr.lock_or_recover().std_dialogs.insert(hwnd, StdDialog::File(Box::new(state)));
 
@@ -645,6 +677,24 @@ impl Loader {
         }
         dirs.extend(listing.dirs);
         self.std_set_list(hwnd, DID_DIRECTORY_LB, dirs);
+        // A dialog procedure filters the files (FDM_FILTER).
+        let pfn = self.shared.window_mgr.lock_or_recover().get_window(hwnd).map_or(0, |w| w.pfn_wp);
+        if pfn != 0 {
+            let types: Vec<Option<String>> = {
+                let dm = self.shared.drive_mgr.lock_or_recover();
+                listing.files.iter().map(|f| file_type(&dm, s.drive, &s.dir, f)).collect()
+            };
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            wm.std_dialogs.unqueue(hwnd, |q| matches!(q.tag, StdTag::FileFilter(_)));
+            for (f, t) in listing.files.iter().zip(types) {
+                wm.std_dialogs.queue(hwnd, StdSend {
+                    msg: FDM_FILTER,
+                    mp1: StdArg::Text(f.clone()),
+                    mp2: t.map_or(StdArg::Value(0), StdArg::Text),
+                    tag: StdTag::FileFilter(f.clone()),
+                });
+            }
+        }
         self.std_set_list(hwnd, DID_FILES_LB, listing.files);
         self.std_set_item_text(hwnd, FILEDLG_PATH_ID, &full_path(s.drive, &s.dir));
     }
@@ -674,8 +724,15 @@ impl Loader {
     }
 
     /// `WinDefFileDlgProc` (and the messages of a file dialog without a
-    /// dialog procedure): the file dialog's default processing.
+    /// dialog procedure): the file dialog's default processing, then the
+    /// messages it has for the dialog procedure (`FDM_*`).
     pub(crate) fn file_dlg_message(&self, hwnd: u32, msg: u32, mp1: u32, mp2: u32) -> ApiResult {
+        let result = self.file_dlg_default(hwnd, msg, mp1, mp2);
+        self.std_flush(hwnd, result)
+    }
+
+    /// The file dialog's default processing of one message.
+    fn file_dlg_default(&self, hwnd: u32, msg: u32, mp1: u32, mp2: u32) -> ApiResult {
         let state = self.shared.window_mgr.lock_or_recover().std_dialogs.file(hwnd).cloned();
         let Some(s) = state else { return self.def_dlg_proc(hwnd, msg, mp1, mp2) };
         match msg {
@@ -735,7 +792,68 @@ impl Loader {
             }
             // No help viewer (helpmgr.rs).
             WM_HELP => ApiResult::Normal(0),
+            // Every file is listed and every name valid; the default error
+            // message (0) — Warpine shows none.
+            FDM_FILTER | FDM_VALIDATE => ApiResult::Normal(1),
+            FDM_ERROR => ApiResult::Normal(0),
             _ => self.def_dlg_proc(hwnd, msg, mp1, mp2),
+        }
+    }
+
+    /// The dialog procedure refused `names` (`FDM_FILTER`): take them out
+    /// of the file list, unless it changed meanwhile.
+    pub(super) fn file_dlg_drop_files(&self, hwnd: u32, names: &[String]) {
+        let items = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            let Some(h) = wm.find_child_by_id(hwnd, DID_FILES_LB) else { return };
+            let Some(w) = wm.get_window(h) else { return };
+            w.listbox_items.clone()
+        };
+        let kept: Vec<String> = items.iter().filter(|i| !names.contains(i)).cloned().collect();
+        if kept.len() + names.len() == items.len() {
+            self.std_set_list(hwnd, DID_FILES_LB, kept);
+        }
+    }
+
+    /// The dialog procedure answered `FDM_VALIDATE` for the files OK or
+    /// Apply took: all valid (`ok`) — take them —, or the dialog stays.
+    pub(super) fn file_dlg_validated(&self, hwnd: u32, ok: bool) {
+        let taken = {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let Some(st) = wm.std_dialogs.file_mut(hwnd) else { return };
+            st.validating.take()
+        };
+        let Some((files, apply)) = taken.filter(|_| ok) else {
+            log::info!("WinFileDlg: the dialog procedure refused the file name");
+            return;
+        };
+        self.file_dlg_accept(hwnd, files, apply);
+    }
+
+    /// Take `files` (OK, or Apply with `apply`): write them back for Apply,
+    /// end the dialog for OK.
+    fn file_dlg_accept(&self, hwnd: u32, files: Vec<String>, apply: bool) {
+        let s = {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let Some(st) = wm.std_dialogs.file_mut(hwnd) else { return };
+            st.accepted = files;
+            st.clone()
+        };
+        if apply {
+            // TODO(unverified): what PM writes and sends for Apply.
+            self.file_dlg_write(&s, DID_APPLY_PB, &s.accepted);
+        } else {
+            self.dismiss_dialog(hwnd, DID_OK);
+        }
+    }
+
+    /// Queue `FDM_ERROR(code)` for the dialog procedure, if there is one.
+    fn file_dlg_error(&self, hwnd: u32, code: u32) {
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        if wm.get_window(hwnd).is_some_and(|w| w.pfn_wp != 0) {
+            wm.std_dialogs.queue(hwnd, StdSend {
+                msg: FDM_ERROR, mp1: StdArg::Value(code), mp2: StdArg::Value(0), tag: StdTag::Notify,
+            });
         }
     }
 
@@ -753,7 +871,8 @@ impl Loader {
             return;
         }
         let selected = self.std_selected(hwnd, DID_FILES_LB);
-        let files: Vec<String> = if s.fl & FDS_MULTIPLESEL != 0 && selected.len() > 1 {
+        let from_list = s.fl & FDS_MULTIPLESEL != 0 && selected.len() > 1;
+        let files: Vec<String> = if from_list {
             selected.into_iter().take(MAX_FQF_FILES).map(|(_, n)| {
                 let mut c = s.dir.clone();
                 c.push(n);
@@ -771,18 +890,24 @@ impl Loader {
                 None => return,
             }
         };
-        let accepted = {
-            let mut wm = self.shared.window_mgr.lock_or_recover();
-            let Some(st) = wm.std_dialogs.file_mut(hwnd) else { return };
-            st.accepted = files;
-            st.accepted.clone()
-        };
-        if apply {
-            // TODO(unverified): what PM writes and sends for Apply.
-            self.file_dlg_write(&s, DID_APPLY_PB, &accepted);
-        } else {
-            self.dismiss_dialog(hwnd, DID_OK);
+        // A dialog procedure validates them first (FDM_VALIDATE).
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        if wm.get_window(hwnd).is_some_and(|w| w.pfn_wp != 0) {
+            let field = if from_list { DID_FILES_LB } else { DID_FILENAME_ED };
+            wm.std_dialogs.unqueue(hwnd, |q| q.tag == StdTag::FileValidate);
+            for f in &files {
+                wm.std_dialogs.queue(hwnd, StdSend {
+                    msg: FDM_VALIDATE, mp1: StdArg::Text(f.clone()), mp2: StdArg::Value(field),
+                    tag: StdTag::FileValidate,
+                });
+            }
+            if let Some(st) = wm.std_dialogs.file_mut(hwnd) {
+                st.validating = Some((files, apply));
+            }
+            return;
         }
+        drop(wm);
+        self.file_dlg_accept(hwnd, files, apply);
     }
 
     /// The entry field's `text`: `Some(full path)` of a file to return;
@@ -792,10 +917,12 @@ impl Loader {
         let drive_dir = |d: u8| split_dir(self.shared.drive_mgr.lock_or_recover().current_dir(d));
         let Some((drive, mut comps)) = resolve_input(text, s.drive, &s.dir, drive_dir) else {
             log::info!("WinFileDlg: '{text}' is not a valid file name");
+            self.file_dlg_error(hwnd, FDS_ERR_INVALID_PATHFILE);
             return None;
         };
         let mounted = self.shared.drive_mgr.lock_or_recover().logical_drive_map();
         if mounted & (1 << drive) == 0 {
+            self.file_dlg_error(hwnd, FDS_ERR_INVALID_DRIVE);
             return None;
         }
         let last = comps.last().cloned().unwrap_or_default();
@@ -827,6 +954,7 @@ impl Loader {
         };
         let Some(listing) = listing else {
             log::info!("WinFileDlg: the directory of '{text}' does not exist");
+            self.file_dlg_error(hwnd, FDS_ERR_INVALID_PATHFILE);
             return None;
         };
         let name = listing.files.into_iter().find(|f| f.eq_ignore_ascii_case(&name)).unwrap_or(name);
@@ -1324,6 +1452,87 @@ mod tests {
         l.dismiss_dialog(dlg, DID_OK);
         assert_eq!(full_file(&l), "D:\\out.dat");
         assert_eq!(l.guest_read::<u32>(FD + FD_LRETURN), Some(DID_OK));
+    }
+
+    /// The messages a chain sends: `(hwnd, msg, mp1, mp2)` of each call.
+    fn chain_sends(r: ApiResult) -> (Box<super::super::pm_hook::CallChain>, Vec<[u32; 4]>) {
+        use super::super::pm_hook::CallStep;
+        let ApiResult::CallChain(chain) = r else { panic!("expected a call chain, got {r:?}") };
+        let sends = chain.steps.iter().map(|s| match s {
+            CallStep::Guest { proc_addr, args, .. } => {
+                assert_eq!(*proc_addr, PROC);
+                [args[0], args[1], args[2], args[3]]
+            }
+            other => panic!("{other:?}"),
+        }).collect();
+        (chain, sends)
+    }
+
+    /// The calls of `chain` return `results`: the dialog acts on them.
+    fn answer(l: &Loader, mut chain: Box<super::super::pm_hook::CallChain>, results: &[u32]) -> u32 {
+        use super::super::pm_hook::ChainEnd;
+        for &r in results { chain.returned(r, false); }
+        chain.steps.clear();
+        match l.finish_chain(&chain) { ChainEnd::Return(v) => v, other => panic!("{other:?}") }
+    }
+
+    const PROC: u32 = 0x0040_0000;
+
+    #[test]
+    fn a_dialog_procedure_filters_validates_and_hears_errors() {
+        let (l, frame, _tmp) = session();
+        filedlg(&l, 0, "D:\\*.*");
+        l.guest_write::<u32>(FD + FD_PFN_DLG_PROC as u32, PROC).unwrap();
+        let dlg = open(&l, frame);
+        assert_eq!(items(&l, dlg, DID_FILES_LB), ["alpha.txt", "Beta.TXT", "gamma.doc"]);
+        // WM_INITDLG through WinDefFileDlgProc: FDM_FILTER for each file.
+        let (chain, sends) = chain_sends(l.file_dlg_message(dlg, WM_INITDLG, 0, FD));
+        let names: Vec<String> = sends.iter().map(|s| l.read_guest_string(s[2])).collect();
+        assert_eq!(names, ["alpha.txt", "Beta.TXT", "gamma.doc"]);
+        assert!(sends.iter().all(|s| s[0] == dlg && s[1] == FDM_FILTER && s[3] == 0), "no .TYPE: mp2 NULL");
+        answer(&l, chain, &[1, 0, 1]);
+        assert_eq!(items(&l, dlg, DID_FILES_LB), ["alpha.txt", "gamma.doc"], "Beta.TXT refused");
+        // The default procedure's own answers.
+        assert!(matches!(l.file_dlg_message(dlg, FDM_FILTER, 0, 0), ApiResult::Normal(1)));
+        assert!(matches!(l.file_dlg_message(dlg, FDM_VALIDATE, 0, 0), ApiResult::Normal(1)));
+        assert!(matches!(l.file_dlg_message(dlg, FDM_ERROR, 0, 0), ApiResult::Normal(0)));
+        // OK: FDM_VALIDATE with the full name; FALSE keeps the dialog.
+        type_into(&l, dlg, "alpha.txt");
+        let (chain, sends) = chain_sends(l.file_dlg_message(dlg, WM_COMMAND, DID_OK, 0));
+        assert_eq!(sends.len(), 1);
+        assert_eq!((sends[0][1], sends[0][3]), (FDM_VALIDATE, DID_FILENAME_ED));
+        assert_eq!(l.read_guest_string(sends[0][2]), "D:\\alpha.txt");
+        answer(&l, chain, &[0]);
+        assert_eq!(dismissed(&l, dlg), None, "refused: the dialog stays");
+        let (chain, _) = chain_sends(l.file_dlg_message(dlg, WM_COMMAND, DID_OK, 0));
+        answer(&l, chain, &[1]);
+        assert_eq!(dismissed(&l, dlg), Some(DID_OK));
+        assert_eq!(full_file(&l), "D:\\alpha.txt");
+    }
+
+    #[test]
+    fn bad_names_send_fdm_error() {
+        let (l, frame, _tmp) = session();
+        filedlg(&l, 0, "D:\\");
+        l.guest_write::<u32>(FD + FD_PFN_DLG_PROC as u32, PROC).unwrap();
+        let dlg = open(&l, frame);
+        let (chain, _) = chain_sends(l.file_dlg_message(dlg, WM_INITDLG, 0, FD));
+        answer(&l, chain, &[1, 1, 1]);
+        for (text, code) in [("Q:\\x.txt", FDS_ERR_INVALID_DRIVE), ("a|b", FDS_ERR_INVALID_PATHFILE),
+                             ("Nowhere\\x.txt", FDS_ERR_INVALID_PATHFILE)] {
+            type_into(&l, dlg, text);
+            let (chain, sends) = chain_sends(l.file_dlg_message(dlg, WM_COMMAND, DID_OK, 0));
+            assert_eq!(sends, [[dlg, FDM_ERROR, code, 0]], "{text}");
+            answer(&l, chain, &[0]);
+            assert_eq!(dismissed(&l, dlg), None);
+        }
+        // Without a dialog procedure nothing is sent.
+        let dlg2 = {
+            filedlg(&l, 0, "D:\\");
+            open(&l, frame)
+        };
+        type_into(&l, dlg2, "Q:\\x.txt");
+        assert!(matches!(l.file_dlg_message(dlg2, WM_COMMAND, DID_OK, 0), ApiResult::Normal(_)));
     }
 
     /// The About dialog of `pm_dialog.rs`'s tests (Open Watcom `wrc`

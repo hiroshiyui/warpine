@@ -34,9 +34,13 @@
 //!   `AREA` / `IMAGE` bundles (`<pmgpi.h>` layouts). Warpine keeps one
 //!   colour, background colour, mix and background mix for all primitive
 //!   types (`GpiSetColor` sets them all in PM too; `GpiSetAttrs` for one
-//!   type sets the shared value — an approximation). The attributes Warpine
-//!   does not model (line ends and joins, character mode / angle / shear /
-//!   direction / alignment / extra spacing, marker set / symbol / box,
+//!   type sets the shared value — an approximation). The character
+//!   bundle's mode (`usPrecision`), angle, shear, direction, text alignment
+//!   (one USHORT: horizontal `TA_*` in the low byte, vertical in the high
+//!   byte), extra and break extra are the text attributes of
+//!   `GpiSetCharMode` … `GpiSetCharBreakExtra` (`PresentationSpace::text`)
+//!   and are checked as those calls check them. The attributes Warpine
+//!   does not model (line ends and joins, marker set / symbol / box,
 //!   pattern set) are accepted and ignored, and reported as default.
 //! - `GpiQueryPS` returns the options (`PU_*`, `GPIF_*`, `GPIT_*`,
 //!   `GPIA_*`) and the page size; `GpiSetPS` changes units, format and size
@@ -49,6 +53,11 @@ use std::sync::Arc;
 use super::constants::*;
 use super::mutex_ext::MutexExt;
 use super::pm_area::PathState;
+use super::pm_text::{
+    TextAttrs, CHDIRN_BOTTOMTOP, CHDIRN_DEFAULT, CHDIRN_LEFTRIGHT, CM_DEFAULT, CM_MODE1, CM_MODE3,
+    PMERR_INV_CHAR_ALIGN_ATTR, PMERR_INV_CHAR_DIRECTION_ATTR, PMERR_INV_CHAR_MODE_ATTR, PMERR_INV_CHAR_SHEAR_ATTR,
+    TA_NORMAL_HORIZ, TA_NORMAL_VERT, TA_STANDARD_HORIZ, TA_STANDARD_VERT,
+};
 use super::pm_types::{PresentationSpace, WindowManager};
 use super::pm_xform::{pels_per_unit, CoordState};
 use super::Loader;
@@ -87,7 +96,14 @@ const LB_GEOM_WIDTH: u32 = 16;
 const LB_TYPE: u32 = 20;
 // CHARBUNDLE
 const CB_SET: u32 = 12;
+const CB_PRECISION: u32 = 14;
 const CB_CELL: u32 = 16;
+const CB_ANGLE: u32 = 24;
+const CB_SHEAR: u32 = 32;
+const CB_DIRECTION: u32 = 40;
+const CB_TEXT_ALIGN: u32 = 42;
+const CB_EXTRA: u32 = 44;
+const CB_BREAK_EXTRA: u32 = 48;
 // AREABUNDLE
 const AB_SYMBOL: u32 = 14;
 const AB_REF_POINT: u32 = 16;
@@ -120,6 +136,13 @@ enum Attr {
     LineType,
     CharSet,
     CharBox,
+    CharMode,
+    CharAngle,
+    CharShear,
+    CharDirection,
+    CharAlign,
+    CharExtra,
+    CharBreakExtra,
     Pattern,
     RefPoint,
 }
@@ -138,6 +161,13 @@ fn attr_of(prim: u32, bit: u32) -> Option<(Attr, u32)> {
         (PRIM_LINE, LBB_TYPE) => (Attr::LineType, LB_TYPE),
         (PRIM_CHAR, CBB_SET) => (Attr::CharSet, CB_SET),
         (PRIM_CHAR, CBB_BOX) => (Attr::CharBox, CB_CELL),
+        (PRIM_CHAR, CBB_MODE) => (Attr::CharMode, CB_PRECISION),
+        (PRIM_CHAR, CBB_ANGLE) => (Attr::CharAngle, CB_ANGLE),
+        (PRIM_CHAR, CBB_SHEAR) => (Attr::CharShear, CB_SHEAR),
+        (PRIM_CHAR, CBB_DIRECTION) => (Attr::CharDirection, CB_DIRECTION),
+        (PRIM_CHAR, CBB_TEXT_ALIGN) => (Attr::CharAlign, CB_TEXT_ALIGN),
+        (PRIM_CHAR, CBB_EXTRA) => (Attr::CharExtra, CB_EXTRA),
+        (PRIM_CHAR, CBB_BREAK_EXTRA) => (Attr::CharBreakExtra, CB_BREAK_EXTRA),
         (PRIM_AREA, ABB_SYMBOL) => (Attr::Pattern, AB_SYMBOL),
         (PRIM_AREA, ABB_REF_POINT) => (Attr::RefPoint, AB_REF_POINT),
         _ => return None,
@@ -355,9 +385,10 @@ impl Loader {
 
     fn read_attr(&self, attr: Attr, at: u32) -> Option<Value> {
         Some(match attr {
-            Attr::Mix | Attr::BackMix | Attr::LineType | Attr::CharSet | Attr::Pattern =>
+            Attr::Mix | Attr::BackMix | Attr::LineType | Attr::CharSet | Attr::Pattern
+            | Attr::CharMode | Attr::CharDirection | Attr::CharAlign =>
                 Value::One(self.guest_read::<u16>(at)? as u32),
-            Attr::CharBox | Attr::RefPoint =>
+            Attr::CharBox | Attr::RefPoint | Attr::CharAngle | Attr::CharShear =>
                 Value::Two(self.guest_read::<i32>(at)?, self.guest_read::<i32>(at.wrapping_add(4))?),
             _ => Value::One(self.guest_read::<u32>(at)?),
         })
@@ -365,7 +396,8 @@ impl Loader {
 
     fn write_attr(&self, attr: Attr, at: u32, value: Value) -> bool {
         match (attr, value) {
-            (Attr::Mix | Attr::BackMix | Attr::LineType | Attr::CharSet | Attr::Pattern, Value::One(v)) =>
+            (Attr::Mix | Attr::BackMix | Attr::LineType | Attr::CharSet | Attr::Pattern
+            | Attr::CharMode | Attr::CharDirection | Attr::CharAlign, Value::One(v)) =>
                 self.guest_write::<u16>(at, v as u16).is_some(),
             (_, Value::One(v)) => self.guest_write::<u32>(at, v).is_some(),
             (_, Value::Two(a, b)) =>
@@ -392,6 +424,13 @@ fn current_value(ps: &PresentationSpace, attr: Attr) -> Value {
         Attr::LineType => Value::One(ps.line_type),
         Attr::CharSet => Value::One(ps.char_set),
         Attr::CharBox => Value::Two(fixed_of(ps.char_box.0) as i32, fixed_of(ps.char_box.1) as i32),
+        Attr::CharMode => Value::One(ps.text.mode),
+        Attr::CharAngle => Value::Two(ps.text.angle.0, ps.text.angle.1),
+        Attr::CharShear => Value::Two(ps.text.shear.0, ps.text.shear.1),
+        Attr::CharDirection => Value::One(ps.text.direction),
+        Attr::CharAlign => Value::One(ps.text.align.0 | ps.text.align.1),
+        Attr::CharExtra => Value::One(ps.text.char_extra as u32),
+        Attr::CharBreakExtra => Value::One(ps.text.break_extra as u32),
         Attr::Pattern => Value::One(ps.pattern),
         Attr::RefPoint => Value::Two(ps.pattern_ref.0, ps.pattern_ref.1),
     }
@@ -403,8 +442,16 @@ fn default_value(fresh: &PresentationSpace, attr: Attr) -> Value {
 
 /// Validate a value as the matching `GpiSet*` call would.
 fn check_value(attr: Attr, value: Value) -> Result<(), u32> {
-    let Value::One(v) = value else { return Ok(()) };
+    let v = match value {
+        // GpiSetCharShear: the vertical strokes cannot run horizontally.
+        Value::Two(_, 0) if attr == Attr::CharShear => return Err(PMERR_INV_CHAR_SHEAR_ATTR),
+        Value::Two(..) => return Ok(()),
+        Value::One(v) => v,
+    };
     match attr {
+        Attr::CharMode if v > CM_MODE3 => Err(PMERR_INV_CHAR_MODE_ATTR),
+        Attr::CharDirection if v > CHDIRN_BOTTOMTOP => Err(PMERR_INV_CHAR_DIRECTION_ATTR),
+        Attr::CharAlign if char_align(v).is_none() => Err(PMERR_INV_CHAR_ALIGN_ATTR),
         Attr::Mix if Mix::from_fm(v).is_none() => Err(PMERR_INV_MIX_ATTR),
         Attr::BackMix if Mix::from_fm(v).is_none() && v != BM_SRCTRANSPARENT && v != BM_DESTTRANSPARENT =>
             Err(PMERR_INV_BACKGROUND_MIX_ATTR),
@@ -427,10 +474,31 @@ fn apply_value(ps: &mut PresentationSpace, attr: Attr, value: Value) {
         (Attr::CharSet, Value::One(v)) => ps.char_set = v,
         // Like GpiSetCharBox: FIXED cell, whole world units.
         (Attr::CharBox, Value::Two(cx, cy)) => ps.char_box = (cx >> 16, cy >> 16),
+        // The *_DEFAULT values select the defaults, as in the GpiSetChar* calls.
+        (Attr::CharMode, Value::One(v)) => ps.text.mode = if v == CM_DEFAULT { CM_MODE1 } else { v },
+        (Attr::CharAngle, Value::Two(x, y)) =>
+            ps.text.angle = if (x, y) == (0, 0) { TextAttrs::default().angle } else { (x, y) },
+        (Attr::CharShear, Value::Two(x, y)) => ps.text.shear = (x, y),
+        (Attr::CharDirection, Value::One(v)) =>
+            ps.text.direction = if v == CHDIRN_DEFAULT { CHDIRN_LEFTRIGHT } else { v },
+        (Attr::CharAlign, Value::One(v)) => if let Some(a) = char_align(v) { ps.text.align = a },
+        (Attr::CharExtra, Value::One(v)) => ps.text.char_extra = v as i32,
+        (Attr::CharBreakExtra, Value::One(v)) => ps.text.break_extra = v as i32,
         (Attr::Pattern, Value::One(v)) => ps.pattern = v,
         (Attr::RefPoint, Value::Two(x, y)) => ps.pattern_ref = (x, y),
         _ => {}
     }
+}
+
+/// The `(horizontal, vertical)` `TA_*` pair of a CHARBUNDLE `usTextAlign`
+/// (horizontal in the low byte, vertical in the high byte); `None` when
+/// either is invalid. 0 (`TA_DEFAULT` in each byte) selects the normal
+/// alignment, unverified.
+fn char_align(v: u32) -> Option<(u32, u32)> {
+    let h = match v & 0xFF { 0 => TA_NORMAL_HORIZ, h => h };
+    let vt = match v & 0xFF00 { 0 => TA_NORMAL_VERT, vt => vt };
+    ((TA_NORMAL_HORIZ..=TA_STANDARD_HORIZ).contains(&h) && (TA_NORMAL_VERT..=TA_STANDARD_VERT).contains(&vt)
+        && v >> 16 == 0).then_some((h, vt))
 }
 
 /// `GpiResetPS` at `level` (`GRES_*`) of an existing presentation space.
@@ -662,6 +730,67 @@ mod tests {
         assert_eq!(gpi(&l, QUERY_ATTRS, &[0xBAD, PRIM_LINE, 1, BUN]), GPI_ALTERROR as u32);
         // A bundle off the end of guest memory.
         assert_eq!(gpi(&l, SET_ATTRS, &[hps, PRIM_LINE, LBB_COLOR, 0, u32::MAX - 1]), 0);
+    }
+
+    #[test]
+    fn character_bundle_text_attributes_both_ways() {
+        use super::super::pm_text::*;
+        let (l, _, hps) = setup();
+        let text = |l: &super::super::Loader| l.shared.window_mgr.lock_or_recover().ps_map[&hps].text;
+        let all = CBB_MODE | CBB_ANGLE | CBB_SHEAR | CBB_DIRECTION | CBB_TEXT_ALIGN | CBB_EXTRA | CBB_BREAK_EXTRA;
+        // A fresh presentation space reports every one as default.
+        for i in 0..13 { l.guest_write::<u32>(BUN + 4 * i, 0xDEAD_BEEF).unwrap(); }
+        assert_eq!(gpi(&l, QUERY_ATTRS, &[hps, PRIM_CHAR, all, BUN]), all);
+        assert_eq!(l.guest_read::<u16>(BUN + 14).unwrap(), CM_MODE1 as u16);
+        assert_eq!(l.guest_read::<i32>(BUN + 24).unwrap(), 1);
+        assert_eq!(l.guest_read::<i32>(BUN + 28).unwrap(), 0);
+        assert_eq!(l.guest_read::<i32>(BUN + 36).unwrap(), 1, "shear (0, 1)");
+        assert_eq!(l.guest_read::<u16>(BUN + 40).unwrap(), CHDIRN_LEFTRIGHT as u16);
+        assert_eq!(l.guest_read::<u16>(BUN + 42).unwrap(), (TA_NORMAL_HORIZ | TA_NORMAL_VERT) as u16);
+        assert_eq!(l.guest_read::<i32>(BUN + 44).unwrap(), 0);
+        // Set every one.
+        l.guest_write::<u16>(BUN + 14, CM_MODE3 as u16).unwrap();
+        put_points(&l, BUN + 24, &[(1, 1), (1, 2)]);
+        l.guest_write::<u16>(BUN + 40, CHDIRN_TOPBOTTOM as u16).unwrap();
+        l.guest_write::<u16>(BUN + 42, (TA_CENTER | TA_HALF) as u16).unwrap();
+        l.guest_write::<i32>(BUN + 44, 3 << 16).unwrap();
+        l.guest_write::<i32>(BUN + 48, -(2 << 16)).unwrap();
+        assert_eq!(gpi(&l, SET_ATTRS, &[hps, PRIM_CHAR, all, 0, BUN]), 1);
+        let t = text(&l);
+        assert_eq!((t.mode, t.angle, t.shear, t.direction), (CM_MODE3, (1, 1), (1, 2), CHDIRN_TOPBOTTOM));
+        assert_eq!((t.align, t.char_extra, t.break_extra), ((TA_CENTER, TA_HALF), 3 << 16, -(2 << 16)));
+        // The query reads them back and no bit is default.
+        for i in 0..13 { l.guest_write::<u32>(BUN + 4 * i, 0).unwrap(); }
+        assert_eq!(gpi(&l, QUERY_ATTRS, &[hps, PRIM_CHAR, all, BUN]), 0);
+        assert_eq!(l.guest_read::<u16>(BUN + 14).unwrap(), CM_MODE3 as u16);
+        assert_eq!((l.guest_read::<i32>(BUN + 24).unwrap(), l.guest_read::<i32>(BUN + 36).unwrap()), (1, 2));
+        assert_eq!(l.guest_read::<u16>(BUN + 42).unwrap(), (TA_CENTER | TA_HALF) as u16);
+        assert_eq!(l.guest_read::<i32>(BUN + 48).unwrap(), -(2 << 16));
+        // The single-attribute calls see the bundle's values.
+        assert_eq!(gpi(&l, 431, &[hps]), CHDIRN_TOPBOTTOM, "GpiQueryCharDirection");
+        assert_eq!(gpi(&l, 432, &[hps]), CM_MODE3, "GpiQueryCharMode");
+        // Invalid values fail as the GpiSetChar* calls do, changing nothing.
+        let bad: [(u32, u32, u32, u32); 4] = [
+            (CBB_SHEAR, 36, 0, PMERR_INV_CHAR_SHEAR_ATTR),
+            (CBB_MODE, 14, 4, PMERR_INV_CHAR_MODE_ATTR),
+            (CBB_DIRECTION, 40, 5, PMERR_INV_CHAR_DIRECTION_ATTR),
+            (CBB_TEXT_ALIGN, 42, 0x0706, PMERR_INV_CHAR_ALIGN_ATTR),
+        ];
+        for (bit, off, v, err) in bad {
+            let before = text(&l);
+            if bit == CBB_SHEAR { l.guest_write::<i32>(BUN + off, v as i32).unwrap(); }
+            else { l.guest_write::<u16>(BUN + off, v as u16).unwrap(); }
+            assert_eq!(gpi(&l, SET_ATTRS, &[hps, PRIM_CHAR, bit | CBB_EXTRA, 0, BUN]), 0);
+            assert_eq!(last_error(&l), err);
+            assert_eq!(text(&l), before);
+        }
+        // Zero values select the defaults; the default mask resets.
+        for i in 0..13 { l.guest_write::<u32>(BUN + 4 * i, 0).unwrap(); }
+        assert_eq!(gpi(&l, SET_ATTRS, &[hps, PRIM_CHAR, CBB_MODE | CBB_ANGLE | CBB_DIRECTION | CBB_TEXT_ALIGN, 0, BUN]), 1);
+        let t = text(&l);
+        assert_eq!((t.mode, t.angle, t.direction, t.align), (CM_MODE1, (1, 0), CHDIRN_LEFTRIGHT, (TA_NORMAL_HORIZ, TA_NORMAL_VERT)));
+        assert_eq!(gpi(&l, SET_ATTRS, &[hps, PRIM_CHAR, all, all, 0]), 1);
+        assert_eq!(text(&l), TextAttrs::default());
     }
 
     #[test]

@@ -2356,13 +2356,17 @@ fn route_button1(shared: &Arc<SharedState>, frame: u32, x: i32, y: i32, press: b
 {
     let mut wm = shared.window_mgr.lock_or_recover();
     // `(x, y)` is in message coordinates (`pointer_local`): a standard
-    // frame's client, whose buffer is the surface; a dialog's surface
-    // starts inside its left border.
-    let border = match wm.get_window(frame) {
-        Some(w) if !wm.frame_to_client.contains_key(&frame) => frame_border_px(w.frame_flags),
-        _ => 0,
+    // frame's client, which lies at its place in the frame's surface
+    // (above a horizontal frame scroll bar); a dialog's surface starts
+    // inside its left border.
+    let (sx, sy) = match wm.get_window(frame) {
+        Some(w) if !wm.frame_to_client.contains_key(&frame) => (x - frame_border_px(w.frame_flags), y),
+        _ => {
+            let (cx, cy, _, _) = wm.client_view(frame).unwrap_or_default();
+            (x.saturating_add(cx), y.saturating_add(cy))
+        }
     };
-    if let Some(hit) = wm.control_at(frame, x - border, y) {
+    if let Some(hit) = wm.control_at(frame, sx, sy) {
         return (hit, 0);
     }
     let focus = wm.focus_hwnd;
@@ -3393,6 +3397,28 @@ mod tests {
         (w.x, w.y, w.cx, w.cy, w.visible) = (10, 200, 200, 25, true);
         drop(wm);
         (shared, frame, client, entry)
+    }
+
+    /// A client moved up by a horizontal frame scroll bar: client
+    /// coordinates reach its controls, and below the client the bar.
+    #[test]
+    fn button1_reaches_controls_of_a_moved_client_and_frame_scroll_bars() {
+        let (shared, frame, client, entry) = routed_window(0);
+        let hbar = {
+            let mut wm = shared.window_mgr.lock_or_recover();
+            wm.get_window_mut(client).unwrap().y = 18;
+            let hbar = wm.create_window("WC_SCROLLBAR".into(), frame, 0);
+            let w = wm.get_window_mut(hbar).unwrap();
+            (w.x, w.y, w.cx, w.cy, w.visible, w.id) = (0, 2, 200, 16, true, crate::loader::FID_HORZSCROLL);
+            hbar
+        };
+        // Client (15, 210) is surface (15, 228): the entry field.
+        assert_eq!(route_button1(&shared, frame, 15, 210, true), ((entry, 5, 10), 0));
+        // Client (20, -10) is surface (20, 8): on the bar.
+        assert_eq!(route_button1(&shared, frame, 20, -10, true), ((hbar, 20, 6), 0));
+        // A hidden bar is not hit.
+        shared.window_mgr.lock_or_recover().get_window_mut(hbar).unwrap().visible = false;
+        assert_eq!(route_button1(&shared, frame, 20, -10, false).0, (frame, 20, -10));
     }
 
     #[test]
