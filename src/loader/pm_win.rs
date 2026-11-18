@@ -14,7 +14,7 @@ use super::constants::*;
 /// Bound guest-supplied window geometry `(x, y, cx, cy)` to
 /// ±`MAX_WINDOW_COORD` (sizes to `0..=MAX_WINDOW_COORD`), so the arithmetic
 /// on it elsewhere — hit tests, layout, the compositor — cannot overflow.
-fn bound_window_geometry(x: i32, y: i32, cx: i32, cy: i32) -> (i32, i32, i32, i32) {
+pub(super) fn bound_window_geometry(x: i32, y: i32, cx: i32, cy: i32) -> (i32, i32, i32, i32) {
     let pos = |v: i32| v.clamp(-MAX_WINDOW_COORD, MAX_WINDOW_COORD);
     let size = |v: i32| v.clamp(0, MAX_WINDOW_COORD);
     (pos(x), pos(y), size(cx), size(cy))
@@ -53,7 +53,7 @@ use super::ApiResult;
 use crate::gui::GUIMessage;
 use crate::gui::surface::{DrawOp, Mix};
 use super::pm_types::{DeviceContext, PsOrigin, TimerStop};
-use crate::lx::header::{RT_STRING, RT_MENU, RT_DIALOG, RT_ACCELTABLE};
+use crate::lx::header::{RT_STRING, RT_MESSAGE, RT_MENU, RT_DIALOG, RT_ACCELTABLE};
 use super::pm_types::MenuItem;
 
 impl super::Loader {
@@ -186,6 +186,8 @@ impl super::Loader {
                     if let Some(haccel) = fcf_accel {
                         wm.set_window_accel(h_frame, haccel);
                     }
+                    // FCF_VERTSCROLL / FCF_HORZSCROLL (pm_frame.rs).
+                    Self::add_frame_scroll_bars(&mut wm, h_frame, fl_create_flags, hmq);
                     // Client fills the frame below the title bar and menu bar.
                     wm.layout_frame(h_frame);
                     // VDR-B1/E1: register in Z-order stack (top-most) and set focus.
@@ -358,6 +360,10 @@ impl super::Loader {
                 let mp1 = read_stack(12);
                 let mp2 = read_stack(16);
 
+                // Frame formatting messages of frame windows (pm_frame.rs).
+                if let Some(r) = self.frame_default_message(hwnd, msg, mp1, mp2) {
+                    return ApiResult::Normal(r);
+                }
                 match msg {
                     // The system menu and keyboard move / size (pm_sysmenu.rs).
                     WM_SYSCOMMAND if self.frame_syscommand(hwnd, mp1 & 0xFFFF, mp2) => {}
@@ -870,55 +876,14 @@ impl super::Loader {
                 ApiResult::Normal(self.create_menu_window(hwnd_frame, items))
             }
             781 => {
-                // WinLoadString(HAB hab, HMODULE hmod, ULONG id, LONG cchMax, PSZ pszBuffer)
-                let _hab = read_stack(4);
-                let hmod = read_stack(8);
-                let id = read_stack(12);
-                let cch_max = read_stack(16) as i32;
-                let psz_buffer = read_stack(20);
-                debug!("  [VCPU {}] WinLoadString id={} cchMax={}", vcpu_id, id, cch_max);
-
-                // OS/2 string tables are grouped in bundles of 16.
-                // Resource ID = (string_id / 16) + 1, index within bundle = string_id % 16
-                let bundle_id = (id / 16) + 1;
-                let string_index = (id % 16) as usize;
-                let res_mgr = self.shared.resource_mgr.lock_or_recover();
-                if let Some((guest_addr, size)) = res_mgr.find(hmod, RT_STRING, bundle_id as u16) {
-                    drop(res_mgr);
-                    // Parse bundle: sequential length-prefixed strings (1-byte length + data)
-                    let mut offset = 0u32;
-                    for idx in 0..16 {
-                        if offset >= size { break; }
-                        let len = self.guest_read::<u8>(guest_addr + offset).unwrap_or(0) as u32;
-                        offset += 1;
-                        if idx == string_index {
-                            let copy_len = len.min((cch_max.max(0) as u32).saturating_sub(1));
-                            if psz_buffer != 0 && copy_len > 0 {
-                                for i in 0..copy_len {
-                                    let b = self.guest_read::<u8>(guest_addr + offset + i).unwrap_or(0);
-                                    self.guest_write::<u8>(psz_buffer + i, b);
-                                }
-                                self.guest_write::<u8>(psz_buffer + copy_len, 0);
-                            } else if psz_buffer != 0 {
-                                self.guest_write::<u8>(psz_buffer, 0);
-                            }
-                            return ApiResult::Normal(copy_len);
-                        }
-                        offset += len;
-                    }
-                    // String index not found in bundle
-                    if psz_buffer != 0 {
-                        self.guest_write::<u8>(psz_buffer, 0);
-                    }
-                    ApiResult::Normal(0)
-                } else {
-                    drop(res_mgr);
-                    debug!("  [VCPU {}] WinLoadString: string bundle {} not found", vcpu_id, bundle_id);
-                    if psz_buffer != 0 {
-                        self.guest_write::<u8>(psz_buffer, 0);
-                    }
-                    ApiResult::Normal(0)
-                }
+                // WinLoadString(HAB hab, HMODULE hmod, ULONG id, LONG cchMax, PSZ pszBuffer) (pm_winmisc.rs)
+                self.win_load_bundle_string(vcpu_id, RT_STRING, read_stack(8), read_stack(12),
+                                            read_stack(16) as i32, read_stack(20))
+            }
+            779 => {
+                // WinLoadMessage(HAB hab, HMODULE hmod, ULONG id, LONG cchMax, PSZ pszBuffer) (pm_winmisc.rs)
+                self.win_load_bundle_string(vcpu_id, RT_MESSAGE, read_stack(8), read_stack(12),
+                                            read_stack(16) as i32, read_stack(20))
             }
             793 => {
                 // WinOpenClipbrd(HAB hab)
@@ -1205,20 +1170,16 @@ impl super::Loader {
                 let psz_text = read_stack(12);
                 if !self.pm_check_hwnd(vcpu_id, hwnd_dlg, false) { return ApiResult::Normal(0); }
                 let text = self.read_guest_string_cp(psz_text, self.window_codepage(hwnd_dlg));
-                let target = {
-                    let mut wm = self.shared.window_mgr.lock_or_recover();
-                    let Some(child_hwnd) = wm.find_child_by_id(hwnd_dlg, id_item) else { return ApiResult::Normal(1) };
-                    let target = wm.text_window(child_hwnd);
-                    if let Some(win) = wm.get_window_mut(target) {
-                        win.text = text;
-                    }
-                    (target != child_hwnd).then_some(target)
-                };
-                // The field of a combination box / spin button shows it.
-                if let Some(field) = target {
-                    self.set_field_text_done(field);
-                }
+                self.set_dlg_item_text(hwnd_dlg, id_item, text);
                 ApiResult::Normal(1)
+            }
+            858 => {
+                // WinSetDlgItemShort(HWND hwndDlg, ULONG idItem, USHORT usValue, BOOL fSigned) (pm_winmisc.rs)
+                self.win_set_dlg_item_short(vcpu_id, read_stack(4), read_stack(8), read_stack(12) as u16, read_stack(16) != 0)
+            }
+            814 => {
+                // WinQueryDlgItemShort(HWND hwndDlg, ULONG idItem, PSHORT psResult, BOOL fSigned) (pm_winmisc.rs)
+                self.win_query_dlg_item_short(vcpu_id, read_stack(4), read_stack(8), read_stack(12), read_stack(16) != 0)
             }
             873 => {
                 // WinSetSysValue(HWND hwndDesktop, LONG iSysValue, LONG lValue)
@@ -1260,91 +1221,15 @@ impl super::Loader {
                 debug!("  [VCPU {}] WinSetWindowPos hwnd={} behind={} x={} y={} cx={} cy={} fl=0x{:04X}",
                        vcpu_id, hwnd, hwnd_behind, x, y, cx, cy, fl);
                 if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
-
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-
-                // SWP_MINIMIZE / SWP_MAXIMIZE / SWP_RESTORE of a standard
-                // frame: its position comes from the state change, which is
-                // made after the rest, once the client has been asked.
-                let state_op = super::pm_minmax::state_change(fl);
-                let minmax = state_op.and_then(|op| {
-                    let pos = (fl & SWP_MOVE != 0).then_some((x, y));
-                    let size = (fl & SWP_SIZE != 0).then_some((cx, cy));
-                    wm.begin_minmax(hwnd, op, pos, size).map(|t| (op, t))
-                });
-                let fl = if minmax.is_some() { fl & !(SWP_MOVE | SWP_SIZE) } else { fl };
-
-                // WM_SIZE goes to the window, and for a standard frame to its
-                // client, whose size follows the frame's (WM_FORMATFRAME).
-                let is_std_frame = wm.frame_to_client.contains_key(&hwnd);
-                let size_target = wm.frame_msg_target(hwnd);
-                let old_size = wm.get_window(size_target).map(|w| (w.cx, w.cy));
-
-                // Update the OS2Window position/size state.
-                if let Some(win) = wm.get_window_mut(hwnd) {
-                    if fl & SWP_MOVE != 0 {
-                        win.x = x;
-                        win.y = y;
-                    }
-                    if fl & SWP_SIZE != 0 {
-                        win.cx = cx;
-                        win.cy = cy;
-                    }
-                    if fl & SWP_SHOW != 0 { win.visible = true; }
-                    if fl & SWP_HIDE != 0 { win.visible = false; }
-                }
-                // Combination boxes and spin buttons place their parts.
-                if fl & SWP_SIZE != 0 {
-                    wm.layout_combo(hwnd);
-                    wm.layout_spin(hwnd);
-                }
-
-                // VDR-B2: SWP_ZORDER — update the Z-order stack.
-                if fl & SWP_ZORDER != 0 && wm.frame_to_client.contains_key(&hwnd) {
-                    match hwnd_behind {
-                        HWND_TOP              => wm.z_push_top(hwnd),
-                        HWND_BOTTOM           => wm.z_push_bottom(hwnd),
-                        0                     => {} // no-op
-                        behind                => wm.z_insert_behind(hwnd, behind),
-                    }
-                }
-
-                // VDR-E1: SWP_ACTIVATE — update focused_hwnd.
-                if fl & SWP_ACTIVATE != 0 && wm.frame_to_client.contains_key(&hwnd) {
-                    wm.focused_hwnd = hwnd;
-                    wm.z_push_top(hwnd);
-                }
-
-                // VDR-B4: any geometry/visibility/z-order/activation change → dirty.
-                if fl & (SWP_MOVE | SWP_SIZE | SWP_SHOW | SWP_HIDE | SWP_ACTIVATE) != 0 {
-                    wm.mark_dirty(hwnd);
-                }
-                // (SWP_ZORDER dirtiness is handled transitively via z_push_top/bottom/insert_behind)
-
-                // A resized frame re-lays out its menu bar and client; the frame's
-                // FrameBuffer holds client content only, so size it to the client.
-                let (fb_cx, fb_cy) = if fl & SWP_SIZE != 0 && wm.frame_to_client.contains_key(&hwnd) {
-                    wm.layout_frame(hwnd)
-                } else { (cx, cy) };
-
-                // Position and visibility are read by the compositor from
-                // the window; only the surface has to follow a size change.
-                if fl & SWP_SIZE != 0 {
-                    wm.resize_surface(hwnd, fb_cx, fb_cy);
-                    let new_size = if is_std_frame { (fb_cx, fb_cy) } else { (cx, cy) };
-                    if let Some(old) = old_size && old != new_size {
-                        wm.post_size(size_target, old, new_size);
-                    }
-                }
-                if fl & (SWP_SHOW | SWP_HIDE) != 0 {
-                    wm.frame_visibility_changed(hwnd);
-                }
-                drop(wm);
-
-                if let Some((op, target)) = minmax {
+                // pm_frame.rs; a state change asks the client first.
+                if let Some((op, target)) = self.set_window_pos(hwnd, hwnd_behind, x, y, cx, cy, fl) {
                     return self.send_minmax(hwnd, op, target, 1);
                 }
                 ApiResult::Normal(1)
+            }
+            863 => {
+                // WinSetMultWindowPos(HAB hab, PSWP pswp, ULONG cswp) (pm_frame.rs)
+                self.win_set_mult_window_pos(vcpu_id, read_stack(8), read_stack(12))
             }
             877 => {
                 // WinSetWindowText(HWND hwnd, PCSZ pszText)
@@ -1370,12 +1255,44 @@ impl super::Loader {
                 let hwnd = read_stack(4);
                 let index = read_stack(8) as i32;
                 let value = read_stack(12);
-                if !self.pm_check_window_word(vcpu_id, hwnd, index, 4) { return ApiResult::Normal(0); }
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-                if let Some(win) = wm.get_window_mut(hwnd) {
-                    win.window_ulong.insert(index, value);
-                }
-                ApiResult::Normal(1)
+                // All bits of the word; QWL_STYLE is the style (pm_winmisc.rs).
+                self.win_set_window_bits(vcpu_id, hwnd, index, value, u32::MAX)
+            }
+            874 => {
+                // WinSetWindowBits(HWND hwnd, LONG index, ULONG flData, ULONG flMask) (pm_winmisc.rs)
+                self.win_set_window_bits(vcpu_id, read_stack(4), read_stack(8) as i32, read_stack(12), read_stack(16))
+            }
+            833 => {
+                // WinQueryVersion(HAB hab) (pm_winmisc.rs)
+                self.win_query_version()
+            }
+            906 => {
+                // WinCreateFrameControls(HWND hwndFrame, PFRAMECDATA pfcdata, PCSZ pszTitle) (pm_frame.rs)
+                self.win_create_frame_controls(vcpu_id, read_stack(4), read_stack(8), read_stack(12))
+            }
+            704 => {
+                // WinCalcFrameRect(HWND hwndFrame, PRECTL prcl, BOOL fClient) (pm_frame.rs)
+                self.win_calc_frame_rect(vcpu_id, read_stack(4), read_stack(8), read_stack(12) != 0)
+            }
+            745 => {
+                // WinFlashWindow(HWND hwnd, BOOL fFlash) (pm_frame.rs)
+                self.win_flash_window(vcpu_id, read_stack(4), read_stack(8) != 0)
+            }
+            713 => {
+                // WinCreateAccelTable(HAB hab, PACCELTABLE pAccelTable) (pm_accel.rs)
+                self.win_create_accel_table(vcpu_id, read_stack(8))
+            }
+            723 => {
+                // WinDestroyAccelTable(HACCEL haccel) (pm_accel.rs)
+                self.win_destroy_accel_table(vcpu_id, read_stack(4))
+            }
+            709 => {
+                // WinCopyAccelTable(HACCEL haccel, PACCELTABLE pAccelTable, ULONG cbCopyMax) (pm_accel.rs)
+                self.win_copy_accel_table(vcpu_id, read_stack(4), read_stack(8), read_stack(12))
+            }
+            798 => {
+                // WinQueryAccelTable(HAB hab, HWND hwnd) (pm_accel.rs)
+                self.win_query_accel_table(vcpu_id, read_stack(8))
             }
             879 => {
                 // WinSetWindowUShort(HWND hwnd, LONG index, USHORT us)
@@ -1481,6 +1398,8 @@ impl super::Loader {
                 }
                 // The parts of a combination box / spin button.
                 self.build_compound_control(hwnd);
+                // The client of a WC_FRAME window (pm_frame.rs).
+                self.adopt_frame_client(hwnd);
 
                 // A visible new window is invalid: it draws itself on creation.
                 if fl_style & WS_VISIBLE != 0 {
@@ -1854,7 +1773,7 @@ impl super::Loader {
 
     /// Parse the RT_MENU resource `id_menu` of module `hmod` (0 = the
     /// executable) into a menu item tree; `None` when there is none.
-    fn load_menu_resource(&self, hmod: u32, id_menu: u32, vcpu_id: u32) -> Option<Vec<MenuItem>> {
+    pub(super) fn load_menu_resource(&self, hmod: u32, id_menu: u32, vcpu_id: u32) -> Option<Vec<MenuItem>> {
         let res = self.shared.resource_mgr.lock_or_recover().find(hmod, RT_MENU, id_menu as u16);
         match res {
             Some((guest_addr, size)) => {
@@ -1962,7 +1881,7 @@ impl super::Loader {
     /// `WindowManager::begin_minmax`: `WM_MINMAXFRAME` goes to its client
     /// first, which can stop the change by returning TRUE. A client without
     /// a window procedure is not asked. The API returns `ret`.
-    fn send_minmax(&self, frame: u32, op: u32, target: super::pm_minmax::WinRect, ret: u32) -> ApiResult {
+    pub(super) fn send_minmax(&self, frame: u32, op: u32, target: super::pm_minmax::WinRect, ret: u32) -> ApiResult {
         let mut wm = self.shared.window_mgr.lock_or_recover();
         let client = wm.frame_to_client.get(&frame).copied().unwrap_or(0);
         let wnd_proc = wm.get_window(client).map_or(0, |w| w.pfn_wp);
@@ -1995,7 +1914,9 @@ impl super::Loader {
         if let (Some(client), Some(old), Some(new)) = (client, old_size, new_size)
             && old != new
         {
-            wm.resize_surface(hwnd_frame, new.0, new.1);
+            // The surface is the frame below its title and menu bars.
+            let surface = wm.layout_frame(hwnd_frame);
+            wm.resize_surface(hwnd_frame, surface.0, surface.1);
             wm.post_size(client, old, new);
         }
         prev
@@ -2063,7 +1984,9 @@ impl super::Loader {
         let data = self.guest_read_bytes(addr, size as usize)?;
         let entries = super::pm_dialog::parse_accel_table(&data);
         debug!("  WinLoadAccelTable id={}: {} entries", id, entries.len());
-        Some(self.shared.window_mgr.lock_or_recover().add_accel_table(entries))
+        // ACCELTABLE.codepage follows cAccel.
+        let codepage = data.get(2..4).map_or(0, |b| u16::from_le_bytes([b[0], b[1]]));
+        Some(self.shared.window_mgr.lock_or_recover().create_accel_table(entries, codepage))
     }
 
     /// WinDlgBox / WinLoadDlg: create dialog `id_dlg` (RT_DIALOG) of module
@@ -2198,6 +2121,8 @@ pub(super) fn sys_value(index: i32) -> i32 {
         SV_CYFULLSCREEN => dh as i32 - CHROME_TITLE_H,
         SV_CYTITLEBAR => CHROME_TITLE_H,
         SV_CYMENU => MENU_BAR_HEIGHT as i32,
+        // Frame scroll bars (pm_frame.rs).
+        SV_CXVSCROLL | SV_CYHSCROLL => super::pm_frame::FRAME_SCROLLBAR_W,
         SV_CXSIZEBORDER | SV_CYSIZEBORDER | SV_CXDLGFRAME | SV_CYDLGFRAME => CHROME_BORDER_W,
         SV_CXBORDER | SV_CYBORDER => 1,
         _ => 0,

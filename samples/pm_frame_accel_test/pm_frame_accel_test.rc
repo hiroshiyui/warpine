@@ -1,0 +1,19 @@
+/* pm_frame_accel_test.rc - accelerator table, messages and strings */
+#define INCL_WIN
+#include <os2.h>
+#include "pm_frame_accel_test.h"
+
+ACCELTABLE ID_ACCEL
+BEGIN
+    VK_F5, IDM_REFRESH, VIRTUALKEY
+END
+
+MESSAGETABLE
+BEGIN
+    MSG_HELLO, "Seventeen"
+END
+
+STRINGTABLE
+BEGIN
+    STR_FIVE, "String five"
+END

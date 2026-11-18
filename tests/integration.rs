@@ -1679,6 +1679,19 @@ fn gui_pm_window_test_checks_the_window_tree_calls() {
     assert_sample_checks_pass("samples/pm_window_test/pm_window_test.exe", "pm_window_test", 36);
 }
 
+/// pm_frame_accel_test: frame scroll bars from FCF_VERTSCROLL and
+/// WinCreateFrameControls (on a WC_FRAME window with an FID_CLIENT
+/// client), WinCalcFrameRect, WM_QUERYFRAMECTLCOUNT / WM_FORMATFRAME /
+/// WM_CALCFRAMERECT, WinCreateAccelTable / WinCopyAccelTable /
+/// WinQueryAccelTable / WinDestroyAccelTable, WinLoadMessage /
+/// WinLoadString from wrc bundles, WinQueryVersion, WinFlashWindow,
+/// WinSetWindowBits, WinSetMultWindowPos and WinSetDlgItemShort /
+/// WinQueryDlgItemShort.
+#[test]
+fn gui_pm_frame_accel_test_checks_frames_accelerators_and_window_calls() {
+    assert_sample_checks_pass("samples/pm_frame_accel_test/pm_frame_accel_test.exe", "pm_frame_accel_test", 72);
+}
+
 /// pm_query_test: window lookups (WinMapWindowPoints, WinWindowFromPoint,
 /// WinIsChild, WinMultWindowFromIDs, WinEnumDlgItem, WinQueryClassName /
 /// WinQueryClassInfo …), system colours (WinSetSysColors changes the title

@@ -925,8 +925,8 @@ impl super::Loader {
                 QSV_MIN_SLICE => 32,         // milliseconds
                 QSV_MAX_SLICE => 248,        // milliseconds
                 QSV_PAGE_SIZE => 4096,
-                QSV_VERSION_MAJOR => 20,     // OS/2 Warp 4.5 (major=20, minor=45 → "4.50")
-                QSV_VERSION_MINOR => 45,     // SetOSVersion(): minor≥40 → "4.XX" branch
+                QSV_VERSION_MAJOR => OS2_VERSION_MAJOR,     // OS/2 Warp 4.5 (major=20, minor=45 → "4.50")
+                QSV_VERSION_MINOR => OS2_VERSION_MINOR,     // SetOSVersion(): minor≥40 → "4.XX" branch
                 QSV_VERSION_REVISION => 0,
                 QSV_MS_COUNT => ms_count(),
                 QSV_TIME_LOW => unix_time() as u32,

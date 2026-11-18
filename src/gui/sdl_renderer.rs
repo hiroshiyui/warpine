@@ -1398,7 +1398,9 @@ impl SdlRenderer {
                 let cjk = wm.queue_codepage(hwnd).map_or(CjkRegion::Auto, CjkRegion::from_codepage);
                 let cache = chrome.entry(hwnd).or_insert_with(ChromeCache::new);
                 let cjk_changed = cache.set_cjk(cjk) | cache.set_colors(title_colors);
-                if cache.sync(&w.text, w.cx, frame_flags, state, hwnd == focused, menu, bar_w) || cjk_changed {
+                // A flashing frame (WinFlashWindow) swaps active and inactive.
+                let active = wm.frame_flash.title_active(hwnd, hwnd == focused);
+                if cache.sync(&w.text, w.cx, frame_flags, state, active, menu, bar_w) || cjk_changed {
                     dirty_frames.insert(hwnd);
                     chrome_changed.insert(hwnd);
                 }
@@ -1866,13 +1868,15 @@ impl SdlRenderer {
                 if let Some(rs) = self.resize_state.take() {
                     let hwnd = rs.hwnd;
                     // Re-lay out the menu bar and client for the new frame size; the
-                    // surface and WM_SIZE both describe the client area.
+                    // surface covers the frame below its title and menu bars.
                     {
                         let mut wm = shared.window_mgr.lock_or_recover();
                         let client = wm.frame_msg_target(hwnd);
                         let old = wm.get_window(client).map_or((0, 0), |w| (w.cx, w.cy));
-                        let new = wm.layout_frame(hwnd);
-                        wm.resize_surface(hwnd, new.0, new.1);
+                        let surface = wm.layout_frame(hwnd);
+                        wm.resize_surface(hwnd, surface.0, surface.1);
+                        // The client is the surface less any frame scroll bars.
+                        let new = wm.get_window(client).map_or(surface, |w| (w.cx, w.cy));
                         // Notify the app (old and new size) so it repaints.
                         if old != new { wm.post_size(client, old, new); }
                     }
@@ -2031,6 +2035,8 @@ impl PmRenderer for SdlRenderer {
                 wm.post_caret_blink();
                 // CURSOR_FLASH cursors blink at the same rate.
                 wm.flash_cursors();
+                // Flashing title bars (WinFlashWindow) at the same rate.
+                wm.flash_frames();
                 // SV_CURSORRATE (WinSetSysValue) sets the interval.
                 self.caret_next = Some(now + Duration::from_millis(wm.cursor_rate_ms as u64));
             }

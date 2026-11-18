@@ -198,8 +198,8 @@ pub(super) fn parse_dlg_template(data: &[u8], fallback_cp: u32) -> Option<DlgTem
 
 /// `ACCELTABLE` layout: `cAccel` (USHORT), `codepage` (USHORT), then
 /// `ACCEL { fs, key, cmd }` entries of three USHORTs.
-const AT_HEADER_SIZE: usize = 4;
-const ACCEL_SIZE: usize = 6;
+pub(super) const AT_HEADER_SIZE: usize = 4;
+pub(super) const ACCEL_SIZE: usize = 6;
 
 /// Parse an `ACCELTABLE` resource; entries past the end of `data` are dropped.
 pub(super) fn parse_accel_table(data: &[u8]) -> Vec<AccelEntry> {

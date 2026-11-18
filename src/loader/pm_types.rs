@@ -479,8 +479,12 @@ pub struct WindowManager {
     pub capture_hwnd: u32,
     /// Text-format clipboard content, kept in sync with the host SDL clipboard.
     pub clipboard_text: String,
-    accel_tables: HashMap<u32, Vec<AccelEntry>>,
-    window_accel: HashMap<u32, u32>, // hwnd → haccel
+    pub(super) accel_tables: HashMap<u32, Vec<AccelEntry>>,
+    pub(super) window_accel: HashMap<u32, u32>, // hwnd → haccel
+    /// Codepage of each accelerator table (`ACCELTABLE.codepage`, pm_accel.rs).
+    pub(super) accel_codepages: HashMap<u32, u16>,
+    /// Frames whose title bars flash (`WinFlashWindow`, pm_frame.rs).
+    pub frame_flash: super::pm_frame::FlashState,
     next_hwnd: u32,
     next_hps: u32,
     next_hmq: u32,
@@ -599,6 +603,8 @@ impl WindowManager {
             clipboard_text: String::new(),
             accel_tables: HashMap::new(),
             window_accel: HashMap::new(),
+            accel_codepages: HashMap::new(),
+            frame_flash: Default::default(),
             next_hwnd: 0x1000,
             next_hps: 0x2000,
             next_hmq: 0x3000,
@@ -1251,28 +1257,33 @@ impl WindowManager {
         })
     }
 
-    /// Re-derive the menu-bar and client rectangles of `frame` from its current
-    /// size: the menu bar sits directly below the title bar and the client
-    /// fills what is left underneath. Returns the client `(cx, cy)`.
+    /// Re-derive the menu-bar, frame scroll-bar and client rectangles of
+    /// `frame` from its current size (`pm_frame::format_frame`): the menu
+    /// bar sits directly below the title bar, the scroll bars along the
+    /// right and bottom, and the client fills what is left. Returns the
+    /// size of the frame's surface (the frame below its title and menu
+    /// bars), which is the client's size when it has no scroll bars.
     pub fn layout_frame(&mut self, frame: u32) -> (i32, i32) {
-        use super::constants::MENU_BAR_HEIGHT;
-        let Some((frame_cx, frame_cy, menu_hwnd)) =
-            self.windows.get(&frame).map(|w| (w.cx, w.cy, w.menu_hwnd)) else { return (0, 0) };
-        let top_h = self.frame_chrome_top_h(frame);
-        let client_cy = (frame_cy - top_h).max(0);
-        if menu_hwnd != 0 && let Some(menu) = self.windows.get_mut(&menu_hwnd) {
-            menu.x = 0;
-            menu.y = client_cy;
-            menu.cx = frame_cx;
-            menu.cy = MENU_BAR_HEIGHT as i32;
+        let Some(shape) = self.frame_shape(frame) else { return (0, 0) };
+        let layout = super::pm_frame::format_frame(&shape);
+        let menu_hwnd = self.windows.get(&frame).map_or(0, |w| w.menu_hwnd);
+        if let Some(r) = layout.menu && let Some(menu) = self.windows.get_mut(&menu_hwnd) {
+            (menu.x, menu.y, menu.cx, menu.cy) = (r.x, r.y, r.cx, r.cy);
         }
+        self.place_frame_scroll_bars(frame, &layout);
+        let has_bars = shape.vscroll || shape.hscroll;
         if let Some(&client) = self.frame_to_client.get(&frame)
             && let Some(cw) = self.windows.get_mut(&client) {
-            cw.cx = frame_cx;
-            cw.cy = client_cy;
+            cw.cx = layout.client.cx;
+            cw.cy = layout.client.cy;
+            // Without frame scroll bars the client keeps its position.
+            if has_bars {
+                cw.x = layout.client.x;
+                cw.y = layout.client.y;
+            }
         }
         self.mark_dirty(frame);
-        (frame_cx, client_cy)
+        layout.surface
     }
 
     /// Move `frame` so its bottom-left corner is at desktop `(x, y)` (a title

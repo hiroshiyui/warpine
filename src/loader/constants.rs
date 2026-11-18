@@ -81,6 +81,14 @@ pub const WM_USER: u32 = 0x1000;
 pub const WM_UPDATEFRAME: u32 = 0x0042;
 /// Identity of a frame's menu-bar window (`WinLoadMenu`, `WinCreateMenu`).
 pub const FID_MENU: u32 = 0x8005;
+/// Identity of a frame's client window (`<pmwin.h>`).
+pub const FID_CLIENT: u32 = 0x8008;
+/// Frame formatting messages (`<pmwin.h>`, pm_frame.rs): mp1 = `SWP`
+/// array, mp2 = client `RECTL`; the count of frame-control `SWP`s; mp1 =
+/// `RECTL`, mp2 = TRUE when it is the frame rectangle.
+pub const WM_FORMATFRAME: u32 = 0x0041;
+pub const WM_QUERYFRAMECTLCOUNT: u32 = 0x0059;
+pub const WM_CALCFRAMERECT: u32 = 0x0053;
 pub const WM_PAINT: u32 = 0x0023;
 pub const WM_TIMER: u32 = 0x0024;
 pub const WM_CLOSE: u32 = 0x0029;
@@ -977,6 +985,8 @@ pub const SV_CURSORRATE:   i32 = 9;
 pub const SV_CYSIZEBORDER: i32 = 5;
 pub const SV_CXSCREEN:     i32 = 20;
 pub const SV_CYSCREEN:     i32 = 21;
+pub const SV_CXVSCROLL:    i32 = 22;
+pub const SV_CYHSCROLL:    i32 = 23;
 pub const SV_CXBORDER:     i32 = 26;
 pub const SV_CYBORDER:     i32 = 27;
 pub const SV_CXDLGFRAME:   i32 = 28;
@@ -1109,6 +1119,10 @@ pub const QSV_MAX_WAIT: u32 = 7;
 pub const QSV_MIN_SLICE: u32 = 8;
 pub const QSV_MAX_SLICE: u32 = 9;
 pub const QSV_PAGE_SIZE: u32 = 10;
+/// The OS/2 version Warpine reports (OS/2 Warp 4.5: `QSV_VERSION_MAJOR`
+/// 20, `QSV_VERSION_MINOR` 45; `WinQueryVersion`).
+pub const OS2_VERSION_MAJOR: u32 = 20;
+pub const OS2_VERSION_MINOR: u32 = 45;
 pub const QSV_VERSION_MAJOR: u32 = 11;
 pub const QSV_VERSION_MINOR: u32 = 12;
 pub const QSV_VERSION_REVISION: u32 = 13;

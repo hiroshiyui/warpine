@@ -216,8 +216,10 @@ impl WindowManager {
         let Some(w) = self.get_window_mut(frame) else { return };
         w.style = (w.style & !(WS_MINIMIZED | WS_MAXIMIZED)) | state_style(op);
         (w.x, w.y, w.cx, w.cy) = (target.x, target.y, target.cx, target.cy);
-        let new = self.layout_frame(frame);
-        self.resize_surface(frame, new.0, new.1);
+        let surface = self.layout_frame(frame);
+        self.resize_surface(frame, surface.0, surface.1);
+        // The client's size: the surface less any frame scroll bars.
+        let new = self.get_window(client).map_or(surface, |w| (w.cx, w.cy));
         self.sync_owned_frames(frame);
         self.mark_all_dirty();
         self.post_size(client, old, new);
