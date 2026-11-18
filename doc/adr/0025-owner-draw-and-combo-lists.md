@@ -1,6 +1,6 @@
 # ADR-0025: Run owner-draw calls before the API returns, and drop combination-box lists inside the parent
 
-- **Status:** Accepted
+- **Status:** Accepted; the owner-call queue also carries `WM_ERASEBACKGROUND` and `WS_SYNCPAINT` calls, and hooks use call chains (ADR-0026)
 - **Date:** 2026-11-18
 - **Sources:** commit f245cfc; `src/loader/pm_owner.rs`, `src/loader/pm_combo.rs`, `src/loader/vcpu.rs` (`FrameKind::OwnerDraw`), `src/loader/pm_types.rs` (`WindowManager::owner_calls`, `builtin_control_descendants`); IBM *Presentation Manager Programming Reference* (`WM_MEASUREITEM`, `WM_DRAWITEM`, `BN_PAINT`, `WC_COMBOBOX`)
 

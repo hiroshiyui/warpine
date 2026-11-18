@@ -31,3 +31,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0023](0023-vcpu-kick.md) | Kick vCPUs out of guest code with `immediate_exit` and a real-time signal | Accepted | 2026-11-18 |
 | [0024](0024-regions-and-clipping.md) | Represent regions as y-bands of x spans and clip by saving and restoring pels | Accepted | 2026-11-18 |
 | [0025](0025-owner-draw-and-combo-lists.md) | Run owner-draw calls before the API returns, and drop combination-box lists inside the parent | Accepted | 2026-11-18 |
+| [0026](0026-call-chains-and-process-hooks.md) | Run hooks and broadcast sends as call chains that may re-run the API, and scope system hooks to the process | Accepted | 2026-11-18 |

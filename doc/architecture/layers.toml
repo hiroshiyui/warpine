@@ -134,7 +134,7 @@ modules = [
 [[layer]]
 id = "pmwin"
 zone = "host"
-label = "PM window manager: PMWIN windows, messages, input, painting, presentation parameters"
+label = "PM window manager: PMWIN windows, messages, hooks (ADR-0026), input, painting, presentation parameters"
 modules = [
   "loader/pm_win.rs", "loader/pm_types.rs", "loader/pm_window.rs", "loader/pm_input.rs",
   "loader/pm_dialog.rs", "loader/pm_msgbox.rs", "loader/pm_destroy.rs", "loader/pm_error.rs",
