@@ -1,6 +1,6 @@
 # ADR-0003: Run OS/2 code natively on KVM
 
-- **Status:** Accepted
+- **Status:** Accepted; the consequence that a vCPU in guest code cannot be interrupted is superseded by ADR-0023
 - **Date:** 2026-03-12
 - **Sources:** commit 843fbb7 ("implement KVM-based hypervisor for hardware-accelerated OS/2 execution"); `CLAUDE.md` (Project, Execution flow); `src/loader/vm_backend.rs`, `kvm_backend.rs`
 

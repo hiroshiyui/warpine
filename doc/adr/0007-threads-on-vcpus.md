@@ -1,6 +1,6 @@
 # ADR-0007: Run each OS/2 thread on its own host thread and KVM vCPU
 
-- **Status:** Accepted
+- **Status:** Accepted; the consequence that a vCPU in guest code cannot be interrupted is superseded by ADR-0023
 - **Date:** 2026-03-12 (vCPU per thread); 2026-11-18 (thread table)
 - **Sources:** `CLAUDE.md` (Concurrency model); commits 9f80c47 (thread exit), 7e8a4de (per-thread exception chains); `src/loader/threads.rs`; developer guide (Threading Model)
 

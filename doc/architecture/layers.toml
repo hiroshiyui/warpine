@@ -75,7 +75,7 @@ modules = ["loader/lx_loader.rs", "loader/ne_exec.rs", "loader/descriptors.rs", 
 [[layer]]
 id = "vcpu"
 zone = "host"
-label = "vCPUs and threads: VM exits, kicks, callbacks, exceptions, signals (ADR-0007)"
+label = "vCPUs and threads: VM exits, kicks, callbacks, exceptions, signals (ADR-0007, ADR-0023)"
 modules = [
   "loader/vm_backend.rs", "loader/kvm_backend.rs", "loader/vcpu.rs", "loader/threads.rs",
   "loader/critsec.rs", "loader/exitlist.rs", "loader/seh.rs", "loader/signals.rs",
@@ -97,7 +97,7 @@ modules = ["loader/mod.rs", "loader/managers.rs", "loader/mutex_ext.rs", "loader
 [[layer]]
 id = "kernel"
 zone = "host"
-label = "Kernel APIs: DOSCALLS, QUECALLS, processes, IPC, named pipes, timers"
+label = "Kernel APIs: DOSCALLS, QUECALLS, processes, IPC, named pipes (ADR-0022), timers"
 modules = [
   "loader/doscalls.rs", "loader/stubs.rs", "loader/process.rs", "loader/ipc.rs",
   "loader/dostimer.rs", "loader/modpath.rs", "loader/suballoc.rs", "loader/cmd.rs",
@@ -146,7 +146,7 @@ modules = [
 [[layer]]
 id = "controls"
 zone = "host"
-label = "Built-in controls: buttons, entry fields, MLE, list box, scroll bar, combo box, spin button, owner draw"
+label = "Built-in controls: buttons, entry fields, MLE, list box, scroll bar, combo box, spin button, owner draw (ADR-0025)"
 modules = [
   "loader/pm_controls.rs", "loader/pm_button.rs", "loader/pm_list.rs", "loader/pm_edit.rs",
   "loader/pm_scrollbar.rs", "loader/pm_combo.rs", "loader/pm_spin.rs", "loader/pm_owner.rs",
@@ -155,7 +155,7 @@ modules = [
 [[layer]]
 id = "gpi"
 zone = "host"
-label = "GPI: presentation spaces, drawing, fonts, bitmaps, regions, clipping, paths"
+label = "GPI: presentation spaces, drawing, fonts, bitmaps, regions, clipping, paths (ADR-0024)"
 modules = [
   "loader/pm_gpi.rs", "loader/pm_bitmap.rs", "loader/pm_shapes.rs", "loader/pm_drawtext.rs",
   "loader/pm_region.rs", "loader/pm_area.rs",
