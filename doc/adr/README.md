@@ -38,3 +38,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0030](0030-process-local-shell-services.md) | Keep the switch list, atom tables and DDE within one Warpine process | Accepted | 2026-11-18 |
 | [0031](0031-capped-test-runs.md) | Run the commit checks inside a capped systemd scope | Accepted | 2026-11-18 |
 | [0032](0032-session-thread-limit.md) | Enforce CONFIG.SYS THREADS= across a session with per-process records in a private directory | Accepted | 2026-11-18 |
+| [0033](0033-generated-compatibility-chart.md) | Generate the API compatibility chart from Warpine's source and a dated, cited API table | Accepted | 2026-11-18 |

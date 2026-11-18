@@ -1,5 +1,12 @@
 # Warpine: OS/2 Compatibility Layer
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="doc/compat/api_coverage_dark.svg">
+  <img alt="Bar chart: the share of the 32-bit API of OS/2 2.0, Warp 3 and Warp 4 that Warpine implements, overall and for the Control Program, window manager, graphics, shell / profiles / help, spooler, drag and drop and Workplace Shell (numbers in the image and from gen_compat table)" src="doc/compat/api_coverage.svg">
+</picture>
+
+*API coverage, generated from Warpine's source and a public dating of the OS/2 API by `gen_compat` (`cargo run --bin gen_compat -- table` prints it as text; data and sources in [doc/compat](doc/compat/SOURCES.md)).*
+
 > ⚠️ **Experimental — not for production use.** Warpine is a research and hobby project, worked on in spare time at an irregular pace. APIs are incomplete, behaviour may be incorrect, and security has not been hardened. Use at your own risk.
 
 Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS/2 1.x (NE format) applications natively on Linux using KVM hardware virtualization. Analogous to WINE for Windows, but targeting OS/2 instead.
@@ -303,7 +310,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 1683 unit tests (no KVM required)
+cargo test                        # 1689 unit tests (no KVM required)
 cargo test --test integration     # 113 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
