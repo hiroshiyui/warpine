@@ -38,7 +38,7 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 - **Games and video** — DIVE (direct framebuffer blitting) and OpenGL are not implemented yet.
 - **Printing** — the spooler reports no printers.
 
-_Screenshots captured from uncommitted changes on top of `924db8b` on 2026-11-18._
+_Screenshots captured from uncommitted changes on top of `ed65028` on 2026-11-18._
 <!-- screenshots:end -->
 
 ## Key Features
@@ -322,7 +322,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 1830 unit tests (no KVM required)
+cargo test                        # 1832 unit tests (no KVM required)
 cargo test --test integration     # 139 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
