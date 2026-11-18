@@ -265,6 +265,8 @@ pub(crate) fn request_exit(shared: &SharedState, rc: u32) {
     shared.dos_timers.lock_or_recover().stop_all();
     shared.kbd_cond.notify_all();
     shared.mou_cond.notify_all();
+    // Threads blocked on semaphores see the process end at once.
+    shared.sem_mgr.lock_or_recover().wake_all();
     // Threads spinning in guest code stop too.
     shared.threads.table.lock_or_recover().kick_all_but(0);
 }
@@ -276,9 +278,10 @@ fn wake_thread_1(shared: &SharedState) {
         threads.signal_pending.store(true, Ordering::Release);
         threads.table.lock_or_recover().kick(MAIN_TID);
         // Blocking calls poll their interruption at least every 100 ms;
-        // these waits are woken at once. (Merge point: semaphore waits
-        // are woken by `shared.sem_mgr.lock_or_recover().wake_all()`
-        // where the semaphore rework provides it.)
+        // these waits are woken at once, the semaphore waits through
+        // `SemaphoreManager::wake_all` (event and mutex condition
+        // variables, the muxwait generation counter).
+        shared.sem_mgr.lock_or_recover().wake_all();
         shared.kbd_cond.notify_all();
         shared.mou_cond.notify_all();
         threads.ended.notify_all();
@@ -418,7 +421,7 @@ impl super::Loader {
         if action != DKP_PROCESS && action != DKP_PROCESSTREE {
             return ERROR_INVALID_DATA;
         }
-        if pid == PROCESS_ID {
+        if pid == self.shared.process_id() {
             if action == DKP_PROCESSTREE {
                 self.kill_children();
             }

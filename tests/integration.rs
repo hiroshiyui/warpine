@@ -1098,6 +1098,20 @@ fn check_gui_golden_env(name: &str, sample: &str, steps: &str, env: &[(&str, &st
 /// Run 4OS2 on a pseudo-terminal (VIO programs get a display only when
 /// stdout is a terminal; `script` from util-linux provides one) with
 /// `WARPINE_VIO` set to `vio` (None: the default), type `ver` and Enter, and
+/// A scripted VIO session that ends with `quit` closes the program's window
+/// or screen: the program gets `XCPT_SIGNAL_KILLPROC` and runs its exit list
+/// (ADR-0034), and its own handler chooses the exit code (4OS2 exits with 3).
+/// So any ordinary exit is a closed session; being killed by a signal or by
+/// the `timeout` wrapper (124) is a failure. The callers check the dumps and
+/// files the session produced, which catches a crash before `quit`.
+fn assert_session_closed(status: std::process::ExitStatus, what: &str) {
+    const TIMEOUT_EXIT: i32 = 124;
+    match status.code() {
+        Some(code) if code != TIMEOUT_EXIT => {}
+        _ => panic!("{what} session did not end by its quit step: {status}"),
+    }
+}
+
 /// return the dumped screen. `None` when KVM, 4OS2 or `script` is missing.
 fn run_4os2_session(vio: Option<&str>) -> Option<(usize, usize, Vec<u8>)> {
     run_4os2_script(vio, &["screen"], |dumps| {
@@ -1140,7 +1154,7 @@ fn run_4os2_script(vio: Option<&str>, dumps: &[&str], script: impl FnOnce(&[std:
         cmd.env("WARPINE_VIO", vio);
     }
     let status = cmd.status().expect("run script");
-    assert!(status.success(), "4OS2 session failed: {status}");
+    assert_session_closed(status, "4OS2");
     Some(paths.iter().map(|path| {
         let ppm = std::fs::read(path).unwrap_or_else(|_| panic!("no dump {} was written", path.display()));
         parse_ppm(&ppm)
@@ -1192,7 +1206,7 @@ fn run_mou_session(vio: Option<&str>, origin: (i32, i32)) -> Option<String> {
         cmd.env("WARPINE_VIO", vio);
     }
     let status = cmd.status().expect("run script");
-    assert!(status.success(), "mou_test session failed: {status}");
+    assert_session_closed(status, "mou_test");
     let drive_c = dir.path().join("warpine/drive_c");
     let file = std::fs::read_dir(&drive_c).expect("no C: drive").flatten()
         .find(|e| e.file_name().to_string_lossy().eq_ignore_ascii_case("MOU_TEST.OUT"))
@@ -1348,7 +1362,7 @@ fn run_4os2_windowed_with(steps: &str, dumps: usize, files: &[&str]) -> Option<W
         .stdout(Stdio::null())
         .status()
         .expect("run script");
-    assert!(status.success(), "4OS2 session failed: {status}");
+    assert_session_closed(status, "4OS2");
     let shots = paths.iter().map(|p| {
         parse_ppm(&std::fs::read(p).unwrap_or_else(|e| panic!("no screen dump {}: {e}", p.display())))
     }).collect();
