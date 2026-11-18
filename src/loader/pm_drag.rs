@@ -717,6 +717,8 @@ impl Loader {
             // Chains are keyed by vCPU, as WinSendMsg's are.
             wm.drag.session = Some(DragSession { source, pdinfo, button, target: 0, reply: DOR_NODROP, never: false,
                                                  pointer: 0, tid: vcpu, awaiting: false });
+            // The drag loop takes the pointer from here on.
+            wm.drop_pointer_input();
         }
         if self.guest_read::<u32>(pdinfo + DI_HWND_SOURCE) == Some(0) {
             let _ = self.guest_write::<u32>(pdinfo + DI_HWND_SOURCE, source);

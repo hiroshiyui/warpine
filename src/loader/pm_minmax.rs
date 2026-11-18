@@ -311,6 +311,16 @@ impl WindowManager {
         Some(next)
     }
 
+    /// The desktop server made `new_active`, another program's frame, the
+    /// active window (ADR-0052): `frame`, active here until now, is not —
+    /// `WM_ACTIVATE` FALSE to it, and its title bar drawn inactive.
+    pub fn deactivate_frame(&mut self, frame: u32, new_active: u32) {
+        if self.focused_hwnd != frame || frame == 0 { return; }
+        self.focused_hwnd = 0;
+        self.post_msg(self.frame_msg_target(frame), WM_ACTIVATE, 0, new_active);
+        self.mark_dirty(frame);
+    }
+
     /// Hide `frame` (`WM_SYSCOMMAND(SC_HIDE)`, its hide button): the frames
     /// it owns are hidden with it and, if it was the active window, another
     /// frame becomes active. Returns whether it was visible.

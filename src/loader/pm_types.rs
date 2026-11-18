@@ -541,6 +541,24 @@ pub fn menu_bar_item_width(text: &str) -> i32 {
     text_width(&menu_label(text), FontSpec::SYSTEM) + MENU_BAR_ITEM_PAD
 }
 
+/// Bits of a window handle above the local number: the desktop slot plus
+/// one (ADR-0052). Handles without a slot (no desktop server) have none.
+pub const HWND_SLOT_SHIFT: u32 = 20;
+/// The local part of a window handle.
+pub const HWND_LOCAL_MASK: u32 = (1 << HWND_SLOT_SHIFT) - 1;
+/// The first local window number (below it: `HWND_DESKTOP`, `HWND_OBJECT` …).
+pub const FIRST_LOCAL_HWND: u32 = 0x1000;
+/// Desktop slots, so that handles stay below `0x4000_0000`.
+pub const MAX_HANDLE_SLOTS: u32 = 1023;
+
+/// Most frames remembered as raised between two composites.
+const MAX_RAISED_FRAMES: usize = 64;
+
+/// Whether window handle `hwnd` belongs to desktop slot `slot`.
+pub fn handle_in_slot(hwnd: u32, slot: u32) -> bool {
+    hwnd >> HWND_SLOT_SHIFT == slot + 1
+}
+
 pub struct WindowManager {
     classes: HashMap<String, WindowClass>,
     windows: HashMap<u32, OS2Window>,
@@ -613,6 +631,16 @@ pub struct WindowManager {
     /// The system input queue: keyboard and pointer input not yet read by
     /// any thread (`pm_input.rs`).
     pub(super) input: super::pm_input::InputQueue,
+    /// Frames brought to the top since the renderer last looked, for the
+    /// desktop server (ADR-0052).
+    pub raised_frames: Vec<u32>,
+    /// While the GUI thread handles an event from the desktop server: its
+    /// token, given to the input events it queues (ADR-0052).
+    pub input_tag: Option<u64>,
+    /// An input event took `input_tag`.
+    pub input_tag_used: bool,
+    /// Acknowledges the desktop server's input once read (`None`: no server).
+    pub input_ack: Option<super::pm_input::InputAck>,
     /// Windows that have been sent `WM_DESTROY` and are waiting to be
     /// removed (`pm_destroy.rs`).
     pub(super) destroying: HashSet<u32>,
@@ -721,6 +749,10 @@ impl WindowManager {
             next_hbm: 0x7000,
             next_hdc: 0x6000,
             input: Default::default(),
+            input_tag: None,
+            raised_frames: Vec::new(),
+            input_tag_used: false,
+            input_ack: None,
             destroying: HashSet::new(),
             hidden_with_owner: HashMap::new(),
             vio_frame: 0,
@@ -801,8 +833,32 @@ impl WindowManager {
             && let Some(parent_win) = self.windows.get_mut(&parent) {
                 parent_win.children.push(h);
         }
-        self.next_hwnd += 1;
+        self.next_hwnd = self.following_hwnd(h);
         h
+    }
+
+    /// Give this process's window handles the prefix of desktop slot `slot`
+    /// (ADR-0052): `(slot + 1) << HWND_SLOT_SHIFT` plus a local number, so
+    /// handles are unique across the processes of a session. Only before
+    /// the first window.
+    pub fn set_handle_slot(&mut self, slot: u32) {
+        if self.windows.is_empty() && slot < MAX_HANDLE_SLOTS {
+            self.next_hwnd = ((slot + 1) << HWND_SLOT_SHIFT) | FIRST_LOCAL_HWND;
+        }
+    }
+
+    /// The handle after `h` within its slot's range, skipping handles in
+    /// use; the local numbers start over after the last one.
+    fn following_hwnd(&self, h: u32) -> u32 {
+        let base = h & !HWND_LOCAL_MASK;
+        let mut local = h & HWND_LOCAL_MASK;
+        for _ in 0..=HWND_LOCAL_MASK {
+            local = if local >= HWND_LOCAL_MASK { FIRST_LOCAL_HWND } else { local + 1 };
+            if !self.windows.contains_key(&(base | local)) {
+                return base | local;
+            }
+        }
+        h.wrapping_add(1)
     }
     pub fn get_window(&self, h: u32) -> Option<&OS2Window> {
         self.windows.get(&h)
@@ -1720,6 +1776,11 @@ impl WindowManager {
             self.z_order.retain(|&h| h != frame_hwnd);
             self.z_order.push(frame_hwnd);
         }
+        // The desktop server raises it over other programs' frames too.
+        if self.raised_frames.last() != Some(&frame_hwnd) {
+            if self.raised_frames.len() >= MAX_RAISED_FRAMES { self.raised_frames.remove(0); }
+            self.raised_frames.push(frame_hwnd);
+        }
         self.mark_all_dirty();
     }
 
@@ -1980,7 +2041,7 @@ mod tests {
         assert!(stop.is_stopped() && stop.sleep(Duration::from_secs(60)), "stays stopped");
     }
 
-    use super::WindowManager;
+    use super::{WindowManager, HWND_SLOT_SHIFT, HWND_LOCAL_MASK, FIRST_LOCAL_HWND, handle_in_slot};
 
     fn make_frame(wm: &mut WindowManager) -> u32 {
         let h_frame = wm.create_window("TestFrame".to_string(), 0, 0);
@@ -2343,6 +2404,24 @@ mod tests {
         // f2 gone; focus falls back to new top (f1).
         assert_eq!(wm.focused_hwnd, f1);
         assert!(!wm.z_order.contains(&f2));
+    }
+
+    #[test]
+    fn window_handles_carry_the_desktop_slot_and_stay_in_its_range() {
+        let mut wm = WindowManager::new();
+        wm.set_handle_slot(2);
+        let a = wm.create_window("X".into(), 0, 0);
+        assert_eq!(a, 3 << HWND_SLOT_SHIFT | FIRST_LOCAL_HWND);
+        assert!(handle_in_slot(a, 2) && !handle_in_slot(a, 1));
+        // Too late once windows exist.
+        wm.set_handle_slot(5);
+        assert!(handle_in_slot(wm.create_window("X".into(), 0, 0), 2));
+        // The last local number wraps to the first free one.
+        wm.next_hwnd = 3 << HWND_SLOT_SHIFT | HWND_LOCAL_MASK;
+        let last = wm.create_window("X".into(), 0, 0);
+        assert_eq!(last & HWND_LOCAL_MASK, HWND_LOCAL_MASK);
+        let next = wm.create_window("X".into(), 0, 0);
+        assert_eq!(next, 3 << HWND_SLOT_SHIFT | (FIRST_LOCAL_HWND + 2), "a and the second window hold the first two");
     }
 
     #[test]

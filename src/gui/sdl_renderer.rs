@@ -35,7 +35,7 @@ use std::time::{Duration, Instant};
 use super::damage::{Damage, Rect, blit_clipped, fill_clipped};
 use super::cursor::CursorMark;
 
-mod compositor;
+pub(crate) mod compositor;
 use compositor::{Compositor, CompositorKind, Overlay, Scene, SceneFrame};
 use super::frame_stats::FrameStats;
 use super::message::{GUIMessage, GuiWake};
@@ -769,11 +769,9 @@ struct DragPress {
 }
 
 pub struct SdlRenderer {
-    video:       sdl3::VideoSubsystem,
-    event:       sdl3::EventSubsystem,
-    event_pump:  sdl3::EventPump,
-    /// The desktop window and how frames are put on it.
-    desktop:     Box<dyn Compositor>,
+    /// Where the desktop is shown: a window of this process, or the
+    /// session's desktop server (ADR-0052).
+    host: Host,
     /// Frame → pre-rendered title bar, menu bar and pull-down.
     chrome: HashMap<u32, ChromeCache>,
     /// Frame → desktop area it covered at the last composite; what must be
@@ -791,10 +789,6 @@ pub struct SdlRenderer {
     /// false if the video driver cannot block (see `driver_can_wait`) or
     /// the event type could not be registered.
     native_wait: bool,
-    /// Mouse capture during drags (`SetMouseCapture`).
-    mouse: sdl3::mouse::MouseUtil,
-    /// The host cursor showing the PM pointer (`SetPointer`).
-    pointer: super::pointer::HostPointer,
     /// A VIO program's text screen in a frame on the desktop (a windowed
     /// VIO session, `vio_window.rs`); `None` for PM programs.
     vio: Option<super::vio_window::VioWindow>,
@@ -842,6 +836,10 @@ pub struct SdlRenderer {
     last_composite: Instant,
     /// Scripted session replayed against the desktop (`WARPINE_GUI_SCRIPT`).
     script: Option<GuiScript>,
+    /// A scripted session runs, here or in the desktop server: no caret
+    /// blink, drag-scroll timer or pointer warps, which would depend on
+    /// timing or the host pointer.
+    scripted: bool,
     /// When the caret of the focused text control blinks next; `None` in a
     /// scripted session, whose captures must not depend on the blink phase.
     caret_next: Option<Instant>,
@@ -851,6 +849,27 @@ pub struct SdlRenderer {
     /// The host text-input area last given to SDL (`SDL_SetTextInputArea`):
     /// screen rectangle and caret offset.
     ime_area: Option<((i32, i32, i32, i32), i32)>,
+}
+
+/// Where an [`SdlRenderer`] shows the desktop.
+enum Host {
+    /// An SDL window of this process.
+    Local(Box<LocalHost>),
+    /// The session's desktop server (ADR-0052).
+    Remote(Box<compositor::RemoteDesktop>),
+}
+
+/// The SDL side of a desktop in this process's own window.
+struct LocalHost {
+    video:       sdl3::VideoSubsystem,
+    event:       sdl3::EventSubsystem,
+    event_pump:  sdl3::EventPump,
+    /// The desktop window and how frames are put on it.
+    desktop:     Box<dyn Compositor>,
+    /// Mouse capture during drags (`SetMouseCapture`).
+    mouse: sdl3::mouse::MouseUtil,
+    /// The host cursor showing the PM pointer (`SetPointer`).
+    pointer: super::pointer::HostPointer,
 }
 
 /// The desktop window and its compositor while a VIO session is full screen
@@ -905,9 +924,11 @@ impl SdlRenderer {
     /// Hide the desktop and leave its window, audio output and GUI script in
     /// `parked` for the next display of a VIO session (Alt+Home).
     pub fn park(self, parked: &mut super::vio_switch::Parked) {
-        let SdlRenderer { desktop, audio, script, .. } = self;
-        desktop.window().clone().hide();
-        parked.desktop = Some(ParkedDesktop(desktop));
+        let SdlRenderer { host, audio, script, .. } = self;
+        if let Host::Local(l) = host {
+            l.desktop.window().clone().hide();
+            parked.desktop = Some(ParkedDesktop(l.desktop));
+        }
         parked.audio = Some(audio);
         parked.script = Some(script);
     }
@@ -927,7 +948,7 @@ impl SdlRenderer {
     /// the keyboard (`keyboard`: the first item is highlighted) or a click.
     fn open_vio_menu(&mut self, shared: &SharedState, keyboard: bool) {
         let Some(vio) = &self.vio else { return };
-        let (dw, dh) = self.desktop.size();
+        let (dw, dh) = self.desktop_size();
         let (items, x, top) = {
             let wm = shared.window_mgr.lock_or_recover();
             let Some(f) = wm.get_window(vio.frame()) else { return };
@@ -955,7 +976,7 @@ impl SdlRenderer {
         if self.vio.as_ref().is_some_and(|v| v.frame() == frame) {
             return self.open_vio_menu(shared, keyboard);
         }
-        let (dw, dh) = self.desktop.size();
+        let (dw, dh) = self.desktop_size();
         let (items, x, top) = {
             let wm = shared.window_mgr.lock_or_recover();
             let Some(f) = wm.get_window(frame).filter(|f| f.visible && f.frame_flags & FCF_SYSMENU != 0)
@@ -972,7 +993,7 @@ impl SdlRenderer {
     /// corner at `(x, y)`, or with item `item`'s row there
     /// (`PU_POSITIONONITEM`), kept on the desktop.
     fn open_popup_request(&mut self, req: super::message::PopupRequest) {
-        let (dw, dh) = self.desktop.size();
+        let (dw, dh) = self.desktop_size();
         let (dw, dh) = (dw as i32, dh as i32);
         let items = menu_popup_items(&req.items);
         let styles = req.items.iter().map(|m| (m.id as u32, m.style)).collect();
@@ -1113,7 +1134,7 @@ impl SdlRenderer {
             return Some(self.popup_action(shared, action, true));
         }
         self.close_popup();
-        let dh = self.desktop.size().1 as i32;
+        let dh = self.desktop_size().1 as i32;
         let on_icon = {
             let wm = shared.window_mgr.lock_or_recover();
             wm.z_hit_test(x, dh - 1 - y).and_then(|h| wm.get_window(h)).is_some_and(|f| {
@@ -1172,7 +1193,7 @@ impl SdlRenderer {
             // A guest CF_TEXT handle no longer holds the clipboard text.
             wm.clipboard.insert(CF_TEXT, 0);
         }
-        if let Err(e) = self.video.clipboard().set_clipboard_text(&text) {
+        if let Err(e) = self.set_host_clipboard(&text) {
             log::warn!("[GUI] cannot set the host clipboard: {e}");
         }
         self.cached_clipboard = text;
@@ -1280,21 +1301,39 @@ impl SdlRenderer {
             && *WAKE_EVENT_REGISTERED.get_or_init(|| event.register_custom_event::<WakeEvent>()
                 .map_err(|e| log::warn!("[GUI] no SDL user event for wake-ups ({e})"))
                 .is_ok());
+        let script = parked.take_script().inspect(|_| {
+            log::info!("[GUI] GUI script active: host mouse and keyboard input is ignored");
+        });
+        let scripted = script.is_some();
+        let host = Host::Local(Box::new(LocalHost {
+            video, event, event_pump, desktop, mouse: sdl.mouse(), pointer: super::pointer::HostPointer::new(sdl.mouse()),
+        }));
+        Self::with_host(sdl, audio, parked, host, native_wait, script, scripted)
+    }
+
+    /// Show the desktop through the session's desktop server (ADR-0052)
+    /// over `link`: this process's frames become pictures the server
+    /// composites with those of the session's other programs, and input
+    /// comes from the server.
+    pub fn new_remote(sdl: &sdl3::Sdl, audio: &super::audio::AudioService,
+                      link: Arc<crate::desktop::client::DesktopLink>) -> Self {
+        let host = Host::Remote(Box::new(compositor::RemoteDesktop::new(link)));
+        let scripted = std::env::var_os(gui_script::SCRIPT_ENV).is_some();
+        Self::with_host(sdl, audio, &mut super::vio_switch::Parked::default(), host, false, None, scripted)
+    }
+
+    fn with_host(sdl: &sdl3::Sdl, audio: &super::audio::AudioService, parked: &mut super::vio_switch::Parked,
+                 host: Host, native_wait: bool, script: Option<GuiScript>, scripted: bool) -> Self {
         let now = Instant::now();
         let wake_slot: Arc<std::sync::OnceLock<Arc<GuiWake>>> = Arc::default();
         let mut renderer = SdlRenderer {
-            video,
-            event,
-            event_pump,
-            desktop,
+            host,
             chrome: HashMap::new(),
             placed: HashMap::new(),
             force_full: true,
             cached_clipboard: String::new(),
             clipboard_synced: false,
             native_wait,
-            mouse: sdl.mouse(),
-            pointer: super::pointer::HostPointer::new(sdl.mouse()),
             audio: {
                 let mut a = parked.take_audio(sdl);
                 let slot = wake_slot.clone();
@@ -1313,9 +1352,8 @@ impl SdlRenderer {
             key_mods: 0,
             // Long enough ago that the first frame is composited at once.
             last_composite: now.checked_sub(FRAME_INTERVAL).unwrap_or(now),
-            script: parked.take_script().inspect(|_| {
-                log::info!("[GUI] GUI script active: host mouse and keyboard input is ignored");
-            }),
+            script,
+            scripted,
             caret_next: None,
             drag_scroll_next: None,
             vio: None,
@@ -1329,10 +1367,98 @@ impl SdlRenderer {
             swallow_release: false,
             ime_area: None,
         };
-        if renderer.script.is_none() {
+        if !renderer.scripted {
             renderer.caret_next = Some(now + CARET_BLINK);
         }
         renderer
+    }
+
+    /// The desktop's size in pels.
+    fn desktop_size(&self) -> (u32, u32) {
+        match &self.host {
+            Host::Local(l) => l.desktop.size(),
+            Host::Remote(r) => r.size(),
+        }
+    }
+
+    /// The host window (or the server's) shows the desktop at `w × h` now.
+    fn resize_desktop(&mut self, w: u32, h: u32) {
+        match &mut self.host {
+            Host::Local(l) => l.desktop.resize(w, h),
+            Host::Remote(r) => r.resize(w, h),
+        }
+    }
+
+    /// Whether SDL window `id` is this process's desktop window.
+    fn is_desktop_window(&self, id: u32) -> bool {
+        matches!(&self.host, Host::Local(l) if l.desktop.window().id() == id)
+    }
+
+    /// Put `text` on the host clipboard (through the server, if any).
+    fn set_host_clipboard(&mut self, text: &str) -> Result<(), String> {
+        match &self.host {
+            Host::Local(l) => l.video.clipboard().set_clipboard_text(text).map_err(|e| e.to_string()),
+            Host::Remote(r) => {
+                r.link().send(&crate::desktop::proto::ClientMsg::Clipboard(text.to_string()), None);
+                Ok(())
+            }
+        }
+    }
+
+    /// The host clipboard's text (as the server last reported it, if any).
+    fn host_clipboard(&self) -> Option<String> {
+        match &self.host {
+            Host::Local(l) => l.video.clipboard().clipboard_text().ok(),
+            Host::Remote(r) => Some(r.clipboard.clone()),
+        }
+    }
+
+    /// Handle what the desktop server sent (ADR-0052). Input is handled like
+    /// this window's own; the server hears that an event was taken once the
+    /// program reads what it queued (`pm_input.rs`), or at once if nothing
+    /// was queued. Returns false when the session must end (`Quit`, or the
+    /// server is gone).
+    fn pump_remote(&mut self, shared: &Arc<SharedState>) -> bool {
+        use crate::desktop::proto::{ClientMsg, ServerMsg};
+        let Host::Remote(r) = &self.host else { return true };
+        let link = r.link().clone();
+        for msg in link.take() {
+            match msg {
+                ServerMsg::Input { token, input } => {
+                    {
+                        let mut wm = shared.window_mgr.lock_or_recover();
+                        wm.input_tag = Some(token);
+                        wm.input_tag_used = false;
+                    }
+                    let go_on = self.handle_sdl_event(super::desktop_events::to_event(&input), shared);
+                    let mut wm = shared.window_mgr.lock_or_recover();
+                    wm.input_tag = None;
+                    if !std::mem::take(&mut wm.input_tag_used) {
+                        wm.ack_input(token);
+                    }
+                    drop(wm);
+                    if !go_on { return false; }
+                }
+                ServerMsg::Deactivate { frame, new_active } => {
+                    shared.window_mgr.lock_or_recover().deactivate_frame(frame, new_active);
+                }
+                ServerMsg::Resized { width, height } => {
+                    self.resize_desktop(width, height);
+                    self.force_full = true;
+                }
+                ServerMsg::Clipboard(text) => {
+                    if let Host::Remote(r) = &mut self.host { r.clipboard = text; }
+                    self.sync_host_clipboard(shared);
+                }
+                ServerMsg::Flush { token } => {
+                    self.composite_and_present(shared);
+                    link.send(&ClientMsg::FlushDone { token }, None);
+                }
+                ServerMsg::Quit => return false,
+                ServerMsg::Welcome { .. } => {}
+            }
+        }
+        !link.lost()
     }
 
     /// Copy the host clipboard into `SharedState` so `WinQueryClipbrdData`
@@ -1342,7 +1468,7 @@ impl SdlRenderer {
     /// trip to the display server.
     fn sync_host_clipboard(&mut self, shared: &Arc<SharedState>) {
         self.clipboard_synced = true;
-        if let Ok(host_text) = self.video.clipboard().clipboard_text()
+        if let Some(host_text) = self.host_clipboard()
             && host_text != self.cached_clipboard {
                 self.cached_clipboard = host_text.clone();
                 let mut wm = shared.window_mgr.lock_or_recover();
@@ -1366,7 +1492,7 @@ impl SdlRenderer {
     /// frame buffer below the title bar and menu bar (VDR-C1, C2, E3).
     fn composite_and_present(&mut self, shared: &Arc<SharedState>) {
         let started = Instant::now();
-        let (dw, dh) = self.desktop.size();
+        let (dw, dh) = self.desktop_size();
         let (dw, dh) = (dw as i32, dh as i32);
         let mut damage = Damage::new(dw, dh);
 
@@ -1377,6 +1503,7 @@ impl SdlRenderer {
         let mut dirty_frames: HashSet<u32> = HashSet::new();
         let mut chrome_changed: HashSet<u32> = HashSet::new();
         let mut cursor_marks: HashMap<u32, CursorMark> = HashMap::new();
+        let (active, raised): (u32, Vec<u32>);
         let snaps: Vec<Snap> = {
             let mut wm = shared.window_mgr.lock_or_recover();
             if wm.dirty.is_empty() && !self.force_full && !self.overlay_changed {
@@ -1395,6 +1522,8 @@ impl SdlRenderer {
                 }
             }
             let focused = wm.focused_hwnd;
+            active = focused;
+            raised = std::mem::take(&mut wm.raised_frames);
             let title_colors = TitleColors::of(&wm.sys_colors);
             let chrome = &mut self.chrome;
             wm.z_order.iter().filter_map(|&hwnd| {
@@ -1479,9 +1608,14 @@ impl SdlRenderer {
         let overlay = self.popup.as_mut().map(|p| Overlay {
             rect: overlay_rect, pixels: p.pixels(), generation: self.overlay_generation,
         });
-        let present = self.desktop.compose(&Scene {
-            frames, damage: &damage, chrome_changed: &chrome_changed, full, overlay,
-        });
+        let scene = Scene { frames, damage: &damage, chrome_changed: &chrome_changed, full, overlay };
+        let present = match &mut self.host {
+            Host::Local(l) => l.desktop.compose(&scene),
+            Host::Remote(r) => {
+                r.compose(&scene, active, raised);
+                Duration::ZERO
+            }
+        };
         self.cursor_marks = cursor_marks;
         let finished = Instant::now();
         let damaged: i64 = damage.rects().iter().map(|r| r.width() as i64 * r.height() as i64).sum();
@@ -1494,7 +1628,7 @@ impl SdlRenderer {
     /// Returns `false` when the loop should return: the application exits,
     /// or (Alt+Home) a VIO session switches to full screen.
     fn handle_sdl_event(&mut self, event: Event, shared: &Arc<SharedState>) -> bool {
-        let dh = self.desktop.size().1;
+        let dh = self.desktop_size().1;
         // The physical keyboard and the pointer position, whoever gets the
         // input (WinGetPhysKeyState, WinQueryPointerPos).
         track_physical_input(shared, &event, dh as i32);
@@ -1518,7 +1652,7 @@ impl SdlRenderer {
             // Events of another SDL window — the full-screen text display of
             // a VIO session, still queued after Alt+Home — are not the
             // desktop's: its size change must not resize the desktop.
-            Event::Window { window_id, .. } if window_id != self.desktop.window().id() => {}
+            Event::Window { window_id, .. } if !self.is_desktop_window(window_id) => {}
             Event::Window { win_event, .. } => {
                 use sdl3::event::WindowEvent;
                 match win_event {
@@ -1529,7 +1663,7 @@ impl SdlRenderer {
                         // keep their size and position, as on an OS/2
                         // desktop. (Positions count from the bottom edge, so
                         // a change of height moves them on the screen.)
-                        self.desktop.resize(w, h);
+                        self.resize_desktop(w, h);
                         self.force_full = true;
                     }
                     WindowEvent::Exposed => {
@@ -1913,21 +2047,36 @@ impl PmRenderer for SdlRenderer {
                 self.open_popup_request(req);
             }
             GUIMessage::SetClipboardText(text) => {
-                let _ = self.video.clipboard().set_clipboard_text(&text);
+                let _ = self.set_host_clipboard(&text);
                 self.cached_clipboard = text;
             }
             GUIMessage::SetMouseCapture(hwnd) => {
                 // hwnd == 0 releases capture; any other value acquires it.
-                self.mouse.capture(hwnd != 0);
+                match &self.host {
+                    Host::Local(l) => l.mouse.capture(hwnd != 0),
+                    Host::Remote(r) => {
+                        r.link().send(&crate::desktop::proto::ClientMsg::Capture(hwnd != 0), None);
+                    }
+                }
             }
-            GUIMessage::SetPointer(shape) => self.pointer.apply(shape),
+            GUIMessage::SetPointer(shape) => match &mut self.host {
+                Host::Local(l) => l.pointer.apply(shape),
+                Host::Remote(r) => {
+                    r.link().send(&crate::desktop::proto::ClientMsg::Pointer(remote_pointer(shape)), None);
+                }
+            },
             GUIMessage::SetPointerPos { x, y } => {
                 // A scripted session does not follow the host pointer, so
                 // it does not move it either (WinSetPointerPos has already
                 // set the PM pointer position).
-                if self.script.is_none() {
-                    let dh = self.desktop.size().1 as i32;
-                    self.mouse.warp_mouse_in_window(self.desktop.window(), x as f32, (dh - 1 - y) as f32);
+                if !self.scripted {
+                    let dh = self.desktop_size().1 as i32;
+                    match &self.host {
+                        Host::Local(l) => l.mouse.warp_mouse_in_window(l.desktop.window(), x as f32, (dh - 1 - y) as f32),
+                        Host::Remote(r) => {
+                            r.link().send(&crate::desktop::proto::ClientMsg::WarpPointer { x, y: dh - 1 - y }, None);
+                        }
+                    }
                 }
             }
         }
@@ -1951,9 +2100,17 @@ impl PmRenderer for SdlRenderer {
         // or what is typed: a stray motion event during a scripted drag
         // would move the window off the scripted path. Its input is added
         // below, after this filter.
+        // The desktop server's input and messages.
+        if !self.pump_remote(shared) {
+            return false;
+        }
         let scripted_session = self.script.is_some();
+        let host_events: Vec<Event> = match &mut self.host {
+            Host::Local(l) => l.event_pump.poll_iter().collect(),
+            Host::Remote(_) => Vec::new(),
+        };
         let mut events: Vec<_> = self.pending_events.drain(..)
-            .chain(self.event_pump.poll_iter())
+            .chain(host_events)
             .filter(|e| !is_wake_event(e) && !(scripted_session && is_host_input(e)))
             .collect();
 
@@ -1973,7 +2130,8 @@ impl PmRenderer for SdlRenderer {
                     // have not been composited yet.
                     shared.window_mgr.lock_or_recover().mark_all_dirty();
                     self.composite_and_present(shared);
-                    let (pixels, w, h) = self.desktop.snapshot();
+                    let Host::Local(l) = &mut self.host else { continue };
+                    let (pixels, w, h) = l.desktop.snapshot();
                     if let Err(e) = gui_script::write_ppm(&path, &pixels, w, h) {
                         eprintln!("warpine: cannot write {}: {e}", path.display());
                     }
@@ -2006,7 +2164,7 @@ impl PmRenderer for SdlRenderer {
         // Drag scroll: an entry field, MLE or list box held with the pointer
         // resting outside it keeps scrolling. Not in scripted sessions,
         // which must not depend on timing.
-        if self.script.is_none() {
+        if !self.scripted {
             let held = shared.window_mgr.lock_or_recover().pressed_control != 0;
             let (next, due) = drag_scroll_step(held, self.drag_scroll_next, Instant::now());
             self.drag_scroll_next = next;
@@ -2017,12 +2175,20 @@ impl PmRenderer for SdlRenderer {
 
         // Host input method: its window goes where the focused text
         // control's caret is.
-        let area = shared.window_mgr.lock_or_recover().text_input_area(self.desktop.size().1 as i32);
+        let area = shared.window_mgr.lock_or_recover().text_input_area(self.desktop_size().1 as i32);
         if area.is_some() && area != self.ime_area {
             self.ime_area = area;
             if let Some(((x, y, w, h), cursor)) = area {
-                let rect = sdl3::rect::Rect::new(x, y, w.max(1) as u32, h.max(1) as u32);
-                self.video.text_input().set_rect(self.desktop.window(), rect, cursor);
+                match &self.host {
+                    Host::Local(l) => {
+                        let rect = sdl3::rect::Rect::new(x, y, w.max(1) as u32, h.max(1) as u32);
+                        l.video.text_input().set_rect(l.desktop.window(), rect, cursor);
+                    }
+                    Host::Remote(r) => {
+                        let area = crate::desktop::proto::Area::new(x, y, w.max(1), h.max(1));
+                        r.link().send(&crate::desktop::proto::ClientMsg::TextArea { area, cursor }, None);
+                    }
+                }
             }
         }
 
@@ -2042,8 +2208,14 @@ impl PmRenderer for SdlRenderer {
     fn install_waker(&mut self, wake: Arc<GuiWake>) {
         self.wake = Some(wake.clone());
         let _ = self.wake_slot.set(wake.clone());
+        if let Host::Remote(r) = &self.host {
+            // The server's messages wake the loop too.
+            let w = wake.clone();
+            r.link().set_waker(Box::new(move || w.wake()));
+        }
         if !self.native_wait { return; }
-        let sender = self.event.event_sender();
+        let Host::Local(l) = &self.host else { return };
+        let sender = l.event.event_sender();
         wake.set_hook(Box::new(move || {
             // SDL_PushEvent is thread-safe. A failure (queue full, SDL shut
             // down) only costs latency: the loop still wakes by IDLE_WAIT.
@@ -2077,7 +2249,8 @@ impl PmRenderer for SdlRenderer {
             // Native wait: input and wake-ups (pushed as user events) both
             // end it.
             (true, _) => {
-                if let Some(event) = self.event_pump.wait_event_timeout(timeout.max(Duration::from_millis(1))) {
+                if let Host::Local(l) = &mut self.host
+                    && let Some(event) = l.event_pump.wait_event_timeout(timeout.max(Duration::from_millis(1))) {
                     self.pending_events.push(event);
                 }
             }
@@ -2086,6 +2259,22 @@ impl PmRenderer for SdlRenderer {
             (false, Some(wake)) => wake.wait(timeout),
             (false, None) => std::thread::sleep(timeout.min(super::renderer::POLL_PERIOD)),
         }
+    }
+}
+
+/// The protocol form of PM pointer `shape` for the desktop server; an image
+/// too large for the socket shows as the arrow.
+fn remote_pointer(shape: Option<super::pointer::PointerShape>) -> crate::desktop::proto::Pointer {
+    use crate::desktop::proto::{Pointer, MAX_POINTER_SIDE};
+    use super::pointer::PointerShape;
+    match shape {
+        None => Pointer::Hidden,
+        Some(PointerShape::System(p)) => Pointer::System(super::desktop_events::pointer_index(p)),
+        Some(PointerShape::Image(img)) if img.width <= MAX_POINTER_SIDE && img.height <= MAX_POINTER_SIDE
+            && img.rgba.len() == (img.width * img.height * 4) as usize => Pointer::Image {
+            width: img.width, height: img.height, hot_x: img.hot_x, hot_y: img.hot_y, rgba: img.rgba.clone(),
+        },
+        Some(PointerShape::Image(_)) => Pointer::System(0),
     }
 }
 
@@ -2131,7 +2320,7 @@ const NON_WAITING_DRIVERS: &[&str] = &["dummy", "offscreen"];
 
 /// Whether SDL's event wait can block on `driver` (as named by
 /// `SDL_GetCurrentVideoDriver`).
-fn driver_can_wait(driver: &str) -> bool {
+pub(crate) fn driver_can_wait(driver: &str) -> bool {
     !NON_WAITING_DRIVERS.iter().any(|d| d.eq_ignore_ascii_case(driver))
 }
 
@@ -2167,10 +2356,10 @@ fn set_frame_rect(wm: &mut WindowManager, frame: u32, r: WinRect) {
 
 /// The user event the wake hook pushes: zero-sized, so pushing it
 /// allocates nothing.
-struct WakeEvent;
+pub(crate) struct WakeEvent;
 
 /// Whether `event` is a [`WakeEvent`]. Warpine pushes no other user events.
-fn is_wake_event(event: &Event) -> bool {
+pub(crate) fn is_wake_event(event: &Event) -> bool {
     event.is_user_event() && event.as_user_event_type::<WakeEvent>().is_some()
 }
 

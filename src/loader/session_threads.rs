@@ -353,6 +353,10 @@ impl ThreadSession {
     pub fn threads(&self) -> u32 { self.threads }
     pub fn dir(&self) -> &SessionDir { &self.dir }
 
+    /// Whether the session directory is in use (not fallen back to counting
+    /// this process's threads only).
+    pub fn is_shared(&self) -> bool { !self.local_only && !self.left }
+
     fn is_alive(&self, who: Identity) -> bool {
         (self.start_time)(who.pid) == Some(who.start)
     }

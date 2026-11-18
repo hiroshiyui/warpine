@@ -204,8 +204,51 @@ impl WindowManager {
             return;
         }
         let pos = self.key_state.pointer;
-        self.input.push_back(QueuedInput { ev, time: super::stubs::ms_count(), pos });
+        // Input from the desktop server (ADR-0052) carries its token: the
+        // server waits for it to be read before routing the next event.
+        let token = self.input_tag;
+        if token.is_some() { self.input_tag_used = true; }
+        self.input.push_back(QueuedInput { ev, time: super::stubs::ms_count(), pos, token });
         self.wake_input_reader();
+    }
+
+    /// Remove the oldest input event. When it is the last one of a desktop
+    /// server event still waiting, the server hears that it was taken, with
+    /// this process's active frame now (ADR-0052).
+    fn pop_input(&mut self) {
+        let Some(gone) = self.input.pop_front() else { return };
+        if let Some(token) = gone.token
+            && !self.input.iter().any(|q| q.token == Some(token)) {
+            self.ack_input(token);
+        }
+    }
+
+    /// A drag starts (`DrgDrag`): its loop takes the pointer input from
+    /// here on, so pointer messages still waiting are not delivered (the
+    /// drag channel has them already). Keys stay. Desktop server events
+    /// whose input all went are acknowledged.
+    pub fn drop_pointer_input(&mut self) {
+        let is_pointer = |q: &QueuedInput| match q.ev {
+            InputEvent::Pointer { .. } => true,
+            InputEvent::Window { msg, .. } => msg == WM_MOUSEMOVE || (WM_BUTTON1DOWN..=WM_BUTTON3DBLCLK).contains(&msg),
+            _ => false,
+        };
+        let gone: Vec<u64> = self.input.iter().filter(|q| is_pointer(q)).filter_map(|q| q.token).collect();
+        self.input.retain(|q| !is_pointer(q));
+        let mut acked = Vec::new();
+        for token in gone {
+            if !acked.contains(&token) && !self.input.iter().any(|q| q.token == Some(token)) {
+                acked.push(token);
+                self.ack_input(token);
+            }
+        }
+    }
+
+    /// Tell the desktop server that its input event `token` was taken.
+    pub fn ack_input(&self, token: u64) {
+        if let Some(ack) = &self.input_ack {
+            ack(token, self.focused_hwnd);
+        }
     }
 
     /// Fix the target of every key still waiting to the window that would
@@ -239,7 +282,7 @@ impl WindowManager {
         loop {
             let head = self.resolve_input(self.input.front()?);
             match head {
-                Head::Drop => { self.input.pop_front(); }
+                Head::Drop => self.pop_input(),
                 Head::TakeUp { hmq: target } => {
                     if target != hmq {
                         self.wake_queue(target);
@@ -256,7 +299,7 @@ impl WindowManager {
                         return None;
                     }
                     if remove {
-                        self.input.pop_front();
+                        self.pop_input();
                         // WinGetKeyState answers as of the input read last.
                         self.key_state.read_input(&msg);
                         self.wake_input_reader();
@@ -341,7 +384,7 @@ impl WindowManager {
             let InputEvent::Pointer { msg, x, y, mp2 } = front.ev else { return };
             let target = self.pointer_target(msg, x, y);
             let Some(t) = target.filter(|t| self.input_queue_of(t.hwnd).is_some()) else {
-                self.input.pop_front();
+                self.pop_input();
                 continue;
             };
             if self.input_queue_of(t.hwnd) != Some(hmq) {
@@ -482,7 +525,13 @@ pub struct QueuedInput {
     pub ev: InputEvent,
     pub time: u32,
     pub pos: (i32, i32),
+    /// The desktop server's event this came from, acknowledged once read.
+    pub token: Option<u64>,
 }
+
+/// How a process acknowledges the desktop server's input: `(token, active
+/// frame)`. Called with the window manager locked.
+pub type InputAck = std::sync::Arc<dyn Fn(u64, u32) + Send + Sync>;
 
 /// The system input queue itself (a field of `WindowManager`).
 pub type InputQueue = VecDeque<QueuedInput>;
@@ -776,6 +825,56 @@ mod tests {
         wm.pin_pending_input();
         assert!(matches!(wm.input.front().map(|q| &q.ev), Some(InputEvent::Pointer { .. })));
         assert_eq!(take(&mut wm, q1).map(|m| m.0), Some(c1));
+    }
+
+    #[test]
+    fn server_input_is_acknowledged_when_its_last_event_is_taken() {
+        use std::sync::{Arc, Mutex};
+        let (mut wm, [q1, _], [f1, c1, ..], _) = placed_frames();
+        wm.focused_hwnd = f1;
+        let acks = Arc::new(Mutex::new(Vec::new()));
+        let sink = acks.clone();
+        wm.input_ack = Some(Arc::new(move |t, active| sink.lock().unwrap().push((t, active))));
+        // One server event giving two input events (as a key and its text).
+        wm.input_tag = Some(7);
+        wm.post_input(InputEvent::Key { mp1: 1, mp2: 0 });
+        wm.post_input(InputEvent::Char('a'));
+        wm.input_tag = None;
+        assert!(wm.input_tag_used);
+        assert_eq!(take(&mut wm, q1).map(|m| m.0), Some(c1));
+        assert!(acks.lock().unwrap().is_empty(), "one of its events still waits");
+        assert_eq!(take(&mut wm, q1).map(|m| m.0), Some(c1));
+        assert_eq!(*acks.lock().unwrap(), vec![(7, f1)]);
+        // Peeking does not acknowledge; a dropped event does.
+        wm.input_tag = Some(8);
+        wm.post_input(InputEvent::Key { mp1: 2, mp2: 0 });
+        wm.input_tag = Some(9);
+        wm.post_input(InputEvent::Pointer { msg: WM_MOUSEMOVE, x: 5000, y: 5000, mp2: 0 });
+        wm.input_tag = None;
+        assert!(wm.next_input(q1, false, |_| true).is_some());
+        assert_eq!(acks.lock().unwrap().len(), 1);
+        assert!(take(&mut wm, q1).is_some());
+        assert_eq!(take(&mut wm, q1), None, "the move over no window is dropped");
+        assert_eq!(acks.lock().unwrap()[1..], [(8, f1), (9, f1)]);
+    }
+
+    #[test]
+    fn a_drag_drops_waiting_pointer_input_but_keeps_keys() {
+        use std::sync::{Arc, Mutex};
+        let (mut wm, [q1, _], [_, c1, ..], _) = placed_frames();
+        let acks = Arc::new(Mutex::new(Vec::new()));
+        let sink = acks.clone();
+        wm.input_ack = Some(Arc::new(move |t, _| sink.lock().unwrap().push(t)));
+        wm.input_tag = Some(1);
+        pointer(&mut wm, WM_MOUSEMOVE, 100, 100);
+        wm.post_input(InputEvent::Window { hwnd: c1, msg: WM_BUTTON2DOWN, mp1: 0, mp2: 0 });
+        wm.input_tag = Some(2);
+        wm.post_input(InputEvent::Key { mp1: 5, mp2: 0 });
+        wm.input_tag = None;
+        wm.drop_pointer_input();
+        assert_eq!(*acks.lock().unwrap(), vec![1]);
+        assert_eq!(take(&mut wm, q1), Some((c1, WM_CHAR, 5, 0)));
+        assert_eq!(*acks.lock().unwrap(), vec![1, 2]);
     }
 
     #[test]

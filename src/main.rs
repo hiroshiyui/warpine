@@ -4,6 +4,7 @@ pub mod ne;
 pub mod loader;
 pub mod api;
 pub mod gui;
+pub mod desktop;
 
 use std::env;
 use std::sync::Arc;
@@ -94,6 +95,16 @@ fn main() {
         eprintln!("Usage: {} <os2_executable> [--gdb <port>]", args[0]);
         eprintln!("       {} --compat         Print API compatibility report", args[0]);
         std::process::exit(1);
+    }
+
+    // The session's desktop server (ADR-0052), started by the first PM
+    // process of a session: `warpine --desktop-server <session dir>`.
+    if args[1] == desktop::client::SERVER_SWITCH {
+        let Some(dir) = args.get(2) else {
+            eprintln!("{} needs the session directory", desktop::client::SERVER_SWITCH);
+            std::process::exit(1);
+        };
+        std::process::exit(gui::desktop_server::run(std::path::Path::new(dir)));
     }
 
     if args[1] == "--compat" {
@@ -234,6 +245,35 @@ fn run_ne(file_path: &str, args: &[&str]) -> ! {
         std::process::exit(1);
     }
     loader.setup_and_run_ne_cli(&ne_file)
+}
+
+/// Connect a PM program to the session's desktop server (ADR-0052),
+/// starting the server if none runs. Its window handles get the slot the
+/// server gives, and input the server sends is acknowledged as it is read.
+/// `None` keeps the desktop in this process: `WARPINE_DESKTOP=local`, no
+/// shared session directory, or no server could be reached.
+fn desktop_link(shared: &Arc<loader::SharedState>) -> Option<Arc<desktop::client::DesktopLink>> {
+    if !desktop::client::server_wanted() {
+        return None;
+    }
+    let dir = shared.thread_slots.lock_or_recover().session()
+        .filter(|s| s.is_shared())
+        .map(|s| s.dir().path().clone())?;
+    match desktop::client::DesktopLink::open(&dir) {
+        Ok(link) => {
+            let mut wm = shared.window_mgr.lock_or_recover();
+            wm.set_handle_slot(link.slot);
+            let l = link.clone();
+            wm.input_ack = Some(Arc::new(move |token, active| {
+                l.send(&desktop::proto::ClientMsg::Ack { token, active }, None);
+            }));
+            Some(link)
+        }
+        Err(e) => {
+            eprintln!("warpine: no desktop server ({e}); the desktop stays in this process");
+            None
+        }
+    }
 }
 
 /// Whether a VIO program runs headless (host terminal / plain output): when
@@ -423,8 +463,12 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>, args: &[&str]) {
         // Store the sender in the window manager
         shared.window_mgr.lock_or_recover().gui_tx = Some(gui_sender);
 
-        // The renderer (and its audio output) exists before the guest runs.
-        let mut renderer = gui::SdlRenderer::new(&sdl, &shared.audio);
+        // The renderer (and its audio output) exists before the guest runs:
+        // on the session's desktop server, else in a window of its own.
+        let mut renderer = match desktop_link(&shared) {
+            Some(link) => gui::SdlRenderer::new_remote(&sdl, &shared.audio, link),
+            None => gui::SdlRenderer::new(&sdl, &shared.audio),
+        };
 
         // Launch VCPU thread
         let loader = Arc::new(loader);

@@ -982,6 +982,7 @@ fn run_gui_script_env(sample: &str, script: &Path, capture: bool, env: &[(&str, 
     let mut child = Command::new(warpine())
         .arg(sample)
         .env_remove("WARPINE_COMPOSITOR")
+        .env_remove("WARPINE_DESKTOP")
         .env("XDG_DATA_HOME", data_home.path())
         // Named-pipe and thread-session directories go there too, never
         // into the user's own runtime directory.
@@ -1393,6 +1394,7 @@ fn run_4os2_windowed_with(steps: &str, dumps: usize, files: &[&str]) -> Option<W
         .env("XDG_RUNTIME_DIR", dir.path())
         .env_remove("WARPINE_VIO")
         .env_remove("WARPINE_COMPOSITOR")
+        .env_remove("WARPINE_DESKTOP")
         .env_remove("WARPINE_DESKTOP_W")
         .env_remove("WARPINE_DESKTOP_H")
         .stdout(Stdio::null())
@@ -2313,6 +2315,40 @@ fn gui_pm_inputorder_test_routes_clicks_when_they_are_read() {
     assert_scripted_checks_pass("samples/pm_inputorder_test/pm_inputorder_test.exe", "pm_inputorder_test", 3, steps);
 }
 
+/// pm_twoproc_test: two PM programs — a parent and the child it starts —
+/// on the one desktop of the session's desktop server (ADR-0052). Frame A
+/// (the parent, desktop x 40–340) and frame B (the child, x 400–700) at PM
+/// y 400–600 (script y 168–367). A click on A, then 'w' (A stays busy 2 s),
+/// 'x', a click on B and 'y': B gets the click and 'y' only after A has read
+/// 'x'. A click on A and 'z' take activation back; 'q' ends both.
+#[test]
+fn gui_pm_twoproc_test_shares_one_desktop_with_input_in_order() {
+    let steps = "3000 click 190 287\n3300 text w\n3500 text x\n3700 click 550 287\n3900 text y\n\
+                 6500 click 190 287\n6700 text z\n7300 text q\n15000 quit\n";
+    assert_scripted_checks_pass("samples/pm_twoproc_test/pm_twoproc_test.exe", "pm_twoproc_test", 6, steps);
+}
+
+/// pm_twoproc_test's desktop with both programs' frames: A active (its
+/// title bar navy), B inactive.
+#[test]
+fn gui_pm_twoproc_test_matches_golden() {
+    check_gui_golden("pm_twoproc_test", "samples/pm_twoproc_test/pm_twoproc_test.exe",
+        "3000 click 550 287\n3300 click 190 287\n4000 dump {dump}\n4100 quit\n");
+}
+
+/// The desktop kept in the process (`WARPINE_DESKTOP=local`, no desktop
+/// server) shows what the server shows: pm_minmax_test's golden picture and
+/// pm_inputorder_test's checks.
+#[test]
+fn gui_in_process_desktop_matches_the_server() {
+    let local: &[(&str, &str)] = &[("WARPINE_DESKTOP", "local")];
+    check_gui_golden_env("pm_minmax_test", "samples/pm_minmax_test/pm_minmax_test.exe",
+        "1500 dblclick 300 42\n2000 dblclick 300 8\n2500 key alt+f9\n3000 dump {dump}\n3100 quit\n", local);
+    let steps = "1500 text a\n1600 click 550 287\n1700 text b\n4500 click 550 287\n4600 text c\n14000 quit\n";
+    assert_scripted_checks_pass_env("samples/pm_inputorder_test/pm_inputorder_test.exe", "pm_inputorder_test", 3,
+                                    steps, local);
+}
+
 /// pm_minmax_test: frames are minimized, maximized and restored through
 /// WinSetWindowPos and WM_SYSCOMMAND (checked from the guest), then with
 /// the mouse and the system keys. Frame A is the default 640×480 frame at
@@ -2932,7 +2968,9 @@ fn gui_entry_field_selection_matches_golden() {
 // from: frames, chrome, an open pull-down, overlapping frames, moves and
 // resizes.
 
-const LAYERED: &[(&str, &str)] = &[("WARPINE_COMPOSITOR", "layered")];
+// The layered compositor draws only an in-process desktop: the desktop
+// server (ADR-0052) composites in software.
+const LAYERED: &[(&str, &str)] = &[("WARPINE_COMPOSITOR", "layered"), ("WARPINE_DESKTOP", "local")];
 
 #[test]
 fn gui_layered_compositor_matches_golden_fonts() {

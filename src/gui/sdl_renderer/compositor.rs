@@ -35,6 +35,9 @@ use crate::gui::surface::{MAX_SURFACE_DIM, SharedSurface};
 use crate::loader::MutexExt;
 use super::{ChromeCache, FramePlacement, DESKTOP_BG, MENU_DROPDOWN_W, draw_placed_frame};
 
+mod remote;
+pub(super) use remote::RemoteDesktop;
+
 /// Environment variable that picks the compositor (`software` or `layered`).
 pub(super) const COMPOSITOR_ENV: &str = "WARPINE_COMPOSITOR";
 
@@ -314,6 +317,65 @@ impl Compositor for SoftwareCompositor {
 
     fn snapshot(&mut self) -> (Vec<u32>, u32, u32) {
         (self.buffer.clone(), self.width, self.height)
+    }
+}
+
+// ── Desktop server ────────────────────────────────────────────────────────
+
+/// A picture a client of the desktop server shows (ADR-0052): its pixmap,
+/// where its top-left pel goes, and its painted parts (pixmap coordinates).
+pub(crate) struct Placed<'a> {
+    pub pixmap: &'a crate::desktop::pixmap::SharedPixmap,
+    pub x: i32,
+    pub y: i32,
+    pub parts: &'a [crate::desktop::proto::Area],
+}
+
+/// The desktop server's compositor: the software compositor's buffer,
+/// texture and window, filled from the clients' finished frame pictures
+/// instead of from surfaces and chrome. Its output is pel for pel what the
+/// software compositor draws in-process (the pictures are rendered by the
+/// same `draw_placed_frame`), so the golden-image tests hold either way.
+pub(crate) struct PixmapCompositor(SoftwareCompositor);
+
+impl PixmapCompositor {
+    pub fn new(video: &sdl3::VideoSubsystem, w: u32, h: u32) -> Self {
+        PixmapCompositor(SoftwareCompositor::new(desktop_window(video, w, h)))
+    }
+
+    pub fn window(&self) -> &Window { self.0.window() }
+    pub fn size(&self) -> (u32, u32) { self.0.size() }
+    pub fn resize(&mut self, w: u32, h: u32) { self.0.resize(w, h) }
+    pub fn snapshot(&mut self) -> (Vec<u32>, u32, u32) { self.0.snapshot() }
+
+    /// Redraw the `damage`d rectangles from `items` (back to front) and
+    /// present them.
+    pub fn compose(&mut self, items: &[Placed], damage: &Damage) {
+        let sw = &mut self.0;
+        let dw = sw.width as usize;
+        let mut row = Vec::new();
+        for &r in damage.rects() {
+            fill_clipped(&mut sw.buffer, dw, r, r, DESKTOP_BG);
+            for it in items {
+                let bounds = Rect::at(0, 0, it.pixmap.width() as i32, it.pixmap.height() as i32);
+                for part in it.parts {
+                    // The part, inside the pixmap, on the desktop, inside `r`.
+                    let src = Rect::at(part.x, part.y, part.w, part.h).intersect(&bounds);
+                    let dst = src.offset(it.x, it.y).intersect(&r)
+                        .intersect(&Rect::at(0, 0, sw.width as i32, sw.height as i32));
+                    if dst.is_empty() { continue; }
+                    let n = dst.width() as usize;
+                    row.resize(n, 0);
+                    for y in dst.y0..dst.y1 {
+                        if it.pixmap.read_row((dst.x0 - it.x) as i64, (y - it.y) as i64, &mut row) {
+                            let at = y as usize * dw + dst.x0 as usize;
+                            sw.buffer[at..at + n].copy_from_slice(&row);
+                        }
+                    }
+                }
+            }
+        }
+        sw.present(damage.rects());
     }
 }
 

@@ -31,6 +31,10 @@ id = "host"
 label = "Warpine host process (one per OS/2 process, ADR-0020)"
 
 [[zone]]
+id = "server"
+label = "Desktop server process (one per session, ADR-0052)"
+
+[[zone]]
 id = "os"
 label = "Host system"
 rank = "max"
@@ -189,7 +193,15 @@ modules = [
   "gui/surface.rs", "gui/region.rs", "gui/damage.rs", "gui/font.rs", "gui/glyph_transform.rs", "gui/message.rs", "gui/pointer.rs",
   "gui/cursor.rs", "gui/popup_menu.rs", "gui/system_menu.rs", "gui/frame_track.rs",
   "gui/frame_stats.rs", "gui/gui_script.rs", "gui/headless.rs", "gui/audio.rs",
+  "gui/sdl_renderer/compositor/remote.rs",
 ]
+
+[[layer]]
+id = "desklink"
+zone = "host"
+label = "Desktop link: frame pictures in sealed memfds, the desktop protocol and socket (ADR-0052)"
+modules = ["desktop/mod.rs", "desktop/client.rs", "desktop/proto.rs", "desktop/transport.rs",
+           "desktop/pixmap.rs", "gui/desktop_events.rs"]
 
 [[layer]]
 id = "textdisplay"
@@ -208,6 +220,12 @@ id = "tools"
 zone = "build"
 label = "Build tools: lx-link, gen_api, gen_arch, gen_compat (ADR-0006, ADR-0015, ADR-0021, ADR-0033)"
 modules = ["bin/lx_link.rs", "bin/gen_api.rs", "bin/gen_arch.rs", "bin/gen_compat.rs"]
+
+[[layer]]
+id = "deskserver"
+zone = "server"
+label = "Desktop server: one SDL desktop per session, stacking, activation and input in order across programs (ADR-0052)"
+modules = ["gui/desktop_server.rs", "desktop/model.rs"]
 
 # ── Host system ─────────────────────────────────────────────────────────────
 
@@ -396,3 +414,18 @@ to = "sdl"
 [[flow]]
 from = "debug"
 to = "gdb"
+
+[[flow]]
+from = "desktop"
+to = "desklink"
+label = "frame pictures, input acknowledgements"
+
+[[flow]]
+from = "desklink"
+to = "deskserver"
+label = "socket in the session directory"
+
+[[flow]]
+from = "deskserver"
+to = "sdl"
+label = "the session's desktop window and input"

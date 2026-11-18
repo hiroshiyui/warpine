@@ -17,6 +17,8 @@ pub mod surface;
 pub mod audio;
 pub mod headless;
 pub mod sdl_renderer;
+pub mod desktop_server;
+pub mod desktop_events;
 pub mod text_renderer;
 pub mod vio_window;
 pub mod vio_switch;
