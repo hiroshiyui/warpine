@@ -97,13 +97,13 @@ modules = ["loader/mod.rs", "loader/managers.rs", "loader/mutex_ext.rs", "loader
 [[layer]]
 id = "kernel"
 zone = "host"
-label = "Kernel APIs: DOSCALLS, QUECALLS, MSG, processes and WinStartApp (nesting limit, ADR-0028), CONFIG.SYS THREADS= session limit, IPC, named pipes (ADR-0022), timers, session clock and WARPINE.DLL 64-bit time (ADR-0039)"
+label = "Kernel APIs: DOSCALLS, QUECALLS, MSG, processes and WinStartApp (nesting limit, ADR-0028), CONFIG.SYS THREADS= session limit, IPC, named pipes (ADR-0022), timers, session clock and WARPINE.DLL 64-bit time (ADR-0039), 16-bit information segments (ADR-0040)"
 modules = [
   "loader/doscalls.rs", "loader/stubs.rs", "loader/process.rs", "loader/ipc.rs",
   "loader/dostimer.rs", "loader/modpath.rs", "loader/suballoc.rs", "loader/cmd.rs",
   "loader/npipe.rs", "loader/npipe_dir.rs", "loader/npipe_api.rs", "loader/npipe_sem.rs", "loader/inherit.rs", "loader/msgcalls.rs",
   "loader/pm_startapp.rs", "loader/config_sys.rs", "loader/session_threads.rs",
-  "loader/clock.rs", "loader/warpine_api.rs",
+  "loader/clock.rs", "loader/warpine_api.rs", "loader/infoseg.rs",
 ]
 
 [[layer]]
@@ -136,7 +136,7 @@ modules = [
 [[layer]]
 id = "pmwin"
 zone = "host"
-label = "PM window manager: PMWIN windows, messages, hooks (ADR-0026), input, painting, presentation parameters, atoms, DDE"
+label = "PM window manager: PMWIN windows, messages, hooks (ADR-0026), input, painting, presentation parameters, atoms, DDE, dialogs embedded in windows (ADR-0042)"
 modules = [
   "loader/pm_win.rs", "loader/pm_types.rs", "loader/pm_window.rs", "loader/pm_input.rs",
   "loader/pm_dialog.rs", "loader/pm_msgbox.rs", "loader/pm_destroy.rs", "loader/pm_error.rs",
@@ -150,11 +150,11 @@ modules = [
 [[layer]]
 id = "controls"
 zone = "host"
-label = "Built-in controls: statics, buttons, entry fields, MLE, list box, scroll bar, combo box, spin button, slider, value set, owner draw (ADR-0025)"
+label = "Built-in controls: statics, buttons, entry fields, MLE, list box, scroll bar, combo box, spin button, slider, value set, notebook, owner draw (ADR-0025)"
 modules = [
   "loader/pm_controls.rs", "loader/pm_button.rs", "loader/pm_list.rs", "loader/pm_edit.rs",
   "loader/pm_scrollbar.rs", "loader/pm_combo.rs", "loader/pm_spin.rs", "loader/pm_owner.rs",
-  "loader/pm_static.rs",
+  "loader/pm_static.rs", "loader/pm_notebook.rs",
   "loader/pm_slider.rs", "loader/pm_valueset.rs",
 ]
 

@@ -188,6 +188,10 @@ samples/               OS/2 sample applications and build scripts
   argv_test/           argc / argv / environment and session-unique process ids across children
   kill_test/           DosKillProcess, exit lists on kill, interrupted waits, Ctrl+C as a signal
   datetime_test/       Dates after 2038: session clock, DosSetDateTime, file times, WARPINE.DLL
+  infoseg_test/        DosGetInfoSeg global and local information segments, a running clock
+  fileattr_test/       FILE_READONLY by path, handle and DosSetFileMode; read-only files not deletable
+  pm_child_dialog_test/ A dialog embedded in a client window (WinLoadDlg with the client as parent)
+  pm_notebook_test/    WC_NOTEBOOK: pages, major / minor tabs, notifications, embedded page dialogs
   semfollow_test/      Semaphore and pipe-semaphore follow-ups, suballocation
   pm_frame_scroll_test/ Frame scroll bars with the mouse, client drawing inside the frame
   pm_charbundle_test/  GpiSetAttrs / GpiQueryAttrs character bundle
@@ -318,8 +322,8 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 1762 unit tests (no KVM required)
-cargo test --test integration     # 127 end-to-end tests (requires /dev/kvm)
+cargo test                        # 1776 unit tests (no KVM required)
+cargo test --test integration     # 133 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
 

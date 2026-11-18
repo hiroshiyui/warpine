@@ -335,7 +335,7 @@ Graphics Primitive Interface, 145 ordinals (see the reference manual for the lis
 
 ### Sockets (SO32DLL / TCP32DLL)
 
-`tcpip.rs` maps the BSD socket calls onto Linux sockets. OS/2's TCP/IP uses BSD numbering for socket options (toolkit `<sys/socket.h>`: `SOL_SOCKET` 0xFFFF, `SO_REUSEADDR` 4, `SO_TYPE` 0x1008, …), which `linux_sockopt` translates; only options whose value has the same layout on both sides (an `int`, `struct linger`) are mapped, others (`SO_SNDTIMEO` / `SO_RCVTIMEO`, a 32-bit `timeval` on OS/2) fail with `SOCENOPROTOOPT`. Every call passes Linux the length of the host buffer Warpine actually copied, never the guest's claimed length (`setsockopt` values are at most `MAX_SOCKOPT_LEN`). `select` cannot report a socket yet: sockets are numbered from 0xA000 while its `fd_set` translation covers handles 0–63, and the 32-bit `fd_set` layout is unsettled (doc/TODOs.md).
+`tcpip.rs` maps the BSD socket calls onto Linux sockets. OS/2's TCP/IP uses BSD numbering for socket options (toolkit `<sys/socket.h>`: `SOL_SOCKET` 0xFFFF, `SO_REUSEADDR` 4, `SO_TYPE` 0x1008, …), which `linux_sockopt` translates; only options whose value has the same layout on both sides (an `int`, `struct linger`) are mapped, others (`SO_SNDTIMEO` / `SO_RCVTIMEO`, a 32-bit `timeval` on OS/2) fail with `SOCENOPROTOOPT`. Every call passes Linux the length of the host buffer Warpine actually copied, never the guest's claimed length (`setsockopt` values are at most `MAX_SOCKOPT_LEN`). `select` reads the OS/2 TCP/IP count-and-array `fd_set` (Open Watcom `<types.h>`), so sockets numbered from 0xA000 fit; see "Socket select (ADR-0041)".
 
 ### Profiles (PMSHAPI, src/loader/profile.rs + pmshapi.rs)
 
@@ -1431,6 +1431,49 @@ Tests: `config_sys.rs` (parser, clamping, env override, reading through drive C)
   - `inherit.rs`: the offset passed to children;
   - `samples/datetime_test` and `test_dates_after_2038`, with `TZ=JST-9` and `WARPINE_CLOCK=2040-03-01T12:00:00`.
 
+### Information segments (ADR-0040)
+
+`infoseg.rs` serves `DosGetInfoSeg`:
+- **Layout:** pure builders, `build_ginfoseg` / `put_time` / `build_linfoseg`, with the layouts of the OS/2 1.x toolkit header.
+- **Placement:** the `GINFOSEG` sits at `GINFOSEG_ADDR` (0xA0000) and the `LINFOSEG` at `LINFOSEG_ADDR` (0xB0000), each at the start of its tile. `tile_selector` gives the data selector `DosFlatToSel` would.
+- **Refresher:** the first call starts one thread (`SharedState::infoseg_refresher`). It rewrites the time and date fields every `INFOSEG_REFRESH` (the 32 ms tick) from the session clock, leaves `cusecTimerInterval` untouched, and ends with the process.
+- **Entry points:** the NE dispatcher (Pascal order: `pLocal` at offset 0) and the registry entry both call `Loader::dos_get_info_seg(vcpu_id, pGlobal, pLocal)`.
+- **Tests:** `infoseg.rs` (layouts, selectors, refresh), and `samples/infoseg_test` with `test_info_segments`.
+
+### Socket select (ADR-0041)
+
+`tcpip.rs`:
+- **Layout:** `read_fd_list` / `write_fd_list` convert the OS/2 TCP/IP `fd_set`, a `u16` count plus padding and then 64 `i32` socket numbers (`OS2_FD_SET_BYTES` 260).
+- **Wait:** `select_sockets` maps each number to its host descriptor, polls them with `poll(2)` in `SELECT_POLL_SLICE` (100 ms) steps checking `interrupted()` / `shutting_down()`, and writes back each set's ready sockets in order. `select_ready` applies select(2)'s readiness rules.
+- **Tests:** `fd_lists_follow_the_os2_tcpip_layout`, `select_reports_ready_sockets_by_number`, `samples/socket_test`.
+
+### Embedded dialogs (ADR-0042)
+
+`pm_types.rs` separates a dialog on the desktop (`is_top_dialog`: a frame with its own surface, Z-order place and chrome) from one whose parent is a window (`is_embedded_dialog`):
+- **Frame and position:** `find_frame_for_hwnd`, `get_abs_rect_in_frame`, `control_root`, `is_frame` and `WindowManager::window_origin` treat an embedded dialog as an ordinary child, so it draws into the enclosing frame's surface at its place.
+- **Controls:** `builtin_control_descendants` still stops at every dialog (its controls paint with it, and Tab stays inside it). `hit_controls` adds the controls of visible embedded dialogs above the ones they cover, for `control_at`. `embedded_dialog_at` finds the dialog under a point for clicks on its own area (`route_button1`).
+- **Creation:** `create_dialog` places an embedded dialog relative to its parent and shows it only with `WS_VISIBLE`, without Z-order, activation or focus.
+- **Painting:** the dialog paints its face with a `Painter` on the enclosing frame, clipped to its rectangle. `WinEndPaint`, and a dialog's own paint, invalidate the dialogs embedded in the window so they paint over it again. A built-in `WM_PAINT` of a window in a hidden embedded dialog draws nothing (`in_hidden_embedded_dialog`: a page turned away).
+- **Tests:** `pm_dialog.rs` `a_dialog_in_a_client_is_embedded`, `pm_win.rs` `test_create_dialog_scales_dialog_units_to_pixels`, `samples/pm_child_dialog_test` with a golden picture.
+
+### Notebooks
+
+`pm_notebook.rs`:
+- **Model:** `NotebookState` (in `OS2Window::notebook`) is a pure page model: `insert`, `deletion` (`BKA_SINGLE` / `TAB` / `ALL`), `remove`, which moves the top page on, `query_id`, `count`, `tabs` and `current_tabs`.
+- **Layout:** `Layout::new` places the major tabs, the minor tabs of the top page's section, the back pages, the status line, the page buttons and the page, and `Layout::hit` hit-tests them.
+- **Messages:** `Loader::notebook_message` handles the `BKM_*` messages, clicks and keys.
+- **Page windows:** `notebook_place_pages` shows the top page's window, sized to the page when `BKA_AUTOPAGESIZE`, hides the others and repaints.
+- **Notifications:** `BKN_PAGESELECTED` / `BKN_PAGEDELETED` are owner calls (`OwnerCallKind::NotebookSelected` / `NotebookDeleted`, `pm_owner.rs`): `WM_CONTROL` with the structure in a block on the guest stack, made on the owner's thread before the API returns, from `WinSendMsg` or from a click alike. `BKN_NEWPAGESIZE` is posted when painting finds a new size.
+- **Tests:** `pm_notebook.rs` (model, layout), `samples/pm_notebook_test` with a golden picture.
+
+### File attributes
+
+`vfs_hostdir.rs`:
+- **Read-only:** `mode_for_attributes` maps `FILE_READONLY` to clearing every write bit, and its absence to setting the owner's write bit. `requested_permissions` skips directories. `set_file_info` / `set_path_info` apply it after the times.
+- **Deleting:** `delete` refuses a read-only regular file with `ACCESS_DENIED`.
+- **`DosSetFileMode`** passes a `FILESTATUS3` with 0 / 0 times through the same `set_path_info`.
+- **Tests:** `read_only_maps_to_the_write_bits`, `set_path_info_applies_times_and_read_only`, `samples/fileattr_test`.
+
 ### Handle Management (absorbed into VFS)
 
 Currently, file handles and directory search handles are managed by two separate structs in `managers.rs`:
@@ -1856,7 +1899,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the 4OS2 / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (1762: 1720 warpine + 19 `gen_api` + 12 `lx_link` + 5 `gen_arch` + 6 `gen_compat`) include, among others:
+The unit tests (1776: 1734 warpine + 19 `gen_api` + 12 `lx_link` + 5 `gen_arch` + 6 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2141,7 +2184,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 1762 unit tests (1720 warpine + 19 gen_api + 12 lx_link + 5 gen_arch + 6 gen_compat), 127 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 1776 unit tests (1734 warpine + 19 gen_api + 12 lx_link + 5 gen_arch + 6 gen_compat), 133 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

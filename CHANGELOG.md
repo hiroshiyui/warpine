@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **Information segments** (new `src/loader/infoseg.rs`) — `DosGetInfoSeg` returns the selectors of a real `GINFOSEG` and `LINFOSEG` at the start of reserved tiles (`0xA0000`, `0xB0000`); the `GINFOSEG` time fields are refreshed every 32 ms from the session clock, for NE programs and 32-bit programs calling the entry directly (ADR-0040). Sample `infoseg_test`.
+- **Read-only files** — `DosSetFileInfo`, `DosSetPathInfo` and `DosSetFileMode` (was a stub) apply `FILE_READONLY` through the host write permission (directories stay writable); `DosDelete` refuses a read-only file with `ERROR_ACCESS_DENIED`, as on OS/2. Sample `fileattr_test`.
+
+- **Dialogs embedded in windows** — a dialog loaded with a window as parent (`WinLoadDlg(hwndClient, …)`, a notebook page) is a child of that window, as in PM: placed relative to it, drawn into its frame's surface, clipped to it, its controls clickable and focusable in place, destroyed with it; dialogs on the desktop stay frames of their own (ADR-0042). Sample `pm_child_dialog_test`.
+- **`WC_NOTEBOOK`** (new `src/loader/pm_notebook.rs`) — pages with major and minor tabs, status line and page buttons (`BKS_MAJORTAB*`, `BKS_TABBEDDIALOG`), `BKM_INSERTPAGE` / `DELETEPAGE` / `TURNTOPAGE` / `QUERYPAGEID` / `QUERYPAGECOUNT` / `QUERYPAGESTYLE`, page data, page windows shown and sized to the page (`BKA_AUTOPAGESIZE`), tab and status texts, `BKM_SETDIMENSIONS`, `BKM_CALCPAGERECT`, `BKM_SETNOTEBOOKCOLORS`, `BKM_SETPAGEINFO` / `QUERYPAGEINFO`; `BKN_PAGESELECTED` and `BKN_PAGEDELETED` are sent with their structures before the call returns; tabs, page buttons and keys turn pages. Sample `pm_notebook_test`.
+
+### Fixed
+- **Socket `select` never reported a socket** — it read a 64-bit bit mask while Warpine numbers sockets from `0xA000`; it now reads the OS/2 TCP/IP count-and-array `fd_set` of Open Watcom's headers, waits with `poll(2)` (a host descriptor of 1024 or more used to overflow the host `fd_set`) and can be interrupted by a signal (ADR-0041). `socket_test` passes completely.
+- **`DosGetInfoSeg` returned real-mode paragraphs** (`PIB_BASE >> 4`) instead of selectors in 32-bit programs, and nothing in NE programs.
+
 ## [0.0.3] - 2026-11-18
 
 ### Added
