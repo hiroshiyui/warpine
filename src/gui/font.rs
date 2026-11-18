@@ -305,11 +305,26 @@ struct Raster {
     advance: f32,
 }
 
-fn rasterize(face_id: usize, gid: GlyphId, scale: f32) -> Option<Raster> {
+/// Horizontal glyph positions per pixel: outline glyphs are rasterised at
+/// the pen's fraction of a pixel, rounded to a quarter, so the spaces
+/// between letters follow the font's fractional advances instead of
+/// each glyph's advance being rounded on its own.
+pub const SUBPIXEL_STEPS: u8 = 4;
+
+/// The whole pixel and the subpixel phase (`0..SUBPIXEL_STEPS`) of pen
+/// position `pen`.
+pub fn pen_phase(pen: f32) -> (i32, u8) {
+    let base = pen.floor();
+    let phase = ((pen - base) * f32::from(SUBPIXEL_STEPS)).round() as u8;
+    if phase >= SUBPIXEL_STEPS { (base as i32 + 1, 0) } else { (base as i32, phase) }
+}
+
+fn rasterize(face_id: usize, gid: GlyphId, scale: f32, phase: u8) -> Option<Raster> {
     let f = face(face_id)?;
     let px_scale = PxScale::from(scale);
     let advance = f.as_scaled(px_scale).h_advance(gid);
-    Some(match f.outline_glyph(gid.with_scale_and_position(px_scale, point(0.0, 0.0))) {
+    let offset = f32::from(phase) / f32::from(SUBPIXEL_STEPS);
+    Some(match f.outline_glyph(gid.with_scale_and_position(px_scale, point(offset, 0.0))) {
         Some(outline) => {
             let b = outline.px_bounds();
             let (width, height) = (b.width() as usize, b.height() as usize);
@@ -336,10 +351,11 @@ struct Glyph {
 }
 
 impl Glyph {
-    fn load(ch: char, spec: FontSpec) -> Glyph {
+    /// The glyph rasterised at subpixel `phase` (see [`SUBPIXEL_STEPS`]).
+    fn load_at(ch: char, spec: FontSpec, phase: u8) -> Glyph {
         let src = resolve(ch, spec);
         let raster = match src {
-            GlyphSource::Outline { face: id, id: gid } => rasterize(id, gid, scale_for(id, spec)),
+            GlyphSource::Outline { face: id, id: gid } => rasterize(id, gid, scale_for(id, spec), phase),
             _ => None,
         };
         let advance = raster.as_ref().map_or_else(|| advance_of(src, spec), |r| r.advance);
@@ -347,9 +363,10 @@ impl Glyph {
     }
 }
 
-/// Glyph cache key: the character, the font, and the CJK face order in
-/// effect (`CjkRegion::Auto` follows the process codepage, which can change).
-type GlyphKey = (char, FontSpec, [usize; 4]);
+/// Glyph cache key: the character, the font, the CJK face order in
+/// effect (`CjkRegion::Auto` follows the process codepage, which can
+/// change) and the subpixel phase it is rasterised at.
+type GlyphKey = (char, FontSpec, [usize; 4], u8);
 
 /// Upper bound on cached glyphs per thread; the cache is cleared when full.
 const GLYPH_CACHE_MAX: usize = 4096;
@@ -364,13 +381,18 @@ thread_local! {
 /// Run `f` on the cached glyph for `ch` in `spec`, loading it on first use.
 /// `f` must not use the glyph cache itself.
 fn with_glyph<R>(ch: char, spec: FontSpec, f: impl FnOnce(&Glyph) -> R) -> R {
-    let key = (ch, spec, cjk_order(spec.cjk));
+    with_glyph_at(ch, spec, 0, f)
+}
+
+/// [`with_glyph`] for the glyph rasterised at subpixel `phase`.
+fn with_glyph_at<R>(ch: char, spec: FontSpec, phase: u8, f: impl FnOnce(&Glyph) -> R) -> R {
+    let key = (ch, spec, cjk_order(spec.cjk), phase);
     GLYPH_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         if cache.len() >= GLYPH_CACHE_MAX && !cache.contains_key(&key) {
             cache.clear();
         }
-        f(cache.entry(key).or_insert_with(|| Glyph::load(ch, spec)))
+        f(cache.entry(key).or_insert_with(|| Glyph::load_at(ch, spec, phase)))
     })
 }
 
@@ -454,7 +476,7 @@ pub fn metrics(spec: FontSpec) -> FontMetricsPx {
 /// otherwise reads the advance from the font without rasterising the glyph,
 /// so measuring many characters (GPI width tables) stays cheap.
 pub fn char_advance(ch: char, spec: FontSpec) -> f32 {
-    let key = (ch, spec, cjk_order(spec.cjk));
+    let key = (ch, spec, cjk_order(spec.cjk), 0);
     GLYPH_CACHE.with(|cache| cache.borrow().get(&key).map(|g| g.advance))
         .unwrap_or_else(|| advance_of(resolve(ch, spec), spec))
 }
@@ -532,13 +554,17 @@ pub fn draw_text_with(
     };
     let mut pen = 0.0f32;
     for ch in text.chars() {
+        // Outline glyphs at the pen's quarter pixel; bitmap glyphs (Unifont)
+        // at the rounded pen, as they have whole-pixel advances.
         let gx = x + pen.round() as i32;
-        pen += with_glyph(ch, spec, |g| {
+        let (whole, phase) = pen_phase(pen);
+        let ox = x + whole;
+        pen += with_glyph_at(ch, spec, phase, |g| {
             match (&g.raster, g.src) {
                 (Some(r), _) => {
                     for row in 0..r.height {
                         for col in 0..r.width {
-                            put(gx + r.left + col as i32, baseline + r.top + row as i32,
+                            put(ox + r.left + col as i32, baseline + r.top + row as i32,
                                 r.coverage[row * r.width + col]);
                         }
                     }
@@ -654,6 +680,44 @@ mod tests {
     }
 
     #[test]
+    fn pen_phases_are_quarter_pixels() {
+        assert_eq!(pen_phase(0.0), (0, 0));
+        assert_eq!(pen_phase(3.3), (3, 1));
+        assert_eq!(pen_phase(3.5), (3, 2));
+        assert_eq!(pen_phase(3.9), (4, 0), "rounds up to the next whole pixel");
+        assert_eq!(pen_phase(-0.25), (-1, 3));
+    }
+
+    /// Glyphs land at the font's fractional pen positions: an "i" after k
+    /// spaces has its ink centred k space advances (fractional) to the
+    /// right of a lone "i", within a quarter pixel's rounding — not half a
+    /// pixel off as when each glyph sat at the rounded pen.
+    #[test]
+    fn glyphs_follow_fractional_advances() {
+        let spec = FontSpec::SYSTEM_BOLD;
+        let space = char_advance(' ', spec);
+        assert!(space.fract() != 0.0, "the test needs a fractional advance ({space})");
+        let (w, h) = (200usize, 24usize);
+        let centroid = |text: &str| {
+            let mut buf = vec![0u32; w * h];
+            draw_text(&mut buf, w, h, 2, 18, text, 0x00FF_FFFF, spec);
+            let (mut sum, mut weight) = (0.0f64, 0.0f64);
+            for (i, &p) in buf.iter().enumerate() {
+                let c = f64::from(p & 0xFF);
+                sum += c * (i % w) as f64;
+                weight += c;
+            }
+            sum / weight
+        };
+        let lone = centroid("i");
+        for k in 1..=8 {
+            let got = centroid(&format!("{}i", " ".repeat(k))) - lone;
+            let want = f64::from(space) * k as f64;
+            assert!((got - want).abs() <= 0.2, "{k} spaces: ink moved {got:.2}, the pen {want:.2}");
+        }
+    }
+
+    #[test]
     fn draw_text_is_antialiased_and_clips_at_buffer_edges() {
         let mut buf = vec![BG; W * H];
         draw_text(&mut buf, W, H, 4, 30, "S", 0, FontSpec { px: 40, ..FontSpec::SYSTEM });
@@ -699,7 +763,7 @@ mod tests {
     fn cached_glyphs_match_freshly_resolved_ones() {
         let spec = mixed_spec();
         for ch in MIXED.chars() {
-            let fresh = Glyph::load(ch, spec);
+            let fresh = Glyph::load_at(ch, spec, 0);
             // Twice: the first call fills the cache, the second reads it.
             for _ in 0..2 {
                 with_glyph(ch, spec, |g| {
@@ -711,7 +775,7 @@ mod tests {
             }
             assert_eq!(fresh.advance, advance_of(fresh.src, spec), "{ch:?}: raster and font advance agree");
         }
-        let sum: f32 = MIXED.chars().map(|ch| Glyph::load(ch, spec).advance).sum();
+        let sum: f32 = MIXED.chars().map(|ch| Glyph::load_at(ch, spec, 0).advance).sum();
         assert_eq!(text_width(MIXED, spec), sum.round() as i32);
     }
 
