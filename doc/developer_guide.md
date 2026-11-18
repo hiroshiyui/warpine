@@ -322,7 +322,7 @@ The `pszClass` argument to `WinCreateWindow` (ordinal 909) arrives as a 32-bit g
 
 ### PMGPI (src/loader/pm_gpi.rs)
 
-Graphics Primitive Interface, 67 ordinals (see the reference manual for the list): presentation spaces, colours and mixes, lines, boxes, arcs, area patterns, line widths, text and fonts, read-back, colour tables, and — in `pm_bitmap.rs` — device contexts, bitmaps and bit-block transfers. Arc geometry and the pattern table are in `pm_shapes.rs`. How drawing reaches the screen: "Rendering Pipeline" below. Presentation-space state (`GpiSavePS` / `GpiRestorePS` / `GpiResetPS`, attribute bundles, `GpiQueryPS` / `GpiSetPS`) is in `pm_psstate.rs`, the transform and coordinate calls in `pm_coords.rs` and their pure matrix maths in `pm_xform.rs`.
+Graphics Primitive Interface, 145 ordinals (see the reference manual for the list): presentation spaces, colours and mixes, lines, boxes, arcs, area patterns, line widths, text and fonts, read-back, colour tables, and — in `pm_bitmap.rs` — device contexts, bitmaps and bit-block transfers. Arc geometry and the pattern table are in `pm_shapes.rs`. How drawing reaches the screen: "Rendering Pipeline" below. Presentation-space state (`GpiSavePS` / `GpiRestorePS` / `GpiResetPS`, attribute bundles, `GpiQueryPS` / `GpiSetPS`) is in `pm_psstate.rs`, the transform and coordinate calls in `pm_coords.rs` and their pure matrix maths in `pm_xform.rs`.
 
 ---
 
@@ -1359,6 +1359,19 @@ Files and pipes share one handle space, as in OS/2: `DriveManager::alloc_handle`
 
 Every child is a whole Warpine process with its own VM and guest memory (some hundreds of MB), so a program that starts itself — on purpose, or because it misreads its command line — could exhaust the host (a test program that did so once started some 230 Warpine processes before the kernel's OOM killer stopped it). `inherit.rs` bounds this: each child gets its depth in `WARPINE_DEPTH` (the first process is depth 0); `admit_child` (used by `DosExecPgm`, `WinStartApp` and CMD.EXE's external commands before they spawn) refuses a child of a process at `MAX_PROCESS_DEPTH` (8) or of one that already keeps `MAX_LIVE_CHILDREN` (16) children (`DosExecPgm` asynchronous children not yet waited for plus `WinStartApp` applications). The refused call fails: `DosExecPgm` with `ERROR_NO_PROC_SLOTS` (89), `WinStartApp` with `PMERR_CANNOT_START`, CMD.EXE with a message. `main.rs` checks the depth before anything else and ends a process started deeper, or with a malformed `WARPINE_DEPTH`, with exit code `EXIT_NESTING_LIMIT` (89) without running guest code. `clear_parent_vars` keeps `WARPINE_DEPTH`. Tests: `inherit.rs` (`depth_parses_and_bounds`, `children_get_their_depth_within_the_limits`), `samples/nest_test` + `test_nest_test_stops_at_the_nesting_limit` (a program that runs itself with `DosExecPgm` ends after 8 copies).
 
+### Session thread limit (CONFIG.SYS `THREADS=`)
+
+OS/2 bounds the threads of the whole system with `THREADS=` (64 … 4095, default 64; the lower bound is unverified, some sources say 32). Warpine applies it to a session: the first process and all its descendants.
+
+- **Limit** — `config_sys.rs`: `parse_threads` (pure: case-insensitive keyword, blanks around `=`, `REM` lines skipped, last valid statement wins, non-numbers ignored, saturating), `clamp_threads`, `threads_limit` (`WARPINE_THREADS` first, then the file, then `DEFAULT_THREADS`), `read_config_sys` (through the VFS, drive C, open-existing read-only, at most `MAX_CONFIG_SYS` bytes; never creates the file).
+- **Accounting** — `session_threads.rs`: a private directory shared by the session's processes (`WARPINE_THREAD_DIR`; the first process makes `$XDG_RUNTIME_DIR/warpine-threads-<uid>-<pid>` with mode 0700 and checks it is a directory of this user closed to others). One record per live process, `p-<pid>` = `"<pid> <starttime> <threads>\n"` (start time = field 22 of `/proc/<pid>/stat`, so a reused pid does not count), and one per reserved child slot, `r-<parentpid>-<seq>` (the parent's identity, 1 thread). Every read-modify-write happens under an exclusive `flock` (`File::lock`) on the directory itself; after locking, the directory must still be the one at the path (a process that empties it removes it, and a waiter then makes it again). A record counts only while its process is alive (exists, not a zombie, same start time); stale or malformed records are removed when seen, so a process killed by a signal leaks nothing. Hostile contents are bounded: strictly parsed names, records ≤ `MAX_RECORD` bytes opened with `O_NOFOLLOW | O_NONBLOCK` as regular files, at most `MAX_ENTRIES` entries per scan (more = full). If the directory cannot be used, the process counts only its own threads (warning).
+- **Thread 1** — `main.rs` calls `Loader::join_thread_session` right after `Loader::new` (LX, NE, CMD.EXE): the process takes over the slot its parent reserved (`WARPINE_THREAD_SLOT`), confirms the record its parent already wrote, or — with neither — needs a free slot; otherwise it exits with `EXIT_NO_THREAD_SLOT` (89) before guest code runs. The exit paths call `SharedState::leave_thread_session`: it removes the record, scans once more (dropping records of killed processes) and removes the directory once empty; afterwards the session writes nothing more (`left`), so a thread ending while the process exits cannot bring the record or the directory back.
+- **Threads** — `dos_create_thread` asks `ThreadSlots::acquire_thread` after setting up the vCPU and fails with `ERROR_MAX_THRDS_REACHED` (164), giving back the vCPU and memory; `end_thread` (`vcpu.rs`) calls `release_thread`.
+- **Children** — `inherit::admit_child` (after the nesting checks) reserves the child's slot (`ThreadSlots::reserve_for`: writes `r-…`, sets `WARPINE_THREAD_DIR`, `WARPINE_THREADS` = the session's limit and `WARPINE_THREAD_SLOT` on the command) and returns a `#[must_use]` `Reservation`; the caller hands it to `child_started` with the child's pid (the `r-` record becomes `p-<pid>` unless the child took it over first) or `None` when the spawn failed (record removed). Refusals: `ChildLimit::Threads` → `DosExecPgm` `ERROR_NO_PROC_SLOTS`, `WinStartApp` `PMERR_CANNOT_START` (`<pmerr.h>` has no more specific error), CMD.EXE a message. Reserving before spawning makes two racing spawns unable to both pass.
+- Unloaded loaders (`Loader::new_mock`) keep `ThreadSlots::Inactive`: no limit.
+
+Tests: `config_sys.rs` (parser, clamping, env override, reading through drive C), `session_threads.rs` (several simulated processes sharing a directory, killed processes and reused pids, junk and symbolic links, reservations taken over / settled / cancelled, a dead parent's reservation, racing reservations from 8 threads, a non-private directory, the unusable-directory fallback, `DosCreateThread` and `admit_child` at the limit); `samples/threads_limit_test` + `test_threads_limit_from_config_sys` (`THREADS=70` in a temporary drive C), `test_threads_limit_from_the_environment` (`WARPINE_THREADS`, clamping), `test_threads_limit_refuses_a_process_without_a_slot` (exit 89 in a full session; a stale record is removed). The sample's children recognise their mode from `pib_pchcmd`, not `argv`.
+
 ### Handle Management (absorbed into VFS)
 
 Currently, file handles and directory search handles are managed by two separate structs in `managers.rs`:
@@ -1557,7 +1570,7 @@ src/
     pm_win.rs          PMWIN dispatcher and window calls (169 ordinals, logic in the pm_* modules)
     pm_message.rs      WinSendMsg (send hooks, inter-thread sends), WinPostQueueMsg, WinBroadcastMsg, WinInSendMsg, WinWaitMsg, WM_HELP help hook
     pm_hook.rs         WinSetHook / WinReleaseHook / WinCallMsgFilter: HookTable, call chains of guest calls (ApiResult::CallChain)
-    pm_gpi.rs          PMGPI API implementations (67 ordinals, incl. DevOpenDC/DevCloseDC/DevQueryCaps)
+    pm_gpi.rs          PMGPI API implementations (145 ordinals with pm_region / pm_area / pm_text / pm_coords / pm_psstate / pmspl, incl. DevOpenDC/DevCloseDC/DevQueryCaps)
     pm_shapes.rs       Arc geometry (ARCPARAMS, full/partial/point arcs, FIXED) and the PATSYM_* pattern table
     pm_text.rs         GPI text layout: character angle/shear/direction/extra/alignment, GpiCharStringPos, GpiQueryCharStringPos, GpiQueryTextBox, GpiQueryWidthTable
     pm_bitmap.rs       Bitmap codec (BITMAPINFOHEADER/2, RT_BITMAP), memory DCs, bitmaps, GpiBitBlt family
@@ -1779,11 +1792,11 @@ cargo test
 cargo clippy --all-targets -- -D warnings   # lint, test code included
 ```
 
-The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`) runs both and aborts the commit on a failing test or any lint.
+The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`) runs both and aborts the commit on a failing test or any lint. It runs them inside a transient `systemd-run --user --scope` with `MemoryMax` (default 24G, `WARPINE_TEST_MEMORY_MAX`), `MemorySwapMax=0` and `TasksMax` (default 4096, `WARPINE_TEST_TASKS_MAX`) when a user systemd instance exists, and without caps otherwise: a runaway test is ended inside its own cgroup instead of the host's out-of-memory killer ending unrelated work (the 2026-11-18 self-starting sample, ADR-0028). Run long or process-starting tests by hand the same way, and check `pgrep -c -x warpine` afterwards.
 
-Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the 4OS2 / ANSI session helpers), unless the test names its own.
+Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the 4OS2 / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (1537: 1501 warpine + 19 `gen_api` + 12 `lx_link` + 5 `gen_arch`) include, among others:
+The unit tests (1683: 1647 warpine + 19 `gen_api` + 12 `lx_link` + 5 `gen_arch`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2063,7 +2076,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 1537 unit tests (1501 warpine + 19 gen_api + 12 lx_link + 5 gen_arch), 102 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 1683 unit tests (1647 warpine + 19 gen_api + 12 lx_link + 5 gen_arch), 113 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

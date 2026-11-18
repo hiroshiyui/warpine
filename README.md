@@ -23,27 +23,29 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 | **Text-mode programs in a PM window.** 4OS2 runs in a frame on the PM desktop, as in an OS/2 window session. `color bright white on blue` and `cls` were typed first: the ANSI escape sequences 4OS2 prints are interpreted, so the screen is cleared in the new colours. `WARPINE_VIO=fullscreen` runs it full screen instead (the text window at the top of this page), and Alt+Home switches between the two. | **The VIO window's system menu.** Dragged smaller than its screen, the window shows scroll bars over it. Alt+Space opened the system menu with the items of an OS/2 window: Mark, Copy and Copy All work with the clipboard, and Paste types it into the program. |
 | ![The PM Combo / Spin / Owner Draw Test window: a drop-down combination box with its list open and Green selected, a drop-down list showing Green, a simple combination box with Blue selected, a numeric spin button at 6 and a string spin button at Sun, an owner-drawn list box with red, green and blue swatches beside their names and Green selected, Yellow drawn as plain text, and a cyan user button](doc/screenshots/pm_combo_spin.png) | ![The PM Slider / Value Set Test window: a horizontal slider with a 0 to 5 scale, arrow buttons, a blue ribbon strip and its arm on a detent; a read-only progress slider half filled; a slider with a red owner-drawn arm; a vertical slider with buttons and tick marks; a grid of eight colour items with red selected; a right-to-left value set with blue selected and an owner-drawn yellow item; and text items Three (selected, with a dotted cursor), a greyed Two and One](doc/screenshots/pm_slider_valueset.png) |
 | **Combination boxes, spin buttons and owner drawing.** Clicks picked Green in the drop-down box and dropped its list again, spun the numeric spin button to 6 and the day spin button to Sun, and selected Green in the owner-drawn list box. The owner paints the colour swatches and the selection, leaves Yellow to the list box, and paints the cyan user button. | **Sliders and value sets.** A scripted session clicked the shaft, dragged the arm, pressed a button and the arrow keys, and Shift+Right moved the arm to the detent marked under it; the ribbon strip follows the arm. The red arm is drawn by the owner. In the value sets, clicks and keys selected items; "Two" is disabled. |
+| ![An "Open a text file" standard file dialog over the inactive PM Standard Dialog Test window: the Open filename field with "*.TXT" selected, the current directory C:\STDDLG, the Type of file and Drive drop-down lists showing "<All Files>" and "C:", a Directory list with "..", a File list with ALPHA.TXT and BETA.TXT, and OK and Cancel buttons](doc/screenshots/pm_stddlg.png) | |
+| **The standard file dialog.** `WinFileDlg` builds the Open dialog from Warpine's own built-in controls and fills it from the drive: the filter in the file-name field, the current directory, type and drive lists, sub-directories and matching files. The program's own dialog procedure subclasses it. | |
 
 ### Work in progress
 
 - **Text controls and pointers** — editing, selection, the clipboard, word wrap, multi-select lists and a blinking caret work, and programs can set system and resource pointers; the pointer does not yet turn into an I-beam over text fields or a sizing arrow over frame borders.
 - **Dialogs, menus and windows** — the system menu, keyboard move and size, minimize / maximize / hide, mnemonics and `WinPopupMenu` work; programs cannot yet change system-menu items, and F10 for the menu bar and menus inside dialogs are missing. Combination boxes, spin buttons, sliders, value sets and owner drawing work.
-- **More GPI** — boxes, lines, arcs, patterns, line widths, text, bitmaps, blits, regions, clipping, areas, paths, polygons and curves work; rounded box corners, line ends and joins, palettes, coordinate transforms and printing are not implemented.
+- **More GPI** — boxes, lines, arcs, patterns, line widths, text, bitmaps, blits, regions, clipping, areas, paths, polygons and curves, transforms and page units, and positioned, rotated and sheared text work; rounded box corners, line ends and joins, scaled line widths, rotated glyphs and images under transforms, and palettes are not implemented.
 - **Command shells and networking** — 4OS2 redirects output to files, interprets ANSI sequences and runs pipelines to external programs (`ver | find "x"`); pipes into its internal commands need named shared memory between processes, and sockets work except `select`.
 - **Games and video** — DIVE (direct framebuffer blitting) and OpenGL are not implemented yet.
-- **Advanced controls** — containers, notebooks, drag and drop and printing are not started.
+- **Advanced controls** — containers, notebooks and drag and drop are not started; the standard file and font dialogs work, but printing is not supported (the spooler reports no printers).
 
-_Screenshots in this section captured from uncommitted changes on top of `2d4dd42` on 2026-11-17; the combination-box picture from `ebddef5` and the slider picture from uncommitted changes on top of `2892d8e`, both on 2026-11-18._
+_Screenshots in this section captured from uncommitted changes on top of `2d4dd42` on 2026-11-17; the combination-box picture from `ebddef5` and the slider picture from uncommitted changes on top of `2892d8e`, and the file-dialog picture from uncommitted changes on top of `71266db`, all on 2026-11-18._
 <!-- screenshots:end -->
 
 ## Key Features
 
 - **LX Executable Parser:** Full support for LX headers, object tables, page maps, fixups, resource tables, import tables, entry tables, and non-resident names tables.
 - **KVM Hypervisor:** Custom VMM executing 32-bit OS/2 code at native speed via hardware-accelerated virtualization.
-- **API Thunking:** System call interception via `INT 3` traps bridging guest OS/2 calls to host Rust implementations. Covers DOSCALLS, QUECALLS, PMWIN, PMGPI, KBDCALLS, VIOCALLS, MOUCALLS, NLS, MSG, MDM (MMPM/2), UCONV, SO32DLL, TCP32DLL, PMSHAPI and HELPMGR — 529 entry points total.
+- **API Thunking:** System call interception via `INT 3` traps bridging guest OS/2 calls to host Rust implementations. Covers DOSCALLS, QUECALLS, PMWIN, PMGPI, KBDCALLS, VIOCALLS, MOUCALLS, NLS, MSG, MDM (MMPM/2), UCONV, SO32DLL, TCP32DLL, PMSHAPI, HELPMGR, PMSPL and PMCTLS — 618 entry points total.
 - **DLL Loader Chain:** Runtime dynamic loading via `DosLoadModule` / `DosQueryProcAddr` / `DosQueryModuleHandle`. User DLLs are loaded into guest memory with rebased objects and export maps. `jpos2dll.dll` (4OS2 extension) loads and resolves all 7 exports at startup.
 - **Multi-Threading:** OS/2 threads mapped 1:1 to host threads, each with its own KVM vCPU; ending a thread ends only that thread, `DosWaitThread` / `DosKillThread` / `DosSuspendThread` / `DosResumeThread` follow the Control Program Reference, a thread spinning in its own code can be stopped (each vCPU can be kicked out of the guest), signal exceptions reach thread 1, and vCPUs of ended threads are reused.
-- **Presentation Manager (GUI):** Window management, message loop, graphics primitives (drawn on the calling thread, so `GpiQueryPel` reads pixels back and `GpiSetMix` raster operations such as XOR combine with what is there), memory presentation spaces, bitmaps (`GpiCreateBitmap`, `GpiLoadBitmap`) and `GpiBitBlt` with raster operations and stretching, logical colour tables, polylines, regions and clipping, areas, paths, polygons and curves, `WinDrawText`, update rectangles with `WinScrollWindow` and `WinDrawBorder`, the rectangle helpers, interactive scroll bars, combination boxes, spin buttons, sliders, value sets, owner-drawn list boxes, menu items and buttons, static icons and bitmaps, presentation parameters (colours and fonts), hooks and message broadcasts, frame controls, accelerator tables made at run time, the text cursor, window lookups (`WinMapWindowPoints`, `WinWindowFromPoint`, `WinEnumDlgItem` …), key state, system colours, timers, clipboard, dialogs, menus, and resource loading via SDL. Each window is kept as its own texture and drawn by the platform's accelerated SDL renderer with vsync, so moving windows costs no redrawing (`WARPINE_COMPOSITOR=software` composites on the CPU instead).
+- **Presentation Manager (GUI):** Window management, message loop, graphics primitives (drawn on the calling thread, so `GpiQueryPel` reads pixels back and `GpiSetMix` raster operations such as XOR combine with what is there), memory presentation spaces, bitmaps (`GpiCreateBitmap`, `GpiLoadBitmap`) and `GpiBitBlt` with raster operations and stretching, logical colour tables, polylines, regions and clipping, areas, paths, polygons and curves, presentation-space state with save / restore, coordinate transforms and page units, text layout with character angle, shear and direction, `WinDrawText`, update rectangles with `WinScrollWindow` and `WinDrawBorder`, the rectangle helpers, interactive scroll bars, the standard file and font dialogs, the switch list, atom tables and DDE within a program, combination boxes, spin buttons, sliders, value sets, owner-drawn list boxes, menu items and buttons, static icons and bitmaps, presentation parameters (colours and fonts), hooks and message broadcasts, frame controls, accelerator tables made at run time, the text cursor, window lookups (`WinMapWindowPoints`, `WinWindowFromPoint`, `WinEnumDlgItem` …), key state, system colours, timers, clipboard, dialogs, menus, and resource loading via SDL. Each window is kept as its own texture and drawn by the platform's accelerated SDL renderer with vsync, so moving windows costs no redrawing (`WARPINE_COMPOSITOR=software` composites on the CPU instead).
 - **Frame system menu:** PM frames open their system menu by a click on the icon, Alt+Space or Shift+Esc; choices reach the program as `WM_SYSCOMMAND`, and Move / Size (Alt+F7 / Alt+F8) work from the keyboard. `WinPopupMenu` shows pop-up menus.
 - **IBM Plex Typography:** All PM text (title bars, menus, dialogs, controls, and GPI text) is rendered anti-aliased in the embedded IBM Plex Sans / Mono / Serif families, with IBM Plex Sans JP / KR / TC / SC for CJK and GNU Unifont as the last-resort fallback. `GpiCreateLogFont` maps OS/2 face names, bold/italic and size onto these faces; font metrics APIs report their real proportional widths.
 - **Text-mode programs in a PM window:** a VIO program runs in a window on the PM desktop, as in an OS/2 window session — CP437 8×16 font, CGA 16-colour palette, blinking cursor. The window can be resized (scroll bars over the screen), minimized and maximized, its system menu marks and copies text and pastes the clipboard as keystrokes, and the mouse reaches programs through MOUCALLS. `WARPINE_VIO=fullscreen` runs it full screen instead (the only choice for programs marked incompatible with PM windowing), Alt+Home switches between the two while it runs, and `WARPINE_HEADLESS=1` uses the host terminal.
@@ -51,7 +53,7 @@ _Screenshots in this section captured from uncommitted changes on top of `2d4dd4
 - **Filesystem:** HPFS-compatible VFS (`VfsBackend` trait) with `HostDirBackend`: case-insensitive lookup, extended attributes (xattrs + sidecar), file locking, OS/2 wildcard matching, sandbox isolation. C: drive auto-mounted at `~/.local/share/warpine/drive_c/`.
 - **Memory Management:** `DosAllocMem`/`DosFreeMem`, shared memory, `DosSub*` suballocation (bookkeeping kept by Warpine), guest physical memory manager.
 - **IPC and threads:** Event / mutex / muxwait semaphores with their queries, critical sections, DOS timers posting semaphores, exit lists (`DosExitList`), per-thread exception handlers, anonymous and named pipes (also between Warpine processes), and named message queues.
-- **Process Management:** `DosExecPgm` (the child gets its arguments, environment and inheritable pipe handles), `DosWaitChild`, `DosSearchPath`, `DosQueryModuleName`, directory tracking, system information queries.
+- **Process Management:** `DosExecPgm` and `WinStartApp` (the child gets its arguments, environment and inheritable pipe handles; a program cannot start Warpine processes more than 8 levels deep or keep more than 16 children, and `THREADS=` in `C:\CONFIG.SYS` bounds the threads of the whole session), `DosWaitChild`, `DosSearchPath`, `DosQueryModuleName`, directory tracking, system information queries.
 - **Profiles and help:** `Prf*` profile calls with OS2.INI / OS2SYS.INI on drive C: (in Warpine's own text format), and Help Manager instances so programs with online help start (no help viewer yet).
 - **NLS:** `DosQueryCtryInfo`, `DosQueryCp`, `DosMapCase`, `DosGetDateTime` — verified correct.
 - **MMPM/2 Audio:** `DosBeep` plays real sine-wave tones; `mciSendCommand`/`mciSendString` play `waveaudio` WAV files (wait, notify, seek, volume, aliases) through SDL3 audio streams on the main thread.
@@ -85,7 +87,7 @@ src/
     ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants: MAGIC_API_BASE, ordinal bases, TIB/PIB addresses
-    api_registry.rs    Static sorted API thunk table (227 entries); compat_report()
+    api_registry.rs    Static sorted API thunk table (259 entries); compat_report()
     api_dispatch.rs    Ordinal → handler dispatch + sub-dispatcher routing
     api_trace.rs       ordinal_to_name(), module_for_ordinal() for structured tracing
     api_ring.rs        256-entry API call ring buffer for crash post-mortem
@@ -169,6 +171,12 @@ samples/               OS/2 sample applications and build scripts
   pm_frame_accel_test/ Frame controls, accelerator tables, WinLoadMessage and other window calls
   pm_presparam_test/   Presentation parameters, static styles, class styles and WinLockWindowUpdate
   pm_slider_valueset_test/ Sliders and value sets
+  pm_textpos_test/     GPI text layout, rotated, sheared and vertical text
+  pm_xform_test/       GPI state, transforms and page units
+  pm_stddlg_test/      Standard file and font dialogs, printing stubs
+  pm_switch_dde_test/  WinStartApp, switch list, atom tables, DDE, MSG calls
+  nest_test/           A program that starts itself, stopped at the nesting limit
+  threads_limit_test/  CONFIG.SYS THREADS= bounds threads and child processes of a session
   pm_query_test/       Window lookups, key state, message position, system colours
   pm_typeahead_test/   Keys typed while the program is busy reach the focus window of the moment they are read
   pm_font_test/        GPI font selection (IBM Plex families, styles, sizes) and CJK text
@@ -204,7 +212,11 @@ This repo ships a pre-commit hook that runs `cargo test` and `cargo clippy --all
 git config core.hooksPath githooks
 ```
 
-The hook will abort the commit if any test fails or if there are clippy warnings.
+The hook will abort the commit if any test fails or if there are clippy warnings. Where a user systemd instance is available it runs both inside a transient `systemd-run --user --scope` with hard caps (`MemoryMax` 24G, no swap, `TasksMax` 4096; override with `WARPINE_TEST_MEMORY_MAX` / `WARPINE_TEST_TASKS_MAX`), so a runaway test — for example a program that keeps starting Warpine processes — is stopped inside that scope instead of exhausting the machine. To run the tests by hand with the same caps:
+
+```bash
+systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test
+```
 
 ## Getting Started
 
@@ -291,8 +303,8 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 1537 unit tests (no KVM required)
-cargo test --test integration     # 102 end-to-end tests (requires /dev/kvm)
+cargo test                        # 1683 unit tests (no KVM required)
+cargo test --test integration     # 113 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
 
