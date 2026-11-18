@@ -383,7 +383,7 @@ $ warpine --compat
 Warpine OS/2 API Compatibility Report
 ======================================
 
-DOSCALLS  (103 implemented, 10 stub)
+DOSCALLS  (136 implemented, 4 stub)
   [stub]  [  317]  DosDebug
           [  213]  DosFlatToSel
           [  234]  DosExit
@@ -396,7 +396,7 @@ APIs marked `[stub]` accept calls and return `NO_ERROR` but perform no operation
 
 ## Implemented APIs
 
-### DOSCALLS (129 APIs: 120 implemented, 9 stub)
+### DOSCALLS (140 APIs: 136 implemented, 4 stub)
 
 **File I/O:**
 DosOpen (273), DosClose (257), DosRead (281), DosWrite (282), DosDelete (259), DosCopy (258), DosMove (271), DosSetFilePtr (256), DosSetFileSize (272), DosQueryFileInfo (279), DosSetFileInfo (218), DosQueryPathInfo (223), DosSetPathInfo (219), DosEnumAttribute (372)
@@ -539,7 +539,7 @@ WinCreateHelpInstance (51), WinDestroyHelpInstance (52), WinQueryHelpInstance (5
 
 Programs can create, associate and destroy help instances and load help tables, so they start normally, but no help is shown: messages sent to a help instance (`HM_*`) are accepted and ignored, and F1 opens nothing. Warpine logs once (warning) that help is not available. `WinQueryHelpInstance` searches the window's parent chain, then its owner chain. The `Ddf*` calls are not implemented.
 
-### PMWIN (127 APIs)
+### PMWIN (131 APIs)
 
 Window management, message queues, painting (incl. `WinGetPS` / `WinReleasePS`, window DCs, `WinDrawBitmap`), input, focus, codepage, dialogs, menus, clipboard, and resource loading. Ordinals follow the Open Watcom import library (`doc/os2_ordinals.md`):
 
@@ -589,7 +589,7 @@ WinAlarm (701), WinBeginPaint (703), WinCloseClipbrd (707), WinCopyRect (710), W
 
 **Keyboard and mouse input (type-ahead).** Input waits in one system queue and is routed when a thread reads it with `WinGetMsg` or `WinPeekMsg` (or inside a modal dialog), as in PM: a key goes to the window that has the focus at that moment, so keys typed while a program is busy follow a focus change the program makes when it handles an earlier key. A thread gets its posted messages first (in the order they were posted), then input, then `WM_PAINT`, then `WM_TIMER`; input is handed out in order: an event for another thread's window waits until that thread reads it. Typed characters are encoded in the codepage of the queue that receives them. Not yet: `WinQueryQueueStatus` is missing.
 
-### PMGPI (67 APIs: 64 implemented, 3 stub)
+### PMGPI (100 APIs: 97 implemented, 3 stub)
 
 Drawing primitives (incl. arcs, area patterns and line widths), fonts, mix modes and read-back, colour tables, line types, memory device contexts, bitmaps (uncompressed 1/4/8/24/32-bit or RLE4 / RLE8 / RLE24) and bit-block transfers (the `Dev*` entry points are exported by PMGPI too). Resource calls — `GpiLoadBitmap`, `WinLoadString`, `WinLoadMenu`, `WinLoadAccelTable`, `WinDlgBox` / `WinLoadDlg`, `WinCreateStdWindow(FCF_MENU)`, `DosGetResource`, `DosQueryResourceSize` — load from the module their `hmod` names: `NULLHANDLE` for the executable, else a DLL loaded with `DosLoadModule` (or imported).
 
@@ -607,11 +607,11 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 216 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs`, `pm_gpi.rs`, 239 ordinals). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 227 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs`, `pm_gpi.rs` with `pm_region.rs` and `pm_area.rs`, 276 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
-| DOSCALLS | registry | 120 | 9 | 129 |
+| DOSCALLS | registry | 136 | 4 | 140 |
 | QUECALLS | registry | 7 | 0 | 7 |
 | NLS | registry | 4 | 0 | 4 |
 | MSG | registry | 2 | 0 | 2 |
@@ -624,9 +624,9 @@ Counts are taken from the static registry (`api_registry.rs`, 216 entries) and t
 | MOUCALLS | sub-dispatcher | 20 | 0 | 20 |
 | PMSHAPI (profiles) | registry | 8 | 0 | 8 |
 | HELPMGR (no viewer) | registry | 6 | 0 | 6 |
-| PMWIN | sub-dispatcher | 127 | 0 | 127 |
-| PMGPI | sub-dispatcher | 64 | 3 | 67 |
-| **Total** | | **439** | **16** | **455** |
+| PMWIN | sub-dispatcher | 131 | 0 | 131 |
+| PMGPI | sub-dispatcher | 97 | 3 | 100 |
+| **Total** | | **492** | **11** | **503** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

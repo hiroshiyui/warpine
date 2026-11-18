@@ -20,6 +20,7 @@ When capturing screenshots for the README, always follow these steps:
    | `pm_dialog_keyboard` | `samples/pm_dialog_test/pm_dialog_test.exe` | `1500 key ctrl+d;2500 text Warp;2800 key tab;3000 key down;3200 key down` | Keyboard-driven modal dialog |
    | `pm_msgbox` | `samples/pm_msgbox_test/pm_msgbox_test.exe` | the `MSGBOX_TEST_STEPS` of `tests/integration.rs` | Message box with an icon over its disabled owner |
    | `pm_sysmenu` | `samples/pm_sysmenu_test/pm_sysmenu_test.exe` | `1000 click 43 42;1400 key down;1500 key down` | A PM frame's system menu, opened by a click on its icon, Size highlighted |
+   | `pm_combo_spin` | `samples/pm_combo_spin_test/pm_combo_spin_test.exe` | the `COMBO_SPIN_STEPS` of `tests/integration.rs` (separate them with `;`) | Combination boxes, spin buttons and owner drawing |
    | `4os2_window` | `samples/4os2/4os2.exe` | `2500 text color bright white on blue;2800 key enter;3300 text cls;3500 key enter;4000 text ver;4200 key enter;5000 text dir /w;5300 key enter` | A VIO program in a window on the PM desktop, its colours set by ANSI sequences after `cls` (needs a pseudo-terminal: capture it as described under step 3 without `WARPINE_VIO`, and trim it like `snap.sh`) |
    | `vio_system_menu` | `samples/4os2/4os2.exe` | `2000 text ver;2200 key enter;3000 drag 675 453 400 300;4000 key alt+space` | The VIO window resized with scroll bars and its system menu open (pseudo-terminal capture, trimmed) |
 
