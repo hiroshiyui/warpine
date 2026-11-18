@@ -6,7 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
-### Changed
+### Added
+- **One desktop per session** (new `src/desktop/`, `src/gui/desktop_server.rs`) — the PM programs of a session now share one desktop: the first starts a desktop server (`warpine --desktop-server`, no guest code) that owns the SDL window; every program draws its frames, chrome included, into sealed shared pixmaps and sends what it shows over a private `SOCK_SEQPACKET` socket in the session directory; the server stacks the frames of all programs, moves activation between them and hands out input one event at a time, routing the next only after the program has read the last, so keys and clicks stay in order across programs; window handles carry the program's desktop slot and are unique in the session; `WinStartApp` / `DosExecPgm` children appear on the same desktop (ADR-0052). `WARPINE_DESKTOP=local` keeps the desktop in the process; text-mode programs keep their own window. Sample `pm_twoproc_test`.
+
 - **Pointer input is routed when it is read** — a click on a client area or dialog is hit-tested, activates its frame (`WM_ACTIVATE` before the click) and takes the focus from a control beside it when it reaches the head of the system input queue, strictly after the input before it, as the PM Programming Guide describes; moves and releases go to the window under the pointer at read time, so a click follows a window the busy program has moved; a disabled frame takes no pointer input (ADR-0051). Clicks on frame chrome and the sizing border still act at once. Sample `pm_inputorder_test`.
 
 ## [0.0.5] - 2026-11-19

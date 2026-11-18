@@ -29,6 +29,9 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 | ![The Container icons window: a container in the icon view with two rows of icons — a tan folder renamed "Archive", a program window icon "Programs", a page icon "Notes", a two-page icon "Docs" and a window icon "App" — each with its text centred under it](doc/screenshots/pm_cnricon.png) | ![4OS2 in a "Warpine — 4os2.exe" frame on the PM desktop, white on blue after color and cls: the ver command and a wide dir listing of drive C:, ending at the [c:\\] prompt](doc/screenshots/4os2_window.png) |
 | **Containers.** `WC_CONTAINER` in the icon view, with system icons. The folder was renamed in place: Alt+click on its text, typing, and a click elsewhere, which asks the program for a buffer (`CN_REALLOCPSZ`). The text, name, detail and tree views, sorting and filtering work too. | **Text-mode programs in a PM window.** 4OS2 runs in a frame on the PM desktop, as in an OS/2 window session. The ANSI sequences it prints for `color` and `cls` are interpreted. `WARPINE_VIO=fullscreen` runs it full screen instead (the text window at the top of this page). |
 
+| ![Two windows side by side on one teal desktop: "Program A" with a navy (active) title bar and a light grey client, and "Program B" with a dark grey (inactive) title bar and a white client](doc/screenshots/pm_twoproc.png) | |
+| **One desktop per session.** Two separate PM programs — a parent and the child it started, each its own Warpine process — on the desktop of the session's desktop server. A was clicked last, so its title bar is the active one; keys and clicks reach the two programs in the order they were typed. | |
+
 ### Work in progress
 
 - **Containers and drag and drop** — container owner drawing, horizontal scrolling, tree lines and title editing are missing; drags work within a program, but not between programs or from the host desktop.
@@ -38,7 +41,7 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 - **Games and video** — DIVE (direct framebuffer blitting) and OpenGL are not implemented yet.
 - **Printing** — the spooler reports no printers.
 
-_Screenshots captured from uncommitted changes on top of `ed65028` on 2026-11-18._
+_Screenshots captured from uncommitted changes on top of `ed65028` on 2026-11-18; the two-program desktop from uncommitted changes on top of `5cca292` on 2026-11-19._
 <!-- screenshots:end -->
 
 ## Key Features
@@ -202,6 +205,7 @@ samples/               OS/2 sample applications and build scripts
   pm_query_test/       Window lookups, key state, message position, system colours
   pm_typeahead_test/   Keys typed while the program is busy reach the focus window of the moment they are read
   pm_inputorder_test/  Clicks are hit-tested and activate their frame when read, after the input before them
+  pm_twoproc_test/     Two PM programs on one desktop, with input in order across them
   pm_font_test/        GPI font selection (IBM Plex families, styles, sizes) and CJK text
   pm_shapes_test/      GPI arcs, area patterns and line widths, checked with GpiQueryPel
   pm_codepage_test/    Queue and presentation-space codepages (WinSetCp, CP1004, GpiSetCp)
@@ -326,7 +330,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 1872 unit tests (no KVM required)
+cargo test                        # 1901 unit tests (no KVM required)
 cargo test --test integration     # 139 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
