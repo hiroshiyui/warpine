@@ -44,3 +44,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0036](0036-session-unique-process-ids.md) | Give every process a session-unique id chosen by its parent; follow the documented entry ABI | Accepted | 2026-11-18 |
 | [0037](0037-pipe-semaphores-and-session-directory-hygiene.md) | Post pipe semaphores from per-end watcher threads, and sweep stale session directories by liveness | Accepted | 2026-11-18 |
 | [0038](0038-client-origin-and-dialog-notifications.md) | Draw client windows at their place in the frame surface; send dialog notifications through call chains | Accepted | 2026-11-18 |
+| [0039](0039-session-clock-and-64-bit-time.md) | Keep a per-process session clock for DosSetDateTime; add 64-bit time calls in WARPINE.DLL | Accepted | 2026-11-18 |
