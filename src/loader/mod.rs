@@ -74,6 +74,8 @@ pub mod pm_psstate;
 mod stubs;
 pub mod clock;
 pub mod infoseg;
+pub mod shared_arena;
+pub mod shared_sem;
 mod warpine_api;
 pub mod console;
 pub mod ansi;
@@ -367,6 +369,11 @@ pub struct SharedState {
     pub handle_mgr: Mutex<HandleManager>,
     pub resource_mgr: Mutex<ResourceManager>,
     pub shmem_mgr: Mutex<SharedMemManager>,
+    /// The session's shared arena, once attached (`shared_arena.rs`);
+    /// without it shared memory stays within this process.
+    pub arena: std::sync::OnceLock<shared_arena::Arena>,
+    /// The session's shared semaphores, once attached (`shared_sem.rs`).
+    pub shared_sems: std::sync::OnceLock<Arc<shared_sem::SharedSems>>,
     pub process_mgr: Mutex<ProcessManager>,
     pub sem_mgr: Mutex<SemaphoreManager>,
     pub hdir_mgr: Mutex<HDirManager>,
@@ -466,11 +473,12 @@ impl Default for Loader {
 impl Loader {
     pub fn new() -> Self {
         let vm: Arc<dyn VmBackend> = Arc::new(KvmVmBackend::new());
-        let guest_mem_size = 256 * 1024 * 1024;
+        let guest_mem_size = GUEST_MEM_SIZE as usize;
         let guest_mem = GuestMemory::alloc(guest_mem_size);
         vm.register_guest_memory(0, guest_mem_size as u64, guest_mem.host_base_addr()).unwrap();
 
-        let mem_mgr = MemoryManager::new(DYNAMIC_ALLOC_BASE, guest_mem_size as u32);
+        // Private allocations end where the shared arena begins.
+        let mem_mgr = MemoryManager::new(DYNAMIC_ALLOC_BASE, SHARED_ARENA_BASE);
         let handle_mgr = HandleManager::new();
         let resource_mgr = ResourceManager::new();
         let shmem_mgr = SharedMemManager::new();
@@ -509,6 +517,8 @@ impl Loader {
             handle_mgr: Mutex::new(handle_mgr),
             resource_mgr: Mutex::new(resource_mgr),
             shmem_mgr: Mutex::new(shmem_mgr),
+            arena: std::sync::OnceLock::new(),
+            shared_sems: std::sync::OnceLock::new(),
             process_mgr: Mutex::new(process_mgr),
             sem_mgr: Mutex::new(sem_mgr),
             hdir_mgr: Mutex::new(hdir_mgr),
@@ -611,6 +621,8 @@ impl Loader {
             handle_mgr:   Mutex::new(HandleManager::new()),
             resource_mgr: Mutex::new(ResourceManager::new()),
             shmem_mgr:    Mutex::new(SharedMemManager::new()),
+            arena: std::sync::OnceLock::new(),
+            shared_sems: std::sync::OnceLock::new(),
             process_mgr:  Mutex::new(ProcessManager::new()),
             sem_mgr:      Mutex::new(SemaphoreManager::new()),
             hdir_mgr:     Mutex::new(HDirManager::new()),

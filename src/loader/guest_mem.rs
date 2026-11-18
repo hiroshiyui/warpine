@@ -83,6 +83,39 @@ impl GuestMemory {
         Some(unsafe { self.ptr.add(off) })
     }
 
+    /// Put the first `len` bytes of the file `fd` in place of the guest
+    /// pages at `offset..offset + len`, shared (`MAP_SHARED | MAP_FIXED`):
+    /// the shared arena (`shared_arena.rs`). The range must be page aligned
+    /// and inside the allocation; the bounds every access checks stay the
+    /// same, since the mapping replaces pages within them. The caller must
+    /// pass a file that cannot shrink (a sealed memfd), so no access through
+    /// this region can fault on a page past the file's end.
+    pub fn map_shared(&self, offset: u32, len: usize, fd: std::os::fd::BorrowedFd<'_>) -> std::io::Result<()> {
+        use std::os::fd::AsRawFd;
+        const PAGE: usize = 4096;
+        let off = offset as usize;
+        if !off.is_multiple_of(PAGE) || !len.is_multiple_of(PAGE) || len == 0
+            || off.checked_add(len).is_none_or(|end| end > self.size) {
+            return Err(std::io::Error::from(std::io::ErrorKind::InvalidInput));
+        }
+        // SAFETY: the target range lies inside this allocation (checked
+        // above), which this type owns; MAP_FIXED replaces exactly those
+        // pages and nothing else of the process. No reference into the range
+        // is held across this call (all accesses copy through `ptr_at`).
+        let raw = unsafe {
+            libc::mmap(
+                self.ptr.add(off) as *mut libc::c_void, len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED | libc::MAP_FIXED,
+                fd.as_raw_fd(), 0,
+            )
+        };
+        if raw == libc::MAP_FAILED {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
     /// Read a `Copy` value from guest memory at `offset`.
     /// Returns `None` if the access would be out of bounds.
     pub fn read<T: Copy>(&self, offset: u32) -> Option<T> {

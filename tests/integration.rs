@@ -633,6 +633,43 @@ fn test_named_pipes_and_child_pipes() {
     assert_eq!(code, 0, "{out}");
 }
 
+/// shmem_test: shared memory between a parent and a child (two Warpine
+/// processes): named, gettable and giveable blocks at the same address in
+/// both, a given block outliving the giver's DosFreeMem, a child's block
+/// gone when it ends, one it gave kept by the parent (ADR-0049).
+#[test]
+fn test_shared_memory_between_processes() {
+    const SAMPLE: &str = "samples/shmem_test/shmem_test.exe";
+    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    let (out, code) = run_sample(SAMPLE, 60);
+    let checks: Vec<&str> = out.lines()
+        .filter(|l| l.starts_with("shmem_test: ") && !l.contains(": done")).collect();
+    assert!(checks.iter().filter(|l| l.contains(": child: ")).count() >= 13, "the child's checks:\n{out}");
+    let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
+    assert!(failed.is_empty(), "failed checks: {failed:#?}");
+    assert!(out.contains("shmem_test: done 29/29"), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
+/// shsem_test: shared semaphores between a parent and a child: named and
+/// DC_SEM_SHARED events and mutexes opened by name and by handle, waits
+/// woken from the other process, a muxwait list of shared events, a mutex
+/// left owned by the ended child (ERROR_SEM_OWNER_DIED), a semaphore only
+/// the child had open gone with it (ADR-0050).
+#[test]
+fn test_shared_semaphores_between_processes() {
+    const SAMPLE: &str = "samples/shsem_test/shsem_test.exe";
+    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    let (out, code) = run_sample(SAMPLE, 60);
+    let checks: Vec<&str> = out.lines()
+        .filter(|l| l.starts_with("shsem_test: ") && !l.contains(": done")).collect();
+    assert!(checks.iter().filter(|l| l.contains(": child: ")).count() >= 18, "the child's checks:\n{out}");
+    let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
+    assert!(failed.is_empty(), "failed checks: {failed:#?}");
+    assert!(out.contains("shsem_test: done 27/27"), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
 /// xcpt_thread_test: every thread has its own exception-handler chain (a
 /// created thread starts with an empty one; exceptions reach only the
 /// raising thread's handlers), and XCPT_CONTINUE_EXECUTION returns from
@@ -2174,13 +2211,13 @@ fn test_threads_limit_refuses_a_process_without_a_slot() {
     let start = stat[stat.rfind(')').unwrap() + 1..].split_whitespace().nth(19).unwrap().to_string();
     let me = std::process::id();
     let record = session.join(format!("p-{me}"));
-    std::fs::write(&record, format!("{me} {start} 4095\n")).unwrap();
+    std::fs::write(&record, format!("{me} {start} 4095 1\n")).unwrap();
     let dir_s = session.to_str().unwrap();
     let (out, code) = run_sample_env("samples/hello/hello.exe", 30, &[("WARPINE_THREAD_DIR", dir_s)]);
     assert_eq!(code, 89, "stdout:\n{out}");
     assert!(!out.contains("Hello"), "{out}");
     // The same record with another start time is a dead process.
-    std::fs::write(&record, format!("{me} 1 4095\n")).unwrap();
+    std::fs::write(&record, format!("{me} 1 4095 1\n")).unwrap();
     let (out, code) = run_sample_env("samples/hello/hello.exe", 30, &[("WARPINE_THREAD_DIR", dir_s)]);
     assert_eq!(code, 0, "stdout:\n{out}");
     assert!(out.contains("Hello"), "{out}");

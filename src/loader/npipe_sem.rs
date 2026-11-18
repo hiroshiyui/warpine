@@ -279,7 +279,7 @@ impl super::Loader {
             table.detach(&weak);
             return NO_ERROR;
         }
-        if self.shared.sem_mgr.lock_or_recover().get_event(hsem).is_none() {
+        if !self.shared.sem_mgr.lock_or_recover().is_event(hsem) {
             return ERROR_SEM_NOT_FOUND;
         }
         let stop = Arc::new(AtomicBool::new(false));
@@ -317,7 +317,7 @@ impl super::Loader {
     /// DosQueryNPipeSemState (ordinal 249): the state of every pipe end
     /// semaphore `hsem` is attached to.
     pub fn dos_query_npipe_sem_state(&self, hsem: u32, pnpss: u32, cb_buf: u32) -> u32 {
-        if self.shared.sem_mgr.lock_or_recover().get_event(hsem).is_none() {
+        if !self.shared.sem_mgr.lock_or_recover().is_event(hsem) {
             return ERROR_INVALID_PARAMETER;
         }
         let records = self.npipe_sem_records(hsem);

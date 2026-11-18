@@ -1298,6 +1298,11 @@ impl super::Loader {
 
     /// DosFreeMem (ordinal 304).
     pub fn dos_free_mem(&self, pb: u32) -> u32 {
+        // A block of the shared arena is let go; it is gone once no
+        // process of the session holds it (`shared_arena.rs`).
+        if super::shared_arena::in_arena(pb) && let Some(r) = self.arena_free(pb) {
+            return r;
+        }
         let freed = self.shared.mem_mgr.lock_or_recover().free_block(pb);
         let Some(size) = freed else { return ERROR_INVALID_ADDRESS };
         // A shared block's name is free again.
@@ -1347,21 +1352,79 @@ impl super::Loader {
         result.map(|()| guard)
     }
 
+    /// The session's shared semaphores, when a semaphore with these flags
+    /// and name belongs there (`DC_SEM_SHARED` or named; `shared_sem.rs`).
+    fn shared_sems_for(&self, attr: u32, named: bool) -> Option<&super::shared_sem::SharedSems> {
+        (attr & DC_SEM_SHARED != 0 || named).then(|| self.shared.shared_sems.get().map(|s| &**s)).flatten()
+    }
+
+    /// Create a shared semaphore: the name checked (also against this
+    /// process's muxwait names), the handle stored at `ph`.
+    fn create_shared_sem(&self, sems: &super::shared_sem::SharedSems, name: Option<String>, attr: u32,
+                         state: super::shared_sem::State, ph: u32) -> u32 {
+        let name = match name.map(|n| canonical_sem_name(&n)).transpose() {
+            Ok(n) => n,
+            Err(e) => return e,
+        };
+        if name.as_ref().is_some_and(|n| self.shared.sem_mgr.lock_or_recover().local_name_exists(n)) {
+            return ERROR_DUPLICATE_NAME;
+        }
+        if self.guest_ptr(ph, 4).is_none() { return ERROR_INVALID_PARAMETER; }
+        self.store_sem_handle(sems.create_sem(name, attr, state), ph)
+    }
+
+    /// Wait for shared semaphore `h` until `attempt` succeeds or `msec` ms
+    /// pass, as `wait_sem` does: the thread counts among the semaphore's
+    /// waiters (`ERROR_SEM_BUSY`), sleeps on the session's generation word
+    /// and looks at the process end every `SEM_POLL`.
+    fn wait_shared_sem<R>(&self, sems: &super::shared_sem::SharedSems, h: u32, msec: u32,
+                          mut attempt: impl FnMut() -> Result<Option<R>, u32>) -> Result<R, u32> {
+        let deadline = sem_deadline(msec);
+        let mut waiting = None;
+        loop {
+            let seen = sems.generation();
+            if let Some(r) = attempt()? { return Ok(r); }
+            if self.interrupted() { return Err(ERROR_INTERRUPT); }
+            if self.shutting_down() { return Err(ERROR_TIMEOUT); }
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() { return Err(ERROR_TIMEOUT); }
+            waiting.get_or_insert_with(|| sems.waiting(h));
+            sems.wait_change(seen, remaining.min(SEM_POLL));
+        }
+    }
+
     /// DosCreateEventSem (ordinal 324).
     pub fn dos_create_event_sem(&self, psz_name_ptr: u32, phev_ptr: u32, fl_attr: u32, f_state: u32) -> u32 {
         let name = self.sem_name(psz_name_ptr);
+        if let Some(sems) = self.shared_sems_for(fl_attr, name.is_some()) {
+            if fl_attr & !(DC_SEM_SHARED | DCE_POSTONE | DCE_AUTORESET) != 0 { return ERROR_INVALID_PARAMETER; }
+            let state = super::shared_sem::State::Event { post_count: (f_state != 0) as u32 };
+            return self.create_shared_sem(sems, name, fl_attr, state, phev_ptr);
+        }
         let created = self.shared.sem_mgr.lock_or_recover().create_event(name.as_deref(), fl_attr, f_state != 0);
         self.store_sem_handle(created, phev_ptr)
     }
 
     /// DosCloseEventSem (ordinal 326).
     pub fn dos_close_event_sem(&self, hev: u32) -> u32 {
+        if let Some(sems) = self.shared_handle(hev) { return sems.close(SemKind::Event, hev); }
         self.shared.sem_mgr.lock_or_recover().close(SemKind::Event, hev)
     }
 
     /// DosResetEventSem (ordinal 327): the post count goes to `*pulPostCount`
     /// and back to 0.
     pub fn dos_reset_event_sem(&self, hev: u32, pul_post_count: u32) -> u32 {
+        if let Some(sems) = self.shared_handle(hev) {
+            let (rc, count) = match sems.reset(hev) {
+                Err(e) => return e,
+                Ok(Ok(count)) => (NO_ERROR, count),
+                Ok(Err(e)) => (e, 0),
+            };
+            if pul_post_count == 0 || self.guest_write::<u32>(pul_post_count, count).is_none() {
+                return ERROR_INVALID_PARAMETER;
+            }
+            return rc;
+        }
         let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_event(hev) else { return ERROR_INVALID_HANDLE };
         if pul_post_count == 0 { return ERROR_INVALID_PARAMETER; }
         let mut sem = sem_arc.0.lock_or_recover();
@@ -1381,6 +1444,12 @@ impl super::Loader {
     /// DosWaitEventSem (ordinal 329); a `DCE_POSTONE` / `DCE_AUTORESET`
     /// semaphore takes its post(s) when it releases the wait.
     pub fn dos_wait_event_sem(&self, hev: u32, msec: u32) -> u32 {
+        if let Some(sems) = self.shared_handle(hev) {
+            return match self.wait_shared_sem(sems, hev, msec, || sems.try_event(hev).map(|p| p.then_some(()))) {
+                Ok(()) => NO_ERROR,
+                Err(e) => e,
+            };
+        }
         let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_event(hev) else { return ERROR_INVALID_HANDLE };
         let (lock, cvar) = &*sem_arc;
         match self.wait_sem(cvar, lock.lock_or_recover(), msec, |s| s.posted()) {
@@ -1391,6 +1460,11 @@ impl super::Loader {
 
     /// DosQueryEventSem (ordinal 330): the post count.
     pub fn dos_query_event_sem(&self, hev: u32, pul_post_count: u32) -> u32 {
+        if let Some(sems) = self.shared_handle(hev) {
+            let count = match sems.post_count(hev) { Ok(c) => c, Err(e) => return e };
+            if pul_post_count == 0 { return ERROR_INVALID_PARAMETER; }
+            return if self.guest_write::<u32>(pul_post_count, count).is_some() { NO_ERROR } else { ERROR_INVALID_PARAMETER };
+        }
         let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_event(hev) else { return ERROR_INVALID_HANDLE };
         if pul_post_count == 0 { return ERROR_INVALID_PARAMETER; }
         let count = sem_arc.0.lock_or_recover().post_count;
@@ -1400,6 +1474,13 @@ impl super::Loader {
     /// DosCreateMutexSem (ordinal 331); created owned, it belongs to the caller.
     pub fn dos_create_mutex_sem(&self, vcpu_id: u32, psz_name_ptr: u32, phmtx_ptr: u32, fl_attr: u32, f_state: u32) -> u32 {
         let name = self.sem_name(psz_name_ptr);
+        if let Some(sems) = self.shared_sems_for(fl_attr, name.is_some()) {
+            let owner = (f_state != 0).then(|| super::shared_sem::Owner {
+                proc: sems.me(), tid: super::threads::tid_of_vcpu(vcpu_id),
+            });
+            let state = super::shared_sem::State::Mutex { owner, count: owner.is_some() as u32, died: None };
+            return self.create_shared_sem(sems, name, fl_attr, state, phmtx_ptr);
+        }
         let owner = (f_state != 0).then_some(vcpu_id);
         let created = self.shared.sem_mgr.lock_or_recover().create_mutex(name.as_deref(), fl_attr, owner);
         self.store_sem_handle(created, phmtx_ptr)
@@ -1407,12 +1488,21 @@ impl super::Loader {
 
     /// DosCloseMutexSem (ordinal 333).
     pub fn dos_close_mutex_sem(&self, hmtx: u32) -> u32 {
+        if let Some(sems) = self.shared_handle(hmtx) { return sems.close(SemKind::Mutex, hmtx); }
         self.shared.sem_mgr.lock_or_recover().close(SemKind::Mutex, hmtx)
     }
 
     /// DosRequestMutexSem (ordinal 334): `ERROR_SEM_OWNER_DIED` (with the
     /// mutex) when its last owner ended without releasing it.
     pub fn dos_request_mutex_sem(&self, vcpu_id: u32, hmtx: u32, msec: u32) -> u32 {
+        if let Some(sems) = self.shared_handle(hmtx) {
+            let tid = super::threads::tid_of_vcpu(vcpu_id);
+            return match self.wait_shared_sem(sems, hmtx, msec, || sems.try_mutex(hmtx, tid)) {
+                Ok(true) => ERROR_SEM_OWNER_DIED,
+                Ok(false) => NO_ERROR,
+                Err(e) => e,
+            };
+        }
         let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_mutex(hmtx) else { return ERROR_INVALID_HANDLE };
         let (lock, cvar) = &*sem_arc;
         match self.wait_sem(cvar, lock.lock_or_recover(), msec, |s| s.available_to(vcpu_id)) {
@@ -1423,6 +1513,9 @@ impl super::Loader {
 
     /// DosReleaseMutexSem (ordinal 335).
     pub fn dos_release_mutex_sem(&self, vcpu_id: u32, hmtx: u32) -> u32 {
+        if let Some(sems) = self.shared_handle(hmtx) {
+            return sems.release(hmtx, super::threads::tid_of_vcpu(vcpu_id));
+        }
         self.shared.sem_mgr.lock_or_recover().release_mutex(hmtx, vcpu_id)
     }
 
@@ -1431,6 +1524,14 @@ impl super::Loader {
     /// releasing it: its process and thread, count 0 (unverified), and
     /// `ERROR_SEM_OWNER_DIED`.
     pub fn dos_query_mutex_sem(&self, hmtx: u32, ppid: u32, ptid: u32, pul_count: u32) -> u32 {
+        if let Some(sems) = self.shared_handle(hmtx) {
+            let (pid, tid, count, rc) = match sems.query_mutex(hmtx) { Ok(q) => q, Err(e) => return e };
+            if ppid == 0 || ptid == 0 || pul_count == 0 { return ERROR_INVALID_PARAMETER; }
+            let written = self.guest_write::<u32>(ppid, pid).is_some()
+                && self.guest_write::<u32>(ptid, tid).is_some()
+                && self.guest_write::<u32>(pul_count, count).is_some();
+            return if written { rc } else { ERROR_INVALID_PARAMETER };
+        }
         let Some(sem_arc) = self.shared.sem_mgr.lock_or_recover().get_mutex(hmtx) else { return ERROR_INVALID_HANDLE };
         if ppid == 0 || ptid == 0 || pul_count == 0 { return ERROR_INVALID_PARAMETER; }
         let own_pid = self.shared.process_id();
@@ -1482,8 +1583,26 @@ impl super::Loader {
             h
         };
         debug!("  open {:?} semaphore name={:?} handle={}", kind, name, h);
+        if kind != SemKind::MuxWait && let Some(sems) = self.shared.shared_sems.get() {
+            let canonical = match name.as_deref().map(canonical_sem_name).transpose() {
+                Ok(n) => n,
+                Err(e) => return e,
+            };
+            if super::shared_sem::is_shared(h) || canonical.is_some() {
+                let opened = sems.open(kind, canonical.as_deref(), h);
+                // A name of this process's own muxwait semaphores is not
+                // the kind asked for either.
+                return self.store_sem_handle(opened, ph);
+            }
+        }
         let opened = self.shared.sem_mgr.lock_or_recover().open(kind, name.as_deref(), h);
         self.store_sem_handle(opened, ph)
+    }
+
+    /// The session's shared semaphores when `h` is one of their handles.
+    fn shared_handle(&self, h: u32) -> Option<&super::shared_sem::SharedSems> {
+        if !super::shared_sem::is_shared(h) { return None; }
+        self.shared.shared_sems.get().map(|s| &**s)
     }
 
     /// DosCloseMuxWaitSem (ordinal 339).
@@ -1509,6 +1628,9 @@ impl super::Loader {
         loop {
             // The generation first: a change after this look wakes the wait.
             let seen = signal.generation();
+            let shared_seen = self.shared.shared_sems.get()
+                .filter(|_| mux.lock_or_recover().records.iter().any(|r| super::shared_sem::is_shared(r.hsem)))
+                .map(|s| (s.clone(), s.generation()));
             let ready = self.shared.sem_mgr.lock_or_recover().try_mux(hmux, vcpu_id);
             match ready {
                 Err(e) => return e,
@@ -1526,7 +1648,12 @@ impl super::Loader {
             if remaining.is_zero() { return ERROR_TIMEOUT; }
             // Counted among the list's waiters while blocked (ERROR_SEM_BUSY).
             waiting.get_or_insert_with(|| MuxWaiting::new(mux.clone()));
-            signal.wait_change(seen, remaining.min(SEM_POLL));
+            // A list with shared semaphores sleeps on the session's word
+            // (local changes wake it too); others on the process's signal.
+            match &shared_seen {
+                Some((sems, seen)) => sems.wait_change(*seen, remaining.min(SEM_POLL)),
+                None => signal.wait_change(seen, remaining.min(SEM_POLL)),
+            }
         }
     }
 

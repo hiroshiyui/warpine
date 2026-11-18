@@ -4,6 +4,18 @@ pub const MAGIC_API_BASE: u64 = 0x01000000;
 pub const EXIT_TRAP_ADDR: u32 = 0x010003FF;
 pub const CALLBACK_RET_TRAP: u32 = 0x010003FE;
 pub const DYNAMIC_ALLOC_BASE: u32 = 0x02000000; // 32MB
+/// Size of the guest's memory (guest physical = linear; no paging).
+pub const GUEST_MEM_SIZE: u32 = 0x1000_0000; // 256 MB
+/// The shared arena: the top of every Warpine process's guest memory, the
+/// same host memory in all processes of a session (`shared_arena.rs`,
+/// ADR-0049). Private allocations stay below it.
+pub const SHARED_ARENA_BASE: u32 = 0x0E00_0000;
+pub const SHARED_ARENA_SIZE: u32 = 0x0200_0000; // 32 MB
+/// The access flags `DosGetSharedMem` / `DosGetNamedSharedMem` /
+/// `DosGiveSharedMem` take.
+pub const SHARED_ACCESS_FLAGS: u32 = PAG_READ | PAG_WRITE | PAG_EXECUTE | PAG_GUARD;
+const _: () = assert!(SHARED_ARENA_BASE as u64 + SHARED_ARENA_SIZE as u64 == GUEST_MEM_SIZE as u64);
+const _: () = assert!(SHARED_ARENA_BASE.is_multiple_of(4096) && SHARED_ARENA_BASE > DYNAMIC_ALLOC_BASE);
 
 pub const PMWIN_BASE: u32 = 2048;
 pub const PMGPI_BASE: u32 = 3072;

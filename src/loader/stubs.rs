@@ -124,7 +124,8 @@ impl super::Loader {
     /// DosAllocSharedMem (ordinal 300): allocate shared memory. A name must
     /// be `\SHAREMEM\…` and not in use (`ERROR_ALREADY_EXISTS`); the
     /// flags need an access bit (`PAG_READ` / `PAG_WRITE` / `PAG_EXECUTE`).
-    /// Warpine's processes are separate host processes: the block is
+    /// The block is in the session's shared arena (`shared_arena.rs`), at
+    /// the same address in every process; without one (no session) it is
     /// shared by the threads of this process only.
     pub fn dos_alloc_shared_mem(&self, ppb: u32, psz_name: u32, cb: u32, flag: u32) -> u32 {
         let name = if psz_name != 0 {
@@ -139,14 +140,19 @@ impl super::Loader {
         if ppb == 0 || cb == 0 || flag & !VALID != 0 || flag & (PAG_READ | PAG_WRITE | PAG_EXECUTE) == 0 {
             return ERROR_INVALID_PARAMETER;
         }
-        if let Some(n) = &name {
-            let upper = n.replace('/', "\\").to_ascii_uppercase();
-            if !upper.starts_with("\\SHAREMEM\\") || upper.len() <= "\\SHAREMEM\\".len() {
-                return ERROR_INVALID_NAME;
-            }
-            if self.shared.shmem_mgr.lock_or_recover().find_by_name(&upper).is_some() {
-                return ERROR_ALREADY_EXISTS;
-            }
+        let name = match name {
+            Some(n) => match super::shared_arena::canonical_name(&n) {
+                Some(c) => Some(c),
+                None => return ERROR_INVALID_NAME,
+            },
+            None => None,
+        };
+        if let Some(r) = self.arena_alloc(ppb, name.clone(), cb, flag) {
+            return r;
+        }
+        if let Some(upper) = &name
+            && self.shared.shmem_mgr.lock_or_recover().find_by_name(upper).is_some() {
+            return ERROR_ALREADY_EXISTS;
         }
         let Some(addr) = self.shared.mem_mgr.lock_or_recover().alloc(cb) else {
             return ERROR_NOT_ENOUGH_MEMORY;
@@ -156,15 +162,26 @@ impl super::Loader {
             return ERROR_INVALID_PARAMETER;
         }
         self.shared.shmem_mgr.lock_or_recover().register(super::managers::SharedBlock {
-            addr, size: cb, flags: flag, name: name.map(|n| n.replace('/', "\\")),
+            addr, size: cb, flags: flag, name,
         });
         NO_ERROR
     }
 
     /// DosGetNamedSharedMem (ordinal 301): get existing shared memory by name.
-    pub fn dos_get_named_shared_mem(&self, ppb: u32, psz_name: u32, _flag: u32) -> u32 {
-        let name = self.read_guest_string(psz_name).replace('/', "\\");
-        debug!("  DosGetNamedSharedMem(name='{}')", name);
+    /// The name must be `\SHAREMEM\…` (`ERROR_INVALID_NAME`) and the flags
+    /// need an access bit.
+    pub fn dos_get_named_shared_mem(&self, ppb: u32, psz_name: u32, flag: u32) -> u32 {
+        let raw = self.read_guest_string(psz_name);
+        debug!("  DosGetNamedSharedMem(name='{}', flag=0x{:X})", raw, flag);
+        if flag & !SHARED_ACCESS_FLAGS != 0 || flag & (PAG_READ | PAG_WRITE | PAG_EXECUTE) == 0 {
+            return ERROR_INVALID_PARAMETER;
+        }
+        let Some(name) = super::shared_arena::canonical_name(&raw) else {
+            return ERROR_INVALID_NAME;
+        };
+        if let Some(r) = self.arena_get_named(ppb, &name) {
+            return r;
+        }
         if let Some(addr) = self.shared.shmem_mgr.lock_or_recover().find_by_name(&name) {
             self.guest_write::<u32>(ppb, addr);
             NO_ERROR
@@ -179,14 +196,18 @@ impl super::Loader {
     /// `ERROR_ACCESS_DENIED`); `flag` needs an access bit and may not ask
     /// for more than the block allows. The calling process itself already
     /// has the block (`NO_ERROR`, unverified); an unknown process is
-    /// `ERROR_INVALID_PROCID`. A child process is a separate Warpine (host)
-    /// process whose memory this process cannot map into, so giving to it
-    /// fails with `ERROR_ACCESS_DENIED` (Warpine's limit).
+    /// `ERROR_INVALID_PROCID`. Another process of the session (a child
+    /// too, even before it has started) gets the block in the shared arena;
+    /// without an arena giving to another process fails with
+    /// `ERROR_ACCESS_DENIED` (Warpine's limit).
     pub fn dos_give_shared_mem(&self, pb: u32, pid: u32, flag: u32) -> u32 {
         debug!("  DosGiveSharedMem(pb=0x{:08X}, pid={}, flag=0x{:X})", pb, pid, flag);
         const PERM: u32 = PAG_READ | PAG_WRITE | PAG_EXECUTE;
-        if flag & !(PERM | PAG_GUARD) != 0 || flag & PERM == 0 {
+        if flag & !SHARED_ACCESS_FLAGS != 0 || flag & PERM == 0 {
             return ERROR_INVALID_PARAMETER;
+        }
+        if super::shared_arena::in_arena(pb) && let Some(r) = self.arena_give(pb, pid, flag & PERM) {
+            return r;
         }
         let Some(block) = self.shared.shmem_mgr.lock_or_recover().block(pb).cloned() else {
             return ERROR_INVALID_ADDRESS;
@@ -204,10 +225,23 @@ impl super::Loader {
         ERROR_INVALID_PROCID
     }
 
-    /// DosGetSharedMem (ordinal 302): get access to shared memory.
-    /// In our flat model all memory is already accessible.
-    pub fn dos_get_shared_mem(&self, _pb: u32, _flag: u32) -> u32 {
-        NO_ERROR
+    /// DosGetSharedMem (ordinal 302): get access to the gettable shared
+    /// block at `pb` (`OBJ_GETTABLE`, else `ERROR_ACCESS_DENIED`; not a
+    /// block: `ERROR_INVALID_ADDRESS`, unverified); the flags need an access
+    /// bit. A block of this process's own (no arena) is already accessible.
+    pub fn dos_get_shared_mem(&self, pb: u32, flag: u32) -> u32 {
+        debug!("  DosGetSharedMem(pb=0x{:08X}, flag=0x{:X})", pb, flag);
+        if flag & !SHARED_ACCESS_FLAGS != 0 || flag & (PAG_READ | PAG_WRITE | PAG_EXECUTE) == 0 {
+            return ERROR_INVALID_PARAMETER;
+        }
+        if super::shared_arena::in_arena(pb) && let Some(r) = self.arena_get(pb) {
+            return r;
+        }
+        match self.shared.shmem_mgr.lock_or_recover().block(pb) {
+            Some(b) if b.flags & OBJ_GETTABLE != 0 => NO_ERROR,
+            Some(_) => ERROR_ACCESS_DENIED,
+            None => ERROR_INVALID_ADDRESS,
+        }
     }
 
     /// DosSetMem (ordinal 305): commit/decommit pages.
@@ -1024,7 +1058,7 @@ impl super::Loader {
                 QSV_TOTRESMEM => 16 * 1024 * 1024,
                 QSV_TOTAVAILMEM => 96 * 1024 * 1024,
                 QSV_MAXPRMEM => 512 * 1024 * 1024, // max private memory
-                QSV_MAXSHMEM => 256 * 1024 * 1024,  // max shared memory
+                QSV_MAXSHMEM => SHARED_ARENA_SIZE, // the shared arena
                 // Tenths of a millisecond (Control Program Reference).
                 QSV_TIMER_INTERVAL => DOS_TIMER_TICK_MS * 10,
                 QSV_MAX_COMP_LENGTH => 255,

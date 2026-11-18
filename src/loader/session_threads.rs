@@ -67,6 +67,10 @@ const LOCK_ATTEMPTS: usize = 8;
 const PID_COUNTER: &str = "pid-next";
 /// Largest process-id counter file.
 const MAX_COUNTER: usize = 16;
+/// The shared-memory table (`shared_arena.rs`); not a record either.
+pub const SHARED_MEM_TABLE: &str = "shmem";
+/// Session-wide tables removed with the last process.
+const TABLES: [&str; 1] = [SHARED_MEM_TABLE];
 
 /// A process: pid and start time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,16 +104,18 @@ pub fn proc_start_time(pid: u32) -> Option<u64> {
     parse_stat(&buf)
 }
 
-/// One record: whose, and how many threads.
+/// One record: whose, how many threads, and the OS/2 process id it stands
+/// for (a `p-` record: the process's own; an `r-` record: the child's).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Record {
     who: Identity,
     threads: u32,
+    os2pid: u32,
 }
 
 impl Record {
     fn encode(&self) -> String {
-        format!("{} {} {}\n", self.who.pid, self.who.start, self.threads)
+        format!("{} {} {} {}\n", self.who.pid, self.who.start, self.threads, self.os2pid)
     }
 
     fn decode(bytes: &[u8]) -> Option<Record> {
@@ -122,10 +128,12 @@ impl Record {
         let pid: u32 = num(parts.next())?.parse().ok()?;
         let start: u64 = num(parts.next())?.parse().ok()?;
         let threads: u32 = num(parts.next())?.parse().ok()?;
-        if parts.next().is_some() || pid == 0 || pid > PID_MAX || threads > MAX_THREADS {
+        let os2pid: u32 = num(parts.next())?.parse().ok()?;
+        if parts.next().is_some() || pid == 0 || pid > PID_MAX || threads > MAX_THREADS
+            || os2pid > MAX_PROCESS_ID {
             return None;
         }
-        Some(Record { who: Identity { pid, start }, threads })
+        Some(Record { who: Identity { pid, start }, threads, os2pid })
     }
 }
 
@@ -303,6 +311,8 @@ pub struct ThreadSession {
     dir: SessionDir,
     limit: u32,
     me: Identity,
+    /// This process's OS/2 process id (`pib_ulpid`).
+    os2pid: u32,
     /// Threads this process runs (as recorded).
     threads: u32,
     next_seq: u32,
@@ -317,8 +327,20 @@ pub struct ThreadSession {
 impl ThreadSession {
     /// A session at `dir` with `limit` threads for process `me`.
     pub fn new(dir: SessionDir, limit: u32, me: Identity, start_time: StartTimeFn) -> Self {
-        ThreadSession { dir, limit, me, threads: 0, next_seq: 0, start_time, local_only: false, left: false }
+        ThreadSession { dir, limit, me, os2pid: 0, threads: 0, next_seq: 0, start_time, local_only: false, left: false }
     }
+
+    /// The same session for OS/2 process `os2pid`.
+    pub fn with_os2pid(mut self, os2pid: u32) -> Self {
+        self.os2pid = os2pid;
+        self
+    }
+
+    /// This process's OS/2 process id.
+    pub fn os2pid(&self) -> u32 { self.os2pid }
+
+    /// This host process.
+    pub fn identity(&self) -> Identity { self.me }
 
     /// This host process in the session of the environment.
     pub fn for_this_process(limit: u32) -> Self {
@@ -361,7 +383,7 @@ impl ThreadSession {
         Ok(total)
     }
 
-    fn own_record(&self) -> Record { Record { who: self.me, threads: self.threads } }
+    fn own_record(&self) -> Record { Record { who: self.me, threads: self.threads, os2pid: self.os2pid } }
 
     fn fall_back(&mut self, what: &str, e: &std::io::Error) {
         if !self.local_only {
@@ -439,7 +461,8 @@ impl ThreadSession {
     }
 
     /// Reserve a slot for thread 1 of a child about to be started.
-    pub fn reserve(&mut self) -> Result<Reservation, Full> {
+    /// `child` is the OS/2 process id the child will have.
+    pub fn reserve(&mut self, child: u32) -> Result<Reservation, Full> {
         if self.left { return Err(Full::Limit); }
         if self.local_only { return Ok(Reservation { name: None }); }
         let seq = self.next_seq;
@@ -449,7 +472,7 @@ impl ThreadSession {
             let l = self.dir.lock()?;
             let used = self.others(&l)?.saturating_add(u64::from(self.threads));
             if used.saturating_add(1) > u64::from(self.limit) { return Ok(Err(Full::Limit)); }
-            l.write(&name, &Record { who: self.me, threads: 1 })?;
+            l.write(&name, &Record { who: self.me, threads: 1, os2pid: child })?;
             Ok(Ok(()))
         })();
         match r {
@@ -469,13 +492,16 @@ impl ThreadSession {
         let Some(name) = res.name else { return };
         if self.left { return; }
         let Ok(l) = self.dir.lock() else { return };
-        if !matches!(l.read(&name), Ok(Some(_))) { return; }
+        let os2pid = match l.read(&name) {
+            Ok(Some(rec)) => rec.map_or(0, |r| r.os2pid),
+            _ => return,
+        };
         l.remove(&name);
         let Some(pid) = child.filter(|&p| p != 0 && p <= PID_MAX) else { return };
         if let Some(start) = (self.start_time)(pid) {
             let own = process_name(pid);
             if !matches!(l.read(&own), Ok(Some(Some(_)))) {
-                let _ = l.write(&own, &Record { who: Identity { pid, start }, threads: 1 });
+                let _ = l.write(&own, &Record { who: Identity { pid, start }, threads: 1, os2pid });
             }
         }
     }
@@ -503,6 +529,9 @@ impl ThreadSession {
             let _ = self.others(&l);
             if !self.any_record(&l) {
                 l.remove(PID_COUNTER);
+                for t in TABLES {
+                    l.remove(t);
+                }
             }
             let _ = std::fs::remove_dir(&self.dir.path);
         }
@@ -514,6 +543,78 @@ impl ThreadSession {
         std::fs::read_dir(l.path("")).map_or(true, |entries| {
             entries.take(MAX_ENTRIES).flatten().any(|e| parse_name(&e.file_name()).is_some())
         })
+    }
+}
+
+/// The session directory locked for a session-wide table kept beside the
+/// records (`shared_arena.rs`). Everything read is treated as hostile.
+pub struct SessionTables<'a> {
+    l: Locked,
+    session: &'a ThreadSession,
+}
+
+impl ThreadSession {
+    /// Lock the directory for its tables; an error when it is not in use
+    /// (this process counts locally, or is leaving).
+    pub fn tables(&self) -> std::io::Result<SessionTables<'_>> {
+        if self.local_only || self.left {
+            return Err(std::io::Error::other("the session directory is not in use"));
+        }
+        Ok(SessionTables { l: self.dir.lock()?, session: self })
+    }
+}
+
+impl SessionTables<'_> {
+    /// Table `name`, at most `max` bytes (`None`: there is none; a link,
+    /// something other than a file or a larger file is removed and read as
+    /// none).
+    pub fn read(&self, name: &str, max: usize) -> std::io::Result<Option<Vec<u8>>> {
+        let f = match OpenOptions::new().read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(self.l.path(name)) {
+            Ok(f) => f,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+            Err(_) => { self.l.remove(name); return Ok(None); }
+        };
+        let meta = f.metadata()?;
+        if !meta.is_file() || meta.len() > max as u64 {
+            self.l.remove(name);
+            return Ok(None);
+        }
+        let mut buf = Vec::with_capacity(meta.len() as usize);
+        f.take(max as u64).read_to_end(&mut buf)?;
+        Ok(Some(buf))
+    }
+
+    /// Replace table `name` with `bytes` (written aside, then renamed over
+    /// it, so a process killed meanwhile leaves the old table).
+    pub fn write(&self, name: &str, bytes: &[u8]) -> std::io::Result<()> {
+        let aside = format!("{name}.new");
+        self.l.remove(&aside);
+        let mut f = OpenOptions::new().write(true).create_new(true).mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW).open(self.l.path(&aside))?;
+        f.write_all(bytes)?;
+        drop(f);
+        std::fs::rename(self.l.path(&aside), self.l.path(name))
+    }
+
+    /// The OS/2 process ids of the session's live processes and of the
+    /// children being started (their reservations).
+    pub fn live_processes(&self) -> std::io::Result<HashSet<u32>> {
+        let mut live = HashSet::new();
+        live.insert(self.session.os2pid);
+        for (i, entry) in std::fs::read_dir(self.l.path(""))?.enumerate() {
+            if i >= MAX_ENTRIES { break; }
+            let entry = entry?;
+            let file = entry.file_name();
+            let Some(kind) = parse_name(&file) else { continue };
+            let Some(name) = file.to_str() else { continue };
+            let owner = match kind { Entry::Process(p) | Entry::Reservation(p, _) => p };
+            if let Some(Some(rec)) = self.l.read(name)?
+                && rec.who.pid == owner && self.session.is_alive(rec.who) {
+                live.insert(rec.os2pid);
+            }
+        }
+        Ok(live)
     }
 }
 
@@ -536,12 +637,12 @@ impl ThreadSlots {
     }
 
     /// Reserve a child's slot and pass the session to `cmd`.
-    pub fn reserve_for(&mut self, cmd: &mut std::process::Command) -> Result<Reservation, Full> {
+    pub fn reserve_for(&mut self, cmd: &mut std::process::Command, child: u32) -> Result<Reservation, Full> {
         let ThreadSlots::Session(s) = self else {
             cmd.env_remove(SLOT_ENV);
             return Ok(Reservation { name: None });
         };
-        let res = s.reserve()?;
+        let res = s.reserve(child)?;
         cmd.env(THREAD_DIR_ENV, s.dir().path());
         cmd.env(super::config_sys::THREADS_ENV, s.limit().to_string());
         match res.name() {
@@ -557,6 +658,11 @@ impl ThreadSlots {
 
     pub fn leave(&mut self) {
         if let ThreadSlots::Session(s) = self { s.leave(); }
+    }
+
+    /// The session, when this process takes part in one.
+    pub fn session(&self) -> Option<&ThreadSession> {
+        match self { ThreadSlots::Inactive => None, ThreadSlots::Session(s) => Some(s) }
     }
 
     /// A new process id from the session (`None`: inactive or unusable).
@@ -576,13 +682,17 @@ impl super::Loader {
     /// [`EXIT_NO_THREAD_SLOT`] before running guest code.
     pub fn join_thread_session(&self) -> bool {
         let limit = super::config_sys::session_limit(&self.shared.drive_mgr.lock_or_recover());
-        let mut session = ThreadSession::for_this_process(limit);
+        let mut session = ThreadSession::for_this_process(limit).with_os2pid(self.shared.process_id());
         let slot = std::env::var(SLOT_ENV).ok();
         if session.join(slot.as_deref()).is_err() {
             return false;
         }
         log::debug!("thread accounting: limit {limit} in {}", session.dir().path().display());
         *self.shared.thread_slots.lock_or_recover() = ThreadSlots::Session(Box::new(session));
+        // The session's shared memory (`shared_arena.rs`).
+        self.shared.attach_shared_arena();
+        // and its shared semaphores (`shared_sem.rs`).
+        self.shared.attach_shared_sems();
         true
     }
 }
@@ -590,6 +700,8 @@ impl super::Loader {
 impl super::SharedState {
     /// This process leaves the session's thread accounting (it ends).
     pub fn leave_thread_session(&self) {
+        self.release_shared_arena();
+        if let Some(s) = self.shared_sems.get() { s.leave(); }
         self.thread_slots.lock_or_recover().leave();
     }
 }
@@ -645,10 +757,11 @@ mod tests {
 
     #[test]
     fn records_and_names_are_parsed_strictly() {
-        let r = Record { who: Identity { pid: 5, start: 7 }, threads: 3 };
+        let r = Record { who: Identity { pid: 5, start: 7 }, threads: 3, os2pid: 9 };
         assert_eq!(Record::decode(r.encode().as_bytes()), Some(r));
-        for bad in [&b"5 7 3"[..], b"5 7 3 1\n", b"0 7 3\n", b"5 7 99999\n", b"-5 7 3\n",
-                    b"5  7 3\n", b"5 7 +3\n", &[b'1'; 80][..], b"\xff 7 3\n"] {
+        for bad in [&b"5 7 3 1"[..], b"5 7 3\n", b"5 7 3 1 1\n", b"0 7 3 1\n", b"5 7 99999 1\n",
+                    b"-5 7 3 1\n", b"5  7 3 1\n", b"5 7 +3 1\n", &[b'1'; 80][..], b"\xff 7 3 1\n",
+                    b"5 7 3 99999999\n"] {
             assert_eq!(Record::decode(bad), None, "{bad:?}");
         }
         assert_eq!(parse_name(OsStr::new("p-12")), Some(Entry::Process(12)));
@@ -729,9 +842,9 @@ mod tests {
         let procs = Procs::default();
         let mut parent = procs.session(d.path(), 3, 100);
         parent.join(None).unwrap();
-        let r1 = parent.reserve().unwrap();
-        let r2 = parent.reserve().unwrap();
-        assert_eq!(parent.reserve(), Err(Full::Limit));
+        let r1 = parent.reserve(0).unwrap();
+        let r2 = parent.reserve(0).unwrap();
+        assert_eq!(parent.reserve(0), Err(Full::Limit));
         assert_eq!(parent.acquire_thread(), Err(Full::Limit));
         // Child 1 starts before its parent settles: takes the reservation.
         let mut c1 = procs.session(d.path(), 3, 201);
@@ -745,7 +858,7 @@ mod tests {
         assert_eq!(files(d.path()), ["p-100", "p-201", "p-202"]);
         // A failed spawn gives the slot back.
         c2.leave();
-        let r3 = parent.reserve().unwrap();
+        let r3 = parent.reserve(0).unwrap();
         parent.settle(r3, None);
         assert_eq!(files(d.path()), ["p-100", "p-201"]);
         // A slot name of another (dead) process does not help.
@@ -762,7 +875,7 @@ mod tests {
         let procs = Procs::default();
         let mut parent = procs.session(d.path(), 2, 100);
         parent.join(None).unwrap();
-        let _r = parent.reserve().unwrap();
+        let _r = parent.reserve(0).unwrap();
         procs.kill(100);
         let mut other = procs.session(d.path(), 2, 300);
         other.join(None).unwrap();
@@ -783,7 +896,7 @@ mod tests {
                 if s.join(None).is_ok() {
                     got += 1;
                     for _ in 0..4 {
-                        if let Ok(r) = s.reserve() { got += 1; std::mem::forget(r); }
+                        if let Ok(r) = s.reserve(0) { got += 1; std::mem::forget(r); }
                     }
                 }
                 got
@@ -877,7 +990,7 @@ mod tests {
         let procs = Procs::default();
         let mut a = procs.session(d.path(), 3, 100);
         assert_eq!(a.join(None), Ok(()));
-        assert_eq!(a.reserve().map(|r| r.name().is_none()), Ok(true));
+        assert_eq!(a.reserve(0).map(|r| r.name().is_none()), Ok(true));
         assert_eq!(a.acquire_thread(), Ok(()));
         assert_eq!(a.acquire_thread(), Ok(()));
         assert_eq!(a.acquire_thread(), Err(Full::Limit));
@@ -903,14 +1016,14 @@ mod tests {
         s.join(None).unwrap();
         let mut slots = ThreadSlots::Session(Box::new(s));
         let mut cmd = std::process::Command::new("true");
-        let r = slots.reserve_for(&mut cmd).unwrap();
+        let r = slots.reserve_for(&mut cmd, 0).unwrap();
         let envs: HashMap<_, _> = cmd.get_envs().collect();
         assert_eq!(envs[OsStr::new(SLOT_ENV)], Some(OsStr::new("r-100-0")));
         assert_eq!(envs[OsStr::new(super::super::config_sys::THREADS_ENV)], Some(OsStr::new("70")));
         assert_eq!(envs[OsStr::new(THREAD_DIR_ENV)], Some(d.path().join("s").as_os_str()));
         slots.settle(r, None);
         let mut inactive = ThreadSlots::Inactive;
-        assert_eq!(inactive.reserve_for(&mut cmd).map(|r| r.name().is_none()), Ok(true));
+        assert_eq!(inactive.reserve_for(&mut cmd, 0).map(|r| r.name().is_none()), Ok(true));
         assert_eq!(inactive.acquire_thread(), Ok(()));
     }
 
@@ -955,5 +1068,39 @@ mod tests {
         child_started(&l.shared, r, None);
         let r = admit_child(&l.shared, &mut cmd2).unwrap();
         child_started(&l.shared, r, None);
+    }
+
+    #[test]
+    fn tables_see_live_processes_and_go_with_the_last_one() {
+        let d = tempfile::tempdir().unwrap();
+        let procs = Procs::default();
+        let mut a = procs.session(d.path(), 8, 100).with_os2pid(1);
+        let mut b = procs.session(d.path(), 8, 200).with_os2pid(7);
+        a.join(None).unwrap();
+        b.join(None).unwrap();
+        let r = a.reserve(9).unwrap();
+        {
+            let t = a.tables().unwrap();
+            assert_eq!(t.live_processes().unwrap(), HashSet::from([1, 7, 9]), "a child being started counts");
+            assert_eq!(t.read(SHARED_MEM_TABLE, 64).unwrap(), None);
+            t.write(SHARED_MEM_TABLE, b"table").unwrap();
+            assert_eq!(t.read(SHARED_MEM_TABLE, 64).unwrap().as_deref(), Some(&b"table"[..]));
+            assert_eq!(t.read(SHARED_MEM_TABLE, 3).unwrap(), None, "too large: dropped");
+        }
+        procs.kill(200);
+        a.settle(r, None);
+        assert_eq!(a.tables().unwrap().live_processes().unwrap(), HashSet::from([1]));
+        a.tables().unwrap().write(SHARED_MEM_TABLE, b"t").unwrap();
+        // A link is not followed, and is dropped.
+        std::os::unix::fs::symlink("/etc/passwd", d.path().join("s").join(SHARED_MEM_TABLE)).ok();
+        let t = a.tables().unwrap();
+        std::fs::remove_file(d.path().join("s").join(SHARED_MEM_TABLE)).ok();
+        std::os::unix::fs::symlink("/etc/passwd", d.path().join("s").join(SHARED_MEM_TABLE)).unwrap();
+        assert_eq!(t.read(SHARED_MEM_TABLE, 1 << 20).unwrap(), None);
+        t.write(SHARED_MEM_TABLE, b"t").unwrap();
+        drop(t);
+        a.leave();
+        assert!(a.tables().is_err(), "a leaving process writes no table");
+        assert!(!d.path().join("s").exists(), "the table goes with the last process");
     }
 }

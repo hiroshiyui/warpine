@@ -230,16 +230,25 @@ pub(crate) fn admit_child(shared: &super::SharedState, cmd: &mut std::process::C
                at most {MAX_LIVE_CHILDREN} children)", own_depth());
         return Err(limit);
     }
-    let slot = shared.thread_slots.lock_or_recover().reserve_for(cmd).map_err(|_| {
+    let pid = shared.allocate_process_id();
+    let slot = shared.thread_slots.lock_or_recover().reserve_for(cmd, pid).map_err(|_| {
         warn!("not starting a child process: the session is at its THREADS= limit");
         ChildLimit::Threads
     })?;
-    let pid = shared.allocate_process_id();
     cmd.env(PID_ENV, pid.to_string());
     cmd.env(PPID_ENV, shared.process_id().to_string());
     // The child's clock starts where this process's is (`clock.rs`); it also
     // overrides a `WARPINE_CLOCK` start date the child would otherwise reread.
     cmd.env(super::clock::CLOCK_OFFSET_ENV, shared.clock.offset_ms().to_string());
+    // The session's shared arena (`shared_arena.rs`).
+    match shared.arena.get() {
+        Some(arena) => arena.pass_to(cmd),
+        None => { cmd.env_remove(super::shared_arena::ARENA_FD_ENV); }
+    }
+    match shared.shared_sems.get() {
+        Some(sems) => super::shared_sem::pass_to(sems, cmd),
+        None => { cmd.env_remove(super::shared_sem::SEM_FD_ENV); }
+    }
     Ok(Admission { slot, pid })
 }
 

@@ -55,6 +55,7 @@ use std::sync::{Arc, Mutex, Condvar};
 use std::time::Duration;
 use super::constants::*;
 use super::mutex_ext::MutexExt;
+use super::shared_sem::{self, SharedSems};
 
 /// The longest semaphore name, `\SEM32\` included.
 const MAX_SEM_NAME: usize = 255;
@@ -301,6 +302,19 @@ pub struct SemaphoreManager {
     /// Wakes muxwait waiters; cloned out and waited on without this
     /// manager's lock.
     pub signal: Arc<SemSignal>,
+    /// The session's shared semaphores (`shared_sem.rs`): named and
+    /// `DC_SEM_SHARED` events and mutexes, handles with `SHARED_SEM_BIT`.
+    pub shared: Option<Arc<SharedSems>>,
+}
+
+/// The canonical form of a semaphore name: upper case, `\SEM32\…`, not
+/// too long (`ERROR_INVALID_NAME`).
+pub fn canonical_sem_name(name: &str) -> Result<String, u32> {
+    let upper = name.to_ascii_uppercase();
+    if !upper.starts_with(SEM32_PREFIX) || upper.len() == SEM32_PREFIX.len() || upper.len() > MAX_SEM_NAME {
+        return Err(ERROR_INVALID_NAME);
+    }
+    Ok(upper)
 }
 
 impl Default for SemaphoreManager {
@@ -309,18 +323,27 @@ impl Default for SemaphoreManager {
 
 impl SemaphoreManager {
     pub fn new() -> Self {
-        SemaphoreManager { sems: HashMap::new(), next_handle: 1, signal: Arc::default() }
+        SemaphoreManager { sems: HashMap::new(), next_handle: 1, signal: Arc::default(), shared: None }
     }
 
-    /// Check a new semaphore's name: `\SEM32\…`, not too long, not in use.
+    /// Something a waiter may wait for changed: wake muxwait waiters here
+    /// and, for lists that hold shared semaphores, on the session's word.
+    fn bump(&self) {
+        self.signal.bump();
+        if let Some(s) = &self.shared { s.notify(); }
+    }
+
+    /// Whether a semaphore of this process has the (canonical) name.
+    pub fn local_name_exists(&self, name: &str) -> bool {
+        self.sems.values().any(|e| e.name.as_deref() == Some(name))
+    }
+
+    /// Check a new semaphore's name: `\SEM32\…`, not too long, not in use
+    /// here or by a shared semaphore of the session.
     fn check_new_name(&self, name: Option<&str>) -> Result<Option<String>, u32> {
         let Some(name) = name else { return Ok(None) };
-        let upper = name.to_ascii_uppercase();
-        if !upper.starts_with(SEM32_PREFIX) || upper.len() == SEM32_PREFIX.len()
-            || upper.len() > MAX_SEM_NAME {
-            return Err(ERROR_INVALID_NAME);
-        }
-        if self.sems.values().any(|e| e.name.as_deref() == Some(upper.as_str())) {
+        let upper = canonical_sem_name(name)?;
+        if self.local_name_exists(&upper) || self.shared.as_ref().is_some_and(|s| s.name_exists(&upper)) {
             return Err(ERROR_DUPLICATE_NAME);
         }
         Ok(Some(upper))
@@ -380,7 +403,15 @@ impl SemaphoreManager {
     }
 
     pub fn kind_of(&self, h: u32) -> Option<SemKind> {
+        if shared_sem::is_shared(h) {
+            return self.shared.as_ref()?.kind_of(h);
+        }
         self.sems.get(&h).map(|e| e.object.kind())
+    }
+
+    /// Whether `h` is an event semaphore (of this process or shared).
+    pub fn is_event(&self, h: u32) -> bool {
+        self.kind_of(h) == Some(SemKind::Event)
     }
 
     pub fn get_event(&self, h: u32) -> Option<EventArc> {
@@ -393,6 +424,9 @@ impl SemaphoreManager {
     /// Whether `h` is a shared event semaphore: created with
     /// `DC_SEM_SHARED` or with a name (named semaphores are shared).
     pub fn is_shared_event(&self, h: u32) -> bool {
+        if shared_sem::is_shared(h) {
+            return self.is_event(h);
+        }
         self.sems.get(&h).is_some_and(|e| matches!(e.object, SemObject::Event(_))
             && (e.attr & DC_SEM_SHARED != 0 || e.name.is_some()))
     }
@@ -446,7 +480,7 @@ impl SemaphoreManager {
         if entry.opens == 0 {
             self.sems.remove(&h);
             // A muxwait wait on a list that holds it fails now.
-            self.signal.bump();
+            self.bump();
         }
         NO_ERROR
     }
@@ -454,6 +488,11 @@ impl SemaphoreManager {
     /// `DosPostEventSem` (and the posts of timers and pipes): one post,
     /// waiters woken.
     pub fn post_event(&self, h: u32) -> u32 {
+        if shared_sem::is_shared(h) {
+            let rc = self.shared.as_ref().map_or(ERROR_INVALID_HANDLE, |s| s.post(h));
+            if rc != ERROR_INVALID_HANDLE { self.signal.bump(); }
+            return rc;
+        }
         let Some(sem) = self.get_event(h) else { return ERROR_INVALID_HANDLE };
         let rc = {
             let (lock, cvar) = &*sem;
@@ -461,7 +500,7 @@ impl SemaphoreManager {
             cvar.notify_all();
             rc
         };
-        self.signal.bump();
+        self.bump();
         rc
     }
 
@@ -474,7 +513,7 @@ impl SemaphoreManager {
         };
         if freed {
             sem.1.notify_all();
-            self.signal.bump();
+            self.bump();
         }
         NO_ERROR
     }
@@ -482,6 +521,7 @@ impl SemaphoreManager {
     /// Thread `vcpu` (thread id `tid`) ended: every mutex it owned goes to
     /// the owner-died state and its waiters are woken. How many it owned.
     pub fn owner_ended(&self, vcpu: u32, tid: u32) -> usize {
+        if let Some(s) = &self.shared { s.owner_ended(tid); }
         let mut n = 0;
         for e in self.sems.values() {
             if let SemObject::Mutex(a) = &e.object && a.0.lock_or_recover().owner_ended(vcpu, tid) {
@@ -490,7 +530,7 @@ impl SemaphoreManager {
             }
         }
         if n > 0 {
-            self.signal.bump();
+            self.bump();
         }
         n
     }
@@ -508,7 +548,7 @@ impl SemaphoreManager {
                 SemObject::MuxWait(_) => {}
             }
         }
-        self.signal.bump();
+        self.bump();
     }
 
     /// `DosAddMuxWaitSem`.
@@ -520,7 +560,7 @@ impl SemaphoreManager {
                 mux.kind = kind;
                 mux.records.push(rec);
                 drop(mux);
-                self.signal.bump();
+                self.bump();
                 NO_ERROR
             }
             Err(e) => e,
@@ -543,7 +583,7 @@ impl SemaphoreManager {
         }
         drop(mux);
         // A wait for all of them may be complete now.
-        self.signal.bump();
+        self.bump();
         NO_ERROR
     }
 
@@ -567,6 +607,10 @@ impl SemaphoreManager {
         let mux = self.get_mux(hmux).ok_or(ERROR_INVALID_HANDLE)?;
         let mux = mux.lock_or_recover();
         let Some(last) = mux.records.last() else { return Err(ERROR_EMPTY_MUXWAIT) };
+        if mux.records.iter().any(|r| shared_sem::is_shared(r.hsem)) {
+            let shared = self.shared.as_ref().ok_or(ERROR_INVALID_HANDLE)?;
+            return shared.with_many(|m| self.try_mixed_mux(&mux, m, vcpu));
+        }
         if mux.kind == Some(SemKind::Mutex) {
             let arcs = mux.records.iter()
                 .map(|r| self.get_mutex(r.hsem).ok_or(ERROR_INVALID_HANDLE))
@@ -593,6 +637,59 @@ impl SemaphoreManager {
         let Some(i) = guards.iter().position(|g| g.posted()) else { return Ok(None) };
         guards[i].consume();
         Ok(Some((mux.records[i].user, false)))
+    }
+}
+
+impl SemaphoreManager {
+    /// `try_mux` for a list holding shared semaphores: all looked at (and
+    /// taken) under the session's lock.
+    fn try_mixed_mux(&self, mux: &MuxWaitSemaphore, m: &mut shared_sem::Many, vcpu: u32)
+        -> Result<Option<(u32, bool)>, u32>
+    {
+        let tid = super::threads::tid_of_vcpu(vcpu);
+        let last = mux.records.last().ok_or(ERROR_EMPTY_MUXWAIT)?;
+        // Local members are locked for the whole look, like `try_mux`.
+        enum Member<'g> {
+            LocalEvent(std::sync::MutexGuard<'g, EventSemaphore>),
+            LocalMutex(std::sync::MutexGuard<'g, MutexSemaphore>),
+            Shared(u32),
+        }
+        let events: Vec<Option<EventArc>> = mux.records.iter().map(|r| self.get_event(r.hsem)).collect();
+        let mutexes: Vec<Option<MutexArc>> = mux.records.iter().map(|r| self.get_mutex(r.hsem)).collect();
+        let want = mux.kind.ok_or(ERROR_EMPTY_MUXWAIT)?;
+        let mut members = Vec::with_capacity(mux.records.len());
+        for (i, r) in mux.records.iter().enumerate() {
+            members.push(if shared_sem::is_shared(r.hsem) {
+                if m.kind_of(r.hsem) != Some(want) { return Err(ERROR_INVALID_HANDLE); }
+                Member::Shared(r.hsem)
+            } else if want == SemKind::Event {
+                Member::LocalEvent(events[i].as_ref().ok_or(ERROR_INVALID_HANDLE)?.0.lock_or_recover())
+            } else {
+                Member::LocalMutex(mutexes[i].as_ref().ok_or(ERROR_INVALID_HANDLE)?.0.lock_or_recover())
+            });
+        }
+        let ready = |mem: &Member, m: &shared_sem::Many| match mem {
+            Member::LocalEvent(g) => g.posted(),
+            Member::LocalMutex(g) => g.available_to(vcpu),
+            Member::Shared(h) => if want == SemKind::Event { m.event_posted(*h) == Some(true) }
+                                 else { m.mutex_available(*h, tid) == Some(true) },
+        };
+        let take = |mem: &mut Member, m: &mut shared_sem::Many| -> bool {
+            match mem {
+                Member::LocalEvent(g) => { g.consume(); false }
+                Member::LocalMutex(g) => g.acquire(vcpu),
+                Member::Shared(h) => if want == SemKind::Event { m.event_consume(*h); false }
+                                     else { m.mutex_acquire(*h, tid) },
+            }
+        };
+        if mux.wait_all {
+            if !members.iter().all(|mem| ready(mem, m)) { return Ok(None); }
+            let died = members.iter_mut().fold(false, |d, mem| take(mem, m) | d);
+            return Ok(Some((last.user, died)));
+        }
+        let Some(i) = members.iter().position(|mem| ready(mem, m)) else { return Ok(None) };
+        let died = take(&mut members[i], m);
+        Ok(Some((mux.records[i].user, died)))
     }
 }
 
