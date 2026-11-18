@@ -191,6 +191,7 @@ samples/               OS/2 sample applications and build scripts
   pm_container_test/   WC_CONTAINER: records in guest memory, detail view, selection, CN_* notifications
   pm_cnrtree_test/     WC_CONTAINER: sorting by a guest comparison function, tree view, scroll bar
   pm_cnricon_test/     WC_CONTAINER: icon view and icons, filtering, direct editing
+  pm_subclass_test/    Subclassing built-in windows and frames, painting, dialog mnemonics
   pm_drag_test/        Drag and drop within a process: DrgDrag, DM_* messages, container drags
   semfollow_test/      Semaphore and pipe-semaphore follow-ups, suballocation
   pm_frame_scroll_test/ Frame scroll bars with the mouse, client drawing inside the frame
@@ -322,7 +323,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 1834 unit tests (no KVM required)
+cargo test                        # 1849 unit tests (no KVM required)
 cargo test --test integration     # 139 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```

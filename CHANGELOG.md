@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **Subclassing built-in windows** — `WinSubclassWindow`, `QWP_PFNWP` and `WinQueryClassInfo` hand out `WrpBuiltinWindowProc` (`WARPINE.5`), the built-in classes' own procedure, so a subclass procedure can pass messages on; standard frames run the system frame procedure instead of borrowing their client's, and a subclassed frame is asked `WM_QUERYFRAMECTLCOUNT` / `WM_FORMATFRAME` (tool bars and status lines it places stay put) and `WM_CALCFRAMERECT` (ADR-0048).
+- **Painting** — a child window's presentation space draws at the child's place; `WinBeginPaint` clips to the update rectangle; `WinUpdateWindow` paints before it returns; `WinShowWindow` invalidates a window it shows; a `WC_FRAME` made with `WinCreateWindow` is shown at once.
+- **Dialogs and keys** — controls of the application's own classes take part in Tab and mnemonics (`WM_MATCHMNEMONIC`); built-in controls answer `WM_QUERYDLGCODE` / `WM_MATCHMNEMONIC`; `WinDefWindowProc` sends `WM_CHAR` to the owner; focus changes post `WM_SETFOCUS`.
+- **Threads and signals** — a thread's windows go with it; a killed thread leaves its modal dialog loop; blocked pipe writes and blocking socket calls are interrupted by signals and `DosKillThread`. Sample `pm_subclass_test`.
+
 ## [0.0.4] - 2026-11-18
 
 ### Added
