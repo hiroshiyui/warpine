@@ -575,6 +575,14 @@ binary. The VIO text-mode console is separate and keeps its 8×16 bitmap font.
   keyed by phase), so letter spacing follows the font's advances. Widths
   (`text_width`) sum the unrounded advances. Unifont bitmaps keep the
   rounded pen. GPOS kerning is not applied (`ab_glyph` reads no GPOS).
+- **Hinting and contrast (ADR-0047).** `rasterize_hinted` draws the Latin
+  faces' glyphs through `skrifa`'s autohinter in light mode (vertical
+  snapping only, linear advances kept): `hint_face` holds each face's
+  `GlyphStyles`, `HINTERS` the per-thread hinting instances by face and
+  ppem, `PathPen` collects the hinted outline, and `ab_glyph_rasterizer`
+  fills it at the quarter-pixel phase. CJK faces, transformed glyphs and any
+  glyph `skrifa` cannot draw use the unhinted `ab_glyph` raster. All outline
+  coverage goes through `contrast_coverage` (`c^(1/TEXT_CONTRAST)`).
 - **Coordinates.** `DrawOp::Text` positions system-font text by the
   bottom of its 16-px line box (used by built-in controls);
   `DrawOp::TextFont` positions text by its baseline, the GPI
@@ -1934,7 +1942,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the 4OS2 / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (1832: 1790 warpine + 19 `gen_api` + 12 `lx_link` + 5 `gen_arch` + 6 `gen_compat`) include, among others:
+The unit tests (1834: 1792 warpine + 19 `gen_api` + 12 `lx_link` + 5 `gen_arch` + 6 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2219,7 +2227,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 1832 unit tests (1790 warpine + 19 gen_api + 12 lx_link + 5 gen_arch + 6 gen_compat), 141 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 1834 unit tests (1792 warpine + 19 gen_api + 12 lx_link + 5 gen_arch + 6 gen_compat), 141 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
