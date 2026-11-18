@@ -182,7 +182,7 @@ This is Warpine's core trick for intercepting OS/2 API calls without modifying t
 
 ### Setup
 
-During loading, `setup_stubs()` fills an 18432-byte region (`STUB_AREA_SIZE`) at `MAGIC_API_BASE` with INT 3 (0xCC) instructions. When the LX loader encounters an import fixup for a known module, `resolve_import()` maps it to a specific address:
+During loading, `setup_stubs()` fills a 20480-byte region (`STUB_AREA_SIZE`) at `MAGIC_API_BASE` with INT 3 (0xCC) instructions. When the LX loader encounters an import fixup for a known module, `resolve_import()` maps it to a specific address:
 
 | Module | Base Constant | Address formula | Range |
 |---|---|---|---|
@@ -202,6 +202,8 @@ During loading, `setup_stubs()` fills an 18432-byte region (`STUB_AREA_SIZE`) at
 | MOUCALLS | `MOUCALLS_BASE` (15360) | `MAGIC_API_BASE + 15360 + ordinal` | 15360–16383 |
 | PMSHAPI | `PMSHAPI_BASE` (16384) | `MAGIC_API_BASE + 16384 + ordinal` | 16384–17407 |
 | HELPMGR | `HELPMGR_BASE` (17408) | `MAGIC_API_BASE + 17408 + ordinal` | 17408–18431 |
+| PMSPL | `PMSPL_BASE` (18432) | `MAGIC_API_BASE + 18432 + ordinal` | 18432–19455 |
+| PMCTLS | `PMCTLS_BASE` (19456) | `MAGIC_API_BASE + 19456 + ordinal` | 19456–20479 |
 
 A new module takes the next 1024-ordinal slot and grows `STUB_AREA_SIZE`; the compile-time asserts in `constants.rs` keep each range 1024 wide, the area below `DYNAMIC_ALLOC_BASE` and addressable by the NE loader's 16-bit offsets. Every place that lists the modules must follow: `resolve_import` / `resolve_import_by_name` (`descriptors.rs`), the range of the previous last module in `api_dispatch.rs`, `vcpu.rs` (Pascal argument pop) and `api_trace.rs`, `lx_loader.rs` `BUILTIN_MODULES`, `stubs.rs` `BUILTINS` (`DosLoadModule`), `lx_link.rs`, `gen_api.rs` (`MODULES`, `base_const` / `upper_const`, `resolve_const`, the `check` / `validate-doc` module lists) and `targets/os2api.def`.
 
@@ -350,6 +352,20 @@ Tests: `profile.rs` (model, format, round trip of all 256 byte values, VFS stora
 ### Help Manager (HELPMGR, src/loader/helpmgr.rs)
 
 There is no help viewer. `WinCreateHelpInstance` creates a hidden object window of class `#HelpInstance` (its procedure, in `dispatch_builtin_control`, returns 0 for every message, so `HM_*` messages are accepted and ignored), records the readable `HELPINIT` fields (title, library, tutorial, accelerator / action-bar ids, the help table — `MAKELONG(id, 0xFFFF)` is a resource id in `hmodHelpTableModule`) in `WindowManager::help` (`HelpRegistry`), clears `ulReturnCode`, and logs once that help is not available. `WinAssociateHelpInstance` maps an application window to an instance (NULLHANDLE removes it), `WinQueryHelpInstance` searches the window's parent chain and then its owner chains (`find_help_instance`), `WinLoadHelpTable` / `WinCreateHelpTable` append to the instance's tables, `WinDestroyHelpInstance` destroys the window; `WindowManager::destroy_window` forgets the instances and associations of destroyed windows. A viewer would need: an INF/HLP reader (the IPF compiled format is not publicly documented by IBM; the osFree / NewView descriptions would have to be checked for clean-room use), parsing of `RT_HELPTABLE` / `RT_HELPSUBTABLE` resources, F1 → `WM_HELP` routing through the help table to a panel, and the `HM_*` notifications (`HM_HELPSUBITEM_NOT_FOUND`, `HM_INFORM`, `HM_ERROR`) back to the application.
+
+### Standard dialogs (PMCTLS, src/loader/pm_stddlg.rs, pm_filedlg.rs, pm_fontdlg.rs)
+
+`WinFileDlg` (PMCTLS 4) and `WinFontDlg` (PMCTLS 2) build an ordinary `#Dialog` of built-in controls in memory, as `WinMessageBox` does (`create_std_dialog` from a list of `StdControl`s; layouts are Warpine's own), or, with `FDS_CUSTOM` / `FNTS_CUSTOM`, create the program's `DLGTEMPLATE` (`usDlgId` / `hMod`) through `create_dialog` (`std_custom_dialog`; no template → `lSRC` = `*_ERR_DIALOG_LOAD_ERROR`). The controls carry the `DID_*` ids of `<pmstddlg.h>` and all dialog logic finds them by id (`std_item_text`, `std_set_item_text`, `std_set_list`, `std_select_item`, `std_selected`), so a custom template works as far as it has the standard controls. The dialog state (`FileDlgState` / `FontDlgState`) lives in `WindowManager::std_dialogs` (`StdDialogs`, keyed by the dialog's handle, dropped by `destroy_window`), which also records the `papszFQFilename` lists handed out until `WinFreeFileDlgList` (PMCTLS 6) frees them. `QWL_USER` and `WM_INITDLG`'s mp2 are the program's `FILEDLG` / `FONTDLG`.
+
+Messages: a dialog without a procedure reaches `std_dialog_procless` from `dispatch_builtin_control` (before the message-box handling); with `pfnDlgProc` the dialog's `pfn_wp` is that procedure, which passes what it does not handle to `WinDefFileDlgProc` / `WinDefFontDlgProc` (PMCTLS 5 / 3) — the same `file_dlg_message` / `font_dlg_message`, falling back to `def_dlg_proc`. Write-back happens once, when the dialog is dismissed: `dismiss_dialog` calls `std_dialog_dismissed` first, so a dialog procedure's own `WinDismissDlg` writes the structure too; `finish_dlg_loop` (`vcpu.rs`) maps the modal result to TRUE through `std_dialog_return` (the outcome is in `lReturn`). Modeless dialogs (`FDS_MODELESS` / `FNTS_MODELESS`) return their handle and hide themselves when dismissed (`std_hide_modeless`).
+
+The file dialog reads directories only through `DriveManager` backends (`list_directory`: at most `MAX_DIR_ENTRIES`, no hidden / system entries, `.TYPE` EA filter via `type_names`); typed paths are resolved by the pure `resolve_input` (drive letters, `.` / `..` stopping at the root, invalid characters, `CCHMAXPATH`), so the dialog never names a host path. Strings written back are encoded in the dialog thread's queue codepage and cut to their buffers (`fit_encoded`: `CCHMAXPATH`, `usFamilyBufLen`). The font dialog offers the three IBM Plex families (`FontFamily`), four styles and point sizes, draws its sample as a `WC_STATIC` whose `PP_FONTNAMESIZE` / colours follow the choice, and writes back an `FATTRS` that `GpiCreateLogFont` maps to the same font (`fattrs_for`).
+
+Tests: pure parts and the dialogs on a mock loader with a temporary drive (`pm_filedlg.rs`, `pm_fontdlg.rs`, `pm_stddlg.rs`), `samples/pm_stddlg_test` + `gui_pm_stddlg_test_picks_a_file_and_a_font` (types a file name, picks a font) and `gui_pm_stddlg_test_open_dialog_matches_golden`.
+
+### Printing (PMSPL, src/loader/pmspl.rs)
+
+Printing is not supported: there are no printer drivers, queues or ports. The `PMSPL` enumerations (`SplEnumQueue` 399, `SplEnumPrinter` 441, `SplEnumDevice` 382, `SplEnumDriver` 406, `SplEnumQueueProcessor` 407, `SplEnumPort` 408) return `NO_ERROR` with zero counts (`ERROR_INVALID_LEVEL` for an undocumented level, `NERR_InvalidComputer` for a computer name); `SplQueryQueue` / `SplQueryDevice` return `NERR_QNotFound` / `NERR_DestNotFound`; `SplQmOpen` fails with `PMERR_SPL_QUEUE_NOT_FOUND` (or `PMERR_SPL_NO_DEFAULT_QUEUE`) and the other `SplQm*` calls with `PMERR_SPL_INV_HSPL`. In PMGPI, `DevOpenDC(OD_QUEUED / OD_DIRECT)` fails with `PMERR_DRIVER_NOT_FOUND` (other unsupported types `PMERR_INV_DC_TYPE`), `DevEscape` (605) returns `DEVESC_NOTIMPLEMENTED` on Warpine's DCs and `DEVESC_ERROR` / `PMERR_INV_HDC` otherwise, and `DevPostDeviceModes` (609) returns `DPDM_ERROR` (`handle_print_call`, chained from `handle_pmgpi_call`; its source is in the PMGPI arm-count test's list).
 
 ## Threading Model
 
@@ -1499,7 +1515,7 @@ src/
     ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants (addresses, message IDs, ordinal bases)
-    api_registry.rs    Static sorted API thunk table (227 entries); ApiEntry
+    api_registry.rs    Static sorted API thunk table (247 entries); ApiEntry
     api_dispatch.rs    Registry lookup + per-subsystem dispatcher routing
     api_trace.rs       Structured tracing helpers (ordinal_to_name auto-generated from os2api.def,
                        module_for_ordinal, arg_names_for_ordinal, format_call)
@@ -1534,6 +1550,10 @@ src/
     pmshapi.rs         PMSHAPI Prf* calls, ProfileTable
     profile.rs         Profile model and Warpine's text profile format, VFS storage
     helpmgr.rs         HELPMGR help instances (no viewer)
+    pm_stddlg.rs       What the standard dialogs share: StdDialogs registry, in-memory dialog building, write-back hooks
+    pm_filedlg.rs      PMCTLS WinFileDlg / WinDefFileDlgProc / WinFreeFileDlgList: Open / Save As over the VFS
+    pm_fontdlg.rs      PMCTLS WinFontDlg / WinDefFontDlgProc: family / style / size / emphasis over IBM Plex, sample
+    pmspl.rs           PMSPL spooler without printers; DevEscape / DevPostDeviceModes (PMGPI)
     pm_paint.rs        Update rectangles, WinScrollWindow, WinDrawBorder
     pm_query.rs        WinMapWindowPoints, WinWindowFromPoint, WinEnumDlgItem, class names / info, ...
     pm_keystate.rs     WinGetKeyState / WinGetPhysKeyState, message time and position, pointer position
@@ -1577,7 +1597,7 @@ To add a new OS/2 API call:
 
 3. **Wire up the dispatch** — The dispatch path depends on the subsystem:
 
-   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (227 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
+   - **DOSCALLS / QUECALLS**: `api_registry.rs` contains a **static sorted table** of `ApiEntry` records (247 entries). Add a new entry to the table in ascending ordinal order. The table is binary-searched at dispatch time; no match arm needed in `api_dispatch.rs` for most cases. For subsystem handlers that need special argument extraction (VIO, KBD, PMWIN, PMGPI, etc.), add a match arm in the appropriate `handle_*_calls()` function in `api_dispatch.rs`.
 
    - **VIOCALLS / KBDCALLS**: add a match arm in `handle_viocalls()` or `handle_kbdcalls()`, and add the ordinal's stack-byte count to `viocalls_arg_bytes()` / `kbdcalls_arg_bytes()`.
 
@@ -2005,7 +2025,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **Virtualization backend abstraction** — `VmBackend`/`VcpuBackend` traits; KVM isolated to `kvm_backend.rs`; `MockVcpu`/`MockVmBackend` for testing without `/dev/kvm`.
 - **Guest memory type safety** — `GuestMemory` struct with safe `read<T>`/`write<T>` replacing raw `*mut u8` + `usize`.
 - **Structured API trace** — `api_trace.rs` with `ordinal_to_name()`, `module_for_ordinal()`, per-argument typed names. `WARPINE_TRACE=strace|json` output modes.
-- **API thunk auto-registration** — `api_registry.rs` static sorted table (227 entries); O(log n) binary search replaces ~120-arm match.
+- **API thunk auto-registration** — `api_registry.rs` static sorted table (247 entries); O(log n) binary search replaces ~120-arm match.
 - **SDL2 GUI backend** — migrated from `winit + softbuffer` to SDL2; full keyboard, mouse, clipboard support.
 - **PM renderer abstraction** — `PmRenderer` trait with `Sdl2Renderer` and `HeadlessRenderer` backends.
 - **GDT tiling** — 4096 tiled 16-bit data descriptors (GDT[6..4101], DPL=2) and 2048 tiled 16-bit code descriptors (GDT[4102..6149]) for 16:16 addressing; GDT[4] 16-bit data alias (0x20), GDT[5] 16-bit code alias (0x28) for Far16 thunks.
@@ -2029,7 +2049,7 @@ Warpine provides a complete toolchain for writing OS/2 guest programs in Rust wi
 - `check` — validate def file (no duplicates, sorted, no overflow) and drift-detect against `api_trace.rs` by text-scanning `ordinal_to_name()` match arms
 - `gen-trace` — emit replacement Rust source for `ordinal_to_name()` + `module_for_ordinal()` (pipe to a file then paste into `api_trace.rs`)
 - `gen-def` — re-emit a canonically sorted `os2api.def`
-- `validate-doc` — cross-check `os2api.def` against `doc/os2_ordinals.md` (Open Watcom `lib386/os2/os2386.lib` snapshot); reports confirmed ordinals, 16-bit alias pairs auto-detected by uppercase+strip-"16" normalisation, entries only in def, name differences acknowledged by a `# NOTE:` on the def line (naming conventions the normaliser cannot detect, e.g. DOSCALLS 75 `DosQueryFileMode16` / `DOS16QFILEMODE`; listed with the note, not counted as mismatches), and the remaining name mismatches to investigate; it covers DOSCALLS, QUECALLS, KBDCALLS, VIOCALLS, PMGPI, PMWIN, SESMGR, NLS, MOUCALLS, PMSHAPI and HELPMGR
+- `validate-doc` — cross-check `os2api.def` against `doc/os2_ordinals.md` (Open Watcom `lib386/os2/os2386.lib` snapshot); reports confirmed ordinals, 16-bit alias pairs auto-detected by uppercase+strip-"16" normalisation, entries only in def, name differences acknowledged by a `# NOTE:` on the def line (naming conventions the normaliser cannot detect, e.g. DOSCALLS 75 `DosQueryFileMode16` / `DOS16QFILEMODE`; listed with the note, not counted as mismatches), and the remaining name mismatches to investigate; it covers DOSCALLS, QUECALLS, KBDCALLS, VIOCALLS, PMGPI, PMWIN, SESMGR, NLS, MOUCALLS, PMSHAPI, HELPMGR, PMSPL and PMCTLS (the snapshot has no PMCTLS section: its def lines carry a `# NOTE:` naming `os2386.lib` as the source, and a def entry missing from the snapshot with a note is listed as acknowledged rather than as "only in os2api.def")
 
 Run `cargo run --bin gen_api -- check` to verify consistency after any ordinal change. Run `cargo run --bin gen_api -- validate-doc` to cross-reference against the OS/2 ordinal reference.
 

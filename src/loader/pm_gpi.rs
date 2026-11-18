@@ -140,6 +140,7 @@ impl super::Loader {
         if let Some(r) = self.handle_region_call(vcpu_id, ordinal, &arg)
             .or_else(|| self.handle_area_call(vcpu_id, ordinal, &arg))
             .or_else(|| self.handle_text_call(vcpu_id, ordinal, &arg))
+            .or_else(|| self.handle_print_call(vcpu_id, ordinal, &arg))
         {
             return ApiResult::Normal(r);
         }
@@ -728,7 +729,7 @@ impl super::Loader {
             610 => {
                 // DevOpenDC(HAB hab, LONG lType, PSZ pszToken, LONG lCount,
                 //           PDEVOPENDATA pdopData, HDC hdcComp) → HDC
-                ApiResult::Normal(self.dev_open_dc(read_stack(8)))
+                ApiResult::Normal(self.dev_open_dc(vcpu_id, read_stack(8)))
             }
             604 => {
                 // DevCloseDC(HDC hdc) → HMF
@@ -1730,7 +1731,8 @@ mod tests {
     #[test]
     fn test_pmgpi_dispatch_ordinals_match_ordinal_table() {
         let sources = [include_str!("pm_gpi.rs"), include_str!("pm_region.rs"), include_str!("pm_area.rs"),
-                       include_str!("pm_text.rs")].concat();
+                       include_str!("pm_text.rs"),
+                       include_str!("pmspl.rs")].concat();
         assert_arms_match_ordinal_table(&sources, "Gpi", &[]);
     }
 

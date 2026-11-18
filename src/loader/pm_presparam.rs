@@ -79,7 +79,7 @@ const ULONG_LEN: usize = 4;
 const LINE_PX_PER_POINT_NUM: u32 = 8;
 const LINE_PX_PER_POINT_DEN: u32 = 5;
 /// Largest point size accepted in `PP_FONTNAMESIZE`.
-const MAX_FONT_POINTS: u32 = 120;
+pub(super) const MAX_FONT_POINTS: u32 = 120;
 
 /// The presentation parameters of one window, in the order they were set.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]

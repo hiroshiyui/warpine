@@ -1909,6 +1909,38 @@ fn gui_pm_combo_spin_test_matches_golden() {
         &format!("{COMBO_SPIN_STEPS}3200 dump {{dump}}\n3300 quit\n"));
 }
 
+/// pm_stddlg_test: the Open dialog starts on "C:\STDDLG\*.TXT" with the
+/// filter selected in its entry field: "beta.txt" replaces it and Enter
+/// presses OK; the font dialog then has the focus on its name list: Down
+/// picks the next family (IBM Plex Serif) and Enter is OK. Keys typed
+/// before a dialog is up wait for it (type-ahead).
+const STDDLG_STEPS: &str = "\
+    2000 text beta.txt\n\
+    2400 key enter\n\
+    3400 key down\n\
+    3800 key enter\n";
+
+/// pm_stddlg_test: WinFileDlg (subclassed by a dialog procedure that
+/// passes on to WinDefFileDlgProc) returns the typed file in its on-disk
+/// case and WinFontDlg the picked family and an FATTRS GpiCreateLogFont
+/// takes; the spooler reports no queues or printers, SplQm* / DevOpenDC
+/// (OD_QUEUED / OD_DIRECT) / DevEscape / DevPostDeviceModes fail with the
+/// documented errors — checked from the guest side.
+#[test]
+fn gui_pm_stddlg_test_picks_a_file_and_a_font() {
+    let steps = format!("{STDDLG_STEPS}9000 quit\n");
+    assert_scripted_checks_pass("samples/pm_stddlg_test/pm_stddlg_test.exe", "pm_stddlg_test", 43, &steps);
+}
+
+/// pm_stddlg_test: the Open dialog, centred on the desktop over the
+/// program's window — file name, current directory, type and drive lists,
+/// the directory and file lists, OK / Cancel.
+#[test]
+fn gui_pm_stddlg_test_open_dialog_matches_golden() {
+    check_gui_golden("pm_stddlg_test", "samples/pm_stddlg_test/pm_stddlg_test.exe",
+        "1800 dump {dump}\n1900 quit\n");
+}
+
 /// pm_presparam_test: presentation parameters (WinSetPresParam /
 /// WinQueryPresParam with inheritance and colour indices /
 /// WinRemovePresParam, the PRESPARAMS of WinCreateWindow and of a dialog

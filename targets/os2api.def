@@ -19,6 +19,8 @@
 #   MOUCALLS  base 15360    (MAGIC_API_BASE + 15360 + ordinal)
 #   PMSHAPI   base 16384    (MAGIC_API_BASE + 16384 + ordinal)
 #   HELPMGR   base 17408    (MAGIC_API_BASE + 17408 + ordinal)
+#   PMSPL     base 18432    (MAGIC_API_BASE + 18432 + ordinal)
+#   PMCTLS    base 19456    (MAGIC_API_BASE + 19456 + ordinal)
 
 # ── DOSCALLS ─────────────────────────────────────────────────────────────────
 DOSCALLS.8    DosGetInfoSeg
@@ -317,3 +319,27 @@ HELPMGR.53    WinQueryHelpInstance
 HELPMGR.54    WinAssociateHelpInstance
 HELPMGR.55    WinLoadHelpTable
 HELPMGR.56    WinCreateHelpTable
+
+# ── PMSPL (spooler; ordinals from Open Watcom os2386.lib) ───────────────────
+PMSPL.301     SplQmOpen
+PMSPL.302     SplQmStartDoc
+PMSPL.303     SplQmEndDoc
+PMSPL.304     SplQmWrite
+PMSPL.305     SplQmAbort
+PMSPL.306     SplQmClose
+PMSPL.308     SplQmAbortDoc
+PMSPL.381     SplQueryDevice
+PMSPL.382     SplEnumDevice
+PMSPL.397     SplQueryQueue
+PMSPL.399     SplEnumQueue
+PMSPL.406     SplEnumDriver
+PMSPL.407     SplEnumQueueProcessor
+PMSPL.408     SplEnumPort
+PMSPL.441     SplEnumPrinter
+
+# ── PMCTLS (standard file / font dialogs; ordinals from Open Watcom os2386.lib)
+PMCTLS.2      WinFontDlg          # NOTE: from os2386.lib (IMPDEF PMCTLS.2); os2_ordinals.md has no PMCTLS section
+PMCTLS.3      WinDefFontDlgProc   # NOTE: from os2386.lib (IMPDEF PMCTLS.3); os2_ordinals.md has no PMCTLS section
+PMCTLS.4      WinFileDlg          # NOTE: from os2386.lib (IMPDEF PMCTLS.4); os2_ordinals.md has no PMCTLS section
+PMCTLS.5      WinDefFileDlgProc   # NOTE: from os2386.lib (IMPDEF PMCTLS.5); os2_ordinals.md has no PMCTLS section
+PMCTLS.6      WinFreeFileDlgList  # NOTE: from os2386.lib (IMPDEF PMCTLS.6); os2_ordinals.md has no PMCTLS section

@@ -81,6 +81,10 @@ pub mod moucalls;
 pub mod profile;
 mod pmshapi;
 pub mod helpmgr;
+mod pmspl;
+mod pm_stddlg;
+mod pm_filedlg;
+mod pm_fontdlg;
 mod seh;
 mod cmd;
 pub mod threads;
@@ -645,6 +649,10 @@ impl Loader {
             let procless = self.shared.window_mgr.lock_or_recover()
                 .get_window(hwnd).is_some_and(|w| w.pfn_wp == 0);
             if procless {
+                // The standard file and font dialogs (pm_stddlg.rs).
+                if let Some(r) = self.std_dialog_procless(hwnd, msg, mp1, mp2) {
+                    return r;
+                }
                 return self.procless_dialog_message(hwnd, msg, mp1, mp2);
             }
         }

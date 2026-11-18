@@ -390,7 +390,9 @@ impl Loader {
     }
 
     /// Mark dialog `hwnd` dismissed with `result` and wake its modal loop.
+    /// A standard file / font dialog writes its structure back first.
     pub(super) fn dismiss_dialog(&self, hwnd: u32, result: u32) {
+        self.std_dialog_dismissed(hwnd, result);
         let mut wm = self.shared.window_mgr.lock_or_recover();
         if let Some(win) = wm.get_window_mut(hwnd) {
             win.dialog_dismissed = true;

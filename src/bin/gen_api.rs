@@ -44,8 +44,10 @@ const MODULES: &[(&str, u32)] = &[
     ("MOUCALLS", 15360),
     ("PMSHAPI",  16384),
     ("HELPMGR",  17408),
+    ("PMSPL",    18432),
+    ("PMCTLS",   19456),
 ];
-const STUB_AREA_SIZE: u32 = 18432;
+const STUB_AREA_SIZE: u32 = 20480;
 
 // Rust constant name used for each module's base in generated code.
 // Must match src/loader/constants.rs exactly.
@@ -67,6 +69,8 @@ fn base_const(module: &str) -> &'static str {
         "MOUCALLS" => "MOUCALLS_BASE",
         "PMSHAPI"  => "PMSHAPI_BASE",
         "HELPMGR"  => "HELPMGR_BASE",
+        "PMSPL"    => "PMSPL_BASE",
+        "PMCTLS"   => "PMCTLS_BASE",
         _          => "?",
     }
 }
@@ -89,7 +93,9 @@ fn upper_const(module: &str) -> &'static str {
         "TCP32DLL" => "MOUCALLS_BASE",
         "MOUCALLS" => "PMSHAPI_BASE",
         "PMSHAPI"  => "HELPMGR_BASE",
-        "HELPMGR"  => "STUB_AREA_SIZE",
+        "HELPMGR"  => "PMSPL_BASE",
+        "PMSPL"    => "PMCTLS_BASE",
+        "PMCTLS"   => "STUB_AREA_SIZE",
         _          => "?",
     }
 }
@@ -284,7 +290,9 @@ fn resolve_const(name: &str) -> u32 {
         "MOUCALLS_BASE" => 15360,
         "PMSHAPI_BASE"  => 16384,
         "HELPMGR_BASE"  => 17408,
-        "STUB_AREA_SIZE"=> 18432,
+        "PMSPL_BASE"    => 18432,
+        "PMCTLS_BASE"   => 19456,
+        "STUB_AREA_SIZE"=> 20480,
         other => other.parse().unwrap_or(0),
     }
 }
@@ -392,7 +400,7 @@ fn cmd_check(entries: &[OrdEntry], trace_path: &Path) -> bool {
     // Excludes PMWIN, PMGPI, SESMGR which return "?" and use sub-dispatchers.
     let trace_covered_modules = [
         "DOSCALLS", "QUECALLS", "KBDCALLS", "VIOCALLS", "NLS", "MSG", "MDM", "UCONV",
-        "SO32DLL", "TCP32DLL", "MOUCALLS", "PMSHAPI", "HELPMGR",
+        "SO32DLL", "TCP32DLL", "MOUCALLS", "PMSHAPI", "HELPMGR", "PMSPL", "PMCTLS",
     ];
     let def_in_trace: Vec<&OrdEntry> = entries
         .iter()
@@ -674,11 +682,12 @@ fn normalize_for_alias(s: &str) -> String {
 }
 
 fn cmd_validate_doc(entries: &[OrdEntry], doc_path: &Path) {
-    // Only modules present in both os2api.def and os2_ordinals.md. MSG,
-    // MDM, UCONV and the socket DLLs are not in the os2386.lib snapshot.
+    // Modules of os2386.lib. MSG, MDM, UCONV and the socket DLLs are not in
+    // the import library; PMCTLS is, but the os2_ordinals.md snapshot has no
+    // section for it, so its def lines carry a `# NOTE:` naming the source.
     const DOC_MODULES: &[&str] = &[
         "DOSCALLS", "QUECALLS", "KBDCALLS", "VIOCALLS", "PMGPI", "PMWIN", "SESMGR",
-        "NLS", "MOUCALLS", "PMSHAPI", "HELPMGR",
+        "NLS", "MOUCALLS", "PMSHAPI", "HELPMGR", "PMSPL", "PMCTLS",
     ];
 
     let doc_map = match parse_ordinals_doc(doc_path) {
@@ -700,6 +709,8 @@ fn cmd_validate_doc(entries: &[OrdEntry], doc_path: &Path) {
     for e in &in_scope {
         let key = (e.module.clone(), e.local_ordinal);
         match doc_map.get(&key) {
+            // Not in the snapshot: acknowledged when the def line says why.
+            None if e.note.is_some() => acknowledged.push((e, "(not in the snapshot)".to_string())),
             None => only_in_def.push(e),
             Some(doc_name) => {
                 if doc_name.to_uppercase() == e.name.to_uppercase() {
@@ -971,7 +982,9 @@ mod tests {
         assert_eq!(module_upper("TCP32DLL"),  15360); // MOUCALLS_BASE
         assert_eq!(module_upper("MOUCALLS"),  16384); // PMSHAPI_BASE
         assert_eq!(module_upper("PMSHAPI"),   17408); // HELPMGR_BASE
-        assert_eq!(module_upper("HELPMGR"),   STUB_AREA_SIZE);
+        assert_eq!(module_upper("HELPMGR"),   18432); // PMSPL_BASE
+        assert_eq!(module_upper("PMSPL"),     19456); // PMCTLS_BASE
+        assert_eq!(module_upper("PMCTLS"),    STUB_AREA_SIZE);
     }
 
     #[test]
@@ -1042,7 +1055,9 @@ mod tests {
         assert_eq!(upper_const("TCP32DLL"),  "MOUCALLS_BASE");
         assert_eq!(upper_const("MOUCALLS"),  "PMSHAPI_BASE");
         assert_eq!(upper_const("PMSHAPI"),   "HELPMGR_BASE");
-        assert_eq!(upper_const("HELPMGR"),   "STUB_AREA_SIZE");
+        assert_eq!(upper_const("HELPMGR"),   "PMSPL_BASE");
+        assert_eq!(upper_const("PMSPL"),     "PMCTLS_BASE");
+        assert_eq!(upper_const("PMCTLS"),    "STUB_AREA_SIZE");
     }
 
     #[test]
@@ -1060,7 +1075,9 @@ mod tests {
         assert_eq!(resolve_const("UCONV_BASE"),     12288);
         assert_eq!(resolve_const("PMSHAPI_BASE"),   16384);
         assert_eq!(resolve_const("HELPMGR_BASE"),   17408);
-        assert_eq!(resolve_const("STUB_AREA_SIZE"), 18432);
+        assert_eq!(resolve_const("PMSPL_BASE"),     18432);
+        assert_eq!(resolve_const("PMCTLS_BASE"),    19456);
+        assert_eq!(resolve_const("STUB_AREA_SIZE"), 20480);
     }
 
     #[test]

@@ -349,7 +349,7 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         },
 
         // ── HELPMGR ────────────────────────────────────────────────
-        o if (HELPMGR_BASE..STUB_AREA_SIZE).contains(&o) => match o - HELPMGR_BASE {
+        o if (HELPMGR_BASE..PMSPL_BASE).contains(&o) => match o - HELPMGR_BASE {
             51 => "WinCreateHelpInstance",
             52 => "WinDestroyHelpInstance",
             53 => "WinQueryHelpInstance",
@@ -357,6 +357,36 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             55 => "WinLoadHelpTable",
             56 => "WinCreateHelpTable",
             _  => "?",
+        },
+
+        // ── PMSPL (spooler) ────────────────────────────────────────
+        o if (PMSPL_BASE..PMCTLS_BASE).contains(&o) => match o - PMSPL_BASE {
+            301 => "SplQmOpen",
+            302 => "SplQmStartDoc",
+            303 => "SplQmEndDoc",
+            304 => "SplQmWrite",
+            305 => "SplQmAbort",
+            306 => "SplQmClose",
+            308 => "SplQmAbortDoc",
+            381 => "SplQueryDevice",
+            382 => "SplEnumDevice",
+            397 => "SplQueryQueue",
+            399 => "SplEnumQueue",
+            406 => "SplEnumDriver",
+            407 => "SplEnumQueueProcessor",
+            408 => "SplEnumPort",
+            441 => "SplEnumPrinter",
+            _   => "?",
+        },
+
+        // ── PMCTLS (standard dialogs) ──────────────────────────────
+        o if (PMCTLS_BASE..STUB_AREA_SIZE).contains(&o) => match o - PMCTLS_BASE {
+            2 => "WinFontDlg",
+            3 => "WinDefFontDlgProc",
+            4 => "WinFileDlg",
+            5 => "WinDefFileDlgProc",
+            6 => "WinFreeFileDlgList",
+            _ => "?",
         },
 
         _ => "?",
@@ -382,7 +412,9 @@ pub fn module_for_ordinal(ordinal: u32) -> &'static str {
     else if ordinal < MOUCALLS_BASE { "TCP32DLL" } // 14336–15359
     else if ordinal < PMSHAPI_BASE  { "MOUCALLS" } // 15360–16383
     else if ordinal < HELPMGR_BASE  { "PMSHAPI" }  // 16384–17407
-    else if ordinal < STUB_AREA_SIZE { "HELPMGR" } // 17408–18431
+    else if ordinal < PMSPL_BASE    { "HELPMGR" }  // 17408–18431
+    else if ordinal < PMCTLS_BASE   { "PMSPL" }    // 18432–19455
+    else if ordinal < STUB_AREA_SIZE { "PMCTLS" }  // 19456–20479
     else                            { "?" }
 }
 
@@ -645,13 +677,37 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
         },
 
         // ── HELPMGR ───────────────────────────────────────────────────────
-        o if (HELPMGR_BASE..STUB_AREA_SIZE).contains(&o) => match o - HELPMGR_BASE {
+        o if (HELPMGR_BASE..PMSPL_BASE).contains(&o) => match o - HELPMGR_BASE {
             51 => &["hab", "phinit"],
             52 => &["hwndHelp"],
             53 => &["hwndApp"],
             54 => &["hwndHelp", "hwndApp"],
             55 => &["hwndHelp", "idHelpTable", "hmod"],
             56 => &["hwndHelp", "phtHelpTable"],
+            _ => &[],
+        },
+
+        // ── PMSPL ─────────────────────────────────────────────────────────
+        o if (PMSPL_BASE..PMCTLS_BASE).contains(&o) => match o - PMSPL_BASE {
+            301 => &["pszToken", "lCount", "pqmdopData"],
+            302 => &["hspl", "pszDocName"],
+            303 | 305 | 306 | 308 => &["hspl"],
+            304 => &["hspl", "lCount", "pData"],
+            381 => &["pszComputerName", "pszPrintDeviceName", "ulLevel", "pBuf", "cbBuf", "pcbNeeded"],
+            397 => &["pszComputerName", "pszQueueName", "ulLevel", "pBuf", "cbBuf", "pcbNeeded"],
+            382 | 399 | 406 | 407 | 408 =>
+                &["pszComputerName", "ulLevel", "pBuf", "cbBuf", "pcReturned", "pcTotal", "pcbNeeded", "pReserved"],
+            441 => &["pszComputerName", "uLevel", "flType", "pBuf", "cbbuf", "pcReturned", "pcTotal",
+                     "pcbNeeded", "pReserved"],
+            _ => &[],
+        },
+
+        // ── PMCTLS ────────────────────────────────────────────────────────
+        o if (PMCTLS_BASE..STUB_AREA_SIZE).contains(&o) => match o - PMCTLS_BASE {
+            2 => &["hwndP", "hwndO", "pfntd"],
+            3 | 5 => &["hwnd", "msg", "mp1", "mp2"],
+            4 => &["hwndP", "hwndO", "pfild"],
+            6 => &["papszFQFilename"],
             _ => &[],
         },
 
@@ -905,7 +961,11 @@ mod tests {
         assert_eq!(module_for_ordinal(PMSHAPI_BASE),        "PMSHAPI");
         assert_eq!(module_for_ordinal(HELPMGR_BASE - 1),   "PMSHAPI");
         assert_eq!(module_for_ordinal(HELPMGR_BASE),        "HELPMGR");
-        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "HELPMGR");
+        assert_eq!(module_for_ordinal(PMSPL_BASE - 1),     "HELPMGR");
+        assert_eq!(module_for_ordinal(PMSPL_BASE),          "PMSPL");
+        assert_eq!(module_for_ordinal(PMCTLS_BASE - 1),    "PMSPL");
+        assert_eq!(module_for_ordinal(PMCTLS_BASE),         "PMCTLS");
+        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "PMCTLS");
         assert_eq!(module_for_ordinal(STUB_AREA_SIZE),     "?");
     }
 
@@ -922,6 +982,22 @@ mod tests {
         assert_eq!(ordinal_to_name(MOUCALLS_BASE + 26), "MouDrawPtr");
         assert_eq!(arg_names_for_ordinal(PMSHAPI_BASE + 115).len(), 6);
         assert_eq!(arg_names_for_ordinal(HELPMGR_BASE + 54), &["hwndHelp", "hwndApp"]);
+    }
+
+    #[test]
+    fn test_pmspl_and_pmctls_ordinal_names() {
+        assert_eq!(ordinal_to_name(PMSPL_BASE + 301), "SplQmOpen");
+        assert_eq!(ordinal_to_name(PMSPL_BASE + 399), "SplEnumQueue");
+        assert_eq!(ordinal_to_name(PMSPL_BASE + 441), "SplEnumPrinter");
+        assert_eq!(ordinal_to_name(PMSPL_BASE + 307), "?");
+        assert_eq!(ordinal_to_name(PMCTLS_BASE + 2), "WinFontDlg");
+        assert_eq!(ordinal_to_name(PMCTLS_BASE + 4), "WinFileDlg");
+        assert_eq!(ordinal_to_name(PMCTLS_BASE + 6), "WinFreeFileDlgList");
+        assert_eq!(ordinal_to_name(PMCTLS_BASE + 24), "?");
+        // HELPMGR ends where PMSPL begins.
+        assert_eq!(ordinal_to_name(HELPMGR_BASE + 56), "WinCreateHelpTable");
+        assert_eq!(arg_names_for_ordinal(PMSPL_BASE + 441).len(), 9);
+        assert_eq!(arg_names_for_ordinal(PMCTLS_BASE + 4), &["hwndP", "hwndO", "pfild"]);
     }
 
     #[test]

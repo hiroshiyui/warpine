@@ -439,13 +439,22 @@ impl super::Loader {
     // ── Device contexts ──────────────────────────────────────────────────────
 
     /// DevOpenDC: memory (`OD_MEMORY`) and information (`OD_INFO`) DCs.
-    /// Printers, metafiles and the rest fail with `DEV_ERROR`.
-    pub(super) fn dev_open_dc(&self, kind: u32) -> u32 {
+    /// Printers (`OD_QUEUED`, `OD_DIRECT`: no printer driver exists,
+    /// `PMERR_DRIVER_NOT_FOUND`; see `pmspl.rs`), metafiles and the rest
+    /// (`PMERR_INV_DC_TYPE`) fail with `DEV_ERROR`.
+    pub(super) fn dev_open_dc(&self, tid: u32, kind: u32) -> u32 {
+        use super::pmspl::{OD_DIRECT, OD_QUEUED, PMERR_DRIVER_NOT_FOUND, PMERR_INV_DC_TYPE};
         let dc = match kind {
             OD_MEMORY => DeviceContext::Memory,
             OD_INFO => DeviceContext::Info,
+            OD_QUEUED | OD_DIRECT => {
+                log::info!("  DevOpenDC: printing is not supported (no printer)");
+                self.pm_error(tid, PMERR_DRIVER_NOT_FOUND);
+                return DEV_ERROR;
+            }
             _ => {
                 log::debug!("  DevOpenDC: device type {kind} not supported");
+                self.pm_error(tid, PMERR_INV_DC_TYPE);
                 return DEV_ERROR;
             }
         };
@@ -1145,6 +1154,11 @@ mod api_tests {
         assert_eq!(gpi(&l, 604, &[hdc]), DEV_OK);
         assert_eq!(gpi(&l, 604, &[hdc]), DEV_ERROR);
         assert_eq!(gpi(&l, 610, &[0, 2 /* OD_QUEUED */, 0, 0, 0, 0]), DEV_ERROR, "no printers");
+        assert_eq!(l.shared.pm_errors.take(0) & 0xFFFF, super::super::pmspl::PMERR_DRIVER_NOT_FOUND);
+        assert_eq!(gpi(&l, 610, &[0, 5 /* OD_DIRECT */, 0, 0, 0, 0]), DEV_ERROR, "no printers");
+        assert_eq!(l.shared.pm_errors.take(0) & 0xFFFF, super::super::pmspl::PMERR_DRIVER_NOT_FOUND);
+        assert_eq!(gpi(&l, 610, &[0, 7 /* OD_METAFILE */, 0, 0, 0, 0]), DEV_ERROR);
+        assert_eq!(l.shared.pm_errors.take(0) & 0xFFFF, super::super::pmspl::PMERR_INV_DC_TYPE);
         // Unsupported formats are refused.
         assert_eq!(gpi(&l, 598, &[0, header(&l, 4, 4, 16), 0, 0, 0]), 0);
         assert_eq!(gpi(&l, 598, &[0, header(&l, 0, 4, 24), 0, 0, 0]), 0);

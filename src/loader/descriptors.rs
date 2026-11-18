@@ -131,6 +131,8 @@ impl super::Loader {
         else if module == "MOUCALLS" { MAGIC_API_BASE + MOUCALLS_BASE as u64 + ordinal as u64 }
         else if module == "PMSHAPI"  { MAGIC_API_BASE + PMSHAPI_BASE  as u64 + ordinal as u64 }
         else if module == "HELPMGR"  { MAGIC_API_BASE + HELPMGR_BASE  as u64 + ordinal as u64 }
+        else if module == "PMSPL"    { MAGIC_API_BASE + PMSPL_BASE    as u64 + ordinal as u64 }
+        else if module == "PMCTLS"   { MAGIC_API_BASE + PMCTLS_BASE   as u64 + ordinal as u64 }
         else {
             // Check loaded user DLLs
             let dll_mgr = self.shared.dll_mgr.lock_or_recover();

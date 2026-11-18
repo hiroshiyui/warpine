@@ -25,7 +25,8 @@
 use tracing::debug;
 
 use super::constants::{NLS_BASE, MSG_BASE, MDM_BASE, UCONV_BASE, SO32DLL_BASE, TCP32DLL_BASE,
-                       PMSHAPI_BASE, HELPMGR_BASE};
+                       PMSHAPI_BASE, HELPMGR_BASE, PMSPL_BASE, PMCTLS_BASE};
+use super::pmspl::SplEnum;
 use super::ApiResult;
 use super::vm_backend::VcpuBackend;
 
@@ -629,6 +630,50 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,i,a| ApiResult::Normal(l.win_load_help_table(i,a[0],a[1],a[2])) },
     ApiEntry { ordinal: HELPMGR_BASE + 56, module: "HELPMGR", name: "WinCreateHelpTable",       argc: 2,
                handler: |l,_v,i,a| ApiResult::Normal(l.win_create_help_table(i,a[0],a[1])) },
+
+    // ── PMSPL — spooler without printers (base PMSPL_BASE = 18432; pmspl.rs) ─
+    ApiEntry { ordinal: PMSPL_BASE + 301, module: "PMSPL", name: "SplQmOpen",             argc: 3,
+               handler: |l,_v,i,a| ApiResult::Normal(l.spl_qm_open(i,a[1],a[2])) },
+    ApiEntry { ordinal: PMSPL_BASE + 302, module: "PMSPL", name: "SplQmStartDoc",         argc: 2,
+               handler: |l,_v,i,_a| ApiResult::Normal(l.spl_qm_invalid(i)) },
+    ApiEntry { ordinal: PMSPL_BASE + 303, module: "PMSPL", name: "SplQmEndDoc",           argc: 1,
+               handler: |l,_v,i,_a| ApiResult::Normal(l.spl_qm_invalid(i)) },
+    ApiEntry { ordinal: PMSPL_BASE + 304, module: "PMSPL", name: "SplQmWrite",            argc: 3,
+               handler: |l,_v,i,_a| ApiResult::Normal(l.spl_qm_invalid(i)) },
+    ApiEntry { ordinal: PMSPL_BASE + 305, module: "PMSPL", name: "SplQmAbort",            argc: 1,
+               handler: |l,_v,i,_a| ApiResult::Normal(l.spl_qm_invalid(i)) },
+    ApiEntry { ordinal: PMSPL_BASE + 306, module: "PMSPL", name: "SplQmClose",            argc: 1,
+               handler: |l,_v,i,_a| ApiResult::Normal(l.spl_qm_invalid(i)) },
+    ApiEntry { ordinal: PMSPL_BASE + 308, module: "PMSPL", name: "SplQmAbortDoc",         argc: 1,
+               handler: |l,_v,i,_a| ApiResult::Normal(l.spl_qm_invalid(i)) },
+    ApiEntry { ordinal: PMSPL_BASE + 381, module: "PMSPL", name: "SplQueryDevice",        argc: 6,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.spl_query(a[0],a[5],super::pmspl::NERR_DestNotFound)) },
+    ApiEntry { ordinal: PMSPL_BASE + 382, module: "PMSPL", name: "SplEnumDevice",         argc: 8,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.spl_enum(SplEnum::Device,a[0],a[1],a[4],a[5],a[6])) },
+    ApiEntry { ordinal: PMSPL_BASE + 397, module: "PMSPL", name: "SplQueryQueue",         argc: 6,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.spl_query(a[0],a[5],super::pmspl::NERR_QNotFound)) },
+    ApiEntry { ordinal: PMSPL_BASE + 399, module: "PMSPL", name: "SplEnumQueue",          argc: 8,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.spl_enum(SplEnum::Queue,a[0],a[1],a[4],a[5],a[6])) },
+    ApiEntry { ordinal: PMSPL_BASE + 406, module: "PMSPL", name: "SplEnumDriver",         argc: 8,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.spl_enum(SplEnum::Other,a[0],a[1],a[4],a[5],a[6])) },
+    ApiEntry { ordinal: PMSPL_BASE + 407, module: "PMSPL", name: "SplEnumQueueProcessor", argc: 8,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.spl_enum(SplEnum::Other,a[0],a[1],a[4],a[5],a[6])) },
+    ApiEntry { ordinal: PMSPL_BASE + 408, module: "PMSPL", name: "SplEnumPort",           argc: 8,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.spl_enum(SplEnum::Other,a[0],a[1],a[4],a[5],a[6])) },
+    ApiEntry { ordinal: PMSPL_BASE + 441, module: "PMSPL", name: "SplEnumPrinter",        argc: 9,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.spl_enum(SplEnum::Printer,a[0],a[1],a[5],a[6],a[7])) },
+
+    // ── PMCTLS — standard dialogs (base PMCTLS_BASE = 19456; pm_filedlg.rs, pm_fontdlg.rs)
+    ApiEntry { ordinal: PMCTLS_BASE + 2, module: "PMCTLS", name: "WinFontDlg",         argc: 3,
+               handler: |l,_v,i,a| l.win_font_dlg(i,a[0],a[1],a[2]) },
+    ApiEntry { ordinal: PMCTLS_BASE + 3, module: "PMCTLS", name: "WinDefFontDlgProc",  argc: 4,
+               handler: |l,_v,_i,a| l.font_dlg_message(a[0],a[1],a[2],a[3]) },
+    ApiEntry { ordinal: PMCTLS_BASE + 4, module: "PMCTLS", name: "WinFileDlg",         argc: 3,
+               handler: |l,_v,i,a| l.win_file_dlg(i,a[0],a[1],a[2]) },
+    ApiEntry { ordinal: PMCTLS_BASE + 5, module: "PMCTLS", name: "WinDefFileDlgProc",  argc: 4,
+               handler: |l,_v,_i,a| l.file_dlg_message(a[0],a[1],a[2],a[3]) },
+    ApiEntry { ordinal: PMCTLS_BASE + 6, module: "PMCTLS", name: "WinFreeFileDlgList", argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.win_free_file_dlg_list(a[0])) },
 ];
 
 // ── Compatibility report ──────────────────────────────────────────────────────
@@ -652,10 +697,10 @@ const MOUCALLS_ORDINALS: u32 = 20;
 /// `N => { // WinName(` arms by a test).
 const PMWIN_ORDINALS: u32 = 157;
 /// PMGPI ordinals dispatched by `pm_gpi.rs`, `pm_region.rs`, `pm_area.rs`
-/// and `pm_text.rs` (checked against their arms by a test), of which
+/// `pm_text.rs` and `pmspl.rs` (checked against their arms by a test), of which
 /// `PMGPI_STUBS` are stubs (`GpiLoadFonts`, `GpiLoadPublicFonts`,
 /// `GpiUnloadPublicFonts`).
-const PMGPI_ORDINALS: u32 = 119;
+const PMGPI_ORDINALS: u32 = 121;
 const PMGPI_STUBS: u32 = 3;
 
 /// Ordinals handled by the sub-dispatchers rather than the registry.
@@ -808,7 +853,8 @@ mod tests {
         let win = dispatched_ordinals(&[include_str!("pm_win.rs")]);
         assert_eq!(win.len() as u32, super::PMWIN_ORDINALS, "PMWIN_ORDINALS is stale");
         let gpi = dispatched_ordinals(&[include_str!("pm_gpi.rs"), include_str!("pm_region.rs"),
-                                        include_str!("pm_area.rs"), include_str!("pm_text.rs")]);
+                                        include_str!("pm_area.rs"), include_str!("pm_text.rs"),
+                                        include_str!("pmspl.rs")]);
         assert_eq!(gpi.len() as u32, super::PMGPI_ORDINALS, "PMGPI_ORDINALS is stale");
     }
 

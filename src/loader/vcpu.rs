@@ -1392,6 +1392,8 @@ fn finish_dlg_loop(
     saved_rsp: u64,
 ) {
     let (result, destroy) = loader.shared.window_mgr.lock_or_recover().end_modal_dialog(hwnd_dlg);
+    // WinFileDlg / WinFontDlg return TRUE (their outcome is in lReturn).
+    let result = loader.std_dialog_return(hwnd_dlg, result);
     let outcome = if destroy { loader.destroy_dialog(hwnd_dlg, result) } else { ApiResult::Normal(result) };
     match outcome {
         ApiResult::DestroyWindows { chain, hwnd, wnd_proc } => continue_destroy(

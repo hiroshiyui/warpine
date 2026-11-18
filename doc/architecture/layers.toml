@@ -172,6 +172,12 @@ label = "PM shell DLLs: PMSHAPI profiles (ADR-0017), HELPMGR"
 modules = ["loader/pmshapi.rs", "loader/profile.rs", "loader/helpmgr.rs"]
 
 [[layer]]
+id = "stddlg"
+zone = "host"
+label = "Standard dialogs and printing: PMCTLS file and font dialogs built in memory of built-in controls, PMSPL spooler and device escapes without printers"
+modules = ["loader/pm_stddlg.rs", "loader/pm_filedlg.rs", "loader/pm_fontdlg.rs", "loader/pmspl.rs"]
+
+[[layer]]
 id = "desktop"
 zone = "host"
 label = "PM desktop front end: surfaces, compositor, chrome, fonts (ADR-0011, ADR-0012)"
@@ -320,6 +326,20 @@ label = "INTR / BREAK as real-time signals"
 from = "pmshell"
 to = "vfs"
 label = "profiles"
+
+[[flow]]
+from = "dispatch"
+to = "stddlg"
+
+[[flow]]
+from = "stddlg"
+to = "controls"
+label = "dialogs of built-in controls"
+
+[[flow]]
+from = "stddlg"
+to = "vfs"
+label = "browse drives"
 
 [[flow]]
 from = "vfs"

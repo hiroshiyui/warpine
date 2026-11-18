@@ -577,6 +577,9 @@ pub struct WindowManager {
     pub hooks: super::pm_hook::HookTable,
     /// The window `WinLockWindowUpdate` locked (0 = none; `pm_paint.rs`).
     pub update_locked: u32,
+    /// The standard file and font dialogs and the file lists they handed
+    /// out (`pm_stddlg.rs`).
+    pub std_dialogs: super::pm_stddlg::StdDialogs,
 }
 
 /// The caret of a text control as last painted, in the surface coordinates
@@ -648,6 +651,7 @@ impl WindowManager {
             owner_drawing: HashSet::new(),
             hooks: Default::default(),
             update_locked: 0,
+            std_dialogs: Default::default(),
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
@@ -1527,6 +1531,7 @@ impl WindowManager {
             }
         }
         self.help.forget_windows(&doomed);
+        self.std_dialogs.forget_windows(&doomed);
         // Presentation spaces and window device contexts of the windows.
         let window_dcs: Vec<u32> = self.dcs.iter()
             .filter(|&(_, dc)| matches!(dc, DeviceContext::Window(w) if doomed.contains(w)))

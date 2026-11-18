@@ -26,6 +26,7 @@ digraph warpine {
     controls [label=<<B>Built-in controls: statics, buttons, entry fields, MLE, list box, scroll bar, combo box, spin button, slider, value set, owner draw (ADR-0025)</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/pm_controls.rs, loader/pm_button.rs, loader/pm_list.rs, loader/pm_edit.rs</FONT><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/pm_scrollbar.rs, loader/pm_combo.rs, loader/pm_spin.rs, loader/pm_owner.rs</FONT><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/pm_static.rs, loader/pm_slider.rs, loader/pm_valueset.rs</FONT>>, fillcolor="#bbdefb"];
     gpi [label=<<B>GPI: presentation spaces, drawing, fonts, bitmaps, regions, clipping, paths (ADR-0024)</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/pm_gpi.rs, loader/pm_bitmap.rs, loader/pm_shapes.rs, loader/pm_drawtext.rs</FONT><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/pm_region.rs, loader/pm_area.rs, loader/pm_text.rs</FONT>>, fillcolor="#bbdefb"];
     pmshell [label=<<B>PM shell DLLs: PMSHAPI profiles (ADR-0017), HELPMGR</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/pmshapi.rs, loader/profile.rs, loader/helpmgr.rs</FONT>>, fillcolor="#bbdefb"];
+    stddlg [label=<<B>Standard dialogs and printing: PMCTLS file and font dialogs built in memory of built-in controls, PMSPL spooler and device escapes without printers</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/pm_stddlg.rs, loader/pm_filedlg.rs, loader/pm_fontdlg.rs, loader/pmspl.rs</FONT>>, fillcolor="#bbdefb"];
     desktop [label=<<B>PM desktop front end: surfaces, compositor, chrome, fonts (ADR-0011, ADR-0012)</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">gui/mod.rs, gui/renderer.rs, gui/sdl_renderer.rs, gui/sdl_renderer/compositor.rs</FONT><BR/><FONT POINT-SIZE="8" COLOR="#37474f">gui/surface.rs, gui/region.rs, gui/damage.rs, gui/font.rs</FONT><BR/><FONT POINT-SIZE="8" COLOR="#37474f">gui/glyph_transform.rs, gui/message.rs, gui/pointer.rs, gui/cursor.rs</FONT><BR/><FONT POINT-SIZE="8" COLOR="#37474f">gui/popup_menu.rs, gui/system_menu.rs, gui/frame_track.rs, gui/frame_stats.rs</FONT><BR/><FONT POINT-SIZE="8" COLOR="#37474f">gui/gui_script.rs, gui/headless.rs, gui/audio.rs</FONT>>, fillcolor="#bbdefb"];
     textdisplay [label=<<B>Text-mode display: VIO window and full-screen text (ADR-0013)</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">gui/text_renderer.rs, gui/vio_window.rs, gui/vio_view.rs, gui/vio_switch.rs</FONT>>, fillcolor="#bbdefb"];
     debug [label=<<B>Debugging: GDB stub, crash dumps</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">loader/gdb_stub.rs, loader/crash_dump.rs</FONT>>, fillcolor="#bbdefb"];
@@ -65,6 +66,9 @@ digraph warpine {
   kernel -> children [label="DosExecPgm (arguments, environment, inherited handles), named pipes"];
   vcpu -> children [label="INTR / BREAK as real-time signals"];
   pmshell -> vfs [label="profiles"];
+  dispatch -> stddlg;
+  stddlg -> controls [label="dialogs of built-in controls"];
+  stddlg -> vfs [label="browse drives"];
   vfs -> hostfs;
   net_mm -> network;
   net_mm -> sdl [label="audio"];
