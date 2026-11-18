@@ -45,6 +45,9 @@ fn run_sample_env(sample: &str, timeout_secs: u64, env: &[(&str, &str)]) -> (Str
         .arg(sample)
         .env("WARPINE_HEADLESS", "1")
         .env("XDG_DATA_HOME", data_home.path())
+        // Named-pipe and thread-session directories go there too, never
+        // into the user's own runtime directory.
+        .env("XDG_RUNTIME_DIR", data_home.path())
         .envs(PINNED_LOCALE.iter().copied())
         .envs(env.iter().copied())
         // Suppress tracing/log noise on stderr; we only care about stdout.
@@ -192,6 +195,9 @@ fn test_ansi_escape_sequences_in_a_vio_window() {
         .env("SDL_AUDIODRIVER", "dummy")
         .env("RUST_LOG", "error")
         .env("XDG_DATA_HOME", dir.path())
+        // Named-pipe and thread-session directories go there too, never
+        // into the user's own runtime directory.
+        .env("XDG_RUNTIME_DIR", dir.path())
         .env("WARPINE_GUI_SCRIPT", &session)
         .env_remove("WARPINE_VIO")
         .env_remove("WARPINE_HEADLESS")
@@ -222,6 +228,9 @@ fn test_4os2_ends_at_the_end_of_piped_input() {
         .envs(PINNED_LOCALE.iter().copied())
         .env("RUST_LOG", "error")
         .env("XDG_DATA_HOME", dir.path())
+        // Named-pipe and thread-session directories go there too, never
+        // into the user's own runtime directory.
+        .env("XDG_RUNTIME_DIR", dir.path())
         .env("SDL_VIDEODRIVER", "dummy")
         .env("SDL_AUDIODRIVER", "dummy")
         .env_remove("WARPINE_VIO")
@@ -271,6 +280,9 @@ fn test_4os2_pipe_to_an_external_program() {
         .envs(PINNED_LOCALE.iter().copied())
         .env("RUST_LOG", "error")
         .env("XDG_DATA_HOME", dir.path())
+        // Named-pipe and thread-session directories go there too, never
+        // into the user's own runtime directory.
+        .env("XDG_RUNTIME_DIR", dir.path())
         .env("SDL_VIDEODRIVER", "dummy")
         .env("SDL_AUDIODRIVER", "dummy")
         .env_remove("WARPINE_VIO")
@@ -700,6 +712,9 @@ fn run_gui_script_env(sample: &str, script: &Path, capture: bool, env: &[(&str, 
         .arg(sample)
         .env_remove("WARPINE_COMPOSITOR")
         .env("XDG_DATA_HOME", data_home.path())
+        // Named-pipe and thread-session directories go there too, never
+        // into the user's own runtime directory.
+        .env("XDG_RUNTIME_DIR", data_home.path())
         .envs(env.iter().copied())
         .envs(PINNED_LOCALE.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
@@ -881,6 +896,9 @@ fn run_4os2_script(vio: Option<&str>, dumps: &[&str], script: impl FnOnce(&[std:
         .env("WARPINE_GUI_SCRIPT", &session)
         // Drive C: in the session's temporary directory, not the user's own.
         .env("XDG_DATA_HOME", dir.path())
+        // Named-pipe and thread-session directories go there too, never
+        // into the user's own runtime directory.
+        .env("XDG_RUNTIME_DIR", dir.path())
         .env_remove("WARPINE_VIO")
         .stdout(Stdio::null());
     if let Some(vio) = vio {
@@ -929,6 +947,9 @@ fn run_mou_session(vio: Option<&str>, origin: (i32, i32)) -> Option<String> {
         .env("RUST_LOG", "error")
         // C: is $XDG_DATA_HOME/warpine/drive_c: the sample's file lands here.
         .env("XDG_DATA_HOME", dir.path())
+        // Named-pipe and thread-session directories go there too, never
+        // into the user's own runtime directory.
+        .env("XDG_RUNTIME_DIR", dir.path())
         .env("WARPINE_GUI_SCRIPT", &session)
         .env_remove("WARPINE_VIO")
         .stdout(Stdio::null());
@@ -1082,6 +1103,9 @@ fn run_4os2_windowed_with(steps: &str, dumps: usize, files: &[&str]) -> Option<W
         .env("WARPINE_GUI_SCRIPT", &session)
         // Drive C: is $XDG_DATA_HOME/warpine/drive_c.
         .env("XDG_DATA_HOME", dir.path())
+        // Named-pipe and thread-session directories go there too, never
+        // into the user's own runtime directory.
+        .env("XDG_RUNTIME_DIR", dir.path())
         .env_remove("WARPINE_VIO")
         .env_remove("WARPINE_COMPOSITOR")
         .env_remove("WARPINE_DESKTOP_W")
