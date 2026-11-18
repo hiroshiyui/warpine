@@ -11,6 +11,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Painting** — a child window's presentation space draws at the child's place; `WinBeginPaint` clips to the update rectangle; `WinUpdateWindow` paints before it returns; `WinShowWindow` invalidates a window it shows; a `WC_FRAME` made with `WinCreateWindow` is shown at once.
 - **Dialogs and keys** — controls of the application's own classes take part in Tab and mnemonics (`WM_MATCHMNEMONIC`); built-in controls answer `WM_QUERYDLGCODE` / `WM_MATCHMNEMONIC`; `WinDefWindowProc` sends `WM_CHAR` to the owner; focus changes post `WM_SETFOCUS`.
 - **Threads and signals** — a thread's windows go with it; a killed thread leaves its modal dialog loop; blocked pipe writes and blocking socket calls are interrupted by signals and `DosKillThread`. Sample `pm_subclass_test`.
+- **Shared memory between processes** (new `src/loader/shared_arena.rs`) — `DosAllocSharedMem`, `DosGetNamedSharedMem`, `DosGetSharedMem` and `DosGiveSharedMem` now share blocks between all processes of a session, at the same address in each: the top 32 MB of every process's guest memory is one sealed memfd that children inherit, and a table in the session's private directory records which processes hold which block, so a block lasts until its last holder frees it or ends (ADR-0049). `DosGetSharedMem` checks `OBJ_GETTABLE`; `DosGetNamedSharedMem` checks its name and flags. Sample `shmem_test`.
+- **Shared semaphores between processes** (new `src/loader/shared_sem.rs`) — named and `DC_SEM_SHARED` event and mutex semaphores are shared by all processes of a session, with the same handle in each: they live in a host-only sealed memfd of slots under an open-file-description lock, waiters in any process are woken by a futex, and a mutex whose owning process ends is owner-died for the next requester; muxwait lists can hold them (ADR-0050). Sample `shsem_test`.
+
+### Changed
+- Private memory of a process ends at `0x0E000000` (192 MB from `0x02000000`), below the shared arena.
 
 ## [0.0.4] - 2026-11-18
 

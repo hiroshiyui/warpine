@@ -54,7 +54,7 @@ _Screenshots captured from uncommitted changes on top of `ed65028` on 2026-11-18
 - **Text-mode programs in a PM window:** a VIO program runs in a window on the PM desktop, as in an OS/2 window session — CP437 8×16 font, CGA 16-colour palette, blinking cursor. The window can be resized (scroll bars over the screen), minimized and maximized, its system menu marks and copies text and pastes the clipboard as keystrokes, and the mouse reaches programs through MOUCALLS. `WARPINE_VIO=fullscreen` runs it full screen instead (the only choice for programs marked incompatible with PM windowing), Alt+Home switches between the two while it runs, and `WARPINE_HEADLESS=1` uses the host terminal.
 - **Text-Mode Console:** Full VIO and KBD subsystem emulation with screen buffer, cursor management, scroll, and keyboard input; ANSI escape sequences in `VioWrtTTY` / `DosWrite` output (cursor, `cls`, colours), and output redirected to files with `DosDupHandle` (`echo text > file` in 4OS2).
 - **Filesystem:** HPFS-compatible VFS (`VfsBackend` trait) with `HostDirBackend`: case-insensitive lookup, extended attributes (xattrs + sidecar), file locking, OS/2 wildcard matching, sandbox isolation. C: drive auto-mounted at `~/.local/share/warpine/drive_c/`.
-- **Memory Management:** `DosAllocMem`/`DosFreeMem`, shared memory, `DosSub*` suballocation (bookkeeping kept by Warpine), guest physical memory manager.
+- **Memory Management:** `DosAllocMem`/`DosFreeMem`, shared memory between the processes of a session, `DosSub*` suballocation (bookkeeping kept by Warpine), guest physical memory manager.
 - **IPC and threads:** Event / mutex / muxwait semaphores with their queries, critical sections, DOS timers posting semaphores, exit lists (`DosExitList`), per-thread exception handlers, anonymous and named pipes (also between Warpine processes), and named message queues.
 - **Process Management:** `DosExecPgm` and `WinStartApp` (the child gets its arguments, environment and inheritable pipe handles; a program cannot start Warpine processes more than 8 levels deep or keep more than 16 children, and `THREADS=` in `C:\CONFIG.SYS` bounds the threads of the whole session), `DosWaitChild`, `DosSearchPath`, `DosQueryModuleName`, directory tracking, system information queries.
 - **Profiles and help:** `Prf*` profile calls with OS2.INI / OS2SYS.INI on drive C: (in Warpine's own text format), and Help Manager instances so programs with online help start (no help viewer yet).
@@ -192,6 +192,8 @@ samples/               OS/2 sample applications and build scripts
   pm_cnrtree_test/     WC_CONTAINER: sorting by a guest comparison function, tree view, scroll bar
   pm_cnricon_test/     WC_CONTAINER: icon view and icons, filtering, direct editing
   pm_subclass_test/    Subclassing built-in windows and frames, painting, dialog mnemonics
+  shmem_test/          Shared memory between a parent and a child process
+  shsem_test/          Shared semaphores between a parent and a child process
   pm_drag_test/        Drag and drop within a process: DrgDrag, DM_* messages, container drags
   semfollow_test/      Semaphore and pipe-semaphore follow-ups, suballocation
   pm_frame_scroll_test/ Frame scroll bars with the mouse, client drawing inside the frame
@@ -323,7 +325,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 1849 unit tests (no KVM required)
+cargo test                        # 1867 unit tests (no KVM required)
 cargo test --test integration     # 139 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
