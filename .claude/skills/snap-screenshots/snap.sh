@@ -55,12 +55,14 @@ mkdir -m 700 "$work/home"
 XDG_DATA_HOME="$work/home" XDG_RUNTIME_DIR="$work/home" \
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy RUST_LOG=error WARPINE_COUNTRY=1 WARPINE_CODEPAGE=437 \
 WARPINE_GUI_SCRIPT="$work/session.script" \
-    timeout 60 "$bin" "$sample" >/dev/null 2>"$work/stderr.log" || {
-        echo "snap: warpine exited with an error for $sample:" >&2
-        tail -5 "$work/stderr.log" >&2
-        exit 1
-    }
-[ -s "$work/desktop.ppm" ] || { echo "snap: no desktop dump was written for $sample" >&2; exit 1; }
+    timeout 60 "$bin" "$sample" >/dev/null 2>"$work/stderr.log" || status=$?
+# A session ended by the script's `quit` may exit non-zero; only a missing
+# dump is a failure.
+[ -s "$work/desktop.ppm" ] || {
+    echo "snap: no desktop dump was written for $sample (exit status ${status:-0}):" >&2
+    tail -5 "$work/stderr.log" >&2
+    exit 1
+}
 
 mkdir -p "$out_dir"
 im=$(command -v magick || command -v convert)
