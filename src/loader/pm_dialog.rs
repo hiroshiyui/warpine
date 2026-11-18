@@ -73,6 +73,25 @@ pub(super) struct DlgItem {
     /// Presentation parameters (`offPresParams`: a `PRESPARAMS` block in
     /// the template; `pm_presparam.rs`).
     pub pres_params: Vec<(u32, Vec<u8>)>,
+    /// The item's control data (`CTLDATA`, e.g. a slider's `SLDCDATA`), at
+    /// most [`MAX_DLG_CTL_DATA`] bytes; empty when it has none.
+    pub ctl_data: Vec<u8>,
+}
+
+/// Most control data bytes kept for a dialog item: enough for the
+/// structures the built-in controls read from it (`SLDCDATA`, `VSCDATA`).
+pub(super) const MAX_DLG_CTL_DATA: usize = 64;
+
+/// The control data at `off` in the template: as many bytes as its leading
+/// size field (`cbSize`, a ULONG) gives, bounded by the template's end and
+/// [`MAX_DLG_CTL_DATA`].
+fn ctl_data_at(data: &[u8], off: u16) -> Vec<u8> {
+    if off == NO_OFFSET {
+        return Vec::new();
+    }
+    let off = off as usize;
+    let len = u32_at(data, off).map_or(0, |cb| (cb as usize).min(MAX_DLG_CTL_DATA));
+    data.get(off..).map_or_else(Vec::new, |rest| rest[..len.min(rest.len())].to_vec())
 }
 
 /// A parsed `DLGTEMPLATE`.
@@ -133,6 +152,7 @@ fn read_item(data: &[u8], off: usize, codepage: u32) -> Option<(DlgItem, u16, u1
             NO_OFFSET => Vec::new(),
             off => data.get(off as usize..).map_or_else(Vec::new, super::pm_presparam::parse_presparams),
         },
+        ctl_data: ctl_data_at(data, w(DI_OFF_CTLDATA)),
     }, w(DI_CHILDREN), w(DI_OFF_CTLDATA)))
 }
 
@@ -764,7 +784,7 @@ mod tests {
 
     fn item(class: &str, text: &str, (x, y, cx, cy): (i16, i16, i16, i16), id: u16, style: u32) -> DlgItem {
         DlgItem { class_name: class.into(), text: text.into(), x, y, cx, cy, id, style: WS_VISIBLE | style, parent: None,
-                  pres_params: Vec::new() }
+                  pres_params: Vec::new(), ctl_data: Vec::new() }
     }
 
     /// A dialog with a label, an entry field, a list box, a check box and
@@ -828,6 +848,53 @@ mod tests {
         assert_ne!(field, spin, "the spin button's field");
         assert_eq!(focus, entry, "the template's focus item gives the focus to its field");
         assert_eq!(wm.tab_stops(dlg), vec![entry, field]);
+    }
+
+    /// A dialog item's control data is kept (bounded by its cbSize, the
+    /// template's end and MAX_DLG_CTL_DATA).
+    #[test]
+    fn control_data_of_items_is_kept_and_bounded() {
+        let mut data = vec![0xEEu8; 4];
+        data.extend_from_slice(&12u32.to_le_bytes());
+        data.extend_from_slice(&[6, 0, 40, 0, 3, 0, 0, 0, 0xAA, 0xBB]);
+        assert_eq!(ctl_data_at(&data, 4), data[4..16].to_vec());
+        assert_eq!(ctl_data_at(&data, NO_OFFSET), Vec::<u8>::new());
+        assert_eq!(ctl_data_at(&data, 200), Vec::<u8>::new(), "past the template");
+        data[4..8].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes());
+        assert_eq!(ctl_data_at(&data, 4).len(), data.len() - 4, "cut at the template's end");
+        let big = [&[0xFF; 4][..], &[0u8; 200][..]].concat();
+        assert_eq!(ctl_data_at(&big, 0).len(), MAX_DLG_CTL_DATA);
+    }
+
+    /// Sliders and value sets in a template get their state from the
+    /// item's control data, and take the focus.
+    #[test]
+    fn templates_with_sliders_and_value_sets() {
+        let loader = Loader::new_mock();
+        {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq(437);
+            wm.tid_to_hmq.insert(0, hmq);
+        }
+        let mut slider = item("WC_SLIDER", "", (4, 60, 150, 30), 1, WS_TABSTOP);
+        slider.ctl_data = [&12u32.to_le_bytes()[..], &[7, 0, 10, 0, 2, 0, 0, 0]].concat();
+        let mut vs = item("WC_VALUESET", "", (4, 4, 100, 40), 2, WS_TABSTOP | VS_RGB);
+        vs.ctl_data = [&8u32.to_le_bytes()[..], &[2, 0, 5, 0]].concat();
+        let t = DlgTemplate {
+            dialog: item("WC_FRAME", "Test", (10, 10, 200, 120), 100, FS_DLGBORDER),
+            frame_flags: FCF_TITLEBAR | FCF_DLGBORDER,
+            focus: None,
+            items: vec![slider, vs],
+        };
+        let (dlg, _, focus) = loader.create_dialog(0, HWND_DESKTOP, 0, 0x1234, Some(t));
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        let (s, v) = (wm.find_child_by_id(dlg, 1).unwrap(), wm.find_child_by_id(dlg, 2).unwrap());
+        let scales = wm.get_window(s).unwrap().slider.as_ref().unwrap().scales;
+        assert_eq!((scales[0].increments, scales[0].spacing, scales[1].increments), (7, 10, 2));
+        let vset = wm.get_window(v).unwrap().valueset.as_ref().unwrap();
+        assert_eq!((vset.rows, vset.cols), (2, 5));
+        assert_eq!(focus, s, "the first tab stop");
+        assert_eq!(wm.tab_stops(dlg), vec![s, v]);
     }
 
     #[test]

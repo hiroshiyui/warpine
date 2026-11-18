@@ -167,6 +167,10 @@ pub struct OS2Window {
     pub spin: Option<Box<super::pm_spin::SpinState>>,
     /// Presentation parameters (`WinSetPresParam`, `pm_presparam.rs`).
     pub pres_params: super::pm_presparam::PresParams,
+    /// A slider's scales, arm and decorations (`pm_slider.rs`).
+    pub slider: Option<Box<super::pm_slider::SliderState>>,
+    /// A value set's items and selection (`pm_valueset.rs`).
+    pub valueset: Option<Box<super::pm_valueset::ValueSetState>>,
 }
 
 /// Map a PM colour value to 0x00RRGGBB with the default colour table: the
@@ -693,6 +697,8 @@ impl WindowManager {
             combo: None,
             spin: None,
             pres_params: Default::default(),
+            slider: None,
+            valueset: None,
         });
         // Register as child of parent
         if parent != 0
@@ -1008,12 +1014,15 @@ impl WindowManager {
     }
 
     /// Whether `hwnd` can hold the keyboard focus: an enabled, visible
-    /// entry field, MLE, list box or button.
+    /// entry field, MLE, list box, button, value set or slider (not a
+    /// read-only one).
     pub fn can_take_focus(&self, hwnd: u32) -> bool {
-        use super::constants::WS_DISABLED;
+        use super::constants::{SLS_READONLY, WS_DISABLED};
         self.windows.get(&hwnd).is_some_and(|w| {
             w.visible && w.style & WS_DISABLED == 0
-                && matches!(w.class_name.as_str(), "WC_ENTRYFIELD" | "WC_MLE" | "WC_LISTBOX" | "WC_BUTTON")
+                && (matches!(w.class_name.as_str(), "WC_ENTRYFIELD" | "WC_MLE" | "WC_LISTBOX" | "WC_BUTTON"
+                                                    | "WC_VALUESET")
+                    || (w.class_name == "WC_SLIDER" && w.style & SLS_READONLY == 0))
         })
     }
 
@@ -1118,7 +1127,8 @@ impl WindowManager {
 
     /// Tell the owner of control `hwnd` that it gained (`gained`) or lost
     /// the focus: `EN_SETFOCUS` / `EN_KILLFOCUS` for an entry field,
-    /// `MLN_*` for an MLE, `LN_*` for a list box (mp2 = the control). Other
+    /// `MLN_*` for an MLE, `LN_*` for a list box, `SLN_*` for a slider,
+    /// `VN_*` for a value set (mp2 = the control). Other
     /// windows have no such notification.
     pub fn notify_focus(&self, hwnd: u32, gained: bool) {
         use super::constants::*;
@@ -1130,6 +1140,10 @@ impl WindowManager {
             ("WC_MLE", false) => MLN_KILLFOCUS,
             ("WC_LISTBOX", true) => LN_SETFOCUS,
             ("WC_LISTBOX", false) => LN_KILLFOCUS,
+            ("WC_SLIDER", true) => SLN_SETFOCUS,
+            ("WC_SLIDER", false) => SLN_KILLFOCUS,
+            ("WC_VALUESET", true) => VN_SETFOCUS,
+            ("WC_VALUESET", false) => VN_KILLFOCUS,
             _ => return,
         };
         self.notify_owner(hwnd, code, hwnd);
@@ -1192,6 +1206,11 @@ impl WindowManager {
         } else if w.class_name == "WC_SPINBUTTON" {
             // A held spin arrow repeats (pm_spin.rs).
             w.spin.as_ref().and_then(|s| s.held)?;
+        } else if w.class_name == "WC_SLIDER" {
+            // A held slider button or shaft repeats (pm_slider.rs); a
+            // dragged arm does not.
+            w.slider.as_ref().and_then(|s| s.held)
+                .filter(|h| !matches!(h, super::pm_slider::Held::Arm { .. }))?;
         } else if !matches!(w.class_name.as_str(), "WC_ENTRYFIELD" | "WC_MLE" | "WC_LISTBOX") {
             return None;
         } else {

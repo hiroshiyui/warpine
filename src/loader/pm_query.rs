@@ -80,7 +80,7 @@ const CLASSINFO_SIZE: usize = 12;
 
 /// The preregistered classes Warpine knows: atom (`WC_*` low word) and the
 /// class name Warpine gives their windows (`resolve_class_atom`).
-const PUBLIC_CLASSES: [(u32, &str); 13] = [
+const PUBLIC_CLASSES: [(u32, &str); 15] = [
     (WC_FRAME_ATOM & 0xFFFF, "WC_FRAME"),
     (WC_COMBOBOX_ATOM & 0xFFFF, "WC_COMBOBOX"),
     (WC_BUTTON_ATOM & 0xFFFF, "WC_BUTTON"),
@@ -94,6 +94,8 @@ const PUBLIC_CLASSES: [(u32, &str); 13] = [
     (WC_SPINBUTTON_ATOM & 0xFFFF, "WC_SPINBUTTON"),
     (WC_CONTAINER_ATOM & 0xFFFF, "WC_CONTAINER"),
     (WC_NOTEBOOK_ATOM & 0xFFFF, "WC_NOTEBOOK"),
+    (WC_SLIDER_ATOM & 0xFFFF, "WC_SLIDER"),
+    (WC_VALUESET_ATOM & 0xFFFF, "WC_VALUESET"),
 ];
 
 /// Whether `hwnd` stands for the desktop as a parent.
@@ -825,6 +827,8 @@ mod tests {
         let spin = wm2.create_window("WC_SPINBUTTON".into(), t.client, 0);
         let other = wm2.create_window("WC_ATOM_0x0026".into(), t.client, 0);
         let menu = wm2.create_window("#Menu".into(), t.frame, 0);
+        let valueset = wm2.create_window("WC_VALUESET".into(), t.client, 0);
+        assert_eq!(wm2.public_class_name(valueset).as_deref(), Some("#39"));
         assert_eq!(wm2.public_class_name(spin).as_deref(), Some("#32"));
         assert_eq!(wm2.public_class_name(other).as_deref(), Some("#38"));
         assert_eq!(wm2.public_class_name(menu).as_deref(), Some("#4"));
@@ -849,7 +853,8 @@ mod tests {
         loader.guest_write_bytes(BUF, b"App\0");
         assert_eq!(info(BUF), Some((0, 0x1234, 8)));
         // Errors.
-        assert_eq!(info(0xFFFF_0026), None, "WC_SLIDER: Warpine has none");
+        assert_eq!(info(WC_SLIDER_ATOM), Some((CS_PUBLIC, def_proc, 0)));
+        assert_eq!(info(0xFFFF_0041), None, "WC_CIRCULARSLIDER: Warpine has none");
         assert_eq!(last_error(&loader), err(PMERR_INVALID_INTEGER_ATOM));
         loader.guest_write_bytes(BUF, b"#99\0");
         assert_eq!(info(BUF), None);

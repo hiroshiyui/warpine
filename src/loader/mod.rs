@@ -18,6 +18,8 @@ mod pm_hook;
 mod pm_message;
 mod pm_combo;
 mod pm_spin;
+mod pm_slider;
+mod pm_valueset;
 pub mod pm_scrollbar;
 pub mod pm_cursor;
 mod pm_destroy;
@@ -646,6 +648,17 @@ impl Loader {
             }
         }
 
+        // Sliders and value sets (pm_slider.rs, pm_valueset.rs); a value set
+        // answers a double click itself (VN_ENTER).
+        if msg != WM_PAINT && class_name == pm_slider::CLASS_SLIDER
+            && let Some(r) = self.slider_message(hwnd, msg, mp1, mp2) {
+            return r;
+        }
+        if msg != WM_PAINT && class_name == pm_valueset::CLASS_VALUESET
+            && let Some(r) = self.valueset_message(hwnd, msg, mp1, mp2) {
+            return r;
+        }
+
         // The second press of a double click: a list box selects and tells
         // its owner LN_ENTER; every other built-in control treats it as a press.
         if msg == WM_BUTTON1DBLCLK {
@@ -710,6 +723,16 @@ impl Loader {
                     }
                     pm_combo::CLASS_COMBOBOX => self.paint_combo(&p, hwnd, (x, y, cx, cy)),
                     pm_spin::CLASS_SPINBUTTON => self.paint_spin(&p, hwnd, (x, y, cx, cy)),
+                    // Sliders and value sets draw parts that can reach
+                    // past their window (texts, fixed sizes): clipped to it.
+                    pm_slider::CLASS_SLIDER => {
+                        let p = Painter::new(self, frame_hwnd, hwnd).clipped_to((x, y, cx, cy));
+                        self.paint_slider(&p, hwnd, (x, y, cx, cy));
+                    }
+                    pm_valueset::CLASS_VALUESET => {
+                        let p = Painter::new(self, frame_hwnd, hwnd).clipped_to((x, y, cx, cy));
+                        self.paint_valueset(&p, hwnd, (x, y, cx, cy));
+                    }
                     "#Menu" => {
                         // The menu bar and any open pull-down are frame chrome:
                         // the compositor draws them from `OS2Window::menu_items`
@@ -1095,6 +1118,8 @@ pub(crate) struct Painter<'a> {
     /// The face of the window's `PP_FONTNAMESIZE` (inherited); `None` = the
     /// system font.
     pub face: Option<FontSpec>,
+    /// Draw only inside this region of the surface (`None`: everywhere).
+    pub clip: Option<crate::gui::region::Region>,
 }
 
 impl<'a> Painter<'a> {
@@ -1108,11 +1133,23 @@ impl<'a> Painter<'a> {
             bg: wm.pres_color(hwnd, pm_presparam::PP_BACKGROUNDCOLOR, false),
             own_bg: wm.pres_color(hwnd, pm_presparam::PP_BACKGROUNDCOLOR, true),
             face: wm.pres_font(hwnd),
+            clip: None,
         }
     }
 
+    /// This painter drawing only inside the rectangle `(x, y, cx, cy)` (a
+    /// control's own area, as PM clips a window's drawing to it).
+    pub fn clipped_to(mut self, (x, y, cx, cy): (i32, i32, i32, i32)) -> Self {
+        use crate::gui::region::{Region, RRect};
+        self.clip = Some(Region::rect(RRect::new(x, y, x.saturating_add(cx), y.saturating_add(cy))));
+        self
+    }
+
     pub fn op(&self, op: DrawOp) {
-        self.loader.draw(self.frame, op);
+        match &self.clip {
+            None => self.loader.draw(self.frame, op),
+            Some(clip) => self.loader.draw_clipped(pm_types::DrawTarget::Frame(self.frame), op, Some(clip)),
+        }
     }
 
     /// The font control text is drawn in: the presentation-parameter face,

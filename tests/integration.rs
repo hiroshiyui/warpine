@@ -1911,6 +1911,47 @@ fn gui_pm_presparam_test_matches_golden() {
                      "2000 dump {dump}\n2100 quit\n");
 }
 
+/// pm_slider_valueset_test (same frame placement as pm_scroll_test: client
+/// from screen (34, 52), PM y = 511 − screen y): slider 10 at client
+/// (20, 330) 300 × 60 has its shaft across client y 360, its two buttons at
+/// client x 22..54 and increments 40 pels apart from client x 56. The
+/// session clicks the shaft right of the arm (→ 40), drags the arm from
+/// client x 100 to 207 (snaps to 160), clicks the right button (→ 200),
+/// presses Left (→ 160) and Shift+Right (→ the detent at 180); clicks item
+/// (2, 3) of value set 20 (client (20, 40) 240 × 100, 2 × 4 items) and
+/// presses Right, double-clicks its item (1, 1) and clicks the leftmost item
+/// of the right-to-left value set 21 (column 3). Notifications (SLN_*,
+/// VN_*) and owner drawing (WM_DRAWITEM for the slider arm and a value set
+/// item) are checked from the guest side.
+const SLIDER_VALUESET_STEPS: &str = "\
+    1000 click 204 151\n\
+    1300 drag 134 151 241 151\n\
+    1800 click 79 151\n\
+    2100 key left\n\
+    2300 key shift+right\n\
+    2600 click 198 444\n\
+    2900 key right\n\
+    3200 dblclick 80 394\n\
+    3600 click 324 451\n";
+
+#[test]
+fn gui_pm_slider_valueset_test_drags_steps_and_selects() {
+    let steps = format!("{SLIDER_VALUESET_STEPS}4000 key alt+f4\n7000 quit\n");
+    assert_scripted_checks_pass("samples/pm_slider_valueset_test/pm_slider_valueset_test.exe",
+                                "pm_slider_valueset_test", 68, &steps);
+}
+
+/// pm_slider_valueset_test after the session: slider 10 on its detent at
+/// 180 with the ribbon strip up to it, the progress slider at 6 of 10, the
+/// owner-drawn red arm, the vertical slider with scale 2 on the left, the
+/// colour grid with item (1, 1) selected, the owner-drawn colour-index
+/// item and "Three" selected with the dotted cursor.
+#[test]
+fn gui_pm_slider_valueset_test_matches_golden() {
+    check_gui_golden("pm_slider_valueset_test", "samples/pm_slider_valueset_test/pm_slider_valueset_test.exe",
+        &format!("{SLIDER_VALUESET_STEPS}3900 dump {{dump}}\n4000 quit\n"));
+}
+
 /// pm_codepage_test: PM text follows the message queue's codepage
 /// (WinSetCp, including CP1004, which DosSetProcessCp refuses), WinQueryCpList
 /// lists the queue codepages, and a presentation space starts with its queue's

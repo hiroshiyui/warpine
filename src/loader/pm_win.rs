@@ -41,6 +41,8 @@ pub(super) fn resolve_class_atom(ptr: u32, string: String) -> String {
         WC_SPINBUTTON_ATOM => "WC_SPINBUTTON".to_string(),
         WC_CONTAINER_ATOM  => "WC_CONTAINER".to_string(),
         WC_NOTEBOOK_ATOM   => "WC_NOTEBOOK".to_string(),
+        WC_SLIDER_ATOM     => "WC_SLIDER".to_string(),
+        WC_VALUESET_ATOM   => "WC_VALUESET".to_string(),
         n if (n & 0xFFFF_0000) == 0xFFFF_0000
                            => format!("WC_ATOM_0x{:04X}", n & 0xFFFF),
         n if n < 0x10000   => format!("WC_ATOM_{}", n),
@@ -1403,6 +1405,9 @@ impl super::Loader {
                 if class_name == "WC_SCROLLBAR" {
                     self.scrollbar_init(hwnd, p_ctl_data);
                 }
+                // A slider's scales (SLDCDATA), a value set's rows and
+                // columns (VSCDATA).
+                self.init_slider_or_valueset(hwnd, p_ctl_data);
                 // The parts of a combination box / spin button.
                 self.build_compound_control(hwnd);
                 // The client of a WC_FRAME window (pm_frame.rs).
@@ -2104,8 +2109,10 @@ impl super::Loader {
                     cwin.owner = h;
                     for (id, v) in &item.pres_params { cwin.pres_params.set(*id, v); }
                 }
-                // The parts of a combination box / spin button.
+                // The parts of a combination box / spin button, the state
+                // of a slider / value set (from the item's control data).
                 wm.build_combo_or_spin(ch);
+                wm.build_slider_or_valueset(ch, &item.ctl_data);
                 controls.push(ch);
             }
         }
@@ -2499,7 +2506,7 @@ mod tests {
                                       HWND_DESKTOP, FCF_TITLEBAR, FCF_DLGBORDER, WS_VISIBLE};
         let item = |class: &str, text: &str, x, y, cx, cy, id| DlgItem {
             class_name: class.to_string(), text: text.to_string(),
-            x, y, cx, cy, id, style: WS_VISIBLE, parent: None, pres_params: Vec::new(),
+            x, y, cx, cy, id, style: WS_VISIBLE, parent: None, pres_params: Vec::new(), ctl_data: Vec::new(),
         };
         let template = DlgTemplate {
             dialog: item("WC_FRAME", "About", 40, 40, 180, 80, 101),

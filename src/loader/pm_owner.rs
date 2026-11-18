@@ -28,6 +28,11 @@
 //!   `fsState` and `fsStateOld` then differ the list box inverts the item to
 //!   show the selection (owners that draw the selection themselves set both
 //!   to FALSE). FALSE = the list box draws the item's text itself.
+//! * `WM_DRAWITEM` (slider, value set): `idItem` = the part (`SDA_*`,
+//!   `VDA_ITEM` / `VDA_BACKGROUND`), `hItem` = `MPFROM2SHORT(row, column)`
+//!   of a value set item, `rclItem` = the part; TRUE keeps what the owner
+//!   drew, FALSE has the control draw the part (`pm_slider.rs`,
+//!   `pm_valueset.rs`).
 //! * `WM_CONTROL(BN_PAINT)` (user button): mp2 = `PUSERBUTTON`, `fsState` =
 //!   `BDS_HILITED` / `BDS_DISABLED` / `BDS_DEFAULT`, `fsStateOld` the state
 //!   it was last painted in. The button erases itself to the button face
@@ -77,6 +82,12 @@ pub enum OwnerCallKind {
     /// `WM_PAINT` sent at once to `WS_SYNCPAINT` window `control`
     /// (`pm_paint_style.rs`).
     SyncPaint,
+    /// `WM_DRAWITEM` for part `part` (`SDA_*`) of an `SLS_OWNERDRAW` slider.
+    SliderPart { part: u32 },
+    /// `WM_DRAWITEM` (`VDA_ITEM`) for a `VIA_OWNERDRAW` value set item.
+    ValueSetItem { row: u16, col: u16 },
+    /// `WM_DRAWITEM` (`VDA_BACKGROUND`) for a `VS_OWNERDRAW` value set.
+    ValueSetBackground,
 }
 
 /// The menu item `id` in `items` (searched through the submenus).
@@ -294,6 +305,29 @@ impl Loader {
                     block: vec![call.control, hps, state, old], hps,
                 }
             }
+            OwnerCallKind::SliderPart { part } => {
+                let Some((l, b, r, t)) = self.slider_part_rect(call.control, part) else { return OwnerSetup::Skip };
+                let hps = self.owner_ps(call.control);
+                let block = vec![call.control, hps, 0, 0, 0, 0, l as u32, b as u32, r as u32, t as u32, part, 0];
+                OwnerSetup::Call { wnd_proc, owner, msg: WM_DRAWITEM, mp1: id & 0xFFFF, mp2: 0, block, hps }
+            }
+            OwnerCallKind::ValueSetItem { row, col } => {
+                let (Some((l, b, r, t)), Some((selected, attr))) = (self.valueset_item_rect(call.control, (row, col)),
+                                                                   self.valueset_item_state(call.control, (row, col)))
+                else { return OwnerSetup::Skip };
+                let hps = self.owner_ps(call.control);
+                let (state, attr) = (selected as u32, attr as u32);
+                let block = vec![call.control, hps, state, attr, state, attr, l as u32, b as u32, r as u32, t as u32,
+                                 VDA_ITEM, row as u32 | (col as u32) << 16];
+                OwnerSetup::Call { wnd_proc, owner, msg: WM_DRAWITEM, mp1: id & 0xFFFF, mp2: 0, block, hps }
+            }
+            OwnerCallKind::ValueSetBackground => {
+                let Some((cx, cy)) = self.shared.window_mgr.lock_or_recover().get_window(call.control)
+                    .map(|w| (w.cx, w.cy)) else { return OwnerSetup::Skip };
+                let hps = self.owner_ps(call.control);
+                let block = vec![call.control, hps, 0, 0, 0, 0, 0, 0, cx as u32, cy as u32, VDA_BACKGROUND, 0];
+                OwnerSetup::Call { wnd_proc, owner, msg: WM_DRAWITEM, mp1: id & 0xFFFF, mp2: 0, block, hps }
+            }
             OwnerCallKind::DrawMenuItem { .. } | OwnerCallKind::EraseBackground
             | OwnerCallKind::SyncPaint => OwnerSetup::Skip,
         }
@@ -377,6 +411,12 @@ impl Loader {
             OwnerCallKind::DrawListItem { index } if result != 0 => self.list_item_rect(call.control, index),
             OwnerCallKind::UserButton => self.shared.window_mgr.lock_or_recover()
                 .get_window(call.control).map(|w| (0, 0, w.cx, w.cy)),
+            OwnerCallKind::SliderPart { part } if result != 0 => self.slider_part_rect(call.control, part),
+            OwnerCallKind::ValueSetItem { row, col } if result != 0 => {
+                self.valueset_item_rect(call.control, (row, col))
+            }
+            OwnerCallKind::ValueSetBackground if result != 0 => self.shared.window_mgr.lock_or_recover()
+                .get_window(call.control).map(|w| (0, 0, w.cx, w.cy)),
             _ => None,
         };
         if hps != 0 {
@@ -411,6 +451,11 @@ impl Loader {
                                        color: 0, fill: true, mix: Mix::Invert });
                 }
             }
+            OwnerCallKind::SliderPart { part } => self.slider_owner_done(call.control, part, result != 0),
+            OwnerCallKind::ValueSetItem { row, col } => {
+                self.valueset_owner_done(call.control, Some((row, col)), result != 0);
+            }
+            OwnerCallKind::ValueSetBackground => self.valueset_owner_done(call.control, None, result != 0),
             OwnerCallKind::UserButton | OwnerCallKind::DrawMenuItem { .. }
             | OwnerCallKind::EraseBackground | OwnerCallKind::SyncPaint => {}
         }

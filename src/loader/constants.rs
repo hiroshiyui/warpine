@@ -273,6 +273,119 @@ pub const SPBQ_UPDATEIFVALID: u32 = 0;
 pub const SPBQ_ALWAYSUPDATE:  u32 = 1;
 pub const SPBQ_DONOTUPDATE:   u32 = 3;
 
+// Sliders (WC_SLIDER, <pmstddlg.h> INCL_WINSTDSLIDER).
+pub const SLS_HORIZONTAL:      u32 = 0x0000_0000;
+pub const SLS_VERTICAL:        u32 = 0x0000_0001;
+pub const SLS_CENTER:          u32 = 0x0000_0000;
+pub const SLS_BOTTOM:          u32 = 0x0000_0002;
+pub const SLS_TOP:             u32 = 0x0000_0004;
+pub const SLS_LEFT:            u32 = 0x0000_0002;
+pub const SLS_RIGHT:           u32 = 0x0000_0004;
+pub const SLS_SNAPTOINCREMENT: u32 = 0x0000_0008;
+pub const SLS_BUTTONSBOTTOM:   u32 = 0x0000_0010;
+pub const SLS_BUTTONSTOP:      u32 = 0x0000_0020;
+pub const SLS_BUTTONSLEFT:     u32 = 0x0000_0010;
+pub const SLS_BUTTONSRIGHT:    u32 = 0x0000_0020;
+pub const SLS_OWNERDRAW:       u32 = 0x0000_0040;
+pub const SLS_READONLY:        u32 = 0x0000_0080;
+pub const SLS_RIBBONSTRIP:     u32 = 0x0000_0100;
+pub const SLS_HOMEBOTTOM:      u32 = 0x0000_0000;
+pub const SLS_HOMETOP:         u32 = 0x0000_0200;
+pub const SLS_HOMELEFT:        u32 = 0x0000_0000;
+pub const SLS_HOMERIGHT:       u32 = 0x0000_0200;
+pub const SLS_PRIMARYSCALE1:   u32 = 0x0000_0000;
+pub const SLS_PRIMARYSCALE2:   u32 = 0x0000_0400;
+/// `SLM_*SLIDERINFO` attributes (mp1 = MPFROM2SHORT(type, arm position type)).
+pub const SMA_SCALE1:              u32 = 0x0001;
+pub const SMA_SCALE2:              u32 = 0x0002;
+pub const SMA_SHAFTDIMENSIONS:     u32 = 0x0000;
+pub const SMA_SHAFTPOSITION:       u32 = 0x0001;
+pub const SMA_SLIDERARMDIMENSIONS: u32 = 0x0002;
+pub const SMA_SLIDERARMPOSITION:   u32 = 0x0003;
+pub const SMA_RANGEVALUE:          u32 = 0x0000;
+pub const SMA_INCREMENTVALUE:      u32 = 0x0001;
+pub const SMA_SETALLTICKS:         u32 = 0xFFFF;
+/// Owner-drawn slider parts (`OWNERITEM.idItem` of `WM_DRAWITEM`).
+pub const SDA_RIBBONSTRIP: u32 = 0x0001;
+pub const SDA_SLIDERSHAFT: u32 = 0x0002;
+pub const SDA_BACKGROUND:  u32 = 0x0003;
+pub const SDA_SLIDERARM:   u32 = 0x0004;
+pub const SLDERR_INVALID_PARAMETERS: i32 = -1;
+pub const SLM_ADDDETENT:       u32 = 0x0369;
+pub const SLM_QUERYDETENTPOS:  u32 = 0x036a;
+pub const SLM_QUERYSCALETEXT:  u32 = 0x036b;
+pub const SLM_QUERYSLIDERINFO: u32 = 0x036c;
+pub const SLM_QUERYTICKPOS:    u32 = 0x036d;
+pub const SLM_QUERYTICKSIZE:   u32 = 0x036e;
+pub const SLM_REMOVEDETENT:    u32 = 0x036f;
+pub const SLM_SETSCALETEXT:    u32 = 0x0370;
+pub const SLM_SETSLIDERINFO:   u32 = 0x0371;
+pub const SLM_SETTICKSIZE:     u32 = 0x0372;
+pub const SLN_CHANGE:      u32 = 1;
+pub const SLN_SLIDERTRACK: u32 = 2;
+pub const SLN_SETFOCUS:    u32 = 3;
+pub const SLN_KILLFOCUS:   u32 = 4;
+/// `SLDCDATA` (pCtlData of a WC_SLIDER): `cbSize` (ULONG), then
+/// `usScale1Increments`, `usScale1Spacing`, `usScale2Increments`,
+/// `usScale2Spacing` (USHORTs) at these byte offsets.
+pub const SLDCDATA_SCALE1_INCREMENTS: usize = 4;
+pub const SLDCDATA_SCALE1_SPACING:    usize = 6;
+pub const SLDCDATA_SCALE2_INCREMENTS: usize = 8;
+pub const SLDCDATA_SCALE2_SPACING:    usize = 10;
+/// Size of `SLDCDATA`.
+pub const SLDCDATA_SIZE: usize = 12;
+
+// Value sets (WC_VALUESET, <pmstddlg.h> INCL_WINSTDVALSET).
+pub const VS_BITMAP:       u32 = 0x0001;
+pub const VS_ICON:         u32 = 0x0002;
+pub const VS_TEXT:         u32 = 0x0004;
+pub const VS_RGB:          u32 = 0x0008;
+pub const VS_COLORINDEX:   u32 = 0x0010;
+pub const VS_BORDER:       u32 = 0x0020;
+pub const VS_ITEMBORDER:   u32 = 0x0040;
+pub const VS_SCALEBITMAPS: u32 = 0x0080;
+pub const VS_RIGHTTOLEFT:  u32 = 0x0100;
+pub const VS_OWNERDRAW:    u32 = 0x0200;
+pub const VIA_BITMAP:     u16 = 0x0001;
+pub const VIA_ICON:       u16 = 0x0002;
+pub const VIA_TEXT:       u16 = 0x0004;
+pub const VIA_RGB:        u16 = 0x0008;
+pub const VIA_COLORINDEX: u16 = 0x0010;
+pub const VIA_OWNERDRAW:  u16 = 0x0020;
+pub const VIA_DISABLED:   u16 = 0x0040;
+pub const VIA_DRAGGABLE:  u16 = 0x0080;
+pub const VIA_DROPONABLE: u16 = 0x0100;
+pub const VMA_ITEMSIZE:    u32 = 0x0001;
+pub const VMA_ITEMSPACING: u32 = 0x0002;
+/// Owner-drawn value set parts (`OWNERITEM.idItem` of `WM_DRAWITEM`).
+pub const VDA_ITEM:           u32 = 0x0001;
+pub const VDA_ITEMBACKGROUND: u32 = 0x0002;
+pub const VDA_SURROUNDING:    u32 = 0x0003;
+pub const VDA_BACKGROUND:     u32 = 0x0004;
+pub const VSERR_INVALID_PARAMETERS: i32 = -1;
+pub const VM_QUERYITEM:         u32 = 0x0375;
+pub const VM_QUERYITEMATTR:     u32 = 0x0376;
+pub const VM_QUERYMETRICS:      u32 = 0x0377;
+pub const VM_QUERYSELECTEDITEM: u32 = 0x0378;
+pub const VM_SELECTITEM:        u32 = 0x0379;
+pub const VM_SETITEM:           u32 = 0x037a;
+pub const VM_SETITEMATTR:       u32 = 0x037b;
+pub const VM_SETMETRICS:        u32 = 0x037c;
+pub const VN_SELECT:    u32 = 120;
+pub const VN_ENTER:     u32 = 121;
+pub const VN_SETFOCUS:  u32 = 127;
+pub const VN_KILLFOCUS: u32 = 128;
+pub const VN_HELP:      u32 = 129;
+/// `VSCDATA` (pCtlData of a WC_VALUESET): `cbSize` (ULONG), then
+/// `usRowCount`, `usColumnCount` (USHORTs) at these byte offsets.
+pub const VSCDATA_ROW_COUNT:    usize = 4;
+pub const VSCDATA_COLUMN_COUNT: usize = 6;
+/// Size of `VSCDATA`.
+pub const VSCDATA_SIZE: usize = 8;
+/// `VSTEXT` (mp2 of `VM_QUERYITEM` for a text item): `pszItemText`, then
+/// `ulBufLen` at this byte offset.
+pub const VSTEXT_BUF_LEN: u32 = 4;
+
 // WC_MLE messages (MLM_*) and MLM_QUERYSEL modes (MLFQS_*, <pmwin.h>)
 pub const MLM_SETSEL:   u32 = 0x01ca;
 pub const MLM_QUERYSEL: u32 = 0x01cb;
@@ -730,6 +843,8 @@ pub const WC_MLE_ATOM:        u32 = 0xFFFF_000A;
 pub const WC_SPINBUTTON_ATOM: u32 = 0xFFFF_0020;
 pub const WC_CONTAINER_ATOM:  u32 = 0xFFFF_0025;
 pub const WC_NOTEBOOK_ATOM:   u32 = 0xFFFF_0028;
+pub const WC_SLIDER_ATOM:     u32 = 0xFFFF_0026;
+pub const WC_VALUESET_ATOM:   u32 = 0xFFFF_0027;
 
 /// Height of the PM menu bar in pixels (OS/2-space units).
 pub const MENU_BAR_HEIGHT: i16 = 20;
@@ -1810,7 +1925,9 @@ mod header_tests {
                      "PMERR_NO_MSG_QUEUE", "PMERR_MSG_QUEUE_ALREADY_EXISTS",
                      "PMERR_PARAMETER_OUT_OF_RANGE", "PMERR_INVALID_FLAG", "PMERR_INVALID_HACCEL",
                      "QW_FRAMEOWNER", "QWL_MIN", "QWS_MIN", "HWND_THREADCAPTURE",
-                     "SV_CURSORRATE", "TID_SCROLL"] {
+                     "SV_CURSORRATE", "TID_SCROLL", "SLM_SETSLIDERINFO", "SLN_SLIDERTRACK",
+                     "SLS_PRIMARYSCALE2", "SDA_SLIDERARM", "VM_SETMETRICS", "VN_ENTER",
+                     "VIA_DISABLED", "VS_RIGHTTOLEFT", "VDA_BACKGROUND"] {
             assert!(defs.contains_key(name), "{name} is not defined in the toolkit headers");
         }
         assert!(wrong.is_empty(), "constants differ from the toolkit headers:\n{}", wrong.join("\n"));
@@ -1833,7 +1950,8 @@ mod header_tests {
             ("WC_LISTBOX", WC_LISTBOX_ATOM), ("WC_SCROLLBAR", WC_SCROLLBAR_ATOM),
             ("WC_TITLEBAR", WC_TITLEBAR_ATOM), ("WC_MLE", WC_MLE_ATOM),
             ("WC_SPINBUTTON", WC_SPINBUTTON_ATOM), ("WC_CONTAINER", WC_CONTAINER_ATOM),
-            ("WC_NOTEBOOK", WC_NOTEBOOK_ATOM),
+            ("WC_NOTEBOOK", WC_NOTEBOOK_ATOM), ("WC_SLIDER", WC_SLIDER_ATOM),
+            ("WC_VALUESET", WC_VALUESET_ATOM),
         ] {
             let expected = defs.get(name).unwrap_or_else(|| panic!("{name} not in the headers"));
             assert!(expected.contains(&(atom as i64)), "{name}: {atom:#x}, header {expected:x?}");
