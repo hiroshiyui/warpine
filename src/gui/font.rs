@@ -319,8 +319,147 @@ pub fn pen_phase(pen: f32) -> (i32, u8) {
     if phase >= SUBPIXEL_STEPS { (base as i32 + 1, 0) } else { (base as i32, phase) }
 }
 
+/// The contrast curve applied to outline coverage: `c^(1 / TEXT_CONTRAST)`
+/// darkens the anti-aliased edges, so thin stems read as ink instead of
+/// grey (ADR-0047).
+pub const TEXT_CONTRAST: f32 = 1.45;
+
+/// Coverage (0.0–1.0) through the contrast curve, as a byte.
+pub fn contrast_coverage(c: f32) -> u8 {
+    (c.clamp(0.0, 1.0).powf(1.0 / TEXT_CONTRAST) * 255.0 + 0.5) as u8
+}
+
+/// The faces drawn with light hinting: the Latin ones (the CJK faces stay
+/// unhinted; the autohinter's per-font analysis of tens of thousands of
+/// glyphs would cost too much).
+fn hinted_face(face_id: usize) -> bool {
+    face_id < FACE_JP
+}
+
+/// Bitmaps larger than this (per side) are not rasterised.
+const MAX_GLYPH_BITMAP: f32 = 1024.0;
+
+/// `skrifa`'s view of face `id` and its autohinter glyph styles, computed
+/// once per face.
+fn hint_face(id: usize) -> Option<&'static (skrifa::FontRef<'static>, skrifa::outline::GlyphStyles)> {
+    use skrifa::MetadataProvider;
+    static HINT_FACES: [OnceLock<Option<(skrifa::FontRef<'static>, skrifa::outline::GlyphStyles)>>; FACE_COUNT] =
+        [const { OnceLock::new() }; FACE_COUNT];
+    HINT_FACES[id].get_or_init(|| {
+        let f = skrifa::FontRef::new(FONT_DATA[id]).ok()?;
+        let styles = skrifa::outline::GlyphStyles::new(&f.outline_glyphs());
+        Some((f, styles))
+    }).as_ref()
+}
+
+thread_local! {
+    /// Light-hinting instances per face and size (ppem bits), per thread.
+    static HINTERS: RefCell<HashMap<(usize, u32), Option<skrifa::outline::HintingInstance>>> =
+        RefCell::new(HashMap::new());
+}
+
+/// Upper bound on cached hinting instances per thread.
+const HINTERS_MAX: usize = 64;
+
+/// A glyph outline in pixels (y up), from `skrifa`'s pen.
+#[derive(Default)]
+struct PathPen {
+    segs: Vec<Seg>,
+    start: (f32, f32),
+    at: (f32, f32),
+}
+
+#[derive(Clone, Copy)]
+enum Seg {
+    Line([(f32, f32); 2]),
+    Quad([(f32, f32); 3]),
+    Cubic([(f32, f32); 4]),
+}
+
+impl skrifa::outline::OutlinePen for PathPen {
+    fn move_to(&mut self, x: f32, y: f32) { self.close(); self.start = (x, y); self.at = (x, y); }
+    fn line_to(&mut self, x: f32, y: f32) { self.segs.push(Seg::Line([self.at, (x, y)])); self.at = (x, y); }
+    fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
+        self.segs.push(Seg::Quad([self.at, (cx, cy), (x, y)]));
+        self.at = (x, y);
+    }
+    fn curve_to(&mut self, c0x: f32, c0y: f32, c1x: f32, c1y: f32, x: f32, y: f32) {
+        self.segs.push(Seg::Cubic([self.at, (c0x, c0y), (c1x, c1y), (x, y)]));
+        self.at = (x, y);
+    }
+    fn close(&mut self) {
+        if self.at != self.start { self.segs.push(Seg::Line([self.at, self.start])); }
+        self.at = self.start;
+    }
+}
+
+/// Rasterise glyph `gid` of Latin face `face_id` at ab_glyph scale `scale`
+/// with light (vertical-only) autohinting (ADR-0047): the outline from
+/// `skrifa`, hinted for `FT_LOAD_TARGET_LIGHT`-like output keeping the
+/// linear advances, then filled by `ab_glyph_rasterizer` at subpixel
+/// `phase`. `None` when hinting is not available for it.
+fn rasterize_hinted(face_id: usize, gid: GlyphId, scale: f32, phase: u8, advance: f32) -> Option<Raster> {
+    use skrifa::MetadataProvider;
+    use skrifa::outline::{DrawSettings, Engine, HintingInstance, HintingOptions, SmoothMode, Target};
+    if !hinted_face(face_id) { return None; }
+    let f = face(face_id)?;
+    let (sk, styles) = hint_face(face_id)?;
+    let ppem = scale * f.units_per_em()? / f.height_unscaled();
+    if !(ppem.is_finite() && ppem > 0.0 && ppem < MAX_GLYPH_BITMAP) { return None; }
+    let outlines = sk.outline_glyphs();
+    let glyph = outlines.get(skrifa::GlyphId::new(u32::from(gid.0)))?;
+    let mut pen = PathPen::default();
+    HINTERS.with(|h| {
+        let mut h = h.borrow_mut();
+        if h.len() >= HINTERS_MAX && !h.contains_key(&(face_id, ppem.to_bits())) { h.clear(); }
+        let inst = h.entry((face_id, ppem.to_bits())).or_insert_with(|| {
+            let options = HintingOptions {
+                engine: Engine::Auto(Some(styles.clone())),
+                target: Target::Smooth { mode: SmoothMode::Light, symmetric_rendering: false, preserve_linear_metrics: true },
+            };
+            HintingInstance::new(&outlines, skrifa::instance::Size::new(ppem), skrifa::instance::LocationRef::default(), options).ok()
+        });
+        let inst = inst.as_ref()?;
+        glyph.draw(DrawSettings::hinted(inst, false), &mut pen).ok()
+    })?;
+    skrifa::outline::OutlinePen::close(&mut pen);
+    if pen.segs.is_empty() {
+        return Some(Raster { left: 0, top: 0, width: 0, height: 0, coverage: Vec::new(), advance });
+    }
+    let off = f32::from(phase) / f32::from(SUBPIXEL_STEPS);
+    let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+    let pts = |s: &Seg| -> Vec<(f32, f32)> {
+        match *s { Seg::Line(p) => p.to_vec(), Seg::Quad(p) => p.to_vec(), Seg::Cubic(p) => p.to_vec() }
+    };
+    for s in &pen.segs {
+        for (x, y) in pts(s) {
+            (x0, y0, x1, y1) = (x0.min(x + off), y0.min(y), x1.max(x + off), y1.max(y));
+        }
+    }
+    if !(x0.is_finite() && y0.is_finite() && x1 - x0 < MAX_GLYPH_BITMAP && y1 - y0 < MAX_GLYPH_BITMAP) { return None; }
+    let (left, top) = (x0.floor(), (-y1).floor());
+    let width = ((x1.ceil() - left) as usize).max(1);
+    let height = ((-y0).ceil() - top).max(1.0) as usize;
+    // Bitmap coordinates: x right of `left`, y down from `top`.
+    let p = |(x, y): (f32, f32)| ab_glyph_rasterizer::point(x + off - left, -y - top);
+    let mut r = ab_glyph_rasterizer::Rasterizer::new(width, height);
+    for s in &pen.segs {
+        match *s {
+            Seg::Line([a, b]) => r.draw_line(p(a), p(b)),
+            Seg::Quad([a, b, c]) => r.draw_quad(p(a), p(b), p(c)),
+            Seg::Cubic([a, b, c, d]) => r.draw_cubic(p(a), p(b), p(c), p(d)),
+        }
+    }
+    let mut coverage = vec![0u8; width * height];
+    r.for_each_pixel(|i, c| if let Some(px) = coverage.get_mut(i) { *px = contrast_coverage(c); });
+    Some(Raster { left: left as i32, top: top as i32, width, height, coverage, advance })
+}
+
 fn rasterize(face_id: usize, gid: GlyphId, scale: f32, phase: u8) -> Option<Raster> {
     let f = face(face_id)?;
+    if let Some(r) = rasterize_hinted(face_id, gid, scale, phase, f.as_scaled(PxScale::from(scale)).h_advance(gid)) {
+        return Some(r);
+    }
     let px_scale = PxScale::from(scale);
     let advance = f.as_scaled(px_scale).h_advance(gid);
     let offset = f32::from(phase) / f32::from(SUBPIXEL_STEPS);
@@ -331,7 +470,7 @@ fn rasterize(face_id: usize, gid: GlyphId, scale: f32, phase: u8) -> Option<Rast
             let mut coverage = vec![0u8; width * height];
             outline.draw(|x, y, c| {
                 if let Some(p) = coverage.get_mut(y as usize * width + x as usize) {
-                    *p = (c.clamp(0.0, 1.0) * 255.0) as u8;
+                    *p = contrast_coverage(c);
                 }
             });
             Raster { left: b.min.x as i32, top: b.min.y as i32, width, height, coverage, advance }
@@ -677,6 +816,41 @@ mod tests {
         assert!(min_y as i32 >= baseline - m.ascent - 1, "nothing above the ascent");
         assert!((max_y as i32) < baseline + m.descent + 1, "nothing below the descent");
         assert!(max_y as i32 > baseline, "descenders of j and q go below the baseline");
+    }
+
+    #[test]
+    fn coverage_goes_through_the_contrast_curve() {
+        assert_eq!(contrast_coverage(0.0), 0);
+        assert_eq!(contrast_coverage(1.0), 255);
+        assert!(contrast_coverage(0.5) > 150, "half coverage is darkened");
+        assert_eq!(contrast_coverage(-1.0), 0);
+        assert_eq!(contrast_coverage(2.0), 255);
+    }
+
+    /// Latin faces are hinted vertically: the flat top of an "x" sits on a
+    /// pixel row (the row is almost fully covered), the advance is the
+    /// font's own; CJK faces are not hinted.
+    #[test]
+    fn latin_glyphs_are_light_hinted() {
+        let spec = FontSpec::SYSTEM;
+        let f = face(spec.latin_face()).unwrap();
+        let gid = f.glyph_id('z');
+        let scale = scale_for(spec.latin_face(), spec);
+        let r = rasterize_hinted(spec.latin_face(), gid, scale, 0, 1.0).expect("a hinted raster");
+        // The bar's rows: hinted, its edge is on a pixel boundary, so the
+        // first row is (almost) solid instead of two half-covered rows.
+        let row = |k: usize| r.coverage[k * r.width..][..r.width].iter().map(|&c| u32::from(c)).max().unwrap_or(0);
+        assert!(row(0) >= 240, "the x-height bar is snapped: top row {}", row(0));
+        assert_eq!(r.advance, 1.0, "the advance passed in is kept");
+        // Each quarter-pixel phase gives a raster.
+        for phase in 1..SUBPIXEL_STEPS {
+            assert!(rasterize_hinted(spec.latin_face(), gid, scale, phase, 1.0).is_some());
+        }
+        let cjk = face(FACE_JP).unwrap().glyph_id('日');
+        assert!(rasterize_hinted(FACE_JP, cjk, scale, 0, 1.0).is_none(), "CJK stays unhinted");
+        // A space has no outline: an empty raster.
+        let space = rasterize_hinted(spec.latin_face(), f.glyph_id(' '), scale, 0, 4.0).unwrap();
+        assert_eq!((space.width, space.coverage.len()), (0, 0));
     }
 
     #[test]

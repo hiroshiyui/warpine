@@ -147,7 +147,7 @@ fn rasterize_outline(mut outline: ab_glyph::Outline, scale: ab_glyph::PxScaleFac
     let mut coverage = vec![0u8; width * height];
     outlined.draw(|x, y, c| {
         if let Some(p) = coverage.get_mut(y as usize * width + x as usize) {
-            *p = (c.clamp(0.0, 1.0) * 255.0) as u8;
+            *p = super::font::contrast_coverage(c);
         }
     });
     Some(Coverage { left: b.min.x as i32, top: b.min.y as i32, width, height, coverage })
@@ -208,15 +208,20 @@ mod tests {
         (xs.clone().min().unwrap(), ys.clone().min().unwrap(), xs.max().unwrap(), ys.max().unwrap())
     }
 
-    /// The identity transform covers the same pels as the upright path.
+    /// The identity transform covers the pels of the upright path, within
+    /// a pel: upright Latin text is hinted (ADR-0047), transformed text
+    /// cannot be.
     #[test]
     fn identity_matches_upright_rendering() {
         let spec = FontSpec { px: 32, ..FontSpec::SYSTEM };
         let mut upright = vec![BG; W * H];
         font::draw_text(&mut upright, W, H, 60, 60, "H", 0, spec);
-        let mut ours = vec![BG; W * H];
-        draw_glyph(&mut ours, W, H, 60, 60, 'H', spec, IDENTITY, |p, c| *p = font::blend(*p, 0, c));
-        assert_eq!(upright, ours);
+        let upright: Vec<(i32, i32)> = upright.iter().enumerate().filter(|&(_, &p)| p != BG)
+            .map(|(i, _)| ((i % W) as i32 - 60, 60 - (i / W) as i32)).collect();
+        let (a, b) = (extent(&upright), extent(&draw('H', IDENTITY)));
+        for (u, t) in [(a.0, b.0), (a.1, b.1), (a.2, b.2), (a.3, b.3)] {
+            assert!((u - t).abs() <= 1, "upright {a:?}, transformed {b:?}");
+        }
     }
 
     /// A quarter turn counter-clockwise puts an "I" (tall, narrow) lying on
