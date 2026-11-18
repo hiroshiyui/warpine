@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.0.3] - 2026-11-18
+
 ### Added
 - **Ending a process from outside** — `DosKillProcess` (`DKP_PROCESS` / `DKP_PROCESSTREE`) delivers `XCPT_SIGNAL_KILLPROC`: the child's handlers and exit list (`TC_KILLPROCESS`) run, then its host process is ended after a 5 s grace period, through a pidfd so a reused pid is never hit; `DosWaitChild` reports `TC_KILLPROCESS`; `ERROR_INVALID_DATA` / `ERROR_ZOMBIE_PROCESS` / `ERROR_INVALID_PROCID`. Exit lists also run when the window or session is closed (Ctrl+Esc, `SIGTERM`), at the end of piped keyboard input, after triple faults / unhandled VM exits (`TC_TRAP`) and KVM errors on another thread (`TC_HARDERROR`) (ADR-0034).
 - **Interrupting blocked calls** (new `src/loader/interrupt.rs`) — signals and `DosKillThread` reach a thread blocked in a call: `DosSleep`, the semaphore waits, `DosWaitThread`, `DosWaitChild`, `DosConnectNPipe` / `DosWaitNPipe` return `ERROR_INTERRUPT`; keyboard, pipe and queue reads and `WinGetMsg` are made again after the handler (ADR-0035).
