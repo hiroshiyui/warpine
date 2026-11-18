@@ -2300,6 +2300,19 @@ fn gui_pm_typeahead_test_routes_keys_when_they_are_read() {
     assert_scripted_checks_pass("samples/pm_typeahead_test/pm_typeahead_test.exe", "pm_typeahead_test", 5, steps);
 }
 
+/// pm_inputorder_test: pointer input is routed when the program reads it
+/// (ADR-0051). Frame A (desktop x 40–340) is active, frame B (x 400–700)
+/// beside it, both at PM y 400–600 (script y 168–367). While the program is
+/// busy, 'a', a click on B's client and 'b' arrive: 'a' goes to A, B is
+/// activated when the click is read, before it, and 'b' goes to B. Then a
+/// click at the same point and 'c' wait while the program swaps the frames:
+/// the click goes to A, now under the pointer, and activates it.
+#[test]
+fn gui_pm_inputorder_test_routes_clicks_when_they_are_read() {
+    let steps = "1500 text a\n1600 click 550 287\n1700 text b\n4500 click 550 287\n4600 text c\n14000 quit\n";
+    assert_scripted_checks_pass("samples/pm_inputorder_test/pm_inputorder_test.exe", "pm_inputorder_test", 3, steps);
+}
+
 /// pm_minmax_test: frames are minimized, maximized and restored through
 /// WinSetWindowPos and WM_SYSCOMMAND (checked from the guest), then with
 /// the mouse and the system keys. Frame A is the default 640×480 frame at

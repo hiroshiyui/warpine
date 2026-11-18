@@ -16,16 +16,37 @@
 //! - a key goes to the focus window at the time it is read (`key_target`),
 //!   and a typed character is encoded in that window's queue codepage then.
 //!
-//! Pointer messages carry the window they were hit-tested to; they go
-//! through this queue so that keys typed before a click are handled before
-//! it. A click changes the focus on the GUI thread (activation, a click
-//! outside the focused control), so it first fixes the target of the keys
-//! still waiting ([`WindowManager::pin_pending_input`]): they were typed for
-//! the old focus.
+//! Pointer input is routed when it is read too (ADR-0051). The PM Guide
+//! ("Capturing Mouse Input") posts a mouse message "to the window that is
+//! under the mouse pointer at the time the system reads the mouse input
+//! events from the system message queue", and its events are "strictly
+//! ordered so that a new event cannot be processed until all previous events
+//! are fully processed": a key typed after a click goes to another window
+//! "only if that window became active as a result of the mouse click". So
+//! the GUI thread queues a pointer event in desktop coordinates
+//! ([`InputEvent::Pointer`]), and when the event reaches the head of the
+//! queue and its thread looks for input ([`WindowManager::take_up_input`]):
+//!
+//! - it is hit-tested: the capture window, a built-in control held with
+//!   button 1, else the window under the pointer (a disabled frame takes
+//!   none; a button-1 message goes to the built-in control under it);
+//! - a button press activates its frame (`WM_ACTIVATE`, posted, so read
+//!   before the click) and a button-1 press beside the focused control takes
+//!   the focus from it;
+//! - it becomes an [`InputEvent::Window`] for that window.
+//!
+//! Clicks on frame chrome (title bar, buttons, sizing border) stay with the
+//! GUI thread, which activates the frame at once; it first fixes the target
+//! of the keys still waiting ([`WindowManager::pin_pending_input`]), since
+//! they were typed for the old active window.
 
 use std::collections::VecDeque;
 
-use super::constants::{KC_CHAR, WM_CHAR, WM_CHAR_REPEAT_SHIFT, WM_PAINT, WM_TIMER};
+use super::constants::{
+    KC_CHAR, WM_ACTIVATE, WM_BUTTON1DBLCLK, WM_BUTTON1DOWN, WM_BUTTON1UP, WM_BUTTON2DBLCLK,
+    WM_BUTTON2DOWN, WM_BUTTON3DBLCLK, WM_BUTTON3DOWN, WM_CHAR, WM_CHAR_REPEAT_SHIFT, WM_MOUSEMOVE,
+    WM_PAINT, WM_TIMER,
+};
 use super::mutex_ext::MutexExt;
 use super::pm_types::{OS2Message, WindowManager};
 
@@ -41,9 +62,13 @@ pub enum InputEvent {
     Key { mp1: u32, mp2: u32 },
     /// A typed character (SDL text input), encoded when the event is read.
     Char(char),
-    /// A message for a window fixed when the event arrived (pointer input,
-    /// or a key whose target a click fixed).
+    /// A message for a window already fixed (a pointer event taken up, a
+    /// key whose target a click on frame chrome fixed, a drag message).
     Window { hwnd: u32, msg: u32, mp1: u32, mp2: u32 },
+    /// A pointer message (`WM_MOUSEMOVE`, `WM_BUTTONn*`) at desktop point
+    /// `(x, y)` (bottom-left origin), hit-tested when it is read; `mp2` is
+    /// its second parameter (the `KC_*` flags in the high word).
+    Pointer { msg: u32, x: i32, y: i32, mp2: u32 },
 }
 
 /// The `WM_CHAR` parameters `(mp1, mp2)` of typed character `ch` in
@@ -70,9 +95,36 @@ pub fn char_message(ch: char, cp: u32) -> Option<(u32, u32)> {
 enum Head {
     /// The event goes to `hmq` as this message.
     Deliver { hmq: u32, msg: OS2Message },
+    /// A pointer event whose thread is that of queue `hmq`: it must be taken
+    /// up there ([`WindowManager::take_up_input`]) before it is delivered.
+    TakeUp { hmq: u32 },
     /// The event cannot be delivered (no window or queue, a character the
     /// codepage lacks): drop it.
     Drop,
+}
+
+/// Whether `msg` presses a mouse button (`WM_BUTTONnDOWN` / `WM_BUTTONnDBLCLK`).
+fn is_press(msg: u32) -> bool {
+    matches!(msg, WM_BUTTON1DOWN | WM_BUTTON1DBLCLK | WM_BUTTON2DOWN | WM_BUTTON2DBLCLK
+        | WM_BUTTON3DOWN | WM_BUTTON3DBLCLK)
+}
+
+/// Pack a point as a pointer message's mp1, `MPFROM2SHORT(x, y)`.
+fn pack_point(x: i32, y: i32) -> u32 {
+    (x as u32 & 0xFFFF) | ((y as u32 & 0xFFFF) << 16)
+}
+
+/// Where a pointer event goes: its window and the point in that window's
+/// coordinates, and the frame it lies in (activated by a press).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PointerTarget {
+    pub hwnd: u32,
+    pub x: i32,
+    pub y: i32,
+    pub frame: u32,
+    /// The window was chosen by the capture or a held control, not by the
+    /// pointer's position: a press does not activate or move the focus.
+    pub held: bool,
 }
 
 /// Where a queued message ranks when a thread reads its queue. The PM
@@ -108,6 +160,9 @@ impl WindowManager {
         -> Option<OS2Message>
     {
         let mq_arc = self.get_mq(hmq)?;
+        // A click at the head of the input queue takes effect first: the
+        // activation messages it posts are read before it.
+        self.take_up_input(hmq);
         // The queue's lock is held only while it is searched: reading input
         // may lock other queues.
         let take = |wm: &WindowManager, rank: Rank| {
@@ -160,11 +215,13 @@ impl WindowManager {
         let pending = std::mem::take(&mut self.input);
         for queued in pending {
             let ev = match queued.ev {
-                InputEvent::Window { .. } => queued.ev.clone(),
+                // Pointer events are hit-tested when read anyway.
+                InputEvent::Window { .. } | InputEvent::Pointer { .. } => queued.ev.clone(),
                 _ => match self.resolve_input(&queued) {
                     Head::Deliver { msg, .. } =>
                         InputEvent::Window { hwnd: msg.hwnd, msg: msg.msg, mp1: msg.mp1, mp2: msg.mp2 },
                     Head::Drop => continue,
+                    Head::TakeUp { .. } => unreachable!("only pointer events are taken up"),
                 },
             };
             self.input.push_back(QueuedInput { ev, ..queued });
@@ -178,10 +235,18 @@ impl WindowManager {
     pub fn next_input(&mut self, hmq: u32, remove: bool, pass: impl Fn(&OS2Message) -> bool)
         -> Option<OS2Message>
     {
+        self.take_up_input(hmq);
         loop {
             let head = self.resolve_input(self.input.front()?);
             match head {
                 Head::Drop => { self.input.pop_front(); }
+                Head::TakeUp { hmq: target } => {
+                    if target != hmq {
+                        self.wake_queue(target);
+                        return None;
+                    }
+                    self.take_up_input(hmq);
+                }
                 Head::Deliver { hmq: target, msg } => {
                     if target != hmq {
                         self.wake_queue(target);
@@ -211,10 +276,17 @@ impl WindowManager {
     /// client, as for every message the GUI thread sends.
     fn resolve_input(&self, queued: &QueuedInput) -> Head {
         let ev = &queued.ev;
+        if let InputEvent::Pointer { msg, x, y, .. } = *ev {
+            return match self.pointer_target(msg, x, y).and_then(|t| self.input_queue_of(t.hwnd)) {
+                Some(hmq) => Head::TakeUp { hmq },
+                None => Head::Drop,
+            };
+        }
         let (hwnd, msg, mp1, mp2) = match *ev {
             InputEvent::Key { mp1, mp2 } => (self.key_target(), WM_CHAR, mp1, mp2),
             InputEvent::Char(_) => (self.key_target(), WM_CHAR, 0, 0),
             InputEvent::Window { hwnd, msg, mp1, mp2 } => (hwnd, msg, mp1, mp2),
+            InputEvent::Pointer { .. } => unreachable!("resolved above"),
         };
         let target = self.frame_to_client.get(&hwnd).copied().unwrap_or(hwnd);
         // The window may have been destroyed since the event arrived.
@@ -242,9 +314,158 @@ impl WindowManager {
 
     /// Wake the thread that is to read the oldest input event.
     fn wake_input_reader(&self) {
-        if let Some(Head::Deliver { hmq, .. }) = self.input.front().map(|ev| self.resolve_input(ev)) {
+        if let Some(Head::Deliver { hmq, .. } | Head::TakeUp { hmq }) =
+            self.input.front().map(|ev| self.resolve_input(ev))
+        {
             self.wake_queue(hmq);
         }
+    }
+
+    /// The queue that reads input for window `hwnd` (a frame stands for its
+    /// client), if it has one.
+    fn input_queue_of(&self, hwnd: u32) -> Option<u32> {
+        let target = self.frame_to_client.get(&hwnd).copied().unwrap_or(hwnd);
+        self.get_window(target)?;
+        self.find_hmq_for_hwnd(target).or_else(|| self.find_hmq_for_hwnd(hwnd))
+            .filter(|h| self.msg_queues.contains_key(h))
+    }
+
+    /// Take up the pointer event at the head of the input queue for the
+    /// thread of queue `hmq`: undeliverable events at the head are dropped;
+    /// a pointer event for that queue is hit-tested now, has its effects (a
+    /// press activates its frame, a button-1 press beside the focused
+    /// control takes the focus away) and becomes a message for its window.
+    /// An event for another queue is left for that queue's thread.
+    pub fn take_up_input(&mut self, hmq: u32) {
+        while let Some(front) = self.input.front() {
+            let InputEvent::Pointer { msg, x, y, mp2 } = front.ev else { return };
+            let target = self.pointer_target(msg, x, y);
+            let Some(t) = target.filter(|t| self.input_queue_of(t.hwnd).is_some()) else {
+                self.input.pop_front();
+                continue;
+            };
+            if self.input_queue_of(t.hwnd) != Some(hmq) {
+                return;
+            }
+            if is_press(msg) && !t.held {
+                self.activate_by_click(t.frame);
+                if msg == WM_BUTTON1DOWN || msg == WM_BUTTON1DBLCLK {
+                    self.click_beside_focus(t.frame, t.hwnd);
+                }
+            }
+            if let Some(front) = self.input.front_mut() {
+                front.ev = InputEvent::Window { hwnd: t.hwnd, msg, mp1: pack_point(t.x, t.y), mp2 };
+            }
+            return;
+        }
+    }
+
+    /// Where pointer message `msg` at desktop point `(x, y)` goes if it is
+    /// read now: the capture window; for a move or a button-1 release the
+    /// built-in control held with button 1; else the frame under the pointer
+    /// unless it is disabled — a button-1 message there goes to the built-in
+    /// control under the pointer, if any. `None`: no window takes it.
+    pub fn pointer_target(&self, msg: u32, x: i32, y: i32) -> Option<PointerTarget> {
+        if self.capture_hwnd != 0 {
+            let hwnd = self.capture_hwnd;
+            let (lx, ly) = self.pointer_local(hwnd, x, y);
+            let frame = self.find_frame_for_hwnd(hwnd);
+            return Some(PointerTarget { hwnd, x: lx, y: ly, frame, held: true });
+        }
+        if matches!(msg, WM_MOUSEMOVE | WM_BUTTON1UP)
+            && let Some((hwnd, lx, ly)) = self.pressed_control_point(x, y)
+        {
+            let frame = self.find_frame_for_hwnd(hwnd);
+            return Some(PointerTarget { hwnd, x: lx, y: ly, frame, held: true });
+        }
+        let frame = self.z_hit_test(x, y)?;
+        // The owner of a modal dialog is disabled: it takes no clicks (the
+        // PM Guide: "disabled windows do not receive mouse messages").
+        if self.frame_disabled(self.find_frame_for_hwnd(frame)) {
+            return None;
+        }
+        let (lx, ly) = self.pointer_local(frame, x, y);
+        let button1 = matches!(msg, WM_BUTTON1DOWN | WM_BUTTON1DBLCLK | WM_BUTTON1UP);
+        let (hwnd, lx, ly) = if button1 {
+            self.control_under(frame, lx, ly).unwrap_or((frame, lx, ly))
+        } else {
+            (frame, lx, ly)
+        };
+        Some(PointerTarget { hwnd, x: lx, y: ly, frame, held: false })
+    }
+
+    /// Desktop point `(x, y)` (bottom-left origin) in the coordinates of the
+    /// window that gets the pointer messages addressed to `hwnd`: a standard
+    /// frame's client (inside the frame's left border), else `hwnd` itself
+    /// (a dialog, a window holding the capture).
+    pub fn pointer_local(&self, hwnd: u32, x: i32, y: i32) -> (i32, i32) {
+        let target = self.frame_to_client.get(&hwnd).copied().unwrap_or(hwnd);
+        let (ox, oy) = self.window_origin(target).unwrap_or((0, 0));
+        (x - ox, y - oy)
+    }
+
+    /// The built-in control held down with mouse button 1, if any, and the
+    /// desktop point `(x, y)` (bottom-left origin) relative to that control.
+    pub fn pressed_control_point(&self, x: i32, y: i32) -> Option<(u32, i32, i32)> {
+        let control = self.pressed_control;
+        if control == 0 { return None; }
+        let frame = self.find_frame_for_hwnd(control);
+        let f = self.get_window(frame)?;
+        // Frame-relative, then relative to the frame's surface, then to the control.
+        let (sx, sy) = (x - f.x - super::constants::frame_border_width(f.frame_flags), y - f.y);
+        let (bx, by, _, _) = self.get_abs_rect_in_frame(control);
+        Some((control, sx - bx, sy - by))
+    }
+
+    /// The built-in control (or embedded dialog, ADR-0042) of `frame` under
+    /// point `(x, y)` in message coordinates (`pointer_local`), with the
+    /// point relative to it.
+    pub fn control_under(&self, frame: u32, x: i32, y: i32) -> Option<(u32, i32, i32)> {
+        // A standard frame's client lies at its place in the frame's surface
+        // (above a horizontal frame scroll bar); a dialog's surface starts
+        // inside its left border.
+        let (sx, sy) = match self.get_window(frame) {
+            Some(w) if !self.frame_to_client.contains_key(&frame) =>
+                (x - super::constants::frame_border_width(w.frame_flags), y),
+            _ => {
+                let (cx, cy, _, _) = self.client_view(frame).unwrap_or_default();
+                (x.saturating_add(cx), y.saturating_add(cy))
+            }
+        };
+        self.control_at(frame, sx, sy).or_else(|| {
+            let root = self.control_root(frame)?;
+            self.embedded_dialog_at(root, sx, sy)
+        })
+    }
+
+    /// A press on `frame` makes it the active window if it is not: it goes
+    /// to the top and `WM_ACTIVATE` is posted, FALSE to the frame that was
+    /// active, then TRUE to this one (each to a standard frame's client).
+    fn activate_by_click(&mut self, frame: u32) {
+        let prev = self.focused_hwnd;
+        if !self.is_frame(frame) || prev == frame {
+            return;
+        }
+        self.focused_hwnd = frame;
+        self.z_push_top(frame);
+        if prev != 0 && self.get_window(prev).is_some() {
+            self.post_msg(self.frame_msg_target(prev), WM_ACTIVATE, 0, frame);
+        }
+        self.post_msg(self.frame_msg_target(frame), WM_ACTIVATE, 1, prev);
+    }
+
+    /// A button-1 press on `hwnd` in `frame` that is not on a built-in
+    /// control takes the keyboard focus from the control of that frame that
+    /// has it (repainted without its caret).
+    fn click_beside_focus(&mut self, frame: u32, hwnd: u32) {
+        let focus = self.focus_hwnd;
+        if hwnd != frame || focus == 0 || !self.frame_to_client.contains_key(&frame)
+            || self.find_frame_for_hwnd(focus) != frame
+        {
+            return;
+        }
+        self.set_focus(0);
+        self.invalidate_window_only(focus);
     }
 
     fn wake_queue(&self, hmq: u32) {
@@ -269,7 +490,7 @@ pub type InputQueue = VecDeque<QueuedInput>;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::loader::constants::WM_BUTTON1DOWN;
+    use crate::loader::constants::WM_BUTTON2UP;
 
     /// Two frames with clients on two queues, and an entry field in the
     /// first client. Returns `(wm, [hmq1, hmq2], [f1, c1, f2, c2], entry)`.
@@ -420,6 +641,141 @@ mod tests {
             wm.post_input(InputEvent::Key { mp1: 0, mp2: 0 });
         }
         assert_eq!(wm.pending_input(), MAX_INPUT_EVENTS);
+    }
+
+    /// `two_frames` with the frames on the desktop side by side — f1 at
+    /// x 0, f2 at x 400, both 300 × 300 and visible, f2 on top — and the
+    /// entry field at (10, 200) in c1, 200 × 25.
+    fn placed_frames() -> (WindowManager, [u32; 2], [u32; 4], u32) {
+        let (mut wm, qs, [f1, c1, f2, c2], entry) = two_frames();
+        for (f, c, x) in [(f1, c1, 0), (f2, c2, 400)] {
+            let w = wm.get_window_mut(f).unwrap();
+            (w.x, w.y, w.cx, w.cy, w.visible) = (x, 0, 300, 300, true);
+            let w = wm.get_window_mut(c).unwrap();
+            (w.x, w.y, w.cx, w.cy, w.visible) = (0, 0, 300, 280, true);
+            wm.z_push_top(f);
+        }
+        let w = wm.get_window_mut(entry).unwrap();
+        (w.x, w.y, w.cx, w.cy) = (10, 200, 200, 25);
+        (wm, qs, [f1, c1, f2, c2], entry)
+    }
+
+    fn pointer(wm: &mut WindowManager, msg: u32, x: i32, y: i32) {
+        wm.post_input(InputEvent::Pointer { msg, x, y, mp2: 0 });
+    }
+
+    #[test]
+    fn a_pointer_message_goes_to_the_window_under_the_pointer_when_read() {
+        let (mut wm, [q1, q2], [f1, c1, f2, c2], _) = placed_frames();
+        pointer(&mut wm, WM_MOUSEMOVE, 450, 100);
+        // The frames swap places before the move is read: it goes to f1.
+        wm.get_window_mut(f2).unwrap().x = 0;
+        wm.get_window_mut(f1).unwrap().x = 400;
+        assert_eq!(take(&mut wm, q2), None);
+        let (hwnd, msg, mp1, _) = take(&mut wm, q1).unwrap();
+        assert_eq!((hwnd, msg), (c1, WM_MOUSEMOVE));
+        assert_eq!(mp1, pack_point(wm.pointer_local(f1, 450, 100).0, wm.pointer_local(f1, 450, 100).1));
+        // Over no window at all, the event is dropped.
+        pointer(&mut wm, WM_MOUSEMOVE, 900, 900);
+        assert_eq!(take(&mut wm, q1), None);
+        assert_eq!(wm.pending_input(), 0);
+        let _ = c2;
+    }
+
+    #[test]
+    fn a_click_activates_its_frame_when_read_and_later_keys_follow_it() {
+        let (mut wm, [q1, q2], [f1, c1, f2, c2], _) = placed_frames();
+        wm.focused_hwnd = f2;
+        // The PM Guide's example: a key, a click on another window, a key.
+        wm.post_input(InputEvent::Key { mp1: 1, mp2: 0 });
+        pointer(&mut wm, WM_BUTTON1DOWN, 100, 100);
+        wm.post_input(InputEvent::Key { mp1: 2, mp2: 0 });
+        // Nothing changed on arrival.
+        assert_eq!(wm.focused_hwnd, f2);
+        assert_eq!(next_msg(&mut wm, q1), None, "the first key is f2's");
+        assert_eq!(next_msg(&mut wm, q2), Some(WM_CHAR));
+        // Reading the click activates f1: WM_ACTIVATE FALSE to c2, TRUE to
+        // c1 — read before the click — and the next key goes to c1.
+        assert_eq!(next_msg(&mut wm, q1), Some(WM_ACTIVATE));
+        assert_eq!(wm.focused_hwnd, f1);
+        assert_eq!(wm.z_order.last(), Some(&f1));
+        let m = wm.next_queued(q1, true, |_, _| true).unwrap();
+        assert_eq!((m.hwnd, m.msg), (c1, WM_BUTTON1DOWN));
+        assert_eq!(take(&mut wm, q1), Some((c1, WM_CHAR, 2, 0)));
+        let deact = wm.next_queued(q2, true, |_, _| true).unwrap();
+        assert_eq!((deact.hwnd, deact.msg, deact.mp1, deact.mp2), (c2, WM_ACTIVATE, 0, f1));
+    }
+
+    #[test]
+    fn button1_is_routed_to_a_control_and_a_press_beside_it_takes_its_focus() {
+        let (mut wm, [q1, _], [f1, c1, ..], entry) = placed_frames();
+        wm.focused_hwnd = f1;
+        let (ex, ey) = {
+            let (ox, oy) = wm.window_origin(c1).unwrap();
+            (ox + 15, oy + 210)
+        };
+        pointer(&mut wm, WM_BUTTON1DOWN, ex, ey);
+        let (hwnd, msg, mp1, _) = take(&mut wm, q1).unwrap();
+        assert_eq!((hwnd, msg, mp1), (entry, WM_BUTTON1DOWN, pack_point(5, 10)));
+        // Button 2 is not routed to controls.
+        pointer(&mut wm, WM_BUTTON2DOWN, ex, ey);
+        assert_eq!(take(&mut wm, q1).map(|m| m.0), Some(c1));
+        // A press beside the control takes the focus when it is read.
+        wm.focus_hwnd = entry;
+        pointer(&mut wm, WM_BUTTON1DOWN, 250, 50);
+        assert_eq!(wm.focus_hwnd, entry, "not on arrival");
+        assert_eq!(take(&mut wm, q1).map(|m| m.0), Some(c1));
+        assert_eq!(wm.focus_hwnd, 0);
+        // A release beside it does not.
+        wm.focus_hwnd = entry;
+        pointer(&mut wm, WM_BUTTON1UP, 250, 50);
+        assert_eq!(take(&mut wm, q1).map(|m| m.0), Some(c1));
+        assert_eq!(wm.focus_hwnd, entry);
+    }
+
+    #[test]
+    fn a_disabled_frame_takes_no_pointer_input() {
+        let (mut wm, [q1, _], [f1, _, f2, _], _) = placed_frames();
+        wm.focused_hwnd = f2;
+        wm.get_window_mut(f1).unwrap().style |= crate::loader::constants::WS_DISABLED;
+        pointer(&mut wm, WM_BUTTON1DOWN, 100, 100);
+        assert_eq!(take(&mut wm, q1), None);
+        assert_eq!(wm.pending_input(), 0);
+        assert_eq!(wm.focused_hwnd, f2);
+    }
+
+    #[test]
+    fn the_capture_and_a_held_control_take_the_pointer_without_activation() {
+        let (mut wm, [q1, q2], [f1, c1, f2, c2], entry) = placed_frames();
+        wm.focused_hwnd = f2;
+        // The capture window gets a press anywhere, in its own coordinates,
+        // and nothing is activated.
+        wm.capture_hwnd = c2;
+        pointer(&mut wm, WM_BUTTON1DOWN, 100, 100);
+        let (hwnd, msg, mp1, _) = take(&mut wm, q2).unwrap();
+        let (lx, ly) = wm.pointer_local(c2, 100, 100);
+        assert_eq!((hwnd, msg, mp1), (c2, WM_BUTTON1DOWN, pack_point(lx, ly)));
+        assert_eq!(wm.focused_hwnd, f2);
+        // A control held with button 1 gets moves and the release.
+        wm.capture_hwnd = 0;
+        wm.pressed_control = entry;
+        pointer(&mut wm, WM_MOUSEMOVE, 600, 100);
+        pointer(&mut wm, WM_BUTTON1UP, 600, 100);
+        assert_eq!(take(&mut wm, q1).map(|m| (m.0, m.1)), Some((entry, WM_MOUSEMOVE)));
+        assert_eq!(take(&mut wm, q1).map(|m| (m.0, m.1)), Some((entry, WM_BUTTON1UP)));
+        // Button 2 is not the held button's: hit-tested as usual.
+        pointer(&mut wm, WM_BUTTON2UP, 100, 100);
+        assert_eq!(take(&mut wm, q1).map(|m| m.0), Some(c1));
+        let _ = (f1, q2);
+    }
+
+    #[test]
+    fn pinning_leaves_pointer_events_to_be_hit_tested_when_read() {
+        let (mut wm, [q1, _], [_, c1, ..], _) = placed_frames();
+        pointer(&mut wm, WM_MOUSEMOVE, 100, 100);
+        wm.pin_pending_input();
+        assert!(matches!(wm.input.front().map(|q| &q.ev), Some(InputEvent::Pointer { .. })));
+        assert_eq!(take(&mut wm, q1).map(|m| m.0), Some(c1));
     }
 
     #[test]

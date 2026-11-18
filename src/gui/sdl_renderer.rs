@@ -1661,29 +1661,11 @@ impl SdlRenderer {
                     let cy = wm.get_window(hwnd).map_or(0, |w| w.cy);
                     let new_top_y_sdl = y - anchor_y_sdl;
                     wm.move_frame(hwnd, x - anchor_x, dh as i32 - new_top_y_sdl - cy);
-                } else if let Some((control, cx, cy)) = pressed_control_release(shared, x, (dh as i32 - 1) - y) {
-                    // A built-in control held with button 1 follows the
-                    // pointer (a text control extends its selection).
-                    let mp1 = ((cx as u32) & 0xFFFF) | ((cy as u32 & 0xFFFF) << 16);
-                    push_input(shared, control, WM_MOUSEMOVE, mp1, 0);
                 } else {
-                    let os2_y = (dh as i32 - 1) - y;
-                    // VDR-D6: captured window overrides hit-test.
-                    let capture = shared.window_mgr.lock_or_recover().capture_hwnd;
-                    let target = if capture != 0 {
-                        Some(capture)
-                    } else {
-                        let wm = shared.window_mgr.lock_or_recover();
-                        wm.z_hit_test(x, os2_y)
-                    };
-                    if let Some(hwnd) = target {
-                        let (local_x, local_y) = {
-                            let wm = shared.window_mgr.lock_or_recover();
-                            pointer_local(&wm, hwnd, x, os2_y)
-                        };
-                        let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
-                        push_input(shared, hwnd, WM_MOUSEMOVE, mp1, 0);
-                    }
+                    // The capture window, a built-in control held with
+                    // button 1 (a text control extends its selection) or the
+                    // window under the pointer when the move is read.
+                    push_pointer(shared, WM_MOUSEMOVE, x, (dh as i32 - 1) - y, 0);
                 }
             }
             Event::MouseButtonDown { mouse_btn, clicks, x, y, .. } => {
@@ -1721,28 +1703,6 @@ impl SdlRenderer {
                     if clicks_blocked(shared, hwnd) {
                         return true;
                     }
-                    // VDR-D4: activate window on click; post WM_ACTIVATE to both windows.
-                    let prev_focused = {
-                        let mut wm = shared.window_mgr.lock_or_recover();
-                        let frame = wm.client_to_frame(hwnd);
-                        let frame = if wm.is_frame(frame) { frame } else { hwnd };
-                        let prev = wm.focused_hwnd;
-                        if wm.is_frame(frame) && prev != frame {
-                            // Keys typed before the click were meant for
-                            // the old active window.
-                            wm.pin_pending_input();
-                            wm.focused_hwnd = frame;
-                            wm.z_push_top(frame);
-                            prev
-                        } else { 0 }
-                    };
-                    if prev_focused != 0 {
-                        // Notify old frame it lost focus.
-                        push_msg(shared, prev_focused, WM_ACTIVATE, 0, hwnd);
-                        // Notify new frame it gained focus (WA_CLICK = 2).
-                        let new_focused = shared.window_mgr.lock_or_recover().focused_hwnd;
-                        push_msg(shared, new_focused, WM_ACTIVATE, 2, prev_focused);
-                    }
                     // VDR-D2/C3/C4: chrome hit-testing (title bar + buttons).
                     let (chrome_hit, state) = {
                         let wm = shared.window_mgr.lock_or_recover();
@@ -1752,13 +1712,28 @@ impl SdlRenderer {
                              state)
                         })
                     };
+                    // VDR-C5: a sizing-border hit, checked before the client.
+                    let resize_edge = if matches!(chrome_hit, ChromeHit::None) {
+                        let wm = shared.window_mgr.lock_or_recover();
+                        wm.get_window(hwnd).and_then(|win| {
+                            // Minimized and maximized frames are not resized.
+                            if win.style & (WS_MINIMIZED | WS_MAXIMIZED) != 0 { return None; }
+                            resize_hit_test(win.x, win.y, win.cx, win.cy, win.frame_flags, x, os2_y)
+                        })
+                    } else { None };
+                    let is_vio = shared.window_mgr.lock_or_recover().is_vio_window(hwnd);
+                    // A click on the client area (or a dialog) is queued and
+                    // activates its frame when it is read (ADR-0051); frame
+                    // chrome and the VIO window, which have no queue to wait
+                    // on, act at once.
+                    let to_queue = matches!(chrome_hit, ChromeHit::None) && resize_edge.is_none() && !is_vio;
+                    if !to_queue {
+                        activate_on_arrival(shared, hwnd);
+                    }
                     let double = mouse_btn == sdl3::mouse::MouseButton::Left
                         && button_down_msg(mouse_btn, clicks) == Some(WM_BUTTON1DBLCLK);
                     // System commands from the chrome: MPFROM2SHORT(source, fPointer).
                     let syscommand = |sc: u32, source: u32| push_msg(shared, hwnd, WM_SYSCOMMAND, sc, source | (1 << 16));
-                    // The VIO window has no message queue: its system commands
-                    // are carried out here (`vio_command`); closing it ends the program.
-                    let is_vio = shared.window_mgr.lock_or_recover().is_vio_window(hwnd);
                     match chrome_hit {
                         // The VIO window's system commands are carried out
                         // here (it has no message queue to post them to).
@@ -1827,16 +1802,6 @@ impl SdlRenderer {
                             });
                         }
                         ChromeHit::None => {
-                            // VDR-C5: check resize edge before forwarding to app.
-                            let resize_edge = {
-                                let wm = shared.window_mgr.lock_or_recover();
-                                wm.get_window(hwnd).and_then(|win| {
-                                    // Minimized and maximized frames are not resized.
-                                    if win.style & (WS_MINIMIZED | WS_MAXIMIZED) != 0 { return None; }
-                                    resize_hit_test(win.x, win.y, win.cx, win.cy,
-                                                    win.frame_flags, x, os2_y)
-                                })
-                            };
                             if let Some(edge) = resize_edge {
                                 let (orig_x, orig_y, orig_cx, orig_cy) = {
                                     let wm = shared.window_mgr.lock_or_recover();
@@ -1853,28 +1818,10 @@ impl SdlRenderer {
                                 && let Some(vio) = self.vio.as_mut() && vio.press(shared, x, os2_y) {
                                 // The VIO window's scroll bars, and marking.
                                 vio.update(shared);
-                            } else {
-                            let (local_x, local_y) = {
-                                let wm = shared.window_mgr.lock_or_recover();
-                                pointer_local(&wm, hwnd, x, os2_y)
-                            };
-                            use sdl3::mouse::MouseButton;
-                            let msg = button_down_msg(mouse_btn, clicks);
-                            // Button 1 goes to the built-in control under the
-                            // pointer, if any; a click elsewhere takes the
-                            // keyboard focus away from the focused control.
-                            let (hwnd, local_x, local_y) = if mouse_btn == MouseButton::Left {
-                                let (target, lost_focus) = route_button1(shared, hwnd, local_x, local_y, true);
-                                if lost_focus != 0 {
-                                    // Repaint the control without its caret.
-                                    shared.window_mgr.lock_or_recover().invalidate_window_only(lost_focus);
-                                }
-                                target
-                            } else {
-                                (hwnd, local_x, local_y)
-                            };
-                            let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
-                            if let Some(m) = msg { push_input(shared, hwnd, m, mp1, mouse_mp2(self.key_mods)); }
+                            } else if let Some(m) = button_down_msg(mouse_btn, clicks) {
+                                // Hit-tested again, and routed to a built-in
+                                // control, when it is read (`take_up_input`).
+                                push_pointer(shared, m, x, os2_y, mouse_mp2(self.key_mods));
                             }
                         }
                     }
@@ -1934,47 +1881,17 @@ impl SdlRenderer {
                     self.composite_and_present(shared);
                     return true;
                 }
-                let _ = (x, y); // suppress unused-variable warnings for x/y used above
-                let os2_y = (dh as i32 - 1) - y;
-                // A built-in button held down gets the release wherever the
-                // pointer is, so it pops up (and is clicked only over itself).
-                if mouse_btn == sdl3::mouse::MouseButton::Left
-                    && let Some((button, bx, by)) = pressed_control_release(shared, x, os2_y)
-                {
-                    let mp1 = ((bx as u32) & 0xFFFF) | ((by as u32 & 0xFFFF) << 16);
-                    push_input(shared, button, WM_BUTTON1UP, mp1, mouse_mp2(self.key_mods));
-                    return true;
-                }
-                // VDR-D6: captured window overrides hit-test.
-                let capture = shared.window_mgr.lock_or_recover().capture_hwnd;
-                let target = if capture != 0 {
-                    Some(capture)
-                } else {
-                    let wm = shared.window_mgr.lock_or_recover();
-                    wm.z_hit_test(x, os2_y)
+                // The capture window, the built-in control held with button 1
+                // (it pops up, and is clicked only over itself) or the window
+                // under the pointer, when the release is read.
+                let msg = match mouse_btn {
+                    sdl3::mouse::MouseButton::Left   => Some(WM_BUTTON1UP),
+                    sdl3::mouse::MouseButton::Right  => Some(WM_BUTTON2UP),
+                    sdl3::mouse::MouseButton::Middle => Some(WM_BUTTON3UP),
+                    _ => None,
                 };
-                if let Some(hwnd) = target {
-                    if clicks_blocked(shared, hwnd) {
-                        return true;
-                    }
-                    let (local_x, local_y) = {
-                        let wm = shared.window_mgr.lock_or_recover();
-                        pointer_local(&wm, hwnd, x, os2_y)
-                    };
-                    use sdl3::mouse::MouseButton;
-                    let (hwnd, local_x, local_y) = if mouse_btn == MouseButton::Left && capture == 0 {
-                        route_button1(shared, hwnd, local_x, local_y, false).0
-                    } else {
-                        (hwnd, local_x, local_y)
-                    };
-                    let mp1 = ((local_x as u32) & 0xFFFF) | ((local_y as u32 & 0xFFFF) << 16);
-                    let msg = match mouse_btn {
-                        MouseButton::Left   => Some(WM_BUTTON1UP),
-                        MouseButton::Right  => Some(WM_BUTTON2UP),
-                        MouseButton::Middle => Some(WM_BUTTON3UP),
-                        _ => None,
-                    };
-                    if let Some(m) = msg { push_input(shared, hwnd, m, mp1, mouse_mp2(self.key_mods)); }
+                if let Some(m) = msg {
+                    push_pointer(shared, m, x, (dh as i32 - 1) - y, mouse_mp2(self.key_mods));
                 }
             }
             _ => {}
@@ -2385,62 +2302,26 @@ fn resized_rect(orig: (i32, i32, i32, i32), edge: ResizeEdge, dx: i32, dy: i32,
     (if left { x + cx - ncx } else { x }, if bottom { y + cy - ncy } else { y }, ncx, ncy)
 }
 
-/// Decide which window receives a mouse-button-1 message aimed at `frame`.
-///
-/// `(x, y)` is the pointer relative to the frame's bottom-left corner. If a
-/// built-in control lies under the pointer the message goes to that control,
-/// with the position relative to the control; otherwise it goes to the frame
-/// (whose client the input queue delivers to) unchanged.
-///
-/// With `press` set, a click that is not on a control ends that frame's
-/// control focus: the second return value is the control that lost the focus
-/// (0 if none) so the caller can have it repainted without its caret.
-fn route_button1(shared: &Arc<SharedState>, frame: u32, x: i32, y: i32, press: bool)
-    -> ((u32, i32, i32), u32)
-{
+/// Make the frame of `hwnd` the active window at once, for a click the GUI
+/// thread handles itself (frame chrome, the sizing border, the VIO window):
+/// it goes to the top and `WM_ACTIVATE` is posted, FALSE to the frame that
+/// was active, then TRUE to this one. Keys typed before the click were meant
+/// for the old active window, so their target is fixed first.
+fn activate_on_arrival(shared: &Arc<SharedState>, hwnd: u32) {
     let mut wm = shared.window_mgr.lock_or_recover();
-    // `(x, y)` is in message coordinates (`pointer_local`): a standard
-    // frame's client, which lies at its place in the frame's surface
-    // (above a horizontal frame scroll bar); a dialog's surface starts
-    // inside its left border.
-    let (sx, sy) = match wm.get_window(frame) {
-        Some(w) if !wm.frame_to_client.contains_key(&frame) => (x - frame_border_px(w.frame_flags), y),
-        _ => {
-            let (cx, cy, _, _) = wm.client_view(frame).unwrap_or_default();
-            (x.saturating_add(cx), y.saturating_add(cy))
-        }
-    };
-    if let Some(hit) = wm.control_at(frame, sx, sy) {
-        return (hit, 0);
+    let frame = wm.client_to_frame(hwnd);
+    let frame = if wm.is_frame(frame) { frame } else { hwnd };
+    let prev = wm.focused_hwnd;
+    if !wm.is_frame(frame) || prev == frame {
+        return;
     }
-    // A dialog embedded in the frame (ADR-0042) gets the click on its own
-    // area, in its own coordinates.
-    if let Some(root) = wm.control_root(frame)
-        && let Some(hit) = wm.embedded_dialog_at(root, sx, sy) {
-        return (hit, 0);
+    wm.pin_pending_input();
+    wm.focused_hwnd = frame;
+    wm.z_push_top(frame);
+    if prev != 0 && wm.get_window(prev).is_some() {
+        wm.post_msg(wm.frame_msg_target(prev), WM_ACTIVATE, 0, frame);
     }
-    let focus = wm.focus_hwnd;
-    let lost = if press && focus != 0 && wm.frame_to_client.contains_key(&frame)
-        && wm.find_frame_for_hwnd(focus) == frame
-    {
-        // Keys typed before the click were meant for the control.
-        wm.pin_pending_input();
-        wm.set_focus(0);
-        focus
-    } else {
-        0
-    };
-    ((frame, x, y), lost)
-}
-
-/// Desktop point `(x, y)` (bottom-left origin) in the coordinates of the
-/// window that gets the pointer messages addressed to `hwnd`: a standard
-/// frame's client (inside the frame's left border), else `hwnd` itself (a
-/// dialog, a window holding the capture).
-fn pointer_local(wm: &WindowManager, hwnd: u32, x: i32, y: i32) -> (i32, i32) {
-    let target = wm.frame_to_client.get(&hwnd).copied().unwrap_or(hwnd);
-    let (ox, oy) = wm.window_origin(target).unwrap_or((0, 0));
-    (x - ox, y - oy)
+    wm.post_msg(wm.frame_msg_target(frame), WM_ACTIVATE, 1, prev);
 }
 
 /// The PM message for a mouse button press: `WM_BUTTONnDOWN`, or
@@ -2464,20 +2345,6 @@ fn clicks_blocked(shared: &Arc<SharedState>, hwnd: u32) -> bool {
     wm.frame_disabled(wm.find_frame_for_hwnd(hwnd))
 }
 
-/// The built-in control held down with mouse button 1, if any, and the
-/// desktop point `(x, os2_y)` (bottom-left origin) relative to that control.
-fn pressed_control_release(shared: &Arc<SharedState>, x: i32, os2_y: i32) -> Option<(u32, i32, i32)> {
-    let wm = shared.window_mgr.lock_or_recover();
-    let button = wm.pressed_control;
-    if button == 0 { return None; }
-    let frame = wm.find_frame_for_hwnd(button);
-    let f = wm.get_window(frame)?;
-    // Frame-relative, then relative to the frame's surface, then to the button.
-    let (sx, sy) = (x - f.x - frame_border_px(f.frame_flags), os2_y - f.y);
-    let (bx, by, _, _) = wm.get_abs_rect_in_frame(button);
-    Some((button, sx - bx, sy - by))
-}
-
 /// Record what `event` says about the physical keyboard (keys by scan code)
 /// and the pointer position (desktop coordinates, bottom-left origin) on a
 /// desktop `desk_h` pixels tall.
@@ -2499,8 +2366,15 @@ fn track_physical_input(shared: &Arc<SharedState>, event: &Event, desk_h: i32) {
     }
 }
 
-/// Queue pointer message `msg` for window `hwnd` (a frame stands for its
-/// client) in the system input queue, behind the keys typed before it.
+/// Queue pointer message `msg` at desktop point `(x, y)` (bottom-left
+/// origin) in the system input queue, behind the input before it: its
+/// window is chosen when it is read (ADR-0051).
+fn push_pointer(shared: &Arc<SharedState>, msg: u32, x: i32, y: i32, mp2: u32) {
+    shared.window_mgr.lock_or_recover().post_input(InputEvent::Pointer { msg, x, y, mp2 });
+}
+
+/// Queue message `msg` for window `hwnd` (a frame stands for its client) in
+/// the system input queue, behind the input before it.
 fn push_input(shared: &Arc<SharedState>, hwnd: u32, msg: u32, mp1: u32, mp2: u32) {
     shared.window_mgr.lock_or_recover().post_input(InputEvent::Window { hwnd, msg, mp1, mp2 });
 }
@@ -2912,7 +2786,7 @@ mod tests {
             assert!(driver_can_wait(real), "{real}");
         }
     }
-    use super::{route_button1, CHROME_BORDER_W,
+    use super::{CHROME_BORDER_W,
                 SharedState, MutexExt};
     use std::sync::Arc;
     use super::{draw_frame_chrome, FrameChrome, CHROME_TITLE_H, CHROME_BTN_W, CHROME_BTN_GAP,
@@ -3438,6 +3312,16 @@ mod tests {
         assert_eq!(vk(KeyMod::RSHIFTMOD), VK_BACKTAB);
     }
 
+    /// Where a button-1 message at client point `(x, y)` of `frame` goes:
+    /// the built-in control under it, else the frame.
+    fn route_button1(shared: &Arc<SharedState>, frame: u32, x: i32, y: i32) -> (u32, i32, i32) {
+        shared.window_mgr.lock_or_recover().control_under(frame, x, y).unwrap_or((frame, x, y))
+    }
+
+    fn pressed_control_release(shared: &Arc<SharedState>, x: i32, y: i32) -> Option<(u32, i32, i32)> {
+        shared.window_mgr.lock_or_recover().pressed_control_point(x, y)
+    }
+
     /// A std window with one entry field; returns `(shared, frame, client, entry)`.
     fn routed_window(frame_flags: u32) -> (Arc<SharedState>, u32, u32, u32) {
         let loader = crate::loader::Loader::new_mock();
@@ -3468,23 +3352,21 @@ mod tests {
             hbar
         };
         // Client (15, 210) is surface (15, 228): the entry field.
-        assert_eq!(route_button1(&shared, frame, 15, 210, true), ((entry, 5, 10), 0));
+        assert_eq!(route_button1(&shared, frame, 15, 210), (entry, 5, 10));
         // Client (20, -10) is surface (20, 8): on the bar.
-        assert_eq!(route_button1(&shared, frame, 20, -10, true), ((hbar, 20, 6), 0));
+        assert_eq!(route_button1(&shared, frame, 20, -10), (hbar, 20, 6));
         // A hidden bar is not hit.
         shared.window_mgr.lock_or_recover().get_window_mut(hbar).unwrap().visible = false;
-        assert_eq!(route_button1(&shared, frame, 20, -10, false).0, (frame, 20, -10));
+        assert_eq!(route_button1(&shared, frame, 20, -10), (frame, 20, -10));
     }
 
     #[test]
     fn button1_is_routed_to_the_control_under_the_pointer() {
         let (shared, frame, _client, entry) = routed_window(0);
-        // On the control: control-relative coordinates, focus untouched here
-        // (the control takes the focus when it handles the message).
-        assert_eq!(route_button1(&shared, frame, 15, 210, true), ((entry, 5, 10), 0));
-        assert_eq!(route_button1(&shared, frame, 15, 210, false), ((entry, 5, 10), 0));
+        // On the control: control-relative coordinates.
+        assert_eq!(route_button1(&shared, frame, 15, 210), (entry, 5, 10));
         // Off the control: the frame gets it unchanged.
-        assert_eq!(route_button1(&shared, frame, 300, 100, true), ((frame, 300, 100), 0));
+        assert_eq!(route_button1(&shared, frame, 300, 100), (frame, 300, 100));
     }
 
     #[test]
@@ -3500,7 +3382,7 @@ mod tests {
     #[test]
     fn a_held_button_gets_the_release_relative_to_itself() {
         let (shared, frame, _client, entry) = routed_window(FCF_SIZEBORDER);
-        assert_eq!(super::pressed_control_release(&shared, 0, 0), None, "no button held");
+        assert_eq!(pressed_control_release(&shared, 0, 0), None, "no button held");
         {
             let mut wm = shared.window_mgr.lock_or_recover();
             let f = wm.get_window_mut(frame).unwrap();
@@ -3509,9 +3391,9 @@ mod tests {
         }
         // Desktop point → frame (100, 50) → surface (inside the border) → control (10, 200).
         let (x, y) = (100 + CHROME_BORDER_W + 10 + 3, 50 + 200 + 4);
-        assert_eq!(super::pressed_control_release(&shared, x, y), Some((entry, 3, 4)));
+        assert_eq!(pressed_control_release(&shared, x, y), Some((entry, 3, 4)));
         // Far away the position is outside the button, so it is not clicked.
-        let (_, bx, by) = super::pressed_control_release(&shared, 0, 0).unwrap();
+        let (_, bx, by) = pressed_control_release(&shared, 0, 0).unwrap();
         assert!(bx < 0 && by < 0);
     }
 
@@ -3520,41 +3402,17 @@ mod tests {
         let (shared, frame, _client, entry) = routed_window(FCF_SIZEBORDER);
         // Client coordinates: the control's left edge is at 10, whatever the
         // border (the client lies inside it).
-        assert_eq!(route_button1(&shared, frame, 10, 200, true), ((entry, 0, 0), 0));
-        assert_eq!(route_button1(&shared, frame, 9, 200, true), ((frame, 9, 200), 0));
+        assert_eq!(route_button1(&shared, frame, 10, 200), (entry, 0, 0));
+        assert_eq!(route_button1(&shared, frame, 9, 200), (frame, 9, 200));
         // A desktop point inside the border is client x 0.
         let (x, y) = {
             let mut wm = shared.window_mgr.lock_or_recover();
             let f = wm.get_window_mut(frame).unwrap();
             (f.x, f.y) = (100, 50);
-            super::pointer_local(&wm, frame, 100 + CHROME_BORDER_W + 10, 50 + 200)
+            wm.pointer_local(frame, 100 + CHROME_BORDER_W + 10, 50 + 200)
         };
         assert_eq!((x, y), (10, 200));
-        assert_eq!(route_button1(&shared, frame, x, y, true), ((entry, 0, 0), 0));
-    }
-
-    #[test]
-    fn click_outside_controls_ends_control_focus() {
-        let (shared, frame, _client, entry) = routed_window(0);
-        shared.window_mgr.lock_or_recover().focus_hwnd = entry;
-        // Releasing the button elsewhere does not change the focus.
-        assert_eq!(route_button1(&shared, frame, 300, 100, false).1, 0);
-        assert_eq!(shared.window_mgr.lock_or_recover().focus_hwnd, entry);
-        // Pressing it does, and reports the control to repaint.
-        assert_eq!(route_button1(&shared, frame, 300, 100, true), ((frame, 300, 100), entry));
-        assert_eq!(shared.window_mgr.lock_or_recover().focus_hwnd, 0);
-        assert_eq!(route_button1(&shared, frame, 300, 100, true).1, 0);
-        // A click in another frame leaves this frame's focus control alone.
-        shared.window_mgr.lock_or_recover().focus_hwnd = entry;
-        let other = {
-            let mut wm = shared.window_mgr.lock_or_recover();
-            let f = wm.create_window("App".into(), 0, 0);
-            let c = wm.create_window("App".into(), f, 0);
-            wm.frame_to_client.insert(f, c);
-            f
-        };
-        assert_eq!(route_button1(&shared, other, 300, 100, true), ((other, 300, 100), 0));
-        assert_eq!(shared.window_mgr.lock_or_recover().focus_hwnd, entry);
+        assert_eq!(route_button1(&shared, frame, x, y), (entry, 0, 0));
     }
 }
 
