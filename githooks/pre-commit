@@ -1,9 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Run the checks inside a transient systemd scope with hard limits, so that a
+# runaway — a test or guest program that keeps starting Warpine processes or
+# eating memory — is stopped by the kernel inside this scope instead of the
+# out-of-memory killer ending unrelated work. Override the limits with
+# WARPINE_TEST_MEMORY_MAX / WARPINE_TEST_TASKS_MAX; without a user systemd
+# instance (CI containers, other systems) the checks run without the caps.
+MEMORY_MAX="${WARPINE_TEST_MEMORY_MAX:-24G}"
+TASKS_MAX="${WARPINE_TEST_TASKS_MAX:-4096}"
+
+if command -v systemd-run >/dev/null 2>&1 \
+    && systemd-run --user --scope --quiet -- true >/dev/null 2>&1; then
+    capped() {
+        systemd-run --user --scope --quiet \
+            -p MemoryMax="$MEMORY_MAX" -p MemorySwapMax=0 -p TasksMax="$TASKS_MAX" \
+            -- "$@"
+    }
+    echo "Checks capped at MemoryMax=$MEMORY_MAX, TasksMax=$TASKS_MAX (systemd scope)."
+else
+    capped() { "$@"; }
+    echo "warning: systemd-run --user is not available; checks run without memory and task caps." >&2
+fi
+
 echo "Running cargo test before commit..."
-cargo test
+capped cargo test
 
 # --all-targets lints the test code too, not only the binaries.
 echo "Running cargo clippy before commit..."
-cargo clippy --all-targets -- -D warnings
+capped cargo clippy --all-targets -- -D warnings

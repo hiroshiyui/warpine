@@ -48,6 +48,11 @@ echo "$((last_ms + 1500)) dump $work/desktop.ppm" >> "$work/session.script"
 echo "$((last_ms + 1600)) quit"                   >> "$work/session.script"
 
 # Pin the US country and codepage: Warpine follows the host locale otherwise.
+# Drive C ($XDG_DATA_HOME/warpine/drive_c) and the session directories
+# ($XDG_RUNTIME_DIR) live in the work directory, never the user's own: some
+# samples create files on drive C.
+mkdir -m 700 "$work/home"
+XDG_DATA_HOME="$work/home" XDG_RUNTIME_DIR="$work/home" \
 SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy RUST_LOG=error WARPINE_COUNTRY=1 WARPINE_CODEPAGE=437 \
 WARPINE_GUI_SCRIPT="$work/session.script" \
     timeout 60 "$bin" "$sample" >/dev/null 2>"$work/stderr.log" || {
