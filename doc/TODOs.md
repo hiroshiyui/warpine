@@ -77,6 +77,9 @@ Open work is grouped by topic:
 | Presentation Manager | GPI regions, clipping, areas, paths, polygons and curves (ADR-0024) | Complete | `src/gui/region.rs`, `src/loader/pm_region.rs`, `src/loader/pm_area.rs`, `samples/pm_region_test/` |
 | Presentation Manager | Combination boxes, spin buttons, owner drawing (ADR-0025) | Complete | `src/loader/pm_combo.rs`, `src/loader/pm_spin.rs`, `src/loader/pm_owner.rs`, `samples/pm_combo_spin_test/` |
 | Presentation Manager | PM hooks and messaging calls (`WinSetHook`, `WinBroadcastMsg` …; ADR-0026), frame controls and accelerator tables, presentation parameters, static and class styles, `WinLockWindowUpdate`, sliders and value sets | Complete | `src/loader/pm_hook.rs`, `pm_message.rs`, `pm_frame.rs`, `pm_accel.rs`, `pm_presparam.rs`, `pm_static.rs`, `pm_paint_style.rs`, `pm_slider.rs`, `pm_valueset.rs`; samples `pm_msg_hook_test`, `pm_frame_accel_test`, `pm_presparam_test`, `pm_slider_valueset_test` |
+| Presentation Manager | GPI presentation-space state, coordinate spaces and transforms (ADR-0027), text layout and character attributes | Complete | `src/loader/pm_psstate.rs`, `pm_xform.rs`, `pm_coords.rs`, `pm_text.rs`, `src/gui/glyph_transform.rs`; samples `pm_xform_test`, `pm_textpos_test` |
+| Presentation Manager | `WinStartApp`, switch list, atom tables, DDE (per process, ADR-0030); standard file and font dialogs, PMSPL / PMCTLS module slots, printing stubs (ADR-0029) | Complete | `src/loader/pm_startapp.rs`, `pm_switch.rs`, `pm_atom.rs`, `pm_dde.rs`, `pm_filedlg.rs`, `pm_fontdlg.rs`, `pmspl.rs`; samples `pm_switch_dde_test`, `pm_stddlg_test` |
+| Core | MSG `DosInsertMessage` / `DosQueryMessageCP`, MSG ordinals from `os2386.lib`; process nesting limit (ADR-0028) | Complete | `src/loader/msgcalls.rs`, `src/loader/inherit.rs`; sample `nest_test` |
 | Project | Development history (the baseline phases 1–7) | Complete | [Developer Guide §20](developer_guide.md#appendix-development-phases) |
 
 ---
@@ -164,22 +167,7 @@ No open items.
 
 Small but fundamental gaps between Warpine and what OS/2 2.0 offered a 32-bit program, found on 2026-11-18 by searching `src/` for each API name. Large subsystems (DOS and Windows sessions, the Workplace Shell, containers, notebooks, drag and drop, printing, the help viewer, REXX) are tracked elsewhere.
 
-### Kernel (DOSCALLS)
-
-- [ ] **Messages** — `DosInsertMessage`, `DosQueryMessageCP`
-
-### GPI
-
-- [ ] **State and coordinate spaces** — `GpiSavePS` / `GpiRestorePS` / `GpiResetPS`, `GpiSetAttrs`, `GpiSetPageViewport`, `GpiSetDefaultViewMatrix`, `GpiConvert`, model transforms
-- [ ] **Text layout** — `GpiCharStringPos`, `GpiQueryCharStringPos`, `GpiQueryWidthTable`, character angle and shear
-
-### System DLLs not present at all
-
-- [ ] **PMSHAPI** — `WinStartApp`, the switch list (`WinAddSwitchEntry`, `WinCreateSwitchEntry`, `WinQuerySwitchList`)
-- [ ] **Atoms and DDE** — `WinCreateAtomTable`, `WinAddAtom`, `WinFindAtom`, `WinQueryAtomName`; `WinDdeInitiate` / `WinDdePostMsg`
-- [ ] **Standard dialogs** — `WinFileDlg`, `WinFontDlg`
-- [ ] **Printing stubs** — the spooler (`SplQmOpen`, …) reporting no printers, `DevEscape`, `DevPostDeviceModes`
-
+All items of this list are implemented (five batches, 2026-11-18): kernel thread control, signals, named pipes and child inheritance; PM window manager, messaging and hooks, frames, presentation parameters; built-in controls up to sliders and value sets; GPI regions, clipping, areas, paths, state, coordinate spaces and text layout; PMSHAPI applications and switch list, atoms, DDE, MSG, the standard dialogs and printing stubs. What each batch left open is listed below.
 
 ### Follow-ups of the first parity batch
 
@@ -195,13 +183,17 @@ Small but fundamental gaps between Warpine and what OS/2 2.0 offered a 32-bit pr
 - [ ] **Window-lookup, input-state and colour follow-ups** — the desktop background, menus and control faces should read `SYSCLR_*` too; a guest-callable window procedure for built-in classes (subclassing through `WinQueryClassInfo` / `WinSubclassWindow` keeping their behaviour); a synchronous key state per queue (one per process now); CapsLock / NumLock toggle state from the host at start; dialogs placed under a client window positioned frame-relative by `WinSetWindowPos`; disabled buttons not drawn greyed. Unverified: `WinWindowFromPoint` skipping hidden but not disabled windows and testing only the Z-order on the desktop, the `PMERR_*` codes chosen for bad counts / pointers / keys / `cchMax`, `WinEnumDlgItem` eligibility (visible and enabled, `WS_TABSTOP` for tab items), the class styles and window procedure `WinQueryClassInfo` reports for built-in classes, case-sensitive class names, `HWND_DESKTOP` from `WinQueryDesktopWindow`, a double click counting as a press, `PMERR_NO_MSG_QUEUE` from `WinQueryMsgPos` / `WinQueryMsgTime`, `WM_SYSCOLORCHANGE` posted rather than sent, `LCOL_PURECOLOR` ignored
 - [ ] **Signal follow-ups** — Ctrl+C / Ctrl+Break typed at the keyboard as `XCPT_SIGNAL_INTR` / `BREAK`; `XCPT_SIGNAL_KILLPROC` from `DosKillProcess` (with exit lists and `TC_KILLPROCESS`); interrupting thread 1 while it is blocked in an API call (the call finishes first now); must-complete sections (`DosEnterMustComplete`); `ERROR_INVALID_PROCID` handling for PM programs; a GDB stop request kicking the vCPUs
 - [ ] **Pipe follow-ups** — `DosSetNPipeSem` / `DosQueryNPipeSemState`, `DosRawReadNPipe` / `DosRawWriteNPipe`; named shared memory across processes (`\SHAREMEM\`, needed for 4OS2 pipes into its internal commands); echo of piped standard input; session pipe directories left behind by a killed Warpine process
-- [ ] **Watcom `argv`** — the Open Watcom C runtime reads the command line from the entry stack slot `[esp+12]`, where Warpine puts the environment pointer, so `argv` stays empty although `pib_pchcmd` is right; find a public description of the LX entry stack before changing the layout
+- [ ] **Watcom `argv`** — the Open Watcom C runtime reads the command line from the entry stack slot `[esp+12]`, where Warpine puts the environment pointer, so `argv` stays empty although `pib_pchcmd` is right (this is why a self-starting sample ran away on 2026-11-18, ADR-0028; until it is fixed, samples with a child mode read `pib_pchcmd`); find a public description of the LX entry stack before changing the layout
 - [ ] **GPI follow-ups** — `GpiSetLineEnd` / `GpiSetLineJoin` (strokes use square ends and joins), outline-font text inside paths, elliptic, rounded-rectangle and polygon region constructors (`GpiCreateEllipticRegion` …), GPI window origins for child-window presentation spaces
 - [ ] **Control follow-ups** — menus: `WM_MEASUREITEM` for owner-drawn items and redrawing on highlight changes; `WM_MEASUREITEM` on deletion and partial `WM_DRAWITEM` (`fsStateOld`); whether a dropped combination-box list may reach outside its parent window (unverified; ADR-0025); unverified spin-button wrap at the limits and case-insensitive array matching
 - [ ] **Hook and messaging follow-ups** — `HK_MSGFILTER` in the modal loops (`MSGF_DIALOGBOX`, `MSGF_MESSAGEBOX`, `MSGF_TRACK`; a call chain inside `setup_dlg_dispatch`), the help hook of a message box, journal hooks and the other hook types (stored, never called), hooks across OS/2 processes (ADR-0026), sent messages processed on the receiving thread (so `WinInSendMsg` answers there), `WinQueryQueueStatus` / `WinSetMsgInterest`; frame windows carry the client's window procedure, so a `BMSG_FRAMEONLY` send reaches the client procedure with the frame's handle
 - [ ] **Frame follow-ups** — send `WM_QUERYFRAMECTLCOUNT` / `WM_FORMATFRAME` / `WM_CALCFRAMERECT` to subclassed frame procedures during layout; `WinCreateWindow(WC_FRAME)` without frame controls or a client is not composited; `QWS_FLAGS` (`FF_FLASHWINDOW` …); the alarm of `WinFlashWindow`; `WM_MINMAXFRAME` from `WinSetMultWindowPos`
 - [ ] **Presentation-parameter and painting follow-ups** — `SS_TEXT` with `DT_WORDBREAK`; sending `WM_PRESPARAMCHANGED` instead of posting it; `PP_HILITE*` / `PP_DISABLED*` colours; presentation parameters for title bars and menus; row heights that follow a larger `PP_FONTNAMESIZE`; sliders and value sets ignore presentation parameters; `SS_ICON` / `SS_BITMAP` from the dialog's own module; locking one window instead of its whole frame; `WS_CLIPSIBLINGS` / `WS_PARENTCLIP` clipping; `CS_MOVENOTIFY` / `WM_MOVE`; `WinEnableWindowUpdate` (a stub)
 - [ ] **Slider and value-set follow-ups** — dragging the arm with button 2, `WC_CIRCULARSLIDER`; value-set drag and drop (`VN_INITDRAG` / `VN_DRAGOVER` / `VN_DROP` / `VN_DROPHELP`), `VN_HELP`, `VDA_ITEMBACKGROUND` / `VDA_SURROUNDING`; a `wrc` dialog with `CTLDATA` in a sample; all sizes and colours are Warpine's own (unverified)
+- [ ] **GPI state, coordinate and text follow-ups** — `GpiSetAttrs` / `GpiQueryAttrs` accept but ignore the character bundle's angle, shear, direction, alignment and extra fields (`pm_psstate.rs` → `PresentationSpace::text`); geometric line widths, glyphs, the character box and blitted images are not scaled or rotated by the transforms; rotated viewing limits and clip rectangles become bounding boxes; separate colour and mix per primitive type; segments (`GpiSetSegmentTransformMatrix`, `GpiCallSegmentMatrix`); `GpiSetDefViewingLimits` / `GpiSetDefAttrs`; whether `WinDrawText` / `WinFillRect` follow the transforms; `GpiCharBox` width scaling and `GpiQueryCharBox`; `GpiTabbedCharStringAt`; image fonts ignoring angle and shear under `CM_MODE1`; text inside path and area brackets
+- [ ] **Application, switch-list, atom and DDE follow-ups** — the switch list, system atoms and DDE across Warpine processes (a session-wide host channel and probably a shared desktop; ADR-0030); `WinStartApp` `SAF_MINIMIZED` / `SAF_MAXIMIZED` / `SAF_BACKGROUND`, `swpInitial` and the title, ending `SAF_STARTCHILDAPP` programs with their parent; `WinSwitchToProgram` restoring minimized frames; switch-list titles following `WinSetWindowText`; `WinQuerySessionTitle`, `WinQueryTaskTitle` / `WinQueryTaskSizePos`, `WinSwitchProgramRegister`; reading real `.MSG` files
+- [ ] **Standard dialog and printing follow-ups** — `FDM_FILTER` / `FDM_VALIDATE` / `FDM_ERROR` and `FNTM_*` sent synchronously to a subclassing procedure (a call chain, ADR-0026); the read-only check box, an error box for bad names, overwrite confirmation on Save As; emphasis in the font sample; `WinRegisterCircularSlider` (PMCTLS 24); a PMCTLS section for `doc/os2_ordinals.md`; real printing (a PostScript / PDF spooler)
+- [ ] **CONFIG.SYS follow-ups** — confirm the `THREADS=` minimum (sources say 32 or 64; 64 here) and the parsing rules (duplicates, comments) against the IBM Command Reference; other statements could use `config_sys.rs` (`LIBPATH`, `MAXWAIT`, `SET`, …)
 - [ ] **Consistent process ids** — every Warpine process reports the constant `PROCESS_ID` (42) for itself (PIB, `DosQueryMutexSem`), while a parent numbers its children from 100 (`ProcessManager::add_child`), so a child's own id differs from the one its parent holds (ADR-0020); give each process a unique id that the parent passes to the child (and `DosGetInfoBlocks`' `pib_ulppid`)
 - [ ] **Help viewer** — an INF / HLP reader (the IPF format is not published by IBM: check osFree / NewView descriptions for clean-room use first), `RT_HELPTABLE` / `RT_HELPSUBTABLE`, F1 → `WM_HELP` → the help-table panel, the `HM_*` notifications back to the program, the `Ddf*` calls
 
@@ -290,7 +282,23 @@ targets: their internal APIs carry no stability promise.
 
 ## Long-term
 
+### Session desktop server (prerequisite for cross-process PM and the WPS)
+
+Each OS/2 process is its own Warpine host process (ADR-0020) with its own SDL window and PM desktop, so window handles, z-order, focus, the switch list, system atoms and DDE stay inside one process (ADR-0030), and a program started with `WinStartApp` opens a second desktop window.
+
+- [ ] **One desktop per session** — one Warpine process (or a small server) owns the SDL window, the compositor, input routing and a session-wide window table; the other Warpine processes of the session connect over a private socket in the session directory (as clients to an X server or Wayland compositor), send their frame surfaces and window-manager requests, and receive their input and messages
+- [ ] **Session-wide window handles** — unique across processes, so cross-process `WinSendMsg` / `WinPostMsg`, `WinQueryWindowProcess`, z-order and focus between programs work
+- [ ] **Shared shell services on top** — one switch list and Ctrl+Esc window list, the system atom table, DDE between programs, `WinStartApp` children on the same desktop (supersedes ADR-0030)
+- [ ] **Decisions to record** — the protocol and its security (a private, mode-0700 socket; every message from a client treated as hostile), what happens when the server process ends, and whether this reverses ADR-0020 for PM programs; an ADR before implementation
+
+### Cross-process shared memory
+
+- [ ] **Named and giveable shared memory between Warpine processes** — `DosAllocSharedMem("\SHAREMEM\…")` / `DosGetNamedSharedMem`, `DosGiveSharedMem` / `DosGetSharedMem` to another process: the same host memory (e.g. a `memfd` in the session directory) registered as a KVM memory slot in every process that uses it, at the same guest address in each (OS/2's shared arena); needed for 4OS2 pipes into its internal commands and for DDE data between programs
+- [ ] **Decisions to record** — the guest address range reserved for the shared arena in every process, how address agreement is kept across processes, lifetime and reference counting (a killed process must not leak or corrupt shared objects), bounds on size and count, and the hypervisor-escape review of mapping host memory into several VMs; an ADR before implementation
+
 ### SOM / Workplace Shell
+
+The Workplace Shell is an ordinary PM application on top of the session desktop server above: its folders and the programs it starts must share one desktop.
 
 The Workplace Shell (WPS) is built entirely on IBM's System Object Model (SOM).
 Multi-year effort; depends on the Presentation Manager work above.
