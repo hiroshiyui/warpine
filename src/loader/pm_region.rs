@@ -4,9 +4,15 @@
 //!
 //! A region (`HRGN`) is a [`Region`] (`gui/region.rs`: y-bands of x spans,
 //! PM coordinates, exclusive at the right and top) kept in
-//! [`RegionTable`] (`WindowManager::regions`). Warpine has no transforms,
-//! so world, device and region coordinates of a presentation space are the
-//! pels of the surface it draws into.
+//! [`RegionTable`] (`WindowManager::regions`). Regions are in device
+//! coordinates, the pels of the surface a presentation space draws into
+//! (`GpiCreateRegion`, `GpiPtInRegion`, `GpiPaintRegion` …). The clip
+//! rectangle calls (`GpiIntersectClipRectangle`,
+//! `GpiExcludeClipRectangle`), `GpiOffsetClipRegion` and `GpiQueryClipBox`
+//! take or report world coordinates, mapped through the PS's transforms
+//! (`pm_xform.rs`; a rotated rectangle becomes its upright bounding box,
+//! Warpine's approximation). The viewing limits and the graphics field
+//! clip too (`CoordState::device_limits`).
 //!
 //! - `GpiCreateRegion` / `GpiSetRegion` take the union of `RECTL`s (left
 //!   and bottom edges in, right and top out); `GpiCombineRegion`
@@ -156,6 +162,12 @@ impl WindowManager {
             (None, None) => None,
             (Some(r), None) | (None, Some(r)) => Some(r),
             (Some(a), Some(b)) => Some(Region::combine(&a, &b, SetOp::And).map(Arc::new).unwrap_or(a)),
+        };
+        // Viewing limits and graphics field (pm_xform.rs).
+        let clip = match (clip, ps.coords.device_limits()) {
+            (clip, None) => clip,
+            (None, Some(r)) => Some(Arc::new(Region::rect(r))),
+            (Some(c), Some(r)) => Some(Region::combine(&c, &Region::rect(r), SetOp::And).map(Arc::new).unwrap_or(c)),
         };
         if let Some(ps) = self.ps_map.get_mut(&hps) { ps.clip = clip; }
     }
@@ -498,7 +510,15 @@ impl Loader {
     /// creating one (everything) when the PS has none.
     fn gpi_clip_rectangle(&self, tid: u32, hps: u32, prcl: u32, op: SetOp) -> u32 {
         if !self.check_hps(tid, hps) { return RGN_ERROR; }
-        let rect = match self.read_rectl(prcl).ok_or(PMERR_INV_COORDINATE).and_then(inclusive_rect) {
+        // World coordinates: the device bounding box of the mapped corners.
+        let xform = self.ps_xform(hps);
+        let to_device = |r: Rectl| -> Result<Rectl, u32> {
+            if xform.identity { return Ok(r); }
+            if r.x_right < r.x_left || r.y_top < r.y_bottom { return Err(PMERR_INV_RECT); }
+            let (x0, y0, x1, y1) = xform.bounds((r.x_left, r.y_bottom), (r.x_right, r.y_top));
+            Ok(Rectl::new(x0, y0, x1, y1))
+        };
+        let rect = match self.read_rectl(prcl).ok_or(PMERR_INV_COORDINATE).and_then(to_device).and_then(inclusive_rect) {
             Ok(r) => Region::rect(r),
             Err(e) => { self.pm_error(tid, e); return RGN_ERROR; }
         };
@@ -530,6 +550,12 @@ impl Loader {
             self.pm_error(tid, PMERR_COORDINATE_OVERFLOW);
             return RGN_ERROR;
         };
+        // A world offset: the device displacement of the mapped vector.
+        let xform = self.ps_xform(hps);
+        let (dx, dy) = if xform.identity { (dx, dy) } else {
+            let (vx, vy) = xform.m.apply_vector((dx as f64, dy as f64));
+            (super::pm_xform::device_coord(vx), super::pm_xform::device_coord(vy))
+        };
         let mut wm = self.shared.window_mgr.lock_or_recover();
         let current = wm.ps_map[&hps].clip_region;
         if let Some(r) = wm.regions.get(current) {
@@ -546,6 +572,13 @@ impl Loader {
         let clip = self.shared.window_mgr.lock_or_recover().effective_clip(hps);
         // Inclusive bounds; nothing left: right < left, top < bottom.
         let b = clip.bounds().map_or(Rectl::new(0, 0, -1, -1), |r| Rectl::new(r.x0, r.y0, r.x1 - 1, r.y1 - 1));
+        // In world coordinates: the bounding box of the device box mapped
+        // back (left as device pels when the transform is singular).
+        let xform = self.ps_xform(hps);
+        let b = if b.x_right < b.x_left { b } else {
+            xform.inverse_bounds((b.x_left, b.y_bottom), (b.x_right, b.y_top))
+                .map_or(b, |(x0, y0, x1, y1)| Rectl::new(x0, y0, x1, y1))
+        };
         if !self.write_rectl(prcl, b) { self.pm_error(tid, PMERR_COORDINATE_OVERFLOW); return RGN_ERROR; }
         rgn_value(clip.complexity())
     }

@@ -20,6 +20,7 @@
 // reference names and pictures them but does not give their bits.
 
 use super::constants::*;
+use super::pm_xform::Affine;
 
 /// 1.0 as a FIXED (16.16) value.
 pub const FIXED_ONE: i32 = 0x0001_0000;
@@ -55,27 +56,54 @@ impl Default for ArcParams {
 }
 
 impl ArcParams {
+    /// The parameters as a linear map.
+    fn lin(&self) -> Lin {
+        Lin { p: self.p as f64, q: self.q as f64, r: self.r as f64, s: self.s as f64 }
+    }
+}
+
+/// A linear map `(u, v) → (p·u + r·v, s·u + q·v)`: the arc parameters,
+/// possibly followed by the linear part of a presentation space's world →
+/// device transform (so arcs are generated in device pels, `*_mapped`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Lin {
+    pub p: f64,
+    pub q: f64,
+    pub r: f64,
+    pub s: f64,
+}
+
+impl Lin {
     /// Apply the transform to `(u, v)` (no translation).
     fn map(&self, (u, v): (f64, f64)) -> (f64, f64) {
-        (self.p as f64 * u + self.r as f64 * v, self.s as f64 * u + self.q as f64 * v)
+        (self.p * u + self.r * v, self.s * u + self.q * v)
     }
 
     fn det(&self) -> f64 {
-        self.p as f64 * self.q as f64 - self.r as f64 * self.s as f64
+        self.p * self.q - self.r * self.s
     }
 
     /// The inverse transform, if the matrix is invertible.
     fn unmap(&self, (x, y): (f64, f64)) -> Option<(f64, f64)> {
         let d = self.det();
-        (d != 0.0).then(|| ((self.q as f64 * x - self.r as f64 * y) / d,
-                            (-(self.s as f64) * x + self.p as f64 * y) / d))
+        (d != 0.0).then(|| ((self.q * x - self.r * y) / d, (-self.s * x + self.p * y) / d))
     }
 
     /// The longest semi-axis bound: how far a unit-circle point can land.
     fn reach(&self) -> f64 {
-        let col1 = (self.p as f64).hypot(self.s as f64);
-        let col2 = (self.r as f64).hypot(self.q as f64);
+        let col1 = self.p.hypot(self.s);
+        let col2 = self.r.hypot(self.q);
         col1 + col2
+    }
+
+    /// `self` followed by the linear part of `m`.
+    fn then(&self, m: &Affine) -> Lin {
+        Lin {
+            p: m.a * self.p + m.c * self.s,
+            r: m.a * self.r + m.c * self.q,
+            s: m.b * self.p + m.d * self.s,
+            q: m.b * self.r + m.d * self.q,
+        }
     }
 }
 
@@ -101,11 +129,19 @@ fn dedup(mut pts: Vec<(i32, i32)>) -> Vec<(i32, i32)> {
 /// The ellipse of `GpiFullArc`: centre `c`, multiplier `mult`, as a closed
 /// polygon (the first point is not repeated at the end).
 pub fn full_arc(c: (i32, i32), params: ArcParams, mult: f64) -> Vec<(i32, i32)> {
-    let n = point_count(params.reach() * mult, 1.0);
-    let (cx, cy) = (c.0 as f64, c.1 as f64);
+    full_arc_lin((c.0 as f64, c.1 as f64), params.lin(), mult)
+}
+
+/// [`full_arc`] in device pels: centre and ellipse mapped by `m`.
+pub fn full_arc_mapped(m: &Affine, c: (i32, i32), params: ArcParams, mult: f64) -> Vec<(i32, i32)> {
+    full_arc_lin(m.apply((c.0 as f64, c.1 as f64)), params.lin().then(m), mult)
+}
+
+fn full_arc_lin((cx, cy): (f64, f64), lin: Lin, mult: f64) -> Vec<(i32, i32)> {
+    let n = point_count(lin.reach() * mult, 1.0);
     dedup((0..n).map(|i| {
         let t = std::f64::consts::TAU * i as f64 / n as f64;
-        let (x, y) = params.map((mult * t.cos(), mult * t.sin()));
+        let (x, y) = lin.map((mult * t.cos(), mult * t.sin()));
         pel((cx + x, cy + y))
     }).collect())
 }
@@ -113,12 +149,22 @@ pub fn full_arc(c: (i32, i32), params: ArcParams, mult: f64) -> Vec<(i32, i32)> 
 /// The arc of `GpiPartialArc`: from `start` degrees, `sweep` degrees
 /// counter-clockwise (capped at a full turn), first point to last.
 pub fn partial_arc(c: (i32, i32), params: ArcParams, mult: f64, start: f64, sweep: f64) -> Vec<(i32, i32)> {
+    partial_arc_lin((c.0 as f64, c.1 as f64), params.lin(), mult, start, sweep)
+}
+
+/// [`partial_arc`] in device pels: centre and ellipse mapped by `m`.
+pub fn partial_arc_mapped(m: &Affine, c: (i32, i32), params: ArcParams, mult: f64, start: f64, sweep: f64)
+    -> Vec<(i32, i32)>
+{
+    partial_arc_lin(m.apply((c.0 as f64, c.1 as f64)), params.lin().then(m), mult, start, sweep)
+}
+
+fn partial_arc_lin((cx, cy): (f64, f64), lin: Lin, mult: f64, start: f64, sweep: f64) -> Vec<(i32, i32)> {
     let sweep = sweep.clamp(0.0, 360.0);
-    let n = point_count(params.reach() * mult, sweep / 360.0);
-    let (cx, cy) = (c.0 as f64, c.1 as f64);
+    let n = point_count(lin.reach() * mult, sweep / 360.0);
     dedup((0..=n).map(|i| {
         let t = (start + sweep * i as f64 / n as f64).to_radians();
-        let (x, y) = params.map((mult * t.cos(), mult * t.sin()));
+        let (x, y) = lin.map((mult * t.cos(), mult * t.sin()));
         pel((cx + x, cy + y))
     }).collect())
 }
@@ -130,6 +176,20 @@ pub fn partial_arc(c: (i32, i32), params: ArcParams, mult: f64, start: f64, swee
 /// arc and the result is the straight path `p0` → `p1` → `p2` — Warpine's
 /// choice; the first and last points are always `p0` and `p2`.
 pub fn point_arc(p0: (i32, i32), p1: (i32, i32), p2: (i32, i32), params: ArcParams) -> Vec<(i32, i32)> {
+    point_arc_lin(p0, p1, p2, params.lin())
+}
+
+/// [`point_arc`] in device pels: `p0`, `p1`, `p2` are already device
+/// points and the ellipse shape is the arc parameters followed by the
+/// linear part of `m` (an affine map takes the world ellipse through the
+/// three world points to the device ellipse through their images).
+pub fn point_arc_mapped(m: &Affine, p0: (i32, i32), p1: (i32, i32), p2: (i32, i32), params: ArcParams)
+    -> Vec<(i32, i32)>
+{
+    point_arc_lin(p0, p1, p2, params.lin().then(m))
+}
+
+fn point_arc_lin(p0: (i32, i32), p1: (i32, i32), p2: (i32, i32), params: Lin) -> Vec<(i32, i32)> {
     let straight = || dedup(vec![p0, p1, p2]);
     let f = |p: (i32, i32)| (p.0 as f64, p.1 as f64);
     let (Some(a), Some(b), Some(c)) = (params.unmap(f(p0)), params.unmap(f(p1)), params.unmap(f(p2)))

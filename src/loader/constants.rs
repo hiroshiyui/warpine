@@ -623,6 +623,106 @@ pub const DRO_FILL:        u32 = 1;
 pub const DRO_OUTLINE:     u32 = 2;
 pub const DRO_OUTLINEFILL: u32 = 3;
 
+// ── Presentation-space options, state and transforms, <pmgpi.h> ──────────────
+// GpiCreatePS / GpiSetPS / GpiQueryPS flOptions: page units (PS_UNITS),
+// coordinate format (PS_FORMAT), type (PS_TYPE), association (PS_ASSOCIATE).
+pub const PU_ARBITRARY: u32 = 0x0004;
+pub const PU_PELS:      u32 = 0x0008;
+pub const PU_LOMETRIC:  u32 = 0x000C;
+pub const PU_HIMETRIC:  u32 = 0x0010;
+pub const PU_LOENGLISH: u32 = 0x0014;
+pub const PU_HIENGLISH: u32 = 0x0018;
+pub const PU_TWIPS:     u32 = 0x001C;
+pub const GPIF_DEFAULT: u32 = 0;
+pub const GPIF_SHORT:   u32 = 0x0100;
+pub const GPIF_LONG:    u32 = 0x0200;
+pub const GPIT_NORMAL:  u32 = 0;
+pub const GPIT_MICRO:   u32 = 0x1000;
+pub const GPIA_NOASSOC: u32 = 0;
+pub const PS_UNITS:     u32 = 0x00FC;
+pub const PS_FORMAT:    u32 = 0x0F00;
+pub const PS_TYPE:      u32 = 0x1000;
+pub const PS_MODE:      u32 = 0x2000;
+pub const PS_ASSOCIATE: u32 = 0x4000;
+pub const PS_NORESET:   u32 = 0x8000;
+// GpiResetPS flOptions.
+pub const GRES_ATTRS:    u32 = 0x0001;
+pub const GRES_SEGMENTS: u32 = 0x0002;
+pub const GRES_ALL:      u32 = 0x0004;
+// GpiSetAttrs / GpiQueryAttrs primitive types and attribute masks.
+pub const PRIM_LINE:   u32 = 1;
+pub const PRIM_CHAR:   u32 = 2;
+pub const PRIM_MARKER: u32 = 3;
+pub const PRIM_AREA:   u32 = 4;
+pub const PRIM_IMAGE:  u32 = 5;
+pub const LBB_COLOR:         u32 = 0x0001;
+pub const LBB_BACK_COLOR:    u32 = 0x0002;
+pub const LBB_MIX_MODE:      u32 = 0x0004;
+pub const LBB_BACK_MIX_MODE: u32 = 0x0008;
+pub const LBB_WIDTH:         u32 = 0x0010;
+pub const LBB_GEOM_WIDTH:    u32 = 0x0020;
+pub const LBB_TYPE:          u32 = 0x0040;
+pub const LBB_END:           u32 = 0x0080;
+pub const LBB_JOIN:          u32 = 0x0100;
+pub const CBB_COLOR:         u32 = 0x0001;
+pub const CBB_BACK_COLOR:    u32 = 0x0002;
+pub const CBB_MIX_MODE:      u32 = 0x0004;
+pub const CBB_BACK_MIX_MODE: u32 = 0x0008;
+pub const CBB_SET:           u32 = 0x0010;
+pub const CBB_MODE:          u32 = 0x0020;
+pub const CBB_BOX:           u32 = 0x0040;
+pub const CBB_ANGLE:         u32 = 0x0080;
+pub const CBB_SHEAR:         u32 = 0x0100;
+pub const CBB_DIRECTION:     u32 = 0x0200;
+pub const CBB_TEXT_ALIGN:    u32 = 0x0400;
+pub const CBB_EXTRA:         u32 = 0x0800;
+pub const CBB_BREAK_EXTRA:   u32 = 0x1000;
+pub const MBB_COLOR:         u32 = 0x0001;
+pub const MBB_BACK_COLOR:    u32 = 0x0002;
+pub const MBB_MIX_MODE:      u32 = 0x0004;
+pub const MBB_BACK_MIX_MODE: u32 = 0x0008;
+pub const MBB_SET:           u32 = 0x0010;
+pub const MBB_SYMBOL:        u32 = 0x0020;
+pub const MBB_BOX:           u32 = 0x0040;
+pub const ABB_COLOR:         u32 = 0x0001;
+pub const ABB_BACK_COLOR:    u32 = 0x0002;
+pub const ABB_MIX_MODE:      u32 = 0x0004;
+pub const ABB_BACK_MIX_MODE: u32 = 0x0008;
+pub const ABB_SET:           u32 = 0x0010;
+pub const ABB_SYMBOL:        u32 = 0x0020;
+pub const ABB_REF_POINT:     u32 = 0x0040;
+pub const IBB_COLOR:         u32 = 0x0001;
+pub const IBB_BACK_COLOR:    u32 = 0x0002;
+pub const IBB_MIX_MODE:      u32 = 0x0004;
+pub const IBB_BACK_MIX_MODE: u32 = 0x0008;
+// GpiConvert coordinate spaces and transform-matrix options.
+pub const CVTC_WORLD:       u32 = 1;
+pub const CVTC_MODEL:       u32 = 2;
+pub const CVTC_DEFAULTPAGE: u32 = 3;
+pub const CVTC_PAGE:        u32 = 4;
+pub const CVTC_DEVICE:      u32 = 5;
+pub const TRANSFORM_REPLACE: u32 = 0;
+pub const TRANSFORM_ADD:     u32 = 1;
+pub const TRANSFORM_PREEMPT: u32 = 2;
+// Errors of these calls.
+pub const PMERR_INV_COORD_SPACE:         u32 = 0x205A;
+pub const PMERR_INV_GRAPHICS_FIELD:      u32 = 0x207A;
+pub const PMERR_INV_ID:                  u32 = 0x2081;
+pub const PMERR_INV_MATRIX_ELEMENT:      u32 = 0x209B;
+pub const PMERR_INV_OR_INCOMPAT_OPTIONS: u32 = 0x20A9;
+pub const PMERR_INV_PAGE_VIEWPORT:       u32 = 0x20AD;
+pub const PMERR_INV_PRIMITIVE_TYPE:      u32 = 0x20B9;
+pub const PMERR_INV_PS_SIZE:             u32 = 0x20BA;
+pub const PMERR_INV_RESET_OPTIONS:       u32 = 0x20C2;
+pub const PMERR_INV_TRANSFORM_TYPE:      u32 = 0x20D0;
+pub const PMERR_INV_VIEWING_LIMITS:      u32 = 0x20D2;
+pub const PMERR_UNSUPPORTED_ATTR:        u32 = 0x2109;
+pub const PMERR_INV_BACKGROUND_MIX_ATTR: u32 = 0x2045;
+pub const PMERR_INV_LINE_TYPE_ATTR:      u32 = 0x2095;
+pub const PMERR_INV_LINE_WIDTH_ATTR:     u32 = 0x2096;
+pub const PMERR_INV_MIX_ATTR:            u32 = 0x20A3;
+pub const PMERR_INV_PATTERN_ATTR:        u32 = 0x20B0;
+
 // ── Device contexts (<pmdev.h>) ──────────────────────────────────────────────
 pub const OD_INFO:   u32 = 6;
 pub const OD_MEMORY: u32 = 8;

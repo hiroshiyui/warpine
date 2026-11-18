@@ -13,6 +13,7 @@ use super::pm_types::{DeviceContext, DrawTarget};
 use crate::gui::font::{self, FontFamily, FontSpec};
 use crate::gui::surface::{AreaFill, DrawOp, Mix, Pattern, Stroke, MAX_STROKE_WIDTH, SOLID_LINE};
 use super::pm_shapes::{self, ArcParams};
+use super::pm_xform::Xform;
 
 // ── GpiCreateLogFont return values ────────────────────────────────────────────
 const FONT_DEFAULT: u32 = 1; // no FATTRS given: the system default font was used
@@ -60,9 +61,17 @@ pub(super) struct PsTarget {
     /// What drawing is clipped to (clip region and clip path); `None`
     /// draws unclipped.
     pub clip: Option<std::sync::Arc<crate::gui::region::Region>>,
+    /// World → device map of the PS (`pm_xform.rs`); `pos` stays in world
+    /// coordinates, primitives map their points with [`PsTarget::dev`].
+    pub xform: Xform,
 }
 
 impl PsTarget {
+    /// A world point in device pels.
+    pub(super) fn dev(&self, p: (i32, i32)) -> (i32, i32) {
+        self.xform.pt(p)
+    }
+
     /// The outline stroke for lines, box and arc boundaries; `None` for
     /// `LINETYPE_INVISIBLE`.
     pub(super) fn stroke(&self) -> Option<Stroke> {
@@ -141,6 +150,8 @@ impl super::Loader {
             .or_else(|| self.handle_area_call(vcpu_id, ordinal, &arg))
             .or_else(|| self.handle_text_call(vcpu_id, ordinal, &arg))
             .or_else(|| self.handle_print_call(vcpu_id, ordinal, &arg))
+            .or_else(|| self.handle_coords_call(vcpu_id, ordinal, &arg))
+            .or_else(|| self.handle_psstate_call(vcpu_id, ordinal, &arg))
         {
             return ApiResult::Normal(r);
         }
@@ -152,8 +163,14 @@ impl super::Loader {
                 // window DC (draws into the window).
                 let _hab = read_stack(4);
                 let hdc = read_stack(8);
-                let _pszl = read_stack(12);
+                let pszl = read_stack(12);
                 let opts = read_stack(16);
+                // The page size (SIZEL, page units); 0 = the device's.
+                let page = if pszl == 0 { Some((0, 0)) } else { self.read_pointl(pszl) };
+                let Some(page) = page.filter(|&(cx, cy)| cx >= 0 && cy >= 0) else {
+                    self.pm_error(vcpu_id, PMERR_INV_PS_SIZE);
+                    return ApiResult::Normal(GPI_ERROR);
+                };
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 let dc = match hdc {
                     0 => None,
@@ -165,7 +182,10 @@ impl super::Loader {
                 let assoc = opts & GPIA_ASSOC != 0;
                 let hwnd = match dc { Some(DeviceContext::Window(w)) if assoc => w, _ => 0 };
                 let hps = wm.create_ps(hwnd);
-                if assoc && let Some(ps) = wm.ps_map.get_mut(&hps) { ps.hdc = hdc; }
+                if let Some(ps) = wm.ps_map.get_mut(&hps) {
+                    if assoc { ps.hdc = hdc; }
+                    ps.coords = super::pm_xform::CoordState::with_page(opts, page);
+                }
                 // A PS without a window takes the creating thread's queue codepage.
                 let thread_cp = wm.tid_to_hmq.get(&vcpu_id).and_then(|&q| wm.msg_queues.get(&q))
                     .map(|mq| mq.lock_or_recover().codepage);
@@ -237,11 +257,18 @@ impl super::Loader {
                 );
                 let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
                 let (x1, y1) = t.pos;
-                let corners = vec![(x1, y1), (x2, y1), (x2, y2), (x1, y2)];
-                if let Some(r) = self.figure_part(vcpu_id, hps, super::pm_area::Part::Closed(corners)) {
+                // Corners in device pels: a rotated or sheared box is a
+                // general quadrilateral.
+                let corners = t.xform.pts(&[(x1, y1), (x2, y1), (x2, y2), (x1, y2)]);
+                if let Some(r) = self.figure_part(vcpu_id, hps, super::pm_area::Part::Closed(corners.clone())) {
                     return ApiResult::Normal(r);
                 }
-                self.draw_box(&t, (x1, y1, x2, y2), control);
+                if t.xform.axis_aligned() {
+                    let ((dx1, dy1), (dx2, dy2)) = (corners[0], corners[2]);
+                    self.draw_box(&t, (dx1, dy1, dx2, dy2), control);
+                } else {
+                    self.draw_area(&t, corners, control);
+                }
                 ApiResult::Normal(GPI_OK)
             }
             398 => {
@@ -252,12 +279,13 @@ impl super::Loader {
                     self.guest_read::<i32>(pptl).unwrap_or(0),
                     self.guest_read::<i32>(pptl + 4).unwrap_or(0),
                 );
-                if let Some(r) = self.figure_part(vcpu_id, hps, super::pm_area::Part::To(vec![(x2, y2)])) {
+                let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
+                if let Some(r) = self.figure_part(vcpu_id, hps, super::pm_area::Part::To(vec![t.dev((x2, y2))])) {
                     if r == GPI_OK { self.set_current_pos(hps, (x2, y2)); }
                     return ApiResult::Normal(r);
                 }
-                let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
-                let (x1, y1) = t.pos;
+                let world_end = (x2, y2);
+                let ((x1, y1), (x2, y2)) = (t.dev(t.pos), t.dev(world_end));
                 match t.stroke() {
                     Some(s) if s.width == 1 =>
                         self.draw_ps(&t, DrawOp::Line { x1, y1, x2, y2, color: s.color, mix: s.mix, style: s.style }),
@@ -266,7 +294,7 @@ impl super::Loader {
                     }),
                     None => {}
                 }
-                self.set_current_pos(hps, (x2, y2));
+                self.set_current_pos(hps, world_end);
                 ApiResult::Normal(GPI_OK)
             }
             415 => {
@@ -372,6 +400,7 @@ impl super::Loader {
                 let (Some(x), Some(y)) = (self.guest_read::<i32>(pptl), self.guest_read::<i32>(pptl + 4))
                     else { return ApiResult::Normal(GPI_ERROR) };
                 let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
+                let (x, y) = t.dev((x, y)); // world coordinates
                 self.draw_ps(&t, DrawOp::Pel { x, y, color: t.color, mix: t.mix });
                 ApiResult::Normal(GPI_OK)
             }
@@ -383,9 +412,13 @@ impl super::Loader {
                 let pptl = read_stack(8);
                 let (Some(x), Some(y)) = (self.guest_read::<i32>(pptl), self.guest_read::<i32>(pptl + 4))
                     else { return ApiResult::Normal(CLR_NOINDEX as u32) };
+                // The point is in world coordinates.
                 let pel = self.ps_target(hps)
-                    .and_then(|t| self.shared.window_mgr.lock_or_recover().target_surface(t.target))
-                    .and_then(|s| s.lock_or_recover().pel(x, y));
+                    .and_then(|t| {
+                        let (x, y) = t.dev((x, y));
+                        let s = self.shared.window_mgr.lock_or_recover().target_surface(t.target)?;
+                        s.lock_or_recover().pel(x, y)
+                    });
                 let value = pel.and_then(|rgb| self.shared.window_mgr.lock_or_recover()
                     .ps_map.get(&hps).map(|ps| ps.value_of_pel(rgb)));
                 ApiResult::Normal(value.unwrap_or(CLR_NOINDEX as u32))
@@ -623,7 +656,11 @@ impl super::Loader {
                     return ApiResult::Normal(GPI_ERROR);
                 }
                 let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
-                let points = pm_shapes::full_arc(t.pos, t.arc_params, mult);
+                let points = if t.xform.identity {
+                    pm_shapes::full_arc(t.pos, t.arc_params, mult)
+                } else {
+                    pm_shapes::full_arc_mapped(&t.xform.m, t.pos, t.arc_params, mult)
+                };
                 if let Some(r) = self.figure_part(vcpu_id, hps, super::pm_area::Part::Closed(points.clone())) {
                     return ApiResult::Normal(r);
                 }
@@ -642,13 +679,20 @@ impl super::Loader {
                                             pm_shapes::fixed(read_stack(20)));
                 if mult < 0.0 || sweep < 0.0 { return ApiResult::Normal(GPI_ERROR); }
                 let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
-                let arc = pm_shapes::partial_arc(center, t.arc_params, mult, start, sweep);
-                let end = *arc.last().unwrap_or(&t.pos);
+                let world = pm_shapes::partial_arc(center, t.arc_params, mult, start, sweep);
+                let end = *world.last().unwrap_or(&t.pos);
+                // The arc in device pels, generated there (not mapped point
+                // by point) so a scaled-up arc stays smooth.
+                let arc = if t.xform.identity {
+                    world
+                } else {
+                    pm_shapes::partial_arc_mapped(&t.xform.m, center, t.arc_params, mult, start, sweep)
+                };
                 if let Some(r) = self.figure_part(vcpu_id, hps, super::pm_area::Part::To(arc.clone())) {
                     if r == GPI_OK { self.set_current_pos(hps, end); }
                     return ApiResult::Normal(r);
                 }
-                let mut points = vec![t.pos];
+                let mut points = vec![t.dev(t.pos)];
                 points.extend(arc);
                 self.draw_path(&t, points);
                 self.set_current_pos(hps, end);
@@ -662,7 +706,11 @@ impl super::Loader {
                 let (Some(p1), Some(p2)) = (self.read_pointl(pptl), self.read_pointl(pptl.wrapping_add(8)))
                     else { return ApiResult::Normal(GPI_ERROR) };
                 let Some(t) = self.ps_target(hps) else { return ApiResult::Normal(GPI_ERROR) };
-                let path = pm_shapes::point_arc(t.pos, p1, p2, t.arc_params);
+                let path = if t.xform.identity {
+                    pm_shapes::point_arc(t.pos, p1, p2, t.arc_params)
+                } else {
+                    pm_shapes::point_arc_mapped(&t.xform.m, t.dev(t.pos), t.dev(p1), t.dev(p2), t.arc_params)
+                };
                 if let Some(r) = self.figure_part(vcpu_id, hps, super::pm_area::Part::To(path.clone())) {
                     if r == GPI_OK { self.set_current_pos(hps, p2); }
                     return ApiResult::Normal(r);
@@ -818,6 +866,7 @@ impl super::Loader {
         let wm = self.shared.window_mgr.lock_or_recover();
         let target = wm.ps_draw_target(hps)?;
         let ps = wm.ps_map.get(&hps)?;
+        let xform = ps.coords.world_to_device();
         Some(PsTarget {
             target,
             color: ps.color,
@@ -831,11 +880,13 @@ impl super::Loader {
                 rows: pm_shapes::pattern_rows(ps.pattern).unwrap_or(Pattern::SOLID_ROWS),
                 fg: ps.color,
                 bg: ps.back_color,
-                origin: ps.pattern_ref,
+                // The reference point is in world coordinates.
+                origin: xform.pt(ps.pattern_ref),
             },
             arc_params: ps.arc_params,
             line_width_geom: ps.line_width_geom,
             clip: ps.clip.clone(),
+            xform,
         })
     }
 
@@ -943,13 +994,14 @@ impl super::Loader {
             return GPI_ERROR;
         };
         let last = pts[pts.len() - 1];
+        let Some(t) = self.ps_target(hps) else { return GPI_ERROR };
+        let pts = t.xform.pts(&pts);
         if let Some(r) = self.figure_part(tid, hps, super::pm_area::Part::To(pts.clone())) {
             if r == GPI_OK { self.set_current_pos(hps, last); }
             return r;
         }
-        let Some(t) = self.ps_target(hps) else { return GPI_ERROR };
         let mut path = Vec::with_capacity(pts.len() + 1);
-        path.push(t.pos);
+        path.push(t.dev(t.pos));
         path.extend(pts);
         self.draw_path(&t, path);
         self.set_current_pos(hps, last);
@@ -1732,7 +1784,8 @@ mod tests {
     fn test_pmgpi_dispatch_ordinals_match_ordinal_table() {
         let sources = [include_str!("pm_gpi.rs"), include_str!("pm_region.rs"), include_str!("pm_area.rs"),
                        include_str!("pm_text.rs"),
-                       include_str!("pmspl.rs")].concat();
+                       include_str!("pmspl.rs"), include_str!("pm_coords.rs"),
+                       include_str!("pm_psstate.rs")].concat();
         assert_arms_match_ordinal_table(&sources, "Gpi", &[]);
     }
 

@@ -696,11 +696,11 @@ const MOUCALLS_ORDINALS: u32 = 20;
 /// PMWIN ordinals dispatched by `pm_win.rs` (checked against its
 /// `N => { // WinName(` arms by a test).
 const PMWIN_ORDINALS: u32 = 157;
-/// PMGPI ordinals dispatched by `pm_gpi.rs`, `pm_region.rs`, `pm_area.rs`
-/// `pm_text.rs` and `pmspl.rs` (checked against their arms by a test), of which
-/// `PMGPI_STUBS` are stubs (`GpiLoadFonts`, `GpiLoadPublicFonts`,
-/// `GpiUnloadPublicFonts`).
-const PMGPI_ORDINALS: u32 = 121;
+/// PMGPI ordinals dispatched by `pm_gpi.rs`, `pm_region.rs`, `pm_area.rs`,
+/// `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs` (checked against
+/// their arms by a test), of which `PMGPI_STUBS` are stubs (`GpiLoadFonts`,
+/// `GpiLoadPublicFonts`, `GpiUnloadPublicFonts`).
+const PMGPI_ORDINALS: u32 = 145;
 const PMGPI_STUBS: u32 = 3;
 
 /// Ordinals handled by the sub-dispatchers rather than the registry.
@@ -762,7 +762,7 @@ pub fn compat_report() -> String {
                   input, paint, timers, menus, dialogs, controls, clipboard, resources, regions)\n"));
     out.push_str(&format!("  PMGPI     {} implemented, {PMGPI_STUBS} stub  (presentation spaces, colour and mix, \
                   lines, boxes, arcs, text, text layout and character attributes, logical fonts, font metrics, bitmaps, regions, clipping, \
-                  areas, paths, curves)\n", PMGPI_ORDINALS - PMGPI_STUBS));
+                  areas, paths, curves, transforms, save / restore)\n", PMGPI_ORDINALS - PMGPI_STUBS));
     out.push('\n');
 
     // Aggregate statistics
@@ -854,7 +854,8 @@ mod tests {
         assert_eq!(win.len() as u32, super::PMWIN_ORDINALS, "PMWIN_ORDINALS is stale");
         let gpi = dispatched_ordinals(&[include_str!("pm_gpi.rs"), include_str!("pm_region.rs"),
                                         include_str!("pm_area.rs"), include_str!("pm_text.rs"),
-                                        include_str!("pmspl.rs")]);
+                                        include_str!("pmspl.rs"), include_str!("pm_coords.rs"),
+                                        include_str!("pm_psstate.rs")]);
         assert_eq!(gpi.len() as u32, super::PMGPI_ORDINALS, "PMGPI_ORDINALS is stale");
     }
 

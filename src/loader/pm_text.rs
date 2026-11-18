@@ -627,7 +627,34 @@ impl super::Loader {
         let incs = call.increments.as_ref().map(|v| unit_increments(&units, v));
         let lay = layout(&units, incs.as_deref(), &attrs, fb);
         let frame = Frame::new(attrs.angle);
-        let end = if call.options & CHS_LEAVEPOS != 0 { t.pos } else { frame.to_world(start, lay.concat) };
+        // World → device (`pm_xform.rs`): the start point is transformed and
+        // the string is laid out from it in device pels; the glyphs, the
+        // increments and the character box are not scaled, rotated or
+        // sheared by the transforms (Warpine's approximation; character
+        // angle and shear are their own attributes). The new current
+        // position is the device end point back in world coordinates.
+        let world_start = start;
+        let start = if t.xform.identity { start } else { t.xform.pt(start) };
+        let end = if call.options & CHS_LEAVEPOS != 0 {
+            t.pos
+        } else if t.xform.identity {
+            frame.to_world(start, lay.concat)
+        } else {
+            t.xform.inverse_pt(frame.to_world(start, lay.concat)).unwrap_or(world_start)
+        };
+        // The CHS_OPAQUE / CHS_CLIP rectangle is in world coordinates; under
+        // a rotation it becomes its device bounding box.
+        let rect = if t.xform.identity {
+            call.rect
+        } else {
+            call.rect.map(|(l, b, r, tp)| {
+                let pts = t.xform.pts(&[(l, b), (r, b), (r, tp), (l, tp)]);
+                let xs = pts.iter().map(|p| p.0);
+                let ys = pts.iter().map(|p| p.1);
+                (xs.clone().min().unwrap_or(l), ys.clone().min().unwrap_or(b),
+                 xs.max().unwrap_or(r), ys.max().unwrap_or(tp))
+            })
+        };
         // In an area or path bracket text is not drawn (outline-font text
         // in paths is not supported); the position still moves.
         if self.in_bracket(hps) {
@@ -635,8 +662,8 @@ impl super::Loader {
             return GPI_OK;
         }
         // The rectangle: exclusive at the right and top (unverified).
-        let rect_region = call.rect.map(|(l, b, r, tp)| Region::rect(RRect::new(l.min(r), b.min(tp), l.max(r), b.max(tp))));
-        if call.options & CHS_OPAQUE != 0 && let Some((l, b, r, tp)) = call.rect && l != r && b != tp {
+        let rect_region = rect.map(|(l, b, r, tp)| Region::rect(RRect::new(l.min(r), b.min(tp), l.max(r), b.max(tp))));
+        if call.options & CHS_OPAQUE != 0 && let Some((l, b, r, tp)) = rect && l != r && b != tp {
             self.draw_ps(&t, DrawOp::Box {
                 x1: l.min(r), y1: b.min(tp), x2: l.max(r) - 1, y2: b.max(tp) - 1,
                 color: t.back_color, fill: true, mix: crate::gui::surface::Mix::Overpaint,

@@ -57,12 +57,17 @@ const MAX_CURVE_INPUT: i32 = 8190;
 /// A figure: its points and whether it is closed.
 pub type Figure = (Vec<(i32, i32)>, bool);
 
-/// The figures an area or path bracket is building.
+/// The figures an area or path bracket is building, in device pels (each
+/// primitive maps its points with the transforms in force when it is
+/// called).
 #[derive(Clone, Debug, Default)]
 pub struct Figures {
     done: Vec<Figure>,
     current: Vec<(i32, i32)>,
     total: usize,
+    /// The start of the current figure in world coordinates: where a
+    /// closing line leaves the current position.
+    start_world: (i32, i32),
 }
 
 impl Figures {
@@ -70,13 +75,16 @@ impl Figures {
         self.total + n <= MAX_SHAPE_POINTS
     }
 
-    /// Extend the current figure from `from` (the current position)
-    /// through `pts`; false (nothing added) when the bracket would hold too
-    /// many points.
-    pub fn line_to(&mut self, from: (i32, i32), pts: &[(i32, i32)]) -> bool {
+    /// Extend the current figure from `from` (the current position, in
+    /// device pels; `from_world` in world coordinates) through `pts`; false
+    /// (nothing added) when the bracket would hold too many points.
+    pub fn line_to(&mut self, from: (i32, i32), from_world: (i32, i32), pts: &[(i32, i32)]) -> bool {
         let start = usize::from(self.current.is_empty());
         if !self.room(start + pts.len()) { return false; }
-        if self.current.is_empty() { self.current.push(from); }
+        if self.current.is_empty() {
+            self.current.push(from);
+            self.start_world = from_world;
+        }
         for &p in pts {
             if self.current.last() != Some(&p) { self.current.push(p); }
         }
@@ -100,17 +108,19 @@ impl Figures {
         true
     }
 
-    /// Close the current figure; its start point, if there was one.
+    /// Close the current figure; its start point in world coordinates, if
+    /// there was one.
     pub fn close(&mut self) -> Option<(i32, i32)> {
-        let start = *self.current.first()?;
+        self.current.first()?;
         self.done.push((std::mem::take(&mut self.current), true));
-        Some(start)
+        Some(self.start_world)
     }
 
-    /// The start of the current figure when it does not end there.
+    /// The start of the current figure (world coordinates) when it does
+    /// not end there.
     fn open_start(&self) -> Option<(i32, i32)> {
         let (first, last) = (self.current.first()?, self.current.last()?);
-        (first != last).then_some(*first)
+        (first != last).then_some(self.start_world)
     }
 
     pub fn finish(mut self) -> Vec<Figure> {
@@ -141,7 +151,7 @@ pub enum PathState {
     Stroked(Vec<Figure>, u32),
 }
 
-/// What a primitive adds to a bracket's figures.
+/// What a primitive adds to a bracket's figures, in device pels.
 pub(super) enum Part {
     /// Lines from the current position through these points.
     To(Vec<(i32, i32)>),
@@ -179,14 +189,15 @@ impl Loader {
     pub(super) fn figure_part(&self, tid: u32, hps: u32, part: Part) -> Option<u32> {
         let mut wm = self.shared.window_mgr.lock_or_recover();
         let ps = wm.ps_map.get_mut(&hps)?;
-        let from = ps.current_pos;
+        let from_world = ps.current_pos;
+        let from = ps.coords.world_to_device().pt(from_world);
         let figures = match (&mut ps.area, &mut ps.path) {
             (Some(a), _) => &mut a.figures,
             (None, Some(PathState::Open(f))) => f,
             _ => return None,
         };
         let ok = match part {
-            Part::To(pts) => figures.line_to(from, &pts),
+            Part::To(pts) => figures.line_to(from, from_world, &pts),
             Part::Closed(pts) => figures.closed_figure(pts),
             Part::Move => { figures.move_to(); true }
         };
@@ -538,7 +549,7 @@ impl Loader {
             if total > MAX_SHAPE_POINTS { return self.gpi_fail(tid, PMERR_INV_LENGTH_OR_COUNT); }
             let Some(mut pts) = self.read_pointls(n, points) else { return self.gpi_fail(tid, PMERR_INV_LENGTH_OR_COUNT) };
             if i == 0 { pts.insert(0, t.pos); }
-            figures.push((pts, true));
+            figures.push((t.xform.pts(&pts), true));
         }
         let fill = (model & POLYGON_NOFILL == 0).then(|| t.fill());
         let stroke = if options & POLYGON_BOUNDARY != 0 { t.stroke() } else { None };
@@ -568,8 +579,15 @@ impl Loader {
             return self.gpi_fail(tid, PMERR_INV_LENGTH_OR_COUNT);
         }
         if count == 0 { return GPI_OK; }
-        let Some(pts) = self.read_pointls(count as u32, ptr) else { return self.gpi_fail(tid, PMERR_INV_COORDINATE) };
-        let from = self.shared.window_mgr.lock_or_recover().ps_map[&hps].current_pos;
+        let Some(world_pts) = self.read_pointls(count as u32, ptr) else { return self.gpi_fail(tid, PMERR_INV_COORDINATE) };
+        // Curves are affine invariant: flatten them in device pels from the
+        // mapped control points.
+        let (xform, from) = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            let ps = &wm.ps_map[&hps];
+            (ps.coords.world_to_device(), ps.current_pos)
+        };
+        let (pts, from) = (xform.pts(&world_pts), xform.pt(from));
         let path: Vec<(i32, i32)> = match curve {
             Curve::Fillet => super::pm_shapes::poly_fillet(from, &pts),
             Curve::Spline => {
@@ -595,13 +613,13 @@ impl Loader {
                 out
             }
         };
-        let last = pts[pts.len() - 1];
+        let last = world_pts[world_pts.len() - 1];
         let result = match self.figure_part(tid, hps, Part::To(path.clone())) {
             Some(r) => r,
             None => {
                 let Some(t) = self.ps_target(hps) else { return GPI_ERROR };
                 let mut line = Vec::with_capacity(path.len() + 1);
-                line.push(t.pos);
+                line.push(t.dev(t.pos));
                 line.extend(path);
                 self.draw_path(&t, line);
                 GPI_OK

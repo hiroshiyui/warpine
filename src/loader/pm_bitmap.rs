@@ -700,6 +700,20 @@ impl super::Loader {
         GPI_OK
     }
 
+    /// The inclusive device rectangle of an inclusive world target
+    /// rectangle (GpiWCBitBlt, GpiDrawBits), normalised: its corners mapped
+    /// by the PS's transforms. A rotated or sheared target becomes its
+    /// upright bounding box ("if any shear or rotation has occurred … the
+    /// result is a rectangle that bounds the transformed shape"); the
+    /// image itself is not rotated (Warpine's approximation).
+    fn world_target(&self, hps: u32, rect: Rect64) -> Rect64 {
+        let (x0, y0, x1, y1) = normalized(rect);
+        let xform = self.ps_xform(hps);
+        if xform.identity { return (x0, y0, x1, y1); }
+        let (a, b, c, d) = xform.bounds((x0 as i32, y0 as i32), (x1 as i32, y1 as i32));
+        normalized((a as i64, b as i64, c as i64, d as i64))
+    }
+
     /// The surface of bitmap `hbm`.
     fn bitmap_surface(&self, hbm: u32) -> Option<SharedSurface> {
         self.shared.window_mgr.lock_or_recover().bitmaps.get(&hbm).map(|b| b.surface.clone())
@@ -739,7 +753,7 @@ impl super::Loader {
         if !(3..=BLT_MAX_POINTS).contains(&count) { return GPI_ERROR; }
         let Some(p) = self.read_points(aptl, count) else { return GPI_ERROR };
         let Some(surface) = self.bitmap_surface(hbm) else { return GPI_ERROR };
-        let (x0, y0, x1, y1) = normalized((p[0].0, p[0].1, p[1].0, p[1].1));
+        let (x0, y0, x1, y1) = self.world_target(hps, (p[0].0, p[0].1, p[1].0, p[1].1));
         let target = (x0, y0, x1 + 1, y1 + 1);
         let src_rect = if count == 3 {
             (p[2].0, p[2].1, p[2].0 + target.2 - x0, p[2].1 + target.3 - y0)
@@ -758,7 +772,7 @@ impl super::Loader {
         let Some(len) = fmt.data_len(fmt.cy) else { return GPI_ERROR };
         let Some(data) = self.guest_read_bytes(bits, len) else { return GPI_ERROR };
         let image = decode_surface(&fmt, &data);
-        let (x0, y0, x1, y1) = normalized((p[0].0, p[0].1, p[1].0, p[1].1));
+        let (x0, y0, x1, y1) = self.world_target(hps, (p[0].0, p[0].1, p[1].0, p[1].1));
         let target = (x0, y0, x1 + 1, y1 + 1);
         let src_rect = if count == 3 {
             (p[2].0, p[2].1, p[2].0 + target.2 - x0, p[2].1 + target.3 - y0)
@@ -1162,6 +1176,38 @@ mod api_tests {
         // Unsupported formats are refused.
         assert_eq!(gpi(&l, 598, &[0, header(&l, 4, 4, 16), 0, 0, 0]), 0);
         assert_eq!(gpi(&l, 598, &[0, header(&l, 0, 4, 24), 0, 0, 0]), 0);
+    }
+
+    /// GpiDrawBits and GpiWCBitBlt targets are world coordinates (mapped by
+    /// the model transform); GpiBitBlt targets are device coordinates.
+    #[test]
+    fn world_targets_follow_the_transforms() {
+        let l = Loader::new_mock();
+        let (hwnd, wps) = window_ps(&l);
+        // 2×2, 1 bit: palette black, black; all pels black.
+        header(&l, 2, 2, 1);
+        l.guest_write_bytes(HDR + 16, &[0; 8]).unwrap();
+        l.guest_write_bytes(DATA, &[0xC0, 0, 0, 0, 0xC0, 0, 0, 0]).unwrap();
+        let hbm = gpi(&l, 598, &[0, HDR, CBM_INIT, DATA, HDR]);
+        // Model transform: scale ×2, move by (10, 0).
+        let m: [i32; 9] = [2 << 16, 0, 0, 0, 2 << 16, 0, 10, 0, 1];
+        for (i, v) in m.iter().enumerate() { l.guest_write::<i32>(TBL + 4 * i as u32, *v).unwrap(); }
+        assert_eq!(gpi(&l, 538, &[wps, 9, TBL, 0]), 1); // GpiSetModelTransformMatrix
+        // World (0,0)–(1,1) inclusive → device (10,0)–(12,2): the corners are points.
+        let p = points(&l, &[(0, 0), (1, 1), (0, 0), (2, 2)]);
+        assert_eq!(gpi(&l, 603, &[wps, DATA, HDR, 4, p, ROP_SRCCOPY, 0]), GPI_OK);
+        let surface = l.shared.window_mgr.lock_or_recover().frame_surface(hwnd).unwrap();
+        let black = |x, y| surface.lock_or_recover().pel(x, y) == Some(0);
+        assert!(black(10, 0) && black(12, 2));
+        assert!(!black(13, 2) && !black(12, 3) && !black(9, 0));
+        // GpiWCBitBlt: world (5,5)–(6,6) → device (20,10)–(22,12).
+        let p = points(&l, &[(5, 5), (6, 6), (0, 0), (2, 2)]);
+        assert_eq!(gpi(&l, 557, &[wps, hbm, 4, p, ROP_SRCCOPY, 0]), GPI_OK);
+        assert!(black(20, 10) && black(22, 12) && !black(23, 12));
+        // GpiBitBlt: device coordinates, the transform does not apply.
+        let p = points(&l, &[(40, 20), (42, 22)]);
+        assert_eq!(gpi(&l, 355, &[wps, 0, 2, p, ROP_ZERO, 0]), GPI_OK);
+        assert!(black(40, 20) && black(41, 21) && !black(42, 21));
     }
 
     /// CBM_INIT from 1-bit data with a colour table; GpiDrawBits and a

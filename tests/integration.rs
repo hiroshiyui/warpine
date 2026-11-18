@@ -1474,6 +1474,25 @@ fn gui_pm_shapes_test_matches_golden() {
         "2500 dump {dump}\n2600 quit\n");
 }
 
+/// pm_xform_test: model transforms (GpiTranslate / GpiScale / GpiRotate,
+/// TRANSFORM_ADD), GpiConvert / GpiConvertWithMatrix, the page viewport,
+/// PU_LOENGLISH page units, clip rectangles and viewing limits in world
+/// coordinates, GpiSavePS / GpiRestorePS / GpiResetPS and attribute
+/// bundles — checked from the guest side with GpiQueryPel and GpiConvert.
+#[test]
+fn gui_pm_xform_test_transforms_and_saves_state() {
+    assert_sample_checks_pass("samples/pm_xform_test/pm_xform_test.exe", "pm_xform_test", 39);
+}
+
+/// The picture half of pm_xform_test: a rosette of rotated squares, an
+/// ellipse scaled from a circle, a sheared box, a star of rotated lines and
+/// a centimetre grid in a PU_LOMETRIC presentation space.
+#[test]
+fn gui_pm_xform_test_matches_golden() {
+    check_gui_golden("pm_xform_test", "samples/pm_xform_test/pm_xform_test.exe",
+        "2500 dump {dump}\n2600 quit\n");
+}
+
 /// pm_region_test: regions (create / combine / query / offset / equal,
 /// GpiQueryRegionRects, paint and frame), clipping (clip rectangles, clip
 /// region ownership, clip box, clip path), areas (alternate / winding /

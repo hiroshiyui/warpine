@@ -275,6 +275,7 @@ pub enum PsOrigin {
     Cached,
 }
 
+#[derive(Clone)]
 pub struct PresentationSpace {
     pub hps: u32,
     pub hwnd: u32,
@@ -346,9 +347,55 @@ pub struct PresentationSpace {
     /// Character attributes of GPI text: angle, shear, direction, extra
     /// spacing, alignment, mode (`pm_text.rs`).
     pub text: super::pm_text::TextAttrs,
+    /// Page units and size, page viewport, transforms, viewing limits and
+    /// graphics field (`pm_xform.rs`, `pm_coords.rs`).
+    pub coords: super::pm_xform::CoordState,
+    /// States saved by `GpiSavePS`, oldest first (`pm_psstate.rs`); the
+    /// saved copies have an empty stack of their own.
+    pub saved: Vec<super::pm_psstate::SavedPs>,
 }
 
 impl PresentationSpace {
+    /// A presentation space with every attribute at its default: drawing
+    /// for window `hwnd` (0 = none) in `codepage` (0 = the process's).
+    pub fn fresh(hps: u32, hwnd: u32, codepage: u32, sys_colors: Arc<super::pm_syscolor::SysColorTable>) -> Self {
+        PresentationSpace {
+            hps,
+            hwnd,
+            color: default_color(super::constants::CLR_DEFAULT as u32),
+            back_color: default_color(super::constants::CLR_BACKGROUND),
+            color_attr: super::constants::CLR_DEFAULT as u32,
+            back_color_attr: super::constants::CLR_BACKGROUND,
+            rgb_mode: false,
+            color_table: std::collections::BTreeMap::new(),
+            line_type: super::constants::LINETYPE_DEFAULT,
+            line_width: super::constants::LINEWIDTH_DEFAULT,
+            line_width_geom: 0,
+            arc_params: super::pm_shapes::ArcParams::default(),
+            pattern: super::constants::PATSYM_DEFAULT,
+            pattern_ref: (0, 0),
+            hdc: 0,
+            bitmap: 0,
+            origin: PsOrigin::Created,
+            mix_mode: super::constants::FM_OVERPAINT,
+            back_mix: super::constants::BM_LEAVEALONE,
+            char_set: 0,
+            char_box: (0, 0),
+            log_fonts: HashMap::new(),
+            current_pos: (0, 0),
+            codepage,
+            sys_colors,
+            clip_region: 0,
+            clip_path: None,
+            clip: None,
+            area: None,
+            path: None,
+            coords: super::pm_xform::CoordState::default(),
+            saved: Vec::new(),
+            text: super::pm_text::TextAttrs::default(),
+        }
+    }
+
     /// Resolve a colour value against this presentation space's colour table.
     pub fn resolve_color(&self, value: u32) -> u32 {
         if let Some(rgb) = self.sys_colors.get(value as i32) {
@@ -730,39 +777,8 @@ impl WindowManager {
     }
     pub fn create_ps(&mut self, hwnd: u32) -> u32 {
         let h = self.next_hps;
-        self.ps_map.insert(h, PresentationSpace {
-            hps: h,
-            hwnd,
-            color: default_color(super::constants::CLR_DEFAULT as u32),
-            back_color: default_color(super::constants::CLR_BACKGROUND),
-            color_attr: super::constants::CLR_DEFAULT as u32,
-            back_color_attr: super::constants::CLR_BACKGROUND,
-            rgb_mode: false,
-            color_table: std::collections::BTreeMap::new(),
-            line_type: super::constants::LINETYPE_DEFAULT,
-            line_width: super::constants::LINEWIDTH_DEFAULT,
-            line_width_geom: 0,
-            arc_params: super::pm_shapes::ArcParams::default(),
-            pattern: super::constants::PATSYM_DEFAULT,
-            pattern_ref: (0, 0),
-            hdc: 0,
-            bitmap: 0,
-            origin: PsOrigin::Created,
-            mix_mode: super::constants::FM_OVERPAINT,
-            back_mix: super::constants::BM_LEAVEALONE,
-            char_set: 0,
-            char_box: (0, 0),
-            log_fonts: HashMap::new(),
-            current_pos: (0, 0),
-            codepage: self.queue_codepage(hwnd).unwrap_or(0),
-            sys_colors: Arc::clone(&self.sys_colors),
-            clip_region: 0,
-            clip_path: None,
-            clip: None,
-            area: None,
-            path: None,
-            text: super::pm_text::TextAttrs::default(),
-        });
+        let codepage = self.queue_codepage(hwnd).unwrap_or(0);
+        self.ps_map.insert(h, PresentationSpace::fresh(h, hwnd, codepage, Arc::clone(&self.sys_colors)));
         self.next_hps += 1;
         h
     }
