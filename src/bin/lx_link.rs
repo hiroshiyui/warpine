@@ -39,6 +39,7 @@ const PMSHAPI_BASE: u32 = 16384;
 const HELPMGR_BASE: u32 = 17408;
 const PMSPL_BASE: u32 = 18432;
 const PMCTLS_BASE: u32 = 19456;
+const WARPINE_BASE: u32 = 20480;
 
 /// Base virtual address of the code (text) object in the generated LX file.
 const CODE_OBJECT_BASE: u32 = 0x0001_0000;
@@ -949,6 +950,7 @@ fn resolve_import(module: &str, ordinal: u32) -> u32 {
         "HELPMGR"  => HELPMGR_BASE,
         "PMSPL"    => PMSPL_BASE,
         "PMCTLS"   => PMCTLS_BASE,
+        "WARPINE"  => WARPINE_BASE,
         _ => {
             eprintln!("warning: unknown import module '{}'", module);
             return MAGIC_API_BASE;

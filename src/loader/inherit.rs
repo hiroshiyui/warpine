@@ -26,6 +26,8 @@
 //   session) is `PROCESS_ID` with parent `NO_PARENT_PROCESS_ID`. Ids come
 //   from a counter in the session's private directory
 //   (`session_threads.rs`), so they are unique within the session.
+// - `WARPINE_CLOCK_OFFSET` — the parent's clock offset (`clock.rs`), so a
+//   `DosSetDateTime` before the start reaches the child (ADR-0039).
 //
 // The server end of a named pipe is not passed on (unverified whether OS/2
 // lets a child serve its parent's instance; Warpine keeps it in the
@@ -235,6 +237,9 @@ pub(crate) fn admit_child(shared: &super::SharedState, cmd: &mut std::process::C
     let pid = shared.allocate_process_id();
     cmd.env(PID_ENV, pid.to_string());
     cmd.env(PPID_ENV, shared.process_id().to_string());
+    // The child's clock starts where this process's is (`clock.rs`); it also
+    // overrides a `WARPINE_CLOCK` start date the child would otherwise reread.
+    cmd.env(super::clock::CLOCK_OFFSET_ENV, shared.clock.offset_ms().to_string());
     Ok(Admission { slot, pid })
 }
 
@@ -688,6 +693,13 @@ mod tests {
         assert_eq!(a.pid, FIRST_CHILD_PROCESS_ID);
         assert_eq!(env_of(&cmd, PID_ENV), Some(a.pid.to_string()));
         assert_eq!(env_of(&cmd, PPID_ENV), Some((PROCESS_ID + 1).to_string()));
+        assert_eq!(env_of(&cmd, super::super::clock::CLOCK_OFFSET_ENV), Some("0".into()));
+        l.shared.clock.set_now_ms(4_102_444_800_000); // 2100-01-01 UTC
+        let mut cmd3 = std::process::Command::new("true");
+        let c = l.admit_child(&mut cmd3).unwrap();
+        let offset: i64 = env_of(&cmd3, super::super::clock::CLOCK_OFFSET_ENV).unwrap().parse().unwrap();
+        assert!((offset - l.shared.clock.offset_ms()).abs() < 1000, "the child gets the offset");
+        l.child_started(c, None);
         let mut cmd2 = std::process::Command::new("true");
         let b = l.admit_child(&mut cmd2).unwrap();
         assert_ne!(a.pid, b.pid);

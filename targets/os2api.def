@@ -21,6 +21,7 @@
 #   HELPMGR   base 17408    (MAGIC_API_BASE + 17408 + ordinal)
 #   PMSPL     base 18432    (MAGIC_API_BASE + 18432 + ordinal)
 #   PMCTLS    base 19456    (MAGIC_API_BASE + 19456 + ordinal)
+#   WARPINE   base 20480    (MAGIC_API_BASE + 20480 + ordinal) — Warpine's own extensions
 
 # ── DOSCALLS ─────────────────────────────────────────────────────────────────
 DOSCALLS.8    DosGetInfoSeg
@@ -357,3 +358,9 @@ PMCTLS.3      WinDefFontDlgProc   # NOTE: from os2386.lib (IMPDEF PMCTLS.3); os2
 PMCTLS.4      WinFileDlg          # NOTE: from os2386.lib (IMPDEF PMCTLS.4); os2_ordinals.md has no PMCTLS section
 PMCTLS.5      WinDefFileDlgProc   # NOTE: from os2386.lib (IMPDEF PMCTLS.5); os2_ordinals.md has no PMCTLS section
 PMCTLS.6      WinFreeFileDlgList  # NOTE: from os2386.lib (IMPDEF PMCTLS.6); os2_ordinals.md has no PMCTLS section
+
+# ── WARPINE (Warpine's own extensions, not an OS/2 module; warpine_api.rs, ADR-0039)
+WARPINE.1     WrpTime64           # NOTE: Warpine extension, not in os2386.lib
+WARPINE.2     WrpGetDateTime64    # NOTE: Warpine extension, not in os2386.lib
+WARPINE.3     WrpLocalTime64      # NOTE: Warpine extension, not in os2386.lib
+WARPINE.4     WrpMakeTime64       # NOTE: Warpine extension, not in os2386.lib

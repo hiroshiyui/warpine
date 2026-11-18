@@ -17,7 +17,7 @@ use log::{debug, info, warn};
 const BUILTIN_MODULES: &[&str] = &[
     "DOSCALLS", "QUECALLS", "PMWIN", "PMGPI", "KBDCALLS",
     "VIOCALLS", "SESMGR", "NLS", "MSG", "MDM", "UCONV", "SO32DLL", "TCP32DLL", "MOUCALLS",
-    "PMSHAPI", "HELPMGR", "PMSPL", "PMCTLS",
+    "PMSHAPI", "HELPMGR", "PMSPL", "PMCTLS", "WARPINE",
 ];
 
 impl super::Loader {
@@ -453,7 +453,7 @@ mod tests {
         let required = ["DOSCALLS", "QUECALLS", "PMWIN", "PMGPI",
                         "KBDCALLS", "VIOCALLS", "SESMGR", "NLS", "MSG", "MDM", "UCONV",
                         "SO32DLL", "TCP32DLL", "MOUCALLS", "PMSHAPI", "HELPMGR",
-                        "PMSPL", "PMCTLS"];
+                        "PMSPL", "PMCTLS", "WARPINE"];
         for m in &required {
             assert!(BUILTIN_MODULES.contains(m),
                     "BUILTIN_MODULES is missing '{}'", m);

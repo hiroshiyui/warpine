@@ -25,7 +25,8 @@
 use tracing::debug;
 
 use super::constants::{NLS_BASE, MSG_BASE, MDM_BASE, UCONV_BASE, SO32DLL_BASE, TCP32DLL_BASE,
-                       PMSHAPI_BASE, HELPMGR_BASE, PMSPL_BASE, PMCTLS_BASE};
+                       PMSHAPI_BASE, HELPMGR_BASE, PMSPL_BASE, PMCTLS_BASE, WARPINE_BASE,
+                       module_base};
 use super::pmspl::SplEnum;
 use super::ApiResult;
 use super::vm_backend::VcpuBackend;
@@ -66,12 +67,15 @@ pub fn find(ordinal: u32) -> Option<&'static ApiEntry> {
 }
 
 /// Look up an entry by module name and function name (linear search).
-/// Used to resolve `ExternalName` LX fixups for registry-based modules.
-/// Returns the ordinal if found, `None` otherwise.
+/// Used to resolve `ExternalName` LX fixups and `DosQueryProcAddr` by name
+/// for registry-based modules. Returns the module's own ordinal (the
+/// registry's flat ordinal less the module base — what `resolve_import`
+/// takes), `None` if not found.
 pub fn find_by_module_and_name(module: &str, name: &str) -> Option<u32> {
+    let base = module_base(module)?;
     REGISTRY.iter()
         .find(|e| e.module == module && e.name == name)
-        .map(|e| e.ordinal)
+        .map(|e| e.ordinal - base)
 }
 
 /// Iterate all registered entries (for compatibility reports, tests, etc.).
@@ -705,6 +709,16 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| l.file_dlg_message(a[0],a[1],a[2],a[3]) },
     ApiEntry { ordinal: PMCTLS_BASE + 6, module: "PMCTLS", name: "WinFreeFileDlgList", argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.win_free_file_dlg_list(a[0])) },
+
+    // ── WARPINE — Warpine's own extensions (base WARPINE_BASE = 20480; warpine_api.rs)
+    ApiEntry { ordinal: WARPINE_BASE + 1, module: "WARPINE", name: "WrpTime64",        argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.wrp_time64(a[0])) },
+    ApiEntry { ordinal: WARPINE_BASE + 2, module: "WARPINE", name: "WrpGetDateTime64", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.wrp_get_date_time64(a[0],a[1])) },
+    ApiEntry { ordinal: WARPINE_BASE + 3, module: "WARPINE", name: "WrpLocalTime64",   argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.wrp_local_time64(a[0],a[1])) },
+    ApiEntry { ordinal: WARPINE_BASE + 4, module: "WARPINE", name: "WrpMakeTime64",    argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.wrp_make_time64(a[0],a[1])) },
 ];
 
 // ── Compatibility report ──────────────────────────────────────────────────────

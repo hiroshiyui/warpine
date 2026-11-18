@@ -21,16 +21,49 @@ pub const PMSHAPI_BASE: u32  = 16384; // 16 * 1024 — profiles (Prf*)
 pub const HELPMGR_BASE: u32  = 17408; // 17 * 1024 — Help Manager
 pub const PMSPL_BASE: u32    = 18432; // 18 * 1024 — spooler (Spl*), no printers
 pub const PMCTLS_BASE: u32   = 19456; // 19 * 1024 — standard file / font dialogs
-pub const STUB_AREA_SIZE: u32 = 20480;
+/// Warpine's own extensions (`WARPINE.DLL`: 64-bit time, `warpine_api.rs`).
+pub const WARPINE_BASE: u32  = 20480; // 20 * 1024
+pub const STUB_AREA_SIZE: u32 = 21504;
+/// QUECALLS ordinals follow DOSCALLS' 1024.
+pub const QUECALLS_BASE: u32 = 1024;
+
+/// The ordinal base of a built-in module in the stub area: the import
+/// `MODULE.n` is the INT 3 stub at `MAGIC_API_BASE + base + n`, and the
+/// registry keys it as `base + n`. `None` for other modules.
+pub fn module_base(module: &str) -> Option<u32> {
+    Some(match module {
+        "DOSCALLS" => 0,
+        "QUECALLS" => QUECALLS_BASE,
+        "PMWIN"    => PMWIN_BASE,
+        "PMGPI"    => PMGPI_BASE,
+        "KBDCALLS" => KBDCALLS_BASE,
+        "VIOCALLS" => VIOCALLS_BASE,
+        "SESMGR"   => SESMGR_BASE,
+        "NLS"      => NLS_BASE,
+        "MSG"      => MSG_BASE,
+        "MDM"      => MDM_BASE,
+        "UCONV"    => UCONV_BASE,
+        "SO32DLL"  => SO32DLL_BASE,
+        "TCP32DLL" => TCP32DLL_BASE,
+        "MOUCALLS" => MOUCALLS_BASE,
+        "PMSHAPI"  => PMSHAPI_BASE,
+        "HELPMGR"  => HELPMGR_BASE,
+        "PMSPL"    => PMSPL_BASE,
+        "PMCTLS"   => PMCTLS_BASE,
+        "WARPINE"  => WARPINE_BASE,
+        _ => return None,
+    })
+}
 
 // Compile-time bounds checks: each module range is 1024 ordinals wide and
-// PMCTLS, the last one, must fit within STUB_AREA_SIZE.
+// WARPINE, the last one, must fit within STUB_AREA_SIZE.
 const _: () = assert!(TCP32DLL_BASE + 1024 <= MOUCALLS_BASE);
 const _: () = assert!(MOUCALLS_BASE + 1024 <= PMSHAPI_BASE);
 const _: () = assert!(PMSHAPI_BASE + 1024 <= HELPMGR_BASE);
 const _: () = assert!(HELPMGR_BASE + 1024 <= PMSPL_BASE);
 const _: () = assert!(PMSPL_BASE + 1024 <= PMCTLS_BASE);
-const _: () = assert!(PMCTLS_BASE + 1024 <= STUB_AREA_SIZE);
+const _: () = assert!(PMCTLS_BASE + 1024 <= WARPINE_BASE);
+const _: () = assert!(WARPINE_BASE + 1024 <= STUB_AREA_SIZE);
 // The INT 3 stub area must not reach the dynamic allocation pool.
 const _: () = assert!(MAGIC_API_BASE + STUB_AREA_SIZE as u64 <= DYNAMIC_ALLOC_BASE as u64);
 // The NE loader addresses stubs with 16-bit offsets.
@@ -802,6 +835,15 @@ pub const ERROR_PROC_NOT_FOUND: u32 = 127;
 pub const ERROR_ENVVAR_NOT_FOUND: u32 = 203;
 pub const ERROR_INIT_ROUTINE_FAILED: u32 = 295;
 pub const ERROR_INVALID_PARAMETER:    u32 = 87;
+/// `DosSetDateTime`: a date or time field out of range (`<bseerr.h>`).
+pub const ERROR_TS_DATETIME:          u32 = 327;
+/// Size of the OS/2 `DATETIME` structure (`<bsedos.h>`).
+pub const DATETIME_SIZE:              u32 = 12;
+/// `DosQueryFileInfo` / `DosSetFileInfo` levels (`<bsedos.h>`).
+pub const FIL_STANDARD:               u32 = 1;
+pub const FIL_QUERYEASIZE:            u32 = 2;
+/// Size of the OS/2 `FILESTATUS3` structure (`<bsedos.h>`).
+pub const FILESTATUS3_SIZE:           u32 = 24;
 pub const ERROR_INVALID_CODE_PAGE:    u32 = 472;
 pub const ERROR_NESTING_NOT_ALLOWED:  u32 = 215;
 /// An NLS table did not fit the caller's buffer (`<bseerr.h>`).

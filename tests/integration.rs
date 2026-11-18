@@ -2003,6 +2003,32 @@ fn built_with_shifted_ow_startup(exe: &str) -> bool {
     std::fs::read(exe).is_ok_and(|b| b.windows(SHIFTED_ARGS.len()).any(|w| w == SHIFTED_ARGS))
 }
 
+/// datetime_test: dates after 2038 (ADR-0039). The session starts at
+/// 2040-03-01 (`WARPINE_CLOCK`) in a fixed zone nine hours east of UTC
+/// (`TZ=JST-9`, no daylight saving): DosGetDateTime / QSV_TIME / the C
+/// runtime's time() past 2038, DosSetDateTime to 2110 (a child started
+/// afterwards inherits it), file times up to 2107 and WARPINE.DLL's 64-bit
+/// time calls. A second run starts on the host's clock.
+#[test]
+fn test_dates_after_2038() {
+    const SAMPLE: &str = "samples/datetime_test/datetime_test.exe";
+    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    let env = [("TZ", "JST-9"), ("WARPINE_CLOCK", "2040-03-01T12:00:00")];
+    let (out, code) = run_sample_args(SAMPLE, &["2040"], 120, &env);
+    assert_eq!(code, 0, "exit code\n{out}");
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("datetime_test: timezone=-540"), "minutes west of UTC\n{out}");
+    assert!(out.contains("datetime_test: start year from WARPINE_CLOCK: ok"), "{out}");
+    assert!(out.contains("datetime_test: child started afterwards sees 2110: ok"), "{out}");
+    let done = out.lines().find(|l| l.starts_with("datetime_test: done ")).expect("done line");
+    let (passed, total) = done["datetime_test: done ".len()..].split_once('/').unwrap();
+    assert_eq!(passed, total, "{out}");
+
+    let (out, code) = run_sample_args(SAMPLE, &[], 120, &[("TZ", "JST-9")]);
+    assert_eq!(code, 0, "host clock\n{out}");
+    assert!(out.contains("datetime_test: done ") && !out.contains("FAIL"), "{out}");
+}
+
 /// argv_test, started with arguments: the C runtime's argc / argv and
 /// environment come from the entry stack ([esp+12] environment, [esp+16]
 /// command line) in the first process and in its DosExecPgm children; every

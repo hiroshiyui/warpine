@@ -1031,6 +1031,18 @@ impl DriveManager {
         self.backend(entry.drive)?.query_file_info(entry.vfs_handle, level)
     }
 
+    /// Set file status by path (`DosSetPathInfo`).
+    pub fn set_path_info(&self, os2_path: &str, level: u32, info: &FileStatus) -> VfsResult<()> {
+        let (drive, rel_path) = self.resolve_path(os2_path)?;
+        self.backend(drive)?.set_path_info(&rel_path, level, info)
+    }
+
+    /// Set file status by open handle (`DosSetFileInfo`).
+    pub fn set_file_info(&self, handle: u32, level: u32, info: &FileStatus) -> VfsResult<()> {
+        let entry = self.file_handles.get(&handle).ok_or(Os2Error::INVALID_HANDLE)?;
+        self.backend(entry.drive)?.set_file_info(entry.vfs_handle, level, info)
+    }
+
     // ── Drive/Directory State ──
 
     /// Get the current drive (0=A, 1=B, 2=C, ...).

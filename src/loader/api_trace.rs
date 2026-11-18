@@ -394,12 +394,21 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         },
 
         // ── PMCTLS (standard dialogs) ──────────────────────────────
-        o if (PMCTLS_BASE..STUB_AREA_SIZE).contains(&o) => match o - PMCTLS_BASE {
+        o if (PMCTLS_BASE..WARPINE_BASE).contains(&o) => match o - PMCTLS_BASE {
             2 => "WinFontDlg",
             3 => "WinDefFontDlgProc",
             4 => "WinFileDlg",
             5 => "WinDefFileDlgProc",
             6 => "WinFreeFileDlgList",
+            _ => "?",
+        },
+
+        // ── WARPINE (Warpine's own extensions) ─────────────────────
+        o if (WARPINE_BASE..STUB_AREA_SIZE).contains(&o) => match o - WARPINE_BASE {
+            1 => "WrpTime64",
+            2 => "WrpGetDateTime64",
+            3 => "WrpLocalTime64",
+            4 => "WrpMakeTime64",
             _ => "?",
         },
 
@@ -428,7 +437,8 @@ pub fn module_for_ordinal(ordinal: u32) -> &'static str {
     else if ordinal < HELPMGR_BASE  { "PMSHAPI" }  // 16384–17407
     else if ordinal < PMSPL_BASE    { "HELPMGR" }  // 17408–18431
     else if ordinal < PMCTLS_BASE   { "PMSPL" }    // 18432–19455
-    else if ordinal < STUB_AREA_SIZE { "PMCTLS" }  // 19456–20479
+    else if ordinal < WARPINE_BASE { "PMCTLS" }    // 19456–20479
+    else if ordinal < STUB_AREA_SIZE { "WARPINE" } // 20480–21503
     else                            { "?" }
 }
 
@@ -731,11 +741,20 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
         },
 
         // ── PMCTLS ────────────────────────────────────────────────────────
-        o if (PMCTLS_BASE..STUB_AREA_SIZE).contains(&o) => match o - PMCTLS_BASE {
+        o if (PMCTLS_BASE..WARPINE_BASE).contains(&o) => match o - PMCTLS_BASE {
             2 => &["hwndP", "hwndO", "pfntd"],
             3 | 5 => &["hwnd", "msg", "mp1", "mp2"],
             4 => &["hwndP", "hwndO", "pfild"],
             6 => &["papszFQFilename"],
+            _ => &[],
+        },
+
+        // ── WARPINE ───────────────────────────────────────────────────────
+        o if (WARPINE_BASE..STUB_AREA_SIZE).contains(&o) => match o - WARPINE_BASE {
+            1 => &["ptime"],
+            2 => &["pdt", "ptime"],
+            3 => &["ptime", "pdt"],
+            4 => &["pdt", "ptime"],
             _ => &[],
         },
 
@@ -993,7 +1012,9 @@ mod tests {
         assert_eq!(module_for_ordinal(PMSPL_BASE),          "PMSPL");
         assert_eq!(module_for_ordinal(PMCTLS_BASE - 1),    "PMSPL");
         assert_eq!(module_for_ordinal(PMCTLS_BASE),         "PMCTLS");
-        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "PMCTLS");
+        assert_eq!(module_for_ordinal(WARPINE_BASE - 1),   "PMCTLS");
+        assert_eq!(module_for_ordinal(WARPINE_BASE),       "WARPINE");
+        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "WARPINE");
         assert_eq!(module_for_ordinal(STUB_AREA_SIZE),     "?");
     }
 

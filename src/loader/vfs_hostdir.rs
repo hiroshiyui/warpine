@@ -26,44 +26,28 @@ use super::vfs::*;
 
 // ── Helper: DOS date/time conversion ──
 
-/// Convert a SystemTime to OS/2 DOS date and time.
+/// A host file time as an OS/2 `FDATE` / `FTIME` pair in local time,
+/// clamped to 1980–2107 (`clock.rs`).
 fn systemtime_to_dos(st: SystemTime) -> (u16, u16) {
-    use std::time::UNIX_EPOCH;
-    let secs = st.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-    // Convert Unix timestamp to broken-down time
-    // Simple conversion: days since epoch → year/month/day
-    let days = (secs / 86400) as i64;
-    let time_of_day = (secs % 86400) as u32;
-    let hours = time_of_day / 3600;
-    let minutes = (time_of_day % 3600) / 60;
-    let seconds = time_of_day % 60;
-
-    // Days since 1970-01-01 → year/month/day
-    // Using a simple algorithm (no leap second handling)
-    let (year, month, day) = days_to_ymd(days);
-
-    // DOS date: bits 15-9 = year-1980, bits 8-5 = month, bits 4-0 = day
-    let dos_year = (year - 1980).max(0) as u16;
-    let dos_date = (dos_year << 9) | ((month as u16) << 5) | (day as u16);
-    // DOS time: bits 15-11 = hour, bits 10-5 = minute, bits 4-0 = seconds/2
-    let dos_time = ((hours as u16) << 11) | ((minutes as u16) << 5) | ((seconds as u16) / 2);
-
-    (dos_date, dos_time)
+    super::clock::system_time_to_fdate(st)
 }
 
-fn days_to_ymd(days_since_epoch: i64) -> (i32, u32, u32) {
-    // Algorithm from http://howardhinnant.github.io/date_algorithms.html
-    let z = days_since_epoch + 719468;
-    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
-    let doe = (z - era * 146097) as u32;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i32 + (era * 400) as i32;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
+/// The access and write times `info` asks to set; `None` when both are
+/// "not changed" (0 / 0). Linux cannot set a creation time, so the
+/// creation date and time are ignored.
+fn requested_file_times(info: &FileStatus) -> Option<fs::FileTimes> {
+    use super::clock::{fdate_request, FileTimeRequest};
+    let mut times = fs::FileTimes::new();
+    let mut any = false;
+    if let FileTimeRequest::Set(t) = fdate_request(info.last_access_date, info.last_access_time) {
+        times = times.set_accessed(t);
+        any = true;
+    }
+    if let FileTimeRequest::Set(t) = fdate_request(info.last_write_date, info.last_write_time) {
+        times = times.set_modified(t);
+        any = true;
+    }
+    any.then_some(times)
 }
 
 /// Build a FileStatus from std::fs::Metadata.
@@ -1059,19 +1043,30 @@ impl VfsBackend for HostDirBackend {
         Ok(metadata_to_file_status(&meta))
     }
 
+    /// Set the access and write times of an open file (`FIL_STANDARD`;
+    /// the attributes and the creation time are not set).
     fn set_file_info(
         &self,
-        _handle: VfsFileHandle,
+        handle: VfsFileHandle,
         _level: u32,
-        _info: &FileStatus,
+        info: &FileStatus,
     ) -> VfsResult<()> {
-        // Stub: setting file info not yet implemented
-        Ok(())
+        let files = self.files.lock().unwrap();
+        let entry = files.get(&handle.0).ok_or(Os2Error::INVALID_HANDLE)?;
+        match requested_file_times(info) {
+            Some(times) => entry.file.set_times(times).map_err(|e| Self::map_io_error(&e)),
+            None => Ok(()),
+        }
     }
 
-    fn set_path_info(&self, _path: &str, _level: u32, _info: &FileStatus) -> VfsResult<()> {
-        // Stub: setting path info not yet implemented
-        Ok(())
+    /// Set the access and write times of a file or directory by path, as
+    /// [`set_file_info`](Self::set_file_info) does.
+    fn set_path_info(&self, path: &str, _level: u32, info: &FileStatus) -> VfsResult<()> {
+        let host_path = self.resolve_existing(path)?;
+        let Some(times) = requested_file_times(info) else { return Ok(()) };
+        File::open(&host_path)
+            .and_then(|f| f.set_times(times))
+            .map_err(|e| Self::map_io_error(&e))
     }
 
     fn get_ea(&self, path: &str, name: &str) -> VfsResult<EaEntry> {

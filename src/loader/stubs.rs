@@ -5,6 +5,7 @@
 
 use log::{debug, warn};
 
+use super::clock;
 use super::constants::*;
 use super::mutex_ext::MutexExt;
 
@@ -404,7 +405,7 @@ impl super::Loader {
             "DOSCALLS", "QUECALLS", "PMWIN", "PMGPI", "KBDCALLS",
             "VIOCALLS", "SESMGR", "NLS", "MSG", "MDM", "UCONV",
             "SO32DLL", "TCP32DLL", "MOUCALLS", "PMSHAPI", "HELPMGR",
-            "PMSPL", "PMCTLS",
+            "PMSPL", "PMCTLS", "WARPINE",
         ];
         let name_upper = name.to_ascii_uppercase();
         let stem = name_upper.strip_suffix(".DLL").unwrap_or(&name_upper);
@@ -549,6 +550,9 @@ impl super::Loader {
             if ordinal != 0 {
                 let thunk = self.resolve_import(&mod_name, ordinal);
                 Some(thunk as u32)
+            } else if !name.is_empty() {
+                // By name: the module's name table or the registry (0 = unknown).
+                Some(self.resolve_import_by_name(&mod_name, &name) as u32).filter(|&a| a != 0)
             } else {
                 None
             }
@@ -669,10 +673,24 @@ impl super::Loader {
         result
     }
 
-    /// DosSetFileInfo (ordinal 218): set file timestamps/attributes.
-    pub fn dos_set_file_info(&self, hf: u32, level: u32, _p_info: u32, _cb_info: u32) -> u32 {
+    /// DosSetFileInfo (ordinal 218): set an open file's times
+    /// (`FIL_STANDARD`, a `FILESTATUS3`): see [`Self::set_file_status`].
+    /// Pipes have no times to set. Level 2 (EAs) is accepted and ignored.
+    pub fn dos_set_file_info(&self, hf: u32, level: u32, p_info: u32, cb_info: u32) -> u32 {
         debug!("  DosSetFileInfo(hf={}, level={})", hf, level);
-        NO_ERROR
+        let status = match self.read_set_status(level, p_info, cb_info) {
+            Ok(Some(status)) => status,
+            Ok(None) => return NO_ERROR,
+            Err(rc) => return rc,
+        };
+        if self.handle_target(hf) == Some(super::doscalls::HandleTarget::Pipe)
+            || hf >= super::managers::PIPE_HANDLE_BASE {
+            return NO_ERROR;
+        }
+        match self.shared.drive_mgr.lock_or_recover().set_file_info(hf, level, &status) {
+            Ok(()) => NO_ERROR,
+            Err(e) => e.0,
+        }
     }
 
     /// DosSetFileMode (ordinal 84): set file attributes.
@@ -682,11 +700,64 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// DosSetPathInfo (ordinal 219): set path timestamps/attributes.
-    pub fn dos_set_path_info(&self, psz_name: u32, level: u32, _p_info: u32, _cb_info: u32, _flag: u32) -> u32 {
+    /// DosSetPathInfo (ordinal 219): set a file's or directory's times by
+    /// name, as `DosSetFileInfo` does. `flOptions` (`DSPI_WRTTHRU`) needs
+    /// nothing on the host.
+    pub fn dos_set_path_info(&self, psz_name: u32, level: u32, p_info: u32, cb_info: u32, _flag: u32) -> u32 {
         let name = self.read_guest_string(psz_name);
         debug!("  DosSetPathInfo('{}', level={})", name, level);
-        NO_ERROR
+        let status = match self.read_set_status(level, p_info, cb_info) {
+            Ok(Some(status)) => status,
+            Ok(None) => return NO_ERROR,
+            Err(rc) => return rc,
+        };
+        match self.shared.drive_mgr.lock_or_recover().set_path_info(&name, level, &status) {
+            Ok(()) => NO_ERROR,
+            Err(e) => e.0,
+        }
+    }
+
+    /// The `FILESTATUS3` a set call at `level` passes, checked: `Ok(None)`
+    /// for level 2 (`FIL_QUERYEASIZE`, EAs — not set here), an error for a
+    /// short buffer, another level or a date or time out of range.
+    ///
+    /// The access and write times are set; a date and time of 0 / 0 leave
+    /// that time unchanged (Control Program Reference). Linux cannot set a
+    /// creation time and the attributes are not set (`DosSetFileMode` is a
+    /// stub too). Unverified: the error OS/2 gives for an invalid date
+    /// (Warpine: `ERROR_INVALID_PARAMETER`).
+    fn read_set_status(&self, level: u32, p_info: u32, cb_info: u32)
+        -> Result<Option<super::vfs::FileStatus>, u32>
+    {
+        match level {
+            FIL_STANDARD => {}
+            FIL_QUERYEASIZE => return Ok(None),
+            _ => return Err(ERROR_INVALID_LEVEL),
+        }
+        if cb_info < FILESTATUS3_SIZE {
+            return Err(ERROR_BUFFER_OVERFLOW);
+        }
+        let b = self.guest_read_bytes(p_info, FILESTATUS3_SIZE as usize).ok_or(ERROR_INVALID_PARAMETER)?;
+        let word = |i: usize| u16::from_le_bytes([b[i], b[i + 1]]);
+        let dword = |i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+        let status = super::vfs::FileStatus {
+            creation_date: word(0),
+            creation_time: word(2),
+            last_access_date: word(4),
+            last_access_time: word(6),
+            last_write_date: word(8),
+            last_write_time: word(10),
+            file_size: dword(12),
+            file_alloc: dword(16),
+            attributes: super::vfs::FileAttribute(dword(20)),
+        };
+        let pairs = [(status.creation_date, status.creation_time),
+                     (status.last_access_date, status.last_access_time),
+                     (status.last_write_date, status.last_write_time)];
+        if pairs.iter().any(|&(d, t)| clock::fdate_request(d, t) == clock::FileTimeRequest::Invalid) {
+            return Err(ERROR_INVALID_PARAMETER);
+        }
+        Ok(Some(status))
     }
 
     /// DosQueryFHState (ordinal 276): get file handle state. Pipe handles
@@ -914,6 +985,8 @@ impl super::Loader {
         if cb_buf < (count * 4) as u32 {
             return ERROR_BUFFER_OVERFLOW;
         }
+        // One reading for both halves, so they cannot straddle a carry.
+        let time = self.shared.clock.now_secs().max(0) as u64;
         for idx in i_start..=i_last {
             let val: u32 = match idx {
                 QSV_MAX_PATH_LENGTH => 260,
@@ -930,8 +1003,10 @@ impl super::Loader {
                 QSV_VERSION_MINOR => OS2_VERSION_MINOR,     // SetOSVersion(): minor≥40 → "4.XX" branch
                 QSV_VERSION_REVISION => 0,
                 QSV_MS_COUNT => ms_count(),
-                QSV_TIME_LOW => unix_time() as u32,
-                QSV_TIME_HIGH => (unix_time() >> 32) as u32,
+                // The session clock (clock.rs): past 2106 the low half wraps
+                // and the high half counts on.
+                QSV_TIME_LOW => time as u32,
+                QSV_TIME_HIGH => (time >> 32) as u32,
                 QSV_TOTPHYSMEM => 128 * 1024 * 1024,
                 QSV_TOTRESMEM => 16 * 1024 * 1024,
                 QSV_TOTAVAILMEM => 96 * 1024 * 1024,
@@ -948,37 +1023,68 @@ impl super::Loader {
         NO_ERROR
     }
 
-    /// DosGetDateTime (ordinal 230): get current date and time.
+    /// DosGetDateTime (ordinal 230): the current date and time of the
+    /// session clock (`clock.rs`) in local time.
+    ///
+    /// `DATETIME` (12 bytes): hours, minutes, seconds, hundredths, day,
+    /// month (UCHARs), year (USHORT), timezone (SHORT, minutes **west** of
+    /// UTC — "positive if it is earlier than GMT", Control Program
+    /// Reference), weekday (UCHAR, 0 = Sunday).
     pub fn dos_get_date_time(&self, p_dt: u32) -> u32 {
         debug!("  DosGetDateTime");
-        if p_dt == 0 { return ERROR_INVALID_FUNCTION; }
-
-        // Use libc to get broken-down time
-        let mut tv = libc::timeval { tv_sec: 0, tv_usec: 0 };
-        unsafe { libc::gettimeofday(&mut tv, std::ptr::null_mut()); }
-        let time_t = tv.tv_sec;
-        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
-        unsafe { libc::localtime_r(&time_t, &mut tm); }
-
-        // OS/2 DATETIME struct layout (12 bytes):
-        //   0: UCHAR hours, 1: UCHAR minutes, 2: UCHAR seconds, 3: UCHAR hundredths
-        //   4: UCHAR day, 5: UCHAR month, 6-7: USHORT year
-        //   8-9: SHORT timezone, 10: UCHAR weekday
-        self.guest_write::<u8>(p_dt, tm.tm_hour as u8);
-        self.guest_write::<u8>(p_dt + 1, tm.tm_min as u8);
-        self.guest_write::<u8>(p_dt + 2, tm.tm_sec as u8);
-        self.guest_write::<u8>(p_dt + 3, (tv.tv_usec / 10000) as u8); // hundredths
-        self.guest_write::<u8>(p_dt + 4, tm.tm_mday as u8);
-        self.guest_write::<u8>(p_dt + 5, (tm.tm_mon + 1) as u8); // tm_mon is 0-based
-        self.guest_write::<u16>(p_dt + 6, (tm.tm_year + 1900) as u16);
-        self.guest_write::<i16>(p_dt + 8, (tm.tm_gmtoff / 60) as i16); // timezone in minutes
-        self.guest_write::<u8>(p_dt + 10, tm.tm_wday as u8);
-        NO_ERROR
+        if p_dt == 0 { return ERROR_INVALID_PARAMETER; }
+        let ms = self.shared.clock.now_ms();
+        let Some(lt) = clock::unix_to_local(ms.div_euclid(1000)) else {
+            return ERROR_INVALID_PARAMETER;
+        };
+        let hundredths = (ms.rem_euclid(1000) / 10) as u8;
+        self.write_datetime(p_dt, &lt, hundredths)
     }
 
-    /// DosSetDateTime (ordinal 292): set system date/time. Stub.
-    pub fn dos_set_date_time(&self, _p_dt: u32) -> u32 {
-        debug!("  DosSetDateTime (stub)");
+    /// Write `lt` as a `DATETIME` at `p_dt`. The year is clamped to the
+    /// `USHORT`.
+    pub(crate) fn write_datetime(&self, p_dt: u32, lt: &clock::LocalTime, hundredths: u8) -> u32 {
+        let mut b = [0u8; DATETIME_SIZE as usize];
+        b[0] = lt.hours;
+        b[1] = lt.minutes;
+        b[2] = lt.seconds;
+        b[3] = hundredths;
+        b[4] = lt.day;
+        b[5] = lt.month;
+        b[6..8].copy_from_slice(&(lt.year.clamp(0, u16::MAX as i32) as u16).to_le_bytes());
+        b[8..10].copy_from_slice(&lt.os2_timezone().to_le_bytes());
+        b[10] = lt.weekday;
+        match self.guest_write_bytes(p_dt, &b) {
+            Some(()) => NO_ERROR,
+            None => ERROR_INVALID_PARAMETER,
+        }
+    }
+
+    /// Read a `DATETIME` at `p_dt`: the date and time and the hundredths,
+    /// `None` when it is not readable.
+    pub(crate) fn read_datetime(&self, p_dt: u32) -> Option<(clock::LocalTime, u8)> {
+        let b = self.guest_read_bytes(p_dt, DATETIME_SIZE as usize)?;
+        let year = i32::from(u16::from_le_bytes([b[6], b[7]]));
+        Some((clock::LocalTime::new(year, b[5], b[4], b[0], b[1], b[2]), b[3]))
+    }
+
+    /// DosSetDateTime (ordinal 292): set the date and time. Warpine cannot
+    /// set the host's clock; it moves the session clock of this process and
+    /// the children it starts afterwards (`clock.rs`, ADR-0039).
+    ///
+    /// A field out of range, or a year outside 1980–9999, is
+    /// `ERROR_TS_DATETIME`. The weekday and time zone are not used (the
+    /// host's time zone stays in force).
+    pub fn dos_set_date_time(&self, p_dt: u32) -> u32 {
+        let Some((lt, hundredths)) = (p_dt != 0).then(|| self.read_datetime(p_dt)).flatten() else {
+            return ERROR_INVALID_PARAMETER;
+        };
+        debug!("  DosSetDateTime({lt:?})");
+        if hundredths >= 100 || !(clock::MIN_SET_YEAR..=clock::MAX_SET_YEAR).contains(&lt.year) {
+            return ERROR_TS_DATETIME;
+        }
+        let Some(secs) = clock::local_to_unix(&lt) else { return ERROR_TS_DATETIME };
+        self.shared.clock.set_now_ms(secs.saturating_mul(1000) + i64::from(hundredths) * 10);
         NO_ERROR
     }
 
@@ -1120,12 +1226,6 @@ pub(super) fn ms_count() -> u32 {
     (ts.tv_sec as u64).wrapping_mul(1000).wrapping_add(ts.tv_nsec as u64 / 1_000_000) as u32
 }
 
-/// `QSV_TIME_LOW`/`QSV_TIME_HIGH`: seconds since 1970-01-01 00:00 UTC.
-fn unix_time() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
 
 #[cfg(test)]
 mod tests {
@@ -1224,7 +1324,7 @@ mod tests {
         let loader = Loader::new_mock();
         let v = query_sys_info(&loader, QSV_TIME_LOW, QSV_TIME_HIGH);
         let guest = (v[1] as u64) << 32 | v[0] as u64;
-        let host = super::unix_time();
+        let host = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
         assert!(host.abs_diff(guest) <= 2, "guest {guest}, host {host}");
         // Well after 2020-01-01, so a wrong index (0) cannot pass.
         assert!(guest > 1_577_836_800);
@@ -1514,6 +1614,34 @@ mod tests {
         assert_eq!(rc2, NO_ERROR);
         let got2 = loader.guest_read::<u32>(pfn_addr).unwrap();
         assert_eq!(got2, (MAGIC_API_BASE as u32) + MDM_BASE + 2);
+    }
+
+    /// DosQueryProcAddr by name on a builtin handle: the registry gives the
+    /// module's own ordinal, added to the module base once (it used to be
+    /// the flat ordinal, so the base was added twice).
+    #[test]
+    fn test_dos_query_proc_addr_builtin_name() {
+        use super::super::mutex_ext::MutexExt;
+        use super::super::constants::{NO_ERROR, ERROR_PROC_NOT_FOUND, MAGIC_API_BASE, WARPINE_BASE, PMSHAPI_BASE};
+        let loader = Loader::new_mock();
+        let name_addr = loader.shared.mem_mgr.lock_or_recover().alloc(32).unwrap();
+        let hmod_addr = loader.shared.mem_mgr.lock_or_recover().alloc(4).unwrap();
+        let pfn_addr = loader.shared.mem_mgr.lock_or_recover().alloc(4).unwrap();
+        let by_name = |module: &[u8], proc_name: &[u8]| {
+            loader.guest_write_bytes(name_addr, module);
+            let _ = loader.dos_load_module(0, 0, name_addr, hmod_addr);
+            let h = loader.guest_read::<u32>(hmod_addr).unwrap();
+            loader.guest_write_bytes(name_addr, proc_name);
+            let rc = loader.dos_query_proc_addr(h, 0, name_addr, pfn_addr);
+            (rc, loader.guest_read::<u32>(pfn_addr).unwrap())
+        };
+        assert_eq!(by_name(b"WARPINE\0", b"WrpTime64\0"),
+                   (NO_ERROR, MAGIC_API_BASE as u32 + WARPINE_BASE + 1));
+        assert_eq!(by_name(b"WARPINE.DLL\0", b"WrpMakeTime64\0"),
+                   (NO_ERROR, MAGIC_API_BASE as u32 + WARPINE_BASE + 4));
+        assert_eq!(by_name(b"PMSHAPI\0", b"WinStartApp\0"),
+                   (NO_ERROR, MAGIC_API_BASE as u32 + PMSHAPI_BASE + 119));
+        assert_eq!(by_name(b"WARPINE\0", b"WrpNoSuchCall\0"), (ERROR_PROC_NOT_FOUND, 0));
     }
 
     #[test]

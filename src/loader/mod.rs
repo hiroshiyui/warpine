@@ -69,6 +69,8 @@ pub mod pm_xform;
 mod pm_coords;
 pub mod pm_psstate;
 mod stubs;
+pub mod clock;
+mod warpine_api;
 pub mod console;
 pub mod ansi;
 mod kbdcalls;
@@ -401,6 +403,9 @@ pub struct SharedState {
     /// Children `DosKillProcess` was used on; whether this process is
     /// being ended from outside (`signals.rs`).
     pub kills: Mutex<signals::KillTable>,
+    /// The process's clock: the host's plus the offset `DosSetDateTime`
+    /// set or the parent passed on (`clock.rs`, ADR-0039).
+    pub clock: clock::SessionClock,
     pub exit_requested: AtomicBool,
     /// A VIO session may switch between its PM window and full screen with
     /// Alt+Home (the program is window-compatible); set by `run_vio_session`.
@@ -520,6 +525,7 @@ impl Loader {
             dos_timers: Default::default(),
             suballoc: Default::default(),
             kills: Default::default(),
+            clock: clock::SessionClock::from_env(),
             exit_requested: AtomicBool::new(false),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),
@@ -622,6 +628,7 @@ impl Loader {
             dos_timers:   Default::default(),
             suballoc:     Default::default(),
             kills:        Default::default(),
+            clock:        Default::default(),
             exit_requested: AtomicBool::new(false),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),
