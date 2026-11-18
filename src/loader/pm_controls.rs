@@ -18,7 +18,7 @@ use super::pm_list::{ListMode, ListSelection};
 use super::pm_types::OS2Message;
 use super::{control_box, control_text, ApiResult, Loader, MutexExt, Painter,
             CONTROL_EMPHASIS_COLOR, CONTROL_FACE_COLOR, CONTROL_FIELD_COLOR, CONTROL_LINE_H,
-            CONTROL_PRESSED_COLOR, CONTROL_TEXT_COLOR, CONTROL_TEXT_INSET};
+            CONTROL_PRESSED_COLOR, CONTROL_TEXT_INSET};
 use crate::gui::font::{self, CjkRegion, FontSpec};
 use crate::gui::surface::DrawOp;
 
@@ -192,7 +192,7 @@ fn draw_edit_line(p: &Painter, (x, y): (i32, i32), view_w: i32, chars: &[char],
     if s < e && y1 <= y2 {
         let (x1, x2) = (x + prefix_w(s), x + prefix_w(e));
         p.fill((x1, y1, x2 - 1, y2), CONTROL_SELECT_COLOR);
-        p.op(DrawOp::Text { x: x1, y, text: chars[s..e].iter().collect(), color: CONTROL_SELECT_TEXT_COLOR, cjk: p.cjk });
+        p.text(x1, y, &chars[s..e].iter().collect::<String>(), CONTROL_SELECT_TEXT_COLOR);
     }
     let caret_x = x + prefix_w(caret?);
     if caret_on && y1 <= y2 {
@@ -307,7 +307,9 @@ impl Loader {
     /// queue's codepage, else the process codepage's), for callers that
     /// already hold the window manager lock.
     fn control_face(&self, wm: &super::pm_types::WindowManager, hwnd: u32) -> FontSpec {
-        system_font(wm.queue_codepage(hwnd).unwrap_or_else(|| self.process_codepage()))
+        let system = system_font(wm.queue_codepage(hwnd).unwrap_or_else(|| self.process_codepage()));
+        // A PP_FONTNAMESIZE face, as `Painter::font` draws it.
+        wm.pres_font(hwnd).map_or(system, |f| FontSpec { cjk: system.cjk, ..f })
     }
 
     /// Queue `msg` for `hwnd` on its message queue.
@@ -360,9 +362,24 @@ impl Loader {
 
     /// Background behind a control: the dialog face inside a dialog, else
     /// the white of a client window.
+    /// A `PP_BACKGROUNDCOLOR` the control inherits comes first
+    /// (`pm_presparam.rs`).
     pub(super) fn control_background(&self, hwnd: u32) -> u32 {
         let wm = self.shared.window_mgr.lock_or_recover();
+        if let Some(rgb) = wm.pres_color(hwnd, super::pm_presparam::PP_BACKGROUNDCOLOR, false) {
+            return rgb;
+        }
         if wm.is_dialog(wm.find_frame_for_hwnd(hwnd)) { CONTROL_FACE_COLOR } else { CONTROL_FIELD_COLOR }
+    }
+
+    /// The face of push button `hwnd` set by presentation parameters:
+    /// `PP_BUTTONBACKGROUNDCOLOR` (inherited), else its own
+    /// `PP_BACKGROUNDCOLOR`. Unverified: which attributes PM's buttons use.
+    fn button_face(&self, hwnd: u32) -> Option<u32> {
+        use super::pm_presparam::{PP_BACKGROUNDCOLOR, PP_BUTTONBACKGROUNDCOLOR};
+        let wm = self.shared.window_mgr.lock_or_recover();
+        wm.pres_color(hwnd, PP_BUTTONBACKGROUNDCOLOR, false)
+            .or_else(|| wm.pres_color(hwnd, PP_BACKGROUNDCOLOR, true))
     }
 
     /// WC_BUTTON: grey face with a border and a centred label. A push button
@@ -379,7 +396,8 @@ impl Loader {
              style & BS_DEFAULT != 0, wm.focus_hwnd == hwnd)
         };
         let push = |flag: bool| push && flag;
-        control_box(p, (x, y, cx, cy), if push(pressed) { CONTROL_PRESSED_COLOR } else { CONTROL_FACE_COLOR });
+        let face = self.button_face(hwnd).unwrap_or(CONTROL_FACE_COLOR);
+        control_box(p, (x, y, cx, cy), if push(pressed) { CONTROL_PRESSED_COLOR } else { face });
         if push(default) {
             p.op(DrawOp::Box { x1: x, y1: y, x2: x + cx, y2: y + cy, color: CONTROL_EMPHASIS_COLOR,
                                fill: false, mix: crate::gui::surface::Mix::Overpaint });
@@ -420,7 +438,7 @@ impl Loader {
         let selected = if hilite {
             0..buf.chars().len()
         } else if focused { relative(buf.selection(), first) } else { 0..0 };
-        control_box(p, (x, y, cx, cy), CONTROL_FIELD_COLOR);
+        control_box(p, (x, y, cx, cy), p.own_bg.unwrap_or(CONTROL_FIELD_COLOR));
         let line_y = y + (cy - CONTROL_LINE_H) / 2;
         let caret_x = draw_edit_line(p, (x + CONTROL_TEXT_INSET + shift, line_y),
                                      view_w, &buf.chars()[first..], selected,
@@ -470,7 +488,7 @@ impl Loader {
             win.top_row = top;
             (buf, top, first, focused, focused && !win.caret_off)
         };
-        control_box(p, (x, y, cx, cy), CONTROL_FIELD_COLOR);
+        control_box(p, (x, y, cx, cy), p.own_bg.unwrap_or(CONTROL_FIELD_COLOR));
         let (caret_line, col) = buf.caret_line();
         let sel = if focused { buf.selection() } else { 0..0 };
         let mut caret_at = None;
@@ -508,7 +526,7 @@ impl Loader {
         };
         let rows = rows_of(cy, row_h);
         let top = listbox_top(top_row, count, rows);
-        control_box(p, (x, y, cx, cy), CONTROL_FIELD_COLOR);
+        control_box(p, (x, y, cx, cy), p.own_bg.unwrap_or(CONTROL_FIELD_COLOR));
         let visible = top..(top + rows).min(count);
         if owner_draw {
             self.queue_list_item_draws(hwnd, visible);
@@ -537,7 +555,7 @@ impl Loader {
         let Some(row) = index.checked_sub(top).filter(|&r| r < rows_of(cy, row_h)) else { return };
         let row_y = y + row_y_of(cy, row, row_h);
         let rect = (x + 1, row_y, x + cx - 1, row_y + row_h - 1);
-        p.fill(rect, if selected { CONTROL_SELECT_COLOR } else { CONTROL_FIELD_COLOR });
+        p.fill(rect, if selected { CONTROL_SELECT_COLOR } else { p.own_bg.unwrap_or(CONTROL_FIELD_COLOR) });
         // The focused list marks its cursor item, in white on a selected row.
         if focused && cursor {
             let color = if selected { CONTROL_SELECT_TEXT_COLOR } else { CONTROL_EMPHASIS_COLOR };
@@ -545,12 +563,8 @@ impl Loader {
         }
         let label = font::fit_text(&item, cx - 2 * CONTROL_TEXT_INSET, p.font());
         if !label.is_empty() {
-            p.op(DrawOp::Text {
-                x: x + CONTROL_TEXT_INSET, y: row_y + (row_h - CONTROL_LINE_H).max(0) / 2,
-                text: label.to_string(),
-                color: if selected { CONTROL_SELECT_TEXT_COLOR } else { CONTROL_TEXT_COLOR },
-                cjk: p.cjk,
-            });
+            p.text(x + CONTROL_TEXT_INSET, row_y + (row_h - CONTROL_LINE_H).max(0) / 2, label,
+                   if selected { CONTROL_SELECT_TEXT_COLOR } else { p.fg });
         }
     }
 
@@ -1929,7 +1943,7 @@ mod tests {
         let row_y = ly + control_row_y(lcy, 1);
         assert_eq!(fills, vec![(lx + 1, row_y, lx + lcx - 1, row_y + CONTROL_LINE_H - 1)]);
         let texts = fx.drawn_texts(list);
-        assert_eq!(texts[0].3, CONTROL_TEXT_COLOR);
+        assert_eq!(texts[0].3, super::super::CONTROL_TEXT_COLOR);
         assert_eq!((texts[1].2.as_str(), texts[1].3), ("Item 1", CONTROL_SELECT_TEXT_COLOR));
 
         // A click on the empty third row or in the margins keeps the selection.

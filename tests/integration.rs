@@ -1890,6 +1890,27 @@ fn gui_pm_combo_spin_test_matches_golden() {
         &format!("{COMBO_SPIN_STEPS}3200 dump {{dump}}\n3300 quit\n"));
 }
 
+/// pm_presparam_test: presentation parameters (WinSetPresParam /
+/// WinQueryPresParam with inheritance and colour indices /
+/// WinRemovePresParam, the PRESPARAMS of WinCreateWindow and of a dialog
+/// template, WM_PRESPARAMCHANGED), built-in controls drawn in them, the
+/// SS_* static styles, class styles (CS_SIZEREDRAW, CS_SYNCPAINT,
+/// CS_CLIPCHILDREN), WM_ERASEBACKGROUND and WinLockWindowUpdate.
+#[test]
+fn gui_pm_presparam_test_checks_presentation_parameters_and_painting() {
+    assert_sample_checks_pass("samples/pm_presparam_test/pm_presparam_test.exe", "pm_presparam_test", 55);
+}
+
+/// pm_presparam_test once checked: red Courier text, the rectangle,
+/// halftone and frame statics, the information icon and the green bitmap,
+/// the yellow button and cyan entry field, the magenta group box, and the
+/// dialog with its red label in the template's smaller font.
+#[test]
+fn gui_pm_presparam_test_matches_golden() {
+    check_gui_golden("pm_presparam_test", "samples/pm_presparam_test/pm_presparam_test.exe",
+                     "2000 dump {dump}\n2100 quit\n");
+}
+
 /// pm_codepage_test: PM text follows the message queue's codepage
 /// (WinSetCp, including CP1004, which DosSetProcessCp refuses), WinQueryCpList
 /// lists the queue codepages, and a presentation space starts with its queue's

@@ -170,8 +170,9 @@ impl super::Loader {
                     }
                     // The client takes flClientStyle (the PM Guide's samples
                     // pass WS_VISIBLE there to "make client window visible").
+                    let class_style = wm.class_window_style(&class_name);
                     if let Some(win) = wm.get_window_mut(h_client) {
-                        win.style = client_style;
+                        win.style = client_style | class_style;
                         win.visible = client_style & WS_VISIBLE != 0;
                     }
                     if let Some(items) = fcf_menu_items {
@@ -197,8 +198,10 @@ impl super::Loader {
                     // The frame is composited once it has a surface.
                     wm.frame_surface(h_frame);
 
-                    // The new client is invalid: it paints on creation.
+                    // The new client is invalid: it paints on creation,
+                    // the frame having it erase its background first.
                     wm.invalidate(h_client, None, false);
+                    wm.queue_erase_background(h_client);
 
                     let pfn_wp = wm.get_window(h_client).map(|w| w.pfn_wp).unwrap_or(0);
                     (h_frame, h_client, pfn_wp)
@@ -1361,7 +1364,7 @@ impl super::Loader {
                 // hwndInsertBehind (+40) — ignored for now
                 let id              = read_stack(44);
                 let p_ctl_data      = read_stack(48);
-                // pPresParams (+52) — ignored
+                let p_pres_params   = read_stack(52);
                 if !self.pm_check_hwnd(vcpu_id, hwnd_parent, false)
                     || !self.pm_check_hwnd(vcpu_id, hwnd_owner, true) {
                     return ApiResult::Normal(0);
@@ -1382,17 +1385,21 @@ impl super::Loader {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
                     let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
                     let h = wm.create_window(class_name.clone(), hwnd_parent, hmq);
+                    // CS_CLIPCHILDREN & co. are window styles too (pm_paint_style.rs).
+                    let class_style = wm.class_window_style(&class_name);
                     if let Some(win) = wm.get_window_mut(h) {
                         win.text = text;
                         win.x = x; win.y = y;
                         win.cx = cx; win.cy = cy;
                         win.id = id;
                         win.owner = hwnd_owner;
-                        win.style = fl_style;
+                        win.style = fl_style | class_style;
                         win.visible = fl_style & WS_VISIBLE != 0;
                     }
                     h
                 };
+                // Presentation parameters, before the window first paints.
+                self.apply_guest_presparams(hwnd, p_pres_params);
                 if class_name == "WC_SCROLLBAR" {
                     self.scrollbar_init(hwnd, p_ctl_data);
                 }
@@ -1487,6 +1494,23 @@ impl super::Loader {
                     }
                 }
                 ApiResult::Normal(1)
+            }
+            // ── Presentation parameters (pm_presparam.rs) ──
+            938 => {
+                // WinSetPresParam(HWND hwnd, ULONG id, ULONG cbParam, PVOID pbParam) -> BOOL
+                self.win_set_pres_param(vcpu_id, read_stack(4), read_stack(8), read_stack(12), read_stack(16))
+            }
+            939 => {
+                // WinQueryPresParam(HWND hwnd, ULONG id1, ULONG id2, PULONG pulId, ULONG cbBuf, PVOID pbBuf, ULONG fs) -> ULONG
+                self.win_query_pres_param(vcpu_id, std::array::from_fn(|i| read_stack(4 + 4 * i as u64)))
+            }
+            940 => {
+                // WinRemovePresParam(HWND hwnd, ULONG id) -> BOOL
+                self.win_remove_pres_param(vcpu_id, read_stack(4), read_stack(8))
+            }
+            784 => {
+                // WinLockWindowUpdate(HWND hwndDesktop, HWND hwndLockUpdate) -> BOOL (pm_paint.rs)
+                self.win_lock_window_update(vcpu_id, read_stack(4), read_stack(8))
             }
             736 => {
                 // WinEnableWindowUpdate(HWND hwnd, BOOL fEnable)
@@ -2060,6 +2084,7 @@ impl super::Loader {
                 win.y = origin_y + px_y(t.dialog.y);
                 win.cx = px_x(t.dialog.cx);
                 win.cy = px_y(t.dialog.cy);
+                for (id, v) in &t.dialog.pres_params { win.pres_params.set(*id, v); }
             }
         }
         if let Some(t) = &template {
@@ -2077,6 +2102,7 @@ impl super::Loader {
                     cwin.visible = item.style & WS_VISIBLE != 0;
                     // Controls notify the dialog.
                     cwin.owner = h;
+                    for (id, v) in &item.pres_params { cwin.pres_params.set(*id, v); }
                 }
                 // The parts of a combination box / spin button.
                 wm.build_combo_or_spin(ch);
@@ -2473,7 +2499,7 @@ mod tests {
                                       HWND_DESKTOP, FCF_TITLEBAR, FCF_DLGBORDER, WS_VISIBLE};
         let item = |class: &str, text: &str, x, y, cx, cy, id| DlgItem {
             class_name: class.to_string(), text: text.to_string(),
-            x, y, cx, cy, id, style: WS_VISIBLE, parent: None,
+            x, y, cx, cy, id, style: WS_VISIBLE, parent: None, pres_params: Vec::new(),
         };
         let template = DlgTemplate {
             dialog: item("WC_FRAME", "About", 40, 40, 180, 80, 101),
@@ -3349,10 +3375,22 @@ mod tests {
         let mut vcpu = MockVcpu::new();
         call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_WINDOW_POS, &[frame, 0, 0, 0, 400, 300, SWP_SIZE]);
         let title = CHROME_TITLE_H;
+        // Shrunk, without CS_SIZEREDRAW: nothing uncovered to paint
+        // (pm_paint_style.rs).
         assert_eq!(drain_queue(&loader), vec![
             (client, WM_SIZE, pack_size((640, 480 - title)), pack_size((400, 300 - title))),
+        ]);
+        // Grown: the uncovered band is painted.
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_WINDOW_POS, &[frame, 0, 0, 0, 500, 300, SWP_SIZE]);
+        assert_eq!(drain_queue(&loader), vec![
+            (client, WM_SIZE, pack_size((400, 300 - title)), pack_size((500, 300 - title))),
             (client, WM_PAINT, 0, 0),
         ]);
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().update_rect(client),
+                   super::super::pm_rect::Rectl::new(400, 0, 500, 300 - title));
+        loader.shared.window_mgr.lock_or_recover().begin_paint(client);
+        call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_WINDOW_POS, &[frame, 0, 0, 0, 400, 300, SWP_SIZE]);
+        drain_queue(&loader);
         // Same size again, or a move only: no WM_SIZE.
         call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_WINDOW_POS, &[frame, 0, 5, 5, 400, 300, SWP_SIZE | SWP_MOVE]);
         assert!(drain_queue(&loader).is_empty());

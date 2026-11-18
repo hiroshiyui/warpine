@@ -48,6 +48,7 @@ const DI_Y: usize = 18;
 const DI_CX: usize = 20;
 const DI_CY: usize = 22;
 const DI_ID: usize = 24;
+const DI_OFF_PRESPARAMS: usize = 26;
 const DI_OFF_CTLDATA: usize = 28;
 
 /// Offset value meaning "none" (`offCtlData`, `offPresParams`, `iItemFocus`).
@@ -69,6 +70,9 @@ pub(super) struct DlgItem {
     pub style: u32,
     /// Index of the parent item in [`DlgTemplate::items`]; `None` = the dialog.
     pub parent: Option<usize>,
+    /// Presentation parameters (`offPresParams`: a `PRESPARAMS` block in
+    /// the template; `pm_presparam.rs`).
+    pub pres_params: Vec<(u32, Vec<u8>)>,
 }
 
 /// A parsed `DLGTEMPLATE`.
@@ -125,6 +129,10 @@ fn read_item(data: &[u8], off: usize, codepage: u32) -> Option<(DlgItem, u16, u1
         id: w(DI_ID),
         style: u32_at(item, DI_STYLE).unwrap_or(0),
         parent: None,
+        pres_params: match w(DI_OFF_PRESPARAMS) {
+            NO_OFFSET => Vec::new(),
+            off => data.get(off as usize..).map_or_else(Vec::new, super::pm_presparam::parse_presparams),
+        },
     }, w(DI_CHILDREN), w(DI_OFF_CTLDATA)))
 }
 
@@ -578,6 +586,26 @@ mod tests {
     }
 
     #[test]
+    fn items_carry_their_presparams() {
+        use super::super::pm_presparam::PP_FOREGROUNDCOLOR;
+        let mut t = ABOUT_DIALOG.to_vec();
+        let at = t.len() as u16;
+        // PRESPARAMS { cb = 12, PARAM { PP_FOREGROUNDCOLOR, 4, red } }
+        for v in [12u32, PP_FOREGROUNDCOLOR, 4, 0x00FF_0000] {
+            t.extend_from_slice(&v.to_le_bytes());
+        }
+        let label_pp = DT_HEADER_SIZE + DLGTITEM_SIZE + DI_OFF_PRESPARAMS;
+        t[label_pp..label_pp + 2].copy_from_slice(&at.to_le_bytes());
+        // The button's offset points past the end: no parameters.
+        let button_pp = DT_HEADER_SIZE + 2 * DLGTITEM_SIZE + DI_OFF_PRESPARAMS;
+        t[button_pp..button_pp + 2].copy_from_slice(&0x7000u16.to_le_bytes());
+        let parsed = parse_dlg_template(&t, 437).unwrap();
+        assert_eq!(parsed.items[0].pres_params, vec![(PP_FOREGROUNDCOLOR, 0x00FF_0000u32.to_le_bytes().to_vec())]);
+        assert!(parsed.items[1].pres_params.is_empty());
+        assert!(parsed.dialog.pres_params.is_empty(), "NO_OFFSET");
+    }
+
+    #[test]
     fn nested_items_keep_their_parent_and_focus_index() {
         let mut t = ABOUT_DIALOG.to_vec();
         // The label (item 1) now owns the button (item 2); the dialog has one child.
@@ -735,7 +763,8 @@ mod tests {
     }
 
     fn item(class: &str, text: &str, (x, y, cx, cy): (i16, i16, i16, i16), id: u16, style: u32) -> DlgItem {
-        DlgItem { class_name: class.into(), text: text.into(), x, y, cx, cy, id, style: WS_VISIBLE | style, parent: None }
+        DlgItem { class_name: class.into(), text: text.into(), x, y, cx, cy, id, style: WS_VISIBLE | style, parent: None,
+                  pres_params: Vec::new() }
     }
 
     /// A dialog with a label, an entry field, a list box, a check box and

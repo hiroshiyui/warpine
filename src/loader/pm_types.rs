@@ -165,6 +165,8 @@ pub struct OS2Window {
     pub combo: Option<super::pm_combo::ComboState>,
     /// A spin button's values and state (`pm_spin.rs`).
     pub spin: Option<Box<super::pm_spin::SpinState>>,
+    /// Presentation parameters (`WinSetPresParam`, `pm_presparam.rs`).
+    pub pres_params: super::pm_presparam::PresParams,
 }
 
 /// Map a PM colour value to 0x00RRGGBB with the default colour table: the
@@ -566,6 +568,8 @@ pub struct WindowManager {
     /// Hooks (`WinSetHook`) and the per-thread state of hook and send
     /// calls (`pm_hook.rs`).
     pub hooks: super::pm_hook::HookTable,
+    /// The window `WinLockWindowUpdate` locked (0 = none; `pm_paint.rs`).
+    pub update_locked: u32,
 }
 
 /// The caret of a text control as last painted, in the surface coordinates
@@ -636,6 +640,7 @@ impl WindowManager {
             owner_calls: Vec::new(),
             owner_drawing: HashSet::new(),
             hooks: Default::default(),
+            update_locked: 0,
         }
     }
     pub fn register_class(&mut self, name: String, pfn_wp: u32, style: u32) {
@@ -687,6 +692,7 @@ impl WindowManager {
             drawn_state: 0,
             combo: None,
             spin: None,
+            pres_params: Default::default(),
         });
         // Register as child of parent
         if parent != 0

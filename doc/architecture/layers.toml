@@ -134,7 +134,7 @@ modules = [
 [[layer]]
 id = "pmwin"
 zone = "host"
-label = "PM window manager: PMWIN windows, messages, input, painting"
+label = "PM window manager: PMWIN windows, messages, input, painting, presentation parameters"
 modules = [
   "loader/pm_win.rs", "loader/pm_types.rs", "loader/pm_window.rs", "loader/pm_input.rs",
   "loader/pm_dialog.rs", "loader/pm_msgbox.rs", "loader/pm_destroy.rs", "loader/pm_error.rs",
@@ -142,15 +142,17 @@ modules = [
   "loader/pm_query.rs", "loader/pm_keystate.rs", "loader/pm_syscolor.rs", "loader/pm_rect.rs",
   "loader/pm_cursor.rs", "loader/pm_message.rs", "loader/pm_hook.rs",
   "loader/pm_frame.rs", "loader/pm_accel.rs", "loader/pm_winmisc.rs",
+  "loader/pm_presparam.rs", "loader/pm_paint_style.rs",
 ]
 
 [[layer]]
 id = "controls"
 zone = "host"
-label = "Built-in controls: buttons, entry fields, MLE, list box, scroll bar, combo box, spin button, owner draw (ADR-0025)"
+label = "Built-in controls: statics, buttons, entry fields, MLE, list box, scroll bar, combo box, spin button, owner draw (ADR-0025)"
 modules = [
   "loader/pm_controls.rs", "loader/pm_button.rs", "loader/pm_list.rs", "loader/pm_edit.rs",
   "loader/pm_scrollbar.rs", "loader/pm_combo.rs", "loader/pm_spin.rs", "loader/pm_owner.rs",
+  "loader/pm_static.rs",
 ]
 
 [[layer]]

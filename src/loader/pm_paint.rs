@@ -172,6 +172,11 @@ impl WindowManager {
         let frame = self.client_to_frame(target);
         self.mark_dirty(frame);
         self.invalidate_window(target, rect.map(|r| r.offset(ox, oy)), include_children);
+        // The frame itself repaints: its client is asked to erase first
+        // (WM_ERASEBACKGROUND, pm_paint_style.rs).
+        if target != hwnd {
+            self.queue_erase_background(target);
+        }
     }
 
     /// Invalidate the whole of `hwnd` but none of its children: a window
@@ -185,6 +190,7 @@ impl WindowManager {
         }
         // A window of no size yet still gets its first WM_PAINT.
         self.post_paint(target);
+        self.queue_sync_paint(target);
     }
 
     fn invalidate_window(&mut self, hwnd: u32, rect: Option<Rectl>, include_children: bool) {
@@ -195,6 +201,7 @@ impl WindowManager {
             w.update = w.update.union(&r);
         }
         self.post_paint(hwnd);
+        self.queue_sync_paint(hwnd);
         for (child, at) in self.paint_children(hwnd, include_children) {
             if let Some(part) = r.intersect(&at) {
                 self.invalidate_window(child, Some(part.offset(-at.x_left, -at.y_bottom)), include_children);

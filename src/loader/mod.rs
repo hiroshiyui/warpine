@@ -32,6 +32,9 @@ mod pm_sysmenu;
 mod pm_rect;
 mod pm_drawtext;
 mod pm_paint;
+mod pm_presparam;
+mod pm_paint_style;
+mod pm_static;
 mod pm_query;
 pub mod pm_keystate;
 pub mod pm_syscolor;
@@ -690,14 +693,9 @@ impl Loader {
                             self.paint_button(&p, hwnd, (x, y, cx, cy), &text);
                         }
                     }
-                    "WC_STATIC" => {
-                        // Text label, left- and top-aligned. Like PM's SS_TEXT it
-                        // erases its rectangle to its parent's background first:
-                        // anti-aliased text drawn again over itself on a later
-                        // repaint would otherwise grow darker and bolder.
-                        p.fill((x, y, x + cx, y + cy), self.control_background(hwnd));
-                        control_label(&p, x, y + (cy - CONTROL_LINE_H).max(0), &text, cx);
-                    }
+                    // Text, group box, icon, bitmap, rectangle or frame
+                    // (pm_static.rs).
+                    "WC_STATIC" => self.paint_static(&p, hwnd, (x, y, cx, cy), &text),
                     pm_scrollbar::CLASS_SCROLLBAR => {
                         self.paint_scrollbar(&p, hwnd, (x, y, cx, cy));
                     }
@@ -725,7 +723,7 @@ impl Loader {
                         // bar and border are frame chrome drawn by the
                         // compositor (from `frame_flags` and the window text).
                         let d = Painter::new(self, hwnd, hwnd);
-                        d.fill((0, 0, cx, cy), CONTROL_FACE_COLOR);
+                        d.fill((0, 0, cx, cy), d.bg.unwrap_or(CONTROL_FACE_COLOR));
                         self.paint_message_box_icon(&d, hwnd);
                         let controls = self.shared.window_mgr.lock_or_recover()
                             .builtin_control_descendants(hwnd);
@@ -1086,21 +1084,54 @@ pub(crate) struct Painter<'a> {
     /// codepage, so a window whose queue is set to CP949 (`WinSetCp`) shows
     /// Hangul and hanja in the Korean face whatever the process codepage.
     pub cjk: CjkRegion,
+    /// Text colour: the window's `PP_FOREGROUNDCOLOR` (inherited), else
+    /// black (`pm_presparam.rs`).
+    pub fg: u32,
+    /// The window's `PP_BACKGROUNDCOLOR`, inherited.
+    pub bg: Option<u32>,
+    /// The window's own `PP_BACKGROUNDCOLOR` (not inherited): the field of
+    /// entry fields, MLEs and list boxes.
+    pub own_bg: Option<u32>,
+    /// The face of the window's `PP_FONTNAMESIZE` (inherited); `None` = the
+    /// system font.
+    pub face: Option<FontSpec>,
 }
 
 impl<'a> Painter<'a> {
     /// A painter for window `hwnd`, drawing into `frame`'s surface.
     pub fn new(loader: &'a Loader, frame: u32, hwnd: u32) -> Self {
-        Painter { loader, frame, cjk: CjkRegion::from_codepage(loader.window_codepage(hwnd)) }
+        let cjk = CjkRegion::from_codepage(loader.window_codepage(hwnd));
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        Painter {
+            loader, frame, cjk,
+            fg: wm.pres_color(hwnd, pm_presparam::PP_FOREGROUNDCOLOR, false).unwrap_or(CONTROL_TEXT_COLOR),
+            bg: wm.pres_color(hwnd, pm_presparam::PP_BACKGROUNDCOLOR, false),
+            own_bg: wm.pres_color(hwnd, pm_presparam::PP_BACKGROUNDCOLOR, true),
+            face: wm.pres_font(hwnd),
+        }
     }
 
     pub fn op(&self, op: DrawOp) {
         self.loader.draw(self.frame, op);
     }
 
-    /// The system font with this painter's CJK face.
+    /// The font control text is drawn in: the presentation-parameter face,
+    /// else the system font, with this painter's CJK face.
     pub fn font(&self) -> FontSpec {
-        FontSpec { cjk: self.cjk, ..FontSpec::SYSTEM }
+        FontSpec { cjk: self.cjk, ..self.face.unwrap_or(FontSpec::SYSTEM) }
+    }
+
+    /// One line of text in [`Painter::font`] whose line box has its bottom
+    /// at `y` (the baseline is the font's descent above it).
+    pub fn text(&self, x: i32, y: i32, text: &str, color: u32) {
+        match self.face {
+            None => self.op(DrawOp::Text { x, y, text: text.to_string(), color, cjk: self.cjk }),
+            Some(_) => {
+                let font = self.font();
+                let y = y.saturating_add(font::metrics(font).descent);
+                self.op(DrawOp::TextFont { x, y, text: text.to_string(), color, font, mix: Mix::Overpaint });
+            }
+        }
     }
 
     /// Overpaint the rectangle with corners `(x1, y1)`–`(x2, y2)` (inclusive).
@@ -1130,6 +1161,10 @@ impl Loader {
     pub(crate) fn draw_clipped(&self, target: pm_types::DrawTarget, op: DrawOp,
                                clip: Option<&crate::gui::region::Region>) {
         let mut wm = self.shared.window_mgr.lock_or_recover();
+        // WinLockWindowUpdate: nothing reaches a locked frame (pm_paint_style.rs).
+        if let pm_types::DrawTarget::Frame(frame) = target && wm.is_update_locked(frame) {
+            return;
+        }
         let Some(surface) = wm.target_surface(target) else { return };
         let mut s = surface.lock_or_recover();
         if let pm_types::DrawTarget::Frame(frame) = target {
@@ -1166,12 +1201,12 @@ pub(crate) fn control_label(p: &Painter, x: i32, y: i32, text: &str, max_w: i32)
         let x1 = x + font::text_width(&label[..start], p.font());
         let w = font::text_width(&label[start..start + ch.len_utf8()], p.font());
         let uy = y + MNEMONIC_UNDERLINE_Y;
-        p.fill((x1, uy, x1 + w - 1, uy), CONTROL_TEXT_COLOR);
+        p.fill((x1, uy, x1 + w - 1, uy), p.fg);
     }
     font::text_width(label, p.font())
 }
 
 /// Draw one line of system-font text whose line box has its bottom at `y`.
 fn control_text(p: &Painter, x: i32, y: i32, text: &str) {
-    p.op(DrawOp::Text { x, y, text: text.to_string(), color: CONTROL_TEXT_COLOR, cjk: p.cjk });
+    p.text(x, y, text, p.fg);
 }

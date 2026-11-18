@@ -71,6 +71,12 @@ pub enum OwnerCallKind {
     UserButton,
     /// `WM_DRAWITEM` for the `MIS_OWNERDRAW` pull-down item `id` of a menu.
     DrawMenuItem { id: u16 },
+    /// `WM_ERASEBACKGROUND` from a frame to its client `control`
+    /// (`pm_paint_style.rs`).
+    EraseBackground,
+    /// `WM_PAINT` sent at once to `WS_SYNCPAINT` window `control`
+    /// (`pm_paint_style.rs`).
+    SyncPaint,
 }
 
 /// The menu item `id` in `items` (searched through the submenus).
@@ -241,8 +247,11 @@ impl Loader {
 
     /// How to make owner call `call` (see [`OwnerSetup`]).
     pub(crate) fn owner_call_setup(&self, call: &OwnerCall) -> OwnerSetup {
-        if let OwnerCallKind::DrawMenuItem { id } = call.kind {
-            return self.menu_item_setup(call.control, id);
+        match call.kind {
+            OwnerCallKind::DrawMenuItem { id } => return self.menu_item_setup(call.control, id),
+            OwnerCallKind::EraseBackground => return self.erase_background_setup(call.control),
+            OwnerCallKind::SyncPaint => return self.sync_paint_setup(call.control),
+            _ => {}
         }
         let (owner, wnd_proc, id, style, item) = {
             let wm = self.shared.window_mgr.lock_or_recover();
@@ -285,7 +294,8 @@ impl Loader {
                     block: vec![call.control, hps, state, old], hps,
                 }
             }
-            OwnerCallKind::DrawMenuItem { .. } => OwnerSetup::Skip,
+            OwnerCallKind::DrawMenuItem { .. } | OwnerCallKind::EraseBackground
+            | OwnerCallKind::SyncPaint => OwnerSetup::Skip,
         }
     }
 
@@ -353,9 +363,13 @@ impl Loader {
     /// Owner call `call` returned `result`, with `block` (the structure
     /// passed, as the owner left it); `hps` is freed.
     pub(crate) fn owner_call_finish(&self, call: &OwnerCall, hps: u32, result: u32, block: &[u32]) {
-        if let OwnerCallKind::DrawMenuItem { id } = call.kind {
-            self.menu_item_finish(call.control, id, hps, result);
-            return;
+        match call.kind {
+            OwnerCallKind::DrawMenuItem { id } => return self.menu_item_finish(call.control, id, hps, result),
+            OwnerCallKind::EraseBackground => {
+                return self.erase_background_finish(call.control, hps, result, block);
+            }
+            OwnerCallKind::SyncPaint => return,
+            _ => {}
         }
         // What the owner drew goes into the control: the item it drew, the
         // whole user button.
@@ -397,7 +411,8 @@ impl Loader {
                                        color: 0, fill: true, mix: Mix::Invert });
                 }
             }
-            OwnerCallKind::UserButton | OwnerCallKind::DrawMenuItem { .. } => {}
+            OwnerCallKind::UserButton | OwnerCallKind::DrawMenuItem { .. }
+            | OwnerCallKind::EraseBackground | OwnerCallKind::SyncPaint => {}
         }
     }
 }

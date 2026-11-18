@@ -1,0 +1,19 @@
+/* pm_presparam_test.rc - a bitmap for an SS_BITMAP control and a dialog
+ * whose template carries presentation parameters (PRESPARAMS). */
+#define INCL_WIN
+#include <os2.h>
+#include "pm_presparam_test.h"
+
+BITMAP ID_BMP "green.bmp"
+
+DLGTEMPLATE ID_DLG LOADONCALL MOVEABLE DISCARDABLE
+BEGIN
+    DIALOG "Presentation parameters", ID_DLG, 300, 20, 150, 60, WS_VISIBLE,
+           FCF_TITLEBAR
+           PRESPARAMS PP_FONTNAMESIZE, "8.Helv"
+    BEGIN
+        LTEXT    "Red label", ID_DTEXT,  8, 40, 100, 10
+                 PRESPARAMS PP_FOREGROUNDCOLOR, 0x00FF0000L
+        GROUPBOX "Group",     ID_DGROUP, 8,  4, 130, 30
+    END
+END

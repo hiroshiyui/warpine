@@ -243,7 +243,8 @@ impl WindowManager {
     /// size change, so that it reaches the window procedure on its own thread.
     pub fn post_size(&mut self, hwnd: u32, old: (i32, i32), new: (i32, i32)) {
         self.post_msg(hwnd, WM_SIZE, pack_size(old), pack_size(new));
-        self.invalidate_window_only(hwnd);
+        // All of it, or what the new size uncovers (CS_SIZEREDRAW, pm_paint.rs).
+        self.invalidate_resized(hwnd, old, new);
     }
 
     /// The window a frame's messages are delivered to: a standard frame's
