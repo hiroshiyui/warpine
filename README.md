@@ -49,7 +49,7 @@ _Screenshots in this section captured from uncommitted changes on top of `2d4dd4
 
 - **LX Executable Parser:** Full support for LX headers, object tables, page maps, fixups, resource tables, import tables, entry tables, and non-resident names tables.
 - **KVM Hypervisor:** Custom VMM executing 32-bit OS/2 code at native speed via hardware-accelerated virtualization.
-- **API Thunking:** System call interception via `INT 3` traps bridging guest OS/2 calls to host Rust implementations. Covers DOSCALLS, QUECALLS, PMWIN, PMGPI, KBDCALLS, VIOCALLS, MOUCALLS, NLS, MSG, MDM (MMPM/2), UCONV, SO32DLL, TCP32DLL, PMSHAPI, HELPMGR, PMSPL and PMCTLS — 618 entry points total.
+- **API Thunking:** System call interception via `INT 3` traps bridging guest OS/2 calls to host Rust implementations. Covers DOSCALLS, QUECALLS, PMWIN, PMGPI, KBDCALLS, VIOCALLS, MOUCALLS, NLS, MSG, MDM (MMPM/2), UCONV, SO32DLL, TCP32DLL, PMSHAPI, HELPMGR, PMSPL and PMCTLS — 620 entry points total.
 - **DLL Loader Chain:** Runtime dynamic loading via `DosLoadModule` / `DosQueryProcAddr` / `DosQueryModuleHandle`. User DLLs are loaded into guest memory with rebased objects and export maps. `jpos2dll.dll` (4OS2 extension) loads and resolves all 7 exports at startup.
 - **Multi-Threading:** OS/2 threads mapped 1:1 to host threads, each with its own KVM vCPU; ending a thread ends only that thread, `DosWaitThread` / `DosKillThread` / `DosSuspendThread` / `DosResumeThread` follow the Control Program Reference, a thread spinning in its own code can be stopped (each vCPU can be kicked out of the guest), signal exceptions reach thread 1, and vCPUs of ended threads are reused.
 - **Presentation Manager (GUI):** Window management, message loop, graphics primitives (drawn on the calling thread, so `GpiQueryPel` reads pixels back and `GpiSetMix` raster operations such as XOR combine with what is there), memory presentation spaces, bitmaps (`GpiCreateBitmap`, `GpiLoadBitmap`) and `GpiBitBlt` with raster operations and stretching, logical colour tables, polylines, regions and clipping, areas, paths, polygons and curves, presentation-space state with save / restore, coordinate transforms and page units, text layout with character angle, shear and direction, `WinDrawText`, update rectangles with `WinScrollWindow` and `WinDrawBorder`, the rectangle helpers, interactive scroll bars, the standard file and font dialogs, the switch list, atom tables and DDE within a program, combination boxes, spin buttons, sliders, value sets, owner-drawn list boxes, menu items and buttons, static icons and bitmaps, presentation parameters (colours and fonts), hooks and message broadcasts, frame controls, accelerator tables made at run time, the text cursor, window lookups (`WinMapWindowPoints`, `WinWindowFromPoint`, `WinEnumDlgItem` …), key state, system colours, timers, clipboard, dialogs, menus, and resource loading via SDL. Each window is kept as its own texture and drawn by the platform's accelerated SDL renderer with vsync, so moving windows costs no redrawing (`WARPINE_COMPOSITOR=software` composites on the CPU instead).
@@ -94,7 +94,7 @@ src/
     ne_exec.rs         NE executable loader: load_ne(), setup_guest_ne(), handle_ne_api_call(), ne_api_arg_bytes()
     descriptors.rs     GDT/IDT setup, resolve_import() (built-ins + DllManager)
     constants.rs       Named constants: MAGIC_API_BASE, ordinal bases, TIB/PIB addresses
-    api_registry.rs    Static sorted API thunk table (259 entries); compat_report()
+    api_registry.rs    Static sorted API thunk table (261 entries); compat_report()
     api_dispatch.rs    Ordinal → handler dispatch + sub-dispatcher routing
     api_trace.rs       ordinal_to_name(), module_for_ordinal() for structured tracing
     api_ring.rs        256-entry API call ring buffer for crash post-mortem
@@ -184,6 +184,12 @@ samples/               OS/2 sample applications and build scripts
   pm_switch_dde_test/  WinStartApp, switch list, atom tables, DDE, MSG calls
   nest_test/           A program that starts itself, stopped at the nesting limit
   threads_limit_test/  CONFIG.SYS THREADS= bounds threads and child processes of a session
+  argv_test/           argc / argv / environment and session-unique process ids across children
+  kill_test/           DosKillProcess, exit lists on kill, interrupted waits, Ctrl+C as a signal
+  semfollow_test/      Semaphore and pipe-semaphore follow-ups, suballocation
+  pm_frame_scroll_test/ Frame scroll bars with the mouse, client drawing inside the frame
+  pm_charbundle_test/  GpiSetAttrs / GpiQueryAttrs character bundle
+  pm_modal_filter_test/ Message-filter hooks in modal loops, standard-dialog notifications
   pm_query_test/       Window lookups, key state, message position, system colours
   pm_typeahead_test/   Keys typed while the program is busy reach the focus window of the moment they are read
   pm_font_test/        GPI font selection (IBM Plex families, styles, sizes) and CJK text
@@ -207,7 +213,7 @@ See [doc/developer_guide.md](doc/developer_guide.md) for detailed internals docu
 - **OS:** Linux with KVM support (`/dev/kvm` must be accessible by the user).
 - **Toolchain:** Rust 1.100.0 (Edition 2024), pinned in `rust-toolchain.toml`; `rustup` installs it automatically on the first `cargo` invocation.
 - **Library:** `libsdl3-dev` — SDL 3, found through pkg-config (for the PM desktop, the VGA text window and audio).
-- **Optional (for samples):** Open Watcom v2 — `./vendor/setup_watcom.sh` to vendor it.
+- **Optional (for samples):** Open Watcom v2 — `./vendor/setup_watcom.sh` to vendor it. Snapshots built before 2026-08-11 lose `argv` and the environment of every OS/2 program (Open Watcom #1649); `./vendor/setup_watcom.sh --refresh` replaces such a snapshot, then rebuild the samples.
 
 ## Contributing
 
@@ -234,7 +240,7 @@ cargo build
 
 ### 2. Build sample OS/2 applications
 ```bash
-./vendor/setup_watcom.sh              # Download Open Watcom compiler (once)
+./vendor/setup_watcom.sh              # Download Open Watcom compiler (once; --refresh replaces an old snapshot)
 make -C samples                       # All Open Watcom samples (what the integration tests run)
 make -C samples/hello                 # Simple "Hello, OS/2!" CLI app
 make -C samples/alloc_test            # Memory allocation test
@@ -310,8 +316,8 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 1689 unit tests (no KVM required)
-cargo test --test integration     # 113 end-to-end tests (requires /dev/kvm)
+cargo test                        # 1749 unit tests (no KVM required)
+cargo test --test integration     # 126 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
 
