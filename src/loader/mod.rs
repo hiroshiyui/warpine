@@ -728,6 +728,13 @@ impl Loader {
             && let Some(r) = self.notebook_message(hwnd, msg, mp1, mp2) {
             return r;
         }
+        // The direct-editing MLE of a container: Esc discards the edit.
+        if msg == WM_CHAR && class_name == pm_controls::CLASS_MLE
+            && self.shared.window_mgr.lock_or_recover().get_window(parent)
+                .is_some_and(|p| p.class_name == pm_container::CLASS_CONTAINER)
+            && let Some(r) = self.container_edit_key(parent, hwnd, mp1, mp2) {
+            return r;
+        }
         // Containers (pm_container.rs); a container answers a double click
         // itself (CN_ENTER).
         if msg != WM_PAINT && class_name == pm_container::CLASS_CONTAINER

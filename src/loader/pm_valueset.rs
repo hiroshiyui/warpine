@@ -628,40 +628,51 @@ impl Loader {
                     super::control_label(p, tx, ty, &item.text, w);
                 }
             }
-            VIA_BITMAP => {
-                let surface = self.shared.window_mgr.lock_or_recover().bitmaps.get(&item.value).map(|b| b.surface.clone());
-                let Some(surface) = surface else { return };
-                let s = surface.lock_or_recover();
-                let (bw, bh) = (s.width as i32, s.height as i32);
-                let pels = |sx: i32, sy: i32| s.pel(sx, sy);
-                blit_scaled(p, (x, y, w, h), (bw, bh), style & VS_SCALEBITMAPS != 0, pels);
-            }
-            VIA_ICON => {
-                let shape = self.shared.pointers.lock_or_recover().shape(item.value);
-                match shape {
-                    Some(PointerShape::Image(img)) => {
-                        let (iw, ih) = (img.width as i32, img.height as i32);
-                        // RGBA rows from the top; transparent pels are None.
-                        let pel = |sx: i32, sy: i32| {
-                            let i = ((ih - 1 - sy) * iw + sx) as usize * 4;
-                            img.rgba.get(i..i + 4).and_then(|c| (c[3] >= 0x80)
-                                .then(|| (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32))
-                        };
-                        blit_scaled(p, (x, y, w, h), (iw, ih), iw > w || ih > h, pel);
-                    }
-                    Some(PointerShape::System(_)) => {
-                        // The message box pictograms stand for the system icons.
-                        let sptr = item.value.wrapping_sub(super::pm_pointer::PointerManager::system_handle(0));
-                        if let Some(pels) = super::pm_msgbox::icon_pels(sptr) {
-                            let n = super::pm_msgbox::MSGBOX_ICON_SIZE;
-                            let pel = |sx: i32, sy: i32| pels.get(((n - 1 - sy) * n + sx) as usize).copied().flatten();
-                            blit_scaled(p, (x, y, w, h), (n, n), n > w || n > h, pel);
-                        }
-                    }
-                    None => {}
-                }
-            }
+            VIA_BITMAP => { self.paint_bitmap_handle(p, (x, y, w, h), item.value, style & VS_SCALEBITMAPS != 0); }
+            VIA_ICON => { self.paint_icon_handle(p, (x, y, w, h), item.value, false); }
             _ => {}
+        }
+    }
+
+    /// Draw bitmap `hbm` centred in the rectangle `(x, y, w, h)`, stretched
+    /// to it with `scale`, else clipped. FALSE when it is no bitmap.
+    pub(super) fn paint_bitmap_handle(&self, p: &Painter, rect: (i32, i32, i32, i32), hbm: u32, scale: bool) -> bool {
+        let surface = self.shared.window_mgr.lock_or_recover().bitmaps.get(&hbm).map(|b| b.surface.clone());
+        let Some(surface) = surface else { return false };
+        let s = surface.lock_or_recover();
+        let (bw, bh) = (s.width as i32, s.height as i32);
+        blit_scaled(p, rect, (bw, bh), scale, |sx, sy| s.pel(sx, sy));
+        true
+    }
+
+    /// Draw icon (pointer) `hptr` centred in the rectangle `(x, y, w, h)`:
+    /// stretched to it with `fit`, else shrunk only when larger. System
+    /// icons are Warpine's pictograms (`pm_msgbox::icon_pels`). FALSE when
+    /// there is no picture.
+    pub(super) fn paint_icon_handle(&self, p: &Painter, (x, y, w, h): (i32, i32, i32, i32), hptr: u32, fit: bool) -> bool {
+        let shape = self.shared.pointers.lock_or_recover().shape(hptr);
+        match shape {
+            Some(PointerShape::Image(img)) => {
+                let (iw, ih) = (img.width as i32, img.height as i32);
+                // RGBA rows from the top; transparent pels are None.
+                let pel = |sx: i32, sy: i32| {
+                    let i = ((ih - 1 - sy) * iw + sx) as usize * 4;
+                    img.rgba.get(i..i + 4).and_then(|c| (c[3] >= 0x80)
+                        .then(|| (c[0] as u32) << 16 | (c[1] as u32) << 8 | c[2] as u32))
+                };
+                blit_scaled(p, (x, y, w, h), (iw, ih), fit || iw > w || ih > h, pel);
+                true
+            }
+            Some(PointerShape::System(_)) => {
+                // The message box pictograms stand for the system icons.
+                let sptr = hptr.wrapping_sub(super::pm_pointer::PointerManager::system_handle(0));
+                let Some(pels) = super::pm_msgbox::icon_pels(sptr) else { return false };
+                let n = super::pm_msgbox::MSGBOX_ICON_SIZE;
+                let pel = |sx: i32, sy: i32| pels.get(((n - 1 - sy) * n + sx) as usize).copied().flatten();
+                blit_scaled(p, (x, y, w, h), (n, n), fit || n > w || n > h, pel);
+                true
+            }
+            None => false,
         }
     }
 

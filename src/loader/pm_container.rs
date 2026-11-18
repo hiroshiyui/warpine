@@ -1,25 +1,29 @@
 // SPDX-License-Identifier: GPL-3.0-only
 //
-//! `WC_CONTAINER`, first stage: records, field infos and the text, name
-//! and detail views (IBM *PM Programming Reference*, "Container Controls";
+//! `WC_CONTAINER`: records, field infos and the text, name, detail, tree
+//! and icon views (IBM *PM Programming Reference*, "Container Controls";
 //! messages, styles and structures from `<pmstddlg.h>`
 //! `INCL_WINSTDCNR`).
 //!
 //! Records and field infos live in guest memory, carved from arenas each
 //! container takes from the memory manager ([`RecordHeap`]); the guest's
 //! copy is the only one — texts, positions and attributes are read when
-//! needed, and only `flRecordAttr` is written back (ADR-0043). The host
-//! keeps the insertion order, each record's parent and the inserted field
-//! infos ([`CnrState`]), and accepts only pointers it handed out.
+//! needed, and only `flRecordAttr`, `ptlIcon` (`CM_ARRANGE`) and edited
+//! texts are written back (ADR-0043, ADR-0046). The host keeps the
+//! insertion order, each record's parent and the inserted field infos
+//! ([`CnrState`]), and accepts only pointers it handed out.
 //!
-//! Views: `CV_TEXT` (`pszText`), `CV_NAME` (`pszName`) and `CV_DETAIL`
-//! (one column per visible field info, read at `offStruct` in each record:
-//! `CFA_STRING`, `CFA_ULONG`, `CFA_DATE`, `CFA_TIME`), with `CV_FLOW` for
-//! the text and name views, the container title (`CA_CONTAINERTITLE`) and
-//! detail column titles (`CA_DETAILSVIEWTITLES`). A `MINIRECORDCORE`
-//! container shows `pszIcon` in every view. Not drawn yet: icons and
-//! bitmaps, the icon view (records are listed by `pszIcon`) and the tree
-//! view (top-level records listed by `pszTree`), scroll bars, the split bar.
+//! Views: `CV_TEXT` (`pszText`), `CV_NAME` (`pszName`), `CV_DETAIL` (one
+//! column per visible field info, read at `offStruct` in each record:
+//! `CFA_STRING`, `CFA_ULONG`, `CFA_DATE`, `CFA_TIME`, `CFA_BITMAPORICON`),
+//! `CV_TREE` (`pszTree`, ADR-0044) and `CV_ICON` (icons at `ptlIcon`,
+//! `pszIcon` under them), with `CV_FLOW` for the text and name views, the
+//! container title (`CA_CONTAINERTITLE`) and detail column titles
+//! (`CA_DETAILSVIEWTITLES`). A `MINIRECORDCORE` container shows `pszIcon`
+//! in every view. Pictures (`hptrIcon` / `hbmBitmap` and the mini ones)
+//! are drawn in the icon, name and tree views. `CM_FILTER` and direct
+//! editing follow ADR-0046. Not drawn yet: tree lines, the split bar,
+//! owner drawing, horizontal scrolling.
 //!
 //! Selection follows `CCS_SINGLESEL` (default) / `CCS_MULTIPLESEL` /
 //! `CCS_EXTENDSEL`; the owner gets `WM_CONTROL` `CN_EMPHASIS`
@@ -41,6 +45,8 @@ pub const CLASS_CONTAINER: &str = "WC_CONTAINER";
 
 pub const CM_ALLOCDETAILFIELDINFO: u32 = 0x0330;
 pub const CM_ALLOCRECORD: u32 = 0x0331;
+pub const CM_ARRANGE: u32 = 0x0332;
+pub const CM_FILTER: u32 = 0x0334;
 pub const CM_FREEDETAILFIELDINFO: u32 = 0x0335;
 pub const CM_FREERECORD: u32 = 0x0336;
 pub const CM_INSERTDETAILFIELDINFO: u32 = 0x0338;
@@ -51,6 +57,7 @@ pub const CM_QUERYCNRINFO: u32 = 0x033d;
 pub const CM_QUERYDETAILFIELDINFO: u32 = 0x033e;
 pub const CM_QUERYRECORD: u32 = 0x0340;
 pub const CM_QUERYRECORDEMPHASIS: u32 = 0x0341;
+pub const CM_QUERYRECORDFROMRECT: u32 = 0x0342;
 pub const CM_QUERYRECORDRECT: u32 = 0x0343;
 pub const CM_QUERYVIEWPORTRECT: u32 = 0x0344;
 pub const CM_REMOVEDETAILFIELDINFO: u32 = 0x0345;
@@ -60,6 +67,8 @@ pub const CM_SEARCHSTRING: u32 = 0x0348;
 pub const CM_SETCNRINFO: u32 = 0x0349;
 pub const CM_SETRECORDEMPHASIS: u32 = 0x034a;
 pub const CM_SORTRECORD: u32 = 0x034b;
+pub const CM_OPENEDIT: u32 = 0x034c;
+pub const CM_CLOSEEDIT: u32 = 0x034d;
 pub const CM_COLLAPSETREE: u32 = 0x034e;
 pub const CM_EXPANDTREE: u32 = 0x034f;
 pub const CM_QUERYRECORDINFO: u32 = 0x0350;
@@ -73,12 +82,17 @@ pub const CN_INITDRAG: u32 = 107;
 pub const CN_EMPHASIS: u32 = 108;
 pub const CN_KILLFOCUS: u32 = 109;
 pub const CN_SETFOCUS: u32 = 112;
+pub const CN_REALLOCPSZ: u32 = 113;
+pub const CN_BEGINEDIT: u32 = 114;
+pub const CN_ENDEDIT: u32 = 115;
 pub const CN_SCROLL: u32 = 110;
 pub const CN_COLLAPSETREE: u32 = 116;
 pub const CN_EXPANDTREE: u32 = 117;
 
 pub const CCS_EXTENDSEL: u32 = 0x0000_0001;
 pub const CCS_MULTIPLESEL: u32 = 0x0000_0002;
+pub const CCS_AUTOPOSITION: u32 = 0x0000_0008;
+pub const CCS_READONLY: u32 = 0x0000_0020;
 pub const CCS_MINIRECORDCORE: u32 = 0x0000_0040;
 
 pub const CV_TEXT: u32 = 0x0000_0001;
@@ -86,6 +100,7 @@ pub const CV_NAME: u32 = 0x0000_0002;
 pub const CV_ICON: u32 = 0x0000_0004;
 pub const CV_DETAIL: u32 = 0x0000_0008;
 pub const CV_FLOW: u32 = 0x0000_0010;
+pub const CV_MINI: u32 = 0x0000_0020;
 pub const CV_TREE: u32 = 0x0000_0040;
 
 pub const CA_CONTAINERTITLE: u32 = 0x0000_0200;
@@ -93,6 +108,8 @@ pub const CA_TITLESEPARATOR: u32 = 0x0000_0400;
 pub const CA_TITLELEFT: u32 = 0x0000_0800;
 pub const CA_TITLERIGHT: u32 = 0x0000_1000;
 pub const CA_DETAILSVIEWTITLES: u32 = 0x0000_8000;
+pub const CA_DRAWBITMAP: u32 = 0x0002_0000;
+pub const CA_DRAWICON: u32 = 0x0004_0000;
 
 pub const CFA_RIGHT: u32 = 0x0000_0002;
 pub const CFA_CENTER: u32 = 0x0000_0004;
@@ -103,17 +120,23 @@ pub const CFA_HORZSEPARATOR: u32 = 0x0000_0400;
 pub const CFA_STRING: u32 = 0x0000_0800;
 pub const CFA_DATE: u32 = 0x0000_2000;
 pub const CFA_TIME: u32 = 0x0000_4000;
+pub const CFA_FIREADONLY: u32 = 0x0000_8000;
 pub const CFA_ULONG: u32 = 0x0002_0000;
 
 pub const CRA_SELECTED: u32 = 0x0000_0001;
 pub const CRA_CURSORED: u32 = 0x0000_0004;
 pub const CRA_FILTERED: u32 = 0x0000_0010;
+pub const CRA_RECORDREADONLY: u32 = 0x0000_0040;
 pub const CRA_DISABLED: u32 = 0x0000_1000;
 pub const CRA_EXPANDED: u32 = 0x0000_0080;
 pub const CRA_COLLAPSED: u32 = 0x0000_0100;
 
 /// The id of a container's vertical scroll bar (`<pmstddlg.h>`).
 pub const CID_VSCROLL: u32 = 0x7FF9;
+/// The direct-editing MLE.
+pub const CID_MLE: u32 = 0x7FFA;
+/// `CNREDITDATA.id` of a details-view record (the left window when unsplit).
+pub const CID_LEFTDVWND: u32 = 0x7FF7;
 
 pub const CMA_PARENT: u16 = 0x0001;
 pub const CMA_FIRSTCHILD: u16 = 0x0002;
@@ -124,6 +147,14 @@ pub const CMA_END: u32 = 0x0040;
 pub const CMA_PREV: u32 = 0x0080;
 pub const CMA_NEXT: u32 = 0x0100;
 pub const CMA_VERTICAL: u32 = 0x0400;
+pub const CMA_FILTER: u32 = 0x1000;
+/// `CM_QUERYRECORDRECT` extents and `CM_QUERYRECORDFROMRECT` searches.
+pub const CMA_ICON: u32 = 0x0800;
+pub const CMA_TEXT: u32 = 0x1000;
+pub const CMA_COMPLETE: u32 = 0x4000;
+pub const CMA_ZORDER: u32 = 0x0008;
+/// `CM_ARRANGE`'s standard arrangement.
+pub const CMA_ARRANGESTANDARD: u32 = 0;
 pub const CMA_FREE: u16 = 0x0001;
 pub const CMA_WINDOW: u16 = 0x0002;
 /// `CM_SETCNRINFO` flags.
@@ -149,7 +180,13 @@ pub const PMERR_FI_CURRENTLY_INSERTED: u32 = 0x1f05;
 /// `RECORDCORE` / `MINIRECORDCORE` field offsets and sizes.
 pub const RC_ATTR: u32 = 4;
 pub const RC_NEXT: u32 = 16;
+pub const RC_PTLX: u32 = 8;
+pub const RC_PTLY: u32 = 12;
 pub const RC_PSZICON: u32 = 20;
+pub const RC_HPTRICON: u32 = 24;
+pub const RC_HPTRMINIICON: u32 = 28;
+pub const RC_HBMBITMAP: u32 = 32;
+pub const RC_HBMMINIBITMAP: u32 = 36;
 pub const RC_PSZTEXT: u32 = 44;
 pub const RC_PSZNAME: u32 = 48;
 pub const RC_PSZTREE: u32 = 52;
@@ -165,6 +202,7 @@ pub const FI_CXWIDTH: u32 = 28;
 pub const FIELDINFO_SIZE: u32 = 32;
 /// `CNRINFO` size (its fields are laid out in [`CnrInfo::words`]).
 pub const CNRINFO_SIZE: u32 = 92;
+pub const CNREDITDATA_SIZE: u32 = 28;
 /// `RECORDINSERT` / `FIELDINFOINSERT` / `SEARCHSTRING` /
 /// `QUERYRECORDRECT` field offsets.
 const RI_ORDER: u32 = 4;
@@ -179,6 +217,11 @@ const SS_PREFIX: u32 = 8;
 const SS_CASE: u32 = 12;
 const SS_VIEW: u32 = 16;
 const QRR_RECORD: u32 = 4;
+const QRR_EXTENT: u32 = 12;
+const QRFR_RECT: u32 = 4;
+const QRFR_SEARCH: u32 = 20;
+const CED_RECORD: u32 = 8;
+const CED_FIELD: u32 = 12;
 
 /// Bytes of guest memory an arena takes (ADR-0043).
 pub const CNR_ARENA_BYTES: u32 = 64 * 1024;
@@ -206,6 +249,16 @@ const SCROLLBAR_W: i32 = 16;
 const TREE_INDENT: i32 = 16;
 /// Side of a tree view's expander box.
 const EXPANDER: i32 = 9;
+/// Icon sizes when `slBitmapOrIcon` is 0: `SV_CXICON` and the mini icon
+/// (`CV_MINI`, and Warpine's tree-view default).
+pub const ICON_SIZE: i32 = 32;
+pub const MINI_ICON_SIZE: i32 = 16;
+/// The largest icon size taken from `CNRINFO`.
+const MAX_ICON_SIZE: i32 = 256;
+/// The gap `CM_ARRANGE` leaves around icon-view items (Warpine's own).
+const ARRANGE_GAP: i32 = 8;
+/// The narrowest direct-editing MLE.
+const EDIT_MIN_W: i32 = 80;
 
 /// What an allocated item is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -366,6 +419,26 @@ pub struct CnrState {
     /// A sort waiting for the application's comparisons.
     pub sort: Option<SortJob>,
     next_sort_id: u32,
+    /// A filter waiting for the application's answers: its id and the
+    /// records asked about, in order.
+    pub filter: Option<(u32, Vec<u32>)>,
+    /// The direct edit in progress, and the text of a closed one waiting
+    /// for the owner's `CN_REALLOCPSZ` answer (encoded, without the NUL).
+    pub edit: Option<EditSession>,
+    pub edit_text: Option<Vec<u8>>,
+}
+
+/// A direct edit of a record's text (`CNREDITDATA`): the record, the
+/// detail field info (0 outside the details view), where the text's
+/// `PSZ` is (`ppszText`) and the window id the edit is in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EditSession { pub rec: u32, pub fi: u32, pub ppsz: u32, pub id: u32 }
+
+impl EditSession {
+    /// The `CNREDITDATA` for container `hwnd` with `cb_text` bytes.
+    pub fn block(&self, hwnd: u32, cb_text: u32) -> [u32; 7] {
+        [CNREDITDATA_SIZE, hwnd, self.rec, self.fi, self.ppsz, cb_text, self.id]
+    }
 }
 
 impl CnrState {
@@ -373,7 +446,7 @@ impl CnrState {
         CnrState {
             heap: RecordHeap::default(), records: Vec::new(), inserted: HashSet::new(), fields: Vec::new(),
             info: CnrInfo { window_attr: CV_ICON, ..CnrInfo::default() },
-            top: 0, anchor: None, mini: style & CCS_MINIRECORDCORE != 0, sort: None, next_sort_id: 0,
+            top: 0, anchor: None, mini: style & CCS_MINIRECORDCORE != 0, sort: None, next_sort_id: 0, filter: None, edit: None, edit_text: None,
         }
     }
 
@@ -471,6 +544,32 @@ impl CnrState {
         }
     }
 
+    /// `CM_QUERYRECORD` with `CMA_FILTER` in `cmd`: the records `shown`
+    /// rejects (filtered) are passed over in the direction of the request.
+    pub fn query_shown(&self, reference: u32, cmd: u32, shown: &dyn Fn(u32) -> bool) -> Result<u32, ()> {
+        let base = cmd & !CMA_FILTER;
+        let mut r = self.query(reference, base)?;
+        if cmd & CMA_FILTER == 0 { return Ok(r); }
+        let step = match base {
+            CMA_FIRST | CMA_NEXT => CMA_NEXT,
+            CMA_LAST | CMA_PREV => CMA_PREV,
+            c if c == u32::from(CMA_FIRSTCHILD) => CMA_NEXT,
+            c if c == u32::from(CMA_LASTCHILD) => CMA_PREV,
+            _ => return Ok(r),
+        };
+        let mut left = self.records.len();
+        while r != 0 && !shown(r) && left > 0 {
+            r = self.query(r, step)?;
+            left -= 1;
+        }
+        Ok(r)
+    }
+
+    /// The inserted records in item order, for a filter.
+    pub fn all_records(&self) -> Vec<u32> {
+        self.records.iter().map(|&(r, _)| r).collect()
+    }
+
     /// Insert field infos `fis` at `order` (`CMA_FIRST`, `CMA_END` or after
     /// an inserted one). Returns the field count.
     pub fn insert_fields(&mut self, fis: &[u32], order: u32) -> Result<u32, CnrError> {
@@ -524,7 +623,7 @@ impl CnrState {
         true
     }
 
-    fn new_sort_id(&mut self) -> u32 {
+    pub(crate) fn new_sort_id(&mut self) -> u32 {
         self.next_sort_id = self.next_sort_id.wrapping_add(1);
         self.next_sort_id
     }
@@ -721,8 +820,9 @@ pub struct Frame {
 }
 
 impl Frame {
-    pub fn new(attr: u32, line_spacing: i32, cx: i32, cy: i32) -> Frame {
-        let row_h = LINE_H + 2 * ROW_PAD + line_spacing.clamp(0, 64);
+    /// `item_h`: the height of a row's picture (0 = text only).
+    pub fn new(attr: u32, line_spacing: i32, item_h: i32, cx: i32, cy: i32) -> Frame {
+        let row_h = LINE_H.max(item_h.clamp(0, MAX_ICON_SIZE)) + 2 * ROW_PAD + line_spacing.clamp(0, 64);
         let band = LINE_H + 2 * ROW_PAD;
         let (x, w) = (BORDER, (cx - 2 * BORDER).max(0));
         let mut top = cy - BORDER;
@@ -745,6 +845,13 @@ impl Frame {
 
 /// A rectangle `(x, y, cx, cy)` in window coordinates.
 pub type Rect = (i32, i32, i32, i32);
+
+/// The rectangle around `a` and `b`.
+pub fn union(a: Rect, b: Rect) -> Rect {
+    let (l, bt) = (a.0.min(b.0), a.1.min(b.1));
+    let (r, t) = ((a.0 + a.2).max(b.0 + b.2), (a.1 + a.3).max(b.1 + b.3));
+    (l, bt, r - l, t - bt)
+}
 /// Shown items: `(index, rectangle)`.
 pub type Placed = Vec<(usize, Rect)>;
 
@@ -812,6 +919,100 @@ pub fn format_time(h: u8, m: u8, s: u8, fmt: u8, sep: char) -> String {
     }
 }
 
+/// The size records' pictures are drawn at in view attributes `attr`
+/// (`CNRINFO.slBitmapOrIcon`, `slTreeBitmapOrIcon` in the tree view; 0 =
+/// the system icon size, or the mini icon size with `CV_MINI` — ignored
+/// for `MINIRECORDCORE`s — and in the tree view).
+pub fn icon_size(info: &CnrInfo, mini_records: bool) -> (i32, i32) {
+    let attr = info.window_attr;
+    let (sz, default) = if view_of(attr) == View::Tree {
+        (info.tree_size, MINI_ICON_SIZE)
+    } else if attr & CV_MINI != 0 && !mini_records {
+        (info.bitmap_size, MINI_ICON_SIZE)
+    } else {
+        (info.bitmap_size, ICON_SIZE)
+    };
+    let pick = |v: u32| if v == 0 { default } else { (v.min(MAX_ICON_SIZE as u32) as i32).max(1) };
+    (pick(sz.0), pick(sz.1))
+}
+
+/// Whether view attributes `attr` show pictures: the icon and name views,
+/// and the tree view unless it is the tree text view (`CV_TREE | CV_TEXT`).
+pub fn shows_icons(attr: u32) -> bool {
+    match view_of(attr) {
+        View::Icon | View::Name => true,
+        View::Tree => attr & CV_TEXT == 0,
+        View::Text | View::Detail => false,
+    }
+}
+
+/// Which handle a record's picture is (`hptrIcon` & co.), and whether it is
+/// a bitmap: `CA_DRAWBITMAP` without `CA_DRAWICON` draws bitmaps, `CV_MINI`
+/// the mini ones (falling back to the normal one when 0, Warpine's
+/// choice); a `MINIRECORDCORE` has only `hptrIcon`. Returns the offsets
+/// to try, in order.
+pub fn picture_fields(attr: u32, mini_records: bool) -> (&'static [u32], bool) {
+    if mini_records { return (&[RC_HPTRICON], false); }
+    let bitmap = attr & CA_DRAWBITMAP != 0 && attr & CA_DRAWICON == 0;
+    let small = attr & CV_MINI != 0 && view_of(attr) != View::Tree;
+    match (bitmap, small) {
+        (false, false) => (&[RC_HPTRICON], false),
+        (false, true) => (&[RC_HPTRMINIICON, RC_HPTRICON], false),
+        (true, false) => (&[RC_HBMBITMAP], true),
+        (true, true) => (&[RC_HBMMINIBITMAP, RC_HBMBITMAP], true),
+    }
+}
+
+/// The height of an icon-view text of `lines` lines.
+pub fn icon_text_h(lines: usize) -> i32 {
+    lines.clamp(1, 64) as i32 * LINE_H + 2 * ROW_PAD
+}
+
+/// An icon-view item in window coordinates: the icon at `ptlIcon` (its
+/// lower-left corner; the reference does not say which point it is)
+/// moved by the work area's origin, the text centred under it.
+pub fn icon_item(ptl: (i32, i32), origin: (i32, i32), rows: (i32, i32), (iw, ih): (i32, i32),
+                 text_w: i32, lines: usize) -> (Rect, Rect) {
+    let x = rows.0.saturating_add(ptl.0.saturating_sub(origin.0));
+    let y = rows.1.saturating_add(ptl.1.saturating_sub(origin.1));
+    let tw = text_w.saturating_add(2 * CELL_PAD);
+    let th = icon_text_h(lines);
+    let tx = x.saturating_add(iw / 2).saturating_sub(tw / 2);
+    ((x, y, iw, ih), (tx, y.saturating_sub(th), tw, th))
+}
+
+/// `CM_ARRANGE`: the `ptlIcon` of each item (`(text width, lines)` each)
+/// placed in rows from the upper left of a `width` × `height` work area,
+/// left to right, a new row when the next one does not fit (spacing:
+/// `ARRANGE_GAP`, Warpine's own; the reference only says CUA spacing).
+pub fn arrange_icons(items: &[(i32, usize)], (iw, ih): (i32, i32), width: i32, height: i32, spacing: i32)
+                     -> Vec<(i32, i32)> {
+    let mut out = Vec::with_capacity(items.len());
+    let (mut x, mut top, mut row_h) = (ARRANGE_GAP, height - ARRANGE_GAP, 0);
+    for &(tw, lines) in items {
+        let w = iw.max(tw.saturating_add(2 * CELL_PAD)).min(width.max(iw));
+        let h = ih + icon_text_h(lines);
+        if x > ARRANGE_GAP && x.saturating_add(w) > width - ARRANGE_GAP {
+            top = top.saturating_sub(row_h + ARRANGE_GAP + spacing.clamp(0, 64));
+            x = ARRANGE_GAP;
+            row_h = 0;
+        }
+        out.push((x + (w - iw) / 2, top - ih));
+        row_h = row_h.max(h);
+        x = x.saturating_add(w + ARRANGE_GAP);
+    }
+    out
+}
+
+/// The icon view's vertical scrolling: items spanning workspace heights
+/// `items` (bottom, top) and a work area `h` high. Returns the
+/// workspace's `(bottom, top)`: the items' span and the work area at the
+/// workspace origin together.
+pub fn icon_extent(items: Option<(i32, i32)>, h: i32) -> (i32, i32) {
+    let (lo, hi) = items.unwrap_or((0, h));
+    (lo.min(0), hi.max(h))
+}
+
 /// A detail-view column: its field info, flags, left edge and width.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct Column { fi: u32, fl_data: u32, fl_title: u32, x: i32, w: i32 }
@@ -829,6 +1030,10 @@ struct Snapshot {
     /// Each row's depth and whether it has children (tree view).
     tree: Vec<(u16, bool)>,
     fields: Vec<(u32, u32)>,
+    /// Icon view: each row's `ptlIcon` and text lines, and the workspace
+    /// heights the items span.
+    icons: Vec<((i32, i32), Vec<String>)>,
+    span: Option<(i32, i32)>,
 }
 
 impl Snapshot {
@@ -838,13 +1043,40 @@ impl Snapshot {
         self.info.window_attr & CV_FLOW != 0 && matches!(self.view(), View::Text | View::Name)
     }
 
-    /// Whether the rows need the vertical scroll bar (not in flowed views).
+    /// Whether the rows need the vertical scroll bar (not in flowed views;
+    /// in the icon view when the workspace is taller than the work area).
     fn bar(&self) -> bool {
+        if self.view() == View::Icon {
+            let (lo, hi) = self.extent();
+            return hi - lo > self.plain_frame().rows.3;
+        }
         !self.flow() && self.rows.len() > self.plain_frame().capacity()
     }
 
+    /// Icon view: the workspace's span (see [`icon_extent`]).
+    fn extent(&self) -> (i32, i32) {
+        icon_extent(self.span, self.plain_frame().rows.3)
+    }
+
+    /// Icon view: the pels of workspace above the work area, and the most.
+    fn icon_scroll(&self) -> (i32, i32) {
+        let (lo, hi) = self.extent();
+        let h = self.plain_frame().rows.3;
+        (hi - (self.origin().1 + h), (hi - lo - h).max(0))
+    }
+
+    /// The work area's origin in the workspace (`CNRINFO.ptlOrigin`).
+    fn origin(&self) -> (i32, i32) {
+        (self.info.origin.0 as i32, self.info.origin.1 as i32)
+    }
+
+    fn icon(&self) -> (i32, i32) { icon_size(&self.info, self.mini) }
+
+    fn pictures(&self) -> bool { shows_icons(self.info.window_attr) }
+
     fn plain_frame(&self) -> Frame {
-        Frame::new(self.info.window_attr, self.info.line_spacing as i32, self.cx, self.cy)
+        let item_h = if self.pictures() && self.view() != View::Icon { self.icon().1 } else { 0 };
+        Frame::new(self.info.window_attr, self.info.line_spacing as i32, item_h, self.cx, self.cy)
     }
 
     /// The view's frame, the rows narrowed by the scroll bar when shown.
@@ -863,12 +1095,29 @@ impl Snapshot {
         match self.info.tree_indent as i32 { i if i > 0 => i.min(256), _ => TREE_INDENT }
     }
 
-    /// Where row `i`'s text starts, from its rectangle's left edge (tree
-    /// view: after its indentation and expander).
-    fn text_inset(&self, i: usize) -> i32 {
-        if self.view() != View::Tree { return 0; }
+    /// Where row `i`'s expander starts, from its rectangle's left edge.
+    fn expander_x(&self, i: usize) -> i32 {
         let depth = self.tree.get(i).map_or(0, |t| i32::from(t.0)).min(64);
-        depth * self.indent() + EXPANDER + 2 * CELL_PAD
+        depth * self.indent() + CELL_PAD
+    }
+
+    /// Where row `i`'s picture starts, from its rectangle's left edge (name
+    /// and tree views), if it has one.
+    fn icon_inset(&self, i: usize) -> Option<i32> {
+        if !self.pictures() { return None; }
+        match self.view() {
+            View::Name => Some(CELL_PAD),
+            View::Tree => Some(self.expander_x(i) + EXPANDER + CELL_PAD),
+            _ => None,
+        }
+    }
+
+    /// Where row `i`'s text starts, from its rectangle's left edge (tree
+    /// view: after its indentation and expander; then after the picture).
+    fn text_inset(&self, i: usize) -> i32 {
+        if let Some(x) = self.icon_inset(i) { return x + self.icon().0; }
+        if self.view() != View::Tree { return 0; }
+        self.expander_x(i) + EXPANDER + CELL_PAD
     }
 }
 
@@ -922,7 +1171,22 @@ impl Loader {
         } else {
             records.iter().filter(|&&(r, p)| p == 0 && shown(r)).map(|&(r, _)| ((r, size(r)), (0, false))).unzip()
         };
-        Some(Snapshot { cx, cy, info, mini, top, rows, tree, fields })
+        let (icons, span) = if view_of(info.window_attr) == View::Icon {
+            let (_, ih) = icon_size(&info, mini);
+            let mut span: Option<(i32, i32)> = None;
+            let icons: Vec<((i32, i32), Vec<String>)> = rows.iter().map(|&(r, _)| {
+                let rd = |o: u32| self.guest_read::<u32>(r.wrapping_add(o)).unwrap_or(0) as i32;
+                let ptl = (rd(RC_PTLX), rd(RC_PTLY));
+                let text = self.record_text(hwnd, r, View::Icon, mini);
+                let lines: Vec<String> = text.split('\n').map(|l| l.trim_end_matches('\r').to_string()).take(64).collect();
+                let lo = ptl.1.saturating_sub(icon_text_h(lines.len()));
+                let hi = ptl.1.saturating_add(ih);
+                span = Some(span.map_or((lo, hi), |(a, b)| (a.min(lo), b.max(hi))));
+                (ptl, lines)
+            }).collect();
+            (icons, span)
+        } else { (Vec::new(), None) };
+        Some(Snapshot { cx, cy, info, mini, top, rows, tree, fields, icons, span })
     }
 
     fn cnr_text(&self, hwnd: u32, ptr: u32) -> String {
@@ -977,7 +1241,7 @@ impl Loader {
                 for &(r, size) in &snap.rows {
                     w = w.max(crate::gui::font::text_width(&self.field_value(hwnd, r, size, fi, fl_data), font));
                 }
-                w
+                w.max(if fl_data & CFA_BITMAPORICON != 0 { LINE_H } else { 0 })
             } + 2 * CELL_PAD;
             out.push(Column { fi, fl_data, fl_title, x, w });
             x = x.saturating_add(w + if fl_data & CFA_SEPARATOR != 0 { 1 } else { 0 });
@@ -985,23 +1249,48 @@ impl Loader {
         out
     }
 
-    /// Where the shown records of `snap` are: `(row index, rectangle)`.
+    /// Where the shown records of `snap` are: `(row index, rectangle)` (in
+    /// the icon view the rectangle around the icon and its text).
     fn placements(&self, hwnd: u32, snap: &Snapshot, font: crate::gui::font::FontSpec) -> (Frame, Placed) {
         let f = snap.frame();
+        if snap.view() == View::Icon {
+            let placed = self.icon_items(snap, font).into_iter().map(|(i, a, b)| (i, union(a, b))).collect();
+            return (f, placed);
+        }
         let view = snap.view();
         let flow = snap.flow();
         let widths: Vec<i32> = if flow {
-            snap.rows.iter().map(|&(r, _)| crate::gui::font::text_width(&self.record_text(hwnd, r, view, snap.mini), font)).collect()
+            snap.rows.iter().enumerate().map(|(i, &(r, _))| {
+                crate::gui::font::text_width(&self.record_text(hwnd, r, view, snap.mini), font) + snap.text_inset(i)
+            }).collect()
         } else { vec![0; snap.rows.len()] };
         let top = snap.top.min(snap.rows.len().saturating_sub(1));
         (f, place_list(&f, &widths, top, flow))
     }
 
-    /// The shown record at window point `(x, y)`.
+    /// The icon view's items: `(row index, icon rectangle, text rectangle)`
+    /// in window coordinates, in drawing order (item order).
+    fn icon_items(&self, snap: &Snapshot, font: crate::gui::font::FontSpec) -> Vec<(usize, Rect, Rect)> {
+        let f = snap.frame();
+        let icon = snap.icon();
+        snap.icons.iter().enumerate().map(|(i, (ptl, lines))| {
+            let tw = lines.iter().map(|l| crate::gui::font::text_width(l, font)).max().unwrap_or(0);
+            let (a, b) = icon_item(*ptl, snap.origin(), (f.rows.0, f.rows.1), icon, tw, lines.len());
+            (i, a, b)
+        }).collect()
+    }
+
+    /// The shown record at window point `(x, y)` (in the icon view the
+    /// topmost whose icon or text is there).
     fn record_at(&self, hwnd: u32, snap: &Snapshot, (x, y): (i32, i32)) -> Option<usize> {
         let font = Painter::new(self, 0, hwnd).font();
+        let inside = |(rx, ry, rw, rh): Rect| x >= rx && x < rx + rw && y >= ry && y < ry + rh;
+        if snap.view() == View::Icon {
+            if !inside(snap.frame().rows) { return None; }
+            return self.icon_items(snap, font).into_iter().rev().find(|&(_, a, b)| inside(a) || inside(b)).map(|(i, _, _)| i);
+        }
         let (_, placed) = self.placements(hwnd, snap, font);
-        placed.into_iter().find(|&(_, (rx, ry, rw, rh))| x >= rx && x < rx + rw && y >= ry && y < ry + rh).map(|(i, _)| i)
+        placed.into_iter().find(|&(_, r)| inside(r)).map(|(i, _)| i)
     }
 
     /// Change emphasis `mask` of record `rec` (on or off), keeping a single
@@ -1113,7 +1402,14 @@ impl Loader {
         let lo = mp2 & 0xFFFF;
         let hi = (mp2 >> 16) as u16;
         Some(match msg {
-            WM_BUTTON1DOWN => ok(self.cnr_click(hwnd, style, mp1, mp2)),
+            WM_BUTTON1DOWN => {
+                // A click ends an edit: Alt+click discards it, a plain one
+                // keeps it. Alt+click on a record's text starts one.
+                let alt = (mp2 >> 16) & KC_ALT != 0;
+                if self.cnr_close_edit(hwnd, !alt) { return Some(ok(true)); }
+                if alt && self.cnr_alt_click(hwnd, style, mp1) { return Some(ok(true)); }
+                ok(self.cnr_click(hwnd, style, mp1, mp2))
+            }
             WM_BUTTON1DBLCLK => {
                 self.cnr_click(hwnd, style, mp1, mp2);
                 let rec = self.snapshot(hwnd).and_then(|snap| {
@@ -1163,6 +1459,7 @@ impl Loader {
                     // parent's children are sorted before the call returns.
                     Some(Ok((count, sort))) if sort != 0 => self.cnr_start_sort(hwnd, sort, 0, Some(parent), count, true),
                     Some(Ok((count, _))) => {
+                        self.cnr_autoposition(hwnd);
                         if inval != 0 { self.repaint_control(hwnd); }
                         ApiResult::Normal(count)
                     }
@@ -1186,12 +1483,13 @@ impl Loader {
                     self.set_rec_attr(r, a & !(CRA_SELECTED | CRA_CURSORED));
                 }
                 if hi & CMA_FREE != 0 { self.cnr_free(hwnd, &gone, ItemKind::Record); }
+                self.cnr_autoposition(hwnd);
                 self.cnr_clamp_top(hwnd);
                 self.repaint_control(hwnd);
                 ApiResult::Normal(self.with_cnr(hwnd, |s, _| s.records.len() as u32).unwrap_or(0))
             }
             // mp1 = reference record, mp2 = MPFROM2SHORT(cmd, order).
-            CM_QUERYRECORD => match self.with_cnr(hwnd, |s, _| s.query(mp1, lo)) {
+            CM_QUERYRECORD => match self.with_cnr(hwnd, |s, _| s.query_shown(mp1, lo, &|r| self.rec_attr(r) & CRA_FILTERED == 0)) {
                 Some(Ok(r)) => ApiResult::Normal(r),
                 _ => minus1,
             },
@@ -1214,6 +1512,7 @@ impl Loader {
                 ok(true)
             }
             CM_INVALIDATERECORD | CM_INVALIDATEDETAILFIELDINFO => {
+                if msg == CM_INVALIDATERECORD { self.cnr_autoposition(hwnd); }
                 self.cnr_clamp_top(hwnd);
                 ok(self.repaint_control(hwnd))
             }
@@ -1233,6 +1532,7 @@ impl Loader {
                 let mut w = [0u32; 23];
                 for (i, c) in raw.as_chunks::<4>().0.iter().enumerate() { w[i] = u32::from_le_bytes(*c); }
                 self.with_cnr(hwnd, |s, _| { s.info.set_from(&w, mp2); s.top = 0; });
+                if mp2 & CMA_FLWINDOWATTR != 0 { self.cnr_autoposition(hwnd); }
                 self.repaint_control(hwnd);
                 ok(true)
             }
@@ -1273,6 +1573,10 @@ impl Loader {
             CM_SCROLLWINDOW => {
                 if mp1 & 0xFFFF == CMA_VERTICAL {
                     let Some(snap) = self.snapshot(hwnd) else { return Some(ok(false)) };
+                    if snap.view() == View::Icon {
+                        self.cnr_scroll_icons(hwnd, &snap, i64::from(snap.icon_scroll().0) + i64::from(mp2 as i32));
+                        return Some(ok(true));
+                    }
                     let rows = (mp2 as i32) / snap.frame().row_h;
                     self.cnr_scroll_to(hwnd, &snap, snap.top as i64 + i64::from(rows));
                 }
@@ -1281,6 +1585,20 @@ impl Loader {
             // From the vertical scroll bar: mp2 = MPFROM2SHORT(slider, SB_*).
             WM_VSCROLL => {
                 let Some(snap) = self.snapshot(hwnd) else { return Some(ok(false)) };
+                if snap.view() == View::Icon {
+                    // The icon view scrolls by pels.
+                    let (pos, page) = (i64::from(snap.icon_scroll().0), i64::from(snap.frame().rows.3.max(1)));
+                    let to = match mp2 >> 16 {
+                        SB_LINEUP => pos - i64::from(LINE_H),
+                        SB_LINEDOWN => pos + i64::from(LINE_H),
+                        SB_PAGEUP => pos - page,
+                        SB_PAGEDOWN => pos + page,
+                        SB_SLIDERTRACK | SB_SLIDERPOSITION => i64::from(mp2 as u16 as i16),
+                        _ => return Some(ok(false)),
+                    };
+                    self.cnr_scroll_icons(hwnd, &snap, to);
+                    return Some(ok(true));
+                }
                 let page = snap.frame().capacity().saturating_sub(1).max(1) as i64;
                 let top = snap.top as i64;
                 let to = match mp2 >> 16 {
@@ -1299,6 +1617,17 @@ impl Loader {
                 if mp1 == 0 { return Some(ok(false)); }
                 self.cnr_start_sort(hwnd, mp1, mp2, None, 1, false)
             }
+            // mp1 = PCNREDITDATA (pRecord, pFieldInfo, id), mp2 = 0.
+            CM_OPENEDIT => {
+                let rd = |o: u32| self.guest_read::<u32>(mp1.wrapping_add(o)).unwrap_or(0);
+                if mp1 == 0 { fail(PMERR_INVALID_PARAMETERS); return Some(ok(false)); }
+                let opened = self.cnr_open_edit(hwnd, style, rd(CED_RECORD), rd(CED_FIELD));
+                if !opened { fail(PMERR_INVALID_PARAMETERS); }
+                ok(opened)
+            }
+            CM_CLOSEEDIT => ok(self.cnr_close_edit(hwnd, true)),
+            // mp1 = filter function (NULL: show every record), mp2 = pStorage.
+            CM_FILTER => self.cnr_start_filter(hwnd, mp1, mp2),
             // mp1 = record (NULL: every record).
             CM_EXPANDTREE | CM_COLLAPSETREE => ok(self.cnr_expand(hwnd, mp1, msg == CM_EXPANDTREE)),
             // mp1 = PSEARCHSTRING, mp2 = start after (CMA_FIRST = from the start).
@@ -1306,12 +1635,15 @@ impl Loader {
             // mp1 = PRECTL out, mp2 = PQUERYRECORDRECT.
             CM_QUERYRECORDRECT => {
                 let rec = self.guest_read::<u32>(mp2.wrapping_add(QRR_RECORD)).unwrap_or(0);
+                let extent = self.guest_read::<u32>(mp2.wrapping_add(QRR_EXTENT)).unwrap_or(0);
                 let Some(snap) = self.snapshot(hwnd) else { return Some(ok(false)) };
-                let font = Painter::new(self, 0, hwnd).font();
-                let (_, placed) = self.placements(hwnd, &snap, font);
-                let Some(&(_, (x, y, w, h))) = placed.iter().find(|&&(i, _)| snap.rows[i].0 == rec) else { return Some(ok(false)) };
+                let Some((x, y, w, h)) = self.record_rect(hwnd, &snap, rec, extent) else { return Some(ok(false)) };
                 ok(self.write_rectl(mp1, super::pm_rect::Rectl { x_left: x, y_bottom: y, x_right: x + w, y_top: y + h }))
             }
+            // mp1 = search after (CMA_FIRST = from the start), mp2 = PQUERYRECFROMRECT.
+            CM_QUERYRECORDFROMRECT => self.cnr_record_from_rect(hwnd, mp1, mp2).map_or(minus1, ApiResult::Normal),
+            // mp1 = CMA_ARRANGESTANDARD (the only arrangement Warpine makes), mp2 = 0.
+            CM_ARRANGE => ok(mp1 == CMA_ARRANGESTANDARD && mp2 == 0 && self.cnr_arrange(hwnd)),
             // mp1 = PRECTL out, mp2 = MPFROM2SHORT(CMA_WINDOW / CMA_WORKSPACE, right split window).
             CM_QUERYVIEWPORTRECT => {
                 if lo != u32::from(CMA_WINDOW) { return Some(ok(false)); }
@@ -1352,12 +1684,272 @@ impl Loader {
     fn cnr_scroll_to(&self, hwnd: u32, snap: &Snapshot, to: i64) {
         let top = to.clamp(0, snap.max_top() as i64) as usize;
         if top == snap.top { return; }
+        self.cnr_close_edit(hwnd, false);
         self.with_cnr(hwnd, |s, _| s.top = top);
         let pels = (top as i64 - snap.top as i64) * i64::from(snap.frame().row_h);
         self.shared.window_mgr.lock_or_recover().queue_owner_call(OwnerCall {
             control: hwnd, kind: OwnerCallKind::ContainerNotify { code: CN_SCROLL as u16, block: [hwnd, pels as i32 as u32, CMA_VERTICAL] },
         });
         self.repaint_control(hwnd);
+    }
+
+    /// Where record `rec`'s text for a direct edit is: its `ppszText`, the
+    /// `CNREDITDATA.id` and the text's rectangle — `None` when it cannot
+    /// be edited: a read-only container (`CCS_READONLY`) or record
+    /// (`CRA_RECORDREADONLY`), a record not shown, in the details view a
+    /// field info that is not an inserted, writable (`CFA_FIREADONLY`)
+    /// `CFA_STRING` column. (Container titles and column headings are not
+    /// edited yet.)
+    fn edit_target(&self, hwnd: u32, style: u32, rec: u32, fi: u32) -> Option<(u32, u32, Rect)> {
+        if style & CCS_READONLY != 0 || rec == 0 || self.rec_attr(rec) & CRA_RECORDREADONLY != 0 { return None; }
+        self.cnr_follow(hwnd, rec);
+        let snap = self.snapshot(hwnd)?;
+        let i = snap.rows.iter().position(|&(r, _)| r == rec)?;
+        let font = Painter::new(self, 0, hwnd).font();
+        let id = self.shared.window_mgr.lock_or_recover().get_window(hwnd).map_or(0, |w| w.id);
+        match snap.view() {
+            View::Detail => {
+                let fl = self.guest_read::<u32>(fi.wrapping_add(FI_FLDATA))?;
+                if !snap.fields.iter().any(|&(f, _)| f == fi) || fl & CFA_STRING == 0 || fl & CFA_FIREADONLY != 0 { return None; }
+                let off = self.guest_read::<u32>(fi.wrapping_add(FI_OFFSTRUCT))?;
+                if off.checked_add(4).is_none_or(|end| end > snap.rows[i].1) { return None; }
+                let col = self.columns(hwnd, &snap, font, BORDER).into_iter().find(|c| c.fi == fi)?;
+                let (_, placed) = self.placements(hwnd, &snap, font);
+                let &(_, row) = placed.iter().find(|&&(k, _)| k == i)?;
+                Some((rec.wrapping_add(off), CID_LEFTDVWND, (col.x, row.1, col.w, row.3)))
+            }
+            view => {
+                if fi != 0 { return None; }
+                let ppsz = rec.wrapping_add(text_offset(view, snap.mini));
+                let rect = if view == View::Icon {
+                    self.icon_items(&snap, font).into_iter().find(|&(k, _, _)| k == i).map(|(_, _, t)| t)?
+                } else {
+                    let (_, placed) = self.placements(hwnd, &snap, font);
+                    let &(_, row) = placed.iter().find(|&&(k, _)| k == i)?;
+                    let inset = snap.text_inset(i);
+                    (row.0 + inset, row.1, row.2 - inset, row.3)
+                };
+                Some((ppsz, id, rect))
+            }
+        }
+    }
+
+    /// Start a direct edit of record `rec` (`fi`: the details-view column):
+    /// an MLE (`CID_MLE`) over the text holding it, all selected, with the
+    /// focus; the owner hears `CN_BEGINEDIT`. An edit in progress is kept
+    /// first. FALSE when the text cannot be edited.
+    fn cnr_open_edit(&self, hwnd: u32, style: u32, rec: u32, fi: u32) -> bool {
+        self.cnr_close_edit(hwnd, true);
+        let Some((ppsz, id, (x, y, w, h))) = self.edit_target(hwnd, style, rec, fi) else { return false };
+        let ptr = self.guest_read::<u32>(ppsz).unwrap_or(0);
+        let text = self.cnr_text(hwnd, ptr);
+        let mle = {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let Some((cnr_w, hmq)) = wm.get_window(hwnd).map(|c| (c.cx, c.hmq)) else { return false };
+            let mle = match wm.find_child_by_id(hwnd, CID_MLE) {
+                Some(m) => m,
+                None => {
+                    let m = wm.create_window(super::pm_controls::CLASS_MLE.to_string(), hwnd, hmq);
+                    if let Some(c) = wm.get_window_mut(m) { (c.id, c.owner) = (CID_MLE, hwnd); }
+                    m
+                }
+            };
+            let Some(m) = wm.get_window_mut(mle) else { return false };
+            let cx = w.max(EDIT_MIN_W).min((cnr_w - 2 * BORDER).max(1));
+            let left = x.clamp(BORDER, (cnr_w - BORDER - cx).max(BORDER));
+            (m.x, m.y, m.cx, m.cy, m.visible) = (left, y, cx, h.max(LINE_H + 4), true);
+            m.style |= WS_VISIBLE;
+            m.edit_anchor = 0;
+            m.edit_caret = text.chars().count();
+            m.text = text;
+            mle
+        };
+        let s = EditSession { rec, fi, ppsz, id };
+        self.with_cnr(hwnd, |c, _| c.edit = Some(s));
+        self.queue_edit_note(hwnd, CN_BEGINEDIT, s.block(hwnd, 0));
+        self.set_focus_window(mle);
+        self.repaint_control(hwnd);
+        true
+    }
+
+    /// End the direct edit of container `hwnd`, if one is in progress
+    /// (FALSE otherwise). Kept (`save`): the owner is asked for room for
+    /// the new text (`CN_REALLOCPSZ`, `cbText` counting the NUL), which is
+    /// copied into `*ppszText` when it answers TRUE; then, and when
+    /// discarded at once, `CN_ENDEDIT`. The MLE is hidden and the focus
+    /// goes back to the container.
+    pub(crate) fn cnr_close_edit(&self, hwnd: u32, save: bool) -> bool {
+        let Some(Some(session)) = self.with_cnr(hwnd, |c, _| c.edit.take()) else { return false };
+        let text = {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let mle = wm.find_child_by_id(hwnd, CID_MLE);
+            mle.and_then(|m| wm.get_window_mut(m)).map(|m| {
+                m.visible = false;
+                m.style &= !WS_VISIBLE;
+                std::mem::take(&mut m.text)
+            }).unwrap_or_default()
+        };
+        if save {
+            let mut bytes = super::codepage::cp_encode(&text, self.window_codepage(hwnd));
+            bytes.truncate(MAX_RECORD_DATA as usize);
+            let cb = bytes.len() as u32 + 1;
+            self.with_cnr(hwnd, |c, _| c.edit_text = Some(bytes));
+            self.queue_edit_note(hwnd, CN_REALLOCPSZ, session.block(hwnd, cb));
+        } else {
+            self.queue_edit_note(hwnd, CN_ENDEDIT, session.block(hwnd, 0));
+        }
+        self.set_focus_window(hwnd);
+        self.repaint_control(hwnd);
+        true
+    }
+
+    /// The owner answered `CN_REALLOCPSZ` (`block`: the `CNREDITDATA` sent)
+    /// with `result`: TRUE copies the new text into the string `*ppszText`
+    /// points to (at most `cbText` bytes with the NUL); then `CN_ENDEDIT`.
+    pub(crate) fn container_realloc_done(&self, hwnd: u32, result: u32, block: [u32; 7]) {
+        let text = self.with_cnr(hwnd, |c, _| c.edit_text.take()).flatten();
+        let (ppsz, cb) = (block[4], block[5]);
+        if result != 0 && let Some(mut bytes) = text {
+            let ptr = self.guest_read::<u32>(ppsz).unwrap_or(0);
+            bytes.truncate(cb.saturating_sub(1) as usize);
+            bytes.push(0);
+            if ptr != 0 { let _ = self.guest_write_bytes(ptr, &bytes); }
+        }
+        let mut end = block;
+        end[5] = if result != 0 { cb } else { 0 };
+        self.queue_edit_note(hwnd, CN_ENDEDIT, end);
+        self.cnr_autoposition(hwnd);
+        self.repaint_control(hwnd);
+    }
+
+    fn queue_edit_note(&self, hwnd: u32, code: u32, block: [u32; 7]) {
+        self.shared.window_mgr.lock_or_recover().queue_owner_call(OwnerCall {
+            control: hwnd, kind: OwnerCallKind::ContainerEdit { code: code as u16, block },
+        });
+    }
+
+    /// Alt + button 1 at container point `mp1`: edit the text of the record
+    /// there (in the icon view its text, in the details view the column).
+    fn cnr_alt_click(&self, hwnd: u32, style: u32, mp1: u32) -> bool {
+        let at = ((mp1 & 0xFFFF) as i16 as i32, (mp1 >> 16) as i16 as i32);
+        let Some(snap) = self.snapshot(hwnd) else { return false };
+        let Some(i) = self.record_at(hwnd, &snap, at) else { return false };
+        let rec = snap.rows[i].0;
+        let fi = if snap.view() == View::Detail {
+            let font = Painter::new(self, 0, hwnd).font();
+            match self.columns(hwnd, &snap, font, BORDER).into_iter().find(|c| at.0 >= c.x && at.0 < c.x + c.w) {
+                Some(c) => c.fi,
+                None => return false,
+            }
+        } else { 0 };
+        self.cnr_open_edit(hwnd, style, rec, fi)
+    }
+
+    /// A key for the direct-editing MLE `mle` of container `hwnd`: Esc
+    /// discards the edit. `None`: the MLE handles the key.
+    pub(super) fn container_edit_key(&self, hwnd: u32, mle: u32, mp1: u32, mp2: u32) -> Option<ApiResult> {
+        let id = self.shared.window_mgr.lock_or_recover().get_window(mle).map_or(0, |w| w.id);
+        let fs = mp1 & 0xFFFF;
+        if id != CID_MLE || fs & KC_KEYUP != 0 || fs & KC_VIRTUALKEY == 0 || mp2 >> WM_CHAR_VKEY_SHIFT != VK_ESC {
+            return None;
+        }
+        self.cnr_close_edit(hwnd, false).then_some(ApiResult::Normal(1))
+    }
+
+    /// Icon view: scroll so that `to` pels of workspace (clamped) are above
+    /// the work area, telling the owner (`CN_SCROLL`).
+    fn cnr_scroll_icons(&self, hwnd: u32, snap: &Snapshot, to: i64) {
+        let (pos, max) = snap.icon_scroll();
+        let new = to.clamp(0, i64::from(max)) as i32;
+        if new == pos { return; }
+        self.cnr_close_edit(hwnd, false);
+        let delta = new - pos;
+        self.with_cnr(hwnd, |s, _| s.info.origin.1 = (s.info.origin.1 as i32).saturating_sub(delta) as u32);
+        self.shared.window_mgr.lock_or_recover().queue_owner_call(OwnerCall {
+            control: hwnd, kind: OwnerCallKind::ContainerNotify { code: CN_SCROLL as u16, block: [hwnd, delta as u32, CMA_VERTICAL] },
+        });
+        self.repaint_control(hwnd);
+    }
+
+    /// `CM_ARRANGE` (standard): place the shown top-level records in rows
+    /// from the upper left of the work area (see [`arrange_icons`]),
+    /// writing their `ptlIcon`, and scroll back to the workspace origin.
+    fn cnr_arrange(&self, hwnd: u32) -> bool {
+        let Some(snap) = self.snapshot(hwnd) else { return false };
+        let font = Painter::new(self, 0, hwnd).font();
+        let recs: Vec<u32> = if snap.view() == View::Icon { snap.rows.iter().map(|&(r, _)| r).collect() } else {
+            let all = self.with_cnr(hwnd, |s, _| s.records.clone()).unwrap_or_default();
+            all.into_iter().filter(|&(r, p)| p == 0 && self.rec_attr(r) & CRA_FILTERED == 0).map(|(r, _)| r).collect()
+        };
+        let items: Vec<(i32, usize)> = recs.iter().map(|&r| {
+            let text = self.record_text(hwnd, r, View::Icon, snap.mini);
+            let lines: Vec<&str> = text.split('\n').take(64).collect();
+            (lines.iter().map(|l| crate::gui::font::text_width(l.trim_end_matches('\r'), font)).max().unwrap_or(0), lines.len())
+        }).collect();
+        let icon = icon_size(&CnrInfo { window_attr: CV_ICON | (snap.info.window_attr & CV_MINI), ..snap.info }, snap.mini);
+        let rows = snap.plain_frame().rows;
+        let places = arrange_icons(&items, icon, rows.2 - SCROLLBAR_W, rows.3, snap.info.line_spacing as i32);
+        for (&r, &(px, py)) in recs.iter().zip(&places) {
+            let _ = self.guest_write::<u32>(r.wrapping_add(RC_PTLX), px as u32);
+            let _ = self.guest_write::<u32>(r.wrapping_add(RC_PTLY), py as u32);
+        }
+        self.with_cnr(hwnd, |s, _| s.info.origin = (0, 0));
+        self.repaint_control(hwnd);
+        true
+    }
+
+    /// `CCS_AUTOPOSITION`: arrange the icon view after records changed.
+    fn cnr_autoposition(&self, hwnd: u32) {
+        let auto = self.with_cnr(hwnd, |s, style| style & CCS_AUTOPOSITION != 0 && view_of(s.info.window_attr) == View::Icon);
+        if auto == Some(true) { self.cnr_arrange(hwnd); }
+    }
+
+    /// `CM_QUERYRECORDRECT`: record `rec`'s rectangle; in the icon view
+    /// `extent` picks the icon (`CMA_ICON`), the text (`CMA_TEXT`) or both,
+    /// in the name and tree views the picture alone with `CMA_ICON`.
+    fn record_rect(&self, hwnd: u32, snap: &Snapshot, rec: u32, extent: u32) -> Option<Rect> {
+        let i = snap.rows.iter().position(|&(r, _)| r == rec)?;
+        let font = Painter::new(self, 0, hwnd).font();
+        if snap.view() == View::Icon {
+            let (_, a, b) = self.icon_items(snap, font).into_iter().find(|&(k, _, _)| k == i)?;
+            return Some(match (extent & CMA_ICON != 0, extent & CMA_TEXT != 0) {
+                (true, false) => a,
+                (false, true) => b,
+                _ => union(a, b),
+            });
+        }
+        let (_, placed) = self.placements(hwnd, snap, font);
+        let &(_, row) = placed.iter().find(|&&(k, _)| k == i)?;
+        if extent & (CMA_ICON | CMA_TEXT) == CMA_ICON && let Some(ix) = snap.icon_inset(i) {
+            let (iw, ih) = snap.icon();
+            return Some((row.0 + ix, row.1 + (row.3 - ih) / 2, iw, ih));
+        }
+        Some(row)
+    }
+
+    /// `CM_QUERYRECORDFROMRECT`: the next shown record (after `after`, or
+    /// from the first with `CMA_FIRST`) lying partly (`CMA_PARTIAL`) or
+    /// wholly (`CMA_COMPLETE`) in the `QUERYRECFROMRECT`'s rectangle;
+    /// `CMA_ZORDER` searches from the topmost (the last drawn). The
+    /// rectangle's x is ignored in the details view. `Some(0)` for none.
+    fn cnr_record_from_rect(&self, hwnd: u32, after: u32, pq: u32) -> Option<u32> {
+        let rd = |o: u32| self.guest_read::<u32>(pq.wrapping_add(o)).map(|v| v as i32);
+        let (l, b, r, t) = (rd(QRFR_RECT)?, rd(QRFR_RECT + 4)?, rd(QRFR_RECT + 8)?, rd(QRFR_RECT + 12)?);
+        let search = rd(QRFR_SEARCH)? as u32;
+        let snap = self.snapshot(hwnd)?;
+        let font = Painter::new(self, 0, hwnd).font();
+        let (_, mut placed) = self.placements(hwnd, &snap, font);
+        if search & CMA_ZORDER != 0 { placed.reverse(); }
+        let detail = snap.view() == View::Detail;
+        let complete = search & CMA_COMPLETE != 0;
+        let hit = |(x, y, w, h): Rect| {
+            let x_ok = detail || if complete { x >= l && x + w <= r } else { x < r && x + w > l };
+            let y_ok = if complete { y >= b && y + h <= t } else { y < t && y + h > b };
+            x_ok && y_ok
+        };
+        let order: Vec<u32> = placed.iter().map(|&(i, _)| snap.rows[i].0).collect();
+        let start = if after == CMA_FIRST { 0 } else { order.iter().position(|&x| x == after)? + 1 };
+        Some(placed[start..].iter().find(|&&(_, rect)| hit(rect)).map_or(0, |&(i, _)| snap.rows[i].0))
     }
 
     /// Expand (or collapse) record `rec` — every record with children for
@@ -1431,6 +2023,7 @@ impl Loader {
         match next {
             Some(Next::Ask(pfn, storage, pair)) => ChainEnd::Next(Box::new(sort_chain(hwnd, job, pfn, storage, pair, ret, keep))),
             Some(Next::Done(applied)) => {
+                self.cnr_autoposition(hwnd);
                 self.repaint_control(hwnd);
                 ChainEnd::Return(if applied || keep { ret } else { 0 })
             }
@@ -1439,11 +2032,63 @@ impl Loader {
         }
     }
 
+    /// `CM_FILTER`: ask the application's function `pfn` about every
+    /// record (a call chain, ADR-0026); those it answers FALSE get
+    /// `CRA_FILTERED`. Without a function every record is shown again.
+    fn cnr_start_filter(&self, hwnd: u32, pfn: u32, storage: u32) -> ApiResult {
+        let Some((id, recs)) = self.with_cnr(hwnd, |s, _| {
+            let id = s.new_sort_id();
+            let recs = s.all_records();
+            s.filter = (pfn != 0 && !recs.is_empty()).then(|| (id, recs.clone()));
+            (id, recs)
+        }) else { return ApiResult::Normal(0) };
+        if pfn == 0 || recs.is_empty() {
+            for r in recs {
+                let a = self.rec_attr(r);
+                if a & CRA_FILTERED != 0 { self.set_rec_attr(r, a & !CRA_FILTERED); }
+            }
+            self.cnr_autoposition(hwnd);
+            self.cnr_clamp_top(hwnd);
+            self.repaint_control(hwnd);
+            return ApiResult::Normal(1);
+        }
+        let steps = recs.iter().map(|&r| CallStep::hook(pfn, vec![r, storage], false)).collect();
+        self.start_chain(CallChain::new(super::interrupt::current_vcpu().unwrap_or(0), steps, false,
+                                        ChainThen::ContainerFilter { hwnd, job: id }))
+    }
+
+    /// Filter `job` of container `hwnd` got its answers (`results`, one
+    /// per record asked about): mark the records, show the rest.
+    pub(crate) fn container_filter_done(&self, hwnd: u32, job: u32, results: &[u32]) -> ChainEnd {
+        let Some(Some(recs)) = self.with_cnr(hwnd, |s, _| match s.filter.take() {
+            Some((id, recs)) if id == job => Some(recs.into_iter().zip(results).filter(|&(r, _)| s.is_inserted(r)).map(|(r, &k)| (r, k)).collect::<Vec<_>>()),
+            other => { s.filter = other; None }
+        }) else { return ChainEnd::Return(0) };
+        for (r, keep) in recs {
+            let a = self.rec_attr(r);
+            let new = if keep != 0 { a & !CRA_FILTERED } else { a | CRA_FILTERED };
+            if new != a { self.set_rec_attr(r, new); }
+        }
+        self.cnr_autoposition(hwnd);
+        self.cnr_clamp_top(hwnd);
+        self.repaint_control(hwnd);
+        ChainEnd::Return(1)
+    }
+
     /// Scroll so that record `rec` is shown.
     fn cnr_follow(&self, hwnd: u32, rec: u32) {
         let Some(snap) = self.snapshot(hwnd) else { return };
         let Some(cursor) = snap.rows.iter().position(|&(r, _)| r == rec) else { return };
         let font = Painter::new(self, 0, hwnd).font();
+        if snap.view() == View::Icon {
+            let Some((_, a, b)) = self.icon_items(&snap, font).into_iter().find(|&(i, _, _)| i == cursor) else { return };
+            let (_, ib, _, ih) = union(a, b);
+            let (_, ry, _, rh) = snap.frame().rows;
+            let pos = i64::from(snap.icon_scroll().0);
+            if ib < ry { self.cnr_scroll_icons(hwnd, &snap, pos + i64::from(ry - ib)); }
+            else if ib + ih > ry + rh { self.cnr_scroll_icons(hwnd, &snap, pos - i64::from(ib + ih - ry - rh)); }
+            return;
+        }
         let (f, placed) = self.placements(hwnd, &snap, font);
         let flow = snap.flow();
         let top = scroll_to(snap.top, cursor, f.capacity(), flow, &placed, f.rows.0 + f.rows.2);
@@ -1578,6 +2223,9 @@ impl Loader {
             VK_DOWN => if cur.is_some() { (c + 1).min(last) } else { 0 },
             VK_LEFT if flow => c.saturating_sub(cap),
             VK_RIGHT if flow => (c + cap).min(last),
+            // The icon view moves through the items in order.
+            VK_LEFT if snap.view() == View::Icon => c.saturating_sub(usize::from(cur.is_some())),
+            VK_RIGHT if snap.view() == View::Icon => if cur.is_some() { (c + 1).min(last) } else { 0 },
             VK_PAGEUP => c.saturating_sub(cap.saturating_sub(1).max(1)),
             VK_PAGEDOWN => (c + cap.saturating_sub(1).max(1)).min(last),
             VK_HOME => 0,
@@ -1642,10 +2290,41 @@ impl Loader {
         w.visible = bar;
         if !bar { return; }
         (w.x, w.y, w.cx, w.cy) = (snap.cx - BORDER - SCROLLBAR_W, f.rows.1, SCROLLBAR_W, f.rows.3);
+        if snap.view() == View::Icon {
+            // Pels: the slider shows the work area's share of the workspace.
+            let (pos, max) = snap.icon_scroll();
+            let (lo, hi) = snap.extent();
+            let c16 = |v: i32| v.clamp(0, i32::from(i16::MAX)) as i16;
+            w.scrollbar.set_range(c16(pos), 0, c16(max));
+            w.scrollbar.thumb_size = Some((c16(f.rows.3) as u16, c16(hi - lo) as u16));
+            wm.invalidate_window_only(sb);
+            return;
+        }
         let clamp = |v: usize| v.min(i16::MAX as usize) as i16;
         w.scrollbar.set_range(clamp(snap.top), 0, clamp(snap.max_top()));
         w.scrollbar.thumb_size = Some((cap.min(u16::MAX as usize) as u16, n.min(u16::MAX as usize) as u16));
         wm.invalidate_window_only(sb);
+    }
+
+    /// Draw handle `h` (a bitmap, else an icon) stretched to `rect`
+    /// (surface coordinates `(x, y, cx, cy)`).
+    fn paint_picture(&self, p: &Painter, h: u32, bitmap: bool, rect: Rect) {
+        if bitmap { self.paint_bitmap_handle(p, rect, h, true); } else { self.paint_icon_handle(p, rect, h, true); }
+    }
+
+    /// Draw record `rec`'s picture (see [`picture_fields`]) in `rect`.
+    fn paint_record_picture(&self, p: &Painter, rec: u32, snap: &Snapshot, rect: Rect) {
+        let (fields, bitmap) = picture_fields(snap.info.window_attr, snap.mini);
+        let h = fields.iter().map(|&o| self.guest_read::<u32>(rec.wrapping_add(o)).unwrap_or(0)).find(|&h| h != 0);
+        if let Some(h) = h { self.paint_picture(p, h, bitmap, rect); }
+    }
+
+    /// The handle a `CFA_BITMAPORICON` field info `fi` finds in record
+    /// `rec` of `size` bytes (none outside the record, or 0).
+    fn field_handle(&self, rec: u32, size: u32, fi: u32) -> Option<u32> {
+        let off = self.guest_read::<u32>(fi.wrapping_add(FI_OFFSTRUCT))?;
+        if off.checked_add(4).is_none_or(|end| end > size) { return None; }
+        self.guest_read::<u32>(rec.wrapping_add(off)).filter(|&h| h != 0)
     }
 
     /// Paint container `hwnd` at `(x, y, cx, cy)` in its frame's surface.
@@ -1699,7 +2378,25 @@ impl Loader {
         // The records.
         let rows_clip = at(f.rows);
         let rp = p.clone_clipped((rows_clip.0, rows_clip.1, f.rows.2, f.rows.3));
-        for &(i, r) in &placed {
+        if view == View::Icon {
+            // Icons at their places, each text centred under its icon.
+            let surf = |(rx, ry, rw, rh): Rect| (x + rx, y + ry, rw, rh);
+            for (i, ir, tr) in self.icon_items(&snap, font) {
+                let rec = snap.rows[i].0;
+                let a = self.rec_attr(rec);
+                let selected = a & CRA_SELECTED != 0;
+                let color = if selected { SELECT_TEXT_COLOR } else if a & CRA_DISABLED != 0 { DISABLED_TEXT_COLOR } else { fg };
+                self.paint_record_picture(&rp, rec, &snap, surf(ir));
+                let (l, b, r, t) = at(tr);
+                if selected { rp.fill((l, b, r, t), SELECT_COLOR); }
+                for (k, line) in snap.icons[i].1.iter().enumerate() {
+                    let lw = crate::gui::font::text_width(line, font);
+                    rp.text(l + (r - l + 1 - lw) / 2, t + 1 - ROW_PAD - (k as i32 + 1) * LINE_H, line, color);
+                }
+                if focused && a & CRA_CURSORED != 0 { super::pm_button::focus_mark(&rp, (l, b, r, t), color); }
+            }
+        }
+        for &(i, r) in placed.iter().filter(|_| view != View::Icon) {
             let (rec, size) = snap.rows[i];
             let a = self.rec_attr(rec);
             let (l, b, rr, t) = at(r);
@@ -1710,6 +2407,17 @@ impl Loader {
                 if selected { rp.fill((l, b, right, t), SELECT_COLOR); }
                 for c in &columns {
                     let (cl, cr) = (x + c.x, x + c.x + c.w - 1);
+                    if c.fl_data & CFA_BITMAPORICON != 0 {
+                        // An icon (or bitmap) handle in the record, drawn
+                        // in a square the height of a line.
+                        if let Some(h) = self.field_handle(rec, size, c.fi) {
+                            let cp = rp.clone_clipped((cl, b, (cr - cl + 1).max(0), r.3));
+                            let side = LINE_H.min(c.w);
+                            let pic = (cl + (c.w - side) / 2, b + (r.3 - side) / 2, side, side);
+                            self.paint_picture(&cp, h, attr & CA_DRAWBITMAP != 0 && attr & CA_DRAWICON == 0, pic);
+                        }
+                        continue;
+                    }
                     let v = self.field_value(hwnd, rec, size, c.fi, c.fl_data);
                     let cp = rp.clone_clipped((cl, b, (cr - cl + 1).max(0), r.3));
                     cp.text(aligned(cl, cr, crate::gui::font::text_width(&v, font), c.fl_data), b + ROW_PAD, &v, color);
@@ -1717,10 +2425,16 @@ impl Loader {
                 if focused && a & CRA_CURSORED != 0 { super::pm_button::focus_mark(&rp, (l, b, right, t), color); }
             } else {
                 let text = self.record_text(hwnd, rec, view, snap.mini);
+                let row_l = l;
+                if let Some(ix) = snap.icon_inset(i) {
+                    let (iw, ih) = snap.icon();
+                    self.paint_record_picture(&rp, rec, &snap, (row_l + ix, b + (r.3 - ih) / 2, iw, ih));
+                }
                 let l = l + snap.text_inset(i);
+                let ty = if snap.pictures() { b + (r.3 - LINE_H) / 2 } else { b + ROW_PAD };
                 if view == View::Tree && snap.tree[i].1 {
                     // The expander: a box with a minus, or a plus when closed.
-                    let ex = l - EXPANDER - CELL_PAD;
+                    let ex = row_l + snap.expander_x(i);
                     let (eb, et) = (b + (r.3 - EXPANDER) / 2, b + (r.3 - EXPANDER) / 2 + EXPANDER - 1);
                     let (er, mid_x, mid_y) = (ex + EXPANDER - 1, ex + EXPANDER / 2, eb + EXPANDER / 2);
                     for edge in [(ex, eb, er, eb), (ex, et, er, et), (ex, eb, ex, et), (er, eb, er, et)] {
@@ -1732,7 +2446,7 @@ impl Loader {
                 let w = crate::gui::font::text_width(&text, font) + 2 * CELL_PAD;
                 let right = (l + w - 1).min(rr);
                 if selected { rp.fill((l, b, right, t), SELECT_COLOR); }
-                rp.text(l + CELL_PAD, b + ROW_PAD, &text, color);
+                rp.text(l + CELL_PAD, ty, &text, color);
                 if focused && a & CRA_CURSORED != 0 { super::pm_button::focus_mark(&rp, (l, b, right, t), color); }
             }
         }
@@ -1794,6 +2508,12 @@ mod tests {
             }
         }
         fn rd(&self, a: u32) -> u32 { self.loader.guest_read::<u32>(a).unwrap() }
+        /// Set the view attributes (`CM_SETCNRINFO` `CMA_FLWINDOWATTR`).
+        fn set_view(&self, attr: u32) {
+            for i in 0..23 { self.wr(BUF + 0x600 + 4 * i, 0); }
+            self.wr(BUF + 0x600 + 20, attr);
+            assert_eq!(self.send(CM_SETCNRINFO, BUF + 0x600, CMA_FLWINDOWATTR), 1);
+        }
         fn wr(&self, a: u32, v: u32) { self.loader.guest_write::<u32>(a, v).unwrap(); }
         /// Allocate `n` records with `extra` bytes; their addresses.
         fn alloc(&self, n: u32, extra: u32) -> Vec<u32> {
@@ -2163,6 +2883,62 @@ mod tests {
         }
     }
 
+    const FILTER_PROC: u32 = 0x6100;
+
+    #[test]
+    fn cm_filter_asks_about_every_record_and_hides_the_rejected() {
+        let f = fixture(0);
+        let r = keyed(&f, &[1, 2, 3, 4]);
+        // A child of the first record is asked about too.
+        let kid = f.alloc(1, 4)[0];
+        f.wr(kid + RECORDCORE_SIZE, 6);
+        f.insert(kid, 1, CMA_END, r[0]);
+        let res = f.loader.dispatch_builtin_control(f.cnr, CM_FILTER, FILTER_PROC, 0x77);
+        let ApiResult::CallChain(mut chain) = res else { panic!("expected a filter chain") };
+        let mut asked = Vec::new();
+        while let Some(CallStep::Guest { proc_addr, args, .. }) = chain.steps.pop_front() {
+            assert_eq!((proc_addr, args[1]), (FILTER_PROC, 0x77), "the function with pStorage");
+            asked.push(args[0]);
+            // Keep the even keys.
+            chain.returned(u32::from(f.rd(args[0] + RECORDCORE_SIZE).is_multiple_of(2)), false);
+        }
+        assert_eq!(asked, vec![r[0], r[1], r[2], r[3], kid]);
+        assert_eq!(f.loader.finish_chain(&chain), crate::loader::pm_hook::ChainEnd::Return(1));
+        let filtered: Vec<bool> = asked.iter().map(|&x| f.rd(x + RC_ATTR) & CRA_FILTERED != 0).collect();
+        assert_eq!(filtered, vec![true, false, true, false, false]);
+        // CMA_FILTER passes over filtered records; plain queries do not.
+        assert_eq!(f.send(CM_QUERYRECORD, 0, CMA_FIRST | CMA_FILTER), r[1]);
+        assert_eq!(f.send(CM_QUERYRECORD, 0, CMA_FIRST), r[0]);
+        assert_eq!(f.send(CM_QUERYRECORD, r[1], CMA_NEXT | CMA_FILTER), r[3]);
+        assert_eq!(f.send(CM_QUERYRECORD, 0, CMA_LAST | CMA_FILTER), r[3]);
+        assert_eq!(f.send(CM_QUERYRECORD, r[3], CMA_PREV | CMA_FILTER), r[1]);
+        assert_eq!(f.send(CM_QUERYRECORD, r[0], u32::from(CMA_FIRSTCHILD) | CMA_FILTER), kid);
+        // The shown rows are the even ones.
+        let shown: Vec<u32> = f.loader.snapshot(f.cnr).unwrap().rows.iter().map(|&(x, _)| x).collect();
+        assert_eq!(shown, vec![r[1], r[3]]);
+        // No function: everything is shown again, at once.
+        assert_eq!(f.send(CM_FILTER, 0, 0), 1);
+        assert!(asked.iter().all(|&x| f.rd(x + RC_ATTR) & CRA_FILTERED == 0));
+    }
+
+    #[test]
+    fn a_stale_filter_marks_nothing_and_skips_removed_records() {
+        let f = fixture(0);
+        let r = keyed(&f, &[1, 2, 3]);
+        let ApiResult::CallChain(mut chain) = f.loader.dispatch_builtin_control(f.cnr, CM_FILTER, FILTER_PROC, 0)
+        else { panic!() };
+        // The second record is removed while the application answers.
+        f.send(CM_REMOVERECORD, f.array(&[r[1]]), 1);
+        for _ in 0..3 { chain.steps.pop_front(); chain.returned(0, false); }
+        assert_eq!(f.loader.finish_chain(&chain), crate::loader::pm_hook::ChainEnd::Return(1));
+        assert_eq!(f.rd(r[1] + RC_ATTR) & CRA_FILTERED, 0, "a removed record is left alone");
+        assert_ne!(f.rd(r[2] + RC_ATTR) & CRA_FILTERED, 0, "answers stay with their records");
+        // A filter replaced by a newer one does nothing when it ends.
+        let ApiResult::CallChain(old) = f.loader.dispatch_builtin_control(f.cnr, CM_FILTER, FILTER_PROC, 0) else { panic!() };
+        let _new = f.loader.dispatch_builtin_control(f.cnr, CM_FILTER, FILTER_PROC, 0);
+        assert_eq!(f.loader.finish_chain(&old), crate::loader::pm_hook::ChainEnd::Return(0));
+    }
+
     #[test]
     fn records_removed_during_a_sort_leave_the_order_alone() {
         let f = fixture(0);
@@ -2188,9 +2964,330 @@ mod tests {
         assert_eq!(order(&f), vec![r[0], r[2]]);
     }
 
+    const CMA_PARTIAL: u32 = 0x2000;
+    const CMA_ITEMORDER: u32 = 0x0001;
+    const FOLDER: u32 = SYS_HPOINTER_BASE + SPTR_FOLDER;
+
+    impl Fx {
+        /// The drawing operations of one paint of the container.
+        fn paint_ops(&self) -> Vec<crate::gui::surface::DrawOp> {
+            let s = {
+                let mut wm = self.loader.shared.window_mgr.lock_or_recover();
+                let frame = wm.find_frame_for_hwnd(self.cnr);
+                wm.frame_surface(frame).unwrap()
+            };
+            s.lock_or_recover().record = Some(Vec::new());
+            self.loader.dispatch_builtin_control(self.cnr, WM_PAINT, 0, 0);
+            s.lock_or_recover().record.take().unwrap()
+        }
+        fn blits(&self) -> Vec<(i32, i32, u32, u32)> {
+            self.paint_ops().into_iter().filter_map(|o| match o {
+                crate::gui::surface::DrawOp::Blit { x, y, w, h, src: Some(_), .. } => Some((x, y, w, h)),
+                _ => None,
+            }).collect()
+        }
+        /// Records with texts `texts` (pszIcon / pszText / pszName / pszTree
+        /// all the same) and icon `hptr`, inserted at the end.
+        fn named(&self, texts: &[&str], hptr: u32) -> Vec<u32> {
+            let r = self.alloc(texts.len() as u32, 0);
+            for (i, t) in texts.iter().enumerate() {
+                let at = BUF + 0x800 + 0x40 * i as u32;
+                self.loader.guest_write_bytes(at, format!("{t}\0").as_bytes()).unwrap();
+                for o in [RC_PSZICON, RC_PSZTEXT, RC_PSZNAME, RC_PSZTREE] { self.wr(r[i] + o, at); }
+                self.wr(r[i] + RC_HPTRICON, hptr);
+            }
+            self.insert(r[0], texts.len() as u32, CMA_END, 0);
+            r
+        }
+        fn place(&self, rec: u32, x: i32, y: i32) {
+            self.wr(rec + RC_PTLX, x as u32);
+            self.wr(rec + RC_PTLY, y as u32);
+        }
+        fn ptl(&self, rec: u32) -> (i32, i32) { (self.rd(rec + RC_PTLX) as i32, self.rd(rec + RC_PTLY) as i32) }
+        fn notes(&self) -> Vec<(u32, [u32; 7])> {
+            let mut wm = self.loader.shared.window_mgr.lock_or_recover();
+            std::mem::take(&mut wm.owner_calls).into_iter().filter_map(|c| match c.kind {
+                OwnerCallKind::ContainerEdit { code, block } => Some((u32::from(code), block)),
+                _ => None,
+            }).collect()
+        }
+    }
+
+    #[test]
+    fn icon_sizes_pictures_and_their_handles() {
+        let info = |attr: u32| CnrInfo { window_attr: attr, ..CnrInfo::default() };
+        assert_eq!(icon_size(&info(CV_ICON), false), (32, 32));
+        assert_eq!(icon_size(&info(CV_ICON | CV_MINI), false), (16, 16));
+        assert_eq!(icon_size(&info(CV_ICON | CV_MINI), true), (32, 32), "CV_MINI is ignored for MINIRECORDCOREs");
+        assert_eq!(icon_size(&info(CV_TREE), false), (16, 16));
+        let mut sized = info(CV_NAME);
+        sized.bitmap_size = (24, 9999);
+        assert_eq!(icon_size(&sized, false), (24, 256));
+        assert!(shows_icons(CV_ICON) && shows_icons(CV_NAME) && shows_icons(CV_TREE) && shows_icons(CV_TREE | CV_ICON));
+        assert!(!shows_icons(CV_TEXT) && !shows_icons(CV_DETAIL) && !shows_icons(CV_TREE | CV_TEXT));
+        assert_eq!(picture_fields(CV_ICON, false), (&[RC_HPTRICON][..], false));
+        assert_eq!(picture_fields(CV_ICON | CV_MINI, false), (&[RC_HPTRMINIICON, RC_HPTRICON][..], false));
+        assert_eq!(picture_fields(CV_ICON | CA_DRAWBITMAP, false), (&[RC_HBMBITMAP][..], true));
+        assert!(!picture_fields(CV_ICON | CA_DRAWBITMAP | CA_DRAWICON, false).1, "CA_DRAWICON wins");
+        assert_eq!(picture_fields(CV_NAME | CA_DRAWBITMAP | CV_MINI, false).0, &[RC_HBMMINIBITMAP, RC_HBMBITMAP][..]);
+        assert_eq!(picture_fields(CV_ICON | CA_DRAWBITMAP, true), (&[RC_HPTRICON][..], false));
+    }
+
+    #[test]
+    fn icon_items_and_arrangement_are_placed_from_the_upper_left() {
+        // The icon at ptlIcon less the origin, the text centred under it.
+        let (icon, text) = icon_item((40, 100), (0, 20), (1, 1), (32, 32), 50, 2);
+        assert_eq!(icon, (41, 81, 32, 32));
+        assert_eq!(text, (41 + 16 - 29, 81 - (2 * LINE_H + 2), 58, 2 * LINE_H + 2));
+        assert_eq!(union((0, 0, 10, 10), (5, -5, 10, 10)), (0, -5, 15, 15));
+        // Rows from the top left, a new row when the next one is too wide.
+        let places = arrange_icons(&[(10, 1), (100, 1), (10, 1)], (32, 32), 200, 150, 0);
+        assert_eq!(places[0], (ARRANGE_GAP, 150 - ARRANGE_GAP - 32));
+        let w1 = 100 + 2 * CELL_PAD;
+        assert_eq!(places[1], (ARRANGE_GAP + 32 + ARRANGE_GAP + (w1 - 32) / 2, 150 - ARRANGE_GAP - 32));
+        let row_h = 32 + icon_text_h(1);
+        assert_eq!(places[2], (ARRANGE_GAP, 150 - ARRANGE_GAP - row_h - ARRANGE_GAP - 32), "wrapped");
+        // The workspace spans the items and the work area.
+        assert_eq!(icon_extent(Some((-50, 80)), 100), (-50, 100));
+        assert_eq!(icon_extent(Some((20, 300)), 100), (0, 300));
+        assert_eq!(icon_extent(None, 100), (0, 100));
+    }
+
+    #[test]
+    fn the_icon_view_hits_queries_and_draws_icons() {
+        let f = fixture(0);
+        let r = f.named(&["alpha", "beta", "gamma"], FOLDER);
+        f.place(r[0], 10, 100);
+        f.place(r[1], 100, 100);
+        f.place(r[2], 105, 105);
+        let snap = f.loader.snapshot(f.cnr).unwrap();
+        assert_eq!(snap.view(), View::Icon);
+        assert_eq!(snap.icons[0].0, (10, 100));
+        // The icon of alpha at window (11, 101); its text under it.
+        assert_eq!(f.loader.container_record_at(f.cnr, (20, 110)), r[0]);
+        assert_eq!(f.loader.container_record_at(f.cnr, (26, 101 - 8)), r[0], "on the text");
+        assert_eq!(f.loader.container_record_at(f.cnr, (200, 110)), 0, "white space");
+        // gamma lies over beta and was drawn last: it is hit.
+        assert_eq!(f.loader.container_record_at(f.cnr, (110, 110)), r[2]);
+        // CM_QUERYRECORDRECT: icon, text, both.
+        let rect = |extent: u32| {
+            f.wr(BUF + 0x400, 16);
+            f.wr(BUF + 0x404, r[0]);
+            f.wr(BUF + 0x408, 0);
+            f.wr(BUF + 0x40C, extent);
+            assert_eq!(f.send(CM_QUERYRECORDRECT, BUF + 0x420, BUF + 0x400), 1);
+            (0..4).map(|k| f.rd(BUF + 0x420 + 4 * k) as i32).collect::<Vec<_>>()
+        };
+        assert_eq!(rect(CMA_ICON), vec![11, 101, 43, 133]);
+        let text = rect(CMA_TEXT);
+        assert_eq!((text[1], text[3]), (101 - icon_text_h(1), 101));
+        assert_eq!(rect(CMA_ICON | CMA_TEXT)[3], 133);
+        // CM_QUERYRECORDFROMRECT: partly inside, item order and z-order.
+        let from = |after: u32, (l, b, rt, t): (i32, i32, i32, i32), search: u32| {
+            for (k, v) in [16u32, l as u32, b as u32, rt as u32, t as u32, search].iter().enumerate() {
+                f.wr(BUF + 0x440 + 4 * k as u32, *v);
+            }
+            f.send(CM_QUERYRECORDFROMRECT, after, BUF + 0x440)
+        };
+        let area = (90, 90, 200, 200);
+        assert_eq!(from(CMA_FIRST, area, CMA_PARTIAL | CMA_ITEMORDER), r[1]);
+        assert_eq!(from(r[1], area, CMA_PARTIAL | CMA_ITEMORDER), r[2]);
+        assert_eq!(from(r[2], area, CMA_PARTIAL | CMA_ITEMORDER), 0);
+        assert_eq!(from(CMA_FIRST, area, CMA_PARTIAL | CMA_ZORDER), r[2], "topmost first");
+        assert_eq!(from(CMA_FIRST, (0, 0, 60, 140), CMA_COMPLETE | CMA_ITEMORDER), r[0]);
+        assert_eq!(from(CMA_FIRST, (0, 0, 30, 140), CMA_COMPLETE | CMA_ITEMORDER), 0, "alpha sticks out");
+        assert_eq!(from(0x1234, area, CMA_PARTIAL), u32::MAX, "an unknown record");
+        // Each record's folder icon is drawn at 32 × 32.
+        let blits = f.blits();
+        assert_eq!(blits.len(), 3, "{blits:?}");
+        assert!(blits.iter().all(|&(_, _, w, h)| (w, h) == (32, 32)));
+    }
+
+    #[test]
+    fn cm_arrange_and_autoposition_write_ptlicon() {
+        let f = fixture(0);
+        let r = f.named(&["a", "b", "c"], 0);
+        assert_eq!(f.send(CM_ARRANGE, CMA_ARRANGESTANDARD, 0), 1);
+        let (x0, y0) = f.ptl(r[0]);
+        assert_eq!(x0, ARRANGE_GAP);
+        assert_eq!(y0, 198 - ARRANGE_GAP - ICON_SIZE, "the top row");
+        assert!(f.ptl(r[1]).0 > x0 && f.ptl(r[1]).1 == y0);
+        assert_eq!(f.send(CM_ARRANGE, 1, 0), 0, "only the standard arrangement");
+        // CCS_AUTOPOSITION arranges as records come.
+        let g = fixture(CCS_AUTOPOSITION);
+        let r = g.named(&["a", "b"], 0);
+        assert_eq!(g.ptl(r[0]).0, ARRANGE_GAP);
+        assert!(g.ptl(r[1]).0 > ARRANGE_GAP);
+        let more = g.named(&["c"], 0);
+        assert!(g.ptl(more[0]).0 > g.ptl(r[1]).0);
+        g.send(CM_REMOVERECORD, g.array(&[r[0]]), 1);
+        assert_eq!(g.ptl(r[1]).0, ARRANGE_GAP, "the rest moves up");
+    }
+
+    #[test]
+    fn the_icon_view_scrolls_by_pels() {
+        let f = fixture(0);
+        let r = f.named(&["low", "high"], 0);
+        f.place(r[0], 10, -300);
+        f.place(r[1], 10, 150);
+        let snap = f.loader.snapshot(f.cnr).unwrap();
+        assert!(snap.bar());
+        // Workspace from -300 - text to 198 (the work area's top); none above.
+        let (pos, max) = snap.icon_scroll();
+        assert_eq!(pos, 0);
+        assert_eq!(max, 300 + icon_text_h(1));
+        f.send(WM_VSCROLL, CID_VSCROLL, SB_LINEDOWN << 16);
+        let scrolls: Vec<[u32; 3]> = std::mem::take(&mut f.loader.shared.window_mgr.lock_or_recover().owner_calls)
+            .into_iter().filter_map(|c| match c.kind {
+                OwnerCallKind::ContainerNotify { code, block } if u32::from(code) == CN_SCROLL => Some(block),
+                _ => None,
+            }).collect();
+        assert_eq!(scrolls, vec![[f.cnr, LINE_H as u32, CMA_VERTICAL]]);
+        let snap = f.loader.snapshot(f.cnr).unwrap();
+        assert_eq!((snap.origin().1, snap.icon_scroll().0), (-LINE_H, LINE_H));
+        f.send(WM_VSCROLL, CID_VSCROLL, SB_PAGEDOWN << 16);
+        f.send(WM_VSCROLL, CID_VSCROLL, SB_PAGEDOWN << 16);
+        assert_eq!(f.loader.snapshot(f.cnr).unwrap().icon_scroll().0, max, "clamped");
+        // Selecting the high record scrolls it back into view.
+        f.send(CM_SETRECORDEMPHASIS, r[1], 1 | (CRA_CURSORED << 16));
+        let snap = f.loader.snapshot(f.cnr).unwrap();
+        assert!(snap.icon_scroll().0 < max);
+        f.loader.cnr_sync_scrollbar(f.cnr, &snap);
+        let wm = f.loader.shared.window_mgr.lock_or_recover();
+        let sb = wm.find_child_by_id(f.cnr, CID_VSCROLL).unwrap();
+        let w = wm.get_window(sb).unwrap();
+        assert!(w.visible);
+        assert_eq!(w.scrollbar.last, max as i16);
+    }
+
+    #[test]
+    fn name_tree_and_detail_views_draw_pictures() {
+        let f = fixture(0);
+        f.named(&["one", "two"], FOLDER);
+        f.set_view(CV_NAME);
+        let snap = f.loader.snapshot(f.cnr).unwrap();
+        assert_eq!(snap.frame().row_h, ICON_SIZE + 2 * ROW_PAD, "rows as high as the icons");
+        assert_eq!(snap.text_inset(0), CELL_PAD + ICON_SIZE);
+        assert_eq!(f.blits().len(), 2);
+        f.set_view(CV_NAME | CV_MINI);
+        assert!(f.blits().iter().all(|&(_, _, w, h)| (w, h) == (16, 16)));
+        f.set_view(CV_TEXT);
+        assert!(f.blits().is_empty(), "the text view has no pictures");
+        f.set_view(CV_TREE);
+        assert!(f.blits().iter().all(|&(_, _, w, _)| w == MINI_ICON_SIZE as u32));
+        f.set_view(CV_TREE | CV_TEXT);
+        assert!(f.blits().is_empty());
+        // A CFA_BITMAPORICON column draws the handle in the record.
+        let g = fixture(0);
+        let r = g.alloc(1, 4);
+        g.wr(r[0] + RECORDCORE_SIZE, FOLDER);
+        g.insert(r[0], 1, CMA_END, 0);
+        let fi = g.send(CM_ALLOCDETAILFIELDINFO, 1, 0);
+        g.wr(fi + FI_FLDATA, CFA_BITMAPORICON);
+        g.wr(fi + FI_OFFSTRUCT, RECORDCORE_SIZE);
+        for (o, v) in [(0, 16), (4, CMA_END), (8, 1), (12, 1)] { g.wr(BUF + 0x500 + o, v); }
+        g.send(CM_INSERTDETAILFIELDINFO, fi, BUF + 0x500);
+        g.set_view(CV_DETAIL);
+        let b = g.blits();
+        assert_eq!(b.len(), 1);
+        assert_eq!((b[0].2, b[0].3), (LINE_H as u32, LINE_H as u32));
+    }
+
+    #[test]
+    fn direct_editing_asks_the_owner_and_copies_the_text() {
+        let f = fixture(0);
+        f.set_view(CV_TEXT);
+        let r = f.named(&["old", "other"], 0);
+        // Alt + button 1 on the first record's text opens the editor.
+        let top_row = 1 + 198 - 9;
+        assert_eq!(f.send(WM_BUTTON1DOWN, Fx::at(20, top_row), KC_ALT << 16), 1);
+        let mle = f.loader.shared.window_mgr.lock_or_recover().find_child_by_id(f.cnr, CID_MLE).expect("the MLE");
+        {
+            let wm = f.loader.shared.window_mgr.lock_or_recover();
+            let w = wm.get_window(mle).unwrap();
+            assert!(w.visible);
+            assert_eq!((w.text.as_str(), w.edit_anchor, w.edit_caret), ("old", 0, 3), "all of it selected");
+            assert_eq!(wm.focus_hwnd, mle);
+            assert!(w.cx >= EDIT_MIN_W);
+        }
+        let begin = f.notes();
+        let id = ID;
+        assert_eq!(begin, vec![(CN_BEGINEDIT, [CNREDITDATA_SIZE, f.cnr, r[0], 0, r[0] + RC_PSZTEXT, 0, id])]);
+        // The user types; CM_CLOSEEDIT keeps it: CN_REALLOCPSZ with the
+        // bytes the new text needs.
+        f.loader.shared.window_mgr.lock_or_recover().get_window_mut(mle).unwrap().text = "renamed".into();
+        assert_eq!(f.send(CM_CLOSEEDIT, 0, 0), 1);
+        let notes = f.notes();
+        assert_eq!(notes, vec![(CN_REALLOCPSZ, [CNREDITDATA_SIZE, f.cnr, r[0], 0, r[0] + RC_PSZTEXT, 8, id])]);
+        assert!(!f.loader.shared.window_mgr.lock_or_recover().get_window(mle).unwrap().visible);
+        assert_eq!(f.loader.shared.window_mgr.lock_or_recover().focus_hwnd, f.cnr);
+        // The owner points pszIcon at a buffer of 8 bytes and says TRUE.
+        f.wr(r[0] + RC_PSZTEXT, BUF + 0xA00);
+        f.loader.container_realloc_done(f.cnr, 1, notes[0].1);
+        assert_eq!(f.loader.guest_read_bytes(BUF + 0xA00, 8).unwrap(), b"renamed\0");
+        assert_eq!(f.notes(), vec![(CN_ENDEDIT, [CNREDITDATA_SIZE, f.cnr, r[0], 0, r[0] + RC_PSZTEXT, 8, id])]);
+        assert_eq!(f.send(CM_CLOSEEDIT, 0, 0), 0, "nothing open");
+        // FALSE from the owner: the text stays.
+        f.send(CM_OPENEDIT, { f.wr(BUF + 0x480, 28); f.wr(BUF + 0x488, r[1]); f.wr(BUF + 0x48C, 0); BUF + 0x480 }, 0);
+        f.notes();
+        f.loader.shared.window_mgr.lock_or_recover().get_window_mut(mle).unwrap().text = "zzz".into();
+        f.send(CM_CLOSEEDIT, 0, 0);
+        let n = f.notes();
+        f.loader.container_realloc_done(f.cnr, 0, n[0].1);
+        assert_eq!(f.loader.cnr_text(f.cnr, f.rd(r[1] + RC_PSZTEXT)), "other");
+        assert_eq!(f.notes()[0].1[5], 0, "CN_ENDEDIT without new text");
+        // Esc in the MLE discards: CN_ENDEDIT at once.
+        f.send(WM_BUTTON1DOWN, Fx::at(20, top_row), KC_ALT << 16);
+        f.notes();
+        let esc = f.loader.dispatch_builtin_control(mle, WM_CHAR, KC_VIRTUALKEY, VK_ESC << WM_CHAR_VKEY_SHIFT);
+        assert!(matches!(esc, ApiResult::Normal(1)));
+        assert_eq!(f.notes().iter().map(|n| n.0).collect::<Vec<_>>(), vec![CN_ENDEDIT]);
+    }
+
+    #[test]
+    fn read_only_text_is_not_edited() {
+        let open = |f: &Fx, rec: u32, fi: u32| {
+            f.wr(BUF + 0x480, 28);
+            f.wr(BUF + 0x488, rec);
+            f.wr(BUF + 0x48C, fi);
+            f.send(CM_OPENEDIT, BUF + 0x480, 0)
+        };
+        let f = fixture(CCS_READONLY);
+        let r = f.named(&["x"], 0);
+        assert_eq!(open(&f, r[0], 0), 0, "CCS_READONLY");
+        let g = fixture(0);
+        let r = g.named(&["x", "y"], 0);
+        g.wr(r[0] + RC_ATTR, CRA_RECORDREADONLY);
+        assert_eq!(open(&g, r[0], 0), 0, "CRA_RECORDREADONLY");
+        assert_eq!(open(&g, 0x4444, 0), 0, "not a record");
+        assert_eq!(open(&g, r[1], 0), 1);
+        g.send(CM_CLOSEEDIT, 0, 0);
+        // Details view: only writable CFA_STRING columns inside the record.
+        let fis: Vec<u32> = {
+            let first = g.send(CM_ALLOCDETAILFIELDINFO, 3, 0);
+            let mut v = vec![first];
+            while v.len() < 3 { v.push(g.rd(v.last().unwrap() + FI_NEXT)); }
+            v
+        };
+        for (fi, fl, off) in [(fis[0], CFA_STRING, RC_PSZTEXT), (fis[1], CFA_STRING | CFA_FIREADONLY, RC_PSZTEXT), (fis[2], CFA_ULONG, RC_ATTR)] {
+            g.wr(fi + FI_FLDATA, fl);
+            g.wr(fi + FI_OFFSTRUCT, off);
+        }
+        for (o, v) in [(0, 16), (4, CMA_END), (8, 1), (12, 3)] { g.wr(BUF + 0x500 + o, v); }
+        g.send(CM_INSERTDETAILFIELDINFO, fis[0], BUF + 0x500);
+        g.set_view(CV_DETAIL);
+        g.notes();
+        assert_eq!(open(&g, r[1], fis[1]), 0, "CFA_FIREADONLY");
+        assert_eq!(open(&g, r[1], fis[2]), 0, "not a string");
+        assert_eq!(open(&g, r[1], 0), 0, "no column");
+        assert_eq!(open(&g, r[1], fis[0]), 1);
+        assert_eq!(g.notes()[0].1, [CNREDITDATA_SIZE, g.cnr, r[1], fis[0], r[1] + RC_PSZTEXT, 0, CID_LEFTDVWND]);
+    }
+
     #[test]
     fn the_scroll_bar_follows_the_rows() {
         let f = fixture(0);
+        f.set_view(CV_TEXT);
         // 200 high: 198 for rows of 18 = 11 rows; 15 records need the bar.
         keyed(&f, &[0; 15]);
         let snap = f.loader.snapshot(f.cnr).unwrap();
@@ -2403,18 +3500,18 @@ mod tests {
 
     #[test]
     fn frames_stack_title_header_and_rows() {
-        let f = Frame::new(CV_DETAIL | CA_DETAILSVIEWTITLES | CA_CONTAINERTITLE | CA_TITLESEPARATOR, 0, 200, 100);
+        let f = Frame::new(CV_DETAIL | CA_DETAILSVIEWTITLES | CA_CONTAINERTITLE | CA_TITLESEPARATOR, 0, 0, 200, 100);
         assert_eq!(f.title, Some((1, 80, 198, 19)));
         assert_eq!(f.header, Some((1, 61, 198, 19)));
         assert_eq!(f.rows, (1, 1, 198, 60));
         assert_eq!(f.capacity(), 3);
-        let plain = Frame::new(CV_TEXT | CA_DETAILSVIEWTITLES, 2, 200, 100);
+        let plain = Frame::new(CV_TEXT | CA_DETAILSVIEWTITLES, 2, 0, 200, 100);
         assert_eq!((plain.title, plain.header, plain.row_h), (None, None, 20));
     }
 
     #[test]
     fn lists_place_rows_or_flowed_columns() {
-        let f = Frame::new(CV_TEXT, 0, 200, 56);
+        let f = Frame::new(CV_TEXT, 0, 0, 200, 56);
         assert_eq!(f.capacity(), 3);
         let one = place_list(&f, &[0; 5], 1, false);
         assert_eq!(one.iter().map(|p| p.0).collect::<Vec<_>>(), vec![1, 2, 3]);

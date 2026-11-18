@@ -103,6 +103,9 @@ pub enum OwnerCallKind {
     /// `WM_CONTROL(CN_INITDRAG)` with a `CNRDRAGINIT` (container, record,
     /// x, y, cx, cy).
     ContainerInitDrag { block: [u32; 6] },
+    /// `WM_CONTROL(code)` from a container with a `CNREDITDATA`
+    /// (`CN_BEGINEDIT`, `CN_REALLOCPSZ`, `CN_ENDEDIT`).
+    ContainerEdit { code: u16, block: [u32; 7] },
 }
 
 /// The menu item `id` in `items` (searched through the submenus).
@@ -330,6 +333,11 @@ impl Loader {
                 mp1: (super::pm_container::CN_INITDRAG << 16) | (id & 0xFFFF), mp2: 0,
                 block: block.to_vec(), hps: 0,
             },
+            OwnerCallKind::ContainerEdit { code, block } => OwnerSetup::Call {
+                wnd_proc, owner, msg: WM_CONTROL,
+                mp1: (u32::from(code) << 16) | (id & 0xFFFF), mp2: 0,
+                block: block.to_vec(), hps: 0,
+            },
             OwnerCallKind::ContainerValue { code, mp2 } => OwnerSetup::Call {
                 wnd_proc, owner, msg: WM_CONTROL,
                 mp1: (u32::from(code) << 16) | (id & 0xFFFF), mp2, block: Vec::new(), hps: 0,
@@ -442,6 +450,10 @@ impl Loader {
                 return self.erase_background_finish(call.control, hps, result, block);
             }
             OwnerCallKind::SyncPaint => return,
+            // The owner's answer decides whether the edited text is kept.
+            OwnerCallKind::ContainerEdit { code, block } if u32::from(code) == super::pm_container::CN_REALLOCPSZ => {
+                return self.container_realloc_done(call.control, result, block);
+            }
             _ => {}
         }
         // What the owner drew goes into the control: the item it drew, the
@@ -499,7 +511,7 @@ impl Loader {
             | OwnerCallKind::EraseBackground | OwnerCallKind::SyncPaint
             | OwnerCallKind::NotebookSelected { .. } | OwnerCallKind::NotebookDeleted { .. }
             | OwnerCallKind::ContainerNotify { .. } | OwnerCallKind::ContainerValue { .. }
-            | OwnerCallKind::ContainerInitDrag { .. } => {}
+            | OwnerCallKind::ContainerInitDrag { .. } | OwnerCallKind::ContainerEdit { .. } => {}
         }
     }
 }

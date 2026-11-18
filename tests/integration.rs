@@ -2531,6 +2531,34 @@ fn gui_pm_cnrtree_test_matches_golden() {
         &format!("{CNRTREE_STEPS}1900 dump {{dump}}\n2000 quit\n"));
 }
 
+/// pm_cnricon_test: the container's icon view with system icons, CM_FILTER
+/// through a guest filter function, CM_ARRANGE, the record-rectangle
+/// queries and CM_OPENEDIT / CM_CLOSEEDIT in the guest; the steps edit the
+/// folder's text directly (Alt+click, typing, a click on white space keeps
+/// it through CN_REALLOCPSZ) and discard a second edit with Esc.
+const CNRICON_STEPS: &str = "\
+    1000 alt+click 157 417\n\
+    1300 text Archive\n\
+    1600 click 410 329\n\
+    1900 alt+click 277 417\n\
+    2100 text zzz\n\
+    2300 key esc\n";
+
+#[test]
+fn gui_pm_cnricon_test_filters_arranges_and_edits() {
+    let steps = format!("{CNRICON_STEPS}2600 key alt+f4\n5000 quit\n");
+    assert_scripted_checks_pass("samples/pm_cnricon_test/pm_cnricon_test.exe", "pm_cnricon_test", 34, &steps);
+}
+
+/// pm_cnricon_test's picture: two rows of icons (folder, program, file,
+/// several files, application) with their texts, the folder renamed
+/// "Archive".
+#[test]
+fn gui_pm_cnricon_test_matches_golden() {
+    check_gui_golden("pm_cnricon_test", "samples/pm_cnricon_test/pm_cnricon_test.exe",
+        &format!("{CNRICON_STEPS}2500 dump {{dump}}\n2600 quit\n"));
+}
+
 /// pm_drag_test: drag and drop within a process. The guest checks the
 /// PMDRAG data calls (string handles, DRAGINFO items, DrgVerify*); the
 /// steps drag with button 2 from the client onto a container (WM_BEGINDRAG,

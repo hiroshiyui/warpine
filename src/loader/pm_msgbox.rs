@@ -163,6 +163,9 @@ const ICON_YELLOW: u32 = 0x00F0_C820;
 const ICON_YELLOW_DARK: u32 = 0x0080_6000;
 const ICON_WHITE: u32 = 0x00FF_FFFF;
 const ICON_BLACK: u32 = 0x0000_0000;
+const ICON_GREY: u32 = 0x0080_8080;
+const ICON_TAN: u32 = 0x00E8_C060;
+const ICON_TAN_DARK: u32 = 0x0080_6010;
 
 /// The marks drawn on the information, warning and question pictograms
 /// (`#` = set), Warpine's own.
@@ -185,11 +188,16 @@ const GLYPH_QUESTION: [&str; 17] = [
 ];
 
 /// The `MSGBOX_ICON_SIZE`² pels of the pictogram for `sptr`
-/// (`SPTR_ICON*`), top row first; `None` = transparent. `None` overall
-/// for anything else. Error: a red circle with a red line across it;
-/// information: a white "i" on a blue disc; warning: a black "!" on a
-/// yellow triangle; question: a white "?" on a blue disc.
+/// (`SPTR_ICON*`, and the object icons `SPTR_APPICON`, `SPTR_FILE`,
+/// `SPTR_FOLDER`, `SPTR_MULTFILE`, `SPTR_PROGRAM`), top row first; `None`
+/// = transparent. `None` overall for anything else. Error: a red circle
+/// with a red line across it; information: a white "i" on a blue disc;
+/// warning: a black "!" on a yellow triangle; question: a white "?" on a
+/// blue disc; see [`object_pels`] for the others.
 pub fn icon_pels(sptr: u32) -> Option<Vec<Option<u32>>> {
+    if let Some(pels) = object_pels(sptr) {
+        return Some(pels);
+    }
     let n = MSGBOX_ICON_SIZE;
     let mut pels = vec![None; (n * n) as usize];
     let centre = n as f32 / 2.0;
@@ -252,6 +260,59 @@ pub fn icon_pels(sptr: u32) -> Option<Vec<Option<u32>>> {
                 }
             }
             glyph(&mut pels, &GLYPH_EXCLAMATION, 12, ICON_BLACK);
+        }
+        _ => return None,
+    }
+    Some(pels)
+}
+
+/// Warpine's own pictograms of the object icons, top row first: a file is
+/// a white page with a folded corner and grey lines, several files two
+/// pages, a folder a tan folder with a tab, a program (and the default
+/// application icon) a window with a blue title bar.
+fn object_pels(sptr: u32) -> Option<Vec<Option<u32>>> {
+    let n = MSGBOX_ICON_SIZE;
+    let mut pels = vec![None; (n * n) as usize];
+    // Fill the inclusive box (x1, y1)-(x2, y2), outlined in `edge`.
+    let boxed = |pels: &mut [Option<u32>], (x1, y1, x2, y2): (i32, i32, i32, i32), fill: u32, edge: u32| {
+        for y in y1..=y2 {
+            for x in x1..=x2 {
+                let on_edge = x == x1 || x == x2 || y == y1 || y == y2;
+                pels[(y * n + x) as usize] = Some(if on_edge { edge } else { fill });
+            }
+        }
+    };
+    // A page at (x1, y1)-(x2, y2) with its top-right corner folded.
+    let page = |pels: &mut [Option<u32>], (x1, y1, x2, y2): (i32, i32, i32, i32)| {
+        boxed(pels, (x1, y1, x2, y2), ICON_WHITE, ICON_BLACK);
+        let fold = 6;
+        for d in 0..fold {
+            for x in x2 - fold + 1 + d..=x2 {
+                pels[((y1 + d) * n + x) as usize] = None;
+            }
+            pels[((y1 + d) * n + x2 - fold + 1 + d) as usize] = Some(ICON_BLACK);
+            pels[((y1 + fold) * n + x2 - d) as usize] = Some(ICON_BLACK);
+            pels[((y1 + d) * n + x2 - fold + 1) as usize] = Some(ICON_BLACK);
+        }
+        for y in (y1 + fold + 3..y2 - 2).step_by(3) {
+            for x in x1 + 3..x2 - 2 {
+                pels[(y * n + x) as usize] = Some(ICON_GREY);
+            }
+        }
+    };
+    match sptr {
+        SPTR_FILE => page(&mut pels, (7, 2, 24, 29)),
+        SPTR_MULTFILE => {
+            page(&mut pels, (11, 1, 27, 24));
+            page(&mut pels, (4, 7, 20, 30));
+        }
+        SPTR_FOLDER => {
+            boxed(&mut pels, (3, 6, 13, 10), ICON_TAN, ICON_TAN_DARK);
+            boxed(&mut pels, (3, 9, 28, 26), ICON_TAN, ICON_TAN_DARK);
+        }
+        SPTR_PROGRAM | SPTR_APPICON => {
+            boxed(&mut pels, (3, 5, 28, 26), ICON_WHITE, ICON_BLACK);
+            boxed(&mut pels, (3, 5, 28, 10), ICON_BLUE, ICON_BLACK);
         }
         _ => return None,
     }
@@ -534,6 +595,26 @@ mod tests {
         assert_eq!(at(warning, 9, 26), Some(ICON_YELLOW));
         assert_eq!(icon_pels(0), None);
         assert_eq!(icon_pels(SPTR_ICONWARNING + 1), None);
+    }
+
+    #[test]
+    fn object_icons_have_pictograms() {
+        let n = MSGBOX_ICON_SIZE as usize;
+        let at = |p: &[Option<u32>], x: usize, y: usize| p[y * n + x];
+        let file = icon_pels(SPTR_FILE).expect("file");
+        let folder = icon_pels(SPTR_FOLDER).expect("folder");
+        let multi = icon_pels(SPTR_MULTFILE).expect("several files");
+        let program = icon_pels(SPTR_PROGRAM).expect("program");
+        assert_eq!(icon_pels(SPTR_APPICON), Some(program.clone()));
+        assert_eq!(at(&file, 10, 19), Some(ICON_WHITE), "a white page");
+        assert_eq!(at(&file, 24, 2), None, "its top-right corner folded away");
+        assert_eq!(at(&file, 0, 0), None);
+        assert_eq!(at(&folder, 16, 18), Some(ICON_TAN));
+        assert_eq!(at(&folder, 20, 7), None, "only the tab rises at the left");
+        assert_eq!(at(&program, 16, 7), Some(ICON_BLUE), "the title bar");
+        assert_eq!(at(&program, 16, 18), Some(ICON_WHITE));
+        assert_ne!(file, multi);
+        assert_eq!(icon_pels(SPTR_ARROW), None);
     }
 
     #[test]
