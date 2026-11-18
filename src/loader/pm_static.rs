@@ -259,8 +259,7 @@ impl Loader {
             StaticKind::SysIcon => {
                 let pels = super::pm_msgbox::icon_pels(id as u32)?;
                 let n = super::pm_msgbox::MSGBOX_ICON_SIZE as u32;
-                // icon_pels is bottom row first.
-                let pels = pels.chunks(n as usize).rev().flatten().copied().collect();
+                // icon_pels is top row first, as a Picture.
                 Some(Picture { w: n, h: n, pels })
             }
             StaticKind::Bitmap => {
@@ -395,6 +394,14 @@ mod tests {
         let (ops, ctl) = static_ops(SS_SYSICON | SS_AUTOSIZE, &format!("#{SPTR_ICONINFORMATION}"), &[]);
         let n = super::super::pm_msgbox::MSGBOX_ICON_SIZE as u32;
         assert!(ops.iter().any(|o| matches!(o, DrawOp::Blit { w, h, .. } if *w == n && *h == n)), "{ops:?}");
+        // Upright: the warning triangle's apex is in the top row (the blit
+        // takes the bottom row first).
+        let (ops, _) = static_ops(SS_SYSICON | SS_AUTOSIZE, &format!("#{SPTR_ICONWARNING}"), &[]);
+        let src = ops.iter().find_map(|o| match o { DrawOp::Blit { src: Some(s), .. } => Some(s.clone()), _ => None })
+            .expect("a blit");
+        assert_eq!(src.len(), (n * n) as usize);
+        let row = |r: usize| src[r * n as usize..][..n as usize].iter().filter(|p| p.is_some()).count();
+        assert!(row(0) > row(n as usize - 1), "base {} at the bottom, apex {} at the top", row(0), row(n as usize - 1));
         // A missing icon draws only the background.
         let (ops, _) = static_ops(SS_ICON, "#999", &[]);
         assert!(!ops.iter().any(|o| matches!(o, DrawOp::Blit { .. })));
