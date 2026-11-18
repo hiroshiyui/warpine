@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.0.5] - 2026-11-19
+
 ### Added
 - **Subclassing built-in windows** — `WinSubclassWindow`, `QWP_PFNWP` and `WinQueryClassInfo` hand out `WrpBuiltinWindowProc` (`WARPINE.5`), the built-in classes' own procedure, so a subclass procedure can pass messages on; standard frames run the system frame procedure instead of borrowing their client's, and a subclassed frame is asked `WM_QUERYFRAMECTLCOUNT` / `WM_FORMATFRAME` (tool bars and status lines it places stay put) and `WM_CALCFRAMERECT` (ADR-0048).
 - **Painting** — a child window's presentation space draws at the child's place; `WinBeginPaint` clips to the update rectangle; `WinUpdateWindow` paints before it returns; `WinShowWindow` invalidates a window it shows; a `WC_FRAME` made with `WinCreateWindow` is shown at once.
@@ -16,6 +18,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 - Private memory of a process ends at `0x0E000000` (192 MB from `0x02000000`), below the shared arena.
+
+### Fixed
+- A standard frame no longer runs its client's window procedure for frame messages, and subclassing a built-in control no longer hands out address 0 as the procedure to pass messages on to (ADR-0048).
+- `WinDefWindowProc` passes unhandled `WM_CHAR` to the owner, so keys a program's own control does not use reach its dialog; focus changes post `WM_SETFOCUS`.
 
 ## [0.0.4] - 2026-11-18
 
