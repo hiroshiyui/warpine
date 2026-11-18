@@ -56,3 +56,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0048](0048-builtin-window-procedure-and-tier-1-pm.md) | A guest-callable procedure for built-in windows; standard frames run the default procedure; child presentation spaces in the frame surface | Accepted | 2026-11-18 |
 | [0049](0049-shared-memory-across-processes.md) | Shared memory across processes: a sealed memfd arena at the top of guest memory, a table in the session directory | Accepted | 2026-11-19 |
 | [0050](0050-shared-semaphores-across-processes.md) | Shared semaphores across processes: a host-only memfd of slots, an OFD lock and a futex | Accepted | 2026-11-19 |
+| [0051](0051-pointer-input-routed-when-read.md) | Pointer input routed when it is read: clicks hit-tested and activating at the head of the input queue | Accepted | 2026-11-19 |
