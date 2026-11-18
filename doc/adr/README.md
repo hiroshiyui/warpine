@@ -48,3 +48,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0040](0040-reserved-tiles-for-info-segments.md) | Keep the 16-bit information segments in reserved tiles, refreshed by a host thread | Accepted | 2026-11-18 |
 | [0041](0041-socket-select-fd-set.md) | Read select()'s fd_set as OS/2 TCP/IP's count-and-array layout; wait with poll(2) | Accepted | 2026-11-18 |
 | [0042](0042-embedded-dialogs.md) | Embed a dialog whose parent is a window into that window | Accepted | 2026-11-18 |
+| [0043](0043-container-record-memory.md) | Keep container records in guest memory, carved from per-container arenas | Accepted | 2026-11-18 |
