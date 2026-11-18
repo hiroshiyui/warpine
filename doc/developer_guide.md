@@ -1466,6 +1466,17 @@ Tests: `config_sys.rs` (parser, clamping, env override, reading through drive C)
 - **Notifications:** `BKN_PAGESELECTED` / `BKN_PAGEDELETED` are owner calls (`OwnerCallKind::NotebookSelected` / `NotebookDeleted`, `pm_owner.rs`): `WM_CONTROL` with the structure in a block on the guest stack, made on the owner's thread before the API returns, from `WinSendMsg` or from a click alike. `BKN_NEWPAGESIZE` is posted when painting finds a new size.
 - **Tests:** `pm_notebook.rs` (model, layout), `samples/pm_notebook_test` with a golden picture.
 
+### Containers
+
+`pm_container.rs` (ADR-0043):
+- **Record memory:** records and field infos live in guest memory. `RecordHeap` takes 64 KB arenas (`CNR_ARENA_BYTES`, or an exact larger one) from the memory manager and carves each `CM_ALLOCRECORD` / `CM_ALLOCDETAILFIELDINFO` from the newest arena, zeroed and chained through `preccNextRecord` / `pNextFieldInfo`. Every item is registered by address with its size; an arena returns to the memory manager once all its items are freed. `cnr_alloc` takes the arena from `mem_mgr` before registering it under the window-manager lock, never holding both.
+- **Model:** `CnrState` (in `OS2Window::container`) holds the heap, the inserted records in item order with their parents (`insert`, `removal` with descendants, `remove`, `query` for `CM_QUERYRECORD`), the inserted field infos (`insert_fields`, `query_field`) and `CnrInfo`. Only registered pointers are accepted; a field's `offStruct` is checked against the record's size before it is read (`field_value`).
+- **Guest copy only:** texts, positions and attributes are read from the records when painting, searching or answering; only `flRecordAttr` is written (emphasis).
+- **Views:** `Frame` stacks the title band, the detail header band and the rows. `place_list` places a list or flowed columns, and `scroll_to` keeps the cursor in view. `paint_container` draws the text, name and detail views (`columns` sizes detail columns to their contents when `cxWidth` is 0). The icon and tree views are listed by `pszIcon` / `pszTree` for now.
+- **Input and notifications:** `cnr_click` / `cnr_char` / `cnr_pick` select by `sel_mode`. `cnr_set_emphasis` keeps one selection (single mode) and one cursored record, and queues `CN_EMPHASIS` as `OwnerCallKind::ContainerNotify` (a `NOTIFYRECORDEMPHASIS`), like `CN_ENTER` (`NOTIFYRECORDENTER`). `CN_SETFOCUS` / `CN_KILLFOCUS` are posted through `notify_focus`. PM errors (`PMERR_RECORD_CURRENTLY_INSERTED`) go to the calling vCPU (`interrupt::current_vcpu`).
+- **Destruction:** `destroy_window` moves a container's arenas to `WindowManager::pending_guest_frees`; `run_destroy` hands them to the memory manager (`free_pending_guest_blocks`).
+- **Tests:** `pm_container.rs` (heap, model, layout, messages through a mock loader), `samples/pm_container_test` with a golden picture.
+
 ### File attributes
 
 `vfs_hostdir.rs`:
@@ -1899,7 +1910,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the 4OS2 / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (1776: 1734 warpine + 19 `gen_api` + 12 `lx_link` + 5 `gen_arch` + 6 `gen_compat`) include, among others:
+The unit tests (1798: 1756 warpine + 19 `gen_api` + 12 `lx_link` + 5 `gen_arch` + 6 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2184,7 +2195,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 1776 unit tests (1734 warpine + 19 gen_api + 12 lx_link + 5 gen_arch + 6 gen_compat), 133 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 1798 unit tests (1756 warpine + 19 gen_api + 12 lx_link + 5 gen_arch + 6 gen_compat), 135 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
