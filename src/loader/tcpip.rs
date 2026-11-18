@@ -19,9 +19,10 @@
 // We read the raw bytes from guest memory and pass them directly to the host.
 //
 // # select() fd_set translation
-// OS/2 uses the OS/2 socket *handle* as the bit index in `fd_set` (max 64
-// sockets, 2 × u32).  We translate each set bit to its Linux fd, build Linux
-// `fd_set`s, call `select(2)`, then translate results back.
+// The OS/2 TCP/IP `fd_set` is a count and an array of socket numbers (Open
+// Watcom `h/os2/types.h`), not a bit mask, so any socket number fits. Each
+// listed socket is looked up, watched with poll(2) (no host FD_SETSIZE
+// limit) and written back if ready; see `so_select`.
 //
 // # gethostbyname / getservbyname
 // The resolved result is written into a scratch buffer owned by `SocketManager`
@@ -142,8 +143,57 @@ pub fn linux_sockopt(level: u32, optname: u32) -> Option<(i32, i32)> {
     }
 }
 
-// OS/2 `fd_set` layout: 2 × u32 = 64 bits (max 64 sockets per set).
-const OS2_FD_SET_WORDS: usize = 2;
+// ── select() fd_set ───────────────────────────────────────────────────────────
+//
+// The OS/2 TCP/IP `fd_set` of Open Watcom's `h/os2/types.h` (the TCP/IP 5.0
+// layout): `u_short fd_count` (2 bytes of padding follow, `#pragma pack(4)`)
+// and `int fd_array[FD_SETSIZE]` with FD_SETSIZE 64 — a count and the socket
+// numbers themselves, so any socket number fits (Warpine's start at 0xA000).
+
+/// `FD_SETSIZE`: socket numbers one `fd_set` holds.
+pub const OS2_FD_SETSIZE: usize = 64;
+/// Offset of `fd_array` (after `fd_count` and its padding).
+const OS2_FD_ARRAY_OFFSET: usize = 4;
+/// Size of an OS/2 `fd_set`.
+pub const OS2_FD_SET_BYTES: usize = OS2_FD_ARRAY_OFFSET + 4 * OS2_FD_SETSIZE;
+/// How long one poll(2) waits before `select` checks for an interrupt.
+const SELECT_POLL_SLICE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// The socket numbers of an `fd_set` (`OS2_FD_SET_BYTES` bytes); `None`
+/// when `fd_count` is above `FD_SETSIZE`.
+pub fn read_fd_list(bytes: &[u8]) -> Option<Vec<u32>> {
+    let count = usize::from(u16::from_le_bytes([*bytes.first()?, *bytes.get(1)?]));
+    if count > OS2_FD_SETSIZE {
+        return None;
+    }
+    (0..count).map(|i| {
+        let at = OS2_FD_ARRAY_OFFSET + 4 * i;
+        bytes.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    }).collect()
+}
+
+/// An `fd_set` holding `sockets` (at most `FD_SETSIZE`; more are dropped).
+pub fn write_fd_list(sockets: &[u32]) -> [u8; OS2_FD_SET_BYTES] {
+    let mut out = [0u8; OS2_FD_SET_BYTES];
+    let n = sockets.len().min(OS2_FD_SETSIZE);
+    out[..2].copy_from_slice(&(n as u16).to_le_bytes());
+    for (i, s) in sockets[..n].iter().enumerate() {
+        let at = OS2_FD_ARRAY_OFFSET + 4 * i;
+        out[at..at + 4].copy_from_slice(&s.to_le_bytes());
+    }
+    out
+}
+
+/// Whether a polled socket counts as ready for its set, as select(2) does:
+/// readable or writable also on an error or hang-up.
+fn select_ready(p: &libc::pollfd) -> bool {
+    let hit = match p.events {
+        libc::POLLIN => libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+        libc::POLLOUT => libc::POLLOUT | libc::POLLHUP | libc::POLLERR,
+        _ => libc::POLLPRI,
+    };
+    p.revents & hit != 0
+}
 
 // ── SocketManager ─────────────────────────────────────────────────────────────
 
@@ -733,115 +783,110 @@ impl super::Loader {
 
     // ── select (ordinal 13) ───────────────────────────────────────────────────
     //
-    //   int select(int nfds, struct fd_set *readfds, struct fd_set *writefds,
-    //              struct fd_set *exceptfds, struct timeval *timeout)
+    // select(int nfds, struct fd_set *readfds, struct fd_set *writefds,
+    //        struct fd_set *exceptfds, struct timeval *timeout)
     //
-    //   OS/2 fd_set: 2 × u32 (64 bits), bit N = OS/2 socket handle N.
-    //   We translate each set OS/2 handle to its Linux fd, call select(2),
-    //   then translate results back.
+    //   The OS/2 TCP/IP `fd_set` is a count and an array of socket numbers
+    //   (Open Watcom `h/os2/types.h`: `u_short fd_count; int
+    //   fd_array[FD_SETSIZE]` packed to 4, FD_SETSIZE 64), not a BSD bit
+    //   mask — see `read_fd_list`. `nfds` is not needed and ignored. The
+    //   sockets are watched with poll(2), in slices so that a signal can
+    //   interrupt the wait (`SOCEINTR`, ADR-0035); on return each given set
+    //   holds the ready sockets in their original order, and the result is
+    //   their total count (0 = timed out).
     //
-    //   args[0] = nfds       — highest OS/2 handle + 1 (used as hint)
-    //   args[1] = readfds    — ptr to OS/2 fd_set or 0
-    //   args[2] = writefds   — ptr to OS/2 fd_set or 0
-    //   args[3] = exceptfds  — ptr to OS/2 fd_set or 0
-    //   args[4] = timeout    — ptr to struct timeval { tv_sec u32, tv_usec u32 } or 0
-
+    //   Unverified: the SO32DLL / TCP32DLL ordinal of `select` (13 here) and
+    //   whether the BSD 4.3 stack's `select` takes a bit mask instead
+    //   (`bsdselect` / `os2_select` are not provided).
     pub fn so_select(&self, nfds: u32, rfds_ptr: u32, wfds_ptr: u32,
                      efds_ptr: u32, timeout_ptr: u32) -> u32 {
         debug!("select(nfds={}, rfds=0x{:X}, wfds=0x{:X}, efds=0x{:X}, timeout=0x{:X})",
                nfds, rfds_ptr, wfds_ptr, efds_ptr, timeout_ptr);
+        match self.select_sockets([rfds_ptr, wfds_ptr, efds_ptr], timeout_ptr) {
+            Ok(n) => {
+                self.shared.socket_mgr.lock_or_recover().clear_errno();
+                n
+            }
+            Err(e) => {
+                self.shared.socket_mgr.lock_or_recover().set_errno(e);
+                SOCK_ERROR
+            }
+        }
+    }
 
-        // Build a snapshot of handle→fd mappings for translation.
-        let handle_map: Vec<(u32, i32)> = {
+    /// The body of `select`: the ready count, or a `SOCE*` error.
+    fn select_sockets(&self, set_ptrs: [u32; 3], timeout_ptr: u32) -> Result<u32, i32> {
+        // The three lists (read, write, exception); `None` for a null set.
+        let mut lists: [Option<Vec<u32>>; 3] = [None, None, None];
+        for (list, &ptr) in lists.iter_mut().zip(&set_ptrs) {
+            if ptr != 0 {
+                let bytes = self.guest_read_bytes(ptr, OS2_FD_SET_BYTES).ok_or(SOCE_FAULT)?;
+                *list = Some(read_fd_list(&bytes).ok_or(SOCE_INVAL)?);
+            }
+        }
+        let timeout = if timeout_ptr == 0 {
+            None
+        } else {
+            let sec = self.guest_read::<i32>(timeout_ptr).ok_or(SOCE_FAULT)?;
+            let usec = self.guest_read::<i32>(timeout_ptr + 4).ok_or(SOCE_FAULT)?;
+            if sec < 0 || !(0..1_000_000).contains(&usec) {
+                return Err(SOCE_INVAL);
+            }
+            Some(std::time::Duration::from_secs(sec as u64) + std::time::Duration::from_micros(usec as u64))
+        };
+
+        // One pollfd per socket and kind; every number must be an open socket.
+        const EVENTS: [libc::c_short; 3] = [libc::POLLIN, libc::POLLOUT, libc::POLLPRI];
+        let mut polls: Vec<libc::pollfd> = Vec::new();
+        {
             let mgr = self.shared.socket_mgr.lock_or_recover();
-            mgr.sockets.iter().map(|(&h, &fd)| (h, fd)).collect()
-        };
-
-        // Read OS/2 fd_set bits (2 × u32 = 64 bits, handles 0..63).
-        let read_os2_fdset = |ptr: u32| -> [u32; OS2_FD_SET_WORDS] {
-            if ptr == 0 { return [0; OS2_FD_SET_WORDS]; }
-            [
-                self.guest_read::<u32>(ptr).unwrap_or(0),
-                self.guest_read::<u32>(ptr + 4).unwrap_or(0),
-            ]
-        };
-
-        let os2_rfds = read_os2_fdset(rfds_ptr);
-        let os2_wfds = read_os2_fdset(wfds_ptr);
-        let os2_efds = read_os2_fdset(efds_ptr);
-
-        // Translate OS/2 handle bits → Linux fd_set, tracking max fd.
-        let mut linux_rfds: libc::fd_set = unsafe { std::mem::zeroed() };
-        let mut linux_wfds: libc::fd_set = unsafe { std::mem::zeroed() };
-        let mut linux_efds: libc::fd_set = unsafe { std::mem::zeroed() };
-        let mut max_fd: i32 = -1;
-
-        let translate = |os2_fds: &[u32; OS2_FD_SET_WORDS],
-                          linux_fds: &mut libc::fd_set,
-                          map: &[(u32, i32)],
-                          max: &mut i32| {
-            unsafe { libc::FD_ZERO(linux_fds); }
-            for &(handle, fd) in map {
-                let h = handle as usize;
-                if h < 64 {
-                    let word = os2_fds[h / 32];
-                    if word & (1 << (h % 32)) != 0 {
-                        unsafe { libc::FD_SET(fd, linux_fds); }
-                        if fd > *max { *max = fd; }
-                    }
+            for (list, events) in lists.iter().zip(EVENTS) {
+                for &s in list.iter().flatten() {
+                    let fd = *mgr.sockets.get(&s).ok_or(SOCE_NOTSOCK)?;
+                    polls.push(libc::pollfd { fd, events, revents: 0 });
                 }
             }
-        };
-
-        if rfds_ptr != 0 { translate(&os2_rfds, &mut linux_rfds, &handle_map, &mut max_fd); }
-        if wfds_ptr != 0 { translate(&os2_wfds, &mut linux_wfds, &handle_map, &mut max_fd); }
-        if efds_ptr != 0 { translate(&os2_efds, &mut linux_efds, &handle_map, &mut max_fd); }
-
-        // Build Linux timeval from guest.
-        let mut tv = libc::timeval { tv_sec: 0, tv_usec: 0 };
-        let tv_ptr = if timeout_ptr != 0 {
-            tv.tv_sec  = self.guest_read::<u32>(timeout_ptr).unwrap_or(0) as libc::time_t;
-            tv.tv_usec = self.guest_read::<u32>(timeout_ptr + 4).unwrap_or(0) as libc::suseconds_t;
-            &mut tv as *mut _
-        } else {
-            std::ptr::null_mut()
-        };
-
-        let rc = unsafe {
-            libc::select(max_fd + 1,
-                if rfds_ptr != 0 { &mut linux_rfds } else { std::ptr::null_mut() },
-                if wfds_ptr != 0 { &mut linux_wfds } else { std::ptr::null_mut() },
-                if efds_ptr != 0 { &mut linux_efds } else { std::ptr::null_mut() },
-                tv_ptr)
-        };
-        if rc < 0 {
-            let e = errno_to_soce(last_errno());
-            self.shared.socket_mgr.lock_or_recover().set_errno(e);
-            return SOCK_ERROR;
         }
 
-        // Translate Linux fd_set results back to OS/2 fd_set bits.
-        let translate_back = |linux_fds: &libc::fd_set,
-                               ptr: u32,
-                               map: &[(u32, i32)]| {
-            if ptr == 0 { return; }
-            let mut bits = [0u32; OS2_FD_SET_WORDS];
-            for &(handle, fd) in map {
-                let h = handle as usize;
-                if h < 64 && unsafe { libc::FD_ISSET(fd, linux_fds) } {
-                    bits[h / 32] |= 1 << (h % 32);
+        let deadline = timeout.map(|t| std::time::Instant::now() + t);
+        loop {
+            let slice = match deadline {
+                Some(d) => d.saturating_duration_since(std::time::Instant::now()).min(SELECT_POLL_SLICE),
+                None => SELECT_POLL_SLICE,
+            };
+            // SAFETY: `polls` is a live, initialised array of `polls.len()`
+            // pollfds for the duration of the call.
+            let n = unsafe { libc::poll(polls.as_mut_ptr(), polls.len() as libc::nfds_t, slice.as_millis() as i32) };
+            if n < 0 {
+                let e = last_errno();
+                if e != libc::EINTR {
+                    return Err(errno_to_soce(e));
                 }
+            } else if n > 0 {
+                break;
             }
-            let _ = self.guest_write::<u32>(ptr,     bits[0]);
-            let _ = self.guest_write::<u32>(ptr + 4, bits[1]);
-        };
+            if self.interrupted() {
+                return Err(SOCE_INTR);
+            }
+            if self.shutting_down() || deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                // Timed out (or the process ends): nothing is ready.
+                for p in &mut polls { p.revents = 0; }
+                break;
+            }
+        }
 
-        if rfds_ptr != 0 { translate_back(&linux_rfds, rfds_ptr, &handle_map); }
-        if wfds_ptr != 0 { translate_back(&linux_wfds, wfds_ptr, &handle_map); }
-        if efds_ptr != 0 { translate_back(&linux_efds, efds_ptr, &handle_map); }
-
-        self.shared.socket_mgr.lock_or_recover().clear_errno();
-        rc as u32
+        // Write back each set with only its ready sockets.
+        let mut ready_total = 0u32;
+        let mut polled = polls.iter();
+        for (list, &ptr) in lists.iter().zip(&set_ptrs) {
+            let Some(list) = list else { continue };
+            let ready: Vec<u32> = list.iter().copied()
+                .filter(|_| polled.next().is_some_and(select_ready))
+                .collect();
+            ready_total += ready.len() as u32;
+            self.guest_write_bytes(ptr, &write_fd_list(&ready)).ok_or(SOCE_FAULT)?;
+        }
+        Ok(ready_total)
     }
 
     // ── gethostid (ordinal 4) ─────────────────────────────────────────────────
@@ -1472,6 +1517,67 @@ mod tests {
 
         loader.so_close(cli_h);
         loader.so_close(srv_h);
+    }
+
+    #[test]
+    fn fd_lists_follow_the_os2_tcpip_layout() {
+        use super::{read_fd_list, write_fd_list, OS2_FD_SET_BYTES, OS2_FD_SETSIZE};
+        let set = write_fd_list(&[0xA000, 0xA003, 7]);
+        assert_eq!(set.len(), OS2_FD_SET_BYTES);
+        assert_eq!(&set[..8], &[3, 0, 0, 0, 0x00, 0xA0, 0, 0], "count, padding, first socket");
+        assert_eq!(read_fd_list(&set), Some(vec![0xA000, 0xA003, 7]));
+        assert_eq!(read_fd_list(&write_fd_list(&[])), Some(vec![]));
+        let mut too_many = write_fd_list(&[]);
+        too_many[0] = OS2_FD_SETSIZE as u8 + 1;
+        assert_eq!(read_fd_list(&too_many), None);
+        let full: Vec<u32> = (0..80).collect();
+        assert_eq!(read_fd_list(&write_fd_list(&full)).map(|v| v.len()), Some(OS2_FD_SETSIZE));
+        assert_eq!(read_fd_list(&[1]), None, "short buffer");
+    }
+
+    /// select() reports a listening socket with a waiting connection (it used
+    /// to read a bit mask, so no socket numbered from 0xA000 could be in it),
+    /// keeps only ready sockets, and rejects a number that is no socket.
+    #[test]
+    fn select_reports_ready_sockets_by_number() {
+        use super::{read_fd_list, write_fd_list, OS2_FD_SET_BYTES};
+        use std::net::{TcpListener, TcpStream};
+        use std::os::unix::io::IntoRawFd;
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let idle = TcpListener::bind("127.0.0.1:0").unwrap();
+        let _client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
+        let loader = Loader::new_mock();
+        let srv = loader.shared.socket_mgr.lock_or_recover().alloc(listener.into_raw_fd());
+        let quiet = loader.shared.socket_mgr.lock_or_recover().alloc(idle.into_raw_fd());
+        assert!(srv >= 0xA000);
+        let buf = loader.shared.mem_mgr.lock_or_recover().alloc(2 * OS2_FD_SET_BYTES as u32 + 8).unwrap();
+        let (rfds, tv) = (buf, buf + 2 * OS2_FD_SET_BYTES as u32);
+        loader.guest_write::<i32>(tv, 2).unwrap();
+        loader.guest_write::<i32>(tv + 4, 0).unwrap();
+        loader.guest_write_bytes(rfds, &write_fd_list(&[quiet, srv])).unwrap();
+        assert_eq!(loader.so_select(0, rfds, 0, 0, tv), 1);
+        let ready = read_fd_list(&loader.guest_read_bytes(rfds, OS2_FD_SET_BYTES).unwrap());
+        assert_eq!(ready, Some(vec![srv]), "only the socket with a connection");
+
+        // Timeout: nothing ready, the set comes back empty.
+        loader.guest_write::<i32>(tv, 0).unwrap();
+        loader.guest_write_bytes(rfds, &write_fd_list(&[quiet])).unwrap();
+        assert_eq!(loader.so_select(0, rfds, 0, 0, tv), 0);
+        assert_eq!(read_fd_list(&loader.guest_read_bytes(rfds, OS2_FD_SET_BYTES).unwrap()), Some(vec![]));
+
+        // A number that is no socket, a bad count, a bad timeout.
+        loader.guest_write_bytes(rfds, &write_fd_list(&[0x1234])).unwrap();
+        assert_eq!(loader.so_select(0, rfds, 0, 0, tv), SOCK_ERROR);
+        assert_eq!(loader.so_sock_errno(), super::SOCE_NOTSOCK as u32);
+        loader.guest_write::<u16>(rfds, 65).unwrap();
+        assert_eq!(loader.so_select(0, rfds, 0, 0, tv), SOCK_ERROR);
+        assert_eq!(loader.so_sock_errno(), super::SOCE_INVAL as u32);
+        loader.guest_write_bytes(rfds, &write_fd_list(&[srv])).unwrap();
+        loader.guest_write::<i32>(tv + 4, 1_000_000).unwrap();
+        assert_eq!(loader.so_select(0, rfds, 0, 0, tv), SOCK_ERROR);
+        assert_eq!(loader.so_sock_errno(), super::SOCE_INVAL as u32);
+        loader.so_close(srv);
+        loader.so_close(quiet);
     }
 
     #[test]

@@ -50,14 +50,29 @@ struct timeval {
     long tv_usec;
 };
 
-/* OS/2 fd_set: 2 × u32 = 64-bit bitmask (handles 0..63) */
+/* OS/2 TCP/IP fd_set, as Open Watcom's h/os2/types.h declares it: a count
+   and the socket numbers themselves (not a bit mask), packed to 4 bytes. */
+#define FD_SETSIZE 64
+#pragma pack( __push, 4 )
 typedef struct {
-    unsigned long fds_bits[2];
+    unsigned short fd_count;
+    int            fd_array[FD_SETSIZE];
 } fd_set;
+#pragma pack( __pop )
 
-#define FD_ZERO(s)       memset((s), 0, sizeof(*(s)))
-#define FD_SET(h, s)     ((s)->fds_bits[(h) / 32] |= (1UL << ((h) % 32)))
-#define FD_ISSET(h, s)   (((s)->fds_bits[(h) / 32] >> ((h) % 32)) & 1)
+#define FD_ZERO(s)       ((s)->fd_count = 0)
+#define FD_SET(h, s)     do { if( (s)->fd_count < FD_SETSIZE ) \
+                                  (s)->fd_array[(s)->fd_count++] = (int)(h); } while( 0 )
+/* <types.h> calls __TCPFDIsSet for FD_ISSET; this loop does the same. */
+static int fd_isset( SOCKET h, const fd_set *s )
+{
+    unsigned i;
+    for( i = 0; i < s->fd_count; i++ ) {
+        if( s->fd_array[i] == (int)h ) return 1;
+    }
+    return 0;
+}
+#define FD_ISSET(h, s)   fd_isset( (h), (s) )
 
 /* hostent / servent (simplified — only fields we read) */
 struct hostent {
@@ -253,6 +268,7 @@ int main(void)
         tv.tv_usec = 0;
         int nready = p_select((int)srv + 1, &rfds, 0, 0, &tv);
         check("select(srv readable)", nready > 0 && FD_ISSET(srv, &rfds));
+        check("select(fd_count is the ready count)", rfds.fd_count == 1);
     }
 
     /* 12. Accept */
