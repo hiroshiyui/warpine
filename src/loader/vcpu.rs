@@ -1827,6 +1827,16 @@ fn continue_call_chain(
             regs.rip = MAGIC_API_BASE + (PMWIN_BASE + ordinal) as u64;
             regs.rsp = saved_rsp - 4;
         }
+        ChainEnd::Exit(result) => {
+            // Into DosExit(EXIT_PROCESS, result), as if the program had
+            // called it from where the chain began.
+            let sp = saved_rsp as u32 - 12;
+            for (i, v) in [saved_rip as u32, super::threads::EXIT_PROCESS, result].into_iter().enumerate() {
+                loader.guest_write::<u32>(sp + 4 * i as u32, v).expect("exit stack OOB");
+            }
+            regs.rip = MAGIC_API_BASE + super::pm_hook::ORD_DOS_EXIT as u64;
+            regs.rsp = sp as u64;
+        }
         ChainEnd::Next(next) => {
             // One more round of calls (a container sort's next comparison).
             continue_call_chain(vcpu, loader, callback_stack, next, saved_rip, saved_rsp);

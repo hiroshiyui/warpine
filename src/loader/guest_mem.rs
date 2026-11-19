@@ -7,6 +7,7 @@
 
 use std::ptr;
 use log::warn;
+use super::MutexExt;
 
 // ── GuestMemory ───────────────────────────────────────────────────────────────
 
@@ -192,6 +193,17 @@ impl super::Loader {
         self.shared.guest_mem.slice_mut(offset, len)
     }
 
+    /// Allocate `size` bytes (whole pages) from the memory manager, all
+    /// zero, as OS/2 commits memory: a reused block is cleared, so nothing
+    /// an earlier allocation or module left shows through.
+    pub fn alloc_zeroed(&self, size: u32) -> Option<u32> {
+        let (addr, stale) = self.shared.mem_mgr.lock_or_recover().alloc_reporting(size)?;
+        if stale > 0 {
+            self.guest_slice_mut(addr, stale as usize)?.fill(0);
+        }
+        Some(addr)
+    }
+
     /// Read a null-terminated string from guest memory, decoding it with the
     /// process's active codepage (`SharedState::active_codepage`).
     ///
@@ -273,6 +285,30 @@ impl super::Loader {
 #[cfg(test)]
 mod tests {
     use super::super::Loader;
+
+    /// Memory handed out again is zero, as OS/2 commits it: DosAllocMem
+    /// after DosFreeMem does not show the old contents; fresh memory is
+    /// not touched.
+    #[test]
+    fn reused_memory_is_zeroed() {
+        use super::super::MutexExt;
+        let l = Loader::new_mock();
+        let a = l.alloc_zeroed(8192).unwrap();
+        l.guest_write_bytes(a, &[0xAB; 8192]).unwrap();
+        assert!(l.shared.mem_mgr.lock_or_recover().free(a));
+        // The same block again, cleared.
+        let b = l.alloc_zeroed(5000).unwrap();
+        assert_eq!(b, a);
+        assert!(l.guest_slice_mut(b, 8192).unwrap().iter().all(|&x| x == 0));
+        assert_eq!(l.shared.mem_mgr.lock_or_recover().alloc_reporting(4096).map(|r| r.1), Some(0), "fresh memory");
+        // DosAllocMem the same way.
+        l.guest_write_bytes(b, &[0xCD; 16]).unwrap();
+        assert!(l.shared.mem_mgr.lock_or_recover().free(b));
+        assert_eq!(l.dos_alloc_mem(0x3000, 16), 0);
+        let c = l.guest_read::<u32>(0x3000).unwrap();
+        assert_eq!(c, b);
+        assert!(l.guest_slice_mut(c, 16).unwrap().iter().all(|&x| x == 0));
+    }
 
     #[test]
     fn test_mock_guest_read_write_u32() {

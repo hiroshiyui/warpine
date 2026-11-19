@@ -49,6 +49,19 @@ impl super::Loader {
         self.start_chain(super::pm_hook::CallChain::new(vcpu, steps, false, then))
     }
 
+    /// `WrpStartProcess`'s `_DLL_InitTerm` calls returned: into the
+    /// program, or, when one returned 0, end it with
+    /// `ERROR_INIT_ROUTINE_FAILED` (OS/2 does not start such a program).
+    pub(crate) fn start_inits_done(&self, chain: &super::pm_hook::CallChain) -> super::pm_hook::ChainEnd {
+        if chain.results.contains(&0) {
+            log::warn!("a DLL's _DLL_InitTerm failed: the program does not start");
+            let _ = self.write_handle(super::constants::STDERR_HANDLE,
+                b"The initialization routine of a DLL the program uses failed; the program does not start.\r\n");
+            return super::pm_hook::ChainEnd::Exit(super::constants::ERROR_INIT_ROUTINE_FAILED);
+        }
+        super::pm_hook::ChainEnd::Return(0)
+    }
+
     /// The chain of `DosLoadModule`'s `_DLL_InitTerm` calls returned: the
     /// handle goes to `*phmod` when every routine said TRUE; else
     /// `ERROR_INIT_ROUTINE_FAILED`.
@@ -156,6 +169,23 @@ mod tests {
         c.returned(0, false);
         assert_eq!(l.finish_chain(&c), ChainEnd::Return(ERROR_INIT_ROUTINE_FAILED));
         assert_eq!(l.guest_read::<u32>(0x3000), Some(0), "no handle");
+    }
+
+    /// At process start (WrpStartProcess): into the program when every
+    /// _DLL_InitTerm said TRUE, else the process ends with
+    /// ERROR_INIT_ROUTINE_FAILED through DosExit (ADR-0063).
+    #[test]
+    fn a_failed_startup_routine_ends_the_program() {
+        use super::super::pm_hook::{ChainEnd, ChainThen};
+        use super::super::{ApiResult, Loader};
+        let l = Loader::new_mock();
+        l.shared.dll_mgr.lock_or_recover().add_pending_init(0x1001, 0x5000);
+        let ApiResult::CallChain(mut c) = l.dll_init_chain(0, ChainThen::StartProcess) else { panic!() };
+        c.steps.clear();
+        c.returned(1, false);
+        assert_eq!(l.finish_chain(&c), ChainEnd::Return(0));
+        c.returned(0, false);
+        assert_eq!(l.finish_chain(&c), ChainEnd::Exit(ERROR_INIT_ROUTINE_FAILED));
     }
 
     use super::*;

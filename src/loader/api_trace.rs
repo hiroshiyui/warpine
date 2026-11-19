@@ -527,6 +527,8 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             303 => "WrpSOMClassMgr_somFindClsInFile",
             304 => "WrpSOMClassMgr_somLocateClassFile",
             305 => "WrpSOMClassMgr_somLoadClassFile",
+            306 => "WrpSOMClassMgr_somUnregisterClass",
+            307 => "WrpSOMClassMgr_somUnloadClassFile",
             _ => "?",
         },
 

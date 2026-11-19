@@ -336,11 +336,14 @@ pub(crate) enum ChainThen {
     /// the modules loaded with it: write the handle to `phmod` when all
     /// succeeded (`warpine_api.rs`).
     LoadModule { hmod: u32, phmod: u32 },
+    /// `WrpStartProcess` ran the `_DLL_InitTerm`s of the program's DLLs
+    /// (`warpine_api.rs`): into the program, or end it when one failed.
+    StartProcess,
     /// `somFree` called the object's `somUninit` (`som.rs`): free it.
     SomFree { obj: u32 },
     /// `somFindClass` (or a sibling) loaded the file of class `id`
     /// (`som.rs`): free the strings at `block`, return the class.
-    SomClassLoaded { id: u32, block: u32, inits: u32 },
+    SomClassLoaded { id: u32, block: u32, inits: u32, first: u32 },
     /// The default `SOMLoadModule` loaded module `hmod`: its handle to
     /// `phandle` when its `inits` `_DLL_InitTerm`s succeeded.
     SomModuleLoaded { hmod: u32, phandle: u32, inits: u32 },
@@ -393,7 +396,13 @@ pub(crate) enum ChainEnd {
     ModalLoop { dlg_proc: u32, hwnd_dlg: u32, hmq: u32, msg: Option<OS2Message> },
     /// Go on with another chain (a container sort's next comparison).
     Next(Box<CallChain>),
+    /// End the process with this result, through `DosExit` (its exit list
+    /// runs).
+    Exit(u32),
 }
+
+/// DOSCALLS ordinal of `DosExit`.
+pub(crate) const ORD_DOS_EXIT: u32 = 234;
 
 /// PMWIN ordinal of `WinSendMsg`.
 pub(crate) const ORD_WIN_SEND_MSG: u32 = 920;
@@ -457,7 +466,8 @@ impl Loader {
             ChainThen::Drag => self.drag_chain_done(chain.last),
             ChainThen::LoadModule { hmod, phmod } => ChainEnd::Return(self.dll_inits_done(hmod, phmod, chain)),
             ChainThen::SomFree { obj } => ChainEnd::Return(self.som_free_done(obj)),
-            ChainThen::SomClassLoaded { id, block, inits } => ChainEnd::Return(self.som_class_loaded(id, block, inits, chain)),
+            ChainThen::StartProcess => self.start_inits_done(chain),
+            ChainThen::SomClassLoaded { id, block, inits, first } => ChainEnd::Return(self.som_class_loaded(id, block, inits, first, chain)),
             ChainThen::SomModuleLoaded { hmod, phandle, inits } => ChainEnd::Return(self.som_module_loaded(hmod, phandle, inits, chain)),
             ChainThen::HitTest { hwnd, after } => self.hit_test_done(hwnd, after, chain),
             ChainThen::AnswerSent { id, hwnd, after, finish, calls } =>

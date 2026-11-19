@@ -479,3 +479,5 @@ SOM.302    WrpSOMClassMgr_somRegisterClass
 SOM.303    WrpSOMClassMgr_somFindClsInFile
 SOM.304    WrpSOMClassMgr_somLocateClassFile
 SOM.305    WrpSOMClassMgr_somLoadClassFile
+SOM.306    WrpSOMClassMgr_somUnregisterClass
+SOM.307    WrpSOMClassMgr_somUnloadClassFile

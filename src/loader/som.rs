@@ -127,6 +127,7 @@ pub const SOMCLASS_METHODS: &[(u32, &str)] = &[
 pub const SOMCLASSMGR_METHODS: &[(u32, &str)] = &[
     (300, "somFindClass"), (301, "somClassFromId"), (302, "somRegisterClass"),
     (303, "somFindClsInFile"), (304, "somLocateClassFile"), (305, "somLoadClassFile"),
+    (306, "somUnregisterClass"), (307, "somUnloadClassFile"),
 ];
 
 /// Most classes a process defines (Warpine's bound).
@@ -273,6 +274,11 @@ pub struct SomRuntime {
     pub env: u32,
     pub data: u32,
     pub heap: SomHeap,
+    /// Classes in the order they became ready (to tell which a module's
+    /// loading made).
+    pub ready_order: Vec<u32>,
+    /// Classes made while the class manager loaded a module: its handle.
+    pub modules: HashMap<u32, u32>,
 }
 
 impl SomRuntime {
@@ -848,9 +854,48 @@ impl Loader {
             }
         };
         if self.som_write_mtab(cls).is_some() {
-            self.shared.som.lock_or_recover().by_name.insert(name, cls);
+            let mut rt = self.shared.som.lock_or_recover();
+            rt.by_name.insert(name, cls);
+            if rt.ready_order.len() < MAX_CLASSES { rt.ready_order.push(cls); }
         }
         0
+    }
+
+    /// `somUnregisterClass`: the class manager forgets class `cls`
+    /// (`somFindClass` will look for it again); 0, or 1 if it was not
+    /// registered.
+    fn som_unregister(&self, cls: u32) -> u32 {
+        let mut rt = self.shared.som.lock_or_recover();
+        let Some(name) = rt.classes.get(&cls).map(|c| c.name.clone()) else { return 1 };
+        if rt.by_name.get(&name) != Some(&cls) { return 1; }
+        rt.by_name.remove(&name);
+        0
+    }
+
+    /// `somUnloadClassFile`: every class the module of class `cls` made is
+    /// unregistered and its objects' methods resolve to nothing (their
+    /// code goes with the module), then `SOMDeleteModule` frees the
+    /// module. Nonzero if the class did not come from a module the class
+    /// manager loaded.
+    fn som_unload_class_file(&self, vcpu: u32, cls: u32) -> ApiResult {
+        let hmod = {
+            let mut rt = self.shared.som.lock_or_recover();
+            let Some(&hmod) = rt.modules.get(&cls) else { return ApiResult::Normal(1) };
+            let made: Vec<u32> = rt.modules.iter().filter(|&(_, &m)| m == hmod).map(|(&c, _)| c).collect();
+            for c in made {
+                rt.modules.remove(&c);
+                let Some((name, mtab)) = rt.classes.get(&c).map(|k| (k.name.clone(), k.mtab)) else { continue };
+                if rt.by_name.get(&name) == Some(&c) { rt.by_name.remove(&name); }
+                rt.mtabs.remove(&mtab);
+                rt.ready_order.retain(|&k| k != c);
+            }
+            hmod
+        };
+        let deleter = self.som_var(SOM_VAR_DELETE_MODULE);
+        if deleter == thunk(SOM_DEFAULT_DELETE_MODULE) || deleter == 0 {
+            return self.dos_free_module(hmod);
+        }
+        self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(deleter, vec![hmod], false)], false, ChainThen::ReturnLast))
     }
 
     /// `WrpSomMetaclassFor(requested, parent)`: the metaclass of a new
@@ -915,11 +960,11 @@ impl Loader {
     /// `_DLL_InitTerm`s; or an OS/2 error.
     fn som_module_steps(&self, file: &str, func: Option<&str>, class: &str, class_ptr: u32,
                         major: u32, minor: u32) -> Result<(u32, Vec<CallStep>, u32), u32> {
-        let Some(path) = self.find_dll_path(file) else {
+        let Some((module, path)) = self.find_module_file(file) else {
             log::warn!("SOM: no class file {file} for class {class}");
             return Err(super::constants::ERROR_MOD_NOT_FOUND);
         };
-        let hmod = self.load_dll(file, &path).map_err(|e| {
+        let hmod = self.load_dll(&module, &path).map_err(|e| {
             log::warn!("SOM: loading {file} for class {class} failed: {e}");
             super::constants::ERROR_MOD_NOT_FOUND
         })?;
@@ -963,26 +1008,38 @@ impl Loader {
             at += s.len() as u32 + 1;
         }
         let loader = self.som_var(SOM_VAR_LOAD_MODULE);
+        let first = self.shared.som.lock_or_recover().ready_order.len() as u32;
         if loader == thunk(SOM_DEFAULT_LOAD_MODULE) {
             match self.som_module_steps(&file, Some(SOM_INIT_MODULE), &name, ptrs[0], major, minor) {
-                Ok((_, steps, inits)) => self.start_chain(CallChain::new(vcpu, steps, false,
-                                                                         ChainThen::SomClassLoaded { id, block, inits })),
+                Ok((hmod, steps, inits)) => {
+                    let _ = self.guest_write::<u32>(block, hmod);
+                    self.start_chain(CallChain::new(vcpu, steps, false, ChainThen::SomClassLoaded { id, block, inits, first }))
+                }
                 Err(_) => { self.som_free_mem(block); ApiResult::Normal(0) }
             }
         } else {
-            // The program's own SOMLoadModule; 0 is success.
+            // The program's own SOMLoadModule; 0 is success, the module
+            // handle in the block's first word.
             let step = CallStep::hook(loader, vec![ptrs[0], ptrs[1], ptrs[2], major, minor, block], false);
             self.start_chain(CallChain::new(vcpu, vec![step], false,
-                                            ChainThen::SomClassLoaded { id, block, inits: u32::MAX }))
+                                            ChainThen::SomClassLoaded { id, block, inits: u32::MAX, first }))
         }
     }
 
     /// The calls loading a class's file returned: the class, if the
     /// loading succeeded and made it (`inits` `_DLL_InitTerm`s first, or
     /// `u32::MAX`: a program's `SOMLoadModule`, its result last).
-    pub(crate) fn som_class_loaded(&self, id: u32, block: u32, inits: u32, chain: &CallChain) -> u32 {
+    /// The classes that became ready since `first` came from the module
+    /// whose handle is in the block's first word.
+    pub(crate) fn som_class_loaded(&self, id: u32, block: u32, inits: u32, first: u32, chain: &CallChain) -> u32 {
+        let hmod = self.guest_read::<u32>(block).unwrap_or(0);
         self.som_free_mem(block);
         let loaded = if inits == u32::MAX { chain.last == 0 } else { som_inits_ok(&chain.results, inits) };
+        if loaded && hmod != 0 {
+            let mut rt = self.shared.som.lock_or_recover();
+            let made: Vec<u32> = rt.ready_order.iter().skip(first as usize).copied().collect();
+            for c in made { rt.modules.insert(c, hmod); }
+        }
         let Some(name) = self.som_id_name(id) else { return 0 };
         let cls = self.shared.som.lock_or_recover().by_name.get(&name).copied();
         match (loaded, cls) {
@@ -1178,6 +1235,8 @@ impl Loader {
             // class's name.
             304 => ok(self.som_id_name(a[1]).map_or(0, |n| self.som_string(&n))),
             305 => self.som_find_class(vcpu, a[1], a[2], a[3], Some(a[4]), true),
+            306 => ok(self.som_unregister(a[1])),
+            307 => self.som_unload_class_file(vcpu, a[1]),
             302 => {
                 let mut rt = self.shared.som.lock_or_recover();
                 if let Some(name) = rt.classes.get(&a[1]).filter(|c| c.ready).map(|c| c.name.clone()) {
@@ -1473,6 +1532,34 @@ mod tests {
                    crate::loader::constants::ERROR_MOD_NOT_FOUND);
         assert!(som_inits_ok(&[1, 5, 0], 2));
         assert!(!som_inits_ok(&[1, 0, 7], 2));
+    }
+
+    /// somUnregisterClass forgets a class; somUnloadClassFile forgets the
+    /// classes of the module that made one, withdraws their method tables
+    /// (their objects resolve nothing) and frees the module.
+    #[test]
+    fn classes_are_unregistered_and_unloaded() {
+        let l = Loader::new_mock();
+        let (som_class, som_object) = (root(&l, SOM_CLASS_CLASS_DATA), root(&l, SOM_OBJECT_CLASS_DATA));
+        let mgr = ok(call(&l, SOM_ENVIRONMENT_NEW, &[]));
+        let a = new_class(&l, som_class, "ModA", &[som_object], 0, &[("work", 0x0065_0000)]);
+        let b = new_class(&l, som_class, "ModB", &[som_object], 0, &[]);
+        assert_eq!(ok(call(&l, 306, &[mgr, b])), 0);
+        assert_eq!(ok(call(&l, 306, &[mgr, b])), 1, "not registered any more");
+        assert_eq!(ok(call(&l, 307, &[mgr, a])), 1, "no module made it");
+        // As if a module 0x1234 had made both.
+        l.shared.som.lock_or_recover().modules.extend([(a, 0x1234), (b, 0x1234)]);
+        let obj = finish(&l, call(&l, 200, &[a]));
+        let work = token(&l, a, "work");
+        assert_eq!(ok(call(&l, SOM_RESOLVE, &[obj, work])), 0x0065_0000);
+        // The default SOMDeleteModule: DosFreeModule of an unknown handle.
+        assert_ne!(ok(call(&l, 307, &[mgr, a])), 0);
+        let rt = l.shared.som.lock_or_recover();
+        assert!(!rt.by_name.contains_key("ModA") && rt.modules.is_empty());
+        drop(rt);
+        assert_eq!(ok(call(&l, SOM_RESOLVE, &[obj, work])), thunk(SOM_METHOD_ERROR), "its code is gone");
+        assert_eq!(ok(call(&l, 300, &[mgr, ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3700, "ModA")])), 0, 0])), 0,
+                   "looked for again (no file here)");
     }
 
     /// Two parents: methods of both, the right one's override where the

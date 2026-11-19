@@ -154,7 +154,7 @@ impl super::Loader {
             && self.shared.shmem_mgr.lock_or_recover().find_by_name(upper).is_some() {
             return ERROR_ALREADY_EXISTS;
         }
-        let Some(addr) = self.shared.mem_mgr.lock_or_recover().alloc(cb) else {
+        let Some(addr) = self.alloc_zeroed(cb) else {
             return ERROR_NOT_ENOUGH_MEMORY;
         };
         if self.guest_write::<u32>(ppb, addr).is_none() {
@@ -470,8 +470,8 @@ impl super::Loader {
         }
 
         // `load_dll` handles the "already loaded → increment refcount" case internally.
-        let result = match self.find_dll_path(&name) {
-            Some(path) => self.load_dll(&name, &path),
+        let result = match self.find_module_file(&name) {
+            Some((module, path)) => self.load_dll(&module, &path),
             None => Err(format!("'{}' not found on host", name)),
         };
 
@@ -523,6 +523,10 @@ impl super::Loader {
         debug!("  DosFreeModule(hmod={})", hmod);
         let freed = {
             let mut dll_mgr = self.shared.dll_mgr.lock_or_recover();
+            // A handle of no loaded module (never one, or already freed).
+            if dll_mgr.find_by_handle(hmod).is_none() {
+                return super::ApiResult::Normal(super::constants::ERROR_INVALID_HANDLE);
+            }
             dll_mgr.decrement_refcount(hmod)
         };
         if freed.is_some() {
@@ -1696,6 +1700,18 @@ mod tests {
         assert_eq!(by_name(b"PMSHAPI\0", b"WinStartApp\0"),
                    (NO_ERROR, MAGIC_API_BASE as u32 + PMSHAPI_BASE + 119));
         assert_eq!(by_name(b"WARPINE\0", b"WrpNoSuchCall\0"), (ERROR_PROC_NOT_FOUND, 0));
+    }
+
+    /// A handle of no loaded module, or one already freed:
+    /// ERROR_INVALID_HANDLE (it was NO_ERROR).
+    #[test]
+    fn test_dos_free_module_of_no_module_is_an_invalid_handle() {
+        use super::super::{ApiResult, constants::{ERROR_INVALID_HANDLE, NO_ERROR}};
+        let loader = Loader::new_mock();
+        assert!(matches!(loader.dos_free_module(0x7777), ApiResult::Normal(ERROR_INVALID_HANDLE)));
+        let h = register_fake_dll(&loader, "ONCE", vec![], None);
+        assert!(matches!(loader.dos_free_module(h), ApiResult::Normal(NO_ERROR)));
+        assert!(matches!(loader.dos_free_module(h), ApiResult::Normal(ERROR_INVALID_HANDLE)), "freed already");
     }
 
     #[test]

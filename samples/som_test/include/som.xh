@@ -79,6 +79,8 @@ public:
                                             { return _somLocateClassFile( this, id, major, minor ); }
     SOMClass *somLoadClassFile( somId id, long major, long minor, zString file )
                                             { return _somLoadClassFile( this, id, major, minor, file ); }
+    long      somUnregisterClass( SOMClass *c ) { return _somUnregisterClass( this, c ); }
+    long      somUnloadClassFile( SOMClass *c ) { return _somUnloadClassFile( this, c ); }
 };
 
 #endif

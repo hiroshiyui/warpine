@@ -190,21 +190,56 @@ fn test_som_samples_run_on_the_som_runtime() {
         "stack object is a SOM object: 0\n", "done\n",
     ].concat();
     assert_eq!((code, out.replace("\r\n", "\n")), (0, want));
-    // findcls (ADR-0062): somFindClass loads greeter.dll by the class's
-    // name and calls its SOMInitModule; somFindClsInFile through the
-    // program's SOMLoadModule loads echoes.dll (EchoNewClass); the
-    // program's SOMOutCharRoutine and SOMError; the default SOMError ends
-    // the program on the fatal code 49.
+    // findcls (ADR-0062, ADR-0063): somFindClass loads greeter.dll by the
+    // class's name and calls its SOMInitModule; somFindClsInFile through
+    // the program's SOMLoadModule loads echoes.dll (EchoNewClass);
+    // somUnregisterClass; somUnloadClassFile through the program's
+    // SOMDeleteModule, then echoes.dll loaded afresh (its memory zeroed,
+    // so EchoNewClass builds the class again); the program's
+    // SOMOutCharRoutine and SOMError; the default SOMError ends the
+    // program on the fatal code 49.
     let (out, code) = run_sample("samples/som_test/findcls.exe", 15);
     let want = concat!(
         "SOMInitModule(1, 2, Greeter)\n", "found Greeter\n", "Greeter Greeter says hello\n",
         "again: the same class\n",
         "SOMLoadModule(Echo, echoes, SOMInitModule, 3, 4)\n", "EchoNewClass(3, 4)\n", "  -> 0, a module\n",
         "found Echo\n", "echo echo\n",
-        "Nowhere: not found, its file would be Nowhere\n", "SOMDeleteModule -> 0\n",
+        "Nowhere: not found, its file would be Nowhere\n",
+        "unregister Greeter: 0\n", "unregister Greeter again: 1\n",
+        "unload Greeter's file: 0\n", "unload it again: 1\n", "unload a class of no file: 1\n",
+        "SOMDeleteModule(echoes) -> 0\n", "unload Echo's file: 0\n",
+        "EchoNewClass(3, 4)\n", "found Echo again\n", "again again\n",
         "QUIET 7\n", "quiet 8\n", "my SOMError: code 20012, with a place\n", "a fatal error next\n",
     );
     assert_eq!((code, out.replace("\r\n", "\n").as_str()), (49, want));
+}
+
+/// dllinit_test (ADR-0063): goodinit.dll initializes before main;
+/// DosLoadModule of badinit.dll fails with ERROR_INIT_ROUTINE_FAILED; a full
+/// OS/2 path on drive C finds the loaded module; DosQueryProcAddr by name
+/// finds a resident-names export; names leading out of drive C are not
+/// found. badstart.exe, which imports badinit.dll, does not start.
+#[test]
+fn test_dll_initialization_and_module_names() {
+    if !kvm_available() { return; }
+    let data = tempfile::tempdir().expect("tempdir");
+    let libs = data.path().join("warpine/drive_c/LIBS");
+    std::fs::create_dir_all(&libs).unwrap();
+    std::fs::copy("samples/dllinit_test/goodinit.dll", libs.join("GOODINIT.DLL")).expect("goodinit.dll built");
+    let home = data.path().to_str().unwrap();
+    let (out, code) = run_sample_env("samples/dllinit_test/dllinit.exe", 15, &[("XDG_DATA_HOME", home)]);
+    let want = concat!(
+        "goodinit: initialized\n", "main: GoodValue() = 42\n",
+        "DosLoadModule(BADINIT) = 295, handle 0\n",
+        "DosLoadModule(C:\\LIBS\\GOODINIT.DLL) = 0, the loaded module\n",
+        "DosQueryProcAddr(GoodValue) = 0, value 42\n",
+        "DosLoadModule(outside drive C) = 126\n", "DosLoadModule(..\\GOODINIT) = 126\n",
+    );
+    assert_eq!((code, out.replace("\r\n", "\n").as_str()), (0, want));
+    // ERROR_INIT_ROUTINE_FAILED (295) as the process's result; the host
+    // sees its low byte.
+    let (out, code) = run_sample("samples/dllinit_test/badstart.exe", 15);
+    assert_eq!((code, out.as_str()), (295 & 0xFF, ""));
 }
 
 /// alloc_test: DosAllocMem / DosFreeMem round-trip.

@@ -1286,7 +1286,8 @@ impl super::Loader {
 
     pub fn dos_alloc_mem(&self, ppb: u32, cb: u32) -> u32 {
         debug!("DosAllocMem(ppb=0x{:08X}, cb=0x{:08X} [{}])", ppb, cb, cb);
-        match self.shared.mem_mgr.lock_or_recover().alloc(cb) {
+        // Committed memory is zero (a reused block is cleared).
+        match self.alloc_zeroed(cb) {
             Some(addr) => {
                 debug!("  -> allocated at 0x{:08X}", addr);
                 self.guest_write::<u32>(ppb, addr);

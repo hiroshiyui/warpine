@@ -15,6 +15,10 @@ pub struct MemoryManager {
     free_list: Vec<AllocBlock>,
     pub next_free: u32,
     limit: u32,
+    /// The highest address ever handed out: memory below it may hold what
+    /// an earlier allocation left (`next_free` drops when the top block is
+    /// freed).
+    high_water: u32,
 }
 
 impl MemoryManager {
@@ -24,10 +28,18 @@ impl MemoryManager {
             free_list: Vec::new(),
             next_free: base,
             limit,
+            high_water: base,
         }
     }
 
     pub fn alloc(&mut self, size: u32) -> Option<u32> {
+        self.alloc_reporting(size).map(|(addr, _)| addr)
+    }
+
+    /// [`Self::alloc`], also telling the bytes that may hold what an
+    /// earlier user left: the whole block when it was freed before
+    /// (memory never handed out is still zero); 0 otherwise.
+    pub fn alloc_reporting(&mut self, size: u32) -> Option<(u32, u32)> {
         let size = (size.checked_add(4095)?) & !4095;
         // First, try to reuse a freed block (first-fit)
         if let Some(idx) = self.free_list.iter().position(|b| b._size >= size) {
@@ -38,7 +50,7 @@ impl MemoryManager {
                 self.free_list.push(AllocBlock { addr: addr + size, _size: block._size - size });
             }
             self.allocated.push(AllocBlock { addr, _size: size });
-            return Some(addr);
+            return Some((addr, size));
         }
         // Otherwise bump-allocate
         let end = self.next_free.checked_add(size)?;
@@ -48,7 +60,9 @@ impl MemoryManager {
         let addr = self.next_free;
         self.allocated.push(AllocBlock { addr, _size: size });
         self.next_free = end;
-        Some(addr)
+        let stale = self.high_water.saturating_sub(addr).min(size);
+        self.high_water = self.high_water.max(end);
+        Some((addr, stale))
     }
 
     pub fn free(&mut self, addr: u32) -> bool {

@@ -232,17 +232,19 @@ impl super::Loader {
             warn!("DLL load: '{}' does not have LIBRARY flag set", dll_name_upper);
         }
 
-        // 2. Allocate guest memory for each object
+        // 2. Allocate guest memory for each object, zeroed: its zero-filled
+        //    pages and the rest of partial pages must not show what an
+        //    earlier module or allocation left there.
         let mut object_bases: Vec<u32> = Vec::new();
-        {
-            let mut mem = self.shared.mem_mgr.lock_or_recover();
-            for obj in &lx_file.object_table {
-                let size = obj.size.max(4096); // at least one page
-                let addr = mem.alloc(size)
-                    .ok_or_else(|| format!("Out of guest memory for DLL '{}'", dll_name_upper))?;
-                object_bases.push(addr);
-                debug!("  DLL object: size=0x{:X} → guest 0x{:08X}", size, addr);
-            }
+        for obj in &lx_file.object_table {
+            let size = obj.size.max(4096); // at least one page
+            let Some(addr) = self.alloc_zeroed(size) else {
+                let mut mem = self.shared.mem_mgr.lock_or_recover();
+                for &b in &object_bases { mem.free(b); }
+                return Err(format!("Out of guest memory for DLL '{}'", dll_name_upper));
+            };
+            object_bases.push(addr);
+            debug!("  DLL object: size=0x{:X} → guest 0x{:08X}", size, addr);
         }
 
         // 3. Load pages into guest memory
@@ -354,6 +356,23 @@ impl super::Loader {
 
         loading.remove(&dll_name_upper);
         Ok(handle)
+    }
+
+    /// The module name and host file of `name` as `DosLoadModule` takes
+    /// it: a plain module name is searched for ([`Self::find_dll_path`]);
+    /// an OS/2 path (`C:\DIR\X.DLL`) is resolved through the drives,
+    /// inside their directories only, and names the module by its file's
+    /// base name.
+    pub fn find_module_file(&self, name: &str) -> Option<(String, String)> {
+        if is_plain_module_name(name) {
+            return self.find_dll_path(name).map(|p| (name.to_string(), p));
+        }
+        if name.len() > 260 || name.chars().any(|c| c.is_control()) { return None; }
+        let host = self.shared.drive_mgr.lock_or_recover().resolve_to_host_path(name)?;
+        if !host.is_file() { return None; }
+        let file = name.rsplit(['\\', '/', ':']).next().filter(|f| !f.is_empty())?;
+        let module = file.split('.').next().filter(|m| !m.is_empty())?.to_ascii_uppercase();
+        Some((module, host.to_string_lossy().into_owned()))
     }
 
     /// Search for a DLL by module name on the host filesystem.
@@ -489,6 +508,28 @@ mod tests {
         }
         let l = crate::loader::Loader::new_mock();
         assert_eq!(l.find_dll_path("../../../../../../etc/passwd"), None);
+    }
+
+    /// DosLoadModule's names: an OS/2 path is resolved through the drives,
+    /// inside them only, and names the module by its file.
+    #[test]
+    fn module_files_by_os2_path() {
+        use crate::loader::vfs_hostdir::HostDirBackend;
+        let outside = tempfile::TempDir::new().unwrap();
+        std::fs::write(outside.path().join("evil.dll"), b"x").unwrap();
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir(tmp.path().join("libs")).unwrap();
+        std::fs::write(tmp.path().join("libs/Greeter.DLL"), b"x").unwrap();
+        let l = crate::loader::Loader::new_mock();
+        l.shared.drive_mgr.lock_or_recover().mount(2, Box::new(HostDirBackend::new(tmp.path().to_path_buf()).unwrap()));
+        let (module, path) = l.find_module_file("C:\\LIBS\\GREETER.DLL").expect("found through drive C");
+        assert_eq!(module, "GREETER");
+        assert!(path.ends_with("libs/Greeter.DLL"), "{path}");
+        assert_eq!(l.find_module_file("C:\\LIBS\\NONE.DLL"), None);
+        assert_eq!(l.find_module_file("C:\\LIBS"), None, "a directory");
+        let up = format!("C:\\..\\{}\\evil.dll", outside.path().file_name().unwrap().to_string_lossy());
+        assert_eq!(l.find_module_file(&up), None, "outside the drive");
+        assert_eq!(l.find_module_file("Q:\\X.DLL"), None, "no such drive");
     }
 
     /// Verify BUILTIN_MODULES covers all modules handled by the thunk mechanism.

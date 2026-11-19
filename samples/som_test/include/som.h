@@ -142,7 +142,8 @@ SOMEXTERN struct SOMClassClassDataStructure {
 SOMEXTERN struct SOMClassMgrClassDataStructure {
     SOMClass *classObject;
     somMToken somFindClass, somClassFromId, somRegisterClass,
-              somFindClsInFile, somLocateClassFile, somLoadClassFile;
+              somFindClsInFile, somLocateClassFile, somLoadClassFile,
+              somUnregisterClass, somUnloadClassFile;
 } SOMDLINK SOMClassMgrClassData;
 
 SOMEXTERN SOMClassMgr * SOMDLINK SOMClassMgrObject;
@@ -264,6 +265,15 @@ typedef somTP_SOMClassMgr_somFindClass       *somTD_SOMClassMgr_somFindClass;
 typedef somTP_SOMClassMgr_somFindClsInFile   *somTD_SOMClassMgr_somFindClsInFile;
 typedef somTP_SOMClassMgr_somLocateClassFile *somTD_SOMClassMgr_somLocateClassFile;
 typedef somTP_SOMClassMgr_somLoadClassFile   *somTD_SOMClassMgr_somLoadClassFile;
+/* Forget a class; unload the module that made it (with its classes). */
+typedef long SOMLINK somTP_SOMClassMgr_somUnregisterClass( SOMClassMgr *, SOMClass * );
+typedef long SOMLINK somTP_SOMClassMgr_somUnloadClassFile( SOMClassMgr *, SOMClass * );
+typedef somTP_SOMClassMgr_somUnregisterClass *somTD_SOMClassMgr_somUnregisterClass;
+typedef somTP_SOMClassMgr_somUnloadClassFile *somTD_SOMClassMgr_somUnloadClassFile;
+#define _somUnregisterClass( m, c ) \
+    SOM_Resolve( m, SOMClassMgr, somUnregisterClass )( (SOMClassMgr *)(m), (SOMClass *)(c) )
+#define _somUnloadClassFile( m, c ) \
+    SOM_Resolve( m, SOMClassMgr, somUnloadClassFile )( (SOMClassMgr *)(m), (SOMClass *)(c) )
 #define _somFindClass( m, id, ma, mi ) \
     SOM_Resolve( m, SOMClassMgr, somFindClass )( (SOMClassMgr *)(m), (id), (ma), (mi) )
 #define _somFindClsInFile( m, id, ma, mi, f ) \
