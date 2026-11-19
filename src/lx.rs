@@ -41,6 +41,10 @@ pub struct LxFile {
     pub import_procedure_names: Vec<u8>,
     pub exports: Vec<LxExport>,
     pub nonresident_names: Vec<(u32, String)>,
+    /// Exported names of the resident names table (ordinal, name), the
+    /// module's own name (ordinal 0) left out. Open Watcom's linker puts a
+    /// DLL's exported names here.
+    pub resident_names: Vec<(u32, String)>,
 }
 
 impl LxFile {
@@ -249,18 +253,17 @@ impl LxFile {
         let mut nonresident_names = Vec::new();
         if header.non_resident_name_table_offset > 0 && header.non_resident_name_table_length > 0 {
             reader.seek(SeekFrom::Start(header.non_resident_name_table_offset as u64))?;
-            loop {
-                let mut lb = [0u8; 1];
-                if reader.read_exact(&mut lb).is_err() { break; }
-                let len = lb[0] as usize;
-                if len == 0 { break; }
-                let mut name_buf = vec![0u8; len];
-                reader.read_exact(&mut name_buf)?;
-                let mut ord_buf = [0u8; 2];
-                reader.read_exact(&mut ord_buf)?;
-                let ordinal = u16::from_le_bytes(ord_buf) as u32;
-                nonresident_names.push((ordinal, String::from_utf8_lossy(&name_buf).into_owned()));
-            }
+            nonresident_names = read_name_table(&mut reader, header.non_resident_name_table_length as usize)?;
+        }
+        // 12. The Resident Names Table (relative to the LX header), up to the
+        // entry table that follows it.
+        let mut resident_names = Vec::new();
+        if header.resident_name_table_offset > 0 {
+            let limit = header.entry_table_offset.checked_sub(header.resident_name_table_offset)
+                .filter(|&n| n > 0).map_or(MAX_NAME_TABLE, |n| (n as usize).min(MAX_NAME_TABLE));
+            reader.seek(SeekFrom::Start(lx_offset + header.resident_name_table_offset as u64))?;
+            resident_names = read_name_table(&mut reader, limit)?;
+            resident_names.retain(|&(ordinal, _)| ordinal != 0);
         }
 
         Ok(LxFile {
@@ -274,6 +277,7 @@ impl LxFile {
             import_procedure_names,
             exports,
             nonresident_names,
+            resident_names,
         })
     }
 
@@ -289,6 +293,30 @@ impl LxFile {
         let name_bytes = &self.import_procedure_names[offset + 1 .. offset + 1 + len];
         Some(String::from_utf8_lossy(name_bytes).into_owned())
     }
+}
+
+/// Most bytes of a names table read.
+const MAX_NAME_TABLE: usize = 1 << 20;
+
+/// A names table (resident or non-resident): entries of a length byte,
+/// the name and a 16-bit ordinal, ended by a zero length, the end of the
+/// file or `limit` bytes (at most [`MAX_NAME_TABLE`]).
+fn read_name_table<R: Read>(reader: &mut R, limit: usize) -> io::Result<Vec<(u32, String)>> {
+    let mut names = Vec::new();
+    let mut used = 0usize;
+    let limit = limit.min(MAX_NAME_TABLE);
+    loop {
+        let mut lb = [0u8; 1];
+        if used >= limit || reader.read_exact(&mut lb).is_err() { break; }
+        let len = lb[0] as usize;
+        if len == 0 || used + 1 + len + 2 > limit { break; }
+        let mut entry = vec![0u8; len + 2];
+        if reader.read_exact(&mut entry).is_err() { break; }
+        used += 1 + len + 2;
+        let ordinal = u16::from_le_bytes([entry[len], entry[len + 1]]) as u32;
+        names.push((ordinal, String::from_utf8_lossy(&entry[..len]).into_owned()));
+    }
+    Ok(names)
 }
 
 #[cfg(test)]
@@ -436,5 +464,32 @@ mod tests {
         assert_eq!(lx.nonresident_names.len(), 7);
         let has_sendkeys = lx.nonresident_names.iter().any(|(_, n)| n == "SendKeys");
         assert!(has_sendkeys, "SendKeys not in nonresident names");
+    }
+
+    /// A names table: length, name, ordinal; ended by a zero length, the
+    /// end of the data or the byte limit (a truncated entry is dropped).
+    #[test]
+    fn name_tables_are_read_within_their_bounds() {
+        let table = [7, b'G', b'R', b'E', b'E', b'T', b'E', b'R', 0, 0,
+                     13, b'S', b'O', b'M', b'I', b'n', b'i', b't', b'M', b'o', b'd', b'u', b'l', b'e', 1, 0,
+                     0, 3, b'x', b'y', b'z', 9, 0];
+        let names = super::read_name_table(&mut &table[..], table.len()).unwrap();
+        assert_eq!(names, vec![(0, "GREETER".to_string()), (1, "SOMInitModule".to_string())]);
+        // A limit inside the second entry keeps only the first.
+        assert_eq!(super::read_name_table(&mut &table[..], 20).unwrap().len(), 1);
+        // A table cut short by the end of the data.
+        assert_eq!(super::read_name_table(&mut &table[..14], 1000).unwrap().len(), 1);
+    }
+
+    /// Open Watcom's DLLs name their exports in the resident names table
+    /// (the SOM sample's greeter.dll, when built).
+    #[test]
+    fn resident_names_are_read() {
+        let path = "samples/som_test/greeter.dll";
+        if !std::path::Path::new(path).exists() { return; }
+        let lx = LxFile::open(path).expect("parse greeter.dll");
+        let names: Vec<&str> = lx.resident_names.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(names, ["SOMInitModule", "GreeterNewClass", "GreeterClassData"], "module name left out");
+        assert!(lx.resident_names.iter().all(|(o, _)| *o != 0));
     }
 }

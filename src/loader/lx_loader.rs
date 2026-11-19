@@ -280,7 +280,8 @@ impl super::Loader {
         self.apply_fixups(&lx_file, &object_bases)
             .map_err(|e| format!("DLL fixup error for '{}': {}", dll_name_upper, e))?;
 
-        // 5. Build export map from entry table + non-resident names table
+        // 5. Build export map from entry table + resident and non-resident
+        // names tables
         let mut exports_by_ordinal: HashMap<u32, u32> = HashMap::new();
         for exp in &lx_file.exports {
             let obj_idx = (exp.object_num as usize).wrapping_sub(1);
@@ -291,7 +292,7 @@ impl super::Loader {
         }
 
         let mut exports_by_name: HashMap<String, u32> = HashMap::new();
-        for (ordinal, name) in &lx_file.nonresident_names {
+        for (ordinal, name) in lx_file.resident_names.iter().chain(&lx_file.nonresident_names) {
             if let Some(&addr) = exports_by_ordinal.get(ordinal) {
                 exports_by_name.insert(name.to_ascii_uppercase(), addr);
             }
@@ -360,7 +361,15 @@ impl super::Loader {
     /// Search order:
     /// 1. Same directory as the running exe
     /// 2. `C:\OS2\DLL\` via the DriveManager host path
+    ///
+    /// Only a plain module name is searched: one with a path separator, a
+    /// drive, `..` or a control character is not (it would reach outside
+    /// these directories on the host).
     pub fn find_dll_path(&self, dll_name: &str) -> Option<String> {
+        if !is_plain_module_name(dll_name) {
+            log::warn!("module name {dll_name:?} is not a plain name; not searched");
+            return None;
+        }
         // Strip .DLL extension if present, then construct filename
         let upper = dll_name.to_ascii_uppercase();
         let stem = upper.strip_suffix(".DLL").unwrap_or(&upper);
@@ -392,6 +401,13 @@ impl super::Loader {
 
         None
     }
+}
+
+/// Whether `name` names a module without a path: not empty, no `/`, `\`
+/// or `:`, not `.` or `..`, no control characters, at most 255 bytes.
+pub(crate) fn is_plain_module_name(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 255 && name != "." && name != ".."
+        && !name.chars().any(|c| matches!(c, '/' | '\\' | ':') || c.is_control())
 }
 
 /// The host directory of the executable `exe` (as given on the command
@@ -460,6 +476,19 @@ mod tests {
         assert_eq!(exe_dir("/opt/os2/app.exe").as_deref(), Some("/opt/os2"));
         assert_eq!(exe_dir("4os2.exe").as_deref(), Some("."));
         assert_eq!(exe_dir(""), None);
+    }
+
+    /// Only plain module names are searched on the host: no path, drive,
+    /// `..` or control characters (DosLoadModule, somFindClsInFile).
+    #[test]
+    fn dll_search_takes_only_plain_module_names() {
+        use super::is_plain_module_name as plain;
+        for ok in ["GREETER", "student.dll", "A-B_C", "x.y"] { assert!(plain(ok), "{ok}"); }
+        for bad in ["", ".", "..", "../x", "a/b", "C:\\OS2\\X.DLL", "a\\b", "c:x", "a\nb", &"x".repeat(256)] {
+            assert!(!plain(bad), "{bad:?}");
+        }
+        let l = crate::loader::Loader::new_mock();
+        assert_eq!(l.find_dll_path("../../../../../../etc/passwd"), None);
     }
 
     /// Verify BUILTIN_MODULES covers all modules handled by the thunk mechanism.
