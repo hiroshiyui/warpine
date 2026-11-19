@@ -1,7 +1,7 @@
 //! Hello World sample — Rust guest binary for Warpine OS/2.
 //!
 //! Build with:
-//!   cargo +nightly build \
+//!   cargo build \
 //!     -Z build-std=core,alloc \
 //!     -Z build-std-features=compiler-builtins-mem \
 //!     -Z json-target-spec \
