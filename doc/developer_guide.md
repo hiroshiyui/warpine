@@ -1518,11 +1518,13 @@ Tests: `shared_arena.rs` (allocation and reuse, holders, sweeps, strict parsing,
 
 `pm_notebook.rs`:
 - **Model:** `NotebookState` (in `OS2Window::notebook`) is a pure page model: `insert`, `deletion` (`BKA_SINGLE` / `TAB` / `ALL`), `remove`, which moves the top page on, `query_id`, `count`, `tabs` and `current_tabs`.
-- **Layout:** `Layout::new` places the major tabs, the minor tabs of the top page's section, the back pages, the status line, the page buttons and the page, and `Layout::hit` hit-tests them.
+- **Layout:** `Layout::new` places the notebook buttons, the major tabs, the minor tabs of the top page's section, the back pages, the status line, the page buttons and the page, and `Layout::hit` hit-tests them. A band of tabs is a `TabBand` (`tab_column` / `tab_row`): when the tabs do not fit (`tabs_fitting`), it shows the range `shown_tabs` gives from `NotebookState::major_first` / `minor_first` and two scroll arrows; `reveal_tab` brings the current tab into view after a turn.
 - **Messages:** `Loader::notebook_message` handles the `BKM_*` messages, clicks and keys.
-- **Page windows:** `notebook_place_pages` shows the top page's window, sized to the page when `BKA_AUTOPAGESIZE`, hides the others and repaints.
-- **Notifications:** `BKN_PAGESELECTED` / `BKN_PAGEDELETED` are owner calls (`OwnerCallKind::NotebookSelected` / `NotebookDeleted`, `pm_owner.rs`): `WM_CONTROL` with the structure in a block on the guest stack, made on the owner's thread before the API returns, from `WinSendMsg` or from a click alike. `BKN_NEWPAGESIZE` is posted when painting finds a new size.
-- **Tests:** `pm_notebook.rs` (model, layout), `samples/pm_notebook_test` with a golden picture.
+- **Page windows:** `notebook_place_pages` loads the top page's dialog when `BKM_SETPAGEINFO` left it for later (`Page::dialog`, a `PageDialog` from a resource or a template in memory, loaded by `load_dialog` / `load_dialog_template` in `pm_win.rs`), shows the top page's window, sized to the page when `BKA_AUTOPAGESIZE`, hides the others, places the notebook buttons and makes the top page's window their owner, and repaints.
+- **Buttons:** `BKM_SETNOTEBOOKBUTTONS` creates `WC_BUTTON` children of kind `BS_NOTEBOOKBUTTON`, push buttons for `pm_button::is_push_kind`.
+- **Notifications:** `BKN_PAGESELECTEDPENDING` / `BKN_PAGESELECTED` / `BKN_PAGEDELETED` are owner calls (`OwnerCallKind::NotebookPending` / `NotebookSelected` / `NotebookDeleted`, `pm_owner.rs`): `WM_CONTROL` with the structure in a block on the guest stack, made on the owner's thread before the API returns, from `WinSendMsg` or from a click alike. A turn (`notebook_turn`) only queues `NotebookPending`; `owner_call_finish` hands the block as the owner left it to `notebook_turn_answered`, which turns unless `ulPageIdNew` is 0 and queues `NotebookSelected` (ADR-0064). `BKN_NEWPAGESIZE` is posted when painting finds a new size.
+- **Keys:** keys the notebook does not use are posted to its owner. `WindowManager::next_tab_stop` cycles through `tab_items(tab_scope(dialog))`: the outermost dialog the asking one is embedded in, the controls of shown embedded dialogs (a notebook's top page) in their place, so Tab crosses into and out of a page.
+- **Tests:** `pm_notebook.rs` (model, layout, pending turns, buttons, page dialogs, scrolling, keys), `pm_types.rs` `tab_crosses_into_a_shown_embedded_dialog`, `samples/pm_notebook_test` and `samples/pm_notebook_dlg_test` with golden pictures.
 
 ### Containers
 

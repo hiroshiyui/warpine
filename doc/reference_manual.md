@@ -738,9 +738,9 @@ WinAddAtom (700), WinAlarm (701), WinBeginPaint (703), WinCalcFrameRect (704), W
 
 **Notebooks.** A `WC_NOTEBOOK` holds pages in order, each with an id (`BKM_INSERTPAGE`: mp1 = a reference page, mp2 = `MPFROM2SHORT(style, BKA_FIRST / BKA_LAST / BKA_NEXT / BKA_PREV)`; returns the id, 0 on failure).
 
-*Pages.* A page's style gives it a major tab (`BKA_MAJOR`) or a minor tab (`BKA_MINOR`; shown while the top page lies in its major section), a status line (`BKA_STATUSTEXTON`), and a page window sized to the page (`BKA_AUTOPAGESIZE`). The first page inserted is the top page. Only the top page's window (`BKM_SETPAGEWINDOWHWND`, usually a dialog loaded with the notebook as parent) is shown; the others are hidden.
+*Pages.* A page's style gives it a major tab (`BKA_MAJOR`) or a minor tab (`BKA_MINOR`; shown while the top page lies in its major section), a status line (`BKA_STATUSTEXTON`), and a page window sized to the page (`BKA_AUTOPAGESIZE`). The first page inserted is the top page. Only the top page's window (`BKM_SETPAGEWINDOWHWND`, usually a dialog loaded with the notebook as parent) is shown; the others are hidden. `BKM_SETPAGEINFO` can have the notebook load the page's dialog itself, from a dialog resource (`BFA_PAGEFROMDLGRES`: `idPageDlg`, `hmodPageDlg`) or a `DLGTEMPLATE` in memory (`BFA_PAGEFROMDLGTEMPLATE`: `pdlgtPage`), with `pfnPageDlgProc` and `pPageDlgCreateParams` (`WM_INITDLG`'s mp2); `bLoadDlg` TRUE loads it at once, FALSE when the page is first turned to (ADR-0064).
 
-*Layout.* Major tabs run down the right (`BKS_MAJORTABLEFT` / `TOP` / `BOTTOM` move them) and minor tabs along the bottom (along the right for top or bottom major tabs). The status line (`BKS_STATUSTEXT*` alignment) and two page buttons, previous and next, lie under the page, and back-page edges right of and below it. `BKS_TABBEDDIALOG` puts the major tabs in a row on top, with no minor tabs, status line or buttons.
+*Layout.* Major tabs run down the right (`BKS_MAJORTABLEFT` / `TOP` / `BOTTOM` move them) and minor tabs along the bottom (along the right for top or bottom major tabs). The status line (`BKS_STATUSTEXT*` alignment) and two page buttons, previous and next, lie under the page, and back-page edges right of and below it. `BKS_TABBEDDIALOG` puts the major tabs in a row on top, with no minor tabs, status line or buttons. Tabs that do not fit their band scroll: two arrows at its end move it by one tab, and the current tab is brought into view at every turn. A tab shows its bitmap (`BKM_SETTABBITMAP`, stretched) instead of its text, on its own colour (`BKM_SETTABCOLOR`: mp2 an RGB colour, `BKA_AUTOCOLOR` for the notebook's). Notebook buttons (`BKM_SETNOTEBOOKBUTTONS`: mp1 = how many, at most 32, mp2 → `NOTEBOOKBUTTON`s; ids up to `BKA_MAXBUTTONID`) are push buttons of kind `BS_NOTEBOOKBUTTON` in a row along the notebook's bottom, common to all pages; their `WM_COMMAND` goes to the top page's window.
 
 *Messages:*
 - `BKM_DELETEPAGE` (`BKA_SINGLE`, `BKA_TAB` = the page's section, `BKA_ALL`);
@@ -748,20 +748,20 @@ WinAddAtom (700), WinAlarm (701), WinBeginPaint (703), WinCalcFrameRect (704), W
 - `BKM_QUERYPAGEID` (mp2 = `MPFROM2SHORT(BKA_FIRST / LAST / NEXT / PREV / TOP, style filter)`);
 - `BKM_QUERYPAGECOUNT` (mp1 / mp2 = first / last page, 0 = the ends, both counted);
 - `BKM_QUERYPAGESTYLE`;
-- `BKM_SET` / `QUERYPAGEDATA`, `BKM_SET` / `QUERYPAGEWINDOWHWND`, `BKM_SET` / `QUERYTABTEXT`, `BKM_SET` / `QUERYSTATUSLINETEXT` (queries through a `BOOKTEXT`; a NULL pointer gives the length), `BKM_SET` / `QUERYTABBITMAP` (kept, not drawn);
+- `BKM_SET` / `QUERYPAGEDATA`, `BKM_SET` / `QUERYPAGEWINDOWHWND`, `BKM_SET` / `QUERYTABTEXT`, `BKM_SET` / `QUERYSTATUSLINETEXT` (queries through a `BOOKTEXT`; a NULL pointer gives the length), `BKM_SET` / `QUERYTABBITMAP`, `BKM_SETTABCOLOR`, `BKM_SETNOTEBOOKBUTTONS`;
 - `BKM_SETDIMENSIONS` (`BKA_MAJORTAB` / `MINORTAB` / `PAGEBUTTON`);
 - `BKM_CALCPAGERECT` (TRUE: notebook rectangle → page rectangle, FALSE: back);
 - `BKM_SETNOTEBOOKCOLORS` (the `BKA_*COLOR[INDEX]` attributes);
 - `BKM_INVALIDATETABS`;
-- `BKM_SETPAGEINFO` / `QUERYPAGEINFO` (`BFA_PAGEDATA`, `PAGEFROMHWND`, `STATUSLINE`, the tab texts and bitmaps; loading a page dialog is not supported).
+- `BKM_SETPAGEINFO` / `QUERYPAGEINFO` (`BFA_PAGEDATA`, `PAGEFROMHWND`, `PAGEFROMDLGRES`, `PAGEFROMDLGTEMPLATE`, `STATUSLINE`, the tab texts and bitmaps).
 
 A bad page id gives `BOOKERR_INVALID_PARAMETERS`.
 
-*Input.* A click on a tab turns to its page, and the page buttons turn one page. On a focused notebook, PageUp / PageDown turn one page, Left / Up and Right / Down go to the previous / next major tab, and Home / End to the first / last page.
+*Input.* A click on a tab turns to its page, and the page buttons turn one page. On a focused notebook, PageUp / PageDown turn one page, Left / Up and Right / Down go to the previous / next major tab, and Home / End to the first / last page. Other keys go to the notebook's owner, so in a dialog Tab moves from the notebook into its top page's controls and from the page's last control on to the dialog's next one.
 
-*Notifications* go to the owner as `WM_CONTROL`. `BKN_PAGESELECTED` (mp2 → `PAGESELECTNOTIFY`: notebook, current and new page) and `BKN_PAGEDELETED` (mp2 → `DELETENOTIFY`: notebook, page window, page data, tab bitmap) are sent, so the owner has read them when the call that caused them returns. `BKN_NEWPAGESIZE` is posted when the notebook's size changes.
+*Notifications* go to the owner as `WM_CONTROL`. Every turn first sends `BKN_PAGESELECTEDPENDING` (mp2 → `PAGESELECTNOTIFY`); setting its `ulPageIdNew` to 0 keeps the current page. `BKN_PAGESELECTED` (mp2 → `PAGESELECTNOTIFY`: notebook, current and new page) and `BKN_PAGEDELETED` (mp2 → `DELETENOTIFY`: notebook, page window, page data, tab bitmap) are sent, so the owner has read them when the call that caused them returns. `BKN_NEWPAGESIZE` is posted when the notebook's size changes.
 
-*Not yet:* `BKN_PAGESELECTEDPENDING`, tab bitmaps and colours, notebook buttons, tab scrolling, and the spiral binding and rounded or polygon tabs (drawn square). Sizes and colours are Warpine's own.
+*Not yet:* the notebook buttons' images (`hImage`), and the spiral binding and rounded or polygon tabs (drawn square). Sizes and colours are Warpine's own.
 
 **Containers.** A `WC_CONTAINER` shows records that live in the application's memory (ADR-0043).
 

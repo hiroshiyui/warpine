@@ -192,6 +192,7 @@ samples/               OS/2 sample applications and build scripts
   fileattr_test/       FILE_READONLY by path, handle and DosSetFileMode; read-only files not deletable
   pm_child_dialog_test/ A dialog embedded in a client window (WinLoadDlg with the client as parent)
   pm_notebook_test/    WC_NOTEBOOK: pages, major / minor tabs, notifications, embedded page dialogs
+  pm_notebook_dlg_test/ A tabbed-dialog notebook: page dialogs, refused turns, buttons, scrolling tabs, Tab
   pm_container_test/   WC_CONTAINER: records in guest memory, detail view, selection, CN_* notifications
   pm_cnrtree_test/     WC_CONTAINER: sorting by a guest comparison function, tree view, scroll bar
   pm_cnricon_test/     WC_CONTAINER: icon view and icons, filtering, direct editing
