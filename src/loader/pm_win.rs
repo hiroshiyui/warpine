@@ -2211,8 +2211,12 @@ impl super::Loader {
     pub(crate) fn def_window_proc(&self, vcpu_id: u32, hwnd: u32, msg: u32, mp1: u32, mp2: u32) -> ApiResult {
         // "The default window procedure sends the message to the owner
         // window if it exists" (WM_CHAR): a key a control does not use
-        // reaches its dialog.
-        if msg == WM_CHAR {
+        // reaches its dialog. The direct-manipulation messages go the same
+        // way, so a child window's drag or context menu reaches the window
+        // that owns it (ADR-0068; unverified for these: their pages' default
+        // processing is read as WM_CHAR's).
+        if matches!(msg, WM_CHAR | super::pm_drag::WM_BEGINDRAG | super::pm_drag::WM_ENDDRAG
+                         | super::pm_input::WM_CONTEXTMENU) {
             let owner = {
                 let wm = self.shared.window_mgr.lock_or_recover();
                 wm.get_window(hwnd).map_or(0, |w| w.owner)

@@ -35,6 +35,20 @@
 //!
 //! Messages for another thread's window of this process are made on the
 //! dragging thread.
+//!
+//! - **Files** (ADR-0068): `DrgDragFiles` builds a `DRAGINFO` of
+//!   `<DRM_OS2FILE,DRF_UNKNOWN>` items, one per file (container = its
+//!   directory, source name = its name), and drags it as `DrgDrag` does.
+//!   Host files dropped on the desktop (SDL drop events, or `drop` in a
+//!   script) become the same kind of `DRAGINFO`, built on the thread of the
+//!   window under the pointer as a [`SentKind::HostDrop`]: `DM_DRAGOVER`,
+//!   then `DM_DROP` when it answers `DOR_DROP`, else `DM_DRAGLEAVE`. Only
+//!   files inside the process's drives are named; others are left out.
+//! - **The operation**: Ctrl, Shift and Ctrl+Shift held during a drag make
+//!   `usOperation` `DO_COPY`, `DO_MOVE` and `DO_LINK` (the CUA keys;
+//!   [`operation_for`]), and a change of them sends `DM_DRAGOVER` again.
+//!
+//! [`SentKind::HostDrop`]: super::pm_remote::SentKind::HostDrop
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
@@ -58,11 +72,14 @@ pub const DI_CDITEM: u32 = 16;
 pub const DRAGINFO_SIZE: u32 = 20;
 /// `DRAGITEM` field offsets and size.
 pub const DIT_HWND_ITEM: u32 = 0;
+pub const DIT_ITEM_ID: u32 = 4;
 pub const DIT_TYPE: u32 = 8;
 pub const DIT_RMF: u32 = 12;
 pub const DIT_CONTAINER: u32 = 16;
 pub const DIT_SOURCE: u32 = 20;
 pub const DIT_TARGET: u32 = 24;
+pub const DIT_FS_CONTROL: u32 = 32;
+pub const DIT_FS_SUPPORTED_OPS: u32 = 34;
 pub const DRAGITEM_SIZE: u32 = 36;
 /// `DRAGTRANSFER` size.
 pub const DRAGTRANSFER_SIZE: u32 = 28;
@@ -77,6 +94,22 @@ pub const MAX_STR_LEN: usize = 4096;
 pub const MAX_DRAG_TRANSFERS: u32 = 4096;
 
 pub const DO_DEFAULT: u16 = 0xBFFE;
+pub const DO_COPY: u16 = 0x0010;
+pub const DO_MOVE: u16 = 0x0020;
+pub const DO_LINK: u16 = 0x0018;
+pub const DO_COPYABLE: u16 = 0x0001;
+pub const DO_MOVEABLE: u16 = 0x0002;
+/// `DRAGITEM.fsControl`: the item is a container (a directory).
+pub const DC_CONTAINER: u16 = 0x0008;
+/// `DRT_UNKNOWN`, the type of a file of no known type.
+pub const DRT_UNKNOWN: &[u8] = b"Unknown";
+/// The rendering mechanism and format of a file item.
+pub const RMF_OS2FILE: &[u8] = b"<DRM_OS2FILE,DRF_UNKNOWN>";
+/// What a file item supports: copy and move (unverified; a host file can
+/// be copied or moved by the program that takes it).
+pub const FILE_OPS: u16 = DO_COPYABLE | DO_MOVEABLE;
+/// Most host drops waiting for their window's thread (Warpine's bound).
+pub const MAX_HOST_DROPS: usize = 8;
 
 pub const DM_DROP: u32 = 0x032f;
 pub const DM_DRAGOVER: u32 = 0x032e;
@@ -84,6 +117,7 @@ pub const DM_DRAGLEAVE: u32 = 0x032d;
 pub const DM_RENDER: u32 = 0x0329;
 pub const DM_RENDERCOMPLETE: u32 = 0x0328;
 pub const WM_BEGINDRAG: u32 = 0x0420;
+pub const WM_ENDDRAG: u32 = 0x0421;
 
 pub const DOR_NODROP: u32 = 0x0000;
 pub const DOR_DROP: u32 = 0x0001;
@@ -243,6 +277,9 @@ pub struct DragSession {
     pub target_pid: u32,
     /// The last step is a `DM_DRAGOVER` whose reply is pending.
     awaiting: bool,
+    /// A `DrgDragFiles` drag: its `DRAGINFO` and string handles go with it,
+    /// and it returns whether the files were dropped.
+    files: bool,
 }
 
 /// One message of the drag conversation: to a window of this program, in a
@@ -277,6 +314,42 @@ pub struct DragTable {
     pub transfers: HashMap<u32, u32>,
     pub session: Option<DragSession>,
     run: DragRun,
+    /// Host files dropped on a window, waiting for its thread
+    /// ([`Loader::host_drop_draginfo`]): OS/2 paths, whether each is a
+    /// directory.
+    pub host_drops: HashMap<u32, Vec<(String, bool)>>,
+    next_drop: u32,
+}
+
+/// `usOperation` for the modifier keys held: Ctrl copies, Shift moves,
+/// both link, none is the default (the CUA keys of OS/2; unverified for
+/// PM's own choice when both are held).
+pub fn operation_for(ctrl: bool, shift: bool) -> u16 {
+    match (ctrl, shift) {
+        (true, true) => DO_LINK,
+        (true, false) => DO_COPY,
+        (false, true) => DO_MOVE,
+        (false, false) => DO_DEFAULT,
+    }
+}
+
+/// An OS/2 path split into its container (the directory, with its
+/// trailing backslash) and name; `None` for a path without a name.
+pub fn split_file_path(path: &[u8]) -> Option<(&[u8], &[u8])> {
+    let cut = path.iter().rposition(|&b| b == b'\\' || b == b'/').map_or(0, |i| i + 1);
+    let (dir, name) = path.split_at(cut);
+    (!name.is_empty()).then_some((dir, name))
+}
+
+/// A file of a file `DRAGINFO`: its OS/2 path (in the thread's codepage),
+/// type and target name (`None`: `DRT_UNKNOWN`, the file's name), and
+/// whether it is a directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileItem {
+    pub path: Vec<u8>,
+    pub kind: Option<Vec<u8>>,
+    pub target: Option<Vec<u8>>,
+    pub dir: bool,
 }
 
 /// Pointer input for a drag, fed by the GUI thread: after `WM_BEGINDRAG`
@@ -291,6 +364,10 @@ pub struct DragFeed {
     pub moved: bool,
     pub released: Option<u8>,
     pub cancelled: bool,
+    /// `usOperation` for the keys held at the last move or release (0: not
+    /// known yet), so input that came before `DrgDrag` looked keeps the
+    /// keys it came with.
+    pub op: u16,
 }
 
 /// [`DragFeed`] with the condition `DrgDrag` waits on.
@@ -298,9 +375,35 @@ pub struct DragFeed {
 pub struct DragChannel {
     pub feed: std::sync::Mutex<DragFeed>,
     pub cond: std::sync::Condvar,
+    /// `usOperation` for the modifier keys held now ([`operation_for`]),
+    /// whether or not a drag runs.
+    op: std::sync::atomic::AtomicU32,
 }
 
 impl DragChannel {
+    /// The modifier keys changed: Ctrl and Shift held or not. A running
+    /// drag asks the window under the pointer again with the new
+    /// operation.
+    pub fn modifiers(&self, ctrl: bool, shift: bool) {
+        use std::sync::atomic::Ordering;
+        let op = u32::from(operation_for(ctrl, shift));
+        if self.op.swap(op, Ordering::Relaxed) == op { return; }
+        let mut f = self.feed.lock_or_recover();
+        if f.active && f.released.is_none() {
+            f.op = op as u16;
+            f.moved = true;
+            self.cond.notify_all();
+        }
+    }
+
+    /// `usOperation` for the keys held now.
+    pub fn operation(&self) -> u16 {
+        match self.op.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => DO_DEFAULT,
+            op => op as u16,
+        }
+    }
+
     /// Whether pointer input belongs to a drag now (the GUI thread does
     /// not route it).
     pub fn active(&self) -> bool {
@@ -313,6 +416,7 @@ impl DragChannel {
         if f.armed.is_none() && !f.active { return; }
         f.pos = pos;
         f.moved = true;
+        f.op = self.operation();
         self.cond.notify_all();
     }
 
@@ -321,6 +425,7 @@ impl DragChannel {
         let mut f = self.feed.lock_or_recover();
         if f.armed.is_none() && !f.active { return false; }
         if f.pos != pos { f.pos = pos; f.moved = true; }
+        f.op = self.operation();
         // Kept while armed: `DrgDrag` may start after the release (the
         // drop then comes at once); the next press resets the channel.
         f.released = Some(button);
@@ -348,7 +453,7 @@ impl DragChannel {
     pub fn arm(&self, button: u8, pos: (i32, i32)) {
         let mut f = self.feed.lock_or_recover();
         if f.active { return; }
-        *f = DragFeed { armed: Some(button), pos, moved: true, ..DragFeed::default() };
+        *f = DragFeed { armed: Some(button), pos, moved: true, op: self.operation(), ..DragFeed::default() };
     }
 }
 
@@ -548,13 +653,20 @@ impl Loader {
     /// `DrgAllocDraginfo(cditem)`: a zeroed `DRAGINFO` with room for
     /// `cditem` items, its sizes, `DO_DEFAULT` and the pointer position.
     pub(crate) fn drg_alloc_draginfo(&self, vcpu: u32, n: u32) -> ApiResult {
+        match self.alloc_draginfo(n) {
+            Ok(base) => ApiResult::Normal(base),
+            Err(code) => self.pm_fail(vcpu, code),
+        }
+    }
+
+    /// A new `DRAGINFO` for `n` items (see [`Self::drg_alloc_draginfo`]),
+    /// or the `PMERR_*` code why not.
+    fn alloc_draginfo(&self, n: u32) -> Result<u32, u32> {
         if n == 0 || n > MAX_DRAG_ITEMS || self.shared.window_mgr.lock_or_recover().drag.infos.len() >= MAX_DRAG_INFOS {
-            return self.pm_fail(vcpu, PMERR_INVALID_PARAMETERS);
+            return Err(PMERR_INVALID_PARAMETERS);
         }
         let size = DRAGINFO_SIZE + n * DRAGITEM_SIZE;
-        let Some(base) = self.drag_block_alloc(size) else {
-            return self.pm_fail(vcpu, PMERR_INSUFFICIENT_MEMORY);
-        };
+        let Some(base) = self.drag_block_alloc(size) else { return Err(PMERR_INSUFFICIENT_MEMORY) };
         let (x, y) = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             wm.drag.infos.insert(base, DragInfoBlock { items: n });
@@ -566,7 +678,146 @@ impl Loader {
         let _ = self.guest_write::<i16>(base + DI_X_DROP, x as i16);
         let _ = self.guest_write::<i16>(base + DI_Y_DROP, y as i16);
         let _ = self.guest_write::<u16>(base + DI_CDITEM, n as u16);
-        ApiResult::Normal(base)
+        Ok(base)
+    }
+
+    /// A `DRAGINFO` of file items (module comment), its items from window
+    /// `hwnd_item`, which is also the source; `None` when it cannot be made
+    /// (what was made is let go again).
+    pub(super) fn file_draginfo(&self, tid: u32, files: &[FileItem], hwnd_item: u32) -> Option<u32> {
+        let n = u32::try_from(files.len()).ok()?;
+        let pdinfo = self.alloc_draginfo(n).ok()?;
+        let _ = self.guest_write::<u32>(pdinfo + DI_HWND_SOURCE, hwnd_item);
+        // One handle per distinct string, as DrgDeleteDraginfoStrHandles
+        // deletes each distinct handle once.
+        let mut held: HashMap<Vec<u8>, u32> = HashMap::new();
+        for (i, f) in files.iter().enumerate() {
+            let item = pdinfo + DRAGINFO_SIZE + i as u32 * DRAGITEM_SIZE;
+            let Some((dir, name)) = split_file_path(&f.path) else {
+                self.discard_draginfo(pdinfo);
+                return None;
+            };
+            let texts: [(u32, &[u8]); 5] = [
+                (DIT_TYPE, f.kind.as_deref().unwrap_or(DRT_UNKNOWN)),
+                (DIT_RMF, RMF_OS2FILE),
+                (DIT_CONTAINER, dir),
+                (DIT_SOURCE, name),
+                (DIT_TARGET, f.target.as_deref().unwrap_or(name)),
+            ];
+            for (off, text) in texts {
+                let h = match held.get(text) {
+                    Some(&h) => h,
+                    None => match self.hstr_add(tid, text) {
+                        Some(h) => { held.insert(text.to_vec(), h); h }
+                        None => {
+                            self.discard_draginfo(pdinfo);
+                            return None;
+                        }
+                    },
+                };
+                let _ = self.guest_write::<u32>(item + off, h);
+            }
+            let _ = self.guest_write::<u32>(item + DIT_HWND_ITEM, hwnd_item);
+            let _ = self.guest_write::<u32>(item + DIT_ITEM_ID, i as u32);
+            let _ = self.guest_write::<u16>(item + DIT_FS_CONTROL, if f.dir { DC_CONTAINER } else { 0 });
+            let _ = self.guest_write::<u16>(item + DIT_FS_SUPPORTED_OPS, FILE_OPS);
+        }
+        Some(pdinfo)
+    }
+
+    /// Let go of a `DRAGINFO` this process made for files and of its
+    /// string handles (if it still has it: the target may have freed it).
+    pub(super) fn discard_draginfo(&self, pdinfo: u32) {
+        let Some(n) = self.info_items(pdinfo) else { return };
+        let mut handles = Vec::new();
+        for i in 0..n {
+            let item = pdinfo + DRAGINFO_SIZE + i * DRAGITEM_SIZE;
+            for off in [DIT_TYPE, DIT_RMF, DIT_CONTAINER, DIT_SOURCE, DIT_TARGET] {
+                let h = self.item_hstr(item, off);
+                if h != 0 && !handles.contains(&h) { handles.push(h); }
+            }
+        }
+        for h in handles { self.hstr_delete(h); }
+        if self.shared.window_mgr.lock_or_recover().drag.infos.remove(&pdinfo).is_some() {
+            self.drag_block_free(pdinfo);
+        }
+    }
+
+    /// `DrgQueryDraginfoPtr(pdinfo)`: the process's `DRAGINFO`s one after
+    /// another — NULL gives the first, a `DRAGINFO` the next; NULL after the
+    /// last (unverified: the reference's wording is short).
+    pub(crate) fn drg_query_draginfo_ptr(&self, prev: u32) -> ApiResult {
+        let wm = self.shared.window_mgr.lock_or_recover();
+        let next = wm.drag.infos.keys().copied().filter(|&p| prev == 0 || p > prev).min();
+        ApiResult::Normal(next.unwrap_or(0))
+    }
+
+    /// `DrgQueryDraginfoPtrFromHwnd(hwndSource)`: the `DRAGINFO` whose
+    /// source is window `hwnd` (the lowest address when there are several;
+    /// unverified), or NULL.
+    pub(crate) fn drg_query_draginfo_from_hwnd(&self, hwnd: u32) -> ApiResult {
+        if hwnd == 0 { return ApiResult::Normal(0); }
+        let mut infos: Vec<u32> = self.shared.window_mgr.lock_or_recover().drag.infos.keys().copied().collect();
+        infos.sort_unstable();
+        let hit = infos.into_iter().find(|&p| self.guest_read::<u32>(p + DI_HWND_SOURCE) == Some(hwnd));
+        ApiResult::Normal(hit.unwrap_or(0))
+    }
+
+    /// `DrgReallocDraginfo(pdinfo, cditem)`: a `DRAGINFO` for `cditem`
+    /// items with the old one's header and as many of its items as fit; the
+    /// old one is freed. Not while it is being dragged (unverified).
+    pub(crate) fn drg_realloc_draginfo(&self, vcpu: u32, pdinfo: u32, n: u32) -> ApiResult {
+        let (old_n, dragging) = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            (wm.drag.infos.get(&pdinfo).map(|b| b.items), wm.drag.in_drag(pdinfo))
+        };
+        let Some(old_n) = old_n else { return self.pm_fail(vcpu, PMERR_INVALID_PARAMETERS) };
+        if dragging { return self.pm_fail(vcpu, PMERR_ALREADY_DRAGGING); }
+        let new = match self.alloc_draginfo(n) {
+            Ok(p) => p,
+            Err(code) => return self.pm_fail(vcpu, code),
+        };
+        for off in [DI_OPERATION, DI_X_DROP, DI_Y_DROP] {
+            let v = self.guest_read::<u16>(pdinfo + off).unwrap_or(0);
+            let _ = self.guest_write::<u16>(new + off, v);
+        }
+        let _ = self.guest_write::<u32>(new + DI_HWND_SOURCE, self.guest_read::<u32>(pdinfo + DI_HWND_SOURCE).unwrap_or(0));
+        let keep = (old_n.min(n) * DRAGITEM_SIZE) as usize;
+        if let Some(items) = self.guest_read_bytes(pdinfo + DRAGINFO_SIZE, keep) {
+            let _ = self.guest_write_bytes(new + DRAGINFO_SIZE, &items);
+        }
+        if self.shared.window_mgr.lock_or_recover().drag.infos.remove(&pdinfo).is_some() {
+            self.drag_block_free(pdinfo);
+        }
+        ApiResult::Normal(new)
+    }
+
+    /// `DrgDragFiles(hwnd, apszFiles, apszTypes, apszTargets, cFiles,
+    /// hptrDrag, vkTerminate, fSourceRender, ulReserved)`: drag the files
+    /// named (fully qualified) from window `hwnd` (module comment); TRUE when
+    /// they were dropped. `fSourceRender` is not used: the target reads the
+    /// files itself (unverified).
+    pub(crate) fn drg_drag_files(&self, vcpu: u32, a: &[u32]) -> ApiResult {
+        let (hwnd, files, kinds, targets, n, hptr, vk) = (a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+        if n == 0 || n > MAX_DRAG_ITEMS || files == 0 || drag_button(vk).is_none() {
+            return self.pm_fail(vcpu, PMERR_INVALID_PARAMETERS);
+        }
+        let string_at = |array: u32, i: u32| -> Option<Vec<u8>> {
+            if array == 0 { return None; }
+            self.drag_bytes(self.guest_read::<u32>(array.checked_add(i * 4)?)?)
+        };
+        let mut items = Vec::new();
+        for i in 0..n {
+            let Some(path) = string_at(files, i) else { return self.pm_fail(vcpu, PMERR_INVALID_PARAMETERS) };
+            items.push(FileItem { path, kind: string_at(kinds, i), target: string_at(targets, i), dir: false });
+        }
+        let Some(pdinfo) = self.file_draginfo(vcpu, &items, hwnd) else {
+            return self.pm_fail(vcpu, PMERR_INVALID_PARAMETERS);
+        };
+        let r = self.start_drag(vcpu, hwnd, pdinfo, vk, true, hptr);
+        // Refused, or over at once: the DRAGINFO goes (again: no harm).
+        if matches!(r, ApiResult::Normal(0)) { self.discard_draginfo(pdinfo); }
+        r
     }
 
     /// `DrgFreeDraginfo(pdinfo)`. Within the process that is dragging it,
@@ -871,12 +1122,14 @@ impl Loader {
     /// start the drag and go on with it until the drop (see the module
     /// comment). Returns the target window, or NULLHANDLE.
     pub(crate) fn drg_drag(&self, vcpu: u32, source: u32, pdinfo: u32, vk_terminate: u32) -> ApiResult {
-        let button = match vk_terminate {
-            VK_BUTTON1 => 1,
-            VK_BUTTON2 => 2,
-            VK_BUTTON3 => 3,
-            VK_ENDDRAG => DRAG_BUTTON,
-            _ => return self.pm_fail(vcpu, PMERR_INVALID_PARAMETERS),
+        self.start_drag(vcpu, source, pdinfo, vk_terminate, false, 0)
+    }
+
+    /// Start a drag (`DrgDrag`; `files`: `DrgDragFiles`'s, shown with
+    /// pointer `pointer` over a target that accepts).
+    fn start_drag(&self, vcpu: u32, source: u32, pdinfo: u32, vk_terminate: u32, files: bool, pointer: u32) -> ApiResult {
+        let Some(button) = drag_button(vk_terminate) else {
+            return self.pm_fail(vcpu, PMERR_INVALID_PARAMETERS);
         };
         {
             let mut wm = self.shared.window_mgr.lock_or_recover();
@@ -887,7 +1140,7 @@ impl Loader {
             if wm.drag.session.is_some() { drop(wm); return self.pm_fail(vcpu, PMERR_ALREADY_DRAGGING); }
             // Chains are keyed by vCPU, as WinSendMsg's are.
             wm.drag.session = Some(DragSession { source, pdinfo, button, target: 0, reply: DOR_NODROP, never: false,
-                                                 pointer: 0, tid: vcpu, target_pid: 0, awaiting: false });
+                                                 pointer, tid: vcpu, target_pid: 0, awaiting: false, files });
             wm.drag.run = DragRun::default();
             // The drag loop takes the pointer from here on.
             wm.drop_pointer_input();
@@ -895,13 +1148,13 @@ impl Loader {
         if self.guest_read::<u32>(pdinfo + DI_HWND_SOURCE) == Some(0) {
             let _ = self.guest_write::<u32>(pdinfo + DI_HWND_SOURCE, source);
         }
-        let pointer = self.shared.window_mgr.lock_or_recover().key_state.pointer;
+        let at = self.shared.window_mgr.lock_or_recover().key_state.pointer;
         {
             let mut f = self.shared.drag_channel.feed.lock_or_recover();
             // Input since WM_BEGINDRAG stays (a release may have come
             // already); without one the drag starts where the pointer is.
             if f.armed.is_none() {
-                *f = DragFeed { pos: pointer, moved: true, ..DragFeed::default() };
+                *f = DragFeed { pos: at, moved: true, ..DragFeed::default() };
             }
             f.armed = None;
             f.active = true;
@@ -1003,13 +1256,18 @@ impl Loader {
 
     /// End the drag: no session, input routed again, the pointer back.
     fn drag_end(&self, result: u32) -> ApiResult {
-        {
+        let session = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
-            wm.drag.session = None;
             wm.drag.run = DragRun::default();
-        }
+            wm.drag.session.take()
+        };
         *self.shared.drag_channel.feed.lock_or_recover() = DragFeed::default();
         self.drag_feedback(true, 0);
+        // DrgDragFiles lets its DRAGINFO go and says whether it dropped.
+        if let Some(s) = session.filter(|s| s.files) {
+            self.discard_draginfo(s.pdinfo);
+            return ApiResult::Normal((result != 0) as u32);
+        }
         ApiResult::Normal(result)
     }
 
@@ -1036,6 +1294,11 @@ impl Loader {
                     if hwnd != 0 && !sess.never {
                         let _ = self.guest_write::<i16>(s.pdinfo + DI_X_DROP, pos.0 as i16);
                         let _ = self.guest_write::<i16>(s.pdinfo + DI_Y_DROP, pos.1 as i16);
+                        let op = match self.shared.drag_channel.feed.lock_or_recover().op {
+                            0 => self.shared.drag_channel.operation(),
+                            op => op,
+                        };
+                        let _ = self.guest_write::<u16>(s.pdinfo + DI_OPERATION, op);
                         match self.drag_action(hwnd, pid, DM_DRAGOVER, s.pdinfo, pos, local) {
                             Some(a) => { actions.push(a); sess.awaiting = true; }
                             None => { sess.reply = DOR_NEVERDROP; sess.never = true; }
@@ -1049,10 +1312,15 @@ impl Loader {
                     return self.drag_run(actions, DRAG_STAGE_OVER);
                 }
                 FeedStep::Release(_) => {
-                    let pos = self.shared.drag_channel.feed.lock_or_recover().pos;
+                    let (pos, op) = {
+                        let f = self.shared.drag_channel.feed.lock_or_recover();
+                        (f.pos, f.op)
+                    };
                     if s.target != 0 && s.reply == DOR_DROP {
                         let _ = self.guest_write::<i16>(s.pdinfo + DI_X_DROP, pos.0 as i16);
                         let _ = self.guest_write::<i16>(s.pdinfo + DI_Y_DROP, pos.1 as i16);
+                        // The keys held when the button came up.
+                        if op != 0 { let _ = self.guest_write::<u16>(s.pdinfo + DI_OPERATION, op); }
                         let local = if s.target_pid != 0 { (0, 0) } else {
                             self.shared.window_mgr.lock_or_recover().window_under(pos.0, pos.1)
                                 .filter(|w| w.0 == s.target).map_or((0, 0), |w| (w.1, w.2))
@@ -1215,6 +1483,85 @@ impl Loader {
     pub(crate) fn drag_after_sent(&self) -> ChainEnd {
         let active = self.shared.window_mgr.lock_or_recover().drag.run.active;
         chain_end(if active { self.drag_advance() } else { self.drag_continue() })
+    }
+}
+
+/// Which conversation step a [`super::pm_remote::SentKind::HostDrop`] is.
+pub const HOST_DROP_OVER: u8 = 0;
+pub const HOST_DROP_DROP: u8 = 1;
+pub const HOST_DROP_LEAVE: u8 = 2;
+
+impl WindowManager {
+    /// Host files (OS/2 paths, whether each is a directory) dropped at
+    /// desktop point `(x, y)` (PM coordinates): queued for the thread of
+    /// the window under it as a [`super::pm_remote::SentKind::HostDrop`].
+    /// FALSE when no window there takes input or too many drops wait.
+    pub fn queue_host_drop(&mut self, x: i32, y: i32, files: Vec<(String, bool)>) -> bool {
+        use super::pm_remote::{SentKind, SentMessage};
+        if files.is_empty() || self.drag.host_drops.len() >= MAX_HOST_DROPS { return false; }
+        let Some((hwnd, _, _)) = self.window_under(x, y) else { return false };
+        if self.frame_disabled(self.find_frame_for_hwnd(hwnd)) { return false; }
+        let Some(hmq) = self.find_hmq_for_hwnd(hwnd) else { return false };
+        let drop = loop {
+            self.drag.next_drop = self.drag.next_drop.wrapping_add(1).max(1);
+            if !self.drag.host_drops.contains_key(&self.drag.next_drop) { break self.drag.next_drop; }
+        };
+        let s = SentMessage { id: None, hwnd, kind: SentKind::HostDrop { drop, x, y, stage: HOST_DROP_OVER, pdinfo: 0 } };
+        if !self.queue_sent(hmq, s) { return false; }
+        self.drag.host_drops.insert(drop, files);
+        true
+    }
+}
+
+impl Loader {
+    /// The `DRAGINFO` of host drop `drop` for window `hwnd` at desktop
+    /// point `pos`, made on the window's thread `tid`; 0 when it is gone or
+    /// cannot be made.
+    pub(super) fn host_drop_draginfo(&self, tid: u32, drop: u32, pos: (i32, i32)) -> u32 {
+        let Some(files) = self.shared.window_mgr.lock_or_recover().drag.host_drops.remove(&drop) else { return 0 };
+        let cp = self.thread_codepage(tid);
+        let items: Vec<FileItem> = files.into_iter().map(|(path, dir)| FileItem {
+            path: super::codepage::cp_encode(&path, cp), kind: None, target: None, dir,
+        }).collect();
+        // The system is the source: no window of the program's.
+        let Some(pdinfo) = self.file_draginfo(tid, &items, 0) else { return 0 };
+        let _ = self.guest_write::<i16>(pdinfo + DI_X_DROP, pos.0 as i16);
+        let _ = self.guest_write::<i16>(pdinfo + DI_Y_DROP, pos.1 as i16);
+        let _ = self.guest_write::<u16>(pdinfo + DI_OPERATION, DO_DEFAULT);
+        pdinfo
+    }
+
+    /// Step `stage` of a host drop on window `hwnd` was made (`took_part`:
+    /// the window was asked), `reply` its answer: after `DM_DRAGOVER` the
+    /// drop or the leave follows (queued for the same thread); after the
+    /// leave, or when nobody was asked, the `DRAGINFO` goes. After the drop
+    /// it is the target's, which frees it.
+    pub(super) fn host_drop_step_done(&self, hwnd: u32, stage: u8, pdinfo: u32, pos: (i32, i32), reply: u32, took_part: bool) {
+        use super::pm_remote::{SentKind, SentMessage};
+        if pdinfo == 0 { return; }
+        let next = match stage {
+            HOST_DROP_OVER if took_part && reply & 0xFFFF == DOR_DROP => Some(HOST_DROP_DROP),
+            HOST_DROP_OVER if took_part => Some(HOST_DROP_LEAVE),
+            HOST_DROP_DROP if took_part => return,
+            _ => None,
+        };
+        if let Some(stage) = next {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            let s = SentMessage { id: None, hwnd, kind: SentKind::HostDrop { drop: 0, x: pos.0, y: pos.1, stage, pdinfo } };
+            if wm.find_hmq_for_hwnd(hwnd).is_some_and(|hmq| wm.queue_sent(hmq, s)) { return; }
+        }
+        self.discard_draginfo(pdinfo);
+    }
+}
+
+/// The button whose release ends a drag with `vkTerminate` `vk`.
+fn drag_button(vk: u32) -> Option<u8> {
+    match vk {
+        VK_BUTTON1 => Some(1),
+        VK_BUTTON2 => Some(2),
+        VK_BUTTON3 => Some(3),
+        VK_ENDDRAG => Some(DRAG_BUTTON),
+        _ => None,
     }
 }
 
@@ -1531,5 +1878,199 @@ mod tests {
         assert_eq!(d.info_of_item(0x1000 + DRAGINFO_SIZE + DRAGITEM_SIZE), Some((0x1000, 1)));
         assert_eq!(d.info_of_item(0x1000 + DRAGINFO_SIZE + 2 * DRAGITEM_SIZE), None);
         assert_eq!(d.info_of_item(0x1000 + DRAGINFO_SIZE + 4), None);
+    }
+
+    #[test]
+    fn operations_follow_the_cua_keys() {
+        assert_eq!(operation_for(false, false), DO_DEFAULT);
+        assert_eq!(operation_for(true, false), DO_COPY);
+        assert_eq!(operation_for(false, true), DO_MOVE);
+        assert_eq!(operation_for(true, true), DO_LINK);
+        let ch = DragChannel::default();
+        assert_eq!(ch.operation(), DO_DEFAULT, "no key seen yet");
+        ch.modifiers(true, false);
+        assert_eq!(ch.operation(), DO_COPY);
+        assert!(!ch.feed.lock_or_recover().moved, "no drag: nothing to ask again");
+        ch.feed.lock_or_recover().active = true;
+        ch.modifiers(true, true);
+        assert!(ch.feed.lock_or_recover().moved, "a running drag asks again");
+    }
+
+    #[test]
+    fn file_paths_split_into_container_and_name() {
+        assert_eq!(split_file_path(b"C:\\DOCS\\a.txt"), Some((&b"C:\\DOCS\\"[..], &b"a.txt"[..])));
+        assert_eq!(split_file_path(b"C:\\a"), Some((&b"C:\\"[..], &b"a"[..])));
+        assert_eq!(split_file_path(b"name"), Some((&b""[..], &b"name"[..])));
+        assert_eq!(split_file_path(b"C:\\DOCS\\"), None);
+    }
+
+    /// The string of handle field `off` of item `i` of `pd`.
+    fn item_text(l: &Loader, pd: u32, i: u32, off: u32) -> String {
+        l.hstr_text(l.item_hstr(pd + DRAGINFO_SIZE + i * DRAGITEM_SIZE, off))
+    }
+
+    fn file(path: &str, kind: Option<&str>, target: Option<&str>, dir: bool) -> FileItem {
+        FileItem { path: path.as_bytes().to_vec(), kind: kind.map(|k| k.as_bytes().to_vec()),
+                   target: target.map(|t| t.as_bytes().to_vec()), dir }
+    }
+
+    #[test]
+    fn file_draginfos_name_each_file_and_go_with_their_handles() {
+        let l = Loader::new_mock();
+        let files = [file("C:\\DOCS\\a.txt", None, None, false), file("C:\\DOCS\\SUB", Some("Plain Text"), Some("b"), true)];
+        let pd = l.file_draginfo(0, &files, 0x77).unwrap();
+        assert_eq!(l.guest_read::<u32>(pd + DI_HWND_SOURCE), Some(0x77));
+        assert_eq!(ok(l.drg_query_dragitem_count(0, pd)), 2);
+        let item = |i: u32, off: u32| l.guest_read::<u16>(pd + DRAGINFO_SIZE + i * DRAGITEM_SIZE + off).unwrap();
+        assert_eq!(item_text(&l, pd, 0, DIT_TYPE), "Unknown");
+        assert_eq!(item_text(&l, pd, 0, DIT_RMF), "<DRM_OS2FILE,DRF_UNKNOWN>");
+        assert_eq!(item_text(&l, pd, 0, DIT_CONTAINER), "C:\\DOCS\\");
+        assert_eq!(item_text(&l, pd, 0, DIT_SOURCE), "a.txt");
+        assert_eq!(item_text(&l, pd, 0, DIT_TARGET), "a.txt");
+        assert_eq!((item(0, DIT_FS_CONTROL), item(0, DIT_FS_SUPPORTED_OPS)), (0, FILE_OPS));
+        assert_eq!(l.guest_read::<u32>(pd + DRAGINFO_SIZE + DIT_HWND_ITEM), Some(0x77));
+        assert_eq!(item_text(&l, pd, 1, DIT_TYPE), "Plain Text");
+        assert_eq!(item_text(&l, pd, 1, DIT_TARGET), "b");
+        assert_eq!(item(1, DIT_FS_CONTROL), DC_CONTAINER, "a directory");
+        assert_eq!(l.guest_read::<u32>(pd + DRAGINFO_SIZE + DRAGITEM_SIZE + DIT_ITEM_ID), Some(1));
+        let source = l.item_hstr(pd + DRAGINFO_SIZE, DIT_SOURCE);
+        l.discard_draginfo(pd);
+        assert_eq!(ok(l.drg_access_draginfo(0, pd)), 0, "gone");
+        assert_eq!(ok(l.drg_query_str_name_len(0, source)), 0, "with its handles");
+        l.discard_draginfo(pd);
+        // A path without a name makes none, and leaves nothing behind.
+        assert!(l.file_draginfo(0, &[file("C:\\", None, None, true)], 0).is_none());
+        assert!(l.shared.window_mgr.lock_or_recover().drag.infos.is_empty());
+    }
+
+    #[test]
+    fn draginfos_are_enumerated_found_by_source_and_reallocated() {
+        let l = Loader::new_mock();
+        let (a, b) = (ok(l.drg_alloc_draginfo(0, 1)), ok(l.drg_alloc_draginfo(0, 2)));
+        let (lo, hi) = (a.min(b), a.max(b));
+        assert_eq!(ok(l.drg_query_draginfo_ptr(0)), lo);
+        assert_eq!(ok(l.drg_query_draginfo_ptr(lo)), hi);
+        assert_eq!(ok(l.drg_query_draginfo_ptr(hi)), 0, "after the last");
+        l.guest_write::<u32>(b + DI_HWND_SOURCE, 0x55).unwrap();
+        assert_eq!(ok(l.drg_query_draginfo_from_hwnd(0x55)), b);
+        assert_eq!(ok(l.drg_query_draginfo_from_hwnd(0x66)), 0);
+        assert_eq!(ok(l.drg_query_draginfo_from_hwnd(0)), 0);
+        // Reallocated: the header and the items that fit come along.
+        l.guest_write::<u32>(b + DRAGINFO_SIZE + DIT_ITEM_ID, 9).unwrap();
+        l.guest_write::<u16>(b + DI_OPERATION, DO_COPY).unwrap();
+        l.guest_write::<i16>(b + DI_X_DROP, 7).unwrap();
+        let c = ok(l.drg_realloc_draginfo(0, b, 3));
+        assert_ne!(c, 0);
+        assert_eq!(ok(l.drg_access_draginfo(0, b)), 0, "the old one is freed");
+        assert_eq!(ok(l.drg_query_dragitem_count(0, c)), 3);
+        assert_eq!(l.guest_read::<u32>(c + DI_CB_DRAGINFO), Some(DRAGINFO_SIZE + 3 * DRAGITEM_SIZE));
+        assert_eq!(l.guest_read::<u32>(c + DRAGINFO_SIZE + DIT_ITEM_ID), Some(9));
+        assert_eq!(l.guest_read::<u16>(c + DI_OPERATION), Some(DO_COPY));
+        assert_eq!(l.guest_read::<i16>(c + DI_X_DROP), Some(7));
+        assert_eq!(l.guest_read::<u32>(c + DI_HWND_SOURCE), Some(0x55));
+        let d = ok(l.drg_realloc_draginfo(0, c, 1));
+        assert_eq!(ok(l.drg_query_dragitem_count(0, d)), 1);
+        assert_eq!(ok(l.drg_realloc_draginfo(0, 0x1234, 1)), 0, "not a DRAGINFO");
+        assert_eq!(ok(l.drg_realloc_draginfo(0, d, 0)), 0, "no items");
+        assert_eq!(ok(l.drg_access_draginfo(0, d)), 1, "kept when refused");
+    }
+
+    #[test]
+    fn the_keys_held_choose_the_operation_of_each_dragover() {
+        let l = Loader::new_mock();
+        let (frame, client, _cnr) = desk(&l);
+        let (ox, oy) = l.shared.window_mgr.lock_or_recover().window_origin(client).unwrap();
+        let pd = ok(l.drg_alloc_draginfo(0, 1));
+        l.shared.drag_channel.modifiers(true, false);
+        l.shared.drag_channel.arm(DRAG_BUTTON, (ox + 150, oy + 50));
+        l.shared.drag_channel.released(DRAG_BUTTON, (ox + 150, oy + 50));
+        let seen = std::cell::Cell::new(0);
+        let (_, target) = run(&l, l.drg_drag(0, frame, pd, VK_ENDDRAG), &|c| {
+            if c[1] == DM_DRAGOVER {
+                seen.set(l.guest_read::<u16>(pd + DI_OPERATION).unwrap());
+                DOR_DROP
+            } else { 0 }
+        });
+        assert_eq!(target, client);
+        assert_eq!(seen.get(), DO_COPY, "Ctrl held");
+        l.shared.drag_channel.modifiers(false, false);
+    }
+
+    #[test]
+    fn drag_files_drops_named_files_and_says_whether_it_did() {
+        let l = Loader::new_mock();
+        let (frame, client, _cnr) = desk(&l);
+        let (ox, oy) = l.shared.window_mgr.lock_or_recover().window_origin(client).unwrap();
+        let names = [put_str(&l, BUF + 0x100, "C:\\X\\one.txt"), put_str(&l, BUF + 0x140, "C:\\two.dat")];
+        for (i, n) in names.iter().enumerate() { l.guest_write::<u32>(BUF + i as u32 * 4, *n).unwrap(); }
+        let args = |vk: u32| [frame, BUF, 0, 0, 2, 0, vk, 0, 0, 0];
+        for (answer, dropped) in [(DOR_DROP, 1), (DOR_NODROP, 0)] {
+            l.shared.drag_channel.arm(DRAG_BUTTON, (ox + 150, oy + 50));
+            l.shared.drag_channel.released(DRAG_BUTTON, (ox + 150, oy + 50));
+            let names_seen = std::cell::RefCell::new(Vec::new());
+            let (calls, result) = run(&l, l.drg_drag_files(0, &args(VK_ENDDRAG)), &|c| {
+                if c[1] == DM_DRAGOVER {
+                    names_seen.borrow_mut().extend([item_text(&l, c[2], 0, DIT_SOURCE), item_text(&l, c[2], 1, DIT_CONTAINER)]);
+                    answer
+                } else { 0 }
+            });
+            assert_eq!(result, dropped, "TRUE only when dropped");
+            assert_eq!(*names_seen.borrow(), vec!["one.txt".to_string(), "C:\\".to_string()]);
+            assert_eq!(ok(l.drg_access_draginfo(0, calls[0][2])), 0, "its DRAGINFO goes with the drag");
+        }
+        assert_eq!(ok(l.drg_drag_files(0, &args(0x77))), 0, "a bad vkTerminate");
+        assert_eq!(ok(l.drg_drag_files(0, &[frame, 0, 0, 0, 2, 0, VK_ENDDRAG, 0, 0, 0])), 0, "no files");
+        assert!(l.shared.window_mgr.lock_or_recover().drag.infos.is_empty(), "nothing left behind");
+    }
+
+    /// Run the chain of a sent message, answering every call with `answer`:
+    /// the calls made (arguments, then the block).
+    fn run_sent_chain(l: &Loader, r: ApiResult, answer: u32) -> Vec<Vec<u32>> {
+        let ApiResult::CallChain(mut chain) = r else { panic!("{r:?}") };
+        let mut calls = Vec::new();
+        while let Some(step) = chain.steps.pop_front() {
+            let CallStep::Guest { args, block, .. } = step else { panic!("built-in step") };
+            calls.push(args.into_iter().chain(block).collect());
+            chain.returned(answer, false);
+        }
+        assert!(matches!(l.finish_chain(&chain), ChainEnd::Rerun(0)));
+        calls
+    }
+
+    #[test]
+    fn host_files_dropped_on_a_window_are_offered_then_dropped_or_left() {
+        use super::super::pm_remote::{AfterSent, SentKind};
+        let l = Loader::new_mock();
+        let (frame, client, _cnr) = desk(&l);
+        let (ox, oy) = l.shared.window_mgr.lock_or_recover().window_origin(client).unwrap();
+        let next = |l: &Loader| {
+            let wm = l.shared.window_mgr.lock_or_recover();
+            wm.thread_queue(0).and_then(|h| wm.take_sent(h))
+        };
+        for (answer, then) in [(DOR_DROP, DM_DROP), (DOR_NODROP, DM_DRAGLEAVE)] {
+            let files = vec![("C:\\IN\\a b.txt".to_string(), false)];
+            assert!(l.shared.window_mgr.lock_or_recover().queue_host_drop(ox + 150, oy + 50, files));
+            let s = next(&l).expect("queued for the window's thread");
+            assert!(matches!(s.kind, SentKind::HostDrop { stage: HOST_DROP_OVER, .. }));
+            assert_eq!(s.hwnd, client);
+            let over = run_sent_chain(&l, l.run_sent(0, s, AfterSent::Rerun(0)), answer);
+            assert_eq!((over[0][0], over[0][1]), (client, DM_DRAGOVER));
+            let pd = over[0][2];
+            assert_eq!(item_text(&l, pd, 0, DIT_CONTAINER), "C:\\IN\\");
+            assert_eq!(item_text(&l, pd, 0, DIT_SOURCE), "a b.txt");
+            assert_eq!(l.guest_read::<u32>(pd + DI_HWND_SOURCE), Some(0), "the system is the source");
+            assert_eq!(l.guest_read::<i16>(pd + DI_X_DROP), Some((ox + 150) as i16));
+            let s = next(&l).expect("the next step follows");
+            let last = run_sent_chain(&l, l.run_sent(0, s, AfterSent::Rerun(0)), 0);
+            assert_eq!((last[0][1], last[0][2]), (then, pd));
+            assert!(next(&l).is_none());
+            // After the drop the target frees it; after the leave it is gone.
+            assert_eq!(ok(l.drg_access_draginfo(0, pd)), (then == DM_DROP) as u32);
+        }
+        let mut wm = l.shared.window_mgr.lock_or_recover();
+        assert!(!wm.queue_host_drop(5, 5, vec![("C:\\a".into(), false)]), "the desktop takes no drop");
+        assert!(!wm.queue_host_drop(ox + 150, oy + 50, vec![]), "no files");
+        if let Some(w) = wm.get_window_mut(frame) { w.style |= WS_DISABLED; }
+        assert!(!wm.queue_host_drop(ox + 150, oy + 50, vec![("C:\\a".into(), false)]), "a disabled frame");
     }
 }

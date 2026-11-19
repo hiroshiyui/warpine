@@ -446,8 +446,12 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             60 => "DrgVerifyTrueType",
             61 => "DrgVerifyType",
             62 => "DrgVerifyTypeSet",
+            65 => "DrgDragFiles",
+            70 => "DrgQueryDraginfoPtr",
+            71 => "DrgQueryDraginfoPtrFromHwnd",
             72 => "DrgQueryDraginfoPtrFromDragitem",
             73 => "DrgQueryDragStatus",
+            74 => "DrgReallocDraginfo",
             _ => "?",
         },
 

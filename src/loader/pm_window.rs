@@ -473,6 +473,27 @@ mod tests {
         assert!(matches!(loader.def_window_proc(0, child, WM_CHAR, KC_CHAR, 0), ApiResult::Normal(0)));
     }
 
+    /// The direct-manipulation messages (WM_BEGINDRAG, WM_ENDDRAG,
+    /// WM_CONTEXTMENU) go on to the owner the same way (ADR-0068).
+    #[test]
+    fn def_window_proc_passes_drags_and_context_menus_to_the_owner() {
+        use super::super::pm_drag::{WM_BEGINDRAG, WM_ENDDRAG};
+        use super::super::pm_input::WM_CONTEXTMENU;
+        let loader = Loader::new_mock();
+        let (_, client, child, _) = tree(&loader);
+        loader.shared.window_mgr.lock_or_recover().get_window_mut(child).unwrap().owner = client;
+        for msg in [WM_BEGINDRAG, WM_ENDDRAG, WM_CONTEXTMENU] {
+            match loader.def_window_proc(0, child, msg, 0x0005_0004, 1) {
+                ApiResult::Callback { wnd_proc, hwnd, msg: m, mp1, mp2, .. } => {
+                    assert_eq!((wnd_proc, hwnd, m, mp1, mp2), (0x1234, client, msg, 0x0005_0004, 1));
+                }
+                other => panic!("{other:?}"),
+            }
+        }
+        loader.shared.window_mgr.lock_or_recover().get_window_mut(child).unwrap().owner = 0;
+        assert!(matches!(loader.def_window_proc(0, child, WM_CONTEXTMENU, 0, 1), ApiResult::Normal(0)));
+    }
+
     /// Focus changes post WM_SETFOCUS to windows with a procedure of their
     /// own: FALSE to the one losing it, TRUE to the one gaining it.
     #[test]

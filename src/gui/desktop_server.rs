@@ -142,6 +142,11 @@ struct Server {
     /// The active frame last announced to the clients.
     announced_active: u32,
     queue: VecDeque<Input>,
+    /// Where the pointer last was (desktop coordinates): host files are
+    /// dropped there (SDL's drop events carry no position here).
+    last_pointer: (i32, i32),
+    /// Host files of a drop not complete yet (`DropFile` … `DropComplete`).
+    dropped: Vec<String>,
     /// The event a client has not read yet: token, client, when sent.
     outstanding: Option<(u64, u32, Instant)>,
     next_token: u64,
@@ -189,7 +194,7 @@ impl Server {
             mouse: sdl.mouse(), pointer: HostPointer::new(sdl.mouse()),
             video, pump, comp,
             clients: HashMap::new(), model: DesktopModel::new(), calls: CallRouter::new(), services: Services::new(), announced_active: 0,
-            queue: VecDeque::new(), outstanding: None,
+            queue: VecDeque::new(), last_pointer: (0, 0), dropped: Vec::new(), outstanding: None,
             next_token: 1, damage: Vec::new(), full: true,
             last_compose: now.checked_sub(FRAME_INTERVAL).unwrap_or(now),
             clipboard: String::new(), script, script_backlog: VecDeque::new(), dump: None, quitting: None,
@@ -272,8 +277,23 @@ impl Server {
             },
             Event::RenderTargetsReset { .. } | Event::RenderDeviceReset { .. } => self.full = true,
             Event::ClipboardUpdate { .. } => self.sync_clipboard(),
+            // Host files dropped on the desktop: one drop of them all, at
+            // the pointer, for the program under it (ADR-0068).
+            Event::DropBegin { .. } => self.dropped.clear(),
+            Event::DropFile { filename, .. } => {
+                if self.dropped.len() < crate::desktop::proto::MAX_DROP_FILES { self.dropped.push(filename); }
+            }
+            Event::DropComplete { .. } => {
+                let (x, y) = self.last_pointer;
+                if let Some(input) = super::desktop_events::drop_input(x, y, std::mem::take(&mut self.dropped)) {
+                    self.queue_input(input);
+                }
+            }
             e => {
                 if let Some(input) = to_input(&e) {
+                    if let Input::Motion { x, y, .. } | Input::Button { x, y, .. } | Input::Wheel { x, y, .. } = input {
+                        self.last_pointer = (x, y);
+                    }
                     self.queue_input(input);
                 }
             }
@@ -303,6 +323,12 @@ impl Server {
                     self.dump = Some(Dump { path, deadline: Instant::now() + DUMP_TIMEOUT, flush: None });
                 }
                 gui_script::Input::Quit => self.begin_quit(),
+                gui_script::Input::Drop { x, y, path } => {
+                    self.last_pointer = (x, y);
+                    if let Some(input) = super::desktop_events::drop_input(x, y, vec![path]) {
+                        self.queue_input(input);
+                    }
+                }
                 step => {
                     if let Some(e) = script_input_to_event(&step) {
                         self.on_sdl(e);
@@ -317,7 +343,8 @@ impl Server {
         while self.outstanding.is_none() {
             let Some(input) = self.queue.pop_front() else { return };
             let target = match &input {
-                Input::Motion { x, y, .. } | Input::Wheel { x, y, .. } => self.model.route_pointer(*x, *y, None, None),
+                Input::Motion { x, y, .. } | Input::Wheel { x, y, .. } | Input::Drop { x, y, .. } =>
+                    self.model.route_pointer(*x, *y, None, None),
                 Input::Button { down, button, x, y, .. } => self.model.route_pointer(
                     *x, *y, down.then_some(*button), (!down).then_some(*button)),
                 Input::Key { .. } | Input::Text(_) => self.model.key_target(),

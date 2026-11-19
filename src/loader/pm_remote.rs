@@ -144,6 +144,10 @@ pub enum SentKind {
     /// at desktop point `(x, y)`: to the window, or for a container to its
     /// owner as `CN_*`.
     Drag { msg: u32, pdinfo: u32, x: i32, y: i32 },
+    /// Host files dropped at desktop point `(x, y)` (ADR-0068): conversation
+    /// step `stage` (`HOST_DROP_*`); the first makes the `DRAGINFO` of drop
+    /// `drop`, the later ones carry it (`pdinfo`).
+    HostDrop { drop: u32, x: i32, y: i32, stage: u8, pdinfo: u32 },
 }
 
 /// A message another program sent to one of this program's windows, waiting
@@ -174,6 +178,8 @@ pub(crate) enum SentFinish {
     /// The reply to drag message `msg`; a window that took no part never
     /// accepts.
     Drag { msg: u32 },
+    /// Step `stage` of a host drop with `DRAGINFO` `pdinfo` at `(x, y)`.
+    HostDrop { stage: u8, pdinfo: u32, x: i32, y: i32 },
 }
 
 /// What a thread does once it has run a [`SentMessage`].
@@ -589,6 +595,21 @@ impl Loader {
                 let steps = self.drag_step(s.hwnd, msg, pdinfo, (x, y), local).into_iter().collect();
                 (steps, SentFinish::Drag { msg })
             }
+            SentKind::HostDrop { drop, x, y, stage, pdinfo } => {
+                use super::pm_drag::{HOST_DROP_DROP, HOST_DROP_OVER};
+                let pdinfo = if stage == HOST_DROP_OVER { self.host_drop_draginfo(tid, drop, (x, y)) } else { pdinfo };
+                let msg = match stage {
+                    HOST_DROP_OVER => DM_DRAGOVER,
+                    HOST_DROP_DROP => super::pm_drag::DM_DROP,
+                    _ => super::pm_drag::DM_DRAGLEAVE,
+                };
+                let local = self.shared.window_mgr.lock_or_recover().window_under(x, y)
+                    .filter(|w| w.0 == s.hwnd).map_or((0, 0), |w| (w.1, w.2));
+                let steps = if pdinfo == 0 { Vec::new() } else {
+                    self.drag_step(s.hwnd, msg, pdinfo, (x, y), local).into_iter().collect()
+                };
+                (steps, SentFinish::HostDrop { stage, pdinfo, x, y })
+            }
         };
         let calls = steps.len() as u32;
         let mut chain = CallChain::new(tid, steps, false,
@@ -611,6 +632,12 @@ impl Loader {
             SentFinish::Reply => WinReply::Failed,
             SentFinish::Drag { .. } if complete && calls > 0 => WinReply::Value(chain.last),
             SentFinish::Drag { msg } => WinReply::Value(if msg == DM_DRAGOVER { DOR_NEVERDROP } else { 0 }),
+            SentFinish::HostDrop { stage, pdinfo, x, y } => {
+                let took_part = complete && calls > 0;
+                let reply = if took_part { chain.last } else { DOR_NEVERDROP };
+                self.host_drop_step_done(hwnd, stage, pdinfo, (x, y), reply, took_part);
+                WinReply::Value(reply)
+            }
             SentFinish::MinMax { op, target } => {
                 if calls == 0 || !complete || chain.last == 0 {
                     self.shared.window_mgr.lock_or_recover().finish_minmax(hwnd, op, target);

@@ -400,8 +400,12 @@ PMDRAG.59     DrgVerifyRMF
 PMDRAG.60     DrgVerifyTrueType
 PMDRAG.61     DrgVerifyType
 PMDRAG.62     DrgVerifyTypeSet
+PMDRAG.65     DrgDragFiles
+PMDRAG.70     DrgQueryDraginfoPtr
+PMDRAG.71     DrgQueryDraginfoPtrFromHwnd
 PMDRAG.72     DrgQueryDraginfoPtrFromDragitem
 PMDRAG.73     DrgQueryDragStatus
+PMDRAG.74     DrgReallocDraginfo
 
 # ── SOM (the SOM runtime kernel; som.rs, ADR-0059). Warpine's own ordinals:
 # programs import by name.

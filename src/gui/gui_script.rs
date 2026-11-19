@@ -41,6 +41,11 @@
 //!   evenly spaced mouse moves ending at `(X2, Y2)`, button up there. The
 //!   events are [`DRAG_STEP_MS`] apart, so a drag takes
 //!   `(DRAG_MOVES + 1) * DRAG_STEP_MS` = 100 ms.
+//! * `rdrag X1 Y1 X2 Y2` — the same with the right button, OS/2's drag
+//!   button; `[MOD+]...rdrag` holds modifier keys until the release (`ctrl+rdrag`
+//!   copies in a PM drag).
+//! * `drop X Y PATH` — host file `PATH` (the rest of the line) dropped on
+//!   the desktop at `(X, Y)`, as a file manager drops it.
 //! * `key [MOD+]...NAME` — press and release one key. `NAME` is one of
 //!   `enter`, `tab`, `esc`, `backspace`, `delete`, `insert`, `left`, `right`,
 //!   `up`, `down`, `home`, `end`, `pageup`, `pagedown`, `space`, `f1`..`f12`
@@ -214,6 +219,11 @@ pub enum Action {
     /// A drag with the right button (`rdrag X1 Y1 X2 Y2`): the OS/2 drag
     /// button.
     RDrag { x1: i32, y1: i32, x2: i32, y2: i32 },
+    /// A button-2 drag with modifier keys held throughout (`ctrl+rdrag …`).
+    ModRDrag { x1: i32, y1: i32, x2: i32, y2: i32, mods: Mods },
+    /// A host file dropped on the desktop at `(x, y)` (`drop X Y PATH`),
+    /// as a file manager drops it.
+    Drop { x: i32, y: i32, path: PathBuf },
     Key { key: Key, mods: Mods },
     Text(String),
     Dump(PathBuf),
@@ -238,6 +248,8 @@ pub enum Input {
     TextInput(String),
     /// The wheel turned `steps` notches (up positive) at `(x, y)`.
     Wheel { x: i32, y: i32, steps: i32 },
+    /// Host file `path` dropped at `(x, y)`.
+    Drop { x: i32, y: i32, path: String },
     Dump(PathBuf),
     Quit,
 }
@@ -256,6 +268,12 @@ fn push_keystroke(out: &mut Vec<(u64, Input)>, at: u64, key: Key, mods: Mods, be
 /// then the modifiers going up in reverse order.
 fn push_with_mods(out: &mut Vec<(u64, Input)>, at: u64, mods: Mods,
                   inner: impl FnOnce(&mut Vec<(u64, Input)>)) {
+    push_with_mods_until(out, at, at, mods, inner);
+}
+
+/// [`push_with_mods`] with the modifiers going up at `end` ms.
+fn push_with_mods_until(out: &mut Vec<(u64, Input)>, at: u64, end: u64, mods: Mods,
+                        inner: impl FnOnce(&mut Vec<(u64, Input)>)) {
     let held: Vec<Key> = [(mods.ctrl, Key::Ctrl), (mods.alt, Key::Alt), (mods.shift, Key::Shift)]
         .into_iter().filter_map(|(on, k)| on.then_some(k)).collect();
     let set = |m: &mut Mods, k: Key, on: bool| match k {
@@ -271,7 +289,7 @@ fn push_with_mods(out: &mut Vec<(u64, Input)>, at: u64, mods: Mods,
     inner(out);
     for &k in held.iter().rev() {
         set(&mut state, k, false);
-        out.push((at, Input::KeyUp { key: k, mods: state }));
+        out.push((end, Input::KeyUp { key: k, mods: state }));
     }
 }
 
@@ -317,6 +335,16 @@ impl Action {
             }
             &Action::Drag { x1, y1, x2, y2 } => push_drag(&mut out, at, Button::Left, (x1, y1), (x2, y2)),
             &Action::RDrag { x1, y1, x2, y2 } => push_drag(&mut out, at, Button::Right, (x1, y1), (x2, y2)),
+            &Action::ModRDrag { x1, y1, x2, y2, mods } => {
+                // The keys stay down until the button comes up.
+                let end = at + (DRAG_MOVES + 1) * DRAG_STEP_MS;
+                push_with_mods_until(&mut out, at, end, mods, |out| {
+                    push_drag(out, at, Button::Right, (x1, y1), (x2, y2));
+                });
+            }
+            Action::Drop { x, y, path } => {
+                out.push((at, Input::Drop { x: *x, y: *y, path: path.to_string_lossy().into_owned() }));
+            }
             &Action::Key { key, mods } => push_keystroke(&mut out, at, key, mods, None),
             Action::Text(text) => {
                 for (i, c) in text.chars().enumerate() {
@@ -398,6 +426,21 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
                 .ok_or_else(|| err("drag needs X1 Y1 X2 Y2"))?,
             "rdrag" => coords(args).map(|[x1, y1, x2, y2]| Action::RDrag { x1, y1, x2, y2 })
                 .ok_or_else(|| err("rdrag needs X1 Y1 X2 Y2"))?,
+            _ if name.ends_with("+rdrag") => {
+                let mods = parse_mods(&name[..name.len() - "+rdrag".len()])
+                    .ok_or_else(|| err("unknown modifier (expected shift, ctrl or alt)"))?;
+                coords(args).map(|[x1, y1, x2, y2]| Action::ModRDrag { x1, y1, x2, y2, mods })
+                    .ok_or_else(|| err("rdrag needs X1 Y1 X2 Y2"))?
+            }
+            // The path is the rest of the line, so it may contain spaces.
+            "drop" => {
+                let (x, rest) = split_word(args);
+                let (y, path) = split_word(rest);
+                match (x.parse(), y.parse()) {
+                    (Ok(x), Ok(y)) if !path.is_empty() => Action::Drop { x, y, path: PathBuf::from(path) },
+                    _ => return Err(err("drop needs X Y and a host file path")),
+                }
+            }
             "key" => {
                 if args.is_empty() || args.contains(char::is_whitespace) {
                     return Err(err("key needs one key name"));
@@ -839,5 +882,24 @@ mod tests {
         assert_eq!(s[0].action.expand(10), vec![(10, Input::Wheel { x: 100, y: 200, steps: -2 })]);
         assert!(parse("1 wheel 1 2").unwrap_err().contains("wheel needs X Y"));
         assert!(parse("1 wheel 1 2 65").is_err(), "at most 64 notches");
+    }
+
+    #[test]
+    fn drops_and_modified_drags_are_parsed_and_expanded() {
+        let s = parse("10 drop 5 6 /tmp/a b.txt\n").unwrap();
+        assert_eq!(s[0].action, Action::Drop { x: 5, y: 6, path: PathBuf::from("/tmp/a b.txt") });
+        assert_eq!(s[0].action.expand(10), vec![(10, Input::Drop { x: 5, y: 6, path: "/tmp/a b.txt".into() })]);
+        assert!(parse("1 drop 1 2").unwrap_err().contains("drop needs X Y"));
+        assert!(parse("1 drop x 2 /a").is_err());
+
+        let s = parse("100 ctrl+rdrag 1 2 9 2\n").unwrap();
+        let ev = s[0].action.expand(100);
+        assert!(matches!(ev[0], (100, Input::KeyDown { key: Key::Ctrl, .. })));
+        assert!(matches!(ev[1], (100, Input::MouseDown { button: Button::Right, x: 1, y: 2 })));
+        let n = ev.len();
+        assert!(matches!(ev[n - 2], (_, Input::MouseUp { button: Button::Right, x: 9, y: 2 })));
+        assert!(matches!(ev[n - 1], (_, Input::KeyUp { key: Key::Ctrl, .. })), "Ctrl held until the release");
+        assert!(ev.windows(2).all(|w| w[0].0 <= w[1].0), "times never decrease");
+        assert!(parse("1 hyper+rdrag 1 2 3 4").is_err());
     }
 }

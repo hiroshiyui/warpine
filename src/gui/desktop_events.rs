@@ -48,10 +48,12 @@ pub fn to_input(event: &Event) -> Option<Input> {
     })
 }
 
-/// The SDL event for protocol input `input`.
-pub fn to_event(input: &Input) -> Event {
+/// The SDL event for protocol input `input`; `None` for a drop of host
+/// files, which has no SDL event with a position (the client hands it to
+/// the program at once, `SdlRenderer::host_drop`).
+pub fn to_event(input: &Input) -> Option<Event> {
     let (timestamp, window_id, which) = (0, 0, 0);
-    match input {
+    Some(match input {
         Input::Motion { x, y, dx, dy, buttons } => Event::MouseMotion {
             timestamp, window_id, which, mousestate: MouseState::from_sdl_state(*buttons),
             x: *x as f32, y: *y as f32, xrel: *dx as f32, yrel: *dy as f32,
@@ -79,7 +81,19 @@ pub fn to_event(input: &Input) -> Event {
             direction: sdl3::mouse::MouseWheelDirection::Normal,
             mouse_x: *x as f32, mouse_y: *y as f32, integer_x: 0, integer_y: *steps,
         },
-    }
+        Input::Drop { .. } => return None,
+    })
+}
+
+/// The drop of host files `paths` at desktop point `(x, y)`, within the
+/// protocol's limits: paths longer than `MAX_DROP_PATH` are left out (a cut
+/// path would name another file), at most `MAX_DROP_FILES` are kept;
+/// `None` when none is left.
+pub fn drop_input(x: i32, y: i32, paths: Vec<String>) -> Option<Input> {
+    use crate::desktop::proto::{MAX_DROP_FILES, MAX_DROP_PATH};
+    let paths: Vec<String> = paths.into_iter().filter(|p| !p.is_empty() && p.len() <= MAX_DROP_PATH)
+        .take(MAX_DROP_FILES).collect();
+    (!paths.is_empty()).then_some(Input::Drop { x: pel(x as f32), y: pel(y as f32), paths })
 }
 
 /// The notches of an SDL wheel event, up positive (a flipped wheel turned
@@ -120,9 +134,19 @@ mod tests {
             Input::Wheel { x: 5, y: 6, steps: -2 },
         ];
         for input in events {
-            assert_eq!(to_input(&to_event(&input)), Some(input.clone()), "{input:?}");
+            assert_eq!(to_event(&input).and_then(|e| to_input(&e)), Some(input.clone()), "{input:?}");
         }
+        assert_eq!(to_event(&Input::Drop { x: 0, y: 0, paths: vec!["/a".into()] }), None);
         assert_eq!(to_input(&Event::Quit { timestamp: 0 }), None);
+    }
+
+    #[test]
+    fn drops_keep_to_the_protocol_limits() {
+        use crate::desktop::proto::{MAX_DROP_FILES, MAX_DROP_PATH};
+        assert_eq!(drop_input(1, 2, vec![]), None);
+        assert_eq!(drop_input(1, 2, vec!["x".repeat(MAX_DROP_PATH + 1)]), None, "a cut path would name another file");
+        let Some(Input::Drop { x: 1, y: 2, paths }) = drop_input(1, 2, vec!["/a".into(); MAX_DROP_FILES + 3]) else { panic!() };
+        assert_eq!(paths.len(), MAX_DROP_FILES);
     }
 
     #[test]

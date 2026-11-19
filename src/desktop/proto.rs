@@ -11,7 +11,7 @@
 //! server's packets the same way.
 
 /// Protocol version, checked in `Hello` / `Welcome`.
-pub const PROTOCOL_VERSION: u32 = 7;
+pub const PROTOCOL_VERSION: u32 = 8;
 /// Largest packet either side sends or accepts.
 pub const MAX_MESSAGE: usize = 128 * 1024;
 /// Most items (frame pictures and pull-downs) in one `Update`.
@@ -319,10 +319,18 @@ pub enum Input {
     /// The mouse wheel turned `steps` notches (up positive) with the
     /// pointer at `(x, y)`; at most `MAX_WHEEL_STEPS` either way.
     Wheel { x: i32, y: i32, steps: i32 },
+    /// Host files dropped on the desktop with the pointer at `(x, y)`:
+    /// their host paths, at most `MAX_DROP_FILES` of at most
+    /// `MAX_DROP_PATH` bytes each (ADR-0068).
+    Drop { x: i32, y: i32, paths: Vec<String> },
 }
 
 /// The most wheel notches one `Input::Wheel` carries.
 pub const MAX_WHEEL_STEPS: i32 = 64;
+/// The most host files one `Input::Drop` carries.
+pub const MAX_DROP_FILES: usize = 16;
+/// The longest host path in an `Input::Drop`, in bytes.
+pub const MAX_DROP_PATH: usize = 4096;
 
 /// Server → client.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -728,6 +736,7 @@ mod tag {
     pub const IN_KEY: u8 = 3;
     pub const IN_TEXT: u8 = 4;
     pub const IN_WHEEL: u8 = 5;
+    pub const IN_DROP: u8 = 6;
 
     pub const PTR_HIDDEN: u8 = 0;
     pub const PTR_SYSTEM: u8 = 1;
@@ -855,6 +864,13 @@ impl ServerMsg {
                     }
                     Input::Text(s) => { w.u8(tag::IN_TEXT); w.text(s); }
                     Input::Wheel { x, y, steps } => { w.u8(tag::IN_WHEEL); w.i32(*x); w.i32(*y); w.i32(*steps); }
+                    Input::Drop { x, y, paths } => {
+                        // The sender keeps to the limits (`drop_input`);
+                        // these only bound what goes out.
+                        let paths = &paths[..paths.len().min(MAX_DROP_FILES)];
+                        w.u8(tag::IN_DROP); w.i32(*x); w.i32(*y); w.u16(paths.len() as u16);
+                        for p in paths { w.text_max(p, MAX_DROP_PATH); }
+                    }
                 }
             }
             ServerMsg::Deactivate { frame, new_active } => {
@@ -889,6 +905,13 @@ impl ServerMsg {
                         let (x, y, steps) = (r.coord()?, r.coord()?, r.i32()?);
                         if !(-MAX_WHEEL_STEPS..=MAX_WHEEL_STEPS).contains(&steps) { return Err(DecodeError::BadValue); }
                         Input::Wheel { x, y, steps }
+                    }
+                    tag::IN_DROP => {
+                        let (x, y) = (r.coord()?, r.coord()?);
+                        let n = r.count(MAX_DROP_FILES)?;
+                        let mut paths = Vec::with_capacity(n);
+                        for _ in 0..n { paths.push(r.text_max(MAX_DROP_PATH)?); }
+                        Input::Drop { x, y, paths }
                     }
                     _ => return Err(DecodeError::BadValue),
                 };
@@ -992,6 +1015,7 @@ mod tests {
                                                               repeat: true } },
             ServerMsg::Input { token: 4, input: Input::Text("é".into()) },
             ServerMsg::Input { token: 5, input: Input::Wheel { x: 10, y: 20, steps: -3 } },
+            ServerMsg::Input { token: 6, input: Input::Drop { x: 3, y: 4, paths: vec!["/home/u/a b.txt".into(), "ü".into()] } },
             ServerMsg::Deactivate { frame: 5, new_active: 6 },
             ServerMsg::Resized { width: 800, height: 600 },
             ServerMsg::Clipboard(String::new()),
@@ -1160,5 +1184,25 @@ mod tests {
         assert_eq!(ServerMsg::decode(&too_many), Err(DecodeError::BadValue));
         let ok = ServerMsg::Input { token: 1, input: Input::Wheel { x: 0, y: 0, steps: -MAX_WHEEL_STEPS } }.encode();
         assert!(ServerMsg::decode(&ok).is_ok());
+    }
+
+    #[test]
+    fn drops_are_bounded() {
+        // The largest drop fits a packet.
+        let big = ServerMsg::Input { token: 1, input: Input::Drop {
+            x: 0, y: 0, paths: vec!["p".repeat(MAX_DROP_PATH); MAX_DROP_FILES] } }.encode();
+        assert!(big.len() <= MAX_MESSAGE);
+        let Ok(ServerMsg::Input { input: Input::Drop { paths, .. }, .. }) = ServerMsg::decode(&big) else { panic!() };
+        assert_eq!(paths.len(), MAX_DROP_FILES);
+        // A count over the limit, as a hostile server might send it.
+        let one = ServerMsg::Input { token: 1, input: Input::Drop { x: 0, y: 0, paths: vec!["a".into()] } }.encode();
+        let count_at = one.len() - 1 - 4 - 2;
+        let mut bad = one.clone();
+        bad[count_at..count_at + 2].copy_from_slice(&((MAX_DROP_FILES + 1) as u16).to_le_bytes());
+        assert_eq!(ServerMsg::decode(&bad), Err(DecodeError::TooMany));
+        // A path over the limit.
+        let mut long = one.clone();
+        long[count_at + 2..count_at + 6].copy_from_slice(&((MAX_DROP_PATH + 1) as u32).to_le_bytes());
+        assert_eq!(ServerMsg::decode(&long), Err(DecodeError::TooLarge));
     }
 }

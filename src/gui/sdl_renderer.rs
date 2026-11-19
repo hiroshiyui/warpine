@@ -822,6 +822,8 @@ pub struct SdlRenderer {
     wake: Option<Arc<GuiWake>>,
     /// Events received while waiting, handled on the next `poll_events`.
     pending_events: Vec<Event>,
+    /// Host files of a drop not complete yet (`DropFile` … `DropComplete`).
+    dropped: Vec<String>,
     /// Loop and composite timings, logged periodically at debug level.
     stats: FrameStats,
     /// Active drag operation (VDR-D3); `None` when no drag is in progress.
@@ -1346,6 +1348,7 @@ impl SdlRenderer {
             wake_slot,
             wake: None,
             pending_events: Vec::new(),
+            dropped: Vec::new(),
             stats: FrameStats::new(now),
             drag_state: None,
             drag_press: None,
@@ -1431,7 +1434,16 @@ impl SdlRenderer {
                         wm.input_tag = Some(token);
                         wm.input_tag_used = false;
                     }
-                    let go_on = self.handle_sdl_event(super::desktop_events::to_event(&input), shared);
+                    let go_on = match super::desktop_events::to_event(&input) {
+                        Some(event) => self.handle_sdl_event(event, shared),
+                        None => {
+                            if let crate::desktop::proto::Input::Drop { x, y, paths } = input {
+                                let dh = self.desktop_size().1 as i32;
+                                host_drop(shared, x, (dh - 1) - y, paths);
+                            }
+                            true
+                        }
+                    };
                     let mut wm = shared.window_mgr.lock_or_recover();
                     wm.input_tag = None;
                     if !std::mem::take(&mut wm.input_tag_used) {
@@ -1638,6 +1650,11 @@ impl SdlRenderer {
         // The physical keyboard and the pointer position, whoever gets the
         // input (WinGetPhysKeyState, WinQueryPointerPos).
         track_physical_input(shared, &event, dh as i32);
+        // Ctrl and Shift choose a drag's operation (DO_COPY / DO_MOVE / DO_LINK).
+        if let Event::KeyDown { keymod, .. } | Event::KeyUp { keymod, .. } = &event {
+            shared.drag_channel.modifiers(keymod.intersects(KeyMod::LCTRLMOD | KeyMod::RCTRLMOD),
+                                          keymod.intersects(KeyMod::LSHIFTMOD | KeyMod::RSHIFTMOD));
+        }
         // A windowed VIO program's mouse (MOUCALLS) sees the pointer over
         // its cells; PM handling (activation, chrome, drags) goes on below.
         // Not while the window uses the mouse itself: an open system menu,
@@ -1686,6 +1703,16 @@ impl SdlRenderer {
             }
             Event::ClipboardUpdate { .. } => {
                 self.sync_host_clipboard(shared);
+            }
+            // Host files dropped on the desktop: one drop of them all, at the
+            // pointer, for the window under it (ADR-0068).
+            Event::DropBegin { .. } => self.dropped.clear(),
+            Event::DropFile { filename, .. } => {
+                if self.dropped.len() < crate::desktop::proto::MAX_DROP_FILES { self.dropped.push(filename); }
+            }
+            Event::DropComplete { .. } => {
+                let at = shared.window_mgr.lock_or_recover().key_state.pointer;
+                host_drop(shared, at.0, at.1, std::mem::take(&mut self.dropped));
             }
             // Keyboard input goes to the system input queue; the thread
             // that reads it delivers it to the PM focus window of that
@@ -1981,6 +2008,9 @@ impl SdlRenderer {
                 // Button 2 coming up without having started a drag is the
                 // context-menu gesture (WM_CONTEXTMENU after WM_BUTTON2UP).
                 let context_click = number == 2 && self.drag_press.as_ref().is_some_and(|p| !p.fired);
+                // Button 2 coming up after WM_BEGINDRAG, with no drag
+                // (DrgDrag) running, ends the gesture: WM_ENDDRAG.
+                let end_drag = number == 2 && self.drag_press.as_ref().is_some_and(|p| p.fired && p.target.is_some());
                 if number == 2 { self.drag_press = None; }
                 if number != 0 && shared.drag_channel.released(number, (x, (dh as i32 - 1) - y)) {
                     return true;
@@ -2038,6 +2068,9 @@ impl SdlRenderer {
                 }
                 if context_click {
                     push_pointer(shared, loader_input::WM_CONTEXTMENU, x, (dh as i32 - 1) - y, 1);
+                }
+                if end_drag && number == 2 {
+                    push_pointer(shared, loader_drag::WM_ENDDRAG, x, (dh as i32 - 1) - y, 1);
                 }
             }
             // The wheel: WM_VSCROLL SB_LINEUP / SB_LINEDOWN, WHEEL_LINES a
@@ -2158,6 +2191,16 @@ impl PmRenderer for SdlRenderer {
                     if let Err(e) = gui_script::write_ppm(&path, &pixels, w, h) {
                         eprintln!("warpine: cannot write {}: {e}", path.display());
                     }
+                }
+                gui_script::Input::Drop { x, y, path } => {
+                    // Input scripted before the drop comes first.
+                    for event in events.drain(..) {
+                        if !self.handle_sdl_event(event, shared) {
+                            return false;
+                        }
+                    }
+                    let dh = self.desktop_size().1 as i32;
+                    host_drop(shared, x, (dh - 1) - y, vec![path]);
                 }
                 input => events.extend(script_input_to_event(&input)),
             }
@@ -2327,6 +2370,30 @@ pub(crate) fn mou_button(button: sdl3::mouse::MouseButton) -> Option<crate::load
     }
 }
 
+/// Host files `paths` dropped at desktop point `(x, y)` (PM coordinates):
+/// those inside the process's drives go, by their OS/2 paths, to the
+/// window under the point (`WindowManager::queue_host_drop`); the others
+/// are left out — a guest never learns host paths outside its drives
+/// (ADR-0066, ADR-0068).
+pub(crate) fn host_drop(shared: &Arc<SharedState>, x: i32, y: i32, paths: Vec<String>) {
+    let files: Vec<(String, bool)> = {
+        let drives = shared.drive_mgr.lock_or_recover();
+        paths.iter().take(crate::desktop::proto::MAX_DROP_FILES).filter_map(|p| {
+            let host = std::path::Path::new(p);
+            match drives.host_to_os2_path(host) {
+                Some(os2) if !os2.ends_with('\\') => Some((os2, host.is_dir())),
+                _ => {
+                    log::warn!("dropped file outside the drives (or a drive itself) left out: {p}");
+                    None
+                }
+            }
+        }).collect()
+    };
+    if !files.is_empty() && !shared.window_mgr.lock_or_recover().queue_host_drop(x, y, files) {
+        log::debug!("no window takes the dropped files at ({x}, {y})");
+    }
+}
+
 /// Mouse, keyboard and text input from the host. Ignored while a GUI script
 /// runs, so a scripted session behaves the same on a real display as on
 /// the headless drivers; window events (resize, expose, close) still count.
@@ -2334,7 +2401,8 @@ pub(crate) fn is_host_input(event: &Event) -> bool {
     matches!(event,
         Event::MouseMotion { .. } | Event::MouseButtonDown { .. } | Event::MouseButtonUp { .. }
         | Event::MouseWheel { .. } | Event::KeyDown { .. } | Event::KeyUp { .. }
-        | Event::TextInput { .. } | Event::TextEditing { .. })
+        | Event::TextInput { .. } | Event::TextEditing { .. }
+        | Event::DropBegin { .. } | Event::DropFile { .. } | Event::DropText { .. } | Event::DropComplete { .. })
 }
 
 /// SDL video drivers with no input source: SDL cannot block on them and
@@ -2935,6 +3003,7 @@ pub(crate) fn script_input_to_event(input: &gui_script::Input) -> Option<Event> 
                            repeat: false, which, raw: 0 }
         }
         Input::TextInput(text) => Event::TextInput { timestamp, window_id, text: text.clone() },
+        Input::Drop { .. } => return None,
         Input::Wheel { x, y, steps } => Event::MouseWheel {
             timestamp, window_id, which, x: 0.0, y: *steps as f32,
             direction: sdl3::mouse::MouseWheelDirection::Normal,

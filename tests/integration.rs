@@ -2988,6 +2988,59 @@ fn gui_pm_drag_test_matches_golden() {
         &format!("{DRAG_STEPS}2600 dump {{dump}}\n2700 quit\n"));
 }
 
+/// pm_dropfiles_test: files dragged and dropped (ADR-0068). The guest
+/// checks DrgQueryDraginfoPtr / DrgQueryDraginfoPtrFromHwnd /
+/// DrgReallocDraginfo; the steps drop the host file behind C:\DROPME.TXT
+/// on the client's right half (DM_DRAGOVER, DM_DROP, the file read through
+/// its container and source names), a host directory outside the drives
+/// (nothing arrives) and the file on the left half (refused, DM_DRAGLEAVE);
+/// drag with Ctrl held from the left half to the right (DrgDragFiles,
+/// DO_COPY, TRUE); click button 2 on a child window and drag inside it
+/// (WM_CONTEXTMENU, WM_BEGINDRAG and WM_ENDDRAG passed on to its owner by
+/// WinDefWindowProc). `{c}` is drive C's host directory.
+const DROPFILES_STEPS: &str = "\
+    1000 drop 352 467 {c}/DROPME.TXT\n\
+    1300 drop 352 467 /etc\n\
+    1600 drop 152 467 {c}/DROPME.TXT\n\
+    2000 ctrl+rdrag 152 467 352 467\n\
+    2600 rclick 170 340\n\
+    2900 rdrag 150 340 200 335\n";
+
+/// Run pm_dropfiles_test's session with drive C holding DROPME.TXT, with
+/// extra environment `env`.
+fn run_dropfiles_session(env: &[(&str, &str)]) {
+    let home = tempfile::tempdir().expect("tempdir");
+    let drive_c = home.path().join("warpine").join("drive_c");
+    std::fs::create_dir_all(&drive_c).unwrap();
+    std::fs::write(drive_c.join("DROPME.TXT"), "dropped!").unwrap();
+    let steps = DROPFILES_STEPS.replace("{c}", drive_c.to_str().unwrap());
+    let steps = format!("{steps}3500 key alt+f4\n5500 quit\n");
+    let mut env = env.to_vec();
+    env.push(("XDG_DATA_HOME", home.path().to_str().unwrap()));
+    assert_scripted_checks_pass_env("samples/pm_dropfiles_test/pm_dropfiles_test.exe", "pm_dropfiles_test", 42,
+                                    &steps, &env);
+}
+
+#[test]
+fn gui_pm_dropfiles_test_drops_files_on_the_sessions_desktop() {
+    run_dropfiles_session(&[]);
+}
+
+/// The same on the in-process desktop (`WARPINE_DESKTOP=local`), where the
+/// renderer hands the drop to the window itself.
+#[test]
+fn gui_pm_dropfiles_test_drops_files_on_the_local_desktop() {
+    run_dropfiles_session(&[("WARPINE_DESKTOP", "local")]);
+}
+
+/// pm_dropfiles_test's picture: the dark source half of the client with
+/// the cyan child window in it.
+#[test]
+fn gui_pm_dropfiles_test_matches_golden() {
+    check_gui_golden("pm_dropfiles_test", "samples/pm_dropfiles_test/pm_dropfiles_test.exe",
+        "1500 dump {dump}\n1600 quit\n");
+}
+
 /// pm_charbundle_test: GpiSetAttrs / GpiQueryAttrs with a CHARBUNDLE set
 /// and report the character mode, angle, shear, direction, alignment,
 /// extra and break extra that the single GpiSetChar* calls use, reject
