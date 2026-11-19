@@ -1,0 +1,40 @@
+/* pm_notebook_dlg_test.rc - a settings dialog holding a tabbed-dialog
+ * notebook, and three page dialogs */
+#define INCL_WINSTDBOOK
+#include <os2.h>
+#include "pm_notebook_dlg_test.h"
+
+DLGTEMPLATE ID_MAIN
+BEGIN
+    DIALOG "Settings", ID_MAIN, 20, 20, 240, 170, FS_DLGBORDER, FCF_TITLEBAR | FCF_SYSMENU
+    BEGIN
+        CONTROL "", ID_BOOK, 4, 22, 232, 130, WC_NOTEBOOK,
+                BKS_TABBEDDIALOG | WS_VISIBLE | WS_TABSTOP
+        DEFPUSHBUTTON "Close", DID_OK, 4, 4, 40, 14, WS_TABSTOP
+    END
+END
+
+DLGTEMPLATE ID_PAGE1
+BEGIN
+    DIALOG "", ID_PAGE1, 0, 0, 100, 60, 0
+    BEGIN
+        LTEXT      "Name:", -1,      4, 46, 30,  8
+        ENTRYFIELD "",      ID_NAME, 4, 34, 80, 10, ES_MARGIN | WS_TABSTOP
+    END
+END
+
+DLGTEMPLATE ID_PAGE2
+BEGIN
+    DIALOG "", ID_PAGE2, 0, 0, 100, 60, 0
+    BEGIN
+        AUTOCHECKBOX "Option", ID_OPTION, 4, 40, 60, 10, WS_TABSTOP
+    END
+END
+
+DLGTEMPLATE ID_PAGE4
+BEGIN
+    DIALOG "", ID_PAGE4, 0, 0, 100, 60, 0
+    BEGIN
+        LTEXT "From memory", ID_MEMLABEL, 4, 40, 90, 8
+    END
+END

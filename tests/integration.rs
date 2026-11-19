@@ -2756,6 +2756,41 @@ fn gui_pm_notebook_test_matches_golden() {
         &format!("{NOTEBOOK_STEPS}2300 dump {{dump}}\n2400 quit\n"));
 }
 
+/// pm_notebook_dlg_test: "Settings", a dialog holding a BKS_TABBEDDIALOG
+/// notebook with six pages set up by BKM_SETPAGEINFO (dialogs loaded at
+/// once, on the first turn, from a template in memory), a tab colour, a
+/// tab bitmap and two notebook buttons; three tabs fit, so it has scroll
+/// arrows (right one at screen (371, 439)). The steps click Undo (P1 gets
+/// its WM_COMMAND), the "Colour" tab, Default (P2 gets its), the "Locked"
+/// tab (the owner refuses it through BKN_PAGESELECTEDPENDING), the right
+/// arrow twice and the third tab shown (P5), then "Memory"; Home turns
+/// back to P1, Tab moves into its entry field, "abc" is typed, Tab leaves
+/// the page for Close and Enter presses it.
+const NOTEBOOK_DLG_STEPS: &str = "\
+    1000 click 70 668\n\
+    1300 click 160 439\n\
+    1600 click 135 668\n\
+    1900 click 240 439\n\
+    2200 click 371 439\n\
+    2500 click 371 439\n\
+    2800 click 240 439\n";
+
+#[test]
+fn gui_pm_notebook_dlg_test_pages_buttons_and_tab() {
+    let steps = format!("{NOTEBOOK_DLG_STEPS}3100 click 160 439\n3400 key home\n3600 key tab\n\
+                         3800 text abc\n4000 key tab\n4300 key enter\n6000 quit\n");
+    assert_scripted_checks_pass("samples/pm_notebook_dlg_test/pm_notebook_dlg_test.exe", "pm_notebook_dlg_test", 35, &steps);
+}
+
+/// pm_notebook_dlg_test's picture after the arrows: the tabs "Locked",
+/// "Memory" and the red bitmap tab of the top page P5 (no window), the
+/// scroll arrows, the notebook buttons and Close.
+#[test]
+fn gui_pm_notebook_dlg_test_matches_golden() {
+    check_gui_golden("pm_notebook_dlg_test", "samples/pm_notebook_dlg_test/pm_notebook_dlg_test.exe",
+        &format!("{NOTEBOOK_DLG_STEPS}3000 dump {{dump}}\n3100 quit\n"));
+}
+
 /// pm_container_test: a WC_CONTAINER (client (8, 8), 380 × 250, extended
 /// selection) with five records in the detail view (a title, column
 /// titles, name / size / date columns). The guest checks record and field
