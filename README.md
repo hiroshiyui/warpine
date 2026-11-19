@@ -216,6 +216,7 @@ samples/               OS/2 sample applications and build scripts
   pm_xshell_test/      The session's switch list, window list, system atoms and DDE between programs
   pm_xdrag_test/       Drag and drop between programs: DM_* messages, DRAGINFO and DM_RENDER across them
   pm_paint_input_test/ Update regions, clicks to the deepest window, WM_HITTEST, WinQueryQueueStatus, must-complete sections
+  som_ordinal_test/    SOM.DLL imported by IBM's ordinals 1–47 (osFree's list): data, NewClass, ids, printing
   som_test/            Open Watcom's SOM samples (helloc, classes, animals, hellocpp) on Warpine's SOM runtime, with hand-written C and C++ bindings, and class loading and unloading by name
   dllinit_test/        DLL initialization at start and in DosLoadModule, OS/2 module paths
   pm_font_test/        GPI font selection (IBM Plex families, styles, sizes) and CJK text
@@ -381,12 +382,13 @@ Warpine follows a near-clean-room policy: API behaviour is derived from public d
 - [IBM OS/2 Device Driver Development Kit](https://www.edm2.com/index.php/IBM_OS/2_Device_Driver_Development_Kit) (EDM/2) — lower-level system and driver documentation.
 - [List of OS/2 Software Development Related Books](https://www.edm2.com/index.php/List_of_OS/2_Software_Development_Related_Books) (EDM/2) — index of further published material.
 - [Open Watcom](https://github.com/open-watcom/open-watcom-v2) — the OS/2 headers and import libraries are the source of the ordinal table in [`doc/os2_ordinals.md`](doc/os2_ordinals.md), and its compiler builds the sample programs used as the test oracle.
+- [osFree](https://github.com/osfree-project/osfree) (BSD-3-Clause) — the `EXPORTS` of its `SOM/som/makefile` are the source of `SOM.DLL`'s ordinals 1–47, IBM's SOM 1.0 exports ([ADR-0070](doc/adr/0070-som-ordinals-from-osfree.md)). Only that list is used; osFree's SOM headers and kernel are not.
 
 ### Related projects
 
 Other open-source efforts to run OS/2 software or reimplement its APIs, useful for comparison and as pointers to documentation:
 
-- [osFree](https://github.com/osfree-project/osfree) — an open-source OS/2-compatible operating system.
+- [osFree](https://github.com/osfree-project/osfree) — an open-source OS/2-compatible operating system; its SOM export list gives Warpine the SOM ordinals (see above).
 - [2ine](https://github.com/icculus/2ine) — runs OS/2 LX binaries on Linux by loading them natively and reimplementing the APIs.
 - [OS2Linux](https://github.com/OS2World/LINUX-SYSTEM-OS2Linux) — an earlier OS/2 API layer for Linux, preserved by OS2World.
 

@@ -214,6 +214,25 @@ fn test_som_samples_run_on_the_som_runtime() {
     assert_eq!((code, out.replace("\r\n", "\n").as_str()), (49, want));
 }
 
+/// som_ordinal_test (ADR-0070): a program that imports SOM.DLL by number,
+/// as one linked against IBM's som.lib does — ordinals 1–47 are IBM's SOM
+/// 1.0 exports as osFree lists them. The data imports (ClassData,
+/// CClassData, SOMClassMgrObject, the runtime variables) and the functions
+/// (NewClass, somParentResolve, the id registry, the printing calls) each
+/// reach the right entry.
+#[test]
+fn test_som_imports_by_ibm_ordinal() {
+    if !kvm_available() || !Path::new("samples/som_ordinal_test/somord.exe").exists() { return; }
+    let (out, code) = run_sample("samples/som_ordinal_test/somord.exe", 15);
+    let checks: Vec<&str> = out.lines()
+        .filter(|l| l.starts_with("som_ordinal_test: ") && !l.starts_with("som_ordinal_test: done")).collect();
+    assert!(checks.len() >= 26, "every check reported:\n{out}");
+    let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
+    assert!(failed.is_empty(), "failed checks: {failed:#?}");
+    assert!(out.contains(&format!("som_ordinal_test: done {n}/{n}", n = checks.len())), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
 /// dllinit_test (ADR-0063): goodinit.dll initializes before main;
 /// DosLoadModule of badinit.dll fails with ERROR_INIT_ROUTINE_FAILED; a full
 /// OS/2 path on drive C finds the loaded module; DosQueryProcAddr by name

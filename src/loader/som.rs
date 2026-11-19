@@ -48,11 +48,19 @@
 //! - **Memory.** Objects, method tables and `SOMMalloc` blocks come from a
 //!   heap of 64 KB arenas ([`SomHeap`]); `somPrintf` formats as C does.
 //!
+//! - **Ordinals** (ADR-0070). 1–47 are IBM's SOM 1.0 exports as osFree
+//!   lists them (`SOM/som/makefile` in osfree-project/osfree,
+//!   BSD-3-Clause): data 1–19, functions 20–47. Warpine's own exports and
+//!   the SOM 2.x functions whose IBM numbers are unknown use 512–1023.
+//!
 //! Warpine's choices (unverified against IBM's SOM): the layout of method
-//! tables and `ClassData` beyond their first word, the token encodings,
-//! the module's ordinals (programs import by name), the resolution rule of
-//! multiple inheritance, the derived metaclass's name, what `somPrintSelf`
-//! and `somDumpSelf` print.
+//! tables, `ClassData` and `CClassData` beyond their documented fields,
+//! the token encodings, osFree's ordinals, the resolution rule of multiple
+//! inheritance, the derived metaclass's name, what `somPrintSelf` and
+//! `somDumpSelf` print, the indentation of `somPrefixLevel`, and the
+//! undocumented SOM 1.0 entries (`somAssert`, `somTest`, `somTestCls`,
+//! `somCheckArgs`, `somConstructClass`, `somSaveMetrics`,
+//! `somWriteMetrics`), which do nothing.
 
 use std::collections::{HashMap, HashSet};
 
@@ -60,74 +68,120 @@ use super::constants::{MAGIC_API_BASE, SOM_BASE, STDOUT_HANDLE};
 use super::pm_hook::{CallChain, CallStep, ChainThen};
 use super::{ApiResult, Loader, MutexExt};
 
-/// The functions of SOM.DLL (ordinals relative to `SOM_BASE`).
-pub const SOM_ENVIRONMENT_NEW: u32 = 1;
-pub const SOM_RESOLVE: u32 = 2;
-pub const SOM_RESOLVE_BY_NAME: u32 = 3;
-pub const SOM_CLASS_RESOLVE: u32 = 4;
-pub const SOM_DATA_RESOLVE: u32 = 5;
-pub const SOM_GET_GLOBAL_ENVIRONMENT: u32 = 6;
-pub const SOM_ID_FROM_STRING: u32 = 7;
-pub const SOM_STRING_FROM_ID: u32 = 8;
-pub const SOM_COMPARE_IDS: u32 = 9;
-pub const SOM_IS_OBJ: u32 = 10;
-pub const SOM_PRINTF: u32 = 11;
-/// The procedures the runtime variables `SOMMalloc` … `SOMFree` hold.
-pub const SOM_MALLOC: u32 = 12;
-pub const SOM_CALLOC: u32 = 13;
-pub const SOM_REALLOC: u32 = 14;
-pub const SOM_FREE_MEM: u32 = 15;
-/// `WrpSomMetaclassFor(requested, parent)`: the metaclass of a new class.
-pub const SOM_METACLASS_FOR: u32 = 16;
-/// The procedures the runtime variables `SOMLoadModule`,
-/// `SOMDeleteModule`, `SOMError` and `SOMOutCharRoutine` hold at first.
-pub const SOM_DEFAULT_LOAD_MODULE: u32 = 17;
-pub const SOM_DEFAULT_DELETE_MODULE: u32 = 18;
-pub const SOM_DEFAULT_ERROR: u32 = 19;
-pub const SOM_DEFAULT_OUT_CHAR: u32 = 35;
-/// `somSetOutChar(routine)`: the routine `somPrintf` writes through.
-pub const SOM_SET_OUT_CHAR: u32 = 36;
-/// Data exports: their addresses, not thunks (`Loader::som_data_address`).
-pub const SOM_OBJECT_CLASS_DATA: u32 = 20;
-pub const SOM_CLASS_CLASS_DATA: u32 = 21;
-pub const SOM_CLASS_MGR_CLASS_DATA: u32 = 22;
-pub const SOM_CLASS_MGR_OBJECT: u32 = 23;
-pub const SOM_VAR_MALLOC: u32 = 24;
-pub const SOM_VAR_CALLOC: u32 = 25;
-pub const SOM_VAR_REALLOC: u32 = 26;
-pub const SOM_VAR_FREE: u32 = 27;
-pub const SOM_TRACE_LEVEL: u32 = 28;
-pub const SOM_WARN_LEVEL: u32 = 29;
-pub const SOM_ASSERT_LEVEL: u32 = 30;
-pub const SOM_VAR_OUT_CHAR: u32 = 31;
-pub const SOM_VAR_LOAD_MODULE: u32 = 32;
-pub const SOM_VAR_DELETE_MODULE: u32 = 33;
-pub const SOM_VAR_ERROR: u32 = 34;
-/// The last data export.
-pub const SOM_LAST_DATA: u32 = SOM_VAR_ERROR;
+// SOM.DLL's ordinals 1–47 are IBM's SOM 1.0 exports as osFree lists them:
+// the `EXPORTS` of `SOM/som/makefile` in osfree-project/osfree
+// (https://github.com/osfree-project/osfree, BSD-3-Clause), the same
+// numbers as Free Pascal's `som.pas` (ADR-0070). They are not verified
+// against IBM's `som.lib`. Ordinals 48–511 are left to IBM's later
+// exports, which are not known yet; Warpine's own exports use 512–1023.
+
+/// Data exports 1–19: their addresses, not thunks
+/// (`Loader::som_data_address`).
+pub const SOM_VAR_CALLOC: u32 = 1;
+pub const SOM_CLASS_CCLASS_DATA: u32 = 2;
+pub const SOM_CLASS_CLASS_DATA: u32 = 3;
+pub const SOM_VAR_CLASS_INIT_FUNC_NAME: u32 = 4;
+pub const SOM_CLASS_MGR_CCLASS_DATA: u32 = 5;
+pub const SOM_CLASS_MGR_CLASS_DATA: u32 = 6;
+pub const SOM_CLASS_MGR_OBJECT: u32 = 7;
+pub const SOM_VAR_DELETE_MODULE: u32 = 8;
+pub const SOM_VAR_ERROR: u32 = 9;
+pub const SOM_VAR_FREE: u32 = 10;
+pub const SOM_VAR_LOAD_MODULE: u32 = 11;
+pub const SOM_VAR_MALLOC: u32 = 12;
+pub const SOM_OBJECT_CCLASS_DATA: u32 = 13;
+pub const SOM_OBJECT_CLASS_DATA: u32 = 14;
+pub const SOM_VAR_OUT_CHAR: u32 = 15;
+pub const SOM_VAR_REALLOC: u32 = 16;
+pub const SOM_ASSERT_LEVEL: u32 = 17;
+pub const SOM_TRACE_LEVEL: u32 = 18;
+pub const SOM_WARN_LEVEL: u32 = 19;
+/// The first and last data exports.
+pub const SOM_FIRST_DATA: u32 = SOM_VAR_CALLOC;
+pub const SOM_LAST_DATA: u32 = SOM_WARN_LEVEL;
 /// The data exports, in the order of the data block.
-const DATA_EXPORTS: usize = (SOM_LAST_DATA - SOM_OBJECT_CLASS_DATA + 1) as usize;
+const DATA_EXPORTS: usize = (SOM_LAST_DATA - SOM_FIRST_DATA + 1) as usize;
+
+/// IBM's SOM 1.0 functions (osFree's numbers).
+pub const SOM_CLASS_MGR_NEW_CLASS: u32 = 20;
+pub const SOM_CLASS_NEW_CLASS: u32 = 21;
+pub const SOM_OBJECT_NEW_CLASS: u32 = 22;
+pub const SOM_ASSERT: u32 = 23;
+pub const SOM_BEGIN_PERSISTENT_IDS: u32 = 24;
+pub const SOM_CHECK_ARGS: u32 = 25;
+pub const SOM_CHECK_ID: u32 = 26;
+pub const SOM_COMPARE_IDS: u32 = 27;
+pub const SOM_CONSTRUCT_CLASS: u32 = 28;
+pub const SOM_END_PERSISTENT_IDS: u32 = 29;
+pub const SOM_ENVIRONMENT_NEW: u32 = 30;
+pub const SOM_ID_FROM_STRING: u32 = 31;
+pub const SOM_L_PRINTF: u32 = 32;
+pub const SOM_PARENT_RESOLVE: u32 = 33;
+pub const SOM_PREFIX_LEVEL: u32 = 34;
+pub const SOM_PRINTF: u32 = 35;
+pub const SOM_REGISTER_ID: u32 = 36;
+pub const SOM_RESOLVE: u32 = 37;
+pub const SOM_SAVE_METRICS: u32 = 38;
+pub const SOM_SET_EXPECTED_IDS: u32 = 39;
+pub const SOM_STRING_FROM_ID: u32 = 40;
+pub const SOM_TEST: u32 = 41;
+pub const SOM_TEST_CLS: u32 = 42;
+pub const SOM_TOTAL_REG_IDS: u32 = 43;
+pub const SOM_UNIQUE_KEY: u32 = 44;
+pub const SOM_VPRINTF: u32 = 45;
+pub const SOM_WRITE_METRICS: u32 = 46;
+pub const SOM_DATA_RESOLVE: u32 = 47;
+/// The last of IBM's ordinals Warpine knows.
+pub const SOM_LAST_IBM: u32 = SOM_DATA_RESOLVE;
+
+/// The first ordinal of Warpine's own exports: below it, IBM's.
+pub const SOM_FIRST_PRIVATE: u32 = 512;
+/// SOM 2.x functions whose IBM ordinals are not known: imported by name.
+pub const SOM_RESOLVE_BY_NAME: u32 = 512;
+pub const SOM_CLASS_RESOLVE: u32 = 513;
+pub const SOM_GET_GLOBAL_ENVIRONMENT: u32 = 514;
+pub const SOM_IS_OBJ: u32 = 515;
+/// `somSetOutChar(routine)`: the routine `somPrintf` writes through.
+pub const SOM_SET_OUT_CHAR: u32 = 516;
+/// The procedures the runtime variables `SOMMalloc` … `SOMFree` hold.
+pub const SOM_MALLOC: u32 = 520;
+pub const SOM_CALLOC: u32 = 521;
+pub const SOM_REALLOC: u32 = 522;
+pub const SOM_FREE_MEM: u32 = 523;
+/// `WrpSomMetaclassFor(requested, parent)`: the metaclass of a new class.
+pub const SOM_METACLASS_FOR: u32 = 524;
+/// The procedures the runtime variables `SOMLoadModule`,
+/// `SOMDeleteModule`, `SOMError`, `SOMOutCharRoutine` and
+/// `SOMClassInitFuncName` hold at first.
+pub const SOM_DEFAULT_LOAD_MODULE: u32 = 525;
+pub const SOM_DEFAULT_DELETE_MODULE: u32 = 526;
+pub const SOM_DEFAULT_ERROR: u32 = 527;
+pub const SOM_DEFAULT_OUT_CHAR: u32 = 528;
+pub const SOM_DEFAULT_CLASS_INIT_FUNC_NAME: u32 = 529;
 /// What an unknown method token resolves to: a procedure returning 0.
-pub const SOM_METHOD_ERROR: u32 = 99;
+pub const SOM_METHOD_ERROR: u32 = 599;
+// The root classes' methods follow: SOMObject's from 600, SOMClass's
+// from 700, SOMClassMgr's from 800; the module has 1024 ordinals.
+const _: () = assert!(SOM_LAST_IBM < SOM_FIRST_PRIVATE && SOM_RESOLVE_BY_NAME >= SOM_FIRST_PRIVATE);
 /// The methods of `SOMObject`, `SOMClass` and `SOMClassMgr` (thunks).
 pub const SOMOBJECT_METHODS: &[(u32, &str)] = &[
-    (100, "somInit"), (101, "somUninit"), (102, "somFree"), (103, "somGetClass"),
-    (104, "somGetClassName"), (105, "somGetSize"), (106, "somIsA"), (107, "somIsInstanceOf"),
-    (108, "somRespondsTo"), (109, "somPrintSelf"), (110, "somDumpSelf"), (111, "somDumpSelfInt"),
-    (112, "somDefaultInit"), (113, "somDestruct"),
+    (600, "somInit"), (601, "somUninit"), (602, "somFree"), (603, "somGetClass"),
+    (604, "somGetClassName"), (605, "somGetSize"), (606, "somIsA"), (607, "somIsInstanceOf"),
+    (608, "somRespondsTo"), (609, "somPrintSelf"), (610, "somDumpSelf"), (611, "somDumpSelfInt"),
+    (612, "somDefaultInit"), (613, "somDestruct"),
 ];
 pub const SOMCLASS_METHODS: &[(u32, &str)] = &[
-    (200, "somNew"), (201, "somNewNoInit"), (202, "somGetName"), (203, "somGetParent"),
-    (204, "somGetInstanceSize"), (205, "somGetInstancePartSize"), (206, "somGetInstanceToken"),
-    (207, "somGetNumMethods"), (208, "somGetNumStaticMethods"), (209, "somDescendedFrom"),
-    (210, "somInitClass"), (211, "somAddStaticMethod"), (212, "somOverrideSMethod"),
-    (213, "somClassReady"), (214, "somGetMethodToken"), (215, "somSupportsMethod"),
-    (216, "somInitMIClass"),
+    (700, "somNew"), (701, "somNewNoInit"), (702, "somGetName"), (703, "somGetParent"),
+    (704, "somGetInstanceSize"), (705, "somGetInstancePartSize"), (706, "somGetInstanceToken"),
+    (707, "somGetNumMethods"), (708, "somGetNumStaticMethods"), (709, "somDescendedFrom"),
+    (710, "somInitClass"), (711, "somAddStaticMethod"), (712, "somOverrideSMethod"),
+    (713, "somClassReady"), (714, "somGetMethodToken"), (715, "somSupportsMethod"),
+    (716, "somInitMIClass"),
 ];
 pub const SOMCLASSMGR_METHODS: &[(u32, &str)] = &[
-    (300, "somFindClass"), (301, "somClassFromId"), (302, "somRegisterClass"),
-    (303, "somFindClsInFile"), (304, "somLocateClassFile"), (305, "somLoadClassFile"),
-    (306, "somUnregisterClass"), (307, "somUnloadClassFile"),
+    (800, "somFindClass"), (801, "somClassFromId"), (802, "somRegisterClass"),
+    (803, "somFindClsInFile"), (804, "somLocateClassFile"), (805, "somLoadClassFile"),
+    (806, "somUnregisterClass"), (807, "somUnloadClassFile"),
 ];
 
 /// Most classes a process defines (Warpine's bound).
@@ -279,6 +333,9 @@ pub struct SomRuntime {
     pub ready_order: Vec<u32>,
     /// Classes made while the class manager loaded a module: its handle.
     pub modules: HashMap<u32, u32>,
+    /// The guest copy of "SOMInitModule" the default
+    /// `SOMClassInitFuncName` returns.
+    pub init_func_name: u32,
 }
 
 impl SomRuntime {
@@ -367,29 +424,57 @@ pub fn thunk(ord: u32) -> u32 {
     (MAGIC_API_BASE + (SOM_BASE + ord) as u64) as u32
 }
 
-/// The offsets in the exported data block of data exports 20..=34: each
-/// root class's `ClassData` (class object, then a token per method of its
-/// own), `SOMClassMgrObject`, the four allocation variables, the three
-/// levels, `SOMOutCharRoutine`, `SOMLoadModule`, `SOMDeleteModule`,
-/// `SOMError`.
+/// Blanks `somPrefixLevel` writes for each level (Warpine's choice, ADR-0070).
+pub const SOM_PREFIX_WIDTH: u32 = 2;
+/// The deepest level `somPrefixLevel` indents to.
+pub const SOM_MAX_PREFIX_LEVEL: u32 = 64;
+
+/// The blanks before a line at `level` (`somPrefixLevel`, `somLPrintf`).
+fn som_prefix(level: u32) -> Vec<u8> {
+    let level = (level as i32).clamp(0, SOM_MAX_PREFIX_LEVEL as i32) as u32;
+    vec![b' '; (level * SOM_PREFIX_WIDTH) as usize]
+}
+
+/// Bytes of a `somMethodTabList` entry: a method table, then the next entry.
+const SOM_METHOD_TAB_LIST_SIZE: u32 = 8;
+
+/// Bytes of a `<Class>CClassData`: `parentMtab` (the documented field),
+/// then the class's instance-data token (Warpine's choice, ADR-0070).
+const CCLASS_DATA_SIZE: u32 = 8;
+
+/// Bytes of data export `ord`: a root class's `ClassData` (class object,
+/// then a token per method of its own), a `CClassData`, else one word (a
+/// runtime variable, `SOMClassMgrObject`).
+fn data_export_size(ord: u32) -> u32 {
+    match ord {
+        SOM_OBJECT_CLASS_DATA => 4 + 4 * SOMOBJECT_METHODS.len() as u32,
+        SOM_CLASS_CLASS_DATA => 4 + 4 * SOMCLASS_METHODS.len() as u32,
+        SOM_CLASS_MGR_CLASS_DATA => 4 + 4 * SOMCLASSMGR_METHODS.len() as u32,
+        SOM_OBJECT_CCLASS_DATA | SOM_CLASS_CCLASS_DATA | SOM_CLASS_MGR_CCLASS_DATA => CCLASS_DATA_SIZE,
+        _ => 4,
+    }
+}
+
+/// The offsets in the exported data block of data exports
+/// `SOM_FIRST_DATA..=SOM_LAST_DATA`, in ordinal order.
 fn data_offsets() -> [u32; DATA_EXPORTS] {
-    let sizes = [
-        4 + 4 * SOMOBJECT_METHODS.len() as u32,
-        4 + 4 * SOMCLASS_METHODS.len() as u32,
-        4 + 4 * SOMCLASSMGR_METHODS.len() as u32,
-    ];
     let mut offs = [0u32; DATA_EXPORTS];
     let mut at = 0;
     for (i, o) in offs.iter_mut().enumerate() {
         *o = at;
-        at += sizes.get(i).copied().unwrap_or(4);
+        at += data_export_size(SOM_FIRST_DATA + i as u32);
     }
     offs
 }
 
+/// The offset of data export `ord` in the data block.
+fn data_offset(ord: u32) -> u32 {
+    data_offsets()[(ord - SOM_FIRST_DATA) as usize]
+}
+
 /// Bytes of the exported data block.
 fn data_size() -> u32 {
-    data_offsets()[DATA_EXPORTS - 1] + 4
+    data_offset(SOM_LAST_DATA) + data_export_size(SOM_LAST_DATA)
 }
 
 /// Format `fmt` as C's `printf` does, taking each argument word from
@@ -655,9 +740,10 @@ impl Loader {
             if rt.initialized { return; }
             rt.initialized = true;
         }
-        let (Some(o), Some(c), Some(m), Some(mgr), Some(env), Some(data)) = (
+        let (Some(o), Some(c), Some(m), Some(mgr), Some(env), Some(data), Some(parent_list)) = (
             self.som_malloc(4), self.som_malloc(4), self.som_malloc(4),
             self.som_malloc(4), self.som_malloc(ENVIRONMENT_SIZE), self.som_malloc(data_size()),
+            self.som_malloc(SOM_METHOD_TAB_LIST_SIZE),
         ) else {
             log::warn!("SOM: no memory for the runtime");
             return;
@@ -693,41 +779,53 @@ impl Loader {
             (rt.som_object, rt.som_class, rt.som_class_mgr, rt.mgr, rt.env, rt.data) = (o, c, m, mgr, env, data);
         }
         let mtabs: Vec<Option<u32>> = [o, c, m].iter().map(|&k| self.som_write_mtab(k)).collect();
-        let (Some(_), Some(cls_mtab), Some(mgr_mtab)) = (mtabs[0], mtabs[1], mtabs[2]) else { return };
+        let (Some(obj_mtab), Some(cls_mtab), Some(mgr_mtab)) = (mtabs[0], mtabs[1], mtabs[2]) else { return };
         // Class objects are instances of SOMClass; the manager of SOMClassMgr.
         for k in [o, c, m] { let _ = self.guest_write::<u32>(k, cls_mtab); }
         let _ = self.guest_write::<u32>(mgr, mgr_mtab);
         self.shared.som.lock_or_recover().instances.extend([o, c, m, mgr]);
-        // The exported data: ClassData of the root classes, the manager,
-        // the runtime variables.
-        let offs = data_offsets();
+        // The exported data: ClassData and CClassData of the root
+        // classes, the manager, the runtime variables.
         let tokens = |cls: u32| -> Vec<u32> {
             let rt = self.shared.som.lock_or_recover();
             (1..=rt.methods.len() as u32).filter(|&t| rt.methods[t as usize - 1].0 == cls).collect()
         };
-        for (base, cls) in [(offs[0], o), (offs[1], c), (offs[2], m)] {
-            let _ = self.guest_write::<u32>(data + base, cls);
+        for (ord, cls) in [(SOM_OBJECT_CLASS_DATA, o), (SOM_CLASS_CLASS_DATA, c), (SOM_CLASS_MGR_CLASS_DATA, m)] {
+            let base = data + data_offset(ord);
+            let _ = self.guest_write::<u32>(base, cls);
             for (i, t) in tokens(cls).into_iter().enumerate() {
-                let _ = self.guest_write::<u32>(data + base + 4 + 4 * i as u32, t);
+                let _ = self.guest_write::<u32>(base + 4 + 4 * i as u32, t);
             }
         }
-        let _ = self.guest_write::<u32>(data + offs[3], mgr);
+        // SOMClass's and SOMClassMgr's parent method tables: a one-entry
+        // list holding SOMObject's; SOMObject has none.
+        let _ = self.guest_write::<u32>(parent_list, obj_mtab);
+        let _ = self.guest_write::<u32>(parent_list + 4, 0);
+        for (ord, parents, cls) in [(SOM_OBJECT_CCLASS_DATA, 0, o), (SOM_CLASS_CCLASS_DATA, parent_list, c),
+                                    (SOM_CLASS_MGR_CCLASS_DATA, parent_list, m)] {
+            let base = data + data_offset(ord);
+            let token = self.shared.som.lock_or_recover().classes.get(&cls)
+                .map_or(0, |k| if k.parts.iter().any(|&(p, _)| p == cls) { cls } else { 0 });
+            let _ = self.guest_write::<u32>(base, parents);
+            let _ = self.guest_write::<u32>(base + 4, token);
+        }
+        let _ = self.guest_write::<u32>(data + data_offset(SOM_CLASS_MGR_OBJECT), mgr);
         for (var, f) in [
             (SOM_VAR_MALLOC, SOM_MALLOC), (SOM_VAR_CALLOC, SOM_CALLOC), (SOM_VAR_REALLOC, SOM_REALLOC),
             (SOM_VAR_FREE, SOM_FREE_MEM), (SOM_VAR_OUT_CHAR, SOM_DEFAULT_OUT_CHAR),
             (SOM_VAR_LOAD_MODULE, SOM_DEFAULT_LOAD_MODULE), (SOM_VAR_DELETE_MODULE, SOM_DEFAULT_DELETE_MODULE),
-            (SOM_VAR_ERROR, SOM_DEFAULT_ERROR),
+            (SOM_VAR_ERROR, SOM_DEFAULT_ERROR), (SOM_VAR_CLASS_INIT_FUNC_NAME, SOM_DEFAULT_CLASS_INIT_FUNC_NAME),
         ] {
-            let _ = self.guest_write::<u32>(data + offs[(var - SOM_OBJECT_CLASS_DATA) as usize], thunk(f));
+            let _ = self.guest_write::<u32>(data + data_offset(var), thunk(f));
         }
     }
 
     /// The address of SOM data export `ord` (`None`: not a data export).
     pub(crate) fn som_data_address(&self, ord: u32) -> Option<u32> {
-        if !(SOM_OBJECT_CLASS_DATA..=SOM_LAST_DATA).contains(&ord) { return None; }
+        if !(SOM_FIRST_DATA..=SOM_LAST_DATA).contains(&ord) { return None; }
         self.som_init();
         let data = self.shared.som.lock_or_recover().data;
-        (data != 0).then(|| data + data_offsets()[(ord - SOM_OBJECT_CLASS_DATA) as usize])
+        (data != 0).then(|| data + data_offset(ord))
     }
 
     /// The class of object `obj` (from its method table).
@@ -935,16 +1033,51 @@ impl Loader {
     /// `somPrintf(fmt, …)`: formatted to standard output; at most 9
     /// argument words.
     fn som_printf(&self, vcpu: u32, a: &[u32; 10]) -> ApiResult {
-        let Some(fmt) = self.som_bytes(a[0], MAX_PRINT) else { return ApiResult::Normal(0) };
+        if a[0] == 0 { return ApiResult::Normal(0); }
+        let out = self.som_format(a[0], &mut a[1..].iter().copied());
+        self.som_output(vcpu, out)
+    }
+
+    /// The guest format string at `fmt` formatted with `args`; empty when
+    /// it cannot be read.
+    fn som_format(&self, fmt: u32, args: &mut dyn Iterator<Item = u32>) -> Vec<u8> {
+        let Some(fmt) = self.som_bytes(fmt, MAX_PRINT) else { return Vec::new() };
         let string_at = |p: u32| self.som_bytes(p, MAX_PRINT).unwrap_or_default();
-        let out = c_format(&fmt, &mut a[1..].iter().copied(), &string_at);
+        let mut out = c_format(&fmt, args, &string_at);
+        out.truncate(MAX_PRINT);
+        out
+    }
+
+    /// Write `out` through `SOMOutCharRoutine`; the count of characters.
+    fn som_output(&self, vcpu: u32, out: Vec<u8>) -> ApiResult {
         // A program's own SOMOutCharRoutine gets every character.
         let routine = self.som_var(SOM_VAR_OUT_CHAR);
+        if out.is_empty() { return ApiResult::Normal(0); }
         if routine == thunk(SOM_DEFAULT_OUT_CHAR) || routine == 0 {
             return ApiResult::Normal(self.write_handle(STDOUT_HANDLE, &out).unwrap_or(0));
         }
         let steps = out.iter().map(|&c| CallStep::hook(routine, vec![c as u32], false)).collect();
         self.start_chain(CallChain::new(vcpu, steps, false, ChainThen::Return(out.len() as u32)))
+    }
+
+    /// `somParentResolve(parentMtab, token)`: the procedure of method
+    /// `token` in the first method table of the list `parentMtab`, through
+    /// the runtime's records of that table's class.
+    fn som_parent_resolve(&self, parent_mtab: u32, token: u32) -> u32 {
+        let mtab = if parent_mtab == 0 { None } else { self.guest_read::<u32>(parent_mtab) };
+        let rt = self.shared.som.lock_or_recover();
+        mtab.and_then(|m| rt.mtabs.get(&m).copied())
+            .and_then(|cls| rt.class_method(cls, token))
+            .unwrap_or_else(|| thunk(SOM_METHOD_ERROR))
+    }
+
+    /// What the default `SOMClassInitFuncName` returns: "SOMInitModule".
+    fn som_init_func_name(&self) -> u32 {
+        let known = self.shared.som.lock_or_recover().init_func_name;
+        if known != 0 { return known; }
+        let at = self.som_string(SOM_INIT_MODULE);
+        self.shared.som.lock_or_recover().init_func_name = at;
+        at
     }
 
     /// The value of runtime variable `ord` (`SOMOutCharRoutine` …).
@@ -1132,34 +1265,84 @@ impl Loader {
                 ok(0)
             }
             SOM_METHOD_ERROR => ok(0),
+            // ── IBM's SOM 1.0 functions (ADR-0070) ──
+            SOM_OBJECT_NEW_CLASS | SOM_CLASS_NEW_CLASS | SOM_CLASS_MGR_NEW_CLASS => {
+                // `<Class>NewClass(major, minor)`: the root classes are
+                // made with the runtime; every version is accepted.
+                let rt = self.shared.som.lock_or_recover();
+                ok(match ord {
+                    SOM_OBJECT_NEW_CLASS => rt.som_object,
+                    SOM_CLASS_NEW_CLASS => rt.som_class,
+                    _ => rt.som_class_mgr,
+                })
+            }
+            SOM_PARENT_RESOLVE => ok(self.som_parent_resolve(a[0], a[1])),
+            SOM_CHECK_ID => {
+                // Registers the id and gives it back.
+                if let Some(name) = self.som_id_name(a[0]) { self.som_id(&name); }
+                ok(a[0])
+            }
+            SOM_REGISTER_ID => {
+                // TRUE when the id was not registered before.
+                let Some(name) = self.som_id_name(a[0]) else { return ok(0) };
+                let known = self.shared.som.lock_or_recover().ids.contains_key(&name);
+                ok((!known && self.som_id(&name) != 0) as u32)
+            }
+            SOM_UNIQUE_KEY => ok(self.som_id_name(a[0]).map_or(0, |n| self.som_id(&n))),
+            SOM_TOTAL_REG_IDS => ok(self.shared.som.lock_or_recover().ids.len() as u32),
+            // Hints and intervals with no effect here.
+            SOM_SET_EXPECTED_IDS | SOM_BEGIN_PERSISTENT_IDS | SOM_END_PERSISTENT_IDS => ok(0),
+            SOM_PREFIX_LEVEL => self.som_output(vcpu, som_prefix(a[0])),
+            SOM_L_PRINTF => {
+                let mut out = som_prefix(a[0]);
+                out.extend(self.som_format(a[1], &mut a[2..].iter().copied()));
+                self.som_output(vcpu, out)
+            }
+            SOM_VPRINTF => {
+                // The arguments are words in guest memory from `ap` on.
+                let ap = a[1];
+                let mut args = (0u32..).map_while(|i| {
+                    ap.checked_add(i.checked_mul(4)?).and_then(|at| self.guest_read::<u32>(at))
+                });
+                let out = self.som_format(a[0], &mut args);
+                self.som_output(vcpu, out)
+            }
+            SOM_DEFAULT_CLASS_INIT_FUNC_NAME => ok(self.som_init_func_name()),
+            // Debugging and metrics entries the references do not
+            // describe: accepted, no effect (ADR-0070).
+            SOM_ASSERT | SOM_TEST | SOM_TEST_CLS | SOM_CHECK_ARGS | SOM_SAVE_METRICS | SOM_WRITE_METRICS
+            | SOM_CONSTRUCT_CLASS => {
+                log::debug!("SOM: undocumented entry {ord} accepted, no effect");
+                ok(0)
+            }
             // ── SOMObject ──
-            100 | 101 | 111 => ok(0), // somInit / somUninit / somDumpSelfInt: nothing at the root
-            102 => {
+            600 | 601 | 611 => ok(0), // somInit / somUninit / somDumpSelfInt: nothing at the root
+            602 => {
                 // somFree: somUninit (the object's own), then the memory.
                 if !self.shared.som.lock_or_recover().instances.contains(&a[0]) { return ok(0); }
                 let uninit = self.som_resolve(a[0], TOKEN_SOM_UNINIT);
                 self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(uninit, vec![a[0]], false)], false,
                                                 ChainThen::SomFree { obj: a[0] }))
             }
-            103 => ok(class_of(a[0])),
-            104 => ok(info(class_of(a[0]), &|c| c.name_addr)),
-            105 => ok(info(class_of(a[0]), &|c| c.instance_size)),
-            106 => {
+            603 => ok(class_of(a[0])),
+            604 => ok(info(class_of(a[0]), &|c| c.name_addr)),
+            605 => ok(info(class_of(a[0]), &|c| c.instance_size)),
+            606 => {
                 // The class first: class_of takes the runtime's lock too.
                 let cls = class_of(a[0]);
                 ok(self.shared.som.lock_or_recover().descends(cls, a[1]) as u32)
             }
-            107 => ok((class_of(a[0]) == a[1] && a[1] != 0) as u32),
-            108 => {
+            607 => ok((class_of(a[0]) == a[1] && a[1] != 0) as u32),
+            608 => {
                 let name = self.som_id_name(a[1]).unwrap_or_default();
                 let cls = class_of(a[0]);
                 ok(self.shared.som.lock_or_recover().token_of(cls, &name).is_some() as u32)
             }
-            109 => {
+            609 => {
                 let _ = self.write_handle(STDOUT_HANDLE, format!("{}\n", self.som_describe(a[0])).as_bytes());
                 ok(a[0])
             }
-            110 => {
+            610 => {
                 // somDumpSelf(level): a line, then the object's somDumpSelfInt.
                 let indent = "  ".repeat((a[1] as i32).clamp(0, 32) as usize);
                 let _ = self.write_handle(STDOUT_HANDLE, format!("{indent}{}\n", self.som_describe(a[0])).as_bytes());
@@ -1167,14 +1350,14 @@ impl Loader {
                 self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(int, vec![a[0], a[1]], false)], false,
                                                 ChainThen::Return(0)))
             }
-            112 => {
+            612 => {
                 // somDefaultInit(ctrl): at the root, the object's somInit
                 // (classes written for SOM 1.x initialize there).
                 let init = self.som_resolve(a[0], TOKEN_SOM_INIT);
                 self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(init, vec![a[0]], false)], false,
                                                 ChainThen::Return(0)))
             }
-            113 => {
+            613 => {
                 // somDestruct(doFree, ctrl): the object's somUninit, then
                 // its memory when doFree (an octet) is set.
                 if !self.shared.som.lock_or_recover().instances.contains(&a[0]) { return ok(0); }
@@ -1183,38 +1366,38 @@ impl Loader {
                 self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(uninit, vec![a[0]], false)], false, then))
             }
             // ── SOMClass (the receiver is a class object) ──
-            200 | 201 => {
+            700 | 701 => {
                 let Some(obj) = self.som_new_instance(a[0]) else { return ok(0) };
-                if ord == 201 { return ok(obj); }
+                if ord == 701 { return ok(obj); }
                 // somNew = somNewNoInit + the object's somDefaultInit; the
                 // root's goes straight to somInit.
                 let default_init = self.som_resolve(obj, TOKEN_SOM_DEFAULT_INIT);
-                let step = if default_init == thunk(112) {
+                let step = if default_init == thunk(612) {
                     CallStep::hook(self.som_resolve(obj, TOKEN_SOM_INIT), vec![obj], false)
                 } else {
                     CallStep::hook(default_init, vec![obj, 0], false)
                 };
                 self.start_chain(CallChain::new(vcpu, vec![step], false, ChainThen::Return(obj)))
             }
-            202 => ok(info(a[0], &|c| c.name_addr)),
-            203 => ok(info(a[0], &|c| c.parents.first().copied().unwrap_or(0))),
-            204 => ok(info(a[0], &|c| c.instance_size)),
-            205 => ok(info(a[0], &|c| c.data_size)),
+            702 => ok(info(a[0], &|c| c.name_addr)),
+            703 => ok(info(a[0], &|c| c.parents.first().copied().unwrap_or(0))),
+            704 => ok(info(a[0], &|c| c.instance_size)),
+            705 => ok(info(a[0], &|c| c.data_size)),
             // The data token of a class is the class itself.
-            206 => ok(info(a[0], &|c| if c.parts.is_empty() { 0 } else { a[0] })),
-            207 => ok(info(a[0], &|c| c.slots.len() as u32)),
-            208 => ok(info(a[0], &|c| c.own_methods as u32)),
-            209 => ok(self.shared.som.lock_or_recover().descends(a[0], a[1]) as u32),
-            210 => ok(self.som_init_class(a[0], a[1], &[a[2]], a[3])),
-            211 => ok(self.som_add_method(a[0], a[1], a[3])),
-            212 => ok(self.som_override(a[0], a[1], a[2])),
-            213 => ok(self.som_class_ready(a[0])),
-            214 | 215 => {
+            706 => ok(info(a[0], &|c| if c.parts.is_empty() { 0 } else { a[0] })),
+            707 => ok(info(a[0], &|c| c.slots.len() as u32)),
+            708 => ok(info(a[0], &|c| c.own_methods as u32)),
+            709 => ok(self.shared.som.lock_or_recover().descends(a[0], a[1]) as u32),
+            710 => ok(self.som_init_class(a[0], a[1], &[a[2]], a[3])),
+            711 => ok(self.som_add_method(a[0], a[1], a[3])),
+            712 => ok(self.som_override(a[0], a[1], a[2])),
+            713 => ok(self.som_class_ready(a[0])),
+            714 | 715 => {
                 let name = self.som_id_name(a[1]).unwrap_or_default();
                 let token = self.shared.som.lock_or_recover().token_of(a[0], &name).unwrap_or(0);
-                ok(if ord == 214 { token } else { (token != 0) as u32 })
+                ok(if ord == 714 { token } else { (token != 0) as u32 })
             }
-            216 => {
+            716 => {
                 // somInitMIClass(self, inherit_vars, className, parentClasses
                 // (a sequence by value: _maximum, _length, _buffer),
                 // dataSize, dataAlignment, maxStaticMethods, major, minor).
@@ -1225,19 +1408,19 @@ impl Loader {
                 ok(self.som_init_class(a[0], a[2], &parents, a[6]))
             }
             // ── SOMClassMgr ──
-            301 => {
+            801 => {
                 let name = self.som_id_name(a[1]).unwrap_or_default();
                 ok(self.shared.som.lock_or_recover().by_name.get(&name).copied().unwrap_or(0))
             }
-            300 => self.som_find_class(vcpu, a[1], a[2], a[3], None, false),
-            303 => self.som_find_class(vcpu, a[1], a[2], a[3], Some(a[4]), false),
+            800 => self.som_find_class(vcpu, a[1], a[2], a[3], None, false),
+            803 => self.som_find_class(vcpu, a[1], a[2], a[3], Some(a[4]), false),
             // somLocateClassFile: without an interface repository, the
             // class's name.
-            304 => ok(self.som_id_name(a[1]).map_or(0, |n| self.som_string(&n))),
-            305 => self.som_find_class(vcpu, a[1], a[2], a[3], Some(a[4]), true),
-            306 => ok(self.som_unregister(a[1])),
-            307 => self.som_unload_class_file(vcpu, a[1]),
-            302 => {
+            804 => ok(self.som_id_name(a[1]).map_or(0, |n| self.som_string(&n))),
+            805 => self.som_find_class(vcpu, a[1], a[2], a[3], Some(a[4]), true),
+            806 => ok(self.som_unregister(a[1])),
+            807 => self.som_unload_class_file(vcpu, a[1]),
+            802 => {
                 let mut rt = self.shared.som.lock_or_recover();
                 if let Some(name) = rt.classes.get(&a[1]).filter(|c| c.ready).map(|c| c.name.clone()) {
                     rt.by_name.insert(name, a[1]);
@@ -1307,31 +1490,31 @@ mod tests {
     /// A class built as a binding does: an instance of `meta`, its
     /// initialization, methods added or overridden, ready.
     fn new_class(l: &Loader, meta: u32, name: &str, parents: &[u32], size: u32, methods: &[(&str, u32)]) -> u32 {
-        let cls = finish(l, call(l, 200, &[meta]));
+        let cls = finish(l, call(l, 700, &[meta]));
         assert_ne!(cls, 0);
         let n = put(l, 0x3400, name);
         if parents.len() <= 1 {
-            ok(call(l, 210, &[cls, n, parents.first().copied().unwrap_or(0), size, 0, 0, 0]));
+            ok(call(l, 710, &[cls, n, parents.first().copied().unwrap_or(0), size, 0, 0, 0]));
         } else {
             for (i, p) in parents.iter().enumerate() { l.guest_write::<u32>(0x3800 + 4 * i as u32, *p).unwrap(); }
             let k = parents.len() as u32;
-            ok(call(l, 216, &[cls, 0, n, k, k, 0x3800, size, 4, 0, 0]));
+            ok(call(l, 716, &[cls, 0, n, k, k, 0x3800, size, 4, 0, 0]));
         }
         for &(m, p) in methods {
             let id = ok(call(l, SOM_ID_FROM_STRING, &[put(l, 0x3900, m)]));
-            if ok(call(l, 214, &[cls, id])) != 0 {
-                ok(call(l, 212, &[cls, id, p]));
+            if ok(call(l, 714, &[cls, id])) != 0 {
+                ok(call(l, 712, &[cls, id, p]));
             } else {
-                assert_ne!(ok(call(l, 211, &[cls, id, 0, p, 0, 0])), 0);
+                assert_ne!(ok(call(l, 711, &[cls, id, 0, p, 0, 0])), 0);
             }
         }
-        ok(call(l, 213, &[cls]));
+        ok(call(l, 713, &[cls]));
         cls
     }
 
     fn token(l: &Loader, cls: u32, name: &str) -> u32 {
         let id = ok(call(l, SOM_ID_FROM_STRING, &[put(l, 0x3900, name)]));
-        ok(call(l, 214, &[cls, id]))
+        ok(call(l, 714, &[cls, id]))
     }
 
     #[test]
@@ -1345,15 +1528,15 @@ mod tests {
         let mgr = root(&l, SOM_CLASS_MGR_OBJECT);
         assert_eq!(ok(call(&l, SOM_ENVIRONMENT_NEW, &[])), mgr);
         // The manager is an instance of SOMClassMgr, itself a SOMObject.
-        let mgr_class = ok(call(&l, 103, &[mgr]));
-        assert_eq!(l.read_guest_string(ok(call(&l, 104, &[mgr]))), "SOMClassMgr");
-        assert_eq!(ok(call(&l, 106, &[mgr, som_object])), 1, "somIsA SOMObject");
-        assert_eq!(ok(call(&l, 203, &[mgr_class])), som_object, "its parent");
+        let mgr_class = ok(call(&l, 603, &[mgr]));
+        assert_eq!(l.read_guest_string(ok(call(&l, 604, &[mgr]))), "SOMClassMgr");
+        assert_eq!(ok(call(&l, 606, &[mgr, som_object])), 1, "somIsA SOMObject");
+        assert_eq!(ok(call(&l, 703, &[mgr_class])), som_object, "its parent");
         // somResolve answers from the class's methods.
         let get_class = root_token(&l, SOM_OBJECT_CLASS_DATA, 3);
-        assert_eq!(ok(call(&l, SOM_RESOLVE, &[mgr, get_class])), thunk(103), "somGetClass");
+        assert_eq!(ok(call(&l, SOM_RESOLVE, &[mgr, get_class])), thunk(603), "somGetClass");
         let find = root_token(&l, SOM_CLASS_MGR_CLASS_DATA, 0);
-        assert_eq!(ok(call(&l, SOM_RESOLVE, &[mgr, find])), thunk(300), "somFindClass");
+        assert_eq!(ok(call(&l, SOM_RESOLVE, &[mgr, find])), thunk(800), "somFindClass");
         assert_eq!(ok(call(&l, SOM_RESOLVE, &[som_object, find])), thunk(SOM_METHOD_ERROR), "not a SOMClassMgr's");
         assert_eq!(ok(call(&l, SOM_RESOLVE, &[mgr, 99_999])), thunk(SOM_METHOD_ERROR));
         assert_eq!(ok(call(&l, SOM_RESOLVE, &[0x1234_0000, 1])), thunk(SOM_METHOD_ERROR), "not an object");
@@ -1361,7 +1544,7 @@ mod tests {
         assert_eq!(root(&l, SOM_VAR_MALLOC), thunk(SOM_MALLOC));
         assert_eq!(root(&l, SOM_VAR_FREE), thunk(SOM_FREE_MEM));
         assert_eq!(root(&l, SOM_TRACE_LEVEL), 0);
-        let span = l.som_data_address(SOM_LAST_DATA).unwrap() + 4 - l.som_data_address(SOM_OBJECT_CLASS_DATA).unwrap();
+        let span = l.som_data_address(SOM_LAST_DATA).unwrap() + 4 - l.som_data_address(SOM_FIRST_DATA).unwrap();
         assert_eq!(span, data_size());
     }
 
@@ -1376,29 +1559,29 @@ mod tests {
         let cls = new_class(&l, som_class, "Hello", &[som_object], 8, &[("sayHello", 0x0060_0000), ("somInit", 0x0060_1000)]);
         let tok = token(&l, cls, "sayHello");
         assert_eq!(tok as usize, SOMOBJECT_METHODS.len() + SOMCLASS_METHODS.len() + SOMCLASSMGR_METHODS.len() + 1);
-        assert_eq!(ok(call(&l, 204, &[cls])), 12, "4 + its 8 bytes");
-        assert_eq!(ok(call(&l, 206, &[cls])), cls, "its data token");
+        assert_eq!(ok(call(&l, 704, &[cls])), 12, "4 + its 8 bytes");
+        assert_eq!(ok(call(&l, 706, &[cls])), cls, "its data token");
         // An instance: somNew calls its somInit (the override).
-        let r = call(&l, 200, &[cls]);
+        let r = call(&l, 700, &[cls]);
         let ApiResult::CallChain(ref c) = r else { panic!() };
         assert!(matches!(c.steps.front(), Some(CallStep::Guest { proc_addr: 0x0060_1000, .. })));
         let obj = finish(&l, r);
         assert_eq!(ok(call(&l, SOM_RESOLVE, &[obj, tok])), 0x0060_0000);
         assert_eq!(ok(call(&l, SOM_DATA_RESOLVE, &[obj, cls])), obj + 4);
         assert_eq!(ok(call(&l, SOM_DATA_RESOLVE, &[obj, som_class])), 0, "not its ancestor");
-        assert_eq!(ok(call(&l, SOM_CLASS_RESOLVE, &[som_object, TOKEN_SOM_INIT])), thunk(100), "the parent's somInit");
-        assert_eq!(l.read_guest_string(ok(call(&l, 104, &[obj]))), "Hello");
+        assert_eq!(ok(call(&l, SOM_CLASS_RESOLVE, &[som_object, TOKEN_SOM_INIT])), thunk(600), "the parent's somInit");
+        assert_eq!(l.read_guest_string(ok(call(&l, 604, &[obj]))), "Hello");
         let id = ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3100, "sayHello")]));
         assert_eq!(ok(call(&l, SOM_ID_FROM_STRING, &[0x3100])), id, "one id per string");
-        assert_eq!(ok(call(&l, 108, &[obj, id])), 1, "somRespondsTo sayHello");
+        assert_eq!(ok(call(&l, 608, &[obj, id])), 1, "somRespondsTo sayHello");
         assert_eq!(ok(call(&l, SOM_IS_OBJ, &[obj])), 1);
         // somFree: somUninit, then the memory.
-        assert_eq!(finish(&l, call(&l, 102, &[obj])), 0);
+        assert_eq!(finish(&l, call(&l, 602, &[obj])), 0);
         assert_eq!(ok(call(&l, SOM_IS_OBJ, &[obj])), 0);
         // A ready class takes no more methods; the manager finds it.
-        assert_eq!(ok(call(&l, 211, &[cls, id, 0, 0x0060_2000, 0, 0])), 0);
+        assert_eq!(ok(call(&l, 711, &[cls, id, 0, 0x0060_2000, 0, 0])), 0);
         let mgr = ok(call(&l, SOM_ENVIRONMENT_NEW, &[]));
-        assert_eq!(ok(call(&l, 300, &[mgr, ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3200, "Hello")])), 0, 0])), cls);
+        assert_eq!(ok(call(&l, 800, &[mgr, ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3200, "Hello")])), 0, 0])), cls);
     }
 
     /// The SOM 2.1 initializers the C++ bindings use: somNew calls the
@@ -1419,27 +1602,27 @@ mod tests {
         };
         // Only somInit overridden: somNew goes to it.
         let plain = new_class(&l, som_class, "Plain", &[som_object], 0, &[("somInit", 0x0061_0000), ("somUninit", 0x0061_1000)]);
-        let r = call(&l, 200, &[plain]);
+        let r = call(&l, 700, &[plain]);
         assert_eq!(first(&r).0, 0x0061_0000);
         let obj = finish(&l, r);
         // somDefaultInit at the root: the object's somInit.
-        let r = call(&l, 112, &[obj, 0]);
+        let r = call(&l, 612, &[obj, 0]);
         assert_eq!(first(&r), (0x0061_0000, vec![obj]));
         assert_eq!(finish(&l, r), 0);
         // somDestruct without doFree: somUninit, the object stays.
-        let r = call(&l, 113, &[obj, 0, 0]);
+        let r = call(&l, 613, &[obj, 0, 0]);
         assert_eq!(first(&r), (0x0061_1000, vec![obj]));
         finish(&l, r);
         assert_eq!(ok(call(&l, SOM_IS_OBJ, &[obj])), 1);
         // With doFree (only its low byte counts): the memory goes too.
-        finish(&l, call(&l, 113, &[obj, 0x0100, 0]));
+        finish(&l, call(&l, 613, &[obj, 0x0100, 0]));
         assert_eq!(ok(call(&l, SOM_IS_OBJ, &[obj])), 1, "doFree is an octet");
-        finish(&l, call(&l, 113, &[obj, 1, 0]));
+        finish(&l, call(&l, 613, &[obj, 1, 0]));
         assert_eq!(ok(call(&l, SOM_IS_OBJ, &[obj])), 0);
-        assert_eq!(ok(call(&l, 113, &[obj, 1, 0])), 0, "not twice");
+        assert_eq!(ok(call(&l, 613, &[obj, 1, 0])), 0, "not twice");
         // somDefaultInit overridden: somNew calls it with a null control.
         let modern = new_class(&l, som_class, "Modern", &[som_object], 0, &[("somDefaultInit", 0x0062_0000)]);
-        let r = call(&l, 200, &[modern]);
+        let r = call(&l, 700, &[modern]);
         let (proc, args) = first(&r);
         assert_eq!(proc, 0x0062_0000);
         assert_eq!(args[1], 0);
@@ -1493,19 +1676,19 @@ mod tests {
         let mgr = ok(call(&l, SOM_ENVIRONMENT_NEW, &[]));
         let id = |n: &str, at: u32| ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, at, n)]));
         let known = new_class(&l, som_class, "Known", &[som_object], 0, &[]);
-        assert_eq!(finish(&l, call(&l, 300, &[mgr, id("Known", 0x3600), 0, 0])), known);
+        assert_eq!(finish(&l, call(&l, 800, &[mgr, id("Known", 0x3600), 0, 0])), known);
         // somLocateClassFile: the class's name.
         let missing = id("Nowhere", 0x3620);
-        assert_eq!(l.read_guest_string(ok(call(&l, 304, &[mgr, missing, 0, 0]))), "Nowhere");
+        assert_eq!(l.read_guest_string(ok(call(&l, 804, &[mgr, missing, 0, 0]))), "Nowhere");
         // No such file: no class, nothing leaked into a chain.
-        assert_eq!(ok(call(&l, 300, &[mgr, missing, 0, 0])), 0);
+        assert_eq!(ok(call(&l, 800, &[mgr, missing, 0, 0])), 0);
         let file = put(&l, 0x3640, "NOFILE");
-        assert_eq!(ok(call(&l, 303, &[mgr, missing, 0, 0, file])), 0);
+        assert_eq!(ok(call(&l, 803, &[mgr, missing, 0, 0, file])), 0);
         // A program's SOMLoadModule.
         let var = l.som_data_address(SOM_VAR_LOAD_MODULE).unwrap();
         l.guest_write::<u32>(var, 0x0064_0000).unwrap();
         let lazy = id("Lazy", 0x3660);
-        let r = call(&l, 303, &[mgr, lazy, 1, 2, file]);
+        let r = call(&l, 803, &[mgr, lazy, 1, 2, file]);
         let ApiResult::CallChain(ref c) = r else { panic!("{r:?}") };
         let Some(CallStep::Guest { proc_addr: 0x0064_0000, args, .. }) = c.steps.front() else { panic!() };
         let args = args.clone();
@@ -1517,11 +1700,11 @@ mod tests {
         // It "loaded" without making the class: no class.
         assert_eq!(finish(&l, r), 0);
         // It made the class (as SOMInitModule would): that class.
-        let r = call(&l, 305, &[mgr, lazy, 0, 0, file]);
+        let r = call(&l, 805, &[mgr, lazy, 0, 0, file]);
         let made = new_class(&l, som_class, "Lazy", &[som_object], 0, &[]);
         assert_eq!(finish(&l, r), made);
         // A failing SOMLoadModule (non-zero): no class, though one exists.
-        let r = call(&l, 305, &[mgr, lazy, 0, 0, file]);
+        let r = call(&l, 805, &[mgr, lazy, 0, 0, file]);
         let ApiResult::CallChain(mut c) = r else { panic!() };
         c.steps.pop_front();
         c.returned(1, false);
@@ -1544,21 +1727,21 @@ mod tests {
         let mgr = ok(call(&l, SOM_ENVIRONMENT_NEW, &[]));
         let a = new_class(&l, som_class, "ModA", &[som_object], 0, &[("work", 0x0065_0000)]);
         let b = new_class(&l, som_class, "ModB", &[som_object], 0, &[]);
-        assert_eq!(ok(call(&l, 306, &[mgr, b])), 0);
-        assert_eq!(ok(call(&l, 306, &[mgr, b])), 1, "not registered any more");
-        assert_eq!(ok(call(&l, 307, &[mgr, a])), 1, "no module made it");
+        assert_eq!(ok(call(&l, 806, &[mgr, b])), 0);
+        assert_eq!(ok(call(&l, 806, &[mgr, b])), 1, "not registered any more");
+        assert_eq!(ok(call(&l, 807, &[mgr, a])), 1, "no module made it");
         // As if a module 0x1234 had made both.
         l.shared.som.lock_or_recover().modules.extend([(a, 0x1234), (b, 0x1234)]);
-        let obj = finish(&l, call(&l, 200, &[a]));
+        let obj = finish(&l, call(&l, 700, &[a]));
         let work = token(&l, a, "work");
         assert_eq!(ok(call(&l, SOM_RESOLVE, &[obj, work])), 0x0065_0000);
         // The default SOMDeleteModule: DosFreeModule of an unknown handle.
-        assert_ne!(ok(call(&l, 307, &[mgr, a])), 0);
+        assert_ne!(ok(call(&l, 807, &[mgr, a])), 0);
         let rt = l.shared.som.lock_or_recover();
         assert!(!rt.by_name.contains_key("ModA") && rt.modules.is_empty());
         drop(rt);
         assert_eq!(ok(call(&l, SOM_RESOLVE, &[obj, work])), thunk(SOM_METHOD_ERROR), "its code is gone");
-        assert_eq!(ok(call(&l, 300, &[mgr, ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3700, "ModA")])), 0, 0])), 0,
+        assert_eq!(ok(call(&l, 800, &[mgr, ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3700, "ModA")])), 0, 0])), 0,
                    "looked for again (no file here)");
     }
 
@@ -1577,14 +1760,14 @@ mod tests {
         }
         assert_eq!(token(&l, d, "shared"), token(&l, a, "shared"), "one token, introduced by A");
         // D: SOMObject 0..4, A 4..8, B 8..16, C 16..28.
-        assert_eq!(ok(call(&l, 204, &[d])), 28);
-        let obj = finish(&l, call(&l, 200, &[d]));
+        assert_eq!(ok(call(&l, 704, &[d])), 28);
+        let obj = finish(&l, call(&l, 700, &[d]));
         assert_eq!(ok(call(&l, SOM_DATA_RESOLVE, &[obj, a])), obj + 4);
         assert_eq!(ok(call(&l, SOM_DATA_RESOLVE, &[obj, b])), obj + 8);
         assert_eq!(ok(call(&l, SOM_DATA_RESOLVE, &[obj, c])), obj + 16);
-        assert_eq!(ok(call(&l, 106, &[obj, c])), 1, "somIsA its right parent");
-        assert_eq!(ok(call(&l, 209, &[d, b])), 1);
-        assert_eq!(ok(call(&l, 203, &[d])), b, "somGetParent: the first");
+        assert_eq!(ok(call(&l, 606, &[obj, c])), 1, "somIsA its right parent");
+        assert_eq!(ok(call(&l, 709, &[d, b])), 1);
+        assert_eq!(ok(call(&l, 703, &[d])), b, "somGetParent: the first");
     }
 
     /// A metaclass with data and a somInit override; a class whose
@@ -1599,20 +1782,20 @@ mod tests {
         assert_eq!(ok(call(&l, SOM_METACLASS_FOR, &[0, som_object])), som_class, "the parent's");
         assert_eq!(ok(call(&l, SOM_METACLASS_FOR, &[som_object, som_object])), 0, "not a metaclass");
         // somNew of a metaclass runs the metaclass's somInit on the new class.
-        let r = call(&l, 200, &[m_animal]);
+        let r = call(&l, 700, &[m_animal]);
         let ApiResult::CallChain(ref c) = r else { panic!() };
         assert!(matches!(c.steps.front(), Some(CallStep::Guest { proc_addr: 0x7100, .. })));
         drop(r);
         // A class object of M_Animal carries M_Animal's data.
         let animal = new_class(&l, m_animal, "Animal", &[som_object], 8, &[("talk", 0x9000)]);
-        assert_eq!(ok(call(&l, 103, &[animal])), m_animal);
+        assert_eq!(ok(call(&l, 603, &[animal])), m_animal);
         assert_eq!(ok(call(&l, SOM_DATA_RESOLVE, &[animal, m_animal])), animal + 4);
         assert_eq!(ok(call(&l, SOM_METACLASS_FOR, &[0, animal])), m_animal, "inherited");
         // Dog asks for Kennel: Kennel + M_Animal, made once.
         let derived = ok(call(&l, SOM_METACLASS_FOR, &[kennel, animal]));
         assert!(derived != 0 && derived != kennel && derived != m_animal);
         assert_eq!(ok(call(&l, SOM_METACLASS_FOR, &[kennel, animal])), derived);
-        assert_eq!(l.read_guest_string(ok(call(&l, 202, &[derived]))), "Kennel+M_Animal");
+        assert_eq!(l.read_guest_string(ok(call(&l, 702, &[derived]))), "Kennel+M_Animal");
         let dog = new_class(&l, derived, "Dog", &[animal], 8, &[]);
         assert_eq!(ok(call(&l, SOM_RESOLVE, &[dog, token(&l, kennel, "newDog")])), 0x8000);
         assert_eq!(ok(call(&l, SOM_RESOLVE, &[dog, token(&l, m_animal, "newAnimal")])), 0x7000);
@@ -1623,10 +1806,10 @@ mod tests {
         assert_eq!(ok(call(&l, SOM_DATA_RESOLVE, &[dog, m_animal])), dog + 8);
         assert_eq!(ok(call(&l, SOM_METACLASS_FOR, &[0, dog])), derived);
         // A Dog is an Animal; its class descends from both metaclasses.
-        let rex = finish(&l, call(&l, 201, &[dog]));
-        assert_eq!(ok(call(&l, 106, &[rex, animal])), 1);
-        assert_eq!(ok(call(&l, 106, &[dog, m_animal])), 1);
-        assert_eq!(ok(call(&l, 106, &[dog, kennel])), 1);
+        let rex = finish(&l, call(&l, 701, &[dog]));
+        assert_eq!(ok(call(&l, 606, &[rex, animal])), 1);
+        assert_eq!(ok(call(&l, 606, &[dog, m_animal])), 1);
+        assert_eq!(ok(call(&l, 606, &[dog, kennel])), 1);
     }
 
     #[test]
@@ -1678,19 +1861,155 @@ mod tests {
     fn bad_input_is_refused() {
         let l = Loader::new_mock();
         let som_class = root(&l, SOM_CLASS_CLASS_DATA);
-        let cls = finish(&l, call(&l, 200, &[som_class]));
+        let cls = finish(&l, call(&l, 700, &[som_class]));
         // Instance data too large; an unready parent; no name.
-        assert_eq!(ok(call(&l, 210, &[cls, put(&l, 0x3000, "Big"), 0, MAX_INSTANCE_DATA + 1, 0, 0, 0])), 0);
-        let other = finish(&l, call(&l, 200, &[som_class]));
-        ok(call(&l, 210, &[cls, put(&l, 0x3000, "Kid"), other, 4, 0, 0, 0]));
-        assert_eq!(ok(call(&l, 213, &[cls])), 0);
-        assert_eq!(ok(call(&l, 200, &[cls])), 0, "not ready: no instances");
+        assert_eq!(ok(call(&l, 710, &[cls, put(&l, 0x3000, "Big"), 0, MAX_INSTANCE_DATA + 1, 0, 0, 0])), 0);
+        let other = finish(&l, call(&l, 700, &[som_class]));
+        ok(call(&l, 710, &[cls, put(&l, 0x3000, "Kid"), other, 4, 0, 0, 0]));
+        assert_eq!(ok(call(&l, 713, &[cls])), 0);
+        assert_eq!(ok(call(&l, 700, &[cls])), 0, "not ready: no instances");
         // Too many parents, or none, for somInitMIClass.
-        assert_eq!(ok(call(&l, 216, &[cls, 0, 0x3000, 99, 99, 0x3800, 0, 4, 0, 0])), 0);
-        assert_eq!(ok(call(&l, 216, &[cls, 0, 0x3000, 0, 0, 0x3800, 0, 4, 0, 0])), 0);
+        assert_eq!(ok(call(&l, 716, &[cls, 0, 0x3000, 99, 99, 0x3800, 0, 4, 0, 0])), 0);
+        assert_eq!(ok(call(&l, 716, &[cls, 0, 0x3000, 0, 0, 0x3800, 0, 4, 0, 0])), 0);
         // somFree of something that is not an object frees nothing.
-        assert_eq!(ok(call(&l, 102, &[0x3000])), 0);
+        assert_eq!(ok(call(&l, 602, &[0x3000])), 0);
         assert_eq!(l.som_data_address(55), None);
         assert_eq!(ok(call(&l, SOM_DATA_RESOLVE, &[0x3000, som_class])), 0, "not an object");
+    }
+
+    /// IBM's SOM 1.0 exports as osFree lists them (`SOM/som/makefile` in
+    /// osfree-project/osfree, BSD-3-Clause; ADR-0070), in ordinal order.
+    const OSFREE_SOM_EXPORTS: [&str; 47] = [
+        "SOMCalloc", "SOMClassCClassData", "SOMClassClassData", "SOMClassInitFuncName",
+        "SOMClassMgrCClassData", "SOMClassMgrClassData", "SOMClassMgrObject", "SOMDeleteModule",
+        "SOMError", "SOMFree", "SOMLoadModule", "SOMMalloc", "SOMObjectCClassData",
+        "SOMObjectClassData", "SOMOutCharRoutine", "SOMRealloc", "SOM_AssertLevel",
+        "SOM_TraceLevel", "SOM_WarnLevel", "SOMClassMgrNewClass", "SOMClassNewClass",
+        "SOMObjectNewClass", "somAssert", "somBeginPersistentIds", "somCheckArgs", "somCheckId",
+        "somCompareIds", "somConstructClass", "somEndPersistentIds", "somEnvironmentNew",
+        "somIdFromString", "somLPrintf", "somParentResolve", "somPrefixLevel", "somPrintf",
+        "somRegisterId", "somResolve", "somSaveMetrics", "somSetExpectedIds", "somStringFromId",
+        "somTest", "somTestCls", "somTotalRegIds", "somUniqueKey", "somVprintf", "somWriteMetrics",
+        "somDataResolve",
+    ];
+
+    /// Ordinals 1–47 are osFree's; every other SOM export is Warpine's own,
+    /// at 512 or above, so IBM's later numbers cannot collide with them.
+    #[test]
+    fn ordinals_follow_osfree_and_keep_ibm_s_range_free() {
+        use super::super::api_registry::{all, find_by_module_and_name};
+        for (i, name) in OSFREE_SOM_EXPORTS.iter().enumerate() {
+            assert_eq!(find_by_module_and_name("SOM", name), Some(i as u32 + 1), "{name}");
+        }
+        for e in all().iter().filter(|e| e.module == "SOM") {
+            let ord = e.ordinal - SOM_BASE;
+            assert!(ord <= SOM_LAST_IBM || ord >= SOM_FIRST_PRIVATE, "{} at {ord}", e.name);
+            assert!(ord < 1024, "{} past the module's ordinals", e.name);
+        }
+    }
+
+    /// Data exports are ordinals 1–19, each at its own address; the
+    /// functions after them are thunks.
+    #[test]
+    fn data_exports_are_the_first_nineteen() {
+        let l = Loader::new_mock();
+        let mut seen = HashSet::new();
+        for ord in SOM_FIRST_DATA..=SOM_LAST_DATA {
+            let at = l.som_data_address(ord).expect("data");
+            assert!(seen.insert(at), "ordinal {ord} shares an address");
+        }
+        assert_eq!(l.som_data_address(SOM_CLASS_MGR_NEW_CLASS), None);
+        assert_eq!(root(&l, SOM_CLASS_MGR_OBJECT), l.shared.som.lock_or_recover().mgr);
+        // SOMClassInitFuncName holds a procedure giving "SOMInitModule".
+        assert_eq!(root(&l, SOM_VAR_CLASS_INIT_FUNC_NAME), thunk(SOM_DEFAULT_CLASS_INIT_FUNC_NAME));
+        let name = ok(call(&l, SOM_DEFAULT_CLASS_INIT_FUNC_NAME, &[]));
+        assert_eq!(l.read_guest_string(name), SOM_INIT_MODULE);
+        assert_eq!(ok(call(&l, SOM_DEFAULT_CLASS_INIT_FUNC_NAME, &[])), name, "one copy");
+    }
+
+    /// `<Class>NewClass`, `CClassData.parentMtab` and `somParentResolve`.
+    #[test]
+    fn new_class_procedures_and_parent_resolution() {
+        let l = Loader::new_mock();
+        l.som_init();
+        let (o, c, m) = {
+            let rt = l.shared.som.lock_or_recover();
+            (rt.som_object, rt.som_class, rt.som_class_mgr)
+        };
+        assert_eq!(ok(call(&l, SOM_OBJECT_NEW_CLASS, &[1, 4])), o);
+        assert_eq!(ok(call(&l, SOM_CLASS_NEW_CLASS, &[0, 0])), c);
+        assert_eq!(ok(call(&l, SOM_CLASS_MGR_NEW_CLASS, &[2, 0])), m);
+        // SOMObject has no parents; SOMClass's list holds SOMObject's table.
+        assert_eq!(root(&l, SOM_OBJECT_CCLASS_DATA), 0);
+        let parents = root(&l, SOM_CLASS_CCLASS_DATA);
+        assert_ne!(parents, 0);
+        assert_eq!(root(&l, SOM_CLASS_MGR_CCLASS_DATA), parents);
+        let obj_mtab = l.guest_read::<u32>(parents).unwrap();
+        assert_eq!(l.shared.som.lock_or_recover().mtabs.get(&obj_mtab), Some(&o));
+        assert_eq!(l.guest_read::<u32>(parents + 4), Some(0), "one entry");
+        // The instance-data token follows parentMtab.
+        let token_at = l.som_data_address(SOM_CLASS_CCLASS_DATA).unwrap() + 4;
+        assert_eq!(l.guest_read::<u32>(token_at), Some(c));
+        let init = root_token(&l, SOM_OBJECT_CLASS_DATA, 0);
+        assert_eq!(ok(call(&l, SOM_PARENT_RESOLVE, &[parents, init])), thunk(600), "SOMObject's somInit");
+        assert_eq!(ok(call(&l, SOM_PARENT_RESOLVE, &[0, init])), thunk(SOM_METHOD_ERROR));
+        let find = root_token(&l, SOM_CLASS_MGR_CLASS_DATA, 0);
+        assert_eq!(ok(call(&l, SOM_PARENT_RESOLVE, &[parents, find])), thunk(SOM_METHOD_ERROR),
+                   "not a method of the parent");
+    }
+
+    /// The id registry: `somCheckId`, `somRegisterId`, `somUniqueKey`,
+    /// `somTotalRegIds`; the hints and the undocumented entries do nothing.
+    #[test]
+    fn ids_are_registered_and_counted() {
+        let l = Loader::new_mock();
+        // A program's own somId: a pointer to the string's pointer.
+        let id = 0x3600;
+        l.guest_write::<u32>(id, put(&l, 0x3610, "Fresh")).unwrap();
+        let before = ok(call(&l, SOM_TOTAL_REG_IDS, &[]));
+        assert_eq!(ok(call(&l, SOM_REGISTER_ID, &[id])), 1, "not registered before");
+        assert_eq!(ok(call(&l, SOM_REGISTER_ID, &[id])), 0, "registered now");
+        assert_eq!(ok(call(&l, SOM_TOTAL_REG_IDS, &[])), before + 1);
+        assert_eq!(ok(call(&l, SOM_CHECK_ID, &[id])), id, "gives the id back");
+        let other = 0x3700;
+        l.guest_write::<u32>(other, put(&l, 0x3710, "Fresh")).unwrap();
+        let key = ok(call(&l, SOM_UNIQUE_KEY, &[id]));
+        assert_ne!(key, 0);
+        assert_eq!(ok(call(&l, SOM_UNIQUE_KEY, &[other])), key, "one key per string");
+        assert_eq!(ok(call(&l, SOM_CHECK_ID, &[0])), 0);
+        assert_eq!(ok(call(&l, SOM_REGISTER_ID, &[0])), 0);
+        for ord in [SOM_SET_EXPECTED_IDS, SOM_BEGIN_PERSISTENT_IDS, SOM_END_PERSISTENT_IDS, SOM_ASSERT, SOM_TEST,
+                    SOM_TEST_CLS, SOM_CHECK_ARGS, SOM_SAVE_METRICS, SOM_WRITE_METRICS, SOM_CONSTRUCT_CLASS] {
+            assert_eq!(ok(call(&l, ord, &[1, 2, 3])), 0, "ordinal {ord}");
+        }
+        assert_eq!(ok(call(&l, SOM_TOTAL_REG_IDS, &[])), before + 1);
+    }
+
+    /// `somPrefixLevel`, `somLPrintf` and `somVprintf` write through
+    /// `SOMOutCharRoutine` as `somPrintf` does.
+    #[test]
+    fn prefixed_and_va_list_printing() {
+        let l = Loader::new_mock();
+        ok(call(&l, SOM_SET_OUT_CHAR, &[0x0063_0000]));
+        let text = |r: ApiResult| -> String {
+            let ApiResult::CallChain(ref c) = r else { panic!("{r:?}") };
+            c.steps.iter().map(|s| match s {
+                CallStep::Guest { args, .. } => args[0] as u8 as char,
+                other => panic!("{other:?}"),
+            }).collect()
+        };
+        assert_eq!(text(call(&l, SOM_PREFIX_LEVEL, &[2])), "    ");
+        let fmt = put(&l, 0x3400, "n=%d %s");
+        let s = put(&l, 0x3480, "ok");
+        assert_eq!(text(call(&l, SOM_L_PRINTF, &[1, fmt, 7, s])), "  n=7 ok");
+        // A va_list: the arguments as words in memory.
+        l.guest_write::<u32>(0x3500, 9).unwrap();
+        l.guest_write::<u32>(0x3504, s).unwrap();
+        assert_eq!(text(call(&l, SOM_VPRINTF, &[fmt, 0x3500])), "n=9 ok");
+        // Level 0 and negative levels write nothing; huge ones are capped.
+        assert_eq!(ok(call(&l, SOM_PREFIX_LEVEL, &[0])), 0);
+        assert_eq!(ok(call(&l, SOM_PREFIX_LEVEL, &[u32::MAX])), 0);
+        let r = call(&l, SOM_PREFIX_LEVEL, &[1_000_000]);
+        assert_eq!(text(r).len(), (SOM_MAX_PREFIX_LEVEL * SOM_PREFIX_WIDTH) as usize);
     }
 }

@@ -1,0 +1,39 @@
+# SOM.DLL imported by ordinal, as a program linked against IBM's som.lib
+# imports it. Ordinals 1-47: IBM's SOM 1.0 exports as osFree lists them
+# (osfree-project/osfree, SOM/som/makefile, BSD-3-Clause; ADR-0070).
+import SOMCalloc               SOM.1
+import SOMClassCClassData      SOM.2
+import SOMClassClassData       SOM.3
+import SOMClassInitFuncName    SOM.4
+import SOMClassMgrCClassData   SOM.5
+import SOMClassMgrClassData    SOM.6
+import SOMClassMgrObject       SOM.7
+import SOMFree                 SOM.10
+import SOMMalloc               SOM.12
+import SOMObjectCClassData     SOM.13
+import SOMObjectClassData      SOM.14
+import SOMOutCharRoutine       SOM.15
+import SOM_TraceLevel          SOM.18
+import SOMClassMgrNewClass     SOM.20
+import SOMClassNewClass        SOM.21
+import SOMObjectNewClass       SOM.22
+import somBeginPersistentIds   SOM.24
+import somCheckId              SOM.26
+import somCompareIds           SOM.27
+import somEndPersistentIds     SOM.29
+import somEnvironmentNew       SOM.30
+import somIdFromString         SOM.31
+import somLPrintf              SOM.32
+import somParentResolve        SOM.33
+import somPrefixLevel          SOM.34
+import somPrintf               SOM.35
+import somRegisterId           SOM.36
+import somResolve              SOM.37
+import somSetExpectedIds       SOM.39
+import somStringFromId         SOM.40
+import somTotalRegIds          SOM.43
+import somUniqueKey            SOM.44
+import somVprintf              SOM.45
+import somDataResolve          SOM.47
+# A SOM 2.x entry whose IBM ordinal is not known: by name.
+import somSetOutChar           SOM.somSetOutChar
