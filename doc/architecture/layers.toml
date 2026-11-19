@@ -175,8 +175,8 @@ modules = [
 [[layer]]
 id = "pmshell"
 zone = "host"
-label = "PM shell DLLs: PMSHAPI profiles (ADR-0017), switch list (per process, ADR-0030), HELPMGR"
-modules = ["loader/pmshapi.rs", "loader/profile.rs", "loader/helpmgr.rs", "loader/pm_switch.rs"]
+label = "PM shell DLLs: PMSHAPI profiles (ADR-0017), the switch list (the session's, ADR-0056), HELPMGR, the SOM runtime kernel (ADR-0059, ADR-0060)"
+modules = ["loader/pmshapi.rs", "loader/profile.rs", "loader/helpmgr.rs", "loader/pm_switch.rs", "loader/som.rs"]
 
 [[layer]]
 id = "stddlg"

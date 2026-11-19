@@ -45,6 +45,8 @@ Open work is grouped by topic:
 | Presentation Manager | Bevelled window chrome — raised title-bar buttons with pictograms, bevelled sizing border | Complete | `src/gui/sdl_renderer.rs` |
 | Presentation Manager | Type-ahead — one system input queue; keys routed to the focus window when `WinGetMsg` / `WinPeekMsg` / the modal loop reads them, after posted messages | Complete | `src/loader/pm_input.rs`, `samples/pm_typeahead_test/` |
 | Presentation Manager | Pointer input routed when read — clicks hit-tested, activating their frame and moving the focus at the head of the system input queue, strictly after the input before them (ADR-0051, `pm_inputorder_test`) | Complete | [ADR-0051](adr/0051-pointer-input-routed-when-read.md) |
+| Workplace Shell | The SOM runtime kernel, stage 1 — built-in `SOM.DLL` (root classes, class building, dispatch, instance data, exported `ClassData`); executables load the DLLs they import and run their `_DLL_InitTerm` first; imports by name and additive imports fixed (ADR-0059, `som_test`) | Complete | [ADR-0059](adr/0059-som-runtime-kernel.md) |
+| Workplace Shell | The SOM runtime kernel, stage 2 — metaclasses with data and methods, derived metaclasses, multiple inheritance, `SOMMalloc` family and the levels, `somPrintf`, `somDumpSelf`; Open Watcom's `animals` sample (ADR-0060, `som_test`) | Complete | [ADR-0060](adr/0060-som-metaclasses-multiple-inheritance.md) |
 | Presentation Manager | Pointer input to the deepest window with `WM_HITTEST` asked when read, move coalescing, `WinQueryQueueStatus`, update regions, child PSs clipped to their ancestors; must-complete sections and interruptible sockets / MMPM/2 / CMD.EXE waits (ADR-0058, `pm_paint_input_test`) | Complete | [ADR-0058](adr/0058-deepest-window-hit-test-update-regions-must-complete.md) |
 | Presentation Manager | Drag and drop between programs (phase C) — the server names the frame under the pointer and its program the window in it, `DM_DRAGOVER` / `DM_DRAGLEAVE` / `DM_DROP` run on the target window's thread while the dragging thread waits and serves `DM_RENDER`, `DRAGINFO` / `DRAGTRANSFER` in the session's shared memory given to the target, the session's string handles (ADR-0057, `pm_xdrag_test`) | Complete | [ADR-0057](adr/0057-drag-and-drop-between-programs.md) |
 | Presentation Manager | The session's shell services (phase C) — one switch list kept by the desktop server (each program changes its own entries, they go when it ends), the Ctrl+Esc window list (`SC_TASKMANAGER`), the session's system atom table, DDE between programs with `DDEINIT` / `DDESTRUCT` in the session's shared memory (ADR-0056, `pm_xshell_test`) | Complete | [ADR-0056](adr/0056-session-shell-services.md) |
@@ -319,10 +321,13 @@ Multi-year effort; depends on the Presentation Manager work above.
 
 #### SOM Runtime Core (prerequisite for WPS)
 
-- [ ] Object / class model: SOM class objects, method table dispatch, offset-based and name-lookup dispatch
-- [ ] `SOMClassMgrObject` — global class manager; `SOMClassMgr_somFindClass()`, class registration, DLL-based class loading
-- [ ] IDL metadata: parse or reconstruct method offsets and class hierarchy at runtime
-- [ ] Binary ABI compatibility with IBM SOM 2.1 (for XWorkplace, Object Desktop)
+Stages 1 and 2 are done (ADR-0059, ADR-0060): a built-in `SOM.DLL` with the root classes, class building through the documented `SOMClass` methods, `somResolve` / `somClassResolve` / `somDataResolve`, metaclasses with data and methods, derived metaclasses, multiple inheritance, the `SOMMalloc` family, `somPrintf`; Open Watcom's `helloc`, `classes` and `animals` samples run unchanged on it (`samples/som_test`, hand-written bindings).
+
+- [ ] The C++ bindings (`hellocpp`: SOM classes as C++ classes, `new` / `delete` through `somNew` / `somFree`)
+- [ ] `SOMError`, `SOMOutCharRoutine` and the other replaceable runtime variables; `somFindClass` loading a class's DLL (`<Class>NewClass` by name); `somBuildClass` with IBM's static class information
+- [ ] IBM's SOM.DLL ordinals (programs linked with IBM's `som.lib` import by ordinal) from a public source, and IBM's layouts of method tables and `ClassData` (SOM 2.1 binary compatibility, for XWorkplace, Object Desktop)
+- [ ] `SOMU` utility classes, the interface repository (`SOMIR`), IDL metadata
+- [ ] Loading follow-ups: a `_DLL_InitTerm` failing at process start should stop the program (`ERROR_INIT_ROUTINE_FAILED`)
 
 #### WPS Object Hierarchy (requires SOM runtime)
 
