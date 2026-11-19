@@ -249,7 +249,7 @@
 <g id="node17" class="node">
 <title>pmshell</title>
 <path fill="#bbdefb" stroke="black" d="M4914.18,-696.6C4914.18,-696.6 4141.82,-696.6 4141.82,-696.6 4135.82,-696.6 4129.82,-690.6 4129.82,-684.6 4129.82,-684.6 4129.82,-670.08 4129.82,-670.08 4129.82,-664.08 4135.82,-658.08 4141.82,-658.08 4141.82,-658.08 4914.18,-658.08 4914.18,-658.08 4920.18,-658.08 4926.18,-664.08 4926.18,-670.08 4926.18,-670.08 4926.18,-684.6 4926.18,-684.6 4926.18,-690.6 4920.18,-696.6 4914.18,-696.6"/>
-<text xml:space="preserve" text-anchor="start" x="4140.62" y="-681.39" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">PM shell DLLs: PMSHAPI profiles (ADR&#45;0017), the switch list (the session&#39;s, ADR&#45;0056), HELPMGR, the SOM runtime kernel (ADR&#45;0059 to ADR&#45;0062)</text>
+<text xml:space="preserve" text-anchor="start" x="4140.62" y="-681.39" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">PM shell DLLs: PMSHAPI profiles (ADR&#45;0017), the switch list (the session&#39;s, ADR&#45;0056), HELPMGR, the SOM runtime kernel (ADR&#45;0059 to ADR&#45;0063)</text>
 <text xml:space="preserve" text-anchor="start" x="4394.88" y="-673.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pmshapi.rs, loader/profile.rs, loader/helpmgr.rs, loader/pm_switch.rs</text>
 <text xml:space="preserve" text-anchor="start" x="4503.62" y="-665.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/som.rs</text>
 </g>
