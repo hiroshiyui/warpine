@@ -759,7 +759,7 @@ A bad page id gives `BOOKERR_INVALID_PARAMETERS`.
 
 *Not yet:* tree lines and the tree's own expander bitmaps, the grid arrangements, `RECORDINSERT.zOrder`, `CM_ERASERECORD`, editing titles, owner drawing, horizontal scrolling and the split bar, and records shared between containers.
 
-**Drag and drop** (PMDRAG, within one program). Pressing button 2 (the drag button) and moving the pointer 4 pels posts `WM_BEGINDRAG` (mp1 = the press point in the window's coordinates, mp2 = TRUE) to the window under the press. A source then builds a `DRAGINFO`:
+**Drag and drop** (PMDRAG; between programs below). Pressing button 2 (the drag button) and moving the pointer 4 pels posts `WM_BEGINDRAG` (mp1 = the press point in the window's coordinates, mp2 = TRUE) to the window under the press. A source then builds a `DRAGINFO`:
 - `DrgAllocDraginfo(cditem)` returns it zeroed with its sizes, `usOperation` = `DO_DEFAULT` and the pointer position; `DrgSetDragitem` / `DrgQueryDragitem` / `DrgQueryDragitemPtr` / `DrgQueryDragitemCount` fill and read its `DRAGITEM`s.
 - String handles (`DrgAddStrHandle`, `DrgQueryStrName` / `Len`, `DrgDeleteStrHandle`, `DrgDeleteDraginfoStrHandles`) hold the type list (`"type[,type…]"`, the first the true type), the rendering mechanisms and formats (`<mech,fmt>` pairs and `(m1,m2)x(f1,f2)` cross products, the first pair native) and the container, source and target names.
 - `DrgVerifyType` / `DrgVerifyTrueType` / `DrgVerifyTypeSet` / `DrgQueryTrueType`, `DrgVerifyRMF` (NULL = any) / `DrgVerifyNativeRMF` / `DrgQueryNativeRMF` test them.
@@ -768,6 +768,8 @@ A bad page id gives `BOOKERR_INVALID_PARAMETERS`.
 - Each move sends `DM_DRAGOVER` (mp1 = the `DRAGINFO`, mp2 = the pointer in desktop coordinates) to the window under the pointer and `DM_DRAGLEAVE` to the one it left. The reply `MRFROM2SHORT(DOR_*, DO_*)` decides the pointer: the illegal sign unless `DOR_DROP`. After `DOR_NEVERDROP` the window gets no more `DM_DRAGOVER` until the pointer leaves it. `WinDefWindowProc` answers `DOR_NEVERDROP`; built-in controls other than containers never accept.
 - On the release, `DM_DROP` goes to the window if its last reply was `DOR_DROP`, and `DrgDrag` returns that window; otherwise the window gets `DM_DRAGLEAVE` and `DrgDrag` returns NULLHANDLE. `xDrop` / `yDrop` hold the last pointer position.
 - While `DrgDrag` runs, `DrgFreeDraginfo` of its `DRAGINFO` fails with `PMERR_SOURCE_SAME_AS_TARGET`: the target only reads it, the source frees it after `DrgDrag` returns. `DrgQueryDragStatus` reports `DGS_DRAGINPROGRESS`.
+
+**Between programs** (on the session's desktop, ADR-0057), the window under the pointer may be another program's: it gets `DM_DRAGOVER` / `DM_DRAGLEAVE` / `DM_DROP` on its own thread, as a message sent from another program (`WinInSendMsg` TRUE), and a container there asks its owner with `CN_*`. `DrgDrag` waits for each reply and meanwhile runs the messages sent to its thread, so a target's `DM_RENDER` reaches the source during `DM_DROP`. `DrgAllocDraginfo` and `DrgAllocDragtransfer` then allocate in the session's shared memory: the source's `DRAGINFO` is given to the target's process before it is sent there (`DrgAccessDraginfo` succeeds in the target, whose `DrgFreeDraginfo` lets its access go), `DrgPushDraginfo` gives it to a window's process, and `DrgSendTransferMsg` / `DrgPostTransferMsg` to another program's window give it the `DRAGTRANSFER` array (`DrgFreeDragtransfer` lets it go). String handles are the session's: a handle one program adds names the same string in every program, and `DrgDeleteStrHandle` / `DrgDeleteDraginfoStrHandles` anywhere drop its count. Warpine's choices (unverified): handles outlive the program that added them; a string is at most 16 KB of text.
 
 `DrgAllocDragtransfer` / `DrgFreeDragtransfer`, `DrgSendTransferMsg` / `DrgPostTransferMsg` (which clear `fsReply` and send or post), `DrgGetPS` / `DrgReleasePS` and `DrgSetDragPointer` support the rendering conversation and target emphasis between the program's windows. *Not yet:* drags between programs, host files dropped on a window, `DrgDragFiles` / `DrgAcceptDroppedFiles`, lazy drag, the drag image, and changing the operation with Ctrl / Shift.
 
@@ -821,7 +823,7 @@ Counts are taken from the static registry (`api_registry.rs`, 299 entries) and t
 | PMSPL (no printers) | registry | 15 | 0 | 15 |
 | PMCTLS (standard dialogs) | registry | 5 | 0 | 5 |
 | WARPINE (Warpine's own extensions) | registry | 5 | 0 | 5 |
-| PMDRAG (drag and drop within a process) | registry | 33 | 0 | 33 |
+| PMDRAG (drag and drop) | registry | 33 | 0 | 33 |
 | PMWIN | sub-dispatcher | 169 | 0 | 169 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
 | **Total** | | **647** | **11** | **658** |

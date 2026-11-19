@@ -34,7 +34,7 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 
 ### Work in progress
 
-- **Containers and drag and drop** — container owner drawing, horizontal scrolling, tree lines and title editing are missing; drags work within a program, but not between programs or from the host desktop.
+- **Containers and drag and drop** — container owner drawing, horizontal scrolling, tree lines and title editing are missing; drags work within a program and between programs, but not from the host desktop.
 - **Text controls and pointers** — editing, selection, the clipboard and multi-select lists work; the pointer does not yet turn into an I-beam over text fields or a sizing arrow over frame borders.
 - **Dialogs and menus** — programs cannot yet change system-menu items, and F10 for the menu bar and menus inside dialogs are missing.
 - **More GPI** — rounded box corners, line ends and joins, scaled line widths, rotated glyphs and images under transforms, palettes, and drawing through a child window's presentation space are not implemented.
@@ -209,6 +209,7 @@ samples/               OS/2 sample applications and build scripts
   pm_twoproc_test/     Two PM programs on one desktop, with input in order across them
   pm_xproc_test/       Calls on another program's windows through the desktop server
   pm_xshell_test/      The session's switch list, window list, system atoms and DDE between programs
+  pm_xdrag_test/       Drag and drop between programs: DM_* messages, DRAGINFO and DM_RENDER across them
   pm_font_test/        GPI font selection (IBM Plex families, styles, sizes) and CJK text
   pm_shapes_test/      GPI arcs, area patterns and line widths, checked with GpiQueryPel
   pm_codepage_test/    Queue and presentation-space codepages (WinSetCp, CP1004, GpiSetCp)
