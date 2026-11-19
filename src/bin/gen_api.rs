@@ -50,7 +50,7 @@ const MODULES: &[(&str, u32)] = &[
     ("PMDRAG",   21504),
     ("SOM",      22528),
 ];
-const STUB_AREA_SIZE: u32 = 23552;
+const STUB_AREA_SIZE: u32 = 26624; // SOM_BASE + SOM_ORDINALS (4096, ADR-0070)
 
 // Rust constant name used for each module's base in generated code.
 // Must match src/loader/constants.rs exactly.
@@ -304,7 +304,7 @@ fn resolve_const(name: &str) -> u32 {
         "WARPINE_BASE"  => 20480,
         "PMDRAG_BASE"   => 21504,
         "SOM_BASE"      => 22528,
-        "STUB_AREA_SIZE"=> 23552,
+        "STUB_AREA_SIZE"=> 26624,
         other => other.parse().unwrap_or(0),
     }
 }
@@ -1100,7 +1100,7 @@ mod tests {
         assert_eq!(resolve_const("WARPINE_BASE"),   20480);
         assert_eq!(resolve_const("PMDRAG_BASE"),    21504);
         assert_eq!(resolve_const("SOM_BASE"),       22528);
-        assert_eq!(resolve_const("STUB_AREA_SIZE"), 23552);
+        assert_eq!(resolve_const("STUB_AREA_SIZE"), 26624);
     }
 
     #[test]
