@@ -205,7 +205,7 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - date the 22 `unknown` exports;
   - check the Warp 3 data;
   - get export lists for UCONV, MMPM/2, TCP/IP, PMCTLS and MSG.
-- [ ] **SOM.DLL ordinals**: see [SOM](#som--workplace-shell).
+- [ ] **SOM.DLL ordinals 48 and above**: see [SOM](#som--workplace-shell).
 
 ---
 
@@ -282,10 +282,10 @@ Open Watcom stays the frozen ABI baseline. A second, modern toolchain goes only 
 
 The WPS is a PM application on the session desktop, built on SOM. The SOM kernel's stages 1–4 are done (ADR-0059–0063).
 
-- [ ] **IBM's SOM.DLL ordinals and layouts** (pending; decided 2026-11-19):
-  - ordinals 1–47 come from osFree, the `EXPORTS` of `SOM/som/makefile` (BSD-3-Clause) and its wiki (CC-BY-SA-4.0);
-  - attribute osFree in the README, the ADR and the source;
-  - still undecided: ordinals 48+ (only Free Pascal's LGPL `som.pas` lists them) and the `ClassData` / method-table layouts (somFree is not used).
+- [ ] **IBM's SOM.DLL ordinals and layouts** (1–47 done, ADR-0070):
+  - ordinals 48 and above: unassigned until a permissive source lists them (Free Pascal's LGPL `som.pas` is not used);
+  - the `ClassData` / method-table layouts from the OS/2 Warp 4 Toolkit's `somobj.idl` / `somcls.idl` / `somcm.idl` `releaseorder` (a stage of its own, with an ADR; somFree is not used);
+  - class loading calling a program's own `SOMClassInitFuncName`.
 - [ ] **C++**: SOM objects on the stack and in static storage; `somInitCtrl` / `somDestructCtrl` and multi-parent initialization order.
 - [ ] **Class files**: `dllname` for `somLocateClassFile`; `somBuildClass` with IBM's static class data.
 - [ ] **Utilities and metadata**: `SOMU` classes, the interface repository (`SOMIR`), IDL metadata.

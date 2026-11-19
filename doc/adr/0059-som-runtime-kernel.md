@@ -59,7 +59,7 @@ Three constraints shaped the work:
 ### Warpine's choices (unverified against IBM's SOM)
 
 - **Layouts and tokens.** The layouts beyond an object's first word, the token encoding and the order of the root classes' `ClassData` fields are Warpine's own.
-- **Ordinals.** The module's ordinals are Warpine's; programs import by name. Programs built against IBM's `som.lib` import by IBM's ordinals, which are not known yet.
+- **Ordinals.** The module's ordinals are Warpine's; programs import by name. Programs built against IBM's `som.lib` import by IBM's ordinals, which are not known yet. (Amended by ADR-0070: ordinals 1–47 are IBM's SOM 1.0 exports as osFree lists them; Warpine's own moved to 512–1023.)
 - **Inheritance.** Only single inheritance; `somInitClass`'s instance size is the class's own data. (Superseded by ADR-0060: multiple inheritance, derived metaclasses.)
 - **Method tracing** (`SOM_TraceLevel`) is not kept.
 - **Failed initialization at start.** A `_DLL_InitTerm` failing at process start does not stop the program; OS/2 refuses to load it.
@@ -74,6 +74,6 @@ Three constraints shaped the work:
   - metaclasses with their own instance data and methods, attributes, sequences and `somDumpSelf` (the `animals` sample), multiple inheritance, `SOMMalloc` and the other runtime variables — done in ADR-0060;
   - the C++ bindings (`hellocpp`);
   - `somFindClass` loading a class's DLL;
-  - IBM's ordinals;
+  - IBM's ordinals (1–47 in ADR-0070);
   - the rest of `SOMClassMgr`, `SOMU`, the interface repository, DSOM;
   - the Workplace Shell classes.

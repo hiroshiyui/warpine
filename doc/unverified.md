@@ -304,4 +304,10 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
 
 ## Other
 
+- **SOM ordinals** (ADR-0070):
+  - osFree's numbers for ordinals 1–47 being IBM's, data at 1–19;
+  - `CClassData`'s second word, every version accepted by `<Class>NewClass`;
+  - two blanks per `somPrefixLevel` level;
+  - the undocumented `somAssert`, `somTest`, `somTestCls`, `somCheckArgs`, `somConstructClass`, `somSaveMetrics`, `somWriteMetrics` doing nothing.
+
 - **CONFIG.SYS**: the `THREADS=` minimum, duplicates and comments.

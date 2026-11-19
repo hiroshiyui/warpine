@@ -75,3 +75,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0067](0067-context-menus-wheel-and-container-trees-grids.md) | WM_CONTEXTMENU and the mouse wheel as routed pointer input; container tree lines, tree moves, grids, erasing and stacking | Accepted | 2026-11-19 |
 | [0068](0068-file-drags-host-drops-and-drag-operations.md) | File drags, host files dropped on windows, the drag's operation keys and WM_ENDDRAG | Accepted | 2026-11-20 |
 | [0069](0069-embedded-dialog-chrome-and-tab.md) | An embedded dialog draws its own chrome, and Tab crosses between it and the client's controls | Accepted | 2026-11-20 |
+| [0070](0070-som-ordinals-from-osfree.md) | SOM.DLL's ordinals 1–47 from osFree's export list; Warpine's own exports at 512–1023 | Accepted | 2026-11-20 |

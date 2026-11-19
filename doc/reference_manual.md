@@ -611,7 +611,12 @@ WinFontDlg (2), WinDefFontDlgProc (3), WinFileDlg (4), WinDefFileDlgProc (5), Wi
 
 ### SOM — the SOM runtime kernel (ADR-0059 to ADR-0063)
 
-`SOM.DLL` is built in. A program imports its functions and data **by name** (Warpine's ordinals are its own; IBM's are not known yet):
+`SOM.DLL` is built in. A program imports its functions and data by name or, for IBM's SOM 1.0 exports, by **IBM's ordinals** (ADR-0070), as a program linked against IBM's `som.lib` does:
+- **1–19, data:** `SOMCalloc` (1), `SOMClassCClassData` (2), `SOMClassClassData` (3), `SOMClassInitFuncName` (4), `SOMClassMgrCClassData` (5), `SOMClassMgrClassData` (6), `SOMClassMgrObject` (7), `SOMDeleteModule` (8), `SOMError` (9), `SOMFree` (10), `SOMLoadModule` (11), `SOMMalloc` (12), `SOMObjectCClassData` (13), `SOMObjectClassData` (14), `SOMOutCharRoutine` (15), `SOMRealloc` (16), `SOM_AssertLevel` (17), `SOM_TraceLevel` (18), `SOM_WarnLevel` (19).
+- **20–47, functions:** `SOMClassMgrNewClass` (20), `SOMClassNewClass` (21), `SOMObjectNewClass` (22), `somAssert` (23), `somBeginPersistentIds` (24), `somCheckArgs` (25), `somCheckId` (26), `somCompareIds` (27), `somConstructClass` (28), `somEndPersistentIds` (29), `somEnvironmentNew` (30), `somIdFromString` (31), `somLPrintf` (32), `somParentResolve` (33), `somPrefixLevel` (34), `somPrintf` (35), `somRegisterId` (36), `somResolve` (37), `somSaveMetrics` (38), `somSetExpectedIds` (39), `somStringFromId` (40), `somTest` (41), `somTestCls` (42), `somTotalRegIds` (43), `somUniqueKey` (44), `somVprintf` (45), `somWriteMetrics` (46), `somDataResolve` (47).
+- **48–511** are left to IBM's later exports, whose numbers are not known; the SOM 2.x functions Warpine has (`somResolveByName`, `somClassResolve`, `somGetGlobalEnvironment`, `somIsObj`, `somSetOutChar`) are imported by name. Warpine's own exports (`Wrp*`, the root classes' method thunks) are at 512–1023.
+
+What they do:
 
 - Functions (`_System`):
   - `somEnvironmentNew()` starts the runtime and returns `SOMClassMgrObject`;
@@ -619,9 +624,16 @@ WinFontDlg (2), WinDefFontDlgProc (3), WinFileDlg (4), WinDefFileDlgProc (5), Wi
   - `somDataResolve(obj, token)` the address of a class's instance data in an object;
   - `somGetGlobalEnvironment()`, `somIdFromString` / `somStringFromId` / `somCompareIds`, `somIsObj`;
   - `somPrintf(fmt, …)` formats as C's `printf` to standard output (at most nine argument words, 64 KB);
+  - `<Class>NewClass(major, minor)` for `SOMObject`, `SOMClass` and `SOMClassMgr` returns the class object (made with the runtime; every version is accepted);
+  - `somParentResolve(parentMtab, token)` returns the procedure of a method in the first method table of a class's parent-table list (`<Class>CClassData.parentMtab`), or a procedure returning 0;
+  - `somCheckId(id)` registers an id and returns it; `somRegisterId(id)` registers it and returns 1 if it was new, else 0; `somUniqueKey(id)` returns one key per string; `somTotalRegIds()` counts the registered ids; `somSetExpectedIds`, `somBeginPersistentIds` and `somEndPersistentIds` have no effect;
+  - `somPrefixLevel(level)` writes two blanks per level (up to 64 levels); `somLPrintf(level, fmt, …)` writes them, then formats as `somPrintf`; `somVprintf(fmt, ap)` takes its arguments from a `va_list`; all write through `SOMOutCharRoutine`;
+  - `somAssert`, `somTest`, `somTestCls`, `somCheckArgs`, `somConstructClass`, `somSaveMetrics` and `somWriteMetrics`, which the references do not describe, are stubs returning 0;
   - `WrpSomMetaclassFor(requested, parent)` (Warpine's) returns the metaclass for a new class: `requested` (0: the parent's metaclass) if it descends from the parent's metaclass, the parent's if that descends from `requested`, else a metaclass derived from both, made once.
 - Data:
   - `SOMObjectClassData`, `SOMClassClassData` and `SOMClassMgrClassData`, the root classes' `ClassData` (the class object, then a token per method);
+  - `SOMObjectCClassData`, `SOMClassCClassData` and `SOMClassMgrCClassData`: `parentMtab` (a list of `{method table, next}` entries: SOMObject's table for the other two, none for SOMObject), then the class's instance-data token;
+  - `SOMClassInitFuncName`: a variable holding a procedure that returns "SOMInitModule", the name of a class library's initialization function;
   - `SOMClassMgrObject`;
   - `SOMMalloc`, `SOMCalloc`, `SOMRealloc`, `SOMFree`: variables holding the runtime's allocation procedures (zeroed blocks from the runtime's heap), called through as `SOMMalloc(n)`;
   - `SOM_TraceLevel`, `SOM_WarnLevel`, `SOM_AssertLevel` (`long`, 0);
@@ -863,7 +875,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 380 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 363 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 406 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 363 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -884,10 +896,10 @@ Counts are taken from the static registry (`api_registry.rs`, 380 entries) and t
 | PMCTLS (standard dialogs) | registry | 5 | 0 | 5 |
 | WARPINE (Warpine's own extensions) | registry | 6 | 0 | 6 |
 | PMDRAG (drag and drop) | registry | 37 | 0 | 37 |
-| SOM (the SOM runtime kernel) | registry | 76 | 0 | 76 |
+| SOM (the SOM runtime kernel) | registry | 95 | 7 | 102 |
 | PMWIN | sub-dispatcher | 173 | 0 | 173 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **732** | **11** | **743** |
+| **Total** | | **751** | **18** | **769** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 
