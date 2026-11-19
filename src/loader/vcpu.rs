@@ -784,7 +784,12 @@ impl super::Loader {
                             ss:     sregs.ss.selector,
                         };
 
-                        match self.try_hw_exception_dispatch(vcpu_id, fault_ctx, vector, error_code) {
+                        // A handler call is built below the faulting stack:
+                        // with no room there, no handler runs.
+                        let dispatch = if guest_stack_ok(regs.rsp) {
+                            self.try_hw_exception_dispatch(vcpu_id, fault_ctx, vector, error_code)
+                        } else { None };
+                        match dispatch {
                             Some(exc_dispatch) => {
                                 // Install exception handler call on the guest stack.
                                 // We reuse the IDT-stub frame area; the pre-fault ESP
@@ -1088,6 +1093,19 @@ impl super::Loader {
                             continue;
                         }
                         let ordinal = (rip - MAGIC_API_BASE) as u32;
+                        // The host builds frames below the guest's stack
+                        // pointer (owner calls, call chains, dialog calls):
+                        // one too low, or outside guest memory, ends the
+                        // process as a fault would, never the host.
+                        let esp = vcpu.get_regs().unwrap().rsp;
+                        if !guest_stack_ok(esp) {
+                            log::warn!("[VCPU {}] API call {} with ESP 0x{:08X} outside the usable stack: ending the process",
+                                       vcpu_id, ordinal, esp);
+                            match self.end_by_exception(&mut *vcpu, vcpu_id, initial_esp, &mut callback_stack, TC_EXCEPTION) {
+                                Some(end) => return end,
+                                None => continue,
+                            }
+                        }
                         // A blocking call may be interrupted (interrupt.rs): a
                         // signal for thread 1 only when it can take it now.
                         let signals_ok = tid == MAIN_TID && self.can_take_signal(&*vcpu);
@@ -1453,6 +1471,17 @@ fn setup_exception_dispatch(
 /// Bytes of a window-procedure call frame on the guest stack: the return
 /// address and the four arguments (hwnd, msg, mp1, mp2).
 const DLG_CALL_FRAME_BYTES: u64 = 20;
+
+/// The lowest guest stack pointer below which the host builds frames: more
+/// than the largest frame it puts there (an owner call's block,
+/// `MAX_OWNER_BLOCK_BYTES` with its return address and arguments).
+pub(crate) const MIN_GUEST_ESP: u64 = 0x2000;
+
+/// Whether the guest's stack pointer `esp` leaves room for the host's
+/// frames below it and its return address above it in guest memory.
+pub(crate) fn guest_stack_ok(esp: u64) -> bool {
+    (MIN_GUEST_ESP..=u64::from(GUEST_MEM_SIZE) - 16).contains(&esp)
+}
 
 #[allow(clippy::too_many_arguments)]
 fn setup_dlg_dispatch(
@@ -2170,6 +2199,29 @@ mod tests {
         let mut table = loader.shared.threads.table.lock_or_recover();
         assert_eq!(table.wait(MAIN_TID, FIRST_CREATED_TID), WaitOutcome::Ended(FIRST_CREATED_TID));
         assert!(table.take_vcpu().is_ok(), "the vCPU is kept for the next thread");
+    }
+
+    #[test]
+    fn the_guest_stack_bound_covers_every_host_frame() {
+        let largest = u64::from(super::super::pm_owner::MAX_OWNER_BLOCK_BYTES) + 4 + 20;
+        assert!(MIN_GUEST_ESP > largest);
+        assert!(MIN_GUEST_ESP > u64::from(super::super::pm_hook::CHAIN_BLOCK_BYTES) + 4 + DLG_CALL_FRAME_BYTES);
+        assert!(!guest_stack_ok(0) && !guest_stack_ok(MIN_GUEST_ESP - 1) && guest_stack_ok(MIN_GUEST_ESP));
+        assert!(guest_stack_ok(u64::from(GUEST_MEM_SIZE) - 16) && !guest_stack_ok(u64::from(GUEST_MEM_SIZE)));
+    }
+
+    /// An API call made with a stack pointer too low for the host's frames
+    /// ends the process as a fault does; the host does not panic.
+    #[test]
+    fn an_api_call_with_no_stack_room_ends_the_process() {
+        let loader = super::super::Loader::new_mock();
+        start_thread(&loader, FIRST_CREATED_TID);
+        let mut vcpu = vcpu_calling_dos_exit(&loader, EXIT_THREAD, 3);
+        vcpu.regs.rsp = 0x40;
+        loader.run_vcpu(vcpu, FIRST_CREATED_TID, 0);
+        assert!(loader.shutting_down(), "the process ends");
+        assert_eq!(loader.shared.exit_code.load(Ordering::Relaxed), 1, "as an exception ends it");
+        loader.wait_for_process_end();
     }
 
     #[test]

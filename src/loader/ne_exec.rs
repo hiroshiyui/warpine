@@ -336,17 +336,19 @@ impl super::Loader {
         let sp = regs.rsp as u16;
         // Stack after CALL FAR: [ret_IP:16] [ret_CS:16] [args...]
         // Args start at SP+4 (Pascal: pushed left-to-right, last arg closest to return addr)
-        let arg_base = ss_base + sp as u32 + 4;
+        // Guest-chosen bases: wrapping, and every read goes through the
+        // bounded accessors.
+        let arg_base = ss_base.wrapping_add(sp as u32).wrapping_add(4);
 
         // Read a 16-bit word from the argument area
         let read_arg16 = |off: u32| -> u16 {
-            self.guest_read::<u16>(arg_base + off).unwrap_or(0)
+            self.guest_read::<u16>(arg_base.wrapping_add(off)).unwrap_or(0)
         };
         // Read a far pointer (offset:segment) and convert to flat address
         let read_far_ptr = |off: u32| -> u32 {
             let ptr_off = read_arg16(off) as u32;
             let ptr_seg = read_arg16(off + 2);
-            self.gdt_entry_base(ptr_seg) + ptr_off
+            self.gdt_entry_base(ptr_seg).wrapping_add(ptr_off)
         };
 
         // Dispatch based on module base + ordinal

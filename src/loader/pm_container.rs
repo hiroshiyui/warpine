@@ -265,6 +265,8 @@ const SCROLLBAR_W: i32 = 16;
 /// horizontal scroll arrow moves (Warpine's own).
 const SPLIT_W: i32 = 4;
 const MIN_PANE: i32 = 16;
+/// The widest details view, in pels: columns past it start there.
+const MAX_DETAIL_WIDTH: i32 = 1 << 24;
 const H_LINE: i32 = 16;
 /// Tree indentation per level when `cxTreeIndent` is not set.
 const TREE_INDENT: i32 = 16;
@@ -1071,10 +1073,10 @@ pub fn split_x(split_bar: i32, w: i32) -> i32 {
 /// left of the split bar (at `split_bar`, see [`split_x`]) two. `offs`
 /// are the panes' scroll positions, kept within their content.
 pub fn detail_panes(advances: &[i32], left: Option<usize>, split_bar: i32, (x, w): (i32, i32), offs: [i32; 2]) -> Vec<Pane> {
-    let sum = |a: usize, b: usize| advances[a..b].iter().fold(0i32, |t, &v| t.saturating_add(v));
+    let sum = |a: usize, b: usize| advances[a..b].iter().fold(0i32, |t, &v| t.saturating_add(v)).min(MAX_DETAIL_WIDTH);
     let pane = |px: i32, pw: i32, first: usize, end: usize, off: i32| {
         let (content, pw) = (sum(first, end), pw.max(0));
-        Pane { x: px, w: pw, first, end, content, off: off.clamp(0, (content - pw).max(0)) }
+        Pane { x: px, w: pw, first, end, content, off: off.clamp(0, content.saturating_sub(pw).max(0)) }
     };
     match left.filter(|&k| k > 0 && k < advances.len()) {
         None => vec![pane(x, w, 0, advances.len(), offs[0])],
@@ -1401,7 +1403,8 @@ impl Loader {
             let rd = |o: u32| self.guest_read::<u32>(fi.wrapping_add(o)).unwrap_or(0);
             let (fl_data, fl_title, width) = (rd(FI_FLDATA), rd(FI_FLTITLE), rd(FI_CXWIDTH));
             if fl_data & CFA_INVISIBLE != 0 { continue; }
-            let w = if width != 0 { (width as i32).min(super::constants::MAX_WINDOW_COORD) } else {
+            // cxWidth is the guest's ULONG: bounded before it is signed.
+            let w = if width != 0 { width.min(super::constants::MAX_WINDOW_COORD as u32) as i32 } else {
                 let title = if fl_title & CFA_BITMAPORICON == 0 { self.cnr_text(hwnd, rd(FI_TITLE)) } else { String::new() };
                 let mut w = crate::gui::font::text_width(&title, font);
                 for &(r, size) in &snap.rows {
@@ -1411,7 +1414,9 @@ impl Loader {
             } + 2 * CELL_PAD;
             let adv = w + if fl_data & CFA_SEPARATOR != 0 { 1 } else { 0 };
             out.push(Column { fi, fl_data, fl_title, x, w, adv, pane: 0 });
-            x = x.saturating_add(adv);
+            // Columns start within MAX_DETAIL_WIDTH, so sums of a few
+            // positions and widths cannot overflow.
+            x = x.saturating_add(adv).min(MAX_DETAIL_WIDTH);
         }
         out
     }
@@ -4001,6 +4006,23 @@ mod tests {
         assert_eq!(format_time(14, 5, 7, 1, ':'), "14:05:07");
         assert_eq!(format_time(14, 5, 7, 0, ':'), " 2:05:07pm");
         assert_eq!(format_time(0, 0, 0, 0, ':'), "12:00:00am");
+    }
+
+    #[test]
+    fn huge_column_widths_stay_bounded() {
+        let f = fixture(0);
+        let fis = detail(&f, [0x8000_0000, u32::MAX, 0x7FFF_FFFF], CA_DETAILSVIEWTITLES, 2);
+        let snap = f.loader.snapshot(f.cnr).unwrap();
+        for c in &snap.cols {
+            assert!(c.w > 0 && c.w <= MAX_WINDOW_COORD + 2 * CELL_PAD, "{c:?}");
+            assert!(c.x <= MAX_DETAIL_WIDTH);
+        }
+        // Painting and scrolling to the far end do not overflow.
+        f.paint_ops();
+        f.send(WM_HSCROLL, CID_HSCROLL, SB_PAGERIGHT << 16);
+        f.send(CM_SCROLLWINDOW, CMA_HORIZONTAL, i32::MAX as u32);
+        f.paint_ops();
+        let _ = fis;
     }
 
     #[test]
