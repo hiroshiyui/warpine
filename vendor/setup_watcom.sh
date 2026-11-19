@@ -11,6 +11,14 @@
 # [esp+12], where the environment is). Programs built with them see an empty
 # argv and no environment, and fail at start-up on OS/2 itself. The script
 # warns about such a snapshot; rebuild the samples after --refresh.
+#
+# Supply chain: the script downloads one pinned, dated snapshot (not the
+# moving "Current-build") over HTTPS only and refuses it unless its SHA-256
+# matches the digest below, which GitHub records for that release asset.
+# To move to a newer snapshot, change SNAPSHOT_TAG and SNAPSHOT_SHA256
+# together (gh api repos/open-watcom/open-watcom-v2/releases/tags/<tag>
+# --jq '.assets[] | select(.name=="ow-snapshot.tar.xz") | .digest'),
+# then run --refresh and rebuild the samples.
 
 # Exit on error
 set -e
@@ -18,7 +26,9 @@ set -e
 # Directory for Watcom
 WATCOM_DIR="$(pwd)/vendor/watcom"
 TAR_FILE="ow-snapshot.tar.xz"
-URL="https://github.com/open-watcom/open-watcom-v2/releases/download/Current-build/${TAR_FILE}"
+SNAPSHOT_TAG="2026-11-01-Build"
+SNAPSHOT_SHA256="89e90b7544cf3ea4a38124ec4c104a5027f31101405d7115c3f833daa465bb48"
+URL="https://github.com/open-watcom/open-watcom-v2/releases/download/${SNAPSHOT_TAG}/${TAR_FILE}"
 # The fix of #1649 (commit ce4a86f, 2026-08-11): libraries built after it.
 FIXED_STARTUP_DATE="2026-08-12"
 
@@ -47,19 +57,30 @@ if [ "$REFRESH" = 0 ] && [ -d "$WATCOM_DIR" ]; then
     exit 0
 fi
 
-echo "Downloading Open Watcom v2 snapshot from $URL..."
-curl -fL -O "$URL"
+echo "Downloading Open Watcom v2 snapshot $SNAPSHOT_TAG from $URL..."
+DOWNLOAD="vendor/$TAR_FILE.part"
+rm -f "$DOWNLOAD"
+curl --proto '=https' --proto-redir '=https' --tlsv1.2 -fL -o "$DOWNLOAD" "$URL"
+
+echo "Checking its SHA-256..."
+if ! echo "$SNAPSHOT_SHA256  $DOWNLOAD" | sha256sum -c --status; then
+    echo "error: $TAR_FILE does not match the pinned SHA-256 $SNAPSHOT_SHA256; refusing it." >&2
+    rm -f "$DOWNLOAD"
+    exit 1
+fi
 
 echo "Extracting Open Watcom v2..."
 # Extract next to the final place first, so a failed download or extraction
 # leaves an existing snapshot untouched (set -e stops before the swap).
+# --no-same-owner: files belong to the user, whatever the archive says;
+# GNU tar also drops leading "/" and refuses ".." in member names.
 rm -rf "$WATCOM_DIR.new"
 mkdir -p "$WATCOM_DIR.new"
-tar -xJf "$TAR_FILE" -C "$WATCOM_DIR.new"
+tar --no-same-owner -xJf "$DOWNLOAD" -C "$WATCOM_DIR.new"
 [ -x "$WATCOM_DIR.new/binl64/wcl386" ] || { echo "error: the snapshot has no binl64/wcl386"; exit 1; }
 
-# Clean up tar file
-rm "$TAR_FILE"
+# Clean up the archive
+rm "$DOWNLOAD"
 # Swap: the old snapshot (on --refresh) out, the new one in.
 if [ -d "$WATCOM_DIR" ]; then
     rm -rf "$WATCOM_DIR.old"
