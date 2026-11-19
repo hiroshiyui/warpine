@@ -67,3 +67,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0059](0059-som-runtime-kernel.md) | A built-in SOM.DLL keeps classes host-side and objects in guest memory; executables load and initialize their DLLs | Accepted (stage 1); partly superseded by 0060 | 2026-11-19 |
 | [0060](0060-som-metaclasses-multiple-inheritance.md) | SOM tokens name their introducing class; derived metaclasses, multiple inheritance and a runtime heap | Accepted | 2026-11-19 |
 | [0061](0061-som-cpp-bindings.md) | SOM's C++ bindings create objects through the runtime; somDefaultInit and somDestruct | Accepted | 2026-11-19 |
+| [0062](0062-som-class-loading.md) | SOM loads a class's DLL by name through replaceable runtime variables; DLLs are searched by plain module name only | Accepted | 2026-11-19 |
