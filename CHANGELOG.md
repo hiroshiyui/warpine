@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Pointer input is routed when it is read** — a click on a client area or dialog is hit-tested, activates its frame (`WM_ACTIVATE` before the click) and takes the focus from a control beside it when it reaches the head of the system input queue, strictly after the input before it, as the PM Programming Guide describes; moves and releases go to the window under the pointer at read time, so a click follows a window the busy program has moved; a disabled frame takes no pointer input (ADR-0051). Clicks on frame chrome and the sizing border still act at once. Sample `pm_inputorder_test`.
 
 ### Changed
+- **`CLAUDE.md` compacted, `AGENTS.md` merged into it** — the agent guide is now a short overview (policy, build and test commands, generators, architecture in brief, memory layout, conventions, security rules) that points to the developer guide, reference manual and ADRs for the details, instead of repeating them (about a twelfth of its former size); `AGENTS.md`, whose content was out of date, is removed and its development priorities kept in `CLAUDE.md`.
 - **`doc/TODOs.md` compacted** — open work only, one short bullet list per topic (about a quarter of its former size); the "Completed" table is gone (the CHANGELOG, guides and ADRs hold it), and the unverified choices moved to the new `doc/unverified.md`.
 
 ### Fixed
