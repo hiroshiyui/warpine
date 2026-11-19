@@ -368,7 +368,7 @@ mod tests {
             let frame = wm.create_window(super::super::pm_types::WindowManager::DIALOG_CLASS.into(), 0, 0);
             let ctl = wm.create_window("WC_STATIC".into(), frame, 0);
             let w = wm.get_window_mut(ctl).unwrap();
-            (w.cx, w.cy, w.style, w.text) = (80, 30, SS_TEXT, "Mono".into());
+            (w.cx, w.cy, w.style, w.text, w.visible) = (80, 30, SS_TEXT, "Mono".into(), true);
             w.pres_params.set(super::super::pm_presparam::PP_FONTNAMESIZE, b"12.Courier\0");
             let s = wm.frame_surface(frame).unwrap();
             drop(wm);

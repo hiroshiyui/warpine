@@ -817,12 +817,17 @@ impl Loader {
         match msg {
             WM_PAINT => {
                 // A built-in window paints all of itself: it is valid now.
-                // One in a hidden embedded dialog (a notebook page turned
+                // A hidden one — hidden since its WM_PAINT was queued, like
+                // a container's scroll bar the view no longer needs — or
+                // one in a hidden embedded dialog (a notebook page turned
                 // away) draws nothing.
                 let frame_hwnd = {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
                     wm.painted(hwnd);
-                    if wm.in_hidden_embedded_dialog(hwnd) {
+                    // (WC_* controls only: Warpine's own pseudo-windows such
+                    // as #Menu, never marked visible, still pass WM_PAINT on.)
+                    let hidden = wm.get_window(hwnd).is_some_and(|w| !w.visible && w.class_name.starts_with("WC_"));
+                    if hidden || wm.in_hidden_embedded_dialog(hwnd) {
                         return ApiResult::Normal(0);
                     }
                     wm.find_frame_for_hwnd(hwnd)
