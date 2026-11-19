@@ -112,7 +112,8 @@ fn test_hello_world() {
 /// data through somDataResolve, ClassData imported across DLLs; animals
 /// (ADR-0060): metaclasses, a derived metaclass, attributes, sequences,
 /// somPrintf and SOMMalloc; hellocpp and sompp (ADR-0061): the C++
-/// bindings.
+/// bindings; findcls (ADR-0062): class loading and the replaceable
+/// runtime variables.
 #[test]
 fn test_som_samples_run_on_the_som_runtime() {
     if !kvm_available() { return; }
@@ -189,6 +190,21 @@ fn test_som_samples_run_on_the_som_runtime() {
         "stack object is a SOM object: 0\n", "done\n",
     ].concat();
     assert_eq!((code, out.replace("\r\n", "\n")), (0, want));
+    // findcls (ADR-0062): somFindClass loads greeter.dll by the class's
+    // name and calls its SOMInitModule; somFindClsInFile through the
+    // program's SOMLoadModule loads echoes.dll (EchoNewClass); the
+    // program's SOMOutCharRoutine and SOMError; the default SOMError ends
+    // the program on the fatal code 49.
+    let (out, code) = run_sample("samples/som_test/findcls.exe", 15);
+    let want = concat!(
+        "SOMInitModule(1, 2, Greeter)\n", "found Greeter\n", "Greeter Greeter says hello\n",
+        "again: the same class\n",
+        "SOMLoadModule(Echo, echoes, SOMInitModule, 3, 4)\n", "EchoNewClass(3, 4)\n", "  -> 0, a module\n",
+        "found Echo\n", "echo echo\n",
+        "Nowhere: not found, its file would be Nowhere\n", "SOMDeleteModule -> 0\n",
+        "QUIET 7\n", "quiet 8\n", "my SOMError: code 20012, with a place\n", "a fatal error next\n",
+    );
+    assert_eq!((code, out.replace("\r\n", "\n").as_str()), (49, want));
 }
 
 /// alloc_test: DosAllocMem / DosFreeMem round-trip.

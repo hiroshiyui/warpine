@@ -22,3 +22,8 @@ import SOMFree                 SOM.SOMFree
 import SOM_TraceLevel          SOM.SOM_TraceLevel
 import SOM_WarnLevel           SOM.SOM_WarnLevel
 import SOM_AssertLevel         SOM.SOM_AssertLevel
+import SOMOutCharRoutine       SOM.SOMOutCharRoutine
+import SOMLoadModule           SOM.SOMLoadModule
+import SOMDeleteModule         SOM.SOMDeleteModule
+import SOMError                SOM.SOMError
+import somSetOutChar           SOM.somSetOutChar

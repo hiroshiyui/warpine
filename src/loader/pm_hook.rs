@@ -338,6 +338,12 @@ pub(crate) enum ChainThen {
     LoadModule { hmod: u32, phmod: u32 },
     /// `somFree` called the object's `somUninit` (`som.rs`): free it.
     SomFree { obj: u32 },
+    /// `somFindClass` (or a sibling) loaded the file of class `id`
+    /// (`som.rs`): free the strings at `block`, return the class.
+    SomClassLoaded { id: u32, block: u32, inits: u32 },
+    /// The default `SOMLoadModule` loaded module `hmod`: its handle to
+    /// `phandle` when its `inits` `_DLL_InitTerm`s succeeded.
+    SomModuleLoaded { hmod: u32, phandle: u32, inits: u32 },
     /// `WM_HITTEST` asked of `hwnd` for the pointer event at the head of
     /// the input queue (`pm_input.rs`): record the answer, then go on as
     /// `after` says.
@@ -451,6 +457,8 @@ impl Loader {
             ChainThen::Drag => self.drag_chain_done(chain.last),
             ChainThen::LoadModule { hmod, phmod } => ChainEnd::Return(self.dll_inits_done(hmod, phmod, chain)),
             ChainThen::SomFree { obj } => ChainEnd::Return(self.som_free_done(obj)),
+            ChainThen::SomClassLoaded { id, block, inits } => ChainEnd::Return(self.som_class_loaded(id, block, inits, chain)),
+            ChainThen::SomModuleLoaded { hmod, phandle, inits } => ChainEnd::Return(self.som_module_loaded(hmod, phandle, inits, chain)),
             ChainThen::HitTest { hwnd, after } => self.hit_test_done(hwnd, after, chain),
             ChainThen::AnswerSent { id, hwnd, after, finish, calls } =>
                 self.sent_done(id, hwnd, after, finish, calls, chain),

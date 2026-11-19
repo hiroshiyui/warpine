@@ -902,6 +902,7 @@ pub const HANDTYPE_PIPE: u32 = 0x0002;
 pub const CONSOLE_DEVICE_ATTR: u32 = 0x0003;
 /// The standard output handle.
 pub const STDOUT_HANDLE: u32 = 1;
+pub const STDERR_HANDLE: u32 = 2;
 /// `DosDupHandle` new-handle value asking for a fresh handle.
 pub const NEW_HANDLE_REQUEST: u32 = 0xFFFF_FFFF;
 

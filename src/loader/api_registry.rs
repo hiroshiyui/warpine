@@ -826,6 +826,12 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,i,a| l.som_call(i,15,&a) },
     ApiEntry { ordinal: SOM_BASE + 16, module: "SOM", name: "WrpSomMetaclassFor", argc: 2,
                handler: |l,_v,i,a| l.som_call(i,16,&a) },
+    ApiEntry { ordinal: SOM_BASE + 17, module: "SOM", name: "WrpSomLoadModule", argc: 6,
+               handler: |l,_v,i,a| l.som_call(i,17,&a) },
+    ApiEntry { ordinal: SOM_BASE + 18, module: "SOM", name: "WrpSomDeleteModule", argc: 1,
+               handler: |l,_v,i,a| l.som_call(i,18,&a) },
+    ApiEntry { ordinal: SOM_BASE + 19, module: "SOM", name: "WrpSomError", argc: 3,
+               handler: |l,_v,i,a| l.som_call(i,19,&a) },
     ApiEntry { ordinal: SOM_BASE + 20, module: "SOM", name: "SOMObjectClassData",          argc: 0,
                handler: |_l,_v,_i,_a| ApiResult::Normal(0) },  // data: resolve_import gives its address
     ApiEntry { ordinal: SOM_BASE + 21, module: "SOM", name: "SOMClassClassData",           argc: 0,
@@ -848,6 +854,18 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |_l,_v,_i,_a| ApiResult::Normal(0) },  // data: resolve_import gives its address
     ApiEntry { ordinal: SOM_BASE + 30, module: "SOM", name: "SOM_AssertLevel", argc: 0,
                handler: |_l,_v,_i,_a| ApiResult::Normal(0) },  // data: resolve_import gives its address
+    ApiEntry { ordinal: SOM_BASE + 31, module: "SOM", name: "SOMOutCharRoutine", argc: 0,
+               handler: |_l,_v,_i,_a| ApiResult::Normal(0) },  // data: resolve_import gives its address
+    ApiEntry { ordinal: SOM_BASE + 32, module: "SOM", name: "SOMLoadModule", argc: 0,
+               handler: |_l,_v,_i,_a| ApiResult::Normal(0) },  // data: resolve_import gives its address
+    ApiEntry { ordinal: SOM_BASE + 33, module: "SOM", name: "SOMDeleteModule", argc: 0,
+               handler: |_l,_v,_i,_a| ApiResult::Normal(0) },  // data: resolve_import gives its address
+    ApiEntry { ordinal: SOM_BASE + 34, module: "SOM", name: "SOMError", argc: 0,
+               handler: |_l,_v,_i,_a| ApiResult::Normal(0) },  // data: resolve_import gives its address
+    ApiEntry { ordinal: SOM_BASE + 35, module: "SOM", name: "WrpSomOutChar", argc: 1,
+               handler: |l,_v,i,a| l.som_call(i,35,&a) },
+    ApiEntry { ordinal: SOM_BASE + 36, module: "SOM", name: "somSetOutChar", argc: 1,
+               handler: |l,_v,i,a| l.som_call(i,36,&a) },
     ApiEntry { ordinal: SOM_BASE + 99, module: "SOM", name: "WrpSomMethodError",           argc: 0,
                handler: |l,_v,i,a| l.som_call(i,99,&a) },
     ApiEntry { ordinal: SOM_BASE + 100, module: "SOM", name: "WrpSOMObject_somInit",        argc: 1,
@@ -918,6 +936,12 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,i,a| l.som_call(i,301,&a) },
     ApiEntry { ordinal: SOM_BASE + 302, module: "SOM", name: "WrpSOMClassMgr_somRegisterClass", argc: 2,
                handler: |l,_v,i,a| l.som_call(i,302,&a) },
+    ApiEntry { ordinal: SOM_BASE + 303, module: "SOM", name: "WrpSOMClassMgr_somFindClsInFile", argc: 5,
+               handler: |l,_v,i,a| l.som_call(i,303,&a) },
+    ApiEntry { ordinal: SOM_BASE + 304, module: "SOM", name: "WrpSOMClassMgr_somLocateClassFile", argc: 4,
+               handler: |l,_v,i,a| l.som_call(i,304,&a) },
+    ApiEntry { ordinal: SOM_BASE + 305, module: "SOM", name: "WrpSOMClassMgr_somLoadClassFile", argc: 5,
+               handler: |l,_v,i,a| l.som_call(i,305,&a) },
 ];
 
 // ── Compatibility report ──────────────────────────────────────────────────────

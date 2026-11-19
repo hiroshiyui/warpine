@@ -72,6 +72,13 @@ public:
 class SOMClassMgr : public SOMObject {
 public:
     SOM_CPP_CLASS( SOMClassMgr )
+    SOMClass *somFindClass( somId id, long major, long minor ) { return _somFindClass( this, id, major, minor ); }
+    SOMClass *somFindClsInFile( somId id, long major, long minor, zString file )
+                                            { return _somFindClsInFile( this, id, major, minor, file ); }
+    zString   somLocateClassFile( somId id, long major, long minor )
+                                            { return _somLocateClassFile( this, id, major, minor ); }
+    SOMClass *somLoadClassFile( somId id, long major, long minor, zString file )
+                                            { return _somLoadClassFile( this, id, major, minor, file ); }
 };
 
 #endif

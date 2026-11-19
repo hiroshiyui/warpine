@@ -96,6 +96,23 @@ SOMEXTERN somTD_SOMFree    * SOMDLINK SOMFree;
 SOMEXTERN long SOMDLINK SOM_TraceLevel;
 SOMEXTERN long SOMDLINK SOM_WarnLevel;
 SOMEXTERN long SOMDLINK SOM_AssertLevel;
+/* Class loading, errors and somPrintf's output: a program may replace
+ * them. SOMLoadModule loads `fileName` for `className` and calls its
+ * `functionName` (or <className>NewClass), returning 0 and the module in
+ * *modHandle; a SOM error code's last digit is its severity (9: fatal). */
+typedef int  SOMLINK somTD_SOMOutCharRoutine( char c );
+typedef int  SOMLINK somTD_SOMLoadModule( zString className, zString fileName, zString functionName,
+                                          long majorVersion, long minorVersion, void **modHandle );
+typedef int  SOMLINK somTD_SOMDeleteModule( void *modHandle );
+typedef void SOMLINK somTD_SOMError( int code, zString fileName, int lineNum );
+SOMEXTERN somTD_SOMOutCharRoutine * SOMDLINK SOMOutCharRoutine;
+SOMEXTERN somTD_SOMLoadModule     * SOMDLINK SOMLoadModule;
+SOMEXTERN somTD_SOMDeleteModule   * SOMDLINK SOMDeleteModule;
+SOMEXTERN somTD_SOMError          * SOMDLINK SOMError;
+/* somSetOutChar( 0 ) puts the default routine back (Warpine's). */
+SOMEXTERN void SOMLINK somSetOutChar( somTD_SOMOutCharRoutine *routine );
+#define SOM_Fatal 9
+#define SOM_Error( code ) SOMError( (code), __FILE__, __LINE__ )
 
 /* ---- IDL sequences: sequence(T) is a struct of _maximum, _length and a
  * buffer of T pointers (objects are pointers with -maddstar). ---- */
@@ -124,7 +141,8 @@ SOMEXTERN struct SOMClassClassDataStructure {
 
 SOMEXTERN struct SOMClassMgrClassDataStructure {
     SOMClass *classObject;
-    somMToken somFindClass, somClassFromId, somRegisterClass;
+    somMToken somFindClass, somClassFromId, somRegisterClass,
+              somFindClsInFile, somLocateClassFile, somLoadClassFile;
 } SOMDLINK SOMClassMgrClassData;
 
 SOMEXTERN SOMClassMgr * SOMDLINK SOMClassMgrObject;
@@ -235,6 +253,25 @@ typedef somTP_SOMClass_somClassReady       *somTD_SOMClass_somClassReady;
 #define _somOverrideSMethod( c, id, m ) \
     SOM_Resolve( c, SOMClass, somOverrideSMethod )( (SOMClass *)(c), (id), (m) )
 #define _somClassReady( c )       SOM_Resolve( c, SOMClass, somClassReady )( (SOMClass *)(c) )
+
+/* SOMClassMgr: a class by name, loaded from its file when it is not
+ * there yet (the file: the class's name, or `file`). */
+typedef SOMClass *SOMLINK somTP_SOMClassMgr_somFindClass( SOMClassMgr *, somId, long, long );
+typedef SOMClass *SOMLINK somTP_SOMClassMgr_somFindClsInFile( SOMClassMgr *, somId, long, long, zString );
+typedef zString   SOMLINK somTP_SOMClassMgr_somLocateClassFile( SOMClassMgr *, somId, long, long );
+typedef SOMClass *SOMLINK somTP_SOMClassMgr_somLoadClassFile( SOMClassMgr *, somId, long, long, zString );
+typedef somTP_SOMClassMgr_somFindClass       *somTD_SOMClassMgr_somFindClass;
+typedef somTP_SOMClassMgr_somFindClsInFile   *somTD_SOMClassMgr_somFindClsInFile;
+typedef somTP_SOMClassMgr_somLocateClassFile *somTD_SOMClassMgr_somLocateClassFile;
+typedef somTP_SOMClassMgr_somLoadClassFile   *somTD_SOMClassMgr_somLoadClassFile;
+#define _somFindClass( m, id, ma, mi ) \
+    SOM_Resolve( m, SOMClassMgr, somFindClass )( (SOMClassMgr *)(m), (id), (ma), (mi) )
+#define _somFindClsInFile( m, id, ma, mi, f ) \
+    SOM_Resolve( m, SOMClassMgr, somFindClsInFile )( (SOMClassMgr *)(m), (id), (ma), (mi), (f) )
+#define _somLocateClassFile( m, id, ma, mi ) \
+    SOM_Resolve( m, SOMClassMgr, somLocateClassFile )( (SOMClassMgr *)(m), (id), (ma), (mi) )
+#define _somLoadClassFile( m, id, ma, mi, f ) \
+    SOM_Resolve( m, SOMClassMgr, somLoadClassFile )( (SOMClassMgr *)(m), (id), (ma), (mi), (f) )
 
 /* What the C emitter's .ih files share: building a class, an instance of
  * the metaclass it asks for (0: its parent's), or of a metaclass derived

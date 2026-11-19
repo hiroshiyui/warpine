@@ -421,6 +421,9 @@ SOM.13     WrpSomCalloc
 SOM.14     WrpSomRealloc
 SOM.15     WrpSomFree
 SOM.16     WrpSomMetaclassFor
+SOM.17     WrpSomLoadModule
+SOM.18     WrpSomDeleteModule
+SOM.19     WrpSomError
 SOM.20     SOMObjectClassData
 SOM.21     SOMClassClassData
 SOM.22     SOMClassMgrClassData
@@ -432,6 +435,12 @@ SOM.27     SOMFree
 SOM.28     SOM_TraceLevel
 SOM.29     SOM_WarnLevel
 SOM.30     SOM_AssertLevel
+SOM.31     SOMOutCharRoutine
+SOM.32     SOMLoadModule
+SOM.33     SOMDeleteModule
+SOM.34     SOMError
+SOM.35     WrpSomOutChar
+SOM.36     somSetOutChar
 SOM.99     WrpSomMethodError
 SOM.100    WrpSOMObject_somInit
 SOM.101    WrpSOMObject_somUninit
@@ -467,3 +476,6 @@ SOM.216    WrpSOMClass_somInitMIClass
 SOM.300    WrpSOMClassMgr_somFindClass
 SOM.301    WrpSOMClassMgr_somClassFromId
 SOM.302    WrpSOMClassMgr_somRegisterClass
+SOM.303    WrpSOMClassMgr_somFindClsInFile
+SOM.304    WrpSOMClassMgr_somLocateClassFile
+SOM.305    WrpSOMClassMgr_somLoadClassFile

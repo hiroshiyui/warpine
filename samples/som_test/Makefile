@@ -15,6 +15,10 @@
 #   hellocpp/ -> hellocpp.exe the C++ bindings: a SOM class as a C++
 #                            class, new through somNewNoInit and
 #                            somDefaultInit (ADR-0061)
+#   findcls/ -> findcls.exe  Warpine's own check of class loading:
+#                            somFindClass loads greeter.dll / echoes.dll
+#                            by class name; the replaceable SOMLoadModule,
+#                            SOMOutCharRoutine and SOMError (ADR-0062)
 #   cpp/     -> sompp.exe    Warpine's own C++ check: a class derived
 #                            from hellocpp's Hello (its object reused),
 #                            overrides, parent calls, delete
@@ -32,7 +36,7 @@ export PATH   := $(WATCOM_ROOT)/binl64:$(PATH)
 B = build
 CFLAGS = -zq -bt=os2 -I$(CURDIR)/include
 
-all: hello.exe classes.exe animals.exe hellocpp.exe sompp.exe
+all: hello.exe classes.exe animals.exe hellocpp.exe sompp.exe findcls.exe greeter.dll echoes.dll
 
 $(B):
 	mkdir -p $(B)
@@ -97,6 +101,22 @@ $(B)/sompp.obj: cpp/sompp.cpp cpp/loud.xh hellocpp/hello.xh include/som.xh | $(B
 	$(WPP386) $(CFLAGS) $(CPP) -fo=$@ $<
 sompp.exe: $(B)/hellocpp.obj $(B)/loud.obj $(B)/sompp.obj som.lnk
 	$(WLINK) name $@ system os2v2 option quiet @som.lnk file { $(B)/hellocpp.obj $(B)/loud.obj $(B)/sompp.obj }
+
+# ---- findcls: class loading; the DLLs are not imported by the program ----
+FND = -I$(CURDIR)/findcls
+$(B)/greeter.obj: findcls/greeter.c include/som.h | $(B)
+	$(WCC386) $(CFLAGS) $(FND) -bd -fo=$@ $<
+$(B)/echo.obj: findcls/echo.c include/som.h | $(B)
+	$(WCC386) $(CFLAGS) $(FND) -bd -fo=$@ $<
+greeter.dll: $(B)/greeter.obj som.lnk
+	$(WLINK) name $@ system os2v2_dll option quiet @som.lnk file $< \
+		export SOMInitModule,GreeterNewClass,GreeterClassData
+echoes.dll: $(B)/echo.obj som.lnk
+	$(WLINK) name $@ system os2v2_dll option quiet @som.lnk file $< export EchoNewClass,EchoClassData
+$(B)/findcls.obj: findcls/findcls.c include/som.h | $(B)
+	$(WCC386) $(CFLAGS) $(FND) -fo=$@ $<
+findcls.exe: $(B)/findcls.obj greeter.dll echoes.dll som.lnk
+	$(WLINK) name $@ system os2v2 option quiet @som.lnk file $(B)/findcls.obj
 
 clean:
 	rm -rf $(B) *.exe *.dll *.err
