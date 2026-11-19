@@ -259,14 +259,21 @@ impl super::Loader {
         // windows is dropped instead of waiting for a reader that is gone.
         {
             let mut wm = self.shared.window_mgr.lock_or_recover();
-            if let Some(hmq) = wm.thread_queue(vcpu_id) {
+            let refused = wm.thread_queue(vcpu_id).map_or_else(Vec::new, |hmq| {
                 // Its windows go too, without WM_DESTROY: there is no thread
                 // left to run their procedures.
                 wm.destroy_queue_windows(hmq);
+                let refused = wm.drain_sent(hmq);
                 wm.destroy_mq(vcpu_id, hmq);
-            }
+                refused
+            });
             // So do its hook and send-call state (pm_hook.rs).
             wm.hooks.forget_thread(vcpu_id);
+            drop(wm);
+            // Messages other programs sent to its windows will not run, and
+            // its own sends to other programs are given up (pm_remote.rs).
+            self.refuse_sent(refused);
+            self.forget_remote_sends(vcpu_id);
         }
         // Arenas of containers destroyed with them (pm_container.rs).
         self.free_pending_guest_blocks();
@@ -1468,6 +1475,15 @@ fn setup_dlg_dispatch(
         let killed = owner.is_some_and(|v| loader.shared.threads.table.lock_or_recover().is_killed(tid_of_vcpu(v)));
         if ended || killed || loader.shutting_down() {
             return finish(vcpu, callback_stack);
+        }
+
+        // A message another program sent runs first, then the loop goes on
+        // (pm_remote.rs).
+        if let Some(sent) = loader.take_sent(hmq)
+            && let ApiResult::CallChain(chain) = loader.run_sent(owner.unwrap_or(0), sent,
+                super::pm_remote::AfterSent::ModalLoop { dlg_proc, hwnd_dlg, hmq }) {
+            continue_call_chain(vcpu, loader, callback_stack, chain, saved_rip, saved_rsp);
+            return true;
         }
 
         // The next message in PM's order, as WinGetMsg takes it.

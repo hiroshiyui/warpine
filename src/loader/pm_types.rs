@@ -68,6 +68,10 @@ pub struct PM_MsgQueue {
     /// last (`WinQueryMsgTime` / `WinQueryMsgPos`).
     pub last_msg_time: u32,
     pub last_msg_pos: (i32, i32),
+    /// Messages other programs sent to windows of this queue, for its
+    /// thread to run when it next reads or waits for messages
+    /// (`pm_remote.rs`).
+    pub sent: VecDeque<super::pm_remote::SentMessage>,
 }
 
 pub struct WindowClass {
@@ -647,6 +651,9 @@ pub struct WindowManager {
     /// The session's active frame as the desktop server last said, which
     /// may be another program's (ADR-0052 phase B).
     pub session_active: u32,
+    /// Messages this program's threads send to other programs' windows,
+    /// in progress (`pm_remote.rs`).
+    pub remote_sends: super::pm_remote::RemoteSends,
     /// While the GUI thread handles an event from the desktop server: its
     /// token, given to the input events it queues (ADR-0052).
     pub input_tag: Option<u64>,
@@ -767,6 +774,7 @@ impl WindowManager {
             lowered_frames: Vec::new(),
             handle_slot: None,
             session_active: 0,
+            remote_sends: Default::default(),
             input_tag_used: false,
             input_ack: None,
             destroying: HashSet::new(),
@@ -925,6 +933,7 @@ impl WindowManager {
             codepage,
             last_msg_time: 0,
             last_msg_pos: (0, 0),
+            sent: VecDeque::new(),
         })));
         self.next_hmq += 1;
         h

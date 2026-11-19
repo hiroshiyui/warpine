@@ -17,6 +17,13 @@
 //! `WinInSendMsg` answers TRUE while the calling thread runs a window
 //! procedure for a message sent to a window of another thread's queue
 //! (where PM would answer on the receiving thread).
+//!
+//! Between programs it is PM's way (`pm_remote.rs`, ADR-0054): a message
+//! sent to another program's window runs on that window's thread when it
+//! reads or waits for messages, and `WinInSendMsg` is TRUE there. Those
+//! waits (`WinGetMsg`, `WinPeekMsg`, `WinWaitMsg`, modal loops, a send to
+//! another program) run them; `WinWaitEventSem` / `WinRequestMutexSem` do
+//! not.
 
 use super::constants::*;
 use super::mutex_ext::MutexExt;
@@ -196,8 +203,12 @@ impl Loader {
     /// (`PMERR_NO_MSG_QUEUE`) or when the process ends.
     pub(crate) fn win_wait_msg(&self, tid: u32, first: u32, last: u32) -> ApiResult {
         if !self.has_msg_queue(tid) { return self.pm_fail(tid, PMERR_NO_MSG_QUEUE); }
-        let found = self.next_message(tid, 0, 0, first, last, 0, true, true);
-        ApiResult::Normal(found.is_some() as u32)
+        match self.next_message(tid, 0, 0, first, last, 0, true, true) {
+            // A message from another program runs, then the wait goes on.
+            Some(super::pm_win::Got::Sent(s)) =>
+                self.run_sent(tid, s, super::pm_remote::AfterSent::Rerun(super::pm_remote::ORD_WAIT_MSG)),
+            found => ApiResult::Normal(found.is_some() as u32),
+        }
     }
 
     /// `WinDefWindowProc(hwnd, WM_HELP, mp1, mp2)`: a frame or a frame's

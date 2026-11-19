@@ -331,6 +331,9 @@ pub(crate) enum ChainThen {
     /// A step of `DrgDrag`'s conversation (`pm_drag.rs`, `DRAG_STAGE_*`):
     /// record the `DM_DRAGOVER` reply and wait for the next input, or end.
     Drag { stage: u8 },
+    /// A message another program sent (`pm_remote.rs`): answer call `id`
+    /// with the window procedure's result, then go on as `after` says.
+    AnswerSent { id: u64, after: super::pm_remote::AfterSent },
 }
 
 /// Guest calls an API makes before it returns (see the module comment).
@@ -428,6 +431,7 @@ impl Loader {
             ChainThen::ContainerFilter { hwnd, job } => self.container_filter_done(hwnd, job, &chain.results),
             ChainThen::DialogMnemonic { dlg } => self.dialog_mnemonic_done(dlg, chain),
             ChainThen::Drag { stage } => self.drag_chain_done(stage, chain.last),
+            ChainThen::AnswerSent { id, after } => self.sent_done(id, after, chain),
             ChainThen::StdDialog { hwnd, buf, ret } => {
                 self.std_chain_done(hwnd, buf, &chain.results);
                 ChainEnd::Return(ret)

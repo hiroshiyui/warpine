@@ -12,7 +12,9 @@
 //! connected, or when the caller already has `MAX_PENDING_CALLS` calls in
 //! flight. Calls to a client that leaves are refused; calls left
 //! unanswered for `CALL_EXPIRY` are refused too, so a callee that never
-//! answers cannot make the server hold them for ever.
+//! answers cannot make the server hold them for ever — except sent
+//! messages (`WinSendMsg`), which wait as long as the window procedure
+//! runs, as in PM; `MAX_PENDING_CALLS` still bounds them.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -34,6 +36,8 @@ struct Pending {
     id: u32,
     callee: ClientId,
     since: Instant,
+    /// Refused after `CALL_EXPIRY` (every call but a sent message).
+    expires: bool,
 }
 
 /// What to do with a client's call.
@@ -60,8 +64,9 @@ impl CallRouter {
     }
 
     /// Client `caller` makes call `id` on window `hwnd`; `connected` tells
-    /// whether a client is connected in a slot.
-    pub fn call(&mut self, caller: ClientId, id: u32, hwnd: u32, now: Instant,
+    /// whether a client is connected in a slot, `expires` whether the call
+    /// is given up after `CALL_EXPIRY`.
+    pub fn call(&mut self, caller: ClientId, id: u32, hwnd: u32, now: Instant, expires: bool,
                 connected: impl Fn(ClientId) -> bool) -> Route {
         let Some(callee) = handle_slot(hwnd) else { return Route::Refuse };
         let in_flight = self.pending.values().filter(|p| p.caller == caller).count();
@@ -69,7 +74,7 @@ impl CallRouter {
             return Route::Refuse;
         }
         self.next += 1;
-        self.pending.insert(self.next, Pending { caller, id, callee, since: now });
+        self.pending.insert(self.next, Pending { caller, id, callee, since: now, expires });
         Route::Forward { callee, id: self.next }
     }
 
@@ -98,11 +103,12 @@ impl CallRouter {
         out
     }
 
-    /// Calls unanswered for `CALL_EXPIRY` by `now`, refused.
+    /// Calls unanswered for `CALL_EXPIRY` by `now`, refused (sent messages
+    /// wait on).
     pub fn expire(&mut self, now: Instant) -> Vec<Refusal> {
         let mut out = Vec::new();
         self.pending.retain(|_, p| {
-            let late = now.saturating_duration_since(p.since) >= CALL_EXPIRY;
+            let late = p.expires && now.saturating_duration_since(p.since) >= CALL_EXPIRY;
             if late { out.push((p.caller, p.id)); }
             !late
         });
@@ -134,7 +140,7 @@ mod tests {
     #[test]
     fn a_call_goes_to_the_windows_client_and_the_answer_back_once() {
         let (mut r, now) = (CallRouter::new(), Instant::now());
-        let Route::Forward { callee, id } = r.call(1, 7, win(2), now, all) else { panic!() };
+        let Route::Forward { callee, id } = r.call(1, 7, win(2), now, true, all) else { panic!() };
         assert_eq!(callee, 2);
         assert_eq!(r.answer(3, id), None, "only the callee answers");
         assert_eq!(r.answer(2, id), Some((1, 7)));
@@ -145,9 +151,9 @@ mod tests {
     #[test]
     fn calls_without_a_callee_are_refused() {
         let (mut r, now) = (CallRouter::new(), Instant::now());
-        assert_eq!(r.call(1, 1, 0x1000, now, all), Route::Refuse, "no slot in the handle");
-        assert_eq!(r.call(1, 1, win(1), now, all), Route::Refuse, "the caller's own window");
-        assert_eq!(r.call(1, 1, win(2), now, |c| c != 2), Route::Refuse, "nobody in that slot");
+        assert_eq!(r.call(1, 1, 0x1000, now, true, all), Route::Refuse, "no slot in the handle");
+        assert_eq!(r.call(1, 1, win(1), now, true, all), Route::Refuse, "the caller's own window");
+        assert_eq!(r.call(1, 1, win(2), now, true, |c| c != 2), Route::Refuse, "nobody in that slot");
         assert!(r.is_empty());
     }
 
@@ -155,18 +161,18 @@ mod tests {
     fn a_caller_has_a_bounded_number_of_calls_in_flight() {
         let (mut r, now) = (CallRouter::new(), Instant::now());
         for i in 0..MAX_PENDING_CALLS as u32 {
-            assert!(matches!(r.call(1, i, win(2), now, all), Route::Forward { .. }));
+            assert!(matches!(r.call(1, i, win(2), now, true, all), Route::Forward { .. }));
         }
-        assert_eq!(r.call(1, 99, win(2), now, all), Route::Refuse);
-        assert!(matches!(r.call(3, 1, win(2), now, all), Route::Forward { .. }), "another caller is not held up");
+        assert_eq!(r.call(1, 99, win(2), now, true, all), Route::Refuse);
+        assert!(matches!(r.call(3, 1, win(2), now, true, all), Route::Forward { .. }), "another caller is not held up");
     }
 
     #[test]
     fn calls_to_a_client_that_leaves_or_never_answers_are_refused() {
         let (mut r, now) = (CallRouter::new(), Instant::now());
-        let Route::Forward { id: to_2, .. } = r.call(1, 1, win(2), now, all) else { panic!() };
-        r.call(2, 5, win(1), now, all);
-        r.call(3, 6, win(4), now, all);
+        let Route::Forward { id: to_2, .. } = r.call(1, 1, win(2), now, true, all) else { panic!() };
+        r.call(2, 5, win(1), now, true, all);
+        r.call(3, 6, win(4), now, true, all);
         let mut gone = r.client_gone(2);
         gone.sort();
         assert_eq!(gone, vec![(1, 1)], "the call client 2 made itself is just forgotten");
@@ -174,6 +180,20 @@ mod tests {
         assert_eq!(r.len(), 1);
         assert!(r.expire(now + CALL_EXPIRY / 2).is_empty());
         assert_eq!(r.expire(now + CALL_EXPIRY), vec![(3, 6)]);
+        assert!(r.is_empty());
+    }
+
+    #[test]
+    fn sent_messages_never_expire_but_count_and_end_with_their_callee() {
+        let (mut r, now) = (CallRouter::new(), Instant::now());
+        let Route::Forward { id, .. } = r.call(1, 1, win(2), now, false, all) else { panic!() };
+        assert!(r.expire(now + CALL_EXPIRY * 100).is_empty(), "a window procedure may run for long");
+        for i in 1..MAX_PENDING_CALLS as u32 {
+            assert!(matches!(r.call(1, 1 + i, win(2), now, false, all), Route::Forward { .. }));
+        }
+        assert_eq!(r.call(1, 99, win(2), now, false, all), Route::Refuse, "still bounded");
+        assert_eq!(r.answer(2, id), Some((1, 1)));
+        assert_eq!(r.client_gone(2).len(), MAX_PENDING_CALLS - 1);
         assert!(r.is_empty());
     }
 }

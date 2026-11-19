@@ -11,7 +11,7 @@
 //! server's packets the same way.
 
 /// Protocol version, checked in `Hello` / `Welcome`.
-pub const PROTOCOL_VERSION: u32 = 2;
+pub const PROTOCOL_VERSION: u32 = 3;
 /// Largest packet either side sends or accepts.
 pub const MAX_MESSAGE: usize = 128 * 1024;
 /// Most items (frame pictures and pull-downs) in one `Update`.
@@ -117,6 +117,19 @@ pub enum WinCall {
     Show { show: bool },
     /// `WinSetActiveWindow`.
     Activate,
+    /// `WinSendMsg`: the window's thread runs its window procedure; the
+    /// answer is the procedure's result. Waits for as long as that takes.
+    Send { msg: u32, mp1: u32, mp2: u32 },
+    /// `WinSetWindowText`.
+    SetText { text: String },
+}
+
+impl WinCall {
+    /// Whether the server gives up on the call after `CALL_EXPIRY`: every
+    /// call but `Send`, whose window procedure may run for any time.
+    pub fn expires(&self) -> bool {
+        !matches!(self, WinCall::Send { .. })
+    }
 }
 
 /// What a program says about one of its windows.
@@ -292,6 +305,8 @@ impl Writer {
             }
             WinCall::Show { show } => { self.u8(tag::CALL_SHOW); self.bool(*show); }
             WinCall::Activate => self.u8(tag::CALL_ACTIVATE),
+            WinCall::Send { msg, mp1, mp2 } => { self.u8(tag::CALL_SEND); self.u32(*msg); self.u32(*mp1); self.u32(*mp2); }
+            WinCall::SetText { text } => { self.u8(tag::CALL_SETTEXT); self.text(text); }
         }
     }
     fn reply(&mut self, r: &WinReply) {
@@ -392,6 +407,8 @@ impl<'a> Reader<'a> {
                                                   cx: self.coord()?, cy: self.coord()?, fl: self.u32()? },
             tag::CALL_SHOW => WinCall::Show { show: self.bool()? },
             tag::CALL_ACTIVATE => WinCall::Activate,
+            tag::CALL_SEND => WinCall::Send { msg: self.u32()?, mp1: self.u32()?, mp2: self.u32()? },
+            tag::CALL_SETTEXT => WinCall::SetText { text: self.text()? },
             _ => return Err(DecodeError::BadValue),
         })
     }
@@ -465,6 +482,8 @@ mod tag {
     pub const CALL_SETPOS: u8 = 5;
     pub const CALL_ACTIVATE: u8 = 6;
     pub const CALL_SHOW: u8 = 7;
+    pub const CALL_SEND: u8 = 8;
+    pub const CALL_SETTEXT: u8 = 9;
 
     pub const REPLY_FAILED: u8 = 0;
     pub const REPLY_VALUE: u8 = 1;
@@ -686,6 +705,8 @@ mod tests {
                                                                              fl: 0x8B } },
             ClientMsg::Call { id: 6, hwnd: 0x20_1000, call: WinCall::Activate },
             ClientMsg::Call { id: 6, hwnd: 0x20_1000, call: WinCall::Show { show: false } },
+            ClientMsg::Call { id: 7, hwnd: 0x20_1000, call: WinCall::Send { msg: 0x1002, mp1: 4, mp2: 5 } },
+            ClientMsg::Call { id: 8, hwnd: 0x20_1000, call: WinCall::SetText { text: "Größe".into() } },
             ClientMsg::Answer { id: 7, reply: WinReply::Failed },
             ClientMsg::Answer { id: 8, reply: WinReply::Value(9) },
             ClientMsg::Answer { id: 9, reply: WinReply::Info(Box::new(info())) },

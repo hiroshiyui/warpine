@@ -8,6 +8,7 @@ use super::vm_backend::VcpuBackend;
 use log::{debug, info, warn};
 
 use super::constants::*;
+use super::pm_remote::{AfterSent, SentMessage};
 
 // ── Built-in class atom → canonical class name ────────────────────────────────
 
@@ -58,6 +59,15 @@ use super::pm_types::{DeviceContext, PsOrigin, TimerStop};
 use crate::lx::header::{RT_STRING, RT_MESSAGE, RT_MENU, RT_DIALOG, RT_ACCELTABLE};
 use super::pm_types::MenuItem;
 
+/// What [`super::Loader::next_message`] found.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Got {
+    /// A message, written to the `QMSG`: its number.
+    Message(u32),
+    /// A message another program sent, for the thread to run first.
+    Sent(SentMessage),
+}
+
 impl super::Loader {
     pub(crate) fn handle_pmwin_call(&self, vcpu: &mut dyn VcpuBackend, vcpu_id: u32, ordinal: u32) -> ApiResult {
         let regs = vcpu.get_regs().unwrap();
@@ -105,7 +115,13 @@ impl super::Loader {
                 // the queue may destroy it (else FALSE, PMERR_INVALID_HMQ).
                 let hmq = read_stack(4);
                 debug!("  [VCPU {}] WinDestroyMsgQueue hmq={}", vcpu_id, hmq);
-                let destroyed = self.shared.window_mgr.lock_or_recover().destroy_mq(vcpu_id, hmq);
+                let (destroyed, refused) = {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    let refused = if wm.thread_queue(vcpu_id) == Some(hmq) { wm.drain_sent(hmq) } else { Vec::new() };
+                    (wm.destroy_mq(vcpu_id, hmq), refused)
+                };
+                // Messages other programs sent to it will not run.
+                self.refuse_sent(refused);
                 if !destroyed { return self.pm_fail(vcpu_id, PMERR_INVALID_HMQ); }
                 ApiResult::Normal(1)
             }
@@ -261,9 +277,11 @@ impl super::Loader {
                 let hooks = self.input_hooks(vcpu_id, pqmsg);
                 match self.next_message(vcpu_id, pqmsg, read_stack(12), read_stack(16),
                                         read_stack(20), PM_REMOVE, true, hooks.is_empty()) {
+                    // A message from another program runs first (pm_remote.rs).
+                    Some(Got::Sent(s)) => self.run_sent(vcpu_id, s, AfterSent::Rerun(ordinal)),
                     Some(_) if !hooks.is_empty() =>
                         self.input_hook_chain(vcpu_id, hooks, ordinal, pqmsg, PM_REMOVE, false),
-                    Some(msg) => ApiResult::Normal((msg != WM_QUIT) as u32),
+                    Some(Got::Message(msg)) => ApiResult::Normal((msg != WM_QUIT) as u32),
                     None => ApiResult::Normal(0),
                 }
             }
@@ -278,6 +296,9 @@ impl super::Loader {
                 let hooks = self.input_hooks(vcpu_id, pqmsg);
                 let found = self.next_message(vcpu_id, pqmsg, read_stack(12), read_stack(16),
                                               read_stack(20), fl, false, hooks.is_empty());
+                if let Some(Got::Sent(s)) = found {
+                    return self.run_sent(vcpu_id, s, AfterSent::Rerun(ordinal));
+                }
                 if found.is_some() && !hooks.is_empty() {
                     return self.input_hook_chain(vcpu_id, hooks, ordinal, pqmsg, fl, true);
                 }
@@ -1129,17 +1150,7 @@ impl super::Loader {
                 let psz_text = read_stack(8);
                 if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
                 let text = self.read_guest_string_cp(psz_text, self.window_codepage(hwnd));
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-                let target = wm.text_window(hwnd);
-                if let Some(win) = wm.get_window_mut(target) {
-                    win.text = text;
-                }
-                wm.mark_dirty(hwnd); // VDR-B4: title bar text changed
-                drop(wm);
-                // The field of a combination box / spin button shows it.
-                if target != hwnd {
-                    self.set_field_text_done(target);
-                }
+                self.set_window_text(hwnd, text);
                 ApiResult::Normal(1)
             }
             878 => {
@@ -1893,19 +1904,37 @@ impl super::Loader {
         prev
     }
 
+    /// `WinSetWindowText`: the window's text (a frame's in its title bar,
+    /// a combination box's or spin button's in its field).
+    pub(super) fn set_window_text(&self, hwnd: u32, text: String) {
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        let target = wm.text_window(hwnd);
+        if let Some(win) = wm.get_window_mut(target) {
+            win.text = text;
+        }
+        wm.mark_dirty(hwnd); // VDR-B4: title bar text changed
+        drop(wm);
+        // The field of a combination box / spin button shows it.
+        if target != hwnd {
+            self.set_field_text_done(target);
+        }
+    }
+
     /// WinGetMsg / WinPeekMsg: take the first message of the calling
     /// thread's queue that passes the filters (`hwnd_filter`: that window or
     /// one of its descendants, 0 = any; `first`..`last`: a message range, see
     /// [`msg_in_range`]), write it to `pqmsg` as a QMSG with any accelerator
     /// keystroke translated, and return its message number. The message is
     /// left in the queue unless `fl` is `PM_REMOVE`. With `wait`, block
-    /// until one arrives; `None` when there is none (or on shutdown).
+    /// until one arrives; `None` when there is none (or on shutdown). A
+    /// message another program sent to the thread's queue comes first, as
+    /// [`Got::Sent`], for the caller to run (`pm_remote.rs`).
     /// Without `translate` the message is written as it was queued (the
     /// input hooks see it first and the accelerator is translated after
     /// them, `pm_hook.rs`).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn next_message(&self, vcpu_id: u32, pqmsg: u32, hwnd_filter: u32, first: u32, last: u32,
-                    fl: u32, wait: bool, translate: bool) -> Option<u32> {
+                    fl: u32, wait: bool, translate: bool) -> Option<Got> {
         let (hmq, mq_arc) = {
             let wm = self.shared.window_mgr.lock_or_recover();
             let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
@@ -1918,6 +1947,9 @@ impl super::Loader {
         let remove = fl & PM_REMOVE != 0;
         loop {
             if self.stop_or_restart() { return None; }
+            if let Some(s) = self.take_sent(hmq) {
+                return Some(Got::Sent(s));
+            }
             // Window-manager lock before the queue lock, as everywhere else.
             let found = self.shared.window_mgr.lock_or_recover().next_queued(hmq, remove, |wm, m| {
                 // WM_QUIT passes every filter, so a filtered loop still ends.
@@ -1939,7 +1971,7 @@ impl super::Loader {
                     self.guest_write::<i32>(pqmsg + 24, msg.y);
                     self.guest_write::<u32>(pqmsg + 28, 0);
                 }
-                return Some(msg.msg);
+                return Some(Got::Message(msg.msg));
             }
             if !wait { return None; }
             // Block on the queue's condvar instead of spinning.

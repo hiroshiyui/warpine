@@ -17,13 +17,19 @@
  *     WinQueryWindowTextLength, WinQueryWindowPos, WinQueryWindowRect,
  *     WinIsWindowVisible, WinIsWindowEnabled, WinQueryClassName,
  *     WinQueryWindowULong, WinQueryWindowUShort, WinQueryWindow;
+ *   - WinSendMsg: B's thread runs its window procedure (WinInSendMsg is
+ *     TRUE there) and A gets its result; a message B's procedure sends
+ *     back to A meanwhile runs in A while A waits;
+ *   - WinSetWindowText, read back with WinQueryWindowText;
+ *   - WinDestroyWindow fails, as for another thread's window;
  *   - WinPostMsg, which B receives with its parameters;
  *   - WinSetWindowPos (move and size: B's client gets WM_SIZE), then
  *     WinSetActiveWindow: B becomes the active window, A loses activation,
  *     and WinQueryActiveWindow in A names B;
  *   - WinSetWindowPos(SWP_MINIMIZE) and WinShowWindow(FALSE);
  *
- * and once the child has ended, B's handle is no window any more. Each
+ * and once the child has ended, B's handle is no window any more and
+ * WinSendMsg to it fails. Each
  * check is written to stdout:
  *
  *   pm_xproc_test: <name>: ok
@@ -43,6 +49,9 @@
 #define POLL_MS     100
 #define WAIT_POLLS  50            /* 5 s for anything asynchronous */
 #define WM_XPROC    ( WM_USER + 1 )
+#define WM_XSEND    ( WM_USER + 2 )   /* to B: returns mp1 * mp2 + 1000 */
+#define WM_XBACK    ( WM_USER + 3 )   /* to B: sends WM_XECHO(mp1) to A, + 1 */
+#define WM_XECHO    ( WM_USER + 4 )   /* to A: returns mp1 * 2 */
 #define USER_WORD   0x5741524BUL  /* 'WARK' */
 
 #define LEFT_X      40
@@ -67,6 +76,9 @@ typedef struct {
     LONG  b_sized_cx;           /* WM_SIZE: B's client's new width */
     LONG  b_activated;          /* WM_ACTIVATE TRUE reached B */
     LONG  b_deactivated;        /* WM_ACTIVATE FALSE reached B */
+    ULONG parent_client;
+    LONG  b_in_send;            /* WinInSendMsg in B's WM_XSEND */
+    ULONG b_send_tid;           /* the thread that ran it */
 } SHARED;
 
 static HAB     hab;
@@ -76,6 +88,7 @@ static int     is_child;
 static int     step = 0;
 static int     waited = 0;
 static int     a_deactivated = 0;
+static int     a_in_send = -1;          /* WinInSendMsg in A's WM_XECHO */
 static int     n_checks = 0, n_passed = 0;
 
 static void write_stdout( const char *s )
@@ -187,6 +200,36 @@ static void query_checks( void )
     check( "WinQueryWindow(QW_PARENT) of its client", WinQueryWindow( bc, QW_PARENT ) == b, TRUE );
 }
 
+static ULONG own_tid( void )
+{
+    PTIB ptib;
+    PPIB ppib;
+    DosGetInfoBlocks( &ptib, &ppib );
+    return ptib->tib_ptib2->tib2_ultid;
+}
+
+/* Messages sent to the child's window, run by its thread. */
+static void send_checks( void )
+{
+    HWND  b = sh->child_frame, bc = sh->child_client;
+    char  buf[64];
+
+    check( "WinSendMsg returns the other program's result",
+           LONGFROMMR( WinSendMsg( bc, WM_XSEND, MPFROMLONG( 6 ), MPFROMLONG( 7 ) ) ), 1042 );
+    check( "  WinInSendMsg was TRUE in its window procedure", sh->b_in_send, TRUE );
+    check( "  which ran on the window's thread", sh->b_send_tid, 1 );
+    check( "WinSendMsg while the other program sends back",
+           LONGFROMMR( WinSendMsg( bc, WM_XBACK, MPFROMLONG( 21 ), 0 ) ), 43 );
+    check( "  this program ran the message sent back while it waited", a_in_send, TRUE );
+    check( "WinInSendMsg here is FALSE again", WinInSendMsg( hab ), FALSE );
+    check( "WinSetWindowText", WinSetWindowText( b, "Program B2" ), TRUE );
+    memset( buf, 0, sizeof( buf ) );
+    WinQueryWindowText( b, sizeof( buf ), buf );
+    check_str( "  the other program's title changed", buf, "Program B2" );
+    check( "WinDestroyWindow of another program's window fails", WinDestroyWindow( b ), FALSE );
+    check( "  it is still a window", WinIsWindow( hab, b ), TRUE );
+}
+
 /* The calls that change the child's windows. */
 static void change_calls( void )
 {
@@ -263,6 +306,7 @@ static void parent_poll( void )
         if( !sh->b_deactivated && waited <= WAIT_POLLS ) return;
         check( "the other program's frame lost activation to this one", sh->b_deactivated, 1 );
         query_checks();
+        send_checks();
         a_deactivated = 0;
         sh->b_activated = 0;
         change_calls();
@@ -282,6 +326,7 @@ static void parent_poll( void )
         check( "the child ended", sh->child_done, 1 );
         check( "its frame is no window once it ended", WinIsWindow( hab, sh->child_frame ), FALSE );
         check( "WinPostMsg to it fails", WinPostMsg( sh->child_client, WM_XPROC, 0, 0 ), FALSE );
+        check( "WinSendMsg to it fails", LONGFROMMR( WinSendMsg( sh->child_client, WM_XSEND, 0, 0 ) ), 0 );
         finish();
         return;
     }
@@ -296,6 +341,18 @@ MRESULT EXPENTRY ClientWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
             sh->posted_mp2 = LONGFROMMP( mp2 );
         }
         return 0;
+
+    case WM_XSEND:
+        sh->b_in_send = WinInSendMsg( hab );
+        sh->b_send_tid = own_tid();
+        return MRFROMLONG( LONGFROMMP( mp1 ) * LONGFROMMP( mp2 ) + 1000 );
+
+    case WM_XBACK:
+        return MRFROMLONG( LONGFROMMR( WinSendMsg( sh->parent_client, WM_XECHO, mp1, 0 ) ) + 1 );
+
+    case WM_XECHO:
+        a_in_send = WinInSendMsg( hab );
+        return MRFROMLONG( LONGFROMMP( mp1 ) * 2 );
 
     case WM_SIZE:
         /* Only the size the parent set: after its posted message. */
@@ -362,8 +419,9 @@ int main( void )
         sh->child_client = client;
         sh->child_pid = own_pid();
         sh->child_ready = 1;
-    } else if( start_child() != NO_ERROR ) {
-        write_stdout( "pm_xproc_test: cannot start the child\r\n" );
+    } else {
+        sh->parent_client = client;
+        if( start_child() != NO_ERROR ) write_stdout( "pm_xproc_test: cannot start the child\r\n" );
     }
 
     while( WinGetMsg( hab, &qmsg, NULLHANDLE, 0, 0 ) )

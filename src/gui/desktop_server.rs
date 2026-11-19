@@ -463,7 +463,8 @@ impl Server {
             }
             ClientMsg::Call { id, hwnd, call } => {
                 let clients = &self.clients;
-                match self.calls.call(slot, id, hwnd, Instant::now(), |c| clients.contains_key(&c)) {
+                let expires = call.expires();
+                match self.calls.call(slot, id, hwnd, Instant::now(), expires, |c| clients.contains_key(&c)) {
                     Route::Forward { callee, id } => {
                         self.clients[&callee].send(&ServerMsg::Called { id, hwnd, call });
                     }
