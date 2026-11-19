@@ -66,3 +66,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0058](0058-deepest-window-hit-test-update-regions-must-complete.md) | Pointer input goes to the deepest window and asks WM_HITTEST when read; update areas are regions; must-complete sections hold signals | Accepted | 2026-11-19 |
 | [0059](0059-som-runtime-kernel.md) | A built-in SOM.DLL keeps classes host-side and objects in guest memory; executables load and initialize their DLLs | Accepted (stage 1); partly superseded by 0060 | 2026-11-19 |
 | [0060](0060-som-metaclasses-multiple-inheritance.md) | SOM tokens name their introducing class; derived metaclasses, multiple inheritance and a runtime heap | Accepted | 2026-11-19 |
+| [0061](0061-som-cpp-bindings.md) | SOM's C++ bindings create objects through the runtime; somDefaultInit and somDestruct | Accepted | 2026-11-19 |
