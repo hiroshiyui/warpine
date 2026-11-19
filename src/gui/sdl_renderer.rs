@@ -1454,8 +1454,12 @@ impl SdlRenderer {
                     self.composite_and_present(shared);
                     link.send(&ClientMsg::FlushDone { token }, None);
                 }
+                ServerMsg::Active { frame } => {
+                    shared.window_mgr.lock_or_recover().session_active = frame;
+                }
                 ServerMsg::Quit => return false,
-                ServerMsg::Welcome { .. } => {}
+                // Calls and answers are handled by the link's reader thread.
+                ServerMsg::Welcome { .. } | ServerMsg::Called { .. } | ServerMsg::Answered { .. } => {}
             }
         }
         !link.lost()
@@ -1503,7 +1507,7 @@ impl SdlRenderer {
         let mut dirty_frames: HashSet<u32> = HashSet::new();
         let mut chrome_changed: HashSet<u32> = HashSet::new();
         let mut cursor_marks: HashMap<u32, CursorMark> = HashMap::new();
-        let (active, raised): (u32, Vec<u32>);
+        let (active, raised, lowered): (u32, Vec<u32>, Vec<u32>);
         let snaps: Vec<Snap> = {
             let mut wm = shared.window_mgr.lock_or_recover();
             if wm.dirty.is_empty() && !self.force_full && !self.overlay_changed {
@@ -1524,6 +1528,7 @@ impl SdlRenderer {
             let focused = wm.focused_hwnd;
             active = focused;
             raised = std::mem::take(&mut wm.raised_frames);
+            lowered = std::mem::take(&mut wm.lowered_frames);
             let title_colors = TitleColors::of(&wm.sys_colors);
             let chrome = &mut self.chrome;
             wm.z_order.iter().filter_map(|&hwnd| {
@@ -1612,7 +1617,7 @@ impl SdlRenderer {
         let present = match &mut self.host {
             Host::Local(l) => l.desktop.compose(&scene),
             Host::Remote(r) => {
-                r.compose(&scene, active, raised);
+                r.compose(&scene, active, raised, lowered);
                 Duration::ZERO
             }
         };

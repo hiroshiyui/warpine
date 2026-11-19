@@ -559,6 +559,12 @@ pub fn handle_in_slot(hwnd: u32, slot: u32) -> bool {
     hwnd >> HWND_SLOT_SHIFT == slot + 1
 }
 
+/// The desktop slot window handle `hwnd` belongs to, `None` for a handle
+/// without one (the reserved handles, or a process without a server).
+pub fn handle_slot(hwnd: u32) -> Option<u32> {
+    (hwnd >> HWND_SLOT_SHIFT).checked_sub(1).filter(|&s| s < MAX_HANDLE_SLOTS)
+}
+
 pub struct WindowManager {
     classes: HashMap<String, WindowClass>,
     windows: HashMap<u32, OS2Window>,
@@ -634,6 +640,13 @@ pub struct WindowManager {
     /// Frames brought to the top since the renderer last looked, for the
     /// desktop server (ADR-0052).
     pub raised_frames: Vec<u32>,
+    /// Frames sent to the bottom since the renderer last looked.
+    pub lowered_frames: Vec<u32>,
+    /// This process's desktop slot (`None`: no desktop server).
+    pub handle_slot: Option<u32>,
+    /// The session's active frame as the desktop server last said, which
+    /// may be another program's (ADR-0052 phase B).
+    pub session_active: u32,
     /// While the GUI thread handles an event from the desktop server: its
     /// token, given to the input events it queues (ADR-0052).
     pub input_tag: Option<u64>,
@@ -751,6 +764,9 @@ impl WindowManager {
             input: Default::default(),
             input_tag: None,
             raised_frames: Vec::new(),
+            lowered_frames: Vec::new(),
+            handle_slot: None,
+            session_active: 0,
             input_tag_used: false,
             input_ack: None,
             destroying: HashSet::new(),
@@ -844,6 +860,24 @@ impl WindowManager {
     pub fn set_handle_slot(&mut self, slot: u32) {
         if self.windows.is_empty() && slot < MAX_HANDLE_SLOTS {
             self.next_hwnd = ((slot + 1) << HWND_SLOT_SHIFT) | FIRST_LOCAL_HWND;
+            self.handle_slot = Some(slot);
+        }
+    }
+
+    /// Whether `hwnd` names a window of another program on the session's
+    /// desktop: a handle of another desktop slot (ADR-0052 phase B).
+    pub fn is_foreign(&self, hwnd: u32) -> bool {
+        self.handle_slot.is_some_and(|own| handle_slot(hwnd).is_some_and(|s| s != own))
+    }
+
+    /// The active window as `WinQueryActiveWindow` reports it: this
+    /// program's active frame, else the session's when that is another
+    /// program's.
+    pub fn active_window(&self) -> u32 {
+        if self.focused_hwnd != 0 || !self.is_foreign(self.session_active) {
+            self.focused_hwnd
+        } else {
+            self.session_active
         }
     }
 
@@ -1777,6 +1811,7 @@ impl WindowManager {
             self.z_order.push(frame_hwnd);
         }
         // The desktop server raises it over other programs' frames too.
+        self.lowered_frames.retain(|&h| h != frame_hwnd);
         if self.raised_frames.last() != Some(&frame_hwnd) {
             if self.raised_frames.len() >= MAX_RAISED_FRAMES { self.raised_frames.remove(0); }
             self.raised_frames.push(frame_hwnd);
@@ -1988,6 +2023,12 @@ impl WindowManager {
     pub fn z_push_bottom(&mut self, frame_hwnd: u32) {
         self.z_order.retain(|&h| h != frame_hwnd);
         self.z_order.insert(0, frame_hwnd);
+        // The desktop server puts it below other programs' frames too.
+        self.raised_frames.retain(|&h| h != frame_hwnd);
+        if self.lowered_frames.last() != Some(&frame_hwnd) {
+            if self.lowered_frames.len() >= MAX_RAISED_FRAMES { self.lowered_frames.remove(0); }
+            self.lowered_frames.push(frame_hwnd);
+        }
         self.mark_all_dirty();
     }
 
@@ -2041,7 +2082,8 @@ mod tests {
         assert!(stop.is_stopped() && stop.sleep(Duration::from_secs(60)), "stays stopped");
     }
 
-    use super::{WindowManager, HWND_SLOT_SHIFT, HWND_LOCAL_MASK, FIRST_LOCAL_HWND, handle_in_slot};
+    use super::{WindowManager, HWND_SLOT_SHIFT, HWND_LOCAL_MASK, FIRST_LOCAL_HWND, handle_in_slot, handle_slot};
+    use super::super::constants::HWND_DESKTOP;
 
     fn make_frame(wm: &mut WindowManager) -> u32 {
         let h_frame = wm.create_window("TestFrame".to_string(), 0, 0);
@@ -2422,6 +2464,39 @@ mod tests {
         assert_eq!(last & HWND_LOCAL_MASK, HWND_LOCAL_MASK);
         let next = wm.create_window("X".into(), 0, 0);
         assert_eq!(next, 3 << HWND_SLOT_SHIFT | (FIRST_LOCAL_HWND + 2), "a and the second window hold the first two");
+    }
+
+    #[test]
+    fn other_slots_handles_are_foreign_and_their_active_frame_is_reported() {
+        let mut wm = WindowManager::new();
+        let other = 5 << HWND_SLOT_SHIFT | FIRST_LOCAL_HWND;
+        assert!(!wm.is_foreign(other), "no desktop server: nothing is foreign");
+        wm.set_handle_slot(2);
+        assert_eq!(handle_slot(other), Some(4));
+        assert_eq!((handle_slot(HWND_DESKTOP), handle_slot(0)), (None, None));
+        assert!(wm.is_foreign(other));
+        assert!(!wm.is_foreign(3 << HWND_SLOT_SHIFT | FIRST_LOCAL_HWND) && !wm.is_foreign(HWND_DESKTOP));
+        // The session's active frame counts while none of ours is active.
+        let f = make_frame(&mut wm);
+        wm.session_active = other;
+        assert_eq!(wm.active_window(), other);
+        wm.focused_hwnd = f;
+        assert_eq!(wm.active_window(), f);
+        wm.focused_hwnd = 0;
+        wm.session_active = f;
+        assert_eq!(wm.active_window(), 0, "our own frame counts only while focused here");
+    }
+
+    #[test]
+    fn frames_sent_to_the_bottom_are_remembered_for_the_desktop_server() {
+        let mut wm = WindowManager::new();
+        let (f1, f2) = (make_frame(&mut wm), make_frame(&mut wm));
+        wm.z_push_top(f1);
+        wm.z_push_top(f2);
+        wm.z_push_bottom(f2);
+        assert_eq!((wm.raised_frames.clone(), wm.lowered_frames.clone()), (vec![f1], vec![f2]));
+        wm.z_push_top(f2);
+        assert_eq!((wm.raised_frames.clone(), wm.lowered_frames.clone()), (vec![f1, f2], vec![]));
     }
 
     #[test]

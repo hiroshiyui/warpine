@@ -6,7 +6,8 @@
 //! text cursor — into a shared pixmap, each open pull-down and pop-up menu
 //! into one of their own, and sends the server what it shows (`Update`):
 //! the pictures back to front with their places and painted parts, the
-//! damaged pixmap areas, its active frame and the frames it raised.
+//! damaged pixmap areas, its active frame and the frames it raised or
+//! lowered.
 //!
 //! Pictures are rendered exactly as the layered compositor renders its frame
 //! textures (`draw_placed_frame`, the same partial updates of changed client
@@ -88,7 +89,7 @@ impl RemoteDesktop {
     }
 
     /// Bring the pictures up to date with `scene` and tell the server.
-    pub fn compose(&mut self, scene: &Scene, active: u32, raised: Vec<u32>) {
+    pub fn compose(&mut self, scene: &Scene, active: u32, raised: Vec<u32>, lowered: Vec<u32>) {
         let mut items = Vec::new();
         let mut damage = Vec::new();
         for f in &scene.frames {
@@ -110,12 +111,12 @@ impl RemoteDesktop {
             damage = items.iter().map(|it: &Item| (it.pixmap, whole(&it.parts))).take(MAX_DAMAGE).collect();
         }
         items.truncate(MAX_ITEMS);
-        let update = Update { active, raised, items, damage, overlay };
-        let unchanged = update.damage.is_empty() && update.raised.is_empty()
+        let update = Update { active, raised, lowered, items, damage, overlay };
+        let unchanged = update.damage.is_empty() && update.raised.is_empty() && update.lowered.is_empty()
             && self.last.as_ref().is_some_and(|l| *l == update);
         if !unchanged {
             self.link.send(&ClientMsg::Update(update.clone()), None);
-            self.last = Some(Update { damage: Vec::new(), raised: Vec::new(), ..update });
+            self.last = Some(Update { damage: Vec::new(), raised: Vec::new(), lowered: Vec::new(), ..update });
         }
     }
 

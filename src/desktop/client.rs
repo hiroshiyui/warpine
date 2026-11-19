@@ -10,16 +10,23 @@
 //! thread decodes the server's messages into an inbox and wakes the GUI
 //! loop; any malformed message or the end of the connection marks the link
 //! lost, and the process then ends its PM program.
+//!
+//! Calls on other programs' windows (phase B) go through the link too: an
+//! API thread's [`DesktopLink::call`] waits for its answer at most
+//! `CALL_TIMEOUT`, and the reader thread answers the calls other programs
+//! make on this program's windows through the [`Responder`] — without
+//! waiting for anything but the window manager's lock, which no thread
+//! holds while it waits for an answer.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fs::File;
 use std::os::fd::BorrowedFd;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-use super::proto::{ClientMsg, ServerMsg, PROTOCOL_VERSION};
+use super::proto::{ClientMsg, ServerMsg, WinCall, WinReply, PROTOCOL_VERSION};
 use super::transport::Conn;
 use crate::loader::MutexExt;
 
@@ -35,6 +42,22 @@ pub const LOCK_NAME: &str = "desktop.lock";
 const START_TIMEOUT: Duration = Duration::from_secs(10);
 /// Pause between connection attempts while it starts.
 const START_POLL: Duration = Duration::from_millis(10);
+/// How long a call on another program's window waits for its answer
+/// (Warpine's choice, as `INPUT_STALL`).
+pub const CALL_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Answers the calls other programs make on this program's windows.
+pub trait Responder: Send + Sync {
+    /// Make `call` on window `hwnd` of this program.
+    fn answer(&self, hwnd: u32, call: &WinCall) -> WinReply;
+}
+
+/// This program's calls waiting for their answers.
+#[derive(Default)]
+struct Calls {
+    waiting: HashMap<u32, Option<WinReply>>,
+    next: u32,
+}
 
 /// The desktop lock: an exclusive `flock` on `desktop.lock` in the session
 /// directory, held while the file at the path is the one locked (the
@@ -79,6 +102,8 @@ pub struct DesktopLink {
     inbox: Arc<Mutex<VecDeque<ServerMsg>>>,
     lost: Arc<AtomicBool>,
     waker: Arc<Mutex<Option<Waker>>>,
+    calls: Arc<(Mutex<Calls>, Condvar)>,
+    responder: Arc<Mutex<Option<Arc<dyn Responder>>>>,
 }
 
 impl DesktopLink {
@@ -120,8 +145,10 @@ impl DesktopLink {
         let link = Arc::new(DesktopLink {
             conn: Arc::new(conn), slot, size: (width, height),
             inbox: Arc::default(), lost: Arc::default(), waker: Arc::default(),
+            calls: Arc::default(), responder: Arc::default(),
         });
         let (conn, inbox, lost, waker) = (link.conn.clone(), link.inbox.clone(), link.lost.clone(), link.waker.clone());
+        let (calls, responder) = (link.calls.clone(), link.responder.clone());
         std::thread::Builder::new().name("desktop-link".into()).spawn(move || {
             loop {
                 let msg = match conn.recv() {
@@ -129,9 +156,30 @@ impl DesktopLink {
                     _ => None,
                 };
                 match msg {
+                    Some(ServerMsg::Answered { id, reply }) => {
+                        let (lock, cond) = &*calls;
+                        // An answer nobody waits for any more is dropped.
+                        if let Some(slot) = lock.lock_or_recover().waiting.get_mut(&id) {
+                            *slot = Some(reply);
+                            cond.notify_all();
+                        }
+                        continue;
+                    }
+                    Some(ServerMsg::Called { id, hwnd, call }) => {
+                        let r = responder.lock_or_recover().clone();
+                        let reply = r.map_or(WinReply::Failed, |r| r.answer(hwnd, &call));
+                        if conn.send(&ClientMsg::Answer { id, reply }.encode(), None).is_err() {
+                            conn.shutdown();
+                        }
+                        continue;
+                    }
                     Some(m) => inbox.lock_or_recover().push_back(m),
                     None => {
                         lost.store(true, Ordering::Release);
+                        // Callers waiting for answers give up.
+                        let (lock, cond) = &*calls;
+                        drop(lock.lock_or_recover());
+                        cond.notify_all();
                         if let Some(w) = waker.lock_or_recover().as_ref() { w(); }
                         return;
                     }
@@ -165,6 +213,41 @@ impl DesktopLink {
     /// The server is gone or misbehaved.
     pub fn lost(&self) -> bool {
         self.lost.load(Ordering::Acquire) && self.inbox.lock_or_recover().is_empty()
+    }
+
+    /// Answer other programs' calls on this program's windows with
+    /// `responder` (until then they fail).
+    pub fn set_responder(&self, responder: Arc<dyn Responder>) {
+        *self.responder.lock_or_recover() = Some(responder);
+    }
+
+    /// Make `call` on window `hwnd` of another program and wait for the
+    /// answer: `None` when none came within `CALL_TIMEOUT` or the link is
+    /// lost. Never call it while holding the window manager's lock: the
+    /// other program may be calling this one meanwhile.
+    pub fn call(&self, hwnd: u32, call: WinCall) -> Option<WinReply> {
+        let (lock, cond) = &*self.calls;
+        let id = {
+            let mut c = lock.lock_or_recover();
+            c.next = c.next.wrapping_add(1);
+            let id = c.next;
+            c.waiting.insert(id, None);
+            id
+        };
+        let sent = self.send(&ClientMsg::Call { id, hwnd, call }, None);
+        let deadline = Instant::now() + CALL_TIMEOUT;
+        let mut c = lock.lock_or_recover();
+        loop {
+            if c.waiting.get(&id).is_some_and(Option::is_some) {
+                return c.waiting.remove(&id).flatten();
+            }
+            let now = Instant::now();
+            if !sent || self.lost.load(Ordering::Acquire) || now >= deadline {
+                c.waiting.remove(&id);
+                return None;
+            }
+            c = cond.wait_timeout(c, deadline - now).map(|(g, _)| g).unwrap_or_else(|e| e.into_inner().0);
+        }
     }
 
     /// Whether frame handle `hwnd` is this process's.
@@ -230,6 +313,50 @@ mod tests {
             std::thread::sleep(Duration::from_millis(1));
         }
         assert!(link.lost());
+    }
+
+    struct Echo;
+
+    impl Responder for Echo {
+        fn answer(&self, hwnd: u32, call: &WinCall) -> WinReply {
+            match call {
+                WinCall::Post { msg, .. } => WinReply::Value(hwnd ^ msg),
+                _ => WinReply::Failed,
+            }
+        }
+    }
+
+    #[test]
+    fn calls_wait_for_their_answers_and_calls_made_here_are_answered() {
+        let (client, server) = Conn::pair().unwrap();
+        let t = std::thread::spawn(move || {
+            let _ = server.recv().unwrap(); // Hello
+            server.send(&ServerMsg::Welcome { version: PROTOCOL_VERSION, slot: 0, width: 1, height: 1 }.encode(),
+                        None).unwrap();
+            // This one calls; meanwhile another program calls this one.
+            let (p, _) = server.recv().unwrap().unwrap();
+            let Ok(ClientMsg::Call { id, hwnd: 0x20_1000, call: WinCall::Describe }) = ClientMsg::decode(&p) else {
+                panic!("{p:?}")
+            };
+            server.send(&ServerMsg::Called { id: 77, hwnd: 0x10_1000, call: WinCall::Post { msg: 1, mp1: 0, mp2: 0 } }
+                        .encode(), None).unwrap();
+            let (p, _) = server.recv().unwrap().unwrap();
+            assert_eq!(ClientMsg::decode(&p), Ok(ClientMsg::Answer { id: 77, reply: WinReply::Value(0x10_1001) }));
+            // A stray answer first, then the right one.
+            server.send(&ServerMsg::Answered { id: id + 100, reply: WinReply::Value(1) }.encode(), None).unwrap();
+            server.send(&ServerMsg::Answered { id, reply: WinReply::Value(2) }.encode(), None).unwrap();
+            // A second call is not answered: the server goes away.
+            let _ = server.recv().unwrap().unwrap();
+            drop(server);
+        });
+        let link = DesktopLink::handshake(client).unwrap();
+        link.set_responder(Arc::new(Echo));
+        assert_eq!(link.call(0x20_1000, WinCall::Describe), Some(WinReply::Value(2)));
+        let started = Instant::now();
+        assert_eq!(link.call(0x20_1000, WinCall::Describe), None);
+        assert!(started.elapsed() < CALL_TIMEOUT, "a lost link ends the wait at once");
+        t.join().unwrap();
+        assert!(link.calls.0.lock().unwrap().waiting.is_empty());
     }
 
     #[test]

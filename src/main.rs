@@ -267,6 +267,8 @@ fn desktop_link(shared: &Arc<loader::SharedState>) -> Option<Arc<desktop::client
             wm.input_ack = Some(Arc::new(move |token, active| {
                 l.send(&desktop::proto::ClientMsg::Ack { token, active }, None);
             }));
+            // Calls on other programs' windows go through it (phase B).
+            let _ = shared.desktop_link.set(link.clone());
             Some(link)
         }
         Err(e) => {
@@ -470,8 +472,12 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>, args: &[&str]) {
             None => gui::SdlRenderer::new(&sdl, &shared.audio),
         };
 
-        // Launch VCPU thread
+        // Launch VCPU thread; other programs' calls on this one's windows
+        // are answered from its window manager (ADR-0052 phase B).
         let loader = Arc::new(loader);
+        if let Some(link) = shared.desktop_link.get() {
+            link.set_responder(loader.clone());
+        }
         loader.clone().setup_and_spawn_vcpu(&lx_file);
 
         // Run the GUI event loop on the main thread (returns when done).

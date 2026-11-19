@@ -2336,6 +2336,18 @@ fn gui_pm_twoproc_test_matches_golden() {
         "3000 click 550 287\n3300 click 190 287\n4000 dump {dump}\n4100 quit\n");
 }
 
+/// pm_xproc_test: calls on another program's windows through the desktop
+/// server (ADR-0052 phase B). The parent takes activation back from the
+/// child's frame B, then queries B (WinIsWindow, WinQueryWindowProcess,
+/// text, position, rectangle, visibility, class name, window words,
+/// WinQueryWindow), posts to it, moves and sizes it, activates it, minimizes
+/// and hides it — each change seen in the child — and once the child ended
+/// B's handle is no window. No input: the script only ends a stuck run.
+#[test]
+fn gui_pm_xproc_test_calls_on_another_programs_windows() {
+    assert_scripted_checks_pass("samples/pm_xproc_test/pm_xproc_test.exe", "pm_xproc_test", 42, "20000 quit\n");
+}
+
 /// The desktop kept in the process (`WARPINE_DESKTOP=local`, no desktop
 /// server) shows what the server shows: pm_minmax_test's golden picture and
 /// pm_inputorder_test's checks.

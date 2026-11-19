@@ -1315,6 +1315,10 @@ pub const WS_CLIPCHILDREN: u32 = 0x2000_0000;
 pub const QWL_STYLE: i32 = -2;
 // WinQueryWindowPtr / WinSetWindowPtr index of the window procedure.
 pub const QWP_PFNWP: i32 = -3;
+// WinQueryWindowUShort / WinSetWindowUShort index of the window identity.
+pub const QWS_ID: i32 = -1;
+// WinQueryWindowULong index of the window's message queue handle.
+pub const QWL_HMQ: i32 = -4;
 // Lowest reserved window-word indices: WinQuery/SetWindowULong accept
 // QWL_MIN..=-1 and WinQuery/SetWindowUShort QWS_MIN..=-1 below the
 // application's own words (0 .. cbWindowData).

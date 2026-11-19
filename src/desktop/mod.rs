@@ -15,4 +15,5 @@ pub mod pixmap;
 pub mod proto;
 pub mod transport;
 pub mod model;
+pub mod calls;
 pub mod client;

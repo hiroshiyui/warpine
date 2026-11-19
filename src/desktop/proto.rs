@@ -11,7 +11,7 @@
 //! server's packets the same way.
 
 /// Protocol version, checked in `Hello` / `Welcome`.
-pub const PROTOCOL_VERSION: u32 = 1;
+pub const PROTOCOL_VERSION: u32 = 2;
 /// Largest packet either side sends or accepts.
 pub const MAX_MESSAGE: usize = 128 * 1024;
 /// Most items (frame pictures and pull-downs) in one `Update`.
@@ -20,8 +20,10 @@ pub const MAX_ITEMS: usize = 512;
 pub const MAX_PARTS: usize = 8;
 /// Most damaged rectangles in one `Update`.
 pub const MAX_DAMAGE: usize = 256;
-/// Most frames named as raised in one `Update`.
+/// Most frames named as raised (or as lowered) in one `Update`.
 pub const MAX_RAISED: usize = 64;
+/// Longest window class name, in bytes.
+pub const MAX_NAME: usize = 256;
 /// Longest text (clipboard, typed text), in bytes.
 pub const MAX_TEXT: usize = 64 * 1024;
 /// Largest pointer image side sent through the socket.
@@ -76,6 +78,8 @@ pub struct Update {
     pub active: u32,
     /// Frames brought to the top since the last update, in that order.
     pub raised: Vec<u32>,
+    /// Frames sent to the bottom since the last update, in that order.
+    pub lowered: Vec<u32>,
     /// Its pictures, back to front.
     pub items: Vec<Item>,
     /// Pixmap areas whose pels changed since the last update.
@@ -93,6 +97,61 @@ pub enum Pointer {
     System(u8),
     /// An RGBA image with its hot spot.
     Image { width: u32, height: u32, hot_x: i32, hot_y: i32, rgba: Vec<u8> },
+}
+
+/// A call on a window of another program (ADR-0052 phase B), made by the
+/// caller's API thread and answered by the program the window belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WinCall {
+    /// `WinPostMsg`: queue the message for the window.
+    Post { msg: u32, mp1: u32, mp2: u32 },
+    /// Describe the window ([`WindowInfo`]).
+    Describe,
+    /// Read a window word of `size` (2 or 4) bytes at `index`.
+    Word { index: i32, size: u8 },
+    /// `WinQueryWindow(hwnd, code)`.
+    Query { code: i32 },
+    /// `WinSetWindowPos`.
+    SetPos { behind: u32, x: i32, y: i32, cx: i32, cy: i32, fl: u32 },
+    /// `WinShowWindow`.
+    Show { show: bool },
+    /// `WinSetActiveWindow`.
+    Activate,
+}
+
+/// What a program says about one of its windows.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct WindowInfo {
+    /// OS/2 process and thread of the window.
+    pub pid: u32,
+    pub tid: u32,
+    pub parent: u32,
+    pub owner: u32,
+    /// `QWL_STYLE`, `WS_VISIBLE` as the window is now.
+    pub style: u32,
+    pub id: u32,
+    /// Position (PM coordinates, relative to the parent) and size.
+    pub x: i32,
+    pub y: i32,
+    pub cx: i32,
+    pub cy: i32,
+    /// `SWP_*` flags `WinQueryWindowPos` reports.
+    pub swp_fl: u32,
+    /// `WinIsWindowVisible`: it and its ancestors are visible.
+    pub showing: bool,
+    pub class: String,
+    pub text: String,
+}
+
+/// The answer to a [`WinCall`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WinReply {
+    /// No such window, or the call failed (the caller reports
+    /// `PMERR_INVALID_HWND` or FALSE).
+    Failed,
+    /// The call's value (BOOL, handle, window word).
+    Value(u32),
+    Info(Box<WindowInfo>),
 }
 
 /// Client → server.
@@ -116,6 +175,11 @@ pub enum ClientMsg {
     TextArea { area: Area, cursor: i32 },
     /// Everything up to `Flush { token }` is shown.
     FlushDone { token: u64 },
+    /// Make `call` on window `hwnd` of another program; the answer comes
+    /// back as `Answered { id }`.
+    Call { id: u32, hwnd: u32, call: WinCall },
+    /// The answer to `Called { id }`.
+    Answer { id: u64, reply: WinReply },
 }
 
 /// One input event, in desktop coordinates (top-left origin).
@@ -146,6 +210,13 @@ pub enum ServerMsg {
     Flush { token: u64 },
     /// The desktop is closing: end.
     Quit,
+    /// Another program makes `call` on this program's window `hwnd`:
+    /// answer with `Answer { id }`.
+    Called { id: u64, hwnd: u32, call: WinCall },
+    /// The answer to this program's `Call { id }`.
+    Answered { id: u32, reply: WinReply },
+    /// The session's active frame is now `frame` (0: none).
+    Active { frame: u32 },
 }
 
 /// Why a packet was refused.
@@ -186,7 +257,11 @@ impl Writer {
     fn bool(&mut self, v: bool) { self.u8(v as u8); }
     /// Text cut to `MAX_TEXT` bytes at a character boundary.
     fn text(&mut self, s: &str) {
-        let mut end = s.len().min(MAX_TEXT);
+        self.text_max(s, MAX_TEXT);
+    }
+    /// Text cut to `max` bytes at a character boundary.
+    fn text_max(&mut self, s: &str, max: usize) {
+        let mut end = s.len().min(max);
         while !s.is_char_boundary(end) { end -= 1; }
         self.u32(end as u32);
         self.0.extend_from_slice(&s.as_bytes()[..end]);
@@ -199,6 +274,40 @@ impl Writer {
         let parts = &it.parts[..it.parts.len().min(MAX_PARTS)];
         self.u16(parts.len() as u16);
         for p in parts { self.area(p); }
+    }
+    fn handles(&mut self, hs: &[u32]) {
+        let hs = &hs[..hs.len().min(MAX_RAISED)];
+        self.u16(hs.len() as u16);
+        for h in hs { self.u32(*h); }
+    }
+    fn call(&mut self, c: &WinCall) {
+        match c {
+            WinCall::Post { msg, mp1, mp2 } => { self.u8(tag::CALL_POST); self.u32(*msg); self.u32(*mp1); self.u32(*mp2); }
+            WinCall::Describe => self.u8(tag::CALL_DESCRIBE),
+            WinCall::Word { index, size } => { self.u8(tag::CALL_WORD); self.i32(*index); self.u8(*size); }
+            WinCall::Query { code } => { self.u8(tag::CALL_QUERY); self.i32(*code); }
+            WinCall::SetPos { behind, x, y, cx, cy, fl } => {
+                self.u8(tag::CALL_SETPOS);
+                self.u32(*behind); self.i32(*x); self.i32(*y); self.i32(*cx); self.i32(*cy); self.u32(*fl);
+            }
+            WinCall::Show { show } => { self.u8(tag::CALL_SHOW); self.bool(*show); }
+            WinCall::Activate => self.u8(tag::CALL_ACTIVATE),
+        }
+    }
+    fn reply(&mut self, r: &WinReply) {
+        match r {
+            WinReply::Failed => self.u8(tag::REPLY_FAILED),
+            WinReply::Value(v) => { self.u8(tag::REPLY_VALUE); self.u32(*v); }
+            WinReply::Info(i) => {
+                self.u8(tag::REPLY_INFO);
+                for v in [i.pid, i.tid, i.parent, i.owner, i.style, i.id] { self.u32(v); }
+                for v in [i.x, i.y, i.cx, i.cy] { self.i32(v); }
+                self.u32(i.swp_fl);
+                self.bool(i.showing);
+                self.text_max(&i.class, MAX_NAME);
+                self.text(&i.text);
+            }
+        }
     }
 }
 
@@ -235,8 +344,11 @@ impl<'a> Reader<'a> {
         }
     }
     fn text(&mut self) -> Result<String, DecodeError> {
+        self.text_max(MAX_TEXT)
+    }
+    fn text_max(&mut self, max: usize) -> Result<String, DecodeError> {
         let n = self.u32()? as usize;
-        if n > MAX_TEXT { return Err(DecodeError::TooLarge); }
+        if n > max { return Err(DecodeError::TooLarge); }
         String::from_utf8(self.take(n)?.to_vec()).map_err(|_| DecodeError::BadText)
     }
     fn count(&mut self, max: usize) -> Result<usize, DecodeError> {
@@ -260,6 +372,47 @@ impl<'a> Reader<'a> {
         let n = self.count(MAX_PARTS)?;
         let parts = (0..n).map(|_| self.area()).collect::<Result<_, _>>()?;
         Ok(Item { frame, pixmap, x, y, parts })
+    }
+    fn handles(&mut self) -> Result<Vec<u32>, DecodeError> {
+        let n = self.count(MAX_RAISED)?;
+        (0..n).map(|_| self.u32()).collect()
+    }
+    fn call(&mut self) -> Result<WinCall, DecodeError> {
+        Ok(match self.u8()? {
+            tag::CALL_POST => WinCall::Post { msg: self.u32()?, mp1: self.u32()?, mp2: self.u32()? },
+            tag::CALL_DESCRIBE => WinCall::Describe,
+            tag::CALL_WORD => {
+                let index = self.i32()?;
+                let size = self.u8()?;
+                if size != 2 && size != 4 { return Err(DecodeError::BadValue); }
+                WinCall::Word { index, size }
+            }
+            tag::CALL_QUERY => WinCall::Query { code: self.i32()? },
+            tag::CALL_SETPOS => WinCall::SetPos { behind: self.u32()?, x: self.coord()?, y: self.coord()?,
+                                                  cx: self.coord()?, cy: self.coord()?, fl: self.u32()? },
+            tag::CALL_SHOW => WinCall::Show { show: self.bool()? },
+            tag::CALL_ACTIVATE => WinCall::Activate,
+            _ => return Err(DecodeError::BadValue),
+        })
+    }
+    fn reply(&mut self) -> Result<WinReply, DecodeError> {
+        Ok(match self.u8()? {
+            tag::REPLY_FAILED => WinReply::Failed,
+            tag::REPLY_VALUE => WinReply::Value(self.u32()?),
+            tag::REPLY_INFO => {
+                let mut i = WindowInfo {
+                    pid: self.u32()?, tid: self.u32()?, parent: self.u32()?, owner: self.u32()?,
+                    style: self.u32()?, id: self.u32()?, ..WindowInfo::default()
+                };
+                (i.x, i.y, i.cx, i.cy) = (self.coord()?, self.coord()?, self.coord()?, self.coord()?);
+                i.swp_fl = self.u32()?;
+                i.showing = self.bool()?;
+                i.class = self.text_max(MAX_NAME)?;
+                i.text = self.text()?;
+                WinReply::Info(Box::new(i))
+            }
+            _ => return Err(DecodeError::BadValue),
+        })
     }
     fn end(&self) -> Result<(), DecodeError> {
         if self.pos == self.buf.len() { Ok(()) } else { Err(DecodeError::Trailing) }
@@ -291,6 +444,8 @@ mod tag {
     pub const WARP: u16 = 9;
     pub const TEXT_AREA: u16 = 10;
     pub const FLUSH_DONE: u16 = 11;
+    pub const CALL: u16 = 12;
+    pub const ANSWER: u16 = 13;
 
     pub const WELCOME: u16 = 100;
     pub const INPUT: u16 = 101;
@@ -299,6 +454,21 @@ mod tag {
     pub const S_CLIPBOARD: u16 = 104;
     pub const FLUSH: u16 = 105;
     pub const QUIT: u16 = 106;
+    pub const CALLED: u16 = 107;
+    pub const ANSWERED: u16 = 108;
+    pub const ACTIVE: u16 = 109;
+
+    pub const CALL_POST: u8 = 1;
+    pub const CALL_DESCRIBE: u8 = 2;
+    pub const CALL_WORD: u8 = 3;
+    pub const CALL_QUERY: u8 = 4;
+    pub const CALL_SETPOS: u8 = 5;
+    pub const CALL_ACTIVATE: u8 = 6;
+    pub const CALL_SHOW: u8 = 7;
+
+    pub const REPLY_FAILED: u8 = 0;
+    pub const REPLY_VALUE: u8 = 1;
+    pub const REPLY_INFO: u8 = 2;
 
     pub const IN_MOTION: u8 = 1;
     pub const IN_BUTTON: u8 = 2;
@@ -324,9 +494,8 @@ impl ClientMsg {
             ClientMsg::Update(u) => {
                 w = Writer::new(tag::UPDATE);
                 w.u32(u.active);
-                let raised = &u.raised[..u.raised.len().min(MAX_RAISED)];
-                w.u16(raised.len() as u16);
-                for h in raised { w.u32(*h); }
+                w.handles(&u.raised);
+                w.handles(&u.lowered);
                 let items = &u.items[..u.items.len().min(MAX_ITEMS)];
                 w.u16(items.len() as u16);
                 for it in items { w.item(it); }
@@ -357,6 +526,8 @@ impl ClientMsg {
             ClientMsg::WarpPointer { x, y } => { w = Writer::new(tag::WARP); w.i32(*x); w.i32(*y); }
             ClientMsg::TextArea { area, cursor } => { w = Writer::new(tag::TEXT_AREA); w.area(area); w.i32(*cursor); }
             ClientMsg::FlushDone { token } => { w = Writer::new(tag::FLUSH_DONE); w.u64(*token); }
+            ClientMsg::Call { id, hwnd, call } => { w = Writer::new(tag::CALL); w.u32(*id); w.u32(*hwnd); w.call(call); }
+            ClientMsg::Answer { id, reply } => { w = Writer::new(tag::ANSWER); w.u64(*id); w.reply(reply); }
         }
         finish(w)
     }
@@ -369,14 +540,14 @@ impl ClientMsg {
             tag::DROP_PIXMAP => ClientMsg::DropPixmap { id: r.u32()? },
             tag::UPDATE => {
                 let active = r.u32()?;
-                let n = r.count(MAX_RAISED)?;
-                let raised = (0..n).map(|_| r.u32()).collect::<Result<_, _>>()?;
+                let raised = r.handles()?;
+                let lowered = r.handles()?;
                 let n = r.count(MAX_ITEMS)?;
                 let items = (0..n).map(|_| r.item()).collect::<Result<_, _>>()?;
                 let n = r.count(MAX_DAMAGE)?;
                 let damage = (0..n).map(|_| Ok((r.u32()?, r.area()?))).collect::<Result<_, _>>()?;
                 let overlay = if r.bool()? { Some(r.item()?) } else { None };
-                ClientMsg::Update(Update { active, raised, items, damage, overlay })
+                ClientMsg::Update(Update { active, raised, lowered, items, damage, overlay })
             }
             tag::ACK => ClientMsg::Ack { token: r.u64()?, active: r.u32()? },
             tag::CLIPBOARD => ClientMsg::Clipboard(r.text()?),
@@ -398,6 +569,8 @@ impl ClientMsg {
             tag::WARP => ClientMsg::WarpPointer { x: r.coord()?, y: r.coord()? },
             tag::TEXT_AREA => ClientMsg::TextArea { area: r.area()?, cursor: r.coord()? },
             tag::FLUSH_DONE => ClientMsg::FlushDone { token: r.u64()? },
+            tag::CALL => ClientMsg::Call { id: r.u32()?, hwnd: r.u32()?, call: r.call()? },
+            tag::ANSWER => ClientMsg::Answer { id: r.u64()?, reply: r.reply()? },
             other => return Err(DecodeError::UnknownTag(other)),
         };
         r.end()?;
@@ -436,6 +609,9 @@ impl ServerMsg {
             ServerMsg::Clipboard(s) => { w = Writer::new(tag::S_CLIPBOARD); w.text(s); }
             ServerMsg::Flush { token } => { w = Writer::new(tag::FLUSH); w.u64(*token); }
             ServerMsg::Quit => w = Writer::new(tag::QUIT),
+            ServerMsg::Called { id, hwnd, call } => { w = Writer::new(tag::CALLED); w.u64(*id); w.u32(*hwnd); w.call(call); }
+            ServerMsg::Answered { id, reply } => { w = Writer::new(tag::ANSWERED); w.u32(*id); w.reply(reply); }
+            ServerMsg::Active { frame } => { w = Writer::new(tag::ACTIVE); w.u32(*frame); }
         }
         finish(w)
     }
@@ -463,6 +639,9 @@ impl ServerMsg {
             tag::S_CLIPBOARD => ServerMsg::Clipboard(r.text()?),
             tag::FLUSH => ServerMsg::Flush { token: r.u64()? },
             tag::QUIT => ServerMsg::Quit,
+            tag::CALLED => ServerMsg::Called { id: r.u64()?, hwnd: r.u32()?, call: r.call()? },
+            tag::ANSWERED => ServerMsg::Answered { id: r.u32()?, reply: r.reply()? },
+            tag::ACTIVE => ServerMsg::Active { frame: r.u32()? },
             other => return Err(DecodeError::UnknownTag(other)),
         };
         r.end()?;
@@ -474,6 +653,11 @@ impl ServerMsg {
 mod tests {
     use super::*;
 
+    fn info() -> WindowInfo {
+        WindowInfo { pid: 3, tid: 1, parent: 1, owner: 0, style: 0x8000_0000, id: 0x8008, x: -5, y: 6, cx: 7,
+                     cy: 8, swp_fl: 3, showing: true, class: "#1".into(), text: "Programm B — 日本".into() }
+    }
+
     fn client_msgs() -> Vec<ClientMsg> {
         let item = Item { frame: 0x10_1000, pixmap: 3, x: -5, y: 40, parts: vec![Area::new(0, 0, 10, 20)] };
         vec![
@@ -481,7 +665,7 @@ mod tests {
             ClientMsg::NewPixmap { id: 7, width: 640, height: 480 },
             ClientMsg::DropPixmap { id: 7 },
             ClientMsg::Update(Update {
-                active: 0x10_1000, raised: vec![0x10_1000], items: vec![item.clone()],
+                active: 0x10_1000, raised: vec![0x10_1000], lowered: vec![0x10_1001], items: vec![item.clone()],
                 damage: vec![(3, Area::new(1, 2, 3, 4))], overlay: Some(item),
             }),
             ClientMsg::Update(Update::default()),
@@ -494,6 +678,17 @@ mod tests {
             ClientMsg::WarpPointer { x: 1, y: -1 },
             ClientMsg::TextArea { area: Area::new(1, 2, 3, 4), cursor: 5 },
             ClientMsg::FlushDone { token: 9 },
+            ClientMsg::Call { id: 1, hwnd: 0x20_1000, call: WinCall::Post { msg: 0x1001, mp1: 2, mp2: 3 } },
+            ClientMsg::Call { id: 2, hwnd: 0x20_1000, call: WinCall::Describe },
+            ClientMsg::Call { id: 3, hwnd: 0x20_1000, call: WinCall::Word { index: -2, size: 2 } },
+            ClientMsg::Call { id: 4, hwnd: 0x20_1000, call: WinCall::Query { code: 5 } },
+            ClientMsg::Call { id: 5, hwnd: 0x20_1000, call: WinCall::SetPos { behind: 3, x: -1, y: 2, cx: 30, cy: 40,
+                                                                             fl: 0x8B } },
+            ClientMsg::Call { id: 6, hwnd: 0x20_1000, call: WinCall::Activate },
+            ClientMsg::Call { id: 6, hwnd: 0x20_1000, call: WinCall::Show { show: false } },
+            ClientMsg::Answer { id: 7, reply: WinReply::Failed },
+            ClientMsg::Answer { id: 8, reply: WinReply::Value(9) },
+            ClientMsg::Answer { id: 9, reply: WinReply::Info(Box::new(info())) },
         ]
     }
 
@@ -510,6 +705,10 @@ mod tests {
             ServerMsg::Clipboard(String::new()),
             ServerMsg::Flush { token: 8 },
             ServerMsg::Quit,
+            ServerMsg::Called { id: u64::MAX, hwnd: 0x10_1000, call: WinCall::Describe },
+            ServerMsg::Answered { id: 3, reply: WinReply::Info(Box::new(info())) },
+            ServerMsg::Answered { id: 4, reply: WinReply::Value(0) },
+            ServerMsg::Active { frame: 0x30_1000 },
         ]
     }
 
@@ -572,6 +771,27 @@ mod tests {
         let item = Item { frame: 1, pixmap: 1, x: i32::MIN, y: 0, parts: vec![] };
         let u = ClientMsg::Update(Update { items: vec![item], ..Update::default() });
         assert_eq!(ClientMsg::decode(&u.encode()), Err(DecodeError::BadValue));
+        // A window word of an odd size, an unknown call, an overlong class name.
+        let mut p = ClientMsg::Call { id: 1, hwnd: 2, call: WinCall::Word { index: 0, size: 4 } }.encode();
+        *p.last_mut().unwrap() = 3;
+        assert_eq!(ClientMsg::decode(&p), Err(DecodeError::BadValue));
+        p[10] = 99;
+        assert_eq!(ClientMsg::decode(&p), Err(DecodeError::BadValue));
+        let long = WindowInfo { class: "c".repeat(MAX_NAME + 1), ..info() };
+        let mut w = Writer::new(tag::ANSWER);
+        w.u64(1);
+        w.u8(tag::REPLY_INFO);
+        for v in [0u32; 6] { w.u32(v); }
+        for v in [0i32; 4] { w.i32(v); }
+        w.u32(0);
+        w.bool(false);
+        w.text(&long.class);
+        w.text("");
+        assert_eq!(ClientMsg::decode(&w.0), Err(DecodeError::TooLarge));
+        // ... which the encoder cuts instead.
+        let a = ClientMsg::Answer { id: 1, reply: WinReply::Info(Box::new(long)) };
+        let Ok(ClientMsg::Answer { reply: WinReply::Info(back), .. }) = ClientMsg::decode(&a.encode()) else { panic!() };
+        assert_eq!(back.class.len(), MAX_NAME);
         // A packet over the size limit.
         assert_eq!(ClientMsg::decode(&vec![0u8; MAX_MESSAGE + 1]), Err(DecodeError::TooLarge));
     }
@@ -589,12 +809,16 @@ mod tests {
     #[test]
     fn the_largest_update_fits_in_a_packet() {
         let item = Item { frame: 1, pixmap: 1, x: 0, y: 0, parts: vec![Area::default(); MAX_PARTS] };
-        let u = Update { active: 1, raised: vec![1; MAX_RAISED], items: vec![item.clone(); MAX_ITEMS],
+        let u = Update { active: 1, raised: vec![1; MAX_RAISED], lowered: vec![1; MAX_RAISED],
+                         items: vec![item.clone(); MAX_ITEMS],
                          damage: vec![(1, Area::default()); MAX_DAMAGE], overlay: Some(item) };
         assert!(ClientMsg::Update(u).encode().len() <= MAX_MESSAGE);
         let p = ClientMsg::Pointer(Pointer::Image { width: MAX_POINTER_SIDE, height: MAX_POINTER_SIDE, hot_x: 0,
                                                      hot_y: 0, rgba: vec![0; (MAX_POINTER_SIDE * MAX_POINTER_SIDE * 4) as usize] });
         assert!(p.encode().len() <= MAX_MESSAGE);
         assert!(ClientMsg::Clipboard("x".repeat(MAX_TEXT)).encode().len() <= MAX_MESSAGE);
+        let i = WindowInfo { class: "c".repeat(MAX_NAME), text: "t".repeat(MAX_TEXT), ..info() };
+        assert!(ClientMsg::Answer { id: 1, reply: WinReply::Info(Box::new(i.clone())) }.encode().len() <= MAX_MESSAGE);
+        assert!(ServerMsg::Answered { id: 1, reply: WinReply::Info(Box::new(i)) }.encode().len() <= MAX_MESSAGE);
     }
 }

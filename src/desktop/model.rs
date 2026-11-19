@@ -7,8 +7,8 @@
 //!
 //! - **Stacking.** Frames of all clients are stacked in one order, back to
 //!   front. A client's own frames keep the order it reports (its Z-order);
-//!   a frame it names as raised goes to the top of the whole desktop, and a
-//!   new frame appears on top.
+//!   a frame it names as raised goes to the top of the whole desktop, one it
+//!   names as lowered to the bottom, and a new frame appears on top.
 //! - **Activation.** One frame of the session is active. A client reports
 //!   its own active frame with every update and acknowledgement; when that
 //!   report *changes* to a frame, the frame becomes the session's active
@@ -126,17 +126,25 @@ impl DesktopModel {
                 self.stack.push(Stacked { client: c, frame: f });
             }
         }
-        // The client's frames keep its order, in the slots they hold.
-        let slots: Vec<usize> = self.stack.iter().enumerate().filter(|(_, s)| s.client == c).map(|(i, _)| i).collect();
-        for (slot, &f) in slots.iter().zip(order.iter()) {
-            self.stack[*slot] = Stacked { client: c, frame: f };
-        }
-        // Raised frames go to the top of the desktop.
+        // Raised frames go to the top of the desktop, lowered ones to the
+        // bottom; first, so that the client's order then fills the slots
+        // its frames hold around them.
         for &f in u.raised.iter().filter(|&&f| owns(f)) {
             if let Some(i) = self.stack.iter().position(|s| s.client == c && s.frame == f) {
                 let s = self.stack.remove(i);
                 self.stack.push(s);
             }
+        }
+        for &f in u.lowered.iter().filter(|&&f| owns(f)) {
+            if let Some(i) = self.stack.iter().position(|s| s.client == c && s.frame == f) {
+                let s = self.stack.remove(i);
+                self.stack.insert(0, s);
+            }
+        }
+        // The client's frames keep its order, in the slots they hold.
+        let slots: Vec<usize> = self.stack.iter().enumerate().filter(|(_, s)| s.client == c).map(|(i, _)| i).collect();
+        for (slot, &f) in slots.iter().zip(order.iter()) {
+            self.stack[*slot] = Stacked { client: c, frame: f };
         }
         self.items.insert(c, items);
         self.overlay = match (self.overlay.take(), &u.overlay) {
@@ -261,7 +269,7 @@ mod tests {
     }
 
     fn upd(active: u32, raised: &[u32], items: Vec<Item>) -> Update {
-        Update { active, raised: raised.to_vec(), items, damage: vec![], overlay: None }
+        Update { active, raised: raised.to_vec(), lowered: vec![], items, damage: vec![], overlay: None }
     }
 
     /// Client c owns frames with c in their high bits, as slots do.
@@ -288,6 +296,12 @@ mod tests {
         // A client reordering its frames keeps the slots they hold.
         m.update(1, &upd(A1, &[], vec![item(A1, 0), item(A2, 50)]), owner(1));
         assert_eq!(order(&m), vec![A1, B1, A2]);
+        // A lowered frame goes below every other client's.
+        let mut u = upd(A1, &[], vec![item(A2, 50), item(A1, 0)]);
+        u.lowered = vec![A2, B1];
+        m.update(1, &u, owner(1));
+        assert_eq!(order(&m), vec![A2, A1, B1], "B1 is not client 1's to lower");
+        m.update(1, &upd(A1, &[], vec![item(A1, 0), item(A2, 50)]), owner(1));
         // A frame that is gone leaves the stack.
         m.update(1, &upd(A1, &[], vec![item(A1, 0)]), owner(1));
         assert_eq!(order(&m), vec![A1, B1]);

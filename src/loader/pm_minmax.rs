@@ -108,15 +108,31 @@ impl WindowManager {
         self.get_window(hwnd).map_or(0, |w| w.style & (WS_MINIMIZED | WS_MAXIMIZED))
     }
 
-    /// WinQueryWindowUShort: window word `index` of `hwnd`. A frame that
-    /// was never minimized reports -1 (0xFFFF) as its icon position.
+    /// WinQueryWindowUShort: window word `index` of `hwnd`. `QWS_ID` is the
+    /// window's identity. A frame that was never minimized reports -1
+    /// (0xFFFF) as its icon position.
     pub fn query_window_ushort(&self, hwnd: u32, index: i32) -> u16 {
         let Some(w) = self.get_window(hwnd) else { return 0 };
+        if index == QWS_ID {
+            return w.id as u16;
+        }
         match w.window_ushort.get(&index) {
             Some(&v) => v,
             None if matches!(index, QWS_XMINIMIZE | QWS_YMINIMIZE)
                 && self.frame_to_client.contains_key(&hwnd) => 0xFFFF,
             None => 0,
+        }
+    }
+
+    /// WinQueryWindowULong: window word `index` of `hwnd`. `QWL_STYLE` is
+    /// the style with `WS_VISIBLE` as the window is now, `QWL_HMQ` its
+    /// message queue.
+    pub fn query_window_ulong(&self, hwnd: u32, index: i32) -> u32 {
+        let Some(w) = self.get_window(hwnd) else { return 0 };
+        match index {
+            QWL_STYLE => (w.style & !WS_VISIBLE) | if w.visible { WS_VISIBLE } else { 0 },
+            QWL_HMQ => w.hmq,
+            _ => w.window_ulong.get(&index).copied().unwrap_or(0),
         }
     }
 

@@ -69,6 +69,12 @@ impl super::Loader {
             std::array::from_fn(|i| self.guest_read::<u32>((esp + 8 + 4 * i as u64) as u32).unwrap_or(0))
         };
 
+        // A call on another program's window goes through the desktop
+        // server (pm_remote.rs).
+        if let Some(r) = self.remote_pmwin(vcpu_id, ordinal, &read_stack) {
+            return r;
+        }
+
         match ordinal {
             763 => {
                 // WinInitialize
@@ -181,6 +187,8 @@ impl super::Loader {
                     // pass WS_VISIBLE there to "make client window visible").
                     let class_style = wm.class_window_style(&class_name);
                     if let Some(win) = wm.get_window_mut(h_client) {
+                        // A standard frame's client is its frame control FID_CLIENT.
+                        win.id = FID_CLIENT;
                         win.style = client_style | class_style;
                         win.visible = client_style & WS_VISIBLE != 0;
                     }
@@ -534,17 +542,7 @@ impl super::Loader {
                 let show = read_stack(8) != 0;
                 debug!("  [VCPU {}] WinShowWindow hwnd={} show={}", vcpu_id, hwnd, show);
                 if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
-                let mut wm = self.shared.window_mgr.lock_or_recover();
-                let was = wm.get_window(hwnd).is_some_and(|w| w.visible);
-                if let Some(win) = wm.get_window_mut(hwnd) {
-                    win.visible = show;
-                }
-                // A window shown again needs painting, with its children.
-                if show && !was {
-                    wm.invalidate(hwnd, None, true);
-                }
-                wm.mark_dirty(hwnd); // VDR-B4
-                wm.frame_visibility_changed(hwnd);
+                self.shared.window_mgr.lock_or_recover().show_window(hwnd, show);
                 ApiResult::Normal(1)
             }
             840 => {
@@ -825,32 +823,7 @@ impl super::Loader {
                 let _hwnd_desktop = read_stack(4);
                 let hwnd = read_stack(8);
                 if !self.pm_check_hwnd(vcpu_id, hwnd, false) { return ApiResult::Normal(0); }
-                let (prev, new_frame) = {
-                    let mut wm = self.shared.window_mgr.lock_or_recover();
-                    let frame = {
-                        let candidate = wm.client_to_frame(hwnd);
-                        if wm.frame_to_client.contains_key(&candidate) { candidate } else { hwnd }
-                    };
-                    let prev = wm.focused_hwnd;
-                    if wm.frame_to_client.contains_key(&frame) {
-                        wm.focused_hwnd = frame;
-                        wm.z_push_top(frame);
-                        (prev, frame)
-                    } else {
-                        (0, 0)
-                    }
-                };
-                if new_frame != 0 && prev != new_frame {
-                    // WM_ACTIVATE goes to each frame's client, as for a click
-                    // and for minimizing (`frame_msg_target`): FALSE to the
-                    // old frame first, then TRUE to the new one.
-                    let wm = self.shared.window_mgr.lock_or_recover();
-                    if prev != 0 {
-                        wm.post_msg(wm.frame_msg_target(prev), WM_ACTIVATE, 0, new_frame);
-                    }
-                    wm.post_msg(wm.frame_msg_target(new_frame), WM_ACTIVATE, 1, prev);
-                }
-                ApiResult::Normal(if new_frame != 0 { 1 } else { 0 })
+                ApiResult::Normal(self.shared.window_mgr.lock_or_recover().set_active_window(hwnd) as u32)
             }
             860 => {
                 // WinSetFocus(HWND hwndDesktop, HWND hwndNewFocus) -> BOOL
@@ -878,11 +851,10 @@ impl super::Loader {
                 ApiResult::Normal(wm.frame_to_client.get(&target).copied().unwrap_or(target))
             }
             799 => {
-                // WinQueryActiveWindow(HWND hwndDesktop) -> HWND
-                // VDR-E2: return focused_hwnd.
+                // WinQueryActiveWindow(HWND hwndDesktop) -> HWND: this
+                // program's active frame, or another program's (ADR-0052).
                 let _hwnd_desktop = read_stack(4);
-                let wm = self.shared.window_mgr.lock_or_recover();
-                ApiResult::Normal(wm.focused_hwnd)
+                ApiResult::Normal(self.shared.window_mgr.lock_or_recover().active_window())
             }
             937 => {
                 // WinPopupMenu(HWND hwndParent, HWND hwndOwner, HWND hwndMenu, LONG x, LONG y, LONG idItem, ULONG fs)
@@ -1000,14 +972,7 @@ impl super::Loader {
                 let hwnd = read_stack(4);
                 let index = read_stack(8) as i32;
                 if !self.pm_check_window_word(vcpu_id, hwnd, index, 4) { return ApiResult::Normal(0); }
-                let wm = self.shared.window_mgr.lock_or_recover();
-                let val = wm.get_window(hwnd).map_or(0, |w| if index == QWL_STYLE {
-                    // The style, with WS_VISIBLE as the window is now.
-                    (w.style & !WS_VISIBLE) | if w.visible { WS_VISIBLE } else { 0 }
-                } else {
-                    w.window_ulong.get(&index).copied().unwrap_or(0)
-                });
-                ApiResult::Normal(val)
+                ApiResult::Normal(self.shared.window_mgr.lock_or_recover().query_window_ulong(hwnd, index))
             }
             844 => {
                 // WinQueryWindowUShort(HWND hwnd, LONG index)
@@ -1229,7 +1194,8 @@ impl super::Loader {
                 if !self.pm_check_window_word(vcpu_id, hwnd, index, 2) { return ApiResult::Normal(0); }
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 if let Some(win) = wm.get_window_mut(hwnd) {
-                    win.window_ushort.insert(index, value);
+                    // QWS_ID changes the window's identity.
+                    if index == QWS_ID { win.id = value as u32; } else { win.window_ushort.insert(index, value); }
                 }
                 ApiResult::Normal(1)
             }
@@ -2460,6 +2426,8 @@ mod tests {
             assert_ne!(menu_hwnd, 0, "FCF_MENU must attach a menu");
             let menu = wm.get_window(menu_hwnd).unwrap();
             assert_eq!(wm.find_child_by_id(frame, super::super::constants::FID_MENU), Some(menu_hwnd));
+            assert_eq!(wm.find_child_by_id(frame, super::super::constants::FID_CLIENT), Some(client),
+                       "the client is the frame control FID_CLIENT");
             assert_eq!(menu.menu_items.len(), 1);
             assert_eq!(menu.menu_items[0].text, "File");
             assert_eq!(wm.get_window(client).unwrap().cy,
@@ -3442,6 +3410,26 @@ mod tests {
         // WM_MINMAXFRAME itself: the default answer is FALSE.
         assert!(matches!(call_pmwin_raw(&loader, ORD_WIN_DEF_WINDOW_PROC, &[client, WM_MINMAXFRAME, 0, 0]),
                          ApiResult::Normal(0)));
+    }
+
+    /// QWS_ID is the window's identity (WinSetWindowUShort changes it) and
+    /// QWL_HMQ its message queue.
+    #[test]
+    fn test_window_words_for_identity_and_queue() {
+        use super::super::constants::*;
+        let loader = Loader::new_mock();
+        let (frame, client) = minmax_window(&loader);
+        let mut vcpu = MockVcpu::new();
+        loader.shared.window_mgr.lock_or_recover().get_window_mut(client).unwrap().id = FID_CLIENT;
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_QUERY_WINDOW_USHORT, &[client, QWS_ID as u32]), FID_CLIENT);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_SET_WINDOW_USHORT, &[client, QWS_ID as u32, 77]), 1);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_QUERY_WINDOW_USHORT, &[client, QWS_ID as u32]), 77);
+        let wm = loader.shared.window_mgr.lock_or_recover();
+        assert_eq!(wm.find_child_by_id(frame, 77), Some(client));
+        let hmq = wm.get_window(client).unwrap().hmq;
+        drop(wm);
+        assert_ne!(hmq, 0);
+        assert_eq!(call_pmwin(&loader, &mut vcpu, ORD_WIN_QUERY_WINDOW_ULONG, &[client, QWL_HMQ as u32]), hmq);
     }
 
     /// WinSetWindowPos with SWP_MINIMIZE / SWP_RESTORE (any frame, buttons

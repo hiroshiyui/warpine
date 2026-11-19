@@ -46,6 +46,7 @@ mod pm_presparam;
 mod pm_paint_style;
 mod pm_static;
 mod pm_query;
+mod pm_remote;
 pub mod pm_keystate;
 pub mod pm_syscolor;
 pub mod vfs;
@@ -374,6 +375,9 @@ pub struct SharedState {
     pub arena: std::sync::OnceLock<shared_arena::Arena>,
     /// The session's shared semaphores, once attached (`shared_sem.rs`).
     pub shared_sems: std::sync::OnceLock<Arc<shared_sem::SharedSems>>,
+    /// The link to the session's desktop server, once connected (ADR-0052):
+    /// calls on other programs' windows go through it (`pm_remote.rs`).
+    pub desktop_link: std::sync::OnceLock<Arc<crate::desktop::client::DesktopLink>>,
     pub process_mgr: Mutex<ProcessManager>,
     pub sem_mgr: Mutex<SemaphoreManager>,
     pub hdir_mgr: Mutex<HDirManager>,
@@ -519,6 +523,7 @@ impl Loader {
             shmem_mgr: Mutex::new(shmem_mgr),
             arena: std::sync::OnceLock::new(),
             shared_sems: std::sync::OnceLock::new(),
+            desktop_link: std::sync::OnceLock::new(),
             process_mgr: Mutex::new(process_mgr),
             sem_mgr: Mutex::new(sem_mgr),
             hdir_mgr: Mutex::new(hdir_mgr),
@@ -623,6 +628,7 @@ impl Loader {
             shmem_mgr:    Mutex::new(SharedMemManager::new()),
             arena: std::sync::OnceLock::new(),
             shared_sems: std::sync::OnceLock::new(),
+            desktop_link: std::sync::OnceLock::new(),
             process_mgr:  Mutex::new(ProcessManager::new()),
             sem_mgr:      Mutex::new(SemaphoreManager::new()),
             hdir_mgr:     Mutex::new(HDirManager::new()),

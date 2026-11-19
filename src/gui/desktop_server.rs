@@ -22,6 +22,12 @@
 //! sealed memfds of the announced size, a client names only its own frames,
 //! and anything malformed ends that client's connection only.
 //!
+//! Programs make calls on each other's windows through the server (phase
+//! B): `Call` names a window, the server forwards it to the program the
+//! window's slot names and passes the answer back (`desktop::calls`). The
+//! server tells every program which frame of the session is active
+//! (`Active`).
+//!
 //! It ends when the desktop window is closed or a GUI script says `quit`
 //! (every client is told to end first), when no client connects within
 //! `FIRST_CLIENT_TIMEOUT`, or `DESKTOP_LINGER` after its last client left.
@@ -36,10 +42,11 @@ use std::time::{Duration, Instant};
 use log::{info, warn};
 use sdl3::event::{Event, WindowEvent};
 
+use crate::desktop::calls::{CallRouter, Refusal, Route};
 use crate::desktop::client::DesktopLock;
 use crate::desktop::model::{DesktopModel, Effects};
 use crate::desktop::pixmap::SharedPixmap;
-use crate::desktop::proto::{Area, ClientMsg, Input, Pointer, ServerMsg, PROTOCOL_VERSION};
+use crate::desktop::proto::{Area, ClientMsg, Input, Pointer, ServerMsg, WinReply, PROTOCOL_VERSION};
 use crate::desktop::transport::{Conn, Listener, SOCKET_NAME};
 use crate::loader::pm_types::{handle_in_slot, MAX_HANDLE_SLOTS};
 use crate::loader::MutexExt;
@@ -127,6 +134,10 @@ struct Server {
     comp: PixmapCompositor,
     clients: HashMap<u32, Client>,
     model: DesktopModel,
+    /// Calls on other programs' windows in flight.
+    calls: CallRouter,
+    /// The active frame last announced to the clients.
+    announced_active: u32,
     queue: VecDeque<Input>,
     /// The event a client has not read yet: token, client, when sent.
     outstanding: Option<(u64, u32, Instant)>,
@@ -174,7 +185,8 @@ impl Server {
             dir: dir.to_path_buf(), listener, rx, slots, wake, native_wait,
             mouse: sdl.mouse(), pointer: HostPointer::new(sdl.mouse()),
             video, pump, comp,
-            clients: HashMap::new(), model: DesktopModel::new(), queue: VecDeque::new(), outstanding: None,
+            clients: HashMap::new(), model: DesktopModel::new(), calls: CallRouter::new(), announced_active: 0,
+            queue: VecDeque::new(), outstanding: None,
             next_token: 1, damage: Vec::new(), full: true,
             last_compose: now.checked_sub(FRAME_INTERVAL).unwrap_or(now),
             clipboard: String::new(), script, script_backlog: VecDeque::new(), dump: None, quitting: None,
@@ -319,6 +331,8 @@ impl Server {
     }
 
     fn check_stall(&mut self) {
+        let late = self.calls.expire(Instant::now());
+        self.refuse(late);
         if let Some((_, slot, since)) = self.outstanding
             && since.elapsed() >= INPUT_STALL {
             warn!("[desktop] client {slot} does not read its input: input goes past it");
@@ -367,6 +381,7 @@ impl Server {
                 if (w, h) != crate::loader::constants::desktop_size() {
                     c.send(&ServerMsg::Resized { width: w, height: h });
                 }
+                if self.announced_active != 0 { c.send(&ServerMsg::Active { frame: self.announced_active }); }
                 if self.quitting.is_some() { c.send(&ServerMsg::Quit); }
                 self.clients.insert(slot, c);
                 self.ever_connected = true;
@@ -446,6 +461,23 @@ impl Server {
                 let rect = sdl3::rect::Rect::new(area.x, area.y, area.w.max(1) as u32, area.h.max(1) as u32);
                 self.video.text_input().set_rect(self.comp.window(), rect, cursor);
             }
+            ClientMsg::Call { id, hwnd, call } => {
+                let clients = &self.clients;
+                match self.calls.call(slot, id, hwnd, Instant::now(), |c| clients.contains_key(&c)) {
+                    Route::Forward { callee, id } => {
+                        self.clients[&callee].send(&ServerMsg::Called { id, hwnd, call });
+                    }
+                    Route::Refuse => self.refuse(vec![(slot, id)]),
+                }
+            }
+            ClientMsg::Answer { id, reply } => {
+                // An answer that is not this client's to give (late, or for
+                // another client's call) is dropped.
+                if let Some((caller, id)) = self.calls.answer(slot, id)
+                    && let Some(c) = self.clients.get(&caller) {
+                    c.send(&ServerMsg::Answered { id, reply });
+                }
+            }
             ClientMsg::FlushDone { token } => {
                 if let Some(Dump { flush: Some((t, waiting)), .. }) = self.dump.as_mut()
                     && *t == token {
@@ -462,12 +494,28 @@ impl Server {
             c.send(&ServerMsg::Deactivate { frame, new_active });
         }
         self.damage.extend(fx.damage);
+        let active = self.model.active().map_or(0, |(_, f)| f);
+        if active != self.announced_active {
+            self.announced_active = active;
+            self.broadcast(&ServerMsg::Active { frame: active });
+        }
+    }
+
+    /// Tell the callers of `calls` that they failed.
+    fn refuse(&self, calls: Vec<Refusal>) {
+        for (caller, id) in calls {
+            if let Some(c) = self.clients.get(&caller) {
+                c.send(&ServerMsg::Answered { id, reply: WinReply::Failed });
+            }
+        }
     }
 
     fn remove_client(&mut self, slot: u32) {
         if self.clients.remove(&slot).is_none() { return; }
         let fx = self.model.remove_client(slot);
         self.apply(fx);
+        let refused = self.calls.client_gone(slot);
+        self.refuse(refused);
         if self.outstanding.is_some_and(|(_, s, _)| s == slot) {
             self.outstanding = None;
         }

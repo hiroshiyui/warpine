@@ -34,7 +34,7 @@
 
 use super::constants::{
     HWND_DESKTOP, HWND_OBJECT, PMERR_INVALID_HWND, PMERR_PARAMETER_OUT_OF_RANGE, QWP_PFNWP,
-    WRP_BUILTIN_WINDOW_PROC,
+    WM_ACTIVATE, WRP_BUILTIN_WINDOW_PROC,
 };
 use super::mutex_ext::MutexExt;
 use super::pm_types::WindowManager;
@@ -94,6 +94,46 @@ impl WindowManager {
             self.z_remove(hwnd);
         }
         self.mark_all_dirty();
+        true
+    }
+}
+
+impl WindowManager {
+    /// `WinShowWindow(hwnd, show)` on a valid window.
+    pub fn show_window(&mut self, hwnd: u32, show: bool) {
+        let was = self.get_window(hwnd).is_some_and(|w| w.visible);
+        if let Some(win) = self.get_window_mut(hwnd) {
+            win.visible = show;
+        }
+        // A window shown again needs painting, with its children.
+        if show && !was {
+            self.invalidate(hwnd, None, true);
+        }
+        self.mark_dirty(hwnd); // VDR-B4
+        self.frame_visibility_changed(hwnd);
+    }
+
+    /// `WinSetActiveWindow(HWND_DESKTOP, hwnd)` on a valid window: its frame
+    /// (a client's, else the window itself) becomes the active window and
+    /// goes on top; false when it is no frame. `WM_ACTIVATE` goes to each
+    /// frame's client, as for a click and for minimizing
+    /// (`frame_msg_target`): FALSE to the old frame first, then TRUE to the
+    /// new one.
+    pub fn set_active_window(&mut self, hwnd: u32) -> bool {
+        let candidate = self.client_to_frame(hwnd);
+        let frame = if self.frame_to_client.contains_key(&candidate) { candidate } else { hwnd };
+        if !self.frame_to_client.contains_key(&frame) {
+            return false;
+        }
+        let prev = self.focused_hwnd;
+        self.focused_hwnd = frame;
+        self.z_push_top(frame);
+        if prev != frame {
+            if prev != 0 {
+                self.post_msg(self.frame_msg_target(prev), WM_ACTIVATE, 0, frame);
+            }
+            self.post_msg(self.frame_msg_target(frame), WM_ACTIVATE, 1, prev);
+        }
         true
     }
 }

@@ -294,7 +294,7 @@ impl WindowManager {
     }
 
     /// The thread (OS/2 thread id) whose queue `hwnd` belongs to.
-    fn window_thread(&self, hwnd: u32) -> Option<u32> {
+    pub(super) fn window_thread(&self, hwnd: u32) -> Option<u32> {
         let hmq = self.get_window(hwnd)?.hmq;
         self.tid_to_hmq.iter().find(|&(_, &q)| q == hmq && hmq != 0)
             .map(|(&vcpu, _)| super::threads::tid_of_vcpu(vcpu))
