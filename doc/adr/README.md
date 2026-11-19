@@ -57,4 +57,5 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0049](0049-shared-memory-across-processes.md) | Shared memory across processes: a sealed memfd arena at the top of guest memory, a table in the session directory | Accepted | 2026-11-19 |
 | [0050](0050-shared-semaphores-across-processes.md) | Shared semaphores across processes: a host-only memfd of slots, an OFD lock and a futex | Accepted | 2026-11-19 |
 | [0051](0051-pointer-input-routed-when-read.md) | Pointer input routed when it is read: clicks hit-tested and activating at the head of the input queue | Accepted | 2026-11-19 |
-| [0052](0052-session-desktop-server.md) | One desktop per session: a desktop server process, with Warpine processes as its clients | Accepted (phase A) | 2026-11-19 |
+| [0052](0052-session-desktop-server.md) | One desktop per session: a desktop server process, with Warpine processes as its clients | Accepted (phase A; phase B in part: ADR-0053) | 2026-11-19 |
+| [0053](0053-calls-on-other-programs-windows.md) | Calls on other programs' windows go through the desktop server and are answered on the owner's link thread | Accepted | 2026-11-19 |
