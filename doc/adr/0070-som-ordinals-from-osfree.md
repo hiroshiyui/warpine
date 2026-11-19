@@ -1,6 +1,6 @@
 # ADR-0070: SOM.DLL's ordinals 1–47 come from osFree's export list; Warpine's own move to 512–1023
 
-- **Status:** Accepted; amends ADR-0059 (the SOM runtime kernel), on its ordinals
+- **Status:** Accepted; amends ADR-0059 (the SOM runtime kernel), on its ordinals. Amended by ADR-0071: the SOM module is 4096 ordinals wide, IBM's later exports have 48–3071, and Warpine's own moved to 3072–4095
 - **Date:** 2026-11-20
 - **Sources:**
   - The code:
