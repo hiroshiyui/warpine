@@ -2825,6 +2825,34 @@ fn gui_pm_cnrdetail_test_matches_golden() {
         &format!("{CNRDETAIL_STEPS}3500 dump {{dump}}\n3600 quit\n"));
 }
 
+/// pm_cnrgrid_test: a tree-view container with tree lines, a picture
+/// expander and a CM_MOVETREE (client (8, 8), 230 × 300), and an icon-view
+/// container arranged on a grid with a record stacked at the bottom
+/// (client (246, 8), 240 × 300). The steps click button 2 on the first
+/// icon (CN_CONTEXTMENU with it), click "Beta" in the tree and press
+/// Shift+F10 (CN_CONTEXTMENU with Beta), and turn the wheel two notches
+/// down over the tree (CN_SCROLL).
+const CNRGRID_STEPS: &str = "\
+    1000 rclick 387 282\n\
+    1300 click 150 360\n\
+    1500 key shift+f10\n\
+    1800 wheel 210 465 -2\n";
+
+#[test]
+fn gui_pm_cnrgrid_test_trees_grids_context_menus_and_the_wheel() {
+    let steps = format!("{CNRGRID_STEPS}2300 key alt+f4\n4500 quit\n");
+    assert_scripted_checks_pass("samples/pm_cnrgrid_test/pm_cnrgrid_test.exe", "pm_cnrgrid_test", 24, &steps);
+}
+
+/// pm_cnrgrid_test's picture before the session: the tree with its lines,
+/// Alpha's folder expander and Gamma moved under Alpha; the icons on a
+/// three-column grid.
+#[test]
+fn gui_pm_cnrgrid_test_matches_golden() {
+    check_gui_golden("pm_cnrgrid_test", "samples/pm_cnrgrid_test/pm_cnrgrid_test.exe",
+        "1500 dump {dump}\n1600 quit\n");
+}
+
 /// pm_container_test: a WC_CONTAINER (client (8, 8), 380 × 250, extended
 /// selection) with five records in the detail view (a title, column
 /// titles, name / size / date columns). The guest checks record and field

@@ -168,6 +168,19 @@ pub const CMA_ICON: u32 = 0x0800;
 pub const CMA_TEXT: u32 = 0x1000;
 pub const CMA_COMPLETE: u32 = 0x4000;
 pub const CMA_ZORDER: u32 = 0x0008;
+pub const CMA_WORKSPACE: u16 = 0x0004;
+pub const CMA_TOP: u32 = 0x0001;
+pub const CMA_BOTTOM: u32 = 0x0002;
+pub const CMA_ARRANGEGRID: u32 = 0x0001;
+pub const CMA_ARRANGESELECTED: u32 = 0x0002;
+pub const CM_ERASERECORD: u32 = 0x0333;
+pub const CM_MOVETREE: u32 = 0x0352;
+pub const CM_SETGRIDINFO: u32 = 0x0354;
+pub const CM_QUERYGRIDINFO: u32 = 0x0355;
+pub const CN_HELP: u32 = 118;
+pub const CN_CONTEXTMENU: u32 = 119;
+pub const CA_TREELINE: u32 = 0x0040_0000;
+use super::pm_input::WM_CONTEXTMENU;
 /// `CM_ARRANGE`'s standard arrangement.
 pub const CMA_ARRANGESTANDARD: u32 = 0;
 pub const CMA_FREE: u16 = 0x0001;
@@ -202,6 +215,8 @@ pub const RC_HPTRICON: u32 = 24;
 pub const RC_HPTRMINIICON: u32 = 28;
 pub const RC_HBMBITMAP: u32 = 32;
 pub const RC_HBMMINIBITMAP: u32 = 36;
+/// `RECORDCORE.pTreeItemDesc` (not in a `MINIRECORDCORE`).
+pub const RC_PTREEITEMDESC: u32 = 40;
 pub const RC_PSZTEXT: u32 = 44;
 pub const RC_PSZNAME: u32 = 48;
 pub const RC_PSZTREE: u32 = 52;
@@ -223,6 +238,7 @@ pub const CNREDITDATA_SIZE: u32 = 28;
 const RI_ORDER: u32 = 4;
 const RI_PARENT: u32 = 8;
 const RI_INVALIDATE: u32 = 12;
+const RI_ZORDER: u32 = 16;
 const RI_COUNT: u32 = 20;
 const FII_ORDER: u32 = 4;
 const FII_INVALIDATE: u32 = 8;
@@ -272,6 +288,11 @@ const H_LINE: i32 = 16;
 const TREE_INDENT: i32 = 16;
 /// Side of a tree view's expander box.
 const EXPANDER: i32 = 9;
+/// The expander when it is a picture (`TREEITEMDESC`, `CNRINFO`'s
+/// expanded / collapsed handles).
+const TREE_PICTURE: i32 = 16;
+/// The largest grid square (`CM_SETGRIDINFO`).
+const MAX_GRID: i32 = 1024;
 /// Icon sizes when `slBitmapOrIcon` is 0: `SV_CXICON` and the mini icon
 /// (`CV_MINI`, and Warpine's tree-view default).
 pub const ICON_SIZE: i32 = 32;
@@ -457,6 +478,12 @@ pub struct CnrState {
     /// A guest cell holding the container title's `PSZ` while it is
     /// edited (its `ppszText`), made at the first title edit.
     pub title_cell: u32,
+    /// The icon view's stacking, bottom first (`RECORDINSERT.zOrder`).
+    pub zorder: Vec<u32>,
+    /// Records erased from the view (`CM_ERASERECORD`) until invalidated.
+    pub erased: HashSet<u32>,
+    /// The icon view's grid square (`CM_SETGRIDINFO`); `None`: Warpine's.
+    pub grid: Option<(i32, i32)>,
 }
 
 /// A direct edit (`CNREDITDATA`): the record (0 for the container title
@@ -480,7 +507,7 @@ impl CnrState {
             heap: RecordHeap::default(), records: Vec::new(), inserted: HashSet::new(), fields: Vec::new(),
             info: CnrInfo { window_attr: CV_ICON, ..CnrInfo::default() },
             top: 0, anchor: None, mini: style & CCS_MINIRECORDCORE != 0, sort: None, next_sort_id: 0, filter: None, edit: None, edit_text: None,
-            hscroll: [0; 2], split_drag: None, title_cell: 0,
+            hscroll: [0; 2], split_drag: None, title_cell: 0, zorder: Vec::new(), erased: HashSet::new(), grid: None,
         }
     }
 
@@ -509,19 +536,57 @@ impl CnrState {
             if !self.is_record(r) || !seen.insert(r) { return Err(CnrError::Invalid); }
             if self.is_inserted(r) { return Err(CnrError::Inserted); }
         }
-        let at = match order {
-            CMA_END => self.records.len(),
-            CMA_FIRST => self.records.iter().position(|&(_, p)| p == parent)
-                .or_else(|| self.records.iter().position(|&(r, _)| r == parent).map(|i| i + 1))
-                .unwrap_or(self.records.len()),
-            after => match self.records.iter().position(|&(r, p)| r == after && p == parent) {
-                Some(i) => i + 1,
-                None => return Err(CnrError::Invalid),
-            },
-        };
+        let at = self.position(order, parent).ok_or(CnrError::Invalid)?;
         self.records.splice(at..at, recs.iter().map(|&r| (r, parent)));
         self.inserted.extend(recs.iter().copied());
+        self.zorder.extend(recs.iter().copied());
         Ok(self.records.len() as u32)
+    }
+
+    /// Where records go in item order for `order` (`CMA_FIRST`, `CMA_END`,
+    /// or after a child of `parent`) under `parent`.
+    fn position(&self, order: u32, parent: u32) -> Option<usize> {
+        match order {
+            CMA_END => Some(self.records.len()),
+            CMA_FIRST => Some(self.records.iter().position(|&(_, p)| p == parent)
+                .or_else(|| self.records.iter().position(|&(r, _)| r == parent).map(|i| i + 1))
+                .unwrap_or(self.records.len())),
+            after => self.records.iter().position(|&(r, p)| r == after && p == parent).map(|i| i + 1),
+        }
+    }
+
+    /// Put `recs` at the bottom of the icon view's stacking (`zOrder`
+    /// `CMA_BOTTOM`); insertion puts them on top.
+    pub fn lower(&mut self, recs: &[u32]) {
+        self.zorder.retain(|r| !recs.contains(r));
+        self.zorder.splice(0..0, recs.iter().copied());
+    }
+
+    /// `CM_MOVETREE`: move `rec` — with `siblings` also the siblings after
+    /// it — and their descendants under `parent` (0: the top level) at
+    /// `order` (`CMA_FIRST`, `CMA_END`, or after a child of `parent`),
+    /// keeping their order. A record cannot move under itself or its
+    /// descendants.
+    pub fn move_tree(&mut self, rec: u32, parent: u32, order: u32, siblings: bool) -> Result<(), CnrError> {
+        if !self.is_inserted(rec) || (parent != 0 && !self.is_inserted(parent)) { return Err(CnrError::Invalid); }
+        let old_parent = self.records.iter().find(|&&(r, _)| r == rec).map(|&(_, p)| p).ok_or(CnrError::Invalid)?;
+        let tops: Vec<u32> = if siblings {
+            self.children(old_parent).skip_while(|&r| r != rec).collect()
+        } else {
+            vec![rec]
+        };
+        let moving: HashSet<u32> = self.removal(&tops)?.into_iter().collect();
+        if moving.contains(&parent) || moving.contains(&order) { return Err(CnrError::Invalid); }
+        let moved: Vec<(u32, u32)> = self.records.iter().filter(|(r, _)| moving.contains(r))
+            .map(|&(r, p)| (r, if tops.contains(&r) { parent } else { p })).collect();
+        let kept: Vec<(u32, u32)> = self.records.iter().filter(|(r, _)| !moving.contains(r)).copied().collect();
+        let saved = std::mem::replace(&mut self.records, kept);
+        let Some(at) = self.position(order, parent) else {
+            self.records = saved;
+            return Err(CnrError::Invalid);
+        };
+        self.records.splice(at..at, moved);
+        Ok(())
     }
 
     /// The records `recs` and all their descendants, for removal; every
@@ -547,6 +612,8 @@ impl CnrState {
         let gone: HashSet<u32> = recs.iter().copied().collect();
         self.records.retain(|(r, _)| !gone.contains(r));
         self.inserted.retain(|r| !gone.contains(r));
+        self.zorder.retain(|r| !gone.contains(r));
+        self.erased.retain(|r| !gone.contains(r));
         if self.anchor.is_some_and(|a| gone.contains(&a)) { self.anchor = None; }
     }
 
@@ -681,6 +748,48 @@ impl CnrState {
 /// whether it has children. Children are shown under `expanded` records
 /// only; a record that is not `shown` (filtered) is left out with its
 /// subtree.
+/// Tree lines (`CA_TREELINE`) of rows at `depths` (tree order): for each
+/// row, the levels whose vertical line runs through it (bit `k`: the line
+/// at level `k`, that of an ancestor at depth `k + 1` with a later
+/// sibling), and whether the row has a later sibling (its own line goes
+/// on below it). Depths past 63 count as 63.
+pub fn tree_lines(depths: &[u16]) -> Vec<(u64, bool)> {
+    let n = depths.len();
+    let mut has_next = vec![false; n];
+    let mut seen = [false; 64];
+    for i in (0..n).rev() {
+        let d = usize::from(depths[i].min(63));
+        has_next[i] = seen[d];
+        seen[d] = true;
+        for s in seen.iter_mut().skip(d + 1) { *s = false; }
+    }
+    let mut path = [false; 64];
+    depths.iter().enumerate().map(|(i, &d)| {
+        let d = usize::from(d.min(63));
+        path[d] = has_next[i];
+        let mask = (1..d).filter(|&k| path[k]).fold(0u64, |m, k| m | 1 << (k - 1));
+        (mask, has_next[i])
+    }).collect()
+}
+
+/// Warpine's grid square for icons of `(iw, ih)`: room for the icon and
+/// two lines of text, at least 64 pels across, with the arrangement gap.
+pub fn default_grid((iw, ih): (i32, i32)) -> (i32, i32) {
+    (iw.max(64) + ARRANGE_GAP, ih + icon_text_h(2) + ARRANGE_GAP)
+}
+
+/// Grid arrangement (`CMA_ARRANGEGRID`): the `ptlIcon` of `n` items of
+/// icon size `(iw, ih)` in squares `cx` × `cy`, row by row from the upper
+/// left of a `width` × `height` work area, each icon centred across its
+/// square and at the square's top.
+pub fn arrange_grid(n: usize, (iw, ih): (i32, i32), (cx, cy): (i32, i32), width: i32, height: i32) -> Vec<(i32, i32)> {
+    let cols = (width / cx.max(1)).max(1) as usize;
+    (0..n).map(|k| {
+        let (c, r) = ((k % cols) as i32, (k / cols) as i32);
+        (c * cx + (cx - iw) / 2, height - r * cy - ARRANGE_GAP / 2 - ih)
+    }).collect()
+}
+
 pub fn tree_order(records: &[(u32, u32)], expanded: &dyn Fn(u32) -> bool, shown: &dyn Fn(u32) -> bool)
                   -> Vec<(u32, u16, bool)> {
     let mut kids: HashMap<u32, Vec<u32>> = HashMap::new();
@@ -1111,6 +1220,13 @@ struct Snapshot {
     cols: Vec<Column>,
     left_cols: Option<usize>,
     hscroll: [i32; 2],
+    /// Icon view: the rows in drawing order, bottom first (the stacking).
+    z: Vec<usize>,
+    /// Tree view: each row's expander picture for its state (handle, a
+    /// bitmap?), from its `TREEITEMDESC` or `CNRINFO`.
+    tree_pics: Vec<Option<(u32, bool)>>,
+    /// Records erased from the view (`CM_ERASERECORD`).
+    erased: HashSet<u32>,
 }
 
 impl Snapshot {
@@ -1240,6 +1356,11 @@ impl Snapshot {
         if self.flow() { self.rows.len().saturating_sub(1) } else { self.rows.len().saturating_sub(self.frame().capacity()) }
     }
 
+    /// The expander's width: a picture's when a row has one.
+    fn expander_w(&self) -> i32 {
+        if self.tree_pics.iter().any(Option::is_some) { TREE_PICTURE } else { EXPANDER }
+    }
+
     fn indent(&self) -> i32 {
         match self.info.tree_indent as i32 { i if i > 0 => i.min(256), _ => TREE_INDENT }
     }
@@ -1256,7 +1377,7 @@ impl Snapshot {
         if !self.pictures() { return None; }
         match self.view() {
             View::Name => Some(CELL_PAD),
-            View::Tree => Some(self.expander_x(i) + EXPANDER + CELL_PAD),
+            View::Tree => Some(self.expander_x(i) + self.expander_w() + CELL_PAD),
             _ => None,
         }
     }
@@ -1266,7 +1387,7 @@ impl Snapshot {
     fn text_inset(&self, i: usize) -> i32 {
         if let Some(x) = self.icon_inset(i) { return x + self.icon().0; }
         if self.view() != View::Tree { return 0; }
-        self.expander_x(i) + EXPANDER + CELL_PAD
+        self.expander_x(i) + self.expander_w() + CELL_PAD
     }
 }
 
@@ -1306,14 +1427,14 @@ impl Loader {
     }
 
     fn snapshot(&self, hwnd: u32) -> Option<Snapshot> {
-        let (cx, cy, info, mini, top, records, sizes, fields, hscroll) = {
+        let (cx, cy, info, mini, top, records, sizes, fields, hscroll, zorder, erased) = {
             let wm = self.shared.window_mgr.lock_or_recover();
             let w = wm.get_window(hwnd)?;
             let s = w.container.as_deref()?;
             let size = |a: u32| s.heap.item(a).map_or(0, |i| i.size);
             let sizes: HashMap<u32, u32> = s.records.iter().map(|&(r, _)| (r, size(r))).collect();
             let fields: Vec<(u32, u32)> = s.fields.iter().map(|&f| (f, size(f))).collect();
-            (w.cx, w.cy, s.info, s.mini, s.top, s.records.clone(), sizes, fields, s.hscroll)
+            (w.cx, w.cy, s.info, s.mini, s.top, s.records.clone(), sizes, fields, s.hscroll, s.zorder.clone(), s.erased.clone())
         };
         let font = Painter::new(self, 0, hwnd).font();
         let shown = |r: u32| self.rec_attr(r) & CRA_FILTERED == 0;
@@ -1347,8 +1468,35 @@ impl Loader {
             }).collect();
             (icons, span, xspan)
         } else { (Vec::new(), None, None) };
+        // Icon view: the stacking of the shown rows, bottom first.
+        let z = if view_of(info.window_attr) == View::Icon {
+            let rank: HashMap<u32, usize> = zorder.iter().enumerate().map(|(k, &r)| (r, k)).collect();
+            let mut z: Vec<usize> = (0..rows.len()).collect();
+            z.sort_by_key(|&i| rank.get(&rows[i].0).copied().unwrap_or(usize::MAX));
+            z
+        } else { Vec::new() };
+        // Tree view: each row's expander picture — its TREEITEMDESC's,
+        // else CNRINFO's — for its state; icons unless only bitmaps are
+        // drawn (CA_DRAWBITMAP without CA_DRAWICON).
+        let tree_pics = if view_of(info.window_attr) == View::Tree {
+            let bitmaps_first = info.window_attr & CA_DRAWBITMAP != 0 && info.window_attr & CA_DRAWICON == 0;
+            rows.iter().zip(&tree).map(|(&(r, _), &(_, kids))| {
+                if !kids { return None; }
+                let open = self.rec_attr(r) & CRA_EXPANDED != 0;
+                let desc = if mini { 0 } else { self.guest_read::<u32>(r.wrapping_add(RC_PTREEITEMDESC)).unwrap_or(0) };
+                let rd = |o: u32| if desc == 0 { 0 } else { self.guest_read::<u32>(desc.wrapping_add(o)).unwrap_or(0) };
+                // TREEITEMDESC: hbmExpanded, hbmCollapsed, hptrExpanded, hptrCollapsed.
+                let (bm, ptr) = if open { (rd(0), rd(8)) } else { (rd(4), rd(12)) };
+                let (cbm, cptr) = if open { (info.tree_bitmaps.0, info.tree_icons.0) } else { (info.tree_bitmaps.1, info.tree_icons.1) };
+                let choose = |b: u32, p: u32| {
+                    let both = if bitmaps_first { [(b, true), (p, false)] } else { [(p, false), (b, true)] };
+                    both.into_iter().find(|&(h, _)| h != 0)
+                };
+                choose(bm, ptr).or_else(|| choose(cbm, cptr))
+            }).collect()
+        } else { Vec::new() };
         let mut snap = Snapshot { cx, cy, info, mini, top, rows, tree, fields, icons, span, xspan,
-                                  cols: Vec::new(), left_cols: None, hscroll };
+                                  cols: Vec::new(), left_cols: None, hscroll, z, tree_pics, erased };
         if snap.view() == View::Detail {
             snap.cols = self.column_widths(hwnd, &snap, font);
             snap.left_cols = (info.field_last != 0)
@@ -1441,14 +1589,15 @@ impl Loader {
     }
 
     /// The icon view's items: `(row index, icon rectangle, text rectangle)`
-    /// in window coordinates, in drawing order (item order).
+    /// in window coordinates, in drawing order (the stacking, bottom first).
     fn icon_items(&self, snap: &Snapshot, font: crate::gui::font::FontSpec) -> Vec<(usize, Rect, Rect)> {
         let f = snap.frame();
         let icon = snap.icon();
-        snap.icons.iter().enumerate().map(|(i, (ptl, lines))| {
+        snap.z.iter().filter_map(|&i| {
+            let (ptl, lines) = snap.icons.get(i)?;
             let tw = lines.iter().map(|l| crate::gui::font::text_width(l, font)).max().unwrap_or(0);
             let (a, b) = icon_item(*ptl, snap.origin(), (f.rows.0, f.rows.1), icon, tw, lines.len());
-            (i, a, b)
+            Some((i, a, b))
         }).collect()
     }
 
@@ -1634,9 +1783,14 @@ impl Loader {
                 let rd = |o: u32| self.guest_read::<u32>(mp2.wrapping_add(o));
                 let (Some(order), Some(parent), Some(inval), Some(n)) = (rd(RI_ORDER), rd(RI_PARENT), rd(RI_INVALIDATE), rd(RI_COUNT))
                 else { return Some(ApiResult::Normal(0)) };
+                let zorder = rd(RI_ZORDER).unwrap_or(CMA_TOP);
                 let recs = if msg == CM_INSERTRECORD { self.read_chain(mp1, n, RC_NEXT) } else { self.read_ptr_array(mp1, n) };
                 let Some(recs) = recs.filter(|r| !r.is_empty()) else { return Some(ApiResult::Normal(0)) };
-                match self.with_cnr(hwnd, |s, _| s.insert(&recs, order, parent).map(|c| (c, s.info.sort_record))) {
+                match self.with_cnr(hwnd, |s, _| s.insert(&recs, order, parent).map(|c| {
+                    // zOrder CMA_BOTTOM: under the others (CMA_TOP: on top).
+                    if zorder == CMA_BOTTOM { s.lower(&recs); }
+                    (c, s.info.sort_record)
+                })) {
                     // With a sort function (CNRINFO.pSortRecord) the
                     // parent's children are sorted before the call returns.
                     Some(Ok((count, sort))) if sort != 0 => self.cnr_start_sort(hwnd, sort, 0, Some(parent), count, true),
@@ -1694,7 +1848,15 @@ impl Loader {
                 ok(true)
             }
             CM_INVALIDATERECORD | CM_INVALIDATEDETAILFIELDINFO => {
-                if msg == CM_INVALIDATERECORD { self.cnr_autoposition(hwnd); }
+                if msg == CM_INVALIDATERECORD {
+                    // Erased records come back: those listed, or all (count 0).
+                    let listed = if lo == 0 { None } else { self.read_ptr_array(mp1, lo) };
+                    self.with_cnr(hwnd, |s, _| match &listed {
+                        Some(recs) => s.erased.retain(|r| !recs.contains(r)),
+                        None => s.erased.clear(),
+                    });
+                    self.cnr_autoposition(hwnd);
+                }
                 self.cnr_clamp_top(hwnd);
                 ok(self.repaint_control(hwnd))
             }
@@ -1852,10 +2014,72 @@ impl Loader {
             }
             // mp1 = search after (CMA_FIRST = from the start), mp2 = PQUERYRECFROMRECT.
             CM_QUERYRECORDFROMRECT => self.cnr_record_from_rect(hwnd, mp1, mp2).map_or(minus1, ApiResult::Normal),
-            // mp1 = CMA_ARRANGESTANDARD (the only arrangement Warpine makes), mp2 = 0.
-            CM_ARRANGE => ok(mp1 == CMA_ARRANGESTANDARD && mp2 == 0 && self.cnr_arrange(hwnd)),
+            // mp1 = CMA_ARRANGESTANDARD / CMA_ARRANGEGRID, mp2 = 0 or CMA_ARRANGESELECTED.
+            CM_ARRANGE => {
+                if ![CMA_ARRANGESTANDARD, CMA_ARRANGEGRID].contains(&mp1) || mp2 & !CMA_ARRANGESELECTED != 0 { return Some(ok(false)); }
+                ok(self.cnr_arrange(hwnd, mp1 == CMA_ARRANGEGRID, mp2 & CMA_ARRANGESELECTED != 0))
+            }
+            // mp1 = PGRIDINFO: the grid square (cxGrid, cyGrid).
+            CM_SETGRIDINFO => {
+                let (Some(cx), Some(cy)) = (self.guest_read::<i16>(mp1.wrapping_add(4)), self.guest_read::<i16>(mp1.wrapping_add(6)))
+                else { return Some(ok(false)) };
+                let (cx, cy) = (i32::from(cx), i32::from(cy));
+                if mp1 == 0 || !(1..=MAX_GRID).contains(&cx) || !(1..=MAX_GRID).contains(&cy) { return Some(ok(false)); }
+                self.with_cnr(hwnd, |s, _| s.grid = Some((cx, cy)));
+                ok(true)
+            }
+            // mp1 = PGRIDINFO out: the square, the rows and columns of the work area.
+            CM_QUERYGRIDINFO => {
+                let Some(snap) = self.snapshot(hwnd).filter(|_| mp1 != 0) else { return Some(ok(false)) };
+                let (cx, cy) = self.with_cnr(hwnd, |s, _| s.grid).flatten().unwrap_or_else(|| default_grid(snap.icon()));
+                let rows = snap.frame().rows;
+                let (gc, gr) = ((rows.2 / cx).max(1), (rows.3 / cy).max(1));
+                let w16 = |o: u32, v: i32| self.guest_write::<i16>(mp1.wrapping_add(o), v.clamp(0, i32::from(i16::MAX)) as i16);
+                let ok_all = w16(4, cx).and(w16(6, cy)).and(w16(8, gr)).and(w16(10, gc))
+                    .and(self.guest_write::<u32>(mp1.wrapping_add(12), (gr * gc) as u32));
+                ok(ok_all.is_some())
+            }
+            // mp1 = record: erased from the view until it is invalidated.
+            CM_ERASERECORD => {
+                if self.with_cnr(hwnd, |s, _| s.is_inserted(mp1)) != Some(true) { return Some(ok(false)); }
+                self.with_cnr(hwnd, |s, _| s.erased.insert(mp1));
+                ok(self.repaint_control(hwnd))
+            }
+            // mp1 = PTREEMOVE (preccMove, preccNewParent, pRecordOrder, flMoveSiblings).
+            CM_MOVETREE => {
+                let rd = |o: u32| self.guest_read::<u32>(mp1.wrapping_add(o));
+                let (Some(rec), Some(parent), Some(order), Some(sibs)) = (rd(0), rd(4), rd(8), rd(12)) else { return Some(ok(false)) };
+                if mp1 == 0 { return Some(ok(false)); }
+                self.cnr_close_edit(hwnd, true);
+                let moved = self.with_cnr(hwnd, |s, _| s.move_tree(rec, parent, order, sibs != 0)) == Some(Ok(()));
+                if moved {
+                    self.cnr_clamp_top(hwnd);
+                    self.repaint_control(hwnd);
+                }
+                ok(moved)
+            }
+            // The context-menu gesture (button 2, Shift+F10) or help (F1)
+            // on the container: the owner hears it with the record under
+            // the pointer, or the cursored one from the keyboard.
+            WM_CONTEXTMENU | WM_HELP => {
+                let rec = if msg == WM_CONTEXTMENU && mp2 & 0xFFFF != 0 {
+                    let at = ((mp1 & 0xFFFF) as i16 as i32, (mp1 >> 16) as i16 as i32);
+                    self.snapshot(hwnd).and_then(|snap| self.record_at(hwnd, &snap, at).map(|i| snap.rows[i].0)).unwrap_or(0)
+                } else {
+                    self.cnr_cursored(hwnd)
+                };
+                let code = if msg == WM_CONTEXTMENU { CN_CONTEXTMENU } else { CN_HELP };
+                self.shared.window_mgr.lock_or_recover().queue_owner_call(OwnerCall {
+                    control: hwnd, kind: OwnerCallKind::ContainerValue { code: code as u16, mp2: rec },
+                });
+                ok(true)
+            }
             // mp1 = PRECTL out, mp2 = MPFROM2SHORT(CMA_WINDOW / CMA_WORKSPACE, right split window).
             CM_QUERYVIEWPORTRECT => {
+                if lo == u32::from(CMA_WORKSPACE) {
+                    let Some(r) = self.snapshot(hwnd).and_then(|snap| self.cnr_workspace(hwnd, &snap)) else { return Some(ok(false)) };
+                    return Some(ok(self.write_rectl(mp1, r)));
+                }
                 if lo != u32::from(CMA_WINDOW) { return Some(ok(false)); }
                 let Some(snap) = self.snapshot(hwnd) else { return Some(ok(false)) };
                 let (mut x, y, mut w, h) = snap.frame().rows;
@@ -2143,13 +2367,16 @@ impl Loader {
     /// `CM_ARRANGE` (standard): place the shown top-level records in rows
     /// from the upper left of the work area (see [`arrange_icons`]),
     /// writing their `ptlIcon`, and scroll back to the workspace origin.
-    fn cnr_arrange(&self, hwnd: u32) -> bool {
+    fn cnr_arrange(&self, hwnd: u32, grid: bool, selected_only: bool) -> bool {
         let Some(snap) = self.snapshot(hwnd) else { return false };
         let font = Painter::new(self, 0, hwnd).font();
-        let recs: Vec<u32> = if snap.view() == View::Icon { snap.rows.iter().map(|&(r, _)| r).collect() } else {
+        let mut recs: Vec<u32> = if snap.view() == View::Icon { snap.rows.iter().map(|&(r, _)| r).collect() } else {
             let all = self.with_cnr(hwnd, |s, _| s.records.clone()).unwrap_or_default();
             all.into_iter().filter(|&(r, p)| p == 0 && self.rec_attr(r) & CRA_FILTERED == 0).map(|(r, _)| r).collect()
         };
+        if selected_only {
+            recs.retain(|&r| self.rec_attr(r) & CRA_SELECTED != 0);
+        }
         let items: Vec<(i32, usize)> = recs.iter().map(|&r| {
             let text = self.record_text(hwnd, r, View::Icon, snap.mini);
             let lines: Vec<&str> = text.split('\n').take(64).collect();
@@ -2157,7 +2384,12 @@ impl Loader {
         }).collect();
         let icon = icon_size(&CnrInfo { window_attr: CV_ICON | (snap.info.window_attr & CV_MINI), ..snap.info }, snap.mini);
         let rows = snap.plain_frame().rows;
-        let places = arrange_icons(&items, icon, rows.2 - SCROLLBAR_W, rows.3, snap.info.line_spacing as i32);
+        let places = if grid {
+            let square = self.with_cnr(hwnd, |s, _| s.grid).flatten().unwrap_or_else(|| default_grid(icon));
+            arrange_grid(recs.len(), icon, square, rows.2 - SCROLLBAR_W, rows.3)
+        } else {
+            arrange_icons(&items, icon, rows.2 - SCROLLBAR_W, rows.3, snap.info.line_spacing as i32)
+        };
         for (&r, &(px, py)) in recs.iter().zip(&places) {
             let _ = self.guest_write::<u32>(r.wrapping_add(RC_PTLX), px as u32);
             let _ = self.guest_write::<u32>(r.wrapping_add(RC_PTLY), py as u32);
@@ -2170,7 +2402,7 @@ impl Loader {
     /// `CCS_AUTOPOSITION`: arrange the icon view after records changed.
     fn cnr_autoposition(&self, hwnd: u32) {
         let auto = self.with_cnr(hwnd, |s, style| style & CCS_AUTOPOSITION != 0 && view_of(s.info.window_attr) == View::Icon);
-        if auto == Some(true) { self.cnr_arrange(hwnd); }
+        if auto == Some(true) { self.cnr_arrange(hwnd, false, false); }
     }
 
     /// `CM_QUERYRECORDRECT`: record `rec`'s rectangle; in the icon view
@@ -2444,8 +2676,8 @@ impl Loader {
         if let Some(i) = self.record_at(hwnd, &snap, at) {
             // A tree record's expander box opens or closes it.
             if snap.view() == View::Tree && snap.tree[i].1 {
-                let ex = BORDER + snap.text_inset(i) - EXPANDER - CELL_PAD;
-                if (ex - 2..=ex + EXPANDER + 1).contains(&at.0) {
+                let ex = BORDER + snap.expander_x(i);
+                if (ex - 2..=ex + snap.expander_w() + 1).contains(&at.0) {
                     let open = self.rec_attr(snap.rows[i].0) & CRA_EXPANDED != 0;
                     return self.cnr_expand(hwnd, snap.rows[i].0, !open);
                 }
@@ -2603,6 +2835,34 @@ impl Loader {
             w.scrollbar.thumb_size = Some((c16(width) as u16, c16(content) as u16));
             wm.invalidate_window_only(sb);
         }
+    }
+
+    /// The cursored record (`CRA_CURSORED`) among the shown ones, or 0.
+    fn cnr_cursored(&self, hwnd: u32) -> u32 {
+        self.snapshot(hwnd).and_then(|snap| snap.rows.iter().map(|&(r, _)| r)
+            .find(|&r| self.rec_attr(r) & CRA_CURSORED != 0)).unwrap_or(0)
+    }
+
+    /// `CM_QUERYVIEWPORTRECT(CMA_WORKSPACE)`: the workspace in workspace
+    /// coordinates. The icon view's spans everything its items cover and
+    /// the work area at the origin; the other views' is their content from
+    /// (0, 0): the rows' height, and the columns' width in the details view.
+    fn cnr_workspace(&self, hwnd: u32, snap: &Snapshot) -> Option<super::pm_rect::Rectl> {
+        let f = snap.frame();
+        if snap.view() == View::Icon {
+            let (yl, yh) = snap.extent();
+            let (xl, xh) = icon_extent(snap.xspan, f.rows.2);
+            return Some(super::pm_rect::Rectl { x_left: xl, y_bottom: yl, x_right: xh, y_top: yh });
+        }
+        let font = Painter::new(self, 0, hwnd).font();
+        let (_, placed) = self.placements(hwnd, snap, font);
+        let width = if snap.view() == View::Detail {
+            snap.panes().iter().map(|p| p.content).fold(0i32, i32::saturating_add)
+        } else {
+            placed.iter().map(|&(_, r)| r.0 + r.2 - f.rows.0).max().unwrap_or(0).max(f.rows.2)
+        };
+        let height = (snap.rows.len() as i64 * i64::from(f.row_h)).min(i64::from(i32::MAX)) as i32;
+        Some(super::pm_rect::Rectl { x_left: 0, y_bottom: 0, x_right: width, y_top: height })
     }
 
     /// Button 1 pressed at container point `mp1`: on the split bar it is
@@ -2776,7 +3036,7 @@ impl Loader {
             let surf = |(rx, ry, rw, rh): Rect| (x + rx, y + ry, rw, rh);
             for (i, ir, tr) in self.icon_items(&snap, font) {
                 let rec = snap.rows[i].0;
-                if only.is_some_and(|o| o.0 != rec) { continue; }
+                if only.is_some_and(|o| o.0 != rec) || snap.erased.contains(&rec) { continue; }
                 let a = self.rec_attr(rec);
                 let selected = a & CRA_SELECTED != 0;
                 let color = if selected { SELECT_TEXT_COLOR } else if a & CRA_DISABLED != 0 { DISABLED_TEXT_COLOR } else { fg };
@@ -2796,9 +3056,31 @@ impl Loader {
                 if focused && a & CRA_CURSORED != 0 { super::pm_button::focus_mark(&rp, (l, b, r, t), color); }
             }
         }
+        // Tree lines (CA_TREELINE), cxTreeLine pels wide (1 by default).
+        let lines = if full && view == View::Tree && attr & CA_TREELINE != 0 {
+            tree_lines(&snap.tree.iter().map(|t| t.0).collect::<Vec<_>>())
+        } else { Vec::new() };
+        let line_w = (snap.info.tree_line as i32).clamp(1, 8);
+        let ew = snap.expander_w();
         for &(i, r) in placed.iter().filter(|_| view != View::Icon) {
             let (rec, size) = snap.rows[i];
-            if only.is_some_and(|o| o.0 != rec) { continue; }
+            if only.is_some_and(|o| o.0 != rec) || snap.erased.contains(&rec) { continue; }
+            if let Some(&(mask, has_next)) = lines.get(i) {
+                let (l, b, _, t) = at(r);
+                let depth = i32::from(snap.tree[i].0.min(63));
+                let level_x = |k: i32| l + k * snap.indent() + CELL_PAD + ew / 2;
+                let y_mid = b + r.3 / 2;
+                let vline = |x: i32, lo: i32, hi: i32| rp.fill((x, lo, x + line_w - 1, hi), SEPARATOR_COLOR);
+                for k in 0..depth.saturating_sub(1) {
+                    if mask & (1 << k) != 0 { vline(level_x(k), b, t); }
+                }
+                if depth > 0 {
+                    let x = level_x(depth - 1);
+                    vline(x, if has_next { b } else { y_mid }, t);
+                    let end = l + snap.expander_x(i) + if snap.tree[i].1 { -1 } else { ew - 1 };
+                    rp.fill((x, y_mid, end.max(x), y_mid + line_w - 1), SEPARATOR_COLOR);
+                }
+            }
             let a = self.rec_attr(rec);
             let (l, b, rr, t) = at(r);
             let selected = a & CRA_SELECTED != 0;
@@ -2845,9 +3127,14 @@ impl Loader {
                 }
                 let l = l + snap.text_inset(i);
                 let ty = if snap.pictures() { b + (r.3 - LINE_H) / 2 } else { b + ROW_PAD };
-                if full && view == View::Tree && snap.tree[i].1 {
-                    // The expander: a box with a minus, or a plus when closed.
+                if full && view == View::Tree && snap.tree[i].1
+                    && let Some((h, bitmap)) = snap.tree_pics.get(i).copied().flatten() {
+                    // The expander as the record's (or CNRINFO's) picture.
                     let ex = row_l + snap.expander_x(i);
+                    self.paint_picture(&rp, h, bitmap, (ex, b + (r.3 - ew) / 2, ew, ew));
+                } else if full && view == View::Tree && snap.tree[i].1 {
+                    // The expander: a box with a minus, or a plus when closed.
+                    let ex = row_l + snap.expander_x(i) + (ew - EXPANDER) / 2;
                     let (eb, et) = (b + (r.3 - EXPANDER) / 2, b + (r.3 - EXPANDER) / 2 + EXPANDER - 1);
                     let (er, mid_x, mid_y) = (ex + EXPANDER - 1, ex + EXPANDER / 2, eb + EXPANDER / 2);
                     for edge in [(ex, eb, er, eb), (ex, et, er, et), (ex, eb, ex, et), (er, eb, er, et)] {
@@ -3586,7 +3873,8 @@ mod tests {
         assert_eq!(x0, ARRANGE_GAP);
         assert_eq!(y0, 198 - ARRANGE_GAP - ICON_SIZE, "the top row");
         assert!(f.ptl(r[1]).0 > x0 && f.ptl(r[1]).1 == y0);
-        assert_eq!(f.send(CM_ARRANGE, 1, 0), 0, "only the standard arrangement");
+        assert_eq!(f.send(CM_ARRANGE, 7, 0), 0, "an unknown arrangement");
+        assert_eq!(f.send(CM_ARRANGE, CMA_ARRANGESTANDARD, 0x80), 0, "an unknown flag");
         // CCS_AUTOPOSITION arranges as records come.
         let g = fixture(CCS_AUTOPOSITION);
         let r = g.named(&["a", "b"], 0);
@@ -3838,7 +4126,7 @@ mod tests {
         // A click on the expander box opens it: row 0 at y 181..198, box
         // after a 0 indentation at x 1 + 4 + ... (text inset 0 + 9 + 8).
         let snap = f.loader.snapshot(f.cnr).unwrap();
-        let ex = BORDER + snap.text_inset(0) - EXPANDER - CELL_PAD;
+        let ex = BORDER + snap.expander_x(0);
         values(&f);
         f.send(WM_BUTTON1DOWN, Fx::at(ex + 4, 190), 0);
         assert_eq!(rows(&f).len(), 4, "the expander opened it");
@@ -4311,5 +4599,200 @@ mod tests {
         s.lock_or_recover().record = Some(Vec::new());
         f.loader.dispatch_builtin_control(sb, WM_PAINT, 0, 0);
         assert!(!s.lock_or_recover().record.take().unwrap().is_empty(), "shown: drawn");
+    }
+
+    // ── Stage 3: tree look and moves, grid, erasing, stacking, menus ─────
+
+    #[test]
+    fn tree_lines_follow_siblings() {
+        // a ─ b ─ c   (b has a sibling d after c's subtree)
+        //   │   └ c
+        //   └ d
+        // e
+        let lines = tree_lines(&[0, 1, 2, 1, 0]);
+        assert_eq!(lines[0], (0, true), "a has a later sibling (e)");
+        assert_eq!(lines[1], (0, true), "b goes on to d");
+        assert_eq!(lines[2], (0b1, false), "c: the line at level 0 runs through for d");
+        assert_eq!(lines[3], (0, false), "d is the last child");
+        assert_eq!(lines[4], (0, false));
+        assert!(tree_lines(&[0, 70, 0]).len() == 3, "deep levels are bounded");
+    }
+
+    #[test]
+    fn grid_arrangement_places_rows_of_squares() {
+        let p = arrange_grid(5, (32, 32), (80, 70), 250, 200);
+        assert_eq!(p.len(), 5);
+        assert_eq!(p[0], ((80 - 32) / 2, 200 - ARRANGE_GAP / 2 - 32));
+        assert_eq!(p[1].0, 80 + (80 - 32) / 2);
+        assert_eq!((p[3].0, p[3].1), (p[0].0, p[0].1 - 70), "three squares a row in 250 pels");
+        let (gx, gy) = default_grid((32, 32));
+        assert!(gx >= 64 && gy > 32);
+    }
+
+    /// Records r0..r5 in a tree: r0 { r2, r3 { r4 } }, r1, r5.
+    fn tree_fixture() -> (Fx, Vec<u32>) {
+        let f = fixture(0);
+        let r = f.alloc(6, 0);
+        f.insert(r[0], 2, CMA_END, 0);
+        f.insert(r[2], 2, CMA_END, r[0]);
+        f.insert(r[4], 1, CMA_END, r[3]);
+        f.insert(r[5], 1, CMA_END, 0);
+        (f, r)
+    }
+
+    fn parent_of(f: &Fx, rec: u32) -> u32 {
+        f.loader.with_cnr(f.cnr, |s, _| s.records.iter().find(|&&(x, _)| x == rec).map(|&(_, p)| p)).flatten().unwrap()
+    }
+
+    #[test]
+    fn cm_movetree_moves_a_subtree() {
+        let (f, r) = tree_fixture();
+        let mv = |rec: u32, parent: u32, order: u32, sibs: u32| {
+            for (o, v) in [(0, rec), (4, parent), (8, order), (12, sibs)] { f.wr(BUF + 0x300 + o, v); }
+            f.send(CM_MOVETREE, BUF + 0x300, 0)
+        };
+        // r3 (with r4) to the top level after r1.
+        assert_eq!(mv(r[3], 0, r[1], 0), 1);
+        assert_eq!(parent_of(&f, r[3]), 0);
+        assert_eq!(parent_of(&f, r[4]), r[3], "its child comes along");
+        assert_eq!(f.send(CM_QUERYRECORD, r[1], CMA_NEXT | 1 << 16), r[3]);
+        // Under itself or its own child: refused.
+        assert_eq!(mv(r[3], r[4], CMA_END, 0), 0);
+        assert_eq!(mv(r[3], r[3], CMA_END, 0), 0);
+        // r1 and its later siblings (r3, r5) under r0, first.
+        assert_eq!(mv(r[1], r[0], CMA_FIRST, 1), 1);
+        for x in [r[1], r[3], r[5]] { assert_eq!(parent_of(&f, x), r[0]); }
+        assert_eq!(f.send(CM_QUERYRECORD, r[0], u32::from(CMA_FIRSTCHILD) | 1 << 16), r[1]);
+        assert_eq!(mv(0x1234, 0, CMA_END, 0), 0, "not a record");
+        assert_eq!(mv(r[2], 0, r[2], 0), 0, "after itself");
+    }
+
+    #[test]
+    fn tree_lines_and_expander_pictures_are_drawn() {
+        let (f, r) = tree_fixture();
+        f.set_view(CV_TREE | CV_TEXT | CA_TREELINE);
+        f.send(CM_EXPANDTREE, 0, 0);
+        let plain = f.paint_ops().len();
+        // TREEITEMDESC on r0: icons for both states.
+        let hptr = crate::loader::pm_pointer::PointerManager::system_handle(3);
+        for (o, v) in [(0, 0), (4, 0), (8, hptr), (12, hptr)] { f.wr(BUF + 0x340 + o, v); }
+        f.wr(r[0] + RC_PTREEITEMDESC, BUF + 0x340);
+        let snap = f.loader.snapshot(f.cnr).unwrap();
+        assert_eq!(snap.tree_pics[0], Some((hptr, false)));
+        assert_eq!(snap.expander_w(), TREE_PICTURE);
+        assert!(f.paint_ops().len() > plain / 2);
+        // A click on the (wider) expander still closes it.
+        let ex = BORDER + snap.expander_x(0);
+        f.send(WM_BUTTON1DOWN, Fx::at(ex + TREE_PICTURE - 2, 190), 0);
+        assert_eq!(f.rd(r[0] + RC_ATTR) & CRA_EXPANDED, 0, "closed by its picture");
+        // CNRINFO's bitmaps stand in for records without a TREEITEMDESC.
+        for i in 0..23 { f.wr(BUF + 0x600 + 4 * i, 0); }
+        f.wr(BUF + 0x600 + 56, 0x77);
+        f.wr(BUF + 0x600 + 60, 0x78);
+        f.send(CM_SETCNRINFO, BUF + 0x600, CMA_TREEBITMAP);
+        f.wr(r[0] + RC_PTREEITEMDESC, 0);
+        f.send(CM_EXPANDTREE, r[3], 0);
+        let snap = f.loader.snapshot(f.cnr).unwrap();
+        assert_eq!(snap.tree_pics[0], Some((0x78, true)), "r0 is closed: hbmCollapsed");
+    }
+
+    #[test]
+    fn erased_records_come_back_when_invalidated() {
+        let f = fixture(0);
+        f.set_view(CV_TEXT);
+        let r = f.named(&["a", "b"], 0);
+        let texts = |f: &Fx| f.paint_ops().iter().filter(|o| matches!(o, crate::gui::surface::DrawOp::Text { .. })).count();
+        let both = texts(&f);
+        assert_eq!(f.send(CM_ERASERECORD, r[0], 0), 1);
+        assert_eq!(texts(&f), both - 1, "erased");
+        assert_eq!(f.send(CM_ERASERECORD, 0x1234, 0), 0);
+        assert_eq!(f.send(CM_INVALIDATERECORD, f.array(&[r[1]]), 1), 1);
+        assert_eq!(texts(&f), both - 1, "another record invalidated");
+        f.send(CM_INVALIDATERECORD, 0, 0);
+        assert_eq!(texts(&f), both, "all invalidated: back");
+    }
+
+    #[test]
+    fn insertion_stacks_records_on_top_or_bottom() {
+        let f = fixture(0);
+        let a = f.named(&["a", "b"], 0);
+        let c = f.alloc(1, 0);
+        for (o, v) in [(0, 24), (RI_ORDER, CMA_END), (RI_PARENT, 0), (RI_INVALIDATE, 1), (RI_ZORDER, CMA_BOTTOM), (RI_COUNT, 1)] {
+            f.wr(BUF + o, v);
+        }
+        f.send(CM_INSERTRECORD, c[0], BUF);
+        for &r in [a[0], a[1], c[0]].iter() { f.place(r, 10, 10); }
+        let snap = f.loader.snapshot(f.cnr).unwrap();
+        let order: Vec<u32> = snap.z.iter().map(|&i| snap.rows[i].0).collect();
+        assert_eq!(order, vec![c[0], a[0], a[1]], "CMA_BOTTOM under the others");
+        // Topmost first for CMA_ZORDER.
+        for (o, v) in [(0, 24), (4, 0), (8, 0), (12, 300), (16, 300), (QRFR_SEARCH, CMA_PARTIAL | CMA_ZORDER)] { f.wr(BUF + 0x500 + o, v); }
+        assert_eq!(f.send(CM_QUERYRECORDFROMRECT, CMA_FIRST, BUF + 0x500), a[1]);
+    }
+
+    #[test]
+    fn grid_info_and_grid_arrangement() {
+        let f = fixture(0);
+        let r = f.named(&["a", "b", "c"], 0);
+        f.wr(BUF + 0x380, 20);
+        f.loader.guest_write::<i16>(BUF + 0x384, 90).unwrap();
+        f.loader.guest_write::<i16>(BUF + 0x386, 80).unwrap();
+        assert_eq!(f.send(CM_SETGRIDINFO, BUF + 0x380, 0), 1);
+        assert_eq!(f.send(CM_QUERYGRIDINFO, BUF + 0x3A0, 0), 1);
+        let rd16 = |a: u32| f.loader.guest_read::<i16>(a).unwrap();
+        assert_eq!((rd16(BUF + 0x3A4), rd16(BUF + 0x3A6)), (90, 80));
+        assert_eq!(rd16(BUF + 0x3AA), (298 / 90) as i16, "columns of the work area");
+        assert_eq!(f.send(CM_ARRANGE, CMA_ARRANGEGRID, 0), 1);
+        assert_eq!(f.ptl(r[1]).0 - f.ptl(r[0]).0, 90, "one square apart");
+        // Only the selected one, with CMA_ARRANGESELECTED.
+        f.place(r[2], 200, 5);
+        f.place(r[0], 222, 6);
+        f.send(CM_SETRECORDEMPHASIS, r[2], 1 | CRA_SELECTED << 16);
+        assert_eq!(f.send(CM_ARRANGE, CMA_ARRANGEGRID, CMA_ARRANGESELECTED), 1);
+        assert_eq!(f.ptl(r[2]).0, (90 - ICON_SIZE) / 2, "the selected record to the first square");
+        assert_eq!(f.ptl(r[0]), (222, 6), "the others stay");
+        f.loader.guest_write::<i16>(BUF + 0x384, 0).unwrap();
+        assert_eq!(f.send(CM_SETGRIDINFO, BUF + 0x380, 0), 0, "an empty square");
+    }
+
+    #[test]
+    fn the_workspace_viewport() {
+        let f = fixture(0);
+        let r = f.named(&["far"], 0);
+        f.place(r[0], 500, 300);
+        f.send(CM_INVALIDATERECORD, 0, 0);
+        assert_eq!(f.send(CM_QUERYVIEWPORTRECT, BUF + 0x700, u32::from(CMA_WORKSPACE)), 1);
+        let rd = |o: u32| f.rd(BUF + 0x700 + o) as i32;
+        assert_eq!((rd(0), rd(4)), (0, 0));
+        assert!(rd(8) >= 500 + ICON_SIZE && rd(12) >= 300 + ICON_SIZE, "{} {}", rd(8), rd(12));
+        // A text view: its rows.
+        f.set_view(CV_TEXT);
+        f.send(CM_QUERYVIEWPORTRECT, BUF + 0x700, u32::from(CMA_WORKSPACE));
+        assert_eq!(rd(12), f.loader.snapshot(f.cnr).unwrap().frame().row_h);
+    }
+
+    #[test]
+    fn context_menu_and_help_reach_the_owner() {
+        let f = fixture(0);
+        f.set_view(CV_TEXT);
+        let r = f.named(&["a", "b"], 0);
+        let values = |f: &Fx| -> Vec<(u32, u32)> {
+            std::mem::take(&mut f.loader.shared.window_mgr.lock_or_recover().owner_calls).into_iter().filter_map(|c| match c.kind {
+                OwnerCallKind::ContainerValue { code, mp2 } => Some((u32::from(code), mp2)),
+                _ => None,
+            }).collect()
+        };
+        values(&f);
+        // From the pointer: the record under it (row 1 at the top).
+        f.send(WM_CONTEXTMENU, Fx::at(20, 189), 1);
+        assert_eq!(values(&f), vec![(CN_CONTEXTMENU, r[0])]);
+        f.send(WM_CONTEXTMENU, Fx::at(20, 20), 1);
+        assert_eq!(values(&f), vec![(CN_CONTEXTMENU, 0)], "over no record");
+        // From the keyboard and for help: the cursored record.
+        f.send(CM_SETRECORDEMPHASIS, r[1], 1 | CRA_CURSORED << 16);
+        values(&f);
+        f.send(WM_CONTEXTMENU, 0, 0);
+        f.send(WM_HELP, 0, 0);
+        assert_eq!(values(&f), vec![(CN_CONTEXTMENU, r[1]), (CN_HELP, r[1])]);
     }
 }
