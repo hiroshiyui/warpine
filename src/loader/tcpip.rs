@@ -257,6 +257,32 @@ impl SocketManager {
 /// Convert a Linux `errno` value to the corresponding OS/2 SOCE* code.
 ///
 /// Many low values (≤ 34) are identical between Linux and OS/2.  The BSD
+/// `AF_INET`, the only address family guests get, and the size of its
+/// `sockaddr_in` (OS/2's is laid out as Linux's: family, port, address,
+/// eight bytes of zero).
+pub const AF_INET: u32 = 2;
+pub const SOCKADDR_IN_LEN: usize = 16;
+
+/// Whether a guest may open a socket of `domain` and `sock_type`: only
+/// Internet sockets (`AF_INET`) of type stream, datagram or raw, without
+/// Linux's flag bits. Unix-domain sockets would reach the host's own
+/// (D-Bus, X11, Warpine's desktop and pipe sockets) and create files
+/// outside the drives; netlink and the rest are the host's business.
+pub fn check_socket_kind(domain: u32, sock_type: u32) -> Result<(), i32> {
+    if domain != AF_INET { return Err(SOCE_AFNOSUPPORT); }
+    match sock_type {
+        1..=3 => Ok(()), // SOCK_STREAM, SOCK_DGRAM, SOCK_RAW
+        _ => Err(SOCE_SOCKTNOSUPPORT),
+    }
+}
+
+/// Whether `bytes` (a `sockaddr_in`) names an `AF_INET` address.
+pub fn check_sockaddr_in(bytes: &[u8]) -> Result<(), i32> {
+    let family = bytes.get(..2).map_or(0, |f| u16::from_le_bytes([f[0], f[1]]));
+    if bytes.len() != SOCKADDR_IN_LEN || u32::from(family) != AF_INET { return Err(SOCE_AFNOSUPPORT); }
+    Ok(())
+}
+
 /// extension codes (EWOULDBLOCK and above) diverge and must be remapped.
 pub fn errno_to_soce(errno: i32) -> i32 {
     match errno {
@@ -376,6 +402,13 @@ impl super::Loader {
 
     pub fn so_socket(&self, domain: u32, sock_type: u32, protocol: u32) -> u32 {
         debug!("socket(domain={}, type={}, protocol={})", domain, sock_type, protocol);
+        // Internet sockets only: a guest must not reach the host's Unix
+        // sockets (D-Bus, X11, Warpine's own desktop and pipe sockets) or
+        // netlink, nor pass Linux socket flags.
+        if let Err(e) = check_socket_kind(domain, sock_type) {
+            self.shared.socket_mgr.lock_or_recover().set_errno(e);
+            return SOCK_ERROR;
+        }
         // SAFETY: domain/type/protocol are valid i32 values passed from guest args.
         // Close-on-exec: a child process (DosExecPgm) must not keep the
         // socket open.
@@ -421,6 +454,17 @@ impl super::Loader {
         SOCK_SUCCESS
     }
 
+    /// Read a `sockaddr_in` of `len` bytes at guest `ptr` for `bind`,
+    /// `connect` or `sendto`: exactly `SOCKADDR_IN_LEN` bytes of an
+    /// `AF_INET` address (see [`check_sockaddr_in`]).
+    fn read_sockaddr_in(&self, ptr: u32, len: u32) -> Result<Vec<u8>, i32> {
+        if (len as usize) < SOCKADDR_IN_LEN { return Err(SOCE_INVAL); }
+        let bytes = self.read_guest_bytes(ptr, SOCKADDR_IN_LEN);
+        if bytes.len() < SOCKADDR_IN_LEN { return Err(SOCE_FAULT); }
+        check_sockaddr_in(&bytes)?;
+        Ok(bytes)
+    }
+
     // ── bind (ordinal 2) ─────────────────────────────────────────────────────
     //
     //   int bind(int s, struct sockaddr *name, int namelen)
@@ -432,16 +476,19 @@ impl super::Loader {
     pub fn so_bind(&self, s: u32, name_ptr: u32, namelen: u32) -> u32 {
         debug!("bind(s=0x{:X}, name=0x{:X}, namelen={})", s, name_ptr, namelen);
         let Some(fd) = self.so_fd(s) else { return SOCK_ERROR; };
-        let addr_bytes = self.read_guest_bytes(name_ptr, namelen as usize);
-        if addr_bytes.len() < namelen as usize {
-            self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_FAULT);
-            return SOCK_ERROR;
-        }
-        // SAFETY: addr_bytes is a valid slice of at least namelen bytes read from bounded guest memory.
+        let addr_bytes = match self.read_sockaddr_in(name_ptr, namelen) {
+            Ok(a) => a,
+            Err(e) => {
+                self.shared.socket_mgr.lock_or_recover().set_errno(e);
+                return SOCK_ERROR;
+            }
+        };
+        // SAFETY: addr_bytes is a host buffer of SOCKADDR_IN_LEN bytes, its
+        // own length passed.
         let rc = unsafe {
             libc::bind(fd,
                 addr_bytes.as_ptr() as *const libc::sockaddr,
-                namelen as libc::socklen_t)
+                addr_bytes.len() as libc::socklen_t)
         };
         self.translate_rc(rc, SOCK_SUCCESS)
     }
@@ -453,15 +500,18 @@ impl super::Loader {
     pub fn so_connect(&self, s: u32, name_ptr: u32, namelen: u32) -> u32 {
         debug!("connect(s=0x{:X}, name=0x{:X}, namelen={})", s, name_ptr, namelen);
         let Some(fd) = self.so_fd(s) else { return SOCK_ERROR; };
-        let addr_bytes = self.read_guest_bytes(name_ptr, namelen as usize);
-        if addr_bytes.len() < namelen as usize {
-            self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_FAULT);
-            return SOCK_ERROR;
-        }
+        let addr_bytes = match self.read_sockaddr_in(name_ptr, namelen) {
+            Ok(a) => a,
+            Err(e) => {
+                self.shared.socket_mgr.lock_or_recover().set_errno(e);
+                return SOCK_ERROR;
+            }
+        };
+        let addr_len = addr_bytes.len() as libc::socklen_t;
         if !self.so_waits_here(fd, libc::POLLOUT, 0) {
-            // SAFETY: `addr_bytes` holds `namelen` bytes (checked above).
+            // SAFETY: `addr_bytes` is a host buffer of `addr_len` bytes.
             let rc = unsafe {
-                libc::connect(fd, addr_bytes.as_ptr() as *const libc::sockaddr, namelen as libc::socklen_t)
+                libc::connect(fd, addr_bytes.as_ptr() as *const libc::sockaddr, addr_len)
             };
             return self.translate_rc(rc, SOCK_SUCCESS);
         }
@@ -471,9 +521,9 @@ impl super::Loader {
         // SAFETY: F_GETFL / F_SETFL on a descriptor the socket table owns.
         let fl = unsafe { libc::fcntl(fd, libc::F_GETFL) };
         unsafe { libc::fcntl(fd, libc::F_SETFL, fl | libc::O_NONBLOCK) };
-        // SAFETY: `addr_bytes` holds `namelen` bytes (checked above).
+        // SAFETY: `addr_bytes` is a host buffer of `addr_len` bytes.
         let rc = unsafe {
-            libc::connect(fd, addr_bytes.as_ptr() as *const libc::sockaddr, namelen as libc::socklen_t)
+            libc::connect(fd, addr_bytes.as_ptr() as *const libc::sockaddr, addr_len)
         };
         let err = if rc == 0 { 0 } else { last_errno() };
         let result = match err {
@@ -668,13 +718,13 @@ impl super::Loader {
         if let Err(e) = self.so_wait(fd, libc::POLLOUT, flags) { return self.so_fail(e); }
         let data = self.read_guest_bytes(buf_ptr, len as usize);
         let sent = if to_ptr != 0 && tolen > 0 {
-            let addr = self.read_guest_bytes(to_ptr, tolen as usize);
-            if addr.len() < tolen as usize {
-                // Unreadable or longer than Warpine copies: never let the
-                // host read past `addr`.
-                self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_FAULT);
-                return SOCK_ERROR;
-            }
+            let addr = match self.read_sockaddr_in(to_ptr, tolen) {
+                Ok(a) => a,
+                Err(e) => {
+                    self.shared.socket_mgr.lock_or_recover().set_errno(e);
+                    return SOCK_ERROR;
+                }
+            };
             // SAFETY: `data` and `addr` are host buffers whose own lengths
             // are passed, so the host never reads past them.
             unsafe {
@@ -1792,5 +1842,44 @@ mod tests {
         end_call();
         // SAFETY: closing the peer created above.
         unsafe { libc::close(fds[1]) };
+    }
+
+    // ── Only Internet sockets reach the host ─────────────────────────────
+
+    #[test]
+    fn only_internet_sockets_and_addresses_are_allowed() {
+        assert_eq!(check_socket_kind(2, 1), Ok(()));
+        assert_eq!(check_socket_kind(2, 2), Ok(()));
+        assert_eq!(check_socket_kind(1, 1), Err(SOCE_AFNOSUPPORT), "AF_UNIX");
+        assert_eq!(check_socket_kind(16, 3), Err(SOCE_AFNOSUPPORT), "AF_NETLINK");
+        assert_eq!(check_socket_kind(10, 1), Err(SOCE_AFNOSUPPORT), "AF_INET6 is not offered");
+        assert_eq!(check_socket_kind(2, 1 | 0x800), Err(SOCE_SOCKTNOSUPPORT), "Linux flag bits");
+        let mut sin = [0u8; 16];
+        sin[0] = 2;
+        assert_eq!(check_sockaddr_in(&sin), Ok(()));
+        sin[0] = 1;
+        assert_eq!(check_sockaddr_in(&sin), Err(SOCE_AFNOSUPPORT), "a sockaddr_un");
+        assert_eq!(check_sockaddr_in(&[2, 0]), Err(SOCE_AFNOSUPPORT), "too short");
+    }
+
+    #[test]
+    fn a_guest_cannot_open_or_reach_a_unix_socket() {
+        let loader = Loader::new_mock();
+        assert_eq!(loader.so_socket(1, 1, 0), SOCK_ERROR);
+        assert_eq!(loader.so_sock_errno(), SOCE_AFNOSUPPORT as u32);
+        // An Internet socket connecting to a sockaddr_un is refused before
+        // the host sees it.
+        let s = loader.so_socket(2, 1, 0);
+        assert_ne!(s, SOCK_ERROR);
+        let mut sun = vec![1u8, 0];
+        sun.extend_from_slice(b"/run/user/1000/bus\0");
+        sun.resize(110, 0);
+        loader.guest_write_bytes(0x9000, &sun).unwrap();
+        assert_eq!(loader.so_connect(s, 0x9000, sun.len() as u32), SOCK_ERROR);
+        assert_eq!(loader.so_sock_errno(), SOCE_AFNOSUPPORT as u32);
+        assert_eq!(loader.so_bind(s, 0x9000, sun.len() as u32), SOCK_ERROR);
+        assert_eq!(loader.so_connect(s, 0x9000, 8), SOCK_ERROR, "shorter than a sockaddr_in");
+        assert_eq!(loader.so_sock_errno(), SOCE_INVAL as u32);
+        loader.so_close(s);
     }
 }
