@@ -147,7 +147,7 @@ modules = [
   "loader/pm_pointer.rs", "loader/pm_minmax.rs", "loader/pm_sysmenu.rs", "loader/pm_paint.rs",
   "loader/pm_query.rs", "loader/pm_keystate.rs", "loader/pm_syscolor.rs", "loader/pm_rect.rs",
   "loader/pm_cursor.rs", "loader/pm_message.rs", "loader/pm_hook.rs",
-  "loader/pm_frame.rs", "loader/pm_accel.rs", "loader/pm_winmisc.rs",
+  "loader/pm_frame.rs", "loader/pm_accel.rs", "loader/pm_winmisc.rs", "loader/pm_remote.rs",
   "loader/pm_presparam.rs", "loader/pm_paint_style.rs", "loader/pm_atom.rs", "loader/pm_dde.rs",
 ]
 
@@ -224,8 +224,8 @@ modules = ["bin/lx_link.rs", "bin/gen_api.rs", "bin/gen_arch.rs", "bin/gen_compa
 [[layer]]
 id = "deskserver"
 zone = "server"
-label = "Desktop server: one SDL desktop per session, stacking, activation and input in order across programs (ADR-0052)"
-modules = ["gui/desktop_server.rs", "desktop/model.rs"]
+label = "Desktop server: one SDL desktop per session, stacking, activation, input in order and window calls across programs (ADR-0052)"
+modules = ["gui/desktop_server.rs", "desktop/model.rs", "desktop/calls.rs"]
 
 # ── Host system ─────────────────────────────────────────────────────────────
 
@@ -419,6 +419,11 @@ to = "gdb"
 from = "desktop"
 to = "desklink"
 label = "frame pictures, input acknowledgements"
+
+[[flow]]
+from = "pmwin"
+to = "desklink"
+label = "calls on other programs' windows"
 
 [[flow]]
 from = "desklink"
