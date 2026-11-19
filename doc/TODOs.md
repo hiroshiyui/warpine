@@ -35,15 +35,13 @@ disassembly.
   - chrome when the dialog asks for it;
   - Tab between an embedded dialog and the client's controls around it;
   - `WinWindowFromPoint` and pointer messages reaching an embedded dialog's guest-drawn children.
-- [ ] **Drag and drop** (ADR-0045, 0057):
-  - host files dropped on a window: SDL drop events → a `DRAGINFO` of `DRM_OS2FILE` items with `DM_DRAGOVER` / `DM_DROP`;
-  - `DrgDragFiles` / `DrgAcceptDroppedFiles`;
+- [ ] **Drag and drop** (ADR-0045, 0057, 0068):
+  - `DrgAcceptDroppedFiles`, `DrgQueryFormat`;
   - lazy drag: `DrgLazyDrag`, `DrgLazyDrop`, `DrgCancelLazyDrag`, `CN_PICKUP`, `CN_DROPNOTIFY`;
-  - `DrgReallocDraginfo`, `DrgQueryFormat`, `DrgQueryDraginfoPtr` / `DrgQueryDraginfoPtrFromHwnd`;
   - drawing the drag image (`DrgSetDragImage` is accepted, but nothing is drawn);
-  - `DM_DRAGOVER` on Ctrl / Shift (`usOperation`);
   - target emphasis drawn by the container, `CN_DRAGAFTER`;
-  - `WM_BEGINDRAG` / `WM_ENDDRAG` passed to the owner by `WinDefWindowProc`, and from the keyboard.
+  - `WM_BEGINDRAG` from the keyboard;
+  - a host drop's position on real displays (the last pointer position is used).
 - [ ] **Menus**:
   - `WM_MEASUREITEM` for owner-drawn items, and a redraw when the highlight changes;
   - `WM_MEASUREITEM` on deletion, partial `WM_DRAWITEM` (`fsStateOld`).

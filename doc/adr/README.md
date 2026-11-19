@@ -73,3 +73,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0065](0065-container-details-panes-owner-drawing-title-edits.md) | Container details panes, horizontal scrolling, owner drawing through owner calls, title and heading edits; hidden built-in windows do not paint | Accepted | 2026-11-19 |
 | [0066](0066-guest-isolation-and-supply-chain-hardening.md) | Guests cannot touch the host environment or host Unix sockets; downloads and toolchains are pinned and verified; a cargo-deny policy guards dependencies | Accepted | 2026-11-19 |
 | [0067](0067-context-menus-wheel-and-container-trees-grids.md) | WM_CONTEXTMENU and the mouse wheel as routed pointer input; container tree lines, tree moves, grids, erasing and stacking | Accepted | 2026-11-19 |
+| [0068](0068-file-drags-host-drops-and-drag-operations.md) | File drags, host files dropped on windows, the drag's operation keys and WM_ENDDRAG | Accepted | 2026-11-20 |

@@ -53,7 +53,8 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - button 2 with a 4-pel threshold;
   - equal strings sharing a handle;
   - `xDrop` / `yDrop` updated at each `DM_DRAGOVER`;
-  - a container passing its owner's `CN_DRAGOVER` reply on.
+  - a container passing its owner's `CN_DRAGOVER` reply on;
+  - more in ADR-0068: file items, host drops, the operation keys, `WM_ENDDRAG`, the owner getting the gestures.
 - **Buttons**:
   - `BM_CLICK(FALSE)` highlighting only;
   - `BM_CLICK` on a disabled button doing nothing;
