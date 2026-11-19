@@ -6,12 +6,16 @@
 # fetched source tree for the full terms.
 #
 # Source: https://github.com/StevenLevine/4os2
-# Pinned to commit 7e56d1c for reproducible builds.
+# Pinned to the full commit 7e56d1ca63d4fb0df8d55a748656f0eb5c1d3494
+# (2025-11-25, "Always update build level string"): a short prefix could
+# be matched by a branch or tag of that name or by a colliding object, so
+# the script checks out the full SHA, detached, and refuses the tree unless
+# HEAD is exactly that commit.
 
 set -euo pipefail
 
 REPO_URL="https://github.com/StevenLevine/4os2.git"
-COMMIT="7e56d1c"
+COMMIT="7e56d1ca63d4fb0df8d55a748656f0eb5c1d3494"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Check if source already fetched
@@ -27,9 +31,14 @@ TMPDIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR"' EXIT
 
 echo "Cloning 4OS2 source (commit $COMMIT)..."
-git clone --quiet "$REPO_URL" "$TMPDIR/4os2"
+git -c protocol.allow=never -c protocol.https.allow=always \
+    clone --quiet --no-checkout "$REPO_URL" "$TMPDIR/4os2"
 cd "$TMPDIR/4os2"
-git checkout --quiet "$COMMIT"
+git -c advice.detachedHead=false checkout --quiet --detach "$COMMIT"
+if [ "$(git rev-parse HEAD)" != "$COMMIT" ]; then
+    echo "error: HEAD is $(git rev-parse HEAD), not the pinned $COMMIT; refusing the tree." >&2
+    exit 1
+fi
 
 echo "Copying source files..."
 # Copy source directories and essential files; skip .git
