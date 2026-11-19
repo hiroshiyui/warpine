@@ -23,6 +23,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - **Pointer input is routed when it is read** — a click on a client area or dialog is hit-tested, activates its frame (`WM_ACTIVATE` before the click) and takes the focus from a control beside it when it reaches the head of the system input queue, strictly after the input before it, as the PM Programming Guide describes; moves and releases go to the window under the pointer at read time, so a click follows a window the busy program has moved; a disabled frame takes no pointer input (ADR-0051). Clicks on frame chrome and the sizing border still act at once. Sample `pm_inputorder_test`.
 
+### Changed
+- **`doc/TODOs.md` compacted** — open work only, one short bullet list per topic (about a quarter of its former size); the "Completed" table is gone (the CHANGELOG, guides and ADRs hold it), and the unverified choices moved to the new `doc/unverified.md`.
+
 ### Fixed
 - **Hidden built-in controls drew themselves** — a built-in control hidden after its `WM_PAINT` was queued (a container scroll bar the view stopped needing) still painted, leaving a stale picture; hidden built-in windows now paint nothing (ADR-0065).
 - **Memory handed out again is zero** — `DosAllocMem`, `DosAllocSharedMem` and a DLL's objects could show what an earlier allocation or module had left in reused memory (OS/2 commits memory zeroed); a DLL loaded again kept the old module's static data (ADR-0063).

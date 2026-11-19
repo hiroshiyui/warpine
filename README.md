@@ -361,7 +361,7 @@ cargo clippy --all-targets -- -D warnings  # Lint, test code included — must p
 | 8 | SOM / Workplace Shell | 🔮 Long-term |
 | 9 | XE — 64-bit OS/2-lineage platform (new format + API set + Rust toolchain) | 🔮 Far future |
 
-See [doc/TODOs.md](doc/TODOs.md) for the detailed roadmap.
+See [doc/TODOs.md](doc/TODOs.md) for the detailed roadmap and [doc/unverified.md](doc/unverified.md) for behaviour still to be checked against OS/2.
 
 ## License
 

@@ -1,0 +1,303 @@
+# Unverified behaviour
+
+Choices Warpine made where no public source settles what OS/2 does. Each is a
+guess to check if a reference turns up. Open work is in [TODOs](TODOs.md). Newer
+features keep this list in their ADR, under "Warpine's choices (unverified)".
+
+## Presentation Manager
+
+- **Text controls**:
+  - `DRAG_SCROLL_MS` 100 ms;
+  - `SV_CURSORRATE` as the time between toggles;
+  - the IME area spanning the caret's line;
+  - `WinSetSysValue` keeping only `SV_CURSORRATE`;
+  - Enter passed on after `LN_ENTER`;
+  - `MLM_SETWRAP` returning TRUE;
+  - Space toggling the cursor item in `LS_EXTENDEDSEL`;
+  - `MLN_*` mp2 (the handle for focus notifications, 0 for `MLN_CHANGE`);
+  - `LM_DELETEITEM` out of range returning the count;
+  - only the CUA clipboard keys (no Ctrl+C/X/V).
+- **Containers** (more in ADR-0065, 0067):
+  - `CM_SETRECORDEMPHASIS` sending `CN_EMPHASIS`;
+  - `CM_QUERYRECORDEMPHASIS` matching all bits;
+  - `RECORDCORE.cb` as the core size;
+  - inserted records freed on destruction;
+  - default `CNRINFO` values: icon view, no line spacing, indentation 16;
+  - `lScrollInc` in pels;
+  - a NULL record expanding or collapsing all;
+  - `pStorage` NULL for `pSortRecord`;
+  - a stable sort;
+  - `ptlIcon` as the lower-left corner;
+  - 8-pel arrangement spacing, 16-pel tree icons;
+  - mini handles falling back to the normal ones;
+  - the filter asked about children, and `CMA_FILTER` passing over filtered records;
+  - `cbText` counting the NUL;
+  - `CN_REALLOCPSZ` for unchanged text;
+  - the split bar's place and sizes;
+  - the 16-pel horizontal step;
+  - `CM_SCROLLWINDOW(CMA_HORIZONTAL)` scrolling the left pane;
+  - `OWNERITEM` fields of `WM_DRAWITEM`;
+  - the guest cell holding an edited title;
+  - mouse / key selection rules read from the PM Guide.
+- **Notebooks**:
+  - notifications on inserting the first page or deleting the top one;
+  - `BKM_QUERYPAGECOUNT` and end pages;
+  - `BKN_PAGESELECTEDPENDING` for `BKM_TURNTOPAGE`;
+  - the owner of a loaded page dialog;
+  - where the buttons' `WM_COMMAND` goes;
+  - `BKA_MAXBUTTONID` as a limit;
+  - `BKM_SETTABCOLOR` taking RGB;
+  - a tab bitmap replacing the text;
+  - arrows scrolling without turning.
+- **Drag and drop**:
+  - button 2 with a 4-pel threshold;
+  - equal strings sharing a handle;
+  - `xDrop` / `yDrop` updated at each `DM_DRAGOVER`;
+  - a container passing its owner's `CN_DRAGOVER` reply on.
+- **Buttons**:
+  - `BM_CLICK(FALSE)` highlighting only;
+  - `BM_CLICK` on a disabled button doing nothing;
+  - the highlighted check-box look;
+  - `BM_SETDEFAULT` changing `BS_DEFAULT`;
+  - `BM_SETCHECK` with mp1 > 2;
+  - auto three-state order 0 → 1 → 2 → 0;
+  - `BN_CLICKED` on arrow-key selection;
+  - an unchecked radio group having no tab stop.
+- **Dialogs and `WM_DESTROY`**:
+  - owned windows destroyed before the frame's children;
+  - the focus going to no window;
+  - Esc's `CMDSRC_OTHER`;
+  - IBM `rc` frame control data;
+  - a push-button mnemonic not moving the focus;
+  - the `msgFirst > msgLast` bounds in `WinGetMsg`.
+- **Message boxes**:
+  - Esc without a Cancel button doing nothing;
+  - staying open after Help;
+  - layout and icons (Warpine's own), centred on the desktop.
+- **Frames**:
+  - the key → `SC_*` mapping (from the OS/2 1.2 Quick Reference card);
+  - `WM_SYSCOMMAND` mp2 of chrome actions;
+  - the `SWP` of `WM_MINMAXFRAME` (client changes ignored);
+  - restoring a frame that was maximized and then minimized;
+  - the minimized look (160 × 22 title bar at the bottom left);
+  - activation moving on minimize / hide;
+  - `SWP_ACTIVATE` / `SWP_DEACTIVATE` for frames only;
+  - `WM_SIZE` posted, and none for an unchanged size;
+  - the hide button replacing the minimize button;
+  - `SC_HIDE` without a hide button.
+- **System and pop-up menus**:
+  - item order, mnemonics and accelerator texts (GG24-3732);
+  - which items are enabled when;
+  - no `WM_INITMENU` / `WM_MENUSELECT` / `WM_MENUEND` for the system menu or to a pop-up's owner;
+  - the first arrow of a keyboard size picking the edge;
+  - the 8-pel step;
+  - `WM_SIZE` once at the end;
+  - `WinPopupMenu`'s `(x, y)` as the bottom-left corner, and `PU_POSITIONONITEM` centring;
+  - menus kept on the desktop.
+- **Input**:
+  - Shift+F10 replacing its `WM_CHAR`;
+  - three lines per wheel notch, mp1 0, a scroll bar's owner taking the wheel;
+  - whether PM queues chrome clicks too;
+  - static controls letting the pointer through;
+  - the search continuing after `HT_TRANSPARENT`;
+  - `HT_ERROR` without the alarm;
+  - only `WinQueryQueueStatus` resetting its "added since" word.
+- **Pointers**:
+  - NULLHANDLE as the desktop;
+  - the arrow initially and after the current pointer is destroyed;
+  - "invert screen" pels drawn black;
+  - bitmap-array choice ignoring the display size;
+  - pen / object pointers shown as the arrow.
+- **PM errors**:
+  - every code with `SEVERITY_ERROR`;
+  - success leaving the error alone;
+  - `WinGetMsg` returning FALSE for a bad filter, and `WinQueryWindow` returning 0 for a bad code;
+  - `WinSendDlgItemMsg` / `WinSetWindowUShort` codes (inferred);
+  - frame window words not bounded;
+  - an `HWND_OBJECT` ancestor hiding a window;
+  - `PMERR_INVALID_HWND` for a descendant as parent;
+  - `WinSetWindowPtr(QWP_PFNWP)` acting as a subclass;
+  - `WinSetParent` keeping the relative position;
+  - frames moved under windows not drawn;
+  - `WinQueryWindowTextLength` not sending `WM_QUERYWINDOWPARAMS`.
+- **Window lookups and colours**:
+  - `WinWindowFromPoint` skipping hidden, not disabled, windows;
+  - the `PMERR_*` codes for bad counts / pointers / keys;
+  - `WinEnumDlgItem` eligibility;
+  - `WinQueryClassInfo` for built-in classes;
+  - case-sensitive class names;
+  - `HWND_DESKTOP` from `WinQueryDesktopWindow`;
+  - a double click counting as a press;
+  - `PMERR_NO_MSG_QUEUE` from `WinQueryMsgPos` / `WinQueryMsgTime`;
+  - `WM_SYSCOLORCHANGE` posted;
+  - `LCOL_PURECOLOR` ignored.
+- **Scroll bars and text cursor**:
+  - an 8-pel minimum slider;
+  - a new bar at 0..0;
+  - `cTotal` 0 meaning no thumb size;
+  - a click not taking the focus;
+  - one cursor per queue;
+  - `CURSOR_SETPOS` from a non-owner returning FALSE;
+  - negative sizes extending left / down;
+  - `rclClip` defaulting to the window;
+  - `WinQueryCursorInfo` reading the caller's queue;
+  - no `WM_TIMER(TID_CURSOR)` to the application.
+- **Rectangles and `WinDrawText`**:
+  - `WinPtInRect` excluding the right / top edges;
+  - (0, 0, 0, 0) as the empty result;
+  - NULL pointers failing silently;
+  - coordinates not limited to 16 bits;
+  - the `DT_WORDBREAK` count including trailing blanks;
+  - nothing drawn with `DT_QUERYEXTENT`, and the inclusive extent;
+  - `DT_ERASERECT` in the background colour;
+  - `DT_HALFTONE` as the mean colour;
+  - `~` as the mnemonic prefix;
+  - no clipping;
+  - `DT_EXTERNALLEADING` adding nothing.
+- **Painting**:
+  - `WinBeginPaint` with nothing to update drawing unclipped;
+  - (0, 0, 0, 0) from `WinQueryUpdateRect` for a valid window;
+  - `WinScrollWindow` clipping to the scroll rectangle, and failing for `HWND_DESKTOP`;
+  - `WinDefWindowProc(WM_PAINT)` validating only;
+  - a border without `DB_AREAATTRS` in solid `clrFore`;
+  - `DB_DLGBORDER` details;
+  - negative border widths as 0.
+- **Controls**:
+  - a dropped combination-box list reaching outside its parent;
+  - spin-button wrap at the limits;
+  - case-insensitive array matching;
+  - every slider and value-set size and colour.
+- **Standard dialogs**: the mp2 parameters, the `FDM_ERROR` ids, the `FNTI_*` bits, the `STYLECHANGE` layout.
+- **Codepages**: whether CP1004 lacks Windows-1252's ƒ (0x83).
+- **GPI**:
+  - `LINETYPE_*` dashes and `PATSYM_*` bits (Warpine's own);
+  - collinear `GpiPointArc` points drawn as a straight path;
+  - thick cosmetic lines as `round(width)` pels;
+  - each pel of a filled and outlined area painted once;
+  - an inclusive target in `GpiWCBitBlt` / `GpiDrawBits`;
+  - image fonts ignoring angle and shear under `CM_MODE1`;
+  - whether `WinDrawText` / `WinFillRect` follow the transforms.
+- **Desktop server**: the handling of a stalled client (later fix packs are said to time out).
+
+## Kernel and processes
+
+- **Exit lists**:
+  - the 5 s grace even when a handler continues;
+  - a routine that returns, calls `DosExit` or faults counting as `EXLST_EXIT`;
+  - `EXLST_EXIT` outside processing → `ERROR_INVALID_FUNCTION`;
+  - removing an unlisted routine or adding NULL → `ERROR_INVALID_DATA`;
+  - re-adding a routine re-orders it;
+  - at most 256 routines;
+  - the exception chain emptied before each routine.
+- **Shared memory**:
+  - getting a block twice counting once;
+  - `ERROR_INVALID_ADDRESS` for a non-block.
+- **Semaphores**:
+  - OS/2's limits;
+  - the owner-died hand-over when a single thread ends;
+  - a count of 0 in `DosQueryMutexSem`;
+  - `DCE_POSTONE` / `DCE_AUTORESET`;
+  - closing an owned mutex without waiters;
+  - `ERROR_TIMEOUT` when the process ends;
+  - pid / tid 0 for an unowned mutex;
+  - `ERROR_INVALID_PARAMETER` for NULL outputs;
+  - 0 written by a redundant `DosResetEventSem`;
+  - names case-insensitive and unique across kinds;
+  - `ERROR_SEM_NOT_FOUND` for the wrong kind;
+  - `ERROR_INVALID_HANDLE` for deleting a non-member;
+  - `ERROR_TOO_MANY_SEMAPHORES` before a duplicate;
+  - muxwait flags with neither or both `DCMW_*`;
+  - a closed member giving `ERROR_INVALID_HANDLE`;
+  - wait-all returning the last record's user value.
+- **Signals**:
+  - the must-complete limit of 65535;
+  - only thread 1's sections holding signals;
+  - an interrupted `MCI_WAIT` playing on;
+  - CMD.EXE ending its child when interrupted.
+- **Threads**:
+  - a thread's windows destroyed without `WM_DESTROY`;
+  - thread 1 ending alone while others run;
+  - the exit code when thread 1 returns;
+  - `DosWaitThread(0)` with nothing left to wait for → `ERROR_INVALID_THREADID`;
+  - an ended thread reported once;
+  - `DosKillThread` on itself;
+  - its queue destroyed with it;
+  - thread ids not reused.
+- **Critical sections, timers, modules**:
+  - a thread ending inside a section ends the section;
+  - held threads ending with the process;
+  - `ERROR_INVALID_THREADID` never returned;
+  - the 32 ms tick, an interval of 0 as one tick, 64 timers;
+  - a one-shot handle invalid after posting;
+  - a closed semaphore stopping its timer;
+  - "shared" meaning `DC_SEM_SHARED` or named;
+  - `DosSearchPath` skipping unresolved elements, matching files only and keeping the caller's spelling;
+  - `DosQueryModuleName` for handle 0 and for built-in modules (`C:\OS2\DLL\NAME.DLL`).
+- **Suballocation**:
+  - the error codes;
+  - first fit;
+  - the 1024-pool and 65536-range limits;
+  - `DOSSUB_SPARSE_OBJ` / `DOSSUB_SERIALIZE` changing nothing.
+- **Profiles**:
+  - a truncated `PrfQueryProfileData` returning TRUE, and a truncated string forced to end in NUL;
+  - list sizes and counts;
+  - `HINI_PROFILE` merging;
+  - deleting what does not exist succeeding;
+  - the last key removing its application;
+  - NULL applications on write;
+  - `PrfQueryProfileInt` overflow wrapping;
+  - the 64 KB limit;
+  - `PrfOpenProfile` creating files and reusing handles;
+  - `PrfCloseProfile` of the system profiles failing;
+  - the help calls' error codes and the `WinQueryHelpInstance` owner walk.
+
+## Console
+
+- **VIO window**:
+  - `SSF_TYPE_DEFAULT` and unknown application types running windowed;
+  - the largest size, the maximized place, the minimum size;
+  - the view following the cursor;
+  - the scroll-bar and menu look;
+  - Alt+Space / Shift+Esc, and Alt+F4 ending the program;
+  - mnemonics, and which items are enabled when;
+  - keys in Mark mode;
+  - Copy All's trailing blank lines;
+  - Paste's scan codes and dropped control characters;
+  - Alt+Home for OS/2 sessions only, and consumed;
+  - integer scaling with black borders.
+- **MOUCALLS**:
+  - one handle, and `MouOpen` returning it again;
+  - `MouOpen` failing without a display;
+  - the 64-event queue dropping the oldest;
+  - a move with a button change split into two events;
+  - an all-zero record with no event and no wait;
+  - mask filtering, mickeys, `MouSetPtrPos` queuing nothing;
+  - the `NOPTRRECT` reading;
+  - errors for short buffers and reserved bits;
+  - text pointer limits, 3 buttons, 79 mickeys/cm;
+  - the default masks;
+  - the PM pointer in a window.
+- **ANSI** (sources: OS/2 FAQ 5.12, REXX Tips & Tricks, `VioWrtTTY`):
+  - `ESC[J` / `ESC[1J` ignored;
+  - unknown sequences swallowed;
+  - a lone `ESC` shown;
+  - `ESC[?7h` as `ESC[=7h`;
+  - `SGR 2` as normal intensity;
+  - underline ignored;
+  - fills in the ANSI attribute, and scrolled-in lines in 0x07;
+  - wrap off overwriting the last column;
+  - TAB to the next multiple of 8;
+  - `ERROR_VIO_INVALID_PARMS` from `VioSetAnsi`;
+  - one state per process;
+  - LF returning to column 0.
+- **Console handles**:
+  - `ERROR_INVALID_HANDLE` writing to a closed standard handle;
+  - `DosSetFilePtr` on the console (OS/2 may say `ERROR_SEEK_ON_DEVICE`).
+- **End of piped input**:
+  - waiting `KbdCharIn` / `KbdStringIn` calls end the process with 0;
+  - a partial line returned first;
+  - `IO_NOWAIT` reporting no character.
+
+## Other
+
+- **CONFIG.SYS**: the `THREADS=` minimum, duplicates and comments.
