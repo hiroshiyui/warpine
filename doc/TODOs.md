@@ -31,10 +31,7 @@ disassembly.
 - [ ] **Notebooks** (ADR-0064):
   - images on notebook buttons (`hImage`);
   - `BKS_SPIRALBIND`, `BKS_ROUNDEDTABS` / `BKS_POLYGONTABS` and the back-page corners, which are drawn as the defaults now.
-- [ ] **Embedded dialogs** (ADR-0042):
-  - chrome when the dialog asks for it;
-  - Tab between an embedded dialog and the client's controls around it;
-  - `WinWindowFromPoint` and pointer messages reaching an embedded dialog's guest-drawn children.
+- [ ] **Embedded dialogs** (ADR-0042, 0069): a working title bar (moving the dialog, its buttons).
 - [ ] **Drag and drop** (ADR-0045, 0057, 0068):
   - `DrgAcceptDroppedFiles`, `DrgQueryFormat`;
   - lazy drag: `DrgLazyDrag`, `DrgLazyDrop`, `DrgCancelLazyDrag`, `CN_PICKUP`, `CN_DROPNOTIFY`;

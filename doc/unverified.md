@@ -49,6 +49,9 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - `BKM_SETTABCOLOR` taking RGB;
   - a tab bitmap replacing the text;
   - arrows scrolling without turning.
+- **Embedded dialogs** (ADR-0069):
+  - the title bar's inactive colours, no buttons, and clicks on it reaching the dialog;
+  - Tab crossing between the dialog and the client's controls, and the client's `WinDefWindowProc` taking Tab.
 - **Drag and drop**:
   - button 2 with a 4-pel threshold;
   - equal strings sharing a handle;

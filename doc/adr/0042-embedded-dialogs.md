@@ -1,6 +1,6 @@
 # ADR-0042: Embed a dialog whose parent is a window into that window
 
-- **Status:** Accepted
+- **Status:** Accepted; extended by ADR-0069 (chrome, Tab across the dialog's edge)
 - **Date:** 2026-11-18
 - **Sources:** `src/loader/pm_types.rs` (`is_embedded_dialog`, `is_top_dialog`, `in_dialog`, `embedded_dialogs`, `hit_controls`, `embedded_dialog_at`, `find_frame_for_hwnd`, `get_abs_rect_in_frame`), `src/loader/pm_win.rs` (`create_dialog`, `WinEndPaint`), `src/loader/mod.rs` (dialog painting), `src/gui/sdl_renderer.rs` (`route_button1`); `samples/pm_child_dialog_test`; IBM *Presentation Manager Programming Reference* (`WinLoadDlg`, `WinDlgBox`: `hwndParent`) and *PM Programming Guide* ("Windows": a child window is clipped to its parent)
 
