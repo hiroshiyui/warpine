@@ -208,6 +208,19 @@ mod elf_reader {
         pub symbols: Vec<ElfSymbol>,
     }
 
+    /// The largest uninitialized section accepted: the whole guest
+    /// memory of a Warpine process is smaller.
+    pub const MAX_SECTION_BYTES: u64 = 256 * 1024 * 1024;
+
+    /// The zero bytes of an uninitialized section of `size` bytes, or an
+    /// error when the input asks for more than `MAX_SECTION_BYTES`.
+    pub fn zeroed_section(size: u64, source_name: &str) -> Result<Vec<u8>, Box<dyn super::Error>> {
+        if size > MAX_SECTION_BYTES {
+            return Err(format!("{source_name}: an uninitialized section of {size} bytes (at most {MAX_SECTION_BYTES})").into());
+        }
+        Ok(vec![0u8; size as usize])
+    }
+
     /// Parse one ELF .o file from raw bytes.
     pub fn parse_elf(data: &[u8], source_name: &str) -> Result<ElfObject, Box<dyn super::Error>> {
         use object::{
@@ -229,9 +242,17 @@ mod elf_reader {
                 | SectionKind::UninitializedData => {}
                 _ => continue,
             }
-            let data_bytes = match section.uncompressed_data() {
-                Ok(d) => d.to_vec(),
-                Err(_) => vec![0u8; section.size() as usize],
+            // An uninitialized section has no bytes in the file: zeros of
+            // its size, bounded (the size comes from the input's header).
+            // Any other section must be readable as it is: compressed
+            // sections are not supported (object's decompressors are left
+            // out), and linking zeros in place of code would be silent.
+            let data_bytes = if kind == SectionKind::UninitializedData {
+                zeroed_section(section.size(), source_name)?
+            } else {
+                section.uncompressed_data()
+                    .map_err(|e| format!("{source_name}: section {}: {e}", section.name().unwrap_or("?")))?
+                    .to_vec()
             };
             let align = section.align().max(1);
             let local_idx = sections.len();
@@ -1046,6 +1067,14 @@ mod tests {
     use object::SectionKind;
 
     use super::*;
+
+    #[test]
+    fn uninitialized_sections_are_bounded() {
+        use super::elf_reader::{zeroed_section, MAX_SECTION_BYTES};
+        assert_eq!(zeroed_section(16, "a.o").unwrap(), vec![0u8; 16]);
+        assert!(zeroed_section(MAX_SECTION_BYTES + 1, "a.o").is_err(), "a crafted header cannot ask for gigabytes");
+        assert!(zeroed_section(u64::MAX, "a.o").is_err());
+    }
 
     #[test]
     fn test_def_parser() {
