@@ -1,6 +1,6 @@
 # ADR-0052: One desktop per session: a desktop server process, with Warpine processes as its clients
 
-- **Status:** Accepted (phases A and B implemented: ADR-0053, ADR-0054, ADR-0055; phase C but drag and drop: ADR-0056); amends ADR-0020's "each Warpine process shows its own PM desktop window"; ADR-0030 stayed until phase C
+- **Status:** Accepted (phases A and B implemented: ADR-0053, ADR-0054, ADR-0055; phase C: ADR-0056, ADR-0057); amends ADR-0020's "each Warpine process shows its own PM desktop window"; ADR-0030 stayed until phase C
 - **Date:** 2026-11-19
 - **Sources:**
   - Desktop link and server: `src/desktop/` (`pixmap.rs`, `proto.rs`, `transport.rs`, `model.rs`, `client.rs`), `src/gui/desktop_server.rs`, `src/gui/desktop_events.rs`, `src/gui/sdl_renderer/compositor/remote.rs`

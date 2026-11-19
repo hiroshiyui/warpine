@@ -50,15 +50,16 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0042](0042-embedded-dialogs.md) | Embed a dialog whose parent is a window into that window | Accepted | 2026-11-18 |
 | [0043](0043-container-record-memory.md) | Keep container records in guest memory, carved from per-container arenas | Accepted | 2026-11-18 |
 | [0044](0044-container-sort-call-chains.md) | Run a container sort as a resumable merge sort, one comparison per call chain | Accepted | 2026-11-18 |
-| [0045](0045-drag-and-drop-within-a-process.md) | Drag and drop within a process: a GUI-fed drag channel and DM_* messages as call chains | Accepted | 2026-11-18 |
+| [0045](0045-drag-and-drop-within-a-process.md) | Drag and drop within a process: a GUI-fed drag channel and DM_* messages as call chains | Accepted (extended to other programs by ADR-0057) | 2026-11-18 |
 | [0046](0046-container-icon-view-filter-and-editing.md) | Container icon view, filtering and direct editing: one filter chain, edits written back through the owner's buffer | Accepted | 2026-11-18 |
 | [0047](0047-light-hinting-with-skrifa.md) | Light hinting of Latin text with skrifa, and a contrast curve | Accepted | 2026-11-18 |
 | [0048](0048-builtin-window-procedure-and-tier-1-pm.md) | A guest-callable procedure for built-in windows; standard frames run the default procedure; child presentation spaces in the frame surface | Accepted | 2026-11-18 |
 | [0049](0049-shared-memory-across-processes.md) | Shared memory across processes: a sealed memfd arena at the top of guest memory, a table in the session directory | Accepted | 2026-11-19 |
 | [0050](0050-shared-semaphores-across-processes.md) | Shared semaphores across processes: a host-only memfd of slots, an OFD lock and a futex | Accepted | 2026-11-19 |
 | [0051](0051-pointer-input-routed-when-read.md) | Pointer input routed when it is read: clicks hit-tested and activating at the head of the input queue | Accepted | 2026-11-19 |
-| [0052](0052-session-desktop-server.md) | One desktop per session: a desktop server process, with Warpine processes as its clients | Accepted (phases A and B: ADR-0053–0055; phase C but drag and drop: ADR-0056) | 2026-11-19 |
+| [0052](0052-session-desktop-server.md) | One desktop per session: a desktop server process, with Warpine processes as its clients | Accepted (phases A and B: ADR-0053–0055; phase C: ADR-0056, ADR-0057) | 2026-11-19 |
 | [0053](0053-calls-on-other-programs-windows.md) | Calls on other programs' windows go through the desktop server and are answered on the owner's link thread | Accepted (`WM_MINMAXFRAME` amended by ADR-0055) | 2026-11-19 |
 | [0054](0054-messages-sent-to-other-programs-windows.md) | Messages sent to another program's window run on the window's thread when it reads messages | Accepted (send hooks amended by ADR-0055) | 2026-11-19 |
 | [0055](0055-programs-see-each-others-windows.md) | Window lists, broadcasts, state changes and send hooks reach other programs | Accepted | 2026-11-19 |
 | [0056](0056-session-shell-services.md) | The desktop server keeps the session's switch list and system atom table; DDE crosses programs | Accepted | 2026-11-19 |
+| [0057](0057-drag-and-drop-between-programs.md) | Drag and drop crosses programs: targets found through the server, DM_* messages as waited calls, drag blocks in the shared arena | Accepted | 2026-11-19 |

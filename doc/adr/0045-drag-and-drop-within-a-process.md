@@ -1,6 +1,6 @@
 # ADR-0045: Drag and drop within a process: a GUI-fed drag channel and DM_* messages as call chains
 
-- **Status:** Accepted
+- **Status:** Accepted; extended to other programs' windows by ADR-0057
 - **Date:** 2026-11-18
 - **Sources:** `src/loader/pm_drag.rs` (`DragTable`, `DragChannel`, `DragFeed`, `drg_drag`, `drag_continue`, `drag_chain_done`, `window_under`), `src/gui/sdl_renderer.rs` (`DragPress`, `WM_BEGINDRAG`, feeding the drag), `src/loader/pm_container.rs` (`CN_INITDRAG`, `CN_DRAGOVER` / `CN_DRAGLEAVE` / `CN_DROP`), `src/loader/pm_hook.rs` (`ChainThen::Drag`); `samples/pm_drag_test`; IBM *PM Programming Reference* (`DrgDrag`, `DM_DRAGOVER`, `DM_DRAGLEAVE`, `DM_DROP`, `WM_BEGINDRAG`, `DrgFreeDraginfo`, `CN_INITDRAG`, `CNRDRAGINIT`, `CNRDRAGINFO`) and *PM Programming Guide* ("Direct Manipulation"), as on EDM/2; ADR-0026, ADR-0044, ADR-0020
 

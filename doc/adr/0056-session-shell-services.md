@@ -1,6 +1,6 @@
 # ADR-0056: The desktop server keeps the session's switch list and system atom table; DDE crosses programs
 
-- **Status:** Accepted; supersedes ADR-0030; implements ADR-0052's phase C except drag and drop between programs
+- **Status:** Accepted; supersedes ADR-0030; implements ADR-0052's phase C except drag and drop between programs (ADR-0057)
 - **Date:** 2026-11-19
 - **Sources:**
   - The session's tables: `src/desktop/services.rs`, `src/gui/desktop_server.rs`
@@ -65,4 +65,4 @@ Each program is still its own process with its own memory, so the shared tables 
 - **What works.** The PM programs of a session share the window list, the switch list and system atoms, and hold DDE conversations with each other. `pm_xshell_test` checks all of these across a parent and a child, with the window list driven by Ctrl+Esc.
 - **Lifetime.** The tables live as long as the desktop server, which is as long as the session has a PM program, plus its linger.
 - **Costs.** Each switch-list and system-atom call is a round trip to the server. A DDE initiation costs one call per other program plus a waited send per window that takes DDE.
-- **Still missing.** Drag and drop between programs, the rest of ADR-0052's phase C: `DrgDrag` over another program's windows and `DRAGINFO` in shared memory.
+- **Still missing then**, done since by ADR-0057: drag and drop between programs, the rest of ADR-0052's phase C.
