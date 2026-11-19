@@ -1247,8 +1247,11 @@ impl VfsBackend for HostDirBackend {
         Ok(())
     }
 
+    /// The host file of `rel_path`, inside the drive's directory only (the
+    /// same sandbox check as opening it: `..` on a kernel-casefolded
+    /// directory or a symbolic link cannot lead outside).
     fn to_host_path(&self, rel_path: &str) -> Option<std::path::PathBuf> {
-        self.resolve_ci(rel_path)
+        self.resolve_existing(rel_path).ok()
     }
 }
 
@@ -1262,6 +1265,27 @@ mod tests {
         let tmp = tempfile::TempDir::new().unwrap();
         let backend = HostDirBackend::new(tmp.path().to_path_buf()).unwrap();
         (tmp, backend)
+    }
+
+    /// to_host_path stays inside the drive: not through `..` (with the
+    /// kernel's case folding too) nor through a symbolic link.
+    #[test]
+    fn host_paths_stay_inside_the_drive() {
+        let outside = tempfile::TempDir::new().unwrap();
+        std::fs::write(outside.path().join("secret.dll"), b"x").unwrap();
+        let (tmp, backend) = create_temp_backend();
+        std::fs::write(tmp.path().join("in.dll"), b"x").unwrap();
+        assert!(backend.to_host_path("in.dll").is_some());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.path().join("secret.dll"), tmp.path().join("link.dll")).unwrap();
+            assert_eq!(backend.to_host_path("link.dll"), None, "a link out of the drive");
+        }
+        let up = format!("../{}/secret.dll", outside.path().file_name().unwrap().to_string_lossy());
+        assert_eq!(backend.to_host_path(&up), None);
+        backend.kernel_casefold.store(true, Ordering::Relaxed);
+        assert_eq!(backend.to_host_path(&up), None, "with the kernel's case folding");
+        assert!(backend.to_host_path("in.dll").is_some());
     }
 
     // ── Setting file information ──
