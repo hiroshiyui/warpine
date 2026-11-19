@@ -136,12 +136,12 @@ cd samples/4os2 && ./fetch_source.sh && make
 
 ```bash
 # Install once:
-rustup toolchain install nightly --component rust-src
+rustup toolchain install nightly-2026-11-15 --component rust-src  # the dated nightly the guest crates pin
 cargo build --bin lx_link && cp target/debug/lx_link ~/.cargo/bin/lx-link
 
 # Build:
 cd samples/rust_hello
-cargo +nightly build \
+cargo build \
   -Z build-std=core,alloc \
   -Z build-std-features=compiler-builtins-mem \
   -Z json-target-spec \

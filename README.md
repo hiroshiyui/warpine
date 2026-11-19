@@ -69,7 +69,7 @@ _Screenshots captured from uncommitted changes on top of `ed65028` on 2026-11-18
 - **GDB Remote Stub:** `--gdb <port>` enables GDB RSP over TCP — attach with `gdb`/`gef`/`pwndbg` for software breakpoints, single-step, and full register/memory access.
 - **Crash Dump Facility:** Structured crash reports on fatal VMEXITs — registers, stack, code bytes, and last 256 API calls written to `warpine-crash-<pid>.txt`.
 - **Builtin CMD.EXE Shell:** Native Rust command shell. `cargo run -- CMD.EXE` opens it in a window on the PM desktop (same as any CLI app); `WARPINE_HEADLESS=1` falls back to the host terminal. Also intercepts `DosExecPgm("CMD.EXE")` from running OS/2 guests. No Open Watcom or 4OS2 required. Built-in commands: `DIR`, `CD`, `SET`, `ECHO`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `HELP`, `EXIT`. Line editor with history (↑/↓). `.CMD` script interpreter.
-- **Rust Guest Toolchain (Phase C):** Write OS/2 guest applications in Rust with `no_std`. Three standalone crates: `crates/warpine-os2-sys` (raw API bindings for DOSCALLS/VIOCALLS/KBDCALLS), `crates/warpine-os2-rt` (`_start` + panic handler + global allocator via `DosAllocMem`/`DosFreeMem`), `crates/warpine-os2` (ergonomic wrappers: `mod file`, `mod memory`, `mod thread`, `mod vio`, `mod process`). `samples/rust_hello` demonstrates a full Rust→LX binary with `cargo +nightly build`.
+- **Rust Guest Toolchain (Phase C):** Write OS/2 guest applications in Rust with `no_std`. Three standalone crates: `crates/warpine-os2-sys` (raw API bindings for DOSCALLS/VIOCALLS/KBDCALLS), `crates/warpine-os2-rt` (`_start` + panic handler + global allocator via `DosAllocMem`/`DosFreeMem`), `crates/warpine-os2` (ergonomic wrappers: `mod file`, `mod memory`, `mod thread`, `mod vio`, `mod process`). `samples/rust_hello` demonstrates a full Rust→LX binary with `cargo build` on the pinned nightly.
 - **API Compatibility Report:** `warpine --compat` prints a module-grouped report of all implemented APIs with stub annotations.
 
 ## Architecture
@@ -236,13 +236,13 @@ See [doc/developer_guide.md](doc/developer_guide.md) for detailed internals docu
 - **OS:** Linux with KVM support (`/dev/kvm` must be accessible by the user).
 - **Toolchain:** Rust 1.100.0 (Edition 2024), pinned in `rust-toolchain.toml`; `rustup` installs it automatically on the first `cargo` invocation.
 - **Library:** `libsdl3-dev` — SDL 3, found through pkg-config (for the PM desktop, the VGA text window and audio).
-- **Optional (for samples):** Open Watcom v2 — `./vendor/setup_watcom.sh` to vendor it. Snapshots built before 2026-08-11 lose `argv` and the environment of every OS/2 program (Open Watcom #1649); `./vendor/setup_watcom.sh --refresh` replaces such a snapshot, then rebuild the samples.
+- **Optional (for samples):** Open Watcom v2 — `./vendor/setup_watcom.sh` to vendor it (a pinned, dated snapshot whose SHA-256 the script checks before extracting). Snapshots built before 2026-08-11 lose `argv` and the environment of every OS/2 program (Open Watcom #1649); `./vendor/setup_watcom.sh --refresh` replaces such a snapshot, then rebuild the samples.
 
 ## Contributing
 
 ### Git Hooks
 
-This repo ships a pre-commit hook that runs `cargo test` and `cargo clippy --all-targets -- -D warnings` (the test code is linted too) before every commit. Activate it once after cloning:
+This repo ships a pre-commit hook that runs `cargo test`, `cargo clippy --all-targets -- -D warnings` (the test code is linted too) and, when `cargo-deny` is installed, the dependency policy of `deny.toml` (crates.io sources only, allowed licences, no banned crates) before every commit; releases also run `cargo audit` and `cargo deny check` (ADR-0066). Activate it once after cloning:
 
 ```bash
 git config core.hooksPath githooks
@@ -297,14 +297,14 @@ cargo run -- samples/4os2/4os2.exe
 ### 6. Build and run a Rust guest binary
 ```bash
 # Install nightly + rust-src (once):
-rustup toolchain install nightly --component rust-src
+rustup toolchain install nightly-2026-11-15 --component rust-src  # the dated nightly the guest crates pin
 
 # Build and install the ELF-to-LX linker (once):
 cargo build --bin lx_link && cp target/debug/lx_link ~/.cargo/bin/lx-link
 
 # Build the sample Rust guest:
 cd samples/rust_hello
-cargo +nightly build \
+cargo build \
   -Z build-std=core,alloc \
   -Z build-std-features=compiler-builtins-mem \
   -Z json-target-spec \

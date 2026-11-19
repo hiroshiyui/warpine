@@ -2061,6 +2061,21 @@ Sample OS/2 binaries in `samples/` serve as integration tests. Build them with O
 make -C samples/<name>
 ```
 
+#### Third-party inputs (ADR-0066)
+
+Everything the build or the samples take from outside the repository is pinned and checked:
+
+| Input | Pin | Check |
+|---|---|---|
+| Rust crates | `Cargo.lock` (checksums) | `deny.toml`: crates.io only, allowed licences, no banned crates (pre-commit hook); `cargo audit` and `cargo deny check` at release |
+| Open Watcom | `SNAPSHOT_TAG` in `vendor/setup_watcom.sh` (a dated build, not `Current-build`) | `SNAPSHOT_SHA256` before extracting; HTTPS only; `tar --no-same-owner` |
+| 4OS2 source | the full 40-character commit in `samples/4os2/fetch_source.sh` | `git rev-parse HEAD` must equal it |
+| GNU Unifont | release 17.0.03 (`vendor/unifont/README.md`) | the tarball's GPG signature by the Unifont maintainer; SHA-256 recorded |
+| IBM Plex | upstream commit in `vendor/ibm-plex/README.md` | files unmodified |
+| Guest Rust toolchain | `nightly-2026-11-15` in the guest crates' `rust-toolchain.toml` | build with `cargo build`, not `cargo +nightly` |
+
+Moving any of them is a deliberate change of the pin and its hash. Build outputs (`*.o`, `*.res`, `*.exe`) are never committed.
+
 Run each sample to verify specific subsystems:
 
 ```bash
@@ -2337,11 +2352,11 @@ The test `layer_map_matches_src_and_the_committed_diagram` runs the validation a
 ### Build
 
 ```bash
-rustup toolchain install nightly --component rust-src
+rustup toolchain install nightly-2026-11-15 --component rust-src  # the dated nightly the guest crates pin
 cargo build --bin lx_link && cp target/debug/lx_link ~/.cargo/bin/lx-link
 
 cd samples/rust_hello
-cargo +nightly build \
+cargo build \
   -Z build-std=core,alloc \
   -Z build-std-features=compiler-builtins-mem \
   -Z json-target-spec \
