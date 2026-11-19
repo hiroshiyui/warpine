@@ -11,7 +11,7 @@
 //! server's packets the same way.
 
 /// Protocol version, checked in `Hello` / `Welcome`.
-pub const PROTOCOL_VERSION: u32 = 6;
+pub const PROTOCOL_VERSION: u32 = 7;
 /// Largest packet either side sends or accepts.
 pub const MAX_MESSAGE: usize = 128 * 1024;
 /// Most items (frame pictures and pull-downs) in one `Update`.
@@ -316,7 +316,13 @@ pub enum Input {
     /// SDL scancode, keycode and modifier bits.
     Key { down: bool, scancode: i32, keycode: u32, mods: u16, repeat: bool },
     Text(String),
+    /// The mouse wheel turned `steps` notches (up positive) with the
+    /// pointer at `(x, y)`; at most `MAX_WHEEL_STEPS` either way.
+    Wheel { x: i32, y: i32, steps: i32 },
 }
+
+/// The most wheel notches one `Input::Wheel` carries.
+pub const MAX_WHEEL_STEPS: i32 = 64;
 
 /// Server → client.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -721,6 +727,7 @@ mod tag {
     pub const IN_BUTTON: u8 = 2;
     pub const IN_KEY: u8 = 3;
     pub const IN_TEXT: u8 = 4;
+    pub const IN_WHEEL: u8 = 5;
 
     pub const PTR_HIDDEN: u8 = 0;
     pub const PTR_SYSTEM: u8 = 1;
@@ -847,6 +854,7 @@ impl ServerMsg {
                         w.bool(*repeat);
                     }
                     Input::Text(s) => { w.u8(tag::IN_TEXT); w.text(s); }
+                    Input::Wheel { x, y, steps } => { w.u8(tag::IN_WHEEL); w.i32(*x); w.i32(*y); w.i32(*steps); }
                 }
             }
             ServerMsg::Deactivate { frame, new_active } => {
@@ -877,6 +885,11 @@ impl ServerMsg {
                     tag::IN_KEY => Input::Key { down: r.bool()?, scancode: r.i32()?, keycode: r.u32()?,
                                                 mods: r.u16()?, repeat: r.bool()? },
                     tag::IN_TEXT => Input::Text(r.text()?),
+                    tag::IN_WHEEL => {
+                        let (x, y, steps) = (r.coord()?, r.coord()?, r.i32()?);
+                        if !(-MAX_WHEEL_STEPS..=MAX_WHEEL_STEPS).contains(&steps) { return Err(DecodeError::BadValue); }
+                        Input::Wheel { x, y, steps }
+                    }
                     _ => return Err(DecodeError::BadValue),
                 };
                 ServerMsg::Input { token, input }
@@ -978,6 +991,7 @@ mod tests {
             ServerMsg::Input { token: 3, input: Input::Key { down: false, scancode: 4, keycode: 97, mods: 1,
                                                               repeat: true } },
             ServerMsg::Input { token: 4, input: Input::Text("é".into()) },
+            ServerMsg::Input { token: 5, input: Input::Wheel { x: 10, y: 20, steps: -3 } },
             ServerMsg::Deactivate { frame: 5, new_active: 6 },
             ServerMsg::Resized { width: 800, height: 600 },
             ServerMsg::Clipboard(String::new()),
@@ -1138,5 +1152,13 @@ mod tests {
 
     fn handle_slot_of(h: u32) -> Option<u32> {
         crate::loader::pm_types::handle_slot(h)
+    }
+
+    #[test]
+    fn wheel_steps_are_bounded() {
+        let too_many = ServerMsg::Input { token: 1, input: Input::Wheel { x: 0, y: 0, steps: MAX_WHEEL_STEPS + 1 } }.encode();
+        assert_eq!(ServerMsg::decode(&too_many), Err(DecodeError::BadValue));
+        let ok = ServerMsg::Input { token: 1, input: Input::Wheel { x: 0, y: 0, steps: -MAX_WHEEL_STEPS } }.encode();
+        assert!(ServerMsg::decode(&ok).is_ok());
     }
 }

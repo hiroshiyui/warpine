@@ -33,6 +33,8 @@
 //!   `shift+click 10 20`: the modifiers go down before the press and up
 //!   after the release.
 //! * `rclick X Y` — right button press and release at `(X, Y)`.
+//! * `wheel X Y N` — the mouse wheel turned `N` notches (up positive,
+//!   within ±64) with the pointer at `(X, Y)`.
 //! * `dblclick X Y` — two left clicks at `(X, Y)`, the second press
 //!   reported as the second click of a double click.
 //! * `drag X1 Y1 X2 Y2` — left button down at `(X1, Y1)`, [`DRAG_MOVES`]
@@ -204,6 +206,8 @@ pub enum Action {
     /// A left click with modifier keys held (`shift+click X Y`).
     ModClick { x: i32, y: i32, mods: Mods },
     RClick { x: i32, y: i32 },
+    /// The wheel turned `steps` notches at `(x, y)` (`wheel X Y N`).
+    Wheel { x: i32, y: i32, steps: i32 },
     /// Two left clicks in quick succession (`dblclick X Y`).
     DblClick { x: i32, y: i32 },
     Drag { x1: i32, y1: i32, x2: i32, y2: i32 },
@@ -232,6 +236,8 @@ pub enum Input {
     KeyUp { key: Key, mods: Mods },
     /// Text committed by the keyboard or an input method.
     TextInput(String),
+    /// The wheel turned `steps` notches (up positive) at `(x, y)`.
+    Wheel { x: i32, y: i32, steps: i32 },
     Dump(PathBuf),
     Quit,
 }
@@ -301,6 +307,7 @@ impl Action {
                 out.push((at, Input::MouseUp { button: Button::Left, x, y }));
             }),
             &Action::RClick { x, y } => press_release(Button::Right, x, y),
+            &Action::Wheel { x, y, steps } => out.push((at, Input::Wheel { x, y, steps })),
             &Action::DblClick { x, y } => {
                 let button = Button::Left;
                 out.push((at, Input::MouseDown { button, x, y }));
@@ -382,6 +389,9 @@ pub fn parse(text: &str) -> Result<Vec<Step>, String> {
             }
             "rclick" => coords(args).map(|[x, y]| Action::RClick { x, y })
                 .ok_or_else(|| err("rclick needs X and Y"))?,
+            "wheel" => coords(args).filter(|[_, _, n]| (-64..=64).contains(n))
+                .map(|[x, y, steps]| Action::Wheel { x, y, steps })
+                .ok_or_else(|| err("wheel needs X Y and notches from -64 to 64"))?,
             "dblclick" => coords(args).map(|[x, y]| Action::DblClick { x, y })
                 .ok_or_else(|| err("dblclick needs X and Y"))?,
             "drag" => coords(args).map(|[x1, y1, x2, y2]| Action::Drag { x1, y1, x2, y2 })
@@ -820,5 +830,14 @@ mod tests {
         assert_eq!(ppm, b"P6\n2 1\n255\n\xFF\x80\x40\x00\x00\x01");
         // A buffer shorter than the header claims is padded, never over-read.
         assert_eq!(encode_ppm(&[0x0012_3456], 2, 1).len(), b"P6\n2 1\n255\n".len() + 6);
+    }
+
+    #[test]
+    fn wheel_steps_are_parsed_and_expanded() {
+        let s = parse("10 wheel 100 200 -2\n").unwrap();
+        assert_eq!(s[0].action, Action::Wheel { x: 100, y: 200, steps: -2 });
+        assert_eq!(s[0].action.expand(10), vec![(10, Input::Wheel { x: 100, y: 200, steps: -2 })]);
+        assert!(parse("1 wheel 1 2").unwrap_err().contains("wheel needs X Y"));
+        assert!(parse("1 wheel 1 2 65").is_err(), "at most 64 notches");
     }
 }

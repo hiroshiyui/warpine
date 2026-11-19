@@ -317,7 +317,7 @@ impl Server {
         while self.outstanding.is_none() {
             let Some(input) = self.queue.pop_front() else { return };
             let target = match &input {
-                Input::Motion { x, y, .. } => self.model.route_pointer(*x, *y, None, None),
+                Input::Motion { x, y, .. } | Input::Wheel { x, y, .. } => self.model.route_pointer(*x, *y, None, None),
                 Input::Button { down, button, x, y, .. } => self.model.route_pointer(
                     *x, *y, down.then_some(*button), (!down).then_some(*button)),
                 Input::Key { .. } | Input::Text(_) => self.model.key_target(),

@@ -361,6 +361,7 @@ fn draw_title_bar(buf: &mut [u32], buf_w: usize, c: &FrameChrome) {
 
 use crate::loader::constants::frame_border_width as frame_border_px;
 use crate::loader::pm_drag as loader_drag;
+use crate::loader::pm_input as loader_input;
 
 /// Draw a frame's border, only inside `clip`. A sizing border is a raised
 /// bevel; a plain or dialog border is a dark outline with a face-coloured
@@ -1977,6 +1978,9 @@ impl SdlRenderer {
                     sdl3::mouse::MouseButton::Middle => 3,
                     _ => 0,
                 };
+                // Button 2 coming up without having started a drag is the
+                // context-menu gesture (WM_CONTEXTMENU after WM_BUTTON2UP).
+                let context_click = number == 2 && self.drag_press.as_ref().is_some_and(|p| !p.fired);
                 if number == 2 { self.drag_press = None; }
                 if number != 0 && shared.drag_channel.released(number, (x, (dh as i32 - 1) - y)) {
                     return true;
@@ -2031,6 +2035,20 @@ impl SdlRenderer {
                 };
                 if let Some(m) = msg {
                     push_pointer(shared, m, x, (dh as i32 - 1) - y, mouse_mp2(self.key_mods));
+                }
+                if context_click {
+                    push_pointer(shared, loader_input::WM_CONTEXTMENU, x, (dh as i32 - 1) - y, 1);
+                }
+            }
+            // The wheel: WM_VSCROLL SB_LINEUP / SB_LINEDOWN, WHEEL_LINES a
+            // notch, to the window under the pointer when it is read.
+            Event::MouseWheel { y, integer_y, direction, mouse_x, mouse_y, .. } => {
+                let steps = super::desktop_events::wheel_steps(y, integer_y, direction);
+                use crate::loader::constants::{SB_LINEDOWN, SB_LINEUP, WM_VSCROLL};
+                let cmd = if steps > 0 { SB_LINEUP } else { SB_LINEDOWN };
+                let (px, py) = (mouse_x as i32, (dh as i32 - 1) - mouse_y as i32);
+                for _ in 0..steps.unsigned_abs() as i32 * loader_input::WHEEL_LINES {
+                    push_pointer(shared, WM_VSCROLL, px, py, cmd << 16);
                 }
             }
             _ => {}
@@ -2917,6 +2935,11 @@ pub(crate) fn script_input_to_event(input: &gui_script::Input) -> Option<Event> 
                            repeat: false, which, raw: 0 }
         }
         Input::TextInput(text) => Event::TextInput { timestamp, window_id, text: text.clone() },
+        Input::Wheel { x, y, steps } => Event::MouseWheel {
+            timestamp, window_id, which, x: 0.0, y: *steps as f32,
+            direction: sdl3::mouse::MouseWheelDirection::Normal,
+            mouse_x: *x as f32, mouse_y: *y as f32, integer_x: 0, integer_y: *steps,
+        },
         Input::Quit => Event::Quit { timestamp },
         Input::Dump(_) => return None,
     })

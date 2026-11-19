@@ -58,7 +58,8 @@ use std::collections::VecDeque;
 use super::constants::{
     KC_CHAR, WS_DISABLED, WM_ACTIVATE, WM_BUTTON1DBLCLK, WM_BUTTON1DOWN, WM_BUTTON1UP, WM_BUTTON2DBLCLK,
     WM_BUTTON2DOWN, WM_BUTTON3DBLCLK, WM_BUTTON3DOWN, WM_CHAR, WM_CHAR_REPEAT_SHIFT, WM_MOUSEMOVE,
-    WM_PAINT, WM_TIMER,
+    WM_PAINT, WM_TIMER, KC_VIRTUALKEY, KC_KEYUP, KC_SHIFT, KC_CTRL, KC_ALT, WM_CHAR_VKEY_SHIFT, VK_F10,
+    WM_VSCROLL,
 };
 use super::mutex_ext::MutexExt;
 use super::pm_types::{OS2Message, WindowManager};
@@ -82,6 +83,22 @@ pub enum InputEvent {
     /// `(x, y)` (bottom-left origin), hit-tested when it is read; `mp2` is
     /// its second parameter (the `KC_*` flags in the high word).
     Pointer { msg: u32, x: i32, y: i32, mp2: u32 },
+}
+
+/// `WM_CONTEXTMENU` (Warp 4): mp1 = the pointer position in the window, mp2
+/// = TRUE when the pointer asked for it (button 2 clicked), FALSE for the
+/// keyboard (Shift+F10).
+pub const WM_CONTEXTMENU: u32 = 0x0424;
+/// Lines one wheel notch scrolls (`WM_VSCROLL` `SB_LINEUP` /
+/// `SB_LINEDOWN` to the window under the pointer, as OS/2 wheel drivers
+/// send; Warp 4 has no wheel message).
+pub const WHEEL_LINES: i32 = 3;
+
+/// Whether `WM_CHAR` parameters `(mp1, mp2)` are Shift+F10 pressed.
+pub fn is_context_key(mp1: u32, mp2: u32) -> bool {
+    let fs = mp1 & 0xFFFF;
+    fs & KC_VIRTUALKEY != 0 && fs & KC_KEYUP == 0 && fs & KC_SHIFT != 0 && fs & (KC_CTRL | KC_ALT) == 0
+        && mp2 >> WM_CHAR_VKEY_SHIFT == VK_F10
 }
 
 /// The `WM_CHAR` parameters `(mp1, mp2)` of typed character `ch` in
@@ -469,6 +486,9 @@ impl WindowManager {
             };
         }
         let (hwnd, msg, mp1, mp2) = match *ev {
+            // Shift+F10, the context-menu key, is WM_CONTEXTMENU (mp2 FALSE:
+            // not from the pointer) for the focus window.
+            InputEvent::Key { mp1, mp2 } if is_context_key(mp1, mp2) => (self.key_target(), WM_CONTEXTMENU, 0, 0),
             InputEvent::Key { mp1, mp2 } => (self.key_target(), WM_CHAR, mp1, mp2),
             InputEvent::Char(_) => (self.key_target(), WM_CHAR, 0, 0),
             InputEvent::Window { hwnd, msg, mp1, mp2 } => (hwnd, msg, mp1, mp2),
@@ -545,8 +565,16 @@ impl WindowManager {
                     self.click_beside_focus(t.frame, t.hwnd);
                 }
             }
+            // The wheel (WM_VSCROLL): the window under the pointer, or for a
+            // scroll bar its owner, with mp1 0 rather than a point.
+            let (hwnd, mp1) = if msg == WM_VSCROLL {
+                let over_bar = self.get_window(t.hwnd).is_some_and(|w| w.class_name == "WC_SCROLLBAR");
+                (if over_bar { self.notify_target(t.hwnd) } else { t.hwnd }, 0)
+            } else {
+                (t.hwnd, pack_point(t.x, t.y))
+            };
             if let Some(front) = self.input.front_mut() {
-                front.ev = InputEvent::Window { hwnd: t.hwnd, msg, mp1: pack_point(t.x, t.y), mp2 };
+                front.ev = InputEvent::Window { hwnd, msg, mp1, mp2 };
             }
             return;
         }
@@ -1240,5 +1268,36 @@ mod tests {
         assert_eq!(char_message('日', 437), None);
         assert_eq!(char_message('?', 437).map(|m| m.1), Some(b'?' as u32));
         assert_eq!(char_message('\r', 437), None);
+    }
+
+    #[test]
+    fn shift_f10_is_the_context_menu_key() {
+        let (mut wm, [q1, _], [_, c1, ..], _) = two_frames();
+        let f10 = VK_F10 << WM_CHAR_VKEY_SHIFT;
+        assert!(is_context_key(KC_VIRTUALKEY | KC_SHIFT, f10));
+        assert!(!is_context_key(KC_VIRTUALKEY, f10), "F10 alone is the menu key");
+        assert!(!is_context_key(KC_VIRTUALKEY | KC_SHIFT | KC_KEYUP, f10));
+        assert!(!is_context_key(KC_VIRTUALKEY | KC_SHIFT | KC_CTRL, f10));
+        wm.post_input(InputEvent::Key { mp1: KC_VIRTUALKEY | KC_SHIFT, mp2: f10 });
+        assert_eq!(take(&mut wm, q1), Some((c1, WM_CONTEXTMENU, 0, 0)), "not from the pointer");
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_window_under_the_pointer_or_a_scroll_bars_owner() {
+        let (mut wm, [q1, _], [_, c1, ..], _) = placed_frames();
+        let down = crate::loader::constants::SB_LINEDOWN << 16;
+        wm.post_input(InputEvent::Pointer { msg: WM_VSCROLL, x: 100, y: 100, mp2: down });
+        assert_eq!(take(&mut wm, q1), Some((c1, WM_VSCROLL, 0, down)), "mp1 0, not a point");
+        // Over a scroll bar: its owner scrolls.
+        let bar = wm.create_window("WC_SCROLLBAR".into(), c1, q1);
+        let w = wm.get_window_mut(bar).unwrap();
+        (w.x, w.y, w.cx, w.cy, w.visible, w.owner) = (0, 0, 300, 280, true, c1);
+        wm.post_input(InputEvent::Pointer { msg: WM_VSCROLL, x: 100, y: 100, mp2: down });
+        assert_eq!(take(&mut wm, q1), Some((c1, WM_VSCROLL, 0, down)));
+        // The context-menu click: the point, mp2 TRUE.
+        wm.post_input(InputEvent::Pointer { msg: WM_CONTEXTMENU, x: 100, y: 100, mp2: 1 });
+        let (hwnd, msg, _, mp2) = take(&mut wm, q1).unwrap();
+        assert_eq!((msg, mp2), (WM_CONTEXTMENU, 1));
+        assert!(hwnd == bar || hwnd == c1);
     }
 }

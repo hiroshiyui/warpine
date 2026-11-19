@@ -41,6 +41,9 @@ pub fn to_input(event: &Event) -> Option<Input> {
             mods: keymod.bits(), repeat: *repeat,
         },
         Event::TextInput { text, .. } => Input::Text(text.clone()),
+        Event::MouseWheel { y, integer_y, direction, mouse_x, mouse_y, .. } => Input::Wheel {
+            x: pel(*mouse_x), y: pel(*mouse_y), steps: wheel_steps(*y, *integer_y, *direction),
+        },
         _ => return None,
     })
 }
@@ -71,7 +74,20 @@ pub fn to_event(input: &Input) -> Event {
             }
         }
         Input::Text(text) => Event::TextInput { timestamp, window_id, text: text.clone() },
+        Input::Wheel { x, y, steps } => Event::MouseWheel {
+            timestamp, window_id, which, x: 0.0, y: *steps as f32,
+            direction: sdl3::mouse::MouseWheelDirection::Normal,
+            mouse_x: *x as f32, mouse_y: *y as f32, integer_x: 0, integer_y: *steps,
+        },
     }
+}
+
+/// The notches of an SDL wheel event, up positive (a flipped wheel turned
+/// back), within `MAX_WHEEL_STEPS`; a fractional turn counts as one notch.
+pub fn wheel_steps(y: f32, integer_y: i32, direction: sdl3::mouse::MouseWheelDirection) -> i32 {
+    let n = if integer_y != 0 { integer_y } else if y > 0.0 { 1 } else if y < 0.0 { -1 } else { 0 };
+    let n = if matches!(direction, sdl3::mouse::MouseWheelDirection::Flipped) { -n } else { n };
+    n.clamp(-crate::desktop::proto::MAX_WHEEL_STEPS, crate::desktop::proto::MAX_WHEEL_STEPS)
 }
 
 /// The system pointers by protocol index.
@@ -101,6 +117,7 @@ mod tests {
             Input::Key { down: false, scancode: Scancode::F10 as i32, keycode: Keycode::F10 as u32,
                          mods: 0, repeat: true },
             Input::Text("é日".into()),
+            Input::Wheel { x: 5, y: 6, steps: -2 },
         ];
         for input in events {
             assert_eq!(to_input(&to_event(&input)), Some(input.clone()), "{input:?}");
@@ -113,5 +130,15 @@ mod tests {
         for (i, p) in SYSTEM_POINTERS.iter().enumerate() {
             assert_eq!(pointer_index(*p) as usize, i);
         }
+    }
+
+    #[test]
+    fn wheel_notches_count_up_positive() {
+        use sdl3::mouse::MouseWheelDirection::{Flipped, Normal};
+        assert_eq!(wheel_steps(2.0, 2, Normal), 2);
+        assert_eq!(wheel_steps(-1.0, -1, Flipped), 1, "a flipped wheel turned back");
+        assert_eq!(wheel_steps(0.25, 0, Normal), 1, "a fractional turn is a notch");
+        assert_eq!(wheel_steps(0.0, 0, Normal), 0);
+        assert_eq!(wheel_steps(500.0, 500, Normal), crate::desktop::proto::MAX_WHEEL_STEPS);
     }
 }
