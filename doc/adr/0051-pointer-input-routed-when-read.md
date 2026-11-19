@@ -1,6 +1,6 @@
 # ADR-0051: Pointer input routed when it is read: clicks hit-tested and activating at the head of the input queue
 
-- **Status:** Accepted; extends the system input queue (`pm_input.rs`)
+- **Status:** Accepted; extends the system input queue (`pm_input.rs`); the window found extended by ADR-0058 (the deepest window, `WM_HITTEST`)
 - **Date:** 2026-11-19
 - **Sources:** `src/loader/pm_input.rs` (`InputEvent::Pointer`, `take_up_input`, `pointer_target`), `src/gui/sdl_renderer.rs` (`push_pointer`, `activate_on_arrival`); `samples/pm_inputorder_test`; IBM *Presentation Manager Programming Guide*, "Mouse and Keyboard Input" ("System Message Queue", "Capturing Mouse Input", "Mouse Messages"), as on EDM/2
 
