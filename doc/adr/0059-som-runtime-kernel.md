@@ -1,6 +1,6 @@
 # ADR-0059: A built-in SOM.DLL keeps classes host-side and objects in guest memory; executables load and initialize their DLLs
 
-- **Status:** Accepted (stage 1: the SOM kernel's root classes, class building, dispatch and instance data); the token encoding and single inheritance are superseded by [ADR-0060](0060-som-metaclasses-multiple-inheritance.md)
+- **Status:** Accepted (stage 1: the SOM kernel's root classes, class building, dispatch and instance data); the token encoding and single inheritance are superseded by [ADR-0060](0060-som-metaclasses-multiple-inheritance.md); a failing `_DLL_InitTerm` at process start stops the program since [ADR-0063](0063-module-lifecycle.md)
 - **Date:** 2026-11-19
 - **Sources:**
   - The runtime: `src/loader/som.rs` (`SomRuntime`, `SomClass`, `som_call`, `som_init`, `som_data_address`), `src/loader/descriptors.rs` (data exports), `src/loader/pm_hook.rs` (`ChainThen::SomFree`)

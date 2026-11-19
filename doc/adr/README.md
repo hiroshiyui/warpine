@@ -64,7 +64,8 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0056](0056-session-shell-services.md) | The desktop server keeps the session's switch list and system atom table; DDE crosses programs | Accepted | 2026-11-19 |
 | [0057](0057-drag-and-drop-between-programs.md) | Drag and drop crosses programs: targets found through the server, DM_* messages as waited calls, drag blocks in the shared arena | Accepted | 2026-11-19 |
 | [0058](0058-deepest-window-hit-test-update-regions-must-complete.md) | Pointer input goes to the deepest window and asks WM_HITTEST when read; update areas are regions; must-complete sections hold signals | Accepted | 2026-11-19 |
-| [0059](0059-som-runtime-kernel.md) | A built-in SOM.DLL keeps classes host-side and objects in guest memory; executables load and initialize their DLLs | Accepted (stage 1); partly superseded by 0060 | 2026-11-19 |
+| [0059](0059-som-runtime-kernel.md) | A built-in SOM.DLL keeps classes host-side and objects in guest memory; executables load and initialize their DLLs | Accepted (stage 1); partly superseded by 0060 and 0063 | 2026-11-19 |
 | [0060](0060-som-metaclasses-multiple-inheritance.md) | SOM tokens name their introducing class; derived metaclasses, multiple inheritance and a runtime heap | Accepted | 2026-11-19 |
 | [0061](0061-som-cpp-bindings.md) | SOM's C++ bindings create objects through the runtime; somDefaultInit and somDestruct | Accepted | 2026-11-19 |
 | [0062](0062-som-class-loading.md) | SOM loads a class's DLL by name through replaceable runtime variables; DLLs are searched by plain module name only | Accepted | 2026-11-19 |
+| [0063](0063-module-lifecycle.md) | Module lifecycle: failed startup routines stop the program, OS/2 paths for DosLoadModule, zeroed memory, SOM class unloading | Accepted | 2026-11-19 |
