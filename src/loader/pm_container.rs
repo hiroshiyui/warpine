@@ -22,8 +22,12 @@
 //! (`CA_DETAILSVIEWTITLES`). A `MINIRECORDCORE` container shows `pszIcon`
 //! in every view. Pictures (`hptrIcon` / `hbmBitmap` and the mini ones)
 //! are drawn in the icon, name and tree views. `CM_FILTER` and direct
-//! editing follow ADR-0046. Not drawn yet: tree lines, the split bar,
-//! owner drawing, horizontal scrolling.
+//! editing follow ADR-0046. The details view splits into two panes at
+//! `pFieldInfoLast` / `xVertSplitbar` ([`detail_panes`]), each scrolling
+//! across with its own scroll bar (`CID_HSCROLL`, `CID_RIGHTHSCROLL`), as
+//! the icon view does; owners draw items (`CA_OWNERDRAW`, `CFA_OWNER`) by
+//! owner calls; the title and column headings can be edited (ADR-0065).
+//! Not drawn yet: tree lines.
 //!
 //! Selection follows `CCS_SINGLESEL` (default) / `CCS_MULTIPLESEL` /
 //! `CCS_EXTENDSEL`; the owner gets `WM_CONTROL` `CN_EMPHASIS`
@@ -110,6 +114,8 @@ pub const CA_TITLERIGHT: u32 = 0x0000_1000;
 pub const CA_DETAILSVIEWTITLES: u32 = 0x0000_8000;
 pub const CA_DRAWBITMAP: u32 = 0x0002_0000;
 pub const CA_DRAWICON: u32 = 0x0004_0000;
+pub const CA_OWNERDRAW: u32 = 0x0000_4000;
+pub const CA_TITLEREADONLY: u32 = 0x0008_0000;
 
 pub const CFA_RIGHT: u32 = 0x0000_0002;
 pub const CFA_CENTER: u32 = 0x0000_0004;
@@ -121,6 +127,8 @@ pub const CFA_STRING: u32 = 0x0000_0800;
 pub const CFA_DATE: u32 = 0x0000_2000;
 pub const CFA_TIME: u32 = 0x0000_4000;
 pub const CFA_FIREADONLY: u32 = 0x0000_8000;
+pub const CFA_OWNER: u32 = 0x0000_1000;
+pub const CFA_FITITLEREADONLY: u32 = 0x0001_0000;
 pub const CFA_ULONG: u32 = 0x0002_0000;
 
 pub const CRA_SELECTED: u32 = 0x0000_0001;
@@ -137,6 +145,12 @@ pub const CID_VSCROLL: u32 = 0x7FF9;
 pub const CID_MLE: u32 = 0x7FFA;
 /// `CNREDITDATA.id` of a details-view record (the left window when unsplit).
 pub const CID_LEFTDVWND: u32 = 0x7FF7;
+pub const CID_RIGHTDVWND: u32 = 0x7FF8;
+pub const CID_LEFTCOLTITLEWND: u32 = 0x7FF0;
+pub const CID_RIGHTCOLTITLEWND: u32 = 0x7FF1;
+pub const CID_HSCROLL: u32 = 0x7FF3;
+pub const CID_RIGHTHSCROLL: u32 = 0x7FF4;
+pub const CID_CNRTITLEWND: u32 = 0x7FF5;
 
 pub const CMA_PARENT: u16 = 0x0001;
 pub const CMA_FIRSTCHILD: u16 = 0x0002;
@@ -147,6 +161,7 @@ pub const CMA_END: u32 = 0x0040;
 pub const CMA_PREV: u32 = 0x0080;
 pub const CMA_NEXT: u32 = 0x0100;
 pub const CMA_VERTICAL: u32 = 0x0400;
+pub const CMA_HORIZONTAL: u32 = 0x0200;
 pub const CMA_FILTER: u32 = 0x1000;
 /// `CM_QUERYRECORDRECT` extents and `CM_QUERYRECORDFROMRECT` searches.
 pub const CMA_ICON: u32 = 0x0800;
@@ -222,6 +237,7 @@ const QRFR_RECT: u32 = 4;
 const QRFR_SEARCH: u32 = 20;
 const CED_RECORD: u32 = 8;
 const CED_FIELD: u32 = 12;
+const CED_ID: u32 = 24;
 
 /// Bytes of guest memory an arena takes (ADR-0043).
 pub const CNR_ARENA_BYTES: u32 = 64 * 1024;
@@ -245,6 +261,11 @@ const DISABLED_TEXT_COLOR: u32 = 0x0080_8080;
 const SEPARATOR_COLOR: u32 = 0x0080_8080;
 /// Breadth of the vertical scroll bar.
 const SCROLLBAR_W: i32 = 16;
+/// The split bar's width, the narrowest pane beside it, and how far a
+/// horizontal scroll arrow moves (Warpine's own).
+const SPLIT_W: i32 = 4;
+const MIN_PANE: i32 = 16;
+const H_LINE: i32 = 16;
 /// Tree indentation per level when `cxTreeIndent` is not set.
 const TREE_INDENT: i32 = 16;
 /// Side of a tree view's expander box.
@@ -262,7 +283,7 @@ const EDIT_MIN_W: i32 = 80;
 
 /// What an allocated item is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ItemKind { Record, Field }
+pub enum ItemKind { Record, Field, Cell }
 
 /// An allocated record or field info: its kind, size in bytes and arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -426,11 +447,21 @@ pub struct CnrState {
     /// for the owner's `CN_REALLOCPSZ` answer (encoded, without the NUL).
     pub edit: Option<EditSession>,
     pub edit_text: Option<Vec<u8>>,
+    /// Details view: the pels each pane (left, right of the split bar)
+    /// is scrolled to the left.
+    pub hscroll: [i32; 2],
+    /// The split bar is being dragged: where in it the pointer took it.
+    pub split_drag: Option<i32>,
+    /// A guest cell holding the container title's `PSZ` while it is
+    /// edited (its `ppszText`), made at the first title edit.
+    pub title_cell: u32,
 }
 
-/// A direct edit of a record's text (`CNREDITDATA`): the record, the
-/// detail field info (0 outside the details view), where the text's
-/// `PSZ` is (`ppszText`) and the window id the edit is in.
+/// A direct edit (`CNREDITDATA`): the record (0 for the container title
+/// and column headings), the detail field info (0 outside the details
+/// view and for the title), where the text's `PSZ` is (`ppszText`) and
+/// the window id the edit is in (`CID_CNRTITLEWND` for the title,
+/// `CID_LEFTCOLTITLEWND` / `CID_RIGHTCOLTITLEWND` for a heading).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EditSession { pub rec: u32, pub fi: u32, pub ppsz: u32, pub id: u32 }
 
@@ -447,6 +478,7 @@ impl CnrState {
             heap: RecordHeap::default(), records: Vec::new(), inserted: HashSet::new(), fields: Vec::new(),
             info: CnrInfo { window_attr: CV_ICON, ..CnrInfo::default() },
             top: 0, anchor: None, mini: style & CCS_MINIRECORDCORE != 0, sort: None, next_sort_id: 0, filter: None, edit: None, edit_text: None,
+            hscroll: [0; 2], split_drag: None, title_cell: 0,
         }
     }
 
@@ -1013,9 +1045,45 @@ pub fn icon_extent(items: Option<(i32, i32)>, h: i32) -> (i32, i32) {
     (lo.min(0), hi.max(h))
 }
 
-/// A detail-view column: its field info, flags, left edge and width.
+/// A detail-view column: its field info, flags, left edge, width, the
+/// room it takes (its width and separator) and its pane (0 left, 1 right
+/// of the split bar).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Column { fi: u32, fl_data: u32, fl_title: u32, x: i32, w: i32 }
+struct Column { fi: u32, fl_data: u32, fl_title: u32, x: i32, w: i32, adv: i32, pane: usize }
+
+/// A details-view pane: its left edge and width in window coordinates,
+/// the columns it holds (`first..end` of the visible columns), their room
+/// together, and how many pels it is scrolled to the left.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Pane { pub x: i32, pub w: i32, pub first: usize, pub end: usize, pub content: i32, pub off: i32 }
+
+/// Where the split bar starts, from the left edge of rows `w` wide:
+/// `split_bar` (`CNRINFO.xVertSplitbar`; half the width when not above 0,
+/// Warpine's choice), kept so that both panes are `MIN_PANE` wide.
+pub fn split_x(split_bar: i32, w: i32) -> i32 {
+    let want = if split_bar <= 0 { w / 2 } else { split_bar };
+    let lo = MIN_PANE.min(w.max(0));
+    want.clamp(lo, (w - SPLIT_W - MIN_PANE).max(lo))
+}
+
+/// The panes of a details view whose rows lie at `x`, `w` pels wide, for
+/// columns taking `advances` pels each: one pane, or with `left` columns
+/// left of the split bar (at `split_bar`, see [`split_x`]) two. `offs`
+/// are the panes' scroll positions, kept within their content.
+pub fn detail_panes(advances: &[i32], left: Option<usize>, split_bar: i32, (x, w): (i32, i32), offs: [i32; 2]) -> Vec<Pane> {
+    let sum = |a: usize, b: usize| advances[a..b].iter().fold(0i32, |t, &v| t.saturating_add(v));
+    let pane = |px: i32, pw: i32, first: usize, end: usize, off: i32| {
+        let (content, pw) = (sum(first, end), pw.max(0));
+        Pane { x: px, w: pw, first, end, content, off: off.clamp(0, (content - pw).max(0)) }
+    };
+    match left.filter(|&k| k > 0 && k < advances.len()) {
+        None => vec![pane(x, w, 0, advances.len(), offs[0])],
+        Some(k) => {
+            let sx = split_x(split_bar, w);
+            vec![pane(x, sx, 0, k, offs[0]), pane(x + sx + SPLIT_W, w - sx - SPLIT_W, k, advances.len(), offs[1])]
+        }
+    }
+}
 
 /// What a paint or hit test needs, taken under the lock.
 struct Snapshot {
@@ -1034,6 +1102,13 @@ struct Snapshot {
     /// heights the items span.
     icons: Vec<((i32, i32), Vec<String>)>,
     span: Option<(i32, i32)>,
+    /// Icon view: the workspace widths the items span.
+    xspan: Option<(i32, i32)>,
+    /// Details view: the visible columns (`x` from the first column's
+    /// left edge), how many lie left of the split bar, each pane's scroll.
+    cols: Vec<Column>,
+    left_cols: Option<usize>,
+    hscroll: [i32; 2],
 }
 
 impl Snapshot {
@@ -1043,26 +1118,92 @@ impl Snapshot {
         self.info.window_attr & CV_FLOW != 0 && matches!(self.view(), View::Text | View::Name)
     }
 
-    /// Whether the rows need the vertical scroll bar (not in flowed views;
-    /// in the icon view when the workspace is taller than the work area).
-    fn bar(&self) -> bool {
+    /// Whether rows `h` pels high need the vertical scroll bar (not in
+    /// flowed views; in the icon view when the workspace is taller).
+    fn needs_v(&self, h: i32) -> bool {
         if self.view() == View::Icon {
-            let (lo, hi) = self.extent();
-            return hi - lo > self.plain_frame().rows.3;
+            let (lo, hi) = icon_extent(self.span, h);
+            return hi - lo > h;
         }
-        !self.flow() && self.rows.len() > self.plain_frame().capacity()
+        !self.flow() && self.rows.len() > (h / self.plain_frame().row_h).max(1) as usize
     }
+
+    /// Whether rows `w` pels wide need horizontal scroll bars: in the
+    /// details view when a pane's columns are wider than it, in the icon
+    /// view when the workspace is wider than the work area.
+    fn needs_h(&self, w: i32) -> bool {
+        match self.view() {
+            View::Icon => { let (lo, hi) = icon_extent(self.xspan, w); hi - lo > w }
+            View::Detail => self.panes_for((BORDER, w)).iter().any(|p| p.content > p.w),
+            _ => false,
+        }
+    }
+
+    /// The scroll bars shown: (vertical, horizontal). A horizontal bar
+    /// takes height from the rows, which may then need the vertical one.
+    fn bars(&self) -> (bool, bool) {
+        let f = self.plain_frame();
+        let v0 = self.needs_v(f.rows.3);
+        let h = self.needs_h(f.rows.2 - if v0 { SCROLLBAR_W } else { 0 });
+        (self.needs_v(f.rows.3 - if h { SCROLLBAR_W } else { 0 }), h)
+    }
+
+    /// Whether the rows need the vertical scroll bar.
+    fn bar(&self) -> bool { self.bars().0 }
 
     /// Icon view: the workspace's span (see [`icon_extent`]).
     fn extent(&self) -> (i32, i32) {
-        icon_extent(self.span, self.plain_frame().rows.3)
+        icon_extent(self.span, self.frame().rows.3)
     }
 
     /// Icon view: the pels of workspace above the work area, and the most.
     fn icon_scroll(&self) -> (i32, i32) {
         let (lo, hi) = self.extent();
-        let h = self.plain_frame().rows.3;
+        let h = self.frame().rows.3;
         (hi - (self.origin().1 + h), (hi - lo - h).max(0))
+    }
+
+    /// Icon view: the pels of workspace left of the work area, and the most.
+    fn icon_xscroll(&self) -> (i32, i32) {
+        let w = self.frame().rows.2;
+        let (lo, hi) = icon_extent(self.xspan, w);
+        (self.origin().0 - lo, (hi - lo - w).max(0))
+    }
+
+    /// Details view: the panes of rows at `x`, `w` wide.
+    fn panes_for(&self, (x, w): (i32, i32)) -> Vec<Pane> {
+        let adv: Vec<i32> = self.cols.iter().map(|c| c.adv).collect();
+        detail_panes(&adv, self.left_cols, self.info.split_bar as i32, (x, w), self.hscroll)
+    }
+
+    /// Details view: the panes of the rows as shown.
+    fn panes(&self) -> Vec<Pane> {
+        let f = self.frame();
+        self.panes_for((f.rows.0, f.rows.2))
+    }
+
+    /// Details view: the columns where they are shown (window `x`), each
+    /// in its pane, moved by the pane's scrolling.
+    fn columns(&self) -> Vec<Column> {
+        let mut out = Vec::with_capacity(self.cols.len());
+        for (k, p) in self.panes().iter().enumerate() {
+            let base = self.cols.get(p.first).map_or(0, |c| c.x);
+            for c in &self.cols[p.first..p.end] {
+                out.push(Column { x: p.x - p.off + (c.x - base), pane: k, ..*c });
+            }
+        }
+        out
+    }
+
+    /// Details view: the split bar's rectangle, through the column
+    /// headings and the rows, when the view is split.
+    fn split_rect(&self) -> Option<Rect> {
+        if self.view() != View::Detail { return None; }
+        let panes = self.panes();
+        let left = panes.first().filter(|_| panes.len() == 2)?;
+        let f = self.frame();
+        let top = f.header.map_or(f.rows.1 + f.rows.3, |h| h.1 + h.3);
+        Some((left.x + left.w, f.rows.1, SPLIT_W, top - f.rows.1))
     }
 
     /// The work area's origin in the workspace (`CNRINFO.ptlOrigin`).
@@ -1079,10 +1220,16 @@ impl Snapshot {
         Frame::new(self.info.window_attr, self.info.line_spacing as i32, item_h, self.cx, self.cy)
     }
 
-    /// The view's frame, the rows narrowed by the scroll bar when shown.
+    /// The view's frame, the rows narrowed by the vertical scroll bar and
+    /// shortened by the horizontal ones when shown.
     fn frame(&self) -> Frame {
         let mut f = self.plain_frame();
-        if self.bar() { f.rows.2 = (f.rows.2 - SCROLLBAR_W).max(0); }
+        let (v, h) = self.bars();
+        if v { f.rows.2 = (f.rows.2 - SCROLLBAR_W).max(0); }
+        if h {
+            f.rows.1 += SCROLLBAR_W;
+            f.rows.3 = (f.rows.3 - SCROLLBAR_W).max(0);
+        }
         f
     }
 
@@ -1122,16 +1269,20 @@ impl Snapshot {
 }
 
 impl WindowManager {
-    /// Give a new `WC_CONTAINER` window its state and its vertical scroll
-    /// bar (`CID_VSCROLL`, hidden until the rows need it).
+    /// Give a new `WC_CONTAINER` window its state and its scroll bars:
+    /// the vertical one (`CID_VSCROLL`) and the horizontal ones of the
+    /// left and right panes (`CID_HSCROLL`, `CID_RIGHTHSCROLL`), hidden
+    /// until the view needs them.
     pub fn build_container(&mut self, hwnd: u32) {
         let Some(w) = self.get_window_mut(hwnd) else { return };
         if w.class_name != CLASS_CONTAINER || w.container.is_some() { return; }
         w.container = Some(Box::new(CnrState::new(w.style)));
         let hmq = w.hmq;
-        let bar = self.create_window("WC_SCROLLBAR".to_string(), hwnd, hmq);
-        if let Some(b) = self.get_window_mut(bar) {
-            (b.id, b.owner, b.style, b.visible) = (CID_VSCROLL, hwnd, SBS_VERT, false);
+        for (id, style) in [(CID_VSCROLL, SBS_VERT), (CID_HSCROLL, SBS_HORZ), (CID_RIGHTHSCROLL, SBS_HORZ)] {
+            let bar = self.create_window("WC_SCROLLBAR".to_string(), hwnd, hmq);
+            if let Some(b) = self.get_window_mut(bar) {
+                (b.id, b.owner, b.style, b.visible) = (id, hwnd, style, false);
+            }
         }
     }
 }
@@ -1153,15 +1304,16 @@ impl Loader {
     }
 
     fn snapshot(&self, hwnd: u32) -> Option<Snapshot> {
-        let (cx, cy, info, mini, top, records, sizes, fields) = {
+        let (cx, cy, info, mini, top, records, sizes, fields, hscroll) = {
             let wm = self.shared.window_mgr.lock_or_recover();
             let w = wm.get_window(hwnd)?;
             let s = w.container.as_deref()?;
             let size = |a: u32| s.heap.item(a).map_or(0, |i| i.size);
             let sizes: HashMap<u32, u32> = s.records.iter().map(|&(r, _)| (r, size(r))).collect();
             let fields: Vec<(u32, u32)> = s.fields.iter().map(|&f| (f, size(f))).collect();
-            (w.cx, w.cy, s.info, s.mini, s.top, s.records.clone(), sizes, fields)
+            (w.cx, w.cy, s.info, s.mini, s.top, s.records.clone(), sizes, fields, s.hscroll)
         };
+        let font = Painter::new(self, 0, hwnd).font();
         let shown = |r: u32| self.rec_attr(r) & CRA_FILTERED == 0;
         let size = |r: u32| sizes.get(&r).copied().unwrap_or(0);
         type Rows = (Vec<(u32, u32)>, Vec<(u16, bool)>);
@@ -1171,9 +1323,10 @@ impl Loader {
         } else {
             records.iter().filter(|&&(r, p)| p == 0 && shown(r)).map(|&(r, _)| ((r, size(r)), (0, false))).unzip()
         };
-        let (icons, span) = if view_of(info.window_attr) == View::Icon {
-            let (_, ih) = icon_size(&info, mini);
+        let (icons, span, xspan) = if view_of(info.window_attr) == View::Icon {
+            let (iw, ih) = icon_size(&info, mini);
             let mut span: Option<(i32, i32)> = None;
+            let mut xspan: Option<(i32, i32)> = None;
             let icons: Vec<((i32, i32), Vec<String>)> = rows.iter().map(|&(r, _)| {
                 let rd = |o: u32| self.guest_read::<u32>(r.wrapping_add(o)).unwrap_or(0) as i32;
                 let ptl = (rd(RC_PTLX), rd(RC_PTLY));
@@ -1182,11 +1335,24 @@ impl Loader {
                 let lo = ptl.1.saturating_sub(icon_text_h(lines.len()));
                 let hi = ptl.1.saturating_add(ih);
                 span = Some(span.map_or((lo, hi), |(a, b)| (a.min(lo), b.max(hi))));
+                // Across: the icon and its text centred under it.
+                let tw = lines.iter().map(|l| crate::gui::font::text_width(l, font)).max().unwrap_or(0)
+                    .saturating_add(2 * CELL_PAD);
+                let tx = ptl.0.saturating_add(iw / 2).saturating_sub(tw / 2);
+                let (xl, xh) = (ptl.0.min(tx), ptl.0.saturating_add(iw).max(tx.saturating_add(tw)));
+                xspan = Some(xspan.map_or((xl, xh), |(a, b)| (a.min(xl), b.max(xh))));
                 (ptl, lines)
             }).collect();
-            (icons, span)
-        } else { (Vec::new(), None) };
-        Some(Snapshot { cx, cy, info, mini, top, rows, tree, fields, icons, span })
+            (icons, span, xspan)
+        } else { (Vec::new(), None, None) };
+        let mut snap = Snapshot { cx, cy, info, mini, top, rows, tree, fields, icons, span, xspan,
+                                  cols: Vec::new(), left_cols: None, hscroll };
+        if snap.view() == View::Detail {
+            snap.cols = self.column_widths(hwnd, &snap, font);
+            snap.left_cols = (info.field_last != 0)
+                .then(|| snap.cols.iter().position(|c| c.fi == info.field_last).map(|i| i + 1)).flatten();
+        }
+        Some(snap)
     }
 
     fn cnr_text(&self, hwnd: u32, ptr: u32) -> String {
@@ -1227,9 +1393,9 @@ impl Loader {
     }
 
     /// The detail-view columns of `snap` (visible field infos; `cxWidth`
-    /// 0 = as wide as the title and the widest value).
-    fn columns(&self, hwnd: u32, snap: &Snapshot, font: crate::gui::font::FontSpec, x0: i32) -> Vec<Column> {
-        let mut x = x0;
+    /// 0 = as wide as the title and the widest value), side by side from 0.
+    fn column_widths(&self, hwnd: u32, snap: &Snapshot, font: crate::gui::font::FontSpec) -> Vec<Column> {
+        let mut x = 0;
         let mut out = Vec::new();
         for &(fi, _) in &snap.fields {
             let rd = |o: u32| self.guest_read::<u32>(fi.wrapping_add(o)).unwrap_or(0);
@@ -1243,8 +1409,9 @@ impl Loader {
                 }
                 w.max(if fl_data & CFA_BITMAPORICON != 0 { LINE_H } else { 0 })
             } + 2 * CELL_PAD;
-            out.push(Column { fi, fl_data, fl_title, x, w });
-            x = x.saturating_add(w + if fl_data & CFA_SEPARATOR != 0 { 1 } else { 0 });
+            let adv = w + if fl_data & CFA_SEPARATOR != 0 { 1 } else { 0 };
+            out.push(Column { fi, fl_data, fl_title, x, w, adv, pane: 0 });
+            x = x.saturating_add(adv);
         }
         out
     }
@@ -1407,6 +1574,7 @@ impl Loader {
                 // keeps it. Alt+click on a record's text starts one.
                 let alt = (mp2 >> 16) & KC_ALT != 0;
                 if self.cnr_close_edit(hwnd, !alt) { return Some(ok(true)); }
+                if self.cnr_split_press(hwnd, mp1) { return Some(ok(true)); }
                 if alt && self.cnr_alt_click(hwnd, style, mp1) { return Some(ok(true)); }
                 ok(self.cnr_click(hwnd, style, mp1, mp2))
             }
@@ -1420,6 +1588,15 @@ impl Loader {
                 ok(true)
             }
             WM_CHAR => ok(self.cnr_char(hwnd, style, mp1, mp2)),
+            // While the split bar is dragged: it follows the pointer.
+            WM_MOUSEMOVE => return self.cnr_split_drag(hwnd, mp1).then_some(ok(true)),
+            WM_BUTTON1UP => {
+                let held = self.with_cnr(hwnd, |c, _| c.split_drag.take()).flatten().is_some();
+                if !held { return None; }
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                if wm.pressed_control == hwnd { wm.pressed_control = 0; }
+                ok(true)
+            }
             // The drag button pressed and moved over the container: the owner
             // hears CN_INITDRAG (a CNRDRAGINIT) and may start the drag.
             super::pm_drag::WM_BEGINDRAG => ok(self.cnr_init_drag(hwnd, mp1)),
@@ -1571,6 +1748,15 @@ impl Loader {
             }
             // mp1 = CMA_VERTICAL / CMA_HORIZONTAL, mp2 = pels.
             CM_SCROLLWINDOW => {
+                if mp1 & 0xFFFF == CMA_HORIZONTAL {
+                    // The left (or only) pane, or the icon view's work area.
+                    let Some(snap) = self.snapshot(hwnd) else { return Some(ok(false)) };
+                    let pos = match snap.view() {
+                        View::Icon => snap.icon_xscroll().0,
+                        _ => snap.panes().first().map_or(0, |p| p.off),
+                    };
+                    return Some(ok(self.cnr_hscroll(hwnd, &snap, 0, i64::from(pos) + i64::from(mp2 as i32))));
+                }
                 if mp1 & 0xFFFF == CMA_VERTICAL {
                     let Some(snap) = self.snapshot(hwnd) else { return Some(ok(false)) };
                     if snap.view() == View::Icon {
@@ -1581,6 +1767,25 @@ impl Loader {
                     self.cnr_scroll_to(hwnd, &snap, snap.top as i64 + i64::from(rows));
                 }
                 ok(true)
+            }
+            // From a horizontal scroll bar: mp1 = its id, mp2 = MPFROM2SHORT(slider, SB_*).
+            WM_HSCROLL => {
+                let Some(snap) = self.snapshot(hwnd) else { return Some(ok(false)) };
+                let pane = usize::from(mp1 & 0xFFFF == CID_RIGHTHSCROLL);
+                let (pos, page) = match snap.view() {
+                    View::Icon => (snap.icon_xscroll().0, snap.frame().rows.2),
+                    _ => snap.panes().get(pane).map_or((0, 0), |p| (p.off, p.w)),
+                };
+                let (pos, page) = (i64::from(pos), i64::from(page.max(1)));
+                let to = match mp2 >> 16 {
+                    SB_LINELEFT => pos - i64::from(H_LINE),
+                    SB_LINERIGHT => pos + i64::from(H_LINE),
+                    SB_PAGELEFT => pos - page,
+                    SB_PAGERIGHT => pos + page,
+                    SB_SLIDERTRACK | SB_SLIDERPOSITION => i64::from(mp2 as u16 as i16),
+                    _ => return Some(ok(false)),
+                };
+                ok(self.cnr_hscroll(hwnd, &snap, pane, to))
             }
             // From the vertical scroll bar: mp2 = MPFROM2SHORT(slider, SB_*).
             WM_VSCROLL => {
@@ -1621,7 +1826,7 @@ impl Loader {
             CM_OPENEDIT => {
                 let rd = |o: u32| self.guest_read::<u32>(mp1.wrapping_add(o)).unwrap_or(0);
                 if mp1 == 0 { fail(PMERR_INVALID_PARAMETERS); return Some(ok(false)); }
-                let opened = self.cnr_open_edit(hwnd, style, rd(CED_RECORD), rd(CED_FIELD));
+                let opened = self.cnr_open_edit(hwnd, style, rd(CED_RECORD), rd(CED_FIELD), rd(CED_ID));
                 if !opened { fail(PMERR_INVALID_PARAMETERS); }
                 ok(opened)
             }
@@ -1648,7 +1853,15 @@ impl Loader {
             CM_QUERYVIEWPORTRECT => {
                 if lo != u32::from(CMA_WINDOW) { return Some(ok(false)); }
                 let Some(snap) = self.snapshot(hwnd) else { return Some(ok(false)) };
-                let (x, y, w, h) = snap.frame().rows;
+                let (mut x, y, mut w, h) = snap.frame().rows;
+                // A split details view: the left or the right pane.
+                let panes = if snap.view() == View::Detail { snap.panes() } else { Vec::new() };
+                if panes.len() == 2 {
+                    let p = panes[usize::from(hi != 0)];
+                    (x, w) = (p.x, p.w);
+                } else if hi != 0 {
+                    return Some(ok(false));
+                }
                 ok(self.write_rectl(mp1, super::pm_rect::Rectl { x_left: x, y_bottom: y, x_right: x + w, y_top: y + h }))
             }
             _ => return None,
@@ -1698,10 +1911,12 @@ impl Loader {
     /// be edited: a read-only container (`CCS_READONLY`) or record
     /// (`CRA_RECORDREADONLY`), a record not shown, in the details view a
     /// field info that is not an inserted, writable (`CFA_FIREADONLY`)
-    /// `CFA_STRING` column. (Container titles and column headings are not
-    /// edited yet.)
-    fn edit_target(&self, hwnd: u32, style: u32, rec: u32, fi: u32) -> Option<(u32, u32, Rect)> {
-        if style & CCS_READONLY != 0 || rec == 0 || self.rec_attr(rec) & CRA_RECORDREADONLY != 0 { return None; }
+    /// `CFA_STRING` column. Without a record, `id` asks for the container
+    /// title or a column heading ([`Self::title_edit_target`]).
+    fn edit_target(&self, hwnd: u32, style: u32, rec: u32, fi: u32, id: u32) -> Option<(u32, u32, Rect)> {
+        if style & CCS_READONLY != 0 { return None; }
+        if rec == 0 { return self.title_edit_target(hwnd, fi, id); }
+        if self.rec_attr(rec) & CRA_RECORDREADONLY != 0 { return None; }
         self.cnr_follow(hwnd, rec);
         let snap = self.snapshot(hwnd)?;
         let i = snap.rows.iter().position(|&(r, _)| r == rec)?;
@@ -1713,10 +1928,11 @@ impl Loader {
                 if !snap.fields.iter().any(|&(f, _)| f == fi) || fl & CFA_STRING == 0 || fl & CFA_FIREADONLY != 0 { return None; }
                 let off = self.guest_read::<u32>(fi.wrapping_add(FI_OFFSTRUCT))?;
                 if off.checked_add(4).is_none_or(|end| end > snap.rows[i].1) { return None; }
-                let col = self.columns(hwnd, &snap, font, BORDER).into_iter().find(|c| c.fi == fi)?;
+                let col = snap.columns().into_iter().find(|c| c.fi == fi)?;
                 let (_, placed) = self.placements(hwnd, &snap, font);
                 let &(_, row) = placed.iter().find(|&&(k, _)| k == i)?;
-                Some((rec.wrapping_add(off), CID_LEFTDVWND, (col.x, row.1, col.w, row.3)))
+                let id = if col.pane == 1 { CID_RIGHTDVWND } else { CID_LEFTDVWND };
+                Some((rec.wrapping_add(off), id, (col.x, row.1, col.w, row.3)))
             }
             view => {
                 if fi != 0 { return None; }
@@ -1734,13 +1950,45 @@ impl Loader {
         }
     }
 
+    /// Where the container title (`id` `CID_CNRTITLEWND`) or the heading of
+    /// details-view column `fi` (`CID_LEFTCOLTITLEWND` /
+    /// `CID_RIGHTCOLTITLEWND`) is for a direct edit: its `ppszText`, the
+    /// window id (the heading's pane) and the rectangle. The title must be
+    /// shown and not `CA_TITLEREADONLY`; its `PSZ` is put in a guest cell
+    /// of the container (`CnrState::title_cell`), whose content becomes the
+    /// title when the edit is kept. A heading must be shown, a text, and
+    /// not `CFA_FITITLEREADONLY`; its `ppszText` is the field info's
+    /// `pTitleData`.
+    fn title_edit_target(&self, hwnd: u32, fi: u32, id: u32) -> Option<(u32, u32, Rect)> {
+        let snap = self.snapshot(hwnd)?;
+        let f = snap.frame();
+        let attr = snap.info.window_attr;
+        if id == CID_CNRTITLEWND {
+            let rect = f.title.filter(|_| attr & CA_TITLEREADONLY == 0)?;
+            let mut cell = self.with_cnr(hwnd, |c, _| c.title_cell)?;
+            if cell == 0 {
+                cell = self.cnr_alloc(hwnd, ItemKind::Cell, 8, 0, 1, 4);
+                if cell == 0 { return None; }
+                self.with_cnr(hwnd, |c, _| c.title_cell = cell);
+            }
+            self.guest_write::<u32>(cell, snap.info.title)?;
+            return Some((cell, CID_CNRTITLEWND, rect));
+        }
+        if id != CID_LEFTCOLTITLEWND && id != CID_RIGHTCOLTITLEWND { return None; }
+        let hd = f.header?;
+        let col = snap.columns().into_iter().find(|c| c.fi == fi)?;
+        if (col.fl_title | col.fl_data) & CFA_FITITLEREADONLY != 0 || col.fl_title & CFA_BITMAPORICON != 0 { return None; }
+        let id = if col.pane == 1 { CID_RIGHTCOLTITLEWND } else { CID_LEFTCOLTITLEWND };
+        Some((fi.wrapping_add(FI_TITLE), id, (col.x, hd.1, col.w, hd.3)))
+    }
+
     /// Start a direct edit of record `rec` (`fi`: the details-view column):
     /// an MLE (`CID_MLE`) over the text holding it, all selected, with the
     /// focus; the owner hears `CN_BEGINEDIT`. An edit in progress is kept
     /// first. FALSE when the text cannot be edited.
-    fn cnr_open_edit(&self, hwnd: u32, style: u32, rec: u32, fi: u32) -> bool {
+    fn cnr_open_edit(&self, hwnd: u32, style: u32, rec: u32, fi: u32, want_id: u32) -> bool {
         self.cnr_close_edit(hwnd, true);
-        let Some((ppsz, id, (x, y, w, h))) = self.edit_target(hwnd, style, rec, fi) else { return false };
+        let Some((ppsz, id, (x, y, w, h))) = self.edit_target(hwnd, style, rec, fi, want_id) else { return false };
         let ptr = self.guest_read::<u32>(ppsz).unwrap_or(0);
         let text = self.cnr_text(hwnd, ptr);
         let mle = {
@@ -1814,6 +2062,11 @@ impl Loader {
             bytes.truncate(cb.saturating_sub(1) as usize);
             bytes.push(0);
             if ptr != 0 { let _ = self.guest_write_bytes(ptr, &bytes); }
+            // The title: the string the cell now names (the owner may
+            // have given it a new one).
+            if block[2] == 0 && block[6] == CID_CNRTITLEWND {
+                self.with_cnr(hwnd, |c, _| c.info.title = ptr);
+            }
         }
         let mut end = block;
         end[5] = if result != 0 { cb } else { 0 };
@@ -1829,20 +2082,31 @@ impl Loader {
     }
 
     /// Alt + button 1 at container point `mp1`: edit the text of the record
-    /// there (in the icon view its text, in the details view the column).
+    /// there (in the icon view its text, in the details view the column),
+    /// or the container title or column heading there.
     fn cnr_alt_click(&self, hwnd: u32, style: u32, mp1: u32) -> bool {
         let at = ((mp1 & 0xFFFF) as i16 as i32, (mp1 >> 16) as i16 as i32);
         let Some(snap) = self.snapshot(hwnd) else { return false };
+        let inside = |(rx, ry, rw, rh): Rect| at.0 >= rx && at.0 < rx + rw && at.1 >= ry && at.1 < ry + rh;
+        let f = snap.frame();
+        if f.title.is_some_and(inside) {
+            return self.cnr_open_edit(hwnd, style, 0, 0, CID_CNRTITLEWND);
+        }
+        if f.header.is_some_and(inside) {
+            let Some(c) = snap.columns().into_iter().find(|c| at.0 >= c.x && at.0 < c.x + c.w
+                && snap.panes().get(c.pane).is_some_and(|p| at.0 >= p.x && at.0 < p.x + p.w)) else { return false };
+            return self.cnr_open_edit(hwnd, style, 0, c.fi, CID_LEFTCOLTITLEWND);
+        }
         let Some(i) = self.record_at(hwnd, &snap, at) else { return false };
         let rec = snap.rows[i].0;
         let fi = if snap.view() == View::Detail {
-            let font = Painter::new(self, 0, hwnd).font();
-            match self.columns(hwnd, &snap, font, BORDER).into_iter().find(|c| at.0 >= c.x && at.0 < c.x + c.w) {
+            match snap.columns().into_iter().find(|c| at.0 >= c.x && at.0 < c.x + c.w
+                && snap.panes().get(c.pane).is_some_and(|p| at.0 >= p.x && at.0 < p.x + p.w)) {
                 Some(c) => c.fi,
                 None => return false,
             }
         } else { 0 };
-        self.cnr_open_edit(hwnd, style, rec, fi)
+        self.cnr_open_edit(hwnd, style, rec, fi, 0)
     }
 
     /// A key for the direct-editing MLE `mle` of container `hwnd`: Esc
@@ -2280,6 +2544,7 @@ impl Loader {
     /// Show, place and set the vertical scroll bar of container `hwnd` for
     /// `snap`, or hide it; it paints itself over the container afterwards.
     fn cnr_sync_scrollbar(&self, hwnd: u32, snap: &Snapshot) {
+        self.cnr_sync_hscrollbars(hwnd, snap);
         let f = snap.frame();
         let bar = snap.bar();
         let n = snap.rows.len();
@@ -2306,6 +2571,94 @@ impl Loader {
         wm.invalidate_window_only(sb);
     }
 
+    /// Show, place and set the horizontal scroll bars: one under each
+    /// pane of the details view, one under the icon view's work area.
+    fn cnr_sync_hscrollbars(&self, hwnd: u32, snap: &Snapshot) {
+        let shown = snap.bars().1;
+        let f = snap.frame();
+        let c16 = |v: i32| v.clamp(0, i32::from(i16::MAX)) as i16;
+        // (x, width, position, most, content) of each bar.
+        let spans: Vec<(i32, i32, i32, i32, i32)> = match snap.view() {
+            _ if !shown => Vec::new(),
+            View::Detail => snap.panes().iter().map(|p| (p.x, p.w, p.off, (p.content - p.w).max(0), p.content)).collect(),
+            View::Icon => {
+                let (pos, max) = snap.icon_xscroll();
+                vec![(f.rows.0, f.rows.2, pos, max, max + f.rows.2)]
+            }
+            _ => Vec::new(),
+        };
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        for (k, id) in [CID_HSCROLL, CID_RIGHTHSCROLL].into_iter().enumerate() {
+            let Some(sb) = wm.find_child_by_id(hwnd, id) else { continue };
+            let Some(w) = wm.get_window_mut(sb) else { continue };
+            w.visible = k < spans.len();
+            let Some(&(x, width, pos, max, content)) = spans.get(k) else { continue };
+            (w.x, w.y, w.cx, w.cy) = (x, BORDER, width, SCROLLBAR_W);
+            w.scrollbar.set_range(c16(pos), 0, c16(max));
+            w.scrollbar.thumb_size = Some((c16(width) as u16, c16(content) as u16));
+            wm.invalidate_window_only(sb);
+        }
+    }
+
+    /// Button 1 pressed at container point `mp1`: on the split bar it is
+    /// taken, to be dragged until the button is released.
+    fn cnr_split_press(&self, hwnd: u32, mp1: u32) -> bool {
+        let at = ((mp1 & 0xFFFF) as i16 as i32, (mp1 >> 16) as i16 as i32);
+        let Some((sx, sy, sw, sh)) = self.snapshot(hwnd).and_then(|s| s.split_rect()) else { return false };
+        if !(at.0 >= sx && at.0 < sx + sw && at.1 >= sy && at.1 < sy + sh) { return false; }
+        self.with_cnr(hwnd, |c, _| c.split_drag = Some(at.0 - sx));
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        wm.pressed_control = hwnd;
+        wm.drag_pointer = at;
+        true
+    }
+
+    /// The pointer moved to container point `mp1` while the split bar is
+    /// held: move it there (`CNRINFO.xVertSplitbar`, from the rows' left
+    /// edge, kept within the rows). FALSE when the bar is not held.
+    fn cnr_split_drag(&self, hwnd: u32, mp1: u32) -> bool {
+        let at = ((mp1 & 0xFFFF) as i16 as i32, (mp1 >> 16) as i16 as i32);
+        let Some(Some(grab)) = self.with_cnr(hwnd, |c, _| c.split_drag) else { return false };
+        if self.shared.window_mgr.lock_or_recover().pressed_control != hwnd { return false; }
+        let Some(snap) = self.snapshot(hwnd) else { return false };
+        let f = snap.frame();
+        // At least MIN_PANE: 0 and below would mean "the middle".
+        let x = split_x((at.0 - grab - f.rows.0).max(MIN_PANE), f.rows.2);
+        self.with_cnr(hwnd, |c, _| c.info.split_bar = x as u32);
+        self.repaint_control(hwnd);
+        true
+    }
+
+    /// Details view: scroll pane `pane` so that `to` pels (clamped) are
+    /// left of it; icon view (pane 0): the work area across. The owner
+    /// hears `CN_SCROLL` (`CMA_HORIZONTAL`, the pels scrolled).
+    fn cnr_hscroll(&self, hwnd: u32, snap: &Snapshot, pane: usize, to: i64) -> bool {
+        let (pos, max) = match snap.view() {
+            View::Detail => match snap.panes().get(pane) {
+                Some(p) => (p.off, (p.content - p.w).max(0)),
+                None => return false,
+            },
+            View::Icon if pane == 0 => snap.icon_xscroll(),
+            _ => return false,
+        };
+        let new = to.clamp(0, i64::from(max)) as i32;
+        if new == pos { return true; }
+        self.cnr_close_edit(hwnd, false);
+        let delta = new - pos;
+        self.with_cnr(hwnd, |s, _| {
+            if view_of(s.info.window_attr) == View::Icon {
+                s.info.origin.0 = (s.info.origin.0 as i32).saturating_add(delta) as u32;
+            } else {
+                s.hscroll[pane] = new;
+            }
+        });
+        self.shared.window_mgr.lock_or_recover().queue_owner_call(OwnerCall {
+            control: hwnd, kind: OwnerCallKind::ContainerNotify { code: CN_SCROLL as u16, block: [hwnd, delta as u32, CMA_HORIZONTAL] },
+        });
+        self.repaint_control(hwnd);
+        true
+    }
+
     /// Draw handle `h` (a bitmap, else an icon) stretched to `rect`
     /// (surface coordinates `(x, y, cx, cy)`).
     fn paint_picture(&self, p: &Painter, h: u32, bitmap: bool, rect: Rect) {
@@ -2328,26 +2681,52 @@ impl Loader {
     }
 
     /// Paint container `hwnd` at `(x, y, cx, cy)` in its frame's surface.
-    pub(super) fn paint_container(&self, p: &Painter, hwnd: u32, (x, y, cx, cy): (i32, i32, i32, i32)) {
+    /// Items the owner draws (`CA_OWNERDRAW`: every record's icon and
+    /// text; `CFA_OWNER`: the cells of that details column) get their
+    /// background and are queued as owner calls (`WM_DRAWITEM`).
+    pub(super) fn paint_container(&self, p: &Painter, hwnd: u32, rect: (i32, i32, i32, i32)) {
+        self.paint_container_parts(p, hwnd, rect, None);
+    }
+
+    /// Paint one part of record `rec` (`fi`: its details-view column,
+    /// `part`: `CMA_ICON` / `CMA_TEXT`) as the container draws it: what an
+    /// owner left to the container by answering FALSE to `WM_DRAWITEM`.
+    pub(crate) fn paint_container_item(&self, p: &Painter, hwnd: u32, rect: (i32, i32, i32, i32), rec: u32, fi: u32, part: u32) {
+        self.paint_container_parts(p, hwnd, rect, Some((rec, fi, part)));
+    }
+
+    /// Paint the whole container, or with `only` just that item part
+    /// (see [`Self::paint_container_item`]).
+    fn paint_container_parts(&self, p: &Painter, hwnd: u32, (x, y, cx, cy): (i32, i32, i32, i32),
+                             only: Option<(u32, u32, u32)>) {
         let Some(snap) = self.snapshot(hwnd) else { return };
+        let full = only.is_none();
+        let want = |rec: u32, fi: u32, part: u32| only.is_none_or(|o| o == (rec, fi, part));
         let font = p.font();
         let attr = snap.info.window_attr;
         let view = view_of(attr);
+        let owner_all = full && attr & CA_OWNERDRAW != 0;
+        let mut owner_items: Vec<(u32, u32, u32)> = Vec::new();
         let bg = p.own_bg.unwrap_or(FIELD_COLOR);
         let at = |(rx, ry, rw, rh): (i32, i32, i32, i32)| (x + rx, y + ry, x + rx + rw - 1, y + ry + rh - 1);
-        p.fill((x, y, x + cx - 1, y + cy - 1), bg);
-        // The border.
-        p.fill((x, y, x + cx - 1, y), BORDER_COLOR);
-        p.fill((x, y + cy - 1, x + cx - 1, y + cy - 1), BORDER_COLOR);
-        p.fill((x, y, x, y + cy - 1), BORDER_COLOR);
-        p.fill((x + cx - 1, y, x + cx - 1, y + cy - 1), BORDER_COLOR);
+        if full {
+            // The scroll bars first: a bar this paint hides must not keep
+            // its place out of the painting.
+            self.cnr_sync_scrollbar(hwnd, &snap);
+            p.fill((x, y, x + cx - 1, y + cy - 1), bg);
+            // The border.
+            p.fill((x, y, x + cx - 1, y), BORDER_COLOR);
+            p.fill((x, y + cy - 1, x + cx - 1, y + cy - 1), BORDER_COLOR);
+            p.fill((x, y, x, y + cy - 1), BORDER_COLOR);
+            p.fill((x + cx - 1, y, x + cx - 1, y + cy - 1), BORDER_COLOR);
+        }
         let (f, placed) = self.placements(hwnd, &snap, font);
         let fg = p.fg;
         let aligned = |l: i32, r: i32, w: i32, fl: u32| {
             if fl & CFA_RIGHT != 0 { r - CELL_PAD - w } else if fl & CFA_CENTER != 0 { l + (r - l + 1 - w) / 2 } else { l + CELL_PAD }
         };
         // The container title.
-        if let Some(t) = f.title {
+        if let Some(t) = f.title.filter(|_| full) {
             let title = self.cnr_text(hwnd, snap.info.title);
             let (l, b, r, _) = at(t);
             let w = crate::gui::font::text_width(&title, font);
@@ -2358,18 +2737,27 @@ impl Loader {
             if sep != 0 { p.fill((l, b, r, b), SEPARATOR_COLOR); }
         }
         let focused = self.shared.window_mgr.lock_or_recover().focus_hwnd == hwnd;
-        let columns = if view == View::Detail { self.columns(hwnd, &snap, font, BORDER) } else { Vec::new() };
+        let columns = if view == View::Detail { snap.columns() } else { Vec::new() };
+        let panes = if view == View::Detail { snap.panes() } else { Vec::new() };
+        // A column's cell from `l` to `r` (surface x), cut to its pane;
+        // `None` when none of it shows.
+        let in_pane = |c: &Column, l: i32, r: i32| -> Option<(i32, i32)> {
+            let pn = panes.get(c.pane)?;
+            let (pl, pr) = (l.max(x + pn.x), r.min(x + pn.x + pn.w - 1));
+            (pl <= pr).then_some((pl, pr))
+        };
         // Detail column titles.
-        if let Some(hd) = f.header {
+        if let Some(hd) = f.header.filter(|_| full) {
             let (l, b, r, _) = at(hd);
             for c in &columns {
+                let (cl, cr) = (x + c.x, x + c.x + c.w - 1);
+                let Some((vl, vr)) = in_pane(c, cl, cr + 1) else { continue };
                 let title = if c.fl_title & CFA_BITMAPORICON == 0 {
                     self.cnr_text(hwnd, self.guest_read::<u32>(c.fi.wrapping_add(FI_TITLE)).unwrap_or(0))
                 } else { String::new() };
-                let (cl, cr) = (x + c.x, x + c.x + c.w - 1);
-                let cp = p.clone_clipped((cl, b, (cr - cl + 1).max(0), hd.3));
+                let cp = p.clone_clipped((vl, b, (vr.min(cr) - vl + 1).max(0), hd.3));
                 cp.text(aligned(cl, cr, crate::gui::font::text_width(&title, font), c.fl_title), b + 1 + ROW_PAD, &title, fg);
-                if c.fl_data & CFA_SEPARATOR != 0 { p.fill((cr + 1, y + f.rows.1, cr + 1, b + hd.3 - 1), SEPARATOR_COLOR); }
+                if c.fl_data & CFA_SEPARATOR != 0 && vr > cr { p.fill((cr + 1, y + f.rows.1, cr + 1, b + hd.3 - 1), SEPARATOR_COLOR); }
             }
             if columns.iter().any(|c| (c.fl_title | c.fl_data) & CFA_HORZSEPARATOR != 0) || !columns.is_empty() {
                 p.fill((l, b, r, b), SEPARATOR_COLOR);
@@ -2383,11 +2771,18 @@ impl Loader {
             let surf = |(rx, ry, rw, rh): Rect| (x + rx, y + ry, rw, rh);
             for (i, ir, tr) in self.icon_items(&snap, font) {
                 let rec = snap.rows[i].0;
+                if only.is_some_and(|o| o.0 != rec) { continue; }
                 let a = self.rec_attr(rec);
                 let selected = a & CRA_SELECTED != 0;
                 let color = if selected { SELECT_TEXT_COLOR } else if a & CRA_DISABLED != 0 { DISABLED_TEXT_COLOR } else { fg };
-                self.paint_record_picture(&rp, rec, &snap, surf(ir));
                 let (l, b, r, t) = at(tr);
+                if owner_all {
+                    if selected { rp.fill((l, b, r, t), SELECT_COLOR); }
+                    owner_items.extend([(rec, 0, CMA_ICON), (rec, 0, CMA_TEXT)]);
+                    continue;
+                }
+                if want(rec, 0, CMA_ICON) { self.paint_record_picture(&rp, rec, &snap, surf(ir)); }
+                if !want(rec, 0, CMA_TEXT) { continue; }
                 if selected { rp.fill((l, b, r, t), SELECT_COLOR); }
                 for (k, line) in snap.icons[i].1.iter().enumerate() {
                     let lw = crate::gui::font::text_width(line, font);
@@ -2398,20 +2793,29 @@ impl Loader {
         }
         for &(i, r) in placed.iter().filter(|_| view != View::Icon) {
             let (rec, size) = snap.rows[i];
+            if only.is_some_and(|o| o.0 != rec) { continue; }
             let a = self.rec_attr(rec);
             let (l, b, rr, t) = at(r);
             let selected = a & CRA_SELECTED != 0;
             let color = if selected { SELECT_TEXT_COLOR } else if a & CRA_DISABLED != 0 { DISABLED_TEXT_COLOR } else { fg };
             if view == View::Detail {
-                let right = columns.last().map_or(rr, |c| (x + c.x + c.w - 1).min(rr));
-                if selected { rp.fill((l, b, right, t), SELECT_COLOR); }
+                let mut right = l;
                 for c in &columns {
                     let (cl, cr) = (x + c.x, x + c.x + c.w - 1);
+                    let Some((vl, vr)) = in_pane(c, cl, cr) else { continue };
+                    right = right.max(vr);
+                    if !want(rec, c.fi, CMA_TEXT) { continue; }
+                    if selected { rp.fill((vl, b, vr, t), SELECT_COLOR); }
+                    if full && (owner_all || c.fl_data & CFA_OWNER != 0) {
+                        owner_items.push((rec, c.fi, CMA_TEXT));
+                        continue;
+                    }
+                    let cell = (vl, b, vr - vl + 1, r.3);
                     if c.fl_data & CFA_BITMAPORICON != 0 {
                         // An icon (or bitmap) handle in the record, drawn
                         // in a square the height of a line.
                         if let Some(h) = self.field_handle(rec, size, c.fi) {
-                            let cp = rp.clone_clipped((cl, b, (cr - cl + 1).max(0), r.3));
+                            let cp = rp.clone_clipped(cell);
                             let side = LINE_H.min(c.w);
                             let pic = (cl + (c.w - side) / 2, b + (r.3 - side) / 2, side, side);
                             self.paint_picture(&cp, h, attr & CA_DRAWBITMAP != 0 && attr & CA_DRAWICON == 0, pic);
@@ -2419,20 +2823,24 @@ impl Loader {
                         continue;
                     }
                     let v = self.field_value(hwnd, rec, size, c.fi, c.fl_data);
-                    let cp = rp.clone_clipped((cl, b, (cr - cl + 1).max(0), r.3));
+                    let cp = rp.clone_clipped(cell);
                     cp.text(aligned(cl, cr, crate::gui::font::text_width(&v, font), c.fl_data), b + ROW_PAD, &v, color);
                 }
-                if focused && a & CRA_CURSORED != 0 { super::pm_button::focus_mark(&rp, (l, b, right, t), color); }
+                if full && focused && a & CRA_CURSORED != 0 { super::pm_button::focus_mark(&rp, (l, b, right, t), color); }
             } else {
                 let text = self.record_text(hwnd, rec, view, snap.mini);
                 let row_l = l;
                 if let Some(ix) = snap.icon_inset(i) {
-                    let (iw, ih) = snap.icon();
-                    self.paint_record_picture(&rp, rec, &snap, (row_l + ix, b + (r.3 - ih) / 2, iw, ih));
+                    if owner_all {
+                        owner_items.push((rec, 0, CMA_ICON));
+                    } else if want(rec, 0, CMA_ICON) {
+                        let (iw, ih) = snap.icon();
+                        self.paint_record_picture(&rp, rec, &snap, (row_l + ix, b + (r.3 - ih) / 2, iw, ih));
+                    }
                 }
                 let l = l + snap.text_inset(i);
                 let ty = if snap.pictures() { b + (r.3 - LINE_H) / 2 } else { b + ROW_PAD };
-                if view == View::Tree && snap.tree[i].1 {
+                if full && view == View::Tree && snap.tree[i].1 {
                     // The expander: a box with a minus, or a plus when closed.
                     let ex = row_l + snap.expander_x(i);
                     let (eb, et) = (b + (r.3 - EXPANDER) / 2, b + (r.3 - EXPANDER) / 2 + EXPANDER - 1);
@@ -2445,18 +2853,79 @@ impl Loader {
                 }
                 let w = crate::gui::font::text_width(&text, font) + 2 * CELL_PAD;
                 let right = (l + w - 1).min(rr);
+                if owner_all {
+                    if selected { rp.fill((l, b, rr, t), SELECT_COLOR); }
+                    owner_items.push((rec, 0, CMA_TEXT));
+                    continue;
+                }
+                if !want(rec, 0, CMA_TEXT) { continue; }
                 if selected { rp.fill((l, b, right, t), SELECT_COLOR); }
                 rp.text(l + CELL_PAD, ty, &text, color);
                 if focused && a & CRA_CURSORED != 0 { super::pm_button::focus_mark(&rp, (l, b, right, t), color); }
             }
         }
+        if !full { return; }
         // Column separators through the rows.
         for c in columns.iter().filter(|c| c.fl_data & CFA_SEPARATOR != 0) {
             let cr = x + c.x + c.w;
-            rp.fill((cr, rows_clip.1, cr, rows_clip.3), SEPARATOR_COLOR);
+            if in_pane(c, cr, cr).is_some() { rp.fill((cr, rows_clip.1, cr, rows_clip.3), SEPARATOR_COLOR); }
         }
-        self.cnr_sync_scrollbar(hwnd, &snap);
+        // The split bar between the panes.
+        if let Some(sr) = snap.split_rect() {
+            let (l, b, r, t) = at(sr);
+            p.fill((l, b, r, t), super::CONTROL_FACE_COLOR);
+            p.fill((l, b, l, t), SEPARATOR_COLOR);
+            p.fill((r, b, r, t), SEPARATOR_COLOR);
+        }
+        // The owner draws its items now, before the call that painted
+        // returns (the drawing so far stays when it answers FALSE).
+        if !owner_items.is_empty() {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            wm.owner_calls.retain(|c| !(c.control == hwnd && matches!(c.kind, OwnerCallKind::ContainerDrawItem { .. })));
+            for (rec, fi, part) in owner_items {
+                wm.queue_owner_call(OwnerCall { control: hwnd, kind: OwnerCallKind::ContainerDrawItem { rec, fi, part } });
+            }
+        }
     }
+
+    /// Where part `part` (`CMA_ICON` / `CMA_TEXT`) of shown record `rec`
+    /// (`fi`: its details-view cell) is, in container coordinates, right
+    /// and top exclusive, cut to the rows' area (and the cell's pane).
+    pub(crate) fn container_item_rect(&self, hwnd: u32, rec: u32, fi: u32, part: u32) -> Option<(i32, i32, i32, i32)> {
+        let snap = self.snapshot(hwnd)?;
+        let i = snap.rows.iter().position(|&(r, _)| r == rec)?;
+        let font = Painter::new(self, 0, hwnd).font();
+        let f = snap.frame();
+        let r: Rect = match snap.view() {
+            View::Icon => {
+                let (_, ir, tr) = self.icon_items(&snap, font).into_iter().find(|&(k, _, _)| k == i)?;
+                if part == CMA_ICON { ir } else { tr }
+            }
+            view => {
+                let (_, placed) = self.placements(hwnd, &snap, font);
+                let &(_, row) = placed.iter().find(|&&(k, _)| k == i)?;
+                if view == View::Detail {
+                    let c = snap.columns().into_iter().find(|c| c.fi == fi)?;
+                    let pn = snap.panes().get(c.pane).copied()?;
+                    let (l, rr) = (c.x.max(pn.x), (c.x + c.w).min(pn.x + pn.w));
+                    (l, row.1, rr - l, row.3)
+                } else if part == CMA_ICON {
+                    let (iw, ih) = snap.icon();
+                    (row.0 + snap.icon_inset(i)?, row.1 + (row.3 - ih) / 2, iw, ih)
+                } else {
+                    let inset = snap.text_inset(i);
+                    (row.0 + inset, row.1, row.2 - inset, row.3)
+                }
+            }
+        };
+        let (rx, ry, rw, rh) = f.rows;
+        let (l, b) = (r.0.max(rx), r.1.max(ry));
+        let (rr, t) = ((r.0 + r.2).min(rx + rw), (r.1 + r.3).min(ry + rh));
+        (l < rr && b < t).then_some((l, b, rr, t))
+    }
+
+    /// The `flRecordAttr` of record `rec`.
+    pub(crate) fn container_record_attr(&self, rec: u32) -> u32 { self.rec_attr(rec) }
 }
 
 #[cfg(test)]
@@ -3532,5 +4001,293 @@ mod tests {
         assert_eq!(format_time(14, 5, 7, 1, ':'), "14:05:07");
         assert_eq!(format_time(14, 5, 7, 0, ':'), " 2:05:07pm");
         assert_eq!(format_time(0, 0, 0, 0, ':'), "12:00:00am");
+    }
+
+    #[test]
+    fn split_bar_and_panes() {
+        assert_eq!(split_x(0, 200), 100, "the middle by default");
+        assert_eq!(split_x(5, 200), MIN_PANE);
+        assert_eq!(split_x(500, 200), 200 - SPLIT_W - MIN_PANE);
+        let one = detail_panes(&[50, 60, 70], None, 0, (1, 100), [500, 0]);
+        assert_eq!(one, vec![Pane { x: 1, w: 100, first: 0, end: 3, content: 180, off: 80 }], "scroll kept in the content");
+        let two = detail_panes(&[50, 60, 70], Some(1), 40, (1, 200), [10, 20]);
+        assert_eq!(two[0], Pane { x: 1, w: 40, first: 0, end: 1, content: 50, off: 10 });
+        assert_eq!(two[1], Pane { x: 1 + 40 + SPLIT_W, w: 200 - 40 - SPLIT_W, first: 1, end: 3, content: 130, off: 0 });
+        assert_eq!(detail_panes(&[50, 60], Some(2), 40, (1, 200), [0, 0]).len(), 1, "no columns right of the bar");
+    }
+
+    /// A details view of `n` records with three fixed-width string
+    /// columns (titled "A", "B", "C"; each record's values in its data):
+    /// the field infos.
+    fn detail(f: &Fx, widths: [u32; 3], attr: u32, n: u32) -> Vec<u32> {
+        let first = f.send(CM_ALLOCDETAILFIELDINFO, 3, 0);
+        let mut fis = vec![first];
+        while fis.len() < 3 { fis.push(f.rd(fis.last().unwrap() + FI_NEXT)); }
+        f.loader.guest_write_bytes(BUF + 0xC00, b"A\0B\0C\0value\0").unwrap();
+        for (k, &fi) in fis.iter().enumerate() {
+            f.wr(fi + FI_FLDATA, CFA_STRING);
+            f.wr(fi + FI_OFFSTRUCT, RECORDCORE_SIZE + 4 * k as u32);
+            f.wr(fi + FI_CXWIDTH, widths[k]);
+            f.wr(fi + FI_TITLE, BUF + 0xC00 + 2 * k as u32);
+        }
+        for (o, v) in [(0, 16), (4, CMA_END), (8, 1), (12, 3)] { f.wr(BUF + 0x500 + o, v); }
+        f.send(CM_INSERTDETAILFIELDINFO, fis[0], BUF + 0x500);
+        let recs = f.alloc(n, 12);
+        for &r in &recs { for k in 0..3 { f.wr(r + RECORDCORE_SIZE + 4 * k, BUF + 0xC06); } }
+        f.insert(recs[0], n, CMA_END, 0);
+        f.set_view(CV_DETAIL | attr);
+        fis
+    }
+
+    fn scroll_notes(f: &Fx) -> Vec<[u32; 3]> {
+        std::mem::take(&mut f.loader.shared.window_mgr.lock_or_recover().owner_calls).into_iter().filter_map(|c| match c.kind {
+            OwnerCallKind::ContainerNotify { code, block } if u32::from(code) == CN_SCROLL => Some(block),
+            _ => None,
+        }).collect()
+    }
+
+    fn bar_of(f: &Fx, id: u32) -> (bool, i32, i32, i16) {
+        let wm = f.loader.shared.window_mgr.lock_or_recover();
+        let w = wm.get_window(wm.find_child_by_id(f.cnr, id).unwrap()).unwrap();
+        (w.visible, w.x, w.cx, w.scrollbar.last)
+    }
+
+    #[test]
+    fn wide_details_scroll_across() {
+        let f = fixture(0);
+        let fis = detail(&f, [150, 150, 100], CA_DETAILSVIEWTITLES, 3);
+        let snap = f.loader.snapshot(f.cnr).unwrap();
+        // 3 columns of 158, 158, 108 pels (with padding) in 298: a bar.
+        assert_eq!(snap.bars(), (false, true));
+        assert_eq!(snap.frame().rows.1, BORDER + SCROLLBAR_W, "the rows above the bar");
+        f.loader.cnr_sync_scrollbar(f.cnr, &snap);
+        let content = 3 * 2 * CELL_PAD + 400;
+        assert_eq!(bar_of(&f, CID_HSCROLL), (true, BORDER, 298, (content - 298) as i16));
+        assert!(!bar_of(&f, CID_RIGHTHSCROLL).0);
+        // A page right: the columns move left; CN_SCROLL across.
+        scroll_notes(&f);
+        f.send(WM_HSCROLL, CID_HSCROLL, SB_PAGERIGHT << 16);
+        let snap = f.loader.snapshot(f.cnr).unwrap();
+        assert_eq!(snap.hscroll[0], content - 298, "clamped to the end");
+        assert_eq!(snap.columns()[0].x, BORDER - (content - 298));
+        assert_eq!(scroll_notes(&f), vec![[f.cnr, (content - 298) as u32, CMA_HORIZONTAL]]);
+        f.send(WM_HSCROLL, CID_HSCROLL, SB_LINELEFT << 16);
+        assert_eq!(f.loader.snapshot(f.cnr).unwrap().hscroll[0], content - 298 - H_LINE);
+        // CM_SCROLLWINDOW across, by pels.
+        assert_eq!(f.send(CM_SCROLLWINDOW, CMA_HORIZONTAL, (-10i32) as u32), 1);
+        assert_eq!(f.loader.snapshot(f.cnr).unwrap().hscroll[0], content - 298 - H_LINE - 10);
+        // Column headings and cells are drawn inside the rows' width.
+        let texts: Vec<i32> = f.paint_ops().into_iter().filter_map(|o| match o {
+            crate::gui::surface::DrawOp::Text { x, .. } => Some(x), _ => None }).collect();
+        assert!(!texts.is_empty());
+        let _ = fis;
+        // Narrow columns: no bar.
+        let g = fixture(0);
+        detail(&g, [20, 20, 20], 0, 2);
+        assert_eq!(g.loader.snapshot(g.cnr).unwrap().bars(), (false, false));
+    }
+
+    #[test]
+    fn a_split_details_view_has_two_panes() {
+        let f = fixture(0);
+        let fis = detail(&f, [100, 150, 150], CA_DETAILSVIEWTITLES, 3);
+        // pFieldInfoLast = the first column, the split bar at 80.
+        for i in 0..23 { f.wr(BUF + 0x600 + 4 * i, 0); }
+        f.wr(BUF + 0x600 + 8, fis[0]);
+        f.wr(BUF + 0x600 + 88, 80);
+        assert_eq!(f.send(CM_SETCNRINFO, BUF + 0x600, CMA_PFIELDINFOLAST | CMA_XVERTSPLITBAR), 1);
+        let snap = f.loader.snapshot(f.cnr).unwrap();
+        let panes = snap.panes();
+        assert_eq!(panes.len(), 2);
+        assert_eq!((panes[0].x, panes[0].w, panes[0].end), (BORDER, 80, 1));
+        assert_eq!(panes[1].x, BORDER + 80 + SPLIT_W);
+        let cols = snap.columns();
+        assert_eq!((cols[0].pane, cols[1].pane, cols[1].x), (0, 1, panes[1].x));
+        // Both panes overflow: two bars, one under each.
+        f.loader.cnr_sync_scrollbar(f.cnr, &snap);
+        assert_eq!(bar_of(&f, CID_HSCROLL).0..=bar_of(&f, CID_HSCROLL).0, true..=true);
+        assert_eq!((bar_of(&f, CID_RIGHTHSCROLL).1, bar_of(&f, CID_RIGHTHSCROLL).2), (panes[1].x, panes[1].w));
+        // The right pane scrolls by itself.
+        f.send(WM_HSCROLL, CID_RIGHTHSCROLL, SB_LINERIGHT << 16);
+        assert_eq!(f.loader.snapshot(f.cnr).unwrap().hscroll, [0, H_LINE]);
+        // CM_QUERYVIEWPORTRECT of the right pane.
+        assert_eq!(f.send(CM_QUERYVIEWPORTRECT, BUF + 0x700, u32::from(CMA_WINDOW) | 1 << 16), 1);
+        assert_eq!((f.rd(BUF + 0x700), f.rd(BUF + 0x708)), (panes[1].x as u32, (panes[1].x + panes[1].w) as u32));
+        // Dragging the split bar moves it; CNRINFO reports the new place.
+        let (sx, sy, _, sh) = snap.split_rect().unwrap();
+        assert_eq!(f.send(WM_BUTTON1DOWN, Fx::at(sx + 1, sy + sh / 2), 0), 1);
+        assert_eq!(f.loader.shared.window_mgr.lock_or_recover().pressed_control, f.cnr);
+        assert_eq!(f.send(WM_MOUSEMOVE, Fx::at(sx + 1 + 40, sy + 5), 0), 1);
+        assert_eq!(f.send(WM_BUTTON1UP, Fx::at(sx + 41, sy + 5), 0), 1);
+        assert_eq!(f.loader.shared.window_mgr.lock_or_recover().pressed_control, 0);
+        f.send(CM_QUERYCNRINFO, BUF + 0x400, CNRINFO_SIZE);
+        assert_eq!(f.rd(BUF + 0x400 + 88), 120, "xVertSplitbar");
+        assert_eq!(f.loader.snapshot(f.cnr).unwrap().panes()[0].w, 120);
+        // Moves without the bar held are not the container's.
+        assert!(f.loader.container_message(f.cnr, WM_MOUSEMOVE, Fx::at(5, 5), 0).is_none());
+        // A drag to the far left stops at the narrowest pane.
+        f.send(WM_BUTTON1DOWN, Fx::at(BORDER + 121, sy + 5), 0);
+        f.send(WM_MOUSEMOVE, Fx::at(-50, sy + 5), 0);
+        f.send(WM_BUTTON1UP, Fx::at(-50, sy + 5), 0);
+        assert_eq!(f.loader.snapshot(f.cnr).unwrap().panes()[0].w, MIN_PANE);
+    }
+
+    #[test]
+    fn the_icon_view_scrolls_across() {
+        let f = fixture(0);
+        let r = f.named(&["far"], 0);
+        f.place(r[0], 600, 50);
+        f.send(CM_INVALIDATERECORD, 0, 0);
+        let snap = f.loader.snapshot(f.cnr).unwrap();
+        assert!(snap.bars().1, "an icon right of the work area");
+        let (pos, max) = snap.icon_xscroll();
+        assert_eq!(pos, 0);
+        assert!(max >= 600 + ICON_SIZE - 298, "{max}");
+        f.send(WM_HSCROLL, CID_HSCROLL, SB_PAGERIGHT << 16);
+        let snap = f.loader.snapshot(f.cnr).unwrap();
+        assert_eq!(snap.info.origin.0 as i32, snap.frame().rows.2, "the work area moved a page across");
+        assert_eq!(scroll_notes(&f), vec![[f.cnr, snap.frame().rows.2 as u32, CMA_HORIZONTAL]]);
+        assert_eq!(f.send(WM_HSCROLL, CID_RIGHTHSCROLL, SB_PAGERIGHT << 16), 0, "no right pane");
+    }
+
+    fn draw_calls(f: &Fx) -> Vec<(u32, u32, u32)> {
+        f.loader.shared.window_mgr.lock_or_recover().owner_calls.iter().filter_map(|c| match c.kind {
+            OwnerCallKind::ContainerDrawItem { rec, fi, part } => Some((rec, fi, part)), _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn owner_drawn_records_and_columns() {
+        let f = fixture(0);
+        f.set_view(CV_TEXT | CA_OWNERDRAW);
+        let r = f.named(&["one", "two"], 0);
+        f.paint_ops();
+        assert_eq!(draw_calls(&f), vec![(r[0], 0, CMA_TEXT), (r[1], 0, CMA_TEXT)]);
+        // The OWNERITEM: the container, the item's rectangle and the part;
+        // pRecord / pFieldInfo after it.
+        let call = f.loader.shared.window_mgr.lock_or_recover().owner_calls.iter()
+            .find(|c| matches!(c.kind, OwnerCallKind::ContainerDrawItem { .. })).copied().unwrap();
+        let client = f.loader.shared.window_mgr.lock_or_recover().get_window(f.cnr).unwrap().owner;
+        f.loader.shared.window_mgr.lock_or_recover().get_window_mut(client).unwrap().pfn_wp = 0x5000;
+        let crate::loader::pm_owner::OwnerSetup::Call { msg, mp1, block, hps, .. } = f.loader.owner_call_setup(&call)
+        else { panic!("a call") };
+        assert_eq!((msg, mp1), (WM_DRAWITEM, ID));
+        let rect = f.loader.container_item_rect(f.cnr, r[0], 0, CMA_TEXT).unwrap();
+        assert_eq!(block.len(), 14);
+        assert_eq!((block[0], block[1], block[10], block[12], block[13]), (f.cnr, hps, CMA_TEXT, r[0], 0));
+        assert_eq!((block[6] as i32, block[7] as i32, block[8] as i32, block[9] as i32), rect);
+        assert_eq!(rect.3, 199, "the top row, below the top border");
+        // FALSE: the container draws the text itself.
+        let s = {
+            let mut wm = f.loader.shared.window_mgr.lock_or_recover();
+            let frame = wm.find_frame_for_hwnd(f.cnr);
+            wm.frame_surface(frame).unwrap()
+        };
+        s.lock_or_recover().record = Some(Vec::new());
+        f.loader.owner_call_finish(&call, hps, 0, &block);
+        let ops = s.lock_or_recover().record.take().unwrap();
+        assert!(ops.iter().any(|o| matches!(o, crate::gui::surface::DrawOp::Text { .. })), "{ops:?}");
+        // Details view: CFA_OWNER asks for that column's cells only.
+        let g = fixture(0);
+        let fis = detail(&g, [40, 40, 40], 0, 2);
+        g.wr(fis[1] + FI_FLDATA, CFA_STRING | CFA_OWNER);
+        let recs: Vec<u32> = g.loader.snapshot(g.cnr).unwrap().rows.iter().map(|&(r, _)| r).collect();
+        g.paint_ops();
+        assert_eq!(draw_calls(&g), vec![(recs[0], fis[1], CMA_TEXT), (recs[1], fis[1], CMA_TEXT)]);
+        let cell = g.loader.container_item_rect(g.cnr, recs[0], fis[1], CMA_TEXT).unwrap();
+        let col = g.loader.snapshot(g.cnr).unwrap().columns()[1];
+        assert_eq!((cell.0, cell.2), (col.x, col.x + col.w));
+        // Icon view with CA_OWNERDRAW: the icon and the text of each.
+        let h = fixture(0);
+        h.set_view(CV_ICON | CA_OWNERDRAW);
+        let r = h.named(&["i"], 0);
+        h.send(CM_ARRANGE, CMA_ARRANGESTANDARD, 0);
+        h.paint_ops();
+        assert_eq!(draw_calls(&h), vec![(r[0], 0, CMA_ICON), (r[0], 0, CMA_TEXT)]);
+        let icon = h.loader.container_item_rect(h.cnr, r[0], 0, CMA_ICON).unwrap();
+        assert_eq!((icon.2 - icon.0, icon.3 - icon.1), (ICON_SIZE, ICON_SIZE));
+    }
+
+    #[test]
+    fn the_title_and_column_headings_are_edited() {
+        let open = |f: &Fx, fi: u32, id: u32| {
+            for i in 0..7 { f.wr(BUF + 0x480 + 4 * i, 0); }
+            f.wr(BUF + 0x480, CNREDITDATA_SIZE);
+            f.wr(BUF + 0x48C, fi);
+            f.wr(BUF + 0x480 + CED_ID, id);
+            f.send(CM_OPENEDIT, BUF + 0x480, 0)
+        };
+        let f = fixture(0);
+        let fis = detail(&f, [60, 60, 60], CA_DETAILSVIEWTITLES | CA_CONTAINERTITLE, 1);
+        f.loader.guest_write_bytes(BUF + 0xD00, b"Files\0").unwrap();
+        for i in 0..23 { f.wr(BUF + 0x600 + 4 * i, 0); }
+        f.wr(BUF + 0x600 + 16, BUF + 0xD00);
+        f.send(CM_SETCNRINFO, BUF + 0x600, CMA_CNRTITLE);
+        f.notes();
+        // The title: its PSZ in a cell of the container.
+        assert_eq!(open(&f, 0, CID_CNRTITLEWND), 1);
+        let n = f.notes();
+        let cell = n[0].1[4];
+        assert_eq!(n, vec![(CN_BEGINEDIT, [CNREDITDATA_SIZE, f.cnr, 0, 0, cell, 0, CID_CNRTITLEWND])]);
+        assert_eq!(f.rd(cell), BUF + 0xD00);
+        let mle = f.loader.shared.window_mgr.lock_or_recover().find_child_by_id(f.cnr, CID_MLE).unwrap();
+        assert_eq!(f.loader.shared.window_mgr.lock_or_recover().get_window(mle).unwrap().text, "Files");
+        f.loader.shared.window_mgr.lock_or_recover().get_window_mut(mle).unwrap().text = "Documents".into();
+        f.send(CM_CLOSEEDIT, 0, 0);
+        let n = f.notes();
+        assert_eq!(n[0].0, CN_REALLOCPSZ);
+        // The owner gives the title a new buffer through the cell.
+        f.wr(cell, BUF + 0xD40);
+        f.loader.container_realloc_done(f.cnr, 1, n[0].1);
+        assert_eq!(f.loader.guest_read_bytes(BUF + 0xD40, 10).unwrap(), b"Documents\0");
+        f.send(CM_QUERYCNRINFO, BUF + 0x400, CNRINFO_SIZE);
+        assert_eq!(f.rd(BUF + 0x400 + 16), BUF + 0xD40, "the new title");
+        f.notes();
+        // A heading: ppszText = the field info's pTitleData.
+        assert_eq!(open(&f, fis[1], CID_LEFTCOLTITLEWND), 1);
+        assert_eq!(f.notes()[0].1, [CNREDITDATA_SIZE, f.cnr, 0, fis[1], fis[1] + FI_TITLE, 0, CID_LEFTCOLTITLEWND]);
+        f.send(CM_CLOSEEDIT, 0, 0);
+        f.notes();
+        // Alt+click on the title band edits the title.
+        let title = f.loader.snapshot(f.cnr).unwrap().frame().title.unwrap();
+        assert_eq!(f.send(WM_BUTTON1DOWN, Fx::at(title.0 + 5, title.1 + 2), KC_ALT << 16), 1);
+        assert_eq!(f.notes()[0].1[6], CID_CNRTITLEWND);
+        f.send(CM_CLOSEEDIT, 0, 0);
+        f.notes();
+        // Read-only titles and headings.
+        f.wr(fis[2] + FI_FLTITLE, CFA_FITITLEREADONLY);
+        assert_eq!(open(&f, fis[2], CID_LEFTCOLTITLEWND), 0, "CFA_FITITLEREADONLY");
+        assert_eq!(open(&f, 0x1234, CID_LEFTCOLTITLEWND), 0, "not a column");
+        f.set_view(CV_DETAIL | CA_DETAILSVIEWTITLES | CA_CONTAINERTITLE | CA_TITLEREADONLY);
+        assert_eq!(open(&f, 0, CID_CNRTITLEWND), 0, "CA_TITLEREADONLY");
+        f.set_view(CV_DETAIL);
+        assert_eq!(open(&f, fis[0], CID_LEFTCOLTITLEWND), 0, "no headings shown");
+        assert_eq!(open(&f, 0, CID_CNRTITLEWND), 0, "no title shown");
+        let g = fixture(CCS_READONLY);
+        g.set_view(CV_TEXT | CA_CONTAINERTITLE);
+        assert_eq!(open(&g, 0, CID_CNRTITLEWND), 0, "CCS_READONLY");
+    }
+
+    /// A hidden built-in window draws nothing on a WM_PAINT queued while it
+    /// was shown (a container's scroll bar the view stopped needing kept
+    /// its picture).
+    #[test]
+    fn a_hidden_scroll_bar_does_not_paint() {
+        let f = fixture(0);
+        let sb = f.loader.shared.window_mgr.lock_or_recover().find_child_by_id(f.cnr, CID_VSCROLL).unwrap();
+        let s = {
+            let mut wm = f.loader.shared.window_mgr.lock_or_recover();
+            let w = wm.get_window_mut(sb).unwrap();
+            (w.x, w.y, w.cx, w.cy, w.visible) = (280, 1, 16, 100, false);
+            let frame = wm.find_frame_for_hwnd(sb);
+            wm.frame_surface(frame).unwrap()
+        };
+        s.lock_or_recover().record = Some(Vec::new());
+        f.loader.dispatch_builtin_control(sb, WM_PAINT, 0, 0);
+        assert!(s.lock_or_recover().record.take().unwrap().is_empty(), "hidden: nothing drawn");
+        f.loader.shared.window_mgr.lock_or_recover().get_window_mut(sb).unwrap().visible = true;
+        s.lock_or_recover().record = Some(Vec::new());
+        f.loader.dispatch_builtin_control(sb, WM_PAINT, 0, 0);
+        assert!(!s.lock_or_recover().record.take().unwrap().is_empty(), "shown: drawn");
     }
 }

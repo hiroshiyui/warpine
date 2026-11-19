@@ -113,6 +113,11 @@ pub enum OwnerCallKind {
     /// `WM_CONTROL(code)` from a container with a `CNREDITDATA`
     /// (`CN_BEGINEDIT`, `CN_REALLOCPSZ`, `CN_ENDEDIT`).
     ContainerEdit { code: u16, block: [u32; 7] },
+    /// `WM_DRAWITEM` for part `part` (`CMA_ICON` / `CMA_TEXT`) of container
+    /// record `rec` (`fi`: its details-view column, else 0): an
+    /// `OWNERITEM` whose `hItem` points to a `CNRDRAWITEMINFO` (`pRecord`,
+    /// `pFieldInfo`) placed after it (`pm_container.rs`).
+    ContainerDrawItem { rec: u32, fi: u32, part: u32 },
     /// A subclassed frame lays itself out (`pm_frame.rs`): `count` `None`
     /// asks `WM_QUERYFRAMECTLCOUNT`, `Some(n)` sends `WM_FORMATFRAME` with
     /// room for `n` `SWP`s, which are applied when it returns.
@@ -359,6 +364,17 @@ impl Loader {
                 wnd_proc, owner, msg: WM_CONTROL,
                 mp1: (u32::from(code) << 16) | (id & 0xFFFF), mp2, block: Vec::new(), hps: 0,
             },
+            OwnerCallKind::ContainerDrawItem { rec, fi, part } => {
+                let Some((l, b, r, t)) = self.container_item_rect(call.control, rec, fi, part) else { return OwnerSetup::Skip };
+                let attr = self.container_record_attr(rec);
+                let selected = u32::from(attr & super::pm_container::CRA_SELECTED != 0);
+                let hps = self.owner_ps(call.control);
+                // hItem (word 11) is set to the CNRDRAWITEMINFO's address
+                // when the block is on the stack (vcpu.rs).
+                let block = vec![call.control, hps, selected, attr, selected, attr, l as u32, b as u32, r as u32, t as u32,
+                                 part, 0, rec, fi];
+                OwnerSetup::Call { wnd_proc, owner, msg: WM_DRAWITEM, mp1: id & 0xFFFF, mp2: 0, block, hps }
+            }
             OwnerCallKind::UserButton => {
                 let state = self.user_button_state(call.control, style);
                 let old = self.shared.window_mgr.lock_or_recover().get_window_mut(call.control)
@@ -490,6 +506,9 @@ impl Loader {
             }
             OwnerCallKind::ValueSetBackground if result != 0 => self.shared.window_mgr.lock_or_recover()
                 .get_window(call.control).map(|w| (0, 0, w.cx, w.cy)),
+            OwnerCallKind::ContainerDrawItem { rec, fi, part } if result != 0 => {
+                self.container_item_rect(call.control, rec, fi, part)
+            }
             _ => None,
         };
         if hps != 0 {
@@ -529,6 +548,16 @@ impl Loader {
                 self.valueset_owner_done(call.control, Some((row, col)), result != 0);
             }
             OwnerCallKind::ValueSetBackground => self.valueset_owner_done(call.control, None, result != 0),
+            // FALSE: the container draws the item itself.
+            OwnerCallKind::ContainerDrawItem { rec, fi, part } if result == 0 => {
+                let (frame, rect) = {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    (wm.find_frame_for_hwnd(call.control), wm.get_abs_rect_in_frame(call.control))
+                };
+                let p = Painter::new(self, frame, call.control);
+                self.paint_container_item(&p, call.control, rect, rec, fi, part);
+            }
+            OwnerCallKind::ContainerDrawItem { .. } => {}
             OwnerCallKind::UserButton | OwnerCallKind::DrawMenuItem { .. }
             | OwnerCallKind::EraseBackground | OwnerCallKind::SyncPaint
             | OwnerCallKind::NotebookSelected { .. } | OwnerCallKind::NotebookDeleted { .. }

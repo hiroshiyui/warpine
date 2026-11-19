@@ -1740,6 +1740,12 @@ fn continue_owner_draw(
                     OwnerCallKind::FrameFormat { count: Some(_) } => block_at + super::pm_frame::FORMAT_RECTL_BYTES,
                     _ => mp1,
                 };
+                // A container's OWNERITEM: hItem → the CNRDRAWITEMINFO
+                // after it (block words 12 and 13).
+                if let OwnerCallKind::ContainerDrawItem { .. } = call.kind
+                    && block_len >= 14 {
+                    loader.guest_write::<u32>(block_at + 44, block_at + 48).expect("owner-draw stack OOB");
+                }
                 callback_stack.push(CallbackFrame {
                     saved_rip,
                     saved_rsp,
