@@ -71,3 +71,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0063](0063-module-lifecycle.md) | Module lifecycle: failed startup routines stop the program, OS/2 paths for DosLoadModule, zeroed memory, SOM class unloading | Accepted | 2026-11-19 |
 | [0064](0064-notebook-turns-page-dialogs-and-tab-across-pages.md) | Notebook turns ask the owner first; the notebook loads page dialogs and owns its buttons; Tab crosses into embedded dialogs | Accepted | 2026-11-19 |
 | [0065](0065-container-details-panes-owner-drawing-title-edits.md) | Container details panes, horizontal scrolling, owner drawing through owner calls, title and heading edits; hidden built-in windows do not paint | Accepted | 2026-11-19 |
+| [0066](0066-guest-isolation-and-supply-chain-hardening.md) | Guests cannot touch the host environment or host Unix sockets; downloads and toolchains are pinned and verified; a cargo-deny policy guards dependencies | Accepted | 2026-11-19 |
