@@ -70,3 +70,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0062](0062-som-class-loading.md) | SOM loads a class's DLL by name through replaceable runtime variables; DLLs are searched by plain module name only | Accepted | 2026-11-19 |
 | [0063](0063-module-lifecycle.md) | Module lifecycle: failed startup routines stop the program, OS/2 paths for DosLoadModule, zeroed memory, SOM class unloading | Accepted | 2026-11-19 |
 | [0064](0064-notebook-turns-page-dialogs-and-tab-across-pages.md) | Notebook turns ask the owner first; the notebook loads page dialogs and owns its buttons; Tab crosses into embedded dialogs | Accepted | 2026-11-19 |
+| [0065](0065-container-details-panes-owner-drawing-title-edits.md) | Container details panes, horizontal scrolling, owner drawing through owner calls, title and heading edits; hidden built-in windows do not paint | Accepted | 2026-11-19 |
