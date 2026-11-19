@@ -1,0 +1,40 @@
+# cargo-deny policy (https://embarkstudios.github.io/cargo-deny/): where
+# dependencies may come from, which licences they may have, and which
+# advisories block a build. `cargo deny check` runs it; the pre-commit hook
+# runs the offline checks (sources, bans, licences), releases all of them.
+
+[graph]
+# Only the targets Warpine builds for.
+targets = ["x86_64-unknown-linux-gnu"]
+
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    # ttf-parser is unmaintained (no fix to take). It is reached only through
+    # ab_glyph, which parses the IBM Plex fonts embedded in the binary
+    # (vendor/ibm-plex, pinned to an upstream commit), never a font a guest
+    # supplies. Revisit when ab_glyph moves to another parser.
+    { id = "RUSTSEC-2026-0192", reason = "unmaintained; parses only our own embedded fonts" },
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.9
+# Permissive licences compatible with Warpine's GPL-3.0-only. A new one
+# needs a look before it is added here.
+allow = ["0BSD", "Apache-2.0", "BSD-3-Clause", "MIT", "Unicode-3.0", "Unlicense", "Zlib"]
+
+# Warpine itself.
+exceptions = [{ crate = "warpine", allow = ["GPL-3.0-only"] }]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+# crates.io only: no other registry, no git dependencies.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

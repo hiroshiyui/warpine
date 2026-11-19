@@ -29,3 +29,13 @@ capped cargo test
 # --all-targets lints the test code too, not only the binaries.
 echo "Running cargo clippy before commit..."
 capped cargo clippy --all-targets -- -D warnings
+
+# Supply chain (deny.toml): dependencies from crates.io only, no banned
+# crates, allowed licences. These checks need no network; advisories are
+# checked at release time (they fetch the advisory database).
+if command -v cargo-deny >/dev/null 2>&1; then
+    echo "Running cargo deny (sources, bans, licenses) before commit..."
+    cargo deny --log-level error check sources bans licenses
+else
+    echo "warning: cargo-deny is not installed; dependency policy (deny.toml) not checked." >&2
+fi
