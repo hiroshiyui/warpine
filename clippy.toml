@@ -1,0 +1,10 @@
+# Lints for the whole workspace (clippy reads this file).
+#
+# The Warpine process's environment is the host's: a guest program must
+# never be able to change it (a variable such as LD_PRELOAD would reach every
+# process Warpine starts later). OS/2 environments are kept as data and given
+# to children through WARPINE_OS2ENV (inherit.rs, cmd.rs).
+disallowed-methods = [
+    { path = "std::env::set_var", reason = "the host environment is not the guest's: keep OS/2 environments as data (WARPINE_OS2ENV)" },
+    { path = "std::env::remove_var", reason = "the host environment is not the guest's: keep OS/2 environments as data (WARPINE_OS2ENV)" },
+]

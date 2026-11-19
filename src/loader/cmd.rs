@@ -84,15 +84,75 @@ struct CmdShell {
     history: Vec<String>,
     output_sink: RefCell<OutputSink>,
     input_source: RefCell<InputSource>,
+    /// The shell's OS/2 environment (`SET`), in order. It is the shell's
+    /// own: the Warpine process's host environment is never read or
+    /// changed by the shell (a guest could otherwise set `LD_PRELOAD` for
+    /// every later child, or read the host's secrets). Programs the shell
+    /// starts get it through `WARPINE_OS2ENV`.
+    env: RefCell<Vec<(String, String)>>,
+}
+
+/// The most variables and bytes of an environment the shell keeps.
+const MAX_ENV_VARS: usize = 1024;
+const MAX_ENV_BYTES: usize = 64 * 1024;
+
+/// The OS/2 environment of a shell no program started: Warpine's default.
+const DEFAULT_SHELL_ENV: &[&str] = &["PATH=C:\\", "COMSPEC=C:\\CMD.EXE", "OS=OS2", "TMP=C:\\TMP"];
+
+/// `NAME=value` strings as (name, value) pairs; strings without `=` are dropped.
+fn parse_env<S: AsRef<str>>(strings: &[S]) -> Vec<(String, String)> {
+    strings.iter().filter_map(|s| {
+        let (k, v) = s.as_ref().split_once('=')?;
+        (!k.is_empty()).then(|| (k.to_string(), v.to_string()))
+    }).take(MAX_ENV_VARS).collect()
+}
+
+/// Why `SET` refused a change.
+#[derive(Debug, PartialEq, Eq)]
+enum EnvError { NoName, Full }
+
+/// `SET name=value` on `env`: names are matched without case and kept as
+/// first written; an empty value removes the variable. The environment
+/// stays within `MAX_ENV_VARS` variables and `MAX_ENV_BYTES` bytes.
+fn env_set(env: &mut Vec<(String, String)>, name: &str, value: &str) -> Result<(), EnvError> {
+    if name.is_empty() || name.contains('\0') { return Err(EnvError::NoName); }
+    let at = env.iter().position(|(k, _)| k.eq_ignore_ascii_case(name));
+    if value.is_empty() {
+        if let Some(i) = at { env.remove(i); }
+        return Ok(());
+    }
+    let size: usize = env.iter().enumerate().filter(|&(i, _)| Some(i) != at)
+        .map(|(_, (k, v))| k.len() + v.len() + 2).sum();
+    if size + name.len() + value.len() + 2 > MAX_ENV_BYTES || (at.is_none() && env.len() >= MAX_ENV_VARS) {
+        return Err(EnvError::Full);
+    }
+    let value = value.replace('\0', "");
+    match at {
+        Some(i) => env[i].1 = value,
+        None => env.push((name.to_string(), value)),
+    }
+    Ok(())
+}
+
+/// The environment block of `env` for `WARPINE_OS2ENV`: `NAME=value`
+/// strings, each with its NUL (the reader adds the block's end), as
+/// `DosExecPgm` passes it.
+fn env_block(env: &[(String, String)], codepage: u32) -> Vec<u8> {
+    let strings: Vec<Vec<u8>> = env.iter()
+        .map(|(k, v)| super::codepage::cp_encode(&format!("{k}={v}"), codepage)).collect();
+    let mut block = super::inherit::join_env(&strings);
+    block.pop();
+    block
 }
 
 impl CmdShell {
-    fn new(shared: Arc<SharedState>) -> Self {
+    fn new(shared: Arc<SharedState>, env: Vec<(String, String)>) -> Self {
         CmdShell {
             shared,
             history: Vec::with_capacity(HISTORY_SIZE),
             output_sink: RefCell::new(OutputSink::Vio),
             input_source: RefCell::new(InputSource::Kbd),
+            env: RefCell::new(env),
         }
     }
 
@@ -555,41 +615,34 @@ impl CmdShell {
 
     fn cmd_set(&self, args: &[&str]) {
         if args.is_empty() {
-            // List all environment variables (host env, inherited by children)
-            let mut vars: Vec<(String, String)> = std::env::vars().collect();
-            vars.sort_by(|a, b| a.0.cmp(&b.0));
-            for (k, v) in vars {
+            // List the shell's OS/2 environment.
+            for (k, v) in self.env.borrow().iter() {
                 self.writeln(&format!("{k}={v}"));
             }
-        } else {
-            let joined = args.join(" ");
-            if let Some(eq) = joined.find('=') {
-                let name = joined[..eq].trim();
-                let value = &joined[eq + 1..];
-                if value.is_empty() {
-                    // SET VAR= → unset
-                    // SAFETY: single-threaded shell context; no concurrent env access.
-                    unsafe { std::env::remove_var(name) };
-                } else {
-                    // SAFETY: single-threaded shell context; no concurrent env access.
-                    unsafe { std::env::set_var(name, value) };
-                }
-            } else {
-                // SET VAR — show matching vars
-                let prefix = joined.to_uppercase();
-                let mut found = false;
-                let mut vars: Vec<(String, String)> = std::env::vars().collect();
-                vars.sort_by(|a, b| a.0.cmp(&b.0));
-                for (k, v) in &vars {
-                    if k.to_uppercase().starts_with(&prefix) {
-                        self.writeln(&format!("{k}={v}"));
-                        found = true;
-                    }
-                }
-                if !found {
-                    self.writeln_attr("Environment variable not found.", ATTR_ERROR);
-                }
+            return;
+        }
+        let joined = args.join(" ");
+        if let Some(eq) = joined.find('=') {
+            // SET VAR=value; SET VAR= removes it.
+            let name = joined[..eq].trim();
+            let value = &joined[eq + 1..];
+            match env_set(&mut self.env.borrow_mut(), name, value) {
+                Ok(()) => {}
+                Err(EnvError::NoName) => self.writeln_attr("Syntax error: no variable name.", ATTR_ERROR),
+                Err(EnvError::Full) => self.writeln_attr("Out of environment space.", ATTR_ERROR),
             }
+            return;
+        }
+        // SET VAR — show the variables whose names start with VAR.
+        let prefix = joined.to_uppercase();
+        let found: Vec<String> = self.env.borrow().iter()
+            .filter(|(k, _)| k.to_uppercase().starts_with(&prefix))
+            .map(|(k, v)| format!("{k}={v}")).collect();
+        if found.is_empty() {
+            self.writeln_attr("Environment variable not found.", ATTR_ERROR);
+        }
+        for line in found {
+            self.writeln(&line);
         }
     }
 
@@ -830,8 +883,10 @@ impl CmdShell {
                 );
             }
             Some(p) if is_script => {
-                let mut shell = CmdShell::new(Arc::clone(&self.shared));
+                // A script shares the shell's environment: its SETs stay.
+                let mut shell = CmdShell::new(Arc::clone(&self.shared), self.env.borrow().clone());
                 shell.run_script(&p);
+                *self.env.borrow_mut() = shell.env.into_inner();
             }
             Some(p) => {
                 self.spawn_external(&p, args);
@@ -853,8 +908,11 @@ impl CmdShell {
         let mut cmd = std::process::Command::new(&warpine_exe);
         cmd.arg(prog_path);
         for a in args { cmd.arg(a); }
-        // What this process got from its own parent is not the child's.
+        // What this process got from its own parent is not the child's;
+        // the child's environment is the shell's.
         super::inherit::clear_parent_vars(&mut cmd);
+        let codepage = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        cmd.env(super::inherit::ENV_ENV, super::inherit::escape(&env_block(&self.env.borrow(), codepage)));
         // Bounded nesting and number of children, and a slot of the
         // session's THREADS= limit (inherit.rs).
         let slot = match super::inherit::admit_child(&self.shared, &mut cmd) {
@@ -1151,7 +1209,13 @@ impl super::Loader {
         };
         debug!("run_builtin_cmd: args={:?}", args);
 
-        let mut shell = CmdShell::new(Arc::clone(&self.shared));
+        // The calling program's environment (DosExecPgm with a NULL pEnv
+        // gives the parent's; Warpine does not yet pass pEnv to the shell).
+        let env_ptr = self.guest_read::<u32>(PIB_BASE + 0x10).unwrap_or(0);
+        let codepage = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let strings: Vec<String> = if env_ptr != 0 { self.read_env_block(env_ptr) } else { Vec::new() }
+            .iter().map(|s| super::codepage::cp_decode(s, codepage)).collect();
+        let mut shell = CmdShell::new(Arc::clone(&self.shared), parse_env(&strings));
         let exit_code = shell.run(&args);
 
         if p_res != 0 {
@@ -1188,7 +1252,15 @@ impl super::Loader {
         args.extend(host_args.iter().map(|s| s.to_string()));
         debug!("run_builtin_cmd: args={:?}", args);
 
-        let mut shell = CmdShell::new(Arc::clone(&self.shared));
+        // The OS/2 environment a parent passed, else Warpine's default —
+        // never the host's.
+        let codepage = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let given = self.shared.startup.lock_or_recover().env.clone();
+        let strings: Vec<String> = match given {
+            Some(env) => env.iter().map(|s| super::codepage::cp_decode(s, codepage)).collect(),
+            None => DEFAULT_SHELL_ENV.iter().map(|s| s.to_string()).collect(),
+        };
+        let mut shell = CmdShell::new(Arc::clone(&self.shared), parse_env(&strings));
         shell.run(&args)
     }
 }
@@ -1556,7 +1628,7 @@ mod tests {
         push_keys(&loader, &[]); // enable SDL path
         {
             // Run execute_line directly via the shell
-            let mut shell = CmdShell::new(Arc::clone(&loader.shared));
+            let mut shell = CmdShell::new(Arc::clone(&loader.shared), Vec::new());
             shell.execute_line(&line);
         }
 
@@ -1578,7 +1650,7 @@ mod tests {
         let tmp_str = tmp.to_string_lossy().to_string();
 
         {
-            let mut shell = CmdShell::new(Arc::clone(&loader.shared));
+            let mut shell = CmdShell::new(Arc::clone(&loader.shared), Vec::new());
             shell.execute_line(&format!("echo line1 > {tmp_str}"));
             shell.execute_line(&format!("echo line2 >> {tmp_str}"));
         }
@@ -1587,5 +1659,50 @@ mod tests {
         let _ = std::fs::remove_file(&tmp);
         assert!(content.contains("line1"), "file should contain 'line1'");
         assert!(content.contains("line2"), "file should contain 'line2' after append");
+    }
+
+    // ── The shell's own environment ──────────────────────────────────────
+
+    #[test]
+    fn set_changes_only_the_shells_environment() {
+        let mut env = parse_env(&["PATH=C:\\", "Os=OS2", "junk", "=x"]);
+        assert_eq!(env, vec![("PATH".into(), "C:\\".into()), ("Os".into(), "OS2".into())], "no name, no variable");
+        assert_eq!(env_set(&mut env, "os", "Warp"), Ok(()));
+        assert_eq!(env[1], ("Os".into(), "Warp".into()), "names match without case, keep their spelling");
+        assert_eq!(env_set(&mut env, "LD_PRELOAD", "./x.so"), Ok(()));
+        assert_eq!(env_set(&mut env, "", "x"), Err(EnvError::NoName), "SET =x does not panic");
+        assert_eq!(env_set(&mut env, "PATH", ""), Ok(()));
+        assert!(!env.iter().any(|(k, _)| k == "PATH"), "an empty value removes it");
+        // The host process's environment is never touched.
+        assert!(std::env::var_os("LD_PRELOAD").is_none_or(|v| v != "./x.so"));
+        assert_eq!(env_block(&env, 437), b"Os=Warp\0LD_PRELOAD=./x.so\0".to_vec());
+    }
+
+    #[test]
+    fn the_shells_environment_is_bounded() {
+        let mut env = Vec::new();
+        let big = "x".repeat(MAX_ENV_BYTES);
+        assert_eq!(env_set(&mut env, "A", &big), Err(EnvError::Full));
+        for i in 0..MAX_ENV_VARS { env_set(&mut env, &format!("V{i}"), "1").unwrap(); }
+        assert_eq!(env_set(&mut env, "ONE_MORE", "1"), Err(EnvError::Full));
+        assert_eq!(env_set(&mut env, "V0", "2"), Ok(()), "changing one still works");
+        assert_eq!(env_set(&mut env, "N\0UL", "1"), Err(EnvError::NoName));
+    }
+
+    #[test]
+    fn set_lists_the_shells_environment_not_the_hosts() {
+        let loader = crate::loader::Loader::new_mock();
+        let shell = CmdShell::new(Arc::clone(&loader.shared), parse_env(&["OS=OS2"]));
+        *shell.output_sink.borrow_mut() = OutputSink::Buffer(Vec::new());
+        shell.cmd_set(&[]);
+        shell.cmd_set(&["HOME=C:\\HOME"]);
+        shell.cmd_set(&["HO"]);
+        let text = match &*shell.output_sink.borrow() {
+            OutputSink::Buffer(b) => String::from_utf8_lossy(b).to_string(),
+            _ => unreachable!(),
+        };
+        assert!(text.contains("OS=OS2") && text.contains("HOME=C:\\HOME"), "{text}");
+        let host_path = std::env::var("PATH").unwrap_or_default();
+        assert!(host_path.is_empty() || !text.contains(&host_path), "the host's PATH is not shown");
     }
 }
