@@ -328,7 +328,7 @@ pub fn dialog_code(class: &str, style: u32) -> u32 {
         "WC_SCROLLBAR" => DLGC_SCROLLBAR,
         "WC_MENU" | "#Menu" => DLGC_MENU,
         "WC_BUTTON" => DLGC_BUTTON | match style & BS_PRIMARYSTYLES {
-            BS_PUSHBUTTON => DLGC_PUSHBUTTON | if style & BS_DEFAULT != 0 { DLGC_DEFAULT } else { 0 },
+            BS_PUSHBUTTON | BS_NOTEBOOKBUTTON => DLGC_PUSHBUTTON | if style & BS_DEFAULT != 0 { DLGC_DEFAULT } else { 0 },
             BS_CHECKBOX | BS_AUTOCHECKBOX | BS_3STATE | BS_AUTO3STATE => DLGC_CHECKBOX,
             BS_RADIOBUTTON | BS_AUTORADIOBUTTON => DLGC_RADIOBUTTON,
             _ => 0,
@@ -575,7 +575,7 @@ impl Loader {
         if owner == 0 {
             return;
         }
-        if style & BS_PRIMARYSTYLES == BS_PUSHBUTTON {
+        if super::pm_button::is_push_kind(style) {
             let msg = if style & BS_SYSCOMMAND != 0 {
                 WM_SYSCOMMAND
             } else if style & BS_HELP != 0 {
@@ -631,12 +631,12 @@ impl Loader {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     /// The `DLGTEMPLATE` Open Watcom `wrc` builds for the About dialog of
     /// `samples/pm_menu_dlg_test/pm_menu_dlg_test.rc` (copied from its .res).
-    const ABOUT_DIALOG: &[u8] = &[
+    pub(in crate::loader) const ABOUT_DIALOG: &[u8] = &[
         0xa7, 0x00, 0x00, 0x00, 0x52, 0x03, 0x0e, 0x00, 0x01, 0x00, 0xff, 0xff, 0x00, 0x00,
         // DLGTITEM 0: the dialog (WC_FRAME), 2 children
         0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x19, 0x00, 0x68, 0x00,

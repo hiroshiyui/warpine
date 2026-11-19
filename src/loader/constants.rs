@@ -1351,6 +1351,8 @@ pub const BS_AUTORADIOBUTTON: u32 = 0x0004;
 pub const BS_3STATE:         u32 = 0x0005;
 pub const BS_AUTO3STATE:     u32 = 0x0006;
 pub const BS_USERBUTTON:     u32 = 0x0007;
+/// A notebook button (`BKM_SETNOTEBOOKBUTTONS`, Warp 4): a push button.
+pub const BS_NOTEBOOKBUTTON: u32 = 0x0008;
 /// Mask of the button kind (`BS_PUSHBUTTON`, `BS_CHECKBOX`, ...) in a style.
 pub const BS_PRIMARYSTYLES:  u32 = 0x000F;
 pub const BS_HELP:           u32 = 0x0100; // click posts WM_HELP

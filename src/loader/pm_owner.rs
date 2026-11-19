@@ -91,6 +91,10 @@ pub enum OwnerCallKind {
     ValueSetItem { row: u16, col: u16 },
     /// `WM_DRAWITEM` (`VDA_BACKGROUND`) for a `VS_OWNERDRAW` value set.
     ValueSetBackground,
+    /// `WM_CONTROL(BKN_PAGESELECTEDPENDING)` with a `PAGESELECTNOTIFY`:
+    /// the notebook is about to turn from page `cur` to page `new`, which
+    /// it does when the owner leaves `ulPageIdNew` non-zero.
+    NotebookPending { cur: u32, new: u32 },
     /// `WM_CONTROL(BKN_PAGESELECTED)` with a `PAGESELECTNOTIFY`: the
     /// notebook turned from page `cur` to page `new` (`pm_notebook.rs`).
     NotebookSelected { cur: u32, new: u32 },
@@ -321,6 +325,11 @@ impl Loader {
                 ];
                 OwnerSetup::Call { wnd_proc, owner, msg: WM_DRAWITEM, mp1: id & 0xFFFF, mp2: 0, block, hps }
             }
+            OwnerCallKind::NotebookPending { cur, new } => OwnerSetup::Call {
+                wnd_proc, owner, msg: WM_CONTROL,
+                mp1: (super::pm_notebook::BKN_PAGESELECTEDPENDING << 16) | (id & 0xFFFF), mp2: 0,
+                block: vec![call.control, cur, new], hps: 0,
+            },
             OwnerCallKind::NotebookSelected { cur, new } => OwnerSetup::Call {
                 wnd_proc, owner, msg: WM_CONTROL,
                 mp1: (super::pm_notebook::BKN_PAGESELECTED << 16) | (id & 0xFFFF), mp2: 0,
@@ -459,6 +468,10 @@ impl Loader {
             }
             OwnerCallKind::SyncPaint => return,
             OwnerCallKind::FrameFormat { count } => return self.frame_format_finish(call.control, count, result, block),
+            // The owner's answer decides whether the page turns.
+            OwnerCallKind::NotebookPending { cur, new } => {
+                return self.notebook_turn_answered(call.control, cur, new, block);
+            }
             // The owner's answer decides whether the edited text is kept.
             OwnerCallKind::ContainerEdit { code, block } if u32::from(code) == super::pm_container::CN_REALLOCPSZ => {
                 return self.container_realloc_done(call.control, result, block);
@@ -519,6 +532,7 @@ impl Loader {
             OwnerCallKind::UserButton | OwnerCallKind::DrawMenuItem { .. }
             | OwnerCallKind::EraseBackground | OwnerCallKind::SyncPaint
             | OwnerCallKind::NotebookSelected { .. } | OwnerCallKind::NotebookDeleted { .. }
+            | OwnerCallKind::NotebookPending { .. }
             | OwnerCallKind::ContainerNotify { .. } | OwnerCallKind::ContainerValue { .. }
             | OwnerCallKind::ContainerInitDrag { .. } | OwnerCallKind::ContainerEdit { .. }
             | OwnerCallKind::FrameFormat { .. } => {}

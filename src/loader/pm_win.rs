@@ -2028,7 +2028,7 @@ impl super::Loader {
     /// `p_create_params`) and WM_PAINT for it. Without a usable template the
     /// dialog is an empty window. Returns `(hwnd_dlg, hmq)`.
     #[allow(clippy::too_many_arguments)]
-    fn load_dialog(&self, vcpu_id: u32, hwnd_parent: u32, hwnd_owner: u32, pfn_dlg_proc: u32,
+    pub(super) fn load_dialog(&self, vcpu_id: u32, hwnd_parent: u32, hwnd_owner: u32, pfn_dlg_proc: u32,
                    hmod: u32, id_dlg: u32, p_create_params: u32) -> (u32, u32) {
         debug!("  [VCPU {}] load dialog: parent={} owner={} idDlg={} pfnDlgProc=0x{:08X}",
                vcpu_id, hwnd_parent, hwnd_owner, id_dlg, pfn_dlg_proc);
@@ -2044,6 +2044,24 @@ impl super::Loader {
             vcpu_id, hwnd_parent, hwnd_owner, pfn_dlg_proc, template);
         self.queue_dialog_start(hwnd_dlg, hmq, focus, p_create_params);
         (hwnd_dlg, hmq)
+    }
+
+    /// Create a dialog from the `DLGTEMPLATE` at `addr` in guest memory (its
+    /// first USHORT is its size, read up to `MAX_DLG_TEMPLATE` bytes) and
+    /// queue its first messages, as `load_dialog` does; the dialog's
+    /// window. An unreadable template gives an empty dialog.
+    pub(super) fn load_dialog_template(&self, vcpu_id: u32, hwnd_parent: u32, hwnd_owner: u32, pfn_dlg_proc: u32,
+                                       addr: u32, p_create_params: u32) -> u32 {
+        let codepage = self.thread_codepage(vcpu_id);
+        let template = self.guest_read::<u16>(addr)
+            .and_then(|cb| self.guest_read_bytes(addr, (cb as usize).min(MAX_DLG_TEMPLATE)))
+            .and_then(|data| super::pm_dialog::parse_dlg_template(&data, codepage));
+        if template.is_none() {
+            warn!("  [VCPU {}] dialog template at 0x{:08X} not usable", vcpu_id, addr);
+        }
+        let (hwnd_dlg, hmq, focus) = self.create_dialog(vcpu_id, hwnd_parent, hwnd_owner, pfn_dlg_proc, template);
+        self.queue_dialog_start(hwnd_dlg, hmq, focus, p_create_params);
+        hwnd_dlg
     }
 
     /// Queue a new dialog's first messages: WM_INITDLG (mp1 = `focus`, mp2

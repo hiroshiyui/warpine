@@ -55,10 +55,16 @@ pub(super) fn has_check_state(style: u32) -> bool {
         | BS_AUTORADIOBUTTON | BS_3STATE | BS_AUTO3STATE)
 }
 
+/// Whether a button of `style` is a push button: `BS_PUSHBUTTON`, or a
+/// notebook's `BS_NOTEBOOKBUTTON`, which acts as one.
+pub(crate) fn is_push_kind(style: u32) -> bool {
+    matches!(kind(style), BS_PUSHBUTTON | BS_NOTEBOOKBUTTON)
+}
+
 /// Whether a button of `style` can be the default button (`BM_SETDEFAULT`):
 /// a push button or a user button.
 pub(super) fn can_be_default(style: u32) -> bool {
-    matches!(kind(style), BS_PUSHBUTTON | BS_USERBUTTON)
+    is_push_kind(style) || kind(style) == BS_USERBUTTON
 }
 
 /// Whether a button of `style` is a radio button (plain or auto).

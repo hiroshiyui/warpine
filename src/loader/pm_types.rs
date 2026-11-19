@@ -1307,11 +1307,11 @@ impl WindowManager {
         }
     }
 
-    /// Whether `hwnd` is a push button (a `WC_BUTTON` of kind `BS_PUSHBUTTON`).
+    /// Whether `hwnd` is a push button (a `WC_BUTTON` of kind
+    /// `BS_PUSHBUTTON` or `BS_NOTEBOOKBUTTON`).
     pub fn is_push_button(&self, hwnd: u32) -> bool {
-        use super::constants::{BS_PRIMARYSTYLES, BS_PUSHBUTTON};
         self.windows.get(&hwnd).is_some_and(|w| {
-            w.class_name == "WC_BUTTON" && w.style & BS_PRIMARYSTYLES == BS_PUSHBUTTON
+            w.class_name == "WC_BUTTON" && super::pm_button::is_push_kind(w.style)
         })
     }
 
@@ -1366,12 +1366,51 @@ impl WindowManager {
         }).collect()
     }
 
+    /// The dialog whose controls Tab cycles through from `dialog`: the
+    /// outermost dialog `dialog` is embedded in (a notebook page in a
+    /// dialog: that dialog), else `dialog` itself.
+    pub fn tab_scope(&self, dialog: u32) -> u32 {
+        let mut scope = dialog;
+        let mut at = dialog;
+        // Bounded: a parent chain is never longer than the window table.
+        for _ in 0..self.windows.len() {
+            let Some(w) = self.windows.get(&at) else { break };
+            if w.parent == at || w.parent == 0 { break; }
+            at = w.parent;
+            if self.is_dialog(at) {
+                scope = at;
+            }
+            if !self.is_embedded_dialog(at) && self.is_dialog(at) { break; }
+        }
+        scope
+    }
+
+    /// The items Tab visits in `dialog`: [`Self::dialog_items`], with the
+    /// controls of the shown dialogs embedded in it (a notebook's top
+    /// page) in their place.
+    pub fn tab_items(&self, dialog: u32) -> Vec<u32> {
+        let mut out = Vec::new();
+        let mut stack: Vec<u32> = self.windows.get(&dialog)
+            .map(|w| w.children.iter().rev().copied().collect()).unwrap_or_default();
+        while let Some(h) = stack.pop() {
+            let Some(w) = self.windows.get(&h) else { continue };
+            if !w.visible || self.is_top_dialog(h) { continue; }
+            if !self.is_dialog(h) && (w.class_name.starts_with("WC_") || self.is_guest_control(h)) {
+                out.push(h);
+            }
+            stack.extend(w.children.iter().rev().copied());
+        }
+        out
+    }
+
     /// The tab stop after the focus window (before it when `backward`),
     /// wrapping around; the first (last) tab stop when the focus is
-    /// elsewhere. `None` when `dialog` has no tab stops.
+    /// elsewhere. `None` when `dialog` has no tab stops. Tab crosses into
+    /// and out of the dialogs embedded in the dialog ([`Self::tab_scope`],
+    /// [`Self::tab_items`]).
     pub fn next_tab_stop(&self, dialog: u32, backward: bool) -> Option<u32> {
         use super::constants::WS_TABSTOP;
-        let controls = self.dialog_items(dialog);
+        let controls = self.tab_items(self.tab_scope(dialog));
         let at = controls.iter().position(|&h| h == self.focus_hwnd);
         step_from(&controls, at, backward, |h| {
             self.can_take_focus(h) && self.windows[&h].style & WS_TABSTOP != 0
@@ -2672,5 +2711,54 @@ mod tests {
         wm.dirty.clear();
         wm.z_remove(f1);
         assert!(!wm.dirty.is_empty(), "z_remove must mark dirty");
+    }
+
+    /// Tab crosses into and out of a dialog embedded in a dialog (a
+    /// notebook's top page): a dialog D with an entry field, a notebook N
+    /// and a push button; N's page P (an embedded dialog) holds two
+    /// controls. A hidden page's controls are passed over.
+    #[test]
+    fn tab_crosses_into_a_shown_embedded_dialog() {
+        use super::super::constants::{WS_TABSTOP, WS_VISIBLE};
+        let mut wm = WindowManager::new();
+        let hmq = wm.create_mq(437);
+        let make = |wm: &mut WindowManager, class: &str, parent: u32| {
+            let h = wm.create_window(class.into(), parent, hmq);
+            let w = wm.get_window_mut(h).unwrap();
+            (w.visible, w.style, w.cx, w.cy) = (true, WS_VISIBLE | WS_TABSTOP, 50, 20);
+            h
+        };
+        let d = make(&mut wm, WindowManager::DIALOG_CLASS, HWND_DESKTOP);
+        let e1 = make(&mut wm, "WC_ENTRYFIELD", d);
+        let nb = make(&mut wm, "WC_NOTEBOOK", d);
+        let page = make(&mut wm, WindowManager::DIALOG_CLASS, nb);
+        let e2 = make(&mut wm, "WC_ENTRYFIELD", page);
+        let ok = make(&mut wm, "WC_BUTTON", page);
+        let hidden = make(&mut wm, WindowManager::DIALOG_CLASS, nb);
+        let e3 = make(&mut wm, "WC_ENTRYFIELD", hidden);
+        wm.get_window_mut(hidden).unwrap().visible = false;
+        let b = make(&mut wm, "WC_BUTTON", d);
+        assert_eq!((wm.tab_scope(page), wm.tab_scope(d)), (d, d));
+        assert_eq!(wm.tab_items(d), vec![e1, nb, e2, ok, b], "the page's controls after the notebook, not e3");
+        let mut order = Vec::new();
+        wm.focus_hwnd = e1;
+        for _ in 0..5 {
+            // The page's WinDefDlgProc asks with the page; the dialog's with the dialog.
+            let from = if [e2, ok].contains(&wm.focus_hwnd) { page } else { d };
+            wm.focus_hwnd = wm.next_tab_stop(from, false).unwrap();
+            order.push(wm.focus_hwnd);
+        }
+        assert_eq!(order, vec![nb, e2, ok, b, e1]);
+        wm.focus_hwnd = e2;
+        assert_eq!(wm.next_tab_stop(page, true), Some(nb), "Shift+Tab leaves the page for the notebook");
+        let _ = e3;
+        // A dialog embedded in a client window keeps Tab to itself.
+        let frame = wm.create_window("App".into(), HWND_DESKTOP, hmq);
+        let client = make(&mut wm, "App", frame);
+        let child = make(&mut wm, WindowManager::DIALOG_CLASS, client);
+        let c1 = make(&mut wm, "WC_ENTRYFIELD", child);
+        assert_eq!(wm.tab_scope(child), child);
+        wm.focus_hwnd = c1;
+        assert_eq!(wm.next_tab_stop(child, false), Some(c1), "wraps within it");
     }
 }
