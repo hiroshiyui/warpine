@@ -1,0 +1,24 @@
+# The SOM runtime kernel (Warpine's built-in SOM.DLL, ADR-0059), by name.
+import somEnvironmentNew       SOM.somEnvironmentNew
+import somResolve              SOM.somResolve
+import somResolveByName        SOM.somResolveByName
+import somClassResolve         SOM.somClassResolve
+import somDataResolve          SOM.somDataResolve
+import somGetGlobalEnvironment SOM.somGetGlobalEnvironment
+import somIdFromString         SOM.somIdFromString
+import somStringFromId         SOM.somStringFromId
+import somCompareIds           SOM.somCompareIds
+import somIsObj                SOM.somIsObj
+import SOMObjectClassData      SOM.SOMObjectClassData
+import SOMClassClassData       SOM.SOMClassClassData
+import SOMClassMgrClassData    SOM.SOMClassMgrClassData
+import SOMClassMgrObject       SOM.SOMClassMgrObject
+import somPrintf               SOM.somPrintf
+import WrpSomMetaclassFor      SOM.WrpSomMetaclassFor
+import SOMMalloc               SOM.SOMMalloc
+import SOMCalloc               SOM.SOMCalloc
+import SOMRealloc              SOM.SOMRealloc
+import SOMFree                 SOM.SOMFree
+import SOM_TraceLevel          SOM.SOM_TraceLevel
+import SOM_WarnLevel           SOM.SOM_WarnLevel
+import SOM_AssertLevel         SOM.SOM_AssertLevel

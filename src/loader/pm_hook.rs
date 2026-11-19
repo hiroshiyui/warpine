@@ -332,6 +332,12 @@ pub(crate) enum ChainThen {
     /// step's next messages, or record the `DM_DRAGOVER` reply and wait
     /// for the next input, or end.
     Drag,
+    /// `DosLoadModule` ran the `_DLL_InitTerm` of the module `hmod` and of
+    /// the modules loaded with it: write the handle to `phmod` when all
+    /// succeeded (`warpine_api.rs`).
+    LoadModule { hmod: u32, phmod: u32 },
+    /// `somFree` called the object's `somUninit` (`som.rs`): free it.
+    SomFree { obj: u32 },
     /// `WM_HITTEST` asked of `hwnd` for the pointer event at the head of
     /// the input queue (`pm_input.rs`): record the answer, then go on as
     /// `after` says.
@@ -443,6 +449,8 @@ impl Loader {
             ChainThen::ContainerFilter { hwnd, job } => self.container_filter_done(hwnd, job, &chain.results),
             ChainThen::DialogMnemonic { dlg } => self.dialog_mnemonic_done(dlg, chain),
             ChainThen::Drag => self.drag_chain_done(chain.last),
+            ChainThen::LoadModule { hmod, phmod } => ChainEnd::Return(self.dll_inits_done(hmod, phmod, chain)),
+            ChainThen::SomFree { obj } => ChainEnd::Return(self.som_free_done(obj)),
             ChainThen::HitTest { hwnd, after } => self.hit_test_done(hwnd, after, chain),
             ChainThen::AnswerSent { id, hwnd, after, finish, calls } =>
                 self.sent_done(id, hwnd, after, finish, calls, chain),

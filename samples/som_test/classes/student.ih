@@ -1,0 +1,51 @@
+/*
+ * student.ih - C implementation bindings of class Student, written by
+ * hand for Warpine as the SOM compiler would emit them (ADR-0059).
+ */
+#ifndef SOM_Student_ih
+#define SOM_Student_ih
+
+#include "student.h"
+
+typedef struct StudentData {
+    char id[16];
+    char name[32];
+} StudentData;
+
+SOMEXTERN struct StudentCClassDataStructure {
+    SOMClass *parent;
+    somDToken instanceDataToken;
+} SOMDLINK StudentCClassData;
+
+#define StudentGetData( somSelf ) \
+    ((StudentData *)somDataResolve( (SOMObject *)(somSelf), StudentCClassData.instanceDataToken ))
+#define StudentMethodDebug( c, m )  SOM_NoTrace( c, m )
+#define _id    (somThis->id)
+#define _name  (somThis->name)
+
+SOM_Scope void   SOMLINK setUpStudent( Student *somSelf, char *id, char *name );
+SOM_Scope void   SOMLINK printStudentInfo( Student *somSelf );
+SOM_Scope char * SOMLINK getStudentType( Student *somSelf );
+SOM_Scope char * SOMLINK getStudentId( Student *somSelf );
+
+struct StudentClassDataStructure SOMDLINK StudentClassData;
+struct StudentCClassDataStructure SOMDLINK StudentCClassData;
+
+SOMClass * SOMLINK StudentNewClass( integer4 major, integer4 minor )
+{
+    SOMClass *cls;
+
+    if( StudentClassData.classObject ) return( StudentClassData.classObject );
+    SOM_NEW_CLASS( cls, "Student", SOMObjectClassData.classObject, sizeof( StudentData ), 4, major, minor );
+    StudentClassData.setUpStudent     = SOM_ADD_METHOD( cls, "setUpStudent", setUpStudent );
+    StudentClassData.printStudentInfo = SOM_ADD_METHOD( cls, "printStudentInfo", printStudentInfo );
+    StudentClassData.getStudentType   = SOM_ADD_METHOD( cls, "getStudentType", getStudentType );
+    StudentClassData.getStudentId     = SOM_ADD_METHOD( cls, "getStudentId", getStudentId );
+    _somClassReady( cls );
+    StudentCClassData.parent = SOMObjectClassData.classObject;
+    StudentCClassData.instanceDataToken = _somGetInstanceToken( cls );
+    StudentClassData.classObject = cls;
+    return( cls );
+}
+
+#endif

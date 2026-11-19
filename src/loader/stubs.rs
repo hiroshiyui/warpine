@@ -439,7 +439,7 @@ impl super::Loader {
             "DOSCALLS", "QUECALLS", "PMWIN", "PMGPI", "KBDCALLS",
             "VIOCALLS", "SESMGR", "NLS", "MSG", "MDM", "UCONV",
             "SO32DLL", "TCP32DLL", "MOUCALLS", "PMSHAPI", "HELPMGR",
-            "PMSPL", "PMCTLS", "WARPINE", "PMDRAG",
+            "PMSPL", "PMCTLS", "WARPINE", "PMDRAG", "SOM",
         ];
         let name_upper = name.to_ascii_uppercase();
         let stem = name_upper.strip_suffix(".DLL").unwrap_or(&name_upper);
@@ -480,10 +480,17 @@ impl super::Loader {
                 // If the DLL has an INITTERM entry, inject the call before writing
                 // the handle to *phmod — the handle is written by the vcpu handler
                 // after INITTERM returns successfully.
-                let initterm = {
-                    let dll_mgr = self.shared.dll_mgr.lock_or_recover();
-                    dll_mgr.find_by_handle(h).and_then(|d| d.initterm_addr)
-                };
+                // The modules it imports that were loaded with it
+                // initialize first, then it: one chain.
+                let pending = self.shared.dll_mgr.lock_or_recover().take_pending_init();
+                if pending.len() > 1 || pending.first().is_some_and(|&(m, _)| m != h) {
+                    let mut dll_mgr = self.shared.dll_mgr.lock_or_recover();
+                    for (m, e) in pending { dll_mgr.add_pending_init(m, e); }
+                    drop(dll_mgr);
+                    let vcpu_id = super::interrupt::current_vcpu().unwrap_or(0);
+                    return self.dll_init_chain(vcpu_id, super::pm_hook::ChainThen::LoadModule { hmod: h, phmod });
+                }
+                let initterm = pending.first().map(|&(_, e)| e);
                 if let Some(addr) = initterm {
                     debug!("  DosLoadModule: injecting _DLL_InitTerm(hmod={:#x}, 0) at 0x{:08X}", h, addr);
                     ApiResult::CallGuest { addr, hmod: h, phmod, object_bases: vec![] }

@@ -17,7 +17,7 @@ use log::{debug, info, warn};
 const BUILTIN_MODULES: &[&str] = &[
     "DOSCALLS", "QUECALLS", "PMWIN", "PMGPI", "KBDCALLS",
     "VIOCALLS", "SESMGR", "NLS", "MSG", "MDM", "UCONV", "SO32DLL", "TCP32DLL", "MOUCALLS",
-    "PMSHAPI", "HELPMGR", "PMSPL", "PMCTLS", "WARPINE", "PMDRAG",
+    "PMSHAPI", "HELPMGR", "PMSPL", "PMCTLS", "WARPINE", "PMDRAG", "SOM",
 ];
 
 impl super::Loader {
@@ -64,7 +64,38 @@ impl super::Loader {
             }
         }
 
+        // The DLLs the program imports, before its fixups refer to them.
+        self.load_dependencies("the program", &lx_file.imported_modules, &mut HashSet::new());
         self.apply_fixups(lx_file, &object_bases)
+    }
+
+    /// Load the modules of `imported` that are neither built in nor loaded
+    /// yet (and theirs, recursively), for module `owner`; `loading` guards
+    /// against cycles.
+    fn load_dependencies(&self, owner: &str, imported: &[String], loading: &mut HashSet<String>) {
+        for dep_name in imported {
+            let dep_upper = dep_name.to_ascii_uppercase();
+            // Built-in emulated modules are handled by the thunk mechanism.
+            if BUILTIN_MODULES.contains(&dep_upper.as_str()) { continue; }
+            // Already loaded — no further action needed (fixups will resolve via dll_mgr).
+            {
+                let dll_mgr = self.shared.dll_mgr.lock_or_recover();
+                if dll_mgr.find_by_name(&dep_upper).is_some() { continue; }
+            }
+            // Cycle guard.
+            if loading.contains(&dep_upper) {
+                warn!("DLL '{}': circular import '{}', skipping", owner, dep_upper);
+                continue;
+            }
+            match self.find_dll_path(&dep_upper) {
+                Some(dep_path) => {
+                    if let Err(e) = self.load_dll_impl(&dep_upper, &dep_path, loading) {
+                        warn!("'{}': dependency '{}' failed: {}", owner, dep_upper, e);
+                    }
+                }
+                None => warn!("'{}': dependency '{}' not found on host", owner, dep_upper),
+            }
+        }
     }
 
     /// Apply LX fixup records using the given per-object base addresses.
@@ -102,6 +133,13 @@ impl super::Loader {
                         _ => 0,
                     };
                     if target_addr == 0 { continue; }
+                    // An import with an additive value refers into the
+                    // imported object (`Data.field` of imported data).
+                    let target_addr = match (&record.target, record.additive) {
+                        (FixupTarget::ExternalOrdinal { .. } | FixupTarget::ExternalName { .. }, Some(add)) =>
+                            (target_addr as u32).wrapping_add(add) as usize,
+                        _ => target_addr,
+                    };
                     // Trace VIO/KBD import fixups
                     if let FixupTarget::ExternalOrdinal { module_ordinal, proc_ordinal } = &record.target {
                         let module = lx_file.imported_modules.get((*module_ordinal as usize).wrapping_sub(1));
@@ -235,31 +273,7 @@ impl super::Loader {
         // 3.5. Recursively load imported user-DLL dependencies before applying
         //      fixups, so that `resolve_import` finds them in `dll_mgr`.
         loading.insert(dll_name_upper.clone());
-        for dep_name in &lx_file.imported_modules {
-            let dep_upper = dep_name.to_ascii_uppercase();
-            // Built-in emulated modules are handled by the thunk mechanism.
-            if BUILTIN_MODULES.contains(&dep_upper.as_str()) { continue; }
-            // Already loaded — no further action needed (fixups will resolve via dll_mgr).
-            {
-                let dll_mgr = self.shared.dll_mgr.lock_or_recover();
-                if dll_mgr.find_by_name(&dep_upper).is_some() { continue; }
-            }
-            // Cycle guard.
-            if loading.contains(&dep_upper) {
-                warn!("DLL '{}': circular import '{}', skipping", dll_name_upper, dep_upper);
-                continue;
-            }
-            match self.find_dll_path(&dep_upper) {
-                Some(dep_path) => {
-                    if let Err(e) = self.load_dll_impl(&dep_upper, &dep_path, loading) {
-                        warn!("DLL '{}': dependency '{}' failed: {}", dll_name_upper, dep_upper, e);
-                    }
-                }
-                None => {
-                    warn!("DLL '{}': dependency '{}' not found on host", dll_name_upper, dep_upper);
-                }
-            }
-        }
+        self.load_dependencies(&dll_name_upper, &lx_file.imported_modules, loading);
 
         // 4. Apply fixups using the allocated (rebased) object addresses.
         //    Dependencies are now in `dll_mgr`, so `resolve_import` can find them.
@@ -319,6 +333,9 @@ impl super::Loader {
                 is_builtin: false,
             });
             dll_mgr.set_module_path(handle, os2_path);
+            // Its _DLL_InitTerm runs after those of the modules it imports
+            // (loaded above): at process start, or in DosLoadModule.
+            if let Some(entry) = initterm_addr { dll_mgr.add_pending_init(handle, entry); }
             handle
         };
 
@@ -453,7 +470,7 @@ mod tests {
         let required = ["DOSCALLS", "QUECALLS", "PMWIN", "PMGPI",
                         "KBDCALLS", "VIOCALLS", "SESMGR", "NLS", "MSG", "MDM", "UCONV",
                         "SO32DLL", "TCP32DLL", "MOUCALLS", "PMSHAPI", "HELPMGR",
-                        "PMSPL", "PMCTLS", "WARPINE", "PMDRAG"];
+                        "PMSPL", "PMCTLS", "WARPINE", "PMDRAG", "SOM"];
         for m in &required {
             assert!(BUILTIN_MODULES.contains(m),
                     "BUILTIN_MODULES is missing '{}'", m);

@@ -23,6 +23,7 @@
 #   PMCTLS    base 19456    (MAGIC_API_BASE + 19456 + ordinal)
 #   WARPINE   base 20480    (MAGIC_API_BASE + 20480 + ordinal) — Warpine's own extensions
 #   PMDRAG    base 21504    (MAGIC_API_BASE + 21504 + ordinal)
+#   SOM       base 22528    (MAGIC_API_BASE + 22528 + ordinal) — the SOM kernel, Warpine's ordinals
 
 # ── DOSCALLS ─────────────────────────────────────────────────────────────────
 DOSCALLS.8    DosGetInfoSeg
@@ -401,3 +402,66 @@ PMDRAG.61     DrgVerifyType
 PMDRAG.62     DrgVerifyTypeSet
 PMDRAG.72     DrgQueryDraginfoPtrFromDragitem
 PMDRAG.73     DrgQueryDragStatus
+
+# ── SOM (the SOM runtime kernel; som.rs, ADR-0059). Warpine's own ordinals:
+# programs import by name.
+SOM.1      somEnvironmentNew
+SOM.2      somResolve
+SOM.3      somResolveByName
+SOM.4      somClassResolve
+SOM.5      somDataResolve
+SOM.6      somGetGlobalEnvironment
+SOM.7      somIdFromString
+SOM.8      somStringFromId
+SOM.9      somCompareIds
+SOM.10     somIsObj
+SOM.11     somPrintf
+SOM.12     WrpSomMalloc
+SOM.13     WrpSomCalloc
+SOM.14     WrpSomRealloc
+SOM.15     WrpSomFree
+SOM.16     WrpSomMetaclassFor
+SOM.20     SOMObjectClassData
+SOM.21     SOMClassClassData
+SOM.22     SOMClassMgrClassData
+SOM.23     SOMClassMgrObject
+SOM.24     SOMMalloc
+SOM.25     SOMCalloc
+SOM.26     SOMRealloc
+SOM.27     SOMFree
+SOM.28     SOM_TraceLevel
+SOM.29     SOM_WarnLevel
+SOM.30     SOM_AssertLevel
+SOM.99     WrpSomMethodError
+SOM.100    WrpSOMObject_somInit
+SOM.101    WrpSOMObject_somUninit
+SOM.102    WrpSOMObject_somFree
+SOM.103    WrpSOMObject_somGetClass
+SOM.104    WrpSOMObject_somGetClassName
+SOM.105    WrpSOMObject_somGetSize
+SOM.106    WrpSOMObject_somIsA
+SOM.107    WrpSOMObject_somIsInstanceOf
+SOM.108    WrpSOMObject_somRespondsTo
+SOM.109    WrpSOMObject_somPrintSelf
+SOM.110    WrpSOMObject_somDumpSelf
+SOM.111    WrpSOMObject_somDumpSelfInt
+SOM.200    WrpSOMClass_somNew
+SOM.201    WrpSOMClass_somNewNoInit
+SOM.202    WrpSOMClass_somGetName
+SOM.203    WrpSOMClass_somGetParent
+SOM.204    WrpSOMClass_somGetInstanceSize
+SOM.205    WrpSOMClass_somGetInstancePartSize
+SOM.206    WrpSOMClass_somGetInstanceToken
+SOM.207    WrpSOMClass_somGetNumMethods
+SOM.208    WrpSOMClass_somGetNumStaticMethods
+SOM.209    WrpSOMClass_somDescendedFrom
+SOM.210    WrpSOMClass_somInitClass
+SOM.211    WrpSOMClass_somAddStaticMethod
+SOM.212    WrpSOMClass_somOverrideSMethod
+SOM.213    WrpSOMClass_somClassReady
+SOM.214    WrpSOMClass_somGetMethodToken
+SOM.215    WrpSOMClass_somSupportsMethod
+SOM.216    WrpSOMClass_somInitMIClass
+SOM.300    WrpSOMClassMgr_somFindClass
+SOM.301    WrpSOMClassMgr_somClassFromId
+SOM.302    WrpSOMClassMgr_somRegisterClass

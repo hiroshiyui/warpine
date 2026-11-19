@@ -131,6 +131,16 @@ impl super::Loader {
         for (slot, value) in exe_entry_stack(env_addr, cmdline_addr).into_iter().enumerate() {
             self.guest_write::<u32>(sp + 4 * slot as u32, value).expect("create_initial_vcpu: stack write OOB");
         }
+        // DLLs the program imports initialize first: the program starts in
+        // WARPINE.6, which calls their _DLL_InitTerm and "returns" to the
+        // entry point with the entry stack as above.
+        if self.shared.dll_mgr.lock_or_recover().has_pending_init() {
+            let mut regs = vcpu.get_regs().unwrap();
+            regs.rsp -= 4;
+            self.guest_write::<u32>(regs.rsp as u32, entry_eip as u32).expect("create_initial_vcpu: stack write OOB");
+            regs.rip = MAGIC_API_BASE + (WARPINE_BASE + WRP_START_PROCESS) as u64;
+            vcpu.set_regs(&regs).unwrap();
+        }
         if self.entry_misreads_stack(entry_eip as u32) {
             warn!("this program was built with an Open Watcom snapshot whose start-up code reads the \
                    entry stack one slot off (Open Watcom #1649, fixed 2026-08-11): its argv and \

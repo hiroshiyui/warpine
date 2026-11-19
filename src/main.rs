@@ -453,11 +453,12 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>, args: &[&str]) {
     let shared = loader.get_shared();
     let is_pm = loader.is_pm_app(&lx_file);
 
+    // Set first: the DLLs the program imports are looked for beside it.
+    *shared.exe_name.lock_or_recover() = file_path.to_string();
     if let Err(e) = loader.load(&lx_file, file_path) {
         eprintln!("Failed to load executable: {}", e);
         std::process::exit(1);
     }
-    *shared.exe_name.lock_or_recover() = file_path.to_string();
 
     if is_pm {
         // PM app: SDL must be initialised on the main thread.

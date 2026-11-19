@@ -14,6 +14,21 @@ pub struct LxExport {
     pub offset: u32,
 }
 
+/// The module an import names: a name with the `.DLL` extension (as
+/// Open Watcom's import libraries write a DLL linked as `name x.dll`)
+/// stands for the module without it, as the OS/2 loader treats it.
+pub fn module_name_of(name: &str) -> String {
+    let n = name.len();
+    if n > 4 && name.is_char_boundary(n - 4) && name[n - 4..].eq_ignore_ascii_case(".DLL") {
+        name[..n - 4].to_string()
+    } else {
+        name.to_string()
+    }
+}
+
+/// Largest import procedure name table read (a bound on hostile files).
+const MAX_IMPORT_PROC_TABLE: u64 = 1 << 20;
+
 #[derive(Debug)]
 pub struct LxFile {
     pub header: LxHeader,
@@ -152,7 +167,7 @@ impl LxFile {
             let len = len_buf[0] as usize;
             let mut name_buf = vec![0u8; len];
             reader.read_exact(&mut name_buf)?;
-            imported_modules.push(String::from_utf8_lossy(&name_buf).into_owned());
+            imported_modules.push(module_name_of(&String::from_utf8_lossy(&name_buf)));
         }
 
         // 9. Read Import Procedure Name Table
@@ -161,7 +176,10 @@ impl LxFile {
         let mut import_procedure_names = Vec::new();
         if header.import_procedure_name_table_offset > 0 {
             reader.seek(SeekFrom::Start(import_proc_table_start))?;
-            let remaining = (lx_offset + header.loader_section_size as u64).saturating_sub(import_proc_table_start);
+            // The table is the last part of the fixup section, which starts
+            // at the fixup page table (not of the loader section).
+            let fixup_end = lx_offset + header.fixup_page_table_offset as u64 + header.fixup_section_size as u64;
+            let remaining = fixup_end.saturating_sub(import_proc_table_start).min(MAX_IMPORT_PROC_TABLE);
             if remaining > 0 {
                 let mut table_data = vec![0u8; remaining as usize];
                 reader.read_exact(&mut table_data)?;
@@ -275,8 +293,34 @@ impl LxFile {
 
 #[cfg(test)]
 mod tests {
+    /// Imports by name: the import procedure name table lies in the fixup
+    /// section (som_test's programs import SOM.DLL by name; skipped when the
+    /// sample is not built).
+    #[test]
+    fn imports_by_name_read_their_names() {
+        let path = "samples/som_test/hello.exe";
+        if !std::path::Path::new(path).exists() { return; }
+        let lx = LxFile::open(path).expect("parse");
+        let names: Vec<String> = lx.fixup_records_by_page.iter().flatten().filter_map(|r| match r.target {
+            crate::lx::header::FixupTarget::ExternalName { proc_name_offset, .. } => lx.get_proc_name(proc_name_offset),
+            _ => None,
+        }).collect();
+        assert!(names.iter().any(|n| n == "somResolve"), "{names:?}");
+        assert!(names.iter().any(|n| n == "SOMObjectClassData"), "{names:?}");
+        assert!(lx.imported_modules.iter().any(|m| m == "SOM"));
+    }
+
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn an_imported_module_name_loses_its_dll_extension() {
+        assert_eq!(module_name_of("COURSE.DLL"), "COURSE");
+        assert_eq!(module_name_of("course.dll"), "course");
+        assert_eq!(module_name_of("DOSCALLS"), "DOSCALLS");
+        assert_eq!(module_name_of(".DLL"), ".DLL", "nothing before it");
+        assert_eq!(module_name_of("MY.DLLX"), "MY.DLLX");
+    }
 
     #[test]
     fn test_parse_invalid_mz() {

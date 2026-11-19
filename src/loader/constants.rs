@@ -38,8 +38,13 @@ pub const WARPINE_BASE: u32  = 20480; // 20 * 1024
 /// Drag and drop (`Drg*`, `pm_drag.rs`).
 /// `WARPINE.5`: the window procedure of the built-in classes.
 pub const WRP_BUILTIN_WINDOW_PROC: u32 = 5;
+/// `WARPINE.6`: where a program starts when DLLs it imports have
+/// `_DLL_InitTerm` routines to run first (`warpine_api.rs`).
+pub const WRP_START_PROCESS: u32 = 6;
 pub const PMDRAG_BASE: u32   = 21504; // 21 * 1024
-pub const STUB_AREA_SIZE: u32 = 22528;
+/// The SOM runtime kernel (`SOM.DLL`, `som.rs`).
+pub const SOM_BASE: u32      = 22528; // 22 * 1024
+pub const STUB_AREA_SIZE: u32 = 23552;
 /// QUECALLS ordinals follow DOSCALLS' 1024.
 pub const QUECALLS_BASE: u32 = 1024;
 
@@ -68,12 +73,13 @@ pub fn module_base(module: &str) -> Option<u32> {
         "PMCTLS"   => PMCTLS_BASE,
         "WARPINE"  => WARPINE_BASE,
         "PMDRAG"   => PMDRAG_BASE,
+        "SOM"      => SOM_BASE,
         _ => return None,
     })
 }
 
 // Compile-time bounds checks: each module range is 1024 ordinals wide and
-// PMDRAG, the last one, must fit within STUB_AREA_SIZE.
+// SOM, the last one, must fit within STUB_AREA_SIZE.
 const _: () = assert!(TCP32DLL_BASE + 1024 <= MOUCALLS_BASE);
 const _: () = assert!(MOUCALLS_BASE + 1024 <= PMSHAPI_BASE);
 const _: () = assert!(PMSHAPI_BASE + 1024 <= HELPMGR_BASE);
@@ -81,7 +87,8 @@ const _: () = assert!(HELPMGR_BASE + 1024 <= PMSPL_BASE);
 const _: () = assert!(PMSPL_BASE + 1024 <= PMCTLS_BASE);
 const _: () = assert!(PMCTLS_BASE + 1024 <= WARPINE_BASE);
 const _: () = assert!(WARPINE_BASE + 1024 <= PMDRAG_BASE);
-const _: () = assert!(PMDRAG_BASE + 1024 <= STUB_AREA_SIZE);
+const _: () = assert!(PMDRAG_BASE + 1024 <= SOM_BASE);
+const _: () = assert!(SOM_BASE + 1024 <= STUB_AREA_SIZE);
 // The INT 3 stub area must not reach the dynamic allocation pool.
 const _: () = assert!(MAGIC_API_BASE + STUB_AREA_SIZE as u64 <= DYNAMIC_ALLOC_BASE as u64);
 // The NE loader addresses stubs with 16-bit offsets.

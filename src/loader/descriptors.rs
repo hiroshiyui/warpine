@@ -115,6 +115,10 @@ impl super::Loader {
     }
 
     pub(crate) fn resolve_import(&self, module: &str, ordinal: u32) -> u64 {
+        // SOM.DLL exports data too: their addresses, not thunks (som.rs).
+        if module == "SOM" && let Some(at) = self.som_data_address(ordinal) {
+            return at as u64;
+        }
         if let Some(base) = module_base(module) { MAGIC_API_BASE + base as u64 + ordinal as u64 }
         else {
             // Check loaded user DLLs

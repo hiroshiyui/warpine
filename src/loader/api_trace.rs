@@ -414,7 +414,7 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         },
 
         // ── PMDRAG (drag and drop; pm_drag.rs) ─────────────────────────
-        o if (PMDRAG_BASE..STUB_AREA_SIZE).contains(&o) => match o - PMDRAG_BASE {
+        o if (PMDRAG_BASE..SOM_BASE).contains(&o) => match o - PMDRAG_BASE {
             32 => "DrgAccessDraginfo",
             33 => "DrgAddStrHandle",
             34 => "DrgAllocDraginfo",
@@ -451,6 +451,71 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             _ => "?",
         },
 
+        // ── SOM (the SOM runtime kernel; som.rs) ──────────────────────
+        o if (SOM_BASE..STUB_AREA_SIZE).contains(&o) => match o - SOM_BASE {
+            1 => "somEnvironmentNew",
+            2 => "somResolve",
+            3 => "somResolveByName",
+            4 => "somClassResolve",
+            5 => "somDataResolve",
+            6 => "somGetGlobalEnvironment",
+            7 => "somIdFromString",
+            8 => "somStringFromId",
+            9 => "somCompareIds",
+            10 => "somIsObj",
+            11 => "somPrintf",
+            12 => "WrpSomMalloc",
+            13 => "WrpSomCalloc",
+            14 => "WrpSomRealloc",
+            15 => "WrpSomFree",
+            16 => "WrpSomMetaclassFor",
+            20 => "SOMObjectClassData",
+            21 => "SOMClassClassData",
+            22 => "SOMClassMgrClassData",
+            23 => "SOMClassMgrObject",
+            24 => "SOMMalloc",
+            25 => "SOMCalloc",
+            26 => "SOMRealloc",
+            27 => "SOMFree",
+            28 => "SOM_TraceLevel",
+            29 => "SOM_WarnLevel",
+            30 => "SOM_AssertLevel",
+            99 => "WrpSomMethodError",
+            100 => "WrpSOMObject_somInit",
+            101 => "WrpSOMObject_somUninit",
+            102 => "WrpSOMObject_somFree",
+            103 => "WrpSOMObject_somGetClass",
+            104 => "WrpSOMObject_somGetClassName",
+            105 => "WrpSOMObject_somGetSize",
+            106 => "WrpSOMObject_somIsA",
+            107 => "WrpSOMObject_somIsInstanceOf",
+            108 => "WrpSOMObject_somRespondsTo",
+            109 => "WrpSOMObject_somPrintSelf",
+            110 => "WrpSOMObject_somDumpSelf",
+            111 => "WrpSOMObject_somDumpSelfInt",
+            200 => "WrpSOMClass_somNew",
+            201 => "WrpSOMClass_somNewNoInit",
+            202 => "WrpSOMClass_somGetName",
+            203 => "WrpSOMClass_somGetParent",
+            204 => "WrpSOMClass_somGetInstanceSize",
+            205 => "WrpSOMClass_somGetInstancePartSize",
+            206 => "WrpSOMClass_somGetInstanceToken",
+            207 => "WrpSOMClass_somGetNumMethods",
+            208 => "WrpSOMClass_somGetNumStaticMethods",
+            209 => "WrpSOMClass_somDescendedFrom",
+            210 => "WrpSOMClass_somInitClass",
+            211 => "WrpSOMClass_somAddStaticMethod",
+            212 => "WrpSOMClass_somOverrideSMethod",
+            213 => "WrpSOMClass_somClassReady",
+            214 => "WrpSOMClass_somGetMethodToken",
+            215 => "WrpSOMClass_somSupportsMethod",
+            216 => "WrpSOMClass_somInitMIClass",
+            300 => "WrpSOMClassMgr_somFindClass",
+            301 => "WrpSOMClassMgr_somClassFromId",
+            302 => "WrpSOMClassMgr_somRegisterClass",
+            _ => "?",
+        },
+
         _ => "?",
     }
 }
@@ -478,7 +543,8 @@ pub fn module_for_ordinal(ordinal: u32) -> &'static str {
     else if ordinal < PMCTLS_BASE   { "PMSPL" }    // 18432–19455
     else if ordinal < WARPINE_BASE { "PMCTLS" }    // 19456–20479
     else if ordinal < PMDRAG_BASE  { "WARPINE" }   // 20480–21503
-    else if ordinal < STUB_AREA_SIZE { "PMDRAG" }  // 21504–22527
+    else if ordinal < SOM_BASE     { "PMDRAG" }    // 21504–22527
+    else if ordinal < STUB_AREA_SIZE { "SOM" }     // 22528–23551
     else                            { "?" }
 }
 
@@ -800,7 +866,7 @@ pub fn arg_names_for_ordinal(ordinal: u32) -> &'static [&'static str] {
         },
 
         // ── PMDRAG ────────────────────────────────────────────────────────
-        o if (PMDRAG_BASE..STUB_AREA_SIZE).contains(&o) => match o - PMDRAG_BASE {
+        o if (PMDRAG_BASE..SOM_BASE).contains(&o) => match o - PMDRAG_BASE {
             32 => &["pdinfo"],
             33 => &["pszString"],
             34 => &["cditem"],
@@ -1095,7 +1161,9 @@ mod tests {
         assert_eq!(module_for_ordinal(WARPINE_BASE),       "WARPINE");
         assert_eq!(module_for_ordinal(PMDRAG_BASE - 1),    "WARPINE");
         assert_eq!(module_for_ordinal(PMDRAG_BASE),        "PMDRAG");
-        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "PMDRAG");
+        assert_eq!(module_for_ordinal(SOM_BASE - 1),       "PMDRAG");
+        assert_eq!(module_for_ordinal(SOM_BASE),           "SOM");
+        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "SOM");
         assert_eq!(module_for_ordinal(STUB_AREA_SIZE),     "?");
     }
 

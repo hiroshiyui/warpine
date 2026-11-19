@@ -104,6 +104,72 @@ fn test_hello_world() {
     );
 }
 
+/// som_test (ADR-0059): the Open Watcom SOM samples, their C sources
+/// unchanged, on Warpine's SOM runtime. helloc: a class with one method;
+/// classes: four classes in four DLLs (implicitly loaded, their
+/// _DLL_InitTerm run before the program starts) — inheritance, overrides
+/// dispatched by somResolve, parent calls through somClassResolve, instance
+/// data through somDataResolve, ClassData imported across DLLs; animals
+/// (ADR-0060): metaclasses, a derived metaclass, attributes, sequences,
+/// somPrintf and SOMMalloc.
+#[test]
+fn test_som_samples_run_on_the_som_runtime() {
+    if !kvm_available() { return; }
+    // Open Watcom's C library ends lines with CR LF on OS/2.
+    let (out, code) = run_sample("samples/som_test/hello.exe", 15);
+    assert_eq!((code, out.replace("\r\n", "\n").as_str()), (0, "Hello, World from SOM (C version)\n"));
+    let (out, code) = run_sample("samples/som_test/classes.exe", 15);
+    let out = out.replace("\r\n", "\n");
+    // test.c's `void main(void)` leaves its exit code undefined.
+    let _ = code;
+    let want = concat!(
+        " 303 Compilers\n",
+        " Instructor Name : Dr. David Johnson\n",
+        " Credit = 3, Capacity = 15, Enrollment = 2\n",
+        "\n",
+        " STUDENT LIST:\n",
+        "\n",
+        " Id : 423538\n",
+        " Name : Jane Brown\n",
+        " Type : Graduate\n",
+        " Thesis : Code Optimization\n",
+        " Degree : Ph.D.\n",
+        "\n",
+        " Id : 399542\n",
+        " Name : Mark Smith\n",
+        " Type : Undergraduate\n",
+        " Grad Date : 12/17/92\n",
+        "\n",
+    );
+    assert_eq!(out, want);
+    // animals: metaclasses with data and constructors (M_Animal keeps the
+    // instances), Dog's metaclass derived from Kennel and M_Animal,
+    // attributes, sequences, somPrintf, SOMMalloc / SOMFree; every animal
+    // is freed through its somFree override at the end.
+    let (out, code) = run_sample("samples/som_test/animals.exe", 15);
+    let want = concat!(
+        "\nThe animal named Scary (Genus: <Unknown>, Species: <Unknown>) says:\n\tRoar!!!\n",
+        "\nThe animal named Rover (Genus: Canis, Species: Familiaris) says:\n\tGrrr\n",
+        "Its breed is Retriever and its color is yellow.\n",
+        "\nThe animal named Pierre (Genus: Canis, Species: Familiaris) says:\n\twoof woof\n",
+        "(and sometimes: yap yap)\nIts breed is French Poodle and its color is black.\n",
+        "\nThe animal named Lassie (Genus: Canis, Species: Familiaris) says:\n\tWOOF WOOF\n",
+        "Its breed is Collie and its color is tan.\n",
+        "\nThe animal named Guffy (Genus: Canis, Species: Familiaris) says:\n\tWOOF WOOF\n",
+        "Its breed is Retriever and its color is brown.\n",
+        "\nThe animal named Waldo (Genus: Canis, Species: Familiaris) says:\n\tWOOF WOOF\n",
+        "Its breed is German Shepherd and its color is black.\n",
+        "\nThe animal named Pluto (Genus: Canis, Species: Familiaris) says:\n\tWOOF WOOF\n",
+        "Its breed is Animated and its color is tan.\n",
+        "\nThe animal named Elvis (Genus: Canis, Species: Familiaris) says:\n\tWOOF WOOF\n",
+        "Its breed is Hounddog and its color is brown.\n",
+        "\nThe animal named Spike (Genus: Canis, Species: Familiaris) says:\n\tWOOF WOOF\n",
+        "Its breed is Bulldog and its color is black.\n",
+        "Total animal population is currently 9.\n\n",
+    );
+    assert_eq!((code, out.replace("\r\n", "\n").as_str()), (0, want));
+}
+
 /// alloc_test: DosAllocMem / DosFreeMem round-trip.
 #[test]
 fn test_alloc_test() {

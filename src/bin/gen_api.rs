@@ -48,8 +48,9 @@ const MODULES: &[(&str, u32)] = &[
     ("PMCTLS",   19456),
     ("WARPINE",  20480),
     ("PMDRAG",   21504),
+    ("SOM",      22528),
 ];
-const STUB_AREA_SIZE: u32 = 22528;
+const STUB_AREA_SIZE: u32 = 23552;
 
 // Rust constant name used for each module's base in generated code.
 // Must match src/loader/constants.rs exactly.
@@ -75,6 +76,7 @@ fn base_const(module: &str) -> &'static str {
         "PMCTLS"   => "PMCTLS_BASE",
         "WARPINE"  => "WARPINE_BASE",
         "PMDRAG"   => "PMDRAG_BASE",
+        "SOM"      => "SOM_BASE",
         _          => "?",
     }
 }
@@ -101,7 +103,8 @@ fn upper_const(module: &str) -> &'static str {
         "PMSPL"    => "PMCTLS_BASE",
         "PMCTLS"   => "WARPINE_BASE",
         "WARPINE"  => "PMDRAG_BASE",
-        "PMDRAG"   => "STUB_AREA_SIZE",
+        "PMDRAG"   => "SOM_BASE",
+        "SOM"      => "STUB_AREA_SIZE",
         _          => "?",
     }
 }
@@ -300,7 +303,8 @@ fn resolve_const(name: &str) -> u32 {
         "PMCTLS_BASE"   => 19456,
         "WARPINE_BASE"  => 20480,
         "PMDRAG_BASE"   => 21504,
-        "STUB_AREA_SIZE"=> 22528,
+        "SOM_BASE"      => 22528,
+        "STUB_AREA_SIZE"=> 23552,
         other => other.parse().unwrap_or(0),
     }
 }
@@ -408,7 +412,7 @@ fn cmd_check(entries: &[OrdEntry], trace_path: &Path) -> bool {
     // Excludes PMWIN, PMGPI, SESMGR which return "?" and use sub-dispatchers.
     let trace_covered_modules = [
         "DOSCALLS", "QUECALLS", "KBDCALLS", "VIOCALLS", "NLS", "MSG", "MDM", "UCONV",
-        "SO32DLL", "TCP32DLL", "MOUCALLS", "PMSHAPI", "HELPMGR", "PMSPL", "PMCTLS", "WARPINE", "PMDRAG",
+        "SO32DLL", "TCP32DLL", "MOUCALLS", "PMSHAPI", "HELPMGR", "PMSPL", "PMCTLS", "WARPINE", "PMDRAG", "SOM",
     ];
     let def_in_trace: Vec<&OrdEntry> = entries
         .iter()
@@ -994,7 +998,8 @@ mod tests {
         assert_eq!(module_upper("PMSPL"),     19456); // PMCTLS_BASE
         assert_eq!(module_upper("PMCTLS"),    20480); // WARPINE_BASE
         assert_eq!(module_upper("WARPINE"),   21504); // PMDRAG_BASE
-        assert_eq!(module_upper("PMDRAG"),    STUB_AREA_SIZE);
+        assert_eq!(module_upper("PMDRAG"),    22528); // SOM_BASE
+        assert_eq!(module_upper("SOM"),       STUB_AREA_SIZE);
     }
 
     #[test]
@@ -1071,7 +1076,8 @@ mod tests {
         assert_eq!(base_const("WARPINE"),    "WARPINE_BASE");
         assert_eq!(upper_const("WARPINE"),   "PMDRAG_BASE");
         assert_eq!(base_const("PMDRAG"),     "PMDRAG_BASE");
-        assert_eq!(upper_const("PMDRAG"),    "STUB_AREA_SIZE");
+        assert_eq!(upper_const("PMDRAG"),    "SOM_BASE");
+        assert_eq!(upper_const("SOM"),       "STUB_AREA_SIZE");
     }
 
     #[test]
@@ -1093,7 +1099,8 @@ mod tests {
         assert_eq!(resolve_const("PMCTLS_BASE"),    19456);
         assert_eq!(resolve_const("WARPINE_BASE"),   20480);
         assert_eq!(resolve_const("PMDRAG_BASE"),    21504);
-        assert_eq!(resolve_const("STUB_AREA_SIZE"), 22528);
+        assert_eq!(resolve_const("SOM_BASE"),       22528);
+        assert_eq!(resolve_const("STUB_AREA_SIZE"), 23552);
     }
 
     #[test]

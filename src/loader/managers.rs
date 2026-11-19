@@ -420,6 +420,9 @@ pub struct DllManager {
     next_handle: u32,
     /// OS/2 path of each loaded (non-built-in) module, by handle.
     paths: HashMap<u32, String>,
+    /// Modules loaded whose `_DLL_InitTerm(hmod, 0)` has not run yet, in
+    /// load order (a module after the ones it imports): (handle, entry).
+    pending_init: Vec<(u32, u32)>,
 }
 
 impl Default for DllManager {
@@ -428,7 +431,22 @@ impl Default for DllManager {
 
 impl DllManager {
     pub fn new() -> Self {
-        DllManager { dlls: Vec::new(), next_handle: 0x1000, paths: HashMap::new() }
+        DllManager { dlls: Vec::new(), next_handle: 0x1000, paths: HashMap::new(), pending_init: Vec::new() }
+    }
+
+    /// Module `handle` was loaded: its `_DLL_InitTerm` at `entry` is to run.
+    pub fn add_pending_init(&mut self, handle: u32, entry: u32) {
+        self.pending_init.push((handle, entry));
+    }
+
+    /// Whether a module's `_DLL_InitTerm` is still to run.
+    pub fn has_pending_init(&self) -> bool {
+        !self.pending_init.is_empty()
+    }
+
+    /// The modules whose `_DLL_InitTerm` is to run now, in order.
+    pub fn take_pending_init(&mut self) -> Vec<(u32, u32)> {
+        std::mem::take(&mut self.pending_init)
     }
 
     /// Allocate a new HMODULE handle value.
@@ -512,6 +530,17 @@ impl DllManager {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dll_inits_wait_in_load_order_until_taken() {
+        let mut m = DllManager::new();
+        assert!(!m.has_pending_init());
+        m.add_pending_init(0x1001, 0x5000);
+        m.add_pending_init(0x1002, 0x6000);
+        assert!(m.has_pending_init());
+        assert_eq!(m.take_pending_init(), vec![(0x1001, 0x5000), (0x1002, 0x6000)]);
+        assert!(!m.has_pending_init());
+    }
+
     use super::*;
 
     #[test]

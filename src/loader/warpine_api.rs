@@ -24,6 +24,7 @@
 //! ignored by `WrpMakeTime64`, as are the weekday and time zone.
 
 use log::debug;
+use super::MutexExt;
 
 use super::clock::{self, LocalTime};
 use super::constants::*;
@@ -35,6 +36,32 @@ pub const WRP_MAX_YEAR: i32 = 9999;
 const MS_PER_SECOND: i64 = 1000;
 
 impl super::Loader {
+    /// Run the `_DLL_InitTerm(hmod, 0)` of the modules waiting for it
+    /// (`DllManager::take_pending_init`: a module after those it imports)
+    /// as one call chain, then go on as `then` says: `WARPINE.6`, where a
+    /// program starts when DLLs it imports have such routines, returns into
+    /// the program's entry point (ADR-0059).
+    pub(crate) fn dll_init_chain(&self, vcpu: u32, then: super::pm_hook::ChainThen) -> super::ApiResult {
+        let pending = self.shared.dll_mgr.lock_or_recover().take_pending_init();
+        let steps = pending.into_iter()
+            .map(|(hmod, entry)| super::pm_hook::CallStep::hook(entry, vec![hmod, 0], false))
+            .collect();
+        self.start_chain(super::pm_hook::CallChain::new(vcpu, steps, false, then))
+    }
+
+    /// The chain of `DosLoadModule`'s `_DLL_InitTerm` calls returned: the
+    /// handle goes to `*phmod` when every routine said TRUE; else
+    /// `ERROR_INIT_ROUTINE_FAILED`.
+    pub(crate) fn dll_inits_done(&self, hmod: u32, phmod: u32, chain: &super::pm_hook::CallChain) -> u32 {
+        if chain.results.contains(&0) {
+            log::warn!("DosLoadModule: a _DLL_InitTerm of module {hmod:#x} or a module it imports failed");
+            if phmod != 0 { let _ = self.guest_write::<u32>(phmod, 0); }
+            return super::constants::ERROR_INIT_ROUTINE_FAILED;
+        }
+        if phmod != 0 { let _ = self.guest_write::<u32>(phmod, hmod); }
+        super::constants::NO_ERROR
+    }
+
     /// Write a `LONGLONG` at `p`.
     fn write_longlong(&self, p: u32, v: i64) -> u32 {
         match (p != 0).then(|| self.guest_write_bytes(p, &v.to_le_bytes())).flatten() {
@@ -104,6 +131,33 @@ impl super::Loader {
 
 #[cfg(test)]
 mod tests {
+    /// The _DLL_InitTerm routines waiting run as one chain (WARPINE.6,
+    /// DosLoadModule); DosLoadModule's handle is written only when every
+    /// one said TRUE.
+    #[test]
+    fn pending_dll_inits_run_as_one_chain() {
+        use super::super::pm_hook::{CallStep, ChainEnd, ChainThen};
+        use super::super::{ApiResult, Loader};
+        let l = Loader::new_mock();
+        {
+            let mut m = l.shared.dll_mgr.lock_or_recover();
+            m.add_pending_init(0x1001, 0x5000);
+            m.add_pending_init(0x1002, 0x6000);
+        }
+        let ApiResult::CallChain(mut c) = l.dll_init_chain(0, ChainThen::LoadModule { hmod: 0x1002, phmod: 0x3000 })
+            else { panic!() };
+        assert_eq!(c.steps.front(), Some(&CallStep::hook(0x5000, vec![0x1001, 0], false)), "the imported one first");
+        assert!(!l.shared.dll_mgr.lock_or_recover().has_pending_init());
+        c.steps.clear();
+        c.returned(1, false);
+        c.returned(1, false);
+        assert_eq!(l.finish_chain(&c), ChainEnd::Return(NO_ERROR));
+        assert_eq!(l.guest_read::<u32>(0x3000), Some(0x1002));
+        c.returned(0, false);
+        assert_eq!(l.finish_chain(&c), ChainEnd::Return(ERROR_INIT_ROUTINE_FAILED));
+        assert_eq!(l.guest_read::<u32>(0x3000), Some(0), "no handle");
+    }
+
     use super::*;
     use crate::loader::Loader;
 

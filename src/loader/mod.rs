@@ -114,6 +114,7 @@ mod host_signal;
 pub(crate) mod signals;
 mod interrupt;
 mod exitlist;
+pub mod som;
 mod critsec;
 pub mod dostimer;
 pub mod suballoc;
@@ -391,6 +392,8 @@ pub struct SharedState {
     /// Pointer input for a drag, from the GUI thread to `DrgDrag`
     /// (`pm_drag.rs`; its lock is taken alone).
     pub drag_channel: pm_drag::DragChannel,
+    /// The SOM runtime (`som.rs`; its lock is taken alone or before `mem_mgr`).
+    pub som: Mutex<som::SomRuntime>,
     pub drive_mgr: Mutex<DriveManager>,
     /// Profiles opened with `PrfOpenProfile` (taken before `drive_mgr`).
     pub profiles: Mutex<pmshapi::ProfileTable>,
@@ -553,6 +556,7 @@ impl Loader {
             clock: clock::SessionClock::from_env(),
             infoseg_refresher: AtomicBool::new(false),
             drag_channel: Default::default(),
+            som: Default::default(),
             exit_requested: AtomicBool::new(false),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),
@@ -661,6 +665,7 @@ impl Loader {
             clock:        Default::default(),
             infoseg_refresher: AtomicBool::new(false),
             drag_channel: Default::default(),
+            som: Default::default(),
             exit_requested: AtomicBool::new(false),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),

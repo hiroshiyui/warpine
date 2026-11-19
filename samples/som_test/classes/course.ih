@@ -1,0 +1,68 @@
+/*
+ * course.ih - C implementation bindings of class Course, written by hand
+ * for Warpine as the SOM compiler would emit them (ADR-0059).
+ */
+#ifndef SOM_Course_ih
+#define SOM_Course_ih
+
+#include "course.h"
+
+typedef struct CourseData {
+    char     code[8];
+    char     title[32];
+    char     instructor[32];
+    int      credit;
+    int      capacity;
+    Student *studentList[20];
+    int      enrollment;
+} CourseData;
+
+SOMEXTERN struct CourseCClassDataStructure {
+    SOMClass *parent;
+    somDToken instanceDataToken;
+} SOMDLINK CourseCClassData;
+
+#define CourseGetData( somSelf ) \
+    ((CourseData *)somDataResolve( (SOMObject *)(somSelf), CourseCClassData.instanceDataToken ))
+#define CourseMethodDebug( c, m )  SOM_NoTrace( c, m )
+#define _code         (somThis->code)
+#define _title        (somThis->title)
+#define _instructor   (somThis->instructor)
+#define _credit       (somThis->credit)
+#define _capacity     (somThis->capacity)
+#define _studentList  (somThis->studentList)
+#define _enrollment   (somThis->enrollment)
+
+/* The parent's somInit (OIDL's parent_ form). */
+#define parent_somInit( somSelf ) \
+    SOM_ClassResolve( CourseCClassData.parent, SOMObject, somInit )( (SOMObject *)(somSelf) )
+
+SOM_Scope void SOMLINK somInit( Course *somSelf );
+SOM_Scope void SOMLINK setUpCourse( Course *somSelf, char *code, char *title, char *instructor,
+                                    int credit, int capacity );
+SOM_Scope int  SOMLINK addStudent( Course *somSelf, Student *student );
+SOM_Scope void SOMLINK dropStudent( Course *somSelf, char *studentId );
+SOM_Scope void SOMLINK printCourseInfo( Course *somSelf );
+
+struct CourseClassDataStructure SOMDLINK CourseClassData;
+struct CourseCClassDataStructure SOMDLINK CourseCClassData;
+
+SOMClass * SOMLINK CourseNewClass( integer4 major, integer4 minor )
+{
+    SOMClass *cls;
+
+    if( CourseClassData.classObject ) return( CourseClassData.classObject );
+    SOM_NEW_CLASS( cls, "Course", SOMObjectClassData.classObject, sizeof( CourseData ), 4, major, minor );
+    SOM_OVERRIDE( cls, "somInit", somInit );
+    CourseClassData.setUpCourse     = SOM_ADD_METHOD( cls, "setUpCourse", setUpCourse );
+    CourseClassData.addStudent      = SOM_ADD_METHOD( cls, "addStudent", addStudent );
+    CourseClassData.dropStudent     = SOM_ADD_METHOD( cls, "dropStudent", dropStudent );
+    CourseClassData.printCourseInfo = SOM_ADD_METHOD( cls, "printCourseInfo", printCourseInfo );
+    _somClassReady( cls );
+    CourseCClassData.parent = SOMObjectClassData.classObject;
+    CourseCClassData.instanceDataToken = _somGetInstanceToken( cls );
+    CourseClassData.classObject = cls;
+    return( cls );
+}
+
+#endif

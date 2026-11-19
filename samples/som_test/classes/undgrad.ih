@@ -1,0 +1,52 @@
+/*
+ * undgrad.ih - C implementation bindings of class UnderGraduateStudent, written by hand for
+ * Warpine as the SOM compiler would emit them (ADR-0059).
+ */
+#ifndef SOM_UnderGraduateStudent_ih
+#define SOM_UnderGraduateStudent_ih
+
+#include "undgrad.h"
+
+typedef struct UnderGraduateStudentData {
+    char date[16];
+} UnderGraduateStudentData;
+
+SOMEXTERN struct UnderGraduateStudentCClassDataStructure {
+    SOMClass *parent;
+    somDToken instanceDataToken;
+} SOMDLINK UnderGraduateStudentCClassData;
+
+#define UnderGraduateStudentGetData( somSelf ) \
+    ((UnderGraduateStudentData *)somDataResolve( (SOMObject *)(somSelf), UnderGraduateStudentCClassData.instanceDataToken ))
+#define UnderGraduateStudentMethodDebug( c, m )  SOM_NoTrace( c, m )
+#define _date  (somThis->date)
+/* The parent's printStudentInfo, whatever the object's class. */
+#define UnderGraduateStudent_parent_Student_printStudentInfo( somSelf ) \
+    SOM_ClassResolve( UnderGraduateStudentCClassData.parent, Student, printStudentInfo )( (Student *)(somSelf) )
+
+SOM_Scope void   SOMLINK printStudentInfo( UnderGraduateStudent *somSelf );
+SOM_Scope char * SOMLINK getStudentType( UnderGraduateStudent *somSelf );
+SOM_Scope void   SOMLINK setUpUnderGraduateStudent( UnderGraduateStudent *somSelf, char *id, char *name, char *date );
+
+struct UnderGraduateStudentClassDataStructure SOMDLINK UnderGraduateStudentClassData;
+struct UnderGraduateStudentCClassDataStructure SOMDLINK UnderGraduateStudentCClassData;
+
+SOMClass * SOMLINK UnderGraduateStudentNewClass( integer4 major, integer4 minor )
+{
+    SOMClass *cls;
+    SOMClass *parent;
+
+    if( UnderGraduateStudentClassData.classObject ) return( UnderGraduateStudentClassData.classObject );
+    parent = StudentNewClass( 0, 0 );
+    SOM_NEW_CLASS( cls, "UnderGraduateStudent", parent, sizeof( UnderGraduateStudentData ), 1, major, minor );
+    SOM_OVERRIDE( cls, "printStudentInfo", printStudentInfo );
+    SOM_OVERRIDE( cls, "getStudentType", getStudentType );
+    UnderGraduateStudentClassData.setUpUnderGraduateStudent = SOM_ADD_METHOD( cls, "setUpUnderGraduateStudent", setUpUnderGraduateStudent );
+    _somClassReady( cls );
+    UnderGraduateStudentCClassData.parent = parent;
+    UnderGraduateStudentCClassData.instanceDataToken = _somGetInstanceToken( cls );
+    UnderGraduateStudentClassData.classObject = cls;
+    return( cls );
+}
+
+#endif
