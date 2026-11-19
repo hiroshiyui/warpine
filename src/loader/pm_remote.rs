@@ -632,6 +632,28 @@ impl Loader {
         }
     }
 
+    /// Ask window `ask.hwnd` `WM_HITTEST` for the pointer event at the head
+    /// of the input queue (`pm_input.rs`), then go on as `after` says.
+    pub(super) fn hit_test_chain(&self, tid: u32, ask: super::pm_input::HitAsk, after: AfterSent) -> ApiResult {
+        let pfn = self.shared.window_mgr.lock_or_recover().get_window(ask.hwnd).map_or(0, |w| w.pfn_wp);
+        let steps = if pfn == 0 { Vec::new() } else {
+            vec![CallStep::send(pfn, ask.hwnd, super::pm_input::WM_HITTEST, ask.mp1, 0)]
+        };
+        self.start_chain(CallChain::new(tid, steps, false, ChainThen::HitTest { hwnd: ask.hwnd, after }))
+    }
+
+    /// The `WM_HITTEST` of [`Self::hit_test_chain`] returned: its answer
+    /// (`HT_NORMAL` when the window went first) steers the pointer event.
+    pub(super) fn hit_test_done(&self, hwnd: u32, after: AfterSent, chain: &CallChain) -> ChainEnd {
+        let answer = if chain.results.is_empty() { super::pm_input::HT_NORMAL } else { chain.last as i32 };
+        self.shared.window_mgr.lock_or_recover().hit_test_answered(hwnd, answer);
+        match after {
+            AfterSent::Rerun(ordinal) | AfterSent::Resume(ordinal) => ChainEnd::Rerun(ordinal),
+            AfterSent::ModalLoop { dlg_proc, hwnd_dlg, hmq } => ChainEnd::ModalLoop { dlg_proc, hwnd_dlg, hmq, msg: None },
+            AfterSent::Drag => self.drag_after_sent(),
+        }
+    }
+
     /// The next message from another program waiting in queue `hmq`.
     pub(super) fn take_sent(&self, hmq: u32) -> Option<SentMessage> {
         self.shared.window_mgr.lock_or_recover().take_sent(hmq)

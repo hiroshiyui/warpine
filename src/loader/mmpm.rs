@@ -223,16 +223,36 @@ fn beep_pcm(freq_hz: u32, duration_ms: u32) -> Vec<u8> {
     }).collect()
 }
 
-/// Play a sine-wave tone and wait until it has finished (DosBeep).
+/// How often a wait for playback looks whether its call should stop.
+const STOP_POLL: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Wait for `voice` to finish, at most `max`, looking every
+/// [`STOP_POLL`] whether the call should stop (`stop`: a signal, a kill,
+/// the process end; then `WaitEnd::Cancelled`).
+pub fn wait_or_stop(audio: &AudioService, voice: u32, max: std::time::Duration, stop: &dyn Fn() -> bool) -> WaitEnd {
+    let deadline = std::time::Instant::now() + max;
+    loop {
+        let now = std::time::Instant::now();
+        if now >= deadline { return WaitEnd::TimedOut; }
+        match audio.wait(voice, None, (deadline - now).min(STOP_POLL)) {
+            WaitEnd::TimedOut if stop() => return WaitEnd::Cancelled,
+            WaitEnd::TimedOut => {}
+            end => return end,
+        }
+    }
+}
+
+/// Play a sine-wave tone and wait until it has finished (DosBeep), or
+/// until `stop` says the call should stop (the tone is cut short then).
 /// Silent, and immediate, when no audio backend is attached.
-pub fn beep_tone(audio: &AudioService, freq_hz: u32, duration_ms: u32) {
+pub fn beep_tone(audio: &AudioService, freq_hz: u32, duration_ms: u32, stop: &dyn Fn() -> bool) {
     if freq_hz == 0 || duration_ms == 0 {
         return;
     }
     let spec = PcmSpec { freq: BEEP_RATE, channels: 1, format: SampleFormat::S16 };
     if let Some(voice) = audio.play(spec, beep_pcm(freq_hz, duration_ms), 1.0) {
         let limit = std::time::Duration::from_millis(duration_ms as u64 + BEEP_SLACK_MS);
-        if audio.wait(voice, None, limit) == WaitEnd::TimedOut {
+        if matches!(wait_or_stop(audio, voice, limit, stop), WaitEnd::TimedOut | WaitEnd::Cancelled) {
             audio.stop(voice);
         }
     }
@@ -711,8 +731,12 @@ impl super::Loader {
             (len * 1000).checked_div(spec.bytes_per_sec() as u64).unwrap_or(0) + PLAY_SLACK_MS);
 
         if param1 & MCI_WAIT != 0 {
-            if audio.wait(voice, None, max_wait) == WaitEnd::TimedOut {
-                audio.stop(voice);
+            match wait_or_stop(audio, voice, max_wait, &|| self.interrupted() || self.shutting_down()) {
+                WaitEnd::TimedOut => audio.stop(voice),
+                // A signal or a kill ends the wait; the sound plays on, as
+                // without MCI_WAIT (Warpine's choice).
+                WaitEnd::Cancelled => return MCIERR_SUCCESS,
+                _ => {}
             }
             self.mci_stop(device_id);
             if param1 & MCI_NOTIFY != 0 && hwnd_callback != 0 {
@@ -1026,13 +1050,32 @@ mod tests {
     fn test_beep_tone_zero_inputs() {
         // Must return immediately without crashing.
         let audio = AudioService::default();
-        beep_tone(&audio, 0, 1000);
-        beep_tone(&audio, 440, 0);
-        beep_tone(&audio, 0, 0);
+        beep_tone(&audio, 0, 1000, &|| false);
+        beep_tone(&audio, 440, 0, &|| false);
+        beep_tone(&audio, 0, 0, &|| false);
         // No backend: returns at once.
         let start = std::time::Instant::now();
-        beep_tone(&audio, 440, 5000);
+        beep_tone(&audio, 440, 5000, &|| false);
         assert!(start.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn a_wait_for_playback_stops_when_its_call_should() {
+        // An attached backend that never drains: the voice plays on.
+        let audio = AudioService::default();
+        audio.attach(Box::new(|| {}));
+        let spec = PcmSpec { freq: BEEP_RATE, channels: 1, format: SampleFormat::S16 };
+        let voice = audio.play(spec, beep_pcm(440, 5000), 1.0).expect("a voice");
+        let start = std::time::Instant::now();
+        let asked = std::cell::Cell::new(0);
+        let end = wait_or_stop(&audio, voice, std::time::Duration::from_secs(10), &|| {
+            asked.set(asked.get() + 1);
+            asked.get() >= 2
+        });
+        assert_eq!(end, WaitEnd::Cancelled);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2), "stopped after two slices");
+        assert_eq!(wait_or_stop(&audio, voice, std::time::Duration::from_millis(150), &|| false), WaitEnd::TimedOut);
+        audio.stop(voice);
     }
 
     #[test]

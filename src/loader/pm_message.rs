@@ -214,6 +214,8 @@ impl Loader {
             // A message from another program runs, then the wait goes on.
             Some(super::pm_win::Got::Sent(s)) =>
                 self.run_sent(tid, s, super::pm_remote::AfterSent::Rerun(super::pm_remote::ORD_WAIT_MSG)),
+            Some(super::pm_win::Got::HitTest(a)) =>
+                self.hit_test_chain(tid, a, super::pm_remote::AfterSent::Rerun(super::pm_remote::ORD_WAIT_MSG)),
             found => ApiResult::Normal(found.is_some() as u32),
         }
     }

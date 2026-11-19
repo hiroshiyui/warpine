@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="760" height="594" viewBox="0 0 760 594" role="img" aria-labelledby="t d" font-family="system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif">
 <title id="t">Warpine API coverage (dark)</title>
-<desc id="d">Share of the 32-bit OS/2 API that Warpine implements: OS/2 2.0 60% (520 of 862), OS/2 Warp 3 58% (524 of 908), OS/2 Warp 4 57% (524 of 912).</desc>
+<desc id="d">Share of the 32-bit OS/2 API that Warpine implements: OS/2 2.0 60% (521 of 862), OS/2 Warp 3 58% (525 of 908), OS/2 Warp 4 58% (525 of 912).</desc>
 <rect width="760" height="594" rx="8" fill="#1a1a19"/>
 <text x="24" y="34" font-size="17" font-weight="600" fill="#f0efec">Warpine API coverage of OS/2 2.0, Warp 3 and Warp 4</text>
 <text x="24" y="55" font-size="12.5" fill="#c3c2b7">Share of each version's 32-bit API that Warpine implements (stubs not counted)</text>
@@ -21,12 +21,12 @@
 <line x1="614" y1="98" x2="614" y2="522" stroke="#383835" stroke-width="1"/>
 <text x="614" y="538" font-size="11" text-anchor="middle" fill="#898781">100%</text>
 <text x="24" y="128" font-size="12.5" font-weight="600" fill="#f0efec">All 32-bit APIs</text>
-<path d="M214 104h237a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-237z" fill="#3987e5"><title>OS/2 2.0: 60% (520 of 862)</title></path>
-<text x="461" y="114" font-size="11" fill="#c3c2b7">60% · 520/862</text>
-<path d="M214 118h227a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-227z" fill="#d95926"><title>OS/2 Warp 3: 58% (524 of 908)</title></path>
-<text x="451" y="128" font-size="11" fill="#c3c2b7">58% · 524/908</text>
-<path d="M214 132h226a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-226z" fill="#199e70"><title>OS/2 Warp 4: 57% (524 of 912)</title></path>
-<text x="450" y="142" font-size="11" fill="#c3c2b7">57% · 524/912</text>
+<path d="M214 104h238a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-238z" fill="#3987e5"><title>OS/2 2.0: 60% (521 of 862)</title></path>
+<text x="462" y="114" font-size="11" fill="#c3c2b7">60% · 521/862</text>
+<path d="M214 118h227a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-227z" fill="#d95926"><title>OS/2 Warp 3: 58% (525 of 908)</title></path>
+<text x="451" y="128" font-size="11" fill="#c3c2b7">58% · 525/908</text>
+<path d="M214 132h226a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-226z" fill="#199e70"><title>OS/2 Warp 4: 58% (525 of 912)</title></path>
+<text x="450" y="142" font-size="11" fill="#c3c2b7">58% · 525/912</text>
 <text x="24" y="182" font-size="12.5" font-weight="400" fill="#f0efec">Control Program</text>
 <path d="M214 158h301a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-301z" fill="#3987e5"><title>OS/2 2.0: 76% (144 of 189)</title></path>
 <text x="525" y="168" font-size="11" fill="#c3c2b7">76% · 144/189</text>
@@ -35,12 +35,12 @@
 <path d="M214 186h270a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-270z" fill="#199e70"><title>OS/2 Warp 4: 69% (146 of 213)</title></path>
 <text x="494" y="196" font-size="11" fill="#c3c2b7">69% · 146/213</text>
 <text x="24" y="236" font-size="12.5" font-weight="400" fill="#f0efec">Window manager (PMWIN)</text>
-<path d="M214 212h255a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-255z" fill="#3987e5"><title>OS/2 2.0: 65% (164 of 253)</title></path>
-<text x="479" y="222" font-size="11" fill="#c3c2b7">65% · 164/253</text>
-<path d="M214 226h252a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-252z" fill="#d95926"><title>OS/2 Warp 3: 64% (164 of 256)</title></path>
-<text x="476" y="236" font-size="11" fill="#c3c2b7">64% · 164/256</text>
-<path d="M214 240h252a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-252z" fill="#199e70"><title>OS/2 Warp 4: 64% (164 of 256)</title></path>
-<text x="476" y="250" font-size="11" fill="#c3c2b7">64% · 164/256</text>
+<path d="M214 212h257a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-257z" fill="#3987e5"><title>OS/2 2.0: 65% (165 of 253)</title></path>
+<text x="481" y="222" font-size="11" fill="#c3c2b7">65% · 165/253</text>
+<path d="M214 226h254a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-254z" fill="#d95926"><title>OS/2 Warp 3: 64% (165 of 256)</title></path>
+<text x="478" y="236" font-size="11" fill="#c3c2b7">64% · 165/256</text>
+<path d="M214 240h254a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-254z" fill="#199e70"><title>OS/2 Warp 4: 64% (165 of 256)</title></path>
+<text x="478" y="250" font-size="11" fill="#c3c2b7">64% · 165/256</text>
 <text x="24" y="290" font-size="12.5" font-weight="400" fill="#f0efec">Graphics (PMGPI)</text>
 <path d="M214 266h206a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-206z" fill="#3987e5"><title>OS/2 2.0: 53% (142 of 270)</title></path>
 <text x="430" y="276" font-size="11" fill="#c3c2b7">53% · 142/270</text>

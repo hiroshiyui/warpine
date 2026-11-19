@@ -35,6 +35,19 @@
 //!   the focus from it;
 //! - it becomes an [`InputEvent::Window`] for that window.
 //!
+//! The window under the pointer is the deepest visible window there (any
+//! class; static controls let the pointer through; a disabled window takes
+//! nothing). A window whose class has `CS_HITTEST` is asked `WM_HITTEST`
+//! first, when the event is read (the PM Reference: "when an application
+//! requests a message through WinPeekMsg or WinGetMsg"): `HT_NORMAL` takes
+//! the message, `HT_TRANSPARENT` passes it to the windows beneath,
+//! `HT_DISCARD` and `HT_ERROR` drop it (`HT_ERROR` still activates the frame
+//! of a press). The reading thread makes that call ([`HitAsk`]) and reads
+//! again (ADR-0058).
+//!
+//! Mouse moves are coalesced: a move queued right behind another move that
+//! is not yet routed replaces it.
+//!
 //! Clicks on frame chrome (title bar, buttons, sizing border) stay with the
 //! GUI thread, which activates the frame at once; it first fixes the target
 //! of the keys still waiting ([`WindowManager::pin_pending_input`]), since
@@ -43,7 +56,7 @@
 use std::collections::VecDeque;
 
 use super::constants::{
-    KC_CHAR, WM_ACTIVATE, WM_BUTTON1DBLCLK, WM_BUTTON1DOWN, WM_BUTTON1UP, WM_BUTTON2DBLCLK,
+    KC_CHAR, WS_DISABLED, WM_ACTIVATE, WM_BUTTON1DBLCLK, WM_BUTTON1DOWN, WM_BUTTON1UP, WM_BUTTON2DBLCLK,
     WM_BUTTON2DOWN, WM_BUTTON3DBLCLK, WM_BUTTON3DOWN, WM_CHAR, WM_CHAR_REPEAT_SHIFT, WM_MOUSEMOVE,
     WM_PAINT, WM_TIMER,
 };
@@ -114,6 +127,80 @@ fn pack_point(x: i32, y: i32) -> u32 {
     (x as u32 & 0xFFFF) | ((y as u32 & 0xFFFF) << 16)
 }
 
+/// `CS_HITTEST` (`<pmwin.h>`): windows of the class are asked `WM_HITTEST`.
+pub const CS_HITTEST: u32 = 0x0000_0008;
+pub const WM_HITTEST: u32 = 0x000C;
+pub const HT_NORMAL: i32 = 0;
+pub const HT_TRANSPARENT: i32 = -1;
+pub const HT_DISCARD: i32 = -2;
+pub const HT_ERROR: i32 = -3;
+/// Most windows one pointer event may pass through (`HT_TRANSPARENT`).
+const MAX_HIT_SKIPS: usize = 64;
+/// How deep the search for the window under the pointer goes.
+const MAX_HIT_DEPTH: usize = 64;
+
+/// `QS_*` flags of `WinQueryQueueStatus` (`<pmwin.h>`).
+pub const QS_KEY: u32 = 0x0001;
+pub const QS_MOUSEBUTTON: u32 = 0x0002;
+pub const QS_MOUSEMOVE: u32 = 0x0004;
+pub const QS_TIMER: u32 = 0x0008;
+pub const QS_PAINT: u32 = 0x0010;
+pub const QS_POSTMSG: u32 = 0x0020;
+pub const QS_SEM1: u32 = 0x0040;
+pub const QS_SEM2: u32 = 0x0080;
+pub const QS_SEM3: u32 = 0x0100;
+pub const QS_SEM4: u32 = 0x0200;
+pub const QS_SENDMSG: u32 = 0x0400;
+const WM_SEM1: u32 = 0x0025;
+const WM_SEM2: u32 = 0x0026;
+const WM_SEM3: u32 = 0x0027;
+const WM_SEM4: u32 = 0x0028;
+
+/// One thing in a queue as `WinQueryQueueStatus` tells them apart: a
+/// queued message, an input event (its serial number) or a message another
+/// program sent, with its `QS_*` flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum StatusKey {
+    Message { flag: u32, hwnd: u32, msg: u32, mp1: u32, mp2: u32 },
+    Input { flag: u32, seq: u64 },
+    Sent { hwnd: u32, id: Option<u64> },
+}
+
+impl StatusKey {
+    fn flag(&self) -> u32 {
+        match *self {
+            StatusKey::Message { flag, .. } | StatusKey::Input { flag, .. } => flag,
+            StatusKey::Sent { .. } => QS_SENDMSG,
+        }
+    }
+}
+
+/// The `QS_*` flag of message `msg` in a queue.
+fn status_flag(msg: u32) -> u32 {
+    match msg {
+        WM_CHAR => QS_KEY,
+        WM_MOUSEMOVE => QS_MOUSEMOVE,
+        m if (WM_BUTTON1DOWN..=WM_BUTTON3DBLCLK).contains(&m) => QS_MOUSEBUTTON,
+        WM_PAINT => QS_PAINT,
+        WM_TIMER => QS_TIMER,
+        WM_SEM1 => QS_SEM1,
+        WM_SEM2 => QS_SEM2,
+        WM_SEM3 => QS_SEM3,
+        WM_SEM4 => QS_SEM4,
+        _ => QS_POSTMSG,
+    }
+}
+
+/// A pointer event at the head of the input queue whose window is to be
+/// asked `WM_HITTEST` by the thread of queue `hmq` before it is read:
+/// `WM_HITTEST(mp1 = the point in `hwnd`'s coordinates, mp2 = 0)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HitAsk {
+    pub hmq: u32,
+    pub hwnd: u32,
+    pub mp1: u32,
+}
+
 /// Where a pointer event goes: its window and the point in that window's
 /// coordinates, and the frame it lies in (activated by a press).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,6 +250,7 @@ impl WindowManager {
         // A click at the head of the input queue takes effect first: the
         // activation messages it posts are read before it.
         self.take_up_input(hmq);
+        let asking = self.hit_ask.is_some_and(|a| a.hmq == hmq);
         // The queue's lock is held only while it is searched: reading input
         // may lock other queues.
         let take = |wm: &WindowManager, rank: Rank| {
@@ -171,6 +259,8 @@ impl WindowManager {
             if remove { mq.messages.remove(i) } else { mq.messages.get(i).cloned() }
         };
         let found = take(self, Rank::Posted).or_else(|| {
+            // Input waits for its WM_HITTEST answer; so do paint and timers.
+            if asking { return None; }
             match self.next_input(hmq, false, |_| true) {
                 Some(probe) if pass(self, &probe) =>
                     if remove { self.next_input(hmq, true, |_| true) } else { Some(probe) },
@@ -208,7 +298,24 @@ impl WindowManager {
         // server waits for it to be read before routing the next event.
         let token = self.input_tag;
         if token.is_some() { self.input_tag_used = true; }
-        self.input.push_back(QueuedInput { ev, time: super::stubs::ms_count(), pos, token });
+        let time = super::stubs::ms_count();
+        self.input_seq += 1;
+        let seq = self.input_seq;
+        // A move right behind a move not yet routed replaces it (not the
+        // head while its window is being asked WM_HITTEST).
+        if let InputEvent::Pointer { msg: WM_MOUSEMOVE, mp2, .. } = ev
+            && (self.input.len() > 1 || self.hit_ask.is_none())
+            && let Some(last) = self.input.back_mut()
+            && matches!(last.ev, InputEvent::Pointer { msg: WM_MOUSEMOVE, mp2: m, .. } if m == mp2)
+        {
+            let old = std::mem::replace(last, QueuedInput { ev, time, pos, token, seq, ..QueuedInput::default() });
+            if let Some(t) = old.token && Some(t) != token && !self.input.iter().any(|q| q.token == Some(t)) {
+                self.ack_input(t);
+            }
+            self.wake_input_reader();
+            return;
+        }
+        self.input.push_back(QueuedInput { ev, time, pos, token, seq, ..QueuedInput::default() });
         self.wake_input_reader();
     }
 
@@ -217,6 +324,7 @@ impl WindowManager {
     /// this process's active frame now (ADR-0052).
     fn pop_input(&mut self) {
         let Some(gone) = self.input.pop_front() else { return };
+        self.hit_ask = None;
         if let Some(token) = gone.token
             && !self.input.iter().any(|q| q.token == Some(token)) {
             self.ack_input(token);
@@ -289,6 +397,11 @@ impl WindowManager {
                         return None;
                     }
                     self.take_up_input(hmq);
+                    // Still a pointer event: its window is to be asked
+                    // WM_HITTEST first.
+                    if matches!(self.input.front().map(|q| &q.ev), Some(InputEvent::Pointer { .. })) {
+                        return None;
+                    }
                 }
                 Head::Deliver { hmq: target, msg } => {
                     if target != hmq {
@@ -310,6 +423,36 @@ impl WindowManager {
         }
     }
 
+    /// `WinQueryQueueStatus`: the `QS_*` kinds of what waits for the thread
+    /// of queue `hmq` — its queued messages, the input it is to read and
+    /// messages other programs sent it — in the high word; in the low word
+    /// those of them that came since its last call (the PM Reference: "the
+    /// types of messages added since the last call"). 0 without the queue.
+    pub fn queue_status(&mut self, hmq: u32) -> u32 {
+        let Some(mq) = self.get_mq(hmq) else { return 0 };
+        let mut now: Vec<StatusKey> = Vec::new();
+        for q in &self.input {
+            let flag = match &q.ev {
+                InputEvent::Key { .. } | InputEvent::Char(_) => QS_KEY,
+                InputEvent::Window { msg, .. } | InputEvent::Pointer { msg, .. } => status_flag(*msg),
+            };
+            let reader = match self.resolve_input(q) {
+                Head::Deliver { hmq, .. } | Head::TakeUp { hmq } => Some(hmq),
+                Head::Drop => None,
+            };
+            if reader == Some(hmq) { now.push(StatusKey::Input { flag, seq: q.seq }); }
+        }
+        let mut q = mq.lock_or_recover();
+        now.extend(q.messages.iter().map(|m| StatusKey::Message {
+            flag: status_flag(m.msg), hwnd: m.hwnd, msg: m.msg, mp1: m.mp1, mp2: m.mp2,
+        }));
+        now.extend(q.sent.iter().map(|s| StatusKey::Sent { hwnd: s.hwnd, id: s.id }));
+        let current = now.iter().fold(0, |acc, k| acc | k.flag());
+        let added = now.iter().filter(|k| !q.status_seen.contains(k)).fold(0, |acc, k| acc | k.flag());
+        q.status_seen = now.into_iter().collect();
+        (current << 16) | added
+    }
+
     /// Number of events in the system input queue.
     pub fn pending_input(&self) -> usize {
         self.input.len()
@@ -320,7 +463,7 @@ impl WindowManager {
     fn resolve_input(&self, queued: &QueuedInput) -> Head {
         let ev = &queued.ev;
         if let InputEvent::Pointer { msg, x, y, .. } = *ev {
-            return match self.pointer_target(msg, x, y).and_then(|t| self.input_queue_of(t.hwnd)) {
+            return match self.pointer_target_skipping(msg, x, y, &queued.skip).and_then(|t| self.input_queue_of(t.hwnd)) {
                 Some(hmq) => Head::TakeUp { hmq },
                 None => Head::Drop,
             };
@@ -382,12 +525,18 @@ impl WindowManager {
     pub fn take_up_input(&mut self, hmq: u32) {
         while let Some(front) = self.input.front() {
             let InputEvent::Pointer { msg, x, y, mp2 } = front.ev else { return };
-            let target = self.pointer_target(msg, x, y);
+            let target = self.pointer_target_skipping(msg, x, y, &front.skip);
+            let asked = front.asked;
             let Some(t) = target.filter(|t| self.input_queue_of(t.hwnd).is_some()) else {
                 self.pop_input();
                 continue;
             };
             if self.input_queue_of(t.hwnd) != Some(hmq) {
+                return;
+            }
+            // A CS_HITTEST window is asked first (by the reading thread).
+            if !t.held && asked != t.hwnd && self.asks_hit_test(t.hwnd) {
+                self.hit_ask = Some(HitAsk { hmq, hwnd: t.hwnd, mp1: pack_point(t.x, t.y) });
                 return;
             }
             if is_press(msg) && !t.held {
@@ -409,6 +558,12 @@ impl WindowManager {
     /// unless it is disabled — a button-1 message there goes to the built-in
     /// control under the pointer, if any. `None`: no window takes it.
     pub fn pointer_target(&self, msg: u32, x: i32, y: i32) -> Option<PointerTarget> {
+        self.pointer_target_skipping(msg, x, y, &[])
+    }
+
+    /// [`Self::pointer_target`] passing over the windows in `skip` (they
+    /// answered `HT_TRANSPARENT`).
+    pub fn pointer_target_skipping(&self, msg: u32, x: i32, y: i32, skip: &[u32]) -> Option<PointerTarget> {
         if self.capture_hwnd != 0 {
             let hwnd = self.capture_hwnd;
             let (lx, ly) = self.pointer_local(hwnd, x, y);
@@ -428,13 +583,100 @@ impl WindowManager {
             return None;
         }
         let (lx, ly) = self.pointer_local(frame, x, y);
-        let button1 = matches!(msg, WM_BUTTON1DOWN | WM_BUTTON1DBLCLK | WM_BUTTON1UP);
-        let (hwnd, lx, ly) = if button1 {
-            self.control_under(frame, lx, ly).unwrap_or((frame, lx, ly))
-        } else {
-            (frame, lx, ly)
-        };
+        let (hwnd, lx, ly) = self.window_under_pointer(frame, lx, ly, skip).unwrap_or((frame, lx, ly));
+        let _ = msg;
         Some(PointerTarget { hwnd, x: lx, y: ly, frame, held: false })
+    }
+
+    /// The deepest visible window of `frame` under point `(x, y)` in message
+    /// coordinates (`pointer_local`), with the point relative to it: the
+    /// topmost child there, then its topmost child there, and so on. Static
+    /// controls let the pointer through, a disabled window takes nothing (a
+    /// `CS_HITTEST` one is asked instead), windows in `skip` and the menu bar
+    /// are passed over. `None`: the frame itself (its client).
+    pub fn window_under_pointer(&self, frame: u32, x: i32, y: i32, skip: &[u32]) -> Option<(u32, i32, i32)> {
+        let (sx, sy) = self.frame_surface_point(frame, x, y);
+        let client = self.frame_to_client.get(&frame).copied();
+        let mut at = frame;
+        let mut found = None;
+        'down: for _ in 0..MAX_HIT_DEPTH {
+            let kids: Vec<u32> = self.get_window(at).map(|w| w.children.clone()).unwrap_or_default();
+            for &h in kids.iter().rev() {
+                let Some(w) = self.get_window(h) else { continue };
+                // A standard frame's client counts as shown with its frame.
+                if (!w.visible && Some(h) != client) || skip.contains(&h) || w.class_name == "#Menu"
+                    || w.class_name == "WC_STATIC" {
+                    continue;
+                }
+                let (ax, ay, cx, cy) = self.get_abs_rect_in_frame(h);
+                // A combination box itself is only its entry row; below it
+                // lies its list, or what is under the box.
+                let bottom = if w.combo.is_some() { ay + cy - super::pm_combo::COMBO_ENTRY_H } else { ay };
+                if !(sx >= ax && sx < ax + cx && sy >= bottom && sy < ay + cy) { continue; }
+                if w.style & WS_DISABLED != 0 && !self.asks_hit_test(h) { break 'down; }
+                at = h;
+                if Some(h) != client { found = Some((h, sx - ax, sy - ay)); }
+                continue 'down;
+            }
+            break;
+        }
+        // Dropped lists of combination boxes lie over their neighbours.
+        if let Some(hit) = self.control_at(frame, sx, sy)
+            && self.get_window(hit.0).is_some_and(|w| w.class_name == super::pm_controls::CLASS_LISTBOX)
+            && self.get_window(hit.0).and_then(|w| self.get_window(w.parent)).is_some_and(|p| p.combo.is_some())
+            && !skip.contains(&hit.0) {
+            return Some(hit);
+        }
+        found
+    }
+
+    /// Message coordinates of `frame` (`pointer_local`) in its surface: a
+    /// standard frame's client lies at its place there; a dialog's surface
+    /// starts inside its left border.
+    fn frame_surface_point(&self, frame: u32, x: i32, y: i32) -> (i32, i32) {
+        match self.get_window(frame) {
+            Some(w) if !self.frame_to_client.contains_key(&frame) =>
+                (x - super::constants::frame_border_width(w.frame_flags), y),
+            _ => {
+                let (cx, cy, _, _) = self.client_view(frame).unwrap_or_default();
+                (x.saturating_add(cx), y.saturating_add(cy))
+            }
+        }
+    }
+
+    /// Whether `hwnd`'s class has `CS_HITTEST` and a window procedure to
+    /// answer `WM_HITTEST`.
+    pub fn asks_hit_test(&self, hwnd: u32) -> bool {
+        self.get_window(hwnd).is_some_and(|w| w.pfn_wp != 0
+            && self.get_class(&w.class_name).is_some_and(|c| c.style & CS_HITTEST != 0))
+    }
+
+    /// The `WM_HITTEST` waiting to be asked by the thread of queue `hmq`.
+    pub fn take_hit_ask(&mut self, hmq: u32) -> Option<HitAsk> {
+        self.hit_ask.filter(|a| a.hmq == hmq)
+    }
+
+    /// Window `hwnd` answered `WM_HITTEST` with `answer` for the pointer
+    /// event at the head of the input queue.
+    pub fn hit_test_answered(&mut self, hwnd: u32, answer: i32) {
+        if self.hit_ask.is_none_or(|a| a.hwnd != hwnd) { return; }
+        self.hit_ask = None;
+        let Some(front) = self.input.front_mut() else { return };
+        let InputEvent::Pointer { msg, x, y, .. } = front.ev else { return };
+        match answer {
+            HT_TRANSPARENT if front.skip.len() < MAX_HIT_SKIPS => front.skip.push(hwnd),
+            HT_DISCARD | HT_TRANSPARENT => self.pop_input(),
+            HT_ERROR => {
+                // A press still brings its frame forward (the alarm is not
+                // sounded).
+                if is_press(msg) && let Some(t) = self.pointer_target(msg, x, y) && !t.held {
+                    self.activate_by_click(t.frame);
+                }
+                self.pop_input();
+            }
+            _ => front.asked = hwnd,
+        }
+        self.wake_input_reader();
     }
 
     /// Desktop point `(x, y)` (bottom-left origin) in the coordinates of the
@@ -527,6 +769,18 @@ pub struct QueuedInput {
     pub pos: (i32, i32),
     /// The desktop server's event this came from, acknowledged once read.
     pub token: Option<u64>,
+    /// A pointer event: the windows that answered `HT_TRANSPARENT`, and the
+    /// one that answered `HT_NORMAL` (0: none yet).
+    pub skip: Vec<u32>,
+    pub asked: u32,
+    /// Its serial number (`WinQueryQueueStatus` tells events apart by it).
+    pub seq: u64,
+}
+
+impl Default for QueuedInput {
+    fn default() -> Self {
+        QueuedInput { ev: InputEvent::Char('\0'), time: 0, pos: (0, 0), token: None, skip: Vec::new(), asked: 0, seq: 0 }
+    }
 }
 
 /// How a process acknowledges the desktop server's input: `(token, active
@@ -766,9 +1020,9 @@ mod tests {
         pointer(&mut wm, WM_BUTTON1DOWN, ex, ey);
         let (hwnd, msg, mp1, _) = take(&mut wm, q1).unwrap();
         assert_eq!((hwnd, msg, mp1), (entry, WM_BUTTON1DOWN, pack_point(5, 10)));
-        // Button 2 is not routed to controls.
+        // Every button and the moves go to the window under the pointer.
         pointer(&mut wm, WM_BUTTON2DOWN, ex, ey);
-        assert_eq!(take(&mut wm, q1).map(|m| m.0), Some(c1));
+        assert_eq!(take(&mut wm, q1).map(|m| m.0), Some(entry));
         // A press beside the control takes the focus when it is read.
         wm.focus_hwnd = entry;
         pointer(&mut wm, WM_BUTTON1DOWN, 250, 50);
@@ -780,6 +1034,105 @@ mod tests {
         pointer(&mut wm, WM_BUTTON1UP, 250, 50);
         assert_eq!(take(&mut wm, q1).map(|m| m.0), Some(c1));
         assert_eq!(wm.focus_hwnd, entry);
+    }
+
+    /// A child window of the program's own class under the pointer: placed
+    /// at (20, 20) in c1, 60×40, with a static over its left half and a
+    /// grandchild at (40, 10), 10×10.
+    fn with_child(wm: &mut WindowManager, c1: u32, q1: u32, class_style: u32) -> (u32, u32, u32) {
+        wm.register_class("Kid".into(), 0x5000, class_style);
+        let kid = wm.create_window("Kid".into(), c1, q1);
+        let w = wm.get_window_mut(kid).unwrap();
+        (w.x, w.y, w.cx, w.cy, w.visible, w.pfn_wp) = (20, 20, 60, 40, true, 0x5000);
+        let grand = wm.create_window("Kid".into(), kid, q1);
+        let w = wm.get_window_mut(grand).unwrap();
+        (w.x, w.y, w.cx, w.cy, w.visible, w.pfn_wp) = (40, 10, 10, 10, true, 0x5000);
+        let label = wm.create_window("WC_STATIC".into(), kid, q1);
+        let w = wm.get_window_mut(label).unwrap();
+        (w.x, w.y, w.cx, w.cy, w.visible) = (0, 0, 30, 40, true);
+        (kid, grand, label)
+    }
+
+    #[test]
+    fn pointer_input_goes_to_the_deepest_window_under_it() {
+        let (mut wm, [q1, _], [_, c1, ..], _) = placed_frames();
+        let (kid, grand, _) = with_child(&mut wm, c1, q1, 0);
+        // A standard frame's client need not carry WS_VISIBLE itself.
+        wm.get_window_mut(c1).unwrap().visible = false;
+        let (ox, oy) = wm.window_origin(c1).unwrap();
+        pointer(&mut wm, WM_MOUSEMOVE, ox + 25, oy + 25);
+        assert_eq!(take(&mut wm, q1).map(|m| (m.0, m.2)), Some((kid, pack_point(5, 5))), "through the static");
+        pointer(&mut wm, WM_BUTTON2DOWN, ox + 65, oy + 35);
+        assert_eq!(take(&mut wm, q1).map(|m| (m.0, m.2)), Some((grand, pack_point(5, 5))));
+        pointer(&mut wm, WM_BUTTON1DOWN, ox + 150, oy + 100);
+        assert_eq!(take(&mut wm, q1).map(|m| m.0), Some(c1), "beside them: the client");
+        // A disabled window takes nothing: its parent does.
+        wm.get_window_mut(grand).unwrap().style |= WS_DISABLED;
+        pointer(&mut wm, WM_BUTTON1DOWN, ox + 65, oy + 35);
+        assert_eq!(take(&mut wm, q1).map(|m| m.0), Some(kid));
+    }
+
+    #[test]
+    fn a_cs_hittest_window_is_asked_when_the_event_is_read() {
+        let (mut wm, [q1, _], [_, c1, ..], _) = placed_frames();
+        let (kid, grand, _) = with_child(&mut wm, c1, q1, CS_HITTEST);
+        let (ox, oy) = wm.window_origin(c1).unwrap();
+        // HT_TRANSPARENT: the window beneath (here its parent) is asked next.
+        pointer(&mut wm, WM_BUTTON1DOWN, ox + 65, oy + 35);
+        assert_eq!(take(&mut wm, q1), None, "waits for the answer");
+        assert_eq!(wm.next_queued(q1, true, |_, _| true), None, "paint and timers wait too");
+        assert_eq!(wm.take_hit_ask(q1), Some(HitAsk { hmq: q1, hwnd: grand, mp1: pack_point(5, 5) }));
+        wm.hit_test_answered(grand, HT_TRANSPARENT);
+        assert_eq!(take(&mut wm, q1), None);
+        assert_eq!(wm.take_hit_ask(q1).map(|a| a.hwnd), Some(kid));
+        wm.hit_test_answered(kid, HT_NORMAL);
+        assert_eq!(take(&mut wm, q1).map(|m| (m.0, m.2)), Some((kid, pack_point(45, 15))));
+        assert_eq!(wm.take_hit_ask(q1), None);
+        // HT_DISCARD drops the event; the next one is asked again.
+        pointer(&mut wm, WM_MOUSEMOVE, ox + 25, oy + 25);
+        assert_eq!(take(&mut wm, q1), None);
+        wm.hit_test_answered(kid, HT_DISCARD);
+        assert_eq!(wm.pending_input(), 0);
+        // HT_ERROR drops it too.
+        pointer(&mut wm, WM_BUTTON1DOWN, ox + 25, oy + 25);
+        assert_eq!(take(&mut wm, q1), None);
+        wm.hit_test_answered(kid, HT_ERROR);
+        assert_eq!(wm.pending_input(), 0);
+        // An answer for a window not asked changes nothing.
+        pointer(&mut wm, WM_MOUSEMOVE, ox + 25, oy + 25);
+        assert_eq!(take(&mut wm, q1), None);
+        wm.hit_test_answered(grand, HT_DISCARD);
+        assert_eq!(wm.pending_input(), 1);
+    }
+
+    #[test]
+    fn mouse_moves_are_coalesced() {
+        let (mut wm, [q1, _], [_, c1, ..], _) = placed_frames();
+        let (ox, oy) = wm.window_origin(c1).unwrap();
+        for i in 0..5 { pointer(&mut wm, WM_MOUSEMOVE, ox + 100 + i, oy + 100); }
+        assert_eq!(wm.pending_input(), 1, "one move");
+        pointer(&mut wm, WM_BUTTON1DOWN, ox + 104, oy + 100);
+        pointer(&mut wm, WM_MOUSEMOVE, ox + 110, oy + 100);
+        assert_eq!(wm.pending_input(), 3, "not across a click");
+        assert_eq!(take(&mut wm, q1).map(|m| (m.1, m.2)), Some((WM_MOUSEMOVE, pack_point(104, 100))), "the last position");
+    }
+
+    #[test]
+    fn queue_status_reports_what_waits_and_what_came_since_the_last_call() {
+        let (mut wm, [q1, q2], [_, c1, _, c2], _) = placed_frames();
+        assert_eq!(wm.queue_status(q1), 0);
+        wm.post_input(InputEvent::Key { mp1: 0, mp2: 0 });
+        post(&wm, q1, c1, WM_TIMER);
+        assert_eq!(wm.queue_status(q1), ((QS_KEY | QS_TIMER) << 16) | QS_KEY | QS_TIMER);
+        assert_eq!(wm.queue_status(q1), (QS_KEY | QS_TIMER) << 16, "nothing new");
+        let (ox, oy) = wm.window_origin(c1).unwrap();
+        pointer(&mut wm, WM_BUTTON1DOWN, ox + 150, oy + 100);
+        post(&wm, q1, c1, 0x0025);
+        assert_eq!(wm.queue_status(q1), ((QS_KEY | QS_TIMER | QS_MOUSEBUTTON | QS_SEM1) << 16) | QS_MOUSEBUTTON | QS_SEM1);
+        assert_eq!(wm.queue_status(q2), 0, "the other queue's input is not its own");
+        post(&wm, q2, c2, WM_PAINT);
+        assert_eq!(wm.queue_status(q2), (QS_PAINT << 16) | QS_PAINT);
+        assert_eq!(wm.queue_status(999), 0);
     }
 
     #[test]

@@ -72,6 +72,9 @@ pub struct PM_MsgQueue {
     /// thread to run when it next reads or waits for messages
     /// (`pm_remote.rs`).
     pub sent: VecDeque<super::pm_remote::SentMessage>,
+    /// What `WinQueryQueueStatus` saw in the queue at its last call
+    /// (`pm_input.rs`).
+    pub status_seen: std::collections::HashSet<super::pm_input::StatusKey>,
 }
 
 pub struct WindowClass {
@@ -154,10 +157,9 @@ pub struct OS2Window {
     /// Highlight state of a `WC_BUTTON` set by `BM_SETHILITE` (or a
     /// `BM_CLICK` down-click): drawn pressed until cleared.
     pub hilite: bool,
-    /// Update rectangle (window coordinates; empty = nothing to paint): the
-    /// bounding rectangle of what was invalidated since the window last
-    /// painted (`pm_paint.rs`).
-    pub update: super::pm_rect::Rectl,
+    /// Update region (window coordinates; empty = nothing to paint): what
+    /// was invalidated since the window last painted (`pm_paint.rs`).
+    pub update: crate::gui::region::Region,
     /// Height of a list box item in pels (`WM_MEASUREITEM` /
     /// `LM_SETITEMHEIGHT`); 0 = the system font's line height.
     pub item_height: i32,
@@ -363,7 +365,7 @@ pub struct PresentationSpace {
     pub clip: Option<Arc<crate::gui::region::Region>>,
     /// `WinBeginPaint`: the window's update rectangle, which the PS is
     /// clipped to until `WinEndPaint` (window coordinates).
-    pub paint_clip: Option<crate::gui::region::RRect>,
+    pub paint_clip: Option<std::sync::Arc<crate::gui::region::Region>>,
     /// Open area bracket (`GpiBeginArea` … `GpiEndArea`).
     pub area: Option<super::pm_area::AreaBracket>,
     /// The path (`GpiBeginPath` … `GpiEndPath`, then used once).
@@ -571,6 +573,9 @@ pub fn handle_slot(hwnd: u32) -> Option<u32> {
     (hwnd >> HWND_SLOT_SHIFT).checked_sub(1).filter(|&s| s < MAX_HANDLE_SLOTS)
 }
 
+/// How many ancestors clip a child window's drawing.
+const MAX_CLIP_ANCESTORS: usize = 64;
+
 pub struct WindowManager {
     classes: HashMap<String, WindowClass>,
     windows: HashMap<u32, OS2Window>,
@@ -643,6 +648,11 @@ pub struct WindowManager {
     /// The system input queue: keyboard and pointer input not yet read by
     /// any thread (`pm_input.rs`).
     pub(super) input: super::pm_input::InputQueue,
+    /// A pointer event at the head of the input queue waits for its
+    /// window's `WM_HITTEST` answer (`pm_input.rs`).
+    pub(super) hit_ask: Option<super::pm_input::HitAsk>,
+    /// The serial number of the next input event (`QueuedInput::seq`).
+    pub(super) input_seq: u64,
     /// Frames brought to the top since the renderer last looked, for the
     /// desktop server (ADR-0052).
     pub raised_frames: Vec<u32>,
@@ -780,6 +790,8 @@ impl WindowManager {
             next_hbm: 0x7000,
             next_hdc: 0x6000,
             input: Default::default(),
+            hit_ask: None,
+            input_seq: 0,
             input_tag: None,
             raised_frames: Vec::new(),
             lowered_frames: Vec::new(),
@@ -853,7 +865,7 @@ impl WindowManager {
             message_box: false,
             check_state: 0,
             hilite: false,
-            update: super::pm_rect::EMPTY_RECTL,
+            update: crate::gui::region::Region::empty(),
             item_height: 0,
             item_handles: Vec::new(),
             text_limit: 0,
@@ -948,6 +960,7 @@ impl WindowManager {
             last_msg_time: 0,
             last_msg_pos: (0, 0),
             sent: VecDeque::new(),
+            status_seen: Default::default(),
         })));
         self.next_hmq += 1;
         h
@@ -1767,6 +1780,33 @@ impl WindowManager {
                 ((x, y), Some((cx.max(0), cy.max(0))))
             }
             _ => ((0, 0), None),
+        }
+    }
+
+    /// The part of `target` drawing may reach, in its own coordinates: a
+    /// client's extent; a child window's rectangle cut to each of its
+    /// ancestors within the frame (a window draws only where its parents
+    /// show it); `None` for a frame or a bitmap (the whole surface).
+    pub fn target_visible(&self, target: DrawTarget) -> Option<crate::gui::region::RRect> {
+        use crate::gui::region::RRect;
+        match target {
+            DrawTarget::Client(_) => self.target_view(target).1.map(|(cx, cy)| RRect::new(0, 0, cx, cy)),
+            DrawTarget::Child { hwnd, frame } => {
+                let (x, y, cx, cy) = self.get_abs_rect_in_frame(hwnd);
+                let (mut x0, mut y0, mut x1, mut y1) = (x, y, x.saturating_add(cx.max(0)), y.saturating_add(cy.max(0)));
+                let mut p = self.get_window(hwnd).map_or(0, |w| w.parent);
+                for _ in 0..MAX_CLIP_ANCESTORS {
+                    if p == 0 || p == frame || p == super::constants::HWND_DESKTOP || !self.is_window(p) { break; }
+                    let (ax, ay, acx, acy) = self.get_abs_rect_in_frame(p);
+                    (x0, y0) = (x0.max(ax), y0.max(ay));
+                    (x1, y1) = (x1.min(ax.saturating_add(acx)), y1.min(ay.saturating_add(acy)));
+                    if self.is_top_dialog(p) || self.frames_its_children(p) { break; }
+                    p = self.get_window(p).map_or(0, |w| w.parent);
+                }
+                if x1 <= x0 || y1 <= y0 { return Some(RRect::new(0, 0, 0, 0)); }
+                Some(RRect::new(x0 - x, y0 - y, x1 - x, y1 - y))
+            }
+            _ => None,
         }
     }
 

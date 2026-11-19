@@ -51,7 +51,7 @@ impl super::Loader {
     /// DosBeep (ordinal 286): play a tone through the audio service.
     pub fn dos_beep(&self, freq: u32, dur: u32) -> u32 {
         debug!("  DosBeep(freq={}, dur={})", freq, dur);
-        super::mmpm::beep_tone(&self.shared.audio, freq, dur);
+        super::mmpm::beep_tone(&self.shared.audio, freq, dur, &|| self.interrupted() || self.shutting_down());
         NO_ERROR
     }
 
@@ -101,22 +101,22 @@ impl super::Loader {
         ERROR_INVALID_FUNCTION
     }
 
-    /// DosEnterMustComplete (ordinal 380).
-    pub fn dos_enter_must_complete(&self, p_nesting: u32) -> u32 {
-        debug!("  DosEnterMustComplete");
-        if p_nesting != 0 {
-            self.guest_write::<u32>(p_nesting, 1);
+    /// DosEnterMustComplete (ordinal 380) / DosExitMustComplete (381,
+    /// `enter` FALSE): a must-complete section of thread `tid` begins or
+    /// ends; `*pulNesting` gets the nesting afterwards. While thread 1 is
+    /// in one, signal exceptions and asynchronous process termination wait
+    /// (`signals.rs`, `interrupt.rs`).
+    pub fn dos_must_complete(&self, vcpu_id: u32, p_nesting: u32, enter: bool) -> u32 {
+        let tid = super::threads::tid_of_vcpu(vcpu_id);
+        match self.shared.threads.must_complete_step(tid, enter) {
+            Ok(n) => {
+                if p_nesting != 0 && self.guest_write::<u32>(p_nesting, n).is_none() {
+                    return ERROR_INVALID_PARAMETER;
+                }
+                NO_ERROR
+            }
+            Err(e) => e,
         }
-        NO_ERROR
-    }
-
-    /// DosExitMustComplete (ordinal 381).
-    pub fn dos_exit_must_complete(&self, p_nesting: u32) -> u32 {
-        debug!("  DosExitMustComplete");
-        if p_nesting != 0 {
-            self.guest_write::<u32>(p_nesting, 0);
-        }
-        NO_ERROR
     }
 
     // ── Step 2: Shared Memory ──

@@ -30,6 +30,7 @@
 
 use super::constants::*;
 use super::mutex_ext::MutexExt;
+use crate::gui::region::{RRect, Region, SetOp};
 use super::pm_rect::{Rectl, EMPTY_RECTL};
 use super::pm_types::{OS2Message, WindowManager};
 use super::{ApiResult, Loader};
@@ -61,6 +62,25 @@ pub fn rect_difference(a: &Rectl, b: &Rectl) -> Vec<Rectl> {
         Rectl::new(a.x_left, i.y_bottom, i.x_left, i.y_top),       // left
         Rectl::new(i.x_right, i.y_bottom, a.x_right, i.y_top),     // right
     ].into_iter().filter(|r| !r.is_empty()).collect()
+}
+
+/// How deep invalidation and validation go into child windows.
+const MAX_PAINT_DEPTH: usize = 64;
+
+/// Rectangle `r` as a region.
+pub fn region_of_rect(r: &Rectl) -> Region {
+    if r.is_empty() { Region::empty() } else { Region::rect(RRect::new(r.x_left, r.y_bottom, r.x_right, r.y_top)) }
+}
+
+/// The bounding rectangle of `r` (empty for an empty region).
+pub fn bounds_of(r: &Region) -> Rectl {
+    r.bounds().map_or(EMPTY_RECTL, |b| Rectl::new(b.x0, b.y0, b.x1, b.y1))
+}
+
+/// `a` ∪ `b`; when that is too complex to keep, the bounding rectangle of
+/// both.
+fn union(a: &Region, b: &Region) -> Region {
+    Region::combine(a, b, SetOp::Or).unwrap_or_else(|| region_of_rect(&bounds_of(a).union(&bounds_of(b))))
 }
 
 fn area(r: &Rectl) -> i64 {
@@ -143,15 +163,22 @@ impl WindowManager {
         self.get_window(hwnd).map_or(EMPTY_RECTL, |w| Rectl::new(0, 0, w.cx, w.cy))
     }
 
-    /// The update rectangle of `hwnd` (empty when it is valid).
+    /// The bounding rectangle of the update region of `hwnd` (empty when it
+    /// is valid).
     pub fn update_rect(&self, hwnd: u32) -> Rectl {
+        bounds_of(&self.update_region(hwnd))
+    }
+
+    /// The update region of `hwnd`, in its coordinates.
+    pub fn update_region(&self, hwnd: u32) -> Region {
         let (target, ox, oy) = self.paint_target(hwnd);
-        let r = self.get_window(target).map_or(EMPTY_RECTL, |w| w.update);
-        if r.is_empty() { EMPTY_RECTL } else { r.offset(-ox, -oy) }
+        let mut r = self.get_window(target).map_or_else(Region::empty, |w| w.update.clone());
+        r.offset(-ox, -oy);
+        r
     }
 
     /// The child windows of `hwnd` that an invalidation or validation with
-    /// `include_children` reaches, each with its offset into its own
+    /// `include_children` reaches, each with its rectangle in `hwnd`'s
     /// coordinates: none when `hwnd` clips its children and they are not
     /// asked for; only visible ones.
     fn paint_children(&self, hwnd: u32, include_children: bool) -> Vec<(u32, Rectl)> {
@@ -166,14 +193,21 @@ impl WindowManager {
     }
 
     /// WinInvalidateRect: add `rect` (window coordinates; `None` = the whole
-    /// window) to the update rectangle of `hwnd` and of the descendants it
+    /// window) to the update region of `hwnd` and of the descendants it
     /// reaches, and have each window with something to paint get a
     /// `WM_PAINT`. Marks the frame dirty.
     pub fn invalidate(&mut self, hwnd: u32, rect: Option<Rectl>, include_children: bool) {
+        let area = rect.map(|r| region_of_rect(&r));
+        self.invalidate_area(hwnd, area.as_ref(), include_children);
+    }
+
+    /// WinInvalidateRegion: as [`Self::invalidate`] with a region.
+    pub fn invalidate_area(&mut self, hwnd: u32, area: Option<&Region>, include_children: bool) {
         let (target, ox, oy) = self.paint_target(hwnd);
         let frame = self.client_to_frame(target);
         self.mark_dirty(frame);
-        self.invalidate_window(target, rect.map(|r| r.offset(ox, oy)), include_children);
+        let area = area.map(|a| { let mut a = a.clone(); a.offset(ox, oy); a });
+        self.invalidate_window(target, area, include_children, 0);
         // The frame itself repaints: its client is asked to erase first
         // (WM_ERASEBACKGROUND, pm_paint_style.rs).
         if target != hwnd {
@@ -186,27 +220,37 @@ impl WindowManager {
     /// repainted with it by `WinEndPaint`).
     pub fn invalidate_window_only(&mut self, hwnd: u32) {
         let (target, ..) = self.paint_target(hwnd);
-        let whole = self.window_rectl(target);
+        let whole = region_of_rect(&self.window_rectl(target));
         if let Some(w) = self.get_window_mut(target) {
-            w.update = w.update.union(&whole);
+            w.update = union(&w.update, &whole);
         }
         // A window of no size yet still gets its first WM_PAINT.
         self.post_paint(target);
         self.queue_sync_paint(target);
     }
 
-    fn invalidate_window(&mut self, hwnd: u32, rect: Option<Rectl>, include_children: bool) {
-        let whole = self.window_rectl(hwnd);
-        let Some(r) = (match rect { None => Some(whole), Some(r) => r.intersect(&whole) }) else { return };
+    fn invalidate_window(&mut self, hwnd: u32, area: Option<Region>, include_children: bool, depth: usize) {
+        if depth > MAX_PAINT_DEPTH { return; }
+        let whole = region_of_rect(&self.window_rectl(hwnd));
+        let r = match area {
+            None => whole,
+            Some(a) => match Region::combine(&a, &whole, SetOp::And) {
+                Some(r) => r,
+                // Too complex to keep: its bounds, inside the window.
+                None => region_of_rect(&bounds_of(&a).intersect(&self.window_rectl(hwnd)).unwrap_or(EMPTY_RECTL)),
+            },
+        };
         if r.is_empty() { return; }
         if let Some(w) = self.get_window_mut(hwnd) {
-            w.update = w.update.union(&r);
+            w.update = union(&w.update, &r);
         }
         self.post_paint(hwnd);
         self.queue_sync_paint(hwnd);
         for (child, at) in self.paint_children(hwnd, include_children) {
-            if let Some(part) = r.intersect(&at) {
-                self.invalidate_window(child, Some(part.offset(-at.x_left, -at.y_bottom)), include_children);
+            if let Some(mut part) = Region::combine(&r, &region_of_rect(&at), SetOp::And)
+                && !part.is_empty() {
+                part.offset(-at.x_left, -at.y_bottom);
+                self.invalidate_window(child, Some(part), include_children, depth + 1);
             }
         }
     }
@@ -229,55 +273,65 @@ impl WindowManager {
     }
 
     /// WinValidateRect: remove `rect` (`None` = everything) from the update
-    /// rectangle of `hwnd` and of the descendants it reaches. What is left
-    /// must be a rectangle; when it would not be, the update rectangle stays.
+    /// region of `hwnd` and of the descendants it reaches.
     pub fn validate(&mut self, hwnd: u32, rect: Option<Rectl>, include_children: bool) {
-        let (target, ox, oy) = self.paint_target(hwnd);
-        self.validate_window(target, rect.map(|r| r.offset(ox, oy)), include_children);
+        let area = rect.map(|r| region_of_rect(&r));
+        self.validate_area(hwnd, area.as_ref(), include_children);
     }
 
-    fn validate_window(&mut self, hwnd: u32, rect: Option<Rectl>, include_children: bool) {
+    /// WinValidateRegion: as [`Self::validate`] with a region.
+    pub fn validate_area(&mut self, hwnd: u32, area: Option<&Region>, include_children: bool) {
+        let (target, ox, oy) = self.paint_target(hwnd);
+        let area = area.map(|a| { let mut a = a.clone(); a.offset(ox, oy); a });
+        self.validate_window(target, area, include_children, 0);
+    }
+
+    fn validate_window(&mut self, hwnd: u32, area: Option<Region>, include_children: bool, depth: usize) {
+        if depth > MAX_PAINT_DEPTH { return; }
         let Some(w) = self.get_window_mut(hwnd) else { return };
-        w.update = match rect {
-            None => EMPTY_RECTL,
-            Some(r) => match w.update.subtract(&r) {
-                left if left.is_empty() => EMPTY_RECTL,
-                left => left,
-            },
+        w.update = match &area {
+            None => Region::empty(),
+            // Too complex to cut: the update region stays (at worst the
+            // window paints more than it must).
+            Some(a) => Region::combine(&w.update, a, SetOp::Diff).unwrap_or_else(|| w.update.clone()),
         };
         if w.update.is_empty() {
             self.withdraw_paint(hwnd);
         }
-        let whole = self.window_rectl(hwnd);
+        let whole = region_of_rect(&self.window_rectl(hwnd));
         for (child, at) in self.paint_children(hwnd, include_children) {
-            let part = match rect {
+            let part = match &area {
                 None => None,
-                Some(r) => match r.intersect(&whole).and_then(|r| r.intersect(&at)) {
-                    Some(p) => Some(p.offset(-at.x_left, -at.y_bottom)),
-                    None => continue,
-                },
+                Some(a) => {
+                    let inside = Region::combine(a, &whole, SetOp::And)
+                        .and_then(|r| Region::combine(&r, &region_of_rect(&at), SetOp::And));
+                    match inside {
+                        Some(mut p) if !p.is_empty() => { p.offset(-at.x_left, -at.y_bottom); Some(p) }
+                        _ => continue,
+                    }
+                }
             };
-            self.validate_window(child, part, include_children);
+            self.validate_window(child, part, include_children, depth + 1);
         }
     }
 
-    /// WinBeginPaint: the update rectangle of `hwnd`, which becomes empty.
-    pub fn begin_paint(&mut self, hwnd: u32) -> Rectl {
+    /// WinBeginPaint: the update region of `hwnd`, which becomes empty.
+    pub fn begin_paint(&mut self, hwnd: u32) -> Region {
         let (target, ox, oy) = self.paint_target(hwnd);
-        let Some(w) = self.get_window_mut(target) else { return EMPTY_RECTL };
-        let r = std::mem::replace(&mut w.update, EMPTY_RECTL);
+        let Some(w) = self.get_window_mut(target) else { return Region::empty() };
+        let mut r = std::mem::replace(&mut w.update, Region::empty());
         self.withdraw_paint(target);
-        if r.is_empty() { r } else { r.offset(-ox, -oy) }
+        r.offset(-ox, -oy);
+        r
     }
 
-    /// Clip `hps` to update rectangle `r` (window coordinates) for a
-    /// `WinBeginPaint`; an empty `r` removes the paint clip. (A
-    /// `WinBeginPaint` with nothing to update draws unclipped: Warpine's
+    /// Clip `hps` to update region `r` (window coordinates) for a
+    /// `WinBeginPaint`; `None` or an empty region removes the paint clip.
+    /// (A `WinBeginPaint` with nothing to update draws unclipped: Warpine's
     /// choice, so painting outside `WM_PAINT` still shows.)
-    pub fn set_paint_clip(&mut self, hps: u32, r: Rectl) {
+    pub fn set_paint_clip(&mut self, hps: u32, r: Option<Region>) {
         let Some(ps) = self.ps_map.get_mut(&hps) else { return };
-        ps.paint_clip = (!r.is_empty())
-            .then(|| crate::gui::region::RRect::new(r.x_left, r.y_bottom, r.x_right, r.y_top));
+        ps.paint_clip = r.filter(|r| !r.is_empty()).map(std::sync::Arc::new);
         self.refresh_clip(hps);
     }
 
@@ -305,7 +359,7 @@ impl WindowManager {
     /// control, `WinDefWindowProc`): it is valid now.
     pub fn painted(&mut self, hwnd: u32) {
         if let Some(w) = self.get_window_mut(hwnd) {
-            w.update = EMPTY_RECTL;
+            w.update = Region::empty();
         }
     }
 }
@@ -361,12 +415,12 @@ impl Loader {
         ApiResult::Normal(!r.is_empty() as u32)
     }
 
-    /// WinBeginPaint's update rectangle, written to `prcl` (if not NULL)
-    /// and returned.
-    pub(super) fn begin_paint_rect(&self, hwnd: u32, prcl: u32) -> Rectl {
+    /// WinBeginPaint's update region, its bounding rectangle written to
+    /// `prcl` (if not NULL).
+    pub(super) fn begin_paint_region(&self, hwnd: u32, prcl: u32) -> Region {
         let r = self.shared.window_mgr.lock_or_recover().begin_paint(hwnd);
         if prcl != 0 {
-            self.write_rectl(prcl, r);
+            self.write_rectl(prcl, bounds_of(&r));
         }
         r
     }
@@ -445,12 +499,15 @@ impl Loader {
         }
 
         if fl & SW_INVALIDATERGN != 0 {
-            // The part of the old update rectangle in the scroll area moves.
-            let old = wm.get_window(target).map_or(EMPTY_RECTL, |w| w.update);
-            if let Some(moved) = area.and_then(|a| old.intersect(&a))
-                .and_then(|m| c.and_then(|c| m.offset(dx, dy).intersect(&c)))
-            {
-                wm.invalidate(target, Some(moved), false);
+            // The part of the old update region in the scroll area moves.
+            let old = wm.get_window(target).map_or_else(Region::empty, |w| w.update.clone());
+            if let (Some(a), Some(c)) = (area, c)
+                && let Some(mut moved) = Region::combine(&old, &region_of_rect(&a), SetOp::And) {
+                moved.offset(dx, dy);
+                if let Some(moved) = Region::combine(&moved, &region_of_rect(&c), SetOp::And)
+                    && !moved.is_empty() {
+                    wm.invalidate_area(target, Some(&moved), false);
+                }
             }
             for r in &uncovered {
                 wm.invalidate(target, Some(*r), false);
@@ -674,6 +731,61 @@ mod tests {
         // GpiQueryPel reads the child's own coordinates.
         assert_eq!(query_pel(&loader, hps, 0, 0), 2, "red, as its colour-table index (CLR_RED)");
         assert_eq!(query_pel(&loader, hps, 40, 0), CLR_NOINDEX as u32, "outside the child");
+    }
+
+    /// The update area is a region: two invalidated rectangles stay two,
+    /// a validation cuts a hole, and WinBeginPaint clips to exactly that.
+    #[test]
+    fn the_update_area_is_a_region() {
+        let (loader, _, frame, client, _) = framed();
+        let hps = call(&loader, ORD_WIN_GET_PS, &[client]);
+        fill(&loader, hps, Rectl::new(0, 0, 280, 170), 0x00FF_FFFF);
+        let mut wm = loader.shared.window_mgr.lock_or_recover();
+        wm.validate(client, None, true);
+        wm.invalidate(client, Some(Rectl::new(0, 0, 20, 20)), false);
+        wm.invalidate(client, Some(Rectl::new(100, 100, 120, 120)), false);
+        assert_eq!(wm.update_rect(client), Rectl::new(0, 0, 120, 120), "bounds");
+        let u = wm.update_region(client);
+        assert!(!u.contains(50, 50), "the gap between them is not to be painted");
+        assert!(u.contains(5, 5) && u.contains(110, 110));
+        // A hole in the middle of a rectangle stays a hole.
+        wm.invalidate(client, Some(Rectl::new(0, 0, 60, 60)), false);
+        wm.validate(client, Some(Rectl::new(20, 20, 40, 40)), false);
+        let u = wm.update_region(client);
+        assert!(!u.contains(30, 30) && u.contains(10, 30) && u.contains(50, 50));
+        drop(wm);
+        let ps = call(&loader, ORD_WIN_BEGIN_PAINT, &[client, 0, OUT]);
+        assert_eq!(get_rect(&loader, OUT), Rectl::new(0, 0, 120, 120), "prclPaint: the bounds");
+        fill(&loader, ps, Rectl::new(0, 0, 280, 170), RED);
+        assert_eq!(pel(&loader, frame, 5 + 10, 10 + 10), Some(RED));
+        assert_eq!(pel(&loader, frame, 5 + 30, 10 + 30), Some(0x00FF_FFFF), "the hole is clipped");
+        assert_eq!(pel(&loader, frame, 5 + 80, 10 + 80), Some(0x00FF_FFFF), "between the parts too");
+        assert_eq!(pel(&loader, frame, 5 + 110, 10 + 110), Some(RED));
+        call(&loader, ORD_WIN_END_PAINT, &[ps]);
+        assert!(loader.shared.window_mgr.lock_or_recover().update_region(client).is_empty());
+    }
+
+    /// A child window's PS also stays inside the child's parent.
+    #[test]
+    fn a_grandchilds_ps_is_clipped_to_its_parent() {
+        let (loader, hmq, frame, _, child) = framed();
+        // A 40×40 grandchild at (30, 10) in the 40×30 child sticks out of it
+        // to the right and the top.
+        let grand = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let g = wm.create_window("Kid".into(), child, hmq);
+            let w = wm.get_window_mut(g).unwrap();
+            (w.x, w.y, w.cx, w.cy, w.visible) = (30, 10, 40, 40, true);
+            g
+        };
+        let before = pel(&loader, frame, 80, 60);
+        let hps = call(&loader, ORD_WIN_GET_PS, &[grand]);
+        fill(&loader, hps, Rectl::new(0, 0, 40, 40), RED);
+        // The child spans the frame surface's (25, 40) .. (65, 70); the
+        // grandchild (55, 50) .. (95, 90).
+        assert_eq!(pel(&loader, frame, 60, 60), Some(RED), "inside both");
+        assert_eq!(pel(&loader, frame, 80, 60), before, "outside its parent: clipped");
+        assert_eq!(pel(&loader, frame, 60, 75), before, "above its parent too");
     }
 
     /// WinBeginPaint clips its PS to the update rectangle until WinEndPaint.

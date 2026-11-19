@@ -2366,6 +2366,20 @@ fn gui_pm_xshell_test_shares_the_sessions_shell_services() {
                                 "9000 key ctrl+esc\n9600 key down\n10000 key enter\n30000 quit\n");
 }
 
+/// pm_paint_input_test (ADR-0058): update regions (two parts and a hole,
+/// WinBeginPaint painting exactly the region), a grandchild's PS clipped to
+/// its parent, WinQueryQueueStatus, must-complete sections holding a signal;
+/// then clicks routed to the deepest window (through a static, to a
+/// grandchild, to a disabled grandchild's parent, button 2 too), WM_HITTEST
+/// asked of CS_HITTEST windows (HT_TRANSPARENT passes the click beneath,
+/// HT_DISCARD drops it). The client lies at desktop (40, 288), top-left.
+#[test]
+fn gui_pm_paint_input_test_routes_pointer_input_and_paints_regions() {
+    assert_scripted_checks_pass("samples/pm_paint_input_test/pm_paint_input_test.exe", "pm_paint_input_test", 40,
+        "3000 click 70 517\n4000 click 135 532\n5000 click 290 517\n6000 click 390 517\n\
+         7000 click 190 367\n8000 rclick 70 517\n9500 click 135 532\n20000 quit\n");
+}
+
 /// pm_xdrag_test: drag and drop between programs (ADR-0057). A button-2
 /// drag from the parent's client ("Drag A", desktop x 40–340) to the
 /// child's ("Drag B", x 500–800): DM_DRAGOVER / DM_DRAGLEAVE at the source,

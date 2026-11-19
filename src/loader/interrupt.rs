@@ -71,25 +71,34 @@ pub(crate) fn end_call() -> bool {
     CALL.with(|c| c.replace(CallState::default()).restart)
 }
 
+/// Whether the call the calling thread is blocked in should stop (see
+/// [`super::Loader::interrupted`]), for code that holds only the shared
+/// state.
+pub(crate) fn call_interrupted(shared: &super::SharedState) -> bool {
+    let call = CALL.with(Cell::get);
+    if call.tid == 0 {
+        return false;
+    }
+    let threads = &shared.threads;
+    if threads.table.lock_or_recover().is_killed(call.tid) {
+        return true;
+    }
+    if call.tid != MAIN_TID
+        || !threads.signal_pending.load(Ordering::Acquire)
+        || threads.exit_list_active.load(Ordering::Acquire)
+        || threads.must_complete.load(Ordering::Acquire) != 0 {
+        return false;
+    }
+    let signals = threads.signals.lock_or_recover();
+    signals.termination_pending() || (call.signals && signals.deliverable())
+}
+
 impl super::Loader {
     /// Whether the call the calling thread is blocked in should stop: its
-    /// thread was killed, or — thread 1 — a signal or a termination waits.
+    /// thread was killed, or — thread 1 — a signal or a termination waits
+    /// (not inside a must-complete section).
     pub(crate) fn interrupted(&self) -> bool {
-        let call = CALL.with(Cell::get);
-        if call.tid == 0 {
-            return false;
-        }
-        let threads = &self.shared.threads;
-        if threads.table.lock_or_recover().is_killed(call.tid) {
-            return true;
-        }
-        if call.tid != MAIN_TID
-            || !threads.signal_pending.load(Ordering::Acquire)
-            || threads.exit_list_active.load(Ordering::Acquire) {
-            return false;
-        }
-        let signals = threads.signals.lock_or_recover();
-        signals.termination_pending() || (call.signals && signals.deliverable())
+        call_interrupted(&self.shared)
     }
 
     /// `interrupted`, for a call that is then made again: its result is

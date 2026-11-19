@@ -66,6 +66,9 @@ pub(super) enum Got {
     Message(u32),
     /// A message another program sent, for the thread to run first.
     Sent(SentMessage),
+    /// The pointer event at the head of the input queue waits for its
+    /// window's `WM_HITTEST` answer: the thread asks, then reads again.
+    HitTest(super::pm_input::HitAsk),
 }
 
 impl super::Loader {
@@ -279,6 +282,7 @@ impl super::Loader {
                                         read_stack(20), PM_REMOVE, true, hooks.is_empty()) {
                     // A message from another program runs first (pm_remote.rs).
                     Some(Got::Sent(s)) => self.run_sent(vcpu_id, s, AfterSent::Rerun(ordinal)),
+                    Some(Got::HitTest(a)) => self.hit_test_chain(vcpu_id, a, AfterSent::Rerun(ordinal)),
                     Some(_) if !hooks.is_empty() =>
                         self.input_hook_chain(vcpu_id, hooks, ordinal, pqmsg, PM_REMOVE, false),
                     Some(Got::Message(msg)) => ApiResult::Normal((msg != WM_QUIT) as u32),
@@ -298,6 +302,9 @@ impl super::Loader {
                                               read_stack(20), fl, false, hooks.is_empty());
                 if let Some(Got::Sent(s)) = found {
                     return self.run_sent(vcpu_id, s, AfterSent::Rerun(ordinal));
+                }
+                if let Some(Got::HitTest(a)) = found {
+                    return self.hit_test_chain(vcpu_id, a, AfterSent::Rerun(ordinal));
                 }
                 if found.is_some() && !hooks.is_empty() {
                     return self.input_hook_chain(vcpu_id, hooks, ordinal, pqmsg, fl, true);
@@ -435,8 +442,8 @@ impl super::Loader {
                 drop(wm);
                 // prclPaint receives the update rectangle, which is emptied
                 // (pm_paint.rs); the PS is clipped to it until WinEndPaint.
-                let r = self.begin_paint_rect(hwnd, prcl);
-                self.shared.window_mgr.lock_or_recover().set_paint_clip(hps, r);
+                let r = self.begin_paint_region(hwnd, prcl);
+                self.shared.window_mgr.lock_or_recover().set_paint_clip(hps, Some(r));
                 ApiResult::Normal(hps)
             }
             738 => {
@@ -465,7 +472,7 @@ impl super::Loader {
                 if wm.ps_map.get(&hps).is_some_and(|ps| ps.origin == PsOrigin::Paint) {
                     wm.remove_ps(hps);
                 } else {
-                    wm.set_paint_clip(hps, super::pm_rect::EMPTY_RECTL);
+                    wm.set_paint_clip(hps, None);
                 }
                 ApiResult::Normal(1)
             }
@@ -1604,6 +1611,14 @@ impl super::Loader {
                 // WinSetPointerPos(HWND hwndDesktop, LONG x, LONG y) -> BOOL
                 self.win_set_pointer_pos(vcpu_id, read_stack(4), read_stack(8) as i32, read_stack(12) as i32)
             }
+            825 => {
+                // WinQueryQueueStatus(HWND hwndDesktop) → ULONG: the QS_*
+                // kinds in the caller's queue (high word) and those added
+                // since the last call (low word; pm_input.rs).
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let hmq = wm.thread_queue(vcpu_id).unwrap_or(0);
+                ApiResult::Normal(wm.queue_status(hmq))
+            }
             // ── System colours (pm_syscolor.rs) ──
             826 => {
                 // WinQuerySysColor(HWND hwndDesktop, LONG clr, LONG lReserved) -> LONG
@@ -1985,6 +2000,10 @@ impl super::Loader {
                 }
                 return Some(Got::Message(msg.msg));
             }
+            // A pointer event waits for its window's WM_HITTEST answer.
+            if let Some(a) = self.shared.window_mgr.lock_or_recover().take_hit_ask(hmq) {
+                return Some(Got::HitTest(a));
+            }
             if !wait { return None; }
             // Block on the queue's condvar instead of spinning.
             let guard = wait_lock.lock_or_recover();
@@ -2203,6 +2222,12 @@ impl super::Loader {
             // "The default window procedure sets the pointer shape":
             // the arrow (pm_pointer.rs).
             WM_MOUSEMOVE => { self.default_mouse_pointer(); }
+            // A disabled window takes no pointer input (pm_input.rs).
+            super::pm_input::WM_HITTEST => {
+                let disabled = self.shared.window_mgr.lock_or_recover().get_window(hwnd)
+                    .is_some_and(|w| w.style & WS_DISABLED != 0);
+                return ApiResult::Normal(if disabled { super::pm_input::HT_ERROR as u32 } else { 0 });
+            }
             // As WinBeginPaint + WinEndPaint would: the window is valid.
             // (Its children keep their own update rectangles.)
             WM_PAINT => { self.shared.window_mgr.lock_or_recover().begin_paint(hwnd); }

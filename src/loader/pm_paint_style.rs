@@ -179,7 +179,7 @@ impl Loader {
     pub(super) fn erase_background_setup(&self, client: u32) -> OwnerSetup {
         let mut wm = self.shared.window_mgr.lock_or_recover();
         let Some(w) = wm.get_window(client) else { return OwnerSetup::Skip };
-        let (wnd_proc, update) = (w.pfn_wp, w.update);
+        let (wnd_proc, update) = (w.pfn_wp, super::pm_paint::bounds_of(&w.update));
         if wnd_proc == 0 || update.is_empty() {
             return OwnerSetup::Skip;
         }

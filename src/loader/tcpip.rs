@@ -458,12 +458,41 @@ impl super::Loader {
             self.shared.socket_mgr.lock_or_recover().set_errno(SOCE_FAULT);
             return SOCK_ERROR;
         }
+        if !self.so_waits_here(fd, libc::POLLOUT, 0) {
+            // SAFETY: `addr_bytes` holds `namelen` bytes (checked above).
+            let rc = unsafe {
+                libc::connect(fd, addr_bytes.as_ptr() as *const libc::sockaddr, namelen as libc::socklen_t)
+            };
+            return self.translate_rc(rc, SOCK_SUCCESS);
+        }
+        // A blocking connect is made without blocking and waited for in
+        // slices, so a signal stops it (SOCEINTR, as BSD's EINTR: the
+        // connection goes on in the background).
+        // SAFETY: F_GETFL / F_SETFL on a descriptor the socket table owns.
+        let fl = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        unsafe { libc::fcntl(fd, libc::F_SETFL, fl | libc::O_NONBLOCK) };
+        // SAFETY: `addr_bytes` holds `namelen` bytes (checked above).
         let rc = unsafe {
-            libc::connect(fd,
-                addr_bytes.as_ptr() as *const libc::sockaddr,
-                namelen as libc::socklen_t)
+            libc::connect(fd, addr_bytes.as_ptr() as *const libc::sockaddr, namelen as libc::socklen_t)
         };
-        self.translate_rc(rc, SOCK_SUCCESS)
+        let err = if rc == 0 { 0 } else { last_errno() };
+        let result = match err {
+            0 => Ok(()),
+            libc::EINPROGRESS => self.so_poll(fd, libc::POLLOUT).and_then(|()| {
+                let mut e: libc::c_int = 0;
+                let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+                // SAFETY: `e` and `len` are live locals of the sizes passed.
+                unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_ERROR, &mut e as *mut _ as *mut libc::c_void, &mut len) };
+                if e == 0 { Ok(()) } else { Err(errno_to_soce(e)) }
+            }),
+            e => Err(errno_to_soce(e)),
+        };
+        // SAFETY: restores the flags read above.
+        unsafe { libc::fcntl(fd, libc::F_SETFL, fl) };
+        match result {
+            Ok(()) => { self.shared.socket_mgr.lock_or_recover().clear_errno(); SOCK_SUCCESS }
+            Err(e) => self.so_fail(e),
+        }
     }
 
     // ── listen (ordinal 10) ───────────────────────────────────────────────────
@@ -493,16 +522,29 @@ impl super::Loader {
     /// (`O_NONBLOCK`, `MSG_DONTWAIT` in `flags`) or has its own timeout
     /// (`SO_RCVTIMEO` / `SO_SNDTIMEO`) is left to the call itself.
     fn so_wait(&self, fd: i32, events: i16, flags: u32) -> Result<(), i32> {
-        if flags & libc::MSG_DONTWAIT as u32 != 0 { return Ok(()); }
+        if !self.so_waits_here(fd, events, flags) { return Ok(()); }
+        self.so_poll(fd, events)
+    }
+
+    /// Whether a call on socket `fd` waiting for `events` would block
+    /// without a time limit: a blocking socket without its own timeout,
+    /// and no `MSG_DONTWAIT` in `flags`. Such waits are made here, in slices.
+    fn so_waits_here(&self, fd: i32, events: i16, flags: u32) -> bool {
+        if flags & libc::MSG_DONTWAIT as u32 != 0 { return false; }
         // SAFETY: F_GETFL on a descriptor the socket table owns; no memory.
         let fl = unsafe { libc::fcntl(fd, libc::F_GETFL) };
-        if fl < 0 || fl & libc::O_NONBLOCK != 0 { return Ok(()); }
+        if fl < 0 || fl & libc::O_NONBLOCK != 0 { return false; }
         let opt = if events == libc::POLLOUT { libc::SO_SNDTIMEO } else { libc::SO_RCVTIMEO };
         let mut tv: libc::timeval = libc::timeval { tv_sec: 0, tv_usec: 0 };
         let mut len = std::mem::size_of::<libc::timeval>() as libc::socklen_t;
         // SAFETY: `tv` and `len` are live locals of the sizes passed.
         let got = unsafe { libc::getsockopt(fd, libc::SOL_SOCKET, opt, &mut tv as *mut _ as *mut libc::c_void, &mut len) };
-        if got == 0 && (tv.tv_sec != 0 || tv.tv_usec != 0) { return Ok(()); }
+        !(got == 0 && (tv.tv_sec != 0 || tv.tv_usec != 0))
+    }
+
+    /// Wait in slices until `fd` is ready for `events`; `SOCEINTR` when a
+    /// signal, a kill or the process end stops the call.
+    fn so_poll(&self, fd: i32, events: i16) -> Result<(), i32> {
         loop {
             let mut p = libc::pollfd { fd, events, revents: 0 };
             // SAFETY: one live pollfd for the duration of the call.
@@ -569,8 +611,11 @@ impl super::Loader {
     pub fn so_send(&self, s: u32, buf_ptr: u32, len: u32, flags: u32) -> u32 {
         debug!("send(s=0x{:X}, len={}, flags={})", s, len, flags);
         let Some(fd) = self.so_fd(s) else { return SOCK_ERROR; };
-        if let Err(e) = self.so_wait(fd, libc::POLLOUT, flags) { return self.so_fail(e); }
         let data = self.read_guest_bytes(buf_ptr, len as usize);
+        if self.so_waits_here(fd, libc::POLLOUT, flags) {
+            return self.so_send_in_slices(fd, &data, flags);
+        }
+        // SAFETY: `data` is a host buffer whose own length is passed.
         let sent = unsafe {
             libc::send(fd, data.as_ptr() as *const libc::c_void, data.len(), flags as i32)
         };
@@ -581,6 +626,34 @@ impl super::Loader {
         }
         self.shared.socket_mgr.lock_or_recover().clear_errno();
         sent as u32
+    }
+
+    /// A blocking `send` of `data`: the part that fits is sent without
+    /// blocking, then the rest after waiting for room, in slices. A signal
+    /// stops it: the bytes sent so far, or `SOCEINTR` when none were.
+    fn so_send_in_slices(&self, fd: i32, data: &[u8], flags: u32) -> u32 {
+        let mut done = 0usize;
+        loop {
+            if let Err(e) = self.so_poll(fd, libc::POLLOUT) {
+                if done > 0 { break; }
+                return self.so_fail(e);
+            }
+            let rest = &data[done..];
+            // SAFETY: `rest` is a host buffer whose own length is passed.
+            let n = unsafe {
+                libc::send(fd, rest.as_ptr() as *const libc::c_void, rest.len(), flags as i32 | libc::MSG_DONTWAIT)
+            };
+            if n < 0 {
+                let e = last_errno();
+                if e == libc::EAGAIN || e == libc::EWOULDBLOCK || e == libc::EINTR { continue; }
+                if done > 0 { break; }
+                return self.so_fail(errno_to_soce(e));
+            }
+            done += n as usize;
+            if done >= data.len() { break; }
+        }
+        self.shared.socket_mgr.lock_or_recover().clear_errno();
+        done as u32
     }
 
     // ── sendto (ordinal 15) ───────────────────────────────────────────────────
@@ -1691,5 +1764,33 @@ mod tests {
         assert_eq!(loader.so_accept(h, 0, 0), SOCK_ERROR);
         assert_ne!(loader.shared.socket_mgr.lock_or_recover().last_sock_errno.load(Ordering::Relaxed), SOCE_INTR, "not waited for");
         end_call();
+    }
+
+    /// A blocking send larger than the socket's free room sends what fits
+    /// and returns that count when a signal stops it; with no room at all
+    /// it fails with SOCEINTR.
+    #[test]
+    fn a_blocking_send_stops_at_a_signal() {
+        use crate::loader::interrupt::{begin_call, end_call};
+        use crate::loader::threads::MAIN_TID;
+        use crate::loader::constants::{SIG_SETFOCUS, XCPT_SIGNAL_INTR};
+        let loader = Loader::new_mock();
+        let mut fds = [0i32; 2];
+        // SAFETY: socketpair fills the two-element array.
+        assert_eq!(unsafe { libc::socketpair(libc::AF_UNIX, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0, fds.as_mut_ptr()) }, 0);
+        let h = loader.shared.socket_mgr.lock_or_recover().alloc(fds[0]);
+        loader.dos_set_signal_exception_focus(SIG_SETFOCUS, 0);
+        loader.post_signal(XCPT_SIGNAL_INTR);
+        begin_call(MAIN_TID, true);
+        const BIG: u32 = 8 << 20;
+        let start = std::time::Instant::now();
+        let sent = loader.so_send(h, 0x0200_0000, BIG, 0);
+        assert!(sent > 0 && sent < BIG, "what fitted: {sent}");
+        assert_eq!(loader.so_send(h, 0x0200_0000, BIG, 0), SOCK_ERROR, "no room left");
+        assert_eq!(loader.shared.socket_mgr.lock_or_recover().last_sock_errno.load(Ordering::Relaxed), SOCE_INTR);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        end_call();
+        // SAFETY: closing the peer created above.
+        unsafe { libc::close(fds[1]) };
     }
 }

@@ -332,6 +332,10 @@ pub(crate) enum ChainThen {
     /// step's next messages, or record the `DM_DRAGOVER` reply and wait
     /// for the next input, or end.
     Drag,
+    /// `WM_HITTEST` asked of `hwnd` for the pointer event at the head of
+    /// the input queue (`pm_input.rs`): record the answer, then go on as
+    /// `after` says.
+    HitTest { hwnd: u32, after: super::pm_remote::AfterSent },
     /// A message another program sent (`pm_remote.rs`): answer call `id`
     /// with the window procedure's result, then go on as `after` says.
     /// `calls`: how many calls the chain was to make.
@@ -439,6 +443,7 @@ impl Loader {
             ChainThen::ContainerFilter { hwnd, job } => self.container_filter_done(hwnd, job, &chain.results),
             ChainThen::DialogMnemonic { dlg } => self.dialog_mnemonic_done(dlg, chain),
             ChainThen::Drag => self.drag_chain_done(chain.last),
+            ChainThen::HitTest { hwnd, after } => self.hit_test_done(hwnd, after, chain),
             ChainThen::AnswerSent { id, hwnd, after, finish, calls } =>
                 self.sent_done(id, hwnd, after, finish, calls, chain),
             ChainThen::StdDialog { hwnd, buf, ret } => {

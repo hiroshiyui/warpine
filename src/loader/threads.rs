@@ -357,6 +357,40 @@ pub struct Threads {
     pub signals: Mutex<super::signals::SignalState>,
     /// A signal may be deliverable (a quick look before `signals`).
     pub signal_pending: AtomicBool,
+    /// Must-complete nesting per thread (`DosEnterMustComplete`).
+    pub must_complete_by: Mutex<std::collections::HashMap<u32, u32>>,
+    /// Thread 1's must-complete nesting: while it is not 0, signals and
+    /// asynchronous process termination wait (a quick look).
+    pub must_complete: std::sync::atomic::AtomicU32,
+}
+
+/// Deepest must-complete nesting (Warpine's bound).
+pub const MAX_MUST_COMPLETE: u32 = 0xFFFF;
+
+impl Threads {
+    /// `DosEnterMustComplete` (`enter`) / `DosExitMustComplete` on thread
+    /// `tid`: its nesting afterwards, or the error (`ERROR_ALREADY_RESET`
+    /// outside a section, `ERROR_NESTING_TOO_DEEP` beyond
+    /// [`MAX_MUST_COMPLETE`]).
+    pub fn must_complete_step(&self, tid: u32, enter: bool) -> Result<u32, u32> {
+        let mut by = self.must_complete_by.lock_or_recover();
+        let n = by.get(&tid).copied().unwrap_or(0);
+        let next = match (enter, n) {
+            (true, n) if n >= MAX_MUST_COMPLETE => return Err(super::constants::ERROR_NESTING_TOO_DEEP),
+            (true, n) => n + 1,
+            (false, 0) => return Err(super::constants::ERROR_ALREADY_RESET),
+            (false, n) => n - 1,
+        };
+        if next == 0 { by.remove(&tid); } else { by.insert(tid, next); }
+        if tid == MAIN_TID { self.must_complete.store(next, Ordering::Release); }
+        Ok(next)
+    }
+
+    /// Thread `tid` ended: it leaves its must-complete sections.
+    pub fn forget_must_complete(&self, tid: u32) {
+        self.must_complete_by.lock_or_recover().remove(&tid);
+        if tid == MAIN_TID { self.must_complete.store(0, Ordering::Release); }
+    }
 }
 
 impl Threads {

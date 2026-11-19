@@ -389,28 +389,16 @@ impl DragTable {
 
 impl WindowManager {
     /// The window under desktop point `(x, y)` that pointer input goes to,
-    /// with the point in its coordinates: a built-in control, a dialog
-    /// embedded in the frame, or the client (dialog) itself; `None` over a
-    /// frame's border and title bar or the desktop.
+    /// with the point in its coordinates: the deepest window there (a
+    /// built-in control, an embedded dialog's control, an application's child
+    /// window), or the client (dialog) itself; `None` over a frame's border
+    /// and title bar or the desktop.
     pub fn window_under(&self, x: i32, y: i32) -> Option<(u32, i32, i32)> {
         let frame = self.z_hit_test(x, y)?;
         let target = self.frame_to_client.get(&frame).copied().unwrap_or(frame);
-        let (ox, oy) = self.window_origin(target)?;
-        let (lx, ly) = (x - ox, y - oy);
-        // As the renderer routes button 1: from message coordinates to the
-        // frame surface (a client lies at its place in it; a dialog's
-        // surface starts inside its left border).
-        let (sx, sy) = match self.get_window(frame) {
-            Some(w) if !self.frame_to_client.contains_key(&frame) => (lx - frame_border_width(w.frame_flags), ly),
-            _ => {
-                let (cx, cy, _, _) = self.client_view(frame).unwrap_or_default();
-                (lx.saturating_add(cx), ly.saturating_add(cy))
-            }
-        };
-        if let Some(hit) = self.control_at(frame, sx, sy) { return Some(hit); }
-        if let Some(root) = self.control_root(frame) && let Some(hit) = self.embedded_dialog_at(root, sx, sy) {
-            return Some(hit);
-        }
+        let (lx, ly) = self.pointer_local(frame, x, y);
+        // The deepest window there, as pointer input is routed (pm_input.rs).
+        if let Some(hit) = self.window_under_pointer(frame, lx, ly, &[]) { return Some(hit); }
         let w = self.get_window(target)?;
         (lx >= 0 && ly >= 0 && lx < w.cx && ly < w.cy).then_some((target, lx, ly))
     }

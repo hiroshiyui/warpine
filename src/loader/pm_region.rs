@@ -164,13 +164,14 @@ impl WindowManager {
             (Some(a), Some(b)) => Some(Region::combine(&a, &b, SetOp::And).map(Arc::new).unwrap_or(a)),
         };
         // Viewing limits and graphics field (pm_xform.rs), and the update
-        // rectangle of a WinBeginPaint PS.
+        // region of a WinBeginPaint PS.
         let mut clip = clip;
-        for limit in [ps.coords.device_limits(), ps.paint_clip] {
+        let limits = [ps.coords.device_limits().map(|r| Arc::new(Region::rect(r))), ps.paint_clip.clone()];
+        for limit in limits {
             clip = match (clip, limit) {
                 (clip, None) => clip,
-                (None, Some(r)) => Some(Arc::new(Region::rect(r))),
-                (Some(c), Some(r)) => Some(Region::combine(&c, &Region::rect(r), SetOp::And).map(Arc::new).unwrap_or(c)),
+                (None, Some(r)) => Some(r),
+                (Some(c), Some(r)) => Some(Region::combine(&c, &r, SetOp::And).map(Arc::new).unwrap_or(c)),
             };
         }
         if let Some(ps) = self.ps_map.get_mut(&hps) { ps.clip = clip; }
@@ -181,10 +182,10 @@ impl WindowManager {
         let Some(ps) = self.ps_map.get(&hps) else { return Region::empty() };
         let clip = ps.clip.clone();
         let target = self.ps_draw_target(hps).filter(|t| *t != DrawTarget::None);
-        // A client's extent, else its surface's.
-        let extent = target.and_then(|t| self.target_view(t).1);
-        let visible = match extent {
-            Some((cx, cy)) => Region::rect(RRect::new(0, 0, cx, cy)),
+        // A client's extent, a child's part inside its ancestors, else its
+        // surface's.
+        let visible = match target.and_then(|t| self.target_visible(t)) {
+            Some(v) => Region::rect(v),
             None => target.and_then(|t| self.target_surface(t))
                 .map(|s| { let s = s.lock_or_recover(); Region::rect(RRect::new(0, 0, s.width as i32, s.height as i32)) })
                 .unwrap_or_else(Region::infinite),
@@ -611,40 +612,26 @@ impl Loader {
 
     /// WinInvalidateRegion(HWND hwnd, HRGN hrgn, BOOL fIncludeChildren) →
     /// BOOL: add the region (window coordinates; NULLHANDLE = the whole
-    /// window) to the update rectangle — Warpine keeps its bounding
-    /// rectangle (`pm_paint.rs`).
+    /// window) to the update region (`pm_paint.rs`).
     pub(super) fn win_invalidate_region(&self, tid: u32, hwnd: u32, hrgn: u32, include: u32) -> ApiResult {
         if !self.pm_check_hwnd(tid, hwnd, false) { return ApiResult::Normal(0); }
         let Ok(region) = self.window_region(tid, hrgn) else { return ApiResult::Normal(0) };
-        let rect = match region {
-            None => None,
-            Some(r) => match r.bounds() {
-                Some(b) => Some(to_rectl(b)),
-                None => return ApiResult::Normal(1),
-            },
-        };
-        self.shared.window_mgr.lock_or_recover().invalidate(hwnd, rect, include != 0);
+        if region.as_ref().is_some_and(|r| r.is_empty()) { return ApiResult::Normal(1); }
+        self.shared.window_mgr.lock_or_recover().invalidate_area(hwnd, region.as_deref(), include != 0);
         ApiResult::Normal(1)
     }
 
     /// WinValidateRegion(HWND hwnd, HRGN hrgn, BOOL fIncludeClippedChildren)
-    /// → BOOL: remove the region's rectangles from the update rectangle
-    /// (as `WinValidateRect` does with each).
+    /// → BOOL: remove the region from the update region.
     pub(super) fn win_validate_region(&self, tid: u32, hwnd: u32, hrgn: u32, include: u32) -> ApiResult {
         if !self.pm_check_hwnd(tid, hwnd, false) { return ApiResult::Normal(0); }
         let Ok(region) = self.window_region(tid, hrgn) else { return ApiResult::Normal(0) };
-        let mut wm = self.shared.window_mgr.lock_or_recover();
-        match region {
-            None => wm.validate(hwnd, None, include != 0),
-            Some(r) => for rc in r.rects(RectOrder::LeftRightBottomTop) {
-                wm.validate(hwnd, Some(to_rectl(rc)), include != 0);
-            },
-        }
+        self.shared.window_mgr.lock_or_recover().validate_area(hwnd, region.as_deref(), include != 0);
         ApiResult::Normal(1)
     }
 
     /// WinQueryUpdateRegion(HWND hwnd, HRGN hrgn) → LONG: set the region to
-    /// the window's update rectangle (window coordinates).
+    /// the window's update region (window coordinates).
     pub(super) fn win_query_update_region(&self, tid: u32, hwnd: u32, hrgn: u32) -> ApiResult {
         if !self.pm_check_hwnd(tid, hwnd, false) { return ApiResult::Normal(RGN_ERROR); }
         let Ok(Some(_)) = self.window_region(tid, hrgn) else {
@@ -652,28 +639,24 @@ impl Loader {
             return ApiResult::Normal(RGN_ERROR);
         };
         let mut wm = self.shared.window_mgr.lock_or_recover();
-        let u = wm.update_rect(hwnd);
-        let region = if u.is_empty() { Region::empty() } else {
-            Region::rect(RRect::new(u.x_left, u.y_bottom, u.x_right, u.y_top))
-        };
+        let region = wm.update_region(hwnd);
         let c = rgn_value(region.complexity());
         wm.regions.set(hrgn, region);
         ApiResult::Normal(c)
     }
 
     /// WinExcludeUpdateRegion(HPS hps, HWND hwnd) → LONG: take the window's
-    /// update rectangle out of the PS's clip region (creating one).
+    /// update region out of the PS's clip region (creating one).
     pub(super) fn win_exclude_update_region(&self, tid: u32, hps: u32, hwnd: u32) -> ApiResult {
         if !self.pm_check_hwnd(tid, hwnd, false) { return ApiResult::Normal(RGN_ERROR); }
         if !self.check_hps(tid, hps) { return ApiResult::Normal(RGN_ERROR); }
         let mut wm = self.shared.window_mgr.lock_or_recover();
-        let u = wm.update_rect(hwnd);
+        let update = wm.update_region(hwnd);
         let current = wm.ps_map[&hps].clip_region;
-        if u.is_empty() {
+        if update.is_empty() {
             return ApiResult::Normal(rgn_value(wm.effective_clip(hps).complexity()));
         }
         let base = wm.regions.get(current).cloned().unwrap_or_else(|| Arc::new(Region::infinite()));
-        let update = Region::rect(RRect::new(u.x_left, u.y_bottom, u.x_right, u.y_top));
         let Some(next) = Region::combine(&base, &update, SetOp::Diff) else {
             return ApiResult::Normal(RGN_ERROR);
         };

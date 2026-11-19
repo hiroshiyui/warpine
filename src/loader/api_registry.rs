@@ -412,9 +412,9 @@ static REGISTRY: &[ApiEntry] = &[
     ApiEntry { ordinal: 379, module: "DOSCALLS", name: "DosSendSignalException", argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_send_signal_exception(a[0],a[1])) },
     ApiEntry { ordinal: 380, module: "DOSCALLS", name: "DosEnterMustComplete", argc: 1,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_enter_must_complete(a[0])) },
+               handler: |l,_v,i,a| ApiResult::Normal(l.dos_must_complete(i,a[0],true)) },
     ApiEntry { ordinal: 381, module: "DOSCALLS", name: "DosExitMustComplete",  argc: 1,
-               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_exit_must_complete(a[0])) },
+               handler: |l,_v,i,a| ApiResult::Normal(l.dos_must_complete(i,a[0],false)) },
     ApiEntry { ordinal: 382, module: "DOSCALLS", name: "DosSetRelMaxFH",   argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_rel_max_fh(a[0],a[1])) },
     ApiEntry { ordinal: 415, module: "DOSCALLS", name: "DosShutdown",      argc: 1,
@@ -812,7 +812,7 @@ const KBDCALLS_ORDINALS: u32 = 3;
 const MOUCALLS_ORDINALS: u32 = 20;
 /// PMWIN ordinals dispatched by `pm_win.rs` (checked against its
 /// `N => { // WinName(` arms by a test).
-const PMWIN_ORDINALS: u32 = 172;
+const PMWIN_ORDINALS: u32 = 173;
 /// PMGPI ordinals dispatched by `pm_gpi.rs`, `pm_region.rs`, `pm_area.rs`,
 /// `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs` (checked against
 /// their arms by a test), of which `PMGPI_STUBS` are stubs (`GpiLoadFonts`,

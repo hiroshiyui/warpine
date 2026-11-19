@@ -238,6 +238,7 @@ impl super::Loader {
     /// The end of thread `vcpu_id`'s vCPU loop (see `run_vcpu`).
     fn end_thread(&self, mut vcpu: Box<dyn VcpuBackend>, vcpu_id: u32, mut end: ThreadEnd, initial_esp: u32) {
         let tid = tid_of_vcpu(vcpu_id);
+        self.shared.threads.forget_must_complete(tid);
         // Thread 1 ending as the last thread ends the process: its exit list
         // runs first, on this thread (decided under the table lock, so that
         // a thread ending at the same time cannot also be the last).
@@ -818,7 +819,16 @@ impl super::Loader {
                             debug!("  [VCPU {}] 16-bit API call: ordinal {} at flat=0x{:08X}, ret=0x{:04X}:0x{:04X}, SP=0x{:04X}",
                                 vcpu_id, ordinal, flat_rip, ret_cs_dbg, ret_ip_dbg, sp_dbg);
                         }
+                        // A blocking 16-bit call can be interrupted too (a
+                        // kill, the process end; 16-bit code takes no
+                        // signal-handler call): it is made again at the
+                        // thunk, where the top of the loop ends the thread.
+                        interrupt::begin_call(tid, false);
                         let result = self.handle_ne_api_call(&mut *vcpu, vcpu_id, ordinal);
+                        if interrupt::end_call() {
+                            debug!("  [VCPU {}] 16-bit call {} interrupted; it is made again", vcpu_id, ordinal);
+                            continue;
+                        }
                         let mut regs = vcpu.get_regs().unwrap();
                         regs.rax = result as u64;
                         // Pop far return address (IP + CS = 4 bytes) and restore CS:IP
@@ -1488,6 +1498,14 @@ fn setup_dlg_dispatch(
 
         // The next message in PM's order, as WinGetMsg takes it.
         let msg_opt = loader.shared.window_mgr.lock_or_recover().next_queued(hmq, true, |_, _| true);
+        // A pointer event waits for its window's WM_HITTEST answer.
+        if msg_opt.is_none()
+            && let Some(ask) = loader.shared.window_mgr.lock_or_recover().take_hit_ask(hmq)
+            && let ApiResult::CallChain(chain) = loader.hit_test_chain(owner.unwrap_or(0), ask,
+                super::pm_remote::AfterSent::ModalLoop { dlg_proc, hwnd_dlg, hmq }) {
+            continue_call_chain(vcpu, loader, callback_stack, chain, saved_rip, saved_rsp);
+            return true;
+        }
 
         if let Some(msg) = msg_opt {
             // WM_QUIT terminates the dialog loop with DID_CANCEL.

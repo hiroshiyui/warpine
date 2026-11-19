@@ -543,7 +543,10 @@ impl super::Loader {
         let threads = &self.shared.threads;
         if super::threads::tid_of_vcpu(vcpu_id) != MAIN_TID
             || !threads.signal_pending.load(Ordering::Acquire)
-            || self.runs_exit_list(vcpu_id) {
+            || self.runs_exit_list(vcpu_id)
+            // A must-complete section holds signals and asynchronous
+            // termination until it ends (DosExitMustComplete).
+            || threads.must_complete.load(Ordering::Acquire) != 0 {
             return SignalAction::None;
         }
         // A termination asked for from outside comes before signals.
@@ -933,5 +936,34 @@ mod kill_tests {
         assert!(!k.reaped(5));
         assert!(k.begin_ending());
         assert!(!k.begin_ending());
+    }
+
+    /// Inside a must-complete section signals wait: blocked calls are not
+    /// interrupted and none is delivered until the section ends.
+    #[test]
+    fn a_must_complete_section_holds_signals() {
+        use super::super::interrupt::{begin_call, end_call};
+        use super::super::threads::MAIN_VCPU_ID;
+        let loader = Loader::new_mock();
+        let nest = 0x3000;
+        assert_eq!(loader.dos_must_complete(MAIN_VCPU_ID, nest, false), ERROR_ALREADY_RESET);
+        assert_eq!(loader.dos_must_complete(MAIN_VCPU_ID, nest, true), NO_ERROR);
+        assert_eq!(loader.dos_must_complete(MAIN_VCPU_ID, nest, true), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(nest), Some(2));
+        loader.dos_set_signal_exception_focus(SIG_SETFOCUS, 0);
+        loader.post_signal(XCPT_SIGNAL_INTR);
+        begin_call(MAIN_TID, true);
+        assert!(!loader.interrupted(), "held in the section");
+        assert_eq!(loader.dos_must_complete(MAIN_VCPU_ID, nest, false), NO_ERROR);
+        assert!(!loader.interrupted(), "still one level");
+        assert_eq!(loader.dos_must_complete(MAIN_VCPU_ID, nest, false), NO_ERROR);
+        assert_eq!(loader.guest_read::<u32>(nest), Some(0));
+        assert!(loader.interrupted(), "delivered once it ends");
+        end_call();
+        // Another thread's sections are its own; a thread that ends leaves them.
+        assert_eq!(loader.dos_must_complete(7, nest, true), NO_ERROR);
+        assert_eq!(loader.shared.threads.must_complete.load(Ordering::Acquire), 0);
+        loader.shared.threads.forget_must_complete(super::super::threads::tid_of_vcpu(7));
+        assert_eq!(loader.dos_must_complete(7, nest, false), ERROR_ALREADY_RESET);
     }
 }

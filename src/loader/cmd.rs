@@ -22,6 +22,9 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use log::debug;
 
+/// How often the shell looks whether the program it waits for ended.
+const CHILD_POLL: Duration = Duration::from_millis(10);
+
 use super::{SharedState, KbdKeyInfo};
 use super::mutex_ext::MutexExt;
 use super::constants::*;
@@ -913,20 +916,53 @@ impl CmdShell {
                             }
                         })
                     });
-                    let _ = child.wait();
+                    self.wait_child(&mut child);
                     if let Some(t) = relay { let _ = t.join(); }
                 } else {
-                    // Buffer all output then write to sink.
-                    let mut output = Vec::new();
-                    if let Some(mut pipe) = child.stdout.take() {
+                    // Buffer all output then write to sink (read on a
+                    // thread of its own, so that the wait stays
+                    // interruptible).
+                    let reader = child.stdout.take().map(|mut pipe| std::thread::spawn(move || {
+                        let mut output = Vec::new();
                         pipe.read_to_end(&mut output).ok();
-                    }
-                    let _ = child.wait();
+                        output
+                    }));
+                    self.wait_child(&mut child);
+                    let output = reader.and_then(|t| t.join().ok()).unwrap_or_default();
                     if !output.is_empty() {
                         self.write_out(&output);
                     }
                 }
             }
+        }
+    }
+
+    /// Wait for `child` to end. When the shell's call is interrupted (a
+    /// signal, a kill) or its process ends, the child is asked to end
+    /// (`SIGTERM`: its exit list runs) and, after `KILL_GRACE`, killed.
+    fn wait_child(&self, child: &mut std::process::Child) {
+        let mut asked: Option<std::time::Instant> = None;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) | Err(_) => return,
+                Ok(None) => {}
+            }
+            let stop = super::interrupt::call_interrupted(&self.shared)
+                || self.shared.exit_requested.load(Ordering::Relaxed);
+            if stop && asked.is_none() {
+                if let Ok(pid) = i32::try_from(child.id()) {
+                    // SAFETY: kill(2) on the pid of a child this shell
+                    // started and has not yet reaped; no memory involved.
+                    unsafe { libc::kill(pid, libc::SIGTERM) };
+                }
+                asked = Some(std::time::Instant::now());
+            }
+            if asked.is_some_and(|t| t.elapsed() >= super::signals::KILL_GRACE) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return;
+            }
+            std::thread::sleep(CHILD_POLL);
         }
     }
 

@@ -1378,6 +1378,7 @@ impl Loader {
         }
         let Some(surface) = wm.target_surface(target) else { return };
         let (origin, extent) = wm.target_view(target);
+        let visible = wm.target_visible(target);
         let mut s = surface.lock_or_recover();
         if let Some(frame) = frame {
             wm.mark_dirty(frame);
@@ -1387,11 +1388,13 @@ impl Loader {
         // horizontal frame scroll bar) or covers only part of it (beside a
         // vertical one): the drawing moves to the client's place and stays
         // inside the client.
-        match extent {
-            Some((cx, cy)) if origin != (0, 0) || (cx, cy) != (s.width as i32, s.height as i32) => {
+        // A child window also stays inside its ancestors.
+        let whole = extent.is_some_and(|(cx, cy)| origin == (0, 0) && (cx, cy) == (s.width as i32, s.height as i32));
+        match visible {
+            Some(v) if !whole || v != RRect::new(0, 0, s.width as i32, s.height as i32) => {
                 let mut op = op;
                 op.translate(origin.0, origin.1);
-                let inside = Region::rect(RRect::new(0, 0, cx, cy));
+                let inside = Region::rect(v);
                 let mut c = match clip {
                     Some(c) => Region::combine(c, &inside, SetOp::And).unwrap_or(inside),
                     None => inside,
