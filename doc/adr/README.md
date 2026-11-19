@@ -35,7 +35,7 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0027](0027-gpi-transforms-per-primitive.md) | Apply GPI transforms to each primitive when it is called, with an identity fast path | Accepted | 2026-11-18 |
 | [0028](0028-process-nesting-limit.md) | Limit how deeply Warpine processes start one another and how many children each keeps | Accepted | 2026-11-18 |
 | [0029](0029-standard-dialogs-and-print-modules.md) | Build the standard file and font dialogs in memory, and give PMCTLS and PMSPL module slots | Accepted | 2026-11-18 |
-| [0030](0030-process-local-shell-services.md) | Keep the switch list, atom tables and DDE within one Warpine process | Accepted | 2026-11-18 |
+| [0030](0030-process-local-shell-services.md) | Keep the switch list, atom tables and DDE within one Warpine process | Superseded by ADR-0056 | 2026-11-18 |
 | [0031](0031-capped-test-runs.md) | Run the commit checks inside a capped systemd scope | Accepted | 2026-11-18 |
 | [0032](0032-session-thread-limit.md) | Enforce CONFIG.SYS THREADS= across a session with per-process records in a private directory | Accepted | 2026-11-18 |
 | [0033](0033-generated-compatibility-chart.md) | Generate the API compatibility chart from Warpine's source and a dated, cited API table | Accepted | 2026-11-18 |
@@ -57,7 +57,8 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0049](0049-shared-memory-across-processes.md) | Shared memory across processes: a sealed memfd arena at the top of guest memory, a table in the session directory | Accepted | 2026-11-19 |
 | [0050](0050-shared-semaphores-across-processes.md) | Shared semaphores across processes: a host-only memfd of slots, an OFD lock and a futex | Accepted | 2026-11-19 |
 | [0051](0051-pointer-input-routed-when-read.md) | Pointer input routed when it is read: clicks hit-tested and activating at the head of the input queue | Accepted | 2026-11-19 |
-| [0052](0052-session-desktop-server.md) | One desktop per session: a desktop server process, with Warpine processes as its clients | Accepted (phases A and B: ADR-0053, ADR-0054, ADR-0055) | 2026-11-19 |
+| [0052](0052-session-desktop-server.md) | One desktop per session: a desktop server process, with Warpine processes as its clients | Accepted (phases A and B: ADR-0053–0055; phase C but drag and drop: ADR-0056) | 2026-11-19 |
 | [0053](0053-calls-on-other-programs-windows.md) | Calls on other programs' windows go through the desktop server and are answered on the owner's link thread | Accepted (`WM_MINMAXFRAME` amended by ADR-0055) | 2026-11-19 |
 | [0054](0054-messages-sent-to-other-programs-windows.md) | Messages sent to another program's window run on the window's thread when it reads messages | Accepted (send hooks amended by ADR-0055) | 2026-11-19 |
 | [0055](0055-programs-see-each-others-windows.md) | Window lists, broadcasts, state changes and send hooks reach other programs | Accepted | 2026-11-19 |
+| [0056](0056-session-shell-services.md) | The desktop server keeps the session's switch list and system atom table; DDE crosses programs | Accepted | 2026-11-19 |

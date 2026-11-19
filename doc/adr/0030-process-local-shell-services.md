@@ -1,6 +1,6 @@
 # ADR-0030: Keep the switch list, atom tables and DDE within one Warpine process
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0056 (the session's switch list and system atom table, DDE between programs) for the session's desktop; still how an in-process desktop (`WARPINE_DESKTOP=local`) works
 - **Date:** 2026-11-18
 - **Sources:** batch 5; `src/loader/pm_switch.rs`, `src/loader/pm_atom.rs`, `src/loader/pm_dde.rs`, `src/loader/pm_startapp.rs`; IBM *Presentation Manager Programming Reference* (switch list, atom tables, DDE, `WinStartApp`); ADR-0020
 
