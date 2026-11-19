@@ -197,6 +197,7 @@ samples/               OS/2 sample applications and build scripts
   pm_cnrtree_test/     WC_CONTAINER: sorting by a guest comparison function, tree view, scroll bar
   pm_cnricon_test/     WC_CONTAINER: icon view and icons, filtering, direct editing
   pm_cnrdetail_test/   WC_CONTAINER: split details view, horizontal scrolling, owner drawing, title edits
+  pm_cnrgrid_test/     WC_CONTAINER: tree lines and moves, grid arrangement, stacking, context menus, the wheel
   pm_subclass_test/    Subclassing built-in windows and frames, painting, dialog mnemonics
   shmem_test/          Shared memory between a parent and a child process
   shsem_test/          Shared semaphores between a parent and a child process
