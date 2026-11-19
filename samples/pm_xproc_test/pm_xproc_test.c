@@ -18,15 +18,22 @@
  *     WinIsWindowVisible, WinIsWindowEnabled, WinQueryClassName,
  *     WinQueryWindowULong, WinQueryWindowUShort, WinQueryWindow;
  *   - WinSendMsg: B's thread runs its window procedure (WinInSendMsg is
- *     TRUE there) and A gets its result; a message B's procedure sends
- *     back to A meanwhile runs in A while A waits;
+ *     TRUE there) after B's send hook (fInterTask TRUE), and A gets its
+ *     result; a message B's procedure sends back to A meanwhile runs in A
+ *     while A waits;
+ *   - WinBeginEnumWindows / WinGetNextWindow / WinEndEnumWindows on the
+ *     desktop (A's frame above B's) and on B's frame (its client);
+ *   - WinBroadcastMsg(HWND_DESKTOP) posted and sent: both programs'
+ *     clients get it;
  *   - WinSetWindowText, read back with WinQueryWindowText;
  *   - WinDestroyWindow fails, as for another thread's window;
  *   - WinPostMsg, which B receives with its parameters;
  *   - WinSetWindowPos (move and size: B's client gets WM_SIZE), then
  *     WinSetActiveWindow: B becomes the active window, A loses activation,
  *     and WinQueryActiveWindow in A names B;
- *   - WinSetWindowPos(SWP_MINIMIZE) and WinShowWindow(FALSE);
+ *   - WinSetWindowPos(SWP_MAXIMIZE), which B's client refuses through
+ *     WM_MINMAXFRAME, then WinSetWindowPos(SWP_MINIMIZE), which it allows,
+ *     and WinShowWindow(FALSE);
  *
  * and once the child has ended, B's handle is no window any more and
  * WinSendMsg to it fails. Each
@@ -38,6 +45,7 @@
  * followed by "pm_xproc_test: done <passed>/<total>".
  */
 #define INCL_WIN
+#define INCL_WINHOOKS
 #define INCL_DOS
 #define INCL_DOSERRORS
 #include <os2.h>
@@ -52,6 +60,8 @@
 #define WM_XSEND    ( WM_USER + 2 )   /* to B: returns mp1 * mp2 + 1000 */
 #define WM_XBACK    ( WM_USER + 3 )   /* to B: sends WM_XECHO(mp1) to A, + 1 */
 #define WM_XECHO    ( WM_USER + 4 )   /* to A: returns mp1 * 2 */
+#define WM_XBPOST   ( WM_USER + 5 )   /* broadcast, posted */
+#define WM_XBSEND   ( WM_USER + 6 )   /* broadcast, sent */
 #define USER_WORD   0x5741524BUL  /* 'WARK' */
 
 #define LEFT_X      40
@@ -79,6 +89,11 @@ typedef struct {
     ULONG parent_client;
     LONG  b_in_send;            /* WinInSendMsg in B's WM_XSEND */
     ULONG b_send_tid;           /* the thread that ran it */
+    LONG  b_hook_inter;         /* B's send hook saw WM_XSEND: fInterTask + 1 */
+    LONG  b_bcast_post;         /* WM_XBPOST's mp1 at B */
+    LONG  b_bcast_send;         /* WM_XBSEND's mp1 at B */
+    LONG  veto_maximize;        /* B's client refuses SWP_MAXIMIZE */
+    LONG  b_minmax;             /* WM_MINMAXFRAME calls at B */
 } SHARED;
 
 static HAB     hab;
@@ -89,6 +104,7 @@ static int     step = 0;
 static int     waited = 0;
 static int     a_deactivated = 0;
 static int     a_in_send = -1;          /* WinInSendMsg in A's WM_XECHO */
+static LONG    a_bcast_post = 0, a_bcast_send = 0;
 static int     n_checks = 0, n_passed = 0;
 
 static void write_stdout( const char *s )
@@ -208,6 +224,52 @@ static ULONG own_tid( void )
     return ptib->tib_ptib2->tib2_ultid;
 }
 
+static VOID EXPENTRY SendHook( HAB h, PSMHSTRUCT psmh, BOOL fInterTask )
+{
+    (void)h;
+    if( psmh->msg == WM_XSEND ) sh->b_hook_inter = fInterTask ? 2 : 1;
+}
+
+/* The windows below `parent`, in the order enumerated: up to `max`. */
+static int enum_windows( HWND parent, HWND *out, int max )
+{
+    HENUM henum = WinBeginEnumWindows( parent );
+    HWND  h;
+    int   n = 0;
+    if( henum == NULLHANDLE ) return -1;
+    while( ( h = WinGetNextWindow( henum ) ) != NULLHANDLE ) {
+        if( n < max ) out[n] = h;
+        n++;
+    }
+    if( !WinEndEnumWindows( henum ) ) return -2;
+    return n;
+}
+
+static int index_of( HWND *list, int n, HWND h )
+{
+    int i;
+    for( i = 0; i < n && i < 64; i++ ) if( list[i] == h ) return i;
+    return -1;
+}
+
+/* Window lists that include the other program's windows. */
+static void enum_checks( void )
+{
+    HWND list[64];
+    int  n, ia, ib;
+
+    n = enum_windows( HWND_DESKTOP, list, 64 );
+    ia = index_of( list, n, frame );
+    ib = index_of( list, n, sh->child_frame );
+    check( "WinBeginEnumWindows(HWND_DESKTOP) lists this program's frame", ia >= 0, TRUE );
+    check( "  and the other program's", ib >= 0, TRUE );
+    check( "  the active one first", ia < ib, TRUE );
+    n = enum_windows( sh->child_frame, list, 64 );
+    check( "WinBeginEnumWindows on the other program's frame lists its client",
+           index_of( list, n, sh->child_client ) >= 0, TRUE );
+    check( "WinGetNextWindow on an ended enumeration fails", WinGetNextWindow( (HENUM)1 ), NULLHANDLE );
+}
+
 /* Messages sent to the child's window, run by its thread. */
 static void send_checks( void )
 {
@@ -218,6 +280,7 @@ static void send_checks( void )
            LONGFROMMR( WinSendMsg( bc, WM_XSEND, MPFROMLONG( 6 ), MPFROMLONG( 7 ) ) ), 1042 );
     check( "  WinInSendMsg was TRUE in its window procedure", sh->b_in_send, TRUE );
     check( "  which ran on the window's thread", sh->b_send_tid, 1 );
+    check( "  after its queue's send hook, told it came from another task", sh->b_hook_inter, 2 );
     check( "WinSendMsg while the other program sends back",
            LONGFROMMR( WinSendMsg( bc, WM_XBACK, MPFROMLONG( 21 ), 0 ) ), 43 );
     check( "  this program ran the message sent back while it waited", a_in_send, TRUE );
@@ -237,6 +300,11 @@ static void change_calls( void )
     SWP  swp;
 
     check( "WinPostMsg", WinPostMsg( sh->child_client, WM_XPROC, MPFROMLONG( 42 ), MPFROMLONG( 4242 ) ), TRUE );
+    check( "WinBroadcastMsg(HWND_DESKTOP, BMSG_POST)",
+           WinBroadcastMsg( HWND_DESKTOP, WM_XBPOST, MPFROMLONG( 77 ), 0, BMSG_POST | BMSG_DESCENDANTS ), TRUE );
+    check( "WinBroadcastMsg(HWND_DESKTOP, BMSG_SEND)",
+           WinBroadcastMsg( HWND_DESKTOP, WM_XBSEND, MPFROMLONG( 88 ), 0, BMSG_SEND | BMSG_DESCENDANTS ), TRUE );
+    check( "  this program's client got the sent one at once", a_bcast_send, 88 );
     check( "WinSetWindowPos (move and size)",
            WinSetWindowPos( b, HWND_TOP, MOVED_X, MOVED_Y, MOVED_CX, MOVED_CY, SWP_MOVE | SWP_SIZE ), TRUE );
     memset( &swp, 0, sizeof( swp ) );
@@ -250,6 +318,7 @@ static void change_calls( void )
 static BOOL arrived( void )
 {
     return sh->posted_mp1 == 42 && sh->b_sized_cx != 0 && sh->b_activated && a_deactivated
+        && sh->b_bcast_post == 77 && sh->b_bcast_send == 88 && a_bcast_post == 77
         && WinQueryActiveWindow( HWND_DESKTOP ) == sh->child_frame;
 }
 
@@ -257,6 +326,9 @@ static void arrival_checks( void )
 {
     check( "the posted message reached the other program", sh->posted_mp1, 42 );
     check( "  with its second parameter", sh->posted_mp2, 4242 );
+    check( "the posted broadcast reached the other program", sh->b_bcast_post, 77 );
+    check( "  and this one", a_bcast_post, 77 );
+    check( "the sent broadcast reached the other program", sh->b_bcast_send, 88 );
     check( "its client was told its new size", sh->b_sized_cx > 0 && sh->b_sized_cx <= MOVED_CX, TRUE );
     check( "it became the active window", sh->b_activated, 1 );
     check( "this program's frame lost activation", a_deactivated, 1 );
@@ -269,7 +341,15 @@ static void hide_calls( void )
     HWND b = sh->child_frame;
     SWP  swp;
 
+    sh->veto_maximize = 1;
+    check( "WinSetWindowPos(SWP_MAXIMIZE)", WinSetWindowPos( b, 0, 0, 0, 0, 0, SWP_MAXIMIZE ), TRUE );
+    check( "  its client was asked (WM_MINMAXFRAME)", sh->b_minmax, 1 );
+    memset( &swp, 0, sizeof( swp ) );
+    WinQueryWindowPos( b, &swp );
+    check( "  it refused: not maximized", ( swp.fl & SWP_MAXIMIZE ) != 0, FALSE );
+    sh->veto_maximize = 0;
     check( "WinSetWindowPos(SWP_MINIMIZE)", WinSetWindowPos( b, 0, 0, 0, 0, 0, SWP_MINIMIZE ), TRUE );
+    check( "  its client was asked again", sh->b_minmax, 2 );
     memset( &swp, 0, sizeof( swp ) );
     WinQueryWindowPos( b, &swp );
     check( "  it is minimized", ( swp.fl & SWP_MINIMIZE ) != 0, TRUE );
@@ -306,6 +386,7 @@ static void parent_poll( void )
         if( !sh->b_deactivated && waited <= WAIT_POLLS ) return;
         check( "the other program's frame lost activation to this one", sh->b_deactivated, 1 );
         query_checks();
+        enum_checks();
         send_checks();
         a_deactivated = 0;
         sh->b_activated = 0;
@@ -349,6 +430,22 @@ MRESULT EXPENTRY ClientWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2 )
 
     case WM_XBACK:
         return MRFROMLONG( LONGFROMMR( WinSendMsg( sh->parent_client, WM_XECHO, mp1, 0 ) ) + 1 );
+
+    case WM_XBPOST:
+        if( is_child ) sh->b_bcast_post = LONGFROMMP( mp1 ); else a_bcast_post = LONGFROMMP( mp1 );
+        return 0;
+
+    case WM_XBSEND:
+        if( is_child ) sh->b_bcast_send = LONGFROMMP( mp1 ); else a_bcast_send = LONGFROMMP( mp1 );
+        return 0;
+
+    case WM_MINMAXFRAME:
+        if( is_child ) {
+            PSWP pswp = (PSWP)PVOIDFROMMP( mp1 );
+            sh->b_minmax++;
+            if( sh->veto_maximize && ( pswp->fl & SWP_MAXIMIZE ) ) return (MRESULT)TRUE;
+        }
+        break;
 
     case WM_XECHO:
         a_in_send = WinInSendMsg( hab );
@@ -415,6 +512,7 @@ int main( void )
     WinStartTimer( hab, client, ID_POLL, POLL_MS );
     if( is_child ) {
         WinSetWindowULong( client, QWL_USER, USER_WORD );
+        WinSetHook( hab, HMQ_CURRENT, HK_SENDMSG, (PFN)SendHook, NULLHANDLE );
         sh->child_frame = frame;
         sh->child_client = client;
         sh->child_pid = own_pid();

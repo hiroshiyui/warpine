@@ -20,6 +20,8 @@
 //! | `WinSetActiveWindow` | `Activate` |
 //! | `WinSetWindowText` | `SetText` |
 //! | `WinSendMsg` | `Send`: run by the window's thread (below) |
+//! | `WinBroadcastMsg(HWND_DESKTOP, …)` | `Broadcast` to every other program |
+//! | `WinBeginEnumWindows` | `Children`, and for the desktop `Clients` / `Stacking` (`pm_enum.rs`) |
 //!
 //! Other calls on another program's window fail with `PMERR_INVALID_HWND`
 //! as before. `WinDestroyWindow` fails as it does for another thread's
@@ -48,15 +50,24 @@
 //!   one, nested inside.
 //! - A send fails (0, `PMERR_INVALID_HWND`) when the window is gone, its
 //!   program ends, or its queue is destroyed before the message is run.
+//! - The send hooks of the window's queue (and the program's system send
+//!   hooks) run on that thread first, with `fInterTask` TRUE.
+//!
+//! `WinSetWindowPos` that minimizes, maximizes or restores another
+//! program's frame goes the same way: the frame's thread asks its client
+//! with `WM_MINMAXFRAME` (TRUE keeps the frame as it is) before the change,
+//! and the caller waits for it as for a send (ADR-0055).
+//!
+//! A broadcast to the desktop reaches the windows of every program: each
+//! other program posts it to its windows, or for `BMSG_SEND` queues it for
+//! their threads to run, without the caller waiting for them (Warpine's
+//! choice).
 //!
 //! Warpine's choices (no public source says how PM does these):
 //! - A call that gets no answer — the window is gone, its program ended or
 //!   does not answer in time — fails with `PMERR_INVALID_HWND`.
 //! - Window text and class names come back in the caller's codepage (the
 //!   calling thread's queue codepage).
-//! - `WinSetWindowPos` that minimizes, maximizes or restores another
-//!   program's frame does not ask its client (`WM_MINMAXFRAME`): that would
-//!   need the window's thread, as `WinSendMsg` does.
 //!
 //! Posted message parameters are passed as they are: a pointer means
 //! something in the other program only for shared memory, as in PM.
@@ -67,13 +78,17 @@ use std::time::Duration;
 
 use super::constants::*;
 use super::mutex_ext::MutexExt;
-use super::pm_hook::{CallChain, CallStep, ChainEnd, ChainThen};
+use super::pm_hook::{CallChain, CallStep, ChainEnd, ChainThen, CHAIN_BLOCK_BYTES};
+use super::pm_minmax::{minmax_swp, WinRect, SWP_STRUCT_SIZE};
 use super::pm_error::window_word_in_range;
 use super::pm_types::{handle_in_slot, WindowManager};
 use super::pm_win::bound_window_geometry;
 use super::{ApiResult, Loader};
 use crate::desktop::client::{CallState, CallWaker, Responder};
-use crate::desktop::proto::{WinCall, WinReply, WindowInfo, MAX_COORD};
+use crate::desktop::proto::{slot_address, WinCall, WinReply, WindowInfo, MAX_COORD, MAX_HANDLES, SERVER_ADDRESS};
+
+// The SWP of WM_MINMAXFRAME is passed in a chained call's block.
+const _: () = assert!(SWP_STRUCT_SIZE <= CHAIN_BLOCK_BYTES);
 
 /// `WinPostMsg`.
 const ORD_POST_MSG: u32 = 919;
@@ -116,16 +131,41 @@ const REMOTE_CALLS: [(u32, u64); 18] = [
     (ORD_SHOW_WINDOW, 4), (ORD_SET_ACTIVE_WINDOW, 8), (ORD_SET_WINDOW_TEXT, 4), (ORD_SEND_MSG, 4),
 ];
 
+/// What another program asks a window's thread to do (module comment).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SentKind {
+    /// Run the window procedure for a sent message.
+    Message { msg: u32, mp1: u32, mp2: u32 },
+    /// Ask the frame's client `WM_MINMAXFRAME`, then change the frame's
+    /// state (`op`) to `target` unless it answers TRUE.
+    MinMax { op: u32, target: WinRect },
+}
+
 /// A message another program sent to one of this program's windows, waiting
 /// for the window's thread (module comment).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SentMessage {
-    /// The server's id of the call, for the answer.
-    pub id: u64,
+    /// The server's id of the call, for the answer; `None` for a message
+    /// nobody waits for (a broadcast).
+    pub id: Option<u64>,
     pub hwnd: u32,
-    pub msg: u32,
-    pub mp1: u32,
-    pub mp2: u32,
+    pub kind: SentKind,
+}
+
+impl SentMessage {
+    /// Message `msg` sent to `hwnd` by call `id`.
+    pub fn message(id: Option<u64>, hwnd: u32, msg: u32, mp1: u32, mp2: u32) -> SentMessage {
+        SentMessage { id, hwnd, kind: SentKind::Message { msg, mp1, mp2 } }
+    }
+}
+
+/// How the answer to a [`SentMessage`] is made from the calls run for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SentFinish {
+    /// The window procedure's result.
+    Reply,
+    /// Change frame `hwnd`'s state unless the client said TRUE.
+    MinMax { op: u32, target: WinRect },
 }
 
 /// What a thread does once it has run a [`SentMessage`].
@@ -134,8 +174,9 @@ pub(crate) enum AfterSent {
     /// Make PMWIN call `ordinal` again (`WinGetMsg`, `WinPeekMsg`,
     /// `WinWaitMsg`).
     Rerun(u32),
-    /// Go on waiting in its own `WinSendMsg` to another program.
-    ResumeSend,
+    /// Go on waiting in its own call `ordinal` to another program
+    /// (`WinSendMsg`, `WinSetWindowPos`).
+    Resume(u32),
     /// Go on with the modal loop of dialog `hwnd_dlg`.
     ModalLoop { dlg_proc: u32, hwnd_dlg: u32, hmq: u32 },
 }
@@ -195,6 +236,14 @@ impl WindowManager {
         true
     }
 
+    /// Post `msg` for no window to queue `hmq` (`WinPostQueueMsg`).
+    pub fn post_queue_msg(&self, hmq: u32, msg: u32, mp1: u32, mp2: u32) {
+        let Some(mq) = self.get_mq(hmq) else { return };
+        let mut q = mq.lock_or_recover();
+        q.messages.push_back(super::pm_types::OS2Message { hwnd: 0, msg, mp1, mp2, time: 0, x: 0, y: 0 });
+        q.cond.notify_one();
+    }
+
     /// The first message from another program waiting in queue `hmq`.
     pub fn take_sent(&self, hmq: u32) -> Option<SentMessage> {
         self.get_mq(hmq)?.lock_or_recover().sent.pop_front()
@@ -203,7 +252,7 @@ impl WindowManager {
     /// The ids of all messages from other programs waiting in queue `hmq`,
     /// taken out (the queue goes away).
     pub fn drain_sent(&self, hmq: u32) -> Vec<u64> {
-        self.get_mq(hmq).map_or_else(Vec::new, |mq| mq.lock_or_recover().sent.drain(..).map(|s| s.id).collect())
+        self.get_mq(hmq).map_or_else(Vec::new, |mq| mq.lock_or_recover().sent.drain(..).filter_map(|s| s.id).collect())
     }
 }
 
@@ -271,7 +320,11 @@ impl Loader {
     fn remote_call(&self, tid: u32, ordinal: u32, hwnd: u32, arg: &dyn Fn(u64) -> u32) -> ApiResult {
         let done = |ok: bool| ApiResult::Normal(ok as u32);
         match ordinal {
-            ORD_SEND_MSG => self.remote_send(tid, hwnd, arg(8), arg(12), arg(16)),
+            ORD_SEND_MSG => match self.remote_wait(tid, ORD_SEND_MSG, hwnd, WinCall::Send { msg: arg(8), mp1: arg(12), mp2: arg(16) }) {
+                Err(r) => r,
+                Ok(Some(WinReply::Value(v))) => ApiResult::Normal(v),
+                Ok(_) => self.pm_fail(tid, PMERR_INVALID_HWND),
+            },
             ORD_SET_WINDOW_TEXT => {
                 // In the calling thread's codepage, as text comes back.
                 let text = self.read_guest_string_cp(arg(8), self.thread_codepage(tid));
@@ -349,7 +402,16 @@ impl Loader {
                 let (x, y, cx, cy) = bound_window_geometry(arg(12) as i32, arg(16) as i32, arg(20) as i32,
                                                            arg(24) as i32);
                 let call = WinCall::SetPos { behind: arg(8), x, y, cx, cy, fl: arg(28) };
-                ApiResult::Normal(self.value_remote(tid, hwnd, call))
+                if call.expires() {
+                    return ApiResult::Normal(self.value_remote(tid, hwnd, call));
+                }
+                // A state change: the frame's client is asked first, and
+                // this thread waits for that as for a send.
+                match self.remote_wait(tid, ORD_SET_WINDOW_POS, hwnd, call) {
+                    Err(r) => r,
+                    Ok(Some(WinReply::Value(v))) => ApiResult::Normal(v),
+                    Ok(_) => self.pm_fail(tid, PMERR_INVALID_HWND),
+                }
             }
             ORD_SHOW_WINDOW => ApiResult::Normal(self.value_remote(tid, hwnd, WinCall::Show { show: arg(8) != 0 })),
             ORD_SET_ACTIVE_WINDOW => ApiResult::Normal(self.value_remote(tid, hwnd, WinCall::Activate)),
@@ -357,11 +419,14 @@ impl Loader {
         }
     }
 
-    /// `WinSendMsg(hwnd, msg, mp1, mp2)` to another program's window: wait
-    /// for the window procedure's result, running the messages other
-    /// programs send to this thread's queue meanwhile (module comment).
-    fn remote_send(&self, tid: u32, hwnd: u32, msg: u32, mp1: u32, mp2: u32) -> ApiResult {
-        let Some(link) = self.shared.desktop_link.get() else { return self.pm_fail(tid, PMERR_INVALID_HWND) };
+    /// Make `call` (of PMWIN API `ordinal`) on another program's window and
+    /// wait for its answer without a time limit, running the messages other
+    /// programs send to this thread's queue meanwhile (module comment):
+    /// `Ok` with the answer (`None`: none will come), or `Err` with the
+    /// result the API returns now — a chain running a message sent to this
+    /// thread, after which the API is made again and goes on waiting.
+    fn remote_wait(&self, tid: u32, ordinal: u32, hwnd: u32, call: WinCall) -> Result<Option<WinReply>, ApiResult> {
+        let Some(link) = self.shared.desktop_link.get() else { return Ok(None) };
         let (hmq, wait, resumed) = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             let hmq = wm.thread_queue(tid);
@@ -381,16 +446,14 @@ impl Loader {
                         cond.notify_all();
                     })
                 });
-                let Some(id) = link.begin_call(hwnd, WinCall::Send { msg, mp1, mp2 }, wake) else {
-                    return self.pm_fail(tid, PMERR_INVALID_HWND);
-                };
+                let Some(id) = link.begin_call(hwnd, call, wake) else { return Ok(None) };
                 self.shared.window_mgr.lock_or_recover().remote_sends.begin(tid, id);
                 id
             }
         };
-        let end = |r: ApiResult| {
+        let end = |r: Option<WinReply>| {
             self.shared.window_mgr.lock_or_recover().remote_sends.end(tid, id);
-            r
+            Ok(r)
         };
         loop {
             let state = match wait {
@@ -398,17 +461,17 @@ impl Loader {
                 None => link.wait_call(id, SEND_WAIT_SLICE),
             };
             match state {
-                CallState::Answered(WinReply::Value(v)) => return end(ApiResult::Normal(v)),
-                CallState::Answered(_) | CallState::Gone => return end(self.pm_fail(tid, PMERR_INVALID_HWND)),
+                CallState::Answered(r) => return end(Some(r)),
+                CallState::Gone => return end(None),
                 CallState::Waiting => {}
             }
             // Messages sent to this thread meanwhile run first.
             if let Some(s) = hmq.and_then(|h| self.shared.window_mgr.lock_or_recover().take_sent(h)) {
-                return self.run_sent(tid, s, AfterSent::ResumeSend);
+                return Err(self.run_sent(tid, s, AfterSent::Resume(ordinal)));
             }
             if self.stop_or_restart() {
                 link.abandon_call(id);
-                return end(ApiResult::Normal(0));
+                return end(None);
             }
             if let Some((cond, lock)) = &wait {
                 let g = lock.lock_or_recover();
@@ -417,31 +480,76 @@ impl Loader {
         }
     }
 
-    /// Run message `s` from another program on thread `tid`: a chain calling
-    /// its window's procedure (or the built-in handling), then answering
-    /// with the result and going on as `after` says.
+    /// Run message `s` from another program on thread `tid`: a chain
+    /// calling the send hooks of the window's queue and its procedure (or
+    /// the built-in handling) — or, for a state change, the client's
+    /// `WM_MINMAXFRAME` —, then answering and going on as `after` says.
     pub(super) fn run_sent(&self, tid: u32, s: SentMessage, after: AfterSent) -> ApiResult {
-        let proc_addr = self.shared.window_mgr.lock_or_recover().get_window(s.hwnd).map_or(0, |w| w.pfn_wp);
-        let mut chain = CallChain::new(tid, vec![CallStep::send(proc_addr, s.hwnd, s.msg, s.mp1, s.mp2)], false,
-                                       ChainThen::AnswerSent { id: s.id, after });
+        let (steps, finish) = match s.kind {
+            SentKind::Message { msg, mp1, mp2 } => {
+                let (proc_addr, hmq) = {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    wm.get_window(s.hwnd).map_or((0, 0), |w| (w.pfn_wp, w.hmq))
+                };
+                let mut steps = if hmq != 0 {
+                    self.send_hook_steps(tid, hmq, [s.hwnd, msg, mp1, mp2], true)
+                } else {
+                    Vec::new()
+                };
+                steps.push(CallStep::send(proc_addr, s.hwnd, msg, mp1, mp2));
+                (steps, SentFinish::Reply)
+            }
+            SentKind::MinMax { op, target } => {
+                let (client, proc_addr) = {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    let client = wm.frame_to_client.get(&s.hwnd).copied().unwrap_or(0);
+                    (client, wm.get_window(client).map_or(0, |w| w.pfn_wp))
+                };
+                // WM_MINMAXFRAME(PSWP, 0): the SWP below the caller's stack.
+                let steps = if proc_addr == 0 { Vec::new() } else {
+                    vec![CallStep::Guest {
+                        proc_addr, args: vec![client, WM_MINMAXFRAME, 0, 0],
+                        block: minmax_swp(s.hwnd, op, target).to_vec(), block_arg: 2,
+                        stop_on_true: false, window: client,
+                    }]
+                };
+                (steps, SentFinish::MinMax { op, target })
+            }
+        };
+        let calls = steps.len() as u32;
+        let mut chain = CallChain::new(tid, steps, false,
+                                       ChainThen::AnswerSent { id: s.id, hwnd: s.hwnd, after, finish, calls });
         // WinInSendMsg is TRUE while the procedure runs.
         chain.inter_thread_send = true;
         self.start_chain(chain)
     }
 
-    /// The chain of a [`SentMessage`] is done: answer with the procedure's
-    /// result (`Failed` when it was not called: the window is gone) and say
-    /// how the thread goes on.
-    pub(super) fn sent_done(&self, id: u64, after: AfterSent, chain: &CallChain) -> ChainEnd {
-        let reply = chain.results.first().map_or(WinReply::Failed, |&v| WinReply::Value(v));
-        if let Some(link) = self.shared.desktop_link.get() {
+    /// The chain of a [`SentMessage`] for window `hwnd` is done (`calls`:
+    /// how many calls it was to make): answer — with the procedure's result,
+    /// `Failed` when it was not called because the window is gone; after a
+    /// state change, which is made unless the client said TRUE, TRUE — and
+    /// say how the thread goes on.
+    pub(super) fn sent_done(&self, id: Option<u64>, hwnd: u32, after: AfterSent, finish: SentFinish, calls: u32,
+                            chain: &CallChain) -> ChainEnd {
+        let complete = chain.results.len() == calls as usize;
+        let reply = match finish {
+            SentFinish::Reply if complete && calls > 0 => WinReply::Value(chain.last),
+            SentFinish::Reply => WinReply::Failed,
+            SentFinish::MinMax { op, target } => {
+                if calls == 0 || !complete || chain.last == 0 {
+                    self.shared.window_mgr.lock_or_recover().finish_minmax(hwnd, op, target);
+                }
+                WinReply::Value(1)
+            }
+        };
+        if let (Some(id), Some(link)) = (id, self.shared.desktop_link.get()) {
             link.answer(id, reply);
         }
         match after {
             AfterSent::Rerun(ordinal) => ChainEnd::Rerun(ordinal),
-            AfterSent::ResumeSend => {
+            AfterSent::Resume(ordinal) => {
                 self.shared.window_mgr.lock_or_recover().remote_sends.mark_resume(chain.tid);
-                ChainEnd::Rerun(ORD_SEND_MSG)
+                ChainEnd::Rerun(ordinal)
             }
             AfterSent::ModalLoop { dlg_proc, hwnd_dlg, hmq } => ChainEnd::ModalLoop { dlg_proc, hwnd_dlg, hmq, msg: None },
         }
@@ -495,18 +603,114 @@ impl Loader {
         })
     }
 
-    /// `WinSetWindowPos` made by another program on this program's window.
+    /// `WinSetWindowPos` made by another program (call `id`) on this
+    /// program's window: the answer, or `None` when a state change waits
+    /// for the frame's thread to ask its client (module comment).
     #[allow(clippy::too_many_arguments)]
-    fn set_pos_for_other(&self, hwnd: u32, behind: u32, x: i32, y: i32, cx: i32, cy: i32, fl: u32) -> bool {
+    fn set_pos_for_other(&self, id: u64, hwnd: u32, behind: u32, x: i32, y: i32, cx: i32, cy: i32, fl: u32)
+        -> Option<WinReply> {
         let (x, y, cx, cy) = bound_window_geometry(x, y, cx, cy);
         // The insert-behind window must be one of ours (or HWND_TOP / BOTTOM).
         let behind = if behind == HWND_TOP || behind == HWND_BOTTOM
             || self.shared.window_mgr.lock_or_recover().is_window(behind) { behind } else { 0 };
-        if let Some((op, target)) = self.set_window_pos(hwnd, behind, x, y, cx, cy, fl) {
-            // A state change: made without asking the client (module comment).
-            self.shared.window_mgr.lock_or_recover().finish_minmax(hwnd, op, target);
+        let Some((op, target)) = self.set_window_pos(hwnd, behind, x, y, cx, cy, fl) else {
+            return Some(WinReply::Value(1));
+        };
+        let wm = self.shared.window_mgr.lock_or_recover();
+        let s = SentMessage { id: Some(id), hwnd, kind: SentKind::MinMax { op, target } };
+        let asked = wm.get_window(hwnd).map(|w| w.hmq).filter(|&q| q != 0).is_some_and(|q| wm.queue_sent(q, s));
+        drop(wm);
+        if asked {
+            return None;
         }
-        true
+        // No thread to ask: changed at once.
+        self.shared.window_mgr.lock_or_recover().finish_minmax(hwnd, op, target);
+        Some(WinReply::Value(1))
+    }
+
+    /// The children of this program's window `hwnd` (at its slot address:
+    /// its windows on the desktop), top first.
+    fn children_top_first(&self, hwnd: u32) -> Vec<u32> {
+        let wm = self.shared.window_mgr.lock_or_recover();
+        let parent = if hwnd & !super::pm_types::HWND_SLOT_MASK == 0 { HWND_DESKTOP } else { hwnd };
+        let mut v = wm.child_windows(parent);
+        v.reverse();
+        v.truncate(MAX_HANDLES);
+        v
+    }
+
+    /// `WinBroadcastMsg(HWND_DESKTOP, …)` from another program on this
+    /// program's windows (module comment): posted, or queued for their
+    /// threads without an answer.
+    fn broadcast_for_other(&self, msg: u32, mp1: u32, mp2: u32, fl: u32) -> WinReply {
+        use super::pm_message::{BMSG_ALL, BMSG_DESCENDANTS, BMSG_FRAMEONLY, BMSG_POSTQUEUE, BMSG_SEND};
+        if fl & !BMSG_ALL != 0 {
+            return WinReply::Failed;
+        }
+        let wm = self.shared.window_mgr.lock_or_recover();
+        if fl & BMSG_POSTQUEUE != 0 {
+            let queues: Vec<u32> = wm.msg_queues.keys().copied().collect();
+            for q in queues {
+                wm.post_queue_msg(q, msg, mp1, mp2);
+            }
+            return WinReply::Value(1);
+        }
+        let targets = wm.broadcast_targets(HWND_DESKTOP, fl & BMSG_DESCENDANTS != 0, fl & BMSG_FRAMEONLY != 0);
+        for h in targets {
+            if fl & BMSG_SEND != 0 {
+                let q = wm.get_window(h).map_or(0, |w| w.hmq);
+                if q != 0 {
+                    wm.queue_sent(q, SentMessage::message(None, h, msg, mp1, mp2));
+                }
+            } else {
+                wm.post_msg(h, msg, mp1, mp2);
+            }
+        }
+        WinReply::Value(1)
+    }
+
+    /// The slots of the other programs on the session's desktop (none
+    /// without a desktop server).
+    pub(super) fn other_programs(&self) -> Vec<u32> {
+        let Some(link) = self.shared.desktop_link.get() else { return Vec::new() };
+        match link.call(SERVER_ADDRESS, WinCall::Clients) {
+            Some(WinReply::Handles(slots)) => slots.into_iter().filter(|&s| s != link.slot).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// `WinBroadcastMsg(HWND_DESKTOP, …)` (or `BMSG_POSTQUEUE`) to the other
+    /// programs' windows (module comment).
+    pub(super) fn broadcast_to_others(&self, msg: u32, mp1: u32, mp2: u32, fl: u32) {
+        let Some(link) = self.shared.desktop_link.get() else { return };
+        for slot in self.other_programs() {
+            link.call(slot_address(slot), WinCall::Broadcast { msg, mp1, mp2, fl });
+        }
+    }
+
+    /// The children of another program's window `hwnd` (or, at a slot
+    /// address, its windows on the desktop), top first.
+    /// `None` when the window is gone or does not answer.
+    pub(super) fn remote_children(&self, hwnd: u32) -> Option<Vec<u32>> {
+        match self.shared.desktop_link.get().and_then(|l| l.call(hwnd, WinCall::Children)) {
+            Some(WinReply::Handles(hs)) => Some(hs),
+            _ => None,
+        }
+    }
+
+    /// The windows on the session's desktop, top first: this program's and
+    /// the other programs', frames in the session's stacking order, then
+    /// each program's other windows in its own order.
+    pub(super) fn desktop_windows(&self) -> Vec<u32> {
+        let own = self.children_top_first(0);
+        let Some(link) = self.shared.desktop_link.get() else { return own };
+        let stacking = match link.call(SERVER_ADDRESS, WinCall::Stacking) {
+            Some(WinReply::Handles(hs)) => hs,
+            _ => Vec::new(),
+        };
+        let mut lists = vec![own];
+        lists.extend(self.other_programs().into_iter().map(|s| self.remote_children(slot_address(s)).unwrap_or_default()));
+        merge_by_stacking(&stacking, &lists)
     }
 }
 
@@ -515,18 +719,30 @@ impl Responder for Loader {
     /// windows of this program's slot that exist. A sent message is queued
     /// for the window's thread, which answers it later.
     fn answer(&self, id: u64, hwnd: u32, call: &WinCall) -> Option<WinReply> {
-        let mine = {
+        let (in_slot, exists) = {
             let wm = self.shared.window_mgr.lock_or_recover();
-            wm.handle_slot.is_some_and(|s| handle_in_slot(hwnd, s)) && wm.is_window(hwnd)
+            (wm.handle_slot.is_some_and(|s| handle_in_slot(hwnd, s)), wm.is_window(hwnd))
         };
-        if !mine {
-            return Some(WinReply::Failed);
-        }
-        if let WinCall::Send { msg, mp1, mp2 } = *call {
-            let wm = self.shared.window_mgr.lock_or_recover();
-            let queued = wm.find_hmq_for_hwnd(hwnd)
-                .is_some_and(|hmq| wm.queue_sent(hmq, SentMessage { id, hwnd, msg, mp1, mp2 }));
-            return (!queued).then_some(WinReply::Failed);
+        // The program as a whole: its slot address.
+        let whole = in_slot && wm_slot_address(hwnd);
+        match *call {
+            WinCall::Children if whole || (in_slot && exists) => {
+                return Some(WinReply::Handles(self.children_top_first(hwnd)));
+            }
+            WinCall::Broadcast { msg, mp1, mp2, fl } if whole => {
+                return Some(self.broadcast_for_other(msg, mp1, mp2, fl));
+            }
+            _ if !(in_slot && exists) => return Some(WinReply::Failed),
+            WinCall::Send { msg, mp1, mp2 } => {
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let queued = wm.find_hmq_for_hwnd(hwnd)
+                    .is_some_and(|hmq| wm.queue_sent(hmq, SentMessage::message(Some(id), hwnd, msg, mp1, mp2)));
+                return (!queued).then_some(WinReply::Failed);
+            }
+            WinCall::SetPos { behind, x, y, cx, cy, fl } => {
+                return self.set_pos_for_other(id, hwnd, behind, x, y, cx, cy, fl);
+            }
+            _ => {}
         }
         Some(self.answer_now(hwnd, call))
     }
@@ -562,7 +778,6 @@ impl Loader {
                 }
                 WinReply::Value(self.shared.window_mgr.lock_or_recover().query_window(hwnd, code))
             }
-            WinCall::SetPos { behind, x, y, cx, cy, fl } => value(self.set_pos_for_other(hwnd, behind, x, y, cx, cy, fl)),
             WinCall::Show { show } => {
                 self.shared.window_mgr.lock_or_recover().show_window(hwnd, show);
                 WinReply::Value(1)
@@ -572,10 +787,30 @@ impl Loader {
                 self.set_window_text(hwnd, text.clone());
                 WinReply::Value(1)
             }
-            // Queued by `answer`.
-            WinCall::Send { .. } => WinReply::Failed,
+            // Made by `answer`, or the server's.
+            WinCall::Send { .. } | WinCall::SetPos { .. } | WinCall::Children | WinCall::Broadcast { .. }
+                | WinCall::Clients | WinCall::Stacking => WinReply::Failed,
         }
     }
+}
+
+/// Whether `hwnd` is a slot address: a handle prefix without a window part.
+fn wm_slot_address(hwnd: u32) -> bool {
+    hwnd != 0 && hwnd & !super::pm_types::HWND_SLOT_MASK == 0
+}
+
+/// Windows of several programs (`lists`, each top first) in one order, top
+/// first: those in `stacking` (the session's frames, top first) in its
+/// order, then the rest of each list in its own order; each window once.
+pub(super) fn merge_by_stacking(stacking: &[u32], lists: &[Vec<u32>]) -> Vec<u32> {
+    let known: HashSet<u32> = lists.iter().flatten().copied().collect();
+    let mut seen = HashSet::new();
+    let mut out: Vec<u32> = stacking.iter().copied().filter(|h| known.contains(h) && seen.insert(*h)).collect();
+    for l in lists {
+        out.extend(l.iter().copied().filter(|h| seen.insert(*h)));
+    }
+    out.truncate(MAX_HANDLES);
+    out
 }
 
 #[cfg(test)]
@@ -625,7 +860,7 @@ mod tests {
         assert_eq!(loader.answer(7, frame, &send(0x1001)), None, "answered later");
         assert_eq!(loader.answer(8, frame + 99, &send(0x1001)), Some(WinReply::Failed), "no such window");
         let wm = loader.shared.window_mgr.lock_or_recover();
-        assert_eq!(wm.take_sent(hmq), Some(SentMessage { id: 7, hwnd: frame, msg: 0x1001, mp1: 1, mp2: 2 }));
+        assert_eq!(wm.take_sent(hmq), Some(SentMessage::message(Some(7), frame, 0x1001, 1, 2)));
         assert_eq!(wm.take_sent(hmq), None);
     }
 
@@ -649,7 +884,8 @@ mod tests {
         // WinWaitMsg: the sent message runs before the posted one is seen.
         let c = chain(loader.win_wait_msg(TID, 0, 0));
         assert_eq!(c.steps.iter().cloned().collect::<Vec<_>>(), vec![CallStep::send(PROC, frame, 0x1001, 1, 2)]);
-        assert_eq!(c.then, ChainThen::AnswerSent { id: 5, after: AfterSent::Rerun(ORD_WAIT_MSG) });
+        assert_eq!(c.then, ChainThen::AnswerSent { id: Some(5), hwnd: frame, after: AfterSent::Rerun(ORD_WAIT_MSG),
+                                                   finish: SentFinish::Reply, calls: 1 });
         assert!(c.inter_thread_send);
         assert_eq!(normal(loader.win_in_send_msg(TID)), 1, "WinInSendMsg while it runs");
         let mut c = *c;
@@ -665,14 +901,14 @@ mod tests {
     #[test]
     fn after_a_sent_message_a_modal_loop_or_a_send_goes_on() {
         let (loader, _, frame) = setup();
-        let s = SentMessage { id: 3, hwnd: frame, msg: 1, mp1: 0, mp2: 0 };
+        let s = SentMessage::message(Some(3), frame, 1, 0, 0);
         let modal = AfterSent::ModalLoop { dlg_proc: 1, hwnd_dlg: 2, hmq: 3 };
         let c = chain(loader.run_sent(TID, s, modal));
         assert_eq!(loader.finish_chain(&c), ChainEnd::ModalLoop { dlg_proc: 1, hwnd_dlg: 2, hmq: 3, msg: None });
         // A send waiting for its answer goes on waiting for the same one.
         loader.shared.window_mgr.lock_or_recover().remote_sends.begin(TID, 41);
-        let c = chain(loader.run_sent(TID, s, AfterSent::ResumeSend));
-        assert_eq!(loader.finish_chain(&c), ChainEnd::Rerun(ORD_SEND_MSG));
+        let c = chain(loader.run_sent(TID, s, AfterSent::Resume(ORD_SET_WINDOW_POS)));
+        assert_eq!(loader.finish_chain(&c), ChainEnd::Rerun(ORD_SET_WINDOW_POS));
         let mut wm = loader.shared.window_mgr.lock_or_recover();
         assert_eq!(wm.remote_sends.resumed(TID), Some(41));
         assert_eq!(wm.remote_sends.resumed(TID), None, "a later WinSendMsg is a new send");
@@ -707,7 +943,122 @@ mod tests {
     fn without_a_desktop_link_a_send_to_a_foreign_window_fails() {
         let (loader, _, _) = setup();
         let foreign = (3 << super::super::pm_types::HWND_SLOT_SHIFT) | super::super::pm_types::FIRST_LOCAL_HWND;
-        assert_eq!(normal(loader.remote_send(TID, foreign, 1, 0, 0)), 0);
+        let arg = |off: u64| if off == 4 { foreign } else { 0 };
+        assert_eq!(normal(loader.remote_call(TID, ORD_SEND_MSG, foreign, &arg)), 0);
+        assert_eq!(loader.shared.pm_errors.take(TID) & 0xFFFF, PMERR_INVALID_HWND);
+    }
+
+    /// A frame of class `App` with a client, and the client: `(frame, client)`.
+    fn std_frame(loader: &Loader, hmq: u32) -> (u32, u32) {
+        let mut wm = loader.shared.window_mgr.lock_or_recover();
+        let frame = wm.create_window("App".into(), HWND_DESKTOP, hmq);
+        let client = wm.create_window("App".into(), frame, hmq);
+        wm.frame_to_client.insert(frame, client);
+        if let Some(w) = wm.get_window_mut(frame) {
+            (w.cx, w.cy) = (300, 200);
+        }
+        (frame, client)
+    }
+
+    #[test]
+    fn another_programs_state_change_asks_the_client_on_its_thread() {
+        let (loader, hmq, _) = setup();
+        let (frame, client) = std_frame(&loader, hmq);
+        let set = WinCall::SetPos { behind: 0, x: 0, y: 0, cx: 0, cy: 0, fl: SWP_MINIMIZE };
+        assert_eq!(loader.answer(4, frame, &set), None, "answered once the client was asked");
+        let s = loader.take_sent(hmq).unwrap();
+        let SentKind::MinMax { op: SWP_MINIMIZE, target } = s.kind else { panic!("{s:?}") };
+        assert_eq!((s.id, s.hwnd), (Some(4), frame));
+        let c = chain(loader.run_sent(TID, s, AfterSent::Rerun(ORD_WAIT_MSG)));
+        let Some(CallStep::Guest { proc_addr, args, block, block_arg, .. }) = c.steps.front().cloned() else { panic!() };
+        assert_eq!((proc_addr, args, block_arg), (PROC, vec![client, WM_MINMAXFRAME, 0, 0], 2));
+        assert_eq!(block, minmax_swp(frame, SWP_MINIMIZE, target).to_vec(), "the SWP as mp1");
+        // TRUE: the frame stays as it is.
+        let mut kept = (*c).clone();
+        kept.steps.clear();
+        kept.returned(1, false);
+        loader.finish_chain(&kept);
+        let minimized = |l: &Loader| l.shared.window_mgr.lock_or_recover().get_window(frame).unwrap().style & WS_MINIMIZED != 0;
+        assert!(!minimized(&loader));
+        // FALSE: it changes.
+        let mut c = *c;
+        c.steps.clear();
+        c.returned(0, false);
+        loader.finish_chain(&c);
+        assert!(minimized(&loader));
+    }
+
+    #[test]
+    fn the_send_hooks_of_the_windows_queue_run_before_its_procedure() {
+        let (loader, hmq, frame) = setup();
+        const HOOK: u32 = 0x6000;
+        assert_eq!(normal(loader.win_set_hook(TID, hmq, super::super::pm_hook::HK_SENDMSG, HOOK)), 1);
+        let c = chain(loader.run_sent(TID, SentMessage::message(Some(1), frame, 0x1001, 1, 2), AfterSent::Rerun(1)));
+        assert_eq!(c.steps.len(), 2);
+        let Some(CallStep::Guest { proc_addr: HOOK, args, block, .. }) = c.steps.front().cloned() else { panic!() };
+        assert_eq!(args[2], 1, "fInterTask");
+        assert_eq!(&block[..4], &[2, 1, 0x1001, frame], "SMHSTRUCT");
+        assert_eq!(c.steps.back(), Some(&CallStep::send(PROC, frame, 0x1001, 1, 2)));
+        let ChainThen::AnswerSent { calls: 2, .. } = c.then else { panic!() };
+        // Only the hook ran (the window went meanwhile): no answer value.
+        let mut c = *c;
+        c.steps.clear();
+        c.returned(0, false);
+        assert_eq!(loader.finish_chain(&c), ChainEnd::Rerun(1));
+    }
+
+    #[test]
+    fn another_program_lists_and_broadcasts_to_this_programs_windows() {
+        let (loader, hmq, a) = setup();
+        let (frame, client) = std_frame(&loader, hmq);
+        let me = slot_address(1);
+        let Some(WinReply::Handles(top)) = loader.answer(1, me, &WinCall::Children) else { panic!() };
+        assert!(top.contains(&a) && top.contains(&frame) && !top.contains(&client));
+        assert_eq!(loader.answer(1, frame, &WinCall::Children), Some(WinReply::Handles(vec![client])));
+        assert_eq!(loader.answer(1, slot_address(2), &WinCall::Children), Some(WinReply::Failed), "not this program");
+        // Posted to the windows below the desktop.
+        let post = WinCall::Broadcast { msg: 0x1005, mp1: 7, mp2: 0, fl: super::super::pm_message::BMSG_DESCENDANTS };
+        assert_eq!(loader.answer(2, me, &post), Some(WinReply::Value(1)));
+        let mq = loader.shared.window_mgr.lock_or_recover().get_mq(hmq).unwrap();
+        let posted: Vec<u32> = mq.lock_or_recover().messages.iter().filter(|m| m.msg == 0x1005).map(|m| m.hwnd).collect();
+        assert!(posted.contains(&client) && posted.contains(&frame));
+        // Sent: queued for the windows' thread, no answer awaited.
+        let send = WinCall::Broadcast { msg: 0x1006, mp1: 0, mp2: 0,
+                                        fl: super::super::pm_message::BMSG_SEND | super::super::pm_message::BMSG_FRAMEONLY };
+        assert_eq!(loader.answer(3, me, &send), Some(WinReply::Value(1)));
+        let s = loader.take_sent(hmq).unwrap();
+        assert_eq!((s.id, s.kind), (None, SentKind::Message { msg: 0x1006, mp1: 0, mp2: 0 }));
+        assert_eq!(loader.answer(3, me, &WinCall::Broadcast { msg: 1, mp1: 0, mp2: 0, fl: 0x100 }),
+                   Some(WinReply::Failed), "an unknown flag");
+    }
+
+    #[test]
+    fn windows_of_several_programs_follow_the_sessions_stacking() {
+        let a = vec![0x20_1001, 0x20_1002, 0x20_1003];
+        let b = vec![0x30_1001, 0x30_1002];
+        // The server knows the frames 0x30_1001 above 0x20_1002 above 0x20_1001.
+        let order = merge_by_stacking(&[0x30_1001, 0x20_1002, 0x40_1000, 0x20_1001], &[a, b]);
+        assert_eq!(order, vec![0x30_1001, 0x20_1002, 0x20_1001, 0x20_1003, 0x30_1002],
+                   "stacked frames first, then the rest of each program; frames of programs not asked are left out");
+    }
+
+    #[test]
+    fn enumerating_lists_children_top_first() {
+        let (loader, hmq, a) = setup();
+        let (frame, client) = std_frame(&loader, hmq);
+        let h = normal(loader.win_begin_enum_windows(TID, frame));
+        assert_eq!(normal(loader.win_get_next_window(TID, h)), client);
+        assert_eq!(normal(loader.win_get_next_window(TID, h)), 0);
+        assert_eq!(normal(loader.win_end_enum_windows(TID, h)), 1);
+        assert_eq!(normal(loader.win_end_enum_windows(TID, h)), 0);
+        assert_eq!(loader.shared.pm_errors.take(TID) & 0xFFFF, PMERR_INVALID_HENUM);
+        // The desktop: without a desktop server only this program's.
+        loader.shared.window_mgr.lock_or_recover().z_push_top(frame);
+        loader.shared.window_mgr.lock_or_recover().z_push_top(a);
+        let h = normal(loader.win_begin_enum_windows(TID, HWND_DESKTOP));
+        assert_eq!(normal(loader.win_get_next_window(TID, h)), a, "the top frame first");
+        assert_eq!(normal(loader.win_get_next_window(TID, h)), frame);
+        assert_eq!(normal(loader.win_begin_enum_windows(TID, frame + 99)), 0, "no window");
         assert_eq!(loader.shared.pm_errors.take(TID) & 0xFFFF, PMERR_INVALID_HWND);
     }
 }

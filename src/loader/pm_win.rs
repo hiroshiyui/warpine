@@ -374,6 +374,18 @@ impl super::Loader {
                 // WinInSendMsg(HAB hab) -> BOOL
                 self.win_in_send_msg(vcpu_id)
             }
+            702 => {
+                // WinBeginEnumWindows(HWND hwnd) -> HENUM (pm_enum.rs)
+                self.win_begin_enum_windows(vcpu_id, read_stack(4))
+            }
+            756 => {
+                // WinGetNextWindow(HENUM henum) -> HWND
+                self.win_get_next_window(vcpu_id, read_stack(4))
+            }
+            737 => {
+                // WinEndEnumWindows(HENUM henum) -> BOOL
+                self.win_end_enum_windows(vcpu_id, read_stack(4))
+            }
             897 => {
                 // WinWaitMsg(HAB hab, ULONG msgFirst, ULONG msgLast) -> BOOL
                 self.win_wait_msg(vcpu_id, read_stack(8), read_stack(12))

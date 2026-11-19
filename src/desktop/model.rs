@@ -245,6 +245,11 @@ impl DesktopModel {
     pub fn clients(&self) -> impl Iterator<Item = &ClientId> {
         self.items.keys()
     }
+
+    /// The frames of all clients, top first.
+    pub fn stacking(&self) -> Vec<u32> {
+        self.stack.iter().rev().map(|s| s.frame).collect()
+    }
 }
 
 /// Desktop areas covered by pictures that appeared, went, moved, changed or

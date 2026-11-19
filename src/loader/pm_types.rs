@@ -548,6 +548,8 @@ pub fn menu_bar_item_width(text: &str) -> i32 {
 /// Bits of a window handle above the local number: the desktop slot plus
 /// one (ADR-0052). Handles without a slot (no desktop server) have none.
 pub const HWND_SLOT_SHIFT: u32 = 20;
+/// The bits of a window handle that name its desktop slot.
+pub const HWND_SLOT_MASK: u32 = !((1 << HWND_SLOT_SHIFT) - 1);
 /// The local part of a window handle.
 pub const HWND_LOCAL_MASK: u32 = (1 << HWND_SLOT_SHIFT) - 1;
 /// The first local window number (below it: `HWND_DESKTOP`, `HWND_OBJECT` …).
@@ -654,6 +656,8 @@ pub struct WindowManager {
     /// Messages this program's threads send to other programs' windows,
     /// in progress (`pm_remote.rs`).
     pub remote_sends: super::pm_remote::RemoteSends,
+    /// Open window enumerations (`pm_enum.rs`).
+    pub enums: super::pm_enum::EnumTable,
     /// While the GUI thread handles an event from the desktop server: its
     /// token, given to the input events it queues (ADR-0052).
     pub input_tag: Option<u64>,
@@ -775,6 +779,7 @@ impl WindowManager {
             handle_slot: None,
             session_active: 0,
             remote_sends: Default::default(),
+            enums: Default::default(),
             input_tag_used: false,
             input_ack: None,
             destroying: HashSet::new(),

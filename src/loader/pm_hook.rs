@@ -123,8 +123,8 @@ pub const HLPM_MENU: i32 = -3;
 /// Most hooks one queue (or the process) can have at once.
 pub const MAX_HOOKS_PER_SCOPE: usize = 64;
 /// Bytes reserved below the API caller's stack for the structure a chained
-/// call passes (`SMHSTRUCT`, `RECTL`).
-pub const CHAIN_BLOCK_BYTES: u32 = 32;
+/// call passes (`SMHSTRUCT`, `RECTL`, `QMSG`, the `SWP` of `WM_MINMAXFRAME`).
+pub const CHAIN_BLOCK_BYTES: u32 = 48;
 /// Most arguments of a chained call.
 pub const MAX_CHAIN_ARGS: usize = 6;
 
@@ -333,7 +333,14 @@ pub(crate) enum ChainThen {
     Drag { stage: u8 },
     /// A message another program sent (`pm_remote.rs`): answer call `id`
     /// with the window procedure's result, then go on as `after` says.
-    AnswerSent { id: u64, after: super::pm_remote::AfterSent },
+    /// `calls`: how many calls the chain was to make.
+    AnswerSent {
+        id: Option<u64>,
+        hwnd: u32,
+        after: super::pm_remote::AfterSent,
+        finish: super::pm_remote::SentFinish,
+        calls: u32,
+    },
 }
 
 /// Guest calls an API makes before it returns (see the module comment).
@@ -431,7 +438,8 @@ impl Loader {
             ChainThen::ContainerFilter { hwnd, job } => self.container_filter_done(hwnd, job, &chain.results),
             ChainThen::DialogMnemonic { dlg } => self.dialog_mnemonic_done(dlg, chain),
             ChainThen::Drag { stage } => self.drag_chain_done(stage, chain.last),
-            ChainThen::AnswerSent { id, after } => self.sent_done(id, after, chain),
+            ChainThen::AnswerSent { id, hwnd, after, finish, calls } =>
+                self.sent_done(id, hwnd, after, finish, calls, chain),
             ChainThen::StdDialog { hwnd, buf, ret } => {
                 self.std_chain_done(hwnd, buf, &chain.results);
                 ChainEnd::Return(ret)

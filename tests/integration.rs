@@ -2340,15 +2340,17 @@ fn gui_pm_twoproc_test_matches_golden() {
 /// server (ADR-0052 phase B). The parent takes activation back from the
 /// child's frame B, then queries B (WinIsWindow, WinQueryWindowProcess,
 /// text, position, rectangle, visibility, class name, window words,
-/// WinQueryWindow), sends to it — B's thread runs the window procedure, and
-/// a message B sends back meanwhile runs in the waiting parent —, sets its
-/// text, posts to it, moves and sizes it, activates it, minimizes and hides
-/// it — each change seen in the child — and once the child ended B's handle
-/// is no window and sends to it fail. No input: the script only ends a
-/// stuck run.
+/// WinQueryWindow), lists the desktop's windows and B's (WinBeginEnumWindows),
+/// sends to it — B's send hook and thread run the window procedure, and a
+/// message B sends back meanwhile runs in the waiting parent —, sets its
+/// text, posts and broadcasts to both programs, moves and sizes it,
+/// activates it, maximizes it (refused by B's WM_MINMAXFRAME), minimizes and
+/// hides it — each change seen in the child — and once the child ended B's
+/// handle is no window and sends to it fail. No input: the script only ends
+/// a stuck run.
 #[test]
 fn gui_pm_xproc_test_calls_on_another_programs_windows() {
-    assert_scripted_checks_pass("samples/pm_xproc_test/pm_xproc_test.exe", "pm_xproc_test", 53, "20000 quit\n");
+    assert_scripted_checks_pass("samples/pm_xproc_test/pm_xproc_test.exe", "pm_xproc_test", 69, "20000 quit\n");
 }
 
 /// The desktop kept in the process (`WARPINE_DESKTOP=local`, no desktop

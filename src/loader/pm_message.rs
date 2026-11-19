@@ -141,15 +141,22 @@ impl Loader {
     /// `WinBroadcastMsg(hwnd, msg, mp1, mp2, fl)` (901): post or send the
     /// message to the children (`BMSG_DESCENDANTS`: all descendants) of
     /// `hwnd` (`BMSG_FRAMEONLY`: frame windows only), or with
-    /// `BMSG_POSTQUEUE` post it to every message queue of the process with
-    /// no window (unverified: that `hwnd` and the other flags are then
-    /// ignored). Sent messages are delivered one after the other, each
+    /// `BMSG_POSTQUEUE` post it to every message queue with no window
+    /// (unverified: that `hwnd` and the other flags are then ignored). For
+    /// the desktop and `BMSG_POSTQUEUE` it reaches the other programs of
+    /// the session too, which run sent ones without this call waiting
+    /// (`pm_remote.rs`). Sent messages are delivered one after the other, each
     /// after the send hooks of its window's queue. TRUE; FALSE for an
     /// unknown flag (`PMERR_INVALID_FLAG`, unverified) or a handle that is
     /// no window.
     pub(crate) fn win_broadcast_msg(&self, tid: u32, hwnd: u32, msg: u32, mp1: u32, mp2: u32, fl: u32) -> ApiResult {
         if fl & !BMSG_ALL != 0 {
             return self.pm_fail(tid, PMERR_INVALID_FLAG);
+        }
+        // The desktop's children and the queues of the session include
+        // other programs' (pm_remote.rs).
+        if fl & BMSG_POSTQUEUE != 0 || is_desktop(hwnd) {
+            self.broadcast_to_others(msg, mp1, mp2, fl);
         }
         if fl & BMSG_POSTQUEUE != 0 {
             let queues: Vec<_> = {

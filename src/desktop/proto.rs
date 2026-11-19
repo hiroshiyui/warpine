@@ -11,7 +11,7 @@
 //! server's packets the same way.
 
 /// Protocol version, checked in `Hello` / `Welcome`.
-pub const PROTOCOL_VERSION: u32 = 3;
+pub const PROTOCOL_VERSION: u32 = 4;
 /// Largest packet either side sends or accepts.
 pub const MAX_MESSAGE: usize = 128 * 1024;
 /// Most items (frame pictures and pull-downs) in one `Update`.
@@ -22,6 +22,19 @@ pub const MAX_PARTS: usize = 8;
 pub const MAX_DAMAGE: usize = 256;
 /// Most frames named as raised (or as lowered) in one `Update`.
 pub const MAX_RAISED: usize = 64;
+/// Most window handles in one reply (a window list).
+pub const MAX_HANDLES: usize = 4096;
+/// The address of calls the server answers itself (`Clients`, `Stacking`):
+/// no window handle has it.
+pub const SERVER_ADDRESS: u32 = 0;
+
+/// The address of the program in desktop slot `slot` as a whole, for calls
+/// about all its windows (`Children` of the desktop, `Broadcast`): its
+/// handle prefix with no window part.
+pub fn slot_address(slot: u32) -> u32 {
+    (slot + 1) << crate::loader::pm_types::HWND_SLOT_SHIFT
+}
+
 /// Longest window class name, in bytes.
 pub const MAX_NAME: usize = 256;
 /// Longest text (clipboard, typed text), in bytes.
@@ -122,13 +135,29 @@ pub enum WinCall {
     Send { msg: u32, mp1: u32, mp2: u32 },
     /// `WinSetWindowText`.
     SetText { text: String },
+    /// The window's children, top first (at a [`slot_address`]: the
+    /// program's windows on the desktop). Answered with `Handles`.
+    Children,
+    /// `WinBroadcastMsg(HWND_DESKTOP, …)` to the program's windows (at a
+    /// [`slot_address`]); `fl` holds the `BMSG_*` flags.
+    Broadcast { msg: u32, mp1: u32, mp2: u32, fl: u32 },
+    /// The slots of the connected programs (at [`SERVER_ADDRESS`]).
+    Clients,
+    /// The session's frames, top first (at [`SERVER_ADDRESS`]).
+    Stacking,
 }
 
 impl WinCall {
     /// Whether the server gives up on the call after `CALL_EXPIRY`: every
     /// call but `Send`, whose window procedure may run for any time.
     pub fn expires(&self) -> bool {
-        !matches!(self, WinCall::Send { .. })
+        use crate::loader::constants::{SWP_MAXIMIZE, SWP_MINIMIZE, SWP_RESTORE};
+        match self {
+            WinCall::Send { .. } => false,
+            // A state change asks the frame's client first (`WM_MINMAXFRAME`).
+            WinCall::SetPos { fl, .. } => fl & (SWP_MINIMIZE | SWP_MAXIMIZE | SWP_RESTORE) == 0,
+            _ => true,
+        }
     }
 }
 
@@ -165,6 +194,8 @@ pub enum WinReply {
     /// The call's value (BOOL, handle, window word).
     Value(u32),
     Info(Box<WindowInfo>),
+    /// Window handles (or slots), at most [`MAX_HANDLES`].
+    Handles(Vec<u32>),
 }
 
 /// Client → server.
@@ -289,7 +320,10 @@ impl Writer {
         for p in parts { self.area(p); }
     }
     fn handles(&mut self, hs: &[u32]) {
-        let hs = &hs[..hs.len().min(MAX_RAISED)];
+        self.handles_max(hs, MAX_RAISED);
+    }
+    fn handles_max(&mut self, hs: &[u32], max: usize) {
+        let hs = &hs[..hs.len().min(max)];
         self.u16(hs.len() as u16);
         for h in hs { self.u32(*h); }
     }
@@ -307,12 +341,19 @@ impl Writer {
             WinCall::Activate => self.u8(tag::CALL_ACTIVATE),
             WinCall::Send { msg, mp1, mp2 } => { self.u8(tag::CALL_SEND); self.u32(*msg); self.u32(*mp1); self.u32(*mp2); }
             WinCall::SetText { text } => { self.u8(tag::CALL_SETTEXT); self.text(text); }
+            WinCall::Children => self.u8(tag::CALL_CHILDREN),
+            WinCall::Broadcast { msg, mp1, mp2, fl } => {
+                self.u8(tag::CALL_BROADCAST); self.u32(*msg); self.u32(*mp1); self.u32(*mp2); self.u32(*fl);
+            }
+            WinCall::Clients => self.u8(tag::CALL_CLIENTS),
+            WinCall::Stacking => self.u8(tag::CALL_STACKING),
         }
     }
     fn reply(&mut self, r: &WinReply) {
         match r {
             WinReply::Failed => self.u8(tag::REPLY_FAILED),
             WinReply::Value(v) => { self.u8(tag::REPLY_VALUE); self.u32(*v); }
+            WinReply::Handles(hs) => { self.u8(tag::REPLY_HANDLES); self.handles_max(hs, MAX_HANDLES); }
             WinReply::Info(i) => {
                 self.u8(tag::REPLY_INFO);
                 for v in [i.pid, i.tid, i.parent, i.owner, i.style, i.id] { self.u32(v); }
@@ -389,7 +430,10 @@ impl<'a> Reader<'a> {
         Ok(Item { frame, pixmap, x, y, parts })
     }
     fn handles(&mut self) -> Result<Vec<u32>, DecodeError> {
-        let n = self.count(MAX_RAISED)?;
+        self.handles_max(MAX_RAISED)
+    }
+    fn handles_max(&mut self, max: usize) -> Result<Vec<u32>, DecodeError> {
+        let n = self.count(max)?;
         (0..n).map(|_| self.u32()).collect()
     }
     fn call(&mut self) -> Result<WinCall, DecodeError> {
@@ -409,6 +453,11 @@ impl<'a> Reader<'a> {
             tag::CALL_ACTIVATE => WinCall::Activate,
             tag::CALL_SEND => WinCall::Send { msg: self.u32()?, mp1: self.u32()?, mp2: self.u32()? },
             tag::CALL_SETTEXT => WinCall::SetText { text: self.text()? },
+            tag::CALL_CHILDREN => WinCall::Children,
+            tag::CALL_BROADCAST => WinCall::Broadcast { msg: self.u32()?, mp1: self.u32()?, mp2: self.u32()?,
+                                                        fl: self.u32()? },
+            tag::CALL_CLIENTS => WinCall::Clients,
+            tag::CALL_STACKING => WinCall::Stacking,
             _ => return Err(DecodeError::BadValue),
         })
     }
@@ -416,6 +465,7 @@ impl<'a> Reader<'a> {
         Ok(match self.u8()? {
             tag::REPLY_FAILED => WinReply::Failed,
             tag::REPLY_VALUE => WinReply::Value(self.u32()?),
+            tag::REPLY_HANDLES => WinReply::Handles(self.handles_max(MAX_HANDLES)?),
             tag::REPLY_INFO => {
                 let mut i = WindowInfo {
                     pid: self.u32()?, tid: self.u32()?, parent: self.u32()?, owner: self.u32()?,
@@ -484,10 +534,15 @@ mod tag {
     pub const CALL_SHOW: u8 = 7;
     pub const CALL_SEND: u8 = 8;
     pub const CALL_SETTEXT: u8 = 9;
+    pub const CALL_CHILDREN: u8 = 10;
+    pub const CALL_BROADCAST: u8 = 11;
+    pub const CALL_CLIENTS: u8 = 12;
+    pub const CALL_STACKING: u8 = 13;
 
     pub const REPLY_FAILED: u8 = 0;
     pub const REPLY_VALUE: u8 = 1;
     pub const REPLY_INFO: u8 = 2;
+    pub const REPLY_HANDLES: u8 = 3;
 
     pub const IN_MOTION: u8 = 1;
     pub const IN_BUTTON: u8 = 2;
@@ -707,9 +762,15 @@ mod tests {
             ClientMsg::Call { id: 6, hwnd: 0x20_1000, call: WinCall::Show { show: false } },
             ClientMsg::Call { id: 7, hwnd: 0x20_1000, call: WinCall::Send { msg: 0x1002, mp1: 4, mp2: 5 } },
             ClientMsg::Call { id: 8, hwnd: 0x20_1000, call: WinCall::SetText { text: "Größe".into() } },
+            ClientMsg::Call { id: 9, hwnd: 0x20_0000, call: WinCall::Children },
+            ClientMsg::Call { id: 10, hwnd: 0x20_0000, call: WinCall::Broadcast { msg: 1, mp1: 2, mp2: 3, fl: 4 } },
+            ClientMsg::Call { id: 11, hwnd: SERVER_ADDRESS, call: WinCall::Clients },
+            ClientMsg::Call { id: 12, hwnd: SERVER_ADDRESS, call: WinCall::Stacking },
             ClientMsg::Answer { id: 7, reply: WinReply::Failed },
             ClientMsg::Answer { id: 8, reply: WinReply::Value(9) },
             ClientMsg::Answer { id: 9, reply: WinReply::Info(Box::new(info())) },
+            ClientMsg::Answer { id: 10, reply: WinReply::Handles(vec![0x20_1000, 0x20_1001]) },
+            ClientMsg::Answer { id: 11, reply: WinReply::Handles(Vec::new()) },
         ]
     }
 
@@ -841,5 +902,29 @@ mod tests {
         let i = WindowInfo { class: "c".repeat(MAX_NAME), text: "t".repeat(MAX_TEXT), ..info() };
         assert!(ClientMsg::Answer { id: 1, reply: WinReply::Info(Box::new(i.clone())) }.encode().len() <= MAX_MESSAGE);
         assert!(ServerMsg::Answered { id: 1, reply: WinReply::Info(Box::new(i)) }.encode().len() <= MAX_MESSAGE);
+    }
+
+    #[test]
+    fn window_lists_are_bounded_and_the_calls_that_wait_long_are_known() {
+        let many: Vec<u32> = (0..MAX_HANDLES as u32 + 10).collect();
+        let a = ClientMsg::Answer { id: 1, reply: WinReply::Handles(many) };
+        let p = a.encode();
+        assert!(p.len() <= MAX_MESSAGE);
+        let Ok(ClientMsg::Answer { reply: WinReply::Handles(back), .. }) = ClientMsg::decode(&p) else { panic!() };
+        assert_eq!(back.len(), MAX_HANDLES, "cut to the limit");
+        // A count beyond the limit is refused.
+        let mut p = ClientMsg::Answer { id: 1, reply: WinReply::Handles(vec![]) }.encode();
+        let n = p.len();
+        p[n - 2..].copy_from_slice(&((MAX_HANDLES + 1) as u16).to_le_bytes());
+        assert!(ClientMsg::decode(&p).is_err());
+        assert_eq!(handle_slot_of(slot_address(3)), Some(3));
+        use crate::loader::constants::{SWP_MINIMIZE, SWP_MOVE};
+        let pos = |fl| WinCall::SetPos { behind: 0, x: 0, y: 0, cx: 0, cy: 0, fl };
+        assert!(pos(SWP_MOVE).expires() && !pos(SWP_MINIMIZE).expires());
+        assert!(!WinCall::Send { msg: 0, mp1: 0, mp2: 0 }.expires() && WinCall::Children.expires());
+    }
+
+    fn handle_slot_of(h: u32) -> Option<u32> {
+        crate::loader::pm_types::handle_slot(h)
     }
 }

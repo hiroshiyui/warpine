@@ -47,6 +47,7 @@ mod pm_paint_style;
 mod pm_static;
 mod pm_query;
 mod pm_remote;
+mod pm_enum;
 pub mod pm_keystate;
 pub mod pm_syscolor;
 pub mod vfs;

@@ -20,6 +20,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use super::model::ClientId;
+use super::proto::{WinCall, WinReply};
 use crate::loader::pm_types::handle_slot;
 
 /// Most calls one client may have in flight.
@@ -27,6 +28,21 @@ pub const MAX_PENDING_CALLS: usize = 32;
 /// How long the server keeps a call that was not answered (the caller has
 /// given up by then: `client::CALL_TIMEOUT`).
 pub const CALL_EXPIRY: Duration = Duration::from_secs(10);
+
+/// A call made at `SERVER_ADDRESS`, answered by the server itself:
+/// `Clients` with the connected clients' slots (ascending), `Stacking`
+/// with the session's frames top first; any other call fails.
+pub fn server_answer(call: &WinCall, clients: impl Iterator<Item = ClientId>, stacking: Vec<u32>) -> WinReply {
+    match call {
+        WinCall::Clients => {
+            let mut slots: Vec<u32> = clients.collect();
+            slots.sort_unstable();
+            WinReply::Handles(slots)
+        }
+        WinCall::Stacking => WinReply::Handles(stacking),
+        _ => WinReply::Failed,
+    }
+}
 
 /// A forwarded call waiting for its answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,6 +197,13 @@ mod tests {
         assert!(r.expire(now + CALL_EXPIRY / 2).is_empty());
         assert_eq!(r.expire(now + CALL_EXPIRY), vec![(3, 6)]);
         assert!(r.is_empty());
+    }
+
+    #[test]
+    fn the_server_answers_for_the_session() {
+        assert_eq!(server_answer(&WinCall::Clients, [4, 1, 2].into_iter(), vec![]), WinReply::Handles(vec![1, 2, 4]));
+        assert_eq!(server_answer(&WinCall::Stacking, [1].into_iter(), vec![9, 8]), WinReply::Handles(vec![9, 8]));
+        assert_eq!(server_answer(&WinCall::Describe, [1].into_iter(), vec![]), WinReply::Failed);
     }
 
     #[test]

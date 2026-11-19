@@ -42,11 +42,11 @@ use std::time::{Duration, Instant};
 use log::{info, warn};
 use sdl3::event::{Event, WindowEvent};
 
-use crate::desktop::calls::{CallRouter, Refusal, Route};
+use crate::desktop::calls::{server_answer, CallRouter, Refusal, Route};
 use crate::desktop::client::DesktopLock;
 use crate::desktop::model::{DesktopModel, Effects};
 use crate::desktop::pixmap::SharedPixmap;
-use crate::desktop::proto::{Area, ClientMsg, Input, Pointer, ServerMsg, WinReply, PROTOCOL_VERSION};
+use crate::desktop::proto::{Area, ClientMsg, Input, Pointer, ServerMsg, WinReply, PROTOCOL_VERSION, SERVER_ADDRESS};
 use crate::desktop::transport::{Conn, Listener, SOCKET_NAME};
 use crate::loader::pm_types::{handle_in_slot, MAX_HANDLE_SLOTS};
 use crate::loader::MutexExt;
@@ -460,6 +460,13 @@ impl Server {
             ClientMsg::TextArea { area, cursor } => {
                 let rect = sdl3::rect::Rect::new(area.x, area.y, area.w.max(1) as u32, area.h.max(1) as u32);
                 self.video.text_input().set_rect(self.comp.window(), rect, cursor);
+            }
+            ClientMsg::Call { id, hwnd, call } if hwnd == SERVER_ADDRESS => {
+                // About the session: answered here (calls.rs).
+                let reply = server_answer(&call, self.clients.keys().copied(), self.model.stacking());
+                if let Some(c) = self.clients.get(&slot) {
+                    c.send(&ServerMsg::Answered { id, reply });
+                }
             }
             ClientMsg::Call { id, hwnd, call } => {
                 let clients = &self.clients;
