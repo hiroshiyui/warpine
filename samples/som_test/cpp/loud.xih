@@ -1,0 +1,58 @@
+/*
+ * loud.xih - C++ implementation bindings of class Loud, written by hand
+ * as the SOM compiler's C++ emitter would emit them (ADR-0061).
+ */
+#ifndef SOM_Loud_xih
+#define SOM_Loud_xih
+
+#include "loud.xh"
+
+typedef struct LoudData {
+    long greetings;
+} LoudData;
+
+SOMEXTERN struct LoudCClassDataStructure {
+    SOMClass *parent;
+    somDToken instanceDataToken;
+} SOMDLINK LoudCClassData;
+
+#define LoudGetData( somSelf ) \
+    ((LoudData *)somDataResolve( (SOMObject *)(somSelf), LoudCClassData.instanceDataToken ))
+#define LoudMethodDebug( c, m )  SOM_NoTrace( c, m )
+#define _greetings  (somThis->greetings)
+/* The parent's implementations, whatever the object's class. */
+#define Loud_parent_SOMObject_somInit( somSelf ) \
+    SOM_ClassResolve( LoudCClassData.parent, SOMObject, somInit )( (SOMObject *)(somSelf) )
+#define Loud_parent_SOMObject_somUninit( somSelf ) \
+    SOM_ClassResolve( LoudCClassData.parent, SOMObject, somUninit )( (SOMObject *)(somSelf) )
+#define Loud_parent_Hello_sayHello( somSelf, ev ) \
+    SOM_ClassResolve( LoudCClassData.parent, Hello, sayHello )( (Hello *)(somSelf), (ev) )
+
+SOM_Scope void SOMLINK somInit( Loud *somSelf );
+SOM_Scope void SOMLINK somUninit( Loud *somSelf );
+SOM_Scope void SOMLINK sayHello( Loud *somSelf, Environment *ev );
+SOM_Scope long SOMLINK shout( Loud *somSelf, Environment *ev, long times );
+
+struct LoudClassDataStructure SOMDLINK LoudClassData;
+struct LoudCClassDataStructure SOMDLINK LoudCClassData;
+
+SOMClass * SOMLINK LoudNewClass( integer4 major, integer4 minor )
+{
+    SOMClass *cls;
+    SOMClass *parent;
+
+    if( LoudClassData.classObject ) return( LoudClassData.classObject );
+    parent = HelloNewClass( 0, 0 );
+    SOM_NEW_CLASS( cls, "Loud", parent, sizeof( LoudData ), 1, major, minor );
+    SOM_OVERRIDE( cls, "somInit", somInit );
+    SOM_OVERRIDE( cls, "somUninit", somUninit );
+    SOM_OVERRIDE( cls, "sayHello", sayHello );
+    LoudClassData.shout = SOM_ADD_METHOD( cls, "shout", shout );
+    _somClassReady( cls );
+    LoudCClassData.parent = parent;
+    LoudCClassData.instanceDataToken = _somGetInstanceToken( cls );
+    LoudClassData.classObject = cls;
+    return( cls );
+}
+
+#endif

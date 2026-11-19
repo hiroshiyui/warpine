@@ -3,7 +3,8 @@
  *
  * Written for Warpine from the public SOM documentation (SOM Programming
  * Guide and Reference: SOMObject, SOMClass, SOMClassMgr, somResolve,
- * somClassResolve, somDataResolve, somIdFromString, somEnvironmentNew).
+ * somClassResolve, somDataResolve, somIdFromString, somEnvironmentNew,
+ * somDefaultInit, somDestruct).
  * It stands in for the header the SOMobjects Toolkit generates and ships:
  * the classes in this directory were bound by hand, the way the SOM
  * compiler's C emitter binds them, so the Open Watcom SOM samples build
@@ -21,7 +22,11 @@
 
 #define SOMLINK   _System
 #define SOMDLINK  _System
+#ifdef __cplusplus
+#define SOMEXTERN extern "C"
+#else
 #define SOMEXTERN extern
+#endif
 #define SOM_Scope static
 
 typedef long           integer4;
@@ -44,9 +49,17 @@ typedef struct SOMAny_struct {
     somMethodTab *mtab;
 } SOMAny;
 
+/* In C every object is a SOMAny; in C++ (som.xh) the classes are C++
+ * classes whose only member is that first word. */
+#ifdef __cplusplus
+class SOMObject;
+class SOMClass;
+class SOMClassMgr;
+#else
 typedef SOMAny SOMObject;
 typedef SOMAny SOMClass;
 typedef SOMAny SOMClassMgr;
+#endif
 
 typedef struct Environment {
     long  _major;
@@ -95,7 +108,8 @@ SOMEXTERN struct SOMObjectClassDataStructure {
     SOMClass *classObject;
     somMToken somInit, somUninit, somFree, somGetClass, somGetClassName,
               somGetSize, somIsA, somIsInstanceOf, somRespondsTo,
-              somPrintSelf, somDumpSelf, somDumpSelfInt;
+              somPrintSelf, somDumpSelf, somDumpSelfInt,
+              somDefaultInit, somDestruct;
 } SOMDLINK SOMObjectClassData;
 
 SOMEXTERN struct SOMClassClassDataStructure {
@@ -134,6 +148,9 @@ typedef int       SOMLINK somTP_SOMObject_somRespondsTo( SOMObject *, somId );
 typedef SOMObject *SOMLINK somTP_SOMObject_somPrintSelf( SOMObject * );
 typedef void      SOMLINK somTP_SOMObject_somDumpSelf( SOMObject *, long );
 typedef void      SOMLINK somTP_SOMObject_somDumpSelfInt( SOMObject *, long );
+/* SOM 2.1 initializers; the control blocks are not used (pass 0). */
+typedef void      SOMLINK somTP_SOMObject_somDefaultInit( SOMObject *, void * );
+typedef void      SOMLINK somTP_SOMObject_somDestruct( SOMObject *, unsigned char, void * );
 typedef somTP_SOMObject_somInit         *somTD_SOMObject_somInit;
 typedef somTP_SOMObject_somUninit       *somTD_SOMObject_somUninit;
 typedef somTP_SOMObject_somFree         *somTD_SOMObject_somFree;
@@ -146,6 +163,8 @@ typedef somTP_SOMObject_somRespondsTo   *somTD_SOMObject_somRespondsTo;
 typedef somTP_SOMObject_somPrintSelf    *somTD_SOMObject_somPrintSelf;
 typedef somTP_SOMObject_somDumpSelf     *somTD_SOMObject_somDumpSelf;
 typedef somTP_SOMObject_somDumpSelfInt  *somTD_SOMObject_somDumpSelfInt;
+typedef somTP_SOMObject_somDefaultInit  *somTD_SOMObject_somDefaultInit;
+typedef somTP_SOMObject_somDestruct     *somTD_SOMObject_somDestruct;
 
 #define _somInit( o )           SOM_Resolve( o, SOMObject, somInit )( (SOMObject *)(o) )
 #define _somUninit( o )         SOM_Resolve( o, SOMObject, somUninit )( (SOMObject *)(o) )
@@ -159,6 +178,8 @@ typedef somTP_SOMObject_somDumpSelfInt  *somTD_SOMObject_somDumpSelfInt;
 #define _somPrintSelf( o )      SOM_Resolve( o, SOMObject, somPrintSelf )( (SOMObject *)(o) )
 #define _somDumpSelf( o, l )    SOM_Resolve( o, SOMObject, somDumpSelf )( (SOMObject *)(o), (l) )
 #define _somDumpSelfInt( o, l ) SOM_Resolve( o, SOMObject, somDumpSelfInt )( (SOMObject *)(o), (l) )
+#define _somDefaultInit( o, c ) SOM_Resolve( o, SOMObject, somDefaultInit )( (SOMObject *)(o), (c) )
+#define _somDestruct( o, f, c ) SOM_Resolve( o, SOMObject, somDestruct )( (SOMObject *)(o), (f), (c) )
 /* The long names of SOM 2.x C bindings. */
 #define SOMObject_somInit( o )         _somInit( o )
 #define SOMObject_somUninit( o )       _somUninit( o )
@@ -175,6 +196,7 @@ typedef somTP_SOMObject_somDumpSelfInt  *somTD_SOMObject_somDumpSelfInt;
 
 /* SOMClass */
 typedef SOMObject *SOMLINK somTP_SOMClass_somNew( SOMClass * );
+typedef SOMObject *SOMLINK somTP_SOMClass_somNewNoInit( SOMClass * );
 typedef zString    SOMLINK somTP_SOMClass_somGetName( SOMClass * );
 typedef SOMClass  *SOMLINK somTP_SOMClass_somGetParent( SOMClass * );
 typedef integer4   SOMLINK somTP_SOMClass_somGetInstanceSize( SOMClass * );
@@ -188,6 +210,7 @@ typedef somMToken  SOMLINK somTP_SOMClass_somAddStaticMethod( SOMClass *, somId,
 typedef void       SOMLINK somTP_SOMClass_somOverrideSMethod( SOMClass *, somId, somMethodProc * );
 typedef void       SOMLINK somTP_SOMClass_somClassReady( SOMClass * );
 typedef somTP_SOMClass_somNew              *somTD_SOMClass_somNew;
+typedef somTP_SOMClass_somNewNoInit        *somTD_SOMClass_somNewNoInit;
 typedef somTP_SOMClass_somGetName          *somTD_SOMClass_somGetName;
 typedef somTP_SOMClass_somGetParent        *somTD_SOMClass_somGetParent;
 typedef somTP_SOMClass_somGetInstanceSize  *somTD_SOMClass_somGetInstanceSize;
@@ -199,6 +222,7 @@ typedef somTP_SOMClass_somOverrideSMethod  *somTD_SOMClass_somOverrideSMethod;
 typedef somTP_SOMClass_somClassReady       *somTD_SOMClass_somClassReady;
 
 #define _somNew( c )              SOM_Resolve( c, SOMClass, somNew )( (SOMClass *)(c) )
+#define _somNewNoInit( c )        SOM_Resolve( c, SOMClass, somNewNoInit )( (SOMClass *)(c) )
 #define _somGetName( c )          SOM_Resolve( c, SOMClass, somGetName )( (SOMClass *)(c) )
 #define _somGetParent( c )        SOM_Resolve( c, SOMClass, somGetParent )( (SOMClass *)(c) )
 #define _somGetInstanceSize( c )  SOM_Resolve( c, SOMClass, somGetInstanceSize )( (SOMClass *)(c) )
@@ -217,7 +241,7 @@ typedef somTP_SOMClass_somClassReady       *somTD_SOMClass_somClassReady;
  * from that and its parent's. */
 #define SOM_NEW_META_CLASS( cls, name, parent, meta, datasize, nmethods, major, minor ) \
     ( somEnvironmentNew(), \
-      (cls) = _somNew( WrpSomMetaclassFor( (meta), (parent) ) ), \
+      (cls) = (SOMClass *)_somNew( WrpSomMetaclassFor( (meta), (parent) ) ), \
       _somInitClass( (cls), (name), (parent), (datasize), (nmethods), (major), (minor) ) )
 #define SOM_NEW_CLASS( cls, name, parent, datasize, nmethods, major, minor ) \
     SOM_NEW_META_CLASS( cls, name, parent, (SOMClass *)0, datasize, nmethods, major, minor )

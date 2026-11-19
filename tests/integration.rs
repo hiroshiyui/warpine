@@ -111,7 +111,8 @@ fn test_hello_world() {
 /// dispatched by somResolve, parent calls through somClassResolve, instance
 /// data through somDataResolve, ClassData imported across DLLs; animals
 /// (ADR-0060): metaclasses, a derived metaclass, attributes, sequences,
-/// somPrintf and SOMMalloc.
+/// somPrintf and SOMMalloc; hellocpp and sompp (ADR-0061): the C++
+/// bindings.
 #[test]
 fn test_som_samples_run_on_the_som_runtime() {
     if !kvm_available() { return; }
@@ -168,6 +169,26 @@ fn test_som_samples_run_on_the_som_runtime() {
         "Total animal population is currently 9.\n\n",
     );
     assert_eq!((code, out.replace("\r\n", "\n").as_str()), (0, want));
+    // hellocpp: the C++ bindings (ADR-0061), `new` through somNewNoInit
+    // and the constructor's somDefaultInit.
+    let (out, code) = run_sample("samples/som_test/hellocpp.exe", 15);
+    assert_eq!((code, out.replace("\r\n", "\n").as_str()), (0, "Hello, World from SOM (C++ version)\n"));
+    // sompp: a C++ class derived from hellocpp's Hello. somInit runs once
+    // however many C++ constructors run, overrides are reached through a
+    // Hello pointer, `delete` calls somDestruct, and a stack object is no
+    // SOM object.
+    let (out, code) = run_sample("samples/som_test/sompp.exe", 15);
+    let hello = "Hello, World from SOM (C++ version)\n";
+    let want = [
+        "Loud::somInit\n", "LOUD: ", hello,
+        "class Loud, isA Hello 1, instance of Hello 0, of Loud 1\n",
+        "Loud::somUninit after 1 greeting(s)\n", "deleted: 0\n",
+        "Loud::somInit\n", "LOUD: ", hello, "LOUD: ", hello, "shout -> 2\n",
+        "Loud::somUninit after 2 greeting(s)\n",
+        hello, "a Hello is a Loud: 0\n",
+        "stack object is a SOM object: 0\n", "done\n",
+    ].concat();
+    assert_eq!((code, out.replace("\r\n", "\n")), (0, want));
 }
 
 /// alloc_test: DosAllocMem / DosFreeMem round-trip.

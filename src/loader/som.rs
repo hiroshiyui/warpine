@@ -38,9 +38,10 @@
 //!   else a derived metaclass with both as parents, made once.
 //! - **Root classes.** The methods of `SOMObject`, `SOMClass` and
 //!   `SOMClassMgr` are API thunks of this module, so their method tables
-//!   hold thunk addresses like any guest procedure's. `somNew` and
-//!   `somFree` call the object's `somInit` / `somUninit` — guest overrides
-//!   included — through call chains (ADR-0026).
+//!   hold thunk addresses like any guest procedure's. `somNew` calls the
+//!   object's `somDefaultInit`, whose root implementation calls its
+//!   `somInit`; `somFree` and `somDestruct` call its `somUninit` — guest
+//!   overrides included — through call chains (ADR-0026).
 //! - **Building classes** uses the documented `SOMClass` methods:
 //!   `somNew` on a metaclass, `somInitClass` / `somInitMIClass`,
 //!   `somAddStaticMethod`, `somOverrideSMethod`, `somClassReady`.
@@ -97,6 +98,7 @@ pub const SOMOBJECT_METHODS: &[(u32, &str)] = &[
     (100, "somInit"), (101, "somUninit"), (102, "somFree"), (103, "somGetClass"),
     (104, "somGetClassName"), (105, "somGetSize"), (106, "somIsA"), (107, "somIsInstanceOf"),
     (108, "somRespondsTo"), (109, "somPrintSelf"), (110, "somDumpSelf"), (111, "somDumpSelfInt"),
+    (112, "somDefaultInit"), (113, "somDestruct"),
 ];
 pub const SOMCLASS_METHODS: &[(u32, &str)] = &[
     (200, "somNew"), (201, "somNewNoInit"), (202, "somGetName"), (203, "somGetParent"),
@@ -139,6 +141,7 @@ const SMALL_MAX: u32 = ARENA_SIZE / 2;
 const TOKEN_SOM_INIT: u32 = 1;
 const TOKEN_SOM_UNINIT: u32 = 2;
 const TOKEN_SOM_DUMP_SELF_INT: u32 = 12;
+const TOKEN_SOM_DEFAULT_INIT: u32 = 13;
 
 /// One method a class supports: its token and procedure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -933,13 +936,34 @@ impl Loader {
                 self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(int, vec![a[0], a[1]], false)], false,
                                                 ChainThen::Return(0)))
             }
+            112 => {
+                // somDefaultInit(ctrl): at the root, the object's somInit
+                // (classes written for SOM 1.x initialize there).
+                let init = self.som_resolve(a[0], TOKEN_SOM_INIT);
+                self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(init, vec![a[0]], false)], false,
+                                                ChainThen::Return(0)))
+            }
+            113 => {
+                // somDestruct(doFree, ctrl): the object's somUninit, then
+                // its memory when doFree (an octet) is set.
+                if !self.shared.som.lock_or_recover().instances.contains(&a[0]) { return ok(0); }
+                let uninit = self.som_resolve(a[0], TOKEN_SOM_UNINIT);
+                let then = if a[1] & 0xFF != 0 { ChainThen::SomFree { obj: a[0] } } else { ChainThen::Return(0) };
+                self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(uninit, vec![a[0]], false)], false, then))
+            }
             // ── SOMClass (the receiver is a class object) ──
             200 | 201 => {
                 let Some(obj) = self.som_new_instance(a[0]) else { return ok(0) };
                 if ord == 201 { return ok(obj); }
-                let init = self.som_resolve(obj, TOKEN_SOM_INIT);
-                self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(init, vec![obj], false)], false,
-                                                ChainThen::Return(obj)))
+                // somNew = somNewNoInit + the object's somDefaultInit; the
+                // root's goes straight to somInit.
+                let default_init = self.som_resolve(obj, TOKEN_SOM_DEFAULT_INIT);
+                let step = if default_init == thunk(112) {
+                    CallStep::hook(self.som_resolve(obj, TOKEN_SOM_INIT), vec![obj], false)
+                } else {
+                    CallStep::hook(default_init, vec![obj, 0], false)
+                };
+                self.start_chain(CallChain::new(vcpu, vec![step], false, ChainThen::Return(obj)))
             }
             202 => ok(info(a[0], &|c| c.name_addr)),
             203 => ok(info(a[0], &|c| c.parents.first().copied().unwrap_or(0))),
@@ -1136,6 +1160,52 @@ mod tests {
         assert_eq!(ok(call(&l, 211, &[cls, id, 0, 0x0060_2000, 0, 0])), 0);
         let mgr = ok(call(&l, SOM_ENVIRONMENT_NEW, &[]));
         assert_eq!(ok(call(&l, 300, &[mgr, ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3200, "Hello")])), 0, 0])), cls);
+    }
+
+    /// The SOM 2.1 initializers the C++ bindings use: somNew calls the
+    /// object's somDefaultInit (straight to somInit at the root),
+    /// somDefaultInit calls somInit, somDestruct calls somUninit and frees
+    /// only when asked.
+    #[test]
+    fn default_init_and_destruct() {
+        let l = Loader::new_mock();
+        let (som_class, som_object) = (root(&l, SOM_CLASS_CLASS_DATA), root(&l, SOM_OBJECT_CLASS_DATA));
+        assert_eq!(root_token(&l, SOM_OBJECT_CLASS_DATA, 12), TOKEN_SOM_DEFAULT_INIT);
+        let first = |r: &ApiResult| match r {
+            ApiResult::CallChain(c) => match c.steps.front() {
+                Some(CallStep::Guest { proc_addr, args, .. }) => (*proc_addr, args.clone()),
+                other => panic!("{other:?}"),
+            },
+            other => panic!("{other:?}"),
+        };
+        // Only somInit overridden: somNew goes to it.
+        let plain = new_class(&l, som_class, "Plain", &[som_object], 0, &[("somInit", 0x0061_0000), ("somUninit", 0x0061_1000)]);
+        let r = call(&l, 200, &[plain]);
+        assert_eq!(first(&r).0, 0x0061_0000);
+        let obj = finish(&l, r);
+        // somDefaultInit at the root: the object's somInit.
+        let r = call(&l, 112, &[obj, 0]);
+        assert_eq!(first(&r), (0x0061_0000, vec![obj]));
+        assert_eq!(finish(&l, r), 0);
+        // somDestruct without doFree: somUninit, the object stays.
+        let r = call(&l, 113, &[obj, 0, 0]);
+        assert_eq!(first(&r), (0x0061_1000, vec![obj]));
+        finish(&l, r);
+        assert_eq!(ok(call(&l, SOM_IS_OBJ, &[obj])), 1);
+        // With doFree (only its low byte counts): the memory goes too.
+        finish(&l, call(&l, 113, &[obj, 0x0100, 0]));
+        assert_eq!(ok(call(&l, SOM_IS_OBJ, &[obj])), 1, "doFree is an octet");
+        finish(&l, call(&l, 113, &[obj, 1, 0]));
+        assert_eq!(ok(call(&l, SOM_IS_OBJ, &[obj])), 0);
+        assert_eq!(ok(call(&l, 113, &[obj, 1, 0])), 0, "not twice");
+        // somDefaultInit overridden: somNew calls it with a null control.
+        let modern = new_class(&l, som_class, "Modern", &[som_object], 0, &[("somDefaultInit", 0x0062_0000)]);
+        let r = call(&l, 200, &[modern]);
+        let (proc, args) = first(&r);
+        assert_eq!(proc, 0x0062_0000);
+        assert_eq!(args[1], 0);
+        let obj = finish(&l, r);
+        assert_eq!(args[0], obj);
     }
 
     /// Two parents: methods of both, the right one's override where the

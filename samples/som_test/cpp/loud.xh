@@ -1,0 +1,40 @@
+/*
+ * loud.xh - C++ usage bindings of class Loud, Warpine's own test class:
+ *
+ *   interface Loud : Hello {
+ *       long shout( in long times );   // sayHello `times` times
+ *       implementation {
+ *           long greetings;            // how often it said hello
+ *           somInit: override; somUninit: override; sayHello: override;
+ *       };
+ *   };
+ *
+ * written by hand as the SOM compiler's C++ emitter would emit them
+ * (ADR-0061).
+ */
+#ifndef SOM_Loud_xh
+#define SOM_Loud_xh
+
+#include <hello.xh>
+
+class Loud;
+
+typedef long SOMLINK somTP_Loud_shout( Loud *somSelf, Environment *ev, long times );
+typedef somTP_Loud_shout *somTD_Loud_shout;
+
+SOMEXTERN SOMClass * SOMLINK LoudNewClass( integer4 major, integer4 minor );
+
+SOMEXTERN struct LoudClassDataStructure {
+    SOMClass *classObject;
+    somMToken shout;
+} SOMDLINK LoudClassData;
+
+#define _Loud  (LoudClassData.classObject ? LoudClassData.classObject : LoudNewClass( 0, 0 ))
+
+class Loud : public Hello {
+public:
+    SOM_CPP_CLASS( Loud )
+    long shout( Environment *ev, long times ) { return SOM_Resolve( this, Loud, shout )( this, ev, times ); }
+};
+
+#endif

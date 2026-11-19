@@ -493,6 +493,8 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             109 => "WrpSOMObject_somPrintSelf",
             110 => "WrpSOMObject_somDumpSelf",
             111 => "WrpSOMObject_somDumpSelfInt",
+            112 => "WrpSOMObject_somDefaultInit",
+            113 => "WrpSOMObject_somDestruct",
             200 => "WrpSOMClass_somNew",
             201 => "WrpSOMClass_somNewNoInit",
             202 => "WrpSOMClass_somGetName",

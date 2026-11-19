@@ -445,6 +445,8 @@ SOM.108    WrpSOMObject_somRespondsTo
 SOM.109    WrpSOMObject_somPrintSelf
 SOM.110    WrpSOMObject_somDumpSelf
 SOM.111    WrpSOMObject_somDumpSelfInt
+SOM.112    WrpSOMObject_somDefaultInit
+SOM.113    WrpSOMObject_somDestruct
 SOM.200    WrpSOMClass_somNew
 SOM.201    WrpSOMClass_somNewNoInit
 SOM.202    WrpSOMClass_somGetName

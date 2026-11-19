@@ -12,10 +12,17 @@
 #   animals/ -> animals.exe  metaclasses with data and constructors, a
 #                            derived metaclass, attributes, sequences,
 #                            somPrintf and SOMMalloc
+#   hellocpp/ -> hellocpp.exe the C++ bindings: a SOM class as a C++
+#                            class, new through somNewNoInit and
+#                            somDefaultInit (ADR-0061)
+#   cpp/     -> sompp.exe    Warpine's own C++ check: a class derived
+#                            from hellocpp's Hello (its object reused),
+#                            overrides, parent calls, delete
 
 WATCOM_ROOT = $(CURDIR)/../../vendor/watcom
 SOMSAMPLES  = $(WATCOM_ROOT)/samples/os2/som
 WCC386      = $(WATCOM_ROOT)/binl64/wcc386
+WPP386      = $(WATCOM_ROOT)/binl64/wpp386
 WLINK       = $(WATCOM_ROOT)/binl64/wlink
 
 export WATCOM  = $(WATCOM_ROOT)
@@ -25,7 +32,7 @@ export PATH   := $(WATCOM_ROOT)/binl64:$(PATH)
 B = build
 CFLAGS = -zq -bt=os2 -I$(CURDIR)/include
 
-all: hello.exe classes.exe animals.exe
+all: hello.exe classes.exe animals.exe hellocpp.exe sompp.exe
 
 $(B):
 	mkdir -p $(B)
@@ -72,6 +79,24 @@ $(B)/amain.obj: $(SOMSAMPLES)/animals/main.c animals/animals.h | $(B)
 	$(WCC386) $(CFLAGS) $(ANI) -fo=$@ $<
 animals.exe: $(B)/animals.obj $(B)/amain.obj som.lnk
 	$(WLINK) name $@ system os2v2 option quiet @som.lnk file { $(B)/animals.obj $(B)/amain.obj }
+
+# ---- hellocpp: the C++ bindings ----
+HPP = -I$(CURDIR)/hellocpp
+$(B)/hellocpp.obj: $(SOMSAMPLES)/hellocpp/hello.cpp hellocpp/hello.xh hellocpp/hello.xih include/som.xh | $(B)
+	$(WPP386) $(CFLAGS) $(HPP) -fo=$@ $<
+$(B)/hcmain.obj: $(SOMSAMPLES)/hellocpp/main.cpp hellocpp/hello.xh include/som.xh | $(B)
+	$(WPP386) $(CFLAGS) $(HPP) -fo=$@ $<
+hellocpp.exe: $(B)/hellocpp.obj $(B)/hcmain.obj som.lnk
+	$(WLINK) name $@ system os2v2 option quiet @som.lnk file { $(B)/hellocpp.obj $(B)/hcmain.obj }
+
+# ---- cpp: Warpine's own C++ check ----
+CPP = $(HPP) -I$(CURDIR)/cpp
+$(B)/loud.obj: cpp/loud.cpp cpp/loud.xh cpp/loud.xih hellocpp/hello.xh include/som.xh | $(B)
+	$(WPP386) $(CFLAGS) $(CPP) -fo=$@ $<
+$(B)/sompp.obj: cpp/sompp.cpp cpp/loud.xh hellocpp/hello.xh include/som.xh | $(B)
+	$(WPP386) $(CFLAGS) $(CPP) -fo=$@ $<
+sompp.exe: $(B)/hellocpp.obj $(B)/loud.obj $(B)/sompp.obj som.lnk
+	$(WLINK) name $@ system os2v2 option quiet @som.lnk file { $(B)/hellocpp.obj $(B)/loud.obj $(B)/sompp.obj }
 
 clean:
 	rm -rf $(B) *.exe *.dll *.err
