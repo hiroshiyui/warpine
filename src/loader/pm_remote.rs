@@ -80,6 +80,7 @@ use super::constants::*;
 use super::mutex_ext::MutexExt;
 use super::pm_hook::{CallChain, CallStep, ChainEnd, ChainThen, CHAIN_BLOCK_BYTES};
 use super::pm_minmax::{minmax_swp, WinRect, SWP_STRUCT_SIZE};
+use super::pm_drag::{DM_DRAGLEAVE, DM_DRAGOVER, DOR_NEVERDROP};
 use super::pm_error::window_word_in_range;
 use super::pm_types::{handle_in_slot, WindowManager};
 use super::pm_win::bound_window_geometry;
@@ -91,7 +92,7 @@ use crate::desktop::proto::{slot_address, WinCall, WinReply, WindowInfo, MAX_COO
 const _: () = assert!(SWP_STRUCT_SIZE <= CHAIN_BLOCK_BYTES);
 
 /// `WinPostMsg`.
-const ORD_POST_MSG: u32 = 919;
+pub(super) const ORD_POST_MSG: u32 = 919;
 /// `WinIsWindow(hab, hwnd)`.
 const ORD_IS_WINDOW: u32 = 772;
 const ORD_QUERY_WINDOW_PROCESS: u32 = 838;
@@ -111,7 +112,7 @@ const ORD_SHOW_WINDOW: u32 = 883;
 const ORD_SET_ACTIVE_WINDOW: u32 = 851;
 const ORD_SET_WINDOW_TEXT: u32 = 877;
 /// `WinSendMsg`.
-const ORD_SEND_MSG: u32 = super::pm_hook::ORD_WIN_SEND_MSG;
+pub(super) const ORD_SEND_MSG: u32 = super::pm_hook::ORD_WIN_SEND_MSG;
 /// `WinWaitMsg`.
 pub(super) const ORD_WAIT_MSG: u32 = 897;
 
@@ -139,6 +140,10 @@ pub enum SentKind {
     /// Ask the frame's client `WM_MINMAXFRAME`, then change the frame's
     /// state (`op`) to `target` unless it answers TRUE.
     MinMax { op: u32, target: WinRect },
+    /// A `DM_*` message of another program's drag (ADR-0057), the pointer
+    /// at desktop point `(x, y)`: to the window, or for a container to its
+    /// owner as `CN_*`.
+    Drag { msg: u32, pdinfo: u32, x: i32, y: i32 },
 }
 
 /// A message another program sent to one of this program's windows, waiting
@@ -166,6 +171,9 @@ pub(crate) enum SentFinish {
     Reply,
     /// Change frame `hwnd`'s state unless the client said TRUE.
     MinMax { op: u32, target: WinRect },
+    /// The reply to drag message `msg`; a window that took no part never
+    /// accepts.
+    Drag { msg: u32 },
 }
 
 /// What a thread does once it has run a [`SentMessage`].
@@ -179,6 +187,8 @@ pub(crate) enum AfterSent {
     Resume(u32),
     /// Go on with the modal loop of dialog `hwnd_dlg`.
     ModalLoop { dlg_proc: u32, hwnd_dlg: u32, hmq: u32 },
+    /// Go on with the thread's drag (`DrgDrag`).
+    Drag,
 }
 
 /// Calls this program's threads make on other programs' windows and wait
@@ -573,6 +583,12 @@ impl Loader {
                 };
                 (steps, SentFinish::MinMax { op, target })
             }
+            SentKind::Drag { msg, pdinfo, x, y } => {
+                let local = self.shared.window_mgr.lock_or_recover().window_under(x, y)
+                    .filter(|w| w.0 == s.hwnd).map_or((0, 0), |w| (w.1, w.2));
+                let steps = self.drag_step(s.hwnd, msg, pdinfo, (x, y), local).into_iter().collect();
+                (steps, SentFinish::Drag { msg })
+            }
         };
         let calls = steps.len() as u32;
         let mut chain = CallChain::new(tid, steps, false,
@@ -593,6 +609,8 @@ impl Loader {
         let reply = match finish {
             SentFinish::Reply if complete && calls > 0 => WinReply::Value(chain.last),
             SentFinish::Reply => WinReply::Failed,
+            SentFinish::Drag { .. } if complete && calls > 0 => WinReply::Value(chain.last),
+            SentFinish::Drag { msg } => WinReply::Value(if msg == DM_DRAGOVER { DOR_NEVERDROP } else { 0 }),
             SentFinish::MinMax { op, target } => {
                 if calls == 0 || !complete || chain.last == 0 {
                     self.shared.window_mgr.lock_or_recover().finish_minmax(hwnd, op, target);
@@ -610,6 +628,7 @@ impl Loader {
                 ChainEnd::Rerun(ordinal)
             }
             AfterSent::ModalLoop { dlg_proc, hwnd_dlg, hmq } => ChainEnd::ModalLoop { dlg_proc, hwnd_dlg, hmq, msg: None },
+            AfterSent::Drag => self.drag_after_sent(),
         }
     }
 
@@ -812,6 +831,16 @@ impl Responder for Loader {
             WinCall::SetPos { behind, x, y, cx, cy, fl } => {
                 return self.set_pos_for_other(id, hwnd, behind, x, y, cx, cy, fl);
             }
+            WinCall::Drag { msg, pdinfo, x, y } => {
+                // The target reads the DRAGINFO the source gave it.
+                if msg != DM_DRAGLEAVE && !self.accept_draginfo(pdinfo) {
+                    return Some(WinReply::Value(if msg == DM_DRAGOVER { DOR_NEVERDROP } else { 0 }));
+                }
+                let wm = self.shared.window_mgr.lock_or_recover();
+                let s = SentMessage { id: Some(id), hwnd, kind: SentKind::Drag { msg, pdinfo, x, y } };
+                let queued = wm.find_hmq_for_hwnd(hwnd).is_some_and(|hmq| wm.queue_sent(hmq, s));
+                return (!queued).then_some(WinReply::Failed);
+            }
             _ => {}
         }
         Some(self.answer_now(hwnd, call))
@@ -856,6 +885,15 @@ impl Loader {
             WinCall::SetText { ref text } => {
                 self.set_window_text(hwnd, text.clone());
                 WinReply::Value(1)
+            }
+            // The window in this frame that takes drag input at the point.
+            WinCall::DragTarget { x, y } => {
+                let wm = self.shared.window_mgr.lock_or_recover();
+                match wm.window_under(x, y) {
+                    Some((h, _, _)) if wm.find_frame_for_hwnd(h) == hwnd =>
+                        WinReply::Windows { pid: self.shared.process_id(), hwnds: vec![h] },
+                    _ => WinReply::Failed,
+                }
             }
             // Made by `answer`, or the server's.
             _ => WinReply::Failed,
@@ -1079,6 +1117,57 @@ mod tests {
         c.steps.clear();
         c.returned(0, false);
         assert_eq!(loader.finish_chain(&c), ChainEnd::Rerun(1));
+    }
+
+    #[test]
+    fn another_programs_drag_finds_the_window_and_runs_on_its_thread() {
+        use super::super::pm_drag::{DM_DROP, DOR_DROP};
+        let (loader, hmq, _) = setup();
+        let (frame, client) = std_frame(&loader, hmq);
+        let (ox, oy) = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            if let Some(w) = wm.get_window_mut(frame) {
+                (w.x, w.y, w.visible, w.frame_flags) = (100, 50, true, FCF_TITLEBAR | FCF_SIZEBORDER);
+            }
+            wm.layout_frame(frame);
+            if let Some(c) = wm.get_window_mut(client) { (c.visible, c.pfn_wp) = (true, PROC); }
+            wm.z_push_top(frame);
+            wm.window_origin(client).unwrap()
+        };
+        // The window under a point of the frame, with this process's id.
+        let pid = loader.shared.process_id();
+        assert_eq!(loader.answer(1, frame, &WinCall::DragTarget { x: ox + 10, y: oy + 10 }),
+                   Some(WinReply::Windows { pid, hwnds: vec![client] }));
+        assert_eq!(loader.answer(2, frame, &WinCall::DragTarget { x: 2, y: 2 }), Some(WinReply::Failed), "outside");
+        // A DRAGINFO outside the session's arena cannot be read here.
+        let over = WinCall::Drag { msg: DM_DRAGOVER, pdinfo: 0x3000, x: ox + 10, y: oy + 10 };
+        assert_eq!(loader.answer(3, client, &over), Some(WinReply::Value(DOR_NEVERDROP)));
+        // DM_DRAGLEAVE needs none: it waits for the window's thread, which
+        // calls the procedure and answers with its reply.
+        let leave = WinCall::Drag { msg: DM_DRAGLEAVE, pdinfo: 0x3000, x: 0, y: 0 };
+        assert_eq!(loader.answer(4, client, &leave), None, "answered later");
+        let s = loader.shared.window_mgr.lock_or_recover().take_sent(hmq).unwrap();
+        assert_eq!(s.kind, SentKind::Drag { msg: DM_DRAGLEAVE, pdinfo: 0x3000, x: 0, y: 0 });
+        let c = chain(loader.run_sent(TID, s, AfterSent::Rerun(1)));
+        assert_eq!(c.steps.front(), Some(&CallStep::send(PROC, client, DM_DRAGLEAVE, 0x3000, 0)));
+        assert!(c.inter_thread_send);
+        let mut c = *c;
+        c.steps.clear();
+        c.returned(DOR_DROP, false);
+        assert_eq!(loader.finish_chain(&c), ChainEnd::Rerun(1));
+        // A window that takes no part (no procedure, not a container)
+        // never accepts.
+        loader.shared.window_mgr.lock_or_recover().get_window_mut(client).unwrap().pfn_wp = 0;
+        let s = SentMessage { id: None, hwnd: client, kind: SentKind::Drag { msg: DM_DROP, pdinfo: 0x3000, x: 0, y: 0 } };
+        let c = chain(loader.run_sent(TID, s, AfterSent::Rerun(1)));
+        assert!(c.steps.is_empty());
+        let ChainThen::AnswerSent { finish: SentFinish::Drag { msg: DM_DROP }, calls: 0, .. } = c.then else { panic!() };
+    }
+
+    #[test]
+    fn a_message_sent_to_a_thread_that_is_not_dragging_returns() {
+        let (loader, _, _) = setup();
+        assert_eq!(loader.drag_after_sent(), ChainEnd::Return(0), "no drag: DrgDrag returns NULLHANDLE");
     }
 
     #[test]

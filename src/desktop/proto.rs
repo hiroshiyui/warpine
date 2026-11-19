@@ -11,7 +11,7 @@
 //! server's packets the same way.
 
 /// Protocol version, checked in `Hello` / `Welcome`.
-pub const PROTOCOL_VERSION: u32 = 5;
+pub const PROTOCOL_VERSION: u32 = 6;
 /// Largest packet either side sends or accepts.
 pub const MAX_MESSAGE: usize = 128 * 1024;
 /// Most items (frame pictures and pull-downs) in one `Update`.
@@ -40,6 +40,9 @@ pub const MAX_SWITCHES: usize = 256;
 
 /// Longest window class name, in bytes.
 pub const MAX_NAME: usize = 256;
+/// Longest drag string (`HSTR`) as text, in bytes, and longest `Text`
+/// reply.
+pub const MAX_STR_TEXT: usize = 16 * 1024;
 /// Longest text (clipboard, typed text), in bytes.
 pub const MAX_TEXT: usize = 64 * 1024;
 /// Largest pointer image side sent through the socket.
@@ -175,6 +178,26 @@ pub enum WinCall {
     AtomUsage { atom: u32 },
     /// Answered with `Text`.
     AtomName { atom: u32 },
+    // ── Drag and drop between programs (ADR-0057) ──
+    /// The frame whose picture is topmost at desktop point `(x, y)` (PM
+    /// coordinates, bottom-left origin), at [`SERVER_ADDRESS`]: answered
+    /// with its handle, 0 for none.
+    FrameAt { x: i32, y: i32 },
+    /// The window of the program that takes drag input at desktop point
+    /// `(x, y)` in this frame: answered with `Windows` (the program's
+    /// process id and the window), `Failed` for none.
+    DragTarget { x: i32, y: i32 },
+    /// Send `DM_DRAGOVER`, `DM_DRAGLEAVE` or `DM_DROP` (`msg`) to the window
+    /// with the `DRAGINFO` at `pdinfo` in the session's shared arena (given
+    /// to the program), the pointer at desktop point `(x, y)`. The window's
+    /// thread answers with the reply; waits for as long as that takes.
+    Drag { msg: u32, pdinfo: u32, x: i32, y: i32 },
+    /// The session's drag string handles (`DrgAddStrHandle`), at
+    /// [`SERVER_ADDRESS`]; answered with the handle.
+    StrAdd { text: String },
+    StrDelete { handle: u32 },
+    /// Answered with `Text`.
+    StrName { handle: u32 },
 }
 
 /// A switch-list entry (`SWCNTRL`) as the session keeps it: the title as
@@ -201,7 +224,7 @@ impl WinCall {
     pub fn expires(&self) -> bool {
         use crate::loader::constants::{SWP_MAXIMIZE, SWP_MINIMIZE, SWP_RESTORE};
         match self {
-            WinCall::Send { .. } => false,
+            WinCall::Send { .. } | WinCall::Drag { .. } => false,
             // A state change asks the frame's client first (`WM_MINMAXFRAME`).
             WinCall::SetPos { fl, .. } => fl & (SWP_MINIMIZE | SWP_MAXIMIZE | SWP_RESTORE) == 0,
             _ => true,
@@ -248,7 +271,7 @@ pub enum WinReply {
     Windows { pid: u32, hwnds: Vec<u32> },
     /// The call failed with this `PMERR_*` code.
     Error(u32),
-    /// Text, at most [`MAX_NAME`] bytes.
+    /// Text, at most [`MAX_STR_TEXT`] bytes.
     Text(String),
     /// Switch-list entries, at most [`MAX_SWITCHES`].
     Switches(Vec<SwitchEntry>),
@@ -424,6 +447,14 @@ impl Writer {
             WinCall::AtomDelete { atom } => { self.u8(tag::CALL_ATOM_DELETE); self.u32(*atom); }
             WinCall::AtomUsage { atom } => { self.u8(tag::CALL_ATOM_USAGE); self.u32(*atom); }
             WinCall::AtomName { atom } => { self.u8(tag::CALL_ATOM_NAME); self.u32(*atom); }
+            WinCall::FrameAt { x, y } => { self.u8(tag::CALL_FRAME_AT); self.i32(*x); self.i32(*y); }
+            WinCall::DragTarget { x, y } => { self.u8(tag::CALL_DRAG_TARGET); self.i32(*x); self.i32(*y); }
+            WinCall::Drag { msg, pdinfo, x, y } => {
+                self.u8(tag::CALL_DRAG); self.u32(*msg); self.u32(*pdinfo); self.i32(*x); self.i32(*y);
+            }
+            WinCall::StrAdd { text } => { self.u8(tag::CALL_STR_ADD); self.text_max(text, MAX_STR_TEXT); }
+            WinCall::StrDelete { handle } => { self.u8(tag::CALL_STR_DELETE); self.u32(*handle); }
+            WinCall::StrName { handle } => { self.u8(tag::CALL_STR_NAME); self.u32(*handle); }
         }
     }
     fn reply(&mut self, r: &WinReply) {
@@ -433,7 +464,7 @@ impl Writer {
             WinReply::Handles(hs) => { self.u8(tag::REPLY_HANDLES); self.handles_max(hs, MAX_HANDLES); }
             WinReply::Windows { pid, hwnds } => { self.u8(tag::REPLY_WINDOWS); self.u32(*pid); self.handles_max(hwnds, MAX_HANDLES); }
             WinReply::Error(code) => { self.u8(tag::REPLY_ERROR); self.u32(*code); }
-            WinReply::Text(t) => { self.u8(tag::REPLY_TEXT); self.text_max(t, MAX_NAME); }
+            WinReply::Text(t) => { self.u8(tag::REPLY_TEXT); self.text_max(t, MAX_STR_TEXT); }
             WinReply::Switches(es) => {
                 self.u8(tag::REPLY_SWITCHES);
                 let es = &es[..es.len().min(MAX_SWITCHES)];
@@ -564,6 +595,12 @@ impl<'a> Reader<'a> {
             tag::CALL_ATOM_DELETE => WinCall::AtomDelete { atom: self.u32()? },
             tag::CALL_ATOM_USAGE => WinCall::AtomUsage { atom: self.u32()? },
             tag::CALL_ATOM_NAME => WinCall::AtomName { atom: self.u32()? },
+            tag::CALL_FRAME_AT => WinCall::FrameAt { x: self.coord()?, y: self.coord()? },
+            tag::CALL_DRAG_TARGET => WinCall::DragTarget { x: self.coord()?, y: self.coord()? },
+            tag::CALL_DRAG => WinCall::Drag { msg: self.u32()?, pdinfo: self.u32()?, x: self.coord()?, y: self.coord()? },
+            tag::CALL_STR_ADD => WinCall::StrAdd { text: self.text_max(MAX_STR_TEXT)? },
+            tag::CALL_STR_DELETE => WinCall::StrDelete { handle: self.u32()? },
+            tag::CALL_STR_NAME => WinCall::StrName { handle: self.u32()? },
             _ => return Err(DecodeError::BadValue),
         })
     }
@@ -574,7 +611,7 @@ impl<'a> Reader<'a> {
             tag::REPLY_HANDLES => WinReply::Handles(self.handles_max(MAX_HANDLES)?),
             tag::REPLY_WINDOWS => WinReply::Windows { pid: self.u32()?, hwnds: self.handles_max(MAX_HANDLES)? },
             tag::REPLY_ERROR => WinReply::Error(self.u32()?),
-            tag::REPLY_TEXT => WinReply::Text(self.text_max(MAX_NAME)?),
+            tag::REPLY_TEXT => WinReply::Text(self.text_max(MAX_STR_TEXT)?),
             tag::REPLY_SWITCHES => {
                 let n = self.count(MAX_SWITCHES)?;
                 WinReply::Switches((0..n).map(|_| self.switch_entry()).collect::<Result<_, _>>()?)
@@ -664,6 +701,12 @@ mod tag {
     pub const CALL_ATOM_DELETE: u8 = 32;
     pub const CALL_ATOM_USAGE: u8 = 33;
     pub const CALL_ATOM_NAME: u8 = 34;
+    pub const CALL_FRAME_AT: u8 = 40;
+    pub const CALL_DRAG_TARGET: u8 = 41;
+    pub const CALL_DRAG: u8 = 42;
+    pub const CALL_STR_ADD: u8 = 43;
+    pub const CALL_STR_DELETE: u8 = 44;
+    pub const CALL_STR_NAME: u8 = 45;
 
     pub const REPLY_FAILED: u8 = 0;
     pub const REPLY_VALUE: u8 = 1;
@@ -909,6 +952,12 @@ mod tests {
             ClientMsg::Call { id: 23, hwnd: SERVER_ADDRESS, call: WinCall::AtomDelete { atom: 0xC000 } },
             ClientMsg::Call { id: 24, hwnd: SERVER_ADDRESS, call: WinCall::AtomUsage { atom: 0xC001 } },
             ClientMsg::Call { id: 25, hwnd: SERVER_ADDRESS, call: WinCall::AtomName { atom: 0xC002 } },
+            ClientMsg::Call { id: 26, hwnd: SERVER_ADDRESS, call: WinCall::FrameAt { x: 10, y: -3 } },
+            ClientMsg::Call { id: 27, hwnd: 0x20_1000, call: WinCall::DragTarget { x: 500, y: 400 } },
+            ClientMsg::Call { id: 28, hwnd: 0x20_1001, call: WinCall::Drag { msg: 0x32e, pdinfo: 0x0E00_0000, x: 5, y: 6 } },
+            ClientMsg::Call { id: 29, hwnd: SERVER_ADDRESS, call: WinCall::StrAdd { text: "<DRM_OS2FILE,DRF_TEXT>".into() } },
+            ClientMsg::Call { id: 30, hwnd: SERVER_ADDRESS, call: WinCall::StrDelete { handle: 3 } },
+            ClientMsg::Call { id: 31, hwnd: SERVER_ADDRESS, call: WinCall::StrName { handle: 3 } },
             ClientMsg::Answer { id: 7, reply: WinReply::Failed },
             ClientMsg::Answer { id: 8, reply: WinReply::Value(9) },
             ClientMsg::Answer { id: 9, reply: WinReply::Info(Box::new(info())) },

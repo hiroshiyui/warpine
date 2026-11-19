@@ -328,9 +328,10 @@ pub(crate) enum ChainThen {
     /// `WM_MATCHMNEMONIC` (`pm_dialog.rs`): the one that said TRUE takes
     /// the focus; returns whether one did.
     DialogMnemonic { dlg: u32 },
-    /// A step of `DrgDrag`'s conversation (`pm_drag.rs`, `DRAG_STAGE_*`):
-    /// record the `DM_DRAGOVER` reply and wait for the next input, or end.
-    Drag { stage: u8 },
+    /// Messages of `DrgDrag`'s conversation (`pm_drag.rs`): go on with the
+    /// step's next messages, or record the `DM_DRAGOVER` reply and wait
+    /// for the next input, or end.
+    Drag,
     /// A message another program sent (`pm_remote.rs`): answer call `id`
     /// with the window procedure's result, then go on as `after` says.
     /// `calls`: how many calls the chain was to make.
@@ -437,7 +438,7 @@ impl Loader {
             ChainThen::ContainerSort { hwnd, job, ret, keep } => self.container_sort_step(hwnd, job, ret, keep, chain.last),
             ChainThen::ContainerFilter { hwnd, job } => self.container_filter_done(hwnd, job, &chain.results),
             ChainThen::DialogMnemonic { dlg } => self.dialog_mnemonic_done(dlg, chain),
-            ChainThen::Drag { stage } => self.drag_chain_done(stage, chain.last),
+            ChainThen::Drag => self.drag_chain_done(chain.last),
             ChainThen::AnswerSent { id, hwnd, after, finish, calls } =>
                 self.sent_done(id, hwnd, after, finish, calls, chain),
             ChainThen::StdDialog { hwnd, buf, ret } => {

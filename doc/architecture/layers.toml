@@ -154,7 +154,7 @@ modules = [
 [[layer]]
 id = "controls"
 zone = "host"
-label = "Built-in controls: statics, buttons, entry fields, MLE, list box, scroll bar, combo box, spin button, slider, value set, notebook, container (records in guest memory, ADR-0043; sorting by chained guest calls, ADR-0044), drag and drop (ADR-0045), owner draw (ADR-0025)"
+label = "Built-in controls: statics, buttons, entry fields, MLE, list box, scroll bar, combo box, spin button, slider, value set, notebook, container (records in guest memory, ADR-0043; sorting by chained guest calls, ADR-0044), drag and drop (ADR-0045; between programs, ADR-0057), owner draw (ADR-0025)"
 modules = [
   "loader/pm_controls.rs", "loader/pm_button.rs", "loader/pm_list.rs", "loader/pm_edit.rs",
   "loader/pm_scrollbar.rs", "loader/pm_combo.rs", "loader/pm_spin.rs", "loader/pm_owner.rs",
@@ -224,7 +224,7 @@ modules = ["bin/lx_link.rs", "bin/gen_api.rs", "bin/gen_arch.rs", "bin/gen_compa
 [[layer]]
 id = "deskserver"
 zone = "server"
-label = "Desktop server: one SDL desktop per session, stacking, activation, input in order and window calls across programs (ADR-0052)"
+label = "Desktop server: one SDL desktop per session, stacking, activation, input in order, window calls across programs, the session's shell services and drag strings (ADR-0052–0057)"
 modules = ["gui/desktop_server.rs", "desktop/model.rs", "desktop/calls.rs", "desktop/services.rs"]
 
 # ── Host system ─────────────────────────────────────────────────────────────

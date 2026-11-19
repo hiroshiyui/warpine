@@ -207,6 +207,14 @@ impl DesktopModel {
             .map(|(c, _)| c)
     }
 
+    /// The frame whose picture is topmost at desktop point `(x, y)` (a
+    /// pull-down counts as its frame's).
+    pub fn frame_at(&self, x: i32, y: i32) -> Option<u32> {
+        self.draw_list().into_iter().rev()
+            .find(|(_, it)| item_extent(it).iter().any(|a| a.contains(x, y)))
+            .map(|(_, it)| it.frame)
+    }
+
     /// Where a pointer event at `(x, y)` goes. A press (`press` = the SDL
     /// button number) makes that client hold the pointer until every
     /// button is up again (`release`).
@@ -360,6 +368,16 @@ mod tests {
         assert_eq!(m.route_pointer(60, 10, None, None), Some(1));
         m.set_capture(1, false);
         assert_eq!(m.route_pointer(60, 10, None, None), Some(2));
+    }
+
+    #[test]
+    fn the_frame_at_a_point_is_the_topmost_picture_there() {
+        let mut m = DesktopModel::new();
+        m.update(1, &upd(A1, &[], vec![item(A1, 0)]), owner(1));
+        m.update(2, &upd(B1, &[], vec![item(B1, 50)]), owner(2));
+        assert_eq!(m.frame_at(10, 10), Some(A1));
+        assert_eq!(m.frame_at(60, 10), Some(B1), "B1 lies over A1 there");
+        assert_eq!(m.frame_at(5000, 10), None);
     }
 
     #[test]

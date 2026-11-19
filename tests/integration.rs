@@ -2366,6 +2366,19 @@ fn gui_pm_xshell_test_shares_the_sessions_shell_services() {
                                 "9000 key ctrl+esc\n9600 key down\n10000 key enter\n30000 quit\n");
 }
 
+/// pm_xdrag_test: drag and drop between programs (ADR-0057). A button-2
+/// drag from the parent's client ("Drag A", desktop x 40–340) to the
+/// child's ("Drag B", x 500–800): DM_DRAGOVER / DM_DRAGLEAVE at the source,
+/// DM_DRAGOVER and DM_DROP in the other program reading the DRAGINFO and the
+/// session's string handles, DM_RENDER sent back to the dragging thread
+/// while DrgDrag waits, DrgDrag returning the child's client, and the
+/// blocks and handles freed on both sides.
+#[test]
+fn gui_pm_xdrag_test_drags_between_programs() {
+    assert_scripted_checks_pass("samples/pm_xdrag_test/pm_xdrag_test.exe", "pm_xdrag_test", 23,
+                                "7000 rdrag 190 290 650 290\n20000 quit\n");
+}
+
 /// The desktop kept in the process (`WARPINE_DESKTOP=local`, no desktop
 /// server) shows what the server shows: pm_minmax_test's golden picture and
 /// pm_inputorder_test's checks.

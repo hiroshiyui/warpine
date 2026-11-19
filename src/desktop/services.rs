@@ -17,15 +17,22 @@
 //!   stay when the program that added them leaves, as in PM, where the
 //!   system atom table lives as long as the system.
 //!
+//! - **Drag string handles** (`HSTR`, ADR-0057): one table for the
+//!   session, so a drop target reads the source's names. Reference
+//!   counted, a string added again gets its handle back; handles stay when
+//!   the program that added them leaves, as system atoms do.
+//!
 //! Warpine's choices (unverified against OS/2): only an entry's own program
 //! may change or remove it (`PMERR_INVALID_SWITCH_HANDLE` for another);
-//! the limits above.
+//! the limits above; string handles outliving their program.
 
 use std::collections::BTreeMap;
 
 use super::model::ClientId;
 use super::proto::{SwitchEntry, WinCall, WinReply, MAX_SWITCHES};
 use crate::loader::pm_atom::{AtomName, AtomTable};
+use crate::loader::pm_drag::StrHandles;
+use crate::loader::constants::PMERR_INSUFFICIENT_MEMORY;
 use crate::loader::pm_switch::{PMERR_INVALID_SWITCH_HANDLE, PMERR_NO_HANDLE, PMERR_NO_SPACE};
 
 /// Most switch-list entries one program may have.
@@ -48,11 +55,13 @@ pub struct Services {
     switches: BTreeMap<u32, Owned>,
     next: u32,
     atoms: AtomTable,
+    strings: StrHandles,
 }
 
 impl Default for Services {
     fn default() -> Self {
-        Services { switches: BTreeMap::new(), next: FIRST_SWITCH_HANDLE, atoms: AtomTable::default() }
+        Services { switches: BTreeMap::new(), next: FIRST_SWITCH_HANDLE, atoms: AtomTable::default(),
+                   strings: StrHandles::default() }
     }
 }
 
@@ -91,6 +100,12 @@ impl Services {
             WinCall::AtomName { atom } => match self.atoms.name(*atom) {
                 Ok(n) => WinReply::Text(String::from_utf8_lossy(&n).into_owned()),
                 Err(code) => WinReply::Error(code),
+            },
+            WinCall::StrAdd { text } => value(self.strings.add(text.as_bytes()).ok_or(PMERR_INSUFFICIENT_MEMORY)),
+            WinCall::StrDelete { handle } => WinReply::Value(self.strings.delete(*handle) as u32),
+            WinCall::StrName { handle } => match self.strings.get(*handle) {
+                Some(b) => WinReply::Text(String::from_utf8_lossy(b).into_owned()),
+                None => WinReply::Failed,
             },
             _ => WinReply::Failed,
         }
@@ -218,5 +233,19 @@ mod tests {
         s.answer(2, &WinCall::AtomDelete { atom });
         assert_eq!(s.answer(2, &WinCall::AtomUsage { atom }), WinReply::Error(PMERR_INVALID_ATOM));
         assert_eq!(s.answer(2, &WinCall::Describe), WinReply::Failed);
+    }
+
+    #[test]
+    fn drag_strings_are_the_sessions_and_counted() {
+        let mut s = Services::new();
+        let h = handle(s.answer(1, &WinCall::StrAdd { text: "Plain Text".into() }));
+        assert_eq!(s.answer(2, &WinCall::StrAdd { text: "Plain Text".into() }), WinReply::Value(h), "the same handle");
+        s.client_gone(1);
+        assert_eq!(s.answer(3, &WinCall::StrName { handle: h }), WinReply::Text("Plain Text".into()));
+        assert_eq!(s.answer(3, &WinCall::StrDelete { handle: h }), WinReply::Value(1));
+        assert_eq!(s.answer(3, &WinCall::StrName { handle: h }), WinReply::Text("Plain Text".into()), "one left");
+        assert_eq!(s.answer(3, &WinCall::StrDelete { handle: h }), WinReply::Value(1));
+        assert_eq!(s.answer(3, &WinCall::StrName { handle: h }), WinReply::Failed);
+        assert_eq!(s.answer(3, &WinCall::StrDelete { handle: h }), WinReply::Value(0));
     }
 }

@@ -23,16 +23,29 @@
 //!   `CN_DRAGLEAVE`, `CN_DROP` with a `CNRDRAGINFO`) and start drags with
 //!   `CN_INITDRAG` (`pm_container.rs`).
 //!
-//! Only windows of this process take part: there is one OS/2 program per
-//! host process (ADR-0020) until the session desktop server exists.
-//! Messages for another thread's window are made on the dragging thread.
+//! - **Between programs** (ADR-0057): on the session's desktop the window
+//!   under the pointer may be another program's. The server names the
+//!   frame on top there (`WinCall::FrameAt`), that program the window in
+//!   it (`DragTarget`), and the `DM_*` messages go to it as `Drag` calls,
+//!   run by the window's thread like a sent message and waited for while
+//!   the dragging thread runs the messages sent to it. The `DRAGINFO` and
+//!   `DRAGTRANSFER` blocks are then in the session's shared arena
+//!   (ADR-0049), given to the target's process, and string handles are
+//!   the session's, kept by the desktop server.
+//!
+//! Messages for another thread's window of this process are made on the
+//! dragging thread.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 use super::constants::*;
 use super::pm_hook::{CallChain, CallStep, ChainEnd, ChainThen};
 use super::pm_types::WindowManager;
+use super::shared_arena::in_arena;
 use super::{ApiResult, Loader, MutexExt};
+use crate::desktop::client::{CallState, CallWaker};
+use crate::desktop::proto::{WinCall, WinReply, MAX_STR_TEXT, SERVER_ADDRESS};
 
 /// `DRAGINFO` field offsets and size (`<pmstddlg.h>`).
 pub const DI_CB_DRAGINFO: u32 = 0;
@@ -96,6 +109,9 @@ pub const MAX_DRAG_INFOS: usize = 1024;
 /// How long `DrgDrag` waits for input before checking whether the call
 /// should stop.
 const FEED_WAIT: std::time::Duration = std::time::Duration::from_millis(100);
+/// The flags of drag blocks in the session's shared arena: giveable, as
+/// `DrgAllocDraginfo`'s are in PM.
+const DRAG_SHARED_FLAGS: u32 = PAG_READ | PAG_WRITE | PAG_COMMIT | OBJ_GIVEABLE;
 
 /// String handles (`HSTR`): an application's strings kept by the system,
 /// reference counted — adding a string held already returns its handle
@@ -222,8 +238,32 @@ pub struct DragSession {
     pub never: bool,
     pub pointer: u32,
     pub tid: u32,
-    /// The last chain ends with a `DM_DRAGOVER` whose reply is pending.
+    /// The OS/2 process id of the target's program when it is another
+    /// program (0: this one).
+    pub target_pid: u32,
+    /// The last step is a `DM_DRAGOVER` whose reply is pending.
     awaiting: bool,
+}
+
+/// One message of the drag conversation: to a window of this program, in a
+/// call chain, or to another program's window, a call waited for.
+#[derive(Debug)]
+enum DragAction {
+    Local(CallStep),
+    Remote { hwnd: u32, call: WinCall },
+}
+
+/// The messages of one step of the conversation (`DRAG_STAGE_*`) being
+/// made: those still to make, the call to another program waited for, the
+/// last reply, and the processes the `DRAGINFO` was given to.
+#[derive(Debug, Default)]
+struct DragRun {
+    active: bool,
+    stage: u8,
+    actions: VecDeque<DragAction>,
+    waiting: Option<u32>,
+    last: u32,
+    given: Vec<u32>,
 }
 
 /// The process's drag state: string handles, the `DRAGINFO`s and
@@ -236,6 +276,7 @@ pub struct DragTable {
     /// `DRAGTRANSFER` arrays: address → count.
     pub transfers: HashMap<u32, u32>,
     pub session: Option<DragSession>,
+    run: DragRun,
 }
 
 /// Pointer input for a drag, fed by the GUI thread: after `WM_BEGINDRAG`
@@ -319,6 +360,8 @@ enum FeedStep {
     Cancel,
     /// The call should stop (thread killed, signal).
     Interrupted,
+    /// Another program sent the dragging thread a message.
+    Sent(super::pm_remote::SentMessage),
 }
 
 /// Which `DM_*` conversation step a [`ChainThen::Drag`] chain made.
@@ -397,10 +440,111 @@ impl Loader {
         self.drag_bytes(ptr).map(|b| String::from_utf8_lossy(&b).into_owned())
     }
 
-    /// The string of handle `h` (empty for none).
+    /// The string of handle `h` as text (empty for none).
     fn hstr_text(&self, h: u32) -> String {
+        if let Some(link) = self.shared.desktop_link.get() {
+            return match link.call(SERVER_ADDRESS, WinCall::StrName { handle: h }) {
+                Some(WinReply::Text(t)) => t,
+                _ => String::new(),
+            };
+        }
         let wm = self.shared.window_mgr.lock_or_recover();
         wm.drag.strings.get(h).map_or(String::new(), |b| String::from_utf8_lossy(b).into_owned())
+    }
+
+    /// The bytes of handle `h` in thread `tid`'s codepage (`None`: no
+    /// handle). On the session's desktop the session keeps the strings as
+    /// text (ADR-0057).
+    fn hstr_bytes(&self, tid: u32, h: u32) -> Option<Vec<u8>> {
+        if let Some(link) = self.shared.desktop_link.get() {
+            return match link.call(SERVER_ADDRESS, WinCall::StrName { handle: h }) {
+                Some(WinReply::Text(t)) => Some(super::codepage::cp_encode(&t, self.thread_codepage(tid))),
+                _ => None,
+            };
+        }
+        self.shared.window_mgr.lock_or_recover().drag.strings.get(h).map(<[u8]>::to_vec)
+    }
+
+    /// A handle for `bytes` (in thread `tid`'s codepage): the session's
+    /// on its desktop, else this process's.
+    fn hstr_add(&self, tid: u32, bytes: &[u8]) -> Option<u32> {
+        if let Some(link) = self.shared.desktop_link.get() {
+            let text = super::codepage::cp_decode(bytes, self.thread_codepage(tid));
+            if text.len() > MAX_STR_TEXT { return None; }
+            return match link.call(SERVER_ADDRESS, WinCall::StrAdd { text }) {
+                Some(WinReply::Value(h)) => Some(h),
+                _ => None,
+            };
+        }
+        self.shared.window_mgr.lock_or_recover().drag.strings.add(bytes)
+    }
+
+    /// Drop a reference to handle `h`; FALSE when it is none.
+    fn hstr_delete(&self, h: u32) -> bool {
+        if let Some(link) = self.shared.desktop_link.get() {
+            return link.call(SERVER_ADDRESS, WinCall::StrDelete { handle: h }) == Some(WinReply::Value(1));
+        }
+        self.shared.window_mgr.lock_or_recover().drag.strings.delete(h)
+    }
+
+    /// `size` bytes for a drag block: in the session's shared arena on the
+    /// session's desktop (so that another program can be given it), else
+    /// from the process's memory. Zeroed.
+    fn drag_block_alloc(&self, size: u32) -> Option<u32> {
+        if self.shared.desktop_link.get().is_some() {
+            let me = self.shared.process_id();
+            let block = self.shared.with_arena_table(|t, _, _| {
+                let offset = t.alloc(size, DRAG_SHARED_FLAGS, None, me)?;
+                Some((offset, t.at(offset).map_or(size, |b| b.size)))
+            }).ok().flatten();
+            if let Some((offset, rounded)) = block {
+                if let Some(arena) = self.shared.arena.get() { arena.zero(offset, rounded); }
+                return Some(super::constants::SHARED_ARENA_BASE + offset);
+            }
+        }
+        let base = self.shared.mem_mgr.lock_or_recover().alloc(size)?;
+        if let Some(m) = self.guest_slice_mut(base, size as usize) { m.fill(0); }
+        Some(base)
+    }
+
+    /// Let a drag block go (an arena block: this process's hold on it).
+    fn drag_block_free(&self, p: u32) -> bool {
+        if in_arena(p) {
+            return self.arena_free(p) == Some(NO_ERROR);
+        }
+        self.shared.mem_mgr.lock_or_recover().free(p);
+        true
+    }
+
+    /// Give the arena block at `p`, which this process holds, to process
+    /// `pid` of the session.
+    fn give_drag_block(&self, p: u32, pid: u32) -> bool {
+        if !in_arena(p) { return false; }
+        let me = self.shared.process_id();
+        if pid == me { return true; }
+        let offset = p - super::constants::SHARED_ARENA_BASE;
+        self.shared.with_arena_table(|t, live, _| {
+            live.contains(&pid) && t.at(offset).is_some_and(|b| b.holders.contains(&me)) && t.hold(offset, pid).is_ok()
+        }).unwrap_or(false)
+    }
+
+    /// Another program gave this one the `DRAGINFO` at `pdinfo` (a block
+    /// of the session's arena this process holds): use it as one of its
+    /// own, its items bounded by the block. FALSE when it is not one.
+    pub(super) fn accept_draginfo(&self, pdinfo: u32) -> bool {
+        if self.shared.window_mgr.lock_or_recover().drag.infos.contains_key(&pdinfo) { return true; }
+        if !in_arena(pdinfo) { return false; }
+        let me = self.shared.process_id();
+        let offset = pdinfo - super::constants::SHARED_ARENA_BASE;
+        let Some(size) = self.shared.with_arena_table(|t, _, _| {
+            t.at(offset).filter(|b| b.holders.contains(&me)).map(|b| b.size)
+        }).ok().flatten() else { return false };
+        let n = u32::from(self.guest_read::<u16>(pdinfo + DI_CDITEM).unwrap_or(0));
+        if n == 0 || n > MAX_DRAG_ITEMS || DRAGINFO_SIZE + n * DRAGITEM_SIZE > size { return false; }
+        let mut wm = self.shared.window_mgr.lock_or_recover();
+        if wm.drag.infos.len() >= MAX_DRAG_INFOS { return false; }
+        wm.drag.infos.insert(pdinfo, DragInfoBlock { items: n });
+        true
     }
 
     /// The `DRAGINFO` an item at `pditem` belongs to (`None`: not an item).
@@ -420,10 +564,9 @@ impl Loader {
             return self.pm_fail(vcpu, PMERR_INVALID_PARAMETERS);
         }
         let size = DRAGINFO_SIZE + n * DRAGITEM_SIZE;
-        let Some(base) = self.shared.mem_mgr.lock_or_recover().alloc(size) else {
+        let Some(base) = self.drag_block_alloc(size) else {
             return self.pm_fail(vcpu, PMERR_INSUFFICIENT_MEMORY);
         };
-        if let Some(m) = self.guest_slice_mut(base, size as usize) { m.fill(0); }
         let (x, y) = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             wm.drag.infos.insert(base, DragInfoBlock { items: n });
@@ -440,14 +583,15 @@ impl Loader {
 
     /// `DrgFreeDraginfo(pdinfo)`. Within the process that is dragging it,
     /// before `DrgDrag` returns, it fails with `PMERR_SOURCE_SAME_AS_TARGET`
-    /// (the source frees it afterwards).
+    /// (the source frees it afterwards). A `DRAGINFO` in the session's
+    /// arena is gone once neither the source nor the target holds it.
     pub(crate) fn drg_free_draginfo(&self, vcpu: u32, pdinfo: u32) -> ApiResult {
         let freed = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             if wm.drag.in_drag(pdinfo) { drop(wm); return self.pm_fail(vcpu, PMERR_SOURCE_SAME_AS_TARGET); }
             wm.drag.infos.remove(&pdinfo).is_some()
         };
-        if freed { self.shared.mem_mgr.lock_or_recover().free(pdinfo); }
+        if freed { self.drag_block_free(pdinfo); }
         self.drag_ok(vcpu, freed, PMERR_INVALID_PARAMETERS)
     }
 
@@ -494,7 +638,7 @@ impl Loader {
     /// `DrgAddStrHandle(psz)`.
     pub(crate) fn drg_add_str_handle(&self, vcpu: u32, psz: u32) -> ApiResult {
         let Some(bytes) = self.drag_bytes(psz) else { return self.pm_fail(vcpu, PMERR_INVALID_PARAMETERS) };
-        match self.shared.window_mgr.lock_or_recover().drag.strings.add(&bytes) {
+        match self.hstr_add(vcpu, &bytes) {
             Some(h) => ApiResult::Normal(h),
             None => self.pm_fail(vcpu, PMERR_INSUFFICIENT_MEMORY),
         }
@@ -502,7 +646,7 @@ impl Loader {
 
     /// `DrgDeleteStrHandle(hstr)`.
     pub(crate) fn drg_delete_str_handle(&self, vcpu: u32, h: u32) -> ApiResult {
-        let ok = self.shared.window_mgr.lock_or_recover().drag.strings.delete(h);
+        let ok = self.hstr_delete(h);
         self.drag_ok(vcpu, ok, PMERR_INVALID_PARAMETERS)
     }
 
@@ -518,22 +662,21 @@ impl Loader {
                 if h != 0 && !handles.contains(&h) { handles.push(h); }
             }
         }
-        let mut wm = self.shared.window_mgr.lock_or_recover();
-        for h in handles { wm.drag.strings.delete(h); }
+        for h in handles { self.hstr_delete(h); }
         ApiResult::Normal(1)
     }
 
     /// `DrgQueryStrName(hstr, cbBuffer, pBuffer)`: the bytes copied (a NUL
     /// after them); a bad handle gives an empty string.
-    pub(crate) fn drg_query_str_name(&self, h: u32, cb: u32, buf: u32) -> ApiResult {
+    pub(crate) fn drg_query_str_name(&self, tid: u32, h: u32, cb: u32, buf: u32) -> ApiResult {
         if cb == 0 || buf == 0 { return ApiResult::Normal(0); }
-        let bytes = self.shared.window_mgr.lock_or_recover().drag.strings.get(h).map(<[u8]>::to_vec).unwrap_or_default();
+        let bytes = self.hstr_bytes(tid, h).unwrap_or_default();
         ApiResult::Normal(self.copy_text_out(&bytes, buf, cb as usize))
     }
 
     /// `DrgQueryStrNameLen(hstr)`: without the NUL; 0 for a bad handle.
-    pub(crate) fn drg_query_str_name_len(&self, h: u32) -> ApiResult {
-        ApiResult::Normal(self.shared.window_mgr.lock_or_recover().drag.strings.get(h).map_or(0, |b| b.len() as u32))
+    pub(crate) fn drg_query_str_name_len(&self, tid: u32, h: u32) -> ApiResult {
+        ApiResult::Normal(self.hstr_bytes(tid, h).map_or(0, |b| b.len() as u32))
     }
 
     /// The types of item `pditem` (`None`: not an item).
@@ -608,20 +751,60 @@ impl Loader {
     pub(crate) fn drg_alloc_dragtransfer(&self, vcpu: u32, n: u32) -> ApiResult {
         if n == 0 || n > MAX_DRAG_TRANSFERS { return self.pm_fail(vcpu, PMERR_INVALID_PARAMETERS); }
         let size = n * DRAGTRANSFER_SIZE;
-        let Some(base) = self.shared.mem_mgr.lock_or_recover().alloc(size) else {
+        let Some(base) = self.drag_block_alloc(size) else {
             return self.pm_fail(vcpu, PMERR_INSUFFICIENT_MEMORY);
         };
-        if let Some(m) = self.guest_slice_mut(base, size as usize) { m.fill(0); }
         for i in 0..n { let _ = self.guest_write::<u32>(base + i * DRAGTRANSFER_SIZE, DRAGTRANSFER_SIZE); }
         self.shared.window_mgr.lock_or_recover().drag.transfers.insert(base, n);
         ApiResult::Normal(base)
     }
 
-    /// `DrgFreeDragtransfer(pdxfer)`: the array it starts.
+    /// `DrgFreeDragtransfer(pdxfer)`: the array it starts — this
+    /// process's own, or one in the session's arena another program gave
+    /// it (`DrgSendTransferMsg`), whose hold it lets go.
     pub(crate) fn drg_free_dragtransfer(&self, vcpu: u32, p: u32) -> ApiResult {
-        let ok = self.shared.window_mgr.lock_or_recover().drag.transfers.remove(&p).is_some();
-        if ok { self.shared.mem_mgr.lock_or_recover().free(p); }
+        let own = self.shared.window_mgr.lock_or_recover().drag.transfers.remove(&p).is_some();
+        let ok = if own { self.drag_block_free(p) } else { in_arena(p) && self.arena_free(p) == Some(NO_ERROR) };
         self.drag_ok(vcpu, ok, PMERR_INVALID_PARAMETERS)
+    }
+
+    /// The start of this process's `DRAGTRANSFER` array that `pdxfer` lies
+    /// in.
+    fn transfer_block(&self, pdxfer: u32) -> Option<u32> {
+        self.shared.window_mgr.lock_or_recover().drag.transfers.iter()
+            .find(|&(&b, &n)| pdxfer >= b && pdxfer < b.saturating_add(n * DRAGTRANSFER_SIZE))
+            .map(|(&b, _)| b)
+    }
+
+    /// `DrgSendTransferMsg` / `DrgPostTransferMsg` (`post`) to window
+    /// `hwnd`, mp1 a `DRAGTRANSFER`: for another program's window the
+    /// array is given to its process first, then the message is sent or
+    /// posted through the desktop server. `None` for this program's
+    /// windows, which take the ordinary path.
+    pub(crate) fn drg_transfer_to_other(&self, tid: u32, a: &[u32], post: bool) -> Option<ApiResult> {
+        let (hwnd, msg, mp1, mp2) = (a[0], a[1], a[2], a[3]);
+        if !self.shared.window_mgr.lock_or_recover().is_foreign(hwnd) { return None; }
+        if let Some(block) = self.transfer_block(mp1)
+            && let Some(info) = self.describe_remote(tid, hwnd) {
+            self.give_drag_block(block, info.pid);
+        }
+        let arg = |off: u64| match off { 4 => hwnd, 8 => msg, 12 => mp1, 16 => mp2, _ => 0 };
+        let ordinal = if post { super::pm_remote::ORD_POST_MSG } else { super::pm_remote::ORD_SEND_MSG };
+        self.remote_pmwin(tid, ordinal, &arg)
+    }
+
+    /// `DrgPushDraginfo(pdinfo, hwndDest)`: give the `DRAGINFO` to the
+    /// process of window `hwnd` — another program's, on the session's
+    /// desktop; this program's need nothing.
+    pub(crate) fn drg_push_draginfo(&self, vcpu: u32, pdinfo: u32, hwnd: u32) -> ApiResult {
+        let (known, foreign) = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            (wm.drag.infos.contains_key(&pdinfo), wm.is_foreign(hwnd))
+        };
+        if !known { return self.pm_fail(vcpu, PMERR_INVALID_PARAMETERS); }
+        if !foreign { return self.drag_ok(vcpu, self.pm_check_hwnd(vcpu, hwnd, false), PMERR_INVALID_HWND); }
+        let given = self.describe_remote(vcpu, hwnd).is_some_and(|i| self.give_drag_block(pdinfo, i.pid));
+        self.drag_ok(vcpu, given, PMERR_INVALID_PARAMETERS)
     }
 
     /// `DrgSendTransferMsg` / `DrgPostTransferMsg`: `fsReply` of the
@@ -716,7 +899,8 @@ impl Loader {
             if wm.drag.session.is_some() { drop(wm); return self.pm_fail(vcpu, PMERR_ALREADY_DRAGGING); }
             // Chains are keyed by vCPU, as WinSendMsg's are.
             wm.drag.session = Some(DragSession { source, pdinfo, button, target: 0, reply: DOR_NODROP, never: false,
-                                                 pointer: 0, tid: vcpu, awaiting: false });
+                                                 pointer: 0, tid: vcpu, target_pid: 0, awaiting: false });
+            wm.drag.run = DragRun::default();
             // The drag loop takes the pointer from here on.
             wm.drop_pointer_input();
         }
@@ -737,8 +921,10 @@ impl Loader {
         self.drag_continue()
     }
 
-    /// Wait for the next drag input.
-    fn drag_wait(&self, button: u8) -> FeedStep {
+    /// Wait for the next drag input, or a message another program sent
+    /// the dragging thread.
+    fn drag_wait(&self, tid: u32, button: u8) -> FeedStep {
+        let hmq = self.shared.window_mgr.lock_or_recover().thread_queue(tid);
         let ch = &self.shared.drag_channel;
         let mut f = ch.feed.lock_or_recover();
         loop {
@@ -749,6 +935,9 @@ impl Loader {
                 continue;
             }
             if self.interrupted() { return FeedStep::Interrupted; }
+            if let Some(s) = hmq.and_then(|h| self.shared.window_mgr.lock_or_recover().take_sent(h)) {
+                return FeedStep::Sent(s);
+            }
             f = ch.cond.wait_timeout(f, FEED_WAIT).map(|(g, _)| g).unwrap_or_else(|e| e.into_inner().0);
         }
     }
@@ -756,7 +945,8 @@ impl Loader {
     /// How the window under the pointer takes part: its procedure is
     /// called (a guest window), its owner is asked (a container: `CN_*`), or
     /// it never accepts (other built-in controls, a frame's chrome).
-    fn drag_step(&self, target: u32, msg: u32, pdinfo: u32, pos: (i32, i32), local: (i32, i32)) -> Option<CallStep> {
+    pub(super) fn drag_step(&self, target: u32, msg: u32, pdinfo: u32, pos: (i32, i32), local: (i32, i32))
+        -> Option<CallStep> {
         let (pfn, class, owner_proc, owner, id) = {
             let wm = self.shared.window_mgr.lock_or_recover();
             let w = wm.get_window(target)?;
@@ -780,13 +970,56 @@ impl Loader {
         })
     }
 
-    fn drag_chain(&self, tid: u32, steps: Vec<CallStep>, stage: u8) -> ApiResult {
-        self.start_chain(CallChain::new(tid, steps, false, ChainThen::Drag { stage }))
+    /// The window under desktop point `pos` that takes the drag, with the
+    /// point in its coordinates and, for another program's window, that
+    /// program's process id: on the session's desktop the server names the
+    /// frame on top (any program's) and the frame's program the window in
+    /// it; else this program's windows. `(0, …)` for none.
+    fn drag_target_at(&self, pos: (i32, i32)) -> (u32, (i32, i32), u32) {
+        if let Some(link) = self.shared.desktop_link.get()
+            && let Some(WinReply::Value(frame)) = link.call(SERVER_ADDRESS, WinCall::FrameAt { x: pos.0, y: pos.1 }) {
+            if frame == 0 { return (0, (0, 0), 0); }
+            if self.shared.window_mgr.lock_or_recover().is_foreign(frame) {
+                let found = link.call(frame, WinCall::DragTarget { x: pos.0, y: pos.1 });
+                return match found {
+                    Some(WinReply::Windows { pid, hwnds }) if hwnds.len() == 1
+                        && super::pm_types::handle_slot(hwnds[0]) == super::pm_types::handle_slot(frame) =>
+                        (hwnds[0], (0, 0), pid),
+                    _ => (0, (0, 0), 0),
+                };
+            }
+        }
+        let under = self.shared.window_mgr.lock_or_recover().window_under(pos.0, pos.1);
+        under.map_or((0, (0, 0), 0), |(h, x, y)| (h, (x, y), 0))
+    }
+
+    /// Message `msg` of the conversation for the window `target` (of
+    /// process `pid`, 0: this one): a call on another program's window,
+    /// which is given the `DRAGINFO` first, or a call in a chain; `None`
+    /// when the window never accepts.
+    fn drag_action(&self, target: u32, pid: u32, msg: u32, pdinfo: u32, pos: (i32, i32), local: (i32, i32))
+        -> Option<DragAction> {
+        if pid == 0 {
+            return self.drag_step(target, msg, pdinfo, pos, local).map(DragAction::Local);
+        }
+        if msg != DM_DRAGLEAVE {
+            let given = self.shared.window_mgr.lock_or_recover().drag.run.given.contains(&pid);
+            if !given {
+                // A DRAGINFO outside the arena cannot reach another program.
+                if !self.give_drag_block(pdinfo, pid) { return None; }
+                self.shared.window_mgr.lock_or_recover().drag.run.given.push(pid);
+            }
+        }
+        Some(DragAction::Remote { hwnd: target, call: WinCall::Drag { msg, pdinfo, x: pos.0, y: pos.1 } })
     }
 
     /// End the drag: no session, input routed again, the pointer back.
     fn drag_end(&self, result: u32) -> ApiResult {
-        self.shared.window_mgr.lock_or_recover().drag.session = None;
+        {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            wm.drag.session = None;
+            wm.drag.run = DragRun::default();
+        }
         *self.shared.drag_channel.feed.lock_or_recover() = DragFeed::default();
         self.drag_feedback(true, 0);
         ApiResult::Normal(result)
@@ -796,17 +1029,18 @@ impl Loader {
     fn drag_continue(&self) -> ApiResult {
         loop {
             let Some(s) = self.shared.window_mgr.lock_or_recover().drag.session else { return ApiResult::Normal(0) };
-            match self.drag_wait(s.button) {
+            match self.drag_wait(s.tid, s.button) {
                 FeedStep::Move(pos) => {
-                    let under = self.shared.window_mgr.lock_or_recover().window_under(pos.0, pos.1);
-                    let (hwnd, local) = under.map_or((0, (0, 0)), |(h, x, y)| (h, (x, y)));
-                    let mut steps = Vec::new();
+                    let (hwnd, local, pid) = self.drag_target_at(pos);
+                    let mut actions = Vec::new();
                     let mut sess = s;
                     if hwnd != s.target {
-                        if s.target != 0 && let Some(step) = self.drag_step(s.target, DM_DRAGLEAVE, s.pdinfo, pos, (0, 0)) {
-                            steps.push(step);
+                        if s.target != 0
+                            && let Some(a) = self.drag_action(s.target, s.target_pid, DM_DRAGLEAVE, s.pdinfo, pos, (0, 0)) {
+                            actions.push(a);
                         }
                         sess.target = hwnd;
+                        sess.target_pid = pid;
                         sess.never = false;
                         sess.reply = DOR_NODROP;
                     }
@@ -814,33 +1048,36 @@ impl Loader {
                     if hwnd != 0 && !sess.never {
                         let _ = self.guest_write::<i16>(s.pdinfo + DI_X_DROP, pos.0 as i16);
                         let _ = self.guest_write::<i16>(s.pdinfo + DI_Y_DROP, pos.1 as i16);
-                        match self.drag_step(hwnd, DM_DRAGOVER, s.pdinfo, pos, local) {
-                            Some(step) => { steps.push(step); sess.awaiting = true; }
+                        match self.drag_action(hwnd, pid, DM_DRAGOVER, s.pdinfo, pos, local) {
+                            Some(a) => { actions.push(a); sess.awaiting = true; }
                             None => { sess.reply = DOR_NEVERDROP; sess.never = true; }
                         }
                     }
                     self.shared.window_mgr.lock_or_recover().drag.session = Some(sess);
-                    if steps.is_empty() {
+                    if actions.is_empty() {
                         self.drag_feedback(sess.reply == DOR_DROP, sess.pointer);
                         continue;
                     }
-                    return self.drag_chain(s.tid, steps, DRAG_STAGE_OVER);
+                    return self.drag_run(actions, DRAG_STAGE_OVER);
                 }
                 FeedStep::Release(_) => {
                     let pos = self.shared.drag_channel.feed.lock_or_recover().pos;
                     if s.target != 0 && s.reply == DOR_DROP {
                         let _ = self.guest_write::<i16>(s.pdinfo + DI_X_DROP, pos.0 as i16);
                         let _ = self.guest_write::<i16>(s.pdinfo + DI_Y_DROP, pos.1 as i16);
-                        let local = self.shared.window_mgr.lock_or_recover().window_under(pos.0, pos.1)
-                            .filter(|w| w.0 == s.target).map_or((0, 0), |w| (w.1, w.2));
-                        if let Some(step) = self.drag_step(s.target, DM_DROP, s.pdinfo, pos, local) {
-                            return self.drag_chain(s.tid, vec![step], DRAG_STAGE_DROP);
+                        let local = if s.target_pid != 0 { (0, 0) } else {
+                            self.shared.window_mgr.lock_or_recover().window_under(pos.0, pos.1)
+                                .filter(|w| w.0 == s.target).map_or((0, 0), |w| (w.1, w.2))
+                        };
+                        if let Some(a) = self.drag_action(s.target, s.target_pid, DM_DROP, s.pdinfo, pos, local) {
+                            return self.drag_run(vec![a], DRAG_STAGE_DROP);
                         }
                     }
                     return self.drag_leave_and_end(s);
                 }
                 FeedStep::Cancel => return self.drag_leave_and_end(s),
                 FeedStep::Interrupted => return self.drag_end(0),
+                FeedStep::Sent(m) => return self.run_sent(s.tid, m, super::pm_remote::AfterSent::Drag),
             }
         }
     }
@@ -848,19 +1085,119 @@ impl Loader {
     /// No drop: `DM_DRAGLEAVE` to the window under the pointer, then the
     /// end with NULLHANDLE.
     fn drag_leave_and_end(&self, s: DragSession) -> ApiResult {
-        if s.target != 0 && let Some(step) = self.drag_step(s.target, DM_DRAGLEAVE, s.pdinfo, (0, 0), (0, 0)) {
-            return self.drag_chain(s.tid, vec![step], DRAG_STAGE_END);
+        if s.target != 0 && let Some(a) = self.drag_action(s.target, s.target_pid, DM_DRAGLEAVE, s.pdinfo, (0, 0), (0, 0)) {
+            return self.drag_run(vec![a], DRAG_STAGE_END);
         }
         self.drag_end(0)
     }
 
-    /// A drag chain of `stage` returned `last` (the `DM_DRAGOVER` reply).
-    pub(crate) fn drag_chain_done(&self, stage: u8, last: u32) -> ChainEnd {
-        let result = match stage {
+    /// Make the messages of conversation step `stage`.
+    fn drag_run(&self, actions: Vec<DragAction>, stage: u8) -> ApiResult {
+        {
+            let mut wm = self.shared.window_mgr.lock_or_recover();
+            let run = &mut wm.drag.run;
+            (run.active, run.stage, run.actions, run.waiting, run.last) = (true, stage, actions.into(), None, 0);
+        }
+        self.drag_advance()
+    }
+
+    /// Go on with the messages of the current step: a run of messages to
+    /// this program's windows is a call chain ([`ChainThen::Drag`]); a
+    /// message to another program's window is a call waited for without a
+    /// time limit, running the messages sent to the dragging thread
+    /// meanwhile. Once all are made, the step ends
+    /// ([`Self::drag_step_done`]).
+    fn drag_advance(&self) -> ApiResult {
+        let Some(tid) = self.shared.window_mgr.lock_or_recover().drag.session.map(|s| s.tid) else {
+            return ApiResult::Normal(0);
+        };
+        let link = self.shared.desktop_link.get();
+        let wait = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            wm.thread_queue(tid).and_then(|h| wm.get_mq(h)).map(|mq| {
+                let q = mq.lock_or_recover();
+                (Arc::clone(&q.cond), Arc::clone(&q.lock))
+            })
+        };
+        let hmq = self.shared.window_mgr.lock_or_recover().thread_queue(tid);
+        loop {
+            let (waiting, next) = {
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                let run = &mut wm.drag.run;
+                (run.waiting, if run.waiting.is_none() { run.actions.pop_front() } else { None })
+            };
+            if let Some(id) = waiting {
+                let state = link.map_or(CallState::Gone, |l| l.poll_call(id));
+                let reply = match state {
+                    CallState::Answered(WinReply::Value(v)) => Some(v),
+                    // The target's program failed or ended: it takes no drop.
+                    CallState::Answered(_) | CallState::Gone => Some(DOR_NEVERDROP),
+                    CallState::Waiting => None,
+                };
+                if let Some(v) = reply {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    (wm.drag.run.waiting, wm.drag.run.last) = (None, v);
+                    continue;
+                }
+                if let Some(s) = hmq.and_then(|h| self.shared.window_mgr.lock_or_recover().take_sent(h)) {
+                    return self.run_sent(tid, s, super::pm_remote::AfterSent::Drag);
+                }
+                if self.interrupted() {
+                    if let Some(l) = link { l.abandon_call(id); }
+                    return self.drag_end(0);
+                }
+                if let Some((cond, lock)) = &wait {
+                    let g = lock.lock_or_recover();
+                    let _ = cond.wait_timeout(g, FEED_WAIT);
+                }
+                continue;
+            }
+            match next {
+                None => {
+                    let (stage, last) = {
+                        let mut wm = self.shared.window_mgr.lock_or_recover();
+                        wm.drag.run.active = false;
+                        (wm.drag.run.stage, wm.drag.run.last)
+                    };
+                    return self.drag_step_done(stage, last);
+                }
+                Some(DragAction::Local(step)) => {
+                    let mut steps = vec![step];
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    while matches!(wm.drag.run.actions.front(), Some(DragAction::Local(_))) {
+                        if let Some(DragAction::Local(step)) = wm.drag.run.actions.pop_front() { steps.push(step); }
+                    }
+                    drop(wm);
+                    return self.start_chain(CallChain::new(tid, steps, false, ChainThen::Drag));
+                }
+                Some(DragAction::Remote { hwnd, call }) => {
+                    // An answer wakes the thread where it waits: its queue.
+                    let wake = wait.clone().map(|(cond, lock)| -> CallWaker {
+                        Arc::new(move || {
+                            let _g = lock.lock_or_recover();
+                            cond.notify_all();
+                        })
+                    });
+                    let id = link.and_then(|l| l.begin_call(hwnd, call, wake));
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    match id {
+                        Some(id) => wm.drag.run.waiting = Some(id),
+                        None => wm.drag.run.last = DOR_NEVERDROP,
+                    }
+                }
+            }
+        }
+    }
+
+    /// The messages of step `stage` are made, `last` the last reply: after
+    /// `DM_DRAGOVER` record it and wait for more input; after the drop
+    /// return the target; else end without one.
+    fn drag_step_done(&self, stage: u8, last: u32) -> ApiResult {
+        match stage {
             DRAG_STAGE_OVER => {
                 let s = {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
-                    let Some(s) = wm.drag.session.as_mut() else { return ChainEnd::Return(0) };
+                    let Some(s) = wm.drag.session.as_mut() else { return ApiResult::Normal(0) };
                     if s.awaiting {
                         s.awaiting = false;
                         s.reply = last & 0xFFFF;
@@ -876,12 +1213,29 @@ impl Loader {
                 self.drag_end(target)
             }
             _ => self.drag_end(0),
-        };
-        match result {
-            ApiResult::CallChain(c) => ChainEnd::Next(c),
-            ApiResult::Normal(v) => ChainEnd::Return(v),
-            other => { log::warn!("drag: unexpected {other:?}"); ChainEnd::Return(0) }
         }
+    }
+
+    /// A drag chain returned `last`.
+    pub(crate) fn drag_chain_done(&self, last: u32) -> ChainEnd {
+        self.shared.window_mgr.lock_or_recover().drag.run.last = last;
+        chain_end(self.drag_advance())
+    }
+
+    /// The dragging thread ran a message another program sent it: go on
+    /// where it was — waiting for a reply, or for input.
+    pub(crate) fn drag_after_sent(&self) -> ChainEnd {
+        let active = self.shared.window_mgr.lock_or_recover().drag.run.active;
+        chain_end(if active { self.drag_advance() } else { self.drag_continue() })
+    }
+}
+
+/// How a chain ends that goes on with the drag's result `r`.
+fn chain_end(r: ApiResult) -> ChainEnd {
+    match r {
+        ApiResult::CallChain(c) => ChainEnd::Next(c),
+        ApiResult::Normal(v) => ChainEnd::Return(v),
+        other => { log::warn!("drag: unexpected {other:?}"); ChainEnd::Return(0) }
     }
 }
 
@@ -941,10 +1295,10 @@ mod tests {
         let ht = ok(l.drg_add_str_handle(0, put_str(&l, BUF, "Plain Text,C Code")));
         let hr = ok(l.drg_add_str_handle(0, put_str(&l, BUF + 0x40, "<DRM_OS2FILE,DRF_TEXT>,(DRM_PRINT)x(DRF_TEXT)")));
         let hs = ok(l.drg_add_str_handle(0, put_str(&l, BUF + 0x80, "hello.txt")));
-        assert_eq!(ok(l.drg_query_str_name_len(hs)), 9);
-        assert_eq!(ok(l.drg_query_str_name(hs, 6, BUF + 0x100)), 5, "cut to the buffer");
+        assert_eq!(ok(l.drg_query_str_name_len(0, hs)), 9);
+        assert_eq!(ok(l.drg_query_str_name(0, hs, 6, BUF + 0x100)), 5, "cut to the buffer");
         assert_eq!(l.read_guest_string(BUF + 0x100), "hello");
-        assert_eq!(ok(l.drg_query_str_name_len(0x7777)), 0);
+        assert_eq!(ok(l.drg_query_str_name_len(0, 0x7777)), 0);
         // An item set and read back, through its pointer.
         let item = BUF + 0x200;
         for (o, v) in [(DIT_HWND_ITEM, 0x1234), (DIT_TYPE, ht), (DIT_RMF, hr), (DIT_SOURCE, hs)] {
@@ -971,7 +1325,7 @@ mod tests {
         assert_eq!(ok(l.drg_verify_type(0x5555, BUF + 0x300, false)), 0, "not an item");
         // The item's handles go; the DRAGINFO is freed.
         assert_eq!(ok(l.drg_delete_draginfo_str_handles(0, pd)), 1);
-        assert_eq!(ok(l.drg_query_str_name_len(hs)), 0);
+        assert_eq!(ok(l.drg_query_str_name_len(0, hs)), 0);
         assert_eq!(ok(l.drg_free_draginfo(0, pd)), 1);
         assert_eq!(ok(l.drg_access_draginfo(0, pd)), 0);
         assert_eq!(ok(l.drg_free_draginfo(0, pd)), 0);
@@ -1102,6 +1456,28 @@ mod tests {
         leave.returned(0, false);
         assert_eq!(l.finish_chain(&leave), ChainEnd::Return(0));
         assert_eq!(ok(l.drg_free_draginfo(0, pd)), 1);
+    }
+
+    #[test]
+    fn without_the_sessions_desktop_drag_blocks_stay_in_the_process() {
+        let l = Loader::new_mock();
+        let (frame, client, _cnr) = desk(&l);
+        let pd = ok(l.drg_alloc_draginfo(0, 1));
+        assert!(!in_arena(pd), "no session: process memory");
+        assert!(!l.give_drag_block(pd, 7), "nothing to give");
+        assert!(l.accept_draginfo(pd), "its own");
+        assert!(!l.accept_draginfo(0x4000), "not a DRAGINFO, not in the arena");
+        // DrgPushDraginfo to this program's windows needs nothing.
+        assert_eq!(ok(l.drg_push_draginfo(0, pd, client)), 1);
+        assert_eq!(ok(l.drg_push_draginfo(0, pd, 0x7777)), 0, "no such window");
+        assert_eq!(ok(l.drg_push_draginfo(0, 0x4000, frame)), 0, "not a DRAGINFO");
+        // Transfers sent or posted to this program's windows take the
+        // ordinary path; a transfer it was never given cannot be freed.
+        let t = ok(l.drg_alloc_dragtransfer(0, 1));
+        assert_eq!(l.transfer_block(t + 4), Some(t));
+        assert!(l.drg_transfer_to_other(0, &[client, DM_RENDER, t, 0], false).is_none());
+        assert_eq!(ok(l.drg_free_dragtransfer(0, 0x4000)), 0);
+        assert_eq!(ok(l.drg_free_dragtransfer(0, t)), 1);
     }
 
     #[test]

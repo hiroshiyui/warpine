@@ -469,6 +469,11 @@ impl Server {
                 let reply = match call {
                     WinCall::Clients | WinCall::Stacking =>
                         server_answer(&call, self.clients.keys().copied(), self.model.stacking()),
+                    // PM coordinates (bottom-left origin) to the desktop's.
+                    WinCall::FrameAt { x, y } => {
+                        let h = self.comp.size().1 as i32;
+                        WinReply::Value(self.model.frame_at(x, h - 1 - y).unwrap_or(0))
+                    }
                     _ => self.services.answer(slot, &call),
                 };
                 if let Some(c) = self.clients.get(&slot) {
