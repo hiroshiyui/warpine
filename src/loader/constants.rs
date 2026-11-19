@@ -1194,6 +1194,18 @@ pub const CHROME_TITLE_H: i32 = 20;
 pub const FRAME_MIN_VISIBLE_W: i32 = 32;
 /// Width of the frame border in desktop pixels (each side).
 pub const CHROME_BORDER_W: i32 = 2;
+/// Active (focused) title bar colour — OS/2 navy blue.
+pub const CHROME_TITLE_ACTIVE: u32   = 0x0000_0080;
+/// Inactive title bar colour — dark gray.
+pub const CHROME_TITLE_INACTIVE: u32 = 0x0040_4040;
+/// Title bar text colour.
+pub const CHROME_TEXT_COLOR: u32     = 0x00FF_FFFF;
+/// Face colour of raised chrome elements (buttons, sizing border).
+pub const CHROME_FACE_COLOR: u32     = 0x00CC_CCCC;
+/// Lit (top/left) edge of a raised bevel.
+pub const CHROME_LIGHT_COLOR: u32    = 0x00FF_FFFF;
+/// Shaded (bottom/right) edge of a raised bevel.
+pub const CHROME_SHADOW_COLOR: u32   = 0x0080_8080;
 /// Size of a minimized frame (Warpine's own choice): a title bar with a
 /// border, `MINIMIZED_CX` wide.
 pub const MINIMIZED_CX: i32 = 160;

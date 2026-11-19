@@ -95,7 +95,8 @@ fn wait_timeout(now: Instant, last_composite: Instant, busy: bool,
 
 // ── VDR-C: Window chrome constants ────────────────────────────────────────
 
-use crate::loader::constants::{CHROME_BORDER_W, CHROME_TITLE_H};
+use crate::loader::constants::{CHROME_BORDER_W, CHROME_TITLE_H, CHROME_TITLE_ACTIVE, CHROME_TITLE_INACTIVE,
+                               CHROME_TEXT_COLOR, CHROME_FACE_COLOR, CHROME_LIGHT_COLOR, CHROME_SHADOW_COLOR};
 
 /// Width of each title-bar button (close/min/max/sysmenu), in desktop pixels.
 const CHROME_BTN_W: i32   = 16;
@@ -108,12 +109,6 @@ const CHROME_BTN_MARGIN: i32 = 2;
 /// Resize-hit zone width at each window edge (VDR-C5).
 const RESIZE_HIT_W: i32 = 6;
 
-/// Active (focused) title bar colour — OS/2 navy blue.
-const CHROME_TITLE_ACTIVE: u32   = 0x0000_0080;
-/// Inactive title bar colour — dark gray.
-const CHROME_TITLE_INACTIVE: u32 = 0x0040_4040;
-/// Title bar text colour.
-const CHROME_TEXT_COLOR: u32     = 0x00FF_FFFF;
 
 /// Draw text into a desktop-space pixel buffer.
 ///
@@ -128,12 +123,6 @@ fn draw_text_screen(buf: &mut [u32], buf_w: usize, buf_h: usize,
 
 // ── Frame chrome ─────────────────────────────────────────────────────────────
 
-/// Face colour of raised chrome elements (buttons, sizing border).
-const CHROME_FACE_COLOR: u32   = 0x00CC_CCCC;
-/// Lit (top/left) edge of a raised bevel.
-const CHROME_LIGHT_COLOR: u32  = 0x00FF_FFFF;
-/// Shaded (bottom/right) edge of a raised bevel.
-const CHROME_SHADOW_COLOR: u32 = 0x0080_8080;
 /// Outermost dark edge and button glyphs.
 const CHROME_DARK_COLOR: u32   = 0x0000_0000;
 /// Vertical inset of the title-bar buttons inside the title bar.

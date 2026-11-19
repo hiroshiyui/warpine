@@ -1,0 +1,12 @@
+/* pm_embdlg_test.rc - a dialog with a title bar and border, embedded in a client */
+#include <os2.h>
+#include "pm_embdlg_test.h"
+
+DLGTEMPLATE ID_DLG
+BEGIN
+    DIALOG "Inner dialog", ID_DLG, 0, 0, 100, 60, WS_VISIBLE | FS_DLGBORDER, FCF_TITLEBAR
+    BEGIN
+        ENTRYFIELD "",      ID_NAME,  4, 30, 80, 10, ES_MARGIN | WS_TABSTOP
+        PUSHBUTTON "Press", ID_PRESS, 4,  4, 40, 14, WS_TABSTOP
+    END
+END

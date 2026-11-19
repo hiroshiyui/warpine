@@ -2215,6 +2215,11 @@ impl super::Loader {
         // way, so a child window's drag or context menu reaches the window
         // that owns it (ADR-0068; unverified for these: their pages' default
         // processing is read as WM_CHAR's).
+        // Tab in a window around embedded dialogs moves between its
+        // controls and theirs (ADR-0069).
+        if msg == WM_CHAR && self.tab_around_embedded_dialogs(hwnd, mp1, mp2) {
+            return ApiResult::Normal(1);
+        }
         if matches!(msg, WM_CHAR | super::pm_drag::WM_BEGINDRAG | super::pm_drag::WM_ENDDRAG
                          | super::pm_input::WM_CONTEXTMENU) {
             let owner = {

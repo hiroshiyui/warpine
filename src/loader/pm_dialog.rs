@@ -19,11 +19,19 @@
 //! pixels, relative to the dialog frame's bottom-left corner as in PM. The
 //! dialog's surface starts inside the left border, which
 //! `WindowManager::get_abs_rect_in_frame` accounts for.
+//!
+//! A dialog embedded in a window (ADR-0042) has no frame chrome from the
+//! compositor: [`Loader::paint_embedded_dialog_chrome`] draws the title bar
+//! and border its template asks for inside its own rectangle (ADR-0069).
 
 use super::constants::*;
 use super::pm_hook::{CallChain, CallStep, ChainThen};
 use super::pm_types::{AccelEntry, OS2Message};
 use super::{pm_button, ApiResult, Loader, MutexExt};
+
+/// Left inset of the title text in an embedded dialog's title bar, as in a
+/// frame's title bar without a system-menu button.
+const TITLE_TEXT_INSET: i32 = 4;
 
 // ── DLGTEMPLATE layout (<pmwin.h>) ───────────────────────────────────────────
 
@@ -373,6 +381,56 @@ fn vkey_down(mp1: u32, mp2: u32) -> Option<u32> {
 }
 
 impl Loader {
+    /// The chrome of embedded dialog `hwnd` (ADR-0069), drawn inside its
+    /// rectangle `(x, y, cx, cy)` in the frame's surface as the compositor
+    /// draws a dialog frame's: a title bar with the dialog's text along its
+    /// top for `FCF_TITLEBAR`, a border for `FCF_BORDER` / `FCF_DLGBORDER` /
+    /// `FCF_SIZEBORDER`. An embedded dialog is never the active window, so
+    /// its title bar has the inactive colours, and it has no buttons.
+    pub(crate) fn paint_embedded_dialog_chrome(&self, d: &super::Painter, hwnd: u32,
+                                               (x, y, cx, cy): (i32, i32, i32, i32)) {
+        use crate::gui::font::{self, FontSpec};
+        use crate::gui::surface::{DrawOp, Mix};
+        let (flags, title, title_bg, title_fg) = {
+            let wm = self.shared.window_mgr.lock_or_recover();
+            let Some(w) = wm.get_window(hwnd) else { return };
+            (w.frame_flags, w.text.clone(),
+             wm.sys_colors.get(SYSCLR_INACTIVETITLE).unwrap_or(CHROME_TITLE_INACTIVE),
+             wm.sys_colors.get(SYSCLR_INACTIVETITLETEXT).unwrap_or(CHROME_TEXT_COLOR))
+        };
+        let (right, top) = (x + cx - 1, y + cy - 1);
+        if flags & FCF_TITLEBAR != 0 {
+            let bottom = top + 1 - CHROME_TITLE_H;
+            d.fill((x, bottom, right, top), title_bg);
+            // The hairline between the title bar and what lies below it.
+            d.fill((x, bottom, right, bottom), CHROME_SHADOW_COLOR);
+            let face = FontSpec { cjk: d.cjk, ..FontSpec::SYSTEM_BOLD };
+            let line_h = font::SYSTEM_FONT_PX as i32;
+            let line_bottom = bottom + (CHROME_TITLE_H - line_h + 1) / 2;
+            let text = font::fit_text(&title, (cx - 2 * TITLE_TEXT_INSET).max(0), face).to_string();
+            d.op(DrawOp::TextFont { x: x + TITLE_TEXT_INSET, y: line_bottom + font::metrics(face).descent,
+                                    text, color: title_fg, font: face, mix: Mix::Overpaint });
+        }
+        if frame_border_width(flags) == 0 { return; }
+        // A sizing border is a raised bevel; a plain or dialog border a dark
+        // outline; both with a face-coloured inner ring.
+        let outer = if flags & FCF_SIZEBORDER != 0 {
+            (CHROME_LIGHT_COLOR, CHROME_SHADOW_COLOR)
+        } else {
+            (CHROME_SHADOW_COLOR, CHROME_SHADOW_COLOR)
+        };
+        for (i, (lit, shaded)) in [outer, (CHROME_FACE_COLOR, CHROME_FACE_COLOR)].into_iter().enumerate()
+            .take(CHROME_BORDER_W as usize)
+        {
+            let i = i as i32;
+            let (l, b, r, t) = (x + i, y + i, right - i, top - i);
+            d.fill((l, t, r, t), lit);
+            d.fill((l, b, l, t), lit);
+            d.fill((l, b, r, b), shaded);
+            d.fill((r, b, r, t), shaded);
+        }
+    }
+
     /// Queue `msg` for `hwnd` on its message queue.
     pub(super) fn post_to_window(&self, hwnd: u32, msg: u32, mp1: u32, mp2: u32) {
         let wm = self.shared.window_mgr.lock_or_recover();
@@ -462,6 +520,24 @@ impl Loader {
             self.set_focus_window(h);
         }
         super::pm_hook::ChainEnd::Return(1)
+    }
+
+    /// Tab / Shift+Tab (`WM_CHAR` `mp1` / `mp2`) reaching `WinDefWindowProc`
+    /// of `hwnd`, a window that is not a dialog with dialogs embedded in it
+    /// and the focus on one of its controls: the focus moves to the next
+    /// tab stop among its controls and the embedded dialogs' (ADR-0069).
+    /// Returns whether the key was used.
+    pub(super) fn tab_around_embedded_dialogs(&self, hwnd: u32, mp1: u32, mp2: u32) -> bool {
+        let Some(vk @ (VK_TAB | VK_BACKTAB)) = vkey_down(mp1, mp2) else { return false };
+        let backward = vk == VK_BACKTAB || mp1 & KC_SHIFT != 0;
+        let next = self.shared.window_mgr.lock_or_recover().tab_around_embedded_dialogs(hwnd, backward);
+        match next {
+            Some(next) => {
+                self.set_focus_window(next);
+                true
+            }
+            None => false,
+        }
     }
 
     /// The keyboard part of `WinDefDlgProc` for `WM_CHAR` on dialog `hwnd`:
@@ -1195,6 +1271,48 @@ pub(super) mod tests {
         // Static text is transparent to the pointer.
         let (lx, ly, _, _) = wm.get_abs_rect_in_frame(wm.find_child_by_id(d.dlg, ID_LABEL as u32).unwrap());
         assert_eq!(wm.control_at(d.dlg, lx + 1, ly + 1), None);
+    }
+
+    /// An embedded dialog draws the title bar and border its template asks
+    /// for inside its own rectangle (ADR-0069); one asking for none has none.
+    #[test]
+    fn an_embedded_dialog_draws_its_own_chrome() {
+        let pels = |frame_flags: u32| {
+            let loader = Loader::new_mock();
+            let (frame, client) = {
+                let mut wm = loader.shared.window_mgr.lock_or_recover();
+                let hmq = wm.create_mq(437);
+                wm.tid_to_hmq.insert(0, hmq);
+                let frame = wm.create_window("App".into(), HWND_DESKTOP, hmq);
+                let client = wm.create_window("App".into(), frame, hmq);
+                wm.frame_to_client.insert(frame, client);
+                for h in [frame, client] {
+                    let w = wm.get_window_mut(h).unwrap();
+                    (w.cx, w.cy, w.visible) = (300, 200, true);
+                }
+                (frame, client)
+            };
+            let mut t = parse_dlg_template(ABOUT_DIALOG, 437).unwrap();
+            t.frame_flags = frame_flags;
+            // The face and chrome only: the template's label would cover them.
+            t.items.clear();
+            let (dlg, _, _) = loader.create_dialog(0, client, client, 0, Some(t));
+            {
+                let mut wm = loader.shared.window_mgr.lock_or_recover();
+                let w = wm.get_window_mut(dlg).unwrap();
+                (w.x, w.y, w.cx, w.cy, w.visible) = (10, 10, 200, 120, true);
+            }
+            loader.dispatch_builtin_control(dlg, WM_PAINT, 0, 0);
+            let s = loader.shared.window_mgr.lock_or_recover().frame_surface(frame).unwrap();
+            let s = s.lock_or_recover();
+            // Left border (outer, inner ring), the title bar near its right
+            // end, its hairline, and the face below it.
+            [(10, 40), (11, 40), (200, 125), (200, 110), (200, 100)].map(|(x, y)| s.pel(x, y).unwrap())
+        };
+        assert_eq!(pels(FCF_TITLEBAR | FCF_DLGBORDER),
+                   [CHROME_SHADOW_COLOR, CHROME_FACE_COLOR, CHROME_TITLE_INACTIVE, CHROME_SHADOW_COLOR,
+                    super::super::CONTROL_FACE_COLOR]);
+        assert_eq!(pels(0), [super::super::CONTROL_FACE_COLOR; 5], "no chrome asked for, none drawn");
     }
 
     /// A dialog whose parent is a client is embedded in it (ADR-0042): it

@@ -191,6 +191,7 @@ samples/               OS/2 sample applications and build scripts
   infoseg_test/        DosGetInfoSeg global and local information segments, a running clock
   fileattr_test/       FILE_READONLY by path, handle and DosSetFileMode; read-only files not deletable
   pm_child_dialog_test/ A dialog embedded in a client window (WinLoadDlg with the client as parent)
+  pm_embdlg_test/      An embedded dialog's title bar and border, Tab across its edge, the pointer reaching its own windows
   pm_notebook_test/    WC_NOTEBOOK: pages, major / minor tabs, notifications, embedded page dialogs
   pm_notebook_dlg_test/ A tabbed-dialog notebook: page dialogs, refused turns, buttons, scrolling tabs, Tab
   pm_container_test/   WC_CONTAINER: records in guest memory, detail view, selection, CN_* notifications

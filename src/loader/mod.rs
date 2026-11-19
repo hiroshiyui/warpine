@@ -895,8 +895,8 @@ impl Loader {
                         self.shared.window_mgr.lock_or_recover().mark_dirty(frame_hwnd);
                     }
                     pm_types::WindowManager::DIALOG_CLASS => {
-                        // The dialog face, then its controls on top. The title
-                        // bar and border are frame chrome drawn by the
+                        // The dialog face, then its controls on top. A dialog
+                        // frame's title bar and border are chrome drawn by the
                         // compositor (from `frame_flags` and the window text).
                         // A dialog on the desktop fills its own surface
                         // from (0, 0); an embedded one (ADR-0042) its place
@@ -907,6 +907,10 @@ impl Loader {
                             Painter::new(self, frame_hwnd, hwnd).clipped_to((x, y, cx, cy))
                         };
                         d.fill((x, y, x + cx, y + cy), d.bg.unwrap_or(CONTROL_FACE_COLOR));
+                        // An embedded dialog draws its own chrome (ADR-0069).
+                        if frame_hwnd != hwnd {
+                            self.paint_embedded_dialog_chrome(&d, hwnd, (x, y, cx, cy));
+                        }
                         self.paint_message_box_icon(&d, hwnd);
                         let controls = self.shared.window_mgr.lock_or_recover()
                             .builtin_control_descendants(hwnd);

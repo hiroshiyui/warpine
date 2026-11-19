@@ -1366,9 +1366,12 @@ impl WindowManager {
         }).collect()
     }
 
-    /// The dialog whose controls Tab cycles through from `dialog`: the
+    /// The window whose controls Tab cycles through from `dialog`: the
     /// outermost dialog `dialog` is embedded in (a notebook page in a
-    /// dialog: that dialog), else `dialog` itself.
+    /// dialog: that dialog), else `dialog` itself. When that dialog is
+    /// itself embedded in a window that is not a dialog (a client), the
+    /// control root of the frame around it (the client), so Tab crosses
+    /// between the dialog and the controls around it (ADR-0069).
     pub fn tab_scope(&self, dialog: u32) -> u32 {
         let mut scope = dialog;
         let mut at = dialog;
@@ -1382,10 +1385,35 @@ impl WindowManager {
             }
             if !self.is_embedded_dialog(at) && self.is_dialog(at) { break; }
         }
+        if self.is_embedded_dialog(scope)
+            && let Some(root) = self.control_root(self.find_frame_for_hwnd(scope))
+        {
+            return root;
+        }
         scope
     }
 
-    /// The items Tab visits in `dialog`: [`Self::dialog_items`], with the
+    /// The tab stop after the focus window (before it when `backward`)
+    /// among the controls of `scope` and of the dialogs embedded in it,
+    /// wrapping around, when `scope` is a window that is not a dialog, has
+    /// shown embedded dialogs and holds the focus (ADR-0069): Tab from a
+    /// client's control into an embedded dialog. `None` otherwise.
+    pub fn tab_around_embedded_dialogs(&self, scope: u32, backward: bool) -> Option<u32> {
+        if self.is_dialog(scope) || self.embedded_dialogs(scope).is_empty() { return None; }
+        let controls = self.tab_items(scope);
+        let at = controls.iter().position(|&h| h == self.focus_hwnd)?;
+        self.tab_step(&controls, Some(at), backward)
+    }
+
+    fn tab_step(&self, controls: &[u32], at: Option<usize>, backward: bool) -> Option<u32> {
+        use super::constants::WS_TABSTOP;
+        step_from(controls, at, backward, |h| {
+            self.can_take_focus(h) && self.windows[&h].style & WS_TABSTOP != 0
+        })
+    }
+
+    /// The items Tab visits in `dialog` (or another window, ADR-0069):
+    /// [`Self::dialog_items`], with the
     /// controls of the shown dialogs embedded in it (a notebook's top
     /// page) in their place.
     pub fn tab_items(&self, dialog: u32) -> Vec<u32> {
@@ -1409,12 +1437,9 @@ impl WindowManager {
     /// and out of the dialogs embedded in the dialog ([`Self::tab_scope`],
     /// [`Self::tab_items`]).
     pub fn next_tab_stop(&self, dialog: u32, backward: bool) -> Option<u32> {
-        use super::constants::WS_TABSTOP;
         let controls = self.tab_items(self.tab_scope(dialog));
         let at = controls.iter().position(|&h| h == self.focus_hwnd);
-        step_from(&controls, at, backward, |h| {
-            self.can_take_focus(h) && self.windows[&h].style & WS_TABSTOP != 0
-        })
+        self.tab_step(&controls, at, backward)
     }
 
     /// The control after the focus window (before it when `backward`) in
@@ -2752,13 +2777,49 @@ mod tests {
         wm.focus_hwnd = e2;
         assert_eq!(wm.next_tab_stop(page, true), Some(nb), "Shift+Tab leaves the page for the notebook");
         let _ = e3;
-        // A dialog embedded in a client window keeps Tab to itself.
+    }
+
+    /// Tab crosses between a dialog embedded in a client and the client's
+    /// controls around it, both ways (ADR-0069).
+    #[test]
+    fn tab_crosses_between_a_client_and_its_embedded_dialog() {
+        use super::super::constants::{WS_TABSTOP, WS_VISIBLE};
+        let mut wm = WindowManager::new();
+        let hmq = wm.create_mq(437);
+        let make = |wm: &mut WindowManager, class: &str, parent: u32| {
+            let h = wm.create_window(class.into(), parent, hmq);
+            let w = wm.get_window_mut(h).unwrap();
+            (w.visible, w.style, w.cx, w.cy) = (true, WS_VISIBLE | WS_TABSTOP, 50, 20);
+            h
+        };
         let frame = wm.create_window("App".into(), HWND_DESKTOP, hmq);
         let client = make(&mut wm, "App", frame);
+        wm.frame_to_client.insert(frame, client);
+        let outer = make(&mut wm, "WC_ENTRYFIELD", client);
         let child = make(&mut wm, WindowManager::DIALOG_CLASS, client);
         let c1 = make(&mut wm, "WC_ENTRYFIELD", child);
-        assert_eq!(wm.tab_scope(child), child);
+        let c2 = make(&mut wm, "WC_BUTTON", child);
+        let after = make(&mut wm, "WC_BUTTON", client);
+        assert_eq!(wm.tab_scope(child), client, "the client around the dialog");
+        assert_eq!(wm.tab_items(client), vec![outer, c1, c2, after]);
+        // The dialog's WinDefDlgProc: out of it into the client's controls.
+        wm.focus_hwnd = c2;
+        assert_eq!(wm.next_tab_stop(child, false), Some(after));
         wm.focus_hwnd = c1;
-        assert_eq!(wm.next_tab_stop(child, false), Some(c1), "wraps within it");
+        assert_eq!(wm.next_tab_stop(child, true), Some(outer));
+        // The client's WinDefWindowProc: into the dialog.
+        wm.focus_hwnd = outer;
+        assert_eq!(wm.tab_around_embedded_dialogs(client, false), Some(c1));
+        wm.focus_hwnd = after;
+        assert_eq!(wm.tab_around_embedded_dialogs(client, true), Some(c2));
+        assert_eq!(wm.tab_around_embedded_dialogs(client, false), Some(outer), "wraps around");
+        // Not for a dialog, nor while the focus is elsewhere, nor without a
+        // shown embedded dialog.
+        assert_eq!(wm.tab_around_embedded_dialogs(child, false), None);
+        wm.focus_hwnd = frame;
+        assert_eq!(wm.tab_around_embedded_dialogs(client, false), None);
+        wm.focus_hwnd = outer;
+        wm.get_window_mut(child).unwrap().visible = false;
+        assert_eq!(wm.tab_around_embedded_dialogs(client, false), None);
     }
 }

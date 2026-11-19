@@ -2727,6 +2727,52 @@ fn gui_pm_child_dialog_test_matches_golden() {
         &format!("{CHILD_DIALOG_STEPS}2000 dump {{dump}}\n2100 quit\n"));
 }
 
+/// pm_embdlg_test: a dialog embedded in a client asks for a title bar and
+/// a dialog border, which it draws inside its rectangle (ADR-0069). The
+/// frame is at desktop (100, 200), 400 × 300, the client's (0, 0) at screen
+/// (102, 567); the client has an entry field at (10, 240) and a push button
+/// at (200, 240); the dialog lies at client (20, 20), 300 × 200, with an
+/// entry field, a push button and a "pad" window of the program's own class
+/// at dialog (150, 10), 100 × 60. The steps click the pad and the dialog's
+/// title bar, click the client's entry field, Tab into the dialog and type,
+/// Tab out of it back to the client's entry field and type, Shift+Tab back
+/// into the dialog's button and press Space.
+const EMBDLG_STEPS: &str = "\
+    1000 click 292 507\n\
+    1200 click 222 357\n\
+    1400 click 162 315\n\
+    1600 key tab\n\
+    1700 key tab\n\
+    1800 text xy\n\
+    2000 key tab\n\
+    2100 key tab\n\
+    2200 text q\n\
+    2400 key shift+tab\n\
+    2500 key space\n";
+
+#[test]
+fn gui_pm_embdlg_test_draws_chrome_and_tabs_across_the_dialog() {
+    let steps = format!("{EMBDLG_STEPS}2800 key alt+f4\n4500 quit\n");
+    assert_scripted_checks_pass("samples/pm_embdlg_test/pm_embdlg_test.exe", "pm_embdlg_test", 14, &steps);
+}
+
+/// pm_embdlg_test on the in-process desktop (`WARPINE_DESKTOP=local`).
+#[test]
+fn gui_pm_embdlg_test_on_the_local_desktop() {
+    let steps = format!("{EMBDLG_STEPS}2800 key alt+f4\n4500 quit\n");
+    assert_scripted_checks_pass_env("samples/pm_embdlg_test/pm_embdlg_test.exe", "pm_embdlg_test", 14, &steps,
+                                    &[("WARPINE_DESKTOP", "local")]);
+}
+
+/// pm_embdlg_test's picture: the embedded dialog's inactive title bar
+/// ("Inner dialog") and border inside the client, its entry field ("xy"),
+/// button and blue pad, and the client's entry field ("q") and button.
+#[test]
+fn gui_pm_embdlg_test_matches_golden() {
+    check_gui_golden("pm_embdlg_test", "samples/pm_embdlg_test/pm_embdlg_test.exe",
+        &format!("{EMBDLG_STEPS}2700 dump {{dump}}\n2800 quit\n"));
+}
+
 /// pm_notebook_test: a WC_NOTEBOOK (client (8, 8), 380 × 250, major tabs on
 /// the right) with three pages, each an embedded dialog. The steps click the
 /// "First" major tab, the "Sub" minor tab, "First" again, and the entry

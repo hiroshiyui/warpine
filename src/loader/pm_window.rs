@@ -494,6 +494,44 @@ mod tests {
         assert!(matches!(loader.def_window_proc(0, child, WM_CONTEXTMENU, 0, 1), ApiResult::Normal(0)));
     }
 
+    /// Tab reaching a client's WinDefWindowProc from one of its controls
+    /// moves the focus into a dialog embedded in it instead of going on to
+    /// the owner (ADR-0069); Shift+Tab goes back; other keys go on.
+    #[test]
+    fn def_window_proc_tabs_into_an_embedded_dialog() {
+        use super::super::pm_types::WindowManager;
+        let loader = Loader::new_mock();
+        let (_, client, _, _) = tree(&loader);
+        let (entry, inner) = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.tid_to_hmq[&0];
+            let mut make = |class: &str, parent: u32| {
+                let h = wm.create_window(class.into(), parent, hmq);
+                let w = wm.get_window_mut(h).unwrap();
+                (w.visible, w.style, w.cx, w.cy, w.owner) = (true, WS_VISIBLE | WS_TABSTOP, 50, 20, parent);
+                h
+            };
+            let entry = make("WC_ENTRYFIELD", client);
+            let dlg = make(WindowManager::DIALOG_CLASS, client);
+            let inner = make("WC_ENTRYFIELD", dlg);
+            wm.focus_hwnd = entry;
+            (entry, inner)
+        };
+        let tab = |vk: u32, shift: u32| (KC_VIRTUALKEY | shift, vk << WM_CHAR_VKEY_SHIFT);
+        let (mp1, mp2) = tab(VK_TAB, 0);
+        assert!(matches!(loader.def_window_proc(0, client, WM_CHAR, mp1, mp2), ApiResult::Normal(1)));
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().focus_hwnd, inner);
+        let (mp1, mp2) = tab(VK_BACKTAB, KC_SHIFT);
+        loader.shared.window_mgr.lock_or_recover().focus_hwnd = entry;
+        assert!(matches!(loader.def_window_proc(0, client, WM_CHAR, mp1, mp2), ApiResult::Normal(1)));
+        assert_eq!(loader.shared.window_mgr.lock_or_recover().focus_hwnd, inner, "wraps backwards");
+        // A key release, and another key, are not Tab.
+        let (mp1, mp2) = tab(VK_TAB, KC_KEYUP);
+        assert!(!matches!(loader.def_window_proc(0, client, WM_CHAR, mp1, mp2), ApiResult::Normal(1)));
+        let (mp1, mp2) = tab(VK_ENTER, 0);
+        assert!(!matches!(loader.def_window_proc(0, client, WM_CHAR, mp1, mp2), ApiResult::Normal(1)));
+    }
+
     /// Focus changes post WM_SETFOCUS to windows with a procedure of their
     /// own: FALSE to the one losing it, TRUE to the one gaining it.
     #[test]
