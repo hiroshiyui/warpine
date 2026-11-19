@@ -2791,6 +2791,40 @@ fn gui_pm_notebook_dlg_test_matches_golden() {
         &format!("{NOTEBOOK_DLG_STEPS}3000 dump {{dump}}\n3100 quit\n"));
 }
 
+/// pm_cnrdetail_test: a WC_CONTAINER details view (client (8, 8), 380 ×
+/// 250) wider than the container, split after its first column at 80
+/// pels, with an owner-drawn column. The steps drag the split bar 40 pels
+/// right, click the right pane's scroll arrow, Alt+click the title and
+/// type "Report", click a row to keep it, Alt+click the "Note" heading and
+/// type "Remark", click a row; the guest checks CNRINFO, the viewport of
+/// both panes, CN_SCROLL across, WM_DRAWITEM with its CNRDRAWITEMINFO and
+/// the edited title and heading.
+const CNRDETAIL_STEPS: &str = "\
+    1000 drag 192 430 232 430\n\
+    1500 click 480 549\n\
+    1800 alt+click 130 320\n\
+    2100 text Report\n\
+    2400 click 290 395\n\
+    2700 alt+click 455 339\n\
+    3000 text Remark\n\
+    3300 click 290 395\n";
+
+#[test]
+fn gui_pm_cnrdetail_test_split_scroll_owner_draw_and_title_edits() {
+    let steps = format!("{CNRDETAIL_STEPS}3600 key alt+f4\n6000 quit\n");
+    assert_scripted_checks_pass("samples/pm_cnrdetail_test/pm_cnrdetail_test.exe", "pm_cnrdetail_test", 28, &steps);
+}
+
+/// pm_cnrdetail_test's picture: the title "Report", the left pane with
+/// Name, the split bar, the right pane scrolled by one arrow step with the
+/// owner's coloured Kind bars (beta's "source" drawn by the container)
+/// and the "Remark" heading, a scroll bar under each pane.
+#[test]
+fn gui_pm_cnrdetail_test_matches_golden() {
+    check_gui_golden("pm_cnrdetail_test", "samples/pm_cnrdetail_test/pm_cnrdetail_test.exe",
+        &format!("{CNRDETAIL_STEPS}3500 dump {{dump}}\n3600 quit\n"));
+}
+
 /// pm_container_test: a WC_CONTAINER (client (8, 8), 380 × 250, extended
 /// selection) with five records in the detail view (a title, column
 /// titles, name / size / date columns). The guest checks record and field
