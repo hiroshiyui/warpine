@@ -175,7 +175,7 @@ impl super::Loader {
                 // The switch-list title, in the thread's codepage (taken
                 // before the window manager is locked).
                 let tasklist_title = (fl_create_flags & FCF_TASKLIST != 0)
-                    .then(|| super::codepage::cp_encode(&title, self.thread_codepage(vcpu_id)));
+                    .then(|| (super::codepage::cp_encode(&title, self.thread_codepage(vcpu_id)), title.clone()));
                 let (h_frame, h_client, pfn_wp_client) = {
                     let mut wm = self.shared.window_mgr.lock_or_recover();
                     let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
@@ -230,8 +230,8 @@ impl super::Loader {
                     // FCF_TASKLIST: a switch-list entry with the frame's
                     // title, removed with the frame (pm_switch.rs). A full
                     // list leaves the frame without one.
-                    if let Some(t) = tasklist_title {
-                        let _ = wm.switch_list.add_frame(h_frame, t);
+                    if let Some((bytes, text)) = tasklist_title {
+                        wm.add_frame_switch(h_frame, bytes, text);
                     }
 
                     // The frame is composited once it has a surface.
@@ -2194,6 +2194,9 @@ impl super::Loader {
         match msg {
             // The system menu and keyboard move / size (pm_sysmenu.rs).
             WM_SYSCOMMAND if self.frame_syscommand(hwnd, mp1 & 0xFFFF, mp2) => {}
+            // The window list and its items (pm_switch.rs).
+            WM_SYSCOMMAND if mp1 & 0xFFFF == SC_TASKMANAGER => self.show_window_list(vcpu_id, hwnd),
+            WM_SYSCOMMAND if self.window_list_pick(vcpu_id, mp1 & 0xFFFF) => {}
             WM_CLOSE => { self.post_wm_quit(hwnd); }
             // Help: the help hooks of a frame (pm_message.rs).
             WM_HELP => return self.help_hook(vcpu_id, hwnd, mp1, mp2),

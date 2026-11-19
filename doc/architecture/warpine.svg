@@ -476,7 +476,7 @@
 <title>deskserver</title>
 <path fill="#e0e0e0" stroke="black" d="M5345.8,-156.25C5345.8,-156.25 4676.2,-156.25 4676.2,-156.25 4670.2,-156.25 4664.2,-150.25 4664.2,-144.25 4664.2,-144.25 4664.2,-132.25 4664.2,-132.25 4664.2,-126.25 4670.2,-120.25 4676.2,-120.25 4676.2,-120.25 5345.8,-120.25 5345.8,-120.25 5351.8,-120.25 5357.8,-126.25 5357.8,-132.25 5357.8,-132.25 5357.8,-144.25 5357.8,-144.25 5357.8,-150.25 5351.8,-156.25 5345.8,-156.25"/>
 <text xml:space="preserve" text-anchor="start" x="4675" y="-138.3" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Desktop server: one SDL desktop per session, stacking, activation, input in order and window calls across programs (ADR&#45;0052)</text>
-<text xml:space="preserve" text-anchor="start" x="4911.25" y="-130.15" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/desktop_server.rs, desktop/model.rs, desktop/calls.rs</text>
+<text xml:space="preserve" text-anchor="start" x="4875.25" y="-130.15" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">gui/desktop_server.rs, desktop/model.rs, desktop/calls.rs, desktop/services.rs</text>
 </g>
 <!-- desklink&#45;&gt;deskserver -->
 <g id="edge37" class="edge">

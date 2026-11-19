@@ -45,8 +45,9 @@ use sdl3::event::{Event, WindowEvent};
 use crate::desktop::calls::{server_answer, CallRouter, Refusal, Route};
 use crate::desktop::client::DesktopLock;
 use crate::desktop::model::{DesktopModel, Effects};
+use crate::desktop::services::Services;
 use crate::desktop::pixmap::SharedPixmap;
-use crate::desktop::proto::{Area, ClientMsg, Input, Pointer, ServerMsg, WinReply, PROTOCOL_VERSION, SERVER_ADDRESS};
+use crate::desktop::proto::{Area, ClientMsg, Input, Pointer, ServerMsg, WinCall, WinReply, PROTOCOL_VERSION, SERVER_ADDRESS};
 use crate::desktop::transport::{Conn, Listener, SOCKET_NAME};
 use crate::loader::pm_types::{handle_in_slot, MAX_HANDLE_SLOTS};
 use crate::loader::MutexExt;
@@ -136,6 +137,8 @@ struct Server {
     model: DesktopModel,
     /// Calls on other programs' windows in flight.
     calls: CallRouter,
+    /// The session's switch list and system atom table (ADR-0056).
+    services: Services,
     /// The active frame last announced to the clients.
     announced_active: u32,
     queue: VecDeque<Input>,
@@ -185,7 +188,7 @@ impl Server {
             dir: dir.to_path_buf(), listener, rx, slots, wake, native_wait,
             mouse: sdl.mouse(), pointer: HostPointer::new(sdl.mouse()),
             video, pump, comp,
-            clients: HashMap::new(), model: DesktopModel::new(), calls: CallRouter::new(), announced_active: 0,
+            clients: HashMap::new(), model: DesktopModel::new(), calls: CallRouter::new(), services: Services::new(), announced_active: 0,
             queue: VecDeque::new(), outstanding: None,
             next_token: 1, damage: Vec::new(), full: true,
             last_compose: now.checked_sub(FRAME_INTERVAL).unwrap_or(now),
@@ -463,7 +466,11 @@ impl Server {
             }
             ClientMsg::Call { id, hwnd, call } if hwnd == SERVER_ADDRESS => {
                 // About the session: answered here (calls.rs).
-                let reply = server_answer(&call, self.clients.keys().copied(), self.model.stacking());
+                let reply = match call {
+                    WinCall::Clients | WinCall::Stacking =>
+                        server_answer(&call, self.clients.keys().copied(), self.model.stacking()),
+                    _ => self.services.answer(slot, &call),
+                };
                 if let Some(c) = self.clients.get(&slot) {
                     c.send(&ServerMsg::Answered { id, reply });
                 }
@@ -522,6 +529,7 @@ impl Server {
         if self.clients.remove(&slot).is_none() { return; }
         let fx = self.model.remove_client(slot);
         self.apply(fx);
+        self.services.client_gone(slot);
         let refused = self.calls.client_gone(slot);
         self.refuse(refused);
         if self.outstanding.is_some_and(|(_, s, _)| s == slot) {

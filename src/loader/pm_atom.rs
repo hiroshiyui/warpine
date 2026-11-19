@@ -14,8 +14,12 @@
 // zero. Names are compared without regard to (ASCII) case and kept as the
 // program first gave them, as bytes in its codepage.
 //
-// The system atom table is the process's own (ADR-0020: nothing is shared
-// between Warpine processes), so atoms are not a channel between programs.
+// The system atom table is the session's on the session's desktop: the
+// desktop server keeps it (`desktop/services.rs`, ADR-0056), names travel
+// as text (decoded from and encoded to each program's codepage), and atoms
+// stay when the program that added them ends. With the desktop in the
+// process it is the process's own. Tables made with `WinCreateAtomTable`
+// are always the process's.
 //
 // Bounded: at most `MAX_ATOM_TABLES` tables, names of 1 to `MAX_ATOM_NAME`
 // bytes, `0x4000` string atoms per table, usage counts up to `MAX_USAGE`.
@@ -31,6 +35,7 @@ use std::collections::{BTreeSet, HashMap};
 use super::constants::*;
 use super::mutex_ext::MutexExt;
 use super::ApiResult;
+use crate::desktop::proto::{WinCall, WinReply, SERVER_ADDRESS};
 
 /// `PMERR_INVALID_HATOMTBL` (`<pmerr.h>`).
 pub const PMERR_INVALID_HATOMTBL: u32 = 0x1013;
@@ -298,10 +303,55 @@ impl super::Loader {
         ApiResult::Normal(SYSTEM_ATOM_TABLE)
     }
 
+    /// The session's desktop link when `h` is the system atom table and
+    /// the session keeps it (ADR-0056).
+    fn session_atoms(&self, h: u32) -> Option<&std::sync::Arc<crate::desktop::client::DesktopLink>> {
+        (h == SYSTEM_ATOM_TABLE).then(|| self.shared.desktop_link.get()).flatten()
+    }
+
+    /// `name` as text for the session's table (`"#n"` for an integer atom).
+    fn atom_text(&self, tid: u32, name: &AtomName) -> String {
+        match name {
+            AtomName::Int(n) => format!("#{n}"),
+            AtomName::Str(b) => super::codepage::cp_decode(b, self.thread_codepage(tid)),
+        }
+    }
+
+    /// Make `call` on the session's system atom table.
+    fn session_atom_call(&self, link: &crate::desktop::client::DesktopLink, call: WinCall) -> AtomResult<WinReply> {
+        match link.call(SERVER_ADDRESS, call) {
+            Some(WinReply::Error(code)) => Err(code),
+            Some(WinReply::Failed) | None => Err(PMERR_INVALID_HATOMTBL),
+            Some(r) => Ok(r),
+        }
+    }
+
+    /// A value from the session's table.
+    fn session_atom_value(&self, link: &crate::desktop::client::DesktopLink, call: WinCall) -> AtomResult<u32> {
+        match self.session_atom_call(link, call)? {
+            WinReply::Value(v) => Ok(v),
+            _ => Err(PMERR_INVALID_HATOMTBL),
+        }
+    }
+
+    /// The name of `atom` in table `h`, as bytes in the thread's codepage.
+    fn atom_name_bytes(&self, tid: u32, h: u32, atom: u32) -> AtomResult<Vec<u8>> {
+        match self.session_atoms(h) {
+            Some(link) => match self.session_atom_call(link, WinCall::AtomName { atom })? {
+                WinReply::Text(t) => Ok(super::codepage::cp_encode(&t, self.thread_codepage(tid))),
+                _ => Err(PMERR_INVALID_ATOM),
+            },
+            None => self.shared.window_mgr.lock_or_recover().atoms.get(h)?.name(atom),
+        }
+    }
+
     /// `WinAddAtom(hAtomTbl, pszAtomName)` → ATOM (0 on error).
     pub(super) fn win_add_atom(&self, tid: u32, h: u32, psz: u32) -> ApiResult {
         let r = (|| {
             let name = self.atom_name(psz)?;
+            if let Some(link) = self.session_atoms(h) {
+                return self.session_atom_value(link, WinCall::AtomAdd { name: self.atom_text(tid, &name) });
+            }
             self.shared.window_mgr.lock_or_recover().atoms.get_mut(h)?.add(&name)
         })();
         self.atom_result(tid, r)
@@ -311,6 +361,9 @@ impl super::Loader {
     pub(super) fn win_find_atom(&self, tid: u32, h: u32, psz: u32) -> ApiResult {
         let r = (|| {
             let name = self.atom_name(psz)?;
+            if let Some(link) = self.session_atoms(h) {
+                return self.session_atom_value(link, WinCall::AtomFind { name: self.atom_text(tid, &name) });
+            }
             self.shared.window_mgr.lock_or_recover().atoms.get(h)?.find(&name)
         })();
         self.atom_result(tid, r)
@@ -318,8 +371,10 @@ impl super::Loader {
 
     /// `WinDeleteAtom(hAtomTbl, atom)` → 0 when done, else the atom.
     pub(super) fn win_delete_atom(&self, tid: u32, h: u32, atom: u32) -> ApiResult {
-        let r = self.shared.window_mgr.lock_or_recover().atoms.get_mut(h)
-            .and_then(|t| t.delete(atom));
+        let r = match self.session_atoms(h) {
+            Some(link) => self.session_atom_value(link, WinCall::AtomDelete { atom }).map(|_| ()),
+            None => self.shared.window_mgr.lock_or_recover().atoms.get_mut(h).and_then(|t| t.delete(atom)),
+        };
         match r {
             Ok(()) => ApiResult::Normal(0),
             Err(code) => { self.pm_error(tid, code); ApiResult::Normal(atom) }
@@ -328,15 +383,17 @@ impl super::Loader {
 
     /// `WinQueryAtomUsage(hAtomTbl, atom)` → the usage count (0 on error).
     pub(super) fn win_query_atom_usage(&self, tid: u32, h: u32, atom: u32) -> ApiResult {
-        let r = self.shared.window_mgr.lock_or_recover().atoms.get(h).and_then(|t| t.usage(atom));
+        let r = match self.session_atoms(h) {
+            Some(link) => self.session_atom_value(link, WinCall::AtomUsage { atom }),
+            None => self.shared.window_mgr.lock_or_recover().atoms.get(h).and_then(|t| t.usage(atom)),
+        };
         self.atom_result(tid, r)
     }
 
     /// `WinQueryAtomLength(hAtomTbl, atom)` → the name's length in bytes,
     /// without the NUL (0 on error).
     pub(super) fn win_query_atom_length(&self, tid: u32, h: u32, atom: u32) -> ApiResult {
-        let r = self.shared.window_mgr.lock_or_recover().atoms.get(h)
-            .and_then(|t| t.name(atom)).map(|n| n.len() as u32);
+        let r = self.atom_name_bytes(tid, h, atom).map(|n| n.len() as u32);
         self.atom_result(tid, r)
     }
 
@@ -345,7 +402,7 @@ impl super::Loader {
     /// NUL-terminated (0 on error or for a zero-sized buffer).
     pub(super) fn win_query_atom_name(&self, tid: u32, h: u32, atom: u32, pch: u32, cch: u32) -> ApiResult {
         let r = (|| {
-            let mut name = self.shared.window_mgr.lock_or_recover().atoms.get(h)?.name(atom)?;
+            let mut name = self.atom_name_bytes(tid, h, atom)?;
             if cch == 0 || pch == 0 { return Err(PMERR_PARAMETER_OUT_OF_RANGE); }
             name.truncate(cch as usize - 1);
             let len = name.len() as u32;

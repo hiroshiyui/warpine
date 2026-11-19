@@ -225,7 +225,7 @@ modules = ["bin/lx_link.rs", "bin/gen_api.rs", "bin/gen_arch.rs", "bin/gen_compa
 id = "deskserver"
 zone = "server"
 label = "Desktop server: one SDL desktop per session, stacking, activation, input in order and window calls across programs (ADR-0052)"
-modules = ["gui/desktop_server.rs", "desktop/model.rs", "desktop/calls.rs"]
+modules = ["gui/desktop_server.rs", "desktop/model.rs", "desktop/calls.rs", "desktop/services.rs"]
 
 # ── Host system ─────────────────────────────────────────────────────────────
 

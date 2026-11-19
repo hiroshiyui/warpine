@@ -282,7 +282,7 @@ impl DesktopLink {
     pub fn begin_call(&self, hwnd: u32, call: WinCall, wake: Option<CallWaker>) -> Option<u32> {
         let id = {
             let mut c = self.calls.0.lock_or_recover();
-            c.next = c.next.wrapping_add(1);
+            c.next = c.next.wrapping_add(1).max(1); // 0 is `notify`'s
             let id = c.next;
             c.waiting.insert(id, Waiting { reply: None, wake });
             id
@@ -325,6 +325,12 @@ impl DesktopLink {
             }
             None => CallState::Gone,
         }
+    }
+
+    /// Make `call` on `hwnd` without waiting for, or wanting, an answer
+    /// (id 0, which no waiting call has): safe under any lock.
+    pub fn notify(&self, hwnd: u32, call: WinCall) -> bool {
+        self.send(&ClientMsg::Call { id: 0, hwnd, call }, None)
     }
 
     /// Stop waiting for call `id`: a late answer is dropped.

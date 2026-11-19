@@ -13,13 +13,20 @@
 // `TERMINATE` with `WinDdePostMsg` (mp1 the sender, mp2 a `DDESTRUCT` in
 // shared memory the program allocated with `DosAllocSharedMem`).
 //
-// Scope: windows of one Warpine process — the threads of one OS/2 process.
-// Every OS/2 process is a Warpine process of its own (ADR-0020), with its
-// own windows and memory, so `WinDdeInitiate` reaches the frames of the
-// calling process only and conversations with other processes are not
-// possible; carrying `DDESTRUCT`s between processes would need a host
-// channel and shared memory between Warpine processes (a decision of its
-// own).
+// Scope: every program on the session's desktop (ADR-0056). Within the
+// process as before; to another program's windows (`pm_remote.rs`):
+// - `WinDdeInitiate` first sends `WM_DDE_INITIATE` to the clients of the
+//   other programs' frames (`DdeTargets`), each send waited for — their
+//   `WinDdeRespond` reaches this thread meanwhile —, then to this
+//   program's;
+// - the `DDEINIT` each gets is in the session's shared arena, given to the
+//   receiving process, which frees it (this process lets it go);
+// - `WinDdeRespond` to another program's client sends `WM_DDE_INITIATEACK`
+//   with such a `DDEINIT`;
+// - `WinDdePostMsg` to another program's window gives the `DDESTRUCT` (in
+//   the shared arena: `DosAllocSharedMem` giveable) to the receiving
+//   process, posts the message and, unless `DDEPM_NOFREE`, lets this
+//   process's hold go, as PM frees it in the sender.
 //
 // The `DDEINIT` blocks are giveable shared memory (`DosFreeMem` frees
 // them), one per receiving window. Messages go to a frame's client (in
@@ -41,6 +48,7 @@ use super::mutex_ext::MutexExt;
 use super::pm_atom::PMERR_HEAP_OUT_OF_MEMORY;
 use super::pm_hook::{CallChain, CallStep, ChainThen};
 use super::ApiResult;
+use crate::desktop::proto::{WinCall, WinReply};
 
 // <pmwin.h> INCL_WINDDE.
 pub const WM_DDE_FIRST: u32 = 0x00A0;
@@ -89,7 +97,71 @@ pub fn ddeinit_bytes(at: u32, app: &[u8], topic: &[u8], context: Option<&[u8; CO
     out
 }
 
+impl super::pm_types::WindowManager {
+    /// The windows `WM_DDE_INITIATE` goes to: the clients (with a window
+    /// procedure) of this program's frames.
+    pub fn dde_targets(&self) -> Vec<u32> {
+        self.broadcast_targets(HWND_DESKTOP, false, true).into_iter()
+            .map(|f| self.frame_msg_target(f))
+            .filter(|&h| self.get_window(h).is_some_and(|w| w.pfn_wp != 0))
+            .collect()
+    }
+}
+
+/// `WinDdeInitiate`.
+const ORD_DDE_INITIATE: u32 = 718;
+/// `WinDdeRespond`.
+const ORD_DDE_RESPOND: u32 = 720;
+
 impl super::Loader {
+    /// A block of `size` bytes in the session's shared arena holding
+    /// `bytes(address)`, given to process `pid` — which frees it — and not
+    /// held by this process.
+    fn give_shared_block(&self, size: u32, bytes: impl Fn(u32) -> Vec<u8>, pid: u32) -> Result<u32, u32> {
+        let me = self.shared.process_id();
+        let offset = self.shared.with_arena_table(|t, live, _| {
+            if !live.contains(&pid) { return None; }
+            t.alloc(size, DDEINIT_FLAGS, None, me)
+        }).ok().flatten().ok_or(PMERR_HEAP_OUT_OF_MEMORY)?;
+        let at = SHARED_ARENA_BASE + offset;
+        let written = self.guest_write_bytes(at, &bytes(at)).is_some();
+        let given = self.shared.with_arena_table(|t, _, freed| {
+            let given = written && t.hold(offset, pid).is_ok();
+            if let Some(Some(range)) = t.release(offset, me) {
+                freed.push(range);
+            }
+            given
+        }).unwrap_or(false);
+        if given { Ok(at) } else { Err(PMERR_HEAP_OUT_OF_MEMORY) }
+    }
+
+    /// A `DDEINIT` for a window of process `pid` (see [`Self::give_shared_block`]).
+    fn shared_ddeinit(&self, app: &[u8], topic: &[u8], context: Option<&[u8; CONVCONTEXT_SIZE]>, pid: u32)
+        -> Result<u32, u32> {
+        let size = ddeinit_bytes(0, app, topic, context).len() as u32;
+        self.give_shared_block(size, |at| ddeinit_bytes(at, app, topic, context), pid)
+    }
+
+    /// The `WM_DDE_INITIATE` sends to the other programs' frames' clients,
+    /// each with a `DDEINIT` of its own.
+    fn remote_initiates(&self, client: u32, app: &[u8], topic: &[u8], context: Option<&[u8; CONVCONTEXT_SIZE]>)
+        -> Vec<(u32, WinCall)> {
+        use crate::desktop::proto::slot_address;
+        let Some(link) = self.shared.desktop_link.get() else { return Vec::new() };
+        let mut calls = Vec::new();
+        for slot in self.other_programs() {
+            let Some(WinReply::Windows { pid, hwnds }) = link.call(slot_address(slot), WinCall::DdeTargets) else {
+                continue;
+            };
+            for h in hwnds {
+                if let Ok(init) = self.shared_ddeinit(app, topic, context, pid) {
+                    calls.push((h, WinCall::Send { msg: WM_DDE_INITIATE, mp1: client, mp2: init }));
+                }
+            }
+        }
+        calls
+    }
+
     /// A DDE name (NULL: empty), bounded.
     fn dde_name(&self, psz: u32) -> Result<Vec<u8>, u32> {
         if psz == 0 { return Ok(Vec::new()); }
@@ -138,17 +210,21 @@ impl super::Loader {
     pub(super) fn win_dde_initiate(&self, tid: u32, client: u32, psz_app: u32, psz_topic: u32,
                                    pctx: u32) -> ApiResult {
         if !self.pm_check_hwnd(tid, client, false) { return ApiResult::Normal(0); }
+        // The other programs' frames first, each send waited for (module
+        // comment); made again after a message sent here ran, it goes on.
+        let calls = if self.remote_resuming(tid) { Vec::new() } else {
+            let parsed = (|| Ok::<_, u32>((self.dde_name(psz_app)?, self.dde_name(psz_topic)?, self.dde_context(pctx)?)))();
+            match &parsed {
+                Ok((app, topic, context)) => self.remote_initiates(client, app, topic, context.as_ref()),
+                Err(_) => Vec::new(),
+            }
+        };
+        if let Err(r) = self.remote_batch(tid, ORD_DDE_INITIATE, calls) { return r; }
         let r = (|| {
             let app = self.dde_name(psz_app)?;
             let topic = self.dde_name(psz_topic)?;
             let context = self.dde_context(pctx)?;
-            let targets: Vec<u32> = {
-                let wm = self.shared.window_mgr.lock_or_recover();
-                wm.broadcast_targets(HWND_DESKTOP, false, true).into_iter()
-                    .map(|f| wm.frame_msg_target(f))
-                    .filter(|&h| wm.get_window(h).is_some_and(|w| w.pfn_wp != 0))
-                    .collect()
-            };
+            let targets = self.shared.window_mgr.lock_or_recover().dde_targets();
             let mut steps = Vec::new();
             for h in targets {
                 let init = self.alloc_ddeinit(&app, &topic, context.as_ref())?;
@@ -168,6 +244,10 @@ impl super::Loader {
     /// return its result.
     pub(super) fn win_dde_respond(&self, tid: u32, client: u32, server: u32, psz_app: u32,
                                   psz_topic: u32, pctx: u32) -> ApiResult {
+        if self.shared.window_mgr.lock_or_recover().is_foreign(client) {
+            if !self.pm_check_hwnd(tid, server, false) { return ApiResult::Normal(0); }
+            return self.respond_to_other_program(tid, client, server, psz_app, psz_topic, pctx);
+        }
         if !self.pm_check_hwnd(tid, client, false) || !self.pm_check_hwnd(tid, server, false) {
             return ApiResult::Normal(0);
         }
@@ -190,7 +270,8 @@ impl super::Loader {
     /// post a DDE message.
     pub(super) fn win_dde_post_msg(&self, tid: u32, to: u32, from: u32, msg: u32, pddes: u32,
                                    fl: u32) -> ApiResult {
-        if !self.pm_check_hwnd(tid, to, false) || !self.pm_check_hwnd(tid, from, true) {
+        let foreign = self.shared.window_mgr.lock_or_recover().is_foreign(to);
+        if (!foreign && !self.pm_check_hwnd(tid, to, false)) || !self.pm_check_hwnd(tid, from, true) {
             return ApiResult::Normal(0);
         }
         if fl & !(DDEPM_RETRY | DDEPM_NOFREE) != 0 {
@@ -203,6 +284,9 @@ impl super::Loader {
         if pddes != 0 && self.guest_read_bytes(pddes, DDESTRUCT_SIZE).is_none() {
             return self.pm_fail(tid, PMERR_INVALID_PARM);
         }
+        if foreign {
+            return self.post_to_other_program(tid, to, from, msg, pddes, fl);
+        }
         let wm = self.shared.window_mgr.lock_or_recover();
         let Some(mq) = wm.find_hmq_for_hwnd(to).and_then(|h| wm.get_mq(h)) else {
             drop(wm);
@@ -213,6 +297,56 @@ impl super::Loader {
         q.messages.push_back(super::pm_types::OS2Message { hwnd: to, msg, mp1: from, mp2: pddes,
                                                            time: 0, x: 0, y: 0 });
         q.cond.notify_one();
+        ApiResult::Normal(1)
+    }
+}
+
+impl super::Loader {
+    /// `WinDdeRespond` to another program's client: `WM_DDE_INITIATEACK`
+    /// with a `DDEINIT` given to its process, waited for as a send.
+    fn respond_to_other_program(&self, tid: u32, client: u32, server: u32, psz_app: u32, psz_topic: u32,
+                                pctx: u32) -> ApiResult {
+        let calls = if self.remote_resuming(tid) { Vec::new() } else {
+            let r = (|| {
+                let app = self.dde_name(psz_app)?;
+                let topic = self.dde_name(psz_topic)?;
+                let context = self.dde_context(pctx)?;
+                let pid = self.describe_remote(tid, client).ok_or(PMERR_INVALID_HWND)?.pid;
+                self.shared_ddeinit(&app, &topic, context.as_ref(), pid)
+            })();
+            match r {
+                Ok(init) => vec![(client, WinCall::Send { msg: WM_DDE_INITIATEACK, mp1: server, mp2: init })],
+                Err(code) => return self.pm_fail(tid, code),
+            }
+        };
+        match self.remote_batch(tid, ORD_DDE_RESPOND, calls) {
+            Err(r) => r,
+            Ok(replies) => match replies.first() {
+                Some(Some(WinReply::Value(v))) => ApiResult::Normal(*v),
+                _ => self.pm_fail(tid, PMERR_INVALID_HWND),
+            },
+        }
+    }
+
+    /// `WinDdePostMsg` to another program's window (module comment).
+    fn post_to_other_program(&self, tid: u32, to: u32, from: u32, msg: u32, pddes: u32, fl: u32) -> ApiResult {
+        // A DDESTRUCT means something to the other program only in the
+        // session's shared memory.
+        if pddes != 0 && !super::shared_arena::in_arena(pddes) {
+            return self.pm_fail(tid, PMERR_INVALID_PARM);
+        }
+        let Some(info) = self.describe_remote(tid, to) else { return ApiResult::Normal(0) };
+        if pddes != 0 && self.arena_give(pddes, info.pid, PAG_READ | PAG_WRITE) != Some(NO_ERROR) {
+            return self.pm_fail(tid, PMERR_INVALID_PARM);
+        }
+        let posted = matches!(self.shared.desktop_link.get().and_then(|l| l.call(to, WinCall::Post { msg, mp1: from, mp2: pddes })),
+                              Some(WinReply::Value(1)));
+        if !posted {
+            return self.pm_fail(tid, PMERR_INVALID_HWND);
+        }
+        if pddes != 0 && fl & DDEPM_NOFREE == 0 {
+            self.arena_free(pddes);
+        }
         ApiResult::Normal(1)
     }
 }

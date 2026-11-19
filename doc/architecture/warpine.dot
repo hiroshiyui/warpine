@@ -34,7 +34,7 @@ digraph warpine {
   }
   subgraph cluster_server {
     label="Desktop server process (one per session, ADR-0052)"; style="rounded,filled"; fillcolor="#f5f5f5"; color="#90a4ae";
-    deskserver [label=<<B>Desktop server: one SDL desktop per session, stacking, activation, input in order and window calls across programs (ADR-0052)</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">gui/desktop_server.rs, desktop/model.rs, desktop/calls.rs</FONT>>, fillcolor="#e0e0e0"];
+    deskserver [label=<<B>Desktop server: one SDL desktop per session, stacking, activation, input in order and window calls across programs (ADR-0052)</B><BR/><FONT POINT-SIZE="8" COLOR="#37474f">gui/desktop_server.rs, desktop/model.rs, desktop/calls.rs, desktop/services.rs</FONT>>, fillcolor="#e0e0e0"];
   }
   subgraph cluster_os {
     label="Host system"; style="rounded,filled"; fillcolor="#f5f5f5"; color="#90a4ae";

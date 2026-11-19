@@ -263,6 +263,8 @@ fn desktop_link(shared: &Arc<loader::SharedState>) -> Option<Arc<desktop::client
         Ok(link) => {
             let mut wm = shared.window_mgr.lock_or_recover();
             wm.set_handle_slot(link.slot);
+            // The session's switch list (ADR-0056).
+            wm.session_link = Some(link.clone());
             let l = link.clone();
             wm.input_ack = Some(Arc::new(move |token, active| {
                 l.send(&desktop::proto::ClientMsg::Ack { token, active }, None);

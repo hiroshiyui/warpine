@@ -16,4 +16,5 @@ pub mod proto;
 pub mod transport;
 pub mod model;
 pub mod calls;
+pub mod services;
 pub mod client;

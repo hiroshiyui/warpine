@@ -11,7 +11,7 @@
 //! server's packets the same way.
 
 /// Protocol version, checked in `Hello` / `Welcome`.
-pub const PROTOCOL_VERSION: u32 = 4;
+pub const PROTOCOL_VERSION: u32 = 5;
 /// Largest packet either side sends or accepts.
 pub const MAX_MESSAGE: usize = 128 * 1024;
 /// Most items (frame pictures and pull-downs) in one `Update`.
@@ -34,6 +34,9 @@ pub const SERVER_ADDRESS: u32 = 0;
 pub fn slot_address(slot: u32) -> u32 {
     (slot + 1) << crate::loader::pm_types::HWND_SLOT_SHIFT
 }
+
+/// Most switch-list entries in one reply (the session's whole list).
+pub const MAX_SWITCHES: usize = 256;
 
 /// Longest window class name, in bytes.
 pub const MAX_NAME: usize = 256;
@@ -145,6 +148,51 @@ pub enum WinCall {
     Clients,
     /// The session's frames, top first (at [`SERVER_ADDRESS`]).
     Stacking,
+    /// The clients of the program's frames that take DDE (at a
+    /// [`slot_address`]): answered with `Windows`.
+    DdeTargets,
+    // ── The session's switch list and system atom table, at
+    // [`SERVER_ADDRESS`] (ADR-0056) ──
+    /// `WinAddSwitchEntry`; `auto`: the entry of a `FCF_TASKLIST` frame,
+    /// removed with it. Answered with the handle.
+    SwitchAdd { entry: SwitchEntry, auto: bool },
+    /// `WinChangeSwitchEntry` (the entry's `handle`).
+    SwitchChange { entry: SwitchEntry },
+    SwitchRemove { handle: u32 },
+    /// Answered with `Switches` holding the entry.
+    SwitchQuery { handle: u32 },
+    /// The whole list, as `Switches`.
+    SwitchList,
+    /// The entry of the first of `hwnds` that has one, or with no windows
+    /// the first entry of process `pid`.
+    SwitchHandle { hwnds: Vec<u32>, pid: u32 },
+    /// Windows destroyed: their `FCF_TASKLIST` entries go (not answered).
+    SwitchForget { hwnds: Vec<u32> },
+    /// The system atom table: `WinAddAtom`, `WinFindAtom` (names as text).
+    AtomAdd { name: String },
+    AtomFind { name: String },
+    AtomDelete { atom: u32 },
+    AtomUsage { atom: u32 },
+    /// Answered with `Text`.
+    AtomName { atom: u32 },
+}
+
+/// A switch-list entry (`SWCNTRL`) as the session keeps it: the title as
+/// text, at most [`MAX_NAME`] bytes.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SwitchEntry {
+    /// Its switch handle (0 when it is being added).
+    pub handle: u32,
+    pub hwnd: u32,
+    pub hwnd_icon: u32,
+    pub hprog: u32,
+    /// OS/2 process id.
+    pub process: u32,
+    pub session: u32,
+    pub visibility: u32,
+    pub jump: u32,
+    pub prog_type: u32,
+    pub title: String,
 }
 
 impl WinCall {
@@ -196,6 +244,14 @@ pub enum WinReply {
     Info(Box<WindowInfo>),
     /// Window handles (or slots), at most [`MAX_HANDLES`].
     Handles(Vec<u32>),
+    /// A program's OS/2 process id and some of its windows.
+    Windows { pid: u32, hwnds: Vec<u32> },
+    /// The call failed with this `PMERR_*` code.
+    Error(u32),
+    /// Text, at most [`MAX_NAME`] bytes.
+    Text(String),
+    /// Switch-list entries, at most [`MAX_SWITCHES`].
+    Switches(Vec<SwitchEntry>),
 }
 
 /// Client → server.
@@ -322,6 +378,12 @@ impl Writer {
     fn handles(&mut self, hs: &[u32]) {
         self.handles_max(hs, MAX_RAISED);
     }
+    fn switch_entry(&mut self, e: &SwitchEntry) {
+        for v in [e.handle, e.hwnd, e.hwnd_icon, e.hprog, e.process, e.session, e.visibility, e.jump, e.prog_type] {
+            self.u32(v);
+        }
+        self.text_max(&e.title, MAX_NAME);
+    }
     fn handles_max(&mut self, hs: &[u32], max: usize) {
         let hs = &hs[..hs.len().min(max)];
         self.u16(hs.len() as u16);
@@ -347,6 +409,21 @@ impl Writer {
             }
             WinCall::Clients => self.u8(tag::CALL_CLIENTS),
             WinCall::Stacking => self.u8(tag::CALL_STACKING),
+            WinCall::DdeTargets => self.u8(tag::CALL_DDE_TARGETS),
+            WinCall::SwitchAdd { entry, auto } => { self.u8(tag::CALL_SWITCH_ADD); self.switch_entry(entry); self.bool(*auto); }
+            WinCall::SwitchChange { entry } => { self.u8(tag::CALL_SWITCH_CHANGE); self.switch_entry(entry); }
+            WinCall::SwitchRemove { handle } => { self.u8(tag::CALL_SWITCH_REMOVE); self.u32(*handle); }
+            WinCall::SwitchQuery { handle } => { self.u8(tag::CALL_SWITCH_QUERY); self.u32(*handle); }
+            WinCall::SwitchList => self.u8(tag::CALL_SWITCH_LIST),
+            WinCall::SwitchHandle { hwnds, pid } => {
+                self.u8(tag::CALL_SWITCH_HANDLE); self.handles_max(hwnds, MAX_RAISED); self.u32(*pid);
+            }
+            WinCall::SwitchForget { hwnds } => { self.u8(tag::CALL_SWITCH_FORGET); self.handles_max(hwnds, MAX_HANDLES); }
+            WinCall::AtomAdd { name } => { self.u8(tag::CALL_ATOM_ADD); self.text_max(name, MAX_NAME); }
+            WinCall::AtomFind { name } => { self.u8(tag::CALL_ATOM_FIND); self.text_max(name, MAX_NAME); }
+            WinCall::AtomDelete { atom } => { self.u8(tag::CALL_ATOM_DELETE); self.u32(*atom); }
+            WinCall::AtomUsage { atom } => { self.u8(tag::CALL_ATOM_USAGE); self.u32(*atom); }
+            WinCall::AtomName { atom } => { self.u8(tag::CALL_ATOM_NAME); self.u32(*atom); }
         }
     }
     fn reply(&mut self, r: &WinReply) {
@@ -354,6 +431,15 @@ impl Writer {
             WinReply::Failed => self.u8(tag::REPLY_FAILED),
             WinReply::Value(v) => { self.u8(tag::REPLY_VALUE); self.u32(*v); }
             WinReply::Handles(hs) => { self.u8(tag::REPLY_HANDLES); self.handles_max(hs, MAX_HANDLES); }
+            WinReply::Windows { pid, hwnds } => { self.u8(tag::REPLY_WINDOWS); self.u32(*pid); self.handles_max(hwnds, MAX_HANDLES); }
+            WinReply::Error(code) => { self.u8(tag::REPLY_ERROR); self.u32(*code); }
+            WinReply::Text(t) => { self.u8(tag::REPLY_TEXT); self.text_max(t, MAX_NAME); }
+            WinReply::Switches(es) => {
+                self.u8(tag::REPLY_SWITCHES);
+                let es = &es[..es.len().min(MAX_SWITCHES)];
+                self.u16(es.len() as u16);
+                for e in es { self.switch_entry(e); }
+            }
             WinReply::Info(i) => {
                 self.u8(tag::REPLY_INFO);
                 for v in [i.pid, i.tid, i.parent, i.owner, i.style, i.id] { self.u32(v); }
@@ -432,6 +518,13 @@ impl<'a> Reader<'a> {
     fn handles(&mut self) -> Result<Vec<u32>, DecodeError> {
         self.handles_max(MAX_RAISED)
     }
+    fn switch_entry(&mut self) -> Result<SwitchEntry, DecodeError> {
+        Ok(SwitchEntry {
+            handle: self.u32()?, hwnd: self.u32()?, hwnd_icon: self.u32()?, hprog: self.u32()?,
+            process: self.u32()?, session: self.u32()?, visibility: self.u32()?, jump: self.u32()?,
+            prog_type: self.u32()?, title: self.text_max(MAX_NAME)?,
+        })
+    }
     fn handles_max(&mut self, max: usize) -> Result<Vec<u32>, DecodeError> {
         let n = self.count(max)?;
         (0..n).map(|_| self.u32()).collect()
@@ -458,6 +551,19 @@ impl<'a> Reader<'a> {
                                                         fl: self.u32()? },
             tag::CALL_CLIENTS => WinCall::Clients,
             tag::CALL_STACKING => WinCall::Stacking,
+            tag::CALL_DDE_TARGETS => WinCall::DdeTargets,
+            tag::CALL_SWITCH_ADD => WinCall::SwitchAdd { entry: self.switch_entry()?, auto: self.bool()? },
+            tag::CALL_SWITCH_CHANGE => WinCall::SwitchChange { entry: self.switch_entry()? },
+            tag::CALL_SWITCH_REMOVE => WinCall::SwitchRemove { handle: self.u32()? },
+            tag::CALL_SWITCH_QUERY => WinCall::SwitchQuery { handle: self.u32()? },
+            tag::CALL_SWITCH_LIST => WinCall::SwitchList,
+            tag::CALL_SWITCH_HANDLE => WinCall::SwitchHandle { hwnds: self.handles_max(MAX_RAISED)?, pid: self.u32()? },
+            tag::CALL_SWITCH_FORGET => WinCall::SwitchForget { hwnds: self.handles_max(MAX_HANDLES)? },
+            tag::CALL_ATOM_ADD => WinCall::AtomAdd { name: self.text_max(MAX_NAME)? },
+            tag::CALL_ATOM_FIND => WinCall::AtomFind { name: self.text_max(MAX_NAME)? },
+            tag::CALL_ATOM_DELETE => WinCall::AtomDelete { atom: self.u32()? },
+            tag::CALL_ATOM_USAGE => WinCall::AtomUsage { atom: self.u32()? },
+            tag::CALL_ATOM_NAME => WinCall::AtomName { atom: self.u32()? },
             _ => return Err(DecodeError::BadValue),
         })
     }
@@ -466,6 +572,13 @@ impl<'a> Reader<'a> {
             tag::REPLY_FAILED => WinReply::Failed,
             tag::REPLY_VALUE => WinReply::Value(self.u32()?),
             tag::REPLY_HANDLES => WinReply::Handles(self.handles_max(MAX_HANDLES)?),
+            tag::REPLY_WINDOWS => WinReply::Windows { pid: self.u32()?, hwnds: self.handles_max(MAX_HANDLES)? },
+            tag::REPLY_ERROR => WinReply::Error(self.u32()?),
+            tag::REPLY_TEXT => WinReply::Text(self.text_max(MAX_NAME)?),
+            tag::REPLY_SWITCHES => {
+                let n = self.count(MAX_SWITCHES)?;
+                WinReply::Switches((0..n).map(|_| self.switch_entry()).collect::<Result<_, _>>()?)
+            }
             tag::REPLY_INFO => {
                 let mut i = WindowInfo {
                     pid: self.u32()?, tid: self.u32()?, parent: self.u32()?, owner: self.u32()?,
@@ -538,11 +651,28 @@ mod tag {
     pub const CALL_BROADCAST: u8 = 11;
     pub const CALL_CLIENTS: u8 = 12;
     pub const CALL_STACKING: u8 = 13;
+    pub const CALL_DDE_TARGETS: u8 = 14;
+    pub const CALL_SWITCH_ADD: u8 = 20;
+    pub const CALL_SWITCH_CHANGE: u8 = 21;
+    pub const CALL_SWITCH_REMOVE: u8 = 22;
+    pub const CALL_SWITCH_QUERY: u8 = 23;
+    pub const CALL_SWITCH_LIST: u8 = 24;
+    pub const CALL_SWITCH_HANDLE: u8 = 25;
+    pub const CALL_SWITCH_FORGET: u8 = 26;
+    pub const CALL_ATOM_ADD: u8 = 30;
+    pub const CALL_ATOM_FIND: u8 = 31;
+    pub const CALL_ATOM_DELETE: u8 = 32;
+    pub const CALL_ATOM_USAGE: u8 = 33;
+    pub const CALL_ATOM_NAME: u8 = 34;
 
     pub const REPLY_FAILED: u8 = 0;
     pub const REPLY_VALUE: u8 = 1;
     pub const REPLY_INFO: u8 = 2;
     pub const REPLY_HANDLES: u8 = 3;
+    pub const REPLY_WINDOWS: u8 = 4;
+    pub const REPLY_ERROR: u8 = 5;
+    pub const REPLY_TEXT: u8 = 6;
+    pub const REPLY_SWITCHES: u8 = 7;
 
     pub const IN_MOTION: u8 = 1;
     pub const IN_BUTTON: u8 = 2;
@@ -766,11 +896,28 @@ mod tests {
             ClientMsg::Call { id: 10, hwnd: 0x20_0000, call: WinCall::Broadcast { msg: 1, mp1: 2, mp2: 3, fl: 4 } },
             ClientMsg::Call { id: 11, hwnd: SERVER_ADDRESS, call: WinCall::Clients },
             ClientMsg::Call { id: 12, hwnd: SERVER_ADDRESS, call: WinCall::Stacking },
+            ClientMsg::Call { id: 13, hwnd: 0x20_0000, call: WinCall::DdeTargets },
+            ClientMsg::Call { id: 14, hwnd: SERVER_ADDRESS, call: WinCall::SwitchAdd { entry: entry(), auto: true } },
+            ClientMsg::Call { id: 15, hwnd: SERVER_ADDRESS, call: WinCall::SwitchChange { entry: entry() } },
+            ClientMsg::Call { id: 16, hwnd: SERVER_ADDRESS, call: WinCall::SwitchRemove { handle: 5 } },
+            ClientMsg::Call { id: 17, hwnd: SERVER_ADDRESS, call: WinCall::SwitchQuery { handle: 5 } },
+            ClientMsg::Call { id: 18, hwnd: SERVER_ADDRESS, call: WinCall::SwitchList },
+            ClientMsg::Call { id: 19, hwnd: SERVER_ADDRESS, call: WinCall::SwitchHandle { hwnds: vec![1, 2], pid: 3 } },
+            ClientMsg::Call { id: 20, hwnd: SERVER_ADDRESS, call: WinCall::SwitchForget { hwnds: vec![4] } },
+            ClientMsg::Call { id: 21, hwnd: SERVER_ADDRESS, call: WinCall::AtomAdd { name: "Größe".into() } },
+            ClientMsg::Call { id: 22, hwnd: SERVER_ADDRESS, call: WinCall::AtomFind { name: "x".into() } },
+            ClientMsg::Call { id: 23, hwnd: SERVER_ADDRESS, call: WinCall::AtomDelete { atom: 0xC000 } },
+            ClientMsg::Call { id: 24, hwnd: SERVER_ADDRESS, call: WinCall::AtomUsage { atom: 0xC001 } },
+            ClientMsg::Call { id: 25, hwnd: SERVER_ADDRESS, call: WinCall::AtomName { atom: 0xC002 } },
             ClientMsg::Answer { id: 7, reply: WinReply::Failed },
             ClientMsg::Answer { id: 8, reply: WinReply::Value(9) },
             ClientMsg::Answer { id: 9, reply: WinReply::Info(Box::new(info())) },
             ClientMsg::Answer { id: 10, reply: WinReply::Handles(vec![0x20_1000, 0x20_1001]) },
             ClientMsg::Answer { id: 11, reply: WinReply::Handles(Vec::new()) },
+            ClientMsg::Answer { id: 12, reply: WinReply::Windows { pid: 7, hwnds: vec![0x20_1001] } },
+            ClientMsg::Answer { id: 13, reply: WinReply::Error(0x1202) },
+            ClientMsg::Answer { id: 14, reply: WinReply::Text("Grüße".into()) },
+            ClientMsg::Answer { id: 15, reply: WinReply::Switches(vec![entry(), SwitchEntry::default()]) },
         ]
     }
 
@@ -922,6 +1069,22 @@ mod tests {
         let pos = |fl| WinCall::SetPos { behind: 0, x: 0, y: 0, cx: 0, cy: 0, fl };
         assert!(pos(SWP_MOVE).expires() && !pos(SWP_MINIMIZE).expires());
         assert!(!WinCall::Send { msg: 0, mp1: 0, mp2: 0 }.expires() && WinCall::Children.expires());
+    }
+
+    fn entry() -> SwitchEntry {
+        SwitchEntry { handle: 1, hwnd: 2, hwnd_icon: 3, hprog: 4, process: 5, session: 6, visibility: 7, jump: 8,
+                      prog_type: 9, title: "Programm B — 日本".into() }
+    }
+
+    #[test]
+    fn the_whole_switch_list_fits_in_a_message() {
+        let e = SwitchEntry { title: "t".repeat(MAX_NAME + 10), ..entry() };
+        let r = ServerMsg::Answered { id: 1, reply: WinReply::Switches(vec![e; MAX_SWITCHES + 3]) };
+        let p = r.encode();
+        assert!(p.len() <= MAX_MESSAGE);
+        let Ok(ServerMsg::Answered { reply: WinReply::Switches(back), .. }) = ServerMsg::decode(&p) else { panic!() };
+        assert_eq!(back.len(), MAX_SWITCHES);
+        assert_eq!(back[0].title.len(), MAX_NAME, "titles cut");
     }
 
     fn handle_slot_of(h: u32) -> Option<u32> {

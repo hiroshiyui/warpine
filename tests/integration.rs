@@ -2353,6 +2353,19 @@ fn gui_pm_xproc_test_calls_on_another_programs_windows() {
     assert_scripted_checks_pass("samples/pm_xproc_test/pm_xproc_test.exe", "pm_xproc_test", 69, "20000 quit\n");
 }
 
+/// pm_xshell_test: the session's shell services (ADR-0056). A parent and a
+/// child with FCF_TASKLIST frames share one switch list (each sees the
+/// other's entries, changes only its own, the child's go when it ends) and
+/// one system atom table, talk DDE (WinDdeInitiate answered by the child's
+/// WinDdeRespond before it returns, WM_DDE_REQUEST → WM_DDE_DATA in shared
+/// memory), and the window list — Ctrl+Esc, Down, Enter from the script,
+/// typed once the parent is active again — switches to the child.
+#[test]
+fn gui_pm_xshell_test_shares_the_sessions_shell_services() {
+    assert_scripted_checks_pass("samples/pm_xshell_test/pm_xshell_test.exe", "pm_xshell_test", 28,
+                                "9000 key ctrl+esc\n9600 key down\n10000 key enter\n30000 quit\n");
+}
+
 /// The desktop kept in the process (`WARPINE_DESKTOP=local`, no desktop
 /// server) shows what the server shows: pm_minmax_test's golden picture and
 /// pm_inputorder_test's checks.

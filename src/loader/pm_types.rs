@@ -658,6 +658,13 @@ pub struct WindowManager {
     pub remote_sends: super::pm_remote::RemoteSends,
     /// Open window enumerations (`pm_enum.rs`).
     pub enums: super::pm_enum::EnumTable,
+    /// The link to the session's desktop server, for what the window
+    /// manager tells it without waiting (switch-list entries of frames,
+    /// ADR-0056); `None` for an in-process desktop.
+    pub session_link: Option<Arc<crate::desktop::client::DesktopLink>>,
+    /// The switch handles the window list (`SC_TASKMANAGER`) shows, by
+    /// item (`pm_switch.rs`).
+    pub window_list: Vec<u32>,
     /// While the GUI thread handles an event from the desktop server: its
     /// token, given to the input events it queues (ADR-0052).
     pub input_tag: Option<u64>,
@@ -780,6 +787,8 @@ impl WindowManager {
             session_active: 0,
             remote_sends: Default::default(),
             enums: Default::default(),
+            session_link: None,
+            window_list: Vec::new(),
             input_tag_used: false,
             input_ack: None,
             destroying: HashSet::new(),
@@ -1931,7 +1940,7 @@ impl WindowManager {
         }
         self.help.forget_windows(&doomed);
         self.std_dialogs.forget_windows(&doomed);
-        self.switch_list.forget_windows(&doomed);
+        self.forget_switch_windows(&doomed);
         // Presentation spaces and window device contexts of the windows.
         let window_dcs: Vec<u32> = self.dcs.iter()
             .filter(|&(_, dc)| matches!(dc, DeviceContext::Window(w) if doomed.contains(w)))

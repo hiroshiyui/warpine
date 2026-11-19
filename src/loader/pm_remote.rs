@@ -72,7 +72,7 @@
 //! Posted message parameters are passed as they are: a pointer means
 //! something in the other program only for shared memory, as in PM.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -181,43 +181,65 @@ pub(crate) enum AfterSent {
     ModalLoop { dlg_proc: u32, hwnd_dlg: u32, hmq: u32 },
 }
 
-/// The messages this program's threads are sending to other programs'
-/// windows: per thread, the link's call ids, innermost last.
+/// Calls this program's threads make on other programs' windows and wait
+/// for without a time limit (sends, state changes, DDE): per thread a
+/// stack of batches, innermost last.
 #[derive(Debug, Default)]
 pub struct RemoteSends {
-    stacks: HashMap<u32, Vec<u32>>,
-    /// Threads whose `WinSendMsg` is made again after running a message
-    /// sent to them: it goes on waiting for its answer.
+    stacks: HashMap<u32, Vec<Batch>>,
+    /// Threads whose call is made again after running a message sent to
+    /// them: it goes on with its batch.
     resume: HashSet<u32>,
 }
 
+/// The calls of one API call, made one after the other.
+#[derive(Debug)]
+struct Batch {
+    /// The link's id of the call being waited for.
+    current: Option<u32>,
+    /// The calls still to make.
+    rest: VecDeque<(u32, WinCall)>,
+    /// The answers so far (`None`: none came).
+    replies: Vec<Option<WinReply>>,
+}
+
 impl RemoteSends {
-    fn begin(&mut self, tid: u32, id: u32) {
-        self.stacks.entry(tid).or_default().push(id);
+    fn begin(&mut self, tid: u32, calls: Vec<(u32, WinCall)>) {
+        self.stacks.entry(tid).or_default().push(Batch { current: None, rest: calls.into(), replies: Vec::new() });
     }
 
-    /// The send thread `tid` goes on waiting for, if its `WinSendMsg` is
-    /// made again after running a sent message (else it is a new send).
-    fn resumed(&mut self, tid: u32) -> Option<u32> {
-        if !self.resume.remove(&tid) { return None; }
-        self.stacks.get(&tid).and_then(|s| s.last().copied())
+    /// Whether thread `tid` goes on with its innermost batch (its call is
+    /// made again after running a sent message) rather than starting one.
+    fn resumed(&mut self, tid: u32) -> bool {
+        self.resume.remove(&tid) && self.stacks.get(&tid).is_some_and(|s| !s.is_empty())
+    }
+
+    /// Whether thread `tid`'s next call goes on with a batch (without
+    /// taking the mark).
+    fn resuming(&self, tid: u32) -> bool {
+        self.resume.contains(&tid)
     }
 
     fn mark_resume(&mut self, tid: u32) {
         self.resume.insert(tid);
     }
 
-    fn end(&mut self, tid: u32, id: u32) {
-        if let Some(s) = self.stacks.get_mut(&tid) {
-            s.retain(|&i| i != id);
-            if s.is_empty() { self.stacks.remove(&tid); }
-        }
+    fn top(&mut self, tid: u32) -> Option<&mut Batch> {
+        self.stacks.get_mut(&tid).and_then(|s| s.last_mut())
     }
 
-    /// Thread `tid` ended: the sends it was waiting for.
+    /// The innermost batch is done: its answers.
+    fn end(&mut self, tid: u32) -> Vec<Option<WinReply>> {
+        let Some(s) = self.stacks.get_mut(&tid) else { return Vec::new() };
+        let b = s.pop();
+        if s.is_empty() { self.stacks.remove(&tid); }
+        b.map(|b| b.replies).unwrap_or_default()
+    }
+
+    /// Thread `tid` ended: the calls it was waiting for.
     pub fn forget_thread(&mut self, tid: u32) -> Vec<u32> {
         self.resume.remove(&tid);
-        self.stacks.remove(&tid).unwrap_or_default()
+        self.stacks.remove(&tid).unwrap_or_default().into_iter().filter_map(|b| b.current).collect()
     }
 }
 
@@ -284,7 +306,7 @@ impl Loader {
     }
 
     /// `call_remote` for a description.
-    fn describe_remote(&self, tid: u32, hwnd: u32) -> Option<WindowInfo> {
+    pub(super) fn describe_remote(&self, tid: u32, hwnd: u32) -> Option<WindowInfo> {
         match self.call_remote(tid, hwnd, WinCall::Describe)? {
             WinReply::Info(i) => Some(*i),
             _ => {
@@ -420,50 +442,86 @@ impl Loader {
     }
 
     /// Make `call` (of PMWIN API `ordinal`) on another program's window and
-    /// wait for its answer without a time limit, running the messages other
-    /// programs send to this thread's queue meanwhile (module comment):
-    /// `Ok` with the answer (`None`: none will come), or `Err` with the
-    /// result the API returns now — a chain running a message sent to this
-    /// thread, after which the API is made again and goes on waiting.
+    /// wait for its answer without a time limit (see [`Self::remote_batch`]).
     fn remote_wait(&self, tid: u32, ordinal: u32, hwnd: u32, call: WinCall) -> Result<Option<WinReply>, ApiResult> {
-        let Some(link) = self.shared.desktop_link.get() else { return Ok(None) };
-        let (hmq, wait, resumed) = {
+        self.remote_batch(tid, ordinal, vec![(hwnd, call)]).map(|r| r.into_iter().next().flatten())
+    }
+
+    /// Whether thread `tid`'s API call goes on with the calls it was
+    /// waiting for (made again after running a message sent to it), so
+    /// that it must not prepare them again.
+    pub(super) fn remote_resuming(&self, tid: u32) -> bool {
+        self.shared.window_mgr.lock_or_recover().remote_sends.resuming(tid)
+    }
+
+    /// Make `calls` (window, call) of PMWIN API `ordinal` on other
+    /// programs' windows one after the other, each waited for without a
+    /// time limit, running the messages other programs send to this
+    /// thread's queue meanwhile (module comment): `Ok` with an answer per
+    /// call (`None`: none came), or `Err` with the result the API returns
+    /// now — a chain running a message sent to this thread, after which
+    /// the API is made again and goes on with the same calls (whatever
+    /// `calls` it then passes).
+    pub(super) fn remote_batch(&self, tid: u32, ordinal: u32, calls: Vec<(u32, WinCall)>)
+        -> Result<Vec<Option<WinReply>>, ApiResult> {
+        let Some(link) = self.shared.desktop_link.get() else { return Ok(vec![None; calls.len()]) };
+        let (hmq, wait) = {
             let mut wm = self.shared.window_mgr.lock_or_recover();
             let hmq = wm.thread_queue(tid);
             let wait = hmq.and_then(|h| wm.get_mq(h)).map(|mq| {
                 let q = mq.lock_or_recover();
                 (Arc::clone(&q.cond), Arc::clone(&q.lock))
             });
-            (hmq, wait, wm.remote_sends.resumed(tid))
-        };
-        let id = match resumed {
-            Some(id) => id,
-            None => {
-                // The answer wakes the thread where it waits: its queue.
-                let wake = wait.clone().map(|(cond, lock)| -> CallWaker {
-                    Arc::new(move || {
-                        let _g = lock.lock_or_recover();
-                        cond.notify_all();
-                    })
-                });
-                let Some(id) = link.begin_call(hwnd, call, wake) else { return Ok(None) };
-                self.shared.window_mgr.lock_or_recover().remote_sends.begin(tid, id);
-                id
+            if !wm.remote_sends.resumed(tid) {
+                wm.remote_sends.begin(tid, calls);
             }
+            (hmq, wait)
         };
-        let end = |r: Option<WinReply>| {
-            self.shared.window_mgr.lock_or_recover().remote_sends.end(tid, id);
-            Ok(r)
-        };
+        // An answer wakes the thread where it waits: its queue.
+        let wake = wait.clone().map(|(cond, lock)| -> CallWaker {
+            Arc::new(move || {
+                let _g = lock.lock_or_recover();
+                cond.notify_all();
+            })
+        });
         loop {
+            // The call waited for, or the next one to make.
+            let (current, next) = {
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                match wm.remote_sends.top(tid) {
+                    Some(b) => (b.current, if b.current.is_none() { b.rest.pop_front() } else { None }),
+                    None => return Ok(Vec::new()),
+                }
+            };
+            let id = match (current, next) {
+                (Some(id), _) => id,
+                (None, None) => return Ok(self.shared.window_mgr.lock_or_recover().remote_sends.end(tid)),
+                (None, Some((hwnd, call))) => {
+                    let id = link.begin_call(hwnd, call, wake.clone());
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    let Some(b) = wm.remote_sends.top(tid) else { return Ok(Vec::new()) };
+                    match id {
+                        Some(id) => { b.current = Some(id); id }
+                        None => { b.replies.push(None); continue; }
+                    }
+                }
+            };
             let state = match wait {
                 Some(_) => link.poll_call(id),
                 None => link.wait_call(id, SEND_WAIT_SLICE),
             };
-            match state {
-                CallState::Answered(r) => return end(Some(r)),
-                CallState::Gone => return end(None),
-                CallState::Waiting => {}
+            let reply = match state {
+                CallState::Answered(r) => Some(Some(r)),
+                CallState::Gone => Some(None),
+                CallState::Waiting => None,
+            };
+            if let Some(reply) = reply {
+                let mut wm = self.shared.window_mgr.lock_or_recover();
+                if let Some(b) = wm.remote_sends.top(tid) {
+                    b.current = None;
+                    b.replies.push(reply);
+                }
+                continue;
             }
             // Messages sent to this thread meanwhile run first.
             if let Some(s) = hmq.and_then(|h| self.shared.window_mgr.lock_or_recover().take_sent(h)) {
@@ -471,7 +529,7 @@ impl Loader {
             }
             if self.stop_or_restart() {
                 link.abandon_call(id);
-                return end(None);
+                return Ok(self.shared.window_mgr.lock_or_recover().remote_sends.end(tid));
             }
             if let Some((cond, lock)) = &wait {
                 let g = lock.lock_or_recover();
@@ -669,6 +727,14 @@ impl Loader {
         WinReply::Value(1)
     }
 
+    /// `WinSwitchToProgram` for another program's frame `hwnd`: shown and
+    /// activated, as for a frame of this program.
+    pub(super) fn switch_to_other_program(&self, hwnd: u32) -> bool {
+        let Some(link) = self.shared.desktop_link.get() else { return false };
+        matches!(link.call(hwnd, WinCall::Show { show: true }), Some(WinReply::Value(_)))
+            && matches!(link.call(hwnd, WinCall::Activate), Some(WinReply::Value(_)))
+    }
+
     /// The slots of the other programs on the session's desktop (none
     /// without a desktop server).
     pub(super) fn other_programs(&self) -> Vec<u32> {
@@ -732,6 +798,10 @@ impl Responder for Loader {
             WinCall::Broadcast { msg, mp1, mp2, fl } if whole => {
                 return Some(self.broadcast_for_other(msg, mp1, mp2, fl));
             }
+            WinCall::DdeTargets if whole => {
+                let hwnds = self.shared.window_mgr.lock_or_recover().dde_targets();
+                return Some(WinReply::Windows { pid: self.shared.process_id(), hwnds });
+            }
             _ if !(in_slot && exists) => return Some(WinReply::Failed),
             WinCall::Send { msg, mp1, mp2 } => {
                 let wm = self.shared.window_mgr.lock_or_recover();
@@ -788,8 +858,7 @@ impl Loader {
                 WinReply::Value(1)
             }
             // Made by `answer`, or the server's.
-            WinCall::Send { .. } | WinCall::SetPos { .. } | WinCall::Children | WinCall::Broadcast { .. }
-                | WinCall::Clients | WinCall::Stacking => WinReply::Failed,
+            _ => WinReply::Failed,
         }
     }
 }
@@ -906,28 +975,33 @@ mod tests {
         let c = chain(loader.run_sent(TID, s, modal));
         assert_eq!(loader.finish_chain(&c), ChainEnd::ModalLoop { dlg_proc: 1, hwnd_dlg: 2, hmq: 3, msg: None });
         // A send waiting for its answer goes on waiting for the same one.
-        loader.shared.window_mgr.lock_or_recover().remote_sends.begin(TID, 41);
+        loader.shared.window_mgr.lock_or_recover().remote_sends.begin(TID, vec![(frame, WinCall::Activate)]);
         let c = chain(loader.run_sent(TID, s, AfterSent::Resume(ORD_SET_WINDOW_POS)));
         assert_eq!(loader.finish_chain(&c), ChainEnd::Rerun(ORD_SET_WINDOW_POS));
+        assert!(loader.remote_resuming(TID));
         let mut wm = loader.shared.window_mgr.lock_or_recover();
-        assert_eq!(wm.remote_sends.resumed(TID), Some(41));
-        assert_eq!(wm.remote_sends.resumed(TID), None, "a later WinSendMsg is a new send");
+        assert!(wm.remote_sends.resumed(TID));
+        assert!(!wm.remote_sends.resumed(TID), "a later call starts a batch of its own");
     }
 
     #[test]
-    fn remote_sends_nest_per_thread() {
+    fn remote_batches_nest_per_thread() {
         let mut r = RemoteSends::default();
-        r.begin(1, 10);
-        r.begin(1, 11);
-        r.begin(2, 20);
+        r.begin(1, vec![(10, WinCall::Activate), (11, WinCall::Describe)]);
+        r.begin(1, vec![(12, WinCall::Activate)]);
+        r.begin(2, vec![]);
+        r.top(1).unwrap().current = Some(7);
         r.mark_resume(1);
-        assert_eq!(r.resumed(1), Some(11), "the innermost");
-        r.end(1, 11);
-        r.mark_resume(1);
-        assert_eq!(r.resumed(1), Some(10));
-        assert_eq!(r.forget_thread(2), vec![20]);
-        assert_eq!(r.forget_thread(2), Vec::<u32>::new());
-        r.end(1, 10);
+        assert!(r.resuming(1) && r.resumed(1) && !r.resuming(1));
+        assert_eq!(r.top(1).unwrap().rest.len(), 1, "the innermost");
+        r.top(1).unwrap().replies.push(Some(WinReply::Value(3)));
+        assert_eq!(r.end(1), vec![Some(WinReply::Value(3))]);
+        assert_eq!(r.top(1).unwrap().rest.len(), 2, "the outer one is next");
+        r.top(1).unwrap().current = Some(5);
+        assert_eq!(r.forget_thread(1), vec![5]);
+        assert!(r.top(1).is_none());
+        assert!(!r.resumed(2), "not marked");
+        r.end(2);
         assert!(r.stacks.is_empty());
     }
 

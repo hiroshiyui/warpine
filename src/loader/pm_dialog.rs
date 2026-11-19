@@ -258,6 +258,8 @@ pub(super) const SYSTEM_ACCELS: &[AccelEntry] = &[
     AccelEntry { flags: AF_VIRTUALKEY | AF_SHIFT | AF_SYSCOMMAND, key: VK_ESC as u16, cmd: SC_SYSMENU as u16 },
     AccelEntry { flags: AF_VIRTUALKEY | AF_ALT | AF_SYSCOMMAND, key: VK_F9 as u16, cmd: SC_MINIMIZE as u16 },
     AccelEntry { flags: AF_VIRTUALKEY | AF_ALT | AF_SYSCOMMAND, key: VK_F10 as u16, cmd: SC_MAXIMIZE as u16 },
+    // Ctrl+Esc: the window list (pm_switch.rs).
+    AccelEntry { flags: AF_VIRTUALKEY | AF_CONTROL | AF_SYSCOMMAND, key: VK_ESC as u16, cmd: SC_TASKMANAGER as u16 },
 ];
 
 /// Whether `WM_CHAR` `(mp1, mp2)` is the keystroke accelerator `entry`
@@ -603,9 +605,20 @@ impl Loader {
                 self.post_to_window(hwnd, WM_CLOSE, 0, 0);
                 ApiResult::Normal(0)
             }
-            // The system menu and keyboard move / size (pm_sysmenu.rs).
+            // The window list (pm_switch.rs), the system menu and keyboard
+            // move / size (pm_sysmenu.rs).
             WM_SYSCOMMAND => {
-                self.frame_syscommand(hwnd, mp1 & 0xFFFF, mp2);
+                let cmd = mp1 & 0xFFFF;
+                // No caller thread here: the dialog's.
+                let tid = {
+                    let wm = self.shared.window_mgr.lock_or_recover();
+                    wm.get_window(hwnd).and_then(|w| wm.queue_thread(w.hmq)).unwrap_or(0)
+                };
+                if cmd == SC_TASKMANAGER {
+                    self.show_window_list(tid, hwnd);
+                } else if !self.window_list_pick(tid, cmd) {
+                    self.frame_syscommand(hwnd, cmd, mp2);
+                }
                 ApiResult::Normal(0)
             }
             WM_CLOSE => {
