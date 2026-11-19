@@ -1,6 +1,6 @@
 # ADR-0054: Messages sent to another program's window run on the window's thread when it reads messages
 
-- **Status:** Accepted; completes ADR-0052's phase B with ADR-0053
+- **Status:** Accepted; completes ADR-0052's phase B with ADR-0053; its send-hook choice amended by ADR-0055
 - **Date:** 2026-11-19
 - **Sources:**
   - Both sides of a sent message: `src/loader/pm_remote.rs` (`SentMessage`, `AfterSent`, `RemoteSends`, `remote_send`, `run_sent`, `sent_done`)
@@ -52,7 +52,7 @@ PM runs a message sent from another thread on the thread of the window's queue, 
 ### Warpine's choices (unverified against OS/2)
 
 - A failed send returns 0 with `PMERR_INVALID_HWND`.
-- Send hooks (`HK_SENDMSG`) do not run for a send to another program.
+- Send hooks (`HK_SENDMSG`) do not run for a send to another program. Amended by ADR-0055: the receiving thread runs its queue's send hooks.
 - Message parameters pass as they are: a pointer means something to the receiver only in shared memory.
 - `WinSetWindowText` text is read in the calling thread's codepage.
 
@@ -62,7 +62,7 @@ PM runs a message sent from another thread on the thread of the window's queue, 
 - **Like PM, also in its faults.** A receiver that never reads its queue holds its senders until it does, or until it ends.
 - **The same path for all waits.** Every place a PM thread waits for messages now also runs messages sent from other programs. A new kind of wait must do the same, or sends to its thread's windows wait until it reads messages again.
 - **Two models.** Within a program a sent message still runs on the sending thread (ADR-0026). Only sends between programs use the window's thread.
-- **Still missing.**
+- **Still missing then**, done since by ADR-0055:
   - `WinBroadcastMsg` to other programs' windows;
   - `WM_MINMAXFRAME` for a state change another program makes;
   - enumerating the desktop's windows across programs.

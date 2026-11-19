@@ -57,6 +57,7 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0049](0049-shared-memory-across-processes.md) | Shared memory across processes: a sealed memfd arena at the top of guest memory, a table in the session directory | Accepted | 2026-11-19 |
 | [0050](0050-shared-semaphores-across-processes.md) | Shared semaphores across processes: a host-only memfd of slots, an OFD lock and a futex | Accepted | 2026-11-19 |
 | [0051](0051-pointer-input-routed-when-read.md) | Pointer input routed when it is read: clicks hit-tested and activating at the head of the input queue | Accepted | 2026-11-19 |
-| [0052](0052-session-desktop-server.md) | One desktop per session: a desktop server process, with Warpine processes as its clients | Accepted (phases A and B: ADR-0053, ADR-0054) | 2026-11-19 |
-| [0053](0053-calls-on-other-programs-windows.md) | Calls on other programs' windows go through the desktop server and are answered on the owner's link thread | Accepted | 2026-11-19 |
-| [0054](0054-messages-sent-to-other-programs-windows.md) | Messages sent to another program's window run on the window's thread when it reads messages | Accepted | 2026-11-19 |
+| [0052](0052-session-desktop-server.md) | One desktop per session: a desktop server process, with Warpine processes as its clients | Accepted (phases A and B: ADR-0053, ADR-0054, ADR-0055) | 2026-11-19 |
+| [0053](0053-calls-on-other-programs-windows.md) | Calls on other programs' windows go through the desktop server and are answered on the owner's link thread | Accepted (`WM_MINMAXFRAME` amended by ADR-0055) | 2026-11-19 |
+| [0054](0054-messages-sent-to-other-programs-windows.md) | Messages sent to another program's window run on the window's thread when it reads messages | Accepted (send hooks amended by ADR-0055) | 2026-11-19 |
+| [0055](0055-programs-see-each-others-windows.md) | Window lists, broadcasts, state changes and send hooks reach other programs | Accepted | 2026-11-19 |

@@ -1,6 +1,6 @@
 # ADR-0052: One desktop per session: a desktop server process, with Warpine processes as its clients
 
-- **Status:** Accepted (phases A and B implemented: ADR-0053, ADR-0054); amends ADR-0020's "each Warpine process shows its own PM desktop window"; ADR-0030 stays until phase C
+- **Status:** Accepted (phases A and B implemented: ADR-0053, ADR-0054, ADR-0055); amends ADR-0020's "each Warpine process shows its own PM desktop window"; ADR-0030 stays until phase C
 - **Date:** 2026-11-19
 - **Sources:**
   - Desktop link and server: `src/desktop/` (`pixmap.rs`, `proto.rs`, `transport.rs`, `model.rs`, `client.rs`), `src/gui/desktop_server.rs`, `src/gui/desktop_events.rs`, `src/gui/sdl_renderer/compositor/remote.rs`
@@ -117,7 +117,7 @@ The desktop of a session belongs to a separate process: the same binary run as `
 | Phase | Scope |
 |---|---|
 | A (done) | The server and the split: frames of every PM process on one desktop, input in order across programs, activation and stacking across programs |
-| B (done) | Calls on other programs' windows: `WinPostMsg`, `WinQueryWindowProcess`, `WinIsWindow`, queries on other programs' windows, Z-order across programs (ADR-0053), synchronous `WinSendMsg` (ADR-0054) |
+| B (done) | Calls on other programs' windows: `WinPostMsg`, `WinQueryWindowProcess`, `WinIsWindow`, queries on other programs' windows, Z-order across programs (ADR-0053), synchronous `WinSendMsg` (ADR-0054), window lists, broadcasts, `WM_MINMAXFRAME` and send hooks across programs (ADR-0055) |
 | C | Shared shell services: one switch list and Ctrl+Esc window list, the system atom table, DDE and drag and drop between programs (supersedes ADR-0030) |
 
 ## Consequences

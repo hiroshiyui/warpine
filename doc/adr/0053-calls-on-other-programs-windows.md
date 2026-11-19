@@ -1,6 +1,6 @@
 # ADR-0053: Calls on other programs' windows go through the desktop server and are answered on the owner's link thread
 
-- **Status:** Accepted; implements the first part of ADR-0052's phase B, completed by ADR-0054 (`WinSendMsg`)
+- **Status:** Accepted; implements the first part of ADR-0052's phase B, completed by ADR-0054 (`WinSendMsg`); its `WM_MINMAXFRAME` choice amended by ADR-0055
 - **Date:** 2026-11-19
 - **Sources:**
   - Call routing: `src/desktop/calls.rs`, `src/gui/desktop_server.rs`
@@ -53,7 +53,7 @@ Each program is its own host process with its own window manager. The window a c
 
 - **No answer.** A call that gets none fails with `PMERR_INVALID_HWND`.
 - **Codepage.** Window text and class names come back in the calling thread's codepage.
-- **Minimize and maximize.** `WinSetWindowPos` that minimizes, maximizes or restores another program's frame does not ask its client with `WM_MINMAXFRAME`: that needs the window's thread.
+- **Minimize and maximize.** `WinSetWindowPos` that minimizes, maximizes or restores another program's frame does not ask its client with `WM_MINMAXFRAME`: that needs the window's thread. Amended by ADR-0055: the frame's thread now asks it.
 - **Message parameters** are passed as they are: a pointer means something to the receiver only in shared memory, as in PM.
 
 ## Consequences
