@@ -1,6 +1,6 @@
 # ADR-0053: Calls on other programs' windows go through the desktop server and are answered on the owner's link thread
 
-- **Status:** Accepted; implements the first part of ADR-0052's phase B (`WinSendMsg` across programs still open)
+- **Status:** Accepted; implements the first part of ADR-0052's phase B, completed by ADR-0054 (`WinSendMsg`)
 - **Date:** 2026-11-19
 - **Sources:**
   - Call routing: `src/desktop/calls.rs`, `src/gui/desktop_server.rs`
@@ -68,4 +68,4 @@ Each program is its own host process with its own window manager. The window a c
   - the client of `WinCreateStdWindow` now has the identity `FID_CLIENT`;
   - `QWS_ID` (`WinQueryWindowUShort` / `WinSetWindowUShort`) is the window's identity;
   - `QWL_HMQ` is its message queue.
-- **Still missing.** `WinSendMsg` across programs, and calls that send messages (`WinSetWindowText`, `WinDestroyWindow` of another program's window). These need the window's thread to run its procedure while the sender waits and handles messages sent to it meanwhile. They keep failing with `PMERR_INVALID_HWND`.
+- **Still missing then.** `WinSendMsg` across programs and `WinSetWindowText` on another program's window, done since by ADR-0054.
