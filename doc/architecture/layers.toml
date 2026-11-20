@@ -103,7 +103,7 @@ id = "kernel"
 zone = "host"
 label = "Kernel APIs: DOSCALLS, QUECALLS, MSG, processes and WinStartApp (nesting limit, ADR-0028), CONFIG.SYS THREADS= session limit, IPC, named pipes (ADR-0022), shared memory and semaphores across processes (ADR-0049, ADR-0050), timers, session clock and WARPINE.DLL 64-bit time (ADR-0039), 16-bit information segments (ADR-0040), the built-in CMD.EXE and its REXX, REXX.DLL / REXXAPI.DLL for programs (ADR-0077–0085)"
 modules = [
-  "loader/doscalls.rs", "loader/dos_misc.rs", "loader/stubs.rs", "loader/process.rs", "loader/ipc.rs",
+  "loader/doscalls.rs", "loader/dos_misc.rs", "loader/stubs.rs", "loader/process.rs", "loader/exit_report.rs", "loader/ipc.rs",
   "loader/dostimer.rs", "loader/modpath.rs", "loader/suballoc.rs", "loader/cmd.rs",
   "loader/cmd/batch.rs", "loader/cmd/builtins.rs", "loader/cmd/env.rs", "loader/cmd/external.rs", "loader/cmd/files.rs", "loader/cmd/prompt.rs", "loader/cmd/rexx_host.rs",
   "loader/rexx.rs", "loader/rexx/builtins.rs", "loader/rexx/condition.rs", "loader/rexx/expr.rs", "loader/rexx/interp.rs", "loader/rexx/lexer.rs",

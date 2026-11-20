@@ -200,6 +200,8 @@ impl super::Loader {
         self.shared.leave_thread_session();
         self.shared.console_mgr.lock_or_recover().disable_raw_mode();
         let code = self.shared.exit_code.load(Ordering::Relaxed);
+        // The whole code for the parent (exit_report.rs).
+        super::exit_report::report(code as u32);
         std::process::exit(code);
     }
 
@@ -226,6 +228,8 @@ impl super::Loader {
         self.shared.leave_thread_session();
         self.shared.console_mgr.lock_or_recover().disable_raw_mode();
         let code = self.shared.exit_code.load(Ordering::Relaxed);
+        // The whole code for the parent (exit_report.rs).
+        super::exit_report::report(code as u32);
         std::process::exit(code);
     }
 

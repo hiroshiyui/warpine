@@ -839,6 +839,20 @@ fn test_dos_misc_calls() {
     assert_eq!(code, 0, "{out}");
 }
 
+/// proc_test: a child's whole exit code reaches its parent (EXEC_SYNC,
+/// DosWaitChild for one child and for any), and DosSendSignalException
+/// reaches the parent and a sibling of the session (ADR-0090). The sample
+/// starts copies of itself.
+#[test]
+fn test_whole_exit_codes_and_signals_between_processes() {
+    let sample = "samples/proc_test/proc_test.exe";
+    if !kvm_available() || !Path::new(sample).exists() { return; }
+    let (out, code) = run_sample(sample, 60);
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("proc_test: done 19/19"), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
 /// tlm_test: DosAllocThreadLocalMemory / DosFreeThreadLocalMemory
 /// (ADR-0088) — one pointer, each thread's own words behind it under its
 /// own page tables, also for what an API call writes there; 32 words in

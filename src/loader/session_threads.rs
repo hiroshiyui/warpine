@@ -601,6 +601,22 @@ impl SessionTables<'_> {
         std::fs::rename(self.l.path(&aside), self.l.path(name))
     }
 
+    /// The host process of live session process `os2pid` (its `p-`
+    /// record; a reservation is no process yet), or `None`.
+    pub fn host_of(&self, os2pid: u32) -> std::io::Result<Option<Identity>> {
+        for (i, entry) in std::fs::read_dir(self.l.path(""))?.enumerate() {
+            if i >= MAX_ENTRIES { break; }
+            let file = entry?.file_name();
+            let Some(Entry::Process(owner)) = parse_name(&file) else { continue };
+            let Some(name) = file.to_str() else { continue };
+            if let Some(Some(rec)) = self.l.read(name)?
+                && rec.who.pid == owner && rec.os2pid == os2pid && self.session.is_alive(rec.who) {
+                return Ok(Some(rec.who));
+            }
+        }
+        Ok(None)
+    }
+
     /// The OS/2 process ids of the session's live processes and of the
     /// children being started (their reservations).
     pub fn live_processes(&self) -> std::io::Result<HashSet<u32>> {
@@ -1088,6 +1104,29 @@ mod tests {
         child_started(&l.shared, r, None);
         let r = admit_child(&l.shared, &mut cmd2).unwrap();
         child_started(&l.shared, r, None);
+    }
+
+    /// A process of the session is found by its OS/2 id while it lives;
+    /// a reservation (a child not started yet) and a dead one are not.
+    #[test]
+    fn a_session_process_is_found_by_its_os2_id() {
+        let d = tempfile::tempdir().unwrap();
+        let procs = Procs::default();
+        let mut a = procs.session(d.path(), 8, 100).with_os2pid(1);
+        let mut b = procs.session(d.path(), 8, 200).with_os2pid(7);
+        a.join(None).unwrap();
+        b.join(None).unwrap();
+        let r = a.reserve(9).unwrap();
+        {
+            let t = a.tables().unwrap();
+            assert_eq!(t.host_of(7).unwrap().map(|w| w.pid), Some(200));
+            assert_eq!(t.host_of(1).unwrap().map(|w| w.pid), Some(100), "itself too");
+            assert_eq!(t.host_of(9).unwrap(), None, "a reservation is no process yet");
+            assert_eq!(t.host_of(42).unwrap(), None);
+        }
+        procs.kill(200);
+        assert_eq!(a.tables().unwrap().host_of(7).unwrap(), None, "a dead process is not found");
+        a.settle(r, None);
     }
 
     #[test]

@@ -586,6 +586,7 @@ impl super::Loader {
     pub fn run_builtin_cmd_main(&mut self, host_args: &[&str]) {
         let exit_code = self.run_builtin_cmd_main_inner(host_args);
         self.shared.leave_thread_session();
+        super::exit_report::report(exit_code);
         std::process::exit(exit_code as i32);
     }
 

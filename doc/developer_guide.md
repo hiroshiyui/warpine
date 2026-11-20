@@ -1616,6 +1616,15 @@ Tests: `shared_arena.rs` (allocation and reuse, holders, sweeps, strict parsing,
 - **Scripts:** `rdrag X1 Y1 X2 Y2` drags with the right button (`gui_script.rs`, `Input::MouseDrag { button, .. }`); `ctrl+rdrag …` holds modifiers until the release (`push_with_mods_until`); `drop X Y PATH` drops a host file (`Input::Drop`).
 - **Tests:** `pm_drag.rs` (strings, RMF parsing, the data calls, `window_under`, drags over a client and a container run through their chains, the feed, operation keys, file `DRAGINFO`s, `DrgDragFiles`, enumeration and reallocation, host drops through their sent steps), `pm_window.rs` (the owner gets the gestures), `proto.rs` / `desktop_events.rs` / `gui_script.rs` (the drop input), `samples/pm_drag_test` with a golden picture, `samples/pm_dropfiles_test` (both desktops) with a golden picture.
 
+### Exit codes and signals across processes
+
+`exit_report.rs`, `signals.rs`, `session_threads.rs` (ADR-0090):
+- **The pipe.** `admit_child` makes an `ExitPipe` per child (`pipe2(O_CLOEXEC)`); `pass_to` names the write end in `WARPINE_EXIT_FD=<fd>:<parent host pid>` and clears its close-on-exec in a `pre_exec` hook; `child_started` keeps the read end in `SharedState::exit_reports` by host pid (`into_read` closes the parent's write end).
+- **The child.** At start, `main` calls `adopt_from_env`, which believes the value only for a direct child (`getppid`) and a write-only FIFO, and makes the descriptor close-on-exec. Every exit path (`vcpu.rs` ×2, `ne_exec.rs`, `cmd.rs`, `main.rs` ×2) calls `report(code)` before `std::process::exit`.
+- **Reaping.** Every reaping path goes through `SharedState::child_exit_code(host, status)` → `full_code`: a 4-byte report whose low byte matches the host status, else the host status, `None` for a host signal. That covers `EXEC_SYNC`, `DosWaitChild`, `wait_any`, `WinStartApp`'s poll, CMD's `wait_child` and the `DETACH` reaper; a path without a status removes the entry.
+- **Signals.** For an OS/2 pid that is no child, `dos_send_signal_exception` asks `SessionTables::host_of(os2pid)` for the live `p-` record (an `Identity`: host pid and start time), and `host_signal::send_to_identity` opens a pidfd, checks the start time and sends.
+- **Tests:** unit tests in `exit_report.rs`, `session_threads.rs`; `samples/proc_test` with `test_whole_exit_codes_and_signals_between_processes`.
+
 ### Tracking a rectangle
 
 `pm_track.rs` and `track.rs` (ADR-0089):

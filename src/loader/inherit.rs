@@ -220,6 +220,8 @@ pub(crate) fn live_children(shared: &super::SharedState) -> usize {
 #[must_use = "an admission is settled with child_started"]
 pub struct Admission {
     slot: Reservation,
+    /// The pipe the child reports its exit code on (`exit_report.rs`).
+    exit: Option<super::exit_report::ExitPipe>,
     /// The child's OS/2 process id (`WARPINE_PID`).
     pub pid: u32,
 }
@@ -258,16 +260,35 @@ pub(crate) fn admit_child(shared: &super::SharedState, cmd: &mut std::process::C
         Some(sems) => super::shared_sem::pass_to(sems, cmd),
         None => { cmd.env_remove(super::shared_sem::SEM_FD_ENV); }
     }
-    Ok(Admission { slot, pid })
+    // Its whole exit code comes back on a pipe (`exit_report.rs`).
+    let exit = super::exit_report::ExitPipe::new().ok();
+    match &exit {
+        Some(p) => p.pass_to(cmd),
+        None => { cmd.env_remove(super::exit_report::EXIT_FD_ENV); }
+    }
+    Ok(Admission { slot, pid, exit })
 }
 
 /// The child of `adm` started as host process `pid` (`None`: it did not
 /// start): its reserved slot becomes its own, or is given back.
 pub(crate) fn child_started(shared: &super::SharedState, adm: Admission, pid: Option<u32>) {
     shared.thread_slots.lock_or_recover().settle(adm.slot, pid);
+    // Keep the read end of its exit report until it is reaped.
+    if let (Some(host), Some(pipe)) = (pid, adm.exit) {
+        shared.exit_reports.lock_or_recover().insert(host, pipe.into_read());
+    }
 }
 
 impl super::SharedState {
+    /// The exit code of child host process `host` that ended with
+    /// `status`: its whole report when it sent one (`exit_report.rs`), else
+    /// the host status; `None` when killed by a host signal. Every reaping
+    /// path calls it, so the report's pipe is closed.
+    pub(crate) fn child_exit_code(&self, host: u32, status: std::process::ExitStatus) -> Option<u32> {
+        let read = self.exit_reports.lock_or_recover().remove(&host);
+        super::exit_report::full_code(read, status)
+    }
+
     /// This process's OS/2 id (`pib_ulpid`).
     pub fn process_id(&self) -> u32 {
         self.startup.lock_or_recover().process_id()

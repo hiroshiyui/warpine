@@ -64,6 +64,7 @@ mod ne_exec;
 mod descriptors;
 pub(crate) mod paging;
 pub(crate) mod track;
+pub(crate) mod exit_report;
 mod pm_track;
 mod vcpu;
 mod api_dispatch;
@@ -431,6 +432,8 @@ pub struct SharedState {
     pub thread_slots: Mutex<session_threads::ThreadSlots>,
     /// The words of the thread-local area handed out (`paging.rs`).
     pub tlm: Mutex<paging::TlmArea>,
+    /// The read ends of children's exit reports, by host pid (`exit_report.rs`).
+    pub exit_reports: Mutex<std::collections::HashMap<u32, std::fs::File>>,
     /// `DosAsyncTimer` / `DosStartTimer` timers (`dostimer.rs`).
     pub dos_timers: Mutex<dostimer::DosTimerTable>,
     /// `DosSubSetMem` pools, kept on the host (`suballoc.rs`).
@@ -566,6 +569,7 @@ impl Loader {
             threads: Default::default(),
             thread_slots: Default::default(),
             tlm: Default::default(),
+            exit_reports: Default::default(),
             dos_timers: Default::default(),
             suballoc: Default::default(),
             kills: Default::default(),
@@ -677,6 +681,7 @@ impl Loader {
             threads:      Default::default(),
             thread_slots: Default::default(),
             tlm:          Default::default(),
+            exit_reports: Default::default(),
             dos_timers:   Default::default(),
             suballoc:     Default::default(),
             kills:        Default::default(),

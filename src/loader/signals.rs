@@ -399,16 +399,25 @@ impl super::Loader {
             self.post_signal(signal);
             return NO_ERROR;
         }
-        let host_pid = {
+        let child = {
             let mut procs = self.shared.process_mgr.lock_or_recover();
             // A child that has ended cannot be signalled (its status stays
             // for DosWaitChild).
-            procs.children.get_mut(&pid)
-                .and_then(|child| matches!(child.try_wait(), Ok(None)).then(|| child.id()))
+            procs.children.get_mut(&pid).map(|child| matches!(child.try_wait(), Ok(None)).then(|| child.id()))
         };
-        match host_pid {
-            Some(host_pid) if super::host_signal::send_to_process(host_pid, signal) => NO_ERROR,
-            _ => ERROR_INVALID_PROCID,
+        match child {
+            Some(Some(host_pid)) if super::host_signal::send_to_process(host_pid, signal) => NO_ERROR,
+            Some(_) => ERROR_INVALID_PROCID,
+            // Another process of the session: the parent or any other
+            // (ADR-0090), found by its session record.
+            None => {
+                let who = self.shared.thread_slots.lock_or_recover().session()
+                    .and_then(|s| s.tables().ok().and_then(|t| t.host_of(pid).ok().flatten()));
+                match who {
+                    Some(w) if super::host_signal::send_to_identity(w.pid, w.start, signal) => NO_ERROR,
+                    _ => ERROR_INVALID_PROCID,
+                }
+            }
         }
     }
 

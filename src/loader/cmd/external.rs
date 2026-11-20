@@ -163,9 +163,19 @@ impl CmdShell {
             std::thread::sleep(DETACHED_POLL);
             let mut procs = shared.process_mgr.lock_or_recover();
             let Some(child) = procs.children.get_mut(&pid) else { return };
-            if !matches!(child.try_wait(), Ok(None)) {
-                procs.take_child(pid);
-                return;
+            let host = child.id();
+            match child.try_wait() {
+                Ok(None) => {}
+                ended => {
+                    procs.take_child(pid);
+                    drop(procs);
+                    // Nobody asks for its code; the report's pipe closes.
+                    match ended {
+                        Ok(Some(s)) => { let _ = shared.child_exit_code(host, s); }
+                        _ => { shared.exit_reports.lock_or_recover().remove(&host); }
+                    }
+                    return;
+                }
             }
         });
         Some(pid)
@@ -345,7 +355,7 @@ impl CmdShell {
                     status
                 };
                 if let Some(t) = feeder { let _ = t.join(); }
-                status.and_then(|s| s.code()).map_or(RC_PROGRAM_KILLED, |c| c as u32)
+                status.unwrap_or(RC_PROGRAM_KILLED)
             }
         }
     }
@@ -353,8 +363,19 @@ impl CmdShell {
     /// Wait for `child` to end. When the shell's call is interrupted (a
     /// signal, a kill) or its process ends, the child is asked to end
     /// (`SIGTERM`: its exit list runs) and, after `KILL_GRACE`, killed.
-    /// Returns how it ended (`None` if that cannot be known).
-    pub(super) fn wait_child(&self, child: &mut std::process::Child) -> Option<std::process::ExitStatus> {
+    /// Returns its exit code (`exit_report.rs`; `None` if it was killed or
+    /// that cannot be known).
+    pub(super) fn wait_child(&self, child: &mut std::process::Child) -> Option<u32> {
+        let host = child.id();
+        let status = self.wait_child_status(child);
+        match status {
+            Some(s) => self.shared.child_exit_code(host, s),
+            None => { self.shared.exit_reports.lock_or_recover().remove(&host); None }
+        }
+    }
+
+    /// [`Self::wait_child`]'s wait: how the child ended.
+    fn wait_child_status(&self, child: &mut std::process::Child) -> Option<std::process::ExitStatus> {
         let mut asked: Option<std::time::Instant> = None;
         loop {
             match child.try_wait() {

@@ -289,20 +289,19 @@ impl ProcessManager {
 
     /// Try to wait on any child (for DosWaitChild with DCWA_PROCESSTREE).
     /// Returns (pid, exit_code) for the first finished child found.
-    pub fn wait_any(&mut self) -> Option<(u32, i32)> {
+    /// A child that ended: its OS/2 pid, host pid and status (its exit
+    /// code comes from `SharedState::child_exit_code`).
+    pub fn wait_any(&mut self) -> Option<(u32, u32, std::process::ExitStatus)> {
         let mut finished = None;
         for (&pid, child) in self.children.iter_mut() {
             if let Ok(Some(status)) = child.try_wait() {
-                finished = Some((pid, status.code().unwrap_or(1)));
+                finished = Some((pid, child.id(), status));
                 break;
             }
         }
-        if let Some((pid, code)) = finished {
-            self.children.remove(&pid);
-            Some((pid, code))
-        } else {
-            None
-        }
+        let (pid, host, status) = finished?;
+        self.children.remove(&pid);
+        Some((pid, host, status))
     }
 }
 

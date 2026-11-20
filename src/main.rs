@@ -117,6 +117,8 @@ fn license_notices() -> String {
 
 fn main() {
     init_logging();
+    // The pipe a Warpine parent gave for this process's exit code (ADR-0090).
+    loader::exit_report::adopt_from_env();
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage: {} <os2_executable> [--gdb <port>]", args[0]);
@@ -380,6 +382,7 @@ fn run_vio_session(shared: Arc<loader::SharedState>, title: &str, app_type: lx::
     shared.leave_thread_session();
     shared.console_mgr.lock_or_recover().disable_raw_mode();
     let code = shared.exit_code.load(Ordering::Relaxed);
+    loader::exit_report::report(code as u32);
     std::process::exit(code);
 }
 
@@ -526,6 +529,7 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>, args: &[&str]) {
         shared.leave_thread_session();
         shared.console_mgr.lock_or_recover().disable_raw_mode();
         let code = shared.exit_code.load(std::sync::atomic::Ordering::Relaxed);
+        loader::exit_report::report(code as u32);
         std::process::exit(code);
     } else {
         // CLI app: use SDL text-mode window only when stdout is a real terminal.

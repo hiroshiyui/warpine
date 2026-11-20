@@ -122,22 +122,23 @@ impl AppTable {
         h
     }
 
-    /// Whether application `happ` ended: its return code and the window
-    /// to notify, the application then forgotten.
-    fn poll(&mut self, happ: u32) -> Option<(u32, u32)> {
+    /// Whether application `happ` ended: its host pid and status (`None`:
+    /// it cannot be known) and the window to notify, the application then
+    /// forgotten.
+    fn poll(&mut self, happ: u32) -> Option<(u32, Option<std::process::ExitStatus>, u32)> {
         let app = self.apps.get_mut(&happ)?;
+        let host = app.child.id();
         match app.child.try_wait() {
             Ok(Some(status)) => {
-                let rc = status.code().map_or(KILLED_RC, |c| c as u32);
                 let notify = app.notify;
                 self.apps.remove(&happ);
-                Some((rc, notify))
+                Some((host, Some(status), notify))
             }
             Ok(None) => None,
             Err(e) => {
                 warn!("WinStartApp: cannot wait for application {happ:#x}: {e}");
                 let notify = self.apps.remove(&happ).map_or(0, |a| a.notify);
-                Some((KILLED_RC, notify))
+                Some((host, None, notify))
             }
         }
     }
@@ -290,7 +291,12 @@ impl super::Loader {
             std::thread::sleep(APP_POLL);
             let mut wm = shared.window_mgr.lock_or_recover();
             if !wm.apps.contains(happ) { break; }
-            if let Some((rc, hwnd)) = wm.apps.poll(happ) {
+            if let Some((host, status, hwnd)) = wm.apps.poll(happ) {
+                // Its whole return code (exit_report.rs); the report's pipe closes either way.
+                let rc = match status {
+                    Some(s) => shared.child_exit_code(host, s).unwrap_or(KILLED_RC),
+                    None => { shared.exit_reports.lock_or_recover().remove(&host); KILLED_RC }
+                };
                 if hwnd != 0 && wm.get_window(hwnd).is_some() {
                     wm.post_msg(hwnd, WM_APPTERMINATENOTIFY, happ, rc);
                 }
@@ -354,7 +360,8 @@ mod tests {
             if let Some(r) = t.poll(h) { ended = Some(r); break; }
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(ended, Some((0, 0x1234)));
+        let (_, status, notify) = ended.unwrap();
+        assert_eq!((status.and_then(|s| s.code()), notify), (Some(0), 0x1234));
         assert!(!t.contains(h));
         assert_eq!(t.poll(h), None);
         assert_eq!(t.kill(h), Err(PMERR_INVALID_HAPP));
@@ -372,7 +379,8 @@ mod tests {
             if let Some(r) = t.poll(h) { ended = Some(r); break; }
             std::thread::sleep(Duration::from_millis(10));
         }
-        assert_eq!(ended, Some((KILLED_RC, 0)));
+        let (_, status, _) = ended.unwrap();
+        assert_eq!(status.and_then(|s| s.code()), None, "killed: no exit code, so KILLED_RC");
     }
 
     const TID: u32 = 1;

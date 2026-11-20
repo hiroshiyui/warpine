@@ -179,13 +179,14 @@ impl super::Loader {
                             std::thread::spawn(move || relay_pipe_to_vio(pipe, shared_out))
                         });
 
+                        let host = child.id();
                         let status = child.wait();
 
                         if let Some(t) = stdout_thread { let _ = t.join(); }
 
                         match status {
                             Ok(status) => {
-                                let exit_code = status.code().unwrap_or(1) as u32;
+                                let exit_code = self.shared.child_exit_code(host, status).unwrap_or(1);
                                 if p_res != 0 {
                                     self.guest_write::<u32>(p_res, 0);
                                     self.guest_write::<u32>(p_res + 4, exit_code);
@@ -289,6 +290,7 @@ impl super::Loader {
                 let status = {
                     let mut procs = self.shared.process_mgr.lock_or_recover();
                     let Some(child) = procs.children.get_mut(&target_pid) else { return ERROR_INVALID_HANDLE };
+                    let host = child.id();
                     match child.try_wait() {
                         Ok(Some(status)) => {
                             procs.take_child(target_pid);
@@ -296,7 +298,8 @@ impl super::Loader {
                             // on its own at the closed pipe's EOF. Joining it here
                             // could deadlock with the renderer over console_mgr.
                             drop(procs.take_relay_thread(target_pid));
-                            status
+                            drop(procs);
+                            self.shared.child_exit_code(host, status).unwrap_or(1)
                         }
                         Ok(None) => {
                             if option == 1 {
@@ -311,7 +314,7 @@ impl super::Loader {
                         Err(_) => return ERROR_INVALID_HANDLE,
                     }
                 };
-                let code = status.code().unwrap_or(1) as u32;
+                let code = status;
                 if p_res != 0 {
                     self.guest_write::<u32>(p_res, self.child_termination_code(target_pid, code));
                     self.guest_write::<u32>(p_res + 4, code);
@@ -326,7 +329,8 @@ impl super::Loader {
                 // Bound first: the guard of an `if let` scrutinee lives through the
                 // block, which locks process_mgr again (a deadlock before).
                 let finished = self.shared.process_mgr.lock_or_recover().wait_any();
-                if let Some((pid, code)) = finished {
+                if let Some((pid, host, status)) = finished {
+                    let code = self.shared.child_exit_code(host, status).unwrap_or(1) as i32;
                     drop(self.shared.process_mgr.lock_or_recover().take_relay_thread(pid));
                     if p_res != 0 {
                         self.guest_write::<u32>(p_res, self.child_termination_code(pid, code as u32));
@@ -345,7 +349,8 @@ impl super::Loader {
                     // Bound first: the guard of an `if let` scrutinee lives through the
                     // block, which locks process_mgr again (a deadlock before).
                     let finished = self.shared.process_mgr.lock_or_recover().wait_any();
-                    if let Some((pid, code)) = finished {
+                    if let Some((pid, host, status)) = finished {
+                        let code = self.shared.child_exit_code(host, status).unwrap_or(1) as i32;
                         drop(self.shared.process_mgr.lock_or_recover().take_relay_thread(pid));
                         if p_res != 0 {
                             self.guest_write::<u32>(p_res, self.child_termination_code(pid, code as u32));
@@ -573,9 +578,9 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(100));
         let result = mgr.wait_any();
         assert!(result.is_some());
-        let (rpid, code) = result.unwrap();
+        let (rpid, _, status) = result.unwrap();
         assert_eq!(rpid, pid);
-        assert_eq!(code, 0);
+        assert_eq!(status.code(), Some(0));
     }
 
     /// DosWaitChild(DCWA_PROCESSTREE) returns once a child ends. It used to

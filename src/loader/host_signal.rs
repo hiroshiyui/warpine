@@ -169,6 +169,19 @@ pub fn send_to_process(host_pid: u32, os2_signal: u32) -> bool {
     unsafe { libc::kill(pid, sig) == 0 }
 }
 
+/// Send OS/2 signal exception `os2_signal` to the host process `pid`
+/// started at `start` (a session record, `session_threads.rs`): through a
+/// pidfd, after checking that the process holding the pid is still that
+/// one, so a reused pid is never signalled. False when it is not there.
+pub fn send_to_identity(pid: u32, start: u64, os2_signal: u32) -> bool {
+    let Some(sig) = host_signal_for(os2_signal) else { return false };
+    let Some(handle) = ProcessHandle::open(pid) else { return false };
+    // The pidfd holds the process it was opened on; the start time says
+    // it is the recorded one.
+    if super::session_threads::proc_start_time(pid) != Some(start) { return false; }
+    handle.send(sig)
+}
+
 /// A child process held by a pidfd (Linux 5.3+): what is sent through it
 /// reaches exactly that process, never one that reused its pid.
 #[derive(Debug)]
