@@ -71,6 +71,14 @@ impl CmdShell {
             Ok(b) => b,
             Err(e) => return failed(self, &format!("Cannot open script: {e}")),
         };
+        // A script whose first line starts with `/*` is REXX (ADR-0083):
+        // its argument string is its arguments as typed.
+        if super::rexx_host::is_rexx(&bytes) {
+            let os2_name = self.find_program_with_name(&params[0]).map_or_else(|| params[0].to_ascii_uppercase(), |(_, _, n)| n);
+            let args = params[1..].join(" ");
+            let rc = self.run_rexx(&bytes, &os2_name, &args);
+            return ScriptEnd { rc, exit: false };
+        }
         // A script is text in the process codepage.
         let codepage = self.shared.active_codepage.load(Ordering::Relaxed);
         let text = crate::loader::codepage::cp_decode(&bytes, codepage);

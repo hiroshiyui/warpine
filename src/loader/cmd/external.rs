@@ -42,6 +42,12 @@ impl CmdShell {
     /// each directory of `PATH`. Without an extension, `.EXE` is tried
     /// before `.CMD`. Returns its host path and whether it is a script.
     pub(super) fn find_program(&self, name: &str) -> Option<(std::path::PathBuf, bool)> {
+        self.find_program_with_name(name).map(|(path, script, _)| (path, script))
+    }
+
+    /// `find_program`, with the OS/2 path it was found at (fully
+    /// qualified: `C:\BIN\TOOL.CMD`).
+    pub(super) fn find_program_with_name(&self, name: &str) -> Option<(std::path::PathBuf, bool, String)> {
         let has_dir = name.contains(['\\', '/', ':']);
         let file = name.rsplit(['\\', '/', ':']).next().unwrap_or(name);
         let candidates: Vec<String> = if file.contains('.') {
@@ -56,12 +62,17 @@ impl CmdShell {
             dirs.extend(path.split(';').map(str::trim).filter(|d| !d.is_empty())
                 .map(|d| if d.ends_with(['\\', '/']) { d.to_string() } else { format!("{d}\\") }));
         }
+        let current = self.current_path();
         let dm = self.shared.drive_mgr.lock_or_recover();
         dirs.iter().flat_map(|dir| candidates.iter().map(move |c| format!("{dir}{c}")))
-            .find_map(|os2_path| dm.resolve_to_host_path(&os2_path).filter(|p| p.is_file()))
-            .map(|p| {
+            .find_map(|os2_path| dm.resolve_to_host_path(&os2_path).filter(|p| p.is_file()).map(|p| (p, os2_path)))
+            .map(|(p, os2_path)| {
                 let is_script = p.extension().is_some_and(|e| e.eq_ignore_ascii_case("cmd"));
-                (p, is_script)
+                // A relative name is in the current directory.
+                let full = if os2_path.contains(':') { os2_path } else if os2_path.starts_with('\\') {
+                    format!("{}{os2_path}", &current[..2])
+                } else if current.ends_with('\\') { format!("{current}{os2_path}") } else { format!("{current}\\{os2_path}") };
+                (p, is_script, full.to_ascii_uppercase())
             })
     }
 

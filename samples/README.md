@@ -131,6 +131,15 @@ make -C samples/<name>      # Build a single sample
 | socket_test | TCP/IP smoke test over loopback through SO32DLL loaded with DosLoadModule: socket, options, bind, listen, select, connect, accept, send / recv, name lookup | DosLoadModule, DosQueryProcAddr, sock_init, socket, setsockopt / getsockopt, bind, listen, select, connect, accept, send, recv, soclose, gethostbyname, getservbyname, sock_errno |
 | cmd_test | `test.cmd`: a CMD.EXE script for the built-in shell (not a compiled program) exercising built-in commands, redirection (`>`, `>>`, `<`) and pipes; run with `cargo run -- CMD.EXE /C samples/cmd_test/test.cmd` | built-in CMD.EXE |
 
+## REXX scripts
+
+`samples/rexx_scripts` holds REXX `.CMD` scripts (their first line is a `/* … */` comment) for the built-in CMD.EXE's interpreter, run by integration tests with `samples/cmd_tool` as `C:\TOOL.EXE`.
+
+| Script | What it exercises |
+|--------|-------------------|
+| rexxtest.cmd, rexxhelp.cmd | R1's language core in 16 ok/FAIL checks: arguments, PARSE SOURCE, arithmetic and NUMERIC DIGITS, strings and words, DO, stems, PROCEDURE, templates, SELECT, INTERPRET, the queue, a command's RC, an external routine (`rexxhelp.cmd`), SIGNAL; ends with EXIT (ADR-0083; `test_rexx_script_language_core`) |
+| rexxask.cmd | PULL and PARSE PULL reading the shell's piped input, and the report of a REXX error (`test_rexx_pull_and_error_report`) |
+
 ## CMD.EXE scripts
 
 `samples/cmd_scripts` holds `.CMD` scripts for the built-in CMD.EXE. They need no build: an integration test copies them to a temporary drive C, with `samples/cmd_tool` as `C:\TOOL.EXE`, and runs them with `CMD.EXE /C`.

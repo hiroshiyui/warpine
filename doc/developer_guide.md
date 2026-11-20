@@ -1209,6 +1209,22 @@ All paths converge on:
 
 `CmdShell` holds an `Arc<SharedState>` and has no vCPU — all I/O goes through `SharedState` managers directly.
 
+### The REXX interpreter
+
+`src/loader/rexx/` is a REXX interpreter that knows nothing of the shell: it talks to it through `interp::Host` (SAY, commands, input, interruption, the clock, external routines, the environment). The modules (ADR-0083):
+
+| Module | What it holds |
+|--------|---------------|
+| `number.rs` | `Num`: decimal arithmetic rounded to NUMERIC DIGITS, REXX's number syntax and notation |
+| `lexer.rs` | tokens and clauses (comments, strings, hex / binary strings, continuation) |
+| `expr.rs` | the expression tree and its precedence parser |
+| `program.rs` | clauses into a flat list of instructions with jump tables (IF, DO, SELECT, WHEN, labels) |
+| `interp.rs` | the run loop, variables (scopes, stems, EXPOSE), routines, DO loops, PARSE sources, limits, error texts |
+| `template.rs` | PARSE templates |
+| `builtins.rs` | the built-in functions |
+
+A program runs as `run_program(host, source, name, args, call_type)`; errors come back as `RexxError` (number, line, detail), and an EXIT inside a routine travels up as one with `exit` set. Tests in `rexx.rs` run programs through a `TestHost`.
+
 ### Modules and a command line's way through them
 
 The shell is `cmd.rs` (the `CmdShell` state, dispatch and the `Loader` entry points) and eight modules under `cmd/` (ADR-0077–0080):
@@ -1220,6 +1236,7 @@ The shell is `cmd.rs` (the `CmdShell` state, dispatch and the `Loader` entry poi
 | `env.rs` | the shell's own environment (`env_set`, its limits), `env_block` for children, `expand_vars` |
 | `builtins.rs` | `DIR`, `CD`, `SET`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `HELP` |
 | `prompt.rs` | `render_prompt`: PROMPT's `$` codes |
+| `rexx_host.rs` | REXX scripts: `is_rexx`, `run_rexx` (on a thread with a 64 MiB stack), the shell as the interpreter's `Host` |
 | `files.rs` | `COPY` (joining with `+`), `REN`, `MOVE`: sources through `matching_files`, targets through `apply_edit_name` |
 | `external.rs` | `find_program` (current directory, then `PATH`), `exec_external`, `child_command` (environment, directories, admission), `spawn_external`, `cmd_detach`, `wait_child` |
 | `input.rs` | the line editor and history |

@@ -109,6 +109,7 @@ mod pm_filedlg;
 mod pm_fontdlg;
 mod seh;
 mod cmd;
+pub mod rexx;
 pub mod threads;
 mod host_signal;
 pub(crate) mod signals;

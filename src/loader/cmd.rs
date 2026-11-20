@@ -27,6 +27,7 @@ mod files;
 mod input;
 mod parse;
 mod prompt;
+mod rexx_host;
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;

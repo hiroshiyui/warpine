@@ -266,6 +266,30 @@ A script runs line by line, in OS/2's batch syntax (ADR-0078):
 
 A false `IF` leaves the return code as it was. Batch commands that only make sense in a script (`GOTO`, `SHIFT`, `SETLOCAL`, `ENDLOCAL`) do nothing at the prompt.
 
+### REXX scripts
+
+A `.CMD` file whose first line starts with `/*` runs as REXX, in Warpine's own interpreter (ADR-0081, ADR-0083):
+
+```
+/* hello.cmd */
+'@ECHO OFF'
+parse arg who
+say 'Hello,' who
+'TOOL exit 3'
+say 'RC was' rc
+exit 0
+```
+
+- **The language core (R1):**
+  - **Numbers:** decimal arithmetic rounded to `NUMERIC DIGITS` (9 by default);
+  - **Instructions:** all of REXX's (`IF`, `DO`, `SELECT`, `CALL`, `PROCEDURE EXPOSE`, `SIGNAL`, `INTERPRET`, `PARSE` with full templates, `PUSH` / `QUEUE` / `PULL`, `ADDRESS`, `NUMERIC`); `TRACE` is accepted and ignored;
+  - **Built-in functions:** the string, word, conversion, number and information functions; DATE and TIME use the session clock; `VALUE(name, new, 'OS2ENVIRONMENT')` reads and sets the shell's variables.
+- **Commands.** A clause that is not REXX is a command for `ADDRESS CMD`, this shell. `RC` takes its return code. While ECHO is on, the shell echoes it with the prompt, hence `'@ECHO OFF'`.
+- **Routines.** A function or routine not found as a label or built-in is looked for as another REXX `.CMD` file (current directory, then `PATH`).
+- **The return code.** The script's `EXIT` value, if a whole number, is its return code.
+- **Errors.** An error writes the failing line and `REXnnnn: Error n running C:\NAME.CMD, line l: text`, and its number becomes the return code.
+- **Not yet (R2):** stream I/O, conditions (`SIGNAL ON`), `TRACE` output, REXXUTIL.
+
 ### Command lines
 
 The shell follows OS/2's CMD.EXE syntax (ADR-0077). A line is processed in this order:

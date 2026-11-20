@@ -784,6 +784,40 @@ fn test_cmd_pipeline_stages_run_together() {
     assert_in_order(&out, &["stopped\r\n", "cmd_tool: count 7\r\n", "cmd_tool: count 7\r\n"]);
 }
 
+/// samples/rexx_scripts/rexxtest.cmd: a REXX script (its first line is a
+/// comment) runs in the built-in CMD.EXE's interpreter — arguments, PARSE
+/// SOURCE, arithmetic, strings, loops, stems, procedures, templates,
+/// SELECT, INTERPRET, the queue, a command's RC from an OS/2 program, an
+/// external REXX routine and SIGNAL — and ends with its EXIT value (R1,
+/// ADR-0083).
+#[test]
+fn test_rexx_script_language_core() {
+    let Some((code, out, _dir)) = run_cmd_headless(&["/C", "REXXTEST.CMD alpha beta"], b"", |c| {
+        for name in ["rexxtest.cmd", "rexxhelp.cmd"] {
+            std::fs::copy(format!("samples/rexx_scripts/{name}"), c.join(name.to_ascii_uppercase())).unwrap();
+        }
+    }) else { return };
+    let out = strip_ansi(&out);
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("rexxtest: done 16/16"), "{out}");
+    assert_eq!(code, Some(0), "EXIT total - passed:\n{out}");
+    assert!(!out.contains("TOOL exit"), "'@echo off' hides the commands:\n{out}");
+}
+
+/// samples/rexx_scripts/rexxask.cmd: PULL and PARSE PULL read the shell's
+/// piped input, and a REXX error is reported with its line and number, as
+/// OS/2 does; the error number is the script's return code (ADR-0083).
+#[test]
+fn test_rexx_pull_and_error_report() {
+    let Some((code, out, _dir)) = run_cmd_headless(&["/C", "echo first Line| REXXASK.CMD"], b"", |c| {
+        std::fs::copy("samples/rexx_scripts/rexxask.cmd", c.join("REXXASK.CMD")).unwrap();
+    }) else { return };
+    let out = strip_ansi(&out);
+    assert_in_order(&out, &["upper: FIRST LINE\r\n", "exact: \r\n", "    10 +++ say 1 + \"not a number\"\r\n",
+                            "REX0041: Error 41 running C:\\REXXASK.CMD, line 10: Bad arithmetic conversion"]);
+    assert_eq!(code, Some(41), "{out}");
+}
+
 /// A script's lines are shown after the prompt while ECHO is on, as the
 /// shell runs them; `@` and ECHO OFF hide them (ADR-0078).
 #[test]
