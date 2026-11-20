@@ -247,7 +247,10 @@ impl CmdShell {
         let Some((mut cmd, slot)) = self.child_command(&path, &arg_refs) else { return };
         if !inherit_env {
             let codepage = self.shared.active_codepage.load(Ordering::Relaxed);
-            let default = parse_env(DEFAULT_SHELL_ENV);
+            // The environment CONFIG.SYS gives (`config_sys.rs`).
+            let default: Vec<String> = self.shared.initial_environment().iter()
+                .map(|s| crate::loader::codepage::cp_decode(s, codepage)).collect();
+            let default = parse_env(&default);
             cmd.env(crate::loader::inherit::ENV_ENV, crate::loader::inherit::escape(&env_block(&default, codepage)));
         }
         // A session of its own: no GUI script of this one's (tests), the

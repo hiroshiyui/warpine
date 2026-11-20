@@ -49,7 +49,7 @@ const MAX_CAPTURED_OUTPUT: usize = 16 * 1024 * 1024;
 use super::{SharedState, KbdKeyInfo};
 use super::mutex_ext::MutexExt;
 use super::constants::*;
-use env::{env_block, env_set, expand_vars, parse_env, EnvError, DEFAULT_SHELL_ENV};
+use env::{env_block, env_set, expand_vars, parse_env, EnvError};
 use parse::first_word;
 use parse::{parse_command, parse_shell_flags, split_chain, tokenize, Chain, ParsedCommand};
 
@@ -613,11 +613,10 @@ impl super::Loader {
         // The OS/2 environment a parent passed, else Warpine's default —
         // never the host's.
         let codepage = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        // The parent's environment, else CONFIG.SYS's (`config_sys.rs`).
         let given = self.shared.startup.lock_or_recover().env.clone();
-        let strings: Vec<String> = match given {
-            Some(env) => env.iter().map(|s| super::codepage::cp_decode(s, codepage)).collect(),
-            None => DEFAULT_SHELL_ENV.iter().map(|s| s.to_string()).collect(),
-        };
+        let env = given.unwrap_or_else(|| self.shared.initial_environment());
+        let strings: Vec<String> = env.iter().map(|s| super::codepage::cp_decode(s, codepage)).collect();
         let mut shell = CmdShell::new(Arc::clone(&self.shared), parse_env(&strings));
         shell.run(&args)
     }

@@ -63,7 +63,7 @@ _Screenshots captured from commit `df07985` (v0.0.6) on 2026-11-20; the CMD.EXE 
 - **Filesystem:** HPFS-compatible VFS (`VfsBackend` trait) with `HostDirBackend`: case-insensitive lookup, extended attributes (xattrs + sidecar), file locking, OS/2 wildcard matching, sandbox isolation. C: drive auto-mounted at `~/.local/share/warpine/drive_c/`.
 - **Memory Management:** `DosAllocMem`/`DosFreeMem`, shared memory between the processes of a session, `DosSub*` suballocation (bookkeeping kept by Warpine), guest physical memory manager.
 - **IPC and threads:** Event / mutex / muxwait semaphores with their queries, critical sections, DOS timers posting semaphores, exit lists (`DosExitList`), per-thread exception handlers, anonymous and named pipes (also between Warpine processes), and named message queues.
-- **Process Management:** `DosExecPgm` and `WinStartApp` (the child gets its arguments, environment and inheritable pipe handles; a program cannot start Warpine processes more than 8 levels deep or keep more than 16 children, and `THREADS=` in `C:\CONFIG.SYS` bounds the threads of the whole session), `DosWaitChild`, `DosSearchPath`, `DosQueryModuleName`, directory tracking, system information queries.
+- **Process Management:** `DosExecPgm` and `WinStartApp` (the child gets its arguments, environment and inheritable pipe handles; a program cannot start Warpine processes more than 8 levels deep or keep more than 16 children, and `THREADS=` in `C:\CONFIG.SYS` bounds the threads of the whole session), DLLs found along `LIBPATH=` and BEGINLIBPATH / ENDLIBPATH, a starting environment from CONFIG.SYS's `SET` statements, `DosWaitChild`, `DosSearchPath`, `DosQueryModuleName`, directory tracking, system information queries.
 - **Profiles and help:** `Prf*` profile calls with OS2.INI / OS2SYS.INI on drive C: (in Warpine's own text format), and Help Manager instances so programs with online help start (no help viewer yet).
 - **NLS:** `DosQueryCtryInfo`, `DosQueryCp`, `DosMapCase`, `DosGetDateTime` — verified correct.
 - **Dates after 2038:** a session clock that `DosSetDateTime` moves (the host clock is never touched) and `WARPINE_CLOCK=2040-03-01` starts anywhere; file times in local time up to the `FDATE` limit 2107, set by `DosSetFileInfo` / `DosSetPathInfo`; `WARPINE.DLL` offers 64-bit time calls (`WrpTime64` …) to programs that can be recompiled.
@@ -193,6 +193,8 @@ samples/               OS/2 sample applications and build scripts
   datetime_test/       Dates after 2038: session clock, DosSetDateTime, file times, WARPINE.DLL
   infoseg_test/        DosGetInfoSeg global and local information segments, a running clock
   fileattr_test/       FILE_READONLY by path, handle and DosSetFileMode; read-only files not deletable
+  attr_test/           Hidden, system and archive kept and reported, archive on write, carried by DosCopy
+  libpath_test/        CONFIG.SYS LIBPATH and SET: the DLL search order and the starting environment
   pm_child_dialog_test/ A dialog embedded in a client window (WinLoadDlg with the client as parent)
   pm_embdlg_test/      An embedded dialog's title bar and border, Tab across its edge, the pointer reaching its own windows
   pm_notebook_test/    WC_NOTEBOOK: pages, major / minor tabs, notifications, embedded page dialogs
@@ -351,7 +353,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 2171 unit tests (no KVM required)
+cargo test                        # 2177 unit tests (no KVM required)
 cargo test --test integration     # 182 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```

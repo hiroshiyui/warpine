@@ -474,6 +474,9 @@ pub struct SharedState {
     /// Ring buffer of the last 256 OS/2 API calls — always populated,
     /// regardless of log level, so crash dumps include full call history.
     pub api_ring: Mutex<ApiRingBuffer>,
+    /// Drive C's CONFIG.SYS, read once when first needed
+    /// ([`SharedState::config_sys`], `config_sys.rs`).
+    pub config_sys_cell: std::sync::OnceLock<Arc<config_sys::ConfigSys>>,
     /// Extended LIBPATH prepended to LIBPATH (BEGINLIBPATH).
     pub begin_libpath: Mutex<String>,
     /// Extended LIBPATH appended after LIBPATH (ENDLIBPATH).
@@ -591,6 +594,7 @@ impl Loader {
             mou_mgr: Mutex::new(moucalls::MouManager::new()),
             mou_cond: Condvar::new(),
             api_ring: Mutex::new(ApiRingBuffer::new()),
+            config_sys_cell: std::sync::OnceLock::new(),
             begin_libpath: Mutex::new(String::new()),
             end_libpath: Mutex::new(String::new()),
             gdb_state: None,
@@ -709,6 +713,7 @@ impl Loader {
             mou_mgr:      Mutex::new(moucalls::MouManager::new()),
             mou_cond:     Condvar::new(),
             api_ring:     Mutex::new(ApiRingBuffer::new()),
+            config_sys_cell: std::sync::OnceLock::new(),
             begin_libpath: Mutex::new(String::new()),
             end_libpath:  Mutex::new(String::new()),
             gdb_state:    None,

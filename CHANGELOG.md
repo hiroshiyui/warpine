@@ -7,6 +7,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **CONFIG.SYS `LIBPATH` and `SET`** (ADR-0092):
+  - DLLs are searched along BEGINLIBPATH, the program's own directory, CONFIG.SYS's `LIBPATH=` (else `C:\OS2\DLL`) and ENDLIBPATH. `DosSetExtLIBPATH` used to store the extended paths without the search using them.
+  - `SET` statements make the environment a program starts with when no parent gives one: 32-bit and 16-bit programs, CMD.EXE, and CMD's `START`.
+  - `DosQueryExtLIBPATH` returns the path in the program's codepage.
+
+  Sample: `samples/libpath_test`.
 - **File attributes** (ADR-0091): hidden, system and archive are kept, as one byte in the extended attribute `user.warpine.attr` or in an `.os2ea` sidecar, and reported by `DosQueryPathInfo` / `DosFindFirst`, whose filter now sees them. Opening a file for writing archives it again. `DosCopy` carries the EAs and attributes, and a rename takes the sidecars along. Sample: `samples/attr_test`.
 - **Whole exit codes and signals between processes** (ADR-0090):
   - A child's whole exit code (`DosExit`'s ULONG) reaches its parent in `RESULTCODES`, `WM_APPTERMINATENOTIFY` and CMD's ERRORLEVEL. A host exit status carries only 8 bits, so the child reports the code on a pipe its parent gives it.

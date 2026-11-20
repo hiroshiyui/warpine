@@ -347,7 +347,7 @@ Other drives (A:–B:, D:–Z:) are not mounted by default.
 
 ### CONFIG.SYS: THREADS=
 
-Warpine reads `C:\CONFIG.SYS` (on drive C as mapped above) at the start of a session — only reads it: the file is never written or created. Of its statements only `THREADS=n` is used: the most threads the whole session runs at once, counted over all its processes (the first one and every process started by `DosExecPgm`, `WinStartApp` or CMD.EXE; each needs one thread for its thread 1).
+Warpine reads `C:\CONFIG.SYS` (on drive C as mapped above) when a process starts; it never writes or creates the file. It uses three statements: `THREADS=` here, and [`LIBPATH=` and `SET`](#configsys-libpath-and-set) below. `THREADS=n` is the most threads the whole session runs at once, counted over all its processes (the first one and every process started by `DosExecPgm`, `WinStartApp` or CMD.EXE; each needs one thread for its thread 1).
 
 | | |
 |---|---|
@@ -367,6 +367,33 @@ At the limit:
 | A Warpine process that finds no slot at its start | exit code 89 before any guest code runs |
 
 Ending threads and processes give their slots back — also a process killed by a signal (its record is recognised as stale). Warpine's own limits on process nesting (`WARPINE_DEPTH`) still apply as well.
+
+### CONFIG.SYS: LIBPATH and SET
+
+`LIBPATH=dir;dir;…` lists the directories searched for DLLs (ADR-0092). `DosLoadModule` and a program's imports look for a module named without a path in these places, in order:
+
+1. BEGINLIBPATH, as set by `DosSetExtLIBPATH(…, BEGIN_LIBPATH)`;
+2. the program's own directory (Warpine's addition: OS/2 searches it only when LIBPATH lists it);
+3. the `LIBPATH=` directories, or `C:\OS2\DLL` without the statement;
+4. ENDLIBPATH, as set by `DosSetExtLIBPATH(…, END_LIBPATH)`.
+
+Each directory is an OS/2 path on a mounted drive, with `.` meaning the current directory. Names match as they do on the drive, and an entry cannot lead outside the drives. Up to 64 directories of up to 260 bytes are used.
+
+`SET name=value` puts a variable in the environment a program starts with when no other program gives it one. This applies to the first program of a session, a CMD.EXE nobody started, and CMD's `START` without `/I`. That environment is Warpine's base, `PATH=C:\`, `COMSPEC=C:\CMD.EXE`, `OS=OS2` and `TMP=C:\TMP`, with the `SET` statements applied in order:
+- the name is upper-cased;
+- a later statement replaces an earlier one;
+- an empty value removes the variable;
+- `%name%` is left as written.
+
+A program started by another gets its parent's environment, as before.
+
+Each Warpine process reads CONFIG.SYS once, when it starts, so an edit applies to programs started afterwards. On OS/2 an edit needs a reboot.
+
+```
+LIBPATH=.;C:\OS2\DLL;C:\MYAPP\DLL
+SET PATH=C:\OS2;C:\MYAPP
+SET HELP=C:\MYAPP\HELP
+```
 
 ### Path Translation
 

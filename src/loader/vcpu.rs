@@ -75,8 +75,7 @@ impl super::Loader {
         // The program's OS/2 name (also what DosQueryModuleName reports).
         // The environment (a parent's, else Warpine's default), the
         // program's full name, then the command line (`inherit.rs`).
-        let (env_block, cmdline_offset) = self.startup_block(&[
-            b"PATH=C:\\", b"COMSPEC=C:\\CMD.EXE", b"OS=OS2", b"TMP=C:\\TMP"]);
+        let (env_block, cmdline_offset) = self.startup_block();
         let cmdline_offset = cmdline_offset as u32;
         // Allocate env block via memory manager so it's properly tracked
         let env_addr = self.shared.mem_mgr.lock_or_recover()

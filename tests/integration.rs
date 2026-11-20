@@ -852,6 +852,32 @@ fn test_file_attributes_are_kept() {
     assert_eq!(code, 0, "{out}");
 }
 
+/// libpath_test (ADR-0092): CONFIG.SYS's SET statements make the starting
+/// environment; DLLs are found along BEGINLIBPATH, LIBPATH (`.` the
+/// current directory) and ENDLIBPATH, in that order.
+#[test]
+fn test_config_sys_libpath_and_set() {
+    let sample = "samples/libpath_test/libpath_test.exe";
+    let dll = "samples/dll_noinit/noinit.dll";
+    if !kvm_available() || !Path::new(sample).exists() || !Path::new(dll).exists() { return; }
+    let data = tempfile::tempdir().expect("tempdir");
+    let c = data.path().join("warpine/drive_c");
+    for dir in ["LIBA", "LIBB", "END", "BEGIN"] {
+        std::fs::create_dir_all(c.join(dir)).unwrap();
+    }
+    for copy in ["LIBB/K3LIB.DLL", "K3DOT.DLL", "END/K3END.DLL", "BEGIN/K3BOTH.DLL", "LIBB/K3BOTH.DLL"] {
+        std::fs::copy(dll, c.join(copy)).unwrap();
+    }
+    std::fs::write(c.join("CONFIG.SYS"), concat!(
+        "REM Warpine's libpath_test\r\n", "LIBPATH=C:\\LIBA;C:\\LIBB;.\r\n",
+        "SET K3VAR=from config.sys\r\n", "SET PATH=C:\\BIN;C:\\\r\n", "SET TMP=\r\n")).unwrap();
+    let home = data.path().to_str().unwrap();
+    let (out, code) = run_sample_env(sample, 30, &[("XDG_DATA_HOME", home)]);
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("libpath_test: done 14/14"), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
 /// proc_test: a child's whole exit code reaches its parent (EXEC_SYNC,
 /// DosWaitChild for one child and for any), and DosSendSignalException
 /// reaches the parent and a sibling of the session (ADR-0090). The sample

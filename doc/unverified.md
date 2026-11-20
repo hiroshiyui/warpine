@@ -317,4 +317,4 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - a class without a version accepting any; `somTestCls`'s error code; the text of a kept `somAssert`; `somCheckArgs`'s levels;
   - `dataAlignment` 4, `classInfo` and the protected data 0.
 
-- **CONFIG.SYS**: the `THREADS=` minimum, duplicates and comments.
+- **CONFIG.SYS**: the `THREADS=` minimum, duplicates and comments; for `LIBPATH` and `SET`, see ADR-0092 (the program's own directory searched, a read per process, the `SET` name and value rules, Warpine's base environment).

@@ -7,9 +7,6 @@
 pub(super) const MAX_ENV_VARS: usize = 1024;
 pub(super) const MAX_ENV_BYTES: usize = 64 * 1024;
 
-/// The OS/2 environment of a shell no program started: Warpine's default.
-pub(super) const DEFAULT_SHELL_ENV: &[&str] = &["PATH=C:\\", "COMSPEC=C:\\CMD.EXE", "OS=OS2", "TMP=C:\\TMP"];
-
 /// `NAME=value` strings as (name, value) pairs; strings without `=` are dropped.
 pub(super) fn parse_env<S: AsRef<str>>(strings: &[S]) -> Vec<(String, String)> {
     strings.iter().filter_map(|s| {

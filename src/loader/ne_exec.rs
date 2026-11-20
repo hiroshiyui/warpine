@@ -152,8 +152,7 @@ impl super::Loader {
     /// Set up guest memory for an NE executable and return (entry_cs_sel, entry_ip, ss_sel, sp).
     fn setup_guest_ne(&self, ne_file: &NeFile) -> (u16, u16, u16, u16) {
         // Reuse common setup: TIB, PIB, environment, BDA
-        let (env_block, cmdline_offset) = self.startup_block(&[
-            b"PATH=C:\\", b"COMSPEC=C:\\CMD.EXE", b"OS=OS2"]);
+        let (env_block, cmdline_offset) = self.startup_block();
         let cmdline_offset = cmdline_offset as u32;
         let env_addr = self.shared.mem_mgr.lock_or_recover()
             .alloc(env_block.len() as u32)

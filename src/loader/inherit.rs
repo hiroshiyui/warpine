@@ -646,10 +646,10 @@ impl super::Loader {
     /// `process_block`): the parent's environment or `default_env`, the
     /// program's OS/2 name, and the command line the parent gave (else
     /// the program name and the arguments from the host command line).
-    pub(crate) fn startup_block(&self, default_env: &[&[u8]]) -> (Vec<u8>, usize) {
+    pub(crate) fn startup_block(&self) -> (Vec<u8>, usize) {
         let os2_exe = self.os2_exe_path();
         let st = self.shared.startup.lock_or_recover().clone();
-        let env = st.env.unwrap_or_else(|| default_env.iter().map(|s| s.to_vec()).collect());
+        let env = st.env.unwrap_or_else(|| self.shared.initial_environment());
         let arg0 = st.arg0.unwrap_or_else(|| os2_exe.as_bytes().to_vec());
         process_block(&env, os2_exe.as_bytes(), &arg0, &st.args)
     }

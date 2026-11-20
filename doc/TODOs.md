@@ -193,9 +193,10 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 - [ ] **Profiles**:
   - `PrfQueryProfile`, `PrfReset`, the program-list calls, the `PRF16*` / `WIN16*` exports;
   - binary OS/2 INI files (format unpublished).
-- [ ] **CONFIG.SYS**:
+- [ ] **CONFIG.SYS** (ADR-0032, 0092):
   - check the `THREADS=` minimum (32 or 64?) and the parsing rules against the IBM Command Reference;
-  - `LIBPATH`, `MAXWAIT`, `SET`, ….
+  - BEGINLIBPATH / ENDLIBPATH passed to child processes, `%BEGINLIBPATH%` / `%ENDLIBPATH%` expanded by `DosSetExtLIBPATH`;
+  - `MAXWAIT`, `DPATH` use, ….
 - [ ] **Compatibility chart** (ADR-0033):
   - date the 22 `unknown` exports;
   - check the Warp 3 data;

@@ -1278,9 +1278,14 @@ impl super::Loader {
             END_LIBPATH   => self.shared.end_libpath.lock_or_recover().clone(),
             _             => return ERROR_INVALID_FUNCTION,
         };
-        self.guest_write_bytes(psz_path, stored.as_bytes());
-        self.guest_write::<u8>(psz_path + stored.len() as u32, 0); // NUL terminator
-        NO_ERROR
+        // In the codepage it was set in, NUL-terminated.
+        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let mut bytes = super::codepage::cp_encode(&stored, cp);
+        bytes.push(0);
+        match self.guest_write_bytes(psz_path, &bytes) {
+            Some(()) => NO_ERROR,
+            None => ERROR_INVALID_PARAMETER,
+        }
     }
 }
 
@@ -1515,6 +1520,14 @@ mod tests {
 
         // Invalid flag
         assert_ne!(loader.dos_query_ext_libpath(out_buf, 99), NO_ERROR);
+
+        // A name outside ASCII comes back in the guest's codepage (437:
+        // é is 0x82), as it was set, not as UTF-8.
+        loader.shared.active_codepage.store(437, std::sync::atomic::Ordering::Relaxed);
+        loader.guest_write_bytes(buf, b"C:\\CAF\x82\0");
+        assert_eq!(loader.dos_set_ext_libpath(buf, BEGIN_LIBPATH), NO_ERROR);
+        assert_eq!(loader.dos_query_ext_libpath(out_begin, BEGIN_LIBPATH), NO_ERROR);
+        assert_eq!(loader.guest_read_bytes(out_begin, 8).as_deref(), Some(&b"C:\\CAF\x82\0"[..]));
     }
 
     #[test]

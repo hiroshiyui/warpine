@@ -1467,6 +1467,24 @@ Files and pipes share one handle space, as in OS/2: `DriveManager::alloc_handle`
 
 Every child is a whole Warpine process with its own VM and guest memory (some hundreds of MB), so a program that starts itself — on purpose, or because it misreads its command line — could exhaust the host (a test program that did so once started some 230 Warpine processes before the kernel's OOM killer stopped it). `inherit.rs` bounds this: each child gets its depth in `WARPINE_DEPTH` (the first process is depth 0); `admit_child` (used by `DosExecPgm`, `WinStartApp` and CMD.EXE's external commands before they spawn) refuses a child of a process at `MAX_PROCESS_DEPTH` (8) or of one that already keeps `MAX_LIVE_CHILDREN` (16) children (`DosExecPgm` asynchronous children not yet waited for plus `WinStartApp` applications). The refused call fails: `DosExecPgm` with `ERROR_NO_PROC_SLOTS` (89), `WinStartApp` with `PMERR_CANNOT_START`, CMD.EXE with a message. `main.rs` checks the depth before anything else and ends a process started deeper, or with a malformed `WARPINE_DEPTH`, with exit code `EXIT_NESTING_LIMIT` (89) without running guest code. `clear_parent_vars` keeps `WARPINE_DEPTH`. Tests: `inherit.rs` (`depth_parses_and_bounds`, `children_get_their_depth_within_the_limits`), `samples/nest_test` + `test_nest_test_stops_at_the_nesting_limit` (a program that runs itself with `DosExecPgm` ends after 8 copies).
 
+### CONFIG.SYS: LIBPATH and SET
+
+`config_sys.rs` (ADR-0092):
+- **Parsing.** `ConfigSys::parse` reads `THREADS=`, `LIBPATH=` (`split_path_list`: trimmed, empty entries dropped, `MAX_LIBPATH_ENTRIES` / `MAX_LIBPATH_DIR`) and `SET` (name upper-cased and trimmed, value trimmed).
+- **Environment.** `ConfigSys::environment` applies the `SET` statements to `BASE_ENVIRONMENT` within `inherit::MAX_ENV_BLOCK`.
+- **Caching.** `SharedState::config_sys` reads the file once per process into `config_sys_cell`, taking `drive_mgr` that once.
+
+Users:
+- `inherit::startup_block` (the 32-bit and 16-bit starts), CMD.EXE without a parent environment, and `START` without `/I` take `SharedState::initial_environment`;
+- `join_thread_session` takes its `THREADS=` from the cache.
+
+`lx_loader.rs` `find_dll_path` searches BEGINLIBPATH, the program's host directory, `libpath_dirs()` and ENDLIBPATH. `find_in_os2_dirs` resolves each `dir\NAME.DLL` through `DriveManager::resolve_to_host_path`, so lookup is case-insensitive and stays inside the drives.
+
+Tests:
+- `config_sys.rs`: LIBPATH bounds, SET rules, the environment limit, one read per process;
+- `lx_loader.rs`: `dlls_are_searched_along_the_libpaths`, `libpath_defaults_to_the_system_dll_directory`;
+- `samples/libpath_test` with `test_config_sys_libpath_and_set`, on a prepared temporary drive C.
+
 ### Session thread limit (CONFIG.SYS `THREADS=`)
 
 OS/2 bounds the threads of the whole system with `THREADS=` (64 … 4095, default 64; the lower bound is unverified, some sources say 32). Warpine applies it to a session: the first process and all its descendants.

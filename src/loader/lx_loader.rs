@@ -392,50 +392,60 @@ impl super::Loader {
         Some((module, host.to_string_lossy().into_owned()))
     }
 
-    /// Search for a DLL by module name on the host filesystem.
-    ///
-    /// Search order:
-    /// 1. Same directory as the running exe
-    /// 2. `C:\OS2\DLL\` via the DriveManager host path
+    /// Search for a DLL by module name (ADR-0092), in this order:
+    /// 1. BEGINLIBPATH (`DosSetExtLIBPATH`);
+    /// 2. the running program's own directory (Warpine's: OS/2 finds it
+    ///    only through a LIBPATH entry);
+    /// 3. CONFIG.SYS's `LIBPATH=` (else `C:\OS2\DLL`), `.` being the
+    ///    current directory;
+    /// 4. ENDLIBPATH.
     ///
     /// Only a plain module name is searched: one with a path separator, a
     /// drive, `..` or a control character is not (it would reach outside
-    /// these directories on the host).
+    /// these directories on the host). The directories are OS/2 paths,
+    /// resolved through the drives, so none leads outside them.
     pub fn find_dll_path(&self, dll_name: &str) -> Option<String> {
         if !is_plain_module_name(dll_name) {
             log::warn!("module name {dll_name:?} is not a plain name; not searched");
             return None;
         }
-        // Strip .DLL extension if present, then construct filename
         let upper = dll_name.to_ascii_uppercase();
         let stem = upper.strip_suffix(".DLL").unwrap_or(&upper);
-        let filename_lower = format!("{}.dll", stem.to_ascii_lowercase());
-        let filename_upper = format!("{}.DLL", stem);
+        let file = format!("{stem}.DLL");
+        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
 
-        // 1. Next to the running exe
-        let exe_dir = exe_dir(&self.shared.exe_name.lock_or_recover());
-        if let Some(exe_dir) = exe_dir {
-            for fname in &[filename_lower.as_str(), filename_upper.as_str()] {
-                let p = format!("{}/{}", exe_dir, fname);
-                if Path::new(&p).exists() { return Some(p); }
+        let begin = self.shared.begin_libpath.lock_or_recover().clone();
+        if let Some(p) = self.find_in_os2_dirs(begin.split(';'), &file) { return Some(p); }
+
+        // The program's own directory, on the host.
+        if let Some(exe_dir) = exe_dir(&self.shared.exe_name.lock_or_recover()) {
+            for fname in [file.to_ascii_lowercase(), file.clone()] {
+                let p = format!("{exe_dir}/{fname}");
+                if Path::new(&p).is_file() { return Some(p); }
             }
         }
 
-        // 2. C:\OS2\DLL\ via DriveManager host path
-        let c_host = {
-            let dm = self.shared.drive_mgr.lock_or_recover();
-            dm.drive_config(2).map(|cfg| cfg.host_path.clone())
-        };
-        if let Some(c_root) = c_host {
-            for subdir in &["os2/dll", "OS2/DLL"] {
-                for fname in &[filename_lower.as_str(), filename_upper.as_str()] {
-                    let p = format!("{}/{}/{}", c_root.display(), subdir, fname);
-                    if Path::new(&p).exists() { return Some(p); }
-                }
-            }
-        }
+        let libpath: Vec<String> = self.shared.config_sys().libpath_dirs().iter()
+            .map(|d| super::codepage::cp_decode(d, cp)).collect();
+        if let Some(p) = self.find_in_os2_dirs(libpath.iter().map(String::as_str), &file) { return Some(p); }
 
-        None
+        let end = self.shared.end_libpath.lock_or_recover().clone();
+        self.find_in_os2_dirs(end.split(';'), &file)
+    }
+
+    /// The host path of `file` in the first of the OS/2 directories `dirs`
+    /// that holds it (names matched as the drives match them); blank and
+    /// over-long entries are skipped.
+    fn find_in_os2_dirs<'a>(&self, dirs: impl IntoIterator<Item = &'a str>, file: &str) -> Option<String> {
+        let dm = self.shared.drive_mgr.lock_or_recover();
+        dirs.into_iter().map(str::trim)
+            .filter(|d| !d.is_empty() && d.len() <= super::config_sys::MAX_LIBPATH_DIR)
+            .take(super::config_sys::MAX_LIBPATH_ENTRIES)
+            .find_map(|d| {
+                let sep = if d.ends_with(['\\', '/', ':']) { "" } else { "\\" };
+                let host = dm.resolve_to_host_path(&format!("{d}{sep}{file}"))?;
+                host.is_file().then(|| host.to_string_lossy().into_owned())
+            })
     }
 }
 
@@ -549,6 +559,64 @@ mod tests {
 
     /// DosLoadModule's names: an OS/2 path is resolved through the drives,
     /// inside them only, and names the module by its file.
+    /// The DLL search (ADR-0092): BEGINLIBPATH, the program's directory,
+    /// CONFIG.SYS's LIBPATH (`.` the current directory), ENDLIBPATH; no
+    /// entry leads outside the drives.
+    #[test]
+    fn dlls_are_searched_along_the_libpaths() {
+        use crate::loader::vfs_hostdir::HostDirBackend;
+        let outside = tempfile::TempDir::new().unwrap();
+        std::fs::write(outside.path().join("EVIL.DLL"), b"x").unwrap();
+        let c = tempfile::TempDir::new().unwrap();
+        let exe = tempfile::TempDir::new().unwrap();
+        for dir in ["begin", "liba", "libb", "end", "os2/dll"] {
+            std::fs::create_dir_all(c.path().join(dir)).unwrap();
+        }
+        let put = |path: &str| std::fs::write(c.path().join(path), b"x").unwrap();
+        put("begin/BOTH.DLL"); put("libb/BOTH.DLL");
+        put("libb/Lib.dll"); put("end/END.DLL"); put("libb/END.DLL");
+        put("end/ONLYEND.DLL"); put("DOT.DLL"); put("os2/dll/SYS.DLL");
+        std::fs::write(exe.path().join("own.dll"), b"x").unwrap();
+        put("libb/OWN.DLL");
+        let escape = format!("C:\\..\\{}", outside.path().file_name().unwrap().to_string_lossy());
+        std::fs::write(c.path().join("CONFIG.SYS"),
+            format!("LIBPATH=C:\\NOWHERE\\;{escape};C:\\LIBA;c:\\libb\\;.\r\n")).unwrap();
+
+        let l = crate::loader::Loader::new_mock();
+        l.shared.drive_mgr.lock_or_recover().mount(2, Box::new(HostDirBackend::new(c.path().to_path_buf()).unwrap()));
+        *l.shared.exe_name.lock_or_recover() = exe.path().join("app.exe").to_string_lossy().into_owned();
+        let found = |name: &str| l.find_dll_path(name)
+            .map(|p| p.strip_prefix(&*c.path().to_string_lossy()).map(str::to_string).unwrap_or(p));
+
+        assert_eq!(found("LIB").as_deref(), Some("/libb/Lib.dll"), "LIBPATH, names matched as on drive C");
+        assert_eq!(found("dot.dll").as_deref(), Some("/DOT.DLL"), "`.`: the current directory");
+        assert_eq!(found("SYS"), None, "LIBPATH replaces the default C:\\OS2\\DLL");
+        assert_eq!(found("EVIL"), None, "an entry leading out of drive C");
+        assert!(found("OWN").unwrap().ends_with("own.dll"), "the program's directory before LIBPATH");
+        assert_eq!(found("ONLYEND"), None);
+        assert_eq!(found("END").as_deref(), Some("/libb/END.DLL"));
+
+        *l.shared.begin_libpath.lock_or_recover() = "C:\\BEGIN".into();
+        *l.shared.end_libpath.lock_or_recover() = " ; C:\\END".into();
+        assert_eq!(found("BOTH").as_deref(), Some("/begin/BOTH.DLL"), "BEGINLIBPATH first");
+        assert_eq!(found("ONLYEND").as_deref(), Some("/end/ONLYEND.DLL"), "ENDLIBPATH last");
+        assert_eq!(found("END").as_deref(), Some("/libb/END.DLL"), "LIBPATH before ENDLIBPATH");
+        *l.shared.begin_libpath.lock_or_recover() = escape.clone();
+        assert_eq!(found("EVIL"), None, "BEGINLIBPATH leading out of drive C");
+    }
+
+    /// Without a LIBPATH statement, C:\OS2\DLL is searched.
+    #[test]
+    fn libpath_defaults_to_the_system_dll_directory() {
+        use crate::loader::vfs_hostdir::HostDirBackend;
+        let c = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(c.path().join("OS2/DLL")).unwrap();
+        std::fs::write(c.path().join("OS2/DLL/SYS.DLL"), b"x").unwrap();
+        let l = crate::loader::Loader::new_mock();
+        l.shared.drive_mgr.lock_or_recover().mount(2, Box::new(HostDirBackend::new(c.path().to_path_buf()).unwrap()));
+        assert!(l.find_dll_path("SYS").is_some_and(|p| p.ends_with("OS2/DLL/SYS.DLL")));
+    }
+
     #[test]
     fn module_files_by_os2_path() {
         use crate::loader::vfs_hostdir::HostDirBackend;

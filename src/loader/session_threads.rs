@@ -701,7 +701,7 @@ impl super::Loader {
     /// when the session has no slot left — the process must then end with
     /// [`EXIT_NO_THREAD_SLOT`] before running guest code.
     pub fn join_thread_session(&self) -> bool {
-        let limit = super::config_sys::session_limit(&self.shared.drive_mgr.lock_or_recover());
+        let limit = super::config_sys::session_limit(&self.shared.config_sys());
         let mut session = ThreadSession::for_this_process(limit).with_os2pid(self.shared.process_id());
         let slot = std::env::var(SLOT_ENV).ok();
         if session.join(slot.as_deref()).is_err() {
