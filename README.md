@@ -9,7 +9,13 @@
 
 > ⚠️ **Experimental — not for production use.** Warpine is a research and hobby project, worked on in spare time at an irregular pace. APIs are incomplete, behaviour may be incorrect, and security has not been hardened. Use at your own risk.
 
-Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS/2 1.x (NE format) applications natively on Linux using KVM hardware virtualization. Analogous to WINE for Windows, but targeting OS/2 instead.
+Warpine runs 32-bit OS/2 (LX format) and 16-bit OS/2 1.x (NE format) programs natively on Linux, using KVM hardware virtualization. It works much as WINE does for Windows, but its goal is different.
+
+**The goal: an OS/2-alike API and its runtime environment.**
+- **A foundation for Free Software.** Warpine provides a familiar, robust set of OS/2-style APIs (the Control Program, Presentation Manager, VIO, SOM and more) for new Free Software to build on.
+- **API-compatible, not a clone.** Programs written to the documented OS/2 APIs run on it, but Warpine doesn't recreate OS/2 itself, and running every existing OS/2 application is not a goal.
+- **Legacy applications case by case.** When an existing application matters to people, the work to make it run is done for that application.
+- **Free of proprietary material.** Behaviour comes from public documentation and from what test programs observe (near-clean-room). Anything that would need proprietary intellectual property is left out, not worked around.
 
 ![Warpine's built-in CMD.EXE in its 80×25 text window: the ver command (Warpine OS/2 Compatibility Layer [Builtin CMD.EXE] version 0.0.6) and a dir listing of the empty drive C:, ending at the [C:\\] prompt](doc/screenshots/cmd.png)
 

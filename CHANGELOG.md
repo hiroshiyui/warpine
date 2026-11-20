@@ -14,7 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Changed
 - **`VER` names the release** — the built-in `CMD.EXE`'s `VER` prints the latest release's version number after the shell's name (`… [Builtin CMD.EXE] version 0.0.6`).
-- **Goal stated** — Warpine is an OS/2-alike API and its runtime environment: a familiar, robust API set as the foundation of a Free Software platform, not a clone; compatibility with legacy applications is done case by case, and anything needing proprietary intellectual property is skipped (`CLAUDE.md`).
+- **Goal stated** — Warpine is an OS/2-alike API and its runtime environment: a familiar, robust API set as the foundation of a Free Software platform, not a clone; compatibility with legacy applications is done case by case, and anything needing proprietary intellectual property is skipped (`README.md`, `CLAUDE.md`).
 - **Licence: GPL-3.0-or-later** — Warpine's own code, samples and guest crates move from GPL-3.0-only to GPL-3.0-or-later (ADR-0074, superseding ADR-0002): every source file carries `SPDX-License-Identifier: GPL-3.0-or-later` (the files that had no header now have one), and `Cargo.toml`, the guest crates' manifests and the cargo-deny policy say so. Vendored third-party material keeps its own licence.
 
 ## [0.0.6] - 2026-11-20
