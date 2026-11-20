@@ -1,6 +1,6 @@
 # ADR-0070: SOM.DLL's ordinals 1–47 come from osFree's export list; Warpine's own move to 512–1023
 
-- **Status:** Accepted; amends ADR-0059 (the SOM runtime kernel), on its ordinals. Amended by ADR-0071: the SOM module is 4096 ordinals wide, IBM's later exports have 48–3071, and Warpine's own moved to 3072–4095
+- **Status:** Accepted; amends ADR-0059 (the SOM runtime kernel), on its ordinals. Amended by ADR-0071: the SOM module is 4096 ordinals wide, IBM's later exports have 48–3071, and Warpine's own moved to 3072–4095. Amended by ADR-0072: `CClassData.parentMtab` is a `somParentMtabStruct` (the class's own table first), and `somAssert`, `somTest`, `somTestCls` and `somCheckArgs` are no longer stubs
 - **Date:** 2026-11-20
 - **Sources:**
   - The code:

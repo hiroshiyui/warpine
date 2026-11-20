@@ -282,12 +282,13 @@ Open Watcom stays the frozen ABI baseline. A second, modern toolchain goes only 
 
 The WPS is a PM application on the session desktop, built on SOM. The SOM kernel's stages 1–4 are done (ADR-0059–0063).
 
-- [ ] **IBM's SOM.DLL ordinals and layouts** (1–47 done, ADR-0070):
+- [ ] **IBM's SOM.DLL ordinals and layouts** (1–47, ADR-0070; the root classes' layouts, ADR-0072):
   - ordinals 48 and above: unassigned until a permissive source lists them (Free Pascal's LGPL `som.pas` is not used);
-  - the `ClassData` / method-table layouts from the OS/2 Warp 4 Toolkit's `somobj.idl` / `somcls.idl` / `somcm.idl` `releaseorder` (a stage of its own, with an ADR; somFree is not used);
+  - class building from IBM's static class data (Stage B): `somBuildClass` / `somStaticClassInfo`, `somConstructClass`, guest classes' `CClassData` / `somParentMtabStruct`;
+  - the root methods that resolve to the not-implemented procedure: the copy, assign, dispatch, cast, reset and renew families, `somGetParents`, the class manager's repository and class-library methods;
   - class loading calling a program's own `SOMClassInitFuncName`.
 - [ ] **C++**: SOM objects on the stack and in static storage; `somInitCtrl` / `somDestructCtrl` and multi-parent initialization order.
-- [ ] **Class files**: `dllname` for `somLocateClassFile`; `somBuildClass` with IBM's static class data.
+- [ ] **Class files**: `dllname` for `somLocateClassFile`.
 - [ ] **Utilities and metadata**: `SOMU` classes, the interface repository (`SOMIR`), IDL metadata.
 - [ ] **WPS classes**:
   - `WPObject`, `WPFileSystem`, `WPFolder` (on `WC_CONTAINER`), `WPDesktop`, `WPProgram`, `WPDataFile`;

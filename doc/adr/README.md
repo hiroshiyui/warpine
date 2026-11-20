@@ -77,3 +77,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0069](0069-embedded-dialog-chrome-and-tab.md) | An embedded dialog draws its own chrome, and Tab crosses between it and the client's controls | Accepted | 2026-11-20 |
 | [0070](0070-som-ordinals-from-osfree.md) | SOM.DLL's ordinals 1–47 from osFree's export list; Warpine's own exports at 512–1023 (moved by ADR-0071) | Accepted | 2026-11-20 |
 | [0071](0071-a-wider-som-ordinal-range.md) | The SOM module is 4096 ordinals wide; Warpine's own SOM exports at 3072–4095 | Accepted | 2026-11-20 |
+| [0072](0072-som-root-class-layouts-from-the-toolkit.md) | The SOM root classes follow IBM's layouts (ClassData release order, somMethodTab header, somParentMtabStruct), read from the OS/2 Warp 4 Toolkit | Accepted | 2026-11-20 |

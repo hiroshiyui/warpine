@@ -306,8 +306,14 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
 
 - **SOM ordinals** (ADR-0070):
   - osFree's numbers for ordinals 1–47 being IBM's, data at 1–19;
-  - `CClassData`'s second word, every version accepted by `<Class>NewClass`;
+  - every version accepted by `<Class>NewClass`;
   - two blanks per `somPrefixLevel` level;
-  - the undocumented `somAssert`, `somTest`, `somTestCls`, `somCheckArgs`, `somConstructClass`, `somSaveMetrics`, `somWriteMetrics` doing nothing.
+  - `somConstructClass`, `somSaveMetrics`, `somWriteMetrics` doing nothing.
+- **SOM layouts** (ADR-0072):
+  - the Toolkit 4.5 copy (`bitwiseworks/os2tk45`) the layouts rest on, not checked against an IBM distribution;
+  - lacking root methods warning (20171) instead of IBM's fatal `SOMERROR_NotImplementedYet`;
+  - `somParentMtabStruct` fields after the instance size left 0, parents counted from 1;
+  - a class without a version accepting any; `somTestCls`'s error code; the text of a kept `somAssert`; `somCheckArgs`'s levels;
+  - `dataAlignment` 4, `classInfo` and the protected data 0.
 
 - **CONFIG.SYS**: the `THREADS=` minimum, duplicates and comments.
