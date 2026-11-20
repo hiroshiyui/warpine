@@ -710,9 +710,17 @@ impl DriveManager {
         // Strip leading slash
         let rest = rest.trim_start_matches('/');
 
+        // Whether the path names its root (`\…`, `C:\…`).
+        let names_root = if path.len() >= 2 && path.as_bytes()[1] == b':' {
+            path.as_bytes().get(2) == Some(&b'/')
+        } else {
+            path.starts_with('/')
+        };
+
         // If relative, prepend per-drive current directory
         let resolved = if rest.is_empty() {
-            self.current_dirs[drive as usize].clone()
+            // `C:` is the drive's current directory; `\` and `C:\` its root.
+            if names_root { String::new() } else { self.current_dirs[drive as usize].clone() }
         } else if os2_path.contains('\\') || os2_path.contains('/') {
             // Check if originally absolute (had drive: + slash or just started with slash)
             let was_absolute = if path.len() >= 2 && path.as_bytes()[1] == b':' {
@@ -1091,12 +1099,30 @@ impl DriveManager {
         &self.current_dirs[drive as usize]
     }
 
-    /// Set the current directory for a drive.
+    /// Set the current directory for a drive. `.` and `..` are collapsed;
+    /// the directory must exist (`ERROR_PATH_NOT_FOUND` otherwise, also
+    /// for a file or for `..` above the root, which is unverified).
     pub fn set_current_dir(&mut self, os2_path: &str) -> VfsResult<()> {
         let (drive, rel_path) = self.resolve_path(os2_path)?;
-        // TODO: verify that the path exists and is a directory via the backend
+        let rel_path = normalize_rel_path(&rel_path).ok_or(Os2Error::PATH_NOT_FOUND)?;
+        if !rel_path.is_empty() {
+            let backend = self.drives[drive as usize].as_ref().ok_or(Os2Error::INVALID_DRIVE)?;
+            let status = backend.query_path_info(&rel_path, 1).map_err(|e| match e {
+                Os2Error::FILE_NOT_FOUND => Os2Error::PATH_NOT_FOUND,
+                other => other,
+            })?;
+            if !status.attributes.contains(FileAttribute::DIRECTORY) {
+                return Err(Os2Error::PATH_NOT_FOUND);
+            }
+        }
         self.current_dirs[drive as usize] = rel_path;
         Ok(())
+    }
+
+    /// A drive's current directory as OS/2 shows it: `\` separators, no
+    /// drive letter and no leading `\` (what `DosQueryCurrentDir` returns).
+    pub fn current_dir_os2(&self, drive: u8) -> String {
+        self.current_dir(drive).replace('/', "\\")
     }
 
     /// Get a bitmask of mounted drives (bit 0 = A:, bit 1 = B:, ...).
@@ -1109,6 +1135,20 @@ impl DriveManager {
         }
         map
     }
+}
+
+/// `rel_path` (`/` separators) with `.` and `..` collapsed and empty parts
+/// dropped; `None` when `..` would leave the drive's root.
+pub fn normalize_rel_path(rel_path: &str) -> Option<String> {
+    let mut parts: Vec<&str> = Vec::new();
+    for part in rel_path.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => { parts.pop()?; }
+            _ => parts.push(part),
+        }
+    }
+    Some(parts.join("/"))
 }
 
 // ── Tests ──
@@ -1222,8 +1262,13 @@ mod tests {
         fn delete(&self, _path: &str) -> VfsResult<()> { Ok(()) }
         fn rename(&self, _old: &str, _new: &str) -> VfsResult<()> { Ok(()) }
         fn copy(&self, _src: &str, _dst: &str) -> VfsResult<()> { Ok(()) }
+        /// Every path is a directory (so `set_current_dir` takes any).
         fn query_path_info(&self, _path: &str, _level: u32) -> VfsResult<FileStatus> {
-            Err(Os2Error::FILE_NOT_FOUND)
+            Ok(FileStatus {
+                creation_date: 0, creation_time: 0, last_access_date: 0, last_access_time: 0,
+                last_write_date: 0, last_write_time: 0, file_size: 0, file_alloc: 0,
+                attributes: FileAttribute::DIRECTORY,
+            })
         }
         fn query_file_info(&self, _handle: VfsFileHandle, _level: u32) -> VfsResult<FileStatus> {
             Err(Os2Error::INVALID_HANDLE)
@@ -1281,6 +1326,33 @@ mod tests {
 
     /// resolve_new_host_path: a new file in an existing directory of the
     /// drive, the existing file itself, nothing outside the drive.
+    /// `set_current_dir` takes only an existing directory of the drive,
+    /// collapses `.` and `..`, and never goes above the root.
+    #[test]
+    fn current_directories_exist_and_stay_on_their_drive() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("sub/deep")).unwrap();
+        std::fs::write(root.path().join("file.txt"), b"x").unwrap();
+        let mut dm = DriveManager::new();
+        dm.mount(2, Box::new(super::super::vfs_hostdir::HostDirBackend::new(root.path().to_path_buf()).unwrap()));
+        dm.set_current_disk(3).unwrap();
+        assert_eq!(dm.set_current_dir(r"C:\SUB\DEEP"), Ok(()));
+        assert_eq!(dm.current_dir(2), "SUB/DEEP");
+        assert_eq!(dm.current_dir_os2(2), "SUB\\DEEP", "OS/2 shows backslashes");
+        assert_eq!(dm.set_current_dir(".."), Ok(()));
+        assert_eq!(dm.current_dir(2), "SUB", "`..` goes up one level");
+        assert_eq!(dm.set_current_dir(r".\DEEP\..\."), Ok(()));
+        assert_eq!(dm.current_dir(2), "SUB");
+        assert_eq!(dm.set_current_dir("NOSUCH"), Err(Os2Error::PATH_NOT_FOUND), "a missing directory");
+        assert_eq!(dm.set_current_dir(r"C:\FILE.TXT"), Err(Os2Error::PATH_NOT_FOUND), "a file");
+        assert_eq!(dm.set_current_dir(r"C:\.."), Err(Os2Error::PATH_NOT_FOUND), "above the root");
+        assert_eq!(dm.current_dir(2), "SUB", "a failed change keeps the directory");
+        assert_eq!(dm.set_current_dir("\\"), Ok(()));
+        assert_eq!(dm.current_dir(2), "", "the root");
+        assert_eq!(normalize_rel_path("a/./b/../c//d"), Some("a/c/d".into()));
+        assert_eq!(normalize_rel_path("a/../.."), None);
+    }
+
     #[test]
     fn new_host_paths_stay_inside_the_drive() {
         let root = tempfile::tempdir().unwrap();
@@ -1458,6 +1530,9 @@ mod tests {
         // Resolve relative path uses per-drive current dir
         let (_, path) = dm.resolve_path("C:file.txt").unwrap();
         assert_eq!(path, "WORK/file.txt");
+        assert_eq!(dm.resolve_path("C:").unwrap().1, "WORK", "`C:` is the current directory");
+        assert_eq!(dm.resolve_path(r"C:\").unwrap().1, "", "`C:\\` is the root");
+        assert_eq!(dm.resolve_path(r"\").unwrap().1, "", "so is `\\`");
 
         dm.set_current_disk(4).unwrap(); // switch to D:
         let (_, path) = dm.resolve_path("readme.txt").unwrap();

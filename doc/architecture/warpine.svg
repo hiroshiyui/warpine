@@ -169,20 +169,21 @@
 <!-- kernel -->
 <g id="node9" class="node">
 <title>kernel</title>
-<path fill="#bbdefb" stroke="black" d="M4093.18,-712.6C4093.18,-712.6 2264.82,-712.6 2264.82,-712.6 2258.82,-712.6 2252.82,-706.6 2252.82,-700.6 2252.82,-700.6 2252.82,-654.08 2252.82,-654.08 2252.82,-648.08 2258.82,-642.08 2264.82,-642.08 2264.82,-642.08 4093.18,-642.08 4093.18,-642.08 4099.18,-642.08 4105.18,-648.08 4105.18,-654.08 4105.18,-654.08 4105.18,-700.6 4105.18,-700.6 4105.18,-706.6 4099.18,-712.6 4093.18,-712.6"/>
-<text xml:space="preserve" text-anchor="start" x="2263.62" y="-697.39" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Kernel APIs: DOSCALLS, QUECALLS, MSG, processes and WinStartApp (nesting limit, ADR&#45;0028), CONFIG.SYS THREADS= session limit, IPC, named pipes (ADR&#45;0022), shared memory and semaphores across processes (ADR&#45;0049, ADR&#45;0050), timers, session clock and WARPINE.DLL 64&#45;bit time (ADR&#45;0039), 16&#45;bit information segments (ADR&#45;0040)</text>
-<text xml:space="preserve" text-anchor="start" x="3062.75" y="-689.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/doscalls.rs, loader/stubs.rs, loader/process.rs, loader/ipc.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3052.25" y="-681.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/dostimer.rs, loader/modpath.rs, loader/suballoc.rs, loader/cmd.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3042.12" y="-673.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/npipe.rs, loader/npipe_dir.rs, loader/npipe_api.rs, loader/npipe_sem.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3038" y="-665.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/inherit.rs, loader/msgcalls.rs, loader/pm_startapp.rs, loader/config_sys.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3020" y="-657.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/session_threads.rs, loader/shared_arena.rs, loader/shared_sem.rs, loader/clock.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3108.5" y="-649.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/warpine_api.rs, loader/infoseg.rs</text>
+<path fill="#bbdefb" stroke="black" d="M4093.18,-716.6C4093.18,-716.6 2264.82,-716.6 2264.82,-716.6 2258.82,-716.6 2252.82,-710.6 2252.82,-704.6 2252.82,-704.6 2252.82,-650.08 2252.82,-650.08 2252.82,-644.08 2258.82,-638.08 2264.82,-638.08 2264.82,-638.08 4093.18,-638.08 4093.18,-638.08 4099.18,-638.08 4105.18,-644.08 4105.18,-650.08 4105.18,-650.08 4105.18,-704.6 4105.18,-704.6 4105.18,-710.6 4099.18,-716.6 4093.18,-716.6"/>
+<text xml:space="preserve" text-anchor="start" x="2263.62" y="-701.39" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Kernel APIs: DOSCALLS, QUECALLS, MSG, processes and WinStartApp (nesting limit, ADR&#45;0028), CONFIG.SYS THREADS= session limit, IPC, named pipes (ADR&#45;0022), shared memory and semaphores across processes (ADR&#45;0049, ADR&#45;0050), timers, session clock and WARPINE.DLL 64&#45;bit time (ADR&#45;0039), 16&#45;bit information segments (ADR&#45;0040)</text>
+<text xml:space="preserve" text-anchor="start" x="3062.75" y="-693.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/doscalls.rs, loader/stubs.rs, loader/process.rs, loader/ipc.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3052.25" y="-685.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/dostimer.rs, loader/modpath.rs, loader/suballoc.rs, loader/cmd.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3029" y="-677.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/cmd/builtins.rs, loader/cmd/env.rs, loader/cmd/external.rs, loader/cmd/input.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3042.88" y="-669.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/cmd/parse.rs, loader/npipe.rs, loader/npipe_dir.rs, loader/npipe_api.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3036.88" y="-661.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/npipe_sem.rs, loader/inherit.rs, loader/msgcalls.rs, loader/pm_startapp.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3010.25" y="-653.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/config_sys.rs, loader/session_threads.rs, loader/shared_arena.rs, loader/shared_sem.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3080.75" y="-645.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/clock.rs, loader/warpine_api.rs, loader/infoseg.rs</text>
 </g>
 <!-- dispatch&#45;&gt;kernel -->
 <g id="edge9" class="edge">
 <title>dispatch&#45;&gt;kernel</title>
-<path fill="none" stroke="#455a64" d="M1817.72,-760.97C2001.67,-749.8 2315.43,-730.76 2595.39,-713.76"/>
-<polygon fill="#455a64" stroke="#455a64" points="2595.31,-717.27 2605.08,-713.18 2594.89,-710.29 2595.31,-717.27"/>
+<path fill="none" stroke="#455a64" d="M1817.72,-760.97C1987.33,-750.67 2267.3,-733.68 2529.38,-717.77"/>
+<polygon fill="#455a64" stroke="#455a64" points="2529.38,-721.28 2539.15,-717.18 2528.96,-714.29 2529.38,-721.28"/>
 </g>
 <!-- net_mm -->
 <g id="node12" class="node">
@@ -289,8 +290,8 @@
 <!-- kernel&#45;&gt;nls -->
 <g id="edge16" class="edge">
 <title>kernel&#45;&gt;nls</title>
-<path fill="none" stroke="#455a64" d="M3179,-641.82C3179,-626.5 3179,-608.69 3179,-594.1"/>
-<polygon fill="#455a64" stroke="#455a64" points="3182.5,-594.25 3179,-584.25 3175.5,-594.25 3182.5,-594.25"/>
+<path fill="none" stroke="#455a64" d="M3179,-637.82C3179,-623.44 3179,-607.37 3179,-594.02"/>
+<polygon fill="#455a64" stroke="#455a64" points="3182.5,-594.17 3179,-584.17 3175.5,-594.17 3182.5,-594.17"/>
 </g>
 <!-- vfs -->
 <g id="node11" class="node">
@@ -302,13 +303,13 @@
 <!-- kernel&#45;&gt;vfs -->
 <g id="edge15" class="edge">
 <title>kernel&#45;&gt;vfs</title>
-<path fill="none" stroke="#455a64" d="M3455.05,-641.59C3605.64,-622.64 3786.21,-599.91 3910.84,-584.22"/>
-<polygon fill="#455a64" stroke="#455a64" points="3910.99,-587.73 3920.47,-583.01 3910.11,-580.79 3910.99,-587.73"/>
+<path fill="none" stroke="#455a64" d="M3486.86,-637.59C3630.42,-619.52 3794.76,-598.83 3910.72,-584.24"/>
+<polygon fill="#455a64" stroke="#455a64" points="3911.16,-587.71 3920.64,-582.99 3910.28,-580.76 3911.16,-587.71"/>
 </g>
 <!-- kernel&#45;&gt;children -->
 <g id="edge17" class="edge">
 <title>kernel&#45;&gt;children</title>
-<path fill="none" stroke="#455a64" d="M4025.21,-641.58C4056.2,-640.39 4086.87,-639.22 4117,-638.08 4175.44,-635.88 6221,-623.8 6221,-565.32 6221,-565.32 6221,-565.32 6221,-137.25 6221,-123.72 6380.27,-81.04 6481.43,-55.29"/>
+<path fill="none" stroke="#455a64" d="M4105.37,-638.52C4109.25,-638.37 4113.13,-638.23 4117,-638.08 4175.44,-635.88 6221,-623.8 6221,-565.32 6221,-565.32 6221,-565.32 6221,-137.25 6221,-123.72 6380.27,-81.04 6481.43,-55.29"/>
 <polygon fill="#455a64" stroke="#455a64" points="6482.25,-58.7 6491.08,-52.84 6480.53,-51.91 6482.25,-58.7"/>
 <text xml:space="preserve" text-anchor="middle" x="6398" y="-337.48" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">DosExecPgm / WinStartApp (arguments, environment, inherited handles), named pipes</text>
 </g>

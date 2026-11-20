@@ -43,6 +43,7 @@ make -C samples/<name>      # Build a single sample
 | thread_control_test | DosSuspendThread / DosResumeThread (counted), CREATE_SUSPENDED, a thread spinning in its own code stopped by DosKillThread and a critical section, signal exceptions sent to itself and to a child process, DosSetSignalExceptionFocus / DosAcknowledgeSignalException; ok/FAIL lines | DosSuspendThread, DosResumeThread, DosSendSignalException, DosSetSignalExceptionFocus, DosAcknowledgeSignalException |
 | pipe_test | Inter-process pipe data transfer | DosCreatePipe, DosWrite, DosRead |
 | npipe_test | Named pipes (byte and message, instances, blocking and non-blocking, DosTransactNPipe / DosCallNPipe / DosPeekNPipe) within a process and with a child process, inherited anonymous pipes, the child's arguments and environment, DosGiveSharedMem and `\SHAREMEM\` names; ok/FAIL lines. Run as `FIND.EXE` it is a minimal FIND filter for the shell pipeline test | DosCreateNPipe, DosConnectNPipe, DosOpen("\PIPE\…"), DosTransactNPipe, DosCallNPipe, DosWaitNPipe, DosQueryNPHState, DosExecPgm |
+| cmd_tool | A probe for the built-in CMD.EXE's integration tests, run as `C:\TOOL.EXE`: `exit N` ends with code N, `cat` copies standard input to standard output, `count` prints how many bytes standard input holds, `cwd` prints the current drive and directory, `exec DIR` sets the directory with DosSetCurrentDir and runs itself in `cwd` mode with DosExecPgm | DosRead / DosWrite on handles 0 and 1, DosQueryCurrentDisk, DosQueryCurrentDir, DosSetCurrentDir, DosExecPgm, DosQueryModuleName |
 | mutex_test | Mutex semaphore recursive locking | DosCreateMutexSem, DosRequestMutexSem |
 | muxwait_test | Multiplexed wait on event semaphores | DosCreateMuxWaitSem, DosWaitMuxWaitSem |
 | queue_test | Inter-thread message queue | DosCreateQueue, DosWriteQueue, DosReadQueue |
@@ -129,6 +130,14 @@ make -C samples/<name>      # Build a single sample
 | rust_hello | Rust no_std guest binary: "Hello from Rust on Warpine!" | DosWrite, DosExit (via warpine-os2 crate) |
 | socket_test | TCP/IP smoke test over loopback through SO32DLL loaded with DosLoadModule: socket, options, bind, listen, select, connect, accept, send / recv, name lookup | DosLoadModule, DosQueryProcAddr, sock_init, socket, setsockopt / getsockopt, bind, listen, select, connect, accept, send, recv, soclose, gethostbyname, getservbyname, sock_errno |
 | cmd_test | `test.cmd`: a CMD.EXE script for the built-in shell (not a compiled program) exercising built-in commands, redirection (`>`, `>>`, `<`) and pipes; run with `cargo run -- CMD.EXE /C samples/cmd_test/test.cmd` | built-in CMD.EXE |
+
+## CMD.EXE scripts
+
+`samples/cmd_scripts` holds `.CMD` scripts for the built-in CMD.EXE. They need no build: an integration test copies them to a temporary drive C, with `samples/cmd_tool` as `C:\TOOL.EXE`, and runs them with `CMD.EXE /C`.
+
+| Script | What it exercises |
+|--------|-------------------|
+| basics.cmd | `%name%` and `%%`, `&` / `&&` / `\|\|` on return codes, a pipe into a program, a program starting in the shell's directory, `^&`, and a script's return code ending `/C` (ADR-0077; `test_cmd_script_basics`) |
 
 ## Rust Guest Binaries
 

@@ -483,12 +483,10 @@ fn test_cmd_ends_at_the_end_of_piped_input() {
 }
 
 /// The built-in CMD.EXE piping to an external program: `ver | find "…"`
-/// should start FIND.EXE (npipe_test.exe under that name) with the pipe as
-/// its standard input, run VER into the pipe and wait for FIND, which
-/// prints only the matching line; the shell then goes on with its own
-/// input.
+/// starts FIND.EXE (npipe_test.exe under that name) with VER's output as
+/// its standard input, which then ends; FIND prints only the matching
+/// line, and the shell goes on with its own input (ADR-0077).
 #[test]
-#[ignore = "the built-in CMD.EXE does not pipe into external programs yet: FIND takes the shell's remaining input (doc/TODOs.md)"]
 fn test_cmd_pipe_to_an_external_program() {
     let sample = "CMD.EXE";
     let find = "samples/npipe_test/npipe_test.exe";
@@ -535,6 +533,138 @@ fn test_cmd_pipe_to_an_external_program() {
     // VER's line comes out once, through the second FIND; the first finds
     // nothing.
     assert_eq!(out.matches("Compatibility Layer [Builtin CMD.EXE]").count(), 1, "VER's line through FIND:\n{out}");
+}
+
+/// samples/cmd_tool, the probe the shell's tests run as C:\\TOOL.EXE.
+const CMD_TOOL: &str = "samples/cmd_tool/cmd_tool.exe";
+
+/// Run the built-in CMD.EXE headless (`warpine CMD.EXE args…`) with `input`
+/// as its piped standard input, on a drive C in a temporary directory that
+/// holds C:\\TOOL.EXE (samples/cmd_tool) and whatever `prepare` puts there.
+/// Returns its exit code, its output and the drive's directory; `None`
+/// (test skipped) without KVM or the sample.
+fn run_cmd_headless(args: &[&str], input: &[u8], prepare: impl FnOnce(&Path))
+                    -> Option<(Option<i32>, String, tempfile::TempDir)> {
+    if !kvm_available() || !Path::new(CMD_TOOL).exists() {
+        eprintln!("skipping: KVM or {CMD_TOOL} not available");
+        return None;
+    }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let drive_c = dir.path().join("warpine/drive_c");
+    std::fs::create_dir_all(&drive_c).unwrap();
+    std::fs::copy(CMD_TOOL, drive_c.join("TOOL.EXE")).unwrap();
+    prepare(&drive_c);
+    let mut child = Command::new(warpine())
+        .arg("CMD.EXE")
+        .args(args)
+        .envs(PINNED_LOCALE.iter().copied())
+        .env("RUST_LOG", "error")
+        .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_RUNTIME_DIR", dir.path())
+        .env("SDL_VIDEODRIVER", "dummy")
+        .env("SDL_AUDIODRIVER", "dummy")
+        .env_remove("WARPINE_VIO")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn warpine");
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(input).unwrap();
+    } // closed: end of input
+    // Read the output while the shell runs, so a full pipe never blocks it.
+    let mut stdout = child.stdout.take().unwrap();
+    let reader = std::thread::spawn(move || {
+        use std::io::Read;
+        let mut out = Vec::new();
+        stdout.read_to_end(&mut out).ok();
+        out
+    });
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() { break s; }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("CMD.EXE did not end");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let out = String::from_utf8_lossy(&reader.join().unwrap()).into_owned();
+    Some((status.code(), out, dir))
+}
+
+/// The return code of the last command: a program's exit code, 0 or 1
+/// for a built-in; `&&` runs on 0, `||` on anything else, and `/C` ends the
+/// shell with it (ADR-0077).
+#[test]
+fn test_cmd_return_codes_drive_and_or_and_the_shell() {
+    let Some((code, out, _dir)) = run_cmd_headless(&["/C", "TOOL exit 7"], b"", |_| {}) else { return };
+    assert_eq!(code, Some(7), "/C returns the program's exit code:\n{out}");
+    let input = b"TOOL exit 3 && echo and-ran || echo or-ran\r\n\
+                  TOOL exit 0 && echo and-ok || echo or-wrong\r\n\
+                  cd NOSUCH || echo cd-failed\r\n\
+                  NOSUCHPROGRAM || echo not-found\r\n\
+                  echo one & echo two\r\n\
+                  REM a remark & echo not-a-command\r\n";
+    let (code, out, _dir) = run_cmd_headless(&[], input, |_| {}).unwrap();
+    assert_eq!(code, Some(0), "{out}");
+    for line in ["or-ran", "and-ok", "cd-failed", "not-found", "one", "two"] {
+        assert!(out.contains(line), "{line} is missing:\n{out}");
+    }
+    // As output lines of their own (the echoed command lines hold them).
+    for line in ["and-ran", "or-wrong", "not-a-command"] {
+        assert!(!out.contains(&format!("\n{line}\r\n")), "{line} ran:\n{out}");
+    }
+}
+
+/// A program reads a pipe or a `< file` as its standard input, byte for
+/// byte, and starts in the shell's current drive and directory; a bare
+/// name is found in the current directory, then along PATH (ADR-0077).
+#[test]
+fn test_cmd_programs_get_pipes_files_and_the_current_directory() {
+    let input = b"echo hi | TOOL count\r\n\
+                  TOOL count < DATA.TXT\r\n\
+                  ver | TOOL cat\r\n\
+                  md WORK\r\n\
+                  cd WORK\r\n\
+                  TOOL cwd\r\n\
+                  TOOL exec C:\\WORK\r\n\
+                  cd \\\r\n\
+                  TOOL cwd\r\n";
+    let Some((code, out, _dir)) = run_cmd_headless(&[], input, |c| {
+        std::fs::write(c.join("DATA.TXT"), b"1234567\r\n").unwrap();
+    }) else { return };
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("cmd_tool: count 4\r\n"), "`hi` and CR LF through the pipe:\n{out}");
+    assert!(out.contains("cmd_tool: count 9\r\n"), "the file's 9 bytes:\n{out}");
+    assert!(out.contains("[Builtin CMD.EXE] version"), "VER through TOOL cat:\n{out}");
+    assert_eq!(out.matches("cmd_tool: cwd C:\\WORK\r\n").count(), 2,
+               "the shell's directory, and DosExecPgm's after DosSetCurrentDir; TOOL found along PATH:\n{out}");
+    assert!(out.contains("cmd_tool: cwd C:\\\r\n"), "back at the root:\n{out}");
+}
+
+/// samples/cmd_scripts/basics.cmd: variables, chaining, a pipe into a
+/// program and the directory a program starts in, in a script; the
+/// script's last return code ends `/C` (ADR-0077).
+#[test]
+fn test_cmd_script_basics() {
+    let script = "samples/cmd_scripts/basics.cmd";
+    let Some((code, out, dir)) = run_cmd_headless(&["/C", "BASICS.CMD"], b"", |c| {
+        std::fs::copy(script, c.join("BASICS.CMD")).unwrap();
+    }) else { return };
+    assert_eq!(code, Some(5), "the script's last command, TOOL exit 5:\n{out}");
+    let expected = ["[hello] [] 100%\r\n", "or-ran\r\n", "and-after-0\r\n", "cmd_tool: count 7\r\n",
+                    "cmd_tool: cwd C:\\WORK\r\n", "a&b\r\n"];
+    let mut at = 0;
+    for line in expected {
+        let Some(i) = out[at..].find(line) else { panic!("{line:?} is missing, or out of order:\n{out}") };
+        at += i + line.len();
+    }
+    assert!(!out.contains("and-ran"), "{out}");
+    assert!(dir.path().join("warpine/drive_c/WORK").is_dir(), "MD WORK");
 }
 
 /// audio_test: DosBeep and mciSendString through MDM loaded at run time

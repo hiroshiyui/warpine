@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **The built-in CMD.EXE's foundations** (Stage 2, slice 2a; ADR-0077), in OS/2's CMD syntax:
+  - `%name%` variables (`%%` for a `%`); `&`, `&&` and `||` on return codes; `^` escapes;
+  - return codes: a program's exit code, 0 / 1 for a built-in, and `CMD.EXE /C` ending with its command's;
+  - programs read the pipe or `< file` before them as their standard input;
+  - a bare program name is found in the current directory, then along `PATH`;
+  - a script's output and input follow its redirections (`SCRIPT.CMD > LOG.TXT`).
+  - Samples: `samples/cmd_tool` (a probe for the tests), `samples/cmd_scripts/basics.cmd`.
 - **`warpine --licenses`** — prints Warpine's licence and, from text compiled into the binary, the copyright notices and licences of the fonts built into it (IBM Plex: SIL OFL 1.1; GNU Unifont: GPL-2.0-or-later with the font embedding exception, or OFL 1.1), as the OFL asks of every copy. `vendor/unifont` now carries Unifont's authors, licence statement and OFL text from its release (ADR-0076).
 - **Trademark notice** — the README says Warpine is independent and not affiliated with IBM or the other companies and projects it names, and credits the trademarks it mentions (OS/2 and the other IBM marks, Linux, Windows).
 
@@ -14,9 +21,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **4OS2** — the 4OS2 sample and the files fetched or patched from it are gone, including copies of 4OS2 and Open Watcom sources that had been committed without the notices their licences require. The built-in `CMD.EXE` is Warpine's shell: the default `COMSPEC` is `C:\CMD.EXE`, the text-mode integration tests and the README's text-mode screenshots use it, the VIO samples generate their 32-bit `bsesub.h` from the local Open Watcom install at build time (`samples/bsesub32.mk`), and the DLL-loader tests use Warpine's own `samples/dll_noinit` (ADR-0075).
 
 ### Security
+- **A pipe's output is bounded** — the built-in CMD.EXE holds at most 16 MiB of a command's output for the next one, reading and dropping the rest, so a guest program cannot grow the host's memory without bound through a pipe (ADR-0077).
+- **No host working directory from a guest path** — `DosExecPgm`, `WinStartApp` and CMD.EXE set a child's host working directory from the host's own joined with a guest path; they now pass OS/2 current directories, which the child applies through its own VFS (ADR-0077).
 - **Shell redirection stays inside the drives** — the built-in `CMD.EXE` opened a redirection target that did not exist yet (`> file`) through the guest's path string as a host path, so a guest could write host files outside its drives through `CMD.EXE /C … > path`; it now creates the file through the VFS, and a path outside the drives is an error. Creating any new file through a dangling symbolic link, which would place it at the link's target, is refused too, `DosOpen` included (ADR-0075).
 
+### Fixed
+- **Child processes start in their parent's current directory** — a program started by `DosExecPgm`, `WinStartApp` or CMD.EXE now gets its parent's current drive and directories, and `WinStartApp`'s start directory becomes its current one; before, every child started at `C:\`.
+- **`CD` and `DosSetCurrentDir`** take only an existing directory and collapse `.` and `..`; `\` and `C:\` name the root (`CD \` did nothing before).
+- **`DosQueryCurrentDir`** returns `\` separators, not `/`, and refuses a drive that is not mounted.
+- **Piped standard input** — `DosRead` on a pipe or file no longer echoes the bytes to standard output or turns CR into CR LF.
+- **`warpine CMD.EXE /C …`** with the command in several host arguments ran nothing; they are joined into one command line.
+- **Redirection** — after a redirected command the shell's output went back to the screen even inside a script run with its own redirection.
+
 ### Changed
+- **The built-in CMD.EXE is split into modules** — `cmd.rs` and `cmd/` (`parse`, `env`, `builtins`, `external`, `input`).
 - **The guest crates stay GPL-3.0-or-later** — OS/2 programs built with `warpine-os2-sys` / `-rt` / `warpine-os2` are covered by the GPL; the question ADR-0074 left open is settled (ADR-0076).
 - **`VER` names the release** — the built-in `CMD.EXE`'s `VER` prints the latest release's version number after the shell's name (`… [Builtin CMD.EXE] version 0.0.6`).
 - **Goal stated** — Warpine is an OS/2-alike API and its runtime environment: a familiar, robust API set as the foundation of a Free Software platform, not a clone; compatibility with legacy applications is done case by case, and anything needing proprietary intellectual property is skipped (`README.md`, `CLAUDE.md`).

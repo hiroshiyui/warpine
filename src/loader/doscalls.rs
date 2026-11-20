@@ -837,28 +837,7 @@ impl super::Loader {
         debug!("  DosSetCurrentDir('{}')", name);
         let mut dm = self.shared.drive_mgr.lock_or_recover();
         match dm.set_current_dir(&name) {
-            Ok(()) => {
-                // Also update ProcessManager for backward compatibility (DosExecPgm uses it)
-                let os2_path = name.replace('/', "\\");
-                let mut proc_mgr = self.shared.process_mgr.lock_or_recover();
-                if os2_path.len() >= 2 && os2_path.as_bytes()[1] == b':' {
-                    proc_mgr.current_dir = os2_path[2..].to_string();
-                } else if os2_path.starts_with('\\') {
-                    proc_mgr.current_dir = os2_path;
-                } else {
-                    let mut new_dir = proc_mgr.current_dir.clone();
-                    if !new_dir.ends_with('\\') { new_dir.push('\\'); }
-                    new_dir.push_str(&os2_path);
-                    proc_mgr.current_dir = new_dir;
-                }
-                if !proc_mgr.current_dir.starts_with('\\') {
-                    proc_mgr.current_dir.insert(0, '\\');
-                }
-                if proc_mgr.current_dir.len() > 1 && proc_mgr.current_dir.ends_with('\\') {
-                    proc_mgr.current_dir.pop();
-                }
-                NO_ERROR
-            }
+            Ok(()) => NO_ERROR,
             Err(e) => e.0,
         }
     }
@@ -866,10 +845,16 @@ impl super::Loader {
     pub fn dos_query_current_dir(&self, disk_num: u32, p_buf: u32, pcb_buf: u32) -> u32 {
         debug!("  DosQueryCurrentDir(disk={})", disk_num);
         let dm = self.shared.drive_mgr.lock_or_recover();
-        let drive = if disk_num == 0 { dm.current_disk() } else { (disk_num as u8) - 1 };
-        let dir = dm.current_dir(drive);
+        // 0 is the current drive, 1 is A:, … 26 is Z:.
+        let drive = match disk_num {
+            0 => dm.current_disk(),
+            1..=26 if dm.logical_drive_map() & (1 << (disk_num - 1)) != 0 => (disk_num - 1) as u8,
+            _ => return ERROR_INVALID_DRIVE,
+        };
+        // As OS/2 shows it: backslashes, no drive and no leading backslash.
+        let dir = dm.current_dir_os2(drive);
         let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
-        let dir_bytes = super::codepage::cp_encode(dir, cp);
+        let dir_bytes = super::codepage::cp_encode(&dir, cp);
 
         if pcb_buf != 0 {
             let buf_len = self.guest_read::<u32>(pcb_buf).unwrap_or(0) as usize;
@@ -2069,6 +2054,32 @@ mod tests {
     use super::super::constants::*;
     use super::super::managers::PIPE_HANDLE_BASE;
     use std::sync::atomic::Ordering;
+
+    /// DosQueryCurrentDir gives the directory as OS/2 writes it, with
+    /// backslashes, and refuses a drive that is not mounted.
+    #[test]
+    fn query_current_dir_uses_backslashes_and_checks_the_drive() {
+        let loader = Loader::new_mock();
+        let drive = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(drive.path().join("SUB/DEEP")).unwrap();
+        {
+            let mut dm = loader.shared.drive_mgr.lock_or_recover();
+            dm.mount(2, Box::new(super::super::vfs_hostdir::HostDirBackend::new(drive.path().to_path_buf()).unwrap()));
+            dm.set_current_disk(3).unwrap();
+            dm.set_current_dir(r"C:\SUB\DEEP").unwrap();
+        }
+        let (pcb, buf) = (0x3000u32, 0x3100u32);
+        let query = |disk: u32| {
+            loader.guest_write::<u32>(pcb, 64).unwrap();
+            loader.dos_query_current_dir(disk, buf, pcb)
+        };
+        assert_eq!(query(0), NO_ERROR);
+        assert_eq!(loader.read_guest_string(buf), r"SUB\DEEP");
+        assert_eq!(query(3), NO_ERROR, "C: by number");
+        assert_eq!(query(4), ERROR_INVALID_DRIVE, "D: is not mounted");
+        assert_eq!(query(27), ERROR_INVALID_DRIVE);
+        assert_eq!(query(300), ERROR_INVALID_DRIVE, "no wrap-around to a drive");
+    }
 
     // ── DosFlatToSel / DosSelToFlat ──────────────────────────────────────────
 

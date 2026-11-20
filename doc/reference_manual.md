@@ -211,14 +211,17 @@ The prompt shows the current drive and directory: `[C:\path] `.
 
 ### Running OS/2 programs
 
-Any token that is not a built-in is treated as a program name. The shell searches the current directory, then the `PATH` environment variable, appending `.EXE` if no extension is given. Example:
+Any token that is not a built-in is treated as a program name.
+- **A bare name** is looked for in the current directory, then in each directory of the `PATH` variable.
+- **A name with a drive or a directory** (`C:\BIN\TOOL`, `WORK\TOOL`) is looked for only there.
+- **Without an extension,** `.EXE` is tried before `.CMD`.
 
 ```
 [C:\] hello
 Hello, OS/2!
 ```
 
-If `hello.exe` is not found, the shell tries `hello.cmd`.
+A program runs as a child Warpine process. It starts with the shell's environment and with its current drive and directories, as every child process does (`DosExecPgm`, `WinStartApp`; ADR-0077).
 
 ### .CMD scripts
 
@@ -228,7 +231,34 @@ Run a `.CMD` file by typing its name (with or without the `.CMD` extension) or u
 [C:\] warpine CMD.EXE /C "MYSCRIPT.CMD"
 ```
 
-A script is run line by line: each line is a command as typed at the prompt, and `REM` or `::` starts a comment. `EXIT` ends the script with its exit code. Batch control (`IF`, `FOR`, `GOTO`, `CALL`, `PAUSE`, `SHIFT`) is not supported yet (`doc/TODOs.md`).
+- **Lines.** A script is run line by line: each line is a command as typed at the prompt, and a `REM` line or a label line (`:name`, `:: text`) does nothing.
+- **Shared state.** A script shares the shell's environment (its `SET`s stay), output and input, so `MYSCRIPT.CMD > LOG.TXT` works.
+- **Its return code** is `EXIT`'s code, else that of its last command.
+- **Not yet supported:** batch control (`IF`, `FOR`, `GOTO`, `CALL`, `PAUSE`, `SHIFT`) and `%0`–`%9` (`doc/TODOs.md`).
+
+### Command lines
+
+The shell follows OS/2's CMD.EXE syntax (ADR-0077). A line is processed in this order:
+
+1. **Remarks and labels.** A `REM` line is skipped whole, `&` and `|` included, and so is a label line (`:name`).
+2. **Variables.** `%name%` becomes the variable's value (names match without case; an undefined one becomes nothing), and `%%` becomes `%`. A `%` that starts no `%name%` stays, and a value is not expanded again.
+3. **Commands.** The line is split at `&`, `&&` and `||`, outside quotes:
+
+   | Syntax | Effect |
+   |--------|--------|
+   | `a & b` | Run `a`, then `b` |
+   | `a && b` | Run `b` only if `a` returned 0 |
+   | `a \|\| b` | Run `b` only if `a` returned non-zero |
+
+   They run left to right, each looking at the return code the line has so far.
+4. **Escapes.** `^` outside quotes takes the next character as it is (`echo a^&b` prints `a&b`).
+
+**Return codes.** Every command leaves one:
+- a program, its exit code (0–255);
+- a built-in, 0, or 1 after an error message;
+- a name that is no command or program, 1.
+
+`CMD.EXE /C` ends with the return code of its command line. The host arguments of `warpine CMD.EXE …` are joined by blanks into one command line, so `warpine CMD.EXE /C TOOL exit 7` ends with 7.
 
 ### Redirection and pipes
 
@@ -240,7 +270,9 @@ A script is run line by line: each line is a command as typed at the prompt, and
 | `cmd1 \| cmd2` | Feed the output of `cmd1` to `cmd2` as its input |
 
 - **Inside the drives.** A redirection target is an OS/2 path on a mounted drive, resolved through the VFS like any file a program opens. A path that maps to no drive (an unmounted drive, `..` above the root, a host path) is an error ("not on a drive"), and the file is not created through a dangling symbolic link (ADR-0075).
-- **Pipes** work between built-in commands. A program run from the shell does not read a pipe yet: it reads the shell's own remaining input instead (`doc/TODOs.md`).
+- **Programs read pipes and files.** A program reads the pipe or `< file` before it as its standard input, byte for byte, until it ends. A program with neither shares the shell's input.
+- **One command at a time.** The commands of a pipeline run one after another, not at the same time, and the shell holds at most 16 MiB of a command's output for the next one.
+- **For one command only.** A redirection holds for its command; afterwards output and input go back to where they were.
 
 ---
 
@@ -438,6 +470,13 @@ DosOpen (273), DosClose (257), DosRead (281), DosWrite (282), DosDelete (259), D
 
 **Directory Operations:**
 DosCreateDir (270), DosDeleteDir (226), DosQueryCurrentDir (274), DosSetCurrentDir (255), DosQueryCurrentDisk (275), DosSetDefaultDisk (220), DosFindFirst (264), DosFindNext (265), DosFindClose (263)
+
+Current directories:
+- **`DosSetCurrentDir`** collapses `.` and `..` and takes only an existing directory. A missing one, a file, or `..` above the root is `ERROR_PATH_NOT_FOUND`; the last two are unverified. `\` and `C:\` name the root; `C:` names the drive's current directory.
+- **`DosQueryCurrentDir`** returns the directory with `\` separators, without the drive or a leading `\`. A drive that is not mounted is `ERROR_INVALID_DRIVE`.
+- **Children.** A child process (`DosExecPgm`, `WinStartApp`, CMD.EXE) starts with its parent's current drive and the current directory of each drive; `WinStartApp`'s start directory becomes its current one (ADR-0077).
+
+**Standard input.** `DosRead` on standard input that is a pipe or a file reads up to the requested length, with no echo and no CR → CR LF; echo and line editing are for the console only (ADR-0077).
 
 **Memory:**
 DosAllocMem (299), DosFreeMem (304), DosSetMem (305), DosQueryMem (306), DosAllocSharedMem (300), DosGetSharedMem (302), DosGetNamedSharedMem (301), DosGiveSharedMem (303), DosSubSetMem (344), DosSubAllocMem (345), DosSubFreeMem (346), DosSubUnsetMem (347)

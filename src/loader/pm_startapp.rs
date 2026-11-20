@@ -239,10 +239,10 @@ impl super::Loader {
         let exe_name = super::codepage::cp_decode(&exe, cp);
         let prog_path = self.resolve_program(&exe_name)
             .filter(|p| p.is_file() && is_executable(p)).ok_or(PMERR_INVALID_APPL)?;
-        let cwd = start_dir.filter(|d| !d.is_empty()).and_then(|d| {
-            let dir = super::codepage::cp_decode(&d, cp);
-            self.shared.drive_mgr.lock_or_recover().resolve_to_host_path(&dir)
-        }).filter(|d| d.is_dir());
+        // The child's OS/2 current drive and directories: this process's,
+        // with the start directory (if it resolves) as the current one.
+        let start_dir = start_dir.filter(|d| !d.is_empty()).map(|d| super::codepage::cp_decode(&d, cp));
+        let cwd = inherit::cwd_strings(&self.shared.drive_mgr.lock_or_recover(), start_dir.as_deref());
 
         if self.shared.window_mgr.lock_or_recover().apps.len() >= MAX_APPS {
             return Err(PMERR_CANNOT_START);
@@ -275,7 +275,7 @@ impl super::Loader {
             PROG_WINDOWABLEVIO => { cmd.env(crate::gui::vio_window::VIO_ENV, "window"); }
             _ => {}
         }
-        if let Some(dir) = cwd { cmd.current_dir(dir); }
+        cmd.env(inherit::CWD_ENV, inherit::escape(&cwd));
         cmd.stdin(Stdio::null());
         debug!("WinStartApp: {} {:?}", prog_path.display(), String::from_utf8_lossy(&params));
         let spawned = cmd.spawn();

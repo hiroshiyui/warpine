@@ -82,3 +82,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0074](0074-gpl-3-or-later.md) | License Warpine under GPL-3.0-or-later | Accepted | 2026-11-20 |
 | [0075](0075-remove-4os2.md) | Remove 4OS2; the built-in CMD.EXE is Warpine's shell; shell redirection stays inside the drives | Accepted | 2026-11-20 |
 | [0076](0076-guest-crates-stay-gpl-and-the-binary-carries-its-font-notices.md) | The guest crates stay GPL-3.0-or-later; `warpine --licenses` carries the built-in fonts' notices | Accepted | 2026-11-20 |
+| [0077](0077-cmd-exe-foundations.md) | The built-in CMD.EXE's foundations: OS/2 syntax, return codes, programs reading pipes, inherited current directories | Accepted | 2026-11-20 |

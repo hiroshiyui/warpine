@@ -211,11 +211,11 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 
 ## Console and multimedia
 
-- [ ] **The built-in CMD.EXE** (`cmd.rs`; it replaces 4OS2, ADR-0075):
-  - pipes into external programs (`ver | find "…"`): the external program now takes the shell's remaining input (`test_cmd_pipe_to_an_external_program` is ignored until then);
-  - `PROMPT` (with `$e` ANSI sequences for colour), `PATH`;
-  - batch control in `.CMD` files: `IF`, `FOR`, `GOTO`, `CALL`, `PAUSE`, `SHIFT`, `SETLOCAL` / `ENDLOCAL`;
-  - `COPY`, `REN`, `MOVE`, `START`, `DETACH`;
+- [ ] **The built-in CMD.EXE** (`cmd.rs`, `cmd/`; it replaces 4OS2, ADR-0075). Stage 2 grows it in slices; the foundations (return codes, `%name%`, `&` / `&&` / `||`, programs reading pipes and files, `PATH` search, inherited current directories) are done (ADR-0077). Still to come:
+  - 2b, batch control in `.CMD` files: `IF` (`EXIST`, `ERRORLEVEL`, `==`, `NOT`), `FOR`, `GOTO`, `CALL`, `PAUSE`, `%0`–`%9` and `SHIFT`, `SETLOCAL` / `ENDLOCAL`, `ECHO ON` / `OFF` and `@`;
+  - 2c, file commands through the VFS: `COPY`, `REN`, `MOVE`;
+  - 2d: `PROMPT` (with `$e` ANSI sequences for colour), the `PATH` command, `DETACH`; `START` waits for several VIO sessions;
+  - grouping with parentheses; the stages of a pipeline running at the same time (they run one after another now);
   - which of OS/2's other `CMD.EXE` commands to add is decided case by case.
 - [ ] **VIO window**:
   - Font Size, Scroll, Help, Hide;

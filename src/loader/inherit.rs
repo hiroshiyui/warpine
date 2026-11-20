@@ -54,6 +54,11 @@ pub const ENV_ENV: &str = "WARPINE_OS2ENV";
 pub const PID_ENV: &str = "WARPINE_PID";
 /// The parent's process id (decimal).
 pub const PPID_ENV: &str = "WARPINE_PPID";
+/// The OS/2 current drive and directories a child starts with
+/// (`cwd_strings`, escaped).
+pub const CWD_ENV: &str = "WARPINE_OS2CWD";
+/// Most bytes of `CWD_ENV` read: 26 drives with a full path each.
+const MAX_CWD_BLOCK: usize = 26 * 262;
 /// Largest environment block passed on or built (an OS/2 environment
 /// segment is at most 64 KiB).
 pub const MAX_ENV_BLOCK: usize = 64 * 1024;
@@ -78,6 +83,9 @@ pub struct StartupInfo {
     pub pid: Option<u32>,
     /// The parent's process id (else `NO_PARENT_PROCESS_ID`).
     pub ppid: Option<u32>,
+    /// The current drive and directories the parent had (`cwd_strings`),
+    /// else the root of drive C.
+    pub cwd: Option<Vec<u8>>,
 }
 
 impl StartupInfo {
@@ -90,6 +98,7 @@ impl StartupInfo {
             env: get(ENV_ENV).map(|e| split_env(&e)),
             pid: parse_process_id(std::env::var_os(PID_ENV).as_deref()),
             ppid: parse_process_id(std::env::var_os(PPID_ENV).as_deref()),
+            cwd: get(CWD_ENV).map(|mut c| { c.truncate(MAX_CWD_BLOCK); c }),
         }
     }
 
@@ -307,7 +316,7 @@ impl super::Loader {
 /// child started without `DosExecPgm`'s set-up (the built-in CMD.EXE) does
 /// not take this process's command line, environment or handles.
 pub fn clear_parent_vars(cmd: &mut std::process::Command) {
-    for var in [HANDLES_ENV, ARG0_ENV, ARGS_ENV, ENV_ENV] {
+    for var in [HANDLES_ENV, ARG0_ENV, ARGS_ENV, ENV_ENV, CWD_ENV] {
         cmd.env_remove(var);
     }
 }
@@ -338,6 +347,56 @@ pub fn unescape(s: &OsStr) -> Vec<u8> {
         }
     }
     out
+}
+
+// ── Current drive and directories ─────────────────────────────────────────
+//
+// OS/2 starts a child with its parent's current drive and the current
+// directory of every drive. Each Warpine process has its own DriveManager,
+// so the parent passes them in `CWD_ENV`: `X:\dir` strings separated by
+// NULs, the current drive first. The child sets each through its own VFS
+// (which checks that the directory exists inside its drive) and drops what
+// fails. The host's working directory has nothing to do with it.
+
+/// The `CWD_ENV` value for a child of a process with `dm`. `start`, an
+/// OS/2 directory, replaces the current drive and its directory (the
+/// start directory of `WinStartApp`); one that does not resolve is ignored.
+pub fn cwd_strings(dm: &super::vfs::DriveManager, start: Option<&str>) -> Vec<u8> {
+    let entry = |drive: u8, rel: &str| format!("{}:\\{}", (b'A' + drive) as char, rel.replace('/', "\\"));
+    let start = start.and_then(|s| {
+        let (drive, rel) = dm.resolve_path(s).ok()?;
+        Some((drive, super::vfs::normalize_rel_path(&rel)?))
+    });
+    let first = start.as_ref().map_or(dm.current_disk(), |(d, _)| *d);
+    let mut entries = vec![match &start {
+        Some((d, rel)) => entry(*d, rel),
+        None => entry(first, dm.current_dir(first)),
+    }];
+    let mounted = dm.logical_drive_map();
+    for drive in (0..26u8).filter(|&d| d != first && mounted & (1 << d) != 0) {
+        entries.push(entry(drive, dm.current_dir(drive)));
+    }
+    entries.join("\0").into_bytes()
+}
+
+/// Set `dm`'s current directories and drive from a `cwd_strings` value.
+/// A directory that is gone, or a drive this process lacks, is skipped.
+pub fn apply_cwd(dm: &mut super::vfs::DriveManager, block: &[u8]) {
+    let block = &block[..block.len().min(MAX_CWD_BLOCK)];
+    let mut first_drive = None;
+    for entry in block.split(|&b| b == 0).take(26) {
+        let Ok(entry) = std::str::from_utf8(entry) else { continue };
+        let Some(letter) = entry.bytes().next().filter(u8::is_ascii_alphabetic) else { continue };
+        if !entry[1..].starts_with(":\\") { continue; }
+        match dm.set_current_dir(entry) {
+            Ok(()) => {}
+            Err(e) => debug!("inherited current directory {entry} not set: {e:?}"),
+        }
+        first_drive.get_or_insert(letter.to_ascii_uppercase() - b'A' + 1);
+    }
+    if let Some(disk) = first_drive && dm.set_current_disk(disk).is_err() {
+        debug!("inherited current drive {disk} is not mounted");
+    }
 }
 
 /// The strings of an environment block (`NAME=value\0…\0`), up to the
@@ -781,6 +840,45 @@ mod tests {
         clear_parent_vars(&mut cmd);
         let set: Vec<_> = cmd.get_envs().filter(|(_, v)| v.is_some()).collect();
         assert!(set.is_empty(), "{set:?}");
+    }
+
+    /// A child gets its parent's current drive and directories; one that
+    /// is gone, a path out of the drive or junk is dropped, never applied.
+    #[test]
+    fn current_directories_pass_to_a_child() {
+        use super::super::vfs::DriveManager;
+        use super::super::vfs_hostdir::HostDirBackend;
+        let root = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(root.path().join("work/src")).unwrap();
+        let drive = || Box::new(HostDirBackend::new(root.path().to_path_buf()).unwrap());
+        let mut parent = DriveManager::new();
+        parent.mount(2, drive());
+        parent.mount(3, drive());
+        parent.set_current_disk(4).unwrap();
+        parent.set_current_dir("C:\\WORK\\SRC").unwrap();
+        parent.set_current_dir("D:\\WORK").unwrap();
+        let block = cwd_strings(&parent, None);
+        assert_eq!(block, b"D:\\WORK\0C:\\WORK\\SRC");
+        assert_eq!(unescape(&escape(&block)), block);
+
+        let mut child = DriveManager::new();
+        child.mount(2, drive());
+        child.mount(3, drive());
+        apply_cwd(&mut child, &block);
+        assert_eq!(child.current_disk(), 3, "the parent's current drive");
+        assert_eq!(child.current_dir(2), "WORK/SRC");
+        assert_eq!(child.current_dir(3), "WORK");
+
+        // WinStartApp's start directory replaces the current drive's.
+        assert_eq!(cwd_strings(&parent, Some("C:\\WORK")), b"C:\\WORK\0D:\\WORK");
+        assert_eq!(cwd_strings(&parent, Some("Q:\\NONE")), block, "an unknown drive is ignored");
+
+        let mut other = DriveManager::new();
+        other.mount(2, drive());
+        apply_cwd(&mut other, b"C:\\GONE\0C:\\..\\..\0Z:\\X\0junk\0\xff\xfe");
+        assert_eq!((other.current_disk(), other.current_dir(2)), (2, ""), "nothing applied");
+        apply_cwd(&mut other, b"Z:\\X\0C:\\WORK");
+        assert_eq!((other.current_disk(), other.current_dir(2)), (2, "WORK"), "a missing drive stays unchosen");
     }
 
     /// Arguments and environment from a parent (`from_env` reads them).

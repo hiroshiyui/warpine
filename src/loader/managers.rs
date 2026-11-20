@@ -224,7 +224,6 @@ impl HDirManager {
 
 pub struct ProcessManager {
     pub current_disk: u8,     // 1=A, 2=B, 3=C (default)
-    pub current_dir: String,  // OS/2-style current directory (without drive letter), e.g. "\"
     pub children: HashMap<u32, std::process::Child>,
     /// Background relay threads that forward child stdout to the parent VioManager.
     /// Keyed by the same PID used in `children`.  Must be joined after the child
@@ -241,17 +240,10 @@ impl ProcessManager {
     pub fn new() -> Self {
         ProcessManager {
             current_disk: 3, // C:
-            current_dir: String::from("\\"),
             children: HashMap::new(),
             relay_threads: HashMap::new(),
             next_pid: super::constants::FIRST_CHILD_PROCESS_ID,
         }
-    }
-
-    /// Get the OS/2 current directory path without the leading backslash.
-    /// OS/2 DosQueryCurrentDir returns the path without the drive letter or leading backslash.
-    pub fn current_dir_no_leading_slash(&self) -> &str {
-        self.current_dir.trim_start_matches('\\')
     }
 
     /// Track a child process under a new id of this process's own
@@ -647,15 +639,6 @@ mod tests {
     fn test_process_manager_defaults() {
         let mgr = ProcessManager::new();
         assert_eq!(mgr.current_disk, 3); // C:
-        assert_eq!(mgr.current_dir, "\\");
-        assert_eq!(mgr.current_dir_no_leading_slash(), "");
-    }
-
-    #[test]
-    fn test_process_manager_current_dir() {
-        let mut mgr = ProcessManager::new();
-        mgr.current_dir = String::from("\\TOOLS\\BIN");
-        assert_eq!(mgr.current_dir_no_leading_slash(), "TOOLS\\BIN");
     }
 
     #[test]

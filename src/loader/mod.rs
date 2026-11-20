@@ -518,6 +518,8 @@ impl Loader {
 
         // The command line, environment and process id a parent passed.
         let startup = inherit::StartupInfo::from_env();
+        // The current drive and directories the parent had.
+        if let Some(cwd) = &startup.cwd { inherit::apply_cwd(&mut drive_mgr, cwd); }
         window_mgr.switch_list.own_process = startup.process_id();
 
         let shared = Arc::new(SharedState {

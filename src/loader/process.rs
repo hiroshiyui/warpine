@@ -154,21 +154,6 @@ impl super::Loader {
             }
         }
 
-        // Inherit the current working directory
-        let cwd = {
-            let proc_mgr = self.shared.process_mgr.lock_or_recover();
-            let dir = proc_mgr.current_dir.replace('\\', "/").trim_start_matches('/').to_string();
-            if dir.is_empty() {
-                std::env::current_dir().ok()
-            } else {
-                std::env::current_dir().ok().map(|base| base.join(&dir))
-            }
-        };
-        if let Some(ref cwd) = cwd
-            && cwd.is_dir() {
-                cmd.current_dir(cwd);
-        }
-
         match exec_flag {
             0 => {
                 // EXEC_SYNC: pipe only stdout so the child's program output
@@ -457,6 +442,8 @@ impl super::Loader {
             Some(dir) => { cmd.env(super::npipe::PIPE_DIR_ENV, dir); }
             None => { cmd.env_remove(super::npipe::PIPE_DIR_ENV); }
         }
+        let cwd = super::inherit::cwd_strings(&self.shared.drive_mgr.lock_or_recover(), None);
+        cmd.env(super::inherit::CWD_ENV, escape(&cwd));
     }
 
     /// Parse a double-null-terminated string from guest memory.
