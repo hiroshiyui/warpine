@@ -11,7 +11,7 @@
 
 Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS/2 1.x (NE format) applications natively on Linux using KVM hardware virtualization. Analogous to WINE for Windows, but targeting OS/2 instead.
 
-![Warpine's built-in CMD.EXE in its 80×25 text window: the ver command (Warpine OS/2 Compatibility Layer [Builtin CMD.EXE]) and a dir listing of drive C:, ending at the [C:\\] prompt](doc/screenshots/cmd.png)
+![Warpine's built-in CMD.EXE in its 80×25 text window: the ver command (Warpine OS/2 Compatibility Layer [Builtin CMD.EXE] version 0.0.6) and a dir listing of the empty drive C:, ending at the [C:\\] prompt](doc/screenshots/cmd.png)
 
 <!-- screenshots:begin -->
 ## Screenshots
@@ -26,8 +26,8 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 | **Built-in controls and typing.** The entry field was clicked and typed into (`Hello, Wörld!` at the end, then *Home* and `>>` at the start); in the multi-line field, Enter after "Line one" and `three` started a new line. | **Dialogs from the keyboard.** Ctrl+D, from the window's accelerator table, opens a modal dialog built from a `DLGTEMPLATE` resource. `Warp` was typed into the focused field, then Tab and Down twice picked *Green*. |
 | ![PM Slider / Value Set Test window: a horizontal slider with a 0 to 5 scale, arrow buttons, a blue ribbon strip and its arm on a detent; a half-filled progress slider; a slider with a red owner-drawn arm; a vertical slider with buttons and ticks; a grid of eight colour items with red selected; a row of value set items with blue selected and an owner-drawn yellow item; and text items Three (selected), a greyed Two and One](doc/screenshots/pm_slider_valueset.png) | ![The "Container trees and grids" window: on the left a tree view with dotted tree lines, a folder "Alpha" with Gamma, A1 and A2 (expanded, holding A21), a collapsed-expander "Beta" with items b01 to b11 and a vertical scroll bar; on the right an icon view with six page icons, One, Two, Three, Four, Five and Under, laid out on a grid](doc/screenshots/pm_cnrgrid.png) |
 | **Sliders and value sets.** A scripted session clicked the shaft, dragged the arm, pressed a button and the arrow keys, and Shift+Right moved the arm to a detent; the red arm is drawn by the owner. In the value sets, clicks and keys selected items; "Two" is disabled. | **Container trees and grids.** `WC_CONTAINER` in the tree view with tree lines and expanders (`CA_TREELINE`), and in the icon view arranged on a grid (`CM_SETGRIDINFO`, `CMA_ARRANGEGRID`). Context menus (`WM_CONTEXTMENU`) and the mouse wheel reach containers too. |
-| ![The "Embedded dialog chrome" window: a grey client with an entry field reading "q" and an "Out" button above an embedded "Inner dialog" with a dark grey title bar and a thin border, holding an entry field reading "xy", a "Press" button with the focus outline and a blue square drawn by the program's own window](doc/screenshots/pm_embdlg.png) | ![The built-in CMD.EXE in a "Warpine — CMD.EXE" frame on the PM desktop: ver, mkdir PROJECTS, echo … > HELLO.TXT, a dir listing showing PROJECTS and the 33-byte HELLO.TXT on drive C:, and type HELLO.TXT printing "Hello from the built-in CMD.EXE"](doc/screenshots/cmd_window.png) |
-| **Dialogs inside windows.** A dialog loaded with the client as its parent lives inside the client and draws the title bar and border its template asks for. Tab went from the client's entry field into the dialog (`xy`), out again (`q`), and Shift+Tab back to *Press*; the blue square is a window of the program's own class, which gets its own clicks. | **Text-mode programs in a PM window.** Warpine's built-in `CMD.EXE` runs in a frame on the PM desktop, as in an OS/2 window session: `mkdir`, an `echo` redirected into a file on drive C:, `dir` and `type`. `WARPINE_VIO=fullscreen` runs it full screen instead (the text window at the top of this page). |
+| ![The "Embedded dialog chrome" window: a grey client with an entry field reading "q" and an "Out" button above an embedded "Inner dialog" with a dark grey title bar and a thin border, holding an entry field reading "xy", a "Press" button with the focus outline and a blue square drawn by the program's own window](doc/screenshots/pm_embdlg.png) | ![The built-in CMD.EXE in a "Warpine — CMD.EXE" frame on the PM desktop: ver naming version 0.0.6, mkdir PROJECTS, echo … > HELLO.TXT, a dir listing showing PROJECTS and the 33-byte HELLO.TXT on drive C:, and type HELLO.TXT printing "Hello from the built-in CMD.EXE"](doc/screenshots/cmd_window.png) |
+| **Dialogs inside windows.** A dialog loaded with the client as its parent lives inside the client and draws the title bar and border its template asks for. Tab went from the client's entry field into the dialog (`xy`), out again (`q`), and Shift+Tab back to *Press*; the blue square is a window of the program's own class, which gets its own clicks. | **Text-mode programs in a PM window.** Warpine's built-in `CMD.EXE` runs in a frame on the PM desktop, as in an OS/2 window session: `ver` with the release version, `mkdir`, an `echo` redirected into a file on drive C:, `dir` and `type`. `WARPINE_VIO=fullscreen` runs it full screen instead (the text window at the top of this page). |
 
 ### Work in progress
 
@@ -38,7 +38,7 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 - **Games and video** — DIVE (direct framebuffer blitting) and OpenGL are not implemented yet.
 - **Printing** — the spooler reports no printers.
 
-_Screenshots captured from commit `df07985` (v0.0.6) on 2026-11-20._
+_Screenshots captured from commit `df07985` (v0.0.6) on 2026-11-20; the CMD.EXE window and the text window at the top from uncommitted changes on top of `8f820e1`, the same day._
 <!-- screenshots:end -->
 
 ## Key Features
@@ -342,7 +342,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 2039 unit tests (no KVM required)
+cargo test                        # 2040 unit tests (no KVM required)
 cargo test --test integration     # 170 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```

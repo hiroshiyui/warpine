@@ -593,8 +593,10 @@ impl CmdShell {
         self.shared.console_mgr.lock_or_recover().clear_screen(ATTR_NORMAL);
     }
 
+    /// The version is the latest release's: every release sets
+    /// `Cargo.toml`'s version to its tag (`vX.Y.Z`).
     fn cmd_ver(&self) {
-        self.writeln("Warpine OS/2 Compatibility Layer [Builtin CMD.EXE]");
+        self.writeln(&ver_line());
     }
 
     fn cmd_help(&self) {
@@ -1053,6 +1055,11 @@ impl CmdShell {
 
 // ── Free helpers ──────────────────────────────────────────────────────────────
 
+/// What `VER` prints: the shell's name and Warpine's release version.
+fn ver_line() -> String {
+    format!("Warpine OS/2 Compatibility Layer [Builtin CMD.EXE] version {}", env!("CARGO_PKG_VERSION"))
+}
+
 /// Parse `/C` / `/K` flags and extract the optional initial command.
 /// Returns `(run_once, initial_command)`.
 ///
@@ -1426,6 +1433,17 @@ mod tests {
         assert_eq!(rc, NO_ERROR);
         let screen = screen_text(&loader);
         assert!(screen.contains("Warpine"), "screen should contain 'Warpine': {:?}", &screen[..80]);
+        assert!(screen.contains(&ver_line()), "VER names the release version: {screen:?}");
+    }
+
+    #[test]
+    fn test_ver_line_ends_with_the_release_version() {
+        let line = ver_line();
+        let version = line.rsplit(' ').next().unwrap();
+        assert_eq!(version, env!("CARGO_PKG_VERSION"));
+        let parts: Vec<&str> = version.split('.').collect();
+        assert_eq!(parts.len(), 3, "a release version is X.Y.Z: {version}");
+        assert!(parts.iter().all(|p| p.parse::<u32>().is_ok()), "numeric: {version}");
     }
 
     #[test]

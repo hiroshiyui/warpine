@@ -416,8 +416,8 @@ fn test_ansi_escape_sequences_in_a_vio_window() {
 }
 
 /// The built-in CMD.EXE reading commands from a pipe: once the input is
-/// used up it ends (exit code 0) instead of waiting forever, and `echo … >
-/// file` writes the file on drive C.
+/// used up it ends (exit code 0) instead of waiting forever, `ver` names the
+/// release version, and `echo … > file` writes the file on drive C.
 #[test]
 fn test_cmd_ends_at_the_end_of_piped_input() {
     let sample = "CMD.EXE";
@@ -442,7 +442,7 @@ fn test_cmd_ends_at_the_end_of_piped_input() {
     {
         use std::io::Write;
         let mut stdin = child.stdin.take().unwrap();
-        stdin.write_all(b"echo piped-Qz7\r\necho saved > out.txt\r\n").unwrap();
+        stdin.write_all(b"echo piped-Qz7\r\nver\r\necho saved > out.txt\r\n").unwrap();
     } // closed: end of input
     let deadline = std::time::Instant::now() + Duration::from_secs(20);
     let status = loop {
@@ -458,6 +458,8 @@ fn test_cmd_ends_at_the_end_of_piped_input() {
     child.stdout.take().unwrap().read_to_string(&mut out).unwrap();
     assert_eq!(status.code(), Some(0), "exit status at the end of input:\n{out}");
     assert!(out.contains("piped-Qz7"), "the piped command ran:\n{out}");
+    let ver = format!("[Builtin CMD.EXE] version {}", env!("CARGO_PKG_VERSION"));
+    assert!(out.contains(&ver), "VER names the release version:\n{out}");
     let saved = std::fs::read_to_string(dir.path().join("warpine/drive_c/out.txt")).unwrap_or_default();
     assert_eq!(saved, "saved\r\n", "echo > file wrote the file");
 }

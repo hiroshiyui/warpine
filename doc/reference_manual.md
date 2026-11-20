@@ -199,7 +199,7 @@ The prompt shows the current drive and directory: `[C:\path] `.
 | `SET` | `SET [VAR[=value]]` | Without args: list all environment variables. `SET VAR` shows matching vars. `SET VAR=value` sets a variable. `SET VAR=` unsets it. |
 | `ECHO` | `ECHO [text]` | Write text to the console. `ECHO.` prints a blank line. `ECHO ON`/`OFF` not supported. |
 | `CLS` | `CLS` | Clear the screen. |
-| `VER` | `VER` | Print the Warpine version. |
+| `VER` | `VER` | Print the shell's name and the version of the latest Warpine release (`Cargo.toml`'s version, which each release sets to its tag). |
 | `TYPE` | `TYPE <file>` | Print file contents to the console. |
 | `MD` | `MD <path>` | Create a directory (and any missing parent directories). |
 | `RD` | `RD <path>` | Remove an empty directory. |
