@@ -92,6 +92,24 @@ fn run_sample_args(sample: &str, args: &[&str], timeout_secs: u64, env: &[(&str,
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
+/// `warpine --licenses` prints Warpine's licence and the notices of the
+/// fonts built into the binary, and needs no KVM (ADR-0076).
+#[test]
+fn test_licenses_switch_prints_the_built_in_font_notices() {
+    let out = Command::new(warpine())
+        .arg("--licenses")
+        .env("RUST_LOG", "error")
+        .stdin(Stdio::null())
+        .output()
+        .expect("run warpine --licenses");
+    assert!(out.status.success(), "exit status: {:?}", out.status);
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.starts_with(&format!("Warpine {}", env!("CARGO_PKG_VERSION"))), "{text}");
+    assert!(text.contains("IBM Corp. with Reserved Font Name \"Plex\""), "IBM Plex notice");
+    assert!(text.contains("GNU Unifont 17.0.03"), "Unifont notice");
+    assert_eq!(text.matches("SIL OPEN FONT LICENSE Version 1.1").count(), 2, "the OFL for each font");
+}
+
 /// hello: DosWrite to stdout, clean exit.
 #[test]
 fn test_hello_world() {

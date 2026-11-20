@@ -327,6 +327,7 @@ cargo run -- samples/rust_hello/target/i686-warpine-os2/debug/rust_hello.exe
 ### 7. API compatibility report
 ```bash
 cargo run -- --compat
+cargo run -- --licenses   # Warpine's licence and the built-in fonts' notices
 ```
 
 ### 8. Tracing
@@ -348,8 +349,8 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 2040 unit tests (no KVM required)
-cargo test --test integration     # 170 end-to-end tests (requires /dev/kvm)
+cargo test                        # 2041 unit tests (no KVM required)
+cargo test --test integration     # 171 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
 
@@ -375,7 +376,7 @@ See [doc/TODOs.md](doc/TODOs.md) for the detailed roadmap and [doc/unverified.md
 
 This project is licensed under the GNU General Public License, version 3 or (at your option) any later version (GPL-3.0-or-later). See the [LICENSE](LICENSE) file for details. Third-party material under `vendor/` keeps its own licence: IBM Plex (SIL Open Font License 1.1) and GNU Unifont (GPL-2.0-or-later with the font embedding exception, or OFL 1.1).
 
-Bundled third-party fonts keep their own licences: the IBM Plex families in [`vendor/ibm-plex`](vendor/ibm-plex) are © IBM Corp. under the SIL Open Font License 1.1 ([`LICENSE.txt`](vendor/ibm-plex/LICENSE.txt)), and GNU Unifont in `vendor/unifont` is dual-licensed under GPL-2.0-or-later with the GNU font embedding exception and the SIL Open Font License 1.1.
+Bundled third-party fonts keep their own licences: the IBM Plex families in [`vendor/ibm-plex`](vendor/ibm-plex) are © IBM Corp. under the SIL Open Font License 1.1 ([`LICENSE.txt`](vendor/ibm-plex/LICENSE.txt)), and GNU Unifont in `vendor/unifont` is dual-licensed under GPL-2.0-or-later with the GNU font embedding exception ([`LICENSE.txt`](vendor/unifont/LICENSE.txt)) and the SIL Open Font License 1.1 ([`OFL-1.1.txt`](vendor/unifont/OFL-1.1.txt)). Both are built into the `warpine` binary, and `warpine --licenses` prints their notices and licences.
 
 ## Trademarks
 

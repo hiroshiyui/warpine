@@ -27,3 +27,10 @@ the signature against the GNU keyring, copy
 GNU Unifont is dual-licensed under the GNU General Public License,
 version 2 or later, with the GNU font embedding exception, and the SIL Open
 Font License 1.1.
+
+- `LICENSE.txt`: the "Unifont AUTHORS" and "LICENSE" sections of the
+  release's README, unchanged.
+- `OFL-1.1.txt`: the release's `OFL-1.1.txt`, unchanged.
+
+Both are compiled into the `warpine` binary and printed by
+`warpine --licenses` (ADR-0076). Copy them again from each new release.

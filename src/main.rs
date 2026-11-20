@@ -88,12 +88,40 @@ fn detect_format(path: &str) -> Result<ExeFormat, String> {
 
 enum ExeFormat { LX, NE }
 
+/// The switch that prints [`license_notices`].
+const LICENSES_SWITCH: &str = "--licenses";
+
+/// Warpine's licence and the licences of the fonts built into the binary
+/// (ADR-0076). The SIL Open Font License asks that every copy of the fonts
+/// carry their copyright notice and the licence, readable by the user; a
+/// `warpine` binary passed on alone carries them here.
+fn license_notices() -> String {
+    const SEPARATOR: &str = "\n----------------------------------------------------------------------\n\n";
+    [
+        concat!(
+            "Warpine ", env!("CARGO_PKG_VERSION"), "\n\n",
+            "Warpine is free software: you can redistribute it and/or modify it under\n",
+            "the terms of the GNU General Public License as published by the Free\n",
+            "Software Foundation, either version 3 of the License, or (at your option)\n",
+            "any later version. It comes with NO WARRANTY. The licence text is in the\n",
+            "LICENSE file of its source, or at <https://www.gnu.org/licenses/>.\n\n",
+            "Built into this program: the IBM Plex fonts and GNU Unifont, under the\n",
+            "notices below.\n",
+        ),
+        concat!("IBM Plex\n\n", include_str!("../vendor/ibm-plex/LICENSE.txt")),
+        include_str!("../vendor/unifont/LICENSE.txt"),
+        concat!("GNU Unifont: SIL Open Font License 1.1\n\n", include_str!("../vendor/unifont/OFL-1.1.txt")),
+    ]
+    .join(SEPARATOR)
+}
+
 fn main() {
     init_logging();
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         eprintln!("Usage: {} <os2_executable> [--gdb <port>]", args[0]);
         eprintln!("       {} --compat         Print API compatibility report", args[0]);
+        eprintln!("       {} {LICENSES_SWITCH}       Print the licences of Warpine and its built-in fonts", args[0]);
         std::process::exit(1);
     }
 
@@ -105,6 +133,11 @@ fn main() {
             std::process::exit(1);
         };
         std::process::exit(gui::desktop_server::run(std::path::Path::new(dir)));
+    }
+
+    if args[1] == LICENSES_SWITCH {
+        print!("{}", license_notices());
+        return;
     }
 
     if args[1] == "--compat" {
@@ -521,7 +554,22 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>, args: &[&str]) {
 
 #[cfg(test)]
 mod tests {
-    use super::headless_requested;
+    use super::{headless_requested, license_notices};
+
+    /// `--licenses` carries Warpine's licence and each built-in font's
+    /// copyright notice and licence text in full.
+    #[test]
+    fn license_notices_carry_every_font_notice_and_licence() {
+        let text = license_notices();
+        assert!(text.contains("GNU General Public License"));
+        assert!(text.contains("either version 3 of the License, or (at your option)"));
+        assert!(text.contains("Copyright © 2017 IBM Corp. with Reserved Font Name \"Plex\""));
+        assert!(text.contains("Roman Czyborra created the original GNU Unifont"));
+        assert!(text.contains("GNU font embedding exception"));
+        // The OFL in full, once for each font, to its last clause.
+        assert_eq!(text.matches("SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007").count(), 2);
+        assert_eq!(text.matches("OTHER DEALINGS IN THE FONT SOFTWARE.").count(), 2);
+    }
 
     /// WARPINE_HEADLESS forces headless mode even on a terminal; a piped
     /// stdout is headless anyway.

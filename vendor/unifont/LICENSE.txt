@@ -1,0 +1,63 @@
+GNU Unifont 17.0.03
+
+The sections "Unifont AUTHORS" and "LICENSE" of the release's README,
+copied unchanged. GNU Unifont is also available under the SIL Open Font
+License 1.1, whose text is in OFL-1.1.txt next to this file.
+
+
+Unifont AUTHORS
+---------------
+Roman Czyborra created the original GNU Unifont, including the
+.hex format.  For greater detail, see the HISTORY section below.
+
+David Starner aggregated many glyphs contributed by others and
+incorporated these into pre-2004 Unifont releases.
+
+Qianqian Fang began his Wen Quan Yi font in 2004, by which
+time work on Unifont had stopped.  Most of the almost 30,000
+CJK ideographs in Unifont versions 5.1 and later were taken
+from Wen Quan Yi with permission of Qianqian Fang.  The glyphs
+in "./font/plane00/wqy-cjk.hex" are for the most part Qianqian
+Fang's Unibit and Wen Quan Yi glyphs.
+
+Paul Hardy drew most of the newly-drawn glyphs added to the BMP
+from the Unifont 5.1 release to the present release.  This includes
+the 11,172 glyphs in the Hangul Syllables block, plus approximately
+10,000 additional glyphs scattered throughout the BMP.
+
+Andrew Miller drew the glyphs added to Unicode 6.3.0.
+
+For full details of software changes after Unicode 6.3.0, higher
+Unicode planes, and the Private Use Area glyphs, etc., see the
+ChangeLog file.
+
+
+LICENSE
+-------
+The source code for everything except the compiled fonts in this current
+release is licensed as follows:
+
+     License for this current distribution of program source
+     files (i.e., everything except the fonts) is released under
+     the terms of the GNU General Public License version 2,
+     or (at your option) a later version.
+
+GPL version 2 is contained in the "COPYING" file in the main source
+directory for this package.  If your received this source without
+a copy of GPL version 2, you can download a copy from GNU's website
+at http://www.gnu.org/licenses/gpl-2.0.html.
+
+The license for the compiled fonts is covered by the above GPL terms
+with the GNU font embedding exception, as follows:
+
+     As a special exception, if you create a document which uses this font,
+     and embed this font or unaltered portions of this font into the document,
+     this font does not by itself cause the resulting document to be covered
+     by the GNU General Public License. This exception does not however
+     invalidate any other reasons why the document might be covered by the
+     GNU General Public License. If you modify this font, you may extend
+     this exception to your version of the font, but you are not obligated
+     to do so. If you do not wish to do so, delete this exception statement
+     from your version. 
+
+See "http://www.gnu.org/licenses/gpl-faq.html#FontException" for more details.

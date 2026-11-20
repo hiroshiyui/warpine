@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **`warpine --licenses`** — prints Warpine's licence and, from text compiled into the binary, the copyright notices and licences of the fonts built into it (IBM Plex: SIL OFL 1.1; GNU Unifont: GPL-2.0-or-later with the font embedding exception, or OFL 1.1), as the OFL asks of every copy. `vendor/unifont` now carries Unifont's authors, licence statement and OFL text from its release (ADR-0076).
 - **Trademark notice** — the README says Warpine is independent and not affiliated with IBM or the other companies and projects it names, and credits the trademarks it mentions (OS/2 and the other IBM marks, Linux, Windows).
 
 ### Removed

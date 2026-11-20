@@ -32,6 +32,7 @@ Warpine is an OS/2 compatibility layer for Linux that runs 32-bit OS/2 (LX forma
 ```
 warpine <os2_executable> [--gdb <port>]
 warpine --compat
+warpine --licenses
 ```
 
 ### Arguments
@@ -41,6 +42,7 @@ warpine --compat
 | `<os2_executable>` | Path | Path to an OS/2 LX or NE executable |
 | `--gdb <port>` | u16 | Enable GDB Remote Stub on the given TCP port |
 | `--compat` | Flag | Print API compatibility report and exit |
+| `--licenses` | Flag | Print Warpine's licence and the notices and licences of the fonts built into the binary (IBM Plex, GNU Unifont), and exit |
 
 ### Exit Codes
 
