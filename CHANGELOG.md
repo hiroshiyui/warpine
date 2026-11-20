@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.0.7] - 2026-11-20
+
 ### Added
 - **Tier 1: small, fundamental calls** (ADR-0086):
   - PMWIN (42):
