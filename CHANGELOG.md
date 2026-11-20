@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.0.8] - 2026-11-21
+
 ### Added
 - **Signals in more places** (ADR-0093):
   - **Ctrl+\\ at a terminal is Ctrl+Break:** it raises `XCPT_SIGNAL_BREAK`, from raw keyboard input or as the host's `SIGQUIT`.
