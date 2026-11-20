@@ -63,6 +63,7 @@ _Screenshots captured from uncommitted changes on top of `ed65028` on 2026-11-18
 - **Profiles and help:** `Prf*` profile calls with OS2.INI / OS2SYS.INI on drive C: (in Warpine's own text format), and Help Manager instances so programs with online help start (no help viewer yet).
 - **NLS:** `DosQueryCtryInfo`, `DosQueryCp`, `DosMapCase`, `DosGetDateTime` — verified correct.
 - **Dates after 2038:** a session clock that `DosSetDateTime` moves (the host clock is never touched) and `WARPINE_CLOCK=2040-03-01` starts anywhere; file times in local time up to the `FDATE` limit 2107, set by `DosSetFileInfo` / `DosSetPathInfo`; `WARPINE.DLL` offers 64-bit time calls (`WrpTime64` …) to programs that can be recompiled.
+- **SOM runtime kernel:** `SOM.DLL` is built in: `SOMObject`, `SOMClass` and `SOMClassMgr` with metaclasses, multiple inheritance and the C and C++ bindings; classes loaded from DLLs by name (`somFindClass`); IBM's SOM 1.0 ordinals (from osFree's export list), IBM's `ClassData`, method-table and `CClassData` layouts for the root classes, and `somBuildClass` for classes built from IBM's static class information. IBM's ordinals above 47 and the initializer control blocks are still missing ([ADR-0059](doc/adr/0059-som-runtime-kernel.md) to 0063, 0070 to 0073).
 - **MMPM/2 Audio:** `DosBeep` plays real sine-wave tones; `mciSendCommand`/`mciSendString` play `waveaudio` WAV files (wait, notify, seek, volume, aliases) through SDL3 audio streams on the main thread.
 - **NE Format Execution:** Full NE (New Executable) loader and 16-bit execution — loads OS/2 1.x 16-bit NE binaries into GDT-tiled guest memory, dispatches DOSCALLS/VIOCALLS via Pascal-convention 16-bit thunks. `ne_hello` (pure assembly, no Watcom CRT) runs `DosWrite`+`DosExit` correctly.
 - **GDB Remote Stub:** `--gdb <port>` enables GDB RSP over TCP — attach with `gdb`/`gef`/`pwndbg` for software breakpoints, single-step, and full register/memory access.
@@ -362,7 +363,7 @@ cargo clippy --all-targets -- -D warnings  # Lint, test code included — must p
 | 5 | Multimedia & 16-bit — MMPM/2 audio baseline; NE parser + full 16-bit NE execution | ✅ Complete |
 | 6 | SDL VGA Text Renderer — 640×400 CP437 window, CGA palette, blinking cursor | ✅ Complete |
 | 7 | Application Compatibility — DLL loader chain baseline (jpos2dll.dll) | 🔄 In progress |
-| 8 | SOM / Workplace Shell | 🔮 Long-term |
+| 8 | SOM / Workplace Shell — the SOM kernel runs Open Watcom's SOM samples and builds IBM-style classes; the WPS is not started | 🔄 In progress |
 | 9 | XE — 64-bit OS/2-lineage platform (new format + API set + Rust toolchain) | 🔮 Far future |
 
 See [doc/TODOs.md](doc/TODOs.md) for the detailed roadmap and [doc/unverified.md](doc/unverified.md) for behaviour still to be checked against OS/2.
