@@ -174,11 +174,11 @@
 <text xml:space="preserve" text-anchor="start" x="3062.75" y="-701.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/doscalls.rs, loader/stubs.rs, loader/process.rs, loader/ipc.rs</text>
 <text xml:space="preserve" text-anchor="start" x="3052.25" y="-693.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/dostimer.rs, loader/modpath.rs, loader/suballoc.rs, loader/cmd.rs</text>
 <text xml:space="preserve" text-anchor="start" x="3027.88" y="-685.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/cmd/batch.rs, loader/cmd/builtins.rs, loader/cmd/env.rs, loader/cmd/external.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3043.62" y="-677.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/cmd/files.rs, loader/cmd/input.rs, loader/cmd/parse.rs, loader/npipe.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3041" y="-669.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/npipe_dir.rs, loader/npipe_api.rs, loader/npipe_sem.rs, loader/inherit.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3020" y="-661.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/msgcalls.rs, loader/pm_startapp.rs, loader/config_sys.rs, loader/session_threads.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3027.12" y="-653.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/shared_arena.rs, loader/shared_sem.rs, loader/clock.rs, loader/warpine_api.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3149.38" y="-645.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/infoseg.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3032" y="-677.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/cmd/files.rs, loader/cmd/prompt.rs, loader/cmd/input.rs, loader/cmd/parse.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3042.12" y="-669.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/npipe.rs, loader/npipe_dir.rs, loader/npipe_api.rs, loader/npipe_sem.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3038" y="-661.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/inherit.rs, loader/msgcalls.rs, loader/pm_startapp.rs, loader/config_sys.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3020" y="-653.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/session_threads.rs, loader/shared_arena.rs, loader/shared_sem.rs, loader/clock.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3108.5" y="-645.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/warpine_api.rs, loader/infoseg.rs</text>
 </g>
 <!-- dispatch&#45;&gt;kernel -->
 <g id="edge9" class="edge">

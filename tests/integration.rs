@@ -726,6 +726,32 @@ fn test_cmd_script_file_commands() {
     assert_eq!(std::fs::read(drive_c.join("NOTE.TXT")).unwrap(), b"abc\r\n", "not emptied");
 }
 
+/// samples/cmd_scripts/session.cmd: PATH decides where programs are
+/// found, DETACH runs one in the background (it makes a file after the
+/// shell went on), and PROMPT's `$p$g` is the prompt the echoed lines show
+/// (ADR-0080).
+#[test]
+fn test_cmd_script_path_detach_and_prompt() {
+    let Some((code, out, dir)) = run_cmd_headless(&["/C", "SESSION.CMD"], b"", |c| {
+        std::fs::copy("samples/cmd_scripts/session.cmd", c.join("SESSION.CMD")).unwrap();
+    }) else { return };
+    let out = strip_ansi(&out);
+    assert_eq!(code, Some(0), "{out}");
+    assert_in_order(&out, &["not-on-path\r\n", "found-on-path\r\n", "PATH=C:\\BIN\r\n",
+                            "The Process Identification Number is ", "C:\\>ECHO prompt-shown\r\n", "prompt-shown\r\n"]);
+    // The detached program ends by itself; its file shows it ran.
+    let done = dir.path().join("warpine/drive_c/DONE.TXT");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !done.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Written once the file is closed; wait for the contents too.
+    while std::fs::read(&done).map_or(true, |d| d.is_empty()) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(std::fs::read(&done).ok().as_deref(), Some(&b"cmd_tool: touched\r\n"[..]), "the detached program ran");
+}
+
 /// A script's lines are shown after the prompt while ECHO is on, as the
 /// shell runs them; `@` and ECHO OFF hide them (ADR-0078).
 #[test]

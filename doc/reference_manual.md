@@ -208,6 +208,9 @@ The prompt shows the current drive and directory: `[C:\path] `.
 | `DEL` | `DEL <file>` | Delete a file. |
 | `COPY` | `COPY src[+src…] [dst] [/A] [/B] [/V]` | Copy files (wildcards allowed) into a directory (the current one without `dst`), to names made by `dst`'s wildcards (`COPY *.TXT *.BAK`), or to a file, replacing it; `+`, or several files into one file, join them. Never onto the file itself. Works across drives. The switches are ignored (binary copies). |
 | `REN` | `REN <old> <new>` | Rename files (wildcards: `REN *.LOG *.OLD`) or a directory in place; `new` is a name, not a path. An existing name is not replaced (a change of case is allowed). Also `RENAME`. |
+| `PROMPT` | `PROMPT [text]` | Set the prompt's template; `PROMPT` alone restores the default `[$P] `. Codes (letters without case): `$P` drive and directory, `$N` drive, `$G` `>`, `$L` `<`, `$Q` `=`, `$A` `&`, `$B` `\|`, `$C` `(`, `$F` `)`, `$S` blank, `$_` new line, `$$` `$`, `$H` backspace, `$E` ESC (ANSI colours), `$D` date, `$T` time, `$V` version, `$R` last return code. Date and time come from the session clock. |
+| `PATH` | `PATH [dirs \| ;]` | Show the program search path (`No Path.` when unset), set it, or clear it with `;`. |
+| `DETACH` | `DETACH <program> [args]` | Run a program in the background without a console (no input, output discarded) and write its process id; it counts as the shell's child until it ends. Not for scripts. |
 | `MOVE` | `MOVE <src> [dst]` | Move files (wildcards allowed) or one directory into a directory (the current one without `dst`), or one file to a new name, on one drive. An existing name is not replaced. |
 | `HELP` | `HELP` | List available commands. |
 | `EXIT` | `EXIT [code]` | Exit the shell with an optional numeric exit code (default 0), also from inside a script. |

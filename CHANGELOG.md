@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **PROMPT, PATH and DETACH in the built-in CMD.EXE** (Stage 2, slice 2d; ADR-0080): PROMPT with OS/2's `$` codes (`$P$G`, `$E` for ANSI colours, `$D` / `$T` from the session clock, `$R` the last return code, …); the PATH command; DETACH to run a program in the background without a console, counted under the session's limits until it ends. Sample: `samples/cmd_scripts/session.cmd`; `samples/cmd_tool` gains `touch`.
 - **COPY, REN and MOVE in the built-in CMD.EXE** (Stage 2, slice 2c; ADR-0079), in OS/2's syntax and through the VFS: COPY with wildcards, wildcard targets (`COPY *.TXT *.BAK`), joining with `+` and across drives; REN by wildcards in place; MOVE of files or a directory on one drive. Neither REN nor MOVE replaces an existing name. Sample: `samples/cmd_scripts/files.cmd`.
 - **Batch control in the built-in CMD.EXE** (Stage 2, slice 2b; ADR-0078), in OS/2's syntax: `ECHO ON` / `OFF` (scripts echo their lines after the prompt until `ECHO OFF`; `@` hides one line), `ECHO.`, `%0`–`%9` and `SHIFT`, `IF [NOT] ERRORLEVEL` / `EXIST` / `==`, `FOR %%v IN (set) DO` (wildcards stand for files), `GOTO` labels, `CALL` (a script started without it takes the caller's place), `SETLOCAL` / `ENDLOCAL` (environment and directories), `PAUSE`, and `EXIT` in a script ending the shell. Samples: `samples/cmd_scripts/batch.cmd`, `batchsub.cmd`.
 - **The built-in CMD.EXE's foundations** (Stage 2, slice 2a; ADR-0077), in OS/2's CMD syntax:
@@ -29,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Shell redirection stays inside the drives** — the built-in `CMD.EXE` opened a redirection target that did not exist yet (`> file`) through the guest's path string as a host path, so a guest could write host files outside its drives through `CMD.EXE /C … > path`; it now creates the file through the VFS, and a path outside the drives is an error. Creating any new file through a dangling symbolic link, which would place it at the link's target, is refused too, `DosOpen` included (ADR-0075).
 
 ### Fixed
+- **A malformed executable crashed Warpine** — an entry or stack object number of 0 made the loader index its object table at `0 - 1`; it is now refused with a load error (ADR-0080).
 - **A file copied onto itself was emptied** — `DosCopy("A.TXT", "a.txt")` truncated the file; it is now `ERROR_ACCESS_DENIED`. `DosCopy` also copies to another drive now.
 - **Names differing only in case** — creating, copying or renaming onto a name that exists in another case made a second file; it now reaches the existing entry, so a dangling link of another case is refused as well.
 - **Files made outside the VFS were not found for up to 2 s** in another case (after a shell redirection, for example).

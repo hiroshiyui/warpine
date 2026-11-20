@@ -11,6 +11,9 @@
  *   cwd       prints "cmd_tool: cwd X:\DIR": the current drive and its
  *             current directory, from DosQueryCurrentDisk and
  *             DosQueryCurrentDir
+ *   touch NAME creates the file NAME (DosOpen, replacing it) holding
+ *             "cmd_tool: touched\r\n"; it writes nothing to standard
+ *             output, so it can run detached
  *   exec DIR  sets the current directory to DIR (DosSetCurrentDir), then
  *             runs itself in `cwd` mode with DosExecPgm (EXEC_SYNC): the
  *             child prints the directory it started in. The child mode
@@ -119,6 +122,19 @@ static int do_exec( const char *dir )
     return (int)res.codeResult;
 }
 
+static int do_touch( const char *name )
+{
+    static const char text[] = "cmd_tool: touched\r\n";
+    HFILE h;
+    ULONG action, written;
+    if( DosOpen( (PSZ)name, &h, &action, 0, FILE_NORMAL,
+                 OPEN_ACTION_CREATE_IF_NEW | OPEN_ACTION_REPLACE_IF_EXISTS,
+                 OPEN_ACCESS_WRITEONLY | OPEN_SHARE_DENYNONE, NULL ) != NO_ERROR ) return 1;
+    DosWrite( h, (PVOID)text, sizeof( text ) - 1, &written );
+    DosClose( h );
+    return 0;
+}
+
 int main( int argc, char **argv )
 {
     const char *mode = argc >= 2 ? argv[1] : "";
@@ -127,6 +143,7 @@ int main( int argc, char **argv )
     if( strcmp( mode, "count" ) == 0 ) return do_count();
     if( strcmp( mode, "cwd" ) == 0 ) return do_cwd();
     if( strcmp( mode, "exec" ) == 0 && argc >= 3 ) return do_exec( argv[2] );
+    if( strcmp( mode, "touch" ) == 0 && argc >= 3 ) return do_touch( argv[2] );
     write_str( "cmd_tool: usage\r\n" );
     return 2;
 }

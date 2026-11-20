@@ -6,6 +6,9 @@
 
 use super::*;
 
+/// How often a detached program is checked for its end.
+const DETACHED_POLL: Duration = Duration::from_millis(200);
+
 /// The return code of a program that ended without an exit code (killed by
 /// a signal, or after a trap): Warpine's choice, unverified (ADR-0077).
 const RC_PROGRAM_KILLED: u32 = 255;
@@ -62,16 +65,17 @@ impl CmdShell {
             })
     }
 
-    /// Spawn `warpine <prog_path> [args...]` as a child process and relay its
-    /// stdout through the current output sink. A pipe or `< file` before it
-    /// is its standard input; else it shares the shell's. Returns its
-    /// return code.
-    pub(super) fn spawn_external(&self, prog_path: &std::path::Path, args: &[&str]) -> u32 {
+    /// The host command that runs `prog_path` with `args` as a child
+    /// Warpine process: the shell's environment and current directories,
+    /// and an admission under the session's limits (nesting, children,
+    /// THREADS=). `None`, with an error written, when it may not start.
+    fn child_command(&self, prog_path: &std::path::Path, args: &[&str])
+                     -> Option<(std::process::Command, crate::loader::inherit::Admission)> {
         let warpine_exe = match std::env::current_exe() {
             Ok(p) => p,
             Err(e) => {
                 self.error(&format!("Cannot locate warpine executable: {e}"));
-                return RC_BUILTIN_FAILED;
+                return None;
             }
         };
 
@@ -89,11 +93,11 @@ impl CmdShell {
             Ok(slot) => slot,
             Err(crate::loader::inherit::ChildLimit::Threads) => {
                 self.error("Cannot start another process: the THREADS= limit is reached");
-                return RC_BUILTIN_FAILED;
+                return None;
             }
             Err(_) => {
                 self.error("Cannot start another process: too many nested or running processes");
-                return RC_BUILTIN_FAILED;
+                return None;
             }
         };
 
@@ -101,6 +105,55 @@ impl CmdShell {
         // host's working directory is not involved).
         let cwd = crate::loader::inherit::cwd_strings(&self.shared.drive_mgr.lock_or_recover(), None);
         cmd.env(crate::loader::inherit::CWD_ENV, crate::loader::inherit::escape(&cwd));
+        Some((cmd, slot))
+    }
+
+    /// `DETACH program [args]`: run a program in the background, without
+    /// a console (no standard input or output), and go on at once. It
+    /// counts as a child of the shell until it ends, so the session's
+    /// limits hold. Writes its process id.
+    pub(super) fn cmd_detach(&self, args: &[&str]) {
+        let Some((&name, args)) = args.split_first() else {
+            self.error("The syntax of the command is incorrect.");
+            return;
+        };
+        let path = match self.find_program(name) {
+            None => return self.error(&format!("'{name}' is not recognized as a program.")),
+            Some((_, true)) => return self.error("DETACH runs programs, not scripts."),
+            Some((path, false)) => path,
+        };
+        let Some((mut cmd, slot)) = self.child_command(&path, args) else { return };
+        cmd.stdin(std::process::Stdio::null())
+           .stdout(std::process::Stdio::null())
+           .stderr(std::process::Stdio::null());
+        let pid = slot.pid;
+        let spawned = cmd.spawn();
+        crate::loader::inherit::child_started(&self.shared, slot, spawned.as_ref().ok().map(std::process::Child::id));
+        let child = match spawned {
+            Ok(child) => child,
+            Err(e) => return self.error(&format!("Failed to start {name}: {e}")),
+        };
+        self.shared.process_mgr.lock_or_recover().insert_child(pid, child);
+        // Reap it when it ends, so it stops counting as a child.
+        let shared = Arc::clone(&self.shared);
+        std::thread::spawn(move || loop {
+            std::thread::sleep(DETACHED_POLL);
+            let mut procs = shared.process_mgr.lock_or_recover();
+            let Some(child) = procs.children.get_mut(&pid) else { return };
+            if !matches!(child.try_wait(), Ok(None)) {
+                procs.take_child(pid);
+                return;
+            }
+        });
+        self.writeln(&format!("The Process Identification Number is {pid}."));
+    }
+
+    /// Spawn `warpine <prog_path> [args...]` as a child process and relay its
+    /// stdout through the current output sink. A pipe or `< file` before it
+    /// is its standard input; else it shares the shell's. Returns its
+    /// return code.
+    pub(super) fn spawn_external(&self, prog_path: &std::path::Path, args: &[&str]) -> u32 {
+        let Some((mut cmd, slot)) = self.child_command(prog_path, args) else { return RC_BUILTIN_FAILED };
 
         cmd.stdout(std::process::Stdio::piped())
            .stderr(std::process::Stdio::inherit());

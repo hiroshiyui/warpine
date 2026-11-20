@@ -211,8 +211,8 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 
 ## Console and multimedia
 
-- [ ] **The built-in CMD.EXE** (`cmd.rs`, `cmd/`; it replaces 4OS2, ADR-0075). Stage 2 grows it in slices; the foundations (return codes, `%name%`, `&` / `&&` / `||`, programs reading pipes and files, `PATH` search, inherited current directories; ADR-0077) batch control (ECHO, `%0`–`%9`, SHIFT, IF, FOR, GOTO, CALL, SETLOCAL, PAUSE; ADR-0078) and the file commands (`COPY`, `REN`, `MOVE`; ADR-0079) are done. Still to come:
-  - 2d: `PROMPT` (with `$e` ANSI sequences for colour), the `PATH` command, `DETACH`; `START` waits for several VIO sessions;
+- [ ] **The built-in CMD.EXE** (`cmd.rs`, `cmd/`; it replaces 4OS2, ADR-0075). Stage 2 grows it in slices; the foundations (return codes, `%name%`, `&` / `&&` / `||`, programs reading pipes and files, `PATH` search, inherited current directories; ADR-0077) batch control (ECHO, `%0`–`%9`, SHIFT, IF, FOR, GOTO, CALL, SETLOCAL, PAUSE; ADR-0078) the file commands (`COPY`, `REN`, `MOVE`; ADR-0079) and `PROMPT`, `PATH` and `DETACH` (ADR-0080) are done. Still to come:
+  - `START`, once several VIO sessions run on one desktop;
   - grouping with parentheses; the stages of a pipeline running at the same time (they run one after another now);
   - which of OS/2's other `CMD.EXE` commands to add is decided case by case.
 - [ ] **VIO window**:

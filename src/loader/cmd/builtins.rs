@@ -46,8 +46,34 @@ impl CmdShell {
         self.writeln("  SHIFT              Move %1-%9 down by one (in a script)");
         self.writeln("  SETLOCAL/ENDLOCAL  Save / restore variables and directory (in a script)");
         self.writeln("  PAUSE              Wait for a key");
+        self.writeln("  PROMPT [text]      Set the prompt ($P path, $G >, $E ESC, $_ new line ...)");
+        self.writeln("  PATH [dirs | ;]    Show, set or clear the program search path");
+        self.writeln("  DETACH program     Run a program in the background, without a console");
         self.writeln("  EXIT [code]        Exit shell");
         self.writeln("  <program>          Run OS/2 executable");
+    }
+
+    /// `PROMPT text` sets the prompt's template (`$` codes, ADR-0080);
+    /// `PROMPT` alone goes back to the default.
+    pub(super) fn cmd_prompt(&self, text: &str) {
+        let result = env_set(&mut self.env.borrow_mut(), "PROMPT", text.trim_end());
+        if result.is_err() { self.error("Out of environment space."); }
+    }
+
+    /// `PATH` shows the search path, `PATH ;` clears it, `PATH dirs` sets
+    /// it (directories separated by `;`, searched for programs).
+    pub(super) fn cmd_path(&self, text: &str) {
+        let text = text.trim();
+        if text.is_empty() {
+            let path = self.env.borrow().iter().find(|(k, _)| k.eq_ignore_ascii_case("PATH")).map(|(_, v)| v.clone());
+            match path {
+                Some(p) => self.writeln(&format!("PATH={p}")),
+                None => self.writeln("No Path."),
+            }
+            return;
+        }
+        let value = if text == ";" { "" } else { text };
+        if env_set(&mut self.env.borrow_mut(), "PATH", value).is_err() { self.error("Out of environment space."); }
     }
 
     pub(super) fn cmd_set(&self, args: &[&str]) {

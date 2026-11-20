@@ -1211,7 +1211,7 @@ All paths converge on:
 
 ### Modules and a command line's way through them
 
-The shell is `cmd.rs` (the `CmdShell` state, dispatch and the `Loader` entry points) and seven modules under `cmd/` (ADR-0077–0079):
+The shell is `cmd.rs` (the `CmdShell` state, dispatch and the `Loader` entry points) and eight modules under `cmd/` (ADR-0077–0080):
 
 | Module | What it holds |
 |--------|---------------|
@@ -1219,8 +1219,9 @@ The shell is `cmd.rs` (the `CmdShell` state, dispatch and the `Loader` entry poi
 | `batch.rs` | the script runner (`Batch`: lines, next line, `%0`–`%9`, SETLOCAL stack), ECHO, GOTO, SHIFT, IF, FOR, CALL, SETLOCAL / ENDLOCAL, PAUSE |
 | `env.rs` | the shell's own environment (`env_set`, its limits), `env_block` for children, `expand_vars` |
 | `builtins.rs` | `DIR`, `CD`, `SET`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `HELP` |
+| `prompt.rs` | `render_prompt`: PROMPT's `$` codes |
 | `files.rs` | `COPY` (joining with `+`), `REN`, `MOVE`: sources through `matching_files`, targets through `apply_edit_name` |
-| `external.rs` | `find_program` (current directory, then `PATH`), `exec_external`, `spawn_external`, `wait_child` |
+| `external.rs` | `find_program` (current directory, then `PATH`), `exec_external`, `child_command` (environment, directories, admission), `spawn_external`, `cmd_detach`, `wait_child` |
 | `input.rs` | the line editor and history |
 
 The way through, in `execute_line`:

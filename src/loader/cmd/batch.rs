@@ -92,7 +92,7 @@ impl CmdShell {
             if trimmed.is_empty() || trimmed.starts_with(':') { continue; }
             if self.echo_on.get() && !trimmed.starts_with('@') {
                 let shown = self.expand_line(trimmed);
-                self.write_attr(self.build_prompt().as_bytes(), ATTR_HEADER);
+                self.write_prompt();
                 self.writeln(&shown);
             }
             if let Some(code) = self.execute_line(trimmed) {

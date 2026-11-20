@@ -26,6 +26,7 @@ mod external;
 mod files;
 mod input;
 mod parse;
+mod prompt;
 
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
@@ -166,10 +167,7 @@ impl CmdShell {
             if self.shared.exit_requested.load(Ordering::Relaxed) {
                 return 0;
             }
-            if self.echo_on.get() {
-                let prompt = self.build_prompt();
-                self.write_attr(prompt.as_bytes(), ATTR_HEADER);
-            }
+            if self.echo_on.get() { self.write_prompt(); }
 
             match self.read_line() {
                 ReadResult::Eof => return 0,
@@ -230,8 +228,22 @@ impl CmdShell {
 
     // ── Prompt ────────────────────────────────────────────────────────────────
 
-    fn build_prompt(&self) -> String {
-        format!("[{}] ", self.current_path())
+    /// Write the prompt: `PROMPT`'s template with its `$` codes, in the
+    /// normal colour (ANSI sequences through `$E` colour it), or the
+    /// default `[C:\DIR] ` in the header colour (ADR-0080).
+    fn write_prompt(&self) {
+        let template = self.env.borrow().iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("PROMPT")).map(|(_, v)| v.clone());
+        let ms = self.shared.clock.now_ms();
+        let now = super::clock::unix_to_local(ms.div_euclid(1000))
+            .map(|t| (t, (ms.rem_euclid(1000) / 10) as u8));
+        let path = self.current_path();
+        let version = builtins::ver_line();
+        let ctx = prompt::PromptContext { path: &path, last_rc: self.last_rc.get(), now, version: &version };
+        match template {
+            Some(t) => self.write_attr(prompt::render_prompt(&t, &ctx).as_bytes(), ATTR_NORMAL),
+            None => self.write_attr(prompt::render_prompt(prompt::DEFAULT_PROMPT, &ctx).as_bytes(), ATTR_HEADER),
+        }
     }
 
     /// The current drive and directory as OS/2 writes them: `C:\`,
@@ -377,16 +389,18 @@ impl CmdShell {
         // a program its exit code (`exec_external`).
         self.failed.set(false);
         let builtin_rc = |shell: &Self| shell.last_rc.set(if shell.failed.get() { RC_BUILTIN_FAILED } else { 0 });
-        // What follows the command's name, as typed.
+        // What follows the command's name, as typed; `raw` keeps its
+        // blanks after one separator (ECHO, PROMPT, PATH).
         let rest = first_word(line).1;
+        let after = &line.trim_start()[tokens[0].len()..];
+        let raw = after.strip_prefix([' ', '\t']).unwrap_or(after);
         let result = match cmd.as_str() {
             "REM" => None,
             // The text after one separator, blanks kept.
-            "ECHO" => {
-                let after = &line.trim_start()[tokens[0].len()..];
-                self.cmd_echo(after.strip_prefix([' ', '\t']).unwrap_or(after));
-                None
-            }
+            "ECHO" => { self.cmd_echo(raw); None }
+            "PROMPT" => { self.cmd_prompt(raw); None }
+            "PATH" => { self.cmd_path(raw); None }
+            "DETACH" => { self.cmd_detach(&args); None }
             // `ECHO.` writes an empty line, `ECHO.text` the text.
             _ if cmd.starts_with("ECHO.") => { self.writeln(&line.trim_start()["ECHO.".len()..]); None }
             "GOTO" => { self.cmd_goto(rest); None }
@@ -788,6 +802,57 @@ mod tests {
         assert_eq!(file, "from-script\r\nthird\r\n");
         assert!(matches!(&*shell.output_sink.borrow(), OutputSink::Vio), "the screen again");
         assert!(matches!(&*shell.input_source.borrow(), InputSource::Kbd), "the keyboard again");
+    }
+
+    /// PROMPT sets the prompt's template, which the prompt shows; PROMPT
+    /// alone goes back to the default.
+    #[test]
+    fn prompt_sets_the_prompt() {
+        let (loader, _drive) = loader_with_drive_c();
+        let mut shell = CmdShell::new(Arc::clone(&loader.shared), Vec::new());
+        *shell.output_sink.borrow_mut() = OutputSink::Buffer(Vec::new());
+        shell.write_prompt();
+        shell.execute_line("PROMPT $p$g ");
+        shell.write_prompt();
+        shell.execute_line("PROMPT rc=$r$_");
+        shell.execute_line("cd NOSUCH");
+        shell.write_prompt();
+        shell.execute_line("PROMPT");
+        shell.write_prompt();
+        let text = buffered(&shell);
+        assert!(text.starts_with("[C:\\] C:\\>"), "{text}");
+        assert!(text.contains("rc=1\r\n[C:\\] "), "the failed CD's code, then the default again: {text}");
+        assert!(!shell.env.borrow().iter().any(|(k, _)| k == "PROMPT"));
+    }
+
+    /// PATH shows, sets and clears the search path.
+    #[test]
+    fn path_shows_sets_and_clears() {
+        let (loader, _drive) = loader_with_drive_c();
+        let mut shell = CmdShell::new(Arc::clone(&loader.shared), parse_env(&["PATH=C:\\"]));
+        *shell.output_sink.borrow_mut() = OutputSink::Buffer(Vec::new());
+        shell.execute_line("PATH");
+        shell.execute_line("PATH C:\\BIN;C:\\TOOLS");
+        shell.execute_line("PATH");
+        shell.execute_line("PATH ;");
+        shell.execute_line("PATH");
+        assert_eq!(buffered(&shell), "PATH=C:\\\r\nPATH=C:\\BIN;C:\\TOOLS\r\nNo Path.\r\n");
+    }
+
+    /// DETACH refuses what it cannot run: nothing, a missing program, a
+    /// script.
+    #[test]
+    fn detach_refuses_what_it_cannot_run() {
+        let (loader, drive) = loader_with_drive_c();
+        std::fs::write(drive.path().join("S.CMD"), b"echo x\r\n").unwrap();
+        let mut shell = CmdShell::new(Arc::clone(&loader.shared), Vec::new());
+        *shell.output_sink.borrow_mut() = OutputSink::Buffer(Vec::new());
+        for line in ["DETACH", "DETACH NOSUCH", "DETACH S.CMD"] {
+            shell.execute_line(line);
+            assert_eq!(shell.last_rc.get(), RC_BUILTIN_FAILED, "{line}");
+        }
+        let text = buffered(&shell);
+        assert!(text.contains("syntax") && text.contains("not recognized") && text.contains("not scripts"), "{text}");
     }
 
     /// `/C` ends the shell with the command's return code, or EXIT's.
