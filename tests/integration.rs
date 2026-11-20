@@ -667,6 +667,62 @@ fn test_cmd_script_basics() {
     assert!(dir.path().join("warpine/drive_c/WORK").is_dir(), "MD WORK");
 }
 
+/// `text` without ANSI colour sequences (`ESC [ … m`), which the headless
+/// shell writes around its prompt.
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c == '\x1b' {
+            for c in chars.by_ref() { if c.is_ascii_alphabetic() { break; } }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// Find `lines` in `out` in this order; panic naming the first missing.
+fn assert_in_order(out: &str, lines: &[&str]) {
+    let mut at = 0;
+    for line in lines {
+        let Some(i) = out[at..].find(line) else { panic!("{line:?} is missing, or out of order:\n{out}") };
+        at += i + line.len();
+    }
+}
+
+/// samples/cmd_scripts/batch.cmd: batch control with a real OS/2 program
+/// for ERRORLEVEL — parameters and SHIFT, IF, FOR, CALL, GOTO, SETLOCAL,
+/// PAUSE (a byte of the shell's piped input) and EXIT ending the shell
+/// with its code (ADR-0078).
+#[test]
+fn test_cmd_script_batch_control() {
+    let Some((code, out, _dir)) = run_cmd_headless(&["/C", "BATCH.CMD first second"], b"k", |c| {
+        std::fs::copy("samples/cmd_scripts/batch.cmd", c.join("BATCH.CMD")).unwrap();
+        std::fs::copy("samples/cmd_scripts/batchsub.cmd", c.join("BATCHSUB.CMD")).unwrap();
+    }) else { return };
+    assert_eq!(code, Some(6), "EXIT 6:\n{out}");
+    assert_in_order(&out, &["args: BATCH.CMD first second\r\n", "shifted: second\r\n", "errorlevel-4\r\n",
+                            "below-5\r\n", "tool-exists\r\n", "second-arg\r\n", "item-one\r\n", "item-two\r\n",
+                            "item-three\r\n", "in-sub called\r\n", "back\r\n", "[]\r\n", "Press any key", "paused\r\n"]);
+    for wrong in ["never", "not-after-exit", "[yes]", "BATCH.CMD first second\r\n[", "REM"] {
+        assert!(!out.contains(wrong), "{wrong}:\n{out}");
+    }
+}
+
+/// A script's lines are shown after the prompt while ECHO is on, as the
+/// shell runs them; `@` and ECHO OFF hide them (ADR-0078).
+#[test]
+fn test_cmd_script_lines_are_echoed() {
+    let Some((code, out, _dir)) = run_cmd_headless(&["/C", "SHOW.CMD"], b"", |c| {
+        std::fs::write(c.join("SHOW.CMD"), b"echo shown\r\n@echo hidden-line\r\necho off\r\necho quiet\r\n").unwrap();
+    }) else { return };
+    let out = strip_ansi(&out);
+    assert_eq!(code, Some(0), "{out}");
+    assert_in_order(&out, &["[C:\\] echo shown\r\n", "shown\r\n", "hidden-line\r\n", "[C:\\] echo off\r\n", "quiet\r\n"]);
+    assert!(!out.contains("] @echo") && !out.contains("] echo quiet"), "{out}");
+}
+
 /// audio_test: DosBeep and mciSendString through MDM loaded at run time
 /// (`open waveaudio alias …` opens the device by name). Runs headless, so
 /// no sound is played and DosBeep returns at once.

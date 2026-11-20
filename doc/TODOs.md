@@ -211,8 +211,7 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 
 ## Console and multimedia
 
-- [ ] **The built-in CMD.EXE** (`cmd.rs`, `cmd/`; it replaces 4OS2, ADR-0075). Stage 2 grows it in slices; the foundations (return codes, `%name%`, `&` / `&&` / `||`, programs reading pipes and files, `PATH` search, inherited current directories) are done (ADR-0077). Still to come:
-  - 2b, batch control in `.CMD` files: `IF` (`EXIST`, `ERRORLEVEL`, `==`, `NOT`), `FOR`, `GOTO`, `CALL`, `PAUSE`, `%0`–`%9` and `SHIFT`, `SETLOCAL` / `ENDLOCAL`, `ECHO ON` / `OFF` and `@`;
+- [ ] **The built-in CMD.EXE** (`cmd.rs`, `cmd/`; it replaces 4OS2, ADR-0075). Stage 2 grows it in slices; the foundations (return codes, `%name%`, `&` / `&&` / `||`, programs reading pipes and files, `PATH` search, inherited current directories; ADR-0077) and batch control (ECHO, `%0`–`%9`, SHIFT, IF, FOR, GOTO, CALL, SETLOCAL, PAUSE; ADR-0078) are done. Still to come:
   - 2c, file commands through the VFS: `COPY`, `REN`, `MOVE`;
   - 2d: `PROMPT` (with `$e` ANSI sequences for colour), the `PATH` command, `DETACH`; `START` waits for several VIO sessions;
   - grouping with parentheses; the stages of a pipeline running at the same time (they run one after another now);

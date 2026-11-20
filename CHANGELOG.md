@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **Batch control in the built-in CMD.EXE** (Stage 2, slice 2b; ADR-0078), in OS/2's syntax: `ECHO ON` / `OFF` (scripts echo their lines after the prompt until `ECHO OFF`; `@` hides one line), `ECHO.`, `%0`–`%9` and `SHIFT`, `IF [NOT] ERRORLEVEL` / `EXIST` / `==`, `FOR %%v IN (set) DO` (wildcards stand for files), `GOTO` labels, `CALL` (a script started without it takes the caller's place), `SETLOCAL` / `ENDLOCAL` (environment and directories), `PAUSE`, and `EXIT` in a script ending the shell. Samples: `samples/cmd_scripts/batch.cmd`, `batchsub.cmd`.
 - **The built-in CMD.EXE's foundations** (Stage 2, slice 2a; ADR-0077), in OS/2's CMD syntax:
   - `%name%` variables (`%%` for a `%`); `&`, `&&` and `||` on return codes; `^` escapes;
   - return codes: a program's exit code, 0 / 1 for a built-in, and `CMD.EXE /C` ending with its command's;

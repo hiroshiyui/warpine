@@ -173,11 +173,11 @@
 <text xml:space="preserve" text-anchor="start" x="2263.62" y="-701.39" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Kernel APIs: DOSCALLS, QUECALLS, MSG, processes and WinStartApp (nesting limit, ADR&#45;0028), CONFIG.SYS THREADS= session limit, IPC, named pipes (ADR&#45;0022), shared memory and semaphores across processes (ADR&#45;0049, ADR&#45;0050), timers, session clock and WARPINE.DLL 64&#45;bit time (ADR&#45;0039), 16&#45;bit information segments (ADR&#45;0040)</text>
 <text xml:space="preserve" text-anchor="start" x="3062.75" y="-693.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/doscalls.rs, loader/stubs.rs, loader/process.rs, loader/ipc.rs</text>
 <text xml:space="preserve" text-anchor="start" x="3052.25" y="-685.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/dostimer.rs, loader/modpath.rs, loader/suballoc.rs, loader/cmd.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3029" y="-677.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/cmd/builtins.rs, loader/cmd/env.rs, loader/cmd/external.rs, loader/cmd/input.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3042.88" y="-669.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/cmd/parse.rs, loader/npipe.rs, loader/npipe_dir.rs, loader/npipe_api.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3036.88" y="-661.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/npipe_sem.rs, loader/inherit.rs, loader/msgcalls.rs, loader/pm_startapp.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3010.25" y="-653.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/config_sys.rs, loader/session_threads.rs, loader/shared_arena.rs, loader/shared_sem.rs</text>
-<text xml:space="preserve" text-anchor="start" x="3080.75" y="-645.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/clock.rs, loader/warpine_api.rs, loader/infoseg.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3027.88" y="-677.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/cmd/batch.rs, loader/cmd/builtins.rs, loader/cmd/env.rs, loader/cmd/external.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3042.88" y="-669.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/cmd/input.rs, loader/cmd/parse.rs, loader/npipe.rs, loader/npipe_dir.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3042.12" y="-661.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/npipe_api.rs, loader/npipe_sem.rs, loader/inherit.rs, loader/msgcalls.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3009.88" y="-653.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_startapp.rs, loader/config_sys.rs, loader/session_threads.rs, loader/shared_arena.rs</text>
+<text xml:space="preserve" text-anchor="start" x="3039.5" y="-645.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/shared_sem.rs, loader/clock.rs, loader/warpine_api.rs, loader/infoseg.rs</text>
 </g>
 <!-- dispatch&#45;&gt;kernel -->
 <g id="edge9" class="edge">

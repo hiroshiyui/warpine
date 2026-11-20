@@ -1,3 +1,4 @@
+@ECHO OFF
 REM SPDX-License-Identifier: GPL-3.0-or-later
 REM basics.cmd - the built-in CMD.EXE's foundations (ADR-0077): variables,
 REM &, && and ||, programs reading pipes, the current directory passed to

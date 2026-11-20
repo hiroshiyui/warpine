@@ -61,9 +61,10 @@ const MAX_VAR_NAME: usize = 256;
 
 /// `line` with `%NAME%` replaced by the variable's value (names match
 /// without case) and `%%` by `%`. An undefined variable expands to nothing;
-/// a `%` that starts no `%NAME%` is kept. Expansion is one pass: a value is
-/// not expanded again.
-pub(super) fn expand_vars(line: &str, env: &[(String, String)]) -> String {
+/// a `%` that starts no `%NAME%` is kept. In a script (`params` given),
+/// `%0`–`%9` are its name and arguments, nothing past the last. Expansion
+/// is one pass: a value is not expanded again.
+pub(super) fn expand_vars(line: &str, env: &[(String, String)], params: Option<&[String]>) -> String {
     let mut out = String::with_capacity(line.len());
     let mut rest = line;
     while let Some(at) = rest.find('%') {
@@ -72,6 +73,11 @@ pub(super) fn expand_vars(line: &str, env: &[(String, String)]) -> String {
         if let Some(tail) = after.strip_prefix('%') {
             out.push('%');
             rest = tail;
+            continue;
+        }
+        if let (Some(params), Some(digit)) = (params, after.chars().next().and_then(|c| c.to_digit(10))) {
+            if let Some(value) = params.get(digit as usize) { out.push_str(value); }
+            rest = &after[1..];
             continue;
         }
         match after.find('%') {
@@ -96,19 +102,33 @@ pub(super) fn expand_vars(line: &str, env: &[(String, String)]) -> String {
 mod tests {
     use super::*;
 
+    fn expand_vars_env(line: &str, env: &[(String, String)]) -> String {
+        expand_vars(line, env, None)
+    }
+
+    /// A script's `%0`–`%9`; at the prompt they stay as they are.
+    #[test]
+    fn script_parameters_expand() {
+        let env = parse_env(&["X=1"]);
+        let params: Vec<String> = vec!["RUN.CMD".into(), "first".into(), "\"two words\"".into()];
+        assert_eq!(expand_vars("%0 %1 %2 [%3] %X% %%1", &env, Some(&params)), "RUN.CMD first \"two words\" [] 1 %1");
+        assert_eq!(expand_vars("echo %1", &env, None), "echo %1", "not in a script");
+        assert_eq!(expand_vars("%10", &env, Some(&params)), "first0", "one digit");
+    }
+
     /// `%NAME%` takes the variable's value, `%%` is one `%`, an undefined
     /// variable is nothing, and a value is not expanded again.
     #[test]
     fn variables_expand_once() {
         let env = parse_env(&["Path=C:\\OS2", "PCT=%PATH%", "EMPTY_NOT=x"]);
-        assert_eq!(expand_vars("echo %path%;D:\\", &env), "echo C:\\OS2;D:\\");
-        assert_eq!(expand_vars("echo %PCT%", &env), "echo %PATH%", "one pass");
-        assert_eq!(expand_vars("echo [%NOSUCH%]", &env), "echo []");
-        assert_eq!(expand_vars("echo 100%% %%PATH%%", &env), "echo 100% %PATH%");
-        assert_eq!(expand_vars("echo 50% off", &env), "echo 50% off", "a lone % stays");
-        assert_eq!(expand_vars("echo %a b% %", &env), "echo %a b% %", "names have no blanks");
-        assert_eq!(expand_vars("%PATH%%PATH%", &env), "C:\\OS2C:\\OS2");
-        assert_eq!(expand_vars("ünï %PATH% ok", &env), "ünï C:\\OS2 ok");
+        assert_eq!(expand_vars_env("echo %path%;D:\\", &env), "echo C:\\OS2;D:\\");
+        assert_eq!(expand_vars_env("echo %PCT%", &env), "echo %PATH%", "one pass");
+        assert_eq!(expand_vars_env("echo [%NOSUCH%]", &env), "echo []");
+        assert_eq!(expand_vars_env("echo 100%% %%PATH%%", &env), "echo 100% %PATH%");
+        assert_eq!(expand_vars_env("echo 50% off", &env), "echo 50% off", "a lone % stays");
+        assert_eq!(expand_vars_env("echo %a b% %", &env), "echo %a b% %", "names have no blanks");
+        assert_eq!(expand_vars_env("%PATH%%PATH%", &env), "C:\\OS2C:\\OS2");
+        assert_eq!(expand_vars_env("ünï %PATH% ok", &env), "ünï C:\\OS2 ok");
     }
 
     #[test]

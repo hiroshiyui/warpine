@@ -9,14 +9,6 @@ use crate::loader::vfs::FileAttribute;
 impl CmdShell {
     // ── Built-in commands ─────────────────────────────────────────────────────
 
-    pub(super) fn cmd_echo(&self, args: &[&str]) {
-        if args.is_empty() {
-            self.writeln("ECHO is on.");
-        } else {
-            self.writeln(&args.join(" "));
-        }
-    }
-
     pub(super) fn cmd_cls(&self) {
         // Clear the screen and home the cursor on the terminal as well (the
         // old row-by-row blanking left the terminal cursor where it was).
@@ -43,6 +35,14 @@ impl CmdShell {
         self.writeln("  CLS                Clear screen");
         self.writeln("  VER                Show version");
         self.writeln("  REM / ::           Comment");
+        self.writeln("  ECHO ON|OFF        Show or hide the prompt and a script's lines");
+        self.writeln("  IF [NOT] ERRORLEVEL n | EXIST file | a==b  command");
+        self.writeln("  FOR %v IN (set) DO command");
+        self.writeln("  GOTO label         Go on after :label (in a script)");
+        self.writeln("  CALL script [args] Run a script and come back");
+        self.writeln("  SHIFT              Move %1-%9 down by one (in a script)");
+        self.writeln("  SETLOCAL/ENDLOCAL  Save / restore variables and directory (in a script)");
+        self.writeln("  PAUSE              Wait for a key");
         self.writeln("  EXIT [code]        Exit shell");
         self.writeln("  <program>          Run OS/2 executable");
     }

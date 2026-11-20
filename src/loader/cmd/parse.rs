@@ -190,6 +190,102 @@ pub fn parse_command(line: &str) -> ParsedCommand {
     ParsedCommand { segments, stdin_file, stdout_redir }
 }
 
+/// The condition of an `IF` command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum IfCondition {
+    /// `ERRORLEVEL n`: the return code is `n` or more.
+    ErrorLevel(u32),
+    /// `EXIST name`: a file or directory matches `name` (wildcards allowed).
+    Exist(String),
+    /// `a==b`: the strings are equal, case and quotes included.
+    Equal(String, String),
+}
+
+/// An `IF [NOT] condition command`, parsed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct IfCommand {
+    pub not: bool,
+    pub condition: IfCondition,
+    pub command: String,
+}
+
+/// The first word of `s` (up to a blank) and the rest, trimmed at its
+/// start; quotes keep blanks inside a word.
+pub(super) fn first_word(s: &str) -> (&str, &str) {
+    let s = s.trim_start();
+    let mut in_quote = false;
+    for (i, c) in s.char_indices() {
+        match c {
+            '"' => in_quote = !in_quote,
+            c if c.is_whitespace() && !in_quote => return (&s[..i], s[i..].trim_start()),
+            _ => {}
+        }
+    }
+    (s, "")
+}
+
+/// Parse what follows `IF` (`[NOT] ERRORLEVEL n cmd`, `[NOT] EXIST name
+/// cmd`, `[NOT] a==b cmd`, blanks around `==` allowed). `None` for a
+/// syntax error: no condition or no command.
+pub(super) fn parse_if(rest: &str) -> Option<IfCommand> {
+    let (mut word, mut rest) = first_word(rest);
+    let not = word.eq_ignore_ascii_case("NOT");
+    if not { (word, rest) = first_word(rest); }
+    let (condition, command) = if word.eq_ignore_ascii_case("ERRORLEVEL") {
+        let (n, rest) = first_word(rest);
+        (IfCondition::ErrorLevel(n.parse().ok()?), rest)
+    } else if word.eq_ignore_ascii_case("EXIST") {
+        let (name, rest) = first_word(rest);
+        if name.is_empty() { return None; }
+        (IfCondition::Exist(name.to_string()), rest)
+    } else {
+        // `a==b`, `a== b`, `a ==b`, `a == b`.
+        let (left, rest) = match word.split_once("==") {
+            Some((l, r)) if !r.is_empty() => return parse_if_tail(not, l, r, rest),
+            Some((l, _)) => (l.to_string(), rest),
+            None => {
+                let rest = rest.strip_prefix("==")?;
+                (word.to_string(), rest)
+            }
+        };
+        let (right, rest) = first_word(rest);
+        return parse_if_tail(not, &left, right, rest);
+    };
+    (!command.is_empty()).then(|| IfCommand { not, condition, command: command.to_string() })
+}
+
+fn parse_if_tail(not: bool, left: &str, right: &str, command: &str) -> Option<IfCommand> {
+    if right.is_empty() || command.is_empty() { return None; }
+    Some(IfCommand { not, condition: IfCondition::Equal(left.to_string(), right.to_string()), command: command.to_string() })
+}
+
+/// A `FOR %v IN (set) DO command`, parsed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ForCommand {
+    /// The variable's letter (`%v`; a script writes `%%v`, which
+    /// expansion has made `%v`).
+    pub var: char,
+    /// The set's items, split at blanks, commas and semicolons.
+    pub items: Vec<String>,
+    pub command: String,
+}
+
+/// Parse what follows `FOR`. `None` for a syntax error.
+pub(super) fn parse_for(rest: &str) -> Option<ForCommand> {
+    let (var, rest) = first_word(rest);
+    let mut chars = var.chars();
+    let (Some('%'), Some(letter), None) = (chars.next(), chars.next(), chars.next()) else { return None };
+    if !letter.is_ascii_alphabetic() { return None; }
+    let (word, rest) = first_word(rest);
+    if !word.eq_ignore_ascii_case("IN") { return None; }
+    let rest = rest.strip_prefix('(')?;
+    let (set, rest) = rest.split_once(')')?;
+    let (word, command) = first_word(rest);
+    if !word.eq_ignore_ascii_case("DO") || command.is_empty() { return None; }
+    let items = set.split([' ', '\t', ',', ';']).filter(|s| !s.is_empty()).map(str::to_string).collect();
+    Some(ForCommand { var: letter, items, command: command.to_string() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +307,36 @@ mod tests {
         assert_eq!(chain(" & a &&  & "), want(&[(Chain::Then, "a")]), "empty commands dropped");
         assert_eq!(chain("a&&b"), want(&[(Chain::Then, "a"), (Chain::And, "b")]));
         assert!(chain("").is_empty());
+    }
+
+    /// `IF`'s three conditions, with `NOT` and blanks around `==`.
+    #[test]
+    fn if_commands_parse() {
+        let parsed = |s: &str| parse_if(s).map(|c| (c.not, c.condition, c.command));
+        assert_eq!(parsed("ERRORLEVEL 2 echo high"), Some((false, IfCondition::ErrorLevel(2), "echo high".into())));
+        assert_eq!(parsed("not exist C:\\X.TXT goto make"),
+                   Some((true, IfCondition::Exist("C:\\X.TXT".into()), "goto make".into())));
+        let eq = |l: &str, r: &str| IfCondition::Equal(l.into(), r.into());
+        assert_eq!(parsed("\"%1\"==\"\" goto usage"), Some((false, eq("\"%1\"", "\"\""), "goto usage".into())));
+        assert_eq!(parsed("a == b echo x"), Some((false, eq("a", "b"), "echo x".into())));
+        assert_eq!(parsed("a== b echo x"), Some((false, eq("a", "b"), "echo x".into())));
+        assert_eq!(parsed("a ==b echo x"), Some((false, eq("a", "b"), "echo x".into())));
+        assert_eq!(parsed("\"a b\"==\"a b\" echo same"), Some((false, eq("\"a b\"", "\"a b\""), "echo same".into())));
+        for bad in ["", "ERRORLEVEL x echo", "ERRORLEVEL 1", "EXIST", "a==b", "a b c", "NOT"] {
+            assert_eq!(parse_if(bad), None, "{bad:?}");
+        }
+    }
+
+    /// `FOR %v IN (set) DO command`: the set splits at blanks, commas and
+    /// semicolons.
+    #[test]
+    fn for_commands_parse() {
+        let f = parse_for("%f in (a.txt, b.txt;c) do echo %f").unwrap();
+        assert_eq!((f.var, f.items.as_slice(), f.command.as_str()), ('f', &["a.txt".to_string(), "b.txt".into(), "c".into()][..], "echo %f"));
+        assert_eq!(parse_for("%X IN () DO echo").map(|f| f.items.len()), Some(0));
+        for bad in ["", "%f in (a) echo", "f in (a) do x", "%ff in (a) do x", "%1 in (a) do x", "%f on (a) do x", "%f in a do x", "%f in (a) do"] {
+            assert_eq!(parse_for(bad), None, "{bad:?}");
+        }
     }
 
     /// `^` takes the next character as it is, outside quotes only.

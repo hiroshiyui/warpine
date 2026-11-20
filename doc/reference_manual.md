@@ -199,7 +199,7 @@ The prompt shows the current drive and directory: `[C:\path] `.
 | `CD` | `CD [path]` | Print or change the current directory. `CD \` goes to root. `CD ..` goes up one level. |
 | `C:` – `Z:` | `C:` | Switch the current drive. |
 | `SET` | `SET [VAR[=value]]` | Without args: list all environment variables. `SET VAR` shows matching vars. `SET VAR=value` sets a variable. `SET VAR=` unsets it. |
-| `ECHO` | `ECHO [text]` | Write text to the console. `ECHO.` prints a blank line. `ECHO ON`/`OFF` not supported. |
+| `ECHO` | `ECHO [text]` | Write text to the console, blanks kept; `ECHO.` prints a blank line; `ECHO ON` / `OFF` (see .CMD scripts). |
 | `CLS` | `CLS` | Clear the screen. |
 | `VER` | `VER` | Print the shell's name and the version of the latest Warpine release (`Cargo.toml`'s version, which each release sets to its tag). |
 | `TYPE` | `TYPE <file>` | Print file contents to the console. |
@@ -207,7 +207,7 @@ The prompt shows the current drive and directory: `[C:\path] `.
 | `RD` | `RD <path>` | Remove an empty directory. |
 | `DEL` | `DEL <file>` | Delete a file. |
 | `HELP` | `HELP` | List available commands. |
-| `EXIT` | `EXIT [code]` | Exit the shell with an optional numeric exit code (default 0). |
+| `EXIT` | `EXIT [code]` | Exit the shell with an optional numeric exit code (default 0), also from inside a script. |
 
 ### Running OS/2 programs
 
@@ -225,16 +225,39 @@ A program runs as a child Warpine process. It starts with the shell's environmen
 
 ### .CMD scripts
 
-Run a `.CMD` file by typing its name (with or without the `.CMD` extension) or using `/C`:
+Run a `.CMD` file by typing its name (with or without the `.CMD` extension), with arguments, or using `/C`:
 
 ```
-[C:\] warpine CMD.EXE /C "MYSCRIPT.CMD"
+[C:\] warpine CMD.EXE /C "MYSCRIPT.CMD first second"
 ```
 
-- **Lines.** A script is run line by line: each line is a command as typed at the prompt, and a `REM` line or a label line (`:name`, `:: text`) does nothing.
-- **Shared state.** A script shares the shell's environment (its `SET`s stay), output and input, so `MYSCRIPT.CMD > LOG.TXT` works.
-- **Its return code** is `EXIT`'s code, else that of its last command.
-- **Not yet supported:** batch control (`IF`, `FOR`, `GOTO`, `CALL`, `PAUSE`, `SHIFT`) and `%0`–`%9` (`doc/TODOs.md`).
+A script runs line by line, in OS/2's batch syntax (ADR-0078):
+- **Shared state.** It shares the shell's environment (its `SET`s stay), output and input, so `MYSCRIPT.CMD > LOG.TXT` works.
+- **Its return code** is that of its last command.
+- **EXIT** ends the whole shell with its code.
+- **Starting another script.** One started without `CALL` takes the script's place: the caller does not go on.
+- **Limits:** scripts nest at most 32 deep, and a script is at most 4 MiB.
+
+| Command | Effect |
+|---------|--------|
+| `@command` | Run the line without echoing it |
+| `ECHO ON` / `ECHO OFF` | Echo each line after the prompt before it runs (on when a script starts), or not; at the prompt, show or hide the prompt |
+| `ECHO` | Show whether ECHO is on |
+| `ECHO.` / `ECHO.text` | Write an empty line / the text |
+| `REM text`, `:: text` | A remark |
+| `:label` | A label for GOTO; does nothing when reached |
+| `%0`–`%9` | The script's name as typed, then its arguments (nothing past the last) |
+| `SHIFT` | `%1` becomes `%0`, `%2` becomes `%1`, … |
+| `GOTO label` | Go on after `:label` (matched without case); the rest of the line is not run; a missing label ends the script |
+| `IF [NOT] ERRORLEVEL n command` | Run `command` if the return code is `n` or more |
+| `IF [NOT] EXIST name command` | Run `command` if a file or directory matches `name` (wildcards allowed) |
+| `IF [NOT] a==b command` | Run `command` if the strings are equal (case and quotes count; blanks around `==` allowed) |
+| `FOR %%v IN (set) DO command` | Run `command` for each item of the set (split at blanks, commas, semicolons), `%%v` replaced by it; a wildcard item stands for the files it matches. At the prompt, `%v` |
+| `CALL script [args]` | Run another script and come back |
+| `SETLOCAL` / `ENDLOCAL` | Save / restore the environment and the current drive and directories; the script's end restores what is still saved |
+| `PAUSE` | Write "Press any key when ready . . ." and wait for a key |
+
+A false `IF` leaves the return code as it was. Batch commands that only make sense in a script (`GOTO`, `SHIFT`, `SETLOCAL`, `ENDLOCAL`) do nothing at the prompt.
 
 ### Command lines
 

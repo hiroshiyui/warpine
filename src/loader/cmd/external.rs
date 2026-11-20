@@ -13,29 +13,25 @@ const RC_PROGRAM_KILLED: u32 = 255;
 impl CmdShell {
     // ── External execution ────────────────────────────────────────────────────
 
-    /// Run a program or a `.CMD` script; its return code becomes the
-    /// shell's (`RC_BUILTIN_FAILED` when it cannot be found or started).
-    pub(super) fn exec_external(&self, cmd: &str, args: &[&str]) {
+    /// Run a program or a `.CMD` script (`cmd` as typed); its return code
+    /// becomes the shell's (`RC_BUILTIN_FAILED` when it cannot be found or
+    /// started). `call`: CALL ran it, so a script comes back to this one.
+    /// Returns `Some(code)` when the shell must end (EXIT in a script).
+    pub(super) fn exec_external(&self, cmd: &str, args: &[&str], call: bool) -> Option<u32> {
         let rc = match self.find_program(cmd) {
             None => {
                 self.error(&format!("'{cmd}' is not recognized as an internal or external command."));
                 RC_BUILTIN_FAILED
             }
             Some((p, true)) => {
-                // A script shares the shell's environment (its SETs stay),
-                // output and input (`script > file`, `x | script`).
-                let mut shell = CmdShell::new(Arc::clone(&self.shared), self.env.borrow().clone());
-                shell.output_sink.swap(&self.output_sink);
-                shell.input_source.swap(&self.input_source);
-                let rc = shell.run_script(&p);
-                shell.output_sink.swap(&self.output_sink);
-                shell.input_source.swap(&self.input_source);
-                *self.env.borrow_mut() = shell.env.into_inner();
-                rc
+                let end = self.run_nested_script(&p, cmd, args, call);
+                if end.exit { return Some(end.rc); }
+                end.rc
             }
             Some((p, false)) => self.spawn_external(&p, args),
         };
         self.last_rc.set(rc);
+        None
     }
 
     /// Find the program or script `name` names: a name with a drive or a
@@ -212,31 +208,5 @@ impl CmdShell {
             }
             std::thread::sleep(CHILD_POLL);
         }
-    }
-
-    // ── Script execution ──────────────────────────────────────────────────────
-
-    /// Run a `.CMD` script line by line. Returns `EXIT`'s code, else the
-    /// return code of its last command.
-    pub(super) fn run_script(&mut self, path: &std::path::Path) -> u32 {
-        let content = match std::fs::read_to_string(path) {
-            Ok(s) => s,
-            Err(e) => {
-                self.error(&format!("Cannot open script: {e}"));
-                return RC_BUILTIN_FAILED;
-            }
-        };
-
-        for line in content.lines() {
-            if self.shared.exit_requested.load(Ordering::Relaxed) {
-                break;
-            }
-            let trimmed = line.trim();
-            if trimmed.is_empty() { continue; }
-            if let Some(exit_code) = self.execute_line(trimmed) {
-                return exit_code;
-            }
-        }
-        self.last_rc.get()
     }
 }

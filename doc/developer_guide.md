@@ -1211,14 +1211,15 @@ All paths converge on:
 
 ### Modules and a command line's way through them
 
-The shell is `cmd.rs` (the `CmdShell` state, dispatch and the `Loader` entry points) and five modules under `cmd/` (ADR-0077):
+The shell is `cmd.rs` (the `CmdShell` state, dispatch and the `Loader` entry points) and six modules under `cmd/` (ADR-0077, ADR-0078):
 
 | Module | What it holds |
 |--------|---------------|
-| `parse.rs` | `/C` / `/K`, `split_chain` (`&`, `&&`, `\|\|`), `parse_command` (pipeline, redirections, `^`), `tokenize` |
+| `parse.rs` | `/C` / `/K`, `split_chain` (`&`, `&&`, `\|\|`), `parse_command` (pipeline, redirections, `^`), `tokenize`, `parse_if`, `parse_for` |
+| `batch.rs` | the script runner (`Batch`: lines, next line, `%0`–`%9`, SETLOCAL stack), ECHO, GOTO, SHIFT, IF, FOR, CALL, SETLOCAL / ENDLOCAL, PAUSE |
 | `env.rs` | the shell's own environment (`env_set`, its limits), `env_block` for children, `expand_vars` |
 | `builtins.rs` | `DIR`, `CD`, `SET`, `ECHO`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `HELP` |
-| `external.rs` | `find_program` (current directory, then `PATH`), `spawn_external`, `wait_child`, `run_script` |
+| `external.rs` | `find_program` (current directory, then `PATH`), `exec_external`, `spawn_external`, `wait_child` |
 | `input.rs` | the line editor and history |
 
 The way through, in `execute_line`:
@@ -1231,7 +1232,7 @@ The way through, in `execute_line`:
 5. **Each stage** goes to `execute_segment`:
    - **A built-in** sets `failed` through `error()`, and `last_rc` becomes 0 or `RC_BUILTIN_FAILED`.
    - **A program** (`spawn_external`) gets any `InputSource::Data` as its piped standard input, written on a thread of its own, and its exit code becomes `last_rc`.
-   - **A script** runs in a nested `CmdShell` that borrows the caller's sink and source (`RefCell::swap`) and hands its environment back.
+   - **A script** runs in a nested `CmdShell` (`run_nested_script`) that borrows the caller's sink and source (`RefCell::swap`), shares its ECHO state and hands its environment back. Its `run_script` loop takes the next line from its `Batch`, echoes it while ECHO is on, and runs it; GOTO moves the next line and sets `jumped`, which ends the current line in `execute_line`. A script started without CALL marks the caller's `Batch` ended; EXIT comes back up as an exit request (`ScriptEnd::exit`).
 
 ### Keyboard input
 

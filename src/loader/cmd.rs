@@ -19,6 +19,7 @@
 // program's exit code, or 0 / 1 for a built-in that worked / failed
 // (ADR-0077).
 
+mod batch;
 mod builtins;
 mod env;
 mod external;
@@ -46,6 +47,7 @@ use super::{SharedState, KbdKeyInfo};
 use super::mutex_ext::MutexExt;
 use super::constants::*;
 use env::{env_block, env_set, expand_vars, parse_env, EnvError, DEFAULT_SHELL_ENV};
+use parse::first_word;
 use parse::{parse_command, parse_shell_flags, split_chain, tokenize, Chain, ParsedCommand};
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -103,6 +105,12 @@ struct CmdShell {
     last_rc: Cell<u32>,
     /// Whether the built-in command running now reported an error.
     failed: Cell<bool>,
+    /// ECHO ON: the prompt shows, and a script's lines are echoed.
+    echo_on: Cell<bool>,
+    /// The script this shell runs, if any (`batch.rs`).
+    batch: RefCell<Option<batch::Batch>>,
+    /// How many scripts deep this shell is.
+    depth: usize,
 }
 
 /// Whether `line` is a `REM` remark (`REM`, `REM text`).
@@ -124,6 +132,9 @@ impl CmdShell {
             env: RefCell::new(env),
             last_rc: Cell::new(0),
             failed: Cell::new(false),
+            echo_on: Cell::new(true),
+            batch: RefCell::new(None),
+            depth: 0,
         }
     }
 
@@ -154,8 +165,10 @@ impl CmdShell {
             if self.shared.exit_requested.load(Ordering::Relaxed) {
                 return 0;
             }
-            let prompt = self.build_prompt();
-            self.write_attr(prompt.as_bytes(), ATTR_HEADER);
+            if self.echo_on.get() {
+                let prompt = self.build_prompt();
+                self.write_attr(prompt.as_bytes(), ATTR_HEADER);
+            }
 
             match self.read_line() {
                 ReadResult::Eof => return 0,
@@ -233,12 +246,15 @@ impl CmdShell {
     /// Execute one command line. Returns `Some(exit_code)` when the shell
     /// should terminate, or `None` to keep looping.
     fn execute_line(&mut self, line: &str) -> Option<u32> {
-        let line = line.trim();
+        // `@` only keeps a script's line from being echoed.
+        let line = line.trim().trim_start_matches('@').trim_start();
         // A label (`:name`, which `::` comments are too) does nothing, and
         // `REM` takes the rest of the line, `&` and `|` included.
         if line.is_empty() || line.starts_with(':') || is_remark(line) { return None; }
-        let line = expand_vars(line, &self.env.borrow());
+        let line = self.expand_line(line);
         for (link, command) in split_chain(&line) {
+            // GOTO leaves the rest of its line.
+            if self.jumped() { break; }
             let run = match link {
                 Chain::Then => true,
                 Chain::And => self.last_rc.get() == 0,
@@ -360,9 +376,27 @@ impl CmdShell {
         // a program its exit code (`exec_external`).
         self.failed.set(false);
         let builtin_rc = |shell: &Self| shell.last_rc.set(if shell.failed.get() { RC_BUILTIN_FAILED } else { 0 });
+        // What follows the command's name, as typed.
+        let rest = first_word(line).1;
         let result = match cmd.as_str() {
             "REM" => None,
-            "ECHO" => { self.cmd_echo(&args); None }
+            // The text after one separator, blanks kept.
+            "ECHO" => {
+                let after = &line.trim_start()[tokens[0].len()..];
+                self.cmd_echo(after.strip_prefix([' ', '\t']).unwrap_or(after));
+                None
+            }
+            // `ECHO.` writes an empty line, `ECHO.text` the text.
+            _ if cmd.starts_with("ECHO.") => { self.writeln(&line.trim_start()["ECHO.".len()..]); None }
+            "GOTO" => { self.cmd_goto(rest); None }
+            "SHIFT" => { self.cmd_shift(); None }
+            "SETLOCAL" => { self.cmd_setlocal(); None }
+            "ENDLOCAL" => { self.end_local(); None }
+            "PAUSE" => { self.cmd_pause(); None }
+            // These leave the return code of the command they run.
+            "IF" => return self.cmd_if(rest),
+            "FOR" => return self.cmd_for(rest),
+            "CALL" => return self.cmd_call(rest),
             "CLS"  => { self.cmd_cls(); None }
             "VER"  => { self.cmd_ver(); None }
             "HELP" => { self.cmd_help(); None }
@@ -390,10 +424,7 @@ impl CmdShell {
                 None
             }
             // External program or .cmd script: it sets the return code.
-            _ => {
-                self.exec_external(&cmd, &args);
-                return None;
-            }
+            _ => return self.exec_external(tokens[0], &args, false),
         };
         builtin_rc(self);
         result
@@ -746,7 +777,7 @@ mod tests {
     #[test]
     fn a_scripts_output_follows_its_redirection() {
         let (loader, drive) = loader_with_drive_c();
-        std::fs::write(drive.path().join("S.CMD"), b"echo from-script\r\necho second | echo third\r\n").unwrap();
+        std::fs::write(drive.path().join("S.CMD"), b"@echo off\r\necho from-script\r\necho second | echo third\r\n").unwrap();
         let mut shell = CmdShell::new(Arc::clone(&loader.shared), Vec::new());
         shell.execute_line("S.CMD > OUT.TXT");
         let file = std::fs::read_to_string(drive.path().join("OUT.TXT")).unwrap();
