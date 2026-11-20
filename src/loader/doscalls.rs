@@ -279,6 +279,13 @@ impl super::Loader {
             }
         }
 
+        // Redirected standard input (a pipe or a file) is data: read as
+        // much as asked, with no echo and no CR → CR LF (OS/2 echoes and
+        // edits only what is typed at the console).
+        if !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+            return self.dos_read_redirected_stdin(buf_ptr, len, actual_ptr);
+        }
+
         // Terminal (termios) path — enable raw mode and read from stdin fd.
         {
             let mut console = self.shared.console_mgr.lock_or_recover();
@@ -329,6 +336,34 @@ impl super::Loader {
                 if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, 0); }
                 return ERROR_ACCESS_DENIED;
             }
+        }
+    }
+
+    /// `DosRead` of a standard input that is a host pipe or file: up to
+    /// `len` bytes (at most `MAX_REDIRECTED_READ` at once), 0 at its end.
+    fn dos_read_redirected_stdin(&self, buf_ptr: u32, len: u32, actual_ptr: u32) -> u32 {
+        const MAX_REDIRECTED_READ: usize = 64 * 1024;
+        let mut buf = vec![0u8; (len as usize).min(MAX_REDIRECTED_READ)];
+        if self.guest_slice_mut(buf_ptr, buf.len()).is_none() { return ERROR_INVALID_PARAMETER; }
+        loop {
+            if self.stop_or_restart() { return ERROR_INVALID_FUNCTION; }
+            // SAFETY: reads at most `buf.len()` bytes into a buffer of that
+            // size owned here; no guest memory is involved.
+            let n = unsafe { libc::read(libc::STDIN_FILENO, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
+            if n >= 0 {
+                let n = n as usize;
+                self.guest_write_bytes(buf_ptr, &buf[..n]);
+                if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, n as u32); }
+                return NO_ERROR;
+            }
+            let err = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+            if err == libc::EINTR { continue; }
+            if err == libc::EAGAIN {
+                std::thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            if actual_ptr != 0 { self.guest_write::<u32>(actual_ptr, 0); }
+            return ERROR_ACCESS_DENIED;
         }
     }
 
