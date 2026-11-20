@@ -1,6 +1,6 @@
 # ADR-0074: License Warpine under GPL-3.0-or-later
 
-- **Status:** Accepted; supersedes ADR-0002 (GPL-3.0-only)
+- **Status:** Accepted; supersedes ADR-0002 (GPL-3.0-only); ADR-0076 settles its open question on the guest crates (they stay GPL)
 - **Date:** 2026-11-20
 - **Sources:** `LICENSE` (the GNU GPL, version 3, unchanged); `Cargo.toml`, `crates/*/Cargo.toml`, `samples/rust_hello/Cargo.toml`; `deny.toml`; the SPDX headers of the source files; `README.md`.
 
@@ -29,5 +29,5 @@ Every commit in the history has one human author, the project's author. The othe
 ## Consequences
 
 - **Distributors** may follow the terms of GPL version 3 or of any later version the Free Software Foundation publishes.
-- **The guest crates.** Programs built with them are derived works under the GPL (version 3 or later). Whether these crates should offer a linking exception or a more permissive licence for users' own OS/2 programs is still open.
+- **The guest crates.** Programs built with them are derived works under the GPL (version 3 or later). Whether these crates should offer a linking exception or a more permissive licence for users' own OS/2 programs was left open here; ADR-0076 keeps them under the GPL.
 - **Older history.** Commits before this change carry `GPL-3.0-only` headers. They remain available under those terms.

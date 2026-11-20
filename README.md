@@ -378,6 +378,8 @@ This project is licensed under the GNU General Public License, version 3 or (at 
 
 Bundled third-party fonts keep their own licences: the IBM Plex families in [`vendor/ibm-plex`](vendor/ibm-plex) are © IBM Corp. under the SIL Open Font License 1.1 ([`LICENSE.txt`](vendor/ibm-plex/LICENSE.txt)), and GNU Unifont in `vendor/unifont` is dual-licensed under GPL-2.0-or-later with the GNU font embedding exception ([`LICENSE.txt`](vendor/unifont/LICENSE.txt)) and the SIL Open Font License 1.1 ([`OFL-1.1.txt`](vendor/unifont/OFL-1.1.txt)). Both are built into the `warpine` binary, and `warpine --licenses` prints their notices and licences.
 
+The guest crates in `crates/` are under the GPL too (version 3 or later), so OS/2 programs built with them are covered by the GPL ([ADR-0076](doc/adr/0076-guest-crates-stay-gpl-and-the-binary-carries-its-font-notices.md)).
+
 ## Trademarks
 
 Warpine is an independent Free Software project. It is not affiliated with, endorsed by or sponsored by IBM, Microsoft, the Open Watcom project, the WINE project or any other company or project named here.
