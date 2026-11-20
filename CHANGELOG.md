@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **Trademark notice** — the README says Warpine is independent and not affiliated with IBM or the other companies and projects it names, and credits the trademarks it mentions (OS/2 and the other IBM marks, Linux, Windows).
+
 ### Removed
 - **4OS2** — the 4OS2 sample and the files fetched or patched from it are gone, including copies of 4OS2 and Open Watcom sources that had been committed without the notices their licences require. The built-in `CMD.EXE` is Warpine's shell: the default `COMSPEC` is `C:\CMD.EXE`, the text-mode integration tests and the README's text-mode screenshots use it, the VIO samples generate their 32-bit `bsesub.h` from the local Open Watcom install at build time (`samples/bsesub32.mk`), and the DLL-loader tests use Warpine's own `samples/dll_noinit` (ADR-0075).
 

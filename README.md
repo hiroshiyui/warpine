@@ -377,7 +377,14 @@ This project is licensed under the GNU General Public License, version 3 or (at 
 
 Bundled third-party fonts keep their own licences: the IBM Plex families in [`vendor/ibm-plex`](vendor/ibm-plex) are © IBM Corp. under the SIL Open Font License 1.1 ([`LICENSE.txt`](vendor/ibm-plex/LICENSE.txt)), and GNU Unifont in `vendor/unifont` is dual-licensed under GPL-2.0-or-later with the GNU font embedding exception and the SIL Open Font License 1.1.
 
-## References
+## Trademarks
+
+Warpine is an independent Free Software project. It is not affiliated with, endorsed by or sponsored by IBM, Microsoft, the Open Watcom project, the WINE project or any other company or project named here.
+
+IBM, OS/2, Presentation Manager, Workplace Shell and IBM Plex are trademarks or registered trademarks of International Business Machines Corporation. Linux® is the registered trademark of Linus Torvalds. Windows is a trademark of the Microsoft group of companies. Other names are trademarks of their respective owners.
+
+These names are used only to describe what Warpine is compatible with or built from. Warpine does not use IBM's logos or branding.
+
 
 Warpine follows a near-clean-room policy: API behaviour is derived from public documentation and from the observable behaviour of applications built with Open Watcom, never from IBM binaries or their disassembly. These are the sources the project draws on.
 
