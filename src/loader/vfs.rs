@@ -1031,14 +1031,26 @@ impl DriveManager {
         self.backend(drive_old)?.rename(&rel_old, &rel_new)
     }
 
-    /// Copy a file (may be cross-drive in the future, for now same drive only).
+    /// Copy a file, replacing the target. A file is not copied onto itself
+    /// (`ERROR_ACCESS_DENIED`, unverified): the host would empty it. Across
+    /// drives both ends are resolved by their own backends, so neither
+    /// leaves its drive.
     pub fn copy_file(&self, src_path: &str, dst_path: &str) -> VfsResult<()> {
         let (drive_src, rel_src) = self.resolve_path(src_path)?;
         let (drive_dst, rel_dst) = self.resolve_path(dst_path)?;
-        if drive_src != drive_dst {
-            return Err(Os2Error::NOT_SAME_DEVICE);
+        let (src, dst) = (self.backend(drive_src)?, self.backend(drive_dst)?);
+        let src_host = src.to_host_path(&rel_src);
+        let dst_host = dst.to_host_path(&rel_dst);
+        if let (Some(a), Some(b)) = (&src_host, &dst_host) && a == b {
+            return Err(Os2Error::ACCESS_DENIED);
         }
-        self.backend(drive_src)?.copy(&rel_src, &rel_dst)
+        if drive_src == drive_dst {
+            return src.copy(&rel_src, &rel_dst);
+        }
+        let src_host = src_host.ok_or(Os2Error::FILE_NOT_FOUND)?;
+        if !src_host.is_file() { return Err(Os2Error::ACCESS_DENIED); }
+        let dst_host = dst.to_host_path_for_create(&rel_dst).ok_or(Os2Error::PATH_NOT_FOUND)?;
+        std::fs::copy(&src_host, &dst_host).map(|_| ()).map_err(|_| Os2Error::ACCESS_DENIED)
     }
 
     // ── Metadata ──
@@ -1326,6 +1338,26 @@ mod tests {
 
     /// resolve_new_host_path: a new file in an existing directory of the
     /// drive, the existing file itself, nothing outside the drive.
+    /// A file is copied within a drive or to another one, never onto
+    /// itself, and never out of a drive.
+    #[test]
+    fn files_copy_across_drives_but_not_onto_themselves() {
+        let (c, d, outside) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::write(c.path().join("a.txt"), b"data").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("x.txt"), d.path().join("link.txt")).unwrap();
+        let mut dm = DriveManager::new();
+        dm.mount(2, Box::new(super::super::vfs_hostdir::HostDirBackend::new(c.path().to_path_buf()).unwrap()));
+        dm.mount(3, Box::new(super::super::vfs_hostdir::HostDirBackend::new(d.path().to_path_buf()).unwrap()));
+        assert_eq!(dm.copy_file(r"C:\A.TXT", r"C:\a.txt"), Err(Os2Error::ACCESS_DENIED), "onto itself");
+        assert_eq!(std::fs::read(c.path().join("a.txt")).unwrap(), b"data", "not emptied");
+        assert_eq!(dm.copy_file(r"C:\A.TXT", r"C:\B.TXT"), Ok(()));
+        assert_eq!(dm.copy_file(r"C:\A.TXT", r"D:\COPY.TXT"), Ok(()));
+        assert_eq!(std::fs::read(d.path().join("COPY.TXT")).unwrap(), b"data");
+        assert!(dm.copy_file(r"C:\A.TXT", r"D:\LINK.TXT").is_err(), "not through a dangling link");
+        assert!(dm.copy_file(r"C:\NONE.TXT", r"D:\N.TXT").is_err());
+        assert!(!outside.path().join("x.txt").exists());
+    }
+
     /// `set_current_dir` takes only an existing directory of the drive,
     /// collapses `.` and `..`, and never goes above the root.
     #[test]

@@ -661,57 +661,51 @@ impl super::Loader {
 
     /// DosEditName (ordinal 261): wildcard filename transformation.
     /// Transforms source name using edit string pattern (e.g., *.txt + *.bak → file.bak).
+    /// The result and its NUL must fit `cb_target` (`ERROR_BUFFER_OVERFLOW`).
     pub fn dos_edit_name(&self, _meta_level: u32, psz_source: u32, psz_edit: u32, psz_target: u32, cb_target: u32) -> u32 {
         let source = self.read_guest_string(psz_source);
         let edit = self.read_guest_string(psz_edit);
         debug!("  DosEditName('{}', '{}')", source, edit);
 
-        let result = Self::apply_edit_name(&source, &edit);
-        let bytes = result.as_bytes();
-        let copy_len = bytes.len().min(cb_target as usize - 1);
-        if psz_target != 0 && copy_len > 0 {
-            self.guest_write_bytes(psz_target, &bytes[..copy_len]);
-            self.guest_write::<u8>(psz_target + copy_len as u32, 0);
-        }
+        let cp = self.shared.active_codepage.load(std::sync::atomic::Ordering::Relaxed);
+        let bytes = super::codepage::cp_encode(&Self::apply_edit_name(&source, &edit), cp);
+        if psz_target == 0 { return ERROR_INVALID_PARAMETER; }
+        if bytes.len() + 1 > cb_target as usize { return ERROR_BUFFER_OVERFLOW; }
+        self.guest_write_bytes(psz_target, &bytes);
+        self.guest_write::<u8>(psz_target + bytes.len() as u32, 0);
         NO_ERROR
     }
 
-    /// Apply OS/2 DosEditName wildcard transformation.
-    /// '*' in edit copies rest of source component, '?' copies one char from source.
+    /// Apply OS/2 DosEditName wildcard transformation, per character:
+    /// `*` copies the rest of the source's component (up to a `.`), `?`
+    /// one character of it, `.` moves to the source's next component, and
+    /// any other character replaces one.
     pub(crate) fn apply_edit_name(source: &str, edit: &str) -> String {
+        let src: Vec<char> = source.chars().collect();
         let mut result = String::new();
-        let src_bytes = source.as_bytes();
         let mut si = 0;
-        for &eb in edit.as_bytes() {
-            match eb {
-                b'*' => {
-                    // Copy from source until '.' or end
-                    while si < src_bytes.len() && src_bytes[si] != b'.' {
-                        result.push(src_bytes[si] as char);
+        for ec in edit.chars() {
+            match ec {
+                '*' => {
+                    while si < src.len() && src[si] != '.' {
+                        result.push(src[si]);
                         si += 1;
                     }
                 }
-                b'?' => {
-                    if si < src_bytes.len() && src_bytes[si] != b'.' {
-                        result.push(src_bytes[si] as char);
+                '?' => {
+                    if si < src.len() && src[si] != '.' {
+                        result.push(src[si]);
                         si += 1;
                     }
                 }
-                b'.' => {
+                '.' => {
                     result.push('.');
-                    // Advance source past '.'
-                    while si < src_bytes.len() && src_bytes[si] != b'.' {
-                        si += 1;
-                    }
-                    if si < src_bytes.len() {
-                        si += 1; // skip the '.'
-                    }
+                    while si < src.len() && src[si] != '.' { si += 1; }
+                    if si < src.len() { si += 1; }
                 }
                 _ => {
-                    result.push(eb as char);
-                    if si < src_bytes.len() && src_bytes[si] != b'.' {
-                        si += 1;
-                    }
+                    result.push(ec);
+                    if si < src.len() && src[si] != '.' { si += 1; }
                 }
             }
         }
@@ -1411,6 +1405,30 @@ mod tests {
     #[test]
     fn test_edit_name_no_extension() {
         assert_eq!(Loader::apply_edit_name("makefile", "*.bak"), "makefile.bak");
+    }
+
+    /// Names beyond ASCII edit by character.
+    #[test]
+    fn test_edit_name_non_ascii() {
+        assert_eq!(Loader::apply_edit_name("résumé.txt", "*.bak"), "résumé.bak");
+        assert_eq!(Loader::apply_edit_name("日本語.txt", "?x*.*"), "日x語.txt");
+    }
+
+    /// The result and its NUL must fit the target buffer; a length of 0
+    /// is an overflow, never a wrapped subtraction.
+    #[test]
+    fn test_dos_edit_name_checks_the_target_size() {
+        let loader = Loader::new_mock();
+        let (src, edit, target) = (0x3000u32, 0x3100u32, 0x3200u32);
+        loader.guest_write_bytes(src, b"readme.txt\0");
+        loader.guest_write_bytes(edit, b"*.bak\0");
+        loader.guest_write_bytes(target, &[0xAA; 16]);
+        assert_eq!(loader.dos_edit_name(0, src, edit, target, 0), ERROR_BUFFER_OVERFLOW);
+        assert_eq!(loader.dos_edit_name(0, src, edit, target, 10), ERROR_BUFFER_OVERFLOW, "10 bytes and a NUL");
+        assert_eq!(loader.guest_read::<u8>(target), Some(0xAA), "nothing written");
+        assert_eq!(loader.dos_edit_name(0, src, edit, target, 11), NO_ERROR);
+        assert_eq!(loader.read_guest_string(target), "readme.bak");
+        assert_eq!(loader.dos_edit_name(0, src, edit, 0, 11), ERROR_INVALID_PARAMETER);
     }
 
     #[test]

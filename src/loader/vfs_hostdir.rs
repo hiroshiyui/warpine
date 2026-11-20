@@ -134,11 +134,13 @@ impl DirCache {
     fn lookup(&self, dir: &Path, component_lower: &str) -> Option<String> {
         let mut cache = self.entries.lock().unwrap();
 
-        // Check if we have a valid cache entry
+        // A fresh entry that knows the name answers. A name it does not
+        // know is read again: the file may have been made since, outside
+        // this backend (a shell redirection, another process).
         if let Some(entry) = cache.get(dir)
-            && entry.created.elapsed().as_millis() < DIR_CACHE_TTL_MS {
-                return entry.names.get(component_lower).cloned();
-            // Expired — will be replaced below
+            && entry.created.elapsed().as_millis() < DIR_CACHE_TTL_MS
+            && let Some(name) = entry.names.get(component_lower) {
+                return Some(name.clone());
         }
 
         // Populate cache from readdir()
@@ -592,6 +594,10 @@ impl HostDirBackend {
             return Err(Os2Error::PATH_NOT_FOUND);
         }
 
+        // An entry that exists in another case is the same file (OS/2's
+        // names are case-insensitive): never a second one beside it.
+        let filename = resolve_component_case_insensitive(&parent, filename, &self.dir_cache)
+            .unwrap_or_else(|| filename.to_string());
         let full = parent.join(filename);
         self.enforce_sandbox(&full)?;
         Ok(full)
@@ -1391,6 +1397,33 @@ mod tests {
         let resolved = resolved.unwrap();
         assert!(resolved.exists());
         assert!(resolved.to_string_lossy().contains("HelloWorld.TXT"));
+    }
+
+    /// Creating, copying or renaming onto a name that exists in another
+    /// case reaches that entry: no second file differing only in case.
+    #[test]
+    fn a_new_name_in_another_case_is_the_existing_entry() {
+        let (tmp, backend) = create_temp_backend();
+        fs::write(tmp.path().join("Old.txt"), b"old").unwrap();
+        fs::write(tmp.path().join("src.txt"), b"new").unwrap();
+        backend.copy("src.txt", "OLD.TXT").unwrap();
+        assert_eq!(fs::read(tmp.path().join("Old.txt")).unwrap(), b"new");
+        assert!(!tmp.path().join("OLD.TXT").exists(), "no second file");
+        assert_eq!(backend.resolve_for_create("old.TXT").unwrap(), tmp.path().canonicalize().unwrap().join("Old.txt"));
+    }
+
+    /// A file made outside the backend after its directory was cached is
+    /// found at once, in any case.
+    #[test]
+    fn a_file_made_after_caching_is_found() {
+        let (tmp, _backend) = create_temp_backend();
+        File::create(tmp.path().join("Old.txt")).unwrap();
+        let cache = DirCache::new();
+        assert!(resolve_path_case_insensitive_cached(tmp.path(), "old.txt", &cache).is_some());
+        File::create(tmp.path().join("New.TXT")).unwrap();
+        let found = resolve_path_case_insensitive_cached(tmp.path(), "NEW.txt", &cache);
+        assert_eq!(found, Some(tmp.path().join("New.TXT")));
+        assert!(resolve_path_case_insensitive_cached(tmp.path(), "none.txt", &cache).is_none());
     }
 
     #[test]
