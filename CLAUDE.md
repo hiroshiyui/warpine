@@ -29,7 +29,7 @@ They run natively under KVM.
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2123 unit tests (2080 warpine + 19 gen_api + 13 lx_link + 5 gen_arch + 6 gen_compat) + 184 integration tests
+cargo test                                 # 2129 unit tests (2086 warpine + 19 gen_api + 13 lx_link + 5 gen_arch + 6 gen_compat) + 186 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); afterwards `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -61,7 +61,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
    - `main.rs` parses the executable (`src/lx/`, `src/ne/`).
    - `Loader::load` maps it into guest memory and applies its fixups.
    - `Loader::run` sets up the TIB / PIB and runs a vCPU (`vcpu.rs`).
-   - API calls are INT 3 thunks at `MAGIC_API_BASE` + ordinal. The VMEXIT goes to `api_dispatch.rs`: the static registry (`api_registry.rs`, 449 entries) or a sub-dispatcher (VIOCALLS / KBDCALLS / MOUCALLS / PMWIN / PMGPI, 363 ordinals), 812 entry points in all (`--compat` lists them).
+   - API calls are INT 3 thunks at `MAGIC_API_BASE` + ordinal. The VMEXIT goes to `api_dispatch.rs`: the static registry (`api_registry.rs`, 470 entries) or a sub-dispatcher (VIOCALLS / KBDCALLS / MOUCALLS / PMWIN / PMGPI, 405 ordinals), 875 entry points in all (`--compat` lists them).
 2. **Threads.** One OS/2 thread is one host thread with its own vCPU.
    - Managers live in `SharedState` behind mutexes; see the lock levels in `src/loader/mod.rs`.
    - Notable orders: pointers before `window_mgr`; profiles before `drive_mgr`; the window manager before a surface, never the reverse.
@@ -75,7 +75,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
    - Shared memory goes through a sealed memfd arena (ADR-0049); shared semaphores through a memfd of slots (ADR-0050).
    - Named pipes are `AF_UNIX` sockets in a private session directory (ADR-0022).
 6. **Files.** OS/2 drives map to host directories through the VFS (`vfs.rs`, `vfs_hostdir.rs`); drive C is `$XDG_DATA_HOME/warpine/drive_c`. Guests never reach host paths outside their drives.
-7. **Built-in modules.** DOSCALLS, PMWIN, PMGPI, VIOCALLS, KBDCALLS, MOUCALLS, NLS, MSG, MDM, UCONV, SO32DLL / TCP32DLL, PMSHAPI, HELPMGR, PMSPL, PMCTLS, PMDRAG, SOM, REXX / REXXAPI (on the built-in REXX interpreter) and Warpine's own WARPINE.
+7. **Built-in modules.** DOSCALLS, PMWIN, PMGPI, VIOCALLS, KBDCALLS, MOUCALLS, NLS, MSG, MDM, UCONV, SO32DLL / TCP32DLL, PMSHAPI, HELPMGR, PMSPL, PMCTLS, PMDRAG, SOM, REXX / REXXAPI (on the built-in REXX interpreter), PMWP (window positions only) and Warpine's own WARPINE.
    - Each has an ordinal base in `constants.rs` (`module_base`).
    - PM sub-dispatcher arms must match `doc/os2_ordinals.md`; the `test_pm*_dispatch_ordinals_match_ordinal_table` tests check it.
 

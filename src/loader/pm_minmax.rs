@@ -137,11 +137,11 @@ impl WindowManager {
     }
 
     /// A signed window word of `frame`, if it was ever set.
-    fn word(&self, frame: u32, index: i32) -> Option<i32> {
+    pub(super) fn word(&self, frame: u32, index: i32) -> Option<i32> {
         self.get_window(frame)?.window_ushort.get(&index).map(|&v| v as i16 as i32)
     }
 
-    fn set_word(&mut self, frame: u32, index: i32, value: i32) {
+    pub(super) fn set_word(&mut self, frame: u32, index: i32, value: i32) {
         if let Some(w) = self.get_window_mut(frame) {
             w.window_ushort.insert(index, value as i16 as u16);
         }

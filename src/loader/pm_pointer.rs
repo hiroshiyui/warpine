@@ -257,6 +257,9 @@ struct Created {
 #[derive(Debug)]
 pub struct PointerManager {
     created: HashMap<u32, Created>,
+    /// The POINTERINFO of pointers made from bitmaps (WinCreatePointer,
+    /// WinCreatePointerIndirect): fPointer, the hot spot and the bitmaps.
+    infos: HashMap<u32, [u32; 7]>,
     next: u32,
     /// The pointer set by WinSetPointer (0 = none).
     current: u32,
@@ -269,7 +272,7 @@ pub struct PointerManager {
 impl Default for PointerManager {
     fn default() -> Self {
         let arrow = SYS_HPOINTER_BASE + SPTR_ARROW;
-        PointerManager { created: HashMap::new(), next: FIRST_CREATED_HPOINTER,
+        PointerManager { created: HashMap::new(), infos: HashMap::new(), next: FIRST_CREATED_HPOINTER,
                          current: arrow, level: 0, shown: Some(arrow) }
     }
 }
@@ -300,11 +303,18 @@ impl PointerManager {
     pub fn destroy(&mut self, hptr: u32, tid: u32) -> bool {
         if self.created.get(&hptr).is_none_or(|c| c.owner != tid) { return false; }
         self.created.remove(&hptr);
+        self.infos.remove(&hptr);
         if self.current == hptr {
             self.current = Self::system_handle(SPTR_ARROW);
         }
         true
     }
+
+    /// Record the POINTERINFO pointer `hptr` was made from.
+    pub fn set_info(&mut self, hptr: u32, info: [u32; 7]) { self.infos.insert(hptr, info); }
+
+    /// The POINTERINFO pointer `hptr` was made from, if it was.
+    pub fn info(&self, hptr: u32) -> Option<[u32; 7]> { self.infos.get(&hptr).copied() }
 
     /// WinSetPointer: `hptr` (0 hides the pointer); false for no pointer.
     pub fn set(&mut self, hptr: u32) -> bool {

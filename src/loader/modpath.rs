@@ -375,7 +375,7 @@ mod tests {
         let mut dm = l.shared.dll_mgr.lock_or_recover();
         let handle = dm.alloc_handle();
         dm.register(LoadedDll {
-            name: name.into(), handle, object_bases: vec![], exports_by_ordinal: HashMap::new(),
+            name: name.into(), handle, object_bases: vec![], object_sizes: vec![], exports_by_ordinal: HashMap::new(),
             exports_by_name: HashMap::new(), ref_count: 1, initterm_addr: None, is_builtin: builtin,
         });
         if let Some(p) = path { dm.set_module_path(handle, p.into()); }

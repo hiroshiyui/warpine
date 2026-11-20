@@ -711,12 +711,16 @@ pub struct QueueEntry {
     pub data: Vec<u8>,
     pub event: u32,
     pub priority: u32,
+    /// Its element code (DosPeekQueue, DosReadQueue), unique in its queue.
+    pub id: u32,
 }
 
 pub struct OS2Queue {
     pub name: String,
     pub items: VecDeque<QueueEntry>,
     pub attr: u32,
+    /// The next element code.
+    pub next_id: u32,
     pub cond: Arc<Condvar>,
     pub cond_lock: Arc<Mutex<bool>>,
 }
@@ -737,7 +741,7 @@ impl QueueManager {
     pub fn create(&mut self, name: String, attr: u32) -> u32 {
         let h = self.next_handle;
         self.queues.insert(h, Arc::new(Mutex::new(OS2Queue {
-            name, items: VecDeque::new(), attr,
+            name, items: VecDeque::new(), attr, next_id: 1,
             cond: Arc::new(Condvar::new()), cond_lock: Arc::new(Mutex::new(false)),
         })));
         self.next_handle += 1;

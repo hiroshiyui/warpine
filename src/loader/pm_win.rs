@@ -675,9 +675,14 @@ impl super::Loader {
                 ApiResult::Normal(1)
             }
             707 => {
-                // WinCloseClipbrd(HAB hab)
+                // WinCloseClipbrd(HAB hab): a change since it was opened is posted
+                // to the viewer as WM_DRAWCLIPBOARD.
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 wm.clipboard_open = false;
+                if std::mem::take(&mut wm.clipboard_changed) && wm.clipboard_viewer != 0 {
+                    let viewer = wm.clipboard_viewer;
+                    wm.post_msg(viewer, WM_DRAWCLIPBOARD, 0, 0);
+                }
                 ApiResult::Normal(1)
             }
             857 => {
@@ -753,9 +758,14 @@ impl super::Loader {
                 ApiResult::DlgRunLoop { dlg_proc: pfn_dlg_proc, hwnd_dlg, hmq }
             }
             733 => {
-                // WinEmptyClipbrd(HAB hab)
+                // WinEmptyClipbrd(HAB hab): the owner is posted WM_DESTROYCLIPBOARD
+                // and stops being the owner.
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 wm.clipboard.clear();
+                wm.clipboard_info.clear();
+                wm.clipboard_changed = true;
+                let owner = std::mem::take(&mut wm.clipboard_owner);
+                if owner != 0 { wm.post_msg(owner, WM_DESTROYCLIPBOARD, 0, 0); }
                 ApiResult::Normal(1)
             }
             743 => {
@@ -763,7 +773,11 @@ impl super::Loader {
                 let hps = read_stack(4);
                 let prcl = read_stack(8);
                 let color_idx = read_stack(12);
-                let color = self.map_color(color_idx);
+                // The colour as the presentation space's colour table gives it
+                // (RGB after GpiCreateLogColorTable(LCOLF_RGB)), as WinDrawText's.
+                let resolved = self.shared.window_mgr.lock_or_recover().ps_map.get(&hps)
+                    .map(|ps| ps.resolve_color(color_idx));
+                let color = resolved.unwrap_or_else(|| self.map_color(color_idx));
                 let (x_left, y_bottom, x_right, y_top) = (
                     self.guest_read::<i32>(prcl).unwrap_or(0),
                     self.guest_read::<i32>(prcl + 4).unwrap_or(0),
@@ -1078,7 +1092,12 @@ impl super::Loader {
                 let _hab = read_stack(4);
                 let data = read_stack(8);
                 let fmt = read_stack(12);
-                let _flags = read_stack(16);
+                let flags = read_stack(16);
+                {
+                    let mut wm = self.shared.window_mgr.lock_or_recover();
+                    wm.clipboard_info.insert(fmt, flags);
+                    wm.clipboard_changed = true;
+                }
                 // For CF_TEXT, also bridge the text to the host system clipboard.
                 if fmt == CF_TEXT && data != 0 {
                     let text = self.read_guest_string_cp(data, self.thread_codepage(vcpu_id));
@@ -1681,6 +1700,7 @@ impl super::Loader {
                                       read_stack(20))
             }
             _ => {
+                if let Some(r) = self.pmwin_util_call(vcpu_id, ordinal, &read_stack) { return r; }
                 warn!("Warning: Unknown PMWIN Ordinal {} on VCPU {}", ordinal, vcpu_id);
                 ApiResult::Normal(0)
             }

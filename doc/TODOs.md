@@ -190,6 +190,7 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - muxwait semaphores as pipe semaphores, and a real `NPSS_WAIT`;
   - sweeping stale `warpine-threads-*` directories;
   - echo of piped standard input.
+- [ ] **Thread-local memory** (`DosAllocThreadLocalMemory` / `DosFreeThreadLocalMemory`, ADR-0086): the same address holding each thread's own words needs per-thread page tables; Warpine's guests run unpaged in one shared address space. Decide the approach (paging per vCPU, or another way) first.
 - [ ] **Suballocation**: shared pools between processes.
 - [ ] **Processes**:
   - `DosSendSignalException` to the parent or other session processes;

@@ -1748,7 +1748,9 @@ impl super::Loader {
             if let Some(src) = self.guest_slice_mut(buf_ptr, len as usize) {
                 data.copy_from_slice(src);
             }
-            q.items.push_back(QueueEntry { data, event, priority });
+            let id = q.next_id;
+            q.next_id = q.next_id.wrapping_add(1).max(1);
+            q.items.push_back(QueueEntry { data, event, priority, id });
             q.cond.notify_one();
             return 0;
         }
@@ -1756,7 +1758,10 @@ impl super::Loader {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn dos_read_queue(&self, hq: u32, preq_ptr: u32, pcb_ptr: u32, ppbuf_ptr: u32, _elem: u32, wait: u32, pprio_ptr: u32, _hev: u32) -> u32 {
+    /// DosReadQueue: take the first element, or (`elem` not 0) the one
+    /// whose element code DosPeekQueue gave; with DCWW_WAIT wait for one,
+    /// with DCWW_NOWAIT return ERROR_QUE_EMPTY at once.
+    pub fn dos_read_queue(&self, hq: u32, preq_ptr: u32, pcb_ptr: u32, ppbuf_ptr: u32, elem: u32, wait: u32, pprio_ptr: u32, _hev: u32) -> u32 {
         let (q_arc, cond, cond_lock) = {
             let queue_mgr = self.shared.queue_mgr.lock_or_recover();
             if let Some(q_arc) = queue_mgr.get(hq) {
@@ -1772,7 +1777,14 @@ impl super::Loader {
             if self.stop_or_restart() { return 342; }
             {
                 let mut q = q_arc.lock_or_recover();
-                if let Some(entry) = q.items.pop_front() {
+                let at = match elem {
+                    0 => Some(0),
+                    code => match q.items.iter().position(|e| e.id == code) {
+                        Some(p) => Some(p),
+                        None => return 333, // ERROR_QUE_ELEMENT_NOT_EXIST
+                    },
+                };
+                if let Some(entry) = at.and_then(|p| q.items.remove(p)) {
                     let len = entry.data.len() as u32;
                     drop(q);
                     let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
@@ -1791,7 +1803,8 @@ impl super::Loader {
                     return 8;
                 }
             }
-            if wait == 0 { return 342; }
+            // DCWW_NOWAIT (1): no waiting.
+            if wait != super::dos_misc::DCWW_WAIT { return 342; }
             let guard = cond_lock.lock_or_recover();
             let _ = cond.wait_timeout(guard, std::time::Duration::from_millis(100)).unwrap();
         }
@@ -2741,11 +2754,11 @@ mod tests {
         // Read queue (wait=1 IO_WAIT, but item already present)
         let pcb_len = 0x6000u32;
         let ppbuf   = 0x6004u32;
-        assert_eq!(loader.dos_read_queue(hq, 0, pcb_len, ppbuf, 0, 1, 0, 0), 0);
+        assert_eq!(loader.dos_read_queue(hq, 0, pcb_len, ppbuf, 0, 0, 0, 0), 0, "DCWW_WAIT with an element");
         assert_eq!(loader.guest_read::<u32>(pcb_len), Some(3)); // 3 bytes
 
         // Queue now empty — NOWAIT read must return 342 (ERROR_QUE_EMPTY)
-        assert_eq!(loader.dos_read_queue(hq, 0, pcb_len, ppbuf, 0, 0, 0, 0), 342);
+        assert_eq!(loader.dos_read_queue(hq, 0, pcb_len, ppbuf, 0, 1, 0, 0), 342, "DCWW_NOWAIT on an empty queue");
 
         assert_eq!(loader.dos_close_queue(hq), 0);
     }

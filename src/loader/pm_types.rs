@@ -586,6 +586,18 @@ pub struct WindowManager {
     pub gui_tx: Option<crate::gui::GUISender>,
     pub timers: TimerMap,
     pub clipboard: HashMap<u32, u32>,
+    /// The `CFI_*` flags each format was set with.
+    pub clipboard_info: HashMap<u32, u32>,
+    /// The clipboard's owner and viewer windows (ADR-0086).
+    pub clipboard_owner: u32,
+    pub clipboard_viewer: u32,
+    /// The contents changed since the clipboard was opened.
+    pub clipboard_changed: bool,
+    /// ERRINFO blocks WinGetErrorInfo gave and WinFreeErrorInfo frees.
+    pub error_infos: std::collections::HashSet<u32>,
+    /// WinRegisterUserMsg / WinRegisterUserDatatype records (ADR-0086).
+    pub user_msgs: HashMap<u32, [u32; 5]>,
+    pub user_datatypes: HashMap<i32, Vec<i32>>,
     pub clipboard_open: bool,
     /// Currently captured window handle (0 = none).
     pub capture_hwnd: u32,
@@ -762,6 +774,13 @@ impl WindowManager {
             gui_tx: None,
             timers: HashMap::new(),
             clipboard: HashMap::new(),
+            clipboard_info: HashMap::new(),
+            clipboard_owner: 0,
+            clipboard_viewer: 0,
+            clipboard_changed: false,
+            error_infos: std::collections::HashSet::new(),
+            user_msgs: HashMap::new(),
+            user_datatypes: HashMap::new(),
             clipboard_open: false,
             capture_hwnd: 0,
             clipboard_text: String::new(),

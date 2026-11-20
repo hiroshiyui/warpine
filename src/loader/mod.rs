@@ -28,6 +28,8 @@ pub mod pm_cursor;
 mod pm_destroy;
 pub mod pm_pointer;
 mod pm_window;
+mod pm_winutil;
+mod dos_misc;
 mod pm_frame;
 mod pm_accel;
 mod pm_winmisc;

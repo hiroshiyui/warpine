@@ -26,7 +26,7 @@ use tracing::debug;
 
 use super::constants::{NLS_BASE, MSG_BASE, MDM_BASE, UCONV_BASE, SO32DLL_BASE, TCP32DLL_BASE,
                        PMSHAPI_BASE, HELPMGR_BASE, PMSPL_BASE, PMCTLS_BASE, WARPINE_BASE, PMDRAG_BASE, SOM_BASE,
-                       REXX_BASE, REXXAPI_BASE,
+                       REXX_BASE, REXXAPI_BASE, PMWP_BASE,
                        module_base};
 use super::pmspl::SplEnum;
 use super::rexxapi::{Kind, RexxSignal};
@@ -108,6 +108,8 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_max_fh(a[0])) },
     ApiEntry { ordinal: 210, module: "DOSCALLS", name: "DosSetVerify",     argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_verify(a[0])) },
+    ApiEntry { ordinal: 211, module: "DOSCALLS", name: "DosErrClass", argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_err_class(a[0],a[1],a[2],a[3])) },
     ApiEntry { ordinal: 212, module: "DOSCALLS", name: "DosError",         argc: 1,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_error(a[0])) },
 
@@ -404,6 +406,12 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,id,a| ApiResult::Normal(l.dos_unwind_exception(id,a[0],a[1],a[2],a[3])) },
 
     // ── DOSCALLS — process state / signals ───────────────────────────────
+    ApiEntry { ordinal: 360, module: "DOSCALLS", name: "DosQueryModFromEIP", argc: 6,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_mod_from_eip(a[0],a[1],a[2],a[3],a[4],a[5])) },
+    ApiEntry { ordinal: 362, module: "DOSCALLS", name: "DosTmrQueryFreq", argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_tmr_query_freq(a[0])) },
+    ApiEntry { ordinal: 363, module: "DOSCALLS", name: "DosTmrQueryTime", argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_tmr_query_time(a[0])) },
     ApiEntry { ordinal: 368, module: "DOSCALLS", name: "DosQuerySysState", argc: 5,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_sys_state(a[0],a[1],a[2],a[3],a[4])) },
     ApiEntry { ordinal: 372, module: "DOSCALLS", name: "DosEnumAttribute", argc: 7,
@@ -431,12 +439,40 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_sel_to_flat(a[0])) },
     ApiEntry { ordinal: 428, module: "DOSCALLS", name: "DosSetFileLocks",  argc: 5,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_file_locks(a[0],a[1],a[2],a[3],a[4])) },
+    ApiEntry { ordinal: 429, module: "DOSCALLS", name: "DosCancelLockRequest", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_cancel_lock_request(a[0],a[1])) },
+    ApiEntry { ordinal: 460, module: "DOSCALLS", name: "DosVerifyPidTid", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_verify_pid_tid(a[0],a[1])) },
     ApiEntry { ordinal: 572, module: "DOSCALLS", name: "DosQueryResourceSize", argc: 4,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_resource_size(a[0],a[1],a[2],a[3])) },
+    ApiEntry { ordinal: 586, module: "DOSCALLS", name: "DosQueryProcType", argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_proc_type(a[0],a[1],a[2],a[3])) },
+    ApiEntry { ordinal: 621, module: "DOSCALLS", name: "DosProtectSetFilePtr", argc: 5,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect(a[0],a[4],|| l.dos_set_file_ptr(a[0],a[1] as i32,a[2],a[3]))) },
+    ApiEntry { ordinal: 636, module: "DOSCALLS", name: "DosProtectEnumAttribute", argc: 8,
+               handler: |l,_v,_i,a| ApiResult::Normal(if a[0] == 0 { l.dos_protect(l.guest_read::<u32>(a[1]).unwrap_or(0),a[7],|| l.dos_enum_attribute(a[0],a[1],a[2],a[3],a[4],a[5],a[6])) } else { l.dos_enum_attribute(a[0],a[1],a[2],a[3],a[4],a[5],a[6]) }) },
+    ApiEntry { ordinal: 637, module: "DOSCALLS", name: "DosProtectOpen", argc: 9,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect_open(a[0],a[1],a[2],a[5],a[6],a[8])) },
+    ApiEntry { ordinal: 638, module: "DOSCALLS", name: "DosProtectClose", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect(a[0],a[1],|| l.dos_close(a[0]))) },
     ApiEntry { ordinal: 639, module: "DOSCALLS", name: "DosProtectSetFileLocks", argc: 6,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect_set_file_locks(a[0],a[1],a[2],a[3],a[4],a[5])) },
 
     // ── DOSCALLS — extended LIBPATH ───────────────────────────────────────
+    ApiEntry { ordinal: 640, module: "DOSCALLS", name: "DosProtectSetFileSize", argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect(a[0],a[2],|| l.dos_set_file_size(a[0],a[1]))) },
+    ApiEntry { ordinal: 641, module: "DOSCALLS", name: "DosProtectRead", argc: 5,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect(a[0],a[4],|| l.dos_read(a[0],a[1],a[2],a[3]))) },
+    ApiEntry { ordinal: 642, module: "DOSCALLS", name: "DosProtectWrite", argc: 5,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect(a[0],a[4],|| l.dos_write(a[0],a[1],a[2],a[3]))) },
+    ApiEntry { ordinal: 643, module: "DOSCALLS", name: "DosProtectSetFileInfo", argc: 5,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect(a[0],a[4],|| l.dos_set_file_info(a[0],a[1],a[2],a[3]))) },
+    ApiEntry { ordinal: 644, module: "DOSCALLS", name: "DosProtectSetFHState", argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect(a[0],a[2],|| l.dos_set_fh_state(a[0],a[1]))) },
+    ApiEntry { ordinal: 645, module: "DOSCALLS", name: "DosProtectQueryFHState", argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect(a[0],a[2],|| l.dos_query_fh_state(a[0],a[1]))) },
+    ApiEntry { ordinal: 646, module: "DOSCALLS", name: "DosProtectQueryFileInfo", argc: 5,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_protect(a[0],a[4],|| l.dos_query_file_info(a[0],a[1],a[2],a[3]))) },
     ApiEntry { ordinal: 873, module: "DOSCALLS", name: "DosSetExtLIBPATH",   argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_ext_libpath(a[0],a[1])) },
     ApiEntry { ordinal: 874, module: "DOSCALLS", name: "DosQueryExtLIBPATH", argc: 2,
@@ -451,6 +487,8 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_close_queue(a[0])) },
     ApiEntry { ordinal: 1024 + 12, module: "QUECALLS", name: "DosQueryQueue",  argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_queue(a[0],a[1])) },
+    ApiEntry { ordinal: 1024 + 13, module: "QUECALLS", name: "DosPeekQueue",   argc: 8,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_peek_queue(a[0],a[1],a[2],a[3],a[4],a[5],a[6])) },
     ApiEntry { ordinal: 1024 + 14, module: "QUECALLS", name: "DosWriteQueue",  argc: 5,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_write_queue(a[0],a[1],a[2],a[3],a[4])) },
     ApiEntry { ordinal: 1024 + 15, module: "QUECALLS", name: "DosOpenQueue",   argc: 3,
@@ -1097,6 +1135,12 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,_a| ApiResult::Normal(l.rexx_macro_space("RexxReorderMacro")) },
     ApiEntry { ordinal: REXXAPI_BASE + 28, module: "REXXAPI", name: "RexxSaveMacroSpace", argc: 3,
                handler: |l,_v,_i,_a| ApiResult::Normal(l.rexx_macro_space("RexxSaveMacroSpace")) },
+
+    // ── PMWP — the Workplace Shell (window positions only; pm_winutil.rs) ──
+    ApiEntry { ordinal: PMWP_BASE + 207, module: "PMWP", name: "WinStoreWindowPos", argc: 3,
+               handler: |l,_v,i,a| ApiResult::Normal(l.win_store_window_pos(i,a[0],a[1],a[2])) },
+    ApiEntry { ordinal: PMWP_BASE + 208, module: "PMWP", name: "WinRestoreWindowPos", argc: 3,
+               handler: |l,_v,i,a| ApiResult::Normal(l.win_restore_window_pos(i,a[0],a[1],a[2])) },
 ];
 
 // ── Compatibility report ──────────────────────────────────────────────────────
@@ -1124,9 +1168,9 @@ const VIOCALLS_ORDINALS: u32 = 22;
 const KBDCALLS_ORDINALS: u32 = 3;
 /// MOUCALLS ordinals of `moucalls.rs`.
 const MOUCALLS_ORDINALS: u32 = 20;
-/// PMWIN ordinals dispatched by `pm_win.rs` (checked against its
-/// `N => { // WinName(` arms by a test).
-const PMWIN_ORDINALS: u32 = 173;
+/// PMWIN ordinals dispatched by `pm_win.rs` and `pm_winutil.rs` (checked
+/// against their `N => { // WinName(` arms by a test).
+const PMWIN_ORDINALS: u32 = 215;
 /// PMGPI ordinals dispatched by `pm_gpi.rs`, `pm_region.rs`, `pm_area.rs`,
 /// `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs` (checked against
 /// their arms by a test), of which `PMGPI_STUBS` are stubs (`GpiLoadFonts`,
@@ -1281,7 +1325,7 @@ mod tests {
 
     #[test]
     fn test_compat_report_pm_counts_match_the_dispatchers() {
-        let win = dispatched_ordinals(&[include_str!("pm_win.rs")]);
+        let win = dispatched_ordinals(&[include_str!("pm_win.rs"), include_str!("pm_winutil.rs")]);
         assert_eq!(win.len() as u32, super::PMWIN_ORDINALS, "PMWIN_ORDINALS is stale");
         let gpi = dispatched_ordinals(&[include_str!("pm_gpi.rs"), include_str!("pm_region.rs"),
                                         include_str!("pm_area.rs"), include_str!("pm_text.rs"),
@@ -1297,7 +1341,7 @@ mod tests {
             assert!(!super::STUB_ORDINALS.contains(&ord), "ordinal {ord} is implemented");
         }
         let report = super::compat_report();
-        assert!(report.contains("DOSCALLS  (138 implemented, 4 stub)"), "{report}");
+        assert!(report.contains("DOSCALLS  (156 implemented, 4 stub)"), "{report}");
     }
 
     // ── registry ─────────────────────────────────────────────────────────────

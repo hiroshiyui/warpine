@@ -522,7 +522,16 @@ APIs marked `[stub]` accept calls and return `NO_ERROR` but perform no operation
 
 ## Implemented APIs
 
-### DOSCALLS (142 APIs: 138 implemented, 4 stub)
+### DOSCALLS (160 APIs: 156 implemented, 4 stub)
+
+**Smaller calls (ADR-0086):** DosErrClass (211), DosQueryModFromEIP (360), DosTmrQueryFreq (362), DosTmrQueryTime (363), DosCancelLockRequest (429), DosVerifyPidTid (460), DosQueryProcType (586), and the protected-handle calls DosProtectSetFilePtr (621), DosProtectEnumAttribute (636), DosProtectOpen (637), DosProtectClose (638), DosProtectSetFileSize (640), DosProtectRead (641), DosProtectWrite (642), DosProtectSetFileInfo (643), DosProtectSetFHState (644), DosProtectQueryFHState (645), DosProtectQueryFileInfo (646).
+- **The timer** counts at 1,193,182 Hz from the process's first query.
+- **`DosQueryModFromEIP`** names the program or loaded DLL whose object holds the address, with the object (from 0) and the offset; `ERROR_INVALID_ADDRESS` elsewhere, `ERROR_BUFFER_OVERFLOW` for a short name buffer.
+- **`DosErrClass`** classifies by Warpine's own table.
+- **`DosQueryProcType`** is always `PT_32BIT`.
+- **`DosVerifyPidTid`** checks this process's threads only (`ERROR_INVALID_PROCID` otherwise).
+- **The `DosProtect*` calls** are the plain file calls guarded by an `FHLOCK` that `DosProtectOpen` returns. A wrong lock is `ERROR_INVALID_HANDLE`.
+- **`DosQueryModuleHandle`** answers for every built-in module (DOSCALLS, PMWIN, REXX …), which is always loaded.
 
 **File I/O:**
 DosOpen (273), DosClose (257), DosRead (281), DosWrite (282), DosDelete (259), DosCopy (258), DosMove (271), DosSetFilePtr (256), DosSetFileSize (272), DosQueryFileInfo (279), DosSetFileInfo (218), DosQueryPathInfo (223), DosSetPathInfo (219), DosEnumAttribute (372)
@@ -609,9 +618,11 @@ DosError (212), DosSetMaxFH (209), DosBeep (286), DosQueryHType (224), DosSetFil
 **Stubs (no-op):**
 DosDebug (317), DosShutdown (415), DOS16REQUESTVDD (267), DosFSCtl (285)
 
-### QUECALLS (7 APIs)
+### QUECALLS (8 APIs)
 
-DosCreateQueue (1040), DosOpenQueue (1039), DosCloseQueue (1035), DosReadQueue (1033), DosWriteQueue (1038), DosPurgeQueue (1034), DosQueryQueue (1036)
+DosCreateQueue (1040), DosOpenQueue (1039), DosCloseQueue (1035), DosReadQueue (1033), DosWriteQueue (1038), DosPurgeQueue (1034), DosQueryQueue (1036), DosPeekQueue (1037)
+
+Each element has an element code. `DosPeekQueue` copies the first element (`*pElement` 0), or the one after the code given, without removing it, and returns its code. `DosReadQueue` takes the first element, or the one a code names (`ERROR_QUE_ELEMENT_NOT_EXIST` when it is gone). With `DCWW_WAIT` both wait for an element; with `DCWW_NOWAIT` they return `ERROR_QUE_EMPTY` at once.
 
 ### NLS (4 APIs)
 
@@ -805,6 +816,10 @@ Not yet available: SOM objects on the stack in C++, the initializer control bloc
 
 **Others.** `RexxSetHalt(pid, tid)` halts the programs a thread of this process runs (HALT). `RexxSetTrace` / `RexxResetTrace` turn tracing to `?R` / `O`.
 
+### PMWP — the Workplace Shell (2 APIs, ADR-0086)
+
+WinStoreWindowPos (207), WinRestoreWindowPos (208): a window's position, size and state (and a frame's normal and icon positions) are kept in the user profile under an application and key name, in Warpine's own record. Restoring a minimized or maximized frame sets its normal position, then the state. Presentation parameters are not kept. The rest of PMWP (Workplace Shell objects) is not built in.
+
 ### WARPINE — Warpine's own extensions (4 APIs)
 
 `WARPINE.DLL` is not an OS/2 module: a program that can be recompiled loads it with `DosLoadModule("WARPINE")` (which fails on OS/2, so it can fall back) and finds the calls with `DosQueryProcAddr` by name or ordinal. They are `_System` (`APIENTRY`) calls returning an `APIRET`, and they take a signed 64-bit count of seconds since 1970-01-01 00:00 UTC (`long long`) on the session clock:
@@ -819,7 +834,28 @@ Not yet available: SOM objects on the stack in C++, the initializer control bloc
 
 A null pointer, or a time whose year is outside 1–9999, is `ERROR_INVALID_PARAMETER`; a `DATETIME` that names no real date or time is `ERROR_TS_DATETIME`. Sample: `datetime_test`.
 
-### PMWIN (169 APIs)
+### PMWIN (215 APIs)
+
+**Utility calls (ADR-0086, `pm_winutil.rs`):**
+- **Strings:** WinUpper (893), WinUpperChar (894), WinNextChar (791), WinPrevChar (795), WinCompareStrings (708), WinCpTranslateChar (711), WinCpTranslateString (712), WinGetCurrentTime (750).
+- **Dialogs:** WinCreateDlg (922), WinMapDlgPoints (787), WinQueryDlgItemTextLength (816), WinGetDlgMsg (914).
+- **Painting:** WinGetScreenPS (759), WinGetClipPS (749), WinInvertRect (767), WinMakeRect (786), WinMakePoints (785), WinIsWindowShowing (774).
+- **Clipboard:** WinSetClipbrdOwner (855), WinQueryClipbrdOwner (808), WinSetClipbrdViewer (856), WinQueryClipbrdViewer (809), WinEnumClipbrdFmts (739), WinQueryClipbrdFmtInfo (807).
+- **Waits:** WinWaitMuxWaitSem (980), WinCheckInput (998), WinIsThreadActive (771).
+- **Pointers:** WinCreatePointer (717), WinCreatePointerIndirect (942), WinQueryPointerInfo (822), WinDrawPointer (732).
+- **Errors:** WinGetErrorInfo (751), WinFreeErrorInfo (748), WinSetErrorInfo (977).
+- **Libraries:** WinLoadLibrary (777), WinLoadProcedure (986), WinDeleteLibrary (722), WinDeleteProcedure (987).
+- **User types:** WinRegisterUserMsg (846), WinRegisterUserDatatype (845).
+- **Positions:** WinGetMaxPosition (754), WinGetMinPosition (755).
+
+How they behave:
+- **Strings** use the codepage given (0: the queue's); `WinCompareStrings` uses `DosQueryCollate`'s order.
+- **`WinGetDlgMsg`** returns FALSE once the dialog is dismissed.
+- **The clipboard's viewer** is posted `WM_DRAWCLIPBOARD` when the clipboard is closed after a change. Emptying posts `WM_DESTROYCLIPBOARD` to the owner and ends the ownership.
+- **Pointers** are made from a mask bitmap twice their height: AND above, XOR below, white pels as 1 bits.
+- **`WinGetErrorInfo`** returns an `ERRINFO` in the Warp 4.5 Toolkit's layout (ULONG fields), with one message; `WinFreeErrorInfo` frees it.
+- **`WinFillRect`'s colour** follows the presentation space's colour table, so RGB after `GpiCreateLogColorTable(LCOLF_RGB)`.
+- **Not here:** `WinTrackRect` / `WinShowTrackRect`, and `WinGetErasePS` / `WinReleaseErasePS` / `WinMsgSemWait` / `WinMsgMuxSemWait` (no public prototype).
 
 Window management, message queues, painting (incl. `WinGetPS` / `WinReleasePS`, window DCs, `WinDrawBitmap`), input, focus, codepage, dialogs, menus, clipboard, and resource loading. Ordinals follow the Open Watcom import library (`doc/os2_ordinals.md`):
 
@@ -1018,12 +1054,12 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 449 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 363 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 470 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 405 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
-| DOSCALLS | registry | 138 | 4 | 142 |
-| QUECALLS | registry | 7 | 0 | 7 |
+| DOSCALLS | registry | 156 | 4 | 160 |
+| QUECALLS | registry | 8 | 0 | 8 |
 | NLS | registry | 4 | 0 | 4 |
 | MSG | registry | 4 | 0 | 4 |
 | MDM (MMPM/2) | registry | 4 | 0 | 4 |
@@ -1042,9 +1078,10 @@ Counts are taken from the static registry (`api_registry.rs`, 449 entries) and t
 | SOM (the SOM runtime kernel) | registry | 113 | 3 | 116 |
 | REXX (the REXX API) | registry | 5 | 0 | 5 |
 | REXXAPI (registrations, queues; no macro space) | registry | 17 | 7 | 24 |
-| PMWIN | sub-dispatcher | 173 | 0 | 173 |
+| PMWP (window positions) | registry | 2 | 0 | 2 |
+| PMWIN | sub-dispatcher | 215 | 0 | 215 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **791** | **21** | **812** |
+| **Total** | | **854** | **21** | **875** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

@@ -40,10 +40,16 @@ impl super::Loader {
                     format!("the program's {what} object {object} is not one of its {objects} objects")));
             }
         }
-        let mut file = File::open(path)?;
+        let mut file = File::open(&path)?;
         let data_pages_base = lx_file.header.data_pages_offset as u64;
         // Use preferred base addresses from the object table for the main exe
         let object_bases: Vec<u32> = lx_file.object_table.iter().map(|o| o.base_address).collect();
+        // The program's objects, for DosQueryModFromEIP.
+        {
+            let mut dlls = self.shared.dll_mgr.lock_or_recover();
+            dlls.exe_objects = lx_file.object_table.iter().map(|o| (o.base_address, o.size)).collect();
+            dlls.exe_name = path.as_ref().file_stem().map(|s| s.to_string_lossy().to_ascii_uppercase()).unwrap_or_default();
+        }
 
         for (i, obj) in lx_file.object_table.iter().enumerate() {
             debug!("  Mapping Object {}...", i + 1);
@@ -339,6 +345,7 @@ impl super::Loader {
                 name: dll_name_upper.clone(),
                 handle,
                 object_bases,
+                object_sizes: lx_file.object_table.iter().map(|o| o.size.max(4096)).collect(),
                 exports_by_ordinal,
                 exports_by_name,
                 ref_count: 1,

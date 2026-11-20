@@ -52,7 +52,10 @@ pub const SOM_ORDINALS: u32  = 4096;
 pub const REXX_BASE: u32     = SOM_BASE + SOM_ORDINALS; // 26624
 /// REXX's registration and queue API (`REXXAPI.DLL`).
 pub const REXXAPI_BASE: u32  = REXX_BASE + 1024; // 27648
-pub const STUB_AREA_SIZE: u32 = REXXAPI_BASE + 1024; // 28672
+/// The Workplace Shell's PMWP.DLL: so far only WinStoreWindowPos and
+/// WinRestoreWindowPos (`pm_winutil.rs`, ADR-0086).
+pub const PMWP_BASE: u32     = REXXAPI_BASE + 1024; // 28672
+pub const STUB_AREA_SIZE: u32 = PMWP_BASE + 1024; // 29696
 /// QUECALLS ordinals follow DOSCALLS' 1024.
 pub const QUECALLS_BASE: u32 = 1024;
 
@@ -84,6 +87,7 @@ pub fn module_base(module: &str) -> Option<u32> {
         "SOM"      => SOM_BASE,
         "REXX"     => REXX_BASE,
         "REXXAPI"  => REXXAPI_BASE,
+        "PMWP"     => PMWP_BASE,
         _ => return None,
     })
 }
@@ -100,7 +104,8 @@ const _: () = assert!(WARPINE_BASE + 1024 <= PMDRAG_BASE);
 const _: () = assert!(PMDRAG_BASE + 1024 <= SOM_BASE);
 const _: () = assert!(SOM_BASE + SOM_ORDINALS <= REXX_BASE);
 const _: () = assert!(REXX_BASE + 1024 <= REXXAPI_BASE);
-const _: () = assert!(REXXAPI_BASE + 1024 <= STUB_AREA_SIZE);
+const _: () = assert!(REXXAPI_BASE + 1024 <= PMWP_BASE);
+const _: () = assert!(PMWP_BASE + 1024 <= STUB_AREA_SIZE);
 // The INT 3 stub area must not reach the dynamic allocation pool.
 const _: () = assert!(MAGIC_API_BASE + STUB_AREA_SIZE as u64 <= DYNAMIC_ALLOC_BASE as u64);
 // The NE loader addresses stubs with 16-bit offsets.
@@ -1431,6 +1436,24 @@ pub const CMDSRC_ACCELERATOR: u32 = 3;
 // WinPeekMsg flags (fl)
 pub const PM_NOREMOVE: u32 = 0;
 pub const PM_REMOVE:   u32 = 1;
+
+// WinCompareStrings results (`<pmwin.h>`).
+pub const WCS_ERROR: u32 = 0;
+pub const WCS_EQ:    u32 = 1;
+pub const WCS_LT:    u32 = 2;
+pub const WCS_GT:    u32 = 3;
+
+// WinGetClipPS flags (`<pmwin.h>`).
+pub const PSF_LOCKWINDOWUPDATE: u32 = 0x0001;
+pub const PSF_CLIPUPWARDS:      u32 = 0x0002;
+pub const PSF_CLIPDOWNWARDS:    u32 = 0x0004;
+pub const PSF_CLIPSIBLINGS:     u32 = 0x0008;
+pub const PSF_CLIPCHILDREN:     u32 = 0x0010;
+pub const PSF_PARENTCLIP:       u32 = 0x0020;
+
+// Clipboard messages (`<pmwin.h>`).
+pub const WM_DESTROYCLIPBOARD: u32 = 0x0062;
+pub const WM_DRAWCLIPBOARD:    u32 = 0x0067;
 
 // WM_HELP: posted by BS_HELP buttons and AF_HELP accelerators.
 pub const WM_HELP: u32 = 0x0022;

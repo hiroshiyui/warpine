@@ -435,15 +435,9 @@ impl super::Loader {
         // Builtin modules (UCONV, MDM, VIOCALLS, …) have no real DLL file on the
         // host.  Register a synthetic handle so DosQueryProcAddr can resolve their
         // ordinals to warpine thunk stubs at runtime.
-        const BUILTINS: &[&str] = &[
-            "DOSCALLS", "QUECALLS", "PMWIN", "PMGPI", "KBDCALLS",
-            "VIOCALLS", "SESMGR", "NLS", "MSG", "MDM", "UCONV",
-            "SO32DLL", "TCP32DLL", "MOUCALLS", "PMSHAPI", "HELPMGR",
-            "PMSPL", "PMCTLS", "WARPINE", "PMDRAG", "SOM",
-        ];
         let name_upper = name.to_ascii_uppercase();
         let stem = name_upper.strip_suffix(".DLL").unwrap_or(&name_upper);
-        if BUILTINS.contains(&stem) {
+        if super::constants::module_base(stem).is_some() {
             let mut dll_mgr = self.shared.dll_mgr.lock_or_recover();
             // Reuse an existing registration (e.g. from a previous DosLoadModule call).
             if let Some(existing) = dll_mgr.find_by_name(stem) {
@@ -457,6 +451,7 @@ impl super::Loader {
                 name: stem.to_string(),
                 handle: h,
                 object_bases: vec![],
+                object_sizes: Vec::new(),
                 exports_by_ordinal: HashMap::new(),
                 exports_by_name: HashMap::new(),
                 ref_count: 1,
@@ -556,6 +551,16 @@ impl super::Loader {
     pub fn dos_query_module_handle(&self, psz_mod_name: u32, phmod: u32) -> u32 {
         let name = self.read_guest_string(psz_mod_name);
         debug!("  DosQueryModuleHandle('{}')", name);
+        // A built-in module is always loaded, as OS/2's system DLLs are: it
+        // gets its handle on first use (ADR-0086).
+        let upper = name.to_ascii_uppercase();
+        let stem = upper.strip_suffix(".DLL").unwrap_or(&upper);
+        if super::constants::module_base(stem).is_some() {
+            return match self.dos_load_module(0, 0, psz_mod_name, phmod) {
+                super::ApiResult::Normal(rc) => rc,
+                _ => ERROR_MOD_NOT_FOUND,
+            };
+        }
         let dll_mgr = self.shared.dll_mgr.lock_or_recover();
         if let Some(dll) = dll_mgr.find_by_name(&name) {
             if phmod != 0 { self.guest_write::<u32>(phmod, dll.handle); }
@@ -593,8 +598,16 @@ impl super::Loader {
         // For builtin modules, compute the thunk stub address directly.
         let addr = if let Some(mod_name) = maybe_name {
             if ordinal != 0 {
-                let thunk = self.resolve_import(&mod_name, ordinal);
-                Some(thunk as u32)
+                // An ordinal Warpine does not implement is not found, so a
+                // program (or its C runtime) probing for an optional call,
+                // such as DosOpenL, falls back as on a system without it.
+                // The sub-dispatched modules' ordinals are not in the
+                // registry and are resolved as before.
+                const SUB_DISPATCHED: [&str; 5] = ["PMWIN", "PMGPI", "VIOCALLS", "KBDCALLS", "MOUCALLS"];
+                let known = SUB_DISPATCHED.contains(&mod_name.as_str())
+                    || super::constants::module_base(&mod_name)
+                        .is_some_and(|base| super::api_registry::find(base + ordinal).is_some());
+                known.then(|| self.resolve_import(&mod_name, ordinal) as u32)
             } else if !name.is_empty() {
                 // By name: the module's name table or the registry (0 = unknown).
                 Some(self.resolve_import_by_name(&mod_name, &name) as u32).filter(|&a| a != 0)
@@ -1605,6 +1618,7 @@ mod tests {
             name: name.to_ascii_uppercase(),
             handle: h,
             object_bases: bases,
+            object_sizes: Vec::new(),
             exports_by_ordinal: HashMap::new(),
             exports_by_name: HashMap::new(),
             ref_count: 1,

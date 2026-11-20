@@ -341,6 +341,13 @@ pub(crate) enum ChainThen {
     StartProcess,
     /// `somFree` called the object's `somUninit` (`som.rs`): free it.
     SomFree { obj: u32 },
+    /// `WinLoadLibrary` ran the `_DLL_InitTerm`s of module `hmod` (and the
+    /// modules loaded with it): return the handle (0 when one failed) and
+    /// free the scratch word at `scratch` (`pm_winutil.rs`).
+    LoadLibrary { hmod: u32, scratch: u32 },
+    /// `WinDeleteLibrary` ran module `hmod`'s `_DLL_InitTerm(hmod, 1)`:
+    /// free its pages and return TRUE.
+    FreeLibrary { hmod: u32 },
     /// A handler of RexxStart session `session` returned (`rexxapi.rs`):
     /// give its result to the interpreter and make its next call, or
     /// return from RexxStart.
@@ -470,6 +477,8 @@ impl Loader {
             ChainThen::Drag => self.drag_chain_done(chain.last),
             ChainThen::LoadModule { hmod, phmod } => ChainEnd::Return(self.dll_inits_done(hmod, phmod, chain)),
             ChainThen::SomFree { obj } => ChainEnd::Return(self.som_free_done(obj)),
+            ChainThen::LoadLibrary { hmod, scratch } => ChainEnd::Return(self.load_library_done(hmod, scratch, chain)),
+            ChainThen::FreeLibrary { hmod } => ChainEnd::Return(self.free_library_done(hmod)),
             ChainThen::Rexx { session } => self.rexx_handler_returned(session, chain.last),
             ChainThen::StartProcess => self.start_inits_done(chain),
             ChainThen::SomClassLoaded { id, block, inits, first } => ChainEnd::Return(self.som_class_loaded(id, block, inits, first, chain)),

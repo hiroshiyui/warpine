@@ -1798,6 +1798,7 @@ mod tests {
 
     #[test]
     fn test_pmwin_dispatch_ordinals_match_ordinal_table() {
-        assert_arms_match_ordinal_table(include_str!("pm_win.rs"), "Win", &[]);
+        let source = [include_str!("pm_win.rs"), include_str!("pm_winutil.rs")].concat();
+        assert_arms_match_ordinal_table(&source, "Win", &[]);
     }
 }

@@ -34,7 +34,7 @@
 
 use super::constants::{
     HWND_DESKTOP, HWND_OBJECT, PMERR_INVALID_HWND, PMERR_PARAMETER_OUT_OF_RANGE, QWP_PFNWP,
-    WM_ACTIVATE, WRP_BUILTIN_WINDOW_PROC,
+    WM_ACTIVATE, WRP_BUILTIN_WINDOW_PROC, WS_MINIMIZED,
 };
 use super::mutex_ext::MutexExt;
 use super::pm_types::WindowManager;
@@ -59,6 +59,28 @@ impl WindowManager {
                 Some(w) if w.visible => h = w.parent,
                 _ => return false,
             }
+        }
+        false
+    }
+
+    /// `WinIsWindowShowing`: visible, not minimized, and some of it inside
+    /// each of its parents (windows covering it are not considered,
+    /// unverified).
+    pub fn is_window_showing(&self, hwnd: u32) -> bool {
+        if !self.is_window_visible(hwnd) { return false; }
+        let Some(w) = self.get_window(hwnd) else { return false };
+        if w.style & WS_MINIMIZED != 0 || w.cx <= 0 || w.cy <= 0 { return false; }
+        // The window's rectangle in its parent's coordinates, cut by each
+        // parent in turn.
+        let (mut x0, mut y0, mut x1, mut y1) = (w.x, w.y, w.x + w.cx, w.y + w.cy);
+        let mut parent = w.parent;
+        for _ in 0..=self.windows().count() {
+            if is_desktop(parent) { return x0 < x1 && y0 < y1; }
+            let Some(p) = self.get_window(parent) else { return false };
+            if p.style & WS_MINIMIZED != 0 { return false; }
+            (x0, y0, x1, y1) = (x0.max(0) + p.x, y0.max(0) + p.y, x1.min(p.cx) + p.x, y1.min(p.cy) + p.y);
+            if x0 >= x1 || y0 >= y1 { return false; }
+            parent = p.parent;
         }
         false
     }

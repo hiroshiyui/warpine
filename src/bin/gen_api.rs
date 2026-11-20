@@ -51,8 +51,9 @@ const MODULES: &[(&str, u32)] = &[
     ("SOM",      22528),
     ("REXX",     26624),
     ("REXXAPI",  27648),
+    ("PMWP",     28672),
 ];
-const STUB_AREA_SIZE: u32 = 28672; // REXXAPI_BASE + 1024 (SOM is SOM_ORDINALS = 4096 wide, ADR-0070)
+const STUB_AREA_SIZE: u32 = 29696; // PMWP_BASE + 1024 (SOM is SOM_ORDINALS = 4096 wide, ADR-0070)
 
 // Rust constant name used for each module's base in generated code.
 // Must match src/loader/constants.rs exactly.
@@ -81,6 +82,7 @@ fn base_const(module: &str) -> &'static str {
         "SOM"      => "SOM_BASE",
         "REXX"     => "REXX_BASE",
         "REXXAPI"  => "REXXAPI_BASE",
+        "PMWP"     => "PMWP_BASE",
         _          => "?",
     }
 }
@@ -110,7 +112,8 @@ fn upper_const(module: &str) -> &'static str {
         "PMDRAG"   => "SOM_BASE",
         "SOM"      => "REXX_BASE",
         "REXX"     => "REXXAPI_BASE",
-        "REXXAPI"  => "STUB_AREA_SIZE",
+        "REXXAPI"  => "PMWP_BASE",
+        "PMWP"     => "STUB_AREA_SIZE",
         _          => "?",
     }
 }
@@ -312,7 +315,8 @@ fn resolve_const(name: &str) -> u32 {
         "SOM_BASE"      => 22528,
         "REXX_BASE"     => 26624,
         "REXXAPI_BASE"  => 27648,
-        "STUB_AREA_SIZE"=> 28672,
+        "PMWP_BASE"     => 28672,
+        "STUB_AREA_SIZE"=> 29696,
         other => other.parse().unwrap_or(0),
     }
 }
@@ -420,7 +424,7 @@ fn cmd_check(entries: &[OrdEntry], trace_path: &Path) -> bool {
     // Excludes PMWIN, PMGPI, SESMGR which return "?" and use sub-dispatchers.
     let trace_covered_modules = [
         "DOSCALLS", "QUECALLS", "KBDCALLS", "VIOCALLS", "NLS", "MSG", "MDM", "UCONV",
-        "SO32DLL", "TCP32DLL", "MOUCALLS", "PMSHAPI", "HELPMGR", "PMSPL", "PMCTLS", "WARPINE", "PMDRAG", "SOM", "REXX", "REXXAPI",
+        "SO32DLL", "TCP32DLL", "MOUCALLS", "PMSHAPI", "HELPMGR", "PMSPL", "PMCTLS", "WARPINE", "PMDRAG", "SOM", "REXX", "REXXAPI", "PMWP",
     ];
     let def_in_trace: Vec<&OrdEntry> = entries
         .iter()
@@ -708,7 +712,7 @@ fn cmd_validate_doc(entries: &[OrdEntry], doc_path: &Path) {
     // section for it, so its def lines carry a `# NOTE:` naming the source.
     const DOC_MODULES: &[&str] = &[
         "DOSCALLS", "QUECALLS", "KBDCALLS", "VIOCALLS", "PMGPI", "PMWIN", "SESMGR",
-        "NLS", "MOUCALLS", "PMSHAPI", "HELPMGR", "PMSPL", "PMCTLS", "REXX", "REXXAPI",
+        "NLS", "MOUCALLS", "PMSHAPI", "HELPMGR", "PMSPL", "PMCTLS", "REXX", "REXXAPI", "PMWP",
     ];
 
     let doc_map = match parse_ordinals_doc(doc_path) {
@@ -1010,7 +1014,8 @@ mod tests {
         assert_eq!(module_upper("PMDRAG"),    22528); // SOM_BASE
         assert_eq!(module_upper("SOM"),       26624); // REXX_BASE
         assert_eq!(module_upper("REXX"),      27648); // REXXAPI_BASE
-        assert_eq!(module_upper("REXXAPI"),   STUB_AREA_SIZE);
+        assert_eq!(module_upper("REXXAPI"),   28672); // PMWP_BASE
+        assert_eq!(module_upper("PMWP"),      STUB_AREA_SIZE);
     }
 
     #[test]
@@ -1092,7 +1097,9 @@ mod tests {
         assert_eq!(base_const("REXX"),       "REXX_BASE");
         assert_eq!(upper_const("REXX"),      "REXXAPI_BASE");
         assert_eq!(base_const("REXXAPI"),    "REXXAPI_BASE");
-        assert_eq!(upper_const("REXXAPI"),   "STUB_AREA_SIZE");
+        assert_eq!(upper_const("REXXAPI"),   "PMWP_BASE");
+        assert_eq!(base_const("PMWP"),       "PMWP_BASE");
+        assert_eq!(upper_const("PMWP"),      "STUB_AREA_SIZE");
     }
 
     #[test]
@@ -1117,7 +1124,8 @@ mod tests {
         assert_eq!(resolve_const("SOM_BASE"),       22528);
         assert_eq!(resolve_const("REXX_BASE"),      26624);
         assert_eq!(resolve_const("REXXAPI_BASE"),   27648);
-        assert_eq!(resolve_const("STUB_AREA_SIZE"), 28672);
+        assert_eq!(resolve_const("PMWP_BASE"),      28672);
+        assert_eq!(resolve_const("STUB_AREA_SIZE"), 29696);
     }
 
     #[test]

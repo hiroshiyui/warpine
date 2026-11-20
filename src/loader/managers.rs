@@ -405,6 +405,9 @@ pub struct LoadedDll {
     pub handle: u32,
     /// Guest flat address of each LX object (index = object_num - 1)
     pub object_bases: Vec<u32>,
+    /// The size of each object (DosQueryModFromEIP); empty for built-in
+    /// modules.
+    pub object_sizes: Vec<u32>,
     /// ordinal → guest flat address
     pub exports_by_ordinal: HashMap<u32, u32>,
     /// UPPERCASE name → guest flat address
@@ -429,6 +432,13 @@ pub struct DllManager {
     /// Modules loaded whose `_DLL_InitTerm(hmod, 0)` has not run yet, in
     /// load order (a module after the ones it imports): (handle, entry).
     pending_init: Vec<(u32, u32)>,
+    /// Pages of modules whose `_DLL_InitTerm(hmod, 1)` runs before they
+    /// are freed (`WinDeleteLibrary`, ADR-0086), by handle.
+    pub pending_free: HashMap<u32, Vec<u32>>,
+    /// The program's objects (base, size) and module name
+    /// (DosQueryModFromEIP).
+    pub exe_objects: Vec<(u32, u32)>,
+    pub exe_name: String,
 }
 
 impl Default for DllManager {
@@ -437,7 +447,18 @@ impl Default for DllManager {
 
 impl DllManager {
     pub fn new() -> Self {
-        DllManager { dlls: Vec::new(), next_handle: 0x1000, paths: HashMap::new(), pending_init: Vec::new() }
+        DllManager { dlls: Vec::new(), next_handle: 0x1000, paths: HashMap::new(), pending_init: Vec::new(), pending_free: HashMap::new(),
+                     exe_objects: Vec::new(), exe_name: String::new() }
+    }
+
+    /// The loaded module whose object holds `address`: its handle, the
+    /// object (from 0), the offset in it and the module's name.
+    pub fn find_object(&self, address: u32) -> Option<(u32, u32, u32, String)> {
+        self.dlls.iter().find_map(|d| {
+            d.object_bases.iter().zip(&d.object_sizes).enumerate()
+                .find(|&(_, (&base, &size))| address >= base && address - base < size)
+                .map(|(i, (&base, _))| (d.handle, i as u32, address - base, d.name.clone()))
+        })
     }
 
     /// Module `handle` was loaded: its `_DLL_InitTerm` at `entry` is to run.
@@ -683,6 +704,7 @@ mod tests {
             name: name.to_string(),
             handle,
             object_bases: bases,
+            object_sizes: Vec::new(),
             exports_by_ordinal: HashMap::new(),
             exports_by_name: HashMap::new(),
             ref_count: 1,

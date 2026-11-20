@@ -38,6 +38,12 @@ impl PmErrorStore {
         self.last.lock_or_recover().insert(tid, error_id(SEVERITY_ERROR, code));
     }
 
+    /// Record a whole ERRORID (`WinSetErrorInfo`) as thread `tid`'s last
+    /// error.
+    pub fn set_id(&self, tid: u32, id: u32) {
+        self.last.lock_or_recover().insert(tid, id);
+    }
+
     /// Thread `tid`'s last error (0 = none), reset to 0 (`WinGetLastError`).
     pub fn take(&self, tid: u32) -> u32 {
         self.last.lock_or_recover().remove(&tid).unwrap_or(0)

@@ -7,6 +7,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **Tier 1: small, fundamental calls** (ADR-0086):
+  - PMWIN (42):
+    - codepage string helpers (`WinUpper`, `WinNextChar`, `WinCompareStrings`, `WinCpTranslateString` …) and `WinGetCurrentTime`;
+    - `WinCreateDlg` from a template in memory, `WinGetDlgMsg`, `WinMapDlgPoints`, `WinQueryDlgItemTextLength`;
+    - `WinGetClipPS`, `WinGetScreenPS`, `WinInvertRect`, `WinIsWindowShowing`;
+    - the clipboard's owner, viewer and formats;
+    - `WinWaitMuxWaitSem`, `WinCheckInput`, `WinIsThreadActive`;
+    - pointers made from bitmaps and `WinDrawPointer`;
+    - `WinGetErrorInfo` / `WinSetErrorInfo`;
+    - `WinLoadLibrary` / `WinLoadProcedure`;
+    - user message types, and min / max positions.
+  - DOSCALLS (18): `DosTmrQueryFreq` / `DosTmrQueryTime`, `DosQueryModFromEIP`, `DosErrClass`, `DosQueryProcType`, `DosVerifyPidTid`, `DosCancelLockRequest`, and the `DosProtect*` file calls.
+  - QUECALLS: `DosPeekQueue`, with element codes for `DosReadQueue`.
+  - PMWP: a new built-in module with `WinStoreWindowPos` / `WinRestoreWindowPos`.
+
+  Samples: `samples/pm_winutil_test`, `samples/dos_misc_test`.
 - **The REXX API for OS/2 programs, R3** (ADR-0085): REXX.DLL and REXXAPI.DLL are built in, on Warpine's own interpreter, with the ordinals of Open Watcom's `rexx.lib`:
   - `RexxStart` runs programs in storage or from files;
   - programs' subcommand handlers, external functions and system exits (`RXINI`, `RXTER`, `RXSIO`, `RXHLT`) are called back on the calling thread;
@@ -49,6 +65,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Shell redirection stays inside the drives** — the built-in `CMD.EXE` opened a redirection target that did not exist yet (`> file`) through the guest's path string as a host path, so a guest could write host files outside its drives through `CMD.EXE /C … > path`; it now creates the file through the VFS, and a path outside the drives is an error. Creating any new file through a dangling symbolic link, which would place it at the link's target, is refused too, `DosOpen` included (ADR-0075).
 
 ### Fixed
+- **`WinFillRect` colours** follow the presentation space's colour table: after `GpiCreateLogColorTable(LCOLF_RGB)` a colour of 0 is black, not the background colour (ADR-0086).
+- **`DosReadQueue`'s wait flag** was inverted: `DCWW_WAIT` now waits for an element and `DCWW_NOWAIT` returns `ERROR_QUE_EMPTY` (ADR-0086).
+- **Built-in modules are always loaded:** `DosQueryModuleHandle("DOSCALLS")` and the like return a handle, and `DosLoadModule` knows REXX, REXXAPI and PMWP as built-in. `DosQueryProcAddr` by ordinal on a registry-dispatched built-in module finds only what Warpine implements, so a C runtime probing for `DosOpenL` falls back to `DosOpen` (ADR-0086).
 - **Writes into a closed pipe looked successful** — a guest's `DosWrite` to its standard output, when that was a host pipe or file, ignored write errors, so a program piped into a reader that stopped early wrote forever; it now gets `ERROR_BROKEN_PIPE` (ADR-0082).
 - **A malformed executable crashed Warpine** — an entry or stack object number of 0 made the loader index its object table at `0 - 1`; it is now refused with a load error (ADR-0080).
 - **A file copied onto itself was emptied** — `DosCopy("A.TXT", "a.txt")` truncated the file; it is now `ERROR_ACCESS_DENIED`. `DosCopy` also copies to another drive now.

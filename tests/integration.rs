@@ -823,6 +823,21 @@ fn test_rexx_conditions_streams_and_rexxutil() {
     assert!(!drive_c.join("R2DATA.TXT").exists() && !drive_c.join("R2DIR").exists(), "the script cleans up");
 }
 
+/// dos_misc_test: the DOSCALLS / QUECALLS calls of Tier 1 (ADR-0086) — the
+/// high-resolution timer, DosQueryModFromEIP, DosErrClass,
+/// DosQueryProcType, DosVerifyPidTid, the DosProtect* file calls,
+/// DosCancelLockRequest, DosPeekQueue element codes and DosReadQueue's
+/// DCWW_NOWAIT.
+#[test]
+fn test_dos_misc_calls() {
+    let sample = "samples/dos_misc_test/dos_misc_test.exe";
+    if !kvm_available() || !Path::new(sample).exists() { return; }
+    let (out, code) = run_sample(sample, 30);
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("dos_misc_test: done 30/30"), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
 /// samples/rexx_api_test: the REXX API (ADR-0085) from an OS/2 program —
 /// RexxStart in storage and from a file, a subcommand handler and an
 /// external function (guest code called back from the interpreter),
@@ -2284,6 +2299,19 @@ fn gui_pm_textpos_test_matches_golden() {
 #[test]
 fn gui_pm_rect_text_test_checks_rectangles_draw_text_and_polylines() {
     assert_sample_checks_pass("samples/pm_rect_text_test/pm_rect_text_test.exe", "pm_rect_text_test", 39);
+}
+
+/// pm_winutil_test: the PMWIN utility calls of Tier 1 (ADR-0086) — string
+/// helpers in a codepage, WinGetCurrentTime, WinCreateDlg from a template
+/// in memory with WinGetDlgMsg, dialog units, WinGetClipPS /
+/// WinGetScreenPS / WinInvertRect, WinIsWindowShowing, the clipboard's
+/// owner, viewer and formats, WinWaitMuxWaitSem, pointers made from a
+/// bitmap and drawn, error information, libraries, user message types,
+/// min / max positions, and PMWP's WinStoreWindowPos / WinRestoreWindowPos
+/// — checked by the guest itself.
+#[test]
+fn gui_pm_winutil_test_checks_the_tier_one_pm_calls() {
+    assert_sample_checks_pass("samples/pm_winutil_test/pm_winutil_test.exe", "pm_winutil_test", 95);
 }
 
 /// pm_paint_test: update rectangles (WinInvalidateRect / WinValidateRect /

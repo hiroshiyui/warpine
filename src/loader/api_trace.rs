@@ -33,6 +33,7 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         111 => "DosKillThread",
         209 => "DosSetMaxFH",
         210 => "DosSetVerify",
+        211 => "DosErrClass",
         212 => "DosError",
         218 => "DosSetFileInfo",
         219 => "DosSetPathInfo",
@@ -152,6 +153,9 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         355 => "DosUnsetExceptionHandler",
         356 => "DosRaiseException",
         357 => "DosUnwindException",
+        360 => "DosQueryModFromEIP",
+        362 => "DosTmrQueryFreq",
+        363 => "DosTmrQueryTime",
         368 => "DosQuerySysState",
         372 => "DosEnumAttribute",
         378 => "DosSetSignalExceptionFocus",
@@ -164,8 +168,22 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         425 => "DosFlatToSel",
         426 => "DosSelToFlat",
         428 => "DosSetFileLocks",
+        429 => "DosCancelLockRequest",
+        460 => "DosVerifyPidTid",
         572 => "DosQueryResourceSize",
+        586 => "DosQueryProcType",
+        621 => "DosProtectSetFilePtr",
+        636 => "DosProtectEnumAttribute",
+        637 => "DosProtectOpen",
+        638 => "DosProtectClose",
         639 => "DosProtectSetFileLocks",
+        640 => "DosProtectSetFileSize",
+        641 => "DosProtectRead",
+        642 => "DosProtectWrite",
+        643 => "DosProtectSetFileInfo",
+        644 => "DosProtectSetFHState",
+        645 => "DosProtectQueryFHState",
+        646 => "DosProtectQueryFileInfo",
         873 => "DosSetExtLIBPATH",
         874 => "DosQueryExtLIBPATH",
 
@@ -175,6 +193,7 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             10 => "DosPurgeQueue",
             11 => "DosCloseQueue",
             12 => "DosQueryQueue",
+            13 => "DosPeekQueue",
             14 => "DosWriteQueue",
             15 => "DosOpenQueue",
             16 => "DosCreateQueue",
@@ -587,7 +606,7 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         },
 
         // ── REXXAPI (registrations and queues; rexxapi.rs) ─────────────
-        o if (REXXAPI_BASE..STUB_AREA_SIZE).contains(&o) => match o - REXXAPI_BASE {
+        o if (REXXAPI_BASE..PMWP_BASE).contains(&o) => match o - REXXAPI_BASE {
             1 => "RexxCreateQueue",
             2 => "RexxDeleteQueue",
             3 => "RexxAddQueue",
@@ -612,6 +631,13 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             26 => "RexxQueryMacro",
             27 => "RexxReorderMacro",
             28 => "RexxSaveMacroSpace",
+            _ => "?",
+        },
+
+        // ── PMWP (the Workplace Shell; pm_winutil.rs) ───────────────────
+        o if (PMWP_BASE..STUB_AREA_SIZE).contains(&o) => match o - PMWP_BASE {
+            207 => "WinStoreWindowPos",
+            208 => "WinRestoreWindowPos",
             _ => "?",
         },
 
@@ -645,7 +671,8 @@ pub fn module_for_ordinal(ordinal: u32) -> &'static str {
     else if ordinal < SOM_BASE     { "PMDRAG" }    // 21504–22527
     else if ordinal < REXX_BASE    { "SOM" }       // 22528–26623 (SOM_ORDINALS wide)
     else if ordinal < REXXAPI_BASE { "REXX" }      // 26624–27647
-    else if ordinal < STUB_AREA_SIZE { "REXXAPI" } // 27648–28671
+    else if ordinal < PMWP_BASE    { "REXXAPI" }   // 27648–28671
+    else if ordinal < STUB_AREA_SIZE { "PMWP" }    // 28672–29695
     else                            { "?" }
 }
 
@@ -1266,7 +1293,8 @@ mod tests {
         assert_eq!(module_for_ordinal(SOM_BASE),           "SOM");
         assert_eq!(module_for_ordinal(REXX_BASE - 1),      "SOM");
         assert_eq!(module_for_ordinal(REXX_BASE),          "REXX");
-        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "REXXAPI");
+        assert_eq!(module_for_ordinal(PMWP_BASE - 1),      "REXXAPI");
+        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "PMWP");
         assert_eq!(module_for_ordinal(STUB_AREA_SIZE),     "?");
     }
 
