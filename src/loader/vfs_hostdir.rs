@@ -609,6 +609,12 @@ impl HostDirBackend {
         let check_path = if path.exists() {
             path.canonicalize().map_err(|_| Os2Error::PATH_NOT_FOUND)?
         } else {
+            // A dangling symbolic link is no new file: creating "through" it
+            // would make the file at its target, wherever that lies.
+            if path.symlink_metadata().is_ok() {
+                warn!("SECURITY: Dangling link blocked: {}", path.display());
+                return Err(Os2Error::ACCESS_DENIED);
+            }
             // For new files, canonicalize the parent (which must exist)
             let parent = path.parent().ok_or(Os2Error::PATH_NOT_FOUND)?;
             if !parent.exists() {
@@ -1252,6 +1258,10 @@ impl VfsBackend for HostDirBackend {
     /// directory or a symbolic link cannot lead outside).
     fn to_host_path(&self, rel_path: &str) -> Option<std::path::PathBuf> {
         self.resolve_existing(rel_path).ok()
+    }
+
+    fn to_host_path_for_create(&self, rel_path: &str) -> Option<std::path::PathBuf> {
+        self.resolve_for_create(rel_path).ok()
     }
 }
 

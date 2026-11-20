@@ -443,6 +443,10 @@ pub trait VfsBackend: Send + Sync {
     /// the backend does not support host-path exposure.
     fn to_host_path(&self, _rel_path: &str) -> Option<std::path::PathBuf> { None }
 
+    /// The host path at which a new file `rel_path` would be created, inside
+    /// the volume (`None`: not possible, or not a host-backed backend).
+    fn to_host_path_for_create(&self, _rel_path: &str) -> Option<std::path::PathBuf> { None }
+
     /// A host file descriptor duplicate of an open file (sharing its file
     /// pointer), so `DosExecPgm` can hand a redirected standard handle to a
     /// child process. `None` if the backend has no host file.
@@ -619,6 +623,18 @@ impl DriveManager {
         let (drive, rel) = self.resolve_path(os2_path).ok()?;
         let backend = self.drives[drive as usize].as_ref()?;
         backend.to_host_path(&rel)
+    }
+
+    /// The host path a file named by `os2_path` may be created or replaced
+    /// at, inside a drive: the file's own when it exists
+    /// ([`Self::resolve_to_host_path`]), else where the backend would
+    /// create it (`to_host_path_for_create`: its existing parent inside the
+    /// drive, a plain name). `None` when the path leaves the drives:
+    /// callers never fall back to the guest's string as a host path.
+    pub fn resolve_new_host_path(&self, os2_path: &str) -> Option<std::path::PathBuf> {
+        if let Some(p) = self.resolve_to_host_path(os2_path) { return Some(p); }
+        let (drive, rel) = self.resolve_path(os2_path).ok()?;
+        self.drives[drive as usize].as_ref()?.to_host_path_for_create(&rel)
     }
 
     /// The OS/2 path (`X:\DIR\FILE`) of host file `host`, when it lies
@@ -1261,6 +1277,36 @@ mod tests {
 
         // D: should not have a config
         assert!(dm.drive_config(3).is_none());
+    }
+
+    /// resolve_new_host_path: a new file in an existing directory of the
+    /// drive, the existing file itself, nothing outside the drive.
+    #[test]
+    fn new_host_paths_stay_inside_the_drive() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::create_dir(root.path().join("sub")).unwrap();
+        std::fs::write(root.path().join("old.txt"), b"x").unwrap();
+        let mut dm = DriveManager::new();
+        dm.mount(2, Box::new(super::super::vfs_hostdir::HostDirBackend::new(root.path().to_path_buf()).unwrap()));
+        let canon = root.path().canonicalize().unwrap();
+        let new = |p: &str| dm.resolve_new_host_path(p).map(|h| h.canonicalize().unwrap_or(h));
+        assert_eq!(new("C:\\SUB\\NEW.TXT").map(|p| p.starts_with(&canon)), Some(true));
+        assert_eq!(new("C:\\OLD.TXT"), Some(canon.join("old.txt")), "the existing file");
+        assert!(new("NEW2.TXT").is_some_and(|p| p.starts_with(&canon)), "relative to the current drive");
+        assert_eq!(new("C:\\NOSUCHDIR\\X.TXT"), None, "no parent");
+        assert!(new("C:\\..\\X.TXT").is_none_or(|p| p.starts_with(&canon)), "not above the root");
+        assert_eq!(new(&outside.path().join("x.txt").to_string_lossy()), None, "a host path");
+        assert_eq!(new("Q:\\X.TXT"), None, "an unmounted drive");
+        // A link out of the drive is refused, not followed.
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(outside.path().join("target.txt"), root.path().join("link.txt")).unwrap();
+            assert_eq!(new("C:\\link.txt"), None, "a dangling link");
+            std::fs::write(outside.path().join("there.txt"), b"x").unwrap();
+            std::os::unix::fs::symlink(outside.path().join("there.txt"), root.path().join("there.txt")).unwrap();
+            assert_eq!(new("C:\\there.txt"), None, "a link to a file outside");
+        }
     }
 
     #[test]

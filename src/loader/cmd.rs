@@ -434,10 +434,12 @@ impl CmdShell {
 
         // Validate and prepare stdout sink (but keep errors going to Vio during setup).
         let final_sink = if let Some((ref path, append)) = parsed.stdout_redir {
-            let host_path = {
-                let dm = self.shared.drive_mgr.lock_or_recover();
-                dm.resolve_to_host_path(path)
-                    .unwrap_or_else(|| std::path::PathBuf::from(path))
+            // Inside a drive only: a path that does not map is an error,
+            // never the guest's string used as a host path (ADR-0066).
+            let host_path = self.shared.drive_mgr.lock_or_recover().resolve_new_host_path(path);
+            let Some(host_path) = host_path else {
+                self.writeln_attr(&format!("Cannot open '{path}': not on a drive"), ATTR_ERROR);
+                return None;
             };
             match std::fs::OpenOptions::new()
                 .write(true)
@@ -1612,56 +1614,57 @@ mod tests {
         );
     }
 
+    /// A mock loader whose drive C is a fresh temporary directory.
+    fn loader_with_drive_c() -> (Loader, tempfile::TempDir) {
+        let loader = Loader::new_mock();
+        let dir = tempfile::tempdir().expect("tempdir");
+        loader.shared.drive_mgr.lock_or_recover().mount(2,
+            Box::new(super::super::vfs_hostdir::HostDirBackend::new(dir.path().to_path_buf()).expect("backend")));
+        (loader, dir)
+    }
+
     #[test]
     fn test_cmd_echo_redirect_to_file() {
-        // Write "echo hello > <tmppath>", verify tmpfile contains "hello\r\n"
-        let tmp = std::env::temp_dir().join("warpine_cmd_test_redirect.txt");
-        let _ = std::fs::remove_file(&tmp);
-
-        let loader = Loader::new_mock();
-        // Use absolute host path directly (DriveManager may not resolve it, but
-        // parse_command + execute_pipeline falls back to PathBuf::from(path))
-        let tmp_str = tmp.to_string_lossy().to_string();
-        let line = format!("echo hello > {tmp_str}");
-
-        // Feed the line via /C
-        push_keys(&loader, &[]); // enable SDL path
+        let (loader, drive) = loader_with_drive_c();
+        let host = drive.path().join("CMDREDIR.TXT");
         {
-            // Run execute_line directly via the shell
             let mut shell = CmdShell::new(Arc::clone(&loader.shared), Vec::new());
-            shell.execute_line(&line);
+            shell.execute_line("echo hello > C:\\CMDREDIR.TXT");
         }
-
-        let content = std::fs::read_to_string(&tmp).unwrap_or_default();
-        let _ = std::fs::remove_file(&tmp);
-        assert!(
-            content.contains("hello"),
-            "redirected file should contain 'hello', got: {:?}",
-            content
-        );
+        let content = std::fs::read_to_string(&host).unwrap_or_default();
+        assert!(content.contains("hello"), "redirected file should contain 'hello', got: {content:?}");
     }
 
     #[test]
     fn test_cmd_append_redirect() {
-        let tmp = std::env::temp_dir().join("warpine_cmd_test_append.txt");
-        let _ = std::fs::remove_file(&tmp);
-
-        let loader = Loader::new_mock();
-        let tmp_str = tmp.to_string_lossy().to_string();
-
+        let (loader, drive) = loader_with_drive_c();
+        let host = drive.path().join("CMDAPPND.TXT");
         {
             let mut shell = CmdShell::new(Arc::clone(&loader.shared), Vec::new());
-            shell.execute_line(&format!("echo line1 > {tmp_str}"));
-            shell.execute_line(&format!("echo line2 >> {tmp_str}"));
+            shell.execute_line("echo line1 > C:\\CMDAPPND.TXT");
+            shell.execute_line("echo line2 >> C:\\CMDAPPND.TXT");
         }
-
-        let content = std::fs::read_to_string(&tmp).unwrap_or_default();
-        let _ = std::fs::remove_file(&tmp);
+        let content = std::fs::read_to_string(&host).unwrap_or_default();
         assert!(content.contains("line1"), "file should contain 'line1'");
         assert!(content.contains("line2"), "file should contain 'line2' after append");
     }
 
-    // ── The shell's own environment ──────────────────────────────────────
+    /// A redirection never names a host file outside the drives: a host
+    /// path, `..` out of the drive or a relative name with no drive all
+    /// stay inside drive C or fail.
+    #[test]
+    fn test_cmd_redirect_stays_inside_the_drives() {
+        let (loader, drive) = loader_with_drive_c();
+        let outside = tempfile::tempdir().expect("tempdir");
+        let target = outside.path().join("escaped.txt");
+        let mut shell = CmdShell::new(Arc::clone(&loader.shared), Vec::new());
+        shell.execute_line(&format!("echo no > {}", target.display()));
+        assert!(!target.exists(), "a host path is not a drive path");
+        shell.execute_line("echo no > C:\\..\\..\\escaped.txt");
+        assert!(!drive.path().parent().unwrap().join("escaped.txt").exists(), "no way out through ..");
+        shell.execute_line("echo yes > inside.txt");
+        assert!(drive.path().join("inside.txt").exists(), "a relative name lands on the current drive");
+    }
 
     #[test]
     fn set_changes_only_the_shells_environment() {
