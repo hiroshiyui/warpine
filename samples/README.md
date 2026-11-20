@@ -138,6 +138,7 @@ make -C samples/<name>      # Build a single sample
 | Script | What it exercises |
 |--------|-------------------|
 | basics.cmd | `%name%` and `%%`, `&` / `&&` / `\|\|` on return codes, a pipe into a program, a program starting in the shell's directory, `^&`, and a script's return code ending `/C` (ADR-0077; `test_cmd_script_basics`) |
+| files.cmd | COPY (into a directory, joining with `+`, by wildcards, never onto itself), REN and MOVE; a copied OS/2 program runs from its new directory and counts a joined file (ADR-0079; `test_cmd_script_file_commands`) |
 | batch.cmd, batchsub.cmd | Batch control: `%0`–`%9` and SHIFT, IF ERRORLEVEL (after `TOOL exit 4`) / EXIST / `==`, FOR, CALL of `batchsub.cmd`, GOTO, SETLOCAL / ENDLOCAL, PAUSE and EXIT ending the shell with its code (ADR-0078; `test_cmd_script_batch_control`) |
 
 ## Rust Guest Binaries

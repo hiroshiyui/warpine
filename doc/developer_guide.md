@@ -1211,14 +1211,15 @@ All paths converge on:
 
 ### Modules and a command line's way through them
 
-The shell is `cmd.rs` (the `CmdShell` state, dispatch and the `Loader` entry points) and six modules under `cmd/` (ADR-0077, ADR-0078):
+The shell is `cmd.rs` (the `CmdShell` state, dispatch and the `Loader` entry points) and seven modules under `cmd/` (ADR-0077–0079):
 
 | Module | What it holds |
 |--------|---------------|
 | `parse.rs` | `/C` / `/K`, `split_chain` (`&`, `&&`, `\|\|`), `parse_command` (pipeline, redirections, `^`), `tokenize`, `parse_if`, `parse_for` |
 | `batch.rs` | the script runner (`Batch`: lines, next line, `%0`–`%9`, SETLOCAL stack), ECHO, GOTO, SHIFT, IF, FOR, CALL, SETLOCAL / ENDLOCAL, PAUSE |
 | `env.rs` | the shell's own environment (`env_set`, its limits), `env_block` for children, `expand_vars` |
-| `builtins.rs` | `DIR`, `CD`, `SET`, `ECHO`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `HELP` |
+| `builtins.rs` | `DIR`, `CD`, `SET`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `HELP` |
+| `files.rs` | `COPY` (joining with `+`), `REN`, `MOVE`: sources through `matching_files`, targets through `apply_edit_name` |
 | `external.rs` | `find_program` (current directory, then `PATH`), `exec_external`, `spawn_external`, `wait_child` |
 | `input.rs` | the line editor and history |
 
@@ -1694,7 +1695,7 @@ The `HostDirBackend` enforces that all path resolution stays within its volume r
 3. Verify the result starts with the volume root prefix
 4. Reject with `ERROR_ACCESS_DENIED` (5) if it escapes; a path that cannot be canonicalized, or a new file whose parent does not exist, gets `ERROR_PATH_NOT_FOUND` (3)
 
-A file that does not exist yet is resolved through its parent directory (`resolve_for_create`), which must exist and canonicalize inside the root. A name that is a dangling symbolic link is refused with `ERROR_ACCESS_DENIED` (5): creating it would place the file at the link's target. The built-in CMD.EXE resolves its redirection targets the same way (`DriveManager::resolve_new_host_path`, ADR-0075).
+A file that does not exist yet is resolved through its parent directory (`resolve_for_create`), which must exist and canonicalize inside the root; a name that exists in another case is that entry, so names stay unique without regard to case (ADR-0079). The directory cache re-reads a directory when its fresh listing lacks a name, so files made outside the backend are found at once. A name that is a dangling symbolic link is refused with `ERROR_ACCESS_DENIED` (5): creating it would place the file at the link's target. The built-in CMD.EXE resolves its redirection targets the same way (`DriveManager::resolve_new_host_path`, ADR-0075).
 
 WINE explicitly does *not* sandbox (`"Wine is NOT a sandbox"`). Warpine's isolated-directory model provides real containment with minimal complexity — OS/2 applications expect to operate within discrete drive boundaries, so isolation is both correct and secure.
 

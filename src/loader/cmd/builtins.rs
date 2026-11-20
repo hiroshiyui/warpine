@@ -32,6 +32,9 @@ impl CmdShell {
         self.writeln("  MD / MKDIR dir     Create directory");
         self.writeln("  RD / RMDIR dir     Remove directory");
         self.writeln("  DEL / ERASE file   Delete file");
+        self.writeln("  COPY src[+src] [dst]  Copy (or join) files");
+        self.writeln("  REN old new        Rename files in place");
+        self.writeln("  MOVE src [dst]     Move files or a directory on one drive");
         self.writeln("  CLS                Clear screen");
         self.writeln("  VER                Show version");
         self.writeln("  REM / ::           Comment");

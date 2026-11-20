@@ -206,6 +206,9 @@ The prompt shows the current drive and directory: `[C:\path] `.
 | `MD` | `MD <path>` | Create a directory (and any missing parent directories). |
 | `RD` | `RD <path>` | Remove an empty directory. |
 | `DEL` | `DEL <file>` | Delete a file. |
+| `COPY` | `COPY src[+src…] [dst] [/A] [/B] [/V]` | Copy files (wildcards allowed) into a directory (the current one without `dst`), to names made by `dst`'s wildcards (`COPY *.TXT *.BAK`), or to a file, replacing it; `+`, or several files into one file, join them. Never onto the file itself. Works across drives. The switches are ignored (binary copies). |
+| `REN` | `REN <old> <new>` | Rename files (wildcards: `REN *.LOG *.OLD`) or a directory in place; `new` is a name, not a path. An existing name is not replaced (a change of case is allowed). Also `RENAME`. |
+| `MOVE` | `MOVE <src> [dst]` | Move files (wildcards allowed) or one directory into a directory (the current one without `dst`), or one file to a new name, on one drive. An existing name is not replaced. |
 | `HELP` | `HELP` | List available commands. |
 | `EXIT` | `EXIT [code]` | Exit the shell with an optional numeric exit code (default 0), also from inside a script. |
 
@@ -498,6 +501,8 @@ Current directories:
 - **`DosSetCurrentDir`** collapses `.` and `..` and takes only an existing directory. A missing one, a file, or `..` above the root is `ERROR_PATH_NOT_FOUND`; the last two are unverified. `\` and `C:\` name the root; `C:` names the drive's current directory.
 - **`DosQueryCurrentDir`** returns the directory with `\` separators, without the drive or a leading `\`. A drive that is not mounted is `ERROR_INVALID_DRIVE`.
 - **Children.** A child process (`DosExecPgm`, `WinStartApp`, CMD.EXE) starts with its parent's current drive and the current directory of each drive; `WinStartApp`'s start directory becomes its current one (ADR-0077).
+
+**`DosCopy`** copies within a drive or to another one, replacing the target; a file is never copied onto itself (`ERROR_ACCESS_DENIED`, unverified), which the host would empty. **`DosEditName`** writes the result only if it and its NUL fit the given length (`ERROR_BUFFER_OVERFLOW`); a NULL target is `ERROR_INVALID_PARAMETER`. A file created, copied or renamed onto a name that exists in another case reaches that entry: names stay unique without regard to case (ADR-0079).
 
 **Standard input.** `DosRead` on standard input that is a pipe or a file reads up to the requested length, with no echo and no CR → CR LF; echo and line editing are for the console only (ADR-0077).
 

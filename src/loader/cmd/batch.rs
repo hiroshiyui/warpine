@@ -240,7 +240,7 @@ impl CmdShell {
     }
 
     /// Whether a file or directory matches `pattern` (wildcards allowed).
-    fn exists(&self, pattern: &str) -> bool {
+    pub(super) fn exists(&self, pattern: &str) -> bool {
         let mut dm = self.shared.drive_mgr.lock_or_recover();
         match dm.find_first(pattern, FileAttribute(0x37), 1) {
             Ok((handle, _)) => { let _ = dm.find_close(handle); true }
@@ -273,7 +273,7 @@ impl CmdShell {
 
     /// The files `pattern` matches, in the directory's order, each with
     /// the pattern's directory part.
-    fn matching_files(&self, pattern: &str) -> Vec<String> {
+    pub(super) fn matching_files(&self, pattern: &str) -> Vec<String> {
         let dir = pattern.rfind(['\\', '/', ':']).map_or("", |i| &pattern[..=i]);
         let mut dm = self.shared.drive_mgr.lock_or_recover();
         let Ok((handle, first)) = dm.find_first(pattern, FileAttribute(0x37), 1) else { return Vec::new() };

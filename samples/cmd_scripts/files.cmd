@@ -1,0 +1,19 @@
+@ECHO OFF
+REM SPDX-License-Identifier: GPL-3.0-or-later
+REM files.cmd - the built-in CMD.EXE's COPY, REN and MOVE (ADR-0079), checked
+REM with an OS/2 program: TOOL.EXE is samples/cmd_tool.
+MD BIN
+COPY TOOL.EXE BIN
+BIN\TOOL exit 9
+IF ERRORLEVEL 9 ECHO copied-tool-runs
+ECHO abc> NOTE.TXT
+COPY NOTE.TXT+NOTE.TXT TWICE.TXT
+TOOL count < TWICE.TXT
+REN TWICE.TXT TWICE.OLD
+IF EXIST TWICE.OLD ECHO renamed
+MOVE TWICE.OLD BIN
+IF EXIST BIN\TWICE.OLD ECHO moved
+COPY *.TXT *.BAK
+IF EXIST NOTE.BAK ECHO wildcard-copy
+COPY NOTE.TXT note.txt
+IF ERRORLEVEL 1 ECHO not-onto-itself

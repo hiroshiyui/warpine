@@ -710,6 +710,22 @@ fn test_cmd_script_batch_control() {
     }
 }
 
+/// samples/cmd_scripts/files.cmd: COPY, REN and MOVE on drive C, checked
+/// by running a copied OS/2 program and counting a joined file with it
+/// (ADR-0079).
+#[test]
+fn test_cmd_script_file_commands() {
+    let Some((code, out, dir)) = run_cmd_headless(&["/C", "FILES.CMD"], b"", |c| {
+        std::fs::copy("samples/cmd_scripts/files.cmd", c.join("FILES.CMD")).unwrap();
+    }) else { return };
+    assert_eq!(code, Some(0), "the last command, the IF's ECHO:\n{out}");
+    assert_in_order(&out, &["copied-tool-runs\r\n", "cmd_tool: count 10\r\n", "renamed\r\n", "moved\r\n",
+                            "wildcard-copy\r\n", "onto itself", "not-onto-itself\r\n"]);
+    let drive_c = dir.path().join("warpine/drive_c");
+    assert_eq!(std::fs::read(drive_c.join("BIN/TWICE.OLD")).unwrap(), b"abc\r\nabc\r\n");
+    assert_eq!(std::fs::read(drive_c.join("NOTE.TXT")).unwrap(), b"abc\r\n", "not emptied");
+}
+
 /// A script's lines are shown after the prompt while ECHO is on, as the
 /// shell runs them; `@` and ECHO OFF hide them (ADR-0078).
 #[test]

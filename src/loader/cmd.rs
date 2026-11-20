@@ -23,6 +23,7 @@ mod batch;
 mod builtins;
 mod env;
 mod external;
+mod files;
 mod input;
 mod parse;
 
@@ -407,6 +408,9 @@ impl CmdShell {
             "MD" | "MKDIR" => { self.cmd_md(&args); None }
             "RD" | "RMDIR" => { self.cmd_rd(&args); None }
             "DEL" | "ERASE" => { self.cmd_del(&args); None }
+            "COPY" => { self.cmd_copy(&args); None }
+            "REN" | "RENAME" => { self.cmd_ren(&args); None }
+            "MOVE" => { self.cmd_move(&args); None }
             "EXIT" => {
                 let code = args.first()
                     .and_then(|s| s.parse::<u32>().ok())

@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **COPY, REN and MOVE in the built-in CMD.EXE** (Stage 2, slice 2c; ADR-0079), in OS/2's syntax and through the VFS: COPY with wildcards, wildcard targets (`COPY *.TXT *.BAK`), joining with `+` and across drives; REN by wildcards in place; MOVE of files or a directory on one drive. Neither REN nor MOVE replaces an existing name. Sample: `samples/cmd_scripts/files.cmd`.
 - **Batch control in the built-in CMD.EXE** (Stage 2, slice 2b; ADR-0078), in OS/2's syntax: `ECHO ON` / `OFF` (scripts echo their lines after the prompt until `ECHO OFF`; `@` hides one line), `ECHO.`, `%0`–`%9` and `SHIFT`, `IF [NOT] ERRORLEVEL` / `EXIST` / `==`, `FOR %%v IN (set) DO` (wildcards stand for files), `GOTO` labels, `CALL` (a script started without it takes the caller's place), `SETLOCAL` / `ENDLOCAL` (environment and directories), `PAUSE`, and `EXIT` in a script ending the shell. Samples: `samples/cmd_scripts/batch.cmd`, `batchsub.cmd`.
 - **The built-in CMD.EXE's foundations** (Stage 2, slice 2a; ADR-0077), in OS/2's CMD syntax:
   - `%name%` variables (`%%` for a `%`); `&`, `&&` and `||` on return codes; `^` escapes;
@@ -22,11 +23,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **4OS2** — the 4OS2 sample and the files fetched or patched from it are gone, including copies of 4OS2 and Open Watcom sources that had been committed without the notices their licences require. The built-in `CMD.EXE` is Warpine's shell: the default `COMSPEC` is `C:\CMD.EXE`, the text-mode integration tests and the README's text-mode screenshots use it, the VIO samples generate their 32-bit `bsesub.h` from the local Open Watcom install at build time (`samples/bsesub32.mk`), and the DLL-loader tests use Warpine's own `samples/dll_noinit` (ADR-0075).
 
 ### Security
+- **`DosEditName` overflow** — a target length of 0 made `cb_target - 1` overflow: a panic in a debug build, a write past the program's buffer in a release build. The result and its NUL must now fit, else `ERROR_BUFFER_OVERFLOW` (ADR-0079).
 - **A pipe's output is bounded** — the built-in CMD.EXE holds at most 16 MiB of a command's output for the next one, reading and dropping the rest, so a guest program cannot grow the host's memory without bound through a pipe (ADR-0077).
 - **No host working directory from a guest path** — `DosExecPgm`, `WinStartApp` and CMD.EXE set a child's host working directory from the host's own joined with a guest path; they now pass OS/2 current directories, which the child applies through its own VFS (ADR-0077).
 - **Shell redirection stays inside the drives** — the built-in `CMD.EXE` opened a redirection target that did not exist yet (`> file`) through the guest's path string as a host path, so a guest could write host files outside its drives through `CMD.EXE /C … > path`; it now creates the file through the VFS, and a path outside the drives is an error. Creating any new file through a dangling symbolic link, which would place it at the link's target, is refused too, `DosOpen` included (ADR-0075).
 
 ### Fixed
+- **A file copied onto itself was emptied** — `DosCopy("A.TXT", "a.txt")` truncated the file; it is now `ERROR_ACCESS_DENIED`. `DosCopy` also copies to another drive now.
+- **Names differing only in case** — creating, copying or renaming onto a name that exists in another case made a second file; it now reaches the existing entry, so a dangling link of another case is refused as well.
+- **Files made outside the VFS were not found for up to 2 s** in another case (after a shell redirection, for example).
+- **`DosEditName`** edits names beyond ASCII by character.
 - **Child processes start in their parent's current directory** — a program started by `DosExecPgm`, `WinStartApp` or CMD.EXE now gets its parent's current drive and directories, and `WinStartApp`'s start directory becomes its current one; before, every child started at `C:\`.
 - **`CD` and `DosSetCurrentDir`** take only an existing directory and collapse `.` and `..`; `\` and `C:\` name the root (`CD \` did nothing before).
 - **`DosQueryCurrentDir`** returns `\` separators, not `/`, and refuses a drive that is not mounted.

@@ -84,3 +84,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0076](0076-guest-crates-stay-gpl-and-the-binary-carries-its-font-notices.md) | The guest crates stay GPL-3.0-or-later; `warpine --licenses` carries the built-in fonts' notices | Accepted | 2026-11-20 |
 | [0077](0077-cmd-exe-foundations.md) | The built-in CMD.EXE's foundations: OS/2 syntax, return codes, programs reading pipes, inherited current directories | Accepted | 2026-11-20 |
 | [0078](0078-cmd-exe-batch-control.md) | The built-in CMD.EXE's batch control: ECHO, `%0`–`%9`, SHIFT, IF, FOR, GOTO, CALL, SETLOCAL, PAUSE | Accepted | 2026-11-20 |
+| [0079](0079-cmd-exe-file-commands.md) | The built-in CMD.EXE's COPY, REN and MOVE; a safe `DosEditName`, `DosCopy` never onto itself, names unique without regard to case | Accepted | 2026-11-20 |
