@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Calls on other programs' windows in flight through the desktop server
 //! (ADR-0052 phase B). Pure bookkeeping, without sockets, so the rules can

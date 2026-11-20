@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * loud.xh - C++ usage bindings of class Loud, Warpine's own test class:
  *

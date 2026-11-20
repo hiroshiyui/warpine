@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The frame of a windowed VIO session: a text-mode program shown in a
 //! window on the PM desktop, as OS/2 runs a window-compatible program in an

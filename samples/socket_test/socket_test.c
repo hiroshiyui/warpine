@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * socket_test.c — OS/2 TCP/IP socket API smoke test for Warpine
  *

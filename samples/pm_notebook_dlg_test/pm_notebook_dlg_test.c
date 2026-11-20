@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_notebook_dlg_test.c - a tabbed-dialog notebook in a dialog
  *

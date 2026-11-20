@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 //! Signal exceptions: `DosSendSignalException` (DOSCALLS 379),
 //! `DosSetSignalExceptionFocus` (378), `DosAcknowledgeSignalException` (418)

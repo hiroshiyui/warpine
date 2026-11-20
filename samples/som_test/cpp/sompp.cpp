@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * sompp.cpp - Warpine's own check of the SOM C++ bindings (ADR-0061):
  * new and delete through the SOM runtime, constructors that initialize

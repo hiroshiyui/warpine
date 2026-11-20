@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_menu_dlg_test.c — PM Menu System + Dialog System test for Warpine.
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * goodinit.c - a DLL whose initialization succeeds; its export is named
  * in the resident names table, as Open Watcom's linker does.

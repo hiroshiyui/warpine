@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Static controls (`WC_STATIC`): the `SS_*` styles of `<pmwin.h>`.
 //!

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * dir_test.c — 32-bit OS/2 directory listing test.
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * xcpt_thread_test.c - every thread has its own exception-handler chain
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * thread_exit_test.c - ending a thread does not end the process
  *

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Guest physical memory — sole access point for reads and writes into the
 // KVM guest address space.  All operations are bounds-checked.  No other

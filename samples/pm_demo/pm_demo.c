@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_demo.c - OS/2 PM Window API demo for Warpine
  *

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Owner drawing: built-in controls that let their owner draw (list boxes
 //! with `LS_OWNERDRAW`, `BS_USERBUTTON` buttons) send it `WM_MEASUREITEM`,

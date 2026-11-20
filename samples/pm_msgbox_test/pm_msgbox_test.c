@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_msgbox_test.c - WinMessageBox as a modal PM dialog under Warpine
  *

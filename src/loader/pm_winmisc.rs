@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Smaller PMWIN calls: `WinLoadMessage` (and the string-bundle reading it
 //! shares with `WinLoadString`), `WinQueryVersion`, `WinSetWindowBits`,

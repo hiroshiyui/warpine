@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 // The SDL front end uses only the safe sdl3-rs API (doc/TODOs.md, SDL3
 // migration): no `unsafe` anywhere in the GUI.

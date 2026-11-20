@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Per-frame drawing surfaces shared between the API threads and the GUI
 // thread.

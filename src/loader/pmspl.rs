@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Printing: the PMSPL spooler and the printer side of PMGPI's device
 //! contexts — without any printer.

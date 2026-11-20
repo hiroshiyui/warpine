@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_slider_valueset_test.c - slider and value set controls under Warpine
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * findcls.c - Warpine's check of SOM class loading and the replaceable
  * runtime variables (ADR-0062):

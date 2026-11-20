@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The named-pipe calls of DOSCALLS on top of `npipe.rs`: DosCreateNPipe,
 // DosConnectNPipe, DosDisConnectNPipe, DosPeekNPipe, DosTransactNPipe,

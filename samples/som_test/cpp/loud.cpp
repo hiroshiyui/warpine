@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * loud.cpp - class Loud: a Hello that counts its greetings and shouts.
  * Warpine's own test of the C++ bindings (ADR-0061).

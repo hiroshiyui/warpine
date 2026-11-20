@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Window enumeration: `WinBeginEnumWindows` (702), `WinGetNextWindow`
 //! (756), `WinEndEnumWindows` (737).

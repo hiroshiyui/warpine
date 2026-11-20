@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // OS/2 stub and minimal API implementations for initialization-time APIs.
 // These are needed to get text-mode apps like 4OS2 past their init sequence.

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_dropfiles_test.c - files dragged and dropped (PMDRAG), the drag's
  * operation keys, WM_ENDDRAG and the default procedure passing drag and

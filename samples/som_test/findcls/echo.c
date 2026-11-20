@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * echo.c - class Echo in ECHOES.DLL, for Warpine's class-loading check
  * (ADR-0062). No SOMInitModule: the loader calls EchoNewClass.

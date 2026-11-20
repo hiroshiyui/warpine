@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Accelerator tables made by the application: `WinCreateAccelTable`,
 //! `WinDestroyAccelTable`, `WinCopyAccelTable` and `WinQueryAccelTable`.

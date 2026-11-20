@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Check boxes and radio buttons: their check state (`BM_SETCHECK`,
 //! `BM_QUERYCHECK`, `BM_QUERYCHECKINDEX`), what the auto styles do when the

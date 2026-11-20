@@ -1,6 +1,6 @@
 # ADR-0002: License Warpine under GPL-3.0-only
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0074 (GPL-3.0-or-later)
 - **Date:** 2026-03-12
 - **Sources:** commit e01df5f ("legal: adopt GPLv3 license"); `LICENSE`; `CLAUDE.md`
 

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_shapes_test.c - GPI arcs, area patterns and line widths for Warpine
  *

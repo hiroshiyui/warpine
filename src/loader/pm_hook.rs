@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! PM hooks: `WinSetHook` (928), `WinReleaseHook` (927) and
 //! `WinCallMsgFilter` (905), and the chains of guest calls that run hooks

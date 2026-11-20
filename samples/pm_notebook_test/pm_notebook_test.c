@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_notebook_test.c - the WC_NOTEBOOK control
  *

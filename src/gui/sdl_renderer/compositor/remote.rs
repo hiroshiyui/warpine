@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A Warpine process's desktop when the session has a desktop server
 //! (ADR-0052): instead of drawing on a window of its own, the process

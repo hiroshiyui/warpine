@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Named pipes (`DosCreateNPipe`, `DosOpen("\PIPE\…")` …): the model and its
 // host transport. The OS/2 calls on top of it are in `npipe_api.rs`.

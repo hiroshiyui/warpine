@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 use super::constants::*;
 use super::{ApiResult, CallbackFrame, FaultContext, FrameKind, MutexExt, pm_minmax};

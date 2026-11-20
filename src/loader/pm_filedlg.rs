@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `WinFileDlg` / `WinDefFileDlgProc` / `WinFreeFileDlgList` (PMCTLS): the
 //! standard Open and Save As dialog, browsing Warpine's drives.

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * animals.ih - C implementation bindings of module Animals, written by
  * hand for Warpine as the SOM compiler would emit them (ADR-0059,

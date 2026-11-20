@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # Capture one screenshot of a PM sample running under Warpine, with no display.
 #
 #   snap.sh <name> <sample.exe> [script-steps] [out-dir]

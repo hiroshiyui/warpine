@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * somord.c - the SOM kernel imported by ordinal (ADR-0070)
  *

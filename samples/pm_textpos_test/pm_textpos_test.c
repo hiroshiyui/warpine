@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_textpos_test.c - GPI text layout checks for Warpine
  *

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The session's shell services, kept by the desktop server (ADR-0056):
 //! the switch list (the window list's entries) and the system atom table.

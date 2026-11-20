@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 //! `WARPINE.DLL`: Warpine's own extensions for programs that can be
 //! recompiled (ADR-0039). Not an OS/2 module — a program must check that

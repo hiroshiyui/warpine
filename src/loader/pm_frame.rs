@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Frame controls and frame formatting: `WinCreateFrameControls`,
 //! `WinCalcFrameRect`, the default frame handling of `WM_FORMATFRAME` /

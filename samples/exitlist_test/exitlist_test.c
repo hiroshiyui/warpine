@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * exitlist_test.c - DosExitList: routines run when the process ends
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #define INCL_WIN
 #include <os2.h>
 

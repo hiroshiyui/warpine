@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_destroy_test.c - WinDestroyWindow and WM_DESTROY under Warpine
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * nls_test.c — Verify NLS (National Language Support) and date/time APIs.
  *

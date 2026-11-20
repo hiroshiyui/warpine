@@ -9,7 +9,7 @@ Warpine is an OS/2 compatibility layer for Linux, like WINE for OS/2. It runs:
 - 16-bit OS/2 1.x programs (NE format).
 
 They run natively under KVM.
-- **License:** GPL-3.0-only.
+- **License:** GPL-3.0-or-later (ADR-0074).
 - **Engineering policy: near-clean-room, blackbox implementation.**
   - API behaviour comes from public documentation only: IBM's *Control Program* and *PM Programming References*, the OS/2 Warp 4 Toolkit headers, IBM Developer Connection, and osFree / ReactOS references.
   - No IBM binaries, ROM dumps or disassembly of OS/2 system libraries.

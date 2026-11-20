@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* pm_notebook_dlg_test.h - resource ids */
 #define ID_MAIN      100
 #define ID_BOOK      101

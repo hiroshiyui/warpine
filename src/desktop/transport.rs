@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The desktop socket (ADR-0052): a Unix `SOCK_SEQPACKET` socket in the
 //! session directory, carrying one protocol message per packet and, for the

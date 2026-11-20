@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_scroll_test.c - scroll-bar controls and the PM text cursor under Warpine
  *

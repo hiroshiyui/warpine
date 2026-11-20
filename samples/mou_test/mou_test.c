@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * mou_test.c - MOUCALLS mouse API for a VIO program.
  *

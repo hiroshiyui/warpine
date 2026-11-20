@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The switch list (PMSHAPI, after the IBM PM Reference "Switch List
 // Functions"): `WinAddSwitchEntry` (120), `WinCreateSwitchEntry` (121),

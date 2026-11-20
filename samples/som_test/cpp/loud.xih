@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * loud.xih - C++ implementation bindings of class Loud, written by hand
  * as the SOM compiler's C++ emitter would emit them (ADR-0061).

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 pub const MAGIC_API_BASE: u64 = 0x01000000;
 pub const EXIT_TRAP_ADDR: u32 = 0x010003FF;

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 // build.rs — Code generation. (SDL3 is located by the `sdl3` crate's
 // `use-pkg-config` feature; no linker setup is needed here.)
 //

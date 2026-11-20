@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_window_test.c - window tree and window-word calls under Warpine
  *

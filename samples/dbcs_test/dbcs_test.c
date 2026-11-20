@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * dbcs_test.c — Verify DBCS VIO APIs: DosQueryDBCSEnv and VioCheckCharType.
  *

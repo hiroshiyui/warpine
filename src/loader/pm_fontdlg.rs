@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! `WinFontDlg` / `WinDefFontDlgProc` (PMCTLS): the standard font dialog,
 //! over the fonts Warpine has.

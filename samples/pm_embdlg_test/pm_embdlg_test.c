@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_embdlg_test.c - an embedded dialog's chrome, Tab across its edge, and
  * the pointer reaching a window of the program's own class inside it

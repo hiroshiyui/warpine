@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_dialog_test.c - dialogs and the keyboard under Warpine
  *

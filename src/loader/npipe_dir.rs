@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 //! Who uses a named-pipe session directory, and removing the directories
 //! of sessions that are gone.

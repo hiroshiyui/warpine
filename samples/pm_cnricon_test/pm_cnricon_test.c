@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_cnricon_test.c - WC_CONTAINER, stage 2b: icon view, icons, filtering
  * and direct editing

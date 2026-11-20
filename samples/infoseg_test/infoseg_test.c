@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * infoseg_test.c - DosGetInfoSeg: the global and local information segments
  *

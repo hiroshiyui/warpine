@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * argv_test.c - the C runtime's argc / argv / environment and process ids,
  * in a program started with arguments and in its DosExecPgm children

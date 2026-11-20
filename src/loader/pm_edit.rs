@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Editing model shared by the built-in text controls (WC_ENTRYFIELD, WC_MLE)
 //! and the scrolling arithmetic of WC_LISTBOX.

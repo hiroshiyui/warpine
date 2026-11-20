@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // OS/2 bitmap formats: BITMAPINFOHEADER / BITMAPINFOHEADER2 parsing, the
 // pel data of uncompressed bitmaps (1, 4, 8, 24 and 32 bits per pel) and of

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Moving and sizing a frame with the keyboard: system menu Move / Size,
 //! Alt+F7 / Alt+F8 (`WM_SYSCOMMAND(SC_MOVE / SC_SIZE)`).

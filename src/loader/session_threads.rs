@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 //! Session-wide thread accounting for `THREADS=` (`config_sys.rs`).
 //!

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Presentation parameters: `WinSetPresParam`, `WinQueryPresParam`,
 //! `WinRemovePresParam`, the `PRESPARAMS` blocks of `WinCreateWindow` and

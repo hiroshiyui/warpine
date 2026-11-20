@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * thread_control_test.c - stopping threads that spin in guest code;
  * DosSuspendThread / DosResumeThread; signal exceptions

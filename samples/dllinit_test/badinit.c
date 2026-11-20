@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * badinit.c - a DLL whose initialization fails.
  */

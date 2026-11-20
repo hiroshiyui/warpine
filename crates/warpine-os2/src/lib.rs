@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! High-level OS/2 API wrappers for Warpine guest programs.
 //!
 //! Provides ergonomic Rust interfaces over the raw `warpine-os2-sys` bindings.

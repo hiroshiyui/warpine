@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * semquery_test.c - OS/2 2.0 semaphore calls beside create / wait / post:
  *

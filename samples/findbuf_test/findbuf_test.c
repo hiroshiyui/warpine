@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * findbuf_test.c — Verify FILEFINDBUF3/4/4L layout from DosFindFirst.
  *

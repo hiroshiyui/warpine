@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-License-Identifier: GPL-3.0-only
+# SPDX-License-Identifier: GPL-3.0-or-later
 """Write the OS/2 pointer files of pm_pointer_test.
 
 The format is the documented OS/2 bitmap file format (OS/2 Warp 4 Toolkit

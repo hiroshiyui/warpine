@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * semfollow_test.c - semaphore, pipe-semaphore and suballocation details:
  *

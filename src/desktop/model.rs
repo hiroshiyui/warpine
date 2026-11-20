@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The desktop server's model of the session's desktop (ADR-0052): which
 //! client shows which pictures, in which order, which frame is active, and

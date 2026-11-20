@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * vfs_test.c — Comprehensive VFS filesystem test for warpine.
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_font_test.c - PM font selection and CJK text demo for Warpine
  *

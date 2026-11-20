@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_container_test.c - the WC_CONTAINER control (first stage)
  *

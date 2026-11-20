@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * bird.c - class Bird in BIRD.DLL, built by somBuildClass from static
  * class information (ADR-0073). somFindClass loads the DLL and calls its

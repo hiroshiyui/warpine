@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_subclass_test.c - painting, subclassing, frame formatting, dialog
  * items of the application's own class, and a thread's windows

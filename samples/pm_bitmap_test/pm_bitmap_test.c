@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_bitmap_test.c - memory presentation spaces, bitmaps and bit-block
  * transfers for Warpine

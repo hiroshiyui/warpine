@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! A pop-up menu drawn by the renderer as an overlay on the desktop: a list
 //! of items (id, text with a `~` mnemonic, accelerator text, enabled,

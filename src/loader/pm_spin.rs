@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Spin buttons (`WC_SPINBUTTON`, `<pmstddlg.h>`): a spin field — the
 //! built-in entry field of `pm_controls.rs`, a child of the spin button —

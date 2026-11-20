@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * uconv_test.c — Verify UCONV.DLL Unicode conversion APIs.
  *

@@ -7,7 +7,7 @@ To add one: copy the layout of an existing record, take the next number, and add
 | ADR | Decision | Status | Date |
 |---|---|---|---|
 | [0001](0001-record-architecture-decisions.md) | Record architecture decisions | Accepted | 2026-11-18 |
-| [0002](0002-gpl-3-only.md) | License Warpine under GPL-3.0-only | Accepted | 2026-03-12 |
+| [0002](0002-gpl-3-only.md) | License Warpine under GPL-3.0-only | Superseded by 0074 | 2026-03-12 |
 | [0003](0003-kvm-native-execution.md) | Run OS/2 code natively on KVM | Accepted | 2026-03-12 |
 | [0004](0004-near-clean-room-policy.md) | Implement OS/2 from public documentation only (near-clean-room) | Accepted | 2026-03-18 |
 | [0005](0005-api-thunks-and-module-slots.md) | Dispatch API calls through INT 3 thunks with one ordinal slot per built-in module | Accepted | 2026-03-14 |
@@ -79,3 +79,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0071](0071-a-wider-som-ordinal-range.md) | The SOM module is 4096 ordinals wide; Warpine's own SOM exports at 3072–4095 | Accepted | 2026-11-20 |
 | [0072](0072-som-root-class-layouts-from-the-toolkit.md) | The SOM root classes follow IBM's layouts (ClassData release order, somMethodTab header, somParentMtabStruct), read from the OS/2 Warp 4 Toolkit | Accepted | 2026-11-20 |
 | [0073](0073-som-build-class-from-static-class-info.md) | somBuildClass builds classes from IBM's static class information (somStaticClassInfo) | Accepted | 2026-11-20 |
+| [0074](0074-gpl-3-or-later.md) | License Warpine under GPL-3.0-or-later | Accepted | 2026-11-20 |

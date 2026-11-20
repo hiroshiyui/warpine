@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 //! PMDRAG: direct manipulation (drag and drop) within a process (IBM *PM
 //! Programming Reference*, "Direct Manipulation Functions" and the `DM_*`

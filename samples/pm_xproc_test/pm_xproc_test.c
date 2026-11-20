@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_xproc_test.c - calls on another program's windows, under Warpine
  *

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 //! `WC_CONTAINER`: records, field infos and the text, name, detail, tree
 //! and icon views (IBM *PM Programming Reference*, "Container Controls";

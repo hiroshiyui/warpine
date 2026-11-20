@@ -1,4 +1,5 @@
 #!/bin/bash
+# SPDX-License-Identifier: GPL-3.0-or-later
 # vendor/setup_watcom.sh
 # This script downloads and extracts the Open Watcom v2 snapshot.
 #

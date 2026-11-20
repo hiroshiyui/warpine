@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Window tree and window-word calls that were missing from PMWIN:
 //! `WinIsWindowVisible`, `WinQueryWindowTextLength`, `WinSetParent`,

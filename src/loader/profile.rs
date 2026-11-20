@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // PM profiles (`Prf*` of PMSHAPI): the pure model and Warpine's own file
 // format.

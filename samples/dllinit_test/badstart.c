@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * badstart.c - imports badinit.dll, whose initialization fails: OS/2 does
  * not start the program, so this never prints.

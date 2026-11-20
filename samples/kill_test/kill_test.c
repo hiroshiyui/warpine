@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * kill_test.c - how processes end: DosKillProcess, exit lists, blocking
  * calls interrupted by signals, Ctrl+C from the keyboard

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * ne_hello.c — Minimal 16-bit OS/2 NE format test program.
  *

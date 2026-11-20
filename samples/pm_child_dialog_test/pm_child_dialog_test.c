@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_child_dialog_test.c - a dialog embedded in a client window
  *

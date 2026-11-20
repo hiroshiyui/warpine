@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* pm_button_test.h - resource ids shared by pm_button_test.c and .rc */
 #define ID_DLG      100    /* the dialog */
 #define ID_BOLD     101    /* auto check box */

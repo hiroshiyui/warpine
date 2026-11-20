@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_modal_filter_test.c - message-filter hooks in the modal loops and the
  * messages the standard dialogs send their dialog procedure, under Warpine

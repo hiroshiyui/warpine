@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * somlay.c - IBM's SOM layouts (ADR-0072)
  *

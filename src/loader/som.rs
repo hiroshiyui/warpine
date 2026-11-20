@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 //! SOM.DLL: the System Object Model runtime kernel (ADR-0059, ADR-0060),
 //! from the public SOM documentation (*SOM Programming Guide* and

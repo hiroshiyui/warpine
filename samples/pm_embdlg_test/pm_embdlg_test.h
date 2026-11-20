@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* pm_embdlg_test.h - resource ids */
 #define ID_DLG     100
 #define ID_NAME    101

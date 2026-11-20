@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * nest_test.c - a program that starts itself without end, to check
  * Warpine's process nesting limit

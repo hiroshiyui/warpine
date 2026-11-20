@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // NE (New Executable) format parser for OS/2 1.x 16-bit applications.
 //

@@ -368,7 +368,7 @@ See [doc/TODOs.md](doc/TODOs.md) for the detailed roadmap and [doc/unverified.md
 
 ## License
 
-This project is licensed under the GNU General Public License v3.0 only (GPL-3.0-only). See the [LICENSE](LICENSE) file for details.
+This project is licensed under the GNU General Public License, version 3 or (at your option) any later version (GPL-3.0-or-later). See the [LICENSE](LICENSE) file for details. Third-party material under `vendor/` keeps its own licence: IBM Plex (SIL Open Font License 1.1) and GNU Unifont (GPL-2.0-or-later with the font embedding exception, or OFL 1.1).
 
 Bundled third-party fonts keep their own licences: the IBM Plex families in [`vendor/ibm-plex`](vendor/ibm-plex) are © IBM Corp. under the SIL Open Font License 1.1 ([`LICENSE.txt`](vendor/ibm-plex/LICENSE.txt)), and GNU Unifont in `vendor/unifont` is dual-licensed under GPL-2.0-or-later with the GNU font embedding exception and the SIL Open Font License 1.1.
 

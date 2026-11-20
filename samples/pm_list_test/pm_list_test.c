@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_list_test.c - list box selection modes and the MLE under Warpine
  *

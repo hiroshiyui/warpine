@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The system menu of a PM frame (`FCF_SYSMENU`, `FID_SYSMENU`) and the
 //! items of pop-up menus (`WinPopupMenu`), as [`PopupItem`]s for the

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 //! The threads of the OS/2 process: which run, which have ended and not yet
 //! been waited for, and the idle vCPUs left behind by ended threads.

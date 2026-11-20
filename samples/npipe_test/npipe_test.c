@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * npipe_test.c - named pipes, pipes passed to child processes, and
  * DosGiveSharedMem

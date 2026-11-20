@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 //! `WC_NOTEBOOK`: pages with major and minor tabs, a status line and page
 //! buttons (IBM *PM Programming Reference*, "Notebook Controls"; messages,

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Host locale detection for OS/2 NLS (National Language Support).
 // Reads the host's locale settings and maps them to OS/2 COUNTRYINFO values.

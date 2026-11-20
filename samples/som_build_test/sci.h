@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* sci.h - the static class information somBuildClass takes (ADR-0073),
  * declared from the layout the OS/2 Warp 4 Toolkit's somapi.h gives:
  * layout version 3. Code the SOM compiler generates fills these

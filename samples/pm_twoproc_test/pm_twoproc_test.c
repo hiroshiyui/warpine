@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_twoproc_test.c - two PM programs on one desktop, under Warpine
  *

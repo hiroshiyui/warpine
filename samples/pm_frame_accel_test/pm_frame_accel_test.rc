@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* pm_frame_accel_test.rc - accelerator table, messages and strings */
 #define INCL_WIN
 #include <os2.h>

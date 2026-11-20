@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_paint_input_test.c - update regions, child presentation spaces,
  * pointer routing, WM_HITTEST, WinQueryQueueStatus and must-complete

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* pm_child_dialog_test.rc - a dialog without a frame, embedded in a client */
 #include <os2.h>
 #include "pm_child_dialog_test.h"

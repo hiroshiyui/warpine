@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_typeahead_test.c - type-ahead routing under Warpine
  *

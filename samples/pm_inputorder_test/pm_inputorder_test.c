@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_inputorder_test.c - pointer input routed when it is read, under Warpine
  *

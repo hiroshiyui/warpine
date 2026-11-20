@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_drag_test.c - drag and drop within a process (PMDRAG)
  *

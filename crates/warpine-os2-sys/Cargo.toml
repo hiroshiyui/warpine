@@ -1,4 +1,5 @@
 [package]
 name = "warpine-os2-sys"
 version = "0.1.0"
+license = "GPL-3.0-or-later"
 edition = "2021"

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_audio_test.c - DosBeep and MMPM/2 waveaudio checks for Warpine
  *

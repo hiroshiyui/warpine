@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // What a child process started by `DosExecPgm` gets from its parent: the
 // command line, the environment and the inheritable pipe handles. A child

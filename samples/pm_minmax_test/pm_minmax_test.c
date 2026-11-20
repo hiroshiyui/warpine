@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_minmax_test.c - minimizing, maximizing and restoring frames under Warpine
  *

@@ -30,7 +30,7 @@ glyphs in `vendor/unifont`.
 Copyright © 2017 IBM Corp. with Reserved Font Name "Plex". Licensed under the
 SIL Open Font License, Version 1.1 — see [`LICENSE.txt`](LICENSE.txt). The
 fonts are bundled with Warpine as a separate work and are not covered by
-Warpine's GPL-3.0-only licence.
+Warpine's GPL-3.0-or-later licence.
 
 ## Updating
 

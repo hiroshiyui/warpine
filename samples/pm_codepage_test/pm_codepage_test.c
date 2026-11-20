@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_codepage_test.c - message-queue and presentation-space codepages
  *

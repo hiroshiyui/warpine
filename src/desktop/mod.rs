@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! One desktop per session (ADR-0052): the desktop server process and the
 //! link every Warpine process of the session keeps to it.

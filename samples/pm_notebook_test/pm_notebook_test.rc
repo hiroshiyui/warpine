@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* pm_notebook_test.rc - three page dialogs, shown by the notebook */
 #include <os2.h>
 #include "pm_notebook_test.h"

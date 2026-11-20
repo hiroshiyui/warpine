@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * animals.h - C usage bindings of module Animals (animals.idl of the Open
  * Watcom SOM samples), written by hand for Warpine as the SOM compiler

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * bmpres.c - a resource DLL for pm_bitmap_test
  *

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_cnrgrid_test.c - WC_CONTAINER, third stage: tree look and moves,
  * grid arrangement, erasing, stacking, context menus, help, the wheel

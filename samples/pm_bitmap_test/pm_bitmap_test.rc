@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* pm_bitmap_test.rc - resources for pm_bitmap_test
  *
  * quadrants.bmp is an 8x8, 24-bit bitmap (BITMAPFILEHEADER + 40-byte info

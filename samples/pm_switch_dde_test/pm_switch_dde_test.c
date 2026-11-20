@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_switch_dde_test.c - the switch list, atom tables, DDE, WinStartApp /
  * WinTerminateApp and the MSG.DLL helpers under Warpine

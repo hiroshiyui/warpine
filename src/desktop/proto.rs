@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The desktop protocol (ADR-0052): the messages a Warpine process (client)
 //! and the desktop server exchange over their `SOCK_SEQPACKET` socket.

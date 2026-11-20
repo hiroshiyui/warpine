@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * threads_limit_test.c - the THREADS= limit of CONFIG.SYS
  *

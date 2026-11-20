@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_combo_spin_test.c - combination boxes, spin buttons and owner drawing
  * under Warpine

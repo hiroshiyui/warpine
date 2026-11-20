@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_pel_test.c - GPI read-back and mix-mode checks for Warpine
  *

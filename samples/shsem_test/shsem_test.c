@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * shsem_test.c - shared semaphores between processes: named and
  * DC_SEM_SHARED event and mutex semaphores used by a parent and a child

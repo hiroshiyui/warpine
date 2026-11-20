@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // MSG.DLL message helpers, after the IBM Control Program Programming
 // Reference: `DosInsertMessage` (MSG.4) and `DosQueryMessageCP` (MSG.8).

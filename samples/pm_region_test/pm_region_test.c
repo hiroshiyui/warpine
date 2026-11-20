@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_region_test.c - GPI regions, clipping, areas, paths, polygons and
  * curves for Warpine

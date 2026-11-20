@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Window coordinates and lookups: `WinMapWindowPoints`,
 //! `WinWindowFromPoint`, `WinQueryDesktopWindow`, `WinQueryAnchorBlock`,

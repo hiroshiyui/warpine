@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! SDL events ↔ desktop protocol input (ADR-0052). The desktop server turns
 //! the host's (or a GUI script's) SDL input events into

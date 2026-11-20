@@ -21,12 +21,12 @@ ignore = [
 [licenses]
 version = 2
 confidence-threshold = 0.9
-# Permissive licences compatible with Warpine's GPL-3.0-only. A new one
+# Permissive licences compatible with Warpine's GPL-3.0-or-later. A new one
 # needs a look before it is added here.
 allow = ["0BSD", "Apache-2.0", "BSD-3-Clause", "MIT", "Unicode-3.0", "Unlicense", "Zlib"]
 
 # Warpine itself.
-exceptions = [{ crate = "warpine", allow = ["GPL-3.0-only"] }]
+exceptions = [{ crate = "warpine", allow = ["GPL-3.0-or-later"] }]
 
 [bans]
 multiple-versions = "warn"

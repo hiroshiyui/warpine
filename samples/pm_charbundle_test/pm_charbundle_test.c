@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_charbundle_test.c - GpiSetAttrs / GpiQueryAttrs with a CHARBUNDLE
  *

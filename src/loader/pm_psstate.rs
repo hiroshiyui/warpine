@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Presentation-space state (PMGPI): save / restore, reset, attribute
 //! bundles, `GpiQueryPS` / `GpiSetPS`.

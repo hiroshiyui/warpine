@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Starting applications (PMSHAPI), after the IBM PM Reference:
 // `WinStartApp` (119) and `WinTerminateApp` (130).

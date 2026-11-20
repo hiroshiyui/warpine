@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Geometry and text of the VIO window's view on the logical video buffer
 //! (LVB): which part of the text screen the window shows, its scroll bars,

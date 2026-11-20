@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* pm_dialog_test.h - resource ids shared by pm_dialog_test.c and .rc */
 #define ID_MAIN     1      /* menu and accelerator table of the main window */
 #define ID_DLG      100    /* the name dialog */

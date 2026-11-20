@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 //! Pipe semaphores: `DosSetNPipeSem` (DOSCALLS 251) and
 //! `DosQueryNPipeSemState` (DOSCALLS 249) on the named pipes of

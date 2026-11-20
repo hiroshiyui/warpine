@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // PMWIN atom tables, after the IBM PM Reference ("Atom Functions"):
 // `WinCreateAtomTable` (714), `WinDestroyAtomTable` (724), `WinAddAtom`

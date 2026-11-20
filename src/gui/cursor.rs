@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The PM text cursor (`WinCreateCursor`) as the compositors draw it: an
 //! inverted rectangle, halftone or frame laid over a frame's client

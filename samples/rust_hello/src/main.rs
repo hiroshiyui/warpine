@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Hello World sample — Rust guest binary for Warpine OS/2.
 //!
 //! Build with:

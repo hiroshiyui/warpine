@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 #define INCL_DOS
 #include <os2.h>
 #include <stdio.h>

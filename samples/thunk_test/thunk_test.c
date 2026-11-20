@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * thunk_test.c — Verify 16-bit thunk/switching infrastructure.
  *

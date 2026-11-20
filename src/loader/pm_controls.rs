@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Interactive behaviour of the built-in text controls: painting with caret,
 //! selection highlight and scrolling; mouse and keyboard input; keyboard

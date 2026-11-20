@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Console manager for OS/2 VIO (Video I/O) subsystem.
 // Maintains a screen buffer and cursor state, outputs via ANSI escape sequences.

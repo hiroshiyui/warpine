@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * ansi_test.c — ANSI escape sequences in VIO TTY output.
  *

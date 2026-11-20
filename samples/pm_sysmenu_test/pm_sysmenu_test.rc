@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /* pm_sysmenu_test.rc - the pop-up menu of pm_sysmenu_test (WinPopupMenu) */
 
 #define INCL_WIN

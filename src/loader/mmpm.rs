@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // MMPM/2 (MultiMedia Presentation Manager/2) emulation.
 //

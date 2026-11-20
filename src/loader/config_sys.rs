@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 //! The `THREADS=` statement of `C:\CONFIG.SYS`: the most threads the whole
 //! system — here, one Warpine session — runs at once (every process needs at

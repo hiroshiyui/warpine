@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Changed
+- **Licence: GPL-3.0-or-later** — Warpine's own code, samples and guest crates move from GPL-3.0-only to GPL-3.0-or-later (ADR-0074, superseding ADR-0002): every source file carries `SPDX-License-Identifier: GPL-3.0-or-later` (the files that had no header now have one), and `Cargo.toml`, the guest crates' manifests and the cargo-deny policy say so. Vendored third-party material keeps its own licence.
+
 ## [0.0.6] - 2026-11-20
 
 ### Added

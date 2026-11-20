@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_xdrag_test.c - drag and drop between programs, under Warpine
  * (ADR-0057)

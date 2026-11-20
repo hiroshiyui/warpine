@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * kernel2_test.c - OS/2 2.0 kernel calls, second batch:
  *

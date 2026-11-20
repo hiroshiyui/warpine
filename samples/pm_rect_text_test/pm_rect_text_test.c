@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_rect_text_test.c - rectangle helpers, WinDrawText and GpiPolyLine
  *

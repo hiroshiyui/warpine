@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_sysmenu_test.c - a frame's system menu, keyboard move / size and a
  * pop-up menu under Warpine

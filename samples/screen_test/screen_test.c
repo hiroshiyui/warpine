@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * screen_test.c — Verify VIO screen mode, resolution, and cursor APIs.
  *

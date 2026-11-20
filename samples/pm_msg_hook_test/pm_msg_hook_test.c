@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_msg_hook_test.c - PM message calls and hooks under Warpine
  *

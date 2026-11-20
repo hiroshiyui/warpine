@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_profile_test.c - PM profiles (PMSHAPI Prf*) and the Help Manager
  * (HELPMGR) under Warpine

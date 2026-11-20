@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_paint_test.c - update rectangles, WinScrollWindow and WinDrawBorder
  *

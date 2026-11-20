@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Painting styles and painting control: class styles (`CS_SIZEREDRAW`,
 //! `CS_SYNCPAINT`, `CS_CLIPCHILDREN` …), `WS_SYNCPAINT`,

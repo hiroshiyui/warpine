@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * shmem_test.c - shared memory between processes: DosAllocSharedMem,
  * DosGetNamedSharedMem, DosGetSharedMem, DosGiveSharedMem and DosFreeMem

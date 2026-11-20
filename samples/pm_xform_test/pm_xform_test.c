@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_xform_test.c - GPI presentation-space state and transforms for Warpine
  *

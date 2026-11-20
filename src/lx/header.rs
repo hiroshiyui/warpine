@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 use std::io::{self, Read, Seek, SeekFrom};
 
 // OS/2 LX resource type constants (OS/2 numbering, not Windows).

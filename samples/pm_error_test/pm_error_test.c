@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_error_test.c - WinGetLastError and per-thread PMERR_* codes under Warpine
  *

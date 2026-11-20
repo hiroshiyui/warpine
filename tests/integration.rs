@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // End-to-end integration tests: run OS/2 sample binaries, capture stdout
 // and exit code, and assert against known-good output.

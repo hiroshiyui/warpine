@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_stddlg_test.c - the standard file and font dialogs (PMCTLS) and the
  * printing calls (PMSPL, DevOpenDC / DevEscape / DevPostDeviceModes)

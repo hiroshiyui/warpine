@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_button_test.c - check boxes, radio buttons and the arrow keys under Warpine
  *

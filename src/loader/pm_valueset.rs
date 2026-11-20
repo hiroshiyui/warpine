@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The value set control (`WC_VALUESET`, `<pmstddlg.h>`): a grid of
 //! `VSCDATA.usRowCount` × `usColumnCount` items — bit maps, icons, texts,

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * dllinit.c - Warpine's check of DLL initialization and module names
  * (ADR-0063):

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_frame_scroll_test.c - frame scroll bars under Warpine
  *

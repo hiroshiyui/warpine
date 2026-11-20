@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Raw OS/2 API bindings for Warpine guest programs.
 //!
 //! Calling conventions:

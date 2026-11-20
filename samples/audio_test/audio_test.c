@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * audio_test.c — Verify MMPM/2 audio APIs: DosBeep and mciSendString.
  *

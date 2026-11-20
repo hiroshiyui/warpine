@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! PM message calls beyond posting and sending to one window:
 //! `WinSendMsg` (920) with its send hooks and inter-thread sends,

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * greeter.c - class Greeter in GREETER.DLL, for Warpine's class-loading
  * check (ADR-0062). The DLL exports SOMInitModule, which somFindClass

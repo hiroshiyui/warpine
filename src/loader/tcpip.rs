@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // SO32DLL / TCP32DLL — OS/2 TCP/IP Socket API emulation.
 //

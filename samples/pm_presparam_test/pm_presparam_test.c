@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_presparam_test.c - presentation parameters, painting calls, static
  * control styles and class styles under Warpine

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * som.h - Warpine's C bindings for the SOM runtime kernel (ADR-0059)
  *

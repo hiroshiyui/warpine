@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The linear slider control (`WC_SLIDER`, `<pmstddlg.h>`): a shaft along
 //! which an arm moves between a home position and the far end, two scales

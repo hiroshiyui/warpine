@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! The PM text cursor: `WinCreateCursor` (715), `WinShowCursor` (880),
 //! `WinDestroyCursor` (725) and `WinQueryCursorInfo` (812) — PM Reference /

@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * pm_xshell_test.c - the session's shell services across programs, under
  * Warpine (ADR-0056)

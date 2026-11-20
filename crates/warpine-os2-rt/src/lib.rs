@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 //! Warpine OS/2 runtime support crate.
 //!
 //! Provides:

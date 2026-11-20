@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // lx_link — ELF-to-LX linker for the Warpine OS/2 compatibility layer.
 //

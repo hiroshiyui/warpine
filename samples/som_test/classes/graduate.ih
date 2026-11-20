@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
  * graduate.ih - C implementation bindings of class GraduateStudent, written by hand for
  * Warpine as the SOM compiler would emit them (ADR-0059).

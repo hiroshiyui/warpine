@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 // PM pointers: WinQuerySysPointer, WinSetPointer / WinQueryPointer,
 // WinShowPointer, WinLoadPointer / WinDestroyPointer, and the RT_POINTER

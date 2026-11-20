@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! GPI text layout (PMGPI): character attributes and the text calls that
 //! follow them.

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 //! Combination boxes (`WC_COMBOBOX`): an entry field and a list box, the
 //! built-in controls of `pm_controls.rs`, as children of the combination

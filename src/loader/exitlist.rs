@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-only
+// SPDX-License-Identifier: GPL-3.0-or-later
 //
 //! `DosExitList` (DOSCALLS 296): routines a process runs when it ends.
 //!
