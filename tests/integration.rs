@@ -252,6 +252,24 @@ fn test_som_layouts_follow_ibm_s() {
     assert_eq!(code, 0, "{out}");
 }
 
+/// som_build_test (ADR-0073): classes built by somBuildClass from static
+/// class information, as code from IBM's SOM compiler builds them —
+/// methods and their tokens, an override by descriptor, a public data
+/// token, a procedure entry, a class init function, CClassData, a subclass
+/// with a parent call, and a class in a DLL that somFindClass loads.
+#[test]
+fn test_som_classes_built_from_static_class_info() {
+    if !kvm_available() || !Path::new("samples/som_build_test/somb.exe").exists() { return; }
+    let (out, code) = run_sample("samples/som_build_test/somb.exe", 15);
+    let checks: Vec<&str> = out.lines()
+        .filter(|l| l.starts_with("som_build_test: ") && !l.starts_with("som_build_test: done")).collect();
+    assert!(checks.len() >= 18, "every check reported:\n{out}");
+    let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
+    assert!(failed.is_empty(), "failed checks: {failed:#?}");
+    assert!(out.contains(&format!("som_build_test: done {n}/{n}", n = checks.len())), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
 /// dllinit_test (ADR-0063): goodinit.dll initializes before main;
 /// DosLoadModule of badinit.dll fails with ERROR_INIT_ROUTINE_FAILED; a full
 /// OS/2 path on drive C finds the loaded module; DosQueryProcAddr by name

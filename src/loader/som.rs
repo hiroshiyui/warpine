@@ -151,6 +151,8 @@ pub const SOM_IS_OBJ: u32 = 3075;
 pub const SOM_SET_OUT_CHAR: u32 = 3076;
 /// `somParentNumResolve(parentMtab, n, token)` (SOM 2.x; ADR-0072).
 pub const SOM_PARENT_NUM_RESOLVE: u32 = 3077;
+/// `somBuildClass(inheritVars, sci, major, minor)` (SOM 2.x; ADR-0073).
+pub const SOM_BUILD_CLASS: u32 = 3078;
 /// The procedures the runtime variables `SOMMalloc` … `SOMFree` hold.
 pub const SOM_MALLOC: u32 = 3080;
 pub const SOM_CALLOC: u32 = 3081;
@@ -425,6 +427,9 @@ pub struct SomRuntime {
     pub init_func_name: u32,
     /// The guest copy of [`SOM_KERNEL_FILE`].
     pub kernel_file: u32,
+    /// Data tokens of instance data at an offset inside a class's part
+    /// (`somBuildClass`'s non-internal data): token → (class, offset).
+    pub data_tokens: HashMap<u32, (u32, u32)>,
 }
 
 impl SomRuntime {
@@ -508,6 +513,70 @@ fn som_inits_ok(results: &[u32], inits: u32) -> bool {
     !results.iter().take(inits as usize).any(|&r| r == 0)
 }
 
+/// The `somStaticClassInfo` layout versions `somBuildClass` reads
+/// (`SOM_SCILEVEL`, `somapi.h`).
+const SOM_SCI_LEVEL: u32 = 4;
+/// Word indices of the `somStaticClassInfo` fields used (`somapi.h`).
+const SCI_LAYOUT_VERSION: u32 = 0;
+const SCI_NUM_STATIC_METHODS: u32 = 1;
+const SCI_NUM_STATIC_OVERRIDES: u32 = 2;
+const SCI_NUM_NON_INTERNAL_DATA: u32 = 3;
+const SCI_NUM_PROC_METHODS: u32 = 4;
+const SCI_NUM_VARARGS_FUNCS: u32 = 5;
+const SCI_INSTANCE_DATA_SIZE: u32 = 8;
+const SCI_NUM_PARENTS: u32 = 10;
+const SCI_CLASS_ID: u32 = 11;
+const SCI_EXPLICIT_META_ID: u32 = 12;
+const SCI_PARENTS: u32 = 14;
+const SCI_CDS: u32 = 15;
+const SCI_CCDS: u32 = 16;
+const SCI_SMT: u32 = 17;
+const SCI_OMT: u32 = 18;
+const SCI_NIT_REFERENCE_BASE: u32 = 19;
+const SCI_NIT: u32 = 20;
+const SCI_PMT: u32 = 21;
+const SCI_VFT: u32 = 22;
+const SCI_CIF: u32 = 23;
+/// Layout 3 extensions.
+const SCI_NUM_METHODS: u32 = 27;
+const SCI_MT: u32 = 28;
+const SCI_NUM_INHERITED_METHODS: u32 = 31;
+const SCI_IMT: u32 = 32;
+/// `somMethods_t` actions (`type & 0xFF`).
+const SCI_MT_STATIC: u32 = 0;
+const SCI_MT_DYNAMIC: u32 = 1;
+const SCI_MT_NONSTATIC: u32 = 2;
+const SCI_MT_TOKEN_OVERRIDE: u32 = 6;
+
+/// What `somBuildClass` takes from a `somStaticClassInfo`, its counts
+/// bounded.
+#[derive(Debug, Clone, Copy)]
+struct SciInfo {
+    num_static_methods: u32,
+    num_overrides: u32,
+    num_non_internal_data: u32,
+    num_proc_methods: u32,
+    num_varargs_funcs: u32,
+    instance_data_size: u32,
+    num_parents: u32,
+    class_id: u32,
+    explicit_meta_id: u32,
+    parents: u32,
+    cds: u32,
+    ccds: u32,
+    smt: u32,
+    omt: u32,
+    nit_reference_base: u32,
+    nit: u32,
+    pmt: u32,
+    vft: u32,
+    cif: u32,
+    num_methods: u32,
+    mt: u32,
+    num_inherited_methods: u32,
+    imt: u32,
+}
+
 /// The procedure of a root method: its thunk, or the not-implemented
 /// procedure's.
 fn root_proc(ord: u32) -> u32 {
@@ -561,6 +630,10 @@ pub const SOMERROR_TEST_OBJECT_FAILURE: u32 = 20109;
 /// `SOMERROR_NotImplementedYet` (20179) as a warning: Warpine's choice,
 /// so a program calling a method Warpine lacks goes on.
 pub const SOMERROR_NOT_IMPLEMENTED_YET_WARN: u32 = 20171;
+pub const SOMERROR_OUT_OF_MEMORY: u32 = 20099;
+pub const SOMERROR_BAD_ARGUMENT: u32 = 20199;
+pub const SOMERROR_NO_PARENT_CLASS: u32 = 20219;
+pub const SOMERROR_NO_META_CLASS: u32 = 20229;
 /// `somTest`'s failure: `SOMERROR_FailedTest` with the given severity.
 const SOMERROR_FAILED_TEST_BASE: u32 = 20110;
 
@@ -993,7 +1066,15 @@ impl Loader {
     /// `somDataResolve`: where class `token`'s instance data lies in `obj`.
     fn som_data_resolve(&self, obj: u32, token: u32) -> u32 {
         let cls = self.som_class_of(obj);
-        let off = cls.and_then(|c| self.shared.som.lock_or_recover().classes.get(&c)?.offset_of(token));
+        let off = cls.and_then(|c| {
+            let rt = self.shared.som.lock_or_recover();
+            let k = rt.classes.get(&c)?;
+            // A class (its whole part), or a field inside one (ADR-0073).
+            match rt.data_tokens.get(&token) {
+                Some(&(part, extra)) => k.offset_of(part)?.checked_add(extra),
+                None => k.offset_of(token),
+            }
+        });
         match off {
             Some(off) => obj.wrapping_add(off),
             None => {
@@ -1141,6 +1222,230 @@ impl Loader {
             return self.dos_free_module(hmod);
         }
         self.start_chain(CallChain::new(vcpu, vec![CallStep::hook(deleter, vec![hmod], false)], false, ChainThen::ReturnLast))
+    }
+
+    /// `somBuildClass(inheritVars, sci, major, minor)`: build the class
+    /// that the static class information `sci` (`somStaticClassInfo`,
+    /// `somapi.h`; ADR-0073) describes, as code from IBM's SOM compiler
+    /// asks for it. Its `ClassData` already naming a class: that class.
+    /// Parents and an explicit metaclass are found by name; the method,
+    /// override, data, procedure and `va_list` tables are applied, writing
+    /// the tokens and entries into the guest's `ClassData`; the class is
+    /// made ready and its `ClassData` / `CClassData` filled; its class
+    /// init function, if any, is called last. Every count and pointer
+    /// comes from the guest and is bounded before use.
+    fn som_build_class(&self, vcpu: u32, _inherit_vars: u32, sci: u32, version: (u32, u32)) -> ApiResult {
+        let ok = ApiResult::Normal;
+        let Some(info) = self.som_read_sci(sci) else {
+            return self.som_raise(vcpu, SOMERROR_BAD_ARGUMENT, 0, 0, 0);
+        };
+        let existing = self.guest_read::<u32>(info.cds).unwrap_or(0);
+        if existing != 0 { return ok(existing); }
+        let Some(name_ptr) = self.guest_read::<u32>(info.class_id).filter(|&p| p != 0) else {
+            return self.som_raise(vcpu, SOMERROR_BAD_ARGUMENT, 0, 0, 0);
+        };
+        // Parents and metaclass, by name.
+        let mut parents = Vec::new();
+        for i in 0..info.num_parents {
+            let id = info.parents.checked_add(4 * i).and_then(|at| self.guest_read::<u32>(at)).unwrap_or(0);
+            match self.som_class_named(id) {
+                Some(p) => parents.push(p),
+                None => return self.som_raise(vcpu, SOMERROR_NO_PARENT_CLASS, 0, 0, 0),
+            }
+        }
+        let requested = if info.explicit_meta_id == 0 { 0 } else {
+            match self.som_class_named(info.explicit_meta_id) {
+                Some(m) => m,
+                None => return self.som_raise(vcpu, SOMERROR_NO_META_CLASS, 0, 0, 0),
+            }
+        };
+        let meta = self.som_metaclass_for(requested, parents.first().copied().unwrap_or(0));
+        if meta == 0 { return self.som_raise(vcpu, SOMERROR_NO_META_CLASS, 0, 0, 0); }
+        let Some(cls) = self.som_new_instance(meta) else {
+            return self.som_raise(vcpu, SOMERROR_OUT_OF_MEMORY, 0, 0, 0);
+        };
+        self.som_init_class(cls, name_ptr, &parents, info.instance_data_size);
+        if !self.shared.som.lock_or_recover().classes.get(&cls).is_some_and(|c| !c.name.is_empty()) {
+            return self.som_raise(vcpu, SOMERROR_BAD_ARGUMENT, 0, 0, 0);
+        }
+        self.som_apply_sci(cls, &info, &parents);
+        self.som_class_ready(cls);
+        let size = {
+            let mut rt = self.shared.som.lock_or_recover();
+            let Some(c) = rt.classes.get_mut(&cls) else { return ok(0) };
+            c.version = version;
+            c.instance_size
+        };
+        // ClassData.classObject, CClassData.parentMtab / instanceDataToken.
+        let _ = self.guest_write::<u32>(info.cds, cls);
+        if info.ccds != 0 {
+            let pm = self.som_parent_mtab_struct(cls, &parents, size);
+            let token = if info.instance_data_size > 0 { cls } else { 0 };
+            let _ = self.guest_write::<u32>(info.ccds, pm);
+            let _ = self.guest_write::<u32>(info.ccds.wrapping_add(4), token);
+        }
+        if info.cif == 0 { return ok(cls); }
+        let step = CallStep::hook(info.cif, vec![cls], false);
+        self.start_chain(CallChain::new(vcpu, vec![step], false, ChainThen::Return(cls)))
+    }
+
+    /// The registered class the somId `id` names.
+    fn som_class_named(&self, id: u32) -> Option<u32> {
+        let name = self.som_id_name(id)?;
+        let rt = self.shared.som.lock_or_recover();
+        rt.by_name.get(&name).copied().filter(|c| rt.classes.get(c).is_some_and(|c| c.ready))
+    }
+
+    /// The fields of the `somStaticClassInfo` at `sci` this runtime uses,
+    /// read and bounded (`None`: unreadable, an unknown layout version or
+    /// no `ClassData`).
+    fn som_read_sci(&self, sci: u32) -> Option<SciInfo> {
+        let word = |i: u32| sci.checked_add(4 * i).and_then(|at| self.guest_read::<u32>(at));
+        let layout = word(SCI_LAYOUT_VERSION)?;
+        if !(1..=SOM_SCI_LEVEL).contains(&layout) { return None; }
+        let count = |i: u32, max: usize| word(i).map(|n| n.min(max as u32));
+        let v3 = layout >= 3;
+        let info = SciInfo {
+            num_static_methods: count(SCI_NUM_STATIC_METHODS, MAX_METHODS)?,
+            num_overrides: count(SCI_NUM_STATIC_OVERRIDES, MAX_METHODS)?,
+            num_non_internal_data: count(SCI_NUM_NON_INTERNAL_DATA, MAX_METHODS)?,
+            num_proc_methods: count(SCI_NUM_PROC_METHODS, MAX_METHODS)?,
+            num_varargs_funcs: count(SCI_NUM_VARARGS_FUNCS, MAX_METHODS)?,
+            instance_data_size: word(SCI_INSTANCE_DATA_SIZE)?.min(MAX_INSTANCE_DATA),
+            num_parents: count(SCI_NUM_PARENTS, MAX_PARENTS)?,
+            class_id: word(SCI_CLASS_ID)?,
+            explicit_meta_id: word(SCI_EXPLICIT_META_ID)?,
+            parents: word(SCI_PARENTS)?,
+            cds: word(SCI_CDS).filter(|&p| p != 0)?,
+            ccds: word(SCI_CCDS)?,
+            smt: word(SCI_SMT)?,
+            omt: word(SCI_OMT)?,
+            nit_reference_base: word(SCI_NIT_REFERENCE_BASE)?,
+            nit: word(SCI_NIT)?,
+            pmt: word(SCI_PMT)?,
+            vft: word(SCI_VFT)?,
+            cif: word(SCI_CIF)?,
+            num_methods: if v3 { count(SCI_NUM_METHODS, MAX_METHODS)? } else { 0 },
+            mt: if v3 { word(SCI_MT)? } else { 0 },
+            num_inherited_methods: if v3 { count(SCI_NUM_INHERITED_METHODS, MAX_METHODS)? } else { 0 },
+            imt: if v3 { word(SCI_IMT)? } else { 0 },
+        };
+        Some(info)
+    }
+
+    /// Apply the tables of `info` to class `cls` (initialized, not ready):
+    /// static methods (tokens written into `ClassData`), general methods,
+    /// overrides, inherited implementations, non-internal data tokens,
+    /// procedure and `va_list` entries.
+    fn som_apply_sci(&self, cls: u32, info: &SciInfo, parents: &[u32]) {
+        let word = |at: u32| self.guest_read::<u32>(at).unwrap_or(0);
+        // Word `field` of entry `i` of a table of `size`-byte entries.
+        let entry = |table: u32, size: u32, i: u32, field: u32| {
+            i.checked_mul(size).and_then(|o| table.checked_add(o)?.checked_add(4 * field)).map_or(0, word)
+        };
+        // somStaticMethod_t: classData, methodId (somId *), descriptor,
+        // method, redispatch stub, apply stub.
+        for i in 0..info.num_static_methods {
+            let (slot, id_ptr, method) = (entry(info.smt, 24, i, 0), entry(info.smt, 24, i, 1), entry(info.smt, 24, i, 3));
+            let token = self.som_add_method(cls, word(id_ptr), method);
+            if slot != 0 && token != 0 { let _ = self.guest_write::<u32>(slot, token); }
+        }
+        // somMethods_t (layout 3): type, classData, methodId, descriptor,
+        // method, stubs. Static, dynamic and nonstatic methods are added
+        // as static ones; an override by token replaces that method.
+        for i in 0..info.num_methods {
+            let kind = entry(info.mt, 28, i, 0) & 0xFF;
+            let (slot, id_ptr, method) = (entry(info.mt, 28, i, 1), entry(info.mt, 28, i, 2), entry(info.mt, 28, i, 4));
+            match kind {
+                SCI_MT_STATIC | SCI_MT_DYNAMIC | SCI_MT_NONSTATIC => {
+                    let token = self.som_add_method(cls, word(id_ptr), method);
+                    if slot != 0 && token != 0 { let _ = self.guest_write::<u32>(slot, token); }
+                }
+                SCI_MT_TOKEN_OVERRIDE => self.som_override_token(cls, word(id_ptr), method),
+                other => log::debug!("SOM: somBuildClass method action {other} not used"),
+            }
+        }
+        // somOverrideMethod_t: methodId (somId *, maybe "Class::method"),
+        // method.
+        for i in 0..info.num_overrides {
+            let (id_ptr, method) = (entry(info.omt, 8, i, 0), entry(info.omt, 8, i, 1));
+            if let Some(name) = self.som_id_name(word(id_ptr)) {
+                let simple = name.rsplit("::").next().unwrap_or(&name).to_string();
+                self.som_override(cls, self.som_id(&simple), method);
+            }
+        }
+        // somInheritedMethod_t: methodId, parentNum (from 1), mToken —
+        // that parent's implementation of the method.
+        for i in 0..info.num_inherited_methods {
+            let (id_ptr, n) = (entry(info.imt, 12, i, 0), entry(info.imt, 12, i, 1));
+            let Some(&parent) = n.checked_sub(1).and_then(|k| parents.get(k as usize)) else { continue };
+            let Some(name) = self.som_id_name(word(id_ptr)) else { continue };
+            let mut rt = self.shared.som.lock_or_recover();
+            let (Some(t), Some(pt)) = (rt.token_of(cls, &name), rt.token_of(parent, &name)) else { continue };
+            let Some(proc) = rt.class_method(parent, pt) else { continue };
+            if let Some(s) = rt.classes.get_mut(&cls).and_then(|c| c.slots.iter_mut().find(|s| s.token == t)) {
+                s.proc = proc;
+            }
+        }
+        // somNonInternalData_t: classData (somDToken *), the field's
+        // address in a model of the instance data (nitReferenceBase).
+        for i in 0..info.num_non_internal_data {
+            let (slot, basis) = (entry(info.nit, 8, i, 0), entry(info.nit, 8, i, 1));
+            let Some(off) = basis.checked_sub(info.nit_reference_base).filter(|&o| o < info.instance_data_size.max(1)) else { continue };
+            let token = self.som_data_token(cls, off);
+            if slot != 0 && token != 0 { let _ = self.guest_write::<u32>(slot, token); }
+        }
+        // somProcMethods_t and somVarargsFuncs_t: an entry written into
+        // the ClassData member they point to.
+        for (table, n) in [(info.pmt, info.num_proc_methods), (info.vft, info.num_varargs_funcs)] {
+            for i in 0..n {
+                let (slot, value) = (entry(table, 8, i, 0), entry(table, 8, i, 1));
+                if slot != 0 { let _ = self.guest_write::<u32>(slot, value); }
+            }
+        }
+    }
+
+    /// Override the method that `token` names in class `cls` (not ready).
+    fn som_override_token(&self, cls: u32, token: u32, method: u32) {
+        let mut rt = self.shared.som.lock_or_recover();
+        match rt.classes.get_mut(&cls).and_then(|c| c.slots.iter_mut().find(|s| s.token == token)) {
+            Some(s) => s.proc = method,
+            None => log::warn!("SOM: no method {token} to override"),
+        }
+    }
+
+    /// A data token for the field at `offset` in class `cls`'s part.
+    fn som_data_token(&self, cls: u32, offset: u32) -> u32 {
+        if self.shared.som.lock_or_recover().data_tokens.len() >= MAX_TOKENS { return 0; }
+        let Some(token) = self.som_malloc(8) else { return 0 };
+        let _ = self.guest_write::<u32>(token, cls);
+        let _ = self.guest_write::<u32>(token + 4, offset);
+        self.shared.som.lock_or_recover().data_tokens.insert(token, (cls, offset));
+        token
+    }
+
+    /// A `somParentMtabStruct` for ready class `cls`: its own method
+    /// table, a list of its parents' tables, its class object and
+    /// instance size (the rest 0).
+    fn som_parent_mtab_struct(&self, cls: u32, parents: &[u32], size: u32) -> u32 {
+        let mtabs: Vec<u32> = {
+            let rt = self.shared.som.lock_or_recover();
+            let parents = if parents.is_empty() { vec![rt.som_object] } else { parents.to_vec() };
+            std::iter::once(cls).chain(parents).map(|c| rt.classes.get(&c).map_or(0, |k| k.mtab)).collect()
+        };
+        let Some(pm) = self.som_malloc(PARENT_MTAB_STRUCT_SIZE) else { return 0 };
+        // The list after the class's own table, last entry first.
+        let mut next = 0;
+        for &m in mtabs[1..].iter().rev() {
+            let Some(node) = self.som_malloc(SOM_METHOD_TAB_LIST_SIZE) else { return 0 };
+            let _ = self.guest_write::<u32>(node, m);
+            let _ = self.guest_write::<u32>(node + 4, next);
+            next = node;
+        }
+        for (j, v) in [mtabs[0], next, cls, 0, size].into_iter().enumerate() {
+            let _ = self.guest_write::<u32>(pm + 4 * j as u32, v);
+        }
+        pm
     }
 
     /// `WrpSomMetaclassFor(requested, parent)`: the metaclass of a new
@@ -1491,6 +1796,7 @@ impl Loader {
             }
             SOM_PARENT_RESOLVE => ok(self.som_parent_resolve(a[0], 1, a[1])),
             SOM_PARENT_NUM_RESOLVE => ok(self.som_parent_resolve(a[0], a[1], a[2])),
+            SOM_BUILD_CLASS => self.som_build_class(vcpu, a[0], a[1], (a[2], a[3])),
             SOM_METHOD_NOT_IMPLEMENTED => self.som_raise(vcpu, SOMERROR_NOT_IMPLEMENTED_YET_WARN, 0, 0, 0),
             SOM_TEST_CLS => {
                 // somTestCls(obj, class, file, line): the object, when it is
@@ -2443,5 +2749,138 @@ mod tests {
             other => panic!("{other:?}"),
         }).collect();
         assert_eq!(text, "Assertion passed: x > 0\n");
+    }
+
+    /// A `somStaticClassInfo` in guest memory at `at`, layout 3: the class
+    /// named `name` with `parents` (somIds at `ids`), its ClassData at
+    /// `cds`, CClassData at `ccds`, the given tables (address, count) and
+    /// class init function.
+    #[allow(clippy::too_many_arguments)]
+    fn put_sci(l: &Loader, at: u32, name_id: u32, parents: &[u32], ids: u32, size: u32, cds: u32, ccds: u32,
+               tables: [(u32, u32); 6], nit_base: u32, cif: u32, meta_id: u32) -> u32 {
+        // tables: smt, omt, nit, pmt, vft, imt.
+        for (i, &p) in parents.iter().enumerate() { l.guest_write::<u32>(ids + 4 * i as u32, p).unwrap(); }
+        let mut w = [0u32; 41];
+        w[0] = 3;
+        (w[1], w[2], w[3], w[4], w[5]) = (tables[0].1, tables[1].1, tables[2].1, tables[3].1, tables[4].1);
+        (w[6], w[7], w[8], w[10]) = (1, 2, size, parents.len() as u32);
+        (w[11], w[12], w[14], w[15], w[16]) = (name_id, meta_id, ids, cds, ccds);
+        (w[17], w[18], w[19], w[20], w[21], w[22], w[23]) = (tables[0].0, tables[1].0, nit_base, tables[2].0, tables[3].0, tables[4].0, cif);
+        (w[31], w[32]) = (tables[5].1, tables[5].0);
+        for (i, v) in w.iter().enumerate() { l.guest_write::<u32>(at + 4 * i as u32, *v).unwrap(); }
+        at
+    }
+
+    /// A somId of `s` stored at `cell` (the static tables hold `somId *`).
+    fn id_cell(l: &Loader, cell: u32, text_at: u32, s: &str) -> u32 {
+        let id = ok(call(l, SOM_ID_FROM_STRING, &[put(l, text_at, s)]));
+        l.guest_write::<u32>(cell, id).unwrap();
+        cell
+    }
+
+    /// somBuildClass from IBM's static class information (ADR-0073):
+    /// static methods (tokens into ClassData), an override by descriptor,
+    /// a non-internal data token, a procedure entry, CClassData, a
+    /// subclass with an inherited implementation and a class init
+    /// function; a second call gives the class already built.
+    #[test]
+    fn build_class_from_static_class_info() {
+        let l = Loader::new_mock();
+        l.som_init();
+        let word = |at: u32| l.guest_read::<u32>(at).unwrap();
+        // Animal: talk, eat; somInit overridden; data field at offset 4.
+        let animal_id = ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3000, "Animal")]));
+        let (cds, ccds) = (0x5000, 0x5100);
+        let smt = 0x5200;
+        for (i, (name, proc, slot)) in [("talk", 0x7000u32, cds + 4), ("eat", 0x7100, cds + 8)].iter().enumerate() {
+            let e = smt + 24 * i as u32;
+            let cell = id_cell(&l, 0x5800 + 4 * i as u32, 0x3100 + 0x20 * i as u32, name);
+            for (k, v) in [*slot, cell, 0, *proc, 0, 0].iter().enumerate() { l.guest_write::<u32>(e + 4 * k as u32, *v).unwrap(); }
+        }
+        let omt = 0x5300;
+        l.guest_write::<u32>(omt, id_cell(&l, 0x5810, 0x3200, "SOMObject::somDumpSelfInt")).unwrap();
+        l.guest_write::<u32>(omt + 4, 0x7200).unwrap();
+        let nit = 0x5400;
+        l.guest_write::<u32>(nit, cds + 12).unwrap();
+        l.guest_write::<u32>(nit + 4, 0x6004).unwrap();
+        let pmt = 0x5500;
+        l.guest_write::<u32>(pmt, cds + 16).unwrap();
+        l.guest_write::<u32>(pmt + 4, 0x7300).unwrap();
+        let sci = put_sci(&l, 0x4000, animal_id, &[], 0x5900, 8, cds, ccds,
+                          [(smt, 2), (omt, 1), (nit, 1), (pmt, 1), (0, 0), (0, 0)], 0x6000, 0, 0);
+        let animal = ok(call(&l, SOM_BUILD_CLASS, &[0, sci, 1, 2]));
+        assert_ne!(animal, 0);
+        assert_eq!(word(cds), animal, "ClassData.classObject");
+        let (talk, eat) = (word(cds + 4), word(cds + 8));
+        assert!(talk != 0 && eat != 0 && talk != eat);
+        assert_eq!(word(cds + 16), 0x7300, "the procedure entry");
+        assert_eq!(ok(call(&l, SOM_BUILD_CLASS, &[0, sci, 1, 2])), animal, "built once");
+        assert_eq!(l.read_guest_string(ok(call(&l, 3302, &[animal]))), "Animal");
+        assert_eq!(ok(call(&l, 3317, &[animal, 1, 2])), 1, "its version");
+        // An instance: its methods, the override, the data field.
+        let obj = finish(&l, call(&l, 3300, &[animal]));
+        assert_ne!(obj, 0);
+        assert_eq!(ok(call(&l, SOM_RESOLVE, &[obj, talk])), 0x7000);
+        assert_eq!(ok(call(&l, SOM_RESOLVE, &[obj, TOKEN_SOM_DUMP_SELF_INT])), 0x7200, "overridden");
+        let part = ok(call(&l, SOM_DATA_RESOLVE, &[obj, animal]));
+        assert_eq!(ok(call(&l, SOM_DATA_RESOLVE, &[obj, word(cds + 12)])), part + 4, "the field");
+        // CClassData: parentMtab (own table, then SOMObject's), data token.
+        let pm = word(ccds);
+        let o = l.shared.som.lock_or_recover().som_object;
+        let mtab_of = |c: u32| l.shared.som.lock_or_recover().classes[&c].mtab;
+        assert_eq!((word(pm), word(pm + 8)), (mtab_of(animal), animal));
+        assert_eq!(word(word(pm + 4)), mtab_of(o));
+        assert_eq!(word(ccds + 4), animal, "instanceDataToken");
+
+        // Dog(Animal): talk overridden by descriptor, eat overridden and
+        // then given back Animal's through the inherited-method table; a
+        // class init function is called with the class.
+        let dog_id = ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3300, "Dog")]));
+        let (dcds, dccds) = (0x5a00, 0x5b00);
+        let domt = 0x5c00;
+        for (i, (name, proc)) in [("Animal::talk", 0x7400u32), ("eat", 0x7500)].iter().enumerate() {
+            let cell = id_cell(&l, 0x5d00 + 4 * i as u32, 0x3400 + 0x20 * i as u32, name);
+            l.guest_write::<u32>(domt + 8 * i as u32, cell).unwrap();
+            l.guest_write::<u32>(domt + 8 * i as u32 + 4, *proc).unwrap();
+        }
+        let imt = 0x5e00;
+        for (k, v) in [id_cell(&l, 0x5d10, 0x3500, "eat"), 1, 0].iter().enumerate() {
+            l.guest_write::<u32>(imt + 4 * k as u32, *v).unwrap();
+        }
+        let dsci = put_sci(&l, 0x4400, dog_id, &[animal_id], 0x5f00, 0, dcds, dccds,
+                           [(0, 0), (domt, 2), (0, 0), (0, 0), (0, 0), (imt, 1)], 0, 0x7600, 0);
+        let r = call(&l, SOM_BUILD_CLASS, &[0, dsci, 1, 0]);
+        let ApiResult::CallChain(ref chain) = r else { panic!("{r:?}") };
+        let dog = word(dcds);
+        assert!(matches!(chain.steps.front(), Some(CallStep::Guest { proc_addr: 0x7600, args, .. }) if args[0] == dog));
+        assert_eq!(finish(&l, r), dog);
+        let rex = finish(&l, call(&l, 3300, &[dog]));
+        assert_eq!(ok(call(&l, SOM_RESOLVE, &[rex, talk])), 0x7400, "Dog's talk");
+        assert_eq!(ok(call(&l, SOM_RESOLVE, &[rex, eat])), 0x7100, "Animal's eat, inherited");
+        assert_eq!(ok(call(&l, SOM_PARENT_NUM_RESOLVE, &[word(dccds), 1, talk])), 0x7000, "the parent's talk");
+        assert_eq!(ok(call(&l, 3206, &[rex, animal])), 1, "somIsA Animal");
+    }
+
+    /// somBuildClass refuses what it cannot build: an unknown layout, a
+    /// missing parent or metaclass (SOMERROR_BadArgument / NoParentClass /
+    /// NoMetaClass, fatal).
+    #[test]
+    fn build_class_errors() {
+        let l = Loader::new_mock();
+        l.som_init();
+        let id = ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3000, "Lost")]));
+        let missing = ok(call(&l, SOM_ID_FROM_STRING, &[put(&l, 0x3100, "NoSuchParent")]));
+        let none = [(0, 0); 6];
+        let sci = put_sci(&l, 0x4000, id, &[missing], 0x5900, 0, 0x5000, 0, none, 0, 0, 0);
+        assert!(matches!(call(&l, SOM_BUILD_CLASS, &[0, sci, 0, 0]), ApiResult::ExitProcess(SOMERROR_NO_PARENT_CLASS)));
+        let sci = put_sci(&l, 0x4000, id, &[], 0x5900, 0, 0x5000, 0, none, 0, 0, missing);
+        assert!(matches!(call(&l, SOM_BUILD_CLASS, &[0, sci, 0, 0]), ApiResult::ExitProcess(SOMERROR_NO_META_CLASS)));
+        l.guest_write::<u32>(0x4000, 99).unwrap();
+        assert!(matches!(call(&l, SOM_BUILD_CLASS, &[0, 0x4000, 0, 0]), ApiResult::ExitProcess(SOMERROR_BAD_ARGUMENT)));
+        assert!(matches!(call(&l, SOM_BUILD_CLASS, &[0, 0, 0, 0]), ApiResult::ExitProcess(SOMERROR_BAD_ARGUMENT)));
+        // Huge counts are capped, not trusted: no read past the tables.
+        let sci = put_sci(&l, 0x4000, id, &[], 0x5900, 0, 0x5000, 0, [(0x0FFF_FFF0, u32::MAX); 6], 0, 0, 0);
+        let r = call(&l, SOM_BUILD_CLASS, &[0, sci, 0, 0]);
+        assert!(matches!(r, ApiResult::Normal(c) if c != 0), "{r:?}");
     }
 }

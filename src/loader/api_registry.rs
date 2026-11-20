@@ -910,6 +910,8 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,i,a| l.som_call(i,3076,&a) },
     ApiEntry { ordinal: SOM_BASE + 3077, module: "SOM", name: "somParentNumResolve", argc: 3,
                handler: |l,_v,i,a| l.som_call(i,3077,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3078, module: "SOM", name: "somBuildClass", argc: 4,
+               handler: |l,_v,i,a| l.som_call(i,3078,&a) },
     ApiEntry { ordinal: SOM_BASE + 3080, module: "SOM", name: "WrpSomMalloc", argc: 1,
                handler: |l,_v,i,a| l.som_call(i,3080,&a) },
     ApiEntry { ordinal: SOM_BASE + 3081, module: "SOM", name: "WrpSomCalloc", argc: 2,

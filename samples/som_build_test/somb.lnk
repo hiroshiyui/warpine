@@ -1,0 +1,3 @@
+# The SOM kernel entries this check adds to samples/som_test/som.lnk (by name).
+import somBuildClass           SOM.somBuildClass
+import somParentNumResolve     SOM.somParentNumResolve

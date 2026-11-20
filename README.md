@@ -215,6 +215,7 @@ samples/               OS/2 sample applications and build scripts
   pm_xshell_test/      The session's switch list, window list, system atoms and DDE between programs
   pm_xdrag_test/       Drag and drop between programs: DM_* messages, DRAGINFO and DM_RENDER across them
   pm_paint_input_test/ Update regions, clicks to the deepest window, WM_HITTEST, WinQueryQueueStatus, must-complete sections
+  som_build_test/      somBuildClass: classes from static class information, in the program and in a DLL
   som_layout_test/     IBM's SOM layouts: ClassData release order, somMethodTab header, parentMtab
   som_ordinal_test/    SOM.DLL imported by IBM's ordinals 1–47 (osFree's list): data, NewClass, ids, printing
   som_test/            Open Watcom's SOM samples (helloc, classes, animals, hellocpp) on Warpine's SOM runtime, with hand-written C and C++ bindings, and class loading and unloading by name

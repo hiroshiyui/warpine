@@ -467,6 +467,7 @@ SOM.3074   somGetGlobalEnvironment
 SOM.3075   somIsObj
 SOM.3076   somSetOutChar
 SOM.3077   somParentNumResolve
+SOM.3078   somBuildClass
 SOM.3080   WrpSomMalloc
 SOM.3081   WrpSomCalloc
 SOM.3082   WrpSomRealloc
