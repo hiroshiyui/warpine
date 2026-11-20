@@ -173,7 +173,45 @@ void run_checks(HWND hwnd)
     GpiQueryCurrentPosition(hps, &pos);
     check("GpiMove / GpiQueryCurrentPosition", pos.x == 120 && pos.y == 30, 1);
     check("GpiSetColor / GpiQueryColor", GpiSetColor(hps, CLR_RED) && GpiQueryColor(hps) == CLR_RED, 1);
+
+    RECTL r1 = { 0, 0, 10, 10 }, r2 = { 20, 0, 30, 10 }, box;
+    HRGN a1 = GpiCreateRegion(hps, 1, &r1), a2 = GpiCreateRegion(hps, 1, &r2);
+    check("GpiCombineRegion(CRGN_OR) of two rectangles is complex",
+          GpiCombineRegion(hps, a1, a1, a2, CRGN_OR), RGN_COMPLEX);
+    check("GpiQueryRegionBox", GpiQueryRegionBox(hps, a1, &box) != RGN_ERROR
+          && box.xLeft == 0 && box.xRight == 30 && box.yTop == 10, 1);
+    POINTL gap = { 15, 5 }, hit = { 25, 5 };
+    check("GpiPtInRegion", GpiPtInRegion(hps, a1, &gap) == PRGN_OUTSIDE
+          && GpiPtInRegion(hps, a1, &hit) == PRGN_INSIDE, 1);
+    GpiDestroyRegion(hps, a1);
+    GpiDestroyRegion(hps, a2);
+
+    LONG horiz = 0, vert = 0;
+    check("GpiSetTextAlignment / GpiQueryTextAlignment", GpiSetTextAlignment(hps, TA_CENTER, TA_TOP)
+          && GpiQueryTextAlignment(hps, &horiz, &vert) && horiz == TA_CENTER && vert == TA_TOP, 1);
+    MATRIXLF m = { MAKEFIXED(1, 0), 0, 0, 0, MAKEFIXED(1, 0), 0, 7, 9, 1 }, back;
+    check("GpiSetModelTransformMatrix / GpiQueryModelTransformMatrix",
+          GpiSetModelTransformMatrix(hps, 9, &m, TRANSFORM_REPLACE)
+          && GpiQueryModelTransformMatrix(hps, 9, &back) && back.lM31 == 7 && back.lM32 == 9, 1);
     WinReleasePS(hps);
+
+    HENUM henum = WinBeginEnumWindows(HWND_DESKTOP);
+    int found_frame = 0;
+    for (HWND w; (w = WinGetNextWindow(henum)) != NULLHANDLE; ) found_frame |= w == frame;
+    WinEndEnumWindows(henum);
+    check("WinBeginEnumWindows finds the frame among the desktop's children", found_frame, 1);
+
+    struct { USHORT cAccel, codepage; ACCEL a[2]; } table = {
+        2, 0, { { AF_CHAR | AF_CONTROL, 'q', 101 }, { AF_VIRTUALKEY, VK_F1, 102 } } };
+    HACCEL haccel = WinCreateAccelTable(hab, (PACCELTABLE)&table);
+    struct { USHORT cAccel, codepage; ACCEL a[2]; } copy;
+    memset(&copy, 0, sizeof copy);
+    check("WinCreateAccelTable / WinCopyAccelTable", haccel != NULLHANDLE
+          && WinCopyAccelTable(haccel, (PACCELTABLE)&copy, sizeof copy) && copy.cAccel == 2
+          && copy.a[1].key == VK_F1 && copy.a[1].cmd == 102, 1);
+    WinDestroyAccelTable(haccel);
+    check("WinCompareStrings", WinCompareStrings(hab, 0, 0, "apple", "banana", 0) == WCS_LT
+          && WinCompareStrings(hab, 0, 0, "same", "same", 0) == WCS_EQ, 1);
 }
 
 int main(void)

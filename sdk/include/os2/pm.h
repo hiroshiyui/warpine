@@ -937,6 +937,129 @@ APIRET  APIENTRY WinWaitEventSem(HEV hev, ULONG ulTimeout);
 APIRET  APIENTRY WinRequestMutexSem(HMTX hmtx, ULONG ulTimeout);
 APIRET  APIENTRY WinWaitMuxWaitSem(HMUX hmux, ULONG ulTimeout, PULONG pulUser);
 
+/* Enumerating windows */
+typedef LHANDLE HENUM;
+HENUM   APIENTRY WinBeginEnumWindows(HWND hwnd);
+HWND    APIENTRY WinGetNextWindow(HENUM henum);
+BOOL    APIENTRY WinEndEnumWindows(HENUM henum);
+LONG    APIENTRY WinMultWindowFromIDs(HWND hwndParent, PHWND prghwnd, ULONG idFirst, ULONG idLast);
+BOOL    APIENTRY WinGetMaxPosition(HWND hwnd, PSWP pswp);
+BOOL    APIENTRY WinGetMinPosition(HWND hwnd, PSWP pswp, PPOINTL pptl);
+LONG    APIENTRY WinQueryUpdateRegion(HWND hwnd, HRGN hrgn);
+LONG    APIENTRY WinExcludeUpdateRegion(HPS hps, HWND hwnd);
+BOOL    APIENTRY WinValidateRegion(HWND hwnd, HRGN hrgn, BOOL fIncludeChildren);
+BOOL    APIENTRY WinShowTrackRect(HWND hwnd, BOOL fShow);
+
+/* Accelerator tables */
+#define AF_CHAR        0x0001
+#define AF_VIRTUALKEY  0x0002
+#define AF_SCANCODE    0x0004
+#define AF_SHIFT       0x0008
+#define AF_CONTROL     0x0010
+#define AF_ALT         0x0020
+#define AF_LONEKEY     0x0040
+#define AF_SYSCOMMAND  0x0100
+#define AF_HELP        0x0200
+
+typedef struct _ACCEL {
+    USHORT fs;
+    USHORT key;
+    USHORT cmd;
+} ACCEL, *PACCEL;
+
+typedef struct _ACCELTABLE {
+    USHORT cAccel;
+    USHORT codepage;
+    ACCEL  aaccel[1];
+} ACCELTABLE, *PACCELTABLE;
+
+HACCEL  APIENTRY WinCreateAccelTable(HAB hab, PACCELTABLE pAccelTable);
+ULONG   APIENTRY WinCopyAccelTable(HACCEL haccel, PACCELTABLE pAccelTable, ULONG cbCopyMax);
+BOOL    APIENTRY WinTranslateAccel(HAB hab, HWND hwnd, HACCEL haccel, PQMSG pqmsg);
+
+/* Message filtering and hooks */
+#define HK_SENDMSG          0
+#define HK_INPUT            1
+#define HK_MSGFILTER        2
+#define HK_JOURNALRECORD    3
+#define HK_JOURNALPLAYBACK  4
+#define HK_HELP             5
+#define HK_LOADER           6
+#define HK_REGISTERUSERMSG  7
+#define HK_MSGCONTROL       8
+#define HK_FINDWORD         11
+#define HK_CODEPAGECHANGED  12
+#define HK_WINDOWDC         15
+#define HK_DESTROYWINDOW    16
+#define HK_CHECKMSGFILTER   20
+#define HK_MSGINPUT         21
+#define HK_LOCKUP           23
+#define HK_FLUSHBUF         24
+
+BOOL    APIENTRY WinSetHook(HAB hab, HMQ hmq, LONG iHook, PFN pfnHook, HMODULE hmod);
+BOOL    APIENTRY WinReleaseHook(HAB hab, HMQ hmq, LONG iHook, PFN pfnHook, HMODULE hmod);
+BOOL    APIENTRY WinCallMsgFilter(HAB hab, PQMSG pqmsg, ULONG msgf);
+BOOL    APIENTRY WinGetDlgMsg(HWND hwndDlg, PQMSG pqmsg);
+BOOL    APIENTRY WinCheckInput(HAB hab);
+BOOL    APIENTRY WinIsThreadActive(HAB hab);
+
+/* Error information */
+typedef struct _ERRINFO {
+    ULONG   cbFixedErrInfo;
+    ERRORID idError;
+    ULONG   cDetailLevel;
+    ULONG   offaoffszMsg;
+    ULONG   offBinaryData;
+} ERRINFO, *PERRINFO;
+
+PERRINFO APIENTRY WinGetErrorInfo(HAB hab);
+BOOL     APIENTRY WinFreeErrorInfo(PERRINFO perrinfo);
+
+/* The clipboard's owner and viewer */
+HWND    APIENTRY WinQueryClipbrdOwner(HAB hab);
+BOOL    APIENTRY WinSetClipbrdOwner(HAB hab, HWND hwnd);
+HWND    APIENTRY WinQueryClipbrdViewer(HAB hab);
+BOOL    APIENTRY WinSetClipbrdViewer(HAB hab, HWND hwndNewClipViewer);
+
+/* Codepage-aware text */
+#define WCS_ERROR  0
+#define WCS_EQ     1
+#define WCS_LT     2
+#define WCS_GT     3
+ULONG   APIENTRY WinCompareStrings(HAB hab, ULONG idcp, ULONG idcc, PCSZ psz1, PCSZ psz2, ULONG reserved);
+ULONG   APIENTRY WinQueryCpList(HAB hab, ULONG ccpMax, PULONG prgcp);
+BOOL    APIENTRY WinCpTranslateString(HAB hab, ULONG cpSrc, PCSZ pszSrc, ULONG cpDst, ULONG cchDestMax,
+                                      PSZ pchDest);
+PSZ     APIENTRY WinNextChar(HAB hab, ULONG idcp, ULONG idcc, PCSZ psz);
+PSZ     APIENTRY WinPrevChar(HAB hab, ULONG idcp, ULONG idcc, PCSZ pszStart, PCSZ psz);
+
+/* Cursor and pointer information */
+typedef struct _CURSORINFO {
+    HWND  hwnd;
+    LONG  x;
+    LONG  y;
+    LONG  cx;
+    LONG  cy;
+    ULONG fs;
+    RECTL rclClip;
+} CURSORINFO, *PCURSORINFO;
+
+typedef struct _POINTERINFO {
+    ULONG   fPointer;
+    LONG    xHotspot;
+    LONG    yHotspot;
+    HBITMAP hbmPointer;
+    HBITMAP hbmColor;
+    HBITMAP hbmMiniPointer;
+    HBITMAP hbmMiniColor;
+} POINTERINFO, *PPOINTERINFO;
+
+BOOL     APIENTRY WinQueryCursorInfo(HWND hwndDesktop, PCURSORINFO pCursorInfo);
+BOOL     APIENTRY WinQueryPointerInfo(HPOINTER hptr, PPOINTERINFO pPointerInfo);
+HPOINTER APIENTRY WinCreatePointer(HWND hwndDesktop, HBITMAP hbmPointer, BOOL fPointer, LONG xHotspot,
+                                   LONG yHotspot);
+HPOINTER APIENTRY WinCreatePointerIndirect(HWND hwndDesktop, PPOINTERINFO pptri);
+
 #endif /* INCL_WIN */
 
 /* ═══ Graphics (PMGPI) ═════════════════════════════════════════════════ */
@@ -1212,6 +1335,259 @@ LONG    APIENTRY GpiSetClipRegion(HPS hps, HRGN hrgn, PHRGN phrgnOld);
 LONG    APIENTRY GpiQueryClipBox(HPS hps, PRECTL prclBound);
 LONG    APIENTRY GpiIntersectClipRectangle(HPS hps, PRECTL prclRectangle);
 LONG    APIENTRY GpiExcludeClipRectangle(HPS hps, PRECTL prclRectangle);
+
+/* Regions */
+#define CRGN_OR      1
+#define CRGN_COPY    2
+#define CRGN_XOR     4
+#define CRGN_AND     6
+#define CRGN_DIFF    7
+#define RGN_ERROR    0
+#define RGN_NULL     1
+#define RGN_RECT     2
+#define RGN_COMPLEX  3
+#define PRGN_ERROR   0
+#define PRGN_OUTSIDE 1
+#define PRGN_INSIDE  2
+#define RRGN_ERROR   0
+#define RRGN_OUTSIDE 1
+#define RRGN_PARTIAL 2
+#define RRGN_INSIDE  3
+#define EQRGN_ERROR    0
+#define EQRGN_NOTEQUAL 1
+#define EQRGN_EQUAL    2
+
+typedef struct _RGNRECT {
+    ULONG ircStart;
+    ULONG crc;
+    ULONG crcReturned;
+    ULONG ulDirection;
+} RGNRECT, *PRGNRECT;
+
+LONG    APIENTRY GpiCombineRegion(HPS hps, HRGN hrgnDest, HRGN hrgnSrc1, HRGN hrgnSrc2, LONG lMode);
+LONG    APIENTRY GpiEqualRegion(HPS hps, HRGN hrgnSrc1, HRGN hrgnSrc2);
+LONG    APIENTRY GpiPtInRegion(HPS hps, HRGN hrgn, PPOINTL pptlPoint);
+LONG    APIENTRY GpiRectInRegion(HPS hps, HRGN hrgn, PRECTL prclRect);
+LONG    APIENTRY GpiQueryRegionBox(HPS hps, HRGN hrgn, PRECTL prclBound);
+BOOL    APIENTRY GpiQueryRegionRects(HPS hps, HRGN hrgn, PRECTL prclBound, PRGNRECT prgnrcControl,
+                                     PRECTL prclRect);
+BOOL    APIENTRY GpiOffsetRegion(HPS hps, HRGN hrgn, PPOINTL pptlOffset);
+BOOL    APIENTRY GpiSetRegion(HPS hps, HRGN hrgn, LONG lcount, PRECTL arclRectangles);
+LONG    APIENTRY GpiFrameRegion(HPS hps, HRGN hrgn, PSIZEL thickness);
+HRGN    APIENTRY GpiQueryClipRegion(HPS hps);
+LONG    APIENTRY GpiOffsetClipRegion(HPS hps, PPOINTL pptlPoint);
+
+/* Paths and curves */
+#define MPATH_STROKE   6
+#define FPATH_ALTERNATE 0
+#define FPATH_WINDING  2
+#define FPATH_INCL     0
+#define FPATH_EXCL     8
+#define SCP_ALTERNATE  0
+#define SCP_WINDING    2
+#define SCP_AND        4
+#define SCP_RESET      0
+#define SCP_INCL       0
+#define SCP_EXCL       8
+HRGN    APIENTRY GpiPathToRegion(HPS hps, LONG lPath, LONG lOptions);
+LONG    APIENTRY GpiOutlinePath(HPS hps, LONG lPath, LONG lOptions);
+BOOL    APIENTRY GpiModifyPath(HPS hps, LONG lPath, LONG lMode);
+BOOL    APIENTRY GpiSetClipPath(HPS hps, LONG lPath, LONG lOptions);
+LONG    APIENTRY GpiPolyFillet(HPS hps, LONG lCount, PPOINTL aptlPoints);
+LONG    APIENTRY GpiPolyFilletSharp(HPS hps, LONG lCount, PPOINTL aptlPoints, PFIXED afxPoints);
+LONG    APIENTRY GpiPolySpline(HPS hps, LONG lCount, PPOINTL aptlPoints);
+
+typedef struct _POLYGON {
+    ULONG   ulPoints;
+    PPOINTL aPointl;
+} POLYGON, *PPOLYGON;
+LONG    APIENTRY GpiPolygons(HPS hps, ULONG ulCount, PPOLYGON paplgn, ULONG flOptions, ULONG flModel);
+
+/* Transforms */
+#define TRANSFORM_REPLACE  0
+#define TRANSFORM_ADD      1
+#define TRANSFORM_PREEMPT  2
+#define CVTC_WORLD         1
+#define CVTC_MODEL         2
+#define CVTC_DEFAULTPAGE   3
+#define CVTC_PAGE          4
+#define CVTC_DEVICE        5
+
+typedef struct _MATRIXLF {
+    FIXED fxM11;
+    FIXED fxM12;
+    LONG  lM13;
+    FIXED fxM21;
+    FIXED fxM22;
+    LONG  lM23;
+    LONG  lM31;
+    LONG  lM32;
+    LONG  lM33;
+} MATRIXLF, *PMATRIXLF;
+
+BOOL    APIENTRY GpiSetModelTransformMatrix(HPS hps, LONG lCount, PMATRIXLF pmatlfArray, LONG lOptions);
+BOOL    APIENTRY GpiQueryModelTransformMatrix(HPS hps, LONG lCount, PMATRIXLF pmatlfArray);
+BOOL    APIENTRY GpiSetDefaultViewMatrix(HPS hps, LONG lCount, PMATRIXLF pmatlfarray, LONG lOptions);
+BOOL    APIENTRY GpiQueryDefaultViewMatrix(HPS hps, LONG lCount, PMATRIXLF pmatlfArray);
+BOOL    APIENTRY GpiSetViewingTransformMatrix(HPS hps, LONG lCount, PMATRIXLF pmatlfArray, LONG lOptions);
+BOOL    APIENTRY GpiQueryViewingTransformMatrix(HPS hps, LONG lCount, PMATRIXLF pmatlfArray);
+BOOL    APIENTRY GpiTranslate(HPS hps, PMATRIXLF pmatrixlf, LONG lOptions, PPOINTL pptlTranslation);
+BOOL    APIENTRY GpiScale(HPS hps, PMATRIXLF pmfatrixlf, LONG lOptions, PFIXED afxScale, PPOINTL pptlCenter);
+BOOL    APIENTRY GpiRotate(HPS hps, PMATRIXLF pmatrixlf, LONG lOptions, FIXED fxAngle, PPOINTL pptlCenter);
+BOOL    APIENTRY GpiConvert(HPS hps, LONG lSrc, LONG lTarg, LONG lCount, PPOINTL aptlPoints);
+BOOL    APIENTRY GpiConvertWithMatrix(HPS hps, LONG lCountp, PPOINTL aptlPoints, LONG lCount,
+                                      PMATRIXLF pmatlfArray);
+BOOL    APIENTRY GpiSetPageViewport(HPS hps, PRECTL prclViewport);
+BOOL    APIENTRY GpiQueryPageViewport(HPS hps, PRECTL prclViewport);
+BOOL    APIENTRY GpiSetGraphicsField(HPS hps, PRECTL prclField);
+BOOL    APIENTRY GpiQueryGraphicsField(HPS hps, PRECTL prclField);
+BOOL    APIENTRY GpiSetViewingLimits(HPS hps, PRECTL prclLimits);
+BOOL    APIENTRY GpiQueryViewingLimits(HPS hps, PRECTL prclLimits);
+BOOL    APIENTRY GpiResetPS(HPS hps, ULONG flOptions);
+ULONG   APIENTRY GpiQueryPS(HPS hps, PSIZEL psizlSize);
+BOOL    APIENTRY GpiSetPS(HPS hps, PSIZEL psizlsize, ULONG flOptions);
+
+/* More attributes */
+#define CHDIRN_DEFAULT     0
+#define CHDIRN_LEFTRIGHT   1
+#define CHDIRN_TOPBOTTOM   2
+#define CHDIRN_RIGHTLEFT   3
+#define CHDIRN_BOTTOMTOP   4
+#define TA_NORMAL_HORIZ    0x0001
+#define TA_LEFT            0x0002
+#define TA_CENTER          0x0003
+#define TA_RIGHT           0x0004
+#define TA_STANDARD_HORIZ  0x0005
+#define TA_NORMAL_VERT     0x0100
+#define TA_TOP             0x0200
+#define TA_HALF            0x0300
+#define TA_BASE            0x0400
+#define TA_BOTTOM          0x0500
+#define TA_STANDARD_VERT   0x0600
+#define LCOL_RESET         0x0001
+#define LCOL_PURECOLOR     0x0004
+#define LCOLF_DEFAULT      0
+#define LCOLF_INDRGB       1
+#define LCOLF_CONSECRGB    2
+#define LCOLF_RGB          3
+
+BOOL    APIENTRY GpiQueryCharAngle(HPS hps, PGRADIENTL pgradlAngle);
+BOOL    APIENTRY GpiSetCharDirection(HPS hps, LONG lDirection);
+LONG    APIENTRY GpiQueryCharDirection(HPS hps);
+LONG    APIENTRY GpiQueryCharMode(HPS hps);
+BOOL    APIENTRY GpiSetCharShear(HPS hps, PPOINTL pptlAngle);
+BOOL    APIENTRY GpiQueryCharShear(HPS hps, PPOINTL pptlShear);
+BOOL    APIENTRY GpiSetCharExtra(HPS hps, FIXED Extra);
+BOOL    APIENTRY GpiQueryCharExtra(HPS hps, PFIXED Extra);
+BOOL    APIENTRY GpiSetCharBreakExtra(HPS hps, FIXED BreakExtra);
+BOOL    APIENTRY GpiQueryCharBreakExtra(HPS hps, PFIXED BreakExtra);
+BOOL    APIENTRY GpiSetTextAlignment(HPS hps, LONG lHoriz, LONG lVert);
+BOOL    APIENTRY GpiQueryTextAlignment(HPS hps, PLONG plHoriz, PLONG plVert);
+BOOL    APIENTRY GpiSetPatternRefPoint(HPS hps, PPOINTL pptlRefPoint);
+BOOL    APIENTRY GpiQueryPatternRefPoint(HPS hps, PPOINTL pptlRefPoint);
+BOOL    APIENTRY GpiSetLineWidthGeom(HPS hps, LONG lLineWidth);
+LONG    APIENTRY GpiQueryLineWidthGeom(HPS hps);
+LONG    APIENTRY GpiQueryColorIndex(HPS hps, ULONG flOptions, LONG lRgbColor);
+LONG    APIENTRY GpiQueryLogColorTable(HPS hps, ULONG flOptions, LONG lStart, LONG lCount, PLONG alArray);
+
+/* Text positions and fonts */
+#define QF_PUBLIC   0x0001
+#define QF_PRIVATE  0x0002
+BOOL    APIENTRY GpiQueryWidthTable(HPS hps, LONG lFirstChar, LONG lCount, PLONG alData);
+LONG    APIENTRY GpiCharStringPos(HPS hps, PRECTL prclRect, ULONG flOptions, LONG lCount, PCCH pchString,
+                                  PLONG alAdx);
+BOOL    APIENTRY GpiQueryCharStringPos(HPS hps, ULONG flOptions, LONG lCount, PCCH pchString,
+                                       PLONG alXincrements, PPOINTL aptlPositions);
+BOOL    APIENTRY GpiQueryCharStringPosAt(HPS hps, PPOINTL pptlStart, ULONG flOptions, LONG lCount,
+                                         PCCH pchString, PLONG alXincrements, PPOINTL aptlPositions);
+LONG    APIENTRY GpiQueryFonts(HPS hps, ULONG flOptions, PCSZ pszFacename, PLONG plReqFonts,
+                               LONG lMetricsLength, PFONTMETRICS afmMetrics);
+BOOL    APIENTRY GpiLoadFonts(HAB hab, PCSZ pszFilename);
+BOOL    APIENTRY GpiLoadPublicFonts(HAB hab, PCSZ pszFilename);
+BOOL    APIENTRY GpiUnloadPublicFonts(HAB hab, PCSZ pszFilename);
+
+/* Bitmaps built in memory */
+#define CBM_INIT     0x0004
+#define BCA_UNCOMP   0
+#define BCA_RLE8     1
+#define BCA_RLE4     2
+#define BCA_RLE24    4
+
+typedef struct _RGB2 {
+    BYTE bBlue;
+    BYTE bGreen;
+    BYTE bRed;
+    BYTE fcOptions;
+} RGB2, *PRGB2;
+
+typedef struct _BITMAPINFOHEADER {
+    ULONG  cbFix;
+    USHORT cx;
+    USHORT cy;
+    USHORT cPlanes;
+    USHORT cBitCount;
+} BITMAPINFOHEADER, *PBITMAPINFOHEADER;
+
+typedef struct _BITMAPINFOHEADER2 {
+    ULONG  cbFix;
+    ULONG  cx;
+    ULONG  cy;
+    USHORT cPlanes;
+    USHORT cBitCount;
+    ULONG  ulCompression;
+    ULONG  cbImage;
+    ULONG  cxResolution;
+    ULONG  cyResolution;
+    ULONG  cclrUsed;
+    ULONG  cclrImportant;
+    USHORT usUnits;
+    USHORT usReserved;
+    USHORT usRecording;
+    USHORT usRendering;
+    ULONG  cSize1;
+    ULONG  cSize2;
+    ULONG  ulColorEncoding;
+    ULONG  ulIdentifier;
+} BITMAPINFOHEADER2, *PBITMAPINFOHEADER2;
+
+/* A header followed by its colour table (argbColor holds cclrUsed, or
+ * 2^cBitCount, entries). */
+typedef struct _BITMAPINFO2 {
+    ULONG  cbFix;
+    ULONG  cx;
+    ULONG  cy;
+    USHORT cPlanes;
+    USHORT cBitCount;
+    ULONG  ulCompression;
+    ULONG  cbImage;
+    ULONG  cxResolution;
+    ULONG  cyResolution;
+    ULONG  cclrUsed;
+    ULONG  cclrImportant;
+    USHORT usUnits;
+    USHORT usReserved;
+    USHORT usRecording;
+    USHORT usRendering;
+    ULONG  cSize1;
+    ULONG  cSize2;
+    ULONG  ulColorEncoding;
+    ULONG  ulIdentifier;
+    RGB2   argbColor[1];
+} BITMAPINFO2, *PBITMAPINFO2;
+
+HBITMAP APIENTRY GpiCreateBitmap(HPS hps, PBITMAPINFOHEADER2 pbmpNew, ULONG flOptions, PBYTE pbInitData,
+                                 PBITMAPINFO2 pbmiInfoTable);
+LONG    APIENTRY GpiSetBitmapBits(HPS hps, LONG lScanStart, LONG lScans, PBYTE pbBuffer,
+                                  PBITMAPINFO2 pbmiInfoTable);
+LONG    APIENTRY GpiQueryBitmapBits(HPS hps, LONG lScanStart, LONG lScans, PBYTE pbBuffer,
+                                    PBITMAPINFO2 pbmiInfoTable);
+BOOL    APIENTRY GpiQueryBitmapInfoHeader(HBITMAP hbm, PBITMAPINFOHEADER2 pbmpData);
+BOOL    APIENTRY GpiQueryBitmapParameters(HBITMAP hbm, PBITMAPINFOHEADER pbmpData);
+BOOL    APIENTRY GpiQueryDeviceBitmapFormats(HPS hps, LONG lCount, PLONG alArray);
+LONG    APIENTRY GpiDrawBits(HPS hps, PVOID pBits, PBITMAPINFO2 pbmiInfoTable, LONG lCount, PPOINTL aptlPoints,
+                             LONG lRop, ULONG flOptions);
+LONG    APIENTRY GpiWCBitBlt(HPS hpsTarget, HBITMAP hbmSource, LONG lCount, PPOINTL aptlPoints, LONG lRop,
+                             ULONG flOptions);
 
 #endif /* INCL_GPI */
 

@@ -2476,14 +2476,16 @@ The test `layer_map_matches_src_and_the_committed_diagram` runs the validation a
   - `os2/dos.h` has the Dos* and Que* calls, their structures and flags;
   - `os2/errors.h` has the `ERROR_*` codes;
   - `os2/sub.h` has VIO, KBD and MOU;
-  - `os2/pm.h` has a PM subset (ADR-0097): 168 PMWIN and 68 PMGPI calls, packed to 2 bytes; its constant blocks were written from Warpine's own values.
+  - `os2/pm.h` has the PM calls (ADR-0097, ADR-0098), packed to 2 bytes; its first constant blocks were written from Warpine's own values.
+  - Together the headers declare 549 of the 579 entries of their modules; ADR-0098 lists the 30 left out.
 - **Pascal calls:** each subsystem call is one `OS2_PASCAL_API(ret, Name, (params), (reversed params), (reversed args))` line. It declares the import `_os2p_Name` (stdcall, the arguments reversed and widened, linked as `Name`) and an always-inline `Name` in the documented order, linked as `_os2i_Name` so the two never share a symbol (clang would otherwise call the wrapper as the import).
 - **The runtime** (`libc/`):
   - `crt0.c`: `argv` / `envp`, the init arrays, `exit(main(...))`;
-  - `stdlib.c`: `exit`, `atexit`, `getenv`, conversions, `qsort`, the runtime's lock and `errno`;
+  - `stdlib.c`: `exit`, `atexit`, `getenv`, conversions, `qsort`, the runtime's lock, and `errno` (`__errno_location`: a word of thread-local memory `crt0` allocates, ADR-0098);
   - `malloc.c`: first-fit, 16-byte aligned, arenas from `DosAllocMem`;
   - `stdio.c`: streams on OS/2 handles, writes straight through;
-  - `printf.c`: no floating point;
+  - `printf.c`: the formatter; doubles are rounded once, ties to even, on the digits `dtoa.c` gives;
+  - `dtoa.c`: the exact decimal digits of a double, from its mantissa and exponent with word-array arithmetic (no floating-point instructions);
   - `string.c`;
   - `divdi3.c`: 64-bit division.
 - **Building:** `sdk/Makefile` builds `build/<compiler>/crt0.o` and `libos2c.a`. GCC builds the runtime with `-fno-tree-loop-distribute-patterns`, so `memset` never becomes a call to itself.

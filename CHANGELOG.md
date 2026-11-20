@@ -20,6 +20,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   - **`targets/os2api.def`** now lists the 362 PMWIN and PMGPI calls the PM sub-dispatchers serve, so `lx-link` links PM programs.
   - **`gen_api check-headers`** compares every integer constant in the headers with Warpine's own (801 of 962), and checks `EXPENTRY` declarations too.
   - **`samples/c_pm_test`:** a PM program, 33 checks, passing built by GCC and by clang.
+- **The C runtime: a per-thread `errno` and floating point in `printf`** (ADR-0098).
+  - **`errno`** is a word of OS/2 thread-local memory: every thread has its own, starting at 0.
+  - **`printf`** formats doubles (`%e %f %g`, all flags, `L` for `long double`) from their exact decimal digits, rounded once with ties to even, with no floating-point instruction.
+  - **More declarations:** the headers declare 549 of the 579 entries of their modules: `DosProtect*`, window enumeration, accelerator tables, hooks, regions, transforms, text alignment, bitmaps built in memory and more.
+  - **The samples:** `c_sdk_test` has 56 checks and `c_pm_test` 41, all passing with GCC and with clang.
 - **C programs from GCC and clang** (ADR-0095). Unmodified GCC or clang builds freestanding i386 ELF objects, and `lx-link` turns them into OS/2 programs.
   - **`lx-link` now handles:**
     - every `.text.*` / `.rodata.*` / `.data.*` / `.bss.*` variant;

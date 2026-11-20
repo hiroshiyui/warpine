@@ -66,6 +66,7 @@ __attribute__((force_align_arg_pointer, noreturn, used))
 void _start(ULONG hmod, ULONG reserved, char *env, char *cmd)
 {
     (void)hmod; (void)reserved;
+    __libc_init_errno();
     __libc_env = env;
 
     const char *name = cmd ? cmd : "";

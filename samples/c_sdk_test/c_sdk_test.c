@@ -87,6 +87,57 @@ static void test_strings(void)
     check(!strcmp(buf, "   7|007"), "printf * width and precision");
 }
 
+/* ── Floating point in printf ───────────────────────────────────────── */
+/* The expected text is what a correctly rounding printf prints (ties to
+ * even on the exact binary value). */
+static void test_floats(void)
+{
+    static const struct { const char *fmt; double value; const char *want; } cases[] = {
+        { "%f", 3.14159, "3.141590" },
+        { "%.2f", 2.675, "2.67" },
+        { "%.0f", 0.5, "0" },
+        { "%.0f", 1.5, "2" },
+        { "%.0f", 2.5, "2" },
+        { "%e", 1234.5, "1.234500e+03" },
+        { "%.3e", 5e-324, "4.941e-324" },
+        { "%g", 0.0001234, "0.0001234" },
+        { "%g", 1e+20, "1e+20" },
+        { "%g", 100000.0, "100000" },
+        { "%g", 1000000.0, "1e+06" },
+        { "%.17g", 0.1, "0.10000000000000001" },
+        { "%.20f", 0.1, "0.10000000000000000555" },
+        { "%10.3f", -1.5, "    -1.500" },
+        { "%+.1e", 0.0, "+0.0e+00" },
+        { "%#.3g", 1.0, "1.00" },
+        { "%.3g", 100.0, "100" },
+        { "%G", 1e-10, "1E-10" },
+        { "%05.1f", 2.25, "002.2" },
+        { "%-8.2e|", -0.000123456, "-1.23e-04|" },
+        { "%.15g", 1152921504606846976.0, "1.15292150460685e+18" },
+        { "%f", 1e+300, "1000000000000000052504760255204420248704468581108159154915854115511802457988908195786371375080447864043704443832883878176942523235360430575644792184786706982848387200926575803737830233794788090059368953234970799945081119038967640880074652742780142494579258788820056842838115669472196386865459400540160.000000" },
+        { "%.10g", 1.0 / 3.0, "0.3333333333" },
+        { "%g", 123456789.0, "1.23457e+08" },
+        { "%.0e", 15.0, "2e+01" },
+        { "%.1f", 0.05, "0.1" },
+        { "%#.0f", 3.0, "3." },
+        { "%g", 1e-05, "1e-05" },
+        { "% .3f", 1.0005, " 1.000" },
+    };
+    int good = 0, n = (int)(sizeof cases / sizeof cases[0]);
+    char buf[400];
+    for (int i = 0; i < n; i++) {
+        snprintf(buf, sizeof buf, cases[i].fmt, cases[i].value);
+        if (!strcmp(buf, cases[i].want)) good++;
+        else printf("  %s of %.17g: got \"%s\" want \"%s\"\n", cases[i].fmt, cases[i].value, buf, cases[i].want);
+    }
+    check(good == n, "printf %f / %e / %g round the exact binary value, ties to even");
+    double inf = __builtin_inf(), nan = __builtin_nan("");
+    snprintf(buf, sizeof buf, "%f %E %5.1f %g", inf, -inf, nan, -0.0);
+    check(!strcmp(buf, "inf -INF   nan -0"), "infinities, NaN and negative zero");
+    snprintf(buf, sizeof buf, "%Lf|%.2Le", (long double)1.5, (long double)12345.0);
+    check(!strcmp(buf, "1.500000|1.23e+04"), "long double arguments");
+}
+
 /* ── Numbers ────────────────────────────────────────────────────────── */
 static int compare_ints(const void *a, const void *b)
 {
@@ -184,6 +235,17 @@ static void test_files(void)
     FILESTATUS3 fs;
     check(DosQueryPathInfo(path, FIL_STANDARD, &fs, sizeof fs) == NO_ERROR && fs.cbFile == 26,
           "append mode, the size through DosQueryPathInfo");
+    HFILE hf;
+    ULONG action, done = 0;
+    FHLOCK lock = 0;
+    char back[8] = "";
+    APIRET rc = DosProtectOpen(path, &hf, &action, 0, FILE_NORMAL, OPEN_ACTION_OPEN_IF_EXISTS,
+                               OPEN_ACCESS_READWRITE | OPEN_SHARE_DENYNONE, NULL, &lock);
+    rc = rc ? rc : DosProtectRead(hf, back, 4, &done, lock);
+    check(rc == NO_ERROR && done == 4 && !memcmp(back, "line", 4)
+          && DosProtectRead(hf, back, 4, &done, lock + 1) != NO_ERROR
+          && DosProtectClose(hf, lock) == NO_ERROR,
+          "DosProtectOpen / Read / Close, and a wrong lock ID is refused");
     check(remove(path) == 0 && fopen(path, "r") == NULL && errno == ENOENT,
           "remove; a missing file sets ENOENT");
 }
@@ -193,17 +255,21 @@ static HEV ready;
 static HMTX lock;
 static volatile int counter;
 static volatile int thread_aligned;
+static volatile int thread_errno_at_start = -1, thread_errno_kept = 1;
 
 static void APIENTRY worker(ULONG arg)
 {
     _Alignas(16) unsigned char probe[16];
     __asm__ volatile("" : : "r"(probe) : "memory");
     thread_aligned = ((uintptr_t)probe & 15) == 0;
+    thread_errno_at_start = errno;
+    errno = EDOM;
     for (ULONG i = 0; i < arg; i++) {
         DosRequestMutexSem(lock, SEM_INDEFINITE_WAIT);
         counter = counter + 1;
         DosReleaseMutexSem(lock);
     }
+    if (errno != EDOM) thread_errno_kept = 0;
     DosPostEventSem(ready);
 }
 
@@ -213,11 +279,14 @@ static void test_threads(void)
           && DosCreateMutexSem(NULL, &lock, 0, FALSE) == NO_ERROR, "semaphores created");
     TID tids[2];
     int ok = 1;
+    errno = ERANGE;
     for (int i = 0; i < 2; i++)
         ok &= DosCreateThread(&tids[i], worker, 500, CREATE_READY | STACK_COMMITTED, 65536) == NO_ERROR;
     for (int i = 0; ok && i < 2; i++) ok &= DosWaitThread(&tids[i], DCWW_WAIT) == NO_ERROR;
     check(ok && counter == 1000, "two threads count to 1000 under a mutex");
     check(thread_aligned, "a thread entered on a 4-byte stack realigns for 16-byte locals");
+    check(thread_errno_at_start == 0 && thread_errno_kept && errno == ERANGE,
+          "errno is per thread: a new thread starts at 0, and its EDOM leaves this thread's ERANGE");
     ULONG posts = 0;
     check(DosQueryEventSem(ready, &posts) == NO_ERROR && posts == 2, "the event semaphore was posted twice");
     DosCloseEventSem(ready);
@@ -312,6 +381,7 @@ int main(int argc, char **argv, char **envp)
 #endif
     test_startup(argc, argv, envp);
     test_strings();
+    test_floats();
     test_numbers();
     test_heap();
     test_files();

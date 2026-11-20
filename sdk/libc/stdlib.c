@@ -13,8 +13,22 @@
 
 #include "libc_internal.h"
 
-int errno;
 char *__libc_env;
+
+/* ── errno: one word of thread-local memory ─────────────────────────── */
+static int *errno_slot;
+static int errno_before_init;
+
+void __libc_init_errno(void)
+{
+    PULONG slot;
+    if (DosAllocThreadLocalMemory(1, &slot) == NO_ERROR) errno_slot = (int *)slot;
+}
+
+int *__errno_location(void)
+{
+    return errno_slot ? errno_slot : &errno_before_init;
+}
 
 /* ── The runtime's lock ─────────────────────────────────────────────── */
 void __libc_lock(libc_lock *l)

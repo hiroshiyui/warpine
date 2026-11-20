@@ -1,10 +1,12 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
-/* errno.h - Warpine's small C runtime (ADR-0096). One errno for the
- * process: not per thread yet. */
+/* errno.h - Warpine's small C runtime (ADR-0096, ADR-0098). errno is per
+ * thread: a word of OS/2 thread-local memory, which every thread starts
+ * with at zero. */
 #ifndef WARPINE_ERRNO_H
 #define WARPINE_ERRNO_H
 
-extern int errno;
+int *__errno_location(void) __attribute__((__const__));
+#define errno (*__errno_location())
 
 #define EPERM    1
 #define ENOENT   2

@@ -254,6 +254,31 @@ typedef struct _FSALLOCATE {
     USHORT cbSector;
 } FSALLOCATE, *PFSALLOCATE;
 
+/* Protected file handles: the calls with a lock ID only its holder knows. */
+typedef ULONG FHLOCK, *PFHLOCK;
+APIRET APIENTRY DosProtectOpen(PCSZ pszFileName, PHFILE phf, PULONG pulAction, ULONG cbFile,
+                               ULONG ulAttribute, ULONG fsOpenFlags, ULONG fsOpenMode, PEAOP2 peaop2,
+                               PFHLOCK pfhFileHandleLockID);
+APIRET APIENTRY DosProtectClose(HFILE hFile, FHLOCK fhFileHandleLockID);
+APIRET APIENTRY DosProtectRead(HFILE hFile, PVOID pBuffer, ULONG cbRead, PULONG pcbActual,
+                               FHLOCK fhFileHandleLockID);
+APIRET APIENTRY DosProtectWrite(HFILE hFile, const void *pBuffer, ULONG cbWrite, PULONG pcbActual,
+                                FHLOCK fhFileHandleLockID);
+APIRET APIENTRY DosProtectSetFilePtr(HFILE hFile, LONG ib, ULONG method, PULONG ibActual,
+                                     FHLOCK fhFileHandleLockID);
+APIRET APIENTRY DosProtectSetFileSize(HFILE hFile, ULONG cbSize, FHLOCK fhFileHandleLockID);
+APIRET APIENTRY DosProtectQueryFHState(HFILE hFile, PULONG pMode, FHLOCK fhFileHandleLockID);
+APIRET APIENTRY DosProtectSetFHState(HFILE hFile, ULONG mode, FHLOCK fhFileHandleLockID);
+APIRET APIENTRY DosProtectQueryFileInfo(HFILE hf, ULONG ulInfoLevel, PVOID pInfo, ULONG cbInfoBuf,
+                                        FHLOCK fhFileHandleLockID);
+APIRET APIENTRY DosProtectSetFileInfo(HFILE hf, ULONG ulInfoLevel, PVOID pInfoBuf, ULONG cbInfoBuf,
+                                      FHLOCK fhFileHandleLockID);
+APIRET APIENTRY DosProtectSetFileLocks(HFILE hFile, PFILELOCK pflUnlock, PFILELOCK pflLock, ULONG timeout,
+                                       ULONG flags, FHLOCK fhFileHandleLockID);
+APIRET APIENTRY DosProtectEnumAttribute(ULONG ulRefType, PVOID pvFile, ULONG ulEntry, PVOID pvBuf,
+                                        ULONG cbBuf, PULONG pulCount, ULONG ulInfoLevel,
+                                        FHLOCK fhFileHandleLockID);
+
 /* ── Memory ─────────────────────────────────────────────────────────── */
 #define PAG_READ      0x00000001
 #define PAG_WRITE     0x00000002

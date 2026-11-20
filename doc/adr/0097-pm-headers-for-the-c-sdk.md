@@ -1,6 +1,6 @@
 # ADR-0097: PM headers for the C SDK, and PMWIN / PMGPI in the ordinal table
 
-- **Status:** Accepted; amends ADR-0096 (what `check-headers` compares) and ADR-0095 (`lx-link`'s modules)
+- **Status:** Accepted; amended by ADR-0098 (more declarations); amends ADR-0096 (what `check-headers` compares) and ADR-0095 (`lx-link`'s modules)
 - **Date:** 2026-11-21
 - **Sources:**
   - IBM's *Presentation Manager Programming Reference*: the prototypes, structures, messages and flags.
