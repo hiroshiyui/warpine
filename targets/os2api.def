@@ -65,6 +65,8 @@ DOSCALLS.242  DosDisConnectNPipe
 DOSCALLS.243  DosCreateNPipe
 DOSCALLS.244  DosPeekNPipe
 DOSCALLS.245  DosQueryNPHState
+DOSCALLS.246  DosRawReadNPipe
+DOSCALLS.247  DosRawWriteNPipe
 DOSCALLS.248  DosQueryNPipeInfo
 DOSCALLS.249  DosQueryNPipeSemState
 DOSCALLS.250  DosSetNPHState

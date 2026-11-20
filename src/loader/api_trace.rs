@@ -62,6 +62,8 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         243 => "DosCreateNPipe",
         244 => "DosPeekNPipe",
         245 => "DosQueryNPHState",
+        246 => "DosRawReadNPipe",
+        247 => "DosRawWriteNPipe",
         248 => "DosQueryNPipeInfo",
         249 => "DosQueryNPipeSemState",
         250 => "DosSetNPHState",

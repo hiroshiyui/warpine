@@ -601,12 +601,14 @@ impl super::Loader {
                 // An ordinal Warpine does not implement is not found, so a
                 // program (or its C runtime) probing for an optional call,
                 // such as DosOpenL, falls back as on a system without it.
-                // The sub-dispatched modules' ordinals are not in the
-                // registry and are resolved as before.
-                const SUB_DISPATCHED: [&str; 5] = ["PMWIN", "PMGPI", "VIOCALLS", "KBDCALLS", "MOUCALLS"];
-                let known = SUB_DISPATCHED.contains(&mod_name.as_str())
-                    || super::constants::module_base(&mod_name)
-                        .is_some_and(|base| super::api_registry::find(base + ordinal).is_some());
+                // PMWIN and PMGPI know their dispatched calls (build.rs);
+                // the VIO / KBD / MOU ordinals are not in the registry and
+                // are resolved as before.
+                const SUB_DISPATCHED: [&str; 3] = ["VIOCALLS", "KBDCALLS", "MOUCALLS"];
+                let known = super::descriptors::pm_ordinal_is_dispatched(&mod_name, ordinal)
+                    .unwrap_or_else(|| SUB_DISPATCHED.contains(&mod_name.as_str())
+                        || super::constants::module_base(&mod_name)
+                            .is_some_and(|base| super::api_registry::find(base + ordinal).is_some()));
                 known.then(|| self.resolve_import(&mod_name, ordinal) as u32)
             } else if !name.is_empty() {
                 // By name: the module's name table or the registry (0 = unknown).

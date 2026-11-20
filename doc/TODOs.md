@@ -170,7 +170,6 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 
 ## Kernel and processes
 
-- [ ] **Exit lists**: run them on thread 1 (now the ending thread), and also after `HLT` or a KVM error on thread 1.
 - [ ] **Shared memory** (ADR-0049):
   - enforce access flags (every process can reach the whole arena now);
   - `DosAllocShrSeg` / `DosGetShrSeg`;
@@ -186,7 +185,6 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - a GDB stop request kicking the vCPUs;
   - `DosKillThread` interrupting the same calls.
 - [ ] **Pipes**:
-  - `DosRawReadNPipe` / `DosRawWriteNPipe`;
   - muxwait semaphores as pipe semaphores, and a real `NPSS_WAIT`;
   - sweeping stale `warpine-threads-*` directories;
   - echo of piped standard input.

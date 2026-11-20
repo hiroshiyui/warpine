@@ -16,10 +16,64 @@
 //      - $OUT_DIR/font_unifont_wide.rs — Rust source that includes the binary
 //        and exposes `pub fn get_glyph_dbcs(ch: char) -> [u8; 32]` via
 //        binary search.
+//
+// 3. The names of the PMWIN and PMGPI calls Warpine implements: read from
+//    their sub-dispatchers' arms (`N => {` followed by `// Name(`), and
+//    emitted as $OUT_DIR/pm_dispatch_names.rs, two name-sorted
+//    `&[(&str, u32)]` tables for `DosQueryProcAddr` by name. The arms are
+//    the one source: the tables cannot list a call that is not dispatched.
 
 fn main() {
     generate_unifont_sbcs();
     generate_unifont_wide();
+    generate_pm_dispatch_names();
+}
+
+/// The source files of the PMWIN and PMGPI sub-dispatchers' arms. The
+/// dispatch-ordinal and count tests read the same lists.
+const PMWIN_SOURCES: &[&str] = &["src/loader/pm_win.rs", "src/loader/pm_winutil.rs"];
+const PMGPI_SOURCES: &[&str] = &[
+    "src/loader/pm_gpi.rs", "src/loader/pm_region.rs", "src/loader/pm_area.rs",
+    "src/loader/pm_text.rs", "src/loader/pmspl.rs", "src/loader/pm_coords.rs",
+    "src/loader/pm_psstate.rs",
+];
+
+/// Emit $OUT_DIR/pm_dispatch_names.rs: `PMWIN_NAMES` and `PMGPI_NAMES`.
+fn generate_pm_dispatch_names() {
+    let mut out = String::new();
+    for (table, sources) in [("PMWIN_NAMES", PMWIN_SOURCES), ("PMGPI_NAMES", PMGPI_SOURCES)] {
+        let mut names: Vec<(String, u32)> = Vec::new();
+        for path in sources {
+            println!("cargo:rerun-if-changed={}", path);
+            let src = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+            names.extend(dispatched_names(&src));
+        }
+        names.sort();
+        names.dedup();
+        out.push_str(&format!("pub static {table}: &[(&str, u32)] = &[\n"));
+        for (name, ord) in &names {
+            out.push_str(&format!("    (\"{name}\", {ord}),\n"));
+        }
+        out.push_str("];\n");
+    }
+    let out_dir = std::env::var("OUT_DIR").expect("OUT_DIR not set");
+    std::fs::write(format!("{out_dir}/pm_dispatch_names.rs"), out).expect("write pm_dispatch_names.rs");
+}
+
+/// The (name, ordinal) pairs of a sub-dispatcher's `N => {` arms whose next
+/// line is a `// Name(` comment.
+fn dispatched_names(src: &str) -> Vec<(String, u32)> {
+    let lines: Vec<&str> = src.lines().map(str::trim).collect();
+    let mut names = Vec::new();
+    for pair in lines.windows(2) {
+        let Some(ord) = pair[0].strip_suffix(" => {").and_then(|o| o.parse::<u32>().ok()) else { continue };
+        let Some(rest) = pair[1].strip_prefix("// ") else { continue };
+        let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+        if name.starts_with(|c: char| c.is_ascii_uppercase()) {
+            names.push((name, ord));
+        }
+    }
+    names
 }
 
 /// Parse vendor/unifont/unifont.hex and emit $OUT_DIR/font_unifont_sbcs.rs.

@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **`DosRawReadNPipe` / `DosRawWriteNPipe`** (ADR-0087): a message pipe's messages read and written as records, a USHORT length and the bytes (Warpine's own format; the calls have public prototypes only); on a byte pipe they are `DosRead` / `DosWrite`. Sample: `samples/npipe_test`.
+
+### Fixed
+- **PMWIN and PMGPI calls by name** (ADR-0087) — `DosQueryProcAddr` and `WinLoadProcedure` found no PMWIN or PMGPI call by name; `build.rs` now reads the names from the dispatchers. By ordinal, these modules now find only the calls Warpine implements (`ERROR_PROC_NOT_FOUND` for the others), as the registry modules do.
+- **Exit lists run on thread 1** (ADR-0087), as the Control Program Guide describes: a `DosExit(EXIT_PROCESS)` on another thread asks thread 1 to run them, as a fault there already did. A guest `HLT` ended the process at once; it now runs the exit list like a trap (`TC_TRAP`), and so does a failed `KVM_RUN` on thread 1 (`TC_HARDERROR`).
+
 ## [0.0.7] - 2026-11-20
 
 ### Added

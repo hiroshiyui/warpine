@@ -40,6 +40,11 @@ const FRAME_DISCONNECT: u8 = 1;
 const FRAME_HEADER: usize = 5;
 /// The largest message (frame payload) Warpine sends or accepts.
 pub const MAX_MESSAGE: usize = 1 << 20;
+/// A raw message record's header: the length of the bytes that follow, a
+/// little-endian USHORT (`DosRawReadNPipe` / `DosRawWriteNPipe`; unverified).
+pub const RAW_HEADER: usize = 2;
+/// The most bytes one raw record holds.
+pub const RAW_RECORD_MAX: usize = u16::MAX as usize;
 /// Byte pipes are sent in chunks of this size.
 const BYTE_CHUNK: usize = 64 * 1024;
 /// An end stops draining its socket once this much is queued.
@@ -300,6 +305,36 @@ impl Rx {
         }
         (out, false)
     }
+
+    /// Take messages as raw records (`[len u16 LE][bytes]`) up to `max`
+    /// bytes. A record holds at most [`RAW_RECORD_MAX`] bytes, so a longer
+    /// message continues in the next record. When even the first record
+    /// does not fit, its first part goes in a shorter record and the
+    /// result says there is more (nothing when `max` cannot hold a header).
+    fn take_raw(&mut self, max: usize) -> (Vec<u8>, bool) {
+        let mut out = Vec::new();
+        while let Some(front) = self.msgs.front() {
+            let room = max - out.len();
+            if room <= RAW_HEADER {
+                return (out, true);
+            }
+            let left = &front[self.front_off..];
+            let whole = left.len().min(RAW_RECORD_MAX);
+            let n = whole.min(room - RAW_HEADER);
+            if n < whole && !out.is_empty() {
+                // Only the first record may be cut.
+                return (out, true);
+            }
+            out.extend_from_slice(&(n as u16).to_le_bytes());
+            out.extend_from_slice(&left[..n]);
+            self.bytes -= n;
+            if n == left.len() { self.msgs.pop_front(); self.front_off = 0; } else { self.front_off += n; }
+            if n < whole {
+                return (out, true);
+            }
+        }
+        (out, false)
+    }
 }
 
 /// What a read returned: the data and whether the message has more
@@ -414,6 +449,31 @@ impl Conn {
                 self.drain_locked(&mut rx);
                 if !rx.msgs.is_empty() {
                     let (data, more) = rx.take(max, message, true);
+                    return Ok(ReadOut { data, more });
+                }
+                if rx.eof || rx.disconnected {
+                    return Ok(ReadOut { data: Vec::new(), more: false });
+                }
+            }
+            if nowait {
+                return Err(ERROR_NO_DATA);
+            }
+            if stop() {
+                return Err(ERROR_INTERRUPT);
+            }
+            poll_fd(self.raw_fd(), libc::POLLIN, POLL_MS);
+        }
+    }
+
+    /// Read message records raw ([`Rx::take_raw`]); waits, ends and
+    /// errors as [`Self::read`].
+    pub fn read_raw(&self, max: usize, nowait: bool, stop: &dyn Fn() -> bool) -> Result<ReadOut, u32> {
+        loop {
+            {
+                let mut rx = self.rx.lock_or_recover();
+                self.drain_locked(&mut rx);
+                if !rx.msgs.is_empty() {
+                    let (data, more) = rx.take_raw(max);
                     return Ok(ReadOut { data, more });
                 }
                 if rx.eof || rx.disconnected {
@@ -902,6 +962,35 @@ mod tests {
         assert!(!is_pipe_name(&format!("\\PIPE\\{}", "x".repeat(300))));
         assert_eq!(pipe_key("\\pipe\\Ab"), "\\PIPE\\AB");
         assert_ne!(name_hash("\\PIPE\\A"), name_hash("\\PIPE\\B"));
+    }
+
+    /// Raw reads give each message as a record with its length; a record
+    /// that does not fit is cut, the rest comes as the next record.
+    #[test]
+    fn raw_records() {
+        let (a, b) = Conn::pair();
+        a.write(b"hello", true, false, &no_stop, &|_| false).unwrap();
+        a.write(b"", true, false, &no_stop, &|_| false).unwrap();
+        a.write(b"world!", true, false, &no_stop, &|_| false).unwrap();
+        // Two whole records fit in 10 bytes; the third does not.
+        let r = b.read_raw(10, true, &no_stop).unwrap();
+        assert_eq!(r, ReadOut { data: b"\x05\x00hello\x00\x00".to_vec(), more: true });
+        // A short buffer cuts the first record.
+        let r = b.read_raw(5, true, &no_stop).unwrap();
+        assert_eq!(r, ReadOut { data: b"\x03\x00wor".to_vec(), more: true });
+        // A buffer that cannot hold a header takes nothing.
+        assert_eq!(b.read_raw(2, true, &no_stop).unwrap(), ReadOut { data: vec![], more: true });
+        let r = b.read_raw(64, true, &no_stop).unwrap();
+        assert_eq!(r, ReadOut { data: b"\x03\x00ld!".to_vec(), more: false });
+        assert_eq!(b.read_raw(64, true, &no_stop), Err(ERROR_NO_DATA));
+        // A message longer than a record continues in the next record.
+        let big = vec![7u8; RAW_RECORD_MAX + 3];
+        a.write(&big, true, false, &no_stop, &|_| false).unwrap();
+        let r = b.read_raw(RAW_RECORD_MAX * 2, true, &no_stop).unwrap();
+        assert!(!r.more);
+        assert_eq!(&r.data[..2], &[0xFF, 0xFF]);
+        assert_eq!(&r.data[RAW_HEADER + RAW_RECORD_MAX..RAW_HEADER * 2 + RAW_RECORD_MAX], &[3, 0]);
+        assert_eq!(r.data.len(), RAW_HEADER * 2 + big.len());
     }
 
     /// Message pipes keep message boundaries; a short buffer leaves the

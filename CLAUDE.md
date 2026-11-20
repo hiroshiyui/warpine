@@ -29,7 +29,7 @@ They run natively under KVM.
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2129 unit tests (2086 warpine + 19 gen_api + 13 lx_link + 5 gen_arch + 6 gen_compat) + 186 integration tests
+cargo test                                 # 2135 unit tests (2092 warpine + 19 gen_api + 13 lx_link + 5 gen_arch + 6 gen_compat) + 187 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); afterwards `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -61,7 +61,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
    - `main.rs` parses the executable (`src/lx/`, `src/ne/`).
    - `Loader::load` maps it into guest memory and applies its fixups.
    - `Loader::run` sets up the TIB / PIB and runs a vCPU (`vcpu.rs`).
-   - API calls are INT 3 thunks at `MAGIC_API_BASE` + ordinal. The VMEXIT goes to `api_dispatch.rs`: the static registry (`api_registry.rs`, 470 entries) or a sub-dispatcher (VIOCALLS / KBDCALLS / MOUCALLS / PMWIN / PMGPI, 405 ordinals), 875 entry points in all (`--compat` lists them).
+   - API calls are INT 3 thunks at `MAGIC_API_BASE` + ordinal. The VMEXIT goes to `api_dispatch.rs`: the static registry (`api_registry.rs`, 472 entries) or a sub-dispatcher (VIOCALLS / KBDCALLS / MOUCALLS / PMWIN / PMGPI, 405 ordinals), 877 entry points in all (`--compat` lists them).
 2. **Threads.** One OS/2 thread is one host thread with its own vCPU.
    - Managers live in `SharedState` behind mutexes; see the lock levels in `src/loader/mod.rs`.
    - Notable orders: pointers before `window_mgr`; profiles before `drive_mgr`; the window manager before a surface, never the reverse.

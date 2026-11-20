@@ -4,6 +4,32 @@ use super::constants::*;
 use super::mutex_ext::MutexExt;
 use log::debug;
 
+/// The PMWIN and PMGPI calls Warpine dispatches, `(name, ordinal)` sorted by
+/// name; build.rs reads them from the sub-dispatchers' arms.
+mod pm_names {
+    include!(concat!(env!("OUT_DIR"), "/pm_dispatch_names.rs"));
+}
+
+/// The dispatched calls of a sub-dispatched PM module, or None for any other.
+pub(super) fn pm_dispatched(module: &str) -> Option<&'static [(&'static str, u32)]> {
+    match module {
+        "PMWIN" => Some(pm_names::PMWIN_NAMES),
+        "PMGPI" => Some(pm_names::PMGPI_NAMES),
+        _ => None,
+    }
+}
+
+/// The ordinal of a PMWIN or PMGPI call Warpine dispatches, found by name
+/// (case-insensitively, as names of programs' own DLLs are).
+pub(crate) fn pm_ordinal_by_name(module: &str, name: &str) -> Option<u32> {
+    pm_dispatched(module)?.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|&(_, o)| o)
+}
+
+/// Whether `ordinal` of a PMWIN or PMGPI is dispatched; None for any other module.
+pub(crate) fn pm_ordinal_is_dispatched(module: &str, ordinal: u32) -> Option<bool> {
+    pm_dispatched(module).map(|t| t.iter().any(|&(_, o)| o == ordinal))
+}
+
 impl super::Loader {
     /// Read GDT entry base address from guest memory.
     pub(crate) fn gdt_entry_base(&self, selector: u16) -> u32 {
@@ -99,8 +125,9 @@ impl super::Loader {
             "MOUCALLS" => {
                 MOUCALLS_NAMES.iter().find(|(n, _)| *n == proc_name).map(|(_, o)| *o)
             }
+            "PMWIN" | "PMGPI" => pm_ordinal_by_name(module, proc_name),
             _ => {
-                // For registry-based modules (DOSCALLS, PMWIN, etc.) search api_registry.
+                // For registry-based modules (DOSCALLS, PMSHAPI, etc.) search api_registry.
                 super::api_registry::find_by_module_and_name(module, proc_name)
             }
         };
@@ -234,6 +261,40 @@ impl super::Loader {
             self.guest_write::<u16>(idt_entry_addr + 2, 0x08).unwrap(); // code selector
             self.guest_write::<u16>(idt_entry_addr + 4, 0x8E00).unwrap(); // P=1, DPL=0, 32-bit int gate
             self.guest_write::<u16>(idt_entry_addr + 6, offset_hi).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pm_calls_are_found_by_name_in_any_case() {
+        assert_eq!(pm_ordinal_by_name("PMWIN", "WinCreateWindow"), Some(909));
+        assert_eq!(pm_ordinal_by_name("PMWIN", "WINCREATEWINDOW"), Some(909));
+        assert_eq!(pm_ordinal_by_name("PMGPI", "GpiBox"), Some(356));
+        assert_eq!(pm_ordinal_by_name("PMWIN", "GpiBox"), None, "each module has its own table");
+        assert_eq!(pm_ordinal_by_name("PMWIN", "WinNoSuchCall"), None);
+        assert_eq!(pm_ordinal_by_name("DOSCALLS", "DosOpen"), None, "registry modules are not in these tables");
+    }
+
+    #[test]
+    fn only_dispatched_pm_ordinals_are_known() {
+        assert_eq!(pm_ordinal_is_dispatched("PMWIN", 909), Some(true));
+        assert_eq!(pm_ordinal_is_dispatched("PMWIN", 0), Some(false));
+        assert_eq!(pm_ordinal_is_dispatched("PMGPI", 356), Some(true));
+        assert_eq!(pm_ordinal_is_dispatched("VIOCALLS", 3), None);
+    }
+
+    #[test]
+    fn each_dispatched_pm_call_has_one_name_and_one_ordinal() {
+        for module in ["PMWIN", "PMGPI"] {
+            let table = pm_dispatched(module).expect("a PM table");
+            let names: std::collections::HashSet<_> = table.iter().map(|(n, _)| n.to_ascii_uppercase()).collect();
+            let ords: std::collections::HashSet<_> = table.iter().map(|&(_, o)| o).collect();
+            assert_eq!(names.len(), table.len(), "{module}: a name dispatched at two ordinals");
+            assert_eq!(ords.len(), table.len(), "{module}: an ordinal under two names");
         }
     }
 }

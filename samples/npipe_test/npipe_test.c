@@ -39,6 +39,10 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Prototypes Open Watcom's headers lack (Toolkit 4.5 bsedos.h). */
+APIRET APIENTRY DosRawReadNPipe(HPIPE hPipe, PVOID pBuffer, ULONG cbRead, PULONG pcbActual);
+APIRET APIENTRY DosRawWriteNPipe(HPIPE hPipe, PVOID pBuffer, ULONG cbWrite, PULONG pcbActual);
+
 #define XPROC_PIPE  "\\PIPE\\NPTEST\\XPROC"
 #define LOCAL_PIPE  "\\PIPE\\NPTEST\\LOCAL"
 #define SHMEM_NAME  "\\SHAREMEM\\NPTEST"
@@ -363,6 +367,22 @@ static void test_named_local(void)
     DosRead(hs, buf, sizeof(buf), &n);
     check_str("  next message", buf, "second");
     check("DosRead(empty, non-blocking)", DosRead(hs, buf, sizeof(buf), &n), ERROR_NO_DATA);
+    /* Raw records (Warpine's format, unverified): a USHORT length, then the bytes. */
+    memcpy(buf, "\x02\x00" "hi" "\x00\x00" "\x03\x00" "abc", 11);
+    check("DosRawWriteNPipe", DosRawWriteNPipe(hc, buf, 11, &n), NO_ERROR);
+    check("  bytes written", n, 11);
+    DosSleep(20);
+    memset(buf, 0, sizeof(buf));
+    DosRead(hs, buf, sizeof(buf), &n);
+    check_str("  a record is a message", buf, "hi");
+    memset(buf, 0, sizeof(buf));
+    check("DosRawReadNPipe", DosRawReadNPipe(hs, buf, sizeof(buf), &n), NO_ERROR);
+    check("  records read", n, 7);
+    check("  the empty record", buf[0] == 0 && buf[1] == 0 && buf[2] == 3 && buf[3] == 0, 1);
+    check("  its bytes", memcmp(buf + 4, "abc", 3), 0);
+    check("DosRawWriteNPipe(record past the end)", DosRawWriteNPipe(hc, "\x09\x00" "ab", 4, &n),
+          ERROR_INVALID_PARAMETER);
+    check("DosRawReadNPipe(empty, non-blocking)", DosRawReadNPipe(hs, buf, sizeof(buf), &n), ERROR_NO_DATA);
     check("DosSetNPHState(reserved bit)", DosSetNPHState(hs, 1), ERROR_INVALID_PARAMETER);
     check("DosQueryNPipeInfo(1)", DosQueryNPipeInfo(hs, 1, info, sizeof(info)), NO_ERROR);
     check("  cbOut", pi->cbOut, 1024);

@@ -130,6 +130,19 @@ fn server_fh_state(open_mode: u32) -> u32 {
     access | (open_mode & (NP_NOINHERIT | NP_NOWRITEBEHIND))
 }
 
+/// Split raw message records (`[len u16 LE][bytes]`); None when one runs
+/// past the end.
+fn raw_records(mut data: &[u8]) -> Option<Vec<&[u8]>> {
+    let mut out = Vec::new();
+    while !data.is_empty() {
+        let header = data.get(..npipe::RAW_HEADER)?;
+        let len = u16::from_le_bytes([header[0], header[1]]) as usize;
+        out.push(data.get(npipe::RAW_HEADER..npipe::RAW_HEADER + len)?);
+        data = &data[npipe::RAW_HEADER + len..];
+    }
+    Some(out)
+}
+
 impl super::Loader {
     /// The named-pipe end behind handle `h`, with its handle state.
     pub(crate) fn np_end(&self, h: u32) -> Option<(NpEnd, u32)> {
@@ -341,6 +354,70 @@ impl super::Loader {
         }
         if p_state != 0 { self.guest_write::<u32>(p_state, state); }
         NO_ERROR
+    }
+
+    /// DosRawReadNPipe (ordinal 246): read a message pipe's messages as
+    /// raw records, each a USHORT length and the bytes (`npipe::Conn::read_raw`);
+    /// a byte pipe reads as `DosRead`. Undocumented beyond its prototype:
+    /// the record format and `ERROR_MORE_DATA` for a cut record are
+    /// Warpine's (unverified). Blocks as the end's mode says.
+    pub fn dos_raw_read_npipe(&self, h: u32, buf: u32, cb: u32, pcb_actual: u32) -> u32 {
+        let Some((end, fh_state)) = self.np_end(h) else { return ERROR_BAD_PIPE };
+        if !end.spec().message_type() {
+            return self.np_read(&end, fh_state, buf, cb, pcb_actual);
+        }
+        if !end.may_read(fh_state & 0x7) {
+            return ERROR_ACCESS_DENIED;
+        }
+        let conn = match end.conn() { Ok(c) => c, Err(e) => return e };
+        if let NpEnd::Client(_) = end && conn.disconnected() {
+            return ERROR_PIPE_NOT_CONNECTED;
+        }
+        let _blocked = BlockedGuard::new(end.blocked());
+        match conn.read_raw(cb.min(NP_MAX_READ) as usize, end.mode().nowait, &|| self.stop_or_restart()) {
+            Ok(ReadOut { data, more }) => {
+                if self.guest_write_bytes(buf, &data).is_none() {
+                    return ERROR_INVALID_PARAMETER;
+                }
+                if pcb_actual != 0 { self.guest_write::<u32>(pcb_actual, data.len() as u32); }
+                if more { ERROR_MORE_DATA } else { NO_ERROR }
+            }
+            Err(e) => {
+                if pcb_actual != 0 { self.guest_write::<u32>(pcb_actual, 0); }
+                e
+            }
+        }
+    }
+
+    /// DosRawWriteNPipe (ordinal 247): write raw records (a USHORT length
+    /// and the bytes) to a message pipe, each as one message; a byte pipe
+    /// writes as `DosWrite`. Records that run past `cb` are
+    /// `ERROR_INVALID_PARAMETER` with nothing written; a full non-blocking
+    /// pipe stops after the records written so far (unverified, as
+    /// `DosRawReadNPipe`). `*pcbActual` counts the records' bytes, headers
+    /// included.
+    pub fn dos_raw_write_npipe(&self, h: u32, buf: u32, cb: u32, pcb_actual: u32) -> u32 {
+        let Some((end, fh_state)) = self.np_end(h) else { return ERROR_BAD_PIPE };
+        let Some(data) = self.guest_read_bytes(buf, cb as usize) else { return ERROR_INVALID_PARAMETER };
+        let records = if end.spec().message_type() {
+            match raw_records(&data) { Some(r) => r, None => return ERROR_INVALID_PARAMETER }
+        } else {
+            vec![&data[..]]
+        };
+        let header = if end.spec().message_type() { npipe::RAW_HEADER as u32 } else { 0 };
+        let mut written = 0u32;
+        let mut rc = NO_ERROR;
+        for record in records {
+            match self.np_write(&end, fh_state, record) {
+                Ok(n) if n as usize == record.len() => written += header + n,
+                // A full non-blocking pipe: a message pipe wrote nothing of
+                // this record, a byte pipe part of it.
+                Ok(n) => { written += n; break; }
+                Err(e) => { rc = e; break; }
+            }
+        }
+        if pcb_actual != 0 { self.guest_write::<u32>(pcb_actual, written); }
+        rc
     }
 
     /// Write a message and read the reply on a duplex message pipe in
@@ -700,6 +777,36 @@ mod tests {
 
     /// Byte pipes: data flows as a stream; access directions are enforced;
     /// non-blocking connect listens.
+    /// Raw records: what DosRawWriteNPipe writes arrives as messages, and
+    /// DosRawReadNPipe gives messages back as records (unverified format).
+    #[test]
+    fn raw_reads_and_writes() {
+        let (l, _d) = loader();
+        let l = Arc::new(l);
+        let hs = create(&l, "\\PIPE\\RAW", NP_ACCESS_DUPLEX, NP_TYPE_MESSAGE | NP_READMODE_MESSAGE | 1).unwrap();
+        let hc = connect(&l, hs, "\\PIPE\\RAW", OPEN_ACCESS_READWRITE);
+        let records = b"\x02\x00hi\x00\x00\x03\x00abc";
+        l.guest_write_bytes(BUF, records);
+        assert_eq!(l.dos_raw_write_npipe(hc, BUF, records.len() as u32, PCB), NO_ERROR);
+        assert_eq!(l.guest_read::<u32>(PCB), Some(records.len() as u32));
+        assert_eq!(read(&l, hs, 64), (NO_ERROR, b"hi".to_vec()), "one message per record");
+        assert_eq!(l.dos_raw_read_npipe(hs, BUF2, 64, PCB), NO_ERROR);
+        assert_eq!(l.guest_read::<u32>(PCB), Some(7));
+        assert_eq!(l.guest_read_bytes(BUF2, 7).unwrap(), b"\x00\x00\x03\x00abc");
+        // A record running past the buffer writes nothing.
+        l.guest_write_bytes(BUF, b"\x01\x00x\x09\x00ab");
+        assert_eq!(l.dos_raw_write_npipe(hc, BUF, 7, PCB), ERROR_INVALID_PARAMETER);
+        assert_eq!(l.dos_peek_npipe(hs, BUF2, 16, PCB, PAVAIL, PSTATE), NO_ERROR);
+        assert_eq!(l.guest_read::<u16>(PAVAIL), Some(0));
+        // A cut record: ERROR_MORE_DATA, the rest as the next record.
+        assert_eq!(write(&l, hc, b"abcdef"), NO_ERROR);
+        assert_eq!(l.dos_raw_read_npipe(hs, BUF2, 4, PCB), ERROR_MORE_DATA);
+        assert_eq!(l.guest_read_bytes(BUF2, 4).unwrap(), b"\x02\x00ab");
+        assert_eq!(l.dos_raw_read_npipe(hs, BUF2, 64, PCB), NO_ERROR);
+        assert_eq!(l.guest_read_bytes(BUF2, 6).unwrap(), b"\x04\x00cdef");
+        assert_eq!(l.dos_raw_read_npipe(0x7777, BUF2, 64, PCB), ERROR_BAD_PIPE);
+    }
+
     #[test]
     fn byte_pipe_and_access() {
         let (l, _d) = loader();

@@ -360,8 +360,9 @@ impl super::Loader {
     /// - on another thread, thread 1 runs the exit list (asked for like a
     ///   termination from outside); the faulting thread waits for the end
     ///   (at most `KILL_GRACE`) and is not used again;
-    /// - on thread 1, only when its vCPU can run again: `restart` holds the
-    ///   segment state it started with (32-bit code), which is put back;
+    /// - on thread 1, when `restart` holds the segment state it started
+    ///   with (32-bit code), which is put back; a vCPU that fails again
+    ///   in a routine ends the process;
     /// - in an exit-list routine, the routine has ended (the next one runs
     ///   when the vCPU can run again).
     ///
@@ -377,14 +378,7 @@ impl super::Loader {
             return Some(ThreadEnd::Process);
         }
         if tid_of_vcpu(vcpu_id) != MAIN_TID {
-            super::signals::request_termination(&self.shared, FAULT_EXIT_CODE, tc);
-            let deadline = std::time::Instant::now() + super::signals::KILL_GRACE;
-            while !self.shutting_down() && std::time::Instant::now() < deadline {
-                thread::sleep(std::time::Duration::from_millis(20));
-            }
-            if !self.shutting_down() {
-                self.request_process_exit(FAULT_EXIT_CODE);
-            }
+            self.wait_for_thread_1_to_end(FAULT_EXIT_CODE, tc);
             return Some(ThreadEnd::Process);
         }
         if reset(vcpu) {
@@ -520,9 +514,11 @@ impl super::Loader {
                     CrashContext::KvmRunError { description: e.clone() },
                 );
                 self.dump_crash_report(&report);
-                // KVM_RUN failed: this vCPU may not run again, so only
-                // another thread's exit list is safe (TC_HARDERROR).
-                match self.end_by_fault(&mut *vcpu, vcpu_id, initial_esp, None, &mut callback_stack, TC_HARDERROR) {
+                // KVM_RUN failed (TC_HARDERROR). The exit list is tried on
+                // this vCPU with its starting segment state put back; if it
+                // fails again, `end_by_fault` ends the process.
+                match self.end_by_fault(&mut *vcpu, vcpu_id, initial_esp, restart_sregs.as_ref(),
+                                        &mut callback_stack, TC_HARDERROR) {
                     Some(end) => return end,
                     None => continue,
                 }
@@ -1121,6 +1117,10 @@ impl super::Loader {
                         match api_result {
                             ApiResult::ExitThread(rc) => return ThreadEnd::Thread(rc),
                             ApiResult::ExitProcess(rc) => {
+                                // Thread 1 runs the exit list (exitlist.rs).
+                                if self.exit_on_thread_1(vcpu_id, rc) {
+                                    return ThreadEnd::Process;
+                                }
                                 match self.begin_exit_list(&mut *vcpu, vcpu_id, rc, TC_EXIT, initial_esp, &mut callback_stack) {
                                     ExitListStart::Running => continue,
                                     ExitListStart::Finished => return ThreadEnd::Process,
@@ -1352,9 +1352,14 @@ impl super::Loader {
                 // looks at the flags; guest state is as it was.
                 VmExit::Interrupted => continue,
                 VmExit::Hlt => {
+                    // The guest stopped its processor: a trap, its exit
+                    // list runs as after any other (TC_TRAP).
                     info!("  [VCPU {}] Guest HLT.", vcpu_id);
-                    self.shared.exit_requested.store(true, Ordering::Relaxed);
-                    return ThreadEnd::Process;
+                    match self.end_by_fault(&mut *vcpu, vcpu_id, initial_esp, restart_sregs.as_ref(),
+                                            &mut callback_stack, TC_TRAP) {
+                        Some(end) => return end,
+                        None => continue,
+                    }
                 }
                 VmExit::MmioRead { addr, size } => {
                     // zeros already filled by kvm_backend
@@ -2436,11 +2441,26 @@ mod tests {
         let mut vcpu = vcpu_calling_dos_exit(&loader, EXIT_PROCESS, 4);
         vcpu.push_exit(VmExit::Debug);
         vcpu.push_exit(VmExit::Debug);
-        loader.run_vcpu(vcpu, FIRST_CREATED_TID, 0);
+        loader.run_vcpu(vcpu, MAIN_VCPU_ID, 0);
         assert!(loader.shutting_down());
         assert_eq!(loader.shared.exit_code.load(Ordering::Relaxed), 4,
                    "both routines ran, the list ended the process (a halt would leave 0)");
         assert_eq!(exit_list_len(&loader), 0);
+    }
+
+    /// DosExit(EXIT_PROCESS) on another thread hands the exit list to
+    /// thread 1 (exitlist_thread.exe covers the hand-over itself); not on
+    /// thread 1, with an empty list or once thread 1 has ended.
+    #[test]
+    fn only_another_thread_with_routines_hands_the_exit_list_to_thread_1() {
+        let loader = super::super::Loader::new_mock();
+        start_thread(&loader, FIRST_CREATED_TID);
+        assert!(!loader.exit_on_thread_1(FIRST_CREATED_TID, 4), "an empty list");
+        add_routine(&loader, 0, ROUTINE_A);
+        assert!(!loader.exit_on_thread_1(MAIN_VCPU_ID, 4), "thread 1 runs the list itself");
+        loader.run_vcpu(vcpu_calling_dos_exit(&loader, EXIT_THREAD, 1), MAIN_VCPU_ID, 0);
+        assert!(!loader.exit_on_thread_1(FIRST_CREATED_TID, 4), "thread 1 has ended");
+        assert!(!loader.shared.threads.signals.lock_or_recover().termination_pending());
     }
 
     #[test]

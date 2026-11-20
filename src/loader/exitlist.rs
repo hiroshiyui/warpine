@@ -19,8 +19,11 @@
 //! - "if thread 1 has already exited … the exit-list functions cannot run".
 //!
 //! Warpine's choices where the documents say nothing (or describe a hang):
-//! - the routines run on the thread that ends the process (OS/2 uses
-//!   thread 1, which must still be running);
+//! - the routines run on thread 1, which must still be running: a
+//!   `DosExit(EXIT_PROCESS)` or a fault on another thread asks thread 1 to
+//!   run them (as a termination from outside does) and waits at most
+//!   `KILL_GRACE` for it; a thread 1 in 16-bit code ends the process
+//!   without them;
 //! - a routine that returns, calls `DosExit`, or has an unhandled
 //!   exception has ended like one calling `EXLST_EXIT` (OS/2 would hang);
 //! - an `EXLST_EXIT` outside exit-list processing is `ERROR_INVALID_FUNCTION`;
@@ -48,6 +51,8 @@ const ORDER_MASK: u32 = 0xFF;
 const RESERVED_MASK: u32 = 0xFFFF_0000;
 /// Bytes the routine's call frame takes: return address + termination code.
 const ROUTINE_FRAME: u32 = 8;
+/// How often a thread waiting for thread 1 to end the process looks.
+const THREAD_1_POLL: std::time::Duration = std::time::Duration::from_millis(20);
 /// EFLAGS bit 1 is reserved and always set.
 const ROUTINE_RFLAGS: u64 = 2;
 
@@ -183,6 +188,38 @@ impl super::Loader {
             ExitListAction::Remove => ApiResult::Normal(list.remove(pfn)),
             ExitListAction::Exit if list.run().is_some_and(|r| r.vcpu_id == vcpu_id) => ApiResult::ExitListNext,
             ExitListAction::Exit => ApiResult::Normal(ERROR_INVALID_FUNCTION),
+        }
+    }
+
+    /// `DosExit(EXIT_PROCESS)` on thread `vcpu_id`: on a thread other
+    /// than thread 1, with routines on the list and thread 1 running,
+    /// thread 1 runs them (see [`Self::wait_for_thread_1_to_end`]); true
+    /// then, and the caller's thread ends. False: the caller ends the
+    /// process itself.
+    pub(crate) fn exit_on_thread_1(&self, vcpu_id: u32, rc: u32) -> bool {
+        if super::threads::tid_of_vcpu(vcpu_id) == super::threads::MAIN_TID
+            || self.shared.threads.exit_list.lock_or_recover().is_empty()
+            || !self.shared.threads.table.lock_or_recover().is_running(super::threads::MAIN_TID) {
+            return false;
+        }
+        debug!("  [VCPU {}] DosExit(EXIT_PROCESS): thread 1 runs the exit list", vcpu_id);
+        self.wait_for_thread_1_to_end(rc, TC_EXIT);
+        true
+    }
+
+    /// Ask thread 1 to end the process with `rc`, its exit list getting
+    /// `tc` (as a termination from outside, `signals.rs`), and wait until
+    /// it has taken over or the process ends: at most `KILL_GRACE`, then
+    /// the process ends without the list.
+    pub(crate) fn wait_for_thread_1_to_end(&self, rc: u32, tc: u32) {
+        super::signals::request_termination(&self.shared, rc, tc);
+        let deadline = std::time::Instant::now() + super::signals::KILL_GRACE;
+        while !self.shutting_down() && std::time::Instant::now() < deadline {
+            std::thread::sleep(THREAD_1_POLL);
+        }
+        if !self.shutting_down() {
+            warn!("  thread 1 did not end the process within {:?}; it ends now", super::signals::KILL_GRACE);
+            self.request_process_exit(rc);
         }
     }
 

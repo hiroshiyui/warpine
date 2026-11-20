@@ -326,6 +326,9 @@ static void library_checks( void )
     check( "WinDeleteProcedure", WinDeleteProcedure( hab, pfn ), TRUE );
     check( "WinDeleteLibrary", WinDeleteLibrary( hab, hlib ), TRUE );
     check( "WinLoadLibrary missing", WinLoadLibrary( hab, "NOSUCHDL" ), NULLHANDLE );
+    hlib = WinLoadLibrary( hab, "PMWIN" );
+    check( "WinLoadProcedure from PMWIN", hlib != NULLHANDLE
+           && WinLoadProcedure( hab, hlib, "WinQueryDesktopWindow" ) != NULL, TRUE );
     check( "WinRegisterUserMsg", WinRegisterUserMsg( hab, WM_USER + 50, DTYP_LONG, RUM_IN, DTYP_LONG, RUM_IN, DTYP_LONG ), TRUE );
     check( "WinRegisterUserDatatype", WinRegisterUserDatatype( hab, DTYP_USER + 1, 2, types ), TRUE );
     check( "WinRegisterUserDatatype below DTYP_USER", WinRegisterUserDatatype( hab, 5, 2, types ), FALSE );

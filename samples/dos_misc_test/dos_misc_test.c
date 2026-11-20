@@ -2,8 +2,9 @@
 /* dos_misc_test.c - smaller DOSCALLS / QUECALLS calls (ADR-0086): the
    high-resolution timer, DosQueryModFromEIP, DosErrClass,
    DosQueryProcType, DosVerifyPidTid, the DosProtect* file calls,
-   DosCancelLockRequest, and DosPeekQueue with element codes (and
-   DosReadQueue's DCWW_NOWAIT). Writes "ok: name" or "FAIL: name" per
+   DosCancelLockRequest, DosPeekQueue with element codes (and
+   DosReadQueue's DCWW_NOWAIT), and DosQueryProcAddr on PMWIN / PMGPI by
+   name and ordinal. Writes "ok: name" or "FAIL: name" per
    check, then "dos_misc_test: done <passed>/<total>". */
 #define INCL_DOS
 #define INCL_DOSERRORS
@@ -13,6 +14,9 @@
 
 /* Calls whose prototypes Open Watcom's headers lack (Toolkit bsedos.h). */
 APIRET APIENTRY DosVerifyPidTid(PID pid, TID tid);
+
+/* PMWIN's WinGetCurrentTime, called through a pointer DosQueryProcAddr gives. */
+typedef ULONG (APIENTRY *PFNTIME)(ULONG hab);
 
 static int passed = 0, total = 0;
 
@@ -40,6 +44,8 @@ int main(void)
     BYTE    prio;
     FILELOCK fl;
     FILESTATUS3 fs3;
+    HMODULE hpm, hgpi;
+    PFN     pfn1, pfn2;
 
     /* The timer. */
     check("DosTmrQueryFreq", DosTmrQueryFreq(&freq) == NO_ERROR && freq > 1000000);
@@ -100,6 +106,18 @@ int main(void)
     check("DosReadQueue DCWW_NOWAIT empty", DosReadQueue(hq, &req, &len, &data, 0, DCWW_NOWAIT, &prio, 0) == ERROR_QUE_EMPTY);
     check("DosReadQueue a gone element", DosReadQueue(hq, &req, &len, &data, elem, DCWW_NOWAIT, &prio, 0) == ERROR_QUE_ELEMENT_NOT_EXIST);
     DosCloseQueue(hq);
+
+    /* DosQueryProcAddr on the sub-dispatched PM modules. */
+    check("DosLoadModule PMWIN", DosLoadModule(NULL, 0, "PMWIN", &hpm) == NO_ERROR);
+    check("PMWIN by name", DosQueryProcAddr(hpm, 0, "WinGetCurrentTime", &pfn1) == NO_ERROR && pfn1 != NULL);
+    check("PMWIN by ordinal", DosQueryProcAddr(hpm, 750, NULL, &pfn2) == NO_ERROR && pfn2 == pfn1);
+    check("PMWIN call through the pointer", ((PFNTIME)pfn1)(0) != 0);
+    check("PMWIN unknown name", DosQueryProcAddr(hpm, 0, "WinNoSuchCall", &pfn1) == ERROR_PROC_NOT_FOUND);
+    check("PMWIN unimplemented ordinal", DosQueryProcAddr(hpm, 174, NULL, &pfn1) == ERROR_PROC_NOT_FOUND);
+    check("DosLoadModule PMGPI", DosLoadModule(NULL, 0, "PMGPI", &hgpi) == NO_ERROR);
+    check("PMGPI by name", DosQueryProcAddr(hgpi, 0, "GpiBox", &pfn1) == NO_ERROR
+          && DosQueryProcAddr(hgpi, 356, NULL, &pfn2) == NO_ERROR && pfn1 == pfn2);
+    check("PMGPI name of another module", DosQueryProcAddr(hgpi, 0, "WinGetCurrentTime", &pfn1) == ERROR_PROC_NOT_FOUND);
 
     printf("dos_misc_test: done %d/%d\n", passed, total);
     return total - passed;

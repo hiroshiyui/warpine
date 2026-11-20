@@ -827,14 +827,15 @@ fn test_rexx_conditions_streams_and_rexxutil() {
 /// high-resolution timer, DosQueryModFromEIP, DosErrClass,
 /// DosQueryProcType, DosVerifyPidTid, the DosProtect* file calls,
 /// DosCancelLockRequest, DosPeekQueue element codes and DosReadQueue's
-/// DCWW_NOWAIT.
+/// DCWW_NOWAIT; DosQueryProcAddr on PMWIN / PMGPI by name and ordinal,
+/// only for the calls Warpine dispatches.
 #[test]
 fn test_dos_misc_calls() {
     let sample = "samples/dos_misc_test/dos_misc_test.exe";
     if !kvm_available() || !Path::new(sample).exists() { return; }
     let (out, code) = run_sample(sample, 30);
     assert!(!out.contains("FAIL"), "{out}");
-    assert!(out.contains("dos_misc_test: done 30/30"), "{out}");
+    assert!(out.contains("dos_misc_test: done 39/39"), "{out}");
     assert_eq!(code, 0, "{out}");
 }
 
@@ -1261,9 +1262,14 @@ fn test_thread_exit_of_the_last_thread_ends_the_process() {
     assert_eq!(code, 5, "exit code of the last thread's DosExit(EXIT_THREAD, 5)\n{out}");
 }
 
+/// Termination codes exit-list routines get (bsedos.h).
+const TC_EXIT: u32 = 0;
+const TC_TRAP: u32 = 2;
+
 /// Run one exitlist_test variant: every check before the process ends and
-/// (when `runs` is set) in the exit-list routines passes; returns stdout.
-fn run_exitlist_variant(exe: &str, code_want: i32, runs: bool) -> Option<String> {
+/// (when `runs` is set) in the exit-list routines passes, the routines
+/// getting termination code `tc`; returns stdout.
+fn run_exitlist_variant(exe: &str, code_want: i32, runs: bool, tc: u32) -> Option<String> {
     let sample = format!("samples/exitlist_test/{exe}");
     if !kvm_available() || !Path::new(&sample).exists() { return None; }
     let (out, code) = run_sample(&sample, 20);
@@ -1273,7 +1279,9 @@ fn run_exitlist_variant(exe: &str, code_want: i32, runs: bool) -> Option<String>
         assert!(out.contains("exitlist_test: sequence BCAL"), "routines in order:\n{out}");
         assert!(out.contains("exitlist_test: exit list done "), "{out}");
         assert!(!out.contains("routine N"), "a removed routine ran:\n{out}");
-        assert!(out.lines().filter(|l| l.contains(": routine ")).all(|l| l.ends_with("tc=0")), "TC_EXIT:\n{out}");
+        assert!(out.contains("B: runs on thread 1: ok"), "{out}");
+        let tc = format!("tc={tc}");
+        assert!(out.lines().filter(|l| l.contains(": routine ")).all(|l| l.ends_with(&tc)), "{tc}:\n{out}");
     } else {
         assert!(!out.contains(": routine "), "no exit list once thread 1 has ended:\n{out}");
     }
@@ -1286,30 +1294,38 @@ fn run_exitlist_variant(exe: &str, code_want: i32, runs: bool) -> Option<String>
 /// one removed while the list runs) before the process ends with code 3.
 #[test]
 fn test_exit_list_runs_at_dos_exit_process() {
-    let Some(out) = run_exitlist_variant("exitlist_test.exe", 3, true) else { return };
+    let Some(out) = run_exitlist_variant("exitlist_test.exe", 3, true, TC_EXIT) else { return };
     let routines = out.find("routine B").unwrap();
     assert!(out.find("exitlist_test: done ").unwrap() < routines, "the routines run at the end:\n{out}");
 }
 
 /// exitlist_thread: thread 2 ends the process (DosExit(EXIT_PROCESS, 4))
-/// while thread 1 waits; the exit list runs.
+/// while thread 1 waits; the exit list runs, on thread 1.
 #[test]
 fn test_exit_list_runs_when_another_thread_ends_the_process() {
-    run_exitlist_variant("exitlist_thread.exe", 4, true);
+    run_exitlist_variant("exitlist_thread.exe", 4, true, TC_EXIT);
+}
+
+/// exitlist_hlt: thread 1 executes HLT; the exit list runs as after a
+/// trap (TC_TRAP) and the process ends with code 1.
+#[test]
+fn test_exit_list_runs_after_hlt() {
+    let Some(out) = run_exitlist_variant("exitlist_hlt.exe", 1, true, TC_TRAP) else { return };
+    assert!(!out.contains("went on after HLT"), "{out}");
 }
 
 /// exitlist_mainlast: thread 1 is the last thread and ends with
 /// DosExit(EXIT_THREAD, 6); the exit list runs.
 #[test]
 fn test_exit_list_runs_when_thread_1_ends_last() {
-    run_exitlist_variant("exitlist_mainlast.exe", 6, true);
+    run_exitlist_variant("exitlist_mainlast.exe", 6, true, TC_EXIT);
 }
 
 /// exitlist_nomain: thread 1 ends first; the last thread ending the
 /// process does not run the exit list (thread 1 is gone).
 #[test]
 fn test_exit_list_does_not_run_after_thread_1_ended() {
-    run_exitlist_variant("exitlist_nomain.exe", 5, false);
+    run_exitlist_variant("exitlist_nomain.exe", 5, false, TC_EXIT);
 }
 
 /// semquery_test: post counts (DosResetEventSem / DosQueryEventSem),
@@ -2311,7 +2327,7 @@ fn gui_pm_rect_text_test_checks_rectangles_draw_text_and_polylines() {
 /// — checked by the guest itself.
 #[test]
 fn gui_pm_winutil_test_checks_the_tier_one_pm_calls() {
-    assert_sample_checks_pass("samples/pm_winutil_test/pm_winutil_test.exe", "pm_winutil_test", 95);
+    assert_sample_checks_pass("samples/pm_winutil_test/pm_winutil_test.exe", "pm_winutil_test", 96);
 }
 
 /// pm_paint_test: update rectangles (WinInvalidateRect / WinValidateRect /

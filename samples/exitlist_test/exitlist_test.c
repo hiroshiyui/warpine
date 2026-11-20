@@ -2,7 +2,7 @@
 /*
  * exitlist_test.c - DosExitList: routines run when the process ends
  *
- * Built four times from this source (see the Makefile); each registers the
+ * Built five times from this source (see the Makefile); each registers the
  * same exit list and ends the process another way:
  *
  *   exitlist_test.exe     thread 1 calls DosExit(EXIT_PROCESS, 3)   -> code 3
@@ -15,6 +15,8 @@
  *                         DosExit(EXIT_THREAD, 5). Thread 1 has gone, so
  *                         the exit list does not run (Control Program
  *                         Guide)                                    -> code 5
+ *   exitlist_hlt.exe      thread 1 executes HLT: a trap; the routines
+ *                         get TC_TRAP                               -> code 1
  *
  * Checked before the process ends: DosExitList's error codes
  * (ERROR_INVALID_DATA for a non-zero high word, an order with
@@ -22,8 +24,9 @@
  * NULL; ERROR_INVALID_FUNCTION for an unknown action and for EXLST_EXIT
  * outside exit-list processing).
  *
- * Checked by the routines: they run lowest order first, the last added
- * first among equal orders; each gets TC_EXIT; a routine may add (order
+ * Checked by the routines: they run on thread 1, lowest order first, the
+ * last added first among equal orders; each gets TC_EXIT (TC_TRAP after
+ * HLT); a routine may add (order
  * 0x30, runs last) and remove (a routine not yet run) others; semaphores
  * still work; the last routine prints the sequence it saw. Each routine
  * ends with DosExitList(EXLST_EXIT, 0).
@@ -43,6 +46,13 @@
 #include <string.h>
 
 #define STACK_SIZE  0x4000
+
+/* The termination code the routines get. */
+#if defined( HLT_EXIT )
+#define EXPECTED_TC TC_TRAP
+#else
+#define EXPECTED_TC TC_EXIT
+#endif
 
 static int n_checks = 0;
 static int n_passed = 0;
@@ -131,8 +141,12 @@ static void ran( char name, ULONG tc )
 /* Order 0x10: first. Adds routine_last, removes routine_never. */
 static VOID APIENTRY routine_b( ULONG tc )
 {
+    PTIB ptib;
+    PPIB ppib;
     ran( 'B', tc );
-    check( "B: termination code", tc, TC_EXIT );
+    check( "B: termination code", tc, EXPECTED_TC );
+    DosGetInfoBlocks( &ptib, &ppib );
+    check( "B: runs on thread 1", ptib->tib_ptib2->tib2_ultid, 1 );
     check( "B: add a routine while the list runs",
            DosExitList( EXLST_ADD | ORDER( 0x30 ), (PFNEXITLIST)routine_last ), NO_ERROR );
     check( "B: remove a routine not yet run",
@@ -249,6 +263,12 @@ int main( void )
     done( "done" );
     write_stdout( "exitlist_test: thread 1 ends first\r\n" );
     DosExit( EXIT_THREAD, 0 );
+    return 1;
+#elif defined( HLT_EXIT )
+    done( "done" );
+    write_stdout( "exitlist_test: thread 1 executes HLT\r\n" );
+    _asm hlt;
+    write_stdout( "exitlist_test: went on after HLT: FAIL\r\n" );
     return 1;
 #else
     done( "done" );

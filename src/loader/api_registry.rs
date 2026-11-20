@@ -186,6 +186,10 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_peek_npipe(a[0],a[1],a[2],a[3],a[4],a[5])) },
     ApiEntry { ordinal: 245, module: "DOSCALLS", name: "DosQueryNPHState", argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_nph_state(a[0],a[1])) },
+    ApiEntry { ordinal: 246, module: "DOSCALLS", name: "DosRawReadNPipe",  argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_raw_read_npipe(a[0],a[1],a[2],a[3])) },
+    ApiEntry { ordinal: 247, module: "DOSCALLS", name: "DosRawWriteNPipe", argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_raw_write_npipe(a[0],a[1],a[2],a[3])) },
     ApiEntry { ordinal: 248, module: "DOSCALLS", name: "DosQueryNPipeInfo", argc: 4,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_query_npipe_info(a[0],a[1],a[2],a[3])) },
     ApiEntry { ordinal: 249, module: "DOSCALLS", name: "DosQueryNPipeSemState", argc: 3,
@@ -1332,6 +1336,11 @@ mod tests {
                                         include_str!("pmspl.rs"), include_str!("pm_coords.rs"),
                                         include_str!("pm_psstate.rs")]);
         assert_eq!(gpi.len() as u32, super::PMGPI_ORDINALS, "PMGPI_ORDINALS is stale");
+        // build.rs's name tables (DosQueryProcAddr by name) list the same calls.
+        let names = |m| super::super::descriptors::pm_dispatched(m).expect("a PM table")
+            .iter().map(|&(_, o)| o).collect::<std::collections::BTreeSet<u32>>();
+        assert_eq!(names("PMWIN"), win, "PMWIN name table");
+        assert_eq!(names("PMGPI"), gpi, "PMGPI name table");
     }
 
     #[test]
@@ -1341,7 +1350,7 @@ mod tests {
             assert!(!super::STUB_ORDINALS.contains(&ord), "ordinal {ord} is implemented");
         }
         let report = super::compat_report();
-        assert!(report.contains("DOSCALLS  (156 implemented, 4 stub)"), "{report}");
+        assert!(report.contains("DOSCALLS  (158 implemented, 4 stub)"), "{report}");
     }
 
     // ── registry ─────────────────────────────────────────────────────────────
