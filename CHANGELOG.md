@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **`WinTrackRect` / `WinShowTrackRect`** (ADR-0089): a program tracks a rectangle with the pointer (under capture, ending on the release) or the keyboard (arrows, Enter, Esc). The tracking honours the moving edges, the grid, the size limits and the boundary, and inverts the outline on the program's PS; messages sent to the thread still run meanwhile. The frames' keyboard tracking and `WinTrackRect` share one tracker (`track.rs`). Sample: `samples/pm_track_test`.
 - **Thread-local memory** (ADR-0088): `DosAllocThreadLocalMemory` / `DosFreeThreadLocalMemory`. Each 32-bit thread now runs with its own page tables, which map memory one-to-one except the thread-local page, so one pointer leads to each thread's own words, for the guest and for API calls alike. Sample: `samples/tlm_test`.
 - **`DosRawReadNPipe` / `DosRawWriteNPipe`** (ADR-0087): a message pipe's messages read and written as records, a USHORT length and the bytes (Warpine's own format; the calls have public prototypes only); on a byte pipe they are `DosRead` / `DosWrite`. Sample: `samples/npipe_test`.
 

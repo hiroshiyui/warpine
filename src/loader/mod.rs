@@ -63,6 +63,8 @@ mod lx_loader;
 mod ne_exec;
 mod descriptors;
 pub(crate) mod paging;
+pub(crate) mod track;
+mod pm_track;
 mod vcpu;
 mod api_dispatch;
 mod doscalls;

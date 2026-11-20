@@ -1128,6 +1128,12 @@ pub const TF_TOP:    u32 = 0x0002;
 pub const TF_RIGHT:  u32 = 0x0004;
 pub const TF_BOTTOM: u32 = 0x0008;
 pub const TF_MOVE:   u32 = 0x000F;
+pub const TF_SETPOINTERPOS:  u32 = 0x0010;
+pub const TF_GRID:           u32 = 0x0020;
+pub const TF_STANDARD:       u32 = 0x0040;
+pub const TF_ALLINBOUNDARY:  u32 = 0x0080;
+pub const TF_VALIDATETRACKRECT: u32 = 0x0100;
+pub const TF_PARTINBOUNDARY: u32 = 0x0200;
 
 // WinPopupMenu options (`<pmwin.h>`).
 pub const PU_POSITIONONITEM: u32 = 0x0001;

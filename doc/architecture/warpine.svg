@@ -224,13 +224,13 @@
 <path fill="#bbdefb" stroke="black" d="M924.92,-740.6C924.92,-740.6 55.08,-740.6 55.08,-740.6 49.08,-740.6 43.07,-734.6 43.07,-728.6 43.07,-728.6 43.07,-666.08 43.07,-666.08 43.07,-660.08 49.07,-654.08 55.07,-654.08 55.07,-654.08 924.92,-654.08 924.92,-654.08 930.92,-654.08 936.92,-660.08 936.92,-666.08 936.92,-666.08 936.92,-728.6 936.92,-728.6 936.92,-734.6 930.92,-740.6 924.92,-740.6"/>
 <text xml:space="preserve" text-anchor="start" x="53.88" y="-725.39" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">PM window manager: PMWIN windows, messages, hooks (ADR&#45;0026), input, painting, presentation parameters, atoms, DDE, dialogs embedded in windows (ADR&#45;0042)</text>
 <text xml:space="preserve" text-anchor="start" x="344.88" y="-717.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_win.rs, loader/pm_types.rs, loader/pm_window.rs, loader/pm_winutil.rs</text>
-<text xml:space="preserve" text-anchor="start" x="338.12" y="-709.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_input.rs, loader/pm_dialog.rs, loader/pm_msgbox.rs, loader/pm_destroy.rs</text>
-<text xml:space="preserve" text-anchor="start" x="334" y="-701.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_error.rs, loader/pm_pointer.rs, loader/pm_minmax.rs, loader/pm_sysmenu.rs</text>
-<text xml:space="preserve" text-anchor="start" x="337" y="-693.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_paint.rs, loader/pm_query.rs, loader/pm_keystate.rs, loader/pm_syscolor.rs</text>
-<text xml:space="preserve" text-anchor="start" x="341.88" y="-685.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_rect.rs, loader/pm_cursor.rs, loader/pm_message.rs, loader/pm_hook.rs</text>
-<text xml:space="preserve" text-anchor="start" x="338.12" y="-677.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_frame.rs, loader/pm_accel.rs, loader/pm_winmisc.rs, loader/pm_remote.rs</text>
-<text xml:space="preserve" text-anchor="start" x="326.88" y="-669.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_enum.rs, loader/pm_presparam.rs, loader/pm_paint_style.rs, loader/pm_atom.rs</text>
-<text xml:space="preserve" text-anchor="start" x="458.5" y="-661.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_dde.rs</text>
+<text xml:space="preserve" text-anchor="start" x="355.75" y="-709.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_track.rs, loader/track.rs, loader/pm_input.rs, loader/pm_dialog.rs</text>
+<text xml:space="preserve" text-anchor="start" x="336.62" y="-701.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_msgbox.rs, loader/pm_destroy.rs, loader/pm_error.rs, loader/pm_pointer.rs</text>
+<text xml:space="preserve" text-anchor="start" x="335.88" y="-693.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_minmax.rs, loader/pm_sysmenu.rs, loader/pm_paint.rs, loader/pm_query.rs</text>
+<text xml:space="preserve" text-anchor="start" x="338.12" y="-685.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_keystate.rs, loader/pm_syscolor.rs, loader/pm_rect.rs, loader/pm_cursor.rs</text>
+<text xml:space="preserve" text-anchor="start" x="340" y="-677.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_message.rs, loader/pm_hook.rs, loader/pm_frame.rs, loader/pm_accel.rs</text>
+<text xml:space="preserve" text-anchor="start" x="328" y="-669.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_winmisc.rs, loader/pm_remote.rs, loader/pm_enum.rs, loader/pm_presparam.rs</text>
+<text xml:space="preserve" text-anchor="start" x="376.75" y="-661.24" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/pm_paint_style.rs, loader/pm_atom.rs, loader/pm_dde.rs</text>
 </g>
 <!-- dispatch&#45;&gt;pmwin -->
 <g id="edge11" class="edge">

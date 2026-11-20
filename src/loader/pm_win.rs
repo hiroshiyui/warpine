@@ -59,6 +59,15 @@ use super::pm_types::{DeviceContext, PsOrigin, TimerStop};
 use crate::lx::header::{RT_STRING, RT_MESSAGE, RT_MENU, RT_DIALOG, RT_ACCELTABLE};
 use super::pm_types::MenuItem;
 
+/// What [`super::Loader::take_message`] found: as [`Got`], with the
+/// message itself.
+#[derive(Debug, Clone)]
+pub(super) enum Taken {
+    Message(super::pm_types::OS2Message),
+    Sent(SentMessage),
+    HitTest(super::pm_input::HitAsk),
+}
+
 /// What [`super::Loader::next_message`] found.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Got {
@@ -1982,6 +1991,31 @@ impl super::Loader {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn next_message(&self, vcpu_id: u32, pqmsg: u32, hwnd_filter: u32, first: u32, last: u32,
                     fl: u32, wait: bool, translate: bool) -> Option<Got> {
+        Some(match self.take_message(vcpu_id, hwnd_filter, first, last, fl, wait, translate)? {
+            Taken::Message(msg) => {
+                if pqmsg != 0 {
+                    self.guest_write::<u32>(pqmsg, msg.hwnd);
+                    self.guest_write::<u32>(pqmsg + 4, msg.msg);
+                    self.guest_write::<u32>(pqmsg + 8, msg.mp1);
+                    self.guest_write::<u32>(pqmsg + 12, msg.mp2);
+                    self.guest_write::<u32>(pqmsg + 16, msg.time);
+                    // ptl is a POINTL (two LONGs), then ulReserved.
+                    self.guest_write::<i32>(pqmsg + 20, msg.x);
+                    self.guest_write::<i32>(pqmsg + 24, msg.y);
+                    self.guest_write::<u32>(pqmsg + 28, 0);
+                }
+                Got::Message(msg.msg)
+            }
+            Taken::Sent(s) => Got::Sent(s),
+            Taken::HitTest(a) => Got::HitTest(a),
+        })
+    }
+
+    /// [`Self::next_message`]'s work: the message itself rather than a
+    /// `QMSG` in guest memory (`WinTrackRect`'s loop reads its input so).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn take_message(&self, vcpu_id: u32, hwnd_filter: u32, first: u32, last: u32,
+                    fl: u32, wait: bool, translate: bool) -> Option<Taken> {
         let (hmq, mq_arc) = {
             let wm = self.shared.window_mgr.lock_or_recover();
             let hmq = wm.tid_to_hmq.get(&vcpu_id).copied().unwrap_or(0);
@@ -1995,7 +2029,7 @@ impl super::Loader {
         loop {
             if self.stop_or_restart() { return None; }
             if let Some(s) = self.take_sent(hmq) {
-                return Some(Got::Sent(s));
+                return Some(Taken::Sent(s));
             }
             // Window-manager lock before the queue lock, as everywhere else.
             let found = self.shared.window_mgr.lock_or_recover().next_queued(hmq, remove, |wm, m| {
@@ -2007,22 +2041,11 @@ impl super::Loader {
                 // Keystrokes that are accelerators arrive as the command
                 // they stand for.
                 if translate { self.translate_queued_accelerator(&mut msg); }
-                if pqmsg != 0 {
-                    self.guest_write::<u32>(pqmsg, msg.hwnd);
-                    self.guest_write::<u32>(pqmsg + 4, msg.msg);
-                    self.guest_write::<u32>(pqmsg + 8, msg.mp1);
-                    self.guest_write::<u32>(pqmsg + 12, msg.mp2);
-                    self.guest_write::<u32>(pqmsg + 16, msg.time);
-                    // ptl is a POINTL (two LONGs), then ulReserved.
-                    self.guest_write::<i32>(pqmsg + 20, msg.x);
-                    self.guest_write::<i32>(pqmsg + 24, msg.y);
-                    self.guest_write::<u32>(pqmsg + 28, 0);
-                }
-                return Some(Got::Message(msg.msg));
+                return Some(Taken::Message(msg));
             }
             // A pointer event waits for its window's WM_HITTEST answer.
             if let Some(a) = self.shared.window_mgr.lock_or_recover().take_hit_ask(hmq) {
-                return Some(Got::HitTest(a));
+                return Some(Taken::HitTest(a));
             }
             if !wait { return None; }
             // Block on the queue's condvar instead of spinning.

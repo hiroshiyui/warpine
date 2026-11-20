@@ -838,7 +838,20 @@ WinStoreWindowPos (207), WinRestoreWindowPos (208): a window's position, size an
 
 A null pointer, or a time whose year is outside 1–9999, is `ERROR_INVALID_PARAMETER`; a `DATETIME` that names no real date or time is `ERROR_TS_DATETIME`. Sample: `datetime_test`.
 
-### PMWIN (215 APIs)
+### PMWIN (217 APIs)
+
+**Tracking (ADR-0089, `pm_track.rs`):** WinTrackRect (890), WinShowTrackRect (882). `WinTrackRect` tracks the `TRACKINFO` rectangle on the calling thread until the user accepts (TRUE) or cancels (FALSE), and leaves the rectangle in `rclTrack`:
+- **Pointer:** the call captures the pointer for `hwnd`; pointer moves move the edges `fs` names (`TF_LEFT` / `TF_TOP` / `TF_RIGHT` / `TF_BOTTOM`, `TF_MOVE` all four), and releasing the button that was down accepts.
+- **Keyboard:** the arrows step the edges by `cxKeyboard` / `cyKeyboard`; Enter accepts and Esc cancels.
+- **Limits:** the rectangle keeps the minimum and maximum size, snaps to the grid with `TF_GRID`, and stays inside `rclBoundary` with `TF_ALLINBOUNDARY` (one pel inside with `TF_PARTINBOUNDARY`). `TF_SETPOINTERPOS` puts the pointer on what moves.
+- **Outline:** the border (`cxBorder` / `cyBorder` wide) is inverted on `hps`, or on a PS of `hwnd`; `WinShowTrackRect` hides and shows it, counted.
+- **Messages:** messages other programs send the thread are run meanwhile; other queued messages wait, and `WM_QUIT` cancels.
+- **Warpine's own choices (unverified):**
+  - `rclTrack` holds the starting rectangle after a cancel;
+  - a nested tracking fails;
+  - with no button down, the next button press and its release end the tracking;
+  - no outline on the desktop without a PS;
+  - `TF_STANDARD` / `TF_VALIDATETRACKRECT` are ignored.
 
 **Utility calls (ADR-0086, `pm_winutil.rs`):**
 - **Strings:** WinUpper (893), WinUpperChar (894), WinNextChar (791), WinPrevChar (795), WinCompareStrings (708), WinCpTranslateChar (711), WinCpTranslateString (712), WinGetCurrentTime (750).
@@ -1058,7 +1071,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 474 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 405 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 474 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 407 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -1083,9 +1096,9 @@ Counts are taken from the static registry (`api_registry.rs`, 474 entries) and t
 | REXX (the REXX API) | registry | 5 | 0 | 5 |
 | REXXAPI (registrations, queues; no macro space) | registry | 17 | 7 | 24 |
 | PMWP (window positions) | registry | 2 | 0 | 2 |
-| PMWIN | sub-dispatcher | 215 | 0 | 215 |
+| PMWIN | sub-dispatcher | 217 | 0 | 217 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **858** | **21** | **879** |
+| **Total** | | **860** | **21** | **881** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

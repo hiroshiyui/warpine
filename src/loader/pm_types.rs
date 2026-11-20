@@ -601,6 +601,8 @@ pub struct WindowManager {
     pub clipboard_open: bool,
     /// Currently captured window handle (0 = none).
     pub capture_hwnd: u32,
+    /// `WinTrackRect` sessions, by vCPU (`pm_track.rs`).
+    pub tracks: HashMap<u32, super::pm_track::TrackSession>,
     /// Text-format clipboard content, kept in sync with the host SDL clipboard.
     pub clipboard_text: String,
     pub(super) accel_tables: HashMap<u32, Vec<AccelEntry>>,
@@ -783,6 +785,7 @@ impl WindowManager {
             user_datatypes: HashMap::new(),
             clipboard_open: false,
             capture_hwnd: 0,
+            tracks: HashMap::new(),
             clipboard_text: String::new(),
             accel_tables: HashMap::new(),
             window_accel: HashMap::new(),

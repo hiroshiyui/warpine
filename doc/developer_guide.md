@@ -1616,6 +1616,29 @@ Tests: `shared_arena.rs` (allocation and reuse, holders, sweeps, strict parsing,
 - **Scripts:** `rdrag X1 Y1 X2 Y2` drags with the right button (`gui_script.rs`, `Input::MouseDrag { button, .. }`); `ctrl+rdrag …` holds modifiers until the release (`push_with_mods_until`); `drop X Y PATH` drops a host file (`Input::Drop`).
 - **Tests:** `pm_drag.rs` (strings, RMF parsing, the data calls, `window_under`, drags over a client and a container run through their chains, the feed, operation keys, file `DRAGINFO`s, `DrgDragFiles`, enumeration and reallocation, host drops through their sent steps), `pm_window.rs` (the owner gets the gestures), `proto.rs` / `desktop_events.rs` / `gui_script.rs` (the drop input), `samples/pm_drag_test` with a golden picture, `samples/pm_dropfiles_test` (both desktops) with a golden picture.
 
+### Tracking a rectangle
+
+`pm_track.rs` and `track.rs` (ADR-0089):
+- **`track.rs`** is pure:
+  - `KeyTrack`: the frames' keyboard move and size, re-exported by `gui/frame_track.rs`;
+  - `TrackInfo`: the 76-byte `TRACKINFO`;
+  - `Tracker`: one offset from the start, set by pointer moves (`pointer`) and arrow steps (`step`), applied by `rect` to the `TF_*` edges, then the grid (towards 0), the size limits (one moving edge per axis; a maximum of 0 is no limit) and the boundary (`keep_in` / `keep_touching`), all with saturating arithmetic;
+  - `pointer_start`: where `TF_SETPOINTERPOS` puts the pointer.
+- **The call:**
+  - `win_track_rect` reads the `TRACKINFO`, the button held (`key_state`) and the pointer (`key_state.pointer` less `window_origin(hwnd)`).
+  - It captures the pointer: `hwnd`, or for `HWND_DESKTOP` the thread's focus window.
+  - It makes a PS for `hwnd` when given none (none for the desktop), draws the outline (`outline_strips`: four strips that do not overlap, inverted with `DrawOp::Box` + `Mix::Invert`), records a `TrackSession` in `WindowManager::tracks` (by vCPU), and runs `track_loop`.
+- **The loop:**
+  - `Loader::take_message` (the body of `next_message`, returning the `OS2Message`) is filtered to `WM_MOUSEMOVE` .. `WM_CHAR`, so other messages stay queued.
+  - Pointer coordinates are mapped from the message's window to `hwnd`.
+  - A sent message or a hit-test ask marks the session `resuming` and runs through `run_sent` / `hit_test_chain` with `AfterSent::Rerun(890)`. The re-run finds the session by `call` (return address, `TRACKINFO`), and anything else on the thread is refused.
+  - An interrupted wait does the same, so the call is simply made again.
+- **The end:** `track_end` removes the outline and writes `rclTrack`. `finish_track` drops the session, frees Warpine's PS and gives the capture back; `end_thread` calls it for a thread that ends while tracking.
+- **`win_show_track_rect`:** finds the session by `hwnd` and counts hides.
+- **Tests:**
+  - unit tests in `track.rs` and `pm_track.rs`;
+  - `samples/pm_track_test` with `gui_pm_track_test_tracks_with_the_pointer_and_the_keyboard`.
+
 ### File attributes
 
 `vfs_hostdir.rs`:
@@ -1790,7 +1813,7 @@ src/
                        CGA_PALETTE, render_cells(), kbd_key_down() (44 unit tests)
     vio_window.rs      VIO program in a PM window: choose_display(), VioWindow
     system_menu.rs     System-menu items of PM frames and the VIO window, can_track, menu_popup_items
-    frame_track.rs     KeyTrack: keyboard move / size state machine (Alt+F7 / Alt+F8)
+    frame_track.rs     Keyboard move / size of frames (Alt+F7 / Alt+F8); KeyTrack lives in loader/track.rs
     cursor.rs          CursorMark: the PM text cursor, inverted over a frame's pels by the compositors
   loader/
     mod.rs             Loader struct, SharedState (kbd_queue/kbd_cond/use_sdl_text), KVM/mock init

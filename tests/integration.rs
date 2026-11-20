@@ -2414,6 +2414,37 @@ fn gui_pm_rect_text_test_checks_rectangles_draw_text_and_polylines() {
     assert_sample_checks_pass("samples/pm_rect_text_test/pm_rect_text_test.exe", "pm_rect_text_test", 39);
 }
 
+/// The script for pm_track_test: a drag tracks a move, then keyboard
+/// trackings (k: size, c: cancel, g: grid and boundary), then q.
+const PM_TRACK_STEPS: &str = "\
+1000 drag 300 300 340 270
+1500 text k
+1700 key right
+1800 key right
+1900 key up
+2000 key enter
+2400 text c
+2600 key right
+2700 key esc
+3000 text g
+3100 key right
+3200 key right
+3300 key right
+3400 key right
+3500 key enter
+3900 text q
+6000 quit
+";
+
+/// pm_track_test: WinTrackRect / WinShowTrackRect (ADR-0089) — a drag's
+/// offset moves the rectangle and the release accepts; arrows size the
+/// right and top edges and Enter accepts; Esc cancels with the starting
+/// rectangle; TF_GRID and TF_ALLINBOUNDARY; the outline gone afterwards.
+#[test]
+fn gui_pm_track_test_tracks_with_the_pointer_and_the_keyboard() {
+    assert_scripted_checks_pass("samples/pm_track_test/pm_track_test.exe", "pm_track_test", 9, PM_TRACK_STEPS);
+}
+
 /// pm_winutil_test: the PMWIN utility calls of Tier 1 (ADR-0086) — string
 /// helpers in a codepage, WinGetCurrentTime, WinCreateDlg from a template
 /// in memory with WinGetDlgMsg, dialog units, WinGetClipPS /

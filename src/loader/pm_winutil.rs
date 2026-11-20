@@ -171,6 +171,15 @@ impl super::Loader {
                     None => ApiResult::Normal(0),
                 }
             }
+            890 => {
+                // WinTrackRect(HWND hwnd, HPS hps, PTRACKINFO pti) -> BOOL: track a rectangle
+                // with the pointer or keyboard until accepted (TRUE) or cancelled (pm_track.rs).
+                self.win_track_rect(vcpu_id, ordinal, read_stack(0), read_stack(4), read_stack(8), read_stack(12))
+            }
+            882 => {
+                // WinShowTrackRect(HWND hwnd, BOOL fShow) -> BOOL: hide or show the outline.
+                self.win_show_track_rect(vcpu_id, read_stack(4), read_stack(8) != 0)
+            }
             759 => {
                 // WinGetScreenPS(HWND hwndDesktop) -> HPS: a presentation space for the
                 // whole screen, freed by WinReleasePS.

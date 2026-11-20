@@ -308,6 +308,9 @@ impl super::Loader {
                 };
             }
         }
+        // A tracking it was in ends (pm_track.rs): the capture goes back.
+        let track = self.shared.window_mgr.lock_or_recover().tracks.get(&vcpu_id).copied();
+        if let Some(s) = track { self.finish_track(vcpu_id, &s); }
         // A thread's PM message queue goes with it, so that input for its
         // windows is dropped instead of waiting for a reader that is gone.
         {

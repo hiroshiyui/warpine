@@ -87,7 +87,7 @@ disassembly.
   - a real `FID_SYSMENU` window (`MM_SETITEMATTR` / `MM_QUERYITEMATTR`; `SC_CLOSE` ignored when Close is disabled);
   - the system menu's Window list item, which is greyed although Ctrl+Esc works;
   - Alt+F11 for Hide, and a minimized frame's system menu on a click;
-  - `WM_TRACKFRAME` / `WM_QUERYTRACKINFO` / `WinTrackRect` for applications, and the pointer taking over a keyboard tracking;
+  - `WM_TRACKFRAME` / `WM_QUERYTRACKINFO` for subclassed frames (ADR-0089 phase 2), the pointer taking over a keyboard tracking, and a `WinTrackRect` outline on the desktop (no PS);
   - submenus, `PU_MOUSEBUTTONnDOWN`, `PU_KEYBOARD` / `PU_MOUSEBUTTONn` in `WinPopupMenu`.
 - [ ] **Input**:
   - the horizontal wheel;
