@@ -252,11 +252,7 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 
 Open Watcom stays the frozen ABI baseline. A second, modern toolchain goes only through stable formats: i386 ELF objects in, LX out, with `lx-link` as the one bridge. That rules out compiler plugins, LLVM passes and lld / BFD back ends.
 
-- [ ] **M1, C hello world from GCC**:
-  - `samples/c_hello` with `gcc -m32 -ffreestanding -fno-pic -c` + `lx-link`, and an integration test;
-  - `lx-link` support for `.text.*` / `.rodata.*` / `.data.*` / `.bss` variants, `COMMON`, string merging and `.init_array`, with a clear error for PIC relocations;
-  - a minimal `_start`.
-- [ ] **M2, compiler-neutral SDK**:
+- [ ] **M2, compiler-neutral SDK** (M1 done: ADR-0095, `samples/c_hello`):
   - `os2.h` headers for GCC and clang (conventions behind macros);
   - imports from `targets/os2api.def`;
   - a small freestanding C runtime.

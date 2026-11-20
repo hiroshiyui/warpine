@@ -6,6 +6,8 @@
 #
 # Each sample keeps its own Makefile; this one only visits them. Left out:
 #   rust_hello a Rust guest built with cargo +nightly (see its README section)
+# c_hello is built with GCC (or clang) and lx-link, not Open Watcom; it is
+# skipped until lx-link is built (cargo build --bin lx_link).
 
 SAMPLES  := $(patsubst %/Makefile,%,$(wildcard */Makefile))
 

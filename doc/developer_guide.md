@@ -2122,7 +2122,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the CMD.EXE / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (1901: 1859 warpine + 19 `gen_api` + 12 `lx_link` + 5 `gen_arch` + 6 `gen_compat`) include, among others:
+The unit tests (2189: 2138 warpine + 19 `gen_api` + 21 `lx_link` + 5 `gen_arch` + 6 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2426,7 +2426,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 1901 unit tests (1859 warpine + 19 gen_api + 12 lx_link + 5 gen_arch + 6 gen_compat), 149 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 2189 unit tests (2138 warpine + 19 gen_api + 21 lx_link + 5 gen_arch + 6 gen_compat), 201 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
@@ -2436,7 +2436,7 @@ Warpine provides a complete toolchain for writing OS/2 guest programs in Rust wi
 
 ### Components
 
-**`targets/i686-warpine-os2.json`** — Custom Rust target spec: `i686-unknown-none`, `relocation-model: static`, `panic-strategy: abort`, `linker: lx-link`. Only `R_386_32` relocations are emitted (no PLT, no PC-relative imports).
+**`targets/i686-warpine-os2.json`** — Custom Rust target spec: `i686-unknown-none`, `relocation-model: static`, `panic-strategy: abort`, `linker: lx-link` (found on `PATH`; rustc passes `--gc-sections`).
 
 **`src/bin/gen_api.rs`** — Ordinal Table Canonical Build Tool. `targets/os2api.def` is the single authoritative source for the OS/2 API ordinal address space. Subcommands:
 - `show` — pretty-print all ordinals with flat addresses and module ranges
@@ -2456,7 +2456,14 @@ Run `cargo run --bin gen_api -- check` to verify consistency after any ordinal c
 
 The test `layer_map_matches_src_and_the_committed_diagram` runs the validation and the comparison, so adding, renaming or removing a module fails `cargo test` until `layers.toml` places it and `render` has been run. Flows describe the architecture and are not checked against the call graph.
 
-**`src/bin/lx_link.rs`** — ELF-to-LX linker. Reads ELF `.o`/`.rlib`/`.a` objects produced by rustc, merges `.text`/`.data` sections, resolves OS/2 API imports via `targets/os2api.def` (embedded via `include_str!` as compile-time fallback), and emits a valid MZ+LX executable. Object layout: code at `0x00010000` (flags `READABLE|EXECUTABLE|BIG`), data at `0x00060000`, stack at `0x00070000`.
+**`src/bin/lx_link.rs`** — the ELF-to-LX linker for rustc, GCC and clang objects (ADR-0015, ADR-0095). It reads `.o` files and `.rlib` / `.a` archives and emits an MZ + LX executable.
+- **Modules:**
+  - `elf_reader` classifies allocated sections by their flags (code, data, zeros, init / fini arrays) and keeps each relocation with its addend (REL ones read from the bytes) and a per-object target: a global symbol, `Local { section, offset }` or an absolute value.
+  - `select_objects` pulls archive members in on demand.
+  - `live_sections` implements `--gc-sections`.
+  - `LinkerState::build` lays out code at `0x10000`, data on the next 64 KB boundary and the stack after it, inside the program area. It also applies symbol precedence, merges commons, and defines `__{preinit,init,fini}_array_{start,end}`.
+  - `lx_writer::write_lx` applies the relocations, writes LX fixups for absolute ones and import fixups for OS/2 APIs (from `targets/os2api.def`, embedded as a fallback), and fails on undefined symbols.
+- **Relocations:** `R_386_32`, `R_386_PC32` and `R_386_PLT32` only; GOT relocations fail with "compile with -fno-pic".
 
 **`crates/warpine-os2-sys`** — `#![no_std]` raw OS/2 API bindings. DOSCALLS use `extern "C"` (caller-cleanup). VIOCALLS and KBDCALLS use `extern "stdcall"` (callee-cleanup) with **reversed argument order** to compensate for the OS/2 Pascal calling convention (which pushes args left-to-right, placing the last arg at ESP+4). The reversed declaration causes Rust's right-to-left stdcall push to produce the same stack layout.
 

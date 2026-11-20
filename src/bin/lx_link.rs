@@ -41,13 +41,16 @@ const PMSPL_BASE: u32 = 18432;
 const PMCTLS_BASE: u32 = 19456;
 const WARPINE_BASE: u32 = 20480;
 
-/// Base virtual address of the code (text) object in the generated LX file.
+/// Base virtual address of the code (text) object: the start of Warpine's
+/// program area (`EXE_AREA_START`, ADR-0094). The data object follows on
+/// the next [`OBJECT_ALIGN`] boundary after the code, the stack after it.
 const CODE_OBJECT_BASE: u32 = 0x0001_0000;
-/// Base virtual address of the data object in the generated LX file.
-const DATA_OBJECT_BASE: u32 = 0x0006_0000;
-/// Stack size: 64 KiB, placed just below TIB (0x90000).
+/// Objects start on 64 KiB boundaries.
+const OBJECT_ALIGN: u32 = 0x0001_0000;
+/// The end of the program area (`EXE_AREA_END`): the API thunks.
+const PROGRAM_AREA_END: u32 = MAGIC_API_BASE;
+/// Stack size: 64 KiB.
 const STACK_SIZE: u32 = 0x0001_0000;
-const STACK_OBJECT_BASE: u32 = 0x0008_0000 - STACK_SIZE; // 0x70000
 
 const PAGE_SIZE: u32 = 4096;
 /// Absolute file offset of the LX header (after 64-byte MZ stub).
@@ -71,12 +74,15 @@ mod args {
         pub inputs: Vec<PathBuf>,
         pub output: PathBuf,
         pub def_file: Option<PathBuf>,
+        /// `--gc-sections`: link only the sections the program reaches.
+        pub gc_sections: bool,
     }
 
     pub fn parse_args(raw: &[String]) -> Args {
         let mut inputs = Vec::new();
         let mut output = PathBuf::from("a.out");
         let mut def_file = None;
+        let mut gc_sections = false;
         let mut i = 1usize;
         while i < raw.len() {
             let arg = &raw[i];
@@ -92,6 +98,10 @@ mod args {
                 if i < raw.len() {
                     def_file = Some(PathBuf::from(&raw[i]));
                 }
+            } else if arg == "--gc-sections" {
+                gc_sections = true;
+            } else if arg == "--no-gc-sections" {
+                gc_sections = false;
             } else if arg.starts_with('-') {
                 // Flags known to take a single value argument:
                 if matches!(
@@ -110,7 +120,7 @@ mod args {
             }
             i += 1;
         }
-        Args { inputs, output, def_file }
+        Args { inputs, output, def_file, gc_sections }
     }
 }
 
@@ -153,59 +163,123 @@ mod def_parser {
 
 // ─── mod elf_reader ───────────────────────────────────────────────────────────
 
+/// i386 ELF objects as `lx-link` sees them: allocated sections classified
+/// by their ELF type and flags (so `.text.*`, `.rodata.str1.1`,
+/// `.data.rel.local`, `.bss.*` … all work), relocations with their
+/// addends — the implicit ones of REL sections read from the section
+/// bytes — and targets resolved per object (a local symbol or a section of
+/// *this* object, never a same-named one elsewhere).
 mod elf_reader {
     use std::collections::HashMap;
 
-    use object::SectionKind;
+    use object::{
+        Object, ObjectSection, ObjectSymbol, RelocationFlags, RelocationTarget, SectionFlags,
+        SectionKind, SymbolKind, SymbolSection,
+    };
 
-    /// A relocation entry from an ELF section.
+    /// ELF section flags and types used here.
+    const SHF_ALLOC: u64 = 0x2;
+    const SHF_EXECINSTR: u64 = 0x4;
+    const SHF_TLS: u64 = 0x400;
+    const SHT_INIT_ARRAY: u32 = 14;
+    const SHT_FINI_ARRAY: u32 = 15;
+    const SHT_PREINIT_ARRAY: u32 = 16;
+
+    /// i386 relocation types (System V ABI, Intel386 supplement).
+    pub const R_386_32: u32 = 1;
+    pub const R_386_PC32: u32 = 2;
+    pub const R_386_PLT32: u32 = 4;
+
+    /// Where a section goes.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum SecClass {
+        Code,
+        /// Initialised data, writable or read-only.
+        Data,
+        /// Zero-initialised data (`SHT_NOBITS`).
+        Bss,
+        /// An array of function pointers the start-up code runs.
+        Array(ArrayKind),
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ArrayKind { Preinit, Init, Fini }
+
+    /// How a relocation is computed (S + A, or S + A − P).
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum RelocKind { Abs32, Pc32 }
+
+    /// A relocation of a section.
     #[derive(Debug, Clone)]
     pub struct Reloc {
         /// Byte offset within the section.
         pub offset: u64,
-        /// Relocation kind (Absolute = R_386_32, Relative = R_386_PC32).
-        pub kind: object::RelocationKind,
-        /// Addend (usually 0 for REL, explicit for RELA).
+        pub kind: RelocKind,
+        /// The addend: explicit (RELA) or read from the section (REL).
         pub addend: i64,
-        /// The relocation target.
         pub target: RelocTarget,
     }
 
-    /// Resolved relocation target.
-    #[derive(Debug, Clone)]
+    /// What a relocation refers to.
+    #[derive(Debug, Clone, PartialEq, Eq)]
     pub enum RelocTarget {
-        /// Symbol defined in (or imported by) this link unit.
+        /// A global symbol: defined by some object, an OS/2 API import,
+        /// or undefined.
         Symbol(String),
-        /// Section-relative reference.
-        Section(String),
+        /// A place in a section of the same object (a local symbol, or the
+        /// section itself).
+        Local { section: usize, offset: u64 },
+        /// An absolute value.
+        Absolute(u64),
     }
 
-    /// A section extracted from an ELF object file.
+    /// An allocated section of an object.
     #[derive(Debug)]
     pub struct ElfSection {
         pub name: String,
-        pub kind: SectionKind,
+        pub class: SecClass,
+        /// The bytes (empty for `Bss`).
         pub data: Vec<u8>,
-        /// Alignment requirement (power of two).
+        /// The size in memory.
+        pub size: u64,
+        /// Alignment (a power of two).
         pub align: u64,
         pub relocs: Vec<Reloc>,
     }
 
-    /// An exported symbol from an ELF object.
-    #[derive(Debug)]
+    /// A global symbol an object defines.
+    #[derive(Debug, Clone)]
     pub struct ElfSymbol {
         pub name: String,
-        /// Index into the `ElfObject::sections` slice (None for undefined/abs).
-        pub section_idx: Option<usize>,
-        /// Byte offset within the section (or absolute address if no section).
+        /// The defining section (index into `ElfObject::sections`).
+        pub section_idx: usize,
+        /// Byte offset within it.
         pub offset: u64,
+        pub weak: bool,
     }
 
-    /// One parsed ELF object file.
-    #[derive(Debug)]
+    /// A common symbol (`int x;` with `-fcommon`).
+    #[derive(Debug, Clone)]
+    pub struct CommonSymbol {
+        pub name: String,
+        pub size: u64,
+        pub align: u64,
+    }
+
+    /// One parsed object file.
+    #[derive(Debug, Default)]
     pub struct ElfObject {
+        /// Where it came from, for messages.
+        pub name: String,
         pub sections: Vec<ElfSection>,
+        /// Global symbols it defines.
         pub symbols: Vec<ElfSymbol>,
+        pub commons: Vec<CommonSymbol>,
+        /// Global symbols it refers to without defining them (strong
+        /// references; weak ones are in `weak_refs`).
+        pub undefined: Vec<String>,
+        /// Undefined weak symbols: 0 when nothing defines them.
+        pub weak_refs: Vec<String>,
     }
 
     /// The largest uninitialized section accepted: the whole guest
@@ -221,265 +295,309 @@ mod elf_reader {
         Ok(vec![0u8; size as usize])
     }
 
-    /// Parse one ELF .o file from raw bytes.
-    pub fn parse_elf(data: &[u8], source_name: &str) -> Result<ElfObject, Box<dyn super::Error>> {
-        use object::{
-            Object, ObjectSection, ObjectSymbol, RelocationTarget, SymbolKind, SymbolScope,
-        };
+    /// The class of a section, `None` for one that is not linked (not
+    /// allocated: debug information, notes, `.comment`; or unwind tables,
+    /// which nothing reads on OS/2).
+    fn classify(name: &str, kind: SectionKind, sh_flags: u64) -> Option<SecClass> {
+        if sh_flags & SHF_ALLOC == 0 || name.starts_with(".eh_frame") || name.starts_with(".note") {
+            return None;
+        }
+        Some(match kind {
+            SectionKind::Elf(SHT_PREINIT_ARRAY) => SecClass::Array(ArrayKind::Preinit),
+            SectionKind::Elf(SHT_INIT_ARRAY) => SecClass::Array(ArrayKind::Init),
+            SectionKind::Elf(SHT_FINI_ARRAY) => SecClass::Array(ArrayKind::Fini),
+            SectionKind::UninitializedData => SecClass::Bss,
+            _ if sh_flags & SHF_EXECINSTR != 0 => SecClass::Code,
+            _ => SecClass::Data,
+        })
+    }
 
+    /// The name of an i386 relocation type, for messages.
+    pub fn reloc_name(r_type: u32) -> &'static str {
+        match r_type {
+            3 => "R_386_GOT32", 9 => "R_386_GOTOFF", 10 => "R_386_GOTPC", 11 => "R_386_32PLT",
+            20 => "R_386_16", 21 => "R_386_PC16", 22 => "R_386_8", 23 => "R_386_PC8",
+            43 => "R_386_GOT32X", 14..=19 | 24..=42 => "a thread-local or dynamic relocation",
+            _ => "an unknown relocation",
+        }
+    }
+
+    /// Parse one ELF object from raw bytes.
+    pub fn parse_elf(data: &[u8], source_name: &str) -> Result<ElfObject, Box<dyn super::Error>> {
         let obj = object::File::parse(data)?;
+        if obj.architecture() != object::Architecture::I386 {
+            return Err(format!("{source_name}: not an i386 object ({:?}); compile with -m32", obj.architecture()).into());
+        }
 
         let mut sections: Vec<ElfSection> = Vec::new();
-        let mut section_index_map: HashMap<object::SectionIndex, usize> = HashMap::new();
-
+        let mut index_map: HashMap<object::SectionIndex, usize> = HashMap::new();
         for section in obj.sections() {
-            let kind = section.kind();
-            match kind {
-                SectionKind::Text
-                | SectionKind::Data
-                | SectionKind::ReadOnlyData
-                | SectionKind::ReadOnlyString
-                | SectionKind::UninitializedData => {}
-                _ => continue,
+            let name = section.name().unwrap_or("").to_string();
+            let SectionFlags::Elf { sh_flags } = section.flags() else { continue };
+            if sh_flags & SHF_TLS != 0 && sh_flags & SHF_ALLOC != 0 {
+                return Err(format!("{source_name}: section {name}: thread-local storage is not supported").into());
             }
-            // An uninitialized section has no bytes in the file: zeros of
-            // its size, bounded (the size comes from the input's header).
-            // Any other section must be readable as it is: compressed
-            // sections are not supported (object's decompressors are left
-            // out), and linking zeros in place of code would be silent.
-            let data_bytes = if kind == SectionKind::UninitializedData {
-                zeroed_section(section.size(), source_name)?
+            let Some(class) = classify(&name, section.kind(), sh_flags) else { continue };
+            let size = section.size();
+            let data = if class == SecClass::Bss {
+                zeroed_section(size, source_name)?;
+                Vec::new()
             } else {
+                // Compressed sections are not supported: linking zeros in
+                // place of code would be silent.
                 section.uncompressed_data()
-                    .map_err(|e| format!("{source_name}: section {}: {e}", section.name().unwrap_or("?")))?
+                    .map_err(|e| format!("{source_name}: section {name}: {e}"))?
                     .to_vec()
             };
-            let align = section.align().max(1);
-            let local_idx = sections.len();
-            section_index_map.insert(section.index(), local_idx);
-            sections.push(ElfSection {
-                name: section.name().unwrap_or("").to_string(),
-                kind,
-                data: data_bytes,
-                align,
-                relocs: Vec::new(),
-            });
+            index_map.insert(section.index(), sections.len());
+            sections.push(ElfSection { name, class, data, size, align: section.align().max(1), relocs: Vec::new() });
         }
 
-        // Read relocations for each section.
         for section in obj.sections() {
-            let local_idx = match section_index_map.get(&section.index()) {
-                Some(&i) => i,
-                None => continue,
-            };
+            let Some(&local) = index_map.get(&section.index()) else { continue };
             for (offset, reloc) in section.relocations() {
-                let kind = reloc.kind();
-                let size = reloc.size();
-                let addend = reloc.addend();
-                if size != 32 {
-                    eprintln!(
-                        "warning: {}: unhandled {}-bit relocation at offset {:#x}",
-                        source_name, size, offset
-                    );
-                    continue;
-                }
-                let target = match reloc.target() {
-                    RelocationTarget::Symbol(sym_idx) => {
-                        let sym = obj.symbol_by_index(sym_idx)?;
-                        let sym_name = sym.name().unwrap_or("").to_string();
-                        if let Some(sec_idx) = sym.section_index() {
-                            if let Some(&local_sec) = section_index_map.get(&sec_idx) {
-                                let sec_name = sections[local_sec].name.clone();
-                                RelocTarget::Section(sec_name)
-                            } else {
-                                RelocTarget::Symbol(sym_name)
-                            }
-                        } else {
-                            RelocTarget::Symbol(sym_name)
-                        }
-                    }
-                    RelocationTarget::Section(sec_idx) => {
-                        if let Some(&local_sec) = section_index_map.get(&sec_idx) {
-                            let sec_name = sections[local_sec].name.clone();
-                            RelocTarget::Section(sec_name)
-                        } else {
-                            RelocTarget::Symbol(String::new())
-                        }
-                    }
-                    _ => {
-                        eprintln!(
-                            "warning: {}: unhandled relocation target at offset {:#x}",
-                            source_name, offset
-                        );
-                        continue;
+                let RelocationFlags::Elf { r_type } = reloc.flags() else {
+                    return Err(format!("{source_name}: not an ELF relocation").into());
+                };
+                let kind = match r_type {
+                    R_386_32 => RelocKind::Abs32,
+                    // A PLT reference is a direct call in a static link.
+                    R_386_PC32 | R_386_PLT32 => RelocKind::Pc32,
+                    other => {
+                        let sec = &sections[local].name;
+                        return Err(format!(
+                            "{source_name}: section {sec} at {offset:#x}: {} (type {other}) is not supported; \
+                             compile with -fno-pic (position-independent code needs a GOT, which OS/2 programs do not have)",
+                            reloc_name(other)).into());
                     }
                 };
-                sections[local_idx].relocs.push(Reloc { offset, kind, addend, target });
+                let mut addend = reloc.addend();
+                if reloc.has_implicit_addend() {
+                    let bytes = sections[local].data.get(offset as usize..offset as usize + 4)
+                        .ok_or_else(|| format!("{source_name}: relocation at {offset:#x} outside section {}", sections[local].name))?;
+                    addend += i64::from(i32::from_le_bytes(bytes.try_into().unwrap()));
+                }
+                let target = match reloc.target() {
+                    RelocationTarget::Symbol(idx) => {
+                        let sym = obj.symbol_by_index(idx)?;
+                        let name = sym.name().unwrap_or("").to_string();
+                        match sym.section() {
+                            SymbolSection::Section(sec) if sym.is_local() || sym.kind() == SymbolKind::Section => {
+                                let Some(&s) = index_map.get(&sec) else {
+                                    return Err(format!("{source_name}: relocation at {offset:#x} refers to a section that is not linked ({name})").into());
+                                };
+                                RelocTarget::Local { section: s, offset: sym.address() }
+                            }
+                            SymbolSection::Absolute => RelocTarget::Absolute(sym.address()),
+                            _ => RelocTarget::Symbol(name),
+                        }
+                    }
+                    RelocationTarget::Section(sec) => match index_map.get(&sec) {
+                        Some(&s) => RelocTarget::Local { section: s, offset: 0 },
+                        None => return Err(format!("{source_name}: relocation at {offset:#x} refers to a section that is not linked").into()),
+                    },
+                    RelocationTarget::Absolute => RelocTarget::Absolute(0),
+                    _ => return Err(format!("{source_name}: relocation at {offset:#x} has an unsupported target").into()),
+                };
+                if sections[local].class == SecClass::Bss {
+                    return Err(format!("{source_name}: relocation in uninitialised section {}", sections[local].name).into());
+                }
+                sections[local].relocs.push(Reloc { offset, kind, addend, target });
             }
         }
 
-        // Collect symbols.
-        let mut symbols: Vec<ElfSymbol> = Vec::new();
+        let mut symbols = Vec::new();
+        let mut commons = Vec::new();
+        let mut undefined = Vec::new();
+        let mut weak_refs = Vec::new();
         for sym in obj.symbols() {
-            let name = match sym.name() {
-                Ok(n) if !n.is_empty() => n.to_string(),
-                _ => continue,
-            };
-            if matches!(sym.kind(), SymbolKind::File | SymbolKind::Section | SymbolKind::Unknown) {
+            let name = match sym.name() { Ok(n) if !n.is_empty() => n.to_string(), _ => continue };
+            if matches!(sym.kind(), SymbolKind::File | SymbolKind::Section) || sym.is_local() {
                 continue;
             }
-            // Only include global/linkage symbols (skip local symbols).
-            if !matches!(sym.scope(), SymbolScope::Dynamic | SymbolScope::Linkage) {
-                continue;
+            match sym.section() {
+                SymbolSection::Section(sec) => {
+                    if let Some(&s) = index_map.get(&sec) {
+                        symbols.push(ElfSymbol { name, section_idx: s, offset: sym.address(), weak: sym.is_weak() });
+                    }
+                }
+                SymbolSection::Common => commons.push(CommonSymbol { name, size: sym.size(), align: sym.address().max(1) }),
+                SymbolSection::Undefined => {
+                    if sym.is_weak() { weak_refs.push(name) } else { undefined.push(name) }
+                }
+                _ => {}
             }
-            let (section_idx, offset) = match sym.section_index() {
-                Some(sec_idx) => (section_index_map.get(&sec_idx).copied(), sym.address()),
-                None => (None, sym.address()),
-            };
-            symbols.push(ElfSymbol { name, section_idx, offset });
         }
-
-        Ok(ElfObject { sections, symbols })
+        Ok(ElfObject { name: source_name.to_string(), sections, symbols, commons, undefined, weak_refs })
     }
 }
 
 // ─── mod linker_state ─────────────────────────────────────────────────────────
 
+/// The program's layout: one code object from 64 KB, the data object
+/// (initialised data, the init / fini arrays, then zeros) on the next
+/// 64 KB boundary, then the stack — inside Warpine's program area
+/// (ADR-0094). Symbols get their addresses here.
 mod linker_state {
     use std::collections::HashMap;
 
-    use object::SectionKind;
-
-    use super::elf_reader::{ElfObject, ElfSection};
-    use super::{CODE_OBJECT_BASE, DATA_OBJECT_BASE, PAGE_SIZE};
-
-    pub struct InputEntry {
-        pub obj_idx: usize,
-        pub sec_idx: usize,
-        /// Byte offset within the merged section's data buffer.
-        pub merged_offset: u32,
-    }
-
-    pub struct MergedSection {
-        /// Combined data (all input sections concatenated, alignment-padded).
-        pub data: Vec<u8>,
-        /// Virtual size of zeroed BSS region beyond `data`.
-        pub bss_size: u32,
-        /// Base virtual address.
-        pub va: u32,
-        pub input_map: Vec<InputEntry>,
-    }
+    use super::elf_reader::{ArrayKind, ElfObject, SecClass};
+    use super::{CODE_OBJECT_BASE, OBJECT_ALIGN, PROGRAM_AREA_END, STACK_SIZE};
 
     pub struct LinkerState {
-        pub code_section: MergedSection,
-        pub data_section: MergedSection,
-        /// symbol name → flat virtual address.
+        /// The code object's bytes.
+        pub code: Vec<u8>,
+        /// The data object's initialised bytes; `bss_size` zero bytes follow.
+        pub data: Vec<u8>,
+        pub bss_size: u32,
+        pub code_va: u32,
+        pub data_va: u32,
+        pub stack_va: u32,
+        /// Address of each linked section: `[object][section]`.
+        pub section_va: Vec<Vec<Option<u32>>>,
+        /// Global symbol → address.
         pub symbol_table: HashMap<String, u32>,
-        /// Entry-point virtual address.
         pub entry_va: u32,
     }
 
-    impl LinkerState {
-        pub fn build(objects: &[ElfObject]) -> Result<Self, Box<dyn super::Error>> {
-            let mut code_sec = MergedSection {
-                data: Vec::new(),
-                bss_size: 0,
-                va: CODE_OBJECT_BASE,
-                input_map: Vec::new(),
-            };
-            let mut data_sec = MergedSection {
-                data: Vec::new(),
-                bss_size: 0,
-                va: DATA_OBJECT_BASE,
-                input_map: Vec::new(),
-            };
+    pub fn align_up(val: u64, align: u64) -> u64 {
+        if align <= 1 { val } else { val.div_ceil(align) * align }
+    }
 
-            for (obj_idx, obj) in objects.iter().enumerate() {
-                for (sec_idx, sec) in obj.sections.iter().enumerate() {
-                    if sec.kind == SectionKind::Text {
-                        append_section(&mut code_sec, obj_idx, sec_idx, sec);
+    /// The start / end symbols of each array, in the order they are laid out.
+    pub const ARRAYS: [(ArrayKind, &str, &str); 3] = [
+        (ArrayKind::Preinit, "__preinit_array_start", "__preinit_array_end"),
+        (ArrayKind::Init, "__init_array_start", "__init_array_end"),
+        (ArrayKind::Fini, "__fini_array_start", "__fini_array_end"),
+    ];
+
+    impl LinkerState {
+        /// Lay out the sections `live` marks (`[object][section]`; all of
+        /// them with `None`).
+        pub fn build(objects: &[ElfObject], live: Option<&[Vec<bool>]>) -> Result<Self, Box<dyn super::Error>> {
+            let is_live = |oi: usize, si: usize| live.is_none_or(|l| l[oi][si]);
+            // Offsets within their object first, addresses once sizes are known.
+            let mut code_off: Vec<Vec<Option<u64>>> = objects.iter().map(|o| vec![None; o.sections.len()]).collect();
+            let mut data_off = code_off.clone();
+            let mut code: Vec<u8> = Vec::new();
+            let mut data: Vec<u8> = Vec::new();
+            let place = |buf: &mut Vec<u8>, bytes: &[u8], align: u64| -> u64 {
+                let at = align_up(buf.len() as u64, align);
+                buf.resize(at as usize, 0);
+                buf.extend_from_slice(bytes);
+                at
+            };
+            for (oi, o) in objects.iter().enumerate() {
+                for (si, s) in o.sections.iter().enumerate() {
+                    if s.class == SecClass::Code && is_live(oi, si) { code_off[oi][si] = Some(place(&mut code, &s.data, s.align)); }
+                }
+            }
+            for (oi, o) in objects.iter().enumerate() {
+                for (si, s) in o.sections.iter().enumerate() {
+                    if s.class == SecClass::Data && is_live(oi, si) { data_off[oi][si] = Some(place(&mut data, &s.data, s.align)); }
+                }
+            }
+            let mut array_bounds: Vec<(u64, u64)> = Vec::new();
+            for (kind, _, _) in ARRAYS {
+                let start = align_up(data.len() as u64, 4);
+                data.resize(start as usize, 0);
+                for (oi, o) in objects.iter().enumerate() {
+                    for (si, s) in o.sections.iter().enumerate() {
+                        if s.class == SecClass::Array(kind) && is_live(oi, si) { data_off[oi][si] = Some(place(&mut data, &s.data, s.align)); }
+                    }
+                }
+                array_bounds.push((start, data.len() as u64));
+            }
+            // Zeros: uninitialised sections, then the common symbols no
+            // object defines (the largest size and alignment of each).
+            let mut bss_end = data.len() as u64;
+            for (oi, o) in objects.iter().enumerate() {
+                for (si, s) in o.sections.iter().enumerate() {
+                    if s.class == SecClass::Bss && is_live(oi, si) {
+                        let at = align_up(bss_end, s.align);
+                        data_off[oi][si] = Some(at);
+                        bss_end = at + s.size;
                     }
                 }
             }
-            for (obj_idx, obj) in objects.iter().enumerate() {
-                for (sec_idx, sec) in obj.sections.iter().enumerate() {
-                    match sec.kind {
-                        SectionKind::Data
-                        | SectionKind::ReadOnlyData
-                        | SectionKind::ReadOnlyString => {
-                            append_section(&mut data_sec, obj_idx, sec_idx, sec);
-                        }
-                        SectionKind::UninitializedData => {
-                            let align = sec.data.len() as u32; // BSS: size field holds size
-                            let cur = data_sec.data.len() as u32 + data_sec.bss_size;
-                            let align_req = sec.align as u32;
-                            let padded = align_up(cur, align_req);
-                            data_sec.bss_size += (padded - cur) + align;
-                        }
+            let defined: std::collections::HashSet<&str> =
+                objects.iter().flat_map(|o| o.symbols.iter().map(|s| s.name.as_str())).collect();
+            let mut commons: Vec<(String, u64, u64)> = Vec::new();
+            for c in objects.iter().flat_map(|o| &o.commons) {
+                if defined.contains(c.name.as_str()) { continue; }
+                match commons.iter_mut().find(|(n, _, _)| *n == c.name) {
+                    Some(e) => { e.1 = e.1.max(c.size); e.2 = e.2.max(c.align); }
+                    None => commons.push((c.name.clone(), c.size, c.align)),
+                }
+            }
+            let mut common_off = Vec::new();
+            for (name, size, align) in &commons {
+                let at = align_up(bss_end, *align);
+                common_off.push((name.clone(), at));
+                bss_end = at + size;
+            }
+
+            // The layout, inside the program area.
+            let code_va = u64::from(CODE_OBJECT_BASE);
+            let data_va = align_up(code_va + (code.len() as u64).max(1), u64::from(OBJECT_ALIGN));
+            let stack_va = align_up(data_va + bss_end.max(1), u64::from(OBJECT_ALIGN));
+            if stack_va + u64::from(STACK_SIZE) > u64::from(PROGRAM_AREA_END) {
+                return Err(format!("the program ({} bytes of code, {bss_end} of data) does not fit below {PROGRAM_AREA_END:#x}",
+                                   code.len()).into());
+            }
+            let section_va: Vec<Vec<Option<u32>>> = code_off.iter().zip(&data_off).map(|(c, d)| {
+                c.iter().zip(d).map(|(c, d)| c.map(|o| (code_va + o) as u32).or(d.map(|o| (data_va + o) as u32))).collect()
+            }).collect();
+
+            // Global symbols: a strong definition wins over a weak one; two
+            // strong ones are an error.
+            let mut symbol_table: HashMap<String, u32> = HashMap::new();
+            let mut weak: HashMap<String, bool> = HashMap::new();
+            let mut duplicates = Vec::new();
+            for (oi, o) in objects.iter().enumerate() {
+                for s in &o.symbols {
+                    let Some(base) = section_va[oi][s.section_idx] else { continue };
+                    let va = base.wrapping_add(s.offset as u32);
+                    match weak.get(&s.name) {
+                        None => { symbol_table.insert(s.name.clone(), va); weak.insert(s.name.clone(), s.weak); }
+                        Some(true) if !s.weak => { symbol_table.insert(s.name.clone(), va); weak.insert(s.name.clone(), false); }
+                        Some(false) if !s.weak => duplicates.push(format!("{} (in {})", s.name, o.name)),
                         _ => {}
                     }
                 }
             }
-
-            let mut symbol_table = HashMap::new();
-            for (obj_idx, obj) in objects.iter().enumerate() {
-                for sym in &obj.symbols {
-                    if let Some(sec_idx) = sym.section_idx {
-                        let base_va = if obj.sections[sec_idx].kind == SectionKind::Text {
-                            find_merged_va(&code_sec, obj_idx, sec_idx)
-                        } else {
-                            find_merged_va(&data_sec, obj_idx, sec_idx)
-                        };
-                        if let Some(va) = base_va {
-                            symbol_table.insert(sym.name.clone(), va + sym.offset as u32);
-                        }
-                    }
-                }
+            if !duplicates.is_empty() {
+                return Err(format!("symbols defined more than once: {}", duplicates.join(", ")).into());
+            }
+            for (name, at) in common_off {
+                symbol_table.insert(name, (data_va + at) as u32);
+            }
+            for ((_, start_name, end_name), (start, end)) in ARRAYS.iter().zip(&array_bounds) {
+                symbol_table.entry(start_name.to_string()).or_insert((data_va + start) as u32);
+                symbol_table.entry(end_name.to_string()).or_insert((data_va + end) as u32);
             }
 
-            let entry_va = symbol_table
-                .get("_start")
-                .copied()
-                .or_else(|| symbol_table.get("main").copied())
-                .unwrap_or(CODE_OBJECT_BASE);
+            let entry_va = symbol_table.get("_start").or_else(|| symbol_table.get("main")).copied()
+                .ok_or("no entry point: define _start (or main)")?;
 
-            Ok(LinkerState { code_section: code_sec, data_section: data_sec, symbol_table, entry_va })
+            let bss_size = (bss_end - data.len() as u64) as u32;
+            Ok(LinkerState {
+                code, data, bss_size,
+                code_va: code_va as u32, data_va: data_va as u32, stack_va: stack_va as u32,
+                section_va, symbol_table, entry_va,
+            })
         }
 
-        pub fn code_va_for(&self, obj_idx: usize, sec_idx: usize) -> Option<u32> {
-            find_merged_va(&self.code_section, obj_idx, sec_idx)
-        }
-
-        pub fn data_va_for(&self, obj_idx: usize, sec_idx: usize) -> Option<u32> {
-            find_merged_va(&self.data_section, obj_idx, sec_idx)
+        /// The object (1 code, 2 data, 3 stack) holding `va`, and its base.
+        pub fn object_of(&self, va: u32) -> (u8, u32) {
+            if va >= self.stack_va { (3, self.stack_va) }
+            else if va >= self.data_va { (2, self.data_va) }
+            else { (1, self.code_va) }
         }
     }
 
-    fn align_up(val: u32, align: u32) -> u32 {
-        if align <= 1 { val } else { (val + align - 1) & !(align - 1) }
-    }
-
-    fn append_section(merged: &mut MergedSection, obj_idx: usize, sec_idx: usize, sec: &ElfSection) {
-        let align = sec.align as u32;
-        let cur_len = merged.data.len() as u32;
-        let aligned = align_up(cur_len, align);
-        merged.data.resize(aligned as usize, 0u8);
-        let merged_offset = merged.data.len() as u32;
-        merged.data.extend_from_slice(&sec.data);
-        merged.input_map.push(InputEntry { obj_idx, sec_idx, merged_offset });
-    }
-
-    fn find_merged_va(merged: &MergedSection, obj_idx: usize, sec_idx: usize) -> Option<u32> {
-        for entry in &merged.input_map {
-            if entry.obj_idx == obj_idx && entry.sec_idx == sec_idx {
-                return Some(merged.va + entry.merged_offset);
-            }
-        }
-        None
-    }
-
-    pub fn page_count(data_len: u32, bss_size: u32) -> usize {
-        ((data_len + bss_size).div_ceil(PAGE_SIZE)) as usize
+    pub fn page_count(bytes: u64) -> usize {
+        bytes.div_ceil(u64::from(super::PAGE_SIZE)) as usize
     }
 }
 
@@ -488,14 +606,11 @@ mod linker_state {
 mod lx_writer {
     use std::collections::HashMap;
 
-    use object::{RelocationKind, SectionKind};
-
-    use super::elf_reader::{ElfObject, RelocTarget};
+    use super::elf_reader::{ElfObject, RelocKind, RelocTarget};
     use super::linker_state::{page_count, LinkerState};
     use super::{
-        resolve_import, CODE_OBJECT_BASE, DATA_OBJECT_BASE, LX_HEADER_OFFSET, LX_HEADER_SIZE,
-        OBJ_BIG, OBJ_EXEC, OBJ_READ, OBJ_USE32, OBJ_WRITE, PAGE_SIZE, STACK_OBJECT_BASE,
-        STACK_SIZE,
+        resolve_import, LX_HEADER_OFFSET, LX_HEADER_SIZE,
+        OBJ_BIG, OBJ_EXEC, OBJ_READ, OBJ_USE32, OBJ_WRITE, PAGE_SIZE, STACK_SIZE,
     };
 
     // A fixup record ready to be serialised.
@@ -514,106 +629,118 @@ mod lx_writer {
         ExternalOrdinal { module_idx: u8, ordinal: u32 },
     }
 
-    /// Generate the full LX binary.
+    /// What a relocation's target resolved to.
+    enum Resolved {
+        /// An address in the program (with an internal fixup).
+        Internal(u32),
+        /// An OS/2 API (with an import fixup).
+        Import { va: u32, module: String, ordinal: u32 },
+        /// A plain value (absolute symbols, undefined weak ones).
+        Value(u32),
+    }
+
+    fn resolve(target: &RelocTarget, obj_idx: usize, state: &LinkerState, obj: &ElfObject,
+               def_map: &HashMap<String, (String, u32)>) -> Result<Resolved, String> {
+        Ok(match target {
+            RelocTarget::Symbol(name) => {
+                if let Some(&va) = state.symbol_table.get(name) {
+                    Resolved::Internal(va)
+                } else if let Some((module, ordinal)) = def_map.get(name) {
+                    Resolved::Import { va: resolve_import(module, *ordinal), module: module.clone(), ordinal: *ordinal }
+                } else if obj.weak_refs.iter().any(|w| w == name) {
+                    Resolved::Value(0)
+                } else {
+                    return Err(name.clone());
+                }
+            }
+            RelocTarget::Local { section, offset } => match state.section_va[obj_idx].get(*section).copied().flatten() {
+                Some(base) => Resolved::Internal(base.wrapping_add(*offset as u32)),
+                None => return Err(format!("a section of {} that is not linked", obj.name)),
+            },
+            RelocTarget::Absolute(v) => Resolved::Value(*v as u32),
+        })
+    }
+
+    /// Generate the LX executable; the error lists the undefined symbols.
     pub fn write_lx(
         objects: &[ElfObject],
         state: &LinkerState,
         def_map: &HashMap<String, (String, u32)>,
-    ) -> Vec<u8> {
-        let entry_offset = state.entry_va - CODE_OBJECT_BASE;
+    ) -> Result<Vec<u8>, String> {
+        let entry_offset = state.entry_va - state.code_va;
+        let mut code_data = state.code.clone();
+        let mut data_data = state.data.clone();
 
-        // Clone merged data into mutable buffers for patch application.
-        let mut code_data = state.code_section.data.clone();
-        let mut data_data = state.data_section.data.clone();
-
-        let code_pages = page_count(code_data.len() as u32, state.code_section.bss_size);
-        let data_pages = page_count(data_data.len() as u32, state.data_section.bss_size);
+        let code_pages = page_count(code_data.len() as u64);
+        let data_pages = page_count(data_data.len() as u64 + u64::from(state.bss_size));
         let stack_pages = (STACK_SIZE / PAGE_SIZE) as usize;
         let total_pages = code_pages + data_pages + stack_pages;
 
         let mut module_map: HashMap<String, u8> = HashMap::new();
         let mut imported_modules: Vec<String> = Vec::new();
-
         let mut code_fixups: Vec<Vec<LxFixup>> = vec![Vec::new(); code_pages];
         let mut data_fixups: Vec<Vec<LxFixup>> = vec![Vec::new(); data_pages];
-
-        // Patches: (offset_in_merged_buf, value).
-        let mut code_patches: Vec<(usize, u32)> = Vec::new();
-        let mut data_patches: Vec<(usize, u32)> = Vec::new();
-        let mut code_patches_i32: Vec<(usize, i32)> = Vec::new();
+        let mut undefined: Vec<String> = Vec::new();
 
         for (obj_idx, obj) in objects.iter().enumerate() {
             for (sec_idx, sec) in obj.sections.iter().enumerate() {
-                let is_code = sec.kind == SectionKind::Text;
-                let section_base_va = if is_code {
-                    match state.code_va_for(obj_idx, sec_idx) { Some(v) => v, None => continue }
-                } else {
-                    match state.data_va_for(obj_idx, sec_idx) { Some(v) => v, None => continue }
-                };
-                let obj_base = if is_code { CODE_OBJECT_BASE } else { DATA_OBJECT_BASE };
-                // Offset of this section within the merged data buffer.
-                let buf_base = (section_base_va - obj_base) as usize;
-
+                let Some(section_va) = state.section_va[obj_idx][sec_idx] else { continue };
+                let (_, obj_base) = state.object_of(section_va);
+                let is_code = section_va < state.data_va;
                 for reloc in &sec.relocs {
-                    let source_va = section_base_va + reloc.offset as u32;
-                    let buf_off = buf_base + reloc.offset as usize;
-
-                    let (target_va, maybe_ft) = resolve_reloc(
-                        reloc,
-                        def_map,
-                        state,
-                        objects,
-                        &mut module_map,
-                        &mut imported_modules,
-                    );
-                    if target_va == 0 { continue; }
-
-                    match reloc.kind {
-                        RelocationKind::Absolute => {
-                            let actual = target_va.wrapping_add(reloc.addend as u32);
-                            if is_code { code_patches.push((buf_off, actual)); }
-                            else       { data_patches.push((buf_off, actual)); }
-
-                            if let Some(ft) = maybe_ft {
-                                let page_idx = ((source_va - obj_base) / PAGE_SIZE) as usize;
-                                let page_off = ((source_va - obj_base) % PAGE_SIZE) as u16;
-                                let fixups = if is_code { &mut code_fixups } else { &mut data_fixups };
-                                if page_idx < fixups.len() {
-                                    fixups[page_idx].push(LxFixup {
-                                        source_type: 0x07,
-                                        source_offset: page_off,
-                                        target: ft,
-                                    });
-                                }
+                    let source_va = section_va.wrapping_add(reloc.offset as u32);
+                    let buf_off = (source_va - obj_base) as usize;
+                    let resolved = match resolve(&reloc.target, obj_idx, state, obj, def_map) {
+                        Ok(r) => r,
+                        Err(name) => { if !undefined.contains(&name) { undefined.push(name); } continue; }
+                    };
+                    let target_va = match &resolved {
+                        Resolved::Internal(va) | Resolved::Value(va) | Resolved::Import { va, .. } => *va,
+                    };
+                    let value = match reloc.kind {
+                        RelocKind::Abs32 => target_va.wrapping_add(reloc.addend as u32),
+                        RelocKind::Pc32 => target_va.wrapping_add(reloc.addend as u32).wrapping_sub(source_va),
+                    };
+                    let buf = if is_code { &mut code_data } else { &mut data_data };
+                    let Some(slot) = buf.get_mut(buf_off..buf_off + 4) else {
+                        return Err(format!("{}: relocation at {:#x} outside its section", obj.name, reloc.offset));
+                    };
+                    slot.copy_from_slice(&value.to_le_bytes());
+                    if reloc.kind != RelocKind::Abs32 { continue; }
+                    let fixup_target = match resolved {
+                        Resolved::Internal(va) => {
+                            let (object_num, base) = state.object_of(va);
+                            FixupTarget::Internal { object_num, target_offset: value.wrapping_sub(base) }
+                        }
+                        Resolved::Import { module, ordinal, .. } => {
+                            if reloc.addend != 0 {
+                                return Err(format!("{}: an offset ({}) from an OS/2 API is not supported", obj.name, reloc.addend));
                             }
+                            let module_idx = get_or_insert_module(&module, &mut module_map, &mut imported_modules);
+                            FixupTarget::ExternalOrdinal { module_idx, ordinal }
                         }
-                        RelocationKind::Relative => {
-                            // PC-relative: patch directly, no LX fixup record needed.
-                            let disp = (target_va as i64)
-                                - (source_va as i64 + 4)
-                                + reloc.addend;
-                            // PC-relative relocs are almost always in code sections.
-                            if is_code { code_patches_i32.push((buf_off, disp as i32)); }
-                            else       { data_patches.push((buf_off, disp as u32)); }
-                        }
-                        _ => eprintln!("warning: unhandled relocation kind {:?}", reloc.kind),
+                        Resolved::Value(_) => continue,
+                    };
+                    let page = (source_va - obj_base) / PAGE_SIZE;
+                    let fixups = if is_code { &mut code_fixups } else { &mut data_fixups };
+                    if let Some(list) = fixups.get_mut(page as usize) {
+                        list.push(LxFixup {
+                            source_type: 0x07,
+                            source_offset: ((source_va - obj_base) % PAGE_SIZE) as u16,
+                            target: fixup_target,
+                        });
                     }
                 }
             }
         }
-
-        // Apply patches.
-        apply_patches_u32(&mut code_data, &code_patches);
-        apply_patches_u32(&mut data_data, &data_patches);
-        apply_patches_i32(&mut code_data, &code_patches_i32);
-
-        pad_to_page(&mut code_data);
-        pad_to_page(&mut data_data);
+        if !undefined.is_empty() {
+            undefined.sort();
+            return Err(format!("undefined symbols: {}", undefined.join(", ")));
+        }
 
         // ── Build fixup section ───────────────────────────────────────────────
         let mut fixup_page_table: Vec<u32> = vec![0u32; total_pages + 1];
         let mut fixup_records: Vec<u8> = Vec::new();
-
         for pi in 0..code_pages {
             fixup_page_table[pi] = fixup_records.len() as u32;
             for fx in &code_fixups[pi] { encode_fixup(&mut fixup_records, fx); }
@@ -690,48 +817,32 @@ mod lx_writer {
 
         // 3. Object table.
         out.extend_from_slice(&encode_object_entry(
-            code_data.len() as u32 + state.code_section.bss_size,
-            CODE_OBJECT_BASE,
+            code_data.len() as u32, state.code_va,
             OBJ_READ | OBJ_EXEC | OBJ_BIG | OBJ_USE32,
             1, code_pages as u32,
         ));
         out.extend_from_slice(&encode_object_entry(
-            data_data.len() as u32 + state.data_section.bss_size,
-            DATA_OBJECT_BASE,
+            data_data.len() as u32 + state.bss_size, state.data_va,
             OBJ_READ | OBJ_WRITE | OBJ_BIG | OBJ_USE32,
             code_pages as u32 + 1, data_pages as u32,
         ));
         out.extend_from_slice(&encode_object_entry(
-            STACK_SIZE, STACK_OBJECT_BASE,
+            STACK_SIZE, state.stack_va,
             OBJ_READ | OBJ_WRITE | OBJ_BIG | OBJ_USE32,
             code_pages as u32 + data_pages as u32 + 1, STACK_SIZE / PAGE_SIZE,
         ));
 
-        // 4. Page map.
+        // 4. Page map: each page's bytes in the file; pages past the
+        // initialised bytes (zeros, the stack) have none.
         let mut file_off: u32 = 0;
-        for pi in 0..code_pages {
-            let slice_end = ((pi + 1) * PAGE_SIZE as usize).min(code_data.len());
-            let slice_start = pi * PAGE_SIZE as usize;
-            let psize = (slice_end - slice_start) as u16;
-            out.extend_from_slice(&file_off.to_le_bytes());
-            out.extend_from_slice(&psize.to_le_bytes());
-            out.extend_from_slice(&0u16.to_le_bytes());
-            file_off += PAGE_SIZE;
-        }
-        for pi in 0..data_pages {
-            let slice_end = ((pi + 1) * PAGE_SIZE as usize).min(data_data.len());
-            let slice_start = pi * PAGE_SIZE as usize;
-            let psize = (slice_end - slice_start) as u16;
-            out.extend_from_slice(&file_off.to_le_bytes());
-            out.extend_from_slice(&psize.to_le_bytes());
-            out.extend_from_slice(&0u16.to_le_bytes());
-            file_off += PAGE_SIZE;
-        }
-        for _ in 0..stack_pages {
-            out.extend_from_slice(&file_off.to_le_bytes());
-            out.extend_from_slice(&(PAGE_SIZE as u16).to_le_bytes());
-            out.extend_from_slice(&0u16.to_le_bytes());
-            file_off += PAGE_SIZE;
+        for (pages, len) in [(code_pages, code_data.len()), (data_pages, data_data.len()), (stack_pages, 0)] {
+            for pi in 0..pages {
+                let psize = len.saturating_sub(pi * PAGE_SIZE as usize).min(PAGE_SIZE as usize) as u16;
+                out.extend_from_slice(&file_off.to_le_bytes());
+                out.extend_from_slice(&psize.to_le_bytes());
+                out.extend_from_slice(&0u16.to_le_bytes());
+                file_off += u32::from(psize);
+            }
         }
 
         // 5. Resident name table.
@@ -747,60 +858,13 @@ mod lx_writer {
         // 10. Import procedure name table (empty — we don't use ExternalName fixups).
         // 11. Padding before data pages.
         out.extend(std::iter::repeat_n(0u8, padding_before_data as usize));
-        // 12. Data pages.
+        // 12. Data pages: the initialised bytes, page after page.
         out.extend_from_slice(&code_data);
         out.extend_from_slice(&data_data);
-        // Stack pages (zero-filled).
-        let stack_data = vec![0u8; stack_pages * PAGE_SIZE as usize];
-        out.extend_from_slice(&stack_data);
-
-        out
+        Ok(out)
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
-
-    fn resolve_reloc(
-        reloc: &super::elf_reader::Reloc,
-        def_map: &HashMap<String, (String, u32)>,
-        state: &LinkerState,
-        objects: &[ElfObject],
-        module_map: &mut HashMap<String, u8>,
-        imported_modules: &mut Vec<String>,
-    ) -> (u32, Option<FixupTarget>) {
-        match &reloc.target {
-            RelocTarget::Symbol(name) => {
-                if let Some(&va) = state.symbol_table.get(name.as_str()) {
-                    let (obj_num, off) = va_to_lx_object(va);
-                    (va, Some(FixupTarget::Internal { object_num: obj_num, target_offset: off }))
-                } else if let Some((module, ordinal)) = def_map.get(name.as_str()) {
-                    let resolved = resolve_import(module, *ordinal);
-                    let idx = get_or_insert_module(module, module_map, imported_modules);
-                    (resolved, Some(FixupTarget::ExternalOrdinal { module_idx: idx, ordinal: *ordinal }))
-                } else {
-                    eprintln!("warning: undefined symbol '{}'", name);
-                    (0, None)
-                }
-            }
-            RelocTarget::Section(sec_name) => {
-                let found = find_section_va(objects, state, sec_name);
-                match found {
-                    Some(base) => {
-                        let (obj_num, off) = va_to_lx_object(base);
-                        (base, Some(FixupTarget::Internal { object_num: obj_num, target_offset: off }))
-                    }
-                    None => {
-                        eprintln!("warning: section '{}' not found", sec_name);
-                        (0, None)
-                    }
-                }
-            }
-        }
-    }
-
-    fn va_to_lx_object(va: u32) -> (u8, u32) {
-        if va >= DATA_OBJECT_BASE { (2, va - DATA_OBJECT_BASE) }
-        else { (1, va - CODE_OBJECT_BASE) }
-    }
 
     fn get_or_insert_module(
         name: &str,
@@ -812,40 +876,6 @@ mod lx_writer {
         let idx = imported_modules.len() as u8;
         module_map.insert(name.to_string(), idx);
         idx
-    }
-
-    fn find_section_va(objects: &[ElfObject], state: &LinkerState, sec_name: &str) -> Option<u32> {
-        for (oi, obj) in objects.iter().enumerate() {
-            for (si, sec) in obj.sections.iter().enumerate() {
-                if sec.name == sec_name {
-                    return state.code_va_for(oi, si).or_else(|| state.data_va_for(oi, si));
-                }
-            }
-        }
-        None
-    }
-
-    fn apply_patches_u32(buf: &mut [u8], patches: &[(usize, u32)]) {
-        for &(off, val) in patches {
-            if off + 4 <= buf.len() {
-                buf[off..off + 4].copy_from_slice(&val.to_le_bytes());
-            }
-        }
-    }
-
-    fn apply_patches_i32(buf: &mut [u8], patches: &[(usize, i32)]) {
-        for &(off, val) in patches {
-            if off + 4 <= buf.len() {
-                buf[off..off + 4].copy_from_slice(&val.to_le_bytes());
-            }
-        }
-    }
-
-    fn pad_to_page(data: &mut Vec<u8>) {
-        let rem = data.len() % PAGE_SIZE as usize;
-        if rem != 0 {
-            data.resize(data.len() + (PAGE_SIZE as usize - rem), 0);
-        }
     }
 
     fn align_to(val: u32, align: u32) -> u32 { (val + align - 1) & !(align - 1) }
@@ -994,30 +1024,103 @@ fn main() {
     let def_content = load_def_file(parsed.def_file.as_deref());
     let def_map = def_parser::parse_def(&def_content);
 
-    let mut objects: Vec<elf_reader::ElfObject> = Vec::new();
+    let mut inputs = Inputs::default();
     for input in &parsed.inputs {
-        if let Err(e) = load_input(input, &mut objects) {
+        if let Err(e) = load_input(input, &mut inputs) {
             eprintln!("lx-link: error reading {:?}: {}", input, e);
             process::exit(1);
         }
     }
-
+    let objects = select_objects(inputs, &def_map);
     if objects.is_empty() {
         eprintln!("lx-link: no ELF objects found in inputs");
         process::exit(1);
     }
+    let live = parsed.gc_sections.then(|| live_sections(&objects));
 
-    let state = match linker_state::LinkerState::build(&objects) {
+    let state = match linker_state::LinkerState::build(&objects, live.as_deref()) {
         Ok(s) => s,
-        Err(e) => { eprintln!("lx-link: linker error: {}", e); process::exit(1); }
+        Err(e) => { eprintln!("lx-link: {}", e); process::exit(1); }
     };
 
-    let lx_bytes = lx_writer::write_lx(&objects, &state, &def_map);
+    let lx_bytes = match lx_writer::write_lx(&objects, &state, &def_map) {
+        Ok(b) => b,
+        Err(e) => { eprintln!("lx-link: {}", e); process::exit(1); }
+    };
 
     if let Err(e) = std::fs::write(&parsed.output, &lx_bytes) {
         eprintln!("lx-link: cannot write {:?}: {}", parsed.output, e);
         process::exit(1);
     }
+}
+
+/// The parsed inputs: plain objects are always linked; an archive member
+/// only when it defines a symbol something linked needs.
+#[derive(Default)]
+struct Inputs {
+    objects: Vec<elf_reader::ElfObject>,
+    members: Vec<elf_reader::ElfObject>,
+}
+
+/// The objects to link: the plain ones, then archive members pulled in
+/// one by one while they define a symbol that is still undefined (as a
+/// static linker does), in archive order.
+fn select_objects(inputs: Inputs, def_map: &std::collections::HashMap<String, (String, u32)>) -> Vec<elf_reader::ElfObject> {
+    use std::collections::HashSet;
+    let Inputs { mut objects, members } = inputs;
+    let mut members: Vec<Option<elf_reader::ElfObject>> = members.into_iter().map(Some).collect();
+    loop {
+        let defined: HashSet<&str> = objects.iter()
+            .flat_map(|o| o.symbols.iter().map(|s| s.name.as_str()).chain(o.commons.iter().map(|c| c.name.as_str())))
+            .collect();
+        let wanted: HashSet<String> = objects.iter()
+            .flat_map(|o| o.undefined.iter().chain(o.sections.iter().flat_map(|s| s.relocs.iter()).filter_map(|r| match &r.target {
+                elf_reader::RelocTarget::Symbol(n) => Some(n),
+                _ => None,
+            })))
+            .filter(|n| !defined.contains(n.as_str()) && !def_map.contains_key(n.as_str()))
+            .cloned().collect();
+        let next = members.iter().position(|m| m.as_ref().is_some_and(|m| m.symbols.iter().any(|s| wanted.contains(&s.name))));
+        match next {
+            Some(i) => objects.push(members[i].take().expect("present")),
+            None => return objects,
+        }
+    }
+}
+
+/// `--gc-sections`: the sections reached from the entry point (`_start`,
+/// else `main`) and the init / fini arrays through relocations, as
+/// `[object][section]`. Common symbols always stay.
+fn live_sections(objects: &[elf_reader::ElfObject]) -> Vec<Vec<bool>> {
+    use elf_reader::{RelocTarget, SecClass};
+    let mut defs: std::collections::HashMap<&str, (usize, usize)> = std::collections::HashMap::new();
+    for (oi, o) in objects.iter().enumerate() {
+        for s in &o.symbols {
+            // A strong definition wins, as in the layout.
+            if !s.weak || !defs.contains_key(s.name.as_str()) { defs.insert(&s.name, (oi, s.section_idx)); }
+        }
+    }
+    let mut live: Vec<Vec<bool>> = objects.iter().map(|o| vec![false; o.sections.len()]).collect();
+    let mut work: Vec<(usize, usize)> = Vec::new();
+    for root in ["_start", "main"] {
+        if let Some(&d) = defs.get(root) { work.push(d); break; }
+    }
+    for (oi, o) in objects.iter().enumerate() {
+        for (si, s) in o.sections.iter().enumerate() {
+            if matches!(s.class, SecClass::Array(_)) { work.push((oi, si)); }
+        }
+    }
+    while let Some((oi, si)) = work.pop() {
+        if std::mem::replace(&mut live[oi][si], true) { continue; }
+        for r in &objects[oi].sections[si].relocs {
+            match &r.target {
+                RelocTarget::Local { section, .. } => work.push((oi, *section)),
+                RelocTarget::Symbol(name) => { if let Some(&d) = defs.get(name.as_str()) { work.push(d); } }
+                RelocTarget::Absolute(_) => {}
+            }
+        }
+    }
+    live
 }
 
 fn load_def_file(explicit: Option<&Path>) -> String {
@@ -1035,7 +1138,7 @@ fn load_def_file(explicit: Option<&Path>) -> String {
     EMBEDDED.to_string()
 }
 
-fn load_input(path: &Path, objects: &mut Vec<elf_reader::ElfObject>) -> Result<(), Box<dyn Error>> {
+fn load_input(path: &Path, inputs: &mut Inputs) -> Result<(), Box<dyn Error>> {
     let data = std::fs::read(path)?;
     let name = path.display().to_string();
 
@@ -1044,19 +1147,17 @@ fn load_input(path: &Path, objects: &mut Vec<elf_reader::ElfObject>) -> Result<(
         for member in archive.members() {
             let m = member?;
             let member_name = std::str::from_utf8(m.name()).unwrap_or("");
-            if member_name.ends_with(".o") {
-                let obj_data = m.data(data.as_slice())?;
-                match elf_reader::parse_elf(obj_data, member_name) {
-                    Ok(obj) => objects.push(obj),
-                    Err(e) => eprintln!("warning: skipping {}/{}: {}", name, member_name, e),
-                }
-            }
+            if !member_name.ends_with(".o") { continue; }
+            // A member sits at any offset in the archive; parse a copy,
+            // which the allocator aligns as an ELF header needs.
+            let obj_data = m.data(data.as_slice())?.to_vec();
+            let member_path = format!("{name}({member_name})");
+            inputs.members.push(elf_reader::parse_elf(&obj_data, &member_path)?);
         }
         return Ok(());
     }
 
-    let obj = elf_reader::parse_elf(&data, &name)?;
-    objects.push(obj);
+    inputs.objects.push(elf_reader::parse_elf(&data, &name)?);
     Ok(())
 }
 
@@ -1064,8 +1165,6 @@ fn load_input(path: &Path, objects: &mut Vec<elf_reader::ElfObject>) -> Result<(
 
 #[cfg(test)]
 mod tests {
-    use object::SectionKind;
-
     use super::*;
 
     #[test]
@@ -1122,28 +1221,236 @@ VIOCALLS.19   VioWrtTTY\n";
         assert_eq!(resolve_import("PMWIN", 763), MAGIC_API_BASE + PMWIN_BASE + 763);
     }
 
+    use elf_reader::{ArrayKind, CommonSymbol, ElfObject, ElfSection, ElfSymbol, Reloc, RelocKind, RelocTarget, SecClass};
+    use linker_state::LinkerState;
+    use std::collections::HashMap;
+
+    fn section(name: &str, class: SecClass, data: Vec<u8>, relocs: Vec<Reloc>) -> ElfSection {
+        let size = data.len() as u64;
+        ElfSection { name: name.into(), class, data, size, align: 4, relocs }
+    }
+
+    fn sym(name: &str, section_idx: usize, offset: u64) -> ElfSymbol {
+        ElfSymbol { name: name.into(), section_idx, offset, weak: false }
+    }
+
+    fn reloc(offset: u64, kind: RelocKind, addend: i64, target: RelocTarget) -> Reloc {
+        Reloc { offset, kind, addend, target }
+    }
+
+    /// One object: `.text` (8 bytes, `_start` at 0) and `.data` (8 bytes).
+    fn start_object(relocs: Vec<Reloc>) -> ElfObject {
+        ElfObject {
+            name: "start.o".into(),
+            sections: vec![section(".text", SecClass::Code, vec![0x90; 8], relocs),
+                           section(".data", SecClass::Data, vec![0; 8], vec![])],
+            symbols: vec![sym("_start", 0, 0)],
+            ..Default::default()
+        }
+    }
+
+    fn word(state: &LinkerState, va: u32) -> u32 {
+        let (buf, base) = if va >= state.data_va { (&state.data, state.data_va) } else { (&state.code, state.code_va) };
+        let at = (va - base) as usize;
+        u32::from_le_bytes(buf[at..at + 4].try_into().unwrap())
+    }
+
+    /// Link and return the state with the relocations applied (the LX
+    /// writer's image, read back from the file's pages).
+    fn link(objects: &[ElfObject], defs: &HashMap<String, (String, u32)>) -> Result<(LinkerState, Vec<u8>), String> {
+        let state = LinkerState::build(objects, None).map_err(|e| e.to_string())?;
+        let lx = lx_writer::write_lx(objects, &state, defs)?;
+        Ok((state, lx))
+    }
+
+    /// The code and data object pages of an LX image, as loaded.
+    fn loaded(state: &LinkerState, lx: &[u8]) -> LinkerState {
+        let hdr = LX_HEADER_OFFSET as usize;
+        let data_pages = u32::from_le_bytes(lx[hdr + 0x80..hdr + 0x84].try_into().unwrap()) as usize;
+        let code_len = state.code.len();
+        LinkerState {
+            code: lx[data_pages..data_pages + code_len].to_vec(),
+            data: lx[data_pages + code_len..data_pages + code_len + state.data.len()].to_vec(),
+            bss_size: state.bss_size, code_va: state.code_va, data_va: state.data_va, stack_va: state.stack_va,
+            section_va: state.section_va.clone(), symbol_table: state.symbol_table.clone(), entry_va: state.entry_va,
+        }
+    }
+
+    /// A relocation against a section or local symbol means that section
+    /// of its own object, never a same-named one of another (two `.data`
+    /// here), and the REL addend read from the bytes counts.
+    #[test]
+    fn local_targets_stay_in_their_own_object() {
+        let a = start_object(vec![reloc(0, RelocKind::Abs32, 2, RelocTarget::Local { section: 1, offset: 4 })]);
+        let mut b = start_object(vec![reloc(4, RelocKind::Abs32, 0, RelocTarget::Local { section: 1, offset: 0 })]);
+        b.symbols.clear();
+        b.name = "b.o".into();
+        let objects = [a, b];
+        let (state, lx) = link(&objects, &HashMap::new()).unwrap();
+        let img = loaded(&state, &lx);
+        let a_data = state.section_va[0][1].unwrap();
+        let b_data = state.section_va[1][1].unwrap();
+        assert_ne!(a_data, b_data);
+        assert_eq!(word(&img, state.section_va[0][0].unwrap()), a_data + 6, "a's .data + 4 + addend 2");
+        assert_eq!(word(&img, state.section_va[1][0].unwrap() + 4), b_data, "b's own .data");
+    }
+
+    /// PC-relative: S + A − P, the addend (−4 for a call) as given.
+    #[test]
+    fn pc_relative_relocations_use_the_addend() {
+        let a = start_object(vec![reloc(1, RelocKind::Pc32, -4, RelocTarget::Symbol("f".into()))]);
+        let b = ElfObject {
+            name: "f.o".into(),
+            sections: vec![section(".text.f", SecClass::Code, vec![0xC3; 4], vec![])],
+            symbols: vec![sym("f", 0, 0)],
+            ..Default::default()
+        };
+        let objects = [a, b];
+        let (state, lx) = link(&objects, &HashMap::new()).unwrap();
+        let p = state.code_va + 1;
+        let f = state.symbol_table["f"];
+        assert_eq!(word(&loaded(&state, &lx), p), f.wrapping_sub(4).wrapping_sub(p));
+    }
+
+    /// Data follows the code on a 64 KB boundary, the stack follows the
+    /// data; a program past the program area is refused.
+    #[test]
+    fn the_layout_follows_the_sizes() {
+        let mut big = start_object(vec![]);
+        big.sections[0].data = vec![0x90; 0x6_0001];
+        big.sections[0].size = 0x6_0001;
+        let state = LinkerState::build(&[big], None).unwrap();
+        assert_eq!((state.code_va, state.data_va), (CODE_OBJECT_BASE, 0x8_0000), "past 0x70001");
+        assert_eq!(state.stack_va, 0x9_0000);
+        let mut huge = start_object(vec![]);
+        huge.sections.push(ElfSection { name: ".bss".into(), class: SecClass::Bss, data: vec![], size: 0x0100_0000, align: 4, relocs: vec![] });
+        assert!(LinkerState::build(&[huge], None).is_err(), "16 MB of zeros do not fit");
+    }
+
+    /// Undefined symbols are an error naming them; an undefined weak one
+    /// is 0; OS/2 APIs come from the DEF map.
+    #[test]
+    fn undefined_weak_and_imported_symbols() {
+        let mut a = start_object(vec![
+            reloc(0, RelocKind::Abs32, 0, RelocTarget::Symbol("missing".into())),
+            reloc(4, RelocKind::Abs32, 0, RelocTarget::Symbol("also_missing".into())),
+        ]);
+        assert_eq!(link(std::slice::from_ref(&a), &HashMap::new()).err(),
+                   Some("undefined symbols: also_missing, missing".into()));
+        a.weak_refs = vec!["missing".into(), "also_missing".into()];
+        let (state, lx) = link(std::slice::from_ref(&a), &HashMap::new()).unwrap();
+        assert_eq!(word(&loaded(&state, &lx), state.code_va), 0);
+        let defs = HashMap::from([("missing".to_string(), ("DOSCALLS".to_string(), 282))]);
+        a.weak_refs.clear();
+        a.sections[0].relocs.truncate(1);
+        let (state, lx) = link(std::slice::from_ref(&a), &defs).unwrap();
+        assert_eq!(word(&loaded(&state, &lx), state.code_va), MAGIC_API_BASE + 282);
+    }
+
+    /// A strong definition wins over a weak one; two strong ones are an
+    /// error; a definition wins over a common symbol, and commons merge.
+    #[test]
+    fn symbol_precedence_and_commons() {
+        let mut a = start_object(vec![]);
+        a.symbols.push(ElfSymbol { name: "v".into(), section_idx: 1, offset: 0, weak: true });
+        a.commons = vec![CommonSymbol { name: "c".into(), size: 4, align: 4 },
+                         CommonSymbol { name: "d".into(), size: 4, align: 4 }];
+        let mut b = ElfObject {
+            name: "b.o".into(),
+            sections: vec![section(".data", SecClass::Data, vec![0; 8], vec![])],
+            symbols: vec![sym("v", 0, 4), sym("d", 0, 0)],
+            commons: vec![CommonSymbol { name: "c".into(), size: 16, align: 8 }],
+            ..Default::default()
+        };
+        let state = LinkerState::build(&[start_object(vec![]), b.clone_for_test()], None).unwrap();
+        assert!(state.symbol_table.contains_key("v"));
+        let state = LinkerState::build(&[a.clone_for_test(), b.clone_for_test()], None).unwrap();
+        assert_eq!(state.symbol_table["v"], state.section_va[1][0].unwrap() + 4, "the strong one");
+        assert_eq!(state.symbol_table["d"], state.section_va[1][0].unwrap(), "a definition over a common");
+        let c = state.symbol_table["c"];
+        assert!(c >= state.data_va + state.data.len() as u32 && c.is_multiple_of(8), "a common in the zeros");
+        assert!(state.bss_size >= 16);
+        b.symbols[0].weak = false;
+        a.symbols[1].weak = false;
+        assert!(LinkerState::build(&[a, b], None).is_err(), "two strong definitions");
+    }
+
+    /// The init / fini arrays lie in the data object between their start
+    /// and end symbols, in order.
+    #[test]
+    fn init_arrays_get_bounds() {
+        let mut a = start_object(vec![]);
+        a.sections.push(section(".init_array", SecClass::Array(ArrayKind::Init), vec![1, 0, 0, 0, 2, 0, 0, 0], vec![]));
+        a.sections.push(section(".fini_array", SecClass::Array(ArrayKind::Fini), vec![3, 0, 0, 0], vec![]));
+        let state = LinkerState::build(&[a], None).unwrap();
+        let t = &state.symbol_table;
+        assert_eq!(t["__init_array_end"] - t["__init_array_start"], 8);
+        assert_eq!(t["__fini_array_end"] - t["__fini_array_start"], 4);
+        assert_eq!(t["__preinit_array_end"], t["__preinit_array_start"]);
+        assert_eq!(word(&state, t["__init_array_start"]), 1);
+        assert_eq!(word(&state, t["__fini_array_start"]), 3);
+    }
+
+    /// `--gc-sections`: only sections reached from `_start` and the arrays
+    /// are linked, so an unreached reference to a missing symbol is fine.
+    #[test]
+    fn unreached_sections_are_dropped() {
+        let mut a = start_object(vec![reloc(0, RelocKind::Abs32, 0, RelocTarget::Symbol("used".into()))]);
+        a.sections.push(section(".text.used", SecClass::Code, vec![0xC3; 4], vec![]));
+        a.sections.push(section(".text.unused", SecClass::Code, vec![0xC3; 4],
+                                vec![reloc(0, RelocKind::Abs32, 0, RelocTarget::Symbol("nowhere".into()))]));
+        a.symbols.push(sym("used", 2, 0));
+        a.symbols.push(sym("unused", 3, 0));
+        let objects = [a];
+        let live = live_sections(&objects);
+        assert_eq!(live[0], vec![true, false, true, false], "_start's .text and what it uses");
+        let state = LinkerState::build(&objects, Some(&live)).unwrap();
+        assert!(lx_writer::write_lx(&objects, &state, &HashMap::new()).is_ok());
+        assert!(!state.symbol_table.contains_key("unused"));
+        assert!(link(&objects, &HashMap::new()).is_err(), "without GC, nowhere is undefined");
+    }
+
+    /// Archive members are linked only when they define a needed symbol,
+    /// and then also what they need in turn.
+    #[test]
+    fn archive_members_are_pulled_in_on_demand() {
+        let a = start_object(vec![reloc(0, RelocKind::Abs32, 0, RelocTarget::Symbol("f".into()))]);
+        let member = |name: &str, defines: &str, needs: Option<&str>| ElfObject {
+            name: name.into(),
+            sections: vec![section(".text", SecClass::Code, vec![0xC3; 4],
+                needs.map(|n| vec![reloc(0, RelocKind::Abs32, 0, RelocTarget::Symbol(n.into()))]).unwrap_or_default())],
+            symbols: vec![sym(defines, 0, 0)],
+            ..Default::default()
+        };
+        let inputs = Inputs { objects: vec![a], members: vec![
+            member("g.o", "g", None), member("f.o", "f", Some("g")), member("h.o", "h", None)] };
+        let names: Vec<String> = select_objects(inputs, &HashMap::new()).into_iter().map(|o| o.name).collect();
+        assert_eq!(names, ["start.o", "f.o", "g.o"]);
+    }
+
+    impl ElfObject {
+        fn clone_for_test(&self) -> ElfObject {
+            ElfObject {
+                name: self.name.clone(),
+                sections: self.sections.iter().map(|s| ElfSection {
+                    name: s.name.clone(), class: s.class, data: s.data.clone(), size: s.size, align: s.align, relocs: s.relocs.clone(),
+                }).collect(),
+                symbols: self.symbols.clone(), commons: self.commons.clone(),
+                undefined: self.undefined.clone(), weak_refs: self.weak_refs.clone(),
+            }
+        }
+    }
+
     #[test]
     fn test_lx_roundtrip() {
-        use elf_reader::{ElfObject, ElfSection, ElfSymbol};
-
-        let obj = ElfObject {
-            sections: vec![ElfSection {
-                name: ".text".into(),
-                kind: SectionKind::Text,
-                data: vec![0xF4u8], // HLT
-                align: 1,
-                relocs: vec![],
-            }],
-            symbols: vec![ElfSymbol {
-                name: "_start".into(),
-                section_idx: Some(0),
-                offset: 0,
-            }],
-        };
-
-        let objects = vec![obj];
-        let state = linker_state::LinkerState::build(&objects).expect("build state");
-        let lx_bytes = lx_writer::write_lx(&objects, &state, &std::collections::HashMap::new());
+        let objects = vec![ElfObject {
+            name: "a.o".into(),
+            sections: vec![section(".text", SecClass::Code, vec![0xF4], vec![])], // HLT
+            symbols: vec![sym("_start", 0, 0)],
+            ..Default::default()
+        }];
+        let state = LinkerState::build(&objects, None).expect("build state");
+        let lx_bytes = lx_writer::write_lx(&objects, &state, &HashMap::new()).expect("write");
 
         // Must start with MZ, then LX at 0x40.
         assert!(lx_bytes.len() > LX_HEADER_OFFSET as usize + LX_HEADER_SIZE as usize);

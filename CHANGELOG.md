@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **C programs from GCC and clang** (ADR-0095). Unmodified GCC or clang builds freestanding i386 ELF objects, and `lx-link` turns them into OS/2 programs.
+  - **`lx-link` now handles:**
+    - every `.text.*` / `.rodata.*` / `.data.*` / `.bss.*` variant;
+    - common symbols and weak symbols;
+    - `.init_array` / `.fini_array` / `.preinit_array`, with their bound symbols;
+    - `--gc-sections`;
+    - archives searched for the members a program needs.
+  - **Errors:** position-independent code is refused, and the message says to compile with `-fno-pic`.
+
+  Sample: `samples/c_hello` with a minimal `crt0.c`, built and run with GCC and with clang by the integration tests.
+
+### Fixed
+- **`lx-link` linked objects wrongly:**
+  - a relocation against a section went to the first same-named section of *any* object;
+  - the addends i386 keeps in the section bytes were lost, as were local symbols' offsets;
+  - members of Rust's archives were skipped when not aligned in the file;
+  - code past 320 KB overlapped the data at its fixed address.
+
+  Undefined symbols now fail the link instead of leaving zeros.
+- **`test_rust_hello` never ran:** it looked for `target/debug/lx-link`, which Cargo does not build (`lx_link`), and skipped silently. It now links with this build's `lx-link`, and a build failure is a failure.
+
 ## [0.0.8] - 2026-11-21
 
 ### Added

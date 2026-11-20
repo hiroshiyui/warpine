@@ -1665,56 +1665,43 @@ fn test_thunk() {
     assert!(out.contains("DosQuerySysInfo returns 0 OK"),  "DosQuerySysInfo:\n{out}");
 }
 
-/// rust_hello: Rust guest binary built with the warpine-os2 crate family.
+/// rust_hello: Rust guest binary built with the warpine-os2 crate family,
+/// linked by this build's `lx-link` (with `--gc-sections`, as rustc asks).
 ///
-/// Skipped gracefully when:
-/// - KVM is unavailable
-/// - `lx-link` has not been built yet (`target/debug/lx-link` absent)
-/// - The nightly build of `rust_hello` fails (toolchain or dependency issue)
+/// Skipped when KVM or the pinned nightly toolchain is missing; a build or
+/// link failure with the toolchain present is a failure (it once skipped
+/// silently while the link was broken).
 #[test]
 fn test_rust_hello() {
     if !kvm_available() { return; }
-
-    let workspace_root = env!("CARGO_MANIFEST_DIR");
-
-    // lx-link must be pre-built; skip rather than fail if it is missing.
-    let lx_link = format!("{workspace_root}/target/debug/lx-link");
-    if !Path::new(&lx_link).exists() {
+    const TOOLCHAIN: &str = "nightly-2026-11-15";
+    let installed = Command::new("rustup").args(["toolchain", "list"]).output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains(TOOLCHAIN)).unwrap_or(false);
+    if !installed {
+        eprintln!("skipping rust_hello: toolchain {TOOLCHAIN} not installed");
         return;
     }
-
-    // Build rust_hello with the nightly Rust guest toolchain.
+    let workspace_root = env!("CARGO_MANIFEST_DIR");
+    // The target spec names the linker `lx-link`: this build's, first on PATH.
+    let bin = tempfile::tempdir().expect("tempdir");
+    std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_lx_link"), bin.path().join("lx-link")).unwrap();
+    let path = format!("{}:{}", bin.path().display(), std::env::var("PATH").unwrap_or_default());
     let target_json = format!("{workspace_root}/targets/i686-warpine-os2.json");
-    let rust_hello_dir = format!("{workspace_root}/samples/rust_hello");
-
-    // Prepend the debug directory to PATH so lx-link is found at link time.
-    let debug_dir = format!("{workspace_root}/target/debug");
-    let existing_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{debug_dir}:{existing_path}");
-
-    let status = Command::new("cargo")
+    let out = Command::new("cargo")
         .args([
-            "+nightly",
-            "build",
+            &format!("+{TOOLCHAIN}"), "build",
             "-Z", "build-std=core,alloc",
             "-Z", "build-std-features=compiler-builtins-mem",
             "-Z", "json-target-spec",
             "--target", &target_json,
         ])
-        .current_dir(&rust_hello_dir)
-        .env("PATH", &new_path)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status();
-
-    // If nightly is unavailable or the build fails for any reason, skip.
-    let ok = match status {
-        Ok(s) => s.success(),
-        Err(_) => false,
-    };
-    if !ok {
-        return;
-    }
+        .current_dir(format!("{workspace_root}/samples/rust_hello"))
+        .env("PATH", &path)
+        .env_remove("RUSTUP_TOOLCHAIN")
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("run cargo");
+    assert!(out.status.success(), "rust_hello did not build:\n{}", String::from_utf8_lossy(&out.stderr));
 
     let exe = "samples/rust_hello/target/i686-warpine-os2/debug/rust_hello.exe";
     let (out, code) = run_sample(exe, 15);
@@ -1723,6 +1710,80 @@ fn test_rust_hello() {
         out.contains("Hello from Rust on Warpine!"),
         "unexpected output:\n{out}"
     );
+}
+
+/// The flags samples/c_hello builds with (`compiler` "gcc" or "clang").
+fn c_hello_flags(compiler: &str) -> Vec<&'static str> {
+    let mut flags = vec!["-m32", "-O2", "-ffreestanding", "-fno-pic", "-fno-stack-protector",
+                         "-fno-asynchronous-unwind-tables", "-ffunction-sections", "-fdata-sections", "-fcommon"];
+    if compiler == "clang" { flags.push("--target=i386-unknown-none"); }
+    flags
+}
+
+/// Whether `compiler` runs here.
+fn compiler_available(compiler: &str) -> bool {
+    Command::new(compiler).arg("--version").output().is_ok_and(|o| o.status.success())
+}
+
+/// Compile samples/c_hello's sources with `compiler` and `flags` into `dir`;
+/// the objects.
+fn compile_c_hello(compiler: &str, flags: &[&str], dir: &Path) -> Vec<std::path::PathBuf> {
+    ["crt0", "hello", "util"].iter().map(|name| {
+        let obj = dir.join(format!("{name}.o"));
+        let out = Command::new(compiler).args(flags)
+            .args(["-c", &format!("samples/c_hello/{name}.c"), "-o"]).arg(&obj)
+            .output().expect("run the compiler");
+        assert!(out.status.success(), "{compiler} {name}.c:\n{}", String::from_utf8_lossy(&out.stderr));
+        obj
+    }).collect()
+}
+
+/// M1: c_hello built by GCC and by clang (each when installed) as i386 ELF
+/// objects and linked by this build's lx-link, with and without
+/// --gc-sections: string sections, data tables, .bss, a common symbol, a
+/// constructor and a destructor, two objects with same-named sections.
+#[test]
+fn test_c_hello_from_gcc_and_clang() {
+    if !kvm_available() { return; }
+    for compiler in ["gcc", "clang"] {
+        if !compiler_available(compiler) {
+            eprintln!("skipping c_hello with {compiler}: not installed");
+            continue;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let objects = compile_c_hello(compiler, &c_hello_flags(compiler), dir.path());
+        for gc in [true, false] {
+            let exe = dir.path().join(format!("c_hello_{gc}.exe"));
+            let mut link = Command::new(env!("CARGO_BIN_EXE_lx_link"));
+            if gc { link.arg("--gc-sections"); }
+            let out = link.args(&objects).arg("-o").arg(&exe).output().expect("run lx-link");
+            assert!(out.status.success(), "lx-link ({compiler}, gc {gc}):\n{}", String::from_utf8_lossy(&out.stderr));
+            let (out, code) = run_sample(exe.to_str().unwrap(), 15);
+            assert!(!out.contains("FAIL"), "{compiler}, gc {gc}:\n{out}");
+            assert!(out.contains("Hello from C on Warpine!") && out.contains("c_hello: done 7/7"), "{compiler}, gc {gc}:\n{out}");
+            assert!(out.contains("c_hello: the destructor ran"), "{compiler}, gc {gc}:\n{out}");
+            assert_eq!(code, 0, "{compiler}, gc {gc}:\n{out}");
+        }
+    }
+}
+
+/// lx-link refuses position-independent code with a message that says
+/// how to build instead, and writes no executable.
+#[test]
+fn test_lx_link_refuses_position_independent_code() {
+    if !compiler_available("gcc") { return; }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut flags = c_hello_flags("gcc");
+    flags.retain(|f| *f != "-fno-pic");
+    flags.push("-fpic");
+    let objects = compile_c_hello("gcc", &flags, dir.path());
+    let exe = dir.path().join("pic.exe");
+    let out = Command::new(env!("CARGO_BIN_EXE_lx_link")).args(&objects).arg("-o").arg(&exe)
+        .output().expect("run lx-link");
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    assert!(err.contains("-fno-pic") && err.contains("R_386_GOT"), "{err}");
+    assert!(!exe.exists());
 }
 
 // ── GUI regression tests ─────────────────────────────────────────────────────

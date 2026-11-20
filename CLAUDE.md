@@ -29,7 +29,7 @@ They run natively under KVM.
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2181 unit tests (2138 warpine + 19 gen_api + 13 lx_link + 5 gen_arch + 6 gen_compat) + 199 integration tests
+cargo test                                 # 2189 unit tests (2138 warpine + 19 gen_api + 21 lx_link + 5 gen_arch + 6 gen_compat) + 201 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); afterwards `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -50,6 +50,9 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
   - The crates in `crates/` (`warpine-os2-sys` / `-rt` / `warpine-os2`) are outside the host workspace, and pin `nightly-2026-11-15`.
   - Install the linker with `cargo build --bin lx_link && cp target/debug/lx_link ~/.cargo/bin/lx-link`.
   - In `samples/rust_hello`, build with `cargo build -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -Z json-target-spec --target ../../targets/i686-warpine-os2.json`.
+- **C guests from GCC or clang** (ADR-0095): unmodified compilers emit freestanding i386 ELF (`-m32 -ffreestanding -fno-pic`) and `lx-link` makes the LX program.
+  - Build with `cargo build --bin lx_link`, then `make -C samples/c_hello` (or `CC=clang`).
+  - `lx-link` refuses position-independent code and fails on undefined symbols.
 - **Generators:** each has a test that fails when its output is stale.
   - `cargo run --bin gen_api -- check | validate-doc`: `targets/os2api.def` is the single source of the ordinals.
   - `cargo run --bin gen_arch -- check | render` (ADR-0021): a new, renamed or removed module needs `doc/architecture/layers.toml` updated and a render.

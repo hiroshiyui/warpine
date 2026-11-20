@@ -1,6 +1,6 @@
 # ADR-0015: Build Rust guest programs with Warpine's own ELF-to-LX linker
 
-- **Status:** Accepted
+- **Status:** Accepted; `lx-link`'s layout and input handling amended by ADR-0095
 - **Date:** 2026-04-01
 - **Sources:** commits 0cf6252 (plan), f55deeb (lx-link); `src/bin/lx_link.rs`; `targets/i686-warpine-os2.json`; `crates/warpine-os2*`; `CLAUDE.md` (Rust Guest Toolchain)
 
