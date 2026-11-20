@@ -30,6 +30,16 @@ impl super::Loader {
     }
 
     pub fn load<P: AsRef<Path>>(&mut self, lx_file: &LxFile, path: P) -> io::Result<()> {
+        // A program starts in its entry object, on its stack object: both
+        // must be objects of the file (the parser lets 0 through, which a
+        // DLL may have), or `setup_guest` could not index them.
+        let objects = lx_file.object_table.len() as u32;
+        for (what, object) in [("entry", lx_file.header.eip_object), ("stack", lx_file.header.esp_object)] {
+            if !(1..=objects).contains(&object) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData,
+                    format!("the program's {what} object {object} is not one of its {objects} objects")));
+            }
+        }
         let mut file = File::open(path)?;
         let data_pages_base = lx_file.header.data_pages_offset as u64;
         // Use preferred base addresses from the object table for the main exe
@@ -442,6 +452,24 @@ fn exe_dir(exe: &str) -> Option<String> {
 mod tests {
     use super::super::Loader;
     use super::super::MutexExt;
+
+    /// A program whose entry or stack object is not one of its objects is
+    /// refused, not run into a panic.
+    #[test]
+    fn a_program_needs_entry_and_stack_objects() {
+        let path = "samples/hello/hello.exe";
+        if !std::path::Path::new(path).exists() { return; }
+        let lx = crate::lx::LxFile::open(path).expect("hello.exe parses");
+        for (eip, esp) in [(0, lx.header.esp_object), (lx.header.eip_object, 0), (99, 1)] {
+            let mut bad = crate::lx::LxFile::open(path).unwrap();
+            bad.header.eip_object = eip;
+            bad.header.esp_object = esp;
+            let mut loader = Loader::new_mock();
+            let err = loader.load(&bad, path).expect_err("refused");
+            assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "{err}");
+        }
+        assert!(Loader::new_mock().load(&lx, path).is_ok());
+    }
 
     /// Load noinit.dll (samples/dll_noinit) with the mock loader; its 3 exports are registered by ordinal and by name.
     #[test]
