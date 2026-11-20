@@ -1,6 +1,6 @@
 # ADR-0072: The SOM root classes follow IBM's layouts, read from the OS/2 Warp 4 Toolkit
 
-- **Status:** Accepted; amends ADR-0070 (the `CClassData` layout, the stubs) and ADR-0059 (the layouts beyond an object's first word)
+- **Status:** Accepted; amends ADR-0070 (the `CClassData` layout, the stubs) and ADR-0059 (the layouts beyond an object's first word); extended by ADR-0073 (`somBuildClass`)
 - **Date:** 2026-11-20
 - **Sources:**
   - The code:

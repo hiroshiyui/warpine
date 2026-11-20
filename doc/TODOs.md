@@ -284,7 +284,7 @@ The WPS is a PM application on the session desktop, built on SOM. The SOM kernel
 
 - [ ] **IBM's SOM.DLL ordinals and layouts** (1–47, ADR-0070; the root classes' layouts, ADR-0072):
   - ordinals 48 and above: unassigned until a permissive source lists them (Free Pascal's LGPL `som.pas` is not used);
-  - class building from IBM's static class data (Stage B): `somBuildClass` / `somStaticClassInfo`, `somConstructClass`, guest classes' `CClassData` / `somParentMtabStruct`;
+  - class building from IBM's static class data, Stage B2/B3 (`somBuildClass` itself is done, ADR-0073): initializers and direct-init classes, the initializer / destructor / assignment control blocks of `somParentMtabStruct`, DirectToSOM classes, migrated methods, `somDynamicSCI`, `inheritVars`, `somConstructClass`; `somBuildClass` and the other SOM 2.x entries reach IBM-built binaries only once IBM's ordinals above 47 are known;
   - the root methods that resolve to the not-implemented procedure: the copy, assign, dispatch, cast, reset and renew families, `somGetParents`, the class manager's repository and class-library methods;
   - class loading calling a program's own `SOMClassInitFuncName`.
 - [ ] **C++**: SOM objects on the stack and in static storage; `somInitCtrl` / `somDestructCtrl` and multi-parent initialization order.
