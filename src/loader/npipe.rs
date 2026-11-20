@@ -361,7 +361,11 @@ pub struct PeekOut {
 pub struct Conn {
     sock: UnixStream,
     rx: Mutex<Rx>,
-    tx: Mutex<()>,
+    /// Held while sending; holds the unsent rest of a frame whose writer
+    /// was interrupted in its middle (ADR-0093), sent before anything else.
+    tx: Mutex<Vec<u8>>,
+    /// A thread sends that rest ([`Conn::flush_tail_in_background`]).
+    flushing: std::sync::atomic::AtomicBool,
     /// A write found the socket full: a pipe semaphore is posted once
     /// there is room again (`npipe_sem.rs`).
     pub write_blocked: std::sync::atomic::AtomicBool,
@@ -370,7 +374,8 @@ pub struct Conn {
 impl Conn {
     pub fn new(sock: UnixStream) -> std::io::Result<Self> {
         sock.set_nonblocking(true)?;
-        Ok(Conn { sock, rx: Mutex::new(Rx::default()), tx: Mutex::new(()),
+        Ok(Conn { sock, rx: Mutex::new(Rx::default()), tx: Mutex::new(Vec::new()),
+                  flushing: std::sync::atomic::AtomicBool::new(false),
                   write_blocked: std::sync::atomic::AtomicBool::new(false) })
     }
 
@@ -384,9 +389,9 @@ impl Conn {
 
     /// A connected pair (tests).
     #[cfg(test)]
-    pub fn pair() -> (Conn, Conn) {
+    pub fn pair() -> (Arc<Conn>, Arc<Conn>) {
         let (a, b) = UnixStream::pair().unwrap();
-        (Conn::new(a).unwrap(), Conn::new(b).unwrap())
+        (Arc::new(Conn::new(a).unwrap()), Arc::new(Conn::new(b).unwrap()))
     }
 
     pub fn raw_fd(&self) -> RawFd {
@@ -499,17 +504,42 @@ impl Conn {
     }
 
     /// Send one frame; `Ok(false)` when non-blocking and the socket is
-    /// full. A frame once started is always finished.
-    fn send_frame(&self, kind: u8, body: &[u8], nowait: bool, stop: &dyn Fn() -> bool) -> Result<bool, u32> {
-        self.send_frame_or_interrupt(kind, body, nowait, stop, &|| false)
+    /// full.
+    fn send_frame(self: &Arc<Self>, kind: u8, body: &[u8], nowait: bool, stop: &dyn Fn() -> bool) -> Result<bool, u32> {
+        self.send_frame_or_interrupt(kind, body, nowait, stop, &|_| false)
     }
 
-    /// [`Self::send_frame`] that also gives up (`ERROR_INTERRUPT`) when
-    /// `interrupt` says so while none of the frame is written yet — never
-    /// in the middle of a frame, which would break the stream.
-    fn send_frame_or_interrupt(&self, kind: u8, body: &[u8], nowait: bool, stop: &dyn Fn() -> bool,
-                               interrupt: &dyn Fn() -> bool) -> Result<bool, u32> {
-        let _tx = self.tx.lock_or_recover();
+    /// [`Self::send_frame`] that a signal or `DosKillThread` interrupts
+    /// (`interrupt(fresh)` true; ADR-0035, ADR-0093):
+    /// - with none of the frame written (`fresh`): `ERROR_INTERRUPT`, the
+    ///   caller makes the call again;
+    /// - in the middle of the frame: the frame counts as sent and the call
+    ///   returns; its rest stays as the connection's tail, which a helper
+    ///   thread sends ([`Self::flush_tail_in_background`]) — a frame is
+    ///   never cut, which would break the stream.
+    ///
+    /// The rest of an earlier interrupted frame always goes first.
+    /// `stop` (the process ends) gives up at once: the connection closes
+    /// with the process.
+    fn send_frame_or_interrupt(self: &Arc<Self>, kind: u8, body: &[u8], nowait: bool, stop: &dyn Fn() -> bool,
+                               interrupt: &dyn Fn(bool) -> bool) -> Result<bool, u32> {
+        let mut tail = self.tx.lock_or_recover();
+        // An earlier frame's rest: none of this frame is written yet.
+        while !tail.is_empty() {
+            match (&self.sock).write(&tail) {
+                Ok(0) => return Err(ERROR_BROKEN_PIPE),
+                Ok(n) => { tail.drain(..n); }
+                Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                    self.write_blocked.store(true, Ordering::Relaxed);
+                    if nowait { return Ok(false); }
+                    if stop() || interrupt(true) { return Err(ERROR_INTERRUPT); }
+                    self.drain();
+                    poll_fd(self.raw_fd(), libc::POLLOUT, POLL_MS);
+                }
+                Err(_) => return Err(ERROR_BROKEN_PIPE),
+            }
+        }
         let mut frame = Vec::with_capacity(FRAME_HEADER + body.len());
         frame.push(kind);
         frame.extend_from_slice(&(body.len() as u32).to_le_bytes());
@@ -525,8 +555,16 @@ impl Conn {
                     if off == 0 && nowait {
                         return Ok(false);
                     }
-                    if stop() || (off == 0 && interrupt()) {
+                    if stop() {
                         return Err(ERROR_INTERRUPT);
+                    }
+                    if interrupt(off == 0) {
+                        if off == 0 { return Err(ERROR_INTERRUPT); }
+                        // Mid-frame: the rest goes later, in order.
+                        tail.extend_from_slice(&frame[off..]);
+                        drop(tail);
+                        self.flush_tail_in_background();
+                        return Ok(true);
                     }
                     // Take in what the peer sends meanwhile, so two ends
                     // writing to each other do not both stay blocked.
@@ -539,12 +577,54 @@ impl Conn {
         Ok(true)
     }
 
+    /// Send the tail on a helper thread (one per connection at a time),
+    /// until it is out or the connection broke. It takes in what the peer
+    /// sends meanwhile, like a blocked writer.
+    fn flush_tail_in_background(self: &Arc<Self>) {
+        if self.flushing.swap(true, Ordering::AcqRel) { return; }
+        let conn = Arc::clone(self);
+        let spawned = std::thread::Builder::new().name("os2-npipe-tail".into()).spawn(move || {
+            loop {
+                let done = {
+                    let mut tail = conn.tx.lock_or_recover();
+                    loop {
+                        if tail.is_empty() { break true; }
+                        match (&conn.sock).write(&tail) {
+                            Ok(0) => { tail.clear(); break true; }
+                            Ok(n) => { tail.drain(..n); }
+                            Err(e) if e.kind() == ErrorKind::Interrupted => {}
+                            Err(e) if e.kind() == ErrorKind::WouldBlock => break false,
+                            Err(_) => { tail.clear(); break true; }
+                        }
+                    }
+                };
+                if done { break; }
+                conn.drain();
+                poll_fd(conn.raw_fd(), libc::POLLOUT, POLL_MS);
+            }
+            conn.flushing.store(false, Ordering::Release);
+            // A tail added after the last look gets its own thread.
+            if !conn.tx.lock_or_recover().is_empty() { conn.flush_tail_in_background(); }
+        });
+        if spawned.is_err() {
+            // No thread: the next write sends the tail first.
+            self.flushing.store(false, Ordering::Release);
+        }
+    }
+
+    /// Unsent bytes of an interrupted frame (tests).
+    #[cfg(test)]
+    pub fn tail_len(&self) -> usize {
+        self.tx.lock_or_recover().len()
+    }
+
     /// Write `data` as one message (`message`) or as a byte stream; returns
     /// the bytes written (0 when non-blocking and full). A blocked write
-    /// gives up when `interrupt(fresh)` says so between frames: with
-    /// nothing written (`fresh`, `ERROR_INTERRUPT`; the caller makes the
-    /// call again), or a byte stream with some chunks written (their count).
-    pub fn write(&self, data: &[u8], message: bool, nowait: bool, stop: &dyn Fn() -> bool,
+    /// gives up when `interrupt(fresh)` says so: with nothing written
+    /// (`fresh`, `ERROR_INTERRUPT`; the caller makes the call again), else
+    /// with what it wrote, a frame cut by the interruption counting as
+    /// written ([`Self::send_frame_or_interrupt`]).
+    pub fn write(self: &Arc<Self>, data: &[u8], message: bool, nowait: bool, stop: &dyn Fn() -> bool,
                  interrupt: &dyn Fn(bool) -> bool) -> Result<usize, u32> {
         if message && data.len() > MAX_MESSAGE {
             return Err(ERROR_INVALID_PARAMETER);
@@ -553,15 +633,25 @@ impl Conn {
             return Err(ERROR_BROKEN_PIPE);
         }
         if message {
-            return Ok(if self.send_frame_or_interrupt(FRAME_DATA, data, nowait, stop, &|| interrupt(true))? {
+            return Ok(if self.send_frame_or_interrupt(FRAME_DATA, data, nowait, stop, interrupt)? {
                 data.len()
             } else { 0 });
         }
         let mut done = 0;
         for chunk in data.chunks(BYTE_CHUNK) {
             let fresh = done == 0;
-            match self.send_frame_or_interrupt(FRAME_DATA, chunk, nowait, stop, &|| interrupt(fresh)) {
-                Ok(true) => done += chunk.len(),
+            let cut = std::cell::Cell::new(false);
+            let chunk_interrupt = |chunk_fresh: bool| {
+                let stop_now = interrupt(fresh && chunk_fresh);
+                if stop_now { cut.set(true); }
+                stop_now
+            };
+            match self.send_frame_or_interrupt(FRAME_DATA, chunk, nowait, stop, &chunk_interrupt) {
+                Ok(true) => {
+                    done += chunk.len();
+                    // Interrupted in this chunk's middle: stop after it.
+                    if cut.get() { break; }
+                }
                 Ok(false) => break,
                 Err(ERROR_INTERRUPT) if !fresh && !stop() => break,
                 Err(e) => return Err(e),
@@ -572,7 +662,7 @@ impl Conn {
 
     /// End the connection from the server's side: the client loses what it
     /// has not read.
-    pub fn disconnect(&self) {
+    pub fn disconnect(self: &Arc<Self>) {
         let _ = self.send_frame(FRAME_DISCONNECT, &[], true, &|| true);
         let _ = self.sock.shutdown(std::net::Shutdown::Both);
     }
@@ -1084,6 +1174,71 @@ mod tests {
         let interrupt = |fresh: bool| { let mut v = asked.take(); v.push(fresh); asked.set(v); true };
         assert_eq!(a.write(b"msg", true, false, &no_stop, &interrupt), Err(ERROR_INTERRUPT));
         assert_eq!(asked.take(), vec![true], "nothing written yet");
+    }
+
+    /// A message write interrupted in the middle of its frame (ADR-0093)
+    /// returns at once as written; its rest goes out on a helper thread,
+    /// before any later message, so the reader gets every message whole
+    /// and in order.
+    #[test]
+    fn a_write_interrupted_mid_frame_finishes_in_the_background() {
+        let (x, mut y) = UnixStream::pair().unwrap();
+        let a = Arc::new(Conn::new(x).unwrap());
+        let filler = vec![1u8; 4096];
+        let mut fillers = 0;
+        while a.write(&filler, true, true, &no_stop, &|_| false) == Ok(filler.len()) { fillers += 1; }
+        // Make room for two fillers, less than the big message needs (read
+        // raw: a Conn would take in all the socket holds).
+        let mut two = vec![0u8; 2 * (FRAME_HEADER + filler.len())];
+        y.read_exact(&mut two).unwrap();
+        fillers -= 2;
+        let big: Vec<u8> = (0..200_000u32).map(|i| i as u8).collect();
+        // Interrupted only once some of the frame is out.
+        let asked = std::cell::Cell::new(Vec::new());
+        let mid_frame = |fresh: bool| { let mut v = asked.take(); v.push(fresh); asked.set(v); !fresh };
+        assert_eq!(a.write(&big, true, false, &no_stop, &mid_frame), Ok(big.len()), "counts as written");
+        assert_eq!(asked.take(), vec![false], "asked once, in the middle");
+        assert!(a.tail_len() > 0 && a.tail_len() < big.len() + FRAME_HEADER);
+        // A later message waits for the rest; a reader takes everything.
+        let b = Arc::new(Conn::new(y).unwrap());
+        let reader = {
+            let b = Arc::clone(&b);
+            std::thread::spawn(move || {
+                let mut got = Vec::new();
+                for _ in 0..fillers + 2 { got.push(b.read(MAX_MESSAGE, true, false, &no_stop).unwrap().data); }
+                got
+            })
+        };
+        assert_eq!(a.write(b"after", true, false, &no_stop, &|_| false), Ok(5));
+        let got = reader.join().unwrap();
+        assert!(got[..fillers].iter().all(|m| *m == filler));
+        assert_eq!(got[fillers], big, "whole");
+        assert_eq!(got[fillers + 1], b"after", "in order");
+        assert_eq!(a.tail_len(), 0);
+    }
+
+    /// The rest of an interrupted frame goes out even when nothing more is
+    /// written; a byte-stream write cut in a chunk stops after that chunk.
+    #[test]
+    fn an_interrupted_frame_reaches_a_reader_without_further_writes() {
+        let (x, mut y) = UnixStream::pair().unwrap();
+        let a = Arc::new(Conn::new(x).unwrap());
+        let filler = vec![2u8; 4096];
+        let mut fillers = 0;
+        while a.write(&filler, false, true, &no_stop, &|_| false) == Ok(filler.len()) { fillers += 1; }
+        let mut two = vec![0u8; 2 * (FRAME_HEADER + filler.len())];
+        y.read_exact(&mut two).unwrap();
+        let data = vec![3u8; 3 * BYTE_CHUNK];
+        let n = a.write(&data, false, false, &no_stop, &|fresh| !fresh).unwrap();
+        assert_eq!(n, BYTE_CHUNK, "the cut chunk counts, then the write stops");
+        let b = Conn::new(y).unwrap();
+        let want = (fillers - 2) * filler.len() + n;
+        let mut got = 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while got < want && std::time::Instant::now() < deadline {
+            got += b.read(MAX_MESSAGE, false, false, &no_stop).unwrap().data.len();
+        }
+        assert_eq!(got, want);
     }
 
     /// A foreign byte stream (no valid frames) ends the connection instead

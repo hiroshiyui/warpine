@@ -20,6 +20,11 @@
  *   kbd       (started by the integration test with Ctrl+C and "x" as
  *             piped keyboard input) KbdCharIn returns "x", the handler got
  *             XCPT_SIGNAL_INTR
+ *   kbdbrk    the same with Ctrl+\ (a terminal's Ctrl+Break, ADR-0093):
+ *             the handler got XCPT_SIGNAL_BREAK
+ *   brk       (integration test) a handler continues every signal; sleeps
+ *             until one comes (the host's SIGQUIT) and writes "break;" to
+ *             C:\KT_BRK.OUT for XCPT_SIGNAL_BREAK
  *   eof       (integration test, empty piped input) an exit-list routine
  *             runs with TC_EXIT when KbdCharIn finds the end of input
  *   win       (integration test, VIO window under a GUI script) records
@@ -304,18 +309,29 @@ static int child_main( const char *mode )
         DosWaitChild( DCWA_PROCESS, DCWW_WAIT, &res, &ended, grand );
         for( ;; ) DosSleep( 60000 );
     }
-    if( strcmp( mode, "kbd" ) == 0 ) {
+    if( strcmp( mode, "kbd" ) == 0 || strcmp( mode, "kbdbrk" ) == 0 ) {
         KEYINFO key;
         USHORT  krc;
+        int     brk = strcmp( mode, "kbdbrk" ) == 0;
         DosSetExceptionHandler( &rec );
         DosSetSignalExceptionFocus( SIG_SETFOCUS, &times );
         memset( &key, 0, sizeof( key ) );
         krc = KBD16CHARIN( &key, 0, 0 );
-        check( "kbd: KbdCharIn after Ctrl+C", krc, NO_ERROR );
-        check( "kbd: -> the next key", key.chChar, 'x' );
-        check( "kbd: -> Ctrl+C was XCPT_SIGNAL_INTR", got_signal, XCPT_SIGNAL_INTR );
+        check( brk ? "kbdbrk: KbdCharIn after Ctrl+\\" : "kbd: KbdCharIn after Ctrl+C", krc, NO_ERROR );
+        check( brk ? "kbdbrk: -> the next key" : "kbd: -> the next key", key.chChar, 'x' );
+        if( brk ) check( "kbdbrk: -> Ctrl+\\ was XCPT_SIGNAL_BREAK", got_signal, XCPT_SIGNAL_BREAK );
+        else check( "kbd: -> Ctrl+C was XCPT_SIGNAL_INTR", got_signal, XCPT_SIGNAL_INTR );
         DosUnsetExceptionHandler( &rec );
         return n_checks == n_passed ? 0 : 1;
+    }
+    if( strcmp( mode, "brk" ) == 0 ) {
+        DosSetExceptionHandler( &rec );
+        DosSetSignalExceptionFocus( SIG_SETFOCUS, &times );
+        ready( mode );
+        while( got_signal == 0 ) DosSleep( 50 );
+        append_file( out_name, got_signal == XCPT_SIGNAL_BREAK ? "break;" : "other;" );
+        DosUnsetExceptionHandler( &rec );
+        return 0;
     }
     if( strcmp( mode, "eof" ) == 0 ) {
         KEYINFO key;

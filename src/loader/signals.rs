@@ -217,13 +217,21 @@ impl KillTable {
 
 /// The character Ctrl+C gives (ASCII ETX).
 pub const CTRL_C: u8 = 0x03;
+/// The character Ctrl+\ gives (ASCII FS): a terminal's quit character,
+/// Ctrl+Break at a terminal (ADR-0093).
+pub const CTRL_BACKSLASH: u8 = 0x1C;
 
-/// The signal a byte typed at the keyboard raises: Ctrl+C is
-/// `XCPT_SIGNAL_INTR` (the KBD subsystem's ASCII mode, the only one
-/// Warpine has: `KbdSetStatus` binary mode is not implemented). A terminal
-/// has no Ctrl+Break key.
+/// The signal a byte typed at the keyboard raises (the KBD subsystem's
+/// ASCII mode, the only one Warpine has: `KbdSetStatus` binary mode is not
+/// implemented): Ctrl+C is `XCPT_SIGNAL_INTR`; a terminal has no Break
+/// key, so its quit character Ctrl+\ stands for Ctrl+Break,
+/// `XCPT_SIGNAL_BREAK` (Warpine's choice, unverified).
 pub fn keyboard_byte_signal(byte: u8) -> Option<u32> {
-    (byte == CTRL_C).then_some(XCPT_SIGNAL_INTR)
+    match byte {
+        CTRL_C => Some(XCPT_SIGNAL_INTR),
+        CTRL_BACKSLASH => Some(XCPT_SIGNAL_BREAK),
+        _ => None,
+    }
 }
 
 /// The signal a key pressed in a VIO window or the text window raises:
@@ -547,6 +555,20 @@ impl super::Loader {
         sregs.cs.db != 0 && sregs.ss.db != 0 && room
     }
 
+    /// Whether thread 1, waiting in a loop Warpine runs on its behalf (a
+    /// modal dialog's) on `vcpu_id`, has a signal or a termination to take
+    /// now: [`Self::signal_action`]'s conditions that do not depend on the
+    /// registers. A held signal does not count, so the loop is not left
+    /// for nothing.
+    pub(crate) fn signal_waits_for(&self, vcpu_id: u32) -> bool {
+        let threads = &self.shared.threads;
+        super::threads::tid_of_vcpu(vcpu_id) == MAIN_TID
+            && threads.signal_pending.load(Ordering::Acquire)
+            && !self.runs_exit_list(vcpu_id)
+            && threads.must_complete.load(Ordering::Acquire) == 0
+            && threads.signals.lock_or_recover().wants_thread_1()
+    }
+
     /// Thread 1 at the top of its vCPU loop: deliver a pending signal.
     pub(crate) fn signal_action(&self, vcpu: &dyn VcpuBackend, vcpu_id: u32) -> SignalAction {
         let threads = &self.shared.threads;
@@ -796,6 +818,8 @@ mod kill_tests {
     fn keys_and_bytes_that_are_signals() {
         assert_eq!(keyboard_byte_signal(CTRL_C), Some(XCPT_SIGNAL_INTR));
         assert_eq!(keyboard_byte_signal(b'c'), None);
+        assert_eq!(keyboard_byte_signal(CTRL_BACKSLASH), Some(XCPT_SIGNAL_BREAK), "Ctrl+\\ is Ctrl+Break at a terminal");
+        assert_eq!(keyboard_byte_signal(b'\\'), None);
         assert_eq!(key_signal(true, true, false, false), Some(XCPT_SIGNAL_INTR));
         assert_eq!(key_signal(false, true, false, false), None, "plain c");
         assert_eq!(key_signal(true, false, true, false), Some(XCPT_SIGNAL_BREAK));

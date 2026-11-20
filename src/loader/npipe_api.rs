@@ -160,9 +160,10 @@ impl super::Loader {
         self.shutting_down()
     }
 
-    /// A blocked pipe write is interrupted (ADR-0035): with nothing written
-    /// yet (`fresh`) the call is made again after the signal; later it
-    /// stops with what it wrote.
+    /// A blocked pipe write is interrupted (ADR-0035, ADR-0093): with
+    /// nothing written yet (`fresh`) the call is made again after the
+    /// signal; later it stops with what it wrote, a frame cut in its middle
+    /// sent in the background.
     fn np_interrupt(&self, fresh: bool) -> bool {
         if fresh { self.interrupt_restart() } else { self.interrupted() }
     }
@@ -445,7 +446,10 @@ impl super::Loader {
         if let Err(e) = conn.write(&msg, true, false, &|| self.np_stop(), &|fresh| self.np_interrupt(fresh)) {
             return e;
         }
-        match conn.read(cb_in.min(NP_MAX_READ) as usize, true, false, &|| self.np_stop()) {
+        // The message is out, so the transaction cannot be made again: an
+        // interrupted wait for the reply fails with ERROR_INTERRUPT
+        // (unverified; ADR-0093).
+        match conn.read(cb_in.min(NP_MAX_READ) as usize, true, false, &|| self.np_stop() || self.interrupted()) {
             Ok(ReadOut { data, more }) => {
                 if self.guest_write_bytes(inb, &data).is_none() {
                     return ERROR_INVALID_PARAMETER;

@@ -7,6 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **Signals in more places** (ADR-0093):
+  - **Ctrl+\\ at a terminal is Ctrl+Break:** it raises `XCPT_SIGNAL_BREAK`, from raw keyboard input or as the host's `SIGQUIT`.
+  - **Modal dialogs:** a signal reaches thread 1 while it waits in `WinDlgBox`, `WinProcessDlg` or `WinMessageBox`, and the dialog goes on once the handler continues.
+  - **Pipe writes blocked mid-message:** a signal or `DosKillThread` now interrupts them. The message counts as written, and its rest reaches the reader whole and in order.
+  - **Transaction replies:** an interrupted wait for a `DosTransactNPipe` / `DosCallNPipe` reply fails with `ERROR_INTERRUPT`.
+
+  Samples: `samples/pm_dlg_signal_test`, `samples/npipe_cut_test`, new `kill_test` modes.
 - **CONFIG.SYS `LIBPATH` and `SET`** (ADR-0092):
   - DLLs are searched along BEGINLIBPATH, the program's own directory, CONFIG.SYS's `LIBPATH=` (else `C:\OS2\DLL`) and ENDLIBPATH. `DosSetExtLIBPATH` used to store the extended paths without the search using them.
   - `SET` statements make the environment a program starts with when no parent gives one: 32-bit and 16-bit programs, CMD.EXE, and CMD's `START`.
@@ -28,6 +35,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **No endless spin on memory past guest RAM** — 1,000 accesses in a row past the guest's memory (a wild page-table entry or loop) end the thread as a trap; before, a guest could keep its process spinning for good.
 
 ### Fixed
+- **`SIGQUIT` no longer ends Warpine with a core dump** (ADR-0093): Ctrl+\\ at a terminal used to kill the process.
 - **EA sidecars** (filesystems without extended attributes) — a rename lost a file's EAs and a delete left them behind; the `.os2ea` folder showed in directory listings, was reachable by programs, and kept its directory from being deleted. `DosCopy` copied no EAs at all.
 - **A termination during an access past guest RAM lost its exit list** — KVM completes such an access on the next run and overrode the registers Warpine had just pointed at the exit-list routine; the access is now completed at once (`finish_mmio`).
 - **PMWIN and PMGPI calls by name** (ADR-0087) — `DosQueryProcAddr` and `WinLoadProcedure` found no PMWIN or PMGPI call by name; `build.rs` now reads the names from the dispatchers. By ordinal, these modules now find only the calls Warpine implements (`ERROR_PROC_NOT_FOUND` for the others), as the registry modules do.

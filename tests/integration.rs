@@ -852,6 +852,19 @@ fn test_file_attributes_are_kept() {
     assert_eq!(code, 0, "{out}");
 }
 
+/// npipe_cut_test (ADR-0093): a pipe write blocked in the middle of a
+/// message is interrupted by DosKillThread and by a signal to thread 1;
+/// the reader still gets the message whole, and later ones after it.
+#[test]
+fn test_pipe_writes_interrupted_mid_message() {
+    let sample = "samples/npipe_cut_test/npipe_cut_test.exe";
+    if !kvm_available() || !Path::new(sample).exists() { return; }
+    let (out, code) = run_sample(sample, 30);
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("npipe_cut_test: done 15/15"), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
 /// libpath_test (ADR-0092): CONFIG.SYS's SET statements make the starting
 /// environment; DLLs are found along BEGINLIBPATH, LIBPATH (`.` the
 /// current directory) and ENDLIBPATH, in that order.
@@ -1230,6 +1243,56 @@ fn test_sigterm_runs_the_exit_list() {
     };
     assert_eq!(status.code(), Some(1));
     assert_eq!(drive_c_file(data_home.path(), "KT_EXITLIST.OUT").as_deref(), Some("tc=3;"));
+}
+
+/// Ctrl+\\ in piped keyboard input, a terminal's stand-in for Ctrl+Break,
+/// is XCPT_SIGNAL_BREAK for KbdCharIn, which returns the next key (ADR-0093).
+#[test]
+fn test_ctrl_backslash_from_the_keyboard_is_ctrl_break() {
+    if !kvm_available() || !Path::new(KILL_TEST).exists() { return; }
+    let (out, code, _c) = run_kill_test_mode("kbdbrk", b"\x1Cx");
+    assert!(!out.contains("FAIL") && out.matches(": ok").count() == 3, "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
+/// SIGQUIT from the host (Ctrl+\\ at a terminal not in raw mode) is
+/// XCPT_SIGNAL_BREAK: a handler that continues it sees the break, and the
+/// process goes on (ADR-0093).
+#[test]
+fn test_sigquit_is_ctrl_break() {
+    if !kvm_available() || !Path::new(KILL_TEST).exists() { return; }
+    let data_home = tempfile::tempdir().expect("tempdir");
+    let mut child = Command::new(warpine())
+        .arg(KILL_TEST)
+        .env("WARPINE_HEADLESS", "1")
+        .env("WARPINE_OS2ARGS", "child brk")
+        .env("XDG_DATA_HOME", data_home.path())
+        .env("XDG_RUNTIME_DIR", data_home.path())
+        .envs(PINNED_LOCALE.iter().copied())
+        .env("RUST_LOG", "error")
+        .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+        .spawn().expect("spawn warpine");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while drive_c_file(data_home.path(), "KT_BRK.RDY").is_none() {
+        if std::time::Instant::now() >= deadline || child.try_wait().unwrap().is_some() {
+            let _ = child.kill();
+            panic!("the child never got ready");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let sent = Command::new("kill").args(["-QUIT", &child.id().to_string()]).status().unwrap();
+    assert!(sent.success());
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(s) = child.try_wait().unwrap() { break s; }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("the child did not end after SIGQUIT");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(status.code(), Some(0), "handled, so not a core dump or a kill");
+    assert_eq!(drive_c_file(data_home.path(), "KT_BRK.OUT").as_deref(), Some("break;"));
 }
 
 /// A named-pipe session directory left behind by a killed Warpine process
@@ -2738,6 +2801,14 @@ fn gui_pm_msgbox_test_answers_message_boxes() {
 #[test]
 fn gui_pm_destroy_test_sends_wm_destroy() {
     assert_sample_checks_pass("samples/pm_destroy_test/pm_destroy_test.exe", "pm_destroy_test", 23);
+}
+
+/// pm_dlg_signal_test (ADR-0093): XCPT_SIGNAL_INTR and XCPT_SIGNAL_BREAK
+/// reach thread 1's handler while it waits in WinDlgBox; the dialog takes
+/// messages between them and returns its result afterwards.
+#[test]
+fn gui_pm_dlg_signal_test_signals_reach_a_modal_dialog() {
+    assert_sample_checks_pass("samples/pm_dlg_signal_test/pm_dlg_signal_test.exe", "pm_dlg_signal_test", 7);
 }
 
 /// The fourth box of pm_msgbox_test: the information icon left of two

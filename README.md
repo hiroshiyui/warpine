@@ -189,7 +189,9 @@ samples/               OS/2 sample applications and build scripts
   nest_test/           A program that starts itself, stopped at the nesting limit
   threads_limit_test/  CONFIG.SYS THREADS= bounds threads and child processes of a session
   argv_test/           argc / argv / environment and session-unique process ids across children
-  kill_test/           DosKillProcess, exit lists on kill, interrupted waits, Ctrl+C as a signal
+  kill_test/           DosKillProcess, exit lists on kill, interrupted waits, Ctrl+C and Ctrl+Break as signals
+  pm_dlg_signal_test/  Signals reaching a program waiting in a modal dialog
+  npipe_cut_test/      Pipe writes interrupted mid-message by DosKillThread and signals, the message kept whole
   datetime_test/       Dates after 2038: session clock, DosSetDateTime, file times, WARPINE.DLL
   infoseg_test/        DosGetInfoSeg global and local information segments, a running clock
   fileattr_test/       FILE_READONLY by path, handle and DosSetFileMode; read-only files not deletable
@@ -353,7 +355,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 2177 unit tests (no KVM required)
+cargo test                        # 2180 unit tests (no KVM required)
 cargo test --test integration     # 182 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```

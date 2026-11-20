@@ -1638,6 +1638,12 @@ fn setup_dlg_dispatch(
         if ended || killed || loader.shutting_down() {
             return finish(vcpu, callback_stack);
         }
+        // A signal for thread 1, or a request to end the process, is taken
+        // between messages (ADR-0093): see `leave_dlg_loop_for_signal`.
+        if owner.is_some_and(|v| loader.signal_waits_for(v)) {
+            leave_dlg_loop_for_signal(vcpu, loader, callback_stack, dlg_proc, hwnd_dlg, hmq, saved_rip, saved_rsp);
+            return true;
+        }
 
         // A message another program sent runs first, then the loop goes on
         // (pm_remote.rs).
@@ -1688,6 +1694,37 @@ fn setup_dlg_dispatch(
         let guard = wait_lock.lock_or_recover();
         let _ = cond.wait_timeout(guard, std::time::Duration::from_millis(100)).unwrap();
     }
+}
+
+/// Leave the modal loop of dialog `hwnd_dlg` for the vCPU loop so that
+/// thread 1 takes a signal (ADR-0093): as if a message's procedure had been
+/// called and were about to return — the guest at `CALLBACK_RET_TRAP` on
+/// the stack a message call would use, under a `FrameKind::DlgRunLoop`
+/// frame. The vCPU loop delivers the signal with that point as its
+/// context; when a handler continues, the trap pops the frame and the
+/// loop goes on. A signal whose default action applies ends the process
+/// there (its exit list runs) as anywhere else.
+#[allow(clippy::too_many_arguments)]
+fn leave_dlg_loop_for_signal(
+    vcpu: &mut dyn super::vm_backend::VcpuBackend,
+    loader: &super::Loader,
+    callback_stack: &mut Vec<CallbackFrame>,
+    dlg_proc: u32,
+    hwnd_dlg: u32,
+    hmq: u32,
+    saved_rip: u64,
+    saved_rsp: u64,
+) {
+    callback_stack.push(CallbackFrame {
+        saved_rip,
+        saved_rsp,
+        kind: FrameKind::DlgRunLoop { dlg_proc, hwnd_dlg, hmq },
+    });
+    let mut regs = vcpu.get_regs().unwrap();
+    regs.rsp = saved_rsp - 4 - DLG_CALL_FRAME_BYTES;
+    loader.guest_write::<u32>(regs.rsp as u32, CALLBACK_RET_TRAP).expect("DlgRunLoop stack OOB");
+    regs.rip = CALLBACK_RET_TRAP as u64;
+    vcpu.set_regs(&regs).unwrap();
 }
 
 /// Dispatch `msg`, taken by the modal loop of dialog `hwnd_dlg`, to its
@@ -2128,6 +2165,44 @@ mod tests {
             stack.pop();
         }
         assert_eq!(sps, vec![saved_rsp - 4 - DLG_CALL_FRAME_BYTES; 3]);
+    }
+
+    /// A signal for thread 1 waiting in a modal loop leaves the loop for
+    /// the vCPU loop (ADR-0093): the guest at the callback trap under a
+    /// loop frame, where the signal is dispatched to its handlers; a held
+    /// signal, or one for a dialog of another thread, does not.
+    #[test]
+    fn a_signal_leaves_the_modal_loop_for_its_handlers() {
+        use super::super::constants::{SIG_SETFOCUS, XCPT_SIGNAL_INTR};
+        use super::super::signals::SignalAction;
+        let loader = super::super::Loader::new_mock();
+        let (hmq, dlg) = {
+            let mut wm = loader.shared.window_mgr.lock_or_recover();
+            let hmq = wm.create_mq(437);
+            wm.tid_to_hmq.insert(MAIN_VCPU_ID, hmq);
+            wm.register_class("Dlg".into(), 0x1234, 0);
+            (hmq, wm.create_window("Dlg".into(), 0, hmq))
+        };
+        let mut vcpu = MockVcpu::new();
+        vcpu.sregs.cs.db = 1;
+        vcpu.sregs.ss.db = 1;
+        let saved_rsp: u64 = 0x8_0000;
+        vcpu.regs.rsp = saved_rsp - 4;
+        loader.dos_set_signal_exception_focus(SIG_SETFOCUS, 0);
+        loader.post_signal(XCPT_SIGNAL_INTR);
+        let mut stack = Vec::new();
+        assert!(setup_dlg_dispatch(&mut vcpu, &loader, &mut stack, 0x1234, dlg, hmq, 0x4000, saved_rsp));
+        let regs = vcpu.get_regs().unwrap();
+        assert_eq!((regs.rip, regs.rsp), (CALLBACK_RET_TRAP as u64, saved_rsp - 4 - DLG_CALL_FRAME_BYTES));
+        assert!(matches!(stack.last(), Some(CallbackFrame { kind: FrameKind::DlgRunLoop { .. }, saved_rip: 0x4000, .. })));
+        // The vCPU loop then gives the signal to the handlers (none here:
+        // the default action, the end of the process).
+        assert!(matches!(loader.signal_action(&vcpu, MAIN_VCPU_ID), SignalAction::EndProcess));
+        // Now held: the loop stays (it waits for a message, then for the
+        // dialog to end; here it is dismissed).
+        loader.post_signal(XCPT_SIGNAL_INTR);
+        assert!(!loader.signal_waits_for(MAIN_VCPU_ID), "held until acknowledged");
+        assert!(!loader.signal_waits_for(2), "not thread 1");
     }
 
     /// An owner-draw chain calls the owner's procedure with the structure

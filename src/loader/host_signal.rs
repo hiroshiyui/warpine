@@ -14,8 +14,9 @@
 //!   with `DKP_PROCESS`) and "end this process and its descendants"
 //!   (`DosKillProcess` with `DKP_PROCESSTREE`) travel as four other
 //!   real-time signals. `SIGINT` (Ctrl+C at a terminal that is not in raw
-//!   mode, `kill -INT`) arrives as `XCPT_SIGNAL_INTR` and `SIGTERM` as
-//!   `XCPT_SIGNAL_KILLPROC`, so a host that ends a Warpine process the
+//!   mode, `kill -INT`) arrives as `XCPT_SIGNAL_INTR`, `SIGQUIT` (Ctrl+\ at
+//!   such a terminal, which has no Break key; ADR-0093) as
+//!   `XCPT_SIGNAL_BREAK`, and `SIGTERM` as `XCPT_SIGNAL_KILLPROC`, so a host that ends a Warpine process the
 //!   polite way runs its exit list. The handler only stores the request in
 //!   an atomic and writes one byte to a pipe (both async-signal-safe); a
 //!   listener thread reads the pipe and hands the request to the process
@@ -95,10 +96,12 @@ pub fn host_signal_for(os2_signal: u32) -> Option<i32> {
 }
 
 /// The request a host signal carries: Warpine's real-time signals, and
-/// `SIGINT` / `SIGTERM` from the host (async-signal-safe: arithmetic only).
+/// `SIGINT` / `SIGQUIT` / `SIGTERM` from the host (async-signal-safe:
+/// arithmetic only).
 pub fn request_for(host_signal: i32) -> Option<HostRequest> {
     match host_signal {
         libc::SIGINT => return Some(HostRequest::Signal(XCPT_SIGNAL_INTR)),
+        libc::SIGQUIT => return Some(HostRequest::Signal(XCPT_SIGNAL_BREAK)),
         libc::SIGTERM => return Some(HostRequest::Signal(XCPT_SIGNAL_KILLPROC)),
         _ => {}
     }
@@ -253,7 +256,7 @@ extern "C" fn on_request(sig: libc::c_int) {
 /// The host signals the listener takes.
 fn request_host_signals() -> Vec<i32> {
     let mut sigs: Vec<i32> = REQUESTS.into_iter().filter_map(request_signal).collect();
-    sigs.extend([libc::SIGINT, libc::SIGTERM]);
+    sigs.extend([libc::SIGINT, libc::SIGQUIT, libc::SIGTERM]);
     sigs
 }
 
@@ -312,6 +315,7 @@ mod tests {
         }
         assert_eq!(request_for(kick), None);
         assert_eq!(request_for(libc::SIGINT), Some(HostRequest::Signal(XCPT_SIGNAL_INTR)));
+        assert_eq!(request_for(libc::SIGQUIT), Some(HostRequest::Signal(XCPT_SIGNAL_BREAK)));
         assert_eq!(request_for(libc::SIGTERM), Some(HostRequest::Signal(XCPT_SIGNAL_KILLPROC)));
         assert_eq!(request_for(libc::SIGHUP), None);
         assert_eq!(host_signal_for(2), None);
