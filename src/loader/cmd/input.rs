@@ -76,6 +76,7 @@ impl CmdShell {
     /// to clear, and Enter to submit.
     pub(super) fn read_line(&mut self) -> ReadResult {
         // Check non-kbd input source first.
+        self.drain_pipe_input();
         {
             let mut src = self.input_source.borrow_mut();
             if let InputSource::Data(ref mut data) = *src {

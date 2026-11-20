@@ -126,15 +126,27 @@ impl CmdShell {
         cmd.stdin(std::process::Stdio::null())
            .stdout(std::process::Stdio::null())
            .stderr(std::process::Stdio::null());
+        if let Some(pid) = self.start_in_background(cmd, slot, name) {
+            self.writeln(&format!("The Process Identification Number is {pid}."));
+        }
+    }
+
+    /// Start `cmd` and go on without waiting: it counts as one of the
+    /// shell's children (the session's limits hold) until a reaper thread
+    /// sees it end. Its process id, or `None` with an error written.
+    fn start_in_background(&self, mut cmd: std::process::Command, slot: crate::loader::inherit::Admission,
+                           name: &str) -> Option<u32> {
         let pid = slot.pid;
         let spawned = cmd.spawn();
         crate::loader::inherit::child_started(&self.shared, slot, spawned.as_ref().ok().map(std::process::Child::id));
         let child = match spawned {
             Ok(child) => child,
-            Err(e) => return self.error(&format!("Failed to start {name}: {e}")),
+            Err(e) => {
+                self.error(&format!("Failed to start {name}: {e}"));
+                return None;
+            }
         };
         self.shared.process_mgr.lock_or_recover().insert_child(pid, child);
-        // Reap it when it ends, so it stops counting as a child.
         let shared = Arc::clone(&self.shared);
         std::thread::spawn(move || loop {
             std::thread::sleep(DETACHED_POLL);
@@ -145,7 +157,84 @@ impl CmdShell {
                 return;
             }
         });
-        self.writeln(&format!("The Process Identification Number is {pid}."));
+        Some(pid)
+    }
+
+    /// `START ["title"] [/C | /K | /N] [/F | /B] [/FS | /WIN | /PM] [/MAX | /MIN] [/I] [/PGM]
+    /// [command]`: start a session of its own and go on (ADR-0082).
+    ///
+    /// - No command, `/K command`: a new CMD.EXE session (that stays).
+    /// - `/C command`, or a command that is not a program: CMD.EXE runs it
+    ///   and the session ends.
+    /// - A program (or `/N`, `/PGM`): the program itself.
+    /// - `/FS` full screen, `/WIN` (default) in a window on the desktop;
+    ///   the session keeps the console, so on a terminal it opens its own
+    ///   window. `/I`: the shell's environment, else Warpine's default.
+    /// - `/F`, `/B`, `/MAX`, `/MIN`, `/PM` and the title are accepted and
+    ///   not acted on (unverified).
+    pub(super) fn cmd_start(&self, rest: &str) {
+        let mut rest = rest.trim_start();
+        let mut keep = None; // Some(true) /K, Some(false) /C
+        let (mut direct, mut inherit_env, mut fullscreen) = (false, false, false);
+        loop {
+            if rest.starts_with('"') {
+                // The title.
+                match rest[1..].find('"') {
+                    Some(end) => rest = rest[end + 2..].trim_start(),
+                    None => rest = "",
+                }
+                continue;
+            }
+            let (word, after) = first_word(rest);
+            if !word.starts_with('/') { break; }
+            match word.to_ascii_uppercase().as_str() {
+                "/C" => keep = Some(false),
+                "/K" => keep = Some(true),
+                "/N" | "/PGM" => direct = true,
+                "/I" => inherit_env = true,
+                "/FS" => fullscreen = true,
+                "/WIN" => fullscreen = false,
+                "/F" | "/B" | "/MAX" | "/MIN" | "/PM" => {}
+                "/DOS" => return self.error("DOS sessions are not supported."),
+                _ => return self.error(&format!("Invalid switch: {word}")),
+            }
+            rest = after;
+        }
+        let command = rest.trim();
+        let (word, _) = first_word(command);
+        let program = if command.is_empty() || keep.is_some() { None } else {
+            match self.find_program(word) {
+                Some((path, false)) => Some(path),
+                _ if direct => return self.error(&format!("'{word}' is not recognized as a program.")),
+                _ => None,
+            }
+        };
+        let tokens = tokenize(command);
+        let (path, args): (std::path::PathBuf, Vec<String>) = match program {
+            Some(path) => (path, tokens.iter().skip(1).map(|t| t.to_string()).collect()),
+            None => {
+                // CMD.EXE (the built-in, by name) with /C or /K.
+                let mut args = Vec::new();
+                if !command.is_empty() {
+                    args.push(if keep == Some(true) { "/K".into() } else { "/C".into() });
+                    args.push(command.to_string());
+                }
+                (std::path::PathBuf::from("CMD.EXE"), args)
+            }
+        };
+        let arg_refs: Vec<&str> = args.iter().map(String::as_str).collect();
+        let Some((mut cmd, slot)) = self.child_command(&path, &arg_refs) else { return };
+        if !inherit_env {
+            let codepage = self.shared.active_codepage.load(Ordering::Relaxed);
+            let default = parse_env(DEFAULT_SHELL_ENV);
+            cmd.env(crate::loader::inherit::ENV_ENV, crate::loader::inherit::escape(&env_block(&default, codepage)));
+        }
+        // A session of its own: no GUI script of this one's (tests), the
+        // console as it is, no input of this shell's.
+        cmd.env_remove(crate::gui::gui_script::SCRIPT_ENV);
+        cmd.env(crate::gui::vio_window::VIO_ENV, if fullscreen { "fullscreen" } else { "window" });
+        cmd.stdin(std::process::Stdio::null());
+        let _ = self.start_in_background(cmd, slot, word);
     }
 
     /// Spawn `warpine <prog_path> [args...]` as a child process and relay its
@@ -159,12 +248,22 @@ impl CmdShell {
            .stderr(std::process::Stdio::inherit());
 
         // The bytes of a pipe or `< file` go to the program's standard
-        // input, which then ends; they are used up either way.
-        let input = match &mut *self.input_source.borrow_mut() {
-            InputSource::Data(data) => Some(Vec::from(std::mem::take(data))),
+        // input, which then ends; they are used up either way. The output
+        // of a program before it in the pipeline is its input directly.
+        let input = match std::mem::replace(&mut *self.input_source.borrow_mut(), InputSource::Kbd) {
+            InputSource::Data(data) => {
+                cmd.stdin(std::process::Stdio::piped());
+                Some(Vec::from(data))
+            }
+            InputSource::Pipe(pipe) => {
+                cmd.stdin(std::process::Stdio::from(pipe));
+                None
+            }
             InputSource::Kbd => None,
         };
-        if input.is_some() { cmd.stdin(std::process::Stdio::piped()); }
+        // Feeding the next command: it reads this program's output while
+        // this one runs (ADR-0082).
+        let feeds_next = self.feeds_next.get();
 
         let to_vio = matches!(&*self.output_sink.borrow(), OutputSink::Vio);
 
@@ -184,6 +283,13 @@ impl CmdShell {
                     // the pipe; what is left is dropped.
                     let _ = stdin.write_all(&data);
                 }));
+                if feeds_next {
+                    // The pipeline waits for it at its end; the feeder ends
+                    // with the program's input.
+                    *self.piped_out.borrow_mut() = child.stdout.take();
+                    self.running.borrow_mut().push(child);
+                    return 0;
+                }
                 let status = if to_vio {
                     // Real-time relay to VioManager.
                     let shared_relay = Arc::clone(&self.shared);

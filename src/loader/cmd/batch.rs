@@ -215,9 +215,10 @@ impl CmdShell {
     /// `PAUSE`: wait for a key (a byte of a pipe or file read as input).
     pub(super) fn cmd_pause(&self) {
         self.writeln(PAUSE_PROMPT);
+        self.drain_pipe_input();
         let from_data = match &mut *self.input_source.borrow_mut() {
             InputSource::Data(data) => { data.pop_front(); true }
-            InputSource::Kbd => false,
+            InputSource::Kbd | InputSource::Pipe(_) => false,
         };
         if !from_data { let _ = self.read_key(); }
     }
@@ -263,12 +264,18 @@ impl CmdShell {
             if items.len() >= MAX_FOR_ITEMS { items.truncate(MAX_FOR_ITEMS); break; }
         }
         let var = format!("%{}", cmd.var);
+        // Several commands: their output is held for a pipe, not piped by
+        // each program in turn.
+        let outer_feeds = self.feeds_next.replace(false);
+        let mut exit = None;
         for item in items {
             if self.shared.exit_requested.load(Ordering::Relaxed) || self.jumped() { break; }
             let command = cmd.command.replace(&var, &item);
-            if let Some(code) = self.execute_segment(&command) { return Some(code); }
+            exit = self.execute_segment(&command);
+            if exit.is_some() { break; }
         }
-        None
+        self.feeds_next.set(outer_feeds);
+        exit
     }
 
     /// The files `pattern` matches, in the directory's order, each with

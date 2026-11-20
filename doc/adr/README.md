@@ -87,3 +87,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0079](0079-cmd-exe-file-commands.md) | The built-in CMD.EXE's COPY, REN and MOVE; a safe `DosEditName`, `DosCopy` never onto itself, names unique without regard to case | Accepted | 2026-11-20 |
 | [0080](0080-cmd-exe-prompt-path-detach.md) | The built-in CMD.EXE's PROMPT (`$` codes), PATH and DETACH; executables need valid entry and stack objects | Accepted | 2026-11-20 |
 | [0081](0081-rexx-in-the-built-in-cmd-exe.md) | REXX in the built-in CMD.EXE: our own interpreter in Rust, from IBM's public docs, Cowlishaw and ANSI; phases R1–R3 | Accepted (planned) | 2026-11-20 |
+| [0082](0082-cmd-exe-groups-concurrent-pipes-start.md) | The built-in CMD.EXE's groups, pipeline stages running at the same time, START; console write errors reach the program | Accepted | 2026-11-20 |

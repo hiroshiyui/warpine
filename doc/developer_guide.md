@@ -1230,7 +1230,7 @@ The way through, in `execute_line`:
 3. **Commands** (`split_chain`), each run or skipped by `last_rc`.
 4. **For each command,** `execute_pipeline`:
    - **Redirections.** It opens the redirections and swaps them into `output_sink` / `input_source`, keeping what was there to put back afterwards.
-   - **The stages, one after another.** A non-last stage writes into an `OutputSink::Buffer`, capped at `MAX_CAPTURED_OUTPUT`, which becomes the next stage's `InputSource::Data`.
+   - **The stages.** A non-last stage runs with `feeds_next` set and an `OutputSink::Buffer`: a program it starts writes into a host pipe (`piped_out`) and is kept in `running`, and the next stage gets `InputSource::Pipe`; a built-in's output (capped at `MAX_CAPTURED_OUTPUT`) becomes `InputSource::Data`. After the last stage the input is put back, which closes an unread pipe, and the `running` programs are waited for (ADR-0082). A stage that is a group `( … )` runs its inside through `execute_commands`, with `feeds_next` off.
 5. **Each stage** goes to `execute_segment`:
    - **A built-in** sets `failed` through `error()`, and `last_rc` becomes 0 or `RC_BUILTIN_FAILED`.
    - **A program** (`spawn_external`) gets any `InputSource::Data` as its piped standard input, written on a thread of its own, and its exit code becomes `last_rc`.

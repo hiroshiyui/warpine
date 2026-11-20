@@ -88,6 +88,9 @@ enum InputSource {
     Kbd,
     /// The bytes of a pipe or of a `< file` redirection, unread.
     Data(VecDeque<u8>),
+    /// The output of the program before this one in a pipeline, which
+    /// still runs: the next program reads it as it comes (ADR-0082).
+    Pipe(std::process::ChildStdout),
 }
 
 // ── CmdShell ─────────────────────────────────────────────────────────────────
@@ -113,6 +116,40 @@ struct CmdShell {
     batch: RefCell<Option<batch::Batch>>,
     /// How many scripts deep this shell is.
     depth: usize,
+    /// How many groups `( … )` deep the command running now is.
+    depth_of_groups: Cell<usize>,
+    /// The command running now feeds the next one in its pipeline: a
+    /// program it starts writes into a pipe instead of the output.
+    feeds_next: Cell<bool>,
+    /// That pipe's reading end, for the next command.
+    piped_out: RefCell<Option<std::process::ChildStdout>>,
+    /// The programs of the running pipelines that were started to feed
+    /// the next command and are not waited for yet.
+    running: RefCell<Vec<std::process::Child>>,
+}
+
+/// The most groups `( … )` inside one another: each is a nested call on
+/// the host's stack.
+const MAX_GROUP_DEPTH: usize = 64;
+
+/// The inside of `line` when all of it is one group `( … )` (the first
+/// parenthesis closing at the end, outside quotes).
+fn group_inside(line: &str) -> Option<&str> {
+    let line = line.trim();
+    let inner = line.strip_prefix('(')?.strip_suffix(')')?;
+    let (mut depth, mut in_quote) = (1usize, false);
+    for c in inner.chars() {
+        match c {
+            '"' => in_quote = !in_quote,
+            '(' if !in_quote => depth += 1,
+            ')' if !in_quote => {
+                depth -= 1;
+                if depth == 0 { return None; }
+            }
+            _ => {}
+        }
+    }
+    Some(inner)
 }
 
 /// Whether `line` is a `REM` remark (`REM`, `REM text`).
@@ -137,6 +174,10 @@ impl CmdShell {
             echo_on: Cell::new(true),
             batch: RefCell::new(None),
             depth: 0,
+            depth_of_groups: Cell::new(0),
+            feeds_next: Cell::new(false),
+            piped_out: RefCell::new(None),
+            running: RefCell::new(Vec::new()),
         }
     }
 
@@ -219,6 +260,21 @@ impl CmdShell {
         self.write_attr(b"\r\n", attr);
     }
 
+    /// A pipe from a program as input becomes its bytes (read to its end,
+    /// at most `MAX_CAPTURED_OUTPUT` kept), for a built-in that reads it.
+    fn drain_pipe_input(&self) {
+        let mut source = self.input_source.borrow_mut();
+        if !matches!(*source, InputSource::Pipe(_)) { return; }
+        let InputSource::Pipe(mut pipe) = std::mem::replace(&mut *source, InputSource::Kbd) else { return };
+        let mut data = Vec::new();
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = pipe.read(&mut buf) && n > 0 {
+            let room = MAX_CAPTURED_OUTPUT.saturating_sub(data.len());
+            data.extend_from_slice(&buf[..n.min(room)]);
+        }
+        *source = InputSource::Data(data.into());
+    }
+
     /// Report an error of the command running now: its message, and a
     /// return code of `RC_BUILTIN_FAILED` for a built-in.
     fn error(&self, msg: &str) {
@@ -265,7 +321,13 @@ impl CmdShell {
         // `REM` takes the rest of the line, `&` and `|` included.
         if line.is_empty() || line.starts_with(':') || is_remark(line) { return None; }
         let line = self.expand_line(line);
-        for (link, command) in split_chain(&line) {
+        self.execute_commands(&line)
+    }
+
+    /// Run an expanded command line: its commands joined by `&`, `&&` and
+    /// `||`, each a pipeline. A group `( … )` comes back here for its inside.
+    fn execute_commands(&mut self, line: &str) -> Option<u32> {
+        for (link, command) in split_chain(line) {
             // GOTO leaves the rest of its line.
             if self.jumped() { break; }
             let run = match link {
@@ -346,21 +408,30 @@ impl CmdShell {
 
         let n = segments.len();
         let mut result = None;
+        // A pipeline inside this one's command (a group) runs its own.
+        let outer_feeds = self.feeds_next.replace(false);
+        let first_running = self.running.borrow().len();
 
         for (i, segment) in segments.iter().enumerate() {
             let segment = segment.trim();
             if segment.is_empty() { continue; }
 
             if i < n - 1 {
-                // Non-last segment: capture output to buffer.
+                // Not the last: a program writes into a pipe the next
+                // command reads as it comes; a built-in's output is held.
                 let prev_sink = self.output_sink.replace(OutputSink::Buffer(Vec::new()));
+                self.feeds_next.set(true);
                 result = self.execute_segment(segment);
+                self.feeds_next.set(false);
                 let captured = match self.output_sink.replace(prev_sink) {
                     OutputSink::Buffer(v) => v,
                     _ => Vec::new(),
                 };
-                // The captured output is the next command's input.
-                let previous = self.input_source.replace(InputSource::Data(captured.into()));
+                let next = match self.piped_out.borrow_mut().take() {
+                    Some(pipe) => InputSource::Pipe(pipe),
+                    None => InputSource::Data(captured.into()),
+                };
+                let previous = self.input_source.replace(next);
                 saved_input.get_or_insert(previous);
             } else {
                 result = self.execute_segment(segment);
@@ -370,13 +441,32 @@ impl CmdShell {
         }
 
         if let Some(output) = saved_output { self.output_sink.replace(output); }
+        // Putting the input back closes a pipe nobody read to its end, so a
+        // program still writing into it gets an error, not a wait.
         if let Some(input) = saved_input { self.input_source.replace(input); }
+        self.piped_out.borrow_mut().take();
+        let started: Vec<_> = self.running.borrow_mut().drain(first_running..).collect();
+        for mut child in started { let _ = self.wait_child(&mut child); }
+        self.feeds_next.set(outer_feeds);
 
         result
     }
 
     /// Execute a single (non-pipeline) command segment.
     fn execute_segment(&mut self, line: &str) -> Option<u32> {
+        // A group: its inside is a command line of its own, already
+        // expanded; the group's redirections hold for all of it.
+        if let Some(inner) = group_inside(line) {
+            if self.depth_of_groups.get() >= MAX_GROUP_DEPTH {
+                self.error("Too many groups inside one another.");
+                self.last_rc.set(RC_BUILTIN_FAILED);
+                return None;
+            }
+            self.depth_of_groups.set(self.depth_of_groups.get() + 1);
+            let result = self.execute_commands(inner);
+            self.depth_of_groups.set(self.depth_of_groups.get() - 1);
+            return result;
+        }
         let tokens = tokenize(line);
         if tokens.is_empty() { return None; }
 
@@ -401,6 +491,7 @@ impl CmdShell {
             "PROMPT" => { self.cmd_prompt(raw); None }
             "PATH" => { self.cmd_path(raw); None }
             "DETACH" => { self.cmd_detach(&args); None }
+            "START" => { self.cmd_start(rest); None }
             // `ECHO.` writes an empty line, `ECHO.text` the text.
             _ if cmd.starts_with("ECHO.") => { self.writeln(&line.trim_start()["ECHO.".len()..]); None }
             "GOTO" => { self.cmd_goto(rest); None }
@@ -853,6 +944,45 @@ mod tests {
         }
         let text = buffered(&shell);
         assert!(text.contains("syntax") && text.contains("not recognized") && text.contains("not scripts"), "{text}");
+    }
+
+    /// A group runs its commands as one: its redirection holds for all of
+    /// them, `&&` / `||` look at its last command, and IF can run one.
+    #[test]
+    fn groups_run_as_one_command() {
+        let (loader, drive) = loader_with_drive_c();
+        let mut shell = CmdShell::new(Arc::clone(&loader.shared), Vec::new());
+        *shell.output_sink.borrow_mut() = OutputSink::Buffer(Vec::new());
+        shell.execute_line("(echo one & echo two) > G.TXT");
+        assert_eq!(std::fs::read_to_string(drive.path().join("G.TXT")).unwrap(), "one\r\ntwo\r\n");
+        shell.execute_line("(echo x & cd NOSUCH) && echo wrong || echo group-failed");
+        shell.execute_line("if a==a (echo then-1 & echo then-2)");
+        shell.execute_line("echo 100%% (kept) & (echo ((nested)))");
+        let text = buffered(&shell);
+        assert!(!text.contains("wrong") && text.contains("group-failed"), "{text}");
+        assert!(text.contains("then-1\r\nthen-2\r\n"), "{text}");
+        assert!(text.contains("100% (kept)\r\n((nested))\r\n"), "expanded once: {text}");
+        assert_eq!(group_inside("(a) & (b)"), None, "two groups, not one");
+        assert_eq!(group_inside(" (a (b)) "), Some("a (b)"));
+        assert_eq!(group_inside("(\")\")"), Some("\")\""));
+        let deep = format!("{}echo deep{}", "(".repeat(MAX_GROUP_DEPTH + 1), ")".repeat(MAX_GROUP_DEPTH + 1));
+        shell.execute_line(&deep);
+        assert!(buffered(&shell).contains("Too many groups"));
+    }
+
+    /// START refuses DOS sessions, unknown switches and a missing program
+    /// with /N; its title and the switches it accepts are skipped.
+    #[test]
+    fn start_refuses_what_it_cannot_start() {
+        let (loader, _drive) = loader_with_drive_c();
+        let mut shell = CmdShell::new(Arc::clone(&loader.shared), Vec::new());
+        *shell.output_sink.borrow_mut() = OutputSink::Buffer(Vec::new());
+        for line in ["START /DOS x", "START /Q", "START \"My title\" /F /MAX /N NOSUCH"] {
+            shell.execute_line(line);
+            assert_eq!(shell.last_rc.get(), RC_BUILTIN_FAILED, "{line}");
+        }
+        let text = buffered(&shell);
+        assert!(text.contains("DOS sessions") && text.contains("Invalid switch: /Q") && text.contains("'NOSUCH'"), "{text}");
     }
 
     /// `/C` ends the shell with the command's return code, or EXIT's.

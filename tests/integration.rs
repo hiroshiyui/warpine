@@ -752,6 +752,38 @@ fn test_cmd_script_path_detach_and_prompt() {
     assert_eq!(std::fs::read(&done).ok().as_deref(), Some(&b"cmd_tool: touched\r\n"[..]), "the detached program ran");
 }
 
+/// START begins sessions of their own and goes on: a program directly,
+/// and a command line through a new CMD.EXE (/C); each leaves a file
+/// (ADR-0082).
+#[test]
+fn test_cmd_start_begins_sessions() {
+    let Some((code, out, dir)) = run_cmd_headless(&["/C", "START \"one\" /N TOOL touch ONE.TXT & START /C TOOL touch TWO.TXT & echo started"], b"", |_| {}) else { return };
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("started"), "the shell went on:\n{out}");
+    let drive_c = dir.path().join("warpine/drive_c");
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let touched = |name: &str| std::fs::read(drive_c.join(name)).is_ok_and(|d| d == b"cmd_tool: touched\r\n");
+    while !(touched("ONE.TXT") && touched("TWO.TXT")) && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(touched("ONE.TXT"), "the program started directly");
+    assert!(touched("TWO.TXT"), "the command run by a new CMD.EXE");
+}
+
+/// Program stages of a pipeline run at the same time: a program writing
+/// without end into a pipe stops when the command after it is done with
+/// the pipe; three programs pass bytes through; a group feeds a program
+/// (ADR-0082).
+#[test]
+fn test_cmd_pipeline_stages_run_together() {
+    let line = "TOOL yes | echo stopped & TOOL cat < IN.TXT | TOOL cat | TOOL count & (echo a & echo bb) | TOOL count & TOOL yes | TOOL exit 4";
+    let Some((code, out, _dir)) = run_cmd_headless(&["/C", line], b"", |c| {
+        std::fs::write(c.join("IN.TXT"), b"12345\r\n").unwrap();
+    }) else { return };
+    assert_eq!(code, Some(4), "the last program's code:\n{out}");
+    assert_in_order(&out, &["stopped\r\n", "cmd_tool: count 7\r\n", "cmd_tool: count 7\r\n"]);
+}
+
 /// A script's lines are shown after the prompt while ECHO is on, as the
 /// shell runs them; `@` and ECHO OFF hide them (ADR-0078).
 #[test]

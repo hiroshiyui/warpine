@@ -29,7 +29,7 @@ They run natively under KVM.
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2079 unit tests (2036 warpine + 19 gen_api + 13 lx_link + 5 gen_arch + 6 gen_compat) + 178 integration tests
+cargo test                                 # 2082 unit tests (2039 warpine + 19 gen_api + 13 lx_link + 5 gen_arch + 6 gen_compat) + 180 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); afterwards `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change

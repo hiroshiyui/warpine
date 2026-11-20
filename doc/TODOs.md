@@ -211,14 +211,13 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 
 ## Console and multimedia
 
-- [ ] **The built-in CMD.EXE** (`cmd.rs`, `cmd/`; it replaces 4OS2, ADR-0075). Stage 2 grows it in slices; the foundations (return codes, `%name%`, `&` / `&&` / `||`, programs reading pipes and files, `PATH` search, inherited current directories; ADR-0077) batch control (ECHO, `%0`–`%9`, SHIFT, IF, FOR, GOTO, CALL, SETLOCAL, PAUSE; ADR-0078) the file commands (`COPY`, `REN`, `MOVE`; ADR-0079) and `PROMPT`, `PATH` and `DETACH` (ADR-0080) are done. Still to come:
-  - `START`, once several VIO sessions run on one desktop;
-  - grouping with parentheses; the stages of a pipeline running at the same time (they run one after another now);
+- [ ] **The built-in CMD.EXE** (`cmd.rs`, `cmd/`; it replaces 4OS2, ADR-0075). Stage 2 is done (ADR-0077–0080, 0082). Still open:
+  - START's sessions on the shared desktop, with the VIO-window item below (each opens a window of its own now);
   - which of OS/2's other `CMD.EXE` commands to add is decided case by case.
 - [ ] **VIO window**:
   - Font Size, Scroll, Help, Hide;
   - keyboard marking, and autoscroll while marking;
-  - several VIO sessions on one desktop (`DosStartSession`);
+  - several VIO sessions on one desktop (`DosStartSession`, the shell's START; each opens its own window now);
   - Advanced VIO (`VioCreatePS`, `VioAssociate`).
 - [ ] **MOUCALLS**:
   - `MouGetHotKey` / `MouSetHotKey`, `MouRegister` / `MouDeRegister`, `MouInitReal`, `MouGetThreshold` / `MouSetThreshold`;

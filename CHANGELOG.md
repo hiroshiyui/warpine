@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **Groups, concurrent pipelines and START in the built-in CMD.EXE** (ADR-0082), completing its Stage 2: `( … )` groups commands (one redirection, one return code; usable with IF and FOR); the programs of a pipeline run at the same time, each reading the one before through a host pipe; START begins a session of its own (`/C`, `/K`, `/N`, `/FS`, `/WIN`, `/I`). `samples/cmd_tool` gains `yes`.
 - **REXX plan** — ADR-0081 records Stage 3: REXX in the built-in CMD.EXE as our own interpreter in Rust, from IBM's public REXX docs, Cowlishaw and ANSI, in phases R1–R3.
 - **PROMPT, PATH and DETACH in the built-in CMD.EXE** (Stage 2, slice 2d; ADR-0080): PROMPT with OS/2's `$` codes (`$P$G`, `$E` for ANSI colours, `$D` / `$T` from the session clock, `$R` the last return code, …); the PATH command; DETACH to run a program in the background without a console, counted under the session's limits until it ends. Sample: `samples/cmd_scripts/session.cmd`; `samples/cmd_tool` gains `touch`.
 - **COPY, REN and MOVE in the built-in CMD.EXE** (Stage 2, slice 2c; ADR-0079), in OS/2's syntax and through the VFS: COPY with wildcards, wildcard targets (`COPY *.TXT *.BAK`), joining with `+` and across drives; REN by wildcards in place; MOVE of files or a directory on one drive. Neither REN nor MOVE replaces an existing name. Sample: `samples/cmd_scripts/files.cmd`.
@@ -31,6 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Shell redirection stays inside the drives** — the built-in `CMD.EXE` opened a redirection target that did not exist yet (`> file`) through the guest's path string as a host path, so a guest could write host files outside its drives through `CMD.EXE /C … > path`; it now creates the file through the VFS, and a path outside the drives is an error. Creating any new file through a dangling symbolic link, which would place it at the link's target, is refused too, `DosOpen` included (ADR-0075).
 
 ### Fixed
+- **Writes into a closed pipe looked successful** — a guest's `DosWrite` to its standard output, when that was a host pipe or file, ignored write errors, so a program piped into a reader that stopped early wrote forever; it now gets `ERROR_BROKEN_PIPE` (ADR-0082).
 - **A malformed executable crashed Warpine** — an entry or stack object number of 0 made the loader index its object table at `0 - 1`; it is now refused with a load error (ADR-0080).
 - **A file copied onto itself was emptied** — `DosCopy("A.TXT", "a.txt")` truncated the file; it is now `ERROR_ACCESS_DENIED`. `DosCopy` also copies to another drive now.
 - **Names differing only in case** — creating, copying or renaming onto a name that exists in another case made a second file; it now reaches the existing entry, so a dangling link of another case is refused as well.

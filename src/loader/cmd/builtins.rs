@@ -49,6 +49,7 @@ impl CmdShell {
         self.writeln("  PROMPT [text]      Set the prompt ($P path, $G >, $E ESC, $_ new line ...)");
         self.writeln("  PATH [dirs | ;]    Show, set or clear the program search path");
         self.writeln("  DETACH program     Run a program in the background, without a console");
+        self.writeln("  START [/C|/K] [/FS|/WIN] [/I] [command]  Start a session of its own");
         self.writeln("  EXIT [code]        Exit shell");
         self.writeln("  <program>          Run OS/2 executable");
     }

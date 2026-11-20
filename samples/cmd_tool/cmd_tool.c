@@ -11,6 +11,8 @@
  *   cwd       prints "cmd_tool: cwd X:\DIR": the current drive and its
  *             current directory, from DosQueryCurrentDisk and
  *             DosQueryCurrentDir
+ *   yes       writes "y" lines to standard output until a write fails (the
+ *             reader closed the pipe) or YES_MAX_LINES were written
  *   touch NAME creates the file NAME (DosOpen, replacing it) holding
  *             "cmd_tool: touched\r\n"; it writes nothing to standard
  *             output, so it can run detached
@@ -122,6 +124,18 @@ static int do_exec( const char *dir )
     return (int)res.codeResult;
 }
 
+/* Enough to fill any pipe many times over; a bound, not a goal. */
+#define YES_MAX_LINES 10000000UL
+
+static int do_yes( void )
+{
+    ULONG i, written;
+    for( i = 0; i < YES_MAX_LINES; i++ ) {
+        if( DosWrite( STDOUT, "y\r\n", 3, &written ) != NO_ERROR || written != 3 ) return 0;
+    }
+    return 1;
+}
+
 static int do_touch( const char *name )
 {
     static const char text[] = "cmd_tool: touched\r\n";
@@ -144,6 +158,7 @@ int main( int argc, char **argv )
     if( strcmp( mode, "cwd" ) == 0 ) return do_cwd();
     if( strcmp( mode, "exec" ) == 0 && argc >= 3 ) return do_exec( argv[2] );
     if( strcmp( mode, "touch" ) == 0 && argc >= 3 ) return do_touch( argv[2] );
+    if( strcmp( mode, "yes" ) == 0 ) return do_yes();
     write_str( "cmd_tool: usage\r\n" );
     return 2;
 }

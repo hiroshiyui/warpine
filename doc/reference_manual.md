@@ -210,6 +210,7 @@ The prompt shows the current drive and directory: `[C:\path] `.
 | `REN` | `REN <old> <new>` | Rename files (wildcards: `REN *.LOG *.OLD`) or a directory in place; `new` is a name, not a path. An existing name is not replaced (a change of case is allowed). Also `RENAME`. |
 | `PROMPT` | `PROMPT [text]` | Set the prompt's template; `PROMPT` alone restores the default `[$P] `. Codes (letters without case): `$P` drive and directory, `$N` drive, `$G` `>`, `$L` `<`, `$Q` `=`, `$A` `&`, `$B` `\|`, `$C` `(`, `$F` `)`, `$S` blank, `$_` new line, `$$` `$`, `$H` backspace, `$E` ESC (ANSI colours), `$D` date, `$T` time, `$V` version, `$R` last return code. Date and time come from the session clock. |
 | `PATH` | `PATH [dirs \| ;]` | Show the program search path (`No Path.` when unset), set it, or clear it with `;`. |
+| `START` | `START ["title"] [/C\|/K\|/N] [/FS\|/WIN] [/I] [command]` | Start a session of its own and go on: no command or `/K` a new CMD.EXE that stays; `/C`, or a command that is not a program, CMD.EXE runs it and ends; a program (or `/N`) runs directly. `/FS` full screen, `/WIN` a window (each session opens its own window for now); `/I` the shell's environment, else the default. `/F` `/B` `/MAX` `/MIN` `/PM` and the title are accepted. |
 | `DETACH` | `DETACH <program> [args]` | Run a program in the background without a console (no input, output discarded) and write its process id; it counts as the shell's child until it ends. Not for scripts. |
 | `MOVE` | `MOVE <src> [dst]` | Move files (wildcards allowed) or one directory into a directory (the current one without `dst`), or one file to a new name, on one drive. An existing name is not replaced. |
 | `HELP` | `HELP` | List available commands. |
@@ -281,6 +282,7 @@ The shell follows OS/2's CMD.EXE syntax (ADR-0077). A line is processed in this 
 
    They run left to right, each looking at the return code the line has so far.
 4. **Escapes.** `^` outside quotes takes the next character as it is (`echo a^&b` prints `a&b`).
+5. **Groups.** `( … )` makes one command of several: `(echo a & echo b) > F.TXT`, `x && (y & z)`, `IF a==a (echo 1 & echo 2)`. Inside, `&`, `|` and redirections belong to the group; the group's return code is its last command's. Groups nest up to 64 deep.
 
 **Return codes.** Every command leaves one:
 - a program, its exit code (0–255);
@@ -300,7 +302,7 @@ The shell follows OS/2's CMD.EXE syntax (ADR-0077). A line is processed in this 
 
 - **Inside the drives.** A redirection target is an OS/2 path on a mounted drive, resolved through the VFS like any file a program opens. A path that maps to no drive (an unmounted drive, `..` above the root, a host path) is an error ("not on a drive"), and the file is not created through a dangling symbolic link (ADR-0075).
 - **Programs read pipes and files.** A program reads the pipe or `< file` before it as its standard input, byte for byte, until it ends. A program with neither shares the shell's input.
-- **One command at a time.** The commands of a pipeline run one after another, not at the same time, and the shell holds at most 16 MiB of a command's output for the next one.
+- **At the same time.** Programs in a pipeline run at the same time, each reading the one before through a pipe; a program still writing when the command after it is done gets a broken pipe and ends. A built-in's or a script's output is held for the next command (at most 16 MiB). A program's return code is the last command's.
 - **For one command only.** A redirection holds for its command; afterwards output and input go back to where they were.
 
 ---

@@ -82,8 +82,8 @@ pub(super) enum Chain {
     Or,
 }
 
-/// Split a command line at the `&`, `&&` and `||` outside quotes and not
-/// escaped by `^` (a single `|` is a pipe and stays). Each command is
+/// Split a command line at the `&`, `&&` and `||` outside quotes and
+/// parentheses and not escaped by `^` (a single `|` is a pipe and stays). Each command is
 /// trimmed; empty ones are dropped. Commands run left to right, each
 /// looking at the return code the line has so far.
 pub(super) fn split_chain(line: &str) -> Vec<(Chain, String)> {
@@ -91,6 +91,7 @@ pub(super) fn split_chain(line: &str) -> Vec<(Chain, String)> {
     let mut link = Chain::Then;
     let mut current = String::new();
     let mut in_quote = false;
+    let mut depth = 0usize;
     let mut chars = line.chars().peekable();
     let mut finish = |link: Chain, current: &mut String| {
         let command = current.trim();
@@ -104,6 +105,9 @@ pub(super) fn split_chain(line: &str) -> Vec<(Chain, String)> {
                 current.push(ch);
                 if let Some(next) = chars.next() { current.push(next); }
             }
+            '(' if !in_quote => { depth += 1; current.push(ch); }
+            ')' if !in_quote => { depth = depth.saturating_sub(1); current.push(ch); }
+            _ if depth > 0 => current.push(ch),
             '&' if !in_quote => {
                 finish(link, &mut current);
                 link = if chars.next_if_eq(&'&').is_some() { Chain::And } else { Chain::Then };
@@ -127,6 +131,8 @@ pub fn parse_command(line: &str) -> ParsedCommand {
 
     let mut current = String::new();
     let mut in_quote = false;
+    // Inside parentheses `|`, `<` and `>` belong to the group.
+    let mut depth = 0usize;
     let chars: Vec<char> = line.chars().collect();
     let mut i = 0;
 
@@ -138,13 +144,17 @@ pub fn parse_command(line: &str) -> ParsedCommand {
             i += 1;
             continue;
         }
-        // `^` outside quotes: the next character is taken as it is.
+        // `^` outside quotes: the next character is taken as it is (in a
+        // group, it stays for the group's own parsing).
         if ch == ESCAPE_CHAR && !in_quote && i + 1 < chars.len() {
+            if depth > 0 { current.push(ch); }
             current.push(chars[i + 1]);
             i += 2;
             continue;
         }
-        if in_quote {
+        if !in_quote && ch == '(' { depth += 1; }
+        if !in_quote && ch == ')' { depth = depth.saturating_sub(1); current.push(ch); i += 1; continue; }
+        if in_quote || depth > 0 {
             current.push(ch);
             i += 1;
             continue;
@@ -337,6 +347,19 @@ mod tests {
         for bad in ["", "%f in (a) echo", "f in (a) do x", "%ff in (a) do x", "%1 in (a) do x", "%f on (a) do x", "%f in a do x", "%f in (a) do"] {
             assert_eq!(parse_for(bad), None, "{bad:?}");
         }
+    }
+
+    /// Parentheses group commands: `&`, `|` and redirections inside them
+    /// belong to the group.
+    #[test]
+    fn parentheses_group_commands() {
+        assert_eq!(split_chain("(a & b) && c"), want(&[(Chain::Then, "(a & b)"), (Chain::And, "c")]));
+        assert_eq!(split_chain("x || (a && (b & c))"), want(&[(Chain::Then, "x"), (Chain::Or, "(a && (b & c))")]));
+        let p = parse_command("(echo a > in.txt & ver | find x) > out.txt");
+        assert_eq!(p.segments, vec!["(echo a > in.txt & ver | find x)"]);
+        assert_eq!(p.stdout_redir, Some(("out.txt".to_string(), false)));
+        assert_eq!(parse_command("(echo a^&b) | more").segments, vec!["(echo a^&b)", "more"], "^ kept for the group");
+        assert_eq!(split_chain("echo a) & echo b"), want(&[(Chain::Then, "echo a)"), (Chain::Then, "echo b")]), "a lone ) is text");
     }
 
     /// `^` takes the next character as it is, outside quotes only.
