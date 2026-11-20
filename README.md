@@ -240,6 +240,8 @@ samples/               OS/2 sample applications and build scripts
   cmd_test/            test.cmd: built-in CMD.EXE commands, redirection and pipes
   rust_hello/          Rust guest binary: "Hello from Rust on Warpine!" (Phase C)
   c_hello/             A C program from GCC or clang, linked by lx-link
+  c_sdk_test/          A C program built with the SDK (os2.h and the C runtime) by GCC or clang
+sdk/                   The C SDK for GCC and clang: os2.h, a small C runtime, os2.mk
 crates/                Standalone guest crates (NOT part of the host workspace)
   warpine-os2-sys/     Raw #![no_std] OS/2 API bindings (extern "C" declarations)
   warpine-os2-rt/      Runtime: _start entry, panic handler, global allocator
@@ -339,6 +341,12 @@ make -C samples/c_hello            # GCC; or: make -C samples/c_hello CC=clang
 cargo run -- samples/c_hello/c_hello.exe
 ```
 
+With the SDK (ADR-0096), a C program includes `<os2.h>` and the usual C headers, and links with the SDK's start-up code and runtime; `sdk/os2.mk` gives its Makefile the flags:
+```bash
+make -C samples/c_sdk_test         # builds sdk/build/gcc/ first; or CC=clang
+cargo run -- samples/c_sdk_test/c_sdk_test.exe alpha '"beta gamma"'
+```
+
 ### 7. API compatibility report
 ```bash
 cargo run -- --compat
@@ -364,8 +372,8 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 2189 unit tests (no KVM required)
-cargo test --test integration     # 182 end-to-end tests (requires /dev/kvm)
+cargo test                        # 2193 unit tests (no KVM required)
+cargo test --test integration     # 202 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
 

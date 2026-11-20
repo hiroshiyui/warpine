@@ -2122,7 +2122,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the CMD.EXE / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (2189: 2138 warpine + 19 `gen_api` + 21 `lx_link` + 5 `gen_arch` + 6 `gen_compat`) include, among others:
+The unit tests (2193: 2138 warpine + 23 `gen_api` + 21 `lx_link` + 5 `gen_arch` + 6 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2426,7 +2426,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 2189 unit tests (2138 warpine + 19 gen_api + 21 lx_link + 5 gen_arch + 6 gen_compat), 201 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 2193 unit tests (2138 warpine + 23 gen_api + 21 lx_link + 5 gen_arch + 6 gen_compat), 202 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
@@ -2444,6 +2444,8 @@ Warpine provides a complete toolchain for writing OS/2 guest programs in Rust wi
 - `gen-trace` — emit replacement Rust source for `ordinal_to_name()` + `module_for_ordinal()` (pipe to a file then paste into `api_trace.rs`)
 - `gen-def` — re-emit a canonically sorted `os2api.def`
 - `validate-doc` — cross-check `os2api.def` against `doc/os2_ordinals.md` (Open Watcom `lib386/os2/os2386.lib` snapshot); reports confirmed ordinals, 16-bit alias pairs auto-detected by uppercase+strip-"16" normalisation, entries only in def, name differences acknowledged by a `# NOTE:` on the def line (naming conventions the normaliser cannot detect, e.g. DOSCALLS 75 `DosQueryFileMode16` / `DOS16QFILEMODE`; listed with the note, not counted as mismatches), and the remaining name mismatches to investigate; it covers DOSCALLS, QUECALLS, KBDCALLS, VIOCALLS, PMGPI, PMWIN, SESMGR, NLS, MOUCALLS, PMSHAPI, HELPMGR, PMSPL and PMCTLS (the snapshot has no PMCTLS section: its def lines carry a `# NOTE:` naming `os2386.lib` as the source, and a def entry missing from the snapshot with a note is listed as acknowledged rather than as "only in os2api.def")
+
+- `check-headers` — check the C SDK's headers (`sdk/include/os2/*.h`, ADR-0096): every call they declare is in `os2api.def`, the Pascal macro `OS2_PASCAL_API` is used exactly for VIOCALLS / KBDCALLS / MOUCALLS, and every `ERROR_*` they define equals Warpine's constant of that name; it also counts the def's Control Program and subsystem entries not declared yet
 
 Run `cargo run --bin gen_api -- check` to verify consistency after any ordinal change. Run `cargo run --bin gen_api -- validate-doc` to cross-reference against the OS/2 ordinal reference.
 
@@ -2464,6 +2466,31 @@ The test `layer_map_matches_src_and_the_committed_diagram` runs the validation a
   - `LinkerState::build` lays out code at `0x10000`, data on the next 64 KB boundary and the stack after it, inside the program area. It also applies symbol precedence, merges commons, and defines `__{preinit,init,fini}_array_{start,end}`.
   - `lx_writer::write_lx` applies the relocations, writes LX fixups for absolute ones and import fixups for OS/2 APIs (from `targets/os2api.def`, embedded as a fallback), and fails on undefined symbols.
 - **Relocations:** `R_386_32`, `R_386_PC32` and `R_386_PLT32` only; GOT relocations fail with "compile with -fno-pic".
+
+**`sdk/`** — the C SDK for GCC and clang (ADR-0096).
+- **Headers:**
+  - `include/os2.h` picks parts by `INCL_*`;
+  - `os2/os2def.h` has the types and conventions (`APIENTRY` is cdecl);
+  - `os2/dos.h` has the Dos* and Que* calls, their structures and flags;
+  - `os2/errors.h` has the `ERROR_*` codes;
+  - `os2/sub.h` has VIO, KBD and MOU.
+- **Pascal calls:** each subsystem call is one `OS2_PASCAL_API(ret, Name, (params), (reversed params), (reversed args))` line. It declares the import `_os2p_Name` (stdcall, the arguments reversed and widened, linked as `Name`) and an always-inline `Name` in the documented order, linked as `_os2i_Name` so the two never share a symbol (clang would otherwise call the wrapper as the import).
+- **The runtime** (`libc/`):
+  - `crt0.c`: `argv` / `envp`, the init arrays, `exit(main(...))`;
+  - `stdlib.c`: `exit`, `atexit`, `getenv`, conversions, `qsort`, the runtime's lock and `errno`;
+  - `malloc.c`: first-fit, 16-byte aligned, arenas from `DosAllocMem`;
+  - `stdio.c`: streams on OS/2 handles, writes straight through;
+  - `printf.c`: no floating point;
+  - `string.c`;
+  - `divdi3.c`: 64-bit division.
+- **Building:** `sdk/Makefile` builds `build/<compiler>/crt0.o` and `libos2c.a`. GCC builds the runtime with `-fno-tree-loop-distribute-patterns`, so `memset` never becomes a call to itself.
+- **`os2.mk`:** a program includes it for `OS2_CFLAGS`, `OS2_CRT0`, `OS2_LIBC` and `LX_LINK`. The flags keep the host's headers out (`-nostdinc`, then the SDK's and the compiler's own) and tell each compiler the stack is only 4-byte aligned (`-mincoming-stack-boundary=2`, `-mstack-alignment=4`).
+- **The check:** `gen_api check-headers` (and its unit test) checks:
+  - every call the headers declare is in `targets/os2api.def`;
+  - Pascal is used exactly for VIOCALLS / KBDCALLS / MOUCALLS;
+  - every `ERROR_*` equals Warpine's constant.
+
+  A new declaration is a line in the right header plus, if the call is new, its def entry.
 
 **`crates/warpine-os2-sys`** — `#![no_std]` raw OS/2 API bindings. DOSCALLS use `extern "C"` (caller-cleanup). VIOCALLS and KBDCALLS use `extern "stdcall"` (callee-cleanup) with **reversed argument order** to compensate for the OS/2 Pascal calling convention (which pushes args left-to-right, placing the last arg at ESP+4). The reversed declaration causes Rust's right-to-left stdcall push to produce the same stack layout.
 

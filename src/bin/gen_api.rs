@@ -14,6 +14,7 @@
 //   check       Validate os2api.def and detect drift against api_trace.rs
 //   gen-trace   Emit Rust source for ordinal_to_name() + module_for_ordinal()
 //   gen-def     Re-emit a canonically sorted os2api.def
+//   check-headers  Check the SDK's C headers (sdk/include) against os2api.def
 
 use std::collections::HashMap;
 use std::fmt::Write as FmtWrite;
@@ -851,6 +852,184 @@ fn cmd_gen_def(entries: &[OrdEntry]) {
     }
 }
 
+// ── SDK header check (ADR-0096) ──────────────────────────────────────────────
+//
+// The C headers in sdk/include/os2/ declare OS/2 calls for GCC and clang;
+// lx-link resolves each one through os2api.def. `check-headers` keeps the
+// two in step: every declared call must be in the def, under the right
+// convention (the Pascal subsystems VIOCALLS / KBDCALLS / MOUCALLS through
+// OS2_PASCAL_API, everything else APIENTRY), and every ERROR_* code the
+// headers define must equal Warpine's own constant of that name.
+
+/// The modules whose calls use the Pascal convention (callee cleans up).
+const PASCAL_MODULES: &[&str] = &["VIOCALLS", "KBDCALLS", "MOUCALLS"];
+
+/// One call an SDK header declares.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeaderDecl {
+    name: String,
+    /// Declared through `OS2_PASCAL_API` (else `APIENTRY`).
+    pascal: bool,
+    /// `file:line`, for messages.
+    origin: String,
+}
+
+/// The identifier at the start of `s` (after leading blanks).
+fn leading_ident(s: &str) -> &str {
+    let s = s.trim_start();
+    let end = s.find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).unwrap_or(s.len());
+    &s[..end]
+}
+
+/// The calls a header declares: `ret APIENTRY Name(` and
+/// `OS2_PASCAL_API(ret, Name, ...`. Preprocessor lines, typedefs (function
+/// pointer types) and comments are not declarations.
+fn parse_header_decls(text: &str, file: &str) -> Vec<HeaderDecl> {
+    let mut decls = Vec::new();
+    for (idx, raw) in text.lines().enumerate() {
+        let line = raw.trim_start();
+        if line.starts_with('#') || line.starts_with("typedef") || line.starts_with("/*") || line.starts_with('*') {
+            continue;
+        }
+        let origin = format!("{file}:{}", idx + 1);
+        if let Some(rest) = line.strip_prefix("OS2_PASCAL_API(") {
+            if let Some((_, after)) = rest.split_once(',') {
+                let name = leading_ident(after);
+                if !name.is_empty() {
+                    decls.push(HeaderDecl { name: name.to_owned(), pascal: true, origin });
+                }
+            }
+        } else if let Some((_, after)) = line.split_once("APIENTRY ") {
+            let name = leading_ident(after);
+            if !name.is_empty() && after.trim_start()[name.len()..].trim_start().starts_with('(') {
+                decls.push(HeaderDecl { name: name.to_owned(), pascal: false, origin });
+            }
+        }
+    }
+    decls
+}
+
+/// A C or Rust integer literal (decimal or 0x hex, `_` and a `U` / `L`
+/// suffix allowed).
+fn parse_int_literal(s: &str) -> Option<u32> {
+    let s: String = s.trim().trim_end_matches(['u', 'U', 'l', 'L']).chars().filter(|c| *c != '_').collect();
+    match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        Some(hex) => u32::from_str_radix(hex, 16).ok(),
+        None => s.parse().ok(),
+    }
+}
+
+/// `#define ERROR_X n` (and `NO_ERROR`) in a header.
+fn parse_header_errors(text: &str) -> Vec<(String, u32)> {
+    text.lines().filter_map(|raw| {
+        let line = raw.trim_start().strip_prefix('#')?.trim_start().strip_prefix("define")?;
+        let name = leading_ident(line);
+        if !(name.starts_with("ERROR_") || name == "NO_ERROR") { return None; }
+        let value = line.trim_start()[name.len()..].split_whitespace().next()?;
+        Some((name.to_owned(), parse_int_literal(value)?))
+    }).collect()
+}
+
+/// `const ERROR_X: u32 = n;` (and `NO_ERROR`) in Rust source.
+fn parse_rust_errors(text: &str) -> Vec<(String, u32)> {
+    text.lines().filter_map(|raw| {
+        let (_, rest) = raw.split_once("const ")?;
+        let name = leading_ident(rest);
+        if !(name.starts_with("ERROR_") || name == "NO_ERROR") { return None; }
+        let (_, value) = rest.split_once('=')?;
+        Some((name.to_owned(), parse_int_literal(value.split(';').next()?)?))
+    }).collect()
+}
+
+/// Warpine's own error constants, from every `.rs` file under `dir`.
+fn warpine_error_values(dir: &Path) -> HashMap<String, u32> {
+    let mut values = HashMap::new();
+    let Ok(read) = fs::read_dir(dir) else { return values };
+    let mut paths: Vec<PathBuf> = read.flatten().map(|e| e.path()).collect();
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            values.extend(warpine_error_values(&path));
+        } else if path.extension().is_some_and(|e| e == "rs")
+            && let Ok(text) = fs::read_to_string(&path) {
+            values.extend(parse_rust_errors(&text));
+        }
+    }
+    values
+}
+
+/// The problems with `decls` against the def `entries`, as messages.
+fn header_decl_problems(entries: &[OrdEntry], decls: &[HeaderDecl]) -> Vec<String> {
+    let modules: HashMap<&str, &str> = entries.iter().map(|e| (e.name.as_str(), e.module.as_str())).collect();
+    let mut problems = Vec::new();
+    let mut seen: HashMap<&str, &str> = HashMap::new();
+    for d in decls {
+        if let Some(first) = seen.insert(&d.name, &d.origin) {
+            problems.push(format!("{} declared twice ({first} and {})", d.name, d.origin));
+        }
+        match modules.get(d.name.as_str()) {
+            None => problems.push(format!("{} ({}) is not in os2api.def: lx-link cannot resolve it", d.name, d.origin)),
+            Some(module) => {
+                let pascal_module = PASCAL_MODULES.contains(module);
+                if pascal_module && !d.pascal {
+                    problems.push(format!("{} ({}) is a {module} call: declare it with OS2_PASCAL_API", d.name, d.origin));
+                } else if !pascal_module && d.pascal {
+                    problems.push(format!("{} ({}) is a {module} call: declare it APIENTRY, not Pascal", d.name, d.origin));
+                }
+            }
+        }
+    }
+    problems
+}
+
+/// The error codes whose header value differs from Warpine's.
+fn header_error_problems(header: &[(String, u32)], warpine: &HashMap<String, u32>) -> Vec<String> {
+    header.iter().filter_map(|(name, value)| match warpine.get(name) {
+        Some(w) if w != value => Some(format!("{name} is {value} in the headers but {w} in Warpine")),
+        _ => None,
+    }).collect()
+}
+
+fn cmd_check_headers(entries: &[OrdEntry], include_dir: &Path, src_dir: &Path) -> bool {
+    let dir = include_dir.join("os2");
+    let mut files: Vec<PathBuf> = match fs::read_dir(&dir) {
+        Ok(read) => read.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "h")).collect(),
+        Err(e) => {
+            eprintln!("error: cannot read {}: {e}", dir.display());
+            return false;
+        }
+    };
+    files.sort();
+    let mut decls = Vec::new();
+    let mut errors = Vec::new();
+    for path in &files {
+        let Ok(text) = fs::read_to_string(path) else {
+            eprintln!("error: cannot read {}", path.display());
+            return false;
+        };
+        decls.extend(parse_header_decls(&text, &path.display().to_string()));
+        errors.extend(parse_header_errors(&text));
+    }
+    let mut problems = header_decl_problems(entries, &decls);
+    problems.extend(header_error_problems(&errors, &warpine_error_values(src_dir)));
+
+    if !problems.is_empty() {
+        for p in &problems {
+            eprintln!("✗  {p}");
+        }
+        return false;
+    }
+    let declared: std::collections::HashSet<&str> = decls.iter().map(|d| d.name.as_str()).collect();
+    let covered_modules = ["DOSCALLS", "QUECALLS", "VIOCALLS", "KBDCALLS", "MOUCALLS"];
+    let missing = entries.iter()
+        .filter(|e| covered_modules.contains(&e.module.as_str()) && !declared.contains(e.name.as_str()))
+        .count();
+    println!("✓  sdk/include: {} calls declared, each in os2api.def under its convention; {} error codes agree with Warpine",
+             decls.len(), errors.len());
+    println!("   ({missing} Control Program and subsystem entries of the def are not declared yet)");
+    true
+}
+
 // ── CLI parsing ───────────────────────────────────────────────────────────────
 
 struct Config {
@@ -858,6 +1037,7 @@ struct Config {
     def_path:     PathBuf,
     trace_path:   PathBuf,
     ordinals_doc: PathBuf,
+    headers:      PathBuf,
 }
 
 fn usage_and_exit() -> ! {
@@ -870,11 +1050,13 @@ fn usage_and_exit() -> ! {
            gen-trace     Emit Rust source for ordinal_to_name() + module_for_ordinal()\n\
            gen-def       Re-emit a canonically sorted os2api.def\n\
            validate-doc  Cross-check os2api.def against doc/os2_ordinals.md\n\
+           check-headers Check the SDK's C headers against os2api.def (ADR-0096)\n\
          \n\
          Options:\n\
            --def PATH          Path to os2api.def        (default: targets/os2api.def)\n\
            --trace PATH        Path to api_trace.rs      (default: src/loader/api_trace.rs)\n\
-           --ordinals-doc PATH Path to os2_ordinals.md   (default: doc/os2_ordinals.md)"
+           --ordinals-doc PATH Path to os2_ordinals.md   (default: doc/os2_ordinals.md)\n\
+           --headers PATH      The SDK's include dir     (default: sdk/include)"
     );
     process::exit(1);
 }
@@ -884,6 +1066,7 @@ fn parse_args() -> Config {
     let mut def_path     = PathBuf::from("targets/os2api.def");
     let mut trace_path   = PathBuf::from("src/loader/api_trace.rs");
     let mut ordinals_doc = PathBuf::from("doc/os2_ordinals.md");
+    let mut headers      = PathBuf::from("sdk/include");
     let mut command      = None;
 
     let mut i = 0;
@@ -910,6 +1093,13 @@ fn parse_args() -> Config {
                     process::exit(1);
                 }));
             }
+            "--headers" => {
+                i += 1;
+                headers = PathBuf::from(args.get(i).unwrap_or_else(|| {
+                    eprintln!("--headers requires a path argument");
+                    process::exit(1);
+                }));
+            }
             s if s.starts_with("--") => {
                 eprintln!("unknown option: {s}");
                 usage_and_exit();
@@ -933,6 +1123,7 @@ fn parse_args() -> Config {
         def_path,
         trace_path,
         ordinals_doc,
+        headers,
     }
 }
 
@@ -961,6 +1152,12 @@ fn main() {
         "gen-def" => cmd_gen_def(&entries),
 
         "validate-doc" => cmd_validate_doc(&entries, &cfg.ordinals_doc),
+
+        "check-headers" => {
+            if !cmd_check_headers(&entries, &cfg.headers, Path::new("src")) {
+                process::exit(1);
+            }
+        }
 
         other => {
             eprintln!("unknown command: {other:?}");
@@ -1295,5 +1492,73 @@ mod tests {
                 "{}.{} defined at lines {} and {}",
                 e.module, e.local_ordinal, prev.unwrap(), e.line);
         }
+    }
+
+    // ── SDK header check (ADR-0096) ──────────────────────────────────────
+
+    fn sub_entries() -> Vec<OrdEntry> {
+        let mut e = sample_entries();
+        e.push(OrdEntry { module: "VIOCALLS".into(), local_ordinal: 19, flat_ordinal: 5139, name: "VioWrtTTY".into(), line: 6, note: None });
+        e
+    }
+
+    #[test]
+    fn test_parse_header_decls_finds_both_conventions() {
+        let text = "#define EXPENTRY APIENTRY\n\
+                    typedef void (APIENTRY *PFNTHREAD)(ULONG);\n\
+                    typedef ULONG APIENTRY ERR(PVOID);\n\
+                    APIRET APIENTRY DosWrite(HFILE hFile, const void *pBuffer,\n\
+                    \x20                        ULONG cbWrite, PULONG pcbActual);\n\
+                    void   APIENTRY DosExit (ULONG action, ULONG result);\n\
+                    /* APIENTRY Commented(void); */\n\
+                    OS2_PASCAL_API(APIRET16, VioWrtTTY, (PCCH pch, USHORT cb, HVIO hvio),\n\
+                    \x20              (ULONG hvio, ULONG cb, PCCH pch), (hvio, cb, pch))\n";
+        let decls = parse_header_decls(text, "x.h");
+        let found: Vec<(&str, bool)> = decls.iter().map(|d| (d.name.as_str(), d.pascal)).collect();
+        assert_eq!(found, [("DosWrite", false), ("DosExit", false), ("VioWrtTTY", true)]);
+        assert_eq!(decls[0].origin, "x.h:4");
+    }
+
+    #[test]
+    fn test_header_decl_problems_name_each_mistake() {
+        let decl = |name: &str, pascal| HeaderDecl { name: name.into(), pascal, origin: "x.h:1".into() };
+        let entries = sub_entries();
+        assert!(header_decl_problems(&entries, &[decl("DosWrite", false), decl("VioWrtTTY", true)]).is_empty());
+        let problems = header_decl_problems(&entries, &[
+            decl("DosWrte", false),      // not in the def
+            decl("VioWrtTTY", false),    // a Pascal call declared APIENTRY
+            decl("DosExit", true),       // a system call declared Pascal
+            decl("DosWrite", false),
+            decl("DosWrite", false),     // twice
+        ]);
+        assert_eq!(problems.len(), 4, "{problems:#?}");
+        assert!(problems[0].contains("DosWrte") && problems[0].contains("not in os2api.def"));
+        assert!(problems[1].contains("OS2_PASCAL_API"));
+        assert!(problems[2].contains("APIENTRY, not Pascal"));
+        assert!(problems[3].contains("declared twice"));
+    }
+
+    #[test]
+    fn test_header_error_codes_compare_with_warpine() {
+        let header = parse_header_errors("#define NO_ERROR 0\n#  define ERROR_FILE_NOT_FOUND   2\n\
+                                          #define ERROR_TIMEOUT 640\n#define ERROR_ONLY_IN_C 7\n#define OTHER 1\n");
+        assert_eq!(header.len(), 4);
+        // Built with format! so the wrong value is no `const` line of this
+        // file (constants.rs's test checks those against the toolkit).
+        let rust = parse_rust_errors(&format!("pub const {}: u32 = 2;\npub const {}:        u32 = 0x0000_0281; // wrong on purpose\nconst NOT_AN_ERROR: u32 = 5;\n",
+                                              "ERROR_FILE_NOT_FOUND", "ERROR_TIMEOUT"));
+        let warpine: HashMap<String, u32> = rust.into_iter().collect();
+        assert_eq!(warpine.len(), 2);
+        let problems = header_error_problems(&header, &warpine);
+        assert_eq!(problems, ["ERROR_TIMEOUT is 640 in the headers but 641 in Warpine"]);
+    }
+
+    /// The real headers against the real def and Warpine's constants: the
+    /// check `cargo run --bin gen_api -- check-headers` runs.
+    #[test]
+    fn test_real_sdk_headers_match_the_def() {
+        let entries = parse_def(Path::new("targets/os2api.def")).expect("parse os2api.def");
+        assert!(cmd_check_headers(&entries, Path::new("sdk/include"), Path::new("src")),
+                "sdk/include disagrees with os2api.def or Warpine's error codes");
     }
 }

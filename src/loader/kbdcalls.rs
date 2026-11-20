@@ -40,7 +40,7 @@ impl super::Loader {
 
     /// KbdCharIn (ordinal 4): read a character from the keyboard.
     /// Fills KBDKEYINFO struct: charcode(u8), scancode(u8), status(u8), reserved(u8),
-    /// shift state(u16), time(u32) — total 8 bytes.
+    /// shift state(u16), time(u32) at +6 — total 10 bytes.
     fn kbd_char_in(&self, p_key_info: u32, wait: u32, _hkbd: u32) -> u32 {
         debug!("  KbdCharIn(wait={})", wait);
 

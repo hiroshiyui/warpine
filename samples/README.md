@@ -22,6 +22,7 @@ make -C samples/<name>      # Build a single sample
 | Sample | Description | Key APIs Tested |
 |--------|-------------|-----------------|
 | hello | "Hello, OS/2!" smoke test | DosWrite, DosExit |
+| c_sdk_test | A program built with the C SDK (ADR-0096) by GCC or clang (`make CC=clang`): structure layouts, `argv` / `envp` / `getenv`, strings and `printf`, conversions and 64-bit division, the heap, streams on a file, threads and a mutex, a continued exception, and the VIO calls in Pascal order (a hand-made Pascal call checks the callee removes its arguments); 51 ok/FAIL checks. Run it as `c_sdk_test alpha "beta gamma"` | DosCreateThread, DosRequestMutexSem, DosRaiseException, DosOpen, VioSetCurPos, VioReadCellStr … |
 | alloc_test | Memory allocation round-trip | DosAllocMem, DosFreeMem |
 | file_test | File I/O: create, write, read, close | DosOpen, DosRead, DosWrite, DosClose |
 | dir_test | Directory creation and enumeration | DosCreateDir, DosDeleteDir, DosFindFirst/Next |

@@ -1786,6 +1786,42 @@ fn test_lx_link_refuses_position_independent_code() {
     assert!(!exe.exists());
 }
 
+/// M2 (ADR-0096): samples/c_sdk_test built with the SDK — os2.h, the
+/// Pascal-order VIO calls and the small C runtime — by GCC and by clang
+/// (each when installed), through the SDK's own Makefiles into a temporary
+/// directory, then run with two arguments.
+#[test]
+fn test_c_sdk_from_gcc_and_clang() {
+    let has_make = Command::new("make").arg("--version").output().is_ok_and(|o| o.status.success());
+    if !kvm_available() || !has_make { return; }
+    for compiler in ["gcc", "clang"] {
+        if !compiler_available(compiler) {
+            eprintln!("skipping c_sdk_test with {compiler}: not installed");
+            continue;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let sdk_build = dir.path().join("sdk");
+        let vars = [format!("CC={compiler}"), format!("OS2_BUILD={}", sdk_build.display()),
+                    format!("BUILD={}", dir.path().display()),
+                    format!("LX_LINK={}", env!("CARGO_BIN_EXE_lx_link"))];
+        for target in ["sdk", "samples/c_sdk_test"] {
+            let out = Command::new("make").args(["-s", "-C", target]).args(&vars).output().expect("run make");
+            assert!(out.status.success(), "make -C {target} ({compiler}):\n{}{}",
+                    String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        }
+        let exe = dir.path().join("c_sdk_test.exe");
+        let (out, code) = run_sample_args(exe.to_str().unwrap(), &["alpha", "\"beta gamma\""], 30, &[]);
+        let failures: Vec<&str> = out.lines().filter(|l| l.contains("FAIL")).collect();
+        assert!(failures.is_empty(), "{compiler}: {failures:?}\n{out}");
+        assert!(out.contains(&format!("c_sdk_test: built by {compiler}")), "{compiler}:\n{out}");
+        let done = out.lines().find_map(|l| l.strip_prefix("c_sdk_test: done ")).unwrap_or("");
+        let (passed, total) = done.split_once('/').unwrap_or(("", "?"));
+        assert!(total.parse::<u32>().is_ok_and(|t| t >= 50) && passed == total,
+                "{compiler}: done {done}\n{out}");
+        assert_eq!(code, 0, "{compiler}:\n{out}");
+    }
+}
+
 // ── GUI regression tests ─────────────────────────────────────────────────────
 //
 // These drive a PM sample with a scripted session (`WARPINE_GUI_SCRIPT`, see

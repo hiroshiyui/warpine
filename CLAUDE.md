@@ -29,7 +29,7 @@ They run natively under KVM.
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2189 unit tests (2138 warpine + 19 gen_api + 21 lx_link + 5 gen_arch + 6 gen_compat) + 201 integration tests
+cargo test                                 # 2193 unit tests (2138 warpine + 23 gen_api + 21 lx_link + 5 gen_arch + 6 gen_compat) + 202 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); afterwards `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -53,8 +53,11 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
 - **C guests from GCC or clang** (ADR-0095): unmodified compilers emit freestanding i386 ELF (`-m32 -ffreestanding -fno-pic`) and `lx-link` makes the LX program.
   - Build with `cargo build --bin lx_link`, then `make -C samples/c_hello` (or `CC=clang`).
   - `lx-link` refuses position-independent code and fails on undefined symbols.
+- **The C SDK** (ADR-0096): `sdk/include/os2.h` (Dos*, Que*, Vio*, Kbd*, Mou*; no PM yet) and a small C runtime.
+  - Build it with `make -C sdk` (or `CC=clang`); a program's Makefile includes `sdk/os2.mk` (see `samples/c_sdk_test`).
+  - Every call a header declares must be in `targets/os2api.def`; VIO / KBD / MOU calls go through `OS2_PASCAL_API`.
 - **Generators:** each has a test that fails when its output is stale.
-  - `cargo run --bin gen_api -- check | validate-doc`: `targets/os2api.def` is the single source of the ordinals.
+  - `cargo run --bin gen_api -- check | validate-doc | check-headers`: `targets/os2api.def` is the single source of the ordinals; `check-headers` holds the SDK's headers to it (ADR-0096).
   - `cargo run --bin gen_arch -- check | render` (ADR-0021): a new, renamed or removed module needs `doc/architecture/layers.toml` updated and a render.
   - `cargo run --bin gen_compat -- render` (ADR-0033): needed after an API is added, removed or stubbed.
 

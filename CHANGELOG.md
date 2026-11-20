@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **A C SDK for GCC and clang** (ADR-0096), in `sdk/`.
+  - **`os2.h`:** the Control Program (Dos* and Que* calls) and the VIO, KBD and MOU subsystems, selected with `INCL_*`, written from IBM's reference.
+    - System calls are cdecl.
+    - The Pascal subsystem calls are stdcall imports with reversed arguments, behind inline functions in the documented order.
+  - **A small C runtime** (`crt0.o`, `libos2c.a`): `argv` and `envp`, `exit` and `atexit`, a thread-safe heap on `DosAllocMem`, streams on OS/2 handles, `printf` without floating point, strings, conversions, sorting, and 64-bit division.
+  - **`sdk/os2.mk`** gives a program's Makefile the flags for either compiler, including the stack alignment OS/2 keeps (4 bytes).
+  - **`gen_api check-headers`** checks every declared call against `targets/os2api.def` and its convention, and the headers' error codes against Warpine's.
+  - **`samples/c_sdk_test`:** 51 checks, passing when built by GCC and when built by clang.
 - **C programs from GCC and clang** (ADR-0095). Unmodified GCC or clang builds freestanding i386 ELF objects, and `lx-link` turns them into OS/2 programs.
   - **`lx-link` now handles:**
     - every `.text.*` / `.rodata.*` / `.data.*` / `.bss.*` variant;
