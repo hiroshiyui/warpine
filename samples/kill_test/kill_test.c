@@ -47,7 +47,8 @@
 #define KILL_GRACE_MAX_MS 15000UL
 
 /* KbdCharIn, KBDCALLS 4, as a direct 32-bit import (_Pascal: arguments
-   pushed left to right, removed by the callee), as 4OS2's headers do. */
+   pushed left to right, removed by the callee), as the generated bsesub.h
+   (samples/bsesub32.mk) does. */
 typedef struct {
     UCHAR  chChar;
     UCHAR  chScan;

@@ -22,7 +22,7 @@ This guide introduces the internals of Warpine and the OS/2 concepts it emulates
 12. [PM Callback Mechanism](#pm-callback-mechanism)
 13. [Text-Mode Console Subsystem](#text-mode-console-subsystem)
 14. [NLS (National Language Support)](#nls-national-language-support)
-15. [4OS2 Compatibility](#4os2-compatibility)
+15. [Text-mode compatibility notes](#text-mode-compatibility-notes)
 16. [Filesystem I/O Design](#filesystem-io-design)
 17. [Module Structure](#module-structure)
 18. [Adding a New API](#adding-a-new-api)
@@ -954,7 +954,7 @@ On OS/2 the session type is chosen when a program starts, not by the program: a 
 
 **MOUCALLS** (`loader/moucalls.rs`). `MouManager` (`SharedState::mou_mgr`, `mou_cond`) holds one mouse handle, a queue of 64 `MOUEVENTINFO`s (oldest dropped when full), the event mask, scale factors, device status, pointer position and shape and the collision area. The GUI thread reports motion and buttons in text cells (`mouse_moved` / `mouse_button`; a move with a button change becomes a motion event and then a button event); `MouReadEventQue` with `MOU_WAIT` waits on `mou_cond` and ends with `ERROR_MOUSE_NO_DEVICE` when the program exits. Calls are 32-bit `_Pascal` like KBDCALLS (callee pops). Unverified choices are listed in the TODO list.
 
-**Scripted sessions**: `SdlTextRenderer` loads `WARPINE_GUI_SCRIPT` like the PM renderer (`GuiScript::from_env`). Each pass turns the due `key` / `text` steps into SDL key and text events (`sdl_renderer::script_input_to_event`) that go through the normal keyboard path into `kbd_queue`, drops host keyboard events meanwhile (`is_host_input`), and after them carries out `dump PATH`: the text buffer is rendered afresh with the cursor shown and written as a PPM (`gui_script::write_ppm`). Mouse steps have no effect in the text window. The window opens only when stdout is a terminal, so a headless capture runs under a pseudo-terminal: `SDL_VIDEODRIVER=dummy WARPINE_GUI_SCRIPT=s.script script -qec "target/debug/warpine samples/4os2/4os2.exe" /dev/null` (the integration test `text_mode_window_replays_a_gui_script_and_dumps_the_screen` and the README screenshot do this).
+**Scripted sessions**: `SdlTextRenderer` loads `WARPINE_GUI_SCRIPT` like the PM renderer (`GuiScript::from_env`). Each pass turns the due `key` / `text` steps into SDL key and text events (`sdl_renderer::script_input_to_event`) that go through the normal keyboard path into `kbd_queue`, drops host keyboard events meanwhile (`is_host_input`), and after them carries out `dump PATH`: the text buffer is rendered afresh with the cursor shown and written as a PPM (`gui_script::write_ppm`). Mouse steps have no effect in the text window. The window opens only when stdout is a terminal, so a headless capture runs under a pseudo-terminal: `SDL_VIDEODRIVER=dummy WARPINE_GUI_SCRIPT=s.script script -qec "target/debug/warpine CMD.EXE" /dev/null` (the integration test `text_mode_window_replays_a_gui_script_and_dumps_the_screen` and the README screenshot do this).
 
 ### TTY output and ANSI escape sequences
 
@@ -1160,58 +1160,26 @@ pub const EH_UNWINDING: u32 = 0x0000_0002;
 
 ---
 
-## 4OS2 Compatibility
+## Text-mode compatibility notes
 
-[4OS2](https://github.com/StevenLevine/4os2) is a commercial-grade OS/2 command shell (BSD-like license from JP Software). It serves as Warpine's primary text-mode compatibility target because it exercises nearly every DOSCALLS surface plus the full Kbd/Vio console subsystem.
+Warpine's first full text-mode target was the 4OS2 command shell. It was removed in favour of the built-in `CMD.EXE` (ADR-0075), but the issues found while bringing it up still describe how Warpine treats any text-mode program:
 
-### Setup
-
-```bash
-cd samples/4os2
-./fetch_source.sh    # Clones source, applies warpine patches automatically
-make                 # Cross-compiles with Open Watcom
-```
-
-`fetch_source.sh` applies 6 patches from `patches/` (see `patches/README.md`):
-1. `bsesub.h.patch` — APIENTRY16 → _System (eliminate 16-bit VIO/KBD thunks)
-2. `viodirect.h` — APIENTRY16/_Seg16 macro overrides (new file)
-3. `viowrap.c` — 32-bit VIO/KBD import pragmas (new file)
-4. `crt0.c` — minimal CRT startup using DosGetInfoBlocks instead of DosGetInfoSeg (new file)
-5. `os2init.c.patch` — DosGetInfoSeg → DosGetInfoBlocks
-6. `os2calls.c.patch` — direct DosFindFirst/DosFindNext with FILEFINDBUF4
-
-### Running
-
-```bash
-cargo run -- samples/4os2/4os2.exe
-```
-
-4OS2 boots to an interactive `[c:\]` prompt in an SDL 640×400 text window (CP437 font, CGA colours, blinking cursor). Working commands include `ver`, `set`, `echo`, `dir`, `exit`, and other built-ins. Use `RUST_LOG=debug` to trace API calls. Use `WARPINE_HEADLESS=1` to run in the host terminal instead.
-
-### Key implementation details
-
-Several issues were discovered and fixed during 4OS2 bring-up that are worth noting for future OS/2 application compatibility work:
-
-- **16-bit thunk elimination** — Watcom's `APIENTRY16` (`_Far16 _Pascal`) generates `__vfthunk` 16-bit bridges that warpine cannot execute. The fix is source-level: replace `APIENTRY16` with `_System` in headers, provide a custom CRT startup (`crt0.c`) that avoids `DosGetInfoSeg` thunks, and use `#pragma import` for direct VIO/KBD ordinal imports. This produces a pure 32-bit binary with zero 16-bit code. See `samples/4os2/patches/` for all modifications.
-- **Why the patches cannot be fully reverted even after GDT fixes** — The patches serve two distinct purposes that must be kept separate:
-  - *Purpose 1 — OS/2 API calling convention* (`bsesub.h`, `viowrap.c`, `crt0.c`): these eliminate `__vfthunk` generation for VIO/KBD/MOU API calls and replace `DosGetInfoSeg` (16-bit-only) with `DosGetInfoBlocks`. Even with a fully working GDT, Warpine's emulation dispatches all these APIs through the 32-bit `MAGIC_API_BASE` INT 3 thunk mechanism. Reverting these patches would require a complete 16-bit API dispatch path (separate ordinal namespace, Pascal/Far16 calling convention, 16:16 pointer translation) — a large undertaking.
-  - *Purpose 2 — correctness fixes* (`os2init.c`, `os2calls.c`): these fix 4OS2 bugs unrelated to calling convention (DosGetInfoSeg → DosGetInfoBlocks, correct DosFindFirst buffer layout). These patches should stay regardless.
-- **JPOS2DLL still uses `__Far16` thunks** — 4OS2 itself is pure 32-bit after patching, but JPOS2DLL (its extension DLL) was compiled with its own build rules and still calls some of its entry points via `__Far16` far pointers. The thunk stubs in 4OS2's code do `JMP FAR 0x0028:offset` to enter 16-bit execution. This requires GDT[5] (selector 0x0028) to be a valid 16-bit code descriptor — see the [GDT layout](#kvm-virtualization-engine) in §5.
+- **16-bit thunks** — Open Watcom's `APIENTRY16` (`_Far16 _Pascal`) makes the compiler call VIO / KBD / MOU through `__vfthunk` 16-bit bridges, which Warpine does not run. Programs built for Warpine declare those calls `_Pascal` instead: the VIO samples generate such a copy of `bsesub.h` at build time (`samples/bsesub32.mk`). `DosGetInfoSeg` (16-bit only) is replaced by `DosGetInfoBlocks`.
 - **VIOCALLS/KBDCALLS use Pascal calling convention** — Arguments pushed left-to-right (last arg at ESP+4), callee cleans stack. This is different from DOSCALLS which uses `_System` (right-to-left, caller cleans). The loader adds callee stack cleanup after VIO/KBD API returns via `viocalls_arg_bytes()` and `kbdcalls_arg_bytes()`.
 - **NLS DLL calling convention** — the NLS functions (`DosQueryCtryInfo`, `DosQueryDBCSEnv`, `DosMapCase`, `DosQueryCollate`, NLS 5–8) use the `_System` convention (same as DOSCALLS, NOT Pascal like VIOCALLS). The Watcom CRT calls NLS 6 (`DosQueryDBCSEnv`) with cb=12 during start-up; see [NLS](#nls-national-language-support).
-- **FSQBUFFER2 layout** — Uses fixed 8-byte header (iType+cbName+cbFSDName+cbFSAData) followed by variable-length strings, not the older FSQBUFFER interleaved format. Getting this wrong causes 4OS2's `ifs_type()` to read garbage, preventing `dir` from calling DosFindFirst.
+- **FSQBUFFER2 layout** — Uses fixed 8-byte header (iType+cbName+cbFSDName+cbFSAData) followed by variable-length strings, not the older FSQBUFFER interleaved format. Getting this wrong makes a shell's file-system query read garbage, preventing `dir` from calling DosFindFirst.
 - **DosFindNext level tracking** — DosFindFirst stores the info level (1=FILEFINDBUF3, 2=FILEFINDBUF4 with EA size). DosFindNext must use the same level, otherwise filenames are offset by 4 bytes (the cbList field size difference).
 - **PIB field ordering** — `pib_pchcmd` is at offset `+0x0C` and `pib_pchenv` is at `+0x10`. Getting these swapped causes the app to read the command line string as the environment block.
 - **Environment block format** — Must be null-terminated `KEY=VALUE` strings followed by a double-null terminator. The command line string is stored separately at `pib_pchcmd`.
 - **Guest memory layout** — TIB/PIB must stay below `0x100000` for 16-bit segment arithmetic (`addr >> 4` must fit in u16). Safe zone: `0x90000–0x9FFFF`.
-- **CR→CRLF on stdin** — OS/2 console DosRead returns `\r\n` when Enter is pressed. Linux raw mode sends only `\r`. Without translation, 4OS2 never recognizes end-of-line.
-- **BDA initialization** — BIOS Data Area at flat address 0x400 must contain VGA 80x25 text mode info. 4OS2's `crt0.c` reads BDA to determine screen dimensions.
+- **CR→CRLF on stdin** — OS/2 console DosRead returns `\r\n` when Enter is pressed. Linux raw mode sends only `\r`. Without translation, a shell never recognizes end-of-line.
+- **BDA initialization** — BIOS Data Area at flat address 0x400 must contain VGA 80x25 text mode info. Programs read it to determine the screen dimensions.
 
 ---
 
 ## Builtin CMD.EXE Shell
 
-`src/loader/cmd.rs` implements a command shell entirely in host Rust, eliminating the Open Watcom / 4OS2 build dependency for basic interactive use. The shell is invoked in two ways:
+`src/loader/cmd.rs` implements a command shell entirely in host Rust, so a shell needs no Open Watcom build. The shell is invoked in two ways:
 
 1. **From the host command line** — `warpine CMD.EXE [args]`: detected in `main()` by basename before `detect_format()` is called. When stdout is a terminal and `WARPINE_HEADLESS` is not set, enables SDL mode on `VioManager`, spawns the shell on a worker thread via `run_builtin_cmd_sdl()`, and runs `run_text_loop()` on the main thread — the same flow as any CLI LX app. With `WARPINE_HEADLESS=1` or piped stdout, calls `run_builtin_cmd_main()` directly on the main thread (terminal mode).
 
@@ -1699,7 +1667,9 @@ The `HostDirBackend` enforces that all path resolution stays within its volume r
 1. Normalize the path (resolve `.` and `..` components)
 2. Canonicalize via `realpath()` (resolves symlinks)
 3. Verify the result starts with the volume root prefix
-4. Reject with `ERROR_PATH_NOT_FOUND` (3) if it escapes
+4. Reject with `ERROR_ACCESS_DENIED` (5) if it escapes; a path that cannot be canonicalized, or a new file whose parent does not exist, gets `ERROR_PATH_NOT_FOUND` (3)
+
+A file that does not exist yet is resolved through its parent directory (`resolve_for_create`), which must exist and canonicalize inside the root. A name that is a dangling symbolic link is refused with `ERROR_ACCESS_DENIED` (5): creating it would place the file at the link's target. The built-in CMD.EXE resolves its redirection targets the same way (`DriveManager::resolve_new_host_path`, ADR-0075).
 
 WINE explicitly does *not* sandbox (`"Wine is NOT a sandbox"`). Warpine's isolated-directory model provides real containment with minimal complexity — OS/2 applications expect to operate within discrete drive boundaries, so isolation is both correct and secure.
 
@@ -2016,7 +1986,7 @@ cargo clippy --all-targets -- -D warnings   # lint, test code included
 
 The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`) runs both and aborts the commit on a failing test or any lint. It runs them inside a transient `systemd-run --user --scope` with `MemoryMax` (default 24G, `WARPINE_TEST_MEMORY_MAX`), `MemorySwapMax=0` and `TasksMax` (default 4096, `WARPINE_TEST_TASKS_MAX`) when a user systemd instance exists, and without caps otherwise: a runaway test is ended inside its own cgroup instead of the host's out-of-memory killer ending unrelated work (the 2026-11-18 self-starting sample, ADR-0028). Run long or process-starting tests by hand the same way, and check `pgrep -c -x warpine` afterwards.
 
-Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the 4OS2 / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
+Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the CMD.EXE / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
 The unit tests (1901: 1859 warpine + 19 `gen_api` + 12 `lx_link` + 5 `gen_arch` + 6 `gen_compat`) include, among others:
 
@@ -2080,7 +2050,6 @@ Everything the build or the samples take from outside the repository is pinned a
 |---|---|---|
 | Rust crates | `Cargo.lock` (checksums) | `deny.toml`: crates.io only, allowed licences, no banned crates (pre-commit hook); `cargo audit` and `cargo deny check` at release |
 | Open Watcom | `SNAPSHOT_TAG` in `vendor/setup_watcom.sh` (a dated build, not `Current-build`) | `SNAPSHOT_SHA256` before extracting; HTTPS only; `tar --no-same-owner` |
-| 4OS2 source | the full 40-character commit in `samples/4os2/fetch_source.sh` | `git rev-parse HEAD` must equal it |
 | GNU Unifont | release 17.0.03 (`vendor/unifont/README.md`) | the tarball's GPG signature by the Unifont maintainer; SHA-256 recorded |
 | IBM Plex | upstream commit in `vendor/ibm-plex/README.md` | files unmodified |
 | Guest Rust toolchain | `nightly-2026-11-15` in the guest crates' `rust-toolchain.toml` | build with `cargo build`, not `cargo +nightly` |
@@ -2147,13 +2116,12 @@ cargo run -- samples/pm_demo/pm_demo.exe
 # PM drawing: GpiBox, GpiLine, GpiCharStringAt, GpiSetColor
 cargo run -- samples/shapes/shapes.exe
 
-# Text-mode: 4OS2 command shell (interactive)
-cd samples/4os2 && ./fetch_source.sh && make && cd ../..
-cargo run -- samples/4os2/4os2.exe
-# Should show banner, [c:\] prompt, accept commands (ver, set, exit)
+# Text-mode: the built-in CMD.EXE (interactive)
+cargo run -- CMD.EXE
+# Should show the [C:\] prompt and accept commands (ver, dir, set, exit)
 ```
 
-CLI samples should print output and exit with code 0. PM samples should open a window and respond to close. 4OS2 should boot to an interactive prompt (`[c:\]`) with working commands: `dir`, `set`, `ver`, `md`, `rd`, `copy`, `move`, `del`, `attrib`, `tree`, `exit`. Use `RUST_LOG=debug` to inspect API call traces if a sample misbehaves.
+CLI samples should print output and exit with code 0. PM samples should open a window and respond to close. The built-in `CMD.EXE` should open at its `[C:\]` prompt with working commands (`dir`, `set`, `ver`, `echo … > file`, `exit`).
 
 ### Automated integration tests
 

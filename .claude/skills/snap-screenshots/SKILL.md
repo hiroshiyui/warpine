@@ -23,8 +23,8 @@ When capturing screenshots for the README, always follow these steps:
    | `pm_combo_spin` | `samples/pm_combo_spin_test/pm_combo_spin_test.exe` | the `COMBO_SPIN_STEPS` of `tests/integration.rs` (separate them with `;`) | Combination boxes, spin buttons and owner drawing |
    | `pm_slider_valueset` | `samples/pm_slider_valueset_test/pm_slider_valueset_test.exe` | the `SLIDER_VALUESET_STEPS` of `tests/integration.rs` (separate them with `;`) | Sliders and value sets |
    | `pm_stddlg` | `samples/pm_stddlg_test/pm_stddlg_test.exe` | none (the Open dialog is up after about 1.8 s; the sample creates its files on drive C, which `snap.sh` keeps in its work directory) | The standard file dialog |
-   | `4os2_window` | `samples/4os2/4os2.exe` | `2500 text color bright white on blue;2800 key enter;3300 text cls;3500 key enter;4000 text ver;4200 key enter;5000 text dir /w;5300 key enter` | A VIO program in a window on the PM desktop, its colours set by ANSI sequences after `cls` (needs a pseudo-terminal: capture it as described under step 3 without `WARPINE_VIO`, and trim it like `snap.sh`) |
-   | `vio_system_menu` | `samples/4os2/4os2.exe` | `2000 text ver;2200 key enter;3000 drag 675 453 400 300;4000 key alt+space` | The VIO window resized with scroll bars and its system menu open (pseudo-terminal capture, trimmed) |
+   | `cmd_window` | the built-in `CMD.EXE` (`target/debug/warpine CMD.EXE`) | `1500 text ver;1700 key enter;2300 text mkdir PROJECTS;2500 key enter;2900 text echo Hello from the built-in CMD.EXE > HELLO.TXT;3100 key enter;3500 text dir;3700 key enter;4300 text type HELLO.TXT;4500 key enter` | The built-in shell in a window on the PM desktop: a directory and a redirected file on drive C (needs a pseudo-terminal: capture it as described under step 3 without `WARPINE_VIO`, and trim it like `snap.sh`) |
+   | `vio_system_menu` | the built-in `CMD.EXE` | `2000 text ver;2200 key enter;3000 drag 675 453 400 300;4000 key alt+space` | The VIO window resized with scroll bars and its system menu open (pseudo-terminal capture, trimmed) |
 
    Keep the list to what the README can show (about six to eight images): every shot captured in this run is embedded in step 5, so leave out a shot here rather than capture it and not use it.
 
@@ -36,16 +36,16 @@ When capturing screenshots for the README, always follow these steps:
    ```
    It runs the sample on SDL's dummy video driver (no display needed) with drive C and the session directories in its own temporary work directory (never the user's drive C), replays the steps, dumps the desktop, trims the desktop background and writes `doc/screenshots/<name>.png`. Capture independent shots in parallel.
    - If a sample binary is missing, build it (`./vendor/setup_watcom.sh` once, then `make -C samples/<name>`). If it cannot be built, skip that shot and say so in the final report — do not reuse an old image under a new claim.
-   - Text-mode (VIO) programs such as 4OS2 open only on a terminal, so `snap.sh` cannot run them; capture them under a pseudo-terminal with the same GUI scripts. By default they run in a window on the PM desktop (dump the desktop and trim it like `snap.sh`); the README's hero image is the full-screen text window (`WARPINE_VIO=fullscreen`), converted without trimming (the frame is a fixed 640 × 400):
+   - Text-mode (VIO) programs, such as the built-in `CMD.EXE`, open only on a terminal, so `snap.sh` cannot run them; capture them under a pseudo-terminal with the same GUI scripts. By default they run in a window on the PM desktop (dump the desktop and trim it like `snap.sh`); the README's hero image is the full-screen text window (`WARPINE_VIO=fullscreen`), converted without trimming (the frame is a fixed 640 × 400):
      ```bash
-     printf '2500 text ver\n2700 key enter\n3500 text dir /w\n3800 key enter\n5500 dump /ABS/PATH/4os2.ppm\n5600 quit\n' > s.script
+     printf '1500 text ver\n1700 key enter\n2300 text dir\n2500 key enter\n3500 dump /ABS/PATH/cmd.ppm\n3600 quit\n' > s.script
      mkdir -m 700 /ABS/PATH/home   # a scratch drive C and runtime directory, never the user's
      XDG_DATA_HOME=/ABS/PATH/home XDG_RUNTIME_DIR=/ABS/PATH/home \
      SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy RUST_LOG=error WARPINE_COUNTRY=1 WARPINE_CODEPAGE=437 WARPINE_VIO=fullscreen WARPINE_GUI_SCRIPT=s.script \
-       script -qec "timeout 60 target/debug/warpine samples/4os2/4os2.exe" /dev/null
-     magick /ABS/PATH/4os2.ppm -strip doc/screenshots/4os2.png
+       script -qec "timeout 60 target/debug/warpine CMD.EXE" /dev/null
+     magick /ABS/PATH/cmd.ppm -strip doc/screenshots/cmd.png
      ```
-     Run it from the repository root. `doc/screenshots/4os2.png` is the README's hero image (outside the screenshot markers). Recapture it only when asked or when text mode changed visibly, and when you do, update that image's alt text.
+     Run it from the repository root. `doc/screenshots/cmd.png` is the README's hero image (outside the screenshot markers). Recapture it only when asked or when text mode changed visibly, and when you do, update that image's alt text.
 
 4. **Look at every image before using it** — open each PNG with the Read tool. Reject and investigate any that is blank, shows only the desktop, is cut off, or does not show what its caption will claim (for example a menu that did not open because a click missed). A screenshot is evidence: the caption must describe what is actually visible.
 

@@ -80,3 +80,4 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0072](0072-som-root-class-layouts-from-the-toolkit.md) | The SOM root classes follow IBM's layouts (ClassData release order, somMethodTab header, somParentMtabStruct), read from the OS/2 Warp 4 Toolkit | Accepted | 2026-11-20 |
 | [0073](0073-som-build-class-from-static-class-info.md) | somBuildClass builds classes from IBM's static class information (somStaticClassInfo) | Accepted | 2026-11-20 |
 | [0074](0074-gpl-3-or-later.md) | License Warpine under GPL-3.0-or-later | Accepted | 2026-11-20 |
+| [0075](0075-remove-4os2.md) | Remove 4OS2; the built-in CMD.EXE is Warpine's shell; shell redirection stays inside the drives | Accepted | 2026-11-20 |

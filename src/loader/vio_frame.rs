@@ -273,11 +273,11 @@ mod tests {
     #[test]
     fn a_vio_frame_holds_the_text_screen_inside_its_chrome() {
         let mut wm = WindowManager::new();
-        let frame = wm.create_vio_frame("Warpine — 4os2.exe", 80, 25);
+        let frame = wm.create_vio_frame("Warpine — CMD.EXE", 80, 25);
         let bw = frame_border_width(VIO_FRAME_FLAGS);
         let w = wm.get_window(frame).unwrap();
         assert_eq!((w.cx, w.cy), (640 + 2 * bw, 400 + CHROME_TITLE_H + bw));
-        assert_eq!(w.text, "Warpine — 4os2.exe");
+        assert_eq!(w.text, "Warpine — CMD.EXE");
         assert!(w.visible);
         assert_eq!((wm.vio_frame, wm.focused_hwnd), (frame, frame));
         assert_eq!(wm.z_order.last(), Some(&frame));

@@ -21,8 +21,8 @@
 
 /* bsesub.h maps Vio16CheckCharType to VIO16CHECKCHARTYPE (VIOCALLS ordinal
    75 in os2386.lib) but declares no prototype for it, and no VioCheckCharType
-   alias. Declare it _Pascal like the other calls in 4OS2's bsesub.h (built
-   with -I ../4os2/h), so it is a direct 32-bit import. */
+   alias. Declare it _Pascal like the other calls in the generated bsesub.h
+   (samples/bsesub32.mk), so it is a direct 32-bit import. */
 USHORT _Pascal Vio16CheckCharType(PUSHORT pType, USHORT usRow, USHORT usCol, HVIO hvio);
 #define VioCheckCharType Vio16CheckCharType
 

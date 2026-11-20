@@ -211,6 +211,12 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 
 ## Console and multimedia
 
+- [ ] **The built-in CMD.EXE** (`cmd.rs`; it replaces 4OS2, ADR-0075):
+  - pipes into external programs (`ver | find "…"`): the external program now takes the shell's remaining input (`test_cmd_pipe_to_an_external_program` is ignored until then);
+  - `PROMPT` (with `$e` ANSI sequences for colour), `PATH`;
+  - batch control in `.CMD` files: `IF`, `FOR`, `GOTO`, `CALL`, `PAUSE`, `SHIFT`, `SETLOCAL` / `ENDLOCAL`;
+  - `COPY`, `REN`, `MOVE`, `START`, `DETACH`;
+  - which of OS/2's other `CMD.EXE` commands to add is decided case by case.
 - [ ] **VIO window**:
   - Font Size, Scroll, Help, Hide;
   - keyboard marking, and autoscroll while marking;
@@ -239,7 +245,7 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - entry registers (AX = environment, BX = command line);
   - real 16-bit `DosGetEnv` / `DosGetPID`.
 - [ ] **Far16 thunks**:
-  - dispatch 16-bit calls made through thunks (`vcpu.rs` bypasses them and returns 0; 4OS2's `DosGetInfoSeg`);
+  - dispatch 16-bit calls made through thunks (`vcpu.rs` bypasses them and returns 0; for example `DosGetInfoSeg`);
   - OS/2's tiling formula `(sel >> 3) << 16` (Warpine's tiles start at GDT index 6).
 - [ ] **REXX**:
   - bridge `REXXAPI.DLL` (`RexxStart`, `RexxRegisterSubcomDll`, `RexxVariablePool`) to Regina;

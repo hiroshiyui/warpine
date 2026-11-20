@@ -154,7 +154,7 @@ Warpine automatically selects an execution mode based on the executable and envi
 
 ## Builtin CMD.EXE Shell
 
-Warpine includes a native Rust command shell that requires no Open Watcom compiler or 4OS2 installation.
+Warpine includes a native Rust command shell that requires no Open Watcom compiler.
 
 ### Invocation
 
@@ -226,20 +226,19 @@ Run a `.CMD` file by typing its name (with or without the `.CMD` extension) or u
 [C:\] warpine CMD.EXE /C "MYSCRIPT.CMD"
 ```
 
-Supported script directives:
+A script is run line by line: each line is a command as typed at the prompt, and `REM` or `::` starts a comment. `EXIT` ends the script with its exit code. Batch control (`IF`, `FOR`, `GOTO`, `CALL`, `PAUSE`, `SHIFT`) is not supported yet (`doc/TODOs.md`).
 
-| Directive | Description |
-|-----------|-------------|
-| `REM text` | Comment — ignored |
-| `:: text` | Alternative comment |
-| `ECHO text` | Write to console |
-| `SET VAR=value` | Set environment variable |
-| `IF [NOT] EXIST file cmd` | Execute `cmd` if file exists (or not) |
-| `IF [NOT] ERRORLEVEL n cmd` | Execute `cmd` if last exit code ≥ n (or <n for NOT) |
-| `FOR %%V IN (a b c) DO cmd` | Loop over space-separated list; `%%V` is replaced by each item |
-| `GOTO label` | Jump to `:label` |
-| `CALL script` | Execute another `.CMD` file |
-| `PAUSE` | Print "Press any key to continue…" and wait |
+### Redirection and pipes
+
+| Syntax | Effect |
+|--------|--------|
+| `cmd > file` | Write the output to `file`, replacing it |
+| `cmd >> file` | Append the output to `file` |
+| `cmd < file` | Read the input from `file`, which must exist |
+| `cmd1 \| cmd2` | Feed the output of `cmd1` to `cmd2` as its input |
+
+- **Inside the drives.** A redirection target is an OS/2 path on a mounted drive, resolved through the VFS like any file a program opens. A path that maps to no drive (an unmounted drive, `..` above the root, a host path) is an error ("not on a drive"), and the file is not created through a dangling symbolic link (ADR-0075).
+- **Pipes** work between built-in commands. A program run from the shell does not read a pipe yet: it reads the shell's own remaining input instead (`doc/TODOs.md`).
 
 ---
 
@@ -470,7 +469,7 @@ Event semaphores count posts: `DosPostEventSem` adds one (`ERROR_ALREADY_POSTED`
 **Process:**
 DosExit (234), DosExecPgm (283), DosWaitChild (280), DosKillProcess (235), DosQueryAppType (323)
 
-`DosExecPgm` starts the child as a separate Warpine process. The child gets the argument block's two strings as its command line (`pib_pchcmd`; the program's full name sits right before it, after the environment), the environment given in `pEnv` or, for NULL, the parent's own, and every inheritable pipe handle at the same number: an anonymous pipe, or the client end of a named pipe (the server end stays with its process). A handle made non-inheritable with `DosSetFHState(OPEN_FLAGS_NOINHERIT)` (or `NP_NOINHERIT`) is not passed, so a reader sees the end of the data once the other write handles are closed. The program's own OS/2 name (`C:\NAME.EXE`, what a shell like 4OS2 starts to run a copy of itself) is its host executable. For `EXEC_ASYNC` / `EXEC_ASYNCRESULT` the child's process id is in `codeTerminate` (CP Reference). Every process of a session has its own id: the first process is 42 (parent id 0), and each child gets the next id of a counter the session's processes share (100, 101, …, after 65535 from 100 again). The parent chooses it and passes it on, so the id the child reports (`pib_ulpid`, `DosQueryMutexSem`, `WinQueryWindowProcess`) is the one the parent holds for `DosWaitChild`, `DosKillProcess` and `DosSendSignalException`, and the child's `pib_ulppid` is its parent's id. An exit code reaches the parent through the host process, so only its low 8 bits arrive.
+`DosExecPgm` starts the child as a separate Warpine process. The child gets the argument block's two strings as its command line (`pib_pchcmd`; the program's full name sits right before it, after the environment), the environment given in `pEnv` or, for NULL, the parent's own, and every inheritable pipe handle at the same number: an anonymous pipe, or the client end of a named pipe (the server end stays with its process). A handle made non-inheritable with `DosSetFHState(OPEN_FLAGS_NOINHERIT)` (or `NP_NOINHERIT`) is not passed, so a reader sees the end of the data once the other write handles are closed. The program's own OS/2 name (`C:\NAME.EXE`, what a shell starts to run a copy of itself) is its host executable. For `EXEC_ASYNC` / `EXEC_ASYNCRESULT` the child's process id is in `codeTerminate` (CP Reference). Every process of a session has its own id: the first process is 42 (parent id 0), and each child gets the next id of a counter the session's processes share (100, 101, …, after 65535 from 100 again). The parent chooses it and passes it on, so the id the child reports (`pib_ulpid`, `DosQueryMutexSem`, `WinQueryWindowProcess`) is the one the parent holds for `DosWaitChild`, `DosKillProcess` and `DosSendSignalException`, and the child's `pib_ulppid` is its parent's id. An exit code reaches the parent through the host process, so only its low 8 bits arrive.
 
 The program's entry point is called with the stack OS/2 sets up for an executable: return address, module handle, a reserved 0, the environment and the command line (`[esp+12]`, `[esp+16]`), which the C runtime's start-up code turns into `argc` / `argv` and the environment. Programs built with an Open Watcom snapshot of roughly March to August 2026 read these one slot off (Open Watcom #1649): they get an empty `argv` and no environment, and Warpine logs a warning; rebuild them with a newer Open Watcom (`vendor/setup_watcom.sh --refresh`). Files, pipes and other handles share one handle space: a new handle is the lowest free number from 3, and closed numbers are used again.
 

@@ -431,7 +431,7 @@ pub(crate) fn is_plain_module_name(name: &str) -> bool {
 
 /// The host directory of the executable `exe` (as given on the command
 /// line): its parent, or the current directory for a bare file name such as
-/// `4os2.exe` run from its own directory; `None` when there is no executable.
+/// `hello.exe` run from its own directory; `None` when there is no executable.
 fn exe_dir(exe: &str) -> Option<String> {
     if exe.is_empty() { return None; }
     let parent = Path::new(exe).parent().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
@@ -443,26 +443,28 @@ mod tests {
     use super::super::Loader;
     use super::super::MutexExt;
 
-    /// Load jpos2dll.dll with mock loader; verify 7 exports are registered.
+    /// Load noinit.dll (samples/dll_noinit) with the mock loader; its 3 exports are registered by ordinal and by name.
     #[test]
-    fn test_load_dll_jpos2dll() {
-        let path = "samples/4os2/jpos2dll.dll";
+    fn test_load_dll_exports_by_name_and_ordinal() {
+        let path = "samples/dll_noinit/noinit.dll";
         if !std::path::Path::new(path).exists() { return; }
 
         let loader = Loader::new_mock();
         // Give exe_name so find_dll_path has a directory to search
-        *loader.shared.exe_name.lock_or_recover() = "samples/4os2/4os2.exe".to_string();
+        *loader.shared.exe_name.lock_or_recover() = "samples/dll_noinit/test.exe".to_string();
 
-        let handle = loader.load_dll("JPOS2DLL", path).expect("load_dll failed");
+        let handle = loader.load_dll("NOINIT", path).expect("load_dll failed");
         assert!(handle > 0, "handle must be nonzero");
 
         let dll_mgr = loader.shared.dll_mgr.lock_or_recover();
         let dll = dll_mgr.find_by_handle(handle).expect("DLL not registered");
-        assert_eq!(dll.name, "JPOS2DLL");
-        assert_eq!(dll.exports_by_ordinal.len(), 7, "expected 7 exported ordinals");
-        assert!(dll.exports_by_name.contains_key("SENDKEYS"), "SENDKEYS export missing");
-        assert!(dll.exports_by_name.contains_key("QUERYEXTLIBPATH"), "QUERYEXTLIBPATH export missing");
-        assert!(dll.exports_by_name.contains_key("KEYSTACKHOOKPROC"), "KEYSTACKHOOKPROC export missing");
+        assert_eq!(dll.name, "NOINIT");
+        assert_eq!(dll.exports_by_ordinal.len(), 3, "expected 3 exported ordinals");
+        // Names from both tables: NoInitAdd / NoInitTwice non-resident,
+        // NoInitAnswer resident.
+        for name in ["NOINITADD", "NOINITTWICE", "NOINITANSWER"] {
+            assert!(dll.exports_by_name.contains_key(name), "{name} export missing");
+        }
 
         // All export addresses must be within the mock guest memory range
         for (&ord, &addr) in &dll.exports_by_ordinal {
@@ -470,17 +472,17 @@ mod tests {
         }
     }
 
-    /// find_dll_path locates jpos2dll.dll next to the exe.
+    /// find_dll_path locates noinit.dll next to the exe.
     #[test]
     fn test_find_dll_path() {
-        let path = "samples/4os2/jpos2dll.dll";
+        let path = "samples/dll_noinit/noinit.dll";
         if !std::path::Path::new(path).exists() { return; }
 
         let loader = Loader::new_mock();
-        *loader.shared.exe_name.lock_or_recover() = "samples/4os2/4os2.exe".to_string();
+        *loader.shared.exe_name.lock_or_recover() = "samples/dll_noinit/test.exe".to_string();
 
-        let found = loader.find_dll_path("JPOS2DLL");
-        assert!(found.is_some(), "find_dll_path should find jpos2dll.dll");
+        let found = loader.find_dll_path("NOINIT");
+        assert!(found.is_some(), "find_dll_path should find noinit.dll");
 
         let found_missing = loader.find_dll_path("NONEXISTENT_DLL_ABCD");
         assert!(found_missing.is_none(), "nonexistent DLL should return None");
@@ -491,9 +493,9 @@ mod tests {
     #[test]
     fn exe_dir_of_a_bare_name_is_the_current_directory() {
         use super::exe_dir;
-        assert_eq!(exe_dir("samples/4os2/4os2.exe").as_deref(), Some("samples/4os2"));
+        assert_eq!(exe_dir("samples/hello/hello.exe").as_deref(), Some("samples/hello"));
         assert_eq!(exe_dir("/opt/os2/app.exe").as_deref(), Some("/opt/os2"));
-        assert_eq!(exe_dir("4os2.exe").as_deref(), Some("."));
+        assert_eq!(exe_dir("hello.exe").as_deref(), Some("."));
         assert_eq!(exe_dir(""), None);
     }
 
@@ -550,14 +552,14 @@ mod tests {
     /// Second load_dll call returns the same handle with incremented refcount.
     #[test]
     fn test_load_dll_refcount_on_second_load() {
-        let path = "samples/4os2/jpos2dll.dll";
+        let path = "samples/dll_noinit/noinit.dll";
         if !std::path::Path::new(path).exists() { return; }
 
         let loader = Loader::new_mock();
-        *loader.shared.exe_name.lock_or_recover() = "samples/4os2/4os2.exe".to_string();
+        *loader.shared.exe_name.lock_or_recover() = "samples/dll_noinit/test.exe".to_string();
 
-        let h1 = loader.load_dll("JPOS2DLL", path).expect("first load");
-        let h2 = loader.load_dll("JPOS2DLL", path).expect("second load");
+        let h1 = loader.load_dll("NOINIT", path).expect("first load");
+        let h2 = loader.load_dll("NOINIT", path).expect("second load");
         assert_eq!(h1, h2, "same handle on second load");
 
         let dll_mgr = loader.shared.dll_mgr.lock_or_recover();
@@ -568,14 +570,14 @@ mod tests {
     /// DosFreeModule decrements refcount; DLL stays loaded until refcount = 0.
     #[test]
     fn test_dos_free_module_refcount() {
-        let path = "samples/4os2/jpos2dll.dll";
+        let path = "samples/dll_noinit/noinit.dll";
         if !std::path::Path::new(path).exists() { return; }
 
         let loader = Loader::new_mock();
-        *loader.shared.exe_name.lock_or_recover() = "samples/4os2/4os2.exe".to_string();
+        *loader.shared.exe_name.lock_or_recover() = "samples/dll_noinit/test.exe".to_string();
 
-        let h = loader.load_dll("JPOS2DLL", path).expect("load");
-        let h2 = loader.load_dll("JPOS2DLL", path).expect("second load"); // refcount = 2
+        let h = loader.load_dll("NOINIT", path).expect("load");
+        let h2 = loader.load_dll("NOINIT", path).expect("second load"); // refcount = 2
         assert_eq!(h, h2);
 
         // First free: refcount drops to 1, DLL still loaded
@@ -594,20 +596,20 @@ mod tests {
         }
     }
 
-    /// jpos2dll.dll has eip_object == 0 so initterm_addr must be None.
+    /// noinit.dll has eip_object == 0 so initterm_addr must be None.
     #[test]
-    fn test_load_dll_initterm_none_for_jpos2dll() {
-        let path = "samples/4os2/jpos2dll.dll";
+    fn test_load_dll_initterm_none_without_an_entry_point() {
+        let path = "samples/dll_noinit/noinit.dll";
         if !std::path::Path::new(path).exists() { return; }
 
         let loader = Loader::new_mock();
-        *loader.shared.exe_name.lock_or_recover() = "samples/4os2/4os2.exe".to_string();
+        *loader.shared.exe_name.lock_or_recover() = "samples/dll_noinit/test.exe".to_string();
 
-        let handle = loader.load_dll("JPOS2DLL", path).expect("load_dll failed");
+        let handle = loader.load_dll("NOINIT", path).expect("load_dll failed");
         let dll_mgr = loader.shared.dll_mgr.lock_or_recover();
         let dll = dll_mgr.find_by_handle(handle).unwrap();
         assert_eq!(dll.initterm_addr, None,
-            "jpos2dll has no INITTERM entry — initterm_addr should be None");
+            "noinit.dll has no INITTERM entry — initterm_addr should be None");
     }
 
     /// DosLoadModule for a DLL without INITTERM must return ApiResult::Normal(NO_ERROR)
@@ -617,15 +619,15 @@ mod tests {
         use super::super::ApiResult;
         use super::super::constants::NO_ERROR;
 
-        let path = "samples/4os2/jpos2dll.dll";
+        let path = "samples/dll_noinit/noinit.dll";
         if !std::path::Path::new(path).exists() { return; }
 
         let loader = Loader::new_mock();
-        *loader.shared.exe_name.lock_or_recover() = "samples/4os2/4os2.exe".to_string();
+        *loader.shared.exe_name.lock_or_recover() = "samples/dll_noinit/test.exe".to_string();
 
         let phmod = loader.shared.mem_mgr.lock_or_recover().alloc(4).unwrap();
         let mod_name_buf = loader.shared.mem_mgr.lock_or_recover().alloc(32).unwrap();
-        loader.guest_write_bytes(mod_name_buf, b"JPOS2DLL\0");
+        loader.guest_write_bytes(mod_name_buf, b"NOINIT\0");
 
         let result = loader.dos_load_module(0, 0, mod_name_buf, phmod);
         assert!(matches!(result, ApiResult::Normal(c) if c == NO_ERROR),

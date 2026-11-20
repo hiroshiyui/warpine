@@ -6,7 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Removed
+- **4OS2** — the 4OS2 sample and the files fetched or patched from it are gone, including copies of 4OS2 and Open Watcom sources that had been committed without the notices their licences require. The built-in `CMD.EXE` is Warpine's shell: the default `COMSPEC` is `C:\CMD.EXE`, the text-mode integration tests and the README's text-mode screenshots use it, the VIO samples generate their 32-bit `bsesub.h` from the local Open Watcom install at build time (`samples/bsesub32.mk`), and the DLL-loader tests use Warpine's own `samples/dll_noinit` (ADR-0075).
+
+### Security
+- **Shell redirection stays inside the drives** — the built-in `CMD.EXE` opened a redirection target that did not exist yet (`> file`) through the guest's path string as a host path, so a guest could write host files outside its drives through `CMD.EXE /C … > path`; it now creates the file through the VFS, and a path outside the drives is an error. Creating any new file through a dangling symbolic link, which would place it at the link's target, is refused too, `DosOpen` included (ADR-0075).
+
 ### Changed
+- **Goal stated** — Warpine is an OS/2-alike API and its runtime environment: a familiar, robust API set as the foundation of a Free Software platform, not a clone; compatibility with legacy applications is done case by case, and anything needing proprietary intellectual property is skipped (`CLAUDE.md`).
 - **Licence: GPL-3.0-or-later** — Warpine's own code, samples and guest crates move from GPL-3.0-only to GPL-3.0-or-later (ADR-0074, superseding ADR-0002): every source file carries `SPDX-License-Identifier: GPL-3.0-or-later` (the files that had no header now have one), and `Cargo.toml`, the guest crates' manifests and the cargo-deny policy say so. Vendored third-party material keeps its own licence.
 
 ## [0.0.6] - 2026-11-20

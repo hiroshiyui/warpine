@@ -415,13 +415,13 @@ fn test_ansi_escape_sequences_in_a_vio_window() {
     assert!(out.contains("done: 0 failed"), "incomplete:\n{out}");
 }
 
-/// 4OS2 reading commands from a pipe: once the input is used up, its
-/// waiting KbdCharIn ends the process (exit code 0) instead of polling
-/// forever.
+/// The built-in CMD.EXE reading commands from a pipe: once the input is
+/// used up it ends (exit code 0) instead of waiting forever, and `echo … >
+/// file` writes the file on drive C.
 #[test]
-fn test_4os2_ends_at_the_end_of_piped_input() {
-    let sample = "samples/4os2/4os2.exe";
-    if !kvm_available() || !Path::new(sample).exists() { return; }
+fn test_cmd_ends_at_the_end_of_piped_input() {
+    let sample = "CMD.EXE";
+    if !kvm_available() { return; }
     let dir = tempfile::tempdir().expect("tempdir");
     let mut child = Command::new(warpine())
         .arg(sample)
@@ -449,7 +449,7 @@ fn test_4os2_ends_at_the_end_of_piped_input() {
         if let Some(s) = child.try_wait().unwrap() { break s; }
         if std::time::Instant::now() >= deadline {
             let _ = child.kill();
-            panic!("4OS2 kept waiting for keys after the end of its piped input");
+            panic!("CMD.EXE kept waiting for keys after the end of its piped input");
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -462,15 +462,17 @@ fn test_4os2_ends_at_the_end_of_piped_input() {
     assert_eq!(saved, "saved\r\n", "echo > file wrote the file");
 }
 
-/// 4OS2 pipes to an external program: `ver | find "…"` creates a pipe,
-/// starts FIND.EXE (npipe_test.exe under that name) with the pipe as its
-/// standard input and the write end not inherited, runs VER into the pipe
-/// and waits for FIND, which prints only the matching line.
+/// The built-in CMD.EXE piping to an external program: `ver | find "…"`
+/// should start FIND.EXE (npipe_test.exe under that name) with the pipe as
+/// its standard input, run VER into the pipe and wait for FIND, which
+/// prints only the matching line; the shell then goes on with its own
+/// input.
 #[test]
-fn test_4os2_pipe_to_an_external_program() {
-    let sample = "samples/4os2/4os2.exe";
+#[ignore = "the built-in CMD.EXE does not pipe into external programs yet: FIND takes the shell's remaining input (doc/TODOs.md)"]
+fn test_cmd_pipe_to_an_external_program() {
+    let sample = "CMD.EXE";
     let find = "samples/npipe_test/npipe_test.exe";
-    if !kvm_available() || !Path::new(sample).exists() || !Path::new(find).exists() { return; }
+    if !kvm_available() || !Path::new(find).exists() { return; }
     let dir = tempfile::tempdir().expect("tempdir");
     let drive_c = dir.path().join("warpine/drive_c");
     std::fs::create_dir_all(&drive_c).unwrap();
@@ -494,14 +496,14 @@ fn test_4os2_pipe_to_an_external_program() {
     {
         use std::io::Write;
         let mut stdin = child.stdin.take().unwrap();
-        stdin.write_all(b"ver | find \"NoSuchTextZq\"\r\nver | find \"OS/2 Version\"\r\necho pipes-done\r\n").unwrap();
+        stdin.write_all(b"ver | find \"NoSuchTextZq\"\r\nver | find \"Builtin\"\r\necho pipes-done\r\n").unwrap();
     }
     let deadline = std::time::Instant::now() + Duration::from_secs(40);
     let status = loop {
         if let Some(s) = child.try_wait().unwrap() { break s; }
         if std::time::Instant::now() >= deadline {
             let _ = child.kill();
-            panic!("4OS2 hung in a pipeline");
+            panic!("CMD.EXE hung in a pipeline");
         }
         std::thread::sleep(Duration::from_millis(50));
     };
@@ -509,11 +511,10 @@ fn test_4os2_pipe_to_an_external_program() {
     use std::io::Read;
     child.stdout.take().unwrap().read_to_string(&mut out).unwrap();
     assert_eq!(status.code(), Some(0), "{out}");
-    assert!(out.contains("pipes-done"), "4OS2 went on after the pipelines:\n{out}");
-    // VER's own line (two spaces after 4OS2, unlike the start-up banner)
-    // comes out once, through FIND; its copyright lines are filtered.
-    assert_eq!(out.matches("4OS2  5.00").count(), 1, "VER's line through FIND:\n{out}");
-    assert_eq!(out.matches("Copyright (c) 1988").count(), 1, "only the banner's copyright:\n{out}");
+    assert!(out.contains("pipes-done"), "CMD.EXE went on after the pipelines:\n{out}");
+    // VER's line comes out once, through the second FIND; the first finds
+    // nothing.
+    assert_eq!(out.matches("Compatibility Layer [Builtin CMD.EXE]").count(), 1, "VER's line through FIND:\n{out}");
 }
 
 /// audio_test: DosBeep and mciSendString through MDM loaded at run time
@@ -1326,12 +1327,9 @@ fn check_gui_golden_env(name: &str, sample: &str, steps: &str, env: &[(&str, &st
         &diff[..diff.len().min(12)]);
 }
 
-/// Run 4OS2 on a pseudo-terminal (VIO programs get a display only when
-/// stdout is a terminal; `script` from util-linux provides one) with
-/// `WARPINE_VIO` set to `vio` (None: the default), type `ver` and Enter, and
 /// A scripted VIO session that ends with `quit` closes the program's window
-/// or screen: the program gets `XCPT_SIGNAL_KILLPROC` and runs its exit list
-/// (ADR-0034), and its own handler chooses the exit code (4OS2 exits with 3).
+/// or screen: a guest program gets `XCPT_SIGNAL_KILLPROC` and runs its exit
+/// list (ADR-0034), and its own handler chooses the exit code.
 /// So any ordinary exit is a closed session; being killed by a signal or by
 /// the `timeout` wrapper (124) is a failure. The callers check the dumps and
 /// files the session produced, which catches a crash before `quit`.
@@ -1343,23 +1341,27 @@ fn assert_session_closed(status: std::process::ExitStatus, what: &str) {
     }
 }
 
-/// return the dumped screen. `None` when KVM, 4OS2 or `script` is missing.
-fn run_4os2_session(vio: Option<&str>) -> Option<(usize, usize, Vec<u8>)> {
-    run_4os2_script(vio, &["screen"], |dumps| {
+/// Run the built-in CMD.EXE on a pseudo-terminal (VIO programs get a display
+/// only when stdout is a terminal; `script` from util-linux provides one)
+/// with `WARPINE_VIO` set to `vio` (None: the default), type `ver` and
+/// Enter, and return the dumped screen. `None` when KVM or `script` is
+/// missing.
+fn run_cmd_session(vio: Option<&str>) -> Option<(usize, usize, Vec<u8>)> {
+    run_cmd_script(vio, &["screen"], |dumps| {
         format!("1500 text ver\n1700 key enter\n3000 dump {}\n3100 quit\n", dumps[0].display())
     }).map(|mut frames| frames.remove(0))
 }
 
-/// Run 4OS2 under a pseudo-terminal with the GUI script `script` makes from
-/// the paths of the `dumps` it writes; returns each dump decoded, in order.
-/// `None` (test skipped) without KVM, the gitignored 4OS2 binary or
-/// util-linux `script`.
-fn run_4os2_script(vio: Option<&str>, dumps: &[&str], script: impl FnOnce(&[std::path::PathBuf]) -> String)
+/// Run the built-in CMD.EXE under a pseudo-terminal with the GUI script
+/// `script` makes from the paths of the `dumps` it writes; returns each dump
+/// decoded, in order. `None` (test skipped) without KVM or util-linux
+/// `script`.
+fn run_cmd_script(vio: Option<&str>, dumps: &[&str], script: impl FnOnce(&[std::path::PathBuf]) -> String)
                    -> Option<Vec<(usize, usize, Vec<u8>)>> {
-    let sample = "samples/4os2/4os2.exe";
+    let sample = "CMD.EXE";
     let has_script = Command::new("script").arg("--version").output().is_ok_and(|o| o.status.success());
-    if !kvm_available() || !Path::new(sample).exists() || !has_script {
-        eprintln!("skipping: KVM, {sample} or util-linux script not available");
+    if !kvm_available() || !has_script {
+        eprintln!("skipping: KVM or util-linux script not available");
         return None;
     }
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1385,14 +1387,18 @@ fn run_4os2_script(vio: Option<&str>, dumps: &[&str], script: impl FnOnce(&[std:
         cmd.env("WARPINE_VIO", vio);
     }
     let status = cmd.status().expect("run script");
-    assert_session_closed(status, "4OS2");
+    assert_session_closed(status, "CMD.EXE");
     Some(paths.iter().map(|path| {
         let ppm = std::fs::read(path).unwrap_or_else(|_| panic!("no dump {} was written", path.display()));
         parse_ppm(&ppm)
     }).collect())
 }
 
-/// Pels of CGA light grey, the colour of 4OS2's text.
+/// Fewest light-grey pels that mean text is on the screen: the shell's
+/// prompt and one `ver` line give about 900; a blank screen none.
+const MIN_TEXT_PELS: usize = 500;
+
+/// Pels of CGA light grey, the colour of the shell's text.
 fn light_grey_pels(rgb: &[u8]) -> usize {
     const LIGHT_GREY: [u8; 3] = [0xAA, 0xAA, 0xAA];
     rgb.chunks(3).filter(|p| *p == LIGHT_GREY).count()
@@ -1474,21 +1480,21 @@ fn mouse_events_reach_a_full_screen_vio_program() {
 /// `ver` typed and Enter — and `dump` writes its 640×400 frame.
 #[test]
 fn text_mode_window_replays_a_gui_script_and_dumps_the_screen() {
-    let Some((w, h, rgb)) = run_4os2_session(Some("fullscreen")) else { return };
+    let Some((w, h, rgb)) = run_cmd_session(Some("fullscreen")) else { return };
     assert_eq!((w, h), (640, 400), "80×25 cells of 8×16 pels");
     let lit = light_grey_pels(&rgb);
-    assert!(lit > 1000, "only {lit} light-grey pels: no text on the screen");
+    assert!(lit > MIN_TEXT_PELS, "only {lit} light-grey pels: no text on the screen");
 }
 
 /// By default a window-compatible VIO program runs in a window on the PM
 /// desktop: the dump is the whole desktop, with the active frame's navy
-/// title bar and 4OS2's text in it.
+/// title bar and the shell's text in it.
 #[test]
 fn vio_program_runs_in_a_pm_window_by_default() {
-    let Some((w, h, rgb)) = run_4os2_session(None) else { return };
+    let Some((w, h, rgb)) = run_cmd_session(None) else { return };
     assert!((w, h) != (640, 400), "the PM desktop, not the text window");
     let lit = light_grey_pels(&rgb);
-    assert!(lit > 1000, "only {lit} light-grey pels: no text in the window");
+    assert!(lit > MIN_TEXT_PELS, "only {lit} light-grey pels: no text in the window");
     const NAVY: [u8; 3] = [0x00, 0x00, 0x80];
     let title = rgb.chunks(3).filter(|p| *p == NAVY).count();
     assert!(title > 1000, "only {title} navy pels: no active title bar");
@@ -1500,7 +1506,7 @@ fn vio_program_runs_in_a_pm_window_by_default() {
 /// full screen reach it.
 #[test]
 fn alt_home_switches_a_vio_program_between_window_and_full_screen() {
-    let Some(frames) = run_4os2_script(None, &["window", "full", "back"], |d| format!(
+    let Some(frames) = run_cmd_script(None, &["window", "full", "back"], |d| format!(
         "1500 text ver\n1700 key enter\n2800 dump {}\n3000 key alt+home\n\
          4000 text ver\n4200 key enter\n5000 dump {}\n5500 key alt+home\n6500 dump {}\n6600 quit\n",
         d[0].display(), d[1].display(), d[2].display())) else { return };
@@ -1509,7 +1515,7 @@ fn alt_home_switches_a_vio_program_between_window_and_full_screen() {
     assert_eq!((*fw, *fh), (640, 400), "full screen: the 80×25 text screen");
     assert_eq!((*bw, *bh), (*ww, *wh), "back on the desktop");
     let (before, full_lit, after) = (light_grey_pels(window), light_grey_pels(full), light_grey_pels(back));
-    assert!(before > 1000, "only {before} light-grey pels in the window");
+    assert!(before > MIN_TEXT_PELS, "only {before} light-grey pels in the window");
     // `ver` typed full screen adds its output to what was there.
     assert!(full_lit > before, "full screen shows the screen and the new output: {full_lit} <= {before}");
     assert!(after >= full_lit, "the window shows the same screen again: {after} < {full_lit}");
@@ -1522,7 +1528,7 @@ fn alt_home_switches_a_vio_program_between_window_and_full_screen() {
 /// desktop with the program's screen in a window, and switches back.
 #[test]
 fn alt_home_from_full_screen_opens_the_pm_window() {
-    let Some(frames) = run_4os2_script(Some("fullscreen"), &["full", "window", "again"], |d| format!(
+    let Some(frames) = run_cmd_script(Some("fullscreen"), &["full", "window", "again"], |d| format!(
         "1500 text ver\n1700 key enter\n2800 dump {}\n3000 key alt+home\n4000 dump {}\n\
          4200 key alt+home\n5200 dump {}\n5300 quit\n",
         d[0].display(), d[1].display(), d[2].display())) else { return };
@@ -1531,32 +1537,31 @@ fn alt_home_from_full_screen_opens_the_pm_window() {
     assert!(sizes[1] != (640, 400), "then the desktop");
     assert_eq!(sizes[2], (640, 400), "full screen again");
     let lit: Vec<_> = frames.iter().map(|(_, _, rgb)| light_grey_pels(rgb)).collect();
-    assert!(lit.iter().all(|&n| n > 1000), "the screen is shown every time: {lit:?}");
+    assert!(lit.iter().all(|&n| n > MIN_TEXT_PELS), "the screen is shown every time: {lit:?}");
 }
 
 /// A desktop dump: width, height and RGB pels.
 type Screen = (usize, usize, Vec<u8>);
-/// What [`run_4os2_windowed`] returns: the dumps, drive C:'s host directory
+/// What [`run_cmd_windowed`] returns: the dumps, drive C:'s host directory
 /// and the temporary directory holding it.
 type WindowedSession = (Vec<Screen>, std::path::PathBuf, tempfile::TempDir);
 
-/// Run 4OS2 in a window on the PM desktop, on a pseudo-terminal like
-/// [`run_4os2_session`], under the GUI script `steps` (`{dumpN}` stands for
-/// the N-th of `dumps` screen dumps), with drive C: in a fresh directory.
-/// Returns the dumps and C:'s host directory (removed when the `TempDir`
-/// is dropped); `None` when KVM, 4OS2 or `script` is missing.
-fn run_4os2_windowed(steps: &str, dumps: usize) -> Option<WindowedSession> {
-    run_4os2_windowed_with(steps, dumps, &[])
+/// Run the built-in CMD.EXE in a window on the PM desktop, on a
+/// pseudo-terminal like [`run_cmd_session`], under the GUI script `steps`
+/// (`{dumpN}` stands for the N-th of `dumps` screen dumps), with drive C: in
+/// a fresh directory. Returns the dumps and C:'s host directory (removed
+/// when the `TempDir` is dropped); `None` when KVM or `script` is missing.
+fn run_cmd_windowed(steps: &str, dumps: usize) -> Option<WindowedSession> {
+    run_cmd_windowed_with(steps, dumps, &[])
 }
 
-/// [`run_4os2_windowed`] with `files` (host paths) copied to drive C:'s root
+/// [`run_cmd_windowed`] with `files` (host paths) copied to drive C:'s root
 /// first; `None` also when one of them is missing.
-fn run_4os2_windowed_with(steps: &str, dumps: usize, files: &[&str]) -> Option<WindowedSession> {
-    let sample = "samples/4os2/4os2.exe";
+fn run_cmd_windowed_with(steps: &str, dumps: usize, files: &[&str]) -> Option<WindowedSession> {
+    let sample = "CMD.EXE";
     let has_script = Command::new("script").arg("--version").output().is_ok_and(|o| o.status.success());
-    if !kvm_available() || !Path::new(sample).exists() || !has_script
-        || files.iter().any(|f| !Path::new(f).exists()) {
-        eprintln!("skipping: KVM, {sample}, {files:?} or util-linux script not available");
+    if !kvm_available() || !has_script || files.iter().any(|f| !Path::new(f).exists()) {
+        eprintln!("skipping: KVM, {files:?} or util-linux script not available");
         return None;
     }
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1594,7 +1599,7 @@ fn run_4os2_windowed_with(steps: &str, dumps: usize, files: &[&str]) -> Option<W
         .stdout(Stdio::null())
         .status()
         .expect("run script");
-    assert_session_closed(status, "4OS2");
+    assert_session_closed(status, "CMD.EXE");
     let shots = paths.iter().map(|p| {
         parse_ppm(&std::fs::read(p).unwrap_or_else(|e| panic!("no screen dump {}: {e}", p.display())))
     }).collect();
@@ -1655,7 +1660,7 @@ fn vio_window_resizes_maximizes_restores_and_minimizes() {
         4200 dump {{dump4}}\n\
         4300 quit\n",
         cx = corner.0, cy = corner.1, sx = corner.0 - 275, sy = corner.1 - 150, ty = VIO_FRAME_TOP + 10);
-    let Some((shots, _, _dir)) = run_4os2_windowed(&steps, 5) else { return };
+    let Some((shots, _, _dir)) = run_cmd_windowed(&steps, 5) else { return };
     let full = navy_in_row(&shots[1], VIO_TITLE_Y);
     let small = navy_in_row(&shots[0], VIO_TITLE_Y);
     assert!(small + 200 < full, "shrunk: {small} navy title pels, {full} at full size");
@@ -1679,21 +1684,21 @@ fn vio_window_resizes_maximizes_restores_and_minimizes() {
 }
 
 /// The system menu's Copy All copies the screen and Paste types it back:
-/// with the prompt `md ` and a screen of `rem` lines, the pasted screen
-/// ends with the command line `md Mq9`, which creates the directory.
+/// after `cls` and `echo md Mq9`, one of the pasted lines is the command
+/// `md Mq9`, which creates the directory (the prompt lines around it are
+/// harmless unknown commands).
 #[test]
 fn vio_window_copy_all_and_paste_round_trip() {
     let steps = "\
-        1500 text prompt md$s\n1600 key enter\n\
-        1900 text for /l %i in (1,1,40) echo rem\n2000 key enter\n\
-        2600 text Mq9\n\
+        1500 text cls\n1600 key enter\n\
+        1900 text echo md Mq9\n2000 key enter\n\
         2800 key alt+space\n2900 key y\n\
         3000 key esc\n\
         3100 dump {dump0}\n\
         3200 key alt+space\n3300 key p\n\
         5000 key enter\n\
         5600 quit\n";
-    let Some((_, drive_c, _dir)) = run_4os2_windowed(steps, 1) else { return };
+    let Some((_, drive_c, _dir)) = run_cmd_windowed(steps, 1) else { return };
     assert!(has_dir(&drive_c, "Mq9"), "the pasted `md Mq9` ran: {:?}",
             std::fs::read_dir(&drive_c).map(|d| d.flatten().map(|e| e.file_name()).collect::<Vec<_>>()));
 }
@@ -1706,11 +1711,11 @@ fn lit_in_cell_row(shot: &(usize, usize, Vec<u8>), row: usize) -> usize {
     }).filter(|&(x, y)| gui_pixel(shot, x, y) != 0).count()
 }
 
-/// 4OS2's `cls` writes `ESC[2J`, which the VIO screen carries out (it was
-/// shown as a literal `[2J`); `echo … > file`, `>>` and an external program's
-/// `> file` write the file (DosDupHandle redirects handle 1 to the file).
+/// The built-in CMD.EXE in a VIO window: `echo … > file`, `>>` and an
+/// external program's `> file` write the file on drive C; `cls` clears the
+/// screen, leaving the prompt at the top.
 #[test]
-fn vio_window_4os2_cls_and_redirection() {
+fn vio_window_cmd_cls_and_redirection() {
     let steps = "\
         1500 text echo one > a.txt\n1600 key enter\n\
         1900 text echo two >> a.txt\n2000 key enter\n\
@@ -1719,13 +1724,14 @@ fn vio_window_4os2_cls_and_redirection() {
         3400 text cls\n3500 key enter\n\
         3900 dump {dump1}\n\
         4000 quit\n";
-    let Some((shots, drive_c, _dir)) = run_4os2_windowed_with(steps, 2, &["samples/hello/hello.exe"]) else { return };
+    let Some((shots, drive_c, _dir)) = run_cmd_windowed_with(steps, 2, &["samples/hello/hello.exe"]) else { return };
     let read = |name: &str| std::fs::read(drive_c.join(name)).unwrap_or_default();
     assert_eq!(read("a.txt"), b"one\r\ntwo\r\n", "echo > and >> wrote the file");
     assert!(read("c.txt").starts_with(b"Hello from Warpine OS/2 Environment!\r\n"),
             "the child's output went to the file: {:?}", String::from_utf8_lossy(&read("c.txt")));
-    // Before cls: the banner on rows 1-3; after: blank rows below the prompt.
-    assert!(lit_in_cell_row(&shots[0], 2) > 200, "the banner before cls");
+    // Before cls: the three command lines on rows 0-2; after: blank rows
+    // below the prompt.
+    assert!(lit_in_cell_row(&shots[0], 2) > 200, "the command lines before cls");
     assert!(lit_in_cell_row(&shots[1], 0) + lit_in_cell_row(&shots[1], 1) > 50, "the prompt after cls");
     for row in 2..8 {
         assert_eq!(lit_in_cell_row(&shots[1], row), 0, "row {row} is blank after cls");
@@ -1736,12 +1742,11 @@ fn vio_window_4os2_cls_and_redirection() {
 /// Copy it, and Paste it: the marked `md Zk4` runs.
 #[test]
 fn vio_window_mark_copy_and_paste() {
-    // Row 7 holds the prompt `md ` and the typed `Zk4` (4OS2's banner and
-    // the `prompt` command above it); mark its first 11 cells.
-    let row_y = VIO_CELLS_Y + 7 * 16 + 8;
+    // Row 1 holds `md Zk4`, echoed below the command on row 0; mark its
+    // first 11 cells, copy them and paste them at the prompt on row 2.
+    let row_y = VIO_CELLS_Y + 16 + 8;
     let steps = format!("\
-        1500 text prompt md$s\n1600 key enter\n\
-        2000 text Zk4\n\
+        1500 text echo md Zk4\n1600 key enter\n\
         2300 key alt+space\n2400 key a\n\
         2600 drag {x0} {row_y} {x1} {row_y}\n\
         2900 dump {{dump0}}\n\
@@ -1752,7 +1757,7 @@ fn vio_window_mark_copy_and_paste() {
         3900 key enter\n\
         4500 quit\n",
         x0 = VIO_CELLS_X + 4, x1 = VIO_CELLS_X + 10 * 8 + 4);
-    let Some((shots, drive_c, _dir)) = run_4os2_windowed(&steps, 2) else { return };
+    let Some((shots, drive_c, _dir)) = run_cmd_windowed(&steps, 2) else { return };
     let white = |s: &(usize, usize, Vec<u8>)| (VIO_CELLS_X..VIO_CELLS_X + 88)
         .filter(|&x| gui_pixel(s, x, row_y) == 0xFF_FFFF).count();
     assert!(white(&shots[0]) > 50, "the marked cells are inverted: {}", white(&shots[0]));

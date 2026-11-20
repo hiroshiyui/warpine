@@ -452,18 +452,19 @@ mod tests {
 
     #[test]
     fn test_parse_entry_table_and_nonresident_names() {
-        // jpos2dll.dll is in samples/4os2/ — only run if present
-        let path = "samples/4os2/jpos2dll.dll";
+        // samples/dll_noinit/noinit.dll (built with the Open Watcom
+        // samples) — only run if present
+        let path = "samples/dll_noinit/noinit.dll";
         if !std::path::Path::new(path).exists() { return; }
-        let lx = LxFile::open(path).expect("parse jpos2dll.dll");
-        // Entry table: 7 exports in object 1
-        assert_eq!(lx.exports.len(), 7, "expected 7 exports");
+        let lx = LxFile::open(path).expect("parse noinit.dll");
+        // Entry table: 3 exports in object 1
+        assert_eq!(lx.exports.len(), 3, "expected 3 exports");
         assert!(lx.exports.iter().all(|e| e.object_num == 1), "all in object 1");
-        assert!(lx.exports.iter().enumerate().all(|(i, e)| e.ordinal == (i + 1) as u32), "ordinals 1..7");
-        // Non-resident names: 7 entries
-        assert_eq!(lx.nonresident_names.len(), 7);
-        let has_sendkeys = lx.nonresident_names.iter().any(|(_, n)| n == "SendKeys");
-        assert!(has_sendkeys, "SendKeys not in nonresident names");
+        assert!(lx.exports.iter().enumerate().all(|(i, e)| e.ordinal == (i + 1) as u32), "ordinals 1..3");
+        // Non-resident names: the two exported by ordinal only.
+        let nonresident: Vec<&str> = lx.nonresident_names.iter().map(|(_, n)| n.as_str()).collect();
+        assert_eq!(nonresident, ["NoInitAdd", "NoInitTwice"]);
+        assert!(lx.resident_names.iter().any(|(o, n)| *o == 3 && n == "NoInitAnswer"), "the resident one");
     }
 
     /// A names table: length, name, ordinal; ended by a zero length, the

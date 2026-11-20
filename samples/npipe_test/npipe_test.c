@@ -18,7 +18,7 @@
  *                    DosCallNPipe; the exit code is the number of failures
  *
  * Copied as FIND.EXE it is a minimal FIND: it prints the lines of its
- * standard input that contain its argument (the 4OS2 pipeline test).
+ * standard input that contain its argument (the shell pipeline test).
  *
  * The parent checks, one line each on stdout:
  *

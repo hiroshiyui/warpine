@@ -10,6 +10,8 @@ samples/rust_hello/target/
 *.err
 *.res
 *.map
+# The 32-bit copy of bsesub.h the VIO samples generate (samples/bsesub32.mk)
+build-bsesub32/
 *.gz
 # Runtime artifacts from OS/2 sample apps
 test.txt

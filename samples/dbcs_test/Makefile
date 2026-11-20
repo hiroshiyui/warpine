@@ -1,11 +1,11 @@
 # samples/dbcs_test/Makefile
-# Built against 4OS2's bsesub.h, which declares the Vio* calls _Pascal
-# instead of APIENTRY16, so they are direct 32-bit imports from VIOCALLS
-# (VioWrtCellStr 10, VIO16CHECKCHARTYPE 75 from os2386.lib).
+# Built against bsesub32.mk's copy of bsesub.h, which declares the Vio*,
+# Kbd* and Mou* calls _Pascal instead of APIENTRY16: direct 32-bit imports.
 WATCOM_ROOT = $(CURDIR)/../../vendor/watcom
+include ../bsesub32.mk
 WCC386      = $(WATCOM_ROOT)/binl64/wcc386
 WLINK       = $(WATCOM_ROOT)/binl64/wlink
-INCLUDE     = $(CURDIR)/../4os2/h:$(WATCOM_ROOT)/h/os2:$(WATCOM_ROOT)/h
+INCLUDE     = $(BSESUB32_DIR):$(WATCOM_ROOT)/h/os2:$(WATCOM_ROOT)/h
 
 all: dbcs_test.exe
 
@@ -15,7 +15,7 @@ dbcs_test.exe: dbcs_test.obj
 	    file dbcs_test.obj \
 	    name dbcs_test.exe
 
-dbcs_test.obj: dbcs_test.c
+dbcs_test.obj: dbcs_test.c $(BSESUB32_H)
 	@if [ ! -d "$(WATCOM_ROOT)" ]; then \
 		echo "Error: Open Watcom not found. Run ../../vendor/setup_watcom.sh first."; \
 		exit 1; \
@@ -24,4 +24,5 @@ dbcs_test.obj: dbcs_test.c
 	$(WCC386) -q -bt=os2 -fo=dbcs_test.obj dbcs_test.c
 
 clean:
+	rm -rf build-bsesub32
 	rm -f *.exe *.obj *.err *.map

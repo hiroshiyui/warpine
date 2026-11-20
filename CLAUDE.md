@@ -10,6 +10,7 @@ Warpine is an OS/2 compatibility layer for Linux, like WINE for OS/2. It runs:
 
 They run natively under KVM.
 - **License:** GPL-3.0-or-later (ADR-0074).
+- **Goal: an OS/2-alike API and its runtime environment** — a familiar, robust API set as the foundation of a Free Software platform; an OS/2-API-compatible product, not a clone. Running every existing OS/2 application is not a goal; compatibility work for a legacy application that matters to people is done case by case. Anything that needs proprietary intellectual property is skipped, not worked around.
 - **Engineering policy: near-clean-room, blackbox implementation.**
   - API behaviour comes from public documentation only: IBM's *Control Program* and *PM Programming References*, the OS/2 Warp 4 Toolkit headers, IBM Developer Connection, and osFree / ReactOS references.
   - No IBM binaries, ROM dumps or disassembly of OS/2 system libraries.
@@ -28,7 +29,7 @@ They run natively under KVM.
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2037 unit tests (1994 warpine + 19 gen_api + 13 lx_link + 5 gen_arch + 6 gen_compat) + 170 integration tests
+cargo test                                 # 2039 unit tests (1996 warpine + 19 gen_api + 13 lx_link + 5 gen_arch + 6 gen_compat) + 170 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); afterwards `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -44,7 +45,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
 - **Open Watcom samples:**
   - Fetch the compiler with `./vendor/setup_watcom.sh`: a pinned, dated snapshot checked by SHA-256 (ADR-0066); `--refresh` replaces a snapshot older than 2026-08-11 (ADR-0036).
   - Then run `make -C samples/<name>`, or `make -C samples` for all.
-  - 4OS2: `cd samples/4os2 && ./fetch_source.sh && make`.
+  - The VIO / KBD / MOU samples generate a 32-bit copy of Open Watcom's `bsesub.h` at build time (`samples/bsesub32.mk`).
 - **Rust guests:**
   - The crates in `crates/` (`warpine-os2-sys` / `-rt` / `warpine-os2`) are outside the host workspace, and pin `nightly-2026-11-15`.
   - Install the linker with `cargo build --bin lx_link && cp target/debug/lx_link ~/.cargo/bin/lx-link`.

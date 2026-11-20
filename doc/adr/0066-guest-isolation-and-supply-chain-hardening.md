@@ -1,6 +1,6 @@
 # ADR-0066: Guests cannot touch the host environment or host Unix sockets; downloads and toolchains are pinned and verified; a cargo-deny policy guards dependencies
 
-- **Status:** Accepted
+- **Status:** Accepted; its 4OS2 pin is moot since ADR-0075 removed 4OS2
 - **Date:** 2026-11-19
 - **Sources:**
   - Guest isolation:

@@ -11,7 +11,7 @@
 
 Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS/2 1.x (NE format) applications natively on Linux using KVM hardware virtualization. Analogous to WINE for Windows, but targeting OS/2 instead.
 
-![The 4OS2 command shell in Warpine's 80×25 text window: its version banner, then the ver command and a wide dir listing of drive C:, ending at the [c:\\] prompt](doc/screenshots/4os2.png)
+![Warpine's built-in CMD.EXE in its 80×25 text window: the ver command (Warpine OS/2 Compatibility Layer [Builtin CMD.EXE]) and a dir listing of drive C:, ending at the [C:\\] prompt](doc/screenshots/cmd.png)
 
 <!-- screenshots:begin -->
 ## Screenshots
@@ -26,8 +26,8 @@ Warpine is a compatibility layer that runs 32-bit OS/2 (LX format) and 16-bit OS
 | **Built-in controls and typing.** The entry field was clicked and typed into (`Hello, Wörld!` at the end, then *Home* and `>>` at the start); in the multi-line field, Enter after "Line one" and `three` started a new line. | **Dialogs from the keyboard.** Ctrl+D, from the window's accelerator table, opens a modal dialog built from a `DLGTEMPLATE` resource. `Warp` was typed into the focused field, then Tab and Down twice picked *Green*. |
 | ![PM Slider / Value Set Test window: a horizontal slider with a 0 to 5 scale, arrow buttons, a blue ribbon strip and its arm on a detent; a half-filled progress slider; a slider with a red owner-drawn arm; a vertical slider with buttons and ticks; a grid of eight colour items with red selected; a row of value set items with blue selected and an owner-drawn yellow item; and text items Three (selected), a greyed Two and One](doc/screenshots/pm_slider_valueset.png) | ![The "Container trees and grids" window: on the left a tree view with dotted tree lines, a folder "Alpha" with Gamma, A1 and A2 (expanded, holding A21), a collapsed-expander "Beta" with items b01 to b11 and a vertical scroll bar; on the right an icon view with six page icons, One, Two, Three, Four, Five and Under, laid out on a grid](doc/screenshots/pm_cnrgrid.png) |
 | **Sliders and value sets.** A scripted session clicked the shaft, dragged the arm, pressed a button and the arrow keys, and Shift+Right moved the arm to a detent; the red arm is drawn by the owner. In the value sets, clicks and keys selected items; "Two" is disabled. | **Container trees and grids.** `WC_CONTAINER` in the tree view with tree lines and expanders (`CA_TREELINE`), and in the icon view arranged on a grid (`CM_SETGRIDINFO`, `CMA_ARRANGEGRID`). Context menus (`WM_CONTEXTMENU`) and the mouse wheel reach containers too. |
-| ![The "Embedded dialog chrome" window: a grey client with an entry field reading "q" and an "Out" button above an embedded "Inner dialog" with a dark grey title bar and a thin border, holding an entry field reading "xy", a "Press" button with the focus outline and a blue square drawn by the program's own window](doc/screenshots/pm_embdlg.png) | ![4OS2 in a "Warpine — 4os2.exe" frame on the PM desktop, white on blue after color and cls: the ver command reporting OS/2 Version 4.50 and a wide dir listing of an empty drive C:, ending at the [c:\\] prompt](doc/screenshots/4os2_window.png) |
-| **Dialogs inside windows.** A dialog loaded with the client as its parent lives inside the client and draws the title bar and border its template asks for. Tab went from the client's entry field into the dialog (`xy`), out again (`q`), and Shift+Tab back to *Press*; the blue square is a window of the program's own class, which gets its own clicks. | **Text-mode programs in a PM window.** 4OS2 runs in a frame on the PM desktop, as in an OS/2 window session. The ANSI sequences it prints for `color` and `cls` are interpreted. `WARPINE_VIO=fullscreen` runs it full screen instead (the text window at the top of this page). |
+| ![The "Embedded dialog chrome" window: a grey client with an entry field reading "q" and an "Out" button above an embedded "Inner dialog" with a dark grey title bar and a thin border, holding an entry field reading "xy", a "Press" button with the focus outline and a blue square drawn by the program's own window](doc/screenshots/pm_embdlg.png) | ![The built-in CMD.EXE in a "Warpine — CMD.EXE" frame on the PM desktop: ver, mkdir PROJECTS, echo … > HELLO.TXT, a dir listing showing PROJECTS and the 33-byte HELLO.TXT on drive C:, and type HELLO.TXT printing "Hello from the built-in CMD.EXE"](doc/screenshots/cmd_window.png) |
+| **Dialogs inside windows.** A dialog loaded with the client as its parent lives inside the client and draws the title bar and border its template asks for. Tab went from the client's entry field into the dialog (`xy`), out again (`q`), and Shift+Tab back to *Press*; the blue square is a window of the program's own class, which gets its own clicks. | **Text-mode programs in a PM window.** Warpine's built-in `CMD.EXE` runs in a frame on the PM desktop, as in an OS/2 window session: `mkdir`, an `echo` redirected into a file on drive C:, `dir` and `type`. `WARPINE_VIO=fullscreen` runs it full screen instead (the text window at the top of this page). |
 
 ### Work in progress
 
@@ -46,14 +46,14 @@ _Screenshots captured from commit `df07985` (v0.0.6) on 2026-11-20._
 - **LX Executable Parser:** Full support for LX headers, object tables, page maps, fixups, resource tables, import tables, entry tables, and non-resident names tables.
 - **KVM Hypervisor:** Custom VMM executing 32-bit OS/2 code at native speed via hardware-accelerated virtualization.
 - **API Thunking:** System call interception via `INT 3` traps bridging guest OS/2 calls to host Rust implementations. Covers DOSCALLS, QUECALLS, PMWIN, PMGPI, KBDCALLS, VIOCALLS, MOUCALLS, NLS, MSG, MDM (MMPM/2), UCONV, SO32DLL, TCP32DLL, PMSHAPI, HELPMGR, PMSPL and PMCTLS, plus Warpine's own WARPINE.DLL — 624 entry points total.
-- **DLL Loader Chain:** Runtime dynamic loading via `DosLoadModule` / `DosQueryProcAddr` / `DosQueryModuleHandle`. User DLLs are loaded into guest memory with rebased objects and export maps. `jpos2dll.dll` (4OS2 extension) loads and resolves all 7 exports at startup.
+- **DLL Loader Chain:** Runtime dynamic loading via `DosLoadModule` / `DosQueryProcAddr` / `DosQueryModuleHandle`. User DLLs are loaded into guest memory with rebased objects and export maps. Exports are found by ordinal and by name in both names tables, and `_DLL_InitTerm` routines run at start and in `DosLoadModule`.
 - **Multi-Threading:** OS/2 threads mapped 1:1 to host threads, each with its own KVM vCPU; ending a thread ends only that thread, `DosWaitThread` / `DosKillThread` / `DosSuspendThread` / `DosResumeThread` follow the Control Program Reference, a thread spinning in its own code can be stopped (each vCPU can be kicked out of the guest), signal exceptions reach thread 1, and vCPUs of ended threads are reused.
 - **Presentation Manager (GUI):** Window management, message loop, graphics primitives (drawn on the calling thread, so `GpiQueryPel` reads pixels back and `GpiSetMix` raster operations such as XOR combine with what is there), memory presentation spaces, bitmaps (`GpiCreateBitmap`, `GpiLoadBitmap`) and `GpiBitBlt` with raster operations and stretching, logical colour tables, polylines, regions and clipping, areas, paths, polygons and curves, presentation-space state with save / restore, coordinate transforms and page units, text layout with character angle, shear and direction, `WinDrawText`, update rectangles with `WinScrollWindow` and `WinDrawBorder`, the rectangle helpers, interactive scroll bars, the standard file and font dialogs, the switch list, atom tables and DDE within a program, combination boxes, spin buttons, sliders, value sets, owner-drawn list boxes, menu items and buttons, static icons and bitmaps, presentation parameters (colours and fonts), hooks and message broadcasts, frame controls, accelerator tables made at run time, the text cursor, window lookups (`WinMapWindowPoints`, `WinWindowFromPoint`, `WinEnumDlgItem` …), key state, system colours, timers, clipboard, dialogs, menus, and resource loading via SDL. Each window is kept as its own texture and drawn by the platform's accelerated SDL renderer with vsync, so moving windows costs no redrawing (`WARPINE_COMPOSITOR=software` composites on the CPU instead).
 - **One desktop per session:** the PM programs of a session — each its own Warpine process — share one desktop owned by a desktop server process: their windows stack and activate across programs, input reaches them in the order it was typed, and a program can list every window on the desktop, query, send, post and broadcast to, move, minimize, hide and activate another program's windows (`WinBeginEnumWindows`, `WinSendMsg`, `WinBroadcastMsg`, `WinQueryWindowProcess`, `WinSetWindowPos`, …). The programs share the window list (Ctrl+Esc), the switch list and the system atom table, and talk DDE with each other.
 - **Frame system menu:** PM frames open their system menu by a click on the icon, Alt+Space or Shift+Esc; choices reach the program as `WM_SYSCOMMAND`, and Move / Size (Alt+F7 / Alt+F8) work from the keyboard. `WinPopupMenu` shows pop-up menus.
 - **IBM Plex Typography:** All PM text (title bars, menus, dialogs, controls, and GPI text) is rendered anti-aliased in the embedded IBM Plex Sans / Mono / Serif families, with IBM Plex Sans JP / KR / TC / SC for CJK and GNU Unifont as the last-resort fallback. `GpiCreateLogFont` maps OS/2 face names, bold/italic and size onto these faces; font metrics APIs report their real proportional widths.
 - **Text-mode programs in a PM window:** a VIO program runs in a window on the PM desktop, as in an OS/2 window session — CP437 8×16 font, CGA 16-colour palette, blinking cursor. The window can be resized (scroll bars over the screen), minimized and maximized, its system menu marks and copies text and pastes the clipboard as keystrokes, and the mouse reaches programs through MOUCALLS. `WARPINE_VIO=fullscreen` runs it full screen instead (the only choice for programs marked incompatible with PM windowing), Alt+Home switches between the two while it runs, and `WARPINE_HEADLESS=1` uses the host terminal.
-- **Text-Mode Console:** Full VIO and KBD subsystem emulation with screen buffer, cursor management, scroll, and keyboard input; ANSI escape sequences in `VioWrtTTY` / `DosWrite` output (cursor, `cls`, colours), and output redirected to files with `DosDupHandle` (`echo text > file` in 4OS2).
+- **Text-Mode Console:** Full VIO and KBD subsystem emulation with screen buffer, cursor management, scroll, and keyboard input; ANSI escape sequences in `VioWrtTTY` / `DosWrite` output (cursor, `cls`, colours), and output redirected to files with `DosDupHandle` (`echo text > file` from a shell).
 - **Filesystem:** HPFS-compatible VFS (`VfsBackend` trait) with `HostDirBackend`: case-insensitive lookup, extended attributes (xattrs + sidecar), file locking, OS/2 wildcard matching, sandbox isolation. C: drive auto-mounted at `~/.local/share/warpine/drive_c/`.
 - **Memory Management:** `DosAllocMem`/`DosFreeMem`, shared memory between the processes of a session, `DosSub*` suballocation (bookkeeping kept by Warpine), guest physical memory manager.
 - **IPC and threads:** Event / mutex / muxwait semaphores with their queries, critical sections, DOS timers posting semaphores, exit lists (`DosExitList`), per-thread exception handlers, anonymous and named pipes (also between Warpine processes), and named message queues.
@@ -66,7 +66,7 @@ _Screenshots captured from commit `df07985` (v0.0.6) on 2026-11-20._
 - **NE Format Execution:** Full NE (New Executable) loader and 16-bit execution — loads OS/2 1.x 16-bit NE binaries into GDT-tiled guest memory, dispatches DOSCALLS/VIOCALLS via Pascal-convention 16-bit thunks. `ne_hello` (pure assembly, no Watcom CRT) runs `DosWrite`+`DosExit` correctly.
 - **GDB Remote Stub:** `--gdb <port>` enables GDB RSP over TCP — attach with `gdb`/`gef`/`pwndbg` for software breakpoints, single-step, and full register/memory access.
 - **Crash Dump Facility:** Structured crash reports on fatal VMEXITs — registers, stack, code bytes, and last 256 API calls written to `warpine-crash-<pid>.txt`.
-- **Builtin CMD.EXE Shell:** Native Rust command shell. `cargo run -- CMD.EXE` opens it in a window on the PM desktop (same as any CLI app); `WARPINE_HEADLESS=1` falls back to the host terminal. Also intercepts `DosExecPgm("CMD.EXE")` from running OS/2 guests. No Open Watcom or 4OS2 required. Built-in commands: `DIR`, `CD`, `SET`, `ECHO`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `HELP`, `EXIT`. Line editor with history (↑/↓). `.CMD` script interpreter.
+- **Builtin CMD.EXE Shell:** Native Rust command shell. `cargo run -- CMD.EXE` opens it in a window on the PM desktop (same as any CLI app); `WARPINE_HEADLESS=1` falls back to the host terminal. Also intercepts `DosExecPgm("CMD.EXE")` from running OS/2 guests. No Open Watcom required; output redirection stays inside the drives. Built-in commands: `DIR`, `CD`, `SET`, `ECHO`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `HELP`, `EXIT`. Line editor with history (↑/↓). `.CMD` script interpreter.
 - **Rust Guest Toolchain (Phase C):** Write OS/2 guest applications in Rust with `no_std`. Three standalone crates: `crates/warpine-os2-sys` (raw API bindings for DOSCALLS/VIOCALLS/KBDCALLS), `crates/warpine-os2-rt` (`_start` + panic handler + global allocator via `DosAllocMem`/`DosFreeMem`), `crates/warpine-os2` (ergonomic wrappers: `mod file`, `mod memory`, `mod thread`, `mod vio`, `mod process`). `samples/rust_hello` demonstrates a full Rust→LX binary with `cargo build` on the pinned nightly.
 - **API Compatibility Report:** `warpine --compat` prints a module-grouped report of all implemented APIs with stub annotations.
 
@@ -120,7 +120,6 @@ src/
 samples/               OS/2 sample applications and build scripts
   hello/               DosWrite "Hello" — basic smoke test
   alloc_test/          DosAllocMem/DosFreeMem round-trip
-  4os2/                4OS2 command shell (fetch_source.sh + make; includes jpos2dll.dll)
   pm_demo/             Presentation Manager GUI demo
   pm_hello/            Minimal PM "Hello World" window
   pm_bench/            PM self-benchmark: GPI, message, paint and timer rates
@@ -219,6 +218,7 @@ samples/               OS/2 sample applications and build scripts
   som_ordinal_test/    SOM.DLL imported by IBM's ordinals 1–47 (osFree's list): data, NewClass, ids, printing
   som_test/            Open Watcom's SOM samples (helloc, classes, animals, hellocpp) on Warpine's SOM runtime, with hand-written C and C++ bindings, and class loading and unloading by name
   dllinit_test/        DLL initialization at start and in DosLoadModule, OS/2 module paths
+  dll_noinit/          A DLL with exports and no initialization routine (loader unit tests)
   pm_font_test/        GPI font selection (IBM Plex families, styles, sizes) and CJK text
   pm_shapes_test/      GPI arcs, area patterns and line widths, checked with GpiQueryPel
   pm_codepage_test/    Queue and presentation-space codepages (WinSetCp, CP1004, GpiSetCp)
@@ -292,10 +292,9 @@ cargo run -- CMD.EXE /C "ECHO Hello!"     # Run one command and exit
 cargo run -- CMD.EXE /K "VER"             # Run one command then stay interactive
 ```
 
-### 5. Run 4OS2 (full-featured OS/2 command shell)
+### 5. Run a VIO sample in a window
 ```bash
-cd samples/4os2 && ./fetch_source.sh && make && cd ../..
-cargo run -- samples/4os2/4os2.exe
+make -C samples/screen_test && cargo run -- samples/screen_test/screen_test.exe
 ```
 
 ### 6. Build and run a Rust guest binary
@@ -343,8 +342,8 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 1901 unit tests (no KVM required)
-cargo test --test integration     # 139 end-to-end tests (requires /dev/kvm)
+cargo test                        # 2039 unit tests (no KVM required)
+cargo test --test integration     # 170 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
 
@@ -355,12 +354,12 @@ cargo clippy --all-targets -- -D warnings  # Lint, test code included — must p
 | 1 | Foundation — LX parser, KVM loader, basic API thunks | ✅ Complete |
 | 2 | Core Subsystem — memory, filesystem, threading, IPC, process management | ✅ Complete |
 | 3 | Presentation Manager — window management, graphics, input, timers, SDL | ✅ Complete |
-| 3.5 | Text-Mode Application Support — VIO/KBD console, 4OS2 shell | ✅ Complete |
+| 3.5 | Text-Mode Application Support — VIO/KBD console, command shell | ✅ Complete |
 | 4 | HPFS-Compatible VFS — VfsBackend, HostDirBackend, EA, file locking | ✅ Complete |
-| 4.5 | 16-bit Thunk Fix — eliminated 16-bit thunks in 4OS2 via recompilation | ✅ Complete |
+| 4.5 | 16-bit Thunk Fix — VIO/KBD/MOU calls as direct 32-bit imports instead of 16-bit thunks | ✅ Complete |
 | 5 | Multimedia & 16-bit — MMPM/2 audio baseline; NE parser + full 16-bit NE execution | ✅ Complete |
 | 6 | SDL VGA Text Renderer — 640×400 CP437 window, CGA palette, blinking cursor | ✅ Complete |
-| 7 | Application Compatibility — DLL loader chain baseline (jpos2dll.dll) | 🔄 In progress |
+| 7 | Application Compatibility — DLL loader chain (`DosLoadModule`, DLL initialization), case by case | 🔄 In progress |
 | 8 | SOM / Workplace Shell — the SOM kernel runs Open Watcom's SOM samples and builds IBM-style classes; the WPS is not started | 🔄 In progress |
 | 9 | XE — 64-bit OS/2-lineage platform (new format + API set + Rust toolchain) | 🔮 Far future |
 

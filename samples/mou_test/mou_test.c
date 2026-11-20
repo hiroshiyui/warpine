@@ -15,8 +15,9 @@
  * Warpine's display, so the integration test reads the file). The last line
  * is "done: N failed".
  *
- * Build: make -C samples/mou_test   (uses 4OS2's bsesub.h: APIENTRY16 ->
- * _Pascal, so the Mou* calls are direct 32-bit imports, no 16-bit thunks).
+ * Build: make -C samples/mou_test   (uses the bsesub.h samples/bsesub32.mk
+ * generates: APIENTRY16 -> _Pascal, so the Mou* calls are direct 32-bit
+ * imports, no 16-bit thunks).
  */
 
 #define INCL_DOS
