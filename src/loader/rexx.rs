@@ -1,20 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// REXX, the built-in CMD.EXE's scripting language (ADR-0081, ADR-0083):
+// REXX, the built-in CMD.EXE's scripting language (ADR-0081, ADR-0083,
+// ADR-0084):
 // our own interpreter, written from IBM's public REXX documentation,
 // Cowlishaw's The REXX Language and ANSI X3.274-1996. A `.CMD` file whose
 // first line starts with `/*` runs here; its commands go to the shell.
 
 pub mod builtins;
+pub mod condition;
 pub mod expr;
 pub mod interp;
 pub mod lexer;
 pub mod number;
 pub mod program;
+pub mod rexxutil;
+pub mod stream;
 pub mod template;
+pub mod trace;
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::collections::{HashMap, VecDeque};
 
     use super::interp::{run_program, CallType, Host, RexxError};
@@ -30,6 +36,9 @@ mod tests {
         input: VecDeque<Vec<u8>>,
         env: HashMap<Vec<u8>, Vec<u8>>,
         externals: HashMap<Vec<u8>, Vec<u8>>,
+        /// HALT: 0 never; n: the program is asked to stop from the n-th
+        /// look on.
+        halt: Cell<u32>,
     }
 
     impl Host for TestHost {
@@ -42,7 +51,13 @@ mod tests {
             Some(c.strip_prefix("exit ").and_then(|n| n.parse().ok()).unwrap_or(0))
         }
         fn read_line(&mut self) -> Option<Vec<u8>> { self.input.pop_front() }
-        fn interrupted(&self) -> bool { false }
+        fn interrupted(&self) -> bool {
+            match self.halt.get() {
+                0 => false,
+                1 => true,
+                n => { self.halt.set(n - 1); false }
+            }
+        }
         fn now(&self) -> Option<(LocalTime, u8)> {
             let mut t = LocalTime::new(2026, 11, 20, 13, 5, 9);
             t.weekday = 5;
@@ -60,9 +75,15 @@ mod tests {
         }
     }
 
+    /// Run `src` as the shell does, on a thread with the interpreter's
+    /// stack.
     fn run_with(host: &mut TestHost, src: &str, arg: &str) -> Result<Option<String>, RexxError> {
-        run_program(host, src.as_bytes(), b"C:\\TEST.CMD", vec![Some(arg.as_bytes().to_vec())], CallType::Command)
-            .map(|v| v.map(|v| String::from_utf8_lossy(&v).into_owned()))
+        std::thread::scope(|scope| {
+            std::thread::Builder::new().stack_size(64 * 1024 * 1024).spawn_scoped(scope, || {
+                run_program(host, src.as_bytes(), b"C:\\TEST.CMD", vec![Some(arg.as_bytes().to_vec())], CallType::Command)
+                    .map(|v| v.map(|v| String::from_utf8_lossy(&v).into_owned()))
+            }).unwrap().join().unwrap()
+        })
     }
 
     /// Run `src`; returns SAY's lines.
@@ -147,7 +168,8 @@ mod tests {
         let mut h = TestHost::default();
         run_with(&mut h, "'dir /w'; say rc; 'exit 3'; say rc; address cmd 'ver'; address other 'x'; say rc; address; say address()", "").unwrap();
         assert_eq!(h.commands.iter().map(|(_, c)| c.as_str()).collect::<Vec<_>>(), ["dir /w", "exit 3", "ver"]);
-        assert_eq!(h.out, ["0", "3", "-3", "CMD"]);
+        // TRACE N (the default) shows the failure: an unknown environment.
+        assert_eq!(h.out, ["0", "3", "     1 *-* address other 'x'", "       +++ RC(-3) +++", "-3", "CMD"]);
         let mut h = TestHost::default();
         h.env.insert(b"PATH".to_vec(), b"C:\\".to_vec());
         run_with(&mut h, "say value('path',,'OS2ENVIRONMENT'); call value 'NEW', 'set', 'OS2ENVIRONMENT'", "").unwrap();
@@ -175,6 +197,83 @@ mod tests {
         assert_eq!(say("say date() date('S') date('W') date('B') time() time('M')"), ["20 Nov 2026 20261120 Friday 739939 13:05:09 785"]);
         assert_eq!(say("say digits() fuzz() form() errortext(16) random(5, 5) length(xrange('a', 'e'))"), ["9 0 SCIENTIFIC Label not found 5 5"]);
         assert_eq!(say("say (bitand('73'x, '27'x) == '23'x) (bitor('15'x, '24'x) == '35'x)"), ["1 1"]);
+    }
+
+    #[test]
+    fn conditions_are_trapped() {
+        assert_eq!(say("signal on syntax\nsay 1 + 'a'\nexit\nsyntax: say 'trapped' rc sigl condition('C') condition('S')"),
+                   ["trapped 41 2 SYNTAX OFF"]);
+        assert_eq!(say("signal on novalue; say x; exit\nnovalue: say condition('D') condition('I')"), ["X SIGNAL"]);
+        assert_eq!(say("signal on novalue; s.1 = 1; say s.1; say s.2; exit\nnovalue: say 'nv' condition('D')"), ["1", "nv S.2"]);
+        assert_eq!(say("signal on novalue; signal off novalue; say y"), ["Y"]);
+        assert_eq!(say("call on error\n'exit 3'\nsay 'after' rc\nexit\nerror: say 'error' condition('D') condition('S') sigl; return"),
+                   ["error exit 3 DELAY 2", "after 3"]);
+        assert_eq!(say("trace o; signal on failure; address other 'x'; exit\nfailure: say 'failed' rc"), ["failed -3"]);
+        assert_eq!(say("trace o; signal on error; address other 'x'; exit\nerror: say condition('C')"), ["ERROR"], "an untrapped FAILURE raises ERROR");
+        assert_eq!(say("'exit 1'; say 'ignored'"), ["ignored"], "no trap: nothing happens");
+        assert_eq!(say("call r; say z; exit\nr: signal on novalue; return"), ["Z"], "traps come back after a routine");
+        assert_eq!(say("signal on syntax name oops; x = 1/0; exit\noops: say 'oops'"), ["oops"]);
+        assert_eq!(say("call on error name e1; 'exit 2'; 'exit 4'; exit\ne1: say rc; return"), ["2", "4"]);
+        let src = "signal on syntax\ncall r\nexit\nr: signal off syntax; say 1 + 'a'; return\nsyntax: say 'caller'";
+        assert_eq!(error(src), (41, 4), "a routine's untrapped error is not its caller's");
+        assert_eq!(error("signal on syntax name nowhere; say 1 + 'a'"), (16, 1));
+    }
+
+    #[test]
+    fn halt_is_raised_once() {
+        let run = |src: &str, halt_at: u32| {
+            let mut h = TestHost::default();
+            h.halt.set(halt_at);
+            let r = run_with(&mut h, src, "");
+            (h.out, r.map_err(|e| e.code))
+        };
+        assert_eq!(run("signal on halt; do forever; nop; end\nhalt: say 'halted' condition('C')", 2), (vec!["halted HALT".to_string()], Ok(None)));
+        assert_eq!(run("call on halt; do i = 1 to 3; nop; end; say 'done'; exit\nhalt: say 'h'; return", 2),
+                   (vec!["h".to_string(), "done".to_string()], Ok(None)));
+        assert_eq!(run("say 'never'", 1), (vec![], Err(4)), "an untrapped HALT ends the program");
+        assert_eq!(run("signal on halt; nop\nhalt: do forever; end", 2).1, Err(4), "a program that goes on is ended");
+    }
+
+    #[test]
+    fn trace_writes_clauses_and_values() {
+        assert_eq!(say("trace r; x = 1 + 2"), ["     1 *-* x = 1 + 2", "       >>>   \"3\""]);
+        assert_eq!(say("a = 2; trace i; say a + 1"),
+                   ["     1 *-* say a + 1", "       >V>   \"2\"", "       >L>   \"1\"", "       >O>   \"3\"", "       >>>   \"3\"", "3"]);
+        assert_eq!(say("trace e; 'exit 3'; 'exit 0'"), ["     1 *-* 'exit 3'", "       +++ RC(3) +++"]);
+        assert_eq!(say("trace l; call f; exit\nf: return"), ["     2 *-* f:"]);
+        assert_eq!(say("trace a; x = 1,\n  + 1"), ["     1 *-* x = 1,", "       *,* + 1"]);
+        assert_eq!(say("trace r; parse value 'a b' with x ."), ["     1 *-* parse value 'a b' with x .", "       >>>   \"a b\"",
+                       "       >>>   \"a\"", "       >.>   \"b\""]);
+        assert_eq!(say("say trace('O') trace(); trace ?r; say trace(); trace off; say trace()"), ["N O", "     1 *-* say trace()", "       >>>   \"?R\"", "?R",
+                   "     1 *-* trace off", "       >>>   \"off\"", "O"]);
+        assert_eq!(say("trace 5; trace -1; say 'numbers are ignored'"), ["numbers are ignored"]);
+        assert_eq!(error("trace x"), (24, 1));
+    }
+
+    #[test]
+    fn engineering_notation() {
+        assert_eq!(say("numeric form engineering; say 1.23E+10 * 1 form(); numeric form; say 1.23E+10 * 1"), ["12.3E+9 ENGINEERING", "1.23E+10"]);
+    }
+
+    #[test]
+    fn rexxutil_functions_are_registered() {
+        assert_eq!(say("say rxfuncquery('SysCls') rxfuncadd('MyVer', 'RexxUtil', 'SysOS2Ver') myver() rxfuncdrop('MyVer') rxfuncquery('MyVer') rxfuncadd('X', 'RXSOCK', 'X')"),
+                   ["0 0 2.45 0 1 1"]);
+        assert_eq!(say("call RxFuncAdd 'SysLoadFuncs', 'RexxUtil', 'SysLoadFuncs'; call SysLoadFuncs; say SysOS2Ver() SysBootDrive()"), ["2.45 C:"]);
+        assert_eq!(error("call SysDropFuncs; call SysCls"), (43, 1));
+        assert_eq!(say("call SysSleep 0; say 'slept'"), ["slept"]);
+    }
+
+    #[test]
+    fn default_streams() {
+        let mut h = TestHost { input: VecDeque::from([b"ab".to_vec(), b"cdef".to_vec()]), ..Default::default() };
+        run_with(&mut h, "say lines() linein() chars(); say charin(,,3); pull rest; say rest lines(); call lineout , 'out'", "").unwrap();
+        assert_eq!(h.out, ["1 ab 6", "cde", "F 0", "out"]);
+        let mut h = TestHost::default();
+        run_with(&mut h, "signal on notready; x = linein(); exit\nnotready: say 'nr' condition('D')", "").unwrap();
+        assert_eq!(h.out, ["nr STDIN"]);
+        assert_eq!(say("say stream('STDOUT') stream('nofile', 'D') lineout('nofile', 'x') linein('nofile')'|'"), ["READY UNKNOWN: 1 |"],
+                   "a host without files: no stream opens");
     }
 
     #[test]

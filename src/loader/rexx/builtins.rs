@@ -1,17 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// REXX's built-in functions (ADR-0083): the string, word, conversion,
-// arithmetic and information functions of the language. Each checks its
+// REXX's built-in functions (ADR-0083, ADR-0084): the string, word,
+// conversion, arithmetic and information functions of the language, and
+// (from stream.rs and rexxutil.rs) the stream functions and RxFuncAdd,
+// RxFuncQuery and RxFuncDrop. Each checks its
 // arguments (Error 40 for a wrong count or value) and works on bytes.
 
 use std::rc::Rc;
 
+use super::condition::{Cond, Trap};
 use super::expr::{is_valid_symbol, symbol_expr, Expr};
+use super::{rexxutil, stream};
 use super::interp::{arith, error_message, Interp, RexxError, R, MAX_STRING};
 use super::number::Num;
 use super::program::{Program, Target};
 
-type Args<'a> = &'a [Option<Vec<u8>>];
+pub(super) type Args<'a> = &'a [Option<Vec<u8>>];
 
 /// A built-in function.
 type Builtin = fn(&mut Interp, &[u8], Args, &Rc<Program>) -> R<Vec<u8>>;
@@ -26,7 +30,7 @@ const MONTHS: [&str; 12] = ["January", "February", "March", "April", "May", "Jun
                             "September", "October", "November", "December"];
 const WEEKDAYS: [&str; 7] = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
-fn bad(name: &[u8], why: &str) -> RexxError {
+pub(super) fn bad(name: &[u8], why: &str) -> RexxError {
     RexxError::with(40, format!("{}: {why}", String::from_utf8_lossy(name)))
 }
 
@@ -35,12 +39,17 @@ pub fn call(interp: &mut Interp, name: &[u8], args: Args, prog: &Rc<Program>) ->
     let f: Builtin = match name {
         b"ABBREV" => abbrev, b"ABS" => abs, b"ADDRESS" => address, b"ARG" => arg, b"B2X" => b2x,
         b"BITAND" | b"BITOR" | b"BITXOR" => bits, b"C2D" => c2d, b"C2X" => c2x, b"CENTER" | b"CENTRE" => center,
-        b"COMPARE" => compare, b"COPIES" => copies, b"D2C" => d2c, b"D2X" => d2x, b"DATATYPE" => datatype,
+        b"CHARIN" => stream::charin, b"CHAROUT" => stream::charout, b"CHARS" => stream::chars,
+        b"COMPARE" => compare, b"CONDITION" => condition, b"COPIES" => copies, b"D2C" => d2c, b"D2X" => d2x,
+        b"DATATYPE" => datatype,
         b"DATE" => date, b"DELSTR" => delstr, b"DELWORD" => delword, b"DIGITS" => digits,
         b"ERRORTEXT" => errortext, b"FORM" => form, b"FORMAT" => format, b"FUZZ" => fuzz, b"INSERT" => insert,
-        b"LASTPOS" => lastpos, b"LEFT" => left, b"LENGTH" => length, b"MAX" | b"MIN" => maxmin,
+        b"LASTPOS" => lastpos, b"LEFT" => left, b"LENGTH" => length, b"LINEIN" => stream::linein,
+        b"LINEOUT" => stream::lineout, b"LINES" => stream::lines, b"MAX" | b"MIN" => maxmin,
         b"OVERLAY" => overlay, b"POS" => pos, b"QUEUED" => queued, b"RANDOM" => random, b"REVERSE" => reverse,
-        b"RIGHT" => right, b"SIGN" => sign, b"SOURCELINE" => sourceline, b"SPACE" => space, b"STRIP" => strip,
+        b"RIGHT" => right, b"RXFUNCADD" => rexxutil::rx_func_add, b"RXFUNCDROP" => rexxutil::rx_func_drop,
+        b"RXFUNCQUERY" => rexxutil::rx_func_query, b"SIGN" => sign, b"SOURCELINE" => sourceline, b"SPACE" => space,
+        b"STREAM" => stream::stream, b"STRIP" => strip,
         b"SUBSTR" => substr, b"SUBWORD" => subword, b"SYMBOL" => symbol, b"TIME" => time, b"TRACE" => trace,
         b"TRANSLATE" => translate, b"TRUNC" => trunc, b"VALUE" => value, b"VERIFY" => verify, b"WORD" => word,
         b"WORDINDEX" => wordindex, b"WORDLENGTH" => wordlength, b"WORDPOS" => wordpos, b"WORDS" => words,
@@ -52,7 +61,7 @@ pub fn call(interp: &mut Interp, name: &[u8], args: Args, prog: &Rc<Program>) ->
 
 // ── Argument helpers ─────────────────────────────────────────────────────
 
-fn count(name: &[u8], args: Args, min: usize, max: usize) -> R<()> {
+pub(super) fn count(name: &[u8], args: Args, min: usize, max: usize) -> R<()> {
     if args.len() > max { return Err(bad(name, "too many arguments")); }
     for (i, a) in args.iter().enumerate() {
         if i < min && a.is_none() { return Err(bad(name, "an argument is missing")); }
@@ -61,12 +70,12 @@ fn count(name: &[u8], args: Args, min: usize, max: usize) -> R<()> {
     Ok(())
 }
 
-fn opt(args: Args<'_>, i: usize) -> Option<&[u8]> { args.get(i).and_then(|a| a.as_deref()) }
+pub(super) fn opt(args: Args<'_>, i: usize) -> Option<&[u8]> { args.get(i).and_then(|a| a.as_deref()) }
 
-fn req(args: Args<'_>, i: usize) -> &[u8] { opt(args, i).unwrap_or_default() }
+pub(super) fn req(args: Args<'_>, i: usize) -> &[u8] { opt(args, i).unwrap_or_default() }
 
 /// A whole-number argument `>= min`, or `default` when omitted.
-fn whole_arg(interp: &Interp, name: &[u8], args: Args, i: usize, min: i64, default: i64) -> R<i64> {
+pub(super) fn whole_arg(interp: &Interp, name: &[u8], args: Args, i: usize, min: i64, default: i64) -> R<i64> {
     match opt(args, i) {
         None => Ok(default),
         Some(v) => {
@@ -78,7 +87,7 @@ fn whole_arg(interp: &Interp, name: &[u8], args: Args, i: usize, min: i64, defau
 }
 
 /// A length argument, bounded by the longest string.
-fn len_arg(interp: &Interp, name: &[u8], args: Args, i: usize, default: usize) -> R<usize> {
+pub(super) fn len_arg(interp: &Interp, name: &[u8], args: Args, i: usize, default: usize) -> R<usize> {
     let n = whole_arg(interp, name, args, i, 0, default as i64)?;
     if n as u64 > MAX_STRING as u64 { return Err(RexxError::with(5, "a string is too long")); }
     Ok(n as usize)
@@ -94,7 +103,7 @@ fn pad_arg(name: &[u8], args: Args, i: usize) -> R<u8> {
 }
 
 /// An option argument: its first letter in upper case.
-fn option_arg(name: &[u8], args: Args, i: usize, default: u8, allowed: &[u8]) -> R<u8> {
+pub(super) fn option_arg(name: &[u8], args: Args, i: usize, default: u8, allowed: &[u8]) -> R<u8> {
     match opt(args, i) {
         None => Ok(default),
         Some(v) => {
@@ -108,9 +117,9 @@ fn num_arg(name: &[u8], args: Args, i: usize) -> R<Num> {
     Num::parse(req(args, i)).ok_or_else(|| bad(name, "a number was needed"))
 }
 
-fn whole_out(n: i64) -> Vec<u8> { n.to_string().into_bytes() }
+pub(super) fn whole_out(n: i64) -> Vec<u8> { n.to_string().into_bytes() }
 
-fn bool_out(b: bool) -> Vec<u8> { if b { b"1".to_vec() } else { b"0".to_vec() } }
+pub(super) fn bool_out(b: bool) -> Vec<u8> { if b { b"1".to_vec() } else { b"0".to_vec() } }
 
 /// The blank-delimited words of `s`: (start, end) of each.
 fn word_spans(s: &[u8]) -> Vec<(usize, usize)> {
@@ -633,16 +642,22 @@ fn random(i: &mut Interp, n: &[u8], a: Args, _: &Rc<Program>) -> R<Vec<u8>> {
     if max < min || max - min > MAX_RANDOM_RANGE { return Err(bad(n, "a range of at most 100000")); }
     if let Some(seed) = opt(a, 2) {
         i.random_state = i.whole(seed).map_err(|_| bad(n, "a whole number was needed"))? as u64;
-    } else if i.random_state == 0 {
+    }
+    let z = next_random(i);
+    Ok(whole_out(min + (z % (max - min + 1) as u64) as i64))
+}
+
+/// The next number of the program's random sequence (splitmix64), seeded
+/// from the clock when no seed was given.
+pub(super) fn next_random(i: &mut Interp) -> u64 {
+    if i.random_state == 0 {
         i.random_state = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(1, |d| d.as_nanos() as u64) | 1;
     }
-    // splitmix64.
     i.random_state = i.random_state.wrapping_add(0x9E37_79B9_7F4A_7C15);
     let mut z = i.random_state;
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-    z ^= z >> 31;
-    Ok(whole_out(min + (z % (max - min + 1) as u64) as i64))
+    z ^ (z >> 31)
 }
 
 // ── Information ──────────────────────────────────────────────────────────
@@ -746,9 +761,37 @@ fn symbol(i: &mut Interp, n: &[u8], a: Args, _: &Rc<Program>) -> R<Vec<u8>> {
     Ok(if exists { b"VAR".to_vec() } else { b"LIT".to_vec() })
 }
 
-fn trace(_: &mut Interp, n: &[u8], a: Args, _: &Rc<Program>) -> R<Vec<u8>> {
+/// TRACE([setting]): the setting, changed to `setting` when given.
+fn trace(i: &mut Interp, n: &[u8], a: Args, _: &Rc<Program>) -> R<Vec<u8>> {
     count(n, a, 0, 1)?;
-    Ok(b"N".to_vec())
+    let old = i.trace_setting();
+    if let Some(v) = opt(a, 0) {
+        if Num::parse(v).is_some() { return Err(bad(n, "a setting, not a number")); }
+        i.set_trace(v)?;
+    }
+    Ok(old)
+}
+
+/// CONDITION([option]): the condition last trapped: C its name, D its
+/// description, I the instruction that trapped it (the default), S its
+/// trap's state now (ON, OFF, DELAY). Empty when none was.
+fn condition(i: &mut Interp, n: &[u8], a: Args, _: &Rc<Program>) -> R<Vec<u8>> {
+    count(n, a, 0, 1)?;
+    let option = option_arg(n, a, 0, b'I', b"CDIS")?;
+    let Some(info) = i.cond_info() else { return Ok(Vec::new()) };
+    Ok(match option {
+        b'C' => info.cond.name().as_bytes().to_vec(),
+        b'D' => info.description.clone(),
+        b'I' => if info.by_call { b"CALL".to_vec() } else { b"SIGNAL".to_vec() },
+        _ => {
+            let cond: Cond = info.cond;
+            match i.trap(cond) {
+                Trap::Off => b"OFF".to_vec(),
+                Trap::Signal(_) | Trap::Call(_) => b"ON".to_vec(),
+                Trap::Delayed(_) => b"DELAY".to_vec(),
+            }
+        }
+    })
 }
 
 fn value(i: &mut Interp, n: &[u8], a: Args, _: &Rc<Program>) -> R<Vec<u8>> {

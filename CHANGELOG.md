@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **REXX in the built-in CMD.EXE, R2** (ADR-0084):
+  - conditions: `SIGNAL ON` / `CALL ON` for ERROR, FAILURE, HALT, NOTREADY, NOVALUE and SYNTAX, and `CONDITION()`;
+  - streams on the drives through the VFS (`CHARIN`, `CHAROUT`, `CHARS`, `LINEIN`, `LINEOUT`, `LINES`, `STREAM` with its OPEN, CLOSE, SEEK and QUERY commands), and STDIN / STDOUT / STDERR;
+  - `TRACE` output (A, C, E, F, I, L, N, O, R) and `TRACE()`;
+  - `NUMERIC FORM ENGINEERING` when writing numbers;
+  - our own REXXUTIL subset, registered from the start: `SysFileTree`, `SysFileSearch`, `SysFileDelete`, `SysMkDir`, `SysRmDir`, `SysSearchPath`, `SysTempFileName`, `SysCls`, `SysSleep`, `SysOS2Ver`, `SysBootDrive`, `SysDriveMap`, `SysLoadFuncs` / `SysDropFuncs`, with `RxFuncAdd`, `RxFuncQuery` and `RxFuncDrop`.
+
+  Sample: `samples/rexx_scripts/rexxr2.cmd`.
 - **REXX in the built-in CMD.EXE, R1** (ADR-0083) — a `.CMD` file starting with `/*` runs as REXX in Warpine's own interpreter (Rust, in the host): decimal arithmetic to NUMERIC DIGITS, all of the language's instructions (IF, DO, SELECT, CALL, PROCEDURE EXPOSE, SIGNAL, INTERPRET, PARSE templates, the queue, ADDRESS, NUMERIC), the built-in string, word, conversion, number and information functions, commands through `ADDRESS CMD` with `RC`, external REXX routines, and errors reported as OS/2 does. Streams, conditions, TRACE and REXXUTIL follow in R2. Samples: `samples/rexx_scripts`.
 - **Groups, concurrent pipelines and START in the built-in CMD.EXE** (ADR-0082), completing its Stage 2: `( … )` groups commands (one redirection, one return code; usable with IF and FOR); the programs of a pipeline run at the same time, each reading the one before through a host pipe; START begins a session of its own (`/C`, `/K`, `/N`, `/FS`, `/WIN`, `/I`). `samples/cmd_tool` gains `yes`.
 - **REXX plan** — ADR-0081 records Stage 3: REXX in the built-in CMD.EXE as our own interpreter in Rust, from IBM's public REXX docs, Cowlishaw and ANSI, in phases R1–R3.

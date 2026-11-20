@@ -22,11 +22,14 @@ pub enum Tok {
     Colon,
 }
 
-/// A token and whether blanks (or a comment) came before it.
+/// A token, whether blanks (or a comment) came before it, and where it
+/// is in the source (byte offsets, for TRACE's clause text).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Token {
     pub tok: Tok,
     pub space_before: bool,
+    pub start: usize,
+    pub end: usize,
 }
 
 /// A clause: its tokens and the line it starts on (1-based).
@@ -114,6 +117,7 @@ pub fn tokenize(src: &[u8]) -> Result<Vec<Clause>, LexError> {
             }
             b'\'' | b'"' => {
                 let quote = b;
+                let start = i;
                 let start_line = line;
                 let mut value = Vec::new();
                 i += 1;
@@ -135,12 +139,12 @@ pub fn tokenize(src: &[u8]) -> Result<Vec<Clause>, LexError> {
                     Some(b'B') if alone => { i += 1; bin_string(&value).ok_or(LexError { code: 15, line })? }
                     _ => value,
                 };
-                tokens.push(Token { tok: Tok::Str(value), space_before: space });
+                tokens.push(Token { tok: Tok::Str(value), space_before: space, start, end: i });
                 space = false;
             }
             b'(' | b')' | b',' | b':' => {
                 let tok = match b { b'(' => Tok::LParen, b')' => Tok::RParen, b',' => Tok::Comma, _ => Tok::Colon };
-                tokens.push(Token { tok, space_before: space });
+                tokens.push(Token { tok, space_before: space, start: i, end: i + 1 });
                 space = false;
                 i += 1;
             }
@@ -158,7 +162,7 @@ pub fn tokenize(src: &[u8]) -> Result<Vec<Clause>, LexError> {
                         i += 1;
                     }
                 }
-                tokens.push(Token { tok: Tok::Symbol(src[start..i].to_vec()), space_before: space });
+                tokens.push(Token { tok: Tok::Symbol(src[start..i].to_vec()), space_before: space, start, end: i });
                 space = false;
             }
             _ => {
@@ -168,9 +172,9 @@ pub fn tokenize(src: &[u8]) -> Result<Vec<Clause>, LexError> {
                 let Some(op) = OPERATORS.iter().find(|op| rest.starts_with(op.as_bytes())) else {
                     return Err(LexError { code: 13, line });
                 };
-                i += op.len();
                 let op: &'static str = op;
-                tokens.push(Token { tok: Tok::Op(op), space_before: space });
+                tokens.push(Token { tok: Tok::Op(op), space_before: space, start: i, end: i + op.len() });
+                i += op.len();
                 space = false;
             }
         }

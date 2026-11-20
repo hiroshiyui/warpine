@@ -139,6 +139,7 @@ make -C samples/<name>      # Build a single sample
 |--------|-------------------|
 | rexxtest.cmd, rexxhelp.cmd | R1's language core in 16 ok/FAIL checks: arguments, PARSE SOURCE, arithmetic and NUMERIC DIGITS, strings and words, DO, stems, PROCEDURE, templates, SELECT, INTERPRET, the queue, a command's RC, an external routine (`rexxhelp.cmd`), SIGNAL; ends with EXIT (ADR-0083; `test_rexx_script_language_core`) |
 | rexxask.cmd | PULL and PARSE PULL reading the shell's piped input, and the report of a REXX error (`test_rexx_pull_and_error_report`) |
+| rexxr2.cmd | R2 in 14 ok/FAIL checks: SIGNAL ON SYNTAX and NOVALUE, CALL ON ERROR for an OS/2 program's return code, streams on drive C (LINEOUT, LINES, LINEIN, CHARIN, STREAM queries, NOTREADY), REXXUTIL (SysFileTree, SysFileSearch, SysMkDir, SysRmDir, SysFileDelete, SysOS2Ver), NUMERIC FORM ENGINEERING, TRACE R (ADR-0084; `test_rexx_conditions_streams_and_rexxutil`) |
 
 ## CMD.EXE scripts
 

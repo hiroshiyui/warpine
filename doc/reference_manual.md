@@ -268,7 +268,7 @@ A false `IF` leaves the return code as it was. Batch commands that only make sen
 
 ### REXX scripts
 
-A `.CMD` file whose first line starts with `/*` runs as REXX, in Warpine's own interpreter (ADR-0081, ADR-0083):
+A `.CMD` file whose first line starts with `/*` runs as REXX, in Warpine's own interpreter (ADR-0081, ADR-0083, ADR-0084):
 
 ```
 /* hello.cmd */
@@ -282,13 +282,17 @@ exit 0
 
 - **The language core (R1):**
   - **Numbers:** decimal arithmetic rounded to `NUMERIC DIGITS` (9 by default);
-  - **Instructions:** all of REXX's (`IF`, `DO`, `SELECT`, `CALL`, `PROCEDURE EXPOSE`, `SIGNAL`, `INTERPRET`, `PARSE` with full templates, `PUSH` / `QUEUE` / `PULL`, `ADDRESS`, `NUMERIC`); `TRACE` is accepted and ignored;
+  - **Instructions:** all of REXX's (`IF`, `DO`, `SELECT`, `CALL`, `PROCEDURE EXPOSE`, `SIGNAL`, `INTERPRET`, `PARSE` with full templates, `PUSH` / `QUEUE` / `PULL`, `ADDRESS`, `NUMERIC`, `TRACE`);
   - **Built-in functions:** the string, word, conversion, number and information functions; DATE and TIME use the session clock; `VALUE(name, new, 'OS2ENVIRONMENT')` reads and sets the shell's variables.
 - **Commands.** A clause that is not REXX is a command for `ADDRESS CMD`, this shell. `RC` takes its return code. While ECHO is on, the shell echoes it with the prompt, hence `'@ECHO OFF'`.
 - **Routines.** A function or routine not found as a label or built-in is looked for as another REXX `.CMD` file (current directory, then `PATH`).
 - **The return code.** The script's `EXIT` value, if a whole number, is its return code.
 - **Errors.** An error writes the failing line and `REXnnnn: Error n running C:\NAME.CMD, line l: text`, and its number becomes the return code.
-- **Not yet (R2):** stream I/O, conditions (`SIGNAL ON`), `TRACE` output, REXXUTIL.
+- **Conditions (R2).** `SIGNAL ON` / `CALL ON` trap ERROR (a command's non-zero return code), FAILURE (a negative one), HALT, NOTREADY (a stream), NOVALUE and SYNTAX (any REXX error, its number in `RC`); `NAME label` names another label. `CONDITION()` describes the condition last trapped.
+- **Streams (R2).** `CHARIN`, `CHAROUT`, `CHARS`, `LINEIN`, `LINEOUT`, `LINES` and `STREAM` read and write files on the drives, by their OS/2 names; `STDIN`, `STDOUT` and `STDERR` (or no name) are the shell's input and output. Lines are written with CR LF. `STREAM(name, 'C', …)` takes `OPEN [READ | WRITE | BOTH] [REPLACE]`, `CLOSE`, `SEEK` and `QUERY EXISTS | SIZE | DATETIME | TIMESTAMP | SEEK`.
+- **TRACE (R2).** `TRACE A | C | E | F | I | L | N | O | R` writes clauses (`    12 *-* say x`) and values (`       >>>   "42"`) to the shell's output; N (the default) shows failed commands with `+++ RC(n) +++`.
+- **REXXUTIL (R2).** Registered from the start, so `call SysLoadFuncs` works as on OS/2: `SysCls`, `SysSleep`, `SysOS2Ver`, `SysBootDrive`, `SysDriveMap`, `SysFileTree`, `SysFileSearch`, `SysFileDelete`, `SysMkDir`, `SysRmDir`, `SysSearchPath`, `SysTempFileName`, with `RxFuncAdd`, `RxFuncQuery`, `RxFuncDrop` and `SysDropFuncs`. The screen, keyboard, EA, INI and Workplace Shell functions are not there (Error 43).
+- **Numbers.** `NUMERIC FORM ENGINEERING` writes exponents in multiples of three (`12.3E+9`).
 
 ### Command lines
 

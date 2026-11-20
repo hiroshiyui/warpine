@@ -350,6 +350,14 @@ impl Num {
     /// notation is used: when it would need more than `digits` places
     /// before the point or more than twice `digits` after it.
     pub fn format(&self, digits: usize) -> Vec<u8> {
+        self.format_form(digits, false)
+    }
+
+    /// The number written with `digits` significant digits; exponential
+    /// notation, when needed, is scientific (one digit before the point)
+    /// or, with `engineering`, has an exponent that is a multiple of three
+    /// (one to three digits before the point).
+    pub fn format_form(&self, digits: usize, engineering: bool) -> Vec<u8> {
         if self.is_zero() { return b"0".to_vec(); }
         let mut out = Vec::new();
         if self.neg { out.push(b'-'); }
@@ -374,13 +382,17 @@ impl Num {
                 out.extend(self.coef.iter().map(digit));
             }
         } else {
-            // Scientific: one digit before the point.
-            out.push(digit(&self.coef[0]));
-            if self.coef.len() > 1 {
+            // Scientific: one digit before the point; engineering: one to
+            // three, so that the exponent is a multiple of three.
+            let mut e = before - 1;
+            let lead = if engineering { let shift = e.rem_euclid(3); e -= shift; shift as usize + 1 } else { 1 };
+            let mut coef = self.coef.clone();
+            if coef.len() < lead { coef.resize(lead, 0); }
+            out.extend(coef[..lead].iter().map(digit));
+            if coef.len() > lead {
                 out.push(b'.');
-                out.extend(self.coef[1..].iter().map(digit));
+                out.extend(coef[lead..].iter().map(digit));
             }
-            let e = before - 1;
             out.push(b'E');
             out.push(if e < 0 { b'-' } else { b'+' });
             out.extend_from_slice(e.unsigned_abs().to_string().as_bytes());
@@ -496,6 +508,16 @@ mod tests {
         assert_eq!(f(n("1").add(&n("1E-30"), 9)), "1.00000000", "a tiny operand only rounds");
         assert_eq!(String::from_utf8(n("2").pow(&n("100"), 40).unwrap().format(40)).unwrap(),
                    "1267650600228229401496703205376");
+    }
+
+    #[test]
+    fn engineering_notation_has_exponents_in_threes() {
+        let e = |x: &str| String::from_utf8(n(x).round(9).format_form(9, true)).unwrap();
+        assert_eq!(e("1.23456789E+10"), "12.3456789E+9");
+        assert_eq!(e("1E+11"), "100E+9", "zeros fill the places before the point");
+        assert_eq!(e("1.5E-20"), "15E-21");
+        assert_eq!(e("-4.5E+12"), "-4.5E+12");
+        assert_eq!(e("123"), "123", "plain numbers stay plain");
     }
 
     #[test]

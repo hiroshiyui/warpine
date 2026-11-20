@@ -1211,7 +1211,7 @@ All paths converge on:
 
 ### The REXX interpreter
 
-`src/loader/rexx/` is a REXX interpreter that knows nothing of the shell: it talks to it through `interp::Host` (SAY, commands, input, interruption, the clock, external routines, the environment). The modules (ADR-0083):
+`src/loader/rexx/` is a REXX interpreter that knows nothing of the shell: it talks to it through `interp::Host` (SAY, commands, input, interruption, the clock, external routines, the environment, and, from R2, output, trace lines and files by OS/2 name, which the shell reaches through the VFS). The modules (ADR-0083, ADR-0084):
 
 | Module | What it holds |
 |--------|---------------|
@@ -1222,8 +1222,14 @@ All paths converge on:
 | `interp.rs` | the run loop, variables (scopes, stems, EXPOSE), routines, DO loops, PARSE sources, limits, error texts |
 | `template.rs` | PARSE templates |
 | `builtins.rs` | the built-in functions |
+| `condition.rs` | the conditions, their traps (`Trap`: off, SIGNAL, CALL, delayed) and CONDITION()'s record |
+| `stream.rs` | the streams: file streams through the host, the standard streams, the stream functions |
+| `trace.rs` | TRACE's settings and output |
+| `rexxutil.rs` | the REXXUTIL functions and their registration (RxFuncAdd …) |
 
 A program runs as `run_program(host, source, name, args, call_type)`; errors come back as `RexxError` (number, line, detail), and an EXIT inside a routine travels up as one with `exit` set. Tests in `rexx.rs` run programs through a `TestHost`.
+
+Conditions (ADR-0084) use the same path. A condition for a `SIGNAL ON` trap is a `RexxError` with `cond` set. The run loop's `catch` turns any error into the trapped label, or marks it `passing`, so that its callers' traps leave it alone and it ends the program. `CALL ON` conditions wait in `pending` until the clause ends. Traps, the TRACE setting and CONDITION()'s record are part of `Settings`, which a routine saves and restores.
 
 ### Modules and a command line's way through them
 

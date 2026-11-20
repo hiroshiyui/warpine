@@ -90,6 +90,7 @@ fn assign_words(interp: &mut Interp, targets: &[Option<&Target>], piece: &[u8]) 
             rest = &rest[(end + 1).min(rest.len())..];
             word
         };
+        interp.trace_assigned(target.is_none(), value);
         if let Some(t) = target { interp.assign(t, value.to_vec())?; }
     }
     Ok(())

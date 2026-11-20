@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 
+use super::condition::Cond;
 use super::expr::{parse_expr, parse_expr_list, symbol_expr, Expr, ExprError};
 use super::lexer::{Clause, Tok, Token};
 
@@ -58,6 +59,8 @@ pub enum ParseSource {
     Version,
     /// A line of the terminal's (the shell's) input.
     External,
+    /// A line of the default input stream (LINEIN()).
+    LineIn,
 }
 
 /// A piece of a PARSE template.
@@ -118,8 +121,12 @@ pub enum Instr {
     NumericDigits(Option<Expr>),
     NumericFuzz(Option<Expr>),
     NumericForm(Option<Expr>),
-    /// TRACE, accepted and not acted on in R1.
-    Trace,
+    /// `TRACE setting` (a constant, given as `Expr::Lit`) or `TRACE VALUE
+    /// expr`; `None` is `TRACE` alone (N).
+    Trace(Option<Expr>),
+    /// `SIGNAL ON | OFF cond [NAME label]`, `CALL ON | OFF cond [NAME
+    /// label]`: `label` is `None` for OFF.
+    Trap { cond: Cond, call: bool, label: Option<Vec<u8>> },
 }
 
 /// A program: its instructions, the line each comes from, its labels and
@@ -128,6 +135,12 @@ pub enum Instr {
 pub struct Program {
     pub instrs: Vec<Instr>,
     pub lines: Vec<usize>,
+    /// Each instruction's clause in `source` (byte offsets), for TRACE.
+    pub spans: Vec<(usize, usize)>,
+    /// The program's text.
+    pub source: Vec<u8>,
+    /// Whether it is INTERPRET's string (TRACE shows its clauses as such).
+    pub interpreted: bool,
     /// Label name → the label's instruction (the first of a name wins).
     pub labels: HashMap<Vec<u8>, usize>,
     /// For each IF: where its THEN instruction starts, where its ELSE
@@ -206,14 +219,16 @@ fn split_clauses(clauses: Vec<Clause>) -> Vec<Clause> {
     out
 }
 
-/// Parse a program's clauses into instructions and jump tables.
-pub fn build(clauses: Vec<Clause>) -> Result<Program, SyntaxError> {
-    let mut p = Program::default();
+/// Parse a program's clauses (of `source`) into instructions and jump
+/// tables.
+pub fn build(clauses: Vec<Clause>, source: &[u8]) -> Result<Program, SyntaxError> {
+    let mut p = Program { source: source.to_vec(), ..Program::default() };
     for c in split_clauses(clauses) {
         let instr = parse_instr(&c.tokens).map_err(|code| SyntaxError { code, line: c.line })?;
         if let Instr::Label(name) = &instr { p.labels.entry(name.clone()).or_insert(p.instrs.len()); }
         p.instrs.push(instr);
         p.lines.push(c.line);
+        p.spans.push((c.tokens.first().map_or(0, |t| t.start), c.tokens.last().map_or(0, |t| t.end)));
     }
     let mut i = 0;
     while i < p.instrs.len() { i = scan(&mut p, i)?; }
@@ -344,14 +359,16 @@ fn parse_instr(t: &[Token]) -> Result<Instr, u32> {
                 Some(Tok::Str(s)) => (s.clone(), true),
                 _ => return Err(19),
             };
-            if !literal && matches!(name.as_slice(), b"ON" | b"OFF") { return Err(25); }
+            if !literal && matches!(name.as_slice(), b"ON" | b"OFF") { return parse_trap(&rest[1..], true, name == b"ON"); }
             let args = parse_expr_list(&rest[1..]).map_err(|ExprError(c)| c)?;
             Ok(Instr::Call { name, literal, args })
         }
         b"SIGNAL" => {
             match rest.first().map(|x| &x.tok) {
                 Some(Tok::Symbol(s)) if s.eq_ignore_ascii_case(b"VALUE") => Ok(Instr::SignalValue(expr_of(&rest[1..])?)),
-                Some(Tok::Symbol(s)) if s.eq_ignore_ascii_case(b"ON") || s.eq_ignore_ascii_case(b"OFF") => Err(25),
+                Some(Tok::Symbol(s)) if s.eq_ignore_ascii_case(b"ON") || s.eq_ignore_ascii_case(b"OFF") => {
+                    parse_trap(&rest[1..], false, s.eq_ignore_ascii_case(b"ON"))
+                }
                 Some(Tok::Symbol(s)) if rest.len() == 1 => Ok(Instr::Signal(s.to_ascii_uppercase())),
                 Some(Tok::Str(s)) if rest.len() == 1 => Ok(Instr::Signal(s.clone())),
                 Some(Tok::LParen) => Ok(Instr::SignalValue(expr_of(rest)?)),
@@ -386,8 +403,41 @@ fn parse_instr(t: &[Token]) -> Result<Instr, u32> {
         b"PARSE" => parse_parse(rest),
         b"ARG" => Ok(Instr::Parse { upper: true, source: ParseSource::Arg, templates: templates(rest)? }),
         b"PULL" => Ok(Instr::Parse { upper: true, source: ParseSource::Pull, templates: templates(rest)? }),
-        b"TRACE" => Ok(Instr::Trace),
+        b"TRACE" => parse_trace(rest),
         _ => Err(19),
+    }
+}
+
+/// `cond [NAME label]` after `SIGNAL ON` / `CALL ON`, or `cond` after OFF.
+fn parse_trap(rest: &[Token], call: bool, on: bool) -> Result<Instr, u32> {
+    let cond = rest.first().and_then(upper_symbol).and_then(|s| Cond::from_name(&s)).ok_or(25u32)?;
+    if call && !cond.callable() { return Err(25); }
+    if !on {
+        return if rest.len() == 1 { Ok(Instr::Trap { cond, call, label: None }) } else { Err(21) };
+    }
+    let label = match &rest[1..] {
+        [] => cond.name().as_bytes().to_vec(),
+        [name, label] if is_word(Some(name), "NAME") => match &label.tok {
+            Tok::Symbol(s) => s.to_ascii_uppercase(),
+            Tok::Str(s) => s.clone(),
+            _ => return Err(19),
+        },
+        _ => return Err(25),
+    };
+    Ok(Instr::Trap { cond, call, label: Some(label) })
+}
+
+/// `TRACE [setting | VALUE expr | expr]`: a symbol or string alone is the
+/// setting as written (`TRACE ?R`), anything else an expression.
+fn parse_trace(rest: &[Token]) -> Result<Instr, u32> {
+    match rest {
+        [] => Ok(Instr::Trace(None)),
+        [t] if matches!(t.tok, Tok::Symbol(_) | Tok::Str(_)) => {
+            let (Tok::Symbol(v) | Tok::Str(v)) = &t.tok else { unreachable!() };
+            Ok(Instr::Trace(Some(Expr::Lit(v.clone()))))
+        }
+        [first, value @ ..] if is_word(Some(first), "VALUE") => Ok(Instr::Trace(Some(expr_of(value)?))),
+        _ => Ok(Instr::Trace(Some(expr_of(rest)?))),
     }
 }
 
@@ -490,7 +540,8 @@ fn parse_parse(rest: &[Token]) -> Result<Instr, u32> {
         b"PULL" => (ParseSource::Pull, &rest[i..]),
         b"SOURCE" => (ParseSource::Source, &rest[i..]),
         b"VERSION" => (ParseSource::Version, &rest[i..]),
-        b"EXTERNAL" | b"LINEIN" => (ParseSource::External, &rest[i..]),
+        b"EXTERNAL" => (ParseSource::External, &rest[i..]),
+        b"LINEIN" => (ParseSource::LineIn, &rest[i..]),
         b"VAR" => {
             let name = rest.get(i).and_then(upper_symbol).ok_or(19u32)?;
             (ParseSource::Var(name), &rest[i + 1..])
@@ -561,8 +612,8 @@ mod tests {
     use super::*;
     use super::super::lexer::tokenize;
 
-    fn program(src: &str) -> Program { build(tokenize(src.as_bytes()).unwrap()).unwrap() }
-    fn error(src: &str) -> u32 { build(tokenize(src.as_bytes()).unwrap()).unwrap_err().code }
+    fn program(src: &str) -> Program { build(tokenize(src.as_bytes()).unwrap(), src.as_bytes()).unwrap() }
+    fn error(src: &str) -> u32 { build(tokenize(src.as_bytes()).unwrap(), src.as_bytes()).unwrap_err().code }
 
     #[test]
     fn clauses_split_and_instructions_parse() {
@@ -613,6 +664,19 @@ mod tests {
     }
 
     #[test]
+    fn traps_and_trace_parse() {
+        let p = program("signal on error; call on halt name stop; signal off novalue; trace ?r; trace value 'A'; trace\nsay 1 ;  say 2");
+        assert_eq!(p.instrs[0], Instr::Trap { cond: Cond::Error, call: false, label: Some(b"ERROR".to_vec()) });
+        assert_eq!(p.instrs[1], Instr::Trap { cond: Cond::Halt, call: true, label: Some(b"STOP".to_vec()) });
+        assert_eq!(p.instrs[2], Instr::Trap { cond: Cond::NoValue, call: false, label: None });
+        assert_eq!(p.instrs[3], Instr::Trace(Some(Expr::Lit(b"?r".to_vec()))));
+        assert!(matches!(p.instrs[4], Instr::Trace(Some(_))));
+        assert_eq!(p.instrs[5], Instr::Trace(None));
+        let (a, b) = p.spans[7];
+        assert_eq!(&p.source[a..b], b"say 2", "a clause's text");
+    }
+
+    #[test]
     fn syntax_errors() {
         assert_eq!(error("do\nsay 1"), 14, "DO without END");
         assert_eq!(error("end"), 10);
@@ -622,7 +686,9 @@ mod tests {
         assert_eq!(error("when a then nop"), 9);
         assert_eq!(error("1abc = 2"), 31);
         assert_eq!(error("do i = 1 to 2 to 3; end"), 27);
-        assert_eq!(error("signal on error"), 25, "conditions come in R2");
+        assert_eq!(error("call on novalue"), 25, "NOVALUE is trapped only by SIGNAL");
+        assert_eq!(error("signal on nothing"), 25);
+        assert_eq!(error("signal off error name x"), 21);
         assert_eq!(error("nop x"), 21);
     }
 }

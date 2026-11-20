@@ -804,6 +804,25 @@ fn test_rexx_script_language_core() {
     assert!(!out.contains("TOOL exit"), "'@echo off' hides the commands:\n{out}");
 }
 
+/// samples/rexx_scripts/rexxr2.cmd: R2 (ADR-0084) — SIGNAL ON SYNTAX
+/// and NOVALUE, CALL ON ERROR for an OS/2 program's return code, streams
+/// on drive C (LINEOUT, LINES, LINEIN, CHARIN, STREAM queries,
+/// NOTREADY), REXXUTIL (SysFileTree, SysFileSearch, SysMkDir, …), NUMERIC
+/// FORM ENGINEERING and TRACE R's output.
+#[test]
+fn test_rexx_conditions_streams_and_rexxutil() {
+    let Some((code, out, dir)) = run_cmd_headless(&["/C", "REXXR2.CMD"], b"", |c| {
+        std::fs::copy("samples/rexx_scripts/rexxr2.cmd", c.join("REXXR2.CMD")).unwrap();
+    }) else { return };
+    let out = strip_ansi(&out);
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("rexxr2: done 14/14"), "{out}");
+    assert_eq!(code, Some(0), "EXIT total - passed:\n{out}");
+    assert_in_order(&out, &["*-* z = 6 * 7\r\n", "       >>>   \"42\"\r\n", "*-* trace off\r\n"]);
+    let drive_c = dir.path().join("warpine/drive_c");
+    assert!(!drive_c.join("R2DATA.TXT").exists() && !drive_c.join("R2DIR").exists(), "the script cleans up");
+}
+
 /// samples/rexx_scripts/rexxask.cmd: PULL and PARSE PULL read the shell's
 /// piped input, and a REXX error is reported with its line and number, as
 /// OS/2 does; the error number is the script's return code (ADR-0083).

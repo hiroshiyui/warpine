@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The REXX interpreter (ADR-0083): runs a program's instructions with its
-// variables, routines, queue and settings. The shell it runs in is a
-// `Host`: SAY's output, commands, terminal input, interruption and the
-// clock go through it.
+// The REXX interpreter (ADR-0083, ADR-0084): runs a program's
+// instructions with its variables, routines, queue, settings, condition
+// traps and streams. The shell it runs in is a `Host`: SAY's output,
+// commands, terminal input, files, interruption and the clock go through
+// it.
 
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
+use super::condition::{Cond, CondInfo, Trap, CONDITIONS};
 use super::expr::{BinOp, Expr, TailPart, UnOp};
 use super::lexer::tokenize;
 use super::number::{ArithError, Num, MAX_DIGITS};
@@ -25,6 +27,42 @@ pub const MAX_STRING: usize = 16 * 1024 * 1024;
 pub const MAX_STEM_ENTRIES: usize = 1 << 20;
 /// The most lines the queue holds.
 pub const MAX_QUEUE: usize = 1 << 16;
+/// The most conditions waiting for their CALL ON routines.
+pub const MAX_PENDING: usize = 64;
+/// The clauses a program may still run after HALT was raised (its HALT
+/// routine's cleanup) before it is ended regardless (unverified).
+pub const HALT_GRACE_CLAUSES: u64 = 100_000;
+/// The REXX error a HALT nobody traps ends the program with.
+const ERROR_HALT: u32 = 4;
+/// OS/2's "file not found", "path not found", "invalid handle".
+pub const ERROR_FILE_NOT_FOUND: u32 = 2;
+pub const ERROR_PATH_NOT_FOUND: u32 = 3;
+pub const ERROR_INVALID_HANDLE: u32 = 6;
+
+/// How a file is opened for a stream.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OpenFor {
+    /// Reading only; the file must exist.
+    Read,
+    /// Reading and writing; created when missing.
+    Write,
+    /// Reading and writing, emptied first; created when missing.
+    Replace,
+}
+
+/// A file or directory as the host describes it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileInfo {
+    /// The full OS/2 name (`file_info`) or the entry's name (`file_find`).
+    pub name: Vec<u8>,
+    pub size: u64,
+    /// The last write's date and time, packed as OS/2 FDATE / FTIME.
+    pub date: u16,
+    pub time: u16,
+    /// OS/2 file attributes (read-only 0x01, hidden 0x02, system 0x04,
+    /// directory 0x10, archived 0x20).
+    pub attributes: u32,
+}
 
 /// What the interpreter needs from the shell around it.
 pub trait Host {
@@ -48,23 +86,66 @@ pub trait Host {
     fn get_env(&self, name: &[u8]) -> Option<Vec<u8>>;
     /// Set (or, with `None`, remove) a variable of the shell's environment.
     fn set_env(&mut self, name: &[u8], value: Option<&[u8]>);
+
+    // ── Output beyond SAY (ADR-0084) ──
+
+    /// Write bytes to the output as they are (CHAROUT to STDOUT).
+    fn write_out(&mut self, bytes: &[u8]) { self.say(bytes) }
+    /// Write bytes to the error output (the STDERR stream).
+    fn write_err(&mut self, bytes: &[u8]) { self.write_out(bytes) }
+    /// Write a line of TRACE output.
+    fn trace(&mut self, line: &[u8]) { self.say(line) }
+    /// Clear the screen (SysCls).
+    fn clear_screen(&mut self) {}
+
+    // ── Files, for streams and REXXUTIL (ADR-0084) ──
+    // Names are OS/2 paths; errors are OS/2 error codes. A host without
+    // files has none.
+
+    /// `name` fully qualified (`C:\DIR\FILE`).
+    fn full_name(&mut self, _name: &[u8]) -> Option<Vec<u8>> { None }
+    /// Open a file; returns its handle.
+    fn file_open(&mut self, _name: &[u8], _mode: OpenFor) -> Result<u32, u32> { Err(ERROR_FILE_NOT_FOUND) }
+    /// Read from `pos`; returns the bytes read (0 at the end).
+    fn file_read(&mut self, _handle: u32, _pos: u64, _buf: &mut [u8]) -> Result<usize, u32> { Err(ERROR_INVALID_HANDLE) }
+    /// Write all of `data` at `pos`.
+    fn file_write(&mut self, _handle: u32, _pos: u64, _data: &[u8]) -> Result<(), u32> { Err(ERROR_INVALID_HANDLE) }
+    fn file_size(&mut self, _handle: u32) -> Result<u64, u32> { Err(ERROR_INVALID_HANDLE) }
+    fn file_close(&mut self, _handle: u32) {}
+    /// A file's or directory's description, by name.
+    fn file_info(&mut self, _name: &[u8]) -> Option<FileInfo> { None }
+    /// The entries a pattern (wildcards in its last part) matches, at most
+    /// `limit`, without `.` and `..`.
+    fn file_find(&mut self, _pattern: &[u8], _limit: usize) -> Result<Vec<FileInfo>, u32> { Err(ERROR_FILE_NOT_FOUND) }
+    fn file_delete(&mut self, _name: &[u8]) -> u32 { ERROR_FILE_NOT_FOUND }
+    fn dir_make(&mut self, _name: &[u8]) -> u32 { ERROR_PATH_NOT_FOUND }
+    fn dir_remove(&mut self, _name: &[u8]) -> u32 { ERROR_PATH_NOT_FOUND }
+    /// The drive letters in use, in order.
+    fn drives(&mut self) -> Vec<u8> { Vec::new() }
 }
 
 /// Why running stopped early: a REXX error (its number, the line it
-/// happened on, more detail), or an EXIT inside a routine, which ends the
-/// whole program (`exit` holds its value).
+/// happened on, more detail), an EXIT inside a routine, which ends the
+/// whole program (`exit` holds its value), or a condition on its way to
+/// its `SIGNAL ON` trap.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RexxError {
     pub code: u32,
     pub line: usize,
     pub detail: Option<String>,
     pub exit: Option<Option<Vec<u8>>>,
+    /// A condition (other than SYNTAX) and its description.
+    pub cond: Option<(Cond, Vec<u8>)>,
+    /// Already offered to the traps of the routine it happened in: its
+    /// callers do not trap it, it ends the program.
+    pub passing: bool,
 }
 
 impl RexxError {
-    pub fn new(code: u32) -> Self { RexxError { code, line: 0, detail: None, exit: None } }
-    pub fn with(code: u32, detail: impl Into<String>) -> Self { RexxError { code, line: 0, detail: Some(detail.into()), exit: None } }
-    fn exit(v: Option<Vec<u8>>) -> Self { RexxError { code: 0, line: 0, detail: None, exit: Some(v) } }
+    pub fn new(code: u32) -> Self { RexxError { code, line: 0, detail: None, exit: None, cond: None, passing: false } }
+    pub fn with(code: u32, detail: impl Into<String>) -> Self { RexxError { detail: Some(detail.into()), ..RexxError::new(code) } }
+    fn exit(v: Option<Vec<u8>>) -> Self { RexxError { exit: Some(v), ..RexxError::new(0) } }
+    fn condition(cond: Cond, description: Vec<u8>) -> Self { RexxError { cond: Some((cond, description)), ..RexxError::new(0) } }
 }
 
 pub type R<T> = Result<T, RexxError>;
@@ -90,6 +171,7 @@ pub fn error_message(code: u32) -> &'static str {
         19 => "String or symbol expected",
         20 => "Name expected",
         21 => "Invalid data on end of clause",
+        24 => "Invalid TRACE request",
         25 => "Invalid sub-keyword found",
         26 => "Invalid whole number",
         27 => "Invalid DO syntax",
@@ -143,12 +225,27 @@ struct Scope {
 
 /// Settings a routine inherits and that come back on its return.
 #[derive(Debug, Clone)]
-struct Settings {
+pub(super) struct Settings {
     digits: usize,
     fuzz: usize,
     engineering: bool,
     address: Vec<u8>,
     previous_address: Vec<u8>,
+    traps: [Trap; CONDITIONS],
+    /// The condition last trapped (CONDITION()).
+    cond_info: Option<CondInfo>,
+    /// The TRACE setting's letter, and whether `?` (interactive) is on.
+    pub(super) trace: u8,
+    pub(super) trace_interactive: bool,
+}
+
+impl Default for Settings {
+    fn default() -> Self {
+        Settings {
+            digits: 9, fuzz: 0, engineering: false, address: DEFAULT_ENV.to_vec(), previous_address: DEFAULT_ENV.to_vec(),
+            traps: Default::default(), cond_info: None, trace: b'N', trace_interactive: false,
+        }
+    }
 }
 
 /// One running routine or program.
@@ -184,7 +281,7 @@ pub struct Interp<'h> {
     pub host: &'h mut dyn Host,
     scopes: Vec<Scope>,
     pub queue: VecDeque<Vec<u8>>,
-    settings: Settings,
+    pub(super) settings: Settings,
     call_depth: usize,
     interpret_depth: usize,
     /// PARSE SOURCE's third word: the program's OS/2 path.
@@ -196,6 +293,18 @@ pub struct Interp<'h> {
     stem_entries: usize,
     /// The arguments of each active routine, the running one last (ARG()).
     pub args_stack: Vec<Vec<Option<Vec<u8>>>>,
+    /// Conditions raised for CALL ON traps, waiting for the clause's end.
+    pending: Vec<(Cond, Vec<u8>)>,
+    /// Clauses run so far, and when HALT was raised.
+    clauses: u64,
+    halted_at: Option<u64>,
+    /// The clause running (TRACE of a failed command).
+    pub(super) current: Option<(Rc<Program>, usize)>,
+    /// The open streams (stream.rs).
+    pub streams: super::stream::Streams,
+    /// The external functions registered (RxFuncAdd, SysLoadFuncs):
+    /// name to the REXXUTIL function it calls.
+    pub functions: HashMap<Vec<u8>, Vec<u8>>,
 }
 
 /// The default environment for commands.
@@ -213,7 +322,7 @@ pub fn run_program(host: &mut dyn Host, source: &[u8], name: &[u8], args: Vec<Op
         host,
         scopes: vec![Scope::default()],
         queue: VecDeque::new(),
-        settings: Settings { digits: 9, fuzz: 0, engineering: false, address: DEFAULT_ENV.to_vec(), previous_address: DEFAULT_ENV.to_vec() },
+        settings: Settings::default(),
         call_depth: 0,
         interpret_depth: 0,
         source_name: name.to_vec(),
@@ -222,8 +331,16 @@ pub fn run_program(host: &mut dyn Host, source: &[u8], name: &[u8], args: Vec<Op
         random_state: 0,
         stem_entries: 0,
         args_stack: Vec::new(),
+        pending: Vec::new(),
+        clauses: 0,
+        halted_at: None,
+        current: None,
+        streams: Default::default(),
+        functions: super::rexxutil::all_registered(),
     };
-    match interp.run_external(source, name, args, call_type) {
+    let result = interp.run_external(source, name, args, call_type);
+    interp.close_streams();
+    match result {
         Err(RexxError { exit: Some(v), .. }) => Ok(v),
         other => other,
     }
@@ -231,8 +348,9 @@ pub fn run_program(host: &mut dyn Host, source: &[u8], name: &[u8], args: Vec<Op
 
 /// A program's clauses as instructions (syntax errors with their line).
 pub fn compile(source: &[u8]) -> R<Program> {
-    let clauses = tokenize(source).map_err(|e| RexxError { code: e.code, line: e.line, detail: None, exit: None })?;
-    build(clauses).map_err(|e| RexxError { code: e.code, line: e.line, detail: None, exit: None })
+    let at = |code, line| RexxError { line, ..RexxError::new(code) };
+    let clauses = tokenize(source).map_err(|e| at(e.code, e.line))?;
+    build(clauses, source).map_err(|e| at(e.code, e.line))
 }
 
 impl Interp<'_> {
@@ -259,6 +377,8 @@ impl Interp<'_> {
     pub fn address(&self) -> &[u8] { &self.settings.address }
     pub fn source_line(&self, n: usize) -> Option<&[u8]> { self.source_lines.get(n.checked_sub(1)?).map(Vec::as_slice) }
     pub fn source_line_count(&self) -> usize { self.source_lines.len() }
+    pub fn cond_info(&self) -> Option<&CondInfo> { self.settings.cond_info.as_ref() }
+    pub fn trap(&self, cond: Cond) -> &Trap { &self.settings.traps[cond.index()] }
 
     // ── Running ─────────────────────────────────────────────────────────
 
@@ -270,47 +390,140 @@ impl Interp<'_> {
         let mut ctl: Vec<Ctl> = Vec::new();
         loop {
             let Some(instr) = prog.instrs.get(pc) else { return Ok(Outcome::Fell) };
-            if self.host.interrupted() {
-                return Err(RexxError { code: 4, line: prog.lines[pc], detail: None, exit: None });
-            }
             let line = prog.lines[pc];
             let at = |mut e: RexxError| { if e.line == 0 { e.line = line; } e };
+            self.clauses += 1;
+            self.current = Some((Rc::clone(prog), pc));
+            if self.traces_clause(instr) { self.trace_clause(prog, pc); }
             let first = act.procedure_allowed;
             act.procedure_allowed = false;
-            let next = match self.step(prog, pc, instr, act, &mut ctl, first) {
-                Ok(Step::Next) => pc + 1,
-                Ok(Step::Jump(to)) => to,
-                Ok(Step::Done(outcome)) => match outcome {
-                    Outcome::Signal(label) if !own_labels => return Ok(Outcome::Signal(label)),
-                    Outcome::Signal(label) => match prog.labels.get(&label) {
-                        Some(&to) => { ctl.clear(); to }
-                        None => return Err(at(RexxError::with(16, String::from_utf8_lossy(&label)))),
-                    },
-                    o => return Ok(o),
-                },
-                Err(e) => return Err(at(e)),
+            let result = self.check_halt().and_then(|()| self.step(prog, pc, instr, act, &mut ctl, first));
+            let mut signal = match result {
+                Ok(Step::Next) => { pc += 1; None }
+                Ok(Step::Jump(to)) => { pc = to; None }
+                Ok(Step::Done(Outcome::Signal(label))) => Some(label),
+                Ok(Step::Done(outcome)) => return Ok(outcome),
+                Err(e) => Some(self.catch(e).map_err(at)?),
             };
-            pc = next;
+            // SIGNAL (or a SIGNAL ON trap) ends the DO and SELECT groups
+            // it is in and goes to the label.
+            while let Some(label) = signal.take() {
+                if !own_labels { return Ok(Outcome::Signal(label)); }
+                match prog.labels.get(&label) {
+                    Some(&to) => {
+                        self.set_var(b"SIGL", line.to_string().into_bytes()).map_err(at)?;
+                        ctl.clear();
+                        pc = to;
+                    }
+                    None => signal = Some(self.catch(at(RexxError::with(16, String::from_utf8_lossy(&label)))).map_err(at)?),
+                }
+            }
+            if own_labels && !self.pending.is_empty() { self.call_pending(prog, line).map_err(at)?; }
         }
+    }
+
+    // ── Conditions (ADR-0084) ───────────────────────────────────────────
+
+    /// Raise `cond`: for a `SIGNAL ON` trap an error that goes to it, for
+    /// a `CALL ON` trap a call when the clause ends; else it is ignored.
+    pub fn raise(&mut self, cond: Cond, description: Vec<u8>) -> R<()> {
+        match &self.settings.traps[cond.index()] {
+            Trap::Signal(_) => Err(RexxError::condition(cond, description)),
+            Trap::Call(_) => {
+                if self.pending.len() < MAX_PENDING { self.pending.push((cond, description)); }
+                Ok(())
+            }
+            Trap::Off | Trap::Delayed(_) => Ok(()),
+        }
+    }
+
+    /// An error in this routine: the label of its `SIGNAL ON` trap (the
+    /// trap is turned off, CONDITION() describes it, a SYNTAX error's
+    /// number is in RC), or the error, now passing to end the program.
+    fn catch(&mut self, mut e: RexxError) -> R<Vec<u8>> {
+        if e.exit.is_some() || e.passing { return Err(e); }
+        let (cond, description) = match e.cond.take() {
+            Some(c) => c,
+            None if e.code == ERROR_HALT => (Cond::Halt, Vec::new()),
+            None => (Cond::Syntax, e.detail.clone().unwrap_or_default().into_bytes()),
+        };
+        if let Trap::Signal(label) = &self.settings.traps[cond.index()] {
+            let label = label.clone();
+            self.settings.traps[cond.index()] = Trap::Off;
+            self.settings.cond_info = Some(CondInfo { cond, by_call: false, description });
+            if cond == Cond::Syntax { self.set_var(b"RC", e.code.to_string().into_bytes())?; }
+            return Ok(label);
+        }
+        e.passing = true;
+        Err(e)
+    }
+
+    /// HALT, when the host asks the program to stop: raised once; a
+    /// program that goes on is ended after `HALT_GRACE_CLAUSES` more
+    /// clauses.
+    fn check_halt(&mut self) -> R<()> {
+        if !self.host.interrupted() { return Ok(()); }
+        match self.halted_at {
+            None => {
+                self.halted_at = Some(self.clauses);
+                if matches!(self.settings.traps[Cond::Halt.index()], Trap::Call(_)) {
+                    self.pending.push((Cond::Halt, Vec::new()));
+                    return Ok(());
+                }
+                Err(RexxError { cond: Some((Cond::Halt, Vec::new())), ..RexxError::new(ERROR_HALT) })
+            }
+            Some(at) if self.clauses - at > HALT_GRACE_CLAUSES => Err(RexxError { passing: true, ..RexxError::new(ERROR_HALT) }),
+            Some(_) => Ok(()),
+        }
+    }
+
+    /// Call the CALL ON routines of the conditions raised in the clause
+    /// that ended at `line`. While one runs its trap is delayed.
+    fn call_pending(&mut self, prog: &Rc<Program>, line: usize) -> R<()> {
+        while !self.pending.is_empty() {
+            let (cond, description) = self.pending.remove(0);
+            let i = cond.index();
+            let Trap::Call(label) = self.settings.traps[i].clone() else { continue };
+            self.settings.cond_info = Some(CondInfo { cond, by_call: true, description });
+            self.set_var(b"SIGL", line.to_string().into_bytes())?;
+            self.settings.traps[i] = Trap::Delayed(label.clone());
+            let result = self.call(&label, false, Vec::new(), CallType::Subroutine, prog);
+            if self.settings.traps[i] == Trap::Delayed(label.clone()) { self.settings.traps[i] = Trap::Call(label); }
+            result?;
+        }
+        Ok(())
     }
 
     fn step(&mut self, prog: &Rc<Program>, pc: usize, instr: &Instr, act: &mut Activation, ctl: &mut Vec<Ctl>, first: bool) -> R<Step> {
         match instr {
-            Instr::Nop | Instr::Label(_) | Instr::Then | Instr::Trace => Ok(Step::Next),
+            Instr::Nop | Instr::Label(_) | Instr::Then => Ok(Step::Next),
+            Instr::Trace(e) => {
+                let v = match e { Some(e) => self.ev(e, prog)?, None => b"N".to_vec() };
+                self.set_trace(&v)?;
+                Ok(Step::Next)
+            }
+            Instr::Trap { cond, call, label } => {
+                self.settings.traps[cond.index()] = match label {
+                    None => Trap::Off,
+                    Some(l) if *call => Trap::Call(l.clone()),
+                    Some(l) => Trap::Signal(l.clone()),
+                };
+                Ok(Step::Next)
+            }
             Instr::Say(e) => {
-                let v = match e { Some(e) => self.eval(e, prog)?, None => Vec::new() };
+                let v = match e { Some(e) => self.ev(e, prog)?, None => Vec::new() };
                 self.host.say(&v);
                 Ok(Step::Next)
             }
             Instr::Assign(target, e) => {
-                let v = self.eval(e, prog)?;
+                let v = self.ev(e, prog)?;
                 self.assign(target, v)?;
                 Ok(Step::Next)
             }
             Instr::Command(e) => {
-                let cmd = self.eval(e, prog)?;
+                let cmd = self.ev(e, prog)?;
                 let env = self.settings.address.clone();
-                self.run_command(&env, &cmd);
+                self.run_command(&env, &cmd)?;
                 Ok(Step::Next)
             }
             Instr::If(cond) => {
@@ -360,7 +573,7 @@ impl Interp<'_> {
             }
             Instr::Call { name, literal, args } => {
                 let mut values = Vec::with_capacity(args.len());
-                for a in args { values.push(match a { Some(e) => Some(self.eval(e, prog)?), None => None }); }
+                for a in args { values.push(match a { Some(e) => Some(self.ev(e, prog)?), None => None }); }
                 let result = self.call(name, *literal, values, CallType::Subroutine, prog)?;
                 match result {
                     Some(v) => self.set_var(b"RESULT", v)?,
@@ -370,15 +583,15 @@ impl Interp<'_> {
             }
             Instr::Signal(label) => Ok(Step::Done(Outcome::Signal(label.clone()))),
             Instr::SignalValue(e) => {
-                let label = self.eval(e, prog)?.to_ascii_uppercase();
+                let label = self.ev(e, prog)?.to_ascii_uppercase();
                 Ok(Step::Done(Outcome::Signal(label)))
             }
             Instr::Return(e) => {
-                let v = match e { Some(e) => Some(self.eval(e, prog)?), None => None };
+                let v = match e { Some(e) => Some(self.ev(e, prog)?), None => None };
                 Ok(Step::Done(Outcome::Return(v)))
             }
             Instr::Exit(e) => {
-                let v = match e { Some(e) => Some(self.eval(e, prog)?), None => None };
+                let v = match e { Some(e) => Some(self.ev(e, prog)?), None => None };
                 Ok(Step::Done(Outcome::Exit(v)))
             }
             Instr::Procedure(names) => {
@@ -391,7 +604,7 @@ impl Interp<'_> {
                 Ok(Step::Next)
             }
             Instr::Interpret(e) => {
-                let source = self.eval(e, prog)?;
+                let source = self.ev(e, prog)?;
                 match self.interpret(&source, act)? {
                     Outcome::Fell => Ok(Step::Next),
                     o => Ok(Step::Done(o)),
@@ -402,7 +615,7 @@ impl Interp<'_> {
                 Ok(Step::Next)
             }
             Instr::Push(e) | Instr::Queue(e) => {
-                let v = match e { Some(e) => self.eval(e, prog)?, None => Vec::new() };
+                let v = match e { Some(e) => self.ev(e, prog)?, None => Vec::new() };
                 if self.queue.len() >= MAX_QUEUE { return Err(RexxError::with(5, "the queue is full")); }
                 if matches!(instr, Instr::Push(_)) { self.queue.push_front(v) } else { self.queue.push_back(v) }
                 Ok(Step::Next)
@@ -412,15 +625,15 @@ impl Interp<'_> {
                 match (env, command, value) {
                     (None, None, None) => std::mem::swap(&mut s.address, &mut s.previous_address),
                     (Some(env), Some(cmd), _) => {
-                        let cmd = self.eval(cmd, prog)?;
+                        let cmd = self.ev(cmd, prog)?;
                         let env = env.clone();
-                        self.run_command(&env, &cmd);
+                        self.run_command(&env, &cmd)?;
                     }
                     (Some(env), None, _) => {
                         s.previous_address = std::mem::replace(&mut s.address, env.clone());
                     }
                     (None, _, Some(e)) => {
-                        let env = self.eval(e, prog)?;
+                        let env = self.ev(e, prog)?;
                         let s = &mut self.settings;
                         s.previous_address = std::mem::replace(&mut s.address, env);
                     }
@@ -445,7 +658,7 @@ impl Interp<'_> {
                 Ok(Step::Next)
             }
             Instr::NumericForm(e) => {
-                let form = match e { Some(e) => self.eval(e, prog)?.to_ascii_uppercase(), None => b"SCIENTIFIC".to_vec() };
+                let form = match e { Some(e) => self.ev(e, prog)?.to_ascii_uppercase(), None => b"SCIENTIFIC".to_vec() };
                 self.settings.engineering = match form.first() {
                     Some(b'E') => true,
                     Some(b'S') => false,
@@ -457,10 +670,19 @@ impl Interp<'_> {
     }
 
     /// Run a command; `RC` takes its return code (-3 for an unknown
-    /// environment, unverified).
-    fn run_command(&mut self, env: &[u8], cmd: &[u8]) {
-        let rc = self.host.command(&env.to_ascii_uppercase(), cmd).unwrap_or(-3);
-        let _ = self.set_var(b"RC", rc.to_string().into_bytes());
+    /// environment, unverified). A negative code raises FAILURE (ERROR
+    /// when FAILURE is not trapped), another non-zero one ERROR.
+    fn run_command(&mut self, env: &[u8], cmd: &[u8]) -> R<()> {
+        if self.settings.trace == b'C' { self.trace_value(b">>>", cmd); }
+        let (rc, failure) = match self.host.command(&env.to_ascii_uppercase(), cmd) {
+            Some(rc) => (rc, rc < 0),
+            None => (-3, true),
+        };
+        self.set_var(b"RC", rc.to_string().into_bytes())?;
+        if rc == 0 { return Ok(()); }
+        self.trace_command_error(rc, failure);
+        let cond = if failure && self.settings.traps[Cond::Failure.index()] != Trap::Off { Cond::Failure } else { Cond::Error };
+        self.raise(cond, cmd.to_vec())
     }
 
     // ── DO loops ────────────────────────────────────────────────────────
@@ -476,11 +698,11 @@ impl Interp<'_> {
         let mut var_name = None;
         let (mut to, mut by) = (None, Num::from_i64(1));
         if let Some((target, init)) = &spec.control {
-            let v = self.eval(init, prog)?;
+            let v = self.ev(init, prog)?;
             let start = self.number(&v)?.round(digits);
-            if let Some(e) = &spec.to { let v = self.eval(e, prog)?; to = Some(self.number(&v)?.round(digits)); }
-            if let Some(e) = &spec.by { let v = self.eval(e, prog)?; by = self.number(&v)?.round(digits); }
-            self.assign(target, start.format(digits))?;
+            if let Some(e) = &spec.to { let v = self.ev(e, prog)?; to = Some(self.number(&v)?.round(digits)); }
+            if let Some(e) = &spec.by { let v = self.ev(e, prog)?; by = self.number(&v)?.round(digits); }
+            self.assign(target, self.format_num(&start))?;
             var_name = Some(match target {
                 Target::Var(n) => n.clone(),
                 Target::Compound(Expr::Compound { stem, .. }) => stem.clone(),
@@ -531,7 +753,7 @@ impl Interp<'_> {
             let by = by.clone();
             let v = self.number(&self.value_of_target(&target)?)?;
             let next = v.add(&by, self.settings.digits).map_err(arith)?;
-            self.assign(&target, next.format(self.settings.digits))?;
+            self.assign(&target, self.format_num(&next))?;
         }
         if self.loop_continues(prog, ctl)? { Ok(Step::Jump(do_idx + 1)) } else { ctl.pop(); Ok(Step::Jump(end + 1)) }
     }
@@ -570,6 +792,7 @@ impl Interp<'_> {
 
     fn call_inner(&mut self, name: &[u8], literal: bool, args: Vec<Option<Vec<u8>>>, call_type: CallType, prog: &Rc<Program>) -> R<Option<Vec<u8>>> {
         if !literal && let Some(&label) = prog.labels.get(name) {
+            if self.traces_clause(&prog.instrs[label]) { self.trace_clause(prog, label); }
             let saved = self.settings.clone();
             self.args_stack.push(args.clone());
             let mut act = Activation { args, call_type, procedure_allowed: true, own_scope: false };
@@ -588,8 +811,15 @@ impl Interp<'_> {
         if let Some(result) = super::builtins::call(self, &upper, &args, prog) {
             return result.map(Some);
         }
+        if let Some(entry) = self.functions.get(&upper).cloned()
+            && let Some(result) = super::rexxutil::call(self, &entry, &args) {
+            return result.map(Some);
+        }
         if let Some((source, path)) = self.host.external(&upper) {
             let saved_settings = self.settings.clone();
+            // An external routine starts with no traps (unverified).
+            self.settings.traps = Default::default();
+            self.settings.cond_info = None;
             let saved_scopes = std::mem::take(&mut self.scopes);
             self.scopes.push(Scope::default());
             let saved_lines = std::mem::replace(&mut self.source_lines,
@@ -652,7 +882,9 @@ impl Interp<'_> {
     /// INTERPRET: run `source` here, with this routine's variables.
     fn interpret(&mut self, source: &[u8], act: &mut Activation) -> R<Outcome> {
         if self.interpret_depth >= MAX_INTERPRET_DEPTH { return Err(RexxError::with(11, "too many INTERPRETs active")); }
-        let prog = Rc::new(compile(source).map_err(|e| RexxError { line: 0, ..e })?);
+        let mut prog = compile(source).map_err(|e| RexxError { line: 0, ..e })?;
+        prog.interpreted = true;
+        let prog = Rc::new(prog);
         if !prog.labels.is_empty() { return Err(RexxError::with(49, "labels in INTERPRET")); }
         self.interpret_depth += 1;
         let first = act.procedure_allowed;
@@ -726,7 +958,7 @@ impl Interp<'_> {
 
     /// A compound symbol's full name: its stem and its tail with the tail's
     /// variables replaced by their values.
-    fn compound_name(&self, e: &Expr) -> R<Vec<u8>> {
+    pub(super) fn compound_name(&self, e: &Expr) -> R<Vec<u8>> {
         let Expr::Compound { stem, tail } = e else { return Err(RexxError::new(20)) };
         let mut name = stem.clone();
         for (k, part) in tail.iter().enumerate() {
@@ -836,12 +1068,34 @@ impl Interp<'_> {
 
     // ── Expressions ─────────────────────────────────────────────────────
 
+    /// An expression's value, its steps traced under TRACE I.
     pub fn eval(&mut self, e: &Expr, prog: &Rc<Program>) -> R<Vec<u8>> {
+        let v = self.eval_node(e, prog)?;
+        if self.settings.trace == b'I' { self.trace_intermediate(e, &v); }
+        Ok(v)
+    }
+
+    /// An instruction's expression: its value, traced under TRACE R or I.
+    fn ev(&mut self, e: &Expr, prog: &Rc<Program>) -> R<Vec<u8>> {
+        let v = self.eval(e, prog)?;
+        if matches!(self.settings.trace, b'R' | b'I') { self.trace_value(b">>>", &v); }
+        Ok(v)
+    }
+
+    fn novalue_trapped(&self) -> bool {
+        matches!(self.settings.traps[Cond::NoValue.index()], Trap::Signal(_))
+    }
+
+    fn eval_node(&mut self, e: &Expr, prog: &Rc<Program>) -> R<Vec<u8>> {
         match e {
             Expr::Lit(s) => Ok(s.clone()),
-            Expr::Var(name) => self.get_var(name),
+            Expr::Var(name) => {
+                if self.novalue_trapped() && !self.var_exists(name) { return Err(RexxError::condition(Cond::NoValue, name.clone())); }
+                self.get_var(name)
+            }
             Expr::Compound { stem, .. } => {
                 let full = self.compound_name(e)?;
+                if self.novalue_trapped() && !self.var_exists(&full) { return Err(RexxError::condition(Cond::NoValue, full)); }
                 Ok(self.get_compound(&full, stem.len()))
             }
             Expr::Call { name, literal, args } => {
@@ -854,8 +1108,8 @@ impl Interp<'_> {
                 let v = self.eval(x, prog)?;
                 match op {
                     UnOp::Not => Ok(if self.logical(&v)? { b"0".to_vec() } else { b"1".to_vec() }),
-                    UnOp::Minus => Ok(self.number(&v)?.negated().round(self.settings.digits).format(self.settings.digits)),
-                    UnOp::Plus => Ok(self.number(&v)?.round(self.settings.digits).format(self.settings.digits)),
+                    UnOp::Minus => Ok(self.format_num(&self.number(&v)?.negated().round(self.settings.digits))),
+                    UnOp::Plus => Ok(self.format_num(&self.number(&v)?.round(self.settings.digits))),
                 }
             }
             Expr::Binary(op, a, b) => {
@@ -942,7 +1196,7 @@ impl Interp<'_> {
 
     /// A number written by the current NUMERIC settings.
     pub fn format_num(&self, n: &Num) -> Vec<u8> {
-        n.format(self.settings.digits)
+        n.format_form(self.settings.digits, self.settings.engineering)
     }
 
     /// A value that must be 0 or 1 (Error 34 otherwise).
@@ -955,13 +1209,13 @@ impl Interp<'_> {
     }
 
     fn truth(&mut self, e: &Expr, prog: &Rc<Program>) -> R<bool> {
-        let v = self.eval(e, prog)?;
+        let v = self.ev(e, prog)?;
         self.logical(&v)
     }
 
     /// An expression that must be a whole number.
     fn whole_arg(&mut self, e: &Expr, prog: &Rc<Program>) -> R<i64> {
-        let v = self.eval(e, prog)?;
+        let v = self.ev(e, prog)?;
         self.whole(&v)
     }
 
@@ -980,12 +1234,13 @@ impl Interp<'_> {
                 ParseSource::Arg => act.args.get(k).cloned().flatten().unwrap_or_default(),
                 ParseSource::Pull => match self.queue.pop_front() {
                     Some(line) => line,
-                    None => self.host.read_line().unwrap_or_default(),
+                    None => self.read_input_line().unwrap_or_default(),
                 },
-                ParseSource::External => self.host.read_line().unwrap_or_default(),
+                ParseSource::External => self.read_input_line().unwrap_or_default(),
+                ParseSource::LineIn => self.linein(b"", None, 1)?,
                 _ if k > 0 => Vec::new(),
                 ParseSource::Var(name) => self.get_var(name)?,
-                ParseSource::Value(e) => match e { Some(e) => self.eval(e, prog)?, None => Vec::new() },
+                ParseSource::Value(e) => match e { Some(e) => self.ev(e, prog)?, None => Vec::new() },
                 ParseSource::Source => {
                     let mut s = format!("OS/2 {} ", act.call_type.word()).into_bytes();
                     s.extend_from_slice(&self.source_name);
