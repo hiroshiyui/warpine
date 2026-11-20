@@ -111,9 +111,24 @@ const _: () = assert!(MAGIC_API_BASE + STUB_AREA_SIZE as u64 <= DYNAMIC_ALLOC_BA
 // The NE loader addresses stubs with 16-bit offsets.
 const _: () = assert!(STUB_AREA_SIZE <= u16::MAX as u32);
 
+// ── The system area (ADR-0094) ───────────────────────────────────────────────
+// Warpine's own structures — GDT, IDT and its handlers, thread 1's TIB and
+// the PIB, the thread-local page — live between the API thunks and the
+// allocator, never where a program's objects go ([`EXE_AREA_START`] ..
+// [`EXE_AREA_END`]). They were below 1 MB, inside a large program's data.
+pub const SYSTEM_AREA_BASE: u32 = 0x0180_0000;
+/// Bytes of the system area: the GDT, IDT, TIB, PIB, environment and
+/// thread-local pages (128 KB), then the two information segments, a 64 KB
+/// tile each (`infoseg.rs`).
+pub const SYSTEM_AREA_SIZE: u32 = 0x0004_0000;
+/// Where an EXE's objects may lie: from 64 KB (page 0 and OS/2's low
+/// 64 KB stay out) up to the API thunks.
+pub const EXE_AREA_START: u32 = 0x0001_0000;
+pub const EXE_AREA_END: u32 = MAGIC_API_BASE as u32;
+
 // GDT tiling: 16-bit segment descriptors covering the guest address space
 // so that 16:16 (selector:offset) addressing works for OS/2 16-bit thunks.
-pub const GDT_BASE: u32 = 0x00080000;
+pub const GDT_BASE: u32 = SYSTEM_AREA_BASE;
 // GDT layout:
 //   [0] null, [1] 32-bit code (0x08), [2] 32-bit data (0x10), [3] FS data (0x18),
 //   [4] 16-bit data alias (0x20, base=0, limit=0xFFFF) — used for SS in 16-bit mode,
@@ -131,9 +146,10 @@ pub const TILED_CODE_START_INDEX: u32 = TILED_SEL_START_INDEX + NUM_TILES; // GD
 pub const TILED_CODE_START: u32 = TILED_CODE_START_INDEX * 8;
 pub const GDT_ENTRY_COUNT: u32 = 6 + NUM_TILES + NUM_CODE_TILES; // 6 fixed + 4096 data + 2048 code = 6150
 pub const GDT_SIZE: u32 = GDT_ENTRY_COUNT * 8;  // 49200 bytes
-// IDT relocated after GDT (GDT ends at ~0x8C030)
-pub const IDT_BASE: u32 = 0x0008D000;
-pub const IDT_HANDLER_BASE: u32 = 0x0008D800;
+// The IDT after the GDT (which ends at SYSTEM_AREA_BASE + 0xC030).
+pub const IDT_BASE: u32 = SYSTEM_AREA_BASE + 0xD000;
+pub const IDT_HANDLER_BASE: u32 = SYSTEM_AREA_BASE + 0xD800;
+const _: () = assert!(GDT_BASE + GDT_SIZE <= IDT_BASE);
 
 // NE (16-bit) loader constants
 pub const NE_SEGMENT_BASE: u32 = 0x00100000;   // 1MB — NE segments start here
@@ -546,19 +562,25 @@ pub const VK_F12:        u32 = 0x2b;
 pub const CF_TEXT:   u32 = 1;
 pub const CF_BITMAP: u32 = 2;
 
-// Guest memory layout constants — placed after loaded objects but below 1MB
-// to keep 16-bit segment arithmetic working. LX objects typically end below 0x80000.
-pub const TIB_BASE: u32 = 0x00090000;
-pub const PIB_BASE: u32 = 0x00091000;
-pub const ENV_ADDR: u32 = 0x00092000;
+// Thread 1's TIB, the PIB and the environment page, in the system area
+// (ADR-0094); 16-bit code reaches them through the tiled selectors.
+pub const TIB_BASE: u32 = SYSTEM_AREA_BASE + 0x1_0000;
+pub const PIB_BASE: u32 = SYSTEM_AREA_BASE + 0x1_1000;
+pub const ENV_ADDR: u32 = SYSTEM_AREA_BASE + 0x1_2000;
 /// The thread-local memory page (`paging.rs`, ADR-0088): the same linear
 /// address in every 32-bit thread, each thread's page tables mapping it to
 /// the thread's own page.
-pub const TLM_PAGE: u32 = 0x0009_F000;
+pub const TLM_PAGE: u32 = SYSTEM_AREA_BASE + 0x1_F000;
 /// A 4 KB page.
 pub const PAGE_SIZE: u32 = 4096;
-const _: () = assert!(TLM_PAGE.is_multiple_of(PAGE_SIZE) && TLM_PAGE > ENV_ADDR && TLM_PAGE < NE_SEGMENT_BASE);
-const _: () = assert!(TLM_PAGE + PAGE_SIZE <= 0x0040_0000, "the thread-local page is in the first 4 MB");
+const _: () = assert!(IDT_HANDLER_BASE < TIB_BASE && TLM_PAGE > ENV_ADDR);
+const _: () = assert!(TLM_PAGE.is_multiple_of(PAGE_SIZE) && SYSTEM_AREA_BASE.is_multiple_of(PAGE_SIZE));
+const _: () = assert!(TLM_PAGE + PAGE_SIZE <= SYSTEM_AREA_BASE + SYSTEM_AREA_SIZE);
+// The system area lies between the API thunks and the allocator, outside
+// every program's area.
+const _: () = assert!(MAGIC_API_BASE + STUB_AREA_SIZE as u64 <= SYSTEM_AREA_BASE as u64);
+const _: () = assert!(SYSTEM_AREA_BASE + SYSTEM_AREA_SIZE <= DYNAMIC_ALLOC_BASE);
+const _: () = assert!(EXE_AREA_END as u64 <= MAGIC_API_BASE && EXE_AREA_START < EXE_AREA_END);
 
 // SWP flags for WinSetWindowPos
 pub const SWP_SIZE: u32 = 0x0001;

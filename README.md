@@ -195,6 +195,7 @@ samples/               OS/2 sample applications and build scripts
   datetime_test/       Dates after 2038: session clock, DosSetDateTime, file times, WARPINE.DLL
   infoseg_test/        DosGetInfoSeg global and local information segments, a running clock
   fileattr_test/       FILE_READONLY by path, handle and DosSetFileMode; read-only files not deletable
+  bigdata_test/        1.5 MB of static data, all of it the program's own
   attr_test/           Hidden, system and archive kept and reported, archive on write, carried by DosCopy
   libpath_test/        CONFIG.SYS LIBPATH and SET: the DLL search order and the starting environment
   pm_child_dialog_test/ A dialog embedded in a client window (WinLoadDlg with the client as parent)
@@ -355,7 +356,7 @@ gdb -ex 'target remote :1234'                      # Attach with GDB
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 2180 unit tests (no KVM required)
+cargo test                        # 2181 unit tests (no KVM required)
 cargo test --test integration     # 182 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```

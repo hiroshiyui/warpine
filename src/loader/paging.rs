@@ -6,7 +6,8 @@
 //! - each thread has its own block of three pages: a page directory, one
 //!   page table and its thread-local page;
 //! - the directory maps the whole 4 GB linear space one-to-one with 4 MB
-//!   pages, except the first 4 MB, which go through the page table;
+//!   pages, except the 4 MB holding `TLM_PAGE` (in the system area,
+//!   ADR-0094), which go through the page table;
 //! - the page table maps those 4 MB one-to-one too, except `TLM_PAGE`,
 //!   which leads to the thread's own page.
 //!
@@ -87,6 +88,11 @@ const PDE_LARGE: u32 = 1 << 7;
 const PTE_FLAGS: u32 = PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_ACCESSED | PTE_DIRTY;
 const ENTRIES: u32 = 1024;
 const LARGE_PAGE_SHIFT: u32 = 22;
+/// The 4 MB block (directory entry) holding `TLM_PAGE`: the one mapped
+/// through the page table.
+const TLM_CHUNK: u32 = TLM_PAGE >> LARGE_PAGE_SHIFT;
+/// `TLM_PAGE`'s entry in the page table.
+const TLM_ENTRY: u32 = (TLM_PAGE >> PAGE_SHIFT) & (ENTRIES - 1);
 const PAGE_SHIFT: u32 = 12;
 
 /// Control-register bits.
@@ -104,13 +110,16 @@ pub fn paging_block(base: u32) -> Vec<u8> {
     let mut put = |at: u32, entry: u32| {
         block[at as usize..at as usize + 4].copy_from_slice(&entry.to_le_bytes());
     };
-    put(0, (base + TABLE_OFFSET) | PTE_FLAGS);
-    for i in 1..ENTRIES {
-        put(4 * i, (i << LARGE_PAGE_SHIFT) | PTE_FLAGS | PDE_LARGE);
+    for i in 0..ENTRIES {
+        if i == TLM_CHUNK {
+            put(4 * i, (base + TABLE_OFFSET) | PTE_FLAGS);
+        } else {
+            put(4 * i, (i << LARGE_PAGE_SHIFT) | PTE_FLAGS | PDE_LARGE);
+        }
     }
     for j in 0..ENTRIES {
-        let page = j << PAGE_SHIFT;
-        let target = if page == TLM_PAGE { base + TLM_OFFSET } else { page };
+        let page = (TLM_CHUNK << LARGE_PAGE_SHIFT) | (j << PAGE_SHIFT);
+        let target = if j == TLM_ENTRY { base + TLM_OFFSET } else { page };
         put(TABLE_OFFSET + 4 * j, target | PTE_FLAGS);
     }
     block
@@ -306,13 +315,17 @@ mod tests {
         const BASE: u32 = 0x0200_3000;
         let b = paging_block(BASE);
         assert_eq!(b.len(), PAGING_BLOCK_SIZE as usize);
-        assert_eq!(entry(&b, 0), (BASE + TABLE_OFFSET) | PTE_FLAGS, "the first 4 MB through the table");
+        let chunk = TLM_CHUNK << LARGE_PAGE_SHIFT;
+        assert_eq!(chunk, SYSTEM_AREA_BASE & !0x3F_FFFF, "the system area's 4 MB");
+        assert_eq!(entry(&b, 4 * TLM_CHUNK), (BASE + TABLE_OFFSET) | PTE_FLAGS, "those 4 MB through the table");
+        assert_eq!(entry(&b, 0), PTE_FLAGS | PDE_LARGE, "the first 4 MB, one large page");
         assert_eq!(entry(&b, 4), 0x0040_0000 | PTE_FLAGS | PDE_LARGE);
         assert_eq!(entry(&b, 4 * 1023), 0xFFC0_0000 | PTE_FLAGS | PDE_LARGE);
-        assert_eq!(entry(&b, TABLE_OFFSET), PTE_FLAGS, "page 0");
-        assert_eq!(entry(&b, TABLE_OFFSET + 4 * 0x90), 0x0009_0000 | PTE_FLAGS, "the TIB");
-        assert_eq!(entry(&b, TABLE_OFFSET + 4 * (TLM_PAGE >> PAGE_SHIFT)), (BASE + TLM_OFFSET) | PTE_FLAGS);
-        assert_eq!(entry(&b, TABLE_OFFSET + 4 * 1023), 0x003F_F000 | PTE_FLAGS);
+        assert_eq!(entry(&b, TABLE_OFFSET), chunk | PTE_FLAGS, "the block's first page");
+        let tib = (TIB_BASE >> PAGE_SHIFT) & (ENTRIES - 1);
+        assert_eq!(entry(&b, TABLE_OFFSET + 4 * tib), TIB_BASE | PTE_FLAGS, "the TIB");
+        assert_eq!(entry(&b, TABLE_OFFSET + 4 * TLM_ENTRY), (BASE + TLM_OFFSET) | PTE_FLAGS);
+        assert_eq!(entry(&b, TABLE_OFFSET + 4 * 1023), (chunk + 0x003F_F000) | PTE_FLAGS);
         assert!(b[TLM_OFFSET as usize..].iter().all(|&x| x == 0), "a zeroed thread-local page");
         assert_eq!(tlm_page_of(BASE as u64), Some(BASE + TLM_OFFSET));
     }
@@ -324,7 +337,7 @@ mod tests {
     fn no_entry_maps_a_page_elsewhere_than_itself_but_the_thread_local_page() {
         const BASE: u32 = 0x0300_0000;
         let b = paging_block(BASE);
-        for i in 1..ENTRIES {
+        for i in (0..ENTRIES).filter(|&i| i != TLM_CHUNK) {
             let e = entry(&b, 4 * i);
             assert_eq!(e & !0x3F_FFFF, i << LARGE_PAGE_SHIFT, "directory entry {i}");
             assert_eq!(e & 0xFFF, PTE_FLAGS | PDE_LARGE);
@@ -333,11 +346,12 @@ mod tests {
             let e = entry(&b, TABLE_OFFSET + 4 * j);
             assert_eq!(e & 0xFFF, PTE_FLAGS, "table entry {j}");
             let target = e & !0xFFF;
-            if j << PAGE_SHIFT == TLM_PAGE {
+            let page = (TLM_CHUNK << LARGE_PAGE_SHIFT) | (j << PAGE_SHIFT);
+            if page == TLM_PAGE {
                 assert_eq!(target, BASE + TLM_OFFSET);
                 assert!(valid_block(target - TLM_OFFSET));
             } else {
-                assert_eq!(target, j << PAGE_SHIFT, "table entry {j}");
+                assert_eq!(target, page, "table entry {j}");
             }
         }
     }
@@ -378,7 +392,7 @@ mod tests {
         assert!(loader.paging_block_intact(base));
         // The guest zeroes a directory entry and remaps its table's TLM entry.
         loader.guest_write::<u32>(base + 4 * 5, 0).unwrap();
-        loader.guest_write::<u32>(base + TABLE_OFFSET + 4 * (TLM_PAGE >> PAGE_SHIFT), 0x0010_0007).unwrap();
+        loader.guest_write::<u32>(base + TABLE_OFFSET + 4 * TLM_ENTRY, 0x0010_0007).unwrap();
         loader.guest_write::<u32>(base + TLM_OFFSET, 0x5151).unwrap();
         assert!(!loader.paging_block_intact(base));
         assert_eq!(loader.paging_status(&paged(base as u64)), PagingStatus::Damaged);

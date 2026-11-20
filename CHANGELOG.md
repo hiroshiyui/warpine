@@ -31,10 +31,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **`DosRawReadNPipe` / `DosRawWriteNPipe`** (ADR-0087): a message pipe's messages read and written as records, a USHORT length and the bytes (Warpine's own format; the calls have public prototypes only); on a byte pipe they are `DosRead` / `DosWrite`. Sample: `samples/npipe_test`.
 
 ### Security
+- **EXE objects are checked at load** (ADR-0094): an EXE whose objects leave the program area (64 KB–16 MB) or overlap is refused with a message. Before, such objects were loaded over Warpine's structures and the API thunks, and one outside guest memory panicked the loader.
 - **Guest paging is guarded** (ADR-0088). The guest runs at ring 0 and could rewrite its new page tables or load CR3 / CR0. The host never follows its tables and accepts a CR3 only as a whole, page-aligned block in the allocator's region. A watch thread kicks each vCPU every 250 ms, and a thread whose paging was changed ends as a trap; its exit list still runs, on repaired tables with the half-delivered fault dropped. Crash reports show CR3 and whether the tables are intact. Sample: `samples/paging_abuse_test`, a hostile guest built five ways.
 - **No endless spin on memory past guest RAM** — 1,000 accesses in a row past the guest's memory (a wild page-table entry or loop) end the thread as a trap; before, a guest could keep its process spinning for good.
 
 ### Fixed
+- **Programs with large static data lost some of it** (ADR-0094). Warpine kept its GDT, IDT, TIB, PIB, thread-local page and information segments at `0x80000`–`0xBFFFF`, inside any program with more than about 450 KB of static data. The program's bytes there were overwritten, or read as another thread's. These structures now live in a system area at `0x01800000`. Sample: `samples/bigdata_test`.
 - **`SIGQUIT` no longer ends Warpine with a core dump** (ADR-0093): Ctrl+\\ at a terminal used to kill the process.
 - **EA sidecars** (filesystems without extended attributes) — a rename lost a file's EAs and a delete left them behind; the `.os2ea` folder showed in directory listings, was reachable by programs, and kept its directory from being deleted. `DosCopy` copied no EAs at all.
 - **A termination during an access past guest RAM lost its exit list** — KVM completes such an access on the next run and overrode the registers Warpine had just pointed at the exit-list routine; the access is now completed at once (`finish_mmio`).

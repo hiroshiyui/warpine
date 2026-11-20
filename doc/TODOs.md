@@ -182,7 +182,6 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - interrupting writes to anonymous pipes, and host file I/O on FIFOs and devices;
   - signal focus across the session, `ERROR_INVALID_PROCID` for PM programs;
   - a GDB stop request kicking the vCPUs.
-- [ ] **Low-memory overlap**: Warpine's TIB (0x90000), PIB (0x91000) and thread-local page (0x9F000) lie inside a program whose objects reach past 0x90000, about 450 KB of static data from 0x20000. That program's bytes there are not its own: `samples/npipe_cut_test` saw them as zeros with two 512 KB static arrays. The loader neither refuses nor relocates such a program. This needs a memory-layout decision; found during K4.
 - [ ] **Pipes**:
   - muxwait semaphores as pipe semaphores, and a real `NPSS_WAIT`;
   - sweeping stale `warpine-threads-*` directories;

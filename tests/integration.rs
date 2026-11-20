@@ -852,6 +852,19 @@ fn test_file_attributes_are_kept() {
     assert_eq!(code, 0, "{out}");
 }
 
+/// bigdata_test (ADR-0094): a program with 1.5 MB of static data owns all
+/// of it; Warpine's GDT, IDT, TIB, PIB, thread-local page and information
+/// segments are no longer inside it.
+#[test]
+fn test_large_static_data_is_the_programs_own() {
+    let sample = "samples/bigdata_test/bigdata_test.exe";
+    if !kvm_available() || !Path::new(sample).exists() { return; }
+    let (out, code) = run_sample(sample, 30);
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("bigdata_test: done 13/13"), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
 /// npipe_cut_test (ADR-0093): a pipe write blocked in the middle of a
 /// message is interrupted by DosKillThread and by a signal to thread 1;
 /// the reader still gets the message whole, and later ones after it.

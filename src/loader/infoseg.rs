@@ -35,10 +35,11 @@ use super::clock::{self, LocalTime};
 use super::constants::*;
 use super::SharedState;
 
-/// Guest address of the `GINFOSEG` (start of tile 10).
-pub const GINFOSEG_ADDR: u32 = 0x000A_0000;
-/// Guest address of the `LINFOSEG` (start of tile 11).
-pub const LINFOSEG_ADDR: u32 = 0x000B_0000;
+/// Guest address of the `GINFOSEG`: a tile of its own in the system area
+/// (ADR-0094), out of every program's way.
+pub const GINFOSEG_ADDR: u32 = SYSTEM_AREA_BASE + 0x2_0000;
+/// Guest address of the `LINFOSEG`: the next tile.
+pub const LINFOSEG_ADDR: u32 = SYSTEM_AREA_BASE + 0x3_0000;
 /// Size of a `GINFOSEG`.
 pub const GINFOSEG_SIZE: usize = 72;
 /// Size of a `LINFOSEG`.
@@ -48,8 +49,8 @@ pub const INFOSEG_REFRESH: Duration = Duration::from_millis(DOS_TIMER_TICK_MS as
 
 // Both segments start a tile, so their selectors address them at offset 0.
 const _: () = assert!(GINFOSEG_ADDR.is_multiple_of(TILE_SIZE) && LINFOSEG_ADDR.is_multiple_of(TILE_SIZE));
-// Below the NE segments and the dynamic pool, above the TIB / PIB / GDT area.
-const _: () = assert!(GINFOSEG_ADDR > PIB_BASE && LINFOSEG_ADDR + TILE_SIZE <= NE_SEGMENT_BASE);
+// In the system area, after the TIB / PIB / thread-local page.
+const _: () = assert!(GINFOSEG_ADDR > TLM_PAGE && LINFOSEG_ADDR + TILE_SIZE <= SYSTEM_AREA_BASE + SYSTEM_AREA_SIZE);
 
 /// `GINFOSEG` offsets around the fields the refresher rewrites.
 const TIMER_INTERVAL_OFFSET: usize = 14;

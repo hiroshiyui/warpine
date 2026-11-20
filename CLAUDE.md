@@ -29,7 +29,7 @@ They run natively under KVM.
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2180 unit tests (2137 warpine + 19 gen_api + 13 lx_link + 5 gen_arch + 6 gen_compat) + 198 integration tests
+cargo test                                 # 2181 unit tests (2138 warpine + 19 gen_api + 13 lx_link + 5 gen_arch + 6 gen_compat) + 199 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); afterwards `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -90,8 +90,10 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
 | `DYNAMIC_ALLOC_BASE` | `0x02000000` | Allocations, up to `SHARED_ARENA_BASE` |
 | `GUEST_MEM_SIZE` | 256 MB | Guest memory |
 | `SHARED_ARENA_BASE` | `0x0E000000` | The session's shared arena (32 MB) |
-| `TIB_BASE` / `PIB_BASE` | `0x90000` / `0x91000` | Thread and process blocks; must stay below 1 MB |
-| `TLM_PAGE` | `0x9F000` | The thread-local memory page: each 32-bit thread's own page tables (`paging.rs`, ADR-0088) map it to the thread's own page |
+| `EXE_AREA_START` – `EXE_AREA_END` | `0x10000` – `0x01000000` | The program area: an EXE's objects must lie inside it, without overlapping, or the load is refused (ADR-0094) |
+| `SYSTEM_AREA_BASE` | `0x01800000` (256 KB) | Warpine's own structures, outside every program (ADR-0094): GDT, IDT, TIB, PIB, environment page, `TLM_PAGE`, information segments |
+| `TIB_BASE` / `PIB_BASE` | `0x01810000` / `0x01811000` | Thread 1's block and the process block, in the system area |
+| `TLM_PAGE` | `0x0181F000` | The thread-local memory page: each 32-bit thread's own page tables (`paging.rs`, ADR-0088) map it to the thread's own page |
 
 The PIB holds `pib_ulpid` at `+0x00`, `ulppid` at `+0x04`, `hmte` at `+0x08`, `pchcmd` at `+0x0C` and `pchenv` at `+0x10`.
 

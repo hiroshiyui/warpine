@@ -40,14 +40,39 @@ impl super::Loader {
                     format!("the program's {what} object {object} is not one of its {objects} objects")));
             }
         }
+        // Every object inside the program area, none over another
+        // (ADR-0094): Warpine's own structures and the allocator's memory
+        // lie outside it, so a program can neither be loaded over them nor
+        // have them inside its data.
+        // Resource objects are reached only through the resource table, never
+        // by fixups: they go wherever the allocator puts them (linkers give
+        // them base address 0).
+        let extents: Vec<(u32, u32, u32)> = lx_file.object_table.iter()
+            .filter(|o| o.flags & OBJ_RESOURCE == 0)
+            .map(|o| (o.base_address, o.size, o.page_count)).collect();
+        check_exe_objects(&extents).map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         let mut file = File::open(&path)?;
         let data_pages_base = lx_file.header.data_pages_offset as u64;
-        // Use preferred base addresses from the object table for the main exe
-        let object_bases: Vec<u32> = lx_file.object_table.iter().map(|o| o.base_address).collect();
+        // The program's objects at their base addresses, resource objects
+        // where the allocator puts them.
+        let mut object_bases: Vec<u32> = Vec::with_capacity(lx_file.object_table.len());
+        for (i, o) in lx_file.object_table.iter().enumerate() {
+            if o.flags & OBJ_RESOURCE == 0 {
+                object_bases.push(o.base_address);
+                continue;
+            }
+            let pages = u64::from(o.page_count) * u64::from(PAGE_SIZE);
+            let size = u32::try_from(u64::from(o.size).max(pages)).ok().filter(|&n| n > 0 && n <= MAX_RESOURCE_OBJECT)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData,
+                    format!("resource object {} is too large", i + 1)))?;
+            let addr = self.alloc_zeroed(size).ok_or_else(|| io::Error::new(io::ErrorKind::OutOfMemory,
+                format!("no memory for resource object {}", i + 1)))?;
+            object_bases.push(addr);
+        }
         // The program's objects, for DosQueryModFromEIP.
         {
             let mut dlls = self.shared.dll_mgr.lock_or_recover();
-            dlls.exe_objects = lx_file.object_table.iter().map(|o| (o.base_address, o.size)).collect();
+            dlls.exe_objects = lx_file.object_table.iter().zip(&object_bases).map(|(o, &b)| (b, o.size)).collect();
             dlls.exe_name = path.as_ref().file_stem().map(|s| s.to_string_lossy().to_ascii_uppercase()).unwrap_or_default();
         }
 
@@ -60,9 +85,12 @@ impl super::Loader {
                 if page_idx >= lx_file.page_map.len() { break; }
                 let page_off = data_pages_base + ((lx_file.page_map[page_idx].data_offset as u64) << lx_file.header.page_offset_shift);
                 let target = base as usize + p * 4096;
-                if lx_file.page_map[page_idx].data_size > 0 {
+                let data_size = (lx_file.page_map[page_idx].data_size as usize).min(PAGE_SIZE as usize);
+                if data_size > 0 {
                     file.seek(SeekFrom::Start(page_off))?;
-                    file.read_exact(self.guest_slice_mut(target as u32, lx_file.page_map[page_idx].data_size as usize).expect("load: page target OOB"))?;
+                    let slice = self.guest_slice_mut(target as u32, data_size).ok_or_else(|| io::Error::new(
+                        io::ErrorKind::InvalidData, format!("object {} page {p} lies outside guest memory", i + 1)))?;
+                    file.read_exact(slice)?;
                 }
             }
         }
@@ -73,7 +101,7 @@ impl super::Loader {
             for res in &lx_file.resources {
                 let obj_idx = (res.object_num as usize).wrapping_sub(1);
                 if obj_idx < lx_file.object_table.len() {
-                    let guest_addr = lx_file.object_table[obj_idx].base_address + res.offset;
+                    let guest_addr = object_bases[obj_idx].wrapping_add(res.offset);
                     res_mgr.add(super::managers::EXE_RESOURCE_MODULE, res.type_id, res.name_id, guest_addr, res.size);
                     debug!("  Resource: type={} id={} addr=0x{:08X} size={}", res.type_id, res.name_id, guest_addr, res.size);
                 }
@@ -449,6 +477,34 @@ impl super::Loader {
     }
 }
 
+/// `OBJRSRC`: the object holds resources (LX object flags).
+pub(crate) const OBJ_RESOURCE: u32 = 0x0008;
+/// The largest resource object Warpine allocates.
+const MAX_RESOURCE_OBJECT: u32 = 64 * 1024 * 1024;
+
+/// Check an EXE's objects, `(base, virtual size, pages)` each: every
+/// object, its pages included, lies wholly in [`EXE_AREA_START`] ..
+/// [`EXE_AREA_END`], and no two overlap (ADR-0094). The error names the
+/// first object that does not fit.
+pub(crate) fn check_exe_objects(objects: &[(u32, u32, u32)]) -> Result<(), String> {
+    let mut spans: Vec<(u64, u64, usize)> = Vec::with_capacity(objects.len());
+    for (i, &(base, size, pages)) in objects.iter().enumerate() {
+        let len = u64::from(size).max(u64::from(pages) * u64::from(PAGE_SIZE));
+        let start = u64::from(base);
+        let end = (start + len).next_multiple_of(u64::from(PAGE_SIZE));
+        if start < u64::from(EXE_AREA_START) || end > u64::from(EXE_AREA_END) {
+            return Err(format!(
+                "object {} (0x{start:08X}-0x{end:08X}) lies outside the program area 0x{EXE_AREA_START:08X}-0x{EXE_AREA_END:08X}",
+                i + 1));
+        }
+        if let Some(&(_, _, j)) = spans.iter().find(|&&(s, e, _)| start < e && s < end) {
+            return Err(format!("object {} overlaps object {}", i + 1, j + 1));
+        }
+        spans.push((start, end, i));
+    }
+    Ok(())
+}
+
 /// Whether `name` names a module without a path: not empty, no `/`, `\`
 /// or `:`, not `.` or `..`, no control characters, at most 255 bytes.
 pub(crate) fn is_plain_module_name(name: &str) -> bool {
@@ -615,6 +671,36 @@ mod tests {
         let l = crate::loader::Loader::new_mock();
         l.shared.drive_mgr.lock_or_recover().mount(2, Box::new(HostDirBackend::new(c.path().to_path_buf()).unwrap()));
         assert!(l.find_dll_path("SYS").is_some_and(|p| p.ends_with("OS2/DLL/SYS.DLL")));
+    }
+
+    /// An EXE's objects must lie in the program area and not overlap
+    /// (ADR-0094); an object reaching Warpine's system area, the API
+    /// thunks or past guest memory is refused, without overflow.
+    #[test]
+    fn exe_objects_must_fit_the_program_area() {
+        use super::check_exe_objects;
+        use crate::loader::constants::{EXE_AREA_END, EXE_AREA_START, SYSTEM_AREA_BASE, TIB_BASE};
+        // Open Watcom's layout: code at 64 KB, data after it.
+        assert_eq!(check_exe_objects(&[(0x1_0000, 0x2CCB, 3), (0x2_0000, 0x2000, 2)]), Ok(()));
+        // A data object of more than 1 MB, as npipe_cut_test once had: fine
+        // now that nothing of Warpine's lies below 16 MB.
+        assert_eq!(check_exe_objects(&[(0x1_0000, 0x3000, 3), (0x2_0000, 0x10_1000, 1)]), Ok(()));
+        assert_eq!(check_exe_objects(&[(EXE_AREA_END - 0x1000, 0x1000, 1)]), Ok(()), "up to the end");
+        for (objects, what) in [
+            (vec![(0, 0x1000, 1)], "page 0"),
+            (vec![(EXE_AREA_START - 0x1000, 0x1000, 1)], "below 64 KB"),
+            (vec![(EXE_AREA_END - 0x1000, 0x1001, 1)], "into the API thunks"),
+            (vec![(SYSTEM_AREA_BASE, 0x1000, 1)], "the system area"),
+            (vec![(TIB_BASE, 0x10, 1)], "the TIB"),
+            (vec![(0x1_0000, 0x10, 0x1_0000)], "pages beyond the size"),
+            (vec![(u32::MAX - 0xFFF, 0x1000, 1)], "at the top of 4 GB"),
+            (vec![(0x1_0000, u32::MAX, 1)], "a huge size"),
+        ] {
+            assert!(check_exe_objects(&objects).is_err(), "{what}");
+        }
+        assert_eq!(check_exe_objects(&[(0x1_0000, 0x2000, 2), (0x1_1000, 0x1000, 1)]),
+                   Err("object 2 overlaps object 1".into()));
+        assert_eq!(check_exe_objects(&[]), Ok(()));
     }
 
     #[test]

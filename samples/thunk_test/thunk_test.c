@@ -81,10 +81,12 @@ int main(void) {
     check("DosGetInfoBlocks returns 0", rc == 0, &passed, &failed);
     check("TIB non-null", (ULONG)ptib != 0, &passed, &failed);
     check("PIB non-null", (ULONG)ppib != 0, &passed, &failed);
-    check("TIB in range 0x90000-0x9FFFF",
-          (ULONG)ptib >= 0x00090000 && (ULONG)ptib < 0x000A0000, &passed, &failed);
-    check("PIB in range 0x90000-0x9FFFF",
-          (ULONG)ppib >= 0x00090000 && (ULONG)ppib < 0x000A0000, &passed, &failed);
+    /* Warpine's own structures lie outside the program area, 64 KB-16 MB
+       (ADR-0094). */
+    check("TIB outside the program area",
+          (ULONG)ptib >= 0x01000000, &passed, &failed);
+    check("PIB outside the program area",
+          (ULONG)ppib >= 0x01000000, &passed, &failed);
 
     /* ── Test 2: PIB field access ── */
     print("\r\nTest 2: PIB fields\r\n");
@@ -155,8 +157,9 @@ int main(void) {
         /* Stack should be in object area */
         check("Stack in LX object range",
               stack_addr >= 0x00010000 && stack_addr < 0x00100000, &passed, &failed);
-        /* TIB/PIB below code (at 0x90000-0x91FFF) */
-        check("TIB below 0xA0000", (ULONG)ptib < 0x000A0000, &passed, &failed);
+        /* TIB and PIB apart from the program's code and stack */
+        check("TIB apart from code and stack",
+              (ULONG)ptib != code_addr && (ULONG)ptib != stack_addr, &passed, &failed);
     }
 
     /* ── Summary ── */

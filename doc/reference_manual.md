@@ -580,7 +580,7 @@ DosAllocMem (299), DosFreeMem (304), DosSetMem (305), DosQueryMem (306), DosAllo
 
 Shared memory: `DosAllocSharedMem` names must start with `\SHAREMEM\` (`ERROR_INVALID_NAME`), are case-insensitive and unique (`ERROR_ALREADY_EXISTS`; free again after `DosFreeMem`); the flags need `PAG_READ`, `PAG_WRITE` or `PAG_EXECUTE` (`ERROR_INVALID_PARAMETER`, also for unknown bits). `DosGiveSharedMem` needs the base address of a block allocated with `OBJ_GIVEABLE` (`ERROR_INVALID_ADDRESS` for any other address, `ERROR_ACCESS_DENIED` for a block that is not giveable or an access it was not allocated with) and an access bit (`PAG_GUARD` allowed, other bits `ERROR_INVALID_PARAMETER`); an unknown process is `ERROR_INVALID_PROCID`. Shared blocks are shared by all processes of a session (ADR-0049): they live in the shared arena, the top 32 MB of every process's guest memory (`0x0E000000`–`0x0FFFFFFF`), at the same address in each process. `DosGetNamedSharedMem` needs an access bit (`ERROR_INVALID_PARAMETER`) and a `\SHAREMEM\` name (`ERROR_INVALID_NAME`; an unknown name is `ERROR_FILE_NOT_FOUND`). `DosGetSharedMem` needs an access bit and a block allocated with `OBJ_GETTABLE` (`ERROR_ACCESS_DENIED`; an address that is not a block is `ERROR_INVALID_ADDRESS`, unverified). `DosGiveSharedMem` reaches any live process of the session, including a child that `DosExecPgm` has just started; the giver must hold the block. A block lasts while some process holds it: `DosFreeMem` lets it go (a second time is `ERROR_INVALID_ADDRESS`), and so does the end of the process, even a killed one. Then its name is free and its pages read zero. A new block is zero. Without a session (an unusable session directory) shared memory stays within the process. Warpine's limits: every process can reach the whole arena, and access flags are checked but not enforced. Warpine's own choices (unverified): giving to the calling process itself is `NO_ERROR`; getting a block twice counts once. `QSV_MAXSHMEM` is the arena's size.
 
-Thread-local memory: `DosAllocThreadLocalMemory(cb, &p)` reserves `cb` DWORDs (1–8, else `ERROR_INVALID_PARAMETER`) of the 32-DWORD thread-local area and returns one pointer; every thread sees its own words behind it, also those an API call writes there. The words are reserved in every thread, and a thread starts with them zero. `ERROR_NOT_ENOUGH_MEMORY` when no run of `cb` free words is left. `DosFreeThreadLocalMemory(p)` frees a block by the pointer it was given (anything else: `ERROR_INVALID_PARAMETER`). Each 32-bit thread runs with its own page tables for this: the guest's memory is mapped one-to-one except the page holding the area (`TLM_PAGE`, `0x9F000`), which leads to the thread's own page (ADR-0088). A program cannot change its paging, as on OS/2: one that turns paging off, loads CR3 or writes its page tables ends as a trap (`TC_TRAP`, exit code 1; its exit list runs on repaired tables) within about 250 ms, and so does one that reads or writes memory past the guest's 256 MB 1,000 times in a row. Warpine's own choices (unverified): the area's address; new threads' words starting zero; the first fitting run handed out; Warpine's own host threads (the GUI's, for example) seeing thread 1's words; a host access that crosses the area's page boundary not being translated.
+Thread-local memory: `DosAllocThreadLocalMemory(cb, &p)` reserves `cb` DWORDs (1–8, else `ERROR_INVALID_PARAMETER`) of the 32-DWORD thread-local area and returns one pointer; every thread sees its own words behind it, also those an API call writes there. The words are reserved in every thread, and a thread starts with them zero. `ERROR_NOT_ENOUGH_MEMORY` when no run of `cb` free words is left. `DosFreeThreadLocalMemory(p)` frees a block by the pointer it was given (anything else: `ERROR_INVALID_PARAMETER`). Each 32-bit thread runs with its own page tables for this: the guest's memory is mapped one-to-one except the page holding the area (`TLM_PAGE`, `0x0181F000` in the system area, ADR-0094), which leads to the thread's own page (ADR-0088). A program cannot change its paging, as on OS/2: one that turns paging off, loads CR3 or writes its page tables ends as a trap (`TC_TRAP`, exit code 1; its exit list runs on repaired tables) within about 250 ms, and so does one that reads or writes memory past the guest's 256 MB 1,000 times in a row. Warpine's own choices (unverified): the area's address; new threads' words starting zero; the first fitting run handed out; Warpine's own host threads (the GUI's, for example) seeing thread 1's words; a host access that crosses the area's page boundary not being translated.
 
 Suballocation: `DosSubSetMem` with `DOSSUB_INIT` makes a pool of at least 72 bytes (the size is rounded down to a multiple of 8; 64 bytes are control information), `DOSSUB_GROW` makes it larger (`ERROR_DOSSUB_SHRINK` for a smaller size; `DOSSUB_SPARSE_OBJ` must match the pool's, else `ERROR_DOSSUB_BADFLAG`), without `DOSSUB_INIT` it attaches to a pool set up before; `DOSSUB_SERIALIZE` is accepted (every call is serialised anyway). `DosSubAllocMem` rounds the size up to 8 bytes and hands out free space first fit (`ERROR_DOSSUB_NOMEM` when nothing is large enough); `DosSubFreeMem` returns a block (`ERROR_DOSSUB_OVERLAP` when it overlaps free space); `DosSubUnsetMem` ends the pool; a pool whose memory `DosFreeMem` frees without it ends then too, so the memory can hold a new pool. The pool's bookkeeping is kept by Warpine, not in the pool's memory. Warpine's own choices (unverified): unknown flags `ERROR_DOSSUB_BADFLAG`; a pool under 72 bytes, outside memory, at 0 or not set up before (attach, grow) `ERROR_INVALID_PARAMETER`; a pool overlapping another `ERROR_DOSSUB_OVERLAP`; a block size of 0 `ERROR_INVALID_PARAMETER`, above the pool size less 64 `ERROR_DOSSUB_BADSIZE`; a pool never set up `ERROR_DOSSUB_CORRUPTED` (alloc, free, unset); a block outside the pool or off the 8-byte grid `ERROR_INVALID_PARAMETER`; at most 1024 pools and 65536 separate free ranges per pool (`ERROR_NOT_ENOUGH_MEMORY`).
 
@@ -1171,21 +1171,25 @@ All addresses are guest physical (GPA = GVA in Warpine's flat model):
 
 | Address | Size | Purpose |
 |---------|------|---------|
-| `0x00001000` | — | Executable pages (loaded from LX objects) |
-| `0x00080000` | 49,200 B | GDT (6150 entries: 6 fixed + 4096 data tiles + 2048 code tiles) |
-| `0x0008D000` | 256 B | IDT (32 exception vectors) |
-| `0x0008D800` | — | IDT handler stubs |
-| `0x00090000` | 4 KB | Thread Information Block (TIB) — thread 1 |
-| `0x00091000` | 4 KB | Process Information Block (PIB) |
-| `0x00092000` | 4 KB | Environment string block |
-| `0x000A0000` | 72 B | `GINFOSEG` (global information segment, start of tile 10, ADR-0040) |
-| `0x000B0000` | 30 B | `LINFOSEG` (local information segment, start of tile 11) |
+| `0x00010000` – `0x00FFFFFF` | — | The program area: a 32-bit program's objects, which must lie wholly inside it and not overlap (ADR-0094) |
 | `0x00100000` | — | NE (16-bit) segment base |
 | `0x00F00000` | — | NE API thunk stubs |
 | `0x01000000` | 21,504 B | LX API thunk stub area (`MAGIC_API_BASE`, `STUB_AREA_SIZE`) |
 | `0x010003FE` | 1 B | PM callback return trap |
 | `0x010003FF` | 1 B | Exit trap address |
+| `0x01800000` | 256 KB | The system area (ADR-0094): Warpine's own structures, outside every program |
+| `0x01800000` | 49,200 B | GDT (6150 entries: 6 fixed + 4096 data tiles + 2048 code tiles) |
+| `0x0180D000` | 256 B | IDT (32 exception vectors) |
+| `0x0180D800` | — | IDT handler stubs |
+| `0x01810000` | 4 KB | Thread Information Block (TIB) — thread 1 |
+| `0x01811000` | 4 KB | Process Information Block (PIB) |
+| `0x01812000` | 4 KB | Environment string block |
+| `0x0181F000` | 4 KB | The thread-local page (`TLM_PAGE`, ADR-0088) |
+| `0x01820000` | 72 B | `GINFOSEG` (global information segment, a tile of its own, ADR-0040) |
+| `0x01830000` | 30 B | `LINFOSEG` (local information segment, the next tile) |
 | `0x02000000` | ~30 MB | Dynamic allocation pool (`DosAllocMem`) |
+
+A 32-bit program whose objects leave the program area or overlap is refused at load ("Failed to load executable", exit code 1). Before ADR-0094, Warpine's structures lay at `0x80000`–`0xBFFFF`, inside any program with more than about 450 KB of static data, which then lost some of its own bytes.
 
 ### GDT Layout
 
