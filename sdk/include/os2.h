@@ -11,10 +11,14 @@
  *                    INCL_DOSMEMMGR ... each select the same header
  *   INCL_DOSERRORS   the ERROR_* codes
  *   INCL_SUB         INCL_VIO, INCL_KBD and INCL_MOU
+ *   INCL_PM          INCL_WIN and INCL_GPI
+ *   INCL_WIN         the window manager; INCL_WINWINDOWMGR,
+ *                    INCL_WINMESSAGEMGR, INCL_WINDIALOGS ... select it too
+ *   INCL_GPI         graphics; INCL_GPIPRIMITIVES, INCL_GPILCIDS ... too
  *
  * Every declared function is an import lx-link resolves through
  * targets/os2api.def; `gen_api check-headers` keeps the two in step.
- * The Presentation Manager is not declared yet. */
+ * The Presentation Manager's declarations are a subset (ADR-0097). */
 #ifndef WARPINE_OS2_H
 #define WARPINE_OS2_H
 
@@ -48,6 +52,33 @@
 
 #if defined(INCL_VIO) || defined(INCL_KBD) || defined(INCL_MOU)
 #  include <os2/sub.h>
+#endif
+
+#ifdef INCL_PM
+#  define INCL_WIN
+#  define INCL_GPI
+#endif
+#if defined(INCL_WINWINDOWMGR) || defined(INCL_WINMESSAGEMGR) || defined(INCL_WININPUT) \
+    || defined(INCL_WINDIALOGS) || defined(INCL_WINFRAMEMGR) || defined(INCL_WINSYS) \
+    || defined(INCL_WINTIMER) || defined(INCL_WINPOINTERS) || defined(INCL_WINMENUS) \
+    || defined(INCL_WINBUTTONS) || defined(INCL_WINENTRYFIELDS) || defined(INCL_WINLISTBOXES) \
+    || defined(INCL_WINSTATICS) || defined(INCL_WINSCROLLBARS) || defined(INCL_WINRECTANGLES) \
+    || defined(INCL_WINACCELERATORS) || defined(INCL_WINCLIPBOARD) || defined(INCL_WINATOM) \
+    || defined(INCL_WINERRORS) || defined(INCL_WINCOUNTRY) || defined(INCL_WINPROGRAMLIST)
+#  ifndef INCL_WIN
+#    define INCL_WIN
+#  endif
+#endif
+#if defined(INCL_GPIPRIMITIVES) || defined(INCL_GPILCIDS) || defined(INCL_GPIBITMAPS) \
+    || defined(INCL_GPIREGIONS) || defined(INCL_GPICONTROL) || defined(INCL_GPIPATHS) \
+    || defined(INCL_GPILOGCOLORTABLE)
+#  ifndef INCL_GPI
+#    define INCL_GPI
+#  endif
+#endif
+
+#if defined(INCL_WIN) || defined(INCL_GPI)
+#  include <os2/pm.h>
 #endif
 
 #endif /* WARPINE_OS2_H */

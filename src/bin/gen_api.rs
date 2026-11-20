@@ -858,8 +858,11 @@ fn cmd_gen_def(entries: &[OrdEntry]) {
 // lx-link resolves each one through os2api.def. `check-headers` keeps the
 // two in step: every declared call must be in the def, under the right
 // convention (the Pascal subsystems VIOCALLS / KBDCALLS / MOUCALLS through
-// OS2_PASCAL_API, everything else APIENTRY), and every ERROR_* code the
-// headers define must equal Warpine's own constant of that name.
+// OS2_PASCAL_API, everything else APIENTRY), and every integer constant
+// the headers define (ERROR_*, WM_*, WS_* …) must equal Warpine's own
+// constant of that name, where Warpine has one. Warpine's constants are
+// checked against the toolkit headers by constants.rs's own test, so this
+// holds the SDK to the toolkit's values without copying its text.
 
 /// The modules whose calls use the Pascal convention (callee cleans up).
 const PASCAL_MODULES: &[&str] = &["VIOCALLS", "KBDCALLS", "MOUCALLS"];
@@ -881,8 +884,8 @@ fn leading_ident(s: &str) -> &str {
     &s[..end]
 }
 
-/// The calls a header declares: `ret APIENTRY Name(` and
-/// `OS2_PASCAL_API(ret, Name, ...`. Preprocessor lines, typedefs (function
+/// The calls a header declares: `ret APIENTRY Name(`, `ret EXPENTRY Name(`
+/// and `OS2_PASCAL_API(ret, Name, ...`. Preprocessor lines, typedefs (function
 /// pointer types) and comments are not declarations.
 fn parse_header_decls(text: &str, file: &str) -> Vec<HeaderDecl> {
     let mut decls = Vec::new();
@@ -899,7 +902,7 @@ fn parse_header_decls(text: &str, file: &str) -> Vec<HeaderDecl> {
                     decls.push(HeaderDecl { name: name.to_owned(), pascal: true, origin });
                 }
             }
-        } else if let Some((_, after)) = line.split_once("APIENTRY ") {
+        } else if let Some((_, after)) = line.split_once("APIENTRY ").or_else(|| line.split_once("EXPENTRY ")) {
             let name = leading_ident(after);
             if !name.is_empty() && after.trim_start()[name.len()..].trim_start().starts_with('(') {
                 decls.push(HeaderDecl { name: name.to_owned(), pascal: false, origin });
@@ -909,53 +912,91 @@ fn parse_header_decls(text: &str, file: &str) -> Vec<HeaderDecl> {
     decls
 }
 
-/// A C or Rust integer literal (decimal or 0x hex, `_` and a `U` / `L`
-/// suffix allowed).
+/// A C or Rust integer literal (decimal or 0x hex, `_` and `U` / `L`
+/// suffixes allowed, a leading `-`), as its 32-bit pattern: -1 and
+/// 0xFFFFFFFF compare equal, as they do in C on i386.
 fn parse_int_literal(s: &str) -> Option<u32> {
     let s: String = s.trim().trim_end_matches(['u', 'U', 'l', 'L']).chars().filter(|c| *c != '_').collect();
-    match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
-        Some(hex) => u32::from_str_radix(hex, 16).ok(),
-        None => s.parse().ok(),
+    let (negative, digits) = match s.strip_prefix('-') {
+        Some(rest) => (true, rest.trim_start()),
+        None => (false, s.as_str()),
+    };
+    let value = match digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+        Some(hex) => u32::from_str_radix(hex, 16).ok()?,
+        None => digits.parse().ok()?,
+    };
+    Some(if negative { value.wrapping_neg() } else { value })
+}
+
+/// A header constant's value: an integer literal, possibly negative, in
+/// parentheses, or cast (`((HWND)1)`, `((ULONG)-1)`); `None` for anything
+/// else (expressions, strings, other macros).
+fn parse_c_value(s: &str) -> Option<u32> {
+    let mut v = s.trim();
+    loop {
+        if let Some(inner) = v.strip_prefix('(').and_then(|r| r.strip_suffix(')')) {
+            v = inner.trim();
+        } else if let Some(rest) = v.strip_prefix('(') {
+            // A cast: "(TYPE)value".
+            let (ty, value) = rest.split_once(')')?;
+            if !ty.trim().chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ' ' || c == '*') {
+                return None;
+            }
+            v = value.trim();
+        } else {
+            return parse_int_literal(v);
+        }
     }
 }
 
-/// `#define ERROR_X n` (and `NO_ERROR`) in a header.
-fn parse_header_errors(text: &str) -> Vec<(String, u32)> {
+/// Every `#define NAME value` in a header whose value is an integer.
+fn parse_header_constants(text: &str) -> Vec<(String, u32)> {
     text.lines().filter_map(|raw| {
         let line = raw.trim_start().strip_prefix('#')?.trim_start().strip_prefix("define")?;
         let name = leading_ident(line);
-        if !(name.starts_with("ERROR_") || name == "NO_ERROR") { return None; }
-        let value = line.trim_start()[name.len()..].split_whitespace().next()?;
-        Some((name.to_owned(), parse_int_literal(value)?))
+        let rest = &line.trim_start()[name.len()..];
+        if name.is_empty() || rest.starts_with('(') { return None; }   // a function-like macro
+        let value = rest.split("/*").next()?.trim();
+        Some((name.to_owned(), parse_c_value(value)?))
     }).collect()
 }
 
-/// `const ERROR_X: u32 = n;` (and `NO_ERROR`) in Rust source.
-fn parse_rust_errors(text: &str) -> Vec<(String, u32)> {
+/// Every `const NAME: <integer type> = literal;` in Rust source.
+fn parse_rust_constants(text: &str) -> Vec<(String, u32)> {
+    const INT_TYPES: &[&str] = &["u8", "u16", "u32", "u64", "usize", "i8", "i16", "i32", "i64", "isize"];
     text.lines().filter_map(|raw| {
         let (_, rest) = raw.split_once("const ")?;
         let name = leading_ident(rest);
-        if !(name.starts_with("ERROR_") || name == "NO_ERROR") { return None; }
-        let (_, value) = rest.split_once('=')?;
+        let (ty, value) = rest[name.len()..].trim_start().strip_prefix(':')?.split_once('=')?;
+        if !INT_TYPES.contains(&ty.trim()) { return None; }
         Some((name.to_owned(), parse_int_literal(value.split(';').next()?)?))
     }).collect()
 }
 
-/// Warpine's own error constants, from every `.rs` file under `dir`.
-fn warpine_error_values(dir: &Path) -> HashMap<String, u32> {
-    let mut values = HashMap::new();
-    let Ok(read) = fs::read_dir(dir) else { return values };
+/// Warpine's own integer constants, from every `.rs` file under `dir`; a
+/// name defined with two different values is left out (it means
+/// different things in different modules).
+fn warpine_constant_values(dir: &Path) -> HashMap<String, u32> {
+    let mut found: HashMap<String, Option<u32>> = HashMap::new();
+    collect_rust_constants(dir, &mut found);
+    found.into_iter().filter_map(|(k, v)| Some((k, v?))).collect()
+}
+
+fn collect_rust_constants(dir: &Path, found: &mut HashMap<String, Option<u32>>) {
+    let Ok(read) = fs::read_dir(dir) else { return };
     let mut paths: Vec<PathBuf> = read.flatten().map(|e| e.path()).collect();
     paths.sort();
     for path in paths {
         if path.is_dir() {
-            values.extend(warpine_error_values(&path));
+            collect_rust_constants(&path, found);
         } else if path.extension().is_some_and(|e| e == "rs")
             && let Ok(text) = fs::read_to_string(&path) {
-            values.extend(parse_rust_errors(&text));
+            for (name, value) in parse_rust_constants(&text) {
+                let slot = found.entry(name).or_insert(Some(value));
+                if *slot != Some(value) { *slot = None; }
+            }
         }
     }
-    values
 }
 
 /// The problems with `decls` against the def `entries`, as messages.
@@ -982,10 +1023,10 @@ fn header_decl_problems(entries: &[OrdEntry], decls: &[HeaderDecl]) -> Vec<Strin
     problems
 }
 
-/// The error codes whose header value differs from Warpine's.
-fn header_error_problems(header: &[(String, u32)], warpine: &HashMap<String, u32>) -> Vec<String> {
+/// The constants whose header value differs from Warpine's.
+fn header_constant_problems(header: &[(String, u32)], warpine: &HashMap<String, u32>) -> Vec<String> {
     header.iter().filter_map(|(name, value)| match warpine.get(name) {
-        Some(w) if w != value => Some(format!("{name} is {value} in the headers but {w} in Warpine")),
+        Some(w) if w != value => Some(format!("{name} is {value:#x} in the headers but {w:#x} in Warpine")),
         _ => None,
     }).collect()
 }
@@ -1001,17 +1042,18 @@ fn cmd_check_headers(entries: &[OrdEntry], include_dir: &Path, src_dir: &Path) -
     };
     files.sort();
     let mut decls = Vec::new();
-    let mut errors = Vec::new();
+    let mut constants = Vec::new();
     for path in &files {
         let Ok(text) = fs::read_to_string(path) else {
             eprintln!("error: cannot read {}", path.display());
             return false;
         };
         decls.extend(parse_header_decls(&text, &path.display().to_string()));
-        errors.extend(parse_header_errors(&text));
+        constants.extend(parse_header_constants(&text));
     }
     let mut problems = header_decl_problems(entries, &decls);
-    problems.extend(header_error_problems(&errors, &warpine_error_values(src_dir)));
+    let warpine = warpine_constant_values(src_dir);
+    problems.extend(header_constant_problems(&constants, &warpine));
 
     if !problems.is_empty() {
         for p in &problems {
@@ -1020,13 +1062,14 @@ fn cmd_check_headers(entries: &[OrdEntry], include_dir: &Path, src_dir: &Path) -
         return false;
     }
     let declared: std::collections::HashSet<&str> = decls.iter().map(|d| d.name.as_str()).collect();
-    let covered_modules = ["DOSCALLS", "QUECALLS", "VIOCALLS", "KBDCALLS", "MOUCALLS"];
+    let covered_modules = ["DOSCALLS", "QUECALLS", "VIOCALLS", "KBDCALLS", "MOUCALLS", "PMWIN", "PMGPI"];
     let missing = entries.iter()
         .filter(|e| covered_modules.contains(&e.module.as_str()) && !declared.contains(e.name.as_str()))
         .count();
-    println!("✓  sdk/include: {} calls declared, each in os2api.def under its convention; {} error codes agree with Warpine",
-             decls.len(), errors.len());
-    println!("   ({missing} Control Program and subsystem entries of the def are not declared yet)");
+    let compared = constants.iter().filter(|(name, _)| warpine.contains_key(name)).count();
+    println!("✓  sdk/include: {} calls declared, each in os2api.def under its convention; {compared} of {} constants \
+              compared with Warpine's, all equal", decls.len(), constants.len());
+    println!("   ({missing} entries of the def for the modules the headers cover are not declared yet)");
     true
 }
 
@@ -1510,12 +1553,13 @@ mod tests {
                     APIRET APIENTRY DosWrite(HFILE hFile, const void *pBuffer,\n\
                     \x20                        ULONG cbWrite, PULONG pcbActual);\n\
                     void   APIENTRY DosExit (ULONG action, ULONG result);\n\
+                    MRESULT EXPENTRY WinDefWindowProc(HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2);\n\
                     /* APIENTRY Commented(void); */\n\
                     OS2_PASCAL_API(APIRET16, VioWrtTTY, (PCCH pch, USHORT cb, HVIO hvio),\n\
                     \x20              (ULONG hvio, ULONG cb, PCCH pch), (hvio, cb, pch))\n";
         let decls = parse_header_decls(text, "x.h");
         let found: Vec<(&str, bool)> = decls.iter().map(|d| (d.name.as_str(), d.pascal)).collect();
-        assert_eq!(found, [("DosWrite", false), ("DosExit", false), ("VioWrtTTY", true)]);
+        assert_eq!(found, [("DosWrite", false), ("DosExit", false), ("WinDefWindowProc", false), ("VioWrtTTY", true)]);
         assert_eq!(decls[0].origin, "x.h:4");
     }
 
@@ -1539,18 +1583,26 @@ mod tests {
     }
 
     #[test]
-    fn test_header_error_codes_compare_with_warpine() {
-        let header = parse_header_errors("#define NO_ERROR 0\n#  define ERROR_FILE_NOT_FOUND   2\n\
-                                          #define ERROR_TIMEOUT 640\n#define ERROR_ONLY_IN_C 7\n#define OTHER 1\n");
-        assert_eq!(header.len(), 4);
+    fn test_header_constants_compare_with_warpine() {
+        let header = parse_header_constants("#define NO_ERROR 0\n#  define ERROR_FILE_NOT_FOUND   2\n\
+                                             #define ERROR_TIMEOUT 640  /* the wait ended */\n#define ERROR_ONLY_IN_C 7\n\
+                                             #define HWND_DESKTOP ((HWND)1)\n#define CLR_BLACK (-1L)\n\
+                                             #define SEM_INDEFINITE_WAIT ((ULONG)-1)\n#define LOUSHORT(l) ((USHORT)(l))\n\
+                                             #define FCF_MINMAX (FCF_MINBUTTON | FCF_MAXBUTTON)\n#define NAME \"text\"\n");
+        let names: Vec<&str> = header.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["NO_ERROR", "ERROR_FILE_NOT_FOUND", "ERROR_TIMEOUT", "ERROR_ONLY_IN_C",
+                           "HWND_DESKTOP", "CLR_BLACK", "SEM_INDEFINITE_WAIT"]);
+        assert_eq!(header[4].1, 1);
+        assert_eq!(header[5].1, u32::MAX);
+        assert_eq!(header[6].1, u32::MAX);
         // Built with format! so the wrong value is no `const` line of this
         // file (constants.rs's test checks those against the toolkit).
-        let rust = parse_rust_errors(&format!("pub const {}: u32 = 2;\npub const {}:        u32 = 0x0000_0281; // wrong on purpose\nconst NOT_AN_ERROR: u32 = 5;\n",
-                                              "ERROR_FILE_NOT_FOUND", "ERROR_TIMEOUT"));
+        let rust = parse_rust_constants(&format!("pub const {}: u32 = 2;\npub const {}:        u32 = 0x0000_0281; // wrong on purpose\nconst NOT_INTEGER: &str = \"5\";\npub const {}: i32 = -1;\n",
+                                              "ERROR_FILE_NOT_FOUND", "ERROR_TIMEOUT", "CLR_BLACK"));
         let warpine: HashMap<String, u32> = rust.into_iter().collect();
-        assert_eq!(warpine.len(), 2);
-        let problems = header_error_problems(&header, &warpine);
-        assert_eq!(problems, ["ERROR_TIMEOUT is 640 in the headers but 641 in Warpine"]);
+        assert_eq!(warpine.len(), 3);
+        let problems = header_constant_problems(&header, &warpine);
+        assert_eq!(problems, ["ERROR_TIMEOUT is 0x280 in the headers but 0x281 in Warpine"]);
     }
 
     /// The real headers against the real def and Warpine's constants: the

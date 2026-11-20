@@ -1,0 +1,202 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/* c_pm_test.c - a Presentation Manager program built by GCC or clang with
+ * Warpine's SDK (ADR-0097): a frame and client window, the message loop,
+ * window procedures called back by Warpine, sent and posted messages, a
+ * timer, window words and text, rectangles, atoms, and GPI drawing read
+ * back with GpiQueryPel. The program ends itself; each check prints
+ *
+ *   c_pm_test: <what>: ok
+ *   c_pm_test: <what>: FAIL got <value> want <value>
+ *
+ * and "c_pm_test: done <passed>/<total>" at the end. */
+#define INCL_WIN
+#define INCL_GPI
+#define INCL_DOSPROCESS
+#include <os2.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdint.h>
+
+/* The structures as Warpine reads and writes them. */
+_Static_assert(sizeof(QMSG) == 32, "QMSG");
+_Static_assert(offsetof(QMSG, ptl) == 20, "QMSG.ptl");
+_Static_assert(sizeof(SWP) == 36 && offsetof(SWP, hwnd) == 24, "SWP");
+_Static_assert(sizeof(FRAMECDATA) == 10 && offsetof(FRAMECDATA, idResources) == 8, "FRAMECDATA");
+_Static_assert(sizeof(CLASSINFO) == 12, "CLASSINFO");
+_Static_assert(sizeof(FATTRS) == 56 && offsetof(FATTRS, lMaxBaselineExt) == 44, "FATTRS");
+_Static_assert(sizeof(FONTMETRICS) == 208, "FONTMETRICS");
+_Static_assert(offsetof(FONTMETRICS, lEmHeight) == 68 && offsetof(FONTMETRICS, lMaxBaselineExt) == 112
+               && offsetof(FONTMETRICS, sXDeviceRes) == 126 && offsetof(FONTMETRICS, sNominalPointSize) == 138,
+               "FONTMETRICS offsets");
+
+#define CLIENT_CLASS "CPmTestClient"
+#define WM_CHECKS    (WM_USER + 1)
+#define WM_ECHO      (WM_USER + 2)
+#define WM_POSTED    (WM_USER + 3)
+#define TIMER_ID     7
+#define CLIENT_CX    300
+#define CLIENT_CY    200
+
+static int passed, total;
+static HAB hab;
+static HWND frame, client;
+static int created, painted, timer_ticks, posted_seen;
+static LONG paint_pel;
+static int aligned_in_wndproc = 1;
+
+static void check(const char *what, long got, long want)
+{
+    total++;
+    if (got == want) {
+        passed++;
+        printf("c_pm_test: %s: ok\n", what);
+    } else {
+        printf("c_pm_test: %s: FAIL got %ld want %ld\n", what, got, want);
+    }
+}
+
+/* Drawing in WM_PAINT, read back on the spot. */
+static void paint(HWND hwnd)
+{
+    RECTL rcl;
+    HPS hps = WinBeginPaint(hwnd, NULLHANDLE, &rcl);
+    WinQueryWindowRect(hwnd, &rcl);
+    WinFillRect(hps, &rcl, CLR_WHITE);
+    GpiSetColor(hps, CLR_BLUE);
+    POINTL corner = { 10, 10 }, opposite = { 60, 40 };
+    GpiMove(hps, &corner);
+    GpiBox(hps, DRO_FILL, &opposite, 0, 0);
+    POINTL inside = { 30, 20 };
+    paint_pel = GpiQueryPel(hps, &inside);
+    GpiSetColor(hps, CLR_BLACK);
+    POINTL at = { 10, 100 };
+    GpiCharStringAt(hps, &at, 22, "Hello from GCC/clang!");
+    WinEndPaint(hps);
+    painted++;
+}
+
+static MRESULT EXPENTRY client_proc(HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2)
+{
+    _Alignas(16) unsigned char probe[16];
+    __asm__ volatile("" : : "r"(probe) : "memory");
+    if ((uintptr_t)probe & 15) aligned_in_wndproc = 0;
+
+    switch (msg) {
+    case WM_CREATE:
+        created++;
+        return 0;
+    case WM_PAINT:
+        paint(hwnd);
+        return 0;
+    case WM_ECHO:
+        return MRFROMLONG(LONGFROMMP(mp1) + LONGFROMMP(mp2));
+    case WM_POSTED:
+        posted_seen = LONGFROMMP(mp1);
+        return 0;
+    case WM_TIMER:
+        if (SHORT1FROMMP(mp1) == TIMER_ID && ++timer_ticks == 1)
+            WinPostMsg(hwnd, WM_CHECKS, MPVOID, MPVOID);
+        return 0;
+    case WM_CHECKS:
+        WinStopTimer(hab, hwnd, TIMER_ID);
+        {
+            extern void run_checks(HWND);
+            run_checks(hwnd);
+        }
+        WinPostMsg(frame, WM_CLOSE, MPVOID, MPVOID);
+        return 0;
+    }
+    return WinDefWindowProc(hwnd, msg, mp1, mp2);
+}
+
+void run_checks(HWND hwnd)
+{
+    check("WM_CREATE reached the client once", created, 1);
+    check("WM_PAINT reached the client", painted >= 1, 1);
+    check("GpiBox filled with the colour GpiQueryPel reads back", paint_pel, CLR_BLUE);
+    check("the window procedure ran on a 16-byte-aligned frame", aligned_in_wndproc, 1);
+    check("the timer ticked", timer_ticks >= 1, 1);
+
+    check("WinWindowFromID(frame, FID_CLIENT) is the client", WinWindowFromID(frame, FID_CLIENT), client);
+    check("the client's parent is the frame", WinQueryWindow(hwnd, QW_PARENT), frame);
+    check("WinQueryAnchorBlock", WinQueryAnchorBlock(hwnd) != NULLHANDLE, 1);
+    check("WinIsWindow", WinIsWindow(hab, hwnd), TRUE);
+    check("WinIsWindowVisible", WinIsWindowVisible(frame), TRUE);
+
+    RECTL rcl;
+    WinQueryWindowRect(frame, &rcl);
+    check("the frame is the size WinSetWindowPos gave", rcl.xRight - rcl.xLeft, CLIENT_CX + 100);
+    SWP swp;
+    check("WinQueryWindowPos", WinQueryWindowPos(frame, &swp) && swp.cy == CLIENT_CY + 100, 1);
+
+    check("WinSendMsg runs the procedure and returns its result",
+          LONGFROMMR(WinSendMsg(hwnd, WM_ECHO, MPFROMLONG(40), MPFROMLONG(2))), 42);
+    WinPostMsg(hwnd, WM_POSTED, MPFROMLONG(77), MPVOID);
+    QMSG qmsg;
+    while (WinPeekMsg(hab, &qmsg, hwnd, WM_POSTED, WM_POSTED, PM_REMOVE))
+        WinDispatchMsg(hab, &qmsg);
+    check("a posted message is peeked and dispatched", posted_seen, 77);
+
+    char text[64];
+    WinSetWindowText(frame, "C on Warpine");
+    LONG n = WinQueryWindowText(frame, sizeof text, text);
+    check("WinSetWindowText / WinQueryWindowText", n == 12 && !strcmp(text, "C on Warpine"), 1);
+    check("WinSetWindowULong(QWL_USER)", WinSetWindowULong(hwnd, QWL_USER, 0xC0FFEE), TRUE);
+    check("WinQueryWindowULong(QWL_USER)", WinQueryWindowULong(hwnd, QWL_USER), 0xC0FFEE);
+
+    RECTL a, b, c;
+    WinSetRect(hab, &a, 0, 0, 10, 10);
+    WinSetRect(hab, &b, 5, 5, 20, 20);
+    WinIntersectRect(hab, &c, &a, &b);
+    check("WinIntersectRect", c.xLeft == 5 && c.yBottom == 5 && c.xRight == 10 && c.yTop == 10, 1);
+    WinUnionRect(hab, &c, &a, &b);
+    check("WinUnionRect", c.xLeft == 0 && c.xRight == 20, 1);
+    POINTL in = { 3, 3 }, out = { 15, 2 };
+    check("WinPtInRect", WinPtInRect(hab, &a, &in) && !WinPtInRect(hab, &a, &out), 1);
+
+    HATOMTABLE atoms = WinQuerySystemAtomTable();
+    ATOM atom = WinAddAtom(atoms, "WarpineCAtom");
+    char name[32] = "";
+    WinQueryAtomName(atoms, atom, name, sizeof name);
+    check("WinAddAtom / WinQueryAtomName", atom != 0 && !strcmp(name, "WarpineCAtom"), 1);
+    check("WinFindAtom", WinFindAtom(atoms, "WarpineCAtom"), atom);
+
+    check("WinQuerySysValue(SV_CXSCREEN) is positive", WinQuerySysValue(HWND_DESKTOP, SV_CXSCREEN) > 0, 1);
+    check("WinQuerySysPointer(SPTR_ARROW)", WinQuerySysPointer(HWND_DESKTOP, SPTR_ARROW, FALSE) != NULLHANDLE, 1);
+
+    HPS hps = WinGetPS(hwnd);
+    FONTMETRICS fm;
+    check("GpiQueryFontMetrics", GpiQueryFontMetrics(hps, sizeof fm, &fm), TRUE);
+    check("the font has a height", fm.lMaxBaselineExt > 0 && fm.lEmHeight > 0, 1);
+    POINTL p = { 120, 30 }, pos;
+    GpiMove(hps, &p);
+    GpiQueryCurrentPosition(hps, &pos);
+    check("GpiMove / GpiQueryCurrentPosition", pos.x == 120 && pos.y == 30, 1);
+    check("GpiSetColor / GpiQueryColor", GpiSetColor(hps, CLR_RED) && GpiQueryColor(hps) == CLR_RED, 1);
+    WinReleasePS(hps);
+}
+
+int main(void)
+{
+    hab = WinInitialize(0);
+    HMQ hmq = WinCreateMsgQueue(hab, 0);
+    check("WinInitialize / WinCreateMsgQueue", hab != NULLHANDLE && hmq != NULLHANDLE, 1);
+    check("WinRegisterClass", WinRegisterClass(hab, CLIENT_CLASS, client_proc, CS_SIZEREDRAW, 4), TRUE);
+
+    ULONG flags = FCF_TITLEBAR | FCF_SYSMENU | FCF_SIZEBORDER | FCF_MINMAX;
+    frame = WinCreateStdWindow(HWND_DESKTOP, 0, &flags, CLIENT_CLASS, "c_pm_test", 0, NULLHANDLE, 0, &client);
+    check("WinCreateStdWindow", frame != NULLHANDLE && client != NULLHANDLE, 1);
+    WinSetWindowPos(frame, HWND_TOP, 40, 40, CLIENT_CX + 100, CLIENT_CY + 100,
+                    SWP_SIZE | SWP_MOVE | SWP_SHOW | SWP_ACTIVATE);
+    check("WinStartTimer", WinStartTimer(hab, client, TIMER_ID, 200) != 0, 1);
+
+    QMSG qmsg;
+    while (WinGetMsg(hab, &qmsg, NULLHANDLE, 0, 0))
+        WinDispatchMsg(hab, &qmsg);
+
+    check("WinDestroyWindow", WinDestroyWindow(frame), TRUE);
+    WinDestroyMsgQueue(hmq);
+    WinTerminate(hab);
+    printf("c_pm_test: done %d/%d\n", passed, total);
+    return passed == total ? 0 : 1;
+}

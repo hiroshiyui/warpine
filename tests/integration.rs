@@ -1822,6 +1822,33 @@ fn test_c_sdk_from_gcc_and_clang() {
     }
 }
 
+/// ADR-0097: samples/c_pm_test — a PM program built with the SDK's pm.h by
+/// GCC and by clang (each when installed): a frame and client, the message
+/// loop, window procedures called back by Warpine, sent and posted
+/// messages, a timer, window words and text, rectangles, atoms, and GPI
+/// drawing read back. It ends itself; the script only bounds it.
+#[test]
+fn gui_c_pm_from_gcc_and_clang() {
+    let has_make = Command::new("make").arg("--version").output().is_ok_and(|o| o.status.success());
+    if !kvm_available() || !has_make { return; }
+    for compiler in ["gcc", "clang"] {
+        if !compiler_available(compiler) {
+            eprintln!("skipping c_pm_test with {compiler}: not installed");
+            continue;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vars = [format!("CC={compiler}"), format!("OS2_BUILD={}", dir.path().join("sdk").display()),
+                    format!("BUILD={}", dir.path().display()),
+                    format!("LX_LINK={}", env!("CARGO_BIN_EXE_lx_link"))];
+        let out = Command::new("make").args(["-s", "-C", "samples/c_pm_test"]).args(&vars).output().expect("run make");
+        assert!(out.status.success(), "make ({compiler}):\n{}{}",
+                String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        let exe = dir.path().join("c_pm_test.exe");
+        assert!(assert_scripted_checks_pass_env(exe.to_str().unwrap(), "c_pm_test", 33, "15000 quit\n", &[]),
+                "{compiler}: c_pm_test did not run");
+    }
+}
+
 // ── GUI regression tests ─────────────────────────────────────────────────────
 //
 // These drive a PM sample with a scripted session (`WARPINE_GUI_SCRIPT`, see

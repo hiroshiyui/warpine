@@ -40,6 +40,12 @@ const HELPMGR_BASE: u32 = 17408;
 const PMSPL_BASE: u32 = 18432;
 const PMCTLS_BASE: u32 = 19456;
 const WARPINE_BASE: u32 = 20480;
+const PMDRAG_BASE: u32 = 21504;
+const SOM_BASE: u32 = 22528;
+/// SOM is 4096 ordinals wide (ADR-0070); the others 1024.
+const REXX_BASE: u32 = SOM_BASE + 4096;
+const REXXAPI_BASE: u32 = REXX_BASE + 1024;
+const PMWP_BASE: u32 = REXXAPI_BASE + 1024;
 
 /// Base virtual address of the code (text) object: the start of Warpine's
 /// program area (`EXE_AREA_START`, ADR-0094). The data object follows on
@@ -646,7 +652,9 @@ mod lx_writer {
                 if let Some(&va) = state.symbol_table.get(name) {
                     Resolved::Internal(va)
                 } else if let Some((module, ordinal)) = def_map.get(name) {
-                    Resolved::Import { va: resolve_import(module, *ordinal), module: module.clone(), ordinal: *ordinal }
+                    let va = resolve_import(module, *ordinal)
+                        .ok_or_else(|| format!("{name} (module {module} is unknown to lx-link)"))?;
+                    Resolved::Import { va, module: module.clone(), ordinal: *ordinal }
                 } else if obj.weak_refs.iter().any(|w| w == name) {
                     Resolved::Value(0)
                 } else {
@@ -981,7 +989,10 @@ mod lx_writer {
 
 // ─── resolve_import (mirrors descriptors.rs::resolve_import) ─────────────────
 
-fn resolve_import(module: &str, ordinal: u32) -> u32 {
+/// The thunk address of `module`'s `ordinal`; `None` for a module Warpine
+/// does not provide. Calls reach imports through `call rel32`, so this
+/// address is linked in, not only the import fixup.
+fn resolve_import(module: &str, ordinal: u32) -> Option<u32> {
     let base = match module {
         "DOSCALLS" => 0,
         "QUECALLS" => 1024,
@@ -1002,12 +1013,14 @@ fn resolve_import(module: &str, ordinal: u32) -> u32 {
         "PMSPL"    => PMSPL_BASE,
         "PMCTLS"   => PMCTLS_BASE,
         "WARPINE"  => WARPINE_BASE,
-        _ => {
-            eprintln!("warning: unknown import module '{}'", module);
-            return MAGIC_API_BASE;
-        }
+        "PMDRAG"   => PMDRAG_BASE,
+        "SOM"      => SOM_BASE,
+        "REXX"     => REXX_BASE,
+        "REXXAPI"  => REXXAPI_BASE,
+        "PMWP"     => PMWP_BASE,
+        _ => return None,
     };
-    MAGIC_API_BASE + base + ordinal
+    Some(MAGIC_API_BASE + base + ordinal)
 }
 
 // ─── main ─────────────────────────────────────────────────────────────────────
@@ -1201,24 +1214,41 @@ VIOCALLS.19   VioWrtTTY\n";
 
     #[test]
     fn test_resolve_import_doscalls() {
-        assert_eq!(resolve_import("DOSCALLS", 234), MAGIC_API_BASE + 234);
+        assert_eq!(resolve_import("DOSCALLS", 234), Some(MAGIC_API_BASE + 234));
     }
 
     #[test]
     fn test_resolve_import_viocalls() {
-        assert_eq!(resolve_import("VIOCALLS", 19), MAGIC_API_BASE + VIOCALLS_BASE + 19);
+        assert_eq!(resolve_import("VIOCALLS", 19), Some(MAGIC_API_BASE + VIOCALLS_BASE + 19));
     }
 
     #[test]
     fn test_resolve_import_sockets_and_mouse() {
-        assert_eq!(resolve_import("SO32DLL", 19), MAGIC_API_BASE + SO32DLL_BASE + 19);
-        assert_eq!(resolve_import("TCP32DLL", 19), MAGIC_API_BASE + TCP32DLL_BASE + 19);
-        assert_eq!(resolve_import("MOUCALLS", 17), MAGIC_API_BASE + MOUCALLS_BASE + 17);
+        assert_eq!(resolve_import("SO32DLL", 19), Some(MAGIC_API_BASE + SO32DLL_BASE + 19));
+        assert_eq!(resolve_import("TCP32DLL", 19), Some(MAGIC_API_BASE + TCP32DLL_BASE + 19));
+        assert_eq!(resolve_import("MOUCALLS", 17), Some(MAGIC_API_BASE + MOUCALLS_BASE + 17));
+    }
+
+    /// Every module the embedded def names resolves, at Warpine's bases
+    /// (`constants.rs`): an unknown module would link calls to the wrong
+    /// address.
+    #[test]
+    fn test_every_def_module_resolves() {
+        let def = def_parser::parse_def(include_str!("../../targets/os2api.def"));
+        for (name, (module, ordinal)) in &def {
+            assert!(resolve_import(module, *ordinal).is_some(), "{name}: module {module}");
+        }
+        assert_eq!(resolve_import("PMDRAG", 1), Some(MAGIC_API_BASE + 21504 + 1));
+        assert_eq!(resolve_import("SOM", 1), Some(MAGIC_API_BASE + 22528 + 1));
+        assert_eq!(resolve_import("REXX", 1), Some(MAGIC_API_BASE + 26624 + 1));
+        assert_eq!(resolve_import("REXXAPI", 1), Some(MAGIC_API_BASE + 27648 + 1));
+        assert_eq!(resolve_import("PMWP", 1), Some(MAGIC_API_BASE + 28672 + 1));
+        assert_eq!(resolve_import("NOSUCHMOD", 1), None);
     }
 
     #[test]
     fn test_resolve_import_pmwin() {
-        assert_eq!(resolve_import("PMWIN", 763), MAGIC_API_BASE + PMWIN_BASE + 763);
+        assert_eq!(resolve_import("PMWIN", 763), Some(MAGIC_API_BASE + PMWIN_BASE + 763));
     }
 
     use elf_reader::{ArrayKind, CommonSymbol, ElfObject, ElfSection, ElfSymbol, Reloc, RelocKind, RelocTarget, SecClass};
@@ -1487,7 +1517,7 @@ VIOCALLS.19   VioWrtTTY\n";
         assert_eq!(u16::from_le_bytes([bytes[2], bytes[3]]), 42);
         assert_eq!(bytes[4], 1);
         assert_eq!(u32::from_le_bytes([bytes[5], bytes[6], bytes[7], bytes[8]]), 282);
-        assert_eq!(resolve_import("DOSCALLS", 282), MAGIC_API_BASE + 282);
+        assert_eq!(resolve_import("DOSCALLS", 282), Some(MAGIC_API_BASE + 282));
     }
 
     #[test]

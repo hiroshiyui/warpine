@@ -71,6 +71,7 @@ typedef ULONG           APIRET;
 typedef USHORT          APIRET16;
 
 typedef ULONG           LHANDLE;
+#define NULLHANDLE ((LHANDLE)0)
 typedef USHORT          SHANDLE;
 typedef LHANDLE         HFILE,   *PHFILE;
 typedef LHANDLE         HMODULE, *PHMODULE;

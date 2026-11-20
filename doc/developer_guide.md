@@ -1539,6 +1539,7 @@ Tests: `shared_arena.rs` (allocation and reuse, holders, sweeps, strict parsing,
   - `set_file_info` / `set_path_info` apply the access and write times with `File::set_times`, and `DriveManager::set_file_info` / `set_path_info` route to the backend.
   - `Loader::read_set_status` checks the level, the buffer size and every date first.
 - **Built-in modules by name:** `constants::module_base` is the one table of module bases. `api_registry::find_by_module_and_name` returns the module's own ordinal, which `resolve_import` adds to the base, and `DosQueryProcAddr` with a name uses `resolve_import_by_name` for built-in modules. The sub-dispatched PMWIN and PMGPI are not in the registry: `build.rs` reads their dispatchers' `N => {` / `// Name(` arms into `$OUT_DIR/pm_dispatch_names.rs`, which `descriptors::pm_ordinal_by_name` (any case) and `pm_ordinal_is_dispatched` (`DosQueryProcAddr` by ordinal) use (ADR-0087); `test_compat_report_pm_counts_match_the_dispatchers` checks the tables against the counts. VIOCALLS / KBDCALLS / MOUCALLS keep hand-written name tables in `resolve_import_by_name`.
+- **A PM dispatcher arm** is written `N => {` with `// Name(params)` on the next line. `build.rs` (the name tables above), `gen_compat` (the chart) and the def's PMWIN / PMGPI lines all find the arms that way; `gen_compat`'s `every_pm_arm_comment_names_its_call_with_parentheses` fails on a bare `// Name` (ADR-0097). A new PM call also needs its line in `targets/os2api.def`, so that `lx-link` can link C programs to it.
 - **Tests:**
   - `clock.rs`: calendar, round trips at 2³¹ / 2³² / 2200, clamping, settings, offsets;
   - `warpine_api.rs`;
@@ -2122,7 +2123,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the CMD.EXE / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (2193: 2138 warpine + 23 `gen_api` + 21 `lx_link` + 5 `gen_arch` + 6 `gen_compat`) include, among others:
+The unit tests (2195: 2138 warpine + 23 `gen_api` + 22 `lx_link` + 5 `gen_arch` + 7 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2426,7 +2427,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 2193 unit tests (2138 warpine + 23 gen_api + 21 lx_link + 5 gen_arch + 6 gen_compat), 202 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 2195 unit tests (2138 warpine + 23 gen_api + 22 lx_link + 5 gen_arch + 7 gen_compat), 203 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
@@ -2440,12 +2441,12 @@ Warpine provides a complete toolchain for writing OS/2 guest programs in Rust wi
 
 **`src/bin/gen_api.rs`** — Ordinal Table Canonical Build Tool. `targets/os2api.def` is the single authoritative source for the OS/2 API ordinal address space. Subcommands:
 - `show` — pretty-print all ordinals with flat addresses and module ranges
-- `check` — validate def file (no duplicates, sorted, no overflow) and drift-detect against `api_trace.rs` by text-scanning `ordinal_to_name()` match arms
+- `check` — validate def file (no duplicates, sorted, no overflow) and drift-detect against `api_trace.rs` by text-scanning `ordinal_to_name()` match arms; the def's PMWIN and PMGPI entries (the calls the PM sub-dispatchers serve, ADR-0097) are left out of the drift check, since their trace names come from the dispatchers
 - `gen-trace` — emit replacement Rust source for `ordinal_to_name()` + `module_for_ordinal()` (pipe to a file then paste into `api_trace.rs`)
 - `gen-def` — re-emit a canonically sorted `os2api.def`
 - `validate-doc` — cross-check `os2api.def` against `doc/os2_ordinals.md` (Open Watcom `lib386/os2/os2386.lib` snapshot); reports confirmed ordinals, 16-bit alias pairs auto-detected by uppercase+strip-"16" normalisation, entries only in def, name differences acknowledged by a `# NOTE:` on the def line (naming conventions the normaliser cannot detect, e.g. DOSCALLS 75 `DosQueryFileMode16` / `DOS16QFILEMODE`; listed with the note, not counted as mismatches), and the remaining name mismatches to investigate; it covers DOSCALLS, QUECALLS, KBDCALLS, VIOCALLS, PMGPI, PMWIN, SESMGR, NLS, MOUCALLS, PMSHAPI, HELPMGR, PMSPL and PMCTLS (the snapshot has no PMCTLS section: its def lines carry a `# NOTE:` naming `os2386.lib` as the source, and a def entry missing from the snapshot with a note is listed as acknowledged rather than as "only in os2api.def")
 
-- `check-headers` — check the C SDK's headers (`sdk/include/os2/*.h`, ADR-0096): every call they declare is in `os2api.def`, the Pascal macro `OS2_PASCAL_API` is used exactly for VIOCALLS / KBDCALLS / MOUCALLS, and every `ERROR_*` they define equals Warpine's constant of that name; it also counts the def's Control Program and subsystem entries not declared yet
+- `check-headers` — check the C SDK's headers (`sdk/include/os2/*.h`, ADR-0096, ADR-0097): every call they declare is in `os2api.def`, the Pascal macro `OS2_PASCAL_API` is used exactly for VIOCALLS / KBDCALLS / MOUCALLS, and every integer constant they define equals Warpine's constant of that name; it also counts the def's entries for the covered modules that are not declared yet
 
 Run `cargo run --bin gen_api -- check` to verify consistency after any ordinal change. Run `cargo run --bin gen_api -- validate-doc` to cross-reference against the OS/2 ordinal reference.
 
@@ -2454,7 +2455,7 @@ Run `cargo run --bin gen_api -- check` to verify consistency after any ordinal c
 - `dot` — print the generated DOT
 - `render` — write `doc/architecture/warpine.dot` and run Graphviz `dot` for `warpine.svg` and `warpine.png` (96 dpi)
 
-**`src/bin/gen_compat.rs`** — API compatibility chart ([ADR-0033](adr/0033-generated-compatibility-chart.md)), shown at the head of the README. It reads `doc/compat/os2_api_versions.tsv` (every 32-bit export of `os2386.lib` with the OS/2 version it first appeared in and its public source, documented in `doc/compat/SOURCES.md`) and Warpine's source — registry entries by module and ordinal, PM dispatch arms (`N => {` + `// ApiName(`) by ordinal and name, stubs left out — and writes `doc/compat/api_coverage.svg` / `api_coverage_dark.svg` (`render`), compares them (`check`) or prints the numbers (`table`). A unit test fails when the committed charts are stale, so **a change that adds, removes or stubs an API must run `cargo run --bin gen_compat -- render`**. A call dated `later` or `unknown` counts in no version; correcting a date is an edit to the TSV with its source.
+**`src/bin/gen_compat.rs`** — API compatibility chart ([ADR-0033](adr/0033-generated-compatibility-chart.md)), shown at the head of the README. It reads `doc/compat/os2_api_versions.tsv` (every 32-bit export of `os2386.lib` with the OS/2 version it first appeared in and its public source, documented in `doc/compat/SOURCES.md`) and Warpine's source — registry entries by module and ordinal, PM dispatch arms (`N => {` + `// ApiName(`) by ordinal and name, stubs left out — and writes `doc/compat/api_coverage.svg` / `api_coverage_dark.svg` (`render`), compares them (`check`) or prints the numbers (`table`). A unit test fails when the committed charts are stale, so **a change that adds, removes or stubs an API must run `cargo run --bin gen_compat -- render`**. A call dated `later` or `unknown` counts in no version; correcting a date is an edit to the TSV with its source. A PM arm counts only when its comment is `// Name(` (see "A PM dispatcher arm" above).
 
 The test `layer_map_matches_src_and_the_committed_diagram` runs the validation and the comparison, so adding, renaming or removing a module fails `cargo test` until `layers.toml` places it and `render` has been run. Flows describe the architecture and are not checked against the call graph.
 
@@ -2465,6 +2466,7 @@ The test `layer_map_matches_src_and_the_committed_diagram` runs the validation a
   - `live_sections` implements `--gc-sections`.
   - `LinkerState::build` lays out code at `0x10000`, data on the next 64 KB boundary and the stack after it, inside the program area. It also applies symbol precedence, merges commons, and defines `__{preinit,init,fini}_array_{start,end}`.
   - `lx_writer::write_lx` applies the relocations, writes LX fixups for absolute ones and import fixups for OS/2 APIs (from `targets/os2api.def`, embedded as a fallback), and fails on undefined symbols.
+  - `resolve_import` gives an import's thunk address (calls reach it through `call rel32`); it knows every module of `constants::module_base`, and an unknown module is a link error (ADR-0097).
 - **Relocations:** `R_386_32`, `R_386_PC32` and `R_386_PLT32` only; GOT relocations fail with "compile with -fno-pic".
 
 **`sdk/`** — the C SDK for GCC and clang (ADR-0096).
@@ -2473,7 +2475,8 @@ The test `layer_map_matches_src_and_the_committed_diagram` runs the validation a
   - `os2/os2def.h` has the types and conventions (`APIENTRY` is cdecl);
   - `os2/dos.h` has the Dos* and Que* calls, their structures and flags;
   - `os2/errors.h` has the `ERROR_*` codes;
-  - `os2/sub.h` has VIO, KBD and MOU.
+  - `os2/sub.h` has VIO, KBD and MOU;
+  - `os2/pm.h` has a PM subset (ADR-0097): 168 PMWIN and 68 PMGPI calls, packed to 2 bytes; its constant blocks were written from Warpine's own values.
 - **Pascal calls:** each subsystem call is one `OS2_PASCAL_API(ret, Name, (params), (reversed params), (reversed args))` line. It declares the import `_os2p_Name` (stdcall, the arguments reversed and widened, linked as `Name`) and an always-inline `Name` in the documented order, linked as `_os2i_Name` so the two never share a symbol (clang would otherwise call the wrapper as the import).
 - **The runtime** (`libc/`):
   - `crt0.c`: `argv` / `envp`, the init arrays, `exit(main(...))`;
@@ -2486,9 +2489,9 @@ The test `layer_map_matches_src_and_the_committed_diagram` runs the validation a
 - **Building:** `sdk/Makefile` builds `build/<compiler>/crt0.o` and `libos2c.a`. GCC builds the runtime with `-fno-tree-loop-distribute-patterns`, so `memset` never becomes a call to itself.
 - **`os2.mk`:** a program includes it for `OS2_CFLAGS`, `OS2_CRT0`, `OS2_LIBC` and `LX_LINK`. The flags keep the host's headers out (`-nostdinc`, then the SDK's and the compiler's own) and tell each compiler the stack is only 4-byte aligned (`-mincoming-stack-boundary=2`, `-mstack-alignment=4`).
 - **The check:** `gen_api check-headers` (and its unit test) checks:
-  - every call the headers declare is in `targets/os2api.def`;
+  - every call the headers declare (`APIENTRY`, `EXPENTRY`, `OS2_PASCAL_API`) is in `targets/os2api.def`;
   - Pascal is used exactly for VIOCALLS / KBDCALLS / MOUCALLS;
-  - every `ERROR_*` equals Warpine's constant.
+  - every integer `#define` (plain, negative or cast) equals Warpine's integer constant of that name, where Warpine has one (constants.rs's own test holds those to the toolkit).
 
   A new declaration is a line in the right header plus, if the call is new, its def entry.
 

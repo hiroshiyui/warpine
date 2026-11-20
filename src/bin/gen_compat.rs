@@ -456,4 +456,33 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join(DARK_SVG)).ok().as_deref(), Some(dark.as_str()),
                    "{DARK_SVG} is stale: run `cargo run --bin gen_compat -- render`");
     }
+
+    /// Every dispatcher arm whose comment names a PM call writes it as
+    /// `// Name(`: `gen_compat`, `build.rs` (`DosQueryProcAddr` by name)
+    /// and the def's PMWIN / PMGPI lines all find arms that way, and 8 arms
+    /// written `// WinInitialize` were invisible to all three (ADR-0097).
+    #[test]
+    fn every_pm_arm_comment_names_its_call_with_parentheses() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let mut bare = Vec::new();
+        let mut files: Vec<PathBuf> = std::fs::read_dir(root.join(LOADER_DIR)).expect("src/loader")
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+            .collect();
+        files.sort();
+        for f in files {
+            let src = std::fs::read_to_string(&f).expect("read a loader file");
+            let lines: Vec<&str> = src.lines().map(str::trim).collect();
+            for pair in lines.windows(2) {
+                if !pair[0].strip_suffix(" => {").is_some_and(|o| o.parse::<u32>().is_ok()) { continue; }
+                let Some(rest) = pair[1].strip_prefix("// ") else { continue };
+                let name: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric()).collect();
+                let pm = ["Win", "Gpi", "Dev"].iter().any(|p| name.len() > p.len() && name.starts_with(p));
+                if pm && !rest[name.len()..].starts_with('(') {
+                    bare.push(format!("{}: {}", f.display(), pair[1]));
+                }
+            }
+        }
+        assert!(bare.is_empty(), "write these arm comments as `// Name(params)`:\n{}", bare.join("\n"));
+    }
 }

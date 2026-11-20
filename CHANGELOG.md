@@ -15,6 +15,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   - **`sdk/os2.mk`** gives a program's Makefile the flags for either compiler, including the stack alignment OS/2 keeps (4 bytes).
   - **`gen_api check-headers`** checks every declared call against `targets/os2api.def` and its convention, and the headers' error codes against Warpine's.
   - **`samples/c_sdk_test`:** 51 checks, passing when built by GCC and when built by clang.
+- **PM headers for the C SDK** (ADR-0097).
+  - **`os2/pm.h`** (`INCL_WIN`, `INCL_GPI`, `INCL_PM`): 168 PMWIN and 68 PMGPI calls, their structures, message macros and constants.
+  - **`targets/os2api.def`** now lists the 362 PMWIN and PMGPI calls the PM sub-dispatchers serve, so `lx-link` links PM programs.
+  - **`gen_api check-headers`** compares every integer constant in the headers with Warpine's own (801 of 962), and checks `EXPENTRY` declarations too.
+  - **`samples/c_pm_test`:** a PM program, 33 checks, passing built by GCC and by clang.
 - **C programs from GCC and clang** (ADR-0095). Unmodified GCC or clang builds freestanding i386 ELF objects, and `lx-link` turns them into OS/2 programs.
   - **`lx-link` now handles:**
     - every `.text.*` / `.rodata.*` / `.data.*` / `.bss.*` variant;
@@ -27,6 +32,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   Sample: `samples/c_hello` with a minimal `crt0.c`, built and run with GCC and with clang by the integration tests.
 
 ### Fixed
+- **`lx-link` linked calls to PMDRAG, SOM, REXX, REXXAPI and PMWP to the wrong address** (it did not know those modules and only warned); an unknown module is now a link error (ADR-0097).
+- **8 PMWIN calls were invisible to the tools that read the dispatchers**, among them `WinInitialize` and `WinCreateStdWindow`: their arm comments lacked the `(` that `gen_compat` and `build.rs` look for (ADR-0097). The compatibility chart left them out, and `DosQueryProcAddr` could not find them by name. A `gen_compat` test now rejects such a comment.
 - **`lx-link` linked objects wrongly:**
   - a relocation against a section went to the first same-named section of *any* object;
   - the addends i386 keeps in the section bytes were lost, as were local symbols' offsets;

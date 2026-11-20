@@ -99,17 +99,17 @@ impl super::Loader {
 
         match ordinal {
             763 => {
-                // WinInitialize
+                // WinInitialize(flOptions)
                 debug!("  [VCPU {}] WinInitialize called.", vcpu_id);
                 ApiResult::Normal(MOCK_HAB)
             }
             888 => {
-                // WinTerminate
+                // WinTerminate(hab)
                 debug!("  [VCPU {}] WinTerminate called.", vcpu_id);
                 ApiResult::Normal(1) // TRUE
             }
             716 => {
-                // WinCreateMsgQueue
+                // WinCreateMsgQueue(hab, cmsg)
                 debug!("  [VCPU {}] WinCreateMsgQueue called.", vcpu_id);
                 let mut wm = self.shared.window_mgr.lock_or_recover();
                 // One queue per thread: a second one fails with NULLHANDLE.
@@ -138,7 +138,7 @@ impl super::Loader {
                 ApiResult::Normal(1)
             }
             926 => {
-                // WinRegisterClass
+                // WinRegisterClass(hab, pszClassName, pfnWndProc, flStyle, cbWindowData)
                 let _hab = read_stack(4);
                 let psz_class_name_ptr = read_stack(8);
                 let pfn_wp = read_stack(12);
@@ -152,7 +152,7 @@ impl super::Loader {
                 ApiResult::Normal(1) // TRUE
             }
             908 => {
-                // WinCreateStdWindow
+                // WinCreateStdWindow(hwndParent, flStyle, pflCreateFlags, pszClientClass, pszTitle, styleClient, hmod, idResources, phwndClient)
                 let parent = read_stack(4);
                 let style = read_stack(8);
                 let pfc_flags_ptr = read_stack(12);
@@ -321,7 +321,7 @@ impl super::Loader {
                 ApiResult::Normal(found.is_some() as u32)
             }
             912 => {
-                // WinDispatchMsg
+                // WinDispatchMsg(hab, pqmsg)
                 debug!("  [VCPU {}] WinDispatchMsg called.", vcpu_id);
                 let _hab = read_stack(4);
                 let pqmsg_ptr = read_stack(8);
@@ -352,7 +352,7 @@ impl super::Loader {
                 self.dispatch_builtin_control(hwnd, msg, mp1, mp2)
             }
             919 => {
-                // WinPostMsg
+                // WinPostMsg(hwnd, msg, mp1, mp2)
                 let hwnd = read_stack(4);
                 let msg = read_stack(8);
                 let mp1 = read_stack(12);
@@ -456,7 +456,7 @@ impl super::Loader {
                 ApiResult::Normal(hps)
             }
             738 => {
-                // WinEndPaint
+                // WinEndPaint(hps)
                 let hps = read_stack(4);
                 let (frame_hwnd, controls) = {
                     let wm = self.shared.window_mgr.lock_or_recover();
