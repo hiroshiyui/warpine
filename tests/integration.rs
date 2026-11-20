@@ -839,6 +839,19 @@ fn test_dos_misc_calls() {
     assert_eq!(code, 0, "{out}");
 }
 
+/// attr_test: hidden, system and archive are kept and reported,
+/// DosFindFirst's filter sees them, writing archives a file again, DosCopy
+/// and DosMove carry them (ADR-0091).
+#[test]
+fn test_file_attributes_are_kept() {
+    let sample = "samples/attr_test/attr_test.exe";
+    if !kvm_available() || !Path::new(sample).exists() { return; }
+    let (out, code) = run_sample(sample, 30);
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("attr_test: done 15/15"), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
 /// proc_test: a child's whole exit code reaches its parent (EXEC_SYNC,
 /// DosWaitChild for one child and for any), and DosSendSignalException
 /// reaches the parent and a sibling of the session (ADR-0090). The sample

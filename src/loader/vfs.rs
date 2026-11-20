@@ -220,7 +220,7 @@ impl SeekMode {
 }
 
 /// OS/2 file attributes (bitflags).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct FileAttribute(pub u32);
 
 impl FileAttribute {
@@ -237,7 +237,7 @@ impl FileAttribute {
 }
 
 /// File metadata (corresponds to OS/2 FILESTATUS3).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct FileStatus {
     pub creation_date: u16,
     pub creation_time: u16,
@@ -1045,12 +1045,25 @@ impl DriveManager {
             return Err(Os2Error::ACCESS_DENIED);
         }
         if drive_src == drive_dst {
-            return src.copy(&rel_src, &rel_dst);
+            src.copy(&rel_src, &rel_dst)?;
+        } else {
+            let src_host = src_host.ok_or(Os2Error::FILE_NOT_FOUND)?;
+            if !src_host.is_file() { return Err(Os2Error::ACCESS_DENIED); }
+            let dst_host = dst.to_host_path_for_create(&rel_dst).ok_or(Os2Error::PATH_NOT_FOUND)?;
+            std::fs::copy(&src_host, &dst_host).map_err(|_| Os2Error::ACCESS_DENIED)?;
         }
-        let src_host = src_host.ok_or(Os2Error::FILE_NOT_FOUND)?;
-        if !src_host.is_file() { return Err(Os2Error::ACCESS_DENIED); }
-        let dst_host = dst.to_host_path_for_create(&rel_dst).ok_or(Os2Error::PATH_NOT_FOUND)?;
-        std::fs::copy(&src_host, &dst_host).map(|_| ()).map_err(|_| Os2Error::ACCESS_DENIED)
+        // The EAs and attributes go with the data (ADR-0091): the
+        // attributes without read-only first (the host copied the write
+        // bits; an EA needs them), then the EAs, then all attributes.
+        // What cannot be carried over is left (unverified).
+        let attrs = src.query_path_info(&rel_src, 1).map(|s| s.attributes).unwrap_or_default();
+        let only = |a: FileAttribute| FileStatus { attributes: a, ..FileStatus::default() };
+        let _ = dst.set_path_info(&rel_dst, 1, &only(FileAttribute(attrs.0 & !FileAttribute::READONLY.0)));
+        for ea in src.enum_ea(&rel_src).unwrap_or_default() {
+            let _ = dst.set_ea(&rel_dst, &ea);
+        }
+        let _ = dst.set_path_info(&rel_dst, 1, &only(attrs));
+        Ok(())
     }
 
     // ── Metadata ──
@@ -1356,6 +1369,28 @@ mod tests {
         assert!(dm.copy_file(r"C:\A.TXT", r"D:\LINK.TXT").is_err(), "not through a dangling link");
         assert!(dm.copy_file(r"C:\NONE.TXT", r"D:\N.TXT").is_err());
         assert!(!outside.path().join("x.txt").exists());
+    }
+
+    /// A copy carries the EAs and the attributes (read-only included),
+    /// on one drive and across drives (ADR-0091).
+    #[test]
+    fn a_copy_carries_eas_and_attributes() {
+        let (c, d) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::write(c.path().join("a.txt"), b"data").unwrap();
+        let mut dm = DriveManager::new();
+        dm.mount(2, Box::new(super::super::vfs_hostdir::HostDirBackend::new(c.path().to_path_buf()).unwrap()));
+        dm.mount(3, Box::new(super::super::vfs_hostdir::HostDirBackend::new(d.path().to_path_buf()).unwrap()));
+        let ea = EaEntry { name: ".TYPE".into(), value: b"Plain Text".to_vec(), flags: 0 };
+        dm.backend(2).unwrap().set_ea("a.txt", &ea).unwrap();
+        let attrs = FileAttribute::HIDDEN.0 | FileAttribute::READONLY.0;
+        dm.set_path_info(r"C:\A.TXT", 1, &FileStatus { attributes: FileAttribute(attrs), ..FileStatus::default() }).unwrap();
+        for to in [r"C:\B.TXT", r"D:\C.TXT"] {
+            assert_eq!(dm.copy_file(r"C:\A.TXT", to), Ok(()), "{to}");
+            let st = dm.query_path_info(to, 1).unwrap();
+            assert_eq!(st.attributes.0, attrs, "{to}: hidden and read-only");
+            let (drive, rel) = dm.resolve_path(to).unwrap();
+            assert_eq!(dm.backend(drive).unwrap().get_ea(&rel, ".TYPE").unwrap().value, b"Plain Text", "{to}");
+        }
     }
 
     /// `set_current_dir` takes only an existing directory of the drive,

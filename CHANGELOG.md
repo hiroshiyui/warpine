@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **File attributes** (ADR-0091): hidden, system and archive are kept, as one byte in the extended attribute `user.warpine.attr` or in an `.os2ea` sidecar, and reported by `DosQueryPathInfo` / `DosFindFirst`, whose filter now sees them. Opening a file for writing archives it again. `DosCopy` carries the EAs and attributes, and a rename takes the sidecars along. Sample: `samples/attr_test`.
 - **Whole exit codes and signals between processes** (ADR-0090):
   - A child's whole exit code (`DosExit`'s ULONG) reaches its parent in `RESULTCODES`, `WM_APPTERMINATENOTIFY` and CMD's ERRORLEVEL. A host exit status carries only 8 bits, so the child reports the code on a pipe its parent gives it.
   - `DosSendSignalException` reaches the parent and any other process of the session, found by its session record and signalled by pidfd once checked to be the same process.
@@ -21,6 +22,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **No endless spin on memory past guest RAM** — 1,000 accesses in a row past the guest's memory (a wild page-table entry or loop) end the thread as a trap; before, a guest could keep its process spinning for good.
 
 ### Fixed
+- **EA sidecars** (filesystems without extended attributes) — a rename lost a file's EAs and a delete left them behind; the `.os2ea` folder showed in directory listings, was reachable by programs, and kept its directory from being deleted. `DosCopy` copied no EAs at all.
 - **A termination during an access past guest RAM lost its exit list** — KVM completes such an access on the next run and overrode the registers Warpine had just pointed at the exit-list routine; the access is now completed at once (`finish_mmio`).
 - **PMWIN and PMGPI calls by name** (ADR-0087) — `DosQueryProcAddr` and `WinLoadProcedure` found no PMWIN or PMGPI call by name; `build.rs` now reads the names from the dispatchers. By ordinal, these modules now find only the calls Warpine implements (`ERROR_PROC_NOT_FOUND` for the others), as the registry modules do.
 - **Exit lists run on thread 1** (ADR-0087), as the Control Program Guide describes: a `DosExit(EXIT_PROCESS)` on another thread asks thread 1 to run them, as a fault there already did. A guest `HLT` ended the process at once; it now runs the exit list like a trap (`TC_TRAP`), and so does a failed `KVM_RUN` on thread 1 (`TC_HARDERROR`).

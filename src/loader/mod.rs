@@ -65,6 +65,7 @@ mod descriptors;
 pub(crate) mod paging;
 pub(crate) mod track;
 pub(crate) mod exit_report;
+pub(crate) mod file_attrs;
 mod pm_track;
 mod vcpu;
 mod api_dispatch;

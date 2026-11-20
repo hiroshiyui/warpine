@@ -642,7 +642,82 @@ impl HostDirBackend {
                   check_path.display(), self.root.display());
             return Err(Os2Error::ACCESS_DENIED);
         }
+        // The sidecar folder (EAs, attributes) is Warpine's, not a program's.
+        let inside = check_path.strip_prefix(&self.root).unwrap_or(&check_path);
+        if inside.components().any(|c| c.as_os_str().eq_ignore_ascii_case(super::file_attrs::SIDECAR_DIR)) {
+            return Err(Os2Error::ACCESS_DENIED);
+        }
         Ok(())
+    }
+
+    /// The status of `host` (with metadata `meta`): the host's, with the
+    /// hidden / system / archive attributes kept beside it (`file_attrs.rs`).
+    fn status_at(&self, host: &Path, meta: &fs::Metadata) -> FileStatus {
+        let mut s = metadata_to_file_status(meta);
+        let stored = super::file_attrs::read(host, self.xattr_supported.load(Ordering::Relaxed));
+        s.attributes = FileAttribute(super::file_attrs::apply(s.attributes.0, stored, meta.is_dir()));
+        s
+    }
+
+    /// Keep the hidden / system / archive attributes of `attrs` for `host`.
+    fn keep_attributes(&self, host: &Path, is_dir: bool, attrs: FileAttribute) -> VfsResult<()> {
+        super::file_attrs::write(host, self.xattr_supported.load(Ordering::Relaxed), is_dir, attrs.0)
+            .map_err(|_| Os2Error::ACCESS_DENIED)
+    }
+
+    /// Set all of `attrs` on `host` (metadata `meta`): read-only as the
+    /// host's write bits, the rest kept beside it. An extended attribute
+    /// needs write permission, so a read-only file is made writable for the
+    /// moment, and its final permissions come last.
+    fn apply_attributes(&self, host: &Path, meta: &fs::Metadata, attrs: FileAttribute) -> VfsResult<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let was = meta.permissions();
+        let unlocked = !meta.is_dir() && was.readonly() && self.xattr_supported.load(Ordering::Relaxed);
+        if unlocked {
+            fs::set_permissions(host, fs::Permissions::from_mode(was.mode() | 0o200))
+                .map_err(|e| Self::map_io_error(&e))?;
+        }
+        let kept = self.keep_attributes(host, meta.is_dir(), attrs);
+        let last = requested_permissions(meta, attrs).or(unlocked.then_some(was));
+        if let Some(perm) = last {
+            fs::set_permissions(host, perm).map_err(|e| Self::map_io_error(&e))?;
+        }
+        kept
+    }
+
+    /// A file opened for writing is archived again (when its archive
+    /// attribute was cleared).
+    fn mark_archived(&self, host: &Path) {
+        let xattr = self.xattr_supported.load(Ordering::Relaxed);
+        if let Some(a) = super::file_attrs::read(host, xattr)
+            && a & FileAttribute::ARCHIVE.0 == 0 {
+            let _ = super::file_attrs::write(host, xattr, false, a | FileAttribute::ARCHIVE.0);
+        }
+    }
+
+    /// The sidecar files of `host` (its EAs and its attributes; only used
+    /// without extended attributes).
+    fn sidecars(host: &Path) -> [Option<PathBuf>; 2] {
+        [sidecar_ea_path(host), super::file_attrs::sidecar_path(host)]
+    }
+
+    /// Move `old`'s sidecars to `new` (a rename), when they are files.
+    fn move_sidecars(&self, old: &Path, new: &Path) {
+        if self.xattr_supported.load(Ordering::Relaxed) { return; }
+        for (from, to) in Self::sidecars(old).into_iter().zip(Self::sidecars(new)) {
+            if let (Some(from), Some(to)) = (from, to) && from.is_file() {
+                if let Some(dir) = to.parent() { let _ = fs::create_dir_all(dir); }
+                let _ = fs::rename(&from, &to);
+            }
+        }
+    }
+
+    /// Remove `host`'s sidecars (a delete).
+    fn remove_sidecars(&self, host: &Path) {
+        if self.xattr_supported.load(Ordering::Relaxed) { return; }
+        for side in Self::sidecars(host).into_iter().flatten() {
+            let _ = fs::remove_file(side);
+        }
     }
 
     /// Convert a std::io::Error to an Os2Error.
@@ -881,6 +956,10 @@ impl VfsBackend for HostDirBackend {
             && let Some(parent) = host_path.parent() {
                 self.dir_cache.invalidate(parent);
         }
+        // Writing archives the file again (its attribute was kept cleared).
+        if mode != OpenMode::ReadOnly || action == OpenAction::Replaced {
+            self.mark_archived(&host_path);
+        }
         self.files.lock().unwrap().insert(handle_id, OpenFileState { file, host_path });
         Ok((VfsFileHandle(handle_id), action))
     }
@@ -960,9 +1039,11 @@ impl VfsBackend for HostDirBackend {
 
         for entry in read_dir.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
+            // The sidecar folder is never listed.
+            if name.eq_ignore_ascii_case(super::file_attrs::SIDECAR_DIR) { continue; }
             if wildcard_match(file_pattern, &name)
                 && let Ok(meta) = entry.metadata() {
-                    let status = metadata_to_file_status(&meta);
+                    let status = self.status_at(&entry.path(), &meta);
                     if attributes_match(status.attributes, attr_filter) {
                         entries.push(DirEntry { name, status });
                     }
@@ -975,7 +1056,7 @@ impl VfsBackend for HostDirBackend {
             && let Ok(meta) = fs::metadata(&dir_path) {
                 entries.insert(0, DirEntry {
                     name: ".".to_string(),
-                    status: metadata_to_file_status(&meta),
+                    status: self.status_at(&dir_path, &meta),
                 });
         }
         if wildcard_match(file_pattern, "..") && attr_filter.contains(FileAttribute::DIRECTORY) {
@@ -984,7 +1065,7 @@ impl VfsBackend for HostDirBackend {
                 let insert_pos = if entries.first().is_some_and(|e| e.name == ".") { 1 } else { 0 };
                 entries.insert(insert_pos, DirEntry {
                     name: "..".to_string(),
-                    status: metadata_to_file_status(&meta),
+                    status: self.status_at(parent, &meta),
                 });
             }
         }
@@ -1032,9 +1113,23 @@ impl VfsBackend for HostDirBackend {
 
     fn delete_dir(&self, path: &str) -> VfsResult<()> {
         let host_path = self.resolve_existing(path)?;
+        // A folder holding only the sidecar folder is empty to OS/2: the
+        // sidecars go first (only files, which are Warpine's).
+        let side = host_path.join(super::file_attrs::SIDECAR_DIR);
+        let only_sidecars = fs::read_dir(&host_path).is_ok_and(|d| {
+            d.flatten().all(|e| e.file_name().eq_ignore_ascii_case(super::file_attrs::SIDECAR_DIR))
+        });
+        if only_sidecars && side.is_dir() && !side.is_symlink() {
+            for f in fs::read_dir(&side).into_iter().flatten().flatten() {
+                if f.file_type().is_ok_and(|t| t.is_file()) { let _ = fs::remove_file(f.path()); }
+            }
+            let _ = fs::remove_dir(&side);
+        }
         let result = fs::remove_dir(&host_path).map_err(|e| Self::map_io_error(&e));
-        if result.is_ok()
-            && let Some(parent) = host_path.parent() { self.dir_cache.invalidate(parent); }
+        if result.is_ok() {
+            self.remove_sidecars(&host_path);
+            if let Some(parent) = host_path.parent() { self.dir_cache.invalidate(parent); }
+        }
         result
     }
 
@@ -1047,8 +1142,10 @@ impl VfsBackend for HostDirBackend {
             return Err(Os2Error::ACCESS_DENIED);
         }
         let result = fs::remove_file(&host_path).map_err(|e| Self::map_io_error(&e));
-        if result.is_ok()
-            && let Some(parent) = host_path.parent() { self.dir_cache.invalidate(parent); }
+        if result.is_ok() {
+            self.remove_sidecars(&host_path);
+            if let Some(parent) = host_path.parent() { self.dir_cache.invalidate(parent); }
+        }
         result
     }
 
@@ -1057,6 +1154,8 @@ impl VfsBackend for HostDirBackend {
         let new_host = self.resolve_for_create(new_path)?;
         let result = fs::rename(&old_host, &new_host).map_err(|e| Self::map_io_error(&e));
         if result.is_ok() {
+            // EAs and attributes go with it (extended attributes do anyway).
+            self.move_sidecars(&old_host, &new_host);
             if let Some(p) = old_host.parent() { self.dir_cache.invalidate(p); }
             if let Some(p) = new_host.parent() { self.dir_cache.invalidate(p); }
         }
@@ -1074,14 +1173,14 @@ impl VfsBackend for HostDirBackend {
     fn query_path_info(&self, path: &str, _level: u32) -> VfsResult<FileStatus> {
         let host_path = self.resolve_existing(path)?;
         let meta = fs::metadata(&host_path).map_err(|e| Self::map_io_error(&e))?;
-        Ok(metadata_to_file_status(&meta))
+        Ok(self.status_at(&host_path, &meta))
     }
 
     fn query_file_info(&self, handle: VfsFileHandle, _level: u32) -> VfsResult<FileStatus> {
         let files = self.files.lock().unwrap();
         let entry = files.get(&handle.0).ok_or(Os2Error::INVALID_HANDLE)?;
         let meta = entry.file.metadata().map_err(|e| Self::map_io_error(&e))?;
-        Ok(metadata_to_file_status(&meta))
+        Ok(self.status_at(&entry.host_path, &meta))
     }
 
     /// Set the access and write times of an open file (`FIL_STANDARD`;
@@ -1098,10 +1197,7 @@ impl VfsBackend for HostDirBackend {
             entry.file.set_times(times).map_err(|e| Self::map_io_error(&e))?;
         }
         let meta = entry.file.metadata().map_err(|e| Self::map_io_error(&e))?;
-        match requested_permissions(&meta, info.attributes) {
-            Some(perm) => entry.file.set_permissions(perm).map_err(|e| Self::map_io_error(&e)),
-            None => Ok(()),
-        }
+        self.apply_attributes(&entry.host_path, &meta, info.attributes)
     }
 
     /// Set the access and write times and the read-only attribute of a file
@@ -1114,10 +1210,7 @@ impl VfsBackend for HostDirBackend {
                 .map_err(|e| Self::map_io_error(&e))?;
         }
         let meta = fs::metadata(&host_path).map_err(|e| Self::map_io_error(&e))?;
-        match requested_permissions(&meta, info.attributes) {
-            Some(perm) => fs::set_permissions(&host_path, perm).map_err(|e| Self::map_io_error(&e)),
-            None => Ok(()),
-        }
+        self.apply_attributes(&host_path, &meta, info.attributes)
     }
 
     fn get_ea(&self, path: &str, name: &str) -> VfsResult<EaEntry> {
@@ -1348,6 +1441,91 @@ mod tests {
         assert_eq!(backend.delete("a.txt").unwrap_err(), Os2Error::ACCESS_DENIED);
         backend.set_path_info("a.txt", 1, &status(0, (0, 0))).unwrap();
         backend.delete("a.txt").unwrap();
+    }
+
+    // ── Hidden, system, archive (ADR-0091) ──
+
+    const H: u32 = 0x02;
+    const S: u32 = 0x04;
+    const A: u32 = 0x20;
+
+    /// The backends to try: extended attributes as detected, and sidecars.
+    fn attr_backends() -> Vec<(tempfile::TempDir, HostDirBackend)> {
+        let (t1, b1) = create_temp_backend();
+        let (t2, b2) = create_temp_backend();
+        b2.xattr_supported.store(false, Ordering::Relaxed);
+        vec![(t1, b1), (t2, b2)]
+    }
+
+    fn open_write(b: &HostDirBackend, path: &str) {
+        let flags = OpenFlags::from_raw(0x01); // open if it exists
+        let (h, _) = b.open(path, OpenMode::ReadWrite, SharingMode::DenyNone, flags, FileAttribute(0)).unwrap();
+        b.close(h).unwrap();
+    }
+
+    /// Hidden and system are kept and reported; a cleared archive stays
+    /// cleared until the file is written; DosFindFirst's filter sees them.
+    #[test]
+    fn hidden_system_and_archive_are_kept() {
+        for (tmp, b) in attr_backends() {
+            std::fs::write(tmp.path().join("F.TXT"), b"x").unwrap();
+            std::fs::create_dir(tmp.path().join("D")).unwrap();
+            assert_eq!(b.query_path_info("f.txt", 1).unwrap().attributes.0, A, "a file is archived");
+            b.set_path_info("f.txt", 1, &status(H | S, (0, 0))).unwrap();
+            assert_eq!(b.query_path_info("f.txt", 1).unwrap().attributes.0, H | S);
+            // Hidden and system files show only when the filter asks.
+            assert_eq!(b.find_first("*.txt", FileAttribute(0)).unwrap_err(), Os2Error::NO_MORE_FILES);
+            let (fh, e) = b.find_first("*.txt", FileAttribute(H | S)).unwrap();
+            assert_eq!((e.name.as_str(), e.status.attributes.0), ("F.TXT", H | S));
+            b.find_close(fh).unwrap();
+            // Opened for writing: archived again.
+            open_write(&b, "f.txt");
+            assert_eq!(b.query_path_info("f.txt", 1).unwrap().attributes.0, H | S | A);
+            // A directory: hidden, then nothing.
+            b.set_path_info("d", 1, &status(FileAttribute::DIRECTORY.0 | H, (0, 0))).unwrap();
+            assert_eq!(b.query_path_info("d", 1).unwrap().attributes.0, FileAttribute::DIRECTORY.0 | H);
+            b.set_path_info("d", 1, &status(0, (0, 0))).unwrap();
+            assert_eq!(b.query_path_info("d", 1).unwrap().attributes.0, FileAttribute::DIRECTORY.0);
+            // Read-only together with hidden, and back.
+            b.set_path_info("f.txt", 1, &status(FileAttribute::READONLY.0 | H, (0, 0))).unwrap();
+            assert_eq!(b.query_path_info("f.txt", 1).unwrap().attributes.0, FileAttribute::READONLY.0 | H);
+            b.set_path_info("f.txt", 1, &status(FileAttribute::READONLY.0 | S, (0, 0))).unwrap();
+            assert_eq!(b.query_path_info("f.txt", 1).unwrap().attributes.0, FileAttribute::READONLY.0 | S,
+                       "changed while read-only");
+            b.set_path_info("f.txt", 1, &status(A, (0, 0))).unwrap();
+            assert_eq!(b.query_path_info("f.txt", 1).unwrap().attributes.0, A);
+        }
+    }
+
+    /// Attributes and EAs go with a rename; a delete leaves no sidecars;
+    /// a folder holding only sidecars deletes; the sidecar folder is
+    /// neither listed nor reachable.
+    #[test]
+    fn attributes_follow_renames_and_sidecars_stay_hidden() {
+        for (tmp, b) in attr_backends() {
+            std::fs::create_dir(tmp.path().join("D")).unwrap();
+            std::fs::write(tmp.path().join("D").join("F.TXT"), b"x").unwrap();
+            b.set_path_info("d/f.txt", 1, &status(H, (0, 0))).unwrap();
+            b.set_ea("d/f.txt", &EaEntry { name: "NOTE".into(), value: b"v".to_vec(), flags: 0 }).unwrap();
+            b.rename("d/f.txt", "d/g.txt").unwrap();
+            assert_eq!(b.query_path_info("d/g.txt", 1).unwrap().attributes.0, H);
+            assert_eq!(b.get_ea("d/g.txt", "NOTE").unwrap().value, b"v");
+            let (fh, e) = b.find_first("d/*", FileAttribute(H | FileAttribute::DIRECTORY.0)).unwrap();
+            let mut names = vec![e.name];
+            while let Ok(e) = b.find_next(fh) { names.push(e.name); }
+            b.find_close(fh).unwrap();
+            assert_eq!(names, [".", "..", "g.txt"], "never the sidecar folder (the rename's own case)");
+            assert!(b.query_path_info("d/.os2ea", 1).is_err(), "the sidecar folder is not reachable");
+            assert!(b.query_path_info("d/.OS2EA/g.txt.attr", 1).is_err());
+            let side = tmp.path().join("D").join(".os2ea");
+            if !b.xattr_supported.load(Ordering::Relaxed) {
+                assert!(side.join("g.txt.attr").exists() && side.join("g.txt.ea").exists(), "moved with the rename");
+            }
+            b.delete("d/g.txt").unwrap();
+            assert!(!side.join("g.txt.attr").exists() && !side.join("g.txt.ea").exists(), "no sidecars left");
+            b.delete_dir("d").unwrap();
+            assert!(!tmp.path().join("D").exists(), "a folder of sidecars only is empty");
+        }
     }
 
     // ── Wildcard matching ──

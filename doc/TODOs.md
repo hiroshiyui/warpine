@@ -244,7 +244,6 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - R3, the REXX API for programs (REXX.DLL / REXXAPI.DLL: RexxStart, handlers, exits, the variable pool, queues), is done (ADR-0085);
   - still open from R3's area: the macro space (`RexxAddMacro` … are stubs), tokenized images (`instore[1]`), the `RXFNC`, `RXCMD`, `RXMSQ` and `RXTRC` exits, the 16-bit entry points (`REXXSAA`, `RXVAR` …), system-wide queues and registrations (they are per process), `RxFuncAdd` of DLL function packages from a script;
   - still open from R2's area: REXXUTIL's screen and keyboard functions (`SysCurPos`, `SysGetKey`, `SysTextScreenRead` …), EAs, INI files and Workplace Shell objects, case by case; interactive tracing's pause (`TRACE ?`); an error output (STDERR, trace) separate from the shell's output;
-- [ ] **File attributes**: keep hidden / system / archive (an EA or the sidecar) and report them.
 - [ ] **Session clock**: `DosSetDateTime` reaching processes that are already running (ADR-0039).
 - [ ] **Sockets** (ADR-0041): the real ordinals and layouts of `select`, `bsdselect` and `os2_select`.
 

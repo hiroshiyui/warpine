@@ -1616,6 +1616,19 @@ Tests: `shared_arena.rs` (allocation and reuse, holders, sweeps, strict parsing,
 - **Scripts:** `rdrag X1 Y1 X2 Y2` drags with the right button (`gui_script.rs`, `Input::MouseDrag { button, .. }`); `ctrl+rdrag …` holds modifiers until the release (`push_with_mods_until`); `drop X Y PATH` drops a host file (`Input::Drop`).
 - **Tests:** `pm_drag.rs` (strings, RMF parsing, the data calls, `window_under`, drags over a client and a container run through their chains, the feed, operation keys, file `DRAGINFO`s, `DrgDragFiles`, enumeration and reallocation, host drops through their sent steps), `pm_window.rs` (the owner gets the gestures), `proto.rs` / `desktop_events.rs` / `gui_script.rs` (the drop input), `samples/pm_drag_test` with a golden picture, `samples/pm_dropfiles_test` (both desktops) with a golden picture.
 
+### File attributes
+
+`file_attrs.rs` and `vfs_hostdir.rs` (ADR-0091):
+- **The byte.** Hidden, system and archive (`KEPT`) are one byte, in `user.warpine.attr` or `.os2ea/<name>.attr`; `read` / `write` / `apply` / `default_kept` (archived for files, nothing for directories). Writing the default removes the byte.
+- **The backend:**
+  - `status_at` merges the byte into every status (path, handle, find entries, `.` and `..`);
+  - `apply_attributes` stores the byte and the read-only bits, unlocking a read-only file for the moment where extended attributes need it;
+  - `mark_archived` runs on every open for writing or replacing;
+  - `move_sidecars` / `remove_sidecars` run on rename, delete and `delete_dir`, which also clears a folder holding only `.os2ea`;
+  - `enforce_sandbox` refuses any path through `.os2ea`, and `find_first` skips it.
+- **Copies.** `DriveManager::copy_file` carries EAs and attributes after the data, through the backend trait, so the same code serves one drive and two.
+- **Tests:** `file_attrs.rs`; `vfs_hostdir.rs` (`hidden_system_and_archive_are_kept`, `attributes_follow_renames_and_sidecars_stay_hidden`, each run with extended attributes and with sidecars); `vfs.rs` (`a_copy_carries_eas_and_attributes`); `samples/attr_test`.
+
 ### Exit codes and signals across processes
 
 `exit_report.rs`, `signals.rs`, `session_threads.rs` (ADR-0090):
