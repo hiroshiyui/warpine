@@ -245,9 +245,10 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 - [ ] **Far16 thunks**:
   - dispatch 16-bit calls made through thunks (`vcpu.rs` bypasses them and returns 0; for example `DosGetInfoSeg`);
   - OS/2's tiling formula `(sel >> 3) << 16` (Warpine's tiles start at GDT index 6).
-- [ ] **REXX**:
-  - bridge `REXXAPI.DLL` (`RexxStart`, `RexxRegisterSubcomDll`, `RexxVariablePool`) to Regina;
-  - this unlocks install programs and `.cmd` scripts.
+- [ ] **REXX** (ADR-0081): our own interpreter in Rust, in the built-in CMD.EXE; a `.CMD` file starting with `/*` runs as REXX and its commands go to `ADDRESS CMD`. No Regina, no IBM code. Phases:
+  - R1, the language core: expressions with decimal arithmetic, stems, the control instructions, `PARSE`, `INTERPRET`, the queue, the string functions;
+  - R2: streams through the VFS, conditions, `TRACE`, `REXXUTIL`-compatible functions (case by case);
+  - R3: the REXX API for OS/2 programs (`RexxStart`, subcommand and external function handlers, `RexxVariablePool`, queues), which unlocks install programs and programs that embed REXX.
 - [ ] **File attributes**: keep hidden / system / archive (an EA or the sidecar) and report them.
 - [ ] **Session clock**: `DosSetDateTime` reaching processes that are already running (ADR-0039).
 - [ ] **Sockets** (ADR-0041): the real ordinals and layouts of `select`, `bsdselect` and `os2_select`.
