@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 pub mod doscalls {
-    pub fn dos_write(fd: u32, buf: &[u8]) -> Result<u32, &'static str> {
+    /// Write `buf` to the host's standard output (`fd` 1) or error (2).
+    /// A failed write is an error: a reader that closed its pipe must
+    /// reach the program as a broken pipe, not as bytes written.
+    pub fn dos_write(fd: u32, buf: &[u8]) -> Result<u32, std::io::ErrorKind> {
         if fd == 1 || fd == 2 {
             use std::io::Write;
             // Convert CP437 bytes to UTF-8 for terminal output.
@@ -15,11 +18,10 @@ pub mod doscalls {
             } else {
                 &mut std::io::stdout()
             };
-            let _ = target.write_all(out.as_bytes());
-            let _ = target.flush();
+            target.write_all(out.as_bytes()).and_then(|()| target.flush()).map_err(|e| e.kind())?;
             Ok(buf.len() as u32)
         } else {
-            Err("Unsupported file descriptor")
+            Err(std::io::ErrorKind::InvalidInput)
         }
     }
 }
