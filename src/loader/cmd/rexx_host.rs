@@ -11,7 +11,6 @@
 use super::*;
 use crate::loader::codepage::{cp_decode, cp_encode};
 use crate::loader::rexx::interp::{error_message, run_program, CallType, FileInfo, Host, OpenFor};
-use crate::loader::vfs::{ExistAction, FileAttribute, FileStatus, NewAction, OpenFlags, OpenMode, SeekMode, SharingMode};
 
 /// The stack a REXX program runs on: its routines and expressions nest on
 /// it, within the interpreter's own limits.
@@ -100,113 +99,25 @@ impl Host for ShellHost<'_> {
 
     fn clear_screen(&mut self) { self.shell.cmd_cls(); }
 
-    fn full_name(&mut self, name: &[u8]) -> Option<Vec<u8>> {
-        let (drive, rel) = self.shell.shared.drive_mgr.lock_or_recover().resolve_path(&self.os2(name)).ok()?;
-        let rel = crate::loader::vfs::normalize_rel_path(&rel)?;
-        Some(cp_encode(&format!("{}:\\{}", (b'A' + drive) as char, rel.replace('/', "\\")), self.codepage))
-    }
-
-    fn file_open(&mut self, name: &[u8], mode: OpenFor) -> Result<u32, u32> {
-        let (access, flags) = match mode {
-            OpenFor::Read => (OpenMode::ReadOnly, OpenFlags { exist_action: ExistAction::Open, new_action: NewAction::Fail }),
-            OpenFor::Write => (OpenMode::ReadWrite, OpenFlags { exist_action: ExistAction::Open, new_action: NewAction::Create }),
-            OpenFor::Replace => (OpenMode::ReadWrite, OpenFlags { exist_action: ExistAction::Replace, new_action: NewAction::Create }),
-        };
-        let path = self.os2(name);
-        self.shell.shared.drive_mgr.lock_or_recover()
-            .open_file(&path, access, SharingMode::DenyNone, flags, FileAttribute::NORMAL)
-            .map(|(h, _)| h).map_err(|e| e.0)
-    }
-
-    fn file_read(&mut self, handle: u32, pos: u64, buf: &mut [u8]) -> Result<usize, u32> {
-        let dm = self.shell.shared.drive_mgr.lock_or_recover();
-        if !dm.is_file(handle) { return Err(crate::loader::rexx::interp::ERROR_INVALID_HANDLE); }
-        dm.seek_file(handle, pos as i64, SeekMode::Begin).map_err(|e| e.0)?;
-        dm.read_file(handle, buf).map_err(|e| e.0)
-    }
-
-    fn file_write(&mut self, handle: u32, pos: u64, data: &[u8]) -> Result<(), u32> {
-        let dm = self.shell.shared.drive_mgr.lock_or_recover();
-        if !dm.is_file(handle) { return Err(crate::loader::rexx::interp::ERROR_INVALID_HANDLE); }
-        dm.seek_file(handle, pos as i64, SeekMode::Begin).map_err(|e| e.0)?;
-        let mut done = 0;
-        while done < data.len() {
-            match dm.write_file(handle, &data[done..]) {
-                Ok(0) => return Err(crate::loader::vfs::Os2Error::DISK_FULL.0),
-                Ok(n) => done += n,
-                Err(e) => return Err(e.0),
-            }
-        }
-        Ok(())
-    }
-
-    fn file_size(&mut self, handle: u32) -> Result<u64, u32> {
-        let dm = self.shell.shared.drive_mgr.lock_or_recover();
-        if !dm.is_file(handle) { return Err(crate::loader::rexx::interp::ERROR_INVALID_HANDLE); }
-        dm.query_file_info(handle, 1).map(|s| s.file_size as u64).map_err(|e| e.0)
-    }
-
-    fn file_close(&mut self, handle: u32) {
-        let mut dm = self.shell.shared.drive_mgr.lock_or_recover();
-        if dm.is_file(handle) { let _ = dm.close_file(handle); }
-    }
-
-    fn file_info(&mut self, name: &[u8]) -> Option<FileInfo> {
-        let status = self.shell.shared.drive_mgr.lock_or_recover().query_path_info(&self.os2(name), 1).ok()?;
-        Some(file_info(self.full_name(name)?, &status))
-    }
-
-    fn file_find(&mut self, pattern: &[u8], limit: usize) -> Result<Vec<FileInfo>, u32> {
-        let pattern = self.os2(pattern);
-        let mut dm = self.shell.shared.drive_mgr.lock_or_recover();
-        let (handle, first) = dm.find_first(&pattern, FileAttribute(ATTR_ALL_ENTRIES), 1).map_err(|e| e.0)?;
-        let mut found = Vec::new();
-        let mut entry = Some(first);
-        while let Some(e) = entry {
-            if found.len() >= limit { break; }
-            if e.name != "." && e.name != ".." { found.push(file_info(cp_encode(&e.name, self.codepage), &e.status)); }
-            entry = dm.find_next(handle).ok();
-        }
-        let _ = dm.find_close(handle);
-        Ok(found)
-    }
-
-    fn file_delete(&mut self, name: &[u8]) -> u32 {
-        let path = self.os2(name);
-        self.shell.shared.drive_mgr.lock_or_recover().delete_file(&path).err().map_or(0, |e| e.0)
-    }
-
-    fn dir_make(&mut self, name: &[u8]) -> u32 {
-        let path = self.os2(name);
-        self.shell.shared.drive_mgr.lock_or_recover().create_dir(&path).err().map_or(0, |e| e.0)
-    }
-
-    fn dir_remove(&mut self, name: &[u8]) -> u32 {
-        let path = self.os2(name);
-        self.shell.shared.drive_mgr.lock_or_recover().delete_dir(&path).err().map_or(0, |e| e.0)
-    }
-
-    fn drives(&mut self) -> Vec<u8> {
-        let map = self.shell.shared.drive_mgr.lock_or_recover().logical_drive_map();
-        (0..26u8).filter(|d| map & (1 << d) != 0).map(|d| b'A' + d).collect()
-    }
-}
-
-/// The attributes a search matches: files and directories, hidden and
-/// system ones too.
-const ATTR_ALL_ENTRIES: u32 = 0x37;
-
-/// A VFS file status as the interpreter's description of an entry.
-fn file_info(name: Vec<u8>, status: &FileStatus) -> FileInfo {
-    FileInfo {
-        name, size: status.file_size as u64, date: status.last_write_date, time: status.last_write_time,
-        attributes: status.attributes.0,
-    }
+    fn full_name(&mut self, name: &[u8]) -> Option<Vec<u8>> { self.files().full_name(name) }
+    fn file_open(&mut self, name: &[u8], mode: OpenFor) -> Result<u32, u32> { self.files().file_open(name, mode) }
+    fn file_read(&mut self, handle: u32, pos: u64, buf: &mut [u8]) -> Result<usize, u32> { self.files().file_read(handle, pos, buf) }
+    fn file_write(&mut self, handle: u32, pos: u64, data: &[u8]) -> Result<(), u32> { self.files().file_write(handle, pos, data) }
+    fn file_size(&mut self, handle: u32) -> Result<u64, u32> { self.files().file_size(handle) }
+    fn file_close(&mut self, handle: u32) { self.files().file_close(handle) }
+    fn file_info(&mut self, name: &[u8]) -> Option<FileInfo> { self.files().file_info(name) }
+    fn file_find(&mut self, pattern: &[u8], limit: usize) -> Result<Vec<FileInfo>, u32> { self.files().file_find(pattern, limit) }
+    fn file_delete(&mut self, name: &[u8]) -> u32 { self.files().file_delete(name) }
+    fn dir_make(&mut self, name: &[u8]) -> u32 { self.files().dir_make(name) }
+    fn dir_remove(&mut self, name: &[u8]) -> u32 { self.files().dir_remove(name) }
+    fn drives(&mut self) -> Vec<u8> { self.files().drives() }
 }
 
 impl ShellHost<'_> {
-    /// A name from the script (process codepage) as an OS/2 path.
-    fn os2(&self, name: &[u8]) -> String { cp_decode(name, self.codepage) }
+    /// The drives, for the stream functions and REXXUTIL.
+    fn files(&self) -> crate::loader::rexx_vfs::VfsFiles<'_> {
+        crate::loader::rexx_vfs::VfsFiles { shared: &self.shell.shared, codepage: self.codepage }
+    }
 }
 
 impl CmdShell {

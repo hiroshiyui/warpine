@@ -24,6 +24,8 @@
 #   WARPINE   base 20480    (MAGIC_API_BASE + 20480 + ordinal) — Warpine's own extensions
 #   PMDRAG    base 21504    (MAGIC_API_BASE + 21504 + ordinal)
 #   SOM       base 22528    (MAGIC_API_BASE + 22528 + ordinal) — the SOM kernel, Warpine's ordinals
+#   REXX      base 26624    (MAGIC_API_BASE + 26624 + ordinal)
+#   REXXAPI   base 27648    (MAGIC_API_BASE + 27648 + ordinal)
 
 # ── DOSCALLS ─────────────────────────────────────────────────────────────────
 DOSCALLS.8    DosGetInfoSeg
@@ -530,3 +532,36 @@ SOM.3404   WrpSOMClassMgr_somLocateClassFile
 SOM.3405   WrpSOMClassMgr_somLoadClassFile
 SOM.3406   WrpSOMClassMgr_somUnregisterClass
 SOM.3407   WrpSOMClassMgr_somUnloadClassFile
+
+# ── REXX ─────────────────────────────────────────────────────────────────────
+REXX.1      RexxStart
+REXX.2      RexxVariablePool
+REXX.3      RexxSetHalt
+REXX.4      RexxSetTrace
+REXX.5      RexxResetTrace
+
+# ── REXXAPI ──────────────────────────────────────────────────────────────────
+REXXAPI.1   RexxCreateQueue
+REXXAPI.2   RexxDeleteQueue
+REXXAPI.3   RexxAddQueue
+REXXAPI.4   RexxPullQueue
+REXXAPI.5   RexxQueryQueue
+REXXAPI.6   RexxRegisterSubcomDll
+REXXAPI.7   RexxRegisterSubcomExe
+REXXAPI.8   RexxQuerySubcom
+REXXAPI.9   RexxDeregisterSubcom
+REXXAPI.11  RexxRegisterExitDll
+REXXAPI.12  RexxRegisterExitExe
+REXXAPI.13  RexxDeregisterExit
+REXXAPI.14  RexxQueryExit
+REXXAPI.17  RexxRegisterFunctionDll
+REXXAPI.18  RexxRegisterFunctionExe
+REXXAPI.19  RexxDeregisterFunction
+REXXAPI.20  RexxQueryFunction
+REXXAPI.22  RexxAddMacro
+REXXAPI.23  RexxDropMacro
+REXXAPI.24  RexxClearMacroSpace
+REXXAPI.25  RexxLoadMacroSpace
+REXXAPI.26  RexxQueryMacro
+REXXAPI.27  RexxReorderMacro
+REXXAPI.28  RexxSaveMacroSpace

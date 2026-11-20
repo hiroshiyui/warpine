@@ -8,6 +8,7 @@
 
 pub mod builtins;
 pub mod condition;
+pub mod embed;
 pub mod expr;
 pub mod interp;
 pub mod lexer;
@@ -23,6 +24,7 @@ mod tests {
     use std::cell::Cell;
     use std::collections::{HashMap, VecDeque};
 
+    use super::embed::*;
     use super::interp::{run_program, CallType, Host, RexxError};
     use crate::loader::clock::LocalTime;
 
@@ -39,6 +41,14 @@ mod tests {
         /// HALT: 0 never; n: the program is asked to stop from the n-th
         /// look on.
         halt: Cell<u32>,
+        /// Handlers it has: `SUBCOM:env`, `FUNC:name`, `EXIT:SAY`.
+        accepts: Vec<&'static str>,
+        /// What its handlers do, in turn; the calls made; the pool's answers.
+        script: VecDeque<CallbackEvent>,
+        calls: Vec<Callback>,
+        answers: Vec<Vec<PoolAnswer>>,
+        /// The session queue.
+        session_queue: VecDeque<Vec<u8>>,
     }
 
     impl Host for TestHost {
@@ -67,6 +77,22 @@ mod tests {
             self.externals.get(name).map(|s| (s.clone(), [b"C:\\", name, b".CMD"].concat()))
         }
         fn get_env(&self, name: &[u8]) -> Option<Vec<u8>> { self.env.get(&name.to_ascii_uppercase()).cloned() }
+        fn has_handler(&mut self, cb: &Callback) -> bool {
+            let key = match cb {
+                Callback::Subcom { env, .. } => format!("SUBCOM:{}", String::from_utf8_lossy(env)),
+                Callback::Function { name, .. } => format!("FUNC:{}", String::from_utf8_lossy(name)),
+                Callback::Exit(ExitCall::Say(_)) => "EXIT:SAY".to_string(),
+                Callback::Exit(_) => "EXIT:OTHER".to_string(),
+            };
+            self.accepts.contains(&key.as_str())
+        }
+        fn callback_begin(&mut self, cb: Callback) { self.calls.push(cb); }
+        fn callback_next(&mut self) -> CallbackEvent {
+            self.script.pop_front().unwrap_or(CallbackEvent::Done(CallbackResult::Exit { handled: false, raise_error: false, value: None }))
+        }
+        fn pool_answer(&mut self, answers: Vec<PoolAnswer>) { self.answers.push(answers); }
+        fn queue_to_host(&mut self, queue: VecDeque<Vec<u8>>) { self.session_queue = queue; }
+        fn queue_from_host(&mut self) -> VecDeque<Vec<u8>> { std::mem::take(&mut self.session_queue) }
         fn set_env(&mut self, name: &[u8], value: Option<&[u8]>) {
             match value {
                 Some(v) => { self.env.insert(name.to_ascii_uppercase(), v.to_vec()); }
@@ -274,6 +300,63 @@ mod tests {
         assert_eq!(h.out, ["nr STDIN"]);
         assert_eq!(say("say stream('STDOUT') stream('nofile', 'D') lineout('nofile', 'x') linein('nofile')'|'"), ["READY UNKNOWN: 1 |"],
                    "a host without files: no stream opens");
+    }
+
+    fn req(code: u8, name: &str, value: &str) -> PoolRequest {
+        PoolRequest { code, name: name.as_bytes().to_vec(), value: value.as_bytes().to_vec() }
+    }
+
+    fn answer(ret: u8, value: Option<&str>) -> PoolAnswer {
+        PoolAnswer { ret, name: None, value: value.map(|v| v.as_bytes().to_vec()) }
+    }
+
+    #[test]
+    fn handlers_are_called_and_use_the_variable_pool() {
+        let mut h = TestHost { accepts: vec!["SUBCOM:TEST", "FUNC:MYFUNC", "EXIT:SAY"], ..Default::default() };
+        h.script = VecDeque::from([
+            CallbackEvent::Pool(vec![
+                req(RXSHV_SET, "FROMHANDLER", "set"), req(RXSHV_FETCH, "A", ""), req(RXSHV_SYFET, "s.i", ""),
+                req(RXSHV_FETCH, "S.2", ""), req(RXSHV_PRIV, "PARM", ""), req(RXSHV_DROPV, "B", ""),
+                req(RXSHV_SET, "bad name", "x"), req(RXSHV_FETCH, "NEVER", ""), req(99, "A", ""),
+            ]),
+            CallbackEvent::Done(CallbackResult::Command { rc: b"7".to_vec(), error: true, failure: false }),
+            CallbackEvent::Done(CallbackResult::Function(Ok(Some(b"42".to_vec())))),
+            CallbackEvent::Done(CallbackResult::Exit { handled: true, raise_error: false, value: None }),
+        ]);
+        run_with(&mut h, "a = 5; b = 1; s.2 = 'two'; i = 2\naddress test 'hello'\nx = myfunc(1)\nsay rc fromhandler x symbol('b')", "").unwrap();
+        assert_eq!(h.calls[0], Callback::Subcom { env: b"TEST".to_vec(), command: b"hello".to_vec() });
+        assert_eq!(h.calls[1], Callback::Function { name: b"MYFUNC".to_vec(), args: vec![Some(b"1".to_vec())], subroutine: false });
+        assert_eq!(h.calls[2], Callback::Exit(ExitCall::Say(b"7 set 42 LIT".to_vec())), "the exit took SAY's line");
+        assert!(h.out.is_empty(), "a handled SAY is not written");
+        assert_eq!(h.answers[0], [answer(RXSHV_NEWV, None), answer(RXSHV_OK, Some("5")), answer(RXSHV_OK, Some("two")),
+                                  answer(RXSHV_OK, Some("two")), answer(RXSHV_OK, Some("1")), answer(RXSHV_OK, None),
+                                  answer(RXSHV_BADN, None), answer(RXSHV_NEWV, Some("NEVER")), answer(RXSHV_BADF, None)]);
+    }
+
+    #[test]
+    fn the_pool_walks_the_variables_and_handlers_can_fail() {
+        let mut h = TestHost { accepts: vec!["SUBCOM:TEST"], ..Default::default() };
+        h.script = VecDeque::from([
+            CallbackEvent::Pool(vec![req(RXSHV_NEXTV, "", ""), req(RXSHV_NEXTV, "", ""), req(RXSHV_NEXTV, "", "")]),
+            CallbackEvent::Done(CallbackResult::Command { rc: b"-1".to_vec(), error: false, failure: true }),
+        ]);
+        run_with(&mut h, "a = 1; s.x = 2\ntrace o; signal on failure; address test 'x'; exit\nfailure: say 'failed' rc", "").unwrap();
+        let mut seen: Vec<(Vec<u8>, Vec<u8>)> = h.answers[0][..2].iter().map(|a| (a.name.clone().unwrap(), a.value.clone().unwrap())).collect();
+        seen.sort();
+        assert_eq!(seen, [(b"A".to_vec(), b"1".to_vec()), (b"S.X".to_vec(), b"2".to_vec())]);
+        assert_eq!(h.answers[0][2].ret, RXSHV_LVAR, "the walk ends");
+        assert_eq!(h.out, ["failed -1"], "a handler's failure raises FAILURE");
+        let mut h = TestHost { accepts: vec!["FUNC:BAD"], ..Default::default() };
+        h.script = VecDeque::from([CallbackEvent::Done(CallbackResult::Function(Err(())))]);
+        assert_eq!(run_with(&mut h, "x = bad()", "").unwrap_err().code, 40);
+    }
+
+    #[test]
+    fn the_session_queue_is_the_hosts() {
+        let mut h = TestHost { session_queue: VecDeque::from([b"from host".to_vec()]), ..Default::default() };
+        run_with(&mut h, "pull x; say x; queue 'back'", "").unwrap();
+        assert_eq!(h.out, ["FROM HOST"]);
+        assert_eq!(h.session_queue, [b"back".to_vec()], "the queue goes back at the end");
     }
 
     #[test]

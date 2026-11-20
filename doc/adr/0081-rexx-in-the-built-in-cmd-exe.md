@@ -1,6 +1,6 @@
 # ADR-0081: REXX in the built-in CMD.EXE: our own interpreter, in three phases
 
-- **Status:** Accepted (planned; not implemented yet)
+- **Status:** Accepted; implemented in phases: R1 ADR-0083, R2 ADR-0084, R3 ADR-0085
 - **Date:** 2026-11-20
 - **Sources:**
   - IBM's public OS/2 REXX documentation: *OS/2 Procedures Language 2/REXX Reference* and the REXX application programming interface reference;

@@ -11,6 +11,7 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use super::condition::{Cond, CondInfo, Trap, CONDITIONS};
+use super::embed::{Callback, CallbackEvent, CallbackResult, ExitCall, PoolAnswer};
 use super::expr::{BinOp, Expr, TailPart, UnOp};
 use super::lexer::tokenize;
 use super::number::{ArithError, Num, MAX_DIGITS};
@@ -122,6 +123,30 @@ pub trait Host {
     fn dir_remove(&mut self, _name: &[u8]) -> u32 { ERROR_PATH_NOT_FOUND }
     /// The drive letters in use, in order.
     fn drives(&mut self) -> Vec<u8> { Vec::new() }
+
+    // ── Handlers of a program that embeds the interpreter (ADR-0085) ──
+    // A host without handlers (the shell) keeps these defaults.
+
+    /// Whether the host has a handler for `cb`.
+    fn has_handler(&mut self, _cb: &Callback) -> bool { false }
+    /// Start the handler call `cb` (`has_handler` said yes).
+    fn callback_begin(&mut self, _cb: Callback) {}
+    /// Wait for the handler: its end, or a variable-pool request it made.
+    fn callback_next(&mut self) -> CallbackEvent {
+        CallbackEvent::Done(CallbackResult::Exit { handled: false, raise_error: false, value: None })
+    }
+    /// The answers to the last variable-pool request.
+    fn pool_answer(&mut self, _answers: Vec<PoolAnswer>) {}
+    /// The program's queue, lent to the host (its session queue) while a
+    /// handler runs, and at the program's end.
+    fn queue_to_host(&mut self, _queue: VecDeque<Vec<u8>>) {}
+    /// The session queue, back from the host (and at the program's start).
+    fn queue_from_host(&mut self) -> VecDeque<Vec<u8>> { VecDeque::new() }
+    /// The ADDRESS environment a program starts with.
+    fn initial_environment(&self) -> Vec<u8> { DEFAULT_ENV.to_vec() }
+    /// A request from outside to turn tracing on (`Some(true)`,
+    /// RexxSetTrace) or off (`Some(false)`, RexxResetTrace).
+    fn trace_request(&mut self) -> Option<bool> { None }
 }
 
 /// Why running stopped early: a REXX error (its number, the line it
@@ -305,6 +330,10 @@ pub struct Interp<'h> {
     /// The external functions registered (RxFuncAdd, SysLoadFuncs):
     /// name to the REXXUTIL function it calls.
     pub functions: HashMap<Vec<u8>, Vec<u8>>,
+    /// RXSHV_NEXTV's walk through the variables (embed.rs).
+    pub(super) pool_walk: Option<VecDeque<(Vec<u8>, Vec<u8>)>>,
+    /// How the program was called (PARSE SOURCE, PRIV SOURCE).
+    program_call: CallType,
 }
 
 /// The default environment for commands.
@@ -337,9 +366,25 @@ pub fn run_program(host: &mut dyn Host, source: &[u8], name: &[u8], args: Vec<Op
         current: None,
         streams: Default::default(),
         functions: super::rexxutil::all_registered(),
+        pool_walk: None,
+        program_call: call_type,
     };
-    let result = interp.run_external(source, name, args, call_type);
+    interp.queue = interp.host.queue_from_host();
+    let env = interp.host.initial_environment();
+    interp.settings.previous_address = env.clone();
+    interp.settings.address = env;
+    // RXINI before the first clause, RXTER after the last; a failing exit
+    // ends the program as an error.
+    let result = interp.exit_call(ExitCall::Init)
+        .and_then(|_| interp.run_external(source, name, args, call_type));
+    let result = match (result, interp.exit_call(ExitCall::Term)) {
+        (Ok(v), Ok(_)) => Ok(v),
+        (Ok(_), Err(e)) => Err(e),
+        (Err(e), _) => Err(e),
+    };
     interp.close_streams();
+    let queue = std::mem::take(&mut interp.queue);
+    interp.host.queue_to_host(queue);
     match result {
         Err(RexxError { exit: Some(v), .. }) => Ok(v),
         other => other,
@@ -462,7 +507,13 @@ impl Interp<'_> {
     /// program that goes on is ended after `HALT_GRACE_CLAUSES` more
     /// clauses.
     fn check_halt(&mut self) -> R<()> {
-        if !self.host.interrupted() { return Ok(()); }
+        match self.host.trace_request() {
+            Some(true) => self.set_trace(b"?R")?,
+            Some(false) => self.set_trace(b"O")?,
+            None => {}
+        }
+        let halt_exit = matches!(self.exit_call(ExitCall::HaltTest)?, Some(Some(v)) if v == b"1");
+        if !halt_exit && !self.host.interrupted() { return Ok(()); }
         match self.halted_at {
             None => {
                 self.halted_at = Some(self.clauses);
@@ -512,7 +563,7 @@ impl Interp<'_> {
             }
             Instr::Say(e) => {
                 let v = match e { Some(e) => self.ev(e, prog)?, None => Vec::new() };
-                self.host.say(&v);
+                self.say_line(&v)?;
                 Ok(Step::Next)
             }
             Instr::Assign(target, e) => {
@@ -674,13 +725,18 @@ impl Interp<'_> {
     /// when FAILURE is not trapped), another non-zero one ERROR.
     fn run_command(&mut self, env: &[u8], cmd: &[u8]) -> R<()> {
         if self.settings.trace == b'C' { self.trace_value(b">>>", cmd); }
-        let (rc, failure) = match self.host.command(&env.to_ascii_uppercase(), cmd) {
-            Some(rc) => (rc, rc < 0),
-            None => (-3, true),
+        let env = env.to_ascii_uppercase();
+        // A program's handler for the environment first, then the host's.
+        let (rc, error, failure) = match self.callback(Callback::Subcom { env: env.clone(), command: cmd.to_vec() }) {
+            Some(CallbackResult::Command { rc, error, failure }) => (rc, error, failure),
+            _ => match self.host.command(&env, cmd) {
+                Some(rc) => (rc.to_string().into_bytes(), rc != 0, rc < 0),
+                None => (b"-3".to_vec(), true, true),
+            },
         };
-        self.set_var(b"RC", rc.to_string().into_bytes())?;
-        if rc == 0 { return Ok(()); }
-        self.trace_command_error(rc, failure);
+        self.set_var(b"RC", rc.clone())?;
+        if !error && !failure { return Ok(()); }
+        self.trace_command_error(&rc, failure);
         let cond = if failure && self.settings.traps[Cond::Failure.index()] != Trap::Off { Cond::Failure } else { Cond::Error };
         self.raise(cond, cmd.to_vec())
     }
@@ -814,6 +870,13 @@ impl Interp<'_> {
         if let Some(entry) = self.functions.get(&upper).cloned()
             && let Some(result) = super::rexxutil::call(self, &entry, &args) {
             return result.map(Some);
+        }
+        // A function the embedding program registered.
+        let subroutine = call_type == CallType::Subroutine;
+        match self.callback(Callback::Function { name: upper.clone(), args: args.clone(), subroutine }) {
+            Some(CallbackResult::Function(Ok(value))) => return Ok(value),
+            Some(CallbackResult::Function(Err(()))) => return Err(RexxError::with(40, String::from_utf8_lossy(name))),
+            _ => {}
         }
         if let Some((source, path)) = self.host.external(&upper) {
             let saved_settings = self.settings.clone();
@@ -1038,6 +1101,56 @@ impl Interp<'_> {
             }
             _ => Err(RexxError::new(20)),
         }
+    }
+
+    /// Drop compound variable `full` (its stem `stem_len` long), by name.
+    pub fn drop_compound(&mut self, full: &[u8], stem_len: usize) -> R<()> {
+        let stem = full[..stem_len].to_vec();
+        let s = self.owner(full, Some(&stem));
+        let tail = full[stem_len..].to_vec();
+        let entries = &mut self.stem_entries;
+        let st = self.scopes[s].stems.entry(stem).or_default();
+        if !st.items.contains_key(&tail) {
+            if *entries >= MAX_STEM_ENTRIES { return Err(RexxError::with(5, "too many compound variables")); }
+            *entries += 1;
+        }
+        st.items.insert(tail, None);
+        Ok(())
+    }
+
+    /// The variables the running routine sees, with their values, for
+    /// RXSHV_NEXTV: simple ones, stems with a default (`S.`), compound
+    /// ones; exposed ones from their owner.
+    pub(super) fn visible_variables(&self) -> VecDeque<(Vec<u8>, Vec<u8>)> {
+        let mut out = VecDeque::new();
+        let mut seen = std::collections::HashSet::new();
+        let top = self.scopes.len() - 1;
+        let mut scopes = vec![top];
+        scopes.extend(self.scopes[top].exposed.values().copied());
+        for s in scopes {
+            let scope = &self.scopes[s];
+            let visible = |name: &[u8]| s == top || self.scopes[top].exposed.contains_key(name)
+                || name.iter().position(|&c| c == b'.').is_some_and(|d| self.scopes[top].exposed.contains_key(&name[..=d]));
+            for (name, value) in &scope.vars {
+                if visible(name) && seen.insert(name.clone()) { out.push_back((name.clone(), value.clone())); }
+            }
+            for (stem, st) in &scope.stems {
+                if !visible(stem) { continue; }
+                if let Some(d) = &st.default && seen.insert(stem.clone()) { out.push_back((stem.clone(), d.clone())); }
+                for (tail, value) in &st.items {
+                    let full = [stem.as_slice(), tail].concat();
+                    if let Some(v) = value && seen.insert(full.clone()) { out.push_back((full, v.clone())); }
+                }
+            }
+        }
+        out
+    }
+
+    /// PARSE SOURCE's string for the program: `OS/2 COMMAND C:\NAME.CMD`.
+    pub(super) fn parse_source_string(&self) -> Vec<u8> {
+        let mut s = format!("OS/2 {} ", self.program_call.word()).into_bytes();
+        s.extend_from_slice(&self.source_name);
+        s
     }
 
     pub fn drop_var(&mut self, target: &Target) -> R<()> {

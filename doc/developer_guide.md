@@ -1226,8 +1226,19 @@ All paths converge on:
 | `stream.rs` | the streams: file streams through the host, the standard streams, the stream functions |
 | `trace.rs` | TRACE's settings and output |
 | `rexxutil.rs` | the REXXUTIL functions and their registration (RxFuncAdd …) |
+| `embed.rs` | the embedding interface: handler calls (`Callback`, `CallbackResult`), system exits, the variable pool (`PoolRequest` / `PoolAnswer`) |
 
 A program runs as `run_program(host, source, name, args, call_type)`; errors come back as `RexxError` (number, line, detail), and an EXIT inside a routine travels up as one with `exit` set. Tests in `rexx.rs` run programs through a `TestHost`.
+
+Files, for both hosts, go through `rexx_vfs.rs` (`VfsFiles`: the VFS by OS/2 name).
+
+**The REXX API for programs** (`rexxapi.rs`, `rexxapi/host.rs`, ADR-0085). `RexxStart` runs the interpreter on a host thread of its own, with a `Loader` of its own over the process's `SharedState`:
+- **Its host.** `ApiHost` writes SAY and TRACE to the program's handles 1 and 2 through `write_handle`, reads PULL through `dos_read` on handle 0, and runs `ADDRESS CMD` through `cmd::run_shell_command`.
+- **Handler calls.** For a subcommand handler, a function handler or a system exit, the interpreter calls `Interp::callback`. `ApiHost` lays the call's block out in new guest memory and sends `ToVcpu::Call`.
+- **The calling thread.** The thread that called RexxStart waits in `rexx_wait` and makes the call as a call chain (`ChainThen::Rexx`, ADR-0026). It sends the result back (`rexx_handler_returned`) and waits again, until `ToVcpu::Done` ends RexxStart. A wait that must stop (killed, signalled, the process ending) halts the program and gives it up after 5 s.
+- **The variable pool.** `RexxVariablePool`, made by a handler on that thread, reads the SHVBLOCKs and sends `ToInterp::Pool`. The interpreter, waiting in `callback`, answers from its variables (`embed.rs`).
+- **The session queue.** It is lent to the host while a handler runs.
+- **Locking.** The process's registrations, queues and sessions are `SharedState::rexx_api`, taken alone.
 
 Conditions (ADR-0084) use the same path. A condition for a `SIGNAL ON` trap is a `RexxError` with `cond` set. The run loop's `catch` turns any error into the trapped label, or marks it `passing`, so that its callers' traps leave it alone and it ends the program. `CALL ON` conditions wait in `pending` until the clause ends. Traps, the TRACE setting and CONDITION()'s record are part of `Settings`, which a routine saves and restores.
 

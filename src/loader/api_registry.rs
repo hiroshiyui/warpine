@@ -26,8 +26,10 @@ use tracing::debug;
 
 use super::constants::{NLS_BASE, MSG_BASE, MDM_BASE, UCONV_BASE, SO32DLL_BASE, TCP32DLL_BASE,
                        PMSHAPI_BASE, HELPMGR_BASE, PMSPL_BASE, PMCTLS_BASE, WARPINE_BASE, PMDRAG_BASE, SOM_BASE,
+                       REXX_BASE, REXXAPI_BASE,
                        module_base};
 use super::pmspl::SplEnum;
+use super::rexxapi::{Kind, RexxSignal};
 use super::ApiResult;
 use super::vm_backend::VcpuBackend;
 
@@ -1036,6 +1038,65 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,i,a| l.som_call(i,3406,&a) },
     ApiEntry { ordinal: SOM_BASE + 3407, module: "SOM", name: "WrpSOMClassMgr_somUnloadClassFile", argc: 2,
                handler: |l,_v,i,a| l.som_call(i,3407,&a) },
+    // ── REXX / REXXAPI — the REXX API (rexxapi.rs, ADR-0085) ─────────────────
+    ApiEntry { ordinal: REXX_BASE + 1, module: "REXX", name: "RexxStart", argc: 9,
+               handler: |l,_v,i,a| l.rexx_start(i,a) },
+    ApiEntry { ordinal: REXX_BASE + 2, module: "REXX", name: "RexxVariablePool", argc: 1,
+               handler: |l,_v,i,a| ApiResult::Normal(l.rexx_variable_pool(i,a[0])) },
+    ApiEntry { ordinal: REXX_BASE + 3, module: "REXX", name: "RexxSetHalt", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_signal(a[0],a[1],RexxSignal::Halt)) },
+    ApiEntry { ordinal: REXX_BASE + 4, module: "REXX", name: "RexxSetTrace", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_signal(a[0],a[1],RexxSignal::TraceOn)) },
+    ApiEntry { ordinal: REXX_BASE + 5, module: "REXX", name: "RexxResetTrace", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_signal(a[0],a[1],RexxSignal::TraceOff)) },
+    ApiEntry { ordinal: REXXAPI_BASE + 1, module: "REXXAPI", name: "RexxCreateQueue", argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_create_queue(a[0],a[1],a[2],a[3])) },
+    ApiEntry { ordinal: REXXAPI_BASE + 2, module: "REXXAPI", name: "RexxDeleteQueue", argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_delete_queue(a[0])) },
+    ApiEntry { ordinal: REXXAPI_BASE + 3, module: "REXXAPI", name: "RexxAddQueue", argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_add_queue(a[0],a[1],a[2])) },
+    ApiEntry { ordinal: REXXAPI_BASE + 4, module: "REXXAPI", name: "RexxPullQueue", argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_pull_queue(a[0],a[1],a[2],a[3])) },
+    ApiEntry { ordinal: REXXAPI_BASE + 5, module: "REXXAPI", name: "RexxQueryQueue", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_query_queue(a[0],a[1])) },
+    ApiEntry { ordinal: REXXAPI_BASE + 6, module: "REXXAPI", name: "RexxRegisterSubcomDll", argc: 5,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_register_dll(Kind::Subcom,a[0],a[1],a[2],a[3])) },
+    ApiEntry { ordinal: REXXAPI_BASE + 7, module: "REXXAPI", name: "RexxRegisterSubcomExe", argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_register_exe(Kind::Subcom,a[0],a[1],a[2])) },
+    ApiEntry { ordinal: REXXAPI_BASE + 8, module: "REXXAPI", name: "RexxQuerySubcom", argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_query(Kind::Subcom,a[0],a[2],a[3])) },
+    ApiEntry { ordinal: REXXAPI_BASE + 9, module: "REXXAPI", name: "RexxDeregisterSubcom", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_deregister(Kind::Subcom,a[0])) },
+    ApiEntry { ordinal: REXXAPI_BASE + 11, module: "REXXAPI", name: "RexxRegisterExitDll", argc: 5,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_register_dll(Kind::Exit,a[0],a[1],a[2],a[3])) },
+    ApiEntry { ordinal: REXXAPI_BASE + 12, module: "REXXAPI", name: "RexxRegisterExitExe", argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_register_exe(Kind::Exit,a[0],a[1],a[2])) },
+    ApiEntry { ordinal: REXXAPI_BASE + 13, module: "REXXAPI", name: "RexxDeregisterExit", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_deregister(Kind::Exit,a[0])) },
+    ApiEntry { ordinal: REXXAPI_BASE + 14, module: "REXXAPI", name: "RexxQueryExit", argc: 4,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_query(Kind::Exit,a[0],a[2],a[3])) },
+    ApiEntry { ordinal: REXXAPI_BASE + 17, module: "REXXAPI", name: "RexxRegisterFunctionDll", argc: 3,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_register_dll(Kind::Function,a[0],a[1],a[2],0)) },
+    ApiEntry { ordinal: REXXAPI_BASE + 18, module: "REXXAPI", name: "RexxRegisterFunctionExe", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_register_exe(Kind::Function,a[0],a[1],0)) },
+    ApiEntry { ordinal: REXXAPI_BASE + 19, module: "REXXAPI", name: "RexxDeregisterFunction", argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_deregister(Kind::Function,a[0])) },
+    ApiEntry { ordinal: REXXAPI_BASE + 20, module: "REXXAPI", name: "RexxQueryFunction", argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.rexx_query(Kind::Function,a[0],0,0)) },
+    ApiEntry { ordinal: REXXAPI_BASE + 22, module: "REXXAPI", name: "RexxAddMacro", argc: 3,
+               handler: |l,_v,_i,_a| ApiResult::Normal(l.rexx_macro_space("RexxAddMacro")) },
+    ApiEntry { ordinal: REXXAPI_BASE + 23, module: "REXXAPI", name: "RexxDropMacro", argc: 1,
+               handler: |l,_v,_i,_a| ApiResult::Normal(l.rexx_macro_space("RexxDropMacro")) },
+    ApiEntry { ordinal: REXXAPI_BASE + 24, module: "REXXAPI", name: "RexxClearMacroSpace", argc: 0,
+               handler: |l,_v,_i,_a| ApiResult::Normal(l.rexx_macro_space("RexxClearMacroSpace")) },
+    ApiEntry { ordinal: REXXAPI_BASE + 25, module: "REXXAPI", name: "RexxLoadMacroSpace", argc: 3,
+               handler: |l,_v,_i,_a| ApiResult::Normal(l.rexx_macro_space("RexxLoadMacroSpace")) },
+    ApiEntry { ordinal: REXXAPI_BASE + 26, module: "REXXAPI", name: "RexxQueryMacro", argc: 2,
+               handler: |l,_v,_i,_a| ApiResult::Normal(l.rexx_macro_space("RexxQueryMacro")) },
+    ApiEntry { ordinal: REXXAPI_BASE + 27, module: "REXXAPI", name: "RexxReorderMacro", argc: 2,
+               handler: |l,_v,_i,_a| ApiResult::Normal(l.rexx_macro_space("RexxReorderMacro")) },
+    ApiEntry { ordinal: REXXAPI_BASE + 28, module: "REXXAPI", name: "RexxSaveMacroSpace", argc: 3,
+               handler: |l,_v,_i,_a| ApiResult::Normal(l.rexx_macro_space("RexxSaveMacroSpace")) },
 ];
 
 // ── Compatibility report ──────────────────────────────────────────────────────
@@ -1052,6 +1113,9 @@ const STUB_ORDINALS: &[u32] = &[
     SOM_BASE + 28,  // somConstructClass
     SOM_BASE + 38,  // somSaveMetrics
     SOM_BASE + 46,  // somWriteMetrics
+    // The REXX macro space is not there (ADR-0085).
+    REXXAPI_BASE + 22, REXXAPI_BASE + 23, REXXAPI_BASE + 24, REXXAPI_BASE + 25,
+    REXXAPI_BASE + 26, REXXAPI_BASE + 27, REXXAPI_BASE + 28,
 ];
 
 /// VIOCALLS ordinals of `viocalls.rs` (18 implemented, 4 stubs).

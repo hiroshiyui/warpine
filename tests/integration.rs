@@ -823,6 +823,21 @@ fn test_rexx_conditions_streams_and_rexxutil() {
     assert!(!drive_c.join("R2DATA.TXT").exists() && !drive_c.join("R2DIR").exists(), "the script cleans up");
 }
 
+/// samples/rexx_api_test: the REXX API (ADR-0085) from an OS/2 program —
+/// RexxStart in storage and from a file, a subcommand handler and an
+/// external function (guest code called back from the interpreter),
+/// RXINI / RXSIO / RXHLT exits using RexxVariablePool, the session queue
+/// and named queues, and an error's negative return code.
+#[test]
+fn test_rexx_api_from_a_program() {
+    let sample = "samples/rexx_api_test/rexx_api_test.exe";
+    if !kvm_available() || !Path::new(sample).exists() { return; }
+    let (out, code) = run_sample(sample, 30);
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("rexx_api_test: done 17/17"), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
 /// samples/rexx_scripts/rexxask.cmd: PULL and PARSE PULL read the shell's
 /// piped input, and a REXX error is reported with its line and number, as
 /// OS/2 does; the error number is the script's return code (ADR-0083).

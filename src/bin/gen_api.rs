@@ -49,8 +49,10 @@ const MODULES: &[(&str, u32)] = &[
     ("WARPINE",  20480),
     ("PMDRAG",   21504),
     ("SOM",      22528),
+    ("REXX",     26624),
+    ("REXXAPI",  27648),
 ];
-const STUB_AREA_SIZE: u32 = 26624; // SOM_BASE + SOM_ORDINALS (4096, ADR-0070)
+const STUB_AREA_SIZE: u32 = 28672; // REXXAPI_BASE + 1024 (SOM is SOM_ORDINALS = 4096 wide, ADR-0070)
 
 // Rust constant name used for each module's base in generated code.
 // Must match src/loader/constants.rs exactly.
@@ -77,6 +79,8 @@ fn base_const(module: &str) -> &'static str {
         "WARPINE"  => "WARPINE_BASE",
         "PMDRAG"   => "PMDRAG_BASE",
         "SOM"      => "SOM_BASE",
+        "REXX"     => "REXX_BASE",
+        "REXXAPI"  => "REXXAPI_BASE",
         _          => "?",
     }
 }
@@ -104,7 +108,9 @@ fn upper_const(module: &str) -> &'static str {
         "PMCTLS"   => "WARPINE_BASE",
         "WARPINE"  => "PMDRAG_BASE",
         "PMDRAG"   => "SOM_BASE",
-        "SOM"      => "STUB_AREA_SIZE",
+        "SOM"      => "REXX_BASE",
+        "REXX"     => "REXXAPI_BASE",
+        "REXXAPI"  => "STUB_AREA_SIZE",
         _          => "?",
     }
 }
@@ -304,7 +310,9 @@ fn resolve_const(name: &str) -> u32 {
         "WARPINE_BASE"  => 20480,
         "PMDRAG_BASE"   => 21504,
         "SOM_BASE"      => 22528,
-        "STUB_AREA_SIZE"=> 26624,
+        "REXX_BASE"     => 26624,
+        "REXXAPI_BASE"  => 27648,
+        "STUB_AREA_SIZE"=> 28672,
         other => other.parse().unwrap_or(0),
     }
 }
@@ -412,7 +420,7 @@ fn cmd_check(entries: &[OrdEntry], trace_path: &Path) -> bool {
     // Excludes PMWIN, PMGPI, SESMGR which return "?" and use sub-dispatchers.
     let trace_covered_modules = [
         "DOSCALLS", "QUECALLS", "KBDCALLS", "VIOCALLS", "NLS", "MSG", "MDM", "UCONV",
-        "SO32DLL", "TCP32DLL", "MOUCALLS", "PMSHAPI", "HELPMGR", "PMSPL", "PMCTLS", "WARPINE", "PMDRAG", "SOM",
+        "SO32DLL", "TCP32DLL", "MOUCALLS", "PMSHAPI", "HELPMGR", "PMSPL", "PMCTLS", "WARPINE", "PMDRAG", "SOM", "REXX", "REXXAPI",
     ];
     let def_in_trace: Vec<&OrdEntry> = entries
         .iter()
@@ -694,12 +702,13 @@ fn normalize_for_alias(s: &str) -> String {
 }
 
 fn cmd_validate_doc(entries: &[OrdEntry], doc_path: &Path) {
-    // Modules of os2386.lib. MSG, MDM, UCONV and the socket DLLs are not in
+    // Modules of os2386.lib (and of rexx.lib: REXX, REXXAPI). MSG, MDM,
+    // UCONV and the socket DLLs are not in
     // the import library; PMCTLS is, but the os2_ordinals.md snapshot has no
     // section for it, so its def lines carry a `# NOTE:` naming the source.
     const DOC_MODULES: &[&str] = &[
         "DOSCALLS", "QUECALLS", "KBDCALLS", "VIOCALLS", "PMGPI", "PMWIN", "SESMGR",
-        "NLS", "MOUCALLS", "PMSHAPI", "HELPMGR", "PMSPL", "PMCTLS",
+        "NLS", "MOUCALLS", "PMSHAPI", "HELPMGR", "PMSPL", "PMCTLS", "REXX", "REXXAPI",
     ];
 
     let doc_map = match parse_ordinals_doc(doc_path) {
@@ -999,7 +1008,9 @@ mod tests {
         assert_eq!(module_upper("PMCTLS"),    20480); // WARPINE_BASE
         assert_eq!(module_upper("WARPINE"),   21504); // PMDRAG_BASE
         assert_eq!(module_upper("PMDRAG"),    22528); // SOM_BASE
-        assert_eq!(module_upper("SOM"),       STUB_AREA_SIZE);
+        assert_eq!(module_upper("SOM"),       26624); // REXX_BASE
+        assert_eq!(module_upper("REXX"),      27648); // REXXAPI_BASE
+        assert_eq!(module_upper("REXXAPI"),   STUB_AREA_SIZE);
     }
 
     #[test]
@@ -1077,7 +1088,11 @@ mod tests {
         assert_eq!(upper_const("WARPINE"),   "PMDRAG_BASE");
         assert_eq!(base_const("PMDRAG"),     "PMDRAG_BASE");
         assert_eq!(upper_const("PMDRAG"),    "SOM_BASE");
-        assert_eq!(upper_const("SOM"),       "STUB_AREA_SIZE");
+        assert_eq!(upper_const("SOM"),       "REXX_BASE");
+        assert_eq!(base_const("REXX"),       "REXX_BASE");
+        assert_eq!(upper_const("REXX"),      "REXXAPI_BASE");
+        assert_eq!(base_const("REXXAPI"),    "REXXAPI_BASE");
+        assert_eq!(upper_const("REXXAPI"),   "STUB_AREA_SIZE");
     }
 
     #[test]
@@ -1100,7 +1115,9 @@ mod tests {
         assert_eq!(resolve_const("WARPINE_BASE"),   20480);
         assert_eq!(resolve_const("PMDRAG_BASE"),    21504);
         assert_eq!(resolve_const("SOM_BASE"),       22528);
-        assert_eq!(resolve_const("STUB_AREA_SIZE"), 26624);
+        assert_eq!(resolve_const("REXX_BASE"),      26624);
+        assert_eq!(resolve_const("REXXAPI_BASE"),   27648);
+        assert_eq!(resolve_const("STUB_AREA_SIZE"), 28672);
     }
 
     #[test]

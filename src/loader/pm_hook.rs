@@ -341,6 +341,10 @@ pub(crate) enum ChainThen {
     StartProcess,
     /// `somFree` called the object's `somUninit` (`som.rs`): free it.
     SomFree { obj: u32 },
+    /// A handler of RexxStart session `session` returned (`rexxapi.rs`):
+    /// give its result to the interpreter and make its next call, or
+    /// return from RexxStart.
+    Rexx { session: u32 },
     /// `somFindClass` (or a sibling) loaded the file of class `id`
     /// (`som.rs`): free the strings at `block`, return the class.
     SomClassLoaded { id: u32, block: u32, inits: u32, first: u32 },
@@ -466,6 +470,7 @@ impl Loader {
             ChainThen::Drag => self.drag_chain_done(chain.last),
             ChainThen::LoadModule { hmod, phmod } => ChainEnd::Return(self.dll_inits_done(hmod, phmod, chain)),
             ChainThen::SomFree { obj } => ChainEnd::Return(self.som_free_done(obj)),
+            ChainThen::Rexx { session } => self.rexx_handler_returned(session, chain.last),
             ChainThen::StartProcess => self.start_inits_done(chain),
             ChainThen::SomClassLoaded { id, block, inits, first } => ChainEnd::Return(self.som_class_loaded(id, block, inits, first, chain)),
             ChainThen::SomModuleLoaded { hmod, phandle, inits } => ChainEnd::Return(self.som_module_loaded(hmod, phandle, inits, chain)),

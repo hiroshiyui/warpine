@@ -80,7 +80,7 @@ impl Interp<'_> {
                 format!("{:LINE_WIDTH$} *,* ", "").into_bytes()
             };
             out.extend_from_slice(part);
-            self.host.trace(&out);
+            self.trace_line(&out);
         }
     }
 
@@ -91,7 +91,7 @@ impl Interp<'_> {
         out.extend_from_slice(b"   \"");
         out.extend_from_slice(value);
         out.push(b'"');
-        self.host.trace(&out);
+        self.trace_line(&out);
     }
 
     /// TRACE I: an expression's step and its value.
@@ -121,13 +121,14 @@ impl Interp<'_> {
     /// A command that returned `rc` (not 0): its clause, unless already
     /// written, and `+++ RC(rc) +++`, as the setting asks. A `failure`
     /// (negative code) shows under N and F too.
-    pub(super) fn trace_command_error(&mut self, rc: i64, failure: bool) {
+    pub(super) fn trace_command_error(&mut self, rc: &[u8], failure: bool) {
         let t = self.settings.trace;
         let show = match t { b'A' | b'C' | b'E' | b'R' | b'I' => true, b'F' | b'N' => failure, _ => false };
         if !show { return; }
         if !matches!(t, b'A' | b'C' | b'R' | b'I') && let Some((prog, pc)) = self.current.clone() {
             self.trace_clause(&prog, pc);
         }
-        self.host.trace(format!("{:LINE_WIDTH$} +++ RC({rc}) +++", "").as_bytes());
+        let line = format!("{:LINE_WIDTH$} +++ RC({}) +++", "", String::from_utf8_lossy(rc));
+        self.trace_line(line.as_bytes());
     }
 }

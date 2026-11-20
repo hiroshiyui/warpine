@@ -543,6 +543,14 @@ impl CmdShell {
 
 // ── Loader entry point ────────────────────────────────────────────────────────
 
+/// Run one command line in a built-in shell over `shared`, as
+/// `DosExecPgm("CMD.EXE /C line")` does: ADDRESS CMD of a program's REXX
+/// (ADR-0085). Returns its return code.
+pub(crate) fn run_shell_command(shared: Arc<SharedState>, env: Vec<(String, String)>, line: &str) -> u32 {
+    let mut shell = CmdShell::new(shared, env);
+    shell.run(&["CMD.EXE".into(), format!("/C {line}")])
+}
+
 impl super::Loader {
     /// Entry point called by `dos_exec_pgm` when the target is CMD.EXE / OS2SHELL.EXE.
     ///

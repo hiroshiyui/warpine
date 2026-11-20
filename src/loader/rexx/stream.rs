@@ -104,7 +104,7 @@ impl Interp<'_> {
             return Some(line);
         }
         if self.streams.input_ended { return None; }
-        let line = self.host.read_line();
+        let line = self.terminal_line().unwrap_or(None);
         if line.is_none() { self.streams.input_ended = true; }
         line
     }
@@ -112,7 +112,7 @@ impl Interp<'_> {
     /// Read the default input ahead until `n` bytes wait (or it ends).
     fn fill_input(&mut self, n: usize) {
         while self.streams.input.len() < n && !self.streams.input_ended {
-            match self.host.read_line() {
+            match self.terminal_line().unwrap_or(None) {
                 Some(line) => {
                     self.streams.input.extend(line);
                     self.streams.input.extend(CRLF);
@@ -333,7 +333,7 @@ impl Interp<'_> {
     /// closes the stream. Returns the lines not written (0 or 1).
     pub fn lineout(&mut self, name: &[u8], string: Option<&[u8]>, line: Option<u64>) -> R<u64> {
         match which(name, true) {
-            Which::StdOut => { if let Some(s) = string { self.host.say(s); } Ok(0) }
+            Which::StdOut => { if let Some(s) = string { self.say_line(s)?; } Ok(0) }
             Which::StdErr => {
                 if let Some(s) = string { self.host.write_err(&[s, CRLF].concat()); }
                 Ok(0)

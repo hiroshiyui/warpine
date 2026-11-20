@@ -7,6 +7,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **The REXX API for OS/2 programs, R3** (ADR-0085): REXX.DLL and REXXAPI.DLL are built in, on Warpine's own interpreter, with the ordinals of Open Watcom's `rexx.lib`:
+  - `RexxStart` runs programs in storage or from files;
+  - programs' subcommand handlers, external functions and system exits (`RXINI`, `RXTER`, `RXSIO`, `RXHLT`) are called back on the calling thread;
+  - `RexxVariablePool` works from inside them;
+  - `RexxSetHalt`, `RexxSetTrace` and `RexxResetTrace`;
+  - the session queue and named queues (`RexxCreateQueue` … `RexxPullQueue`).
+
+  The macro space is not there (stubs). Sample: `samples/rexx_api_test`.
 - **REXX in the built-in CMD.EXE, R2** (ADR-0084):
   - conditions: `SIGNAL ON` / `CALL ON` for ERROR, FAILURE, HALT, NOTREADY, NOVALUE and SYNTAX, and `CONDITION()`;
   - streams on the drives through the VFS (`CHARIN`, `CHAROUT`, `CHARS`, `LINEIN`, `LINEOUT`, `LINES`, `STREAM` with its OPEN, CLOSE, SEEK and QUERY commands), and STDIN / STDOUT / STDERR;

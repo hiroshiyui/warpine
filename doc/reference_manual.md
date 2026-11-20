@@ -768,6 +768,43 @@ Module names: imports and plain names given to `DosLoadModule` or SOM are search
 
 Not yet available: SOM objects on the stack in C++, the initializer control blocks, `somBuildClass`, `SOMError` / `SOMOutCharRoutine`.
 
+### REXX and REXXAPI — the REXX API (29 APIs, ADR-0085)
+
+`REXX.DLL` and `REXXAPI.DLL` are built in, on Warpine's own REXX interpreter (the one the built-in CMD.EXE runs scripts with). The ordinals are those of Open Watcom's `rexx.lib`; `<rexxsaa.h>` declares the calls.
+
+- **REXX:** RexxStart (1), RexxVariablePool (2), RexxSetHalt (3), RexxSetTrace (4), RexxResetTrace (5).
+- **REXXAPI:**
+  - queues: RexxCreateQueue (1), RexxDeleteQueue (2), RexxAddQueue (3), RexxPullQueue (4), RexxQueryQueue (5);
+  - subcommand handlers: RexxRegisterSubcomDll (6), RexxRegisterSubcomExe (7), RexxQuerySubcom (8), RexxDeregisterSubcom (9);
+  - system exits: RexxRegisterExitDll (11), RexxRegisterExitExe (12), RexxDeregisterExit (13), RexxQueryExit (14);
+  - external functions: RexxRegisterFunctionDll (17), RexxRegisterFunctionExe (18), RexxDeregisterFunction (19), RexxQueryFunction (20).
+- **Stubs (no macro space):** RexxAddMacro (22), RexxDropMacro (23), RexxClearMacroSpace (24), RexxLoadMacroSpace (25), RexxQueryMacro (26), RexxReorderMacro (27), RexxSaveMacroSpace (28): nothing is stored, nothing is found.
+
+**RexxStart** runs a program in storage (`instore[0]`) or from a file (`procname`, with `.CMD` added when it has no extension, in the current directory or on the `PATH`), with its arguments, a call type (`RXCOMMAND` takes at most one argument), an initial ADDRESS environment (`CMD` by default) and a list of system exits. It returns 0 when the program ran, or minus the REXX error number when an error ended it, with the error written to standard error as the shell writes it. `retc` takes the result when it is a whole number from -32768 to 32767 (else 0). `result` takes the result string: in the caller's buffer when it is large enough, else in new memory the caller frees with `DosFreeMem`. A tokenized image (`instore[1]` alone) and the macro space are not supported (-3).
+
+**While a program runs:**
+- `SAY` writes to the program's standard output, `TRACE` to its standard error, and `PULL` reads its standard input, wherever those handles lead.
+- `ADDRESS CMD` runs the command in the built-in shell, as `DosExecPgm("CMD.EXE")` does.
+- An environment with a registered subcommand handler goes to the handler. RC takes its return string; `RXSUBCOM_ERROR` / `RXSUBCOM_FAILURE` raise ERROR / FAILURE.
+- A function not found in the program, among the built-in functions or in REXXUTIL goes to a registered function handler, with `SESSION` as the queue name. A non-zero return is Error 40, and no result string is no value.
+- The handlers are the program's own code, called on the thread that called RexxStart. A `…Dll` registration's entry point is looked up by name among the modules the program has loaded when it is called.
+
+**System exits** (`RXSYSEXIT` list; names registered with `RexxRegisterExit…`):
+- `RXINI` before the first clause and `RXTER` after the last (both may use the variable pool);
+- `RXSIO`: `RXSIOSAY` (SAY's line), `RXSIOTRC` (a trace line), `RXSIOTRD` (a line of input);
+- `RXHLT`: `RXHLTTST` after each clause, halting the program when it sets the flag.
+
+`RXEXIT_NOT_HANDLED` lets the interpreter do the default; `RXEXIT_RAISE_ERROR` is Error 48. The other exits (`RXFNC`, `RXCMD`, `RXMSQ`, `RXTRC`) are accepted and never called.
+
+**RexxVariablePool**, from inside a handler or exit of the thread's running program:
+- **Codes:** `RXSHV_SET`, `FETCH`, `DROPV` (names as they are: upper case, a compound tail taken literally), `SYSET`, `SYFET`, `SYDRO` (symbols, the tail's variables substituted), `NEXTV` (each variable in turn, then `RXSHV_LVAR`) and `PRIV` (`PARM`, `PARM.n`, `SOURCE`, `VERSION`, `QUENAME`).
+- **Values back.** A value goes into the SHVBLOCK's buffer (`RXSHV_TRUNC` when it is too short), or into new memory when it has none.
+- **Results.** `RXSHV_NEWV`, `BADN`, `BADF` and `MEMFL` report as `<rexxsaa.h>` describes, and the call returns all the blocks' flags together. Outside a handler it returns `RXSHV_NOAVL`.
+
+**Queues.** Each process has the `SESSION` queue: the running program's PUSH, QUEUE and PULL use it, and so do `RexxAddQueue` / `RexxPullQueue` before, between and after programs. `RexxCreateQueue` makes a named queue, or a new name when the requested one is taken (`RXQUEUE_DUP`). `RexxPullQueue` can wait (`RXQUEUE_WAIT`). The queues and registrations belong to the process, not to the system.
+
+**Others.** `RexxSetHalt(pid, tid)` halts the programs a thread of this process runs (HALT). `RexxSetTrace` / `RexxResetTrace` turn tracing to `?R` / `O`.
+
 ### WARPINE — Warpine's own extensions (4 APIs)
 
 `WARPINE.DLL` is not an OS/2 module: a program that can be recompiled loads it with `DosLoadModule("WARPINE")` (which fails on OS/2, so it can fall back) and finds the calls with `DosQueryProcAddr` by name or ordinal. They are `_System` (`APIENTRY`) calls returning an `APIRET`, and they take a signed 64-bit count of seconds since 1970-01-01 00:00 UTC (`long long`) on the session clock:
@@ -981,7 +1018,7 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 420 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 363 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 449 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 363 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
@@ -1003,9 +1040,11 @@ Counts are taken from the static registry (`api_registry.rs`, 420 entries) and t
 | WARPINE (Warpine's own extensions) | registry | 6 | 0 | 6 |
 | PMDRAG (drag and drop) | registry | 37 | 0 | 37 |
 | SOM (the SOM runtime kernel) | registry | 113 | 3 | 116 |
+| REXX (the REXX API) | registry | 5 | 0 | 5 |
+| REXXAPI (registrations, queues; no macro space) | registry | 17 | 7 | 24 |
 | PMWIN | sub-dispatcher | 173 | 0 | 173 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **769** | **14** | **783** |
+| **Total** | | **791** | **21** | **812** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

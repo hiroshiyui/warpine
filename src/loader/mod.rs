@@ -110,6 +110,8 @@ mod pm_fontdlg;
 mod seh;
 mod cmd;
 pub mod rexx;
+pub mod rexx_vfs;
+pub mod rexxapi;
 pub mod threads;
 mod host_signal;
 pub(crate) mod signals;
@@ -395,6 +397,9 @@ pub struct SharedState {
     pub drag_channel: pm_drag::DragChannel,
     /// The SOM runtime (`som.rs`; its lock is taken alone or before `mem_mgr`).
     pub som: Mutex<som::SomRuntime>,
+    /// The REXX API's registrations, queues and running programs
+    /// (`rexxapi.rs`; its lock is taken alone).
+    pub rexx_api: Mutex<rexxapi::RexxApi>,
     pub drive_mgr: Mutex<DriveManager>,
     /// Profiles opened with `PrfOpenProfile` (taken before `drive_mgr`).
     pub profiles: Mutex<pmshapi::ProfileTable>,
@@ -560,6 +565,7 @@ impl Loader {
             infoseg_refresher: AtomicBool::new(false),
             drag_channel: Default::default(),
             som: Default::default(),
+            rexx_api: Default::default(),
             exit_requested: AtomicBool::new(false),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),
@@ -669,6 +675,7 @@ impl Loader {
             infoseg_refresher: AtomicBool::new(false),
             drag_channel: Default::default(),
             som: Default::default(),
+            rexx_api: Default::default(),
             exit_requested: AtomicBool::new(false),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),

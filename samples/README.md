@@ -131,6 +131,12 @@ make -C samples/<name>      # Build a single sample
 | socket_test | TCP/IP smoke test over loopback through SO32DLL loaded with DosLoadModule: socket, options, bind, listen, select, connect, accept, send / recv, name lookup | DosLoadModule, DosQueryProcAddr, sock_init, socket, setsockopt / getsockopt, bind, listen, select, connect, accept, send, recv, soclose, gethostbyname, getservbyname, sock_errno |
 | cmd_test | `test.cmd`: a CMD.EXE script for the built-in shell (not a compiled program) exercising built-in commands, redirection (`>`, `>>`, `<`) and pipes; run with `cargo run -- CMD.EXE /C samples/cmd_test/test.cmd` | built-in CMD.EXE |
 
+## REXX API
+
+| Sample | What it checks |
+|--------|----------------|
+| rexx_api_test | The REXX API from an OS/2 program, in 17 ok/FAIL checks: RexxStart in storage and from a file, a subcommand handler and an external function, RXINI / RXSIO / RXHLT exits using RexxVariablePool, the session queue and named queues, an error's return code (ADR-0085; `test_rexx_api_from_a_program`) |
+
 ## REXX scripts
 
 `samples/rexx_scripts` holds REXX `.CMD` scripts (their first line is a `/* … */` comment) for the built-in CMD.EXE's interpreter, run by integration tests with `samples/cmd_tool` as `C:\TOOL.EXE`.

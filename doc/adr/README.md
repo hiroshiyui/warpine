@@ -86,7 +86,8 @@ To add one: copy the layout of an existing record, take the next number, and add
 | [0078](0078-cmd-exe-batch-control.md) | The built-in CMD.EXE's batch control: ECHO, `%0`–`%9`, SHIFT, IF, FOR, GOTO, CALL, SETLOCAL, PAUSE | Accepted | 2026-11-20 |
 | [0079](0079-cmd-exe-file-commands.md) | The built-in CMD.EXE's COPY, REN and MOVE; a safe `DosEditName`, `DosCopy` never onto itself, names unique without regard to case | Accepted | 2026-11-20 |
 | [0080](0080-cmd-exe-prompt-path-detach.md) | The built-in CMD.EXE's PROMPT (`$` codes), PATH and DETACH; executables need valid entry and stack objects | Accepted | 2026-11-20 |
-| [0081](0081-rexx-in-the-built-in-cmd-exe.md) | REXX in the built-in CMD.EXE: our own interpreter in Rust, from IBM's public docs, Cowlishaw and ANSI; phases R1–R3 | Accepted (planned) | 2026-11-20 |
+| [0081](0081-rexx-in-the-built-in-cmd-exe.md) | REXX in the built-in CMD.EXE: our own interpreter in Rust, from IBM's public docs, Cowlishaw and ANSI; phases R1–R3 | Accepted (implemented: ADR-0083–0085) | 2026-11-20 |
 | [0082](0082-cmd-exe-groups-concurrent-pipes-start.md) | The built-in CMD.EXE's groups, pipeline stages running at the same time, START; console write errors reach the program | Accepted | 2026-11-20 |
 | [0083](0083-rexx-r1-language-core.md) | REXX R1: the language core in the built-in CMD.EXE (decimal arithmetic, instructions, PARSE, routines, built-in functions, ADDRESS CMD) | Accepted | 2026-11-20 |
 | [0084](0084-rexx-r2-conditions-streams-trace-rexxutil.md) | REXX R2: conditions (SIGNAL ON / CALL ON), streams through the VFS, TRACE, NUMERIC FORM ENGINEERING and a REXXUTIL subset | Accepted | 2026-11-20 |
+| [0085](0085-rexx-r3-api-for-programs.md) | REXX R3: the REXX API for OS/2 programs (REXX.DLL / REXXAPI.DLL on the built-in interpreter, handlers called back on the calling thread, ordinals from Open Watcom's `rexx.lib`) | Accepted | 2026-11-20 |

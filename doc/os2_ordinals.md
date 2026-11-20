@@ -1,6 +1,6 @@
 # OS/2 API Ordinals
 
-Extracted from Open Watcom's `lib386/os2/os2386.lib` import library (OMF IMPDEF records).
+Extracted from Open Watcom's `lib386/os2/os2386.lib` import library (OMF IMPDEF records); the REXX and REXXAPI sections from its `lib386/os2/rexx.lib` (ADR-0085).
 These are the definitive ordinal numbers used when resolving LX fixup imports.
 
 ## BDCALLS (11 exports)
@@ -1518,6 +1518,75 @@ These are the definitive ordinal numbers used when resolving LX fixup imports.
 | 14 | DosWriteQueue |
 | 15 | DosOpenQueue |
 | 16 | DosCreateQueue |
+
+## REXX (11 exports)
+
+| Ordinal | Function |
+|---------|----------|
+| 1 | REXXSTART |
+| 2 | REXXVARIABLEPOOL |
+| 3 | REXXSETHALT |
+| 4 | REXXSETTRACE |
+| 5 | REXXRESETTRACE |
+| 6 | REXXSAA |
+| 7 | RXTRACESET |
+| 8 | RXVAR |
+| 9 | RXBREAKCLEANUP |
+| 10 | RXHALTSET |
+| 11 | RXTRACERESET |
+
+## REXXAPI (48 exports)
+
+| Ordinal | Function |
+|---------|----------|
+| 1 | REXXCREATEQUEUE |
+| 2 | REXXDELETEQUEUE |
+| 3 | REXXADDQUEUE |
+| 4 | REXXPULLQUEUE |
+| 5 | REXXQUERYQUEUE |
+| 6 | REXXREGISTERSUBCOMDLL |
+| 7 | REXXREGISTERSUBCOMEXE |
+| 8 | REXXQUERYSUBCOM |
+| 9 | REXXDEREGISTERSUBCOM |
+| 10 | REXXLOADSUBCOM |
+| 11 | REXXREGISTEREXITDLL |
+| 12 | REXXREGISTEREXITEXE |
+| 13 | REXXDEREGISTEREXIT |
+| 14 | REXXQUERYEXIT |
+| 15 | REXXCALLEXIT |
+| 16 | REXXCALLSUBCOM |
+| 17 | REXXREGISTERFUNCTIONDLL |
+| 18 | REXXREGISTERFUNCTIONEXE |
+| 19 | REXXDEREGISTERFUNCTION |
+| 20 | REXXQUERYFUNCTION |
+| 21 | REXXCALLFUNCTION |
+| 22 | REXXADDMACRO |
+| 23 | REXXDROPMACRO |
+| 24 | REXXCLEARMACROSPACE |
+| 25 | REXXLOADMACROSPACE |
+| 26 | REXXQUERYMACRO |
+| 27 | REXXREORDERMACRO |
+| 28 | REXXSAVEMACROSPACE |
+| 29 | REXXEXECUTEMACROFUNCTION |
+| 30 | RXSUBCOMLOAD |
+| 31 | RXEXITREGISTER |
+| 32 | RXMACROREORDER |
+| 33 | RXMACRODROP |
+| 34 | RXSUBCOMEXECUTE |
+| 35 | RXEXITDROP |
+| 36 | RXSUBCOMQUERY |
+| 37 | RXEXITQUERY |
+| 38 | RXMACROERASE |
+| 39 | RXFUNCTIONDEREGISTER |
+| 40 | RXFUNCTIONCALL |
+| 41 | RXSUBCOMREGISTER |
+| 42 | RXFUNCTIONREGISTER |
+| 43 | RXSUBCOMDROP |
+| 44 | RXMACROLOAD |
+| 45 | RXMACROQUERY |
+| 46 | RXMACROSAVE |
+| 47 | RXFUNCTIONQUERY |
+| 48 | RXMACROCHANGE |
 
 ## SESMGR (36 exports)
 

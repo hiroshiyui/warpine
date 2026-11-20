@@ -456,7 +456,7 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         },
 
         // ── SOM (the SOM runtime kernel; som.rs) ──────────────────────
-        o if (SOM_BASE..STUB_AREA_SIZE).contains(&o) => match o - SOM_BASE {
+        o if (SOM_BASE..REXX_BASE).contains(&o) => match o - SOM_BASE {
             1 => "SOMCalloc",
             2 => "SOMClassCClassData",
             3 => "SOMClassClassData",
@@ -576,6 +576,45 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
             _ => "?",
         },
 
+        // ── REXX (the REXX API; rexxapi.rs) ────────────────────────────
+        o if (REXX_BASE..REXXAPI_BASE).contains(&o) => match o - REXX_BASE {
+            1 => "RexxStart",
+            2 => "RexxVariablePool",
+            3 => "RexxSetHalt",
+            4 => "RexxSetTrace",
+            5 => "RexxResetTrace",
+            _ => "?",
+        },
+
+        // ── REXXAPI (registrations and queues; rexxapi.rs) ─────────────
+        o if (REXXAPI_BASE..STUB_AREA_SIZE).contains(&o) => match o - REXXAPI_BASE {
+            1 => "RexxCreateQueue",
+            2 => "RexxDeleteQueue",
+            3 => "RexxAddQueue",
+            4 => "RexxPullQueue",
+            5 => "RexxQueryQueue",
+            6 => "RexxRegisterSubcomDll",
+            7 => "RexxRegisterSubcomExe",
+            8 => "RexxQuerySubcom",
+            9 => "RexxDeregisterSubcom",
+            11 => "RexxRegisterExitDll",
+            12 => "RexxRegisterExitExe",
+            13 => "RexxDeregisterExit",
+            14 => "RexxQueryExit",
+            17 => "RexxRegisterFunctionDll",
+            18 => "RexxRegisterFunctionExe",
+            19 => "RexxDeregisterFunction",
+            20 => "RexxQueryFunction",
+            22 => "RexxAddMacro",
+            23 => "RexxDropMacro",
+            24 => "RexxClearMacroSpace",
+            25 => "RexxLoadMacroSpace",
+            26 => "RexxQueryMacro",
+            27 => "RexxReorderMacro",
+            28 => "RexxSaveMacroSpace",
+            _ => "?",
+        },
+
         _ => "?",
     }
 }
@@ -604,7 +643,9 @@ pub fn module_for_ordinal(ordinal: u32) -> &'static str {
     else if ordinal < WARPINE_BASE { "PMCTLS" }    // 19456–20479
     else if ordinal < PMDRAG_BASE  { "WARPINE" }   // 20480–21503
     else if ordinal < SOM_BASE     { "PMDRAG" }    // 21504–22527
-    else if ordinal < STUB_AREA_SIZE { "SOM" }     // 22528–26623 (SOM_ORDINALS wide)
+    else if ordinal < REXX_BASE    { "SOM" }       // 22528–26623 (SOM_ORDINALS wide)
+    else if ordinal < REXXAPI_BASE { "REXX" }      // 26624–27647
+    else if ordinal < STUB_AREA_SIZE { "REXXAPI" } // 27648–28671
     else                            { "?" }
 }
 
@@ -1223,7 +1264,9 @@ mod tests {
         assert_eq!(module_for_ordinal(PMDRAG_BASE),        "PMDRAG");
         assert_eq!(module_for_ordinal(SOM_BASE - 1),       "PMDRAG");
         assert_eq!(module_for_ordinal(SOM_BASE),           "SOM");
-        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "SOM");
+        assert_eq!(module_for_ordinal(REXX_BASE - 1),      "SOM");
+        assert_eq!(module_for_ordinal(REXX_BASE),          "REXX");
+        assert_eq!(module_for_ordinal(STUB_AREA_SIZE - 1), "REXXAPI");
         assert_eq!(module_for_ordinal(STUB_AREA_SIZE),     "?");
     }
 
