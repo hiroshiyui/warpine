@@ -466,6 +466,7 @@ SOM.3073   somClassResolve
 SOM.3074   somGetGlobalEnvironment
 SOM.3075   somIsObj
 SOM.3076   somSetOutChar
+SOM.3077   somParentNumResolve
 SOM.3080   WrpSomMalloc
 SOM.3081   WrpSomCalloc
 SOM.3082   WrpSomRealloc
@@ -476,6 +477,7 @@ SOM.3086   WrpSomDeleteModule
 SOM.3087   WrpSomError
 SOM.3088   WrpSomOutChar
 SOM.3089   WrpSomClassInitFuncName
+SOM.3198   WrpSomMethodNotImplemented
 SOM.3199   WrpSomMethodError
 SOM.3200   WrpSOMObject_somInit
 SOM.3201   WrpSOMObject_somUninit
@@ -508,6 +510,17 @@ SOM.3313   WrpSOMClass_somClassReady
 SOM.3314   WrpSOMClass_somGetMethodToken
 SOM.3315   WrpSOMClass_somSupportsMethod
 SOM.3316   WrpSOMClass_somInitMIClass
+SOM.3317   WrpSOMClass_somCheckVersion
+SOM.3318   WrpSOMClass_somGetVersionNumbers
+SOM.3319   WrpSOMClass_somGetClassMtab
+SOM.3320   WrpSOMClass_somGetInstanceOffset
+SOM.3321   WrpSOMClass_somFindMethod
+SOM.3322   WrpSOMClass_somFindMethodOk
+SOM.3323   WrpSOMClass_somFindSMethod
+SOM.3324   WrpSOMClass_somFindSMethodOk
+SOM.3325   WrpSOMClass_somLookupMethod
+SOM.3326   WrpSOMClass_somAllocate
+SOM.3327   WrpSOMClass_somDeallocate
 SOM.3400   WrpSOMClassMgr_somFindClass
 SOM.3401   WrpSOMClassMgr_somClassFromId
 SOM.3402   WrpSOMClassMgr_somRegisterClass

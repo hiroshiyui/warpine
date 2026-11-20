@@ -39,9 +39,18 @@ typedef char         **somId;
 typedef void SOMLINK   somMethodProc( void );
 
 struct SOMAny_struct;
+/* A method table (IBM's layout, ADR-0072): a header, then the procedures
+ * in the order of the class's methods. */
 typedef struct somMethodTabStruct {
     struct SOMAny_struct *classObject;
-    long                  count;
+    void                 *classInfo;
+    char                 *className;
+    long                  instanceSize;
+    long                  dataAlignment;
+    long                  mtabSize;      /* bytes, header included */
+    long                  protectedDataOffset;
+    somDToken             protectedDataToken;
+    void                 *embeddedObjs;
     somMethodProc        *entries[1];
 } somMethodTab;
 
@@ -120,30 +129,56 @@ SOMEXTERN void SOMLINK somSetOutChar( somTD_SOMOutCharRoutine *routine );
 #define SOM_SEQUENCE_OF( type ) \
     typedef struct { unsigned long _maximum; unsigned long _length; type **_buffer; } _IDL_SEQUENCE_##type
 
-/* ---- The root classes' ClassData and the class manager ---- */
+/* ---- The root classes' ClassData (tokens in IBM's release order, ADR-0072)
+ * and the class manager ---- */
 SOMEXTERN struct SOMObjectClassDataStructure {
     SOMClass *classObject;
-    somMToken somInit, somUninit, somFree, somGetClass, somGetClassName,
-              somGetSize, somIsA, somIsInstanceOf, somRespondsTo,
-              somPrintSelf, somDumpSelf, somDumpSelfInt,
-              somDefaultInit, somDestruct;
+    somMToken somInit, somUninit, somFree, somDefaultVCopyInit, somGetClassName,
+              somGetClass, somIsA, somRespondsTo, somIsInstanceOf, somGetSize,
+              somDumpSelf, somDumpSelfInt, somPrintSelf, somDefaultConstVCopyInit,
+              somDispatchV, somDispatchL, somDispatchA, somDispatchD, somDispatch,
+              somClassDispatch, somCastObj, somResetObj, somDefaultInit,
+              somDestruct, somPrivate1, somPrivate2, somDefaultCopyInit,
+              somDefaultConstCopyInit, somDefaultAssign, somDefaultConstAssign,
+              somDefaultVAssign, somDefaultConstVAssign;
 } SOMDLINK SOMObjectClassData;
 
 SOMEXTERN struct SOMClassClassDataStructure {
     SOMClass *classObject;
-    somMToken somNew, somNewNoInit, somGetName, somGetParent,
-              somGetInstanceSize, somGetInstancePartSize, somGetInstanceToken,
-              somGetNumMethods, somGetNumStaticMethods, somDescendedFrom,
-              somInitClass, somAddStaticMethod, somOverrideSMethod,
-              somClassReady, somGetMethodToken, somSupportsMethod,
-              somInitMIClass;
+    somMToken somNew, somRenew, somInitClass, somClassReady, somGetName,
+              somGetParent, somDescendedFrom, somCheckVersion, somFindMethod,
+              somFindMethodOk, somSupportsMethod, somGetNumMethods,
+              somGetInstanceSize, somGetInstanceOffset, somGetInstancePartSize,
+              somGetMethodIndex, somGetNumStaticMethods, somGetPClsMtab,
+              somGetClassMtab, somAddStaticMethod, somOverrideSMethod,
+              somAddDynamicMethod, somcPrivate0, somGetApplyStub, somFindSMethod,
+              somFindSMethodOk, somGetMethodDescriptor, somGetNthMethodInfo,
+              somSetClassData, somGetClassData, somNewNoInit, somRenewNoInit,
+              somGetInstanceToken, somGetMemberToken, somcPrivate1,
+              somGetMethodData, somOverrideMtab, somGetMethodToken, somGetParents,
+              somGetPClsMtabs, somInitMIClass, somGetVersionNumbers,
+              somLookupMethod, _get_somInstanceDataOffsets, somRenewNoZero,
+              somRenewNoInitNoZero, somAllocate, somDeallocate, somGetRdStub,
+              somGetNthMethodData, somcPrivate2, somcPrivate3,
+              _get_somDirectInitClasses, somcPrivate5, somcPrivate6, somcPrivate7,
+              somcPrivate8, somcPrivate9, somcPrivate10, somcPrivate11,
+              somcPrivate12, somDefinedMethod, somcPrivate13, somcPrivate14,
+              somcPrivate15, somcPrivate16, somcPrivate17, somcPrivate18,
+              somcPrivate19, somcPrivate20, _get_somDataAlignment, somcPrivate21,
+              somcPrivate22, somcPrivate23, somcPrivate24, somcPrivate25;
 } SOMDLINK SOMClassClassData;
 
 SOMEXTERN struct SOMClassMgrClassDataStructure {
     SOMClass *classObject;
-    somMToken somFindClass, somClassFromId, somRegisterClass,
-              somFindClsInFile, somLocateClassFile, somLoadClassFile,
-              somUnregisterClass, somUnloadClassFile;
+    somMToken somFindClsInFile, somFindClass, somClassFromId, somRegisterClass,
+              somUnregisterClass, somLocateClassFile, somLoadClassFile,
+              somUnloadClassFile, somGetInitFunction, somMergeInto,
+              somGetRelatedClasses, somSubstituteClass,
+              _get_somInterfaceRepository, _set_somInterfaceRepository,
+              _get_somRegisteredClasses, somBeginPersistentClasses,
+              somEndPersistentClasses, somcmPrivate1, somcmPrivate2,
+              somRegisterClassLibrary, somJoinAffinityGroup,
+              somUnregisterClassLibrary;
 } SOMDLINK SOMClassMgrClassData;
 
 SOMEXTERN SOMClassMgr * SOMDLINK SOMClassMgrObject;

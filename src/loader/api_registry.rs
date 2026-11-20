@@ -848,11 +848,11 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,i,a| l.som_call(i,21,&a) },
     ApiEntry { ordinal: SOM_BASE + 22, module: "SOM", name: "SOMObjectNewClass", argc: 2,
                handler: |l,_v,i,a| l.som_call(i,22,&a) },
-    ApiEntry { ordinal: SOM_BASE + 23, module: "SOM", name: "somAssert", argc: 0,
+    ApiEntry { ordinal: SOM_BASE + 23, module: "SOM", name: "somAssert", argc: 5,
                handler: |l,_v,i,a| l.som_call(i,23,&a) },
     ApiEntry { ordinal: SOM_BASE + 24, module: "SOM", name: "somBeginPersistentIds", argc: 0,
                handler: |l,_v,i,a| l.som_call(i,24,&a) },
-    ApiEntry { ordinal: SOM_BASE + 25, module: "SOM", name: "somCheckArgs", argc: 0,
+    ApiEntry { ordinal: SOM_BASE + 25, module: "SOM", name: "somCheckArgs", argc: 2,
                handler: |l,_v,i,a| l.som_call(i,25,&a) },
     ApiEntry { ordinal: SOM_BASE + 26, module: "SOM", name: "somCheckId", argc: 1,
                handler: |l,_v,i,a| l.som_call(i,26,&a) },
@@ -884,9 +884,9 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,i,a| l.som_call(i,39,&a) },
     ApiEntry { ordinal: SOM_BASE + 40, module: "SOM", name: "somStringFromId", argc: 1,
                handler: |l,_v,i,a| l.som_call(i,40,&a) },
-    ApiEntry { ordinal: SOM_BASE + 41, module: "SOM", name: "somTest", argc: 0,
+    ApiEntry { ordinal: SOM_BASE + 41, module: "SOM", name: "somTest", argc: 5,
                handler: |l,_v,i,a| l.som_call(i,41,&a) },
-    ApiEntry { ordinal: SOM_BASE + 42, module: "SOM", name: "somTestCls", argc: 0,
+    ApiEntry { ordinal: SOM_BASE + 42, module: "SOM", name: "somTestCls", argc: 4,
                handler: |l,_v,i,a| l.som_call(i,42,&a) },
     ApiEntry { ordinal: SOM_BASE + 43, module: "SOM", name: "somTotalRegIds", argc: 0,
                handler: |l,_v,i,a| l.som_call(i,43,&a) },
@@ -908,6 +908,8 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,i,a| l.som_call(i,3075,&a) },
     ApiEntry { ordinal: SOM_BASE + 3076, module: "SOM", name: "somSetOutChar", argc: 1,
                handler: |l,_v,i,a| l.som_call(i,3076,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3077, module: "SOM", name: "somParentNumResolve", argc: 3,
+               handler: |l,_v,i,a| l.som_call(i,3077,&a) },
     ApiEntry { ordinal: SOM_BASE + 3080, module: "SOM", name: "WrpSomMalloc", argc: 1,
                handler: |l,_v,i,a| l.som_call(i,3080,&a) },
     ApiEntry { ordinal: SOM_BASE + 3081, module: "SOM", name: "WrpSomCalloc", argc: 2,
@@ -928,6 +930,8 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,i,a| l.som_call(i,3088,&a) },
     ApiEntry { ordinal: SOM_BASE + 3089, module: "SOM", name: "WrpSomClassInitFuncName", argc: 0,
                handler: |l,_v,i,a| l.som_call(i,3089,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3198, module: "SOM", name: "WrpSomMethodNotImplemented", argc: 0,
+               handler: |l,_v,i,a| l.som_call(i,3198,&a) },
     ApiEntry { ordinal: SOM_BASE + 3199, module: "SOM", name: "WrpSomMethodError", argc: 0,
                handler: |l,_v,i,a| l.som_call(i,3199,&a) },
     ApiEntry { ordinal: SOM_BASE + 3200, module: "SOM", name: "WrpSOMObject_somInit", argc: 1,
@@ -992,6 +996,28 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,i,a| l.som_call(i,3315,&a) },
     ApiEntry { ordinal: SOM_BASE + 3316, module: "SOM", name: "WrpSOMClass_somInitMIClass", argc: 10,
                handler: |l,_v,i,a| l.som_call(i,3316,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3317, module: "SOM", name: "WrpSOMClass_somCheckVersion", argc: 3,
+               handler: |l,_v,i,a| l.som_call(i,3317,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3318, module: "SOM", name: "WrpSOMClass_somGetVersionNumbers", argc: 3,
+               handler: |l,_v,i,a| l.som_call(i,3318,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3319, module: "SOM", name: "WrpSOMClass_somGetClassMtab", argc: 1,
+               handler: |l,_v,i,a| l.som_call(i,3319,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3320, module: "SOM", name: "WrpSOMClass_somGetInstanceOffset", argc: 1,
+               handler: |l,_v,i,a| l.som_call(i,3320,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3321, module: "SOM", name: "WrpSOMClass_somFindMethod", argc: 3,
+               handler: |l,_v,i,a| l.som_call(i,3321,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3322, module: "SOM", name: "WrpSOMClass_somFindMethodOk", argc: 3,
+               handler: |l,_v,i,a| l.som_call(i,3322,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3323, module: "SOM", name: "WrpSOMClass_somFindSMethod", argc: 2,
+               handler: |l,_v,i,a| l.som_call(i,3323,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3324, module: "SOM", name: "WrpSOMClass_somFindSMethodOk", argc: 2,
+               handler: |l,_v,i,a| l.som_call(i,3324,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3325, module: "SOM", name: "WrpSOMClass_somLookupMethod", argc: 2,
+               handler: |l,_v,i,a| l.som_call(i,3325,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3326, module: "SOM", name: "WrpSOMClass_somAllocate", argc: 2,
+               handler: |l,_v,i,a| l.som_call(i,3326,&a) },
+    ApiEntry { ordinal: SOM_BASE + 3327, module: "SOM", name: "WrpSOMClass_somDeallocate", argc: 2,
+               handler: |l,_v,i,a| l.som_call(i,3327,&a) },
     ApiEntry { ordinal: SOM_BASE + 3400, module: "SOM", name: "WrpSOMClassMgr_somFindClass", argc: 4,
                handler: |l,_v,i,a| l.som_call(i,3400,&a) },
     ApiEntry { ordinal: SOM_BASE + 3401, module: "SOM", name: "WrpSOMClassMgr_somClassFromId", argc: 2,
@@ -1019,13 +1045,10 @@ const STUB_ORDINALS: &[u32] = &[
     285,  // DosFSCtl
     317,  // DosDebug
     415,  // DosShutdown
-    // SOM 1.0 entries the SOM references do not describe (ADR-0070).
-    SOM_BASE + 23,  // somAssert
-    SOM_BASE + 25,  // somCheckArgs
+    // SOM entries no source describes (metrics), and somConstructClass
+    // until classes are built from IBM's static class data (ADR-0072).
     SOM_BASE + 28,  // somConstructClass
     SOM_BASE + 38,  // somSaveMetrics
-    SOM_BASE + 41,  // somTest
-    SOM_BASE + 42,  // somTestCls
     SOM_BASE + 46,  // somWriteMetrics
 ];
 

@@ -41,6 +41,9 @@ all: hello.exe classes.exe animals.exe hellocpp.exe sompp.exe findcls.exe greete
 $(B):
 	mkdir -p $(B)
 
+# Every object follows the shared bindings: a change to them rebuilds it.
+$(wildcard $(B)/*.obj): include/som.h include/som.xh
+
 # ---- helloc ----
 $(B)/hello.obj: $(SOMSAMPLES)/helloc/hello.c hello/hello.h hello/hello.ih | $(B)
 	$(WCC386) $(CFLAGS) -I$(CURDIR)/hello -fo=$@ $<

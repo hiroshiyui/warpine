@@ -233,6 +233,25 @@ fn test_som_imports_by_ibm_ordinal() {
     assert_eq!(code, 0, "{out}");
 }
 
+/// som_layout_test (ADR-0072): IBM's SOM layouts as a program built with
+/// IBM's bindings reads them — ClassData tokens at IBM's release-order
+/// offsets, the somMethodTab header, CClassData.parentMtab as a
+/// somParentMtabStruct (own table, then the parents'), somParentNumResolve,
+/// the SOMClass methods of the release order, a lacking method raising
+/// SOMERROR_NotImplementedYet as a warning, somTestCls and somCheckArgs.
+#[test]
+fn test_som_layouts_follow_ibm_s() {
+    if !kvm_available() || !Path::new("samples/som_layout_test/somlay.exe").exists() { return; }
+    let (out, code) = run_sample("samples/som_layout_test/somlay.exe", 15);
+    let checks: Vec<&str> = out.lines()
+        .filter(|l| l.starts_with("som_layout_test: ") && !l.starts_with("som_layout_test: done")).collect();
+    assert!(checks.len() >= 25, "every check reported:\n{out}");
+    let failed: Vec<&&str> = checks.iter().filter(|l| !l.ends_with(": ok")).collect();
+    assert!(failed.is_empty(), "failed checks: {failed:#?}");
+    assert!(out.contains(&format!("som_layout_test: done {n}/{n}", n = checks.len())), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
 /// dllinit_test (ADR-0063): goodinit.dll initializes before main;
 /// DosLoadModule of badinit.dll fails with ERROR_INIT_ROUTINE_FAILED; a full
 /// OS/2 path on drive C finds the loaded module; DosQueryProcAddr by name

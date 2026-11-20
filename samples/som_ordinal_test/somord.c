@@ -26,9 +26,15 @@ typedef struct somMethodTabList {
     somMethodTab            *mtab;
     struct somMethodTabList *next;
 } somMethodTabList;
+/* parentMtab: the class's own method table, then its parents' (ADR-0072). */
 typedef struct {
-    somMethodTabList *parentMtab;
-    somDToken         instanceDataToken;
+    somMethodTab     *mtab;
+    somMethodTabList *next;
+    SOMClass         *classObject;
+} somParentMtab;
+typedef struct {
+    somParentMtab *parentMtab;
+    somDToken      instanceDataToken;
 } somCClassData;
 SOMEXTERN somCClassData SOMDLINK SOMObjectCClassData;
 SOMEXTERN somCClassData SOMDLINK SOMClassCClassData;
@@ -37,7 +43,7 @@ SOMEXTERN char * (SOMLINK * SOMDLINK SOMClassInitFuncName)( void );
 SOMEXTERN SOMClass      * SOMLINK SOMObjectNewClass( long major, long minor );
 SOMEXTERN SOMClass      * SOMLINK SOMClassNewClass( long major, long minor );
 SOMEXTERN SOMClass      * SOMLINK SOMClassMgrNewClass( long major, long minor );
-SOMEXTERN somMethodProc * SOMLINK somParentResolve( somMethodTabList *parents, somMToken method );
+SOMEXTERN somMethodProc * SOMLINK somParentResolve( somParentMtab *parents, somMToken method );
 SOMEXTERN somId           SOMLINK somCheckId( somId id );
 SOMEXTERN int             SOMLINK somRegisterId( somId id );
 SOMEXTERN unsigned long   SOMLINK somUniqueKey( somId id );
@@ -140,9 +146,11 @@ int main( void )
     /* Method resolution, directly and through the parent's table. */
     name = (name_proc *)somResolve( mgr, SOMObjectClassData.somGetClassName );
     check( "somResolve: somGetClassName", strcmp( name( mgr ), "SOMClassMgr" ) == 0, 1 );
-    check( "SOMObject has no parent tables", SOMObjectCClassData.parentMtab == NULL, 1 );
-    check( "SOMClassMgr's parent table is SOMObject's",
-           SOMClassMgrCClassData.parentMtab->mtab->classObject == SOMObjectClassData.classObject, 1 );
+    check( "SOMObject has no parent tables", SOMObjectCClassData.parentMtab->next == NULL, 1 );
+    check( "SOMClassMgr's parentMtab starts with its own table",
+           SOMClassMgrCClassData.parentMtab->mtab == mgr->mtab, 1 );
+    check( "... then SOMObject's",
+           SOMClassMgrCClassData.parentMtab->next->mtab->classObject == SOMObjectClassData.classObject, 1 );
     name = (name_proc *)somParentResolve( SOMClassMgrCClassData.parentMtab, SOMObjectClassData.somGetClassName );
     check( "somParentResolve: SOMObject's somGetClassName", strcmp( name( mgr ), "SOMClassMgr" ) == 0, 1 );
 

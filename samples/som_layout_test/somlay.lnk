@@ -1,0 +1,7 @@
+# The SOM kernel by name (samples/som_test/som.lnk), and the entries this
+# check adds.
+import somParentNumResolve     SOM.somParentNumResolve
+import somTestCls              SOM.somTestCls
+import somCheckArgs            SOM.somCheckArgs
+import SOMClassMgrCClassData   SOM.SOMClassMgrCClassData
+import SOMObjectCClassData     SOM.SOMObjectCClassData

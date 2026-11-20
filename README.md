@@ -215,6 +215,7 @@ samples/               OS/2 sample applications and build scripts
   pm_xshell_test/      The session's switch list, window list, system atoms and DDE between programs
   pm_xdrag_test/       Drag and drop between programs: DM_* messages, DRAGINFO and DM_RENDER across them
   pm_paint_input_test/ Update regions, clicks to the deepest window, WM_HITTEST, WinQueryQueueStatus, must-complete sections
+  som_layout_test/     IBM's SOM layouts: ClassData release order, somMethodTab header, parentMtab
   som_ordinal_test/    SOM.DLL imported by IBM's ordinals 1–47 (osFree's list): data, NewClass, ids, printing
   som_test/            Open Watcom's SOM samples (helloc, classes, animals, hellocpp) on Warpine's SOM runtime, with hand-written C and C++ bindings, and class loading and unloading by name
   dllinit_test/        DLL initialization at start and in DosLoadModule, OS/2 module paths
@@ -381,6 +382,7 @@ Warpine follows a near-clean-room policy: API behaviour is derived from public d
 - [IBM OS/2 Device Driver Development Kit](https://www.edm2.com/index.php/IBM_OS/2_Device_Driver_Development_Kit) (EDM/2) — lower-level system and driver documentation.
 - [List of OS/2 Software Development Related Books](https://www.edm2.com/index.php/List_of_OS/2_Software_Development_Related_Books) (EDM/2) — index of further published material.
 - [Open Watcom](https://github.com/open-watcom/open-watcom-v2) — the OS/2 headers and import libraries are the source of the ordinal table in [`doc/os2_ordinals.md`](doc/os2_ordinals.md), and its compiler builds the sample programs used as the test oracle.
+- [IBM OS/2 Developer's Toolkit 4.5](https://github.com/bitwiseworks/os2tk45) (an unofficial copy of IBM's Toolkit) — its SOM headers (`somobj.idl`, `somcls.idl`, `somcm.idl`, `somapi.h`, `somcdev.h`) are the source of the SOM root classes' layouts ([ADR-0072](doc/adr/0072-som-root-class-layouts-from-the-toolkit.md)). They are only read, at a pinned commit; nothing from the Toolkit is copied, built or run.
 - [osFree](https://github.com/osfree-project/osfree) (BSD-3-Clause) — the `EXPORTS` of its `SOM/som/makefile` are the source of `SOM.DLL`'s ordinals 1–47, IBM's SOM 1.0 exports ([ADR-0070](doc/adr/0070-som-ordinals-from-osfree.md)). Only that list is used; osFree's SOM headers and kernel are not.
 
 ### Related projects
