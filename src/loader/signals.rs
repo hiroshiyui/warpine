@@ -758,7 +758,7 @@ mod tests {
         let loader = Loader::new_mock();
         {
             let mut t = loader.shared.threads.table.lock_or_recover();
-            t.start(2, ThreadMemory { stack: 0x1000, tib: 0x2000 });
+            t.start(2, ThreadMemory { stack: 0x1000, tib: 0x2000, paging: 0 });
             t.end(MAIN_TID);
         }
         loader.post_signal(XCPT_SIGNAL_INTR);
@@ -889,7 +889,7 @@ mod kill_tests {
         let loader = Loader::new_mock();
         {
             let mut t = loader.shared.threads.table.lock_or_recover();
-            t.start(2, ThreadMemory { stack: 0x1000, tib: 0x2000 });
+            t.start(2, ThreadMemory { stack: 0x1000, tib: 0x2000, paging: 0 });
             t.end(MAIN_TID);
         }
         request_termination(&loader.shared, 4, TC_EXIT);

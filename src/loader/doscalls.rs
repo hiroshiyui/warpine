@@ -1167,10 +1167,24 @@ impl super::Loader {
             };
             (stack_base, tib_addr)
         };
+        // The thread's page tables and thread-local page (paging.rs), when
+        // the creating thread runs paged (32-bit programs do).
+        let paging = if super::guest_mem::thread_tlm_backing() != 0 {
+            match self.alloc_paging_block() {
+                Some(p) => p,
+                None => {
+                    let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
+                    mem_mgr.free(stack_base);
+                    mem_mgr.free(tib_addr);
+                    return ERROR_NOT_ENOUGH_MEMORY;
+                }
+            }
+        } else { 0 };
         let free_memory = || {
             let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
             mem_mgr.free(stack_base);
             mem_mgr.free(tib_addr);
+            if paging != 0 { mem_mgr.free(paging); }
         };
         let Some(stack_top) = stack_base.checked_add(stack_size) else {
             free_memory();
@@ -1221,7 +1235,7 @@ impl super::Loader {
         }
 
         let mut new_vcpu = vcpu;
-        self.setup_vcpu_segments_32bit(&mut *new_vcpu, tib_addr as u64);
+        self.setup_vcpu_segments_32bit(&mut *new_vcpu, tib_addr as u64, paging);
         // Fresh registers: a reused vCPU must not carry the old thread's.
         let new_regs = super::vm_backend::GuestRegs {
             rip: pfn as u64, rsp: sp_addr as u64, rax: param as u64,
@@ -1241,7 +1255,7 @@ impl super::Loader {
 
         {
             let mut table = self.shared.threads.table.lock_or_recover();
-            table.start(tid, ThreadMemory { stack: stack_base, tib: tib_addr });
+            table.start(tid, ThreadMemory { stack: stack_base, tib: tib_addr, paging });
             if flags & CREATE_SUSPENDED != 0 {
                 table.suspend(super::threads::tid_of_vcpu(vcpu_id), tid);
             }

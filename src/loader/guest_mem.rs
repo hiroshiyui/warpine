@@ -8,6 +8,45 @@
 use std::ptr;
 use super::MutexExt;
 
+// ── The thread-local page ─────────────────────────────────────────────────────
+
+thread_local! {
+    /// The guest thread-local page of the guest thread this host thread
+    /// runs (`paging.rs`); 0 for none. Host accesses that lie inside the
+    /// page at `TLM_PAGE` go there, as the guest's own do through its page
+    /// tables.
+    static TLM_BACKING: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Make this host thread's accesses to the thread-local page go to `page`
+/// (0: to `TLM_PAGE` itself). Set by the vCPU thread before it runs.
+pub fn set_thread_tlm_backing(page: u32) {
+    TLM_BACKING.with(|b| b.set(page));
+}
+
+/// This host thread's thread-local page (0: none, the guest thread runs
+/// unpaged).
+pub fn thread_tlm_backing() -> u32 {
+    TLM_BACKING.with(|b| b.get())
+}
+
+/// The guest-physical address of an access of `len` bytes at `offset`: an
+/// access wholly inside the thread-local page goes to this thread's own
+/// page. One that only overlaps it is left as it is (unverified: the
+/// guest's own access would cross into the next page).
+fn tlm_translate(offset: u32, len: usize) -> u32 {
+    use super::constants::{TLM_PAGE, PAGE_SIZE};
+    let backing = TLM_BACKING.with(|b| b.get());
+    match offset.checked_sub(TLM_PAGE) {
+        // Saturating: a backing page near the top of the 32-bit space must
+        // not wrap around to low memory (the bounds check that follows
+        // then refuses it).
+        Some(inside) if backing != 0 && (inside as usize).saturating_add(len) <= PAGE_SIZE as usize
+            => backing.saturating_add(inside),
+        _ => offset,
+    }
+}
+
 // ── GuestMemory ───────────────────────────────────────────────────────────────
 
 /// Owns the `mmap`-backed host memory region that backs the KVM guest physical
@@ -76,7 +115,7 @@ impl GuestMemory {
     /// Returns a checked raw pointer at `offset` for an access of `len` bytes,
     /// or `None` if `offset..offset+len` would exceed the allocation bounds.
     pub fn ptr_at(&self, offset: u32, len: usize) -> Option<*mut u8> {
-        let off = offset as usize;
+        let off = tlm_translate(offset, len) as usize;
         if off.checked_add(len).is_none_or(|end| end > self.size) {
             return None;
         }

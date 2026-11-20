@@ -405,7 +405,7 @@ mod tests {
         };
         loader.guest_write::<u32>(tib2 + TIB_EXCHAIN_OFFSET, XCPT_CHAIN_END).unwrap();
         // Thread 2 runs on vCPU 2.
-        loader.shared.threads.table.lock_or_recover().start(2, ThreadMemory { stack: stack2, tib: tib2 });
+        loader.shared.threads.table.lock_or_recover().start(2, ThreadMemory { stack: stack2, tib: tib2, paging: 0 });
         let rec_main = loader.shared.mem_mgr.lock_or_recover().alloc(16).unwrap();
         let rec_t2 = loader.shared.mem_mgr.lock_or_recover().alloc(16).unwrap();
 

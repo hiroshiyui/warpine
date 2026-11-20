@@ -551,6 +551,14 @@ pub const CF_BITMAP: u32 = 2;
 pub const TIB_BASE: u32 = 0x00090000;
 pub const PIB_BASE: u32 = 0x00091000;
 pub const ENV_ADDR: u32 = 0x00092000;
+/// The thread-local memory page (`paging.rs`, ADR-0088): the same linear
+/// address in every 32-bit thread, each thread's page tables mapping it to
+/// the thread's own page.
+pub const TLM_PAGE: u32 = 0x0009_F000;
+/// A 4 KB page.
+pub const PAGE_SIZE: u32 = 4096;
+const _: () = assert!(TLM_PAGE.is_multiple_of(PAGE_SIZE) && TLM_PAGE > ENV_ADDR && TLM_PAGE < NE_SEGMENT_BASE);
+const _: () = assert!(TLM_PAGE + PAGE_SIZE <= 0x0040_0000, "the thread-local page is in the first 4 MB");
 
 // SWP flags for WinSetWindowPos
 pub const SWP_SIZE: u32 = 0x0001;

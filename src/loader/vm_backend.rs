@@ -92,6 +92,9 @@ pub struct GuestSregs {
     pub idt_limit: u32,
     pub cr0: u64,
     pub cr2: u64,
+    /// The page directory's guest-physical address when CR0.PG is set
+    /// (`paging.rs`).
+    pub cr3: u64,
     pub cr4: u64,
 }
 
@@ -140,6 +143,11 @@ pub trait VcpuBackend: Send {
     /// When `enabled` is `true` the vCPU will exit after every instruction with
     /// `VmExit::Debug`.  Call with `false` to return to normal execution.
     fn set_single_step(&mut self, enabled: bool) -> Result<(), String>;
+
+    /// Drop an exception, interrupt or NMI the vCPU was about to deliver,
+    /// before it is set to run elsewhere after a fault (an exit-list
+    /// routine): a fault left half-delivered would hit the new code.
+    fn clear_pending_events(&mut self) -> Result<(), String>;
 
     /// A handle that makes this vCPU leave the guest (see [`VcpuKick`]),
     /// valid for as long as the vCPU exists.
@@ -245,6 +253,7 @@ pub mod mock {
         fn set_sregs(&mut self, s: &GuestSregs) -> Result<(), String> { self.sregs = s.clone(); Ok(()) }
         fn enable_software_breakpoints(&mut self) -> Result<(), String> { Ok(()) }
         fn set_single_step(&mut self, _enabled: bool) -> Result<(), String> { Ok(()) }
+        fn clear_pending_events(&mut self) -> Result<(), String> { Ok(()) }
         fn kicker(&self) -> Arc<dyn VcpuKick> { self.kick.clone() }
     }
 

@@ -839,6 +839,103 @@ fn test_dos_misc_calls() {
     assert_eq!(code, 0, "{out}");
 }
 
+/// tlm_test: DosAllocThreadLocalMemory / DosFreeThreadLocalMemory
+/// (ADR-0088) — one pointer, each thread's own words behind it under its
+/// own page tables, also for what an API call writes there; 32 words in
+/// all; the error codes.
+#[test]
+fn test_thread_local_memory() {
+    let sample = "samples/tlm_test/tlm_test.exe";
+    if !kvm_available() || !Path::new(sample).exists() { return; }
+    let (out, code) = run_sample(sample, 30);
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("tlm_test: done 16/16"), "{out}");
+    assert_eq!(code, 0, "{out}");
+}
+
+/// Run a paging_abuse_test variant with its working directory in a fresh
+/// directory (where Warpine writes its crash dump): stdout, the exit
+/// code, and the crash dumps written.
+fn run_paging_abuse(exe: &str, sigterm_after: Option<Duration>) -> Option<(String, i32, Vec<String>)> {
+    let sample = std::fs::canonicalize(format!("samples/paging_abuse_test/{exe}")).ok()?;
+    if !kvm_available() { return None; }
+    let work = tempfile::tempdir().expect("tempdir");
+    let mut child = Command::new(warpine())
+        .arg(&sample)
+        .current_dir(work.path())
+        .env("WARPINE_HEADLESS", "1")
+        .env("XDG_DATA_HOME", work.path())
+        .env("XDG_RUNTIME_DIR", work.path())
+        .envs(PINNED_LOCALE.iter().copied())
+        .env("RUST_LOG", "error")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn warpine");
+    if let Some(after) = sigterm_after {
+        std::thread::sleep(after);
+        let sent = Command::new("kill").args(["-TERM", &child.id().to_string()]).status().unwrap();
+        assert!(sent.success());
+    }
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let status = loop {
+        if let Some(st) = child.try_wait().expect("try_wait") { break st; }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            panic!("{exe}: Warpine did not end the hostile guest within 20 s");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    let mut out = String::new();
+    use std::io::Read;
+    child.stdout.take().unwrap().read_to_string(&mut out).ok();
+    let dumps = std::fs::read_dir(work.path()).unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().starts_with("warpine-crash-"))
+        .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
+        .collect();
+    Some((out, status.code().unwrap_or(-1), dumps))
+}
+
+/// A guest attacking its own paging (ADR-0088) ends as a trap: exit code
+/// 1, its exit list run once with TC_TRAP on repaired tables, one crash
+/// dump naming what it did — and never a hang (the wild CR3 leaves the
+/// vCPU spinning in KVM, which only the paging watch's kick ends; reads
+/// past guest memory in a loop end after MMIO_STORM_LIMIT of them).
+#[test]
+fn test_a_guest_attacking_its_paging_ends_as_a_trap() {
+    for (exe, paging) in [
+        ("pgabuse_zero.exe", "Paging: the thread's tables DAMAGED by the guest"),
+        ("pgabuse_cr3.exe", "Paging: on, CR3 0xF0000000 is not the thread's block"),
+        ("pgabuse_remap.exe", "Paging: the thread's tables DAMAGED by the guest"),
+        ("pgabuse_off.exe", "Paging: off"),
+        ("pgabuse_past.exe", "accesses in a row to memory past guest RAM"),
+    ] {
+        let Some((out, code, dumps)) = run_paging_abuse(exe, None) else { return };
+        assert!(out.contains("pgabuse: runs paged: ok"), "{exe}:\n{out}");
+        assert!(!out.contains("FAIL"), "{exe}:\n{out}");
+        assert_eq!(out.matches("pgabuse: exit list tc=2").count(), 1, "{exe}: the exit list once, TC_TRAP:\n{out}");
+        assert_eq!(code, 1, "{exe}:\n{out}");
+        assert_eq!(dumps.len(), 1, "{exe}: one crash dump:\n{dumps:#?}");
+        assert!(dumps[0].contains(paging), "{exe}: wants {paging:?}:\n{}", dumps[0]);
+    }
+}
+
+/// SIGTERM while the guest loops on memory past its RAM (before the
+/// limit ends it): the exit list runs, once, with TC_KILLPROCESS. KVM
+/// finishes each such access before the vCPU is pointed at the routine;
+/// otherwise the pending access overrides the redirection.
+#[test]
+fn test_sigterm_during_accesses_past_guest_memory_runs_the_exit_list() {
+    let Some((out, code, dumps)) = run_paging_abuse("pgabuse_past.exe", Some(Duration::from_millis(400))) else { return };
+    assert!(out.contains("pgabuse: reading past guest memory"), "{out}");
+    assert_eq!(out.matches("pgabuse: exit list tc=3").count(), 1, "the exit list once, TC_KILLPROCESS:\n{out}");
+    assert!(!out.contains("tc=2"), "ended by the signal, not the limit:\n{out}");
+    assert_eq!(code, 1, "{out}");
+    assert!(dumps.is_empty(), "no crash:\n{dumps:#?}");
+}
+
 /// samples/rexx_api_test: the REXX API (ADR-0085) from an OS/2 program —
 /// RexxStart in storage and from a file, a subcommand handler and an
 /// external function (guest code called back from the interpreter),

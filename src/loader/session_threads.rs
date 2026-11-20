@@ -1057,6 +1057,22 @@ mod tests {
         }
     }
 
+    /// A paged creator's failed DosCreateThread gives back the new
+    /// thread's page tables too (paging.rs): nothing leaks.
+    #[test]
+    fn dos_create_thread_failing_gives_back_the_page_tables() {
+        use super::super::constants::ERROR_MAX_THRDS_REACHED;
+        let d = tempfile::tempdir().unwrap();
+        let l = loader_in_session(d.path(), 1);
+        let creator = l.alloc_paging_block().expect("the creator's block");
+        let before = l.shared.mem_mgr.lock().unwrap().next_free;
+        super::super::guest_mem::set_thread_tlm_backing(super::super::paging::tlm_page_of(creator as u64).unwrap());
+        let rc = l.dos_create_thread(0, 0x7_0000, 0x1_0000, 0, 0, 0x2000);
+        super::super::guest_mem::set_thread_tlm_backing(0);
+        assert_eq!(rc, ERROR_MAX_THRDS_REACHED);
+        assert_eq!(l.shared.mem_mgr.lock().unwrap().next_free, before, "stack, TIB and page tables freed");
+    }
+
     #[test]
     fn children_need_a_slot() {
         use super::super::inherit::{admit_child, child_started, ChildLimit};

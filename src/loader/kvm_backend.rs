@@ -202,7 +202,7 @@ impl VcpuBackend for KvmVcpu {
             gs: kseg_to_guest(s.gs), ss: kseg_to_guest(s.ss),
             gdt_base:  s.gdt.base,  gdt_limit: s.gdt.limit as u32,
             idt_base:  s.idt.base,  idt_limit: s.idt.limit as u32,
-            cr0: s.cr0, cr2: s.cr2, cr4: s.cr4,
+            cr0: s.cr0, cr2: s.cr2, cr3: s.cr3, cr4: s.cr4,
         })
     }
 
@@ -215,7 +215,7 @@ impl VcpuBackend for KvmVcpu {
         s.gs = guest_to_kseg(&g.gs); s.ss = guest_to_kseg(&g.ss);
         s.gdt.base  = g.gdt_base;  s.gdt.limit = g.gdt_limit as u16;
         s.idt.base  = g.idt_base;  s.idt.limit = g.idt_limit as u16;
-        s.cr0 = g.cr0; s.cr4 = g.cr4;
+        s.cr0 = g.cr0; s.cr3 = g.cr3; s.cr4 = g.cr4;
         self.fd.set_sregs(&s).map_err(|e| e.to_string())
     }
 
@@ -235,6 +235,17 @@ impl VcpuBackend for KvmVcpu {
         };
         let dbg = kvm_guest_debug { control, ..Default::default() };
         self.fd.set_guest_debug(&dbg).map_err(|e| e.to_string())
+    }
+
+    fn clear_pending_events(&mut self) -> Result<(), String> {
+        let mut ev = self.fd.get_vcpu_events().map_err(|e| e.to_string())?;
+        ev.exception.injected = 0;
+        ev.exception.pending = 0;
+        ev.exception.has_error_code = 0;
+        ev.interrupt.injected = 0;
+        ev.nmi.injected = 0;
+        ev.nmi.pending = 0;
+        self.fd.set_vcpu_events(&ev).map_err(|e| e.to_string())
     }
 
     fn kicker(&self) -> Arc<dyn VcpuKick> {

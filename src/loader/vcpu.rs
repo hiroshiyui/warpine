@@ -46,6 +46,24 @@ fn is_shifted_ow_main(code: &[u8]) -> bool {
         && code.windows(OW_SHIFTED_ARGS.len()).any(|w| w == OW_SHIFTED_ARGS)
 }
 
+/// Finish the memory access a vCPU exited for, so that it may be pointed
+/// elsewhere at once: KVM completes an MMIO exit on the next `KVM_RUN`,
+/// and changing the registers before that loses the change (KVM API). One
+/// `KVM_RUN` with `immediate_exit` set — what a kick sets — completes it
+/// and returns at once without entering the guest.
+fn finish_mmio(vcpu: &mut dyn VcpuBackend) {
+    vcpu.kicker().kick();
+    match vcpu.run() {
+        Ok(VmExit::Interrupted) => {}
+        other => warn!("  finishing an MMIO access returned {:?}", other.map(|e| format!("{e:?}"))),
+    }
+}
+
+/// Exits to memory past guest RAM in a row, with no other exit between
+/// them, after which a thread ends as a trap (`TC_TRAP`): about a second
+/// at the 1 ms each such exit sleeps.
+const MMIO_STORM_LIMIT: u32 = 1000;
+
 impl super::Loader {
     pub(crate) fn setup_guest(&self, lx_file: &LxFile) -> (u64, u64, u64) {
         let entry_eip = lx_file.object_table[lx_file.header.eip_object as usize - 1].base_address as u64 + lx_file.header.eip as u64;
@@ -111,8 +129,16 @@ impl super::Loader {
 
     pub(crate) fn create_initial_vcpu(&self, entry_eip: u64, entry_esp: u64) -> Box<dyn VcpuBackend> {
         let mut vcpu = self.vm.create_vcpu(0).unwrap();
-        // Set up 32-bit flat segment registers, CR0/CR4, GDT, IDT.
-        self.setup_vcpu_segments_32bit(&mut *vcpu, TIB_BASE as u64);
+        // Set up 32-bit flat segment registers, CR0/CR4, GDT, IDT, and
+        // thread 1's page tables (thread-local memory, ADR-0088).
+        let cr3 = self.alloc_paging_block().unwrap_or_else(|| {
+            log::warn!("no memory for thread 1's page tables; it runs unpaged");
+            0
+        });
+        self.setup_vcpu_segments_32bit(&mut *vcpu, TIB_BASE as u64, cr3);
+        if cr3 != 0 {
+            super::paging::start_paging_watch(std::sync::Arc::clone(&self.shared));
+        }
         let mut regs = vcpu.get_regs().unwrap();
         regs.rip = entry_eip;
         regs.rsp = entry_esp - 20;
@@ -208,7 +234,10 @@ impl super::Loader {
     /// Called by the LX (32-bit) execution paths.  The NE (16-bit) path sets up
     /// its own segment registers in `setup_and_run_ne_cli` before calling
     /// `run_vcpu`, so this helper must NOT be called from there.
-    pub(crate) fn setup_vcpu_segments_32bit(&self, vcpu: &mut dyn VcpuBackend, tib_base: u64) {
+    ///
+    /// `cr3`: the thread's paging block (`paging.rs`), which turns paging on;
+    /// 0 runs the thread unpaged.
+    pub(crate) fn setup_vcpu_segments_32bit(&self, vcpu: &mut dyn VcpuBackend, tib_base: u64, cr3: u32) {
         let mut sregs = vcpu.get_sregs().unwrap();
         sregs.cs.base = 0; sregs.cs.limit = 0xFFFFFFFF; sregs.cs.g = 1; sregs.cs.db = 1; sregs.cs.present = 1; sregs.cs.type_ = 11; sregs.cs.s = 1; sregs.cs.selector = 0x08;
         let mut ds = sregs.cs.clone(); ds.type_ = 3; ds.selector = 0x10;
@@ -218,6 +247,14 @@ impl super::Loader {
         sregs.cr0 = (sregs.cr0 | 1 | (1 << 5)) & !(1u64 << 2) & !(1u64 << 3);
         // Also set CR4.OSFXSR to enable SSE instructions
         sregs.cr4 |= 1 << 9;
+        // Paging with the thread's own tables (ADR-0088), or none.
+        sregs.cr3 = cr3 as u64;
+        if cr3 != 0 {
+            sregs.cr4 |= super::paging::CR4_PSE;
+            sregs.cr0 |= super::paging::CR0_PG;
+        } else {
+            sregs.cr0 &= !super::paging::CR0_PG;
+        }
         // Set up GDT and IDT registers
         sregs.gdt_base  = GDT_BASE as u64;
         sregs.gdt_limit = GDT_SIZE - 1;
@@ -235,6 +272,11 @@ impl super::Loader {
         let initial_esp = vcpu.get_regs().map_or(0, |r| r.rsp as u32);
         // Others may now kick this thread out of guest code.
         self.shared.threads.table.lock_or_recover().set_kicker(tid_of_vcpu(vcpu_id), vcpu.kicker());
+        // This host thread's accesses to the thread-local page go where the
+        // guest thread's own do (paging.rs).
+        // Only a CR3 that is a valid block counts (paging.rs).
+        let paged = vcpu.get_sregs().ok().filter(|s| s.cr0 & super::paging::CR0_PG != 0);
+        super::guest_mem::set_thread_tlm_backing(paged.and_then(|s| super::paging::tlm_page_of(s.cr3)).unwrap_or(0));
         let end = self.vcpu_loop(&mut *vcpu, vcpu_id, initial_esp, false);
         self.end_thread(vcpu, vcpu_id, end, initial_esp);
     }
@@ -305,7 +347,11 @@ impl super::Loader {
             let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
             mem_mgr.free(mem.stack);
             mem_mgr.free(mem.tib);
+            if mem.paging != 0 {
+                mem_mgr.free(mem.paging);
+            }
         }
+        super::guest_mem::set_thread_tlm_backing(0);
         // A critical section the thread was in ends with it.
         self.shared.threads.release_crit_sec(tid);
         // So does its slot of the session's THREADS= limit.
@@ -371,7 +417,17 @@ impl super::Loader {
                     restart: Option<&super::vm_backend::GuestSregs>,
                     callback_stack: &mut Vec<CallbackFrame>, tc: u32) -> Option<ThreadEnd> {
         const FAULT_EXIT_CODE: u32 = 1;
-        let reset = |vcpu: &mut dyn VcpuBackend| restart.is_some_and(|s| vcpu.set_sregs(s).is_ok());
+        // The segment state the thread started with, and its own page
+        // tables as Warpine wrote them: the guest may have damaged them
+        // (paging.rs).
+        // A fault the vCPU was still delivering is dropped.
+        let reset = |vcpu: &mut dyn VcpuBackend| restart.is_some_and(|s| {
+            if s.cr0 & super::paging::CR0_PG != 0
+                && !u32::try_from(s.cr3).is_ok_and(|base| self.repair_paging_block(base)) {
+                return false;
+            }
+            vcpu.clear_pending_events().is_ok() && vcpu.set_sregs(s).is_ok()
+        });
         if self.runs_exit_list(vcpu_id) {
             if reset(vcpu) && self.next_exit_routine(vcpu) { return None; }
             self.request_process_exit(FAULT_EXIT_CODE);
@@ -427,6 +483,8 @@ impl super::Loader {
         }
 
         let mut callback_stack: Vec<CallbackFrame> = Vec::new();
+        // Exits to memory past guest RAM in a row (see MMIO_STORM_LIMIT).
+        let mut mmio_run: u32 = 0;
 
         loop {
             // Another thread is in a critical section (DosEnterCritSec):
@@ -524,6 +582,30 @@ impl super::Loader {
                 }
             }
             let exit = res.unwrap();
+            // Memory past guest RAM reads as zeros, but a run of such
+            // exits with nothing else between them (kicks aside) is a guest that makes
+            // no progress (a page walk through a CR3 or table entry the
+            // guest pointed past its memory, a loop over memory it does
+            // not have): it ends as a trap instead of spinning forever.
+            if matches!(exit, VmExit::MmioRead { .. } | VmExit::MmioWrite { .. }) {
+                mmio_run += 1;
+                if mmio_run >= MMIO_STORM_LIMIT {
+                    mmio_run = 0;
+                    let report = self.collect_crash_report(&*vcpu, vcpu_id, CrashContext::UnhandledVmexit {
+                        description: format!("{MMIO_STORM_LIMIT} accesses in a row to memory past guest RAM"),
+                    });
+                    self.dump_crash_report(&report);
+                    finish_mmio(&mut *vcpu);
+                    match self.end_by_fault(&mut *vcpu, vcpu_id, initial_esp, restart_sregs.as_ref(),
+                                            &mut callback_stack, TC_TRAP) {
+                        Some(end) => return end,
+                        None => continue,
+                    }
+                }
+            } else if !matches!(exit, VmExit::Interrupted) {
+                // A kick (the paging watch's, every 250 ms) is no progress.
+                mmio_run = 0;
+            }
             match exit {
                 VmExit::Debug => {
                     // ── GDB single-step or software breakpoint ────────────────
@@ -1350,7 +1432,23 @@ impl super::Loader {
                 }
                 // Kicked out of the guest (VcpuKick): the top of the loop
                 // looks at the flags; guest state is as it was.
-                VmExit::Interrupted => continue,
+                VmExit::Interrupted => {
+                    // The paging watch kicks paged threads (paging.rs): a
+                    // guest that changed its own paging ends as a trap,
+                    // its tables and CR3 put back for the exit list.
+                    if let Some(status) = self.paging_violation(&*vcpu) {
+                        let report = self.collect_crash_report(&*vcpu, vcpu_id, CrashContext::UnhandledVmexit {
+                            description: format!("the guest changed its own paging ({status})"),
+                        });
+                        self.dump_crash_report(&report);
+                        match self.end_by_fault(&mut *vcpu, vcpu_id, initial_esp, restart_sregs.as_ref(),
+                                                &mut callback_stack, TC_TRAP) {
+                            Some(end) => return end,
+                            None => continue,
+                        }
+                    }
+                    continue;
+                }
                 VmExit::Hlt => {
                     // The guest stopped its processor: a trap, its exit
                     // list runs as after any other (TC_TRAP).
@@ -1368,12 +1466,16 @@ impl super::Loader {
                     // Rate-limit repeated accesses to unmapped memory to avoid
                     // spinning the VCPU thread at 100% CPU.
                     std::thread::sleep(std::time::Duration::from_millis(1));
+                    // The top of the loop may point the vCPU elsewhere (a
+                    // termination's exit list): finish the access first.
+                    finish_mmio(&mut *vcpu);
                 }
                 VmExit::MmioWrite { addr } => {
                     // Guest write to unmapped memory — silently ignore
                     warn!("  [VCPU {}] MMIO write at 0x{:08X} — ignoring", vcpu_id, addr);
                     // Rate-limit same as MmioRead.
                     std::thread::sleep(std::time::Duration::from_millis(1));
+                    finish_mmio(&mut *vcpu);
                 }
                 VmExit::Shutdown => {
                     let report = self.collect_crash_report(
@@ -1968,6 +2070,25 @@ mod tests {
     use super::super::vm_backend::mock::MockVcpu;
     use super::super::vm_backend::VcpuBackend;
 
+    /// A paging block turns paging on with that CR3 (paging.rs); 0 turns
+    /// it off again, also on a reused vCPU that ran paged.
+    #[test]
+    fn a_thread_runs_paged_on_its_own_block_or_unpaged() {
+        use super::super::paging::{CR0_PG, CR4_PSE};
+        let loader = super::super::Loader::new_mock();
+        let block = loader.alloc_paging_block().expect("a block");
+        let mut vcpu = MockVcpu::new();
+        loader.setup_vcpu_segments_32bit(&mut vcpu, TIB_BASE as u64, block);
+        let s = vcpu.get_sregs().unwrap();
+        assert_eq!(s.cr3, block as u64);
+        assert_ne!(s.cr0 & CR0_PG, 0);
+        assert_ne!(s.cr4 & CR4_PSE, 0);
+        assert_eq!(s.cr0 & 1, 1, "protected mode");
+        loader.setup_vcpu_segments_32bit(&mut vcpu, TIB_BASE as u64, 0);
+        let s = vcpu.get_sregs().unwrap();
+        assert_eq!((s.cr3, s.cr0 & CR0_PG), (0, 0));
+    }
+
     /// Every message the modal loop dispatches is called at the same stack
     /// position: a procedure returning (which leaves rsp 16 bytes below its
     /// frame) does not make the next call sink lower.
@@ -2192,7 +2313,7 @@ mod tests {
     }
 
     fn start_thread(loader: &super::super::Loader, tid: u32) {
-        loader.shared.threads.table.lock_or_recover().start(tid, ThreadMemory { stack: 0, tib: 0 });
+        loader.shared.threads.table.lock_or_recover().start(tid, ThreadMemory { stack: 0, tib: 0, paging: 0 });
     }
 
     #[test]

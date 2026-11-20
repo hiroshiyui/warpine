@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn a_killed_thread_is_interrupted() {
         let loader = Loader::new_mock();
-        loader.shared.threads.table.lock_or_recover().start(2, ThreadMemory { stack: 0x1000, tib: 0x2000 });
+        loader.shared.threads.table.lock_or_recover().start(2, ThreadMemory { stack: 0x1000, tib: 0x2000, paging: 0 });
         begin_call(2, false);
         assert!(!loader.stop_or_restart());
         assert!(!end_call());

@@ -522,7 +522,7 @@ APIs marked `[stub]` accept calls and return `NO_ERROR` but perform no operation
 
 ## Implemented APIs
 
-### DOSCALLS (162 APIs: 158 implemented, 4 stub)
+### DOSCALLS (164 APIs: 160 implemented, 4 stub)
 
 **Smaller calls (ADR-0086):** DosErrClass (211), DosQueryModFromEIP (360), DosTmrQueryFreq (362), DosTmrQueryTime (363), DosCancelLockRequest (429), DosVerifyPidTid (460), DosQueryProcType (586), and the protected-handle calls DosProtectSetFilePtr (621), DosProtectEnumAttribute (636), DosProtectOpen (637), DosProtectClose (638), DosProtectSetFileSize (640), DosProtectRead (641), DosProtectWrite (642), DosProtectSetFileInfo (643), DosProtectSetFHState (644), DosProtectQueryFHState (645), DosProtectQueryFileInfo (646).
 - **The timer** counts at 1,193,182 Hz from the process's first query.
@@ -549,9 +549,11 @@ Current directories:
 **Standard input.** `DosRead` on standard input that is a pipe or a file reads up to the requested length, with no echo and no CR → CR LF; echo and line editing are for the console only (ADR-0077).
 
 **Memory:**
-DosAllocMem (299), DosFreeMem (304), DosSetMem (305), DosQueryMem (306), DosAllocSharedMem (300), DosGetSharedMem (302), DosGetNamedSharedMem (301), DosGiveSharedMem (303), DosSubSetMem (344), DosSubAllocMem (345), DosSubFreeMem (346), DosSubUnsetMem (347)
+DosAllocMem (299), DosFreeMem (304), DosSetMem (305), DosQueryMem (306), DosAllocSharedMem (300), DosGetSharedMem (302), DosGetNamedSharedMem (301), DosGiveSharedMem (303), DosSubSetMem (344), DosSubAllocMem (345), DosSubFreeMem (346), DosSubUnsetMem (347), DosAllocThreadLocalMemory (454), DosFreeThreadLocalMemory (455)
 
 Shared memory: `DosAllocSharedMem` names must start with `\SHAREMEM\` (`ERROR_INVALID_NAME`), are case-insensitive and unique (`ERROR_ALREADY_EXISTS`; free again after `DosFreeMem`); the flags need `PAG_READ`, `PAG_WRITE` or `PAG_EXECUTE` (`ERROR_INVALID_PARAMETER`, also for unknown bits). `DosGiveSharedMem` needs the base address of a block allocated with `OBJ_GIVEABLE` (`ERROR_INVALID_ADDRESS` for any other address, `ERROR_ACCESS_DENIED` for a block that is not giveable or an access it was not allocated with) and an access bit (`PAG_GUARD` allowed, other bits `ERROR_INVALID_PARAMETER`); an unknown process is `ERROR_INVALID_PROCID`. Shared blocks are shared by all processes of a session (ADR-0049): they live in the shared arena, the top 32 MB of every process's guest memory (`0x0E000000`–`0x0FFFFFFF`), at the same address in each process. `DosGetNamedSharedMem` needs an access bit (`ERROR_INVALID_PARAMETER`) and a `\SHAREMEM\` name (`ERROR_INVALID_NAME`; an unknown name is `ERROR_FILE_NOT_FOUND`). `DosGetSharedMem` needs an access bit and a block allocated with `OBJ_GETTABLE` (`ERROR_ACCESS_DENIED`; an address that is not a block is `ERROR_INVALID_ADDRESS`, unverified). `DosGiveSharedMem` reaches any live process of the session, including a child that `DosExecPgm` has just started; the giver must hold the block. A block lasts while some process holds it: `DosFreeMem` lets it go (a second time is `ERROR_INVALID_ADDRESS`), and so does the end of the process, even a killed one. Then its name is free and its pages read zero. A new block is zero. Without a session (an unusable session directory) shared memory stays within the process. Warpine's limits: every process can reach the whole arena, and access flags are checked but not enforced. Warpine's own choices (unverified): giving to the calling process itself is `NO_ERROR`; getting a block twice counts once. `QSV_MAXSHMEM` is the arena's size.
+
+Thread-local memory: `DosAllocThreadLocalMemory(cb, &p)` reserves `cb` DWORDs (1–8, else `ERROR_INVALID_PARAMETER`) of the 32-DWORD thread-local area and returns one pointer; every thread sees its own words behind it, also those an API call writes there. The words are reserved in every thread, and a thread starts with them zero. `ERROR_NOT_ENOUGH_MEMORY` when no run of `cb` free words is left. `DosFreeThreadLocalMemory(p)` frees a block by the pointer it was given (anything else: `ERROR_INVALID_PARAMETER`). Each 32-bit thread runs with its own page tables for this: the guest's memory is mapped one-to-one except the page holding the area (`TLM_PAGE`, `0x9F000`), which leads to the thread's own page (ADR-0088). A program cannot change its paging, as on OS/2: one that turns paging off, loads CR3 or writes its page tables ends as a trap (`TC_TRAP`, exit code 1; its exit list runs on repaired tables) within about 250 ms, and so does one that reads or writes memory past the guest's 256 MB 1,000 times in a row. Warpine's own choices (unverified): the area's address; new threads' words starting zero; the first fitting run handed out; Warpine's own host threads (the GUI's, for example) seeing thread 1's words; a host access that crosses the area's page boundary not being translated.
 
 Suballocation: `DosSubSetMem` with `DOSSUB_INIT` makes a pool of at least 72 bytes (the size is rounded down to a multiple of 8; 64 bytes are control information), `DOSSUB_GROW` makes it larger (`ERROR_DOSSUB_SHRINK` for a smaller size; `DOSSUB_SPARSE_OBJ` must match the pool's, else `ERROR_DOSSUB_BADFLAG`), without `DOSSUB_INIT` it attaches to a pool set up before; `DOSSUB_SERIALIZE` is accepted (every call is serialised anyway). `DosSubAllocMem` rounds the size up to 8 bytes and hands out free space first fit (`ERROR_DOSSUB_NOMEM` when nothing is large enough); `DosSubFreeMem` returns a block (`ERROR_DOSSUB_OVERLAP` when it overlaps free space); `DosSubUnsetMem` ends the pool; a pool whose memory `DosFreeMem` frees without it ends then too, so the memory can hold a new pool. The pool's bookkeeping is kept by Warpine, not in the pool's memory. Warpine's own choices (unverified): unknown flags `ERROR_DOSSUB_BADFLAG`; a pool under 72 bytes, outside memory, at 0 or not set up before (attach, grow) `ERROR_INVALID_PARAMETER`; a pool overlapping another `ERROR_DOSSUB_OVERLAP`; a block size of 0 `ERROR_INVALID_PARAMETER`, above the pool size less 64 `ERROR_DOSSUB_BADSIZE`; a pool never set up `ERROR_DOSSUB_CORRUPTED` (alloc, free, unset); a block outside the pool or off the 8-byte grid `ERROR_INVALID_PARAMETER`; at most 1024 pools and 65536 separate free ranges per pool (`ERROR_NOT_ENOUGH_MEMORY`).
 
@@ -1056,11 +1058,11 @@ GpiLoadFonts (400), GpiLoadPublicFonts (622), GpiUnloadPublicFonts (623)
 
 ### Summary
 
-Counts are taken from the static registry (`api_registry.rs`, 472 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 405 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
+Counts are taken from the static registry (`api_registry.rs`, 474 entries) and the sub-dispatchers (`viocalls.rs`, `kbdcalls.rs`, `moucalls.rs`, `pm_win.rs` with `pm_winutil.rs`, `pm_gpi.rs` with `pm_region.rs`, `pm_area.rs`, `pm_text.rs`, `pmspl.rs`, `pm_coords.rs` and `pm_psstate.rs`, 405 ordinals; `--compat` prints the same counts, and a unit test checks the PM ones against the dispatch arms). A stub accepts the call and returns success without doing any work.
 
 | Module | Dispatch | Implemented | Stub | Total |
 |--------|----------|------------:|-----:|------:|
-| DOSCALLS | registry | 158 | 4 | 162 |
+| DOSCALLS | registry | 160 | 4 | 164 |
 | QUECALLS | registry | 8 | 0 | 8 |
 | NLS | registry | 4 | 0 | 4 |
 | MSG | registry | 4 | 0 | 4 |
@@ -1083,7 +1085,7 @@ Counts are taken from the static registry (`api_registry.rs`, 472 entries) and t
 | PMWP (window positions) | registry | 2 | 0 | 2 |
 | PMWIN | sub-dispatcher | 215 | 0 | 215 |
 | PMGPI | sub-dispatcher | 142 | 3 | 145 |
-| **Total** | | **856** | **21** | **877** |
+| **Total** | | **858** | **21** | **879** |
 
 PMWIN handlers are not individually classified as stubs; some return fixed values.
 

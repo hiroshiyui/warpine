@@ -171,6 +171,8 @@ pub fn ordinal_to_name(ordinal: u32) -> &'static str {
         426 => "DosSelToFlat",
         428 => "DosSetFileLocks",
         429 => "DosCancelLockRequest",
+        454 => "DosAllocThreadLocalMemory",
+        455 => "DosFreeThreadLocalMemory",
         460 => "DosVerifyPidTid",
         572 => "DosQueryResourceSize",
         586 => "DosQueryProcType",

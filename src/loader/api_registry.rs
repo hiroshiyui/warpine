@@ -445,6 +445,10 @@ static REGISTRY: &[ApiEntry] = &[
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_set_file_locks(a[0],a[1],a[2],a[3],a[4])) },
     ApiEntry { ordinal: 429, module: "DOSCALLS", name: "DosCancelLockRequest", argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_cancel_lock_request(a[0],a[1])) },
+    ApiEntry { ordinal: 454, module: "DOSCALLS", name: "DosAllocThreadLocalMemory", argc: 2,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_alloc_thread_local_memory(a[0],a[1])) },
+    ApiEntry { ordinal: 455, module: "DOSCALLS", name: "DosFreeThreadLocalMemory", argc: 1,
+               handler: |l,_v,_i,a| ApiResult::Normal(l.dos_free_thread_local_memory(a[0])) },
     ApiEntry { ordinal: 460, module: "DOSCALLS", name: "DosVerifyPidTid", argc: 2,
                handler: |l,_v,_i,a| ApiResult::Normal(l.dos_verify_pid_tid(a[0],a[1])) },
     ApiEntry { ordinal: 572, module: "DOSCALLS", name: "DosQueryResourceSize", argc: 4,
@@ -1350,7 +1354,7 @@ mod tests {
             assert!(!super::STUB_ORDINALS.contains(&ord), "ordinal {ord} is implemented");
         }
         let report = super::compat_report();
-        assert!(report.contains("DOSCALLS  (158 implemented, 4 stub)"), "{report}");
+        assert!(report.contains("DOSCALLS  (160 implemented, 4 stub)"), "{report}");
     }
 
     // ── registry ─────────────────────────────────────────────────────────────

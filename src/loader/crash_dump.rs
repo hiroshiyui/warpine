@@ -53,6 +53,8 @@ pub struct CrashReport {
     pub timestamp:   std::time::SystemTime,
     /// Snapshot of the API call ring buffer at crash time (oldest first).
     pub api_history: Vec<ApiCallRecord>,
+    /// Paging: off, intact, damaged by the guest, or a CR3 the guest loaded.
+    pub paging: super::paging::PagingStatus,
 }
 
 // ── Loader methods ────────────────────────────────────────────────────────────
@@ -105,6 +107,7 @@ impl Loader {
 
         let exe_name    = self.shared.exe_name.lock_or_recover().clone();
         let api_history = self.shared.api_ring.lock_or_recover().snapshot();
+        let paging      = self.paging_status(&sregs);
 
         CrashReport {
             vcpu_id,
@@ -117,6 +120,7 @@ impl Loader {
             exe_name,
             timestamp: std::time::SystemTime::now(),
             api_history,
+            paging,
         }
     }
 
@@ -208,8 +212,9 @@ fn format_crash_report(r: &CrashReport) -> String {
             "  {} sel=0x{:04X} base=0x{:08X} limit=0x{:08X} db={} type=0x{:02X} dpl={}",
             name, seg.selector, seg.base, seg.limit, seg.db, seg.type_, seg.dpl);
     }
-    let _ = writeln!(out, "  CR0=0x{:08X}  CR2=0x{:08X}  CR4=0x{:08X}",
-        sregs.cr0 as u32, sregs.cr2 as u32, sregs.cr4 as u32);
+    let _ = writeln!(out, "  CR0=0x{:08X}  CR2=0x{:08X}  CR3=0x{:08X}  CR4=0x{:08X}",
+        sregs.cr0 as u32, sregs.cr2 as u32, sregs.cr3 as u32, sregs.cr4 as u32);
+    let _ = writeln!(out, "  Paging: {}", r.paging);
     let _ = writeln!(out);
 
     // ── Code bytes at EIP ─────────────────────────────────────────────────────
@@ -351,7 +356,25 @@ mod tests {
             exe_name: "TEST.EXE".to_string(),
             timestamp: std::time::SystemTime::UNIX_EPOCH,
             api_history: vec![],
+            paging: crate::loader::paging::PagingStatus::Off,
         }
+    }
+
+    /// The report says whether the guest damaged its page tables or
+    /// loaded its own CR3 (paging.rs, ADR-0088).
+    #[test]
+    fn test_report_shows_the_paging_state() {
+        use crate::loader::paging::PagingStatus;
+        let mut report = make_report(CrashContext::TripleFault);
+        report.sregs.cr3 = 0x0200_3000;
+        report.paging = PagingStatus::Damaged;
+        let text = format_crash_report(&report);
+        assert!(text.contains("CR3=0x02003000"), "{text}");
+        assert!(text.contains("Paging: the thread's tables DAMAGED by the guest"), "{text}");
+        report.paging = PagingStatus::ForeignCr3(0xF000_0000);
+        assert!(format_crash_report(&report).contains("CR3 0xF0000000 is not the thread's block"));
+        report.paging = PagingStatus::Off;
+        assert!(format_crash_report(&report).contains("Paging: off"));
     }
 
     #[test]

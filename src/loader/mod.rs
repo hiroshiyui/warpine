@@ -62,6 +62,7 @@ mod guest_mem;
 mod lx_loader;
 mod ne_exec;
 mod descriptors;
+pub(crate) mod paging;
 mod vcpu;
 mod api_dispatch;
 mod doscalls;
@@ -426,6 +427,8 @@ pub struct SharedState {
     pub threads: threads::Threads,
     /// Its part of the session's `THREADS=` accounting (`session_threads.rs`).
     pub thread_slots: Mutex<session_threads::ThreadSlots>,
+    /// The words of the thread-local area handed out (`paging.rs`).
+    pub tlm: Mutex<paging::TlmArea>,
     /// `DosAsyncTimer` / `DosStartTimer` timers (`dostimer.rs`).
     pub dos_timers: Mutex<dostimer::DosTimerTable>,
     /// `DosSubSetMem` pools, kept on the host (`suballoc.rs`).
@@ -560,6 +563,7 @@ impl Loader {
             guest_mem,
             threads: Default::default(),
             thread_slots: Default::default(),
+            tlm: Default::default(),
             dos_timers: Default::default(),
             suballoc: Default::default(),
             kills: Default::default(),
@@ -670,6 +674,7 @@ impl Loader {
             guest_mem,
             threads:      Default::default(),
             thread_slots: Default::default(),
+            tlm:          Default::default(),
             dos_timers:   Default::default(),
             suballoc:     Default::default(),
             kills:        Default::default(),

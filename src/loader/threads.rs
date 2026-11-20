@@ -89,6 +89,8 @@ pub enum WaitOutcome {
 pub struct ThreadMemory {
     pub stack: u32,
     pub tib: u32,
+    /// Its paging block (`paging.rs`; 0 for none).
+    pub paging: u32,
 }
 
 /// The process's threads (pure bookkeeping, no blocking).
@@ -543,7 +545,7 @@ mod tests {
     use crate::loader::vm_backend::mock::MockVcpu;
     use crate::loader::vm_backend::VcpuBackend;
 
-    const MEM: ThreadMemory = ThreadMemory { stack: 0x1000, tib: 0x2000 };
+    const MEM: ThreadMemory = ThreadMemory { stack: 0x1000, tib: 0x2000, paging: 0 };
 
     fn with_threads(tids: &[u32]) -> ThreadTable {
         let mut t = ThreadTable::new();

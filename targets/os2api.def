@@ -174,6 +174,8 @@ DOSCALLS.425  DosFlatToSel
 DOSCALLS.426  DosSelToFlat
 DOSCALLS.428  DosSetFileLocks
 DOSCALLS.429  DosCancelLockRequest
+DOSCALLS.454  DosAllocThreadLocalMemory
+DOSCALLS.455  DosFreeThreadLocalMemory
 DOSCALLS.460  DosVerifyPidTid
 DOSCALLS.572  DosQueryResourceSize
 DOSCALLS.586  DosQueryProcType

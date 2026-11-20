@@ -76,7 +76,7 @@ mod tests {
     use std::sync::atomic::Ordering;
     use std::time::Duration;
 
-    const MEM: ThreadMemory = ThreadMemory { stack: 0x1000, tib: 0x2000 };
+    const MEM: ThreadMemory = ThreadMemory { stack: 0x1000, tib: 0x2000, paging: 0 };
 
     #[test]
     fn enter_and_exit_nest() {

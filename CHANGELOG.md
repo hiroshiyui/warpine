@@ -7,9 +7,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **Thread-local memory** (ADR-0088): `DosAllocThreadLocalMemory` / `DosFreeThreadLocalMemory`. Each 32-bit thread now runs with its own page tables, which map memory one-to-one except the thread-local page, so one pointer leads to each thread's own words, for the guest and for API calls alike. Sample: `samples/tlm_test`.
 - **`DosRawReadNPipe` / `DosRawWriteNPipe`** (ADR-0087): a message pipe's messages read and written as records, a USHORT length and the bytes (Warpine's own format; the calls have public prototypes only); on a byte pipe they are `DosRead` / `DosWrite`. Sample: `samples/npipe_test`.
 
+### Security
+- **Guest paging is guarded** (ADR-0088). The guest runs at ring 0 and could rewrite its new page tables or load CR3 / CR0. The host never follows its tables and accepts a CR3 only as a whole, page-aligned block in the allocator's region. A watch thread kicks each vCPU every 250 ms, and a thread whose paging was changed ends as a trap; its exit list still runs, on repaired tables with the half-delivered fault dropped. Crash reports show CR3 and whether the tables are intact. Sample: `samples/paging_abuse_test`, a hostile guest built five ways.
+- **No endless spin on memory past guest RAM** — 1,000 accesses in a row past the guest's memory (a wild page-table entry or loop) end the thread as a trap; before, a guest could keep its process spinning for good.
+
 ### Fixed
+- **A termination during an access past guest RAM lost its exit list** — KVM completes such an access on the next run and overrode the registers Warpine had just pointed at the exit-list routine; the access is now completed at once (`finish_mmio`).
 - **PMWIN and PMGPI calls by name** (ADR-0087) — `DosQueryProcAddr` and `WinLoadProcedure` found no PMWIN or PMGPI call by name; `build.rs` now reads the names from the dispatchers. By ordinal, these modules now find only the calls Warpine implements (`ERROR_PROC_NOT_FOUND` for the others), as the registry modules do.
 - **Exit lists run on thread 1** (ADR-0087), as the Control Program Guide describes: a `DosExit(EXIT_PROCESS)` on another thread asks thread 1 to run them, as a fault there already did. A guest `HLT` ended the process at once; it now runs the exit list like a trap (`TC_TRAP`), and so does a failed `KVM_RUN` on thread 1 (`TC_HARDERROR`).
 
