@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **OS/2's page states for allocated memory** (ADR-0114). `DosAllocMem` honours its flags: memory without `PAG_COMMIT` is reserved and faults until `DosSetMem` commits it; `PAG_READ` alone makes read-only pages; `DosSetMem` commits (zeroed), decommits and changes access; `PAG_GUARD` makes guard pages, whose first touch raises `XCPT_GUARD_PAGE_VIOLATION`; `DosQueryMem` reports the real state. Before, every page was committed and writable whatever was asked. The states live in page tables every thread of the process shares, and a page that loses access is flushed from every thread's TLB. Sample `mem_protect_test` (33 checks).
+- **Sparse thread stacks** (ADR-0114). At ring 3 a thread's stack is committed as it grows (`STACK_SPARSE`, the default of `DosCreateThread`; `STACK_COMMITTED` commits it whole), and a thread that runs out gets `XCPT_UNABLE_TO_GROW_STACK` instead of silently overwriting the memory below its stack. Sample `stack_grow_test`.
+
+### Changed
+- **At most 182 threads per process** (was 191): the paging arena now also holds the process's page tables for the allocator's region (ADR-0114).
+
 ## [0.0.9] - 2026-11-21
 
 ### Added

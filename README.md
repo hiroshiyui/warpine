@@ -410,7 +410,7 @@ gdb -ex 'symbol-file samples/c_gdb_test/c_gdb_test.dbg' -ex 'target remote :1234
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 2270 unit tests (no KVM required)
+cargo test                        # 2277 unit tests (no KVM required)
 cargo test --test integration     # 210 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```
