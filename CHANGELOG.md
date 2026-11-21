@@ -9,9 +9,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Added
 - **OS/2's page states for allocated memory** (ADR-0114). `DosAllocMem` honours its flags: memory without `PAG_COMMIT` is reserved and faults until `DosSetMem` commits it; `PAG_READ` alone makes read-only pages; `DosSetMem` commits (zeroed), decommits and changes access; `PAG_GUARD` makes guard pages, whose first touch raises `XCPT_GUARD_PAGE_VIOLATION`; `DosQueryMem` reports the real state. Before, every page was committed and writable whatever was asked. The states live in page tables every thread of the process shares, and a page that loses access is flushed from every thread's TLB. Sample `mem_protect_test` (33 checks).
 - **Sparse thread stacks** (ADR-0114). At ring 3 a thread's stack is committed as it grows (`STACK_SPARSE`, the default of `DosCreateThread`; `STACK_COMMITTED` commits it whole), and a thread that runs out gets `XCPT_UNABLE_TO_GROW_STACK` instead of silently overwriting the memory below its stack. Sample `stack_grow_test`.
+- **Read-only code** (ADR-0114). The objects of a program and its DLLs that the LX format does not mark writable (code, resources) are read-only: a write raises `XCPT_ACCESS_VIOLATION`, as on OS/2, at either ring.
 
 ### Changed
-- **At most 182 threads per process** (was 191): the paging arena now also holds the process's page tables for the allocator's region (ADR-0114).
+- **At most 226 threads per process** (was 191): the paging arena now also holds the process's page tables, and each thread's paging block is a page smaller (ADR-0114).
 
 ## [0.0.9] - 2026-11-21
 
@@ -109,6 +110,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **Desktop protocol version 10:** the frames an API call raises or lowers travel in the `Report` after the call (ADR-0108).
 
 ### Fixed
+- **A DLL object smaller than its pages** was given only its virtual size (at least a page), while all its pages were loaded: the file's data could land past it, over other memory. It now gets its pages' size.
 - **A program's own breakpoint instruction** (`INT3`, or `INT 3`) raises `XCPT_BREAKPOINT` to its exception handlers, as on OS/2, with EIP past the instruction so a handler can continue. Before, it ended the process at once with exit code 0 and no exit list; unhandled, it now ends the process like any other exception (exit list with `TC_EXCEPTION`, exit code 1). Sample `xcpt_breakpoint_test` (Open Watcom, GCC and clang).
 - **Hostile executables crashed the loader** (found by fuzzing, ADR-0112): an LX header's imported-module count made it reserve about 100 GB; an NE alignment shift of 64 or more, an entry table cut short, and ordinals past 65535 panicked.
 - **A program's new frame could end above another program's active one** (ADR-0108): its raise travelled with its first display update and could arrive after the other program had activated its frame (`pm_xproc_test` failed now and then under load).

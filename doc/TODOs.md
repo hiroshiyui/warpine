@@ -188,7 +188,7 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - muxwait semaphores as pipe semaphores, and a real `NPSS_WAIT`;
   - sweeping stale `warpine-threads-*` directories;
   - echo of piped standard input.
-- [ ] **Memory protection on the page tables** (ADR-0114): phases 1 and 2 are done (page states for `DosAllocMem` memory in shared process tables; sparse thread stacks with `XCPT_UNABLE_TO_GROW_STACK`, at ring 3). Left: read-only code objects of the program and its DLLs (the LX object flags); a sparse main-thread stack; faulting on free memory and blocks given back.
+- [ ] **Memory protection on the page tables** (ADR-0114): phases 1 and 2 are done (page states for `DosAllocMem` memory in shared process tables; sparse thread stacks with `XCPT_UNABLE_TO_GROW_STACK`, at ring 3). Read-only objects (phase 3) are done too. Left: a sparse main-thread stack; faulting on free memory and blocks given back; `DosQueryMem` reporting an object's real access.
 - [ ] **Suballocation**: shared pools between processes.
 - [ ] **Profiles**:
   - `PrfQueryProfile`, `PrfReset`, the program-list calls, the `PRF16*` / `WIN16*` exports;
@@ -254,8 +254,8 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 
 Warpine's first priority is that a guest cannot escape to the host (CLAUDE.md, ADR-0066). These would make that boundary harder to cross, and find mistakes before guests do.
 
-- [ ] **Guest privilege**: ADR-0113 steps 1–4 are done: 32-bit and 16-bit programs run at ring 3 by default, with supervisor-only page tables (the paging arena), GDT, IDT and ring-0 window, read-only thunks and CR0.WP. Left: step 5, after one release (v0.0.10), remove `WARPINE_RING=0` and with it the ring-0 defences (the `os2-paging-watch` kicks, `paging_violation`, ADR-0088). The arena caps a process at 182 threads; a second arena would lift that. XE faces the same choice.
-- [ ] **Memory protection**: see [Memory protection on the page tables](#kernel-and-processes) (read-only code objects, free memory).
+- [ ] **Guest privilege**: ADR-0113 steps 1–4 are done: 32-bit and 16-bit programs run at ring 3 by default, with supervisor-only page tables (the paging arena), GDT, IDT and ring-0 window, read-only thunks and CR0.WP. Left: step 5, after one release (v0.0.10), remove `WARPINE_RING=0` and with it the ring-0 defences (the `os2-paging-watch` kicks, `paging_violation`, ADR-0088). The arena caps a process at 226 threads; a second arena would lift that. XE faces the same choice.
+- [ ] **Memory protection**: see [Memory protection on the page tables](#kernel-and-processes) (free memory, the main thread's stack).
 - [ ] **Confining the host process, further** (Landlock is done, ADR-0111):
   - check the sandbox's display and sound paths on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers); only SDL's dummy drivers are tested;
   - a cgroup v2 scope per session (memory, tasks), as the tests and the pre-commit hook already use, against runaway or hostile guests;
