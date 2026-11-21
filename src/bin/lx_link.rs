@@ -66,7 +66,9 @@ const PAGE_SIZE: u32 = 4096;
 /// Absolute file offset of the LX header (after 64-byte MZ stub).
 const LX_HEADER_OFFSET: u32 = 0x40;
 /// Size in bytes of the LX header structure.
-const LX_HEADER_SIZE: u32 = 172; // 0xAC
+/// The LX header's size: through `STACKSIZE` (ACh) and the reserved
+/// bytes after it, as Open Watcom's linker writes it (0xC4).
+const LX_HEADER_SIZE: u32 = 0xC4;
 
 // LX object flags
 const OBJ_READ: u32 = 0x0001;
@@ -447,6 +449,19 @@ mod elf_reader {
     /// memory of a Warpine process is smaller.
     pub const MAX_SECTION_BYTES: u64 = 256 * 1024 * 1024;
 
+    /// The largest alignment a section or common symbol may ask for: the
+    /// objects start on [`super::OBJECT_ALIGN`] boundaries, so no larger
+    /// one could be kept (and an input's own could make the image huge).
+    pub const MAX_ALIGN: u64 = super::OBJECT_ALIGN as u64;
+
+    /// `align` of `what`, at least 1, or an error above [`MAX_ALIGN`].
+    pub fn alignment(align: u64, what: &str, source_name: &str) -> Result<u64, Box<dyn super::Error>> {
+        if align > MAX_ALIGN {
+            return Err(format!("{source_name}: {what} asks for an alignment of {align} bytes (at most {MAX_ALIGN})").into());
+        }
+        Ok(align.max(1))
+    }
+
     /// The zero bytes of an uninitialized section of `size` bytes, or an
     /// error when the input asks for more than `MAX_SECTION_BYTES`.
     pub fn zeroed_section(size: u64, source_name: &str) -> Result<Vec<u8>, Box<dyn super::Error>> {
@@ -517,7 +532,8 @@ mod elf_reader {
                     .to_vec()
             };
             index_map.insert(section.index(), sections.len());
-            sections.push(ElfSection { name, class, data, size, align: section.align().max(1), relocs: Vec::new() });
+            let align = alignment(section.align(), &format!("section {name}"), source_name)?;
+            sections.push(ElfSection { name, class, data, size, align, relocs: Vec::new() });
         }
 
         for section in obj.sections() {
@@ -596,7 +612,15 @@ mod elf_reader {
                         symbols.push(ElfSymbol { name, section_idx: s, offset: sym.address(), weak: sym.is_weak() });
                     }
                 }
-                SymbolSection::Common => commons.push(CommonSymbol { name, size: sym.size(), align: sym.address().max(1) }),
+                SymbolSection::Common => {
+                    // A common symbol's value is its alignment (System V ABI).
+                    let what = format!("common symbol {name}");
+                    let align = alignment(sym.address(), &what, source_name)?;
+                    if sym.size() > MAX_SECTION_BYTES {
+                        return Err(format!("{source_name}: {what} of {} bytes (at most {MAX_SECTION_BYTES})", sym.size()).into());
+                    }
+                    commons.push(CommonSymbol { name, size: sym.size(), align });
+                }
                 SymbolSection::Undefined => {
                     if sym.is_weak() { weak_refs.push(name) } else { undefined.push(name) }
                 }
@@ -1409,7 +1433,7 @@ mod lx_writer {
         mz[0x3C] = LX_HEADER_OFFSET as u8;
         out.extend_from_slice(&mz);
 
-        // 2. LX header (172 bytes).
+        // 2. LX header (LX_HEADER_SIZE bytes).
         out.extend_from_slice(&build_lx_header(
             total_pages as u32,
             obj_table_off, num_objects, page_map_off,
@@ -1564,6 +1588,8 @@ mod lx_writer {
         eip: u32,
         esp_object: u32,
         esp: u32,
+        /// The main thread's stack (`STACKSIZE`): Warpine makes it sparse.
+        stack_size: u32,
     }
 
     impl HeaderKind {
@@ -1573,12 +1599,12 @@ mod lx_writer {
                 None => (0, 0),
             };
             match dll {
-                None => HeaderKind { module_flags: 0, eip_object, eip, esp_object: 3, esp: STACK_SIZE },
+                None => HeaderKind { module_flags: 0, eip_object, eip, esp_object: 3, esp: STACK_SIZE, stack_size: STACK_SIZE },
                 Some(d) => HeaderKind {
                     module_flags: MODULE_LIBRARY
                         | if d.init_instance { MODULE_INIT_INSTANCE } else { 0 }
                         | if d.term_instance { MODULE_TERM_INSTANCE } else { 0 },
-                    eip_object, eip, esp_object: 0, esp: 0,
+                    eip_object, eip, esp_object: 0, esp: 0, stack_size: 0,
                 },
             }
         }
@@ -1665,7 +1691,7 @@ mod lx_writer {
         resource_count: u32,
         kind: HeaderKind,
     ) -> Vec<u8> {
-        let mut h = Vec::with_capacity(172);
+        let mut h = Vec::with_capacity(LX_HEADER_SIZE as usize);
         h.extend_from_slice(b"LX");
         h.push(0); h.push(0);                                       // byte_order, word_order
         h.extend_from_slice(&0u32.to_le_bytes());                   // format_level
@@ -1711,7 +1737,9 @@ mod lx_writer {
         h.extend_from_slice(&0u32.to_le_bytes());                   // num_instance_preload
         h.extend_from_slice(&0u32.to_le_bytes());                   // num_instance_demand
         h.extend_from_slice(&0u32.to_le_bytes());                   // heap_size
-        assert_eq!(h.len(), 172, "LX header must be 172 bytes");
+        h.extend_from_slice(&kind.stack_size.to_le_bytes());        // stack_size (the whole stack object)
+        h.resize(LX_HEADER_SIZE as usize, 0);                       // reserved
+        assert_eq!(h.len(), LX_HEADER_SIZE as usize);
         h
     }
 }
@@ -1766,7 +1794,6 @@ fn main() {
     let def_content = load_def_file(parsed.def_file.as_deref());
     let def_map = def_parser::parse_def(&def_content);
 
-    let mut def_map = def_map;
     let mut inputs = Inputs::default();
     for input in &parsed.inputs {
         if let Err(e) = load_input(input, &mut inputs) {
@@ -1774,16 +1801,65 @@ fn main() {
             process::exit(1);
         }
     }
+    let linked = match link(&parsed, def_map, inputs) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("lx-link: {e}");
+            process::exit(1);
+        }
+    };
+
+    if let Err(e) = std::fs::write(&parsed.output, &linked.lx) {
+        eprintln!("lx-link: cannot write {:?}: {}", parsed.output, e);
+        process::exit(1);
+    }
+
+    // The debug companion (ADR-0102).
+    let debug_file = if parsed.no_debug_file {
+        None
+    } else {
+        parsed.debug_file.clone()
+            .or_else(|| debug_elf::has_debug_info(&linked.objects).then(|| parsed.output.with_extension("dbg")))
+    };
+    if let Some(path) = debug_file {
+        let written = linked.debug_file()
+            .and_then(|elf| std::fs::write(&path, elf).map_err(|e| e.to_string()));
+        if let Err(e) = written {
+            eprintln!("lx-link: cannot write the debug file {path:?}: {e}");
+            process::exit(1);
+        }
+    }
+}
+
+/// What a link made: the LX file, and the objects and layout its debug
+/// companion is made from.
+pub(crate) struct Linked {
+    pub(crate) lx: Vec<u8>,
+    objects: Vec<elf_reader::ElfObject>,
+    state: linker_state::LinkerState,
+}
+
+impl Linked {
+    /// The debug companion (ADR-0102).
+    pub(crate) fn debug_file(&self) -> Result<Vec<u8>, String> {
+        debug_elf::linked_images(&self.lx, &self.state)
+            .ok_or_else(|| "the linked image is cut short".to_string())
+            .and_then(|(code, data)| debug_elf::write(&self.objects, &self.state, &code, &data))
+    }
+
+    /// Whether the objects carry debug information.
+    #[allow(dead_code)]
+    pub(crate) fn has_debug_info(&self) -> bool {
+        debug_elf::has_debug_info(&self.objects)
+    }
+}
+
+/// Link `inputs` as `parsed` asks, with the API ordinals of `def_map`.
+fn link(parsed: &args::Args, mut def_map: std::collections::HashMap<String, (String, u32)>, mut inputs: Inputs) -> Result<Linked, String> {
     let resources = std::mem::take(&mut inputs.resources);
     let messages = std::mem::take(&mut inputs.messages);
     if !messages.is_empty() {
-        match message_object(&messages) {
-            Ok(o) => inputs.objects.push(o),
-            Err(e) => {
-                eprintln!("lx-link: bad message file: {e}");
-                process::exit(1);
-            }
-        }
+        inputs.objects.push(message_object(&messages).map_err(|e| format!("bad message file: {e}"))?);
     }
     let mut spec = lx_writer::Spec::default();
     // Names a DLL input exports become imports from it; an OS/2 API of
@@ -1803,8 +1879,7 @@ fn main() {
     }
     let objects = select_objects(inputs, &def_map);
     if objects.is_empty() {
-        eprintln!("lx-link: no ELF objects found in inputs");
-        process::exit(1);
+        return Err("no ELF objects found in inputs".into());
     }
     let roots: Vec<&str> = match &spec.dll {
         Some(d) => std::iter::once(DLL_ENTRY).chain(d.exports.iter().map(|(n, _)| n.as_str())).collect(),
@@ -1813,54 +1888,37 @@ fn main() {
     let live = parsed.gc_sections.then(|| live_sections(&objects, &roots));
     let mut objects = objects;
     let all_live: Vec<Vec<bool>> = objects.iter().map(|o| vec![true; o.sections.len()]).collect();
-    if let Err(e) = eh_frame::prune(&mut objects, live.as_deref().unwrap_or(&all_live)) {
-        eprintln!("lx-link: {e}");
-        process::exit(1);
-    }
+    eh_frame::prune(&mut objects, live.as_deref().unwrap_or(&all_live))?;
 
     let built = if spec.dll.is_some() {
         linker_state::LinkerState::build_dll(&objects, live.as_deref())
     } else {
         linker_state::LinkerState::build(&objects, live.as_deref())
     };
-    let state = match built {
-        Ok(s) => s,
-        Err(e) => { eprintln!("lx-link: {}", e); process::exit(1); }
-    };
+    let state = built.map_err(|e| e.to_string())?;
+    let lx = lx_writer::write_lx(&objects, &state, &def_map, &resources, &spec).map_err(|e| e.to_string())?;
+    Ok(Linked { lx, objects, state })
+}
 
-    let lx_bytes = match lx_writer::write_lx(&objects, &state, &def_map, &resources, &spec) {
-        Ok(b) => b,
-        Err(e) => { eprintln!("lx-link: {}", e); process::exit(1); }
-    };
-
-    if let Err(e) = std::fs::write(&parsed.output, &lx_bytes) {
-        eprintln!("lx-link: cannot write {:?}: {}", parsed.output, e);
-        process::exit(1);
+/// Link the one input `data`, named `name` (its extension says what it
+/// is), into a program in memory, with the built-in API ordinals: the
+/// fuzz target's entry (ADR-0112). `gc` links with `--gc-sections`.
+#[allow(dead_code)]
+pub(crate) fn link_in_memory(name: &str, data: Vec<u8>, gc: bool) -> Result<Linked, String> {
+    let mut raw = vec!["lx-link".to_string(), name.to_string(), "-o".into(), "fuzz.exe".into()];
+    if gc {
+        raw.push("--gc-sections".into());
     }
-
-    // The debug companion (ADR-0102).
-    let debug_file = if parsed.no_debug_file {
-        None
-    } else {
-        parsed.debug_file.clone()
-            .or_else(|| debug_elf::has_debug_info(&objects).then(|| parsed.output.with_extension("dbg")))
-    };
-    if let Some(path) = debug_file {
-        let written = debug_elf::linked_images(&lx_bytes, &state)
-            .ok_or_else(|| "the linked image is cut short".to_string())
-            .and_then(|(code, data)| debug_elf::write(&objects, &state, &code, &data))
-            .and_then(|elf| std::fs::write(&path, elf).map_err(|e| e.to_string()));
-        if let Err(e) = written {
-            eprintln!("lx-link: cannot write the debug file {path:?}: {e}");
-            process::exit(1);
-        }
-    }
+    let parsed = args::parse_args(&raw);
+    let mut inputs = Inputs::default();
+    add_input(Path::new(name), data, &mut inputs).map_err(|e| e.to_string())?;
+    link(&parsed, def_parser::parse_def(EMBEDDED_DEF), inputs)
 }
 
 /// The parsed inputs: plain objects are always linked; an archive member
 /// only when it defines a symbol something linked needs.
 #[derive(Default)]
-struct Inputs {
+pub(crate) struct Inputs {
     objects: Vec<elf_reader::ElfObject>,
     members: Vec<elf_reader::ElfObject>,
     /// Resources from .res files, in order.
@@ -1962,9 +2020,11 @@ fn live_sections(objects: &[elf_reader::ElfObject], roots: &[&str]) -> Vec<Vec<b
     live
 }
 
+/// The API ordinals, compiled in so lx-link works regardless of CWD.
+const EMBEDDED_DEF: &str = include_str!("../../targets/os2api.def");
+
 fn load_def_file(explicit: Option<&Path>) -> String {
-    // Embedded fallback — compiled in so lx-link works regardless of CWD.
-    const EMBEDDED: &str = include_str!("../../targets/os2api.def");
+    const EMBEDDED: &str = EMBEDDED_DEF;
     if let Some(p) = explicit {
         return std::fs::read_to_string(p).unwrap_or_else(|_| EMBEDDED.to_string());
     }
@@ -1979,6 +2039,13 @@ fn load_def_file(explicit: Option<&Path>) -> String {
 
 fn load_input(path: &Path, inputs: &mut Inputs) -> Result<(), Box<dyn Error>> {
     let data = std::fs::read(path)?;
+    add_input(path, data, inputs)
+}
+
+/// Read input `data`, the contents of `path`: a resource file, a DLL, a
+/// message file, an archive or an object, by its name and first bytes
+/// (the fuzz target's entry, ADR-0112: every input is untrusted).
+pub(crate) fn add_input(path: &Path, data: Vec<u8>, inputs: &mut Inputs) -> Result<(), Box<dyn Error>> {
     let name = path.display().to_string();
 
     if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("res")) {
@@ -2026,6 +2093,19 @@ mod tests {
         assert_eq!(zeroed_section(16, "a.o").unwrap(), vec![0u8; 16]);
         assert!(zeroed_section(MAX_SECTION_BYTES + 1, "a.o").is_err(), "a crafted header cannot ask for gigabytes");
         assert!(zeroed_section(u64::MAX, "a.o").is_err());
+    }
+
+    /// A section's or common symbol's alignment is at most the objects'
+    /// own (64 KB): a crafted one could otherwise grow the image to
+    /// gigabytes (found by the lx_link fuzz target).
+    #[test]
+    fn alignments_are_bounded() {
+        use super::elf_reader::{alignment, MAX_ALIGN};
+        assert_eq!(alignment(0, "section .text", "a.o").unwrap(), 1);
+        assert_eq!(alignment(16, "section .text", "a.o").unwrap(), 16);
+        assert_eq!(alignment(MAX_ALIGN, "section .text", "a.o").unwrap(), MAX_ALIGN);
+        let e = alignment(1 << 31, "section .text", "a.o").expect_err("too large").to_string();
+        assert!(e.contains("a.o: section .text asks for an alignment of 2147483648 bytes"), "{e}");
     }
 
     #[test]
@@ -2330,6 +2410,9 @@ VIOCALLS.19   VioWrtTTY\n";
         let hdr = LX_HEADER_OFFSET as usize;
         let obj_count = u32::from_le_bytes(lx_bytes[hdr + 0x44..hdr + 0x48].try_into().unwrap());
         assert_eq!(obj_count, 3, "3 objects: code + data + stack");
+        let u32_at = |at: usize| u32::from_le_bytes(lx_bytes[hdr + at..hdr + at + 4].try_into().unwrap());
+        assert_eq!(u32_at(0x40), LX_HEADER_SIZE, "the object table follows the header");
+        assert_eq!(u32_at(0xAC), STACK_SIZE, "STACKSIZE: the whole stack object");
 
         let eip_obj = u32::from_le_bytes(lx_bytes[hdr + 0x18..hdr + 0x1C].try_into().unwrap());
         assert_eq!(eip_obj, 1, "entry in object 1 (code)");
@@ -2700,8 +2783,18 @@ VIOCALLS.19   VioWrtTTY\n";
         assert_eq!(p.def_file.as_ref().unwrap().to_str().unwrap(), "/api.def");
     }
 
+    /// A link in memory reads its one input by its name and fails
+    /// cleanly on bad input (the fuzz target's entry).
+    #[test]
+    fn a_link_in_memory_refuses_bad_input() {
+        for name in ["x.o", "x.res", "x.dll", "x.msg"] {
+            assert!(link_in_memory(name, b"not an object".to_vec(), false).is_err(), "{name}");
+        }
+        assert!(link_in_memory("x.a", b"!<arch>\n".to_vec(), true).is_err(), "an empty archive: no objects");
+    }
+
     #[test]
     fn test_lx_header_size_constant() {
-        assert_eq!(LX_HEADER_SIZE, 172);
+        assert_eq!(LX_HEADER_SIZE, 0xC4, "as Open Watcom's linker writes it");
     }
 }

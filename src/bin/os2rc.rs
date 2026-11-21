@@ -295,6 +295,9 @@ struct Preprocessor {
     files: Vec<PathBuf>,
     out: Vec<Tok>,
     depth: usize,
+    /// Whether `#include` and `RCINCLUDE` may read files (not while
+    /// fuzzing: [`compile_in_memory`]).
+    reads_files: bool,
 }
 
 const MAX_INCLUDE_DEPTH: usize = 32;
@@ -368,7 +371,7 @@ impl Preprocessor {
             macros.insert(name.to_string(), Macro { params: None,
                 body: vec![Tok { kind: Kind::Num(1, false), text: "1".into(), loc: Loc::default(), space_before: true }] });
         }
-        Preprocessor { macros, include_dirs, files: Vec::new(), out: Vec::new(), depth: 0 }
+        Preprocessor { macros, include_dirs, files: Vec::new(), out: Vec::new(), depth: 0, reads_files: true }
     }
 
     fn define_cmdline(&mut self, def: &str) -> Result<()> {
@@ -381,6 +384,9 @@ impl Preprocessor {
     /// Where `name` is: next to `from` (quoted includes), then on the
     /// include path.
     fn find(&self, name: &str, from: Option<&Path>, quoted: bool) -> Option<PathBuf> {
+        if !self.reads_files {
+            return None;
+        }
         let mut candidates = Vec::new();
         if quoted {
             if let Some(dir) = from.and_then(Path::parent) { candidates.push(dir.join(name)); }
@@ -397,7 +403,15 @@ impl Preprocessor {
             return Err(RcError { loc: at, msg: "#include nested too deeply".into() });
         }
         let text = std::fs::read(path).map_err(|e| RcError { loc: at, msg: format!("{}: {e}", path.display()) })?;
-        let text = String::from_utf8_lossy(&text).into_owned();
+        self.run_text(&text, path, script, at)
+    }
+
+    /// Preprocess `text`, the contents of `path` (see [`Self::run_file`]).
+    fn run_text(&mut self, text: &[u8], path: &Path, script: bool, at: Option<Loc>) -> Result<()> {
+        if self.depth >= MAX_INCLUDE_DEPTH {
+            return Err(RcError { loc: at, msg: "#include nested too deeply".into() });
+        }
+        let text = String::from_utf8_lossy(text).into_owned();
         let file = self.files.len();
         self.files.push(path.to_path_buf());
         self.depth += 1;
@@ -807,6 +821,8 @@ struct Parser<'a> {
     pos: usize,
     files: &'a [PathBuf],
     search: &'a [PathBuf],
+    /// Whether ICON, BITMAP, … may read their files.
+    reads_files: bool,
     codepage: u16,
     out: Vec<Resource>,
     /// String and message table bundles, by (type, bundle id).
@@ -950,11 +966,15 @@ impl<'a> Parser<'a> {
     }
 
     fn read_file(&self, name: &str, loc: Loc) -> Result<Vec<u8>> {
+        if !self.reads_files {
+            return err(loc, format!("cannot read {name}: no files here"));
+        }
         let here = self.files.get(loc.file).and_then(|f| f.parent()).map(Path::to_path_buf);
         let candidates = std::iter::once(PathBuf::from(name))
             .chain(here.map(|d| d.join(name)))
             .chain(self.search.iter().map(|d| d.join(name)));
-        for c in candidates {
+        // Regular files only: a device such as /dev/zero never ends.
+        for c in candidates.filter(|c| c.is_file()) {
             if let Ok(data) = std::fs::read(&c) { return Ok(data); }
         }
         err(loc, format!("cannot read {name}"))
@@ -1419,7 +1439,24 @@ fn write_res(resources: &[Resource]) -> Vec<u8> {
 
 /// Compile the script at `input`.
 fn compile(input: &Path, include_dirs: &[PathBuf], defines: &[String]) -> std::result::Result<Vec<Resource>, String> {
+    let text = std::fs::read(input).map_err(|e| format!("{}: {e}", input.display()))?;
+    compile_source(&text, input, include_dirs, defines, true)
+}
+
+/// Compile the script `text` alone into a .res file: no `#include`,
+/// `RCINCLUDE` or resource file is read (the fuzz target's entry,
+/// ADR-0112).
+#[allow(dead_code)]
+pub(crate) fn compile_in_memory(text: &[u8]) -> std::result::Result<Vec<u8>, String> {
+    compile_source(text, Path::new("input.rc"), &[], &[], false).map(|r| write_res(&r))
+}
+
+/// Compile `text`, the script at `input`; files are read only when
+/// `reads_files`.
+fn compile_source(text: &[u8], input: &Path, include_dirs: &[PathBuf], defines: &[String], reads_files: bool)
+                  -> std::result::Result<Vec<Resource>, String> {
     let mut pre = Preprocessor::new(include_dirs.to_vec());
+    pre.reads_files = reads_files;
     let describe = |e: RcError, files: &[PathBuf]| match e.loc {
         Some(l) if l.line > 0 => format!("{}:{}: {}", files.get(l.file).map_or("?".into(), |f| f.display().to_string()), l.line, e.msg),
         Some(l) => format!("{}: {}", files.get(l.file).map_or("?".into(), |f| f.display().to_string()), e.msg),
@@ -1428,11 +1465,11 @@ fn compile(input: &Path, include_dirs: &[PathBuf], defines: &[String]) -> std::r
     for d in defines {
         pre.define_cmdline(d).map_err(|e| e.msg)?;
     }
-    if let Err(e) = pre.run_file(input, true, None) {
+    if let Err(e) = pre.run_text(text, input, true, None) {
         return Err(describe(e, &pre.files));
     }
     let toks = std::mem::take(&mut pre.out);
-    let mut parser = Parser { toks: &toks, pos: 0, files: &pre.files, search: include_dirs, codepage: DEFAULT_CODEPAGE,
+    let mut parser = Parser { toks: &toks, pos: 0, files: &pre.files, search: include_dirs, reads_files, codepage: DEFAULT_CODEPAGE,
                               out: Vec::new(), bundles: BTreeMap::new() };
     match parser.statements() {
         Ok(()) => Ok(parser.finish()),
@@ -1501,6 +1538,29 @@ mod tests {
         let out = compile(&rc, &[sdk], &[]);
         let _ = std::fs::remove_dir_all(&dir);
         out
+    }
+
+    /// A script compiled in memory reads no file: neither an include nor
+    /// a resource's file; what it defines itself compiles.
+    #[test]
+    fn a_script_compiled_in_memory_reads_no_file() {
+        let res = compile_in_memory(b"#define ID 7\nRCDATA ID\nBEGIN\n  1, 2\nEND\n").expect("compiles");
+        // One resource: type RT_RCDATA (0xFF, 9), name 7 (0xFF, 7).
+        assert_eq!(&res[..6], &[0xFF, 9, 0, 0xFF, 7, 0]);
+        let sdk = Path::new(env!("CARGO_MANIFEST_DIR")).join("sdk/include/os2.h");
+        let include = format!("#include \"{}\"\n", sdk.display());
+        assert!(compile_in_memory(include.as_bytes()).is_err(), "no include");
+        let icon = format!("ICON 1 \"{}\"\n", sdk.display());
+        assert!(compile_in_memory(icon.as_bytes()).expect_err("no resource file").contains("no files"));
+    }
+
+    /// A resource's file must be a regular file: a device such as
+    /// /dev/zero would be read for ever.
+    #[test]
+    fn a_resource_file_must_be_a_regular_file() {
+        if !Path::new("/dev/zero").exists() { return; }
+        let e = compile_text("ICON 1 \"/dev/zero\"\n", &[]).expect_err("not a regular file");
+        assert!(e.contains("cannot read /dev/zero"), "{e}");
     }
 
     fn hex(s: &str) -> Vec<u8> {

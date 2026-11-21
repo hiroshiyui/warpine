@@ -23,6 +23,9 @@ libfuzzer-sys = "=0.4.13"
 # Warpine's own logging facade, at the version Warpine locks (src/ne.rs
 # logs through it; nothing is printed while fuzzing).
 log = "=0.4.29"
+# lx-link's object and archive reader, at the version and with the
+# features Warpine locks (src/bin/lx_link.rs).
+object = { version = "=0.36.7", default-features = false, features = ["read_core", "elf", "archive", "std"] }
 
 [[bin]]
 name = "desktop_proto"
@@ -45,6 +48,18 @@ doc = false
 [[bin]]
 name = "msgfile"
 path = "fuzz_targets/msgfile.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "os2rc"
+path = "fuzz_targets/os2rc.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "lx_link"
+path = "fuzz_targets/lx_link.rs"
 test = false
 doc = false
 

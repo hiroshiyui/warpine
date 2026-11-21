@@ -55,7 +55,7 @@ case "$MODE" in
         # samples just built (fuzz/). A crash prints its input to rerun.
         step "fuzzing"
         fuzz/seed.sh
-        for target in desktop_proto lx_parse ne_parse msgfile; do
+        for target in desktop_proto lx_parse ne_parse msgfile os2rc lx_link; do
             if ! FUZZ_TARGET_DIR="$CARGO_TARGET_DIR/fuzz" fuzz/run.sh "$target" "${FUZZ_SECONDS:-60}" >"$CARGO_TARGET_DIR/fuzz-$target.log" 2>&1; then
                 tail -40 "$CARGO_TARGET_DIR/fuzz-$target.log"
                 for crash in fuzz/artifacts/"$target"/*; do
