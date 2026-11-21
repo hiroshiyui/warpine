@@ -6,6 +6,9 @@
 #   ./vendor/setup_ci_image.sh --refresh  # rebuild the image
 #   ./vendor/setup_ci_image.sh --print-image  # its name
 #
+# Other localhost/warpine-ci tags (images of earlier pins) are removed
+# once the current image exists; KEEP_OLD_CI_IMAGES=1 keeps them.
+#
 # Builds localhost/warpine-ci:<SUITE>-<SNAPSHOT>: the Debian base and the
 # snapshot.debian.org timestamp of vendor/setup_compilers.sh (the same
 # pinned gcc, g++ and clang), plus what building and testing Warpine
@@ -36,13 +39,21 @@ BASE_IMAGE=$(setting BASE_IMAGE)
 BASE_DIGEST=$(setting BASE_DIGEST)
 SNAPSHOT=$(setting SNAPSHOT)
 RUST_TOOLCHAIN=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$ROOT/rust-toolchain.toml")
-# The fuzz targets' dated nightly (fuzz/rust-toolchain.toml).
+# The dated nightly of the fuzz targets (fuzz/rust-toolchain.toml) and of
+# the Rust guest crates: rust-src for the guests' `-Z build-std`
+# (test_rust_hello builds samples/rust_hello whenever the toolchain is
+# installed).
 FUZZ_TOOLCHAIN=$(sed -n 's/^channel = "\(.*\)"$/\1/p' "$ROOT/fuzz/rust-toolchain.toml")
+FUZZ_COMPONENTS="rust-src"
 RUSTUP_VERSION="1.29.3"
 RUSTUP_SHA256="b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55"
 CARGO_DENY_VERSION="0.19.4"
 CARGO_DENY_SHA256="3bd58b784e83715b86ddbc9deac591890372ec77fda5741bb0826970b958506f"
-IMAGE="localhost/warpine-ci:${SUITE}-${SNAPSHOT}-rust${RUST_TOOLCHAIN}-deny${CARGO_DENY_VERSION}-fuzz${FUZZ_TOOLCHAIN}"
+# Counted up whenever what the image holds changes in a way the names
+# above do not show (its package list): a new tag builds a new image.
+# 2: git, which cargo-deny runs to fetch the advisory database.
+IMAGE_REVISION=2
+IMAGE="localhost/warpine-ci:${SUITE}-${SNAPSHOT}-rust${RUST_TOOLCHAIN}-deny${CARGO_DENY_VERSION}-fuzz${FUZZ_TOOLCHAIN}-${FUZZ_COMPONENTS}-r${IMAGE_REVISION}"
 
 if [ "${1:-}" = "--print-image" ]; then
     echo "$IMAGE"
@@ -53,8 +64,22 @@ command -v podman >/dev/null || { echo "setup_ci_image.sh: podman is not install
 [ -n "$SUITE" ] && [ -n "$BASE_DIGEST" ] && [ -n "$SNAPSHOT" ] && [ -n "$RUST_TOOLCHAIN" ] && [ -n "$FUZZ_TOOLCHAIN" ] \
     || { echo "setup_ci_image.sh: cannot read the pins" >&2; exit 1; }
 
+# Remove the warpine-ci images of other tags: each change of the pins
+# leaves the previous image behind (gigabytes each); they can all be
+# built again from this script. KEEP_OLD_CI_IMAGES=1 keeps them.
+remove_stale_images() {
+    [ "${KEEP_OLD_CI_IMAGES:-}" = "1" ] && return 0
+    local old
+    podman images --format '{{.Repository}}:{{.Tag}}' localhost/warpine-ci | while read -r old; do
+        [ "$old" = "$IMAGE" ] && continue
+        echo "Removing the stale CI image $old"
+        podman rmi "$old" >/dev/null || echo "setup_ci_image.sh: could not remove $old (in use?)" >&2
+    done
+}
+
 if [ "${1:-}" != "--refresh" ] && podman image exists "$IMAGE"; then
     echo "The CI image is already $IMAGE"
+    remove_stale_images
     exit 0
 fi
 
@@ -68,7 +93,7 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \\
       echo 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/${SNAPSHOT} ${SUITE}-security main'; } > /etc/apt/sources.list \\
  && apt-get -o Acquire::Retries=3 update \\
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \\
-      gcc g++ clang binutils make libsdl3-dev pkg-config gdb ca-certificates curl xz-utils procps \\
+      gcc g++ clang binutils make libsdl3-dev pkg-config gdb ca-certificates curl xz-utils procps git \\
  && rm -rf /var/lib/apt/lists/*
 ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:\$PATH
 RUN curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/rustup-init \\
@@ -77,7 +102,7 @@ RUN curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/rustup-init \\
  && chmod +x /tmp/rustup-init \\
  && /tmp/rustup-init -y --no-modify-path --profile minimal --default-toolchain ${RUST_TOOLCHAIN} -c clippy,rustfmt \\
  && rm /tmp/rustup-init \\
- && /opt/cargo/bin/rustup toolchain install ${FUZZ_TOOLCHAIN} --profile minimal \\
+ && /opt/cargo/bin/rustup toolchain install ${FUZZ_TOOLCHAIN} --profile minimal -c ${FUZZ_COMPONENTS} \\
  && curl --proto '=https' --tlsv1.2 -fsSL -o /tmp/cargo-deny.tar.gz \\
       https://github.com/EmbarkStudios/cargo-deny/releases/download/${CARGO_DENY_VERSION}/cargo-deny-${CARGO_DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz \\
  && echo '${CARGO_DENY_SHA256}  /tmp/cargo-deny.tar.gz' | sha256sum -c - \\
@@ -90,3 +115,4 @@ CONTAINERFILE
 echo "Building $IMAGE (Debian $SUITE at $SNAPSHOT on $BASE_DIGEST, Rust $RUST_TOOLCHAIN)"
 podman build --pull=missing -t "$IMAGE" "$CONTEXT"
 podman run --rm --network=none "$IMAGE" sh -c 'gcc --version | head -1; clang --version | head -1; rustc --version; pkg-config --modversion sdl3'
+remove_stale_images

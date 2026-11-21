@@ -34,7 +34,7 @@ The "Security Facilities" TODOs named two gaps:
    A crash fails the entry and prints its input as base64, since the workflow uses no third-party action to upload artifacts.
 3. **The CI image** gains:
    - `cargo-deny` 0.19.4, its release binary checked against its SHA-256;
-   - the fuzz toolchain, through rustup, which checks it against the channel manifest.
+   - the fuzz toolchain, through rustup, which checks it against the channel manifest, with `rust-src`: it is also the Rust guest crates' toolchain, and once it is in the image `test_rust_hello` builds `samples/rust_hello` with `-Z build-std` instead of skipping.
 
    The image's tag names both.
 
@@ -52,3 +52,5 @@ The "Security Facilities" TODOs named two gaps:
   - `parse_entry_table` panicked on a bundle header cut after its count, and on ordinals running past 65535. It now stops there.
 - After the fixes, two minutes per target found nothing more: 16.7 million inputs for the desktop protocol, 249,000 for LX, 6.2 million for NE and 5.2 million for message files.
 - A new advisory against a dependency turns CI red until it is fixed or written off in `deny.toml` with a reason.
+- **Found after release:** the image first installed the nightly without `rust-src`. `test_rust_hello`, which had skipped for want of the toolchain, then failed in every matrix entry, from this change until it was fixed (v0.0.9 was released with CI red). The image's tag names the component, so a fixed image is built.
+- **Found with it:** `cargo deny`'s advisory check, which CI had never reached, failed in the image: the release binary fetches the advisory database with `git`, which the image lacked. The image installs `git` from the dated Debian snapshot, and its tag carries a revision (`IMAGE_REVISION`) counted up when its package list changes.

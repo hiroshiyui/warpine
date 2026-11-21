@@ -2319,7 +2319,7 @@ cargo test --test integration     # the end-to-end tests (requires /dev/kvm)
 
 **The samples' compiler** (ADR-0101): the tests run the Open Watcom builds in `samples/<name>/`. With `WARPINE_SAMPLES=gcc` (or `clang`, `gcc-pinned`, `clang-pinned`) they run the builds of `samples/build_sdk.sh` instead: `sample_path` maps every `samples/<name>/<file>.exe` / `.dll` a test runs, copies or checks to `samples/build/<tag>/<name>/`, except for the samples that script does not build. Use `sample_path` / `sample_exists` for any new sample path in a test. A `ci-` prefix (`ci-gcc`, `ci-clang`) is the CI matrix's own build (ADR-0106).
 
-**CI** (ADR-0106): `ci/matrix.sh watcom|gcc|clang` is one matrix entry; it runs in the image `vendor/setup_ci_image.sh` builds, started by `ci/run.sh` (locally, or from `.github/workflows/ci.yml`). A new tool or package the tests need goes into that image's package list. A sample with its own Makefile and integration test goes into `build_sdk.sh`'s `SKIP` and `sample_path`'s `NOT_BUILT`.
+**CI** (ADR-0106): `ci/matrix.sh watcom|gcc|clang` is one matrix entry; it runs in the image `vendor/setup_ci_image.sh` builds, started by `ci/run.sh` (locally, or from `.github/workflows/ci.yml`). A new tool or package the tests need goes into that image's package list, with `IMAGE_REVISION` counted up so that a new tag builds a new image; the script removes the images of older tags (`KEEP_OLD_CI_IMAGES=1` keeps them). A sample with its own Makefile and integration test goes into `build_sdk.sh`'s `SKIP` and `sample_path`'s `NOT_BUILT`.
 
 ```bash
 samples/build_sdk.sh gcc && WARPINE_SAMPLES=gcc cargo test --test integration
