@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* os2/pm.h - the Presentation Manager (PMWIN and PMGPI) for GCC and clang
  * (ADR-0097), declared from IBM's Presentation Manager Programming
- * Reference. INCL_WIN selects the window manager, INCL_GPI the graphics,
- * INCL_PM both. Every call is APIENTRY; window and dialog procedures are
+ * Reference; os2.h includes all of it. Every call is APIENTRY; window and dialog procedures are
  * EXPENTRY. The structures the window manager passes are packed to 2
  * bytes (FRAMECDATA is 10 bytes); the others have no padding to lose.
  *
@@ -84,7 +83,6 @@ typedef struct _SIZEL  { LONG cx; LONG cy; } SIZEL, *PSIZEL;
 #endif
 
 /* ═══ The window manager (PMWIN) ═══════════════════════════════════════ */
-#if defined(INCL_WIN) || defined(INCL_PM) || !defined(WARPINE_OS2_H)
 
 /* Messages */
 #define WM_NULL                0x0000
@@ -1137,10 +1135,8 @@ HPOINTER APIENTRY WinCreatePointer(HWND hwndDesktop, HBITMAP hbmPointer, BOOL fP
                                    LONG yHotspot);
 HPOINTER APIENTRY WinCreatePointerIndirect(HWND hwndDesktop, PPOINTERINFO pptri);
 
-#endif /* INCL_WIN */
 
 /* ═══ Graphics (PMGPI) ═════════════════════════════════════════════════ */
-#if defined(INCL_GPI) || defined(INCL_PM) || !defined(WARPINE_OS2_H)
 
 /* Results */
 #define GPI_ERROR     0
@@ -1275,6 +1271,22 @@ typedef struct _FATTRS {
 } FATTRS, *PFATTRS;
 
 /* The OS/2 2.x layout (208 bytes); pass its size to GpiQueryFontMetrics. */
+/* A font's PANOSE classification (Warpine leaves it zero). */
+typedef struct _PANOSE {
+    BYTE bFamilyType;
+    BYTE bSerifStyle;
+    BYTE bWeight;
+    BYTE bProportion;
+    BYTE bContrast;
+    BYTE bStrokeVariation;
+    BYTE bArmStyle;
+    BYTE bLetterform;
+    BYTE bMidline;
+    BYTE bXHeight;
+    BYTE fbPassedISO;
+    BYTE fbFailedISO;
+} PANOSE, *PPANOSE;
+
 typedef struct _FONTMETRICS {
     CHAR   szFamilyname[FACESIZE];
     CHAR   szFacename[FACESIZE];
@@ -1325,6 +1337,9 @@ typedef struct _FONTMETRICS {
     SHORT  sKerningPairs;
     SHORT  sFamilyClass;
     LONG   lMatch;
+    LONG   FamilyNameAtom;
+    LONG   FaceNameAtom;
+    PANOSE panose;
 } FONTMETRICS, *PFONTMETRICS;
 
 /* What DevOpenDC and SplQmOpen are given (lCount of the fields). */
@@ -1339,7 +1354,9 @@ typedef struct _DEVOPENSTRUC {
     PSZ   pszSpoolerParams;
     PSZ   pszNetworkParams;
 } DEVOPENSTRUC, *PDEVOPENSTRUC;
-typedef PDEVOPENSTRUC PDEVOPENDATA;
+/* DevOpenDC takes the fields as an array of strings (cast a
+ * DEVOPENSTRUC's address to it). */
+typedef PSZ *PDEVOPENDATA;
 
 /* Presentation spaces */
 HPS     APIENTRY GpiCreatePS(HAB hab, HDC hdc, PSIZEL psizlSize, ULONG flOptions);
@@ -1677,7 +1694,6 @@ LONG    APIENTRY GpiDrawBits(HPS hps, PVOID pBits, PBITMAPINFO2 pbmiInfoTable, L
 LONG    APIENTRY GpiWCBitBlt(HPS hpsTarget, HBITMAP hbmSource, LONG lCount, PPOINTL aptlPoints, LONG lRop,
                              ULONG flOptions);
 
-#endif /* INCL_GPI */
 
 #pragma pack(pop)
 
@@ -1686,14 +1702,12 @@ LONG    APIENTRY GpiWCBitBlt(HPS hpsTarget, HBITMAP hbmSource, LONG lCount, PPOI
 #endif
 
 /* The other PM modules: the shell, the standard dialogs and drag and
- * drop, help, the spooler. */
-#if defined(INCL_WIN) || defined(INCL_PM) || !defined(WARPINE_OS2_H)
-#  include <os2/pmshl.h>
-#  include <os2/pmstddlg.h>
-#  include <os2/pmhelp.h>
-#endif
-#if defined(INCL_GPI) || defined(INCL_PM) || !defined(WARPINE_OS2_H)
-#  include <os2/pmspl.h>
-#endif
+ * drop, help, the spooler, then the controls' structures, DDE and the
+ * calls that use them. */
+#include <os2/pmshl.h>
+#include <os2/pmstddlg.h>
+#include <os2/pmhelp.h>
+#include <os2/pmspl.h>
+#include <os2/pmctl.h>
 
 #endif /* WARPINE_OS2_PM_H */

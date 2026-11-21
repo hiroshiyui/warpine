@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// <cstdlib> - Warpine's C++ runtime (ADR-0103): <stdlib.h> in namespace std too.
+#ifndef WARPINE_CXX_CSTDLIB
+#define WARPINE_CXX_CSTDLIB
+
+#include <stdlib.h>
+
+namespace std {
+using ::size_t;
+using ::div_t;
+using ::ldiv_t;
+using ::malloc;
+using ::calloc;
+using ::realloc;
+using ::free;
+using ::exit;
+using ::abort;
+using ::atexit;
+using ::getenv;
+using ::abs;
+using ::labs;
+using ::llabs;
+using ::div;
+using ::ldiv;
+using ::atof;
+using ::strtod;
+using ::atoi;
+using ::atol;
+using ::strtol;
+using ::strtoul;
+using ::strtoll;
+using ::strtoull;
+using ::rand;
+using ::srand;
+using ::qsort;
+using ::bsearch;
+} // namespace std
+
+#endif

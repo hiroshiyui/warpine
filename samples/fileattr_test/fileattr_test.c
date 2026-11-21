@@ -27,7 +27,11 @@
 #define TEST_DIR  "C:\\FA_DIR"
 #define DIR_FILE  "C:\\FA_DIR\\INSIDE.TMP"
 
+#ifdef __WATCOMC__
 extern USHORT APIENTRY DOS16SETFILEMODE( PSZ name, USHORT attr, ULONG reserved );
+#else
+#define DOS16SETFILEMODE DosSetFileMode  /* the SDK's name for DOSCALLS.84 */
+#endif
 
 static int n_checks = 0;
 static int n_passed = 0;

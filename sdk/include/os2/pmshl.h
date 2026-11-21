@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* os2/pmshl.h - the shell (PMSHAPI): profiles, the switch list, starting
  * programs (ADR-0100), declared from IBM's PM Programming Reference.
- * Included by pm.h with INCL_WIN. */
+ * Included by pm.h. */
 #ifndef WARPINE_OS2_PMSHL_H
 #define WARPINE_OS2_PMSHL_H
 

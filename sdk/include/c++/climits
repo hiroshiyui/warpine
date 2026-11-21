@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// <climits> - Warpine's C++ runtime (ADR-0103): <limits.h> in namespace std too.
+#ifndef WARPINE_CXX_CLIMITS
+#define WARPINE_CXX_CLIMITS
+
+#include <limits.h>
+
+#endif

@@ -90,13 +90,13 @@ static MRESULT EXPENTRY ClientWndProc( HWND hwnd, ULONG msg, MPARAM mp1, MPARAM 
 }
 
 /* An ACCELTABLE with two entries (ACCELTABLE declares one). */
-#pragma pack( __push, 2 )
+#pragma pack( push, 2 )
 static struct {
     USHORT cAccel;
     USHORT codepage;
     ACCEL  aaccel[2];
 } table = { 2, 850, { { AF_VIRTUALKEY, VK_F3, 300 }, { AF_CHAR | AF_CONTROL, 's', 301 } } };
-#pragma pack( __pop )
+#pragma pack( pop )
 
 int main( void )
 {

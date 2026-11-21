@@ -7,6 +7,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- **C++ for the SDK** (ADR-0103): programs from g++ and clang++, with the SDK's own C++ runtime (`libos2cxx.a`).
+  - **Exceptions:** `throw` / `catch` through frames with destructors, rethrow, `catch (...)`, catch by base class and by pointer, `std::terminate`. A DWARF unwinder reads the `.eh_frame` that `lx-link` now keeps, pruned to the functions it keeps.
+  - **Run-time type information:** `typeid`, `dynamic_cast` (down, across, to `void *`), and the `type_info` objects of the fundamental types.
+  - **The rest:** `new` / `delete` in every form with `std::bad_alloc`, static constructors and destructors (`__cxa_atexit`, also per DLL), thread-safe static locals, `<new>`, `<exception>`, `<typeinfo>`, `<initializer_list>`, `<utility>`, `<stdexcept>` and the `<c…>` headers.
+  - **OS/2 exception handlers:** an exception leaving a frame takes that frame's `DosSetExceptionHandler` registration out of the chain.
+  - **`samples/cxx_test`:** 27 checks, passing with g++ and clang++.
+- **Source-level debugging with GDB** (ADR-0102).
+  - **`lx-link` writes a debug companion** (`prog.dbg`) when the objects have DWARF: an ELF file with the linked code at its addresses, the symbols and the relocated debug sections.
+  - **Using it:** `warpine --gdb 1234 prog.exe`, then `gdb -ex 'symbol-file prog.dbg' -ex 'target remote :1234'`. Breakpoints by function and line, arguments, locals, structures, `finish`, backtraces and globals all work.
+  - **`samples/c_gdb_test`** is debugged that way by the integration tests, built by GCC and by clang.
+- **Every C sample from GCC and clang** (ADR-0101).
+  - **`samples/build_sdk.sh gcc|clang`** builds 116 samples into `samples/build/<cc>/`, and `WARPINE_SAMPLES=gcc` (or `clang`) runs the integration tests against them. Open Watcom's builds stay the default.
+  - **The SDK declares everything:**
+    - `os2.h` ignores `INCL_*`;
+    - `os2/pmctl.h` has the standard controls, DDE, tracking and the attribute bundles;
+    - `dos.h` has NLS and MSG;
+    - there are `rexxsaa.h`, `os2me.h` (MCI), `time.h` and `stdint.h`, `sscanf` and `setvbuf`.
+  - **`lx-link` makes DLLs** (`--dll`, `--export`, `--initinstance`, `--terminstance`) and links against them (a `.dll` input); `dll0.o` is the SDK's DLL start-up.
+  - **Pinned compilers:** `vendor/setup_compilers.sh` builds a Podman image from a Debian base pinned by digest, with gcc, g++ and clang from a dated `snapshot.debian.org`; `vendor/pinned/*` run them.
+  - **`tests/sdk_layout`:** the size of 142 structures and the offset of each of their fields, built by Open Watcom and by both compilers, must agree.
 - **A C SDK for GCC and clang** (ADR-0096), in `sdk/`.
   - **`os2.h`:** the Control Program (Dos* and Que* calls) and the VIO, KBD and MOU subsystems, selected with `INCL_*`, written from IBM's reference.
     - System calls are cdecl.
@@ -48,6 +68,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   Sample: `samples/c_hello` with a minimal `crt0.c`, built and run with GCC and with clang by the integration tests.
 
 ### Fixed
+- **Exception handlers read the wrong registers from `CONTEXTRECORD`** (ADR-0101).
+  - Warpine laid out 0x88 bytes of floating-point state where IBM's structure has 0x6C, so `ctx_RegEip`, `ctx_SegCs`, `ctx_RegEsp` and the rest were read from other registers' places.
+  - The record now follows `<bsexcpt.h>`, 0xB0 bytes with `ctx_SegGs` at 0x70.
+- **`GpiQueryFontMetrics` filled only 208 of `FONTMETRICS`' 228 bytes**; the two atoms and the `PANOSE` after `lMatch` are now zeroed.
+- **The GDB stub showed PC 0 on attach**: it now reports the entry point, and the first `continue` waits for a real stop.
+- **Samples:**
+  - `socket_test` and `pm_frame_accel_test` packed their structures with Open Watcom's `__push` spelling, which other compilers ignore; they now use `push` / `pop`.
+  - `pm_controls_test`, `pm_demo` and `c_pm_test` drew strings past their end. The controls tests' goldens are regenerated.
 - **`lx-link` linked calls to PMDRAG, SOM, REXX, REXXAPI and PMWP to the wrong address** (it did not know those modules and only warned); an unknown module is now a link error (ADR-0097).
 - **8 PMWIN calls were invisible to the tools that read the dispatchers**, among them `WinInitialize` and `WinCreateStdWindow`: their arm comments lacked the `(` that `gen_compat` and `build.rs` look for (ADR-0097). The compatibility chart left them out, and `DosQueryProcAddr` could not find them by name. A `gen_compat` test now rejects such a comment.
 - **`lx-link` linked objects wrongly:**

@@ -20,6 +20,10 @@ extern init_fn __init_array_start[], __init_array_end[];
 
 int main(int argc, char **argv, char **envp);
 
+/* The module's handle for __cxa_atexit: C++ destructors of a program's
+ * statics run at exit() (ADR-0103). */
+void *__dso_handle = &__dso_handle;
+
 /* Count the arguments in `args` and, when `argv` is set, split them into
  * `out`, a buffer at least strlen(args) + 1 bytes long. */
 static int split_args(const char *args, char **argv, char *out)

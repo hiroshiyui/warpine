@@ -15,19 +15,28 @@
 
 char *__libc_env;
 
-/* ── errno: one word of thread-local memory ─────────────────────────── */
-static int *errno_slot;
+/* ── Thread-local memory: errno, and the C++ runtime's two words ────── */
+#define TLS_ERRNO      0
+#define TLS_CXX        1   /* the caught exceptions, the uncaught count */
+#define TLS_WORDS      3
+static ULONG *tls_words;
 static int errno_before_init;
+static ULONG cxx_before_init[2];
 
 void __libc_init_errno(void)
 {
-    PULONG slot;
-    if (DosAllocThreadLocalMemory(1, &slot) == NO_ERROR) errno_slot = (int *)slot;
+    PULONG words;
+    if (DosAllocThreadLocalMemory(TLS_WORDS, &words) == NO_ERROR) tls_words = words;
 }
 
 int *__errno_location(void)
 {
-    return errno_slot ? errno_slot : &errno_before_init;
+    return tls_words ? (int *)&tls_words[TLS_ERRNO] : &errno_before_init;
+}
+
+void *__libc_cxx_globals(void)
+{
+    return tls_words ? (void *)&tls_words[TLS_CXX] : (void *)cxx_before_init;
 }
 
 /* ── The runtime's lock ─────────────────────────────────────────────── */
@@ -67,21 +76,61 @@ int __libc_errno_of(unsigned long rc)
 }
 
 /* ── Exit ───────────────────────────────────────────────────────────── */
-#define ATEXIT_MAX 32
-static void (*atexit_fns[ATEXIT_MAX])(void);
-static int atexit_count;
-static libc_lock atexit_lock;
+/* atexit functions and C++ destructors registered by __cxa_atexit, run in
+ * reverse order of registration: by exit() all of them, by a DLL's
+ * termination (__cxa_finalize with its __dso_handle) the DLL's own. */
+#define ATEXIT_MAX 128
+struct exit_fn {
+    void (*fn)(void *);
+    void *arg;
+    void *dso;
+    int   plain;          /* an atexit function: called with no argument */
+};
+static struct exit_fn exit_fns[ATEXIT_MAX];
+static int exit_count;
+static libc_lock exit_lock;
+
+static int add_exit_fn(void (*fn)(void *), void *arg, void *dso, int plain)
+{
+    int rc = -1;
+    __libc_lock(&exit_lock);
+    if (exit_count < ATEXIT_MAX) {
+        exit_fns[exit_count++] = (struct exit_fn){ fn, arg, dso, plain };
+        rc = 0;
+    }
+    __libc_unlock(&exit_lock);
+    return rc;
+}
 
 int atexit(void (*fn)(void))
 {
-    int rc = -1;
-    __libc_lock(&atexit_lock);
-    if (atexit_count < ATEXIT_MAX) {
-        atexit_fns[atexit_count++] = fn;
-        rc = 0;
+    return add_exit_fn((void (*)(void *))fn, NULL, NULL, 1);
+}
+
+int __cxa_atexit(void (*fn)(void *), void *arg, void *dso)
+{
+    return add_exit_fn(fn, arg, dso, 0);
+}
+
+/* Run (newest first) the functions registered for `dso`, or all of them
+ * for NULL; each runs once, and may register more. */
+void __cxa_finalize(void *dso)
+{
+    for (;;) {
+        struct exit_fn e = { 0, 0, 0, 0 };
+        __libc_lock(&exit_lock);
+        for (int i = exit_count - 1; i >= 0; i--) {
+            if (exit_fns[i].fn && (!dso || exit_fns[i].dso == dso)) {
+                e = exit_fns[i];
+                exit_fns[i].fn = NULL;
+                break;
+            }
+        }
+        while (exit_count > 0 && !exit_fns[exit_count - 1].fn) exit_count--;
+        __libc_unlock(&exit_lock);
+        if (!e.fn) return;
+        if (e.plain) ((void (*)(void))e.fn)(); else e.fn(e.arg);
     }
-    __libc_unlock(&atexit_lock);
-    return rc;
 }
 
 typedef void (*fini_fn)(void);
@@ -89,7 +138,7 @@ extern fini_fn __fini_array_start[], __fini_array_end[];
 
 void exit(int status)
 {
-    while (atexit_count > 0) atexit_fns[--atexit_count]();
+    __cxa_finalize(NULL);
     for (fini_fn *f = __fini_array_end; f > __fini_array_start; ) (*--f)();
     __libc_close_streams();
     DosExit(EXIT_PROCESS, (ULONG)status);

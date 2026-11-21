@@ -231,6 +231,14 @@ int puts(const char *s)
     return (fputs(s, stdout) == EOF || fputc('\n', stdout) == EOF) ? EOF : 0;
 }
 
+/* Nothing is ever buffered for output, so every mode is accepted and
+ * changes nothing. */
+int setvbuf(FILE *f, char *buf, int mode, size_t size)
+{
+    (void)f; (void)buf; (void)size;
+    return (mode == _IOFBF || mode == _IOLBF || mode == _IONBF) ? 0 : -1;
+}
+
 int fflush(FILE *f)
 {
     (void)f;   /* nothing is ever buffered for output */

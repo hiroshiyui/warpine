@@ -5,8 +5,15 @@
 
 #include <stddef.h>
 
-/* Give errno its thread-local word (crt0, before anything can fail). */
+/* Give errno and the C++ runtime their thread-local words (crt0 and
+ * dll0, before anything can fail). */
 void __libc_init_errno(void);
+
+/* The thread's two words for the C++ runtime (ADR-0103). */
+void *__libc_cxx_globals(void);
+
+/* Run the exit functions registered for a module (NULL: all). */
+void __cxa_finalize(void *dso);
 
 /* The environment block crt0 was given. */
 extern char *__libc_env;

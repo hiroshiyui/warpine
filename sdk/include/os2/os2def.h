@@ -26,6 +26,15 @@
 #  define _System   APIENTRY
 #endif
 #define OS2_PASCAL  __attribute__((__stdcall__))
+/* Other OS/2 compilers' convention keywords, for their sources: __syscall
+ * is _System; _Optlink becomes cdecl too (both sides of a call are
+ * compiled the same way). */
+#ifndef __syscall
+#  define __syscall APIENTRY
+#endif
+#ifndef _Optlink
+#  define _Optlink
+#endif
 /* The import a declaration resolves to, when its C name differs. */
 #define OS2_IMPORT(name) __asm__(#name)
 

@@ -17,3 +17,4 @@ build-bsesub32/
 test.txt
 # The SDK runtime, one directory per compiler (sdk/Makefile)
 /sdk/build/
+/samples/build/

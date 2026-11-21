@@ -29,7 +29,7 @@ They run natively under KVM.
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2205 unit tests (2138 warpine + 23 gen_api + 24 lx_link + 8 os2rc + 5 gen_arch + 7 gen_compat) + 204 integration tests
+cargo test                                 # 2213 unit tests (2138 warpine + 23 gen_api + 32 lx_link + 8 os2rc + 5 gen_arch + 7 gen_compat) + 207 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); afterwards `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -53,11 +53,17 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
 - **C guests from GCC or clang** (ADR-0095): unmodified compilers emit freestanding i386 ELF (`-m32 -ffreestanding -fno-pic`) and `lx-link` makes the LX program.
   - Build with `cargo build --bin lx_link`, then `make -C samples/c_hello` (or `CC=clang`).
   - `lx-link` refuses position-independent code and fails on undefined symbols.
-- **The C SDK** (ADR-0096–0100): `sdk/include/os2.h` (Dos*, Que*, Vio*, Kbd*, Mou*, PM in `os2/pm.h` and the PM module headers it includes) and a small C runtime (stdio, stdlib with `strtod`, string, math).
+- **The C SDK** (ADR-0096–0101): `sdk/include/os2.h` declares everything (Dos*, Que*, NLS, MSG, Vio*, Kbd*, Mou*, PM in `os2/pm.h` and the PM module headers it includes; `INCL_*` select nothing), `rexxsaa.h`, `os2me.h`, and a small C runtime (stdio, stdlib with `strtod`, string, math, time).
   - Build it with `make -C sdk` (or `CC=clang`); a program's Makefile includes `sdk/os2.mk` (see `samples/c_sdk_test`).
   - Resources (ADR-0099): `cargo build --bin os2rc`; `os2rc -I sdk/include x.rc -o x.res`, then pass `x.res` to `lx-link` (see `samples/c_pm_test`). Its output must stay byte-identical to `wrc -zm` (`os2rc_matches_open_watcom_wrc`).
   - Every call a header declares must be in `targets/os2api.def`; VIO / KBD / MOU calls go through `OS2_PASCAL_API`; every integer `#define` must equal Warpine's constant of that name.
   - The def lists PMWIN / PMGPI calls the sub-dispatchers serve: a new PM call needs its def line too.
+  - Structure layouts match Open Watcom's (`tests/sdk_layout`, ADR-0101): a new structure Open Watcom also has goes into `fields.inc`.
+  - DLLs: `lx-link --dll --export A,B.2 [--initinstance --terminstance] $(OS2_DLL0) objs libos2c.a -o x.dll`; a `.dll` input links its exports as imports.
+- **Every C sample from GCC or clang** (ADR-0101): `samples/build_sdk.sh gcc|clang [sample...]` builds into `samples/build/<cc>/`; `WARPINE_SAMPLES=gcc cargo test --test integration` runs the tests on those builds (Open Watcom's are the default). In tests, name sample paths through `sample_path` / `sample_exists`.
+  - Pinned compilers: `./vendor/setup_compilers.sh` (a Podman image from a Debian base pinned by digest, packages from a dated snapshot), then `CC_CMD=vendor/pinned/gcc OUT_TAG=gcc-pinned samples/build_sdk.sh gcc`. The container sees only the repository.
+- **C++** (ADR-0103): `$(OS2_CXX) $(OS2_CXXFLAGS)` from `os2.mk` (g++ / clang++, the SDK's `include/c++`), linked with `$(OS2_LIBCXX)` before `$(OS2_LIBC)`; exceptions, RTTI, `new` / `delete`, `__cxa_atexit` (see `samples/cxx_test`). An exception must not leave its module or cross a call into Warpine.
+- **Source-level debugging** (ADR-0102): objects with DWARF (`-g`) make `lx-link` write `<output>.dbg`; `warpine --gdb 1234 prog.exe`, then `gdb -ex 'symbol-file prog.dbg' -ex 'target remote :1234'` (see `samples/c_gdb_test`).
 - **Generators:** each has a test that fails when its output is stale.
   - `cargo run --bin gen_api -- check | validate-doc | check-headers`: `targets/os2api.def` is the single source of the ordinals; `check-headers` holds the SDK's headers to it (ADR-0096).
   - `cargo run --bin gen_arch -- check | render` (ADR-0021): a new, renamed or removed module needs `doc/architecture/layers.toml` updated and a render.

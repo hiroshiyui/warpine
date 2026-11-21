@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// <stdexcept> - Warpine's C++ runtime (ADR-0103): the standard exception
+// classes, each keeping its own copy of the message.
+#ifndef WARPINE_CXX_STDEXCEPT
+#define WARPINE_CXX_STDEXCEPT
+
+#include <exception>
+
+namespace std {
+
+class logic_error : public exception {
+public:
+    explicit logic_error(const char *what);
+    logic_error(const logic_error &other) noexcept;
+    logic_error &operator=(const logic_error &other) noexcept;
+    ~logic_error() noexcept override;
+    const char *what() const noexcept override;
+
+private:
+    char *msg_;
+};
+
+class runtime_error : public exception {
+public:
+    explicit runtime_error(const char *what);
+    runtime_error(const runtime_error &other) noexcept;
+    runtime_error &operator=(const runtime_error &other) noexcept;
+    ~runtime_error() noexcept override;
+    const char *what() const noexcept override;
+
+private:
+    char *msg_;
+};
+
+#define WARPINE_DERIVED_ERROR(name, base) \
+    class name : public base { public: explicit name(const char *w) : base(w) {} ~name() noexcept override; };
+WARPINE_DERIVED_ERROR(domain_error, logic_error)
+WARPINE_DERIVED_ERROR(invalid_argument, logic_error)
+WARPINE_DERIVED_ERROR(length_error, logic_error)
+WARPINE_DERIVED_ERROR(out_of_range, logic_error)
+WARPINE_DERIVED_ERROR(range_error, runtime_error)
+WARPINE_DERIVED_ERROR(overflow_error, runtime_error)
+WARPINE_DERIVED_ERROR(underflow_error, runtime_error)
+#undef WARPINE_DERIVED_ERROR
+
+} // namespace std
+
+#endif

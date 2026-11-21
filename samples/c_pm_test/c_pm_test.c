@@ -28,7 +28,7 @@ _Static_assert(sizeof(SWP) == 36 && offsetof(SWP, hwnd) == 24, "SWP");
 _Static_assert(sizeof(FRAMECDATA) == 10 && offsetof(FRAMECDATA, idResources) == 8, "FRAMECDATA");
 _Static_assert(sizeof(CLASSINFO) == 12, "CLASSINFO");
 _Static_assert(sizeof(FATTRS) == 56 && offsetof(FATTRS, lMaxBaselineExt) == 44, "FATTRS");
-_Static_assert(sizeof(FONTMETRICS) == 208, "FONTMETRICS");
+_Static_assert(sizeof(FONTMETRICS) == 228, "FONTMETRICS");
 _Static_assert(offsetof(FONTMETRICS, lEmHeight) == 68 && offsetof(FONTMETRICS, lMaxBaselineExt) == 112
                && offsetof(FONTMETRICS, sXDeviceRes) == 126 && offsetof(FONTMETRICS, sNominalPointSize) == 138,
                "FONTMETRICS offsets");
@@ -87,7 +87,7 @@ static void paint(HWND hwnd)
     paint_pel = GpiQueryPel(hps, &inside);
     GpiSetColor(hps, CLR_BLACK);
     POINTL at = { 10, 100 };
-    GpiCharStringAt(hps, &at, 22, "Hello from GCC/clang!");
+    GpiCharStringAt(hps, &at, 21, "Hello from GCC/clang!");
     WinEndPaint(hps);
     painted++;
 }

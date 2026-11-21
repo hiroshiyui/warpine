@@ -54,12 +54,12 @@ struct timeval {
 /* OS/2 TCP/IP fd_set, as Open Watcom's h/os2/types.h declares it: a count
    and the socket numbers themselves (not a bit mask), packed to 4 bytes. */
 #define FD_SETSIZE 64
-#pragma pack( __push, 4 )
+#pragma pack( push, 4 )
 typedef struct {
     unsigned short fd_count;
     int            fd_array[FD_SETSIZE];
 } fd_set;
-#pragma pack( __pop )
+#pragma pack( pop )
 
 #define FD_ZERO(s)       ((s)->fd_count = 0)
 #define FD_SET(h, s)     do { if( (s)->fd_count < FD_SETSIZE ) \

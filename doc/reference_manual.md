@@ -492,8 +492,19 @@ gdb -ex 'target remote :1234'
 
 - **Software breakpoints:** INT 3 (0xCC) patched into guest memory; original byte restored on hit; RIP rewound to breakpoint address.
 - **Single-step:** `KVM_GUESTDBG_SINGLESTEP` flag on vCPU.
-- **Memory access:** Full 128 MB guest flat address space.
+- **Memory access:** The whole 256 MB guest address space.
 - **Synchronisation:** `GdbState` (Mutex + Condvar) coordinates vCPU and GDB threads; `AtomicBool` for Ctrl-C.
+
+### Source-level debugging
+
+A program built with `-g` by GCC or clang and linked by `lx-link` has a debug companion beside it, `prog.dbg` (ADR-0102): the linked code at its addresses, the symbols, and the DWARF. Load it before connecting:
+
+```bash
+warpine --gdb 1234 prog.exe
+gdb -ex 'symbol-file prog.dbg' -ex 'target remote :1234' -ex 'break main' -ex 'continue'
+```
+
+Breakpoints by function or `file:line`, `next` / `step`, arguments and locals, `print` of structures, `finish`, `bt` and globals then work. A DLL's companion has its link addresses: load it with `add-symbol-file mod.dbg -o <load address - link address>`.
 
 ---
 

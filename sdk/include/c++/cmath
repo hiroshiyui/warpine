@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// <cmath> - Warpine's C++ runtime (ADR-0103): <math.h> in namespace std too.
+#ifndef WARPINE_CXX_CMATH
+#define WARPINE_CXX_CMATH
+
+#include <math.h>
+
+namespace std {
+using ::fabs;
+using ::sqrt;
+using ::floor;
+using ::ceil;
+using ::trunc;
+using ::round;
+using ::fmod;
+using ::modf;
+using ::frexp;
+using ::ldexp;
+using ::exp;
+using ::log;
+using ::log10;
+using ::log2;
+using ::pow;
+using ::sin;
+using ::cos;
+using ::tan;
+using ::asin;
+using ::acos;
+using ::atan;
+using ::atan2;
+using ::sinh;
+using ::cosh;
+using ::tanh;
+using ::hypot;
+} // namespace std
+
+#endif

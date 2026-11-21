@@ -1,0 +1,8 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// <cerrno> - Warpine's C++ runtime (ADR-0103): <errno.h> in namespace std too.
+#ifndef WARPINE_CXX_CERRNO
+#define WARPINE_CXX_CERRNO
+
+#include <errno.h>
+
+#endif

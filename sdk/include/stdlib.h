@@ -25,6 +25,8 @@ void   exit(int status) __attribute__((__noreturn__));
 void   _Exit(int status) __attribute__((__noreturn__));
 void   abort(void) __attribute__((__noreturn__));
 int    atexit(void (*fn)(void));
+/* For C++ compilers: destructors of statics, run at exit (ADR-0103). */
+int    __cxa_atexit(void (*fn)(void *), void *arg, void *dso);
 char  *getenv(const char *name);
 
 int    abs(int n);

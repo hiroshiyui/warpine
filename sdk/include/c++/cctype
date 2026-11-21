@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// <cctype> - Warpine's C++ runtime (ADR-0103): <ctype.h> in namespace std too.
+#ifndef WARPINE_CXX_CCTYPE
+#define WARPINE_CXX_CCTYPE
+
+#include <ctype.h>
+
+namespace std {
+using ::isdigit;
+using ::isupper;
+using ::islower;
+using ::isalpha;
+using ::isalnum;
+using ::isxdigit;
+using ::isspace;
+using ::isblank;
+using ::iscntrl;
+using ::isprint;
+using ::isgraph;
+using ::ispunct;
+using ::toupper;
+using ::tolower;
+} // namespace std
+
+#endif

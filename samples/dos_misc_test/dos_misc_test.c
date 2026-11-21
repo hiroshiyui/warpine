@@ -75,7 +75,7 @@ int main(void)
     check("DosProtectOpen", DosProtectOpen("PROT.TMP", &hf, &action, 0, FILE_NORMAL,
           OPEN_ACTION_CREATE_IF_NEW | OPEN_ACTION_REPLACE_IF_EXISTS,
           OPEN_ACCESS_READWRITE | OPEN_SHARE_DENYNONE, NULL, &lock) == NO_ERROR);
-    check("DosProtectWrite", DosProtectWrite(hf, (ULONG)"warpine", 7, &n, lock) == NO_ERROR && n == 7);
+    check("DosProtectWrite", DosProtectWrite(hf, (PVOID)"warpine", 7, &n, lock) == NO_ERROR && n == 7);
     check("DosProtectSetFilePtr", DosProtectSetFilePtr(hf, 2, FILE_BEGIN, &n, lock) == NO_ERROR && n == 2);
     check("DosProtectRead", DosProtectRead(hf, buf, 3, &n, lock) == NO_ERROR && n == 3 && memcmp(buf, "rpi", 3) == 0);
     check("DosProtectQueryFHState", DosProtectQueryFHState(hf, &state, lock) == NO_ERROR);

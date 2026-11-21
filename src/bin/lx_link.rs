@@ -70,6 +70,8 @@ const OBJ_WRITE: u32 = 0x0002;
 const OBJ_EXEC: u32 = 0x0004;
 /// The object holds resources (reached through the resource table).
 const OBJ_RESOURCE: u32 = 0x0008;
+/// A DLL's initialisation and termination routine (ADR-0101).
+const DLL_ENTRY: &str = "_DLL_InitTerm";
 const OBJ_BIG: u32 = 0x0040; // 32-bit (USE32)
 const OBJ_USE32: u32 = 0x2000;
 
@@ -84,6 +86,28 @@ mod args {
         pub def_file: Option<PathBuf>,
         /// `--gc-sections`: link only the sections the program reaches.
         pub gc_sections: bool,
+        /// Make a DLL (`--dll`, or an output ending in .dll; ADR-0101).
+        pub dll: bool,
+        /// `--name`: the DLL's module name (default: the output's stem).
+        pub module_name: Option<String>,
+        /// `--export NAME[.ORDINAL]` (repeatable, or comma-separated).
+        pub exports: Vec<(String, Option<u32>)>,
+        pub init_instance: bool,
+        pub term_instance: bool,
+        /// `--debug-file PATH`: where the debug companion goes (ADR-0102;
+        /// default: the output with the extension .dbg, written when an
+        /// input has debugging information); `--no-debug-file` writes none.
+        pub debug_file: Option<PathBuf>,
+        pub no_debug_file: bool,
+    }
+
+    /// `NAME` or `NAME.ORDINAL`.
+    pub fn parse_export(s: &str) -> Option<(String, Option<u32>)> {
+        let (name, ordinal) = match s.rsplit_once('.') {
+            Some((n, o)) if !o.is_empty() && o.bytes().all(|b| b.is_ascii_digit()) => (n, Some(o.parse().ok()?)),
+            _ => (s, None),
+        };
+        (!name.is_empty()).then(|| (name.to_string(), ordinal))
     }
 
     pub fn parse_args(raw: &[String]) -> Args {
@@ -91,6 +115,13 @@ mod args {
         let mut output = PathBuf::from("a.out");
         let mut def_file = None;
         let mut gc_sections = false;
+        let mut dll = false;
+        let mut module_name = None;
+        let mut exports = Vec::new();
+        let mut init_instance = false;
+        let mut term_instance = false;
+        let mut debug_file = None;
+        let mut no_debug_file = false;
         let mut i = 1usize;
         while i < raw.len() {
             let arg = &raw[i];
@@ -106,6 +137,26 @@ mod args {
                 if i < raw.len() {
                     def_file = Some(PathBuf::from(&raw[i]));
                 }
+            } else if arg == "--dll" {
+                dll = true;
+            } else if arg == "--initinstance" {
+                init_instance = true;
+            } else if arg == "--terminstance" {
+                term_instance = true;
+            } else if arg == "--name" || arg == "--export" {
+                i += 1;
+                let Some(v) = raw.get(i) else { break };
+                if arg == "--name" {
+                    module_name = Some(v.clone());
+                } else {
+                    exports.extend(v.split(',').filter_map(parse_export));
+                }
+            } else if arg == "--debug-file" {
+                i += 1;
+                let Some(v) = raw.get(i) else { break };
+                debug_file = Some(PathBuf::from(v));
+            } else if arg == "--no-debug-file" {
+                no_debug_file = true;
             } else if arg == "--gc-sections" {
                 gc_sections = true;
             } else if arg == "--no-gc-sections" {
@@ -120,15 +171,17 @@ mod args {
                 }
                 // All other unknown flags: silently skip
             } else {
-                // Positional: only collect .o / .rlib / .a / .res files
+                // Positional: only collect .o / .rlib / .a / .res / .dll files
                 let lower = arg.to_ascii_lowercase();
-                if lower.ends_with(".o") || lower.ends_with(".rlib") || lower.ends_with(".a") || lower.ends_with(".res") {
+                if [".o", ".rlib", ".a", ".res", ".dll"].iter().any(|e| lower.ends_with(e)) {
                     inputs.push(PathBuf::from(arg));
                 }
             }
             i += 1;
         }
-        Args { inputs, output, def_file, gc_sections }
+        let dll = dll || output.extension().is_some_and(|e| e.eq_ignore_ascii_case("dll"));
+        Args { inputs, output, def_file, gc_sections, dll, module_name, exports, init_instance, term_instance,
+               debug_file, no_debug_file }
     }
 }
 
@@ -207,6 +260,56 @@ mod res_reader {
     }
 }
 
+// ─── mod dll_reader ───────────────────────────────────────────────────────────
+
+/// The exports of an LX DLL given as an input (ADR-0101): its module name
+/// and its exported names with their ordinals, from the resident and
+/// non-resident name tables. A program linked with it imports those names
+/// by ordinal; the loader finds the DLL when the program starts.
+mod dll_reader {
+    /// LX header fields (offsets from the LX header).
+    const RESIDENT_NAMES: usize = 0x58;
+    const NONRESIDENT_NAMES: usize = 0x88;
+    const NONRESIDENT_LEN: usize = 0x8C;
+    /// Where the MZ header keeps the LX header's offset.
+    const LX_OFFSET_AT: usize = 0x3C;
+
+    /// Name entries from `data[at..]` until a zero length or `end`.
+    fn names(data: &[u8], mut at: usize, end: usize, source: &str) -> Result<Vec<(String, u16)>, String> {
+        let mut out = Vec::new();
+        while at < end.min(data.len()) {
+            let len = data[at] as usize;
+            if len == 0 { break; }
+            let entry = data.get(at + 1..at + 3 + len).ok_or_else(|| format!("{source}: a name table is cut short"))?;
+            let name = String::from_utf8_lossy(&entry[..len]).into_owned();
+            out.push((name, u16::from_le_bytes([entry[len], entry[len + 1]])));
+            at += 3 + len;
+        }
+        Ok(out)
+    }
+
+    fn u32_at(data: &[u8], at: usize, source: &str) -> Result<u32, String> {
+        data.get(at..at + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .ok_or_else(|| format!("{source}: not an LX file"))
+    }
+
+    /// The module name and the (name, ordinal) exports.
+    pub fn read_exports(data: &[u8], source: &str) -> Result<(String, Vec<(String, u32)>), String> {
+        if !data.starts_with(b"MZ") { return Err(format!("{source}: not an LX file")); }
+        let lx = u32_at(data, LX_OFFSET_AT, source)? as usize;
+        if data.get(lx..lx + 2) != Some(b"LX") { return Err(format!("{source}: not an LX file")); }
+        let resident = names(data, lx + u32_at(data, lx + RESIDENT_NAMES, source)? as usize, data.len(), source)?;
+        let nr_at = u32_at(data, lx + NONRESIDENT_NAMES, source)? as usize;
+        let nr_len = u32_at(data, lx + NONRESIDENT_LEN, source)? as usize;
+        let nonresident = if nr_at == 0 { Vec::new() } else { names(data, nr_at, nr_at + nr_len, source)? };
+        let module = resident.iter().find(|(_, o)| *o == 0).map(|(n, _)| n.clone())
+            .ok_or_else(|| format!("{source}: no module name"))?;
+        let exports = resident.into_iter().chain(nonresident)
+            .filter(|(_, o)| *o != 0).map(|(n, o)| (n, u32::from(o))).collect();
+        Ok((module.to_ascii_uppercase(), exports))
+    }
+}
+
 // ─── mod elf_reader ───────────────────────────────────────────────────────────
 
 /// i386 ELF objects as `lx-link` sees them: allocated sections classified
@@ -246,6 +349,13 @@ mod elf_reader {
         Bss,
         /// An array of function pointers the start-up code runs.
         Array(ArrayKind),
+        /// DWARF debugging information (`.debug_*`, not allocated): never
+        /// in the program, only in its debug companion (ADR-0102).
+        Debug,
+        /// Unwind tables (`.eh_frame`) for C++ exceptions (ADR-0103):
+        /// kept only for the functions the link keeps, and placed together
+        /// between `__EH_FRAME_BEGIN__` and `__EH_FRAME_END__`.
+        EhFrame,
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,11 +451,17 @@ mod elf_reader {
         Ok(vec![0u8; size as usize])
     }
 
-    /// The class of a section, `None` for one that is not linked (not
-    /// allocated: debug information, notes, `.comment`; or unwind tables,
-    /// which nothing reads on OS/2).
+    /// The class of a section, `None` for one that is not linked (notes,
+    /// `.comment` and other unallocated sections but debugging information;
+    /// `.eh_frame_hdr`, which the unwinder does without).
     fn classify(name: &str, kind: SectionKind, sh_flags: u64) -> Option<SecClass> {
-        if sh_flags & SHF_ALLOC == 0 || name.starts_with(".eh_frame") || name.starts_with(".note") {
+        if sh_flags & SHF_ALLOC == 0 {
+            return name.starts_with(".debug_").then_some(SecClass::Debug);
+        }
+        if name == ".eh_frame" {
+            return Some(SecClass::EhFrame);
+        }
+        if name.starts_with(".eh_frame") || name.starts_with(".note") {
             return None;
         }
         Some(match kind {
@@ -405,10 +521,15 @@ mod elf_reader {
                 let RelocationFlags::Elf { r_type } = reloc.flags() else {
                     return Err(format!("{source_name}: not an ELF relocation").into());
                 };
+                let debug = sections[local].class == SecClass::Debug;
                 let kind = match r_type {
                     R_386_32 => RelocKind::Abs32,
                     // A PLT reference is a direct call in a static link.
                     R_386_PC32 | R_386_PLT32 => RelocKind::Pc32,
+                    // Debugging information may describe what the program
+                    // cannot have (thread-local variables): its value is
+                    // left as it is.
+                    _ if debug => continue,
                     other => {
                         let sec = &sections[local].name;
                         return Err(format!(
@@ -430,6 +551,8 @@ mod elf_reader {
                         match sym.section() {
                             SymbolSection::Section(sec) if sym.is_local() || sym.kind() == SymbolKind::Section => {
                                 let Some(&s) = index_map.get(&sec) else {
+                                    // Debugging information about a section that is not linked.
+                                    if debug { sections[local].relocs.push(Reloc { offset, kind, addend, target: RelocTarget::Absolute(0) }); continue; }
                                     return Err(format!("{source_name}: relocation at {offset:#x} refers to a section that is not linked ({name})").into());
                                 };
                                 RelocTarget::Local { section: s, offset: sym.address() }
@@ -440,6 +563,7 @@ mod elf_reader {
                     }
                     RelocationTarget::Section(sec) => match index_map.get(&sec) {
                         Some(&s) => RelocTarget::Local { section: s, offset: 0 },
+                        None if debug => RelocTarget::Absolute(0),
                         None => return Err(format!("{source_name}: relocation at {offset:#x} refers to a section that is not linked").into()),
                     },
                     RelocationTarget::Absolute => RelocTarget::Absolute(0),
@@ -478,6 +602,347 @@ mod elf_reader {
     }
 }
 
+// ─── mod eh_frame ────────────────────────────────────────────────────────────
+
+/// `.eh_frame` (ADR-0103): the call-frame information C++ exceptions
+/// unwind with. An object's `.eh_frame` is a series of records, CIEs
+/// (common information: the personality routine) and FDEs (one function
+/// each, pointing back at their CIE, with the function's LSDA). The link
+/// keeps the FDEs of the functions it keeps, the CIEs they use, and what
+/// they refer to.
+mod eh_frame {
+    use super::elf_reader::{ElfObject, ElfSection, Reloc, RelocTarget, SecClass};
+    use std::collections::HashMap;
+
+    /// One record: where it starts and its whole length (with the length
+    /// word), and for an FDE the offset of its CIE.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Record { pub offset: usize, pub len: usize, pub cie: Option<usize> }
+
+    /// The records of a section, up to a zero terminator or its end.
+    pub fn records(data: &[u8]) -> Result<Vec<Record>, String> {
+        let mut out = Vec::new();
+        let mut at = 0usize;
+        while at + 4 <= data.len() {
+            let len = u32::from_le_bytes(data[at..at + 4].try_into().unwrap()) as usize;
+            if len == 0 { break; }
+            if len == 0xFFFF_FFFF { return Err("a 64-bit .eh_frame record".into()); }
+            let end = at + 4 + len;
+            if end > data.len() || len < 4 { return Err(format!(".eh_frame record at {at:#x} is cut short")); }
+            let id = u32::from_le_bytes(data[at + 4..at + 8].try_into().unwrap()) as usize;
+            let cie = if id == 0 { None } else {
+                Some((at + 4).checked_sub(id).ok_or_else(|| format!("FDE at {at:#x} points before the section"))?)
+            };
+            out.push(Record { offset: at, len: 4 + len, cie });
+            at = end;
+        }
+        Ok(out)
+    }
+
+    fn relocs_in<'a>(sec: &'a ElfSection, r: &Record) -> impl Iterator<Item = &'a Reloc> {
+        let (start, end) = (r.offset as u64, (r.offset + r.len) as u64);
+        sec.relocs.iter().filter(move |x| (start..end).contains(&x.offset))
+    }
+
+    /// The section an FDE describes: the target of its pc_begin (8 bytes
+    /// in), a section of the same object.
+    fn fde_target(o: &ElfObject, sec: &ElfSection, r: &Record) -> Option<usize> {
+        let reloc = sec.relocs.iter().find(|x| x.offset == r.offset as u64 + 8)?;
+        match &reloc.target {
+            RelocTarget::Local { section, .. } => Some(*section),
+            RelocTarget::Symbol(name) => o.symbols.iter().find(|s| &s.name == name).map(|s| s.section_idx),
+            RelocTarget::Absolute(_) => None,
+        }
+    }
+
+    /// For each function section with an FDE, `(object, section)`, what
+    /// its FDE and CIE refer to besides the function itself.
+    pub fn dependencies(objects: &[ElfObject]) -> HashMap<(usize, usize), Vec<RelocTarget>> {
+        let mut deps: HashMap<(usize, usize), Vec<RelocTarget>> = HashMap::new();
+        for (oi, o) in objects.iter().enumerate() {
+            for sec in o.sections.iter().filter(|s| s.class == SecClass::EhFrame) {
+                let Ok(recs) = records(&sec.data) else { continue };
+                for r in recs.iter().filter(|r| r.cie.is_some()) {
+                    let Some(target) = fde_target(o, sec, r) else { continue };
+                    let cie = recs.iter().find(|c| Some(c.offset) == r.cie);
+                    let entry = deps.entry((oi, target)).or_default();
+                    for x in relocs_in(sec, r).filter(|x| x.offset != r.offset as u64 + 8)
+                        .chain(cie.into_iter().flat_map(|c| relocs_in(sec, c))) {
+                        entry.push(x.target.clone());
+                    }
+                }
+            }
+        }
+        deps
+    }
+
+    /// Keep the FDEs of live functions and the CIEs they use: each
+    /// `.eh_frame` is rebuilt from those records (an FDE's CIE pointer
+    /// recomputed) with its relocations moved along.
+    pub fn prune(objects: &mut [ElfObject], live: &[Vec<bool>]) -> Result<(), String> {
+        for (oi, o) in objects.iter_mut().enumerate() {
+            let name = o.name.clone();
+            let keep_fde: Vec<Vec<bool>> = o.sections.iter().map(|sec| {
+                if sec.class != SecClass::EhFrame { return Vec::new(); }
+                records(&sec.data).unwrap_or_default().iter().map(|r| match r.cie {
+                    None => false,
+                    Some(_) => fde_target(o, sec, r).is_some_and(|t| live[oi].get(t).copied().unwrap_or(false)),
+                }).collect()
+            }).collect();
+            for (si, sec) in o.sections.iter_mut().enumerate() {
+                if sec.class != SecClass::EhFrame { continue; }
+                let recs = records(&sec.data).map_err(|e| format!("{name}: {e}"))?;
+                let used_cies: Vec<usize> = recs.iter().zip(&keep_fde[si]).filter(|(_, k)| **k).filter_map(|(r, _)| r.cie).collect();
+                let mut data = Vec::new();
+                let mut moved: HashMap<usize, usize> = HashMap::new();
+                for (r, keep) in recs.iter().zip(&keep_fde[si]) {
+                    let kept = if r.cie.is_none() { used_cies.contains(&r.offset) } else { *keep };
+                    if !kept { continue; }
+                    let at = data.len();
+                    moved.insert(r.offset, at);
+                    data.extend_from_slice(&sec.data[r.offset..r.offset + r.len]);
+                    if let Some(cie) = r.cie {
+                        let new_cie = *moved.get(&cie).ok_or_else(|| format!("{name}: an FDE before its CIE"))?;
+                        let pointer = (at + 4 - new_cie) as u32;
+                        data[at + 4..at + 8].copy_from_slice(&pointer.to_le_bytes());
+                    }
+                }
+                let relocs = std::mem::take(&mut sec.relocs).into_iter().filter_map(|mut x| {
+                    let r = recs.iter().find(|r| (r.offset as u64..(r.offset + r.len) as u64).contains(&x.offset))?;
+                    let new = moved.get(&r.offset)?;
+                    x.offset = x.offset - r.offset as u64 + *new as u64;
+                    Some(x)
+                }).collect();
+                sec.size = data.len() as u64;
+                sec.data = data;
+                sec.relocs = relocs;
+            }
+        }
+        Ok(())
+    }
+}
+
+// ─── mod debug_elf ───────────────────────────────────────────────────────────
+
+/// The debug companion (ADR-0102): an ELF32 file for GDB beside the LX
+/// program, holding the linked code and data at the addresses they have
+/// in the program, the global symbols, and the inputs' DWARF sections
+/// joined by name with their relocations applied against the final
+/// layout. `symbol-file prog.dbg` then gives Warpine's GDB stub source
+/// lines, types and variables; a DLL, which the loader moves, takes
+/// `add-symbol-file mod.dbg -o <load offset>`.
+mod debug_elf {
+    use super::elf_reader::{ElfObject, RelocKind, RelocTarget, SecClass};
+    use super::linker_state::LinkerState;
+    use std::collections::BTreeMap;
+
+    const SHT_PROGBITS: u32 = 1;
+    const SHT_SYMTAB: u32 = 2;
+    const SHT_STRTAB: u32 = 3;
+    const SHT_NOBITS: u32 = 8;
+    const SHF_WRITE: u32 = 1;
+    const SHF_ALLOC: u32 = 2;
+    const SHF_EXECINSTR: u32 = 4;
+    const PT_LOAD: u32 = 1;
+    const PF_X: u32 = 1;
+    const PF_W: u32 = 2;
+    const PF_R: u32 = 4;
+    const STB_GLOBAL: u8 = 1;
+    const STT_OBJECT: u8 = 1;
+    const STT_FUNC: u8 = 2;
+    const EHDR_SIZE: usize = 52;
+    const PHDR_SIZE: usize = 32;
+    const SHDR_SIZE: usize = 40;
+    const SYM_SIZE: usize = 16;
+
+    /// Whether any object carries debugging information.
+    pub fn has_debug_info(objects: &[ElfObject]) -> bool {
+        objects.iter().any(|o| o.sections.iter().any(|s| s.class == SecClass::Debug))
+    }
+
+    /// Where each input debug section starts in the output section of its
+    /// name (`[object][section]`), joining them in input order as `ld`
+    /// does, and each output section's size.
+    /// `[object][section]` → offset in its output debug section.
+    pub type Starts = Vec<Vec<Option<u32>>>;
+
+    pub fn placements(objects: &[ElfObject]) -> Result<(Starts, BTreeMap<String, usize>), String> {
+        let mut sizes: BTreeMap<String, usize> = BTreeMap::new();
+        let mut start: Starts = objects.iter().map(|o| vec![None; o.sections.len()]).collect();
+        for (oi, o) in objects.iter().enumerate() {
+            for (si, sec) in o.sections.iter().enumerate().filter(|(_, s)| s.class == SecClass::Debug) {
+                let size = sizes.entry(sec.name.clone()).or_default();
+                start[oi][si] = Some(u32::try_from(*size).map_err(|_| format!("{} is larger than 4 GB", sec.name))?);
+                *size += sec.data.len();
+            }
+        }
+        Ok((start, sizes))
+    }
+
+    /// Join the debug sections by name, in input order (as `ld` does), and
+    /// apply their relocations: a place in another debug section becomes
+    /// its offset in the joined section, a place in the program its
+    /// address; a section the link dropped (or an undefined symbol) is 0.
+    pub fn join(objects: &[ElfObject], state: &LinkerState) -> Result<BTreeMap<String, Vec<u8>>, String> {
+        let (start, sizes) = placements(objects)?;
+        let mut sections: BTreeMap<String, Vec<u8>> =
+            sizes.into_iter().map(|(name, size)| (name, Vec::with_capacity(size))).collect();
+        for o in objects {
+            for sec in o.sections.iter().filter(|s| s.class == SecClass::Debug) {
+                if let Some(out) = sections.get_mut(&sec.name) { out.extend_from_slice(&sec.data); }
+            }
+        }
+        for (oi, o) in objects.iter().enumerate() {
+            for (si, sec) in o.sections.iter().enumerate().filter(|(_, s)| s.class == SecClass::Debug) {
+                let base = start[oi][si].unwrap_or(0) as usize;
+                for r in &sec.relocs {
+                    if r.kind != RelocKind::Abs32 { continue; }
+                    let target: i64 = match &r.target {
+                        RelocTarget::Local { section, offset } => {
+                            let in_debug = start[oi].get(*section).copied().flatten();
+                            match in_debug.or_else(|| state.section_va[oi].get(*section).copied().flatten()) {
+                                Some(at) => i64::from(at) + *offset as i64,
+                                None => { patch(sections.get_mut(&sec.name), base + r.offset as usize, 0); continue; }
+                            }
+                        }
+                        RelocTarget::Symbol(name) => match state.symbol_table.get(name) {
+                            Some(&va) => i64::from(va),
+                            None => { patch(sections.get_mut(&sec.name), base + r.offset as usize, 0); continue; }
+                        },
+                        RelocTarget::Absolute(v) => *v as i64,
+                    };
+                    patch(sections.get_mut(&sec.name), base + r.offset as usize, (target + r.addend) as u32);
+                }
+            }
+        }
+        Ok(sections)
+    }
+
+    fn patch(section: Option<&mut Vec<u8>>, at: usize, value: u32) {
+        if let Some(bytes) = section.and_then(|s| s.get_mut(at..at + 4)) {
+            bytes.copy_from_slice(&value.to_le_bytes());
+        }
+    }
+
+    struct Shdr { name: u32, kind: u32, flags: u32, addr: u32, offset: u32, size: u32, link: u32, info: u32, align: u32, entsize: u32 }
+
+    fn add_name(strtab: &mut Vec<u8>, name: &str) -> u32 {
+        let at = strtab.len() as u32;
+        strtab.extend_from_slice(name.as_bytes());
+        strtab.push(0);
+        at
+    }
+
+    /// The companion file: `code` and `data` are the program's linked
+    /// bytes (relocations applied, as in its pages).
+    pub fn write(objects: &[ElfObject], state: &LinkerState, code: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
+        let joined = join(objects, state)?;
+        let bss_va = state.data_va + data.len() as u32;
+
+        // Contents after the headers: code, data, the debug sections, the
+        // symbol and string tables, then the section headers.
+        let mut out = vec![0u8; EHDR_SIZE + 2 * PHDR_SIZE];
+        let mut shstrtab = vec![0u8];
+        let mut shdrs = vec![Shdr { name: 0, kind: 0, flags: 0, addr: 0, offset: 0, size: 0, link: 0, info: 0, align: 0, entsize: 0 }];
+        let place = |out: &mut Vec<u8>, bytes: &[u8], align: usize| {
+            while !out.len().is_multiple_of(align) { out.push(0); }
+            let at = out.len() as u32;
+            out.extend_from_slice(bytes);
+            at
+        };
+        let code_off = place(&mut out, code, 16);
+        shdrs.push(Shdr { name: add_name(&mut shstrtab, ".text"), kind: SHT_PROGBITS, flags: SHF_ALLOC | SHF_EXECINSTR,
+                          addr: state.code_va, offset: code_off, size: code.len() as u32, link: 0, info: 0, align: 16, entsize: 0 });
+        let data_off = place(&mut out, data, 16);
+        shdrs.push(Shdr { name: add_name(&mut shstrtab, ".data"), kind: SHT_PROGBITS, flags: SHF_ALLOC | SHF_WRITE,
+                          addr: state.data_va, offset: data_off, size: data.len() as u32, link: 0, info: 0, align: 16, entsize: 0 });
+        shdrs.push(Shdr { name: add_name(&mut shstrtab, ".bss"), kind: SHT_NOBITS, flags: SHF_ALLOC | SHF_WRITE,
+                          addr: bss_va, offset: out.len() as u32, size: state.bss_size, link: 0, info: 0, align: 16, entsize: 0 });
+        const TEXT: u16 = 1;
+        const DATA: u16 = 2;
+        const BSS: u16 = 3;
+        for (name, bytes) in &joined {
+            let off = place(&mut out, bytes, 1);
+            shdrs.push(Shdr { name: add_name(&mut shstrtab, name), kind: SHT_PROGBITS, flags: 0, addr: 0, offset: off,
+                              size: bytes.len() as u32, link: 0, info: 0, align: 1, entsize: 0 });
+        }
+
+        // The global symbols, sorted by address.
+        let mut strtab = vec![0u8];
+        let mut symtab = vec![0u8; SYM_SIZE];
+        let mut symbols: Vec<(&String, &u32)> = state.symbol_table.iter().collect();
+        symbols.sort_by(|a, b| a.1.cmp(b.1).then(a.0.cmp(b.0)));
+        let code_end = state.code_va + code.len() as u32;
+        for (name, &va) in symbols {
+            let (shndx, kind) = if (state.code_va..code_end).contains(&va) { (TEXT, STT_FUNC) }
+                else if (state.data_va..bss_va).contains(&va) { (DATA, STT_OBJECT) }
+                else if (bss_va..bss_va + state.bss_size).contains(&va) { (BSS, STT_OBJECT) }
+                else { continue };
+            symtab.extend_from_slice(&add_name(&mut strtab, name).to_le_bytes());
+            symtab.extend_from_slice(&va.to_le_bytes());
+            symtab.extend_from_slice(&0u32.to_le_bytes());
+            symtab.push((STB_GLOBAL << 4) | kind);
+            symtab.push(0);
+            symtab.extend_from_slice(&shndx.to_le_bytes());
+        }
+        let symtab_idx = shdrs.len() as u32;
+        let sym_off = place(&mut out, &symtab, 4);
+        shdrs.push(Shdr { name: add_name(&mut shstrtab, ".symtab"), kind: SHT_SYMTAB, flags: 0, addr: 0, offset: sym_off,
+                          size: symtab.len() as u32, link: symtab_idx + 1, info: 1, align: 4, entsize: SYM_SIZE as u32 });
+        let str_off = place(&mut out, &strtab, 1);
+        shdrs.push(Shdr { name: add_name(&mut shstrtab, ".strtab"), kind: SHT_STRTAB, flags: 0, addr: 0, offset: str_off,
+                          size: strtab.len() as u32, link: 0, info: 0, align: 1, entsize: 0 });
+        let shstr_name = add_name(&mut shstrtab, ".shstrtab");
+        let shstr_off = place(&mut out, &shstrtab, 1);
+        let shstrndx = shdrs.len() as u16;
+        shdrs.push(Shdr { name: shstr_name, kind: SHT_STRTAB, flags: 0, addr: 0, offset: shstr_off,
+                          size: shstrtab.len() as u32, link: 0, info: 0, align: 1, entsize: 0 });
+        while !out.len().is_multiple_of(4) { out.push(0); }
+        let shoff = out.len() as u32;
+        for h in &shdrs {
+            for v in [h.name, h.kind, h.flags, h.addr, h.offset, h.size, h.link, h.info, h.align, h.entsize] {
+                out.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+
+        // The ELF header: 32-bit, little-endian, an i386 executable with no
+        // entry (GDB is told where the program is, not asked to run it).
+        let mut ehdr = Vec::with_capacity(EHDR_SIZE);
+        ehdr.extend_from_slice(&[0x7F, b'E', b'L', b'F', 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        ehdr.extend_from_slice(&2u16.to_le_bytes());          // ET_EXEC
+        ehdr.extend_from_slice(&3u16.to_le_bytes());          // EM_386
+        ehdr.extend_from_slice(&1u32.to_le_bytes());          // EV_CURRENT
+        ehdr.extend_from_slice(&0u32.to_le_bytes());          // e_entry
+        ehdr.extend_from_slice(&(EHDR_SIZE as u32).to_le_bytes());
+        ehdr.extend_from_slice(&shoff.to_le_bytes());
+        ehdr.extend_from_slice(&0u32.to_le_bytes());          // e_flags
+        for v in [EHDR_SIZE, PHDR_SIZE, 2, SHDR_SIZE, shdrs.len()] { ehdr.extend_from_slice(&(v as u16).to_le_bytes()); }
+        ehdr.extend_from_slice(&shstrndx.to_le_bytes());
+        out[..EHDR_SIZE].copy_from_slice(&ehdr);
+        // Program headers: the code, and the data with its zeros.
+        let phdrs = [(code_off, state.code_va, code.len() as u32, code.len() as u32, PF_R | PF_X),
+                     (data_off, state.data_va, data.len() as u32, data.len() as u32 + state.bss_size, PF_R | PF_W)];
+        for (i, (off, va, filesz, memsz, flags)) in phdrs.into_iter().enumerate() {
+            let at = EHDR_SIZE + i * PHDR_SIZE;
+            for (j, v) in [PT_LOAD, off, va, va, filesz, memsz, flags, 4096].into_iter().enumerate() {
+                out[at + 4 * j..at + 4 * j + 4].copy_from_slice(&v.to_le_bytes());
+            }
+        }
+        Ok(out)
+    }
+
+    /// The code and data an LX image written by `lx_writer` holds in its
+    /// pages (relocations applied): the code object's bytes, then the
+    /// data object's, from the start of the data pages.
+    pub fn linked_images(lx: &[u8], state: &LinkerState) -> Option<(Vec<u8>, Vec<u8>)> {
+        let hdr = super::LX_HEADER_OFFSET as usize;
+        let pages = u32::from_le_bytes(lx.get(hdr + 0x80..hdr + 0x84)?.try_into().ok()?) as usize;
+        let code = lx.get(pages..pages + state.code.len())?.to_vec();
+        let data = lx.get(pages + state.code.len()..pages + state.code.len() + state.data.len())?.to_vec();
+        Some((code, data))
+    }
+}
+
 // ─── mod linker_state ─────────────────────────────────────────────────────────
 
 /// The program's layout: one code object from 64 KB, the data object
@@ -488,7 +953,7 @@ mod linker_state {
     use std::collections::HashMap;
 
     use super::elf_reader::{ArrayKind, ElfObject, SecClass};
-    use super::{CODE_OBJECT_BASE, OBJECT_ALIGN, PROGRAM_AREA_END, STACK_SIZE};
+    use super::{CODE_OBJECT_BASE, DLL_ENTRY, OBJECT_ALIGN, PROGRAM_AREA_END, STACK_SIZE};
 
     pub struct LinkerState {
         /// The code object's bytes.
@@ -503,12 +968,19 @@ mod linker_state {
         pub section_va: Vec<Vec<Option<u32>>>,
         /// Global symbol → address.
         pub symbol_table: HashMap<String, u32>,
-        pub entry_va: u32,
+        /// The entry point: always there for a program; for a DLL its
+        /// `_DLL_InitTerm`, if any.
+        pub entry_va: Option<u32>,
     }
 
     pub fn align_up(val: u64, align: u64) -> u64 {
         if align <= 1 { val } else { val.div_ceil(align) * align }
     }
+
+    /// The bounds of the unwind tables (ADR-0103); `__EH_FRAME_END__` is
+    /// where the zero terminator starts.
+    pub const EH_FRAME_BEGIN: &str = "__EH_FRAME_BEGIN__";
+    pub const EH_FRAME_END: &str = "__EH_FRAME_END__";
 
     /// The start / end symbols of each array, in the order they are laid out.
     pub const ARRAYS: [(ArrayKind, &str, &str); 3] = [
@@ -520,7 +992,18 @@ mod linker_state {
     impl LinkerState {
         /// Lay out the sections `live` marks (`[object][section]`; all of
         /// them with `None`).
+        /// A program: the entry point is `_start` (or `main`) and must exist.
         pub fn build(objects: &[ElfObject], live: Option<&[Vec<bool>]>) -> Result<Self, Box<dyn super::Error>> {
+            Self::build_as(objects, live, false)
+        }
+
+        /// A DLL (ADR-0101): the entry point is `_DLL_InitTerm` when the
+        /// objects define it; there is no stack object.
+        pub fn build_dll(objects: &[ElfObject], live: Option<&[Vec<bool>]>) -> Result<Self, Box<dyn super::Error>> {
+            Self::build_as(objects, live, true)
+        }
+
+        fn build_as(objects: &[ElfObject], live: Option<&[Vec<bool>]>, dll: bool) -> Result<Self, Box<dyn super::Error>> {
             let is_live = |oi: usize, si: usize| live.is_none_or(|l| l[oi][si]);
             // Offsets within their object first, addresses once sizes are known.
             let mut code_off: Vec<Vec<Option<u64>>> = objects.iter().map(|o| vec![None; o.sections.len()]).collect();
@@ -543,6 +1026,16 @@ mod linker_state {
                     if s.class == SecClass::Data && is_live(oi, si) { data_off[oi][si] = Some(place(&mut data, &s.data, s.align)); }
                 }
             }
+            // The unwind tables, together, then a zero terminator.
+            let eh_start = align_up(data.len() as u64, 4);
+            data.resize(eh_start as usize, 0);
+            for (oi, o) in objects.iter().enumerate() {
+                for (si, s) in o.sections.iter().enumerate() {
+                    if s.class == SecClass::EhFrame && is_live(oi, si) { data_off[oi][si] = Some(place(&mut data, &s.data, 4)); }
+                }
+            }
+            let eh_end = data.len() as u64;
+            if eh_end > eh_start { data.extend_from_slice(&[0; 4]); }
             let mut array_bounds: Vec<(u64, u64)> = Vec::new();
             for (kind, _, _) in ARRAYS {
                 let start = align_up(data.len() as u64, 4);
@@ -622,9 +1115,15 @@ mod linker_state {
                 symbol_table.entry(start_name.to_string()).or_insert((data_va + start) as u32);
                 symbol_table.entry(end_name.to_string()).or_insert((data_va + end) as u32);
             }
+            symbol_table.entry(EH_FRAME_BEGIN.to_string()).or_insert((data_va + eh_start) as u32);
+            symbol_table.entry(EH_FRAME_END.to_string()).or_insert((data_va + eh_end) as u32);
 
-            let entry_va = symbol_table.get("_start").or_else(|| symbol_table.get("main")).copied()
-                .ok_or("no entry point: define _start (or main)")?;
+            let entry_va = if dll {
+                symbol_table.get(DLL_ENTRY).copied()
+            } else {
+                Some(symbol_table.get("_start").or_else(|| symbol_table.get("main")).copied()
+                    .ok_or("no entry point: define _start (or main)")?)
+            };
 
             let bss_size = (bss_end - data.len() as u64) as u32;
             Ok(LinkerState {
@@ -660,6 +1159,41 @@ mod lx_writer {
         OBJ_BIG, OBJ_EXEC, OBJ_READ, OBJ_RESOURCE, OBJ_USE32, OBJ_WRITE, PAGE_SIZE, STACK_SIZE,
     };
 
+    /// What makes a DLL (ADR-0101): its module name, exports and when its
+    /// `_DLL_InitTerm` runs.
+    #[derive(Debug, Clone, Default)]
+    pub struct DllSpec {
+        pub name: String,
+        /// Exported symbols, with the ordinal asked for (else the next free).
+        pub exports: Vec<(String, Option<u32>)>,
+        /// Per-process initialisation (`INITINSTANCE`).
+        pub init_instance: bool,
+        /// Per-process termination (`TERMINSTANCE`).
+        pub term_instance: bool,
+    }
+
+    /// The output: a program, or a DLL; and the modules that are DLLs given
+    /// as inputs (their imports are resolved when the program loads).
+    #[derive(Debug, Clone, Default)]
+    pub struct Spec {
+        pub dll: Option<DllSpec>,
+        pub user_modules: std::collections::HashSet<String>,
+    }
+
+    /// LX module flags (`<exe386.h>`): a library, per-process
+    /// initialisation and termination.
+    const MODULE_LIBRARY: u32 = 0x0000_8000;
+    const MODULE_INIT_INSTANCE: u32 = 0x0000_0004;
+    const MODULE_TERM_INSTANCE: u32 = 0x4000_0000;
+    /// LX fixup source types: 32-bit offset and 32-bit self-relative.
+    const SRC_OFFSET32: u8 = 0x07;
+    const SRC_SELF_REL32: u8 = 0x08;
+    /// Entry table: a bundle of 32-bit entries, of unused ordinals; an
+    /// entry's flag that it is exported.
+    const BUNDLE_32BIT: u8 = 3;
+    const BUNDLE_UNUSED: u8 = 0;
+    const ENTRY_EXPORTED: u8 = 0x01;
+
     // A fixup record ready to be serialised.
     #[derive(Debug, Clone)]
     struct LxFixup {
@@ -673,28 +1207,32 @@ mod lx_writer {
     #[derive(Debug, Clone)]
     enum FixupTarget {
         Internal { object_num: u8, target_offset: u32 },
-        ExternalOrdinal { module_idx: u8, ordinal: u32 },
+        /// An import; `additive` is added to its address.
+        ExternalOrdinal { module_idx: u8, ordinal: u32, additive: u32 },
     }
 
     /// What a relocation's target resolved to.
     enum Resolved {
         /// An address in the program (with an internal fixup).
         Internal(u32),
-        /// An OS/2 API (with an import fixup).
-        Import { va: u32, module: String, ordinal: u32 },
+        /// An import (with an import fixup): an OS/2 API, whose thunk
+        /// address is known, or a DLL given as an input, whose is not.
+        Import { va: Option<u32>, module: String, ordinal: u32 },
         /// A plain value (absolute symbols, undefined weak ones).
         Value(u32),
     }
 
     fn resolve(target: &RelocTarget, obj_idx: usize, state: &LinkerState, obj: &ElfObject,
-               def_map: &HashMap<String, (String, u32)>) -> Result<Resolved, String> {
+               def_map: &HashMap<String, (String, u32)>, spec: &Spec) -> Result<Resolved, String> {
         Ok(match target {
             RelocTarget::Symbol(name) => {
                 if let Some(&va) = state.symbol_table.get(name) {
                     Resolved::Internal(va)
                 } else if let Some((module, ordinal)) = def_map.get(name) {
-                    let va = resolve_import(module, *ordinal)
-                        .ok_or_else(|| format!("{name} (module {module} is unknown to lx-link)"))?;
+                    let va = resolve_import(module, *ordinal);
+                    if va.is_none() && !spec.user_modules.contains(module) {
+                        return Err(format!("{name} (module {module} is unknown to lx-link)"));
+                    }
                     Resolved::Import { va, module: module.clone(), ordinal: *ordinal }
                 } else if obj.weak_refs.iter().any(|w| w == name) {
                     Resolved::Value(0)
@@ -716,15 +1254,18 @@ mod lx_writer {
         state: &LinkerState,
         def_map: &HashMap<String, (String, u32)>,
         resources: &[ResEntry],
+        spec: &Spec,
     ) -> Result<Vec<u8>, String> {
-        let entry_offset = state.entry_va - state.code_va;
+        let dll = spec.dll.as_ref();
         let mut code_data = state.code.clone();
         let mut data_data = state.data.clone();
 
         let code_pages = page_count(code_data.len() as u64);
         let data_pages = page_count(data_data.len() as u64 + u64::from(state.bss_size));
-        let stack_pages = (STACK_SIZE / PAGE_SIZE) as usize;
-        let (res_blob, res_table) = resource_object(resources)?;
+        // A DLL runs on its caller's stack: no stack object.
+        let stack_pages = if dll.is_some() { 0 } else { (STACK_SIZE / PAGE_SIZE) as usize };
+        let resource_object_num: u16 = if dll.is_some() { 3 } else { 4 };
+        let (res_blob, res_table) = resource_object(resources, resource_object_num)?;
         let res_pages = page_count(res_blob.len() as u64);
         let total_pages = code_pages + data_pages + stack_pages + res_pages;
 
@@ -742,12 +1283,13 @@ mod lx_writer {
                 for reloc in &sec.relocs {
                     let source_va = section_va.wrapping_add(reloc.offset as u32);
                     let buf_off = (source_va - obj_base) as usize;
-                    let resolved = match resolve(&reloc.target, obj_idx, state, obj, def_map) {
+                    let resolved = match resolve(&reloc.target, obj_idx, state, obj, def_map, spec) {
                         Ok(r) => r,
                         Err(name) => { if !undefined.contains(&name) { undefined.push(name); } continue; }
                     };
                     let target_va = match &resolved {
-                        Resolved::Internal(va) | Resolved::Value(va) | Resolved::Import { va, .. } => *va,
+                        Resolved::Internal(va) | Resolved::Value(va) => *va,
+                        Resolved::Import { va, .. } => va.unwrap_or(0),
                     };
                     let value = match reloc.kind {
                         RelocKind::Abs32 => target_va.wrapping_add(reloc.addend as u32),
@@ -758,26 +1300,36 @@ mod lx_writer {
                         return Err(format!("{}: relocation at {:#x} outside its section", obj.name, reloc.offset));
                     };
                     slot.copy_from_slice(&value.to_le_bytes());
-                    if reloc.kind != RelocKind::Abs32 { continue; }
-                    let fixup_target = match resolved {
-                        Resolved::Internal(va) => {
+                    // The loader writes T for an offset fixup and T - (P + 4)
+                    // for a self-relative one, so a PC-relative S + A - P
+                    // needs T = S + A + 4. A PC-relative reference within its
+                    // own object needs no fixup: the object moves as a whole.
+                    let (source_type, fixup_target) = match (reloc.kind, resolved) {
+                        (RelocKind::Abs32, Resolved::Internal(va)) => {
                             let (object_num, base) = state.object_of(va);
-                            FixupTarget::Internal { object_num, target_offset: value.wrapping_sub(base) }
+                            (SRC_OFFSET32, FixupTarget::Internal { object_num, target_offset: value.wrapping_sub(base) })
                         }
-                        Resolved::Import { module, ordinal, .. } => {
-                            if reloc.addend != 0 {
-                                return Err(format!("{}: an offset ({}) from an OS/2 API is not supported", obj.name, reloc.addend));
-                            }
+                        (RelocKind::Pc32, Resolved::Internal(va)) => {
+                            let (object_num, base) = state.object_of(va);
+                            if object_num == state.object_of(source_va).0 { continue; }
+                            let t = va.wrapping_add(reloc.addend as u32).wrapping_add(4);
+                            (SRC_SELF_REL32, FixupTarget::Internal { object_num, target_offset: t.wrapping_sub(base) })
+                        }
+                        (kind, Resolved::Import { module, ordinal, .. }) => {
                             let module_idx = get_or_insert_module(&module, &mut module_map, &mut imported_modules);
-                            FixupTarget::ExternalOrdinal { module_idx, ordinal }
+                            let (source_type, additive) = match kind {
+                                RelocKind::Abs32 => (SRC_OFFSET32, reloc.addend as u32),
+                                RelocKind::Pc32 => (SRC_SELF_REL32, (reloc.addend as u32).wrapping_add(4)),
+                            };
+                            (source_type, FixupTarget::ExternalOrdinal { module_idx, ordinal, additive })
                         }
-                        Resolved::Value(_) => continue,
+                        (_, Resolved::Value(_)) => continue,
                     };
                     let page = (source_va - obj_base) / PAGE_SIZE;
                     let fixups = if is_code { &mut code_fixups } else { &mut data_fixups };
                     if let Some(list) = fixups.get_mut(page as usize) {
                         list.push(LxFixup {
-                            source_type: 0x07,
+                            source_type,
                             source_offset: ((source_va - obj_base) % PAGE_SIZE) as u16,
                             target: fixup_target,
                         });
@@ -814,18 +1366,13 @@ mod lx_writer {
         }
 
         // ── Resident name table ───────────────────────────────────────────────
-        let mod_name = b"WARPEXE";
-        let mut resident_name_bytes = Vec::new();
-        resident_name_bytes.push(mod_name.len() as u8);
-        resident_name_bytes.extend_from_slice(mod_name);
-        resident_name_bytes.extend_from_slice(&0u16.to_le_bytes());
-        resident_name_bytes.push(0); // terminator
-
-        // ── Entry table (minimal: just terminator) ────────────────────────────
-        let entry_table_bytes: Vec<u8> = vec![0, 0];
+        let (resident_name_bytes, entry_table_bytes) = match dll {
+            None => (name_entry(b"WARPEXE", 0).into_iter().chain([0]).collect(), vec![0, 0]),
+            Some(d) => export_tables(d, state)?,
+        };
 
         // ── Compute table offsets (all relative to LX header start, 0x40) ─────
-        let num_objects: u32 = if resources.is_empty() { 3 } else { 4 };
+        let num_objects: u32 = 2 + u32::from(dll.is_none()) + u32::from(!resources.is_empty());
         let obj_table_off: u32 = LX_HEADER_SIZE;
         let page_map_off: u32 = obj_table_off + num_objects * 24;
         let resource_table_off: u32 = page_map_off + total_pages as u32 * 8;
@@ -858,7 +1405,6 @@ mod lx_writer {
 
         // 2. LX header (172 bytes).
         out.extend_from_slice(&build_lx_header(
-            entry_offset,
             total_pages as u32,
             obj_table_off, num_objects, page_map_off,
             resident_name_off, entry_table_off,
@@ -867,6 +1413,7 @@ mod lx_writer {
             loader_section_size, fixup_section_size,
             data_pages_offset_abs,
             if resources.is_empty() { 0 } else { resource_table_off }, resources.len() as u32,
+            HeaderKind::of(dll, state),
         ));
 
         // 3. Object table.
@@ -880,11 +1427,13 @@ mod lx_writer {
             OBJ_READ | OBJ_WRITE | OBJ_BIG | OBJ_USE32,
             code_pages as u32 + 1, data_pages as u32,
         ));
-        out.extend_from_slice(&encode_object_entry(
-            STACK_SIZE, state.stack_va,
-            OBJ_READ | OBJ_WRITE | OBJ_BIG | OBJ_USE32,
-            code_pages as u32 + data_pages as u32 + 1, STACK_SIZE / PAGE_SIZE,
-        ));
+        if dll.is_none() {
+            out.extend_from_slice(&encode_object_entry(
+                STACK_SIZE, state.stack_va,
+                OBJ_READ | OBJ_WRITE | OBJ_BIG | OBJ_USE32,
+                code_pages as u32 + data_pages as u32 + 1, STACK_SIZE / PAGE_SIZE,
+            ));
+        }
         if !resources.is_empty() {
             // The loader places resource objects itself: base 0.
             out.extend_from_slice(&encode_object_entry(
@@ -931,8 +1480,7 @@ mod lx_writer {
     /// The resource object's bytes (each resource 4-byte aligned) and the
     /// LX resource table: type, name, size, object (4) and offset, 14 bytes
     /// an entry. A type and name given twice is an error.
-    fn resource_object(resources: &[ResEntry]) -> Result<(Vec<u8>, Vec<u8>), String> {
-        const RESOURCE_OBJECT: u16 = 4;
+    fn resource_object(resources: &[ResEntry], object_num: u16) -> Result<(Vec<u8>, Vec<u8>), String> {
         let mut blob = Vec::new();
         let mut table = Vec::with_capacity(resources.len() * 14);
         let mut seen = std::collections::HashSet::new();
@@ -946,7 +1494,7 @@ mod lx_writer {
             table.extend_from_slice(&r.type_id.to_le_bytes());
             table.extend_from_slice(&r.name.to_le_bytes());
             table.extend_from_slice(&size.to_le_bytes());
-            table.extend_from_slice(&RESOURCE_OBJECT.to_le_bytes());
+            table.extend_from_slice(&object_num.to_le_bytes());
             table.extend_from_slice(&offset.to_le_bytes());
             blob.extend_from_slice(&r.data);
         }
@@ -989,19 +1537,110 @@ mod lx_writer {
                 out.push(*object_num);
                 out.extend_from_slice(&target_offset.to_le_bytes());
             }
-            FixupTarget::ExternalOrdinal { module_idx, ordinal } => {
+            FixupTarget::ExternalOrdinal { module_idx, ordinal, additive } => {
+                // 0x01 = import by ordinal, 0x10 = 32-bit ordinal; with an
+                // additive value, 0x04 = additive and 0x20 = 32 bits of it.
+                let flags = if *additive == 0 { 0x11 } else { 0x11 | 0x04 | 0x20 };
                 out.push(fix.source_type);
-                out.push(0x11); // 0x01=external ordinal | 0x10=32-bit ordinal
+                out.push(flags);
                 out.extend_from_slice(&fix.source_offset.to_le_bytes());
                 out.push(*module_idx);
                 out.extend_from_slice(&ordinal.to_le_bytes());
+                if *additive != 0 { out.extend_from_slice(&additive.to_le_bytes()); }
             }
         }
     }
 
+    /// What differs in the header between a program and a DLL.
+    struct HeaderKind {
+        module_flags: u32,
+        eip_object: u32,
+        eip: u32,
+        esp_object: u32,
+        esp: u32,
+    }
+
+    impl HeaderKind {
+        fn of(dll: Option<&DllSpec>, state: &LinkerState) -> HeaderKind {
+            let (eip_object, eip) = match state.entry_va {
+                Some(va) => (1, va - state.code_va),
+                None => (0, 0),
+            };
+            match dll {
+                None => HeaderKind { module_flags: 0, eip_object, eip, esp_object: 3, esp: STACK_SIZE },
+                Some(d) => HeaderKind {
+                    module_flags: MODULE_LIBRARY
+                        | if d.init_instance { MODULE_INIT_INSTANCE } else { 0 }
+                        | if d.term_instance { MODULE_TERM_INSTANCE } else { 0 },
+                    eip_object, eip, esp_object: 0, esp: 0,
+                },
+            }
+        }
+    }
+
+    /// A resident or non-resident name table entry.
+    fn name_entry(name: &[u8], ordinal: u16) -> Vec<u8> {
+        let mut b = Vec::with_capacity(name.len() + 3);
+        b.push(name.len() as u8);
+        b.extend_from_slice(name);
+        b.extend_from_slice(&ordinal.to_le_bytes());
+        b
+    }
+
+    /// A DLL's resident name table (its name, then every export) and entry
+    /// table (bundles of 32-bit entries, unused ordinals skipped).
+    fn export_tables(d: &DllSpec, state: &LinkerState) -> Result<(Vec<u8>, Vec<u8>), String> {
+        if d.name.is_empty() || d.name.len() > 127 { return Err(format!("bad module name {:?}", d.name)); }
+        let mut taken: std::collections::BTreeMap<u32, (&str, u8, u32)> = std::collections::BTreeMap::new();
+        let mut next = 1u32;
+        let mut missing = Vec::new();
+        for (name, ordinal) in &d.exports {
+            let Some(&va) = state.symbol_table.get(name) else { missing.push(name.clone()); continue };
+            if name.is_empty() || name.len() > 127 { return Err(format!("export name {name:?} is too long")); }
+            let ord = match ordinal { Some(o) => *o, None => { while taken.contains_key(&next) { next += 1; } next } };
+            if ord == 0 || ord > 0xFFFF { return Err(format!("export {name}: ordinal {ord} out of range")); }
+            let (object, base) = state.object_of(va);
+            if taken.insert(ord, (name, object, va - base)).is_some() {
+                return Err(format!("ordinal {ord} is exported twice"));
+            }
+        }
+        if !missing.is_empty() {
+            missing.sort();
+            return Err(format!("exported but not defined: {}", missing.join(", ")));
+        }
+        let mut names = name_entry(d.name.to_ascii_uppercase().as_bytes(), 0);
+        for (ord, (name, _, _)) in &taken { names.extend(name_entry(name.as_bytes(), *ord as u16)); }
+        names.push(0);
+
+        let mut entries = Vec::new();
+        let mut expected = 1u32;
+        let list: Vec<(u32, u8, u32)> = taken.iter().map(|(o, (_, obj, off))| (*o, *obj, *off)).collect();
+        let mut i = 0;
+        while i < list.len() {
+            let (ord, object, _) = list[i];
+            let mut gap = ord - expected;
+            while gap > 0 {
+                let n = gap.min(255);
+                entries.extend_from_slice(&[n as u8, BUNDLE_UNUSED]);
+                gap -= n;
+            }
+            let mut run = 1;
+            while i + run < list.len() && run < 255 && list[i + run].0 == ord + run as u32 && list[i + run].1 == object { run += 1; }
+            entries.extend_from_slice(&[run as u8, BUNDLE_32BIT]);
+            entries.extend_from_slice(&u16::from(object).to_le_bytes());
+            for &(_, _, offset) in &list[i..i + run] {
+                entries.push(ENTRY_EXPORTED);
+                entries.extend_from_slice(&offset.to_le_bytes());
+            }
+            expected = ord + run as u32;
+            i += run;
+        }
+        entries.push(0);
+        Ok((names, entries))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn build_lx_header(
-        entry_offset: u32,
         total_pages: u32,
         obj_table_off: u32,
         num_objects: u32,
@@ -1018,6 +1657,7 @@ mod lx_writer {
         data_pages_offset_abs: u32,
         resource_table_off: u32,
         resource_count: u32,
+        kind: HeaderKind,
     ) -> Vec<u8> {
         let mut h = Vec::with_capacity(172);
         h.extend_from_slice(b"LX");
@@ -1026,12 +1666,12 @@ mod lx_writer {
         h.extend_from_slice(&2u16.to_le_bytes());                   // cpu_type = 386
         h.extend_from_slice(&1u16.to_le_bytes());                   // os_type = OS/2
         h.extend_from_slice(&0u32.to_le_bytes());                   // module_version
-        h.extend_from_slice(&0u32.to_le_bytes());                   // module_flags (EXE)
+        h.extend_from_slice(&kind.module_flags.to_le_bytes());      // module_flags
         h.extend_from_slice(&total_pages.to_le_bytes());            // module_num_pages
-        h.extend_from_slice(&1u32.to_le_bytes());                   // eip_object = 1 (code)
-        h.extend_from_slice(&entry_offset.to_le_bytes());           // eip
-        h.extend_from_slice(&3u32.to_le_bytes());                   // esp_object = 3 (stack)
-        h.extend_from_slice(&STACK_SIZE.to_le_bytes());             // esp = top of stack
+        h.extend_from_slice(&kind.eip_object.to_le_bytes());        // eip_object (1: code; 0: none)
+        h.extend_from_slice(&kind.eip.to_le_bytes());               // eip
+        h.extend_from_slice(&kind.esp_object.to_le_bytes());        // esp_object (3: stack; 0 for a DLL)
+        h.extend_from_slice(&kind.esp.to_le_bytes());               // esp = top of stack
         h.extend_from_slice(&4096u32.to_le_bytes());                // page_size
         h.extend_from_slice(&0u32.to_le_bytes());                   // page_offset_shift
         h.extend_from_slice(&fixup_section_size.to_le_bytes());     // fixup_section_size
@@ -1120,6 +1760,7 @@ fn main() {
     let def_content = load_def_file(parsed.def_file.as_deref());
     let def_map = def_parser::parse_def(&def_content);
 
+    let mut def_map = def_map;
     let mut inputs = Inputs::default();
     for input in &parsed.inputs {
         if let Err(e) = load_input(input, &mut inputs) {
@@ -1128,19 +1769,50 @@ fn main() {
         }
     }
     let resources = std::mem::take(&mut inputs.resources);
+    let mut spec = lx_writer::Spec::default();
+    // Names a DLL input exports become imports from it; an OS/2 API of
+    // the same name stays the API.
+    for (module, exports) in std::mem::take(&mut inputs.dlls) {
+        for (name, ordinal) in exports {
+            def_map.entry(name).or_insert((module.clone(), ordinal));
+        }
+        spec.user_modules.insert(module);
+    }
+    if parsed.dll {
+        let name = parsed.module_name.clone().unwrap_or_else(|| {
+            parsed.output.file_stem().map(|s| s.to_string_lossy().to_ascii_uppercase()).unwrap_or_default()
+        });
+        spec.dll = Some(lx_writer::DllSpec { name, exports: parsed.exports.clone(),
+                                             init_instance: parsed.init_instance, term_instance: parsed.term_instance });
+    }
     let objects = select_objects(inputs, &def_map);
     if objects.is_empty() {
         eprintln!("lx-link: no ELF objects found in inputs");
         process::exit(1);
     }
-    let live = parsed.gc_sections.then(|| live_sections(&objects));
+    let roots: Vec<&str> = match &spec.dll {
+        Some(d) => std::iter::once(DLL_ENTRY).chain(d.exports.iter().map(|(n, _)| n.as_str())).collect(),
+        None => vec!["_start", "main"],
+    };
+    let live = parsed.gc_sections.then(|| live_sections(&objects, &roots));
+    let mut objects = objects;
+    let all_live: Vec<Vec<bool>> = objects.iter().map(|o| vec![true; o.sections.len()]).collect();
+    if let Err(e) = eh_frame::prune(&mut objects, live.as_deref().unwrap_or(&all_live)) {
+        eprintln!("lx-link: {e}");
+        process::exit(1);
+    }
 
-    let state = match linker_state::LinkerState::build(&objects, live.as_deref()) {
+    let built = if spec.dll.is_some() {
+        linker_state::LinkerState::build_dll(&objects, live.as_deref())
+    } else {
+        linker_state::LinkerState::build(&objects, live.as_deref())
+    };
+    let state = match built {
         Ok(s) => s,
         Err(e) => { eprintln!("lx-link: {}", e); process::exit(1); }
     };
 
-    let lx_bytes = match lx_writer::write_lx(&objects, &state, &def_map, &resources) {
+    let lx_bytes = match lx_writer::write_lx(&objects, &state, &def_map, &resources, &spec) {
         Ok(b) => b,
         Err(e) => { eprintln!("lx-link: {}", e); process::exit(1); }
     };
@@ -1148,6 +1820,24 @@ fn main() {
     if let Err(e) = std::fs::write(&parsed.output, &lx_bytes) {
         eprintln!("lx-link: cannot write {:?}: {}", parsed.output, e);
         process::exit(1);
+    }
+
+    // The debug companion (ADR-0102).
+    let debug_file = if parsed.no_debug_file {
+        None
+    } else {
+        parsed.debug_file.clone()
+            .or_else(|| debug_elf::has_debug_info(&objects).then(|| parsed.output.with_extension("dbg")))
+    };
+    if let Some(path) = debug_file {
+        let written = debug_elf::linked_images(&lx_bytes, &state)
+            .ok_or_else(|| "the linked image is cut short".to_string())
+            .and_then(|(code, data)| debug_elf::write(&objects, &state, &code, &data))
+            .and_then(|elf| std::fs::write(&path, elf).map_err(|e| e.to_string()));
+        if let Err(e) = written {
+            eprintln!("lx-link: cannot write the debug file {path:?}: {e}");
+            process::exit(1);
+        }
     }
 }
 
@@ -1159,6 +1849,8 @@ struct Inputs {
     members: Vec<elf_reader::ElfObject>,
     /// Resources from .res files, in order.
     resources: Vec<res_reader::ResEntry>,
+    /// DLLs given as inputs: module name and exports.
+    dlls: Vec<(String, Vec<(String, u32)>)>,
 }
 
 /// The objects to link: the plain ones, then archive members pulled in
@@ -1173,7 +1865,7 @@ fn select_objects(inputs: Inputs, def_map: &std::collections::HashMap<String, (S
             .flat_map(|o| o.symbols.iter().map(|s| s.name.as_str()).chain(o.commons.iter().map(|c| c.name.as_str())))
             .collect();
         let wanted: HashSet<String> = objects.iter()
-            .flat_map(|o| o.undefined.iter().chain(o.sections.iter().flat_map(|s| s.relocs.iter()).filter_map(|r| match &r.target {
+            .flat_map(|o| o.undefined.iter().chain(o.sections.iter().filter(|s| s.class != elf_reader::SecClass::Debug).flat_map(|s| s.relocs.iter()).filter_map(|r| match &r.target {
                 elf_reader::RelocTarget::Symbol(n) => Some(n),
                 _ => None,
             })))
@@ -1187,10 +1879,11 @@ fn select_objects(inputs: Inputs, def_map: &std::collections::HashMap<String, (S
     }
 }
 
-/// `--gc-sections`: the sections reached from the entry point (`_start`,
-/// else `main`) and the init / fini arrays through relocations, as
+/// `--gc-sections`: the sections reached from `roots` (a program's entry
+/// point; a DLL's `_DLL_InitTerm` and exports) and the init / fini arrays
+/// through relocations, as
 /// `[object][section]`. Common symbols always stay.
-fn live_sections(objects: &[elf_reader::ElfObject]) -> Vec<Vec<bool>> {
+fn live_sections(objects: &[elf_reader::ElfObject], roots: &[&str]) -> Vec<Vec<bool>> {
     use elf_reader::{RelocTarget, SecClass};
     let mut defs: std::collections::HashMap<&str, (usize, usize)> = std::collections::HashMap::new();
     for (oi, o) in objects.iter().enumerate() {
@@ -1201,22 +1894,33 @@ fn live_sections(objects: &[elf_reader::ElfObject]) -> Vec<Vec<bool>> {
     }
     let mut live: Vec<Vec<bool>> = objects.iter().map(|o| vec![false; o.sections.len()]).collect();
     let mut work: Vec<(usize, usize)> = Vec::new();
-    for root in ["_start", "main"] {
-        if let Some(&d) = defs.get(root) { work.push(d); break; }
+    for root in roots {
+        if let Some(&d) = defs.get(root) { work.push(d); }
     }
     for (oi, o) in objects.iter().enumerate() {
         for (si, s) in o.sections.iter().enumerate() {
             if matches!(s.class, SecClass::Array(_)) { work.push((oi, si)); }
         }
     }
+    // What each function's unwind entry needs once the function is kept:
+    // its LSDA (.gcc_except_table) and its CIE's personality routine.
+    let eh_deps = eh_frame::dependencies(objects);
     while let Some((oi, si)) = work.pop() {
         if std::mem::replace(&mut live[oi][si], true) { continue; }
-        for r in &objects[oi].sections[si].relocs {
-            match &r.target {
+        let deps = eh_deps.get(&(oi, si)).into_iter().flatten();
+        for target in objects[oi].sections[si].relocs.iter().map(|r| &r.target).chain(deps) {
+            match target {
                 RelocTarget::Local { section, .. } => work.push((oi, *section)),
                 RelocTarget::Symbol(name) => { if let Some(&d) = defs.get(name.as_str()) { work.push(d); } }
                 RelocTarget::Absolute(_) => {}
             }
+        }
+    }
+    // The unwind tables are pruned to the kept functions (eh_frame::prune)
+    // and kept themselves.
+    for (oi, o) in objects.iter().enumerate() {
+        for (si, s) in o.sections.iter().enumerate() {
+            if s.class == SecClass::EhFrame { live[oi][si] = true; }
         }
     }
     live
@@ -1243,6 +1947,10 @@ fn load_input(path: &Path, inputs: &mut Inputs) -> Result<(), Box<dyn Error>> {
 
     if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("res")) {
         inputs.resources.extend(res_reader::parse_res(&data, &name)?);
+        return Ok(());
+    }
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("dll")) {
+        inputs.dlls.push(dll_reader::read_exports(&data, &name)?);
         return Ok(());
     }
 
@@ -1380,7 +2088,7 @@ VIOCALLS.19   VioWrtTTY\n";
     /// writer's image, read back from the file's pages).
     fn link(objects: &[ElfObject], defs: &HashMap<String, (String, u32)>) -> Result<(LinkerState, Vec<u8>), String> {
         let state = LinkerState::build(objects, None).map_err(|e| e.to_string())?;
-        let lx = lx_writer::write_lx(objects, &state, defs, &[])?;
+        let lx = lx_writer::write_lx(objects, &state, defs, &[], &lx_writer::Spec::default())?;
         Ok((state, lx))
     }
 
@@ -1523,10 +2231,10 @@ VIOCALLS.19   VioWrtTTY\n";
         a.symbols.push(sym("used", 2, 0));
         a.symbols.push(sym("unused", 3, 0));
         let objects = [a];
-        let live = live_sections(&objects);
+        let live = live_sections(&objects, &["_start"]);
         assert_eq!(live[0], vec![true, false, true, false], "_start's .text and what it uses");
         let state = LinkerState::build(&objects, Some(&live)).unwrap();
-        assert!(lx_writer::write_lx(&objects, &state, &HashMap::new(), &[]).is_ok());
+        assert!(lx_writer::write_lx(&objects, &state, &HashMap::new(), &[], &lx_writer::Spec::default()).is_ok());
         assert!(!state.symbol_table.contains_key("unused"));
         assert!(link(&objects, &HashMap::new()).is_err(), "without GC, nowhere is undefined");
     }
@@ -1544,7 +2252,7 @@ VIOCALLS.19   VioWrtTTY\n";
             ..Default::default()
         };
         let inputs = Inputs { objects: vec![a], members: vec![
-            member("g.o", "g", None), member("f.o", "f", Some("g")), member("h.o", "h", None)], resources: Vec::new() };
+            member("g.o", "g", None), member("f.o", "f", Some("g")), member("h.o", "h", None)], resources: Vec::new(), dlls: Vec::new() };
         let names: Vec<String> = select_objects(inputs, &HashMap::new()).into_iter().map(|o| o.name).collect();
         assert_eq!(names, ["start.o", "f.o", "g.o"]);
     }
@@ -1571,7 +2279,7 @@ VIOCALLS.19   VioWrtTTY\n";
             ..Default::default()
         }];
         let state = LinkerState::build(&objects, None).expect("build state");
-        let lx_bytes = lx_writer::write_lx(&objects, &state, &HashMap::new(), &[]).expect("write");
+        let lx_bytes = lx_writer::write_lx(&objects, &state, &HashMap::new(), &[], &lx_writer::Spec::default()).expect("write");
 
         // Must start with MZ, then LX at 0x40.
         assert!(lx_bytes.len() > LX_HEADER_OFFSET as usize + LX_HEADER_SIZE as usize);
@@ -1606,7 +2314,7 @@ VIOCALLS.19   VioWrtTTY\n";
         let state = LinkerState::build(&objects, None).expect("build state");
         let resources = vec![ResEntry { type_id: 3, name: 100, data: vec![1, 2, 3] },
                              ResEntry { type_id: 4, name: 101, data: vec![9; 5000] }];
-        let lx = lx_writer::write_lx(&objects, &state, &HashMap::new(), &resources).expect("write");
+        let lx = lx_writer::write_lx(&objects, &state, &HashMap::new(), &resources, &lx_writer::Spec::default()).expect("write");
         let hdr = LX_HEADER_OFFSET as usize;
         let u32_at = |o: usize| u32::from_le_bytes(lx[o..o + 4].try_into().unwrap());
         let u16_at = |o: usize| u16::from_le_bytes(lx[o..o + 2].try_into().unwrap());
@@ -1626,8 +2334,254 @@ VIOCALLS.19   VioWrtTTY\n";
         assert_eq!(lx[first + 4], 9);
 
         let dup = vec![ResEntry { type_id: 3, name: 1, data: vec![] }, ResEntry { type_id: 3, name: 1, data: vec![] }];
-        let e = lx_writer::write_lx(&objects, &state, &HashMap::new(), &dup).unwrap_err();
+        let e = lx_writer::write_lx(&objects, &state, &HashMap::new(), &dup, &lx_writer::Spec::default()).unwrap_err();
         assert!(e.contains("given twice"), "{e}");
+    }
+
+    /// A DLL (ADR-0101): the library flags, INITINSTANCE / TERMINSTANCE,
+    /// no stack object, `_DLL_InitTerm` as the entry, its exports in the
+    /// resident names and the entry table, read back by `dll_reader` the
+    /// way a program linked with the DLL reads them.
+    #[test]
+    fn a_dll_has_exports_an_entry_table_and_no_stack() {
+        let objects = vec![ElfObject {
+            name: "d.o".into(),
+            sections: vec![section(".text", SecClass::Code, vec![0x90; 16], vec![]),
+                           section(".data", SecClass::Data, vec![0; 8], vec![])],
+            symbols: vec![sym("_DLL_InitTerm", 0, 0), sym("Answer", 0, 8), sym("Table", 1, 4)],
+            ..Default::default()
+        }];
+        let state = LinkerState::build_dll(&objects, None).expect("build");
+        let spec = lx_writer::Spec {
+            dll: Some(lx_writer::DllSpec {
+                name: "MYDLL".into(),
+                exports: vec![("Answer".into(), Some(3)), ("Table".into(), None)],
+                init_instance: true,
+                term_instance: true,
+            }),
+            ..Default::default()
+        };
+        let lx = lx_writer::write_lx(&objects, &state, &HashMap::new(), &[], &spec).expect("write");
+        let hdr = LX_HEADER_OFFSET as usize;
+        let u32_at = |o: usize| u32::from_le_bytes(lx[o..o + 4].try_into().unwrap());
+        assert_eq!(u32_at(hdr + 0x10), 0x8000 | 0x4 | 0x4000_0000, "library, INITINSTANCE, TERMINSTANCE");
+        assert_eq!(u32_at(hdr + 0x44), 2, "code and data, no stack");
+        assert_eq!((u32_at(hdr + 0x18), u32_at(hdr + 0x1C)), (1, 0), "_DLL_InitTerm is the entry");
+        assert_eq!((u32_at(hdr + 0x20), u32_at(hdr + 0x24)), (0, 0), "no stack");
+
+        let (module, mut exports) = dll_reader::read_exports(&lx, "mydll.dll").expect("read back");
+        exports.sort_by_key(|e| e.1);
+        assert_eq!(module, "MYDLL");
+        assert_eq!(exports, [("Table".to_string(), 1), ("Answer".to_string(), 3)], "the lowest free ordinal");
+
+        // Entry table: a 32-bit bundle in object 2 for ordinal 1, ordinal 2
+        // unused (a type-0 bundle), then one in object 1 for ordinal 3.
+        let et = hdr + u32_at(hdr + 0x5C) as usize;
+        let bundle = |at: usize| (lx[at], lx[at + 1], u16::from_le_bytes([lx[at + 2], lx[at + 3]]),
+                                  u32::from_le_bytes(lx[at + 5..at + 9].try_into().unwrap()));
+        assert_eq!(bundle(et), (1, 3, 2, 4), "Table: object 2, offset 4");
+        assert_eq!(&lx[et + 9..et + 11], &[1, 0], "ordinal 2 unused");
+        assert_eq!(bundle(et + 11), (1, 3, 1, 8), "Answer: object 1, offset 8");
+        assert_eq!(lx[et + 20], 0, "the end of the table");
+    }
+
+    /// Debug sections (ADR-0102) are joined by name in input order; a
+    /// relocation to another debug section becomes its offset in the
+    /// joined section, one to code its linked address, and one to a
+    /// section the link dropped 0.
+    #[test]
+    fn debug_sections_are_joined_and_relocated() {
+        let obj = |name: &str, info_relocs: Vec<Reloc>| ElfObject {
+            name: name.into(),
+            sections: vec![section(".text", SecClass::Code, vec![0xC3; 8], vec![]),
+                           section(".debug_info", SecClass::Debug, vec![0; 8], info_relocs),
+                           section(".debug_str", SecClass::Debug, b"main\0x\0".to_vec(), vec![]),
+                           section(".text.unused", SecClass::Code, vec![0xC3; 4], vec![])],
+            symbols: vec![sym("_start", 0, 0)],
+            ..Default::default()
+        };
+        let a = obj("a.o", vec![reloc(0, RelocKind::Abs32, 5, RelocTarget::Local { section: 2, offset: 0 }),
+                                reloc(4, RelocKind::Abs32, 2, RelocTarget::Local { section: 0, offset: 0 })]);
+        let mut b = obj("b.o", vec![reloc(0, RelocKind::Abs32, 0, RelocTarget::Local { section: 2, offset: 0 }),
+                                    reloc(4, RelocKind::Abs32, 0, RelocTarget::Local { section: 3, offset: 0 })]);
+        b.symbols.clear();
+        let objects = [a, b];
+        let live = live_sections(&objects, &["_start"]);
+        let state = LinkerState::build(&objects, Some(&live)).expect("build");
+        let joined = debug_elf::join(&objects, &state).expect("join");
+        let (start, _) = debug_elf::placements(&objects).expect("placements");
+        let info = &joined[".debug_info"];
+        let word = |at: usize| u32::from_le_bytes(info[at..at + 4].try_into().unwrap());
+        assert_eq!(info.len(), 16, "both objects' .debug_info");
+        assert_eq!(start[1][1], Some(8), "b's .debug_info follows a's");
+        assert_eq!(start[1][2], Some(7), "b's .debug_str follows a's 7 bytes");
+        assert_eq!(word(0), 5, "a's string at its offset 0 + 5");
+        assert_eq!(word(4), state.section_va[0][0].unwrap() + 2, "a's code at its address + 2");
+        assert_eq!(word(8), 7, "b's string, after a's strings");
+        assert_eq!(word(12), 0, "b's .text.unused was dropped");
+        assert!(debug_elf::has_debug_info(&objects));
+    }
+
+    /// The companion is an ELF32 i386 file GDB can read: the code and
+    /// data at their linked addresses, the debug sections, and the global
+    /// symbols as functions and objects.
+    #[test]
+    fn the_debug_companion_is_an_elf_with_code_symbols_and_dwarf() {
+        use object::{Object, ObjectSection, ObjectSymbol};
+        let objects = vec![ElfObject {
+            name: "a.o".into(),
+            sections: vec![section(".text", SecClass::Code, vec![0x90, 0xC3], vec![]),
+                           section(".data", SecClass::Data, vec![1, 2, 3, 4], vec![]),
+                           section(".debug_line", SecClass::Debug, vec![9; 6], vec![])],
+            symbols: vec![sym("_start", 0, 0), sym("counter", 1, 0)],
+            ..Default::default()
+        }];
+        let state = LinkerState::build(&objects, None).expect("build");
+        let lx = lx_writer::write_lx(&objects, &state, &HashMap::new(), &[], &lx_writer::Spec::default()).expect("lx");
+        let (code, data) = debug_elf::linked_images(&lx, &state).expect("images");
+        assert_eq!(code, [0x90, 0xC3]);
+        let elf = debug_elf::write(&objects, &state, &code, &data).expect("elf");
+        let file = object::File::parse(&*elf).expect("parses as ELF");
+        assert_eq!(file.architecture(), object::Architecture::I386);
+        let text = file.section_by_name(".text").expect(".text");
+        assert_eq!((text.address(), text.data().unwrap()), (u64::from(state.code_va), &[0x90u8, 0xC3][..]));
+        assert_eq!(file.section_by_name(".data").unwrap().address(), u64::from(state.data_va));
+        assert_eq!(file.section_by_name(".debug_line").unwrap().data().unwrap(), &[9; 6]);
+        let start = file.symbols().find(|s| s.name() == Ok("_start")).expect("_start");
+        assert_eq!((start.address(), start.kind()), (u64::from(state.code_va), object::SymbolKind::Text));
+        let counter = file.symbols().find(|s| s.name() == Ok("counter")).expect("counter");
+        assert_eq!((counter.address(), counter.kind()), (u64::from(state.data_va), object::SymbolKind::Data));
+    }
+
+    /// `--debug-file` names the companion, `--no-debug-file` turns it off.
+    #[test]
+    fn debug_file_flags_parse() {
+        let parse = |a: &[&str]| args::parse_args(&a.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        let a = parse(&["lx-link", "a.o", "--debug-file", "x.dbg", "-o", "x.exe"]);
+        assert_eq!(a.debug_file.as_deref(), Some(std::path::Path::new("x.dbg")));
+        assert!(!a.no_debug_file);
+        assert!(parse(&["lx-link", "a.o", "--no-debug-file"]).no_debug_file);
+    }
+
+    /// An `.eh_frame` with one CIE and two FDEs, for `.text.a` (with an
+    /// LSDA in `.gcc_except_table.a`) and `.text.b` (ADR-0103).
+    fn eh_object() -> ElfObject {
+        let mut eh = Vec::new();
+        // CIE at 0: length 16, id 0, version 1, "zR", align 1 / -4, ra 8, aug 1: 0x1b.
+        eh.extend_from_slice(&16u32.to_le_bytes());
+        eh.extend_from_slice(&0u32.to_le_bytes());
+        eh.extend_from_slice(&[1, b'z', b'R', 0, 1, 0x7C, 8, 1, 0x1B]);
+        eh.extend_from_slice(&[0, 0, 0]);
+        // FDE at 20 (for .text.a): length 20, CIE pointer 24, pc_begin, range, aug 4 (LSDA).
+        eh.extend_from_slice(&20u32.to_le_bytes());
+        eh.extend_from_slice(&24u32.to_le_bytes());
+        eh.extend_from_slice(&[0; 8]);
+        eh.extend_from_slice(&[4, 0, 0, 0, 0, 0, 0, 0]);
+        // FDE at 44 (for .text.b): length 16, CIE pointer 48.
+        eh.extend_from_slice(&16u32.to_le_bytes());
+        eh.extend_from_slice(&48u32.to_le_bytes());
+        eh.extend_from_slice(&[0; 8]);
+        eh.extend_from_slice(&[0, 0, 0, 0]);
+        let relocs = vec![
+            reloc(28, RelocKind::Pc32, 0, RelocTarget::Local { section: 0, offset: 0 }),
+            reloc(37, RelocKind::Abs32, 0, RelocTarget::Local { section: 2, offset: 0 }),
+            reloc(52, RelocKind::Pc32, 0, RelocTarget::Local { section: 1, offset: 0 }),
+        ];
+        ElfObject {
+            name: "eh.o".into(),
+            sections: vec![section(".text.a", SecClass::Code, vec![0xC3; 4], vec![]),
+                           section(".text.b", SecClass::Code, vec![0xC3; 4], vec![]),
+                           section(".gcc_except_table.a", SecClass::Data, vec![0xFF; 4], vec![]),
+                           section(".eh_frame", SecClass::EhFrame, eh, relocs)],
+            symbols: vec![sym("_start", 0, 0), sym("unused", 1, 0)],
+            ..Default::default()
+        }
+    }
+
+    /// A kept function's FDE keeps its LSDA alive; the FDE of a dropped
+    /// one goes, the CIE stays, the kept FDE points back at it from its
+    /// new place, and its relocations move along. The tables lie between
+    /// `__EH_FRAME_BEGIN__` and `__EH_FRAME_END__`, followed by a zero.
+    #[test]
+    fn eh_frame_keeps_the_kept_functions_records() {
+        let mut objects = vec![eh_object()];
+        assert_eq!(eh_frame::records(&objects[0].sections[3].data).unwrap().len(), 3);
+        let live = live_sections(&objects, &["_start"]);
+        assert_eq!(live[0], [true, false, true, true], ".text.a and its LSDA, not .text.b");
+        eh_frame::prune(&mut objects, &live).unwrap();
+        let eh = &objects[0].sections[3];
+        let recs = eh_frame::records(&eh.data).unwrap();
+        assert_eq!(recs.len(), 2, "the CIE and .text.a's FDE");
+        assert_eq!(recs[1].cie, Some(0), "the FDE's CIE pointer still finds the CIE");
+        assert_eq!(eh.relocs.iter().map(|r| r.offset).collect::<Vec<_>>(), [28, 37]);
+
+        let state = LinkerState::build(&objects, Some(&live)).unwrap();
+        let begin = state.symbol_table["__EH_FRAME_BEGIN__"];
+        let end = state.symbol_table["__EH_FRAME_END__"];
+        assert_eq!(end - begin, 44, "the two records");
+        assert_eq!(word(&state, end), 0, "the terminator");
+        assert_eq!(state.section_va[0][3], Some(begin));
+    }
+
+    /// A malformed record is an error naming the object.
+    #[test]
+    fn a_cut_eh_frame_is_refused() {
+        let mut o = eh_object();
+        o.sections[3].data.truncate(34);
+        let e = eh_frame::prune(&mut [o], &[vec![true; 4]]).unwrap_err();
+        assert!(e.contains("eh.o") && e.contains("cut short"), "{e}");
+    }
+
+    /// Exporting what nothing defines, or one ordinal twice, is an error.
+    #[test]
+    fn bad_dll_exports_are_refused() {
+        let objects = vec![ElfObject {
+            name: "d.o".into(),
+            sections: vec![section(".text", SecClass::Code, vec![0x90; 4], vec![])],
+            symbols: vec![sym("A", 0, 0), sym("B", 0, 2)],
+            ..Default::default()
+        }];
+        let state = LinkerState::build_dll(&objects, None).expect("build");
+        let write = |exports: Vec<(String, Option<u32>)>| {
+            let spec = lx_writer::Spec {
+                dll: Some(lx_writer::DllSpec { name: "D".into(), exports, init_instance: false, term_instance: false }),
+                ..Default::default()
+            };
+            lx_writer::write_lx(&objects, &state, &HashMap::new(), &[], &spec)
+        };
+        let e = write(vec![("Missing".into(), None)]).unwrap_err();
+        assert!(e.contains("exported but not defined: Missing"), "{e}");
+        let e = write(vec![("A".into(), Some(1)), ("B".into(), Some(1))]).unwrap_err();
+        assert!(e.contains("ordinal 1 is exported twice"), "{e}");
+        assert!(write(vec![("A".into(), Some(1)), ("B".into(), Some(2))]).is_ok());
+        // With no entry routine the DLL has no entry point (eip_object 0).
+        let lx = write(vec![]).unwrap();
+        let hdr = LX_HEADER_OFFSET as usize;
+        assert_eq!(u32::from_le_bytes(lx[hdr + 0x18..hdr + 0x1C].try_into().unwrap()), 0);
+    }
+
+    /// A program importing from a DLL given as an input: the DLL's module
+    /// goes into the import module table, and a call becomes a
+    /// self-relative fixup to its ordinal, never a Warpine API thunk.
+    #[test]
+    fn imports_from_a_user_dll_are_fixups_to_its_module() {
+        let objects = [start_object(vec![reloc(1, RelocKind::Pc32, -4, RelocTarget::Symbol("Answer".into()))])];
+        let state = LinkerState::build(&objects, None).expect("build");
+        let mut defs = HashMap::new();
+        defs.insert("Answer".to_string(), ("MYDLL".to_string(), 3));
+        let mut spec = lx_writer::Spec::default();
+        spec.user_modules.insert("MYDLL".into());
+        let lx = lx_writer::write_lx(&objects, &state, &defs, &[], &spec).expect("write");
+        let hdr = LX_HEADER_OFFSET as usize;
+        let u32_at = |o: usize| u32::from_le_bytes(lx[o..o + 4].try_into().unwrap());
+        assert_eq!(u32_at(hdr + 0x74), 1, "one import module");
+        let im = hdr + u32_at(hdr + 0x70) as usize;
+        assert_eq!(&lx[im..im + 6], b"\x05MYDLL");
+        let fx = hdr + u32_at(hdr + 0x6C) as usize;
+        assert_eq!(lx[fx], 0x08, "self-relative");
+        assert_eq!(lx[fx + 1] & 0x03, 0x01, "an import by ordinal");
+        assert_eq!(u16::from_le_bytes([lx[fx + 2], lx[fx + 3]]), 1, "at the call's operand");
+        assert_eq!((lx[fx + 4], u16::from_le_bytes([lx[fx + 5], lx[fx + 6]])), (1, 3), "module 1, ordinal 3");
     }
 
     #[test]

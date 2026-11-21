@@ -61,7 +61,7 @@ With ADR-0095 an unmodified GCC or clang builds OS/2 programs, but each program 
 - **The subsystem structures are packed to 2 bytes:** taken from the offsets Warpine fills (`KBDKEYINFO.time` at 6, `MOUEVENTINFO` 10 bytes, `VIOCONFIGINFO.cbMemory` at 6).
 - **The find buffers are packed to 1 byte:** `FILEFINDBUF3.achName` is at 29.
 - **`FSALLOCATE`** has natural alignment (20 bytes); the call returns 18.
-- **`CONTEXTRECORD`** keeps its floating-point area as 0x88 bytes, which is Warpine's layout; the register offsets are Warpine's `CTX_*`.
+- **`CONTEXTRECORD`** keeps its floating-point area as 0x88 bytes, which is Warpine's layout; the register offsets are Warpine's `CTX_*`. *(Superseded by ADR-0101: that layout was wrong; Warpine and the SDK now follow IBM's, `ctx_env[7]` and eight packed `FPREG`s, `ctx_SegGs` at 0x70.)*
 - **`errno` is one per process,** not per thread.
 - **The exit code of `abort`** is 3.
 - **No stream buffers output:** `fflush` does nothing.

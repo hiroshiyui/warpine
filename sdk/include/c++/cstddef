@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// <cstddef> - Warpine's C++ runtime (ADR-0103): <stddef.h> in namespace std too.
+#ifndef WARPINE_CXX_CSTDDEF
+#define WARPINE_CXX_CSTDDEF
+
+#include <stddef.h>
+
+namespace std {
+using ::size_t;
+using ::ptrdiff_t;
+typedef decltype(nullptr) nullptr_t;
+using ::max_align_t;
+} // namespace std
+
+#endif

@@ -21,6 +21,9 @@ extern "C" {
 #define SEEK_CUR 1
 #define SEEK_END 2
 #define FOPEN_MAX 32
+#define _IOFBF   0
+#define _IOLBF   1
+#define _IONBF   2
 
 typedef struct _WARPINE_FILE FILE;
 
@@ -43,6 +46,7 @@ int    putchar(int c);
 int    fputs(const char *s, FILE *f);
 int    puts(const char *s);
 int    fflush(FILE *f);
+int    setvbuf(FILE *f, char *buf, int mode, size_t size);
 int    fseek(FILE *f, long offset, int whence);
 long   ftell(FILE *f);
 void   rewind(FILE *f);
@@ -60,6 +64,8 @@ int    vprintf(const char *fmt, va_list ap);
 int    vfprintf(FILE *f, const char *fmt, va_list ap);
 int    vsprintf(char *buf, const char *fmt, va_list ap);
 int    vsnprintf(char *buf, size_t size, const char *fmt, va_list ap);
+int    sscanf(const char *str, const char *fmt, ...) __attribute__((__format__(__scanf__, 2, 3)));
+int    vsscanf(const char *str, const char *fmt, va_list ap);
 
 #ifdef __cplusplus
 }

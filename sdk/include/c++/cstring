@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// <cstring> - Warpine's C++ runtime (ADR-0103): <string.h> in namespace std too.
+#ifndef WARPINE_CXX_CSTRING
+#define WARPINE_CXX_CSTRING
+
+#include <string.h>
+
+namespace std {
+using ::size_t;
+using ::memcpy;
+using ::memmove;
+using ::memset;
+using ::memcmp;
+using ::memchr;
+using ::strlen;
+using ::strnlen;
+using ::strcpy;
+using ::strncpy;
+using ::strcat;
+using ::strncat;
+using ::strcmp;
+using ::strncmp;
+using ::stricmp;
+using ::strnicmp;
+using ::strchr;
+using ::strrchr;
+using ::strstr;
+using ::strspn;
+using ::strcspn;
+using ::strpbrk;
+using ::strtok;
+using ::strtok_r;
+using ::strdup;
+using ::strerror;
+} // namespace std
+
+#endif

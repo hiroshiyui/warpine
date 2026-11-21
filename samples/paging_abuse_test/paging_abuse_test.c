@@ -61,6 +61,7 @@ static VOID APIENTRY routine(ULONG tc)
     DosExitList(EXLST_EXIT, 0);
 }
 
+#ifdef __WATCOMC__
 static ULONG read_cr3(void);
 #pragma aux read_cr3 = "mov eax, cr3" value [eax];
 static void load_cr3(ULONG v);
@@ -69,6 +70,12 @@ static ULONG read_cr0(void);
 #pragma aux read_cr0 = "mov eax, cr0" value [eax];
 static void load_cr0(ULONG v);
 #pragma aux load_cr0 = "mov cr0, eax" parm [eax];
+#else
+static inline ULONG read_cr3(void) { ULONG v; __asm__ volatile("mov %%cr3, %0" : "=r"(v)); return v; }
+static inline void load_cr3(ULONG v) { __asm__ volatile("mov %0, %%cr3" : : "r"(v) : "memory"); }
+static inline ULONG read_cr0(void) { ULONG v; __asm__ volatile("mov %%cr0, %0" : "=r"(v)); return v; }
+static inline void load_cr0(ULONG v) { __asm__ volatile("mov %0, %%cr0" : : "r"(v) : "memory"); }
+#endif
 
 int main(void)
 {

@@ -70,10 +70,11 @@ _Screenshots captured from commit `df07985` (v0.0.6) on 2026-11-20; the CMD.EXE 
 - **SOM runtime kernel:** `SOM.DLL` is built in: `SOMObject`, `SOMClass` and `SOMClassMgr` with metaclasses, multiple inheritance and the C and C++ bindings; classes loaded from DLLs by name (`somFindClass`); IBM's SOM 1.0 ordinals (from osFree's export list), IBM's `ClassData`, method-table and `CClassData` layouts for the root classes, and `somBuildClass` for classes built from IBM's static class information. IBM's ordinals above 47 and the initializer control blocks are still missing ([ADR-0059](doc/adr/0059-som-runtime-kernel.md) to 0063, 0070 to 0073).
 - **MMPM/2 Audio:** `DosBeep` plays real sine-wave tones; `mciSendCommand`/`mciSendString` play `waveaudio` WAV files (wait, notify, seek, volume, aliases) through SDL3 audio streams on the main thread.
 - **NE Format Execution:** Full NE (New Executable) loader and 16-bit execution — loads OS/2 1.x 16-bit NE binaries into GDT-tiled guest memory, dispatches DOSCALLS/VIOCALLS via Pascal-convention 16-bit thunks. `ne_hello` (pure assembly, no Watcom CRT) runs `DosWrite`+`DosExit` correctly.
-- **GDB Remote Stub:** `--gdb <port>` enables GDB RSP over TCP — attach with `gdb`/`gef`/`pwndbg` for software breakpoints, single-step, and full register/memory access.
+- **GDB Remote Stub:** `--gdb <port>` enables GDB RSP over TCP — attach with `gdb`/`gef`/`pwndbg` for software breakpoints, single-step, and full register/memory access. Programs built with `-g` by GCC or clang get a debug companion from `lx-link`, so GDB debugs them at the source level (ADR-0102).
 - **Crash Dump Facility:** Structured crash reports on fatal VMEXITs — registers, stack, code bytes, and last 256 API calls written to `warpine-crash-<pid>.txt`.
 - **Builtin CMD.EXE Shell:** Native Rust command shell. `cargo run -- CMD.EXE` opens it in a window on the PM desktop (same as any CLI app); `WARPINE_HEADLESS=1` falls back to the host terminal. Also intercepts `DosExecPgm("CMD.EXE")` from running OS/2 guests. No Open Watcom required. It follows OS/2's CMD syntax: `%name%` variables, `&` / `&&` / `||` on return codes, `^` escapes, pipes and `<` / `>` / `>>` (inside the drives) that OS/2 programs read and write too, and a `PATH` search; programs start in the shell's directory. Built-in commands: `DIR`, `CD`, `SET`, `PATH`, `PROMPT` (OS/2's `$` codes, ANSI colours), `ECHO`, `CLS`, `VER`, `TYPE`, `MD`, `RD`, `DEL`, `COPY`, `REN`, `MOVE`, `START`, `DETACH`, `HELP`, `EXIT`; commands group with `( … )`, and the programs of a pipeline run at the same time. Line editor with history (↑/↓). `.CMD` scripts in REXX (a first line starting with `/*`; Warpine's own interpreter: the language, conditions, streams on the drives, TRACE and common REXXUTIL functions; OS/2 programs embed it through `RexxStart` and the REXX API) or with OS/2's batch control: `ECHO ON` / `OFF` and `@`, `%0`–`%9` and `SHIFT`, `IF`, `FOR`, `GOTO`, `CALL`, `SETLOCAL` / `ENDLOCAL`, `PAUSE`.
 - **Rust Guest Toolchain (Phase C):** Write OS/2 guest applications in Rust with `no_std`. Three standalone crates: `crates/warpine-os2-sys` (raw API bindings for DOSCALLS/VIOCALLS/KBDCALLS), `crates/warpine-os2-rt` (`_start` + panic handler + global allocator via `DosAllocMem`/`DosFreeMem`), `crates/warpine-os2` (ergonomic wrappers: `mod file`, `mod memory`, `mod thread`, `mod vio`, `mod process`). `samples/rust_hello` demonstrates a full Rust→LX binary with `cargo build` on the pinned nightly.
+- **C and C++ from GCC and clang:** `os2.h` and the PM headers, a small C runtime, a C++ runtime with exceptions and RTTI, the `os2rc` resource compiler, and `lx-link` making programs and DLLs from ELF objects (ADR-0095–0103). Every C sample builds with either compiler, also pinned ones from a Podman image, and the integration tests pass with those builds as with Open Watcom's.
 - **API Compatibility Report:** `warpine --compat` prints a module-grouped report of all implemented APIs with stub annotations.
 
 ## Architecture
@@ -242,7 +243,11 @@ samples/               OS/2 sample applications and build scripts
   c_hello/             A C program from GCC or clang, linked by lx-link
   c_sdk_test/          A C program built with the SDK (os2.h and the C runtime) by GCC or clang
   c_pm_test/           A PM program built with the SDK's pm.h by GCC or clang
-sdk/                   The C SDK for GCC and clang: os2.h, a small C runtime, os2.mk (os2rc compiles its resources)
+  c_gdb_test/          A C program built with -g, for source-level debugging with GDB
+  cxx_test/            A C++ program (exceptions, RTTI, new / delete) built by g++ or clang++
+  build_sdk.sh         Builds every C sample with GCC or clang into samples/build/
+sdk/                   The SDK for GCC and clang: os2.h, a small C runtime, a C++ runtime, os2.mk (os2rc compiles resources)
+vendor/setup_compilers.sh  Pinned GCC and clang in a Podman image (vendor/pinned/ runs them)
 tests/rc/              Resource scripts os2rc must compile exactly as Open Watcom's wrc does
 crates/                Standalone guest crates (NOT part of the host workspace)
   warpine-os2-sys/     Raw #![no_std] OS/2 API bindings (extern "C" declarations)
@@ -348,8 +353,22 @@ With the SDK (ADR-0096), a C program includes `<os2.h>` and the usual C headers,
 make -C samples/c_sdk_test         # builds sdk/build/gcc/ first; or CC=clang
 cargo run -- samples/c_sdk_test/c_sdk_test.exe alpha '"beta gamma"'
 cargo build --bin os2rc            # the resource compiler (ADR-0099)
-make -C samples/c_pm_test          # a PM program (INCL_WIN / INCL_GPI) with a menu, a dialog and strings from c_pm_test.rc
+make -C samples/c_pm_test          # a PM program with a menu, a dialog and strings from c_pm_test.rc
 cargo run -- samples/c_pm_test/c_pm_test.exe
+```
+
+Every C sample builds with either compiler (ADR-0101), and the integration tests can run those builds instead of Open Watcom's:
+```bash
+samples/build_sdk.sh gcc           # or clang: samples/build/<cc>/<sample>/
+WARPINE_SAMPLES=gcc cargo test --test integration
+./vendor/setup_compilers.sh        # pinned GCC and clang in a Podman image, by digest and snapshot date
+CC_CMD=vendor/pinned/gcc OUT_TAG=gcc-pinned samples/build_sdk.sh gcc
+```
+
+C++ works too, with exceptions and RTTI (ADR-0103): `os2.mk` gives `OS2_CXX` and `OS2_CXXFLAGS`, and a program links `libos2cxx.a` before `libos2c.a`.
+```bash
+make -C samples/cxx_test           # g++; or CC=clang for clang++
+cargo run -- samples/cxx_test/cxx_test.exe
 ```
 
 ### 7. API compatibility report
@@ -373,11 +392,15 @@ WARPINE_TRACE=json   RUST_LOG=debug cargo run -- samples/hello/hello.exe  # JSON
 cargo run -- --gdb 1234 samples/hello/hello.exe   # Start with GDB stub on port 1234
 # In another terminal:
 gdb -ex 'target remote :1234'                      # Attach with GDB
+# A program built with -g by GCC or clang has a debug companion beside it
+# (ADR-0102), which gives GDB its source lines, types and variables:
+make -C samples/c_gdb_test && cargo run -- --gdb 1234 samples/c_gdb_test/c_gdb_test.exe
+gdb -ex 'symbol-file samples/c_gdb_test/c_gdb_test.dbg' -ex 'target remote :1234' -ex 'break add_points'
 ```
 
 ### 10. Run tests and lint
 ```bash
-cargo test                        # 2205 unit tests (no KVM required)
+cargo test                        # 2213 unit tests (no KVM required)
 cargo test --test integration     # 204 end-to-end tests (requires /dev/kvm)
 cargo clippy --all-targets -- -D warnings  # Lint, test code included — must pass with zero warnings
 ```

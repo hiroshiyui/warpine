@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* os2/pmstddlg.h - the standard file and font dialogs (PMCTLS) and drag
  * and drop (PMDRAG) (ADR-0100), declared from IBM's PM Programming
- * Reference. Included by pm.h with INCL_WIN. */
+ * Reference. Included by pm.h. */
 #ifndef WARPINE_OS2_PMSTDDLG_H
 #define WARPINE_OS2_PMSTDDLG_H
 

@@ -1111,7 +1111,7 @@ When the guest triggers an IDT fault (vectors 0–31) that is not the Far16 thun
 
 1. `vcpu.rs` builds a `FaultContext` from the current KVM registers. Pre-fault ESP is `frame_base + 20` (5 dwords pushed by the IDT stub: `[vector][error_code][EIP][CS][EFLAGS]`).
 2. `try_hw_exception_dispatch()` in `seh.rs` reads `TIB[TIB_EXCHAIN_OFFSET]`. If the chain is `XCPT_CHAIN_END`, returns `None` → falls through to crash dump.
-3. Otherwise allocates guest memory for an EXCEPTIONREPORTRECORD (0x38 bytes) and CONTEXTRECORD (0xCC bytes), writes them via `write_exception_report()` / `write_context_record()`, and returns `ApiResult::ExceptionDispatch`.
+3. Otherwise allocates guest memory for an EXCEPTIONREPORTRECORD (0x38 bytes) and CONTEXTRECORD (0xB0 bytes), writes them via `write_exception_report()` / `write_context_record()`, and returns `ApiResult::ExceptionDispatch`.
 4. Back in the VMEXIT loop, `setup_exception_dispatch()` pushes a `CallbackFrame { FrameKind::ExceptionHandler { saved, next_handler, exc_report, ctx_record, guest_allocs } }` and sets up the guest stack for the handler call:
 
 ```
@@ -1163,7 +1163,7 @@ pub const XCPT_CHAIN_END: u32 = 0xFFFF_FFFF;
 pub const XCPT_CONTINUE_EXECUTION: u32 = 0xFFFF_FFFF;
 pub const XCPT_CONTINUE_SEARCH: u32 = 0x0000_0000;
 pub const EXCEPTION_REPORT_SIZE: u32 = 0x38;
-pub const CONTEXT_RECORD_SIZE: u32 = 0xCC;
+pub const CONTEXT_RECORD_SIZE: u32 = 0xB0;   // IBM's layout: ctx_env[7], 8 packed FPREGs, ctx_SegGs at 0x70 (ADR-0101)
 pub const EH_NONCONTINUABLE: u32 = 0x0000_0001;
 pub const EH_UNWINDING: u32 = 0x0000_0002;
 ```
@@ -2078,7 +2078,9 @@ gdb -ex 'target remote :1234'
 - `GdbBlockingEventLoop` — Polls `stop_cond` with 10 ms timeout and checks the TCP socket for incoming bytes between polls.
 - `launch_gdb_stub()` — Binds `127.0.0.1:<port>`, accepts one connection, and runs `GdbStub::run_blocking`.
 
-**Features:** Software breakpoints (INT 3 patching with original byte restore), single-step via `KVM_GUESTDBG_SINGLESTEP`, full 256 MB guest memory read/write, Ctrl-C stop with `SIGINT` mapping. The vCPU pauses at the entry point on startup, sending `SIGTRAP` to the GDB client.
+**Features:** Software breakpoints (INT 3 patching with original byte restore), single-step via `KVM_GUESTDBG_SINGLESTEP`, full 256 MB guest memory read/write, Ctrl-C stop with `SIGINT` mapping. The vCPU pauses at the entry point on startup, sending `SIGTRAP` to the GDB client; the stub takes that stop when the client connects (`take_initial_stop`), so GDB starts at the entry point.
+
+**Source-level debugging** (ADR-0102): a program `lx-link` linked from objects with DWARF has a debug companion, `prog.dbg`. Give it to GDB with `symbol-file prog.dbg` before `target remote`; a DLL takes `add-symbol-file mod.dbg -o <offset>`.
 
 ### Crash Dump Facility
 
@@ -2123,7 +2125,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the CMD.EXE / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (2205: 2138 warpine + 23 `gen_api` + 24 `lx_link` + 8 `os2rc` + 5 `gen_arch` + 7 `gen_compat`) include, among others:
+The unit tests (2213: 2138 warpine + 23 `gen_api` + 32 `lx_link` + 8 `os2rc` + 5 `gen_arch` + 7 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2262,10 +2264,16 @@ CLI samples should print output and exit with code 0. PM samples should open a w
 
 ### Automated integration tests
 
-`tests/integration.rs` contains 73 end-to-end tests that run real OS/2 sample binaries under KVM: CLI samples (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test, ne_hello, rust_hello, …) with headless output checks, and PM samples driven by GUI scripts on SDL's `dummy` driver — the self-checking samples (`pm_dialog_test`, `pm_list_test`, `pm_msgbox_test`, `pm_typeahead_test`, `pm_codepage_test`, `pm_pointer_test`, `pm_audio_test`, `pm_menu_dlg_test`, …) must report every check as passed, and desktop dumps are compared with golden tile signatures (see "GUI regression tests" below). Each test skips itself when `/dev/kvm` or its sample binary is missing.
+`tests/integration.rs` contains end-to-end tests that run real OS/2 sample binaries under KVM: CLI samples (hello, alloc_test, nls_test, thread_test, pipe_test, mutex_test, queue_test, thunk_test, ne_hello, rust_hello, …) with headless output checks, and PM samples driven by GUI scripts on SDL's `dummy` driver — the self-checking samples (`pm_dialog_test`, `pm_list_test`, `pm_msgbox_test`, `pm_typeahead_test`, `pm_codepage_test`, `pm_pointer_test`, `pm_audio_test`, `pm_menu_dlg_test`, …) must report every check as passed, and desktop dumps are compared with golden tile signatures (see "GUI regression tests" below). Each test skips itself when `/dev/kvm` or its sample binary is missing.
 
 ```bash
-cargo test --test integration     # 73 end-to-end tests (requires /dev/kvm)
+cargo test --test integration     # the end-to-end tests (requires /dev/kvm)
+```
+
+**The samples' compiler** (ADR-0101): the tests run the Open Watcom builds in `samples/<name>/`. With `WARPINE_SAMPLES=gcc` (or `clang`, `gcc-pinned`, `clang-pinned`) they run the builds of `samples/build_sdk.sh` instead: `sample_path` maps every `samples/<name>/<file>.exe` / `.dll` a test runs, copies or checks to `samples/build/<tag>/<name>/`, except for the samples that script does not build. Use `sample_path` / `sample_exists` for any new sample path in a test.
+
+```bash
+samples/build_sdk.sh gcc && WARPINE_SAMPLES=gcc cargo test --test integration
 ```
 
 ---
@@ -2427,7 +2435,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 2205 unit tests (2138 warpine + 23 gen_api + 24 lx_link + 8 os2rc + 5 gen_arch + 7 gen_compat), 204 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 2213 unit tests (2138 warpine + 23 gen_api + 32 lx_link + 8 os2rc + 5 gen_arch + 7 gen_compat), 207 integration tests, compatibility report (`warpine --compat`).
 
 ---
 
@@ -2468,7 +2476,10 @@ The test `layer_map_matches_src_and_the_committed_diagram` runs the validation a
   - `lx_writer::write_lx` applies the relocations, writes LX fixups for absolute ones and import fixups for OS/2 APIs (from `targets/os2api.def`, embedded as a fallback), and fails on undefined symbols.
   - `resolve_import` gives an import's thunk address (calls reach it through `call rel32`); it knows every module of `constants::module_base`, and an unknown module is a link error (ADR-0097).
   - `res_reader::parse_res` reads `.res` inputs (ADR-0099); `write_lx` puts the resources in a fourth object (`OBJ_RESOURCE`, base 0, each 4-byte aligned) with the LX resource table after the page map.
-- **Relocations:** `R_386_32`, `R_386_PC32` and `R_386_PLT32` only; GOT relocations fail with "compile with -fno-pic".
+  - **DLLs** (ADR-0101): `--dll` (or a `.dll` output) makes `LinkerState::build_dll` (no stack, `_DLL_InitTerm` as the entry) and `write_lx` with a `DllSpec`: module flags, the entry table and resident names from `export_tables`. `dll_reader::read_exports` reads a `.dll` input's resident and non-resident names; its exports become imports from its module (`Spec::user_modules`).
+  - `eh_frame` (ADR-0103): parses `.eh_frame` into CIE / FDE records. `dependencies` gives `live_sections` what a function's FDE needs (its LSDA, its CIE's personality routine). `prune` rebuilds each `.eh_frame` from the kept functions' FDEs and their CIEs. The layout places them between `__EH_FRAME_BEGIN__` and `__EH_FRAME_END__` and ends them with a zero.
+  - `debug_elf` (ADR-0102): when an input has `.debug_*` sections (`SecClass::Debug`, never laid out), `main` writes `<output>.dbg`. `join` concatenates them by name and applies their relocations against the final layout; `write` emits an ELF32 file with `.text` / `.data` / `.bss` at their linked addresses, the debug sections and the global symbols.
+- **Relocations:** `R_386_32`, `R_386_PC32` and `R_386_PLT32` only; GOT relocations fail with "compile with -fno-pic". Other types in debug sections are left as they are.
 
 **`src/bin/os2rc.rs`** — the resource compiler of the C SDK (ADR-0099): `os2rc [-I dir] [-D name=value] in.rc -o out.res`.
 - **Preprocessor:** `logical_lines` (comments, continuations), `Preprocessor` (`#define` / `#include` / `#if` …; headers give only their directives; `RC_INVOKED`), and `Eval` (C expressions, casts; `#if` takes unknown names as 0, resources reject them).
@@ -2480,20 +2491,26 @@ The test `layer_map_matches_src_and_the_committed_diagram` runs the validation a
 
   When `os2rc` learns a statement, add a script for it to `tests/rc/`.
 
-**`sdk/`** — the C SDK for GCC and clang (ADR-0096).
+**`sdk/`** — the SDK for GCC and clang (ADR-0096, ADR-0101, ADR-0103).
 - **Headers:**
-  - `include/os2.h` picks parts by `INCL_*`;
+  - `include/os2.h` includes everything; `INCL_*` are accepted and select nothing (ADR-0101);
   - `os2/os2def.h` has the types and conventions (`APIENTRY` is cdecl);
   - `os2/dos.h` has the Dos* and Que* calls, their structures and flags;
   - `os2/errors.h` has the `ERROR_*` codes;
   - `os2/sub.h` has VIO, KBD and MOU;
   - `os2/pm.h` has the PM calls (ADR-0097, ADR-0098), packed to 2 bytes; its first constant blocks were written from Warpine's own values;
-  - `os2/pmshl.h`, `os2/pmstddlg.h`, `os2/pmhelp.h`, `os2/pmspl.h` (ADR-0100) have PMSHAPI, PMCTLS / PMDRAG, HELPMGR and PMSPL; `pm.h` includes them.
-  - Together the headers declare 622 of the 660 entries of their modules; ADR-0098 and ADR-0100 list the ones left out.
+  - `os2/pmshl.h`, `os2/pmstddlg.h`, `os2/pmhelp.h`, `os2/pmspl.h` (ADR-0100) have PMSHAPI, PMCTLS / PMDRAG, HELPMGR and PMSPL; `os2/pmctl.h` (ADR-0101) the standard controls' messages and structures, DDE, tracking, bundles and the spooler's queries; `pm.h` includes them.
+  - `rexxsaa.h` (REXX / REXXAPI), `os2me.h` (MCI), `pmerr.h`, `time.h`, `stdint.h`, `unwind.h` (ADR-0101, ADR-0103).
+  - `include/c++/`: the C++ headers (ADR-0103), `<new>`, `<exception>`, `<typeinfo>`, `<initializer_list>`, `<utility>`, `<stdexcept>` and the `<c…>` wrappers.
+  - Together the headers declare 661 of the 670 entries of their modules (`gen_api check-headers` counts what is left).
+  - **Layouts:** `tests/sdk_layout/layout.c` prints every structure's size and field offsets, 142 structures, built by Open Watcom with its headers and by GCC and clang with the SDK's; `sdk_structure_layouts_match_open_watcom` compares the three. Add a structure to `fields.inc` when the SDK gains one Open Watcom also has.
 - **Pascal calls:** each subsystem call is one `OS2_PASCAL_API(ret, Name, (params), (reversed params), (reversed args))` line. It declares the import `_os2p_Name` (stdcall, the arguments reversed and widened, linked as `Name`) and an always-inline `Name` in the documented order, linked as `_os2i_Name` so the two never share a symbol (clang would otherwise call the wrapper as the import).
 - **The runtime** (`libc/`):
-  - `crt0.c`: `argv` / `envp`, the init arrays, `exit(main(...))`;
-  - `stdlib.c`: `exit`, `atexit`, `getenv`, conversions, `qsort`, the runtime's lock, and `errno` (`__errno_location`: a word of thread-local memory `crt0` allocates, ADR-0098);
+  - `crt0.c`: `argv` / `envp`, the init arrays, `exit(main(...))`, the program's `__dso_handle`;
+  - `dll0.c` (ADR-0101): a DLL's `_DLL_InitTerm` (weak): on attach the thread-local words, the init arrays and `__dll_initialize`; on detach `__dll_terminate`, the DLL's `__cxa_atexit` destructors and the fini arrays;
+  - `stdlib.c`: `exit`, `atexit` and `__cxa_atexit` / `__cxa_finalize` (one list, newest first), `getenv`, conversions, `qsort`, the runtime's lock, and the thread-local words `crt0` / `dll0` allocate: `errno` (`__errno_location`, ADR-0098) and two for the C++ runtime (`__libc_cxx_globals`);
+  - `time.c`, `scanf.c` (ADR-0101): `<time.h>` on `DosGetDateTime` (64-bit `time_t`), `sscanf`;
+  - `msgstub.c`: `__warpine_DosGetMessage`, which adds the null message segment MSG.6 takes before its arguments;
   - `malloc.c`: first-fit, 16-byte aligned, arenas from `DosAllocMem`;
   - `stdio.c`: streams on OS/2 handles, writes straight through;
   - `printf.c`: the formatter; doubles are rounded once, ties to even, on the digits `dtoa.c` gives;
@@ -2502,8 +2519,17 @@ The test `layer_map_matches_src_and_the_committed_diagram` runs the validation a
   - `math.c`: `<math.h>` on the x87 instructions; the rounding and exponent functions on the bits;
   - `string.c`;
   - `divdi3.c`: 64-bit division.
-- **Building:** `sdk/Makefile` builds `build/<compiler>/crt0.o` and `libos2c.a`. GCC builds the runtime with `-fno-tree-loop-distribute-patterns`, so `memset` never becomes a call to itself.
-- **`os2.mk`:** a program includes it for `OS2_CFLAGS`, `OS2_CRT0`, `OS2_LIBC` and `LX_LINK`. The flags keep the host's headers out (`-nostdinc`, then the SDK's and the compiler's own) and tell each compiler the stack is only 4-byte aligned (`-mincoming-stack-boundary=2`, `-mstack-alignment=4`).
+- **The C++ runtime** (`libcxx/`, ADR-0103):
+  - `unwind.c`: the base unwinder. It finds FDEs by scanning `.eh_frame`, runs the call-frame instructions and the DWARF expressions of realigned frames, unwinds in two phases, removes the OS/2 handler registrations of the frames it leaves (`DosUnsetExceptionHandler`), and jumps to the landing pad;
+  - `cxa_exception.cc`: `__cxa_*`, `__gxx_personality_v0` (the LSDA), `std::terminate`, the guards;
+  - `typeinfo.cc` (with `cxxabi_internal.h`): the ABI's `type_info` classes, catch matching, `__dynamic_cast`; the fundamental types' `type_info` objects are emitted there;
+  - `new.cc`, `stdexcept.cc`.
+- **Building:** `sdk/Makefile` builds `build/<compiler>/crt0.o`, `dll0.o`, `libos2c.a` and `libos2cxx.a` (with g++ or clang++). GCC builds the runtime with `-fno-tree-loop-distribute-patterns`, so `memset` never becomes a call to itself.
+- **`os2.mk`:** a program includes it for `OS2_CFLAGS`, `OS2_CXX` / `OS2_CXXFLAGS`, `OS2_CRT0`, `OS2_DLL0`, `OS2_LIBC`, `OS2_LIBCXX` and `LX_LINK`.
+  - The flags keep the host's headers out (`-nostdinc`, then the SDK's and the compiler's own) and tell each compiler the stack is only 4-byte aligned (`-mincoming-stack-boundary=2`, `-mstack-alignment=4`).
+  - `_System`, `__syscall` and `_Optlink` are defined as nothing.
+  - C++ is compiled hosted, since a freestanding clang++ mangles `main`.
+- **Samples with GCC and clang** (ADR-0101): `samples/build_sdk.sh gcc|clang [sample...]` builds every C sample into `samples/build/<cc>/`; its `build_special` has the rules for the DLL samples, the `-D` variants and the SOM samples. `CC_CMD` and `OUT_TAG` select another compiler, such as the pinned ones in `vendor/pinned/` (`vendor/setup_compilers.sh` builds their Podman image from a base pinned by digest and a dated Debian snapshot).
 - **The check:** `gen_api check-headers` (and its unit test) checks:
   - every call the headers declare (`APIENTRY`, `EXPENTRY`, `OS2_PASCAL_API`) is in `targets/os2api.def`;
   - Pascal is used exactly for VIOCALLS / KBDCALLS / MOUCALLS;

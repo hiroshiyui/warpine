@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// <cstdio> - Warpine's C++ runtime (ADR-0103): <stdio.h> in namespace std too.
+#ifndef WARPINE_CXX_CSTDIO
+#define WARPINE_CXX_CSTDIO
+
+#include <stdio.h>
+
+namespace std {
+using ::size_t;
+using ::FILE;
+using ::fopen;
+using ::fclose;
+using ::fread;
+using ::fwrite;
+using ::fgetc;
+using ::getc;
+using ::getchar;
+using ::ungetc;
+using ::fgets;
+using ::fputc;
+using ::putc;
+using ::putchar;
+using ::fputs;
+using ::puts;
+using ::fflush;
+using ::setvbuf;
+using ::fseek;
+using ::ftell;
+using ::rewind;
+using ::feof;
+using ::ferror;
+using ::clearerr;
+using ::remove;
+using ::rename;
+using ::printf;
+using ::fprintf;
+using ::sprintf;
+using ::snprintf;
+using ::vprintf;
+using ::vfprintf;
+using ::vsprintf;
+using ::vsnprintf;
+using ::sscanf;
+using ::vsscanf;
+} // namespace std
+
+#endif

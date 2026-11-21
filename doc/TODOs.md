@@ -254,14 +254,14 @@ Open Watcom stays the frozen ABI baseline. A second, modern toolchain goes only 
 
 - [ ] **The rest of the C SDK** (M1, M2, the PM headers, the runtime and its errno / floating point / strtod / math.h, the resource compiler and the other PM modules done: ADR-0095–0100, `sdk/`):
   - `os2rc`: HELPTABLE / HELPSUBTABLE, ASSOCTABLE, FONTDIR, resource names given as strings;
-  - the 38 entries left undeclared (ADR-0098, ADR-0100), the float and long double math functions.
-- [ ] **M3, two compilers in CI**:
-  - GCC and clang (`i386-unknown-none`) for every C sample;
-  - pinned compilers (Guix or Nix);
-  - Open Watcom regression binaries kept.
-- [ ] **M4, debugging and C++**:
-  - DWARF through `lx-link` for the GDB stub;
-  - Itanium C++ ABI runtime and unwinder, coexisting with OS/2 SEH.
+  - the entries left undeclared (`cargo run --bin gen_api -- check-headers` counts them), the float and long double math functions.
+- [ ] **After M3 and M4** (every C sample from GCC and clang, pinned compilers, GDB with DWARF, C++: ADR-0101–0103):
+  - run the integration suite against the GCC and clang builds in CI (`samples/build_sdk.sh`, `WARPINE_SAMPLES`), with the pinned compilers;
+  - C++ exceptions across DLLs (one shared runtime, or frame registration between modules) and through Warpine's callbacks;
+  - OS/2 exceptions running C++ destructors (an OS/2 handler per C++ frame, as compilers for OS/2 do);
+  - a C++ standard library (strings, containers, streams);
+  - `DosGetMessage` with messages bound into the executable;
+  - the debug companion for DLLs at their load address (a GDB command, or the stub reporting the loaded modules).
 - [ ] **Ported-software tier**:
   - bitwiseworks GCC / LIBCn / LIBCx binaries as regression inputs (check licences);
   - list the DOSCALLS ordinals LIBCn / LIBCx import;

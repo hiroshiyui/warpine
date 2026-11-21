@@ -54,6 +54,7 @@
 /* KbdCharIn, KBDCALLS 4, as a direct 32-bit import (_Pascal: arguments
    pushed left to right, removed by the callee), as the generated bsesub.h
    (samples/bsesub32.mk) does. */
+#ifdef __WATCOMC__
 typedef struct {
     UCHAR  chChar;
     UCHAR  chScan;
@@ -63,6 +64,10 @@ typedef struct {
     ULONG  time;
 } KEYINFO;
 extern USHORT _Pascal KBD16CHARIN( KEYINFO *info, USHORT wait, USHORT hkbd );
+#else
+typedef KBDKEYINFO KEYINFO;                 /* the SDK's os2.h declares KbdCharIn */
+#define KBD16CHARIN( info, wait, hkbd ) KbdCharIn( info, wait, hkbd )
+#endif
 
 static int n_checks = 0;
 static int n_passed = 0;

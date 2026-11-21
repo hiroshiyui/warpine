@@ -23,8 +23,10 @@
    75 in os2386.lib) but declares no prototype for it, and no VioCheckCharType
    alias. Declare it _Pascal like the other calls in the generated bsesub.h
    (samples/bsesub32.mk), so it is a direct 32-bit import. */
+#ifdef __WATCOMC__
 USHORT _Pascal Vio16CheckCharType(PUSHORT pType, USHORT usRow, USHORT usCol, HVIO hvio);
 #define VioCheckCharType Vio16CheckCharType
+#endif   /* the SDK's os2.h declares VioCheckCharType */
 
 static ULONG dummy;
 

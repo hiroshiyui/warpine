@@ -1,0 +1,47 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// <typeinfo> - Warpine's C++ runtime (ADR-0103): std::type_info as the
+// Itanium C++ ABI lays it out (a virtual table pointer, then the name).
+#ifndef WARPINE_CXX_TYPEINFO
+#define WARPINE_CXX_TYPEINFO
+
+#include <exception>
+#include <cstddef>
+
+namespace std {
+
+class type_info {
+public:
+    virtual ~type_info();
+    // A name starting with '*' is unique to its program (a local type).
+    const char *name() const noexcept { return __type_name[0] == '*' ? __type_name + 1 : __type_name; }
+    bool operator==(const type_info &other) const noexcept;
+    bool operator!=(const type_info &other) const noexcept { return !(*this == other); }
+    bool before(const type_info &other) const noexcept;
+    size_t hash_code() const noexcept;
+
+protected:
+    const char *__type_name;
+    explicit type_info(const char *n) : __type_name(n) {}
+
+private:
+    type_info(const type_info &) = delete;
+    type_info &operator=(const type_info &) = delete;
+};
+
+class bad_cast : public exception {
+public:
+    bad_cast() noexcept {}
+    ~bad_cast() noexcept override;
+    const char *what() const noexcept override;
+};
+
+class bad_typeid : public exception {
+public:
+    bad_typeid() noexcept {}
+    ~bad_typeid() noexcept override;
+    const char *what() const noexcept override;
+};
+
+} // namespace std
+
+#endif

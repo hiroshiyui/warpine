@@ -16,6 +16,7 @@
 #define INCL_DOS
 #define INCL_DOSERRORS
 #include <os2.h>
+#include <stdio.h>
 #include <string.h>
 
 

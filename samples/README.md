@@ -17,6 +17,13 @@ make -C samples              # Build every Open Watcom sample (rust_hello has it
 make -C samples/<name>      # Build a single sample
 ```
 
+The C samples also build with GCC or clang and the SDK (ADR-0101), into `samples/build/<cc>/<name>/` under the same file names; `WARPINE_SAMPLES=gcc` (or `clang`) makes the integration tests run those builds. Samples that need Open Watcom's own syntax (`#pragma aux`, `_asm`, 16-bit `_Pascal` declarations) carry an equivalent for the other compilers behind `#ifdef __WATCOMC__`.
+
+```bash
+samples/build_sdk.sh gcc                     # every sample; or clang; or name samples after it
+CC_CMD=vendor/pinned/gcc OUT_TAG=gcc-pinned samples/build_sdk.sh gcc   # the pinned compiler (vendor/setup_compilers.sh)
+```
+
 ## Sample Applications
 
 | Sample | Description | Key APIs Tested |
@@ -24,6 +31,8 @@ make -C samples/<name>      # Build a single sample
 | hello | "Hello, OS/2!" smoke test | DosWrite, DosExit |
 | c_sdk_test | A program built with the C SDK (ADR-0096) by GCC or clang (`make CC=clang`): structure layouts, `argv` / `envp` / `getenv`, strings and `printf`, conversions and 64-bit division, the heap, streams on a file, threads and a mutex, a continued exception, and the VIO calls in Pascal order (a hand-made Pascal call checks the callee removes its arguments), `printf` of doubles against correctly rounded results, `strtod` bit for bit and `<math.h>` within an ulp, a per-thread `errno`, `DosProtect*`, the extended-attribute layouts; 64 ok/FAIL checks. Run it as `c_sdk_test alpha "beta gamma"` | DosCreateThread, DosRequestMutexSem, DosRaiseException, DosOpen, VioSetCurPos, VioReadCellStr … |
 | c_pm_test | A PM program built with the SDK's `pm.h` (ADR-0097) by GCC or clang: structure layouts, a frame and client, the message loop, window procedures called back on an aligned stack, sent and posted messages, a timer, window words and text, rectangles, atoms, GPI drawing read back with GpiQueryPel, regions, transforms, text alignment, window enumeration, accelerator tables; and its resources from `c_pm_test.rc`, compiled by `os2rc` (ADR-0099): the frame's menu and accelerators, a dialog run by WinDlgBox, a string, RCDATA; the other PM modules' structures and calls (profiles, the switch list, drag string handles and DRAGINFO, help); ends itself; 54 checks | WinCreateStdWindow, WinGetMsg, WinSendMsg, WinPeekMsg, WinStartTimer, WinAddAtom, GpiBox, GpiQueryPel, GpiQueryFontMetrics … |
+| c_gdb_test | A C program built with `-g -O0` by GCC or clang (ADR-0102); `lx-link` writes `c_gdb_test.dbg`, and the integration test debugs it with GDB through `warpine --gdb`: a breakpoint on a function, its source line and arguments, a structure through a pointer, `finish`, a global | (GDB stub) |
+| cxx_test | C++ built by g++ or clang++ with the SDK's C++ runtime (ADR-0103): static constructors and destructors, new / delete, virtual calls, typeid and dynamic_cast, exceptions through three frames with destructors, rethrow, catch by base and by pointer, std::bad_alloc and std::bad_cast, a static local, an exception on a second thread, an exception passing a DosSetExceptionHandler registration (which leaves the chain); 27 checks. `cxx_test uncaught` ends through std::terminate with exit code 3 | DosSetExceptionHandler, DosCreateThread, DosWaitThread, DosAllocMem … |
 | alloc_test | Memory allocation round-trip | DosAllocMem, DosFreeMem |
 | file_test | File I/O: create, write, read, close | DosOpen, DosRead, DosWrite, DosClose |
 | dir_test | Directory creation and enumeration | DosCreateDir, DosDeleteDir, DosFindFirst/Next |
@@ -33,7 +42,7 @@ make -C samples/<name>      # Build a single sample
 | vfs_test | Comprehensive VFS test: seeks, truncate, metadata | DosSetFilePtr, DosSetFileSize, DosQueryFileInfo |
 | thread_test | Basic threading | DosCreateThread, DosWaitThread |
 | thread_exit_test | Ending a thread ends only that thread (ok/FAIL lines, exit code 3); `thread_last_test.exe` from the same source: the last thread's `DosExit(EXIT_THREAD, 5)` ends the process | DosExit, DosCreateThread, DosWaitThread, DosGetInfoBlocks |
-| xcpt_thread_test | Every thread has its own exception-handler chain: a created thread starts with an empty one, DosRaiseException on each thread reaches only that thread's handler, XCPT_CONTINUE_EXECUTION returns with the caller's registers intact; ok/FAIL lines | DosSetExceptionHandler, DosUnsetExceptionHandler, DosRaiseException, DosCreateThread, DosWaitThread, event semaphores |
+| xcpt_thread_test | Every thread has its own exception-handler chain: a created thread starts with an empty one, DosRaiseException on each thread reaches only that thread's handler, XCPT_CONTINUE_EXECUTION returns with the caller's registers intact, and the handler's CONTEXTRECORD holds the thread's CS, SS and ESP at `<bsexcpt.h>`'s offsets (ADR-0101); ok/FAIL lines | DosSetExceptionHandler, DosUnsetExceptionHandler, DosRaiseException, DosCreateThread, DosWaitThread, event semaphores |
 | exitlist_test | DosExitList: routine order, adding and removing routines while the list runs, TC_EXIT (TC_TRAP after HLT), the routines running on thread 1, the error codes; built five times for the five ways a process ends (exit codes 3 / 4 / 6 / 5, and 1 after HLT); ok/FAIL lines | DosExitList, DosExit, DosCreateThread, DosWaitThread |
 | semquery_test | Event post counts, DosQueryMutexSem, muxwait open / add / delete / query and their error codes (79 checks); ok/FAIL lines | DosResetEventSem, DosQueryEventSem, DosQueryMutexSem, DosOpenMuxWaitSem, DosAddMuxWaitSem, DosQueryMuxWaitSem, DosDeleteMuxWaitSem, DosWaitMuxWaitSem |
 | kernel2_test | Critical sections, DosAsyncTimer / DosStartTimer / DosStopTimer, DosSearchPath, DosQueryModuleName and DosSub* suballocation; one ok/FAIL line per check (96 checks) | DosEnterCritSec, DosExitCritSec, DosAsyncTimer, DosStartTimer, DosStopTimer, DosSearchPath, DosQueryModuleName, DosSubSetMem, DosSubAllocMem, DosSubFreeMem, DosSubUnsetMem |

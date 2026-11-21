@@ -11,6 +11,7 @@ u64 __udivdi3(u64 num, u64 den);
 u64 __umoddi3(u64 num, u64 den);
 s64 __divdi3(s64 num, s64 den);
 s64 __moddi3(s64 num, s64 den);
+s64 __divmoddi4(s64 num, s64 den, s64 *rem);
 
 u64 __udivmoddi4(u64 num, u64 den, u64 *rem)
 {
@@ -53,4 +54,13 @@ s64 __moddi3(s64 num, s64 den)
     u64 r = 0;
     __udivmoddi4(magnitude(num), magnitude(den), &r);
     return num < 0 ? (s64)(0 - r) : (s64)r;
+}
+
+/* The quotient, and the remainder through `rem` (GCC asks for both at
+ * once). */
+s64 __divmoddi4(s64 num, s64 den, s64 *rem)
+{
+    s64 q = __divdi3(num, den);
+    if (rem) *rem = num - q * den;
+    return q;
 }

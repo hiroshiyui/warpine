@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /* os2/pmhelp.h - the Help Manager (HELPMGR) (ADR-0100), declared from
- * IBM's PM Programming Reference. Included by pm.h with INCL_WIN. */
+ * IBM's PM Programming Reference. Included by pm.h. */
 #ifndef WARPINE_OS2_PMHELP_H
 #define WARPINE_OS2_PMHELP_H
 
@@ -22,7 +22,8 @@ extern "C" {
 #define HM_KEYS_HELP           0x022C
 #define HM_CONTROL             0x0244
 
-typedef struct _HELPSUBTABLE *PHELPSUBTABLE;
+/* A help subtable is an array of USHORTs (its size, then pairs). */
+typedef USHORT HELPSUBTABLE, *PHELPSUBTABLE;
 
 typedef struct _HELPTABLE {
     USHORT        idAppWindow;

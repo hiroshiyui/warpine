@@ -71,7 +71,11 @@
 #define TIMEOUT_MS 20000
 
 /* The 32-bit DosQueryMessageCP entry point in os2386.lib (MSG.8). */
+#ifdef __WATCOMC__
 APIRET APIENTRY DOS32IQUERYMESSAGECP( PCHAR pb, ULONG cb, PCSZ pszFile, PULONG pcbBuf );
+#else
+#define DOS32IQUERYMESSAGECP DosQueryMessageCP   /* the SDK's name for MSG.8 */
+#endif
 
 static int  n_checks = 0;
 static int  n_passed = 0;

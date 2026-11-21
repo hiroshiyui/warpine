@@ -140,9 +140,9 @@ typedef struct _FILESTATUS4 {
     ULONG cbList;
 } FILESTATUS4, *PFILESTATUS4;
 
-/* The find buffers are packed: the name follows its length byte. Use
- * oNextEntryOffset (0 for the last entry) to walk several. */
-#pragma pack(push, 1)
+/* The name follows its length byte, and the structure is padded to 4
+ * bytes. Use oNextEntryOffset (0 for the last entry) to walk several. */
+#pragma pack(push, 4)
 typedef struct _FILEFINDBUF3 {
     ULONG oNextEntryOffset;
     FDATE fdateCreation;
@@ -187,9 +187,9 @@ typedef struct _FILELOCK {
 #define ENUMEA_REFTYPE_PATH      1
 #define ENUMEA_REFTYPE_MVMT      2
 
-/* Packed: each name follows its length byte, and entries are walked by
- * oNextEntryOffset (0 for the last). */
-#pragma pack(push, 1)
+/* Each name follows its length byte, each structure is padded to 4
+ * bytes, and entries are walked by oNextEntryOffset (0 for the last). */
+#pragma pack(push, 4)
 typedef struct _GEA2 {
     ULONG oNextEntryOffset;
     BYTE  cbName;
@@ -456,7 +456,7 @@ APIRET APIENTRY DosEnterMustComplete(PULONG pulNesting);
 APIRET APIENTRY DosExitMustComplete(PULONG pulNesting);
 APIRET APIENTRY DosExitList(ULONG ordercode, PFNEXITLIST pfn);
 APIRET APIENTRY DosQueryAppType(PCSZ pszName, PULONG pFlags);
-APIRET APIENTRY DosScanEnv(PCSZ pszName, PCSZ *ppszValue);
+APIRET APIENTRY DosScanEnv(PCSZ pszName, PSZ *ppszValue);
 APIRET APIENTRY DosShutdown(ULONG ulReserved);
 
 /* ── Modules and resources ──────────────────────────────────────────── */
@@ -630,11 +630,21 @@ typedef struct _EXCEPTIONREPORTRECORD {
 #define CONTEXT_FLOATING_POINT 0x00000008UL
 #define CONTEXT_FULL (CONTEXT_CONTROL | CONTEXT_INTEGER | CONTEXT_SEGMENTS)
 
-/* The processor state at an exception. The floating-point save area is
- * kept as bytes here (Warpine does not fill it yet). */
+/* A floating-point register as FSAVE stores it: 10 bytes, packed. */
+#pragma pack(push, 1)
+typedef struct _FPREG {
+    ULONG  losig;
+    ULONG  hisig;
+    USHORT signexp;
+} FPREG, *PFPREG;
+#pragma pack(pop)
+
+/* The processor state at an exception. Warpine leaves the floating-point
+ * environment and registers zero. */
 typedef struct _CONTEXT {
     ULONG ContextFlags;
-    BYTE  ctx_fpu[0x88];
+    ULONG ctx_env[7];
+    FPREG ctx_stack[8];
     ULONG ctx_SegGs;
     ULONG ctx_SegFs;
     ULONG ctx_SegEs;
@@ -750,6 +760,118 @@ APIRET APIENTRY DosPeekQueue(HQUEUE hq, PREQUESTDATA pRequest, PULONG pcbData, P
                              PULONG element, BOOL32 nowait, PBYTE ppriority, HEV hsem);
 APIRET APIENTRY DosPurgeQueue(HQUEUE hq);
 APIRET APIENTRY DosQueryQueue(HQUEUE hq, PULONG pcbEntries);
+
+/* ── Pipe information, 64-bit file sizes ───────────────────────────── */
+#pragma pack(push, 4)
+typedef struct _PIPEINFO {
+    USHORT cbOut;
+    USHORT cbIn;
+    BYTE   cbMaxInst;
+    BYTE   cbCurInst;
+    BYTE   cbName;
+    CHAR   szName[1];
+} PIPEINFO, *PPIPEINFO;
+
+typedef long long LONGLONG;
+typedef unsigned long long ULONGLONG;
+
+typedef struct _FILESTATUS3L {
+    FDATE    fdateCreation;
+    FTIME    ftimeCreation;
+    FDATE    fdateLastAccess;
+    FTIME    ftimeLastAccess;
+    FDATE    fdateLastWrite;
+    FTIME    ftimeLastWrite;
+    LONGLONG cbFile;
+    LONGLONG cbFileAlloc;
+    ULONG    attrFile;
+} FILESTATUS3L, *PFILESTATUS3L;
+#pragma pack(pop)
+
+/* The 64-bit find buffers are not padded. */
+#pragma pack(push, 1)
+
+typedef struct _FILEFINDBUF3L {
+    ULONG    oNextEntryOffset;
+    FDATE    fdateCreation;
+    FTIME    ftimeCreation;
+    FDATE    fdateLastAccess;
+    FTIME    ftimeLastAccess;
+    FDATE    fdateLastWrite;
+    FTIME    ftimeLastWrite;
+    LONGLONG cbFile;
+    LONGLONG cbFileAlloc;
+    ULONG    attrFile;
+    UCHAR    cchName;
+    CHAR     achName[CCHMAXPATHCOMP];
+} FILEFINDBUF3L, *PFILEFINDBUF3L;
+
+typedef struct _FILEFINDBUF4L {
+    ULONG    oNextEntryOffset;
+    FDATE    fdateCreation;
+    FTIME    ftimeCreation;
+    FDATE    fdateLastAccess;
+    FTIME    ftimeLastAccess;
+    FDATE    fdateLastWrite;
+    FTIME    ftimeLastWrite;
+    LONGLONG cbFile;
+    LONGLONG cbFileAlloc;
+    ULONG    attrFile;
+    ULONG    cbList;
+    UCHAR    cchName;
+    CHAR     achName[CCHMAXPATHCOMP];
+} FILEFINDBUF4L, *PFILEFINDBUF4L;
+#pragma pack(pop)
+
+#define FIL_STANDARDL          11
+#define FIL_QUERYEASIZEL       12
+#define FIL_QUERYEASFROMLISTL  13
+
+typedef USHORT SEL, *PSEL;
+
+/* ── National language support (NLS) ────────────────────────────────── */
+typedef struct _COUNTRYCODE {
+    ULONG country;
+    ULONG codepage;
+} COUNTRYCODE, *PCOUNTRYCODE;
+
+typedef struct _COUNTRYINFO {
+    ULONG  country;
+    ULONG  codepage;
+    ULONG  fsDateFmt;
+    CHAR   szCurrency[5];
+    CHAR   szThousandsSeparator[2];
+    CHAR   szDecimal[2];
+    CHAR   szDateSeparator[2];
+    CHAR   szTimeSeparator[2];
+    UCHAR  fsCurrencyFmt;
+    UCHAR  cDecimalPlace;
+    UCHAR  fsTimeFmt;
+    USHORT abReserved1[2];
+    CHAR   szDataSeparator[2];
+    USHORT abReserved2[5];
+} COUNTRYINFO, *PCOUNTRYINFO;
+
+/* Two calls from OS/2 1.x that 32-bit programs can still import: the
+ * global and local information segments' selectors (DOSCALLS.8) and a
+ * file's attributes (DOSCALLS.84). */
+APIRET16 APIENTRY DosGetInfoSeg(PSEL pselGlobal, PSEL pselLocal);
+APIRET16 APIENTRY DosSetFileMode(PSZ pszFileName, USHORT usAttr, ULONG ulReserved);
+
+APIRET APIENTRY DosQueryCtryInfo(ULONG cb, PCOUNTRYCODE pcc, PCOUNTRYINFO pci, PULONG pcbActual);
+APIRET APIENTRY DosQueryDBCSEnv(ULONG cb, PCOUNTRYCODE pcc, PCHAR pBuf);
+APIRET APIENTRY DosMapCase(ULONG cb, PCOUNTRYCODE pcc, PCHAR pch);
+APIRET APIENTRY DosQueryCollate(ULONG cb, PCOUNTRYCODE pcc, PCHAR pch, PULONG pcch);
+
+/* ── Messages (MSG) ─────────────────────────────────────────────────── */
+APIRET APIENTRY DosInsertMessage(PCHAR *pTable, ULONG cTable, PCSZ pszMsg, ULONG cbMsg, PCHAR pBuf, ULONG cbBuf,
+                                 PULONG pcbMsg);
+APIRET APIENTRY DosPutMessage(HFILE hfile, ULONG cbMsg, PCCH pBuf);
+/* Through a runtime stub: the import takes a message segment before the
+ * documented arguments, and removes it itself (ADR-0101). */
+APIRET APIENTRY DosGetMessage(PCHAR *pTable, ULONG cTable, PCHAR pBuf, ULONG cbBuf, ULONG msgnumber, PCSZ pszFile,
+                              PULONG pcbMsg) OS2_IMPORT(__warpine_DosGetMessage);
+APIRET APIENTRY DosQueryMessageCP(PCHAR pb, ULONG cb, PCSZ pszFilename, PULONG cbBuf);
 
 #ifdef __cplusplus
 }

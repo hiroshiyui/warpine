@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// <cstdarg> - Warpine's C++ runtime (ADR-0103): <stdarg.h> in namespace std too.
+#ifndef WARPINE_CXX_CSTDARG
+#define WARPINE_CXX_CSTDARG
+
+#include <stdarg.h>
+
+namespace std {
+using ::va_list;
+} // namespace std
+
+#endif

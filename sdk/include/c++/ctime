@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// <ctime> - Warpine's C++ runtime (ADR-0103): <time.h> in namespace std too.
+#ifndef WARPINE_CXX_CTIME
+#define WARPINE_CXX_CTIME
+
+#include <time.h>
+
+namespace std {
+using ::size_t;
+using ::time_t;
+using ::clock_t;
+using ::tm;
+using ::time;
+using ::difftime;
+using ::mktime;
+using ::gmtime;
+using ::localtime;
+using ::gmtime_r;
+using ::localtime_r;
+using ::clock;
+using ::strftime;
+} // namespace std
+
+#endif

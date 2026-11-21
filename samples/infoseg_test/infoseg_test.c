@@ -26,7 +26,11 @@
 #include <string.h>
 
 /* The 16-bit entry, called directly (see above). */
+#ifdef __WATCOMC__
 extern USHORT APIENTRY DOS16GETINFOSEG( USHORT *pselGlobal, USHORT *pselLocal );
+#else
+#define DOS16GETINFOSEG DosGetInfoSeg   /* the SDK's name for DOSCALLS.8 */
+#endif
 /* DOSCALLS 426: a 16:16 address (selector in the high word) as a flat one. */
 extern ULONG APIENTRY DosSelToFlat( ULONG sel_off );
 

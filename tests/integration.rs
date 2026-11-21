@@ -22,6 +22,31 @@ fn warpine() -> &'static str {
     env!("CARGO_BIN_EXE_warpine")
 }
 
+/// The sample programs the tests run: the Open Watcom builds in
+/// `samples/<name>/` by default, or with `WARPINE_SAMPLES=<tag>` the builds
+/// of `samples/build_sdk.sh` in `samples/build/<tag>/<name>/` (`gcc`,
+/// `clang`, or `gcc-pinned` / `clang-pinned` from the pinned compilers;
+/// ADR-0101). Only programs and DLLs move; the samples that script does
+/// not build keep their Open Watcom binaries.
+fn sample_path(path: impl AsRef<Path>) -> String {
+    let path = path.as_ref().to_string_lossy().into_owned();
+    let Ok(cc) = std::env::var("WARPINE_SAMPLES") else { return path };
+    if cc.is_empty() || cc == "watcom" { return path; }
+    let compiler = cc.strip_suffix("-pinned").unwrap_or(&cc);
+    assert!(compiler == "gcc" || compiler == "clang", "WARPINE_SAMPLES names gcc, clang or watcom, not {cc:?}");
+    const NOT_BUILT: &[&str] = &["ne_hello", "c_hello", "c_sdk_test", "c_pm_test", "c_gdb_test", "rust_hello", "shapes", "som_test"];
+    let Some(rest) = path.strip_prefix("samples/") else { return path };
+    let Some((dir, _)) = rest.split_once('/') else { return path };
+    let lower = rest.to_ascii_lowercase();
+    if NOT_BUILT.contains(&dir) || !(lower.ends_with(".exe") || lower.ends_with(".dll")) { return path; }
+    format!("samples/build/{cc}/{rest}")
+}
+
+/// Whether the sample program `path` names (after [`sample_path`]) exists.
+fn sample_exists(path: impl AsRef<Path>) -> bool {
+    Path::new(&sample_path(path)).exists()
+}
+
 /// Return `true` if KVM is accessible on this machine.
 fn kvm_available() -> bool {
     Path::new("/dev/kvm").exists()
@@ -47,7 +72,7 @@ fn run_sample_args(sample: &str, args: &[&str], timeout_secs: u64, env: &[(&str,
     // the user's own (`env` may still name another).
     let data_home = tempfile::tempdir().expect("tempdir");
     let mut child = Command::new(warpine())
-        .arg(sample)
+        .arg(sample_path(sample))
         .args(args)
         .env("WARPINE_HEADLESS", "1")
         .env("XDG_DATA_HOME", data_home.path())
@@ -240,7 +265,7 @@ fn test_som_samples_run_on_the_som_runtime() {
 /// reach the right entry.
 #[test]
 fn test_som_imports_by_ibm_ordinal() {
-    if !kvm_available() || !Path::new("samples/som_ordinal_test/somord.exe").exists() { return; }
+    if !kvm_available() || !sample_exists("samples/som_ordinal_test/somord.exe") { return; }
     let (out, code) = run_sample("samples/som_ordinal_test/somord.exe", 15);
     let checks: Vec<&str> = out.lines()
         .filter(|l| l.starts_with("som_ordinal_test: ") && !l.starts_with("som_ordinal_test: done")).collect();
@@ -259,7 +284,7 @@ fn test_som_imports_by_ibm_ordinal() {
 /// SOMERROR_NotImplementedYet as a warning, somTestCls and somCheckArgs.
 #[test]
 fn test_som_layouts_follow_ibm_s() {
-    if !kvm_available() || !Path::new("samples/som_layout_test/somlay.exe").exists() { return; }
+    if !kvm_available() || !sample_exists("samples/som_layout_test/somlay.exe") { return; }
     let (out, code) = run_sample("samples/som_layout_test/somlay.exe", 15);
     let checks: Vec<&str> = out.lines()
         .filter(|l| l.starts_with("som_layout_test: ") && !l.starts_with("som_layout_test: done")).collect();
@@ -277,7 +302,7 @@ fn test_som_layouts_follow_ibm_s() {
 /// with a parent call, and a class in a DLL that somFindClass loads.
 #[test]
 fn test_som_classes_built_from_static_class_info() {
-    if !kvm_available() || !Path::new("samples/som_build_test/somb.exe").exists() { return; }
+    if !kvm_available() || !sample_exists("samples/som_build_test/somb.exe") { return; }
     let (out, code) = run_sample("samples/som_build_test/somb.exe", 15);
     let checks: Vec<&str> = out.lines()
         .filter(|l| l.starts_with("som_build_test: ") && !l.starts_with("som_build_test: done")).collect();
@@ -299,7 +324,7 @@ fn test_dll_initialization_and_module_names() {
     let data = tempfile::tempdir().expect("tempdir");
     let libs = data.path().join("warpine/drive_c/LIBS");
     std::fs::create_dir_all(&libs).unwrap();
-    std::fs::copy("samples/dllinit_test/goodinit.dll", libs.join("GOODINIT.DLL")).expect("goodinit.dll built");
+    std::fs::copy(sample_path("samples/dllinit_test/goodinit.dll"), libs.join("GOODINIT.DLL")).expect("goodinit.dll built");
     let home = data.path().to_str().unwrap();
     let (out, code) = run_sample_env("samples/dllinit_test/dllinit.exe", 15, &[("XDG_DATA_HOME", home)]);
     let want = concat!(
@@ -366,7 +391,7 @@ fn test_country_and_codepage_from_the_environment() {
 /// (VIOCALLS 75, os2386.lib VIO16CHECKCHARTYPE) classifying its cells.
 #[test]
 fn test_dbcs_env_and_vio_char_types() {
-    if !kvm_available() || !Path::new("samples/dbcs_test/dbcs_test.exe").exists() { return; }
+    if !kvm_available() || !sample_exists("samples/dbcs_test/dbcs_test.exe") { return; }
     let (out, code) = run_sample("samples/dbcs_test/dbcs_test.exe", 15);
     assert!(out.contains("All tests PASSED!"), "dbcs_test failed (exit {code}):\n{out}");
     for line in ["CP932 range (0x81,0x9F) present OK",
@@ -383,7 +408,7 @@ fn test_dbcs_env_and_vio_char_types() {
 #[test]
 fn test_ansi_escape_sequences_headless() {
     let sample = "samples/ansi_test/ansi_test.exe";
-    if !kvm_available() || !Path::new(sample).exists() { return; }
+    if !kvm_available() || !sample_exists(sample) { return; }
     let (out, code) = run_sample(sample, 15);
     let failures: Vec<&str> = out.lines().filter(|l| l.contains("FAIL")).collect();
     assert!(failures.is_empty(), "failures: {failures:?}\n{out}");
@@ -401,12 +426,12 @@ fn test_ansi_escape_sequences_headless() {
 fn test_ansi_escape_sequences_in_a_vio_window() {
     let sample = "samples/ansi_test/ansi_test.exe";
     let has_script = Command::new("script").arg("--version").output().is_ok_and(|o| o.status.success());
-    if !kvm_available() || !Path::new(sample).exists() || !has_script { return; }
+    if !kvm_available() || !sample_exists(sample) || !has_script { return; }
     let dir = tempfile::tempdir().expect("tempdir");
     let session = dir.path().join("session.script");
     std::fs::write(&session, "5000 quit\n").unwrap();
     let status = Command::new("script")
-        .args(["-qec", &format!("timeout 30 {} {sample}", warpine())])
+        .args(["-qec", &format!("timeout 30 {} {}", warpine(), sample_path(sample))])
         .arg("/dev/null")
         .envs(PINNED_LOCALE.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
@@ -442,7 +467,7 @@ fn test_cmd_ends_at_the_end_of_piped_input() {
     if !kvm_available() { return; }
     let dir = tempfile::tempdir().expect("tempdir");
     let mut child = Command::new(warpine())
-        .arg(sample)
+        .arg(sample_path(sample))
         .envs(PINNED_LOCALE.iter().copied())
         .env("RUST_LOG", "error")
         .env("XDG_DATA_HOME", dir.path())
@@ -490,13 +515,13 @@ fn test_cmd_ends_at_the_end_of_piped_input() {
 fn test_cmd_pipe_to_an_external_program() {
     let sample = "CMD.EXE";
     let find = "samples/npipe_test/npipe_test.exe";
-    if !kvm_available() || !Path::new(find).exists() { return; }
+    if !kvm_available() || !sample_exists(find) { return; }
     let dir = tempfile::tempdir().expect("tempdir");
     let drive_c = dir.path().join("warpine/drive_c");
     std::fs::create_dir_all(&drive_c).unwrap();
-    std::fs::copy(find, drive_c.join("FIND.EXE")).unwrap();
+    std::fs::copy(sample_path(find), drive_c.join("FIND.EXE")).unwrap();
     let mut child = Command::new(warpine())
-        .arg(sample)
+        .arg(sample_path(sample))
         .envs(PINNED_LOCALE.iter().copied())
         .env("RUST_LOG", "error")
         .env("XDG_DATA_HOME", dir.path())
@@ -545,14 +570,14 @@ const CMD_TOOL: &str = "samples/cmd_tool/cmd_tool.exe";
 /// (test skipped) without KVM or the sample.
 fn run_cmd_headless(args: &[&str], input: &[u8], prepare: impl FnOnce(&Path))
                     -> Option<(Option<i32>, String, tempfile::TempDir)> {
-    if !kvm_available() || !Path::new(CMD_TOOL).exists() {
+    if !kvm_available() || !sample_exists(CMD_TOOL) {
         eprintln!("skipping: KVM or {CMD_TOOL} not available");
         return None;
     }
     let dir = tempfile::tempdir().expect("tempdir");
     let drive_c = dir.path().join("warpine/drive_c");
     std::fs::create_dir_all(&drive_c).unwrap();
-    std::fs::copy(CMD_TOOL, drive_c.join("TOOL.EXE")).unwrap();
+    std::fs::copy(sample_path(CMD_TOOL), drive_c.join("TOOL.EXE")).unwrap();
     prepare(&drive_c);
     let mut child = Command::new(warpine())
         .arg("CMD.EXE")
@@ -832,7 +857,7 @@ fn test_rexx_conditions_streams_and_rexxutil() {
 #[test]
 fn test_dos_misc_calls() {
     let sample = "samples/dos_misc_test/dos_misc_test.exe";
-    if !kvm_available() || !Path::new(sample).exists() { return; }
+    if !kvm_available() || !sample_exists(sample) { return; }
     let (out, code) = run_sample(sample, 30);
     assert!(!out.contains("FAIL"), "{out}");
     assert!(out.contains("dos_misc_test: done 39/39"), "{out}");
@@ -845,7 +870,7 @@ fn test_dos_misc_calls() {
 #[test]
 fn test_file_attributes_are_kept() {
     let sample = "samples/attr_test/attr_test.exe";
-    if !kvm_available() || !Path::new(sample).exists() { return; }
+    if !kvm_available() || !sample_exists(sample) { return; }
     let (out, code) = run_sample(sample, 30);
     assert!(!out.contains("FAIL"), "{out}");
     assert!(out.contains("attr_test: done 15/15"), "{out}");
@@ -858,7 +883,7 @@ fn test_file_attributes_are_kept() {
 #[test]
 fn test_large_static_data_is_the_programs_own() {
     let sample = "samples/bigdata_test/bigdata_test.exe";
-    if !kvm_available() || !Path::new(sample).exists() { return; }
+    if !kvm_available() || !sample_exists(sample) { return; }
     let (out, code) = run_sample(sample, 30);
     assert!(!out.contains("FAIL"), "{out}");
     assert!(out.contains("bigdata_test: done 13/13"), "{out}");
@@ -871,7 +896,7 @@ fn test_large_static_data_is_the_programs_own() {
 #[test]
 fn test_pipe_writes_interrupted_mid_message() {
     let sample = "samples/npipe_cut_test/npipe_cut_test.exe";
-    if !kvm_available() || !Path::new(sample).exists() { return; }
+    if !kvm_available() || !sample_exists(sample) { return; }
     let (out, code) = run_sample(sample, 30);
     assert!(!out.contains("FAIL"), "{out}");
     assert!(out.contains("npipe_cut_test: done 15/15"), "{out}");
@@ -885,14 +910,14 @@ fn test_pipe_writes_interrupted_mid_message() {
 fn test_config_sys_libpath_and_set() {
     let sample = "samples/libpath_test/libpath_test.exe";
     let dll = "samples/dll_noinit/noinit.dll";
-    if !kvm_available() || !Path::new(sample).exists() || !Path::new(dll).exists() { return; }
+    if !kvm_available() || !sample_exists(sample) || !sample_exists(dll) { return; }
     let data = tempfile::tempdir().expect("tempdir");
     let c = data.path().join("warpine/drive_c");
     for dir in ["LIBA", "LIBB", "END", "BEGIN"] {
         std::fs::create_dir_all(c.join(dir)).unwrap();
     }
     for copy in ["LIBB/K3LIB.DLL", "K3DOT.DLL", "END/K3END.DLL", "BEGIN/K3BOTH.DLL", "LIBB/K3BOTH.DLL"] {
-        std::fs::copy(dll, c.join(copy)).unwrap();
+        std::fs::copy(sample_path(dll), c.join(copy)).unwrap();
     }
     std::fs::write(c.join("CONFIG.SYS"), concat!(
         "REM Warpine's libpath_test\r\n", "LIBPATH=C:\\LIBA;C:\\LIBB;.\r\n",
@@ -911,7 +936,7 @@ fn test_config_sys_libpath_and_set() {
 #[test]
 fn test_whole_exit_codes_and_signals_between_processes() {
     let sample = "samples/proc_test/proc_test.exe";
-    if !kvm_available() || !Path::new(sample).exists() { return; }
+    if !kvm_available() || !sample_exists(sample) { return; }
     let (out, code) = run_sample(sample, 60);
     assert!(!out.contains("FAIL"), "{out}");
     assert!(out.contains("proc_test: done 19/19"), "{out}");
@@ -925,7 +950,7 @@ fn test_whole_exit_codes_and_signals_between_processes() {
 #[test]
 fn test_thread_local_memory() {
     let sample = "samples/tlm_test/tlm_test.exe";
-    if !kvm_available() || !Path::new(sample).exists() { return; }
+    if !kvm_available() || !sample_exists(sample) { return; }
     let (out, code) = run_sample(sample, 30);
     assert!(!out.contains("FAIL"), "{out}");
     assert!(out.contains("tlm_test: done 16/16"), "{out}");
@@ -936,11 +961,11 @@ fn test_thread_local_memory() {
 /// directory (where Warpine writes its crash dump): stdout, the exit
 /// code, and the crash dumps written.
 fn run_paging_abuse(exe: &str, sigterm_after: Option<Duration>) -> Option<(String, i32, Vec<String>)> {
-    let sample = std::fs::canonicalize(format!("samples/paging_abuse_test/{exe}")).ok()?;
+    let sample = std::fs::canonicalize(sample_path(format!("samples/paging_abuse_test/{exe}"))).ok()?;
     if !kvm_available() { return None; }
     let work = tempfile::tempdir().expect("tempdir");
     let mut child = Command::new(warpine())
-        .arg(&sample)
+        .arg(sample_path(&sample))
         .current_dir(work.path())
         .env("WARPINE_HEADLESS", "1")
         .env("XDG_DATA_HOME", work.path())
@@ -1023,7 +1048,7 @@ fn test_sigterm_during_accesses_past_guest_memory_runs_the_exit_list() {
 #[test]
 fn test_rexx_api_from_a_program() {
     let sample = "samples/rexx_api_test/rexx_api_test.exe";
-    if !kvm_available() || !Path::new(sample).exists() { return; }
+    if !kvm_available() || !sample_exists(sample) { return; }
     let (out, code) = run_sample(sample, 30);
     assert!(!out.contains("FAIL"), "{out}");
     assert!(out.contains("rexx_api_test: done 17/17"), "{out}");
@@ -1062,7 +1087,7 @@ fn test_cmd_script_lines_are_echoed() {
 /// no sound is played and DosBeep returns at once.
 #[test]
 fn test_audio() {
-    if !kvm_available() || !Path::new("samples/audio_test/audio_test.exe").exists() { return; }
+    if !kvm_available() || !sample_exists("samples/audio_test/audio_test.exe") { return; }
     let (out, code) = run_sample("samples/audio_test/audio_test.exe", 15);
     assert!(out.contains("Failed: 0"), "audio_test failed (exit {code}):\n{out}");
 }
@@ -1071,7 +1096,7 @@ fn test_audio() {
 /// `select` on the OS/2 TCP/IP `fd_set` (a count and socket numbers).
 #[test]
 fn test_sockets_over_loopback() {
-    if !kvm_available() || !Path::new("samples/socket_test/socket_test.exe").exists() { return; }
+    if !kvm_available() || !sample_exists("samples/socket_test/socket_test.exe") { return; }
     let (out, _code) = run_sample("samples/socket_test/socket_test.exe", 20);
     for line in ["PASS  setsockopt(SO_REUSEADDR)", "PASS  getsockopt(SO_TYPE)",
                  "PASS  connect(loopback)", "PASS  accept()", "PASS  select(srv readable)",
@@ -1099,7 +1124,7 @@ fn test_thread() {
 #[test]
 fn test_thread_exit_ends_only_the_thread() {
     const SAMPLE: &str = "samples/thread_exit_test/thread_exit_test.exe";
-    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
     let (out, code) = run_sample(SAMPLE, 30);
     let checks: Vec<&str> = out.lines()
         .filter(|l| l.starts_with("thread_exit_test: ") && !l.contains(": done")).collect();
@@ -1121,12 +1146,12 @@ fn test_thread_exit_ends_only_the_thread() {
 #[test]
 fn test_thread_control_and_signal_exceptions() {
     const SAMPLE: &str = "samples/thread_control_test/thread_control_test.exe";
-    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
     let data_home = tempfile::tempdir().expect("tempdir");
     let drive_c = data_home.path().join("warpine/drive_c");
     std::fs::create_dir_all(&drive_c).unwrap();
     for name in ["THRDCF.EXE", "THRDCN.EXE"] {
-        std::fs::copy(SAMPLE, drive_c.join(name)).unwrap();
+        std::fs::copy(sample_path(SAMPLE), drive_c.join(name)).unwrap();
     }
     let home = data_home.path().to_str().unwrap();
     let (out, code) = run_sample_env(SAMPLE, 90, &[("XDG_DATA_HOME", home)]);
@@ -1147,7 +1172,7 @@ fn run_kill_test_mode(mode: &str, stdin: &[u8]) -> (String, i32, tempfile::TempD
     use std::io::Write;
     let data_home = tempfile::tempdir().expect("tempdir");
     let mut child = Command::new(warpine())
-        .arg(KILL_TEST)
+        .arg(sample_path(KILL_TEST))
         .env("WARPINE_HEADLESS", "1")
         .env("WARPINE_OS2ARGS", format!("child {mode}"))
         .env("XDG_DATA_HOME", data_home.path())
@@ -1187,7 +1212,7 @@ fn drive_c_file(data_home: &Path, name: &str) -> Option<String> {
 /// grace period, DKP_PROCESSTREE reaches the grandchild.
 #[test]
 fn test_kill_process_and_interrupted_waits() {
-    if !kvm_available() || !Path::new(KILL_TEST).exists() { return; }
+    if !kvm_available() || !sample_exists(KILL_TEST) { return; }
     let (out, code) = run_sample(KILL_TEST, 90);
     let checks: Vec<&str> = out.lines()
         .filter(|l| l.starts_with("kill_test: ") && !l.contains(": done")).collect();
@@ -1202,7 +1227,7 @@ fn test_kill_process_and_interrupted_waits() {
 /// returns the next key.
 #[test]
 fn test_ctrl_c_from_the_keyboard_is_a_signal() {
-    if !kvm_available() || !Path::new(KILL_TEST).exists() { return; }
+    if !kvm_available() || !sample_exists(KILL_TEST) { return; }
     let (out, code, _c) = run_kill_test_mode("kbd", b"\x03x");
     assert!(!out.contains("FAIL") && out.matches(": ok").count() == 3, "{out}");
     assert_eq!(code, 0, "{out}");
@@ -1212,7 +1237,7 @@ fn test_ctrl_c_from_the_keyboard_is_a_signal() {
 /// list runs with TC_EXIT.
 #[test]
 fn test_exit_list_runs_at_the_end_of_piped_input() {
-    if !kvm_available() || !Path::new(KILL_TEST).exists() { return; }
+    if !kvm_available() || !sample_exists(KILL_TEST) { return; }
     let (out, code, c) = run_kill_test_mode("eof", b"");
     assert!(out.contains("kill_test: eof waiting") && !out.contains("FAIL"), "{out}");
     assert_eq!(drive_c_file(c.path(), "KT_EOF.OUT").as_deref(), Some("tc=0;"), "{out}");
@@ -1223,10 +1248,10 @@ fn test_exit_list_runs_at_the_end_of_piped_input() {
 /// TC_KILLPROCESS and the process ends with code 1.
 #[test]
 fn test_sigterm_runs_the_exit_list() {
-    if !kvm_available() || !Path::new(KILL_TEST).exists() { return; }
+    if !kvm_available() || !sample_exists(KILL_TEST) { return; }
     let data_home = tempfile::tempdir().expect("tempdir");
     let mut child = Command::new(warpine())
-        .arg(KILL_TEST)
+        .arg(sample_path(KILL_TEST))
         .env("WARPINE_HEADLESS", "1")
         .env("WARPINE_OS2ARGS", "child exitlist")
         .env("XDG_DATA_HOME", data_home.path())
@@ -1262,7 +1287,7 @@ fn test_sigterm_runs_the_exit_list() {
 /// is XCPT_SIGNAL_BREAK for KbdCharIn, which returns the next key (ADR-0093).
 #[test]
 fn test_ctrl_backslash_from_the_keyboard_is_ctrl_break() {
-    if !kvm_available() || !Path::new(KILL_TEST).exists() { return; }
+    if !kvm_available() || !sample_exists(KILL_TEST) { return; }
     let (out, code, _c) = run_kill_test_mode("kbdbrk", b"\x1Cx");
     assert!(!out.contains("FAIL") && out.matches(": ok").count() == 3, "{out}");
     assert_eq!(code, 0, "{out}");
@@ -1273,10 +1298,10 @@ fn test_ctrl_backslash_from_the_keyboard_is_ctrl_break() {
 /// process goes on (ADR-0093).
 #[test]
 fn test_sigquit_is_ctrl_break() {
-    if !kvm_available() || !Path::new(KILL_TEST).exists() { return; }
+    if !kvm_available() || !sample_exists(KILL_TEST) { return; }
     let data_home = tempfile::tempdir().expect("tempdir");
     let mut child = Command::new(warpine())
-        .arg(KILL_TEST)
+        .arg(sample_path(KILL_TEST))
         .env("WARPINE_HEADLESS", "1")
         .env("WARPINE_OS2ARGS", "child brk")
         .env("XDG_DATA_HOME", data_home.path())
@@ -1314,7 +1339,7 @@ fn test_sigquit_is_ctrl_break() {
 /// a pipe directory.
 #[test]
 fn test_stale_pipe_directories_are_removed() {
-    if !kvm_available() || !Path::new(KILL_TEST).exists() { return; }
+    if !kvm_available() || !sample_exists(KILL_TEST) { return; }
     use std::os::unix::fs::DirBuilderExt;
     let runtime = tempfile::tempdir().expect("tempdir");
     let uid = std::fs::metadata("/proc/self").map(|m| { use std::os::unix::fs::MetadataExt; m.uid() }).unwrap();
@@ -1355,7 +1380,7 @@ fn test_stale_pipe_directories_are_removed() {
 /// closes the session; returns C:\KT_WIN.OUT.
 fn run_kill_test_window(vio: Option<&str>) -> Option<String> {
     let has_script = Command::new("script").arg("--version").output().is_ok_and(|o| o.status.success());
-    if !kvm_available() || !Path::new(KILL_TEST).exists() || !has_script {
+    if !kvm_available() || !sample_exists(KILL_TEST) || !has_script {
         eprintln!("skipping: KVM, {KILL_TEST} or util-linux script not available");
         return None;
     }
@@ -1363,7 +1388,7 @@ fn run_kill_test_window(vio: Option<&str>) -> Option<String> {
     let session = dir.path().join("session.script");
     std::fs::write(&session, "2000 key ctrl+c\n3500 quit\n").unwrap();
     let mut cmd = Command::new("script");
-    cmd.args(["-qec", &format!("timeout 30 {} {KILL_TEST}", warpine())])
+    cmd.args(["-qec", &format!("timeout 30 {} {}", warpine(), sample_path(KILL_TEST))])
         .arg("/dev/null")
         .envs(PINNED_LOCALE.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
@@ -1407,7 +1432,7 @@ fn gui_ctrl_c_and_close_in_the_full_screen_text_window() {
 #[test]
 fn test_named_pipes_and_child_pipes() {
     const SAMPLE: &str = "samples/npipe_test/npipe_test.exe";
-    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
     let (out, code) = run_sample(SAMPLE, 60);
     let checks: Vec<&str> = out.lines()
         .filter(|l| l.starts_with("npipe_test: ") && !l.contains(": done")).collect();
@@ -1425,7 +1450,7 @@ fn test_named_pipes_and_child_pipes() {
 #[test]
 fn test_shared_memory_between_processes() {
     const SAMPLE: &str = "samples/shmem_test/shmem_test.exe";
-    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
     let (out, code) = run_sample(SAMPLE, 60);
     let checks: Vec<&str> = out.lines()
         .filter(|l| l.starts_with("shmem_test: ") && !l.contains(": done")).collect();
@@ -1444,7 +1469,7 @@ fn test_shared_memory_between_processes() {
 #[test]
 fn test_shared_semaphores_between_processes() {
     const SAMPLE: &str = "samples/shsem_test/shsem_test.exe";
-    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
     let (out, code) = run_sample(SAMPLE, 60);
     let checks: Vec<&str> = out.lines()
         .filter(|l| l.starts_with("shsem_test: ") && !l.contains(": done")).collect();
@@ -1462,7 +1487,7 @@ fn test_shared_semaphores_between_processes() {
 #[test]
 fn test_exception_chains_are_per_thread() {
     const SAMPLE: &str = "samples/xcpt_thread_test/xcpt_thread_test.exe";
-    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
     let (out, code) = run_sample(SAMPLE, 30);
     let checks: Vec<&str> = out.lines()
         .filter(|l| l.starts_with("xcpt_thread_test: ") && !l.contains(": done")).collect();
@@ -1479,7 +1504,7 @@ fn test_exception_chains_are_per_thread() {
 #[test]
 fn test_thread_exit_of_the_last_thread_ends_the_process() {
     const SAMPLE: &str = "samples/thread_exit_test/thread_last_test.exe";
-    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
     let (out, code) = run_sample(SAMPLE, 15);
     assert!(out.contains("thread_exit_test: DosCreateThread(last thread): ok"), "{out}");
     assert!(out.contains("thread_exit_test: main thread ends"), "{out}");
@@ -1497,7 +1522,7 @@ const TC_TRAP: u32 = 2;
 /// getting termination code `tc`; returns stdout.
 fn run_exitlist_variant(exe: &str, code_want: i32, runs: bool, tc: u32) -> Option<String> {
     let sample = format!("samples/exitlist_test/{exe}");
-    if !kvm_available() || !Path::new(&sample).exists() { return None; }
+    if !kvm_available() || !sample_exists(&sample) { return None; }
     let (out, code) = run_sample(&sample, 20);
     assert!(!out.contains("FAIL"), "{out}");
     assert!(out.lines().any(|l| l.starts_with("exitlist_test: done ")), "{out}");
@@ -1560,7 +1585,7 @@ fn test_exit_list_does_not_run_after_thread_1_ended() {
 #[test]
 fn test_semaphore_queries() {
     const SAMPLE: &str = "samples/semquery_test/semquery_test.exe";
-    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
     let (out, code) = run_sample(SAMPLE, 30);
     let checks: Vec<&str> = out.lines()
         .filter(|l| l.starts_with("semquery_test: ") && !l.contains(": done")).collect();
@@ -1578,7 +1603,7 @@ fn test_semaphore_queries() {
 #[test]
 fn test_semaphore_pipe_and_suballoc_follow_ups() {
     const SAMPLE: &str = "samples/semfollow_test/semfollow_test.exe";
-    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
     let (out, code) = run_sample(SAMPLE, 60);
     let checks: Vec<&str> = out.lines()
         .filter(|l| l.starts_with("semfollow_test: ") && !l.contains(": done")).collect();
@@ -1596,7 +1621,7 @@ fn test_semaphore_pipe_and_suballoc_follow_ups() {
 #[test]
 fn test_kernel_batch2() {
     const SAMPLE: &str = "samples/kernel2_test/kernel2_test.exe";
-    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
     let dir = tempfile::tempdir().expect("tempdir");
     let xdg = dir.path().to_string_lossy().into_owned();
     let (out, code) = run_sample_env(SAMPLE, 60, &[("XDG_DATA_HOME", xdg.as_str())]);
@@ -1822,6 +1847,102 @@ fn test_c_sdk_from_gcc_and_clang() {
     }
 }
 
+/// ADR-0101: every structure the C SDK declares that Open Watcom's headers
+/// declare too has the same size and field offsets: tests/sdk_layout/
+/// layout.c prints them, built by Open Watcom with its headers and by GCC
+/// and clang with the SDK's, and the three outputs must match.
+#[test]
+fn sdk_structure_layouts_match_open_watcom() {
+    let watcom = std::env::current_dir().unwrap().join("vendor/watcom");
+    let wcl = watcom.join("binl64/wcl386");
+    if !kvm_available() || !wcl.exists() { return; }
+    let dir = tempfile::tempdir().expect("tempdir");
+    let ow_exe = dir.path().join("layout_ow.exe");
+    let out = Command::new(&wcl)
+        .args(["-q", "-bt=os2", "-l=os2v2", "layout.c"])
+        .arg(format!("-fe={}", ow_exe.display())).arg(format!("-fo={}", dir.path().join("layout_ow.obj").display()))
+        .current_dir("tests/sdk_layout")
+        .env("WATCOM", &watcom)
+        .env("INCLUDE", format!("{}:{}", watcom.join("h/os2").display(), watcom.join("h").display()))
+        .env("PATH", format!("{}:{}", watcom.join("binl64").display(), std::env::var("PATH").unwrap_or_default()))
+        .output().expect("run wcl386");
+    assert!(out.status.success(), "wcl386:\n{}", String::from_utf8_lossy(&out.stdout));
+    let (reference, code) = run_sample(ow_exe.to_str().unwrap(), 30);
+    assert_eq!(code, 0);
+    let reference = reference.replace('\r', "");
+    assert!(reference.lines().count() > 1000, "every structure printed:\n{reference}");
+    for compiler in ["gcc", "clang"] {
+        if !compiler_available(compiler) { continue; }
+        let sdk_build = dir.path().join(format!("sdk-{compiler}"));
+        let vars = [format!("CC={compiler}"), format!("OS2_BUILD={}", sdk_build.display())];
+        let out = Command::new("make").args(["-s", "-C", "sdk"]).args(&vars).output().expect("run make");
+        assert!(out.status.success(), "{compiler}: {}", String::from_utf8_lossy(&out.stderr));
+        let include = String::from_utf8(Command::new(compiler).args(["-m32", "-print-file-name=include"]).output()
+                                        .expect("compiler").stdout).unwrap();
+        let obj = dir.path().join(format!("layout_{compiler}.o"));
+        let mut cc = Command::new(compiler);
+        cc.args(["-m32", "-O1", "-ffreestanding", "-fno-pic", "-fno-stack-protector", "-nostdinc", "-w",
+                 "-isystem", "sdk/include", "-isystem", include.trim(), "-c", "tests/sdk_layout/layout.c", "-o"]).arg(&obj);
+        if compiler == "clang" { cc.arg("--target=i386-unknown-none"); }
+        let out = cc.output().expect("compile");
+        assert!(out.status.success(), "{compiler}: {}", String::from_utf8_lossy(&out.stderr));
+        let exe = dir.path().join(format!("layout_{compiler}.exe"));
+        let out = Command::new(env!("CARGO_BIN_EXE_lx_link"))
+            .arg("--gc-sections").arg(sdk_build.join("crt0.o")).arg(&obj).arg(sdk_build.join("libos2c.a"))
+            .arg("-o").arg(&exe).output().expect("lx-link");
+        assert!(out.status.success(), "{compiler}: {}", String::from_utf8_lossy(&out.stderr));
+        let (got, code) = run_sample(exe.to_str().unwrap(), 30);
+        assert_eq!(code, 0);
+        let differ: Vec<String> = reference.lines().zip(got.lines()).filter(|(a, b)| a != b)
+            .map(|(a, b)| format!("Open Watcom {a} / {compiler} {b}")).collect();
+        assert!(differ.is_empty() && reference.lines().count() == got.lines().count(),
+                "{compiler}: layouts differ from Open Watcom's:\n{}", differ.join("\n"));
+    }
+}
+
+/// ADR-0103: samples/cxx_test, C++ built by g++ and by clang++ with the
+/// SDK's C++ runtime and lx-link's unwind tables: static construction and
+/// destruction, new and delete, virtual calls, typeid and dynamic_cast,
+/// exceptions through frames with destructors, rethrow, catch by base and
+/// by pointer, std::bad_alloc and std::bad_cast, static locals, a second
+/// thread, and an OS/2 exception handler leaving the chain when an
+/// exception passes its frame. An uncaught exception ends the program
+/// through std::terminate with exit code 3.
+#[test]
+fn test_cxx_from_gcc_and_clang() {
+    let has_make = Command::new("make").arg("--version").output().is_ok_and(|o| o.status.success());
+    if !kvm_available() || !has_make { return; }
+    for (compiler, cxx) in [("gcc", "g++"), ("clang", "clang++")] {
+        if !compiler_available(compiler) || !compiler_available(cxx) {
+            eprintln!("skipping cxx_test with {cxx}: not installed");
+            continue;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vars = [format!("CC={compiler}"), format!("OS2_BUILD={}", dir.path().join("sdk").display()),
+                    format!("BUILD={}", dir.path().display()),
+                    format!("LX_LINK={}", env!("CARGO_BIN_EXE_lx_link"))];
+        for target in ["sdk", "samples/cxx_test"] {
+            let out = Command::new("make").args(["-s", "-C", target]).args(&vars).output().expect("run make");
+            assert!(out.status.success(), "make -C {target} ({cxx}):\n{}{}",
+                    String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        }
+        let exe = dir.path().join("cxx_test.exe");
+        let (out, code) = run_sample(exe.to_str().unwrap(), 30);
+        let failures: Vec<&str> = out.lines().filter(|l| l.contains("FAIL")).collect();
+        assert!(failures.is_empty(), "{cxx}: {failures:?}\n{out}");
+        assert!(out.contains(&format!("cxx_test: built by {cxx}")), "{cxx}:\n{out}");
+        let done = out.lines().find_map(|l| l.strip_prefix("cxx_test: done ")).unwrap_or("");
+        let (passed, total) = done.split_once('/').unwrap_or(("", "?"));
+        assert!(total.parse::<u32>().is_ok_and(|t| t >= 27) && passed == total, "{cxx}: done {done}\n{out}");
+        assert!(out.ends_with("cxx_test: the global's destructor ran at exit\n"), "{cxx}: destructors at exit\n{out}");
+        assert_eq!(code, 0, "{cxx}:\n{out}");
+
+        let (out, code) = run_sample_args(exe.to_str().unwrap(), &["uncaught"], 30, &[]);
+        assert!(out.contains("cxx_test: throwing with no handler"), "{cxx}:\n{out}");
+        assert_eq!(code, 3, "{cxx}: std::terminate ends the program with abort's code\n{out}");
+    }
+}
+
 /// The resources of a classic OS/2 .res file, by (type, name): memory
 /// flags and data.
 fn parse_classic_res(path: &Path) -> std::collections::BTreeMap<(u16, u16), (u16, Vec<u8>)> {
@@ -1909,6 +2030,78 @@ fn gui_c_pm_from_gcc_and_clang() {
     }
 }
 
+/// ADR-0102: source-level debugging through Warpine's GDB stub.
+/// samples/c_gdb_test is built with -g by GCC and by clang; lx-link writes
+/// its debug companion (c_gdb_test.dbg), and GDB, given that file with
+/// `symbol-file`, stops on a function by name, shows its source line and
+/// arguments, prints a structure through a pointer, finishes the call for
+/// its return value, and reads a global, all from the running program.
+#[test]
+fn gdb_debugs_a_c_program_at_the_source_level() {
+    let has = |tool: &str| Command::new(tool).arg("--version").output().is_ok_and(|o| o.status.success());
+    if !kvm_available() || !has("make") || !has("gdb") { return; }
+    for compiler in ["gcc", "clang"] {
+        if !compiler_available(compiler) {
+            eprintln!("skipping c_gdb_test with {compiler}: not installed");
+            continue;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let vars = [format!("CC={compiler}"), format!("OS2_BUILD={}", dir.path().join("sdk").display()),
+                    format!("BUILD={}", dir.path().display()),
+                    format!("LX_LINK={}", env!("CARGO_BIN_EXE_lx_link"))];
+        let out = Command::new("make").args(["-s", "-C", "samples/c_gdb_test"]).args(&vars).output().expect("run make");
+        assert!(out.status.success(), "make ({compiler}):\n{}{}",
+                String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        let (exe, dbg) = (dir.path().join("c_gdb_test.exe"), dir.path().join("c_gdb_test.dbg"));
+        assert!(dbg.exists(), "{compiler}: lx-link wrote no debug companion");
+
+        // A free port: bind to 0, note it, release it for warpine. GDB
+        // retries the connection until the stub listens (tcp auto-retry).
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let mut child = Command::new(warpine())
+            .args(["--gdb", &port.to_string()]).arg(&exe)
+            .env("WARPINE_HEADLESS", "1")
+            .env("XDG_DATA_HOME", dir.path())
+            .env("XDG_RUNTIME_DIR", dir.path())
+            .envs(PINNED_LOCALE.iter().copied())
+            .env("RUST_LOG", "error")
+            .stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null())
+            .spawn().expect("spawn warpine");
+        let gdb = Command::new("timeout")
+            .args(["60", "gdb", "-nx", "-batch", "-ex", "set confirm off", "-ex", "set tcp connect-timeout 20"])
+            .args(["-ex", &format!("symbol-file {}", dbg.display())])
+            .args(["-ex", &format!("target remote 127.0.0.1:{port}")])
+            .args(["-ex", "info symbol $pc", "-ex", "break add_points", "-ex", "continue", "-ex", "print *b",
+                   "-ex", "finish", "-ex", "print counter", "-ex", "print greeting", "-ex", "continue"])
+            .output().expect("run gdb");
+        let text = String::from_utf8_lossy(&gdb.stdout).into_owned() + &String::from_utf8_lossy(&gdb.stderr);
+        // Bounded: a stub that never got its client would wait forever.
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let status = loop {
+            if let Some(st) = child.try_wait().expect("try_wait") { break st; }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                panic!("{compiler}: warpine did not end after the gdb session:\n{text}");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        };
+        let mut program_out = String::new();
+        use std::io::Read;
+        child.stdout.take().unwrap().read_to_string(&mut program_out).ok();
+        for want in ["_start in section .text",
+                     "Breakpoint 1, add_points (a=", "c_gdb_test.c:23",
+                     "a->x += b->x;",
+                     "$1 = {x = 30, y = 40}",
+                     "Value returned is $2 = 73",
+                     "$3 = 1",
+                     "$4 = \"debugging\""] {
+            assert!(text.contains(want), "{compiler}: gdb did not show {want:?}:\n{text}");
+        }
+        assert!(program_out.contains("c_gdb_test: debugging, sum 73, counter 1"), "{compiler}: {program_out}");
+        assert_eq!(status.code(), Some(0), "{compiler}: the program ends normally after the session");
+    }
+}
+
 // ── GUI regression tests ─────────────────────────────────────────────────────
 //
 // These drive a PM sample with a scripted session (`WARPINE_GUI_SCRIPT`, see
@@ -1964,7 +2157,7 @@ fn run_gui_script_env(sample: &str, script: &Path, capture: bool, env: &[(&str, 
     // A fresh drive C: per run, never the user's own (`env` may name another).
     let data_home = tempfile::tempdir().expect("tempdir");
     let mut child = Command::new(warpine())
-        .arg(sample)
+        .arg(sample_path(sample))
         .env_remove("WARPINE_COMPOSITOR")
         .env_remove("WARPINE_DESKTOP")
         .env("XDG_DATA_HOME", data_home.path())
@@ -2089,7 +2282,7 @@ fn check_gui_golden(name: &str, sample: &str, steps: &str) {
 /// [`check_gui_golden`] with extra environment variables for warpine. The
 /// golden files are written by runs without them.
 fn check_gui_golden_env(name: &str, sample: &str, steps: &str, env: &[(&str, &str)]) {
-    if !kvm_available() || !Path::new(sample).exists() {
+    if !kvm_available() || !sample_exists(sample) {
         eprintln!("skipping {name}: KVM or {sample} not available");
         return;
     }
@@ -2158,7 +2351,7 @@ fn run_cmd_script(vio: Option<&str>, dumps: &[&str], script: impl FnOnce(&[std::
     let session = dir.path().join("session.script");
     std::fs::write(&session, script(&paths)).unwrap();
     let mut cmd = Command::new("script");
-    cmd.args(["-qec", &format!("timeout 30 {} {sample}", warpine())])
+    cmd.args(["-qec", &format!("timeout 30 {} {}", warpine(), sample_path(sample))])
         .arg("/dev/null")
         .envs(PINNED_LOCALE.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
@@ -2202,7 +2395,7 @@ fn light_grey_pels(rgb: &[u8]) -> usize {
 fn run_mou_session(vio: Option<&str>, origin: (i32, i32)) -> Option<String> {
     let sample = "samples/mou_test/mou_test.exe";
     let has_script = Command::new("script").arg("--version").output().is_ok_and(|o| o.status.success());
-    if !kvm_available() || !Path::new(sample).exists() || !has_script {
+    if !kvm_available() || !sample_exists(sample) || !has_script {
         eprintln!("skipping: KVM, {sample} or util-linux script not available");
         return None;
     }
@@ -2214,7 +2407,7 @@ fn run_mou_session(vio: Option<&str>, origin: (i32, i32)) -> Option<String> {
     std::fs::write(&session, format!(
         "2000 click {x1} {y1}\n2400 rclick {x2} {y2}\n2800 drag {x3} {y3} {x4} {y4}\n4500 quit\n")).unwrap();
     let mut cmd = Command::new("script");
-    cmd.args(["-qec", &format!("timeout 30 {} {sample}", warpine())])
+    cmd.args(["-qec", &format!("timeout 30 {} {}", warpine(), sample_path(sample))])
         .arg("/dev/null")
         .envs(PINNED_LOCALE.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
@@ -2349,7 +2542,7 @@ fn run_cmd_windowed(steps: &str, dumps: usize) -> Option<WindowedSession> {
 fn run_cmd_windowed_with(steps: &str, dumps: usize, files: &[&str]) -> Option<WindowedSession> {
     let sample = "CMD.EXE";
     let has_script = Command::new("script").arg("--version").output().is_ok_and(|o| o.status.success());
-    if !kvm_available() || !has_script || files.iter().any(|f| !Path::new(f).exists()) {
+    if !kvm_available() || !has_script || files.iter().any(|f| !sample_exists(f)) {
         eprintln!("skipping: KVM, {files:?} or util-linux script not available");
         return None;
     }
@@ -2358,7 +2551,7 @@ fn run_cmd_windowed_with(steps: &str, dumps: usize, files: &[&str]) -> Option<Wi
     std::fs::create_dir_all(&drive_c).unwrap();
     for f in files {
         let name = Path::new(f).file_name().unwrap();
-        std::fs::copy(f, drive_c.join(name)).unwrap();
+        std::fs::copy(sample_path(f), drive_c.join(name)).unwrap();
     }
     let paths: Vec<_> = (0..dumps).map(|i| dir.path().join(format!("screen{i}.ppm"))).collect();
     let mut text = steps.to_string();
@@ -2368,7 +2561,7 @@ fn run_cmd_windowed_with(steps: &str, dumps: usize, files: &[&str]) -> Option<Wi
     let session = dir.path().join("session.script");
     std::fs::write(&session, text).unwrap();
     let status = Command::new("script")
-        .args(["-qec", &format!("timeout 40 {} {sample}", warpine())])
+        .args(["-qec", &format!("timeout 40 {} {}", warpine(), sample_path(sample))])
         .arg("/dev/null")
         .envs(PINNED_LOCALE.iter().copied())
         .env("SDL_VIDEODRIVER", "dummy")
@@ -2606,7 +2799,7 @@ fn gui_menu_pulldown_matches_golden() {
 #[test]
 fn gui_menu_dlg_test_replaces_the_menu_bar() {
     let sample = "samples/pm_menu_dlg_test/pm_menu_dlg_test.exe";
-    if !kvm_available() || !Path::new(sample).exists() {
+    if !kvm_available() || !sample_exists(sample) {
         eprintln!("skipping gui_menu_dlg_test_replaces_the_menu_bar: KVM or {sample} not available");
         return;
     }
@@ -2631,7 +2824,7 @@ fn gui_menu_about_dialog_matches_golden() {
 #[test]
 fn gui_pm_bench_reports_every_measurement() {
     let sample = "samples/pm_bench/pm_bench.exe";
-    if !kvm_available() || !Path::new(sample).exists() {
+    if !kvm_available() || !sample_exists(sample) {
         eprintln!("skipping gui_pm_bench_reports_every_measurement: KVM or {sample} not available");
         return;
     }
@@ -2673,7 +2866,7 @@ fn assert_scripted_checks_pass(sample: &str, prefix: &str, min_checks: usize, st
 /// not available).
 fn assert_scripted_checks_pass_env(sample: &str, prefix: &str, min_checks: usize, steps: &str,
                                    env: &[(&str, &str)]) -> bool {
-    if !kvm_available() || !Path::new(sample).exists() {
+    if !kvm_available() || !sample_exists(sample) {
         eprintln!("skipping {prefix}: KVM or {sample} not available");
         return false;
     }
@@ -3065,7 +3258,7 @@ fn gui_pm_profile_test_reads_and_writes_profiles() {
 /// below it. No Warpine process is left running.
 #[test]
 fn test_nest_test_stops_at_the_nesting_limit() {
-    if !kvm_available() || !Path::new("samples/nest_test/nest_test.exe").exists() { return; }
+    if !kvm_available() || !sample_exists("samples/nest_test/nest_test.exe") { return; }
     let (out, code) = run_sample("samples/nest_test/nest_test.exe", 120);
     assert_eq!(code, 8, "exit code (copies started below the first)\nstdout:\n{out}");
     assert_eq!(out.matches("nest_test: DosExecPgm refused rc=89").count(), 1, "{out}");
@@ -3084,7 +3277,7 @@ fn built_with_shifted_ow_startup(exe: &str) -> bool {
 /// Run an ok/FAIL sample and check that every check passed (its last line is
 /// "<name>: done <passed>/<total>" and its exit code the failures).
 fn assert_all_checks_pass(sample: &str, env: &[(&str, &str)]) {
-    if !kvm_available() || !Path::new(sample).exists() { return; }
+    if !kvm_available() || !sample_exists(sample) { return; }
     let (out, code) = run_sample_args(sample, &[], 60, env);
     assert_eq!(code, 0, "exit code\n{out}");
     assert!(!out.contains("FAIL"), "{out}");
@@ -3117,7 +3310,7 @@ fn test_file_attributes() {
 #[test]
 fn test_dates_after_2038() {
     const SAMPLE: &str = "samples/datetime_test/datetime_test.exe";
-    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
     let env = [("TZ", "JST-9"), ("WARPINE_CLOCK", "2040-03-01T12:00:00")];
     let (out, code) = run_sample_args(SAMPLE, &["2040"], 120, &env);
     assert_eq!(code, 0, "exit code\n{out}");
@@ -3143,7 +3336,7 @@ fn test_dates_after_2038() {
 #[test]
 fn test_argv_and_process_ids() {
     const SAMPLE: &str = "samples/argv_test/argv_test.exe";
-    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
     if built_with_shifted_ow_startup(SAMPLE) {
         eprintln!("skipped: {SAMPLE} was built with an Open Watcom snapshot older than 2026-08-11 \
                    (#1649); rebuild it with a newer one (vendor/setup_watcom.sh --refresh)");
@@ -3192,7 +3385,7 @@ fn test_argv_and_process_ids() {
 #[test]
 fn test_threads_limit_from_config_sys() {
     const SAMPLE: &str = "samples/threads_limit_test/threads_limit_test.exe";
-    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
     let data = tempfile::tempdir().unwrap();
     let run = tempfile::tempdir().unwrap();
     let drive_c = data.path().join("warpine/drive_c");
@@ -3221,7 +3414,7 @@ fn test_threads_limit_from_config_sys() {
 #[test]
 fn test_threads_limit_from_the_environment() {
     const SAMPLE: &str = "samples/threads_limit_test/threads_limit_test.exe";
-    if !kvm_available() || !Path::new(SAMPLE).exists() { return; }
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
     let run = tempfile::tempdir().unwrap();
     let (out, code) = run_sample_env(SAMPLE, 120, &[
         ("WARPINE_THREADS", "66"),
@@ -4179,7 +4372,7 @@ fn gui_drag_title_bar_moves_window() {
 
 fn check_drag_title_bar_moves_window(env: &[(&str, &str)]) {
     let sample = "samples/pm_menu_dlg_test/pm_menu_dlg_test.exe";
-    if !kvm_available() || !Path::new(sample).exists() {
+    if !kvm_available() || !sample_exists(sample) {
         eprintln!("skipping gui_drag_title_bar_moves_window: KVM or {sample} not available");
         return;
     }
@@ -4212,7 +4405,7 @@ fn gui_drag_sizing_border_resizes_window() {
 
 fn check_drag_sizing_border_resizes_window(env: &[(&str, &str)]) {
     let sample = "samples/pm_controls_test/pm_controls_test.exe";
-    if !kvm_available() || !Path::new(sample).exists() {
+    if !kvm_available() || !sample_exists(sample) {
         eprintln!("skipping gui_drag_sizing_border_resizes_window: KVM or {sample} not available");
         return;
     }

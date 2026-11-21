@@ -21,7 +21,11 @@
 static unsigned char one[BIG], two[BIG];
 static int n_checks, n_passed;
 
+#ifdef __WATCOMC__
 APIRET16 APIENTRY16 DOS16GETINFOSEG( PSEL psel_global, PSEL psel_local );
+#else
+#define DOS16GETINFOSEG DosGetInfoSeg   /* the SDK's 32-bit import of DOSCALLS.8 */
+#endif
 
 static void check( const char *what, ULONG got, ULONG want )
 {

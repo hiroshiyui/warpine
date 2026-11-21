@@ -267,7 +267,11 @@ int main( void )
 #elif defined( HLT_EXIT )
     done( "done" );
     write_stdout( "exitlist_test: thread 1 executes HLT\r\n" );
+#ifdef __WATCOMC__
     _asm hlt;
+#else
+    __asm__ volatile( "hlt" );
+#endif
     write_stdout( "exitlist_test: went on after HLT: FAIL\r\n" );
     return 1;
 #else

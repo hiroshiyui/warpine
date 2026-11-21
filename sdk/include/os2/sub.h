@@ -36,7 +36,6 @@ extern "C" {
 #pragma pack(push, 2)
 
 /* ── VIO ────────────────────────────────────────────────────────────── */
-#if defined(INCL_VIO) || !defined(WARPINE_OS2_H)
 
 #define VGMT_OTHER         0x01
 #define VGMT_GRAPHICS      0x02
@@ -68,11 +67,21 @@ typedef struct _VIOCURSORINFO {
     USHORT attr;   /* 0xFFFF hides the cursor */
 } VIOCURSORINFO, *PVIOCURSORINFO;
 
+/* Set cb to the bytes wanted; Warpine fills the first 10 (through
+ * cbMemory) and sets cb to that. */
 typedef struct _VIOCONFIGINFO {
     USHORT cb;
     USHORT adapter;
     USHORT display;
     ULONG  cbMemory;
+    USHORT Configuration;
+    USHORT VDHVersion;
+    USHORT Flags;
+    ULONG  HWBufferSize;
+    ULONG  FullSaveSize;
+    ULONG  PartSaveSize;
+    USHORT EMAdaptersOFF;
+    USHORT EMDisplaysOFF;
 } VIOCONFIGINFO, *PVIOCONFIGINFO;
 
 OS2_PASCAL_API(APIRET16, VioWrtTTY, (PCCH pch, USHORT cb, HVIO hvio),
@@ -141,10 +150,8 @@ OS2_PASCAL_API(APIRET16, VioSetState, (PVOID pState, HVIO hvio),
 OS2_PASCAL_API(APIRET16, VioCheckCharType, (PUSHORT pType, USHORT usRow, USHORT usColumn, HVIO hvio),
                (ULONG hvio, ULONG usColumn, ULONG usRow, PUSHORT pType), (hvio, usColumn, usRow, pType))
 
-#endif /* INCL_VIO */
 
 /* ── KBD ────────────────────────────────────────────────────────────── */
-#if defined(INCL_KBD) || !defined(WARPINE_OS2_H)
 
 #define IO_WAIT    0
 #define IO_NOWAIT  1
@@ -185,10 +192,8 @@ OS2_PASCAL_API(APIRET16, KbdStringIn, (PCH pch, PSTRINGINBUF pchIn, USHORT fsWai
 OS2_PASCAL_API(APIRET16, KbdGetStatus, (PKBDINFO pkbdinfo, HKBD hkbd),
                (ULONG hkbd, PKBDINFO pkbdinfo), (hkbd, pkbdinfo))
 
-#endif /* INCL_KBD */
 
 /* ── MOU ────────────────────────────────────────────────────────────── */
-#if defined(INCL_MOU) || !defined(WARPINE_OS2_H)
 
 #define MOU_NOWAIT  0
 #define MOU_WAIT    1
@@ -305,7 +310,6 @@ OS2_PASCAL_API(APIRET16, MouGetPtrShape, (PBYTE pBuf, PPTRSHAPE pmoupsInfo, HMOU
 OS2_PASCAL_API(APIRET16, MouSetPtrShape, (PBYTE pBuf, PPTRSHAPE pmoupsInfo, HMOU hmou),
                (ULONG hmou, PPTRSHAPE pmoupsInfo, PBYTE pBuf), (hmou, pmoupsInfo, pBuf))
 
-#endif /* INCL_MOU */
 
 #pragma pack(pop)
 
