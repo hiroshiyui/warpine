@@ -14,7 +14,9 @@
  *   - DosSetMem's and DosAllocMem's errors;
  *   - a page made read-only by one thread faults on another thread that
  *     wrote it just before (its TLB must forget the old entry);
- *   - the program's code object (no write flag) can be read, not written.
+ *   - the program's code object (no write flag) can be read, not written;
+ *   - memory freed with DosFreeMem cannot be touched any more, nor memory
+ *     never allocated.
  * A probe that faults is left by longjmp from the exception handler.
  *
  * Output: "mem_protect_test: <name>: ok" / "...: FAIL", then
@@ -30,6 +32,8 @@
 #define PAGE     4096UL
 #define RW       (PAG_READ | PAG_WRITE)
 #define THREAD_STACK 0x8000UL
+/* Near the top of Warpine's allocator region, which no program here reaches. */
+#define NEVER_ALLOCATED 0x0DF00000UL
 
 static int passed = 0, total = 0;
 
@@ -189,6 +193,11 @@ int main(void)
     check("DosSetMem sets a guard again", DosSetMem(p, PAGE, RW | PAG_GUARD) == NO_ERROR
           && query_is(p, PAGE, PAGE, RW | PAG_COMMIT | PAG_GUARD | PAG_BASE));
     DosFreeMem(p);
+
+    /* Freed and never allocated memory. */
+    check("DosAllocMem, written", DosAllocMem((PPVOID)&p, PAGE, PAG_COMMIT | RW) == NO_ERROR && !faults(write_at, p));
+    check("freed, it cannot be read", DosFreeMem(p) == NO_ERROR && faults(read_at, p));
+    check("memory never allocated cannot be read", faults(read_at, (PVOID)NEVER_ALLOCATED));
 
     /* The program's own code. */
     check("the program's code can be read", !faults(read_at, (PVOID)check));

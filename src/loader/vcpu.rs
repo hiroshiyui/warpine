@@ -626,10 +626,16 @@ impl super::Loader {
                 }
             }
 
+            // The allocator's allocations and frees into the page tables
+            // (ADR-0114).
+            self.sync_allocations();
             // Pages lost access since this vCPU last ran (ADR-0114):
             // reload CR3 so that its TLB forgets them.
+            // So did the memory this thread freed (free memory is not
+            // present), which only this thread's TLB is flushed for.
             let epoch = self.shared.tlb_epoch.load(Ordering::Acquire);
-            if epoch != tlb_epoch {
+            let freed_here = super::managers::take_freed_here();
+            if epoch != tlb_epoch || freed_here {
                 tlb_epoch = epoch;
                 flush_tlb(&mut *vcpu);
             }
@@ -995,6 +1001,16 @@ impl super::Loader {
                                         Some(end) => return end,
                                         None => continue,
                                     }
+                                }
+                                // Memory another thread allocated just now:
+                                // its page is present once the allocation
+                                // is in the tables.
+                                None if error_code & PF_ERROR_PRESENT == 0 && self.allocated_and_present(addr) => {
+                                    debug!("  [VCPU {}] #PF at 0x{:08X}: allocated meanwhile, again", vcpu_id, addr);
+                                    let mut r = vcpu.get_regs().unwrap();
+                                    resume_at(&mut r, &fault_ctx);
+                                    vcpu.set_regs(&r).unwrap();
+                                    continue;
                                 }
                                 Some(super::vmem::FaultKind::Violation) | None => {}
                             }

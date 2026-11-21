@@ -447,17 +447,19 @@ impl super::Loader {
     }
 
     /// Write the process tables (ADR-0114) once, before the first thread's
-    /// block: every page of the allocator's region present and writable,
-    /// as the large pages they replace were; `vmem.rs` changes them.
+    /// block or the first change of a page's state: the program area
+    /// present and writable but the low 64 KB, the allocator's region not
+    /// present; `vmem.rs` brings the allocations in and changes states.
     pub(crate) fn ensure_process_tables(&self) {
         if self.shared.process_tables_ready.swap(true, Ordering::AcqRel) {
             return;
         }
         // The program area's tables, the low 64 KB not present; then the
-        // allocator's.
+        // allocator's, not present until allocated (`vmem.rs` brings the
+        // allocations in, those made before this too).
         let exe = (0..EXE_CHUNKS * ENTRIES).map(|i| i << PAGE_SHIFT)
             .map(|page| if page < LOW_GUARD { 0 } else { page | PTE_FLAGS });
-        let alloc = (0..ALLOC_CHUNKS * ENTRIES).map(|i| (DYNAMIC_ALLOC_BASE + (i << PAGE_SHIFT)) | PTE_FLAGS);
+        let alloc = (0..ALLOC_CHUNKS * ENTRIES).map(|i| DYNAMIC_ALLOC_BASE + (i << PAGE_SHIFT));
         let tables: Vec<u8> = exe.chain(alloc).flat_map(u32::to_le_bytes).collect();
         if self.guest_write_bytes(PROCESS_TABLES, &tables).is_none() {
             warn!("the process page tables could not be written");
@@ -624,7 +626,8 @@ mod tests {
     }
 
     /// The process tables (ADR-0114) map the program area (but the low
-    /// 64 KB) and the allocator's region page by page, present and writable, and lie in the supervisor-only arena
+    /// 64 KB) present and writable, and the allocator's region page by page,
+    /// present while allocated, and lie in the supervisor-only arena
     /// before the blocks; the entry helpers address and fill them.
     #[test]
     fn the_process_tables_map_the_allocators_region() {
@@ -645,10 +648,22 @@ mod tests {
         assert_eq!(process_pte(page, PageAccess::None) & PTE_PRESENT, 0);
         let loader = super::super::Loader::new_mock();
         loader.ensure_process_tables();
-        for addr in [LOW_GUARD, EXE_AREA_START + 0x5000, EXE_AREA_END - PAGE_SIZE, DYNAMIC_ALLOC_BASE, page, SHARED_ARENA_BASE - PAGE_SIZE] {
+        for addr in [LOW_GUARD, EXE_AREA_START + 0x5000, EXE_AREA_END - PAGE_SIZE] {
             let at = process_pte_at(addr).unwrap();
-            assert_eq!(loader.guest_read::<u32>(at), Some(addr | PTE_FLAGS), "{addr:#x}");
+            assert_eq!(loader.guest_read::<u32>(at), Some(addr | PTE_FLAGS), "{addr:#x}: the program area present");
         }
+        for addr in [DYNAMIC_ALLOC_BASE, page, SHARED_ARENA_BASE - PAGE_SIZE] {
+            let at = process_pte_at(addr).unwrap();
+            assert_eq!(loader.guest_read::<u32>(at), Some(addr), "{addr:#x}: the allocator's region not present until allocated");
+        }
+        // An allocation comes in with the next sync, its free goes out.
+        let block = loader.shared.mem_mgr.lock().unwrap().alloc(2 * PAGE_SIZE).unwrap();
+        loader.sync_allocations();
+        let entry = |a: u32| loader.guest_read::<u32>(process_pte_at(a).unwrap()).unwrap();
+        assert_eq!((entry(block), entry(block + PAGE_SIZE)), (block | PTE_FLAGS, (block + PAGE_SIZE) | PTE_FLAGS));
+        assert!(loader.shared.mem_mgr.lock().unwrap().free(block));
+        loader.sync_allocations();
+        assert_eq!(entry(block) & PTE_PRESENT, 0, "freed: not present");
         for addr in (0..LOW_GUARD).step_by(PAGE_SIZE as usize) {
             assert_eq!(loader.guest_read::<u32>(process_pte_at(addr).unwrap()).map(|e| e & PTE_PRESENT), Some(0),
                        "{addr:#x}: the low 64 KB not present");

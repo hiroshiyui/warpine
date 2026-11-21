@@ -1,6 +1,6 @@
 # ADR-0114: Page states of allocated memory, held by the page tables
 
-- **Status:** Accepted (phase 1: the memory calls and guard pages; phase 2: sparse thread stacks; phase 3: read-only objects)
+- **Status:** Accepted (phase 1: the memory calls and guard pages; phase 2: sparse thread stacks; phase 3: read-only objects; phase 4: free memory not present)
 - **Date:** 2026-11-22
 - **Sources:**
   - IBM's *Control Program Programming Reference*: `DosAllocMem`, `DosSetMem`, `DosQueryMem`, `DosFreeMem`, `DosCreateThread` (`STACK_SPARSE`, `STACK_COMMITTED`), and the exceptions `XCPT_GUARD_PAGE_VIOLATION`, `XCPT_ACCESS_VIOLATION`, `XCPT_UNABLE_TO_GROW_STACK`.
@@ -58,10 +58,15 @@ ADR-0088 made 32-bit threads run paged, and ADR-0113 made them run at ring 3 wit
    - Once a module's fixups are in, the pages of its objects without the LX write flag (`OBJWRITE`, 0x0002) become read-only: the program's own objects, its resource objects, and every DLL's. A page such an object shares with a writable object stays writable. Writing them raises `XCPT_ACCESS_VIOLATION`, at ring 0 too (CR0.WP).
    - A DLL's objects are made writable again before their memory is freed (`free_module_objects`, from `DosFreeModule`, the unload `_DLL_InitTerm`'s return and `WinDeleteLibrary`), so the allocator never hands out a read-only page.
    - The process tables are written before the first entry is changed (`apply_page_changes`), since a program's objects are protected before its first thread exists.
+9. **Phase 4: free memory is not present** (`sync_allocations`).
+   - The allocator's region starts not present. `MemoryManager` records every allocation and free (`take_pending`, with a flag the vCPU loops read without its lock). Before a vCPU runs guest code, the pending changes go into the process tables: an allocated block present and writable, a freed one not present. Pages of `DosAllocMem` regions keep their own states, and a region's pages are not present once it is freed.
+   - A page fault on a page that is allocated, and present once the pending changes are in (another thread allocated it just now), runs the instruction again (`allocated_and_present`, only for a not-present fault).
+   - A free flushes only the freeing thread's TLB (`take_freed_here`), not the other vCPUs': Warpine frees often (a callback's scratch memory), and kicking every vCPU each time would cost more than a stale entry, which only lets another thread reach memory just freed.
+   - A retried fault rewrites the page's entry from its state, so an entry that disagrees with its state cannot make a fault repeat for ever.
 
 ## Warpine's choices (unverified)
 
-- **Untracked memory stays reachable:** reading free memory, or a block `DosFreeMem` gave back, does not fault, as on OS/2 it would.
+- **Free memory faults (phase 4),** but another thread may still reach memory just freed through its TLB, until its next flush.
 - **The error codes** for committing committed pages, decommitting reserved ones, or changing uncommitted ones (`ERROR_ACCESS_DENIED`), and `PAG_GUARD` without `PAG_COMMIT` (`ERROR_INVALID_PARAMETER`).
 - **`PAG_GUARD` accepted by `DosSetMem`,** although `fSET` does not include it.
 - **A guard violation no handler takes goes on** with the guard gone.
@@ -81,8 +86,10 @@ ADR-0088 made 32-bit threads run paged, and ADR-0113 made them run at ring 3 wit
   - Unit tests: `vmem.rs` (allocation, `DosSetMem` and its errors, `DosQueryMem`, faults) and `paging.rs` (the process tables).
 - **Phase 2:** `samples/stack_grow_test` (11 checks at ring 3, 6 at ring 0; Open Watcom, GCC and clang): a sparse stack's reserved bottom, growth by recursion and by a frame of four pages, `STACK_COMMITTED`, and `XCPT_UNABLE_TO_GROW_STACK` left by `longjmp`. Unit test: `a_sparse_stack_grows_down_and_runs_out_once`. Before, a thread that overflowed its stack wrote over the memory below it without a fault.
 - **Phase 3:** `mem_protect_test` checks that the program's code can be read but not written (35 checks); unit test `read_only_objects_lose_only_their_own_pages`. The suite passes at both rings and with GCC-built samples, so none of them writes its own code.
+- **Phase 4:** `mem_protect_test` checks that memory freed with `DosFreeMem`, and memory never allocated, cannot be read (38 checks); the suite passes at both rings and with GCC-built samples, so neither the samples nor Warpine itself touches the allocator's memory without allocating it.
 - **Found on the way:**
   - Phase 3's first run left the program's code writable: its objects were protected before the process tables were first written, which then made every page writable again. `apply_page_changes` now writes the tables first.
+  - Phase 4's first version kept phase 1's assumption that an allocator page is present unless a region says otherwise: a sparse stack's top page was never made present, and the thread faulted on it for ever (the retry is self-healing since). Every region now writes all its pages' entries.
   - A DLL object was given its virtual size (at least a page), while all its pages were loaded; an object smaller than its pages had file data written past its block. It now gets its pages' size (`load_dll_impl`).
   - A `DosAllocMem` that restricted pages a freed block had left in a TLB did not fault until `flush_tlbs` was also called there.
   - The `warpine-os2` crate's `set_mem` documentation gave wrong flag values; corrected.

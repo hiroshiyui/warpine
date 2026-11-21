@@ -1851,6 +1851,9 @@ pub const XCPT_UNKNOWN_ACCESS: u32 = 0x0000_0000;
 pub const XCPT_READ_ACCESS:    u32 = 0x0000_0001;
 pub const XCPT_WRITE_ACCESS:   u32 = 0x0000_0002;
 /// The page-fault error code's write bit (Intel SDM vol. 3, 4.7).
+/// A page fault's error code: the page was present (a protection
+/// violation), not missing.
+pub const PF_ERROR_PRESENT: u32 = 1 << 0;
 pub const PF_ERROR_WRITE: u32 = 1 << 1;
 /// The page-fault exception's vector (#PF).
 pub const PAGE_FAULT_VECTOR: u32 = 14;

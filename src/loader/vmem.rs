@@ -14,10 +14,10 @@
 //!
 //! A guard page touched loses its guard and raises
 //! `XCPT_GUARD_PAGE_VIOLATION` (continuable); a reserved or read-only page
-//! touched the wrong way raises `XCPT_ACCESS_VIOLATION`. Only memory a
-//! program allocates with `DosAllocMem` is tracked: Warpine's own
-//! allocations, shared memory and free pages stay present and writable,
-//! as before.
+//! touched the wrong way raises `XCPT_ACCESS_VIOLATION`. Memory a program
+//! allocates with `DosAllocMem` has these states; the allocator's other
+//! blocks (Warpine's own allocations) are present and writable while
+//! allocated, and free pages are not present (`sync_allocations`).
 //!
 //! When a page loses access, other vCPUs may still hold the old entry in
 //! their TLB: [`super::Loader::flush_tlbs`] counts an epoch up and kicks
@@ -158,23 +158,19 @@ impl PageMap {
     }
 
     /// Record an allocation of `size` bytes (whole pages) at `base` with
-    /// `DosAllocMem`'s `flag`; the entries that differ from present and
-    /// writable.
+    /// `DosAllocMem`'s `flag`; every page's entry.
     pub fn allocate(&mut self, base: u32, size: u32, flag: u32) -> Vec<Change> {
         let count = size.div_ceil(PAGE_SIZE) as usize;
         let state = flag & STATE_BITS;
         self.regions.insert(base, Region { pages: vec![state; count], default: flag & FPERM, stack: false, exhausted: false });
         let access = access_of(state);
-        if access == PageAccess::ReadWrite {
-            return Vec::new();
-        }
         (0..count as u32).map(|i| (base + i * PAGE_SIZE, access)).collect()
     }
 
     /// Record a thread's sparse stack of `size` bytes at `base` (ADR-0114,
     /// `STACK_SPARSE`): its top page committed, a guard page below it, the
     /// rest reserved. A stack of fewer than [`MIN_SPARSE_STACK_PAGES`]
-    /// pages is not recorded (committed whole). The entries that change.
+    /// pages is not recorded (committed whole). Every page's entry.
     pub fn allocate_stack(&mut self, base: u32, size: u32) -> Vec<Change> {
         let count = (size / PAGE_SIZE) as usize;
         if count < MIN_SPARSE_STACK_PAGES as usize {
@@ -185,16 +181,17 @@ impl PageMap {
         pages[count - 1] = PAG_COMMIT | rw;
         pages[count - 2] = PAG_COMMIT | rw | PAG_GUARD;
         self.regions.insert(base, Region { pages, default: rw, stack: true, exhausted: false });
-        (0..count as u32 - 1).map(|i| (base + i * PAGE_SIZE, PageAccess::None)).collect()
+        (0..count as u32).map(|i| (base + i * PAGE_SIZE, if i as usize == count - 1 { PageAccess::ReadWrite } else { PageAccess::None })).collect()
     }
 
-    /// Forget the allocation at `base`: its pages that were not present
-    /// and writable become so again. None: no allocation starts there.
+    /// Forget the allocation at `base`: its pages are not present any
+    /// more, as free memory is not (phase 4). None: no allocation starts
+    /// there.
     pub fn free(&mut self, base: u32) -> Option<Vec<Change>> {
         let region = self.regions.remove(&base)?;
         Some(region.pages.iter().enumerate()
-            .filter(|&(_, &s)| access_of(s) != PageAccess::ReadWrite)
-            .map(|(i, _)| (base + i as u32 * PAGE_SIZE, PageAccess::ReadWrite))
+            .filter(|&(_, &s)| access_of(s) != PageAccess::None)
+            .map(|(i, _)| (base + i as u32 * PAGE_SIZE, PageAccess::None))
             .collect())
     }
 
@@ -235,8 +232,10 @@ impl PageMap {
             PageAccess::Read => !write,
             PageAccess::None => false,
         };
+        // The entry is rewritten from the state: a stale TLB entry, or an
+        // entry that disagrees with the state, cannot fault for ever.
         if allows {
-            return Some((FaultKind::Retry, Vec::new()));
+            return Some((FaultKind::Retry, vec![(page, access_of(state))]));
         }
         if region.stack {
             return Some(grow_stack(base, region, i));
@@ -334,11 +333,66 @@ impl super::Loader {
             return;
         }
         self.ensure_process_tables();
+        // The allocator's changes first, so that these come after them.
+        self.apply_pending_allocations();
         for &(addr, access) in changes {
             if let Some(at) = process_pte_at(addr) {
                 self.guest_write::<u32>(at, process_pte(addr, access));
             }
         }
+    }
+
+    /// Bring the allocator's pages into the process tables: allocated
+    /// pages present and writable, freed pages not present (ADR-0114,
+    /// phase 4). Pages of `DosAllocMem` regions keep their own states.
+    /// A process without page tables (a 16-bit program at ring 0) only
+    /// drops the record.
+    pub(crate) fn sync_allocations(&self) {
+        if !self.shared.alloc_pending.load(Ordering::Acquire) {
+            return;
+        }
+        if !self.shared.process_tables_ready.load(Ordering::Acquire) {
+            self.shared.mem_mgr.lock_or_recover().take_pending();
+            return;
+        }
+        self.apply_pending_allocations();
+    }
+
+    /// The allocator's pending changes into the process tables. Frees do
+    /// not flush other vCPUs' TLBs (Warpine frees often, a callback's
+    /// scratch memory): a stale entry only lets another thread reach
+    /// memory just freed; the freeing thread flushes its own
+    /// (`managers::take_freed_here`).
+    fn apply_pending_allocations(&self) {
+        let pending = self.shared.mem_mgr.lock_or_recover().take_pending();
+        if pending.is_empty() {
+            return;
+        }
+        let writes: Vec<(u32, u32)> = {
+            let vmem = self.shared.vmem.lock_or_recover();
+            pending.iter()
+                .flat_map(|&(addr, size, allocated)| (0..size / PAGE_SIZE).map(move |i| (addr + i * PAGE_SIZE, allocated)))
+                .filter(|&(page, _)| !vmem.contains(page))
+                .filter_map(|(page, allocated)| {
+                    let access = if allocated { PageAccess::ReadWrite } else { PageAccess::None };
+                    process_pte_at(page).map(|at| (at, process_pte(page, access)))
+                })
+                .collect()
+        };
+        for (at, entry) in writes {
+            self.guest_write::<u32>(at, entry);
+        }
+    }
+
+    /// Whether `addr` is an allocated page whose process-table entry is
+    /// present now (a fault there came before this vCPU saw the
+    /// allocation: run the instruction again).
+    pub(crate) fn allocated_and_present(&self, addr: u32) -> bool {
+        self.sync_allocations();
+        let allocated = self.shared.mem_mgr.lock_or_recover().contains(addr);
+        allocated && process_pte_at(addr)
+            .and_then(|at| self.guest_read::<u32>(at))
+            .is_some_and(|e| e & 1 != 0)
     }
 
     /// Make every vCPU drop the TLB entries of pages that lost access:
@@ -366,9 +420,8 @@ impl super::Loader {
         let size = cb.div_ceil(PAGE_SIZE) * PAGE_SIZE;
         let changes = self.shared.vmem.lock_or_recover().allocate(addr, size, flag);
         self.apply_page_changes(&changes);
-        // The pages were present and writable (free, or a block freed
-        // before): a TLB may still hold them so.
-        if !changes.is_empty() {
+        // A page of a block freed before may still be in a TLB, writable.
+        if changes.iter().any(|c| c.1 != PageAccess::ReadWrite) {
             self.flush_tlbs();
         }
         debug!("  -> allocated at 0x{addr:08X}");
@@ -407,9 +460,9 @@ impl super::Loader {
         let size = size.div_ceil(PAGE_SIZE) * PAGE_SIZE;
         let changes = self.shared.vmem.lock_or_recover().allocate_stack(base, size);
         self.apply_page_changes(&changes);
-        // The pages were present and writable before (a stack of an ended
-        // thread, say): a TLB may still hold them so.
-        if !changes.is_empty() {
+        // The pages may have been present and writable before (a stack of
+        // an ended thread, say): a TLB may still hold them so.
+        if changes.iter().any(|c| c.1 != PageAccess::ReadWrite) {
             self.flush_tlbs();
         }
     }
@@ -490,9 +543,9 @@ mod tests {
     const RW: u32 = PAG_COMMIT | PAG_READ | PAG_WRITE;
 
     #[test]
-    fn a_committed_writable_allocation_changes_no_entry() {
+    fn a_committed_writable_allocation_is_present_and_writable() {
         let mut map = PageMap::default();
-        assert!(map.allocate(BASE, 3 * PAGE_SIZE, RW).is_empty());
+        assert_eq!(map.allocate(BASE, 3 * PAGE_SIZE, RW).len(), 3, "every page's entry, present and writable");
         assert!(map.contains(BASE + 2 * PAGE_SIZE + 5));
         assert!(!map.contains(BASE + 3 * PAGE_SIZE));
         assert_eq!(map.query(BASE, 0x10000), Some((3 * PAGE_SIZE, RW | PAG_BASE)));
@@ -509,7 +562,8 @@ mod tests {
         assert_eq!(read, vec![(BASE + 0x10000, PageAccess::Read)]);
         let guard = map.allocate(BASE + 0x20000, PAGE_SIZE, RW | PAG_GUARD);
         assert_eq!(guard, vec![(BASE + 0x20000, PageAccess::None)]);
-        assert_eq!(map.free(BASE).unwrap().len(), 2, "both back to present and writable");
+        assert!(map.free(BASE).unwrap().is_empty(), "reserved pages: not present already");
+        assert_eq!(map.free(BASE + 0x10000).unwrap(), vec![(BASE + 0x10000, PageAccess::None)], "freed: not present");
         assert_eq!(map.free(BASE), None);
         assert!(!map.contains(BASE));
     }
@@ -572,7 +626,9 @@ mod tests {
         assert!(map.allocate_stack(BASE, 3 * PAGE_SIZE).is_empty(), "too small: committed whole");
         assert!(!map.contains(BASE));
         let changes = map.allocate_stack(BASE, 8 * PAGE_SIZE);
-        assert_eq!(changes.len(), 7, "all but the top page not present");
+        assert_eq!(changes.len(), 8);
+        assert_eq!(changes[7], (BASE + 7 * PAGE_SIZE, PageAccess::ReadWrite), "the top page present");
+        assert!(changes[..7].iter().all(|c| c.1 == PageAccess::None), "the rest not present");
         let rw = PAG_READ | PAG_WRITE;
         assert_eq!(map.query(BASE + 7 * PAGE_SIZE, PAGE_SIZE), Some((PAGE_SIZE, rw | PAG_COMMIT)));
         assert_eq!(map.query(BASE + 6 * PAGE_SIZE, PAGE_SIZE), Some((PAGE_SIZE, rw | PAG_COMMIT | PAG_GUARD)));
@@ -588,7 +644,7 @@ mod tests {
         assert_eq!(map.fault(BASE + PAGE_SIZE, false).unwrap().0, FaultKind::StackExhausted, "the bottom pages");
         assert_eq!(map.fault(BASE, false).unwrap().0, FaultKind::Retry, "once");
         assert_eq!(map.query(BASE, 0x10000), Some((8 * PAGE_SIZE, rw | PAG_COMMIT | PAG_BASE)), "all committed now");
-        assert!(map.free(BASE).unwrap().is_empty(), "nothing left to restore");
+        assert_eq!(map.free(BASE).unwrap().len(), 8, "every page not present again");
     }
 
     #[test]
@@ -597,10 +653,10 @@ mod tests {
         map.allocate(BASE, 3 * PAGE_SIZE, PAG_READ | PAG_WRITE);
         map.set(BASE, PAGE_SIZE, PAG_COMMIT | PAG_READ).unwrap().unwrap();
         map.set(BASE + PAGE_SIZE, PAGE_SIZE, RW | PAG_GUARD).unwrap().unwrap();
-        assert_eq!(map.fault(BASE + 8, false), Some((FaultKind::Retry, vec![])), "reading a readable page: a stale TLB");
+        assert_eq!(map.fault(BASE + 8, false), Some((FaultKind::Retry, vec![(BASE, PageAccess::Read)])), "reading a readable page: a stale TLB");
         assert_eq!(map.fault(BASE + 8, true), Some((FaultKind::Violation, vec![])), "writing a read-only page");
         assert_eq!(map.fault(BASE + PAGE_SIZE, true), Some((FaultKind::Guard, vec![(BASE + PAGE_SIZE, PageAccess::ReadWrite)])));
-        assert_eq!(map.fault(BASE + PAGE_SIZE, true), Some((FaultKind::Retry, vec![])), "the guard is gone");
+        assert_eq!(map.fault(BASE + PAGE_SIZE, true), Some((FaultKind::Retry, vec![(BASE + PAGE_SIZE, PageAccess::ReadWrite)])), "the guard is gone");
         assert_eq!(map.fault(BASE + 2 * PAGE_SIZE, false), Some((FaultKind::Violation, vec![])), "reserved");
         assert_eq!(map.fault(BASE + 3 * PAGE_SIZE, false), None, "untracked");
     }

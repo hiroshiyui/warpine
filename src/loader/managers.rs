@@ -4,6 +4,18 @@ use std::collections::HashMap;
 use std::fs::{File, ReadDir};
 use std::sync::Arc;
 
+thread_local! {
+    /// Set when this host thread freed a block: its vCPU flushes its own
+    /// TLB before it runs guest code again, so that the thread cannot use
+    /// memory it freed (ADR-0114).
+    static FREED_HERE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this host thread freed a block since the last call.
+pub fn take_freed_here() -> bool {
+    FREED_HERE.with(|f| f.replace(false))
+}
+
 #[derive(Debug, Clone, Copy)]
 struct AllocBlock {
     addr: u32,
@@ -19,6 +31,12 @@ pub struct MemoryManager {
     /// an earlier allocation left (`next_free` drops when the top block is
     /// freed).
     high_water: u32,
+    /// Allocations and frees not in the page tables yet (ADR-0114):
+    /// `(address, bytes, allocated)`, in order.
+    pending: Vec<(u32, u32, bool)>,
+    /// Set while `pending` holds something; the vCPU loops look at it
+    /// without the lock.
+    pending_flag: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl MemoryManager {
@@ -29,7 +47,30 @@ impl MemoryManager {
             next_free: base,
             limit,
             high_water: base,
+            pending: Vec::new(),
+            pending_flag: Arc::default(),
         }
+    }
+
+    /// The flag set while allocations or frees wait for the page tables.
+    pub fn pending_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        Arc::clone(&self.pending_flag)
+    }
+
+    /// The allocations and frees since the last call, in order.
+    pub fn take_pending(&mut self) -> Vec<(u32, u32, bool)> {
+        self.pending_flag.store(false, std::sync::atomic::Ordering::Release);
+        std::mem::take(&mut self.pending)
+    }
+
+    fn note(&mut self, addr: u32, size: u32, allocated: bool) {
+        self.pending.push((addr, size, allocated));
+        self.pending_flag.store(true, std::sync::atomic::Ordering::Release);
+    }
+
+    /// Whether `addr` lies in an allocated block.
+    pub fn contains(&self, addr: u32) -> bool {
+        self.allocated.iter().any(|b| addr >= b.addr && u64::from(addr) < u64::from(b.addr) + u64::from(b._size))
     }
 
     pub fn alloc(&mut self, size: u32) -> Option<u32> {
@@ -50,6 +91,7 @@ impl MemoryManager {
                 self.free_list.push(AllocBlock { addr: addr + size, _size: block._size - size });
             }
             self.allocated.push(AllocBlock { addr, _size: size });
+            self.note(addr, size, true);
             return Some((addr, size));
         }
         // Otherwise bump-allocate
@@ -59,6 +101,7 @@ impl MemoryManager {
         }
         let addr = self.next_free;
         self.allocated.push(AllocBlock { addr, _size: size });
+        self.note(addr, size, true);
         self.next_free = end;
         let stale = self.high_water.saturating_sub(addr).min(size);
         self.high_water = self.high_water.max(end);
@@ -79,6 +122,8 @@ impl MemoryManager {
         if let Some(idx) = self.allocated.iter().position(|b| b.addr == addr) {
             let block = self.allocated.remove(idx);
             let size = block._size;
+            self.note(block.addr, size, false);
+            FREED_HERE.with(|f| f.set(true));
             self.free_list.push(block);
             // Coalesce: if the top free block is at next_free boundary, reclaim it
             self.free_list.sort_by_key(|b| b.addr);

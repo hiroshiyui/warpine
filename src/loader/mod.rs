@@ -468,6 +468,9 @@ pub struct SharedState {
     /// Counted up when pages lose access: every vCPU flushes its TLB once
     /// it sees a new value (`vmem.rs`).
     pub tlb_epoch: std::sync::atomic::AtomicU64,
+    /// Set while allocations or frees wait for the page tables
+    /// (`MemoryManager::pending_flag`, `vmem.rs`).
+    pub alloc_pending: Arc<AtomicBool>,
     /// The read ends of children's exit reports, by host pid (`exit_report.rs`).
     pub exit_reports: Mutex<std::collections::HashMap<u32, std::fs::File>>,
     /// `DosAsyncTimer` / `DosStartTimer` timers (`dostimer.rs`).
@@ -545,6 +548,7 @@ impl Loader {
 
         // Private allocations end where the shared arena begins.
         let mem_mgr = MemoryManager::new(DYNAMIC_ALLOC_BASE, SHARED_ARENA_BASE);
+        let alloc_pending = mem_mgr.pending_flag();
         let handle_mgr = HandleManager::new();
         let resource_mgr = ResourceManager::new();
         let shmem_mgr = SharedMemManager::new();
@@ -615,6 +619,7 @@ impl Loader {
             process_tables_ready: AtomicBool::new(false),
             vmem: Default::default(),
             tlb_epoch: Default::default(),
+            alloc_pending,
             exit_reports: Default::default(),
             dos_timers: Default::default(),
             suballoc: Default::default(),
@@ -695,8 +700,10 @@ impl Loader {
         let guest_mem_size = 64 * 1024 * 1024; // 64 MB (must cover DYNAMIC_ALLOC_BASE = 0x02000000)
         let guest_mem = GuestMemory::alloc(guest_mem_size);
         vm.register_guest_memory(0, guest_mem_size as u64, guest_mem.host_base_addr()).unwrap();
+        let mem_mgr = MemoryManager::new(DYNAMIC_ALLOC_BASE, DYNAMIC_ALLOC_BASE + guest_mem_size as u32);
+        let alloc_pending = mem_mgr.pending_flag();
         let shared = Arc::new(SharedState {
-            mem_mgr:      Mutex::new(MemoryManager::new(DYNAMIC_ALLOC_BASE, DYNAMIC_ALLOC_BASE + guest_mem_size as u32)),
+            mem_mgr:      Mutex::new(mem_mgr),
             handle_mgr:   Mutex::new(HandleManager::new()),
             resource_mgr: Mutex::new(ResourceManager::new()),
             shmem_mgr:    Mutex::new(SharedMemManager::new()),
@@ -733,6 +740,7 @@ impl Loader {
             process_tables_ready: AtomicBool::new(false),
             vmem: Default::default(),
             tlb_epoch: Default::default(),
+            alloc_pending,
             exit_reports: Default::default(),
             dos_timers:   Default::default(),
             suballoc:     Default::default(),
