@@ -28,6 +28,11 @@ pub fn module_name_of(name: &str) -> String {
 
 /// Largest import procedure name table read (a bound on hostile files).
 const MAX_IMPORT_PROC_TABLE: u64 = 1 << 20;
+/// Sizes of the LX tables' entries on disk (the LX format): an object
+/// table entry, an object page map entry, a resource table entry.
+const OBJECT_TABLE_ENTRY_SIZE: u64 = 24;
+const PAGE_MAP_ENTRY_SIZE: u64 = 8;
+const RESOURCE_ENTRY_SIZE: u64 = 14;
 
 #[derive(Debug)]
 pub struct LxFile {
@@ -70,6 +75,14 @@ impl LxFile {
             mz_header[0x3F],
         ]) as u64;
 
+        // The file's length bounds every table a header count sizes: the
+        // capacity reserved for a count is at most the entries the file
+        // could hold, so a hostile header cannot ask for gigabytes.
+        let file_len = reader.seek(SeekFrom::End(0))?;
+        let capacity = |count: u32, entry_size: u64| -> usize {
+            (u64::from(count)).min(file_len / entry_size.max(1)) as usize
+        };
+
         // 3. Read LX Header
         let header = LxHeader::read(&mut reader, lx_offset)?;
 
@@ -101,7 +114,7 @@ impl LxFile {
         let object_table_start = lx_offset + header.object_table_offset as u64;
         reader.seek(SeekFrom::Start(object_table_start))?;
 
-        let mut object_table = Vec::with_capacity(header.object_count as usize);
+        let mut object_table = Vec::with_capacity(capacity(header.object_count, OBJECT_TABLE_ENTRY_SIZE));
         for _ in 0..header.object_count {
             object_table.push(ObjectTableEntry::read(&mut reader)?);
         }
@@ -110,7 +123,7 @@ impl LxFile {
         let page_map_start = lx_offset + header.object_page_map_offset as u64;
         reader.seek(SeekFrom::Start(page_map_start))?;
 
-        let mut page_map = Vec::with_capacity(header.module_num_pages as usize);
+        let mut page_map = Vec::with_capacity(capacity(header.module_num_pages, PAGE_MAP_ENTRY_SIZE));
         for _ in 0..header.module_num_pages {
             page_map.push(ObjectPageMapEntry::read(&mut reader)?);
         }
@@ -121,7 +134,7 @@ impl LxFile {
             return Err(io::Error::new(io::ErrorKind::InvalidData,
                 format!("Resource count {} exceeds maximum {}", header.resource_count, MAX_RESOURCES)));
         }
-        let mut resources = Vec::with_capacity(header.resource_count as usize);
+        let mut resources = Vec::with_capacity(capacity(header.resource_count, RESOURCE_ENTRY_SIZE));
         if header.resource_count > 0 && header.resource_table_offset > 0 {
             let resource_table_start = lx_offset + header.resource_table_offset as u64;
             reader.seek(SeekFrom::Start(resource_table_start))?;
@@ -135,7 +148,7 @@ impl LxFile {
         reader.seek(SeekFrom::Start(fixup_page_table_start))?;
         
         let num_fixup_pages = header.module_num_pages + 1;
-        let mut fixup_page_table = Vec::with_capacity(num_fixup_pages as usize);
+        let mut fixup_page_table = Vec::with_capacity(capacity(num_fixup_pages, 4));
         let mut buf4 = [0u8; 4];
         for _ in 0..num_fixup_pages {
             reader.read_exact(&mut buf4)?;
@@ -144,7 +157,7 @@ impl LxFile {
 
         // 7. Read Fixup Records by Page
         let fixup_record_table_start = lx_offset + header.fixup_record_table_offset as u64;
-        let mut fixup_records_by_page = Vec::with_capacity(header.module_num_pages as usize);
+        let mut fixup_records_by_page = Vec::with_capacity(capacity(header.module_num_pages, 4));
         
         for i in 0..header.module_num_pages as usize {
             let start_offset = fixup_page_table[i] as u64;
@@ -164,7 +177,8 @@ impl LxFile {
         let import_module_table_start = lx_offset + header.imported_modules_name_table_offset as u64;
         reader.seek(SeekFrom::Start(import_module_table_start))?;
         
-        let mut imported_modules = Vec::with_capacity(header.imported_modules_count as usize);
+        // Each name takes at least its length byte.
+        let mut imported_modules = Vec::with_capacity(capacity(header.imported_modules_count, 1));
         for _ in 0..header.imported_modules_count {
             let mut len_buf = [0u8; 1];
             reader.read_exact(&mut len_buf)?;
@@ -402,6 +416,21 @@ mod tests {
         let res = LxFile::parse(cursor);
         assert!(res.is_err());
         assert!(res.unwrap_err().to_string().contains("Page count"));
+    }
+
+    /// Found by fuzzing (fuzz/, lx_parse): a header claiming four billion
+    /// imported modules made the parser reserve about 100 GB. Capacities
+    /// are bounded by what the file could hold; the parse then fails at the
+    /// end of the file.
+    #[test]
+    fn a_huge_import_count_reserves_nothing_beyond_the_file() {
+        let mut data = vec![0u8; 1024];
+        data[0] = b'M'; data[1] = b'Z';
+        data[0x3C] = 0x80;
+        data[0x80] = b'L'; data[0x81] = b'X';
+        data[0x80 + 0x74..0x80 + 0x78].copy_from_slice(&u32::MAX.to_le_bytes());
+        let res = LxFile::parse(Cursor::new(data));
+        assert_eq!(res.unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
     }
 
     #[test]

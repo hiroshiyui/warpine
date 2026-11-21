@@ -250,13 +250,15 @@ pub struct NeEntry {
     pub offset: u16,
 }
 
-/// Parse the entry table from raw bytes.
+/// Parse the entry table from raw bytes. A table cut short, or one whose
+/// ordinals would pass 65535, ends where it stops making sense (found by
+/// fuzzing: both panicked).
 pub fn parse_entry_table(data: &[u8]) -> Vec<NeEntry> {
     let mut entries = Vec::new();
     let mut pos = 0;
     let mut ordinal: u16 = 1;
 
-    while pos < data.len() {
+    while pos + 2 <= data.len() {
         let count = data[pos];
         if count == 0 { break; }
         let indicator = data[pos + 1];
@@ -264,7 +266,10 @@ pub fn parse_entry_table(data: &[u8]) -> Vec<NeEntry> {
 
         if indicator == ENTRY_UNUSED {
             // Skip `count` ordinals
-            ordinal += count as u16;
+            match ordinal.checked_add(count as u16) {
+                Some(next) => ordinal = next,
+                None => break,
+            }
             continue;
         }
 
@@ -286,7 +291,10 @@ pub fn parse_entry_table(data: &[u8]) -> Vec<NeEntry> {
                 entries.push(NeEntry { ordinal, flags, segment_num: indicator, offset });
                 pos += 3;
             }
-            ordinal += 1;
+            match ordinal.checked_add(1) {
+                Some(next) => ordinal = next,
+                None => return entries,
+            }
         }
     }
     entries
@@ -454,6 +462,26 @@ mod tests {
             }
             _ => panic!("Expected ImportName"),
         }
+    }
+
+    /// Found by fuzzing (fuzz/, ne_parse): a bundle header cut after its
+    /// count, and ordinals running past 65535, panicked.
+    #[test]
+    fn a_short_or_overlong_entry_table_ends_without_panicking() {
+        assert!(parse_entry_table(&[5]).is_empty(), "a count with no indicator");
+        // 255 unused ordinals, 257 times over, then a fixed entry: past 65535.
+        let mut data = Vec::new();
+        for _ in 0..257 { data.extend_from_slice(&[255, ENTRY_UNUSED]); }
+        data.extend_from_slice(&[1, 1, 0, 0x34, 0x12, 0]);
+        assert!(parse_entry_table(&data).is_empty());
+        // Fixed entries up to ordinal 65535 and one more.
+        let mut data = Vec::new();
+        for _ in 0..257 {
+            data.extend_from_slice(&[255, 1]);
+            for _ in 0..255 { data.extend_from_slice(&[0, 0, 0]); }
+        }
+        data.push(0);
+        assert_eq!(parse_entry_table(&data).len(), 65535, "ordinals 1 to 65535, then it stops");
     }
 
     #[test]

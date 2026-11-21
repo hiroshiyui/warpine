@@ -36,6 +36,10 @@ pub struct NeFile {
     ne_offset: u64,
 }
 
+/// Segment offsets are 16-bit sector numbers shifted left by the header's
+/// alignment shift count; a count from this on is refused.
+const MAX_ALIGNMENT_SHIFT: u16 = 32;
+
 impl NeFile {
     pub fn open<P: AsRef<Path>>(path: P) -> io::Result<Self> {
         let file = File::open(path)?;
@@ -68,6 +72,12 @@ impl NeFile {
         }
 
         let shift = header.alignment_shift_count;
+        // Segment offsets are shifted by it: a count past the 32 bits of a
+        // file offset is no NE file (real ones use 4 to 9). Found by fuzzing.
+        if shift >= MAX_ALIGNMENT_SHIFT {
+            return Err(io::Error::new(io::ErrorKind::InvalidData,
+                format!("Invalid alignment shift count: {shift}")));
+        }
         debug!("NE header: {} segments, {} module refs, target_os={}, shift={}",
                header.segment_count, header.module_ref_count, header.target_os, shift);
         debug!("  Entry: CS:IP = {}:{:04X}, SS:SP = {}:{:04X}",
@@ -253,6 +263,20 @@ mod tests {
         assert_eq!(ne.header.segment_count, 0);
         assert_eq!(ne.header.target_os, NE_OS_OS2);
         assert_eq!(ne.segment_table.len(), 0);
+    }
+
+    /// Found by fuzzing (fuzz/, ne_parse): an alignment shift count of 64
+    /// or more overflowed the segment offset's shift and panicked.
+    #[test]
+    fn an_impossible_alignment_shift_is_refused() {
+        let mut data = vec![0u8; 256];
+        data[0] = b'M'; data[1] = b'Z';
+        data[60] = 128;
+        data[128] = b'N'; data[129] = b'E';
+        data[128 + 50] = 64;
+        data[128 + 54] = NE_OS_OS2;
+        let err = NeFile::parse(Cursor::new(&data)).unwrap_err();
+        assert!(err.to_string().contains("alignment shift"), "{err}");
     }
 
     #[test]
