@@ -284,6 +284,8 @@ impl super::Loader {
         let paged = vcpu.get_sregs().ok().filter(|s| s.cr0 & super::paging::CR0_PG != 0);
         super::guest_mem::set_thread_tlm_backing(paged.and_then(|s| super::paging::tlm_page_of(s.cr3)).unwrap_or(0));
         super::guest_mem::set_thread_tib(tib_base as u32);
+        // Its stacking changes go in the Report after each call (ADR-0108).
+        super::pm_types::set_api_thread(true);
         let end = self.vcpu_loop(&mut *vcpu, vcpu_id, initial_esp, false);
         self.end_thread(vcpu, vcpu_id, end, initial_esp);
     }

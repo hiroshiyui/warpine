@@ -495,8 +495,8 @@ impl Server {
                 // About the session: answered here (calls.rs).
                 let reply = match call {
                     // The caller's active frame changed (ADR-0108).
-                    WinCall::Report(active) => {
-                        let fx = self.model.reported(slot, active, owns);
+                    WinCall::Report { active, ref raised, ref lowered } => {
+                        let fx = self.model.reported(slot, active, raised, lowered, owns);
                         self.apply(fx);
                         WinReply::Value(self.model.active().map_or(0, |(_, f)| f))
                     }

@@ -66,6 +66,9 @@ pub struct DesktopModel {
     active: Option<(ClientId, u32)>,
     /// Each client's newest report of its active frame.
     reported: HashMap<ClientId, Activation>,
+    /// Frames a client raised in a `Report` before any update showed them
+    /// (ADR-0108): they hold their place in the stack until they are drawn.
+    announced: std::collections::HashSet<(ClientId, u32)>,
     /// Client holding the pointer: buttons held, or a capture.
     held_by: Option<ClientId>,
     buttons: u32,
@@ -124,8 +127,11 @@ impl DesktopModel {
         for it in &items {
             if !order.contains(&it.frame) { order.push(it.frame); }
         }
-        // Frames gone; new frames on top.
-        self.stack.retain(|s| s.client != c || order.contains(&s.frame));
+        // Frames gone; new frames on top. A frame a report announced keeps
+        // the place it took then, drawn or not yet.
+        for &f in &order { self.announced.remove(&(c, f)); }
+        let announced = &self.announced;
+        self.stack.retain(|s| s.client != c || order.contains(&s.frame) || announced.contains(&(c, s.frame)));
         for &f in &order {
             if !self.stack.iter().any(|s| s.client == c && s.frame == f) {
                 self.stack.push(Stacked { client: c, frame: f });
@@ -147,7 +153,8 @@ impl DesktopModel {
             }
         }
         // The client's frames keep its order, in the slots they hold.
-        let slots: Vec<usize> = self.stack.iter().enumerate().filter(|(_, s)| s.client == c).map(|(i, _)| i).collect();
+        let slots: Vec<usize> = self.stack.iter().enumerate()
+            .filter(|(_, s)| s.client == c && order.contains(&s.frame)).map(|(i, _)| i).collect();
         for (slot, &f) in slots.iter().zip(order.iter()) {
             self.stack[*slot] = Stacked { client: c, frame: f };
         }
@@ -173,9 +180,28 @@ impl DesktopModel {
         self.report_active(c, active, &owns)
     }
 
-    /// Client `c` reported its active frame (`Report`, ADR-0108).
-    pub fn reported(&mut self, c: ClientId, active: Activation, owns: impl Fn(u32) -> bool) -> Effects {
+    /// Client `c` reported its active frame and the frames an API call
+    /// raised or lowered (`Report`, ADR-0108): in that order, before what
+    /// the client does next. A raised frame no update has shown yet takes
+    /// its place now, so that its first update does not put it on top.
+    pub fn reported(&mut self, c: ClientId, active: Activation, raised: &[u32], lowered: &[u32],
+                    owns: impl Fn(u32) -> bool) -> Effects {
         let before = self.drawn();
+        for &f in raised.iter().filter(|&&f| owns(f)) {
+            match self.stack.iter().position(|s| s.client == c && s.frame == f) {
+                Some(i) => { let s = self.stack.remove(i); self.stack.push(s); }
+                None => {
+                    self.stack.push(Stacked { client: c, frame: f });
+                    self.announced.insert((c, f));
+                }
+            }
+        }
+        for &f in lowered.iter().filter(|&&f| owns(f)) {
+            if let Some(i) = self.stack.iter().position(|s| s.client == c && s.frame == f) {
+                let s = self.stack.remove(i);
+                self.stack.insert(0, s);
+            }
+        }
         let mut fx = self.report_active(c, active, &owns);
         fx.damage = changed_extents(&before, &self.drawn());
         fx
@@ -224,6 +250,7 @@ impl DesktopModel {
         self.stack.retain(|s| s.client != c);
         self.items.remove(&c);
         self.reported.remove(&c);
+        self.announced.retain(|&(ac, _)| ac != c);
         if self.overlay.as_ref().is_some_and(|(oc, _)| *oc == c) { self.overlay = None; }
         if self.active.is_some_and(|(ac, _)| ac == c) { self.active = None; }
         if self.held_by == Some(c) { self.held_by = None; self.buttons = 0; }
@@ -404,7 +431,7 @@ mod tests {
         m.update(1, &upd(A1, &[], vec![item(A1, 0)]), owner(1));
         assert_eq!(m.update(2, &upd(B1, &[], vec![item(B1, 200)]), owner(2)).deactivate, Some((1, A1, B1, 1)));
         assert_eq!(order(&m), vec![A1, B1]);
-        let fx = m.reported(1, act(A1, 2), owner(1));
+        let fx = m.reported(1, act(A1, 2), &[], &[], owner(1));
         assert_eq!(fx.deactivate, Some((2, B1, A1, 1)));
         assert_eq!(m.active(), Some((1, A1)));
         assert_eq!(order(&m), vec![B1, A1], "the active frame goes on top");
@@ -413,11 +440,32 @@ mod tests {
         assert_eq!(m.update(2, &upd(B1, &[], vec![item(B1, 200)]), owner(2)).deactivate, None);
         assert_eq!(m.active(), Some((1, A1)));
         // Report numbers wrap around.
-        m.reported(2, act(B1, 0x7FFF_FFFF), owner(2));
+        m.reported(2, act(B1, 0x7FFF_FFFF), &[], &[], owner(2));
         assert_eq!(m.active(), Some((2, B1)));
-        m.reported(2, act(B1, 0xFFFF_FFFE), owner(2));
-        m.reported(2, act(0, 0), owner(2));
+        m.reported(2, act(B1, 0xFFFF_FFFE), &[], &[], owner(2));
+        m.reported(2, act(0, 0), &[], &[], owner(2));
         assert_eq!(m.active(), None, "0 comes after 0xFFFF_FFFE");
+    }
+
+    /// ADR-0108: a frame raised in a report before its first update keeps
+    /// the place it took then. Client 2 shows B1 and reports it; client 1
+    /// then activates A1; client 2's first update, late, must not put B1
+    /// back on top.
+    #[test]
+    fn a_frame_announced_by_a_report_keeps_its_place_at_its_first_update() {
+        let mut m = DesktopModel::new();
+        m.update(1, &upd(A1, &[], vec![item(A1, 0)]), owner(1));
+        let fx = m.reported(2, act(B1, 1), &[B1], &[], owner(2));
+        assert_eq!(fx.deactivate, Some((1, A1, B1, 1)));
+        assert_eq!(m.stacking(), vec![B1, A1], "B1 placed (top first) before it is drawn");
+        m.reported(1, act(A1, 2), &[A1], &[], owner(1));
+        assert_eq!(m.stacking(), vec![A1, B1]);
+        m.update(2, &upd_n(act(B1, 1), &[], vec![item(B1, 200)]), owner(2));
+        assert_eq!(m.stacking(), vec![A1, B1], "the late first update leaves B1 below");
+        assert_eq!(m.active(), Some((1, A1)));
+        // Lowered by a report: to the bottom.
+        m.reported(1, act(A1, 2), &[], &[A1], owner(1));
+        assert_eq!(m.stacking(), vec![B1, A1]);
     }
 
     #[test]

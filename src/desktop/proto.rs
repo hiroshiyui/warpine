@@ -11,7 +11,7 @@
 //! server's packets the same way.
 
 /// Protocol version, checked in `Hello` / `Welcome`.
-pub const PROTOCOL_VERSION: u32 = 9;
+pub const PROTOCOL_VERSION: u32 = 10;
 /// Largest packet either side sends or accepts.
 pub const MAX_MESSAGE: usize = 128 * 1024;
 /// Most items (frame pictures and pull-downs) in one `Update`.
@@ -154,10 +154,11 @@ pub enum WinCall {
     Show { show: bool },
     /// `WinSetActiveWindow`.
     Activate,
-    /// To the server: the caller's active frame changed (ADR-0108). Made
-    /// by a program's API thread, which waits for the answer, so that the
-    /// server takes the change before anything the program does next.
-    Report(Activation),
+    /// To the server: the caller's active frame, and the frames its API
+    /// calls raised or lowered (ADR-0108). Made by a program's API thread,
+    /// which waits for the answer, so that the server takes the changes
+    /// before anything the program does next.
+    Report { active: Activation, raised: Vec<u32>, lowered: Vec<u32> },
     /// `WinSendMsg`: the window's thread runs its window procedure; the
     /// answer is the procedure's result. Waits for as long as that takes.
     Send { msg: u32, mp1: u32, mp2: u32 },
@@ -465,7 +466,9 @@ impl Writer {
             }
             WinCall::Show { show } => { self.u8(tag::CALL_SHOW); self.bool(*show); }
             WinCall::Activate => self.u8(tag::CALL_ACTIVATE),
-            WinCall::Report(a) => { self.u8(tag::CALL_REPORT); self.activation(a); }
+            WinCall::Report { active, raised, lowered } => {
+                self.u8(tag::CALL_REPORT); self.activation(active); self.handles(raised); self.handles(lowered);
+            }
             WinCall::Send { msg, mp1, mp2 } => { self.u8(tag::CALL_SEND); self.u32(*msg); self.u32(*mp1); self.u32(*mp2); }
             WinCall::SetText { text } => { self.u8(tag::CALL_SETTEXT); self.text(text); }
             WinCall::Children => self.u8(tag::CALL_CHILDREN),
@@ -620,7 +623,7 @@ impl<'a> Reader<'a> {
                                                   cx: self.coord()?, cy: self.coord()?, fl: self.u32()? },
             tag::CALL_SHOW => WinCall::Show { show: self.bool()? },
             tag::CALL_ACTIVATE => WinCall::Activate,
-            tag::CALL_REPORT => WinCall::Report(self.activation()?),
+            tag::CALL_REPORT => WinCall::Report { active: self.activation()?, raised: self.handles()?, lowered: self.handles()? },
             tag::CALL_SEND => WinCall::Send { msg: self.u32()?, mp1: self.u32()?, mp2: self.u32()? },
             tag::CALL_SETTEXT => WinCall::SetText { text: self.text()? },
             tag::CALL_CHILDREN => WinCall::Children,
@@ -1001,7 +1004,8 @@ mod tests {
             ClientMsg::Call { id: 5, hwnd: 0x20_1000, call: WinCall::SetPos { behind: 3, x: -1, y: 2, cx: 30, cy: 40,
                                                                              fl: 0x8B } },
             ClientMsg::Call { id: 6, hwnd: 0x20_1000, call: WinCall::Activate },
-            ClientMsg::Call { id: 6, hwnd: SERVER_ADDRESS, call: WinCall::Report(Activation { frame: 0x20_1000, seq: 3 }) },
+            ClientMsg::Call { id: 6, hwnd: SERVER_ADDRESS, call: WinCall::Report {
+                active: Activation { frame: 0x20_1000, seq: 3 }, raised: vec![0x20_1000], lowered: vec![0x20_1001] } },
             ClientMsg::Call { id: 6, hwnd: 0x20_1000, call: WinCall::Show { show: false } },
             ClientMsg::Call { id: 7, hwnd: 0x20_1000, call: WinCall::Send { msg: 0x1002, mp1: 4, mp2: 5 } },
             ClientMsg::Call { id: 8, hwnd: 0x20_1000, call: WinCall::SetText { text: "Größe".into() } },

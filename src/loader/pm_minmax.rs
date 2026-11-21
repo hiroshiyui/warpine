@@ -372,6 +372,20 @@ impl WindowManager {
         self.activation_sent
     }
 
+    /// The `Report` for the desktop server, when anything changed since
+    /// the last one: the active frame's report and the frames API calls
+    /// raised or lowered (ADR-0108).
+    pub fn take_report(&mut self) -> Option<crate::desktop::proto::WinCall> {
+        if !self.activation_changed() && self.reported_raised.is_empty() && self.reported_lowered.is_empty() {
+            return None;
+        }
+        Some(crate::desktop::proto::WinCall::Report {
+            active: self.activation_report(),
+            raised: std::mem::take(&mut self.reported_raised),
+            lowered: std::mem::take(&mut self.reported_lowered),
+        })
+    }
+
     /// Hide `frame` (`WM_SYSCOMMAND(SC_HIDE)`, its hide button): the frames
     /// it owns are hidden with it and, if it was the active window, another
     /// frame becomes active. Returns whether it was visible.

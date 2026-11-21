@@ -1,6 +1,6 @@
 # ADR-0108: Numbered activation reports, taken before the program goes on
 
-- **Status:** Accepted; amends ADR-0052 (the desktop protocol, now version 9)
+- **Status:** Accepted; amends ADR-0052 (the desktop protocol, version 9, then 10 with item 7)
 - **Date:** 2026-11-21
 - **Sources:**
   - IBM's *PM Programming Reference*: `WinSetActiveWindow`, `WinQueryActiveWindow`, `WM_ACTIVATE`.
@@ -33,6 +33,11 @@ Two more orderings had the same effect:
 4. **The server raises a frame that becomes active,** over every other program's frames, keeping its program's own order. A report can arrive before the update that raises the frame.
 5. **The link's reader thread takes `Deactivate` and `Active` at once** (`Responder::take_activation`), in order with the answers to the program's calls. Without a responder they wait in the inbox as before.
 6. **`PROTOCOL_VERSION` is 9.**
+7. **Stacking too (amended the same day; protocol version 10).** The frames an API call raises or lowers travel in the same `Report` call, not in the renderer's next update.
+   - On a thread that makes the guest's API calls (`pm_types::set_api_thread`: vCPU threads, and the link's thread answering other programs), `z_push_top` / `z_push_bottom` record them in `reported_raised` / `reported_lowered`. `WindowManager::take_report` sends them with the activation report.
+   - The GUI thread's own raises, such as a click on a frame's title, still go in its updates.
+   - The server places a frame announced in a `Report` before any update has drawn it (`DesktopModel::reported`, `announced`). The frame's first update then leaves it where it is instead of putting it on top.
+   - Found when `pm_xproc_test`'s "the active one first" check failed under load (4 of 20 runs): B's raise of its new frame, sent with B's first update, arrived after A had activated and raised its own frame.
 
 ## Warpine's choices (unverified)
 
@@ -42,7 +47,7 @@ Two more orderings had the same effect:
 
 ## Consequences
 
-- `pm_xproc_test` passed 30 of 30 runs under the load that failed 2 of 15 before. `pm_xshell_test`, `pm_xdrag_test` and `pm_switch_dde_test` passed 10 of 10 runs each under the same load.
+- `pm_xproc_test` passed 30 of 30 runs under the load that failed 2 of 15 before; with item 7, 30 of 30 under the load where its stacking check had failed 4 of 20. `pm_xshell_test`, `pm_xdrag_test` and `pm_switch_dde_test` passed 10 of 10 runs each under the same load.
 - **Tests:**
   - `model.rs`: newer reports only, a claim taking activation back, raising in the client's order, wrap-around;
   - `pm_minmax.rs`: report numbering and stale `Deactivate`s;

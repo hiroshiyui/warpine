@@ -672,6 +672,12 @@ pub struct WindowManager {
     pub raised_frames: Vec<u32>,
     /// Frames sent to the bottom since the renderer last looked.
     pub lowered_frames: Vec<u32>,
+    /// Frames an API call raised or lowered (on a vCPU thread, or the link
+    /// thread answering another program): sent in the `Report` that follows
+    /// the call, not in the renderer's next update, so that the server has
+    /// them before the program goes on (ADR-0108).
+    pub reported_raised: Vec<u32>,
+    pub reported_lowered: Vec<u32>,
     /// This process's desktop slot (`None`: no desktop server).
     pub handle_slot: Option<u32>,
     /// The session's active frame as the desktop server last said, which
@@ -769,6 +775,30 @@ impl Default for WindowManager {
     fn default() -> Self { Self::new() }
 }
 
+thread_local! {
+    /// Whether this host thread makes API calls for the guest (a vCPU
+    /// thread, or the desktop link's thread answering other programs):
+    /// its stacking changes go in the `Report` after the call (ADR-0108).
+    static API_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Mark this host thread as one that makes the guest's API calls.
+pub fn set_api_thread(on: bool) {
+    API_THREAD.with(|t| t.set(on));
+}
+
+fn on_api_thread() -> bool {
+    API_THREAD.with(|t| t.get())
+}
+
+/// Add `frame` to a list of raised or lowered frames: once, at its end,
+/// the oldest dropped past `MAX_RAISED_FRAMES`.
+fn note_frame(list: &mut Vec<u32>, frame: u32) {
+    list.retain(|&h| h != frame);
+    if list.len() >= MAX_RAISED_FRAMES { list.remove(0); }
+    list.push(frame);
+}
+
 impl WindowManager {
     pub fn new() -> Self {
         WindowManager {
@@ -822,6 +852,8 @@ impl WindowManager {
             input_tag: None,
             raised_frames: Vec::new(),
             lowered_frames: Vec::new(),
+            reported_raised: Vec::new(),
+            reported_lowered: Vec::new(),
             handle_slot: None,
             session_active: 0,
             activation_sent: Default::default(),
@@ -1968,10 +2000,9 @@ impl WindowManager {
         }
         // The desktop server raises it over other programs' frames too.
         self.lowered_frames.retain(|&h| h != frame_hwnd);
-        if self.raised_frames.last() != Some(&frame_hwnd) {
-            if self.raised_frames.len() >= MAX_RAISED_FRAMES { self.raised_frames.remove(0); }
-            self.raised_frames.push(frame_hwnd);
-        }
+        self.reported_lowered.retain(|&h| h != frame_hwnd);
+        let list = if on_api_thread() { &mut self.reported_raised } else { &mut self.raised_frames };
+        note_frame(list, frame_hwnd);
         self.mark_all_dirty();
     }
 
@@ -2181,10 +2212,9 @@ impl WindowManager {
         self.z_order.insert(0, frame_hwnd);
         // The desktop server puts it below other programs' frames too.
         self.raised_frames.retain(|&h| h != frame_hwnd);
-        if self.lowered_frames.last() != Some(&frame_hwnd) {
-            if self.lowered_frames.len() >= MAX_RAISED_FRAMES { self.lowered_frames.remove(0); }
-            self.lowered_frames.push(frame_hwnd);
-        }
+        self.reported_raised.retain(|&h| h != frame_hwnd);
+        let list = if on_api_thread() { &mut self.reported_lowered } else { &mut self.lowered_frames };
+        note_frame(list, frame_hwnd);
         self.mark_all_dirty();
     }
 

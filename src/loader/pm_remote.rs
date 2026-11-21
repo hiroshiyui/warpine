@@ -803,20 +803,17 @@ impl Loader {
             && matches!(link.call(hwnd, WinCall::Activate), Some(WinReply::Value(_)))
     }
 
-    /// Report a change of this program's active frame to the desktop
-    /// server and wait until it took it (ADR-0108): after every API call,
-    /// so that the server has it before the program does anything else (a
-    /// program that activates a frame and then tells another program so
-    /// through shared memory must not be overtaken by that program's
-    /// activation). The server answers with the session's active frame.
+    /// Report a change of this program's active frame, and the frames the
+    /// call raised or lowered, to the desktop server and wait until it took
+    /// them (ADR-0108): after every API call, so that the server has them
+    /// before the program does anything else (a program that activates or
+    /// shows a frame and then tells another program so through shared
+    /// memory must not be overtaken by that program's changes). The server
+    /// answers with the session's active frame.
     pub(crate) fn report_activation(&self) {
         let Some(link) = self.shared.desktop_link.get() else { return };
-        let report = {
-            let mut wm = self.shared.window_mgr.lock_or_recover();
-            if !wm.activation_changed() { return; }
-            wm.activation_report()
-        };
-        if let Some(WinReply::Value(active)) = link.call(SERVER_ADDRESS, WinCall::Report(report)) {
+        let Some(report) = self.shared.window_mgr.lock_or_recover().take_report() else { return };
+        if let Some(WinReply::Value(active)) = link.call(SERVER_ADDRESS, report) {
             self.shared.window_mgr.lock_or_recover().session_active = active;
         }
     }
@@ -883,6 +880,24 @@ impl Responder for Loader {
     /// windows of this program's slot that exist. A sent message is queued
     /// for the window's thread, which answers it later.
     fn answer(&self, id: u64, hwnd: u32, call: &WinCall) -> Option<WinReply> {
+        // This thread makes API calls for other programs: what they change
+        // in the stacking or activation is reported before the answer goes
+        // back, on the same link, so the server takes it before the caller
+        // goes on (ADR-0108).
+        super::pm_types::set_api_thread(true);
+        let reply = self.answer_call(id, hwnd, call);
+        let report = self.shared.window_mgr.lock_or_recover().take_report();
+        if let (Some(report), Some(link)) = (report, self.shared.desktop_link.get()) {
+            link.notify(SERVER_ADDRESS, report);
+        }
+        reply
+    }
+}
+
+impl Loader {
+    /// A call another program makes on window `hwnd` of this one (see
+    /// [`Responder::answer`]).
+    fn answer_call(&self, id: u64, hwnd: u32, call: &WinCall) -> Option<WinReply> {
         let (in_slot, exists) = {
             let wm = self.shared.window_mgr.lock_or_recover();
             (wm.handle_slot.is_some_and(|s| handle_in_slot(hwnd, s)), wm.is_window(hwnd))
@@ -960,19 +975,7 @@ impl Loader {
                 self.shared.window_mgr.lock_or_recover().show_window(hwnd, show);
                 WinReply::Value(1)
             }
-            WinCall::Activate => {
-                let (done, report) = {
-                    let mut wm = self.shared.window_mgr.lock_or_recover();
-                    let done = wm.set_active_window(hwnd);
-                    (done, wm.activation_changed().then(|| wm.activation_report()))
-                };
-                // Reported before the answer goes back, on the same link, so
-                // the server takes it before the caller goes on (ADR-0108).
-                if let (Some(report), Some(link)) = (report, self.shared.desktop_link.get()) {
-                    link.notify(SERVER_ADDRESS, WinCall::Report(report));
-                }
-                value(done)
-            }
+            WinCall::Activate => value(self.shared.window_mgr.lock_or_recover().set_active_window(hwnd)),
             WinCall::SetText { ref text } => {
                 self.set_window_text(hwnd, text.clone());
                 WinReply::Value(1)
