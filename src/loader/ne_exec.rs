@@ -149,8 +149,10 @@ impl super::Loader {
         base + ordinal
     }
 
-    /// Set up guest memory for an NE executable and return (entry_cs_sel, entry_ip, ss_sel, sp).
-    fn setup_guest_ne(&self, ne_file: &NeFile) -> (u16, u16, u16, u16) {
+    /// Set up guest memory for an NE executable and return (entry_cs_sel,
+    /// entry_ip, ss_sel, sp, cr3): `cr3` is the thread's paging block when
+    /// it runs at ring 3 (ADR-0113), 0 when it runs unpaged at ring 0.
+    fn setup_guest_ne(&self, ne_file: &NeFile) -> (u16, u16, u16, u16, u32) {
         // Reuse common setup: TIB, PIB, environment, BDA
         let (env_block, cmdline_offset) = self.startup_block();
         let cmdline_offset = cmdline_offset as u32;
@@ -191,6 +193,19 @@ impl super::Loader {
         // Set up 32-bit API stubs (still needed for some internal dispatches)
         self.setup_stubs();
 
+        // The ring (ADR-0113): at ring 3 the thread runs paged, so that
+        // its page tables, TSS and Warpine's descriptor tables are
+        // supervisor-only; without a block it stays at ring 0.
+        self.set_guest_ring(super::ring::ring_from_env(std::env::var(super::ring::RING_ENV).ok().as_deref()));
+        let cr3 = if self.guest_ring() == 3 {
+            self.alloc_paging_block(TIB_BASE).unwrap_or_else(|| {
+                warn!("no page tables for the 16-bit program; it runs at ring 0");
+                self.set_guest_ring(0);
+                0
+            })
+        } else { 0 };
+        let user_dpl = self.guest_ring();
+
         // Set up the full tiled GDT and IDT using the same path as LX executables.
         // This writes all 6150 GDT entries (including data/code tiles for all NE
         // segment selectors and the NE thunk tile at GDT[NE_THUNK_GDT_INDEX]) and
@@ -216,8 +231,13 @@ impl super::Loader {
             let selector = gdt_idx * 8;
             let limit = seg.actual_min_alloc().saturating_sub(1).min(0xFFFF);
             // Data segments use DPL=2 (0xD3) to match the tiled data tile base, allowing
-            // OS/2 ring-2 RPL selectors to be loaded without a protection fault.
-            let access = if seg.is_code() { 0x9B } else { 0xD3 };
+            // OS/2 ring-2 RPL selectors to be loaded without a protection fault;
+            // at ring 3 every segment is DPL 3, as the tiles are.
+            let access = match (user_dpl, seg.is_code()) {
+                (3, code) => super::ring::access_byte(3, code),
+                (_, true) => 0x9B,
+                (_, false) => 0xD3,
+            };
             let gdt_offset = GDT_BASE + gdt_idx * 8;
             self.guest_write::<u64>(gdt_offset,
                 Self::make_gdt_entry(guest_base, limit, access, 0x00)).unwrap();
@@ -251,12 +271,15 @@ impl super::Loader {
         info!("NE entry: CS:IP = 0x{:04X}:0x{:04X}, SS:SP = 0x{:04X}:0x{:04X}",
             cs_sel, entry_ip, ss_sel, actual_sp);
 
-        (cs_sel, entry_ip, ss_sel, actual_sp)
+        // Selectors at the thread's ring (RPL 3 at ring 3).
+        let rpl = |sel: u16| super::ring::flat_selector(sel, user_dpl);
+        (rpl(cs_sel), entry_ip, rpl(ss_sel), actual_sp, cr3)
     }
 
     /// Run an NE (16-bit) CLI application.
     pub fn setup_and_run_ne_cli(self, ne_file: &NeFile) -> ! {
-        let (cs_sel, entry_ip, ss_sel, sp) = self.setup_guest_ne(ne_file);
+        let (cs_sel, entry_ip, ss_sel, sp, cr3) = self.setup_guest_ne(ne_file);
+        let ring = self.guest_ring();
 
         let mut vcpu = self.vm.create_vcpu(0).unwrap();
         let mut regs = vcpu.get_regs().unwrap();
@@ -275,11 +298,20 @@ impl super::Loader {
         sregs.idt_limit = 32 * 8 - 1;
         // CR0: protected mode enabled
         sregs.cr0 = 0x00000011; // PE + ET
+        // At ring 3, paging with the thread's block (its TSS in the ring-0
+        // window, Warpine's pages supervisor-only, the thunks read-only),
+        // as for 32-bit threads (ADR-0113).
+        if cr3 != 0 {
+            sregs.cr3 = u64::from(cr3);
+            sregs.cr4 |= super::paging::CR4_PSE;
+            sregs.cr0 |= super::paging::CR0_PG | super::paging::CR0_WP;
+            sregs.tr = super::vcpu::task_register(true);
+        }
 
         // CS: 16-bit code segment
         sregs.cs = GuestSegment {
             base: self.gdt_entry_base(cs_sel) as u64, limit: self.gdt_entry_limit(cs_sel),
-            selector: cs_sel, type_: 11, present: 1, dpl: 0, db: 0, s: 1, l: 0, g: 0, avl: 0, unusable: 0,
+            selector: cs_sel, type_: 11, present: 1, dpl: ring, db: 0, s: 1, l: 0, g: 0, avl: 0, unusable: 0,
         };
 
         // DS/ES: NE header's auto_data_segment identifies the automatic data segment.
@@ -287,13 +319,13 @@ impl super::Loader {
         let auto_ds = ne_file.header.auto_data_segment;
         let ds_sel = if auto_ds > 0 && (auto_ds as usize) <= ne_file.segment_table.len() {
             let tile_idx = (NE_SEGMENT_BASE / TILE_SIZE) + (auto_ds as u32 - 1);
-            ((TILED_SEL_START_INDEX + tile_idx) * 8) as u16
+            super::ring::flat_selector(((TILED_SEL_START_INDEX + tile_idx) * 8) as u16, ring)
         } else {
             ss_sel
         };
         let ds_seg = GuestSegment {
             base: self.gdt_entry_base(ds_sel) as u64, limit: self.gdt_entry_limit(ds_sel),
-            selector: ds_sel, type_: 3, present: 1, dpl: 0, db: 0, s: 1, l: 0, g: 0, avl: 0, unusable: 0,
+            selector: ds_sel, type_: 3, present: 1, dpl: ring, db: 0, s: 1, l: 0, g: 0, avl: 0, unusable: 0,
         };
         sregs.ds = ds_seg.clone();
         sregs.es = ds_seg;
@@ -301,19 +333,22 @@ impl super::Loader {
         // SS: stack segment
         sregs.ss = GuestSegment {
             base: self.gdt_entry_base(ss_sel) as u64, limit: self.gdt_entry_limit(ss_sel),
-            selector: ss_sel, type_: 3, present: 1, dpl: 0, db: 0, s: 1, l: 0, g: 0, avl: 0, unusable: 0,
+            selector: ss_sel, type_: 3, present: 1, dpl: ring, db: 0, s: 1, l: 0, g: 0, avl: 0, unusable: 0,
         };
 
         // FS/GS: use 32-bit flat data for now
         let flat_seg = GuestSegment {
             base: 0, limit: 0xFFFFFFFF,
-            selector: 0x10, type_: 3, present: 1, dpl: 0, db: 1, s: 1, l: 0, g: 1, avl: 0, unusable: 0,
+            selector: super::ring::flat_selector(0x10, ring), type_: 3, present: 1, dpl: ring, db: 1, s: 1, l: 0, g: 1, avl: 0, unusable: 0,
         };
         sregs.fs = flat_seg.clone();
         sregs.gs = flat_seg;
 
         vcpu.set_sregs(&sregs).unwrap();
         vcpu.enable_software_breakpoints().unwrap();
+        if cr3 != 0 {
+            super::paging::start_paging_watch(std::sync::Arc::clone(&self.shared));
+        }
 
         info!("Starting NE 16-bit execution at 0x{:04X}:0x{:04X}", cs_sel, entry_ip);
         self.run_vcpu(vcpu, super::threads::MAIN_VCPU_ID, TIB_BASE as u64);

@@ -29,7 +29,7 @@ const OW_SHIFTED_ARGS: [u8; 7] = [0x8B, 0x45, 0x10, 0x8B, 0x5D, 0x04, 0x50];
 /// its TSS, at the ring-0 window its tables map to its own ring-0 page.
 /// An unpaged one has no such page and keeps the processor's reset state
 /// (a busy TSS at 0, never used while the thread runs at ring 0).
-fn task_register(paged: bool) -> GuestSegment {
+pub(crate) fn task_register(paged: bool) -> GuestSegment {
     const BUSY_TSS_32: u8 = 11;
     let (base, limit, selector) = if paged {
         (u64::from(RING0_WINDOW), TSS_SIZE - 1, TSS_SEL)

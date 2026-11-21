@@ -35,7 +35,7 @@ fn sample_path(path: impl AsRef<Path>) -> String {
     let compiler = cc.strip_prefix("ci-").unwrap_or(&cc);
     let compiler = compiler.strip_suffix("-pinned").unwrap_or(compiler);
     assert!(compiler == "gcc" || compiler == "clang", "WARPINE_SAMPLES names gcc, clang or watcom, not {cc:?}");
-    const NOT_BUILT: &[&str] = &["ne_hello", "c_hello", "c_sdk_test", "c_pm_test", "c_gdb_test", "c_msg_test", "cxx_test",
+    const NOT_BUILT: &[&str] = &["ne_hello", "ne_ring_test", "c_hello", "c_sdk_test", "c_pm_test", "c_gdb_test", "c_msg_test", "cxx_test",
                                   "rust_hello", "shapes", "som_test", "wcxx_throw_test"];
     let Some(rest) = path.strip_prefix("samples/") else { return path };
     let Some((dir, _)) = rest.split_once('/') else { return path };
@@ -1805,6 +1805,27 @@ fn test_queue() {
     assert!(out.contains("DosCreateQueue rc=0"), "queue create:\n{out}");
     assert!(out.contains("DosReadQueue rc=0"),   "queue read:\n{out}");
     assert!(out.contains("msg='Queue Message'"), "queue message:\n{out}");
+}
+
+/// ne_ring_test (ADR-0113): a 16-bit program runs at ring 3, its data and
+/// stack selectors at its code's RPL, and CLI ends it as an unhandled
+/// #GP, its page tables intact; with WARPINE_RING=0 it runs at ring 0,
+/// where CLI goes through.
+#[test]
+fn a_16_bit_program_runs_at_ring_3() {
+    const SAMPLE: &str = "samples/ne_ring_test/ne_ring_test.exe";
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
+    let (out, code) = run_sample_env(SAMPLE, 15, &[("WARPINE_RING", RING_3)]);
+    assert!(out.contains("ne_ring_test info: running at ring 3"), "{out}");
+    assert!(out.contains("ne_ring_test: data and stack at the code's ring: ok"), "{out}");
+    assert!(out.contains("ne_ring_test info: executing CLI"), "{out}");
+    assert!(!out.contains("went on after CLI"), "CLI is privileged at ring 3:\n{out}");
+    assert_ne!(code, 0, "{out}");
+    let (out, code) = run_sample_env(SAMPLE, 15, &[("WARPINE_RING", RING_0)]);
+    assert!(out.contains("ne_ring_test info: running at ring 0"), "{out}");
+    assert!(out.contains("ne_ring_test: data and stack at the code's ring: ok"), "{out}");
+    assert!(out.contains("ne_ring_test info: went on after CLI"), "{out}");
+    assert_eq!(code, 0, "{out}");
 }
 
 /// ne_hello: 16-bit NE format DosWrite + DosExit — pure assembly, no CRT.

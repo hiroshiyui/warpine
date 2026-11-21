@@ -1,0 +1,8 @@
+# ne_ring_test.lnk — wlink directive file for the 16-bit ring test
+format os2
+option nodefaultlibs
+option stack=0x400
+import DosWrite DOSCALLS.138
+import DosExit DOSCALLS.5
+file ne_ring_test.o
+name ne_ring_test.exe

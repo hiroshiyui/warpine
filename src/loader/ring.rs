@@ -20,8 +20,9 @@
 //! - EFLAGS Warpine takes from a context record or a saved context cannot
 //!   raise the I/O privilege level or set IF ([`guest_eflags`]).
 //!
-//! 16-bit (NE) programs and unpaged threads stay at ring 0. The pages a
-//! ring-3 guest must not reach are supervisor-only (`paging.rs`).
+//! 16-bit (NE) programs run at ring 3 too, paged with the same block
+//! (`ne_exec.rs`); an unpaged thread stays at ring 0. The pages a ring-3
+//! guest must not reach are supervisor-only (`paging.rs`).
 
 use std::sync::atomic::Ordering;
 
@@ -36,7 +37,7 @@ pub const RING_ENV: &str = "WARPINE_RING";
 pub fn ring_from_env(value: Option<&str>) -> u8 {
     match value.map(str::trim) {
         Some("0") => {
-            log::warn!("{RING_ENV}=0: 32-bit guests run at ring 0, where they can reach their own page tables");
+            log::warn!("{RING_ENV}=0: guests run at ring 0, where they can reach their own page tables");
             0
         }
         Some("3") | Some("") | None => 3,
