@@ -337,7 +337,7 @@ impl super::Loader {
         self.apply_pending_allocations();
         for &(addr, access) in changes {
             if let Some(at) = process_pte_at(addr) {
-                self.guest_write::<u32>(at, process_pte(addr, access));
+                self.system_write::<u32>(at, process_pte(addr, access));
             }
         }
     }
@@ -380,7 +380,7 @@ impl super::Loader {
                 .collect()
         };
         for (at, entry) in writes {
-            self.guest_write::<u32>(at, entry);
+            self.system_write::<u32>(at, entry);
         }
     }
 

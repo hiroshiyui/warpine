@@ -335,7 +335,7 @@ impl super::Loader {
             eax: 0, ebx: 0, ecx: 0, edx: 0, esi: 0, edi: 0, ebp: 0,
             esp: 0, eip: exc_addr,
             eflags: 2,
-            ..FaultContext::flat(self.thread_ring())
+            ..FaultContext::flat()
         };
 
         // Allocate CONTEXTRECORD (using zeroed fault); pass caller's exc_rec directly.

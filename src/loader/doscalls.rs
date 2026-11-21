@@ -1148,7 +1148,7 @@ impl super::Loader {
     /// own stack and vCPU (an idle vCPU of an ended thread if there is one);
     /// returning from `pfn` lands on `EXIT_TRAP_ADDR` and ends the thread.
     /// `CREATE_SUSPENDED` starts it suspended (`DosResumeThread` lets it
-    /// run). A thread's stack at ring 3 is sparse (`STACK_SPARSE`, ADR-0114):
+    /// run). A thread's stack is sparse (`STACK_SPARSE`, ADR-0114):
     /// committed as it grows, `XCPT_UNABLE_TO_GROW_STACK` near its bottom;
     /// `STACK_COMMITTED` commits it whole. Other flag bits are ignored.
     pub fn dos_create_thread(&self, vcpu_id: u32, ptid_ptr: u32, pfn: u32, param: u32, flags: u32, cb_stack: u32) -> u32 {
@@ -1168,25 +1168,20 @@ impl super::Loader {
             };
             (stack_base, tib_addr)
         };
-        // The thread's page tables and thread-local page (paging.rs), when
-        // the creating thread runs paged (32-bit programs do).
-        let paging = if super::guest_mem::thread_tlm_backing() != 0 {
-            match self.alloc_paging_block(tib_addr) {
-                Some(p) => p,
-                None => {
-                    let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
-                    mem_mgr.free(stack_base);
-                    mem_mgr.free(tib_addr);
-                    return ERROR_NOT_ENOUGH_MEMORY;
-                }
-            }
-        } else { 0 };
+        // The thread's page tables, thread-local page and TSS (paging.rs):
+        // every thread runs paged at ring 3 (ADR-0113).
+        let Some(paging) = self.alloc_paging_block(tib_addr) else {
+            let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
+            mem_mgr.free(stack_base);
+            mem_mgr.free(tib_addr);
+            return ERROR_NOT_ENOUGH_MEMORY;
+        };
         let free_memory = || {
             let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
             mem_mgr.free(stack_base);
             mem_mgr.free(tib_addr);
             drop(mem_mgr);
-            if paging != 0 { self.free_paging_block(paging); }
+            self.free_paging_block(paging);
         };
         let Some(stack_top) = stack_base.checked_add(stack_size) else {
             free_memory();
@@ -1237,10 +1232,9 @@ impl super::Loader {
         }
 
         let mut new_vcpu = vcpu;
-        // A sparse stack (ADR-0114), unless asked for committed whole.
-        // Only a thread at ring 3 can grow one: at ring 0 a fault on the
-        // stack has no other stack to be delivered on (a triple fault).
-        if paging != 0 && self.guest_ring() == 3 && flags & STACK_COMMITTED == 0 {
+        // A sparse stack (ADR-0114), unless asked for committed whole: it
+        // grows through faults the processor delivers on the ring-0 stack.
+        if flags & STACK_COMMITTED == 0 {
             self.sparse_thread_stack(stack_base, stack_size);
         }
         self.setup_vcpu_segments_32bit(&mut *new_vcpu, tib_addr as u64, paging);

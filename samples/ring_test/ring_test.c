@@ -10,7 +10,8 @@
  *     0x08, data 0x10, the TIB at 0x18), at the RPL of the current ring;
  *   - FS still reaches the TIB, whose tib_ptib2 points at its TIB2;
  *   - all of this holds on a second thread too.
- * At ring 3 only (with WARPINE_RING=3):
+ * At ring 3, where every program runs (before ADR-0113's step 5,
+ * WARPINE_RING=0 could run them at ring 0, where these do not hold):
  *   - CLI, which only ring 0 may execute, raises XCPT_PRIVILEGED_INSTRUCTION
  *     at its own address, and the program goes on past it when its handler
  *     continues;

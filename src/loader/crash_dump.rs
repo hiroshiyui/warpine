@@ -389,17 +389,17 @@ mod tests {
         }
     }
 
-    /// The report says whether the guest damaged its page tables or
-    /// loaded its own CR3 (paging.rs, ADR-0088).
+    /// The report says whether paging is on and whether CR3 is the
+    /// thread's own block (paging.rs, ADR-0088).
     #[test]
     fn test_report_shows_the_paging_state() {
         use crate::loader::paging::PagingStatus;
         let mut report = make_report(CrashContext::TripleFault);
         report.sregs.cr3 = 0x0200_3000;
-        report.paging = PagingStatus::Damaged;
+        report.paging = PagingStatus::Own;
         let text = format_crash_report(&report);
         assert!(text.contains("CR3=0x02003000"), "{text}");
-        assert!(text.contains("Paging: the thread's tables DAMAGED by the guest"), "{text}");
+        assert!(text.contains("Paging: on, the thread's own tables"), "{text}");
         report.paging = PagingStatus::ForeignCr3(0xF000_0000);
         assert!(format_crash_report(&report).contains("CR3 0xF0000000 is not the thread's block"));
         report.paging = PagingStatus::Off;

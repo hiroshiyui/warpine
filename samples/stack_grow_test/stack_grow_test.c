@@ -12,9 +12,9 @@
  *   - a STACK_COMMITTED stack is committed whole;
  *   - recursion without end raises XCPT_UNABLE_TO_GROW_STACK, which the
  *     thread's handler leaves by longjmp; the thread then ends normally.
- * At ring 0 (WARPINE_RING=0) Warpine commits stacks whole, since a fault
- * on the stack has no other stack to be delivered on there: only the
- * checks that hold either way run ("stack_grow_test info: ..." says so).
+ * Growth needs ring 3, where every program runs (ADR-0113): a fault on
+ * the stack is delivered on the ring-0 stack. At ring 0, which Warpine
+ * no longer offers, only the checks that hold there would run.
  * Built with Open Watcom's -s (no stack checks: Warpine's TIB, not the
  * runtime, knows the stack's bounds).
  *

@@ -968,16 +968,6 @@ fn test_thread_local_memory() {
 /// directory (where Warpine writes its crash dump): stdout, the exit
 /// code, and the crash dumps written.
 fn run_paging_abuse(exe: &str, sigterm_after: Option<Duration>) -> Option<(String, i32, Vec<String>)> {
-    run_paging_abuse_at(exe, sigterm_after, RING_0)
-}
-
-/// The ring a test pins with `WARPINE_RING` (ADR-0113), whatever the
-/// environment it runs in asks for.
-const RING_0: &str = "0";
-const RING_3: &str = "3";
-
-/// [`run_paging_abuse`] with the program's threads at `ring`.
-fn run_paging_abuse_at(exe: &str, sigterm_after: Option<Duration>, ring: &str) -> Option<(String, i32, Vec<String>)> {
     let sample = std::fs::canonicalize(sample_path(format!("samples/paging_abuse_test/{exe}"))).ok()?;
     if !kvm_available() { return None; }
     let work = tempfile::tempdir().expect("tempdir");
@@ -990,7 +980,6 @@ fn run_paging_abuse_at(exe: &str, sigterm_after: Option<Duration>, ring: &str) -
         .env("XDG_RUNTIME_DIR", work.path())
         .envs(PINNED_LOCALE.iter().copied())
         .env("RUST_LOG", "error")
-        .env("WARPINE_RING", ring)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -1022,48 +1011,38 @@ fn run_paging_abuse_at(exe: &str, sigterm_after: Option<Duration>, ring: &str) -
     Some((out, status.code().unwrap_or(-1), dumps))
 }
 
-/// A guest attacking its own paging (ADR-0088) ends as a trap: exit code
-/// 1, its exit list run once with TC_TRAP on repaired tables, one crash
-/// dump naming what it did — and never a hang (the wild CR3 leaves the
-/// vCPU spinning in KVM, which only the paging watch's kick ends; reads
-/// past guest memory in a loop end after MMIO_STORM_LIMIT of them).
-#[test]
-fn test_a_guest_attacking_its_paging_ends_as_a_trap() {
-    for (exe, paging) in [
-        ("pgabuse_zero.exe", "Paging: the thread's tables DAMAGED by the guest"),
-        ("pgabuse_cr3.exe", "Paging: on, CR3 0xF0000000 is not the thread's block"),
-        ("pgabuse_remap.exe", "Paging: the thread's tables DAMAGED by the guest"),
-        ("pgabuse_off.exe", "Paging: off"),
-        ("pgabuse_past.exe", "accesses in a row to memory past guest RAM"),
-    ] {
-        let Some((out, code, dumps)) = run_paging_abuse(exe, None) else { return };
-        assert!(out.contains("pgabuse: runs paged: ok"), "{exe}:\n{out}");
-        assert!(!out.contains("FAIL"), "{exe}:\n{out}");
-        assert_eq!(out.matches("pgabuse: exit list tc=2").count(), 1, "{exe}: the exit list once, TC_TRAP:\n{out}");
-        assert_eq!(code, 1, "{exe}:\n{out}");
-        assert_eq!(dumps.len(), 1, "{exe}: one crash dump:\n{dumps:#?}");
-        assert!(dumps[0].contains(paging), "{exe}: wants {paging:?}:\n{}", dumps[0]);
-    }
-}
-
-/// At ring 3 (ADR-0113) the same attacks never touch the paging: each
-/// variant's first privileged instruction (reading CR3, to check it runs
-/// paged) raises XCPT_PRIVILEGED_INSTRUCTION before the program has
+/// A guest attacking its own paging (ADR-0088) never gets to it (ADR-0113):
+/// each variant's first privileged instruction (reading CR3, to check it
+/// runs paged) raises XCPT_PRIVILEGED_INSTRUCTION before the program has
 /// registered its exit-list routine, and with no handler the process ends
 /// by the exception (exit code 1), one crash dump showing a #GP and the
-/// tables intact.
+/// thread's own tables.
 #[test]
-fn at_ring_3_a_guest_cannot_reach_its_paging() {
-    for exe in ["pgabuse_zero.exe", "pgabuse_cr3.exe", "pgabuse_remap.exe", "pgabuse_off.exe", "pgabuse_past.exe"] {
-        let Some((out, code, dumps)) = run_paging_abuse_at(exe, None, RING_3) else { return };
+fn a_guest_cannot_reach_its_paging() {
+    for exe in ["pgabuse_zero.exe", "pgabuse_cr3.exe", "pgabuse_remap.exe", "pgabuse_off.exe"] {
+        let Some((out, code, dumps)) = run_paging_abuse(exe, None) else { return };
         assert!(!out.contains("FAIL"), "{exe}:\n{out}");
         assert!(!out.contains("pgabuse: runs paged"), "{exe}: reading CR3 must fault:\n{out}");
         assert!(!out.contains("pgabuse: exit list"), "{exe}: no routine registered yet:\n{out}");
         assert_eq!(code, 1, "{exe}:\n{out}");
         assert_eq!(dumps.len(), 1, "{exe}: one crash dump:\n{dumps:#?}");
         assert!(dumps[0].contains("General Protection"), "{exe}:\n{}", dumps[0]);
-        assert!(dumps[0].contains("Paging: on, the thread's tables intact"), "{exe}:\n{}", dumps[0]);
+        assert!(dumps[0].contains("Paging: on, the thread's own tables"), "{exe}:\n{}", dumps[0]);
     }
+}
+
+/// A guest reading past its memory in a loop (each read an exit to
+/// Warpine) ends as a trap after MMIO_STORM_LIMIT of them: its exit list
+/// once with TC_TRAP, exit code 1, one crash dump naming it.
+#[test]
+fn a_guest_reading_past_its_memory_ends_as_a_trap() {
+    let Some((out, code, dumps)) = run_paging_abuse("pgabuse_past.exe", None) else { return };
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("pgabuse: reading past guest memory"), "{out}");
+    assert_eq!(out.matches(&format!("pgabuse: exit list tc={TC_TRAP}")).count(), 1, "the exit list once, TC_TRAP:\n{out}");
+    assert_eq!(code, 1, "{out}");
+    assert_eq!(dumps.len(), 1, "one crash dump:\n{dumps:#?}");
+    assert!(dumps[0].contains("accesses in a row to memory past guest RAM"), "{}", dumps[0]);
 }
 
 /// SIGTERM while the guest loops on memory past its RAM (before the
@@ -1544,37 +1523,31 @@ fn test_exception_chains_are_per_thread() {
 
 /// ring_test (ADR-0113): every 32-bit thread's task register names its
 /// TSS, and its segments are the flat ones (code 0x08, data 0x10, the
-/// TIB at 0x18) at the RPL of the ring it runs at; FS reaches its TIB.
-/// At either ring the API thunks' 4 MB cannot be written (CR0.WP). At ring
-/// 3 (the default) it also checks that CLI raises
-/// XCPT_PRIVILEGED_INSTRUCTION, that a context record cannot raise IOPL,
-/// and that the GDT, the ring-0 window and the paging arena cannot be read.
+/// TIB at 0x18) with RPL 3; FS reaches its TIB. CLI raises
+/// XCPT_PRIVILEGED_INSTRUCTION, a context record cannot raise IOPL, the
+/// GDT, the ring-0 window and the paging arena cannot be read, and the API
+/// thunks' 4 MB cannot be written.
 #[test]
 fn every_thread_has_a_tss_and_the_flat_segments() {
-    const SAMPLE: &str = "samples/ring_test/ring_test.exe";
-    for (ring, min) in [(RING_0, 11), (RING_3, 17)] {
-        let Some(out) = text_checks_pass_env(SAMPLE, "ring_test", min, &[("WARPINE_RING", ring)]) else { return };
-        assert!(out.contains(&format!("ring_test info: running at ring {ring}")), "{out}");
-        assert!(out.contains(&format!("ring_test info: thread 2: running at ring {ring}")), "{out}");
-    }
+    let Some(out) = text_checks_pass_env("samples/ring_test/ring_test.exe", "ring_test", 17, &[]) else { return };
+    assert!(out.contains("ring_test info: running at ring 3"), "{out}");
+    assert!(out.contains("ring_test info: thread 2: running at ring 3"), "{out}");
 }
 
 /// xcpt_breakpoint_test: a program's own INT3 (and INT 3, CD 03) raises
 /// XCPT_BREAKPOINT, continuable, with EIP and ExceptionAddress past the
 /// instruction; with no handler it ends the process as an unhandled
-/// exception, its exit list run with TC_EXCEPTION. At both rings.
+/// exception, its exit list run with TC_EXCEPTION.
 #[test]
 fn a_programs_breakpoint_raises_xcpt_breakpoint() {
     const SAMPLE: &str = "samples/xcpt_breakpoint_test/xcpt_breakpoint_test.exe";
     if !kvm_available() || !sample_exists(SAMPLE) { return; }
-    for ring in [RING_3, RING_0] {
-        let (out, code) = run_sample_env(SAMPLE, 20, &[("WARPINE_RING", ring)]);
-        assert!(!out.contains("FAIL"), "ring {ring}:\n{out}");
-        assert!(out.contains("xcpt_breakpoint_test: done 8/8"), "ring {ring}:\n{out}");
-        assert!(out.contains("xcpt_breakpoint_test: INT3 with no handler"), "ring {ring}:\n{out}");
-        assert_eq!(out.matches("xcpt_breakpoint_test: exit list tc=4").count(), 1, "ring {ring}: TC_EXCEPTION once:\n{out}");
-        assert_eq!(code, 1, "ring {ring}:\n{out}");
-    }
+    let (out, code) = run_sample(SAMPLE, 20);
+    assert!(!out.contains("FAIL"), "{out}");
+    assert!(out.contains("xcpt_breakpoint_test: done 8/8"), "{out}");
+    assert!(out.contains("xcpt_breakpoint_test: INT3 with no handler"), "{out}");
+    assert_eq!(out.matches("xcpt_breakpoint_test: exit list tc=4").count(), 1, "TC_EXCEPTION once:\n{out}");
+    assert_eq!(code, 1, "{out}");
 }
 
 /// mem_protect_test (ADR-0114): DosAllocMem / DosSetMem / DosQueryMem page
@@ -1583,30 +1556,19 @@ fn a_programs_breakpoint_raises_xcpt_breakpoint() {
 /// XCPT_GUARD_PAGE_VIOLATION once, the calls' errors, and a page made
 /// read-only faults on another thread whose TLB held it writable, the
 /// program's code object cannot be written, and freed or never allocated
-/// memory cannot be read. At both rings.
+/// memory cannot be read.
 #[test]
 fn page_states_of_allocated_memory_hold() {
-    for ring in [RING_3, RING_0] {
-        if text_checks_pass_env("samples/mem_protect_test/mem_protect_test.exe", "mem_protect_test", 40,
-                                &[("WARPINE_RING", ring)]).is_none() {
-            return;
-        }
-    }
+    text_checks_pass_env("samples/mem_protect_test/mem_protect_test.exe", "mem_protect_test", 40, &[]);
 }
 
-/// stack_grow_test (ADR-0114): at ring 3 a thread's stack is sparse,
-/// grows as it is used (also by a frame larger than a page), and raises
+/// stack_grow_test (ADR-0114): a thread's stack is sparse, grows as it is
+/// used (also by a frame larger than a page), and raises
 /// XCPT_UNABLE_TO_GROW_STACK near its bottom, which a handler leaves by
-/// longjmp; STACK_COMMITTED commits it whole. At ring 0 stacks are
-/// committed whole and only those checks run.
+/// longjmp; STACK_COMMITTED commits it whole.
 #[test]
-fn thread_stacks_grow_and_run_out_at_ring_3() {
-    for (ring, min) in [(RING_3, 11), (RING_0, 6)] {
-        if text_checks_pass_env("samples/stack_grow_test/stack_grow_test.exe", "stack_grow_test", min,
-                                &[("WARPINE_RING", ring)]).is_none() {
-            return;
-        }
-    }
+fn thread_stacks_grow_and_run_out() {
+    text_checks_pass_env("samples/stack_grow_test/stack_grow_test.exe", "stack_grow_test", 11, &[]);
 }
 
 /// The checks a text-mode sample with `<prefix>: <name>: ok` lines
@@ -1698,14 +1660,9 @@ const TC_EXCEPTION: u32 = 4;
 /// (when `runs` is set) in the exit-list routines passes, the routines
 /// getting termination code `tc`; returns stdout.
 fn run_exitlist_variant(exe: &str, code_want: i32, runs: bool, tc: u32) -> Option<String> {
-    run_exitlist_variant_at(exe, code_want, runs, tc, RING_0)
-}
-
-/// [`run_exitlist_variant`] with the program's threads at `ring`.
-fn run_exitlist_variant_at(exe: &str, code_want: i32, runs: bool, tc: u32, ring: &str) -> Option<String> {
     let sample = format!("samples/exitlist_test/{exe}");
     if !kvm_available() || !sample_exists(&sample) { return None; }
-    let (out, code) = run_sample_env(&sample, 20, &[("WARPINE_RING", ring)]);
+    let (out, code) = run_sample(&sample, 20);
     assert!(!out.contains("FAIL"), "{out}");
     assert!(out.lines().any(|l| l.starts_with("exitlist_test: done ")), "{out}");
     if runs {
@@ -1739,19 +1696,12 @@ fn test_exit_list_runs_when_another_thread_ends_the_process() {
     run_exitlist_variant("exitlist_thread.exe", 4, true, TC_EXIT);
 }
 
-/// exitlist_hlt: thread 1 executes HLT; the exit list runs as after a
-/// trap (TC_TRAP) and the process ends with code 1.
+/// exitlist_hlt: thread 1 executes HLT, a privileged instruction at ring
+/// 3 (ADR-0113), as on OS/2; unhandled, it ends the process with
+/// TC_EXCEPTION, its exit list run, exit code 1.
 #[test]
 fn test_exit_list_runs_after_hlt() {
-    let Some(out) = run_exitlist_variant("exitlist_hlt.exe", 1, true, TC_TRAP) else { return };
-    assert!(!out.contains("went on after HLT"), "{out}");
-}
-
-/// exitlist_hlt at ring 3 (ADR-0113): HLT is a privileged instruction, as
-/// on OS/2; unhandled, it ends the process with TC_EXCEPTION.
-#[test]
-fn at_ring_3_hlt_ends_the_process_by_an_exception() {
-    let Some(out) = run_exitlist_variant_at("exitlist_hlt.exe", 1, true, TC_EXCEPTION, RING_3) else { return };
+    let Some(out) = run_exitlist_variant("exitlist_hlt.exe", 1, true, TC_EXCEPTION) else { return };
     assert!(!out.contains("went on after HLT"), "{out}");
 }
 
@@ -1859,23 +1809,17 @@ fn test_queue() {
 
 /// ne_ring_test (ADR-0113): a 16-bit program runs at ring 3, its data and
 /// stack selectors at its code's RPL, and CLI ends it as an unhandled
-/// #GP, its page tables intact; with WARPINE_RING=0 it runs at ring 0,
-/// where CLI goes through.
+/// #GP, its page tables intact.
 #[test]
 fn a_16_bit_program_runs_at_ring_3() {
     const SAMPLE: &str = "samples/ne_ring_test/ne_ring_test.exe";
     if !kvm_available() || !sample_exists(SAMPLE) { return; }
-    let (out, code) = run_sample_env(SAMPLE, 15, &[("WARPINE_RING", RING_3)]);
+    let (out, code) = run_sample(SAMPLE, 15);
     assert!(out.contains("ne_ring_test info: running at ring 3"), "{out}");
     assert!(out.contains("ne_ring_test: data and stack at the code's ring: ok"), "{out}");
     assert!(out.contains("ne_ring_test info: executing CLI"), "{out}");
     assert!(!out.contains("went on after CLI"), "CLI is privileged at ring 3:\n{out}");
     assert_ne!(code, 0, "{out}");
-    let (out, code) = run_sample_env(SAMPLE, 15, &[("WARPINE_RING", RING_0)]);
-    assert!(out.contains("ne_ring_test info: running at ring 0"), "{out}");
-    assert!(out.contains("ne_ring_test: data and stack at the code's ring: ok"), "{out}");
-    assert!(out.contains("ne_ring_test info: went on after CLI"), "{out}");
-    assert_eq!(code, 0, "{out}");
 }
 
 /// ne_hello: 16-bit NE format DosWrite + DosExit — pure assembly, no CRT.

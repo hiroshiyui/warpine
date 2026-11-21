@@ -1,23 +1,24 @@
 /* SPDX-License-Identifier: GPL-3.0-or-later */
 /*
- * paging_abuse_test.c - a hostile guest against Warpine's paging (ADR-0088)
+ * paging_abuse_test.c - a hostile guest against Warpine's paging (ADR-0088,
+ * ADR-0113)
  *
- * Warpine's guests run at ring 0, so a program can rewrite its own page
- * tables or load CR3 / CR0 itself; on OS/2 neither is possible (the
- * instructions are privileged, the tables are not the program's). The
- * hardware (EPT / NPT) keeps the guest in its own memory, and Warpine ends
- * such a program as a trap: its exit list runs (TC_TRAP, with the tables
- * put back) and the process ends with exit code 1. Built five times:
+ * A program cannot rewrite its page tables or load CR3 / CR0, as on OS/2:
+ * it runs at ring 3, where those instructions are privileged and the
+ * tables are supervisor-only. Built five times:
  *
- *   pgabuse_zero.exe   zeroes its page directory: a triple fault at once
- *   pgabuse_cr3.exe    loads CR3 with an address past guest memory: the
- *                      vCPU spins inside KVM with no exit; the paging
- *                      watch's kick ends it
- *   pgabuse_remap.exe  points its thread-local page elsewhere, then spins
- *   pgabuse_off.exe    turns paging off, then spins
+ *   pgabuse_zero.exe   reads CR3, to zero its page directory
+ *   pgabuse_cr3.exe    reads CR3, to load it with an address past guest
+ *                      memory
+ *   pgabuse_remap.exe  reads CR3, to point its thread-local page elsewhere
+ *   pgabuse_off.exe    reads CR3, to turn paging off
+ *       Each faults at its first privileged instruction (reading CR3,
+ *       before it registers its exit list): with no handler the process
+ *       ends by the exception, exit code 1.
  *   pgabuse_past.exe   leaves paging alone and reads past guest memory in
  *                      a loop: each read exits to Warpine (and reads 0);
  *                      a run of them with nothing else ends it as a trap
+ *                      (its exit list with TC_TRAP, exit code 1)
  *
  * Output: "pgabuse: <name>: ok" / "pgabuse: <name>: FAIL" before the
  * attack, then the exit-list routine's "pgabuse: exit list tc=<n>". Only
@@ -79,10 +80,12 @@ static inline void load_cr0(ULONG v) { __asm__ volatile("mov %0, %%cr0" : : "r"(
 
 int main(void)
 {
-    ULONG   cr3 = read_cr3();
     PULONG  tlm;
+#if !defined(PAST)
+    ULONG   cr3 = read_cr3();       /* a privileged instruction: it faults */
 
     check("runs paged", (read_cr0() & 0x80000000UL) != 0 && cr3 != 0);
+#endif
     check("DosExitList", DosExitList(EXLST_ADD, (PFNEXITLIST)routine) == NO_ERROR);
     check("DosAllocThreadLocalMemory", DosAllocThreadLocalMemory(2, &tlm) == NO_ERROR);
 #if defined(ZERO)

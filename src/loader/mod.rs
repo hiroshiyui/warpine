@@ -178,15 +178,14 @@ pub(crate) struct FaultContext {
 }
 
 impl FaultContext {
-    /// A context with no registers set but the flat segments of a thread
-    /// at `ring` (0x08 / 0x10 / 0x18 with that RPL, ADR-0113) and EFLAGS'
-    /// reserved bit.
-    pub(crate) fn flat(ring: u8) -> Self {
-        use ring::flat_selector;
-        let data = flat_selector(0x10, ring);
+    /// A context with no registers set but a thread's flat segments (0x08 /
+    /// 0x10 / 0x18 with RPL 3, ADR-0113) and EFLAGS' reserved bit.
+    pub(crate) fn flat() -> Self {
+        use ring::user_selector;
+        let data = user_selector(0x10);
         FaultContext {
             eflags: 2,
-            cs: flat_selector(0x08, ring), ds: data, es: data, fs: flat_selector(0x18, ring), gs: data, ss: data,
+            cs: user_selector(0x08), ds: data, es: data, fs: user_selector(0x18), gs: data, ss: data,
             ..Default::default()
         }
     }
@@ -486,9 +485,6 @@ pub struct SharedState {
     /// Whether the `GINFOSEG` refresher thread runs (`infoseg.rs`).
     pub infoseg_refresher: AtomicBool,
     pub exit_requested: AtomicBool,
-    /// The ring this process's paged 32-bit threads run at: 0, or 3 with
-    /// `WARPINE_RING=3` (`ring.rs`, ADR-0113).
-    pub guest_ring: std::sync::atomic::AtomicU8,
     /// A VIO session may switch between its PM window and full screen with
     /// Alt+Home (the program is window-compatible); set by `run_vio_session`.
     pub vio_switchable: AtomicBool,
@@ -630,7 +626,6 @@ impl Loader {
             som: Default::default(),
             rexx_api: Default::default(),
             exit_requested: AtomicBool::new(false),
-            guest_ring: std::sync::atomic::AtomicU8::new(0),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),
             exit_code: AtomicI32::new(0),
@@ -751,7 +746,6 @@ impl Loader {
             som: Default::default(),
             rexx_api: Default::default(),
             exit_requested: AtomicBool::new(false),
-            guest_ring: std::sync::atomic::AtomicU8::new(0),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),
             exit_code:    AtomicI32::new(0),

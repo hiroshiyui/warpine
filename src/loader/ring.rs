@@ -1,12 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-//! The privilege level 32-bit guests run at (ADR-0113).
+//! The privilege level guests run at: ring 3 (ADR-0113).
 //!
 //! OS/2 runs applications at ring 3. Warpine's guests ran at ring 0, which
-//! let them load CR3 or CR0 and rewrite their own page tables (caught only
-//! afterwards, by the paging watch, ADR-0088). An LX program's paged
-//! threads run at ring 3 (since step 3 the default; `WARPINE_RING=0` runs
-//! them at ring 0 for one more release):
+//! let them load CR3 or CR0 and rewrite their own page tables. Every
+//! thread of a program, 32-bit or 16-bit, now runs paged at ring 3:
 //! - the descriptors programs use (0x08, 0x10, 0x18, the 16-bit aliases and
 //!   tiles) are DPL 3, and their selectors carry RPL 3 (0x0B, 0x13, 0x1B);
 //! - the IDT's gates enter ring 0 through `KERNEL_CODE_SEL`, on the ring-0
@@ -20,37 +18,19 @@
 //! - EFLAGS Warpine takes from a context record or a saved context cannot
 //!   raise the I/O privilege level or set IF ([`guest_eflags`]).
 //!
-//! 16-bit (NE) programs run at ring 3 too, paged with the same block
-//! (`ne_exec.rs`); an unpaged thread stays at ring 0. The pages a ring-3
-//! guest must not reach are supervisor-only (`paging.rs`).
-
-use std::sync::atomic::Ordering;
+//! 16-bit (NE) programs too (`ne_exec.rs`). The pages a ring-3 guest must
+//! not reach are supervisor-only (`paging.rs`), and Warpine does not write
+//! them on a guest's behalf (`guest_mem::protected`).
 
 use super::constants::*;
 use super::vm_backend::{GuestSegment, VcpuBackend};
 
-/// The variable that chooses the ring: `0` runs guests at ring 0, the
-/// way back for one release (ADR-0113); unset, or `3`, ring 3.
-pub const RING_ENV: &str = "WARPINE_RING";
+/// The ring every guest thread runs at, and the RPL of its selectors.
+pub const USER_RING: u8 = 3;
 
-/// The ring `WARPINE_RING`'s value asks for: 0 for "0", else 3.
-pub fn ring_from_env(value: Option<&str>) -> u8 {
-    match value.map(str::trim) {
-        Some("0") => {
-            log::warn!("{RING_ENV}=0: guests run at ring 0, where they can reach their own page tables");
-            0
-        }
-        Some("3") | Some("") | None => 3,
-        Some(other) => {
-            log::warn!("{RING_ENV}={other}: not 0 or 3; guests run at ring 3");
-            3
-        }
-    }
-}
-
-/// The selectors and descriptor privilege of the flat segments at `ring`.
-pub const fn flat_selector(selector: u16, ring: u8) -> u16 {
-    selector | ring as u16
+/// A selector as a guest thread holds it: with RPL 3 (0x08 is 0x0B).
+pub const fn user_selector(selector: u16) -> u16 {
+    selector | USER_RING as u16
 }
 
 /// Descriptor access bytes (Intel SDM vol. 3, 3.4.5): present, the
@@ -114,23 +94,6 @@ const RING3_FRAME_DWORDS: u32 = 7;
 const RING0_FRAME_DWORDS: u32 = 5;
 
 impl super::Loader {
-    /// The ring this process's paged 32-bit threads run at (0 or 3).
-    pub(crate) fn guest_ring(&self) -> u8 {
-        self.shared.guest_ring.load(Ordering::Relaxed)
-    }
-
-    /// The ring of the guest thread this host thread runs: the process's
-    /// for a paged thread, 0 for an unpaged one.
-    pub(crate) fn thread_ring(&self) -> u8 {
-        if super::guest_mem::thread_tlm_backing() != 0 { self.guest_ring() } else { 0 }
-    }
-
-    /// Choose the ring for this process's 32-bit threads (before the GDT
-    /// is written and the first thread starts).
-    pub(crate) fn set_guest_ring(&self, ring: u8) {
-        self.shared.guest_ring.store(if ring == 3 { 3 } else { 0 }, Ordering::Relaxed);
-    }
-
     /// The segment the GDT descriptor of `selector` describes, as the
     /// processor would load it; None for a selector outside the GDT or a
     /// descriptor that is not present.
@@ -219,17 +182,6 @@ mod tests {
     use super::super::vm_backend::{GuestRegs, GuestSregs};
 
     #[test]
-    fn ring_3_unless_0_is_asked_for() {
-        assert_eq!(ring_from_env(Some("0")), 0);
-        assert_eq!(ring_from_env(Some(" 0 ")), 0);
-        for v in [None, Some(""), Some("3"), Some("2"), Some("ring0")] {
-            assert_eq!(ring_from_env(v), 3, "{v:?}");
-        }
-    }
-
-    /// A context record cannot raise IOPL or set IF, NT, RF or VM; the
-    /// arithmetic flags, TF, DF, AC and ID pass.
-    #[test]
     fn guest_eflags_keep_only_what_a_program_may_set() {
         assert_eq!(guest_eflags(0), 0x2);
         assert_eq!(guest_eflags(0x3000 | 0x200 | 0x4000 | 0x1_0000 | 0x2_0000 | 0x18_0000), 0x2,
@@ -265,15 +217,14 @@ mod tests {
         assert_eq!(access_byte(0, false), 0x93);
         assert_eq!(access_byte(3, true), 0xFB);
         assert_eq!(access_byte(3, false), 0xF3);
-        assert_eq!(flat_selector(0x10, 3), 0x13);
-        assert_eq!(flat_selector(0x08, 0), 0x08);
+        assert_eq!(user_selector(0x10), 0x13);
+        assert_eq!(user_selector(0x0B), 0x0B, "already RPL 3");
     }
 
     /// A GDT descriptor decodes to the segment the processor loads.
     #[test]
     fn gdt_descriptors_decode() {
         let loader = super::super::Loader::new_mock();
-        loader.set_guest_ring(3);
         loader.setup_idt();
         let cs = loader.gdt_segment(0x0B).expect("code");
         assert_eq!((cs.base, cs.limit, cs.type_, cs.dpl, cs.db, cs.s, cs.g, cs.present), (0, 0xFFFF_FFFF, 0xB, 3, 1, 1, 1, 1));
@@ -292,7 +243,6 @@ mod tests {
     #[test]
     fn a_ring3_frame_moves_to_the_guests_stack() {
         let loader = super::super::Loader::new_mock();
-        loader.set_guest_ring(3);
         loader.setup_idt();
         let block = loader.alloc_paging_block(TIB_BASE).expect("a block");
         super::super::guest_mem::set_thread_tlm_backing(super::super::paging::tlm_page_of(u64::from(block)).unwrap());
@@ -301,7 +251,7 @@ mod tests {
         let guest_esp = 0x0003_0000;
         let frame = [14, 6, 0x0001_2345, 0x0B, 0x246, guest_esp, 0x13];
         for (i, w) in frame.iter().enumerate() {
-            loader.guest_write::<u32>(ring0 + (r0_sp - RING0_WINDOW) + 4 * i as u32, *w).unwrap();
+            loader.system_write::<u32>(ring0 + (r0_sp - RING0_WINDOW) + 4 * i as u32, *w).unwrap();
         }
         let mut vcpu = MockVcpu::new();
         vcpu.regs = GuestRegs { rsp: u64::from(r0_sp), ..Default::default() };
@@ -320,7 +270,7 @@ mod tests {
         assert_eq!(loader.lower_ring3_frame(&mut vcpu), Ok(false));
         // A guest stack that cannot take the frame.
         let mut vcpu = MockVcpu::new();
-        loader.guest_write::<u32>(ring0 + (r0_sp - RING0_WINDOW) + 20, 0xFFFF_FF00).unwrap();
+        loader.system_write::<u32>(ring0 + (r0_sp - RING0_WINDOW) + 20, 0xFFFF_FF00).unwrap();
         vcpu.regs = GuestRegs { rsp: u64::from(r0_sp), ..Default::default() };
         assert!(loader.lower_ring3_frame(&mut vcpu).is_err());
         super::super::guest_mem::set_thread_tlm_backing(0);

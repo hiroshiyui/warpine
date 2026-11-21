@@ -25,62 +25,34 @@
 //! The host side translates `TLM_PAGE` the same way for the thread a vCPU
 //! thread runs (`guest_mem::set_thread_tlm_backing`).
 //!
-//! Protection (ADR-0113): every block lies in the paging arena, whose
-//! pages, the GDT, IDT and stubs, and the ring-0 window are supervisor-only
-//! in every thread's tables, and the API thunks' 4 MB are read-only
-//! (`CR0.WP` holds ring 0 to that too). A guest at ring 3 (the default)
-//! therefore cannot reach its tables, its TSS or Warpine's descriptor
-//! tables, and privileged instructions fault (`ring.rs`).
+//! Protection (ADR-0113): every guest thread runs at ring 3. Every block
+//! lies in the paging arena, whose pages, the GDT, IDT and stubs, and the
+//! ring-0 window are supervisor-only in every thread's tables, and the API
+//! thunks' 4 MB are read-only (`CR0.WP` holds Warpine's ring-0 stubs to
+//! that too). A guest therefore cannot reach its tables, its TSS or
+//! Warpine's descriptor tables, and `mov cr3` / `mov cr0` fault as
+//! privileged instructions (`ring.rs`). Warpine itself does not write
+//! those pages through an address a guest gave (`guest_mem::protected`).
 //!
-//! Security against a guest at ring 0 (`WARPINE_RING=0`, which may
-//! rewrite its own tables or load CR3 / CR0 itself):
+//! Security:
 //! - the host never walks the guest's tables: `guest_mem` translates only
 //!   `TLM_PAGE`, to the page Warpine itself chose for the vCPU thread when
 //!   the thread started; every access stays bounds-checked;
 //! - a block address is used only when it is one of the arena's blocks
 //!   ([`valid_block`]), with checked arithmetic;
-//! - OS/2 programs cannot touch paging (`mov cr3` is privileged, the
-//!   tables are not theirs), so a guest that turns paging off, loads its
-//!   own CR3 or changes its tables ends as a trap (`TC_TRAP`): a watch
-//!   thread kicks the paged vCPUs every [`PAGING_WATCH_INTERVAL`] and each
-//!   kicked exit looks ([`super::Loader::paging_violation`]). The kick also
-//!   ends a vCPU spinning in KVM after such a change, which never exits on
-//!   its own;
-//! - damaged tables hurt only the guest (EPT / NPT bound it): a fault ends
-//!   the process; before thread 1 runs its exit list after a fault, Warpine
-//!   rewrites the thread's tables and CR3 ([`super::Loader::repair_paging_block`]);
-//! - crash reports say whether paging is on, whether CR3 is the thread's
-//!   own block, and whether its tables are intact ([`PagingStatus`]).
+//! - crash reports say whether paging is on and whether CR3 is the
+//!   thread's own block ([`PagingStatus`]).
 //!
 //! `DosAllocThreadLocalMemory` / `DosFreeThreadLocalMemory` (Control
 //! Program Programming Reference) hand out words of the 32-DWORD
 //! thread-local area at the start of that page, 1 to 8 per call; the
 //! same words are reserved in every thread.
 
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use super::constants::*;
 use super::mutex_ext::MutexExt;
 use log::{debug, warn};
-
-/// How often the paged vCPUs are kicked to look at their paging.
-pub const PAGING_WATCH_INTERVAL: Duration = Duration::from_millis(250);
-
-/// Kick every vCPU of the process every [`PAGING_WATCH_INTERVAL`] until it
-/// ends, so that each looks at its paging (see the module documentation).
-pub fn start_paging_watch(shared: Arc<super::SharedState>) {
-    let spawned = std::thread::Builder::new().name("os2-paging-watch".into()).spawn(move || {
-        while !shared.exit_requested.load(Ordering::Relaxed) {
-            std::thread::sleep(PAGING_WATCH_INTERVAL);
-            shared.threads.table.lock_or_recover().kick_all_but(0);
-        }
-    });
-    if let Err(e) = spawned {
-        warn!("no paging watch thread ({e}): a guest changing its paging is not caught");
-    }
-}
 
 /// Pages in a thread's paging block: directory, TLM table, thread-local
 /// page, ring-0 page. (The first 4 MB go through a process table shared by
@@ -295,10 +267,6 @@ pub fn paging_block(base: u32, tib: u32) -> Vec<u8> {
     block
 }
 
-/// Bytes of a block Warpine rewrites to repair it: the directory and the
-/// tables (the thread-local page keeps its words).
-const TABLES_SIZE: u32 = TLM_OFFSET;
-
 /// Whether `base` can be a paging block: one of the paging arena's
 /// blocks ([`PAGING_BLOCKS_BASE`], every [`PAGING_BLOCK_SIZE`] bytes).
 pub fn valid_block(base: u32) -> bool {
@@ -327,13 +295,11 @@ pub fn block_of_tlm_page(page: u32) -> Option<u32> {
 /// The paging state of a vCPU, for crash reports.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PagingStatus {
-    /// CR0.PG is off (16-bit programs, or a guest that turned it off).
+    /// CR0.PG is off (the processor was reset, by a triple fault).
     Off,
-    /// CR3 is the thread's own block and its tables are as Warpine wrote them.
-    Intact,
-    /// The thread's own tables were changed (whatever CR3 holds now).
-    Damaged,
-    /// CR3 is not the block Warpine gave the thread (the guest loaded it).
+    /// CR3 is the thread's own block.
+    Own,
+    /// CR3 is not the block Warpine gave the thread.
     ForeignCr3(u64),
 }
 
@@ -341,9 +307,8 @@ impl std::fmt::Display for PagingStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             PagingStatus::Off => write!(f, "off"),
-            PagingStatus::Intact => write!(f, "on, the thread's tables intact"),
-            PagingStatus::Damaged => write!(f, "the thread's tables DAMAGED by the guest"),
-            PagingStatus::ForeignCr3(cr3) => write!(f, "on, CR3 0x{cr3:08X} is not the thread's block (loaded by the guest)"),
+            PagingStatus::Own => write!(f, "on, the thread's own tables"),
+            PagingStatus::ForeignCr3(cr3) => write!(f, "on, CR3 0x{cr3:08X} is not the thread's block"),
         }
     }
 }
@@ -385,52 +350,15 @@ impl TlmArea {
 }
 
 impl super::Loader {
-    /// Whether the directory and table of the block at `base` are as
-    /// Warpine wrote them, but for the accessed and dirty bits (which the
-    /// processor may set, though Warpine sets them already).
-    pub(crate) fn paging_block_intact(&self, base: u32) -> bool {
-        const AD: u32 = PTE_ACCESSED | PTE_DIRTY;
-        let entries = |b: &[u8]| b.as_chunks::<4>().0.iter()
-            .map(|e| u32::from_le_bytes(*e) | AD).collect::<Vec<u32>>();
-        let tib = super::guest_mem::thread_tib();
-        valid_block(base) && self.guest_read_bytes(base, TABLES_SIZE as usize)
-            .is_some_and(|now| entries(&now) == entries(&paging_block(base, tib)[..TABLES_SIZE as usize]))
-    }
-
-    /// Rewrite the directory and table of the block at `base` (its
-    /// thread-local words stay); false for an address that is no block.
-    pub(crate) fn repair_paging_block(&self, base: u32) -> bool {
-        valid_block(base) && self.guest_write_bytes(base, &paging_block(base, super::guest_mem::thread_tib())[..TABLES_SIZE as usize]).is_some()
-    }
-
     /// The paging state of a vCPU with `sregs` on this host thread (whose
-    /// block `guest_mem` knows from `run_vcpu`).
+    /// block `guest_mem` knows from `run_vcpu`), for crash reports.
     pub(crate) fn paging_status(&self, sregs: &super::vm_backend::GuestSregs) -> PagingStatus {
-        // The thread's own tables first: a triple fault resets the vCPU's
-        // registers, but damage the guest did is still in memory.
-        let own = block_of_tlm_page(super::guest_mem::thread_tlm_backing());
-        if own.is_some_and(|base| !self.paging_block_intact(base)) {
-            return PagingStatus::Damaged;
-        }
         if sregs.cr0 & CR0_PG == 0 {
             return PagingStatus::Off;
         }
-        match own {
-            Some(base) if sregs.cr3 & CR3_ADDRESS == base as u64 => PagingStatus::Intact,
+        match block_of_tlm_page(super::guest_mem::thread_tlm_backing()) {
+            Some(base) if sregs.cr3 & CR3_ADDRESS == base as u64 => PagingStatus::Own,
             _ => PagingStatus::ForeignCr3(sregs.cr3),
-        }
-    }
-
-    /// What is wrong with the paging of `vcpu`, a thread this host thread
-    /// runs, when the guest changed it: its tables changed, paging off, or
-    /// a CR3 that is not its block. None when it is as Warpine set it up,
-    /// or the thread runs unpaged anyway.
-    pub(crate) fn paging_violation(&self, vcpu: &dyn super::vm_backend::VcpuBackend) -> Option<PagingStatus> {
-        block_of_tlm_page(super::guest_mem::thread_tlm_backing())?;
-        let sregs = vcpu.get_sregs().ok()?;
-        match self.paging_status(&sregs) {
-            PagingStatus::Intact => None,
-            other => Some(other),
         }
     }
 
@@ -439,7 +367,7 @@ impl super::Loader {
     pub(crate) fn alloc_paging_block(&self, tib: u32) -> Option<u32> {
         self.ensure_process_tables();
         let base = self.shared.paging_arena.lock_or_recover().alloc()?;
-        if self.guest_write_bytes(base, &paging_block(base, tib)).is_none() {
+        if self.system_write_bytes(base, &paging_block(base, tib)).is_none() {
             self.shared.paging_arena.lock_or_recover().free(base);
             return None;
         }
@@ -461,7 +389,7 @@ impl super::Loader {
             .map(|page| if page < LOW_GUARD { 0 } else { page | PTE_FLAGS });
         let alloc = (0..ALLOC_CHUNKS * ENTRIES).map(|i| DYNAMIC_ALLOC_BASE + (i << PAGE_SHIFT));
         let tables: Vec<u8> = exe.chain(alloc).flat_map(u32::to_le_bytes).collect();
-        if self.guest_write_bytes(PROCESS_TABLES, &tables).is_none() {
+        if self.system_write_bytes(PROCESS_TABLES, &tables).is_none() {
             warn!("the process page tables could not be written");
         }
     }
@@ -702,36 +630,47 @@ mod tests {
         }
     }
 
-    /// Tables the guest damaged are seen, reported and repaired; the
-    /// thread-local words survive a repair.
+    /// The crash report's paging state: the thread's own block, paging
+    /// off (after a reset), or a CR3 that is not its block.
     #[test]
-    fn damaged_tables_are_seen_and_repaired() {
+    fn the_paging_state_names_the_threads_own_block() {
         let loader = super::super::Loader::new_mock();
         let base = loader.alloc_paging_block(TIB_BASE).expect("a paging block");
         let paged = |cr3: u64| super::super::vm_backend::GuestSregs { cr0: CR0_PG | 1, cr3, ..Default::default() };
         super::super::guest_mem::set_thread_tlm_backing(tlm_page_of(base as u64).unwrap());
-        super::super::guest_mem::set_thread_tib(TIB_BASE);
-        assert!(loader.paging_block_intact(base));
-        assert_eq!(loader.paging_status(&paged(base as u64)), PagingStatus::Intact);
+        assert_eq!(loader.paging_status(&paged(base as u64)), PagingStatus::Own);
+        assert_eq!(loader.paging_status(&paged(base as u64 | CR3_PWT)), PagingStatus::Own, "a TLB flush's CR3");
         assert_eq!(loader.paging_status(&Default::default()), PagingStatus::Off);
         assert_eq!(loader.paging_status(&paged(0x1234_5000)), PagingStatus::ForeignCr3(0x1234_5000));
-        // The processor's accessed / dirty bits are no damage.
-        let e = loader.guest_read::<u32>(base + 4 * 7).unwrap();
-        loader.guest_write::<u32>(base + 4 * 7, e & !(PTE_ACCESSED | PTE_DIRTY)).unwrap();
-        assert!(loader.paging_block_intact(base));
-        // The guest zeroes a directory entry and remaps its table's TLM entry.
-        loader.guest_write::<u32>(base + 4 * 5, 0).unwrap();
-        loader.guest_write::<u32>(base + TABLE_OFFSET + 4 * TLM_ENTRY, 0x0010_0007).unwrap();
-        loader.guest_write::<u32>(base + TLM_OFFSET, 0x5151).unwrap();
-        assert!(!loader.paging_block_intact(base));
-        assert_eq!(loader.paging_status(&paged(base as u64)), PagingStatus::Damaged);
-        assert!(loader.repair_paging_block(base));
-        assert!(loader.paging_block_intact(base));
-        assert_eq!(loader.guest_read::<u32>(base + TLM_OFFSET), Some(0x5151), "the words stay");
-        assert!(!loader.repair_paging_block(0x1000), "no block there");
-        assert!(!loader.paging_block_intact(0x1000));
         super::super::guest_mem::set_thread_tlm_backing(0);
-        super::super::guest_mem::set_thread_tib(0);
+    }
+
+    /// Warpine's protected memory (the GDT, IDT and stubs, the paging
+    /// arena) cannot be written through an ordinary write, which is what
+    /// an API call writing through a guest's pointer does; Warpine's own
+    /// system writes can. The thread-local page, whose backing lies in the
+    /// arena, stays writable at `TLM_PAGE`.
+    #[test]
+    fn protected_memory_takes_only_system_writes() {
+        use super::super::guest_mem::protected;
+        let loader = super::super::Loader::new_mock();
+        let base = loader.alloc_paging_block(TIB_BASE).expect("a paging block");
+        for addr in [GDT_BASE, IDT_BASE, IDT_HANDLER_BASE, TIB_BASE - 4, PAGING_ARENA_BASE, base, base + TLM_OFFSET, PAGING_ARENA_END - 4] {
+            assert!(protected(addr, 4), "{addr:#x}");
+            assert_eq!(loader.guest_write::<u32>(addr, 0x5151), None, "{addr:#x}: refused");
+            assert!(loader.guest_write_bytes(addr, &[1, 2, 3, 4]).is_none(), "{addr:#x}");
+            assert!(loader.guest_slice_mut(addr, 4).is_none(), "{addr:#x}");
+            assert!(loader.guest_read::<u32>(addr).is_some(), "{addr:#x}: reads stay possible");
+        }
+        assert!(protected(TIB_BASE - 2, 4), "a write that straddles the edge");
+        for addr in [TIB_BASE, PIB_BASE, TLM_PAGE, FS_WINDOW, PAGING_ARENA_END, DYNAMIC_ALLOC_BASE] {
+            assert!(!protected(addr, 4), "{addr:#x}");
+        }
+        assert_eq!(loader.system_write::<u32>(base + TLM_OFFSET, 0x5151), Some(()));
+        super::super::guest_mem::set_thread_tlm_backing(base + TLM_OFFSET);
+        assert_eq!(loader.guest_write::<u32>(TLM_PAGE + 8, 7), Some(()), "TLM_PAGE, translated into the arena");
+        assert_eq!(loader.guest_read::<u32>(TLM_PAGE), Some(0x5151));
+        super::super::guest_mem::set_thread_tlm_backing(0);
     }
 
     #[test]
@@ -787,31 +726,6 @@ mod tests {
         super::super::guest_mem::set_thread_tib(0);
         assert_eq!(loader.guest_read::<u32>(TLM_PAGE), Some(0x1111));
         assert_eq!(loader.guest_read::<u32>(TLM_PAGE + 4), Some(0));
-    }
-
-    /// A guest that changed its paging is caught: tables, paging off, its
-    /// own CR3; a thread running as set up, or unpaged from the start, is not.
-    #[test]
-    fn a_guest_changing_its_paging_is_caught() {
-        use super::super::vm_backend::mock::MockVcpu;
-        let loader = super::super::Loader::new_mock();
-        let base = loader.alloc_paging_block(TIB_BASE).expect("a paging block");
-        let mut vcpu = MockVcpu::new();
-        loader.setup_vcpu_segments_32bit(&mut vcpu, TIB_BASE as u64, base);
-        assert_eq!(loader.paging_violation(&vcpu), None, "no block known: an unpaged thread");
-        super::super::guest_mem::set_thread_tlm_backing(tlm_page_of(base as u64).unwrap());
-        super::super::guest_mem::set_thread_tib(TIB_BASE);
-        assert_eq!(loader.paging_violation(&vcpu), None, "as set up");
-        vcpu.sregs.cr3 = 0xF000_0000;
-        assert_eq!(loader.paging_violation(&vcpu), Some(PagingStatus::ForeignCr3(0xF000_0000)));
-        vcpu.sregs.cr3 = base as u64;
-        vcpu.sregs.cr0 &= !CR0_PG;
-        assert_eq!(loader.paging_violation(&vcpu), Some(PagingStatus::Off));
-        vcpu.sregs.cr0 |= CR0_PG;
-        loader.guest_write::<u32>(base + TABLE_OFFSET, 0).unwrap();
-        assert_eq!(loader.paging_violation(&vcpu), Some(PagingStatus::Damaged));
-        super::super::guest_mem::set_thread_tlm_backing(0);
-        super::super::guest_mem::set_thread_tib(0);
     }
 
     /// Host accesses near the thread-local page stay inside guest memory

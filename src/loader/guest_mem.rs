@@ -65,6 +65,26 @@ fn tlm_translate(offset: u32, len: usize) -> u32 {
     }
 }
 
+// ── Warpine's protected memory ────────────────────────────────────────────────
+
+/// Whether `len` bytes at the guest-physical `offset` touch Warpine's
+/// protected memory (ADR-0113): the GDT, IDT and exception stubs (the
+/// system area below the TIB) and the paging arena (page tables, TSSs,
+/// ring-0 stacks). A guest at ring 3 cannot write them itself, and Warpine
+/// does not write them on its behalf: every write through a guest-given
+/// pointer goes through the checked paths, and only Warpine's own setup
+/// uses the `*_system` ones. The address is the one given, before the
+/// thread-local page is translated: `TLM_PAGE` stays writable, its backing
+/// page in the arena does not.
+pub fn protected(offset: u32, len: usize) -> bool {
+    use super::constants::{SYSTEM_AREA_BASE, TIB_BASE};
+    use super::paging::{PAGING_ARENA_BASE, PAGING_ARENA_END};
+    let start = u64::from(offset);
+    let end = start + len.max(1) as u64;
+    let overlaps = |lo: u32, hi: u32| start < u64::from(hi) && end > u64::from(lo);
+    overlaps(SYSTEM_AREA_BASE, TIB_BASE) || overlaps(PAGING_ARENA_BASE, PAGING_ARENA_END)
+}
+
 // ── GuestMemory ───────────────────────────────────────────────────────────────
 
 /// Owns the `mmap`-backed host memory region that backs the KVM guest physical
@@ -181,19 +201,52 @@ impl GuestMemory {
     }
 
     /// Write a `Copy` value to guest memory at `offset`.
-    /// Returns `None` if the access would be out of bounds.
+    /// Returns `None` if the access would be out of bounds, or would touch
+    /// Warpine's protected memory ([`protected`]).
     pub fn write<T: Copy>(&self, offset: u32, val: T) -> Option<()> {
+        if protected(offset, std::mem::size_of::<T>()) {
+            return None;
+        }
+        self.write_system(offset, val)
+    }
+
+    /// Copy `data` into guest memory starting at `offset`.
+    /// Returns `None` if the write would be out of bounds, or would touch
+    /// Warpine's protected memory ([`protected`]).
+    pub fn write_bytes(&self, offset: u32, data: &[u8]) -> Option<()> {
+        if protected(offset, data.len()) {
+            return None;
+        }
+        self.write_bytes_system(offset, data)
+    }
+
+    /// [`Self::write`] into Warpine's protected memory too: only for its
+    /// own structures (descriptor tables, page tables), never at an
+    /// address a guest gave.
+    pub fn write_system<T: Copy>(&self, offset: u32, val: T) -> Option<()> {
         let p = self.ptr_at(offset, std::mem::size_of::<T>())?;
+        // SAFETY: `ptr_at` checked that the whole value lies inside the
+        // mapping; the write is unaligned-safe.
         unsafe { ptr::write_unaligned(p as *mut T, val); }
         Some(())
     }
 
-    /// Copy `data` into guest memory starting at `offset`.
-    /// Returns `None` if the write would be out of bounds.
-    pub fn write_bytes(&self, offset: u32, data: &[u8]) -> Option<()> {
+    /// [`Self::write_bytes`] into Warpine's protected memory too (see
+    /// [`Self::write_system`]).
+    pub fn write_bytes_system(&self, offset: u32, data: &[u8]) -> Option<()> {
         let p = self.ptr_at(offset, data.len())?;
+        // SAFETY: `ptr_at` checked that `data.len()` bytes from `p` lie
+        // inside the mapping; `data` is host memory, so they do not overlap.
         unsafe { ptr::copy_nonoverlapping(data.as_ptr(), p, data.len()); }
         Some(())
+    }
+
+    /// Copy `len` bytes out of guest memory; `None` if out of bounds.
+    pub fn read_bytes(&self, offset: u32, len: usize) -> Option<Vec<u8>> {
+        let p = self.ptr_at(offset, len)?;
+        // SAFETY: `ptr_at` checked that `len` bytes from `p` lie inside
+        // the mapping; they are copied out at once.
+        Some(unsafe { std::slice::from_raw_parts(p, len) }.to_vec())
     }
 
     /// Return a mutable byte slice into guest memory at `offset..offset+len`.
@@ -205,6 +258,9 @@ impl GuestMemory {
     /// ensure no other live mutable reference into the same region exists.
     #[allow(clippy::mut_from_ref)]
     pub fn slice_mut(&self, offset: u32, len: usize) -> Option<&mut [u8]> {
+        if protected(offset, len) {
+            return None;
+        }
         let p = self.ptr_at(offset, len)?;
         Some(unsafe { std::slice::from_raw_parts_mut(p, len) })
     }
@@ -241,7 +297,19 @@ impl super::Loader {
 
     /// Copy `len` bytes out of guest memory; `None` if out of bounds.
     pub fn guest_read_bytes(&self, offset: u32, len: usize) -> Option<Vec<u8>> {
-        self.shared.guest_mem.slice_mut(offset, len).map(|s| s.to_vec())
+        self.shared.guest_mem.read_bytes(offset, len)
+    }
+
+    /// Write into Warpine's protected memory (descriptor tables, page
+    /// tables): only for Warpine's own structures, never at an address a
+    /// guest gave (`GuestMemory::write_system`).
+    pub(crate) fn system_write<T: Copy>(&self, offset: u32, val: T) -> Option<()> {
+        self.shared.guest_mem.write_system::<T>(offset, val)
+    }
+
+    /// Bytes into Warpine's protected memory (see [`Self::system_write`]).
+    pub(crate) fn system_write_bytes(&self, offset: u32, data: &[u8]) -> Option<()> {
+        self.shared.guest_mem.write_bytes_system(offset, data)
     }
 
     /// Get a mutable slice of guest memory with bounds check.

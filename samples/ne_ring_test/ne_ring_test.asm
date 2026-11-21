@@ -2,8 +2,7 @@
 ;
 ; SPDX-License-Identifier: GPL-3.0-or-later
 ;
-; Warpine runs 16-bit programs at ring 3, as OS/2 does (WARPINE_RING=0:
-; ring 0, for one release). This program:
+; Warpine runs 16-bit programs at ring 3, as OS/2 does. This program:
 ;   - prints the ring its code runs at (CS's RPL) as information;
 ;   - checks that its data and stack selectors carry the same RPL;
 ;   - executes CLI, which only ring 0 (or an I/O privilege level the

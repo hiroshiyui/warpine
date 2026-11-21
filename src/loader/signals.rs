@@ -578,11 +578,10 @@ impl super::Loader {
             // A must-complete section holds signals and asynchronous
             // termination until it ends (DosExitMustComplete).
             || threads.must_complete.load(Ordering::Acquire) != 0
-            // At ring 3, a thread kicked inside an exception stub (ring 0,
-            // ADR-0113) takes nothing there: the stub exits at once, and
-            // the next round finds the thread at its own ring.
-            || (self.guest_ring() == 3
-                && vcpu.get_sregs().is_ok_and(|s| (s.cs.selector & 3) as u8 != self.thread_ring())) {
+            // A thread kicked inside an exception stub (ring 0's code
+            // selector, ADR-0113) takes nothing there: the stub exits at
+            // once, and the next round finds the thread at ring 3.
+            || vcpu.get_sregs().is_ok_and(|s| s.cs.selector == KERNEL_CODE_SEL) {
             return SignalAction::None;
         }
         // A termination asked for from outside comes before signals.
