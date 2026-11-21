@@ -4,7 +4,8 @@
 //
 // Collects a snapshot of guest CPU state at crash time (exception, triple
 // fault, unhandled VMEXIT, KVM error) and writes a human-readable report to
-// both stderr and a `warpine-crash-<pid>.txt` file in the current directory.
+// both stderr and a `warpine-crash-<pid>.txt` file in `$XDG_STATE_HOME/warpine`
+// (`crash_dir`, ADR-0111).
 
 use super::{GuestRegs, GuestSregs, Loader, ApiCallRecord};
 use super::mutex_ext::MutexExt;
@@ -125,7 +126,7 @@ impl Loader {
     }
 
     /// Format `report`, print it to stderr, and write it to
-    /// `warpine-crash-<pid>.txt` in the current directory.
+    /// `warpine-crash-<pid>.txt` in [`crash_dir`].
     ///
     /// Returns the path written (or a diagnostic string on I/O error).
     pub(crate) fn dump_crash_report(&self, report: &CrashReport) -> String {
@@ -133,7 +134,9 @@ impl Loader {
         eprint!("{}", text);
 
         let pid  = std::process::id();
-        let path = format!("warpine-crash-{}.txt", pid);
+        let dir = crash_dir();
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(format!("warpine-crash-{}.txt", pid)).display().to_string();
         match std::fs::File::create(&path) {
             Ok(mut f) => {
                 let _ = f.write_all(text.as_bytes());
@@ -145,6 +148,22 @@ impl Loader {
                 format!("<failed: {}>", e)
             }
         }
+    }
+}
+
+/// Where crash dumps go (ADR-0111): `$XDG_STATE_HOME/warpine`, else
+/// `~/.local/state/warpine`, else the current directory. Not the current
+/// directory first: the sandbox (`src/sandbox.rs`) may write only here.
+pub fn crash_dir() -> std::path::PathBuf {
+    crash_dir_from(std::env::var_os("XDG_STATE_HOME"), std::env::var_os("HOME"))
+}
+
+fn crash_dir_from(state: Option<std::ffi::OsString>, home: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    use std::path::PathBuf;
+    match (state.filter(|s| !s.is_empty()), home.filter(|h| !h.is_empty())) {
+        (Some(state), _) => PathBuf::from(state).join("warpine"),
+        (None, Some(home)) => PathBuf::from(home).join(".local/state/warpine"),
+        (None, None) => PathBuf::from("."),
     }
 }
 
@@ -330,6 +349,16 @@ fn format_timestamp(ts: std::time::SystemTime) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn crash_dumps_go_to_the_state_directory() {
+        use std::path::PathBuf;
+        let some = |s: &str| Some(std::ffi::OsString::from(s));
+        assert_eq!(super::crash_dir_from(some("/s"), some("/h")), PathBuf::from("/s/warpine"));
+        assert_eq!(super::crash_dir_from(None, some("/h")), PathBuf::from("/h/.local/state/warpine"));
+        assert_eq!(super::crash_dir_from(some(""), some("/h")), PathBuf::from("/h/.local/state/warpine"), "empty is unset");
+        assert_eq!(super::crash_dir_from(None, None), PathBuf::from("."));
+    }
+
     use super::*;
     use crate::loader::Loader;
 

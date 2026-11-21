@@ -76,9 +76,9 @@
 <!-- entry -->
 <g id="node3" class="node">
 <title>entry</title>
-<path fill="#bbdefb" stroke="black" d="M5135.8,-1204.91C5135.8,-1204.91 4880.2,-1204.91 4880.2,-1204.91 4874.2,-1204.91 4868.2,-1198.91 4868.2,-1192.91 4868.2,-1192.91 4868.2,-1180.91 4868.2,-1180.91 4868.2,-1174.91 4874.2,-1168.91 4880.2,-1168.91 4880.2,-1168.91 5135.8,-1168.91 5135.8,-1168.91 5141.8,-1168.91 5147.8,-1174.91 5147.8,-1180.91 5147.8,-1180.91 5147.8,-1192.91 5147.8,-1192.91 5147.8,-1198.91 5141.8,-1204.91 5135.8,-1204.91"/>
-<text xml:space="preserve" text-anchor="start" x="4879" y="-1186.96" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Start&#45;up: PM, VIO window, full screen or headless</text>
-<text xml:space="preserve" text-anchor="start" x="4982.88" y="-1178.81" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">main.rs, api.rs</text>
+<path fill="#bbdefb" stroke="black" d="M5193.05,-1204.91C5193.05,-1204.91 4752.95,-1204.91 4752.95,-1204.91 4746.95,-1204.91 4740.95,-1198.91 4740.95,-1192.91 4740.95,-1192.91 4740.95,-1180.91 4740.95,-1180.91 4740.95,-1174.91 4746.95,-1168.91 4752.95,-1168.91 4752.95,-1168.91 5193.05,-1168.91 5193.05,-1168.91 5199.05,-1168.91 5205.05,-1174.91 5205.05,-1180.91 5205.05,-1180.91 5205.05,-1192.91 5205.05,-1192.91 5205.05,-1198.91 5199.05,-1204.91 5193.05,-1204.91"/>
+<text xml:space="preserve" text-anchor="start" x="4751.75" y="-1186.96" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Start&#45;up: PM, VIO window, full screen or headless; the Landlock sandbox (ADR&#45;0111)</text>
+<text xml:space="preserve" text-anchor="start" x="4926.12" y="-1178.81" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">main.rs, api.rs, sandbox.rs</text>
 </g>
 <!-- formats -->
 <g id="node4" class="node">
@@ -90,9 +90,9 @@
 <!-- entry&#45;&gt;formats -->
 <g id="edge1" class="edge">
 <title>entry&#45;&gt;formats</title>
-<path fill="none" stroke="#455a64" d="M4999.94,-1168.57C4994.95,-1157.84 4988.44,-1143.82 4982.76,-1131.61"/>
-<polygon fill="#455a64" stroke="#455a64" points="4986.07,-1130.43 4978.69,-1122.84 4979.73,-1133.38 4986.07,-1130.43"/>
-<text xml:space="preserve" text-anchor="middle" x="5002.9" y="-1142.36" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">parse</text>
+<path fill="none" stroke="#455a64" d="M4972.36,-1168.57C4971.98,-1158.16 4971.49,-1144.67 4971.05,-1132.72"/>
+<polygon fill="#455a64" stroke="#455a64" points="4974.56,-1132.84 4970.69,-1122.98 4967.56,-1133.1 4974.56,-1132.84"/>
+<text xml:space="preserve" text-anchor="middle" x="4983.3" y="-1142.36" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">parse</text>
 </g>
 <!-- loading -->
 <g id="node5" class="node">
@@ -105,9 +105,9 @@
 <!-- entry&#45;&gt;loading -->
 <g id="edge2" class="edge">
 <title>entry&#45;&gt;loading</title>
-<path fill="none" stroke="#455a64" d="M5072.63,-1168.47C5118.84,-1156 5181.34,-1139.14 5230.75,-1125.8"/>
-<polygon fill="#455a64" stroke="#455a64" points="5231.52,-1129.22 5240.26,-1123.24 5229.7,-1122.46 5231.52,-1129.22"/>
-<text xml:space="preserve" text-anchor="middle" x="5177.59" y="-1142.36" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">load</text>
+<path fill="none" stroke="#455a64" d="M5045.09,-1168.47C5097.08,-1155.9 5167.54,-1138.85 5222.87,-1125.47"/>
+<polygon fill="#455a64" stroke="#455a64" points="5223.35,-1128.95 5232.25,-1123.2 5221.71,-1122.15 5223.35,-1128.95"/>
+<text xml:space="preserve" text-anchor="middle" x="5161.13" y="-1142.36" font-family="Helvetica,sans-Serif" font-size="9.00" fill="#37474f">load</text>
 </g>
 <!-- loading&#45;&gt;program -->
 <g id="edge3" class="edge">
@@ -284,9 +284,9 @@
 <!-- core -->
 <g id="node8" class="node">
 <title>core</title>
-<path fill="#bbdefb" stroke="black" d="M5524.68,-1204.91C5524.68,-1204.91 5235.32,-1204.91 5235.32,-1204.91 5229.32,-1204.91 5223.32,-1198.91 5223.32,-1192.91 5223.32,-1192.91 5223.32,-1180.91 5223.32,-1180.91 5223.32,-1174.91 5229.32,-1168.91 5235.32,-1168.91 5235.32,-1168.91 5524.68,-1168.91 5524.68,-1168.91 5530.68,-1168.91 5536.68,-1174.91 5536.68,-1180.91 5536.68,-1180.91 5536.68,-1192.91 5536.68,-1192.91 5536.68,-1198.91 5530.68,-1204.91 5524.68,-1204.91"/>
-<text xml:space="preserve" text-anchor="start" x="5234.12" y="-1186.96" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Loader core: Loader, SharedState, managers, constants</text>
-<text xml:space="preserve" text-anchor="start" x="5244.62" y="-1178.81" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/mod.rs, loader/managers.rs, loader/mutex_ext.rs, loader/constants.rs</text>
+<path fill="#bbdefb" stroke="black" d="M5535.68,-1204.91C5535.68,-1204.91 5246.32,-1204.91 5246.32,-1204.91 5240.32,-1204.91 5234.32,-1198.91 5234.32,-1192.91 5234.32,-1192.91 5234.32,-1180.91 5234.32,-1180.91 5234.32,-1174.91 5240.32,-1168.91 5246.32,-1168.91 5246.32,-1168.91 5535.68,-1168.91 5535.68,-1168.91 5541.68,-1168.91 5547.68,-1174.91 5547.68,-1180.91 5547.68,-1180.91 5547.68,-1192.91 5547.68,-1192.91 5547.68,-1198.91 5541.68,-1204.91 5535.68,-1204.91"/>
+<text xml:space="preserve" text-anchor="start" x="5245.12" y="-1186.96" font-family="Helvetica,sans-Serif" font-weight="bold" font-size="11.00">Loader core: Loader, SharedState, managers, constants</text>
+<text xml:space="preserve" text-anchor="start" x="5255.62" y="-1178.81" font-family="Helvetica,sans-Serif" font-size="8.00" fill="#37474f">loader/mod.rs, loader/managers.rs, loader/mutex_ext.rs, loader/constants.rs</text>
 </g>
 <!-- nls -->
 <g id="node10" class="node">

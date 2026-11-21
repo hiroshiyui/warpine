@@ -78,6 +78,7 @@ fn run_sample_args(sample: &str, args: &[&str], timeout_secs: u64, env: &[(&str,
         .args(args)
         .env("WARPINE_HEADLESS", "1")
         .env("XDG_DATA_HOME", data_home.path())
+        .env("XDG_STATE_HOME", data_home.path())
         // Named-pipe and thread-session directories go there too, never
         // into the user's own runtime directory.
         .env("XDG_RUNTIME_DIR", data_home.path())
@@ -440,6 +441,7 @@ fn test_ansi_escape_sequences_in_a_vio_window() {
         .env("SDL_AUDIODRIVER", "dummy")
         .env("RUST_LOG", "error")
         .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_STATE_HOME", dir.path())
         // Named-pipe and thread-session directories go there too, never
         // into the user's own runtime directory.
         .env("XDG_RUNTIME_DIR", dir.path())
@@ -473,6 +475,7 @@ fn test_cmd_ends_at_the_end_of_piped_input() {
         .envs(PINNED_LOCALE.iter().copied())
         .env("RUST_LOG", "error")
         .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_STATE_HOME", dir.path())
         // Named-pipe and thread-session directories go there too, never
         // into the user's own runtime directory.
         .env("XDG_RUNTIME_DIR", dir.path())
@@ -527,6 +530,7 @@ fn test_cmd_pipe_to_an_external_program() {
         .envs(PINNED_LOCALE.iter().copied())
         .env("RUST_LOG", "error")
         .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_STATE_HOME", dir.path())
         // Named-pipe and thread-session directories go there too, never
         // into the user's own runtime directory.
         .env("XDG_RUNTIME_DIR", dir.path())
@@ -587,6 +591,7 @@ fn run_cmd_headless(args: &[&str], input: &[u8], prepare: impl FnOnce(&Path))
         .envs(PINNED_LOCALE.iter().copied())
         .env("RUST_LOG", "error")
         .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_STATE_HOME", dir.path())
         .env("XDG_RUNTIME_DIR", dir.path())
         .env("SDL_VIDEODRIVER", "dummy")
         .env("SDL_AUDIODRIVER", "dummy")
@@ -959,7 +964,7 @@ fn test_thread_local_memory() {
     assert_eq!(code, 0, "{out}");
 }
 
-/// Run a paging_abuse_test variant with its working directory in a fresh
+/// Run a paging_abuse_test variant with its state directory in a fresh
 /// directory (where Warpine writes its crash dump): stdout, the exit
 /// code, and the crash dumps written.
 fn run_paging_abuse(exe: &str, sigterm_after: Option<Duration>) -> Option<(String, i32, Vec<String>)> {
@@ -971,6 +976,7 @@ fn run_paging_abuse(exe: &str, sigterm_after: Option<Duration>) -> Option<(Strin
         .current_dir(work.path())
         .env("WARPINE_HEADLESS", "1")
         .env("XDG_DATA_HOME", work.path())
+        .env("XDG_STATE_HOME", work.path())
         .env("XDG_RUNTIME_DIR", work.path())
         .envs(PINNED_LOCALE.iter().copied())
         .env("RUST_LOG", "error")
@@ -996,7 +1002,8 @@ fn run_paging_abuse(exe: &str, sigterm_after: Option<Duration>) -> Option<(Strin
     let mut out = String::new();
     use std::io::Read;
     child.stdout.take().unwrap().read_to_string(&mut out).ok();
-    let dumps = std::fs::read_dir(work.path()).unwrap()
+    // Crash dumps go to $XDG_STATE_HOME/warpine (ADR-0111).
+    let dumps = std::fs::read_dir(work.path().join("warpine")).into_iter().flatten()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_name().to_string_lossy().starts_with("warpine-crash-"))
         .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
@@ -1178,6 +1185,7 @@ fn run_kill_test_mode(mode: &str, stdin: &[u8]) -> (String, i32, tempfile::TempD
         .env("WARPINE_HEADLESS", "1")
         .env("WARPINE_OS2ARGS", format!("child {mode}"))
         .env("XDG_DATA_HOME", data_home.path())
+        .env("XDG_STATE_HOME", data_home.path())
         .env("XDG_RUNTIME_DIR", data_home.path())
         .envs(PINNED_LOCALE.iter().copied())
         .env("RUST_LOG", "error")
@@ -1257,6 +1265,7 @@ fn test_sigterm_runs_the_exit_list() {
         .env("WARPINE_HEADLESS", "1")
         .env("WARPINE_OS2ARGS", "child exitlist")
         .env("XDG_DATA_HOME", data_home.path())
+        .env("XDG_STATE_HOME", data_home.path())
         .env("XDG_RUNTIME_DIR", data_home.path())
         .envs(PINNED_LOCALE.iter().copied())
         .env("RUST_LOG", "error")
@@ -1307,6 +1316,7 @@ fn test_sigquit_is_ctrl_break() {
         .env("WARPINE_HEADLESS", "1")
         .env("WARPINE_OS2ARGS", "child brk")
         .env("XDG_DATA_HOME", data_home.path())
+        .env("XDG_STATE_HOME", data_home.path())
         .env("XDG_RUNTIME_DIR", data_home.path())
         .envs(PINNED_LOCALE.iter().copied())
         .env("RUST_LOG", "error")
@@ -1398,6 +1408,7 @@ fn run_kill_test_window(vio: Option<&str>) -> Option<String> {
         .env("RUST_LOG", "error")
         .env("WARPINE_OS2ARGS", "child win")
         .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_STATE_HOME", dir.path())
         .env("XDG_RUNTIME_DIR", dir.path())
         .env("WARPINE_GUI_SCRIPT", &session)
         .env_remove("WARPINE_VIO")
@@ -1512,6 +1523,28 @@ fn assert_text_checks_pass(sample: &str, prefix: &str, min: usize) {
     assert!(failed.is_empty(), "failed checks: {failed:#?}");
     assert!(out.contains(&format!("{prefix}: done {n}/{n}", n = checks.len())), "{out}");
     assert_eq!(code, 0, "{out}");
+}
+
+/// The Landlock sandbox (ADR-0111): a confined process cannot read the
+/// home directory, can read the system's files, and is not confined with
+/// WARPINE_SANDBOX=off. Skipped on a kernel without Landlock.
+#[test]
+fn the_sandbox_keeps_the_home_directory_out_of_reach() {
+    let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from).filter(|h| h.is_dir()) else { return };
+    let check = |path: &std::path::Path, sandbox: Option<&str>| {
+        let mut cmd = Command::new(warpine());
+        cmd.arg("--sandbox-check").arg(path).env("RUST_LOG", "error");
+        match sandbox {
+            Some(v) => { cmd.env("WARPINE_SANDBOX", v); }
+            None => { cmd.env_remove("WARPINE_SANDBOX"); }
+        }
+        String::from_utf8_lossy(&cmd.output().expect("run warpine").stdout).into_owned()
+    };
+    let out = check(&home, None);
+    if out.starts_with("Ok(Unsupported)") { return; }
+    assert_eq!(out.trim(), "Ok(Confined { fully: true }): denied", "the home directory");
+    assert_eq!(check(std::path::Path::new("/usr"), None).trim(), "Ok(Confined { fully: true }): readable");
+    assert_eq!(check(&home, Some("off")).trim(), "Ok(Disabled): readable");
 }
 
 /// xcpt_unwind_test (ADR-0110): DosUnwindException calls the handlers
@@ -2100,6 +2133,7 @@ fn gdb_debugs_a_c_program_at_the_source_level() {
             .args(["--gdb", &port.to_string()]).arg(&exe)
             .env("WARPINE_HEADLESS", "1")
             .env("XDG_DATA_HOME", dir.path())
+            .env("XDG_STATE_HOME", dir.path())
             .env("XDG_RUNTIME_DIR", dir.path())
             .envs(PINNED_LOCALE.iter().copied())
             .env("RUST_LOG", "error")
@@ -2180,6 +2214,7 @@ fn dos_get_message_reads_bound_and_drive_message_files() {
         let out = Command::new("timeout").arg("30").arg(warpine()).arg(dir.path().join("c_msg_test.exe"))
             .env("WARPINE_HEADLESS", "1")
             .env("XDG_DATA_HOME", dir.path())
+            .env("XDG_STATE_HOME", dir.path())
             .env("XDG_RUNTIME_DIR", dir.path())
             .envs(PINNED_LOCALE.iter().copied())
             .env("RUST_LOG", "error")
@@ -2251,6 +2286,7 @@ fn run_gui_script_env(sample: &str, script: &Path, capture: bool, env: &[(&str, 
         .env_remove("WARPINE_COMPOSITOR")
         .env_remove("WARPINE_DESKTOP")
         .env("XDG_DATA_HOME", data_home.path())
+        .env("XDG_STATE_HOME", data_home.path())
         // Named-pipe and thread-session directories go there too, never
         // into the user's own runtime directory.
         .env("XDG_RUNTIME_DIR", data_home.path())
@@ -2450,6 +2486,7 @@ fn run_cmd_script(vio: Option<&str>, dumps: &[&str], script: impl FnOnce(&[std::
         .env("WARPINE_GUI_SCRIPT", &session)
         // Drive C: in the session's temporary directory, not the user's own.
         .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_STATE_HOME", dir.path())
         // Named-pipe and thread-session directories go there too, never
         // into the user's own runtime directory.
         .env("XDG_RUNTIME_DIR", dir.path())
@@ -2505,6 +2542,7 @@ fn run_mou_session(vio: Option<&str>, origin: (i32, i32)) -> Option<String> {
         .env("RUST_LOG", "error")
         // C: is $XDG_DATA_HOME/warpine/drive_c: the sample's file lands here.
         .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_STATE_HOME", dir.path())
         // Named-pipe and thread-session directories go there too, never
         // into the user's own runtime directory.
         .env("XDG_RUNTIME_DIR", dir.path())
@@ -2660,6 +2698,7 @@ fn run_cmd_windowed_with(steps: &str, dumps: usize, files: &[&str]) -> Option<Wi
         .env("WARPINE_GUI_SCRIPT", &session)
         // Drive C: is $XDG_DATA_HOME/warpine/drive_c.
         .env("XDG_DATA_HOME", dir.path())
+        .env("XDG_STATE_HOME", dir.path())
         // Named-pipe and thread-session directories go there too, never
         // into the user's own runtime directory.
         .env("XDG_RUNTIME_DIR", dir.path())

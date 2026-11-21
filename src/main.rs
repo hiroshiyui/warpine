@@ -5,6 +5,7 @@ pub mod loader;
 pub mod api;
 pub mod gui;
 pub mod desktop;
+pub mod sandbox;
 
 use std::env;
 use std::sync::Arc;
@@ -124,6 +125,7 @@ fn main() {
         eprintln!("Usage: {} <os2_executable> [--gdb <port>]", args[0]);
         eprintln!("       {} --compat         Print API compatibility report", args[0]);
         eprintln!("       {} {LICENSES_SWITCH}       Print the licences of Warpine and its built-in fonts", args[0]);
+        eprintln!("       {} {} <path>  Confine as a program would, then try to read <path>", args[0], sandbox::CHECK_SWITCH);
         std::process::exit(1);
     }
 
@@ -134,7 +136,23 @@ fn main() {
             eprintln!("{} needs the session directory", desktop::client::SERVER_SWITCH);
             std::process::exit(1);
         };
+        // The server reaches the session and the display only (ADR-0111).
+        sandbox::confine_process(&[], None);
         std::process::exit(gui::desktop_server::run(std::path::Path::new(dir)));
+    }
+
+    // Whether the sandbox works here (ADR-0111): confine as a program with
+    // no drives would, then try to read the path.
+    if args[1] == sandbox::CHECK_SWITCH {
+        let Some(path) = args.get(2) else {
+            eprintln!("{} needs a path", sandbox::CHECK_SWITCH);
+            std::process::exit(1);
+        };
+        let env = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(std::path::PathBuf::from);
+        let outcome = sandbox::confine(&sandbox::policy(&[], None, &env));
+        let readable = std::fs::read_dir(path).is_ok() || std::fs::File::open(path).is_ok();
+        println!("{:?}: {}", outcome, if readable { "readable" } else { "denied" });
+        return;
     }
 
     if args[1] == LICENSES_SWITCH {
@@ -207,11 +225,13 @@ fn main() {
             if headless {
                 let mut loader = loader::Loader::new();
                 join_thread_session(&loader);
+                confine(&loader, None);
                 let args: Vec<&str> = host_args.iter().map(|s| s.as_str()).collect();
                 loader.run_builtin_cmd_main(&args);
             } else {
                 let loader = Arc::new(loader::Loader::new());
                 join_thread_session(&loader);
+                confine(&loader, None);
                 let shared = loader.get_shared();
                 *shared.exe_name.lock_or_recover() = "CMD.EXE".to_string();
                 // CMD.EXE runs windowed or full screen on OS/2.
@@ -235,6 +255,17 @@ fn main() {
         ExeFormat::NE => run_ne(file_path, &remaining_args[1..]),
         ExeFormat::LX => run_lx(file_path, gdb_port, &remaining_args[1..]),
     }
+}
+
+/// Confine this process with Landlock (ADR-0111) to its drives, the
+/// session, the system's files and `program`'s directory, before any guest
+/// code runs.
+fn confine(loader: &loader::Loader, program: Option<&std::path::Path>) {
+    let drives: Vec<sandbox::Drive> = {
+        let dm = loader.shared.drive_mgr.lock_or_recover();
+        (0..26).filter_map(|d| dm.drive_config(d).map(|c| (c.host_path.clone(), c.read_only))).collect()
+    };
+    sandbox::confine_process(&drives, program);
 }
 
 /// Enter the session's `THREADS=` accounting with thread 1, or end with
@@ -274,6 +305,7 @@ fn run_ne(file_path: &str, args: &[&str]) -> ! {
 
     let mut loader = loader::Loader::new();
     join_thread_session(&loader);
+    confine(&loader, Some(std::path::Path::new(file_path)));
     set_host_args(&loader, args);
     if let Err(e) = loader.load_ne(&ne_file, file_path) {
         eprintln!("Failed to load NE executable: {}", e);
@@ -475,6 +507,7 @@ fn run_lx(file_path: &str, gdb_port: Option<u16>, args: &[&str]) {
 
     let mut loader = loader::Loader::new();
     join_thread_session(&loader);
+    confine(&loader, Some(std::path::Path::new(file_path)));
     set_host_args(&loader, args);
 
     // Attach GDB stub if --gdb was requested.
