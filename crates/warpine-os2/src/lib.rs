@@ -82,8 +82,9 @@ pub mod memory {
 
     /// Change the access/commit attributes of a memory region.
     ///
-    /// `flag` bit mask: `0x01` PAG_READ, `0x02` PAG_WRITE, `0x10` PAG_COMMIT,
-    /// `0x08` PAG_DECOMMIT, `0x04` PAG_GUARD.
+    /// `flag` bit mask (`bsememf.h`): `0x01` PAG_READ, `0x02` PAG_WRITE,
+    /// `0x04` PAG_EXECUTE, `0x08` PAG_GUARD, `0x10` PAG_COMMIT,
+    /// `0x20` PAG_DECOMMIT, `0x400` PAG_DEFAULT.
     pub fn set_mem(ptr: *mut u8, size: usize, flag: u32) -> Result<(), u32> {
         let rc = unsafe { sys::DosSetMem(ptr, size as sys::ULONG, flag) };
         if rc == 0 { Ok(()) } else { Err(rc) }
