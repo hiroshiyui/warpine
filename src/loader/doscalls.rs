@@ -1169,12 +1169,13 @@ impl super::Loader {
             (stack_base, tib_addr)
         };
         // The thread's page tables, thread-local page and TSS (paging.rs):
-        // every thread runs paged at ring 3 (ADR-0113).
+        // every thread runs paged at ring 3 (ADR-0113). The arena's blocks
+        // are the process's thread limit (ADR-0115).
         let Some(paging) = self.alloc_paging_block(tib_addr) else {
             let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
             mem_mgr.free(stack_base);
             mem_mgr.free(tib_addr);
-            return ERROR_NOT_ENOUGH_MEMORY;
+            return ERROR_MAX_THRDS_REACHED;
         };
         let free_memory = || {
             let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();

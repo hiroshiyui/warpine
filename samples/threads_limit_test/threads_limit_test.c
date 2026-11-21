@@ -18,6 +18,12 @@
  *   4. ends its threads, waits for the children and runs a child that ends
  *      with 7: the slots of ended threads and processes come back.
  *
+ * Run as "threads_limit_test cap" with a limit above a process's own
+ * (WARPINE_THREADS=4095), it creates threads until DosCreateThread fails,
+ * twice, and writes "process cap: created <n> rc=<rc>" each time: Warpine
+ * gives a process at most 482 threads (thread 1 and 481 more, ADR-0115),
+ * and the failure is ERROR_MAX_THRDS_REACHED (164).
+ *
  * One "ok ..." or "FAIL ..." line per check; exit code 0 when all passed.
  *
  * A child knows its mode from its command line, read with DosGetInfoBlocks
@@ -142,6 +148,16 @@ int main( void )
         return 0;
     }
     if( strncmp( mode, "exit7", 5 ) == 0 ) return 7;
+    if( strncmp( mode, "cap", 3 ) == 0 ) {
+        for( i = 0; i < 2; i++ ) {
+            n = fill( 0, &rc );
+            report( rc == ERROR_MAX_THRDS_REACHED, "process cap rc=", rc );
+            report( n > 0, "process cap: created threads=", n );
+            end_threads( 0, n );
+        }
+        write_stdout( failures ? "threads_limit_test: FAILED\r\n" : "threads_limit_test: all passed\r\n" );
+        return failures ? 1 : 0;
+    }
 
     DosGetInfoBlocks( &ptib, &ppib );
     if( DosQueryModuleName( ppib->pib_hmte, sizeof( path ), path ) != NO_ERROR ) return 255;

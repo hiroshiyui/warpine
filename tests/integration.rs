@@ -3643,6 +3643,26 @@ fn test_threads_limit_from_the_environment() {
     assert!(out.contains("ok created threads=63"), "clamped to 64:\n{out}");
 }
 
+/// threads_limit_test's `cap` mode with the session's limit above a
+/// process's own (ADR-0115): a process gets 482 threads, thread 1 and 481
+/// more, each on its own paging block; the next DosCreateThread fails with
+/// ERROR_MAX_THRDS_REACHED (164); ended threads give their blocks back, so
+/// a second round gets as many.
+#[test]
+fn a_process_gets_482_threads() {
+    const SAMPLE: &str = "samples/threads_limit_test/threads_limit_test.exe";
+    if !kvm_available() || !sample_exists(SAMPLE) { return; }
+    let run = tempfile::tempdir().unwrap();
+    let (out, code) = run_sample_args(SAMPLE, &["cap"], 120, &[
+        ("WARPINE_THREADS", "4095"),
+        ("XDG_RUNTIME_DIR", run.path().to_str().unwrap()),
+    ]);
+    assert_eq!(code, 0, "stdout:\n{out}");
+    assert!(!out.contains("FAIL"), "{out}");
+    assert_eq!(out.matches("ok process cap rc=164").count(), 2, "{out}");
+    assert_eq!(out.matches("ok process cap: created threads=481").count(), 2, "{out}");
+}
+
 /// A process joining a session whose threads are all in use ends with
 /// ERROR_NO_PROC_SLOTS (89) before running guest code; a record of a dead
 /// process does not count.

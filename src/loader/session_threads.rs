@@ -1089,6 +1089,29 @@ mod tests {
         assert_eq!(l.shared.mem_mgr.lock().unwrap().next_free, before, "stack, TIB and page tables freed");
     }
 
+    /// With the session's THREADS= far above it, the paging arena is the
+    /// process's limit (ADR-0115): once every block is taken,
+    /// DosCreateThread fails with ERROR_MAX_THRDS_REACHED, gives back the
+    /// stack and TIB, and takes no slot of the session.
+    #[test]
+    fn dos_create_thread_fails_when_the_paging_arena_is_full() {
+        use super::super::constants::ERROR_MAX_THRDS_REACHED;
+        use super::super::paging::PAGING_BLOCKS;
+        let d = tempfile::tempdir().unwrap();
+        let l = loader_in_session(d.path(), super::super::config_sys::MAX_THREADS);
+        let blocks: Vec<u32> = std::iter::from_fn(|| l.alloc_paging_block(0)).collect();
+        assert_eq!(blocks.len(), PAGING_BLOCKS as usize);
+        assert_eq!(PAGING_BLOCKS, 482, "482 threads a process (ADR-0115)");
+        let before = l.shared.mem_mgr.lock().unwrap().next_free;
+        assert_eq!(l.dos_create_thread(0, 0x7_0000, 0x1_0000, 0, 0, 0x2000), ERROR_MAX_THRDS_REACHED);
+        assert_eq!(l.shared.mem_mgr.lock().unwrap().next_free, before, "stack and TIB freed");
+        if let ThreadSlots::Session(s) = &*l.shared.thread_slots.lock().unwrap() {
+            assert_eq!(s.threads(), 1, "no slot taken");
+        }
+        l.free_paging_block(blocks[0]);
+        assert_eq!(l.alloc_paging_block(0), Some(blocks[0]), "a freed block comes back");
+    }
+
     #[test]
     fn children_need_a_slot() {
         use super::super::inherit::{admit_child, child_started, ChildLimit};

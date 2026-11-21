@@ -10,7 +10,8 @@
 //!   pages, except the 4 MB holding `TLM_PAGE` (in the system area,
 //!   ADR-0094), which go through the TLM table, and the program area and
 //!   the allocator's region, which go through the process tables every
-//!   thread shares (ADR-0114);
+//!   thread shares (ADR-0114); the 4 MB after the TLM table's are paging
+//!   arena, a supervisor-only large page (ADR-0115);
 //! - the TLM table maps its 4 MB one-to-one too, except `TLM_PAGE`, which
 //!   leads to the thread's own page, and the FS and ring-0 windows, which
 //!   lead to its TIB's page and its ring-0 page;
@@ -68,13 +69,17 @@ const RING0_OFFSET: u32 = 3 * PAGE_SIZE;
 /// every program's objects).
 pub const LOW_GUARD: u32 = EXE_AREA_START;
 
-/// The paging arena (ADR-0113): from the page after the ring-0 window to
-/// the end of the 4 MB the TLM table maps. Its pages are supervisor-only
-/// in every thread's tables, so a guest at ring 3 reaches nothing in it.
-/// It starts with the process's page tables for the allocator's region
-/// (ADR-0114), then holds every thread's paging block.
+/// The paging arena (ADR-0113, ADR-0115): from the page after the ring-0
+/// window to the allocator's region: the rest of the 4 MB the TLM table
+/// maps, then the next 4 MB ([`ARENA_CHUNK`]), a supervisor-only large
+/// page. Its pages are supervisor-only in every thread's tables, so a
+/// guest at ring 3 reaches nothing in it. It starts with the process's
+/// page tables (ADR-0114), then holds every thread's paging block.
 pub const PAGING_ARENA_BASE: u32 = RING0_WINDOW + PAGE_SIZE;
-pub const PAGING_ARENA_END: u32 = (TLM_CHUNK + 1) << LARGE_PAGE_SHIFT;
+pub const PAGING_ARENA_END: u32 = (ARENA_CHUNK + 1) << LARGE_PAGE_SHIFT;
+/// The 4 MB after the TLM table's, all of them paging arena (ADR-0115).
+const ARENA_CHUNK: u32 = TLM_CHUNK + 1;
+const _: () = assert!(PAGING_ARENA_END == DYNAMIC_ALLOC_BASE);
 /// The allocator's region in 4 MB chunks: the directory entries that lead
 /// to the process tables instead of large pages (ADR-0114).
 pub const ALLOC_FIRST_CHUNK: u32 = DYNAMIC_ALLOC_BASE >> LARGE_PAGE_SHIFT;
@@ -95,9 +100,9 @@ pub const ALLOC_TABLES: u32 = PROCESS_TABLES + EXE_CHUNKS * PAGE_SIZE;
 pub const PROCESS_TABLES_SIZE: u32 = (EXE_CHUNKS + ALLOC_CHUNKS) * PAGE_SIZE;
 /// Where the paging blocks start, after the process tables.
 pub const PAGING_BLOCKS_BASE: u32 = PROCESS_TABLES + PROCESS_TABLES_SIZE;
-/// Blocks the arena holds: the most threads a process can have.
+/// Blocks the arena holds: the most threads a process can have (482).
 pub const PAGING_BLOCKS: u32 = (PAGING_ARENA_END - PAGING_BLOCKS_BASE) / PAGING_BLOCK_SIZE;
-const _: () = assert!(PAGING_ARENA_BASE >> LARGE_PAGE_SHIFT == TLM_CHUNK && PAGING_BLOCKS >= 64);
+const _: () = assert!(PAGING_ARENA_BASE >> LARGE_PAGE_SHIFT == TLM_CHUNK && PAGING_BLOCKS >= 480);
 /// The 4 MB holding the API thunks (`MAGIC_API_BASE`): read-only, so no
 /// guest rewrites a thunk (at ring 0 too, with CR0.WP).
 const STUB_CHUNK: u32 = (MAGIC_API_BASE >> LARGE_PAGE_SHIFT) as u32;
@@ -240,6 +245,8 @@ pub fn paging_block(base: u32, tib: u32) -> Vec<u8> {
             put(4 * i, (PROCESS_TABLES + i * PAGE_SIZE) | PTE_FLAGS);
         } else if i == STUB_CHUNK {
             put(4 * i, (i << LARGE_PAGE_SHIFT) | PDE_READ_ONLY | PDE_LARGE);
+        } else if i == ARENA_CHUNK {
+            put(4 * i, (i << LARGE_PAGE_SHIFT) | PTE_SUPERVISOR | PDE_LARGE);
         } else if (ALLOC_FIRST_CHUNK..ALLOC_FIRST_CHUNK + ALLOC_CHUNKS).contains(&i) {
             put(4 * i, (ALLOC_TABLES + (i - ALLOC_FIRST_CHUNK) * PAGE_SIZE) | PTE_FLAGS);
         } else {
@@ -466,6 +473,8 @@ mod tests {
         assert!(b[TLM_OFFSET as usize..RING0_OFFSET as usize].iter().all(|&x| x == 0), "a zeroed thread-local page");
         assert_eq!(entry(&b, TABLE_OFFSET + 4 * RING0_ENTRY), (BASE + RING0_OFFSET) | PTE_SUPERVISOR, "the ring-0 window");
         assert_eq!(entry(&b, 4 * STUB_CHUNK), (STUB_CHUNK << LARGE_PAGE_SHIFT) | PDE_READ_ONLY | PDE_LARGE, "the thunks: read-only");
+        assert_eq!(entry(&b, 4 * ARENA_CHUNK), (ARENA_CHUNK << LARGE_PAGE_SHIFT) | PTE_SUPERVISOR | PDE_LARGE,
+                   "the arena's second 4 MB: supervisor-only (ADR-0115)");
         assert_eq!(tlm_page_of(BASE as u64), Some(BASE + TLM_OFFSET));
     }
 
@@ -485,7 +494,11 @@ mod tests {
         for i in (EXE_CHUNKS..ENTRIES).filter(|&i| i != TLM_CHUNK && !alloc.contains(&i)) {
             let e = entry(&b, 4 * i);
             assert_eq!(e & !0x3F_FFFF, i << LARGE_PAGE_SHIFT, "directory entry {i}");
-            let flags = if i == STUB_CHUNK { PDE_READ_ONLY } else { PTE_FLAGS };
+            let flags = match i {
+                STUB_CHUNK => PDE_READ_ONLY,
+                ARENA_CHUNK => PTE_SUPERVISOR,
+                _ => PTE_FLAGS,
+            };
             assert_eq!(e & 0xFFF, flags | PDE_LARGE, "directory entry {i}");
         }
         for j in 0..ENTRIES {
