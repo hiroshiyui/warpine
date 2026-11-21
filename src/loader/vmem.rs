@@ -506,12 +506,8 @@ impl super::Loader {
             return ERROR_INVALID_PARAMETER;
         }
         let tracked = self.shared.vmem.lock_or_recover().query(pb, cb);
-        let (size, flags) = tracked.unwrap_or_else(|| {
-            // Untracked memory reads as committed and writable, a page at
-            // a time; shared memory says so.
-            let shared = if super::shared_arena::in_arena(pb) { PAG_SHARED } else { 0 };
-            (PAGE_SIZE.min(cb.div_ceil(PAGE_SIZE) * PAGE_SIZE), PAG_COMMIT | PAG_READ | PAG_WRITE | shared)
-        });
+        let (size, flags) = tracked.unwrap_or_else(|| self.query_untracked(pb, cb));
+        debug!("  -> {size:#x} bytes, flags {flags:#x}");
         if self.guest_write::<u32>(pcb, size).is_none()
             || self.guest_write::<u32>(pflag, flags).is_none() {
             return ERROR_INVALID_PARAMETER;
@@ -523,6 +519,47 @@ impl super::Loader {
     /// page violation, whose guard is gone (Control Program Reference).
     pub(crate) fn continues_by_default(&self, exc_report: u32) -> bool {
         self.guest_read::<u32>(exc_report.wrapping_add(ERR_NUM)) == Some(XCPT_GUARD_PAGE_VIOLATION)
+    }
+
+    /// `DosQueryMem` on memory `DosAllocMem` did not allocate: what the
+    /// process tables say (after the allocator's pending changes), for the
+    /// run of pages with the same entry: `PAG_FREE` for a page not present,
+    /// read-only or writable committed memory otherwise, `PAG_BASE` on the
+    /// first page of an allocator block. Memory the process tables do not
+    /// map (shared memory, Warpine's own areas) reads as committed and
+    /// writable, a page at a time, `PAG_SHARED` in the shared arena.
+    fn query_untracked(&self, pb: u32, cb: u32) -> (u32, u32) {
+        self.sync_allocations();
+        let first = pb & !(PAGE_SIZE - 1);
+        let limit = cb.div_ceil(PAGE_SIZE).max(1);
+        let flags_at = |page: u32| -> Option<u32> {
+            if !self.shared.process_tables_ready.load(Ordering::Acquire) {
+                return None;
+            }
+            let entry = self.guest_read::<u32>(process_pte_at(page)?)?;
+            const PRESENT: u32 = 1 << 0;
+            const WRITABLE: u32 = 1 << 1;
+            Some(match (entry & PRESENT != 0, entry & WRITABLE != 0) {
+                (false, _) => PAG_FREE,
+                (true, false) => PAG_COMMIT | PAG_READ,
+                (true, true) => PAG_COMMIT | PAG_READ | PAG_WRITE,
+            })
+        };
+        let Some(state) = flags_at(first) else {
+            let shared = if super::shared_arena::in_arena(pb) { PAG_SHARED } else { 0 };
+            return (PAGE_SIZE.min(limit * PAGE_SIZE), PAG_COMMIT | PAG_READ | PAG_WRITE | shared);
+        };
+        let mem = self.shared.mem_mgr.lock_or_recover();
+        // A run ends at the limit, at another state, or where the next
+        // allocator block starts.
+        let run = (0..limit)
+            .take_while(|&i| {
+                let page = first.wrapping_add(i * PAGE_SIZE);
+                (i == 0 || mem.block_size(page).is_none()) && flags_at(page) == Some(state)
+            })
+            .count() as u32;
+        let base = if state != PAG_FREE && mem.block_size(first).is_some() { PAG_BASE } else { 0 };
+        (run * PAGE_SIZE, state | base)
     }
 
     /// A page fault at `addr` from guest code (a write when `write`): what
@@ -615,6 +652,32 @@ mod tests {
         assert!(read_only_pages(&[(0x10000, 0x1000, DATA)]).is_empty());
         assert!(read_only_pages(&[(0x10000, 0, CODE)]).is_empty(), "no bytes");
         assert_eq!(read_only_pages(&[(u32::MAX - 0xFFF, 0x2000, CODE)]), vec![u32::MAX - 0xFFF], "no overflow");
+    }
+
+    /// DosQueryMem on memory DosAllocMem did not allocate answers from the
+    /// process tables: an allocator block committed and writable, its first
+    /// page the base, the run ending at the next block; free pages
+    /// PAG_FREE; a read-only page read-only.
+    #[test]
+    fn query_mem_answers_untracked_memory_from_the_page_tables() {
+        let l = super::super::Loader::new_mock();
+        l.ensure_process_tables();
+        let (pcb, pflag) = (0x3000, 0x3004);
+        let query = |pb: u32, cb: u32| {
+            l.guest_write::<u32>(pcb, cb).unwrap();
+            assert_eq!(l.dos_query_mem(pb, pcb, pflag), NO_ERROR);
+            (l.guest_read::<u32>(pcb).unwrap(), l.guest_read::<u32>(pflag).unwrap())
+        };
+        let a = l.shared.mem_mgr.lock().unwrap().alloc(2 * PAGE_SIZE).unwrap();
+        let b = l.shared.mem_mgr.lock().unwrap().alloc(PAGE_SIZE).unwrap();
+        assert_eq!(b, a + 2 * PAGE_SIZE, "the next block right after");
+        assert_eq!(query(a, 0x10000), (2 * PAGE_SIZE, RW | PAG_BASE), "the run ends where the next block starts");
+        assert_eq!(query(a + PAGE_SIZE, 0x10000), (PAGE_SIZE, RW), "not the base");
+        assert_eq!(query(b + PAGE_SIZE, 2 * PAGE_SIZE), (2 * PAGE_SIZE, PAG_FREE), "free pages");
+        l.protect_objects(&[(a, PAGE_SIZE, 0x0005)]);
+        assert_eq!(query(a, 0x10000), (PAGE_SIZE, PAG_COMMIT | PAG_READ | PAG_BASE), "a read-only object page");
+        let (_, shared) = query(SHARED_ARENA_BASE, PAGE_SIZE);
+        assert_ne!(shared & PAG_SHARED, 0);
     }
 
     /// A sparse stack: its top page committed, a guard below, the rest

@@ -1587,7 +1587,7 @@ fn a_programs_breakpoint_raises_xcpt_breakpoint() {
 #[test]
 fn page_states_of_allocated_memory_hold() {
     for ring in [RING_3, RING_0] {
-        if text_checks_pass_env("samples/mem_protect_test/mem_protect_test.exe", "mem_protect_test", 38,
+        if text_checks_pass_env("samples/mem_protect_test/mem_protect_test.exe", "mem_protect_test", 40,
                                 &[("WARPINE_RING", ring)]).is_none() {
             return;
         }

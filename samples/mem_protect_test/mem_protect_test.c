@@ -16,7 +16,8 @@
  *     wrote it just before (its TLB must forget the old entry);
  *   - the program's code object (no write flag) can be read, not written;
  *   - memory freed with DosFreeMem cannot be touched any more, nor memory
- *     never allocated.
+ *     never allocated; DosQueryMem reports freed memory as PAG_FREE and
+ *     the program's code as committed and read-only.
  * A probe that faults is left by longjmp from the exception handler.
  *
  * Output: "mem_protect_test: <name>: ok" / "...: FAIL", then
@@ -196,8 +197,19 @@ int main(void)
 
     /* Freed and never allocated memory. */
     check("DosAllocMem, written", DosAllocMem((PPVOID)&p, PAGE, PAG_COMMIT | RW) == NO_ERROR && !faults(write_at, p));
-    check("freed, it cannot be read", DosFreeMem(p) == NO_ERROR && faults(read_at, p));
-    check("memory never allocated cannot be read", faults(read_at, (PVOID)NEVER_ALLOCATED));
+    {
+        /* Queried at once: handling an exception allocates memory, which
+         * may be this block again. */
+        ULONG cb = PAGE, fl = 0;
+        check("DosFreeMem, then DosQueryMem: PAG_FREE",
+              DosFreeMem(p) == NO_ERROR && DosQueryMem(p, &cb, &fl) == NO_ERROR && fl == PAG_FREE);
+        check("freed, it cannot be read", faults(read_at, p));
+        check("memory never allocated cannot be read", faults(read_at, (PVOID)NEVER_ALLOCATED));
+        cb = PAGE;
+        check("DosQueryMem: the program's code is committed, read-only",
+              DosQueryMem((PVOID)check, &cb, &fl) == NO_ERROR
+              && (fl & (PAG_COMMIT | PAG_READ | PAG_WRITE | PAG_FREE)) == (PAG_COMMIT | PAG_READ));
+    }
 
     /* The program's own code. */
     check("the program's code can be read", !faults(read_at, (PVOID)check));
