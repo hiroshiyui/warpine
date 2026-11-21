@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.0.11] - 2026-11-22
+
 ### Security
 - **No API call writes Warpine's protected memory for a program** (ADR-0113, step 5). Warpine writes many results through pointers a program gives; a program could point one into its own page tables, which it cannot write itself at ring 3, and have Warpine corrupt them. The 250 ms paging watch used to catch that afterwards; now such a write is refused, and the call fails as with any address it cannot write.
 
@@ -14,6 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Removed
 - **`WARPINE_RING`, and ring 0 for programs** (ADR-0113, step 5): every program runs at ring 3. With it went the paging watch thread and the check and repair of a thread's page tables, which only a program at ring 0 could damage. A thread that cannot get its page tables now fails to start instead of running unpaged.
+
+### Fixed
+- **Intermittent unit tests**: three thread tests measured elapsed time and failed under load; they now check the order of events. A desktop-link test expected the waker of an answered call to have run already, while the reader calls it just after storing the answer; it now waits for it.
+- **Intermittent sample tests**: in `exitlist_test`, the second thread could end the process before the first had written its results; it now waits for them. The thread-limit sample's 481 threads block instead of polling, so they no longer starve tests that run beside them.
 
 ## [0.0.10] - 2026-11-22
 
