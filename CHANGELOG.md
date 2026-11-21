@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.0.9] - 2026-11-21
+
 ### Added
 - **A Landlock sandbox** (ADR-0111). Every Warpine process confines its own file access before guest code runs: its drives and the session read-write, the system's files read-only, the rest of the home directory out of reach, even should a guest escape into Warpine's process. `WARPINE_SANDBOX=off` turns it off; `warpine --sandbox-check <path>` shows what a confined process reaches.
 - **Fuzzing** (ADR-0112). `fuzz/` has libFuzzer targets for the desktop protocol, the LX and NE parsers and message files. CI fuzzes each for a minute and checks dependency advisories (`cargo deny check`) on every push.
