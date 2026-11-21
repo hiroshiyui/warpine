@@ -974,7 +974,10 @@ mod tests {
         let ch = parent.child_handles();
         let fd = ch.passed_fds()[0];
         let mut cmd = std::process::Command::new("sh");
-        cmd.args(["-c", &format!("printf passed >&{fd}; echo \"${HANDLES_ENV}\"")]);
+        // Through /proc: dash, /bin/sh on Debian, takes only single-digit
+        // descriptors in `>&N`, and with other tests running the duplicate
+        // is often 10 or more.
+        cmd.args(["-c", &format!("printf passed > /proc/self/fd/{fd}; echo \"${HANDLES_ENV}\"")]);
         cmd.stdout(std::process::Stdio::piped());
         ch.apply(&mut cmd);
         let out = cmd.output().unwrap();
