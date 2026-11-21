@@ -86,6 +86,8 @@ pub struct GuestSregs {
     pub fs: GuestSegment,
     pub gs: GuestSegment,
     pub ss: GuestSegment,
+    /// The task register: the thread's TSS (ADR-0113).
+    pub tr: GuestSegment,
     pub gdt_base:  u64,
     pub gdt_limit: u32,
     pub idt_base:  u64,

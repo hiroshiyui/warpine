@@ -8,7 +8,7 @@ use crate::lx::LxFile;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 use std::thread;
-use super::vm_backend::{VcpuBackend, VmExit};
+use super::vm_backend::{GuestSegment, VcpuBackend, VmExit};
 use super::threads::{tid_of_vcpu, EndOutcome, ThreadEnd, MAIN_TID, MAIN_VCPU_ID};
 use super::exitlist::ExitListStart;
 use super::signals::{SignalAction, SIGNAL_EXIT_CODE};
@@ -24,6 +24,20 @@ const OW_SHIFTED_PROLOGUE: [u8; 6] = [0x55, 0x89, 0xE5, 0x83, 0xEC, 0x08];
 /// Its argument loads: `mov eax,[ebp+0x10]` (cmd taken from `[esp+12]`),
 /// `mov ebx,[ebp+4]` (hmod from the return-address slot), `push eax`.
 const OW_SHIFTED_ARGS: [u8; 7] = [0x8B, 0x45, 0x10, 0x8B, 0x5D, 0x04, 0x50];
+
+/// The task register of a 32-bit thread (ADR-0113). A paged thread's is
+/// its TSS, at the ring-0 window its tables map to its own ring-0 page.
+/// An unpaged one has no such page and keeps the processor's reset state
+/// (a busy TSS at 0, never used while the thread runs at ring 0).
+fn task_register(paged: bool) -> GuestSegment {
+    const BUSY_TSS_32: u8 = 11;
+    let (base, limit, selector) = if paged {
+        (u64::from(RING0_WINDOW), TSS_SIZE - 1, TSS_SEL)
+    } else {
+        (0, 0xFFFF, 0)
+    };
+    GuestSegment { base, limit, selector, type_: BUSY_TSS_32, present: 1, ..Default::default() }
+}
 
 /// The initial stack of an executable, from `[esp]` up: return address
 /// (Warpine's exit trap), module handle, reserved, environment, command
@@ -120,6 +134,8 @@ impl super::Loader {
         }
 
         self.setup_stubs();
+        // The ring of the program's threads (ADR-0113), before the GDT.
+        self.set_guest_ring(super::ring::ring_from_env(std::env::var(super::ring::RING_ENV).ok().as_deref()));
         self.setup_idt();
         // Other Warpine processes may send signal exceptions (signals.rs).
         self.listen_for_signals();
@@ -241,14 +257,22 @@ impl super::Loader {
     /// `cr3`: the thread's paging block (`paging.rs`), which turns paging on;
     /// 0 runs the thread unpaged.
     pub(crate) fn setup_vcpu_segments_32bit(&self, vcpu: &mut dyn VcpuBackend, tib_base: u64, cr3: u32) {
+        use super::ring::flat_selector;
         let mut sregs = vcpu.get_sregs().unwrap();
-        sregs.cs.base = 0; sregs.cs.limit = 0xFFFFFFFF; sregs.cs.g = 1; sregs.cs.db = 1; sregs.cs.present = 1; sregs.cs.type_ = 11; sregs.cs.s = 1; sregs.cs.selector = 0x08;
-        let mut ds = sregs.cs.clone(); ds.type_ = 3; ds.selector = 0x10;
+        // A paged thread runs at the process's ring (ADR-0113); an unpaged
+        // one has no ring-0 stack and stays at ring 0.
+        let ring = if cr3 != 0 { self.guest_ring() } else { 0 };
+        if cr3 == 0 && self.guest_ring() == 3 {
+            warn!("a thread without page tables runs at ring 0");
+        }
+        sregs.cs.base = 0; sregs.cs.limit = 0xFFFFFFFF; sregs.cs.g = 1; sregs.cs.db = 1; sregs.cs.present = 1; sregs.cs.type_ = 11; sregs.cs.s = 1;
+        sregs.cs.selector = flat_selector(0x08, ring); sregs.cs.dpl = ring;
+        let mut ds = sregs.cs.clone(); ds.type_ = 3; ds.selector = flat_selector(0x10, ring);
         sregs.ds = ds.clone(); sregs.es = ds.clone(); sregs.gs = ds.clone(); sregs.ss = ds.clone();
         // A paged thread sees its TIB through the FS window, as a reload
         // of selector 0x18 would (ADR-0110); an unpaged one directly.
         let fs_base = if cr3 != 0 { u64::from(FS_WINDOW) + (tib_base & 0xFFF) } else { tib_base };
-        let mut fs = ds; fs.base = fs_base; fs.limit = 0xFFF; fs.selector = 0x18; fs.g = 0; sregs.fs = fs;
+        let mut fs = ds; fs.base = fs_base; fs.limit = 0xFFF; fs.selector = flat_selector(0x18, ring); fs.g = 0; sregs.fs = fs;
         // PE=1 (protected mode), clear EM/TS to enable FPU, set NE for native FPU errors
         sregs.cr0 = (sregs.cr0 | 1 | (1 << 5)) & !(1u64 << 2) & !(1u64 << 3);
         // Also set CR4.OSFXSR to enable SSE instructions
@@ -261,6 +285,9 @@ impl super::Loader {
         } else {
             sregs.cr0 &= !super::paging::CR0_PG;
         }
+        // The thread's TSS (ADR-0113): a paged thread's ring-0 window, or
+        // the reset state for an unpaged one, which has no ring-0 page.
+        sregs.tr = task_register(cr3 != 0);
         // Set up GDT and IDT registers
         sregs.gdt_base  = GDT_BASE as u64;
         sregs.gdt_limit = GDT_SIZE - 1;
@@ -711,6 +738,20 @@ impl super::Loader {
                     let flat_rip = vcpu.get_sregs().unwrap().cs.base + rip;
                     // Check if this is from an IDT exception handler stub
                     if rip >= IDT_HANDLER_BASE as u64 && rip < IDT_HANDLER_BASE as u64 + 32 * 16 {
+                        // An exception from ring 3 (ADR-0113): its frame
+                        // moves to the guest's stack, so what follows reads
+                        // it as at ring 0.
+                        if let Err(e) = self.lower_ring3_frame(&mut *vcpu) {
+                            let report = self.collect_crash_report(&*vcpu, vcpu_id, CrashContext::UnhandledVmexit {
+                                description: format!("an exception at ring 3 that cannot be delivered: {e}"),
+                            });
+                            self.dump_crash_report(&report);
+                            match self.end_by_fault(&mut *vcpu, vcpu_id, initial_esp, restart_sregs.as_ref(),
+                                                    &mut callback_stack, TC_TRAP) {
+                                Some(end) => return end,
+                                None => continue,
+                            }
+                        }
                         let regs = vcpu.get_regs().unwrap();
                         let sregs = vcpu.get_sregs().unwrap();
 
@@ -752,7 +793,7 @@ impl super::Loader {
                         // (self-referential: value at addr == addr+8, with
                         // [addr+4]==0x10 as saved SS), then read the saved
                         // registers and return address from [EBP+0..EBP+24].
-                        if vector == 13 && fault_cs == 0x08 {
+                        if vector == 13 && fault_cs & !3 == 0x08 {
                             let err_sel_index = error_code / 8;
                             let is_tiled = (TILED_SEL_START_INDEX..TILED_SEL_START_INDEX + NUM_TILES).contains(&err_sel_index)
                                 || (TILED_CODE_START_INDEX..TILED_CODE_START_INDEX + NUM_CODE_TILES).contains(&err_sel_index);
@@ -791,7 +832,7 @@ impl super::Loader {
                                         let val = self.guest_read::<u32>(addr).unwrap_or(0);
                                         if val == addr + 8 {
                                             let ss_val = self.guest_read::<u16>(addr + 4).unwrap_or(0);
-                                            if ss_val == 0x10 {
+                                            if ss_val & !3 == 0x10 {
                                                 saved_ebp = Some(val);
                                                 break;
                                             }
@@ -824,22 +865,26 @@ impl super::Loader {
                                         regs.rdx = s_edx as u64;
                                         regs.rdi = s_edi as u64;
                                         regs.rbp = s_ebp as u64;
-                                        regs.rflags = fault_eflags as u64;
+                                        regs.rflags = super::ring::guest_eflags(fault_eflags);
                                         vcpu.set_regs(&regs).unwrap();
 
                                         let mut sregs = vcpu.get_sregs().unwrap();
-                                        // Restore all segments to 32-bit flat
-                                        sregs.cs.selector = 0x08;
+                                        // Restore all segments to 32-bit flat, at the
+                                        // thread's ring (the faulting CS's RPL).
+                                        let ring = (fault_cs & 3) as u8;
+                                        sregs.cs.selector = super::ring::flat_selector(0x08, ring);
                                         sregs.cs.base = 0;
                                         sregs.cs.limit = 0xFFFFFFFF;
                                         sregs.cs.db = 1;
                                         sregs.cs.type_ = 0x0B;
+                                        sregs.cs.dpl = ring;
                                         for seg in [&mut sregs.ds, &mut sregs.es, &mut sregs.ss] {
-                                            seg.selector = s_ds as u16; // typically 0x10
+                                            seg.selector = s_ds as u16; // typically 0x10 (0x13 at ring 3)
                                             seg.base = 0;
                                             seg.limit = 0xFFFFFFFF;
                                             seg.db = 1;
                                             seg.type_ = 0x03;
+                                            seg.dpl = ring;
                                         }
                                         vcpu.set_sregs(&sregs).unwrap();
                                         continue;
@@ -1134,7 +1179,7 @@ impl super::Loader {
                                             regs.rsi    = ctx.esi as u64;
                                             regs.rdi    = ctx.edi as u64;
                                             regs.rbp    = ctx.ebp as u64;
-                                            regs.rflags = ctx.eflags as u64;
+                                            regs.rflags = super::ring::guest_eflags(ctx.eflags);
                                             // A signal continued is acknowledged.
                                             self.signal_continued(exc_report);
                                             self.free_exception_records(guest_allocs);
@@ -1647,7 +1692,7 @@ fn drive_unwind(
             regs.rsi = r.esi as u64;
             regs.rdi = r.edi as u64;
             regs.rbp = r.ebp as u64;
-            regs.rflags = r.eflags as u64;
+            regs.rflags = super::ring::guest_eflags(r.eflags);
         }
     }
     vcpu.set_regs(&regs).unwrap();
@@ -2256,9 +2301,71 @@ mod tests {
         assert_ne!(s.cr0 & CR0_PG, 0);
         assert_ne!(s.cr4 & CR4_PSE, 0);
         assert_eq!(s.cr0 & 1, 1, "protected mode");
+        assert_eq!((s.tr.base, s.tr.limit, s.tr.selector), (u64::from(RING0_WINDOW), TSS_SIZE - 1, TSS_SEL),
+                   "TR: the thread's TSS in its ring-0 window");
+        assert_eq!((s.tr.type_, s.tr.present, s.tr.s), (11, 1, 0), "a present, busy 32-bit TSS");
         loader.setup_vcpu_segments_32bit(&mut vcpu, TIB_BASE as u64, 0);
         let s = vcpu.get_sregs().unwrap();
         assert_eq!((s.cr3, s.cr0 & CR0_PG), (0, 0));
+        assert_eq!((s.tr.base, s.tr.selector, s.tr.type_), (0, 0, 11), "unpaged: TR's reset state");
+    }
+
+    /// The GDT's ring-0 descriptors and the TSS descriptor, and the IDT's
+    /// gates: only the breakpoint gate is DPL 3, so API thunks work from
+    /// ring 3 while a guest's other `INT n` faults (ADR-0113).
+    #[test]
+    fn the_gdt_has_ring0_descriptors_and_only_the_breakpoint_gate_is_dpl3() {
+        let loader = super::super::Loader::new_mock();
+        loader.setup_idt();
+        let desc = |sel: u16| loader.guest_read::<u64>(GDT_BASE + u32::from(sel)).unwrap();
+        let access = |sel: u16| (desc(sel) >> 40) as u8;
+        assert_eq!(access(KERNEL_CODE_SEL), 0x9B, "ring-0 code: present, DPL 0, execute/read");
+        assert_eq!(access(KERNEL_DATA_SEL), 0x93, "ring-0 data: present, DPL 0, read/write");
+        assert_eq!(access(TSS_SEL), 0x8B, "TSS: present, DPL 0, busy 32-bit");
+        assert_eq!(loader.gdt_entry_base(TSS_SEL), RING0_WINDOW);
+        assert_eq!(loader.gdt_entry_limit(TSS_SEL), TSS_SIZE - 1);
+        assert_eq!(loader.gdt_entry_base(KERNEL_CODE_SEL), 0);
+        for (sel, want) in [(0x08u16, 0x9Bu8), (0x10, 0x93), (0x18, 0x93)] {
+            assert_eq!(access(sel), want, "selector {sel:#x} keeps its descriptor");
+        }
+        for v in 0..32u32 {
+            let attrs = loader.guest_read::<u16>(IDT_BASE + v * 8 + 4).unwrap();
+            let dpl = (attrs >> 13) & 3;
+            assert_eq!(dpl, if v == 3 { 3 } else { 0 }, "gate {v}'s DPL");
+            assert_eq!(attrs & 0x9F00, 0x8E00, "gate {v}: a present 32-bit interrupt gate");
+        }
+    }
+
+    /// At ring 3 (ADR-0113) the descriptors programs use are DPL 3, the
+    /// gates enter ring 0 through ring 0's code descriptor, and a paged
+    /// thread starts with RPL-3 selectors; an unpaged one stays at ring 0.
+    #[test]
+    fn at_ring_3_program_descriptors_are_dpl3_and_gates_enter_ring_0() {
+        let loader = super::super::Loader::new_mock();
+        loader.set_guest_ring(3);
+        loader.setup_idt();
+        let access = |sel: u32| (loader.guest_read::<u64>(GDT_BASE + sel).unwrap() >> 40) as u8;
+        for (sel, want) in [(0x08, 0xFB), (0x10, 0xF3), (0x18, 0xF3), (0x20, 0xF3), (0x28, 0xFB),
+                            (TILED_SEL_START, 0xF3), (TILED_CODE_START, 0xFB)] {
+            assert_eq!(access(sel), want, "selector {sel:#x}: DPL 3");
+        }
+        assert_eq!(access(u32::from(KERNEL_CODE_SEL)), 0x9B, "ring 0's code stays DPL 0");
+        for v in 0..32u32 {
+            let cs = loader.guest_read::<u16>(IDT_BASE + v * 8 + 2).unwrap();
+            assert_eq!(cs, KERNEL_CODE_SEL, "gate {v} enters ring 0");
+        }
+        let block = loader.alloc_paging_block(TIB_BASE).expect("a block");
+        let mut vcpu = MockVcpu::new();
+        loader.setup_vcpu_segments_32bit(&mut vcpu, TIB_BASE as u64, block);
+        let s = vcpu.get_sregs().unwrap();
+        assert_eq!((s.cs.selector, s.cs.dpl), (0x0B, 3));
+        for seg in [&s.ds, &s.es, &s.gs, &s.ss] {
+            assert_eq!((seg.selector, seg.dpl), (0x13, 3));
+        }
+        assert_eq!((s.fs.selector, s.fs.dpl), (0x1B, 3));
+        loader.setup_vcpu_segments_32bit(&mut vcpu, TIB_BASE as u64, 0);
+        let s = vcpu.get_sregs().unwrap();
+        assert_eq!((s.cs.selector, s.cs.dpl, s.ss.selector), (0x08, 0, 0x10), "unpaged: ring 0");
     }
 
     /// Every message the modal loop dispatches is called at the same stack

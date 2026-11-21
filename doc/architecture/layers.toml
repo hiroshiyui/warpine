@@ -73,8 +73,8 @@ modules = ["lx.rs", "lx/header.rs", "ne.rs", "ne/header.rs"]
 [[layer]]
 id = "loading"
 zone = "host"
-label = "Loading and guest memory: objects, fixups, GDT / IDT, imports, page tables (ADR-0088)"
-modules = ["loader/lx_loader.rs", "loader/ne_exec.rs", "loader/descriptors.rs", "loader/guest_mem.rs", "loader/paging.rs"]
+label = "Loading and guest memory: objects, fixups, GDT / IDT, imports, page tables (ADR-0088), the guests' ring (ADR-0113)"
+modules = ["loader/lx_loader.rs", "loader/ne_exec.rs", "loader/descriptors.rs", "loader/guest_mem.rs", "loader/paging.rs", "loader/ring.rs"]
 
 [[layer]]
 id = "vcpu"

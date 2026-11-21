@@ -53,6 +53,10 @@ pub(crate) struct Unwind {
     pub calls: usize,
 }
 
+/// Bytes read at a faulting EIP to recognise a privileged instruction
+/// (prefixes, opcode and ModR/M).
+const PRIVILEGED_SCAN_LEN: usize = 8;
+
 /// Map an x86 exception vector + error code to an OS/2 XCPT_* exception code.
 pub fn xcpt_code_for_vector(vector: u32, _error_code: u32) -> u32 {
     match vector {
@@ -195,7 +199,14 @@ impl super::Loader {
         error_code: u32,
         fault_addr: u32,
     ) -> Option<ApiResult> {
-        let xcpt_code = xcpt_code_for_vector(vector, error_code);
+        // A #GP at ring 3 from an instruction only ring 0 may execute is a
+        // privileged instruction, as on OS/2 (ADR-0113).
+        const GP_VECTOR: u32 = 13;
+        let privileged = vector == GP_VECTOR && error_code == 0 && fault.cs & 3 == 3
+            && self.guest_read_bytes(fault.eip, PRIVILEGED_SCAN_LEN)
+                .or_else(|| self.guest_read_bytes(fault.eip, 1))
+                .is_some_and(|code| super::ring::is_privileged_instruction(&code));
+        let xcpt_code = if privileged { XCPT_PRIVILEGED_INSTRUCTION } else { xcpt_code_for_vector(vector, error_code) };
         let flags = if xcpt_code == XCPT_ACCESS_VIOLATION || xcpt_code == XCPT_FATAL_EXCEPTION {
             EH_NONCONTINUABLE
         } else {
@@ -310,7 +321,7 @@ impl super::Loader {
             eax: 0, ebx: 0, ecx: 0, edx: 0, esi: 0, edi: 0, ebp: 0,
             esp: 0, eip: exc_addr,
             eflags: 2,
-            cs: 0x08, ds: 0x10, es: 0x10, fs: 0x18, gs: 0x10, ss: 0x10,
+            ..FaultContext::flat(self.thread_ring())
         };
 
         // Allocate CONTEXTRECORD (using zeroed fault); pass caller's exc_rec directly.

@@ -63,6 +63,7 @@ mod guest_mem;
 mod lx_loader;
 mod ne_exec;
 mod descriptors;
+mod ring;
 pub(crate) mod paging;
 pub(crate) mod track;
 pub(crate) mod exit_report;
@@ -173,6 +174,21 @@ pub(crate) struct FaultContext {
     pub esi: u32, pub edi: u32, pub ebp: u32,
     pub esp: u32, pub eip: u32, pub eflags: u32,
     pub cs: u16, pub ds: u16, pub es: u16, pub fs: u16, pub gs: u16, pub ss: u16,
+}
+
+impl FaultContext {
+    /// A context with no registers set but the flat segments of a thread
+    /// at `ring` (0x08 / 0x10 / 0x18 with that RPL, ADR-0113) and EFLAGS'
+    /// reserved bit.
+    pub(crate) fn flat(ring: u8) -> Self {
+        use ring::flat_selector;
+        let data = flat_selector(0x10, ring);
+        FaultContext {
+            eflags: 2,
+            cs: flat_selector(0x08, ring), ds: data, es: data, fs: flat_selector(0x18, ring), gs: data, ss: data,
+            ..Default::default()
+        }
+    }
 }
 
 /// Discriminates callback frames so the CALLBACK_RET_TRAP handler knows what
@@ -457,6 +473,9 @@ pub struct SharedState {
     /// Whether the `GINFOSEG` refresher thread runs (`infoseg.rs`).
     pub infoseg_refresher: AtomicBool,
     pub exit_requested: AtomicBool,
+    /// The ring this process's paged 32-bit threads run at: 0, or 3 with
+    /// `WARPINE_RING=3` (`ring.rs`, ADR-0113).
+    pub guest_ring: std::sync::atomic::AtomicU8,
     /// A VIO session may switch between its PM window and full screen with
     /// Alt+Home (the program is window-compatible); set by `run_vio_session`.
     pub vio_switchable: AtomicBool,
@@ -592,6 +611,7 @@ impl Loader {
             som: Default::default(),
             rexx_api: Default::default(),
             exit_requested: AtomicBool::new(false),
+            guest_ring: std::sync::atomic::AtomicU8::new(0),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),
             exit_code: AtomicI32::new(0),
@@ -705,6 +725,7 @@ impl Loader {
             som: Default::default(),
             rexx_api: Default::default(),
             exit_requested: AtomicBool::new(false),
+            guest_ring: std::sync::atomic::AtomicU8::new(0),
             vio_switchable: AtomicBool::new(false),
             vio_switch_requested: AtomicBool::new(false),
             exit_code:    AtomicI32::new(0),

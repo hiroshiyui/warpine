@@ -3,13 +3,15 @@
 //! Guest paging for thread-local memory (ADR-0088).
 //!
 //! 32-bit guest threads run with 32-bit paging (`CR0.PG`, `CR4.PSE`):
-//! - each thread has its own block of four pages: a page directory, two
-//!   page tables and its thread-local page;
+//! - each thread has its own block of five pages: a page directory, two
+//!   page tables, its thread-local page and its ring-0 page (its TSS and
+//!   ring-0 stack, ADR-0113);
 //! - the directory maps the whole 4 GB linear space one-to-one with 4 MB
 //!   pages, except the 4 MB holding `TLM_PAGE` (in the system area,
 //!   ADR-0094) and the first 4 MB, which go through the page tables;
 //! - the TLM table maps its 4 MB one-to-one too, except `TLM_PAGE`, which
-//!   leads to the thread's own page;
+//!   leads to the thread's own page, and the FS and ring-0 windows, which
+//!   lead to its TIB's page and its ring-0 page;
 //! - the low table maps the first 4 MB one-to-one but for the low 64 KB,
 //!   which are not present, as on OS/2: a null pointer, or one just past
 //!   it, traps as an access violation (ADR-0110).
@@ -71,14 +73,15 @@ pub fn start_paging_watch(shared: Arc<super::SharedState>) {
 }
 
 /// Pages in a thread's paging block: directory, TLM table, low table,
-/// thread-local page.
-pub const PAGING_BLOCK_PAGES: u32 = 4;
+/// thread-local page, ring-0 page.
+pub const PAGING_BLOCK_PAGES: u32 = 5;
 /// Bytes of a thread's paging block.
 pub const PAGING_BLOCK_SIZE: u32 = PAGING_BLOCK_PAGES * PAGE_SIZE;
 /// Offsets of the parts in the block.
 const TABLE_OFFSET: u32 = PAGE_SIZE;
 const LOW_TABLE_OFFSET: u32 = 2 * PAGE_SIZE;
 const TLM_OFFSET: u32 = 3 * PAGE_SIZE;
+const RING0_OFFSET: u32 = 4 * PAGE_SIZE;
 /// The low addresses no 32-bit thread reaches (OS/2's low 64 KB, below
 /// every program's objects).
 pub const LOW_GUARD: u32 = EXE_AREA_START;
@@ -103,6 +106,8 @@ const TLM_CHUNK: u32 = TLM_PAGE >> LARGE_PAGE_SHIFT;
 const TLM_ENTRY: u32 = (TLM_PAGE >> PAGE_SHIFT) & (ENTRIES - 1);
 /// The FS window's entry in the page table (ADR-0110).
 const FS_ENTRY: u32 = (FS_WINDOW >> PAGE_SHIFT) & (ENTRIES - 1);
+/// The ring-0 window's entry in the page table (ADR-0113).
+const RING0_ENTRY: u32 = (RING0_WINDOW >> PAGE_SHIFT) & (ENTRIES - 1);
 // The two tables map different 4 MB, and the guard lies in the first.
 const _: () = assert!(TLM_CHUNK != 0 && LOW_GUARD < (1 << LARGE_PAGE_SHIFT) && LOW_GUARD.is_multiple_of(PAGE_SIZE));
 const PAGE_SHIFT: u32 = 12;
@@ -119,8 +124,8 @@ pub const TLM_MAX_PER_CALL: u32 = 8;
 
 /// The paging block's contents for a block at `base`, for the thread
 /// whose TIB is at `tib` (its page shows through the FS window; 0: the
-/// window is not present): the directory, the two tables and a zeroed
-/// thread-local page.
+/// window is not present): the directory, the two tables, a zeroed
+/// thread-local page, and the ring-0 page with the thread's TSS.
 pub fn paging_block(base: u32, tib: u32) -> Vec<u8> {
     let mut block = vec![0u8; PAGING_BLOCK_SIZE as usize];
     let mut put = |at: u32, entry: u32| {
@@ -137,7 +142,11 @@ pub fn paging_block(base: u32, tib: u32) -> Vec<u8> {
     }
     for j in 0..ENTRIES {
         let page = (TLM_CHUNK << LARGE_PAGE_SHIFT) | (j << PAGE_SHIFT);
-        let target = if j == TLM_ENTRY { base + TLM_OFFSET } else { page };
+        let target = match j {
+            TLM_ENTRY => base + TLM_OFFSET,
+            RING0_ENTRY => base + RING0_OFFSET,
+            _ => page,
+        };
         if j != FS_ENTRY {
             put(TABLE_OFFSET + 4 * j, target | PTE_FLAGS);
         } else if tib != 0 {
@@ -148,6 +157,10 @@ pub fn paging_block(base: u32, tib: u32) -> Vec<u8> {
             put(LOW_TABLE_OFFSET + 4 * j, low | PTE_FLAGS);
         }
     }
+    put(RING0_OFFSET + TSS_ESP0_OFFSET, RING0_STACK_TOP);
+    put(RING0_OFFSET + TSS_SS0_OFFSET, u32::from(KERNEL_DATA_SEL));
+    let iomap = (RING0_OFFSET + TSS_IOMAP_OFFSET) as usize;
+    block[iomap..iomap + 2].copy_from_slice(&(TSS_SIZE as u16).to_le_bytes());
     block
 }
 
@@ -167,6 +180,12 @@ pub fn valid_block(base: u32) -> bool {
 pub fn tlm_page_of(cr3: u64) -> Option<u32> {
     let base = u32::try_from(cr3).ok().filter(|&b| valid_block(b))?;
     Some(base + TLM_OFFSET)
+}
+
+/// The ring-0 page (TSS and ring-0 stack, ADR-0113) of the block whose
+/// thread-local page is `page`; None for a page of no block.
+pub fn ring0_page_of_tlm(page: u32) -> Option<u32> {
+    block_of_tlm_page(page).map(|base| base + RING0_OFFSET)
 }
 
 /// The paging block whose thread-local page is `page`.
@@ -360,7 +379,8 @@ mod tests {
         assert_eq!(entry(&b, TABLE_OFFSET + 4 * FS_ENTRY), TIB_BASE | PTE_FLAGS, "the FS window");
         assert_eq!(entry(&paging_block(BASE, 0), TABLE_OFFSET + 4 * FS_ENTRY), 0, "no TIB: no window");
         assert_eq!(entry(&b, TABLE_OFFSET + 4 * 1023), (chunk + 0x003F_F000) | PTE_FLAGS);
-        assert!(b[TLM_OFFSET as usize..].iter().all(|&x| x == 0), "a zeroed thread-local page");
+        assert!(b[TLM_OFFSET as usize..RING0_OFFSET as usize].iter().all(|&x| x == 0), "a zeroed thread-local page");
+        assert_eq!(entry(&b, TABLE_OFFSET + 4 * RING0_ENTRY), (BASE + RING0_OFFSET) | PTE_FLAGS, "the ring-0 window");
         assert_eq!(tlm_page_of(BASE as u64), Some(BASE + TLM_OFFSET));
     }
 
@@ -391,9 +411,31 @@ mod tests {
                 assert!(valid_block(target - TLM_OFFSET));
             } else if page == FS_WINDOW {
                 assert_eq!(target, TIB_BASE, "the FS window shows the thread's TIB");
+            } else if page == RING0_WINDOW {
+                assert_eq!(target, BASE + RING0_OFFSET, "the ring-0 window shows the block's ring-0 page");
             } else {
                 assert_eq!(target, page, "table entry {j}");
             }
+        }
+    }
+
+    /// The ring-0 page starts with a TSS whose ring-0 stack is the rest of
+    /// that page, on the ring-0 data selector, with no I/O bitmap; the
+    /// stack itself starts zeroed (ADR-0113).
+    #[test]
+    fn the_ring0_page_holds_the_threads_tss_and_stack() {
+        const BASE: u32 = 0x0200_5000;
+        let b = paging_block(BASE, TIB_BASE);
+        let tss = |off: u32| entry(&b, RING0_OFFSET + off);
+        assert_eq!(tss(TSS_ESP0_OFFSET), RING0_WINDOW + PAGE_SIZE, "ESP0: the top of the ring-0 page");
+        assert_eq!(tss(TSS_SS0_OFFSET), u32::from(KERNEL_DATA_SEL), "SS0: ring-0 data");
+        assert_eq!(tss(TSS_IOMAP_OFFSET - 2) >> 16, TSS_SIZE, "no I/O permission bitmap");
+        assert_eq!(ring0_page_of_tlm(BASE + TLM_OFFSET), Some(BASE + RING0_OFFSET));
+        assert_eq!(ring0_page_of_tlm(0), None);
+        assert_eq!(KERNEL_DATA_SEL & 3, 0, "SS0's RPL is 0");
+        let fields = [TSS_ESP0_OFFSET, TSS_SS0_OFFSET, TSS_IOMAP_OFFSET - 2];
+        for off in (0..PAGE_SIZE).step_by(4).filter(|o| !fields.contains(o)) {
+            assert_eq!(tss(off), 0, "ring-0 page offset {off:#x}");
         }
     }
 

@@ -47,9 +47,19 @@
 
 #define STACK_SIZE  0x4000
 
-/* The termination code the routines get. */
+/* The termination code the routines get. HLT is privileged: at ring 3
+ * (OS/2's, and Warpine's with WARPINE_RING=3, ADR-0113) it raises
+ * XCPT_PRIVILEGED_INSTRUCTION, and the unhandled exception ends the
+ * process with TC_EXCEPTION; at ring 0 the processor halts and Warpine
+ * ends the process as a trap. */
 #if defined( HLT_EXIT )
-#define EXPECTED_TC TC_TRAP
+#ifdef __WATCOMC__
+static ULONG read_cs( void );
+#pragma aux read_cs = "xor eax, eax" "mov ax, cs" value [eax];
+#else
+static ULONG read_cs( void ) { ULONG v = 0; __asm__ volatile( "mov %%cs, %w0" : "+r"( v ) ); return v; }
+#endif
+#define EXPECTED_TC ( ( read_cs() & 3 ) == 3 ? TC_EXCEPTION : TC_TRAP )
 #else
 #define EXPECTED_TC TC_EXIT
 #endif

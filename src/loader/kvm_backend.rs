@@ -200,6 +200,7 @@ impl VcpuBackend for KvmVcpu {
             cs: kseg_to_guest(s.cs), ds: kseg_to_guest(s.ds),
             es: kseg_to_guest(s.es), fs: kseg_to_guest(s.fs),
             gs: kseg_to_guest(s.gs), ss: kseg_to_guest(s.ss),
+            tr: kseg_to_guest(s.tr),
             gdt_base:  s.gdt.base,  gdt_limit: s.gdt.limit as u32,
             idt_base:  s.idt.base,  idt_limit: s.idt.limit as u32,
             cr0: s.cr0, cr2: s.cr2, cr3: s.cr3, cr4: s.cr4,
@@ -213,6 +214,7 @@ impl VcpuBackend for KvmVcpu {
         s.cs = guest_to_kseg(&g.cs); s.ds = guest_to_kseg(&g.ds);
         s.es = guest_to_kseg(&g.es); s.fs = guest_to_kseg(&g.fs);
         s.gs = guest_to_kseg(&g.gs); s.ss = guest_to_kseg(&g.ss);
+        s.tr = guest_to_kseg(&g.tr);
         s.gdt.base  = g.gdt_base;  s.gdt.limit = g.gdt_limit as u16;
         s.idt.base  = g.idt_base;  s.idt.limit = g.idt_limit as u16;
         s.cr0 = g.cr0; s.cr3 = g.cr3; s.cr4 = g.cr4;

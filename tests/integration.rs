@@ -968,6 +968,16 @@ fn test_thread_local_memory() {
 /// directory (where Warpine writes its crash dump): stdout, the exit
 /// code, and the crash dumps written.
 fn run_paging_abuse(exe: &str, sigterm_after: Option<Duration>) -> Option<(String, i32, Vec<String>)> {
+    run_paging_abuse_at(exe, sigterm_after, RING_0)
+}
+
+/// The ring a test pins with `WARPINE_RING` (ADR-0113), whatever the
+/// environment it runs in asks for.
+const RING_0: &str = "0";
+const RING_3: &str = "3";
+
+/// [`run_paging_abuse`] with the program's threads at `ring`.
+fn run_paging_abuse_at(exe: &str, sigterm_after: Option<Duration>, ring: &str) -> Option<(String, i32, Vec<String>)> {
     let sample = std::fs::canonicalize(sample_path(format!("samples/paging_abuse_test/{exe}"))).ok()?;
     if !kvm_available() { return None; }
     let work = tempfile::tempdir().expect("tempdir");
@@ -980,6 +990,7 @@ fn run_paging_abuse(exe: &str, sigterm_after: Option<Duration>) -> Option<(Strin
         .env("XDG_RUNTIME_DIR", work.path())
         .envs(PINNED_LOCALE.iter().copied())
         .env("RUST_LOG", "error")
+        .env("WARPINE_RING", ring)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -1032,6 +1043,26 @@ fn test_a_guest_attacking_its_paging_ends_as_a_trap() {
         assert_eq!(code, 1, "{exe}:\n{out}");
         assert_eq!(dumps.len(), 1, "{exe}: one crash dump:\n{dumps:#?}");
         assert!(dumps[0].contains(paging), "{exe}: wants {paging:?}:\n{}", dumps[0]);
+    }
+}
+
+/// At ring 3 (ADR-0113) the same attacks never touch the paging: each
+/// variant's first privileged instruction (reading CR3, to check it runs
+/// paged) raises XCPT_PRIVILEGED_INSTRUCTION before the program has
+/// registered its exit-list routine, and with no handler the process ends
+/// by the exception (exit code 1), one crash dump showing a #GP and the
+/// tables intact.
+#[test]
+fn at_ring_3_a_guest_cannot_reach_its_paging() {
+    for exe in ["pgabuse_zero.exe", "pgabuse_cr3.exe", "pgabuse_remap.exe", "pgabuse_off.exe", "pgabuse_past.exe"] {
+        let Some((out, code, dumps)) = run_paging_abuse_at(exe, None, RING_3) else { return };
+        assert!(!out.contains("FAIL"), "{exe}:\n{out}");
+        assert!(!out.contains("pgabuse: runs paged"), "{exe}: reading CR3 must fault:\n{out}");
+        assert!(!out.contains("pgabuse: exit list"), "{exe}: no routine registered yet:\n{out}");
+        assert_eq!(code, 1, "{exe}:\n{out}");
+        assert_eq!(dumps.len(), 1, "{exe}: one crash dump:\n{dumps:#?}");
+        assert!(dumps[0].contains("General Protection"), "{exe}:\n{}", dumps[0]);
+        assert!(dumps[0].contains("Paging: on, the thread's tables intact"), "{exe}:\n{}", dumps[0]);
     }
 }
 
@@ -1511,11 +1542,33 @@ fn test_exception_chains_are_per_thread() {
     assert_eq!(code, 0, "{out}");
 }
 
+/// ring_test (ADR-0113): every 32-bit thread's task register names its
+/// TSS, and its segments are the flat ones (code 0x08, data 0x10, the
+/// TIB at 0x18) at the RPL of the ring it runs at; FS reaches its TIB.
+/// At ring 3 (`WARPINE_RING=3`) it also checks that CLI raises
+/// XCPT_PRIVILEGED_INSTRUCTION and that a context record cannot raise
+/// IOPL.
+#[test]
+fn every_thread_has_a_tss_and_the_flat_segments() {
+    const SAMPLE: &str = "samples/ring_test/ring_test.exe";
+    for (ring, min) in [(RING_0, 10), (RING_3, 13)] {
+        let Some(out) = text_checks_pass_env(SAMPLE, "ring_test", min, &[("WARPINE_RING", ring)]) else { return };
+        assert!(out.contains(&format!("ring_test info: running at ring {ring}")), "{out}");
+        assert!(out.contains(&format!("ring_test info: thread 2: running at ring {ring}")), "{out}");
+    }
+}
+
 /// The checks a text-mode sample with `<prefix>: <name>: ok` lines
 /// reported, all passed, at least `min` of them, and exit code 0.
 fn assert_text_checks_pass(sample: &str, prefix: &str, min: usize) {
-    if !kvm_available() || !sample_exists(sample) { return; }
-    let (out, code) = run_sample(sample, 30);
+    text_checks_pass_env(sample, prefix, min, &[]);
+}
+
+/// [`assert_text_checks_pass`] with extra environment variables; the
+/// output, or None when the sample cannot run here.
+fn text_checks_pass_env(sample: &str, prefix: &str, min: usize, env: &[(&str, &str)]) -> Option<String> {
+    if !kvm_available() || !sample_exists(sample) { return None; }
+    let (out, code) = run_sample_env(sample, 30, env);
     let checks: Vec<&str> = out.lines()
         .filter(|l| l.starts_with(&format!("{prefix}: ")) && !l.contains(": done")).collect();
     assert!(checks.len() >= min, "every check reported:\n{out}");
@@ -1523,6 +1576,7 @@ fn assert_text_checks_pass(sample: &str, prefix: &str, min: usize) {
     assert!(failed.is_empty(), "failed checks: {failed:#?}");
     assert!(out.contains(&format!("{prefix}: done {n}/{n}", n = checks.len())), "{out}");
     assert_eq!(code, 0, "{out}");
+    Some(out)
 }
 
 /// The Landlock sandbox (ADR-0111): a confined process cannot read the
@@ -1587,14 +1641,20 @@ fn test_thread_exit_of_the_last_thread_ends_the_process() {
 /// Termination codes exit-list routines get (bsedos.h).
 const TC_EXIT: u32 = 0;
 const TC_TRAP: u32 = 2;
+const TC_EXCEPTION: u32 = 4;
 
 /// Run one exitlist_test variant: every check before the process ends and
 /// (when `runs` is set) in the exit-list routines passes, the routines
 /// getting termination code `tc`; returns stdout.
 fn run_exitlist_variant(exe: &str, code_want: i32, runs: bool, tc: u32) -> Option<String> {
+    run_exitlist_variant_at(exe, code_want, runs, tc, RING_0)
+}
+
+/// [`run_exitlist_variant`] with the program's threads at `ring`.
+fn run_exitlist_variant_at(exe: &str, code_want: i32, runs: bool, tc: u32, ring: &str) -> Option<String> {
     let sample = format!("samples/exitlist_test/{exe}");
     if !kvm_available() || !sample_exists(&sample) { return None; }
-    let (out, code) = run_sample(&sample, 20);
+    let (out, code) = run_sample_env(&sample, 20, &[("WARPINE_RING", ring)]);
     assert!(!out.contains("FAIL"), "{out}");
     assert!(out.lines().any(|l| l.starts_with("exitlist_test: done ")), "{out}");
     if runs {
@@ -1633,6 +1693,14 @@ fn test_exit_list_runs_when_another_thread_ends_the_process() {
 #[test]
 fn test_exit_list_runs_after_hlt() {
     let Some(out) = run_exitlist_variant("exitlist_hlt.exe", 1, true, TC_TRAP) else { return };
+    assert!(!out.contains("went on after HLT"), "{out}");
+}
+
+/// exitlist_hlt at ring 3 (ADR-0113): HLT is a privileged instruction, as
+/// on OS/2; unhandled, it ends the process with TC_EXCEPTION.
+#[test]
+fn at_ring_3_hlt_ends_the_process_by_an_exception() {
+    let Some(out) = run_exitlist_variant_at("exitlist_hlt.exe", 1, true, TC_EXCEPTION, RING_3) else { return };
     assert!(!out.contains("went on after HLT"), "{out}");
 }
 

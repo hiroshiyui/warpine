@@ -136,6 +136,23 @@ pub const EXE_AREA_START: u32 = 0x0001_0000;
 pub const FS_WINDOW: u32 = SYSTEM_AREA_BASE + SYSTEM_AREA_SIZE;
 const _: () = assert!(FS_WINDOW >> 22 == TLM_PAGE >> 22 && FS_WINDOW.is_multiple_of(PAGE_SIZE)
                       && FS_WINDOW + PAGE_SIZE <= DYNAMIC_ALLOC_BASE);
+/// The ring-0 window (ADR-0113): the page after the FS window, which each
+/// 32-bit thread's tables map to its own ring-0 page. The page starts with
+/// the thread's task-state segment (TR's base); the rest is the stack an
+/// interrupt or exception from ring 3 switches to.
+pub const RING0_WINDOW: u32 = FS_WINDOW + PAGE_SIZE;
+const _: () = assert!(RING0_WINDOW >> 22 == TLM_PAGE >> 22 && RING0_WINDOW + PAGE_SIZE <= DYNAMIC_ALLOC_BASE);
+/// The top of a thread's ring-0 stack (the TSS's ESP0).
+pub const RING0_STACK_TOP: u32 = RING0_WINDOW + PAGE_SIZE;
+/// A 32-bit task-state segment without an I/O permission bitmap (Intel
+/// SDM vol. 3, 8.2.1): its size, and the offsets of ESP0, SS0 and the
+/// I/O map base. A map base at the TSS's size means no bitmap, so ring 3
+/// may use no I/O port.
+pub const TSS_SIZE: u32 = 104;
+pub const TSS_ESP0_OFFSET: u32 = 4;
+pub const TSS_SS0_OFFSET: u32 = 8;
+pub const TSS_IOMAP_OFFSET: u32 = 102;
+const _: () = assert!(TSS_SIZE < PAGE_SIZE / 2);
 pub const EXE_AREA_END: u32 = MAGIC_API_BASE as u32;
 
 // GDT tiling: 16-bit segment descriptors covering the guest address space
@@ -146,7 +163,8 @@ pub const GDT_BASE: u32 = SYSTEM_AREA_BASE;
 //   [4] 16-bit data alias (0x20, base=0, limit=0xFFFF) — used for SS in 16-bit mode,
 //   [5] 16-bit code alias (0x28, base=0, limit=0xFFFF) — Far16 thunk entry (JMP FAR 0x0028:xxxx),
 //   [6..4101] 16-bit data tiles (0x30, 0x38, …) — one per 64KB, read/write,
-//   [4102..6149] 16-bit code tiles — matching bases, execute/read, for Far16 JMP/CALL fixups.
+//   [4102..6149] 16-bit code tiles — matching bases, execute/read, for Far16 JMP/CALL fixups,
+//   [6150..6152] ring-0 code, ring-0 data, the TSS (ADR-0113).
 pub const TILED_SEL_START_INDEX: u32 = 6;       // data tiles start at GDT[6] (selector 0x30)
 pub const TILED_SEL_START: u32 = TILED_SEL_START_INDEX * 8; // selector 0x30
 pub const TILE_SIZE: u32 = 0x10000;             // 64KB per tile
@@ -156,9 +174,18 @@ pub const NUM_TILES: u32 = 4096;                // 256MB / 64KB (data tiles)
 pub const NUM_CODE_TILES: u32 = 2048;           // 128MB / 64KB (guest memory size)
 pub const TILED_CODE_START_INDEX: u32 = TILED_SEL_START_INDEX + NUM_TILES; // GDT[4102]
 pub const TILED_CODE_START: u32 = TILED_CODE_START_INDEX * 8;
-pub const GDT_ENTRY_COUNT: u32 = 6 + NUM_TILES + NUM_CODE_TILES; // 6 fixed + 4096 data + 2048 code = 6150
-pub const GDT_SIZE: u32 = GDT_ENTRY_COUNT * 8;  // 49200 bytes
-// The IDT after the GDT (which ends at SYSTEM_AREA_BASE + 0xC030).
+// Ring-0 descriptors after the code tiles (ADR-0113): code and data for
+// the exception stubs and their stack, and each thread's TSS (TR). The
+// selectors programs know (0x08, 0x10, 0x18, the tiles) keep their values.
+pub const KERNEL_CODE_INDEX: u32 = TILED_CODE_START_INDEX + NUM_CODE_TILES; // GDT[6150]
+pub const KERNEL_CODE_SEL: u16 = (KERNEL_CODE_INDEX * 8) as u16;
+pub const KERNEL_DATA_SEL: u16 = KERNEL_CODE_SEL + 8;
+pub const TSS_SEL: u16 = KERNEL_DATA_SEL + 8;
+// 6 fixed + 4096 data tiles + 2048 code tiles + 3 ring-0 = 6153
+pub const GDT_ENTRY_COUNT: u32 = 6 + NUM_TILES + NUM_CODE_TILES + 3;
+const _: () = assert!(TSS_SEL as u32 / 8 + 1 == GDT_ENTRY_COUNT);
+pub const GDT_SIZE: u32 = GDT_ENTRY_COUNT * 8;  // 49224 bytes
+// The IDT after the GDT (which ends at SYSTEM_AREA_BASE + 0xC048).
 pub const IDT_BASE: u32 = SYSTEM_AREA_BASE + 0xD000;
 pub const IDT_HANDLER_BASE: u32 = SYSTEM_AREA_BASE + 0xD800;
 const _: () = assert!(GDT_BASE + GDT_SIZE <= IDT_BASE);

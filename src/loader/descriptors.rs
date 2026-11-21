@@ -4,6 +4,15 @@ use super::constants::*;
 use super::mutex_ext::MutexExt;
 use log::debug;
 
+/// A present 32-bit TSS, busy (Intel SDM vol. 3, 3.5): TR is loaded with
+/// it directly, never with `LTR`.
+const GDT_ACCESS_BUSY_TSS: u8 = 0x8B;
+/// 32-bit interrupt gates, present: DPL 0, and DPL 3 for the breakpoint.
+const IDT_GATE_DPL0: u16 = 0x8E00;
+const IDT_GATE_DPL3: u16 = 0xEE00;
+/// The breakpoint exception (`INT3`), which API thunks raise.
+const BREAKPOINT_VECTOR: u32 = 3;
+
 /// The PMWIN and PMGPI calls Warpine dispatches, `(name, ordinal)` sorted by
 /// name; build.rs reads them from the sub-dispatchers' arms.
 mod pm_names {
@@ -183,32 +192,41 @@ impl super::Loader {
     ///   [0] null, [1] 32-bit code (0x08), [2] 32-bit data (0x10), [3] FS data (0x18),
     ///   [4] 16-bit data alias (0x20, base=0, limit=0xFFFF) — SS for 16-bit stack,
     ///   [5] 16-bit code alias (0x28, base=0, limit=0xFFFF) — CS target for Far16 thunks,
-    ///   [6..4101] 16-bit data tiles (0x30..0x8020) — one per 64KB of guest address space.
+    ///   [6..4101] 16-bit data tiles (0x30..0x8020) — one per 64KB of guest address space,
+    ///   [4102..6149] 16-bit code tiles,
+    ///   [6150..6152] ring-0 code, ring-0 data and the TSS (ADR-0113).
     ///
     /// The tiled 16-bit descriptors allow OS/2 16:16 (selector:offset) addressing to work
     /// correctly for LSS, JMP FAR, CALL FAR, and other segmented instructions.
     pub(crate) fn setup_idt(&self) {
+        use super::ring::access_byte;
         const NUM_VECTORS: u32 = 32;
+        // At ring 3 (ADR-0113) the descriptors programs use are DPL 3, and
+        // the gates enter ring 0 through ring 0's own code descriptor.
+        let ring3 = self.guest_ring() == 3;
+        let user_dpl = if ring3 { 3 } else { 0 };
+        let (user_code, user_data) = (access_byte(user_dpl, true), access_byte(user_dpl, false));
+        let gate_cs = if ring3 { KERNEL_CODE_SEL } else { 0x08 };
 
         // ── GDT entries ──
 
         // Entry 0: null descriptor
         self.guest_write::<u64>(GDT_BASE, 0).unwrap();
         // Entry 1 (selector 0x08): 32-bit code — base=0, limit=4GB, exec/read
-        self.guest_write::<u64>(GDT_BASE + 8, Self::make_gdt_entry(0, 0xFFFFF, 0x9B, 0xCF)).unwrap();
+        self.guest_write::<u64>(GDT_BASE + 8, Self::make_gdt_entry(0, 0xFFFFF, user_code, 0xCF)).unwrap();
         // Entry 2 (selector 0x10): 32-bit data — base=0, limit=4GB, read/write
-        self.guest_write::<u64>(GDT_BASE + 16, Self::make_gdt_entry(0, 0xFFFFF, 0x93, 0xCF)).unwrap();
+        self.guest_write::<u64>(GDT_BASE + 16, Self::make_gdt_entry(0, 0xFFFFF, user_data, 0xCF)).unwrap();
         // Entry 3 (selector 0x18): FS data — the FS window, which each
         // thread's tables map to its own TIB (ADR-0110): reloading FS keeps
         // the thread's TIB, as OS/2's per-thread TIB selector does.
-        self.guest_write::<u64>(GDT_BASE + 24, Self::make_gdt_entry(FS_WINDOW, PAGE_SIZE - 1, 0x93, 0x40)).unwrap();
+        self.guest_write::<u64>(GDT_BASE + 24, Self::make_gdt_entry(FS_WINDOW, PAGE_SIZE - 1, user_data, 0x40)).unwrap();
         // Entry 4 (selector 0x20): 16-bit data alias — base=0, limit=0xFFFF, byte granular.
         // Used as SS by 16-bit thunk code when it loads a 16-bit stack segment.
-        self.guest_write::<u64>(GDT_BASE + 32, Self::make_gdt_entry(0, 0xFFFF, 0x93, 0x00)).unwrap();
+        self.guest_write::<u64>(GDT_BASE + 32, Self::make_gdt_entry(0, 0xFFFF, user_data, 0x00)).unwrap();
         // Entry 5 (selector 0x28): 16-bit code alias — base=0, limit=0xFFFF, byte granular,
         // exec+read. Required by Far16 thunk stubs that execute `JMP FAR 0x0028:xxxx` to switch
         // from 32-bit to 16-bit execution mode (e.g., calls into JPOS2DLL Far16 exports).
-        self.guest_write::<u64>(GDT_BASE + 40, Self::make_gdt_entry(0, 0xFFFF, 0x9B, 0x00)).unwrap();
+        self.guest_write::<u64>(GDT_BASE + 40, Self::make_gdt_entry(0, 0xFFFF, user_code, 0x00)).unwrap();
 
         // Tiled 16-bit read/write data descriptors: GDT[6..4102].
         // Each tile i covers [i*64KB .. (i+1)*64KB), allowing OS/2 16:16 (selector:offset)
@@ -218,7 +236,9 @@ impl super::Loader {
             let base = i * TILE_SIZE;
             // DPL=2 (0xD3) so that OS/2 ring-2 selectors (RPL=2) can be loaded into
             // data segment registers from CPL=0: max(CPL=0,RPL=2)=2 ≤ DPL=2 passes.
-            let entry = Self::make_gdt_entry(base, 0xFFFF, 0xD3, 0x00); // 16-bit data, DPL=2
+            // At ring 3, DPL 3: RPL 2 and 3 selectors both load.
+            let access = if ring3 { user_data } else { 0xD3 };
+            let entry = Self::make_gdt_entry(base, 0xFFFF, access, 0x00); // 16-bit data
             let entry_addr = GDT_BASE + (TILED_SEL_START_INDEX + i) * 8;
             self.guest_write::<u64>(entry_addr, entry).expect("setup_idt: tile descriptor OOB");
         }
@@ -227,11 +247,22 @@ impl super::Loader {
         // Used by 16:16 far JMP/CALL fixups targeting executable LX objects.
         for i in 0..NUM_CODE_TILES {
             let base = i * TILE_SIZE;
-            let entry = Self::make_gdt_entry(base, 0xFFFF, 0x9B, 0x00); // 16-bit code, exec+read
+            let entry = Self::make_gdt_entry(base, 0xFFFF, user_code, 0x00); // 16-bit code, exec+read
             let entry_addr = GDT_BASE + (TILED_CODE_START_INDEX + i) * 8;
             self.guest_write::<u64>(entry_addr, entry).expect("setup_idt: code tile descriptor OOB");
         }
-        debug!("GDT: 6 fixed + {} tiled data + {} tiled code descriptors", NUM_TILES, NUM_CODE_TILES);
+        // Ring-0 code and data, and the TSS (ADR-0113): the descriptors an
+        // exception from ring 3 enters through. Each thread's tables map
+        // the TSS's base, the ring-0 window, to the thread's own page.
+        let ring0 = [
+            (KERNEL_CODE_SEL, Self::make_gdt_entry(0, 0xFFFFF, 0x9B, 0xCF)),
+            (KERNEL_DATA_SEL, Self::make_gdt_entry(0, 0xFFFFF, 0x93, 0xCF)),
+            (TSS_SEL, Self::make_gdt_entry(RING0_WINDOW, TSS_SIZE - 1, GDT_ACCESS_BUSY_TSS, 0x00)),
+        ];
+        for (sel, entry) in ring0 {
+            self.guest_write::<u64>(GDT_BASE + u32::from(sel), entry).expect("setup_idt: ring-0 descriptor OOB");
+        }
+        debug!("GDT: 6 fixed + {} tiled data + {} tiled code + 3 ring-0 descriptors", NUM_TILES, NUM_CODE_TILES);
 
         // ── IDT with exception handler stubs ──
         for i in 0..NUM_VECTORS {
@@ -260,8 +291,12 @@ impl super::Loader {
             let offset_lo = (handler_addr & 0xFFFF) as u16;
             let offset_hi = ((handler_addr >> 16) & 0xFFFF) as u16;
             self.guest_write::<u16>(idt_entry_addr, offset_lo).unwrap();
-            self.guest_write::<u16>(idt_entry_addr + 2, 0x08).unwrap(); // code selector
-            self.guest_write::<u16>(idt_entry_addr + 4, 0x8E00).unwrap(); // P=1, DPL=0, 32-bit int gate
+            self.guest_write::<u16>(idt_entry_addr + 2, gate_cs).unwrap(); // code selector
+            // `INT3` checks its gate's DPL like `INT n` (Intel SDM vol. 3,
+            // 6.12.1.1): the breakpoint gate is DPL 3, so that API thunks
+            // keep working from ring 3; a guest's other `INT n` faults.
+            let attrs = if i == BREAKPOINT_VECTOR { IDT_GATE_DPL3 } else { IDT_GATE_DPL0 };
+            self.guest_write::<u16>(idt_entry_addr + 4, attrs).unwrap();
             self.guest_write::<u16>(idt_entry_addr + 6, offset_hi).unwrap();
         }
     }
