@@ -75,7 +75,9 @@ ADR-0088 made 32-bit threads run paged, and ADR-0113 made them run at ring 3 wit
 - **The TLB flush** relies on KVM reloading a vCPU's paging when CR3 changes, observed, not documented.
 - **A stack grows wherever it is touched,** not only through its guard page, and without calling the program's handlers; OS/2 grows it through the guard page (the documentation does not say whether the handlers see `XCPT_GUARD_PAGE_VIOLATION` for a stack's guard page first).
 - **`XCPT_UNABLE_TO_GROW_STACK` from the bottom two pages,** once, continuable; with no handler it ends the process (`TC_EXCEPTION`).
-- **Stacks of fewer than four pages,** and the main thread's stack (the program's stack object), are committed whole.
+- **Stacks of fewer than four pages** are committed whole.
+- **The main thread's stack is the LX header's `STACKSIZE` below the entry ESP,** not below the stack object's base (Open Watcom puts the data and the stack in one object); a page it shares with the object's data stays committed; a program whose header has no `STACKSIZE` (0, or a header ending at 0xAC) keeps its stack committed whole.
+- **`PAG_EXECUTE` for a module's executable objects only** (the LX `OBJEXEC` flag); OS/2's exact flags for code are not documented.
 - **182 threads per process** instead of 191 (ADR-0113's arena, now shared with the process tables).
 
 ## Consequences
@@ -94,3 +96,6 @@ ADR-0088 made 32-bit threads run paged, and ADR-0113 made them run at ring 3 wit
   - A DLL object was given its virtual size (at least a page), while all its pages were loaded; an object smaller than its pages had file data written past its block. It now gets its pages' size (`load_dll_impl`).
   - A `DosAllocMem` that restricted pages a freed block had left in a TLB did not fault until `flush_tlbs` was also called there.
   - The `warpine-os2` crate's `set_mem` documentation gave wrong flag values; corrected.
+- **Later: the main thread's stack, and `PAG_EXECUTE`.**
+  - Thread 1's stack is sparse too (`MainStack`, `sparse_main_stack`): the header's `STACKSIZE` bytes below the entry ESP, made a stack region as other threads' are; its TIB gets the bounds, which were 0. lx-link writes `STACKSIZE` (its header is 0xC4 bytes now, as Open Watcom's). `stack_grow_test` checks the bounds, the reserved bottom, growth and `XCPT_UNABLE_TO_GROW_STACK` on the main thread (18 checks); unit test `the_main_stack_lies_below_the_entry_esp`.
+  - `DosQueryMem` on a code object reports `PAG_EXECUTE` (`PageMap::mark_executable`, forgotten when the module is freed). `mem_protect_test` checks code and data (42 checks).

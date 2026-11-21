@@ -2170,7 +2170,7 @@ The pre-commit hook (`githooks/pre-commit`; `git config core.hooksPath githooks`
 
 Tests never use the user's drive C (`$XDG_DATA_HOME/warpine/drive_c`): `Loader::new_mock` mounts C: at `target/test-drive-c` (`DriveManager::with_drive_c`; `default_drive_c_path()` only computes the user's path), and every Warpine process an integration test starts gets `XDG_DATA_HOME` in a temporary directory (`run_sample_env`, `run_gui_script_env` and the CMD.EXE / ANSI session helpers), unless the test names its own. The same helpers set `XDG_RUNTIME_DIR` to that temporary directory, so the named-pipe session directories (ADR-0022) and the thread-session directories (ADR-0032) of test runs never land in the user's `/run/user/<uid>`.
 
-The unit tests (2279: 2193 warpine + 23 `gen_api` + 37 `lx_link` + 8 `os2rc` + 6 `os2msg` + 5 `gen_arch` + 7 `gen_compat`) include, among others:
+The unit tests (2286: 2196 warpine + 23 `gen_api` + 39 `lx_link` + 10 `os2rc` + 6 `os2msg` + 5 `gen_arch` + 7 `gen_compat`) include, among others:
 
 | Module | What's tested |
 |---|---|
@@ -2317,7 +2317,7 @@ CLI samples should print output and exit with code 0. PM samples should open a w
 cargo test --test integration     # the end-to-end tests (requires /dev/kvm)
 ```
 
-**The samples' compiler** (ADR-0101): the tests run the Open Watcom builds in `samples/<name>/`. With `WARPINE_SAMPLES=gcc` (or `clang`, `gcc-pinned`, `clang-pinned`) they run the builds of `samples/build_sdk.sh` instead: `sample_path` maps every `samples/<name>/<file>.exe` / `.dll` a test runs, copies or checks to `samples/build/<tag>/<name>/`, except for the samples that script does not build. Use `sample_path` / `sample_exists` for any new sample path in a test. A `ci-` prefix (`ci-gcc`, `ci-clang`) is the CI matrix's own build (ADR-0106).
+**The samples' compiler** (ADR-0101): the tests run the Open Watcom builds in `samples/<name>/`. With `WARPINE_SAMPLES=gcc` (or `clang`, `gcc-pinned`, `clang-pinned`) they run the builds of `samples/build_sdk.sh` instead: `sample_path` maps every `samples/<name>/<file>.exe` / `.dll` a test runs, copies or checks to `samples/build/<tag>/<name>/`, except for the samples that script does not build. Use `sample_path` / `sample_exists` for any new sample path in a test, and guard a test that runs a sample with `can_run(sample)`: the samples are git-ignored, so a clean worktree has none, and the test then skips (`run_sample` itself fails on a missing sample, naming the guard). A `ci-` prefix (`ci-gcc`, `ci-clang`) is the CI matrix's own build (ADR-0106).
 
 **CI** (ADR-0106): `ci/matrix.sh watcom|gcc|clang` is one matrix entry; it runs in the image `vendor/setup_ci_image.sh` builds, started by `ci/run.sh` (locally, or from `.github/workflows/ci.yml`). A new tool or package the tests need goes into that image's package list, with `IMAGE_REVISION` counted up so that a new tag builds a new image; the script removes the images of older tags (`KEEP_OLD_CI_IMAGES=1` keeps them). A sample with its own Makefile and integration test goes into `build_sdk.sh`'s `SKIP` and `sample_path`'s `NOT_BUILT`.
 
@@ -2333,8 +2333,10 @@ samples/build_sdk.sh gcc && WARPINE_SAMPLES=gcc cargo test --test integration
 - **Targets** include Warpine's modules by `#[path]`:
   - `desktop_proto`, with shims for the loader items `proto.rs` uses; decoded messages must round-trip;
   - `lx_parse` and `ne_parse`, through a module whose path is `src/`, so their `header` submodules resolve;
-  - `msgfile`, where parsed files must round-trip.
-- **Running:** `fuzz/seed.sh` copies the built samples' programs, DLLs and message files into `fuzz/corpus/`; `fuzz/run.sh <target> [seconds]` builds with libFuzzer's instrumentation and the address sanitizer and runs. A crash's input lands in `fuzz/artifacts/<target>/`. Corpus and artifacts are ignored by git.
+  - `msgfile`, where parsed files must round-trip;
+  - `os2rc`, the whole of `src/bin/os2rc.rs`: `compile_in_memory` compiles a script to a .res file without reading any file (no `#include`, `RCINCLUDE` or resource file);
+  - `lx_link`, the whole of `src/bin/lx_link.rs`: `link_in_memory` reads one input (its first byte picks `.o`, `.res`, `.dll` or `.msg`; archives are told by their magic), links it, with `--gc-sections` when the byte's top bit is set, and writes the debug companion when it has DWARF.
+- **Running:** `fuzz/seed.sh` copies the built samples' programs, DLLs, message files, resource scripts and lx-link inputs into `fuzz/corpus/`; `fuzz/run.sh <target> [seconds]` builds with libFuzzer's instrumentation and the address sanitizer and runs. A crash's input lands in `fuzz/artifacts/<target>/`. Corpus and artifacts are ignored by git.
 - **In CI** the watcom entry runs each target for a minute after `cargo deny check` (advisories included) in both workspaces.
 
 ### GUI regression tests
@@ -2494,7 +2496,7 @@ The `ne_hello` sample (`samples/ne_hello/ne_hello.asm`) is a minimal 3-segment N
 - **NE (16-bit OS/2 1.x) execution** — full NE loader in `ne_exec.rs`: segments loaded into GDT-tiled memory, CALL FAR fixups patched to code tile `NE_THUNK_CODE_SELECTOR` (0x87B0), API dispatch via Pascal calling convention thunks, `ne_hello` pure assembly sample runs end-to-end.
 - **Modifier key suppression** — pure modifier keys (LShift, RShift, Ctrl, Alt, CapsLock) are filtered before `KbdCharIn` enqueueing; fixes 4OS2 printing raw scan codes on Shift press.
 - **Developer tooling** — crash dump facility (`crash_dump.rs`), GDB Remote Stub (`gdb_stub.rs`, `--gdb <port>`), API call ring buffer (`api_ring.rs`, 256 entries).
-- **Testing** — 2279 unit tests (2193 warpine + 23 gen_api + 37 lx_link + 8 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat), 218 integration tests, compatibility report (`warpine --compat`).
+- **Testing** — 2286 unit tests (2196 warpine + 23 gen_api + 39 lx_link + 10 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat), 218 integration tests, compatibility report (`warpine --compat`).
 
 ---
 

@@ -188,7 +188,6 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
   - muxwait semaphores as pipe semaphores, and a real `NPSS_WAIT`;
   - sweeping stale `warpine-threads-*` directories;
   - echo of piped standard input.
-- [ ] **Memory protection on the page tables** (ADR-0114): phases 1 and 2 are done (page states for `DosAllocMem` memory in shared process tables; sparse thread stacks with `XCPT_UNABLE_TO_GROW_STACK`, at ring 3). Read-only objects (phase 3) and not-present free memory (phase 4) are done too. Left: a sparse main-thread stack; `PAG_EXECUTE` in `DosQueryMem` for code objects.
 - [ ] **Suballocation**: shared pools between processes.
 - [ ] **Profiles**:
   - `PrfQueryProfile`, `PrfReset`, the program-list calls, the `PRF16*` / `WIN16*` exports;
@@ -255,13 +254,12 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 Warpine's first priority is that a guest cannot escape to the host (CLAUDE.md, ADR-0066). These would make that boundary harder to cross, and find mistakes before guests do.
 
 - [ ] **Threads per process**: the paging arena caps a process at 482 threads (ADR-0115), below `THREADS=`'s 4095; the free 4 MB after the thunks would make 738, blocks from the allocator would lift the cap (both weighed in ADR-0115).
-- [ ] **Memory protection**: see [Memory protection on the page tables](#kernel-and-processes) (the main thread's stack).
 - [ ] **Confining the host process, further** (Landlock is done, ADR-0111):
   - check the sandbox's display and sound paths on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers); only SDL's dummy drivers are tested;
   - a cgroup v2 scope per session (memory, tasks), as the tests and the pre-commit hook already use, against runaway or hostile guests;
   - seccomp filters per process role (guest processes, the desktop server);
   - namespaces (mount, user, network) only if those leave gaps: the session's AF_UNIX sockets, memfds, `/dev/kvm` and the display make them delicate.
-- [ ] **Fuzzing, further** (ADR-0112 fuzzes the desktop protocol, LX, NE and message files): the resource and `os2rc` inputs, `lx-link`'s object reader, and longer runs than CI's minute per target.
+- [ ] **Fuzzing, further** (ADR-0112 fuzzes the desktop protocol, LX, NE, message files, `os2rc`'s scripts and `lx-link`'s inputs): the resources Warpine reads from a running program (dialog and menu templates, bitmaps, string tables), and longer runs than CI's minute per target.
 - [ ] **Address layout**: programs, the system area and the allocator sit at fixed addresses; decide whether to randomise the allocator's and the DLLs' bases.
 
 ---
@@ -275,7 +273,6 @@ Open Watcom stays the frozen ABI baseline. A second, modern toolchain goes only 
   - the entries left undeclared (`cargo run --bin gen_api -- check-headers` counts them), the float and long double math functions.
 - [ ] **After M3 and M4** (every C sample from GCC and clang, pinned compilers, GDB with DWARF, C++: ADR-0101–0103):
   - CI (ADR-0106): watch the first runs on GitHub (time and memory of the three entries), and consider caching the image and the crates;
-  - tests that need a sample binary should skip when it is missing: in a clean worktree, 13 integration tests failed until the Open Watcom samples were built (a guard in `run_sample` and the golden helpers, rather than per test);
   - C++ exceptions through Warpine's callbacks (a window procedure that `WinDispatchMsg` called; across DLLs is done, ADR-0107);
   - C code that can trap under a C++ catch needs `-fasynchronous-unwind-tables` (ADR-0110 turns it on for C++ and the C library only); decide whether `OS2_CFLAGS` should have it too;
   - clang does not honour `-fnon-call-exceptions`: a trapping instruction's own frame gets no cleanups, and a caller clang proves cannot throw ends in `std::terminate` (ADR-0110);

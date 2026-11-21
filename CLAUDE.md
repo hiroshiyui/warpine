@@ -29,7 +29,7 @@ They run natively under KVM.
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2279 unit tests (2193 warpine + 23 gen_api + 37 lx_link + 8 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat) + 218 integration tests
+cargo test                                 # 2286 unit tests (2196 warpine + 23 gen_api + 39 lx_link + 10 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat) + 218 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); afterwards `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -40,7 +40,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
   - Rust 1.100.0, pinned in `rust-toolchain.toml` with clippy and rustfmt;
   - `libsdl3-dev`, found through pkg-config.
 - **Integration tests:**
-  - They skip when KVM or a sample binary is missing.
+  - They skip when KVM or a sample binary is missing: guard a test with `can_run(sample)` (`run_sample` fails on a missing sample and says so).
   - GUI tests run on SDL's `dummy` driver, under scripts (`WARPINE_GUI_SCRIPT`, `src/gui/gui_script.rs`), and compare dumps with `tests/golden/*.sig`.
 - **Open Watcom samples:**
   - Fetch the compiler with `./vendor/setup_watcom.sh`: a pinned, dated snapshot checked by SHA-256 (ADR-0066); `--refresh` replaces a snapshot older than 2026-08-11 (ADR-0036).
@@ -83,7 +83,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
    - Every thread, 32-bit or 16-bit, runs paged at ring 3 (`ring.rs`, ADR-0113: DPL-3 descriptors, a TSS and ring-0 stack per thread, an exception's frame moved from the ring-0 stack to the guest's); the GDT, IDT, ring-0 window and every paging block (the paging arena, at most 482 threads, ADR-0115) are supervisor-only, the thunks read-only, CR0.WP set. There is no ring 0 for guests and no paging watch.
    - Warpine never writes its protected memory (GDT, IDT, stubs, paging arena) through an address a guest gave: `guest_write` / `guest_write_bytes` / `guest_slice_mut` refuse it (`guest_mem::protected`); only Warpine's own setup uses `system_write` / `system_write_bytes`. A new structure in that memory is written the same way.
    - The host never walks the guest's page tables; a guest that spins on memory past its RAM ends as a trap. After an MMIO exit, `finish_mmio` completes the access before the registers change.
-   - Memory a program allocates has OS/2's page states (`vmem.rs`, ADR-0114): `DosAllocMem` / `DosSetMem` reserve, commit, decommit, make pages read-only or guard pages, in the process tables every thread shares; a guard page raises `XCPT_GUARD_PAGE_VIOLATION`. At ring 3 thread stacks are sparse: committed as they are touched, `XCPT_UNABLE_TO_GROW_STACK` near the bottom (`allocate_stack`, `grow_stack`). A page that loses access flushes every vCPU's TLB (`flush_tlbs`, CR3 reloaded). The program's and its DLLs' objects without the LX write flag are read-only (`protect_objects`). The allocator's other blocks are present while allocated; free memory is not present (`sync_allocations` brings `MemoryManager`'s allocations and frees into the tables before each vCPU runs guest code).
+   - Memory a program allocates has OS/2's page states (`vmem.rs`, ADR-0114): `DosAllocMem` / `DosSetMem` reserve, commit, decommit, make pages read-only or guard pages, in the process tables every thread shares; a guard page raises `XCPT_GUARD_PAGE_VIOLATION`. Thread stacks are sparse, the main thread's too (the header's `STACKSIZE` below the entry ESP, `MainStack`): committed as they are touched, `XCPT_UNABLE_TO_GROW_STACK` near the bottom (`allocate_stack`, `grow_stack`). `DosQueryMem` reports `PAG_EXECUTE` for executable objects. A page that loses access flushes every vCPU's TLB (`flush_tlbs`, CR3 reloaded). The program's and its DLLs' objects without the LX write flag are read-only (`protect_objects`). The allocator's other blocks are present while allocated; free memory is not present (`sync_allocations` brings `MemoryManager`'s allocations and frees into the tables before each vCPU runs guest code).
    - Managers live in `SharedState` behind mutexes; see the lock levels in `src/loader/mod.rs`.
    - Notable orders: pointers before `window_mgr`; profiles before `drive_mgr`; the window manager before a surface, never the reverse.
    - Never call the desktop link under the window manager's lock.

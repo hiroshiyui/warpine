@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- **The main thread's stack is sparse too** (ADR-0114). Thread 1's stack, the `STACKSIZE` bytes below the entry ESP that the LX header gives, is committed as it grows and raises `XCPT_UNABLE_TO_GROW_STACK` near its bottom, like every other thread's stack. Thread 1's TIB now has its stack bounds (`tib_pstack`, `tib_pstacklimit`), which were 0. `stack_grow_test` checks it (18 checks).
+- **`DosQueryMem` reports `PAG_EXECUTE`** for the code objects of a program and its DLLs (ADR-0114), and not for their data. `mem_protect_test` checks both (42 checks).
+- **Two more fuzz targets** (ADR-0112): `os2rc` compiles resource scripts in memory, and `lx_link` reads and links objects, archives, resource files, DLLs and message files in memory. CI runs both.
+
+### Changed
+- **lx-link writes the full LX header** (0xC4 bytes, as Open Watcom's linker does), with `STACKSIZE`, so the programs it links get a sparse main-thread stack. Warpine still runs programs whose header ends at 0xAC; their main stack stays committed whole.
+
+### Fixed
+- **lx-link could allocate gigabytes** for an object whose section or common symbol asked for a huge alignment, or for a common symbol of a huge size; it now refuses alignments above 64 KB and common symbols above 256 MB. Found by the new `lx_link` fuzz target.
+- **os2rc read devices as resource files**: `ICON 1 "/dev/zero"` read for ever. It now reads only regular files.
+- **`fuzz/seed.sh` seeded nothing for message files**: `find -size -1M` matches only empty files. The seeds are now every file under 1 MB.
+- **Integration tests failed when a sample was not built**: 11 tests ran samples without checking that they existed, so a clean worktree failed them. They now skip, through one guard (`can_run`), and running a missing sample names the missing guard.
+
 ## [0.0.11] - 2026-11-22
 
 ### Security
