@@ -29,7 +29,7 @@ They run natively under KVM.
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2258 unit tests (2172 warpine + 23 gen_api + 37 lx_link + 8 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat) + 211 integration tests
+cargo test                                 # 2267 unit tests (2181 warpine + 23 gen_api + 37 lx_link + 8 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat) + 214 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); afterwards `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -80,7 +80,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
    - API calls are INT 3 thunks at `MAGIC_API_BASE` + ordinal. The VMEXIT goes to `api_dispatch.rs`: the static registry (`api_registry.rs`, 478 entries) or a sub-dispatcher (VIOCALLS / KBDCALLS / MOUCALLS / PMWIN / PMGPI, 407 ordinals), 885 entry points in all (`--compat` lists them).
 2. **Threads.** One OS/2 thread is one host thread with its own vCPU.
    - 32-bit threads run paged with their own page tables: memory is mapped one-to-one except the thread-local page (`paging.rs`, ADR-0088); host accesses there go to the running thread's page (`guest_mem.rs`).
-   - The guest runs at ring 0: the host never walks its page tables, and a guest that changes its paging (caught by the `os2-paging-watch` kicks) or spins on memory past its RAM ends as a trap. After an MMIO exit, `finish_mmio` completes the access before the registers change.
+   - The guest runs at ring 0 by default; `WARPINE_RING=3` runs a 32-bit program's paged threads at ring 3 (`ring.rs`, ADR-0113: DPL-3 descriptors, a TSS and ring-0 stack per thread, an exception's frame moved from the ring-0 stack to the guest's). The host never walks the guest's page tables; at ring 0 a guest that changes its paging (caught by the `os2-paging-watch` kicks), and at either ring one that spins on memory past its RAM, ends as a trap. After an MMIO exit, `finish_mmio` completes the access before the registers change.
    - Managers live in `SharedState` behind mutexes; see the lock levels in `src/loader/mod.rs`.
    - Notable orders: pointers before `window_mgr`; profiles before `drive_mgr`; the window manager before a surface, never the reverse.
    - Never call the desktop link under the window manager's lock.
@@ -111,6 +111,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
 | `TIB_BASE` / `PIB_BASE` | `0x01810000` / `0x01811000` | Thread 1's block and the process block, in the system area |
 | `TLM_PAGE` | `0x0181F000` | The thread-local memory page: each 32-bit thread's own page tables (`paging.rs`, ADR-0088) map it to the thread's own page |
 | `FS_WINDOW` | `0x01840000` | Mapped by each thread's tables to its own TIB; selector `0x18`'s base, so reloading FS keeps the TIB (ADR-0110). The low 64 KB are not present: NULL pointers trap |
+| `RING0_WINDOW` | `0x01841000` | Mapped by each thread's tables to its ring-0 page: its TSS (TR, `TSS_SEL`), then its ring-0 stack (ADR-0113) |
 
 The PIB holds `pib_ulpid` at `+0x00`, `ulppid` at `+0x04`, `hmte` at `+0x08`, `pchcmd` at `+0x0C` and `pchenv` at `+0x10`.
 

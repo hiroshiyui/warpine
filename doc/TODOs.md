@@ -254,7 +254,8 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 
 Warpine's first priority is that a guest cannot escape to the host (CLAUDE.md, ADR-0066). These would make that boundary harder to cross, and find mistakes before guests do.
 
-- [ ] **Guest privilege**: 32-bit guests run at ring 0, so they can change their own page tables and control registers; Warpine only detects that afterwards (`os2-paging-watch`, ADR-0088). ADR-0113 (proposed) plans ring 3 in steps: a TSS and ring-0 stacks, DPL-3 descriptors behind `WARPINE_RING=3`, supervisor-only tables and CR0.WP, then the NE path. XE faces the same choice.
+- [ ] **Guest privilege**: 32-bit guests run at ring 0, so they can change their own page tables and control registers; Warpine only detects that afterwards (`os2-paging-watch`, ADR-0088). ADR-0113 (accepted) moves them to ring 3 in steps. Steps 1 and 2 are done: each thread has a TSS and ring-0 stack, and `WARPINE_RING=3` runs 32-bit programs at ring 3 with the whole suite passing. Next: step 3, ring 3 by default with supervisor-only tables, system area and ring-0 window, CR0.WP, and `WARPINE_RING=0` kept for one release; then the NE path. XE faces the same choice.
+- [ ] **A program's own `INT3`**: one outside the API thunks ends the process as an unexpected breakpoint (`vcpu.rs`); OS/2 raises `XCPT_BREAKPOINT` to the program's exception handlers (found with ADR-0113).
 - [ ] **Memory protection**: see [Memory protection on the page tables](#kernel-and-processes) (guard pages, read-only and decommitted memory), and paging for 16-bit (NE) programs.
 - [ ] **Confining the host process, further** (Landlock is done, ADR-0111):
   - check the sandbox's display and sound paths on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers); only SDL's dummy drivers are tested;
