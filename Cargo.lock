@@ -660,7 +660,7 @@ dependencies = [
 
 [[package]]
 name = "warpine"
-version = "0.0.9"
+version = "0.0.10"
 dependencies = [
  "ab_glyph",
  "ab_glyph_rasterizer",
