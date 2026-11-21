@@ -43,6 +43,43 @@ pub type Change = (u32, PageAccess);
 
 /// An LX object's write flag (IBM's LX format description: `OBJWRITE`).
 pub const LX_OBJECT_WRITE: u32 = 0x0002;
+/// An LX object's execute flag (`OBJEXEC`).
+pub const LX_OBJECT_EXEC: u32 = 0x0004;
+
+/// The main thread's stack (thread 1): from `bottom` up to `top`, the
+/// entry ESP, in the program's stack object.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MainStack {
+    pub bottom: u32,
+    pub top: u32,
+}
+
+impl MainStack {
+    /// The stack of a program whose stack object (`object_base`,
+    /// `object_bytes`) has the entry ESP at `top` and whose header gives
+    /// `stack_size` (`STACKSIZE`): the `stack_size` bytes below `top`,
+    /// not below the object. None: no stack size, or a `top` outside
+    /// the object.
+    pub fn of(object_base: u32, object_bytes: u32, top: u32, stack_size: u32) -> Option<Self> {
+        let object_end = u64::from(object_base) + u64::from(object_bytes);
+        if stack_size == 0 || top <= object_base || u64::from(top) > object_end {
+            return None;
+        }
+        Some(Self { bottom: top.saturating_sub(stack_size).max(object_base), top })
+    }
+
+    /// The whole pages of the stack that can be sparse: from the first
+    /// page above the bottom (a page shared with the object's data stays
+    /// committed) through the page that holds the entry ESP. `(base,
+    /// bytes)`; no bytes when there are none.
+    pub fn sparse_pages(&self) -> (u32, u32) {
+        let up = |a: u32| a.div_ceil(PAGE_SIZE).saturating_mul(PAGE_SIZE);
+        let base = up(self.bottom);
+        // The page holding the bytes just below the entry ESP.
+        let end = up(self.top);
+        (base, end.saturating_sub(base))
+    }
+}
 
 /// The pages of `objects` (`(base, bytes, LX flags)`) that are read-only:
 /// those of an object without the write flag, but for a page it shares
@@ -138,6 +175,9 @@ pub enum FaultKind {
 #[derive(Debug, Default)]
 pub struct PageMap {
     regions: BTreeMap<u32, Region>,
+    /// The loaded modules' executable objects: start page to end (bytes,
+    /// exclusive), for `DosQueryMem`'s `PAG_EXECUTE`.
+    executable: BTreeMap<u32, u32>,
 }
 
 impl PageMap {
@@ -150,6 +190,25 @@ impl PageMap {
     fn find_mut(&mut self, addr: u32) -> Option<(u32, &mut Region)> {
         let (&base, region) = self.regions.range_mut(..=addr).next_back()?;
         (u64::from(addr) < region.end(base)).then_some((base, region))
+    }
+
+    /// Record a module's executable object of `bytes` at `base`.
+    pub fn mark_executable(&mut self, base: u32, bytes: u32) {
+        let start = base & !(PAGE_SIZE - 1);
+        let end = base.saturating_add(bytes);
+        if end > start {
+            self.executable.insert(start, end);
+        }
+    }
+
+    /// Forget the executable object at `base` (its module was freed).
+    pub fn forget_executable(&mut self, base: u32) {
+        self.executable.remove(&(base & !(PAGE_SIZE - 1)));
+    }
+
+    /// Whether the page at `page` holds code of a loaded module.
+    pub fn executable(&self, page: u32) -> bool {
+        self.executable.range(..=page).next_back().is_some_and(|(_, &end)| page < end)
     }
 
     /// Whether `addr` lies in a tracked allocation.
@@ -430,7 +489,14 @@ impl super::Loader {
 
     /// Make the read-only objects of a loaded module read-only (ADR-0114):
     /// `objects` are `(base, bytes, LX flags)`, after the fixups are in.
+    /// Its executable objects report `PAG_EXECUTE` (`DosQueryMem`).
     pub(crate) fn protect_objects(&self, objects: &[(u32, u32, u32)]) {
+        {
+            let mut vmem = self.shared.vmem.lock_or_recover();
+            for &(base, bytes, _) in objects.iter().filter(|o| o.2 & LX_OBJECT_EXEC != 0) {
+                vmem.mark_executable(base, bytes);
+            }
+        }
         let changes: Vec<Change> = read_only_pages(objects).into_iter()
             .filter(|&p| process_pte_at(p).is_some())
             .map(|p| (p, PageAccess::Read)).collect();
@@ -446,6 +512,7 @@ impl super::Loader {
     /// present and writable again before the memory can be handed out.
     pub(crate) fn free_module_objects(&self, bases: impl IntoIterator<Item = u32>) {
         for base in bases {
+            self.shared.vmem.lock_or_recover().forget_executable(base);
             let size = self.shared.mem_mgr.lock_or_recover().block_size(base);
             if let Some(size) = size {
                 let changes: Vec<Change> = (0..size / PAGE_SIZE).map(|i| (base + i * PAGE_SIZE, PageAccess::ReadWrite)).collect();
@@ -464,6 +531,18 @@ impl super::Loader {
         // an ended thread, say): a TLB may still hold them so.
         if changes.iter().any(|c| c.1 != PageAccess::ReadWrite) {
             self.flush_tlbs();
+        }
+    }
+
+    /// Thread 1's stack (ADR-0114): its bounds in the TIB, and its pages
+    /// sparse as other threads' stacks are (`allocate_stack`). A stack too
+    /// small to be sparse is left committed.
+    pub(crate) fn sparse_main_stack(&self, stack: MainStack) {
+        self.guest_write::<u32>(TIB_BASE + TIB_PSTACK_OFFSET, stack.bottom);
+        self.guest_write::<u32>(TIB_BASE + TIB_PSTACKLIMIT_OFFSET, stack.top);
+        let (base, bytes) = stack.sparse_pages();
+        if bytes != 0 {
+            self.sparse_thread_stack(base, bytes);
         }
     }
 
@@ -524,7 +603,8 @@ impl super::Loader {
     /// `DosQueryMem` on memory `DosAllocMem` did not allocate: what the
     /// process tables say (after the allocator's pending changes), for the
     /// run of pages with the same entry: `PAG_FREE` for a page not present,
-    /// read-only or writable committed memory otherwise, `PAG_BASE` on the
+    /// read-only or writable committed memory otherwise (`PAG_EXECUTE` too
+    /// in a module's executable object), `PAG_BASE` on the
     /// first page of an allocator block. Memory the process tables do not
     /// map (shared memory, Warpine's own areas) reads as committed and
     /// writable, a page at a time, `PAG_SHARED` in the shared arena.
@@ -532,6 +612,9 @@ impl super::Loader {
         self.sync_allocations();
         let first = pb & !(PAGE_SIZE - 1);
         let limit = cb.div_ceil(PAGE_SIZE).max(1);
+        // A copy: the allocator's lock is held below, and the page states'
+        // is not taken under it.
+        let code = PageMap { executable: self.shared.vmem.lock_or_recover().executable.clone(), ..Default::default() };
         let flags_at = |page: u32| -> Option<u32> {
             if !self.shared.process_tables_ready.load(Ordering::Acquire) {
                 return None;
@@ -539,10 +622,11 @@ impl super::Loader {
             let entry = self.guest_read::<u32>(process_pte_at(page)?)?;
             const PRESENT: u32 = 1 << 0;
             const WRITABLE: u32 = 1 << 1;
+            let execute = if code.executable(page) { PAG_EXECUTE } else { 0 };
             Some(match (entry & PRESENT != 0, entry & WRITABLE != 0) {
                 (false, _) => PAG_FREE,
-                (true, false) => PAG_COMMIT | PAG_READ,
-                (true, true) => PAG_COMMIT | PAG_READ | PAG_WRITE,
+                (true, false) => PAG_COMMIT | PAG_READ | execute,
+                (true, true) => PAG_COMMIT | PAG_READ | PAG_WRITE | execute,
             })
         };
         let Some(state) = flags_at(first) else {
@@ -578,6 +662,39 @@ mod tests {
 
     const BASE: u32 = 0x0300_0000;
     const RW: u32 = PAG_COMMIT | PAG_READ | PAG_WRITE;
+
+    /// Thread 1's stack is the `STACKSIZE` bytes below the entry ESP, in
+    /// its object; whole pages above a page shared with data are sparse.
+    #[test]
+    fn the_main_stack_lies_below_the_entry_esp() {
+        // Open Watcom: data and the stack in one object, ESP at its end.
+        let watcom = MainStack::of(0x20000, 0x101F0, 0x301F0, 0x10000).expect("a stack");
+        assert_eq!(watcom, MainStack { bottom: 0x201F0, top: 0x301F0 });
+        assert_eq!(watcom.sparse_pages(), (0x21000, 0x10000), "the page shared with data stays committed");
+        // lx-link: a stack object of its own.
+        let own = MainStack::of(0x30000, 0x10000, 0x40000, 0x10000).expect("a stack");
+        assert_eq!(own.sparse_pages(), (0x30000, 0x10000));
+        assert_eq!(MainStack::of(0x30000, 0x8000, 0x38000, 0x10000).map(|s| s.bottom), Some(0x30000), "not below its object");
+        assert_eq!(MainStack::of(0x30000, 0x10000, 0x40000, 0), None, "no STACKSIZE");
+        assert_eq!(MainStack::of(0x30000, 0x10000, 0x40004, 0x1000), None, "ESP past the object");
+        assert_eq!(MainStack::of(0x30000, 0x10000, 0x30000, 0x1000), None, "ESP at the object's base");
+        let tiny = MainStack::of(0x30000, 0x10000, 0x30800, 0x100).expect("a stack");
+        assert_eq!(tiny.sparse_pages(), (0x31000, 0), "no whole page: nothing sparse");
+    }
+
+    /// Executable objects are known by page until their module is freed.
+    #[test]
+    fn executable_objects_are_known_by_page() {
+        let mut map = PageMap::default();
+        map.mark_executable(0x10000, 0x1801);
+        assert!(map.executable(0x10000) && map.executable(0x11000));
+        assert!(!map.executable(0x12000), "past the object");
+        assert!(!map.executable(0xF000), "before it");
+        map.mark_executable(0x20000, 0);
+        assert!(!map.executable(0x20000), "an empty object");
+        map.forget_executable(0x10000);
+        assert!(!map.executable(0x10000));
+    }
 
     #[test]
     fn a_committed_writable_allocation_is_present_and_writable() {
@@ -657,7 +774,8 @@ mod tests {
     /// DosQueryMem on memory DosAllocMem did not allocate answers from the
     /// process tables: an allocator block committed and writable, its first
     /// page the base, the run ending at the next block; free pages
-    /// PAG_FREE; a read-only page read-only.
+    /// PAG_FREE; a read-only page read-only; a code object's page
+    /// PAG_EXECUTE until its module is freed.
     #[test]
     fn query_mem_answers_untracked_memory_from_the_page_tables() {
         let l = super::super::Loader::new_mock();
@@ -674,8 +792,12 @@ mod tests {
         assert_eq!(query(a, 0x10000), (2 * PAGE_SIZE, RW | PAG_BASE), "the run ends where the next block starts");
         assert_eq!(query(a + PAGE_SIZE, 0x10000), (PAGE_SIZE, RW), "not the base");
         assert_eq!(query(b + PAGE_SIZE, 2 * PAGE_SIZE), (2 * PAGE_SIZE, PAG_FREE), "free pages");
-        l.protect_objects(&[(a, PAGE_SIZE, 0x0005)]);
-        assert_eq!(query(a, 0x10000), (PAGE_SIZE, PAG_COMMIT | PAG_READ | PAG_BASE), "a read-only object page");
+        l.protect_objects(&[(a, PAGE_SIZE, LX_OBJECT_EXEC | 0x0001)]);
+        assert_eq!(query(a, 0x10000), (PAGE_SIZE, PAG_COMMIT | PAG_READ | PAG_EXECUTE | PAG_BASE), "a code object page");
+        l.protect_objects(&[(a + PAGE_SIZE, PAGE_SIZE, 0x0001)]);
+        assert_eq!(query(a + PAGE_SIZE, PAGE_SIZE), (PAGE_SIZE, PAG_COMMIT | PAG_READ), "a read-only data page: no PAG_EXECUTE");
+        l.free_module_objects([a]);
+        assert_eq!(query(a, PAGE_SIZE), (PAGE_SIZE, PAG_FREE), "freed: no PAG_EXECUTE left");
         let (_, shared) = query(SHARED_ARENA_BASE, PAGE_SIZE);
         assert_ne!(shared & PAG_SHARED, 0);
     }

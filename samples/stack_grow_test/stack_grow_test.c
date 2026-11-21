@@ -11,7 +11,10 @@
  *     works (Warpine commits any page of the stack that is touched);
  *   - a STACK_COMMITTED stack is committed whole;
  *   - recursion without end raises XCPT_UNABLE_TO_GROW_STACK, which the
- *     thread's handler leaves by longjmp; the thread then ends normally.
+ *     thread's handler leaves by longjmp; the thread then ends normally;
+ *   - the main thread's stack (the header's STACKSIZE below the entry
+ *     ESP) has its bounds in the TIB, is sparse, grows, and runs out
+ *     the same way.
  * Growth needs ring 3, where every program runs (ADR-0113): a fault on
  * the stack is delivered on the ring-0 stack. At ring 0, which Warpine
  * no longer offers, only the checks that hold there would run.
@@ -168,6 +171,27 @@ static ULONG read_cs(void);
 static ULONG read_cs(void) { ULONG v = 0; __asm__ volatile("mov %%cs, %w0" : "+r"(v)); return v; }
 #endif
 
+/* The main thread's own stack, checked on the main thread. */
+static void main_thread_stack(void)
+{
+    ULONG low, high, here = (ULONG)&low;
+    stack_bounds(&low, &high);
+    check("the main thread's TIB has its stack bounds", low != 0 && low < here && here < high);
+    /* The first whole page above the bottom (a page shared with data
+     * stays committed). */
+    check("its stack's bottom is reserved", (flags_at((low + PAGE - 1) & ~(PAGE - 1)) & PAG_COMMIT) == 0);
+    check("its top is committed", (flags_at(high - 1) & PAG_COMMIT) != 0);
+    check("deep recursion on it works", deep(DEEP) == 0);
+    check("and has committed what it used",
+          high - deepest >= DEEP * FRAME_BYTES / 2 && (flags_at(deepest) & PAG_COMMIT) != 0);
+    came_back = 0;
+    ended = 0;
+    overflow_code = 0;
+    runaway(0);
+    check("recursion without end on it gets XCPT_UNABLE_TO_GROW_STACK", overflow_code == XCPT_UNABLE_TO_GROW_STACK);
+    check("which its handler leaves by longjmp", came_back && ended);
+}
+
 static int run(PFNTHREAD fn, ULONG flags)
 {
     TID tid;
@@ -198,6 +222,7 @@ int main(void)
         check("a thread recursing without end runs", run((PFNTHREAD)runaway, 0));
         check("it gets XCPT_UNABLE_TO_GROW_STACK", overflow_code == XCPT_UNABLE_TO_GROW_STACK);
         check("its handler leaves it by longjmp", came_back && ended);
+        main_thread_stack();
     }
 
     say("stack_grow_test: done ");

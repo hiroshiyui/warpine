@@ -129,6 +129,13 @@ impl super::Loader {
             debug!("BDA initialized: VGA mode 0x03, {}x{} text", cols, rows);
         }
 
+        // Thread 1's stack: its bounds in the TIB, sparse (ADR-0114).
+        let stack_object = &lx_file.object_table[lx_file.header.esp_object as usize - 1];
+        let object_bytes = stack_object.size.max(stack_object.page_count.saturating_mul(PAGE_SIZE));
+        if let Some(stack) = super::vmem::MainStack::of(stack_object.base_address, object_bytes, entry_esp as u32, lx_file.header.stack_size) {
+            self.sparse_main_stack(stack);
+        }
+
         self.setup_stubs();
         self.setup_idt();
         // Other Warpine processes may send signal exceptions (signals.rs).

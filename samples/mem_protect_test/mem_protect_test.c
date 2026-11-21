@@ -17,7 +17,8 @@
  *   - the program's code object (no write flag) can be read, not written;
  *   - memory freed with DosFreeMem cannot be touched any more, nor memory
  *     never allocated; DosQueryMem reports freed memory as PAG_FREE and
- *     the program's code as committed and read-only.
+ *     the program's code as committed, read-only and executable, its
+ *     data as not executable.
  * A probe that faults is left by longjmp from the exception handler.
  *
  * Output: "mem_protect_test: <name>: ok" / "...: FAIL", then
@@ -209,6 +210,11 @@ int main(void)
         check("DosQueryMem: the program's code is committed, read-only",
               DosQueryMem((PVOID)check, &cb, &fl) == NO_ERROR
               && (fl & (PAG_COMMIT | PAG_READ | PAG_WRITE | PAG_FREE)) == (PAG_COMMIT | PAG_READ));
+        check("and executable", (fl & PAG_EXECUTE) != 0);
+        cb = PAGE;
+        check("DosQueryMem: the program's data is not executable",
+              DosQueryMem((PVOID)&passed, &cb, &fl) == NO_ERROR
+              && (fl & (PAG_COMMIT | PAG_WRITE | PAG_EXECUTE)) == (PAG_COMMIT | PAG_WRITE));
     }
 
     /* The program's own code. */

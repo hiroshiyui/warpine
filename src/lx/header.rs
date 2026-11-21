@@ -3,6 +3,10 @@ use std::io::{self, Read, Seek, SeekFrom};
 
 // OS/2 LX resource type constants (OS/2 numbering, not Windows).
 // Reference: IBM OS/2 Warp 4 Toolkit <pmwin.h> / <os2.h> RT_* macros.
+/// Where the header's `STACKSIZE` field ends (IBM's LX format
+/// description: `STACKSIZE` at ACh).
+pub const LX_STACK_SIZE_END: u32 = 0xB0;
+
 pub const RT_POINTER: u16 = 1;
 pub const RT_BITMAP: u16 = 2;
 pub const RT_MENU: u16 = 3;
@@ -64,6 +68,9 @@ pub struct LxHeader {
     pub num_instance_preload: u32,    // A0h
     pub num_instance_demand: u32,     // A4h
     pub heap_size: u32,               // A8h
+    /// The main thread's stack size (`STACKSIZE`); 0 when the header is
+    /// too short to hold it (the object table starts before B0h).
+    pub stack_size: u32,              // ACh
 }
 
 #[derive(Debug, Default, Clone)]
@@ -368,6 +375,11 @@ impl LxHeader {
         reader.read_exact(&mut buf4)?; header.num_instance_preload = u32::from_le_bytes(buf4);
         reader.read_exact(&mut buf4)?; header.num_instance_demand = u32::from_le_bytes(buf4);
         reader.read_exact(&mut buf4)?; header.heap_size = u32::from_le_bytes(buf4);
+        // A header ending at ACh (an older lx-link) has its object table
+        // there, not a stack size.
+        if header.object_table_offset >= LX_STACK_SIZE_END {
+            reader.read_exact(&mut buf4)?; header.stack_size = u32::from_le_bytes(buf4);
+        }
 
         Ok(header)
     }
@@ -408,6 +420,23 @@ mod tests {
         assert_eq!(header.os_type, 1);
         assert_eq!(header.eip, 0x9A);
         assert_eq!(header.data_pages_offset, 0x1CC);
+        assert_eq!(header.stack_size, 0, "no object table offset: no stack size read");
+    }
+
+    /// `STACKSIZE` (ACh) is read when the object table starts after it,
+    /// and left 0 when the header ends at ACh (an older lx-link).
+    #[test]
+    fn the_stack_size_is_read_from_a_full_header() {
+        let header_with = |object_table: u32| {
+            let mut data = vec![0u8; 196];
+            data[..2].copy_from_slice(b"LX");
+            data[0x40..0x44].copy_from_slice(&object_table.to_le_bytes());
+            data[0xAC..0xB0].copy_from_slice(&0x0001_0000u32.to_le_bytes());
+            LxHeader::read(&mut Cursor::new(data), 0).expect("a header").stack_size
+        };
+        assert_eq!(header_with(0xC4), 0x10000);
+        assert_eq!(header_with(LX_STACK_SIZE_END), 0x10000);
+        assert_eq!(header_with(0xAC), 0, "the object table, not a stack size");
     }
 
     #[test]
