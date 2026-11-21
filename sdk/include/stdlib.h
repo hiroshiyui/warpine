@@ -32,6 +32,8 @@ long   labs(long n);
 long long llabs(long long n);
 div_t  div(int num, int den);
 ldiv_t ldiv(long num, long den);
+double atof(const char *s);
+double strtod(const char *s, char **end);
 int    atoi(const char *s);
 long   atol(const char *s);
 long   strtol(const char *s, char **end, int base);

@@ -1327,8 +1327,19 @@ typedef struct _FONTMETRICS {
     LONG   lMatch;
 } FONTMETRICS, *PFONTMETRICS;
 
-/* Device contexts are opened with data that is not declared yet. */
-typedef struct _DEVOPENSTRUC *PDEVOPENDATA;
+/* What DevOpenDC and SplQmOpen are given (lCount of the fields). */
+typedef struct _DEVOPENSTRUC {
+    PSZ   pszLogAddress;
+    PSZ   pszDriverName;
+    PVOID pdriv;
+    PSZ   pszDataType;
+    PSZ   pszComment;
+    PSZ   pszQueueProcName;
+    PSZ   pszQueueProcParams;
+    PSZ   pszSpoolerParams;
+    PSZ   pszNetworkParams;
+} DEVOPENSTRUC, *PDEVOPENSTRUC;
+typedef PDEVOPENSTRUC PDEVOPENDATA;
 
 /* Presentation spaces */
 HPS     APIENTRY GpiCreatePS(HAB hab, HDC hdc, PSIZEL psizlSize, ULONG flOptions);
@@ -1672,6 +1683,17 @@ LONG    APIENTRY GpiWCBitBlt(HPS hpsTarget, HBITMAP hbmSource, LONG lCount, PPOI
 
 #ifdef __cplusplus
 }
+#endif
+
+/* The other PM modules: the shell, the standard dialogs and drag and
+ * drop, help, the spooler. */
+#if defined(INCL_WIN) || defined(INCL_PM) || !defined(WARPINE_OS2_H)
+#  include <os2/pmshl.h>
+#  include <os2/pmstddlg.h>
+#  include <os2/pmhelp.h>
+#endif
+#if defined(INCL_GPI) || defined(INCL_PM) || !defined(WARPINE_OS2_H)
+#  include <os2/pmspl.h>
 #endif
 
 #endif /* WARPINE_OS2_PM_H */

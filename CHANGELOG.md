@@ -20,6 +20,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   - **`targets/os2api.def`** now lists the 362 PMWIN and PMGPI calls the PM sub-dispatchers serve, so `lx-link` links PM programs.
   - **`gen_api check-headers`** compares every integer constant in the headers with Warpine's own (801 of 962), and checks `EXPENTRY` declarations too.
   - **`samples/c_pm_test`:** a PM program, 33 checks, passing built by GCC and by clang.
+- **The C SDK: `strtod`, `<math.h>`, the other PM modules, extended attributes** (ADR-0100).
+  - **`strtod` / `atof`:** correctly rounded with big-integer arithmetic, ties to even, subnormals included; hex, inf and nan are read too.
+  - **`<math.h>`:** the double functions on the x87, with the exact ones (`floor`, `ceil`, `trunc`, `round`, `modf`, `frexp`, `ldexp`) worked on the bits.
+  - **New headers:** `os2/pmshl.h` (profiles, switch list, `WinStartApp`), `os2/pmstddlg.h` (file and font dialogs, drag and drop), `os2/pmhelp.h`, `os2/pmspl.h`.
+  - **Extended attributes:** `EAOP2`, `FEA2LIST`, `GEA2LIST` and their friends in `dos.h`.
+  - **The samples:** `c_sdk_test` has 64 checks and `c_pm_test` 54, all passing with GCC and clang.
 - **`os2rc`, a resource compiler for the C SDK** (ADR-0099).
   - **Input:** resource scripts, with a C preprocessor in front, and the SDK's `os2.h` for the constants. The statements are MENU, DLGTEMPLATE (DIALOG, FRAME, WINDOW, CONTROL and the control statements, PRESPARAMS, CTLDATA), ACCELTABLE, STRINGTABLE, MESSAGETABLE, RCDATA, ICON, POINTER, BITMAP, FONT, RESOURCE, DEFAULTICON, DLGINCLUDE, CODEPAGE and RCINCLUDE.
   - **Output:** classic OS/2 `.res` files, byte-identical to Open Watcom's `wrc -zm` for every script in `samples/` and `tests/rc/`.

@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <stdint.h>
+#include <math.h>
 
 static int passed, total;
 
@@ -34,6 +35,9 @@ _Static_assert(offsetof(CONTEXTRECORD, ctx_SegGs) == 0x8C, "CONTEXTRECORD.ctx_Se
 _Static_assert(offsetof(CONTEXTRECORD, ctx_RegEip) == 0xB8, "CONTEXTRECORD.ctx_RegEip");
 _Static_assert(sizeof(CONTEXTRECORD) == 0xCC, "CONTEXTRECORD");
 _Static_assert(offsetof(PIB, pib_pchcmd) == 0x0C, "PIB.pib_pchcmd");
+_Static_assert(offsetof(FEA2, szName) == 8 && offsetof(FEA2, cbValue) == 6, "FEA2");
+_Static_assert(offsetof(GEA2, szName) == 5, "GEA2");
+_Static_assert(sizeof(EAOP2) == 12 && offsetof(EAOP2, oError) == 8, "EAOP2");
 
 /* ── Start-up: arguments and environment ────────────────────────────── */
 static void test_startup(int argc, char **argv, char **envp)
@@ -136,6 +140,105 @@ static void test_floats(void)
     check(!strcmp(buf, "inf -INF   nan -0"), "infinities, NaN and negative zero");
     snprintf(buf, sizeof buf, "%Lf|%.2Le", (long double)1.5, (long double)12345.0);
     check(!strcmp(buf, "1.500000|1.23e+04"), "long double arguments");
+}
+
+/* ── strtod and <math.h> ────────────────────────────────────────────── */
+static uint64_t bits(double d) { uint64_t b; memcpy(&b, &d, sizeof b); return b; }
+
+/* Every expected value is what a correctly rounding strtod gives (taken
+ * from Python's float()). */
+static void test_strtod(void)
+{
+    static const struct { const char *text; uint64_t want; } cases[] = {
+        { "0.1", 0x3FB999999999999AULL },
+        { "1e23", 0x44B52D02C7E14AF6ULL },
+        { "2.2250738585072011e-308", 0x000FFFFFFFFFFFFFULL },
+        { "2.2250738585072012e-308", 0x0010000000000000ULL },
+        { "4.9e-324", 0x0000000000000001ULL },
+        { "2.4703282292062327e-324", 0x0000000000000000ULL },
+        { "2.4703282292062328e-324", 0x0000000000000001ULL },
+        { "1.7976931348623157e308", 0x7FEFFFFFFFFFFFFFULL },
+        { "1.7976931348623158e308", 0x7FEFFFFFFFFFFFFFULL },
+        { "1.7976931348623159e308", 0x7FF0000000000000ULL },
+        { "0x1.8p1", 0x4008000000000000ULL },
+        { "0x.8p-1074", 0x0000000000000000ULL },
+        { "123456789012345678901234567890", 0x45F8EE90FF6C373EULL },
+        { "3.14159265358979323846264338327950288", 0x400921FB54442D18ULL },
+        { "9007199254740993", 0x4340000000000000ULL },
+        { "9007199254740995", 0x4340000000000002ULL },
+        { "1e-400", 0x0000000000000000ULL },
+        { "0.000000000000000000000000000000000000000000001e45", 0x3FF0000000000000ULL },
+        { "1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e-100", 0x7E031CFD3999F7B0ULL },
+        { "-0.0", 0x8000000000000000ULL },
+        { "10000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000e-400", 0x3FF0000000000000ULL },
+    };
+    int good = 0, n = (int)(sizeof cases / sizeof cases[0]);
+    for (int i = 0; i < n; i++) {
+        double v = strtod(cases[i].text, NULL);
+        if (bits(v) == cases[i].want) good++;
+        else printf("  strtod(%.40s): got %016llx want %016llx\n", cases[i].text,
+                    (unsigned long long)bits(v), (unsigned long long)cases[i].want);
+    }
+    check(good == n, "strtod rounds correctly: halfway cases, subnormals, the largest double, hex");
+    char *end;
+    double v = strtod("  -12.5e-1xyz", &end);
+    check(v == -1.25 && !strcmp(end, "xyz"), "strtod stops where the number ends");
+    errno = 0;
+    check(isinf(strtod("1e400", NULL)) && errno == ERANGE, "overflow is infinity with ERANGE");
+    check(isinf(strtod("-Infinity", &end)) && *end == 0 && isnan(strtod("nan(x)", NULL)) && atof("2.5") == 2.5,
+          "infinity, nan and atof");
+    strtod("e5", &end);
+    check(!strcmp(end, "e5"), "no digits: nothing read");
+}
+
+/* Within one unit in the last place of the correctly rounded value. */
+static int near(double got, uint64_t want)
+{
+    uint64_t g = bits(got);
+    return (g > want ? g - want : want - g) <= 1;
+}
+
+static void test_math(void)
+{
+    const struct { const char *what; double got; uint64_t want; } cases[] = {
+        { "sqrt(2.0)", sqrt(2.0), 0x3FF6A09E667F3BCDULL },
+        { "exp(1.0)", exp(1.0), 0x4005BF0A8B145769ULL },
+        { "log(10.0)", log(10.0), 0x40026BB1BBB55516ULL },
+        { "log10(2.0)", log10(2.0), 0x3FD34413509F79FFULL },
+        { "log2(10.0)", log2(10.0), 0x400A934F0979A371ULL },
+        { "pow(2.0, 0.5)", pow(2.0, 0.5), 0x3FF6A09E667F3BCDULL },
+        { "pow(10.0, -3.0)", pow(10.0, -3.0), 0x3F50624DD2F1A9FCULL },
+        { "pow(-2.0, 3.0)", pow(-2.0, 3.0), 0xC020000000000000ULL },
+        { "sin(1.0)", sin(1.0), 0x3FEAED548F090CEEULL },
+        { "cos(1.0)", cos(1.0), 0x3FE14A280FB5068CULL },
+        { "tan(0.5)", tan(0.5), 0x3FE17B4F5BF3474AULL },
+        { "atan2(1.0, 1.0) * 4", atan2(1.0, 1.0) * 4, 0x400921FB54442D18ULL },
+        { "asin(0.5)", asin(0.5), 0x3FE0C152382D7366ULL },
+        { "acos(0.5)", acos(0.5), 0x3FF0C152382D7366ULL },
+        { "atan(1e10)", atan(1e10), 0x3FF921FB543D4DE0ULL },
+        { "sinh(1.0)", sinh(1.0), 0x3FF2CD9FC44EB982ULL },
+        { "cosh(1.0)", cosh(1.0), 0x3FF8B07551D9F550ULL },
+        { "tanh(0.5)", tanh(0.5), 0x3FDD9353D7568AF3ULL },
+        { "hypot(3.0, 4.0)", hypot(3.0, 4.0), 0x4014000000000000ULL },
+        { "hypot(1e300, 1e300)", hypot(1e300, 1e300), 0x7E40E4D50F99B211ULL },
+        { "fmod(10.0, 3.0)", fmod(10.0, 3.0), 0x3FF0000000000000ULL },
+        { "fmod(-7.5, 2.0)", fmod(-7.5, 2.0), 0xBFF8000000000000ULL },
+        { "exp(-745.0)", exp(-745.0), 0x0000000000000001ULL },
+    };
+    int good = 0, n = (int)(sizeof cases / sizeof cases[0]);
+    for (int i = 0; i < n; i++) {
+        if (near(cases[i].got, cases[i].want)) good++;
+        else printf("  %s: got %.17g\n", cases[i].what, cases[i].got);
+    }
+    check(good == n, "math functions within an ulp of the correctly rounded value");
+    int e;
+    double f = frexp(48.0, &e);
+    check(floor(-1.5) == -2 && ceil(-1.5) == -1 && trunc(-1.5) == -1 && round(2.5) == 3 && round(-2.5) == -3
+          && f == 0.75 && e == 6 && ldexp(0.75, 6) == 48, "floor, ceil, trunc, round, frexp, ldexp");
+    double ip, frac = modf(-3.25, &ip);
+    errno = 0;
+    check(frac == -0.25 && ip == -3 && isnan(sqrt(-1)) && errno == EDOM && fabs(-0.0) == 0 && !signbit(fabs(-0.0)),
+          "modf, sqrt of a negative, fabs");
 }
 
 /* ── Numbers ────────────────────────────────────────────────────────── */
@@ -382,6 +485,8 @@ int main(int argc, char **argv, char **envp)
     test_startup(argc, argv, envp);
     test_strings();
     test_floats();
+    test_strtod();
+    test_math();
     test_numbers();
     test_heap();
     test_files();

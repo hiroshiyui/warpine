@@ -33,6 +33,19 @@ _Static_assert(offsetof(FONTMETRICS, lEmHeight) == 68 && offsetof(FONTMETRICS, l
                && offsetof(FONTMETRICS, sXDeviceRes) == 126 && offsetof(FONTMETRICS, sNominalPointSize) == 138,
                "FONTMETRICS offsets");
 
+/* The other PM modules' structures, as Warpine reads them. */
+_Static_assert(sizeof(SWCNTRL) == 96 && sizeof(SWENTRY) == 100, "SWCNTRL");
+_Static_assert(sizeof(PROGDETAILS) == 72 && offsetof(PROGDETAILS, pszEnvironment) == 32, "PROGDETAILS");
+_Static_assert(sizeof(FILEDLG) == 328 && offsetof(FILEDLG, szFullFile) == 52 && offsetof(FILEDLG, papszFQFilename) == 312
+               && offsetof(FILEDLG, usDlgId) == 320 && offsetof(FILEDLG, x) == 322, "FILEDLG");
+_Static_assert(sizeof(FONTDLG) == 168 && offsetof(FONTDLG, fAttrs) == 96 && offsetof(FONTDLG, sNominalPointSize) == 152
+               && offsetof(FONTDLG, usDlgId) == 162 && offsetof(FONTDLG, usFamilyBufLen) == 164, "FONTDLG");
+_Static_assert(sizeof(HELPINIT) == 44 && offsetof(HELPINIT, pszHelpLibraryName) == 40, "HELPINIT");
+_Static_assert(sizeof(DRAGINFO) == 20 && offsetof(DRAGINFO, cditem) == 16, "DRAGINFO");
+_Static_assert(sizeof(DRAGITEM) == 36 && offsetof(DRAGITEM, fsControl) == 32, "DRAGITEM");
+_Static_assert(sizeof(DRAGTRANSFER) == 28, "DRAGTRANSFER");
+_Static_assert(sizeof(DEVOPENSTRUC) == 36, "DEVOPENSTRUC");
+
 #define CLIENT_CLASS "CPmTestClient"
 #define WM_CHECKS    (WM_USER + 1)
 #define WM_ECHO      (WM_USER + 2)
@@ -126,6 +139,33 @@ static MRESULT EXPENTRY dlg_proc(HWND hwnd, ULONG msg, MPARAM mp1, MPARAM mp2)
     return WinDefDlgProc(hwnd, msg, mp1, mp2);
 }
 
+/* Profiles, the switch list, drag and drop, help. */
+static void module_checks(void)
+{
+    char text[32] = "";
+    check("PrfWriteProfileString / PrfQueryProfileString",
+          PrfWriteProfileString(HINI_USERPROFILE, "CPmTest", "Key", "Value")
+          && PrfQueryProfileString(HINI_USERPROFILE, "CPmTest", "Key", "none", text, sizeof text) == 6
+          && !strcmp(text, "Value"), 1);
+    ULONG size = 0;
+    check("PrfQueryProfileSize", PrfQueryProfileSize(HINI_USERPROFILE, "CPmTest", "Key", &size) && size == 6, 1);
+    check("PrfQueryProfileInt of a missing key gives the default",
+          PrfQueryProfileInt(HINI_USERPROFILE, "CPmTest", "Missing", 42), 42);
+    HSTR h = DrgAddStrHandle("DRM_OS2FILE");
+    char name[32] = "";
+    check("DrgAddStrHandle / DrgQueryStrName", h != NULLHANDLE && DrgQueryStrName(h, sizeof name, name) == 11
+          && !strcmp(name, "DRM_OS2FILE") && DrgDeleteStrHandle(h), 1);
+    PDRAGINFO di = DrgAllocDraginfo(2);
+    check("DrgAllocDraginfo / DrgQueryDragitemCount / DrgFreeDraginfo",
+          di != NULL && DrgQueryDragitemCount(di) == 2 && di->cbDragitem == sizeof(DRAGITEM) && DrgFreeDraginfo(di), 1);
+    HSWITCH sw = WinQuerySwitchHandle(frame, 0);
+    SWCNTRL ctl;
+    memset(&ctl, 0, sizeof ctl);
+    check("WinQuerySwitchHandle / WinQuerySwitchEntry find the frame's entry",
+          sw != NULLHANDLE && WinQuerySwitchEntry(sw, &ctl) == 0 && ctl.hwnd == frame, 1);
+    check("WinQueryHelpInstance: no help instance", WinQueryHelpInstance(frame), NULLHANDLE);
+}
+
 static void resource_checks(void)
 {
     check("FCF_MENU loaded the RT_MENU resource as the frame's menu",
@@ -149,6 +189,7 @@ static void resource_checks(void)
 void run_checks(HWND hwnd)
 {
     resource_checks();
+    module_checks();
     check("WM_CREATE reached the client once", created, 1);
     check("WM_PAINT reached the client", painted >= 1, 1);
     check("GpiBox filled with the colour GpiQueryPel reads back", paint_pel, CLR_BLUE);
@@ -259,7 +300,7 @@ int main(void)
     check("WinInitialize / WinCreateMsgQueue", hab != NULLHANDLE && hmq != NULLHANDLE, 1);
     check("WinRegisterClass", WinRegisterClass(hab, CLIENT_CLASS, client_proc, CS_SIZEREDRAW, 4), TRUE);
 
-    ULONG flags = FCF_TITLEBAR | FCF_SYSMENU | FCF_SIZEBORDER | FCF_MINMAX | FCF_MENU | FCF_ACCELTABLE;
+    ULONG flags = FCF_TITLEBAR | FCF_SYSMENU | FCF_SIZEBORDER | FCF_MINMAX | FCF_MENU | FCF_ACCELTABLE | FCF_TASKLIST;
     frame = WinCreateStdWindow(HWND_DESKTOP, 0, &flags, CLIENT_CLASS, "c_pm_test", 0, NULLHANDLE, ID_MAIN, &client);
     check("WinCreateStdWindow", frame != NULLHANDLE && client != NULLHANDLE, 1);
     WinSetWindowPos(frame, HWND_TOP, 40, 40, CLIENT_CX + 100, CLIENT_CY + 100,

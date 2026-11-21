@@ -252,10 +252,9 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 
 Open Watcom stays the frozen ABI baseline. A second, modern toolchain goes only through stable formats: i386 ELF objects in, LX out, with `lx-link` as the one bridge. That rules out compiler plugins, LLVM passes and lld / BFD back ends.
 
-- [ ] **The rest of the C SDK** (M1, M2, the PM headers, the runtime's errno / floating point and the resource compiler done: ADR-0095–0099, `sdk/`):
+- [ ] **The rest of the C SDK** (M1, M2, the PM headers, the runtime and its errno / floating point / strtod / math.h, the resource compiler and the other PM modules done: ADR-0095–0100, `sdk/`):
   - `os2rc`: HELPTABLE / HELPSUBTABLE, ASSOCTABLE, FONTDIR, resource names given as strings;
-  - the 30 entries left undeclared (ADR-0098 lists them), extended attributes, the other PM modules (PMSHAPI, PMDRAG, HELPMGR, PMSPL, PMCTLS);
-  - `strtod` / `atof` and `<math.h>`.
+  - the 38 entries left undeclared (ADR-0098, ADR-0100), the float and long double math functions.
 - [ ] **M3, two compilers in CI**:
   - GCC and clang (`i386-unknown-none`) for every C sample;
   - pinned compilers (Guix or Nix);

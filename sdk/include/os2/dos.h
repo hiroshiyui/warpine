@@ -180,8 +180,49 @@ typedef struct _FILELOCK {
     LONG lRange;
 } FILELOCK, *PFILELOCK;
 
-/* Extended attributes are not declared yet: pass NULL. */
-typedef struct _EAOP2 *PEAOP2;
+/* ── Extended attributes ────────────────────────────────────────────── */
+#define FEA_NEEDEA               0x80
+#define ENUMEA_LEVEL_NO_VALUE    1
+#define ENUMEA_REFTYPE_FHANDLE   0
+#define ENUMEA_REFTYPE_PATH      1
+#define ENUMEA_REFTYPE_MVMT      2
+
+/* Packed: each name follows its length byte, and entries are walked by
+ * oNextEntryOffset (0 for the last). */
+#pragma pack(push, 1)
+typedef struct _GEA2 {
+    ULONG oNextEntryOffset;
+    BYTE  cbName;
+    CHAR  szName[1];
+} GEA2, *PGEA2;
+
+typedef struct _GEA2LIST {
+    ULONG cbList;
+    GEA2  list[1];
+} GEA2LIST, *PGEA2LIST;
+
+typedef struct _FEA2 {
+    ULONG  oNextEntryOffset;
+    BYTE   fEA;
+    BYTE   cbName;
+    USHORT cbValue;
+    CHAR   szName[1];
+} FEA2, *PFEA2;
+
+typedef struct _FEA2LIST {
+    ULONG cbList;
+    FEA2  list[1];
+} FEA2LIST, *PFEA2LIST;
+#pragma pack(pop)
+
+/* DosEnumAttribute's entries have the FEA2 layout. */
+typedef FEA2 DENA2, *PDENA2;
+
+typedef struct _EAOP2 {
+    PGEA2LIST fpGEA2List;
+    PFEA2LIST fpFEA2List;
+    ULONG     oError;
+} EAOP2, *PEAOP2;
 
 APIRET APIENTRY DosOpen(PCSZ pszFileName, PHFILE phf, PULONG pulAction, ULONG cbFile,
                         ULONG ulAttribute, ULONG fsOpenFlags, ULONG fsOpenMode, PEAOP2 peaop2);

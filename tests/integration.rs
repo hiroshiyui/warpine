@@ -1904,7 +1904,7 @@ fn gui_c_pm_from_gcc_and_clang() {
         assert!(out.status.success(), "make ({compiler}):\n{}{}",
                 String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
         let exe = dir.path().join("c_pm_test.exe");
-        assert!(assert_scripted_checks_pass_env(exe.to_str().unwrap(), "c_pm_test", 47, "15000 quit\n", &[]),
+        assert!(assert_scripted_checks_pass_env(exe.to_str().unwrap(), "c_pm_test", 54, "15000 quit\n", &[]),
                 "{compiler}: c_pm_test did not run");
     }
 }

@@ -7,7 +7,7 @@
 WARPINE_SDK_BUILDING = 1
 include os2.mk
 
-LIBC_SRCS = string.c stdlib.c malloc.c stdio.c printf.c dtoa.c divdi3.c
+LIBC_SRCS = string.c stdlib.c malloc.c stdio.c printf.c dtoa.c strtod.c math.c divdi3.c
 LIBC_OBJS = $(LIBC_SRCS:%.c=$(OS2_BUILD)/%.o)
 HEADERS   = $(wildcard include/*.h include/os2/*.h) libc/libc_internal.h
 

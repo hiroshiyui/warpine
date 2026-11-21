@@ -1062,7 +1062,8 @@ fn cmd_check_headers(entries: &[OrdEntry], include_dir: &Path, src_dir: &Path) -
         return false;
     }
     let declared: std::collections::HashSet<&str> = decls.iter().map(|d| d.name.as_str()).collect();
-    let covered_modules = ["DOSCALLS", "QUECALLS", "VIOCALLS", "KBDCALLS", "MOUCALLS", "PMWIN", "PMGPI"];
+    let covered_modules = ["DOSCALLS", "QUECALLS", "VIOCALLS", "KBDCALLS", "MOUCALLS", "PMWIN", "PMGPI",
+                           "PMSHAPI", "PMCTLS", "HELPMGR", "PMSPL", "PMDRAG"];
     let missing = entries.iter()
         .filter(|e| covered_modules.contains(&e.module.as_str()) && !declared.contains(e.name.as_str()))
         .count();
