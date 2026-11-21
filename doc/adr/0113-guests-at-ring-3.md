@@ -1,6 +1,6 @@
 # ADR-0113: Running 32-bit guests at ring 3
 
-- **Status:** Accepted (steps 1 and 2 done; steps 3–5 to come)
+- **Status:** Accepted (steps 1–3 done: ring 3 is the default; steps 4–5 to come)
 - **Date:** 2026-11-21
 - **Sources:**
   - Intel SDM vol. 3: privilege levels and checks (5.5–5.8), stack switching through the TSS on an interrupt from ring 3 (6.12.1, 7.2), the gate DPL check that `INT n`, `INT3` and `INTO` make (6.12.1.1), the 32-bit TSS and its I/O map base (8.2.1), CR0.WP and the U/S page bit (4.6).
@@ -56,7 +56,7 @@ OS/2 itself runs applications at ring 3. ADR-0109's red-zone question for XE poi
 7. **Steps:**
    1. **Done:** the TSS and ring-0 page per thread, the ring-0 descriptors and the DPL-3 breakpoint gate, with guests still at ring 0 (no behaviour change);
    2. **Done:** DPL-3 descriptors and CPL 3 for LX threads, behind `WARPINE_RING=3`, with the whole suite and the GCC / clang builds passing (see *Step 2* below);
-   3. the default switched, U/S and CR0.WP set; `WARPINE_RING=0` kept for one release as a way back (from v0.0.9 to v0.0.10), then removed;
+   3. **Done:** the default switched, U/S and CR0.WP set; `WARPINE_RING=0` kept for one release as a way back (from v0.0.9 to v0.0.10), then removed (see *Step 3* below);
    4. the NE path, later: it runs unpaged and as a separate process, so it gains less;
    5. the paging watch kept as a second check for one release after the switch, then removed.
 
@@ -70,6 +70,14 @@ OS/2 itself runs applications at ring 3. ADR-0109's red-zone question for XE poi
 - **Selectors Warpine writes:** `DosRaiseException`'s context record and the Far16 bypass use the thread's ring's flat selectors (`FaultContext::flat`, `flat_selector`); the Far16 check compares selectors without their RPL.
 - **A kick inside a stub:** a thread kicked between the processor's delivery and the stub's `INT3` is at ring 0; it takes no signal or termination there (`signal_action`), since the stub exits at once.
 - **Tests that pin a ring:** the paging-abuse and HLT tests test ring 0's defences and run with `WARPINE_RING=0`; their ring-3 counterparts (`at_ring_3_a_guest_cannot_reach_its_paging`, `at_ring_3_hlt_ends_the_process_by_an_exception`) check that the first privileged instruction ends the program by an unhandled exception, its tables intact (the abuse sample reads CR3 before it registers its exit list; HLT's exit list gets `TC_EXCEPTION`). `ring_test` runs at both rings.
+
+## Step 3: ring 3 by default, Warpine's pages out of reach (`paging.rs`)
+
+- **The default is ring 3.** `WARPINE_RING=0` (only that value) runs 32-bit guests at ring 0, with a warning, for one more release; any other value means ring 3.
+- **The paging arena.** Paging blocks no longer come from the allocator, whose 4 MB pages every thread maps user-writable: a thread could have rewritten another thread's tables. They come from the *paging arena*, from the page after the ring-0 window (`PAGING_ARENA_BASE`, 0x01842000) to the end of the 4 MB the TLM table maps (0x01C00000): 191 blocks (`PAGING_BLOCKS`, `PagingArena`). The TLM table maps that 4 MB page by page, so its pages can be supervisor-only.
+- **Supervisor-only pages** (`supervisor_only`), in every thread's TLM table: the GDT, the IDT and its stubs (the system area below the TIB), the ring-0 window and the arena. The TIB, PIB, environment, thread-local page, information segments and FS window stay user pages. The processor's own accesses to the descriptor tables and the TSS, and the stubs it runs at ring 0, are supervisor accesses.
+- **The API thunks' 4 MB are read-only** (their directory entry, `STUB_CHUNK`), and **CR0.WP** is set for every paged thread, so a guest at ring 0 cannot rewrite a thunk either.
+- **What a ring-3 guest can no longer do:** read or write its own or another thread's page tables, TSS or ring-0 stack, or the GDT and IDT; write a thunk; load CR3 or CR0. The paging watch stays until step 5, for `WARPINE_RING=0`.
 
 ## Open questions
 
@@ -87,6 +95,9 @@ OS/2 itself runs applications at ring 3. ADR-0109's red-zone question for XE poi
 - **The list of privileged instructions** and the EFLAGS a program may set, from the SDM; OS/2's own lists were not available.
 - **An unhandled privileged instruction ends with `TC_EXCEPTION`,** like every other unhandled exception in Warpine; at ring 0 `HLT` ended as a trap (`TC_TRAP`).
 - **EFLAGS are masked at both rings,** not only at ring 3: no program sets IOPL or IF legitimately.
+- **191 paging blocks:** a process can have at most 191 32-bit threads at once, whatever `THREADS=` says (the default is 64); past that, `DosCreateThread` returns `ERROR_NOT_ENOUGH_MEMORY`, as it did when no block could be allocated. More would need a second arena with its own page tables.
+- **The whole 4 MB of the thunks read-only,** with one directory entry, rather than only the thunks' pages; nothing else lies in it.
+- **The system area below the TIB supervisor-only** as a whole (16 pages), not only the GDT and IDT pages.
 
 ## Consequences
 
@@ -94,4 +105,5 @@ OS/2 itself runs applications at ring 3. ADR-0109's red-zone question for XE poi
 - More of Warpine's guest-facing state is enforced by hardware, at the cost of a TSS per thread and changes in the fault, Far16 and NE paths, each covered by the existing samples and tests.
 - **Step 1:** each paging block grows from four pages to five. The sample `ring_test` checks, on two threads, that the task register names a GDT TSS and that the segments are the flat ones at the current ring's RPL; run with the TSS missing, its TSS checks fail. Unit tests: the ring-0 page's TSS (`paging.rs`), TR for paged and unpaged threads, the ring-0 descriptors and the gates' DPLs (`vcpu.rs`).
 - **Step 2:** with `WARPINE_RING=3` the whole suite passes (the ring-0 abuse tests pinned to ring 0, their ring-3 counterparts added), and `ring_test` checks `CLI` raising `XCPT_PRIVILEGED_INSTRUCTION` and a context record unable to raise IOPL. Unit tests: `ring.rs` (the variable, EFLAGS, the instruction list, descriptor decoding, moving a frame), and the ring-3 descriptors and segments (`vcpu.rs`).
+- **Step 3:** ring 3 is the default. `ring_test` checks, built by Open Watcom, GCC and clang, that at ring 3 the GDT, the ring-0 window and the paging arena raise `XCPT_ACCESS_VIOLATION`, and at either ring that the thunks' 4 MB cannot be written (17 checks at ring 3, 11 at ring 0). Unit tests: the arena, the supervisor-only pages and the read-only thunks' entry, CR0.WP. The suite passes at the default ring and with `WARPINE_RING=0`.
 - **Found, not fixed:** an `INT3` a program executes itself, outside the API thunks, ends the process as an unexpected breakpoint; OS/2 raises `XCPT_BREAKPOINT` to the program's handlers. It is in `doc/TODOs.md`.

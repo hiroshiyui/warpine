@@ -22,13 +22,20 @@
 //! The host side translates `TLM_PAGE` the same way for the thread a vCPU
 //! thread runs (`guest_mem::set_thread_tlm_backing`).
 //!
-//! Security (the guest runs at ring 0 and may rewrite its own tables or
-//! load CR3 / CR0 itself):
+//! Protection (ADR-0113): every block lies in the paging arena, whose
+//! pages, the GDT, IDT and stubs, and the ring-0 window are supervisor-only
+//! in every thread's tables, and the API thunks' 4 MB are read-only
+//! (`CR0.WP` holds ring 0 to that too). A guest at ring 3 (the default)
+//! therefore cannot reach its tables, its TSS or Warpine's descriptor
+//! tables, and privileged instructions fault (`ring.rs`).
+//!
+//! Security against a guest at ring 0 (`WARPINE_RING=0`, which may
+//! rewrite its own tables or load CR3 / CR0 itself):
 //! - the host never walks the guest's tables: `guest_mem` translates only
 //!   `TLM_PAGE`, to the page Warpine itself chose for the vCPU thread when
 //!   the thread started; every access stays bounds-checked;
-//! - a block address is used only when it lies, whole and page-aligned, in
-//!   the allocator's region ([`valid_block`]), with checked arithmetic;
+//! - a block address is used only when it is one of the arena's blocks
+//!   ([`valid_block`]), with checked arithmetic;
 //! - OS/2 programs cannot touch paging (`mov cr3` is privileged, the
 //!   tables are not theirs), so a guest that turns paging off, loads its
 //!   own CR3 or changes its tables ends as a trap (`TC_TRAP`): a watch
@@ -86,6 +93,65 @@ const RING0_OFFSET: u32 = 4 * PAGE_SIZE;
 /// every program's objects).
 pub const LOW_GUARD: u32 = EXE_AREA_START;
 
+/// The paging arena (ADR-0113): where every thread's paging block lies,
+/// from the page after the ring-0 window to the end of the 4 MB the TLM
+/// table maps. Its pages are supervisor-only in every thread's tables, so
+/// a guest at ring 3 reaches no block, its own or another thread's.
+pub const PAGING_ARENA_BASE: u32 = RING0_WINDOW + PAGE_SIZE;
+pub const PAGING_ARENA_END: u32 = (TLM_CHUNK + 1) << LARGE_PAGE_SHIFT;
+/// Blocks the arena holds: the most 32-bit threads a process can have.
+pub const PAGING_BLOCKS: u32 = (PAGING_ARENA_END - PAGING_ARENA_BASE) / PAGING_BLOCK_SIZE;
+const _: () = assert!(PAGING_ARENA_BASE >> LARGE_PAGE_SHIFT == TLM_CHUNK && PAGING_BLOCKS >= 64);
+/// The 4 MB holding the API thunks (`MAGIC_API_BASE`): read-only, so no
+/// guest rewrites a thunk (at ring 0 too, with CR0.WP).
+const STUB_CHUNK: u32 = (MAGIC_API_BASE >> LARGE_PAGE_SHIFT) as u32;
+const _: () = assert!(STUB_CHUNK != TLM_CHUNK && STUB_CHUNK != 0
+    && (MAGIC_API_BASE + STUB_AREA_SIZE as u64 - 1) >> LARGE_PAGE_SHIFT == STUB_CHUNK as u64
+    && EXE_AREA_END as u64 <= (STUB_CHUNK as u64) << LARGE_PAGE_SHIFT
+    && DYNAMIC_ALLOC_BASE as u64 >= ((STUB_CHUNK + 1) as u64) << LARGE_PAGE_SHIFT);
+
+/// Whether the page at linear `page` is supervisor-only (ADR-0113): the
+/// GDT, the IDT and its stubs (the system area below the TIB), the
+/// ring-0 window and the paging arena. A guest at ring 3 cannot read or
+/// write them; the processor's own accesses (descriptor tables, the TSS,
+/// the stubs at ring 0) are supervisor accesses.
+pub fn supervisor_only(page: u32) -> bool {
+    (SYSTEM_AREA_BASE..TIB_BASE).contains(&page)
+        || page == RING0_WINDOW
+        || (PAGING_ARENA_BASE..PAGING_ARENA_END).contains(&page)
+}
+
+/// Which blocks of the paging arena are in use (pure bookkeeping).
+#[derive(Debug)]
+pub struct PagingArena {
+    used: Vec<bool>,
+}
+
+impl Default for PagingArena {
+    fn default() -> Self {
+        PagingArena { used: vec![false; PAGING_BLOCKS as usize] }
+    }
+}
+
+impl PagingArena {
+    /// A free block's address, now in use; None when every block is.
+    pub fn alloc(&mut self) -> Option<u32> {
+        let slot = self.used.iter().position(|&u| !u)?;
+        self.used[slot] = true;
+        Some(PAGING_ARENA_BASE + slot as u32 * PAGING_BLOCK_SIZE)
+    }
+
+    /// Give back the block at `base`; false for an address that is no
+    /// block in use.
+    pub fn free(&mut self, base: u32) -> bool {
+        if !valid_block(base) {
+            return false;
+        }
+        let slot = ((base - PAGING_ARENA_BASE) / PAGING_BLOCK_SIZE) as usize;
+        std::mem::replace(&mut self.used[slot], false)
+    }
+}
+
 /// Page-directory and page-table entry bits (Intel SDM vol. 3, 4.3).
 const PTE_PRESENT: u32 = 1 << 0;
 const PTE_WRITABLE: u32 = 1 << 1;
@@ -97,6 +163,10 @@ const PTE_DIRTY: u32 = 1 << 6;
 /// A directory entry mapping a 4 MB page (needs `CR4.PSE`).
 const PDE_LARGE: u32 = 1 << 7;
 const PTE_FLAGS: u32 = PTE_PRESENT | PTE_WRITABLE | PTE_USER | PTE_ACCESSED | PTE_DIRTY;
+/// A supervisor-only page (ADR-0113).
+const PTE_SUPERVISOR: u32 = PTE_FLAGS & !PTE_USER;
+/// The read-only 4 MB of the API thunks (ADR-0113).
+const PDE_READ_ONLY: u32 = PTE_FLAGS & !PTE_WRITABLE;
 const ENTRIES: u32 = 1024;
 const LARGE_PAGE_SHIFT: u32 = 22;
 /// The 4 MB block (directory entry) holding `TLM_PAGE`: the one mapped
@@ -114,6 +184,8 @@ const PAGE_SHIFT: u32 = 12;
 
 /// Control-register bits.
 pub const CR0_PG: u64 = 1 << 31;
+/// Write protect: ring 0 cannot write a read-only page either (ADR-0113).
+pub const CR0_WP: u64 = 1 << 16;
 pub const CR4_PSE: u64 = 1 << 4;
 
 /// DWORDs in the thread-local area, and most per call.
@@ -136,6 +208,8 @@ pub fn paging_block(base: u32, tib: u32) -> Vec<u8> {
             put(4 * i, (base + TABLE_OFFSET) | PTE_FLAGS);
         } else if i == 0 {
             put(4 * i, (base + LOW_TABLE_OFFSET) | PTE_FLAGS);
+        } else if i == STUB_CHUNK {
+            put(4 * i, (i << LARGE_PAGE_SHIFT) | PDE_READ_ONLY | PDE_LARGE);
         } else {
             put(4 * i, (i << LARGE_PAGE_SHIFT) | PTE_FLAGS | PDE_LARGE);
         }
@@ -147,8 +221,9 @@ pub fn paging_block(base: u32, tib: u32) -> Vec<u8> {
             RING0_ENTRY => base + RING0_OFFSET,
             _ => page,
         };
+        let flags = if supervisor_only(page) { PTE_SUPERVISOR } else { PTE_FLAGS };
         if j != FS_ENTRY {
-            put(TABLE_OFFSET + 4 * j, target | PTE_FLAGS);
+            put(TABLE_OFFSET + 4 * j, target | flags);
         } else if tib != 0 {
             put(TABLE_OFFSET + 4 * j, (tib & !(PAGE_SIZE - 1)) | PTE_FLAGS);
         }
@@ -168,11 +243,11 @@ pub fn paging_block(base: u32, tib: u32) -> Vec<u8> {
 /// tables (the thread-local page keeps its words).
 const TABLES_SIZE: u32 = TLM_OFFSET;
 
-/// Whether `base` can be a paging block: page-aligned and wholly inside
-/// the allocator's region (`DYNAMIC_ALLOC_BASE`..`SHARED_ARENA_BASE`).
+/// Whether `base` can be a paging block: one of the paging arena's
+/// blocks ([`PAGING_ARENA_BASE`], every [`PAGING_BLOCK_SIZE`] bytes).
 pub fn valid_block(base: u32) -> bool {
-    base.is_multiple_of(PAGE_SIZE) && base >= DYNAMIC_ALLOC_BASE
-        && base.checked_add(PAGING_BLOCK_SIZE).is_some_and(|end| end <= SHARED_ARENA_BASE)
+    base.checked_sub(PAGING_ARENA_BASE)
+        .is_some_and(|off| off.is_multiple_of(PAGING_BLOCK_SIZE) && off / PAGING_BLOCK_SIZE < PAGING_BLOCKS)
 }
 
 /// The thread-local page of the paging block at `cr3`; None for an
@@ -306,12 +381,19 @@ impl super::Loader {
     /// Allocate and fill a thread's paging block; its address (the CR3
     /// value), or None when there is no memory.
     pub(crate) fn alloc_paging_block(&self, tib: u32) -> Option<u32> {
-        let base = self.shared.mem_mgr.lock_or_recover().alloc(PAGING_BLOCK_SIZE)?;
-        if !valid_block(base) || self.guest_write_bytes(base, &paging_block(base, tib)).is_none() {
-            self.shared.mem_mgr.lock_or_recover().free(base);
+        let base = self.shared.paging_arena.lock_or_recover().alloc()?;
+        if self.guest_write_bytes(base, &paging_block(base, tib)).is_none() {
+            self.shared.paging_arena.lock_or_recover().free(base);
             return None;
         }
         Some(base)
+    }
+
+    /// Give back a thread's paging block (from [`Self::alloc_paging_block`]).
+    pub(crate) fn free_paging_block(&self, base: u32) {
+        if !self.shared.paging_arena.lock_or_recover().free(base) {
+            warn!("paging block {base:#x} freed twice or never allocated");
+        }
     }
 
     /// DosAllocThreadLocalMemory (ordinal 454): `cb` DWORDs (1–8) of the
@@ -358,7 +440,7 @@ mod tests {
     /// Every address maps to itself, except the thread-local page.
     #[test]
     fn the_tables_map_everything_one_to_one_but_the_thread_local_page() {
-        const BASE: u32 = 0x0200_3000;
+        const BASE: u32 = PAGING_ARENA_BASE + 3 * PAGING_BLOCK_SIZE;
         let b = paging_block(BASE, TIB_BASE);
         assert_eq!(b.len(), PAGING_BLOCK_SIZE as usize);
         let chunk = TLM_CHUNK << LARGE_PAGE_SHIFT;
@@ -372,15 +454,16 @@ mod tests {
         }
         assert_eq!(entry(&b, 4), 0x0040_0000 | PTE_FLAGS | PDE_LARGE);
         assert_eq!(entry(&b, 4 * 1023), 0xFFC0_0000 | PTE_FLAGS | PDE_LARGE);
-        assert_eq!(entry(&b, TABLE_OFFSET), chunk | PTE_FLAGS, "the block's first page");
+        assert_eq!(entry(&b, TABLE_OFFSET), chunk | PTE_SUPERVISOR, "the GDT's first page: supervisor-only");
         let tib = (TIB_BASE >> PAGE_SHIFT) & (ENTRIES - 1);
         assert_eq!(entry(&b, TABLE_OFFSET + 4 * tib), TIB_BASE | PTE_FLAGS, "the TIB");
         assert_eq!(entry(&b, TABLE_OFFSET + 4 * TLM_ENTRY), (BASE + TLM_OFFSET) | PTE_FLAGS);
         assert_eq!(entry(&b, TABLE_OFFSET + 4 * FS_ENTRY), TIB_BASE | PTE_FLAGS, "the FS window");
         assert_eq!(entry(&paging_block(BASE, 0), TABLE_OFFSET + 4 * FS_ENTRY), 0, "no TIB: no window");
-        assert_eq!(entry(&b, TABLE_OFFSET + 4 * 1023), (chunk + 0x003F_F000) | PTE_FLAGS);
+        assert_eq!(entry(&b, TABLE_OFFSET + 4 * 1023), (chunk + 0x003F_F000) | PTE_SUPERVISOR, "the arena's last page");
         assert!(b[TLM_OFFSET as usize..RING0_OFFSET as usize].iter().all(|&x| x == 0), "a zeroed thread-local page");
-        assert_eq!(entry(&b, TABLE_OFFSET + 4 * RING0_ENTRY), (BASE + RING0_OFFSET) | PTE_FLAGS, "the ring-0 window");
+        assert_eq!(entry(&b, TABLE_OFFSET + 4 * RING0_ENTRY), (BASE + RING0_OFFSET) | PTE_SUPERVISOR, "the ring-0 window");
+        assert_eq!(entry(&b, 4 * STUB_CHUNK), (STUB_CHUNK << LARGE_PAGE_SHIFT) | PDE_READ_ONLY | PDE_LARGE, "the thunks: read-only");
         assert_eq!(tlm_page_of(BASE as u64), Some(BASE + TLM_OFFSET));
     }
 
@@ -390,7 +473,7 @@ mod tests {
     /// view it did not have unpaged.
     #[test]
     fn no_entry_maps_a_page_elsewhere_than_itself_but_the_thread_local_page() {
-        const BASE: u32 = 0x0300_0000;
+        const BASE: u32 = PAGING_ARENA_BASE;
         let b = paging_block(BASE, TIB_BASE);
         for j in 0..ENTRIES {
             let e = entry(&b, LOW_TABLE_OFFSET + 4 * j);
@@ -399,13 +482,15 @@ mod tests {
         for i in (1..ENTRIES).filter(|&i| i != TLM_CHUNK) {
             let e = entry(&b, 4 * i);
             assert_eq!(e & !0x3F_FFFF, i << LARGE_PAGE_SHIFT, "directory entry {i}");
-            assert_eq!(e & 0xFFF, PTE_FLAGS | PDE_LARGE);
+            let flags = if i == STUB_CHUNK { PDE_READ_ONLY } else { PTE_FLAGS };
+            assert_eq!(e & 0xFFF, flags | PDE_LARGE, "directory entry {i}");
         }
         for j in 0..ENTRIES {
             let e = entry(&b, TABLE_OFFSET + 4 * j);
-            assert_eq!(e & 0xFFF, PTE_FLAGS, "table entry {j}");
-            let target = e & !0xFFF;
             let page = (TLM_CHUNK << LARGE_PAGE_SHIFT) | (j << PAGE_SHIFT);
+            let flags = if supervisor_only(page) { PTE_SUPERVISOR } else { PTE_FLAGS };
+            assert_eq!(e & 0xFFF, flags, "table entry {j}");
+            let target = e & !0xFFF;
             if page == TLM_PAGE {
                 assert_eq!(target, BASE + TLM_OFFSET);
                 assert!(valid_block(target - TLM_OFFSET));
@@ -424,7 +509,7 @@ mod tests {
     /// stack itself starts zeroed (ADR-0113).
     #[test]
     fn the_ring0_page_holds_the_threads_tss_and_stack() {
-        const BASE: u32 = 0x0200_5000;
+        const BASE: u32 = PAGING_ARENA_BASE + 5 * PAGING_BLOCK_SIZE;
         let b = paging_block(BASE, TIB_BASE);
         let tss = |off: u32| entry(&b, RING0_OFFSET + off);
         assert_eq!(tss(TSS_ESP0_OFFSET), RING0_WINDOW + PAGE_SIZE, "ESP0: the top of the ring-0 page");
@@ -439,22 +524,56 @@ mod tests {
         }
     }
 
-    /// Only a page-aligned block wholly inside the allocator's region is
-    /// accepted, whatever a CR3 value holds; nothing overflows.
+    /// Only one of the paging arena's blocks is accepted, whatever a CR3
+    /// value holds; nothing overflows.
     #[test]
-    fn only_blocks_in_the_allocators_region_are_accepted() {
-        assert!(valid_block(DYNAMIC_ALLOC_BASE));
-        assert!(valid_block(SHARED_ARENA_BASE - PAGING_BLOCK_SIZE));
-        for bad in [0, TLM_PAGE, DYNAMIC_ALLOC_BASE - PAGE_SIZE, DYNAMIC_ALLOC_BASE + 1,
-                    SHARED_ARENA_BASE - PAGING_BLOCK_SIZE + PAGE_SIZE, SHARED_ARENA_BASE, !0xFFF, u32::MAX] {
+    fn only_the_arenas_blocks_are_accepted() {
+        let last = PAGING_ARENA_BASE + (PAGING_BLOCKS - 1) * PAGING_BLOCK_SIZE;
+        assert!(valid_block(PAGING_ARENA_BASE));
+        assert!(valid_block(last));
+        assert!(last + PAGING_BLOCK_SIZE <= PAGING_ARENA_END);
+        for bad in [0, TLM_PAGE, PAGING_ARENA_BASE - PAGE_SIZE, PAGING_ARENA_BASE + PAGE_SIZE, PAGING_ARENA_BASE + 1,
+                    last + PAGING_BLOCK_SIZE, PAGING_ARENA_END, DYNAMIC_ALLOC_BASE, !0xFFF, u32::MAX] {
             assert!(!valid_block(bad), "{bad:#x}");
             assert_eq!(tlm_page_of(bad as u64), None, "{bad:#x}");
         }
-        assert_eq!(tlm_page_of(1u64 << 32 | DYNAMIC_ALLOC_BASE as u64), None, "CR3 above 4 GB");
+        assert_eq!(tlm_page_of(1u64 << 32 | PAGING_ARENA_BASE as u64), None, "CR3 above 4 GB");
         assert_eq!(tlm_page_of(u64::MAX), None);
         assert_eq!(block_of_tlm_page(0), None);
         assert_eq!(block_of_tlm_page(u32::MAX), None);
-        assert_eq!(block_of_tlm_page(DYNAMIC_ALLOC_BASE + TLM_OFFSET), Some(DYNAMIC_ALLOC_BASE));
+        assert_eq!(block_of_tlm_page(PAGING_ARENA_BASE + TLM_OFFSET), Some(PAGING_ARENA_BASE));
+    }
+
+    /// The arena hands out each block once, takes back only blocks in use,
+    /// and runs out after PAGING_BLOCKS of them.
+    #[test]
+    fn the_arena_hands_out_each_block_once() {
+        let mut arena = PagingArena::default();
+        let blocks: Vec<u32> = std::iter::from_fn(|| arena.alloc()).collect();
+        assert_eq!(blocks.len(), PAGING_BLOCKS as usize);
+        assert!(blocks.iter().all(|&b| valid_block(b)));
+        assert_eq!(blocks.iter().collect::<std::collections::HashSet<_>>().len(), blocks.len());
+        assert!(arena.free(blocks[7]));
+        assert!(!arena.free(blocks[7]), "not twice");
+        assert!(!arena.free(DYNAMIC_ALLOC_BASE), "no block");
+        assert_eq!(arena.alloc(), Some(blocks[7]), "a freed block comes back");
+        assert_eq!(arena.alloc(), None);
+    }
+
+    /// The pages a guest at ring 3 must not reach (ADR-0113): the GDT, IDT
+    /// and stubs, the ring-0 window and the arena; the TIB, PIB,
+    /// environment, thread-local page, information segments and FS window
+    /// stay the guest's.
+    #[test]
+    fn warpines_own_pages_are_supervisor_only() {
+        for page in [SYSTEM_AREA_BASE, IDT_BASE, IDT_HANDLER_BASE & !0xFFF, TIB_BASE - PAGE_SIZE, RING0_WINDOW,
+                     PAGING_ARENA_BASE, PAGING_ARENA_END - PAGE_SIZE] {
+            assert!(supervisor_only(page), "{page:#x}");
+        }
+        for page in [TIB_BASE, PIB_BASE, ENV_ADDR, TLM_PAGE, super::super::infoseg::GINFOSEG_ADDR,
+                     super::super::infoseg::LINFOSEG_ADDR, FS_WINDOW, PAGING_ARENA_END, MAGIC_API_BASE as u32] {
+            assert!(!supervisor_only(page), "{page:#x}");
+        }
     }
 
     /// Tables the guest damaged are seen, reported and repaired; the

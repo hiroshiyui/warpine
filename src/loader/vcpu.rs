@@ -279,11 +279,12 @@ impl super::Loader {
         sregs.cr4 |= 1 << 9;
         // Paging with the thread's own tables (ADR-0088), or none.
         sregs.cr3 = cr3 as u64;
+        // CR0.WP: the read-only thunks hold at ring 0 too (ADR-0113).
         if cr3 != 0 {
             sregs.cr4 |= super::paging::CR4_PSE;
-            sregs.cr0 |= super::paging::CR0_PG;
+            sregs.cr0 |= super::paging::CR0_PG | super::paging::CR0_WP;
         } else {
-            sregs.cr0 &= !super::paging::CR0_PG;
+            sregs.cr0 &= !(super::paging::CR0_PG | super::paging::CR0_WP);
         }
         // The thread's TSS (ADR-0113): a paged thread's ring-0 window, or
         // the reset state for an unpaged one, which has no ring-0 page.
@@ -386,8 +387,9 @@ impl super::Loader {
             let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
             mem_mgr.free(mem.stack);
             mem_mgr.free(mem.tib);
+            drop(mem_mgr);
             if mem.paging != 0 {
-                mem_mgr.free(mem.paging);
+                self.free_paging_block(mem.paging);
             }
         }
         super::guest_mem::set_thread_tlm_backing(0);
@@ -2300,6 +2302,7 @@ mod tests {
         assert_eq!(s.cr3, block as u64);
         assert_ne!(s.cr0 & CR0_PG, 0);
         assert_ne!(s.cr4 & CR4_PSE, 0);
+        assert_ne!(s.cr0 & super::super::paging::CR0_WP, 0, "write protect: the thunks are read-only at ring 0 too");
         assert_eq!(s.cr0 & 1, 1, "protected mode");
         assert_eq!((s.tr.base, s.tr.limit, s.tr.selector), (u64::from(RING0_WINDOW), TSS_SIZE - 1, TSS_SEL),
                    "TR: the thread's TSS in its ring-0 window");

@@ -15,7 +15,13 @@
  *     at its own address, and the program goes on past it when its handler
  *     continues;
  *   - a handler that sets IOPL 3 in the context record does not get it:
- *     the program's EFLAGS still have IOPL 0.
+ *     the program's EFLAGS still have IOPL 0;
+ *   - Warpine's own pages cannot be read: the GDT, the ring-0 window (the
+ *     thread's TSS and ring-0 stack) and the paging arena (every thread's
+ *     page tables) raise XCPT_ACCESS_VIOLATION.
+ * At either ring: the 4 MB of the API thunks cannot be written (read-only,
+ * and CR0.WP holds ring 0 to it too).
+ * A probe that faults is left by longjmp from the exception handler.
  * The ring itself is printed as information ("ring_test info: running at ring
  * <n>"), not checked.
  *
@@ -26,12 +32,18 @@
 #define INCL_DOSEXCEPTIONS
 #include <os2.h>
 #include <string.h>
+#include <setjmp.h>
 
 #define CODE_SEL 0x08
 #define DATA_SEL 0x10
 #define TIB_SEL  0x18
 #define RPL_MASK 3
 #define TI_LDT   4
+/* Warpine's guest memory layout (ADR-0094, ADR-0113). */
+#define GDT_ADDR      0x01800000UL
+#define RING0_WINDOW  0x01841000UL
+#define PAGING_ARENA  0x01842000UL
+#define THUNK_CHUNK   0x01200000UL  /* in the API thunks' 4 MB, past the thunks */
 #define CLI_LEN  1
 #define IOPL_MASK 0x3000UL
 
@@ -104,6 +116,57 @@ static ULONG APIENTRY handler(PEXCEPTIONREPORTRECORD rep, PEXCEPTIONREGISTRATION
     return XCPT_CONTINUE_SEARCH;
 }
 
+static jmp_buf          probe_env;
+static volatile ULONG    probe_code;
+
+/* Leave an access violation by longjmp back into faults(). */
+static ULONG APIENTRY probe_handler(PEXCEPTIONREPORTRECORD rep, PEXCEPTIONREGISTRATIONRECORD reg,
+                                    PCONTEXTRECORD ctx, PVOID unused)
+{
+    (void)reg; (void)ctx; (void)unused;
+    if (rep->fHandlerFlags & (EH_UNWINDING | EH_EXIT_UNWIND)) {
+        return XCPT_CONTINUE_SEARCH;
+    }
+    if (rep->ExceptionNum == XCPT_ACCESS_VIOLATION) {
+        probe_code = rep->ExceptionNum;
+        longjmp(probe_env, 1);
+    }
+    return XCPT_CONTINUE_SEARCH;
+}
+
+static volatile ULONG    probe_sink;
+
+/* The value goes to a volatile global: Open Watcom drops a volatile read
+ * cast to void. */
+static void read_at(ULONG addr)  { probe_sink = *(volatile ULONG *)addr; }
+static void write_at(ULONG addr) { *(volatile UCHAR *)addr = 0; }
+
+/* Whether reading (or writing) the byte at addr raises an access violation. */
+static int faults(void (*probe)(ULONG), ULONG addr)
+{
+    EXCEPTIONREGISTRATIONRECORD rec;
+
+    memset(&rec, 0, sizeof(rec));
+    rec.ExceptionHandler = probe_handler;
+    probe_code = 0;
+    DosSetExceptionHandler(&rec);
+    if (setjmp(probe_env) == 0) {
+        probe(addr);
+    }
+    DosUnsetExceptionHandler(&rec);
+    return probe_code == XCPT_ACCESS_VIOLATION;
+}
+
+static void check_protected(int ring3)
+{
+    if (ring3) {
+        check("the GDT cannot be read", faults(read_at, GDT_ADDR));
+        check("the ring-0 window cannot be read", faults(read_at, RING0_WINDOW));
+        check("the paging arena cannot be read", faults(read_at, PAGING_ARENA));
+    }
+    check("the API thunks' 4 MB cannot be written", faults(write_at, THUNK_CHUNK));
+}
+
 static void check_privileged(void)
 {
     EXCEPTIONREGISTRATIONRECORD rec;
@@ -155,6 +218,7 @@ int main(void)
     if ((read_cs() & RPL_MASK) == 3) {
         check_privileged();
     }
+    check_protected((read_cs() & RPL_MASK) == 3);
     if (DosCreateThread(&tid, (PFNTHREAD)second, 0, 0, 65536) == 0) {
         DosWaitThread(&tid, DCWW_WAIT);
     } else {

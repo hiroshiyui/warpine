@@ -4,8 +4,9 @@
 //!
 //! OS/2 runs applications at ring 3. Warpine's guests ran at ring 0, which
 //! let them load CR3 or CR0 and rewrite their own page tables (caught only
-//! afterwards, by the paging watch, ADR-0088). With `WARPINE_RING=3` an LX
-//! program's paged threads run at ring 3:
+//! afterwards, by the paging watch, ADR-0088). An LX program's paged
+//! threads run at ring 3 (since step 3 the default; `WARPINE_RING=0` runs
+//! them at ring 0 for one more release):
 //! - the descriptors programs use (0x08, 0x10, 0x18, the 16-bit aliases and
 //!   tiles) are DPL 3, and their selectors carry RPL 3 (0x0B, 0x13, 0x1B);
 //! - the IDT's gates enter ring 0 through `KERNEL_CODE_SEL`, on the ring-0
@@ -19,24 +20,29 @@
 //! - EFLAGS Warpine takes from a context record or a saved context cannot
 //!   raise the I/O privilege level or set IF ([`guest_eflags`]).
 //!
-//! 16-bit (NE) programs and unpaged threads stay at ring 0.
+//! 16-bit (NE) programs and unpaged threads stay at ring 0. The pages a
+//! ring-3 guest must not reach are supervisor-only (`paging.rs`).
 
 use std::sync::atomic::Ordering;
 
 use super::constants::*;
 use super::vm_backend::{GuestSegment, VcpuBackend};
 
-/// The variable that chooses the ring (`3`; anything else: ring 0).
+/// The variable that chooses the ring: `0` runs guests at ring 0, the
+/// way back for one release (ADR-0113); unset, or `3`, ring 3.
 pub const RING_ENV: &str = "WARPINE_RING";
 
-/// The ring `WARPINE_RING`'s value asks for: 3 for "3", else 0.
+/// The ring `WARPINE_RING`'s value asks for: 0 for "0", else 3.
 pub fn ring_from_env(value: Option<&str>) -> u8 {
     match value.map(str::trim) {
-        Some("3") => 3,
-        Some("0") | Some("") | None => 0,
-        Some(other) => {
-            log::warn!("{RING_ENV}={other}: not 0 or 3; guests run at ring 0");
+        Some("0") => {
+            log::warn!("{RING_ENV}=0: 32-bit guests run at ring 0, where they can reach their own page tables");
             0
+        }
+        Some("3") | Some("") | None => 3,
+        Some(other) => {
+            log::warn!("{RING_ENV}={other}: not 0 or 3; guests run at ring 3");
+            3
         }
     }
 }
@@ -212,11 +218,11 @@ mod tests {
     use super::super::vm_backend::{GuestRegs, GuestSregs};
 
     #[test]
-    fn only_3_asks_for_ring_3() {
-        assert_eq!(ring_from_env(Some("3")), 3);
-        assert_eq!(ring_from_env(Some(" 3 ")), 3);
-        for v in [None, Some(""), Some("0"), Some("2"), Some("ring3")] {
-            assert_eq!(ring_from_env(v), 0, "{v:?}");
+    fn ring_3_unless_0_is_asked_for() {
+        assert_eq!(ring_from_env(Some("0")), 0);
+        assert_eq!(ring_from_env(Some(" 0 ")), 0);
+        for v in [None, Some(""), Some("3"), Some("2"), Some("ring0")] {
+            assert_eq!(ring_from_env(v), 3, "{v:?}");
         }
     }
 

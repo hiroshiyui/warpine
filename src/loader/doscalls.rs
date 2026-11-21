@@ -1184,7 +1184,8 @@ impl super::Loader {
             let mut mem_mgr = self.shared.mem_mgr.lock_or_recover();
             mem_mgr.free(stack_base);
             mem_mgr.free(tib_addr);
-            if paging != 0 { mem_mgr.free(paging); }
+            drop(mem_mgr);
+            if paging != 0 { self.free_paging_block(paging); }
         };
         let Some(stack_top) = stack_base.checked_add(stack_size) else {
             free_memory();

@@ -458,6 +458,8 @@ pub struct SharedState {
     pub thread_slots: Mutex<session_threads::ThreadSlots>,
     /// The words of the thread-local area handed out (`paging.rs`).
     pub tlm: Mutex<paging::TlmArea>,
+    /// The paging arena's blocks in use (`paging.rs`, ADR-0113).
+    pub paging_arena: Mutex<paging::PagingArena>,
     /// The read ends of children's exit reports, by host pid (`exit_report.rs`).
     pub exit_reports: Mutex<std::collections::HashMap<u32, std::fs::File>>,
     /// `DosAsyncTimer` / `DosStartTimer` timers (`dostimer.rs`).
@@ -601,6 +603,7 @@ impl Loader {
             threads: Default::default(),
             thread_slots: Default::default(),
             tlm: Default::default(),
+            paging_arena: Default::default(),
             exit_reports: Default::default(),
             dos_timers: Default::default(),
             suballoc: Default::default(),
@@ -715,6 +718,7 @@ impl Loader {
             threads:      Default::default(),
             thread_slots: Default::default(),
             tlm:          Default::default(),
+            paging_arena: Default::default(),
             exit_reports: Default::default(),
             dos_timers:   Default::default(),
             suballoc:     Default::default(),

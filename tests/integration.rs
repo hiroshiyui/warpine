@@ -1545,13 +1545,14 @@ fn test_exception_chains_are_per_thread() {
 /// ring_test (ADR-0113): every 32-bit thread's task register names its
 /// TSS, and its segments are the flat ones (code 0x08, data 0x10, the
 /// TIB at 0x18) at the RPL of the ring it runs at; FS reaches its TIB.
-/// At ring 3 (`WARPINE_RING=3`) it also checks that CLI raises
-/// XCPT_PRIVILEGED_INSTRUCTION and that a context record cannot raise
-/// IOPL.
+/// At either ring the API thunks' 4 MB cannot be written (CR0.WP). At ring
+/// 3 (the default) it also checks that CLI raises
+/// XCPT_PRIVILEGED_INSTRUCTION, that a context record cannot raise IOPL,
+/// and that the GDT, the ring-0 window and the paging arena cannot be read.
 #[test]
 fn every_thread_has_a_tss_and_the_flat_segments() {
     const SAMPLE: &str = "samples/ring_test/ring_test.exe";
-    for (ring, min) in [(RING_0, 10), (RING_3, 13)] {
+    for (ring, min) in [(RING_0, 11), (RING_3, 17)] {
         let Some(out) = text_checks_pass_env(SAMPLE, "ring_test", min, &[("WARPINE_RING", ring)]) else { return };
         assert!(out.contains(&format!("ring_test info: running at ring {ring}")), "{out}");
         assert!(out.contains(&format!("ring_test info: thread 2: running at ring {ring}")), "{out}");
