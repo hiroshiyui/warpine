@@ -13,7 +13,8 @@
  *     PAG_GUARD on DosAllocMem makes every page a guard page;
  *   - DosSetMem's and DosAllocMem's errors;
  *   - a page made read-only by one thread faults on another thread that
- *     wrote it just before (its TLB must forget the old entry).
+ *     wrote it just before (its TLB must forget the old entry);
+ *   - the program's code object (no write flag) can be read, not written.
  * A probe that faults is left by longjmp from the exception handler.
  *
  * Output: "mem_protect_test: <name>: ok" / "...: FAIL", then
@@ -188,6 +189,10 @@ int main(void)
     check("DosSetMem sets a guard again", DosSetMem(p, PAGE, RW | PAG_GUARD) == NO_ERROR
           && query_is(p, PAGE, PAGE, RW | PAG_COMMIT | PAG_GUARD | PAG_BASE));
     DosFreeMem(p);
+
+    /* The program's own code. */
+    check("the program's code can be read", !faults(read_at, (PVOID)check));
+    check("but not written", faults(write_at, (PVOID)check));
 
     /* Another thread's TLB. */
     DosCreateEventSem(NULL, &wrote, 0, FALSE);

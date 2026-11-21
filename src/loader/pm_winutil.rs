@@ -649,8 +649,7 @@ impl super::Loader {
     /// module's pages.
     pub(super) fn free_library_done(&self, hmod: u32) -> u32 {
         let bases = self.shared.dll_mgr.lock_or_recover().pending_free.remove(&hmod).unwrap_or_default();
-        let mut mem = self.shared.mem_mgr.lock_or_recover();
-        for base in bases { mem.free(base); }
+        self.free_module_objects(bases);
         1
     }
 

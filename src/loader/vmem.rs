@@ -41,6 +41,31 @@ const STATE_BITS: u32 = FPERM | PAG_GUARD | PAG_COMMIT;
 /// A page whose process-table entry changes: its address and new access.
 pub type Change = (u32, PageAccess);
 
+/// An LX object's write flag (IBM's LX format description: `OBJWRITE`).
+pub const LX_OBJECT_WRITE: u32 = 0x0002;
+
+/// The pages of `objects` (`(base, bytes, LX flags)`) that are read-only:
+/// those of an object without the write flag, but for a page it shares
+/// with a writable object.
+pub fn read_only_pages(objects: &[(u32, u32, u32)]) -> Vec<u32> {
+    let pages = |base: u32, bytes: u32| {
+        let first = base / PAGE_SIZE;
+        // At most the last page of the 32-bit space.
+        const PAGES_IN_4GB: u64 = 1 << 20;
+        let end = (u64::from(base) + u64::from(bytes)).div_ceil(u64::from(PAGE_SIZE)).min(PAGES_IN_4GB) as u32;
+        first..end.max(first)
+    };
+    let writable: Vec<_> = objects.iter().filter(|o| o.2 & LX_OBJECT_WRITE != 0).map(|o| pages(o.0, o.1)).collect();
+    let mut out: Vec<u32> = objects.iter().filter(|o| o.2 & LX_OBJECT_WRITE == 0)
+        .flat_map(|o| pages(o.0, o.1))
+        .filter(|p| !writable.iter().any(|w| w.contains(p)))
+        .map(|p| p * PAGE_SIZE)
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// One `DosAllocMem` allocation, or a thread's sparse stack: each page's
 /// state (`PAG_*` bits), and the access it was allocated with
 /// (`PAG_DEFAULT`).
@@ -301,8 +326,14 @@ fn set_pages(base: u32, region: &mut Region, addr: u32, cb: u32, flag: u32) -> R
 }
 
 impl super::Loader {
-    /// Write `changes` into the process tables.
+    /// Write `changes` into the process tables, which are written first if
+    /// no thread has run yet (a program's objects are protected before
+    /// its first thread exists).
     fn apply_page_changes(&self, changes: &[Change]) {
+        if changes.is_empty() {
+            return;
+        }
+        self.ensure_process_tables();
         for &(addr, access) in changes {
             if let Some(at) = process_pte_at(addr) {
                 self.guest_write::<u32>(at, process_pte(addr, access));
@@ -342,6 +373,33 @@ impl super::Loader {
         }
         debug!("  -> allocated at 0x{addr:08X}");
         NO_ERROR
+    }
+
+    /// Make the read-only objects of a loaded module read-only (ADR-0114):
+    /// `objects` are `(base, bytes, LX flags)`, after the fixups are in.
+    pub(crate) fn protect_objects(&self, objects: &[(u32, u32, u32)]) {
+        let changes: Vec<Change> = read_only_pages(objects).into_iter()
+            .filter(|&p| process_pte_at(p).is_some())
+            .map(|p| (p, PageAccess::Read)).collect();
+        self.apply_page_changes(&changes);
+        // A module loaded while threads run may reuse pages a TLB holds
+        // writable.
+        if !changes.is_empty() {
+            self.flush_tlbs();
+        }
+    }
+
+    /// Free a module's objects (from the allocator): their pages are
+    /// present and writable again before the memory can be handed out.
+    pub(crate) fn free_module_objects(&self, bases: impl IntoIterator<Item = u32>) {
+        for base in bases {
+            let size = self.shared.mem_mgr.lock_or_recover().block_size(base);
+            if let Some(size) = size {
+                let changes: Vec<Change> = (0..size / PAGE_SIZE).map(|i| (base + i * PAGE_SIZE, PageAccess::ReadWrite)).collect();
+                self.apply_page_changes(&changes);
+            }
+            self.shared.mem_mgr.lock_or_recover().free(base);
+        }
     }
 
     /// Make the thread stack of `size` bytes at `base` sparse (ADR-0114).
@@ -488,6 +546,21 @@ mod tests {
         map.set(BASE, PAGE_SIZE, PAG_DECOMMIT).unwrap().unwrap();
         assert_eq!(map.set(BASE, PAGE_SIZE, PAG_DECOMMIT), Some(Err(ERROR_ACCESS_DENIED)), "not committed");
         assert_eq!(map.set(BASE, PAGE_SIZE, PAG_READ), Some(Err(ERROR_ACCESS_DENIED)), "access of an uncommitted page");
+    }
+
+    /// Pages of objects without the write flag are read-only, but for one a
+    /// writable object shares; byte sizes round up to whole pages.
+    #[test]
+    fn read_only_objects_lose_only_their_own_pages() {
+        const CODE: u32 = 0x0001 | 0x0004;
+        const DATA: u32 = 0x0001 | LX_OBJECT_WRITE;
+        assert_eq!(read_only_pages(&[(0x10000, 0x2100, CODE), (0x20000, 0x1000, DATA)]),
+                   vec![0x10000, 0x11000, 0x12000], "a partial last page counts");
+        assert_eq!(read_only_pages(&[(0x10000, 0x1800, CODE), (0x11000, 0x1000, DATA)]),
+                   vec![0x10000], "the page shared with data stays writable");
+        assert!(read_only_pages(&[(0x10000, 0x1000, DATA)]).is_empty());
+        assert!(read_only_pages(&[(0x10000, 0, CODE)]).is_empty(), "no bytes");
+        assert_eq!(read_only_pages(&[(u32::MAX - 0xFFF, 0x2000, CODE)]), vec![u32::MAX - 0xFFF], "no overflow");
     }
 
     /// A sparse stack: its top page committed, a guard below, the rest

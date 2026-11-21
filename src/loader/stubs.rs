@@ -517,10 +517,7 @@ impl super::Loader {
             }
             Some((bases, None)) => {
                 // No INITTERM — free pages now.
-                let mut mem = self.shared.mem_mgr.lock_or_recover();
-                for base in bases {
-                    mem.free(base);
-                }
+                self.free_module_objects(bases);
                 debug!("  DosFreeModule: hmod={} unloaded", hmod);
                 super::ApiResult::Normal(NO_ERROR)
             }

@@ -110,7 +110,12 @@ impl super::Loader {
 
         // The DLLs the program imports, before its fixups refer to them.
         self.load_dependencies("the program", &lx_file.imported_modules, &mut HashSet::new());
-        self.apply_fixups(lx_file, &object_bases)
+        self.apply_fixups(lx_file, &object_bases)?;
+        // Objects without the write flag are read-only from now on (ADR-0114).
+        let objects: Vec<(u32, u32, u32)> = lx_file.object_table.iter().zip(&object_bases)
+            .map(|(o, &b)| (b, o.size.max(o.page_count.saturating_mul(PAGE_SIZE)), o.flags)).collect();
+        self.protect_objects(&objects);
+        Ok(())
     }
 
     /// Load the modules of `imported` that are neither built in nor loaded
@@ -279,14 +284,18 @@ impl super::Loader {
         // 2. Allocate guest memory for each object, zeroed: its zero-filled
         //    pages and the rest of partial pages must not show what an
         //    earlier module or allocation left there.
+        //    Each takes its virtual size or its pages, whichever is more
+        //    (its pages are loaded whole), and at least one page.
         let mut object_bases: Vec<u32> = Vec::new();
+        let mut object_bytes: Vec<u32> = Vec::new();
         for obj in &lx_file.object_table {
-            let size = obj.size.max(4096); // at least one page
+            let pages = obj.page_count.saturating_mul(PAGE_SIZE);
+            let size = obj.size.max(pages).max(PAGE_SIZE);
             let Some(addr) = self.alloc_zeroed(size) else {
-                let mut mem = self.shared.mem_mgr.lock_or_recover();
-                for &b in &object_bases { mem.free(b); }
+                self.free_module_objects(object_bases);
                 return Err(format!("Out of guest memory for DLL '{}'", dll_name_upper));
             };
+            object_bytes.push(size);
             object_bases.push(addr);
             debug!("  DLL object: size=0x{:X} → guest 0x{:08X}", size, addr);
         }
@@ -325,6 +334,10 @@ impl super::Loader {
         //    Dependencies are now in `dll_mgr`, so `resolve_import` can find them.
         self.apply_fixups(&lx_file, &object_bases)
             .map_err(|e| format!("DLL fixup error for '{}': {}", dll_name_upper, e))?;
+        // Objects without the write flag are read-only from now on (ADR-0114).
+        let objects: Vec<(u32, u32, u32)> = lx_file.object_table.iter().enumerate()
+            .map(|(i, o)| (object_bases[i], object_bytes[i], o.flags)).collect();
+        self.protect_objects(&objects);
 
         // 5. Build export map from entry table + resident and non-resident
         // names tables

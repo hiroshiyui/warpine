@@ -1230,10 +1230,7 @@ impl super::Loader {
                                         // Unload-time INITTERM: OS/2 does not allow a DLL to
                                         // refuse unloading, so the return value is ignored.
                                         debug!("  [VCPU {}] _DLL_InitTerm(hmod={:#x}, flag=1) unload complete (ret={})", vcpu_id, hmod, result);
-                                        let mut mem = self.shared.mem_mgr.lock_or_recover();
-                                        for base in object_bases {
-                                            mem.free(base);
-                                        }
+                                        self.free_module_objects(object_bases);
                                         regs.rax = NO_ERROR as u64;
                                     }
                                     FrameKind::UnwindHandler { unwind } => {

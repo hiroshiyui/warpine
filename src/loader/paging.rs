@@ -3,18 +3,21 @@
 //! Guest paging for thread-local memory (ADR-0088).
 //!
 //! 32-bit guest threads run with 32-bit paging (`CR0.PG`, `CR4.PSE`):
-//! - each thread has its own block of five pages: a page directory, two
-//!   page tables, its thread-local page and its ring-0 page (its TSS and
+//! - each thread has its own block of four pages: a page directory, its
+//!   TLM table, its thread-local page and its ring-0 page (its TSS and
 //!   ring-0 stack, ADR-0113);
 //! - the directory maps the whole 4 GB linear space one-to-one with 4 MB
 //!   pages, except the 4 MB holding `TLM_PAGE` (in the system area,
-//!   ADR-0094) and the first 4 MB, which go through the page tables;
+//!   ADR-0094), which go through the TLM table, and the program area and
+//!   the allocator's region, which go through the process tables every
+//!   thread shares (ADR-0114);
 //! - the TLM table maps its 4 MB one-to-one too, except `TLM_PAGE`, which
 //!   leads to the thread's own page, and the FS and ring-0 windows, which
 //!   lead to its TIB's page and its ring-0 page;
-//! - the low table maps the first 4 MB one-to-one but for the low 64 KB,
-//!   which are not present, as on OS/2: a null pointer, or one just past
-//!   it, traps as an access violation (ADR-0110).
+//! - the process tables map their pages one-to-one, but for the low 64 KB,
+//!   which are not present, as on OS/2 (a null pointer, or one just past
+//!   it, traps as an access violation, ADR-0110), and the page states of
+//!   allocated memory and of the program's objects (`vmem.rs`).
 //!
 //! So every address means what it meant unpaged but the low 64 KB, and
 //! `TLM_PAGE` holds each thread's own words. EPT / NPT still bound the guest to its memory:
@@ -79,16 +82,16 @@ pub fn start_paging_watch(shared: Arc<super::SharedState>) {
     }
 }
 
-/// Pages in a thread's paging block: directory, TLM table, low table,
-/// thread-local page, ring-0 page.
-pub const PAGING_BLOCK_PAGES: u32 = 5;
+/// Pages in a thread's paging block: directory, TLM table, thread-local
+/// page, ring-0 page. (The first 4 MB go through a process table shared by
+/// every thread, ADR-0114.)
+pub const PAGING_BLOCK_PAGES: u32 = 4;
 /// Bytes of a thread's paging block.
 pub const PAGING_BLOCK_SIZE: u32 = PAGING_BLOCK_PAGES * PAGE_SIZE;
 /// Offsets of the parts in the block.
 const TABLE_OFFSET: u32 = PAGE_SIZE;
-const LOW_TABLE_OFFSET: u32 = 2 * PAGE_SIZE;
-const TLM_OFFSET: u32 = 3 * PAGE_SIZE;
-const RING0_OFFSET: u32 = 4 * PAGE_SIZE;
+const TLM_OFFSET: u32 = 2 * PAGE_SIZE;
+const RING0_OFFSET: u32 = 3 * PAGE_SIZE;
 /// The low addresses no 32-bit thread reaches (OS/2's low 64 KB, below
 /// every program's objects).
 pub const LOW_GUARD: u32 = EXE_AREA_START;
@@ -106,10 +109,18 @@ pub const ALLOC_FIRST_CHUNK: u32 = DYNAMIC_ALLOC_BASE >> LARGE_PAGE_SHIFT;
 pub const ALLOC_CHUNKS: u32 = (SHARED_ARENA_BASE - DYNAMIC_ALLOC_BASE) >> LARGE_PAGE_SHIFT;
 const _: () = assert!(DYNAMIC_ALLOC_BASE.trailing_zeros() >= LARGE_PAGE_SHIFT
     && SHARED_ARENA_BASE.trailing_zeros() >= LARGE_PAGE_SHIFT);
-/// The process tables: one page table per allocator chunk, shared by all
-/// of a process's threads, so a change of a page's state reaches them all.
+/// The program area in 4 MB chunks (0 up to the API thunks), mapped
+/// through process tables too, so the program's objects can be read-only
+/// (ADR-0114); the first holds the not-present low 64 KB (ADR-0110).
+pub const EXE_CHUNKS: u32 = EXE_AREA_END >> LARGE_PAGE_SHIFT;
+const _: () = assert!(EXE_AREA_END.trailing_zeros() >= LARGE_PAGE_SHIFT && EXE_CHUNKS == STUB_CHUNK);
+/// The process tables: one page table per chunk of the program area, then
+/// one per allocator chunk, shared by all of a process's threads, so a
+/// change of a page's state reaches them all.
 pub const PROCESS_TABLES: u32 = PAGING_ARENA_BASE;
-pub const PROCESS_TABLES_SIZE: u32 = ALLOC_CHUNKS * PAGE_SIZE;
+/// The allocator's tables, after the program area's.
+pub const ALLOC_TABLES: u32 = PROCESS_TABLES + EXE_CHUNKS * PAGE_SIZE;
+pub const PROCESS_TABLES_SIZE: u32 = (EXE_CHUNKS + ALLOC_CHUNKS) * PAGE_SIZE;
 /// Where the paging blocks start, after the process tables.
 pub const PAGING_BLOCKS_BASE: u32 = PROCESS_TABLES + PROCESS_TABLES_SIZE;
 /// Blocks the arena holds: the most threads a process can have.
@@ -154,10 +165,14 @@ pub fn process_pte(addr: u32, access: PageAccess) -> u32 {
 }
 
 /// Where the process-table entry of the page holding `addr` lies; None
-/// outside the allocator's region.
+/// outside the program area and the allocator's region.
 pub fn process_pte_at(addr: u32) -> Option<u32> {
-    (DYNAMIC_ALLOC_BASE..SHARED_ARENA_BASE).contains(&addr)
-        .then(|| PROCESS_TABLES + ((addr - DYNAMIC_ALLOC_BASE) >> PAGE_SHIFT) * 4)
+    if addr < EXE_AREA_END {
+        Some(PROCESS_TABLES + (addr >> PAGE_SHIFT) * 4)
+    } else {
+        (DYNAMIC_ALLOC_BASE..SHARED_ARENA_BASE).contains(&addr)
+            .then(|| ALLOC_TABLES + ((addr - DYNAMIC_ALLOC_BASE) >> PAGE_SHIFT) * 4)
+    }
 }
 
 /// Which blocks of the paging arena are in use (pure bookkeeping).
@@ -239,7 +254,7 @@ pub const TLM_MAX_PER_CALL: u32 = 8;
 
 /// The paging block's contents for a block at `base`, for the thread
 /// whose TIB is at `tib` (its page shows through the FS window; 0: the
-/// window is not present): the directory, the two tables, a zeroed
+/// window is not present): the directory, the TLM table, a zeroed
 /// thread-local page, and the ring-0 page with the thread's TSS.
 pub fn paging_block(base: u32, tib: u32) -> Vec<u8> {
     let mut block = vec![0u8; PAGING_BLOCK_SIZE as usize];
@@ -249,12 +264,12 @@ pub fn paging_block(base: u32, tib: u32) -> Vec<u8> {
     for i in 0..ENTRIES {
         if i == TLM_CHUNK {
             put(4 * i, (base + TABLE_OFFSET) | PTE_FLAGS);
-        } else if i == 0 {
-            put(4 * i, (base + LOW_TABLE_OFFSET) | PTE_FLAGS);
+        } else if i < EXE_CHUNKS {
+            put(4 * i, (PROCESS_TABLES + i * PAGE_SIZE) | PTE_FLAGS);
         } else if i == STUB_CHUNK {
             put(4 * i, (i << LARGE_PAGE_SHIFT) | PDE_READ_ONLY | PDE_LARGE);
         } else if (ALLOC_FIRST_CHUNK..ALLOC_FIRST_CHUNK + ALLOC_CHUNKS).contains(&i) {
-            put(4 * i, (PROCESS_TABLES + (i - ALLOC_FIRST_CHUNK) * PAGE_SIZE) | PTE_FLAGS);
+            put(4 * i, (ALLOC_TABLES + (i - ALLOC_FIRST_CHUNK) * PAGE_SIZE) | PTE_FLAGS);
         } else {
             put(4 * i, (i << LARGE_PAGE_SHIFT) | PTE_FLAGS | PDE_LARGE);
         }
@@ -271,10 +286,6 @@ pub fn paging_block(base: u32, tib: u32) -> Vec<u8> {
             put(TABLE_OFFSET + 4 * j, target | flags);
         } else if tib != 0 {
             put(TABLE_OFFSET + 4 * j, (tib & !(PAGE_SIZE - 1)) | PTE_FLAGS);
-        }
-        let low = j << PAGE_SHIFT;
-        if low >= LOW_GUARD {
-            put(LOW_TABLE_OFFSET + 4 * j, low | PTE_FLAGS);
         }
     }
     put(RING0_OFFSET + TSS_ESP0_OFFSET, RING0_STACK_TOP);
@@ -442,9 +453,12 @@ impl super::Loader {
         if self.shared.process_tables_ready.swap(true, Ordering::AcqRel) {
             return;
         }
-        let tables: Vec<u8> = (0..ALLOC_CHUNKS * ENTRIES)
-            .flat_map(|i| ((DYNAMIC_ALLOC_BASE + (i << PAGE_SHIFT)) | PTE_FLAGS).to_le_bytes())
-            .collect();
+        // The program area's tables, the low 64 KB not present; then the
+        // allocator's.
+        let exe = (0..EXE_CHUNKS * ENTRIES).map(|i| i << PAGE_SHIFT)
+            .map(|page| if page < LOW_GUARD { 0 } else { page | PTE_FLAGS });
+        let alloc = (0..ALLOC_CHUNKS * ENTRIES).map(|i| (DYNAMIC_ALLOC_BASE + (i << PAGE_SHIFT)) | PTE_FLAGS);
+        let tables: Vec<u8> = exe.chain(alloc).flat_map(u32::to_le_bytes).collect();
         if self.guest_write_bytes(PROCESS_TABLES, &tables).is_none() {
             warn!("the process page tables could not be written");
         }
@@ -507,13 +521,10 @@ mod tests {
         let chunk = TLM_CHUNK << LARGE_PAGE_SHIFT;
         assert_eq!(chunk, SYSTEM_AREA_BASE & !0x3F_FFFF, "the system area's 4 MB");
         assert_eq!(entry(&b, 4 * TLM_CHUNK), (BASE + TABLE_OFFSET) | PTE_FLAGS, "those 4 MB through the table");
-        assert_eq!(entry(&b, 0), (BASE + LOW_TABLE_OFFSET) | PTE_FLAGS, "the first 4 MB through the low table");
-        for j in 0..ENTRIES {
-            let low = j << PAGE_SHIFT;
-            let want = if low < LOW_GUARD { 0 } else { low | PTE_FLAGS };
-            assert_eq!(entry(&b, LOW_TABLE_OFFSET + 4 * j), want, "low table entry {j}: the low 64 KB not present");
+        for i in 0..EXE_CHUNKS {
+            assert_eq!(entry(&b, 4 * i), (PROCESS_TABLES + i * PAGE_SIZE) | PTE_FLAGS, "program area chunk {i}: a process table");
         }
-        assert_eq!(entry(&b, 4), 0x0040_0000 | PTE_FLAGS | PDE_LARGE);
+        assert_eq!(entry(&b, 4 * (STUB_CHUNK + 1)), ((STUB_CHUNK + 1) << LARGE_PAGE_SHIFT) | PTE_FLAGS | PDE_LARGE);
         assert_eq!(entry(&b, 4 * 1023), 0xFFC0_0000 | PTE_FLAGS | PDE_LARGE);
         assert_eq!(entry(&b, TABLE_OFFSET), chunk | PTE_SUPERVISOR, "the GDT's first page: supervisor-only");
         let tib = (TIB_BASE >> PAGE_SHIFT) & (ENTRIES - 1);
@@ -536,16 +547,12 @@ mod tests {
     fn no_entry_maps_a_page_elsewhere_than_itself_but_the_thread_local_page() {
         const BASE: u32 = PAGING_BLOCKS_BASE;
         let b = paging_block(BASE, TIB_BASE);
-        for j in 0..ENTRIES {
-            let e = entry(&b, LOW_TABLE_OFFSET + 4 * j);
-            assert!(e == 0 || e & !0xFFF == j << PAGE_SHIFT, "low table entry {j}");
-        }
         let alloc = ALLOC_FIRST_CHUNK..ALLOC_FIRST_CHUNK + ALLOC_CHUNKS;
         for i in alloc.clone() {
-            assert_eq!(entry(&b, 4 * i), (PROCESS_TABLES + (i - ALLOC_FIRST_CHUNK) * PAGE_SIZE) | PTE_FLAGS,
+            assert_eq!(entry(&b, 4 * i), (ALLOC_TABLES + (i - ALLOC_FIRST_CHUNK) * PAGE_SIZE) | PTE_FLAGS,
                        "allocator chunk {i}: through its process table");
         }
-        for i in (1..ENTRIES).filter(|&i| i != TLM_CHUNK && !alloc.contains(&i)) {
+        for i in (EXE_CHUNKS..ENTRIES).filter(|&i| i != TLM_CHUNK && !alloc.contains(&i)) {
             let e = entry(&b, 4 * i);
             assert_eq!(e & !0x3F_FFFF, i << LARGE_PAGE_SHIFT, "directory entry {i}");
             let flags = if i == STUB_CHUNK { PDE_READ_ONLY } else { PTE_FLAGS };
@@ -616,16 +623,19 @@ mod tests {
         assert_eq!(block_of_tlm_page(PAGING_BLOCKS_BASE + TLM_OFFSET), Some(PAGING_BLOCKS_BASE));
     }
 
-    /// The process tables (ADR-0114) map the allocator's region page by
-    /// page, present and writable, and lie in the supervisor-only arena
+    /// The process tables (ADR-0114) map the program area (but the low
+    /// 64 KB) and the allocator's region page by page, present and writable, and lie in the supervisor-only arena
     /// before the blocks; the entry helpers address and fill them.
     #[test]
     fn the_process_tables_map_the_allocators_region() {
         assert_eq!(ALLOC_CHUNKS * (1 << LARGE_PAGE_SHIFT), SHARED_ARENA_BASE - DYNAMIC_ALLOC_BASE);
         assert!(supervisor_only(PROCESS_TABLES) && supervisor_only(PAGING_BLOCKS_BASE - PAGE_SIZE));
-        assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE), Some(PROCESS_TABLES));
-        assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE + 0x234), Some(PROCESS_TABLES));
-        assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE + 0x1234), Some(PROCESS_TABLES + 4));
+        assert_eq!(process_pte_at(0), Some(PROCESS_TABLES), "the program area first");
+        assert_eq!(process_pte_at(EXE_AREA_END - 1), Some(ALLOC_TABLES - 4));
+        assert_eq!(process_pte_at(EXE_AREA_END), None, "the API thunks keep their large page");
+        assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE), Some(ALLOC_TABLES));
+        assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE + 0x234), Some(ALLOC_TABLES));
+        assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE + 0x1234), Some(ALLOC_TABLES + 4));
         assert_eq!(process_pte_at(SHARED_ARENA_BASE - 1), Some(PAGING_BLOCKS_BASE - 4));
         assert_eq!(process_pte_at(SHARED_ARENA_BASE), None, "the shared arena keeps its large pages");
         assert_eq!(process_pte_at(DYNAMIC_ALLOC_BASE - 1), None);
@@ -635,9 +645,13 @@ mod tests {
         assert_eq!(process_pte(page, PageAccess::None) & PTE_PRESENT, 0);
         let loader = super::super::Loader::new_mock();
         loader.ensure_process_tables();
-        for addr in [DYNAMIC_ALLOC_BASE, page, SHARED_ARENA_BASE - PAGE_SIZE] {
+        for addr in [LOW_GUARD, EXE_AREA_START + 0x5000, EXE_AREA_END - PAGE_SIZE, DYNAMIC_ALLOC_BASE, page, SHARED_ARENA_BASE - PAGE_SIZE] {
             let at = process_pte_at(addr).unwrap();
             assert_eq!(loader.guest_read::<u32>(at), Some(addr | PTE_FLAGS), "{addr:#x}");
+        }
+        for addr in (0..LOW_GUARD).step_by(PAGE_SIZE as usize) {
+            assert_eq!(loader.guest_read::<u32>(process_pte_at(addr).unwrap()).map(|e| e & PTE_PRESENT), Some(0),
+                       "{addr:#x}: the low 64 KB not present");
         }
     }
 

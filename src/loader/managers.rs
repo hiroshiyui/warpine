@@ -65,6 +65,11 @@ impl MemoryManager {
         Some((addr, stale))
     }
 
+    /// The size (whole pages) of the block allocated at `addr`.
+    pub fn block_size(&self, addr: u32) -> Option<u32> {
+        self.allocated.iter().find(|b| b.addr == addr).map(|b| b._size)
+    }
+
     pub fn free(&mut self, addr: u32) -> bool {
         self.free_block(addr).is_some()
     }

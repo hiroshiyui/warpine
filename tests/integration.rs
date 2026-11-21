@@ -1581,12 +1581,12 @@ fn a_programs_breakpoint_raises_xcpt_breakpoint() {
 /// states held by the page tables: reserved, read-only and decommitted
 /// pages fault, committed pages start zeroed, guard pages raise
 /// XCPT_GUARD_PAGE_VIOLATION once, the calls' errors, and a page made
-/// read-only faults on another thread whose TLB held it writable. At
-/// both rings.
+/// read-only faults on another thread whose TLB held it writable, and the
+/// program's code object cannot be written. At both rings.
 #[test]
 fn page_states_of_allocated_memory_hold() {
     for ring in [RING_3, RING_0] {
-        if text_checks_pass_env("samples/mem_protect_test/mem_protect_test.exe", "mem_protect_test", 33,
+        if text_checks_pass_env("samples/mem_protect_test/mem_protect_test.exe", "mem_protect_test", 35,
                                 &[("WARPINE_RING", ring)]).is_none() {
             return;
         }
