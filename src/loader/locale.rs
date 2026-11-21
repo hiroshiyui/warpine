@@ -48,6 +48,38 @@ pub fn resolve_country(lang: &str, territory: &str,
     (country, cp)
 }
 
+/// The language and territory a country code stands for, for the formats
+/// a country implies (date order, separators, clock, currency): the
+/// inverse of [`locale_country`]'s territory table. `None` for a code
+/// that table does not have.
+pub fn country_locale(country: u32) -> Option<(&'static str, &'static str)> {
+    Some(match country {
+        1 => ("en", "US"), 2 => ("en", "CA"), 3 => ("es", "MX"), 7 => ("ru", "RU"),
+        30 => ("el", "GR"), 31 => ("nl", "NL"), 32 => ("nl", "BE"), 33 => ("fr", "FR"),
+        34 => ("es", "ES"), 36 => ("hu", "HU"), 38 => ("hr", "HR"), 39 => ("it", "IT"),
+        40 => ("ro", "RO"), 41 => ("de", "CH"), 42 => ("cs", "CZ"), 43 => ("de", "AT"),
+        44 => ("en", "GB"), 45 => ("da", "DK"), 46 => ("sv", "SE"), 47 => ("nb", "NO"),
+        48 => ("pl", "PL"), 49 => ("de", "DE"), 55 => ("pt", "BR"), 61 => ("en", "AU"),
+        64 => ("en", "NZ"), 81 => ("ja", "JP"), 82 => ("ko", "KR"), 86 => ("zh", "CN"),
+        88 => ("zh", "TW"), 90 => ("tr", "TR"), 91 => ("en", "IN"), 351 => ("pt", "PT"),
+        354 => ("is", "IS"), 358 => ("fi", "FI"), 359 => ("bg", "BG"), 375 => ("be", "BY"),
+        380 => ("uk", "UA"), 852 => ("zh", "HK"), 853 => ("zh", "MO"),
+        _ => return None,
+    })
+}
+
+/// The language and territory the formats follow: those of the country
+/// `country_var` (`WARPINE_COUNTRY`) names when [`country_locale`] knows
+/// it, else the host locale's. A country set explicitly decides every
+/// format, so a pinned country gives the same dates and numbers on every
+/// host.
+pub fn format_locale<'a>(host_lang: &'a str, host_territory: &'a str, country_var: Option<&str>) -> (&'a str, &'a str) {
+    country_var
+        .and_then(|v| v.trim().parse::<u32>().ok())
+        .and_then(country_locale)
+        .unwrap_or((host_lang, host_territory))
+}
+
 /// [`resolve_country`] without the overrides.
 fn locale_country(lang: &str, territory: &str) -> (u32, u32) {
     let lang = lang.to_ascii_lowercase();
@@ -116,11 +148,14 @@ impl Os2Locale {
 
         // Extract language and country from locale string (e.g., "ja_JP.UTF-8" → "ja", "JP")
         let locale_part = lang.split('.').next().unwrap_or("");
-        let (language, territory) = if let Some(idx) = locale_part.find('_') {
+        let (host_language, host_territory) = if let Some(idx) = locale_part.find('_') {
             (&locale_part[..idx], &locale_part[idx + 1..])
         } else {
             (locale_part, "")
         };
+        // WARPINE_COUNTRY decides the formats too, not only the code.
+        let country_var = std::env::var(COUNTRY_VAR).ok();
+        let (language, territory) = format_locale(host_language, host_territory, country_var.as_deref());
 
         // Also read libc locale for numeric/monetary formatting
         let lconv = Self::read_lconv();
@@ -363,6 +398,24 @@ mod tests {
         assert_eq!(r("", ""), DEFAULT_COUNTRY_CP);
         assert_eq!(r("C", ""), DEFAULT_COUNTRY_CP);
         assert_eq!(r("POSIX", ""), DEFAULT_COUNTRY_CP);
+    }
+
+    #[test]
+    fn a_pinned_country_decides_the_formats() {
+        use super::{country_locale, format_locale};
+        assert_eq!(format_locale("ja", "JP", Some("1")), ("en", "US"), "WARPINE_COUNTRY=1 on a Japanese host");
+        assert_eq!(format_locale("", "", Some(" 49 ")), ("de", "DE"), "no host locale");
+        assert_eq!(format_locale("ja", "JP", None), ("ja", "JP"));
+        assert_eq!(format_locale("ja", "JP", Some("9999")), ("ja", "JP"), "a code without a table entry");
+        assert_eq!(format_locale("ja", "JP", Some("x")), ("ja", "JP"));
+        // Every country the table gives back maps to itself.
+        for c in [1, 2, 3, 7, 30, 31, 32, 33, 34, 36, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 55, 61, 64,
+                  81, 82, 86, 88, 90, 91, 351, 354, 358, 359, 375, 380, 852, 853] {
+            let (l, t) = country_locale(c).expect("in the table");
+            assert_eq!(resolve_country(l, t, None, None).0, c, "{l}_{t}");
+        }
+        assert_eq!(Os2Locale::map_date_format("en", "US"), 0);
+        assert_eq!(Os2Locale::map_date_format("ja", "JP"), 2);
     }
 
     #[test]

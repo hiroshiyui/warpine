@@ -317,4 +317,5 @@ features keep this list in their ADR, under "Warpine's choices (unverified)".
   - a class without a version accepting any; `somTestCls`'s error code; the text of a kept `somAssert`; `somCheckArgs`'s levels;
   - `dataAlignment` 4, `classInfo` and the protected data 0.
 
+- **Formats of a pinned country** (`WARPINE_COUNTRY`): the language and territory each country code stands for (`country_locale`), and through them its date order, separators, clock and currency.
 - **CONFIG.SYS**: the `THREADS=` minimum, duplicates and comments; for `LIBPATH` and `SET`, see ADR-0092 (the program's own directory searched, a read per process, the `SET` name and value rules, Warpine's base environment).
