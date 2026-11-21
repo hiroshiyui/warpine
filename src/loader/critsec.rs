@@ -111,15 +111,19 @@ mod tests {
     fn a_waiting_thread_runs_when_the_owner_leaves() {
         let loader = Loader::new_mock();
         assert_eq!(loader.dos_enter_crit_sec(MAIN_VCPU_ID), NO_ERROR);
+        // The owner sets `left` just before it leaves: a waiter that went
+        // on earlier sees it unset. (No timing: under load the waiter may
+        // start late, so how long it waited says nothing.)
+        let left = std::sync::atomic::AtomicBool::new(false);
         std::thread::scope(|s| {
             let waiter = s.spawn(|| {
-                let start = std::time::Instant::now();
                 assert!(loader.wait_crit_sec(2));
-                start.elapsed()
+                left.load(Ordering::SeqCst)
             });
             std::thread::sleep(Duration::from_millis(40));
+            left.store(true, Ordering::SeqCst);
             assert_eq!(loader.dos_exit_crit_sec(MAIN_VCPU_ID), NO_ERROR);
-            assert!(waiter.join().unwrap() >= Duration::from_millis(30));
+            assert!(waiter.join().unwrap(), "the waiter went on before the owner left");
         });
     }
 }

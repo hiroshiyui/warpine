@@ -694,14 +694,17 @@ mod tests {
         assert!(!threads.wait_while_suspended(2, || false), "not suspended");
         assert_eq!(threads.suspend(MAIN_TID, 2), NO_ERROR);
         assert!(threads.wait_while_suspended(2, || true), "gives up when told to");
-        let other = std::sync::Arc::clone(&threads);
+        // The resumer sets `resumed` just before it resumes: a wait that
+        // ended earlier sees it unset (no timing, which load would upset).
+        let resumed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (other, flag) = (std::sync::Arc::clone(&threads), std::sync::Arc::clone(&resumed));
         let resumer = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(30));
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
             other.resume(2)
         });
-        let start = std::time::Instant::now();
         assert!(threads.wait_while_suspended(2, || false));
-        assert!(start.elapsed() >= Duration::from_millis(20));
+        assert!(resumed.load(std::sync::atomic::Ordering::SeqCst), "it waited for the resume");
         assert_eq!(resumer.join().unwrap(), NO_ERROR);
     }
 
@@ -766,14 +769,16 @@ mod tests {
         assert_eq!(threads.enter_crit_sec(2, || false), Some(NO_ERROR));
         assert!(threads.wait_crit_sec(2, || false), "the owner runs");
         assert!(!threads.wait_crit_sec(MAIN_TID, || true), "gives up when told to");
-        let other = std::sync::Arc::clone(&threads);
+        // The ender sets `ended` just before the section ends (no timing).
+        let ended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (other, flag) = (std::sync::Arc::clone(&threads), std::sync::Arc::clone(&ended));
         let ender = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(30));
+            flag.store(true, std::sync::atomic::Ordering::SeqCst);
             other.exit_crit_sec(2)
         });
-        let start = std::time::Instant::now();
         assert!(threads.wait_crit_sec(MAIN_TID, || false));
-        assert!(start.elapsed() >= Duration::from_millis(20), "it waited");
+        assert!(ended.load(std::sync::atomic::Ordering::SeqCst), "it waited for the section to end");
         assert_eq!(ender.join().unwrap(), NO_ERROR);
         // Entering waits as well, and a thread end releases the section.
         threads.enter_crit_sec(3, || false);
