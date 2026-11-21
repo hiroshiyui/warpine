@@ -28,7 +28,7 @@ ADR-0088 made 32-bit threads run paged, and ADR-0113 made them run at ring 3 wit
 1. **Process tables for the allocator's region.** The 48 page tables mapping `DYNAMIC_ALLOC_BASE`..`SHARED_ARENA_BASE` (192 KB) lie at the start of the paging arena (`PROCESS_TABLES`), supervisor-only.
    - Every thread's directory points those chunks at them instead of at large pages, so one write reaches every thread of the process.
    - They start present and writable, as the large pages were (`ensure_process_tables`).
-   - The paging blocks follow them (`PAGING_BLOCKS_BASE`). With phase 3, 226 (191 before this ADR).
+   - The paging blocks follow them (`PAGING_BLOCKS_BASE`). With phase 3, 226 (191 before this ADR; 482 since ADR-0115).
 2. **Page states** (`vmem.rs`, `PageMap`): each `DosAllocMem` allocation is a region, with each page's `PAG_*` state and the access it was allocated with (`PAG_DEFAULT`). A page's process-table entry follows its state:
    - committed with `PAG_WRITE`: present and writable;
    - committed with read or execute access only: present and read-only;

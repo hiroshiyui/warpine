@@ -9,6 +9,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Security
 - **No API call writes Warpine's protected memory for a program** (ADR-0113, step 5). Warpine writes many results through pointers a program gives; a program could point one into its own page tables, which it cannot write itself at ring 3, and have Warpine corrupt them. The 250 ms paging watch used to catch that afterwards; now such a write is refused, and the call fails as with any address it cannot write.
 
+### Changed
+- **A process can have 482 threads** (was 226; ADR-0115). The paging arena now runs up to the allocator. Its new 4 MB are one supervisor-only page, so a program can no more reach them than the rest of the arena. A program over the limit gets `ERROR_MAX_THRDS_REACHED` (164) from `DosCreateThread`, as at the session's `THREADS=` limit, instead of `ERROR_NOT_ENOUGH_MEMORY`.
+
 ### Removed
 - **`WARPINE_RING`, and ring 0 for programs** (ADR-0113, step 5): every program runs at ring 3. With it went the paging watch thread and the check and repair of a thread's page tables, which only a program at ring 0 could damage. A thread that cannot get its page tables now fails to start instead of running unpaged.
 

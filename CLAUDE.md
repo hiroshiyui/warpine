@@ -29,7 +29,7 @@ They run natively under KVM.
 ```bash
 cargo build
 cargo run -- samples/hello/hello.exe       # run an OS/2 program
-cargo test                                 # 2278 unit tests (2192 warpine + 23 gen_api + 37 lx_link + 8 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat) + 217 integration tests
+cargo test                                 # 2279 unit tests (2193 warpine + 23 gen_api + 37 lx_link + 8 os2rc + 6 os2msg + 5 gen_arch + 7 gen_compat) + 218 integration tests
 cargo clippy --all-targets -- -D warnings  # must be clean before every commit (the pre-commit hook runs it)
 systemd-run --user --scope -p MemoryMax=24G -p MemorySwapMax=0 -p TasksMax=4096 -- cargo test   # as the hook runs it (ADR-0031); afterwards `pgrep -c -x warpine` must be 0
 WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden pictures after an intended rendering change
@@ -80,7 +80,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
    - API calls are INT 3 thunks at `MAGIC_API_BASE` + ordinal. The VMEXIT goes to `api_dispatch.rs`: the static registry (`api_registry.rs`, 478 entries) or a sub-dispatcher (VIOCALLS / KBDCALLS / MOUCALLS / PMWIN / PMGPI, 407 ordinals), 885 entry points in all (`--compat` lists them).
 2. **Threads.** One OS/2 thread is one host thread with its own vCPU.
    - 32-bit threads run paged with their own page tables: memory is mapped one-to-one except the thread-local page (`paging.rs`, ADR-0088); host accesses there go to the running thread's page (`guest_mem.rs`).
-   - Every thread, 32-bit or 16-bit, runs paged at ring 3 (`ring.rs`, ADR-0113: DPL-3 descriptors, a TSS and ring-0 stack per thread, an exception's frame moved from the ring-0 stack to the guest's); the GDT, IDT, ring-0 window and every paging block (the paging arena, at most 226 threads) are supervisor-only, the thunks read-only, CR0.WP set. There is no ring 0 for guests and no paging watch.
+   - Every thread, 32-bit or 16-bit, runs paged at ring 3 (`ring.rs`, ADR-0113: DPL-3 descriptors, a TSS and ring-0 stack per thread, an exception's frame moved from the ring-0 stack to the guest's); the GDT, IDT, ring-0 window and every paging block (the paging arena, at most 482 threads, ADR-0115) are supervisor-only, the thunks read-only, CR0.WP set. There is no ring 0 for guests and no paging watch.
    - Warpine never writes its protected memory (GDT, IDT, stubs, paging arena) through an address a guest gave: `guest_write` / `guest_write_bytes` / `guest_slice_mut` refuse it (`guest_mem::protected`); only Warpine's own setup uses `system_write` / `system_write_bytes`. A new structure in that memory is written the same way.
    - The host never walks the guest's page tables; a guest that spins on memory past its RAM ends as a trap. After an MMIO exit, `finish_mmio` completes the access before the registers change.
    - Memory a program allocates has OS/2's page states (`vmem.rs`, ADR-0114): `DosAllocMem` / `DosSetMem` reserve, commit, decommit, make pages read-only or guard pages, in the process tables every thread shares; a guard page raises `XCPT_GUARD_PAGE_VIOLATION`. At ring 3 thread stacks are sparse: committed as they are touched, `XCPT_UNABLE_TO_GROW_STACK` near the bottom (`allocate_stack`, `grow_stack`). A page that loses access flushes every vCPU's TLB (`flush_tlbs`, CR3 reloaded). The program's and its DLLs' objects without the LX write flag are read-only (`protect_objects`). The allocator's other blocks are present while allocated; free memory is not present (`sync_allocations` brings `MemoryManager`'s allocations and frees into the tables before each vCPU runs guest code).
@@ -115,7 +115,7 @@ WARPINE_UPDATE_GOLDEN=1 cargo test --test integration gui_   # regenerate golden
 | `TLM_PAGE` | `0x0181F000` | The thread-local memory page: each 32-bit thread's own page tables (`paging.rs`, ADR-0088) map it to the thread's own page |
 | `FS_WINDOW` | `0x01840000` | Mapped by each thread's tables to its own TIB; selector `0x18`'s base, so reloading FS keeps the TIB (ADR-0110). The low 64 KB are not present: NULL pointers trap |
 | `RING0_WINDOW` | `0x01841000` | Mapped by each thread's tables to its ring-0 page: its TSS (TR, `TSS_SEL`), then its ring-0 stack (ADR-0113) |
-| `PAGING_ARENA_BASE` – `PAGING_ARENA_END` | `0x01842000` – `0x01C00000` | Supervisor-only: the process tables for the program area and the allocator's region (`PROCESS_TABLES`, 4 + 48 pages, ADR-0114), then every thread's paging block (226 of 4 pages, ADR-0113) |
+| `PAGING_ARENA_BASE` – `PAGING_ARENA_END` | `0x01842000` – `0x02000000` | Supervisor-only: the process tables for the program area and the allocator's region (`PROCESS_TABLES`, 4 + 48 pages, ADR-0114), then every thread's paging block (482 of 4 pages, ADR-0113, ADR-0115); the last 4 MB are one supervisor-only large page |
 
 The PIB holds `pib_ulpid` at `+0x00`, `ulppid` at `+0x04`, `hmte` at `+0x08`, `pchcmd` at `+0x0C` and `pchenv` at `+0x10`.
 

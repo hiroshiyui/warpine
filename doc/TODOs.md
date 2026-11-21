@@ -254,7 +254,7 @@ Measure with the frame statistics (`RUST_LOG=warpine::gui=debug`) and `samples/p
 
 Warpine's first priority is that a guest cannot escape to the host (CLAUDE.md, ADR-0066). These would make that boundary harder to cross, and find mistakes before guests do.
 
-- [ ] **Threads per process**: the paging arena caps a process at 226 threads (ADR-0113, ADR-0114), below `THREADS=`'s 4095; a second arena with its own page tables would lift that.
+- [ ] **Threads per process**: the paging arena caps a process at 482 threads (ADR-0115), below `THREADS=`'s 4095; the free 4 MB after the thunks would make 738, blocks from the allocator would lift the cap (both weighed in ADR-0115).
 - [ ] **Memory protection**: see [Memory protection on the page tables](#kernel-and-processes) (the main thread's stack).
 - [ ] **Confining the host process, further** (Landlock is done, ADR-0111):
   - check the sandbox's display and sound paths on real desktops (Wayland, X11, PulseAudio, PipeWire, GPU drivers); only SDL's dummy drivers are tested;
